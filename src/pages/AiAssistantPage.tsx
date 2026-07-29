@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { BookOpen, Bot, CalendarDays, Check, Clock3, Filter, Network, RefreshCw, Search, Settings2, ShieldCheck, Sparkles, X } from 'lucide-react'
+import { BookOpen, Bot, CalendarDays, Check, Clock3, Filter, Network, Paperclip, RefreshCw, Search, Settings2, ShieldCheck, Sparkles, X } from 'lucide-react'
 import { buildTaskCalendar, shanghaiToday } from '../utils/taskCalendar'
 import './AiAssistantPage.scss'
 
@@ -179,11 +179,12 @@ function AiAssistantPage() {
   const pendingReviews = graph.reviewQueue.filter((item: any) => item.status === 'pending')
   const identityDisambiguation = dashboard?.identityDisambiguation
   const mergeHistory = dashboard?.mergeHistory || []
-  const memoryFeed = dashboard?.memoryFeed || { claims: [], events: [] }
+  const memoryFeed = dashboard?.memoryFeed || { claims: [], events: [], resources: [] }
   const ingestionStatus = dashboard?.ingestionStatus
   const ingestionCounts = Object.fromEntries((ingestionStatus?.batches || []).map((item: any) => [item.status, Number(item.count || 0)]))
   const visibleClaims = memoryFeed.claims.filter((item: any) => item.status !== 'rejected')
   const visibleEvents = memoryFeed.events.filter((item: any) => item.status !== 'rejected')
+  const visibleResources = memoryFeed.resources || []
   const selectedEntityClaims = selectedEntity
     ? visibleClaims.filter((item: any) => item.subject_id === selectedEntity.id)
     : []
@@ -651,7 +652,7 @@ function AiAssistantPage() {
             <strong>{briefingPeriod === 'latest' ? briefing?.messageCount || 0 : weeklyBriefing?.messageCount || 0}</strong>
             <span>{briefingPeriod === 'latest' ? '条本次新增消息' : '条本周新增消息'}</span>
             <small>{briefingPeriod === 'latest'
-              ? `${dashboard?.memoryStats?.claims || 0} 条事实 · ${dashboard?.memoryStats?.events || 0} 个事件`
+              ? `${dashboard?.memoryStats?.claims || 0} 条事实 · ${dashboard?.memoryStats?.events || 0} 个事件 · ${dashboard?.memoryStats?.resources || 0} 个资源`
               : `${weeklyBriefing?.highPriorityTaskCount || 0} 项高优先级 · ${weeklyBriefing?.waitingTaskCount || 0} 项等待中`}</small>
           </div>
         </section>
@@ -872,7 +873,7 @@ function AiAssistantPage() {
             <select value={memoryTypeFilter} onChange={event => setMemoryTypeFilter(event.target.value)}>
               <option value="">所有记忆类型</option>
               <option value="entity">实体</option><option value="relation">关系</option><option value="claim">事实</option>
-              <option value="event">事件</option><option value="task">待办</option>
+              <option value="event">事件</option><option value="task">待办</option><option value="resource">资源</option>
             </select>
             <label><span>从</span><input type="date" value={memoryFrom} onChange={event => setMemoryFrom(event.target.value)} /></label>
             <label><span>至</span><input type="date" value={memoryTo} onChange={event => setMemoryTo(event.target.value)} /></label>
@@ -993,6 +994,29 @@ function AiAssistantPage() {
                 </div>
               </article>)}
               {!visibleEvents.length && <div className="assistant-empty">会议、决定、交付和承诺等事件会显示在这里。</div>}
+            </div>
+          </section>
+
+          <section className="assistant-panel">
+            <div className="assistant-section-heading">
+              <div><span className="assistant-eyebrow">MESSAGE RESOURCES</span><h3><Paperclip size={16} /> 消息资源库</h3></div>
+              <span className="assistant-count">{visibleResources.length} 项</span>
+            </div>
+            <div className="assistant-memory-list">
+              {visibleResources.map((resource: any) => <article className="assistant-memory-item" key={resource.id}>
+                <div className="assistant-memory-item-head">
+                  <strong>{resource.title}</strong>
+                  <span>{resource.resource_type === 'link' ? '链接' : resource.resource_type === 'file' ? '文件' : resource.resource_type === 'chat-history' ? '转发记录' : resource.resource_type === 'mini-program' ? '小程序' : resource.resource_type === 'image' ? '图片 OCR' : resource.resource_type === 'voice' ? '语音转写' : resource.resource_type}</span>
+                </div>
+                {resource.content && <p>{resource.content}</p>}
+                {(resource.file_name || resource.url) && <small>{resource.file_name ? `${resource.file_name}${resource.file_ext ? ` · ${resource.file_ext}` : ''}` : resource.url}</small>}
+                {resource.metadata?.sessionName && <small>来自：{resource.metadata.sessionName}{resource.metadata.senderName ? ` · ${resource.metadata.senderName}` : ''}</small>}
+                <div className="assistant-evidence-stack">
+                  {(resource.evidence || []).map((evidence: any) =>
+                    <small key={`${evidence.message_id}-${evidence.timestamp}`}>原消息 · {new Date(evidence.timestamp * 1000).toLocaleString('zh-CN')}：“{evidence.excerpt}”</small>)}
+                </div>
+              </article>)}
+              {!visibleResources.length && <div className="assistant-empty">链接、文件、转发记录、小程序、图片 OCR 和语音转写会在增量整理时沉淀到这里。</div>}
             </div>
           </section>
         </div>

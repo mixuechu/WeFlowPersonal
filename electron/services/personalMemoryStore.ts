@@ -287,6 +287,21 @@ export class PersonalMemoryStore {
         UNIQUE(document_type, source_id)
       ) STRICT;
 
+      CREATE TABLE IF NOT EXISTS memory_resources (
+        id TEXT PRIMARY KEY,
+        resource_type TEXT NOT NULL,
+        title TEXT NOT NULL,
+        url TEXT NOT NULL DEFAULT '',
+        file_name TEXT NOT NULL DEFAULT '',
+        file_ext TEXT NOT NULL DEFAULT '',
+        content TEXT NOT NULL DEFAULT '',
+        metadata_json TEXT NOT NULL DEFAULT '{}',
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      ) STRICT;
+      CREATE INDEX IF NOT EXISTS idx_memory_resources_type_updated
+        ON memory_resources(resource_type, updated_at);
+
       CREATE VIRTUAL TABLE IF NOT EXISTS search_fts USING fts5(
         document_id UNINDEXED,
         title,
@@ -865,9 +880,50 @@ export class PersonalMemoryStore {
   }
 
   getMemoryStats(): any {
-    if (!this.db) return { claims: 0, events: 0 }
+    if (!this.db) return { claims: 0, events: 0, resources: 0 }
     const count = (table: string) => Number((this.db!.prepare(`SELECT COUNT(*) AS count FROM ${table}`).get() as { count: number }).count)
-    return { claims: count('claims'), events: count('events') }
+    return { claims: count('claims'), events: count('events'), resources: count('memory_resources') }
+  }
+
+  upsertResources(resources: any[]): void {
+    if (!this.db || !resources.length) return
+    const upsert = this.db.prepare(`
+      INSERT INTO memory_resources(
+        id,resource_type,title,url,file_name,file_ext,content,metadata_json,created_at,updated_at
+      ) VALUES(?,?,?,?,?,?,?,?,?,?)
+      ON CONFLICT(id) DO UPDATE SET
+        resource_type=excluded.resource_type,title=excluded.title,url=excluded.url,
+        file_name=excluded.file_name,file_ext=excluded.file_ext,content=excluded.content,
+        metadata_json=excluded.metadata_json,updated_at=excluded.updated_at
+    `)
+    const insertEvidence = this.db.prepare(`
+      INSERT OR IGNORE INTO search_document_evidence(document_id,message_id,session_id,timestamp,sender,excerpt)
+      VALUES(?,?,?,?,?,?)
+    `)
+    for (const resource of resources) {
+      const now = String(resource.updatedAt || new Date().toISOString())
+      const metadata = resource.metadata && typeof resource.metadata === 'object' ? resource.metadata : {}
+      upsert.run(
+        String(resource.id), String(resource.resourceType || 'resource'),
+        String(resource.title || '未命名资源'), String(resource.url || ''),
+        String(resource.fileName || ''), String(resource.fileExt || ''),
+        String(resource.content || ''), JSON.stringify(metadata),
+        String(resource.createdAt || now), now
+      )
+      const documentId = `resource:${resource.id}`
+      const searchText = [
+        resource.title, resource.content, resource.url, resource.fileName, resource.fileExt,
+        metadata.sessionName, metadata.senderName, metadata.appMsgKind
+      ].filter(Boolean).join('；')
+      this.upsertSearchDocument(documentId, 'resource', String(resource.id), String(resource.title || '未命名资源'),
+        searchText, { ...metadata, resourceType: resource.resourceType, url: resource.url || '', fileName: resource.fileName || '' }, now)
+      this.db.prepare('DELETE FROM search_document_evidence WHERE document_id=?').run(documentId)
+      for (const item of resource.evidence || []) {
+        if (!item.messageId) continue
+        insertEvidence.run(documentId, String(item.messageId), String(item.sessionId || ''),
+          Number(item.timestamp || 0), String(item.sender || ''), String(item.excerpt || '').slice(0, 2000))
+      }
+    }
   }
 
   syncTasks(tasks: any[]): void {
@@ -912,8 +968,8 @@ export class PersonalMemoryStore {
     }
   }
 
-  getMemoryFeed(limit = 100): { claims: any[]; events: any[] } {
-    if (!this.db) return { claims: [], events: [] }
+  getMemoryFeed(limit = 100): { claims: any[]; events: any[]; resources: any[] } {
+    if (!this.db) return { claims: [], events: [], resources: [] }
     const claims = this.db.prepare(`
       SELECT c.*,s.canonical_name AS subject_name,o.canonical_name AS object_entity_name
       FROM claims c
@@ -932,6 +988,13 @@ export class PersonalMemoryStore {
       SELECT ep.entity_id,ep.role,e.canonical_name
       FROM event_participants ep JOIN entities e ON e.id=ep.entity_id WHERE ep.event_id=?
     `)
+    const resources = this.db.prepare(`
+      SELECT * FROM memory_resources ORDER BY updated_at DESC LIMIT ?
+    `).all(limit) as any[]
+    const resourceEvidence = this.db.prepare(`
+      SELECT message_id,session_id,timestamp,sender,excerpt
+      FROM search_document_evidence WHERE document_id=? ORDER BY timestamp
+    `)
     return {
       claims: claims.map(claim => ({
         ...claim,
@@ -941,6 +1004,11 @@ export class PersonalMemoryStore {
         ...event,
         participants: participantStatement.all(event.id) as any[],
         evidence: evidenceStatement.all('', event.id) as any[]
+      })),
+      resources: resources.map(resource => ({
+        ...resource,
+        metadata: JSON.parse(resource.metadata_json || '{}'),
+        evidence: resourceEvidence.all(`resource:${resource.id}`) as any[]
       }))
     }
   }

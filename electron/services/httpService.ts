@@ -1888,7 +1888,14 @@ class HttpService {
       mediaType: media?.kind,
       mediaFileName: media?.fileName,
       mediaUrl: media ? `http://${this.host}:${this.port}/api/v1/media/${media.relativePath}` : undefined,
-      mediaLocalPath: media?.fullPath
+      mediaLocalPath: media?.fullPath,
+      appMsgKind: msg.appMsgKind,
+      linkTitle: msg.linkTitle,
+      linkUrl: msg.linkUrl,
+      fileName: msg.fileName,
+      fileExt: msg.fileExt,
+      fileSize: msg.fileSize,
+      fileMd5: msg.fileMd5
     }
 
     if (quoteInfo?.replyToMessageId) {

@@ -854,3 +854,39 @@ test('forget entity transaction removes graph, memory, search, task audit and as
   assert.equal(store.getDiagnostics().integrity, 'ok')
   assert.ok(store.searchText('保留组织').some(item => item.id === 'entity:org-keep'))
 }))
+
+test('message resources remain idempotent, searchable and traceable to original evidence', () => withStore(store => {
+  const resource = {
+    id: 'resource-link-1',
+    resourceType: 'link',
+    title: '项目验收说明',
+    url: 'https://example.com/acceptance',
+    content: '报价有效期三天，周五前完成验收。',
+    metadata: {
+      sessionId: 'session-1',
+      sessionName: '项目推进群',
+      senderName: '老张',
+      appMsgKind: 'link'
+    },
+    createdAt: '2026-07-30T01:00:00.000Z',
+    updatedAt: '2026-07-30T01:00:00.000Z',
+    evidence: [{
+      messageId: 'message-resource-1',
+      sessionId: 'session-1',
+      timestamp: 1_775_000_000,
+      sender: '老张',
+      excerpt: '项目验收说明，报价有效期三天'
+    }]
+  }
+  store.upsertResources([resource])
+  store.upsertResources([{ ...resource, content: `${resource.content} 请查看链接。`, updatedAt: '2026-07-30T02:00:00.000Z' }])
+
+  const feed = store.getMemoryFeed()
+  assert.equal(feed.resources.length, 1)
+  assert.equal(feed.resources[0].content.includes('请查看链接'), true)
+  assert.equal(feed.resources[0].evidence[0].message_id, 'message-resource-1')
+  assert.equal(store.getMemoryStats().resources, 1)
+  const results = store.searchText('报价有效期')
+  assert.ok(results.some(item => item.id === 'resource:resource-link-1'))
+  assert.equal(store.getDocumentEvidence('resource', 'resource-link-1')[0].sender, '老张')
+}))

@@ -467,7 +467,14 @@ export class AiAssistantService {
           semanticType: semantics.semanticType,
           replyToMessageId: semantics.replyToMessageId,
           quotedSender: semantics.quotedSender,
-          mediaLocalPath: String(message.mediaLocalPath || '')
+          mediaLocalPath: String(message.mediaLocalPath || ''),
+          appMsgKind: String(message.appMsgKind || ''),
+          linkTitle: String(message.linkTitle || ''),
+          linkUrl: String(message.linkUrl || ''),
+          fileName: String(message.fileName || message.mediaFileName || ''),
+          fileExt: String(message.fileExt || ''),
+          fileSize: Number(message.fileSize || 0),
+          fileMd5: String(message.fileMd5 || '')
         }
       }).filter((message: any) => message.content)
       return { sessionId: session.username, rows }
@@ -529,6 +536,61 @@ export class AiAssistantService {
         message.ocrSource = 'tesseract-local'
       }
     }
+  }
+
+  private persistMessageResources(messages: any[], createdAt: string): void {
+    const resourceTypes = new Set(['link', 'file', 'forward', 'miniapp', 'image', 'voice'])
+    const resources = messages.flatMap(message => {
+      if (!resourceTypes.has(message.semanticType)) return []
+      if (message.semanticType === 'image' && !message.ocrSource) return []
+      if (message.semanticType === 'voice' && !message.transcriptionSource) return []
+      const recoveredContent = String(message.content || '')
+        .replace(/^\[(?:图片·本地OCR|语音·本地转写)\]\s*/, '')
+        .trim()
+      const resourceType = message.semanticType === 'forward'
+        ? 'chat-history'
+        : message.semanticType === 'miniapp' ? 'mini-program' : message.semanticType
+      const title = String(
+        message.linkTitle || message.fileName ||
+        (message.semanticType === 'image' ? '图片识别内容' :
+          message.semanticType === 'voice' ? '语音转写' :
+            message.semanticType === 'chat-history' ? '转发的聊天记录' :
+              message.semanticType === 'mini-program' ? '小程序' : '消息资源')
+      ).trim()
+      const messageId = String(message.id || message.localId || '')
+      if (!messageId) return []
+      return [{
+        id: crypto.createHash('sha256').update(`${message.sessionId}:${messageId}:${resourceType}`).digest('hex').slice(0, 32),
+        resourceType,
+        title,
+        url: message.linkUrl,
+        fileName: message.fileName,
+        fileExt: message.fileExt,
+        content: recoveredContent,
+        metadata: {
+          sessionId: message.sessionId,
+          sessionName: message.sessionName,
+          senderId: message.senderId,
+          senderName: message.senderName,
+          appMsgKind: message.appMsgKind,
+          fileSize: message.fileSize,
+          fileMd5: message.fileMd5,
+          mediaLocalPath: message.mediaLocalPath,
+          transcriptionSource: message.transcriptionSource || '',
+          ocrSource: message.ocrSource || ''
+        },
+        createdAt: new Date(Number(message.timestamp || 0) * 1000).toISOString(),
+        updatedAt: createdAt,
+        evidence: [{
+          messageId,
+          sessionId: message.sessionId,
+          timestamp: message.timestamp,
+          sender: message.senderName,
+          excerpt: String(message.content || '').slice(0, 2000)
+        }]
+      }]
+    })
+    personalMemoryStore.upsertResources(resources)
   }
 
   private async callAi(messages: any[]): Promise<any> {
@@ -980,6 +1042,7 @@ export class AiAssistantService {
       const fresh = collected.messages.filter(message => !seen.has(messageKey(message)))
       const digests: any[] = []
       const createdAt = new Date().toISOString()
+      this.persistMessageResources(fresh, createdAt)
       const successfulMessageKeys: string[] = []
       const batchErrors: string[] = []
       const batches = this.buildAnalysisBatches(fresh)
