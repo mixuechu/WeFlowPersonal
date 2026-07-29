@@ -376,6 +376,83 @@ export class PersonalMemoryStore {
     }
   }
 
+  previewForgetEntity(entityId: string): any {
+    if (!this.db) return null
+    const entity = this.db.prepare('SELECT id,canonical_name FROM entities WHERE id=? AND deleted_at IS NULL').get(entityId) as any
+    if (!entity) return null
+    const aliases = this.db.prepare('SELECT value FROM aliases WHERE entity_id=?').all(entityId).map((item: any) => item.value)
+    const identities = this.db.prepare('SELECT account_id,display_name FROM identities WHERE entity_id=?').all(entityId) as any[]
+    const names = [...new Set([
+      entity.canonical_name,
+      ...aliases,
+      ...identities.flatMap(item => [item.account_id, item.display_name])
+    ].map(value => String(value || '').trim()).filter(Boolean))]
+    const claims = this.db.prepare('SELECT id FROM claims WHERE subject_id=? OR object_entity_id=?').all(entityId, entityId) as any[]
+    const relations = this.db.prepare('SELECT id FROM relations WHERE subject_id=? OR object_id=?').all(entityId, entityId) as any[]
+    const events = this.db.prepare('SELECT DISTINCT event_id AS id FROM event_participants WHERE entity_id=?').all(entityId) as any[]
+    return {
+      entityId,
+      canonicalName: entity.canonical_name,
+      names,
+      claimIds: claims.map(item => item.id),
+      relationIds: relations.map(item => item.id),
+      eventIds: events.map(item => item.id)
+    }
+  }
+
+  forgetEntity(entityId: string, taskIds: string[] = []): any {
+    if (!this.db) return null
+    const preview = this.previewForgetEntity(entityId)
+    if (!preview) return null
+    const documentIds = [
+      `entity:${entityId}`,
+      ...preview.claimIds.map((id: string) => `claim:${id}`),
+      ...preview.relationIds.map((id: string) => `relation:${id}`),
+      ...preview.eventIds.map((id: string) => `event:${id}`),
+      ...taskIds.map(id => `task:${id}`)
+    ]
+    const deleteIds = (table: string, column: string, ids: string[]) => {
+      if (!ids.length) return
+      this.db!.prepare(`DELETE FROM ${table} WHERE ${column} IN (${ids.map(() => '?').join(',')})`).run(...ids)
+    }
+    this.db.exec('BEGIN IMMEDIATE')
+    try {
+      deleteIds('search_fts', 'document_id', documentIds)
+      deleteIds('search_documents', 'id', documentIds)
+      deleteIds('search_document_evidence', 'document_id', documentIds)
+      deleteIds('evidence', 'relation_id', preview.relationIds)
+      deleteIds('events', 'id', preview.eventIds)
+      deleteIds('task_history', 'task_id', taskIds)
+      this.db.prepare('DELETE FROM review_queue WHERE payload_json LIKE ?').run(`%${entityId}%`)
+      this.db.prepare('DELETE FROM merge_history WHERE source_entity_id=? OR target_entity_id=?').run(entityId, entityId)
+      this.db.prepare('DELETE FROM identity_decisions WHERE left_entity_id=? OR right_entity_id=?').run(entityId, entityId)
+      for (const name of preview.names) {
+        const pattern = `%${name.replace(/[%_]/g, value => `\\${value}`)}%`
+        this.db.prepare(`DELETE FROM assistant_messages
+          WHERE content LIKE ? ESCAPE '\\' OR citations_json LIKE ? ESCAPE '\\'`).run(pattern, pattern)
+        this.db.prepare(`DELETE FROM memory_corrections
+          WHERE before_json LIKE ? ESCAPE '\\' OR after_json LIKE ? ESCAPE '\\'`).run(pattern, pattern)
+      }
+      this.db.prepare('DELETE FROM assistant_conversations WHERE id NOT IN (SELECT DISTINCT conversation_id FROM assistant_messages)').run()
+      this.db.prepare('DELETE FROM entities WHERE id=?').run(entityId)
+      this.db.exec('COMMIT')
+      return {
+        success: true,
+        canonicalName: preview.canonicalName,
+        removed: {
+          claims: preview.claimIds.length,
+          relations: preview.relationIds.length,
+          events: preview.eventIds.length,
+          tasks: taskIds.length,
+          searchDocuments: documentIds.length
+        }
+      }
+    } catch (error) {
+      this.db.exec('ROLLBACK')
+      throw error
+    }
+  }
+
   createBackup(): any {
     if (!this.db || !this.databasePath) throw new Error('个人记忆数据库尚未初始化')
     const diagnostics = this.getDiagnostics()

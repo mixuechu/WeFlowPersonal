@@ -464,3 +464,78 @@ test('anonymous task-assignment golden set meets the published quality baseline'
   assert.equal(delegated.taskKind, 'delegated')
   assert.ok(delegated.rationale.includes('执行者是收件人'))
 })
+
+test('forget entity transaction removes graph, memory, search, task audit and assistant traces', () => withStore(store => {
+  store.syncGraph({
+    entities: [{
+      id: 'person-forget',
+      type: 'person',
+      canonicalName: '隐私测试人',
+      aliases: ['测试别名'],
+      accountIds: ['wxid_forget']
+    }, {
+      id: 'org-keep',
+      type: 'organization',
+      canonicalName: '保留组织',
+      aliases: [],
+      accountIds: []
+    }],
+    relations: [{
+      id: 'relation-forget',
+      subjectId: 'person-forget',
+      predicate: '任职于',
+      objectId: 'org-keep',
+      confidence: 0.8,
+      status: 'candidate',
+      evidence: evidence('message-relation-forget', '隐私测试人任职于保留组织')
+    }],
+    reviewQueue: []
+  })
+  store.upsertClaims([{
+    id: 'claim-forget',
+    subjectId: 'person-forget',
+    predicate: '所在城市',
+    objectValue: '上海',
+    confidence: 0.8,
+    status: 'candidate',
+    sourceNature: 'self_statement',
+    searchText: '隐私测试人 所在城市 上海',
+    evidence: evidence('message-claim-forget', '隐私测试人住在上海')
+  }])
+  store.upsertEvents([{
+    id: 'event-forget',
+    eventType: 'meeting',
+    title: '与隐私测试人开会',
+    description: '',
+    confidence: 0.8,
+    status: 'candidate',
+    searchText: '与隐私测试人开会',
+    participants: [{ entityId: 'person-forget', role: '参与者' }],
+    evidence: evidence('message-event-forget', '与隐私测试人开会')
+  }])
+  store.syncTasks([{
+    id: 'task-forget',
+    title: '回复隐私测试人',
+    status: 'todo',
+    priority: 'medium',
+    classification: 'mine'
+  }])
+  store.recordTaskChanges('task-forget', {}, { status: 'todo', title: '回复隐私测试人' }, 'created')
+  store.saveAssistantExchange('隐私测试人是谁', '隐私测试人住在上海', [])
+
+  const preview = store.previewForgetEntity('person-forget')
+  assert.deepEqual({
+    claims: preview.claimIds.length,
+    relations: preview.relationIds.length,
+    events: preview.eventIds.length
+  }, { claims: 1, relations: 1, events: 1 })
+  const result = store.forgetEntity('person-forget', ['task-forget'])
+  assert.equal(result.success, true)
+  assert.equal(store.searchText('隐私测试人').length, 0)
+  assert.equal(store.getMemoryFeed().claims.length, 0)
+  assert.equal(store.getMemoryFeed().events.length, 0)
+  assert.equal(store.listTaskHistory(['task-forget']).length, 0)
+  assert.equal(store.getRecentAssistantExchanges().length, 0)
+  assert.equal(store.getDiagnostics().integrity, 'ok')
+  assert.ok(store.searchText('保留组织').some(item => item.id === 'entity:org-keep'))
+}))

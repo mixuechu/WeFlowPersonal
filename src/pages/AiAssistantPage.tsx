@@ -42,6 +42,7 @@ function AiAssistantPage() {
   const [graphRelationType, setGraphRelationType] = useState('')
   const [graphRelationStatus, setGraphRelationStatus] = useState('')
   const [selectedEntityId, setSelectedEntityId] = useState('')
+  const [forgettingEntityId, setForgettingEntityId] = useState('')
   const [showSources, setShowSources] = useState(false)
   const [sources, setSources] = useState<any[]>([])
   const [sourceQuery, setSourceQuery] = useState('')
@@ -370,6 +371,36 @@ function AiAssistantPage() {
   const openSources = async () => {
     setSources(await window.electronAPI.aiAssistant.getConversationSources())
     setShowSources(true)
+  }
+
+  const forgetSelectedEntity = async () => {
+    if (!selectedEntity || forgettingEntityId) return
+    const preview = await window.electronAPI.aiAssistant.previewForgetEntity(selectedEntity.id)
+    if (!preview) return
+    const confirmed = window.confirm(
+      `彻底遗忘“${preview.canonicalName}”？\n\n` +
+      `将永久删除 ${preview.counts.claims} 条事实、${preview.counts.relations} 条关系、` +
+      `${preview.counts.events} 个事件、${preview.counts.tasks} 个关联任务，以及相关搜索向量、审计和问答记录。\n\n` +
+      '此操作不可撤销。建议先在上方创建个人记忆备份。'
+    )
+    if (!confirmed) return
+    const exactConfirmed = window.prompt(`请输入实体名称“${preview.canonicalName}”以确认彻底遗忘：`) === preview.canonicalName
+    if (!exactConfirmed) {
+      setMessage('名称不匹配，已取消彻底遗忘')
+      return
+    }
+    setForgettingEntityId(selectedEntity.id)
+    try {
+      const result = await window.electronAPI.aiAssistant.forgetEntity(selectedEntity.id)
+      setSelectedEntityId('')
+      setMessage(`已彻底遗忘 ${result.canonicalName}：删除 ${result.removed.searchDocuments} 个记忆索引`)
+      await load()
+      setMemoryDiagnostics(await window.electronAPI.aiAssistant.getMemoryDiagnostics())
+    } catch (error: any) {
+      setMessage(error?.message || String(error))
+    } finally {
+      setForgettingEntityId('')
+    }
   }
 
   const toggleSource = async (source: any) => {
@@ -830,6 +861,9 @@ function AiAssistantPage() {
                   <small>别名：{selectedEntity.aliases?.join('、') || '无'}</small>
                   <small>账号：{selectedEntity.accountIds?.join('、') || '未关联'}</small>
                   <small>证据消息：{selectedEntity.evidenceMessageIds?.length || 0} 条</small>
+                  <button className="assistant-forget-entity" onClick={() => void forgetSelectedEntity()} disabled={forgettingEntityId === selectedEntity.id}>
+                    {forgettingEntityId === selectedEntity.id ? '正在彻底清理…' : '彻底遗忘此实体'}
+                  </button>
                   {selectedEntityInsight && <div className="assistant-relationship-metrics">
                     <div><strong>{selectedEntityInsight.strength}</strong><span>关系强度 · {selectedEntityInsight.strengthLabel}</span></div>
                     <div><strong>{selectedEntityInsight.evidenceCount}</strong><span>去重证据</span></div>

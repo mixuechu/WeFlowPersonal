@@ -418,6 +418,8 @@
 .assistant-relationship-metrics > small,.assistant-relationship-metrics details { grid-column: 1 / -1; color: #727a73; font-size: 8px; }
 .assistant-relationship-metrics summary { cursor: pointer; }
 .assistant-relationship-metrics details small { display: block; margin-top: 3px; }
+.assistant-forget-entity { margin-top: 8px; padding: 6px 8px; border: 1px solid #e0c3bb; border-radius: 7px; color: #94564a; background: #fff7f4; font-size: 8px; cursor: pointer; }
+.assistant-forget-entity:disabled { opacity: .5; cursor: default; }
 .assistant-path-finder { margin-bottom: 10px; display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr) auto; align-items: center; gap: 7px; }
 .assistant-path-finder select, .assistant-path-finder button { min-width: 0; padding: 7px 8px; border: 1px solid #deddd5; border-radius: 8px; color: #60665f; background: #fff; font-size: 9px; }
 .assistant-path-finder button { cursor: pointer; }

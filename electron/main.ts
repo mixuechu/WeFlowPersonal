@@ -4514,6 +4514,8 @@ function registerIpcHandlers() {
     aiAssistantService.updateMemoryItemStatus(kind, id, status))
   ipcMain.handle('ai-assistant:reviewMemoryDocument', (_, kind: 'relation' | 'claim' | 'event', id: string, decision: 'confirmed' | 'rejected') =>
     aiAssistantService.reviewMemoryDocument(kind, id, decision))
+  ipcMain.handle('ai-assistant:previewForgetEntity', (_, id: string) => aiAssistantService.previewForgetEntity(id))
+  ipcMain.handle('ai-assistant:forgetEntity', (_, id: string) => aiAssistantService.forgetEntity(id))
   ipcMain.handle('ai-assistant:searchMemory', (_, query: string, options?: any) => aiAssistantService.searchMemoryHybrid(query, options))
   ipcMain.handle('ai-assistant:indexMemoryVectors', () => aiAssistantService.ensureVectorIndex())
   ipcMain.handle('ai-assistant:findGraphPath', (_, fromId: string, toId: string, maxDepth?: number) =>

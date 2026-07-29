@@ -1315,6 +1315,56 @@ export class AiAssistantService {
     return relation
   }
 
+  previewForgetEntity(id: string): any {
+    const entity = this.state.graph.entities.find(item => item.id === id)
+    const databasePreview = personalMemoryStore.previewForgetEntity(id)
+    if (!entity || !databasePreview) return null
+    const names = [...new Set([
+      entity.canonicalName,
+      ...(entity.aliases || []),
+      ...(entity.accountIds || []),
+      ...(databasePreview.names || [])
+    ].map(value => String(value || '').trim().toLowerCase()).filter(value => value.length >= 2))]
+    const taskIds = this.state.tasks.filter(task => [
+      task.owner,
+      ...(task.collaborators || []),
+      task.project,
+      task.title,
+      task.detail,
+      task.assignmentEvidence,
+      ...(task.evidence || []).map(item => item.excerpt)
+    ].some(value => names.some(name => String(value || '').toLowerCase().includes(name)))).map(task => task.id)
+    return {
+      ...databasePreview,
+      taskIds,
+      counts: {
+        claims: databasePreview.claimIds.length,
+        relations: databasePreview.relationIds.length,
+        events: databasePreview.eventIds.length,
+        tasks: taskIds.length
+      }
+    }
+  }
+
+  forgetEntity(id: string): any {
+    const preview = this.previewForgetEntity(id)
+    if (!preview) throw new Error('实体不存在或已被遗忘')
+    const taskIds = new Set(preview.taskIds)
+    this.state.tasks = this.state.tasks.filter(task => !taskIds.has(task.id))
+    for (const briefing of Object.values(this.state.briefings)) {
+      if (Array.isArray(briefing?.tasks)) briefing.tasks = briefing.tasks.filter((task: any) => !taskIds.has(task.id))
+    }
+    this.state.graph.entities = this.state.graph.entities.filter(entity => entity.id !== id)
+    const relationIds = new Set(this.state.graph.relations
+      .filter(relation => relation.subjectId === id || relation.objectId === id).map(relation => relation.id))
+    this.state.graph.relations = this.state.graph.relations.filter(relation => !relationIds.has(relation.id))
+    this.state.graph.reviewQueue = this.state.graph.reviewQueue.filter(review =>
+      review.leftEntityId !== id && review.rightEntityId !== id && (!review.relationId || !relationIds.has(review.relationId)))
+    const result = personalMemoryStore.forgetEntity(id, [...taskIds])
+    this.saveState()
+    return result
+  }
+
   searchMemory(query: string, limit = 200): any[] {
     return personalMemoryStore.searchText(String(query || ''), limit).map((item: any) => ({
       ...item,

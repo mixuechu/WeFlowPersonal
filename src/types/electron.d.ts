@@ -1653,6 +1653,8 @@ export interface ElectronAPI {
       revertMerge: (id: number) => Promise<any>
       updateMemoryItemStatus: (kind: 'claim' | 'event', id: string, status: 'confirmed' | 'rejected') => Promise<any>
       reviewMemoryDocument: (kind: 'relation' | 'claim' | 'event', id: string, decision: 'confirmed' | 'rejected') => Promise<any>
+      previewForgetEntity: (id: string) => Promise<any>
+      forgetEntity: (id: string) => Promise<any>
       searchMemory: (query: string, options?: any) => Promise<any[]>
       indexMemoryVectors: () => Promise<any>
       findGraphPath: (fromId: string, toId: string, maxDepth?: number) => Promise<any>
