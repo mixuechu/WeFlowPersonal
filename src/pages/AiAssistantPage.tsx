@@ -1021,6 +1021,11 @@ function AiAssistantPage() {
                           : resource.metadata?.attachmentIndexStatus === 'empty' ? '未提取到可读正文'
                             : resource.metadata?.attachmentIndexStatus === 'failed' ? '解析失败' : '等待增量解析'}
                 </small>}
+                {resource.metadata?.attachmentFormat === '.pdf-ocr' && <small>
+                  扫描 PDF：已 OCR {resource.metadata.attachmentPdfOcrPages || 0}
+                  {resource.metadata.attachmentPdfTotalPages ? ` / ${resource.metadata.attachmentPdfTotalPages}` : ''} 页
+                  {resource.metadata.attachmentPdfOcrTruncated ? ' · 其余页面将在后续增强中处理' : ''}
+                </small>}
                 {resource.resource_type === 'image' && resource.metadata?.ocrStructure && <div className="assistant-evidence-stack">
                   <small>
                     截图结构：{resource.metadata.ocrStructure.kind === 'chat' ? '聊天记录'

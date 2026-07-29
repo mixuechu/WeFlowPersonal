@@ -12,6 +12,7 @@ import { localEmbeddingService } from './localEmbeddingService'
 import { extractAttachmentText } from './attachmentTextExtractor'
 import { structureOcrText } from './imageOcrStructuring'
 import { captureWebSnapshot } from './webSnapshotService'
+import { extractScannedPdfText, getPdfOcrStatus } from './pdfOcrService'
 import { exportService } from './export'
 import { filterMemorySearchResults, type MemorySearchOptions } from './memorySearchFilters'
 import { buildMemoryQueryPlan } from './memoryQueryPlanner'
@@ -565,6 +566,19 @@ export class AiAssistantService {
         message.attachmentMatchedBy = located.matchedBy
         message.attachmentIndexStatus = extracted.status
         message.attachmentFormat = extracted.format
+        if (extracted.status === 'ocr_required' && this.config.get('aiAssistantOcrImages')) {
+          const scanned = await extractScannedPdfText(located.sourcePath)
+          message.attachmentPdfOcrStatus = scanned.status
+          message.attachmentPdfOcrPages = scanned.processedPages
+          message.attachmentPdfTotalPages = scanned.totalPages
+          message.attachmentPdfOcrTruncated = scanned.truncated
+          if (scanned.success) {
+            message.content = `${message.content}\n[PDF扫描·本地OCR] ${redact(scanned.text)}`.slice(0, 18_000)
+            message.attachmentIndexStatus = 'indexed'
+            message.attachmentFormat = '.pdf-ocr'
+            message.attachmentTextSource = 'poppler-tesseract-local'
+          }
+        }
         if (extracted.success) {
           message.content = `${message.content}\n[附件·本地正文] ${redact(extracted.text)}`.slice(0, 18_000)
           message.attachmentTextSource = 'local-bounded-parser'
@@ -639,6 +653,10 @@ export class AiAssistantService {
           attachmentIndexStatus: message.attachmentIndexStatus || '',
           attachmentFormat: message.attachmentFormat || '',
           attachmentTextSource: message.attachmentTextSource || '',
+          attachmentPdfOcrStatus: message.attachmentPdfOcrStatus || '',
+          attachmentPdfOcrPages: message.attachmentPdfOcrPages || 0,
+          attachmentPdfTotalPages: message.attachmentPdfTotalPages || 0,
+          attachmentPdfOcrTruncated: Boolean(message.attachmentPdfOcrTruncated),
           webSnapshotStatus: message.webSnapshotStatus || '',
           webSnapshotFinalUrl: message.webSnapshotFinalUrl || '',
           webSnapshotTitle: message.webSnapshotTitle || '',
@@ -1384,6 +1402,7 @@ export class AiAssistantService {
   async getMemoryDiagnostics(): Promise<any> {
     const ingestionRuns = personalMemoryStore.listIngestionRuns(20)
     const ocr = await localOcrService.getStatus()
+    const pdfOcr = await getPdfOcrStatus()
     return {
       ...personalMemoryStore.getDiagnostics(),
       ingestionRuns,
@@ -1403,7 +1422,8 @@ export class AiAssistantService {
         httpBinding: '127.0.0.1',
         logsRedacted: true
       },
-      ocr: { ...ocr, enabled: Boolean(this.config.get('aiAssistantOcrImages')) }
+      ocr: { ...ocr, enabled: Boolean(this.config.get('aiAssistantOcrImages')) },
+      pdfOcr: { ...pdfOcr, enabled: Boolean(this.config.get('aiAssistantOcrImages')) }
     }
   }
 

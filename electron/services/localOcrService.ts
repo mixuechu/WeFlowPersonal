@@ -49,7 +49,10 @@ class LocalOcrService {
     }
   }
 
-  async recognize(imagePath: string): Promise<{ success: boolean; text?: string; cached?: boolean; error?: string }> {
+  async recognize(
+    imagePath: string,
+    options: { timeoutMs?: number; maxChars?: number; psm?: number } = {}
+  ): Promise<{ success: boolean; text?: string; cached?: boolean; error?: string }> {
     this.load()
     const executable = this.executable()
     if (!executable) return { success: false, error: '本机未安装 Tesseract' }
@@ -62,9 +65,10 @@ class LocalOcrService {
       const hash = createHash('sha256').update(bytes).digest('hex')
       if (Object.hasOwn(this.cache, hash)) return { success: true, text: this.cache[hash], cached: true }
       const { stdout } = await execFileAsync(executable, [
-        imagePath, 'stdout', '-l', 'chi_sim+eng', '--psm', '6'
-      ], { timeout: 45_000, maxBuffer: 2 * 1024 * 1024 })
-      const text = String(stdout || '').replace(/\s*\n+\s*/g, ' ').replace(/\s{2,}/g, ' ').trim().slice(0, 4000)
+        imagePath, 'stdout', '-l', 'chi_sim+eng', '--psm', String(options.psm || 6)
+      ], { timeout: Math.max(1_000, Math.min(45_000, Number(options.timeoutMs || 45_000))), maxBuffer: 2 * 1024 * 1024 })
+      const text = String(stdout || '').replace(/\s*\n+\s*/g, ' ').replace(/\s{2,}/g, ' ').trim()
+        .slice(0, Math.max(100, Math.min(10_000, Number(options.maxChars || 4_000))))
       this.cache[hash] = text
       if (Object.keys(this.cache).length > 5000) {
         this.cache = Object.fromEntries(Object.entries(this.cache).slice(-4000))
