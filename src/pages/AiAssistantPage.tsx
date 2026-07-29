@@ -38,6 +38,9 @@ function AiAssistantPage() {
   const [pathFromId, setPathFromId] = useState('')
   const [pathToId, setPathToId] = useState('')
   const [graphPath, setGraphPath] = useState<any>(null)
+  const [memoryDiagnostics, setMemoryDiagnostics] = useState<any>(null)
+  const [backingUpMemory, setBackingUpMemory] = useState(false)
+  const [restoringMemory, setRestoringMemory] = useState(false)
   const [memoryQuestion, setMemoryQuestion] = useState('')
   const [memoryAnswer, setMemoryAnswer] = useState<any>(null)
   const [askingMemory, setAskingMemory] = useState(false)
@@ -53,6 +56,7 @@ function AiAssistantPage() {
 
   useEffect(() => {
     void load()
+    void window.electronAPI.aiAssistant.getMemoryDiagnostics().then(setMemoryDiagnostics).catch(() => {})
     const timer = window.setInterval(() => void load(), 15_000)
     return () => window.clearInterval(timer)
   }, [load])
@@ -169,6 +173,36 @@ function AiAssistantPage() {
     setGraphPath(await window.electronAPI.aiAssistant.findGraphPath(pathFromId, pathToId, 6))
   }
 
+  const backupMemory = async () => {
+    if (backingUpMemory) return
+    setBackingUpMemory(true)
+    try {
+      const result = await window.electronAPI.aiAssistant.createMemoryBackup()
+      setMessage(`个人记忆备份完成：${result.path}`)
+      setMemoryDiagnostics(await window.electronAPI.aiAssistant.getMemoryDiagnostics())
+    } catch (error: any) {
+      setMessage(error?.message || String(error))
+    } finally {
+      setBackingUpMemory(false)
+    }
+  }
+
+  const restoreMemory = async (backup: any) => {
+    if (restoringMemory || !backup?.path || !backup?.hasState) return
+    if (!window.confirm(`确定恢复到 ${new Date(backup.createdAt).toLocaleString('zh-CN')} 的个人记忆快照吗？恢复前会自动创建安全快照。`)) return
+    setRestoringMemory(true)
+    try {
+      await window.electronAPI.aiAssistant.restoreMemoryBackup(backup.path)
+      setMessage('个人记忆已恢复；恢复前的安全快照已保留。')
+      setMemoryDiagnostics(await window.electronAPI.aiAssistant.getMemoryDiagnostics())
+      await load()
+    } catch (error: any) {
+      setMessage(error?.message || String(error))
+    } finally {
+      setRestoringMemory(false)
+    }
+  }
+
   const decideReview = async (id: string, decision: 'confirmed' | 'rejected') => {
     await window.electronAPI.aiAssistant.updateGraphReview(id, decision)
     await load()
@@ -276,6 +310,35 @@ function AiAssistantPage() {
             <strong>最近一次记忆处理：{ingestionStatus.status === 'completed' ? '全部完成' : ingestionStatus.status === 'partial' ? '部分完成，等待重试' : ingestionStatus.status === 'running' ? '正在处理' : '处理失败'}</strong>
             <span>{Number(ingestionStatus.message_count || 0)} 条已完成 · {ingestionCounts.completed || 0} 个成功批次{ingestionCounts.failed ? ` · ${ingestionCounts.failed} 个待重试批次` : ''}</span>
           </div>
+        )}
+        {memoryDiagnostics && (
+          <section className={`assistant-memory-health ${memoryDiagnostics.healthy ? 'healthy' : 'unhealthy'}`}>
+            <div>
+              <ShieldCheck size={16} />
+              <span><strong>个人记忆库{memoryDiagnostics.healthy ? '健康' : '需要检查'}</strong>
+                <small>{memoryDiagnostics.integrity === 'ok' ? 'SQLite 一致性检查通过' : memoryDiagnostics.integrity}
+                  {' · '}{(Number(memoryDiagnostics.databaseBytes || 0) / 1024 / 1024).toFixed(1)} MB
+                  {' · '}{memoryDiagnostics.backups?.length || 0} 个本地快照
+                </small>
+              </span>
+            </div>
+            <div className="assistant-memory-health-actions">
+              <button onClick={() => void backupMemory()} disabled={backingUpMemory || restoringMemory || !memoryDiagnostics.healthy}>
+                {backingUpMemory ? '正在验证并备份…' : '立即备份个人记忆'}
+              </button>
+              {!!memoryDiagnostics.backups?.length && <details>
+                <summary>恢复历史快照</summary>
+                <div>
+                  {memoryDiagnostics.backups.slice(0, 5).map((backup: any) => <button key={backup.path}
+                    disabled={restoringMemory || !backup.hasState}
+                    title={backup.hasState ? '恢复数据库、图谱、任务和增量游标' : '旧快照缺少完整状态文件'}
+                    onClick={() => void restoreMemory(backup)}>
+                    {new Date(backup.createdAt).toLocaleString('zh-CN')}{backup.hasState ? '' : '（仅数据库）'}
+                  </button>)}
+                </div>
+              </details>}
+            </div>
+          </section>
         )}
 
         <section className="assistant-briefing-card">

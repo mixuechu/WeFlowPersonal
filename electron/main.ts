@@ -4513,6 +4513,9 @@ function registerIpcHandlers() {
   ipcMain.handle('ai-assistant:searchMemory', (_, query: string) => aiAssistantService.searchMemory(query))
   ipcMain.handle('ai-assistant:findGraphPath', (_, fromId: string, toId: string, maxDepth?: number) =>
     aiAssistantService.findGraphPath(fromId, toId, maxDepth))
+  ipcMain.handle('ai-assistant:getMemoryDiagnostics', () => aiAssistantService.getMemoryDiagnostics())
+  ipcMain.handle('ai-assistant:createMemoryBackup', () => aiAssistantService.createMemoryBackup())
+  ipcMain.handle('ai-assistant:restoreMemoryBackup', (_, path: string) => aiAssistantService.restoreMemoryBackup(path))
   ipcMain.handle('ai-assistant:correctClaim', (_, id: string, input: any) => aiAssistantService.correctClaim(id, input))
   ipcMain.handle('ai-assistant:askMemory', (_, question: string, conversationId?: string) => aiAssistantService.askMemory(question, conversationId))
   ipcMain.handle('ai-assistant:getConversationSources', () => aiAssistantService.getConversationSources())

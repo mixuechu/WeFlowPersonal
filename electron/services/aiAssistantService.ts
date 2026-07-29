@@ -1,6 +1,6 @@
 import { app } from 'electron'
 import crypto from 'crypto'
-import { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'fs'
+import { copyFileSync, existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'fs'
 import { dirname, join } from 'path'
 import { jsonrepair } from 'jsonrepair'
 import { ConfigService } from './config'
@@ -910,6 +910,41 @@ export class AiAssistantService {
       memoryFeed: personalMemoryStore.getMemoryFeed(),
       ingestionStatus: personalMemoryStore.getIngestionStatus(),
       assistantHistory: personalMemoryStore.getRecentAssistantExchanges()
+    }
+  }
+
+  getMemoryDiagnostics(): any {
+    return personalMemoryStore.getDiagnostics()
+  }
+
+  createMemoryBackup(): any {
+    const result = personalMemoryStore.createBackup()
+    const stateBackupPath = `${result.path}.state.json`
+    if (existsSync(this.statePath)) copyFileSync(this.statePath, stateBackupPath)
+    return { ...result, stateBackupPath }
+  }
+
+  restoreMemoryBackup(path: string): any {
+    const stateBackupPath = `${path}.state.json`
+    if (!existsSync(stateBackupPath)) throw new Error('该快照缺少 AI 助理状态文件，无法完整恢复')
+    JSON.parse(readFileSync(stateBackupPath, 'utf8'))
+    const safety = this.createMemoryBackup()
+    try {
+      const result = personalMemoryStore.restoreBackup(path)
+      const temporary = `${this.statePath}.restore-${Date.now()}.tmp`
+      copyFileSync(stateBackupPath, temporary)
+      renameSync(temporary, this.statePath)
+      this.loadState()
+      this.saveState()
+      return { ...result, safetyBackup: safety.path, restoredStateFrom: stateBackupPath }
+    } catch (error) {
+      try {
+        personalMemoryStore.restoreBackup(safety.path)
+        if (safety.stateBackupPath && existsSync(safety.stateBackupPath)) copyFileSync(safety.stateBackupPath, this.statePath)
+        this.loadState()
+        this.saveState()
+      } catch {}
+      throw error
     }
   }
 

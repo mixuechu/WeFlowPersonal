@@ -1,6 +1,6 @@
 import { DatabaseSync } from 'node:sqlite'
-import { mkdirSync } from 'fs'
-import { dirname } from 'path'
+import { copyFileSync, existsSync, mkdirSync, readdirSync, renameSync, statSync, unlinkSync } from 'fs'
+import { dirname, join, resolve } from 'path'
 
 type MemoryGraph = {
   entities: any[]
@@ -10,9 +10,11 @@ type MemoryGraph = {
 
 export class PersonalMemoryStore {
   private db: DatabaseSync | null = null
+  private databasePath = ''
 
   initialize(databasePath: string): void {
     mkdirSync(dirname(databasePath), { recursive: true })
+    this.databasePath = databasePath
     this.db = new DatabaseSync(databasePath)
     this.db.exec(`
       PRAGMA journal_mode = WAL;
@@ -320,6 +322,112 @@ export class PersonalMemoryStore {
   close(): void {
     this.db?.close()
     this.db = null
+  }
+
+  getDiagnostics(): any {
+    if (!this.db || !this.databasePath) return { healthy: false, integrity: 'not_initialized' }
+    const integrityRows = this.db.prepare('PRAGMA integrity_check').all() as Array<{ integrity_check: string }>
+    const integrity = integrityRows.map(row => row.integrity_check).join('; ')
+    const counts = this.db.prepare(`
+      SELECT
+        (SELECT COUNT(*) FROM entities WHERE deleted_at IS NULL) AS entities,
+        (SELECT COUNT(*) FROM relations WHERE status!='rejected') AS relations,
+        (SELECT COUNT(*) FROM claims WHERE status!='rejected') AS claims,
+        (SELECT COUNT(*) FROM events WHERE status!='rejected') AS events,
+        (SELECT COUNT(*) FROM search_documents) AS searchDocuments,
+        (SELECT COUNT(*) FROM evidence) AS evidence
+    `).get() as any
+    const backupDirectory = join(dirname(this.databasePath), 'personal-memory-backups')
+    const backups = this.listBackups(backupDirectory)
+    return {
+      healthy: integrity === 'ok',
+      integrity,
+      databasePath: this.databasePath,
+      databaseBytes: statSync(this.databasePath).size,
+      counts,
+      backups
+    }
+  }
+
+  createBackup(): any {
+    if (!this.db || !this.databasePath) throw new Error('个人记忆数据库尚未初始化')
+    const diagnostics = this.getDiagnostics()
+    if (!diagnostics.healthy) throw new Error(`数据库一致性检查失败：${diagnostics.integrity}`)
+    const backupDirectory = join(dirname(this.databasePath), 'personal-memory-backups')
+    mkdirSync(backupDirectory, { recursive: true })
+    const timestamp = new Date().toISOString().replace(/[:.]/g, '-')
+    const backupPath = join(backupDirectory, `personal-memory-${timestamp}.sqlite`)
+    const escapedPath = backupPath.replace(/'/g, "''")
+    this.db.exec(`VACUUM INTO '${escapedPath}'`)
+    const verification = new DatabaseSync(backupPath, { readOnly: true })
+    try {
+      const result = verification.prepare('PRAGMA integrity_check').get() as { integrity_check?: string }
+      if (result?.integrity_check !== 'ok') throw new Error(`备份验证失败：${result?.integrity_check || 'unknown'}`)
+    } finally {
+      verification.close()
+    }
+    const backups = this.listBackups(backupDirectory)
+    for (const stale of backups.slice(10)) {
+      unlinkSync(stale.path)
+      try { unlinkSync(`${stale.path}.state.json`) } catch {}
+    }
+    return {
+      success: true,
+      path: backupPath,
+      bytes: statSync(backupPath).size,
+      createdAt: new Date().toISOString(),
+      retained: Math.min(backups.length, 10)
+    }
+  }
+
+  restoreBackup(backupPath: string): any {
+    if (!this.db || !this.databasePath) throw new Error('个人记忆数据库尚未初始化')
+    const backupDirectory = join(dirname(this.databasePath), 'personal-memory-backups')
+    const allowed = this.listBackups(backupDirectory).find(item => resolve(item.path) === resolve(String(backupPath || '')))
+    if (!allowed) throw new Error('只能恢复由本应用创建的个人记忆快照')
+    const verification = new DatabaseSync(allowed.path, { readOnly: true })
+    try {
+      const result = verification.prepare('PRAGMA integrity_check').get() as { integrity_check?: string }
+      if (result?.integrity_check !== 'ok') throw new Error(`所选快照验证失败：${result?.integrity_check || 'unknown'}`)
+    } finally {
+      verification.close()
+    }
+    const safetyBackup = this.createBackup()
+    const temporary = `${this.databasePath}.restore-${Date.now()}.tmp`
+    this.db.close()
+    this.db = null
+    try {
+      copyFileSync(allowed.path, temporary)
+      renameSync(temporary, this.databasePath)
+      this.initialize(this.databasePath)
+      const diagnostics = this.getDiagnostics()
+      if (!diagnostics.healthy) throw new Error(`恢复后的数据库验证失败：${diagnostics.integrity}`)
+      return { success: true, restoredFrom: allowed.path, safetyBackup: safetyBackup.path, diagnostics }
+    } catch (error) {
+      try { this.db?.close() } catch {}
+      this.db = null
+      try {
+        copyFileSync(safetyBackup.path, temporary)
+        renameSync(temporary, this.databasePath)
+      } catch {}
+      this.initialize(this.databasePath)
+      throw error
+    }
+  }
+
+  private listBackups(backupDirectory: string): Array<{ path: string; name: string; bytes: number; createdAt: string; hasState: boolean }> {
+    try {
+      return readdirSync(backupDirectory)
+        .filter(name => /^personal-memory-.*\.sqlite$/.test(name))
+        .map(name => {
+          const path = join(backupDirectory, name)
+          const stat = statSync(path)
+          return { path, name, bytes: stat.size, createdAt: stat.mtime.toISOString(), hasState: existsSync(`${path}.state.json`) }
+        })
+        .sort((left, right) => right.createdAt.localeCompare(left.createdAt))
+    } catch {
+      return []
+    }
   }
 
   syncGraph(graph: MemoryGraph): void {

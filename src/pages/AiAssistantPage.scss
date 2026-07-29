@@ -335,6 +335,18 @@
 .assistant-ingestion-status { display: flex; justify-content: space-between; gap: 16px; margin: 12px 0; padding: 10px 13px; border-radius: 10px; color: #315c4e; background: #e8f3ee; font-size: 11px; }
 .assistant-ingestion-status.partial, .assistant-ingestion-status.failed { color: #8a5a14; background: #fff3d8; }
 .assistant-ingestion-status span { color: inherit; opacity: .78; }
+.assistant-memory-health { margin: 12px 0; padding: 11px 13px; border: 1px solid #cfe0d3; border-radius: 11px; display: flex; justify-content: space-between; align-items: center; gap: 14px; color: #315c4e; background: #f3f8f3; }
+.assistant-memory-health > div { display: flex; align-items: center; gap: 9px; }
+.assistant-memory-health span { display: grid; gap: 2px; }
+.assistant-memory-health strong { font-size: 11px; }
+.assistant-memory-health small { color: #6f7d73; font-size: 9px; }
+.assistant-memory-health button { padding: 7px 10px; border: 1px solid #aebfb1; border-radius: 8px; color: #315c4e; background: #fff; font-size: 9px; cursor: pointer; }
+.assistant-memory-health button:disabled { opacity: .5; cursor: default; }
+.assistant-memory-health.unhealthy { border-color: #e0c2b9; color: #8a4d46; background: #fff3ef; }
+.assistant-memory-health-actions { position: relative; display: flex; align-items: center; gap: 7px; }
+.assistant-memory-health-actions summary { color: #65736a; font-size: 9px; cursor: pointer; }
+.assistant-memory-health-actions details > div { position: absolute; z-index: 10; top: calc(100% + 6px); right: 0; width: 230px; padding: 7px; border: 1px solid #d6ded7; border-radius: 9px; display: grid; gap: 5px; background: #fff; box-shadow: 0 12px 28px rgba(40, 55, 45, .14); }
+.assistant-memory-health-actions details button { width: 100%; text-align: left; }
 .assistant-memory-search { margin-top: 18px; }
 .assistant-search-results { display: grid; grid-template-columns: repeat(auto-fill,minmax(220px,1fr)); gap: 9px; margin-top: 12px; }
 .assistant-search-results article { padding: 11px 12px; border: 1px solid #e8e5dd; border-radius: 10px; background: rgba(255,255,255,.55); }

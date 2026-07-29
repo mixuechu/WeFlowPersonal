@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, rmSync } from 'node:fs'
+import { existsSync, mkdtempSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { PersonalMemoryStore } from '../electron/services/personalMemoryStore.ts'
@@ -110,4 +110,36 @@ test('Chinese substring search falls back when the exact FTS phrase misses', () 
 
   const results = store.searchText('项目交付')
   assert.ok(results.some(result => result.source_id === 'task-2'))
+}))
+
+test('verified memory backup is created only from a healthy database', () => withStore(store => {
+  store.syncTasks([{
+    id: 'task-backup',
+    title: '验证个人记忆备份',
+    priority: 'medium',
+    status: 'todo',
+    classification: 'mine'
+  }])
+
+  const before = store.getDiagnostics()
+  assert.equal(before.healthy, true)
+  assert.equal(before.integrity, 'ok')
+  const backup = store.createBackup()
+  assert.equal(backup.success, true)
+  assert.ok(backup.bytes > 0)
+  assert.equal(existsSync(backup.path), true)
+  store.syncTasks([{
+    id: 'task-after-backup',
+    title: '这条记录不应出现在恢复后的快照中',
+    priority: 'low',
+    status: 'todo',
+    classification: 'mine'
+  }])
+  assert.equal(store.searchText('不应出现在恢复后的快照中').length, 1)
+  const restored = store.restoreBackup(backup.path)
+  assert.equal(restored.success, true)
+  assert.equal(store.searchText('不应出现在恢复后的快照中').length, 0)
+  const after = store.getDiagnostics()
+  assert.equal(after.backups.length, 2)
+  assert.ok(after.backups.some((item: any) => item.path === backup.path))
 }))
