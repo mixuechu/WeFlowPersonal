@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { Bot, Check, Clock3, RefreshCw, Settings2, ShieldCheck, Sparkles, X } from 'lucide-react'
+import { Bot, Check, Clock3, Network, RefreshCw, Settings2, ShieldCheck, Sparkles, X } from 'lucide-react'
 import './AiAssistantPage.scss'
 
 type Task = {
@@ -11,6 +11,8 @@ type Task = {
   priority: 'high' | 'medium' | 'low'
   confidence: number
   status: 'todo' | 'doing' | 'done'
+  classification?: 'mine' | 'uncertain'
+  assignmentEvidence?: string
 }
 
 function AiAssistantPage() {
@@ -39,6 +41,7 @@ function AiAssistantPage() {
   const briefing = dashboard?.briefing
   const tasks: Task[] = dashboard?.tasks || []
   const openTasks = useMemo(() => tasks.filter(task => task.status !== 'done'), [tasks])
+  const graph = dashboard?.graph || { entities: [], relations: [], reviewQueue: [] }
 
   const syncNow = async () => {
     setSyncing(true)
@@ -145,10 +148,12 @@ function AiAssistantPage() {
                     <strong>{task.title}</strong>
                     {task.detail && <p>{task.detail}</p>}
                     <div className="assistant-tags">
+                      {task.classification === 'uncertain' && <span>待确认归属</span>}
                       {task.source && <span>来自 {task.source}</span>}
                       {task.due && <span><Clock3 size={10} /> {task.due}</span>}
                       <span>{Math.round(task.confidence * 100)}% 可信</span>
                     </div>
+                    {task.assignmentEvidence && <small className="assistant-evidence">归属依据：{task.assignmentEvidence}</small>}
                   </div>
                   <i className={`priority ${task.priority}`} />
                 </article>
@@ -165,6 +170,25 @@ function AiAssistantPage() {
             {status?.cursor?.lastError && <div className="assistant-error"><strong>上次同步未完成</strong><span>{status.cursor.lastError}</span></div>}
           </aside>
         </div>
+
+        <section className="assistant-panel assistant-memory">
+          <div className="assistant-section-heading">
+            <div><span className="assistant-eyebrow">PERSONAL MEMORY GRAPH</span><h3><Network size={16} /> 持续生长的个人知识图谱</h3></div>
+            <span className="assistant-count">{graph.entities.length} 个实体 · {graph.relations.length} 条关系</span>
+          </div>
+          <div className="assistant-memory-grid">
+            {graph.entities.slice(-12).reverse().map((entity: any) => (
+              <article className="assistant-entity" key={entity.id}>
+                <span>{entity.type}</span><strong>{entity.canonicalName}</strong>
+                <p>{entity.summary || entity.aliases?.join('、') || '等待更多证据补充'}</p>
+              </article>
+            ))}
+            {!graph.entities.length && <div className="assistant-empty">下一次同步会从新增消息开始建立人物、组织、项目和关系证据。</div>}
+          </div>
+          {!!graph.reviewQueue?.filter((item: any) => item.status === 'pending').length && (
+            <div className="assistant-review-note">有 {graph.reviewQueue.filter((item: any) => item.status === 'pending').length} 个身份或关系候选等待确认；系统不会仅凭同名自动合并。</div>
+          )}
+        </section>
       </div>
 
       {showSettings && settings && (
@@ -174,6 +198,9 @@ function AiAssistantPage() {
             <label><span>DeepSeek API Key</span><input type="password" placeholder={settings.configured ? '已安全保存；留空表示不修改' : 'sk-...'} onChange={event => setSettings({ ...settings, apiKey: event.target.value })} /></label>
             <label><span>API 地址</span><input value={settings.baseUrl} onChange={event => setSettings({ ...settings, baseUrl: event.target.value })} /></label>
             <label><span>模型</span><input value={settings.model} onChange={event => setSettings({ ...settings, model: event.target.value })} /></label>
+            <label><span>我的姓名</span><input value={settings.ownerName || ''} placeholder="用于判断群聊任务是否指向你" onChange={event => setSettings({ ...settings, ownerName: event.target.value })} /></label>
+            <label><span>我的常用称呼</span><input value={settings.ownerAliases || ''} placeholder="昵称、群昵称，用逗号分隔" onChange={event => setSettings({ ...settings, ownerAliases: event.target.value })} /></label>
+            <label><span>我的背景信息</span><textarea value={settings.ownerBackground || ''} placeholder="公司、职位、负责项目等，帮助理解聊天上下文" onChange={event => setSettings({ ...settings, ownerBackground: event.target.value })} /></label>
             <label><span>每日整理时间</span><input type="time" value={settings.scheduleTime} onChange={event => setSettings({ ...settings, scheduleTime: event.target.value })} /></label>
             <label className="assistant-toggle"><input type="checkbox" checked={settings.enabled} onChange={event => setSettings({ ...settings, enabled: event.target.checked })} /><span>启用启动补齐与每日自动整理</span></label>
             <div className="assistant-modal-actions"><button onClick={() => setShowSettings(false)}>取消</button><button className="primary" onClick={saveSettings}>保存设置</button></div>

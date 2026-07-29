@@ -18,10 +18,37 @@ type AssistantTask = {
   status: 'todo' | 'doing' | 'done'
   createdAt?: string
   updatedAt?: string
+  classification?: 'mine' | 'uncertain'
+  assignmentEvidence?: string
+}
+
+type GraphEntity = {
+  id: string
+  type: 'person' | 'organization' | 'group' | 'project'
+  canonicalName: string
+  aliases: string[]
+  accountIds: string[]
+  summary: string
+  confidence: number
+  evidenceMessageIds: string[]
+  createdAt: string
+  updatedAt: string
+}
+
+type GraphRelation = {
+  id: string
+  subjectId: string
+  predicate: string
+  objectId: string
+  confidence: number
+  evidence: Array<{ messageId: string; sessionId: string; timestamp: number; excerpt: string }>
+  status: 'candidate' | 'confirmed' | 'rejected'
+  createdAt: string
+  updatedAt: string
 }
 
 type AssistantState = {
-  version: 2
+  version: 3
   briefings: Record<string, any>
   tasks: AssistantTask[]
   lastSyncAt: string | null
@@ -34,10 +61,15 @@ type AssistantState = {
     lastAttemptAt: string | null
     lastError: string | null
   }
+  graph: {
+    entities: GraphEntity[]
+    relations: GraphRelation[]
+    reviewQueue: Array<{ id: string; kind: 'possible_duplicate' | 'relation'; title: string; detail: string; confidence: number; status: 'pending' | 'confirmed' | 'rejected'; createdAt: string }>
+  }
 }
 
 const EMPTY_STATE: AssistantState = {
-  version: 2,
+  version: 3,
   briefings: {},
   tasks: [],
   lastSyncAt: null,
@@ -49,13 +81,17 @@ const EMPTY_STATE: AssistantState = {
     lastScheduledRunDate: null,
     lastAttemptAt: null,
     lastError: null
-  }
+  },
+  graph: { entities: [], relations: [], reviewQueue: [] }
 }
 
-const SYSTEM_PROMPT = `你是一位谨慎、高效的中文私人助理。请从新增微信消息中提取真正可执行的待办和重要信息。
-只根据消息证据，不臆测；合并跨日重复事项；title 用动词开头；不确定日期时 due 为空；source 使用会话显示名。
+const SYSTEM_PROMPT = `你是一个谨慎的中文私人助理兼个人记忆图谱分析器。输入包含按会话组织的连续微信消息和用户身份档案。
+待办归属规则：只有明确@用户、称呼用户、上下文明确指派用户，或用户自己明确承诺承担的事项才进入 mine；可能相关但证据不足进入 uncertain；分配给他人、群公告、@所有人和泛泛讨论不得成为任务。
+群聊必须结合 sender、direction、被提及名字和前后文判断，不能因为群内出现祈使句就默认属于用户。每个任务必须给出 assignmentEvidence。
+知识图谱规则：提取人物、组织、群和项目，以及有明确消息证据的关系。不要因名字相同就合并人物；一个人可以有多个账号和别名。身份不确定时创建候选，不做硬合并。所有关系必须带 messageId 证据。
+只根据消息证据，不臆测；title 用动词开头；不确定日期时 due 为空；source 使用会话显示名。
 只返回 JSON：
-{"headline":"标题","summary":"摘要","highlights":["重要信息"],"tasks":[{"title":"待办","detail":"上下文","owner":"我","due":"","priority":"high|medium|low","source":"会话名","confidence":0.8}]}`
+{"headline":"标题","summary":"摘要","highlights":["重要信息"],"tasks":[{"title":"待办","detail":"上下文","owner":"我","due":"","priority":"high|medium|low","source":"会话名","confidence":0.8,"classification":"mine|uncertain","assignmentEvidence":"归属证据"}],"entities":[{"tempId":"e1","type":"person|organization|group|project","canonicalName":"名称","aliases":[],"accountIds":[],"summary":"仅基于证据的简述","confidence":0.8,"evidenceMessageIds":["消息ID"]}],"relations":[{"subjectTempId":"e1","predicate":"关系","objectTempId":"e2","confidence":0.8,"evidenceMessageIds":["消息ID"]}],"possibleDuplicates":[{"leftTempId":"e1","rightExistingName":"已有实体名","confidence":0.7,"reason":"原因"}]}`
 
 function shanghaiDate(timestampMs = Date.now()): string {
   return new Intl.DateTimeFormat('en-CA', {
@@ -144,9 +180,16 @@ export class AiAssistantService {
       this.state = {
         ...structuredClone(EMPTY_STATE),
         ...loaded,
-        version: 2,
+        version: 3,
         cursor: { ...structuredClone(EMPTY_STATE.cursor), ...(loaded.cursor || {}) },
-        tasks: Array.isArray(loaded.tasks) ? loaded.tasks : []
+        tasks: Array.isArray(loaded.tasks)
+          ? loaded.tasks.map((task: AssistantTask) => task.classification ? task : { ...task, classification: 'uncertain' })
+          : [],
+        graph: {
+          entities: Array.isArray(loaded.graph?.entities) ? loaded.graph.entities : [],
+          relations: Array.isArray(loaded.graph?.relations) ? loaded.graph.relations : [],
+          reviewQueue: Array.isArray(loaded.graph?.reviewQueue) ? loaded.graph.reviewQueue : []
+        }
       }
     } catch {
       this.state = structuredClone(EMPTY_STATE)
@@ -222,6 +265,9 @@ export class AiAssistantService {
           sessionName: session.displayName || session.username,
           timestamp: Number(message.createTime || 0),
           direction: Number(message.isSend) === 1 ? '我发送' : '对方发送',
+          senderId: String(message.senderUsername || (Number(message.isSend) === 1 ? 'self' : '')),
+          senderName: String(message.senderDisplayName || message.senderName || message.displayName || ''),
+          isGroup: String(session.username).endsWith('@chatroom'),
           content: String(message.content || message.parsedContent || '').slice(0, 2000)
         })).filter((message: any) => message.content))
         if (!payload.hasMore || pageRows.length < 200) break
@@ -250,10 +296,34 @@ export class AiAssistantService {
     const baseUrl = String(this.config.get('aiAssistantApiBaseUrl') || 'https://api.deepseek.com').replace(/\/$/, '')
     const model = String(this.config.get('aiAssistantApiModel') || 'deepseek-v4-flash')
     const compact = messages.map(message => ({
+      messageId: message.id,
       time: new Date(message.timestamp * 1000).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' }),
       session: message.sessionName,
+      sessionId: message.sessionId,
+      isGroup: message.isGroup,
       direction: message.direction,
+      senderId: message.senderId,
+      sender: message.direction === '我发送' ? '我' : (message.senderName || message.senderId || '未知发送者'),
       content: redact(message.content)
+    }))
+    const conversations = Object.values(compact.reduce((groups: Record<string, any>, message: any) => {
+      const key = message.sessionId
+      if (!groups[key]) groups[key] = { session: message.session, sessionId: key, isGroup: message.isGroup, messages: [] }
+      groups[key].messages.push(message)
+      return groups
+    }, {}))
+    const ownerProfile = {
+      name: String(this.config.get('aiAssistantOwnerName') || '').trim(),
+      aliases: String(this.config.get('aiAssistantOwnerAliases') || '').split(/[,，、\n]/).map(item => item.trim()).filter(Boolean),
+      background: String(this.config.get('aiAssistantOwnerBackground') || '').trim()
+    }
+    const existingGraph = this.state.graph.entities.slice(-200).map(entity => ({
+      id: entity.id,
+      type: entity.type,
+      canonicalName: entity.canonicalName,
+      aliases: entity.aliases,
+      accountIds: entity.accountIds,
+      summary: entity.summary
     }))
     let lastError: any = null
     for (let attempt = 0; attempt < 2; attempt += 1) {
@@ -267,7 +337,10 @@ export class AiAssistantService {
           response_format: { type: 'json_object' },
           messages: [
             { role: 'system', content: SYSTEM_PROMPT + (attempt ? '\n务必输出单个完整 JSON 对象。' : '') },
-            { role: 'user', content: `请输出 json。新增消息：${JSON.stringify(compact)}` }
+            { role: 'user', content: `用户身份档案：${JSON.stringify(ownerProfile)}
+现有知识图谱实体（用于关联，不得仅凭同名合并）：${JSON.stringify(existingGraph)}
+按会话组织的新增消息：${JSON.stringify(conversations)}
+请输出 json。` }
           ]
         }),
         signal: AbortSignal.timeout(90_000)
@@ -281,6 +354,91 @@ export class AiAssistantService {
       }
     }
     throw lastError
+  }
+
+  private mergeGraphDigest(digest: any, sourceMessages: any[], now: string): void {
+    const tempIds = new Map<string, string>()
+    const entities = Array.isArray(digest.entities) ? digest.entities : []
+    for (const item of entities) {
+      const accountIds = [...new Set((Array.isArray(item.accountIds) ? item.accountIds : []).map(String).filter(Boolean))]
+      const aliases = [...new Set((Array.isArray(item.aliases) ? item.aliases : []).map(String).filter(Boolean))]
+      const byAccount = accountIds.length
+        ? this.state.graph.entities.find(entity => entity.accountIds.some(id => accountIds.includes(id)))
+        : undefined
+      const exactNameMatches = this.state.graph.entities.filter(entity =>
+        entity.type === item.type && entity.canonicalName === String(item.canonicalName || '').trim())
+      const existing = byAccount || (exactNameMatches.length === 1 && Number(item.confidence || 0) >= 0.9 ? exactNameMatches[0] : undefined)
+      const id = existing?.id || `ent_${crypto.randomUUID()}`
+      tempIds.set(String(item.tempId || id), id)
+      const evidenceIds = [...new Set((Array.isArray(item.evidenceMessageIds) ? item.evidenceMessageIds : []).map(String))]
+      if (existing) {
+        existing.aliases = [...new Set([...existing.aliases, ...aliases])]
+        existing.accountIds = [...new Set([...existing.accountIds, ...accountIds])]
+        existing.summary = String(item.summary || existing.summary).slice(0, 800)
+        existing.confidence = Math.max(existing.confidence, Number(item.confidence || 0))
+        existing.evidenceMessageIds = [...new Set([...existing.evidenceMessageIds, ...evidenceIds])].slice(-500)
+        existing.updatedAt = now
+      } else if (item.canonicalName) {
+        this.state.graph.entities.push({
+          id,
+          type: ['person', 'organization', 'group', 'project'].includes(item.type) ? item.type : 'person',
+          canonicalName: String(item.canonicalName).slice(0, 100),
+          aliases,
+          accountIds,
+          summary: String(item.summary || '').slice(0, 800),
+          confidence: Math.max(0, Math.min(1, Number(item.confidence || 0.6))),
+          evidenceMessageIds: evidenceIds,
+          createdAt: now,
+          updatedAt: now
+        })
+      }
+    }
+    for (const item of Array.isArray(digest.relations) ? digest.relations : []) {
+      const subjectId = tempIds.get(String(item.subjectTempId || ''))
+      const objectId = tempIds.get(String(item.objectTempId || ''))
+      if (!subjectId || !objectId || subjectId === objectId) continue
+      const predicate = String(item.predicate || '').trim().slice(0, 80)
+      if (!predicate) continue
+      const id = crypto.createHash('sha256').update(`${subjectId}|${predicate}|${objectId}`).digest('hex').slice(0, 20)
+      const evidenceIds = (Array.isArray(item.evidenceMessageIds) ? item.evidenceMessageIds : []).map(String)
+      const evidence = sourceMessages.filter(message => evidenceIds.includes(String(message.id))).map(message => ({
+        messageId: String(message.id),
+        sessionId: String(message.sessionId),
+        timestamp: Number(message.timestamp),
+        excerpt: redact(String(message.content)).slice(0, 160)
+      }))
+      const existing = this.state.graph.relations.find(relation => relation.id === id)
+      if (existing) {
+        const known = new Set(existing.evidence.map(item => item.messageId))
+        existing.evidence.push(...evidence.filter(item => !known.has(item.messageId)))
+        existing.confidence = Math.max(existing.confidence, Number(item.confidence || 0))
+        existing.updatedAt = now
+      } else {
+        this.state.graph.relations.push({
+          id, subjectId, predicate, objectId,
+          confidence: Math.max(0, Math.min(1, Number(item.confidence || 0.6))),
+          evidence,
+          status: Number(item.confidence || 0) >= 0.9 ? 'confirmed' : 'candidate',
+          createdAt: now,
+          updatedAt: now
+        })
+      }
+    }
+    for (const item of Array.isArray(digest.possibleDuplicates) ? digest.possibleDuplicates : []) {
+      const leftId = tempIds.get(String(item.leftTempId || ''))
+      if (!leftId) continue
+      const id = crypto.createHash('sha256').update(`${leftId}|${item.rightExistingName}`).digest('hex').slice(0, 20)
+      if (this.state.graph.reviewQueue.some(review => review.id === id)) continue
+      this.state.graph.reviewQueue.push({
+        id,
+        kind: 'possible_duplicate',
+        title: `可能是同一个人：${item.rightExistingName || '未知实体'}`,
+        detail: String(item.reason || ''),
+        confidence: Math.max(0, Math.min(1, Number(item.confidence || 0.5))),
+        status: 'pending',
+        createdAt: now
+      })
+    }
   }
 
   async sync(): Promise<any> {
@@ -312,7 +470,9 @@ export class AiAssistantService {
       const tasks = new Map<string, AssistantTask>()
       const highlights: string[] = []
       const summaries: string[] = []
+      const createdAt = new Date().toISOString()
       for (const digest of digests) {
+        this.mergeGraphDigest(digest, fresh, createdAt)
         highlights.push(...(Array.isArray(digest.highlights) ? digest.highlights : []))
         if (digest.summary) summaries.push(String(digest.summary))
         for (const item of Array.isArray(digest.tasks) ? digest.tasks : []) {
@@ -325,13 +485,14 @@ export class AiAssistantService {
             priority: ['high', 'medium', 'low'].includes(item.priority) ? item.priority : 'medium',
             source: String(item.source || '').slice(0, 100),
             confidence: Math.max(0, Math.min(1, Number(item.confidence ?? 0.7))),
-            status: 'todo'
+            status: 'todo',
+            classification: item.classification === 'uncertain' ? 'uncertain' : 'mine',
+            assignmentEvidence: String(item.assignmentEvidence || '').slice(0, 300)
           }
           tasks.set(task.id, task)
         }
       }
       const existing = new Map(this.state.tasks.map(task => [task.id, task]))
-      const createdAt = new Date().toISOString()
       for (const task of tasks.values()) {
         const previous = existing.get(task.id)
         existing.set(task.id, previous ? { ...task, status: previous.status, createdAt: previous.createdAt, updatedAt: createdAt } : { ...task, createdAt, updatedAt: createdAt })
@@ -386,7 +547,12 @@ export class AiAssistantService {
   getDashboard(): any {
     const dates = Object.keys(this.state.briefings).sort().reverse()
     const latest = dates[0] ? this.state.briefings[dates[0]] : null
-    return { briefing: latest ? { ...latest, tasks: this.state.tasks } : null, tasks: this.state.tasks, cursor: this.state.cursor }
+    return {
+      briefing: latest ? { ...latest, tasks: this.state.tasks } : null,
+      tasks: this.state.tasks,
+      cursor: this.state.cursor,
+      graph: this.state.graph
+    }
   }
 
   getSettings(): any {
@@ -395,7 +561,10 @@ export class AiAssistantService {
       baseUrl: this.config.get('aiAssistantApiBaseUrl'),
       model: this.config.get('aiAssistantApiModel'),
       scheduleTime: this.config.get('aiAssistantScheduleTime'),
-      enabled: this.config.get('aiAssistantEnabled')
+      enabled: this.config.get('aiAssistantEnabled'),
+      ownerName: this.config.get('aiAssistantOwnerName'),
+      ownerAliases: this.config.get('aiAssistantOwnerAliases'),
+      ownerBackground: this.config.get('aiAssistantOwnerBackground')
     }
   }
 
@@ -405,6 +574,9 @@ export class AiAssistantService {
     if (typeof input.model === 'string' && input.model.trim()) this.config.set('aiAssistantApiModel', input.model.trim())
     if (/^\d{2}:\d{2}$/.test(input.scheduleTime || '')) this.config.set('aiAssistantScheduleTime', input.scheduleTime)
     if (typeof input.enabled === 'boolean') this.config.set('aiAssistantEnabled', input.enabled)
+    if (typeof input.ownerName === 'string') this.config.set('aiAssistantOwnerName', input.ownerName.trim())
+    if (typeof input.ownerAliases === 'string') this.config.set('aiAssistantOwnerAliases', input.ownerAliases.trim())
+    if (typeof input.ownerBackground === 'string') this.config.set('aiAssistantOwnerBackground', input.ownerBackground.trim())
     return this.getSettings()
   }
 

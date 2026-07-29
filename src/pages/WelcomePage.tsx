@@ -611,11 +611,19 @@ function WelcomePage({ standalone = false }: WelcomePageProps) {
 
   useEffect(() => {
     if (!dbPath || !wxid || decryptKey.length !== 64) return
+    // 已持久化的图片密钥可直接复用。启动时重新扫描微信进程不仅没有必要，
+    // 还会在 macOS 上触发 task_for_pid 管理员授权。只有用户手动要求重新获取
+    // 或确实没有缓存密钥时，才允许进入 helper 流程。
+    if (imageAesKey.trim()) {
+      setIsImageStepAutoCompleted(true)
+      setImageKeyStatus('已复用本地保存的图片密钥')
+      return
+    }
     const attemptKey = `${dbPath}::${wxid}::${decryptKey}`
     if (imagePrefetchAttemptRef.current === attemptKey) return
     imagePrefetchAttemptRef.current = attemptKey
     void handleAutoGetImageKey('prefetch-cache', { silentError: true })
-  }, [dbPath, wxid, decryptKey])
+  }, [dbPath, wxid, decryptKey, imageAesKey])
 
   const jumpToStep = (stepId: SetupStepId) => {
     const targetIndex = steps.findIndex(step => step.id === stepId)
