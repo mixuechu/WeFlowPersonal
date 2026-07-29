@@ -45,6 +45,19 @@ function AiAssistantPage() {
   const [memoryQuestion, setMemoryQuestion] = useState('')
   const [memoryAnswer, setMemoryAnswer] = useState<any>(null)
   const [askingMemory, setAskingMemory] = useState(false)
+  const [memoryEntityFilter, setMemoryEntityFilter] = useState('')
+  const [memorySessionFilter, setMemorySessionFilter] = useState('')
+  const [memoryTypeFilter, setMemoryTypeFilter] = useState('')
+  const [memoryFrom, setMemoryFrom] = useState('')
+  const [memoryTo, setMemoryTo] = useState('')
+  const memorySearchOptions = useMemo(() => ({
+    entityId: memoryEntityFilter || undefined,
+    sessionId: memorySessionFilter || undefined,
+    sessionName: sources.find(source => source.sessionId === memorySessionFilter)?.displayName || undefined,
+    documentTypes: memoryTypeFilter ? [memoryTypeFilter] : undefined,
+    from: memoryFrom || undefined,
+    to: memoryTo || undefined
+  }), [memoryEntityFilter, memorySessionFilter, memoryTypeFilter, memoryFrom, memoryTo, sources])
 
   const load = useCallback(async () => {
     const [nextStatus, nextDashboard] = await Promise.all([
@@ -58,6 +71,7 @@ function AiAssistantPage() {
   useEffect(() => {
     void load()
     void window.electronAPI.aiAssistant.getMemoryDiagnostics().then(setMemoryDiagnostics).catch(() => {})
+    void window.electronAPI.aiAssistant.getConversationSources().then(setSources).catch(() => {})
     const timer = window.setInterval(() => void load(), 15_000)
     return () => window.clearInterval(timer)
   }, [load])
@@ -69,10 +83,10 @@ function AiAssistantPage() {
       return
     }
     const timer = window.setTimeout(() => {
-      void window.electronAPI.aiAssistant.searchMemory(query).then(setMemoryResults)
+      void window.electronAPI.aiAssistant.searchMemory(query, memorySearchOptions).then(setMemoryResults)
     }, 250)
     return () => window.clearTimeout(timer)
-  }, [memoryQuery])
+  }, [memoryQuery, memorySearchOptions])
 
   const briefing = dashboard?.briefing
   const tasks: Task[] = dashboard?.tasks || []
@@ -254,7 +268,7 @@ function AiAssistantPage() {
     if (!question || askingMemory) return
     setAskingMemory(true)
     try {
-      setMemoryAnswer(await window.electronAPI.aiAssistant.askMemory(question, memoryAnswer?.conversationId))
+      setMemoryAnswer(await window.electronAPI.aiAssistant.askMemory(question, memoryAnswer?.conversationId, memorySearchOptions))
     } catch (error: any) {
       setMemoryAnswer({ answer: error?.message || String(error), citations: [], uncertainty: '' })
     } finally {
@@ -474,6 +488,27 @@ function AiAssistantPage() {
           <div className="assistant-graph-toolbar">
             <input value={memoryQuery} onChange={event => setMemoryQuery(event.target.value)} placeholder="搜索人物、事实、事件、关系或项目" />
           </div>
+          <div className="assistant-memory-scope">
+            <select value={memoryEntityFilter} onChange={event => setMemoryEntityFilter(event.target.value)}>
+              <option value="">所有人物与实体</option>
+              {graph.entities.map((entity: any) => <option key={entity.id} value={entity.id}>{entity.canonicalName} · {entity.type}</option>)}
+            </select>
+            <select value={memorySessionFilter} onChange={event => setMemorySessionFilter(event.target.value)}>
+              <option value="">所有会话</option>
+              {sources.filter(source => source.enabled).map(source => <option key={source.sessionId} value={source.sessionId}>{source.displayName}</option>)}
+            </select>
+            <select value={memoryTypeFilter} onChange={event => setMemoryTypeFilter(event.target.value)}>
+              <option value="">所有记忆类型</option>
+              <option value="entity">实体</option><option value="relation">关系</option><option value="claim">事实</option>
+              <option value="event">事件</option><option value="task">待办</option>
+            </select>
+            <label><span>从</span><input type="date" value={memoryFrom} onChange={event => setMemoryFrom(event.target.value)} /></label>
+            <label><span>至</span><input type="date" value={memoryTo} onChange={event => setMemoryTo(event.target.value)} /></label>
+            {(memoryEntityFilter || memorySessionFilter || memoryTypeFilter || memoryFrom || memoryTo) &&
+              <button onClick={() => { setMemoryEntityFilter(''); setMemorySessionFilter(''); setMemoryTypeFilter(''); setMemoryFrom(''); setMemoryTo('') }}>清除范围</button>}
+          </div>
+          {(memoryEntityFilter || memorySessionFilter || memoryTypeFilter || memoryFrom || memoryTo) &&
+            <small className="assistant-scope-note">当前范围同时应用于下方搜索和“向个人记忆提问”，范围外内容不会发送给模型。</small>}
           {!!memoryQuery.trim() && <div className="assistant-search-results">
             {memoryResults.map(result => <article key={result.id}>
               <span>{result.document_type}{result.match_source ? ` · ${result.match_source}匹配` : ''}{result.semantic_score ? ` · ${Math.round(result.semantic_score * 100)}%` : ''}</span><strong>{result.title}</strong><p>{result.search_text}</p>

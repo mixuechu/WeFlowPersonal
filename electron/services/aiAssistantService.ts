@@ -8,6 +8,7 @@ import { httpService } from './httpService'
 import { showSystemNotification } from './systemNotificationService'
 import { personalMemoryStore } from './personalMemoryStore'
 import { localEmbeddingService } from './localEmbeddingService'
+import { filterMemorySearchResults, type MemorySearchOptions } from './memorySearchFilters'
 
 type AssistantTask = {
   id: string
@@ -17,6 +18,7 @@ type AssistantTask = {
   due: string
   priority: 'high' | 'medium' | 'low'
   source: string
+  sourceSessionId?: string
   confidence: number
   status: 'todo' | 'doing' | 'done'
   createdAt?: string
@@ -810,6 +812,7 @@ export class AiAssistantService {
             due: String(item.due || '').slice(0, 40),
             priority: ['high', 'medium', 'low'].includes(item.priority) ? item.priority : 'medium',
             source: String(item.source || '').slice(0, 100),
+            sourceSessionId: String(evidenceMessages[0]?.sessionId || ''),
             confidence: Math.max(0, Math.min(1, Number(item.confidence ?? 0.7))),
             status: 'todo',
             classification,
@@ -1132,20 +1135,24 @@ export class AiAssistantService {
     return personalMemoryStore.updateMemoryItemStatus(kind, id, status)
   }
 
-  searchMemory(query: string): any[] {
-    return personalMemoryStore.searchText(String(query || ''), 40).map((item: any) => ({
+  searchMemory(query: string, limit = 200): any[] {
+    return personalMemoryStore.searchText(String(query || ''), limit).map((item: any) => ({
       ...item,
       metadata: (() => { try { return JSON.parse(item.metadata_json || '{}') } catch { return {} } })(),
       evidence: personalMemoryStore.getDocumentEvidence(item.document_type, item.source_id)
     }))
   }
 
-  async searchMemoryHybrid(query: string): Promise<any[]> {
-    const lexical = this.searchMemory(query)
+  async searchMemoryHybrid(query: string, options: MemorySearchOptions = {}): Promise<any[]> {
+    const selectedEntity = options.entityId ? this.state.graph.entities.find(entity => entity.id === options.entityId) : null
+    const scopedOptions = selectedEntity
+      ? { ...options, entityTerms: [selectedEntity.canonicalName, ...(selectedEntity.aliases || []), ...(selectedEntity.accountIds || [])] }
+      : options
+    const lexical = this.searchMemory(query, 300)
     try {
       await this.ensureVectorIndex()
       const [queryVector] = await localEmbeddingService.embed([String(query || '')])
-      const semantic = personalMemoryStore.searchVector(queryVector, localEmbeddingService.modelVersion, 40)
+      const semantic = personalMemoryStore.searchVector(queryVector, localEmbeddingService.modelVersion, 300)
       const merged = new Map<string, any>()
       lexical.forEach((item, index) => merged.set(item.id, {
         ...item,
@@ -1165,10 +1172,13 @@ export class AiAssistantService {
           evidence: existing?.evidence || personalMemoryStore.getDocumentEvidence(item.document_type, item.source_id)
         })
       })
-      return [...merged.values()].sort((left, right) => Number(right.hybrid_score || 0) - Number(left.hybrid_score || 0)).slice(0, 40)
+      return filterMemorySearchResults(
+        [...merged.values()].sort((left, right) => Number(right.hybrid_score || 0) - Number(left.hybrid_score || 0)),
+        scopedOptions
+      ).slice(0, 40)
     } catch (error) {
       console.warn('[AI Assistant] 向量检索回退为全文检索:', error)
-      return lexical
+      return filterMemorySearchResults(lexical, scopedOptions).slice(0, 40)
     }
   }
 
@@ -1228,15 +1238,15 @@ export class AiAssistantService {
     return { found: false, entities: [], steps: [] }
   }
 
-  async askMemory(question: string, conversationId?: string): Promise<any> {
+  async askMemory(question: string, conversationId?: string, options: MemorySearchOptions = {}): Promise<any> {
     const query = String(question || '').trim()
     if (!query) throw new Error('请输入问题')
-    let results = await this.searchMemoryHybrid(query)
+    let results = await this.searchMemoryHybrid(query, options)
     if (!results.length) {
       const terms = query.match(/[A-Za-z0-9@._-]{2,}|[\u4e00-\u9fff]{2,}/g) || []
       const merged = new Map<string, any>()
       for (const term of terms.slice(0, 6)) {
-        for (const result of await this.searchMemoryHybrid(term)) merged.set(result.id, result)
+        for (const result of await this.searchMemoryHybrid(term, options)) merged.set(result.id, result)
       }
       results = [...merged.values()].slice(0, 30)
     }
@@ -1259,7 +1269,7 @@ export class AiAssistantService {
         model, temperature: 0.1, max_tokens: 1800, response_format: { type: 'json_object' },
         messages: [
           { role: 'system', content: '你是本地个人记忆问答助手。只能依据提供的检索结果回答；证据不足必须明确说不知道。只有 canSupportFacts=true 且包含原始 evidence 的文档可以支持事实结论；没有原始 evidence 的实体摘要只能作为检索线索，不能作为事实依据。每个事实结论必须引用能够支持它的 documentId。只输出 JSON：{"answer":"回答","citationIds":["documentId"],"uncertainty":"不确定性说明"}。' },
-          { role: 'user', content: `问题：${query}\n本地检索结果：${JSON.stringify(context)}` }
+          { role: 'user', content: `问题：${query}\n检索范围：${JSON.stringify(options)}\n本地检索结果：${JSON.stringify(context)}` }
         ]
       }),
       signal: AbortSignal.timeout(90_000)

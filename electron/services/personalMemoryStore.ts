@@ -584,7 +584,7 @@ export class PersonalMemoryStore {
         evidence.run(claim.id, item.messageId, item.sessionId, item.timestamp, item.excerpt, evidenceRole)
       }
       this.upsertSearchDocument(`claim:${claim.id}`, 'claim', claim.id, claim.predicate, claim.searchText,
-        { subjectId: claim.subjectId, status: claim.status, validFrom: claim.validFrom, validTo: claim.validTo }, now)
+        { subjectId: claim.subjectId, objectEntityId: claim.objectEntityId, status: claim.status, validFrom: claim.validFrom, validTo: claim.validTo }, now)
     }
   }
 
@@ -620,7 +620,7 @@ export class PersonalMemoryStore {
       for (const item of event.evidence || []) evidence.run(event.id, item.messageId, item.sessionId, item.timestamp, item.excerpt,
         item.role && item.role !== 'support' ? item.role : 'direct')
       this.upsertSearchDocument(`event:${event.id}`, 'event', event.id, event.title, event.searchText,
-        { eventType: event.eventType, startAt: event.startAt, status: event.status }, now)
+        { eventType: event.eventType, startAt: event.startAt, endAt: event.endAt, participantIds: (event.participants || []).map((item: any) => item.entityId), status: event.status }, now)
     }
   }
 
@@ -645,7 +645,7 @@ export class PersonalMemoryStore {
       const documentId = `task:${task.id}`
       this.upsertSearchDocument(documentId, 'task', task.id, task.title,
         [task.title, task.detail, task.source, task.assignmentEvidence].filter(Boolean).join('；'),
-        { status: task.status, priority: task.priority, due: task.due, classification: task.classification }, now)
+        { status: task.status, priority: task.priority, due: task.due, classification: task.classification, sourceSessionId: task.sourceSessionId }, now)
       this.db.prepare('DELETE FROM search_document_evidence WHERE document_id=?').run(documentId)
       const insertEvidence = this.db.prepare(`
         INSERT OR IGNORE INTO search_document_evidence(document_id,message_id,session_id,timestamp,sender,excerpt)
@@ -654,7 +654,7 @@ export class PersonalMemoryStore {
       for (const item of task.evidence || []) {
         const messageId = String(item.messageId || '')
         if (!messageId) continue
-        insertEvidence.run(documentId, messageId, String(task.source || ''),
+        insertEvidence.run(documentId, messageId, String(task.sourceSessionId || task.source || ''),
           Number(item.timestamp || 0), String(item.sender || ''), String(item.excerpt || '').slice(0, 2000))
       }
     }
@@ -781,7 +781,7 @@ export class PersonalMemoryStore {
 
   searchText(query: string, limit = 20): any[] {
     if (!this.db || !query.trim()) return []
-    const safeLimit = Math.max(1, Math.min(100, limit))
+    const safeLimit = Math.max(1, Math.min(500, limit))
     const normalized = query.trim().replace(/["']/g, ' ')
     try {
       const matches = this.db.prepare(`
@@ -835,7 +835,7 @@ export class PersonalMemoryStore {
       let score = 0
       for (let index = 0; index < vector.length && index < candidate.length; index += 1) score += vector[index] * candidate[index]
       return { ...row, semantic_score: score }
-    }).sort((left, right) => right.semantic_score - left.semantic_score).slice(0, Math.max(1, Math.min(100, limit)))
+    }).sort((left, right) => right.semantic_score - left.semantic_score).slice(0, Math.max(1, Math.min(500, limit)))
   }
 
   getDocumentEvidence(documentType: string, sourceId: string): any[] {

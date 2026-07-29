@@ -625,14 +625,14 @@ contextBridge.exposeInMainWorld('electronAPI', {
     revertMerge: (id: number) => ipcRenderer.invoke('ai-assistant:revertMerge', id),
     updateMemoryItemStatus: (kind: 'claim' | 'event', id: string, status: 'confirmed' | 'rejected') =>
       ipcRenderer.invoke('ai-assistant:updateMemoryItemStatus', kind, id, status),
-    searchMemory: (query: string) => ipcRenderer.invoke('ai-assistant:searchMemory', query),
+    searchMemory: (query: string, options?: any) => ipcRenderer.invoke('ai-assistant:searchMemory', query, options),
     indexMemoryVectors: () => ipcRenderer.invoke('ai-assistant:indexMemoryVectors'),
     findGraphPath: (fromId: string, toId: string, maxDepth?: number) => ipcRenderer.invoke('ai-assistant:findGraphPath', fromId, toId, maxDepth),
     getMemoryDiagnostics: () => ipcRenderer.invoke('ai-assistant:getMemoryDiagnostics'),
     createMemoryBackup: () => ipcRenderer.invoke('ai-assistant:createMemoryBackup'),
     restoreMemoryBackup: (path: string) => ipcRenderer.invoke('ai-assistant:restoreMemoryBackup', path),
     correctClaim: (id: string, input: any) => ipcRenderer.invoke('ai-assistant:correctClaim', id, input),
-    askMemory: (question: string, conversationId?: string) => ipcRenderer.invoke('ai-assistant:askMemory', question, conversationId),
+    askMemory: (question: string, conversationId?: string, options?: any) => ipcRenderer.invoke('ai-assistant:askMemory', question, conversationId, options),
     getConversationSources: () => ipcRenderer.invoke('ai-assistant:getConversationSources'),
     setConversationSource: (input: any) => ipcRenderer.invoke('ai-assistant:setConversationSource', input),
     setConversationSourcesBulk: (input: any) => ipcRenderer.invoke('ai-assistant:setConversationSourcesBulk', input)
