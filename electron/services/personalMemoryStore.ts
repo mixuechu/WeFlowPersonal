@@ -334,6 +334,61 @@ export class PersonalMemoryStore {
     return this.db.prepare('SELECT id,source_entity_id,target_entity_id,created_at FROM merge_history WHERE reverted_at IS NULL ORDER BY id DESC LIMIT ?').all(limit) as any[]
   }
 
+  upsertClaims(claims: any[]): void {
+    if (!this.db || !claims.length) return
+    const now = new Date().toISOString()
+    const upsert = this.db.prepare(`
+      INSERT INTO claims(id,subject_id,predicate,object_entity_id,object_value,value_type,confidence,status,valid_from,valid_to,search_text,created_at,updated_at)
+      VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)
+      ON CONFLICT(id) DO UPDATE SET confidence=MAX(confidence,excluded.confidence),status=excluded.status,
+        valid_from=COALESCE(excluded.valid_from,valid_from),valid_to=COALESCE(excluded.valid_to,valid_to),
+        search_text=excluded.search_text,updated_at=excluded.updated_at
+    `)
+    const evidence = this.db.prepare(`
+      INSERT OR IGNORE INTO evidence(claim_id,message_id,session_id,timestamp,excerpt,evidence_role)
+      VALUES(?,?,?,?,?,?)
+    `)
+    for (const claim of claims) {
+      upsert.run(claim.id, claim.subjectId, claim.predicate, claim.objectEntityId || null, claim.objectValue || null,
+        claim.valueType || 'text', claim.confidence, claim.status || 'candidate', claim.validFrom || null,
+        claim.validTo || null, claim.searchText, claim.createdAt || now, now)
+      for (const item of claim.evidence || []) evidence.run(claim.id, item.messageId, item.sessionId, item.timestamp, item.excerpt, item.role || 'support')
+      this.upsertSearchDocument(`claim:${claim.id}`, 'claim', claim.id, claim.predicate, claim.searchText,
+        { subjectId: claim.subjectId, status: claim.status, validFrom: claim.validFrom, validTo: claim.validTo }, now)
+    }
+  }
+
+  upsertEvents(events: any[]): void {
+    if (!this.db || !events.length) return
+    const now = new Date().toISOString()
+    const upsert = this.db.prepare(`
+      INSERT INTO events(id,event_type,title,description,start_at,end_at,location,confidence,status,search_text,created_at,updated_at)
+      VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
+      ON CONFLICT(id) DO UPDATE SET description=excluded.description,start_at=COALESCE(excluded.start_at,start_at),
+        end_at=COALESCE(excluded.end_at,end_at),location=COALESCE(excluded.location,location),
+        confidence=MAX(confidence,excluded.confidence),status=excluded.status,search_text=excluded.search_text,updated_at=excluded.updated_at
+    `)
+    const participant = this.db.prepare('INSERT OR IGNORE INTO event_participants(event_id,entity_id,role) VALUES(?,?,?)')
+    const evidence = this.db.prepare(`
+      INSERT OR IGNORE INTO evidence(event_id,message_id,session_id,timestamp,excerpt,evidence_role)
+      VALUES(?,?,?,?,?,?)
+    `)
+    for (const event of events) {
+      upsert.run(event.id, event.eventType, event.title, event.description || '', event.startAt || null, event.endAt || null,
+        event.location || null, event.confidence, event.status || 'candidate', event.searchText, event.createdAt || now, now)
+      for (const item of event.participants || []) participant.run(event.id, item.entityId, item.role || 'participant')
+      for (const item of event.evidence || []) evidence.run(event.id, item.messageId, item.sessionId, item.timestamp, item.excerpt, item.role || 'support')
+      this.upsertSearchDocument(`event:${event.id}`, 'event', event.id, event.title, event.searchText,
+        { eventType: event.eventType, startAt: event.startAt, status: event.status }, now)
+    }
+  }
+
+  getMemoryStats(): any {
+    if (!this.db) return { claims: 0, events: 0 }
+    const count = (table: string) => Number((this.db!.prepare(`SELECT COUNT(*) AS count FROM ${table}`).get() as { count: number }).count)
+    return { claims: count('claims'), events: count('events') }
+  }
+
   getMergeSnapshot(id: number): any | null {
     if (!this.db) return null
     const row = this.db.prepare('SELECT snapshot_json FROM merge_history WHERE id=? AND reverted_at IS NULL').get(id) as { snapshot_json: string } | undefined

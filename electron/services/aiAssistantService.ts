@@ -97,10 +97,13 @@ const SYSTEM_PROMPT = `你是一个谨慎的中文私人助理兼个人记忆图
 身份映射规则：每个会话的 participants 提供 wxid、通讯录备注 contactRemark、微信昵称 wechatNickname、群昵称 groupNickname、微信号 alias 和 displayName。wxid 是稳定身份主键，其余名称都是该身份在不同场景下的别名；同一个 wxid 的多个名称必须视为同一人，不同 wxid 即使同名也不得自动合并。理解消息中的称呼时优先结合群昵称和通讯录备注。
 分片规则：消息的 analysisScope 为 core 时才允许产生待办、实体、关系或合并候选；context 消息仅用于理解 core 的前后文，绝对不能单独据此重复产出结果。
 知识图谱规则：提取人物、组织、群和项目，以及有明确消息证据的关系。不要因名字相同就合并人物；一个人可以有多个账号和别名。身份不确定时创建候选，不做硬合并。所有关系必须带 messageId 证据。
+事实记忆规则：必须检查 core 消息中是否包含可长期复用的事实，例如身份、职业、组织、技能、偏好、所在地、项目属性、联系方式和状态变化；有则写入 claims。本人明确陈述标记 self_statement，他人陈述标记 other_statement，仅从上下文推断标记 inference。事实必须带直接 evidenceMessageIds；短暂寒暄和纯情绪不作为事实。
+事件记忆规则：必须检查 core 消息中是否发生或计划会议、承诺、交付、旅行、付款、组织变化、决定等有时间意义的事件；有则写入 events。事件必须带 evidenceMessageIds，参与实体必须引用本次 entities 的 tempId。没有合格内容时数组为空，claims 和 events 两个字段仍必须返回。
+输出预算：每批最多 30 个实体、30 条关系、20 条高价值 claims、15 个 events 和 20 个 tasks；优先保留与用户本人、重要人物、项目和行动有关且证据最强的内容，禁止为了凑数量记录琐碎事实。
 “用户”“我”“本人”“对方”“群友”“某人”“未知”等只是角色占位词，绝对不能作为实体名称。用户本人必须使用身份档案里的真实姓名；身份档案没有姓名时，不创建用户本人的人物实体。
 只根据消息证据，不臆测；title 用动词开头；不确定日期时 due 为空；source 使用会话显示名。
 只返回 JSON：
-{"headline":"标题","summary":"摘要","highlights":["重要信息"],"tasks":[{"title":"待办","detail":"上下文","owner":"我","due":"","priority":"high|medium|low","source":"会话名","confidence":0.8,"classification":"mine|uncertain|others","assignmentEvidence":"归属证据","sourceMessageIds":["消息ID"]}],"entities":[{"tempId":"e1","type":"person|organization|group|project","canonicalName":"名称","aliases":[],"accountIds":[],"summary":"仅基于证据的简述","confidence":0.8,"evidenceMessageIds":["消息ID"]}],"relations":[{"subjectTempId":"e1","predicate":"从主语到宾语可直接朗读的有向关系","objectTempId":"e2","directionExplanation":"完整自然语言，例如A向B提供服务","confidence":0.8,"evidenceMessageIds":["消息ID"]}],"possibleDuplicates":[{"leftTempId":"e1","rightExistingName":"已有实体名","confidence":0.7,"reason":"原因"}]}`
+{"headline":"标题","summary":"摘要","highlights":["重要信息"],"tasks":[{"title":"待办","detail":"上下文","owner":"我","due":"","priority":"high|medium|low","source":"会话名","confidence":0.8,"classification":"mine|uncertain|others","assignmentEvidence":"归属证据","sourceMessageIds":["消息ID"]}],"entities":[{"tempId":"e1","type":"person|organization|group|project","canonicalName":"名称","aliases":[],"accountIds":[],"summary":"仅基于证据的简述","confidence":0.8,"evidenceMessageIds":["消息ID"]}],"relations":[{"subjectTempId":"e1","predicate":"从主语到宾语可直接朗读的有向关系","objectTempId":"e2","directionExplanation":"完整自然语言，例如A向B提供服务","confidence":0.8,"evidenceMessageIds":["消息ID"]}],"claims":[{"subjectTempId":"e1","predicate":"结构化事实属性","objectTempId":"","objectValue":"事实值","valueType":"text|number|date|boolean","validFrom":"","validTo":"","confidence":0.8,"sourceNature":"self_statement|other_statement|inference","evidenceMessageIds":["消息ID"]}],"events":[{"eventType":"meeting|commitment|delivery|travel|payment|organization_change|decision|other","title":"事件","description":"描述","startAt":"","endAt":"","location":"","participants":[{"tempId":"e1","role":"参与者角色"}],"confidence":0.8,"evidenceMessageIds":["消息ID"]}],"possibleDuplicates":[{"leftTempId":"e1","rightExistingName":"已有实体名","confidence":0.7,"reason":"原因"}]}`
 
 function shanghaiDate(timestampMs = Date.now()): string {
   return new Intl.DateTimeFormat('en-CA', {
@@ -487,14 +490,14 @@ export class AiAssistantService {
     const windows: any[][] = []
     for (const rows of bySession.values()) {
       rows.sort((a, b) => a.timestamp - b.timestamp)
-      if (rows.length <= 260) {
+      if (rows.length <= 140) {
         windows.push(rows.map(message => ({ ...message, analysisScope: 'core' })))
         continue
       }
-      for (let coreStart = 0; coreStart < rows.length; coreStart += 200) {
-        const coreEnd = Math.min(rows.length, coreStart + 200)
-        const windowStart = Math.max(0, coreStart - 30)
-        const windowEnd = Math.min(rows.length, coreEnd + 30)
+      for (let coreStart = 0; coreStart < rows.length; coreStart += 100) {
+        const coreEnd = Math.min(rows.length, coreStart + 100)
+        const windowStart = Math.max(0, coreStart - 20)
+        const windowEnd = Math.min(rows.length, coreEnd + 20)
         windows.push(rows.slice(windowStart, windowEnd).map((message, index) => ({
           ...message,
           analysisScope: windowStart + index >= coreStart && windowStart + index < coreEnd ? 'core' : 'context'
@@ -504,7 +507,7 @@ export class AiAssistantService {
     const batches: any[][] = []
     let pending: any[] = []
     for (const window of windows) {
-      if (pending.length && pending.length + window.length > 400) {
+      if (pending.length && pending.length + window.length > 160) {
         batches.push(pending)
         pending = []
       }
@@ -514,7 +517,7 @@ export class AiAssistantService {
     return batches
   }
 
-  private mergeGraphDigest(digest: any, sourceMessages: any[], now: string): void {
+  private mergeGraphDigest(digest: any, sourceMessages: any[], now: string): Map<string, string> {
     const tempIds = new Map<string, string>()
     const entities = Array.isArray(digest.entities) ? digest.entities : []
     for (const item of entities) {
@@ -632,6 +635,58 @@ export class AiAssistantService {
         rightEntityId: right.id
       })
     }
+    return tempIds
+  }
+
+  private persistClaimsAndEvents(digest: any, tempIds: Map<string, string>, sourceMessages: any[], now: string): void {
+    const evidenceFor = (ids: any[]) => {
+      const wanted = new Set((Array.isArray(ids) ? ids : []).map(String))
+      return sourceMessages.filter(message => wanted.has(String(message.id))).map(message => ({
+        messageId: String(message.id),
+        sessionId: String(message.sessionId),
+        timestamp: Number(message.timestamp),
+        excerpt: redact(String(message.content)).slice(0, 300),
+        role: 'support'
+      }))
+    }
+    const claims = (Array.isArray(digest.claims) ? digest.claims : []).flatMap((item: any) => {
+      const subjectId = tempIds.get(String(item.subjectTempId || ''))
+      const objectEntityId = tempIds.get(String(item.objectTempId || ''))
+      const predicate = String(item.predicate || '').trim().slice(0, 100)
+      const objectValue = String(item.objectValue || '').trim().slice(0, 1000)
+      const evidence = evidenceFor(item.evidenceMessageIds)
+      if (!subjectId || !predicate || (!objectEntityId && !objectValue) || !evidence.length) return []
+      const value = objectEntityId || objectValue
+      const id = crypto.createHash('sha256').update(`${subjectId}|${predicate}|${value}|${String(item.validFrom || '')}`).digest('hex').slice(0, 24)
+      return [{
+        id, subjectId, predicate, objectEntityId, objectValue: objectEntityId ? '' : objectValue,
+        valueType: ['text', 'number', 'date', 'boolean'].includes(item.valueType) ? item.valueType : 'text',
+        confidence: Math.max(0, Math.min(1, Number(item.confidence || 0.6))),
+        status: item.sourceNature === 'self_statement' && Number(item.confidence || 0) >= 0.8 ? 'confirmed' : 'candidate',
+        validFrom: String(item.validFrom || ''), validTo: String(item.validTo || ''),
+        searchText: `${predicate} ${objectValue}`.trim(), evidence, createdAt: now
+      }]
+    })
+    const events = (Array.isArray(digest.events) ? digest.events : []).flatMap((item: any) => {
+      const title = String(item.title || '').trim().slice(0, 200)
+      const evidence = evidenceFor(item.evidenceMessageIds)
+      if (!title || !evidence.length) return []
+      const participants = (Array.isArray(item.participants) ? item.participants : []).flatMap((participant: any) => {
+        const entityId = tempIds.get(String(participant.tempId || ''))
+        return entityId ? [{ entityId, role: String(participant.role || 'participant').slice(0, 80) }] : []
+      })
+      const id = crypto.createHash('sha256').update(`${String(item.eventType || 'other')}|${title}|${String(item.startAt || '')}|${evidence[0].messageId}`).digest('hex').slice(0, 24)
+      return [{
+        id, eventType: String(item.eventType || 'other').slice(0, 80), title,
+        description: String(item.description || '').slice(0, 1200),
+        startAt: String(item.startAt || ''), endAt: String(item.endAt || ''), location: String(item.location || '').slice(0, 200),
+        confidence: Math.max(0, Math.min(1, Number(item.confidence || 0.6))),
+        status: 'confirmed', searchText: `${title} ${String(item.description || '')}`.trim(),
+        participants, evidence, createdAt: now
+      }]
+    })
+    personalMemoryStore.upsertClaims(claims)
+    personalMemoryStore.upsertEvents(events)
   }
 
   private enqueueIdentityCandidates(entity: GraphEntity, now: string): void {
@@ -686,10 +741,22 @@ export class AiAssistantService {
       const fresh = collected.messages.filter(message => !seen.has(messageKey(message)))
       const digests: any[] = []
       const createdAt = new Date().toISOString()
+      const successfulMessageKeys: string[] = []
+      const batchErrors: string[] = []
       for (const batch of this.buildAnalysisBatches(fresh)) {
-        const digest = await this.callAi(batch)
-        digests.push(digest)
-        this.mergeGraphDigest(digest, batch, createdAt)
+        try {
+          const digest = await this.callAi(batch)
+          digests.push(digest)
+          const tempIds = this.mergeGraphDigest(digest, batch, createdAt)
+          personalMemoryStore.syncGraph(this.state.graph)
+          this.persistClaimsAndEvents(digest, tempIds, batch, createdAt)
+          const checkpointKeys = batch.filter(message => message.analysisScope === 'core').map(messageKey)
+          successfulMessageKeys.push(...checkpointKeys)
+          this.state.cursor.recentMessageIds = [...new Set([...this.state.cursor.recentMessageIds, ...checkpointKeys])].slice(-20_000)
+          this.saveState()
+        } catch (error: any) {
+          batchErrors.push(error?.message || String(error))
+        }
       }
       const tasks = new Map<string, AssistantTask>()
       const highlights: string[] = []
@@ -744,12 +811,16 @@ export class AiAssistantService {
         }
       }
       this.state.tasks = [...existing.values()].sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)))
-      this.state.cursor.recentMessageIds = [...new Set([...this.state.cursor.recentMessageIds, ...collected.messages.map(messageKey)])].slice(-20_000)
-      for (const sessionId of collected.successful) this.state.cursor.sessionCursors[sessionId] = now
-      this.state.cursor.lastMessageTimestamp = now
-      this.state.cursor.lastSuccessfulRunAt = createdAt
-      this.state.cursor.lastError = null
-      this.state.lastSyncAt = createdAt
+      this.state.cursor.recentMessageIds = [...new Set([...this.state.cursor.recentMessageIds, ...successfulMessageKeys])].slice(-20_000)
+      if (!batchErrors.length) {
+        for (const sessionId of collected.successful) this.state.cursor.sessionCursors[sessionId] = now
+        this.state.cursor.lastMessageTimestamp = now
+        this.state.cursor.lastSuccessfulRunAt = createdAt
+        this.state.cursor.lastError = null
+        this.state.lastSyncAt = createdAt
+      } else {
+        this.state.cursor.lastError = `仍有 ${batchErrors.length} 个消息批次等待重试：${batchErrors[0]}`
+      }
       this.saveState()
       const mineTasks = [...tasks.values()].filter(task => task.classification === 'mine')
       if (mineTasks.length > 0) {
@@ -760,6 +831,7 @@ export class AiAssistantService {
           targetRoute: '/ai-assistant'
         }).catch(() => undefined)
       }
+      if (batchErrors.length) throw new Error(this.state.cursor.lastError || '部分消息批次等待重试')
       return { success: true, newMessageCount: fresh.length, newTaskCount: mineTasks.length, failedSessions: collected.failed.length }
     } catch (error: any) {
       this.state.cursor.lastError = error?.message || String(error)
@@ -789,7 +861,8 @@ export class AiAssistantService {
       taskReviewQueue,
       cursor: this.state.cursor,
       graph: this.state.graph,
-      mergeHistory: personalMemoryStore.listActiveMerges()
+      mergeHistory: personalMemoryStore.listActiveMerges(),
+      memoryStats: personalMemoryStore.getMemoryStats()
     }
   }
 

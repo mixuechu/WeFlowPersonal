@@ -182,7 +182,7 @@ function AiAssistantPage() {
           <div className="assistant-stat">
             <strong>{briefing?.messageCount || 0}</strong>
             <span>条本次新增消息</span>
-            <small>{status?.scheduleTime || '20:00'} 自动整理</small>
+            <small>{dashboard?.memoryStats?.claims || 0} 条事实 · {dashboard?.memoryStats?.events || 0} 个事件</small>
           </div>
         </section>
 
