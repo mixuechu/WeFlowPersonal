@@ -72,6 +72,7 @@ export class PersonalMemoryStore {
         predicate TEXT NOT NULL,
         object_entity_id TEXT REFERENCES entities(id) ON DELETE CASCADE,
         object_value TEXT,
+        polarity TEXT NOT NULL DEFAULT 'positive',
         value_type TEXT NOT NULL DEFAULT 'text',
         confidence REAL NOT NULL,
         status TEXT NOT NULL DEFAULT 'candidate',
@@ -265,6 +266,7 @@ export class PersonalMemoryStore {
     this.ensureColumn('entities', 'last_disambiguated_at', 'TEXT')
     this.ensureColumn('claims', 'source_nature', `TEXT NOT NULL DEFAULT 'inference'`)
     this.ensureColumn('claims', 'conflict_group', 'TEXT')
+    this.ensureColumn('claims', 'polarity', `TEXT NOT NULL DEFAULT 'positive'`)
     this.db.prepare(`UPDATE claims SET status='candidate' WHERE source_nature!='self_statement' AND status='confirmed'`).run()
     this.db.prepare(`
       UPDATE evidence SET evidence_role=CASE
@@ -540,11 +542,11 @@ export class PersonalMemoryStore {
     if (!this.db || !claims.length) return
     const now = new Date().toISOString()
     const upsert = this.db.prepare(`
-      INSERT INTO claims(id,subject_id,predicate,object_entity_id,object_value,value_type,confidence,status,valid_from,valid_to,search_text,created_at,updated_at,source_nature,conflict_group)
-      VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+      INSERT INTO claims(id,subject_id,predicate,object_entity_id,object_value,polarity,value_type,confidence,status,valid_from,valid_to,search_text,created_at,updated_at,source_nature,conflict_group)
+      VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
       ON CONFLICT(id) DO UPDATE SET confidence=MAX(confidence,excluded.confidence),status=excluded.status,
         valid_from=COALESCE(excluded.valid_from,valid_from),valid_to=COALESCE(excluded.valid_to,valid_to),
-        search_text=excluded.search_text,updated_at=excluded.updated_at,source_nature=excluded.source_nature,
+        polarity=excluded.polarity,search_text=excluded.search_text,updated_at=excluded.updated_at,source_nature=excluded.source_nature,
         conflict_group=COALESCE(excluded.conflict_group,conflict_group)
     `)
     const evidence = this.db.prepare(`
@@ -554,12 +556,14 @@ export class PersonalMemoryStore {
     for (const claim of claims) {
       const sourceNature = claim.sourceNature || 'inference'
       const existingValues = this.db.prepare(`
-        SELECT id,COALESCE(object_entity_id,object_value,'') AS value,valid_from,valid_to
+        SELECT id,COALESCE(object_entity_id,object_value,'') AS value,polarity,valid_from,valid_to
         FROM claims WHERE subject_id=? AND predicate=? AND status!='rejected' AND id!=?
-      `).all(claim.subjectId, claim.predicate, claim.id) as Array<{ id: string; value: string; valid_from?: string; valid_to?: string }>
+      `).all(claim.subjectId, claim.predicate, claim.id) as Array<{ id: string; value: string; polarity: string; valid_from?: string; valid_to?: string }>
       const incomingValue = String(claim.objectEntityId || claim.objectValue || '')
+      const incomingPolarity = claim.polarity === 'negative' ? 'negative' : 'positive'
       const conflicting = existingValues.filter(item => {
-        if (!item.value || item.value === incomingValue) return false
+        if (!item.value) return false
+        if (item.value === incomingValue && item.polarity === incomingPolarity) return false
         if (item.valid_to && claim.validFrom && item.valid_to < claim.validFrom) return false
         if (claim.validTo && item.valid_from && claim.validTo < item.valid_from) return false
         return true
@@ -572,10 +576,21 @@ export class PersonalMemoryStore {
         const placeholders = ids.map(() => '?').join(',')
         this.db.prepare(`UPDATE claims SET status='candidate',conflict_group=?,updated_at=? WHERE id IN (${placeholders})`)
           .run(conflictGroup, now, ...ids)
+        for (const id of ids) {
+          const documentId = `claim:${id}`
+          const document = this.db.prepare('SELECT metadata_json FROM search_documents WHERE id=?').get(documentId) as any
+          if (!document) continue
+          let metadata: any = {}
+          try { metadata = JSON.parse(document.metadata_json || '{}') } catch {}
+          metadata.status = 'candidate'
+          metadata.conflictGroup = conflictGroup
+          this.db.prepare('UPDATE search_documents SET metadata_json=?,updated_at=? WHERE id=?')
+            .run(JSON.stringify(metadata), now, documentId)
+        }
         claim.status = 'candidate'
       }
       upsert.run(claim.id, claim.subjectId, claim.predicate, claim.objectEntityId || null, claim.objectValue || null,
-        claim.valueType || 'text', claim.confidence, claim.status || 'candidate', claim.validFrom || null,
+        incomingPolarity, claim.valueType || 'text', claim.confidence, claim.status || 'candidate', claim.validFrom || null,
         claim.validTo || null, claim.searchText, claim.createdAt || now, now, sourceNature, conflictGroup)
       for (const item of claim.evidence || []) {
         const evidenceRole = item.role && item.role !== 'support'
@@ -583,8 +598,20 @@ export class PersonalMemoryStore {
           : sourceNature === 'self_statement' || sourceNature === 'human_confirmation' ? 'direct' : 'indirect'
         evidence.run(claim.id, item.messageId, item.sessionId, item.timestamp, item.excerpt, evidenceRole)
       }
+      for (const prior of conflicting) {
+        for (const item of claim.evidence || []) {
+          evidence.run(prior.id, item.messageId, item.sessionId, item.timestamp, item.excerpt, 'contradiction')
+        }
+        const priorEvidence = this.db.prepare(`
+          SELECT message_id,session_id,timestamp,excerpt FROM evidence
+          WHERE claim_id=? AND evidence_role!='contradiction'
+        `).all(prior.id) as any[]
+        for (const item of priorEvidence) {
+          evidence.run(claim.id, item.message_id, item.session_id, item.timestamp, item.excerpt, 'contradiction')
+        }
+      }
       this.upsertSearchDocument(`claim:${claim.id}`, 'claim', claim.id, claim.predicate, claim.searchText,
-        { subjectId: claim.subjectId, objectEntityId: claim.objectEntityId, status: claim.status, validFrom: claim.validFrom, validTo: claim.validTo }, now)
+        { subjectId: claim.subjectId, objectEntityId: claim.objectEntityId, polarity: incomingPolarity, status: claim.status, validFrom: claim.validFrom, validTo: claim.validTo }, now)
     }
   }
 
@@ -719,6 +746,7 @@ export class PersonalMemoryStore {
       ...before,
       object_entity_id: null,
       object_value: String(input.value || '').trim().slice(0, 1000),
+      polarity: 'positive',
       valid_from: String(input.validFrom || '').trim() || null,
       valid_to: String(input.validTo || '').trim() || null,
       status: 'confirmed',
@@ -728,7 +756,7 @@ export class PersonalMemoryStore {
     }
     if (!after.object_value) return null
     this.db.prepare(`
-      UPDATE claims SET object_entity_id=NULL,object_value=?,valid_from=?,valid_to=?,status='confirmed',
+      UPDATE claims SET object_entity_id=NULL,object_value=?,polarity='positive',valid_from=?,valid_to=?,status='confirmed',
         source_nature='human_confirmation',conflict_group=NULL,updated_at=? WHERE id=?
     `).run(after.object_value, after.valid_from, after.valid_to, now, id)
     this.db.prepare(`
@@ -737,7 +765,7 @@ export class PersonalMemoryStore {
     const subject = this.db.prepare('SELECT canonical_name FROM entities WHERE id=?').get(before.subject_id) as { canonical_name?: string } | undefined
     this.upsertSearchDocument(`claim:${id}`, 'claim', id, before.predicate,
       `${subject?.canonical_name || ''} ${before.predicate} ${after.object_value}`.trim(),
-      { subjectId: before.subject_id, status: 'confirmed', validFrom: after.valid_from, validTo: after.valid_to }, now)
+      { subjectId: before.subject_id, polarity: 'positive', status: 'confirmed', validFrom: after.valid_from, validTo: after.valid_to }, now)
     return this.db.prepare('SELECT * FROM claims WHERE id=?').get(id) || null
   }
 

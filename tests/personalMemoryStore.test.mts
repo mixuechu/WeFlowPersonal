@@ -263,3 +263,47 @@ test('manual memory review updates searchable status metadata', () => withStore(
   assert.ok(result)
   assert.equal(JSON.parse(result.metadata_json).status, 'confirmed')
 }))
+
+test('negative claims preserve polarity and attach contradiction evidence both ways', () => withStore(store => {
+  store.syncGraph({
+    entities: [{ id: 'person-polarity', type: 'person', canonicalName: '极性测试', aliases: [], accountIds: [] }],
+    relations: [],
+    reviewQueue: []
+  })
+  store.upsertClaims([{
+    id: 'claim-positive',
+    subjectId: 'person-polarity',
+    predicate: '任职于',
+    objectValue: '示例公司',
+    polarity: 'positive',
+    confidence: 0.95,
+    status: 'candidate',
+    sourceNature: 'self_statement',
+    searchText: '极性测试 任职于 示例公司',
+    evidence: evidence('message-positive', '我在示例公司工作')
+  }])
+  store.upsertClaims([{
+    id: 'claim-negative',
+    subjectId: 'person-polarity',
+    predicate: '任职于',
+    objectValue: '示例公司',
+    polarity: 'negative',
+    confidence: 0.95,
+    status: 'candidate',
+    sourceNature: 'self_statement',
+    searchText: '极性测试 并非 任职于 示例公司',
+    evidence: evidence('message-negative', '我不是示例公司的员工')
+  }])
+
+  const claims = store.getMemoryFeed().claims
+  const positive = claims.find(item => item.id === 'claim-positive')
+  const negative = claims.find(item => item.id === 'claim-negative')
+  assert.equal(positive.status, 'candidate')
+  assert.equal(negative.polarity, 'negative')
+  assert.ok(positive.evidence.some((item: any) => item.message_id === 'message-negative' && item.evidence_role === 'contradiction'))
+  assert.ok(negative.evidence.some((item: any) => item.message_id === 'message-positive' && item.evidence_role === 'contradiction'))
+  const positiveSearch = store.searchText('极性测试').find(item => item.id === 'claim:claim-positive')
+  const negativeSearch = store.searchText('极性测试').find(item => item.id === 'claim:claim-negative')
+  assert.equal(JSON.parse(positiveSearch.metadata_json).status, 'candidate')
+  assert.equal(JSON.parse(negativeSearch.metadata_json).polarity, 'negative')
+}))
