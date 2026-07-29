@@ -178,6 +178,18 @@ export class PersonalMemoryStore {
         created_at TEXT NOT NULL
       ) STRICT;
 
+      CREATE TABLE IF NOT EXISTS task_history (
+        id INTEGER PRIMARY KEY,
+        task_id TEXT NOT NULL,
+        field TEXT NOT NULL,
+        before_value TEXT NOT NULL DEFAULT '',
+        after_value TEXT NOT NULL DEFAULT '',
+        reason TEXT NOT NULL DEFAULT '',
+        evidence_json TEXT NOT NULL DEFAULT '[]',
+        created_at TEXT NOT NULL
+      ) STRICT;
+      CREATE INDEX IF NOT EXISTS idx_task_history_task ON task_history(task_id,created_at);
+
       CREATE TABLE IF NOT EXISTS assistant_conversations (
         id TEXT PRIMARY KEY,
         title TEXT NOT NULL,
@@ -746,6 +758,32 @@ export class PersonalMemoryStore {
         .run(JSON.stringify(metadata), now, documentId)
     }
     return this.db.prepare(`SELECT * FROM ${table} WHERE id=?`).get(id) || null
+  }
+
+  recordTaskChanges(taskId: string, before: any, after: any, reason = 'manual_edit', evidence: any[] = []): void {
+    if (!this.db) return
+    const fields = ['status', 'title', 'detail', 'owner', 'collaborators', 'project', 'dependsOnIds', 'taskKind', 'due', 'priority']
+    const insert = this.db.prepare(`
+      INSERT INTO task_history(task_id,field,before_value,after_value,reason,evidence_json,created_at)
+      VALUES(?,?,?,?,?,?,?)
+    `)
+    const now = new Date().toISOString()
+    for (const field of fields) {
+      const left = JSON.stringify(before?.[field] ?? '')
+      const right = JSON.stringify(after?.[field] ?? '')
+      if (left === right) continue
+      insert.run(taskId, field, left, right, reason, JSON.stringify(evidence || []), now)
+    }
+  }
+
+  listTaskHistory(taskIds: string[], limit = 200): any[] {
+    if (!this.db || !taskIds.length) return []
+    const ids = [...new Set(taskIds.map(String))].slice(0, 500)
+    const placeholders = ids.map(() => '?').join(',')
+    return this.db.prepare(`
+      SELECT * FROM task_history WHERE task_id IN (${placeholders})
+      ORDER BY created_at DESC,id DESC LIMIT ?
+    `).all(...ids, Math.max(1, Math.min(1000, limit))) as any[]
   }
 
   correctClaim(id: string, input: { value: string; validFrom?: string; validTo?: string }): any {

@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os'
 import { PersonalMemoryStore } from '../electron/services/personalMemoryStore.ts'
 import { filterMemorySearchResults } from '../electron/services/memorySearchFilters.ts'
 import { buildMemoryQueryPlan } from '../electron/services/memoryQueryPlanner.ts'
+import { buildTaskReminders, findMatchingTask } from '../electron/services/taskIntelligence.ts'
 
 function withStore(run: (store: PersonalMemoryStore) => void): void {
   const directory = mkdtempSync(join(tmpdir(), 'weflow-memory-test-'))
@@ -321,4 +322,46 @@ test('negative claims preserve polarity and attach contradiction evidence both w
   const negativeSearch = store.searchText('极性测试').find(item => item.id === 'claim:claim-negative')
   assert.equal(JSON.parse(positiveSearch.metadata_json).status, 'candidate')
   assert.equal(JSON.parse(negativeSearch.metadata_json).polarity, 'negative')
+}))
+
+test('task intelligence deduplicates by evidence and explains actionable reminders', () => {
+  const existing = [{
+    id: 'task-existing',
+    title: '确认交付时间',
+    source: '项目群',
+    sourceMessageIds: ['message-shared'],
+    status: 'todo'
+  }]
+  assert.equal(findMatchingTask({
+    id: 'task-new-id',
+    title: '确认最终交付时间',
+    source: '项目群',
+    sourceMessageIds: ['message-shared']
+  }, existing)?.id, 'task-existing')
+
+  const reminders = buildTaskReminders([{
+    id: 'dependency',
+    title: '准备设计稿',
+    status: 'todo'
+  }, {
+    id: 'overdue',
+    title: '提交客户方案',
+    status: 'waiting',
+    taskKind: 'delegated',
+    due: '2026-07-20',
+    updatedAt: '2026-07-20T00:00:00+08:00',
+    dependsOnIds: ['dependency']
+  }], new Date('2026-07-30T04:00:00Z'))
+  assert.deepEqual(new Set(reminders.map(item => item.kind)), new Set(['overdue', 'waiting_stale', 'blocked']))
+  assert.ok(reminders.every(item => item.reason.length > 10))
+})
+
+test('task status changes are persisted as an auditable history', () => withStore(store => {
+  const before = { id: 'task-history', status: 'todo', due: '2026-07-30', priority: 'medium' }
+  const after = { ...before, status: 'waiting', due: '2026-08-02' }
+  store.recordTaskChanges('task-history', before, after, 'manual_edit', [{ messageId: 'message-history' }])
+  const history = store.listTaskHistory(['task-history'])
+  assert.deepEqual(new Set(history.map(item => item.field)), new Set(['status', 'due']))
+  assert.ok(history.every(item => item.reason === 'manual_edit'))
+  assert.ok(history.every(item => JSON.parse(item.evidence_json)[0].messageId === 'message-history'))
 }))

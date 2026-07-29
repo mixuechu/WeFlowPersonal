@@ -10,6 +10,7 @@ import { personalMemoryStore } from './personalMemoryStore'
 import { localEmbeddingService } from './localEmbeddingService'
 import { filterMemorySearchResults, type MemorySearchOptions } from './memorySearchFilters'
 import { buildMemoryQueryPlan } from './memoryQueryPlanner'
+import { buildTaskReminders, findMatchingTask } from './taskIntelligence'
 
 type AssistantTask = {
   id: string
@@ -73,6 +74,7 @@ type AssistantState = {
     sessionCursors: Record<string, number>
     lastSuccessfulRunAt: string | null
     lastScheduledRunDate: string | null
+    lastReminderNotificationDate?: string | null
     lastAttemptAt: string | null
     lastError: string | null
   }
@@ -94,6 +96,7 @@ const EMPTY_STATE: AssistantState = {
     sessionCursors: {},
     lastSuccessfulRunAt: null,
     lastScheduledRunDate: null,
+    lastReminderNotificationDate: null,
     lastAttemptAt: null,
     lastError: null
   },
@@ -129,7 +132,8 @@ function messageKey(message: any): string {
 }
 
 function stableTaskId(task: any): string {
-  const value = [task.title, task.source, task.due].map(item => String(item || '').trim().toLowerCase()).join('|')
+  const evidence = (Array.isArray(task.sourceMessageIds) ? task.sourceMessageIds : []).map(String).sort().join(',')
+  const value = [task.title, task.source, evidence].map(item => String(item || '').trim().toLowerCase()).join('|')
   return crypto.createHash('sha256').update(value).digest('hex').slice(0, 20)
 }
 
@@ -853,8 +857,10 @@ export class AiAssistantService {
       }
       const existing = new Map(this.state.tasks.map(task => [task.id, task]))
       for (const task of tasks.values()) {
-        const previous = existing.get(task.id)
-        existing.set(task.id, previous ? {
+        const previous = existing.get(task.id) || findMatchingTask(task, this.state.tasks)
+        if (previous && previous.id !== task.id) existing.delete(previous.id)
+        if (previous) task.id = previous.id
+        const mergedTask: AssistantTask = previous ? {
           ...task,
           status: previous.status,
           owner: previous.owner || task.owner,
@@ -864,7 +870,10 @@ export class AiAssistantService {
           taskKind: previous.taskKind || task.taskKind,
           createdAt: previous.createdAt,
           updatedAt: createdAt
-        } : { ...task, createdAt, updatedAt: createdAt })
+        } : { ...task, createdAt, updatedAt: createdAt }
+        existing.set(task.id, mergedTask)
+        personalMemoryStore.recordTaskChanges(task.id, previous || {}, mergedTask,
+          previous ? 'incremental_message_update' : 'created_from_message', task.evidence || [])
       }
       const today = shanghaiDate()
       if (fresh.length > 0) {
@@ -940,10 +949,14 @@ export class AiAssistantService {
     const latest = dates[0] ? this.state.briefings[dates[0]] : null
     const tasks = this.state.tasks.filter(task => task.classification === 'mine')
     const taskReviewQueue = this.state.tasks.filter(task => task.classification !== 'mine')
+    const taskReminders = buildTaskReminders(tasks)
+    const taskHistory = personalMemoryStore.listTaskHistory(tasks.map(task => task.id))
     return {
       briefing: latest ? { ...latest, tasks } : null,
       tasks,
       taskReviewQueue,
+      taskReminders,
+      taskHistory,
       cursor: this.state.cursor,
       graph: this.state.graph,
       mergeHistory: personalMemoryStore.listActiveMerges(),
@@ -1067,6 +1080,7 @@ export class AiAssistantService {
   updateTask(id: string, patch: any): AssistantTask | null {
     const task = this.state.tasks.find(item => item.id === id)
     if (!task) return null
+    const before = structuredClone(task)
     if (['todo', 'doing', 'waiting', 'done', 'cancelled'].includes(patch.status)) task.status = patch.status
     if (typeof patch.title === 'string' && patch.title.trim()) task.title = patch.title.trim().slice(0, 300)
     if (typeof patch.detail === 'string') task.detail = patch.detail.trim().slice(0, 2000)
@@ -1082,6 +1096,7 @@ export class AiAssistantService {
     if (typeof patch.due === 'string') task.due = patch.due.trim().slice(0, 100)
     if (['high', 'medium', 'low'].includes(patch.priority)) task.priority = patch.priority
     task.updatedAt = new Date().toISOString()
+    personalMemoryStore.recordTaskChanges(id, before, task, String(patch.reason || 'manual_edit'), task.evidence || [])
     this.saveState()
     return task
   }
@@ -1122,6 +1137,7 @@ export class AiAssistantService {
       updatedAt: now
     }
     this.state.tasks.unshift(task)
+    personalMemoryStore.recordTaskChanges(task.id, {}, task, 'created_from_memory', evidence)
     this.saveState()
     return task
   }
@@ -1449,6 +1465,16 @@ export class AiAssistantService {
     try {
       await this.sync()
       this.state.cursor.lastScheduledRunDate = today
+      const reminders = buildTaskReminders(this.state.tasks.filter(task => task.classification === 'mine'), now)
+      if (reminders.length && this.state.cursor.lastReminderNotificationDate !== today) {
+        await showSystemNotification({
+          title: `AI 助理：${reminders.length} 项需要留意`,
+          content: reminders.slice(0, 2).map(item => `${item.title}（${item.reason}）`).join('；'),
+          channel: 'ai-assistant',
+          targetRoute: '/ai-assistant'
+        }).catch(() => undefined)
+        this.state.cursor.lastReminderNotificationDate = today
+      }
       this.saveState()
     } catch {}
   }

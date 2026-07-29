@@ -21,6 +21,15 @@ type Task = {
   evidence?: Array<{ messageId: string; timestamp: number; sender: string; excerpt: string }>
 }
 
+function taskHistoryValue(value: string): string {
+  try {
+    const parsed = JSON.parse(value)
+    return Array.isArray(parsed) ? parsed.join('、') : String(parsed || '空')
+  } catch {
+    return value || '空'
+  }
+}
+
 function AiAssistantPage() {
   const [status, setStatus] = useState<any>(null)
   const [dashboard, setDashboard] = useState<any>(null)
@@ -97,6 +106,8 @@ function AiAssistantPage() {
   const briefing = dashboard?.briefing
   const tasks: Task[] = dashboard?.tasks || []
   const taskReviewQueue: Task[] = dashboard?.taskReviewQueue || []
+  const taskReminders: any[] = dashboard?.taskReminders || []
+  const taskHistory: any[] = dashboard?.taskHistory || []
   const openTasks = useMemo(() => tasks.filter(task => !['done', 'cancelled'].includes(task.status)), [tasks])
   const displayedTasks = useMemo(() => tasks.filter(task =>
     (taskStatusFilter === 'all' || task.status === taskStatusFilter) &&
@@ -464,12 +475,19 @@ function AiAssistantPage() {
               <select value={taskKindFilter} onChange={event => setTaskKindFilter(event.target.value as any)}>
                 <option value="all">全部类型</option><option value="action">自己执行</option><option value="delegated">已委派</option><option value="waiting">等待他人</option>
               </select>
-              <button disabled={!displayedTasks.some(task => task.status !== 'done')} onClick={() => void completeVisibleTasks()}>完成当前筛选</button>
+              <button disabled={!displayedTasks.some(task => !['done', 'cancelled'].includes(task.status))} onClick={() => void completeVisibleTasks()}>完成当前筛选</button>
             </div>
+            {!!taskReminders.length && <div className="assistant-task-reminders">
+              {taskReminders.slice(0, 8).map(reminder => <button key={reminder.id} className={reminder.severity}
+                onClick={() => document.getElementById(`assistant-task-${reminder.taskId}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' })}>
+                <strong>{reminder.kind === 'overdue' ? '已逾期' : reminder.kind === 'due_soon' ? '即将到期' : reminder.kind === 'blocked' ? '存在依赖' : '等待过久'} · {reminder.title}</strong>
+                <span>{reminder.reason}</span>
+              </button>)}
+            </div>}
             <div className="assistant-task-list">
               {displayedTasks.length === 0 && <div className="assistant-empty">{tasks.length ? '当前筛选没有待办' : '暂时没有识别到明确待办'}</div>}
               {displayedTasks.map(task => (
-                <article className={`assistant-task ${task.status === 'done' ? 'done' : ''}`} key={task.id}>
+                <article id={`assistant-task-${task.id}`} className={`assistant-task ${task.status === 'done' ? 'done' : ''}`} key={task.id}>
                   <button className="assistant-check" onClick={() => void toggleTask(task)} aria-label={task.status === 'done' ? '恢复待办' : '完成待办'}>
                     {task.status === 'done' && <Check size={13} />}
                   </button>
@@ -529,6 +547,14 @@ function AiAssistantPage() {
                         detail: task.detail || '',
                         due: task.due || ''
                       })}>编辑待办</button>
+                      {!!taskHistory.some(item => item.task_id === task.id) && <details>
+                        <summary>状态历史</summary>
+                        <div className="assistant-task-history">
+                          {taskHistory.filter(item => item.task_id === task.id).slice(0, 12).map(item => <small key={item.id}>
+                            {new Date(item.created_at).toLocaleString('zh-CN')} · {item.field}：{taskHistoryValue(item.before_value)} → {taskHistoryValue(item.after_value)}
+                          </small>)}
+                        </div>
+                      </details>}
                     </div>}
                   </div>
                   <i className={`priority ${task.priority}`} />
