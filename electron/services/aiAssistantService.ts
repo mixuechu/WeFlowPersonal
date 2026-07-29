@@ -91,6 +91,7 @@ const SYSTEM_PROMPT = `你是一个谨慎的中文私人助理兼个人记忆图
 待办归属规则：只有明确@用户、称呼用户、上下文明确指派用户，或用户自己明确承诺承担的事项才进入 mine；可能相关但证据不足进入 uncertain；明确分配给他人则标为 others；群公告、@所有人和泛泛讨论不得成为任务。
 “我发送”只表示消息方向，绝不表示任务负责人是用户。用户发出的“查一下、看一下、确认一下、问一下、发一下、快、请、麻烦、帮我”等祈使句或请求，默认是要求收件人/群友执行，必须标为 others；只有同时出现“我来、我会、我负责、我去、我处理、我跟进、我要”等明确自我承诺，才可能标为 mine。
 群聊必须结合 sender、direction、被提及名字和前后文判断，不能因为群内出现祈使句就默认属于用户。每个任务必须给出 assignmentEvidence。
+身份映射规则：每个会话的 participants 提供 wxid、通讯录备注 contactRemark、微信昵称 wechatNickname、群昵称 groupNickname、微信号 alias 和 displayName。wxid 是稳定身份主键，其余名称都是该身份在不同场景下的别名；同一个 wxid 的多个名称必须视为同一人，不同 wxid 即使同名也不得自动合并。理解消息中的称呼时优先结合群昵称和通讯录备注。
 知识图谱规则：提取人物、组织、群和项目，以及有明确消息证据的关系。不要因名字相同就合并人物；一个人可以有多个账号和别名。身份不确定时创建候选，不做硬合并。所有关系必须带 messageId 证据。
 “用户”“我”“本人”“对方”“群友”“某人”“未知”等只是角色占位词，绝对不能作为实体名称。用户本人必须使用身份档案里的真实姓名；身份档案没有姓名时，不创建用户本人的人物实体。
 只根据消息证据，不臆测；title 用动词开头；不确定日期时 due 为空；source 使用会话显示名。
@@ -287,6 +288,8 @@ export class AiAssistantService {
 
   private async collectMessages(start: number, end: number): Promise<{ messages: any[]; failed: string[]; successful: string[] }> {
     const sessionPayload = await this.api('/api/v1/sessions', { limit: 500 })
+    const contactsPayload = await this.api('/api/v1/contacts', { limit: 10_000 }).catch(() => ({ contacts: [] }))
+    const contactsById = new Map((contactsPayload.contacts || []).map((contact: any) => [String(contact.username), contact]))
     const policies = personalMemoryStore.getConversationPolicies()
     const allSessions = sessionPayload.sessions || []
     for (const session of allSessions) {
@@ -303,7 +306,7 @@ export class AiAssistantService {
       return Number(session.lastTimestamp || 0) >= sessionStart
     })
     const results = await Promise.allSettled(sessions.map(async (session: any) => {
-      const rows: any[] = []
+      const rawRows: any[] = []
       const sessionStart = Math.max(0, Number(this.state.cursor.sessionCursors[session.username] || start) - 300)
       let offset = 0
       for (let page = 0; page < 50; page += 1) {
@@ -315,20 +318,46 @@ export class AiAssistantService {
           end
         })
         const pageRows = Array.isArray(payload.messages) ? payload.messages : []
-        rows.push(...pageRows.map((message: any) => ({
+        rawRows.push(...pageRows)
+        if (!payload.hasMore || pageRows.length < 200) break
+        offset += pageRows.length
+      }
+      const isGroup = String(session.username).endsWith('@chatroom')
+      const membersPayload = isGroup && rawRows.length
+        ? await this.api('/api/v1/group-members', { chatroomId: session.username }).catch(() => ({ members: [] }))
+        : { members: [] }
+      const membersById = new Map((membersPayload.members || []).map((member: any) => [String(member.wxid), member]))
+      const rows = rawRows.map((message: any) => {
+        const isSelf = Number(message.isSend) === 1
+        const senderId = String(message.senderUsername || (isSelf ? 'self' : ''))
+        const contact: any = contactsById.get(senderId) || {}
+        const member: any = membersById.get(senderId) || {}
+        const identity = {
+          wxid: senderId,
+          contactRemark: String(member.remark || contact.remark || ''),
+          wechatNickname: String(member.nickname || contact.nickname || contact.nickName || ''),
+          groupNickname: String(member.groupNickname || ''),
+          alias: String(member.alias || contact.alias || ''),
+          displayName: String(
+            member.groupNickname || member.remark || contact.remark ||
+            member.nickname || contact.nickname || contact.nickName ||
+            member.displayName || contact.displayName ||
+            message.senderDisplayName || message.senderName || message.displayName || senderId
+          )
+        }
+        return {
           id: String(message.serverId || message.localId),
           sessionId: session.username,
           sessionName: session.displayName || session.username,
           timestamp: Number(message.createTime || 0),
-          direction: Number(message.isSend) === 1 ? '我发送' : '对方发送',
-          senderId: String(message.senderUsername || (Number(message.isSend) === 1 ? 'self' : '')),
-          senderName: String(message.senderDisplayName || message.senderName || message.displayName || ''),
-          isGroup: String(session.username).endsWith('@chatroom'),
+          direction: isSelf ? '我发送' : '对方发送',
+          senderId,
+          senderName: isSelf ? '我' : identity.displayName,
+          senderIdentity: identity,
+          isGroup,
           content: String(message.content || message.parsedContent || '').slice(0, 2000)
-        })).filter((message: any) => message.content))
-        if (!payload.hasMore || pageRows.length < 200) break
-        offset += pageRows.length
-      }
+        }
+      }).filter((message: any) => message.content)
       return { sessionId: session.username, rows }
     }))
     const messages: any[] = []
@@ -360,14 +389,17 @@ export class AiAssistantService {
       direction: message.direction,
       senderId: message.senderId,
       sender: message.direction === '我发送' ? '我' : (message.senderName || message.senderId || '未知发送者'),
+      senderIdentity: message.senderIdentity,
       content: redact(message.content)
     }))
     const conversations = Object.values(compact.reduce((groups: Record<string, any>, message: any) => {
       const key = message.sessionId
-      if (!groups[key]) groups[key] = { session: message.session, sessionId: key, isGroup: message.isGroup, messages: [] }
-      groups[key].messages.push(message)
+      if (!groups[key]) groups[key] = { session: message.session, sessionId: key, isGroup: message.isGroup, participants: {}, messages: [] }
+      if (message.senderIdentity?.wxid) groups[key].participants[message.senderIdentity.wxid] = message.senderIdentity
+      const { senderIdentity, ...compactMessage } = message
+      groups[key].messages.push(compactMessage)
       return groups
-    }, {}))
+    }, {})).map((conversation: any) => ({ ...conversation, participants: Object.values(conversation.participants) }))
     const ownerProfile = {
       name: String(this.config.get('aiAssistantOwnerName') || '').trim(),
       aliases: String(this.config.get('aiAssistantOwnerAliases') || '').split(/[,，、\n]/).map(item => item.trim()).filter(Boolean),
