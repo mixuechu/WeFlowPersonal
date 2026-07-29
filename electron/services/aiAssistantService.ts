@@ -7,6 +7,7 @@ import { ConfigService } from './config'
 import { httpService } from './httpService'
 import { showSystemNotification } from './systemNotificationService'
 import { personalMemoryStore } from './personalMemoryStore'
+import { localEmbeddingService } from './localEmbeddingService'
 
 type AssistantTask = {
   id: string
@@ -163,9 +164,11 @@ export class AiAssistantService {
   private activeSync: Promise<any> | null = null
   private scheduler: ReturnType<typeof setInterval> | null = null
   private lastSchedulerAttemptAt = 0
+  private vectorIndexPromise: Promise<any> | null = null
 
   async initialize(): Promise<void> {
     this.statePath = join(app.getPath('userData'), 'ai-assistant-state.json')
+    localEmbeddingService.initialize(app.getPath('userData'))
     personalMemoryStore.initialize(join(app.getPath('userData'), 'personal-memory.sqlite'))
     this.migrateLegacyData()
     this.loadState()
@@ -175,6 +178,8 @@ export class AiAssistantService {
     if (this.config.get('aiAssistantEnabled')) {
       setTimeout(() => void this.sync().catch(() => undefined), 5_000)
     }
+    setTimeout(() => void this.ensureVectorIndex().catch(error =>
+      console.warn('[AI Assistant] 本地向量索引暂未完成:', error)), 12_000)
   }
 
   dispose(): void {
@@ -914,7 +919,14 @@ export class AiAssistantService {
   }
 
   getMemoryDiagnostics(): any {
-    return personalMemoryStore.getDiagnostics()
+    return {
+      ...personalMemoryStore.getDiagnostics(),
+      embeddings: {
+        ...personalMemoryStore.getEmbeddingStats(localEmbeddingService.modelVersion),
+        ...localEmbeddingService.getStatus(),
+        indexing: Boolean(this.vectorIndexPromise)
+      }
+    }
   }
 
   createMemoryBackup(): any {
@@ -1128,6 +1140,55 @@ export class AiAssistantService {
     }))
   }
 
+  async searchMemoryHybrid(query: string): Promise<any[]> {
+    const lexical = this.searchMemory(query)
+    try {
+      await this.ensureVectorIndex()
+      const [queryVector] = await localEmbeddingService.embed([String(query || '')])
+      const semantic = personalMemoryStore.searchVector(queryVector, localEmbeddingService.modelVersion, 40)
+      const merged = new Map<string, any>()
+      lexical.forEach((item, index) => merged.set(item.id, {
+        ...item,
+        hybrid_score: 1 / (40 + index),
+        match_source: '全文'
+      }))
+      semantic.forEach((item: any, index: number) => {
+        if (Number(item.semantic_score || 0) < 0.35) return
+        const existing = merged.get(item.id)
+        const semanticContribution = Math.max(0, Number(item.semantic_score || 0)) * 0.035 + 1 / (60 + index)
+        merged.set(item.id, {
+          ...(existing || item),
+          semantic_score: item.semantic_score,
+          hybrid_score: Number(existing?.hybrid_score || 0) + semanticContribution,
+          match_source: existing ? '全文 + 语义' : '语义',
+          metadata: existing?.metadata || (() => { try { return JSON.parse(item.metadata_json || '{}') } catch { return {} } })(),
+          evidence: existing?.evidence || personalMemoryStore.getDocumentEvidence(item.document_type, item.source_id)
+        })
+      })
+      return [...merged.values()].sort((left, right) => Number(right.hybrid_score || 0) - Number(left.hybrid_score || 0)).slice(0, 40)
+    } catch (error) {
+      console.warn('[AI Assistant] 向量检索回退为全文检索:', error)
+      return lexical
+    }
+  }
+
+  async ensureVectorIndex(): Promise<any> {
+    if (this.vectorIndexPromise) return this.vectorIndexPromise
+    this.vectorIndexPromise = (async () => {
+      let indexed = 0
+      while (true) {
+        const documents = personalMemoryStore.listEmbeddingCandidates(localEmbeddingService.modelVersion, 24)
+        if (!documents.length) break
+        const vectors = await localEmbeddingService.embed(documents.map((item: any) => `${item.title}\n${item.search_text}`))
+        documents.forEach((item: any, index: number) =>
+          personalMemoryStore.saveEmbedding(item.id, localEmbeddingService.modelVersion, vectors[index]))
+        indexed += documents.length
+      }
+      return { indexed, ...personalMemoryStore.getEmbeddingStats(localEmbeddingService.modelVersion) }
+    })().finally(() => { this.vectorIndexPromise = null })
+    return this.vectorIndexPromise
+  }
+
   findGraphPath(fromId: string, toId: string, maxDepth = 5): any {
     const entities = new Map(this.state.graph.entities.map(entity => [entity.id, entity]))
     if (!entities.has(fromId) || !entities.has(toId)) return { found: false, entities: [], steps: [] }
@@ -1170,12 +1231,12 @@ export class AiAssistantService {
   async askMemory(question: string, conversationId?: string): Promise<any> {
     const query = String(question || '').trim()
     if (!query) throw new Error('请输入问题')
-    let results = this.searchMemory(query)
+    let results = await this.searchMemoryHybrid(query)
     if (!results.length) {
       const terms = query.match(/[A-Za-z0-9@._-]{2,}|[\u4e00-\u9fff]{2,}/g) || []
       const merged = new Map<string, any>()
       for (const term of terms.slice(0, 6)) {
-        for (const result of this.searchMemory(term)) merged.set(result.id, result)
+        for (const result of await this.searchMemoryHybrid(term)) merged.set(result.id, result)
       }
       results = [...merged.values()].slice(0, 30)
     }

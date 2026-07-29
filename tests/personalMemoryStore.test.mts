@@ -143,3 +143,26 @@ test('verified memory backup is created only from a healthy database', () => wit
   assert.equal(after.backups.length, 2)
   assert.ok(after.backups.some((item: any) => item.path === backup.path))
 }))
+
+test('vector metadata is retained for unchanged content and invalidated after edits', () => withStore(store => {
+  const model = 'test-embedding:2d'
+  const task = {
+    id: 'task-vector',
+    title: '准备客户演示',
+    detail: '整理产品介绍',
+    priority: 'high',
+    status: 'todo',
+    classification: 'mine'
+  }
+  store.syncTasks([task])
+  assert.equal(store.listEmbeddingCandidates(model).length, 1)
+  store.saveEmbedding('task:task-vector', model, [1, 0])
+  assert.deepEqual(store.getEmbeddingStats(model), { total: 1, indexed: 1, pending: 0, model })
+  assert.equal(store.searchVector([0.9, 0.1], model)[0].source_id, 'task-vector')
+
+  store.syncTasks([task])
+  assert.equal(store.listEmbeddingCandidates(model).length, 0)
+  store.syncTasks([{ ...task, detail: '整理产品介绍与报价材料' }])
+  assert.equal(store.listEmbeddingCandidates(model).length, 1)
+  assert.equal(store.getEmbeddingStats(model).pending, 1)
+}))

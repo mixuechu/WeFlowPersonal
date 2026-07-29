@@ -1,4 +1,5 @@
 import { DatabaseSync } from 'node:sqlite'
+import { createHash } from 'node:crypto'
 import { copyFileSync, existsSync, mkdirSync, readdirSync, renameSync, statSync, unlinkSync } from 'fs'
 import { dirname, join, resolve } from 'path'
 
@@ -797,6 +798,46 @@ export class PersonalMemoryStore {
     `).all(`%${normalized}%`, `%${normalized}%`, safeLimit) as any[]
   }
 
+  listEmbeddingCandidates(model: string, limit = 100): any[] {
+    if (!this.db) return []
+    return this.db.prepare(`
+      SELECT id,title,search_text,content_hash FROM search_documents
+      WHERE embedding_json IS NULL OR embedding_model IS NULL OR embedding_model!=?
+      ORDER BY updated_at DESC LIMIT ?
+    `).all(model, Math.max(1, Math.min(1000, limit))) as any[]
+  }
+
+  saveEmbedding(id: string, model: string, vector: number[]): void {
+    if (!this.db || !vector.length) return
+    this.db.prepare(`
+      UPDATE search_documents SET embedding_model=?,embedding_dimensions=?,embedding_json=? WHERE id=?
+    `).run(model, vector.length, JSON.stringify(vector), id)
+  }
+
+  getEmbeddingStats(model: string): any {
+    if (!this.db) return { total: 0, indexed: 0, pending: 0, model }
+    const row = this.db.prepare(`
+      SELECT COUNT(*) AS total,
+        SUM(CASE WHEN embedding_model=? AND embedding_json IS NOT NULL THEN 1 ELSE 0 END) AS indexed
+      FROM search_documents
+    `).get(model) as { total: number; indexed: number }
+    return { total: Number(row.total || 0), indexed: Number(row.indexed || 0), pending: Number(row.total || 0) - Number(row.indexed || 0), model }
+  }
+
+  searchVector(vector: number[], model: string, limit = 20): any[] {
+    if (!this.db || !vector.length) return []
+    const rows = this.db.prepare(`
+      SELECT * FROM search_documents WHERE embedding_model=? AND embedding_dimensions=? AND embedding_json IS NOT NULL
+    `).all(model, vector.length) as any[]
+    return rows.map(row => {
+      let candidate: number[] = []
+      try { candidate = JSON.parse(row.embedding_json) } catch {}
+      let score = 0
+      for (let index = 0; index < vector.length && index < candidate.length; index += 1) score += vector[index] * candidate[index]
+      return { ...row, semantic_score: score }
+    }).sort((left, right) => right.semantic_score - left.semantic_score).slice(0, Math.max(1, Math.min(100, limit)))
+  }
+
   getDocumentEvidence(documentType: string, sourceId: string): any[] {
     if (!this.db) return []
     const generic = this.db.prepare(`
@@ -850,12 +891,16 @@ export class PersonalMemoryStore {
 
   private upsertSearchDocument(id: string, type: string, sourceId: string, title: string, searchText: string, metadata: any, now: string): void {
     if (!this.db) return
-    const hash = Buffer.from(searchText).toString('base64').slice(0, 80)
+    const hash = createHash('sha256').update(searchText).digest('hex')
     this.db.prepare(`
       INSERT INTO search_documents(id,document_type,source_id,title,search_text,metadata_json,content_hash,updated_at)
       VALUES(?,?,?,?,?,?,?,?)
       ON CONFLICT(id) DO UPDATE SET title=excluded.title,search_text=excluded.search_text,
-        metadata_json=excluded.metadata_json,content_hash=excluded.content_hash,updated_at=excluded.updated_at
+        metadata_json=excluded.metadata_json,
+        embedding_model=CASE WHEN search_documents.content_hash=excluded.content_hash THEN search_documents.embedding_model ELSE NULL END,
+        embedding_dimensions=CASE WHEN search_documents.content_hash=excluded.content_hash THEN search_documents.embedding_dimensions ELSE NULL END,
+        embedding_json=CASE WHEN search_documents.content_hash=excluded.content_hash THEN search_documents.embedding_json ELSE NULL END,
+        content_hash=excluded.content_hash,updated_at=excluded.updated_at
     `).run(id, type, sourceId, title, searchText, JSON.stringify(metadata), hash, now)
     this.db.prepare('DELETE FROM search_fts WHERE document_id=?').run(id)
     this.db.prepare('INSERT INTO search_fts(document_id,title,search_text) VALUES(?,?,?)').run(id, title, searchText)

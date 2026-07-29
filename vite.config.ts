@@ -119,6 +119,8 @@ export default defineConfig({
                 'node-llama-cpp',
                 '@vscode/sudo-prompt',
                 'silk-wasm',
+                // Transformers.js 依赖原始 ESM import.meta.url 定位 ONNX 运行时资源
+                '@huggingface/transformers',
                 // 原生 .node 二进制不可打包，运行时从 asarUnpack 目录解析
                 '@hicccc77/electron-liquid-glass'
               ]

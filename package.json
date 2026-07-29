@@ -25,6 +25,7 @@
   },
   "dependencies": {
     "@hicccc77/electron-liquid-glass": "^0.3.0",
+    "@huggingface/transformers": "^4.2.0",
     "@vscode/sudo-prompt": "^9.3.2",
     "echarts": "^6.1.0",
     "echarts-for-react": "^3.0.2",
@@ -39,6 +40,7 @@
     "jszip": "^3.10.1",
     "koffi": "^3.1.0",
     "lucide-react": "^1.23.0",
+    "node-addon-api": "^8.9.0",
     "react": "^19.2.3",
     "react-dom": "^19.2.7",
     "react-markdown": "^10.1.0",
@@ -277,6 +279,8 @@
     "icon": "resources/icons/macos/icon.icns"
   },
   "overrides": {
+    "adm-zip": "^0.6.0",
+    "sharp": "$sharp",
     "brace-expansion": {
       ".": "^5.0.6"
     },

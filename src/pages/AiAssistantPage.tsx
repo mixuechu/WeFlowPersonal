@@ -41,6 +41,7 @@ function AiAssistantPage() {
   const [memoryDiagnostics, setMemoryDiagnostics] = useState<any>(null)
   const [backingUpMemory, setBackingUpMemory] = useState(false)
   const [restoringMemory, setRestoringMemory] = useState(false)
+  const [indexingVectors, setIndexingVectors] = useState(false)
   const [memoryQuestion, setMemoryQuestion] = useState('')
   const [memoryAnswer, setMemoryAnswer] = useState<any>(null)
   const [askingMemory, setAskingMemory] = useState(false)
@@ -203,6 +204,20 @@ function AiAssistantPage() {
     }
   }
 
+  const indexMemoryVectors = async () => {
+    if (indexingVectors) return
+    setIndexingVectors(true)
+    try {
+      const result = await window.electronAPI.aiAssistant.indexMemoryVectors()
+      setMessage(`本地语义索引完成：${result.indexed} 条新增，累计 ${result.total - result.pending}/${result.total} 条。`)
+      setMemoryDiagnostics(await window.electronAPI.aiAssistant.getMemoryDiagnostics())
+    } catch (error: any) {
+      setMessage(error?.message || String(error))
+    } finally {
+      setIndexingVectors(false)
+    }
+  }
+
   const decideReview = async (id: string, decision: 'confirmed' | 'rejected') => {
     await window.electronAPI.aiAssistant.updateGraphReview(id, decision)
     await load()
@@ -319,6 +334,7 @@ function AiAssistantPage() {
                 <small>{memoryDiagnostics.integrity === 'ok' ? 'SQLite 一致性检查通过' : memoryDiagnostics.integrity}
                   {' · '}{(Number(memoryDiagnostics.databaseBytes || 0) / 1024 / 1024).toFixed(1)} MB
                   {' · '}{memoryDiagnostics.backups?.length || 0} 个本地快照
+                  {memoryDiagnostics.embeddings ? ` · 语义索引 ${memoryDiagnostics.embeddings.indexed}/${memoryDiagnostics.embeddings.total}` : ''}
                 </small>
               </span>
             </div>
@@ -326,6 +342,9 @@ function AiAssistantPage() {
               <button onClick={() => void backupMemory()} disabled={backingUpMemory || restoringMemory || !memoryDiagnostics.healthy}>
                 {backingUpMemory ? '正在验证并备份…' : '立即备份个人记忆'}
               </button>
+              {memoryDiagnostics.embeddings?.pending > 0 && <button onClick={() => void indexMemoryVectors()} disabled={indexingVectors}>
+                {indexingVectors ? '正在本地生成向量…' : '补齐语义索引'}
+              </button>}
               {!!memoryDiagnostics.backups?.length && <details>
                 <summary>恢复历史快照</summary>
                 <div>
@@ -457,7 +476,7 @@ function AiAssistantPage() {
           </div>
           {!!memoryQuery.trim() && <div className="assistant-search-results">
             {memoryResults.map(result => <article key={result.id}>
-              <span>{result.document_type}</span><strong>{result.title}</strong><p>{result.search_text}</p>
+              <span>{result.document_type}{result.match_source ? ` · ${result.match_source}匹配` : ''}{result.semantic_score ? ` · ${Math.round(result.semantic_score * 100)}%` : ''}</span><strong>{result.title}</strong><p>{result.search_text}</p>
             </article>)}
             {!memoryResults.length && <div className="assistant-empty">没有找到相关记忆。</div>}
           </div>}
