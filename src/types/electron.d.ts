@@ -1655,6 +1655,7 @@ export interface ElectronAPI {
       updateMemoryItemStatus: (kind: 'claim' | 'event', id: string, status: 'confirmed' | 'rejected') => Promise<any>
       deleteMemoryResource: (id: string) => Promise<any>
       restoreMemoryResource: (id: string) => Promise<any>
+      purgeMemoryResourceTrash: (id: string) => Promise<any>
       reviewMemoryDocument: (kind: 'relation' | 'claim' | 'event', id: string, decision: 'confirmed' | 'rejected') => Promise<any>
       previewForgetEntity: (id: string) => Promise<any>
       forgetEntity: (id: string) => Promise<any>

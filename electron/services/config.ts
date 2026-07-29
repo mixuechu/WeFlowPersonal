@@ -112,6 +112,7 @@ interface ConfigSchema {
   aiAssistantOwnerBackground: string
   aiAssistantOcrImages: boolean
   aiAssistantIndexWebLinks: boolean
+  aiAssistantResourceTrashRetentionDays: number
   aiInsightEnabled: boolean
   aiInsightApiBaseUrl: string
   aiInsightApiKey: string
@@ -279,6 +280,7 @@ export class ConfigService {
       aiAssistantOwnerBackground: '',
       aiAssistantOcrImages: false,
       aiAssistantIndexWebLinks: false,
+      aiAssistantResourceTrashRetentionDays: 0,
       aiInsightEnabled: false,
       aiInsightApiBaseUrl: '',
       aiInsightApiKey: '',

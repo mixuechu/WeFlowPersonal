@@ -230,6 +230,9 @@ export class AiAssistantService {
     localEmbeddingService.initialize(app.getPath('userData'))
     localOcrService.initialize(join(app.getPath('userData'), 'ai-ocr-cache.json'))
     personalMemoryStore.initialize(join(app.getPath('userData'), 'personal-memory.sqlite'))
+    personalMemoryStore.purgeExpiredResourceTrash(
+      Number(this.config.get('aiAssistantResourceTrashRetentionDays') || 0)
+    )
     this.migrateLegacyData()
     this.loadState()
     this.saveState()
@@ -1572,7 +1575,8 @@ export class AiAssistantService {
       ownerBackground: this.config.get('aiAssistantOwnerBackground'),
       transcribeVoice: this.config.get('autoTranscribeVoice'),
       ocrImages: this.config.get('aiAssistantOcrImages'),
-      indexWebLinks: this.config.get('aiAssistantIndexWebLinks')
+      indexWebLinks: this.config.get('aiAssistantIndexWebLinks'),
+      resourceTrashRetentionDays: this.config.get('aiAssistantResourceTrashRetentionDays')
     }
   }
 
@@ -1637,6 +1641,10 @@ export class AiAssistantService {
     if (typeof input.transcribeVoice === 'boolean') this.config.set('autoTranscribeVoice', input.transcribeVoice)
     if (typeof input.ocrImages === 'boolean') this.config.set('aiAssistantOcrImages', input.ocrImages)
     if (typeof input.indexWebLinks === 'boolean') this.config.set('aiAssistantIndexWebLinks', input.indexWebLinks)
+    if ([0, 7, 30, 90].includes(Number(input.resourceTrashRetentionDays))) {
+      this.config.set('aiAssistantResourceTrashRetentionDays', Number(input.resourceTrashRetentionDays))
+      personalMemoryStore.purgeExpiredResourceTrash(Number(input.resourceTrashRetentionDays))
+    }
     this.repairPlaceholderEntities()
     this.saveState()
     return this.getSettings()
@@ -1835,6 +1843,10 @@ export class AiAssistantService {
 
   restoreMemoryResource(id: string): any {
     return personalMemoryStore.restoreResource(id)
+  }
+
+  purgeMemoryResourceTrash(id: string): any {
+    return personalMemoryStore.purgeResourceTrash(id)
   }
 
   reviewMemoryDocument(kind: 'relation' | 'claim' | 'event', id: string, decision: 'confirmed' | 'rejected'): any {

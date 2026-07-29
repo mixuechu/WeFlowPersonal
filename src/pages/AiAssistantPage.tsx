@@ -425,6 +425,21 @@ function AiAssistantPage() {
     }
   }
 
+  const purgeMemoryResourceTrash = async (resource: any) => {
+    const confirmed = window.confirm(
+      `永久删除“${resource.title || '未命名资源'}”的回收站快照？\n\n` +
+      '此操作无法撤销；原消息今后也不会重新生成该资源。'
+    )
+    if (!confirmed) return
+    try {
+      await window.electronAPI.aiAssistant.purgeMemoryResourceTrash(resource.id)
+      setMessage(`已永久删除资源快照：${resource.title || '未命名资源'}`)
+      await load()
+    } catch (error: any) {
+      setMessage(error?.message || String(error))
+    }
+  }
+
   const saveClaimCorrection = async () => {
     if (!editingClaim?.id || !String(editingClaim.value || '').trim()) return
     await window.electronAPI.aiAssistant.correctClaim(editingClaim.id, {
@@ -1097,6 +1112,7 @@ function AiAssistantPage() {
                   </div>
                   <small>删除于 {new Date(resource.deletedAt).toLocaleString('zh-CN')}</small>
                   <div className="assistant-memory-actions">
+                    <button onClick={() => void purgeMemoryResourceTrash(resource)}>永久删除</button>
                     <button className="primary" onClick={() => void restoreMemoryResource(resource)}>恢复资源</button>
                   </div>
                 </article>)}
@@ -1513,6 +1529,10 @@ function AiAssistantPage() {
             <label className="assistant-toggle"><input type="checkbox" checked={Boolean(settings.transcribeVoice)} onChange={event => setSettings({ ...settings, transcribeVoice: event.target.checked })} /><span>增量整理时本地转写语音（每次最多 12 条，需已安装 SenseVoice 模型）</span></label>
             <label className="assistant-toggle"><input type="checkbox" checked={Boolean(settings.ocrImages)} onChange={event => setSettings({ ...settings, ocrImages: event.target.checked })} /><span>增量整理时本地识别图片文字（每次最多 8 张，需本机 Tesseract 中文模型）</span></label>
             <label className="assistant-toggle"><input type="checkbox" checked={Boolean(settings.indexWebLinks)} onChange={event => setSettings({ ...settings, indexWebLinks: event.target.checked })} /><span>安全抓取公开网页正文（每次最多 4 个；拒绝内网地址，默认关闭）</span></label>
+            <label><span>资源回收站保留</span><select value={Number(settings.resourceTrashRetentionDays || 0)} onChange={event => setSettings({ ...settings, resourceTrashRetentionDays: Number(event.target.value) })}>
+              <option value={0}>永不自动清空</option><option value={7}>7 天</option><option value={30}>30 天</option><option value={90}>90 天</option>
+            </select></label>
+            <small className="assistant-settings-note">到期只清除回收站快照；删除抑制仍保留，原消息不会让资源复活。</small>
             <label className="assistant-toggle"><input type="checkbox" checked={settings.enabled} onChange={event => setSettings({ ...settings, enabled: event.target.checked })} /><span>启用启动补齐与每日自动整理</span></label>
             <div className="assistant-modal-actions"><button onClick={() => setShowSettings(false)}>取消</button><button className="primary" onClick={saveSettings}>保存设置</button></div>
           </div>

@@ -4515,6 +4515,7 @@ function registerIpcHandlers() {
     aiAssistantService.updateMemoryItemStatus(kind, id, status))
   ipcMain.handle('ai-assistant:deleteMemoryResource', (_, id: string) => aiAssistantService.deleteMemoryResource(id))
   ipcMain.handle('ai-assistant:restoreMemoryResource', (_, id: string) => aiAssistantService.restoreMemoryResource(id))
+  ipcMain.handle('ai-assistant:purgeMemoryResourceTrash', (_, id: string) => aiAssistantService.purgeMemoryResourceTrash(id))
   ipcMain.handle('ai-assistant:reviewMemoryDocument', (_, kind: 'relation' | 'claim' | 'event', id: string, decision: 'confirmed' | 'rejected') =>
     aiAssistantService.reviewMemoryDocument(kind, id, decision))
   ipcMain.handle('ai-assistant:previewForgetEntity', (_, id: string) => aiAssistantService.previewForgetEntity(id))

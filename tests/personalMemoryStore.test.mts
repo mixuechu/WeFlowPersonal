@@ -903,6 +903,31 @@ test('message resources remain idempotent, searchable and traceable to original 
   assert.ok(store.searchText('报价有效期').some(item => item.id === 'resource:resource-link-1'))
   assert.equal(store.getDocumentEvidence('resource', 'resource-link-1')[0].message_id, 'message-resource-1')
   assert.deepEqual(store.listResourceTrash(), [])
+  store.deleteResource('resource-link-1')
+  assert.equal(store.purgeResourceTrash('resource-link-1').purged, 1)
+  assert.equal(store.restoreResource('resource-link-1').success, false)
+  store.upsertResources([resource])
+  assert.equal(store.getMemoryStats().resources, 0)
+}))
+
+test('resource trash retention is opt-in and expires snapshots without lifting suppressions', () => withStore(store => {
+  const resource = {
+    id: 'resource-retention',
+    resourceType: 'file',
+    title: '临时附件',
+    content: '等待删除',
+    metadata: {},
+    evidence: []
+  }
+  store.upsertResources([resource])
+  store.deleteResource(resource.id)
+  assert.equal(store.purgeExpiredResourceTrash(0).purged, 0)
+  assert.equal(store.listResourceTrash().length, 1)
+  const future = new Date(Date.now() + 8 * 86_400_000)
+  assert.equal(store.purgeExpiredResourceTrash(7, future).purged, 1)
+  assert.equal(store.restoreResource(resource.id).success, false)
+  store.upsertResources([resource])
+  assert.equal(store.getMemoryStats().resources, 0)
 }))
 
 test('long scanned PDF resources resume by persisted page cursor and invalidate stale vectors', () => withStore(store => {

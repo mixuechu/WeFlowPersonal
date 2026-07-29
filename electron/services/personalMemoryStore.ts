@@ -1039,6 +1039,23 @@ export class PersonalMemoryStore {
     }
   }
 
+  purgeResourceTrash(id: string): any {
+    if (!this.db) return { success: false, id }
+    const resourceId = String(id || '').trim()
+    if (!resourceId) return { success: false, id: resourceId }
+    const result = this.db.prepare('DELETE FROM resource_trash WHERE resource_id=?').run(resourceId)
+    return { success: true, id: resourceId, purged: Number(result.changes || 0), suppressed: true }
+  }
+
+  purgeExpiredResourceTrash(retentionDays: number, now = new Date()): any {
+    if (!this.db) return { success: false, purged: 0 }
+    const days = Math.max(0, Math.floor(Number(retentionDays || 0)))
+    if (!days) return { success: true, purged: 0, retentionDays: 0 }
+    const cutoff = new Date(now.getTime() - days * 86_400_000).toISOString()
+    const result = this.db.prepare('DELETE FROM resource_trash WHERE deleted_at<?').run(cutoff)
+    return { success: true, purged: Number(result.changes || 0), retentionDays: days, cutoff }
+  }
+
   listPendingPdfOcrResources(limit = 1): any[] {
     if (!this.db) return []
     const rows = this.db.prepare(`
