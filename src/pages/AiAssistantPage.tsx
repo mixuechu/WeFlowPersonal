@@ -42,6 +42,7 @@ function AiAssistantPage() {
   const [graphRelationType, setGraphRelationType] = useState('')
   const [graphRelationStatus, setGraphRelationStatus] = useState('')
   const [selectedEntityId, setSelectedEntityId] = useState('')
+  const [showEntityDossier, setShowEntityDossier] = useState(false)
   const [forgettingEntityId, setForgettingEntityId] = useState('')
   const [showSources, setShowSources] = useState(false)
   const [sources, setSources] = useState<any[]>([])
@@ -164,6 +165,17 @@ function AiAssistantPage() {
   const selectedEntityRelationHistory = selectedEntity
     ? (dashboard?.relationHistory || []).filter((item: any) =>
       item.subject_id === selectedEntity.id || item.object_id === selectedEntity.id)
+    : []
+  const selectedEntityTasks = selectedEntity
+    ? tasks.filter(task => {
+      const names = [selectedEntity.canonicalName, ...(selectedEntity.aliases || []), ...(selectedEntity.accountIds || [])]
+        .map((value: string) => value.trim().toLowerCase()).filter(Boolean)
+      const haystack = [
+        task.title, task.detail, task.owner, task.project, ...(task.collaborators || []),
+        ...(task.evidence || []).map(item => `${item.sender} ${item.excerpt}`)
+      ].join(' ').toLowerCase()
+      return names.some((name: string) => haystack.includes(name))
+    })
     : []
 
   const syncNow = async () => {
@@ -872,6 +884,7 @@ function AiAssistantPage() {
                   <small>别名：{selectedEntity.aliases?.join('、') || '无'}</small>
                   <small>账号：{selectedEntity.accountIds?.join('、') || '未关联'}</small>
                   <small>证据消息：{selectedEntity.evidenceMessageIds?.length || 0} 条</small>
+                  <button className="assistant-open-dossier" onClick={() => setShowEntityDossier(true)}>打开完整档案</button>
                   <button className="assistant-forget-entity" onClick={() => void forgetSelectedEntity()} disabled={forgettingEntityId === selectedEntity.id}>
                     {forgettingEntityId === selectedEntity.id ? '正在彻底清理…' : '彻底遗忘此实体'}
                   </button>
@@ -964,6 +977,101 @@ function AiAssistantPage() {
           </div>
         </section>
       </div>
+
+      {showEntityDossier && selectedEntity && (
+        <div className="assistant-modal-backdrop">
+          <div className="assistant-entity-dossier-modal">
+            <header>
+              <div>
+                <span className="assistant-eyebrow">{selectedEntity.type.toUpperCase()} DOSSIER</span>
+                <h2>{selectedEntity.canonicalName}</h2>
+                <p>{selectedEntity.summary || '等待更多可靠证据补充人物摘要。'}</p>
+              </div>
+              <button aria-label="关闭人物档案" onClick={() => setShowEntityDossier(false)}><X size={18} /></button>
+            </header>
+            <div className="assistant-dossier-identity">
+              <span><small>别名</small><b>{selectedEntity.aliases?.join('、') || '暂无'}</b></span>
+              <span><small>微信身份锚点</small><b>{selectedEntity.accountIds?.join('、') || '尚未关联'}</b></span>
+              <span><small>原文证据</small><b>{selectedEntity.evidenceMessageIds?.length || 0} 条</b></span>
+              <span><small>身份版本</small><b>v{selectedEntity.identityVersion || 1}</b></span>
+            </div>
+            {selectedEntityInsight && <div className="assistant-dossier-metrics">
+              <span><b>{selectedEntityInsight.strength}</b><small>关系强度 · {selectedEntityInsight.strengthLabel}</small></span>
+              <span><b>{selectedEntityInsight.evidenceCount}</b><small>去重证据</small></span>
+              <span><b>{selectedEntityTasks.filter(task => !['done', 'cancelled'].includes(task.status)).length}</b><small>进行中事项</small></span>
+              <span><b>{selectedEntityInsight.pendingCommitmentCount}</b><small>待确认承诺</small></span>
+            </div>}
+            <div className="assistant-dossier-grid">
+              <section>
+                <h3>结构化事实 <small>{selectedEntityClaims.length}</small></h3>
+                {selectedEntityClaims.map((claim: any) => <article key={claim.id}>
+                  <div><b>{claim.polarity === 'negative' ? '并非 ' : ''}{claim.predicate}</b><span>{claim.object_entity_name || claim.object_value || '待确认'}</span></div>
+                  <small>{claim.status === 'confirmed' ? '已确认' : '待确认'} · {Math.round(Number(claim.confidence || 0) * 100)}% · {claim.source_nature === 'self_statement' ? '本人陈述' : claim.source_nature === 'other_statement' ? '他人陈述' : '模型推断'}</small>
+                  {(claim.evidence || []).map((evidence: any) => <blockquote key={`${claim.id}-${evidence.message_id}`}>“{evidence.excerpt}”</blockquote>)}
+                </article>)}
+                {!selectedEntityClaims.length && <em>尚无结构化事实</em>}
+              </section>
+              <section>
+                <h3>关系与证据 <small>{selectedEntityRelations.length}</small></h3>
+                {selectedEntityRelations.map((relation: any) => {
+                  const outgoing = relation.subjectId === selectedEntity.id
+                  const neighborId = outgoing ? relation.objectId : relation.subjectId
+                  const neighbor = graph.entities.find((item: any) => item.id === neighborId)
+                  return <article key={relation.id}>
+                    <button className="assistant-dossier-link" onClick={() => setSelectedEntityId(neighborId)}>
+                      <b>{outgoing ? relation.predicate : `被${relation.predicate}`}</b><span>{neighbor?.canonicalName || neighborId}</span>
+                    </button>
+                    <small>{relation.status === 'confirmed' ? '已确认' : '待确认'} · {Math.round(Number(relation.confidence || 0) * 100)}%</small>
+                    {(relation.evidence || []).map((evidence: any) => <blockquote key={`${relation.id}-${evidence.messageId}`}>“{evidence.excerpt}”</blockquote>)}
+                  </article>
+                })}
+                {!selectedEntityRelations.length && <em>尚无关系</em>}
+              </section>
+              <section>
+                <h3>事件时间线 <small>{selectedEntityEvents.length}</small></h3>
+                {selectedEntityEvents.map((event: any) => <article key={event.id}>
+                  <div><b>{event.title}</b><span>{event.start_at || '时间待确认'}</span></div>
+                  {event.description && <p>{event.description}</p>}
+                  <small>{event.event_type} · {event.status === 'confirmed' ? '已确认' : '待确认'} · {event.location || '地点未记录'}</small>
+                  {(event.evidence || []).map((evidence: any) => <blockquote key={`${event.id}-${evidence.message_id}`}>“{evidence.excerpt}”</blockquote>)}
+                </article>)}
+                {!selectedEntityEvents.length && <em>尚无相关事件</em>}
+              </section>
+              <section>
+                <h3>关联事项 <small>{selectedEntityTasks.length}</small></h3>
+                {selectedEntityTasks.map(task => <article key={task.id}>
+                  <div>
+                    <b>{task.title}</b><span>{task.status}</span>
+                  </div>
+                  <small>{task.taskKind || 'action'} · {task.owner || '负责人待确认'} · {task.due || '无截止时间'}</small>
+                  {(task.evidence || []).map(evidence => <blockquote key={`${task.id}-${evidence.messageId}`}>{evidence.sender}：“{evidence.excerpt}”</blockquote>)}
+                  {!['cancelled'].includes(task.status) && <button className="assistant-dossier-task-action" onClick={() => void toggleTask(task)}>
+                    {task.status === 'done' ? '恢复为待处理' : '标记完成'}
+                  </button>}
+                </article>)}
+                {!selectedEntityTasks.length && <em>尚无关联事项</em>}
+              </section>
+              <section className="assistant-dossier-wide">
+                <h3>关系变化历史 <small>{selectedEntityRelationHistory.length}</small></h3>
+                {selectedEntityRelationHistory.map((item: any) => <article key={item.id} className="assistant-dossier-history-row">
+                  <div><b>{item.subject_name || item.subject_id} — {item.predicate} → {item.object_name || item.object_id}</b>
+                    <span>{item.change_type === 'created' ? '首次发现' : item.change_type === 'status_changed' ? '可信状态变化' : '证据更新'}</span></div>
+                  <small>{new Date(item.created_at).toLocaleString('zh-CN')} · {item.status} · {Math.round(Number(item.confidence || 0) * 100)}%</small>
+                </article>)}
+                {!selectedEntityRelationHistory.length && <em>尚无关系变化历史</em>}
+              </section>
+            </div>
+            <footer>
+              <button onClick={() => {
+                setMemoryEntityFilter(selectedEntity.id)
+                setMemoryQuery(selectedEntity.canonicalName)
+                setShowEntityDossier(false)
+              }}>在统一记忆中检索此实体</button>
+              <button className="primary" onClick={() => setShowEntityDossier(false)}>完成</button>
+            </footer>
+          </div>
+        </div>
+      )}
 
       {showSettings && settings && (
         <div className="assistant-modal-backdrop">
