@@ -298,6 +298,35 @@ function AiAssistantPage() {
     }
   }
 
+  const reviewMemoryCitation = async (citation: any, decision: 'confirmed' | 'rejected') => {
+    if (!['relation', 'claim', 'event'].includes(citation.type) || !citation.sourceId) return
+    await window.electronAPI.aiAssistant.reviewMemoryDocument(citation.type, citation.sourceId, decision)
+    setMemoryAnswer((current: any) => ({
+      ...current,
+      citations: (current?.citations || []).map((item: any) =>
+        item.documentId === citation.documentId ? { ...item, status: decision } : item)
+    }))
+    setMessage(decision === 'confirmed' ? '已人工确认这条记忆' : '已标记为不准确')
+    await load()
+  }
+
+  const openClaimCorrection = (citation: any) => {
+    const claim = visibleClaims.find((item: any) => item.id === citation.sourceId)
+    if (!claim) {
+      setMemoryQuery(citation.title)
+      setMemoryTypeFilter('claim')
+      setMessage('已定位该事实；它当前不在可见事实列表中，可能已被拒绝或归档。')
+      return
+    }
+    setEditingClaim({
+      id: claim.id,
+      value: claim.object_entity_name || claim.object_value || '',
+      validFrom: claim.valid_from || '',
+      validTo: claim.valid_to || ''
+    })
+    window.setTimeout(() => document.getElementById(`memory-claim-${claim.id}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' }), 0)
+  }
+
   const openSources = async () => {
     setSources(await window.electronAPI.aiAssistant.getConversationSources())
     setShowSources(true)
@@ -552,6 +581,10 @@ function AiAssistantPage() {
           {memoryAnswer && <div className="assistant-memory-answer">
             <p>{memoryAnswer.answer}</p>
             {memoryAnswer.uncertainty && <small>不确定性：{memoryAnswer.uncertainty}</small>}
+            {!!memoryAnswer.queryPlan?.explanation?.length && <details className="assistant-query-plan">
+              <summary>查看本次查询规划</summary>
+              <div>{memoryAnswer.queryPlan.explanation.map((item: string) => <span key={item}>{item}</span>)}</div>
+            </details>}
             <div className="assistant-memory-answer-actions">
               <button onClick={() => void createTaskFromMemory()} disabled={creatingMemoryTask || Boolean(memoryAnswer.createdTaskId)}>
                 <Check size={13} /> {memoryAnswer.createdTaskId ? '已生成待办' : creatingMemoryTask ? '正在生成…' : '生成待办'}
@@ -564,7 +597,12 @@ function AiAssistantPage() {
                   setMemoryTypeFilter(citation.type)
                 }}>定位到检索</button>
                 <strong>{citation.title}</strong><span>{citation.type}</span><p>{citation.content}</p>
-                {(citation.evidence || []).map((evidence: any) => <small key={evidence.message_id}>“{evidence.excerpt}”</small>)}
+                {(citation.evidence || []).map((evidence: any) => <small key={evidence.message_id || evidence.messageId}>“{evidence.excerpt}”</small>)}
+                {['relation', 'claim', 'event'].includes(citation.type) && <div className="assistant-citation-actions">
+                  {citation.type === 'claim' && <button onClick={() => openClaimCorrection(citation)}>纠正事实</button>}
+                  {citation.status !== 'confirmed' && <button className="primary" onClick={() => void reviewMemoryCitation(citation, 'confirmed')}>确认</button>}
+                  {citation.status !== 'rejected' && <button onClick={() => void reviewMemoryCitation(citation, 'rejected')}>不准确</button>}
+                </div>}
               </article>)}
             </div>}
           </div>}
@@ -577,7 +615,7 @@ function AiAssistantPage() {
               <span className="assistant-count">{visibleClaims.length} 条</span>
             </div>
             <div className="assistant-memory-list">
-              {visibleClaims.map((claim: any) => <article className="assistant-memory-item" key={claim.id}>
+              {visibleClaims.map((claim: any) => <article className="assistant-memory-item" id={`memory-claim-${claim.id}`} key={claim.id}>
                 <div className="assistant-memory-item-head">
                   <strong>{claim.subject_name || '未知主体'} · {claim.predicate}</strong>
                   <span className={claim.status}>{claim.status === 'confirmed' ? '已确认' : '待确认'}</span>

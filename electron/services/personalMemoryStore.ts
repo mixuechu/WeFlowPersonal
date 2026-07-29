@@ -484,7 +484,7 @@ export class PersonalMemoryStore {
         upsertRelation.run(relation.id, relation.subjectId, relation.predicate, relation.objectId, Number(relation.confidence || 0), relation.status, searchText, relation.createdAt || now, relation.updatedAt || now)
         for (const evidence of relation.evidence || []) insertEvidence.run(relation.id, evidence.messageId, evidence.sessionId, Number(evidence.timestamp || 0), evidence.excerpt || '')
         this.upsertSearchDocument(`relation:${relation.id}`, 'relation', relation.id, relation.predicate, searchText,
-          { subjectId: relation.subjectId, objectId: relation.objectId, status: relation.status }, now)
+          { subjectId: relation.subjectId, objectId: relation.objectId, predicate: relation.predicate, status: relation.status }, now)
       }
       const upsertReview = this.db.prepare(`
         INSERT INTO review_queue(id,kind,title,detail,confidence,status,payload_json,created_at)
@@ -696,7 +696,17 @@ export class PersonalMemoryStore {
   updateMemoryItemStatus(kind: 'claim' | 'event', id: string, status: 'confirmed' | 'rejected'): any {
     if (!this.db) return null
     const table = kind === 'claim' ? 'claims' : 'events'
-    this.db.prepare(`UPDATE ${table} SET status=?,updated_at=? WHERE id=?`).run(status, new Date().toISOString(), id)
+    const now = new Date().toISOString()
+    this.db.prepare(`UPDATE ${table} SET status=?,updated_at=? WHERE id=?`).run(status, now, id)
+    const documentId = `${kind}:${id}`
+    const document = this.db.prepare('SELECT metadata_json FROM search_documents WHERE id=?').get(documentId) as any
+    if (document) {
+      let metadata: any = {}
+      try { metadata = JSON.parse(document.metadata_json || '{}') } catch {}
+      metadata.status = status
+      this.db.prepare('UPDATE search_documents SET metadata_json=?,updated_at=? WHERE id=?')
+        .run(JSON.stringify(metadata), now, documentId)
+    }
     return this.db.prepare(`SELECT * FROM ${table} WHERE id=?`).get(id) || null
   }
 

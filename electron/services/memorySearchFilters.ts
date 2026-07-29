@@ -6,6 +6,7 @@ export type MemorySearchOptions = {
   from?: string
   to?: string
   documentTypes?: string[]
+  relationTypes?: string[]
 }
 
 function dateBoundary(value: string | undefined, endOfDay = false): number | null {
@@ -37,11 +38,16 @@ function itemTimestamps(item: any): number[] {
 
 export function filterMemorySearchResults(items: any[], options: MemorySearchOptions = {}): any[] {
   const types = new Set((options.documentTypes || []).filter(Boolean))
+  const relationTypes = new Set((options.relationTypes || []).map(value => value.trim().toLowerCase()).filter(Boolean))
   const entityTerms = (options.entityTerms || []).map(value => value.trim().toLowerCase()).filter(Boolean)
   const from = dateBoundary(options.from)
   const to = dateBoundary(options.to, true)
   return items.filter(item => {
     if (types.size && !types.has(String(item.document_type || ''))) return false
+    if (relationTypes.size && item.document_type === 'relation') {
+      const predicate = String(item.metadata?.predicate || item.title || '').trim().toLowerCase()
+      if (![...relationTypes].some(type => predicate.includes(type) || type.includes(predicate))) return false
+    }
     if (options.sessionId) {
       const acceptedSessions = new Set([options.sessionId, options.sessionName].filter(Boolean))
       if (!(item.evidence || []).some((evidence: any) => acceptedSessions.has(String(evidence.session_id || evidence.sessionId || '')))) return false

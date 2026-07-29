@@ -9,6 +9,7 @@ import { showSystemNotification } from './systemNotificationService'
 import { personalMemoryStore } from './personalMemoryStore'
 import { localEmbeddingService } from './localEmbeddingService'
 import { filterMemorySearchResults, type MemorySearchOptions } from './memorySearchFilters'
+import { buildMemoryQueryPlan } from './memoryQueryPlanner'
 
 type AssistantTask = {
   id: string
@@ -1171,6 +1172,19 @@ export class AiAssistantService {
     return personalMemoryStore.updateMemoryItemStatus(kind, id, status)
   }
 
+  reviewMemoryDocument(kind: 'relation' | 'claim' | 'event', id: string, decision: 'confirmed' | 'rejected'): any {
+    if (kind === 'claim' || kind === 'event') return personalMemoryStore.updateMemoryItemStatus(kind, id, decision)
+    const relation = this.state.graph.relations.find(item => item.id === id)
+    if (!relation) return null
+    relation.status = decision
+    relation.updatedAt = new Date().toISOString()
+    for (const review of this.state.graph.reviewQueue) {
+      if (review.kind === 'relation' && review.relationId === id && review.status === 'pending') review.status = decision
+    }
+    this.saveState()
+    return relation
+  }
+
   searchMemory(query: string, limit = 200): any[] {
     return personalMemoryStore.searchText(String(query || ''), limit).map((item: any) => ({
       ...item,
@@ -1277,20 +1291,60 @@ export class AiAssistantService {
   async askMemory(question: string, conversationId?: string, options: MemorySearchOptions = {}): Promise<any> {
     const query = String(question || '').trim()
     if (!query) throw new Error('请输入问题')
-    let results = await this.searchMemoryHybrid(query, options)
+    const plan = buildMemoryQueryPlan(query, this.state.graph.entities)
+    const plannedOptions: MemorySearchOptions = {
+      ...plan.inferredOptions,
+      ...options,
+      documentTypes: options.documentTypes?.length ? options.documentTypes : plan.inferredOptions.documentTypes,
+      relationTypes: options.relationTypes?.length ? options.relationTypes : plan.inferredOptions.relationTypes
+    }
+    const mergedResults = new Map<string, any>()
+    let plannedGraphPath: any = null
+    if (plan.matchedEntities.length >= 2) {
+      plannedGraphPath = this.findGraphPath(plan.matchedEntities[0].id, plan.matchedEntities[1].id, 6)
+      if (plannedGraphPath.found && plannedGraphPath.steps.length) {
+        const names = new Map(this.state.graph.entities.map(entity => [entity.id, entity.canonicalName]))
+        const pathResults = plannedGraphPath.steps.map((step: any) => ({
+          id: `relation:${step.relationId}`,
+          document_type: 'relation',
+          source_id: step.relationId,
+          title: step.predicate,
+          search_text: `${names.get(step.fromId) || step.fromId} ${step.forward ? step.predicate : `反向:${step.predicate}`} ${names.get(step.toId) || step.toId}`,
+          metadata: { subjectId: step.fromId, objectId: step.toId, predicate: step.predicate, status: step.status },
+          evidence: step.evidence,
+          hybrid_score: 1,
+          match_source: '图路径'
+        }))
+        for (const result of filterMemorySearchResults(pathResults, plannedOptions)) mergedResults.set(result.id, result)
+        plan.explanation.push(`图路径：${plannedGraphPath.steps.length} 跳`)
+      } else {
+        plan.explanation.push('图路径：未找到已知连接')
+      }
+    }
+    for (const plannedQuery of plan.queries.slice(0, 6)) {
+      for (const result of await this.searchMemoryHybrid(plannedQuery, plannedOptions)) {
+        const existing = mergedResults.get(result.id)
+        if (!existing || Number(result.hybrid_score || 0) > Number(existing.hybrid_score || 0)) mergedResults.set(result.id, result)
+      }
+    }
+    let results = [...mergedResults.values()]
+      .sort((left, right) => Number(right.hybrid_score || 0) - Number(left.hybrid_score || 0))
+      .slice(0, 40)
     if (!results.length) {
       const terms = query.match(/[A-Za-z0-9@._-]{2,}|[\u4e00-\u9fff]{2,}/g) || []
       const merged = new Map<string, any>()
       for (const term of terms.slice(0, 6)) {
-        for (const result of await this.searchMemoryHybrid(term, options)) merged.set(result.id, result)
+        for (const result of await this.searchMemoryHybrid(term, plannedOptions)) merged.set(result.id, result)
       }
       results = [...merged.values()].slice(0, 30)
     }
     const context = results.slice(0, 20).map((item: any) => ({
       documentId: item.id,
+      sourceId: item.source_id,
       type: item.document_type,
       title: item.title,
       content: item.search_text,
+      status: item.metadata?.status,
       evidence: item.evidence,
       canSupportFacts: Array.isArray(item.evidence) && item.evidence.length > 0
     }))
@@ -1305,7 +1359,7 @@ export class AiAssistantService {
         model, temperature: 0.1, max_tokens: 1800, response_format: { type: 'json_object' },
         messages: [
           { role: 'system', content: '你是本地个人记忆问答助手。只能依据提供的检索结果回答；证据不足必须明确说不知道。只有 canSupportFacts=true 且包含原始 evidence 的文档可以支持事实结论；没有原始 evidence 的实体摘要只能作为检索线索，不能作为事实依据。每个事实结论必须引用能够支持它的 documentId。只输出 JSON：{"answer":"回答","citationIds":["documentId"],"uncertainty":"不确定性说明"}。' },
-          { role: 'user', content: `问题：${query}\n检索范围：${JSON.stringify(options)}\n本地检索结果：${JSON.stringify(context)}` }
+          { role: 'user', content: `问题：${query}\n查询规划：${JSON.stringify(plan)}\n最终检索范围：${JSON.stringify(plannedOptions)}\n本地检索结果：${JSON.stringify(context)}` }
         ]
       }),
       signal: AbortSignal.timeout(90_000)
@@ -1318,7 +1372,21 @@ export class AiAssistantService {
     const citations = context.filter(item => citationIds.includes(item.documentId))
     const answer = String(parsed.answer || '没有足够证据回答。').slice(0, 6000)
     const id = personalMemoryStore.saveAssistantExchange(query, answer, citations, conversationId)
-    return { conversationId: id, answer, uncertainty: String(parsed.uncertainty || ''), citations }
+    return {
+      conversationId: id,
+      answer,
+      uncertainty: String(parsed.uncertainty || ''),
+      citations,
+      queryPlan: {
+        ...plan,
+        appliedOptions: plannedOptions,
+        graphPath: plannedGraphPath ? {
+          found: plannedGraphPath.found,
+          entities: plannedGraphPath.entities?.map((entity: any) => entity?.canonicalName).filter(Boolean),
+          steps: plannedGraphPath.steps?.map((step: any) => ({ predicate: step.predicate, forward: step.forward }))
+        } : null
+      }
+    }
   }
 
   correctClaim(id: string, input: any): any {

@@ -5,6 +5,7 @@ import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { PersonalMemoryStore } from '../electron/services/personalMemoryStore.ts'
 import { filterMemorySearchResults } from '../electron/services/memorySearchFilters.ts'
+import { buildMemoryQueryPlan } from '../electron/services/memoryQueryPlanner.ts'
 
 function withStore(run: (store: PersonalMemoryStore) => void): void {
   const directory = mkdtempSync(join(tmpdir(), 'weflow-memory-test-'))
@@ -216,3 +217,49 @@ test('memory scope filters apply entity, session, date and document type togethe
   }).map(item => item.id), ['task-1'])
   assert.equal(filterMemorySearchResults(items, { from: '2026-07-29' }).length, 0)
 })
+
+test('memory query planner infers Shanghai time, entity and intent scopes', () => {
+  const entities = [{
+    id: 'org-onyx',
+    canonicalName: 'Onyx Devs Lab',
+    aliases: ['Onyx'],
+    accountIds: []
+  }]
+  const plan = buildMemoryQueryPlan(
+    '过去三天 Onyx 有什么待办需要我回复？',
+    entities,
+    new Date('2026-07-30T02:00:00Z')
+  )
+  assert.equal(plan.inferredOptions.entityId, 'org-onyx')
+  assert.deepEqual(plan.inferredOptions.documentTypes, ['task'])
+  assert.equal(plan.inferredOptions.from, '2026-07-28')
+  assert.equal(plan.inferredOptions.to, '2026-07-30')
+  assert.ok(plan.queries.includes('Onyx Devs Lab'))
+  assert.ok(plan.explanation.some(item => item.includes('2026-07-28')))
+  const relationPlan = buildMemoryQueryPlan('Onyx 是我的客户吗？', entities, new Date('2026-07-30T02:00:00Z'))
+  assert.deepEqual(relationPlan.inferredOptions.documentTypes, ['relation'])
+  assert.deepEqual(relationPlan.inferredOptions.relationTypes, ['客户'])
+})
+
+test('manual memory review updates searchable status metadata', () => withStore(store => {
+  store.syncGraph({
+    entities: [{ id: 'person-review', type: 'person', canonicalName: '审核对象', aliases: [], accountIds: [] }],
+    relations: [],
+    reviewQueue: []
+  })
+  store.upsertClaims([{
+    id: 'claim-review',
+    subjectId: 'person-review',
+    predicate: '所在城市',
+    objectValue: '上海',
+    confidence: 0.7,
+    status: 'candidate',
+    sourceNature: 'other_statement',
+    searchText: '审核对象 所在城市 上海',
+    evidence: evidence('message-review', '听说现在住在上海')
+  }])
+  store.updateMemoryItemStatus('claim', 'claim-review', 'confirmed')
+  const result = store.searchText('审核对象').find(item => item.id === 'claim:claim-review')
+  assert.ok(result)
+  assert.equal(JSON.parse(result.metadata_json).status, 'confirmed')
+}))
