@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os'
 import { PersonalMemoryStore } from '../electron/services/personalMemoryStore.ts'
 import { filterMemorySearchResults } from '../electron/services/memorySearchFilters.ts'
 import { buildMemoryQueryPlan } from '../electron/services/memoryQueryPlanner.ts'
-import { buildTaskReminders, findMatchingTask } from '../electron/services/taskIntelligence.ts'
+import { applyReminderPreferences, buildTaskReminders, findMatchingTask } from '../electron/services/taskIntelligence.ts'
 import { buildEntityInsights } from '../electron/services/relationshipInsights.ts'
 import {
   classifyTaskAssignment,
@@ -580,6 +580,21 @@ test('task intelligence deduplicates by evidence and explains actionable reminde
   }], new Date('2026-07-30T04:00:00Z'))
   assert.deepEqual(new Set(reminders.map(item => item.kind)), new Set(['overdue', 'waiting_stale', 'blocked']))
   assert.ok(reminders.every(item => item.reason.length > 10))
+})
+
+test('reminder preferences mute kinds and temporarily snooze individual reminders', () => {
+  const reminders = [
+    { id: 'overdue:a', taskId: 'a', kind: 'overdue' as const, severity: 'high' as const, title: 'A', reason: 'late' },
+    { id: 'blocked:b', taskId: 'b', kind: 'blocked' as const, severity: 'medium' as const, title: 'B', reason: 'blocked' },
+    { id: 'due_soon:c', taskId: 'c', kind: 'due_soon' as const, severity: 'medium' as const, title: 'C', reason: 'soon' }
+  ]
+  const result = applyReminderPreferences(reminders, {
+    mutedKinds: ['blocked'],
+    snoozedUntil: { 'due_soon:c': '2026-08-01T00:00:00.000Z' },
+    history: []
+  }, new Date('2026-07-30T00:00:00.000Z'))
+  assert.deepEqual(result.visible.map(item => item.id), ['overdue:a'])
+  assert.equal(result.suppressed, 2)
 })
 
 test('task status changes are persisted as an auditable history', () => withStore(store => {

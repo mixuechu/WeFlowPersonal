@@ -623,6 +623,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     updateTask: (id: string, patch: any) => ipcRenderer.invoke('ai-assistant:updateTask', id, patch),
     createTaskFromMemory: (input: any) => ipcRenderer.invoke('ai-assistant:createTaskFromMemory', input),
     updateTaskReview: (id: string, decision: 'mine' | 'rejected') => ipcRenderer.invoke('ai-assistant:updateTaskReview', id, decision),
+    updateReminderPreference: (input: any) => ipcRenderer.invoke('ai-assistant:updateReminderPreference', input),
     updateGraphReview: (id: string, decision: 'confirmed' | 'rejected') => ipcRenderer.invoke('ai-assistant:updateGraphReview', id, decision),
     revertMerge: (id: number) => ipcRenderer.invoke('ai-assistant:revertMerge', id),
     updateMemoryItemStatus: (kind: 'claim' | 'event', id: string, status: 'confirmed' | 'rejected') =>

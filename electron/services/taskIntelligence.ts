@@ -7,6 +7,46 @@ export type TaskReminder = {
   reason: string
 }
 
+export type ReminderPreferences = {
+  mutedKinds: TaskReminder['kind'][]
+  snoozedUntil: Record<string, string>
+  history: Array<{
+    reminderId: string
+    taskId: string
+    kind: TaskReminder['kind']
+    action: 'helpful' | 'snooze' | 'mute_kind' | 'restore_kind'
+    createdAt: string
+  }>
+}
+
+export function normalizeReminderPreferences(value: any): ReminderPreferences {
+  const kinds = new Set<TaskReminder['kind']>(['overdue', 'due_soon', 'waiting_stale', 'blocked'])
+  return {
+    mutedKinds: [...new Set((Array.isArray(value?.mutedKinds) ? value.mutedKinds : [])
+      .filter((kind: any): kind is TaskReminder['kind'] => kinds.has(kind)))],
+    snoozedUntil: value?.snoozedUntil && typeof value.snoozedUntil === 'object'
+      ? Object.fromEntries(Object.entries(value.snoozedUntil).filter(([, until]) => Number.isFinite(Date.parse(String(until)))))
+      : {},
+    history: (Array.isArray(value?.history) ? value.history : []).slice(-200)
+  }
+}
+
+export function applyReminderPreferences(
+  reminders: TaskReminder[],
+  input: ReminderPreferences,
+  now = new Date()
+): { visible: TaskReminder[]; suppressed: number } {
+  const preferences = normalizeReminderPreferences(input)
+  const muted = new Set(preferences.mutedKinds)
+  const current = now.getTime()
+  const visible = reminders.filter(reminder => {
+    if (muted.has(reminder.kind)) return false
+    const until = Date.parse(preferences.snoozedUntil[reminder.id] || '')
+    return !Number.isFinite(until) || until <= current
+  })
+  return { visible, suppressed: reminders.length - visible.length }
+}
+
 function normalizedTitle(value: unknown): string {
   return String(value || '').toLowerCase().replace(/[\s，。！？、,.!?:：；;（）()[\]【】]/g, '')
 }

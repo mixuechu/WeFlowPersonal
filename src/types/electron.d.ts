@@ -1649,6 +1649,7 @@ export interface ElectronAPI {
       updateTask: (id: string, patch: any) => Promise<any>
       createTaskFromMemory: (input: any) => Promise<any>
       updateTaskReview: (id: string, decision: 'mine' | 'rejected') => Promise<any>
+      updateReminderPreference: (input: any) => Promise<any>
       updateGraphReview: (id: string, decision: 'confirmed' | 'rejected') => Promise<any>
       revertMerge: (id: number) => Promise<any>
       updateMemoryItemStatus: (kind: 'claim' | 'event', id: string, status: 'confirmed' | 'rejected') => Promise<any>

@@ -305,10 +305,15 @@
 .assistant-calendar-detail details summary { color: #755a34; cursor: pointer; }
 .assistant-calendar-detail details small { margin-top: 4px; display: block; color: #747b74; }
 .assistant-task-reminders { margin-bottom: 12px; display: grid; gap: 6px; }
-.assistant-task-reminders button { padding: 8px 10px; border: 1px solid #e4d7b6; border-radius: 8px; display: grid; gap: 3px; text-align: left; color: #71633f; background: #fffaf0; cursor: pointer; }
-.assistant-task-reminders button.high { border-color: #e7c5bc; color: #8b4939; background: #fff5f2; }
+.assistant-task-reminders article { border: 1px solid #e4d7b6; border-radius: 8px; color: #71633f; background: #fffaf0; overflow: hidden; }
+.assistant-task-reminders article.high { border-color: #e7c5bc; color: #8b4939; background: #fff5f2; }
+.assistant-task-reminders .assistant-reminder-main { width: 100%; padding: 8px 10px; border: 0; display: grid; gap: 3px; text-align: left; color: inherit; background: transparent; cursor: pointer; }
 .assistant-task-reminders strong { font-size: 9px; }
 .assistant-task-reminders span { font-size: 8px; }
+.assistant-reminder-feedback { display: flex; gap: 5px; padding: 0 8px 7px; }
+.assistant-reminder-feedback button, .assistant-muted-reminders button { padding: 3px 7px; border: 1px solid rgba(113, 99, 63, .2); border-radius: 999px; color: inherit; background: rgba(255, 255, 255, .65); font-size: 8px; cursor: pointer; }
+.assistant-muted-reminders { padding: 7px 9px; border: 1px dashed #d8cba9; border-radius: 8px; color: #776a49; font-size: 8px; }
+.assistant-muted-reminders > div { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 6px; }
 .assistant-task-list { display: grid; gap: 9px; }
 .assistant-task { padding: 15px; border: 1px solid #e3e1da; border-radius: 13px; display: grid; grid-template-columns: auto 1fr auto; gap: 12px; align-items: start; }
 .assistant-task.done { opacity: .58; }

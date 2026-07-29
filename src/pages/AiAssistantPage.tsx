@@ -123,6 +123,7 @@ function AiAssistantPage() {
   const tasks: Task[] = dashboard?.tasks || []
   const taskReviewQueue: Task[] = dashboard?.taskReviewQueue || []
   const taskReminders: any[] = dashboard?.taskReminders || []
+  const reminderPreferences = dashboard?.reminderPreferences
   const taskHistory: any[] = dashboard?.taskHistory || []
   const openTasks = useMemo(() => tasks.filter(task => !['done', 'cancelled'].includes(task.status)), [tasks])
   const displayedTasks = useMemo(() => tasks.filter(task =>
@@ -132,6 +133,16 @@ function AiAssistantPage() {
   ), [tasks, taskStatusFilter, taskPriorityFilter, taskKindFilter])
   const taskCalendar = useMemo(() => buildTaskCalendar(displayedTasks, calendarMonth), [displayedTasks, calendarMonth])
   const selectedCalendarDay = taskCalendar.days.find(day => day.date === selectedCalendarDate)
+  const updateReminderPreference = async (reminder: any, action: 'helpful' | 'snooze' | 'mute_kind' | 'restore_kind') => {
+    await window.electronAPI.aiAssistant.updateReminderPreference({
+      reminderId: reminder.id,
+      taskId: reminder.taskId,
+      kind: reminder.kind,
+      action
+    })
+    setMessage(action === 'helpful' ? '已记录：这条提醒有用。' : action === 'snooze' ? '已推迟 24 小时。' : '提醒偏好已更新。')
+    await load()
+  }
   const moveCalendarMonth = (offset: number) => {
     const [year, month] = calendarMonth.split('-').map(Number)
     const date = new Date(Date.UTC(year, month - 1 + offset, 1))
@@ -612,12 +623,25 @@ function AiAssistantPage() {
               </div>
               <button disabled={!displayedTasks.some(task => !['done', 'cancelled'].includes(task.status))} onClick={() => void completeVisibleTasks()}>完成当前筛选</button>
             </div>
-            {!!taskReminders.length && <div className="assistant-task-reminders">
-              {taskReminders.slice(0, 8).map(reminder => <button key={reminder.id} className={reminder.severity}
-                onClick={() => document.getElementById(`assistant-task-${reminder.taskId}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' })}>
-                <strong>{reminder.kind === 'overdue' ? '已逾期' : reminder.kind === 'due_soon' ? '即将到期' : reminder.kind === 'blocked' ? '存在依赖' : '等待过久'} · {reminder.title}</strong>
-                <span>{reminder.reason}</span>
-              </button>)}
+            {(!!taskReminders.length || reminderPreferences?.mutedKinds?.length) && <div className="assistant-task-reminders">
+              {taskReminders.slice(0, 8).map(reminder => <article key={reminder.id} className={reminder.severity}>
+                <button className="assistant-reminder-main"
+                  onClick={() => document.getElementById(`assistant-task-${reminder.taskId}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' })}>
+                  <strong>{reminder.kind === 'overdue' ? '已逾期' : reminder.kind === 'due_soon' ? '即将到期' : reminder.kind === 'blocked' ? '存在依赖' : '等待过久'} · {reminder.title}</strong>
+                  <span>{reminder.reason}</span>
+                </button>
+                <div className="assistant-reminder-feedback">
+                  <button onClick={() => void updateReminderPreference(reminder, 'helpful')}>有用</button>
+                  <button onClick={() => void updateReminderPreference(reminder, 'snooze')}>24 小时后</button>
+                  <button onClick={() => void updateReminderPreference(reminder, 'mute_kind')}>关闭此类</button>
+                </div>
+              </article>)}
+              {!!reminderPreferences?.mutedKinds?.length && <details className="assistant-muted-reminders">
+                <summary>已关闭 {reminderPreferences.mutedKinds.length} 类提醒 · 共隐藏 {reminderPreferences.suppressed || 0} 条</summary>
+                <div>{reminderPreferences.mutedKinds.map((kind: string) => <button key={kind} onClick={() => void updateReminderPreference(
+                  { id: '', taskId: '', kind }, 'restore_kind'
+                )}>恢复“{kind === 'overdue' ? '逾期' : kind === 'due_soon' ? '临期' : kind === 'blocked' ? '依赖阻塞' : '等待过久'}”提醒</button>)}</div>
+              </details>}
             </div>}
             {taskView === 'calendar' && <div className="assistant-task-calendar">
               <header><button onClick={() => moveCalendarMonth(-1)}>‹</button><strong>{calendarMonth}</strong><button onClick={() => moveCalendarMonth(1)}>›</button></header>

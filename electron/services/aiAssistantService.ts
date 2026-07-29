@@ -10,7 +10,14 @@ import { personalMemoryStore } from './personalMemoryStore'
 import { localEmbeddingService } from './localEmbeddingService'
 import { filterMemorySearchResults, type MemorySearchOptions } from './memorySearchFilters'
 import { buildMemoryQueryPlan } from './memoryQueryPlanner'
-import { buildTaskReminders, findMatchingTask } from './taskIntelligence'
+import {
+  applyReminderPreferences,
+  buildTaskReminders,
+  findMatchingTask,
+  normalizeReminderPreferences,
+  type ReminderPreferences,
+  type TaskReminder
+} from './taskIntelligence'
 import { buildEntityInsights } from './relationshipInsights'
 import { classifyTaskAssignment, evaluateTaskAssignmentPolicy } from './taskAssignmentPolicy'
 import { buildWeeklyBriefing, isQuietTime } from './briefingIntelligence'
@@ -88,6 +95,7 @@ type AssistantState = {
   tasks: AssistantTask[]
   lastSyncAt: string | null
   notifications: NotificationOutbox
+  reminderPreferences: ReminderPreferences
   cursor: {
     lastMessageTimestamp: number
     recentMessageIds: string[]
@@ -112,6 +120,7 @@ const EMPTY_STATE: AssistantState = {
   tasks: [],
   lastSyncAt: null,
   notifications: { pending: [], sentKeys: [] },
+  reminderPreferences: { mutedKinds: [], snoozedUntil: {}, history: [] },
   cursor: {
     lastMessageTimestamp: 0,
     recentMessageIds: [],
@@ -257,6 +266,7 @@ export class AiAssistantService {
           pending: Array.isArray(loaded.notifications?.pending) ? loaded.notifications.pending : [],
           sentKeys: Array.isArray(loaded.notifications?.sentKeys) ? loaded.notifications.sentKeys : []
         },
+        reminderPreferences: normalizeReminderPreferences(loaded.reminderPreferences),
         tasks: Array.isArray(loaded.tasks)
           ? loaded.tasks.map((task: AssistantTask) => task.classification ? task : { ...task, classification: 'uncertain' })
           : [],
@@ -1080,7 +1090,8 @@ export class AiAssistantService {
     const latest = dates[0] ? this.state.briefings[dates[0]] : null
     const tasks = this.state.tasks.filter(task => task.classification === 'mine')
     const taskReviewQueue = this.state.tasks.filter(task => task.classification !== 'mine')
-    const taskReminders = buildTaskReminders(tasks)
+    const allTaskReminders = buildTaskReminders(tasks)
+    const reminderResult = applyReminderPreferences(allTaskReminders, this.state.reminderPreferences)
     const taskHistory = personalMemoryStore.listTaskHistory(tasks.map(task => task.id))
     const memoryFeed = personalMemoryStore.getMemoryFeed()
     const entityInsights = buildEntityInsights({
@@ -1101,7 +1112,12 @@ export class AiAssistantService {
       briefing: latest ? { ...latest, tasks } : null,
       tasks,
       taskReviewQueue,
-      taskReminders,
+      taskReminders: reminderResult.visible,
+      reminderPreferences: {
+        ...this.state.reminderPreferences,
+        suppressed: reminderResult.suppressed,
+        total: allTaskReminders.length
+      },
       taskHistory,
       entityInsights,
       projectInsights,
@@ -1340,6 +1356,38 @@ export class AiAssistantService {
     task.updatedAt = new Date().toISOString()
     this.saveState()
     return task
+  }
+
+  updateReminderPreference(input: {
+    reminderId?: string
+    taskId?: string
+    kind: TaskReminder['kind']
+    action: 'helpful' | 'snooze' | 'mute_kind' | 'restore_kind'
+  }): ReminderPreferences {
+    const allowedKinds = new Set<TaskReminder['kind']>(['overdue', 'due_soon', 'waiting_stale', 'blocked'])
+    const allowedActions = new Set(['helpful', 'snooze', 'mute_kind', 'restore_kind'])
+    if (!allowedKinds.has(input?.kind) || !allowedActions.has(input?.action)) throw new Error('无效的提醒反馈')
+    const preferences = normalizeReminderPreferences(this.state.reminderPreferences)
+    const now = new Date()
+    if (input.action === 'snooze') {
+      if (!input.reminderId) throw new Error('缺少提醒 ID')
+      preferences.snoozedUntil[input.reminderId] = new Date(now.getTime() + 24 * 60 * 60 * 1000).toISOString()
+    } else if (input.action === 'mute_kind') {
+      preferences.mutedKinds = [...new Set([...preferences.mutedKinds, input.kind])]
+    } else if (input.action === 'restore_kind') {
+      preferences.mutedKinds = preferences.mutedKinds.filter(kind => kind !== input.kind)
+    }
+    preferences.history.push({
+      reminderId: String(input.reminderId || ''),
+      taskId: String(input.taskId || ''),
+      kind: input.kind,
+      action: input.action,
+      createdAt: now.toISOString()
+    })
+    preferences.history = preferences.history.slice(-200)
+    this.state.reminderPreferences = preferences
+    this.saveState()
+    return preferences
   }
 
   updateGraphReview(id: string, decision: 'confirmed' | 'rejected'): any {
@@ -1710,7 +1758,11 @@ export class AiAssistantService {
     try {
       await this.sync()
       this.state.cursor.lastScheduledRunDate = today
-      const reminders = buildTaskReminders(this.state.tasks.filter(task => task.classification === 'mine'), now)
+      const reminders = applyReminderPreferences(
+        buildTaskReminders(this.state.tasks.filter(task => task.classification === 'mine'), now),
+        this.state.reminderPreferences,
+        now
+      ).visible
       if (reminders.length && this.state.cursor.lastReminderNotificationDate !== today) {
         this.enqueueNotification({
           key: `task-reminders:${today}`,
