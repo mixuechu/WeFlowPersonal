@@ -3,6 +3,7 @@ import crypto from 'crypto'
 import { copyFileSync, existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'fs'
 import { dirname, join } from 'path'
 import { jsonrepair } from 'jsonrepair'
+import JSZip from 'jszip'
 import { ConfigService } from './config'
 import { httpService } from './httpService'
 import { showSystemNotification } from './systemNotificationService'
@@ -1196,6 +1197,67 @@ export class AiAssistantService {
       } catch {}
       throw error
     }
+  }
+
+  async exportMemoryBundle(outputPath: string): Promise<any> {
+    if (!String(outputPath || '').trim()) throw new Error('未选择导出位置')
+    const backup = this.createMemoryBackup()
+    const databaseBytes = readFileSync(backup.path)
+    const stateBytes = readFileSync(backup.stateBackupPath)
+    const manifest = {
+      format: 'weflow-personal-memory',
+      version: 1,
+      appVersion: app.getVersion(),
+      createdAt: new Date().toISOString(),
+      databaseSha256: crypto.createHash('sha256').update(databaseBytes).digest('hex'),
+      stateSha256: crypto.createHash('sha256').update(stateBytes).digest('hex')
+    }
+    const zip = new JSZip()
+    zip.file('manifest.json', JSON.stringify(manifest, null, 2))
+    zip.file('personal-memory.sqlite', databaseBytes)
+    zip.file('ai-assistant-state.json', stateBytes)
+    const payload = await zip.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE', compressionOptions: { level: 6 } })
+    writeFileSync(outputPath, payload)
+    return { success: true, path: outputPath, bytes: payload.length, manifest }
+  }
+
+  async inspectMemoryBundle(bundlePath: string): Promise<any> {
+    const zip = await JSZip.loadAsync(readFileSync(bundlePath))
+    const manifestEntry = zip.file('manifest.json')
+    const databaseEntry = zip.file('personal-memory.sqlite')
+    const stateEntry = zip.file('ai-assistant-state.json')
+    if (!manifestEntry || !databaseEntry || !stateEntry) throw new Error('迁移包不完整')
+    const manifest = JSON.parse(await manifestEntry.async('string'))
+    if (manifest?.format !== 'weflow-personal-memory' || manifest?.version !== 1) throw new Error('不支持的迁移包格式')
+    const databaseBytes = await databaseEntry.async('nodebuffer')
+    const stateBytes = await stateEntry.async('nodebuffer')
+    const databaseSha256 = crypto.createHash('sha256').update(databaseBytes).digest('hex')
+    const stateSha256 = crypto.createHash('sha256').update(stateBytes).digest('hex')
+    if (databaseSha256 !== manifest.databaseSha256 || stateSha256 !== manifest.stateSha256) {
+      throw new Error('迁移包校验失败，文件可能损坏')
+    }
+    const state = JSON.parse(stateBytes.toString('utf8'))
+    return {
+      valid: true,
+      manifest,
+      databaseBytes: databaseBytes.length,
+      stateSummary: {
+        version: state.version,
+        tasks: Array.isArray(state.tasks) ? state.tasks.length : 0,
+        entities: Array.isArray(state.graph?.entities) ? state.graph.entities.length : 0,
+        relations: Array.isArray(state.graph?.relations) ? state.graph.relations.length : 0,
+        lastSyncAt: state.lastSyncAt || null
+      }
+    }
+  }
+
+  async importMemoryBundle(bundlePath: string): Promise<any> {
+    await this.inspectMemoryBundle(bundlePath)
+    const zip = await JSZip.loadAsync(readFileSync(bundlePath))
+    const databaseBytes = await zip.file('personal-memory.sqlite')!.async('uint8array')
+    const stateText = await zip.file('ai-assistant-state.json')!.async('string')
+    const imported = personalMemoryStore.registerImportedBackup(databaseBytes, stateText)
+    return { ...this.restoreMemoryBackup(imported.path), importedFrom: bundlePath }
   }
 
   getSettings(): any {

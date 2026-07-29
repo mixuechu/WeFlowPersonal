@@ -1,6 +1,6 @@
 import { DatabaseSync } from 'node:sqlite'
 import { createHash } from 'node:crypto'
-import { copyFileSync, existsSync, mkdirSync, readdirSync, renameSync, statSync, unlinkSync } from 'fs'
+import { copyFileSync, existsSync, mkdirSync, readdirSync, renameSync, statSync, unlinkSync, writeFileSync } from 'fs'
 import { dirname, join, resolve } from 'path'
 import { fuzzyEntityScore } from './fuzzyEntitySearch.ts'
 
@@ -540,6 +540,27 @@ export class PersonalMemoryStore {
       this.initialize(this.databasePath)
       throw error
     }
+  }
+
+  registerImportedBackup(databaseBytes: Uint8Array, stateText: string): any {
+    if (!this.db || !this.databasePath) throw new Error('个人记忆数据库尚未初始化')
+    JSON.parse(stateText)
+    const backupDirectory = join(dirname(this.databasePath), 'personal-memory-backups')
+    mkdirSync(backupDirectory, { recursive: true })
+    const timestamp = new Date().toISOString().replace(/[:.]/g, '-')
+    const backupPath = join(backupDirectory, `personal-memory-imported-${timestamp}.sqlite`)
+    const temporary = `${backupPath}.tmp`
+    writeFileSync(temporary, databaseBytes)
+    const verification = new DatabaseSync(temporary, { readOnly: true })
+    try {
+      const result = verification.prepare('PRAGMA integrity_check').get() as { integrity_check?: string }
+      if (result?.integrity_check !== 'ok') throw new Error(`导入数据库验证失败：${result?.integrity_check || 'unknown'}`)
+    } finally {
+      verification.close()
+    }
+    renameSync(temporary, backupPath)
+    writeFileSync(`${backupPath}.state.json`, stateText, 'utf8')
+    return { path: backupPath, bytes: statSync(backupPath).size, createdAt: new Date().toISOString(), hasState: true }
   }
 
   private listBackups(backupDirectory: string): Array<{ path: string; name: string; bytes: number; createdAt: string; hasState: boolean }> {

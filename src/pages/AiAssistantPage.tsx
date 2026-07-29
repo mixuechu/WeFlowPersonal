@@ -68,6 +68,7 @@ function AiAssistantPage() {
   const [showDiagnostics, setShowDiagnostics] = useState(false)
   const [backingUpMemory, setBackingUpMemory] = useState(false)
   const [restoringMemory, setRestoringMemory] = useState(false)
+  const [migratingMemory, setMigratingMemory] = useState(false)
   const [indexingVectors, setIndexingVectors] = useState(false)
   const [memoryQuestion, setMemoryQuestion] = useState('')
   const [memoryAnswer, setMemoryAnswer] = useState<any>(null)
@@ -314,6 +315,55 @@ function AiAssistantPage() {
     }
   }
 
+  const exportMemoryBundle = async () => {
+    if (migratingMemory) return
+    const selected = await window.electronAPI.dialog.saveFile({
+      title: '导出个人记忆迁移包',
+      defaultPath: `WeFlow-个人记忆-${new Date().toISOString().slice(0, 10)}.weflow-memory`,
+      filters: [{ name: 'WeFlow 个人记忆', extensions: ['weflow-memory'] }]
+    })
+    if (selected.canceled || !selected.filePath) return
+    setMigratingMemory(true)
+    try {
+      const result = await window.electronAPI.aiAssistant.exportMemoryBundle(selected.filePath)
+      setMessage(`迁移包已校验并导出：${result.path}`)
+      setMemoryDiagnostics(await window.electronAPI.aiAssistant.getMemoryDiagnostics())
+    } catch (error: any) {
+      setMessage(error?.message || String(error))
+    } finally {
+      setMigratingMemory(false)
+    }
+  }
+
+  const importMemoryBundle = async () => {
+    if (migratingMemory || restoringMemory) return
+    const selected = await window.electronAPI.dialog.openFile({
+      title: '选择个人记忆迁移包',
+      properties: ['openFile'],
+      filters: [{ name: 'WeFlow 个人记忆', extensions: ['weflow-memory'] }]
+    })
+    const bundlePath = selected.filePaths?.[0]
+    if (selected.canceled || !bundlePath) return
+    setMigratingMemory(true)
+    try {
+      const inspected = await window.electronAPI.aiAssistant.inspectMemoryBundle(bundlePath)
+      const summary = inspected.stateSummary
+      if (!window.confirm(
+        `迁移包校验通过。\n创建时间：${new Date(inspected.manifest.createdAt).toLocaleString('zh-CN')}\n` +
+        `包含 ${summary.entities} 个实体、${summary.relations} 条关系、${summary.tasks} 项任务。\n\n` +
+        '确定导入并替换当前个人记忆吗？当前数据会先自动创建安全快照。'
+      )) return
+      await window.electronAPI.aiAssistant.importMemoryBundle(bundlePath)
+      setMessage('个人记忆迁移完成；导入前的安全快照已保留。')
+      setMemoryDiagnostics(await window.electronAPI.aiAssistant.getMemoryDiagnostics())
+      await load()
+    } catch (error: any) {
+      setMessage(error?.message || String(error))
+    } finally {
+      setMigratingMemory(false)
+    }
+  }
+
   const indexMemoryVectors = async () => {
     if (indexingVectors) return
     setIndexingVectors(true)
@@ -545,6 +595,10 @@ function AiAssistantPage() {
               <button onClick={() => void backupMemory()} disabled={backingUpMemory || restoringMemory || !memoryDiagnostics.healthy}>
                 {backingUpMemory ? '正在验证并备份…' : '立即备份个人记忆'}
               </button>
+              <button onClick={() => void exportMemoryBundle()} disabled={migratingMemory || !memoryDiagnostics.healthy}>
+                {migratingMemory ? '正在处理迁移包…' : '导出到其他电脑'}
+              </button>
+              <button onClick={() => void importMemoryBundle()} disabled={migratingMemory || restoringMemory}>导入迁移包</button>
               {memoryDiagnostics.embeddings?.pending > 0 && <button onClick={() => void indexMemoryVectors()} disabled={indexingVectors}>
                 {indexingVectors ? '正在本地生成向量…' : '补齐语义索引'}
               </button>}

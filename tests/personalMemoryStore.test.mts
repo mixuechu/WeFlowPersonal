@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { existsSync, mkdtempSync, rmSync } from 'node:fs'
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { PersonalMemoryStore } from '../electron/services/personalMemoryStore.ts'
@@ -386,6 +386,10 @@ test('verified memory backup is created only from a healthy database', () => wit
   const after = store.getDiagnostics()
   assert.equal(after.backups.length, 2)
   assert.ok(after.backups.some((item: any) => item.path === backup.path))
+  const imported = store.registerImportedBackup(readFileSync(backup.path), JSON.stringify({ version: 3, tasks: [] }))
+  assert.equal(imported.hasState, true)
+  assert.equal(existsSync(`${imported.path}.state.json`), true)
+  assert.ok(store.restoreBackup(imported.path).success)
 }))
 
 test('vector metadata is retained for unchanged content and invalidated after edits', () => withStore(store => {
