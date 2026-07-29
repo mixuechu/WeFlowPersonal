@@ -46,3 +46,9 @@ export function attachLocalVoiceTranscript(content: string, transcript: string):
   if (!normalized) return content
   return `[语音·本地转写] ${normalized}`.slice(0, 2800)
 }
+
+export function attachLocalImageOcr(content: string, text: string): string {
+  const normalized = String(text || '').trim()
+  if (!normalized) return content
+  return `[图片·本地OCR] ${normalized}`.slice(0, 2800)
+}

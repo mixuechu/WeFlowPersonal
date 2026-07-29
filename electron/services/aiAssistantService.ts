@@ -30,10 +30,11 @@ import {
 import { findCommonGraphNeighbors } from './graphCommonNeighbors'
 import { buildProjectInsights } from './projectInsights'
 import { summarizeIngestionRuns } from './ingestionDiagnostics'
-import { attachLocalVoiceTranscript, recoverMessageSemantics } from './messageSemanticRecovery'
+import { attachLocalImageOcr, attachLocalVoiceTranscript, recoverMessageSemantics } from './messageSemanticRecovery'
 import { sanitizeDiagnosticText } from './diagnosticRedaction'
 import { chatService } from './chatService'
 import { voiceTranscribeService } from './voiceTranscribeService'
+import { localOcrService } from './localOcrService'
 import {
   assessIdentityPair,
   buildGraphIdentitySuggestions,
@@ -222,6 +223,7 @@ export class AiAssistantService {
   async initialize(): Promise<void> {
     this.statePath = join(app.getPath('userData'), 'ai-assistant-state.json')
     localEmbeddingService.initialize(app.getPath('userData'))
+    localOcrService.initialize(join(app.getPath('userData'), 'ai-ocr-cache.json'))
     personalMemoryStore.initialize(join(app.getPath('userData'), 'personal-memory.sqlite'))
     this.migrateLegacyData()
     this.loadState()
@@ -402,6 +404,7 @@ export class AiAssistantService {
       const sessionStart = Number(this.state.cursor.sessionCursors[session.username] || start)
       return Number(session.lastTimestamp || 0) >= sessionStart
     })
+    const ocrImages = Boolean(this.config.get('aiAssistantOcrImages'))
     const results = await Promise.allSettled(sessions.map(async (session: any) => {
       const rawRows: any[] = []
       const sessionStart = Math.max(0, Number(this.state.cursor.sessionCursors[session.username] || start) - 300)
@@ -412,7 +415,12 @@ export class AiAssistantService {
           limit: 200,
           offset,
           start: sessionStart,
-          end
+          end,
+          media: ocrImages ? '1' : undefined,
+          image: ocrImages ? '1' : undefined,
+          voice: ocrImages ? '0' : undefined,
+          video: ocrImages ? '0' : undefined,
+          emoji: ocrImages ? '0' : undefined
         })
         const pageRows = Array.isArray(payload.messages) ? payload.messages : []
         rawRows.push(...pageRows)
@@ -458,7 +466,8 @@ export class AiAssistantService {
           content: semantics.content,
           semanticType: semantics.semanticType,
           replyToMessageId: semantics.replyToMessageId,
-          quotedSender: semantics.quotedSender
+          quotedSender: semantics.quotedSender,
+          mediaLocalPath: String(message.mediaLocalPath || '')
         }
       }).filter((message: any) => message.content)
       return { sessionId: session.username, rows }
@@ -477,6 +486,7 @@ export class AiAssistantService {
     const deduped = new Map(messages.map(message => [messageKey(message), message]))
     const sorted = [...deduped.values()].sort((a, b) => a.timestamp - b.timestamp)
     await this.enrichVoiceTranscripts(sorted)
+    await this.enrichImageOcr(sorted)
     return { messages: sorted, failed, successful }
   }
 
@@ -505,6 +515,22 @@ export class AiAssistantService {
     }
   }
 
+  private async enrichImageOcr(messages: any[]): Promise<void> {
+    if (!this.config.get('aiAssistantOcrImages')) return
+    const status = await localOcrService.getStatus()
+    if (!status.available || !status.chinese) return
+    const candidates = messages.filter(message =>
+      message.semanticType === 'image' && message.mediaLocalPath && !String(message.content || '').includes('本地OCR')
+    ).slice(-8)
+    for (const message of candidates) {
+      const result = await localOcrService.recognize(message.mediaLocalPath)
+      if (result.success && result.text?.trim()) {
+        message.content = attachLocalImageOcr(message.content, redact(result.text))
+        message.ocrSource = 'tesseract-local'
+      }
+    }
+  }
+
   private async callAi(messages: any[]): Promise<any> {
     const apiKey = String(this.config.get('aiAssistantApiKey') || '').trim()
     if (!apiKey) throw new Error('请先设置 DeepSeek API Key')
@@ -523,6 +549,7 @@ export class AiAssistantService {
       senderIdentity: message.senderIdentity,
       semanticType: message.semanticType,
       transcriptionSource: message.transcriptionSource || undefined,
+      ocrSource: message.ocrSource || undefined,
       replyToMessageId: message.replyToMessageId || undefined,
       quotedSender: message.quotedSender || undefined,
       content: redact(message.content)
@@ -1225,8 +1252,9 @@ export class AiAssistantService {
     }
   }
 
-  getMemoryDiagnostics(): any {
+  async getMemoryDiagnostics(): Promise<any> {
     const ingestionRuns = personalMemoryStore.listIngestionRuns(20)
+    const ocr = await localOcrService.getStatus()
     return {
       ...personalMemoryStore.getDiagnostics(),
       ingestionRuns,
@@ -1245,7 +1273,8 @@ export class AiAssistantService {
         apiKeyStorage: 'macOS Safe Storage',
         httpBinding: '127.0.0.1',
         logsRedacted: true
-      }
+      },
+      ocr: { ...ocr, enabled: Boolean(this.config.get('aiAssistantOcrImages')) }
     }
   }
 
@@ -1359,7 +1388,8 @@ export class AiAssistantService {
       ownerName: this.config.get('aiAssistantOwnerName'),
       ownerAliases: this.config.get('aiAssistantOwnerAliases'),
       ownerBackground: this.config.get('aiAssistantOwnerBackground'),
-      transcribeVoice: this.config.get('autoTranscribeVoice')
+      transcribeVoice: this.config.get('autoTranscribeVoice'),
+      ocrImages: this.config.get('aiAssistantOcrImages')
     }
   }
 
@@ -1422,6 +1452,7 @@ export class AiAssistantService {
     if (typeof input.ownerAliases === 'string') this.config.set('aiAssistantOwnerAliases', input.ownerAliases.trim())
     if (typeof input.ownerBackground === 'string') this.config.set('aiAssistantOwnerBackground', input.ownerBackground.trim())
     if (typeof input.transcribeVoice === 'boolean') this.config.set('autoTranscribeVoice', input.transcribeVoice)
+    if (typeof input.ocrImages === 'boolean') this.config.set('aiAssistantOcrImages', input.ocrImages)
     this.repairPlaceholderEntities()
     this.saveState()
     return this.getSettings()
