@@ -1658,6 +1658,7 @@ export interface ElectronAPI {
       searchMemory: (query: string, options?: any) => Promise<any[]>
       indexMemoryVectors: () => Promise<any>
       findGraphPath: (fromId: string, toId: string, maxDepth?: number) => Promise<any>
+      findCommonNeighbors: (fromId: string, toId: string) => Promise<any>
       getMemoryDiagnostics: () => Promise<any>
       createMemoryBackup: () => Promise<any>
       restoreMemoryBackup: (path: string) => Promise<any>

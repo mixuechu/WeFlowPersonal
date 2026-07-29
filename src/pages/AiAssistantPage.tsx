@@ -58,6 +58,7 @@ function AiAssistantPage() {
   const [pathFromId, setPathFromId] = useState('')
   const [pathToId, setPathToId] = useState('')
   const [graphPath, setGraphPath] = useState<any>(null)
+  const [graphCommonNeighbors, setGraphCommonNeighbors] = useState<any>(null)
   const [memoryDiagnostics, setMemoryDiagnostics] = useState<any>(null)
   const [backingUpMemory, setBackingUpMemory] = useState(false)
   const [restoringMemory, setRestoringMemory] = useState(false)
@@ -246,7 +247,12 @@ function AiAssistantPage() {
 
   const findGraphPath = async () => {
     if (!pathFromId || !pathToId) return
-    setGraphPath(await window.electronAPI.aiAssistant.findGraphPath(pathFromId, pathToId, 6))
+    const [path, common] = await Promise.all([
+      window.electronAPI.aiAssistant.findGraphPath(pathFromId, pathToId, 6),
+      window.electronAPI.aiAssistant.findCommonNeighbors(pathFromId, pathToId)
+    ])
+    setGraphPath(path)
+    setGraphCommonNeighbors(common)
   }
 
   const backupMemory = async () => {
@@ -868,12 +874,12 @@ function AiAssistantPage() {
             <span><b>{identityDisambiguation.lastRunAt ? new Date(identityDisambiguation.lastRunAt).toLocaleString('zh-CN') : '尚未运行'}</b><small>最近消歧</small></span>
           </div>}
           <div className="assistant-path-finder">
-            <select value={pathFromId} onChange={event => { setPathFromId(event.target.value); setGraphPath(null) }}>
+            <select value={pathFromId} onChange={event => { setPathFromId(event.target.value); setGraphPath(null); setGraphCommonNeighbors(null) }}>
               <option value="">选择起点</option>
               {graph.entities.map((entity: any) => <option key={`from-${entity.id}`} value={entity.id}>{entity.canonicalName} · {entity.type}</option>)}
             </select>
             <span>→</span>
-            <select value={pathToId} onChange={event => { setPathToId(event.target.value); setGraphPath(null) }}>
+            <select value={pathToId} onChange={event => { setPathToId(event.target.value); setGraphPath(null); setGraphCommonNeighbors(null) }}>
               <option value="">选择终点</option>
               {graph.entities.map((entity: any) => <option key={`to-${entity.id}`} value={entity.id}>{entity.canonicalName} · {entity.type}</option>)}
             </select>
@@ -884,6 +890,23 @@ function AiAssistantPage() {
               <button onClick={() => setSelectedEntityId(entity.id)}>{entity.canonicalName}</button>
               {graphPath.steps[index] && <i>{graphPath.steps[index].forward ? graphPath.steps[index].predicate : `被${graphPath.steps[index].predicate}`} →</i>}
             </span>) : <p>在 6 层关系内没有找到路径。候选关系被保留，已拒绝关系不会参与计算。</p>}
+          </div>}
+          {graphCommonNeighbors && <div className="assistant-common-neighbors">
+            <div className="assistant-section-heading"><div><span className="assistant-eyebrow">COMMON CONNECTIONS</span><h3>共同联系人与实体</h3></div><span className="assistant-count">{graphCommonNeighbors.common.length} 个</span></div>
+            {graphCommonNeighbors.common.map((item: any) => <article key={item.entity.id}>
+              <button onClick={() => setSelectedEntityId(item.entity.id)}>{item.entity.canonicalName}</button>
+              <div>
+                {item.leftEdges.map((edge: any) => <span key={`left-${edge.relationId}`}>
+                  {graphCommonNeighbors.from?.canonicalName} {edge.forward ? edge.predicate : `被${edge.predicate}`} {item.entity.canonicalName}
+                  <small>{edge.status === 'confirmed' ? '已确认' : '待确认'} · {Math.round(Number(edge.confidence || 0) * 100)}%</small>
+                </span>)}
+                {item.rightEdges.map((edge: any) => <span key={`right-${edge.relationId}`}>
+                  {graphCommonNeighbors.to?.canonicalName} {edge.forward ? edge.predicate : `被${edge.predicate}`} {item.entity.canonicalName}
+                  <small>{edge.status === 'confirmed' ? '已确认' : '待确认'} · {Math.round(Number(edge.confidence || 0) * 100)}%</small>
+                </span>)}
+              </div>
+            </article>)}
+            {!graphCommonNeighbors.common.length && <div className="assistant-empty">当前图谱中没有共同的一跳联系人或实体。</div>}
           </div>}
           {graphEntities.length ? (
             <div className="assistant-graph-layout">

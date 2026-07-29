@@ -440,6 +440,13 @@
 .assistant-path-result i { color: #747b73; font-size: 9px; font-style: normal; }
 .assistant-path-result.missing { border-color: #e5ddd3; background: #fbf7f1; }
 .assistant-path-result p { margin: 0; color: #7d786f; font-size: 9px; }
+.assistant-common-neighbors { margin: 10px 0 14px; padding: 12px; border: 1px solid #e0e5de; border-radius: 11px; display: grid; gap: 8px; background: #fbfcf9; }
+.assistant-common-neighbors .assistant-section-heading { margin-bottom: 0; }
+.assistant-common-neighbors article { padding: 9px 10px; border: 1px solid #e7e9e3; border-radius: 9px; display: grid; grid-template-columns: 150px 1fr; gap: 12px; background: #fff; }
+.assistant-common-neighbors article > button { border: 0; color: #315c4e; background: transparent; text-align: left; font-weight: 600; cursor: pointer; }
+.assistant-common-neighbors article > div { display: grid; gap: 4px; }
+.assistant-common-neighbors article span { color: #586159; font-size: 10px; }
+.assistant-common-neighbors article small { margin-left: 7px; color: #858d86; font-size: 8px; }
 .assistant-graph-layout { min-height: 340px; display: grid; grid-template-columns: minmax(0, 1fr) 220px; border: 1px solid #e3e1da; border-radius: 14px; overflow: hidden; }
 .assistant-graph-canvas { width: 100%; height: 340px; background: radial-gradient(circle at center, #fff 0, #faf8f2 72%); }
 .assistant-graph-canvas line { stroke: #aeb8b1; stroke-width: 1.2; }

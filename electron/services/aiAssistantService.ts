@@ -19,6 +19,7 @@ import {
   markNotificationAttempt,
   type NotificationOutbox
 } from './notificationOutbox'
+import { findCommonGraphNeighbors } from './graphCommonNeighbors'
 import {
   assessIdentityPair,
   buildNameBuckets,
@@ -1556,6 +1557,14 @@ export class AiAssistantService {
       }
     }
     return { found: false, entities: [], steps: [] }
+  }
+
+  findCommonNeighbors(fromId: string, toId: string): any {
+    return {
+      from: this.state.graph.entities.find(entity => entity.id === fromId) || null,
+      to: this.state.graph.entities.find(entity => entity.id === toId) || null,
+      common: findCommonGraphNeighbors(fromId, toId, this.state.graph.entities, this.state.graph.relations)
+    }
   }
 
   async askMemory(question: string, conversationId?: string, options: MemorySearchOptions = {}): Promise<any> {

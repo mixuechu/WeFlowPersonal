@@ -634,6 +634,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     searchMemory: (query: string, options?: any) => ipcRenderer.invoke('ai-assistant:searchMemory', query, options),
     indexMemoryVectors: () => ipcRenderer.invoke('ai-assistant:indexMemoryVectors'),
     findGraphPath: (fromId: string, toId: string, maxDepth?: number) => ipcRenderer.invoke('ai-assistant:findGraphPath', fromId, toId, maxDepth),
+    findCommonNeighbors: (fromId: string, toId: string) => ipcRenderer.invoke('ai-assistant:findCommonNeighbors', fromId, toId),
     getMemoryDiagnostics: () => ipcRenderer.invoke('ai-assistant:getMemoryDiagnostics'),
     createMemoryBackup: () => ipcRenderer.invoke('ai-assistant:createMemoryBackup'),
     restoreMemoryBackup: (path: string) => ipcRenderer.invoke('ai-assistant:restoreMemoryBackup', path),

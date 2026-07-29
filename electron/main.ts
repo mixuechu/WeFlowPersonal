@@ -4520,6 +4520,8 @@ function registerIpcHandlers() {
   ipcMain.handle('ai-assistant:indexMemoryVectors', () => aiAssistantService.ensureVectorIndex())
   ipcMain.handle('ai-assistant:findGraphPath', (_, fromId: string, toId: string, maxDepth?: number) =>
     aiAssistantService.findGraphPath(fromId, toId, maxDepth))
+  ipcMain.handle('ai-assistant:findCommonNeighbors', (_, fromId: string, toId: string) =>
+    aiAssistantService.findCommonNeighbors(fromId, toId))
   ipcMain.handle('ai-assistant:getMemoryDiagnostics', () => aiAssistantService.getMemoryDiagnostics())
   ipcMain.handle('ai-assistant:createMemoryBackup', () => aiAssistantService.createMemoryBackup())
   ipcMain.handle('ai-assistant:restoreMemoryBackup', (_, path: string) => aiAssistantService.restoreMemoryBackup(path))

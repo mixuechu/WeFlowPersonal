@@ -23,6 +23,7 @@ import {
 import { editDistance, fuzzyEntityScore } from '../electron/services/fuzzyEntitySearch.ts'
 import { buildWeeklyBriefing, isQuietTime } from '../electron/services/briefingIntelligence.ts'
 import { enqueueUniqueNotification, markNotificationAttempt } from '../electron/services/notificationOutbox.ts'
+import { findCommonGraphNeighbors } from '../electron/services/graphCommonNeighbors.ts'
 
 function withStore(run: (store: PersonalMemoryStore) => void): void {
   const directory = mkdtempSync(join(tmpdir(), 'weflow-memory-test-'))
@@ -260,6 +261,32 @@ test('notification outbox persists unique work until a successful delivery', () 
   assert.equal(outbox.pending.length, 0)
   assert.deepEqual(outbox.sentKeys, [notification.key])
   assert.equal(enqueueUniqueNotification(outbox, notification), false)
+})
+
+test('common-neighbor graph query keeps relation direction, status and evidence', () => {
+  const entities = [
+    { id: 'left', canonicalName: '人物甲' },
+    { id: 'right', canonicalName: '人物乙' },
+    { id: 'common', canonicalName: '共同项目' },
+    { id: 'rejected-only', canonicalName: '错误实体' }
+  ]
+  const relations = [{
+    id: 'left-common', subjectId: 'left', objectId: 'common', predicate: '参与', status: 'confirmed', confidence: 0.9,
+    evidence: [{ messageId: 'evidence-left' }]
+  }, {
+    id: 'common-right', subjectId: 'common', objectId: 'right', predicate: '服务', status: 'candidate', confidence: 0.7,
+    evidence: [{ messageId: 'evidence-right' }]
+  }, {
+    id: 'left-rejected', subjectId: 'left', objectId: 'rejected-only', predicate: '认识', status: 'rejected', confidence: 1
+  }, {
+    id: 'right-rejected', subjectId: 'right', objectId: 'rejected-only', predicate: '认识', status: 'confirmed', confidence: 1
+  }]
+  const [result] = findCommonGraphNeighbors('left', 'right', entities, relations)
+  assert.equal(result.entity.id, 'common')
+  assert.equal(result.leftEdges[0].forward, true)
+  assert.equal(result.rightEdges[0].forward, false)
+  assert.equal(result.rightEdges[0].status, 'candidate')
+  assert.equal(result.leftEdges[0].evidence[0].messageId, 'evidence-left')
 })
 
 test('verified memory backup is created only from a healthy database', () => withStore(store => {
