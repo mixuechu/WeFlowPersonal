@@ -40,6 +40,18 @@ function patchWcdbDylib(dylibPath) {
   return true
 }
 
+function findStableLocalSigningIdentity() {
+  if (process.env.WEFLOW_LOCAL_SIGN_IDENTITY) {
+    return process.env.WEFLOW_LOCAL_SIGN_IDENTITY.trim()
+  }
+  try {
+    const output = execFileSync('security', ['find-identity', '-v', '-p', 'codesigning'], { encoding: 'utf8' })
+    return output.match(/\)\s+([A-F0-9]{40})\s+"Apple Development:/)?.[1] || ''
+  } catch {
+    return ''
+  }
+}
+
 module.exports = async function afterPack(context) {
   if (context.electronPlatformName !== 'darwin') {
     return
@@ -68,14 +80,18 @@ module.exports = async function afterPack(context) {
     }
   }
 
-  // 本地演示包没有 Apple Developer ID。electron-builder 跳过签名时，
-  // install_name_tool 会让随 Electron 附带的旧签名失效，macOS 随后以
-  // RBSRequestErrorDomain -1006 拒绝启动。为本地包补一层 ad-hoc 签名；
-  // 正式证书构建仍交由 electron-builder 执行，不受影响。
+  // 本地构建跳过 electron-builder 的在线时间戳签名后，在这里使用固定的
+  // Apple Development 身份签名。稳定的 designated requirement 可让钥匙串
+  // 记住 Safe Storage 访问许可，避免每次重打包都弹窗；没有本地证书时才
+  // 降级为 ad-hoc 签名。
   if (process.env.CSC_IDENTITY_AUTO_DISCOVERY === 'false') {
-    execFileSync('codesign', ['--force', '--deep', '--sign', '-', appPath], {
+    const identity = findStableLocalSigningIdentity()
+    const signArgs = ['--force', '--deep', '--timestamp=none', '--sign', identity || '-']
+    if (identity) signArgs.push('--entitlements', join(process.cwd(), 'electron', 'entitlements.mac.plist'))
+    signArgs.push(appPath)
+    execFileSync('codesign', signArgs, {
       stdio: 'inherit',
     })
-    console.log(`[afterPack] Applied ad-hoc signature to ${appPath}`)
+    console.log(`[afterPack] Applied ${identity ? `stable local signature ${identity}` : 'ad-hoc fallback signature'} to ${appPath}`)
   }
 }
