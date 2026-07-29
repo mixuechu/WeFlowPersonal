@@ -77,6 +77,11 @@ test('task search keeps original message evidence', () => withStore(store => {
     title: '确认客户更新时间',
     detail: '需要回复客户',
     source: '项目群',
+    owner: '李卓',
+    collaborators: ['同事甲'],
+    project: '升级版演示',
+    dependsOnIds: ['task-prerequisite'],
+    taskKind: 'delegated',
     priority: 'high',
     status: 'todo',
     classification: 'mine',
@@ -90,6 +95,16 @@ test('task search keeps original message evidence', () => withStore(store => {
 
   const [result] = store.searchText('确认客户更新时间')
   assert.equal(result.document_type, 'task')
+  assert.deepEqual(JSON.parse(result.metadata_json), {
+    status: 'todo',
+    priority: 'high',
+    classification: 'mine',
+    owner: '李卓',
+    collaborators: ['同事甲'],
+    project: '升级版演示',
+    dependsOnIds: ['task-prerequisite'],
+    taskKind: 'delegated'
+  })
   assert.deepEqual(store.getDocumentEvidence('task', 'task-1').map(item => ({ ...item })), [{
     message_id: 'message-task-1',
     session_id: '项目群',

@@ -287,6 +287,8 @@
 .assistant-task-editor input, .assistant-task-editor textarea, .assistant-task-editor select { width: 100%; padding: 7px 8px; border: 1px solid #dcdad2; border-radius: 7px; color: #444a44; background: #fff; font: inherit; font-size: 10px; outline: none; }
 .assistant-task-editor textarea { min-height: 58px; resize: vertical; }
 .assistant-task-editor > div:not(.assistant-task-editor-actions) { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 7px; }
+.assistant-task-dependencies { display: grid; gap: 4px; color: #727970; font-size: 9px; }
+.assistant-task-dependencies select { min-height: 70px; }
 .assistant-task-editor-actions { display: flex; justify-content: flex-end; gap: 7px; }
 .assistant-task-editor-actions button.primary { border-color: #255f4b; color: #fff; background: #255f4b; }
 .priority { width: 8px; height: 8px; margin-top: 6px; border-radius: 50%; }

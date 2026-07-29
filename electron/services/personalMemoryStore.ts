@@ -671,8 +671,19 @@ export class PersonalMemoryStore {
     for (const task of tasks) {
       const documentId = `task:${task.id}`
       this.upsertSearchDocument(documentId, 'task', task.id, task.title,
-        [task.title, task.detail, task.source, task.assignmentEvidence].filter(Boolean).join('；'),
-        { status: task.status, priority: task.priority, due: task.due, classification: task.classification, sourceSessionId: task.sourceSessionId }, now)
+        [task.title, task.detail, task.owner, ...(task.collaborators || []), task.project, task.source, task.assignmentEvidence].filter(Boolean).join('；'),
+        {
+          status: task.status,
+          priority: task.priority,
+          due: task.due,
+          classification: task.classification,
+          sourceSessionId: task.sourceSessionId,
+          owner: task.owner,
+          collaborators: task.collaborators || [],
+          project: task.project || '',
+          dependsOnIds: task.dependsOnIds || [],
+          taskKind: task.taskKind || 'action'
+        }, now)
       this.db.prepare('DELETE FROM search_document_evidence WHERE document_id=?').run(documentId)
       const insertEvidence = this.db.prepare(`
         INSERT OR IGNORE INTO search_document_evidence(document_id,message_id,session_id,timestamp,sender,excerpt)

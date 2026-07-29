@@ -20,8 +20,12 @@ type AssistantTask = {
   priority: 'high' | 'medium' | 'low'
   source: string
   sourceSessionId?: string
+  collaborators?: string[]
+  project?: string
+  dependsOnIds?: string[]
+  taskKind?: 'action' | 'delegated' | 'waiting'
   confidence: number
-  status: 'todo' | 'doing' | 'done'
+  status: 'todo' | 'doing' | 'waiting' | 'done' | 'cancelled'
   createdAt?: string
   updatedAt?: string
   classification?: 'mine' | 'uncertain'
@@ -109,7 +113,7 @@ const SYSTEM_PROMPT = `你是一个谨慎的中文私人助理兼个人记忆图
 “用户”“我”“本人”“对方”“群友”“某人”“未知”等只是角色占位词，绝对不能作为实体名称。用户本人必须使用身份档案里的真实姓名；身份档案没有姓名时，不创建用户本人的人物实体。
 只根据消息证据，不臆测；title 用动词开头；不确定日期时 due 为空；source 使用会话显示名。
 只返回 JSON：
-{"headline":"标题","summary":"摘要","highlights":["重要信息"],"tasks":[{"title":"待办","detail":"上下文","owner":"我","due":"","priority":"high|medium|low","source":"会话名","confidence":0.8,"classification":"mine|uncertain|others","assignmentEvidence":"归属证据","sourceMessageIds":["消息ID"]}],"entities":[{"tempId":"e1","type":"person|organization|group|project","canonicalName":"名称","aliases":[],"accountIds":[],"summary":"仅基于证据的简述","confidence":0.8,"evidenceMessageIds":["消息ID"]}],"relations":[{"subjectTempId":"e1","predicate":"从主语到宾语可直接朗读的有向关系","objectTempId":"e2","directionExplanation":"完整自然语言，例如A向B提供服务","confidence":0.8,"evidenceMessageIds":["消息ID"]}],"claims":[{"subjectTempId":"e1","predicate":"肯定式标准事实属性","objectTempId":"","objectValue":"事实值","polarity":"positive|negative","valueType":"text|number|date|boolean","validFrom":"","validTo":"","confidence":0.8,"sourceNature":"self_statement|other_statement|inference","evidenceMessageIds":["消息ID"]}],"events":[{"eventType":"meeting|commitment|delivery|travel|payment|organization_change|decision|other","title":"事件","description":"描述","startAt":"","endAt":"","location":"","participants":[{"tempId":"e1","role":"参与者角色"}],"confidence":0.8,"evidenceMessageIds":["消息ID"]}],"possibleDuplicates":[{"leftTempId":"e1","rightExistingName":"已有实体名","confidence":0.7,"reason":"原因"}]}`
+{"headline":"标题","summary":"摘要","highlights":["重要信息"],"tasks":[{"title":"待办","detail":"上下文","owner":"负责人真实名称","collaborators":["协作者"],"project":"所属项目","dependsOnTitles":["依赖待办标题"],"taskKind":"action|delegated|waiting","due":"","priority":"high|medium|low","source":"会话名","confidence":0.8,"classification":"mine|uncertain|others","assignmentEvidence":"归属证据","sourceMessageIds":["消息ID"]}],"entities":[{"tempId":"e1","type":"person|organization|group|project","canonicalName":"名称","aliases":[],"accountIds":[],"summary":"仅基于证据的简述","confidence":0.8,"evidenceMessageIds":["消息ID"]}],"relations":[{"subjectTempId":"e1","predicate":"从主语到宾语可直接朗读的有向关系","objectTempId":"e2","directionExplanation":"完整自然语言，例如A向B提供服务","confidence":0.8,"evidenceMessageIds":["消息ID"]}],"claims":[{"subjectTempId":"e1","predicate":"肯定式标准事实属性","objectTempId":"","objectValue":"事实值","polarity":"positive|negative","valueType":"text|number|date|boolean","validFrom":"","validTo":"","confidence":0.8,"sourceNature":"self_statement|other_statement|inference","evidenceMessageIds":["消息ID"]}],"events":[{"eventType":"meeting|commitment|delivery|travel|payment|organization_change|decision|other","title":"事件","description":"描述","startAt":"","endAt":"","location":"","participants":[{"tempId":"e1","role":"参与者角色"}],"confidence":0.8,"evidenceMessageIds":["消息ID"]}],"possibleDuplicates":[{"leftTempId":"e1","rightExistingName":"已有实体名","confidence":0.7,"reason":"原因"}]}`
 
 function shanghaiDate(timestampMs = Date.now()): string {
   return new Intl.DateTimeFormat('en-CA', {
@@ -806,19 +810,27 @@ export class AiAssistantService {
           let classification: 'mine' | 'uncertain' | 'others' =
             item.classification === 'mine' || item.classification === 'others' ? item.classification : 'uncertain'
           if (onlySentByUser && isRequest && !isSelfCommitment) classification = 'others'
-          if (classification === 'others') continue
+          const delegatedByUser = classification === 'others' && onlySentByUser && isRequest
+          if (classification === 'others' && !delegatedByUser) continue
+          const requestedKind = ['action', 'delegated', 'waiting'].includes(item.taskKind) ? item.taskKind : 'action'
+          const taskKind: AssistantTask['taskKind'] = delegatedByUser ? 'delegated' : requestedKind
           const task: AssistantTask = {
             id: stableTaskId(item),
             title: String(item.title || '待确认事项').slice(0, 160),
             detail: String(item.detail || '').slice(0, 500),
             owner: String(item.owner || '我').slice(0, 50),
+            collaborators: (Array.isArray(item.collaborators) ? item.collaborators : [])
+              .map((value: any) => String(value || '').trim().slice(0, 80)).filter(Boolean).slice(0, 20),
+            project: String(item.project || '').trim().slice(0, 160),
+            dependsOnIds: [],
+            taskKind,
             due: String(item.due || '').slice(0, 40),
             priority: ['high', 'medium', 'low'].includes(item.priority) ? item.priority : 'medium',
             source: String(item.source || '').slice(0, 100),
             sourceSessionId: String(evidenceMessages[0]?.sessionId || ''),
             confidence: Math.max(0, Math.min(1, Number(item.confidence ?? 0.7))),
-            status: 'todo',
-            classification,
+            status: taskKind === 'waiting' ? 'waiting' : 'todo',
+            classification: delegatedByUser ? 'mine' : classification,
             assignmentEvidence: String(item.assignmentEvidence || '').slice(0, 300),
             sourceMessageIds,
             evidence: evidenceMessages.map(message => ({
@@ -828,13 +840,31 @@ export class AiAssistantService {
               excerpt: redact(String(message.content)).slice(0, 300)
             }))
           }
+          ;(task as any).dependsOnTitles = (Array.isArray(item.dependsOnTitles) ? item.dependsOnTitles : [])
+            .map((value: any) => String(value || '').trim()).filter(Boolean).slice(0, 20)
           tasks.set(task.id, task)
         }
+      }
+      const titleToId = new Map([...tasks.values()].map(task => [task.title.trim().toLowerCase(), task.id]))
+      for (const task of tasks.values()) {
+        task.dependsOnIds = ((task as any).dependsOnTitles || [])
+          .map((title: string) => titleToId.get(title.toLowerCase())).filter(Boolean)
+        delete (task as any).dependsOnTitles
       }
       const existing = new Map(this.state.tasks.map(task => [task.id, task]))
       for (const task of tasks.values()) {
         const previous = existing.get(task.id)
-        existing.set(task.id, previous ? { ...task, status: previous.status, createdAt: previous.createdAt, updatedAt: createdAt } : { ...task, createdAt, updatedAt: createdAt })
+        existing.set(task.id, previous ? {
+          ...task,
+          status: previous.status,
+          owner: previous.owner || task.owner,
+          collaborators: previous.collaborators || task.collaborators,
+          project: previous.project || task.project,
+          dependsOnIds: previous.dependsOnIds || task.dependsOnIds,
+          taskKind: previous.taskKind || task.taskKind,
+          createdAt: previous.createdAt,
+          updatedAt: createdAt
+        } : { ...task, createdAt, updatedAt: createdAt })
       }
       const today = shanghaiDate()
       if (fresh.length > 0) {
@@ -1037,10 +1067,18 @@ export class AiAssistantService {
   updateTask(id: string, patch: any): AssistantTask | null {
     const task = this.state.tasks.find(item => item.id === id)
     if (!task) return null
-    if (['todo', 'doing', 'done'].includes(patch.status)) task.status = patch.status
+    if (['todo', 'doing', 'waiting', 'done', 'cancelled'].includes(patch.status)) task.status = patch.status
     if (typeof patch.title === 'string' && patch.title.trim()) task.title = patch.title.trim().slice(0, 300)
     if (typeof patch.detail === 'string') task.detail = patch.detail.trim().slice(0, 2000)
     if (typeof patch.owner === 'string') task.owner = patch.owner.trim().slice(0, 100) || '我'
+    if (Array.isArray(patch.collaborators)) task.collaborators = patch.collaborators
+      .map((value: any) => String(value || '').trim().slice(0, 80)).filter(Boolean).slice(0, 20)
+    if (typeof patch.project === 'string') task.project = patch.project.trim().slice(0, 160)
+    if (Array.isArray(patch.dependsOnIds)) {
+      const knownIds = new Set(this.state.tasks.map(item => item.id))
+      task.dependsOnIds = [...new Set(patch.dependsOnIds.map(String).filter((value: string) => value !== id && knownIds.has(value)))].slice(0, 30)
+    }
+    if (['action', 'delegated', 'waiting'].includes(patch.taskKind)) task.taskKind = patch.taskKind
     if (typeof patch.due === 'string') task.due = patch.due.trim().slice(0, 100)
     if (['high', 'medium', 'low'].includes(patch.priority)) task.priority = patch.priority
     task.updatedAt = new Date().toISOString()
@@ -1067,6 +1105,10 @@ export class AiAssistantService {
       title,
       detail: String(input?.detail || '').trim().slice(0, 2000),
       owner: '我',
+      collaborators: [],
+      project: '',
+      dependsOnIds: [],
+      taskKind: 'action',
       due: '',
       priority: ['high', 'medium', 'low'].includes(input?.priority) ? input.priority : 'medium',
       source: '个人记忆问答',
