@@ -898,3 +898,42 @@ test('message resources remain idempotent, searchable and traceable to original 
   store.upsertResources([resource])
   assert.equal(store.getMemoryStats().resources, 0)
 }))
+
+test('long scanned PDF resources resume by persisted page cursor and invalidate stale vectors', () => withStore(store => {
+  store.upsertResources([{
+    id: 'resource-pdf-resume',
+    resourceType: 'file',
+    title: '扫描合同.pdf',
+    fileName: '扫描合同.pdf',
+    fileExt: '.pdf',
+    content: '[第 1 页] 合同首页',
+    metadata: {
+      attachmentFormat: '.pdf-ocr',
+      attachmentLocalPath: '/tmp/scanned-contract.pdf',
+      attachmentPdfOcrPages: 3,
+      attachmentPdfTotalPages: 9,
+      attachmentPdfOcrTruncated: true,
+      attachmentPdfOcrNextPage: 4
+    },
+    evidence: [{
+      messageId: 'message-pdf-resume',
+      sessionId: 'session-pdf',
+      timestamp: 1_775_000_000,
+      sender: '项目群',
+      excerpt: '扫描合同.pdf'
+    }]
+  }])
+  const pending = store.listPendingPdfOcrResources(1)
+  assert.equal(pending[0].metadata.attachmentPdfOcrNextPage, 4)
+  store.saveEmbedding('resource:resource-pdf-resume', 'test-vector', [1, 0])
+  assert.equal(store.getEmbeddingStats('test-vector').pending, 0)
+  store.appendResourceContent('resource-pdf-resume', '[第 4 页] 付款条件为验收后七日内', {
+    attachmentPdfOcrPages: 6,
+    attachmentPdfOcrNextPage: 7,
+    attachmentPdfOcrTruncated: true
+  })
+  assert.ok(store.searchText('付款条件').some(item => item.id === 'resource:resource-pdf-resume'))
+  assert.equal(store.getDocumentEvidence('resource', 'resource-pdf-resume')[0].message_id, 'message-pdf-resume')
+  assert.equal(store.getEmbeddingStats('test-vector').pending, 1)
+  assert.equal(store.listPendingPdfOcrResources(1)[0].metadata.attachmentPdfOcrNextPage, 7)
+}))

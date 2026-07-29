@@ -572,6 +572,7 @@ export class AiAssistantService {
           message.attachmentPdfOcrPages = scanned.processedPages
           message.attachmentPdfTotalPages = scanned.totalPages
           message.attachmentPdfOcrTruncated = scanned.truncated
+          message.attachmentPdfOcrNextPage = scanned.nextPage
           if (scanned.success) {
             message.content = `${message.content}\n[PDF扫描·本地OCR] ${redact(scanned.text)}`.slice(0, 18_000)
             message.attachmentIndexStatus = 'indexed'
@@ -604,6 +605,35 @@ export class AiAssistantService {
         message.content = `${message.content}\n[网页·本地快照] ${snapshot.text}`.slice(0, 18_000)
         message.webSnapshotSource = 'local-safe-fetch'
       }
+    }
+  }
+
+  private async continuePendingPdfOcr(): Promise<void> {
+    if (!this.config.get('aiAssistantOcrImages')) return
+    const pending = personalMemoryStore.listPendingPdfOcrResources(1)
+    for (const resource of pending) {
+      const filePath = String(resource.metadata?.attachmentLocalPath || '')
+      if (!filePath || !existsSync(filePath)) {
+        personalMemoryStore.appendResourceContent(resource.id, '', {
+          attachmentPdfOcrStatus: 'not_found',
+          attachmentPdfOcrTruncated: false
+        })
+        continue
+      }
+      const startPage = Math.max(2, Number(resource.metadata?.attachmentPdfOcrNextPage || 2))
+      const scanned = await extractScannedPdfText(filePath, startPage)
+      const retryable = scanned.status === 'failed' || scanned.status === 'dependency_missing'
+      personalMemoryStore.appendResourceContent(
+        resource.id,
+        scanned.success ? redact(scanned.text) : '',
+        {
+          attachmentPdfOcrStatus: scanned.status,
+          attachmentPdfOcrPages: Number(resource.metadata?.attachmentPdfOcrPages || 0) + scanned.processedPages,
+          attachmentPdfTotalPages: scanned.totalPages || resource.metadata?.attachmentPdfTotalPages || 0,
+          attachmentPdfOcrTruncated: retryable ? true : scanned.truncated,
+          attachmentPdfOcrNextPage: retryable ? startPage : scanned.nextPage
+        }
+      )
     }
   }
 
@@ -657,6 +687,7 @@ export class AiAssistantService {
           attachmentPdfOcrPages: message.attachmentPdfOcrPages || 0,
           attachmentPdfTotalPages: message.attachmentPdfTotalPages || 0,
           attachmentPdfOcrTruncated: Boolean(message.attachmentPdfOcrTruncated),
+          attachmentPdfOcrNextPage: message.attachmentPdfOcrNextPage || 0,
           webSnapshotStatus: message.webSnapshotStatus || '',
           webSnapshotFinalUrl: message.webSnapshotFinalUrl || '',
           webSnapshotTitle: message.webSnapshotTitle || '',
@@ -1126,6 +1157,7 @@ export class AiAssistantService {
       const fresh = collected.messages.filter(message => !seen.has(messageKey(message)))
       const digests: any[] = []
       const createdAt = new Date().toISOString()
+      await this.continuePendingPdfOcr()
       this.persistMessageResources(fresh, createdAt)
       const successfulMessageKeys: string[] = []
       const batchErrors: string[] = []

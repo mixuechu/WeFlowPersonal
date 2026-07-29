@@ -42,6 +42,7 @@ test('scanned PDF OCR reports local capability and cleans temporary render pages
     assert.equal(result.status, 'empty')
     assert.equal(result.processedPages, 1)
     assert.equal(result.totalPages, 1)
+    assert.equal(result.nextPage, 2)
   } finally {
     rmSync(directory, { recursive: true, force: true })
   }
