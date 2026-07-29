@@ -56,6 +56,33 @@ test('identity candidates explain their source and preserve current negative dec
   }, left, right), false)
 })
 
+test('relationship history keeps creation and later review state instead of overwriting it', () => withStore(store => {
+  const entities = [
+    { id: 'person-a', type: 'person', canonicalName: '人物甲', aliases: [], accountIds: [] },
+    { id: 'org-b', type: 'organization', canonicalName: '组织乙', aliases: [], accountIds: [] }
+  ]
+  const relation = {
+    id: 'relation-history',
+    subjectId: 'person-a',
+    predicate: '服务对象',
+    objectId: 'org-b',
+    confidence: 0.7,
+    status: 'candidate',
+    evidence: [],
+    createdAt: '2026-07-29T00:00:00.000Z',
+    updatedAt: '2026-07-29T00:00:00.000Z'
+  }
+  store.syncGraph({ entities, relations: [relation], reviewQueue: [] })
+  store.syncGraph({
+    entities,
+    relations: [{ ...relation, status: 'confirmed', confidence: 0.9, updatedAt: '2026-07-30T00:00:00.000Z' }],
+    reviewQueue: []
+  })
+  const history = store.listRelationHistory('person-a')
+  assert.deepEqual(history.map(item => item.change_type), ['status_changed', 'created'])
+  assert.deepEqual(history.map(item => item.status), ['confirmed', 'candidate'])
+}))
+
 test('large identity graphs switch to a weekly indexed full scan', () => {
   const now = new Date('2026-07-30T12:00:00.000Z')
   assert.equal(getFullIdentityScanSchedule(499, null, now).mode, 'incremental')
@@ -570,6 +597,7 @@ test('forget entity transaction removes graph, memory, search, task audit and as
   assert.equal(store.searchText('隐私测试人').length, 0)
   assert.equal(store.getMemoryFeed().claims.length, 0)
   assert.equal(store.getMemoryFeed().events.length, 0)
+  assert.equal(store.listRelationHistory('person-forget').length, 0)
   assert.equal(store.listTaskHistory(['task-forget']).length, 0)
   assert.equal(store.getRecentAssistantExchanges().length, 0)
   assert.equal(store.getDiagnostics().integrity, 'ok')

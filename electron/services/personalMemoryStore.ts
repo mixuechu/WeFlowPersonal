@@ -114,6 +114,27 @@ export class PersonalMemoryStore {
       CREATE INDEX IF NOT EXISTS idx_relations_subject ON relations(subject_id, predicate);
       CREATE INDEX IF NOT EXISTS idx_relations_object ON relations(object_id, predicate);
 
+      CREATE TABLE IF NOT EXISTS relation_history (
+        id INTEGER PRIMARY KEY,
+        relation_id TEXT NOT NULL,
+        subject_id TEXT NOT NULL,
+        predicate TEXT NOT NULL,
+        object_id TEXT NOT NULL,
+        status TEXT NOT NULL,
+        confidence REAL NOT NULL,
+        change_type TEXT NOT NULL,
+        snapshot_json TEXT NOT NULL DEFAULT '{}',
+        created_at TEXT NOT NULL
+      ) STRICT;
+      CREATE INDEX IF NOT EXISTS idx_relation_history_subject ON relation_history(subject_id, created_at);
+      CREATE INDEX IF NOT EXISTS idx_relation_history_object ON relation_history(object_id, created_at);
+      INSERT INTO relation_history(
+        relation_id,subject_id,predicate,object_id,status,confidence,change_type,snapshot_json,created_at
+      )
+      SELECT r.id,r.subject_id,r.predicate,r.object_id,r.status,r.confidence,'created','{}',r.created_at
+      FROM relations r
+      WHERE NOT EXISTS (SELECT 1 FROM relation_history h WHERE h.relation_id=r.id);
+
       CREATE TABLE IF NOT EXISTS events (
         id TEXT PRIMARY KEY,
         event_type TEXT NOT NULL,
@@ -421,6 +442,7 @@ export class PersonalMemoryStore {
       deleteIds('search_documents', 'id', documentIds)
       deleteIds('search_document_evidence', 'document_id', documentIds)
       deleteIds('evidence', 'relation_id', preview.relationIds)
+      this.db.prepare('DELETE FROM relation_history WHERE subject_id=? OR object_id=?').run(entityId, entityId)
       deleteIds('events', 'id', preview.eventIds)
       deleteIds('task_history', 'task_id', taskIds)
       this.db.prepare('DELETE FROM review_queue WHERE payload_json LIKE ?').run(`%${entityId}%`)
@@ -581,9 +603,33 @@ export class PersonalMemoryStore {
         ON CONFLICT(id) DO UPDATE SET confidence=excluded.confidence,status=excluded.status,
           search_text=excluded.search_text,updated_at=excluded.updated_at
       `)
+      const getStoredRelation = this.db.prepare('SELECT * FROM relations WHERE id=?')
+      const insertRelationHistory = this.db.prepare(`
+        INSERT INTO relation_history(relation_id,subject_id,predicate,object_id,status,confidence,change_type,snapshot_json,created_at)
+        VALUES(?,?,?,?,?,?,?,?,?)
+      `)
       const insertEvidence = this.db.prepare(`INSERT OR IGNORE INTO evidence(relation_id,message_id,session_id,timestamp,excerpt,evidence_role) VALUES(?,?,?,?,?,'direct')`)
       for (const relation of graph.relations) {
         const searchText = `${entityNames.get(relation.subjectId) || relation.subjectId} ${relation.predicate} ${entityNames.get(relation.objectId) || relation.objectId}`
+        const stored = getStoredRelation.get(relation.id) as any
+        const nextSnapshot = {
+          subjectId: relation.subjectId,
+          predicate: relation.predicate,
+          objectId: relation.objectId,
+          confidence: Number(relation.confidence || 0),
+          status: relation.status,
+          evidenceCount: (relation.evidence || []).length
+        }
+        const changed = !stored || stored.subject_id !== relation.subjectId || stored.predicate !== relation.predicate ||
+          stored.object_id !== relation.objectId || stored.status !== relation.status ||
+          Math.abs(Number(stored.confidence || 0) - nextSnapshot.confidence) >= 0.01
+        if (changed) {
+          insertRelationHistory.run(
+            relation.id, relation.subjectId, relation.predicate, relation.objectId, relation.status,
+            nextSnapshot.confidence, stored ? (stored.status !== relation.status ? 'status_changed' : 'evidence_updated') : 'created',
+            JSON.stringify(nextSnapshot), relation.updatedAt || now
+          )
+        }
         upsertRelation.run(relation.id, relation.subjectId, relation.predicate, relation.objectId, Number(relation.confidence || 0), relation.status, searchText, relation.createdAt || now, relation.updatedAt || now)
         for (const evidence of relation.evidence || []) insertEvidence.run(relation.id, evidence.messageId, evidence.sessionId, Number(evidence.timestamp || 0), evidence.excerpt || '')
         this.upsertSearchDocument(`relation:${relation.id}`, 'relation', relation.id, relation.predicate, searchText,
@@ -603,6 +649,27 @@ export class PersonalMemoryStore {
       this.db.exec('ROLLBACK')
       throw error
     }
+  }
+
+  listRelationHistory(entityId = '', limit = 200): any[] {
+    if (!this.db) return []
+    const rows = entityId
+      ? this.db.prepare(`
+          SELECT h.*,subject.canonical_name AS subject_name,object.canonical_name AS object_name
+          FROM relation_history h
+          LEFT JOIN entities subject ON subject.id=h.subject_id
+          LEFT JOIN entities object ON object.id=h.object_id
+          WHERE h.subject_id=? OR h.object_id=?
+          ORDER BY h.id DESC LIMIT ?
+        `).all(entityId, entityId, limit)
+      : this.db.prepare(`
+          SELECT h.*,subject.canonical_name AS subject_name,object.canonical_name AS object_name
+          FROM relation_history h
+          LEFT JOIN entities subject ON subject.id=h.subject_id
+          LEFT JOIN entities object ON object.id=h.object_id
+          ORDER BY h.id DESC LIMIT ?
+        `).all(limit)
+    return rows as any[]
   }
 
   private pairKey(leftId: string, rightId: string): string {

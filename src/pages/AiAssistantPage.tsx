@@ -161,6 +161,10 @@ function AiAssistantPage() {
     ? graph.relations.filter((item: any) =>
       item.status !== 'rejected' && (item.subjectId === selectedEntity.id || item.objectId === selectedEntity.id))
     : []
+  const selectedEntityRelationHistory = selectedEntity
+    ? (dashboard?.relationHistory || []).filter((item: any) =>
+      item.subject_id === selectedEntity.id || item.object_id === selectedEntity.id)
+    : []
 
   const syncNow = async () => {
     setSyncing(true)
@@ -897,6 +901,14 @@ function AiAssistantPage() {
                       </button>
                     })}
                     {!selectedEntityRelations.length && <em>尚无关系</em>}
+                    <strong>关系变化 · {selectedEntityRelationHistory.length}</strong>
+                    {selectedEntityRelationHistory.slice(0, 8).map((item: any) =>
+                      <div className="assistant-relation-history" key={item.id}>
+                        <b>{item.subject_name || item.subject_id} — {item.predicate} → {item.object_name || item.object_id}</b>
+                        <span>{item.change_type === 'created' ? '首次发现' : item.change_type === 'status_changed' ? '可信状态变化' : '证据与置信度更新'} · {item.status === 'confirmed' ? '已确认' : item.status === 'rejected' ? '已拒绝' : '待确认'}</span>
+                        <small>{new Date(item.created_at).toLocaleString('zh-CN')} · {Math.round(Number(item.confidence || 0) * 100)}%</small>
+                      </div>)}
+                    {!selectedEntityRelationHistory.length && <em>尚无关系变化记录</em>}
                     <strong>相关事件 · {selectedEntityEvents.length}</strong>
                     {selectedEntityEvents.slice(0, 5).map((event: any) =>
                       <button key={event.id} onClick={() => setMemoryQuery(event.title)}>

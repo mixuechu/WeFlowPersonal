@@ -464,6 +464,9 @@
 .assistant-identity-status > span { display: grid; gap: 2px; }
 .assistant-identity-status strong, .assistant-identity-status b { font-size: 11px; }
 .assistant-identity-status small { color: #748078; font-size: 9px; }
+.assistant-relation-history { padding: 8px 9px; border-left: 2px solid #b9cdbd; display: grid; gap: 2px; background: #f7faf7; }
+.assistant-relation-history b { color: #3f4941; font-size: 10px; }
+.assistant-relation-history span, .assistant-relation-history small { color: #788078; font-size: 9px; }
 @media (max-width: 900px) { .assistant-identity-status { grid-template-columns: 1fr; gap: 8px; } }
 .assistant-review-item > div:last-child { display: flex; align-items: center; gap: 7px; }
 .assistant-review-item button { padding: 7px 11px; border: 1px solid #d9d6cd; border-radius: 8px; background: transparent; }

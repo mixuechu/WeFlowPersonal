@@ -1081,6 +1081,7 @@ export class AiAssistantService {
       entityInsights,
       cursor: this.state.cursor,
       graph: this.state.graph,
+      relationHistory: personalMemoryStore.listRelationHistory('', 300),
       identityDisambiguation: {
         ...this.state.graph.identityScan,
         ...getFullIdentityScanSchedule(
