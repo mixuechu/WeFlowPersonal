@@ -45,6 +45,7 @@ type GraphRelation = {
   predicate: string
   objectId: string
   confidence: number
+  directionExplanation?: string
   evidence: Array<{ messageId: string; sessionId: string; timestamp: number; excerpt: string }>
   status: 'candidate' | 'confirmed' | 'rejected'
   createdAt: string
@@ -99,7 +100,7 @@ const SYSTEM_PROMPT = `你是一个谨慎的中文私人助理兼个人记忆图
 “用户”“我”“本人”“对方”“群友”“某人”“未知”等只是角色占位词，绝对不能作为实体名称。用户本人必须使用身份档案里的真实姓名；身份档案没有姓名时，不创建用户本人的人物实体。
 只根据消息证据，不臆测；title 用动词开头；不确定日期时 due 为空；source 使用会话显示名。
 只返回 JSON：
-{"headline":"标题","summary":"摘要","highlights":["重要信息"],"tasks":[{"title":"待办","detail":"上下文","owner":"我","due":"","priority":"high|medium|low","source":"会话名","confidence":0.8,"classification":"mine|uncertain|others","assignmentEvidence":"归属证据","sourceMessageIds":["消息ID"]}],"entities":[{"tempId":"e1","type":"person|organization|group|project","canonicalName":"名称","aliases":[],"accountIds":[],"summary":"仅基于证据的简述","confidence":0.8,"evidenceMessageIds":["消息ID"]}],"relations":[{"subjectTempId":"e1","predicate":"关系","objectTempId":"e2","confidence":0.8,"evidenceMessageIds":["消息ID"]}],"possibleDuplicates":[{"leftTempId":"e1","rightExistingName":"已有实体名","confidence":0.7,"reason":"原因"}]}`
+{"headline":"标题","summary":"摘要","highlights":["重要信息"],"tasks":[{"title":"待办","detail":"上下文","owner":"我","due":"","priority":"high|medium|low","source":"会话名","confidence":0.8,"classification":"mine|uncertain|others","assignmentEvidence":"归属证据","sourceMessageIds":["消息ID"]}],"entities":[{"tempId":"e1","type":"person|organization|group|project","canonicalName":"名称","aliases":[],"accountIds":[],"summary":"仅基于证据的简述","confidence":0.8,"evidenceMessageIds":["消息ID"]}],"relations":[{"subjectTempId":"e1","predicate":"从主语到宾语可直接朗读的有向关系","objectTempId":"e2","directionExplanation":"完整自然语言，例如A向B提供服务","confidence":0.8,"evidenceMessageIds":["消息ID"]}],"possibleDuplicates":[{"leftTempId":"e1","rightExistingName":"已有实体名","confidence":0.7,"reason":"原因"}]}`
 
 function shanghaiDate(timestampMs = Date.now()): string {
   return new Intl.DateTimeFormat('en-CA', {
@@ -563,6 +564,7 @@ export class AiAssistantService {
         const relation: GraphRelation = {
           id, subjectId, predicate, objectId,
           confidence: Math.max(0, Math.min(1, Number(item.confidence || 0.6))),
+          directionExplanation: String(item.directionExplanation || '').slice(0, 240),
           evidence,
           status: Number(item.confidence || 0) >= 0.9 ? 'confirmed' : 'candidate',
           createdAt: now,
@@ -574,7 +576,7 @@ export class AiAssistantService {
           const object = this.state.graph.entities.find(entity => entity.id === objectId)?.canonicalName || '未知'
           this.state.graph.reviewQueue.push({
             id: `review_rel_${id}`, kind: 'relation', title: `${subject} — ${predicate} → ${object}`,
-            detail: evidence[0]?.excerpt || '需要根据消息证据确认这条关系',
+            detail: String(item.directionExplanation || evidence[0]?.excerpt || '需要根据消息证据确认这条关系').slice(0, 300),
             confidence: relation.confidence, status: 'pending', createdAt: now, relationId: id
           })
         }
