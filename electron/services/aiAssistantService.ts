@@ -5,6 +5,7 @@ import { dirname, join } from 'path'
 import { ConfigService } from './config'
 import { httpService } from './httpService'
 import { showSystemNotification } from './systemNotificationService'
+import { personalMemoryStore } from './personalMemoryStore'
 
 type AssistantTask = {
   id: string
@@ -142,6 +143,7 @@ export class AiAssistantService {
 
   async initialize(): Promise<void> {
     this.statePath = join(app.getPath('userData'), 'ai-assistant-state.json')
+    personalMemoryStore.initialize(join(app.getPath('userData'), 'personal-memory.sqlite'))
     this.migrateLegacyData()
     this.loadState()
     this.saveState()
@@ -155,6 +157,7 @@ export class AiAssistantService {
   dispose(): void {
     if (this.scheduler) clearInterval(this.scheduler)
     this.scheduler = null
+    personalMemoryStore.close()
   }
 
   private migrateLegacyData(): void {
@@ -229,6 +232,11 @@ export class AiAssistantService {
     const temporary = `${this.statePath}.tmp`
     writeFileSync(temporary, `${JSON.stringify(this.state, null, 2)}\n`, { mode: 0o600 })
     renameSync(temporary, this.statePath)
+    try {
+      personalMemoryStore.syncGraph(this.state.graph)
+    } catch (error) {
+      console.error('[AI Assistant] 个人记忆数据库同步失败:', error)
+    }
   }
 
   private async ensureHttpApi(): Promise<{ port: number; token: string }> {
