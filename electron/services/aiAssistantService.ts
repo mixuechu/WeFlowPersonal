@@ -862,7 +862,8 @@ export class AiAssistantService {
       cursor: this.state.cursor,
       graph: this.state.graph,
       mergeHistory: personalMemoryStore.listActiveMerges(),
-      memoryStats: personalMemoryStore.getMemoryStats()
+      memoryStats: personalMemoryStore.getMemoryStats(),
+      memoryFeed: personalMemoryStore.getMemoryFeed()
     }
   }
 
@@ -1027,6 +1028,10 @@ export class AiAssistantService {
     personalMemoryStore.markMergeReverted(id)
     this.saveState()
     return { success: true }
+  }
+
+  updateMemoryItemStatus(kind: 'claim' | 'event', id: string, status: 'confirmed' | 'rejected'): any {
+    return personalMemoryStore.updateMemoryItemStatus(kind, id, status)
   }
 
   private async schedulerTick(): Promise<void> {

@@ -306,6 +306,21 @@
 .assistant-entity strong { display: block; margin-top: 3px; font-size: 13px; }
 .assistant-entity p { margin: 6px 0 0; color: #74786f; font-size: 11px; line-height: 1.5; }
 .assistant-review-note { margin-top: 12px; padding: 10px 12px; border-radius: 10px; color: #8a5a14; background: #fff3d8; font-size: 11px; }
+.assistant-memory-feed { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; margin-top: 18px; }
+.assistant-memory-list { display: grid; gap: 10px; max-height: 520px; overflow: auto; }
+.assistant-memory-item { padding: 14px; border: 1px solid #e8e5dd; border-radius: 12px; background: rgba(255,255,255,.55); }
+.assistant-memory-item-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+.assistant-memory-item-head strong { color: #303731; font-size: 13px; }
+.assistant-memory-item-head span { flex: none; padding: 3px 7px; border-radius: 999px; font-size: 9px; color: #8a5a14; background: #fff3d8; }
+.assistant-memory-item-head span.confirmed { color: #255f4b; background: #e5f2ec; }
+.assistant-memory-item p { margin: 7px 0; color: #555d56; font-size: 12px; line-height: 1.55; }
+.assistant-memory-item > small { display: block; margin-top: 5px; color: #7d847d; font-size: 10px; }
+.assistant-evidence-stack { display: grid; gap: 4px; margin-top: 10px; padding-top: 9px; border-top: 1px dashed #dedbd2; }
+.assistant-evidence-stack small { color: #777f78; font-size: 10px; line-height: 1.5; }
+.assistant-memory-actions { display: flex; justify-content: flex-end; gap: 7px; margin-top: 10px; }
+.assistant-memory-actions button { padding: 6px 10px; border: 1px solid #d9d6cd; border-radius: 8px; background: transparent; }
+.assistant-memory-actions button.primary { color: #fff; border-color: #255f4b; background: #255f4b; }
+@media (max-width: 980px) { .assistant-memory-feed { grid-template-columns: 1fr; } }
 .assistant-graph-toolbar { margin-bottom: 12px; }
 .assistant-graph-toolbar input { width: min(360px, 100%); padding: 9px 12px; border: 1px solid #deddd5; border-radius: 9px; background: #fff; }
 .assistant-graph-layout { min-height: 340px; display: grid; grid-template-columns: minmax(0, 1fr) 220px; border: 1px solid #e3e1da; border-radius: 14px; overflow: hidden; }

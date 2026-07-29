@@ -389,6 +389,46 @@ export class PersonalMemoryStore {
     return { claims: count('claims'), events: count('events') }
   }
 
+  getMemoryFeed(limit = 100): { claims: any[]; events: any[] } {
+    if (!this.db) return { claims: [], events: [] }
+    const claims = this.db.prepare(`
+      SELECT c.*,s.canonical_name AS subject_name,o.canonical_name AS object_entity_name
+      FROM claims c
+      LEFT JOIN entities s ON s.id=c.subject_id
+      LEFT JOIN entities o ON o.id=c.object_entity_id
+      ORDER BY c.updated_at DESC LIMIT ?
+    `).all(limit) as any[]
+    const events = this.db.prepare(`
+      SELECT * FROM events ORDER BY COALESCE(start_at,updated_at) DESC LIMIT ?
+    `).all(limit) as any[]
+    const evidenceStatement = this.db.prepare(`
+      SELECT message_id,session_id,timestamp,excerpt,evidence_role
+      FROM evidence WHERE claim_id=? OR event_id=? ORDER BY timestamp
+    `)
+    const participantStatement = this.db.prepare(`
+      SELECT ep.entity_id,ep.role,e.canonical_name
+      FROM event_participants ep JOIN entities e ON e.id=ep.entity_id WHERE ep.event_id=?
+    `)
+    return {
+      claims: claims.map(claim => ({
+        ...claim,
+        evidence: evidenceStatement.all(claim.id, '') as any[]
+      })),
+      events: events.map(event => ({
+        ...event,
+        participants: participantStatement.all(event.id) as any[],
+        evidence: evidenceStatement.all('', event.id) as any[]
+      }))
+    }
+  }
+
+  updateMemoryItemStatus(kind: 'claim' | 'event', id: string, status: 'confirmed' | 'rejected'): any {
+    if (!this.db) return null
+    const table = kind === 'claim' ? 'claims' : 'events'
+    this.db.prepare(`UPDATE ${table} SET status=?,updated_at=? WHERE id=?`).run(status, new Date().toISOString(), id)
+    return this.db.prepare(`SELECT * FROM ${table} WHERE id=?`).get(id) || null
+  }
+
   getMergeSnapshot(id: number): any | null {
     if (!this.db) return null
     const row = this.db.prepare('SELECT snapshot_json FROM merge_history WHERE id=? AND reverted_at IS NULL').get(id) as { snapshot_json: string } | undefined

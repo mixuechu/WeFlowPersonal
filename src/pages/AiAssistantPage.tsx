@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { Bot, Check, Clock3, Filter, Network, RefreshCw, Settings2, ShieldCheck, Sparkles, X } from 'lucide-react'
+import { BookOpen, Bot, CalendarDays, Check, Clock3, Filter, Network, RefreshCw, Settings2, ShieldCheck, Sparkles, X } from 'lucide-react'
 import './AiAssistantPage.scss'
 
 type Task = {
@@ -66,6 +66,9 @@ function AiAssistantPage() {
   const selectedEntity = graph.entities.find((entity: any) => entity.id === selectedEntityId)
   const pendingReviews = graph.reviewQueue.filter((item: any) => item.status === 'pending')
   const mergeHistory = dashboard?.mergeHistory || []
+  const memoryFeed = dashboard?.memoryFeed || { claims: [], events: [] }
+  const visibleClaims = memoryFeed.claims.filter((item: any) => item.status !== 'rejected')
+  const visibleEvents = memoryFeed.events.filter((item: any) => item.status !== 'rejected')
 
   const syncNow = async () => {
     setSyncing(true)
@@ -111,6 +114,11 @@ function AiAssistantPage() {
 
   const revertMerge = async (id: number) => {
     await window.electronAPI.aiAssistant.revertMerge(id)
+    await load()
+  }
+
+  const updateMemoryStatus = async (kind: 'claim' | 'event', id: string, nextStatus: 'confirmed' | 'rejected') => {
+    await window.electronAPI.aiAssistant.updateMemoryItemStatus(kind, id, nextStatus)
     await load()
   }
 
@@ -247,6 +255,61 @@ function AiAssistantPage() {
             ))}
           </section>
         )}
+
+        <div className="assistant-memory-feed">
+          <section className="assistant-panel">
+            <div className="assistant-section-heading">
+              <div><span className="assistant-eyebrow">STRUCTURED CLAIMS</span><h3><BookOpen size={16} /> 持续积累的事实</h3></div>
+              <span className="assistant-count">{visibleClaims.length} 条</span>
+            </div>
+            <div className="assistant-memory-list">
+              {visibleClaims.map((claim: any) => <article className="assistant-memory-item" key={claim.id}>
+                <div className="assistant-memory-item-head">
+                  <strong>{claim.subject_name || '未知主体'} · {claim.predicate}</strong>
+                  <span className={claim.status}>{claim.status === 'confirmed' ? '已确认' : '待确认'}</span>
+                </div>
+                <p>{claim.object_entity_name || claim.object_value || '未记录值'}</p>
+                {(claim.valid_from || claim.valid_to) && <small>有效期：{claim.valid_from || '未知'} — {claim.valid_to || '至今'}</small>}
+                <div className="assistant-evidence-stack">
+                  {(claim.evidence || []).map((evidence: any) =>
+                    <small key={evidence.message_id}>证据 · {new Date(evidence.timestamp * 1000).toLocaleString('zh-CN')}：“{evidence.excerpt}”</small>)}
+                </div>
+                {claim.status === 'candidate' && <div className="assistant-memory-actions">
+                  <button onClick={() => void updateMemoryStatus('claim', claim.id, 'rejected')}>不准确</button>
+                  <button className="primary" onClick={() => void updateMemoryStatus('claim', claim.id, 'confirmed')}>确认事实</button>
+                </div>}
+              </article>)}
+              {!visibleClaims.length && <div className="assistant-empty">后续增量消息会在这里形成带原文证据的个人事实。</div>}
+            </div>
+          </section>
+
+          <section className="assistant-panel">
+            <div className="assistant-section-heading">
+              <div><span className="assistant-eyebrow">EVENT TIMELINE</span><h3><CalendarDays size={16} /> 事件时间线</h3></div>
+              <span className="assistant-count">{visibleEvents.length} 项</span>
+            </div>
+            <div className="assistant-memory-list">
+              {visibleEvents.map((event: any) => <article className="assistant-memory-item" key={event.id}>
+                <div className="assistant-memory-item-head">
+                  <strong>{event.title}</strong>
+                  <span className={event.status}>{event.status === 'confirmed' ? '已确认' : '待确认'}</span>
+                </div>
+                {event.description && <p>{event.description}</p>}
+                <small>{event.start_at || '时间待确认'}{event.location ? ` · ${event.location}` : ''}</small>
+                {!!event.participants?.length && <small>参与者：{event.participants.map((item: any) => `${item.canonical_name}（${item.role}）`).join('、')}</small>}
+                <div className="assistant-evidence-stack">
+                  {(event.evidence || []).map((evidence: any) =>
+                    <small key={evidence.message_id}>证据 · {new Date(evidence.timestamp * 1000).toLocaleString('zh-CN')}：“{evidence.excerpt}”</small>)}
+                </div>
+                {event.status === 'candidate' && <div className="assistant-memory-actions">
+                  <button onClick={() => void updateMemoryStatus('event', event.id, 'rejected')}>不准确</button>
+                  <button className="primary" onClick={() => void updateMemoryStatus('event', event.id, 'confirmed')}>确认事件</button>
+                </div>}
+              </article>)}
+              {!visibleEvents.length && <div className="assistant-empty">会议、决定、交付和承诺等事件会显示在这里。</div>}
+            </div>
+          </section>
+        </div>
 
         <section className="assistant-panel assistant-memory">
           <div className="assistant-section-heading">
