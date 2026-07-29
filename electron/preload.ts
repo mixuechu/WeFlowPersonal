@@ -625,6 +625,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
     revertMerge: (id: number) => ipcRenderer.invoke('ai-assistant:revertMerge', id),
     updateMemoryItemStatus: (kind: 'claim' | 'event', id: string, status: 'confirmed' | 'rejected') =>
       ipcRenderer.invoke('ai-assistant:updateMemoryItemStatus', kind, id, status),
+    searchMemory: (query: string) => ipcRenderer.invoke('ai-assistant:searchMemory', query),
+    correctClaim: (id: string, input: any) => ipcRenderer.invoke('ai-assistant:correctClaim', id, input),
+    askMemory: (question: string, conversationId?: string) => ipcRenderer.invoke('ai-assistant:askMemory', question, conversationId),
     getConversationSources: () => ipcRenderer.invoke('ai-assistant:getConversationSources'),
     setConversationSource: (input: any) => ipcRenderer.invoke('ai-assistant:setConversationSource', input),
     setConversationSourcesBulk: (input: any) => ipcRenderer.invoke('ai-assistant:setConversationSourcesBulk', input)

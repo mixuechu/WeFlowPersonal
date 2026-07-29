@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { BookOpen, Bot, CalendarDays, Check, Clock3, Filter, Network, RefreshCw, Settings2, ShieldCheck, Sparkles, X } from 'lucide-react'
+import { BookOpen, Bot, CalendarDays, Check, Clock3, Filter, Network, RefreshCw, Search, Settings2, ShieldCheck, Sparkles, X } from 'lucide-react'
 import './AiAssistantPage.scss'
 
 type Task = {
@@ -13,6 +13,7 @@ type Task = {
   status: 'todo' | 'doing' | 'done'
   classification?: 'mine' | 'uncertain'
   assignmentEvidence?: string
+  evidence?: Array<{ messageId: string; timestamp: number; sender: string; excerpt: string }>
 }
 
 function AiAssistantPage() {
@@ -27,6 +28,12 @@ function AiAssistantPage() {
   const [showSources, setShowSources] = useState(false)
   const [sources, setSources] = useState<any[]>([])
   const [sourceQuery, setSourceQuery] = useState('')
+  const [memoryQuery, setMemoryQuery] = useState('')
+  const [memoryResults, setMemoryResults] = useState<any[]>([])
+  const [editingClaim, setEditingClaim] = useState<any>(null)
+  const [memoryQuestion, setMemoryQuestion] = useState('')
+  const [memoryAnswer, setMemoryAnswer] = useState<any>(null)
+  const [askingMemory, setAskingMemory] = useState(false)
 
   const load = useCallback(async () => {
     const [nextStatus, nextDashboard] = await Promise.all([
@@ -42,6 +49,18 @@ function AiAssistantPage() {
     const timer = window.setInterval(() => void load(), 15_000)
     return () => window.clearInterval(timer)
   }, [load])
+
+  useEffect(() => {
+    const query = memoryQuery.trim()
+    if (!query) {
+      setMemoryResults([])
+      return
+    }
+    const timer = window.setTimeout(() => {
+      void window.electronAPI.aiAssistant.searchMemory(query).then(setMemoryResults)
+    }, 250)
+    return () => window.clearTimeout(timer)
+  }, [memoryQuery])
 
   const briefing = dashboard?.briefing
   const tasks: Task[] = dashboard?.tasks || []
@@ -67,6 +86,8 @@ function AiAssistantPage() {
   const pendingReviews = graph.reviewQueue.filter((item: any) => item.status === 'pending')
   const mergeHistory = dashboard?.mergeHistory || []
   const memoryFeed = dashboard?.memoryFeed || { claims: [], events: [] }
+  const ingestionStatus = dashboard?.ingestionStatus
+  const ingestionCounts = Object.fromEntries((ingestionStatus?.batches || []).map((item: any) => [item.status, Number(item.count || 0)]))
   const visibleClaims = memoryFeed.claims.filter((item: any) => item.status !== 'rejected')
   const visibleEvents = memoryFeed.events.filter((item: any) => item.status !== 'rejected')
 
@@ -120,6 +141,30 @@ function AiAssistantPage() {
   const updateMemoryStatus = async (kind: 'claim' | 'event', id: string, nextStatus: 'confirmed' | 'rejected') => {
     await window.electronAPI.aiAssistant.updateMemoryItemStatus(kind, id, nextStatus)
     await load()
+  }
+
+  const saveClaimCorrection = async () => {
+    if (!editingClaim?.id || !String(editingClaim.value || '').trim()) return
+    await window.electronAPI.aiAssistant.correctClaim(editingClaim.id, {
+      value: editingClaim.value,
+      validFrom: editingClaim.validFrom,
+      validTo: editingClaim.validTo
+    })
+    setEditingClaim(null)
+    await load()
+  }
+
+  const askMemory = async () => {
+    const question = memoryQuestion.trim()
+    if (!question || askingMemory) return
+    setAskingMemory(true)
+    try {
+      setMemoryAnswer(await window.electronAPI.aiAssistant.askMemory(question, memoryAnswer?.conversationId))
+    } catch (error: any) {
+      setMemoryAnswer({ answer: error?.message || String(error), citations: [], uncertainty: '' })
+    } finally {
+      setAskingMemory(false)
+    }
   }
 
   const openSources = async () => {
@@ -180,6 +225,12 @@ function AiAssistantPage() {
         )}
 
         {message && <div className={`assistant-message ${message.includes('完成') ? 'success' : ''}`}>{message}</div>}
+        {ingestionStatus && (
+          <div className={`assistant-ingestion-status ${ingestionStatus.status}`}>
+            <strong>最近一次记忆处理：{ingestionStatus.status === 'completed' ? '全部完成' : ingestionStatus.status === 'partial' ? '部分完成，等待重试' : ingestionStatus.status === 'running' ? '正在处理' : '处理失败'}</strong>
+            <span>{Number(ingestionStatus.message_count || 0)} 条已完成 · {ingestionCounts.completed || 0} 个成功批次{ingestionCounts.failed ? ` · ${ingestionCounts.failed} 个待重试批次` : ''}</span>
+          </div>
+        )}
 
         <section className="assistant-briefing-card">
           <div className="assistant-briefing-copy">
@@ -217,6 +268,9 @@ function AiAssistantPage() {
                       <span>{Math.round(task.confidence * 100)}% 可信</span>
                     </div>
                     {task.assignmentEvidence && <small className="assistant-evidence">归属依据：{task.assignmentEvidence}</small>}
+                    {!!task.evidence?.length && <div className="assistant-evidence-stack">
+                      {task.evidence.map(item => <small key={item.messageId}>{item.sender} · {new Date(item.timestamp * 1000).toLocaleString('zh-CN')}：“{item.excerpt}”</small>)}
+                    </div>}
                   </div>
                   <i className={`priority ${task.priority}`} />
                 </article>
@@ -256,6 +310,43 @@ function AiAssistantPage() {
           </section>
         )}
 
+        <section className="assistant-panel assistant-memory-search">
+          <div className="assistant-section-heading">
+            <div><span className="assistant-eyebrow">MEMORY SEARCH</span><h3><Search size={16} /> 搜索个人记忆</h3></div>
+          </div>
+          <div className="assistant-graph-toolbar">
+            <input value={memoryQuery} onChange={event => setMemoryQuery(event.target.value)} placeholder="搜索人物、事实、事件、关系或项目" />
+          </div>
+          {!!memoryQuery.trim() && <div className="assistant-search-results">
+            {memoryResults.map(result => <article key={result.id}>
+              <span>{result.document_type}</span><strong>{result.title}</strong><p>{result.search_text}</p>
+            </article>)}
+            {!memoryResults.length && <div className="assistant-empty">没有找到相关记忆。</div>}
+          </div>}
+        </section>
+
+        <section className="assistant-panel assistant-memory-chat">
+          <div className="assistant-section-heading">
+            <div><span className="assistant-eyebrow">EVIDENCE Q&A</span><h3><Bot size={16} /> 向个人记忆提问</h3></div>
+          </div>
+          <div className="assistant-memory-question">
+            <input value={memoryQuestion} onChange={event => setMemoryQuestion(event.target.value)} onKeyDown={event => {
+              if (event.key === 'Enter') void askMemory()
+            }} placeholder="例如：我和 Onyx Devs Lab 是什么关系？" />
+            <button className="primary" onClick={() => void askMemory()} disabled={askingMemory || !memoryQuestion.trim()}>{askingMemory ? '正在检索…' : '提问'}</button>
+          </div>
+          {memoryAnswer && <div className="assistant-memory-answer">
+            <p>{memoryAnswer.answer}</p>
+            {memoryAnswer.uncertainty && <small>不确定性：{memoryAnswer.uncertainty}</small>}
+            {!!memoryAnswer.citations?.length && <div className="assistant-citations">
+              {memoryAnswer.citations.map((citation: any) => <article key={citation.documentId}>
+                <strong>{citation.title}</strong><span>{citation.type}</span><p>{citation.content}</p>
+                {(citation.evidence || []).map((evidence: any) => <small key={evidence.message_id}>“{evidence.excerpt}”</small>)}
+              </article>)}
+            </div>}
+          </div>}
+        </section>
+
         <div className="assistant-memory-feed">
           <section className="assistant-panel">
             <div className="assistant-section-heading">
@@ -268,16 +359,24 @@ function AiAssistantPage() {
                   <strong>{claim.subject_name || '未知主体'} · {claim.predicate}</strong>
                   <span className={claim.status}>{claim.status === 'confirmed' ? '已确认' : '待确认'}</span>
                 </div>
-                <p>{claim.object_entity_name || claim.object_value || '未记录值'}</p>
+                {editingClaim?.id === claim.id ? <div className="assistant-claim-editor">
+                  <input value={editingClaim.value} onChange={event => setEditingClaim({ ...editingClaim, value: event.target.value })} placeholder="正确的事实值" />
+                  <input value={editingClaim.validFrom} onChange={event => setEditingClaim({ ...editingClaim, validFrom: event.target.value })} placeholder="生效时间（可选）" />
+                  <input value={editingClaim.validTo} onChange={event => setEditingClaim({ ...editingClaim, validTo: event.target.value })} placeholder="失效时间（可选）" />
+                </div> : <p>{claim.object_entity_name || claim.object_value || '未记录值'}</p>}
+                <small>来源：{claim.source_nature === 'self_statement' ? '本人明确陈述' : claim.source_nature === 'other_statement' ? '他人陈述' : '模型推断'} · {Math.round(Number(claim.confidence || 0) * 100)}% 可信{claim.conflict_group ? ' · 与其他事实冲突' : ''}</small>
                 {(claim.valid_from || claim.valid_to) && <small>有效期：{claim.valid_from || '未知'} — {claim.valid_to || '至今'}</small>}
                 <div className="assistant-evidence-stack">
                   {(claim.evidence || []).map((evidence: any) =>
                     <small key={evidence.message_id}>证据 · {new Date(evidence.timestamp * 1000).toLocaleString('zh-CN')}：“{evidence.excerpt}”</small>)}
                 </div>
-                {claim.status === 'candidate' && <div className="assistant-memory-actions">
+                <div className="assistant-memory-actions">
+                  {editingClaim?.id === claim.id
+                    ? <><button onClick={() => setEditingClaim(null)}>取消</button><button className="primary" onClick={() => void saveClaimCorrection()}>保存纠正</button></>
+                    : <button onClick={() => setEditingClaim({ id: claim.id, value: claim.object_entity_name || claim.object_value || '', validFrom: claim.valid_from || '', validTo: claim.valid_to || '' })}>纠正</button>}
                   <button onClick={() => void updateMemoryStatus('claim', claim.id, 'rejected')}>不准确</button>
-                  <button className="primary" onClick={() => void updateMemoryStatus('claim', claim.id, 'confirmed')}>确认事实</button>
-                </div>}
+                  {claim.status === 'candidate' && <button className="primary" onClick={() => void updateMemoryStatus('claim', claim.id, 'confirmed')}>确认事实</button>}
+                </div>
               </article>)}
               {!visibleClaims.length && <div className="assistant-empty">后续增量消息会在这里形成带原文证据的个人事实。</div>}
             </div>
@@ -301,10 +400,10 @@ function AiAssistantPage() {
                   {(event.evidence || []).map((evidence: any) =>
                     <small key={evidence.message_id}>证据 · {new Date(evidence.timestamp * 1000).toLocaleString('zh-CN')}：“{evidence.excerpt}”</small>)}
                 </div>
-                {event.status === 'candidate' && <div className="assistant-memory-actions">
+                <div className="assistant-memory-actions">
                   <button onClick={() => void updateMemoryStatus('event', event.id, 'rejected')}>不准确</button>
-                  <button className="primary" onClick={() => void updateMemoryStatus('event', event.id, 'confirmed')}>确认事件</button>
-                </div>}
+                  {event.status === 'candidate' && <button className="primary" onClick={() => void updateMemoryStatus('event', event.id, 'confirmed')}>确认事件</button>}
+                </div>
               </article>)}
               {!visibleEvents.length && <div className="assistant-empty">会议、决定、交付和承诺等事件会显示在这里。</div>}
             </div>

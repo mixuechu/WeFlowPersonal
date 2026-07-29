@@ -1650,6 +1650,9 @@ export interface ElectronAPI {
       updateGraphReview: (id: string, decision: 'confirmed' | 'rejected') => Promise<any>
       revertMerge: (id: number) => Promise<any>
       updateMemoryItemStatus: (kind: 'claim' | 'event', id: string, status: 'confirmed' | 'rejected') => Promise<any>
+      searchMemory: (query: string) => Promise<any[]>
+      correctClaim: (id: string, input: any) => Promise<any>
+      askMemory: (question: string, conversationId?: string) => Promise<any>
       getConversationSources: () => Promise<any[]>
       setConversationSource: (input: any) => Promise<any>
       setConversationSourcesBulk: (input: any) => Promise<any>

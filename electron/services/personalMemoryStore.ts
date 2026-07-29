@@ -165,6 +165,31 @@ export class PersonalMemoryStore {
         updated_at TEXT NOT NULL
       ) STRICT;
 
+      CREATE TABLE IF NOT EXISTS memory_corrections (
+        id INTEGER PRIMARY KEY,
+        item_kind TEXT NOT NULL,
+        item_id TEXT NOT NULL,
+        before_json TEXT NOT NULL,
+        after_json TEXT NOT NULL,
+        created_at TEXT NOT NULL
+      ) STRICT;
+
+      CREATE TABLE IF NOT EXISTS assistant_conversations (
+        id TEXT PRIMARY KEY,
+        title TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      ) STRICT;
+
+      CREATE TABLE IF NOT EXISTS assistant_messages (
+        id TEXT PRIMARY KEY,
+        conversation_id TEXT NOT NULL REFERENCES assistant_conversations(id) ON DELETE CASCADE,
+        role TEXT NOT NULL,
+        content TEXT NOT NULL,
+        citations_json TEXT NOT NULL DEFAULT '[]',
+        created_at TEXT NOT NULL
+      ) STRICT;
+
       CREATE TABLE IF NOT EXISTS ingestion_runs (
         id TEXT PRIMARY KEY,
         started_at TEXT NOT NULL,
@@ -178,6 +203,19 @@ export class PersonalMemoryStore {
         status TEXT NOT NULL,
         error TEXT
       ) STRICT;
+
+      CREATE TABLE IF NOT EXISTS ingestion_batches (
+        run_id TEXT NOT NULL,
+        batch_index INTEGER NOT NULL,
+        message_count INTEGER NOT NULL,
+        status TEXT NOT NULL,
+        attempts INTEGER NOT NULL DEFAULT 1,
+        error TEXT,
+        started_at TEXT NOT NULL,
+        finished_at TEXT,
+        PRIMARY KEY(run_id,batch_index)
+      ) STRICT;
+      CREATE INDEX IF NOT EXISTS idx_ingestion_batches_status ON ingestion_batches(status,started_at);
 
       CREATE TABLE IF NOT EXISTS conversation_policy (
         session_id TEXT PRIMARY KEY,
@@ -212,6 +250,10 @@ export class PersonalMemoryStore {
     `)
     this.ensureColumn('entities', 'identity_version', 'INTEGER NOT NULL DEFAULT 1')
     this.ensureColumn('entities', 'last_disambiguated_at', 'TEXT')
+    this.ensureColumn('claims', 'source_nature', `TEXT NOT NULL DEFAULT 'inference'`)
+    this.ensureColumn('claims', 'conflict_group', 'TEXT')
+    this.db.prepare(`UPDATE claims SET status='candidate' WHERE source_nature!='self_statement' AND status='confirmed'`).run()
+    this.repairDuplicateEvents()
     this.db.prepare(`
       INSERT INTO schema_meta(key, value, updated_at) VALUES('schema_version', '1', ?)
       ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at
@@ -222,6 +264,37 @@ export class PersonalMemoryStore {
     if (!this.db) return
     const columns = this.db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>
     if (!columns.some(item => item.name === column)) this.db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`)
+  }
+
+  private repairDuplicateEvents(): void {
+    if (!this.db) return
+    const rows = this.db.prepare(`
+      SELECT e.message_id,ev.id,ev.title,ev.start_at
+      FROM evidence e JOIN events ev ON ev.id=e.event_id
+      WHERE e.event_id IS NOT NULL AND e.event_id!=''
+      ORDER BY e.message_id
+    `).all() as Array<{ message_id: string; id: string; title: string; start_at?: string }>
+    const groups = new Map<string, typeof rows>()
+    for (const row of rows) groups.set(row.message_id, [...(groups.get(row.message_id) || []), row])
+    for (const group of groups.values()) {
+      if (group.length < 2) continue
+      const candidates = [...group]
+      while (candidates.length > 1) {
+        const left = candidates.shift()!
+        const rightIndex = candidates.findIndex(right => !left.start_at || !right.start_at || left.start_at === right.start_at)
+        if (rightIndex < 0) continue
+        const right = candidates.splice(rightIndex, 1)[0]
+        const leftScore = (left.start_at ? 1000 : 0) + left.title.length
+        const [target, source] = leftScore >= ((right.start_at ? 1000 : 0) + right.title.length) ? [left, right] : [right, left]
+        this.db.prepare('INSERT OR IGNORE INTO event_participants(event_id,entity_id,role) SELECT ?,entity_id,role FROM event_participants WHERE event_id=?').run(target.id, source.id)
+        this.db.prepare('UPDATE OR IGNORE evidence SET event_id=? WHERE event_id=?').run(target.id, source.id)
+        this.db.prepare('DELETE FROM evidence WHERE event_id=?').run(source.id)
+        this.db.prepare('DELETE FROM event_participants WHERE event_id=?').run(source.id)
+        this.db.prepare('DELETE FROM events WHERE id=?').run(source.id)
+        this.db.prepare('DELETE FROM search_fts WHERE document_id=?').run(`event:${source.id}`)
+        this.db.prepare('DELETE FROM search_documents WHERE id=?').run(`event:${source.id}`)
+      }
+    }
   }
 
   close(): void {
@@ -338,20 +411,42 @@ export class PersonalMemoryStore {
     if (!this.db || !claims.length) return
     const now = new Date().toISOString()
     const upsert = this.db.prepare(`
-      INSERT INTO claims(id,subject_id,predicate,object_entity_id,object_value,value_type,confidence,status,valid_from,valid_to,search_text,created_at,updated_at)
-      VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)
+      INSERT INTO claims(id,subject_id,predicate,object_entity_id,object_value,value_type,confidence,status,valid_from,valid_to,search_text,created_at,updated_at,source_nature,conflict_group)
+      VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
       ON CONFLICT(id) DO UPDATE SET confidence=MAX(confidence,excluded.confidence),status=excluded.status,
         valid_from=COALESCE(excluded.valid_from,valid_from),valid_to=COALESCE(excluded.valid_to,valid_to),
-        search_text=excluded.search_text,updated_at=excluded.updated_at
+        search_text=excluded.search_text,updated_at=excluded.updated_at,source_nature=excluded.source_nature,
+        conflict_group=COALESCE(excluded.conflict_group,conflict_group)
     `)
     const evidence = this.db.prepare(`
       INSERT OR IGNORE INTO evidence(claim_id,message_id,session_id,timestamp,excerpt,evidence_role)
       VALUES(?,?,?,?,?,?)
     `)
     for (const claim of claims) {
+      const existingValues = this.db.prepare(`
+        SELECT id,COALESCE(object_entity_id,object_value,'') AS value,valid_from,valid_to
+        FROM claims WHERE subject_id=? AND predicate=? AND status!='rejected' AND id!=?
+      `).all(claim.subjectId, claim.predicate, claim.id) as Array<{ id: string; value: string; valid_from?: string; valid_to?: string }>
+      const incomingValue = String(claim.objectEntityId || claim.objectValue || '')
+      const conflicting = existingValues.filter(item => {
+        if (!item.value || item.value === incomingValue) return false
+        if (item.valid_to && claim.validFrom && item.valid_to < claim.validFrom) return false
+        if (claim.validTo && item.valid_from && claim.validTo < item.valid_from) return false
+        return true
+      })
+      const conflictGroup = conflicting.length
+        ? `conflict_${Buffer.from(`${claim.subjectId}|${claim.predicate}`).toString('base64url').slice(0, 24)}`
+        : null
+      if (conflictGroup) {
+        const ids = conflicting.map(item => item.id)
+        const placeholders = ids.map(() => '?').join(',')
+        this.db.prepare(`UPDATE claims SET status='candidate',conflict_group=?,updated_at=? WHERE id IN (${placeholders})`)
+          .run(conflictGroup, now, ...ids)
+        claim.status = 'candidate'
+      }
       upsert.run(claim.id, claim.subjectId, claim.predicate, claim.objectEntityId || null, claim.objectValue || null,
         claim.valueType || 'text', claim.confidence, claim.status || 'candidate', claim.validFrom || null,
-        claim.validTo || null, claim.searchText, claim.createdAt || now, now)
+        claim.validTo || null, claim.searchText, claim.createdAt || now, now, claim.sourceNature || 'inference', conflictGroup)
       for (const item of claim.evidence || []) evidence.run(claim.id, item.messageId, item.sessionId, item.timestamp, item.excerpt, item.role || 'support')
       this.upsertSearchDocument(`claim:${claim.id}`, 'claim', claim.id, claim.predicate, claim.searchText,
         { subjectId: claim.subjectId, status: claim.status, validFrom: claim.validFrom, validTo: claim.validTo }, now)
@@ -374,6 +469,16 @@ export class PersonalMemoryStore {
       VALUES(?,?,?,?,?,?)
     `)
     for (const event of events) {
+      const evidenceIds = (event.evidence || []).map((item: any) => item.messageId)
+      if (evidenceIds.length) {
+        const placeholders = evidenceIds.map(() => '?').join(',')
+        const matches = this.db.prepare(`
+          SELECT DISTINCT ev.id,ev.start_at FROM events ev
+          JOIN evidence e ON e.event_id=ev.id WHERE e.message_id IN (${placeholders})
+        `).all(...evidenceIds) as Array<{ id: string; start_at?: string }>
+        const reusable = matches.find(match => !match.start_at || !event.startAt || match.start_at === event.startAt)
+        if (reusable) event.id = reusable.id
+      }
       upsert.run(event.id, event.eventType, event.title, event.description || '', event.startAt || null, event.endAt || null,
         event.location || null, event.confidence, event.status || 'candidate', event.searchText, event.createdAt || now, now)
       for (const item of event.participants || []) participant.run(event.id, item.entityId, item.role || 'participant')
@@ -387,6 +492,23 @@ export class PersonalMemoryStore {
     if (!this.db) return { claims: 0, events: 0 }
     const count = (table: string) => Number((this.db!.prepare(`SELECT COUNT(*) AS count FROM ${table}`).get() as { count: number }).count)
     return { claims: count('claims'), events: count('events') }
+  }
+
+  syncTasks(tasks: any[]): void {
+    if (!this.db) return
+    const now = new Date().toISOString()
+    const activeIds = new Set(tasks.map(task => `task:${task.id}`))
+    const existing = this.db.prepare(`SELECT id FROM search_documents WHERE document_type='task'`).all() as Array<{ id: string }>
+    for (const { id } of existing) {
+      if (activeIds.has(id)) continue
+      this.db.prepare('DELETE FROM search_fts WHERE document_id=?').run(id)
+      this.db.prepare('DELETE FROM search_documents WHERE id=?').run(id)
+    }
+    for (const task of tasks) {
+      this.upsertSearchDocument(`task:${task.id}`, 'task', task.id, task.title,
+        [task.title, task.detail, task.source, task.assignmentEvidence].filter(Boolean).join('；'),
+        { status: task.status, priority: task.priority, due: task.due, classification: task.classification }, now)
+    }
   }
 
   getMemoryFeed(limit = 100): { claims: any[]; events: any[] } {
@@ -429,6 +551,75 @@ export class PersonalMemoryStore {
     return this.db.prepare(`SELECT * FROM ${table} WHERE id=?`).get(id) || null
   }
 
+  correctClaim(id: string, input: { value: string; validFrom?: string; validTo?: string }): any {
+    if (!this.db) return null
+    const before = this.db.prepare('SELECT * FROM claims WHERE id=?').get(id) as any
+    if (!before) return null
+    const now = new Date().toISOString()
+    const after = {
+      ...before,
+      object_entity_id: null,
+      object_value: String(input.value || '').trim().slice(0, 1000),
+      valid_from: String(input.validFrom || '').trim() || null,
+      valid_to: String(input.validTo || '').trim() || null,
+      status: 'confirmed',
+      source_nature: 'human_confirmation',
+      conflict_group: null,
+      updated_at: now
+    }
+    if (!after.object_value) return null
+    this.db.prepare(`
+      UPDATE claims SET object_entity_id=NULL,object_value=?,valid_from=?,valid_to=?,status='confirmed',
+        source_nature='human_confirmation',conflict_group=NULL,updated_at=? WHERE id=?
+    `).run(after.object_value, after.valid_from, after.valid_to, now, id)
+    this.db.prepare(`
+      INSERT INTO memory_corrections(item_kind,item_id,before_json,after_json,created_at) VALUES('claim',?,?,?,?)
+    `).run(id, JSON.stringify(before), JSON.stringify(after), now)
+    const subject = this.db.prepare('SELECT canonical_name FROM entities WHERE id=?').get(before.subject_id) as { canonical_name?: string } | undefined
+    this.upsertSearchDocument(`claim:${id}`, 'claim', id, before.predicate,
+      `${subject?.canonical_name || ''} ${before.predicate} ${after.object_value}`.trim(),
+      { subjectId: before.subject_id, status: 'confirmed', validFrom: after.valid_from, validTo: after.valid_to }, now)
+    return this.db.prepare('SELECT * FROM claims WHERE id=?').get(id) || null
+  }
+
+  startIngestionRun(id: string, model: string, promptVersion: string): void {
+    if (!this.db) return
+    this.db.prepare(`
+      INSERT INTO ingestion_runs(id,started_at,model,prompt_version,status)
+      VALUES(?,?,?,?,?)
+    `).run(id, new Date().toISOString(), model, promptVersion, 'running')
+  }
+
+  recordIngestionBatch(runId: string, batchIndex: number, messageCount: number, status: 'running' | 'completed' | 'failed', error = ''): void {
+    if (!this.db) return
+    const now = new Date().toISOString()
+    this.db.prepare(`
+      INSERT INTO ingestion_batches(run_id,batch_index,message_count,status,error,started_at,finished_at)
+      VALUES(?,?,?,?,?,?,?)
+      ON CONFLICT(run_id,batch_index) DO UPDATE SET status=excluded.status,error=excluded.error,
+        attempts=CASE WHEN excluded.status='running' THEN ingestion_batches.attempts+1 ELSE ingestion_batches.attempts END,
+        finished_at=excluded.finished_at
+    `).run(runId, batchIndex, messageCount, status, error || null, now, status === 'running' ? null : now)
+  }
+
+  finishIngestionRun(id: string, input: { status: 'completed' | 'partial' | 'failed'; messageCount: number; entityCount: number; relationCount: number; error?: string }): void {
+    if (!this.db) return
+    this.db.prepare(`
+      UPDATE ingestion_runs SET finished_at=?,message_count=?,entity_count=?,relation_count=?,status=?,error=? WHERE id=?
+    `).run(new Date().toISOString(), input.messageCount, input.entityCount, input.relationCount, input.status, input.error || null, id)
+  }
+
+  getIngestionStatus(): any {
+    if (!this.db) return null
+    const latest = this.db.prepare('SELECT * FROM ingestion_runs ORDER BY started_at DESC LIMIT 1').get() as any
+    if (!latest) return null
+    const batches = this.db.prepare(`
+      SELECT status,COUNT(*) AS count,SUM(message_count) AS messages
+      FROM ingestion_batches WHERE run_id=? GROUP BY status
+    `).all(latest.id) as any[]
+    return { ...latest, batches }
+  }
+
   getMergeSnapshot(id: number): any | null {
     if (!this.db) return null
     const row = this.db.prepare('SELECT snapshot_json FROM merge_history WHERE id=? AND reverted_at IS NULL').get(id) as { snapshot_json: string } | undefined
@@ -441,12 +632,51 @@ export class PersonalMemoryStore {
 
   searchText(query: string, limit = 20): any[] {
     if (!this.db || !query.trim()) return []
+    const safeLimit = Math.max(1, Math.min(100, limit))
+    const normalized = query.trim().replace(/["']/g, ' ')
+    try {
+      const matches = this.db.prepare(`
+        SELECT d.*, bm25(search_fts) AS rank
+        FROM search_fts JOIN search_documents d ON d.id = search_fts.document_id
+        WHERE search_fts MATCH ?
+        ORDER BY rank LIMIT ?
+      `).all(normalized, safeLimit) as any[]
+      if (matches.length) return matches
+    } catch {}
     return this.db.prepare(`
-      SELECT d.*, bm25(search_fts) AS rank
-      FROM search_fts JOIN search_documents d ON d.id = search_fts.document_id
-      WHERE search_fts MATCH ?
-      ORDER BY rank LIMIT ?
-    `).all(query.trim().replace(/["']/g, ' '), Math.max(1, Math.min(100, limit))) as any[]
+      SELECT *,0 AS rank FROM search_documents
+      WHERE title LIKE ? OR search_text LIKE ? ORDER BY updated_at DESC LIMIT ?
+    `).all(`%${normalized}%`, `%${normalized}%`, safeLimit) as any[]
+  }
+
+  getDocumentEvidence(documentType: string, sourceId: string): any[] {
+    if (!this.db) return []
+    if (documentType === 'claim') return this.db.prepare('SELECT message_id,session_id,timestamp,excerpt FROM evidence WHERE claim_id=? ORDER BY timestamp LIMIT 10').all(sourceId) as any[]
+    if (documentType === 'event') return this.db.prepare('SELECT message_id,session_id,timestamp,excerpt FROM evidence WHERE event_id=? ORDER BY timestamp LIMIT 10').all(sourceId) as any[]
+    if (documentType === 'relation') return this.db.prepare('SELECT message_id,session_id,timestamp,excerpt FROM evidence WHERE relation_id=? ORDER BY timestamp LIMIT 10').all(sourceId) as any[]
+    return []
+  }
+
+  saveAssistantExchange(question: string, answer: string, citations: any[], conversationId?: string): string {
+    if (!this.db) return ''
+    const now = new Date().toISOString()
+    const id = conversationId || `chat_${Date.now()}_${Math.random().toString(16).slice(2)}`
+    this.db.prepare(`
+      INSERT INTO assistant_conversations(id,title,created_at,updated_at) VALUES(?,?,?,?)
+      ON CONFLICT(id) DO UPDATE SET updated_at=excluded.updated_at
+    `).run(id, question.slice(0, 80), now, now)
+    const insert = this.db.prepare('INSERT INTO assistant_messages(id,conversation_id,role,content,citations_json,created_at) VALUES(?,?,?,?,?,?)')
+    insert.run(`msg_${Date.now()}_q`, id, 'user', question, '[]', now)
+    insert.run(`msg_${Date.now()}_a`, id, 'assistant', answer, JSON.stringify(citations || []), now)
+    return id
+  }
+
+  getRecentAssistantExchanges(limit = 10): any[] {
+    if (!this.db) return []
+    return this.db.prepare(`
+      SELECT m.*,c.title FROM assistant_messages m JOIN assistant_conversations c ON c.id=m.conversation_id
+      ORDER BY m.created_at DESC LIMIT ?
+    `).all(limit * 2) as any[]
   }
 
   getConversationPolicies(): Map<string, boolean> {

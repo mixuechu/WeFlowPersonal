@@ -2,6 +2,7 @@ import { app } from 'electron'
 import crypto from 'crypto'
 import { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'fs'
 import { dirname, join } from 'path'
+import { jsonrepair } from 'jsonrepair'
 import { ConfigService } from './config'
 import { httpService } from './httpService'
 import { showSystemNotification } from './systemNotificationService'
@@ -22,6 +23,7 @@ type AssistantTask = {
   classification?: 'mine' | 'uncertain'
   assignmentEvidence?: string
   sourceMessageIds?: string[]
+  evidence?: Array<{ messageId: string; timestamp: number; sender: string; excerpt: string }>
 }
 
 type GraphEntity = {
@@ -131,8 +133,12 @@ function parseModelJson(text: string): any {
   } catch {
     const start = fenced.indexOf('{')
     const end = fenced.lastIndexOf('}')
-    if (start >= 0 && end > start) return JSON.parse(fenced.slice(start, end + 1))
-    throw new Error('模型没有返回有效 JSON')
+    const candidate = start >= 0 && end > start ? fenced.slice(start, end + 1) : fenced
+    try {
+      return JSON.parse(jsonrepair(candidate))
+    } catch {
+      throw new Error('模型没有返回有效 JSON')
+    }
   }
 }
 
@@ -266,6 +272,7 @@ export class AiAssistantService {
     renameSync(temporary, this.statePath)
     try {
       personalMemoryStore.syncGraph(this.state.graph)
+      personalMemoryStore.syncTasks(this.state.tasks)
     } catch (error) {
       console.error('[AI Assistant] 个人记忆数据库同步失败:', error)
     }
@@ -657,14 +664,17 @@ export class AiAssistantService {
       const evidence = evidenceFor(item.evidenceMessageIds)
       if (!subjectId || !predicate || (!objectEntityId && !objectValue) || !evidence.length) return []
       const value = objectEntityId || objectValue
+      const subjectName = this.state.graph.entities.find(entity => entity.id === subjectId)?.canonicalName || ''
+      const objectName = objectEntityId ? this.state.graph.entities.find(entity => entity.id === objectEntityId)?.canonicalName || '' : objectValue
       const id = crypto.createHash('sha256').update(`${subjectId}|${predicate}|${value}|${String(item.validFrom || '')}`).digest('hex').slice(0, 24)
       return [{
         id, subjectId, predicate, objectEntityId, objectValue: objectEntityId ? '' : objectValue,
         valueType: ['text', 'number', 'date', 'boolean'].includes(item.valueType) ? item.valueType : 'text',
         confidence: Math.max(0, Math.min(1, Number(item.confidence || 0.6))),
         status: item.sourceNature === 'self_statement' && Number(item.confidence || 0) >= 0.8 ? 'confirmed' : 'candidate',
+        sourceNature: ['self_statement', 'other_statement', 'inference'].includes(item.sourceNature) ? item.sourceNature : 'inference',
         validFrom: String(item.validFrom || ''), validTo: String(item.validTo || ''),
-        searchText: `${predicate} ${objectValue}`.trim(), evidence, createdAt: now
+        searchText: `${subjectName} ${predicate} ${objectName}`.trim(), evidence, createdAt: now
       }]
     })
     const events = (Array.isArray(digest.events) ? digest.events : []).flatMap((item: any) => {
@@ -675,13 +685,15 @@ export class AiAssistantService {
         const entityId = tempIds.get(String(participant.tempId || ''))
         return entityId ? [{ entityId, role: String(participant.role || 'participant').slice(0, 80) }] : []
       })
+      const participantNames = participants.map((participant: any) =>
+        this.state.graph.entities.find(entity => entity.id === participant.entityId)?.canonicalName || '').filter(Boolean)
       const id = crypto.createHash('sha256').update(`${String(item.eventType || 'other')}|${title}|${String(item.startAt || '')}|${evidence[0].messageId}`).digest('hex').slice(0, 24)
       return [{
         id, eventType: String(item.eventType || 'other').slice(0, 80), title,
         description: String(item.description || '').slice(0, 1200),
         startAt: String(item.startAt || ''), endAt: String(item.endAt || ''), location: String(item.location || '').slice(0, 200),
         confidence: Math.max(0, Math.min(1, Number(item.confidence || 0.6))),
-        status: 'confirmed', searchText: `${title} ${String(item.description || '')}`.trim(),
+        status: 'confirmed', searchText: `${title} ${String(item.description || '')} ${participantNames.join(' ')}`.trim(),
         participants, evidence, createdAt: now
       }]
     })
@@ -728,8 +740,11 @@ export class AiAssistantService {
   }
 
   private async runSync(): Promise<any> {
+    const runId = `run_${crypto.randomUUID()}`
+    let runFinished = false
     this.state.cursor.lastAttemptAt = new Date().toISOString()
     this.saveState()
+    personalMemoryStore.startIngestionRun(runId, String(this.config.get('aiAssistantApiModel') || ''), 'personal-os-v2')
     const now = Math.floor(Date.now() / 1000)
     const lookbackDays = Number(this.config.get('aiAssistantInitialLookbackDays')) || 3
     const start = this.state.cursor.lastMessageTimestamp
@@ -743,7 +758,10 @@ export class AiAssistantService {
       const createdAt = new Date().toISOString()
       const successfulMessageKeys: string[] = []
       const batchErrors: string[] = []
-      for (const batch of this.buildAnalysisBatches(fresh)) {
+      const batches = this.buildAnalysisBatches(fresh)
+      for (let batchIndex = 0; batchIndex < batches.length; batchIndex += 1) {
+        const batch = batches[batchIndex]
+        personalMemoryStore.recordIngestionBatch(runId, batchIndex, batch.length, 'running')
         try {
           const digest = await this.callAi(batch)
           digests.push(digest)
@@ -754,8 +772,11 @@ export class AiAssistantService {
           successfulMessageKeys.push(...checkpointKeys)
           this.state.cursor.recentMessageIds = [...new Set([...this.state.cursor.recentMessageIds, ...checkpointKeys])].slice(-20_000)
           this.saveState()
+          personalMemoryStore.recordIngestionBatch(runId, batchIndex, batch.length, 'completed')
         } catch (error: any) {
-          batchErrors.push(error?.message || String(error))
+          const message = error?.message || String(error)
+          batchErrors.push(message)
+          personalMemoryStore.recordIngestionBatch(runId, batchIndex, batch.length, 'failed', message)
         }
       }
       const tasks = new Map<string, AssistantTask>()
@@ -787,7 +808,13 @@ export class AiAssistantService {
             status: 'todo',
             classification,
             assignmentEvidence: String(item.assignmentEvidence || '').slice(0, 300),
-            sourceMessageIds
+            sourceMessageIds,
+            evidence: evidenceMessages.map(message => ({
+              messageId: String(message.id),
+              timestamp: Number(message.timestamp),
+              sender: message.direction === '我发送' ? '我' : String(message.senderName || message.senderId || '对方'),
+              excerpt: redact(String(message.content)).slice(0, 300)
+            }))
           }
           tasks.set(task.id, task)
         }
@@ -822,6 +849,14 @@ export class AiAssistantService {
         this.state.cursor.lastError = `仍有 ${batchErrors.length} 个消息批次等待重试：${batchErrors[0]}`
       }
       this.saveState()
+      personalMemoryStore.finishIngestionRun(runId, {
+        status: batchErrors.length ? 'partial' : 'completed',
+        messageCount: successfulMessageKeys.length,
+        entityCount: this.state.graph.entities.length,
+        relationCount: this.state.graph.relations.length,
+        error: batchErrors[0]
+      })
+      runFinished = true
       const mineTasks = [...tasks.values()].filter(task => task.classification === 'mine')
       if (mineTasks.length > 0) {
         await showSystemNotification({
@@ -836,6 +871,14 @@ export class AiAssistantService {
     } catch (error: any) {
       this.state.cursor.lastError = error?.message || String(error)
       this.saveState()
+      if (!runFinished) {
+        personalMemoryStore.finishIngestionRun(runId, {
+          status: 'failed', messageCount: 0,
+          entityCount: this.state.graph.entities.length,
+          relationCount: this.state.graph.relations.length,
+          error: this.state.cursor.lastError
+        })
+      }
       throw error
     }
   }
@@ -863,7 +906,9 @@ export class AiAssistantService {
       graph: this.state.graph,
       mergeHistory: personalMemoryStore.listActiveMerges(),
       memoryStats: personalMemoryStore.getMemoryStats(),
-      memoryFeed: personalMemoryStore.getMemoryFeed()
+      memoryFeed: personalMemoryStore.getMemoryFeed(),
+      ingestionStatus: personalMemoryStore.getIngestionStatus(),
+      assistantHistory: personalMemoryStore.getRecentAssistantExchanges()
     }
   }
 
@@ -1032,6 +1077,65 @@ export class AiAssistantService {
 
   updateMemoryItemStatus(kind: 'claim' | 'event', id: string, status: 'confirmed' | 'rejected'): any {
     return personalMemoryStore.updateMemoryItemStatus(kind, id, status)
+  }
+
+  searchMemory(query: string): any[] {
+    return personalMemoryStore.searchText(String(query || ''), 40).map((item: any) => ({
+      ...item,
+      metadata: (() => { try { return JSON.parse(item.metadata_json || '{}') } catch { return {} } })(),
+      evidence: personalMemoryStore.getDocumentEvidence(item.document_type, item.source_id)
+    }))
+  }
+
+  async askMemory(question: string, conversationId?: string): Promise<any> {
+    const query = String(question || '').trim()
+    if (!query) throw new Error('请输入问题')
+    let results = this.searchMemory(query)
+    if (!results.length) {
+      const terms = query.match(/[A-Za-z0-9@._-]{2,}|[\u4e00-\u9fff]{2,}/g) || []
+      const merged = new Map<string, any>()
+      for (const term of terms.slice(0, 6)) {
+        for (const result of this.searchMemory(term)) merged.set(result.id, result)
+      }
+      results = [...merged.values()].slice(0, 30)
+    }
+    const context = results.slice(0, 20).map((item: any) => ({
+      documentId: item.id,
+      type: item.document_type,
+      title: item.title,
+      content: item.search_text,
+      evidence: item.evidence,
+      canSupportFacts: Array.isArray(item.evidence) && item.evidence.length > 0
+    }))
+    const apiKey = String(this.config.get('aiAssistantApiKey') || '').trim()
+    if (!apiKey) throw new Error('请先设置 DeepSeek API Key')
+    const baseUrl = String(this.config.get('aiAssistantApiBaseUrl') || 'https://api.deepseek.com').replace(/\/$/, '')
+    const model = String(this.config.get('aiAssistantApiModel') || 'deepseek-v4-flash')
+    const response = await fetch(`${baseUrl}/chat/completions`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model, temperature: 0.1, max_tokens: 1800, response_format: { type: 'json_object' },
+        messages: [
+          { role: 'system', content: '你是本地个人记忆问答助手。只能依据提供的检索结果回答；证据不足必须明确说不知道。只有 canSupportFacts=true 且包含原始 evidence 的文档可以支持事实结论；没有原始 evidence 的实体摘要只能作为检索线索，不能作为事实依据。每个事实结论必须引用能够支持它的 documentId。只输出 JSON：{"answer":"回答","citationIds":["documentId"],"uncertainty":"不确定性说明"}。' },
+          { role: 'user', content: `问题：${query}\n本地检索结果：${JSON.stringify(context)}` }
+        ]
+      }),
+      signal: AbortSignal.timeout(90_000)
+    })
+    const payload = await response.json().catch(() => ({}))
+    if (!response.ok) throw new Error(payload?.error?.message || `DeepSeek 请求失败 (${response.status})`)
+    const parsed = parseModelJson(payload?.choices?.[0]?.message?.content)
+    const allowed = new Set(context.filter(item => item.canSupportFacts).map(item => item.documentId))
+    const citationIds = (Array.isArray(parsed.citationIds) ? parsed.citationIds : []).map(String).filter((id: string) => allowed.has(id))
+    const citations = context.filter(item => citationIds.includes(item.documentId))
+    const answer = String(parsed.answer || '没有足够证据回答。').slice(0, 6000)
+    const id = personalMemoryStore.saveAssistantExchange(query, answer, citations, conversationId)
+    return { conversationId: id, answer, uncertainty: String(parsed.uncertainty || ''), citations }
+  }
+
+  correctClaim(id: string, input: any): any {
+    return personalMemoryStore.correctClaim(id, input)
   }
 
   private async schedulerTick(): Promise<void> {
