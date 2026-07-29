@@ -185,6 +185,7 @@ function AiAssistantPage() {
   const visibleClaims = memoryFeed.claims.filter((item: any) => item.status !== 'rejected')
   const visibleEvents = memoryFeed.events.filter((item: any) => item.status !== 'rejected')
   const visibleResources = memoryFeed.resources || []
+  const resourceTrash = dashboard?.resourceTrash || []
   const selectedEntityClaims = selectedEntity
     ? visibleClaims.filter((item: any) => item.subject_id === selectedEntity.id)
     : []
@@ -408,6 +409,16 @@ function AiAssistantPage() {
     try {
       await window.electronAPI.aiAssistant.deleteMemoryResource(resource.id)
       setMessage(`已从个人记忆删除：${resource.title || '未命名资源'}`)
+      await load()
+    } catch (error: any) {
+      setMessage(error?.message || String(error))
+    }
+  }
+
+  const restoreMemoryResource = async (resource: any) => {
+    try {
+      const result = await window.electronAPI.aiAssistant.restoreMemoryResource(resource.id)
+      setMessage(result?.success ? `已恢复资源：${resource.title || '未命名资源'}` : '资源恢复失败')
       await load()
     } catch (error: any) {
       setMessage(error?.message || String(error))
@@ -1076,6 +1087,21 @@ function AiAssistantPage() {
               </article>)}
               {!visibleResources.length && <div className="assistant-empty">链接、文件、转发记录、小程序、图片 OCR 和语音转写会在增量整理时沉淀到这里。</div>}
             </div>
+            {!!resourceTrash.length && <details className="assistant-query-plan">
+              <summary>资源回收站（{resourceTrash.length}）</summary>
+              <div className="assistant-memory-list">
+                {resourceTrash.map((resource: any) => <article className="assistant-memory-item" key={resource.id}>
+                  <div className="assistant-memory-item-head">
+                    <strong>{resource.title}</strong>
+                    <span>{resource.resourceType}</span>
+                  </div>
+                  <small>删除于 {new Date(resource.deletedAt).toLocaleString('zh-CN')}</small>
+                  <div className="assistant-memory-actions">
+                    <button className="primary" onClick={() => void restoreMemoryResource(resource)}>恢复资源</button>
+                  </div>
+                </article>)}
+              </div>
+            </details>}
           </section>
         </div>
 

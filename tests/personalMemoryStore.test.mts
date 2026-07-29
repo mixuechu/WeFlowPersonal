@@ -897,6 +897,12 @@ test('message resources remain idempotent, searchable and traceable to original 
   assert.deepEqual(store.getDocumentEvidence('resource', 'resource-link-1'), [])
   store.upsertResources([resource])
   assert.equal(store.getMemoryStats().resources, 0)
+  assert.equal(store.listResourceTrash()[0].title, '项目验收说明')
+  assert.equal(store.restoreResource('resource-link-1').success, true)
+  assert.equal(store.getMemoryStats().resources, 1)
+  assert.ok(store.searchText('报价有效期').some(item => item.id === 'resource:resource-link-1'))
+  assert.equal(store.getDocumentEvidence('resource', 'resource-link-1')[0].message_id, 'message-resource-1')
+  assert.deepEqual(store.listResourceTrash(), [])
 }))
 
 test('long scanned PDF resources resume by persisted page cursor and invalidate stale vectors', () => withStore(store => {

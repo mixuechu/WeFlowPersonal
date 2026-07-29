@@ -308,6 +308,13 @@ export class PersonalMemoryStore {
         created_at TEXT NOT NULL
       ) STRICT;
 
+      CREATE TABLE IF NOT EXISTS resource_trash (
+        resource_id TEXT PRIMARY KEY,
+        snapshot_json TEXT NOT NULL,
+        reason TEXT NOT NULL DEFAULT 'manual_delete',
+        deleted_at TEXT NOT NULL
+      ) STRICT;
+
       CREATE VIRTUAL TABLE IF NOT EXISTS search_fts USING fts5(
         document_id UNINDEXED,
         title,
@@ -942,6 +949,18 @@ export class PersonalMemoryStore {
     const now = new Date().toISOString()
     this.db.exec('BEGIN IMMEDIATE')
     try {
+      const resource = this.db.prepare('SELECT * FROM memory_resources WHERE id=?').get(resourceId) as any
+      const evidence = this.db.prepare(`
+        SELECT message_id,session_id,timestamp,sender,excerpt
+        FROM search_document_evidence WHERE document_id=? ORDER BY timestamp
+      `).all(documentId) as any[]
+      if (resource) {
+        this.db.prepare(`
+          INSERT INTO resource_trash(resource_id,snapshot_json,reason,deleted_at) VALUES(?,?,?,?)
+          ON CONFLICT(resource_id) DO UPDATE SET
+            snapshot_json=excluded.snapshot_json,reason=excluded.reason,deleted_at=excluded.deleted_at
+        `).run(resourceId, JSON.stringify({ resource, evidence }), String(reason || 'manual_delete').slice(0, 200), now)
+      }
       this.db.prepare(`
         INSERT INTO resource_suppressions(resource_id,reason,created_at) VALUES(?,?,?)
         ON CONFLICT(resource_id) DO UPDATE SET reason=excluded.reason,created_at=excluded.created_at
@@ -952,6 +971,68 @@ export class PersonalMemoryStore {
       const result = this.db.prepare('DELETE FROM memory_resources WHERE id=?').run(resourceId)
       this.db.exec('COMMIT')
       return { success: true, id: resourceId, deleted: Number(result.changes || 0), suppressed: true }
+    } catch (error) {
+      this.db.exec('ROLLBACK')
+      throw error
+    }
+  }
+
+  listResourceTrash(limit = 50): any[] {
+    if (!this.db) return []
+    return (this.db.prepare(`
+      SELECT resource_id,snapshot_json,reason,deleted_at
+      FROM resource_trash ORDER BY deleted_at DESC LIMIT ?
+    `).all(Math.max(1, Math.min(500, limit))) as any[]).flatMap(row => {
+      try {
+        const snapshot = JSON.parse(row.snapshot_json)
+        return [{
+          id: row.resource_id,
+          title: snapshot.resource?.title || '未命名资源',
+          resourceType: snapshot.resource?.resource_type || 'resource',
+          deletedAt: row.deleted_at,
+          reason: row.reason
+        }]
+      } catch {
+        return []
+      }
+    })
+  }
+
+  restoreResource(id: string): any {
+    if (!this.db) return { success: false, id }
+    const resourceId = String(id || '').trim()
+    const trash = this.db.prepare('SELECT snapshot_json FROM resource_trash WHERE resource_id=?').get(resourceId) as any
+    if (!trash) return { success: false, id: resourceId, error: 'not_found' }
+    const snapshot = JSON.parse(trash.snapshot_json || '{}')
+    const row = snapshot.resource
+    if (!row) return { success: false, id: resourceId, error: 'invalid_snapshot' }
+    let metadata: any = {}
+    try { metadata = JSON.parse(row.metadata_json || '{}') } catch {}
+    this.db.exec('BEGIN IMMEDIATE')
+    try {
+      this.db.prepare('DELETE FROM resource_suppressions WHERE resource_id=?').run(resourceId)
+      this.upsertResources([{
+        id: resourceId,
+        resourceType: row.resource_type,
+        title: row.title,
+        url: row.url,
+        fileName: row.file_name,
+        fileExt: row.file_ext,
+        content: row.content,
+        metadata,
+        createdAt: row.created_at,
+        updatedAt: new Date().toISOString(),
+        evidence: (snapshot.evidence || []).map((item: any) => ({
+          messageId: item.message_id,
+          sessionId: item.session_id,
+          timestamp: item.timestamp,
+          sender: item.sender,
+          excerpt: item.excerpt
+        }))
+      }])
+      this.db.prepare('DELETE FROM resource_trash WHERE resource_id=?').run(resourceId)
+      this.db.exec('COMMIT')
+      return { success: true, id: resourceId }
     } catch (error) {
       this.db.exec('ROLLBACK')
       throw error

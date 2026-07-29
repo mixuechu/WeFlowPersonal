@@ -1415,6 +1415,7 @@ export class AiAssistantService {
       mergeHistory: personalMemoryStore.listActiveMerges(),
       memoryStats: personalMemoryStore.getMemoryStats(),
       memoryFeed,
+      resourceTrash: personalMemoryStore.listResourceTrash(),
       ingestionStatus: personalMemoryStore.getIngestionStatus(),
       assistantHistory: personalMemoryStore.getRecentAssistantExchanges(),
       qualityBaseline: evaluateTaskAssignmentPolicy(),
@@ -1830,6 +1831,10 @@ export class AiAssistantService {
 
   deleteMemoryResource(id: string): any {
     return personalMemoryStore.deleteResource(id)
+  }
+
+  restoreMemoryResource(id: string): any {
+    return personalMemoryStore.restoreResource(id)
   }
 
   reviewMemoryDocument(kind: 'relation' | 'claim' | 'event', id: string, decision: 'confirmed' | 'rejected'): any {
