@@ -45,6 +45,7 @@ function AiAssistantPage() {
 
   const briefing = dashboard?.briefing
   const tasks: Task[] = dashboard?.tasks || []
+  const taskReviewQueue: Task[] = dashboard?.taskReviewQueue || []
   const openTasks = useMemo(() => tasks.filter(task => task.status !== 'done'), [tasks])
   const graph = dashboard?.graph || { entities: [], relations: [], reviewQueue: [] }
   const graphEntities = useMemo(() => {
@@ -99,6 +100,11 @@ function AiAssistantPage() {
 
   const decideReview = async (id: string, decision: 'confirmed' | 'rejected') => {
     await window.electronAPI.aiAssistant.updateGraphReview(id, decision)
+    await load()
+  }
+
+  const decideTaskReview = async (id: string, decision: 'mine' | 'rejected') => {
+    await window.electronAPI.aiAssistant.updateTaskReview(id, decision)
     await load()
   }
 
@@ -213,6 +219,28 @@ function AiAssistantPage() {
             {status?.cursor?.lastError && <div className="assistant-error"><strong>上次同步未完成</strong><span>{status.cursor.lastError}</span></div>}
           </aside>
         </div>
+
+        {taskReviewQueue.length > 0 && (
+          <section className="assistant-panel assistant-review-section">
+            <div className="assistant-section-heading">
+              <div><span className="assistant-eyebrow">ASSIGNEE REVIEW</span><h3>待确认归属</h3></div>
+              <span className="assistant-count">{taskReviewQueue.length} 项不会计入你的待办</span>
+            </div>
+            {taskReviewQueue.map(task => (
+              <article className="assistant-review-item" key={task.id}>
+                <div>
+                  <strong>{task.title}</strong>
+                  {task.detail && <p>{task.detail}</p>}
+                  <small>{task.assignmentEvidence || '缺少足够的归属证据'}{task.source ? ` · 来自 ${task.source}` : ''}</small>
+                </div>
+                <div>
+                  <button onClick={() => void decideTaskReview(task.id, 'rejected')}>不是我的</button>
+                  <button className="primary" onClick={() => void decideTaskReview(task.id, 'mine')}>归为我的待办</button>
+                </div>
+              </article>
+            ))}
+          </section>
+        )}
 
         <section className="assistant-panel assistant-memory">
           <div className="assistant-section-heading">

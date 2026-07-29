@@ -4505,6 +4505,7 @@ function registerIpcHandlers() {
   ipcMain.handle('ai-assistant:getSettings', () => aiAssistantService.getSettings())
   ipcMain.handle('ai-assistant:setSettings', (_, input: any) => aiAssistantService.setSettings(input))
   ipcMain.handle('ai-assistant:updateTask', (_, id: string, patch: any) => aiAssistantService.updateTask(id, patch))
+  ipcMain.handle('ai-assistant:updateTaskReview', (_, id: string, decision: 'mine' | 'rejected') => aiAssistantService.updateTaskReview(id, decision))
   ipcMain.handle('ai-assistant:updateGraphReview', (_, id: string, decision: 'confirmed' | 'rejected') => aiAssistantService.updateGraphReview(id, decision))
   ipcMain.handle('ai-assistant:getConversationSources', () => aiAssistantService.getConversationSources())
   ipcMain.handle('ai-assistant:setConversationSource', (_, input: any) => aiAssistantService.setConversationSource(input))

@@ -21,6 +21,7 @@ type AssistantTask = {
   updatedAt?: string
   classification?: 'mine' | 'uncertain'
   assignmentEvidence?: string
+  sourceMessageIds?: string[]
 }
 
 type GraphEntity = {
@@ -87,13 +88,14 @@ const EMPTY_STATE: AssistantState = {
 }
 
 const SYSTEM_PROMPT = `你是一个谨慎的中文私人助理兼个人记忆图谱分析器。输入包含按会话组织的连续微信消息和用户身份档案。
-待办归属规则：只有明确@用户、称呼用户、上下文明确指派用户，或用户自己明确承诺承担的事项才进入 mine；可能相关但证据不足进入 uncertain；分配给他人、群公告、@所有人和泛泛讨论不得成为任务。
+待办归属规则：只有明确@用户、称呼用户、上下文明确指派用户，或用户自己明确承诺承担的事项才进入 mine；可能相关但证据不足进入 uncertain；明确分配给他人则标为 others；群公告、@所有人和泛泛讨论不得成为任务。
+“我发送”只表示消息方向，绝不表示任务负责人是用户。用户发出的“查一下、看一下、确认一下、问一下、发一下、快、请、麻烦、帮我”等祈使句或请求，默认是要求收件人/群友执行，必须标为 others；只有同时出现“我来、我会、我负责、我去、我处理、我跟进、我要”等明确自我承诺，才可能标为 mine。
 群聊必须结合 sender、direction、被提及名字和前后文判断，不能因为群内出现祈使句就默认属于用户。每个任务必须给出 assignmentEvidence。
 知识图谱规则：提取人物、组织、群和项目，以及有明确消息证据的关系。不要因名字相同就合并人物；一个人可以有多个账号和别名。身份不确定时创建候选，不做硬合并。所有关系必须带 messageId 证据。
 “用户”“我”“本人”“对方”“群友”“某人”“未知”等只是角色占位词，绝对不能作为实体名称。用户本人必须使用身份档案里的真实姓名；身份档案没有姓名时，不创建用户本人的人物实体。
 只根据消息证据，不臆测；title 用动词开头；不确定日期时 due 为空；source 使用会话显示名。
 只返回 JSON：
-{"headline":"标题","summary":"摘要","highlights":["重要信息"],"tasks":[{"title":"待办","detail":"上下文","owner":"我","due":"","priority":"high|medium|low","source":"会话名","confidence":0.8,"classification":"mine|uncertain","assignmentEvidence":"归属证据"}],"entities":[{"tempId":"e1","type":"person|organization|group|project","canonicalName":"名称","aliases":[],"accountIds":[],"summary":"仅基于证据的简述","confidence":0.8,"evidenceMessageIds":["消息ID"]}],"relations":[{"subjectTempId":"e1","predicate":"关系","objectTempId":"e2","confidence":0.8,"evidenceMessageIds":["消息ID"]}],"possibleDuplicates":[{"leftTempId":"e1","rightExistingName":"已有实体名","confidence":0.7,"reason":"原因"}]}`
+{"headline":"标题","summary":"摘要","highlights":["重要信息"],"tasks":[{"title":"待办","detail":"上下文","owner":"我","due":"","priority":"high|medium|low","source":"会话名","confidence":0.8,"classification":"mine|uncertain|others","assignmentEvidence":"归属证据","sourceMessageIds":["消息ID"]}],"entities":[{"tempId":"e1","type":"person|organization|group|project","canonicalName":"名称","aliases":[],"accountIds":[],"summary":"仅基于证据的简述","confidence":0.8,"evidenceMessageIds":["消息ID"]}],"relations":[{"subjectTempId":"e1","predicate":"关系","objectTempId":"e2","confidence":0.8,"evidenceMessageIds":["消息ID"]}],"possibleDuplicates":[{"leftTempId":"e1","rightExistingName":"已有实体名","confidence":0.7,"reason":"原因"}]}`
 
 function shanghaiDate(timestampMs = Date.now()): string {
   return new Intl.DateTimeFormat('en-CA', {
@@ -553,6 +555,16 @@ export class AiAssistantService {
         highlights.push(...(Array.isArray(digest.highlights) ? digest.highlights : []))
         if (digest.summary) summaries.push(String(digest.summary))
         for (const item of Array.isArray(digest.tasks) ? digest.tasks : []) {
+          const sourceMessageIds = Array.isArray(item.sourceMessageIds) ? item.sourceMessageIds.map(String).slice(0, 20) : []
+          const evidenceMessages = fresh.filter(message => sourceMessageIds.includes(String(message.id)))
+          const evidenceText = evidenceMessages.map(message => String(message.content || '')).join('\n')
+          const onlySentByUser = evidenceMessages.length > 0 && evidenceMessages.every(message => message.direction === '我发送')
+          const isRequest = /请|麻烦|帮我|帮忙|查一下|看一下|确认一下|问一下|发一下|给我|快/.test(evidenceText)
+          const isSelfCommitment = /我(?:来|会|负责|去|处理|跟进|完成|安排|准备|需要|要)/.test(evidenceText)
+          let classification: 'mine' | 'uncertain' | 'others' =
+            item.classification === 'mine' || item.classification === 'others' ? item.classification : 'uncertain'
+          if (onlySentByUser && isRequest && !isSelfCommitment) classification = 'others'
+          if (classification === 'others') continue
           const task: AssistantTask = {
             id: stableTaskId(item),
             title: String(item.title || '待确认事项').slice(0, 160),
@@ -563,8 +575,9 @@ export class AiAssistantService {
             source: String(item.source || '').slice(0, 100),
             confidence: Math.max(0, Math.min(1, Number(item.confidence ?? 0.7))),
             status: 'todo',
-            classification: item.classification === 'uncertain' ? 'uncertain' : 'mine',
-            assignmentEvidence: String(item.assignmentEvidence || '').slice(0, 300)
+            classification,
+            assignmentEvidence: String(item.assignmentEvidence || '').slice(0, 300),
+            sourceMessageIds
           }
           tasks.set(task.id, task)
         }
@@ -581,7 +594,7 @@ export class AiAssistantService {
           headline: `已整理 ${fresh.length} 条新增消息`,
           summary: summaries.join(' ').slice(0, 900),
           highlights: [...new Set(highlights)].slice(0, 8),
-          tasks: [...tasks.values()],
+          tasks: [...tasks.values()].filter(task => task.classification === 'mine'),
           messageCount: fresh.length,
           failedSessions: collected.failed.length,
           generatedAt: createdAt
@@ -595,15 +608,16 @@ export class AiAssistantService {
       this.state.cursor.lastError = null
       this.state.lastSyncAt = createdAt
       this.saveState()
-      if (tasks.size > 0) {
+      const mineTasks = [...tasks.values()].filter(task => task.classification === 'mine')
+      if (mineTasks.length > 0) {
         await showSystemNotification({
-          title: `AI 助理发现 ${tasks.size} 个新待办`,
-          content: [...tasks.values()].slice(0, 2).map(task => task.title).join('；'),
+          title: `AI 助理发现 ${mineTasks.length} 个新待办`,
+          content: mineTasks.slice(0, 2).map(task => task.title).join('；'),
           channel: 'ai-assistant',
           targetRoute: '/ai-assistant'
         }).catch(() => undefined)
       }
-      return { success: true, newMessageCount: fresh.length, newTaskCount: tasks.size, failedSessions: collected.failed.length }
+      return { success: true, newMessageCount: fresh.length, newTaskCount: mineTasks.length, failedSessions: collected.failed.length }
     } catch (error: any) {
       this.state.cursor.lastError = error?.message || String(error)
       this.saveState()
@@ -624,9 +638,12 @@ export class AiAssistantService {
   getDashboard(): any {
     const dates = Object.keys(this.state.briefings).sort().reverse()
     const latest = dates[0] ? this.state.briefings[dates[0]] : null
+    const tasks = this.state.tasks.filter(task => task.classification === 'mine')
+    const taskReviewQueue = this.state.tasks.filter(task => task.classification !== 'mine')
     return {
-      briefing: latest ? { ...latest, tasks: this.state.tasks } : null,
-      tasks: this.state.tasks,
+      briefing: latest ? { ...latest, tasks } : null,
+      tasks,
+      taskReviewQueue,
       cursor: this.state.cursor,
       graph: this.state.graph
     }
@@ -704,6 +721,21 @@ export class AiAssistantService {
     const task = this.state.tasks.find(item => item.id === id)
     if (!task) return null
     if (['todo', 'doing', 'done'].includes(patch.status)) task.status = patch.status
+    task.updatedAt = new Date().toISOString()
+    this.saveState()
+    return task
+  }
+
+  updateTaskReview(id: string, decision: 'mine' | 'rejected'): AssistantTask | null {
+    const index = this.state.tasks.findIndex(item => item.id === id && item.classification !== 'mine')
+    if (index < 0) return null
+    const task = this.state.tasks[index]
+    if (decision === 'rejected') {
+      this.state.tasks.splice(index, 1)
+      this.saveState()
+      return task
+    }
+    task.classification = 'mine'
     task.updatedAt = new Date().toISOString()
     this.saveState()
     return task
