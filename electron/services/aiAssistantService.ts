@@ -30,8 +30,10 @@ import {
 import { findCommonGraphNeighbors } from './graphCommonNeighbors'
 import { buildProjectInsights } from './projectInsights'
 import { summarizeIngestionRuns } from './ingestionDiagnostics'
-import { recoverMessageSemantics } from './messageSemanticRecovery'
+import { attachLocalVoiceTranscript, recoverMessageSemantics } from './messageSemanticRecovery'
 import { sanitizeDiagnosticText } from './diagnosticRedaction'
+import { chatService } from './chatService'
+import { voiceTranscribeService } from './voiceTranscribeService'
 import {
   assessIdentityPair,
   buildGraphIdentitySuggestions,
@@ -443,6 +445,8 @@ export class AiAssistantService {
         const semantics = recoverMessageSemantics(message)
         return {
           id: String(message.serverId || message.localId),
+          localId: String(message.localId || ''),
+          serverId: String(message.serverId || ''),
           sessionId: session.username,
           sessionName: session.displayName || session.username,
           timestamp: Number(message.createTime || 0),
@@ -471,7 +475,34 @@ export class AiAssistantService {
       }
     })
     const deduped = new Map(messages.map(message => [messageKey(message), message]))
-    return { messages: [...deduped.values()].sort((a, b) => a.timestamp - b.timestamp), failed, successful }
+    const sorted = [...deduped.values()].sort((a, b) => a.timestamp - b.timestamp)
+    await this.enrichVoiceTranscripts(sorted)
+    return { messages: sorted, failed, successful }
+  }
+
+  private async enrichVoiceTranscripts(messages: any[]): Promise<void> {
+    if (!this.config.get('autoTranscribeVoice')) return
+    const model = await voiceTranscribeService.getModelStatus().catch(() => ({ success: false, exists: false }))
+    if (!model.success || !model.exists) return
+    const candidates = messages.filter(message =>
+      message.semanticType === 'voice' && message.localId && !String(message.content || '').includes('本地转写')
+    ).slice(0, 12)
+    for (const message of candidates) {
+      try {
+        const result = await chatService.getVoiceTranscript(
+          message.sessionId,
+          message.localId,
+          message.timestamp,
+          undefined,
+          message.senderId,
+          message.serverId
+        )
+        if (result.success && result.transcript?.trim()) {
+          message.content = attachLocalVoiceTranscript(message.content, redact(result.transcript))
+          message.transcriptionSource = 'sensevoice-local'
+        }
+      } catch {}
+    }
   }
 
   private async callAi(messages: any[]): Promise<any> {
@@ -491,6 +522,7 @@ export class AiAssistantService {
       analysisScope: message.analysisScope || 'core',
       senderIdentity: message.senderIdentity,
       semanticType: message.semanticType,
+      transcriptionSource: message.transcriptionSource || undefined,
       replyToMessageId: message.replyToMessageId || undefined,
       quotedSender: message.quotedSender || undefined,
       content: redact(message.content)
@@ -1326,7 +1358,8 @@ export class AiAssistantService {
       enabled: this.config.get('aiAssistantEnabled'),
       ownerName: this.config.get('aiAssistantOwnerName'),
       ownerAliases: this.config.get('aiAssistantOwnerAliases'),
-      ownerBackground: this.config.get('aiAssistantOwnerBackground')
+      ownerBackground: this.config.get('aiAssistantOwnerBackground'),
+      transcribeVoice: this.config.get('autoTranscribeVoice')
     }
   }
 
@@ -1388,6 +1421,7 @@ export class AiAssistantService {
     if (typeof input.ownerName === 'string') this.config.set('aiAssistantOwnerName', input.ownerName.trim())
     if (typeof input.ownerAliases === 'string') this.config.set('aiAssistantOwnerAliases', input.ownerAliases.trim())
     if (typeof input.ownerBackground === 'string') this.config.set('aiAssistantOwnerBackground', input.ownerBackground.trim())
+    if (typeof input.transcribeVoice === 'boolean') this.config.set('autoTranscribeVoice', input.transcribeVoice)
     this.repairPlaceholderEntities()
     this.saveState()
     return this.getSettings()

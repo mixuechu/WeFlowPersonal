@@ -28,7 +28,7 @@ import { findCommonGraphNeighbors } from '../electron/services/graphCommonNeighb
 import { buildProjectInsights } from '../electron/services/projectInsights.ts'
 import { buildTaskCalendar, extractTaskDueDate } from '../src/utils/taskCalendar.ts'
 import { summarizeIngestionRuns } from '../electron/services/ingestionDiagnostics.ts'
-import { recoverMessageSemantics } from '../electron/services/messageSemanticRecovery.ts'
+import { attachLocalVoiceTranscript, recoverMessageSemantics } from '../electron/services/messageSemanticRecovery.ts'
 import { sanitizeDiagnosticText } from '../electron/services/diagnosticRedaction.ts'
 
 function withStore(run: (store: PersonalMemoryStore) => void): void {
@@ -655,6 +655,8 @@ test('message semantic recovery preserves quoted authorship and card media types
   assert.equal(recoverMessageSemantics({ localType: 49, content: '[聊天记录] 项目讨论' }).semanticType, 'forward')
   assert.equal(recoverMessageSemantics({ localType: 49, content: '[小程序] 日程助手' }).semanticType, 'miniapp')
   assert.equal(recoverMessageSemantics({ localType: 47, content: '[表情]' }).semanticType, 'emoji')
+  assert.equal(attachLocalVoiceTranscript('[语音]', '明天下午三点开会'), '[语音·本地转写] 明天下午三点开会')
+  assert.equal(attachLocalVoiceTranscript('[语音]', ''), '[语音]')
 })
 
 test('diagnostic errors redact local identifiers, credentials and home paths', () => {

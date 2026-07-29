@@ -40,3 +40,9 @@ export function recoverMessageSemantics(message: any): RecoveredMessageSemantics
     quotedContent
   }
 }
+
+export function attachLocalVoiceTranscript(content: string, transcript: string): string {
+  const normalized = String(transcript || '').trim()
+  if (!normalized) return content
+  return `[语音·本地转写] ${normalized}`.slice(0, 2800)
+}
