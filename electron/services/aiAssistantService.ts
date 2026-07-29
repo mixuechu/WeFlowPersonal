@@ -13,6 +13,13 @@ import { buildMemoryQueryPlan } from './memoryQueryPlanner'
 import { buildTaskReminders, findMatchingTask } from './taskIntelligence'
 import { buildEntityInsights } from './relationshipInsights'
 import { classifyTaskAssignment, evaluateTaskAssignmentPolicy } from './taskAssignmentPolicy'
+import {
+  assessIdentityPair,
+  buildNameBuckets,
+  getFullIdentityScanSchedule,
+  identityPairKey,
+  isNegativeDecisionCurrent
+} from './identityDisambiguation'
 
 type AssistantTask = {
   id: string
@@ -84,7 +91,8 @@ type AssistantState = {
   graph: {
     entities: GraphEntity[]
     relations: GraphRelation[]
-    reviewQueue: Array<{ id: string; kind: 'possible_duplicate' | 'relation'; title: string; detail: string; confidence: number; status: 'pending' | 'confirmed' | 'rejected'; createdAt: string; leftEntityId?: string; rightEntityId?: string; relationId?: string }>
+    reviewQueue: Array<{ id: string; kind: 'possible_duplicate' | 'relation'; title: string; detail: string; confidence: number; status: 'pending' | 'confirmed' | 'rejected'; createdAt: string; leftEntityId?: string; rightEntityId?: string; relationId?: string; candidateSource?: string; candidateSignals?: Array<{ source: string; label: string; value: string }> }>
+    identityScan: { lastFullScanAt: string | null; lastRunAt: string | null; lastMode: 'incremental' | 'full' | null; lastCandidateCount: number }
   }
 }
 
@@ -103,7 +111,7 @@ const EMPTY_STATE: AssistantState = {
     lastAttemptAt: null,
     lastError: null
   },
-  graph: { entities: [], relations: [], reviewQueue: [] }
+  graph: { entities: [], relations: [], reviewQueue: [], identityScan: { lastFullScanAt: null, lastRunAt: null, lastMode: null, lastCandidateCount: 0 } }
 }
 
 const EXTRACTION_PROMPT_VERSION = 'personal-os-prompt-v5'
@@ -241,7 +249,11 @@ export class AiAssistantService {
             ...entity, identityVersion: Number(entity.identityVersion || 1), lastDisambiguatedAt: entity.lastDisambiguatedAt || null
           })) : [],
           relations: Array.isArray(loaded.graph?.relations) ? loaded.graph.relations : [],
-          reviewQueue: Array.isArray(loaded.graph?.reviewQueue) ? loaded.graph.reviewQueue : []
+          reviewQueue: Array.isArray(loaded.graph?.reviewQueue) ? loaded.graph.reviewQueue : [],
+          identityScan: {
+            ...structuredClone(EMPTY_STATE.graph.identityScan),
+            ...(loaded.graph?.identityScan || {})
+          }
         }
       }
       this.repairPlaceholderEntities()
@@ -662,19 +674,12 @@ export class AiAssistantService {
       if (!leftId) continue
       const right = this.state.graph.entities.find(entity => entity.canonicalName === String(item.rightExistingName || ''))
       if (!right || right.id === leftId) continue
-      const id = crypto.createHash('sha256').update(`${leftId}|${right.id}`).digest('hex').slice(0, 20)
-      if (this.state.graph.reviewQueue.some(review => review.id === id)) continue
       const leftName = this.state.graph.entities.find(entity => entity.id === leftId)?.canonicalName || '未知人物'
-      this.state.graph.reviewQueue.push({
-        id,
-        kind: 'possible_duplicate',
-        title: `${leftName} ↔ ${right.canonicalName}`,
+      const left = this.state.graph.entities.find(entity => entity.id === leftId)
+      if (left) this.enqueueIdentityPair(left, right, now, {
+        source: 'llm_suggestion',
         detail: String(item.reason || ''),
-        confidence: Math.max(0, Math.min(1, Number(item.confidence || 0.5))),
-        status: 'pending',
-        createdAt: now,
-        leftEntityId: leftId,
-        rightEntityId: right.id
+        confidence: Math.max(0, Math.min(1, Number(item.confidence || 0.5)))
       })
     }
     return tempIds
@@ -741,30 +746,77 @@ export class AiAssistantService {
 
   private enqueueIdentityCandidates(entity: GraphEntity, now: string): void {
     if (entity.type !== 'person') return
-    const names = new Set([entity.canonicalName, ...entity.aliases].map(value => value.trim().toLowerCase()).filter(value => value.length >= 2))
+    if (this.state.graph.identityScan.lastRunAt !== now) this.state.graph.identityScan.lastCandidateCount = 0
     for (const candidate of this.state.graph.entities) {
-      if (candidate.id === entity.id || candidate.type !== 'person') continue
-      const candidateNames = [candidate.canonicalName, ...candidate.aliases].map(value => value.trim().toLowerCase())
-      const shared = candidateNames.find(name => names.has(name))
-      if (!shared) continue
-      const decision = personalMemoryStore.getIdentityDecision(entity.id, candidate.id)
-      const orderedVersions = entity.id <= candidate.id
-        ? [entity.identityVersion, candidate.identityVersion]
-        : [candidate.identityVersion, entity.identityVersion]
-      if (decision?.decision === 'different' &&
-          Number(decision.left_version) === orderedVersions[0] &&
-          Number(decision.right_version) === orderedVersions[1]) continue
-      const [leftId, rightId] = [entity.id, candidate.id].sort()
-      const id = crypto.createHash('sha256').update(`${leftId}|${rightId}`).digest('hex').slice(0, 20)
-      if (this.state.graph.reviewQueue.some(review => review.id === id && review.status === 'pending')) continue
-      this.state.graph.reviewQueue.push({
-        id, kind: 'possible_duplicate', title: `${entity.canonicalName} ↔ ${candidate.canonicalName}`,
-        detail: `共享名称或别名“${shared}”，账号不同，需确认是否为同一人。`,
-        confidence: 0.65, status: 'pending', createdAt: now,
-        leftEntityId: entity.id, rightEntityId: candidate.id
-      })
+      if (this.enqueueIdentityPair(entity, candidate, now)) this.state.graph.identityScan.lastCandidateCount += 1
     }
     entity.lastDisambiguatedAt = now
+    this.state.graph.identityScan.lastRunAt = now
+    this.state.graph.identityScan.lastMode = 'incremental'
+  }
+
+  private enqueueIdentityPair(
+    left: GraphEntity,
+    right: GraphEntity,
+    now: string,
+    suggestion?: { source: string; detail: string; confidence: number }
+  ): boolean {
+    const assessment = assessIdentityPair(left, right)
+    if (!assessment.eligible && (!suggestion || suggestion.confidence < 0.65)) return false
+    const decision = personalMemoryStore.getIdentityDecision(left.id, right.id)
+    if (isNegativeDecisionCurrent(decision, left, right)) return false
+    const id = crypto.createHash('sha256').update(identityPairKey(left.id, right.id)).digest('hex').slice(0, 20)
+    const existing = this.state.graph.reviewQueue.find(review => review.id === id)
+    if (existing?.status === 'pending') return false
+    const signals = assessment.signals.map(signal => ({ source: signal.source, label: signal.label, value: signal.value }))
+    const candidateReview = {
+      id,
+      kind: 'possible_duplicate',
+      title: `${left.canonicalName} ↔ ${right.canonicalName}`,
+      detail: suggestion?.detail || signals.map(signal => `${signal.label}“${signal.value}”`).join('；') + '，需人工确认是否为同一人。',
+      confidence: Math.max(assessment.confidence, suggestion?.confidence || 0),
+      status: 'pending',
+      createdAt: now,
+      leftEntityId: left.id,
+      rightEntityId: right.id,
+      candidateSource: suggestion?.source || signals[0]?.source || 'rule',
+      candidateSignals: signals
+    } as const
+    if (existing) Object.assign(existing, candidateReview)
+    else this.state.graph.reviewQueue.push(candidateReview)
+    return true
+  }
+
+  private runScheduledIdentityScan(now: string): void {
+    const schedule = getFullIdentityScanSchedule(
+      this.state.graph.entities.length,
+      this.state.graph.identityScan.lastFullScanAt,
+      new Date(now)
+    )
+    if (!schedule.due) return
+    const people = this.state.graph.entities.filter(entity => entity.type === 'person')
+    const byId = new Map(people.map(entity => [entity.id, entity]))
+    const pairKeys = new Set<string>()
+    for (const ids of buildNameBuckets(people).values()) {
+      for (let leftIndex = 0; leftIndex < ids.length; leftIndex += 1) {
+        for (let rightIndex = leftIndex + 1; rightIndex < ids.length; rightIndex += 1) {
+          pairKeys.add(identityPairKey(ids[leftIndex], ids[rightIndex]))
+        }
+      }
+    }
+    let candidates = 0
+    for (const pairKey of pairKeys) {
+      const [leftId, rightId] = pairKey.split('|')
+      const left = byId.get(leftId)
+      const right = byId.get(rightId)
+      if (left && right && this.enqueueIdentityPair(left, right, now)) candidates += 1
+    }
+    this.state.graph.identityScan = {
+      lastFullScanAt: now,
+      lastRunAt: now,
+      lastMode: 'full',
+      lastCandidateCount: candidates
+    }
   }
 
   async sync(): Promise<any> {
@@ -922,6 +974,7 @@ export class AiAssistantService {
           previous ? 'incremental_message_update' : 'created_from_message', task.evidence || [])
       }
       const today = shanghaiDate()
+      this.runScheduledIdentityScan(createdAt)
       if (fresh.length > 0) {
         this.state.briefings[today] = {
           date: today,
@@ -1028,6 +1081,13 @@ export class AiAssistantService {
       entityInsights,
       cursor: this.state.cursor,
       graph: this.state.graph,
+      identityDisambiguation: {
+        ...this.state.graph.identityScan,
+        ...getFullIdentityScanSchedule(
+          this.state.graph.entities.length,
+          this.state.graph.identityScan.lastFullScanAt
+        )
+      },
       mergeHistory: personalMemoryStore.listActiveMerges(),
       memoryStats: personalMemoryStore.getMemoryStats(),
       memoryFeed,

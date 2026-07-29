@@ -13,6 +13,13 @@ import {
   evaluateTaskAssignmentPolicy,
   TASK_ASSIGNMENT_GOLDEN_SAMPLES
 } from '../electron/services/taskAssignmentPolicy.ts'
+import {
+  assessIdentityPair,
+  buildNameBuckets,
+  getFullIdentityScanSchedule,
+  identityPairKey,
+  isNegativeDecisionCurrent
+} from '../electron/services/identityDisambiguation.ts'
 
 function withStore(run: (store: PersonalMemoryStore) => void): void {
   const directory = mkdtempSync(join(tmpdir(), 'weflow-memory-test-'))
@@ -33,6 +40,35 @@ const evidence = (messageId: string, excerpt: string) => [{
   excerpt,
   role: 'support'
 }]
+
+test('identity candidates explain their source and preserve current negative decisions', () => {
+  const left = { id: 'a', type: 'person', canonicalName: '同名用户', aliases: ['小同'], accountIds: ['wx-a'], identityVersion: 2 }
+  const right = { id: 'b', type: 'person', canonicalName: '另一名称', aliases: ['小同'], accountIds: ['wx-b'], identityVersion: 4 }
+  const assessment = assessIdentityPair(left, right)
+  assert.equal(assessment.eligible, true)
+  assert.equal(assessment.signals[0].source, 'alias_overlap')
+  assert.equal(identityPairKey('b', 'a'), 'a|b')
+  assert.equal(isNegativeDecisionCurrent({
+    decision: 'different', left_version: 2, right_version: 4
+  }, left, right), true)
+  assert.equal(isNegativeDecisionCurrent({
+    decision: 'different', left_version: 1, right_version: 4
+  }, left, right), false)
+})
+
+test('large identity graphs switch to a weekly indexed full scan', () => {
+  const now = new Date('2026-07-30T12:00:00.000Z')
+  assert.equal(getFullIdentityScanSchedule(499, null, now).mode, 'incremental')
+  assert.equal(getFullIdentityScanSchedule(500, null, now).due, true)
+  assert.equal(getFullIdentityScanSchedule(500, '2026-07-29T12:00:00.000Z', now).due, false)
+  assert.equal(getFullIdentityScanSchedule(500, '2026-07-20T12:00:00.000Z', now).due, true)
+  const buckets = buildNameBuckets([
+    { id: 'a', type: 'person', canonicalName: '甲', aliases: ['共同别名'] },
+    { id: 'b', type: 'person', canonicalName: '乙', aliases: ['共同别名'] },
+    { id: 'org', type: 'organization', canonicalName: '共同别名' }
+  ])
+  assert.deepEqual(buckets.get('共同别名'), ['a', 'b'])
+})
 
 test('conflicting current claims coexist as review candidates', () => withStore(store => {
   store.syncGraph({

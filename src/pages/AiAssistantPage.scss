@@ -460,6 +460,11 @@
 .assistant-identity-pair > span { padding: 9px; border: 1px solid #e3e1da; border-radius: 9px; display: grid; gap: 3px; background: #faf8f2; }
 .assistant-identity-pair b { font-size: 12px; }
 .assistant-identity-pair small { font-size: 9px; }
+.assistant-identity-status { margin: 10px 0 14px; padding: 10px 12px; border: 1px solid #d8e3d9; border-radius: 10px; display: grid; grid-template-columns: minmax(220px, 1fr) auto auto; align-items: center; gap: 18px; color: #315c4e; background: #f5faf6; }
+.assistant-identity-status > span { display: grid; gap: 2px; }
+.assistant-identity-status strong, .assistant-identity-status b { font-size: 11px; }
+.assistant-identity-status small { color: #748078; font-size: 9px; }
+@media (max-width: 900px) { .assistant-identity-status { grid-template-columns: 1fr; gap: 8px; } }
 .assistant-review-item > div:last-child { display: flex; align-items: center; gap: 7px; }
 .assistant-review-item button { padding: 7px 11px; border: 1px solid #d9d6cd; border-radius: 8px; background: transparent; }
 .assistant-review-item button.primary { border-color: #255f4b; color: #fff; background: #255f4b; }

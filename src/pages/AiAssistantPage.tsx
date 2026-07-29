@@ -144,6 +144,7 @@ function AiAssistantPage() {
     .filter((relation: any) => relation.status !== 'rejected')
     .map((relation: any) => String(relation.predicate || '')).filter(Boolean))].sort(), [graph.relations])
   const pendingReviews = graph.reviewQueue.filter((item: any) => item.status === 'pending')
+  const identityDisambiguation = dashboard?.identityDisambiguation
   const mergeHistory = dashboard?.mergeHistory || []
   const memoryFeed = dashboard?.memoryFeed || { claims: [], events: [] }
   const ingestionStatus = dashboard?.ingestionStatus
@@ -819,6 +820,12 @@ function AiAssistantPage() {
               <option value="">全部可信状态</option><option value="confirmed">已确认</option><option value="candidate">待确认</option>
             </select>
           </div>
+          {identityDisambiguation && <div className="assistant-identity-status">
+            <span><strong>{identityDisambiguation.mode === 'full' ? '全图身份巡检' : '增量身份消歧'}</strong>
+              <small>{identityDisambiguation.reason}</small></span>
+            <span><b>{identityDisambiguation.lastCandidateCount || 0}</b><small>上次新增候选</small></span>
+            <span><b>{identityDisambiguation.lastRunAt ? new Date(identityDisambiguation.lastRunAt).toLocaleString('zh-CN') : '尚未运行'}</b><small>最近消歧</small></span>
+          </div>}
           <div className="assistant-path-finder">
             <select value={pathFromId} onChange={event => { setPathFromId(event.target.value); setGraphPath(null) }}>
               <option value="">选择起点</option>
@@ -914,6 +921,12 @@ function AiAssistantPage() {
                     const entity = graph.entities.find((item: any) => item.id === entityId)
                     return <span key={entityId}><b>{entity?.canonicalName || '未知人物'}</b><small>{entity?.aliases?.join('、') || entity?.accountIds?.join('、') || '暂无别名或账号'}</small></span>
                   })}
+                </div>}
+                {review.kind === 'possible_duplicate' && <div className="assistant-review-note">
+                  <b>候选来源：</b>{review.candidateSource === 'llm_suggestion' ? '模型基于上下文建议' : '确定性身份规则'}
+                  {(review.candidateSignals || []).map((signal: any, index: number) =>
+                    <div key={`${signal.source}-${index}`}><small>{signal.label}：“{signal.value}”</small></div>)}
+                  <div><small>拒绝后会记为负样本；两边身份信息未变化前不会再次出现。</small></div>
                 </div>}
                 {relation && <div className="assistant-review-note">
                   <b>方向说明：</b>{relation.directionExplanation || (
