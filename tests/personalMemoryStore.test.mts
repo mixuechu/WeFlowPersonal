@@ -968,3 +968,69 @@ test('long scanned PDF resources resume by persisted page cursor and invalidate 
   assert.equal(store.getEmbeddingStats('test-vector').pending, 1)
   assert.equal(store.listPendingPdfOcrResources(1)[0].metadata.attachmentPdfOcrNextPage, 7)
 }))
+
+test('Office attachment structure migration is resumable, deferred and invalidates stale vectors', () => withStore(store => {
+  const parserVersion = 'office-layout-v1'
+  store.upsertResources([{
+    id: 'resource-doc-migrate',
+    resourceType: 'file',
+    title: '历史项目计划.docx',
+    fileName: '历史项目计划.docx',
+    fileExt: '.docx',
+    content: '旧正文',
+    metadata: {
+      attachmentFormat: '.docx',
+      attachmentLocalPath: '/tmp/history-plan.docx'
+    },
+    evidence: []
+  }])
+  assert.equal(store.getAttachmentStructureMigrationStats(parserVersion).pending, 1)
+  assert.equal(store.listPendingAttachmentStructureResources(parserVersion, 1)[0].id, 'resource-doc-migrate')
+  store.saveEmbedding('resource:resource-doc-migrate', 'test-vector', [1, 0])
+  store.replaceResourceContent('resource-doc-migrate', '新版结构正文', {
+    attachmentStructure: {
+      kind: 'document',
+      paragraphCount: 2,
+      headingCount: 1,
+      listItemCount: 0,
+      tableCount: 0,
+      headerFooterCount: 0,
+      truncated: false,
+      headings: [{ level: 1, text: '项目计划' }],
+      tables: []
+    },
+    attachmentStructureParserVersion: parserVersion,
+    attachmentStructureMigrationStatus: 'completed'
+  })
+  assert.equal(store.listPendingAttachmentStructureResources(parserVersion, 1).length, 0)
+  assert.equal(store.getAttachmentStructureMigrationStats(parserVersion).completed, 1)
+  assert.ok(store.searchText('新版结构正文').some(item => item.id === 'resource:resource-doc-migrate'))
+  assert.equal(store.getEmbeddingStats('test-vector').pending, 1)
+  store.upsertResources([{
+    id: 'resource-doc-migrate',
+    resourceType: 'file',
+    title: '历史项目计划.docx',
+    fileExt: '.docx',
+    content: '新版结构正文',
+    metadata: { attachmentFormat: '.docx', attachmentLocalPath: '/tmp/history-plan.docx' },
+    evidence: []
+  }])
+  assert.equal(store.getMemoryFeed().resources.find(item => item.id === 'resource-doc-migrate')?.metadata?.attachmentStructure?.kind, 'document')
+  assert.equal(store.getAttachmentStructureMigrationStats(parserVersion).completed, 1)
+
+  store.upsertResources([{
+    id: 'resource-ppt-deferred',
+    resourceType: 'file',
+    title: '旧汇报.pptx',
+    fileExt: '.pptx',
+    content: '等待迁移',
+    metadata: {
+      attachmentFormat: '.pptx',
+      attachmentLocalPath: '/tmp/missing-deck.pptx',
+      attachmentStructureMigrationNextAt: '2099-01-01T00:00:00.000Z'
+    },
+    evidence: []
+  }])
+  assert.equal(store.getAttachmentStructureMigrationStats(parserVersion).deferred, 1)
+  assert.equal(store.listPendingAttachmentStructureResources(parserVersion, 10).length, 0)
+}))

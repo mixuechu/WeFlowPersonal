@@ -49,6 +49,8 @@ import {
   isNegativeDecisionCurrent
 } from './identityDisambiguation'
 
+const ATTACHMENT_STRUCTURE_PARSER_VERSION = 'office-layout-v1'
+
 type AssistantTask = {
   id: string
   title: string
@@ -570,6 +572,7 @@ export class AiAssistantService {
         message.attachmentIndexStatus = extracted.status
         message.attachmentFormat = extracted.format
         message.attachmentStructure = extracted.structure || null
+        message.attachmentStructureParserVersion = extracted.structure ? ATTACHMENT_STRUCTURE_PARSER_VERSION : ''
         if (extracted.status === 'ocr_required' && this.config.get('aiAssistantOcrImages')) {
           const scanned = await extractScannedPdfText(located.sourcePath)
           message.attachmentPdfOcrStatus = scanned.status
@@ -641,6 +644,45 @@ export class AiAssistantService {
     }
   }
 
+  private async continuePendingAttachmentStructures(): Promise<void> {
+    const pending = personalMemoryStore.listPendingAttachmentStructureResources(
+      ATTACHMENT_STRUCTURE_PARSER_VERSION,
+      1
+    )
+    for (const resource of pending) {
+      const filePath = String(resource.metadata?.attachmentLocalPath || '')
+      const attempts = Number(resource.metadata?.attachmentStructureMigrationAttempts || 0)
+      if (!filePath || !existsSync(filePath)) {
+        personalMemoryStore.replaceResourceContent(resource.id, resource.content, {
+          attachmentStructureMigrationStatus: 'not_found',
+          attachmentStructureMigrationAttempts: attempts + 1,
+          attachmentStructureMigrationNextAt: new Date(Date.now() + 7 * 86_400_000).toISOString()
+        })
+        continue
+      }
+      const extracted = await extractAttachmentText(filePath)
+      if (extracted.success && extracted.structure) {
+        const baseContent = String(resource.content || '').replace(/\n?\[附件·本地正文\][\s\S]*$/u, '').trim()
+        const content = `${baseContent}\n[附件·本地正文] ${redact(extracted.text)}`.trim()
+        personalMemoryStore.replaceResourceContent(resource.id, content, {
+          attachmentStructure: extracted.structure,
+          attachmentStructureParserVersion: ATTACHMENT_STRUCTURE_PARSER_VERSION,
+          attachmentStructureMigrationStatus: 'completed',
+          attachmentStructureMigrationAttempts: attempts + 1,
+          attachmentStructureMigrationNextAt: '',
+          attachmentStructureMigratedAt: new Date().toISOString()
+        })
+      } else {
+        const retryDays = Math.min(7, Math.max(1, 2 ** attempts))
+        personalMemoryStore.replaceResourceContent(resource.id, resource.content, {
+          attachmentStructureMigrationStatus: extracted.status || 'failed',
+          attachmentStructureMigrationAttempts: attempts + 1,
+          attachmentStructureMigrationNextAt: new Date(Date.now() + retryDays * 86_400_000).toISOString()
+        })
+      }
+    }
+  }
+
   private persistMessageResources(messages: any[], createdAt: string): void {
     const resourceTypes = new Set(['link', 'file', 'forward', 'miniapp', 'image', 'voice'])
     const resources = messages.flatMap(message => {
@@ -688,6 +730,7 @@ export class AiAssistantService {
           attachmentFormat: message.attachmentFormat || '',
           attachmentTextSource: message.attachmentTextSource || '',
           attachmentStructure: message.attachmentStructure || null,
+          attachmentStructureParserVersion: message.attachmentStructureParserVersion || '',
           attachmentPdfOcrStatus: message.attachmentPdfOcrStatus || '',
           attachmentPdfOcrPages: message.attachmentPdfOcrPages || 0,
           attachmentPdfTotalPages: message.attachmentPdfTotalPages || 0,
@@ -1164,6 +1207,7 @@ export class AiAssistantService {
       const createdAt = new Date().toISOString()
       await this.continuePendingPdfOcr()
       this.persistMessageResources(fresh, createdAt)
+      await this.continuePendingAttachmentStructures()
       const successfulMessageKeys: string[] = []
       const batchErrors: string[] = []
       const batches = this.buildAnalysisBatches(fresh)
@@ -1419,6 +1463,9 @@ export class AiAssistantService {
       },
       mergeHistory: personalMemoryStore.listActiveMerges(),
       memoryStats: personalMemoryStore.getMemoryStats(),
+      attachmentStructureMigration: personalMemoryStore.getAttachmentStructureMigrationStats(
+        ATTACHMENT_STRUCTURE_PARSER_VERSION
+      ),
       memoryFeed,
       resourceTrash: personalMemoryStore.listResourceTrash(),
       ingestionStatus: personalMemoryStore.getIngestionStatus(),

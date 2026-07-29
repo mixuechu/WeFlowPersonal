@@ -1043,6 +1043,12 @@ function AiAssistantPage() {
               <div><span className="assistant-eyebrow">MESSAGE RESOURCES</span><h3><Paperclip size={16} /> 消息资源库</h3></div>
               <span className="assistant-count">{visibleResources.length} 项</span>
             </div>
+            {!!dashboard?.attachmentStructureMigration?.total && <div className="assistant-query-plan">
+              历史 Office 附件结构化：{dashboard.attachmentStructureMigration.completed || 0}
+              {' / '}{dashboard.attachmentStructureMigration.total} 已完成
+              {!!dashboard.attachmentStructureMigration.pending && ` · ${dashboard.attachmentStructureMigration.pending} 个将在后续同步中继续`}
+              {!!dashboard.attachmentStructureMigration.deferred && ` · ${dashboard.attachmentStructureMigration.deferred} 个正在退避等待`}
+            </div>}
             <div className="assistant-memory-list">
               {visibleResources.map((resource: any) => <article className="assistant-memory-item" key={resource.id}>
                 <div className="assistant-memory-item-head">

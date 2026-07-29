@@ -918,6 +918,15 @@ export class PersonalMemoryStore {
       if (this.db.prepare('SELECT 1 FROM resource_suppressions WHERE resource_id=?').get(resourceId)) continue
       const now = String(resource.updatedAt || new Date().toISOString())
       const metadata = resource.metadata && typeof resource.metadata === 'object' ? resource.metadata : {}
+      const existing = this.db.prepare('SELECT metadata_json FROM memory_resources WHERE id=?').get(resourceId) as any
+      let existingMetadata: any = {}
+      try { existingMetadata = JSON.parse(existing?.metadata_json || '{}') } catch {}
+      if (!metadata.attachmentStructure && existingMetadata.attachmentStructure) {
+        metadata.attachmentStructure = existingMetadata.attachmentStructure
+        metadata.attachmentStructureParserVersion = existingMetadata.attachmentStructureParserVersion || ''
+        metadata.attachmentStructureMigrationStatus = existingMetadata.attachmentStructureMigrationStatus || ''
+        metadata.attachmentStructureMigratedAt = existingMetadata.attachmentStructureMigratedAt || ''
+      }
       upsert.run(
         resourceId, String(resource.resourceType || 'resource'),
         String(resource.title || '未命名资源'), String(resource.url || ''),
@@ -1074,6 +1083,74 @@ export class PersonalMemoryStore {
         return []
       }
     }).slice(0, Math.max(1, Math.min(10, limit)))
+  }
+
+  listPendingAttachmentStructureResources(parserVersion: string, limit = 1, now = new Date()): any[] {
+    if (!this.db) return []
+    const rows = this.db.prepare(`
+      SELECT r.* FROM memory_resources r
+      LEFT JOIN resource_suppressions s ON s.resource_id=r.id
+      WHERE r.resource_type='file' AND s.resource_id IS NULL
+      ORDER BY r.updated_at ASC
+    `).all() as any[]
+    return rows.flatMap(row => {
+      try {
+        const metadata = JSON.parse(row.metadata_json || '{}')
+        const extension = String(metadata.attachmentFormat || row.file_ext || '').toLowerCase()
+        if (!['.docx', '.pptx', '.xlsx'].includes(extension) || !metadata.attachmentLocalPath) return []
+        if (metadata.attachmentStructureParserVersion === parserVersion && metadata.attachmentStructure) return []
+        const nextAt = Date.parse(String(metadata.attachmentStructureMigrationNextAt || ''))
+        if (Number.isFinite(nextAt) && nextAt > now.getTime()) return []
+        return [{ ...row, metadata }]
+      } catch {
+        return []
+      }
+    }).slice(0, Math.max(1, Math.min(10, limit)))
+  }
+
+  getAttachmentStructureMigrationStats(parserVersion: string, now = new Date()): any {
+    if (!this.db) return { total: 0, completed: 0, pending: 0, deferred: 0 }
+    const rows = this.db.prepare(`
+      SELECT r.file_ext,r.metadata_json FROM memory_resources r
+      LEFT JOIN resource_suppressions s ON s.resource_id=r.id
+      WHERE r.resource_type='file' AND s.resource_id IS NULL
+    `).all() as any[]
+    let total = 0
+    let completed = 0
+    let deferred = 0
+    for (const row of rows) {
+      try {
+        const metadata = JSON.parse(row.metadata_json || '{}')
+        const extension = String(metadata.attachmentFormat || row.file_ext || '').toLowerCase()
+        if (!['.docx', '.pptx', '.xlsx'].includes(extension) || !metadata.attachmentLocalPath) continue
+        total += 1
+        if (metadata.attachmentStructureParserVersion === parserVersion && metadata.attachmentStructure) completed += 1
+        else if (Date.parse(String(metadata.attachmentStructureMigrationNextAt || '')) > now.getTime()) deferred += 1
+      } catch {}
+    }
+    return { total, completed, pending: Math.max(0, total - completed - deferred), deferred }
+  }
+
+  replaceResourceContent(id: string, content: string, metadataPatch: Record<string, any>): any {
+    if (!this.db) return null
+    const resourceId = String(id || '').trim()
+    const row = this.db.prepare('SELECT * FROM memory_resources WHERE id=?').get(resourceId) as any
+    if (!row || this.db.prepare('SELECT 1 FROM resource_suppressions WHERE resource_id=?').get(resourceId)) return null
+    let metadata: any = {}
+    try { metadata = JSON.parse(row.metadata_json || '{}') } catch {}
+    metadata = { ...metadata, ...metadataPatch }
+    const nextContent = String(content || '').trim().slice(0, 80_000)
+    const now = new Date().toISOString()
+    this.db.prepare('UPDATE memory_resources SET content=?,metadata_json=?,updated_at=? WHERE id=?')
+      .run(nextContent, JSON.stringify(metadata), now, resourceId)
+    this.upsertSearchDocument(
+      `resource:${resourceId}`, 'resource', resourceId, String(row.title || '未命名资源'),
+      [row.title, nextContent, row.url, row.file_name, row.file_ext, metadata.sessionName, metadata.senderName]
+        .filter(Boolean).join('；'),
+      { ...metadata, resourceType: row.resource_type, url: row.url || '', fileName: row.file_name || '' },
+      now
+    )
+    return { id: resourceId, content: nextContent, metadata, updatedAt: now }
   }
 
   appendResourceContent(id: string, text: string, metadataPatch: Record<string, any>): any {
