@@ -399,6 +399,21 @@ function AiAssistantPage() {
     await load()
   }
 
+  const deleteMemoryResource = async (resource: any) => {
+    const confirmed = window.confirm(
+      `确定从个人记忆中删除“${resource.title || '未命名资源'}”吗？\n\n` +
+      '相关全文索引、向量和原消息证据引用会一并移除；以后重新整理同一条消息也不会自动恢复。'
+    )
+    if (!confirmed) return
+    try {
+      await window.electronAPI.aiAssistant.deleteMemoryResource(resource.id)
+      setMessage(`已从个人记忆删除：${resource.title || '未命名资源'}`)
+      await load()
+    } catch (error: any) {
+      setMessage(error?.message || String(error))
+    }
+  }
+
   const saveClaimCorrection = async () => {
     if (!editingClaim?.id || !String(editingClaim.value || '').trim()) return
     await window.electronAPI.aiAssistant.correctClaim(editingClaim.id, {
@@ -1054,6 +1069,9 @@ function AiAssistantPage() {
                 <div className="assistant-evidence-stack">
                   {(resource.evidence || []).map((evidence: any) =>
                     <small key={`${evidence.message_id}-${evidence.timestamp}`}>原消息 · {new Date(evidence.timestamp * 1000).toLocaleString('zh-CN')}：“{evidence.excerpt}”</small>)}
+                </div>
+                <div className="assistant-memory-actions">
+                  <button onClick={() => void deleteMemoryResource(resource)}>从记忆删除</button>
                 </div>
               </article>)}
               {!visibleResources.length && <div className="assistant-empty">链接、文件、转发记录、小程序、图片 OCR 和语音转写会在增量整理时沉淀到这里。</div>}

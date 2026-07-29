@@ -1796,6 +1796,10 @@ export class AiAssistantService {
     return personalMemoryStore.updateMemoryItemStatus(kind, id, status)
   }
 
+  deleteMemoryResource(id: string): any {
+    return personalMemoryStore.deleteResource(id)
+  }
+
   reviewMemoryDocument(kind: 'relation' | 'claim' | 'event', id: string, decision: 'confirmed' | 'rejected'): any {
     if (kind === 'claim' || kind === 'event') return personalMemoryStore.updateMemoryItemStatus(kind, id, decision)
     const relation = this.state.graph.relations.find(item => item.id === id)

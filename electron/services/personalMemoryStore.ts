@@ -302,6 +302,12 @@ export class PersonalMemoryStore {
       CREATE INDEX IF NOT EXISTS idx_memory_resources_type_updated
         ON memory_resources(resource_type, updated_at);
 
+      CREATE TABLE IF NOT EXISTS resource_suppressions (
+        resource_id TEXT PRIMARY KEY,
+        reason TEXT NOT NULL DEFAULT 'manual_delete',
+        created_at TEXT NOT NULL
+      ) STRICT;
+
       CREATE VIRTUAL TABLE IF NOT EXISTS search_fts USING fts5(
         document_id UNINDEXED,
         title,
@@ -901,21 +907,23 @@ export class PersonalMemoryStore {
       VALUES(?,?,?,?,?,?)
     `)
     for (const resource of resources) {
+      const resourceId = String(resource.id)
+      if (this.db.prepare('SELECT 1 FROM resource_suppressions WHERE resource_id=?').get(resourceId)) continue
       const now = String(resource.updatedAt || new Date().toISOString())
       const metadata = resource.metadata && typeof resource.metadata === 'object' ? resource.metadata : {}
       upsert.run(
-        String(resource.id), String(resource.resourceType || 'resource'),
+        resourceId, String(resource.resourceType || 'resource'),
         String(resource.title || '未命名资源'), String(resource.url || ''),
         String(resource.fileName || ''), String(resource.fileExt || ''),
         String(resource.content || ''), JSON.stringify(metadata),
         String(resource.createdAt || now), now
       )
-      const documentId = `resource:${resource.id}`
+      const documentId = `resource:${resourceId}`
       const searchText = [
         resource.title, resource.content, resource.url, resource.fileName, resource.fileExt,
         metadata.sessionName, metadata.senderName, metadata.appMsgKind
       ].filter(Boolean).join('；')
-      this.upsertSearchDocument(documentId, 'resource', String(resource.id), String(resource.title || '未命名资源'),
+      this.upsertSearchDocument(documentId, 'resource', resourceId, String(resource.title || '未命名资源'),
         searchText, { ...metadata, resourceType: resource.resourceType, url: resource.url || '', fileName: resource.fileName || '' }, now)
       this.db.prepare('DELETE FROM search_document_evidence WHERE document_id=?').run(documentId)
       for (const item of resource.evidence || []) {
@@ -923,6 +931,30 @@ export class PersonalMemoryStore {
         insertEvidence.run(documentId, String(item.messageId), String(item.sessionId || ''),
           Number(item.timestamp || 0), String(item.sender || ''), String(item.excerpt || '').slice(0, 2000))
       }
+    }
+  }
+
+  deleteResource(id: string, reason = 'manual_delete'): any {
+    if (!this.db) return { success: false, id }
+    const resourceId = String(id || '').trim()
+    if (!resourceId) return { success: false, id: resourceId }
+    const documentId = `resource:${resourceId}`
+    const now = new Date().toISOString()
+    this.db.exec('BEGIN IMMEDIATE')
+    try {
+      this.db.prepare(`
+        INSERT INTO resource_suppressions(resource_id,reason,created_at) VALUES(?,?,?)
+        ON CONFLICT(resource_id) DO UPDATE SET reason=excluded.reason,created_at=excluded.created_at
+      `).run(resourceId, String(reason || 'manual_delete').slice(0, 200), now)
+      this.db.prepare('DELETE FROM search_document_evidence WHERE document_id=?').run(documentId)
+      this.db.prepare('DELETE FROM search_fts WHERE document_id=?').run(documentId)
+      this.db.prepare('DELETE FROM search_documents WHERE id=?').run(documentId)
+      const result = this.db.prepare('DELETE FROM memory_resources WHERE id=?').run(resourceId)
+      this.db.exec('COMMIT')
+      return { success: true, id: resourceId, deleted: Number(result.changes || 0), suppressed: true }
+    } catch (error) {
+      this.db.exec('ROLLBACK')
+      throw error
     }
   }
 

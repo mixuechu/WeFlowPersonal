@@ -628,6 +628,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     revertMerge: (id: number) => ipcRenderer.invoke('ai-assistant:revertMerge', id),
     updateMemoryItemStatus: (kind: 'claim' | 'event', id: string, status: 'confirmed' | 'rejected') =>
       ipcRenderer.invoke('ai-assistant:updateMemoryItemStatus', kind, id, status),
+    deleteMemoryResource: (id: string) => ipcRenderer.invoke('ai-assistant:deleteMemoryResource', id),
     reviewMemoryDocument: (kind: 'relation' | 'claim' | 'event', id: string, decision: 'confirmed' | 'rejected') =>
       ipcRenderer.invoke('ai-assistant:reviewMemoryDocument', kind, id, decision),
     previewForgetEntity: (id: string) => ipcRenderer.invoke('ai-assistant:previewForgetEntity', id),
