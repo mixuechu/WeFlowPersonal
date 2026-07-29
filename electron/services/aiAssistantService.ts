@@ -20,6 +20,7 @@ import {
   type NotificationOutbox
 } from './notificationOutbox'
 import { findCommonGraphNeighbors } from './graphCommonNeighbors'
+import { buildProjectInsights } from './projectInsights'
 import {
   assessIdentityPair,
   buildNameBuckets,
@@ -1088,6 +1089,13 @@ export class AiAssistantService {
       events: memoryFeed.events,
       tasks
     })
+    const projectInsights = buildProjectInsights({
+      entities: this.state.graph.entities,
+      relations: this.state.graph.relations,
+      claims: memoryFeed.claims,
+      events: memoryFeed.events,
+      tasks
+    })
     return {
       briefing: latest ? { ...latest, tasks } : null,
       tasks,
@@ -1095,6 +1103,7 @@ export class AiAssistantService {
       taskReminders,
       taskHistory,
       entityInsights,
+      projectInsights,
       cursor: this.state.cursor,
       graph: this.state.graph,
       relationHistory: personalMemoryStore.listRelationHistory('', 300),

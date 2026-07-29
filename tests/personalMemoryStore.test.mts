@@ -24,6 +24,7 @@ import { editDistance, fuzzyEntityScore } from '../electron/services/fuzzyEntity
 import { buildWeeklyBriefing, isQuietTime } from '../electron/services/briefingIntelligence.ts'
 import { enqueueUniqueNotification, markNotificationAttempt } from '../electron/services/notificationOutbox.ts'
 import { findCommonGraphNeighbors } from '../electron/services/graphCommonNeighbors.ts'
+import { buildProjectInsights } from '../electron/services/projectInsights.ts'
 
 function withStore(run: (store: PersonalMemoryStore) => void): void {
   const directory = mkdtempSync(join(tmpdir(), 'weflow-memory-test-'))
@@ -287,6 +288,47 @@ test('common-neighbor graph query keeps relation direction, status and evidence'
   assert.equal(result.rightEdges[0].forward, false)
   assert.equal(result.rightEdges[0].status, 'candidate')
   assert.equal(result.leftEdges[0].evidence[0].messageId, 'evidence-left')
+})
+
+test('project intelligence aggregates members, progress, risks, decisions and evidence', () => {
+  const projects = buildProjectInsights({
+    entities: [
+      { id: 'project-demo', type: 'project', canonicalName: '升级版演示', aliases: ['演示项目'], summary: '客户演示项目' },
+      { id: 'person-owner', type: 'person', canonicalName: '负责人甲', aliases: [] }
+    ],
+    relations: [{
+      id: 'member-relation', subjectId: 'person-owner', objectId: 'project-demo', predicate: '负责', status: 'confirmed', confidence: 0.9,
+      evidence: [{ messageId: 'message-member', timestamp: 1_775_000_000, excerpt: '负责人甲负责升级版演示' }]
+    }],
+    claims: [],
+    events: [{
+      id: 'decision-project', event_type: 'decision', title: '决定周五演示', description: '', status: 'candidate', start_at: '2026-07-31',
+      participants: [{ entity_id: 'project-demo' }],
+      evidence: [{ message_id: 'message-decision', timestamp: 1_775_000_100, excerpt: '决定周五演示' }]
+    }, {
+      id: 'delivery-project', event_type: 'delivery', title: '交付演示包', description: '升级版演示交付', status: 'candidate',
+      participants: [], evidence: [{ message_id: 'message-delivery', timestamp: 1_775_000_200, excerpt: '交付升级版演示包' }]
+    }],
+    tasks: [{
+      id: 'task-overdue', title: '准备演示', project: '演示项目', status: 'doing', priority: 'high', due: '2026-07-29',
+      evidence: [{ messageId: 'message-task', timestamp: 1_775_000_300, excerpt: '准备演示' }]
+    }, {
+      id: 'task-waiting', title: '等待反馈', project: '升级版演示', status: 'waiting', taskKind: 'waiting', priority: 'medium'
+    }, {
+      id: 'task-done', title: '整理需求', project: '升级版演示', status: 'done', priority: 'medium'
+    }],
+    now: new Date('2026-07-30T12:00:00+08:00')
+  })
+  const [project] = projects
+  assert.equal(project.name, '升级版演示')
+  assert.equal(project.members[0].name, '负责人甲')
+  assert.equal(project.progress, 33)
+  assert.equal(project.phase, 'active')
+  assert.ok(project.risks.some((risk: any) => risk.kind === 'overdue'))
+  assert.ok(project.risks.some((risk: any) => risk.kind === 'waiting'))
+  assert.equal(project.decisions[0].id, 'decision-project')
+  assert.equal(project.milestones[0].id, 'delivery-project')
+  assert.equal(project.evidence.length, 4)
 })
 
 test('verified memory backup is created only from a healthy database', () => withStore(store => {

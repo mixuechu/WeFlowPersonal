@@ -44,6 +44,7 @@ function AiAssistantPage() {
   const [selectedEntityId, setSelectedEntityId] = useState('')
   const [showEntityDossier, setShowEntityDossier] = useState(false)
   const [briefingPeriod, setBriefingPeriod] = useState<'latest' | 'week'>('latest')
+  const [selectedProjectId, setSelectedProjectId] = useState('')
   const [forgettingEntityId, setForgettingEntityId] = useState('')
   const [showSources, setShowSources] = useState(false)
   const [sources, setSources] = useState<any[]>([])
@@ -112,6 +113,8 @@ function AiAssistantPage() {
 
   const briefing = dashboard?.briefing
   const weeklyBriefing = dashboard?.weeklyBriefing
+  const projectInsights: any[] = dashboard?.projectInsights || []
+  const selectedProject = projectInsights.find(project => project.id === selectedProjectId)
   const tasks: Task[] = dashboard?.tasks || []
   const taskReviewQueue: Task[] = dashboard?.taskReviewQueue || []
   const taskReminders: any[] = dashboard?.taskReminders || []
@@ -686,6 +689,21 @@ function AiAssistantPage() {
           </aside>
         </div>
 
+        <section className="assistant-panel assistant-project-portfolio">
+          <div className="assistant-section-heading">
+            <div><span className="assistant-eyebrow">PROJECT INTELLIGENCE</span><h3>项目驾驶舱</h3></div>
+            <span className="assistant-count">{projectInsights.length} 个项目</span>
+          </div>
+          {projectInsights.length ? <div className="assistant-project-grid">
+            {projectInsights.map(project => <button key={project.id} onClick={() => setSelectedProjectId(project.id)}>
+              <div><strong>{project.name}</strong><span>{project.phase === 'completed' ? '已完成' : project.phase === 'active' ? '推进中' : project.phase === 'planned' ? '已规划' : '发现阶段'}</span></div>
+              <p>{project.summary || (project.inferred ? '从待办项目字段识别，等待更多图谱证据。' : '等待更多项目证据补充。')}</p>
+              <div className="assistant-project-progress"><i style={{ width: `${project.progress}%` }} /><span>{project.progress}%</span></div>
+              <small>{project.activeTaskCount} 项进行中 · {project.members.length} 位参与者 · {project.risks.length} 个风险</small>
+            </button>)}
+          </div> : <div className="assistant-empty">当聊天中识别到项目实体或待办归属项目后，这里会自动形成项目进度、风险、里程碑和决策视图。</div>}
+        </section>
+
         {taskReviewQueue.length > 0 && (
           <section className="assistant-panel assistant-review-section">
             <div className="assistant-section-heading">
@@ -1116,6 +1134,71 @@ function AiAssistantPage() {
                 setShowEntityDossier(false)
               }}>在统一记忆中检索此实体</button>
               <button className="primary" onClick={() => setShowEntityDossier(false)}>完成</button>
+            </footer>
+          </div>
+        </div>
+      )}
+
+      {selectedProject && (
+        <div className="assistant-modal-backdrop">
+          <div className="assistant-project-modal">
+            <header>
+              <div><span className="assistant-eyebrow">PROJECT DOSSIER</span><h2>{selectedProject.name}</h2>
+                <p>{selectedProject.summary || '这是由结构化记忆自动聚合的项目视图，所有结论均来自下方任务、事件、关系和原文证据。'}</p></div>
+              <button aria-label="关闭项目详情" onClick={() => setSelectedProjectId('')}><X size={18} /></button>
+            </header>
+            <div className="assistant-dossier-metrics">
+              <span><b>{selectedProject.progress}%</b><small>任务完成度</small></span>
+              <span><b>{selectedProject.activeTaskCount}</b><small>进行中任务</small></span>
+              <span><b>{selectedProject.risks.length}</b><small>可解释风险</small></span>
+              <span><b>{selectedProject.evidence.length}</b><small>去重证据</small></span>
+            </div>
+            <div className="assistant-dossier-grid">
+              <section>
+                <h3>参与者 <small>{selectedProject.members.length}</small></h3>
+                {selectedProject.members.map((member: any) => <button className="assistant-project-member" key={member.id} onClick={() => {
+                  setSelectedEntityId(member.id); setSelectedProjectId(''); setShowEntityDossier(true)
+                }}>{member.name}</button>)}
+                {!selectedProject.members.length && <em>尚未从项目关系中确认参与者</em>}
+              </section>
+              <section>
+                <h3>风险与阻塞 <small>{selectedProject.risks.length}</small></h3>
+                {selectedProject.risks.map((risk: any, index: number) => <article key={`${risk.taskId}-${risk.kind}-${index}`} className={`assistant-project-risk ${risk.severity}`}>
+                  <div><b>{risk.title}</b><span>{risk.kind}</span></div><small>{risk.detail}</small>
+                </article>)}
+                {!selectedProject.risks.length && <em>当前没有确定性规则识别出的风险</em>}
+              </section>
+              <section>
+                <h3>项目任务 <small>{selectedProject.tasks.length}</small></h3>
+                {selectedProject.tasks.map((task: Task) => <article key={task.id}>
+                  <div><b>{task.title}</b><span>{task.status}</span></div>
+                  <small>{task.owner || '负责人待确认'} · {task.due || '无截止时间'} · {task.priority}</small>
+                  {(task.evidence || []).slice(0, 2).map(evidence => <blockquote key={evidence.messageId}>{evidence.sender}：“{evidence.excerpt}”</blockquote>)}
+                  {task.status !== 'cancelled' && <button className="assistant-dossier-task-action" onClick={() => void toggleTask(task)}>{task.status === 'done' ? '恢复待处理' : '标记完成'}</button>}
+                </article>)}
+                {!selectedProject.tasks.length && <em>尚无归入项目的任务</em>}
+              </section>
+              <section>
+                <h3>里程碑与决策 <small>{selectedProject.milestones.length + selectedProject.decisions.length}</small></h3>
+                {[...selectedProject.decisions, ...selectedProject.milestones].map((event: any) => <article key={event.id}>
+                  <div><b>{event.title}</b><span>{event.event_type}</span></div>
+                  <small>{event.start_at || '时间待确认'} · {event.status === 'confirmed' ? '已确认' : '待确认'}</small>
+                  {(event.evidence || []).slice(0, 2).map((evidence: any) => <blockquote key={evidence.message_id}>“{evidence.excerpt}”</blockquote>)}
+                </article>)}
+                {!selectedProject.milestones.length && !selectedProject.decisions.length && <em>尚无里程碑或决策事件</em>}
+              </section>
+              <section className="assistant-dossier-wide">
+                <h3>最近原文证据 <small>{selectedProject.evidence.length}</small></h3>
+                {selectedProject.evidence.slice(0, 12).map((evidence: any, index: number) =>
+                  <blockquote key={String(evidence.messageId || evidence.message_id || index)}>“{evidence.excerpt}”</blockquote>)}
+                {!selectedProject.evidence.length && <em>等待带原文的关系、事件或任务证据</em>}
+              </section>
+            </div>
+            <footer>
+              {selectedProject.entityId && <button onClick={() => {
+                setMemoryEntityFilter(selectedProject.entityId); setMemoryQuery(selectedProject.name); setSelectedProjectId('')
+              }}>在统一记忆中检索</button>}
+              <button className="primary" onClick={() => setSelectedProjectId('')}>完成</button>
             </footer>
           </div>
         </div>
