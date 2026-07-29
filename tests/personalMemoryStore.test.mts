@@ -370,7 +370,14 @@ test('task status changes are persisted as an auditable history', () => withStor
 test('partial ingestion keeps completed checkpoints visible for safe resume', () => withStore(store => {
   store.startIngestionRun('run-resume', 'deepseek-test', 'prompt-test')
   store.recordIngestionBatch('run-resume', 0, 100, 'running')
-  store.recordIngestionBatch('run-resume', 0, 100, 'completed')
+  store.recordIngestionBatch('run-resume', 0, 100, 'completed', '', {
+    model: 'deepseek-test',
+    promptVersion: 'prompt-test',
+    schemaVersion: 'schema-test',
+    inputTokens: 1200,
+    outputTokens: 300,
+    durationMs: 2500
+  })
   store.recordIngestionBatch('run-resume', 1, 80, 'running')
   store.recordIngestionBatch('run-resume', 1, 80, 'failed', '用户已安全暂停')
   store.finishIngestionRun('run-resume', {
@@ -384,6 +391,14 @@ test('partial ingestion keeps completed checkpoints visible for safe resume', ()
   assert.equal(status.status, 'partial')
   assert.equal(status.message_count, 100)
   assert.equal(status.error, '用户已安全暂停')
+  assert.deepEqual({ ...status.usage }, {
+    input_tokens: 1200,
+    output_tokens: 300,
+    duration_ms: 2500,
+    model: 'deepseek-test',
+    prompt_version: 'prompt-test',
+    schema_version: 'schema-test'
+  })
   assert.deepEqual(Object.fromEntries(status.batches.map((item: any) => [item.status, item.count])), {
     completed: 1,
     failed: 1

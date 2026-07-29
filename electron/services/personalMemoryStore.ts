@@ -229,6 +229,12 @@ export class PersonalMemoryStore {
         error TEXT,
         started_at TEXT NOT NULL,
         finished_at TEXT,
+        model TEXT NOT NULL DEFAULT '',
+        prompt_version TEXT NOT NULL DEFAULT '',
+        schema_version TEXT NOT NULL DEFAULT '',
+        input_tokens INTEGER NOT NULL DEFAULT 0,
+        output_tokens INTEGER NOT NULL DEFAULT 0,
+        duration_ms INTEGER NOT NULL DEFAULT 0,
         PRIMARY KEY(run_id,batch_index)
       ) STRICT;
       CREATE INDEX IF NOT EXISTS idx_ingestion_batches_status ON ingestion_batches(status,started_at);
@@ -279,6 +285,12 @@ export class PersonalMemoryStore {
     this.ensureColumn('claims', 'source_nature', `TEXT NOT NULL DEFAULT 'inference'`)
     this.ensureColumn('claims', 'conflict_group', 'TEXT')
     this.ensureColumn('claims', 'polarity', `TEXT NOT NULL DEFAULT 'positive'`)
+    this.ensureColumn('ingestion_batches', 'model', `TEXT NOT NULL DEFAULT ''`)
+    this.ensureColumn('ingestion_batches', 'prompt_version', `TEXT NOT NULL DEFAULT ''`)
+    this.ensureColumn('ingestion_batches', 'schema_version', `TEXT NOT NULL DEFAULT ''`)
+    this.ensureColumn('ingestion_batches', 'input_tokens', `INTEGER NOT NULL DEFAULT 0`)
+    this.ensureColumn('ingestion_batches', 'output_tokens', `INTEGER NOT NULL DEFAULT 0`)
+    this.ensureColumn('ingestion_batches', 'duration_ms', `INTEGER NOT NULL DEFAULT 0`)
     this.db.prepare(`UPDATE claims SET status='candidate' WHERE source_nature!='self_statement' AND status='confirmed'`).run()
     this.db.prepare(`
       UPDATE evidence SET evidence_role=CASE
@@ -826,16 +838,42 @@ export class PersonalMemoryStore {
     `).run(id, new Date().toISOString(), model, promptVersion, 'running')
   }
 
-  recordIngestionBatch(runId: string, batchIndex: number, messageCount: number, status: 'running' | 'completed' | 'failed', error = ''): void {
+  recordIngestionBatch(
+    runId: string,
+    batchIndex: number,
+    messageCount: number,
+    status: 'running' | 'completed' | 'failed',
+    error = '',
+    metrics: {
+      model?: string
+      promptVersion?: string
+      schemaVersion?: string
+      inputTokens?: number
+      outputTokens?: number
+      durationMs?: number
+    } = {}
+  ): void {
     if (!this.db) return
     const now = new Date().toISOString()
     this.db.prepare(`
-      INSERT INTO ingestion_batches(run_id,batch_index,message_count,status,error,started_at,finished_at)
-      VALUES(?,?,?,?,?,?,?)
+      INSERT INTO ingestion_batches(run_id,batch_index,message_count,status,error,started_at,finished_at,
+        model,prompt_version,schema_version,input_tokens,output_tokens,duration_ms)
+      VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)
       ON CONFLICT(run_id,batch_index) DO UPDATE SET status=excluded.status,error=excluded.error,
         attempts=CASE WHEN excluded.status='running' THEN ingestion_batches.attempts+1 ELSE ingestion_batches.attempts END,
-        finished_at=excluded.finished_at
-    `).run(runId, batchIndex, messageCount, status, error || null, now, status === 'running' ? null : now)
+        finished_at=excluded.finished_at,
+        model=CASE WHEN excluded.model!='' THEN excluded.model ELSE ingestion_batches.model END,
+        prompt_version=CASE WHEN excluded.prompt_version!='' THEN excluded.prompt_version ELSE ingestion_batches.prompt_version END,
+        schema_version=CASE WHEN excluded.schema_version!='' THEN excluded.schema_version ELSE ingestion_batches.schema_version END,
+        input_tokens=CASE WHEN excluded.input_tokens>0 THEN excluded.input_tokens ELSE ingestion_batches.input_tokens END,
+        output_tokens=CASE WHEN excluded.output_tokens>0 THEN excluded.output_tokens ELSE ingestion_batches.output_tokens END,
+        duration_ms=CASE WHEN excluded.duration_ms>0 THEN excluded.duration_ms ELSE ingestion_batches.duration_ms END
+    `).run(
+      runId, batchIndex, messageCount, status, error || null, now, status === 'running' ? null : now,
+      String(metrics.model || ''), String(metrics.promptVersion || ''), String(metrics.schemaVersion || ''),
+      Math.max(0, Number(metrics.inputTokens || 0)), Math.max(0, Number(metrics.outputTokens || 0)),
+      Math.max(0, Number(metrics.durationMs || 0))
+    )
   }
 
   finishIngestionRun(id: string, input: { status: 'completed' | 'partial' | 'failed'; messageCount: number; entityCount: number; relationCount: number; error?: string }): void {
@@ -853,7 +891,14 @@ export class PersonalMemoryStore {
       SELECT status,COUNT(*) AS count,SUM(message_count) AS messages
       FROM ingestion_batches WHERE run_id=? GROUP BY status
     `).all(latest.id) as any[]
-    return { ...latest, batches }
+    const usage = this.db.prepare(`
+      SELECT COALESCE(SUM(input_tokens),0) AS input_tokens,
+        COALESCE(SUM(output_tokens),0) AS output_tokens,
+        COALESCE(SUM(duration_ms),0) AS duration_ms,
+        MAX(model) AS model,MAX(prompt_version) AS prompt_version,MAX(schema_version) AS schema_version
+      FROM ingestion_batches WHERE run_id=?
+    `).get(latest.id) as any
+    return { ...latest, batches, usage }
   }
 
   getMergeSnapshot(id: number): any | null {

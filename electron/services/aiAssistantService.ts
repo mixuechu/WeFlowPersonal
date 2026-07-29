@@ -104,6 +104,9 @@ const EMPTY_STATE: AssistantState = {
   graph: { entities: [], relations: [], reviewQueue: [] }
 }
 
+const EXTRACTION_PROMPT_VERSION = 'personal-os-prompt-v5'
+const EXTRACTION_SCHEMA_VERSION = 'personal-memory-schema-v4'
+
 const SYSTEM_PROMPT = `你是一个谨慎的中文私人助理兼个人记忆图谱分析器。输入包含按会话组织的连续微信消息和用户身份档案。
 待办归属规则：只有明确@用户、称呼用户、上下文明确指派用户，或用户自己明确承诺承担的事项才进入 mine；可能相关但证据不足进入 uncertain；明确分配给他人则标为 others；群公告、@所有人和泛泛讨论不得成为任务。
 “我发送”只表示消息方向，绝不表示任务负责人是用户。用户发出的“查一下、看一下、确认一下、问一下、发一下、快、请、麻烦、帮我”等祈使句或请求，默认是要求收件人/群友执行，必须标为 others；只有同时出现“我来、我会、我负责、我去、我处理、我跟进、我要”等明确自我承诺，才可能标为 mine。
@@ -476,6 +479,7 @@ export class AiAssistantService {
     }))
     let lastError: any = null
     for (let attempt = 0; attempt < 2; attempt += 1) {
+      const startedAt = Date.now()
       const response = await fetch(`${baseUrl}/chat/completions`, {
         method: 'POST',
         headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
@@ -497,7 +501,18 @@ export class AiAssistantService {
       const payload = await response.json().catch(() => ({}))
       if (!response.ok) throw new Error(payload?.error?.message || `DeepSeek 请求失败 (${response.status})`)
       try {
-        return parseModelJson(payload?.choices?.[0]?.message?.content)
+        return {
+          ...parseModelJson(payload?.choices?.[0]?.message?.content),
+          __meta: {
+            model,
+            promptVersion: EXTRACTION_PROMPT_VERSION,
+            schemaVersion: EXTRACTION_SCHEMA_VERSION,
+            inputTokens: Number(payload?.usage?.prompt_tokens || 0),
+            outputTokens: Number(payload?.usage?.completion_tokens || 0),
+            durationMs: Date.now() - startedAt,
+            attempt: attempt + 1
+          }
+        }
       } catch (error) {
         lastError = error
       }
@@ -768,7 +783,11 @@ export class AiAssistantService {
     let cancelled = false
     this.state.cursor.lastAttemptAt = new Date().toISOString()
     this.saveState()
-    personalMemoryStore.startIngestionRun(runId, String(this.config.get('aiAssistantApiModel') || ''), 'personal-os-v2')
+    personalMemoryStore.startIngestionRun(
+      runId,
+      String(this.config.get('aiAssistantApiModel') || ''),
+      `${EXTRACTION_PROMPT_VERSION}/${EXTRACTION_SCHEMA_VERSION}`
+    )
     const now = Math.floor(Date.now() / 1000)
     const lookbackDays = Number(this.config.get('aiAssistantInitialLookbackDays')) || 3
     const start = this.state.cursor.lastMessageTimestamp
@@ -790,7 +809,12 @@ export class AiAssistantService {
           break
         }
         const batch = batches[batchIndex]
-        personalMemoryStore.recordIngestionBatch(runId, batchIndex, batch.length, 'running')
+        const batchStartedAt = Date.now()
+        personalMemoryStore.recordIngestionBatch(runId, batchIndex, batch.length, 'running', '', {
+          model: String(this.config.get('aiAssistantApiModel') || ''),
+          promptVersion: EXTRACTION_PROMPT_VERSION,
+          schemaVersion: EXTRACTION_SCHEMA_VERSION
+        })
         try {
           const digest = await this.callAi(batch)
           digests.push(digest)
@@ -801,7 +825,10 @@ export class AiAssistantService {
           successfulMessageKeys.push(...checkpointKeys)
           this.state.cursor.recentMessageIds = [...new Set([...this.state.cursor.recentMessageIds, ...checkpointKeys])].slice(-20_000)
           this.saveState()
-          personalMemoryStore.recordIngestionBatch(runId, batchIndex, batch.length, 'completed')
+          personalMemoryStore.recordIngestionBatch(runId, batchIndex, batch.length, 'completed', '', {
+            ...digest.__meta,
+            durationMs: Number(digest.__meta?.durationMs || Date.now() - batchStartedAt)
+          })
           if (this.cancelRequested) {
             cancelled = true
             batchErrors.push('用户已安全暂停，剩余批次将在下次继续')
@@ -810,7 +837,12 @@ export class AiAssistantService {
         } catch (error: any) {
           const message = error?.message || String(error)
           batchErrors.push(message)
-          personalMemoryStore.recordIngestionBatch(runId, batchIndex, batch.length, 'failed', message)
+          personalMemoryStore.recordIngestionBatch(runId, batchIndex, batch.length, 'failed', message, {
+            model: String(this.config.get('aiAssistantApiModel') || ''),
+            promptVersion: EXTRACTION_PROMPT_VERSION,
+            schemaVersion: EXTRACTION_SCHEMA_VERSION,
+            durationMs: Date.now() - batchStartedAt
+          })
         }
       }
       const tasks = new Map<string, AssistantTask>()
