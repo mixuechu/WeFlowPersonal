@@ -327,6 +327,10 @@
 .assistant-review-item { padding: 14px; border-top: 1px solid #e8e5dd; display: flex; justify-content: space-between; gap: 16px; }
 .assistant-review-item p { margin: 5px 0; color: #74786f; font-size: 11px; }
 .assistant-review-item small { color: #8b8f88; font-size: 9px; }
+.assistant-identity-pair { margin: 9px 0; display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.assistant-identity-pair > span { padding: 9px; border: 1px solid #e3e1da; border-radius: 9px; display: grid; gap: 3px; background: #faf8f2; }
+.assistant-identity-pair b { font-size: 12px; }
+.assistant-identity-pair small { font-size: 9px; }
 .assistant-review-item > div:last-child { display: flex; align-items: center; gap: 7px; }
 .assistant-review-item button { padding: 7px 11px; border: 1px solid #d9d6cd; border-radius: 8px; background: transparent; }
 .assistant-review-item button.primary { border-color: #255f4b; color: #fff; background: #255f4b; }
