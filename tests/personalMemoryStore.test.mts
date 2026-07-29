@@ -28,6 +28,7 @@ import { findCommonGraphNeighbors } from '../electron/services/graphCommonNeighb
 import { buildProjectInsights } from '../electron/services/projectInsights.ts'
 import { buildTaskCalendar, extractTaskDueDate } from '../src/utils/taskCalendar.ts'
 import { summarizeIngestionRuns } from '../electron/services/ingestionDiagnostics.ts'
+import { recoverMessageSemantics } from '../electron/services/messageSemanticRecovery.ts'
 
 function withStore(run: (store: PersonalMemoryStore) => void): void {
   const directory = mkdtempSync(join(tmpdir(), 'weflow-memory-test-'))
@@ -637,6 +638,22 @@ test('reminder preferences mute kinds and temporarily snooze individual reminder
   }, new Date('2026-07-30T00:00:00.000Z'))
   assert.deepEqual(result.visible.map(item => item.id), ['overdue:a'])
   assert.equal(result.suppressed, 2)
+})
+
+test('message semantic recovery preserves quoted authorship and card media types', () => {
+  const reply = recoverMessageSemantics({
+    localType: 49,
+    content: '这个我晚点回复',
+    replyToMessageId: 'message-original',
+    quote: { sender: '客户甲', content: '你来确认交付时间', platformMessageId: 'message-original' }
+  })
+  assert.equal(reply.semanticType, 'quote')
+  assert.equal(reply.replyToMessageId, 'message-original')
+  assert.equal(reply.quotedSender, '客户甲')
+  assert.match(reply.content, /这个我晚点回复 \[引用上下文｜客户甲：你来确认交付时间\]/)
+  assert.equal(recoverMessageSemantics({ localType: 49, content: '[聊天记录] 项目讨论' }).semanticType, 'forward')
+  assert.equal(recoverMessageSemantics({ localType: 49, content: '[小程序] 日程助手' }).semanticType, 'miniapp')
+  assert.equal(recoverMessageSemantics({ localType: 47, content: '[表情]' }).semanticType, 'emoji')
 })
 
 test('task status changes are persisted as an auditable history', () => withStore(store => {

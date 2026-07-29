@@ -30,6 +30,7 @@ import {
 import { findCommonGraphNeighbors } from './graphCommonNeighbors'
 import { buildProjectInsights } from './projectInsights'
 import { summarizeIngestionRuns } from './ingestionDiagnostics'
+import { recoverMessageSemantics } from './messageSemanticRecovery'
 import {
   assessIdentityPair,
   buildGraphIdentitySuggestions,
@@ -143,6 +144,7 @@ const SYSTEM_PROMPT = `你是一个谨慎的中文私人助理兼个人记忆图
 待办归属规则：只有明确@用户、称呼用户、上下文明确指派用户，或用户自己明确承诺承担的事项才进入 mine；可能相关但证据不足进入 uncertain；明确分配给他人则标为 others；群公告、@所有人和泛泛讨论不得成为任务。
 “我发送”只表示消息方向，绝不表示任务负责人是用户。用户发出的“查一下、看一下、确认一下、问一下、发一下、快、请、麻烦、帮我”等祈使句或请求，默认是要求收件人/群友执行，必须标为 others；只有同时出现“我来、我会、我负责、我去、我处理、我跟进、我要”等明确自我承诺，才可能标为 mine。
 群聊必须结合 sender、direction、被提及名字和前后文判断，不能因为群内出现祈使句就默认属于用户。每个任务必须给出 assignmentEvidence。
+引用消息规则：semanticType=quote 时，content 中“[引用上下文｜发送者：原文]”属于被引用的原作者，不是当前回复者的新陈述；它只能用于理解指代、回复对象和上下文，不得把引用原文的承诺或任务重新归到当前回复者名下。链接、文件、聊天记录、小程序、图片、语音、视频和表情的 semanticType 必须保留其媒介性质。
 身份映射规则：每个会话的 participants 提供 wxid、通讯录备注 contactRemark、微信昵称 wechatNickname、群昵称 groupNickname、微信号 alias 和 displayName。wxid 是稳定身份主键，其余名称都是该身份在不同场景下的别名；同一个 wxid 的多个名称必须视为同一人，不同 wxid 即使同名也不得自动合并。理解消息中的称呼时优先结合群昵称和通讯录备注。
 分片规则：消息的 analysisScope 为 core 时才允许产生待办、实体、关系或合并候选；context 消息仅用于理解 core 的前后文，绝对不能单独据此重复产出结果。
 知识图谱规则：提取人物、组织、群和项目，以及有明确消息证据的关系。不要因名字相同就合并人物；一个人可以有多个账号和别名。身份不确定时创建候选，不做硬合并。所有关系必须带 messageId 证据。
@@ -437,6 +439,7 @@ export class AiAssistantService {
             message.senderDisplayName || message.senderName || message.displayName || senderId
           )
         }
+        const semantics = recoverMessageSemantics(message)
         return {
           id: String(message.serverId || message.localId),
           sessionId: session.username,
@@ -447,7 +450,10 @@ export class AiAssistantService {
           senderName: isSelf ? '我' : identity.displayName,
           senderIdentity: identity,
           isGroup,
-          content: String(message.content || message.parsedContent || '').slice(0, 2000)
+          content: semantics.content,
+          semanticType: semantics.semanticType,
+          replyToMessageId: semantics.replyToMessageId,
+          quotedSender: semantics.quotedSender
         }
       }).filter((message: any) => message.content)
       return { sessionId: session.username, rows }
@@ -483,6 +489,9 @@ export class AiAssistantService {
       sender: message.direction === '我发送' ? '我' : (message.senderName || message.senderId || '未知发送者'),
       analysisScope: message.analysisScope || 'core',
       senderIdentity: message.senderIdentity,
+      semanticType: message.semanticType,
+      replyToMessageId: message.replyToMessageId || undefined,
+      quotedSender: message.quotedSender || undefined,
       content: redact(message.content)
     }))
     const conversations = Object.values(compact.reduce((groups: Record<string, any>, message: any) => {
