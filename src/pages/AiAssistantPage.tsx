@@ -43,6 +43,7 @@ function AiAssistantPage() {
   const [graphRelationStatus, setGraphRelationStatus] = useState('')
   const [selectedEntityId, setSelectedEntityId] = useState('')
   const [showEntityDossier, setShowEntityDossier] = useState(false)
+  const [briefingPeriod, setBriefingPeriod] = useState<'latest' | 'week'>('latest')
   const [forgettingEntityId, setForgettingEntityId] = useState('')
   const [showSources, setShowSources] = useState(false)
   const [sources, setSources] = useState<any[]>([])
@@ -109,6 +110,7 @@ function AiAssistantPage() {
   }, [memoryQuery, memorySearchOptions])
 
   const briefing = dashboard?.briefing
+  const weeklyBriefing = dashboard?.weeklyBriefing
   const tasks: Task[] = dashboard?.tasks || []
   const taskReviewQueue: Task[] = dashboard?.taskReviewQueue || []
   const taskReminders: any[] = dashboard?.taskReminders || []
@@ -533,14 +535,24 @@ function AiAssistantPage() {
 
         <section className="assistant-briefing-card">
           <div className="assistant-briefing-copy">
-            <span className="assistant-eyebrow">最新增量简报</span>
-            <h2>{briefing?.headline || '等待第一次增量整理'}</h2>
-            <p>{briefing?.summary || '服务会在启动时自动补齐，也会在每天设定时间整理新增消息。'}</p>
+            <div className="assistant-briefing-tabs">
+              <button className={briefingPeriod === 'latest' ? 'active' : ''} onClick={() => setBriefingPeriod('latest')}>最新增量</button>
+              <button className={briefingPeriod === 'week' ? 'active' : ''} onClick={() => setBriefingPeriod('week')}>本周汇总</button>
+            </div>
+            {briefingPeriod === 'latest' ? <>
+              <h2>{briefing?.headline || '等待第一次增量整理'}</h2>
+              <p>{briefing?.summary || '服务会在启动时自动补齐，也会在每天设定时间整理新增消息。'}</p>
+            </> : <>
+              <h2>{weeklyBriefing?.daysWithUpdates || 0} 天有新增信息，{weeklyBriefing?.activeTaskCount || 0} 项仍在推进</h2>
+              <p>{(weeklyBriefing?.summaries || []).map((item: any) => item.summary || item.headline).filter(Boolean).slice(0, 3).join(' ') || '本周尚无可汇总的新增信息。'}</p>
+            </>}
           </div>
           <div className="assistant-stat">
-            <strong>{briefing?.messageCount || 0}</strong>
-            <span>条本次新增消息</span>
-            <small>{dashboard?.memoryStats?.claims || 0} 条事实 · {dashboard?.memoryStats?.events || 0} 个事件</small>
+            <strong>{briefingPeriod === 'latest' ? briefing?.messageCount || 0 : weeklyBriefing?.messageCount || 0}</strong>
+            <span>{briefingPeriod === 'latest' ? '条本次新增消息' : '条本周新增消息'}</span>
+            <small>{briefingPeriod === 'latest'
+              ? `${dashboard?.memoryStats?.claims || 0} 条事实 · ${dashboard?.memoryStats?.events || 0} 个事件`
+              : `${weeklyBriefing?.highPriorityTaskCount || 0} 项高优先级 · ${weeklyBriefing?.waitingTaskCount || 0} 项等待中`}</small>
           </div>
         </section>
 
@@ -1088,6 +1100,11 @@ function AiAssistantPage() {
             <label><span>我的常用称呼</span><input value={settings.ownerAliases || ''} placeholder="昵称、群昵称，用逗号分隔" onChange={event => setSettings({ ...settings, ownerAliases: event.target.value })} /></label>
             <label><span>我的背景信息</span><textarea value={settings.ownerBackground || ''} placeholder="公司、职位、负责项目等，帮助理解聊天上下文" onChange={event => setSettings({ ...settings, ownerBackground: event.target.value })} /></label>
             <label><span>每日整理时间</span><input type="time" value={settings.scheduleTime} onChange={event => setSettings({ ...settings, scheduleTime: event.target.value })} /></label>
+            <div className="assistant-settings-inline">
+              <label><span>静默开始</span><input type="time" value={settings.quietStart || '22:00'} onChange={event => setSettings({ ...settings, quietStart: event.target.value })} /></label>
+              <label><span>静默结束</span><input type="time" value={settings.quietEnd || '08:00'} onChange={event => setSettings({ ...settings, quietEnd: event.target.value })} /></label>
+            </div>
+            <small className="assistant-settings-note">静默时段仍会继续补齐并生成简报，只是不发送系统通知。</small>
             <label className="assistant-toggle"><input type="checkbox" checked={settings.enabled} onChange={event => setSettings({ ...settings, enabled: event.target.checked })} /><span>启用启动补齐与每日自动整理</span></label>
             <div className="assistant-modal-actions"><button onClick={() => setShowSettings(false)}>取消</button><button className="primary" onClick={saveSettings}>保存设置</button></div>
           </div>

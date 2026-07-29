@@ -21,6 +21,7 @@ import {
   isNegativeDecisionCurrent
 } from '../electron/services/identityDisambiguation.ts'
 import { editDistance, fuzzyEntityScore } from '../electron/services/fuzzyEntitySearch.ts'
+import { buildWeeklyBriefing, isQuietTime } from '../electron/services/briefingIntelligence.ts'
 
 function withStore(run: (store: PersonalMemoryStore) => void): void {
   const directory = mkdtempSync(join(tmpdir(), 'weflow-memory-test-'))
@@ -221,6 +222,30 @@ test('entity search indexes WeChat IDs and tolerates one-character name errors',
   assert.ok(fuzzyEntityScore('wxid-onyx-contact', ['wxid_onyx_contact']) !== null)
   assert.equal(fuzzyEntityScore('完全无关', ['邢爱妮']), null)
 }))
+
+test('weekly briefing aggregates Shanghai dates and quiet hours cross midnight', () => {
+  assert.equal(isQuietTime('23:30', '22:00', '08:00'), true)
+  assert.equal(isQuietTime('07:59', '22:00', '08:00'), true)
+  assert.equal(isQuietTime('12:00', '22:00', '08:00'), false)
+  assert.equal(isQuietTime('12:00', '09:00', '18:00'), true)
+  const briefing = buildWeeklyBriefing({
+    '2026-07-30': { messageCount: 8, highlights: ['完成演示'], summary: '完成产品演示。' },
+    '2026-07-27': { messageCount: 5, highlights: ['客户反馈'], summary: '收到客户反馈。' },
+    '2026-07-20': { messageCount: 99, highlights: ['过期内容'], summary: '不应进入本周。' }
+  }, [{
+    id: 'task-high', status: 'todo', priority: 'high'
+  }, {
+    id: 'task-waiting', status: 'waiting', priority: 'medium', taskKind: 'waiting'
+  }, {
+    id: 'task-done', status: 'done', priority: 'high'
+  }], new Date('2026-07-30T12:00:00+08:00'))
+  assert.equal(briefing.messageCount, 13)
+  assert.equal(briefing.daysWithUpdates, 2)
+  assert.equal(briefing.activeTaskCount, 2)
+  assert.equal(briefing.waitingTaskCount, 1)
+  assert.equal(briefing.highPriorityTaskCount, 1)
+  assert.deepEqual(briefing.highlights, ['完成演示', '客户反馈'])
+})
 
 test('verified memory backup is created only from a healthy database', () => withStore(store => {
   store.syncTasks([{

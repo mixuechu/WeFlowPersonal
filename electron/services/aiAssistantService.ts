@@ -13,6 +13,7 @@ import { buildMemoryQueryPlan } from './memoryQueryPlanner'
 import { buildTaskReminders, findMatchingTask } from './taskIntelligence'
 import { buildEntityInsights } from './relationshipInsights'
 import { classifyTaskAssignment, evaluateTaskAssignmentPolicy } from './taskAssignmentPolicy'
+import { buildWeeklyBriefing, isQuietTime } from './briefingIntelligence'
 import {
   assessIdentityPair,
   buildNameBuckets,
@@ -1008,7 +1009,7 @@ export class AiAssistantService {
       })
       runFinished = true
       const mineTasks = [...tasks.values()].filter(task => task.classification === 'mine')
-      if (mineTasks.length > 0) {
+      if (mineTasks.length > 0 && !this.isNotificationQuiet(new Date())) {
         await showSystemNotification({
           title: `AI 助理发现 ${mineTasks.length} 个新待办`,
           content: mineTasks.slice(0, 2).map(task => task.title).join('；'),
@@ -1094,7 +1095,8 @@ export class AiAssistantService {
       memoryFeed,
       ingestionStatus: personalMemoryStore.getIngestionStatus(),
       assistantHistory: personalMemoryStore.getRecentAssistantExchanges(),
-      qualityBaseline: evaluateTaskAssignmentPolicy()
+      qualityBaseline: evaluateTaskAssignmentPolicy(),
+      weeklyBriefing: buildWeeklyBriefing(this.state.briefings, tasks)
     }
   }
 
@@ -1146,6 +1148,8 @@ export class AiAssistantService {
       baseUrl: this.config.get('aiAssistantApiBaseUrl'),
       model: this.config.get('aiAssistantApiModel'),
       scheduleTime: this.config.get('aiAssistantScheduleTime'),
+      quietStart: this.config.get('aiAssistantQuietStart'),
+      quietEnd: this.config.get('aiAssistantQuietEnd'),
       enabled: this.config.get('aiAssistantEnabled'),
       ownerName: this.config.get('aiAssistantOwnerName'),
       ownerAliases: this.config.get('aiAssistantOwnerAliases'),
@@ -1199,6 +1203,8 @@ export class AiAssistantService {
     if (typeof input.baseUrl === 'string' && input.baseUrl.trim()) this.config.set('aiAssistantApiBaseUrl', input.baseUrl.trim())
     if (typeof input.model === 'string' && input.model.trim()) this.config.set('aiAssistantApiModel', input.model.trim())
     if (/^\d{2}:\d{2}$/.test(input.scheduleTime || '')) this.config.set('aiAssistantScheduleTime', input.scheduleTime)
+    if (/^\d{2}:\d{2}$/.test(input.quietStart || '')) this.config.set('aiAssistantQuietStart', input.quietStart)
+    if (/^\d{2}:\d{2}$/.test(input.quietEnd || '')) this.config.set('aiAssistantQuietEnd', input.quietEnd)
     if (typeof input.enabled === 'boolean') this.config.set('aiAssistantEnabled', input.enabled)
     if (typeof input.ownerName === 'string') this.config.set('aiAssistantOwnerName', input.ownerName.trim())
     if (typeof input.ownerAliases === 'string') this.config.set('aiAssistantOwnerAliases', input.ownerAliases.trim())
@@ -1647,7 +1653,7 @@ export class AiAssistantService {
       await this.sync()
       this.state.cursor.lastScheduledRunDate = today
       const reminders = buildTaskReminders(this.state.tasks.filter(task => task.classification === 'mine'), now)
-      if (reminders.length && this.state.cursor.lastReminderNotificationDate !== today) {
+      if (reminders.length && this.state.cursor.lastReminderNotificationDate !== today && !this.isNotificationQuiet(now)) {
         await showSystemNotification({
           title: `AI 助理：${reminders.length} 项需要留意`,
           content: reminders.slice(0, 2).map(item => `${item.title}（${item.reason}）`).join('；'),
@@ -1658,6 +1664,17 @@ export class AiAssistantService {
       }
       this.saveState()
     } catch {}
+  }
+
+  private isNotificationQuiet(now: Date): boolean {
+    const time = new Intl.DateTimeFormat('en-GB', {
+      timeZone: 'Asia/Shanghai', hour: '2-digit', minute: '2-digit', hour12: false
+    }).format(now)
+    return isQuietTime(
+      time,
+      String(this.config.get('aiAssistantQuietStart') || '22:00'),
+      String(this.config.get('aiAssistantQuietEnd') || '08:00')
+    )
   }
 }
 

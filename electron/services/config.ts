@@ -102,6 +102,8 @@ interface ConfigSchema {
   aiAssistantApiKey: string
   aiAssistantApiModel: string
   aiAssistantScheduleTime: string
+  aiAssistantQuietStart: string
+  aiAssistantQuietEnd: string
   aiAssistantInitialLookbackDays: number
   aiAssistantOwnerName: string
   aiAssistantOwnerAliases: string
@@ -263,6 +265,8 @@ export class ConfigService {
       aiAssistantApiKey: '',
       aiAssistantApiModel: 'deepseek-v4-flash',
       aiAssistantScheduleTime: '20:00',
+      aiAssistantQuietStart: '22:00',
+      aiAssistantQuietEnd: '08:00',
       aiAssistantInitialLookbackDays: 3,
       aiAssistantOwnerName: '',
       aiAssistantOwnerAliases: '',

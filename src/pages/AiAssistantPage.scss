@@ -364,6 +364,11 @@
 .assistant-quality-baseline span { display: grid; gap: 2px; }
 .assistant-quality-baseline small { color: #738077; font-size: 8px; }
 .assistant-quality-baseline.warning { border-color: #e2cfb8; color: #835d28; background: #fff9ef; }
+.assistant-briefing-tabs { margin-bottom: 9px; display: flex; gap: 6px; }
+.assistant-briefing-tabs button { padding: 4px 8px; border: 1px solid rgba(49,92,78,.25); border-radius: 999px; color: #68756d; background: transparent; font-size: 9px; cursor: pointer; }
+.assistant-briefing-tabs button.active { border-color: #315c4e; color: #fff; background: #315c4e; }
+.assistant-settings-inline { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.assistant-settings-note { margin-top: -8px; color: var(--text-tertiary); font-size: 9px; }
 .assistant-memory-health-actions { position: relative; display: flex; align-items: center; gap: 7px; }
 .assistant-memory-health-actions summary { color: #65736a; font-size: 9px; cursor: pointer; }
 .assistant-memory-health-actions details > div { position: absolute; z-index: 10; top: calc(100% + 6px); right: 0; width: 230px; padding: 7px; border: 1px solid #d6ded7; border-radius: 9px; display: grid; gap: 5px; background: #fff; box-shadow: 0 12px 28px rgba(40, 55, 45, .14); }
