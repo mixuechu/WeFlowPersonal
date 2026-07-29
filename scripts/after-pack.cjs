@@ -45,7 +45,8 @@ module.exports = async function afterPack(context) {
     return
   }
 
-  const resourcesDir = join(context.appOutDir, `${context.packager.appInfo.productFilename}.app`, 'Contents', 'Resources')
+  const appPath = join(context.appOutDir, `${context.packager.appInfo.productFilename}.app`)
+  const resourcesDir = join(appPath, 'Contents', 'Resources')
   const dylibs = walk(resourcesDir)
 
   for (const dylibPath of dylibs) {
@@ -65,5 +66,16 @@ module.exports = async function afterPack(context) {
       rmSync(frameworkPath, { recursive: true, force: true })
       console.log(`[afterPack] Removed invalid framework bundle ${frameworkPath}`)
     }
+  }
+
+  // 本地演示包没有 Apple Developer ID。electron-builder 跳过签名时，
+  // install_name_tool 会让随 Electron 附带的旧签名失效，macOS 随后以
+  // RBSRequestErrorDomain -1006 拒绝启动。为本地包补一层 ad-hoc 签名；
+  // 正式证书构建仍交由 electron-builder 执行，不受影响。
+  if (process.env.CSC_IDENTITY_AUTO_DISCOVERY === 'false') {
+    execFileSync('codesign', ['--force', '--deep', '--sign', '-', appPath], {
+      stdio: 'inherit',
+    })
+    console.log(`[afterPack] Applied ad-hoc signature to ${appPath}`)
   }
 }
