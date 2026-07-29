@@ -92,6 +92,7 @@ const SYSTEM_PROMPT = `你是一个谨慎的中文私人助理兼个人记忆图
 “我发送”只表示消息方向，绝不表示任务负责人是用户。用户发出的“查一下、看一下、确认一下、问一下、发一下、快、请、麻烦、帮我”等祈使句或请求，默认是要求收件人/群友执行，必须标为 others；只有同时出现“我来、我会、我负责、我去、我处理、我跟进、我要”等明确自我承诺，才可能标为 mine。
 群聊必须结合 sender、direction、被提及名字和前后文判断，不能因为群内出现祈使句就默认属于用户。每个任务必须给出 assignmentEvidence。
 身份映射规则：每个会话的 participants 提供 wxid、通讯录备注 contactRemark、微信昵称 wechatNickname、群昵称 groupNickname、微信号 alias 和 displayName。wxid 是稳定身份主键，其余名称都是该身份在不同场景下的别名；同一个 wxid 的多个名称必须视为同一人，不同 wxid 即使同名也不得自动合并。理解消息中的称呼时优先结合群昵称和通讯录备注。
+分片规则：消息的 analysisScope 为 core 时才允许产生待办、实体、关系或合并候选；context 消息仅用于理解 core 的前后文，绝对不能单独据此重复产出结果。
 知识图谱规则：提取人物、组织、群和项目，以及有明确消息证据的关系。不要因名字相同就合并人物；一个人可以有多个账号和别名。身份不确定时创建候选，不做硬合并。所有关系必须带 messageId 证据。
 “用户”“我”“本人”“对方”“群友”“某人”“未知”等只是角色占位词，绝对不能作为实体名称。用户本人必须使用身份档案里的真实姓名；身份档案没有姓名时，不创建用户本人的人物实体。
 只根据消息证据，不臆测；title 用动词开头；不确定日期时 due 为空；source 使用会话显示名。
@@ -389,6 +390,7 @@ export class AiAssistantService {
       direction: message.direction,
       senderId: message.senderId,
       sender: message.direction === '我发送' ? '我' : (message.senderName || message.senderId || '未知发送者'),
+      analysisScope: message.analysisScope || 'core',
       senderIdentity: message.senderIdentity,
       content: redact(message.content)
     }))
@@ -421,7 +423,7 @@ export class AiAssistantService {
         body: JSON.stringify({
           model,
           temperature: 0.2,
-          max_tokens: 3200,
+          max_tokens: 5000,
           response_format: { type: 'json_object' },
           messages: [
             { role: 'system', content: SYSTEM_PROMPT + (attempt ? '\n务必输出单个完整 JSON 对象。' : '') },
@@ -442,6 +444,43 @@ export class AiAssistantService {
       }
     }
     throw lastError
+  }
+
+  private buildAnalysisBatches(messages: any[]): any[][] {
+    const bySession = new Map<string, any[]>()
+    for (const message of messages) {
+      const rows = bySession.get(message.sessionId) || []
+      rows.push(message)
+      bySession.set(message.sessionId, rows)
+    }
+    const windows: any[][] = []
+    for (const rows of bySession.values()) {
+      rows.sort((a, b) => a.timestamp - b.timestamp)
+      if (rows.length <= 260) {
+        windows.push(rows.map(message => ({ ...message, analysisScope: 'core' })))
+        continue
+      }
+      for (let coreStart = 0; coreStart < rows.length; coreStart += 200) {
+        const coreEnd = Math.min(rows.length, coreStart + 200)
+        const windowStart = Math.max(0, coreStart - 30)
+        const windowEnd = Math.min(rows.length, coreEnd + 30)
+        windows.push(rows.slice(windowStart, windowEnd).map((message, index) => ({
+          ...message,
+          analysisScope: windowStart + index >= coreStart && windowStart + index < coreEnd ? 'core' : 'context'
+        })))
+      }
+    }
+    const batches: any[][] = []
+    let pending: any[] = []
+    for (const window of windows) {
+      if (pending.length && pending.length + window.length > 400) {
+        batches.push(pending)
+        pending = []
+      }
+      pending.push(...window)
+    }
+    if (pending.length) batches.push(pending)
+    return batches
   }
 
   private mergeGraphDigest(digest: any, sourceMessages: any[], now: string): void {
@@ -575,8 +614,8 @@ export class AiAssistantService {
       const seen = new Set(this.state.cursor.recentMessageIds)
       const fresh = collected.messages.filter(message => !seen.has(messageKey(message)))
       const digests: any[] = []
-      for (let offset = 0; offset < fresh.length; offset += 400) {
-        digests.push(await this.callAi(fresh.slice(offset, offset + 400)))
+      for (const batch of this.buildAnalysisBatches(fresh)) {
+        digests.push(await this.callAi(batch))
       }
       const tasks = new Map<string, AssistantTask>()
       const highlights: string[] = []
