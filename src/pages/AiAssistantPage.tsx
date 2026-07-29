@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { BookOpen, Bot, CalendarDays, Check, Clock3, Filter, Network, RefreshCw, Search, Settings2, ShieldCheck, Sparkles, X } from 'lucide-react'
+import { buildTaskCalendar, shanghaiToday } from '../utils/taskCalendar'
 import './AiAssistantPage.scss'
 
 type Task = {
@@ -56,6 +57,9 @@ function AiAssistantPage() {
   const [taskStatusFilter, setTaskStatusFilter] = useState<'all' | Task['status']>('all')
   const [taskPriorityFilter, setTaskPriorityFilter] = useState<'all' | Task['priority']>('all')
   const [taskKindFilter, setTaskKindFilter] = useState<'all' | NonNullable<Task['taskKind']>>('all')
+  const [taskView, setTaskView] = useState<'list' | 'calendar'>('list')
+  const [calendarMonth, setCalendarMonth] = useState(() => shanghaiToday().slice(0, 7))
+  const [selectedCalendarDate, setSelectedCalendarDate] = useState(() => shanghaiToday())
   const [pathFromId, setPathFromId] = useState('')
   const [pathToId, setPathToId] = useState('')
   const [graphPath, setGraphPath] = useState<any>(null)
@@ -125,6 +129,15 @@ function AiAssistantPage() {
     (taskPriorityFilter === 'all' || task.priority === taskPriorityFilter) &&
     (taskKindFilter === 'all' || (task.taskKind || 'action') === taskKindFilter)
   ), [tasks, taskStatusFilter, taskPriorityFilter, taskKindFilter])
+  const taskCalendar = useMemo(() => buildTaskCalendar(displayedTasks, calendarMonth), [displayedTasks, calendarMonth])
+  const selectedCalendarDay = taskCalendar.days.find(day => day.date === selectedCalendarDate)
+  const moveCalendarMonth = (offset: number) => {
+    const [year, month] = calendarMonth.split('-').map(Number)
+    const date = new Date(Date.UTC(year, month - 1 + offset, 1))
+    const next = date.toISOString().slice(0, 7)
+    setCalendarMonth(next)
+    setSelectedCalendarDate(`${next}-01`)
+  }
   const graph = dashboard?.graph || { entities: [], relations: [], reviewQueue: [] }
   const graphEntities = useMemo(() => {
     const query = graphQuery.trim().toLowerCase()
@@ -590,6 +603,10 @@ function AiAssistantPage() {
               <select value={taskKindFilter} onChange={event => setTaskKindFilter(event.target.value as any)}>
                 <option value="all">全部类型</option><option value="action">自己执行</option><option value="delegated">已委派</option><option value="waiting">等待他人</option>
               </select>
+              <div className="assistant-task-view-toggle">
+                <button className={taskView === 'list' ? 'active' : ''} onClick={() => setTaskView('list')}>列表</button>
+                <button className={taskView === 'calendar' ? 'active' : ''} onClick={() => setTaskView('calendar')}><CalendarDays size={11} /> 月历</button>
+              </div>
               <button disabled={!displayedTasks.some(task => !['done', 'cancelled'].includes(task.status))} onClick={() => void completeVisibleTasks()}>完成当前筛选</button>
             </div>
             {!!taskReminders.length && <div className="assistant-task-reminders">
@@ -599,7 +616,35 @@ function AiAssistantPage() {
                 <span>{reminder.reason}</span>
               </button>)}
             </div>}
-            <div className="assistant-task-list">
+            {taskView === 'calendar' && <div className="assistant-task-calendar">
+              <header><button onClick={() => moveCalendarMonth(-1)}>‹</button><strong>{calendarMonth}</strong><button onClick={() => moveCalendarMonth(1)}>›</button></header>
+              <div className="assistant-calendar-weekdays">{['一', '二', '三', '四', '五', '六', '日'].map(day => <span key={day}>{day}</span>)}</div>
+              <div className="assistant-calendar-grid">
+                {taskCalendar.days.map(day => <button key={day.date} className={`${day.inMonth ? '' : 'outside'} ${day.isToday ? 'today' : ''} ${selectedCalendarDate === day.date ? 'selected' : ''}`}
+                  onClick={() => setSelectedCalendarDate(day.date)}>
+                  <b>{day.day}</b>
+                  <div>{day.tasks.slice(0, 3).map(task => <span className={`${task.priority} ${task.status}`} key={task.id}>{task.title}</span>)}</div>
+                  {day.tasks.length > 3 && <small>+{day.tasks.length - 3}</small>}
+                </button>)}
+              </div>
+              <div className="assistant-calendar-detail">
+                <h4>{selectedCalendarDate} <small>{selectedCalendarDay?.tasks.length || 0} 项</small></h4>
+                {(selectedCalendarDay?.tasks || []).map(task => <button key={task.id} onClick={() => {
+                  setEditingTask({
+                    ...task, owner: task.owner || '我', collaboratorsText: (task.collaborators || []).join('、'),
+                    project: task.project || '', dependsOnIds: task.dependsOnIds || [], taskKind: task.taskKind || 'action',
+                    detail: task.detail || '', due: task.due || ''
+                  })
+                  setTaskView('list')
+                }}><b>{task.title}</b><span>{task.status} · {task.priority}</span></button>)}
+                {!(selectedCalendarDay?.tasks.length) && <em>当天没有当前筛选范围内的任务</em>}
+                {!!taskCalendar.overdue.length && <details><summary>逾期未完成 · {taskCalendar.overdue.length}</summary>
+                  {taskCalendar.overdue.map(task => <small key={task.id}>{task.due} · {task.title}</small>)}</details>}
+                {!!taskCalendar.unscheduled.length && <details><summary>未排期 · {taskCalendar.unscheduled.length}</summary>
+                  {taskCalendar.unscheduled.map(task => <small key={task.id}>{task.title}</small>)}</details>}
+              </div>
+            </div>}
+            {taskView === 'list' && <div className="assistant-task-list">
               {displayedTasks.length === 0 && <div className="assistant-empty">{tasks.length ? '当前筛选没有待办' : '暂时没有识别到明确待办'}</div>}
               {displayedTasks.map(task => (
                 <article id={`assistant-task-${task.id}`} className={`assistant-task ${task.status === 'done' ? 'done' : ''}`} key={task.id}>
@@ -676,7 +721,7 @@ function AiAssistantPage() {
                   <i className={`priority ${task.priority}`} />
                 </article>
               ))}
-            </div>
+            </div>}
           </section>
 
           <aside className="assistant-panel assistant-signals">

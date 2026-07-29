@@ -25,6 +25,7 @@ import { buildWeeklyBriefing, isQuietTime } from '../electron/services/briefingI
 import { enqueueUniqueNotification, markNotificationAttempt } from '../electron/services/notificationOutbox.ts'
 import { findCommonGraphNeighbors } from '../electron/services/graphCommonNeighbors.ts'
 import { buildProjectInsights } from '../electron/services/projectInsights.ts'
+import { buildTaskCalendar, extractTaskDueDate } from '../src/utils/taskCalendar.ts'
 
 function withStore(run: (store: PersonalMemoryStore) => void): void {
   const directory = mkdtempSync(join(tmpdir(), 'weflow-memory-test-'))
@@ -329,6 +330,29 @@ test('project intelligence aggregates members, progress, risks, decisions and ev
   assert.equal(project.decisions[0].id, 'decision-project')
   assert.equal(project.milestones[0].id, 'delivery-project')
   assert.equal(project.evidence.length, 4)
+})
+
+test('task calendar handles leap months, Shanghai today, overdue and unscheduled work', () => {
+  assert.equal(extractTaskDueDate('2028-02-29 18:00'), '2028-02-29')
+  assert.equal(extractTaskDueDate('2027-02-29'), null)
+  const calendar = buildTaskCalendar([{
+    id: 'high', title: '高优先任务', due: '2028-02-29 18:00', priority: 'high', status: 'todo'
+  }, {
+    id: 'medium', title: '普通任务', due: '2028-02-29', priority: 'medium', status: 'todo'
+  }, {
+    id: 'overdue', title: '逾期任务', due: '2028-02-01', priority: 'low', status: 'todo'
+  }, {
+    id: 'done-overdue', title: '已完成旧任务', due: '2028-02-01', priority: 'high', status: 'done'
+  }, {
+    id: 'unscheduled', title: '未排期任务', due: '', priority: 'medium', status: 'todo'
+  }], '2028-02', new Date('2028-02-29T04:00:00Z'))
+  assert.equal(calendar.days.length, 42)
+  assert.equal(calendar.days[0].date, '2028-01-31')
+  const leapDay = calendar.days.find(day => day.date === '2028-02-29')!
+  assert.equal(leapDay.isToday, true)
+  assert.deepEqual(leapDay.tasks.map(task => task.id), ['high', 'medium'])
+  assert.deepEqual(calendar.overdue.map(task => task.id), ['overdue'])
+  assert.deepEqual(calendar.unscheduled.map(task => task.id), ['unscheduled'])
 })
 
 test('verified memory backup is created only from a healthy database', () => withStore(store => {

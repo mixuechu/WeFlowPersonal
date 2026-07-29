@@ -274,6 +274,36 @@
 .assistant-task-filters select, .assistant-task-filters button { padding: 6px 8px; border: 1px solid #deddd5; border-radius: 7px; color: #666c65; background: #fff; font-size: 9px; }
 .assistant-task-filters button { margin-left: auto; cursor: pointer; }
 .assistant-task-filters button:disabled { opacity: .45; cursor: default; }
+.assistant-task-view-toggle { display: inline-flex; gap: 3px; padding: 2px; border: 1px solid #deddd5; border-radius: 8px; background: #f6f6f2; }
+.assistant-task-view-toggle button { margin: 0; border: 0; display: inline-flex; align-items: center; gap: 3px; background: transparent; }
+.assistant-task-view-toggle button.active { color: #fff; background: #496f5c; }
+.assistant-task-calendar { display: grid; gap: 8px; }
+.assistant-task-calendar > header { display: flex; justify-content: center; align-items: center; gap: 14px; }
+.assistant-task-calendar > header button { width: 27px; height: 27px; border: 1px solid #dfe3dc; border-radius: 8px; color: #4f5c53; background: #fff; cursor: pointer; }
+.assistant-task-calendar > header strong { min-width: 80px; text-align: center; font-size: 12px; }
+.assistant-calendar-weekdays, .assistant-calendar-grid { display: grid; grid-template-columns: repeat(7, minmax(0,1fr)); }
+.assistant-calendar-weekdays span { padding: 5px; color: #858c85; text-align: center; font-size: 8px; }
+.assistant-calendar-grid { border-top: 1px solid #e4e5df; border-left: 1px solid #e4e5df; }
+.assistant-calendar-grid > button { min-width: 0; min-height: 76px; padding: 6px; border: 0; border-right: 1px solid #e4e5df; border-bottom: 1px solid #e4e5df; color: #4a524b; background: #fff; text-align: left; cursor: pointer; overflow: hidden; }
+.assistant-calendar-grid > button.outside { color: #adb1ac; background: #f8f8f5; }
+.assistant-calendar-grid > button.today b { display: inline-grid; width: 20px; height: 20px; border-radius: 50%; place-items: center; color: #fff; background: #4e8065; }
+.assistant-calendar-grid > button.selected { box-shadow: inset 0 0 0 2px #80a08c; }
+.assistant-calendar-grid > button > div { display: grid; gap: 2px; margin-top: 4px; }
+.assistant-calendar-grid span { padding: 2px 3px; border-left: 2px solid #91a99a; color: #657068; background: #f4f7f4; font-size: 7px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.assistant-calendar-grid span.high { border-left-color: #b85f50; }
+.assistant-calendar-grid span.low { border-left-color: #aeb5ae; }
+.assistant-calendar-grid span.done { opacity: .5; text-decoration: line-through; }
+.assistant-calendar-grid small { color: #8b928b; font-size: 7px; }
+.assistant-calendar-detail { padding: 10px; border: 1px solid #e2e5df; border-radius: 9px; display: grid; gap: 5px; background: #fafbf8; }
+.assistant-calendar-detail h4 { margin: 0 0 4px; font-size: 11px; }
+.assistant-calendar-detail h4 small { color: #808880; font-weight: 400; }
+.assistant-calendar-detail > button { padding: 7px 8px; border: 1px solid #e4e6e1; border-radius: 7px; display: flex; justify-content: space-between; gap: 10px; color: #4e574f; background: #fff; text-align: left; cursor: pointer; }
+.assistant-calendar-detail > button b, .assistant-calendar-detail > button span { font-size: 9px; }
+.assistant-calendar-detail > button span { color: #828982; }
+.assistant-calendar-detail > em { color: #929892; font-size: 9px; font-style: normal; }
+.assistant-calendar-detail details { font-size: 9px; }
+.assistant-calendar-detail details summary { color: #755a34; cursor: pointer; }
+.assistant-calendar-detail details small { margin-top: 4px; display: block; color: #747b74; }
 .assistant-task-reminders { margin-bottom: 12px; display: grid; gap: 6px; }
 .assistant-task-reminders button { padding: 8px 10px; border: 1px solid #e4d7b6; border-radius: 8px; display: grid; gap: 3px; text-align: left; color: #71633f; background: #fffaf0; cursor: pointer; }
 .assistant-task-reminders button.high { border-color: #e7c5bc; color: #8b4939; background: #fff5f2; }
