@@ -83,12 +83,13 @@
       "repo": "WeFlow",
       "releaseType": "release"
     },
-    "productName": "WeFlow",
-    "artifactName": "WeFlow 升级版-${version}-Setup.${ext}",
+    "productName": "WeFlow 升级版",
+    "artifactName": "${productName}-${version}-Setup.${ext}",
     "directories": {
       "output": "release"
     },
     "mac": {
+      "executableName": "WeFlow",
       "extendInfo": {
         "CFBundleDisplayName": "WeFlow 升级版"
       },
