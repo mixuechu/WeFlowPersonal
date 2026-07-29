@@ -3777,13 +3777,23 @@ export class ExportContext {
         }
     }
 
-    private collectFileStorageCandidatesByName(rootDir: string, fileName: string, maxDepth = 3): string[] {
+    private collectFileStorageCandidatesByName(
+      rootDir: string,
+      fileName: string,
+      maxDepth = 3,
+      budget: { maxDirectories?: number; maxEntries?: number } = {}
+    ): string[] {
         const normalizedName = String(fileName || '').trim().toLowerCase();
         if (!rootDir || !normalizedName) return []
         const matches: string[] = [];
         const stack: Array<{ dir: string; depth: number }> = [{ dir: rootDir, depth: 0 }];
-        while (stack.length > 0) {
+        let directoryCount = 0
+        let entryCount = 0
+        const maxDirectories = Math.max(1, Number(budget.maxDirectories || Number.MAX_SAFE_INTEGER))
+        const maxEntries = Math.max(1, Number(budget.maxEntries || Number.MAX_SAFE_INTEGER))
+        while (stack.length > 0 && directoryCount < maxDirectories && entryCount < maxEntries) {
           const current = stack.pop()!
+          directoryCount += 1
           let entries: fs.Dirent[]
           try {
             entries = fs.readdirSync(current.dir, { withFileTypes: true })
@@ -3792,6 +3802,8 @@ export class ExportContext {
           }
 
           for (const entry of entries) {
+            entryCount += 1
+            if (entryCount > maxEntries) break
             const entryPath = path.join(current.dir, entry.name)
             if (entry.isFile() && entry.name.toLowerCase() === normalizedName) {
               matches.push(entryPath)
@@ -3830,7 +3842,10 @@ export class ExportContext {
         this.noteMediaTelemetry({ cacheMissFiles: 1 })
     }
 
-    private async resolveFileAttachmentCandidates(msg: any): Promise<FileExportCandidate[]> {
+    private async resolveFileAttachmentCandidates(
+      msg: any,
+      searchBudget: { maxDirectories?: number; maxEntries?: number } = {}
+    ): Promise<FileExportCandidate[]> {
         const fileName = String(msg?.fileName || '').trim();
         if (!fileName) return []
         const roots = this.resolveFileAttachmentSearchRoots();
@@ -3888,7 +3903,7 @@ export class ExportContext {
           }
 
           if (root.fileStorageRoot) {
-            for (const candidatePath of this.collectFileStorageCandidatesByName(root.fileStorageRoot, fileName, 3)) {
+            for (const candidatePath of this.collectFileStorageCandidatesByName(root.fileStorageRoot, fileName, 3, searchBudget)) {
               await appendCandidate(candidatePath)
             }
           }
@@ -3907,6 +3922,26 @@ export class ExportContext {
           return left.searchOrder - right.searchOrder
         })
         return candidates
+    }
+
+    public async resolveFileAttachmentForIndexing(msg: any): Promise<{
+      sourcePath: string
+      matchedBy: 'md5' | 'name'
+      size: number
+    } | null> {
+      const candidates = await this.resolveFileAttachmentCandidates(msg, {
+        maxDirectories: 160,
+        maxEntries: 4_000
+      })
+      const selected = candidates[0]
+      if (!selected) return null
+      try {
+        const stat = await fs.promises.stat(selected.sourcePath)
+        if (!stat.isFile()) return null
+        return { sourcePath: selected.sourcePath, matchedBy: selected.matchedBy, size: stat.size }
+      } catch {
+        return null
+      }
     }
 
     private async exportFileAttachment(msg: any, mediaRootDir: string, mediaRelativePrefix: string, maxFileSizeMb?: number, dirCache?: Set<string>, control?: ExportTaskControl, options?: Pick<ExportOptions, 'exportConflictStrategy'>): Promise<MediaExportItem | null> {

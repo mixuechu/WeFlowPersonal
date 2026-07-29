@@ -1010,6 +1010,15 @@ function AiAssistantPage() {
                 </div>
                 {resource.content && <p>{resource.content}</p>}
                 {(resource.file_name || resource.url) && <small>{resource.file_name ? `${resource.file_name}${resource.file_ext ? ` · ${resource.file_ext}` : ''}` : resource.url}</small>}
+                {resource.resource_type === 'file' && <small>
+                  正文索引：{resource.metadata?.attachmentIndexStatus === 'indexed'
+                    ? `已完成${resource.metadata?.attachmentFormat ? `（${resource.metadata.attachmentFormat}）` : ''}`
+                    : resource.metadata?.attachmentIndexStatus === 'not_found' ? '未在本机找到原文件'
+                      : resource.metadata?.attachmentIndexStatus === 'too_large' ? '文件超过本地解析上限'
+                        : resource.metadata?.attachmentIndexStatus === 'unsupported' ? '该格式暂不支持'
+                          : resource.metadata?.attachmentIndexStatus === 'empty' ? '未提取到可读正文'
+                            : resource.metadata?.attachmentIndexStatus === 'failed' ? '解析失败' : '等待增量解析'}
+                </small>}
                 {resource.metadata?.sessionName && <small>来自：{resource.metadata.sessionName}{resource.metadata.senderName ? ` · ${resource.metadata.senderName}` : ''}</small>}
                 <div className="assistant-evidence-stack">
                   {(resource.evidence || []).map((evidence: any) =>

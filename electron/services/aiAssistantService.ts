@@ -9,6 +9,8 @@ import { httpService } from './httpService'
 import { showSystemNotification } from './systemNotificationService'
 import { personalMemoryStore } from './personalMemoryStore'
 import { localEmbeddingService } from './localEmbeddingService'
+import { extractAttachmentText } from './attachmentTextExtractor'
+import { exportService } from './export'
 import { filterMemorySearchResults, type MemorySearchOptions } from './memorySearchFilters'
 import { buildMemoryQueryPlan } from './memoryQueryPlanner'
 import {
@@ -494,6 +496,7 @@ export class AiAssistantService {
     const sorted = [...deduped.values()].sort((a, b) => a.timestamp - b.timestamp)
     await this.enrichVoiceTranscripts(sorted)
     await this.enrichImageOcr(sorted)
+    await this.enrichAttachmentText(sorted)
     return { messages: sorted, failed, successful }
   }
 
@@ -538,6 +541,36 @@ export class AiAssistantService {
     }
   }
 
+  private async enrichAttachmentText(messages: any[]): Promise<void> {
+    const candidates = messages.filter(message =>
+      message.semanticType === 'file' && message.fileName
+    ).slice(-6)
+    for (const message of candidates) {
+      try {
+        const located = await exportService.context.resolveFileAttachmentForIndexing({
+          fileName: message.fileName,
+          fileMd5: message.fileMd5,
+          createTime: message.timestamp
+        })
+        if (!located) {
+          message.attachmentIndexStatus = 'not_found'
+          continue
+        }
+        const extracted = await extractAttachmentText(located.sourcePath, located.size)
+        message.attachmentLocalPath = located.sourcePath
+        message.attachmentMatchedBy = located.matchedBy
+        message.attachmentIndexStatus = extracted.status
+        message.attachmentFormat = extracted.format
+        if (extracted.success) {
+          message.content = `${message.content}\n[附件·本地正文] ${redact(extracted.text)}`.slice(0, 18_000)
+          message.attachmentTextSource = 'local-bounded-parser'
+        }
+      } catch {
+        message.attachmentIndexStatus = 'failed'
+      }
+    }
+  }
+
   private persistMessageResources(messages: any[], createdAt: string): void {
     const resourceTypes = new Set(['link', 'file', 'forward', 'miniapp', 'image', 'voice'])
     const resources = messages.flatMap(message => {
@@ -577,7 +610,12 @@ export class AiAssistantService {
           fileMd5: message.fileMd5,
           mediaLocalPath: message.mediaLocalPath,
           transcriptionSource: message.transcriptionSource || '',
-          ocrSource: message.ocrSource || ''
+          ocrSource: message.ocrSource || '',
+          attachmentLocalPath: message.attachmentLocalPath || '',
+          attachmentMatchedBy: message.attachmentMatchedBy || '',
+          attachmentIndexStatus: message.attachmentIndexStatus || '',
+          attachmentFormat: message.attachmentFormat || '',
+          attachmentTextSource: message.attachmentTextSource || ''
         },
         createdAt: new Date(Number(message.timestamp || 0) * 1000).toISOString(),
         updatedAt: createdAt,
