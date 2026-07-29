@@ -89,6 +89,7 @@ const SYSTEM_PROMPT = `你是一个谨慎的中文私人助理兼个人记忆图
 待办归属规则：只有明确@用户、称呼用户、上下文明确指派用户，或用户自己明确承诺承担的事项才进入 mine；可能相关但证据不足进入 uncertain；分配给他人、群公告、@所有人和泛泛讨论不得成为任务。
 群聊必须结合 sender、direction、被提及名字和前后文判断，不能因为群内出现祈使句就默认属于用户。每个任务必须给出 assignmentEvidence。
 知识图谱规则：提取人物、组织、群和项目，以及有明确消息证据的关系。不要因名字相同就合并人物；一个人可以有多个账号和别名。身份不确定时创建候选，不做硬合并。所有关系必须带 messageId 证据。
+“用户”“我”“本人”“对方”“群友”“某人”“未知”等只是角色占位词，绝对不能作为实体名称。用户本人必须使用身份档案里的真实姓名；身份档案没有姓名时，不创建用户本人的人物实体。
 只根据消息证据，不臆测；title 用动词开头；不确定日期时 due 为空；source 使用会话显示名。
 只返回 JSON：
 {"headline":"标题","summary":"摘要","highlights":["重要信息"],"tasks":[{"title":"待办","detail":"上下文","owner":"我","due":"","priority":"high|medium|low","source":"会话名","confidence":0.8,"classification":"mine|uncertain","assignmentEvidence":"归属证据"}],"entities":[{"tempId":"e1","type":"person|organization|group|project","canonicalName":"名称","aliases":[],"accountIds":[],"summary":"仅基于证据的简述","confidence":0.8,"evidenceMessageIds":["消息ID"]}],"relations":[{"subjectTempId":"e1","predicate":"关系","objectTempId":"e2","confidence":0.8,"evidenceMessageIds":["消息ID"]}],"possibleDuplicates":[{"leftTempId":"e1","rightExistingName":"已有实体名","confidence":0.7,"reason":"原因"}]}`
@@ -143,6 +144,7 @@ export class AiAssistantService {
     this.statePath = join(app.getPath('userData'), 'ai-assistant-state.json')
     this.migrateLegacyData()
     this.loadState()
+    this.saveState()
     this.scheduler = setInterval(() => void this.schedulerTick(), 60_000)
     this.scheduler.unref()
     if (this.config.get('aiAssistantEnabled')) {
@@ -191,8 +193,34 @@ export class AiAssistantService {
           reviewQueue: Array.isArray(loaded.graph?.reviewQueue) ? loaded.graph.reviewQueue : []
         }
       }
+      this.repairPlaceholderEntities()
     } catch {
       this.state = structuredClone(EMPTY_STATE)
+    }
+  }
+
+  private repairPlaceholderEntities(): void {
+    const reserved = new Set(['用户', '我', '本人', '自己', '对方', '群友', '某人', '未知', '未知用户', 'unknown', 'user'])
+    const ownerName = String(this.config.get('aiAssistantOwnerName') || '').trim()
+    const removed = new Set<string>()
+    for (const entity of this.state.graph.entities) {
+      if (entity.type !== 'person' || !reserved.has(entity.canonicalName.trim().toLowerCase())) continue
+      const aliases = entity.aliases.map(alias => alias.trim())
+      const inferredOwnerName = ownerName && aliases.includes(ownerName)
+        ? ownerName
+        : (entity.accountIds.length > 0 && aliases.length === 1 && !reserved.has(aliases[0].toLowerCase()) ? aliases[0] : '')
+      if (inferredOwnerName) {
+        entity.canonicalName = inferredOwnerName
+        entity.aliases = aliases.filter(alias => alias !== inferredOwnerName && !reserved.has(alias.toLowerCase()))
+        entity.summary = entity.summary.replace(/用户自称/g, `${inferredOwnerName}自称`).replace(/^用户/g, inferredOwnerName)
+        entity.updatedAt = new Date().toISOString()
+      } else {
+        removed.add(entity.id)
+      }
+    }
+    if (removed.size) {
+      this.state.graph.entities = this.state.graph.entities.filter(entity => !removed.has(entity.id))
+      this.state.graph.relations = this.state.graph.relations.filter(relation => !removed.has(relation.subjectId) && !removed.has(relation.objectId))
     }
   }
 
@@ -360,13 +388,21 @@ export class AiAssistantService {
     const tempIds = new Map<string, string>()
     const entities = Array.isArray(digest.entities) ? digest.entities : []
     for (const item of entities) {
+      const reservedNames = new Set(['用户', '我', '本人', '自己', '对方', '群友', '某人', '未知', '未知用户', 'unknown', 'user'])
+      const ownerName = String(this.config.get('aiAssistantOwnerName') || '').trim()
+      const rawName = String(item.canonicalName || '').trim()
+      const itemAliases = (Array.isArray(item.aliases) ? item.aliases : []).map(String).filter(Boolean)
+      const canonicalName = reservedNames.has(rawName.toLowerCase()) && ownerName && itemAliases.includes(ownerName)
+        ? ownerName
+        : rawName
+      if (!canonicalName || reservedNames.has(canonicalName.toLowerCase())) continue
       const accountIds = [...new Set((Array.isArray(item.accountIds) ? item.accountIds : []).map(String).filter(Boolean))]
-      const aliases = [...new Set((Array.isArray(item.aliases) ? item.aliases : []).map(String).filter(Boolean))]
+      const aliases = [...new Set(itemAliases.filter(alias => !reservedNames.has(alias.trim().toLowerCase()) && alias !== canonicalName))]
       const byAccount = accountIds.length
         ? this.state.graph.entities.find(entity => entity.accountIds.some(id => accountIds.includes(id)))
         : undefined
       const exactNameMatches = this.state.graph.entities.filter(entity =>
-        entity.type === item.type && entity.canonicalName === String(item.canonicalName || '').trim())
+        entity.type === item.type && entity.canonicalName === canonicalName)
       const existing = byAccount || (exactNameMatches.length === 1 && Number(item.confidence || 0) >= 0.9 ? exactNameMatches[0] : undefined)
       const id = existing?.id || `ent_${crypto.randomUUID()}`
       tempIds.set(String(item.tempId || id), id)
@@ -378,11 +414,11 @@ export class AiAssistantService {
         existing.confidence = Math.max(existing.confidence, Number(item.confidence || 0))
         existing.evidenceMessageIds = [...new Set([...existing.evidenceMessageIds, ...evidenceIds])].slice(-500)
         existing.updatedAt = now
-      } else if (item.canonicalName) {
+      } else {
         this.state.graph.entities.push({
           id,
           type: ['person', 'organization', 'group', 'project'].includes(item.type) ? item.type : 'person',
-          canonicalName: String(item.canonicalName).slice(0, 100),
+          canonicalName: canonicalName.slice(0, 100),
           aliases,
           accountIds,
           summary: String(item.summary || '').slice(0, 800),
@@ -577,6 +613,8 @@ export class AiAssistantService {
     if (typeof input.ownerName === 'string') this.config.set('aiAssistantOwnerName', input.ownerName.trim())
     if (typeof input.ownerAliases === 'string') this.config.set('aiAssistantOwnerAliases', input.ownerAliases.trim())
     if (typeof input.ownerBackground === 'string') this.config.set('aiAssistantOwnerBackground', input.ownerBackground.trim())
+    this.repairPlaceholderEntities()
+    this.saveState()
     return this.getSettings()
   }
 
