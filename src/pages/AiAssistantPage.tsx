@@ -6,6 +6,7 @@ type Task = {
   id: string
   title: string
   detail?: string
+  owner?: string
   due?: string
   source?: string
   priority: 'high' | 'medium' | 'low'
@@ -31,6 +32,9 @@ function AiAssistantPage() {
   const [memoryQuery, setMemoryQuery] = useState('')
   const [memoryResults, setMemoryResults] = useState<any[]>([])
   const [editingClaim, setEditingClaim] = useState<any>(null)
+  const [editingTask, setEditingTask] = useState<any>(null)
+  const [taskStatusFilter, setTaskStatusFilter] = useState<'all' | Task['status']>('all')
+  const [taskPriorityFilter, setTaskPriorityFilter] = useState<'all' | Task['priority']>('all')
   const [memoryQuestion, setMemoryQuestion] = useState('')
   const [memoryAnswer, setMemoryAnswer] = useState<any>(null)
   const [askingMemory, setAskingMemory] = useState(false)
@@ -66,6 +70,10 @@ function AiAssistantPage() {
   const tasks: Task[] = dashboard?.tasks || []
   const taskReviewQueue: Task[] = dashboard?.taskReviewQueue || []
   const openTasks = useMemo(() => tasks.filter(task => task.status !== 'done'), [tasks])
+  const displayedTasks = useMemo(() => tasks.filter(task =>
+    (taskStatusFilter === 'all' || task.status === taskStatusFilter) &&
+    (taskPriorityFilter === 'all' || task.priority === taskPriorityFilter)
+  ), [tasks, taskStatusFilter, taskPriorityFilter])
   const graph = dashboard?.graph || { entities: [], relations: [], reviewQueue: [] }
   const graphEntities = useMemo(() => {
     const query = graphQuery.trim().toLowerCase()
@@ -130,6 +138,26 @@ function AiAssistantPage() {
     await window.electronAPI.aiAssistant.updateTask(task.id, {
       status: task.status === 'done' ? 'todo' : 'done'
     })
+    await load()
+  }
+
+  const saveTask = async () => {
+    if (!editingTask?.id || !String(editingTask.title || '').trim()) return
+    await window.electronAPI.aiAssistant.updateTask(editingTask.id, {
+      title: editingTask.title,
+      detail: editingTask.detail,
+      owner: editingTask.owner,
+      due: editingTask.due,
+      priority: editingTask.priority,
+      status: editingTask.status
+    })
+    setEditingTask(null)
+    await load()
+  }
+
+  const completeVisibleTasks = async () => {
+    const targets = displayedTasks.filter(task => task.status !== 'done')
+    await Promise.all(targets.map(task => window.electronAPI.aiAssistant.updateTask(task.id, { status: 'done' })))
     await load()
   }
 
@@ -261,18 +289,44 @@ function AiAssistantPage() {
               <div><span className="assistant-eyebrow">ACTION ITEMS</span><h3>持续待办池</h3></div>
               <span className="assistant-count">{openTasks.length} 项未完成</span>
             </div>
+            <div className="assistant-task-filters">
+              <select value={taskStatusFilter} onChange={event => setTaskStatusFilter(event.target.value as any)}>
+                <option value="all">全部状态</option><option value="todo">待处理</option><option value="doing">进行中</option><option value="done">已完成</option>
+              </select>
+              <select value={taskPriorityFilter} onChange={event => setTaskPriorityFilter(event.target.value as any)}>
+                <option value="all">全部优先级</option><option value="high">高优先级</option><option value="medium">中优先级</option><option value="low">低优先级</option>
+              </select>
+              <button disabled={!displayedTasks.some(task => task.status !== 'done')} onClick={() => void completeVisibleTasks()}>完成当前筛选</button>
+            </div>
             <div className="assistant-task-list">
-              {tasks.length === 0 && <div className="assistant-empty">暂时没有识别到明确待办</div>}
-              {tasks.map(task => (
+              {displayedTasks.length === 0 && <div className="assistant-empty">{tasks.length ? '当前筛选没有待办' : '暂时没有识别到明确待办'}</div>}
+              {displayedTasks.map(task => (
                 <article className={`assistant-task ${task.status === 'done' ? 'done' : ''}`} key={task.id}>
                   <button className="assistant-check" onClick={() => void toggleTask(task)} aria-label={task.status === 'done' ? '恢复待办' : '完成待办'}>
                     {task.status === 'done' && <Check size={13} />}
                   </button>
                   <div>
-                    <strong>{task.title}</strong>
-                    {task.detail && <p>{task.detail}</p>}
+                    {editingTask?.id === task.id ? <div className="assistant-task-editor">
+                      <input value={editingTask.title} onChange={event => setEditingTask({ ...editingTask, title: event.target.value })} placeholder="待办标题" />
+                      <textarea value={editingTask.detail} onChange={event => setEditingTask({ ...editingTask, detail: event.target.value })} placeholder="补充说明" />
+                      <div>
+                        <input value={editingTask.owner} onChange={event => setEditingTask({ ...editingTask, owner: event.target.value })} placeholder="负责人" />
+                        <input value={editingTask.due} onChange={event => setEditingTask({ ...editingTask, due: event.target.value })} placeholder="截止时间" />
+                        <select value={editingTask.priority} onChange={event => setEditingTask({ ...editingTask, priority: event.target.value })}>
+                          <option value="high">高优先级</option><option value="medium">中优先级</option><option value="low">低优先级</option>
+                        </select>
+                        <select value={editingTask.status} onChange={event => setEditingTask({ ...editingTask, status: event.target.value })}>
+                          <option value="todo">待处理</option><option value="doing">进行中</option><option value="done">已完成</option>
+                        </select>
+                      </div>
+                      <div className="assistant-task-editor-actions"><button onClick={() => setEditingTask(null)}>取消</button><button className="primary" onClick={() => void saveTask()}>保存</button></div>
+                    </div> : <>
+                      <strong>{task.title}</strong>
+                      {task.detail && <p>{task.detail}</p>}
+                    </>}
                     <div className="assistant-tags">
                       {task.classification === 'uncertain' && <span>待确认归属</span>}
+                      {task.owner && <span>负责人 {task.owner}</span>}
                       {task.source && <span>来自 {task.source}</span>}
                       {task.due && <span><Clock3 size={10} /> {task.due}</span>}
                       <span>{Math.round(task.confidence * 100)}% 可信</span>
@@ -280,6 +334,9 @@ function AiAssistantPage() {
                     {task.assignmentEvidence && <small className="assistant-evidence">归属依据：{task.assignmentEvidence}</small>}
                     {!!task.evidence?.length && <div className="assistant-evidence-stack">
                       {task.evidence.map(item => <small key={item.messageId}>{item.sender} · {new Date(item.timestamp * 1000).toLocaleString('zh-CN')}：“{item.excerpt}”</small>)}
+                    </div>}
+                    {editingTask?.id !== task.id && <div className="assistant-task-actions">
+                      <button onClick={() => setEditingTask({ ...task, owner: task.owner || '我', detail: task.detail || '', due: task.due || '' })}>编辑待办</button>
                     </div>}
                   </div>
                   <i className={`priority ${task.priority}`} />

@@ -17,7 +17,7 @@
     "rebuild": "electron-rebuild",
     "dev": "node scripts/prepare-electron-runtime.cjs && vite",
     "typecheck": "tsc --noEmit",
-    "test": "node --experimental-strip-types --test tests/*.test.ts",
+    "test": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types --test tests/*.test.mts",
     "build": "node scripts/clean-dist-electron.cjs && tsc && vite build && electron-builder",
     "preview": "vite preview",
     "electron:dev": "node scripts/prepare-electron-runtime.cjs && vite --mode electron",

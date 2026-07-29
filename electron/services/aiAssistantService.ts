@@ -985,6 +985,11 @@ export class AiAssistantService {
     const task = this.state.tasks.find(item => item.id === id)
     if (!task) return null
     if (['todo', 'doing', 'done'].includes(patch.status)) task.status = patch.status
+    if (typeof patch.title === 'string' && patch.title.trim()) task.title = patch.title.trim().slice(0, 300)
+    if (typeof patch.detail === 'string') task.detail = patch.detail.trim().slice(0, 2000)
+    if (typeof patch.owner === 'string') task.owner = patch.owner.trim().slice(0, 100) || '我'
+    if (typeof patch.due === 'string') task.due = patch.due.trim().slice(0, 100)
+    if (['high', 'medium', 'low'].includes(patch.priority)) task.priority = patch.priority
     task.updatedAt = new Date().toISOString()
     this.saveState()
     return task
