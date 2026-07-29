@@ -111,6 +111,7 @@ interface ConfigSchema {
   aiAssistantOwnerAliases: string
   aiAssistantOwnerBackground: string
   aiAssistantOcrImages: boolean
+  aiAssistantIndexWebLinks: boolean
   aiInsightEnabled: boolean
   aiInsightApiBaseUrl: string
   aiInsightApiKey: string
@@ -277,6 +278,7 @@ export class ConfigService {
       aiAssistantOwnerAliases: '',
       aiAssistantOwnerBackground: '',
       aiAssistantOcrImages: false,
+      aiAssistantIndexWebLinks: false,
       aiInsightEnabled: false,
       aiInsightApiBaseUrl: '',
       aiInsightApiKey: '',

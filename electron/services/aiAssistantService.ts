@@ -11,6 +11,7 @@ import { personalMemoryStore } from './personalMemoryStore'
 import { localEmbeddingService } from './localEmbeddingService'
 import { extractAttachmentText } from './attachmentTextExtractor'
 import { structureOcrText } from './imageOcrStructuring'
+import { captureWebSnapshot } from './webSnapshotService'
 import { exportService } from './export'
 import { filterMemorySearchResults, type MemorySearchOptions } from './memorySearchFilters'
 import { buildMemoryQueryPlan } from './memoryQueryPlanner'
@@ -498,6 +499,7 @@ export class AiAssistantService {
     await this.enrichVoiceTranscripts(sorted)
     await this.enrichImageOcr(sorted)
     await this.enrichAttachmentText(sorted)
+    await this.enrichWebSnapshots(sorted)
     return { messages: sorted, failed, successful }
   }
 
@@ -573,6 +575,24 @@ export class AiAssistantService {
     }
   }
 
+  private async enrichWebSnapshots(messages: any[]): Promise<void> {
+    if (!this.config.get('aiAssistantIndexWebLinks')) return
+    const candidates = messages.filter(message =>
+      message.semanticType === 'link' && /^https?:\/\//i.test(message.linkUrl || '')
+    ).slice(-4)
+    for (const message of candidates) {
+      const snapshot = await captureWebSnapshot(message.linkUrl)
+      message.webSnapshotStatus = snapshot.status
+      message.webSnapshotFinalUrl = snapshot.finalUrl || ''
+      message.webSnapshotTitle = snapshot.title || ''
+      message.webSnapshotDescription = snapshot.description || ''
+      if (snapshot.success && snapshot.text) {
+        message.content = `${message.content}\n[网页·本地快照] ${snapshot.text}`.slice(0, 18_000)
+        message.webSnapshotSource = 'local-safe-fetch'
+      }
+    }
+  }
+
   private persistMessageResources(messages: any[], createdAt: string): void {
     const resourceTypes = new Set(['link', 'file', 'forward', 'miniapp', 'image', 'voice'])
     const resources = messages.flatMap(message => {
@@ -618,7 +638,12 @@ export class AiAssistantService {
           attachmentMatchedBy: message.attachmentMatchedBy || '',
           attachmentIndexStatus: message.attachmentIndexStatus || '',
           attachmentFormat: message.attachmentFormat || '',
-          attachmentTextSource: message.attachmentTextSource || ''
+          attachmentTextSource: message.attachmentTextSource || '',
+          webSnapshotStatus: message.webSnapshotStatus || '',
+          webSnapshotFinalUrl: message.webSnapshotFinalUrl || '',
+          webSnapshotTitle: message.webSnapshotTitle || '',
+          webSnapshotDescription: message.webSnapshotDescription || '',
+          webSnapshotSource: message.webSnapshotSource || ''
         },
         createdAt: new Date(Number(message.timestamp || 0) * 1000).toISOString(),
         updatedAt: createdAt,
@@ -1493,7 +1518,8 @@ export class AiAssistantService {
       ownerAliases: this.config.get('aiAssistantOwnerAliases'),
       ownerBackground: this.config.get('aiAssistantOwnerBackground'),
       transcribeVoice: this.config.get('autoTranscribeVoice'),
-      ocrImages: this.config.get('aiAssistantOcrImages')
+      ocrImages: this.config.get('aiAssistantOcrImages'),
+      indexWebLinks: this.config.get('aiAssistantIndexWebLinks')
     }
   }
 
@@ -1557,6 +1583,7 @@ export class AiAssistantService {
     if (typeof input.ownerBackground === 'string') this.config.set('aiAssistantOwnerBackground', input.ownerBackground.trim())
     if (typeof input.transcribeVoice === 'boolean') this.config.set('autoTranscribeVoice', input.transcribeVoice)
     if (typeof input.ocrImages === 'boolean') this.config.set('aiAssistantOcrImages', input.ocrImages)
+    if (typeof input.indexWebLinks === 'boolean') this.config.set('aiAssistantIndexWebLinks', input.indexWebLinks)
     this.repairPlaceholderEntities()
     this.saveState()
     return this.getSettings()

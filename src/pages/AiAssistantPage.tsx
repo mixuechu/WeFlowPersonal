@@ -1033,6 +1033,16 @@ function AiAssistantPage() {
                   {!!resource.metadata.ocrStructure.amounts?.length && <small>金额：{resource.metadata.ocrStructure.amounts.join('、')}</small>}
                   {!!resource.metadata.ocrStructure.urls?.length && <small>链接：{resource.metadata.ocrStructure.urls.join('、')}</small>}
                 </div>}
+                {resource.resource_type === 'link' && <small>
+                  网页快照：{resource.metadata?.webSnapshotStatus === 'indexed' ? '已安全索引'
+                    : resource.metadata?.webSnapshotStatus === 'unsafe_url' ? '因内网/危险地址已拒绝'
+                      : resource.metadata?.webSnapshotStatus === 'not_html' ? '不是可索引网页'
+                        : resource.metadata?.webSnapshotStatus === 'too_large' ? '响应超过大小上限'
+                          : resource.metadata?.webSnapshotStatus === 'timeout' ? '访问超时'
+                            : resource.metadata?.webSnapshotStatus === 'failed' ? '抓取失败'
+                              : '未启用或等待增量抓取'}
+                </small>}
+                {resource.metadata?.webSnapshotDescription && <small>网页摘要：{resource.metadata.webSnapshotDescription}</small>}
                 {resource.metadata?.sessionName && <small>来自：{resource.metadata.sessionName}{resource.metadata.senderName ? ` · ${resource.metadata.senderName}` : ''}</small>}
                 <div className="assistant-evidence-stack">
                   {(resource.evidence || []).map((evidence: any) =>
@@ -1451,6 +1461,7 @@ function AiAssistantPage() {
             <small className="assistant-settings-note">DeepSeek 费率可能调整，成本只按你填写的当前费率本地估算。</small>
             <label className="assistant-toggle"><input type="checkbox" checked={Boolean(settings.transcribeVoice)} onChange={event => setSettings({ ...settings, transcribeVoice: event.target.checked })} /><span>增量整理时本地转写语音（每次最多 12 条，需已安装 SenseVoice 模型）</span></label>
             <label className="assistant-toggle"><input type="checkbox" checked={Boolean(settings.ocrImages)} onChange={event => setSettings({ ...settings, ocrImages: event.target.checked })} /><span>增量整理时本地识别图片文字（每次最多 8 张，需本机 Tesseract 中文模型）</span></label>
+            <label className="assistant-toggle"><input type="checkbox" checked={Boolean(settings.indexWebLinks)} onChange={event => setSettings({ ...settings, indexWebLinks: event.target.checked })} /><span>安全抓取公开网页正文（每次最多 4 个；拒绝内网地址，默认关闭）</span></label>
             <label className="assistant-toggle"><input type="checkbox" checked={settings.enabled} onChange={event => setSettings({ ...settings, enabled: event.target.checked })} /><span>启用启动补齐与每日自动整理</span></label>
             <div className="assistant-modal-actions"><button onClick={() => setShowSettings(false)}>取消</button><button className="primary" onClick={saveSettings}>保存设置</button></div>
           </div>
