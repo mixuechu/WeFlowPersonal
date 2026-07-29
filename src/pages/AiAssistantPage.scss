@@ -364,6 +364,11 @@
 .assistant-quality-baseline span { display: grid; gap: 2px; }
 .assistant-quality-baseline small { color: #738077; font-size: 8px; }
 .assistant-quality-baseline.warning { border-color: #e2cfb8; color: #835d28; background: #fff9ef; }
+.assistant-notification-delivery { margin: 10px 0; padding: 9px 12px; border: 1px solid #d5e2d7; border-radius: 10px; display: flex; justify-content: space-between; align-items: center; gap: 12px; color: #315c4e; background: #f7faf7; font-size: 9px; }
+.assistant-notification-delivery > div { display: flex; align-items: center; gap: 8px; }
+.assistant-notification-delivery > div span { display: grid; gap: 2px; }
+.assistant-notification-delivery small { color: #738077; font-size: 8px; }
+.assistant-notification-delivery.warning { border-color: #e2cfb8; color: #835d28; background: #fff9ef; }
 .assistant-briefing-tabs { margin-bottom: 9px; display: flex; gap: 6px; }
 .assistant-briefing-tabs button { padding: 4px 8px; border: 1px solid rgba(49,92,78,.25); border-radius: 999px; color: #68756d; background: transparent; font-size: 9px; cursor: pointer; }
 .assistant-briefing-tabs button.active { border-color: #315c4e; color: #fff; background: #315c4e; }

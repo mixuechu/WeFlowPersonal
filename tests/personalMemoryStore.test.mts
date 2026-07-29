@@ -22,6 +22,7 @@ import {
 } from '../electron/services/identityDisambiguation.ts'
 import { editDistance, fuzzyEntityScore } from '../electron/services/fuzzyEntitySearch.ts'
 import { buildWeeklyBriefing, isQuietTime } from '../electron/services/briefingIntelligence.ts'
+import { enqueueUniqueNotification, markNotificationAttempt } from '../electron/services/notificationOutbox.ts'
 
 function withStore(run: (store: PersonalMemoryStore) => void): void {
   const directory = mkdtempSync(join(tmpdir(), 'weflow-memory-test-'))
@@ -245,6 +246,20 @@ test('weekly briefing aggregates Shanghai dates and quiet hours cross midnight',
   assert.equal(briefing.waitingTaskCount, 1)
   assert.equal(briefing.highPriorityTaskCount, 1)
   assert.deepEqual(briefing.highlights, ['完成演示', '客户反馈'])
+})
+
+test('notification outbox persists unique work until a successful delivery', () => {
+  const outbox = { pending: [], sentKeys: [] } as any
+  const notification = { key: 'task-reminders:2026-07-30', title: '需要留意', content: '两项待办', createdAt: '2026-07-30T12:00:00Z' }
+  assert.equal(enqueueUniqueNotification(outbox, notification), true)
+  assert.equal(enqueueUniqueNotification(outbox, notification), false)
+  markNotificationAttempt(outbox, notification.key, { success: false, error: 'temporary failure' })
+  assert.equal(outbox.pending[0].attempts, 1)
+  assert.equal(outbox.pending[0].lastError, 'temporary failure')
+  markNotificationAttempt(outbox, notification.key, { success: true })
+  assert.equal(outbox.pending.length, 0)
+  assert.deepEqual(outbox.sentKeys, [notification.key])
+  assert.equal(enqueueUniqueNotification(outbox, notification), false)
 })
 
 test('verified memory backup is created only from a healthy database', () => withStore(store => {

@@ -15,6 +15,11 @@ import { buildEntityInsights } from './relationshipInsights'
 import { classifyTaskAssignment, evaluateTaskAssignmentPolicy } from './taskAssignmentPolicy'
 import { buildWeeklyBriefing, isQuietTime } from './briefingIntelligence'
 import {
+  enqueueUniqueNotification,
+  markNotificationAttempt,
+  type NotificationOutbox
+} from './notificationOutbox'
+import {
   assessIdentityPair,
   buildNameBuckets,
   getFullIdentityScanSchedule,
@@ -79,6 +84,7 @@ type AssistantState = {
   briefings: Record<string, any>
   tasks: AssistantTask[]
   lastSyncAt: string | null
+  notifications: NotificationOutbox
   cursor: {
     lastMessageTimestamp: number
     recentMessageIds: string[]
@@ -102,6 +108,7 @@ const EMPTY_STATE: AssistantState = {
   briefings: {},
   tasks: [],
   lastSyncAt: null,
+  notifications: { pending: [], sentKeys: [] },
   cursor: {
     lastMessageTimestamp: 0,
     recentMessageIds: [],
@@ -205,6 +212,7 @@ export class AiAssistantService {
     if (this.config.get('aiAssistantEnabled')) {
       setTimeout(() => void this.sync().catch(() => undefined), 5_000)
     }
+    setTimeout(() => void this.flushNotificationOutbox(new Date()), 8_000)
     setTimeout(() => void this.ensureVectorIndex().catch(error =>
       console.warn('[AI Assistant] 本地向量索引暂未完成:', error)), 12_000)
   }
@@ -242,6 +250,10 @@ export class AiAssistantService {
         ...loaded,
         version: 3,
         cursor: { ...structuredClone(EMPTY_STATE.cursor), ...(loaded.cursor || {}) },
+        notifications: {
+          pending: Array.isArray(loaded.notifications?.pending) ? loaded.notifications.pending : [],
+          sentKeys: Array.isArray(loaded.notifications?.sentKeys) ? loaded.notifications.sentKeys : []
+        },
         tasks: Array.isArray(loaded.tasks)
           ? loaded.tasks.map((task: AssistantTask) => task.classification ? task : { ...task, classification: 'uncertain' })
           : [],
@@ -1009,13 +1021,15 @@ export class AiAssistantService {
       })
       runFinished = true
       const mineTasks = [...tasks.values()].filter(task => task.classification === 'mine')
-      if (mineTasks.length > 0 && !this.isNotificationQuiet(new Date())) {
-        await showSystemNotification({
+      if (mineTasks.length > 0) {
+        this.enqueueNotification({
+          key: `new-tasks:${mineTasks.map(task => task.id).sort().join(',')}`,
           title: `AI 助理发现 ${mineTasks.length} 个新待办`,
           content: mineTasks.slice(0, 2).map(task => task.title).join('；'),
-          channel: 'ai-assistant',
-          targetRoute: '/ai-assistant'
-        }).catch(() => undefined)
+          createdAt: new Date().toISOString()
+        })
+        this.saveState()
+        await this.flushNotificationOutbox(new Date())
       }
       if (batchErrors.length && !cancelled) throw new Error(this.state.cursor.lastError || '部分消息批次等待重试')
       return {
@@ -1096,7 +1110,16 @@ export class AiAssistantService {
       ingestionStatus: personalMemoryStore.getIngestionStatus(),
       assistantHistory: personalMemoryStore.getRecentAssistantExchanges(),
       qualityBaseline: evaluateTaskAssignmentPolicy(),
-      weeklyBriefing: buildWeeklyBriefing(this.state.briefings, tasks)
+      weeklyBriefing: buildWeeklyBriefing(this.state.briefings, tasks),
+      notificationDelivery: {
+        pending: this.state.notifications.pending.length,
+        sent: this.state.notifications.sentKeys.length,
+        quiet: this.isNotificationQuiet(new Date()),
+        quietStart: this.config.get('aiAssistantQuietStart'),
+        quietEnd: this.config.get('aiAssistantQuietEnd'),
+        oldestPendingAt: this.state.notifications.pending[0]?.createdAt || null,
+        lastError: this.state.notifications.pending.find(item => item.lastError)?.lastError || null
+      }
     }
   }
 
@@ -1641,8 +1664,10 @@ export class AiAssistantService {
   }
 
   private async schedulerTick(): Promise<void> {
-    if (!this.config.get('aiAssistantEnabled') || this.activeSync) return
+    if (!this.config.get('aiAssistantEnabled')) return
     const now = new Date()
+    if (!this.activeSync) await this.flushNotificationOutbox(now)
+    if (this.activeSync) return
     const time = new Intl.DateTimeFormat('en-GB', { timeZone: 'Asia/Shanghai', hour: '2-digit', minute: '2-digit', hour12: false }).format(now)
     const today = shanghaiDate()
     const schedule = String(this.config.get('aiAssistantScheduleTime') || '20:00')
@@ -1653,16 +1678,17 @@ export class AiAssistantService {
       await this.sync()
       this.state.cursor.lastScheduledRunDate = today
       const reminders = buildTaskReminders(this.state.tasks.filter(task => task.classification === 'mine'), now)
-      if (reminders.length && this.state.cursor.lastReminderNotificationDate !== today && !this.isNotificationQuiet(now)) {
-        await showSystemNotification({
+      if (reminders.length && this.state.cursor.lastReminderNotificationDate !== today) {
+        this.enqueueNotification({
+          key: `task-reminders:${today}`,
           title: `AI 助理：${reminders.length} 项需要留意`,
           content: reminders.slice(0, 2).map(item => `${item.title}（${item.reason}）`).join('；'),
-          channel: 'ai-assistant',
-          targetRoute: '/ai-assistant'
-        }).catch(() => undefined)
+          createdAt: now.toISOString()
+        })
         this.state.cursor.lastReminderNotificationDate = today
       }
       this.saveState()
+      await this.flushNotificationOutbox(now)
     } catch {}
   }
 
@@ -1675,6 +1701,32 @@ export class AiAssistantService {
       String(this.config.get('aiAssistantQuietStart') || '22:00'),
       String(this.config.get('aiAssistantQuietEnd') || '08:00')
     )
+  }
+
+  private enqueueNotification(notification: { key: string; title: string; content: string; createdAt: string }): boolean {
+    return enqueueUniqueNotification(this.state.notifications, notification)
+  }
+
+  private async flushNotificationOutbox(now: Date): Promise<void> {
+    if (this.isNotificationQuiet(now) || !this.state.notifications.pending.length) return
+    for (const notification of [...this.state.notifications.pending].slice(0, 5)) {
+      try {
+        await showSystemNotification({
+          title: notification.title,
+          content: notification.content,
+          channel: 'ai-assistant',
+          targetRoute: '/ai-assistant'
+        })
+        markNotificationAttempt(this.state.notifications, notification.key, { success: true })
+      } catch (error: any) {
+        markNotificationAttempt(this.state.notifications, notification.key, {
+          success: false,
+          error: error?.message || String(error)
+        })
+        break
+      }
+    }
+    this.saveState()
   }
 }
 

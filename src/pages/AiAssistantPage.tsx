@@ -532,6 +532,15 @@ function AiAssistantPage() {
           </span></div>
           <span>{dashboard.qualityBaseline.failures?.length ? `${dashboard.qualityBaseline.failures.length} 个样本未通过` : '全部通过'}</span>
         </section>}
+        {dashboard?.notificationDelivery && <section className={`assistant-notification-delivery ${dashboard.notificationDelivery.lastError ? 'warning' : ''}`}>
+          <div><Clock3 size={14} /><span><strong>通知投递 · {dashboard.notificationDelivery.quiet ? '静默中' : '可发送'}</strong>
+            <small>静默 {dashboard.notificationDelivery.quietStart}–{dashboard.notificationDelivery.quietEnd} · 已成功去重投递 {dashboard.notificationDelivery.sent} 条</small>
+          </span></div>
+          <span>{dashboard.notificationDelivery.pending
+            ? `${dashboard.notificationDelivery.pending} 条等待静默结束或下次启动`
+            : '没有待发通知'}</span>
+          {dashboard.notificationDelivery.lastError && <small>{dashboard.notificationDelivery.lastError}</small>}
+        </section>}
 
         <section className="assistant-briefing-card">
           <div className="assistant-briefing-copy">
