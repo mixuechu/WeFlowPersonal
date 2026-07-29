@@ -133,6 +133,13 @@ function redact(text: string): string {
     .replace(/\b[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}\b/g, '[已隐藏的邮箱]')
 }
 
+function isOfficialAccountSession(session: any): boolean {
+  const username = String(session?.username || session?.sessionId || '').trim().toLowerCase()
+  const type = String(session?.type || '').trim().toLowerCase()
+  const sessionType = String(session?.sessionType || '').trim().toLowerCase()
+  return username.startsWith('gh_') || type === 'official' || sessionType === 'channel'
+}
+
 export class AiAssistantService {
   private config = ConfigService.getInstance()
   private state: AssistantState = structuredClone(EMPTY_STATE)
@@ -281,13 +288,14 @@ export class AiAssistantService {
     const policies = personalMemoryStore.getConversationPolicies()
     const allSessions = sessionPayload.sessions || []
     for (const session of allSessions) {
-      if (policies.get(session.username) === false) {
+      if (isOfficialAccountSession(session) || policies.get(session.username) === false) {
         // 忽略期间持续推进该会话游标，重新启用时默认从启用时刻开始，
         // 避免突然补分析数月历史消息。
         this.state.cursor.sessionCursors[session.username] = end
       }
     }
     const sessions = allSessions.filter((session: any) => {
+      if (isOfficialAccountSession(session)) return false
       if (policies.get(session.username) === false) return false
       const sessionStart = Number(this.state.cursor.sessionCursors[session.username] || start)
       return Number(session.lastTimestamp || 0) >= sessionStart
@@ -640,7 +648,7 @@ export class AiAssistantService {
   async getConversationSources(): Promise<any[]> {
     const sessionPayload = await this.api('/api/v1/sessions', { limit: 500 })
     const policies = personalMemoryStore.getConversationPolicies()
-    return (sessionPayload.sessions || []).map((session: any) => ({
+    return (sessionPayload.sessions || []).filter((session: any) => !isOfficialAccountSession(session)).map((session: any) => ({
       sessionId: String(session.username),
       displayName: String(session.displayName || session.username),
       type: String(session.username).endsWith('@chatroom') ? 'group' : 'private',
@@ -652,6 +660,10 @@ export class AiAssistantService {
   setConversationSource(input: { sessionId: string; displayName?: string; type?: 'group' | 'private'; enabled: boolean }): any {
     const sessionId = String(input.sessionId || '').trim()
     if (!sessionId) throw new Error('缺少会话 ID')
+    if (sessionId.toLowerCase().startsWith('gh_')) {
+      personalMemoryStore.setConversationPolicy(sessionId, String(input.displayName || sessionId), 'private', false)
+      return { success: true, sessionId, enabled: false, excludedReason: 'official_account' }
+    }
     const type = input.type === 'group' || sessionId.endsWith('@chatroom') ? 'group' : 'private'
     personalMemoryStore.setConversationPolicy(sessionId, String(input.displayName || sessionId), type, Boolean(input.enabled))
     this.state.cursor.sessionCursors[sessionId] = Math.floor(Date.now() / 1000)
