@@ -64,7 +64,7 @@ type AssistantState = {
   graph: {
     entities: GraphEntity[]
     relations: GraphRelation[]
-    reviewQueue: Array<{ id: string; kind: 'possible_duplicate' | 'relation'; title: string; detail: string; confidence: number; status: 'pending' | 'confirmed' | 'rejected'; createdAt: string }>
+    reviewQueue: Array<{ id: string; kind: 'possible_duplicate' | 'relation'; title: string; detail: string; confidence: number; status: 'pending' | 'confirmed' | 'rejected'; createdAt: string; leftEntityId?: string; rightEntityId?: string; relationId?: string }>
   }
 }
 
@@ -450,20 +450,32 @@ export class AiAssistantService {
         existing.confidence = Math.max(existing.confidence, Number(item.confidence || 0))
         existing.updatedAt = now
       } else {
-        this.state.graph.relations.push({
+        const relation: GraphRelation = {
           id, subjectId, predicate, objectId,
           confidence: Math.max(0, Math.min(1, Number(item.confidence || 0.6))),
           evidence,
           status: Number(item.confidence || 0) >= 0.9 ? 'confirmed' : 'candidate',
           createdAt: now,
           updatedAt: now
-        })
+        }
+        this.state.graph.relations.push(relation)
+        if (relation.status === 'candidate') {
+          const subject = this.state.graph.entities.find(entity => entity.id === subjectId)?.canonicalName || '未知'
+          const object = this.state.graph.entities.find(entity => entity.id === objectId)?.canonicalName || '未知'
+          this.state.graph.reviewQueue.push({
+            id: `review_rel_${id}`, kind: 'relation', title: `${subject} — ${predicate} → ${object}`,
+            detail: evidence[0]?.excerpt || '需要根据消息证据确认这条关系',
+            confidence: relation.confidence, status: 'pending', createdAt: now, relationId: id
+          })
+        }
       }
     }
     for (const item of Array.isArray(digest.possibleDuplicates) ? digest.possibleDuplicates : []) {
       const leftId = tempIds.get(String(item.leftTempId || ''))
       if (!leftId) continue
-      const id = crypto.createHash('sha256').update(`${leftId}|${item.rightExistingName}`).digest('hex').slice(0, 20)
+      const right = this.state.graph.entities.find(entity => entity.canonicalName === String(item.rightExistingName || ''))
+      if (!right || right.id === leftId) continue
+      const id = crypto.createHash('sha256').update(`${leftId}|${right.id}`).digest('hex').slice(0, 20)
       if (this.state.graph.reviewQueue.some(review => review.id === id)) continue
       this.state.graph.reviewQueue.push({
         id,
@@ -472,7 +484,9 @@ export class AiAssistantService {
         detail: String(item.reason || ''),
         confidence: Math.max(0, Math.min(1, Number(item.confidence || 0.5))),
         status: 'pending',
-        createdAt: now
+        createdAt: now,
+        leftEntityId: leftId,
+        rightEntityId: right.id
       })
     }
   }
@@ -625,6 +639,38 @@ export class AiAssistantService {
     task.updatedAt = new Date().toISOString()
     this.saveState()
     return task
+  }
+
+  updateGraphReview(id: string, decision: 'confirmed' | 'rejected'): any {
+    const review = this.state.graph.reviewQueue.find(item => item.id === id)
+    if (!review || review.status !== 'pending') return null
+    review.status = decision
+    if (review.kind === 'relation' && review.relationId) {
+      const relation = this.state.graph.relations.find(item => item.id === review.relationId)
+      if (relation) {
+        relation.status = decision
+        relation.updatedAt = new Date().toISOString()
+      }
+    }
+    if (review.kind === 'possible_duplicate' && decision === 'confirmed' && review.leftEntityId && review.rightEntityId) {
+      const source = this.state.graph.entities.find(entity => entity.id === review.leftEntityId)
+      const target = this.state.graph.entities.find(entity => entity.id === review.rightEntityId)
+      if (source && target) {
+        target.aliases = [...new Set([...target.aliases, source.canonicalName, ...source.aliases])].filter(alias => alias !== target.canonicalName)
+        target.accountIds = [...new Set([...target.accountIds, ...source.accountIds])]
+        target.evidenceMessageIds = [...new Set([...target.evidenceMessageIds, ...source.evidenceMessageIds])]
+        target.summary = target.summary || source.summary
+        target.confidence = Math.max(target.confidence, source.confidence)
+        target.updatedAt = new Date().toISOString()
+        for (const relation of this.state.graph.relations) {
+          if (relation.subjectId === source.id) relation.subjectId = target.id
+          if (relation.objectId === source.id) relation.objectId = target.id
+        }
+        this.state.graph.entities = this.state.graph.entities.filter(entity => entity.id !== source.id)
+      }
+    }
+    this.saveState()
+    return review
   }
 
   private async schedulerTick(): Promise<void> {

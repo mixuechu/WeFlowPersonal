@@ -619,7 +619,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
     sync: () => ipcRenderer.invoke('ai-assistant:sync'),
     getSettings: () => ipcRenderer.invoke('ai-assistant:getSettings'),
     setSettings: (input: any) => ipcRenderer.invoke('ai-assistant:setSettings', input),
-    updateTask: (id: string, patch: any) => ipcRenderer.invoke('ai-assistant:updateTask', id, patch)
+    updateTask: (id: string, patch: any) => ipcRenderer.invoke('ai-assistant:updateTask', id, patch),
+    updateGraphReview: (id: string, decision: 'confirmed' | 'rejected') => ipcRenderer.invoke('ai-assistant:updateGraphReview', id, decision)
   },
 
   // AI 见解

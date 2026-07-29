@@ -22,6 +22,8 @@ function AiAssistantPage() {
   const [showSettings, setShowSettings] = useState(false)
   const [syncing, setSyncing] = useState(false)
   const [message, setMessage] = useState('')
+  const [graphQuery, setGraphQuery] = useState('')
+  const [selectedEntityId, setSelectedEntityId] = useState('')
 
   const load = useCallback(async () => {
     const [nextStatus, nextDashboard] = await Promise.all([
@@ -42,6 +44,23 @@ function AiAssistantPage() {
   const tasks: Task[] = dashboard?.tasks || []
   const openTasks = useMemo(() => tasks.filter(task => task.status !== 'done'), [tasks])
   const graph = dashboard?.graph || { entities: [], relations: [], reviewQueue: [] }
+  const graphEntities = useMemo(() => {
+    const query = graphQuery.trim().toLowerCase()
+    const rows = query
+      ? graph.entities.filter((entity: any) => [entity.canonicalName, ...(entity.aliases || [])].some((value: string) => value.toLowerCase().includes(query)))
+      : graph.entities
+    return rows.slice(-60)
+  }, [graph.entities, graphQuery])
+  const graphEntityIds = useMemo(() => new Set(graphEntities.map((entity: any) => entity.id)), [graphEntities])
+  const graphRelations = useMemo(() => graph.relations.filter((relation: any) =>
+    relation.status !== 'rejected' && graphEntityIds.has(relation.subjectId) && graphEntityIds.has(relation.objectId)), [graph.relations, graphEntityIds])
+  const graphPositions = useMemo(() => new Map(graphEntities.map((entity: any, index: number) => {
+    const angle = (Math.PI * 2 * index) / Math.max(1, graphEntities.length) - Math.PI / 2
+    const ring = 105 + (index % 3) * 35
+    return [entity.id, { x: 250 + Math.cos(angle) * ring, y: 170 + Math.sin(angle) * ring }]
+  })), [graphEntities])
+  const selectedEntity = graph.entities.find((entity: any) => entity.id === selectedEntityId)
+  const pendingReviews = graph.reviewQueue.filter((item: any) => item.status === 'pending')
 
   const syncNow = async () => {
     setSyncing(true)
@@ -72,6 +91,11 @@ function AiAssistantPage() {
     await window.electronAPI.aiAssistant.updateTask(task.id, {
       status: task.status === 'done' ? 'todo' : 'done'
     })
+    await load()
+  }
+
+  const decideReview = async (id: string, decision: 'confirmed' | 'rejected') => {
+    await window.electronAPI.aiAssistant.updateGraphReview(id, decision)
     await load()
   }
 
@@ -176,18 +200,38 @@ function AiAssistantPage() {
             <div><span className="assistant-eyebrow">PERSONAL MEMORY GRAPH</span><h3><Network size={16} /> 持续生长的个人知识图谱</h3></div>
             <span className="assistant-count">{graph.entities.length} 个实体 · {graph.relations.length} 条关系</span>
           </div>
-          <div className="assistant-memory-grid">
-            {graph.entities.slice(-12).reverse().map((entity: any) => (
-              <article className="assistant-entity" key={entity.id}>
-                <span>{entity.type}</span><strong>{entity.canonicalName}</strong>
-                <p>{entity.summary || entity.aliases?.join('、') || '等待更多证据补充'}</p>
-              </article>
-            ))}
-            {!graph.entities.length && <div className="assistant-empty">下一次同步会从新增消息开始建立人物、组织、项目和关系证据。</div>}
+          <div className="assistant-graph-toolbar">
+            <input value={graphQuery} onChange={event => setGraphQuery(event.target.value)} placeholder="搜索人物、别名、组织或项目" />
           </div>
-          {!!graph.reviewQueue?.filter((item: any) => item.status === 'pending').length && (
-            <div className="assistant-review-note">有 {graph.reviewQueue.filter((item: any) => item.status === 'pending').length} 个身份或关系候选等待确认；系统不会仅凭同名自动合并。</div>
-          )}
+          {graphEntities.length ? (
+            <div className="assistant-graph-layout">
+              <svg className="assistant-graph-canvas" viewBox="0 0 500 340" role="img" aria-label="个人知识关系图">
+                {graphRelations.map((relation: any) => {
+                  const from = graphPositions.get(relation.subjectId) as any
+                  const to = graphPositions.get(relation.objectId) as any
+                  return <g key={relation.id}><line x1={from.x} y1={from.y} x2={to.x} y2={to.y} className={relation.status === 'candidate' ? 'candidate' : ''} /><text x={(from.x + to.x) / 2} y={(from.y + to.y) / 2}>{relation.predicate}</text></g>
+                })}
+                {graphEntities.map((entity: any) => {
+                  const point = graphPositions.get(entity.id) as any
+                  return <g key={entity.id} className={`graph-node ${selectedEntityId === entity.id ? 'selected' : ''}`} onClick={() => setSelectedEntityId(entity.id)}>
+                    <circle cx={point.x} cy={point.y} r={entity.type === 'person' ? 18 : 14} />
+                    <text x={point.x} y={point.y + 32} textAnchor="middle">{entity.canonicalName.slice(0, 12)}</text>
+                  </g>
+                })}
+              </svg>
+              <aside className="assistant-graph-detail">
+                {selectedEntity ? <><span>{selectedEntity.type}</span><h4>{selectedEntity.canonicalName}</h4><p>{selectedEntity.summary || '等待更多证据补充'}</p><small>别名：{selectedEntity.aliases?.join('、') || '无'}</small><small>账号：{selectedEntity.accountIds?.join('、') || '未关联'}</small><small>证据消息：{selectedEntity.evidenceMessageIds?.length || 0} 条</small></> : <p>点击节点查看身份、别名、账号和证据。</p>}
+              </aside>
+            </div>
+          ) : <div className="assistant-empty">下一次同步会从新增消息开始建立人物、组织、项目和关系证据。</div>}
+          <div className="assistant-review-section">
+            <div className="assistant-section-heading"><div><span className="assistant-eyebrow">REVIEW QUEUE</span><h3>身份与关系候选</h3></div><span className="assistant-count">{pendingReviews.length} 项</span></div>
+            {pendingReviews.map((review: any) => <article className="assistant-review-item" key={review.id}>
+              <div><strong>{review.title}</strong><p>{review.detail}</p><small>{Math.round(review.confidence * 100)}% 可信 · {review.kind === 'possible_duplicate' ? '确认后合并身份' : '确认后写入关系'}</small></div>
+              <div><button onClick={() => void decideReview(review.id, 'rejected')}>拒绝</button><button className="primary" onClick={() => void decideReview(review.id, 'confirmed')}>确认</button></div>
+            </article>)}
+            {!pendingReviews.length && <div className="assistant-empty">当前没有等待确认的身份或关系。</div>}
+          </div>
         </section>
       </div>
 

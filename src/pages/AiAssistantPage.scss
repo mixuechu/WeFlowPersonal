@@ -306,8 +306,34 @@
 .assistant-entity strong { display: block; margin-top: 3px; font-size: 13px; }
 .assistant-entity p { margin: 6px 0 0; color: #74786f; font-size: 11px; line-height: 1.5; }
 .assistant-review-note { margin-top: 12px; padding: 10px 12px; border-radius: 10px; color: #8a5a14; background: #fff3d8; font-size: 11px; }
+.assistant-graph-toolbar { margin-bottom: 12px; }
+.assistant-graph-toolbar input { width: min(360px, 100%); padding: 9px 12px; border: 1px solid #deddd5; border-radius: 9px; background: #fff; }
+.assistant-graph-layout { min-height: 340px; display: grid; grid-template-columns: minmax(0, 1fr) 220px; border: 1px solid #e3e1da; border-radius: 14px; overflow: hidden; }
+.assistant-graph-canvas { width: 100%; height: 340px; background: radial-gradient(circle at center, #fff 0, #faf8f2 72%); }
+.assistant-graph-canvas line { stroke: #aeb8b1; stroke-width: 1.2; }
+.assistant-graph-canvas line.candidate { stroke: #d8a657; stroke-dasharray: 4 4; }
+.assistant-graph-canvas > g > text { fill: #74786f; font-size: 8px; paint-order: stroke; stroke: #fffdf8; stroke-width: 3px; }
+.graph-node { cursor: pointer; }
+.graph-node circle { fill: #dfeae3; stroke: #678472; stroke-width: 1.5; transition: .15s ease; }
+.graph-node:nth-of-type(3n) circle { fill: #f0e6d8; stroke: #a77a4d; }
+.graph-node.selected circle { fill: #255f4b; stroke: #173d30; stroke-width: 3; }
+.graph-node text { fill: #3e4640; font-size: 10px; font-weight: 600; pointer-events: none; }
+.assistant-graph-detail { padding: 18px; border-left: 1px solid #e3e1da; background: #fffdf8; }
+.assistant-graph-detail > span { color: #7b8078; font-size: 9px; text-transform: uppercase; }
+.assistant-graph-detail h4 { margin: 5px 0 10px; font-size: 18px; }
+.assistant-graph-detail p { color: #686e67; font-size: 11px; line-height: 1.6; }
+.assistant-graph-detail small { margin-top: 8px; display: block; color: #7b8078; font-size: 10px; }
+.assistant-review-section { margin-top: 24px; }
+.assistant-review-item { padding: 14px; border-top: 1px solid #e8e5dd; display: flex; justify-content: space-between; gap: 16px; }
+.assistant-review-item p { margin: 5px 0; color: #74786f; font-size: 11px; }
+.assistant-review-item small { color: #8b8f88; font-size: 9px; }
+.assistant-review-item > div:last-child { display: flex; align-items: center; gap: 7px; }
+.assistant-review-item button { padding: 7px 11px; border: 1px solid #d9d6cd; border-radius: 8px; background: transparent; }
+.assistant-review-item button.primary { border-color: #255f4b; color: #fff; background: #255f4b; }
 
 @media (max-width: 920px) {
   .assistant-grid { grid-template-columns: 1fr; }
+  .assistant-graph-layout { grid-template-columns: 1fr; }
+  .assistant-graph-detail { border-top: 1px solid #e3e1da; border-left: 0; }
   .ai-assistant-service-meta > span:not(.service-dot) { display: none; }
 }
