@@ -433,6 +433,12 @@
 .assistant-diagnostics-modal > header p { margin: 0; color: var(--text-tertiary); font-size: 10px; }
 .assistant-diagnostics-modal > header button { border: 0; color: var(--text-secondary); background: transparent; cursor: pointer; }
 .assistant-diagnostics-summary { padding: 10px 12px; border: 1px solid #dde4dd; border-radius: 10px; display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap; color: #6c766e; background: #f7faf7; font-size: 9px; }
+.assistant-privacy-audit { padding: 9px 11px; border: 1px solid #d6e5da; border-radius: 10px; display: flex; justify-content: space-between; gap: 12px; color: #3f6856; background: #f3faf6; }
+.assistant-privacy-audit.warning { border-color: #ead5aa; color: #896a35; background: #fff9ed; }
+.assistant-privacy-audit > div { display: flex; align-items: center; gap: 7px; }
+.assistant-privacy-audit > div:first-child span { display: grid; gap: 2px; }
+.assistant-privacy-audit b { font-size: 9px; }
+.assistant-privacy-audit small, .assistant-privacy-audit > div:last-child span { font-size: 8px; }
 .assistant-diagnostics-runs { min-height: 0; overflow: auto; display: grid; align-content: start; gap: 8px; }
 .assistant-diagnostics-runs > details { border: 1px solid #e1e4de; border-radius: 10px; background: #fbfcfa; }
 .assistant-diagnostics-runs summary { padding: 10px 12px; display: flex; justify-content: space-between; gap: 12px; cursor: pointer; }

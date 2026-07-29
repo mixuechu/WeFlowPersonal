@@ -1,6 +1,6 @@
 import { app } from 'electron'
 import crypto from 'crypto'
-import { copyFileSync, existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'fs'
+import { chmodSync, copyFileSync, existsSync, mkdirSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from 'fs'
 import { dirname, join } from 'path'
 import { jsonrepair } from 'jsonrepair'
 import JSZip from 'jszip'
@@ -31,6 +31,7 @@ import { findCommonGraphNeighbors } from './graphCommonNeighbors'
 import { buildProjectInsights } from './projectInsights'
 import { summarizeIngestionRuns } from './ingestionDiagnostics'
 import { recoverMessageSemantics } from './messageSemanticRecovery'
+import { sanitizeDiagnosticText } from './diagnosticRedaction'
 import {
   assessIdentityPair,
   buildGraphIdentitySuggestions,
@@ -339,7 +340,7 @@ export class AiAssistantService {
       personalMemoryStore.syncGraph(this.state.graph)
       personalMemoryStore.syncTasks(this.state.tasks)
     } catch (error) {
-      console.error('[AI Assistant] 个人记忆数据库同步失败:', error)
+      console.error('[AI Assistant] 个人记忆数据库同步失败:', sanitizeDiagnosticText(error))
     }
   }
 
@@ -956,7 +957,7 @@ export class AiAssistantService {
             break
           }
         } catch (error: any) {
-          const message = error?.message || String(error)
+          const message = sanitizeDiagnosticText(error)
           batchErrors.push(message)
           personalMemoryStore.recordIngestionBatch(runId, batchIndex, batch.length, 'failed', message, {
             model: String(this.config.get('aiAssistantApiModel') || ''),
@@ -1096,7 +1097,7 @@ export class AiAssistantService {
         message: cancelled ? '已安全暂停，成功批次已保存；下次将从断点继续' : ''
       }
     } catch (error: any) {
-      this.state.cursor.lastError = error?.message || String(error)
+      this.state.cursor.lastError = sanitizeDiagnosticText(error)
       this.saveState()
       if (!runFinished) {
         personalMemoryStore.finishIngestionRun(runId, {
@@ -1205,6 +1206,13 @@ export class AiAssistantService {
         ...personalMemoryStore.getEmbeddingStats(localEmbeddingService.modelVersion),
         ...localEmbeddingService.getStatus(),
         indexing: Boolean(this.vectorIndexPromise)
+      },
+      privacy: {
+        ...personalMemoryStore.getFilePermissionAudit(),
+        stateMode: (() => { try { return (statSync(this.statePath).mode & 0o777).toString(8).padStart(3, '0') } catch { return null } })(),
+        apiKeyStorage: 'macOS Safe Storage',
+        httpBinding: '127.0.0.1',
+        logsRedacted: true
       }
     }
   }
@@ -1212,7 +1220,10 @@ export class AiAssistantService {
   createMemoryBackup(): any {
     const result = personalMemoryStore.createBackup()
     const stateBackupPath = `${result.path}.state.json`
-    if (existsSync(this.statePath)) copyFileSync(this.statePath, stateBackupPath)
+    if (existsSync(this.statePath)) {
+      copyFileSync(this.statePath, stateBackupPath)
+      try { chmodSync(stateBackupPath, 0o600) } catch {}
+    }
     return { ...result, stateBackupPath }
   }
 
@@ -1258,7 +1269,8 @@ export class AiAssistantService {
     zip.file('personal-memory.sqlite', databaseBytes)
     zip.file('ai-assistant-state.json', stateBytes)
     const payload = await zip.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE', compressionOptions: { level: 6 } })
-    writeFileSync(outputPath, payload)
+    writeFileSync(outputPath, payload, { mode: 0o600 })
+    try { chmodSync(outputPath, 0o600) } catch {}
     return { success: true, path: outputPath, bytes: payload.length, manifest }
   }
 
@@ -1909,7 +1921,7 @@ export class AiAssistantService {
       } catch (error: any) {
         markNotificationAttempt(this.state.notifications, notification.key, {
           success: false,
-          error: error?.message || String(error)
+          error: sanitizeDiagnosticText(error)
         })
         break
       }

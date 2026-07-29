@@ -29,6 +29,7 @@ import { buildProjectInsights } from '../electron/services/projectInsights.ts'
 import { buildTaskCalendar, extractTaskDueDate } from '../src/utils/taskCalendar.ts'
 import { summarizeIngestionRuns } from '../electron/services/ingestionDiagnostics.ts'
 import { recoverMessageSemantics } from '../electron/services/messageSemanticRecovery.ts'
+import { sanitizeDiagnosticText } from '../electron/services/diagnosticRedaction.ts'
 
 function withStore(run: (store: PersonalMemoryStore) => void): void {
   const directory = mkdtempSync(join(tmpdir(), 'weflow-memory-test-'))
@@ -654,6 +655,15 @@ test('message semantic recovery preserves quoted authorship and card media types
   assert.equal(recoverMessageSemantics({ localType: 49, content: '[聊天记录] 项目讨论' }).semanticType, 'forward')
   assert.equal(recoverMessageSemantics({ localType: 49, content: '[小程序] 日程助手' }).semanticType, 'miniapp')
   assert.equal(recoverMessageSemantics({ localType: 47, content: '[表情]' }).semanticType, 'emoji')
+})
+
+test('diagnostic errors redact local identifiers, credentials and home paths', () => {
+  const sanitized = sanitizeDiagnosticText(
+    'Bearer secret-token sk-testsecret123456 wxid_private123 /Users/mimimi/data user@example.com?token=abcdef'
+  )
+  assert.doesNotMatch(sanitized, /secret-token|sk-testsecret|wxid_private|\/Users\/mimimi|user@example\.com|token=abcdef/)
+  assert.match(sanitized, /Bearer \[已隐藏\]/)
+  assert.match(sanitized, /\/Users\/\[本机用户\]/)
 })
 
 test('task status changes are persisted as an auditable history', () => withStore(store => {

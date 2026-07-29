@@ -1,6 +1,6 @@
 import { DatabaseSync } from 'node:sqlite'
 import { createHash } from 'node:crypto'
-import { copyFileSync, existsSync, mkdirSync, readdirSync, renameSync, statSync, unlinkSync, writeFileSync } from 'fs'
+import { chmodSync, copyFileSync, existsSync, mkdirSync, readdirSync, renameSync, statSync, unlinkSync, writeFileSync } from 'fs'
 import { dirname, join, resolve } from 'path'
 import { fuzzyEntityScore, pinyinEntityScore } from './fuzzyEntitySearch.ts'
 
@@ -16,8 +16,10 @@ export class PersonalMemoryStore {
 
   initialize(databasePath: string): void {
     mkdirSync(dirname(databasePath), { recursive: true })
+    try { chmodSync(dirname(databasePath), 0o700) } catch {}
     this.databasePath = databasePath
     this.db = new DatabaseSync(databasePath)
+    try { chmodSync(databasePath, 0o600) } catch {}
     this.db.exec(`
       PRAGMA journal_mode = WAL;
       PRAGMA synchronous = NORMAL;
@@ -482,10 +484,12 @@ export class PersonalMemoryStore {
     if (!diagnostics.healthy) throw new Error(`数据库一致性检查失败：${diagnostics.integrity}`)
     const backupDirectory = join(dirname(this.databasePath), 'personal-memory-backups')
     mkdirSync(backupDirectory, { recursive: true })
+    try { chmodSync(backupDirectory, 0o700) } catch {}
     const timestamp = new Date().toISOString().replace(/[:.]/g, '-')
     const backupPath = join(backupDirectory, `personal-memory-${timestamp}.sqlite`)
     const escapedPath = backupPath.replace(/'/g, "''")
     this.db.exec(`VACUUM INTO '${escapedPath}'`)
+    try { chmodSync(backupPath, 0o600) } catch {}
     const verification = new DatabaseSync(backupPath, { readOnly: true })
     try {
       const result = verification.prepare('PRAGMA integrity_check').get() as { integrity_check?: string }
@@ -547,6 +551,7 @@ export class PersonalMemoryStore {
     JSON.parse(stateText)
     const backupDirectory = join(dirname(this.databasePath), 'personal-memory-backups')
     mkdirSync(backupDirectory, { recursive: true })
+    try { chmodSync(backupDirectory, 0o700) } catch {}
     const timestamp = new Date().toISOString().replace(/[:.]/g, '-')
     const backupPath = join(backupDirectory, `personal-memory-imported-${timestamp}.sqlite`)
     const temporary = `${backupPath}.tmp`
@@ -560,6 +565,10 @@ export class PersonalMemoryStore {
     }
     renameSync(temporary, backupPath)
     writeFileSync(`${backupPath}.state.json`, stateText, 'utf8')
+    try {
+      chmodSync(backupPath, 0o600)
+      chmodSync(`${backupPath}.state.json`, 0o600)
+    } catch {}
     return { path: backupPath, bytes: statSync(backupPath).size, createdAt: new Date().toISOString(), hasState: true }
   }
 
@@ -575,6 +584,20 @@ export class PersonalMemoryStore {
         .sort((left, right) => right.createdAt.localeCompare(left.createdAt))
     } catch {
       return []
+    }
+  }
+
+  getFilePermissionAudit(): any {
+    const mode = (path: string): string | null => {
+      try { return (statSync(path).mode & 0o777).toString(8).padStart(3, '0') } catch { return null }
+    }
+    const databaseMode = this.databasePath ? mode(this.databasePath) : null
+    const backupDirectory = this.databasePath ? join(dirname(this.databasePath), 'personal-memory-backups') : ''
+    const backupDirectoryMode = backupDirectory ? mode(backupDirectory) : null
+    return {
+      databaseMode,
+      backupDirectoryMode,
+      secure: databaseMode === '600' && (!backupDirectoryMode || backupDirectoryMode === '700')
     }
   }
 
