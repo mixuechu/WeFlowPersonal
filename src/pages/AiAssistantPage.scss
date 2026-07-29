@@ -209,6 +209,9 @@
 
   &:disabled { opacity: .55; cursor: not-allowed; }
 }
+.assistant-sync-actions { display: flex; gap: 7px; align-items: center; }
+.assistant-cancel-sync { padding: 9px 12px; border: 1px solid #dfc7bd; border-radius: 9px; color: #8a5244; background: #fff8f5; cursor: pointer; }
+.assistant-cancel-sync:disabled { opacity: .55; cursor: default; }
 
 .spin { animation: assistant-spin 1s linear infinite; }
 @keyframes assistant-spin { to { transform: rotate(360deg); } }

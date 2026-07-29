@@ -176,6 +176,7 @@ export class AiAssistantService {
   private scheduler: ReturnType<typeof setInterval> | null = null
   private lastSchedulerAttemptAt = 0
   private vectorIndexPromise: Promise<any> | null = null
+  private cancelRequested = false
 
   async initialize(): Promise<void> {
     this.statePath = join(app.getPath('userData'), 'ai-assistant-state.json')
@@ -750,17 +751,20 @@ export class AiAssistantService {
 
   async sync(): Promise<any> {
     if (this.activeSync) return this.activeSync
+    this.cancelRequested = false
     this.activeSync = this.runSync()
     try {
       return await this.activeSync
     } finally {
       this.activeSync = null
+      this.cancelRequested = false
     }
   }
 
   private async runSync(): Promise<any> {
     const runId = `run_${crypto.randomUUID()}`
     let runFinished = false
+    let cancelled = false
     this.state.cursor.lastAttemptAt = new Date().toISOString()
     this.saveState()
     personalMemoryStore.startIngestionRun(runId, String(this.config.get('aiAssistantApiModel') || ''), 'personal-os-v2')
@@ -779,6 +783,11 @@ export class AiAssistantService {
       const batchErrors: string[] = []
       const batches = this.buildAnalysisBatches(fresh)
       for (let batchIndex = 0; batchIndex < batches.length; batchIndex += 1) {
+        if (this.cancelRequested) {
+          cancelled = true
+          batchErrors.push('用户已安全暂停，未开始的批次将在下次继续')
+          break
+        }
         const batch = batches[batchIndex]
         personalMemoryStore.recordIngestionBatch(runId, batchIndex, batch.length, 'running')
         try {
@@ -792,6 +801,11 @@ export class AiAssistantService {
           this.state.cursor.recentMessageIds = [...new Set([...this.state.cursor.recentMessageIds, ...checkpointKeys])].slice(-20_000)
           this.saveState()
           personalMemoryStore.recordIngestionBatch(runId, batchIndex, batch.length, 'completed')
+          if (this.cancelRequested) {
+            cancelled = true
+            batchErrors.push('用户已安全暂停，剩余批次将在下次继续')
+            break
+          }
         } catch (error: any) {
           const message = error?.message || String(error)
           batchErrors.push(message)
@@ -917,8 +931,15 @@ export class AiAssistantService {
           targetRoute: '/ai-assistant'
         }).catch(() => undefined)
       }
-      if (batchErrors.length) throw new Error(this.state.cursor.lastError || '部分消息批次等待重试')
-      return { success: true, newMessageCount: fresh.length, newTaskCount: mineTasks.length, failedSessions: collected.failed.length }
+      if (batchErrors.length && !cancelled) throw new Error(this.state.cursor.lastError || '部分消息批次等待重试')
+      return {
+        success: !batchErrors.length,
+        cancelled,
+        newMessageCount: successfulMessageKeys.length,
+        newTaskCount: mineTasks.length,
+        failedSessions: collected.failed.length,
+        message: cancelled ? '已安全暂停，成功批次已保存；下次将从断点继续' : ''
+      }
     } catch (error: any) {
       this.state.cursor.lastError = error?.message || String(error)
       this.saveState()
@@ -938,10 +959,17 @@ export class AiAssistantService {
     return {
       configured: Boolean(this.config.get('aiAssistantApiKey')),
       syncing: Boolean(this.activeSync),
+      cancelling: this.cancelRequested,
       scheduleTime: this.config.get('aiAssistantScheduleTime'),
       model: this.config.get('aiAssistantApiModel'),
       cursor: this.state.cursor
     }
+  }
+
+  cancelSync(): any {
+    if (!this.activeSync) return { success: false, message: '当前没有正在运行的增量处理' }
+    this.cancelRequested = true
+    return { success: true, message: '将在当前批次安全完成后暂停' }
   }
 
   getDashboard(): any {

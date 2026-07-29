@@ -1642,7 +1642,8 @@ export interface ElectronAPI {
   aiAssistant: {
     status: () => Promise<any>
     dashboard: () => Promise<any>
-    sync: () => Promise<any>
+      sync: () => Promise<any>
+      cancelSync: () => Promise<any>
     getSettings: () => Promise<any>
     setSettings: (input: any) => Promise<any>
       updateTask: (id: string, patch: any) => Promise<any>

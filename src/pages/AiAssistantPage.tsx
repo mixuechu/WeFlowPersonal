@@ -154,13 +154,21 @@ function AiAssistantPage() {
     setMessage('')
     try {
       const result = await window.electronAPI.aiAssistant.sync()
-      setMessage(`补齐完成：${result.newMessageCount} 条新消息，${result.newTaskCount} 个新待办`)
+      setMessage(result.cancelled
+        ? result.message
+        : `补齐完成：${result.newMessageCount} 条新消息，${result.newTaskCount} 个新待办`)
       await load()
     } catch (error: any) {
       setMessage(error?.message || String(error))
     } finally {
       setSyncing(false)
     }
+  }
+
+  const cancelSync = async () => {
+    const result = await window.electronAPI.aiAssistant.cancelSync()
+    setMessage(result.message)
+    await load()
   }
 
   const openSettings = async () => {
@@ -391,10 +399,15 @@ function AiAssistantPage() {
                 : '首次运行将读取最近三天，此后按时间戳持续补齐。'}
             </p>
           </div>
-          <button className="assistant-sync-button" onClick={syncNow} disabled={syncing || status?.syncing || !status?.configured}>
-            <RefreshCw size={15} className={syncing ? 'spin' : ''} />
-            {syncing ? '正在理解消息…' : '立即补齐'}
-          </button>
+          <div className="assistant-sync-actions">
+            <button className="assistant-sync-button" onClick={syncNow} disabled={syncing || status?.syncing || !status?.configured}>
+              <RefreshCw size={15} className={syncing ? 'spin' : ''} />
+              {syncing ? '正在理解消息…' : status?.cursor?.lastError ? '继续补齐' : '立即补齐'}
+            </button>
+            {(syncing || status?.syncing) && <button className="assistant-cancel-sync" onClick={() => void cancelSync()} disabled={status?.cancelling}>
+              {status?.cancelling ? '正在安全暂停…' : '当前批次后暂停'}
+            </button>}
+          </div>
         </header>
 
         {!status?.configured && (
@@ -409,7 +422,8 @@ function AiAssistantPage() {
         {ingestionStatus && (
           <div className={`assistant-ingestion-status ${ingestionStatus.status}`}>
             <strong>最近一次记忆处理：{ingestionStatus.status === 'completed' ? '全部完成' : ingestionStatus.status === 'partial' ? '部分完成，等待重试' : ingestionStatus.status === 'running' ? '正在处理' : '处理失败'}</strong>
-            <span>{Number(ingestionStatus.message_count || 0)} 条已完成 · {ingestionCounts.completed || 0} 个成功批次{ingestionCounts.failed ? ` · ${ingestionCounts.failed} 个待重试批次` : ''}</span>
+            <span>{Number(ingestionStatus.message_count || 0)} 条已完成 · {ingestionCounts.completed || 0} 个成功批次{ingestionCounts.running ? ` · ${ingestionCounts.running} 个处理中` : ''}{ingestionCounts.failed ? ` · ${ingestionCounts.failed} 个待重试批次` : ''}</span>
+            {ingestionStatus.error && <small>{ingestionStatus.error}</small>}
           </div>
         )}
         {memoryDiagnostics && (

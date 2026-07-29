@@ -365,3 +365,26 @@ test('task status changes are persisted as an auditable history', () => withStor
   assert.ok(history.every(item => item.reason === 'manual_edit'))
   assert.ok(history.every(item => JSON.parse(item.evidence_json)[0].messageId === 'message-history'))
 }))
+
+test('partial ingestion keeps completed checkpoints visible for safe resume', () => withStore(store => {
+  store.startIngestionRun('run-resume', 'deepseek-test', 'prompt-test')
+  store.recordIngestionBatch('run-resume', 0, 100, 'running')
+  store.recordIngestionBatch('run-resume', 0, 100, 'completed')
+  store.recordIngestionBatch('run-resume', 1, 80, 'running')
+  store.recordIngestionBatch('run-resume', 1, 80, 'failed', '用户已安全暂停')
+  store.finishIngestionRun('run-resume', {
+    status: 'partial',
+    messageCount: 100,
+    entityCount: 2,
+    relationCount: 1,
+    error: '用户已安全暂停'
+  })
+  const status = store.getIngestionStatus()
+  assert.equal(status.status, 'partial')
+  assert.equal(status.message_count, 100)
+  assert.equal(status.error, '用户已安全暂停')
+  assert.deepEqual(Object.fromEntries(status.batches.map((item: any) => [item.status, item.count])), {
+    completed: 1,
+    failed: 1
+  })
+}))
