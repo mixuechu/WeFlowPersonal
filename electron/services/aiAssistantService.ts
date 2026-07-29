@@ -213,6 +213,7 @@ export class AiAssistantService {
         }
       }
       this.repairPlaceholderEntities()
+      this.repairInvalidRelations()
     } catch {
       this.state = structuredClone(EMPTY_STATE)
     }
@@ -241,6 +242,18 @@ export class AiAssistantService {
       this.state.graph.entities = this.state.graph.entities.filter(entity => !removed.has(entity.id))
       this.state.graph.relations = this.state.graph.relations.filter(relation => !removed.has(relation.subjectId) && !removed.has(relation.objectId))
     }
+  }
+
+  private repairInvalidRelations(): void {
+    const entityTypes = new Map(this.state.graph.entities.map(entity => [entity.id, entity.type]))
+    const personOnlyPredicates = /伴侣|配偶|夫妻|父亲|母亲|兄弟|姐妹|朋友|同学/
+    const removed = new Set(this.state.graph.relations.filter(relation =>
+      personOnlyPredicates.test(relation.predicate) &&
+      (entityTypes.get(relation.subjectId) !== 'person' || entityTypes.get(relation.objectId) !== 'person')
+    ).map(relation => relation.id))
+    if (!removed.size) return
+    this.state.graph.relations = this.state.graph.relations.filter(relation => !removed.has(relation.id))
+    this.state.graph.reviewQueue = this.state.graph.reviewQueue.filter(review => !review.relationId || !removed.has(review.relationId))
   }
 
   private saveState(): void {
@@ -407,9 +420,22 @@ export class AiAssistantService {
       groups[key].messages.push(compactMessage)
       return groups
     }, {})).map((conversation: any) => ({ ...conversation, participants: Object.values(conversation.participants) }))
+    const configuredOwnerName = String(this.config.get('aiAssistantOwnerName') || '').trim()
+    const configuredAliases = String(this.config.get('aiAssistantOwnerAliases') || '').split(/[,，、\n]/).map(item => item.trim()).filter(Boolean)
+    const selfIdentity = messages.find(message => message.direction === '我发送' && message.senderIdentity)?.senderIdentity
+    const inferredOwnerName = String(
+      selfIdentity?.contactRemark || selfIdentity?.wechatNickname || selfIdentity?.displayName || ''
+    ).trim()
     const ownerProfile = {
-      name: String(this.config.get('aiAssistantOwnerName') || '').trim(),
-      aliases: String(this.config.get('aiAssistantOwnerAliases') || '').split(/[,，、\n]/).map(item => item.trim()).filter(Boolean),
+      name: configuredOwnerName || inferredOwnerName,
+      aliases: [...new Set([
+        ...configuredAliases,
+        selfIdentity?.contactRemark,
+        selfIdentity?.wechatNickname,
+        selfIdentity?.groupNickname,
+        selfIdentity?.alias
+      ].map(value => String(value || '').trim()).filter(Boolean))],
+      wxid: String(selfIdentity?.wxid || ''),
       background: String(this.config.get('aiAssistantOwnerBackground') || '').trim()
     }
     const existingGraph = this.state.graph.entities.slice(-200).map(entity => ({
@@ -546,6 +572,10 @@ export class AiAssistantService {
       if (!subjectId || !objectId || subjectId === objectId) continue
       const predicate = String(item.predicate || '').trim().slice(0, 80)
       if (!predicate) continue
+      const subjectType = this.state.graph.entities.find(entity => entity.id === subjectId)?.type
+      const objectType = this.state.graph.entities.find(entity => entity.id === objectId)?.type
+      if (/伴侣|配偶|夫妻|父亲|母亲|兄弟|姐妹|朋友|同学/.test(predicate) &&
+          (subjectType !== 'person' || objectType !== 'person')) continue
       const id = crypto.createHash('sha256').update(`${subjectId}|${predicate}|${objectId}`).digest('hex').slice(0, 20)
       const evidenceIds = (Array.isArray(item.evidenceMessageIds) ? item.evidenceMessageIds : []).map(String)
       const evidence = sourceMessages.filter(message => evidenceIds.includes(String(message.id))).map(message => ({
