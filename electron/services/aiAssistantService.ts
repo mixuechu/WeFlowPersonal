@@ -21,6 +21,7 @@ import {
 } from './notificationOutbox'
 import { findCommonGraphNeighbors } from './graphCommonNeighbors'
 import { buildProjectInsights } from './projectInsights'
+import { summarizeIngestionRuns } from './ingestionDiagnostics'
 import {
   assessIdentityPair,
   buildNameBuckets,
@@ -1134,8 +1135,14 @@ export class AiAssistantService {
   }
 
   getMemoryDiagnostics(): any {
+    const ingestionRuns = personalMemoryStore.listIngestionRuns(20)
     return {
       ...personalMemoryStore.getDiagnostics(),
+      ingestionRuns,
+      ingestionSummary: summarizeIngestionRuns(ingestionRuns, {
+        inputPerMillion: Number(this.config.get('aiAssistantInputCostPerMillion') || 0),
+        outputPerMillion: Number(this.config.get('aiAssistantOutputCostPerMillion') || 0)
+      }),
       embeddings: {
         ...personalMemoryStore.getEmbeddingStats(localEmbeddingService.modelVersion),
         ...localEmbeddingService.getStatus(),
@@ -1183,6 +1190,8 @@ export class AiAssistantService {
       scheduleTime: this.config.get('aiAssistantScheduleTime'),
       quietStart: this.config.get('aiAssistantQuietStart'),
       quietEnd: this.config.get('aiAssistantQuietEnd'),
+      inputCostPerMillion: this.config.get('aiAssistantInputCostPerMillion'),
+      outputCostPerMillion: this.config.get('aiAssistantOutputCostPerMillion'),
       enabled: this.config.get('aiAssistantEnabled'),
       ownerName: this.config.get('aiAssistantOwnerName'),
       ownerAliases: this.config.get('aiAssistantOwnerAliases'),
@@ -1238,6 +1247,12 @@ export class AiAssistantService {
     if (/^\d{2}:\d{2}$/.test(input.scheduleTime || '')) this.config.set('aiAssistantScheduleTime', input.scheduleTime)
     if (/^\d{2}:\d{2}$/.test(input.quietStart || '')) this.config.set('aiAssistantQuietStart', input.quietStart)
     if (/^\d{2}:\d{2}$/.test(input.quietEnd || '')) this.config.set('aiAssistantQuietEnd', input.quietEnd)
+    if (Number.isFinite(Number(input.inputCostPerMillion)) && Number(input.inputCostPerMillion) >= 0) {
+      this.config.set('aiAssistantInputCostPerMillion', Number(input.inputCostPerMillion))
+    }
+    if (Number.isFinite(Number(input.outputCostPerMillion)) && Number(input.outputCostPerMillion) >= 0) {
+      this.config.set('aiAssistantOutputCostPerMillion', Number(input.outputCostPerMillion))
+    }
     if (typeof input.enabled === 'boolean') this.config.set('aiAssistantEnabled', input.enabled)
     if (typeof input.ownerName === 'string') this.config.set('aiAssistantOwnerName', input.ownerName.trim())
     if (typeof input.ownerAliases === 'string') this.config.set('aiAssistantOwnerAliases', input.ownerAliases.trim())

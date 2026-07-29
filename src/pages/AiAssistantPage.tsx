@@ -65,6 +65,7 @@ function AiAssistantPage() {
   const [graphPath, setGraphPath] = useState<any>(null)
   const [graphCommonNeighbors, setGraphCommonNeighbors] = useState<any>(null)
   const [memoryDiagnostics, setMemoryDiagnostics] = useState<any>(null)
+  const [showDiagnostics, setShowDiagnostics] = useState(false)
   const [backingUpMemory, setBackingUpMemory] = useState(false)
   const [restoringMemory, setRestoringMemory] = useState(false)
   const [indexingVectors, setIndexingVectors] = useState(false)
@@ -228,6 +229,7 @@ function AiAssistantPage() {
     await window.electronAPI.aiAssistant.setSettings(settings)
     setShowSettings(false)
     await load()
+    setMemoryDiagnostics(await window.electronAPI.aiAssistant.getMemoryDiagnostics())
   }
 
   const toggleTask = async (task: Task) => {
@@ -528,6 +530,7 @@ function AiAssistantPage() {
               </span>
             </div>
             <div className="assistant-memory-health-actions">
+              <button onClick={() => setShowDiagnostics(true)}>完整诊断</button>
               <button onClick={() => void backupMemory()} disabled={backingUpMemory || restoringMemory || !memoryDiagnostics.healthy}>
                 {backingUpMemory ? '正在验证并备份…' : '立即备份个人记忆'}
               </button>
@@ -1249,6 +1252,50 @@ function AiAssistantPage() {
         </div>
       )}
 
+      {showDiagnostics && memoryDiagnostics && (
+        <div className="assistant-modal-backdrop">
+          <div className="assistant-diagnostics-modal">
+            <header><div><span className="assistant-eyebrow">SYSTEM DIAGNOSTICS</span><h2>个人记忆运行诊断</h2>
+              <p>最近 20 次增量运行、每个模型批次、失败原因、Token、耗时和成本估算。</p></div>
+              <button aria-label="关闭诊断" onClick={() => setShowDiagnostics(false)}><X size={18} /></button>
+            </header>
+            <div className="assistant-dossier-metrics">
+              <span><b>{memoryDiagnostics.ingestionSummary?.runs || 0}</b><small>近期运行</small></span>
+              <span><b>{memoryDiagnostics.ingestionSummary?.failedBatches || 0}</b><small>失败批次</small></span>
+              <span><b>{Number(memoryDiagnostics.ingestionSummary?.inputTokens || 0).toLocaleString()}</b><small>输入 Token</small></span>
+              <span><b>{Number(memoryDiagnostics.ingestionSummary?.outputTokens || 0).toLocaleString()}</b><small>输出 Token</small></span>
+            </div>
+            <div className="assistant-diagnostics-summary">
+              <span>总耗时 <b>{(Number(memoryDiagnostics.ingestionSummary?.durationMs || 0) / 1000).toFixed(1)} 秒</b></span>
+              <span>处理消息 <b>{Number(memoryDiagnostics.ingestionSummary?.messages || 0).toLocaleString()} 条</b></span>
+              <span>估算成本 <b>{memoryDiagnostics.ingestionSummary?.costConfigured
+                ? `¥${Number(memoryDiagnostics.ingestionSummary.estimatedCost || 0).toFixed(4)}`
+                : '未配置费率'}</b></span>
+              <span>运行结果 <b>{memoryDiagnostics.ingestionSummary?.completedRuns || 0} 完成 / {memoryDiagnostics.ingestionSummary?.partialRuns || 0} 部分 / {memoryDiagnostics.ingestionSummary?.failedRuns || 0} 失败</b></span>
+            </div>
+            <div className="assistant-diagnostics-runs">
+              {(memoryDiagnostics.ingestionRuns || []).map((run: any) => <details key={run.id} open={run.status !== 'completed'}>
+                <summary><span><b>{new Date(run.started_at).toLocaleString('zh-CN')}</b><small>{run.model || '模型待记录'} · {run.prompt_version || '版本待记录'}</small></span>
+                  <span className={run.status}>{run.status} · {run.message_count} 条 · {(Number(run.usage?.duration_ms || 0) / 1000).toFixed(1)} 秒</span></summary>
+                {run.error && <p className="assistant-diagnostics-error">{run.error}</p>}
+                <div>
+                  {(run.batches || []).map((batch: any) => <article key={`${run.id}-${batch.batch_index}`} className={batch.status}>
+                    <div><b>批次 {Number(batch.batch_index) + 1}</b><span>{batch.status} · {batch.message_count} 条 · 尝试 {batch.attempts} 次</span></div>
+                    <small>{batch.model || run.model} · {batch.prompt_version || run.prompt_version}{batch.schema_version ? ` / ${batch.schema_version}` : ''}</small>
+                    <small>Token {Number(batch.input_tokens || 0).toLocaleString()} 入 / {Number(batch.output_tokens || 0).toLocaleString()} 出 · {(Number(batch.duration_ms || 0) / 1000).toFixed(1)} 秒</small>
+                    {batch.error && <p>{batch.error}</p>}
+                  </article>)}
+                  {!run.batches?.length && <em>该次运行没有创建模型批次</em>}
+                </div>
+              </details>)}
+              {!memoryDiagnostics.ingestionRuns?.length && <div className="assistant-empty">尚无增量运行记录。</div>}
+            </div>
+            <footer><button onClick={() => void window.electronAPI.aiAssistant.getMemoryDiagnostics().then(setMemoryDiagnostics)}>刷新</button>
+              <button className="primary" onClick={() => setShowDiagnostics(false)}>完成</button></footer>
+          </div>
+        </div>
+      )}
+
       {showSettings && settings && (
         <div className="assistant-modal-backdrop">
           <div className="assistant-modal">
@@ -1265,6 +1312,11 @@ function AiAssistantPage() {
               <label><span>静默结束</span><input type="time" value={settings.quietEnd || '08:00'} onChange={event => setSettings({ ...settings, quietEnd: event.target.value })} /></label>
             </div>
             <small className="assistant-settings-note">静默时段仍会继续补齐并生成简报，只是不发送系统通知。</small>
+            <div className="assistant-settings-inline">
+              <label><span>输入费率（元/百万 Token）</span><input type="number" min="0" step="0.01" value={settings.inputCostPerMillion ?? 0} onChange={event => setSettings({ ...settings, inputCostPerMillion: Number(event.target.value) })} /></label>
+              <label><span>输出费率（元/百万 Token）</span><input type="number" min="0" step="0.01" value={settings.outputCostPerMillion ?? 0} onChange={event => setSettings({ ...settings, outputCostPerMillion: Number(event.target.value) })} /></label>
+            </div>
+            <small className="assistant-settings-note">DeepSeek 费率可能调整，成本只按你填写的当前费率本地估算。</small>
             <label className="assistant-toggle"><input type="checkbox" checked={settings.enabled} onChange={event => setSettings({ ...settings, enabled: event.target.checked })} /><span>启用启动补齐与每日自动整理</span></label>
             <div className="assistant-modal-actions"><button onClick={() => setShowSettings(false)}>取消</button><button className="primary" onClick={saveSettings}>保存设置</button></div>
           </div>

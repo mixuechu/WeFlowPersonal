@@ -1047,6 +1047,24 @@ export class PersonalMemoryStore {
     return { ...latest, batches, usage }
   }
 
+  listIngestionRuns(limit = 20): any[] {
+    if (!this.db) return []
+    const safeLimit = Math.max(1, Math.min(100, Number(limit) || 20))
+    const runs = this.db.prepare('SELECT * FROM ingestion_runs ORDER BY started_at DESC LIMIT ?').all(safeLimit) as any[]
+    const batches = this.db.prepare(`
+      SELECT * FROM ingestion_batches WHERE run_id=? ORDER BY batch_index
+    `)
+    return runs.map(run => {
+      const runBatches = batches.all(run.id) as any[]
+      const usage = runBatches.reduce((result, batch) => ({
+        input_tokens: result.input_tokens + Number(batch.input_tokens || 0),
+        output_tokens: result.output_tokens + Number(batch.output_tokens || 0),
+        duration_ms: result.duration_ms + Number(batch.duration_ms || 0)
+      }), { input_tokens: 0, output_tokens: 0, duration_ms: 0 })
+      return { ...run, batches: runBatches, usage }
+    })
+  }
+
   getMergeSnapshot(id: number): any | null {
     if (!this.db) return null
     const row = this.db.prepare('SELECT snapshot_json FROM merge_history WHERE id=? AND reverted_at IS NULL').get(id) as { snapshot_json: string } | undefined

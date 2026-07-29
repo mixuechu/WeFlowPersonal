@@ -26,6 +26,7 @@ import { enqueueUniqueNotification, markNotificationAttempt } from '../electron/
 import { findCommonGraphNeighbors } from '../electron/services/graphCommonNeighbors.ts'
 import { buildProjectInsights } from '../electron/services/projectInsights.ts'
 import { buildTaskCalendar, extractTaskDueDate } from '../src/utils/taskCalendar.ts'
+import { summarizeIngestionRuns } from '../electron/services/ingestionDiagnostics.ts'
 
 function withStore(run: (store: PersonalMemoryStore) => void): void {
   const directory = mkdtempSync(join(tmpdir(), 'weflow-memory-test-'))
@@ -627,6 +628,14 @@ test('partial ingestion keeps completed checkpoints visible for safe resume', ()
     completed: 1,
     failed: 1
   })
+  const runs = store.listIngestionRuns()
+  assert.equal(runs.length, 1)
+  assert.equal(runs[0].batches[1].error, '用户已安全暂停')
+  assert.deepEqual(runs[0].usage, { input_tokens: 1200, output_tokens: 300, duration_ms: 2500 })
+  const summary = summarizeIngestionRuns(runs, { inputPerMillion: 1, outputPerMillion: 2 })
+  assert.equal(summary.partialRuns, 1)
+  assert.equal(summary.failedBatches, 1)
+  assert.equal(summary.estimatedCost, 0.0018)
 }))
 
 test('entity insight strength is explainable and deduplicates shared evidence', () => {

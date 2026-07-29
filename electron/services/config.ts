@@ -104,6 +104,8 @@ interface ConfigSchema {
   aiAssistantScheduleTime: string
   aiAssistantQuietStart: string
   aiAssistantQuietEnd: string
+  aiAssistantInputCostPerMillion: number
+  aiAssistantOutputCostPerMillion: number
   aiAssistantInitialLookbackDays: number
   aiAssistantOwnerName: string
   aiAssistantOwnerAliases: string
@@ -267,6 +269,8 @@ export class ConfigService {
       aiAssistantScheduleTime: '20:00',
       aiAssistantQuietStart: '22:00',
       aiAssistantQuietEnd: '08:00',
+      aiAssistantInputCostPerMillion: 0,
+      aiAssistantOutputCostPerMillion: 0,
       aiAssistantInitialLookbackDays: 3,
       aiAssistantOwnerName: '',
       aiAssistantOwnerAliases: '',

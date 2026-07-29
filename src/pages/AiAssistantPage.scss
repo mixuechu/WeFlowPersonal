@@ -422,6 +422,33 @@
 .assistant-project-member { text-align: left; }
 .assistant-project-risk.high { border-left: 3px solid #b85f50 !important; }
 .assistant-project-risk.medium { border-left: 3px solid #c99b4d !important; }
+.assistant-diagnostics-modal { width: min(1040px, calc(100vw - 40px)); max-height: calc(100vh - 40px); padding: 24px; border-radius: 20px; display: grid; grid-template-rows: auto auto auto minmax(0,1fr) auto; gap: 14px; color: var(--text-primary); background: var(--bg-primary); box-shadow: 0 30px 100px rgba(0,0,0,.25); }
+.assistant-diagnostics-modal > header { display: flex; justify-content: space-between; gap: 20px; }
+.assistant-diagnostics-modal > header h2 { margin: 3px 0 5px; font-size: 22px; }
+.assistant-diagnostics-modal > header p { margin: 0; color: var(--text-tertiary); font-size: 10px; }
+.assistant-diagnostics-modal > header button { border: 0; color: var(--text-secondary); background: transparent; cursor: pointer; }
+.assistant-diagnostics-summary { padding: 10px 12px; border: 1px solid #dde4dd; border-radius: 10px; display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap; color: #6c766e; background: #f7faf7; font-size: 9px; }
+.assistant-diagnostics-runs { min-height: 0; overflow: auto; display: grid; align-content: start; gap: 8px; }
+.assistant-diagnostics-runs > details { border: 1px solid #e1e4de; border-radius: 10px; background: #fbfcfa; }
+.assistant-diagnostics-runs summary { padding: 10px 12px; display: flex; justify-content: space-between; gap: 12px; cursor: pointer; }
+.assistant-diagnostics-runs summary > span:first-child { display: grid; gap: 2px; }
+.assistant-diagnostics-runs summary b { font-size: 10px; }
+.assistant-diagnostics-runs summary small { color: #7d857e; font-size: 8px; }
+.assistant-diagnostics-runs summary > span:last-child { font-size: 9px; }
+.assistant-diagnostics-runs summary .completed { color: #347058; }
+.assistant-diagnostics-runs summary .partial, .assistant-diagnostics-runs summary .failed { color: #a16243; }
+.assistant-diagnostics-runs details > div { padding: 0 10px 10px; display: grid; gap: 6px; }
+.assistant-diagnostics-runs article { padding: 8px 9px; border-left: 3px solid #91aa98; border-radius: 7px; display: grid; gap: 3px; background: #fff; }
+.assistant-diagnostics-runs article.failed { border-left-color: #b85f50; }
+.assistant-diagnostics-runs article.running { border-left-color: #c99b4d; }
+.assistant-diagnostics-runs article > div { display: flex; justify-content: space-between; gap: 10px; }
+.assistant-diagnostics-runs article b, .assistant-diagnostics-runs article span, .assistant-diagnostics-runs article small { font-size: 8px; }
+.assistant-diagnostics-runs article p, .assistant-diagnostics-error { margin: 3px 0 0; color: #9b4f42; font-size: 9px; line-height: 1.5; }
+.assistant-diagnostics-error { padding: 0 12px 8px; }
+.assistant-diagnostics-runs em { color: #919891; font-size: 9px; font-style: normal; }
+.assistant-diagnostics-modal > footer { display: flex; justify-content: flex-end; gap: 8px; }
+.assistant-diagnostics-modal > footer button { padding: 8px 12px; border: 1px solid #ccd8ce; border-radius: 8px; color: #315c4e; background: #fff; cursor: pointer; }
+.assistant-diagnostics-modal > footer button.primary { color: #fff; border-color: #255f4b; background: #255f4b; }
 .assistant-briefing-tabs { margin-bottom: 9px; display: flex; gap: 6px; }
 .assistant-briefing-tabs button { padding: 4px 8px; border: 1px solid rgba(49,92,78,.25); border-radius: 999px; color: #68756d; background: transparent; font-size: 9px; cursor: pointer; }
 .assistant-briefing-tabs button.active { border-color: #315c4e; color: #fff; background: #315c4e; }
