@@ -10,6 +10,7 @@ import { showSystemNotification } from './systemNotificationService'
 import { personalMemoryStore } from './personalMemoryStore'
 import { localEmbeddingService } from './localEmbeddingService'
 import { extractAttachmentText } from './attachmentTextExtractor'
+import { structureOcrText } from './imageOcrStructuring'
 import { exportService } from './export'
 import { filterMemorySearchResults, type MemorySearchOptions } from './memorySearchFilters'
 import { buildMemoryQueryPlan } from './memoryQueryPlanner'
@@ -537,6 +538,7 @@ export class AiAssistantService {
       if (result.success && result.text?.trim()) {
         message.content = attachLocalImageOcr(message.content, redact(result.text))
         message.ocrSource = 'tesseract-local'
+        message.ocrStructure = structureOcrText(redact(result.text))
       }
     }
   }
@@ -611,6 +613,7 @@ export class AiAssistantService {
           mediaLocalPath: message.mediaLocalPath,
           transcriptionSource: message.transcriptionSource || '',
           ocrSource: message.ocrSource || '',
+          ocrStructure: message.ocrStructure || null,
           attachmentLocalPath: message.attachmentLocalPath || '',
           attachmentMatchedBy: message.attachmentMatchedBy || '',
           attachmentIndexStatus: message.attachmentIndexStatus || '',

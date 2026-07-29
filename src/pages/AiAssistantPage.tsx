@@ -1019,6 +1019,20 @@ function AiAssistantPage() {
                           : resource.metadata?.attachmentIndexStatus === 'empty' ? '未提取到可读正文'
                             : resource.metadata?.attachmentIndexStatus === 'failed' ? '解析失败' : '等待增量解析'}
                 </small>}
+                {resource.resource_type === 'image' && resource.metadata?.ocrStructure && <div className="assistant-evidence-stack">
+                  <small>
+                    截图结构：{resource.metadata.ocrStructure.kind === 'chat' ? '聊天记录'
+                      : resource.metadata.ocrStructure.kind === 'table' ? '表格'
+                        : resource.metadata.ocrStructure.kind === 'form' ? '表单/字段'
+                          : '普通文档'} · {Math.round(Number(resource.metadata.ocrStructure.confidence || 0) * 100)}% 可信
+                  </small>
+                  {!!resource.metadata.ocrStructure.keyValues?.length && <small>
+                    关键字段：{resource.metadata.ocrStructure.keyValues.slice(0, 8).map((item: any) => `${item.key}＝${item.value}`).join('；')}
+                  </small>}
+                  {!!resource.metadata.ocrStructure.dates?.length && <small>日期：{resource.metadata.ocrStructure.dates.join('、')}</small>}
+                  {!!resource.metadata.ocrStructure.amounts?.length && <small>金额：{resource.metadata.ocrStructure.amounts.join('、')}</small>}
+                  {!!resource.metadata.ocrStructure.urls?.length && <small>链接：{resource.metadata.ocrStructure.urls.join('、')}</small>}
+                </div>}
                 {resource.metadata?.sessionName && <small>来自：{resource.metadata.sessionName}{resource.metadata.senderName ? ` · ${resource.metadata.senderName}` : ''}</small>}
                 <div className="assistant-evidence-stack">
                   {(resource.evidence || []).map((evidence: any) =>
