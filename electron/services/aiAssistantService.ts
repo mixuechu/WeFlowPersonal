@@ -11,6 +11,7 @@ import { localEmbeddingService } from './localEmbeddingService'
 import { filterMemorySearchResults, type MemorySearchOptions } from './memorySearchFilters'
 import { buildMemoryQueryPlan } from './memoryQueryPlanner'
 import { buildTaskReminders, findMatchingTask } from './taskIntelligence'
+import { buildEntityInsights } from './relationshipInsights'
 
 type AssistantTask = {
   id: string
@@ -979,17 +980,26 @@ export class AiAssistantService {
     const taskReviewQueue = this.state.tasks.filter(task => task.classification !== 'mine')
     const taskReminders = buildTaskReminders(tasks)
     const taskHistory = personalMemoryStore.listTaskHistory(tasks.map(task => task.id))
+    const memoryFeed = personalMemoryStore.getMemoryFeed()
+    const entityInsights = buildEntityInsights({
+      entities: this.state.graph.entities,
+      relations: this.state.graph.relations,
+      claims: memoryFeed.claims,
+      events: memoryFeed.events,
+      tasks
+    })
     return {
       briefing: latest ? { ...latest, tasks } : null,
       tasks,
       taskReviewQueue,
       taskReminders,
       taskHistory,
+      entityInsights,
       cursor: this.state.cursor,
       graph: this.state.graph,
       mergeHistory: personalMemoryStore.listActiveMerges(),
       memoryStats: personalMemoryStore.getMemoryStats(),
-      memoryFeed: personalMemoryStore.getMemoryFeed(),
+      memoryFeed,
       ingestionStatus: personalMemoryStore.getIngestionStatus(),
       assistantHistory: personalMemoryStore.getRecentAssistantExchanges()
     }

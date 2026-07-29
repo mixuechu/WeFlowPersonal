@@ -402,7 +402,16 @@
 .assistant-citation-actions button.primary { border-color: #2f6b55; color: #fff; background: #2f6b55; }
 @media (max-width: 980px) { .assistant-memory-feed { grid-template-columns: 1fr; } }
 .assistant-graph-toolbar { margin-bottom: 12px; }
+.assistant-graph-toolbar { display: flex; gap: 7px; flex-wrap: wrap; }
 .assistant-graph-toolbar input { width: min(360px, 100%); padding: 9px 12px; border: 1px solid #deddd5; border-radius: 9px; background: #fff; }
+.assistant-graph-toolbar select { min-width: 125px; padding: 8px; border: 1px solid #deddd5; border-radius: 9px; color: #616861; background: #fff; font-size: 9px; }
+.assistant-relationship-metrics { margin-top: 9px; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 5px; }
+.assistant-relationship-metrics > div { padding: 7px; border-radius: 7px; display: grid; background: #eef4ef; }
+.assistant-relationship-metrics > div strong { color: #285d49; font-size: 15px; }
+.assistant-relationship-metrics > div span { color: #748078; font-size: 8px; }
+.assistant-relationship-metrics > small,.assistant-relationship-metrics details { grid-column: 1 / -1; color: #727a73; font-size: 8px; }
+.assistant-relationship-metrics summary { cursor: pointer; }
+.assistant-relationship-metrics details small { display: block; margin-top: 3px; }
 .assistant-path-finder { margin-bottom: 10px; display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr) auto; align-items: center; gap: 7px; }
 .assistant-path-finder select, .assistant-path-finder button { min-width: 0; padding: 7px 8px; border: 1px solid #deddd5; border-radius: 8px; color: #60665f; background: #fff; font-size: 9px; }
 .assistant-path-finder button { cursor: pointer; }

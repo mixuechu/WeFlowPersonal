@@ -38,6 +38,8 @@ function AiAssistantPage() {
   const [syncing, setSyncing] = useState(false)
   const [message, setMessage] = useState('')
   const [graphQuery, setGraphQuery] = useState('')
+  const [graphRelationType, setGraphRelationType] = useState('')
+  const [graphRelationStatus, setGraphRelationStatus] = useState('')
   const [selectedEntityId, setSelectedEntityId] = useState('')
   const [showSources, setShowSources] = useState(false)
   const [sources, setSources] = useState<any[]>([])
@@ -124,13 +126,21 @@ function AiAssistantPage() {
   }, [graph.entities, graphQuery])
   const graphEntityIds = useMemo(() => new Set(graphEntities.map((entity: any) => entity.id)), [graphEntities])
   const graphRelations = useMemo(() => graph.relations.filter((relation: any) =>
-    relation.status !== 'rejected' && graphEntityIds.has(relation.subjectId) && graphEntityIds.has(relation.objectId)), [graph.relations, graphEntityIds])
+    relation.status !== 'rejected' &&
+    (!graphRelationType || relation.predicate === graphRelationType) &&
+    (!graphRelationStatus || relation.status === graphRelationStatus) &&
+    graphEntityIds.has(relation.subjectId) && graphEntityIds.has(relation.objectId)),
+  [graph.relations, graphEntityIds, graphRelationType, graphRelationStatus])
   const graphPositions = useMemo(() => new Map(graphEntities.map((entity: any, index: number) => {
     const angle = (Math.PI * 2 * index) / Math.max(1, graphEntities.length) - Math.PI / 2
     const ring = 105 + (index % 3) * 35
     return [entity.id, { x: 250 + Math.cos(angle) * ring, y: 170 + Math.sin(angle) * ring }]
   })), [graphEntities])
   const selectedEntity = graph.entities.find((entity: any) => entity.id === selectedEntityId)
+  const selectedEntityInsight = dashboard?.entityInsights?.[selectedEntityId]
+  const relationPredicates = useMemo<string[]>(() => [...new Set<string>(graph.relations
+    .filter((relation: any) => relation.status !== 'rejected')
+    .map((relation: any) => String(relation.predicate || '')).filter(Boolean))].sort(), [graph.relations])
   const pendingReviews = graph.reviewQueue.filter((item: any) => item.status === 'pending')
   const mergeHistory = dashboard?.mergeHistory || []
   const memoryFeed = dashboard?.memoryFeed || { claims: [], events: [] }
@@ -756,6 +766,13 @@ function AiAssistantPage() {
           </div>
           <div className="assistant-graph-toolbar">
             <input value={graphQuery} onChange={event => setGraphQuery(event.target.value)} placeholder="搜索人物、别名、组织或项目" />
+            <select value={graphRelationType} onChange={event => setGraphRelationType(event.target.value)}>
+              <option value="">全部关系类型</option>
+              {relationPredicates.map(predicate => <option key={predicate} value={predicate}>{predicate}</option>)}
+            </select>
+            <select value={graphRelationStatus} onChange={event => setGraphRelationStatus(event.target.value)}>
+              <option value="">全部可信状态</option><option value="confirmed">已确认</option><option value="candidate">待确认</option>
+            </select>
           </div>
           <div className="assistant-path-finder">
             <select value={pathFromId} onChange={event => { setPathFromId(event.target.value); setGraphPath(null) }}>
@@ -799,6 +816,14 @@ function AiAssistantPage() {
                   <small>别名：{selectedEntity.aliases?.join('、') || '无'}</small>
                   <small>账号：{selectedEntity.accountIds?.join('、') || '未关联'}</small>
                   <small>证据消息：{selectedEntity.evidenceMessageIds?.length || 0} 条</small>
+                  {selectedEntityInsight && <div className="assistant-relationship-metrics">
+                    <div><strong>{selectedEntityInsight.strength}</strong><span>关系强度 · {selectedEntityInsight.strengthLabel}</span></div>
+                    <div><strong>{selectedEntityInsight.evidenceCount}</strong><span>去重证据</span></div>
+                    <div><strong>{selectedEntityInsight.openTaskCount}</strong><span>关联待办</span></div>
+                    <div><strong>{selectedEntityInsight.pendingCommitmentCount}</strong><span>待确认承诺</span></div>
+                    {selectedEntityInsight.lastContactAt && <small>最近互动证据：{new Date(selectedEntityInsight.lastContactAt * 1000).toLocaleString('zh-CN')}</small>}
+                    <details><summary>强度计算依据</summary>{selectedEntityInsight.explanation.map((item: string) => <small key={item}>{item}</small>)}</details>
+                  </div>}
                   <div className="assistant-entity-dossier">
                     <strong>结构化事实 · {selectedEntityClaims.length}</strong>
                     {selectedEntityClaims.slice(0, 6).map((claim: any) =>

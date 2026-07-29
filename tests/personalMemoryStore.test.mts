@@ -7,6 +7,7 @@ import { PersonalMemoryStore } from '../electron/services/personalMemoryStore.ts
 import { filterMemorySearchResults } from '../electron/services/memorySearchFilters.ts'
 import { buildMemoryQueryPlan } from '../electron/services/memoryQueryPlanner.ts'
 import { buildTaskReminders, findMatchingTask } from '../electron/services/taskIntelligence.ts'
+import { buildEntityInsights } from '../electron/services/relationshipInsights.ts'
 
 function withStore(run: (store: PersonalMemoryStore) => void): void {
   const directory = mkdtempSync(join(tmpdir(), 'weflow-memory-test-'))
@@ -388,3 +389,42 @@ test('partial ingestion keeps completed checkpoints visible for safe resume', ()
     failed: 1
   })
 }))
+
+test('entity insight strength is explainable and deduplicates shared evidence', () => {
+  const insight = buildEntityInsights({
+    entities: [{ id: 'person-a', canonicalName: '张三', aliases: ['老张'], accountIds: [] }],
+    relations: [{
+      subjectId: 'person-a',
+      objectId: 'org-a',
+      status: 'confirmed',
+      confidence: 0.9,
+      evidence: [{ messageId: 'message-shared', timestamp: 1_775_000_000 }]
+    }],
+    claims: [{
+      subject_id: 'person-a',
+      status: 'candidate',
+      evidence: [{ message_id: 'message-shared', timestamp: 1_775_000_000 }]
+    }],
+    events: [{
+      event_type: 'commitment',
+      status: 'candidate',
+      participants: [{ entity_id: 'person-a' }],
+      evidence: [{ message_id: 'message-event', timestamp: 1_775_000_100 }]
+    }],
+    tasks: [{
+      id: 'task-person',
+      title: '等待老张回复',
+      status: 'waiting',
+      owner: '老张',
+      evidence: [{ messageId: 'message-task', timestamp: 1_775_000_200 }]
+    }],
+    now: new Date(1_775_000_300_000)
+  })['person-a']
+  assert.equal(insight.evidenceCount, 3)
+  assert.equal(insight.relationCount, 1)
+  assert.equal(insight.openTaskCount, 1)
+  assert.equal(insight.pendingCommitmentCount, 1)
+  assert.equal(insight.strength, 62)
+  assert.equal(insight.strengthLabel, '中')
+  assert.ok(insight.explanation.some(item => item.includes('去重原文证据')))
+})
