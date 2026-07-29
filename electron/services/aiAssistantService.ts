@@ -222,10 +222,6 @@ export class AiAssistantService {
       this.state.graph.entities = this.state.graph.entities.filter(entity => !removed.has(entity.id))
       this.state.graph.relations = this.state.graph.relations.filter(relation => !removed.has(relation.subjectId) && !removed.has(relation.objectId))
     }
-    // 旧版本的同人候选没有保存左右实体 ID，无法安全确认“谁和谁”。
-    // 这类不可执行候选直接移出待确认队列，等待后续消息重新生成完整证据。
-    this.state.graph.reviewQueue = this.state.graph.reviewQueue.filter(review =>
-      review.kind !== 'possible_duplicate' || review.status !== 'pending' || Boolean(review.leftEntityId && review.rightEntityId))
   }
 
   private saveState(): void {
