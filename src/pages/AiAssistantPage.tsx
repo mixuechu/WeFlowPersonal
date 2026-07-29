@@ -1082,6 +1082,39 @@ function AiAssistantPage() {
                       {sheet.truncated ? ' · 部分索引' : ''}
                     </small>)}
                 </div>}
+                {resource.metadata?.attachmentStructure?.kind === 'document' && <div className="assistant-evidence-stack">
+                  <small>
+                    文档结构：{resource.metadata.attachmentStructure.paragraphCount || 0} 段
+                    · {resource.metadata.attachmentStructure.headingCount || 0} 个标题
+                    · {resource.metadata.attachmentStructure.listItemCount || 0} 个列表项
+                    · {resource.metadata.attachmentStructure.tableCount || 0} 个表格
+                    {resource.metadata.attachmentStructure.truncated ? ' · 已按本地安全预算截断' : ''}
+                  </small>
+                  {!!resource.metadata.attachmentStructure.headings?.length && <small>
+                    标题大纲：{resource.metadata.attachmentStructure.headings.slice(0, 10)
+                      .map((heading: any) => `${'·'.repeat(Math.max(1, Number(heading.level || 1)))} ${heading.text}`).join('　')}
+                  </small>}
+                  {(resource.metadata.attachmentStructure.tables || []).slice(0, 5).map((table: any) =>
+                    <small key={table.index}>
+                      {table.layout === 'key-value' ? '字段表' : '表格'} {table.index}：{table.rowCount || 0} 行 · {table.columnCount || 0} 列
+                      {!!table.headers?.length && ` · 字段 ${table.headers.slice(0, 8).join('、')}`}
+                    </small>)}
+                </div>}
+                {resource.metadata?.attachmentStructure?.kind === 'presentation' && <div className="assistant-evidence-stack">
+                  <small>
+                    演示结构：已读取 {resource.metadata.attachmentStructure.indexedSlideCount || 0}
+                    {resource.metadata.attachmentStructure.slideCount
+                      ? ` / ${resource.metadata.attachmentStructure.slideCount}` : ''} 页
+                    · {resource.metadata.attachmentStructure.textBlockCount || 0} 个文本块
+                    · {resource.metadata.attachmentStructure.tableCount || 0} 个表格
+                    {resource.metadata.attachmentStructure.truncated ? ' · 已按本地安全预算截断' : ''}
+                  </small>
+                  {(resource.metadata.attachmentStructure.slides || []).filter((slide: any) => slide.title).slice(0, 10)
+                    .map((slide: any) => <small key={slide.number}>
+                      第 {slide.number} 页{slide.titleSource === 'layout-inference' ? '推断标题' : '标题'}：{slide.title}
+                      {slide.titleSource === 'layout-inference' ? ` · ${Math.round(Number(slide.titleConfidence || 0) * 100)}% 可信` : ''}
+                    </small>)}
+                </div>}
                 {resource.resource_type === 'image' && resource.metadata?.ocrStructure && <div className="assistant-evidence-stack">
                   <small>
                     截图结构：{resource.metadata.ocrStructure.kind === 'chat' ? '聊天记录'

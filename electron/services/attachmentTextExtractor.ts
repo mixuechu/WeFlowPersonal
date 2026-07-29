@@ -24,13 +24,47 @@ export type SpreadsheetAttachmentStructure = {
   sheets: SpreadsheetSheetStructure[]
 }
 
+export type DocumentAttachmentStructure = {
+  kind: 'document'
+  paragraphCount: number
+  headingCount: number
+  listItemCount: number
+  tableCount: number
+  headerFooterCount: number
+  truncated: boolean
+  headings: Array<{ level: number, text: string }>
+  tables: Array<{ index: number, rowCount: number, columnCount: number, layout: 'grid' | 'key-value', headers: string[] }>
+}
+
+export type PresentationAttachmentStructure = {
+  kind: 'presentation'
+  slideCount: number
+  indexedSlideCount: number
+  textBlockCount: number
+  tableCount: number
+  truncated: boolean
+  slides: Array<{
+    number: number
+    title: string
+    titleSource: 'placeholder' | 'layout-inference' | 'none'
+    titleConfidence: number
+    textBlockCount: number
+    tableCount: number
+  }>
+}
+
+export type AttachmentStructure =
+  | SpreadsheetAttachmentStructure
+  | DocumentAttachmentStructure
+  | PresentationAttachmentStructure
+
 export type AttachmentTextResult = {
   success: boolean
   text: string
   format: string
   status: 'indexed' | 'unsupported' | 'too_large' | 'empty' | 'ocr_required' | 'dependency_missing' | 'failed'
   error?: string
-  structure?: SpreadsheetAttachmentStructure
+  structure?: AttachmentStructure
 }
 
 const MAX_FILE_BYTES = 8 * 1024 * 1024
@@ -39,6 +73,10 @@ const MAX_SPREADSHEET_SHEETS = 20
 const MAX_SPREADSHEET_ROWS_PER_SHEET = 500
 const MAX_SPREADSHEET_CELLS = 8_000
 const MAX_SPREADSHEET_CELL_CHARS = 500
+const MAX_DOCUMENT_BLOCKS = 800
+const MAX_DOCUMENT_TABLES = 40
+const MAX_PRESENTATION_SLIDES = 80
+const MAX_PRESENTATION_TEXT_BLOCKS = 800
 const PLAIN_TEXT_EXTENSIONS = new Set([
   '.txt', '.md', '.markdown', '.csv', '.tsv', '.json', '.jsonl', '.xml',
   '.html', '.htm', '.log', '.yaml', '.yml', '.ini', '.conf'
@@ -52,6 +90,26 @@ function decodeXmlText(value: string): string {
     .replace(/<[^>]+>/g, ' ')
     .replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&')
     .replace(/&quot;/g, '"').replace(/&apos;/g, "'")
+}
+
+function decodeXmlEntities(value: string): string {
+  return value
+    .replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&')
+    .replace(/&quot;/g, '"').replace(/&apos;/g, "'")
+}
+
+function xmlRunText(xml: string, namespace: 'w' | 'a'): string {
+  const pieces: string[] = []
+  const tokenPattern = new RegExp(
+    `<${namespace}:t\\b[^>]*>([\\s\\S]*?)<\\/${namespace}:t>|<${namespace}:(?:tab|br)\\b[^>]*\\/?>`,
+    'gi'
+  )
+  for (const match of xml.matchAll(tokenPattern)) {
+    pieces.push(match[1] === undefined
+      ? (/<[^>]*tab/i.test(match[0]) ? '\t' : '\n')
+      : decodeXmlEntities(match[1]))
+  }
+  return normalizeText(pieces.join(''))
 }
 
 function normalizeText(value: string): string {
@@ -78,6 +136,181 @@ async function extractOfficeXml(buffer: Buffer, extension: string): Promise<stri
     if (parts.join('\n').length >= MAX_TEXT_CHARS) break
   }
   return normalizeText(parts.join('\n'))
+}
+
+async function extractDocument(buffer: Buffer): Promise<AttachmentTextResult> {
+  const archive = await JSZip.loadAsync(buffer)
+  const documentXml = await archive.file('word/document.xml')?.async('string') || ''
+  const output: string[] = []
+  const headings: Array<{ level: number, text: string }> = []
+  const tables: DocumentAttachmentStructure['tables'] = []
+  let paragraphCount = 0
+  let listItemCount = 0
+  let blockCount = 0
+  let truncated = false
+
+  for (const block of documentXml.matchAll(/<w:(p|tbl)\b[^>]*>[\s\S]*?<\/w:\1>/gi)) {
+    if (blockCount >= MAX_DOCUMENT_BLOCKS || output.join('\n').length >= MAX_TEXT_CHARS) {
+      truncated = true
+      break
+    }
+    if (block[1].toLowerCase() === 'p') {
+      const text = xmlRunText(block[0], 'w')
+      if (!text) continue
+      const style = block[0].match(/<w:pStyle\b[^>]*w:val="([^"]+)"/i)?.[1] || ''
+      const headingMatch = style.match(/^(?:Heading|标题)\s*([1-9])/i)
+      const isTitle = /^(?:Title|标题)$|^Subtitle$/i.test(style)
+      const isList = /<w:numPr\b/i.test(block[0])
+      if (headingMatch || isTitle) {
+        const level = headingMatch ? Number(headingMatch[1]) : 1
+        headings.push({ level, text: text.slice(0, 300) })
+        output.push(`${'#'.repeat(Math.min(6, level))} ${text}`)
+      } else {
+        output.push(isList ? `- ${text}` : text)
+      }
+      paragraphCount += 1
+      if (isList) listItemCount += 1
+    } else if (tables.length < MAX_DOCUMENT_TABLES) {
+      const rows = [...block[0].matchAll(/<w:tr\b[^>]*>([\s\S]*?)<\/w:tr>/gi)]
+      const parsedRows = rows.map(row =>
+        [...row[1].matchAll(/<w:tc\b[^>]*>([\s\S]*?)<\/w:tc>/gi)]
+          .map(cell => xmlRunText(cell[1], 'w').slice(0, MAX_SPREADSHEET_CELL_CHARS))
+      ).filter(row => row.some(Boolean))
+      if (parsedRows.length) {
+        const tableIndex = tables.length + 1
+        const columnCount = Math.max(...parsedRows.map(row => row.length))
+        const firstRowPopulated = parsedRows[0].filter(Boolean).length
+        const keyValueRows = columnCount === 2 && parsedRows.filter(row => row[0]).length >= Math.ceil(parsedRows.length * 0.7)
+        const layout = keyValueRows && firstRowPopulated < 2 ? 'key-value' : 'grid'
+        const headers = layout === 'grid'
+          ? parsedRows[0].map((value, index) => safeSpreadsheetLabel(value, spreadsheetColumnLabel(index + 1)))
+          : ['字段', '值']
+        tables.push({ index: tableIndex, rowCount: parsedRows.length, columnCount, layout, headers })
+        output.push(`[表格 ${tableIndex}]`)
+        parsedRows.forEach((row, index) => {
+          output.push(layout === 'key-value'
+            ? `字段：${row[0] || ''}${row[1] ? ` = ${row[1]}` : ''}`
+            : index === 0
+            ? `表头：${row.map((value, column) => `${spreadsheetColumnLabel(column + 1)}=${value}`).join(' | ')}`
+            : `第 ${index + 1} 行：${row.map((value, column) => `${headers[column] || spreadsheetColumnLabel(column + 1)}=${value}`).join(' | ')}`)
+        })
+      }
+    } else {
+      truncated = true
+    }
+    blockCount += 1
+  }
+
+  let headerFooterCount = 0
+  const auxiliaryNames = Object.keys(archive.files)
+    .filter(name => /^word\/(?:header|footer)\d+\.xml$/i.test(name))
+    .sort((a, b) => a.localeCompare(b, undefined, { numeric: true }))
+  for (const name of auxiliaryNames) {
+    const text = xmlRunText(await archive.file(name)?.async('string') || '', 'w')
+    if (!text) continue
+    headerFooterCount += 1
+    output.push(`[${name.includes('header') ? '页眉' : '页脚'}] ${text}`)
+  }
+  const text = normalizeText(output.join('\n'))
+  const structure: DocumentAttachmentStructure = {
+    kind: 'document',
+    paragraphCount,
+    headingCount: headings.length,
+    listItemCount,
+    tableCount: tables.length,
+    headerFooterCount,
+    truncated: truncated || output.join('\n').length > MAX_TEXT_CHARS,
+    headings,
+    tables
+  }
+  return text
+    ? { success: true, text, format: '.docx', status: 'indexed', structure }
+    : { success: false, text: '', format: '.docx', status: 'empty', structure }
+}
+
+async function extractPresentation(buffer: Buffer): Promise<AttachmentTextResult> {
+  const archive = await JSZip.loadAsync(buffer)
+  const slideNames = Object.keys(archive.files)
+    .filter(name => /^ppt\/slides\/slide\d+\.xml$/i.test(name))
+    .sort((a, b) => a.localeCompare(b, undefined, { numeric: true }))
+  const output: string[] = []
+  const slides: PresentationAttachmentStructure['slides'] = []
+  let textBlockCount = 0
+  let tableCount = 0
+  let truncated = slideNames.length > MAX_PRESENTATION_SLIDES
+
+  for (const [index, name] of slideNames.slice(0, MAX_PRESENTATION_SLIDES).entries()) {
+    if (textBlockCount >= MAX_PRESENTATION_TEXT_BLOCKS || output.join('\n').length >= MAX_TEXT_CHARS) {
+      truncated = true
+      break
+    }
+    const xml = await archive.file(name)?.async('string') || ''
+    const shapes = [...xml.matchAll(/<p:sp\b[^>]*>([\s\S]*?)<\/p:sp>/gi)]
+    const shapeDetails = shapes.map(shape => {
+      const text = xmlRunText(shape[0], 'a')
+      const sizes = [...shape[0].matchAll(/<(?:a:rPr|a:defRPr)\b[^>]*sz="(\d+)"/gi)].map(match => Number(match[1]))
+      return {
+        shape,
+        text,
+        placeholderTitle: /<p:ph\b[^>]*type="(?:title|ctrTitle)"/i.test(shape[0]),
+        fontSize: sizes.length ? Math.max(...sizes) : 0,
+        y: Number(shape[0].match(/<a:off\b[^>]*y="(\d+)"/i)?.[1] || Number.MAX_SAFE_INTEGER)
+      }
+    }).filter(shape => shape.text)
+    const explicitTitle = shapeDetails.find(shape => shape.placeholderTitle)
+    const inferredTitle = explicitTitle || [...shapeDetails]
+      .filter(shape => shape.text.length <= 120 && !/^\s*[\d.%+/-]+\s*$/.test(shape.text))
+      .sort((a, b) => {
+        const score = (shape: typeof a) =>
+          shape.fontSize - (Number.isFinite(shape.y) ? shape.y / 1000 : 0) - shape.text.length * 5 -
+          (/【[^】]+】|公司名称|LOGO/i.test(shape.text) ? 10_000 : 0)
+        return score(b) - score(a)
+      })[0]
+    const title = inferredTitle?.text.slice(0, 300) || ''
+    const titleSource = explicitTitle ? 'placeholder' : inferredTitle ? 'layout-inference' : 'none'
+    const titleConfidence = explicitTitle ? 0.95 : inferredTitle ? 0.65 : 0
+    const blocks: string[] = []
+    for (const shape of shapeDetails) {
+      const text = shape.text
+      if (title && shape === inferredTitle) continue
+      blocks.push(text.slice(0, 1500))
+      textBlockCount += 1
+      if (textBlockCount >= MAX_PRESENTATION_TEXT_BLOCKS) break
+    }
+    const tableMatches = [...xml.matchAll(/<a:tbl\b[^>]*>([\s\S]*?)<\/a:tbl>/gi)]
+    const slideTableCount = tableMatches.length
+    output.push(`[幻灯片 ${index + 1}${title ? `：${title}` : ''}]`)
+    blocks.forEach(block => output.push(block))
+    for (const [tableIndex, table] of tableMatches.entries()) {
+      const rows = [...table[1].matchAll(/<a:tr\b[^>]*>([\s\S]*?)<\/a:tr>/gi)]
+        .map(row => [...row[1].matchAll(/<a:tc\b[^>]*>([\s\S]*?)<\/a:tc>/gi)]
+          .map(cell => xmlRunText(cell[1], 'a').slice(0, MAX_SPREADSHEET_CELL_CHARS)))
+      output.push(`[幻灯片 ${index + 1} · 表格 ${tableIndex + 1}]`)
+      rows.forEach((row, rowIndex) => output.push(`${rowIndex === 0 ? '表头' : `第 ${rowIndex + 1} 行`}：${row.join(' | ')}`))
+    }
+    tableCount += slideTableCount
+    slides.push({
+      number: index + 1,
+      title,
+      titleSource,
+      titleConfidence,
+      textBlockCount: blocks.length,
+      tableCount: slideTableCount
+    })
+  }
+  const text = normalizeText(output.join('\n'))
+  const structure: PresentationAttachmentStructure = {
+    kind: 'presentation',
+    slideCount: slideNames.length,
+    indexedSlideCount: slides.length,
+    textBlockCount,
+    tableCount,
+    truncated: truncated || output.join('\n').length > MAX_TEXT_CHARS,
+    slides
+  }
+  return text
+    ? { success: true, text, format: '.pptx', status: 'indexed', structure }
+    : { success: false, text: '', format: '.pptx', status: 'empty', structure }
 }
 
 function spreadsheetCellText(value: ExcelJS.CellValue): string {
@@ -396,6 +629,8 @@ export async function extractAttachmentText(
     const buffer = await readFile(filePath)
     if (buffer.length > MAX_FILE_BYTES) return { success: false, text: '', format: extension, status: 'too_large' }
     if (extension === '.xlsx') return await extractSpreadsheet(buffer)
+    if (extension === '.docx') return await extractDocument(buffer)
+    if (extension === '.pptx') return await extractPresentation(buffer)
     const text = PLAIN_TEXT_EXTENSIONS.has(extension)
       ? normalizeText(buffer.toString('utf8'))
       : await extractOfficeXml(buffer, extension)
@@ -411,5 +646,8 @@ export const ATTACHMENT_TEXT_LIMITS = {
   maxTextChars: MAX_TEXT_CHARS,
   maxSpreadsheetSheets: MAX_SPREADSHEET_SHEETS,
   maxSpreadsheetRowsPerSheet: MAX_SPREADSHEET_ROWS_PER_SHEET,
-  maxSpreadsheetCells: MAX_SPREADSHEET_CELLS
+  maxSpreadsheetCells: MAX_SPREADSHEET_CELLS,
+  maxDocumentBlocks: MAX_DOCUMENT_BLOCKS,
+  maxPresentationSlides: MAX_PRESENTATION_SLIDES,
+  maxPresentationTextBlocks: MAX_PRESENTATION_TEXT_BLOCKS
 }

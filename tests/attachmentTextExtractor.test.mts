@@ -70,6 +70,81 @@ test('attachment text extractor recovers DOCX body text without cloud services',
   }
 })
 
+test('attachment text extractor preserves DOCX headings, lists, tables and headers', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'weflow-attachment-docx-structure-'))
+  try {
+    const archive = new JSZip()
+    archive.file('word/document.xml', [
+      '<w:document><w:body>',
+      '<w:p><w:pPr><w:pStyle w:val="Heading1"/></w:pPr><w:r><w:t>项目计划</w:t></w:r></w:p>',
+      '<w:p><w:pPr><w:numPr><w:numId w:val="1"/></w:numPr></w:pPr><w:r><w:t>确认需求</w:t></w:r></w:p>',
+      '<w:tbl>',
+      '<w:tr><w:tc><w:p><w:r><w:t>负责人</w:t></w:r></w:p></w:tc><w:tc><w:p><w:r><w:t>事项</w:t></w:r></w:p></w:tc></w:tr>',
+      '<w:tr><w:tc><w:p><w:r><w:t>李金石</w:t></w:r></w:p></w:tc><w:tc><w:p><w:r><w:t>提交方案</w:t></w:r></w:p></w:tc></w:tr>',
+      '</w:tbl>',
+      '</w:body></w:document>'
+    ].join(''))
+    archive.file('word/header1.xml', '<w:hdr><w:p><w:r><w:t>Onyx Devs Lab</w:t></w:r></w:p></w:hdr>')
+    const filePath = join(directory, '项目计划.docx')
+    writeFileSync(filePath, await archive.generateAsync({ type: 'nodebuffer' }))
+
+    const result = await extractAttachmentText(filePath)
+    assert.equal(result.success, true)
+    assert.match(result.text, /# 项目计划/)
+    assert.match(result.text, /- 确认需求/)
+    assert.match(result.text, /\[表格 1\]/)
+    assert.match(result.text, /负责人=李金石/)
+    assert.match(result.text, /\[页眉\] Onyx Devs Lab/)
+    assert.equal(result.structure?.kind, 'document')
+    if (result.structure?.kind === 'document') {
+      assert.equal(result.structure.headingCount, 1)
+      assert.equal(result.structure.listItemCount, 1)
+      assert.equal(result.structure.tableCount, 1)
+      assert.equal(result.structure.tables[0].layout, 'grid')
+      assert.deepEqual(result.structure.tables[0].headers, ['负责人', '事项'])
+    }
+  } finally {
+    rmSync(directory, { recursive: true, force: true })
+  }
+})
+
+test('attachment text extractor preserves PPTX slide order, titles and tables', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'weflow-attachment-pptx-structure-'))
+  try {
+    const archive = new JSZip()
+    const slide = (title: string, body: string, table = '') => [
+      '<p:sld><p:cSld><p:spTree>',
+      `<p:sp><p:nvSpPr><p:nvPr><p:ph type="title"/></p:nvPr></p:nvSpPr><p:txBody><a:p><a:r><a:t>${title}</a:t></a:r></a:p></p:txBody></p:sp>`,
+      `<p:sp><p:txBody><a:p><a:r><a:t>${body}</a:t></a:r></a:p></p:txBody></p:sp>`,
+      table,
+      '</p:spTree></p:cSld></p:sld>'
+    ].join('')
+    archive.file('ppt/slides/slide1.xml', slide('项目总览', '本周完成需求确认',
+      '<p:graphicFrame><a:tbl><a:tr><a:tc><a:txBody><a:p><a:r><a:t>负责人</a:t></a:r></a:p></a:txBody></a:tc></a:tr><a:tr><a:tc><a:txBody><a:p><a:r><a:t>李金石</a:t></a:r></a:p></a:txBody></a:tc></a:tr></a:tbl></p:graphicFrame>'))
+    archive.file('ppt/slides/slide2.xml', slide('下一步', '提交测试报告'))
+    archive.file('ppt/slides/slide10.xml', slide('附录', '历史记录').replace('type="title"', 'type="body"'))
+    const filePath = join(directory, '项目汇报.pptx')
+    writeFileSync(filePath, await archive.generateAsync({ type: 'nodebuffer' }))
+
+    const result = await extractAttachmentText(filePath)
+    assert.equal(result.success, true)
+    assert.ok(result.text.indexOf('[幻灯片 2：下一步]') < result.text.indexOf('[幻灯片 3：附录]'))
+    assert.match(result.text, /\[幻灯片 1 · 表格 1\]/)
+    assert.match(result.text, /李金石/)
+    assert.equal(result.structure?.kind, 'presentation')
+    if (result.structure?.kind === 'presentation') {
+      assert.equal(result.structure.slideCount, 3)
+      assert.equal(result.structure.slides[0].title, '项目总览')
+      assert.equal(result.structure.slides[0].titleSource, 'placeholder')
+      assert.equal(result.structure.slides[2].title, '附录')
+      assert.equal(result.structure.slides[2].titleSource, 'layout-inference')
+      assert.equal(result.structure.tableCount, 1)
+    }
+  } finally {
+    rmSync(directory, { recursive: true, force: true })
+  }
+})
+
 test('attachment text extractor indexes text-layer PDFs and marks image-only PDFs for OCR', async () => {
   const directory = mkdtempSync(join(tmpdir(), 'weflow-attachment-pdf-'))
   try {
