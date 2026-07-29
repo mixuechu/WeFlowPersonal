@@ -83,7 +83,7 @@
       "repo": "WeFlow",
       "releaseType": "release"
     },
-    "productName": "WeFlow",
+    "productName": "WeFlow 升级版",
     "artifactName": "${productName}-${version}-Setup.${ext}",
     "directories": {
       "output": "release"

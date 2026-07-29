@@ -40,6 +40,10 @@ import { backupService } from './services/backupService'
 import { imageDownloadService } from './services/imageDownloadService'
 import { aiAssistantService } from './services/aiAssistantService'
 
+// 桌面产品名可独立定制，但始终沿用原 WeFlow 数据目录，避免升级后
+// 配置、解密信息和 AI 助理游标被 Electron 视为一套全新的应用数据。
+app.setPath('userData', join(app.getPath('appData'), 'weflow'))
+
 // 屏幕采集去节流（仅影响通知玻璃的 Chromium 流回退管线；Windows 主路径为
 // 原生面板渲染，不经过 Chromium 采集）：默认桌面采集 CPU 预算限制在 50%，
 // 会自适应压低采集帧率、显著增加回退路径下折射的跟随延迟。
