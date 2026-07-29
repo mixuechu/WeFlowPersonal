@@ -1648,6 +1648,7 @@ export interface ElectronAPI {
       updateTask: (id: string, patch: any) => Promise<any>
       updateTaskReview: (id: string, decision: 'mine' | 'rejected') => Promise<any>
       updateGraphReview: (id: string, decision: 'confirmed' | 'rejected') => Promise<any>
+      revertMerge: (id: number) => Promise<any>
       getConversationSources: () => Promise<any[]>
       setConversationSource: (input: any) => Promise<any>
       setConversationSourcesBulk: (input: any) => Promise<any>

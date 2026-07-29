@@ -65,6 +65,7 @@ function AiAssistantPage() {
   })), [graphEntities])
   const selectedEntity = graph.entities.find((entity: any) => entity.id === selectedEntityId)
   const pendingReviews = graph.reviewQueue.filter((item: any) => item.status === 'pending')
+  const mergeHistory = dashboard?.mergeHistory || []
 
   const syncNow = async () => {
     setSyncing(true)
@@ -105,6 +106,11 @@ function AiAssistantPage() {
 
   const decideTaskReview = async (id: string, decision: 'mine' | 'rejected') => {
     await window.electronAPI.aiAssistant.updateTaskReview(id, decision)
+    await load()
+  }
+
+  const revertMerge = async (id: number) => {
+    await window.electronAPI.aiAssistant.revertMerge(id)
     await load()
   }
 
@@ -285,6 +291,13 @@ function AiAssistantPage() {
               <div><button onClick={() => void decideReview(review.id, 'rejected')}>拒绝</button><button className="primary" disabled={review.kind === 'possible_duplicate' && (!review.leftEntityId || !review.rightEntityId)} title={!review.leftEntityId || !review.rightEntityId ? '候选信息不完整，暂不能合并' : ''} onClick={() => void decideReview(review.id, 'confirmed')}>确认</button></div>
             </article>)}
             {!pendingReviews.length && <div className="assistant-empty">当前没有等待确认的身份或关系。</div>}
+            {mergeHistory.length > 0 && <>
+              <div className="assistant-section-heading"><div><span className="assistant-eyebrow">MERGE HISTORY</span><h3>最近身份合并</h3></div></div>
+              {mergeHistory.map((merge: any) => <article className="assistant-review-item" key={`merge-${merge.id}`}>
+                <div><strong>已合并身份</strong><p>{merge.source_entity_id} → {merge.target_entity_id}</p><small>{new Date(merge.created_at).toLocaleString('zh-CN')}</small></div>
+                <div><button onClick={() => void revertMerge(Number(merge.id))}>撤销合并</button></div>
+              </article>)}
+            </>}
           </div>
         </section>
       </div>

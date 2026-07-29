@@ -153,6 +153,18 @@ export class PersonalMemoryStore {
         reverted_at TEXT
       ) STRICT;
 
+      CREATE TABLE IF NOT EXISTS identity_decisions (
+        pair_key TEXT PRIMARY KEY,
+        left_entity_id TEXT NOT NULL,
+        right_entity_id TEXT NOT NULL,
+        decision TEXT NOT NULL,
+        left_version INTEGER NOT NULL DEFAULT 1,
+        right_version INTEGER NOT NULL DEFAULT 1,
+        reason TEXT NOT NULL DEFAULT '',
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      ) STRICT;
+
       CREATE TABLE IF NOT EXISTS ingestion_runs (
         id TEXT PRIMARY KEY,
         started_at TEXT NOT NULL,
@@ -198,10 +210,18 @@ export class PersonalMemoryStore {
         tokenize='unicode61'
       );
     `)
+    this.ensureColumn('entities', 'identity_version', 'INTEGER NOT NULL DEFAULT 1')
+    this.ensureColumn('entities', 'last_disambiguated_at', 'TEXT')
     this.db.prepare(`
       INSERT INTO schema_meta(key, value, updated_at) VALUES('schema_version', '1', ?)
       ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at
     `).run(new Date().toISOString())
+  }
+
+  private ensureColumn(table: string, column: string, definition: string): void {
+    if (!this.db) return
+    const columns = this.db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>
+    if (!columns.some(item => item.name === column)) this.db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`)
   }
 
   close(): void {
@@ -214,17 +234,35 @@ export class PersonalMemoryStore {
     const now = new Date().toISOString()
     this.db.exec('BEGIN IMMEDIATE')
     try {
+      const activeEntityIds = new Set(graph.entities.map(entity => entity.id))
+      const storedEntityIds = this.db.prepare('SELECT id FROM entities WHERE deleted_at IS NULL').all() as Array<{ id: string }>
+      for (const { id } of storedEntityIds) {
+        if (activeEntityIds.has(id)) continue
+        this.db.prepare('UPDATE entities SET deleted_at=? WHERE id=?').run(now, id)
+        this.db.prepare('DELETE FROM search_fts WHERE document_id=?').run(`entity:${id}`)
+        this.db.prepare('DELETE FROM search_documents WHERE id=?').run(`entity:${id}`)
+      }
+      const activeRelationIds = new Set(graph.relations.map(relation => relation.id))
+      const storedRelationIds = this.db.prepare('SELECT id FROM relations').all() as Array<{ id: string }>
+      for (const { id } of storedRelationIds) {
+        if (activeRelationIds.has(id)) continue
+        this.db.prepare('DELETE FROM evidence WHERE relation_id=?').run(id)
+        this.db.prepare('DELETE FROM relations WHERE id=?').run(id)
+        this.db.prepare('DELETE FROM search_fts WHERE document_id=?').run(`relation:${id}`)
+        this.db.prepare('DELETE FROM search_documents WHERE id=?').run(`relation:${id}`)
+      }
       const upsertEntity = this.db.prepare(`
-        INSERT INTO entities(id,type,canonical_name,summary,confidence,created_at,updated_at)
-        VALUES(?,?,?,?,?,?,?)
+        INSERT INTO entities(id,type,canonical_name,summary,confidence,created_at,updated_at,identity_version,last_disambiguated_at)
+        VALUES(?,?,?,?,?,?,?,?,?)
         ON CONFLICT(id) DO UPDATE SET type=excluded.type, canonical_name=excluded.canonical_name,
-          summary=excluded.summary, confidence=excluded.confidence, updated_at=excluded.updated_at, deleted_at=NULL
+          summary=excluded.summary, confidence=excluded.confidence, updated_at=excluded.updated_at,
+          identity_version=excluded.identity_version,last_disambiguated_at=excluded.last_disambiguated_at,deleted_at=NULL
       `)
       const insertAlias = this.db.prepare(`INSERT OR IGNORE INTO aliases(entity_id,value,normalized_value,alias_type,confidence) VALUES(?,?,?,?,?)`)
       const insertIdentity = this.db.prepare(`INSERT INTO identities(entity_id,platform,account_id,display_name,confidence) VALUES(?,?,?,?,?)
         ON CONFLICT(platform,account_id) DO UPDATE SET entity_id=excluded.entity_id, display_name=excluded.display_name, confidence=excluded.confidence`)
       for (const entity of graph.entities) {
-        upsertEntity.run(entity.id, entity.type, entity.canonicalName, entity.summary || '', Number(entity.confidence || 0), entity.createdAt || now, entity.updatedAt || now)
+        upsertEntity.run(entity.id, entity.type, entity.canonicalName, entity.summary || '', Number(entity.confidence || 0), entity.createdAt || now, entity.updatedAt || now, Number(entity.identityVersion || 1), entity.lastDisambiguatedAt || null)
         for (const alias of entity.aliases || []) insertAlias.run(entity.id, alias, String(alias).trim().toLowerCase(), 'name', 1)
         for (const accountId of entity.accountIds || []) insertIdentity.run(entity.id, 'wechat', accountId, entity.canonicalName, 1)
         this.upsertSearchDocument(`entity:${entity.id}`, 'entity', entity.id, entity.canonicalName,
@@ -260,6 +298,50 @@ export class PersonalMemoryStore {
       this.db.exec('ROLLBACK')
       throw error
     }
+  }
+
+  private pairKey(leftId: string, rightId: string): string {
+    return [leftId, rightId].sort().join('|')
+  }
+
+  getIdentityDecision(leftId: string, rightId: string): any | null {
+    return this.db?.prepare('SELECT * FROM identity_decisions WHERE pair_key=?').get(this.pairKey(leftId, rightId)) || null
+  }
+
+  recordIdentityDecision(leftId: string, rightId: string, decision: 'merged' | 'different', leftVersion: number, rightVersion: number, reason = ''): void {
+    if (!this.db) return
+    const now = new Date().toISOString()
+    const ordered = leftId <= rightId
+      ? { leftId, rightId, leftVersion, rightVersion }
+      : { leftId: rightId, rightId: leftId, leftVersion: rightVersion, rightVersion: leftVersion }
+    this.db.prepare(`
+      INSERT INTO identity_decisions(pair_key,left_entity_id,right_entity_id,decision,left_version,right_version,reason,created_at,updated_at)
+      VALUES(?,?,?,?,?,?,?,?,?)
+      ON CONFLICT(pair_key) DO UPDATE SET decision=excluded.decision,left_version=excluded.left_version,
+        right_version=excluded.right_version,reason=excluded.reason,updated_at=excluded.updated_at
+    `).run(this.pairKey(leftId, rightId), ordered.leftId, ordered.rightId, decision, ordered.leftVersion, ordered.rightVersion, reason, now, now)
+  }
+
+  recordMerge(sourceId: string, targetId: string, snapshot: any): number {
+    if (!this.db) return 0
+    const result = this.db.prepare('INSERT INTO merge_history(source_entity_id,target_entity_id,snapshot_json,created_at) VALUES(?,?,?,?)')
+      .run(sourceId, targetId, JSON.stringify(snapshot), new Date().toISOString())
+    return Number(result.lastInsertRowid)
+  }
+
+  listActiveMerges(limit = 20): any[] {
+    if (!this.db) return []
+    return this.db.prepare('SELECT id,source_entity_id,target_entity_id,created_at FROM merge_history WHERE reverted_at IS NULL ORDER BY id DESC LIMIT ?').all(limit) as any[]
+  }
+
+  getMergeSnapshot(id: number): any | null {
+    if (!this.db) return null
+    const row = this.db.prepare('SELECT snapshot_json FROM merge_history WHERE id=? AND reverted_at IS NULL').get(id) as { snapshot_json: string } | undefined
+    return row ? JSON.parse(row.snapshot_json) : null
+  }
+
+  markMergeReverted(id: number): void {
+    this.db?.prepare('UPDATE merge_history SET reverted_at=? WHERE id=? AND reverted_at IS NULL').run(new Date().toISOString(), id)
   }
 
   searchText(query: string, limit = 20): any[] {

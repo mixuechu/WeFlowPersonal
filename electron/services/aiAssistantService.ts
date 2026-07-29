@@ -35,6 +35,8 @@ type GraphEntity = {
   evidenceMessageIds: string[]
   createdAt: string
   updatedAt: string
+  identityVersion: number
+  lastDisambiguatedAt: string | null
 }
 
 type GraphRelation = {
@@ -202,7 +204,9 @@ export class AiAssistantService {
           ? loaded.tasks.map((task: AssistantTask) => task.classification ? task : { ...task, classification: 'uncertain' })
           : [],
         graph: {
-          entities: Array.isArray(loaded.graph?.entities) ? loaded.graph.entities : [],
+          entities: Array.isArray(loaded.graph?.entities) ? loaded.graph.entities.map((entity: any) => ({
+            ...entity, identityVersion: Number(entity.identityVersion || 1), lastDisambiguatedAt: entity.lastDisambiguatedAt || null
+          })) : [],
           relations: Array.isArray(loaded.graph?.relations) ? loaded.graph.relations : [],
           reviewQueue: Array.isArray(loaded.graph?.reviewQueue) ? loaded.graph.reviewQueue : []
         }
@@ -507,14 +511,17 @@ export class AiAssistantService {
       tempIds.set(String(item.tempId || id), id)
       const evidenceIds = [...new Set((Array.isArray(item.evidenceMessageIds) ? item.evidenceMessageIds : []).map(String))]
       if (existing) {
+        const before = JSON.stringify([existing.canonicalName, existing.aliases, existing.accountIds, existing.summary])
         existing.aliases = [...new Set([...existing.aliases, ...aliases])]
         existing.accountIds = [...new Set([...existing.accountIds, ...accountIds])]
         existing.summary = String(item.summary || existing.summary).slice(0, 800)
         existing.confidence = Math.max(existing.confidence, Number(item.confidence || 0))
         existing.evidenceMessageIds = [...new Set([...existing.evidenceMessageIds, ...evidenceIds])].slice(-500)
         existing.updatedAt = now
+        if (before !== JSON.stringify([existing.canonicalName, existing.aliases, existing.accountIds, existing.summary])) existing.identityVersion += 1
+        this.enqueueIdentityCandidates(existing, now)
       } else {
-        this.state.graph.entities.push({
+        const created: GraphEntity = {
           id,
           type: ['person', 'organization', 'group', 'project'].includes(item.type) ? item.type : 'person',
           canonicalName: canonicalName.slice(0, 100),
@@ -524,8 +531,12 @@ export class AiAssistantService {
           confidence: Math.max(0, Math.min(1, Number(item.confidence || 0.6))),
           evidenceMessageIds: evidenceIds,
           createdAt: now,
-          updatedAt: now
-        })
+          updatedAt: now,
+          identityVersion: 1,
+          lastDisambiguatedAt: null
+        }
+        this.state.graph.entities.push(created)
+        this.enqueueIdentityCandidates(created, now)
       }
     }
     for (const item of Array.isArray(digest.relations) ? digest.relations : []) {
@@ -591,6 +602,34 @@ export class AiAssistantService {
     }
   }
 
+  private enqueueIdentityCandidates(entity: GraphEntity, now: string): void {
+    if (entity.type !== 'person') return
+    const names = new Set([entity.canonicalName, ...entity.aliases].map(value => value.trim().toLowerCase()).filter(value => value.length >= 2))
+    for (const candidate of this.state.graph.entities) {
+      if (candidate.id === entity.id || candidate.type !== 'person') continue
+      const candidateNames = [candidate.canonicalName, ...candidate.aliases].map(value => value.trim().toLowerCase())
+      const shared = candidateNames.find(name => names.has(name))
+      if (!shared) continue
+      const decision = personalMemoryStore.getIdentityDecision(entity.id, candidate.id)
+      const orderedVersions = entity.id <= candidate.id
+        ? [entity.identityVersion, candidate.identityVersion]
+        : [candidate.identityVersion, entity.identityVersion]
+      if (decision?.decision === 'different' &&
+          Number(decision.left_version) === orderedVersions[0] &&
+          Number(decision.right_version) === orderedVersions[1]) continue
+      const [leftId, rightId] = [entity.id, candidate.id].sort()
+      const id = crypto.createHash('sha256').update(`${leftId}|${rightId}`).digest('hex').slice(0, 20)
+      if (this.state.graph.reviewQueue.some(review => review.id === id && review.status === 'pending')) continue
+      this.state.graph.reviewQueue.push({
+        id, kind: 'possible_duplicate', title: `${entity.canonicalName} ↔ ${candidate.canonicalName}`,
+        detail: `共享名称或别名“${shared}”，账号不同，需确认是否为同一人。`,
+        confidence: 0.65, status: 'pending', createdAt: now,
+        leftEntityId: entity.id, rightEntityId: candidate.id
+      })
+    }
+    entity.lastDisambiguatedAt = now
+  }
+
   async sync(): Promise<any> {
     if (this.activeSync) return this.activeSync
     this.activeSync = this.runSync()
@@ -614,15 +653,16 @@ export class AiAssistantService {
       const seen = new Set(this.state.cursor.recentMessageIds)
       const fresh = collected.messages.filter(message => !seen.has(messageKey(message)))
       const digests: any[] = []
+      const createdAt = new Date().toISOString()
       for (const batch of this.buildAnalysisBatches(fresh)) {
-        digests.push(await this.callAi(batch))
+        const digest = await this.callAi(batch)
+        digests.push(digest)
+        this.mergeGraphDigest(digest, batch, createdAt)
       }
       const tasks = new Map<string, AssistantTask>()
       const highlights: string[] = []
       const summaries: string[] = []
-      const createdAt = new Date().toISOString()
       for (const digest of digests) {
-        this.mergeGraphDigest(digest, fresh, createdAt)
         highlights.push(...(Array.isArray(digest.highlights) ? digest.highlights : []))
         if (digest.summary) summaries.push(String(digest.summary))
         for (const item of Array.isArray(digest.tasks) ? digest.tasks : []) {
@@ -716,7 +756,8 @@ export class AiAssistantService {
       tasks,
       taskReviewQueue,
       cursor: this.state.cursor,
-      graph: this.state.graph
+      graph: this.state.graph,
+      mergeHistory: personalMemoryStore.listActiveMerges()
     }
   }
 
@@ -827,21 +868,60 @@ export class AiAssistantService {
       const source = this.state.graph.entities.find(entity => entity.id === review.leftEntityId)
       const target = this.state.graph.entities.find(entity => entity.id === review.rightEntityId)
       if (source && target) {
+        personalMemoryStore.recordMerge(source.id, target.id, {
+          source: structuredClone(source),
+          target: structuredClone(target),
+          relations: structuredClone(this.state.graph.relations)
+        })
         target.aliases = [...new Set([...target.aliases, source.canonicalName, ...source.aliases])].filter(alias => alias !== target.canonicalName)
         target.accountIds = [...new Set([...target.accountIds, ...source.accountIds])]
         target.evidenceMessageIds = [...new Set([...target.evidenceMessageIds, ...source.evidenceMessageIds])]
         target.summary = target.summary || source.summary
         target.confidence = Math.max(target.confidence, source.confidence)
         target.updatedAt = new Date().toISOString()
+        target.identityVersion += 1
+        target.lastDisambiguatedAt = target.updatedAt
         for (const relation of this.state.graph.relations) {
           if (relation.subjectId === source.id) relation.subjectId = target.id
           if (relation.objectId === source.id) relation.objectId = target.id
         }
+        const normalizedRelations = new Map<string, GraphRelation>()
+        for (const relation of this.state.graph.relations) {
+          if (relation.subjectId === relation.objectId) continue
+          const relationId = crypto.createHash('sha256')
+            .update(`${relation.subjectId}|${relation.predicate}|${relation.objectId}`).digest('hex').slice(0, 20)
+          const existingRelation = normalizedRelations.get(relationId)
+          if (existingRelation) {
+            const knownEvidence = new Set(existingRelation.evidence.map(item => item.messageId))
+            existingRelation.evidence.push(...relation.evidence.filter(item => !knownEvidence.has(item.messageId)))
+            existingRelation.confidence = Math.max(existingRelation.confidence, relation.confidence)
+          } else {
+            normalizedRelations.set(relationId, { ...relation, id: relationId })
+          }
+        }
+        this.state.graph.relations = [...normalizedRelations.values()]
         this.state.graph.entities = this.state.graph.entities.filter(entity => entity.id !== source.id)
+        personalMemoryStore.recordIdentityDecision(source.id, target.id, 'merged', source.identityVersion, target.identityVersion, review.detail)
       }
+    }
+    if (review.kind === 'possible_duplicate' && decision === 'rejected' && review.leftEntityId && review.rightEntityId) {
+      const left = this.state.graph.entities.find(entity => entity.id === review.leftEntityId)
+      const right = this.state.graph.entities.find(entity => entity.id === review.rightEntityId)
+      if (left && right) personalMemoryStore.recordIdentityDecision(left.id, right.id, 'different', left.identityVersion, right.identityVersion, review.detail)
     }
     this.saveState()
     return review
+  }
+
+  revertMerge(id: number): any {
+    const snapshot = personalMemoryStore.getMergeSnapshot(id)
+    if (!snapshot?.source || !snapshot?.target || !Array.isArray(snapshot.relations)) return null
+    this.state.graph.entities = this.state.graph.entities.filter(entity => entity.id !== snapshot.source.id && entity.id !== snapshot.target.id)
+    this.state.graph.entities.push(snapshot.source, snapshot.target)
+    this.state.graph.relations = snapshot.relations
+    personalMemoryStore.markMergeReverted(id)
+    this.saveState()
+    return { success: true }
   }
 
   private async schedulerTick(): Promise<void> {
