@@ -12,6 +12,7 @@ import { filterMemorySearchResults, type MemorySearchOptions } from './memorySea
 import { buildMemoryQueryPlan } from './memoryQueryPlanner'
 import { buildTaskReminders, findMatchingTask } from './taskIntelligence'
 import { buildEntityInsights } from './relationshipInsights'
+import { classifyTaskAssignment, evaluateTaskAssignmentPolicy } from './taskAssignmentPolicy'
 
 type AssistantTask = {
   id: string
@@ -32,6 +33,7 @@ type AssistantTask = {
   updatedAt?: string
   classification?: 'mine' | 'uncertain'
   assignmentEvidence?: string
+  ownershipPolicyReason?: string
   sourceMessageIds?: string[]
   evidence?: Array<{ messageId: string; timestamp: number; sender: string; excerpt: string }>
 }
@@ -854,17 +856,13 @@ export class AiAssistantService {
         for (const item of Array.isArray(digest.tasks) ? digest.tasks : []) {
           const sourceMessageIds = Array.isArray(item.sourceMessageIds) ? item.sourceMessageIds.map(String).slice(0, 20) : []
           const evidenceMessages = fresh.filter(message => sourceMessageIds.includes(String(message.id)))
-          const evidenceText = evidenceMessages.map(message => String(message.content || '')).join('\n')
-          const onlySentByUser = evidenceMessages.length > 0 && evidenceMessages.every(message => message.direction === '我发送')
-          const isRequest = /请|麻烦|帮我|帮忙|查一下|看一下|确认一下|问一下|发一下|给我|快/.test(evidenceText)
-          const isSelfCommitment = /我(?:来|会|负责|去|处理|跟进|完成|安排|准备|需要|要)/.test(evidenceText)
-          let classification: 'mine' | 'uncertain' | 'others' =
-            item.classification === 'mine' || item.classification === 'others' ? item.classification : 'uncertain'
-          if (onlySentByUser && isRequest && !isSelfCommitment) classification = 'others'
-          const delegatedByUser = classification === 'others' && onlySentByUser && isRequest
-          if (classification === 'others' && !delegatedByUser) continue
-          const requestedKind = ['action', 'delegated', 'waiting'].includes(item.taskKind) ? item.taskKind : 'action'
-          const taskKind: AssistantTask['taskKind'] = delegatedByUser ? 'delegated' : requestedKind
+          const assignment = classifyTaskAssignment({
+            evidenceMessages,
+            modelClassification: item.classification,
+            modelTaskKind: item.taskKind
+          })
+          if (!assignment.keep) continue
+          const taskKind = assignment.taskKind
           const task: AssistantTask = {
             id: stableTaskId(item),
             title: String(item.title || '待确认事项').slice(0, 160),
@@ -881,8 +879,9 @@ export class AiAssistantService {
             sourceSessionId: String(evidenceMessages[0]?.sessionId || ''),
             confidence: Math.max(0, Math.min(1, Number(item.confidence ?? 0.7))),
             status: taskKind === 'waiting' ? 'waiting' : 'todo',
-            classification: delegatedByUser ? 'mine' : classification,
+            classification: assignment.classification,
             assignmentEvidence: String(item.assignmentEvidence || '').slice(0, 300),
+            ownershipPolicyReason: assignment.rationale,
             sourceMessageIds,
             evidence: evidenceMessages.map(message => ({
               messageId: String(message.id),
@@ -1033,7 +1032,8 @@ export class AiAssistantService {
       memoryStats: personalMemoryStore.getMemoryStats(),
       memoryFeed,
       ingestionStatus: personalMemoryStore.getIngestionStatus(),
-      assistantHistory: personalMemoryStore.getRecentAssistantExchanges()
+      assistantHistory: personalMemoryStore.getRecentAssistantExchanges(),
+      qualityBaseline: evaluateTaskAssignmentPolicy()
     }
   }
 

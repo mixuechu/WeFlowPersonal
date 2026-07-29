@@ -359,6 +359,11 @@
 .assistant-memory-health button { padding: 7px 10px; border: 1px solid #aebfb1; border-radius: 8px; color: #315c4e; background: #fff; font-size: 9px; cursor: pointer; }
 .assistant-memory-health button:disabled { opacity: .5; cursor: default; }
 .assistant-memory-health.unhealthy { border-color: #e0c2b9; color: #8a4d46; background: #fff3ef; }
+.assistant-quality-baseline { margin: 10px 0; padding: 9px 12px; border: 1px solid #d5e2d7; border-radius: 10px; display: flex; justify-content: space-between; align-items: center; gap: 12px; color: #315c4e; background: #f7faf7; font-size: 9px; }
+.assistant-quality-baseline > div { display: flex; align-items: center; gap: 8px; }
+.assistant-quality-baseline span { display: grid; gap: 2px; }
+.assistant-quality-baseline small { color: #738077; font-size: 8px; }
+.assistant-quality-baseline.warning { border-color: #e2cfb8; color: #835d28; background: #fff9ef; }
 .assistant-memory-health-actions { position: relative; display: flex; align-items: center; gap: 7px; }
 .assistant-memory-health-actions summary { color: #65736a; font-size: 9px; cursor: pointer; }
 .assistant-memory-health-actions details > div { position: absolute; z-index: 10; top: calc(100% + 6px); right: 0; width: 230px; padding: 7px; border: 1px solid #d6ded7; border-radius: 9px; display: grid; gap: 5px; background: #fff; box-shadow: 0 12px 28px rgba(40, 55, 45, .14); }

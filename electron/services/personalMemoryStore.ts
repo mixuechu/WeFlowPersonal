@@ -706,7 +706,8 @@ export class PersonalMemoryStore {
           collaborators: task.collaborators || [],
           project: task.project || '',
           dependsOnIds: task.dependsOnIds || [],
-          taskKind: task.taskKind || 'action'
+          taskKind: task.taskKind || 'action',
+          ownershipPolicyReason: task.ownershipPolicyReason || ''
         }, now)
       this.db.prepare('DELETE FROM search_document_evidence WHERE document_id=?').run(documentId)
       const insertEvidence = this.db.prepare(`

@@ -8,6 +8,11 @@ import { filterMemorySearchResults } from '../electron/services/memorySearchFilt
 import { buildMemoryQueryPlan } from '../electron/services/memoryQueryPlanner.ts'
 import { buildTaskReminders, findMatchingTask } from '../electron/services/taskIntelligence.ts'
 import { buildEntityInsights } from '../electron/services/relationshipInsights.ts'
+import {
+  classifyTaskAssignment,
+  evaluateTaskAssignmentPolicy,
+  TASK_ASSIGNMENT_GOLDEN_SAMPLES
+} from '../electron/services/taskAssignmentPolicy.ts'
 
 function withStore(run: (store: PersonalMemoryStore) => void): void {
   const directory = mkdtempSync(join(tmpdir(), 'weflow-memory-test-'))
@@ -105,7 +110,8 @@ test('task search keeps original message evidence', () => withStore(store => {
     collaborators: ['同事甲'],
     project: '升级版演示',
     dependsOnIds: ['task-prerequisite'],
-    taskKind: 'delegated'
+    taskKind: 'delegated',
+    ownershipPolicyReason: ''
   })
   assert.deepEqual(store.getDocumentEvidence('task', 'task-1').map(item => ({ ...item })), [{
     message_id: 'message-task-1',
@@ -442,4 +448,19 @@ test('entity insight strength is explainable and deduplicates shared evidence', 
   assert.equal(insight.strength, 62)
   assert.equal(insight.strengthLabel, '中')
   assert.ok(insight.explanation.some(item => item.includes('去重原文证据')))
+})
+
+test('anonymous task-assignment golden set meets the published quality baseline', () => {
+  const report = evaluateTaskAssignmentPolicy()
+  assert.equal(report.samples, TASK_ASSIGNMENT_GOLDEN_SAMPLES.length)
+  assert.equal(report.exactAccuracy, 1)
+  assert.equal(report.minePrecision, 1)
+  assert.equal(report.mineRecall, 1)
+  assert.deepEqual(report.failures, [])
+  const delegated = classifyTaskAssignment({
+    evidenceMessages: [{ direction: '我发送', content: '查一下几点更新' }],
+    modelClassification: 'mine'
+  })
+  assert.equal(delegated.taskKind, 'delegated')
+  assert.ok(delegated.rationale.includes('执行者是收件人'))
 })

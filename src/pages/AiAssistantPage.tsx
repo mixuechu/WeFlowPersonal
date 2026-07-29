@@ -18,6 +18,7 @@ type Task = {
   status: 'todo' | 'doing' | 'waiting' | 'done' | 'cancelled'
   classification?: 'mine' | 'uncertain'
   assignmentEvidence?: string
+  ownershipPolicyReason?: string
   evidence?: Array<{ messageId: string; timestamp: number; sender: string; excerpt: string }>
 }
 
@@ -475,6 +476,12 @@ function AiAssistantPage() {
             </div>
           </section>
         )}
+        {dashboard?.qualityBaseline && <section className={`assistant-quality-baseline ${dashboard.qualityBaseline.failures?.length ? 'warning' : ''}`}>
+          <div><ShieldCheck size={15} /><span><strong>任务归属质量基线 · {dashboard.qualityBaseline.version}</strong>
+            <small>{dashboard.qualityBaseline.samples} 个匿名化合成样本 · 精确率 {Math.round(dashboard.qualityBaseline.minePrecision * 100)}% · 召回率 {Math.round(dashboard.qualityBaseline.mineRecall * 100)}% · 全字段准确率 {Math.round(dashboard.qualityBaseline.exactAccuracy * 100)}%</small>
+          </span></div>
+          <span>{dashboard.qualityBaseline.failures?.length ? `${dashboard.qualityBaseline.failures.length} 个样本未通过` : '全部通过'}</span>
+        </section>}
 
         <section className="assistant-briefing-card">
           <div className="assistant-briefing-copy">
@@ -563,6 +570,7 @@ function AiAssistantPage() {
                       <span>{Math.round(task.confidence * 100)}% 可信</span>
                     </div>
                     {task.assignmentEvidence && <small className="assistant-evidence">归属依据：{task.assignmentEvidence}</small>}
+                    {task.ownershipPolicyReason && <small className="assistant-evidence">策略判断：{task.ownershipPolicyReason}</small>}
                     {!!task.evidence?.length && <div className="assistant-evidence-stack">
                       {task.evidence.map(item => <small key={item.messageId}>{item.sender} · {new Date(item.timestamp * 1000).toLocaleString('zh-CN')}：“{item.excerpt}”</small>)}
                     </div>}
