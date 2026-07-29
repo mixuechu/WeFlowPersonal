@@ -1647,6 +1647,9 @@ export interface ElectronAPI {
     setSettings: (input: any) => Promise<any>
       updateTask: (id: string, patch: any) => Promise<any>
       updateGraphReview: (id: string, decision: 'confirmed' | 'rejected') => Promise<any>
+      getConversationSources: () => Promise<any[]>
+      setConversationSource: (input: any) => Promise<any>
+      setConversationSourcesBulk: (input: any) => Promise<any>
   }
   social: {
     saveWeiboCookie: (rawInput: string) => Promise<SocialSaveWeiboCookieResult>

@@ -4506,6 +4506,9 @@ function registerIpcHandlers() {
   ipcMain.handle('ai-assistant:setSettings', (_, input: any) => aiAssistantService.setSettings(input))
   ipcMain.handle('ai-assistant:updateTask', (_, id: string, patch: any) => aiAssistantService.updateTask(id, patch))
   ipcMain.handle('ai-assistant:updateGraphReview', (_, id: string, decision: 'confirmed' | 'rejected') => aiAssistantService.updateGraphReview(id, decision))
+  ipcMain.handle('ai-assistant:getConversationSources', () => aiAssistantService.getConversationSources())
+  ipcMain.handle('ai-assistant:setConversationSource', (_, input: any) => aiAssistantService.setConversationSource(input))
+  ipcMain.handle('ai-assistant:setConversationSourcesBulk', (_, input: any) => aiAssistantService.setConversationSourcesBulk(input))
 
   // 自动下载原图
   ipcMain.handle('image:startAutoDownload', async (_, whitelist?: string[]) => {

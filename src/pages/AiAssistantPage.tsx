@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { Bot, Check, Clock3, Network, RefreshCw, Settings2, ShieldCheck, Sparkles, X } from 'lucide-react'
+import { Bot, Check, Clock3, Filter, Network, RefreshCw, Settings2, ShieldCheck, Sparkles, X } from 'lucide-react'
 import './AiAssistantPage.scss'
 
 type Task = {
@@ -24,6 +24,9 @@ function AiAssistantPage() {
   const [message, setMessage] = useState('')
   const [graphQuery, setGraphQuery] = useState('')
   const [selectedEntityId, setSelectedEntityId] = useState('')
+  const [showSources, setShowSources] = useState(false)
+  const [sources, setSources] = useState<any[]>([])
+  const [sourceQuery, setSourceQuery] = useState('')
 
   const load = useCallback(async () => {
     const [nextStatus, nextDashboard] = await Promise.all([
@@ -99,6 +102,21 @@ function AiAssistantPage() {
     await load()
   }
 
+  const openSources = async () => {
+    setSources(await window.electronAPI.aiAssistant.getConversationSources())
+    setShowSources(true)
+  }
+
+  const toggleSource = async (source: any) => {
+    await window.electronAPI.aiAssistant.setConversationSource({ ...source, enabled: !source.enabled })
+    setSources(current => current.map(item => item.sessionId === source.sessionId ? { ...item, enabled: !item.enabled } : item))
+  }
+
+  const setSourceType = async (type: 'group' | 'private', enabled: boolean) => {
+    await window.electronAPI.aiAssistant.setConversationSourcesBulk({ type, enabled, sources })
+    setSources(current => current.map(item => item.type === type ? { ...item, enabled } : item))
+  }
+
   return (
     <div className="ai-assistant-page native">
       <div className="ai-assistant-toolbar">
@@ -111,6 +129,7 @@ function AiAssistantPage() {
           <span>{syncing || status?.syncing ? '正在补齐消息' : status?.cursor?.lastError ? '等待自动重试' : '增量服务正常'}</span>
           <span className="service-divider" />
           <ShieldCheck size={13} /><span>Key 已加密存储</span>
+          <button type="button" onClick={openSources} aria-label="信息来源" title="管理分析信息来源"><Filter size={14} /></button>
           <button type="button" onClick={openSettings} aria-label="AI 助理设置"><Settings2 size={14} /></button>
         </div>
       </div>
@@ -255,6 +274,29 @@ function AiAssistantPage() {
             <label><span>每日整理时间</span><input type="time" value={settings.scheduleTime} onChange={event => setSettings({ ...settings, scheduleTime: event.target.value })} /></label>
             <label className="assistant-toggle"><input type="checkbox" checked={settings.enabled} onChange={event => setSettings({ ...settings, enabled: event.target.checked })} /><span>启用启动补齐与每日自动整理</span></label>
             <div className="assistant-modal-actions"><button onClick={() => setShowSettings(false)}>取消</button><button className="primary" onClick={saveSettings}>保存设置</button></div>
+          </div>
+        </div>
+      )}
+
+      {showSources && (
+        <div className="assistant-modal-backdrop">
+          <div className="assistant-modal assistant-source-modal">
+            <div className="assistant-modal-title"><div><h2>信息来源</h2><p>关闭后消息不会发送给模型，也不会进入待办和知识图谱。</p></div><button onClick={() => setShowSources(false)}><X size={16} /></button></div>
+            <div className="assistant-source-actions">
+              <button onClick={() => void setSourceType('group', false)}>关闭全部群聊</button>
+              <button onClick={() => void setSourceType('group', true)}>开启全部群聊</button>
+              <button onClick={() => void setSourceType('private', true)}>开启全部私聊</button>
+            </div>
+            <input className="assistant-source-search" value={sourceQuery} onChange={event => setSourceQuery(event.target.value)} placeholder="搜索群聊或联系人" />
+            <div className="assistant-source-list">
+              {sources.filter(source => !sourceQuery.trim() || source.displayName.toLowerCase().includes(sourceQuery.trim().toLowerCase())).map(source => (
+                <label className="assistant-source-row" key={source.sessionId}>
+                  <span><strong>{source.displayName}</strong><small>{source.type === 'group' ? '群聊' : '私聊'} · {source.enabled ? '参与分析' : '已停止分析'}</small></span>
+                  <input type="checkbox" checked={source.enabled} onChange={() => void toggleSource(source)} />
+                </label>
+              ))}
+            </div>
+            <div className="assistant-source-footer"><span>{sources.filter(source => source.enabled).length} 个来源已开启</span><button className="primary" onClick={() => setShowSources(false)}>完成</button></div>
           </div>
         </div>
       )}

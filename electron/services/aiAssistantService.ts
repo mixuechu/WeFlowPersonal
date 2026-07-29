@@ -278,7 +278,17 @@ export class AiAssistantService {
 
   private async collectMessages(start: number, end: number): Promise<{ messages: any[]; failed: string[]; successful: string[] }> {
     const sessionPayload = await this.api('/api/v1/sessions', { limit: 500 })
-    const sessions = (sessionPayload.sessions || []).filter((session: any) => {
+    const policies = personalMemoryStore.getConversationPolicies()
+    const allSessions = sessionPayload.sessions || []
+    for (const session of allSessions) {
+      if (policies.get(session.username) === false) {
+        // 忽略期间持续推进该会话游标，重新启用时默认从启用时刻开始，
+        // 避免突然补分析数月历史消息。
+        this.state.cursor.sessionCursors[session.username] = end
+      }
+    }
+    const sessions = allSessions.filter((session: any) => {
+      if (policies.get(session.username) === false) return false
       const sessionStart = Number(this.state.cursor.sessionCursors[session.username] || start)
       return Number(session.lastTimestamp || 0) >= sessionStart
     })
@@ -625,6 +635,43 @@ export class AiAssistantService {
       ownerAliases: this.config.get('aiAssistantOwnerAliases'),
       ownerBackground: this.config.get('aiAssistantOwnerBackground')
     }
+  }
+
+  async getConversationSources(): Promise<any[]> {
+    const sessionPayload = await this.api('/api/v1/sessions', { limit: 500 })
+    const policies = personalMemoryStore.getConversationPolicies()
+    return (sessionPayload.sessions || []).map((session: any) => ({
+      sessionId: String(session.username),
+      displayName: String(session.displayName || session.username),
+      type: String(session.username).endsWith('@chatroom') ? 'group' : 'private',
+      enabled: policies.get(session.username) !== false,
+      lastTimestamp: Number(session.lastTimestamp || 0)
+    })).sort((a: any, b: any) => b.lastTimestamp - a.lastTimestamp)
+  }
+
+  setConversationSource(input: { sessionId: string; displayName?: string; type?: 'group' | 'private'; enabled: boolean }): any {
+    const sessionId = String(input.sessionId || '').trim()
+    if (!sessionId) throw new Error('缺少会话 ID')
+    const type = input.type === 'group' || sessionId.endsWith('@chatroom') ? 'group' : 'private'
+    personalMemoryStore.setConversationPolicy(sessionId, String(input.displayName || sessionId), type, Boolean(input.enabled))
+    this.state.cursor.sessionCursors[sessionId] = Math.floor(Date.now() / 1000)
+    this.saveState()
+    return { success: true, sessionId, enabled: Boolean(input.enabled) }
+  }
+
+  setConversationSourcesBulk(input: { type: 'group' | 'private'; enabled: boolean; sources: any[] }): any {
+    const now = Math.floor(Date.now() / 1000)
+    let updated = 0
+    for (const source of input.sources || []) {
+      const sessionId = String(source.sessionId || '').trim()
+      const type = sessionId.endsWith('@chatroom') ? 'group' : 'private'
+      if (!sessionId || type !== input.type) continue
+      personalMemoryStore.setConversationPolicy(sessionId, String(source.displayName || sessionId), type, Boolean(input.enabled))
+      this.state.cursor.sessionCursors[sessionId] = now
+      updated += 1
+    }
+    this.saveState()
+    return { success: true, updated }
   }
 
   setSettings(input: any): any {

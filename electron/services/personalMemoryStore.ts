@@ -272,6 +272,22 @@ export class PersonalMemoryStore {
     `).all(query.trim().replace(/["']/g, ' '), Math.max(1, Math.min(100, limit))) as any[]
   }
 
+  getConversationPolicies(): Map<string, boolean> {
+    if (!this.db) return new Map()
+    const rows = this.db.prepare('SELECT session_id, analysis_enabled FROM conversation_policy').all() as Array<{ session_id: string; analysis_enabled: number }>
+    return new Map(rows.map(row => [row.session_id, row.analysis_enabled === 1]))
+  }
+
+  setConversationPolicy(sessionId: string, displayName: string, sessionType: 'group' | 'private', enabled: boolean): void {
+    if (!this.db) return
+    this.db.prepare(`
+      INSERT INTO conversation_policy(session_id,display_name,session_type,analysis_enabled,resume_policy,updated_at)
+      VALUES(?,?,?,?,?,?)
+      ON CONFLICT(session_id) DO UPDATE SET display_name=excluded.display_name,session_type=excluded.session_type,
+        analysis_enabled=excluded.analysis_enabled,updated_at=excluded.updated_at
+    `).run(sessionId, displayName, sessionType, enabled ? 1 : 0, 'from_now', new Date().toISOString())
+  }
+
   private upsertSearchDocument(id: string, type: string, sourceId: string, title: string, searchText: string, metadata: any, now: string): void {
     if (!this.db) return
     const hash = Buffer.from(searchText).toString('base64').slice(0, 80)
