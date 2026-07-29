@@ -45,6 +45,7 @@ function AiAssistantPage() {
   const [memoryQuestion, setMemoryQuestion] = useState('')
   const [memoryAnswer, setMemoryAnswer] = useState<any>(null)
   const [askingMemory, setAskingMemory] = useState(false)
+  const [creatingMemoryTask, setCreatingMemoryTask] = useState(false)
   const [memoryEntityFilter, setMemoryEntityFilter] = useState('')
   const [memorySessionFilter, setMemorySessionFilter] = useState('')
   const [memoryTypeFilter, setMemoryTypeFilter] = useState('')
@@ -268,11 +269,32 @@ function AiAssistantPage() {
     if (!question || askingMemory) return
     setAskingMemory(true)
     try {
-      setMemoryAnswer(await window.electronAPI.aiAssistant.askMemory(question, memoryAnswer?.conversationId, memorySearchOptions))
+      const answer = await window.electronAPI.aiAssistant.askMemory(question, memoryAnswer?.conversationId, memorySearchOptions)
+      setMemoryAnswer({ ...answer, question })
     } catch (error: any) {
       setMemoryAnswer({ answer: error?.message || String(error), citations: [], uncertainty: '' })
     } finally {
       setAskingMemory(false)
+    }
+  }
+
+  const createTaskFromMemory = async () => {
+    if (!memoryAnswer?.answer || creatingMemoryTask) return
+    setCreatingMemoryTask(true)
+    try {
+      const task = await window.electronAPI.aiAssistant.createTaskFromMemory({
+        title: memoryAnswer.question || String(memoryAnswer.answer).split(/[。！？\n]/)[0],
+        detail: memoryAnswer.answer,
+        citations: memoryAnswer.citations,
+        priority: 'medium'
+      })
+      setMemoryAnswer((current: any) => ({ ...current, createdTaskId: task.id }))
+      setMessage(`已生成待办：${task.title}`)
+      await load()
+    } catch (error: any) {
+      setMessage(error?.message || String(error))
+    } finally {
+      setCreatingMemoryTask(false)
     }
   }
 
@@ -530,8 +552,17 @@ function AiAssistantPage() {
           {memoryAnswer && <div className="assistant-memory-answer">
             <p>{memoryAnswer.answer}</p>
             {memoryAnswer.uncertainty && <small>不确定性：{memoryAnswer.uncertainty}</small>}
+            <div className="assistant-memory-answer-actions">
+              <button onClick={() => void createTaskFromMemory()} disabled={creatingMemoryTask || Boolean(memoryAnswer.createdTaskId)}>
+                <Check size={13} /> {memoryAnswer.createdTaskId ? '已生成待办' : creatingMemoryTask ? '正在生成…' : '生成待办'}
+              </button>
+            </div>
             {!!memoryAnswer.citations?.length && <div className="assistant-citations">
               {memoryAnswer.citations.map((citation: any) => <article key={citation.documentId}>
+                <button className="assistant-citation-locate" onClick={() => {
+                  setMemoryQuery(citation.title)
+                  setMemoryTypeFilter(citation.type)
+                }}>定位到检索</button>
                 <strong>{citation.title}</strong><span>{citation.type}</span><p>{citation.content}</p>
                 {(citation.evidence || []).map((evidence: any) => <small key={evidence.message_id}>“{evidence.excerpt}”</small>)}
               </article>)}

@@ -1646,6 +1646,7 @@ export interface ElectronAPI {
     getSettings: () => Promise<any>
     setSettings: (input: any) => Promise<any>
       updateTask: (id: string, patch: any) => Promise<any>
+      createTaskFromMemory: (input: any) => Promise<any>
       updateTaskReview: (id: string, decision: 'mine' | 'rejected') => Promise<any>
       updateGraphReview: (id: string, decision: 'confirmed' | 'rejected') => Promise<any>
       revertMerge: (id: number) => Promise<any>

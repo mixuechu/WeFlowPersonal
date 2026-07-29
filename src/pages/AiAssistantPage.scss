@@ -369,8 +369,12 @@
 .assistant-memory-answer { margin-top: 12px; padding: 14px; border-radius: 12px; background: #f2f5f1; }
 .assistant-memory-answer > p { margin: 0; color: #354139; font-size: 13px; line-height: 1.65; white-space: pre-wrap; }
 .assistant-memory-answer > small { display: block; margin-top: 8px; color: #7b837c; }
+.assistant-memory-answer-actions { margin-top: 10px; display: flex; gap: 7px; }
+.assistant-memory-answer-actions button { padding: 6px 9px; border: 1px solid #c8d8cc; border-radius: 7px; display: inline-flex; gap: 5px; align-items: center; color: #255f4b; background: #fff; cursor: pointer; }
+.assistant-memory-answer-actions button:disabled { opacity: .5; cursor: default; }
 .assistant-citations { display: grid; gap: 7px; margin-top: 12px; }
-.assistant-citations article { padding: 9px 11px; border-left: 3px solid #6b927f; background: rgba(255,255,255,.72); }
+.assistant-citations article { position: relative; padding: 9px 88px 9px 11px; border-left: 3px solid #6b927f; background: rgba(255,255,255,.72); }
+.assistant-citation-locate { position: absolute; top: 7px; right: 8px; padding: 4px 6px; border: 1px solid #d4ddd5; border-radius: 6px; color: #587162; background: #fff; font-size: 8px; cursor: pointer; }
 .assistant-citations strong { font-size: 10px; }
 .assistant-citations span { margin-left: 7px; color: #899089; font-size: 8px; text-transform: uppercase; }
 .assistant-citations p,.assistant-citations small { display: block; margin: 4px 0 0; color: #697169; font-size: 9px; line-height: 1.45; }

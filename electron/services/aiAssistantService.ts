@@ -1045,6 +1045,42 @@ export class AiAssistantService {
     return task
   }
 
+  createTaskFromMemory(input: any): AssistantTask {
+    const title = String(input?.title || '').trim().slice(0, 300)
+    if (!title) throw new Error('待办标题不能为空')
+    const citations = Array.isArray(input?.citations) ? input.citations.slice(0, 20) : []
+    const evidence = citations.flatMap((citation: any) => Array.isArray(citation?.evidence)
+      ? citation.evidence.map((item: any) => ({
+        messageId: String(item.message_id || item.messageId || ''),
+        timestamp: Number(item.timestamp || 0),
+        sender: String(item.sender || ''),
+        excerpt: String(item.excerpt || '').slice(0, 2000)
+      })).filter((item: any) => item.messageId)
+      : []).slice(0, 30)
+    const firstEvidence = citations.flatMap((citation: any) => citation?.evidence || [])[0]
+    const now = new Date().toISOString()
+    const task: AssistantTask = {
+      id: `task_${crypto.randomUUID()}`,
+      title,
+      detail: String(input?.detail || '').trim().slice(0, 2000),
+      owner: '我',
+      due: '',
+      priority: ['high', 'medium', 'low'].includes(input?.priority) ? input.priority : 'medium',
+      source: '个人记忆问答',
+      sourceSessionId: String(firstEvidence?.session_id || firstEvidence?.sessionId || ''),
+      confidence: citations.length ? 0.9 : 0.6,
+      status: 'todo',
+      classification: 'mine',
+      assignmentEvidence: citations.length ? `由 ${citations.length} 条记忆引用生成` : '由个人记忆问答手动生成',
+      evidence,
+      createdAt: now,
+      updatedAt: now
+    }
+    this.state.tasks.unshift(task)
+    this.saveState()
+    return task
+  }
+
   updateTaskReview(id: string, decision: 'mine' | 'rejected'): AssistantTask | null {
     const index = this.state.tasks.findIndex(item => item.id === id && item.classification !== 'mine')
     if (index < 0) return null
