@@ -1016,6 +1016,8 @@ function AiAssistantPage() {
                     : resource.metadata?.attachmentIndexStatus === 'not_found' ? '未在本机找到原文件'
                       : resource.metadata?.attachmentIndexStatus === 'too_large' ? '文件超过本地解析上限'
                         : resource.metadata?.attachmentIndexStatus === 'unsupported' ? '该格式暂不支持'
+                          : resource.metadata?.attachmentIndexStatus === 'ocr_required' ? '扫描版 PDF，等待逐页 OCR'
+                            : resource.metadata?.attachmentIndexStatus === 'dependency_missing' ? '本机缺少 PDF 文本组件'
                           : resource.metadata?.attachmentIndexStatus === 'empty' ? '未提取到可读正文'
                             : resource.metadata?.attachmentIndexStatus === 'failed' ? '解析失败' : '等待增量解析'}
                 </small>}
