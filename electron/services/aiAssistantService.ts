@@ -569,6 +569,7 @@ export class AiAssistantService {
         message.attachmentMatchedBy = located.matchedBy
         message.attachmentIndexStatus = extracted.status
         message.attachmentFormat = extracted.format
+        message.attachmentStructure = extracted.structure || null
         if (extracted.status === 'ocr_required' && this.config.get('aiAssistantOcrImages')) {
           const scanned = await extractScannedPdfText(located.sourcePath)
           message.attachmentPdfOcrStatus = scanned.status
@@ -686,6 +687,7 @@ export class AiAssistantService {
           attachmentIndexStatus: message.attachmentIndexStatus || '',
           attachmentFormat: message.attachmentFormat || '',
           attachmentTextSource: message.attachmentTextSource || '',
+          attachmentStructure: message.attachmentStructure || null,
           attachmentPdfOcrStatus: message.attachmentPdfOcrStatus || '',
           attachmentPdfOcrPages: message.attachmentPdfOcrPages || 0,
           attachmentPdfTotalPages: message.attachmentPdfTotalPages || 0,

@@ -1067,6 +1067,21 @@ function AiAssistantPage() {
                   {resource.metadata.attachmentPdfTotalPages ? ` / ${resource.metadata.attachmentPdfTotalPages}` : ''} 页
                   {resource.metadata.attachmentPdfOcrTruncated ? ' · 其余页面将在后续增强中处理' : ''}
                 </small>}
+                {resource.metadata?.attachmentStructure?.kind === 'spreadsheet' && <div className="assistant-evidence-stack">
+                  <small>
+                    表格结构：已读取 {resource.metadata.attachmentStructure.indexedSheetCount || 0}
+                    {resource.metadata.attachmentStructure.sheetCount
+                      ? ` / ${resource.metadata.attachmentStructure.sheetCount}` : ''} 个工作表
+                    · {resource.metadata.attachmentStructure.indexedCells || 0} 个单元格
+                    {resource.metadata.attachmentStructure.truncated ? ' · 已按本地安全预算截断' : ''}
+                  </small>
+                  {(resource.metadata.attachmentStructure.sheets || []).slice(0, 8).map((sheet: any) =>
+                    <small key={sheet.name}>
+                      {sheet.name}：{sheet.indexedRows || 0} 行 · {sheet.columnCount || 0} 列
+                      {!!sheet.headers?.length && ` · 字段 ${sheet.headers.slice(0, 8).join('、')}`}
+                      {sheet.truncated ? ' · 部分索引' : ''}
+                    </small>)}
+                </div>}
                 {resource.resource_type === 'image' && resource.metadata?.ocrStructure && <div className="assistant-evidence-stack">
                   <small>
                     截图结构：{resource.metadata.ocrStructure.kind === 'chat' ? '聊天记录'

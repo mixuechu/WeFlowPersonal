@@ -4,6 +4,7 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import JSZip from 'jszip'
+import ExcelJS from 'exceljs'
 import { ATTACHMENT_TEXT_LIMITS, extractAttachmentText } from '../electron/services/attachmentTextExtractor.ts'
 
 function createMinimalPdf(text: string): Buffer {
@@ -81,6 +82,100 @@ test('attachment text extractor indexes text-layer PDFs and marks image-only PDF
     assert.match(indexed.text, /WeFlow PDF attachment index test/)
     const scan = await extractAttachmentText(imageOnlyPdf)
     assert.equal(scan.status, 'ocr_required')
+  } finally {
+    rmSync(directory, { recursive: true, force: true })
+  }
+})
+
+test('attachment text extractor preserves XLSX sheets, headers, formulas, dates and links', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'weflow-attachment-xlsx-'))
+  try {
+    const workbook = new ExcelJS.Workbook()
+    const tasks = workbook.addWorksheet('客户待办')
+    tasks.addRow(['负责人', '事项', '截止日期', '预算'])
+    tasks.addRow(['李金石', '确认交付范围', new Date('2026-08-03T00:00:00.000Z'), 12000])
+    tasks.addRow([
+      '王小明',
+      { text: '查看需求文档', hyperlink: 'https://example.com/spec' },
+      new Date('2026-08-05T00:00:00.000Z'),
+      { formula: 'D2*1.1', result: 13200 }
+    ])
+    const contacts = workbook.addWorksheet('联系人')
+    contacts.addRow(['姓名', '公司'])
+    contacts.addRow(['邢爱妮', 'Onyx Devs Lab'])
+    const filePath = join(directory, '项目台账.xlsx')
+    await workbook.xlsx.writeFile(filePath)
+
+    const result = await extractAttachmentText(filePath)
+    assert.equal(result.success, true)
+    assert.equal(result.status, 'indexed')
+    assert.match(result.text, /\[工作表：客户待办\]/)
+    assert.match(result.text, /负责人=李金石/)
+    assert.match(result.text, /查看需求文档（https:\/\/example\.com\/spec）/)
+    assert.match(result.text, /13200（公式：D2\*1\.1）/)
+    assert.match(result.text, /\[工作表：联系人\]/)
+    assert.equal(result.structure?.kind, 'spreadsheet')
+    assert.equal(result.structure?.sheetCount, 2)
+    assert.equal(result.structure?.indexedSheetCount, 2)
+    assert.deepEqual(result.structure?.sheets[0].headers, ['负责人', '事项', '截止日期', '预算'])
+  } finally {
+    rmSync(directory, { recursive: true, force: true })
+  }
+})
+
+test('attachment text extractor applies explicit XLSX row budgets', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'weflow-attachment-xlsx-budget-'))
+  try {
+    const workbook = new ExcelJS.Workbook()
+    const sheet = workbook.addWorksheet('大量数据')
+    sheet.addRow(['序号', '事项'])
+    for (let index = 1; index <= ATTACHMENT_TEXT_LIMITS.maxSpreadsheetRowsPerSheet + 10; index += 1) {
+      sheet.addRow([index, `事项 ${index}`])
+    }
+    const filePath = join(directory, '大量数据.xlsx')
+    await workbook.xlsx.writeFile(filePath)
+
+    const result = await extractAttachmentText(filePath)
+    assert.equal(result.success, true)
+    assert.equal(result.structure?.truncated, true)
+    assert.equal(result.structure?.sheets[0].truncated, true)
+    assert.ok((result.structure?.sheets[0].indexedRows || 0) <= ATTACHMENT_TEXT_LIMITS.maxSpreadsheetRowsPerSheet)
+    assert.doesNotMatch(result.text, /事项 510/)
+  } finally {
+    rmSync(directory, { recursive: true, force: true })
+  }
+})
+
+test('attachment text extractor falls back for prefixed OOXML without shifting sparse cells', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'weflow-attachment-xlsx-prefixed-'))
+  try {
+    const archive = new JSZip()
+    archive.file('xl/workbook.xml',
+      '<x:workbook><x:sheets><x:sheet name="预算" r:id="R1" /></x:sheets></x:workbook>')
+    archive.file('xl/_rels/workbook.xml.rels',
+      '<Relationships><Relationship Id="R1" Target="/xl/worksheets/sheet1.xml" /></Relationships>')
+    archive.file('xl/styles.xml', [
+      '<x:styleSheet><x:cellXfs>',
+      '<x:xf numFmtId="0" />',
+      '<x:xf numFmtId="14" />',
+      '</x:cellXfs></x:styleSheet>'
+    ].join(''))
+    archive.file('xl/worksheets/sheet1.xml', [
+      '<x:worksheet><x:sheetData>',
+      '<x:row r="1"><x:c r="A1" t="str"><x:v>事项</x:v></x:c><x:c r="C1" t="str"><x:v>日期</x:v></x:c><x:c r="D1" t="str"><x:v>金额</x:v></x:c></x:row>',
+      '<x:row r="2"><x:c r="A2" t="str"><x:v>交付</x:v></x:c><x:c r="B2" /><x:c r="C2" s="1" t="n"><x:v>46237</x:v></x:c><x:c r="D2" t="n"><x:f>6000*2</x:f><x:v>12000.000000000002</x:v></x:c></x:row>',
+      '</x:sheetData></x:worksheet>'
+    ].join(''))
+    const filePath = join(directory, '精简导出.xlsx')
+    writeFileSync(filePath, await archive.generateAsync({ type: 'nodebuffer' }))
+
+    const result = await extractAttachmentText(filePath)
+    assert.equal(result.success, true)
+    assert.match(result.text, /\[工作表：预算\]/)
+    assert.match(result.text, /事项=交付/)
+    assert.match(result.text, /日期=2026-08-03T00:00:00.000Z/)
+    assert.match(result.text, /金额=12000（公式：6000\*2）/)
+    assert.doesNotMatch(result.text, /金额=12000\.000000000002/)
   } finally {
     rmSync(directory, { recursive: true, force: true })
   }
