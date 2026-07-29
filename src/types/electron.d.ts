@@ -1639,6 +1639,14 @@ export interface ElectronAPI {
     stop: () => Promise<{ success: boolean }>
     status: () => Promise<{ running: boolean; port: number; mediaExportPath: string }>
   }
+  aiAssistant: {
+    status: () => Promise<any>
+    dashboard: () => Promise<any>
+    sync: () => Promise<any>
+    getSettings: () => Promise<any>
+    setSettings: (input: any) => Promise<any>
+    updateTask: (id: string, patch: any) => Promise<any>
+  }
   social: {
     saveWeiboCookie: (rawInput: string) => Promise<SocialSaveWeiboCookieResult>
     validateWeiboUid: (uid: string) => Promise<SocialValidateWeiboUidResult>

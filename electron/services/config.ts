@@ -97,6 +97,12 @@ interface ConfigSchema {
   aiModelApiKey: string
   aiModelApiModel: string
   aiModelApiMaxTokens: number
+  aiAssistantEnabled: boolean
+  aiAssistantApiBaseUrl: string
+  aiAssistantApiKey: string
+  aiAssistantApiModel: string
+  aiAssistantScheduleTime: string
+  aiAssistantInitialLookbackDays: number
   aiInsightEnabled: boolean
   aiInsightApiBaseUrl: string
   aiInsightApiKey: string
@@ -153,6 +159,7 @@ const ENCRYPTED_STRING_KEYS: Set<string> = new Set([
   'authPassword',
   'httpApiToken',
   'aiModelApiKey',
+  'aiAssistantApiKey',
   'aiInsightApiKey',
   'aiInsightWeiboCookie'
 ])
@@ -248,6 +255,12 @@ export class ConfigService {
       aiModelApiKey: '',
       aiModelApiModel: 'gpt-4o-mini',
       aiModelApiMaxTokens: 1024,
+      aiAssistantEnabled: true,
+      aiAssistantApiBaseUrl: 'https://api.deepseek.com',
+      aiAssistantApiKey: '',
+      aiAssistantApiModel: 'deepseek-v4-flash',
+      aiAssistantScheduleTime: '20:00',
+      aiAssistantInitialLookbackDays: 3,
       aiInsightEnabled: false,
       aiInsightApiBaseUrl: '',
       aiInsightApiKey: '',
@@ -1132,4 +1145,3 @@ export class ConfigService {
     this.unlockPassword = null
   }
 }
-

@@ -613,6 +613,15 @@ contextBridge.exposeInMainWorld('electronAPI', {
     status: () => ipcRenderer.invoke('http:status')
   },
 
+  aiAssistant: {
+    status: () => ipcRenderer.invoke('ai-assistant:status'),
+    dashboard: () => ipcRenderer.invoke('ai-assistant:dashboard'),
+    sync: () => ipcRenderer.invoke('ai-assistant:sync'),
+    getSettings: () => ipcRenderer.invoke('ai-assistant:getSettings'),
+    setSettings: (input: any) => ipcRenderer.invoke('ai-assistant:setSettings', input),
+    updateTask: (id: string, patch: any) => ipcRenderer.invoke('ai-assistant:updateTask', id, patch)
+  },
+
   // AI 见解
   insight: {
     testConnection: () => ipcRenderer.invoke('insight:testConnection'),

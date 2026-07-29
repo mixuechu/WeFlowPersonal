@@ -38,6 +38,7 @@ import { normalizeWeiboCookieInput, weiboService } from './services/social/weibo
 import { bizService } from './services/bizService'
 import { backupService } from './services/backupService'
 import { imageDownloadService } from './services/imageDownloadService'
+import { aiAssistantService } from './services/aiAssistantService'
 
 // 屏幕采集去节流（仅影响通知玻璃的 Chromium 流回退管线；Windows 主路径为
 // 原生面板渲染，不经过 Chromium 采集）：默认桌面采集 CPU 预算限制在 50%，
@@ -4494,6 +4495,13 @@ function registerIpcHandlers() {
     }
   })
 
+  ipcMain.handle('ai-assistant:status', () => aiAssistantService.getStatus())
+  ipcMain.handle('ai-assistant:dashboard', () => aiAssistantService.getDashboard())
+  ipcMain.handle('ai-assistant:sync', () => aiAssistantService.sync())
+  ipcMain.handle('ai-assistant:getSettings', () => aiAssistantService.getSettings())
+  ipcMain.handle('ai-assistant:setSettings', (_, input: any) => aiAssistantService.setSettings(input))
+  ipcMain.handle('ai-assistant:updateTask', (_, id: string, patch: any) => aiAssistantService.updateTask(id, patch))
+
   // 自动下载原图
   ipcMain.handle('image:startAutoDownload', async (_, whitelist?: string[]) => {
     return await imageDownloadService.startAutoDownload(whitelist || [])
@@ -4738,6 +4746,7 @@ app.whenReady().then(async () => {
   checkForUpdatesOnStartup()
 
   await httpService.autoStart()
+  await aiAssistantService.initialize()
 
   app.on('activate', () => {
     if (mainWindow && !mainWindow.isDestroyed()) {
@@ -4765,6 +4774,7 @@ const shutdownAppServices = async (): Promise<void> => {
     messagePushService.stop()
     insightService.stop()
     groupSummaryService.stop()
+    aiAssistantService.dispose()
     // 兜底：5秒后强制退出，防止某个异步任务卡住导致进程残留
     const forceExitTimer = setTimeout(() => {
       console.warn('[App] Force exit after timeout')
