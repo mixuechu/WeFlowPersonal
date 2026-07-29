@@ -35,6 +35,9 @@ function AiAssistantPage() {
   const [editingTask, setEditingTask] = useState<any>(null)
   const [taskStatusFilter, setTaskStatusFilter] = useState<'all' | Task['status']>('all')
   const [taskPriorityFilter, setTaskPriorityFilter] = useState<'all' | Task['priority']>('all')
+  const [pathFromId, setPathFromId] = useState('')
+  const [pathToId, setPathToId] = useState('')
+  const [graphPath, setGraphPath] = useState<any>(null)
   const [memoryQuestion, setMemoryQuestion] = useState('')
   const [memoryAnswer, setMemoryAnswer] = useState<any>(null)
   const [askingMemory, setAskingMemory] = useState(false)
@@ -159,6 +162,11 @@ function AiAssistantPage() {
     const targets = displayedTasks.filter(task => task.status !== 'done')
     await Promise.all(targets.map(task => window.electronAPI.aiAssistant.updateTask(task.id, { status: 'done' })))
     await load()
+  }
+
+  const findGraphPath = async () => {
+    if (!pathFromId || !pathToId) return
+    setGraphPath(await window.electronAPI.aiAssistant.findGraphPath(pathFromId, pathToId, 6))
   }
 
   const decideReview = async (id: string, decision: 'confirmed' | 'rejected') => {
@@ -485,6 +493,24 @@ function AiAssistantPage() {
           <div className="assistant-graph-toolbar">
             <input value={graphQuery} onChange={event => setGraphQuery(event.target.value)} placeholder="搜索人物、别名、组织或项目" />
           </div>
+          <div className="assistant-path-finder">
+            <select value={pathFromId} onChange={event => { setPathFromId(event.target.value); setGraphPath(null) }}>
+              <option value="">选择起点</option>
+              {graph.entities.map((entity: any) => <option key={`from-${entity.id}`} value={entity.id}>{entity.canonicalName} · {entity.type}</option>)}
+            </select>
+            <span>→</span>
+            <select value={pathToId} onChange={event => { setPathToId(event.target.value); setGraphPath(null) }}>
+              <option value="">选择终点</option>
+              {graph.entities.map((entity: any) => <option key={`to-${entity.id}`} value={entity.id}>{entity.canonicalName} · {entity.type}</option>)}
+            </select>
+            <button onClick={() => void findGraphPath()} disabled={!pathFromId || !pathToId}>查找关系路径</button>
+          </div>
+          {graphPath && <div className={`assistant-path-result ${graphPath.found ? '' : 'missing'}`}>
+            {graphPath.found ? graphPath.entities.map((entity: any, index: number) => <span key={entity.id}>
+              <button onClick={() => setSelectedEntityId(entity.id)}>{entity.canonicalName}</button>
+              {graphPath.steps[index] && <i>{graphPath.steps[index].forward ? graphPath.steps[index].predicate : `被${graphPath.steps[index].predicate}`} →</i>}
+            </span>) : <p>在 6 层关系内没有找到路径。候选关系被保留，已拒绝关系不会参与计算。</p>}
+          </div>}
           {graphEntities.length ? (
             <div className="assistant-graph-layout">
               <svg className="assistant-graph-canvas" viewBox="0 0 500 340" role="img" aria-label="个人知识关系图">

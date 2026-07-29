@@ -1093,6 +1093,45 @@ export class AiAssistantService {
     }))
   }
 
+  findGraphPath(fromId: string, toId: string, maxDepth = 5): any {
+    const entities = new Map(this.state.graph.entities.map(entity => [entity.id, entity]))
+    if (!entities.has(fromId) || !entities.has(toId)) return { found: false, entities: [], steps: [] }
+    if (fromId === toId) return { found: true, entities: [entities.get(fromId)], steps: [] }
+    const relations = this.state.graph.relations.filter(relation => relation.status !== 'rejected')
+    const adjacency = new Map<string, Array<{ nextId: string; relation: GraphRelation; forward: boolean }>>()
+    for (const relation of relations) {
+      adjacency.set(relation.subjectId, [...(adjacency.get(relation.subjectId) || []), { nextId: relation.objectId, relation, forward: true }])
+      adjacency.set(relation.objectId, [...(adjacency.get(relation.objectId) || []), { nextId: relation.subjectId, relation, forward: false }])
+    }
+    const queue: Array<{ entityId: string; steps: any[] }> = [{ entityId: fromId, steps: [] }]
+    const visited = new Set([fromId])
+    const safeDepth = Math.max(1, Math.min(8, Number(maxDepth) || 5))
+    while (queue.length) {
+      const current = queue.shift()!
+      if (current.steps.length >= safeDepth) continue
+      for (const edge of adjacency.get(current.entityId) || []) {
+        if (visited.has(edge.nextId)) continue
+        const steps = [...current.steps, {
+          relationId: edge.relation.id,
+          fromId: current.entityId,
+          toId: edge.nextId,
+          predicate: edge.relation.predicate,
+          forward: edge.forward,
+          status: edge.relation.status,
+          confidence: edge.relation.confidence,
+          evidence: edge.relation.evidence
+        }]
+        if (edge.nextId === toId) {
+          const pathIds = [fromId, ...steps.map(step => step.toId)]
+          return { found: true, entities: pathIds.map(id => entities.get(id)), steps }
+        }
+        visited.add(edge.nextId)
+        queue.push({ entityId: edge.nextId, steps })
+      }
+    }
+    return { found: false, entities: [], steps: [] }
+  }
+
   async askMemory(question: string, conversationId?: string): Promise<any> {
     const query = String(question || '').trim()
     if (!query) throw new Error('请输入问题')

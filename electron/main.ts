@@ -4511,6 +4511,8 @@ function registerIpcHandlers() {
   ipcMain.handle('ai-assistant:updateMemoryItemStatus', (_, kind: 'claim' | 'event', id: string, status: 'confirmed' | 'rejected') =>
     aiAssistantService.updateMemoryItemStatus(kind, id, status))
   ipcMain.handle('ai-assistant:searchMemory', (_, query: string) => aiAssistantService.searchMemory(query))
+  ipcMain.handle('ai-assistant:findGraphPath', (_, fromId: string, toId: string, maxDepth?: number) =>
+    aiAssistantService.findGraphPath(fromId, toId, maxDepth))
   ipcMain.handle('ai-assistant:correctClaim', (_, id: string, input: any) => aiAssistantService.correctClaim(id, input))
   ipcMain.handle('ai-assistant:askMemory', (_, question: string, conversationId?: string) => aiAssistantService.askMemory(question, conversationId))
   ipcMain.handle('ai-assistant:getConversationSources', () => aiAssistantService.getConversationSources())

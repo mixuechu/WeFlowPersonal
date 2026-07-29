@@ -626,6 +626,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     updateMemoryItemStatus: (kind: 'claim' | 'event', id: string, status: 'confirmed' | 'rejected') =>
       ipcRenderer.invoke('ai-assistant:updateMemoryItemStatus', kind, id, status),
     searchMemory: (query: string) => ipcRenderer.invoke('ai-assistant:searchMemory', query),
+    findGraphPath: (fromId: string, toId: string, maxDepth?: number) => ipcRenderer.invoke('ai-assistant:findGraphPath', fromId, toId, maxDepth),
     correctClaim: (id: string, input: any) => ipcRenderer.invoke('ai-assistant:correctClaim', id, input),
     askMemory: (question: string, conversationId?: string) => ipcRenderer.invoke('ai-assistant:askMemory', question, conversationId),
     getConversationSources: () => ipcRenderer.invoke('ai-assistant:getConversationSources'),
