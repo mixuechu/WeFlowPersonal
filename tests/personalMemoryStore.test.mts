@@ -20,6 +20,7 @@ import {
   identityPairKey,
   isNegativeDecisionCurrent
 } from '../electron/services/identityDisambiguation.ts'
+import { editDistance, fuzzyEntityScore } from '../electron/services/fuzzyEntitySearch.ts'
 
 function withStore(run: (store: PersonalMemoryStore) => void): void {
   const directory = mkdtempSync(join(tmpdir(), 'weflow-memory-test-'))
@@ -198,6 +199,27 @@ test('Chinese substring search falls back when the exact FTS phrase misses', () 
 
   const results = store.searchText('项目交付')
   assert.ok(results.some(result => result.source_id === 'task-2'))
+}))
+
+test('entity search indexes WeChat IDs and tolerates one-character name errors', () => withStore(store => {
+  store.syncGraph({
+    entities: [{
+      id: 'person-search',
+      type: 'person',
+      canonicalName: '邢爱妮',
+      aliases: ['爱妮'],
+      accountIds: ['wxid_onyx_contact']
+    }],
+    relations: [],
+    reviewQueue: []
+  })
+  assert.equal(store.searchText('wxid_onyx_contact')[0].source_id, 'person-search')
+  const fuzzy = store.searchText('邢爱泥')
+  assert.equal(fuzzy[0].source_id, 'person-search')
+  assert.equal(fuzzy[0].match_reason, 'fuzzy_entity')
+  assert.equal(editDistance('邢爱妮', '邢爱泥'), 1)
+  assert.ok(fuzzyEntityScore('wxid-onyx-contact', ['wxid_onyx_contact']) !== null)
+  assert.equal(fuzzyEntityScore('完全无关', ['邢爱妮']), null)
 }))
 
 test('verified memory backup is created only from a healthy database', () => withStore(store => {

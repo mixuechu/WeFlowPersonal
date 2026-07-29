@@ -2,6 +2,7 @@ import { DatabaseSync } from 'node:sqlite'
 import { createHash } from 'node:crypto'
 import { copyFileSync, existsSync, mkdirSync, readdirSync, renameSync, statSync, unlinkSync } from 'fs'
 import { dirname, join, resolve } from 'path'
+import { fuzzyEntityScore } from './fuzzyEntitySearch.ts'
 
 type MemoryGraph = {
   entities: any[]
@@ -593,7 +594,7 @@ export class PersonalMemoryStore {
         for (const alias of entity.aliases || []) insertAlias.run(entity.id, alias, String(alias).trim().toLowerCase(), 'name', 1)
         for (const accountId of entity.accountIds || []) insertIdentity.run(entity.id, 'wechat', accountId, entity.canonicalName, 1)
         this.upsertSearchDocument(`entity:${entity.id}`, 'entity', entity.id, entity.canonicalName,
-          [entity.canonicalName, ...(entity.aliases || []), entity.summary || ''].join('；'),
+          [entity.canonicalName, ...(entity.aliases || []), ...(entity.accountIds || []), entity.summary || ''].join('；'),
           { entityType: entity.type, accountIds: entity.accountIds || [] }, now)
       }
       const entityNames = new Map(graph.entities.map(entity => [entity.id, entity.canonicalName]))
@@ -1060,6 +1061,7 @@ export class PersonalMemoryStore {
     if (!this.db || !query.trim()) return []
     const safeLimit = Math.max(1, Math.min(500, limit))
     const normalized = query.trim().replace(/["']/g, ' ')
+    let exactMatches: any[] = []
     try {
       const matches = this.db.prepare(`
         SELECT d.*, bm25(search_fts) AS rank
@@ -1067,12 +1069,28 @@ export class PersonalMemoryStore {
         WHERE search_fts MATCH ?
         ORDER BY rank LIMIT ?
       `).all(normalized, safeLimit) as any[]
-      if (matches.length) return matches
+      exactMatches = matches
     } catch {}
-    return this.db.prepare(`
-      SELECT *,0 AS rank FROM search_documents
-      WHERE title LIKE ? OR search_text LIKE ? ORDER BY updated_at DESC LIMIT ?
-    `).all(`%${normalized}%`, `%${normalized}%`, safeLimit) as any[]
+    if (!exactMatches.length) {
+      exactMatches = this.db.prepare(`
+        SELECT *,0 AS rank FROM search_documents
+        WHERE title LIKE ? OR search_text LIKE ? ORDER BY updated_at DESC LIMIT ?
+      `).all(`%${normalized}%`, `%${normalized}%`, safeLimit) as any[]
+    }
+    if (exactMatches.length >= safeLimit) return exactMatches
+    const knownIds = new Set(exactMatches.map(item => item.id))
+    const fuzzyMatches = (this.db.prepare(`
+      SELECT *,0 AS rank FROM search_documents WHERE document_type='entity'
+    `).all() as any[]).flatMap(item => {
+      if (knownIds.has(item.id)) return []
+      const fuzzyScore = fuzzyEntityScore(normalized, [item.title, ...String(item.search_text || '').split('；')])
+      return fuzzyScore === null ? [] : [{
+        ...item,
+        rank: 50 + fuzzyScore,
+        match_reason: fuzzyScore === 0 ? 'entity_alias_or_account' : 'fuzzy_entity'
+      }]
+    }).sort((left, right) => left.rank - right.rank)
+    return [...exactMatches, ...fuzzyMatches].slice(0, safeLimit)
   }
 
   listEmbeddingCandidates(model: string, limit = 100): any[] {
