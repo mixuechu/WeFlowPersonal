@@ -1177,6 +1177,38 @@ export class PersonalMemoryStore {
     }).sort((left, right) => right.semantic_score - left.semantic_score).slice(0, Math.max(1, Math.min(500, limit)))
   }
 
+  listSimilarEntityPairs(model: string, minimumScore = 0.88, limit = 200): Array<{ leftId: string; rightId: string; score: number }> {
+    if (!this.db) return []
+    const rows = this.db.prepare(`
+      SELECT source_id,embedding_json FROM search_documents
+      WHERE document_type='entity' AND embedding_model=? AND embedding_json IS NOT NULL
+    `).all(model) as Array<{ source_id: string; embedding_json: string }>
+    const vectors = rows.flatMap(row => {
+      try {
+        const vector = JSON.parse(row.embedding_json)
+        return Array.isArray(vector) && vector.length ? [{ id: row.source_id, vector: vector.map(Number) }] : []
+      } catch {
+        return []
+      }
+    })
+    const pairs: Array<{ leftId: string; rightId: string; score: number }> = []
+    for (let leftIndex = 0; leftIndex < vectors.length; leftIndex += 1) {
+      for (let rightIndex = leftIndex + 1; rightIndex < vectors.length; rightIndex += 1) {
+        let score = 0
+        const dimensions = Math.min(vectors[leftIndex].vector.length, vectors[rightIndex].vector.length)
+        for (let index = 0; index < dimensions; index += 1) {
+          score += vectors[leftIndex].vector[index] * vectors[rightIndex].vector[index]
+        }
+        if (score >= minimumScore) pairs.push({
+          leftId: vectors[leftIndex].id,
+          rightId: vectors[rightIndex].id,
+          score
+        })
+      }
+    }
+    return pairs.sort((left, right) => right.score - left.score).slice(0, Math.max(1, Math.min(1000, limit)))
+  }
+
   getDocumentEvidence(documentType: string, sourceId: string): any[] {
     if (!this.db) return []
     const generic = this.db.prepare(`

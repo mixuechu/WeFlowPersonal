@@ -15,6 +15,7 @@ import {
 } from '../electron/services/taskAssignmentPolicy.ts'
 import {
   assessIdentityPair,
+  buildGraphIdentitySuggestions,
   buildNameBuckets,
   getFullIdentityScanSchedule,
   identityPairKey,
@@ -103,6 +104,34 @@ test('large identity graphs switch to a weekly indexed full scan', () => {
   ])
   assert.deepEqual(buckets.get('共同别名'), ['a', 'b'])
 })
+
+test('identity disambiguation recalls multi-account candidates from graph and local vectors', () => withStore(store => {
+  const entities = [
+    { id: 'person-a', type: 'person', canonicalName: '开发者甲' },
+    { id: 'person-b', type: 'person', canonicalName: '产品经理乙' },
+    { id: 'person-c', type: 'person', canonicalName: '无关人物' },
+    { id: 'org-1', type: 'organization', canonicalName: '组织一' },
+    { id: 'project-1', type: 'project', canonicalName: '项目一' }
+  ]
+  const relations = [
+    { subjectId: 'person-a', objectId: 'org-1', status: 'confirmed' },
+    { subjectId: 'person-a', objectId: 'project-1', status: 'confirmed' },
+    { subjectId: 'person-b', objectId: 'org-1', status: 'confirmed' },
+    { subjectId: 'person-b', objectId: 'project-1', status: 'candidate' }
+  ]
+  const graph = buildGraphIdentitySuggestions(entities, relations)
+  assert.equal(graph.length, 1)
+  assert.equal(graph[0].source, 'graph_neighbors')
+  assert.equal(graph[0].value, '2 个')
+
+  store.syncGraph({ entities, relations: [], reviewQueue: [] })
+  store.saveEmbedding('entity:person-a', 'identity-test', [1, 0])
+  store.saveEmbedding('entity:person-b', 'identity-test', [0.9, Math.sqrt(0.19)])
+  store.saveEmbedding('entity:person-c', 'identity-test', [0, 1])
+  const vectorPairs = store.listSimilarEntityPairs('identity-test', 0.88)
+  assert.deepEqual(vectorPairs.map(pair => [pair.leftId, pair.rightId]), [['person-a', 'person-b']])
+  assert.ok(vectorPairs[0].score >= 0.9)
+}))
 
 test('conflicting current claims coexist as review candidates', () => withStore(store => {
   store.syncGraph({

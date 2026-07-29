@@ -32,6 +32,7 @@ import { buildProjectInsights } from './projectInsights'
 import { summarizeIngestionRuns } from './ingestionDiagnostics'
 import {
   assessIdentityPair,
+  buildGraphIdentitySuggestions,
   buildNameBuckets,
   getFullIdentityScanSchedule,
   identityPairKey,
@@ -786,7 +787,7 @@ export class AiAssistantService {
     left: GraphEntity,
     right: GraphEntity,
     now: string,
-    suggestion?: { source: string; detail: string; confidence: number }
+    suggestion?: { source: string; detail: string; confidence: number; label?: string; value?: string }
   ): boolean {
     const assessment = assessIdentityPair(left, right)
     if (!assessment.eligible && (!suggestion || suggestion.confidence < 0.65)) return false
@@ -796,6 +797,9 @@ export class AiAssistantService {
     const existing = this.state.graph.reviewQueue.find(review => review.id === id)
     if (existing?.status === 'pending') return false
     const signals = assessment.signals.map(signal => ({ source: signal.source, label: signal.label, value: signal.value }))
+    if (suggestion?.label && !signals.some(signal => signal.source === suggestion.source)) {
+      signals.push({ source: suggestion.source as any, label: suggestion.label, value: suggestion.value || '' })
+    }
     const candidateReview = {
       id,
       kind: 'possible_duplicate',
@@ -842,8 +846,35 @@ export class AiAssistantService {
       lastFullScanAt: now,
       lastRunAt: now,
       lastMode: 'full',
-      lastCandidateCount: candidates
+      lastCandidateCount: (this.state.graph.identityScan.lastRunAt === now
+        ? this.state.graph.identityScan.lastCandidateCount
+        : 0) + candidates
     }
+  }
+
+  private runContextualIdentityScan(now: string): void {
+    const people = this.state.graph.entities.filter(entity => entity.type === 'person')
+    const byId = new Map(people.map(entity => [entity.id, entity]))
+    const suggestions = buildGraphIdentitySuggestions(people, this.state.graph.relations)
+    for (const pair of personalMemoryStore.listSimilarEntityPairs(localEmbeddingService.modelVersion, 0.88, 200)) {
+      if (!byId.has(pair.leftId) || !byId.has(pair.rightId)) continue
+      suggestions.push({
+        leftId: pair.leftId,
+        rightId: pair.rightId,
+        source: 'vector_similarity',
+        label: '档案语义相似',
+        value: `${Math.round(pair.score * 100)}%`,
+        detail: `两个人物档案的本地向量相似度为 ${Math.round(pair.score * 100)}%，可能是同一人的不同账号，需人工确认。`,
+        confidence: Math.min(0.92, pair.score)
+      })
+    }
+    let candidates = 0
+    for (const suggestion of suggestions) {
+      const left = byId.get(suggestion.leftId)
+      const right = byId.get(suggestion.rightId)
+      if (left && right && this.enqueueIdentityPair(left, right, now, suggestion)) candidates += 1
+    }
+    this.state.graph.identityScan.lastCandidateCount += candidates
   }
 
   async sync(): Promise<any> {
@@ -1001,6 +1032,7 @@ export class AiAssistantService {
           previous ? 'incremental_message_update' : 'created_from_message', task.evidence || [])
       }
       const today = shanghaiDate()
+      this.runContextualIdentityScan(createdAt)
       this.runScheduledIdentityScan(createdAt)
       if (fresh.length > 0) {
         this.state.briefings[today] = {

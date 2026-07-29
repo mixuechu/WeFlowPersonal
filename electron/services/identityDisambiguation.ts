@@ -20,6 +20,16 @@ export type IdentityCandidateAssessment = {
   signals: IdentityCandidateSignal[]
 }
 
+export type IdentityPairSuggestion = {
+  leftId: string
+  rightId: string
+  source: 'graph_neighbors' | 'vector_similarity'
+  detail: string
+  confidence: number
+  label: string
+  value: string
+}
+
 export const FULL_IDENTITY_SCAN_THRESHOLD = 500
 export const FULL_IDENTITY_SCAN_INTERVAL_DAYS = 7
 
@@ -105,4 +115,43 @@ export function buildNameBuckets(entities: IdentityCandidateEntity[]): Map<strin
     for (const name of names) buckets.set(name, [...(buckets.get(name) || []), entity.id])
   }
   return buckets
+}
+
+export function buildGraphIdentitySuggestions(
+  entities: IdentityCandidateEntity[],
+  relations: Array<{ subjectId: string; objectId: string; predicate?: string; status?: string }>
+): IdentityPairSuggestion[] {
+  const people = new Set(entities.filter(entity => entity.type === 'person').map(entity => entity.id))
+  const neighbors = new Map<string, Set<string>>()
+  for (const relation of relations) {
+    if (relation.status === 'rejected') continue
+    if (people.has(relation.subjectId)) {
+      const set = neighbors.get(relation.subjectId) || new Set<string>()
+      set.add(relation.objectId)
+      neighbors.set(relation.subjectId, set)
+    }
+    if (people.has(relation.objectId)) {
+      const set = neighbors.get(relation.objectId) || new Set<string>()
+      set.add(relation.subjectId)
+      neighbors.set(relation.objectId, set)
+    }
+  }
+  const ids = [...people]
+  const suggestions: IdentityPairSuggestion[] = []
+  for (let leftIndex = 0; leftIndex < ids.length; leftIndex += 1) {
+    for (let rightIndex = leftIndex + 1; rightIndex < ids.length; rightIndex += 1) {
+      const shared = [...(neighbors.get(ids[leftIndex]) || [])].filter(id => neighbors.get(ids[rightIndex])?.has(id))
+      if (shared.length < 2) continue
+      suggestions.push({
+        leftId: ids[leftIndex],
+        rightId: ids[rightIndex],
+        source: 'graph_neighbors',
+        label: '共享图谱邻居',
+        value: `${shared.length} 个`,
+        detail: `两个人物连接到 ${shared.length} 个相同实体，可能是同一人的不同账号，需人工确认。`,
+        confidence: Math.min(0.9, 0.66 + shared.length * 0.06)
+      })
+    }
+  }
+  return suggestions
 }
