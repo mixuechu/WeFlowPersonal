@@ -362,6 +362,13 @@
 .assistant-graph-detail h4 { margin: 5px 0 10px; font-size: 18px; }
 .assistant-graph-detail p { color: #686e67; font-size: 11px; line-height: 1.6; }
 .assistant-graph-detail small { margin-top: 8px; display: block; color: #7b8078; font-size: 10px; }
+.assistant-entity-dossier { margin-top: 16px; padding-top: 12px; border-top: 1px solid #ebe8df; display: grid; gap: 6px; max-height: 270px; overflow: auto; }
+.assistant-entity-dossier > strong { margin-top: 6px; color: #4c514b; font-size: 10px; }
+.assistant-entity-dossier > button { width: 100%; padding: 7px 8px; border: 1px solid #ebe8df; border-radius: 8px; background: #fff; color: #4f554f; text-align: left; display: grid; grid-template-columns: minmax(70px, .65fr) 1fr; gap: 7px; cursor: pointer; }
+.assistant-entity-dossier > button:hover { border-color: #b9cbbd; background: #f6faf6; }
+.assistant-entity-dossier > button b { font-size: 9px; font-weight: 600; }
+.assistant-entity-dossier > button span { font-size: 9px; overflow-wrap: anywhere; }
+.assistant-entity-dossier > em { color: #999d97; font-size: 9px; font-style: normal; }
 .assistant-review-section { margin-top: 24px; }
 .assistant-review-item { padding: 14px; border-top: 1px solid #e8e5dd; display: flex; justify-content: space-between; gap: 16px; }
 .assistant-review-item p { margin: 5px 0; color: #74786f; font-size: 11px; }

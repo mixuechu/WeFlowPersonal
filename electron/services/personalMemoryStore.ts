@@ -247,12 +247,32 @@ export class PersonalMemoryStore {
         search_text,
         tokenize='unicode61'
       );
+
+      CREATE TABLE IF NOT EXISTS search_document_evidence (
+        document_id TEXT NOT NULL,
+        message_id TEXT NOT NULL,
+        session_id TEXT NOT NULL DEFAULT '',
+        timestamp INTEGER NOT NULL DEFAULT 0,
+        sender TEXT NOT NULL DEFAULT '',
+        excerpt TEXT NOT NULL DEFAULT '',
+        PRIMARY KEY(document_id,message_id)
+      ) STRICT;
     `)
     this.ensureColumn('entities', 'identity_version', 'INTEGER NOT NULL DEFAULT 1')
     this.ensureColumn('entities', 'last_disambiguated_at', 'TEXT')
     this.ensureColumn('claims', 'source_nature', `TEXT NOT NULL DEFAULT 'inference'`)
     this.ensureColumn('claims', 'conflict_group', 'TEXT')
     this.db.prepare(`UPDATE claims SET status='candidate' WHERE source_nature!='self_statement' AND status='confirmed'`).run()
+    this.db.prepare(`
+      UPDATE evidence SET evidence_role=CASE
+        WHEN claim_id IS NOT NULL AND claim_id!='' AND EXISTS(
+          SELECT 1 FROM claims WHERE claims.id=evidence.claim_id AND claims.source_nature='self_statement'
+        ) THEN 'direct'
+        WHEN claim_id IS NOT NULL AND claim_id!='' THEN 'indirect'
+        ELSE 'direct'
+      END
+      WHERE evidence_role='support'
+    `).run()
     this.repairDuplicateEvents()
     this.db.prepare(`
       INSERT INTO schema_meta(key, value, updated_at) VALUES('schema_version', '1', ?)
@@ -349,7 +369,7 @@ export class PersonalMemoryStore {
         ON CONFLICT(id) DO UPDATE SET confidence=excluded.confidence,status=excluded.status,
           search_text=excluded.search_text,updated_at=excluded.updated_at
       `)
-      const insertEvidence = this.db.prepare(`INSERT OR IGNORE INTO evidence(relation_id,message_id,session_id,timestamp,excerpt) VALUES(?,?,?,?,?)`)
+      const insertEvidence = this.db.prepare(`INSERT OR IGNORE INTO evidence(relation_id,message_id,session_id,timestamp,excerpt,evidence_role) VALUES(?,?,?,?,?,'direct')`)
       for (const relation of graph.relations) {
         const searchText = `${entityNames.get(relation.subjectId) || relation.subjectId} ${relation.predicate} ${entityNames.get(relation.objectId) || relation.objectId}`
         upsertRelation.run(relation.id, relation.subjectId, relation.predicate, relation.objectId, Number(relation.confidence || 0), relation.status, searchText, relation.createdAt || now, relation.updatedAt || now)
@@ -423,6 +443,7 @@ export class PersonalMemoryStore {
       VALUES(?,?,?,?,?,?)
     `)
     for (const claim of claims) {
+      const sourceNature = claim.sourceNature || 'inference'
       const existingValues = this.db.prepare(`
         SELECT id,COALESCE(object_entity_id,object_value,'') AS value,valid_from,valid_to
         FROM claims WHERE subject_id=? AND predicate=? AND status!='rejected' AND id!=?
@@ -446,8 +467,13 @@ export class PersonalMemoryStore {
       }
       upsert.run(claim.id, claim.subjectId, claim.predicate, claim.objectEntityId || null, claim.objectValue || null,
         claim.valueType || 'text', claim.confidence, claim.status || 'candidate', claim.validFrom || null,
-        claim.validTo || null, claim.searchText, claim.createdAt || now, now, claim.sourceNature || 'inference', conflictGroup)
-      for (const item of claim.evidence || []) evidence.run(claim.id, item.messageId, item.sessionId, item.timestamp, item.excerpt, item.role || 'support')
+        claim.validTo || null, claim.searchText, claim.createdAt || now, now, sourceNature, conflictGroup)
+      for (const item of claim.evidence || []) {
+        const evidenceRole = item.role && item.role !== 'support'
+          ? item.role
+          : sourceNature === 'self_statement' || sourceNature === 'human_confirmation' ? 'direct' : 'indirect'
+        evidence.run(claim.id, item.messageId, item.sessionId, item.timestamp, item.excerpt, evidenceRole)
+      }
       this.upsertSearchDocument(`claim:${claim.id}`, 'claim', claim.id, claim.predicate, claim.searchText,
         { subjectId: claim.subjectId, status: claim.status, validFrom: claim.validFrom, validTo: claim.validTo }, now)
     }
@@ -482,7 +508,8 @@ export class PersonalMemoryStore {
       upsert.run(event.id, event.eventType, event.title, event.description || '', event.startAt || null, event.endAt || null,
         event.location || null, event.confidence, event.status || 'candidate', event.searchText, event.createdAt || now, now)
       for (const item of event.participants || []) participant.run(event.id, item.entityId, item.role || 'participant')
-      for (const item of event.evidence || []) evidence.run(event.id, item.messageId, item.sessionId, item.timestamp, item.excerpt, item.role || 'support')
+      for (const item of event.evidence || []) evidence.run(event.id, item.messageId, item.sessionId, item.timestamp, item.excerpt,
+        item.role && item.role !== 'support' ? item.role : 'direct')
       this.upsertSearchDocument(`event:${event.id}`, 'event', event.id, event.title, event.searchText,
         { eventType: event.eventType, startAt: event.startAt, status: event.status }, now)
     }
@@ -501,13 +528,26 @@ export class PersonalMemoryStore {
     const existing = this.db.prepare(`SELECT id FROM search_documents WHERE document_type='task'`).all() as Array<{ id: string }>
     for (const { id } of existing) {
       if (activeIds.has(id)) continue
+      this.db.prepare('DELETE FROM search_document_evidence WHERE document_id=?').run(id)
       this.db.prepare('DELETE FROM search_fts WHERE document_id=?').run(id)
       this.db.prepare('DELETE FROM search_documents WHERE id=?').run(id)
     }
     for (const task of tasks) {
-      this.upsertSearchDocument(`task:${task.id}`, 'task', task.id, task.title,
+      const documentId = `task:${task.id}`
+      this.upsertSearchDocument(documentId, 'task', task.id, task.title,
         [task.title, task.detail, task.source, task.assignmentEvidence].filter(Boolean).join('；'),
         { status: task.status, priority: task.priority, due: task.due, classification: task.classification }, now)
+      this.db.prepare('DELETE FROM search_document_evidence WHERE document_id=?').run(documentId)
+      const insertEvidence = this.db.prepare(`
+        INSERT OR IGNORE INTO search_document_evidence(document_id,message_id,session_id,timestamp,sender,excerpt)
+        VALUES(?,?,?,?,?,?)
+      `)
+      for (const item of task.evidence || []) {
+        const messageId = String(item.messageId || '')
+        if (!messageId) continue
+        insertEvidence.run(documentId, messageId, String(task.source || ''),
+          Number(item.timestamp || 0), String(item.sender || ''), String(item.excerpt || '').slice(0, 2000))
+      }
     }
   }
 
@@ -651,9 +691,14 @@ export class PersonalMemoryStore {
 
   getDocumentEvidence(documentType: string, sourceId: string): any[] {
     if (!this.db) return []
-    if (documentType === 'claim') return this.db.prepare('SELECT message_id,session_id,timestamp,excerpt FROM evidence WHERE claim_id=? ORDER BY timestamp LIMIT 10').all(sourceId) as any[]
-    if (documentType === 'event') return this.db.prepare('SELECT message_id,session_id,timestamp,excerpt FROM evidence WHERE event_id=? ORDER BY timestamp LIMIT 10').all(sourceId) as any[]
-    if (documentType === 'relation') return this.db.prepare('SELECT message_id,session_id,timestamp,excerpt FROM evidence WHERE relation_id=? ORDER BY timestamp LIMIT 10').all(sourceId) as any[]
+    const generic = this.db.prepare(`
+      SELECT message_id,session_id,timestamp,sender,excerpt
+      FROM search_document_evidence WHERE document_id=? ORDER BY timestamp LIMIT 10
+    `).all(`${documentType}:${sourceId}`) as any[]
+    if (generic.length) return generic
+    if (documentType === 'claim') return this.db.prepare('SELECT message_id,session_id,timestamp,excerpt,evidence_role FROM evidence WHERE claim_id=? ORDER BY timestamp LIMIT 10').all(sourceId) as any[]
+    if (documentType === 'event') return this.db.prepare('SELECT message_id,session_id,timestamp,excerpt,evidence_role FROM evidence WHERE event_id=? ORDER BY timestamp LIMIT 10').all(sourceId) as any[]
+    if (documentType === 'relation') return this.db.prepare('SELECT message_id,session_id,timestamp,excerpt,evidence_role FROM evidence WHERE relation_id=? ORDER BY timestamp LIMIT 10').all(sourceId) as any[]
     return []
   }
 

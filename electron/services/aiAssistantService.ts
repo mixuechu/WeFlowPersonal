@@ -646,14 +646,14 @@ export class AiAssistantService {
   }
 
   private persistClaimsAndEvents(digest: any, tempIds: Map<string, string>, sourceMessages: any[], now: string): void {
-    const evidenceFor = (ids: any[]) => {
+    const evidenceFor = (ids: any[], role: 'direct' | 'indirect' | 'contradiction' = 'direct') => {
       const wanted = new Set((Array.isArray(ids) ? ids : []).map(String))
       return sourceMessages.filter(message => wanted.has(String(message.id))).map(message => ({
         messageId: String(message.id),
         sessionId: String(message.sessionId),
         timestamp: Number(message.timestamp),
         excerpt: redact(String(message.content)).slice(0, 300),
-        role: 'support'
+        role
       }))
     }
     const claims = (Array.isArray(digest.claims) ? digest.claims : []).flatMap((item: any) => {
@@ -661,7 +661,8 @@ export class AiAssistantService {
       const objectEntityId = tempIds.get(String(item.objectTempId || ''))
       const predicate = String(item.predicate || '').trim().slice(0, 100)
       const objectValue = String(item.objectValue || '').trim().slice(0, 1000)
-      const evidence = evidenceFor(item.evidenceMessageIds)
+      const sourceNature = ['self_statement', 'other_statement', 'inference'].includes(item.sourceNature) ? item.sourceNature : 'inference'
+      const evidence = evidenceFor(item.evidenceMessageIds, sourceNature === 'self_statement' ? 'direct' : 'indirect')
       if (!subjectId || !predicate || (!objectEntityId && !objectValue) || !evidence.length) return []
       const value = objectEntityId || objectValue
       const subjectName = this.state.graph.entities.find(entity => entity.id === subjectId)?.canonicalName || ''
@@ -672,7 +673,7 @@ export class AiAssistantService {
         valueType: ['text', 'number', 'date', 'boolean'].includes(item.valueType) ? item.valueType : 'text',
         confidence: Math.max(0, Math.min(1, Number(item.confidence || 0.6))),
         status: item.sourceNature === 'self_statement' && Number(item.confidence || 0) >= 0.8 ? 'confirmed' : 'candidate',
-        sourceNature: ['self_statement', 'other_statement', 'inference'].includes(item.sourceNature) ? item.sourceNature : 'inference',
+        sourceNature,
         validFrom: String(item.validFrom || ''), validTo: String(item.validTo || ''),
         searchText: `${subjectName} ${predicate} ${objectName}`.trim(), evidence, createdAt: now
       }]

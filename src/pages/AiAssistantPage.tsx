@@ -90,6 +90,16 @@ function AiAssistantPage() {
   const ingestionCounts = Object.fromEntries((ingestionStatus?.batches || []).map((item: any) => [item.status, Number(item.count || 0)]))
   const visibleClaims = memoryFeed.claims.filter((item: any) => item.status !== 'rejected')
   const visibleEvents = memoryFeed.events.filter((item: any) => item.status !== 'rejected')
+  const selectedEntityClaims = selectedEntity
+    ? visibleClaims.filter((item: any) => item.subject_id === selectedEntity.id)
+    : []
+  const selectedEntityEvents = selectedEntity
+    ? visibleEvents.filter((item: any) => item.participants?.some((participant: any) => participant.entity_id === selectedEntity.id))
+    : []
+  const selectedEntityRelations = selectedEntity
+    ? graph.relations.filter((item: any) =>
+      item.status !== 'rejected' && (item.subjectId === selectedEntity.id || item.objectId === selectedEntity.id))
+    : []
 
   const syncNow = async () => {
     setSyncing(true)
@@ -364,11 +374,11 @@ function AiAssistantPage() {
                   <input value={editingClaim.validFrom} onChange={event => setEditingClaim({ ...editingClaim, validFrom: event.target.value })} placeholder="生效时间（可选）" />
                   <input value={editingClaim.validTo} onChange={event => setEditingClaim({ ...editingClaim, validTo: event.target.value })} placeholder="失效时间（可选）" />
                 </div> : <p>{claim.object_entity_name || claim.object_value || '未记录值'}</p>}
-                <small>来源：{claim.source_nature === 'self_statement' ? '本人明确陈述' : claim.source_nature === 'other_statement' ? '他人陈述' : '模型推断'} · {Math.round(Number(claim.confidence || 0) * 100)}% 可信{claim.conflict_group ? ' · 与其他事实冲突' : ''}</small>
+                <small>来源：{claim.source_nature === 'self_statement' ? '本人明确陈述' : claim.source_nature === 'other_statement' ? '他人陈述' : claim.source_nature === 'human_confirmation' ? '人工纠正确认' : '模型推断'} · {Math.round(Number(claim.confidence || 0) * 100)}% 可信{claim.conflict_group ? ' · 与其他事实冲突' : ''}</small>
                 {(claim.valid_from || claim.valid_to) && <small>有效期：{claim.valid_from || '未知'} — {claim.valid_to || '至今'}</small>}
                 <div className="assistant-evidence-stack">
                   {(claim.evidence || []).map((evidence: any) =>
-                    <small key={evidence.message_id}>证据 · {new Date(evidence.timestamp * 1000).toLocaleString('zh-CN')}：“{evidence.excerpt}”</small>)}
+                    <small key={evidence.message_id}>{evidence.evidence_role === 'indirect' ? '间接证据' : evidence.evidence_role === 'contradiction' ? '反证' : '直接证据'} · {new Date(evidence.timestamp * 1000).toLocaleString('zh-CN')}：“{evidence.excerpt}”</small>)}
                 </div>
                 <div className="assistant-memory-actions">
                   {editingClaim?.id === claim.id
@@ -435,7 +445,39 @@ function AiAssistantPage() {
                 })}
               </svg>
               <aside className="assistant-graph-detail">
-                {selectedEntity ? <><span>{selectedEntity.type}</span><h4>{selectedEntity.canonicalName}</h4><p>{selectedEntity.summary || '等待更多证据补充'}</p><small>别名：{selectedEntity.aliases?.join('、') || '无'}</small><small>账号：{selectedEntity.accountIds?.join('、') || '未关联'}</small><small>证据消息：{selectedEntity.evidenceMessageIds?.length || 0} 条</small></> : <p>点击节点查看身份、别名、账号和证据。</p>}
+                {selectedEntity ? <>
+                  <span>{selectedEntity.type}</span>
+                  <h4>{selectedEntity.canonicalName}</h4>
+                  <p>{selectedEntity.summary || '等待更多证据补充'}</p>
+                  <small>别名：{selectedEntity.aliases?.join('、') || '无'}</small>
+                  <small>账号：{selectedEntity.accountIds?.join('、') || '未关联'}</small>
+                  <small>证据消息：{selectedEntity.evidenceMessageIds?.length || 0} 条</small>
+                  <div className="assistant-entity-dossier">
+                    <strong>结构化事实 · {selectedEntityClaims.length}</strong>
+                    {selectedEntityClaims.slice(0, 6).map((claim: any) =>
+                      <button key={claim.id} onClick={() => setMemoryQuery(`${selectedEntity.canonicalName} ${claim.predicate}`)}>
+                        <b>{claim.predicate}</b><span>{claim.object_entity_name || claim.object_value || '待确认'}</span>
+                      </button>)}
+                    {!selectedEntityClaims.length && <em>尚无事实</em>}
+                    <strong>关系 · {selectedEntityRelations.length}</strong>
+                    {selectedEntityRelations.slice(0, 6).map((relation: any) => {
+                      const outgoing = relation.subjectId === selectedEntity.id
+                      const neighborId = outgoing ? relation.objectId : relation.subjectId
+                      const neighbor = graph.entities.find((item: any) => item.id === neighborId)
+                      return <button key={relation.id} onClick={() => setSelectedEntityId(neighborId)}>
+                        <b>{outgoing ? relation.predicate : `被${relation.predicate}`}</b>
+                        <span>{neighbor?.canonicalName || neighborId}</span>
+                      </button>
+                    })}
+                    {!selectedEntityRelations.length && <em>尚无关系</em>}
+                    <strong>相关事件 · {selectedEntityEvents.length}</strong>
+                    {selectedEntityEvents.slice(0, 5).map((event: any) =>
+                      <button key={event.id} onClick={() => setMemoryQuery(event.title)}>
+                        <b>{event.start_at || '时间待确认'}</b><span>{event.title}</span>
+                      </button>)}
+                    {!selectedEntityEvents.length && <em>尚无事件</em>}
+                  </div>
+                </> : <p>点击节点查看身份、别名、账号、关系、事实和历史事件。</p>}
               </aside>
             </div>
           ) : <div className="assistant-empty">下一次同步会从新增消息开始建立人物、组织、项目和关系证据。</div>}
