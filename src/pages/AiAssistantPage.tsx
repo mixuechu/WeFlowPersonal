@@ -884,7 +884,7 @@ function AiAssistantPage() {
             {memoryResults.map(result => <article key={result.id}>
               <span>{result.document_type}
                 {result.match_source ? ` · ${result.match_source}匹配` : ''}
-                {result.match_reason === 'fuzzy_entity' ? ' · 名称近似召回' : result.match_reason === 'entity_alias_or_account' ? ' · 别名/微信 ID 命中' : ''}
+                {result.match_reason === 'pinyin_entity' ? ' · 拼音命中' : result.match_reason === 'fuzzy_entity' ? ' · 名称近似召回' : result.match_reason === 'entity_alias_or_account' ? ' · 别名/微信 ID 命中' : ''}
                 {result.semantic_score ? ` · ${Math.round(result.semantic_score * 100)}%` : ''}
               </span><strong>{result.title}</strong><p>{result.search_text}</p>
             </article>)}

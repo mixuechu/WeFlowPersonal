@@ -1,5 +1,36 @@
+import { pinyin } from 'pinyin-pro'
+
 export function normalizeEntityTerm(value: unknown): string {
   return String(value || '').trim().toLocaleLowerCase('zh-CN').replace(/[\s_\-—·.]+/g, '')
+}
+
+export function entityPinyinTerms(value: unknown): string[] {
+  const text = String(value || '').trim()
+  if (!text || !/[\u3400-\u9fff]/u.test(text)) return []
+  const syllables = pinyin(text, { toneType: 'none', type: 'array' })
+    .map(value => normalizeEntityTerm(value)).filter(Boolean)
+  if (!syllables.length) return []
+  const full = syllables.join('')
+  const initials = syllables.map(value => [...value][0] || '').join('')
+  return [...new Set([full, initials].filter(value => value.length >= 2))]
+}
+
+export function pinyinEntityScore(query: string, terms: string[]): number | null {
+  const normalizedQuery = normalizeEntityTerm(query)
+  if (normalizedQuery.length < 2 || normalizedQuery.length > 64 || /\s/.test(query.trim())) return null
+  const queryForms = new Set([normalizedQuery, ...entityPinyinTerms(query)])
+  let best: number | null = null
+  for (const term of terms) {
+    for (const phonetic of entityPinyinTerms(term)) {
+      for (const queryForm of queryForms) {
+        if (phonetic === queryForm) return 0
+        if (queryForm.length >= 3 && (phonetic.includes(queryForm) || queryForm.includes(phonetic))) {
+          best = Math.min(best ?? 1, 1 - Math.min(queryForm.length, phonetic.length) / Math.max(queryForm.length, phonetic.length))
+        }
+      }
+    }
+  }
+  return best
 }
 
 export function editDistance(leftValue: string, rightValue: string): number {

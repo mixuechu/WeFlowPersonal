@@ -41,6 +41,7 @@
     "koffi": "^3.1.0",
     "lucide-react": "^1.23.0",
     "node-addon-api": "^8.9.0",
+    "pinyin-pro": "^3.28.2",
     "react": "^19.2.3",
     "react-dom": "^19.2.7",
     "react-markdown": "^10.1.0",

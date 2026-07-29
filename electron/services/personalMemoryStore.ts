@@ -2,7 +2,7 @@ import { DatabaseSync } from 'node:sqlite'
 import { createHash } from 'node:crypto'
 import { copyFileSync, existsSync, mkdirSync, readdirSync, renameSync, statSync, unlinkSync, writeFileSync } from 'fs'
 import { dirname, join, resolve } from 'path'
-import { fuzzyEntityScore } from './fuzzyEntitySearch.ts'
+import { fuzzyEntityScore, pinyinEntityScore } from './fuzzyEntitySearch.ts'
 
 type MemoryGraph = {
   entities: any[]
@@ -1122,11 +1122,16 @@ export class PersonalMemoryStore {
       SELECT *,0 AS rank FROM search_documents WHERE document_type='entity'
     `).all() as any[]).flatMap(item => {
       if (knownIds.has(item.id)) return []
-      const fuzzyScore = fuzzyEntityScore(normalized, [item.title, ...String(item.search_text || '').split('；')])
-      return fuzzyScore === null ? [] : [{
+      const terms = [item.title, ...String(item.search_text || '').split('；')]
+      const phoneticScore = pinyinEntityScore(normalized, terms)
+      const fuzzyScore = fuzzyEntityScore(normalized, terms)
+      const score = phoneticScore === null ? fuzzyScore : phoneticScore
+      return score === null ? [] : [{
         ...item,
-        rank: 50 + fuzzyScore,
-        match_reason: fuzzyScore === 0 ? 'entity_alias_or_account' : 'fuzzy_entity'
+        rank: 50 + score,
+        match_reason: phoneticScore !== null
+          ? 'pinyin_entity'
+          : fuzzyScore === 0 ? 'entity_alias_or_account' : 'fuzzy_entity'
       }]
     }).sort((left, right) => left.rank - right.rank)
     return [...exactMatches, ...fuzzyMatches].slice(0, safeLimit)

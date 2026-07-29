@@ -20,7 +20,7 @@ import {
   identityPairKey,
   isNegativeDecisionCurrent
 } from '../electron/services/identityDisambiguation.ts'
-import { editDistance, fuzzyEntityScore } from '../electron/services/fuzzyEntitySearch.ts'
+import { editDistance, entityPinyinTerms, fuzzyEntityScore, pinyinEntityScore } from '../electron/services/fuzzyEntitySearch.ts'
 import { buildWeeklyBriefing, isQuietTime } from '../electron/services/briefingIntelligence.ts'
 import { enqueueUniqueNotification, markNotificationAttempt } from '../electron/services/notificationOutbox.ts'
 import { findCommonGraphNeighbors } from '../electron/services/graphCommonNeighbors.ts'
@@ -220,12 +220,21 @@ test('entity search indexes WeChat IDs and tolerates one-character name errors',
     reviewQueue: []
   })
   assert.equal(store.searchText('wxid_onyx_contact')[0].source_id, 'person-search')
-  const fuzzy = store.searchText('邢爱泥')
+  const homophone = store.searchText('邢爱泥')
+  assert.equal(homophone[0].source_id, 'person-search')
+  assert.equal(homophone[0].match_reason, 'pinyin_entity')
+  const fuzzy = store.searchText('邢爱娃')
   assert.equal(fuzzy[0].source_id, 'person-search')
   assert.equal(fuzzy[0].match_reason, 'fuzzy_entity')
-  assert.equal(editDistance('邢爱妮', '邢爱泥'), 1)
+  assert.equal(editDistance('邢爱妮', '邢爱娃'), 1)
   assert.ok(fuzzyEntityScore('wxid-onyx-contact', ['wxid_onyx_contact']) !== null)
   assert.equal(fuzzyEntityScore('完全无关', ['邢爱妮']), null)
+  assert.deepEqual(entityPinyinTerms('邢爱妮'), ['xingaini', 'xan'])
+  assert.equal(pinyinEntityScore('xingaini', ['邢爱妮']), 0)
+  assert.equal(pinyinEntityScore('xan', ['邢爱妮']), 0)
+  const pinyinResult = store.searchText('xan')
+  assert.equal(pinyinResult[0].source_id, 'person-search')
+  assert.equal(pinyinResult[0].match_reason, 'pinyin_entity')
 }))
 
 test('weekly briefing aggregates Shanghai dates and quiet hours cross midnight', () => {
