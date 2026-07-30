@@ -131,6 +131,11 @@ import {
 } from './identityDisambiguation'
 import { paginateGraphReviews, type GraphReviewPageOptions } from '../../shared/graphReviewPagination'
 import { buildGraphViewport, type GraphViewportOptions } from '../../shared/graphViewport'
+import {
+  buildGraphDashboardPayload,
+  toGraphViewportEdge,
+  toGraphViewportNode
+} from '../../shared/graphPayload'
 
 const ATTACHMENT_STRUCTURE_PARSER_VERSION = 'attachment-layout-v3'
 
@@ -2976,10 +2981,16 @@ export class AiAssistantService {
       },
       projectInsights,
       cursor: this.state.cursor,
-      graph: { ...this.state.graph, relations: [], reviewQueue: [] },
+      graph: buildGraphDashboardPayload(this.state.graph.entities),
       graphSummary: {
         entities: this.state.graph.entities.filter(entity => entity.trustStatus !== 'rejected').length,
         relations: this.state.graph.relations.filter(relation => relation.status !== 'rejected').length
+      },
+      graphPayloadPolicy: {
+        version: 'graph-directory-v1',
+        directoryEntities: this.state.graph.entities.length,
+        entityProfiles: 'on_demand',
+        relationEvidence: 'on_demand'
       },
       graphRevision,
       graphReviewRevision,
@@ -3096,6 +3107,8 @@ export class AiAssistantService {
     return {
       viewport: {
         ...viewport,
+        entities: viewport.entities.map(toGraphViewportNode),
+        relations: viewport.relations.map(toGraphViewportEdge),
         levels: Object.fromEntries(viewport.levels)
       },
       summary: {
@@ -3106,6 +3119,12 @@ export class AiAssistantService {
         .filter(relation => relation.status !== 'rejected')
         .map(relation => relation.predicate)
         .filter(Boolean))].sort((left, right) => left.localeCompare(right, 'zh-CN')),
+      payloadPolicy: {
+        version: 'graph-viewport-v1',
+        nodeFields: 'drawing_only',
+        edgeFields: 'drawing_only',
+        focusProfile: focus ? 'loaded' : 'not_requested'
+      },
       focus
     }
   }

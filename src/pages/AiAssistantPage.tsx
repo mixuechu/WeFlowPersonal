@@ -2103,6 +2103,9 @@ function AiAssistantPage() {
             <small>当前画布 {graphEntities.length} 个节点 · {graphRelations.length} 条边
               {graphViewport.truncated ? ` · 为保持流畅另有 ${graphViewport.truncated} 个相关节点未展开` : ''}
             </small>
+            {dashboard?.graphPayloadPolicy?.entityProfiles === 'on_demand' && <small>
+              首页只加载轻量身份目录；实体摘要、原文证据、事实、事件和关系历史会在点击人物后按需读取。
+            </small>}
           </div>
           {identityDisambiguation && <div className="assistant-identity-status">
             <span><strong>{identityDisambiguation.mode === 'full' ? '全图身份巡检' : '增量身份消歧'}</strong>
