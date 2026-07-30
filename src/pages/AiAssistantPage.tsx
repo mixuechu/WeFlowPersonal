@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { BookOpen, Bot, CalendarDays, Check, Clock3, Filter, Network, Paperclip, RefreshCw, Search, Settings2, ShieldCheck, Sparkles, X } from 'lucide-react'
 import { buildTaskCalendar, shanghaiToday } from '../utils/taskCalendar'
-import { filterGraphReviews, type ReviewStatusFilter } from '../utils/graphReviewFilters'
+import type { ReviewStatusFilter } from '../utils/graphReviewFilters'
 import { evidenceLocalMessageId, groupMemorySearchResults, MEMORY_TYPE_LABELS, normalizeMemoryEvidence, type MemoryEvidence } from '../utils/memorySearchPresentation'
 import { buildGraphViewport } from '../utils/graphViewport'
 import { LatestRequestGate } from '../utils/latestRequestGate'
@@ -130,6 +130,23 @@ function AiAssistantPage() {
   const [reviewStatusFilter, setReviewStatusFilter] = useState<ReviewStatusFilter>('pending')
   const [reviewKindFilter, setReviewKindFilter] = useState('')
   const [reviewQuery, setReviewQuery] = useState('')
+  const [reviewPage, setReviewPage] = useState<{
+    items: any[]
+    total: number
+    hasMore: boolean
+    counts: { pending: number; resolved: number; all: number }
+    status: 'idle' | 'loading' | 'ready' | 'error'
+    error?: string
+  }>({
+    items: [],
+    total: 0,
+    hasMore: false,
+    counts: { pending: 0, resolved: 0, all: 0 },
+    status: 'idle'
+  })
+  const [reviewLoadingMore, setReviewLoadingMore] = useState(false)
+  const [reviewRefreshKey, setReviewRefreshKey] = useState(0)
+  const reviewPageGate = useRef(new LatestRequestGate())
   const [memoryDiagnostics, setMemoryDiagnostics] = useState<any>(null)
   const [showDiagnostics, setShowDiagnostics] = useState(false)
   const [backingUpMemory, setBackingUpMemory] = useState(false)
@@ -225,6 +242,38 @@ function AiAssistantPage() {
     }
   }, [memoryQuery, memorySearchOptions, hasMemoryScope])
 
+  useEffect(() => {
+    const request = reviewPageGate.current.begin()
+    setReviewLoadingMore(false)
+    setReviewPage(current => ({ ...current, items: [], total: 0, hasMore: false, status: 'loading', error: undefined }))
+    const timer = window.setTimeout(() => {
+      void window.electronAPI.aiAssistant.getGraphReviewPage({
+        status: reviewStatusFilter,
+        kind: reviewKindFilter || undefined,
+        query: reviewQuery.trim() || undefined,
+        offset: 0,
+        limit: 40
+      }).then(page => {
+        if (!reviewPageGate.current.isCurrent(request)) return
+        setReviewPage({ ...page, status: 'ready' })
+      }).catch(error => {
+        if (!reviewPageGate.current.isCurrent(request)) return
+        setReviewPage(current => ({
+          ...current,
+          items: [],
+          total: 0,
+          hasMore: false,
+          status: 'error',
+          error: error?.message || String(error)
+        }))
+      })
+    }, 200)
+    return () => {
+      window.clearTimeout(timer)
+      if (reviewPageGate.current.isCurrent(request)) reviewPageGate.current.invalidate()
+    }
+  }, [reviewStatusFilter, reviewKindFilter, reviewQuery, reviewRefreshKey, dashboard?.graphReviewRevision])
+
   useEffect(() => () => {
     memoryConversationGate.current.invalidate()
   }, [])
@@ -300,15 +349,9 @@ function AiAssistantPage() {
   const relationPredicates = useMemo<string[]>(() => [...new Set<string>(graph.relations
     .filter((relation: any) => relation.status !== 'rejected')
     .map((relation: any) => String(relation.predicate || '')).filter(Boolean))].sort(), [graph.relations])
-  const pendingReviews = graph.reviewQueue.filter((item: any) => item.status === 'pending')
-  const resolvedReviews = graph.reviewQueue.filter((item: any) => item.status !== 'pending')
-  const visibleReviews = useMemo(() => {
-    return filterGraphReviews(graph.reviewQueue, {
-      status: reviewStatusFilter,
-      kind: reviewKindFilter,
-      query: reviewQuery
-    })
-  }, [graph.reviewQueue, reviewStatusFilter, reviewKindFilter, reviewQuery])
+  const pendingReviewCount = reviewPage.counts.pending
+  const resolvedReviewCount = reviewPage.counts.resolved
+  const visibleReviews = reviewPage.items
   const groupedMemoryResults = useMemo(() => groupMemorySearchResults(memoryResults), [memoryResults])
   const assistantConversations: any[] = dashboard?.assistantConversations || []
   const identityDisambiguation = dashboard?.identityDisambiguation
@@ -377,6 +420,7 @@ function AiAssistantPage() {
         ? result.message
         : `补齐完成：${result.newMessageCount} 条新消息，${result.newTaskCount} 个新待办`)
       await load()
+      setReviewRefreshKey(value => value + 1)
     } catch (error: any) {
       setMessage(error?.message || String(error))
     } finally {
@@ -597,6 +641,7 @@ function AiAssistantPage() {
         return next
       })
       await load()
+      setReviewRefreshKey(value => value + 1)
     } catch (error: any) {
       setMessage(error?.message || String(error))
     }
@@ -619,6 +664,36 @@ function AiAssistantPage() {
   const revertMerge = async (id: number) => {
     await window.electronAPI.aiAssistant.revertMerge(id)
     await load()
+    setReviewRefreshKey(value => value + 1)
+  }
+
+  const loadMoreReviews = async () => {
+    if (reviewLoadingMore || !reviewPage.hasMore) return
+    const request = reviewPageGate.current.begin()
+    setReviewLoadingMore(true)
+    try {
+      const page = await window.electronAPI.aiAssistant.getGraphReviewPage({
+        status: reviewStatusFilter,
+        kind: reviewKindFilter || undefined,
+        query: reviewQuery.trim() || undefined,
+        offset: reviewPage.items.length,
+        limit: 40
+      })
+      if (!reviewPageGate.current.isCurrent(request)) return
+      setReviewPage(current => ({
+        ...current,
+        ...page,
+        items: [...current.items, ...page.items.filter((item: any) =>
+          !current.items.some((existing: any) => existing.id === item.id))],
+        status: 'ready'
+      }))
+    } catch (error: any) {
+      if (reviewPageGate.current.isCurrent(request)) {
+        setReviewPage(current => ({ ...current, status: 'error', error: error?.message || String(error) }))
+      }
+    } finally {
+      if (reviewPageGate.current.isCurrent(request)) setReviewLoadingMore(false)
+    }
   }
 
   const updateMemoryStatus = async (kind: 'claim' | 'event', id: string, nextStatus: 'confirmed' | 'rejected') => {
@@ -2103,12 +2178,12 @@ function AiAssistantPage() {
             </div>
           ) : <div className="assistant-empty">下一次同步会从新增消息开始建立人物、组织、项目和关系证据。</div>}
           <div className="assistant-review-section">
-            <div className="assistant-section-heading"><div><span className="assistant-eyebrow">REVIEW LEDGER</span><h3>身份与关系审阅</h3></div><span className="assistant-count">{pendingReviews.length} 待处理 · {resolvedReviews.length} 已处理</span></div>
+            <div className="assistant-section-heading"><div><span className="assistant-eyebrow">REVIEW LEDGER</span><h3>身份与关系审阅</h3></div><span className="assistant-count">{pendingReviewCount} 待处理 · {resolvedReviewCount} 已处理</span></div>
             <div className="assistant-review-filters">
               <div>
-                <button className={reviewStatusFilter === 'pending' ? 'active' : ''} onClick={() => setReviewStatusFilter('pending')}>待处理 {pendingReviews.length}</button>
-                <button className={reviewStatusFilter === 'resolved' ? 'active' : ''} onClick={() => setReviewStatusFilter('resolved')}>已处理 {resolvedReviews.length}</button>
-                <button className={reviewStatusFilter === 'all' ? 'active' : ''} onClick={() => setReviewStatusFilter('all')}>全部</button>
+                <button className={reviewStatusFilter === 'pending' ? 'active' : ''} onClick={() => setReviewStatusFilter('pending')}>待处理 {pendingReviewCount}</button>
+                <button className={reviewStatusFilter === 'resolved' ? 'active' : ''} onClick={() => setReviewStatusFilter('resolved')}>已处理 {resolvedReviewCount}</button>
+                <button className={reviewStatusFilter === 'all' ? 'active' : ''} onClick={() => setReviewStatusFilter('all')}>全部 {reviewPage.counts.all}</button>
               </div>
               <select value={reviewKindFilter} onChange={event => setReviewKindFilter(event.target.value)}>
                 <option value="">全部类型</option>
@@ -2328,7 +2403,15 @@ function AiAssistantPage() {
               {isPending && <div className="assistant-review-actions"><button onClick={() => void decideReview(review.id, 'rejected')}>拒绝</button><button className="primary" disabled={(review.kind === 'possible_duplicate' && (!review.leftEntityId || !review.rightEntityId || !selectedMergeTargetId)) || Boolean(entityNameInvalidReason) || Boolean(relationInvalidReason) || Boolean(profileInvalidReason)} title={review.kind === 'possible_duplicate' && (!review.leftEntityId || !review.rightEntityId) ? '候选信息不完整，暂不能合并' : review.kind === 'possible_duplicate' && !selectedMergeTargetId ? '请先选择合并后保留的身份' : entityNameInvalidReason || relationInvalidReason || profileInvalidReason} onClick={() => void decideReview(review.id, 'confirmed', review.kind === 'possible_duplicate' ? { mergeTargetEntityId: selectedMergeTargetId } : review.kind === 'entity_creation' ? { correctedCanonicalName: entityNameEdits[review.id] ?? review.entityCanonicalName ?? '' } : review.kind === 'relation' && relationEdit ? { relationCorrection: relationEdit } : review.kind === 'entity_summary' ? { correctedSummaryText: profileEditValue } : review.kind === 'entity_alias' ? { correctedAliasText: profileEditValue } : undefined)}>{review.kind === 'relation' ? '确认修正后方向' : review.kind === 'possible_duplicate' ? '按此方向合并' : review.kind === 'entity_creation' ? '确认名称并启用' : review.kind === 'entity_summary' || review.kind === 'entity_alias' ? '确认人工最终值' : '确认'}</button></div>}</>
               })()}
             </article>)}
-            {!visibleReviews.length && <div className="assistant-empty">{reviewStatusFilter === 'pending' ? '当前没有符合筛选条件的待处理候选。' : '当前没有符合筛选条件的审阅历史。'}</div>}
+            {reviewPage.status === 'loading' && <div className="assistant-empty">正在读取符合条件的审阅记录…</div>}
+            {reviewPage.status === 'error' && <div className="assistant-empty">审阅记录读取失败：{reviewPage.error}</div>}
+            {reviewPage.status === 'ready' && !visibleReviews.length && <div className="assistant-empty">{reviewStatusFilter === 'pending' ? '当前没有符合筛选条件的待处理候选。' : '当前没有符合筛选条件的审阅历史。'}</div>}
+            {reviewPage.status === 'ready' && visibleReviews.length > 0 && <div className="assistant-review-page-status">
+              <small>已加载 {visibleReviews.length} / {reviewPage.total} 条符合条件的记录；筛选和排序由本机后端执行。</small>
+              {reviewPage.hasMore && <button type="button" disabled={reviewLoadingMore} onClick={() => void loadMoreReviews()}>
+                {reviewLoadingMore ? '正在加载…' : '加载更多审阅记录'}
+              </button>}
+            </div>}
             {mergeHistory.length > 0 && <>
               <div className="assistant-section-heading"><div><span className="assistant-eyebrow">MERGE HISTORY</span><h3>最近身份合并</h3></div></div>
               {mergeHistory.map((merge: any) => <article className="assistant-review-item" key={`merge-${merge.id}`}>

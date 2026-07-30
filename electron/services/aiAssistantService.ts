@@ -102,6 +102,7 @@ import {
   identityPairKey,
   isNegativeDecisionCurrent
 } from './identityDisambiguation'
+import { paginateGraphReviews, type GraphReviewPageOptions } from '../../shared/graphReviewPagination'
 
 const ATTACHMENT_STRUCTURE_PARSER_VERSION = 'attachment-layout-v3'
 
@@ -2526,6 +2527,12 @@ export class AiAssistantService {
       events: memoryFeed.events,
       tasks
     })
+    const graphReviewRevision = crypto.createHash('sha256')
+      .update(this.state.graph.reviewQueue.map(review =>
+        `${review.id}\u0000${review.status}\u0000${review.createdAt || ''}\u0000${review.resolvedAt || ''}`
+      ).join('\u0001'))
+      .digest('hex')
+      .slice(0, 16)
     return {
       briefing: latest ? { ...latest, tasks } : null,
       tasks,
@@ -2550,7 +2557,8 @@ export class AiAssistantService {
       entityInsights,
       projectInsights,
       cursor: this.state.cursor,
-      graph: this.state.graph,
+      graph: { ...this.state.graph, reviewQueue: [] },
+      graphReviewRevision,
       relationHistory: personalMemoryStore.listRelationHistory('', 300),
       identityDisambiguation: {
         ...this.state.graph.identityScan,
@@ -2588,6 +2596,19 @@ export class AiAssistantService {
         lastError: this.state.notifications.pending.find(item => item.lastError)?.lastError || null
       }
     }
+  }
+
+  getGraphReviewPage(options?: Partial<GraphReviewPageOptions>): any {
+    const status = options?.status === 'resolved' || options?.status === 'all'
+      ? options.status
+      : 'pending'
+    return paginateGraphReviews(this.state.graph.reviewQueue, {
+      status,
+      kind: String(options?.kind || '').trim(),
+      query: String(options?.query || '').trim(),
+      offset: options?.offset,
+      limit: options?.limit
+    })
   }
 
   getEventTimeline(options: any = {}): any {

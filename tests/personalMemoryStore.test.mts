@@ -58,7 +58,7 @@ import { enqueueUniqueNotification, markNotificationAttempt } from '../electron/
 import { findCommonGraphNeighbors } from '../electron/services/graphCommonNeighbors.ts'
 import { buildProjectInsights } from '../electron/services/projectInsights.ts'
 import { buildTaskCalendar, extractTaskDueDate } from '../src/utils/taskCalendar.ts'
-import { filterGraphReviews } from '../src/utils/graphReviewFilters.ts'
+import { filterGraphReviews, paginateGraphReviews } from '../src/utils/graphReviewFilters.ts'
 import { summarizeIngestionRuns } from '../electron/services/ingestionDiagnostics.ts'
 import { attachLocalImageOcr, attachLocalVoiceTranscript, recoverMessageSemantics } from '../electron/services/messageSemanticRecovery.ts'
 import { sanitizeDiagnosticText } from '../electron/services/diagnosticRedaction.ts'
@@ -269,6 +269,53 @@ test('review ledger filters pending and resolved decisions by kind, evidence and
   assert.deepEqual(
     filterGraphReviews(reviews, { status: 'resolved' }).map(item => item.id),
     ['confirmed-alias', 'rejected-relation']
+  )
+})
+
+test('review ledger pagination keeps stable boundaries and scoped counts', () => {
+  const reviews = Array.from({ length: 95 }, (_, index) => ({
+    id: `review-${String(index).padStart(3, '0')}`,
+    kind: index % 3 === 0 ? 'relation' : 'entity_alias',
+    status: index % 4 === 0 ? 'pending' : index % 2 === 0 ? 'rejected' : 'confirmed',
+    title: index < 70 ? `目标候选 ${index}` : `其他候选 ${index}`,
+    createdAt: index % 2 === 0 ? '2026-07-30T01:00:00.000Z' : '2026-07-30T02:00:00.000Z'
+  }))
+  const first = paginateGraphReviews(reviews, {
+    status: 'all',
+    query: '目标候选',
+    offset: 0,
+    limit: 40
+  })
+  const second = paginateGraphReviews(reviews, {
+    status: 'all',
+    query: '目标候选',
+    offset: 40,
+    limit: 40
+  })
+  assert.equal(first.total, 70)
+  assert.equal(first.items.length, 40)
+  assert.equal(first.hasMore, true)
+  assert.equal(second.items.length, 30)
+  assert.equal(second.hasMore, false)
+  assert.equal(new Set([...first.items, ...second.items].map(item => item.id)).size, 70)
+  assert.deepEqual(first.counts, {
+    pending: reviews.slice(0, 70).filter(item => item.status === 'pending').length,
+    resolved: reviews.slice(0, 70).filter(item => item.status !== 'pending').length,
+    all: 70
+  })
+  assert.deepEqual(
+    paginateGraphReviews(reviews, {
+      status: 'resolved',
+      kind: 'relation',
+      query: '目标候选',
+      offset: 0,
+      limit: 1000
+    }).items.map(item => item.id),
+    filterGraphReviews(reviews, {
+      status: 'resolved',
+      kind: 'relation',
+      query: '目标候选'
+    }).map(item => item.id)
   )
 })
 

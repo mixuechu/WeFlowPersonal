@@ -1642,6 +1642,20 @@ export interface ElectronAPI {
   aiAssistant: {
     status: () => Promise<any>
     dashboard: () => Promise<any>
+      getGraphReviewPage: (options?: {
+        status?: 'pending' | 'resolved' | 'all'
+        kind?: string
+        query?: string
+        offset?: number
+        limit?: number
+      }) => Promise<{
+        items: any[]
+        offset: number
+        limit: number
+        total: number
+        hasMore: boolean
+        counts: { pending: number; resolved: number; all: number }
+      }>
       sync: () => Promise<any>
       cancelSync: () => Promise<any>
     getSettings: () => Promise<any>

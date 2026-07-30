@@ -656,6 +656,9 @@
 .assistant-review-filters button, .assistant-review-filters select, .assistant-review-filters input { padding: 7px 9px; border: 1px solid #dcd9d0; border-radius: 8px; color: #62675f; background: #fff; font-size: 9px; }
 .assistant-review-filters button.active { border-color: #4c7c65; color: #315c4e; background: #eef6f0; }
 .assistant-review-filters input { min-width: 0; }
+.assistant-review-page-status { margin: 10px 0 2px; display: flex; align-items: center; justify-content: center; gap: 12px; color: #7c847d; }
+.assistant-review-page-status button { padding: 7px 12px; border: 1px solid #cfd8d1; border-radius: 8px; color: #456050; background: #fff; font-size: 9px; cursor: pointer; }
+.assistant-review-page-status button:disabled { opacity: .55; cursor: default; }
 .assistant-review-item { padding: 14px; border-top: 1px solid #e8e5dd; display: flex; justify-content: space-between; gap: 16px; }
 .assistant-review-item.resolved { background: rgba(247,247,243,.66); }
 .assistant-review-item p { margin: 5px 0; color: #74786f; font-size: 11px; }

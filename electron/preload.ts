@@ -616,6 +616,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   aiAssistant: {
     status: () => ipcRenderer.invoke('ai-assistant:status'),
     dashboard: () => ipcRenderer.invoke('ai-assistant:dashboard'),
+    getGraphReviewPage: (options?: any) => ipcRenderer.invoke('ai-assistant:getGraphReviewPage', options),
     sync: () => ipcRenderer.invoke('ai-assistant:sync'),
     cancelSync: () => ipcRenderer.invoke('ai-assistant:cancelSync'),
     getSettings: () => ipcRenderer.invoke('ai-assistant:getSettings'),
