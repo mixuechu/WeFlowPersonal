@@ -2893,8 +2893,8 @@ export class AiAssistantService {
     return result
   }
 
-  searchMemory(query: string, limit = 200): any[] {
-    return personalMemoryStore.searchText(String(query || ''), limit).map((item: any) => ({
+  searchMemory(query: string, limit = 200, allowedIds: Set<string> | null = null): any[] {
+    return personalMemoryStore.searchText(String(query || ''), limit, allowedIds).map((item: any) => ({
       ...item,
       metadata: (() => { try { return JSON.parse(item.metadata_json || '{}') } catch { return {} } })(),
       evidence: personalMemoryStore.getDocumentEvidence(item.document_type, item.source_id)
@@ -2914,11 +2914,15 @@ export class AiAssistantService {
           ]
         }
       : options
-    const lexical = this.searchMemory(query, 300)
+    const allowedIds = personalMemoryStore.listScopedSearchDocumentIds(scopedOptions)
+    const scopeCandidateCount = allowedIds?.size ?? null
+    const lexical = this.searchMemory(query, 300, allowedIds)
     try {
       await this.ensureVectorIndex()
       const [queryVector] = await localEmbeddingService.embed([String(query || '')])
-      const semantic = personalMemoryStore.searchVector(queryVector, localEmbeddingService.modelVersion, 300)
+      const semantic = personalMemoryStore.searchVector(queryVector, localEmbeddingService.modelVersion, 300, {
+        allowedIds
+      })
       const merged = new Map<string, any>()
       lexical.forEach((item, index) => merged.set(item.id, {
         ...item,
@@ -2942,10 +2946,18 @@ export class AiAssistantService {
       return filterMemorySearchResults(
         [...merged.values()].sort((left, right) => Number(right.hybrid_score || 0) - Number(left.hybrid_score || 0)),
         scopedOptions
-      ).slice(0, 40)
+      ).slice(0, 40).map(item => ({
+        ...item,
+        retrieval_scope_applied: allowedIds !== null,
+        retrieval_scope_candidates: scopeCandidateCount
+      }))
     } catch (error) {
       console.warn('[AI Assistant] 向量检索回退为全文检索:', error)
-      return filterMemorySearchResults(lexical, scopedOptions).slice(0, 40)
+      return filterMemorySearchResults(lexical, scopedOptions).slice(0, 40).map(item => ({
+        ...item,
+        retrieval_scope_applied: allowedIds !== null,
+        retrieval_scope_candidates: scopeCandidateCount
+      }))
     }
   }
 
@@ -3024,6 +3036,20 @@ export class AiAssistantService {
       documentTypes: options.documentTypes?.length ? options.documentTypes : plan.inferredOptions.documentTypes,
       relationTypes: options.relationTypes?.length ? options.relationTypes : plan.inferredOptions.relationTypes
     }
+    const plannedEntity = plannedOptions.entityId
+      ? this.state.graph.entities.find(entity => entity.id === plannedOptions.entityId)
+      : null
+    const scopeAuditOptions: MemorySearchOptions = plannedEntity ? {
+      ...plannedOptions,
+      entityTerms: [
+        plannedEntity.canonicalName,
+        ...(plannedEntity.aliases || []),
+        ...(plannedEntity.accountIds || []),
+        ...(plannedEntity.externalIdentities || []).flatMap(identity => [identity.accountId, identity.displayName])
+      ]
+    } : plannedOptions
+    const plannedScopeIds = personalMemoryStore.listScopedSearchDocumentIds(scopeAuditOptions)
+    if (plannedScopeIds) plan.explanation.push(`召回前范围约束：${plannedScopeIds.size} 个候选文档`)
     const mergedResults = new Map<string, any>()
     let plannedGraphPath: any = null
     if (plan.matchedEntities.length >= 2) {

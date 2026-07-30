@@ -11,6 +11,7 @@ import {
   computeAnnSignatures,
   listMultiProbeSignatures
 } from './localAnnIndex.ts'
+import type { MemorySearchOptions } from './memorySearchFilters.ts'
 
 type MemoryGraph = {
   entities: any[]
@@ -2197,15 +2198,135 @@ export class PersonalMemoryStore {
     this.db?.prepare('UPDATE merge_history SET reverted_at=? WHERE id=? AND reverted_at IS NULL').run(new Date().toISOString(), id)
   }
 
-  searchText(query: string, limit = 20): any[] {
+  listScopedSearchDocumentIds(options: MemorySearchOptions = {}): Set<string> | null {
+    if (!this.db) return new Set()
+    const hasScope = Boolean(
+      options.entityId ||
+      options.sessionId ||
+      options.from ||
+      options.to ||
+      options.documentTypes?.length ||
+      options.relationTypes?.length
+    )
+    if (!hasScope) return null
+    const conditions: string[] = []
+    const parameters: Array<string | number> = []
+    const documentTypes = [...new Set((options.documentTypes || []).map(String).filter(Boolean))]
+    if (documentTypes.length) {
+      conditions.push(`d.document_type IN (${documentTypes.map(() => '?').join(',')})`)
+      parameters.push(...documentTypes)
+    }
+    const relationTypes = [...new Set((options.relationTypes || [])
+      .map(value => String(value).trim().toLowerCase()).filter(Boolean))]
+    if (relationTypes.length) {
+      conditions.push(`(
+        d.document_type!='relation' OR (
+          ${relationTypes.map(() => `(LOWER(d.title) LIKE ? OR LOWER(COALESCE(json_extract(d.metadata_json,'$.predicate'),'')) LIKE ?)`).join(' OR ')}
+        )
+      )`)
+      for (const relationType of relationTypes) parameters.push(`%${relationType}%`, `%${relationType}%`)
+    }
+    if (options.sessionId) {
+      const sessions = [...new Set([options.sessionId, options.sessionName].map(value => String(value || '')).filter(Boolean))]
+      const placeholders = sessions.map(() => '?').join(',')
+      conditions.push(`(
+        EXISTS (SELECT 1 FROM search_document_evidence sde
+          WHERE sde.document_id=d.id AND sde.session_id IN (${placeholders}))
+        OR (d.document_type='claim' AND EXISTS (SELECT 1 FROM evidence e
+          WHERE e.claim_id=d.source_id AND e.session_id IN (${placeholders})))
+        OR (d.document_type='event' AND EXISTS (SELECT 1 FROM evidence e
+          WHERE e.event_id=d.source_id AND e.session_id IN (${placeholders})))
+        OR (d.document_type='relation' AND EXISTS (SELECT 1 FROM evidence e
+          WHERE e.relation_id=d.source_id AND e.session_id IN (${placeholders})))
+      )`)
+      parameters.push(...sessions, ...sessions, ...sessions, ...sessions)
+    }
+    if (options.entityId) {
+      const terms = [...new Set((options.entityTerms || []).map(value => String(value).trim().toLowerCase()).filter(Boolean))]
+      const termConditions = terms.map(() => `(LOWER(d.title) LIKE ? OR LOWER(d.search_text) LIKE ?)`)
+      conditions.push(`(
+        (d.document_type='entity' AND d.source_id=?)
+        OR COALESCE(json_extract(d.metadata_json,'$.subjectId'),'')=?
+        OR COALESCE(json_extract(d.metadata_json,'$.objectId'),'')=?
+        OR COALESCE(json_extract(d.metadata_json,'$.objectEntityId'),'')=?
+        OR EXISTS (
+          SELECT 1 FROM json_each(COALESCE(json_extract(d.metadata_json,'$.participantIds'),'[]'))
+          WHERE CAST(json_each.value AS TEXT)=?
+        )
+        ${termConditions.length ? `OR ${termConditions.join(' OR ')}` : ''}
+      )`)
+      parameters.push(options.entityId, options.entityId, options.entityId, options.entityId, options.entityId)
+      for (const term of terms) parameters.push(`%${term}%`, `%${term}%`)
+    }
+    const parseBoundary = (value: string | undefined, endOfDay: boolean): number | null => {
+      const text = String(value || '').trim()
+      if (!text) return null
+      const normalized = /^\d{4}-\d{2}-\d{2}$/.test(text)
+        ? `${text}T${endOfDay ? '23:59:59.999' : '00:00:00.000'}+08:00`
+        : text
+      const timestamp = Date.parse(normalized)
+      return Number.isFinite(timestamp) ? Math.floor(timestamp / 1000) : null
+    }
+    const from = parseBoundary(options.from, false)
+    const to = parseBoundary(options.to, true)
+    if (from !== null || to !== null) {
+      const range = (expression: string) => [
+        from === null ? '1=1' : `${expression}>=?`,
+        to === null ? '1=1' : `${expression}<=?`
+      ].join(' AND ')
+      const addRangeParameters = () => {
+        if (from !== null) parameters.push(from)
+        if (to !== null) parameters.push(to)
+      }
+      const metadataExpressions = ['startAt', 'endAt', 'validFrom', 'validTo', 'due']
+      conditions.push(`(
+        EXISTS (SELECT 1 FROM search_document_evidence sde
+          WHERE sde.document_id=d.id AND ${range('sde.timestamp')})
+        OR (d.document_type='claim' AND EXISTS (SELECT 1 FROM evidence e
+          WHERE e.claim_id=d.source_id AND ${range('e.timestamp')}))
+        OR (d.document_type='event' AND EXISTS (SELECT 1 FROM evidence e
+          WHERE e.event_id=d.source_id AND ${range('e.timestamp')}))
+        OR (d.document_type='relation' AND EXISTS (SELECT 1 FROM evidence e
+          WHERE e.relation_id=d.source_id AND ${range('e.timestamp')}))
+        OR ${metadataExpressions.map(key =>
+          `(json_extract(d.metadata_json,'$.${key}') IS NOT NULL AND ${range(`CAST(strftime('%s',json_extract(d.metadata_json,'$.${key}')) AS INTEGER)`)})`
+        ).join(' OR ')}
+      )`)
+      for (let index = 0; index < 4 + metadataExpressions.length; index += 1) addRangeParameters()
+    }
+    if (!conditions.length) return null
+    return new Set((this.db.prepare(`
+      SELECT d.id FROM search_documents d WHERE ${conditions.join(' AND ')}
+    `).all(...parameters) as Array<{ id: string }>).map(row => row.id))
+  }
+
+  private replaceActiveSearchScope(ids: Set<string>): void {
+    if (!this.db) return
+    this.db.exec(`
+      CREATE TEMP TABLE IF NOT EXISTS active_memory_search_scope (
+        id TEXT PRIMARY KEY
+      ) WITHOUT ROWID;
+      DELETE FROM active_memory_search_scope;
+    `)
+    const insert = this.db.prepare('INSERT INTO active_memory_search_scope(id) VALUES(?)')
+    const transaction = this.db.transaction(() => {
+      for (const id of ids) insert.run(id)
+    })
+    transaction()
+  }
+
+  searchText(query: string, limit = 20, allowedIds: Set<string> | null = null): any[] {
     if (!this.db || !query.trim()) return []
+    if (allowedIds && !allowedIds.size) return []
     const safeLimit = Math.max(1, Math.min(500, limit))
     const normalized = query.trim().replace(/["']/g, ' ')
+    if (allowedIds) this.replaceActiveSearchScope(allowedIds)
+    const scopeJoin = allowedIds ? 'JOIN active_memory_search_scope scope ON scope.id=d.id' : ''
     let exactMatches: any[] = []
     try {
       const matches = this.db.prepare(`
         SELECT d.*, bm25(search_fts) AS rank
-        FROM search_fts JOIN search_documents d ON d.id = search_fts.document_id
+        FROM search_fts JOIN search_documents d ON d.id = search_fts.document_id ${scopeJoin}
         WHERE search_fts MATCH ?
         ORDER BY rank LIMIT ?
       `).all(normalized, safeLimit) as any[]
@@ -2213,14 +2334,14 @@ export class PersonalMemoryStore {
     } catch {}
     if (!exactMatches.length) {
       exactMatches = this.db.prepare(`
-        SELECT *,0 AS rank FROM search_documents
-        WHERE title LIKE ? OR search_text LIKE ? ORDER BY updated_at DESC LIMIT ?
+        SELECT d.*,0 AS rank FROM search_documents d ${scopeJoin}
+        WHERE d.title LIKE ? OR d.search_text LIKE ? ORDER BY d.updated_at DESC LIMIT ?
       `).all(`%${normalized}%`, `%${normalized}%`, safeLimit) as any[]
     }
     if (exactMatches.length >= safeLimit) return exactMatches
     const knownIds = new Set(exactMatches.map(item => item.id))
     const fuzzyMatches = (this.db.prepare(`
-      SELECT *,0 AS rank FROM search_documents WHERE document_type='entity'
+      SELECT d.*,0 AS rank FROM search_documents d ${scopeJoin} WHERE d.document_type='entity'
     `).all() as any[]).flatMap(item => {
       if (knownIds.has(item.id)) return []
       const terms = [item.title, ...String(item.search_text || '').split('；')]
@@ -2398,10 +2519,19 @@ export class PersonalMemoryStore {
     return { rebuilt: true, ...this.getApproximateVectorIndexStats(model, dimensions) }
   }
 
-  private searchVectorExact(vector: number[], model: string, limit: number): any[] {
+  private searchVectorExact(
+    vector: number[],
+    model: string,
+    limit: number,
+    allowedIds: Set<string> | null = null
+  ): any[] {
     if (!this.db) return []
+    if (allowedIds && !allowedIds.size) return []
+    if (allowedIds) this.replaceActiveSearchScope(allowedIds)
+    const scopeJoin = allowedIds ? 'JOIN active_memory_search_scope scope ON scope.id=d.id' : ''
     const rows = this.db.prepare(`
-      SELECT * FROM search_documents WHERE embedding_model=? AND embedding_dimensions=? AND embedding_json IS NOT NULL
+      SELECT d.* FROM search_documents d ${scopeJoin}
+      WHERE d.embedding_model=? AND d.embedding_dimensions=? AND d.embedding_json IS NOT NULL
     `).all(model, vector.length) as any[]
     return this.rankVectorRows(rows, vector, limit, 'exact')
   }
@@ -2421,16 +2551,23 @@ export class PersonalMemoryStore {
     vector: number[],
     model: string,
     limit = 20,
-    options: { minimumDocuments?: number; minimumCandidates?: number } = {}
+    options: {
+      minimumDocuments?: number
+      minimumCandidates?: number
+      allowedIds?: Set<string> | null
+    } = {}
   ): any[] {
     if (!this.db || !vector.length) return []
+    const allowedIds = options.allowedIds ?? null
+    if (allowedIds && !allowedIds.size) return []
+    if (allowedIds) this.replaceActiveSearchScope(allowedIds)
     const minimumDocuments = Math.max(1, Number(options.minimumDocuments || LOCAL_ANN_DEFAULT_MINIMUM_DOCUMENTS))
     const stats = this.getApproximateVectorIndexStats(model, vector.length)
     const canUseAnn = stats.status === 'ready' &&
       stats.version === LOCAL_ANN_INDEX_VERSION &&
       stats.indexed === stats.eligible &&
       stats.eligible >= minimumDocuments
-    if (!canUseAnn) return this.searchVectorExact(vector, model, limit)
+    if (!canUseAnn) return this.searchVectorExact(vector, model, limit, allowedIds)
     const signatures = computeAnnSignatures(vector, model, stats.tables, stats.bits)
     const candidateIds = new Set<string>()
     const lookup = this.db.prepare(`
@@ -2440,15 +2577,22 @@ export class PersonalMemoryStore {
     signatures.forEach((signature, table) => {
       const probes = listMultiProbeSignatures(signature, stats.bits)
       for (const row of lookup.all(model, vector.length, table, ...probes) as Array<{ document_id: string }>) {
-        candidateIds.add(row.document_id)
+        if (!allowedIds || allowedIds.has(row.document_id)) candidateIds.add(row.document_id)
       }
     })
     const minimumCandidates = Math.max(
       limit,
       Number(options.minimumCandidates || Math.max(64, Math.min(256, limit * 2)))
     )
-    if (candidateIds.size < Math.min(minimumCandidates, stats.eligible)) {
-      return this.searchVectorExact(vector, model, limit)
+    const scopedEligible = allowedIds
+      ? Number((this.db.prepare(`
+          SELECT COUNT(*) AS count FROM search_documents d
+          JOIN active_memory_search_scope scope ON scope.id=d.id
+          WHERE d.embedding_model=? AND d.embedding_dimensions=? AND d.embedding_json IS NOT NULL
+        `).get(model, vector.length) as any)?.count || 0)
+      : stats.eligible
+    if (candidateIds.size < Math.min(minimumCandidates, scopedEligible)) {
+      return this.searchVectorExact(vector, model, limit, allowedIds)
     }
     const ids = [...candidateIds]
     const rows: any[] = []

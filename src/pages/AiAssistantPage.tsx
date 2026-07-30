@@ -1246,7 +1246,9 @@ function AiAssistantPage() {
               <button onClick={() => { setMemoryEntityFilter(''); setMemorySessionFilter(''); setMemoryTypeFilter(''); setMemoryFrom(''); setMemoryTo('') }}>清除范围</button>}
           </div>
           {(memoryEntityFilter || memorySessionFilter || memoryTypeFilter || memoryFrom || memoryTo) &&
-            <small className="assistant-scope-note">当前范围同时应用于下方搜索和“向个人记忆提问”，范围外内容不会发送给模型。</small>}
+            <small className="assistant-scope-note">当前范围在全文/向量召回之前生效，范围外内容不会参与排序或发送给模型。
+              {memoryResults[0]?.retrieval_scope_applied && ` · 当前候选 ${Number(memoryResults[0].retrieval_scope_candidates || 0).toLocaleString()} 条`}
+            </small>}
           {!!memoryQuery.trim() && <div className="assistant-search-results">
             {memoryResults.map(result => <article key={result.id}>
               <span>{result.document_type}

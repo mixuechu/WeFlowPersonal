@@ -730,6 +730,97 @@ test('memory scope filters apply entity, session, date and document type togethe
   assert.equal(filterMemorySearchResults(items, { from: '2026-07-29' }).length, 0)
 })
 
+test('retrieval scope is applied before lexical and vector top-k ranking', () => withStore(store => {
+  const timestamp = Math.floor(Date.parse('2026-07-30T02:00:00.000Z') / 1000)
+  const tasks = Array.from({ length: 350 }, (_, index) => ({
+    id: `crowded-${index}`,
+    title: `共同关键词 共同关键词 共同关键词 全局任务 ${index}`,
+    detail: '共同关键词用于制造超过 Top-300 的高相关全库匹配',
+    priority: 'low',
+    status: 'todo',
+    classification: 'mine',
+    sourceSessionId: 'session-global',
+    evidence: [{ messageId: `global-${index}`, timestamp, sender: '全局', excerpt: '共同关键词' }]
+  }))
+  tasks.push({
+    id: 'scoped-target',
+    title: '共同关键词 范围内唯一目标',
+    detail: '只能通过召回前范围约束可靠找回',
+    priority: 'high',
+    status: 'todo',
+    classification: 'mine',
+    sourceSessionId: 'session-target',
+    evidence: [{ messageId: 'target-message', timestamp, sender: '目标', excerpt: '共同关键词 范围内证据' }]
+  })
+  store.syncTasks(tasks)
+  const scope = store.listScopedSearchDocumentIds({
+    sessionId: 'session-target',
+    from: '2026-07-30',
+    to: '2026-07-30',
+    documentTypes: ['task']
+  })
+  assert.deepEqual([...scope || []], ['task:scoped-target'])
+  assert.equal(store.searchText('共同关键词', 300).some(item => item.id === 'task:scoped-target'), false)
+  assert.deepEqual(store.searchText('共同关键词', 40, scope).map(item => item.id), ['task:scoped-target'])
+
+  const model = 'scoped-retrieval:2d'
+  tasks.forEach((task, index) =>
+    store.saveEmbedding(`task:${task.id}`, model, task.id === 'scoped-target' ? [0, 1] : [1, index / 10_000]))
+  const globalVector = store.searchVector([1, 0], model, 300)
+  assert.equal(globalVector.some(item => item.id === 'task:scoped-target'), false)
+  const scopedVector = store.searchVector([1, 0], model, 40, { allowedIds: scope })
+  assert.deepEqual(scopedVector.map(item => item.id), ['task:scoped-target'])
+  assert.equal(scopedVector[0].semantic_search_mode, 'exact')
+}))
+
+test('database retrieval scope covers entity links, relation type and evidence time', () => withStore(store => {
+  store.syncGraph({
+    entities: [
+      { id: 'scope-person', type: 'person', canonicalName: '范围人物', aliases: ['范围别名'], accountIds: [] },
+      { id: 'scope-org', type: 'organization', canonicalName: '范围组织', aliases: [], accountIds: [] }
+    ],
+    relations: [{
+      id: 'scope-relation',
+      subjectId: 'scope-person',
+      predicate: '服务对象',
+      objectId: 'scope-org',
+      confidence: 0.9,
+      status: 'confirmed',
+      evidence: [{ messageId: 'scope-relation-message', sessionId: 'scope-session', timestamp: 1_754_000_000, excerpt: '为范围组织提供服务' }]
+    }],
+    reviewQueue: []
+  })
+  store.upsertEvents([{
+    id: 'scope-event',
+    eventType: 'meeting',
+    title: '范围会议',
+    description: '',
+    startAt: '2025-08-01T10:00:00.000Z',
+    confidence: 0.8,
+    status: 'candidate',
+    searchText: '范围人物参加范围会议',
+    participants: [{ entityId: 'scope-person', role: 'participant' }],
+    evidence: [{ messageId: 'scope-event-message', sessionId: 'scope-session', timestamp: 1_754_040_000, excerpt: '参加范围会议' }]
+  }])
+  const entityScope = store.listScopedSearchDocumentIds({
+    entityId: 'scope-person',
+    entityTerms: ['范围人物', '范围别名']
+  })
+  assert.ok(entityScope?.has('entity:scope-person'))
+  assert.ok(entityScope?.has('relation:scope-relation'))
+  assert.ok(entityScope?.has('event:scope-event'))
+  const relationScope = store.listScopedSearchDocumentIds({
+    documentTypes: ['relation'],
+    relationTypes: ['服务对象']
+  })
+  assert.deepEqual([...relationScope || []], ['relation:scope-relation'])
+  const dateScope = store.listScopedSearchDocumentIds({
+    from: '2025-08-01',
+    to: '2025-08-01'
+  })
+  assert.ok(dateScope?.has('event:scope-event'))
+}))
+
 test('memory query planner infers Shanghai time, entity and intent scopes', () => {
   const entities = [{
     id: 'org-onyx',
