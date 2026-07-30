@@ -974,7 +974,7 @@ test('long scanned PDF resources resume by persisted page cursor and invalidate 
 }))
 
 test('Office and PDF attachment structure migration is resumable, deferred and invalidates stale vectors', () => withStore(store => {
-  const parserVersion = 'attachment-layout-v2'
+  const parserVersion = 'attachment-layout-v3'
   store.upsertResources([{
     id: 'resource-doc-migrate',
     resourceType: 'file',

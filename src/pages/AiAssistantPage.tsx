@@ -1092,13 +1092,20 @@ function AiAssistantPage() {
                     {resource.metadata.attachmentStructure.sheetCount
                       ? ` / ${resource.metadata.attachmentStructure.sheetCount}` : ''} 个工作表
                     · {resource.metadata.attachmentStructure.indexedCells || 0} 个单元格
+                    · {resource.metadata.attachmentStructure.chartCount || 0} 个图表
                     {resource.metadata.attachmentStructure.truncated ? ' · 已按本地安全预算截断' : ''}
                   </small>
                   {(resource.metadata.attachmentStructure.sheets || []).slice(0, 8).map((sheet: any) =>
                     <small key={sheet.name}>
                       {sheet.name}：{sheet.indexedRows || 0} 行 · {sheet.columnCount || 0} 列
                       {!!sheet.headers?.length && ` · 字段 ${sheet.headers.slice(0, 8).join('、')}`}
+                      {!!sheet.chartCount && ` · ${sheet.chartCount} 个图表`}
                       {sheet.truncated ? ' · 部分索引' : ''}
+                    </small>)}
+                  {(resource.metadata.attachmentStructure.sheets || []).flatMap((sheet: any) => sheet.charts || []).slice(0, 8)
+                    .map((chart: any) => <small key={`sheet-chart-${chart.index}`}>
+                      图表 {chart.index}{chart.title ? `《${chart.title}》` : ''}：{chart.seriesCount || 0} 个系列 · {chart.pointCount || 0} 个数据点
+                      {!!chart.series?.length && ` · ${chart.series.slice(0, 4).map((series: any) => series.name).join('、')}`}
                     </small>)}
                 </div>}
                 {resource.metadata?.attachmentStructure?.kind === 'document' && <div className="assistant-evidence-stack">
@@ -1107,6 +1114,7 @@ function AiAssistantPage() {
                     · {resource.metadata.attachmentStructure.headingCount || 0} 个标题
                     · {resource.metadata.attachmentStructure.listItemCount || 0} 个列表项
                     · {resource.metadata.attachmentStructure.tableCount || 0} 个表格
+                    · {resource.metadata.attachmentStructure.chartCount || 0} 个图表
                     {resource.metadata.attachmentStructure.truncated ? ' · 已按本地安全预算截断' : ''}
                   </small>
                   {!!resource.metadata.attachmentStructure.headings?.length && <small>
@@ -1118,6 +1126,11 @@ function AiAssistantPage() {
                       {table.layout === 'key-value' ? '字段表' : '表格'} {table.index}：{table.rowCount || 0} 行 · {table.columnCount || 0} 列
                       {!!table.headers?.length && ` · 字段 ${table.headers.slice(0, 8).join('、')}`}
                     </small>)}
+                  {(resource.metadata.attachmentStructure.charts || []).slice(0, 8).map((chart: any) =>
+                    <small key={`doc-chart-${chart.index}`}>
+                      图表 {chart.index}{chart.title ? `《${chart.title}》` : ''}：{chart.seriesCount || 0} 个系列 · {chart.pointCount || 0} 个数据点
+                      {!!chart.series?.length && ` · ${chart.series.slice(0, 4).map((series: any) => series.name).join('、')}`}
+                    </small>)}
                 </div>}
                 {resource.metadata?.attachmentStructure?.kind === 'presentation' && <div className="assistant-evidence-stack">
                   <small>
@@ -1126,12 +1139,18 @@ function AiAssistantPage() {
                       ? ` / ${resource.metadata.attachmentStructure.slideCount}` : ''} 页
                     · {resource.metadata.attachmentStructure.textBlockCount || 0} 个文本块
                     · {resource.metadata.attachmentStructure.tableCount || 0} 个表格
+                    · {resource.metadata.attachmentStructure.chartCount || 0} 个图表
                     {resource.metadata.attachmentStructure.truncated ? ' · 已按本地安全预算截断' : ''}
                   </small>
                   {(resource.metadata.attachmentStructure.slides || []).filter((slide: any) => slide.title).slice(0, 10)
                     .map((slide: any) => <small key={slide.number}>
                       第 {slide.number} 页{slide.titleSource === 'layout-inference' ? '推断标题' : '标题'}：{slide.title}
                       {slide.titleSource === 'layout-inference' ? ` · ${Math.round(Number(slide.titleConfidence || 0) * 100)}% 可信` : ''}
+                    </small>)}
+                  {(resource.metadata.attachmentStructure.slides || []).flatMap((slide: any) => slide.charts || []).slice(0, 8)
+                    .map((chart: any) => <small key={`slide-chart-${chart.index}`}>
+                      图表 {chart.index}{chart.title ? `《${chart.title}》` : ''}：{chart.seriesCount || 0} 个系列 · {chart.pointCount || 0} 个数据点
+                      {!!chart.series?.length && ` · ${chart.series.slice(0, 4).map((series: any) => series.name).join('、')}`}
                     </small>)}
                 </div>}
                 {resource.metadata?.attachmentStructure?.kind === 'pdf' && <div className="assistant-evidence-stack">

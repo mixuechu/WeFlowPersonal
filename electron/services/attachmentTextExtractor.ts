@@ -1,6 +1,6 @@
 import { existsSync } from 'node:fs'
 import { readFile } from 'node:fs/promises'
-import { extname } from 'node:path'
+import { extname, posix } from 'node:path'
 import { spawn } from 'node:child_process'
 import JSZip from 'jszip'
 import ExcelJS from 'exceljs'
@@ -12,7 +12,23 @@ export type SpreadsheetSheetStructure = {
   indexedRows: number
   indexedCells: number
   headers: string[]
+  chartCount: number
+  charts: ChartAttachmentStructure[]
   truncated: boolean
+}
+
+export type ChartAttachmentStructure = {
+  index: number
+  title: string
+  chartType: 'bar' | 'line' | 'pie' | 'doughnut' | 'area' | 'scatter' | 'radar' | 'bubble' | 'unknown'
+  seriesCount: number
+  pointCount: number
+  truncated: boolean
+  series: Array<{
+    name: string
+    categories: string[]
+    values: string[]
+  }>
 }
 
 export type SpreadsheetAttachmentStructure = {
@@ -20,6 +36,7 @@ export type SpreadsheetAttachmentStructure = {
   sheetCount: number
   indexedSheetCount: number
   indexedCells: number
+  chartCount: number
   truncated: boolean
   sheets: SpreadsheetSheetStructure[]
 }
@@ -31,9 +48,11 @@ export type DocumentAttachmentStructure = {
   listItemCount: number
   tableCount: number
   headerFooterCount: number
+  chartCount: number
   truncated: boolean
   headings: Array<{ level: number, text: string }>
   tables: Array<{ index: number, rowCount: number, columnCount: number, layout: 'grid' | 'key-value', headers: string[] }>
+  charts: ChartAttachmentStructure[]
 }
 
 export type PresentationAttachmentStructure = {
@@ -42,6 +61,7 @@ export type PresentationAttachmentStructure = {
   indexedSlideCount: number
   textBlockCount: number
   tableCount: number
+  chartCount: number
   truncated: boolean
   slides: Array<{
     number: number
@@ -50,6 +70,8 @@ export type PresentationAttachmentStructure = {
     titleConfidence: number
     textBlockCount: number
     tableCount: number
+    chartCount: number
+    charts: ChartAttachmentStructure[]
   }>
 }
 
@@ -96,6 +118,9 @@ const MAX_DOCUMENT_BLOCKS = 800
 const MAX_DOCUMENT_TABLES = 40
 const MAX_PRESENTATION_SLIDES = 80
 const MAX_PRESENTATION_TEXT_BLOCKS = 800
+const MAX_ATTACHMENT_CHARTS = 40
+const MAX_CHART_SERIES = 12
+const MAX_CHART_POINTS = 100
 const PLAIN_TEXT_EXTENSIONS = new Set([
   '.txt', '.md', '.markdown', '.csv', '.tsv', '.json', '.jsonl', '.xml',
   '.html', '.htm', '.log', '.yaml', '.yml', '.ini', '.conf'
@@ -139,6 +164,139 @@ function normalizeText(value: string): string {
     .replace(/[ \t]{2,}/g, ' ')
     .trim()
     .slice(0, MAX_TEXT_CHARS)
+}
+
+function relationshipTargets(xml: string, relationshipKind: 'chart' | 'drawing'): string[] {
+  return [...xml.matchAll(/<Relationship\b[^>]*\/?>/gi)]
+    .filter(match => new RegExp(`/relationships/${relationshipKind}"`, 'i').test(match[0]))
+    .map(match => xmlAttribute(match[0], 'Target'))
+    .filter(Boolean)
+}
+
+function resolveArchiveRelationship(ownerPath: string, target: string): string {
+  return posix.normalize(posix.join(posix.dirname(ownerPath), target.replace(/^\/+/, '')))
+}
+
+function ownerRelationshipsPath(ownerPath: string): string {
+  return posix.join(posix.dirname(ownerPath), '_rels', `${posix.basename(ownerPath)}.rels`)
+}
+
+function chartPointValues(xml: string): string[] {
+  const points = [...xml.matchAll(/<c:pt\b[^>]*>([\s\S]*?)<\/c:pt>/gi)]
+    .map(point => normalizeText(decodeXmlText(point[1].match(/<c:v\b[^>]*>([\s\S]*?)<\/c:v>/i)?.[1] || '')))
+    .filter(Boolean)
+  if (points.length) return points.slice(0, MAX_CHART_POINTS + 1)
+  return [...xml.matchAll(/<c:v\b[^>]*>([\s\S]*?)<\/c:v>/gi)]
+    .map(value => normalizeText(decodeXmlText(value[1])))
+    .filter(Boolean)
+    .slice(0, MAX_CHART_POINTS + 1)
+}
+
+function chartTypeFromXml(xml: string): ChartAttachmentStructure['chartType'] {
+  const mapping: Array<[RegExp, ChartAttachmentStructure['chartType']]> = [
+    [/<c:barChart\b/i, 'bar'],
+    [/<c:lineChart\b/i, 'line'],
+    [/<c:pieChart\b/i, 'pie'],
+    [/<c:doughnutChart\b/i, 'doughnut'],
+    [/<c:areaChart\b/i, 'area'],
+    [/<c:scatterChart\b/i, 'scatter'],
+    [/<c:radarChart\b/i, 'radar'],
+    [/<c:bubbleChart\b/i, 'bubble']
+  ]
+  return mapping.find(([pattern]) => pattern.test(xml))?.[1] || 'unknown'
+}
+
+function parseChartXml(xml: string, index: number): ChartAttachmentStructure {
+  const titleXml = xml.match(/<c:title\b[^>]*>([\s\S]*?)<\/c:title>/i)?.[1] || ''
+  const title = normalizeText([
+    ...titleXml.matchAll(/<a:t\b[^>]*>([\s\S]*?)<\/a:t>/gi),
+    ...titleXml.matchAll(/<c:v\b[^>]*>([\s\S]*?)<\/c:v>/gi)
+  ].map(match => decodeXmlText(match[1])).join(' ')).slice(0, 300)
+  let pointCount = 0
+  let truncated = false
+  const series = [...xml.matchAll(/<c:ser\b[^>]*>([\s\S]*?)<\/c:ser>/gi)]
+    .slice(0, MAX_CHART_SERIES)
+    .map((match, seriesIndex) => {
+      const seriesXml = match[1]
+      const nameXml = seriesXml.match(/<c:tx\b[^>]*>([\s\S]*?)<\/c:tx>/i)?.[1] || ''
+      const name = normalizeText(decodeXmlText(
+        nameXml.match(/<c:v\b[^>]*>([\s\S]*?)<\/c:v>/i)?.[1]
+        || nameXml.match(/<a:t\b[^>]*>([\s\S]*?)<\/a:t>/i)?.[1]
+        || ''
+      )).slice(0, 200) || `系列 ${seriesIndex + 1}`
+      const categoriesXml = seriesXml.match(/<c:(?:cat|xVal)\b[^>]*>([\s\S]*?)<\/c:(?:cat|xVal)>/i)?.[1] || ''
+      const valuesXml = seriesXml.match(/<c:(?:val|yVal|bubbleSize)\b[^>]*>([\s\S]*?)<\/c:(?:val|yVal|bubbleSize)>/i)?.[1] || ''
+      const rawCategories = chartPointValues(categoriesXml)
+      const rawValues = chartPointValues(valuesXml)
+      const remaining = Math.max(0, MAX_CHART_POINTS - pointCount)
+      const seriesPointCount = Math.min(remaining, Math.max(rawCategories.length, rawValues.length))
+      const categories = rawCategories.slice(0, seriesPointCount)
+      const values = rawValues.slice(0, seriesPointCount)
+      pointCount += seriesPointCount
+      if (seriesPointCount < Math.max(rawCategories.length, rawValues.length)) truncated = true
+      return { name, categories, values }
+    })
+  if ([...xml.matchAll(/<c:ser\b/gi)].length > MAX_CHART_SERIES) truncated = true
+  return {
+    index,
+    title,
+    chartType: chartTypeFromXml(xml),
+    seriesCount: series.length,
+    pointCount,
+    truncated,
+    series
+  }
+}
+
+async function extractOwnerCharts(
+  archive: JSZip,
+  ownerPath: string,
+  startIndex = 1,
+  maxCharts = MAX_ATTACHMENT_CHARTS
+): Promise<ChartAttachmentStructure[]> {
+  if (maxCharts <= 0) return []
+  const relationshipsXml = await archive.file(ownerRelationshipsPath(ownerPath))?.async('string') || ''
+  const chartPaths = relationshipTargets(relationshipsXml, 'chart')
+    .map(target => resolveArchiveRelationship(ownerPath, target))
+  const drawingPaths = relationshipTargets(relationshipsXml, 'drawing')
+    .map(target => resolveArchiveRelationship(ownerPath, target))
+  for (const drawingPath of drawingPaths) {
+    const drawingRelationships = await archive.file(ownerRelationshipsPath(drawingPath))?.async('string') || ''
+    chartPaths.push(...relationshipTargets(drawingRelationships, 'chart')
+      .map(target => resolveArchiveRelationship(drawingPath, target)))
+  }
+  const uniquePaths = [...new Set(chartPaths)].slice(0, Math.min(MAX_ATTACHMENT_CHARTS, maxCharts))
+  const charts: ChartAttachmentStructure[] = []
+  for (const [offset, chartPath] of uniquePaths.entries()) {
+    const xml = await archive.file(chartPath)?.async('string') || ''
+    if (xml) charts.push(parseChartXml(xml, startIndex + offset))
+  }
+  return charts
+}
+
+function chartTypeLabel(type: ChartAttachmentStructure['chartType']): string {
+  return {
+    bar: '柱状图',
+    line: '折线图',
+    pie: '饼图',
+    doughnut: '环形图',
+    area: '面积图',
+    scatter: '散点图',
+    radar: '雷达图',
+    bubble: '气泡图',
+    unknown: '图表'
+  }[type]
+}
+
+function chartTextLines(chart: ChartAttachmentStructure, scope = ''): string[] {
+  const lines = [`[${scope ? `${scope} · ` : ''}图表 ${chart.index}${chart.title ? `：${chart.title}` : ''}]`, `类型：${chartTypeLabel(chart.chartType)}`]
+  chart.series.forEach(series => {
+    lines.push(`系列：${series.name}`)
+    const count = Math.max(series.categories.length, series.values.length)
+    if (count) lines.push(`数据：${Array.from({ length: count }, (_, index) =>
+      `${series.categories[index] || `第 ${index + 1} 项`}=${series.values[index] || '值缺失'}`).join(' | ')}`)
+  })
+  return lines
 }
 
 async function extractOfficeXml(buffer: Buffer, extension: string): Promise<string> {
@@ -230,6 +388,8 @@ async function extractDocument(buffer: Buffer): Promise<AttachmentTextResult> {
     headerFooterCount += 1
     output.push(`[${name.includes('header') ? '页眉' : '页脚'}] ${text}`)
   }
+  const charts = await extractOwnerCharts(archive, 'word/document.xml')
+  charts.forEach(chart => output.push(...chartTextLines(chart, '文档')))
   const text = normalizeText(output.join('\n'))
   const structure: DocumentAttachmentStructure = {
     kind: 'document',
@@ -238,9 +398,11 @@ async function extractDocument(buffer: Buffer): Promise<AttachmentTextResult> {
     listItemCount,
     tableCount: tables.length,
     headerFooterCount,
+    chartCount: charts.length,
     truncated: truncated || output.join('\n').length > MAX_TEXT_CHARS,
     headings,
-    tables
+    tables,
+    charts
   }
   return text
     ? { success: true, text, format: '.docx', status: 'indexed', structure }
@@ -256,6 +418,7 @@ async function extractPresentation(buffer: Buffer): Promise<AttachmentTextResult
   const slides: PresentationAttachmentStructure['slides'] = []
   let textBlockCount = 0
   let tableCount = 0
+  let chartCount = 0
   let truncated = slideNames.length > MAX_PRESENTATION_SLIDES
 
   for (const [index, name] of slideNames.slice(0, MAX_PRESENTATION_SLIDES).entries()) {
@@ -298,6 +461,12 @@ async function extractPresentation(buffer: Buffer): Promise<AttachmentTextResult
     }
     const tableMatches = [...xml.matchAll(/<a:tbl\b[^>]*>([\s\S]*?)<\/a:tbl>/gi)]
     const slideTableCount = tableMatches.length
+    const slideCharts = await extractOwnerCharts(
+      archive,
+      name,
+      chartCount + 1,
+      MAX_ATTACHMENT_CHARTS - chartCount
+    )
     output.push(`[幻灯片 ${index + 1}${title ? `：${title}` : ''}]`)
     blocks.forEach(block => output.push(block))
     for (const [tableIndex, table] of tableMatches.entries()) {
@@ -307,14 +476,18 @@ async function extractPresentation(buffer: Buffer): Promise<AttachmentTextResult
       output.push(`[幻灯片 ${index + 1} · 表格 ${tableIndex + 1}]`)
       rows.forEach((row, rowIndex) => output.push(`${rowIndex === 0 ? '表头' : `第 ${rowIndex + 1} 行`}：${row.join(' | ')}`))
     }
+    slideCharts.forEach(chart => output.push(...chartTextLines(chart, `幻灯片 ${index + 1}`)))
     tableCount += slideTableCount
+    chartCount += slideCharts.length
     slides.push({
       number: index + 1,
       title,
       titleSource,
       titleConfidence,
       textBlockCount: blocks.length,
-      tableCount: slideTableCount
+      tableCount: slideTableCount,
+      chartCount: slideCharts.length,
+      charts: slideCharts
     })
   }
   const text = normalizeText(output.join('\n'))
@@ -324,6 +497,7 @@ async function extractPresentation(buffer: Buffer): Promise<AttachmentTextResult
     indexedSlideCount: slides.length,
     textBlockCount,
     tableCount,
+    chartCount,
     truncated: truncated || output.join('\n').length > MAX_TEXT_CHARS,
     slides
   }
@@ -440,6 +614,8 @@ async function extractSpreadsheetXmlFallback(buffer: Buffer): Promise<Attachment
       indexedRows: 0,
       indexedCells: 0,
       headers: [],
+      chartCount: 0,
+      charts: [],
       truncated: rowMatches.length > MAX_SPREADSHEET_ROWS_PER_SHEET
     }
     const lines = [`[工作表：${descriptor.name}]`]
@@ -486,6 +662,14 @@ async function extractSpreadsheetXmlFallback(buffer: Buffer): Promise<Attachment
       sheet.indexedCells += cells.length
       indexedCells += cells.length
     }
+    sheet.charts = await extractOwnerCharts(
+      archive,
+      normalizedPath,
+      sheets.reduce((total, item) => total + item.chartCount, 0) + 1,
+      MAX_ATTACHMENT_CHARTS - sheets.reduce((total, item) => total + item.chartCount, 0)
+    )
+    sheet.chartCount = sheet.charts.length
+    sheet.charts.forEach(chart => lines.push(...chartTextLines(chart, `工作表 ${descriptor.name}`)))
     if (sheet.truncated) truncated = true
     sheets.push(sheet)
     output.push(lines.join('\n'))
@@ -496,6 +680,7 @@ async function extractSpreadsheetXmlFallback(buffer: Buffer): Promise<Attachment
     sheetCount: sheetDescriptors.length,
     indexedSheetCount: sheets.length,
     indexedCells,
+    chartCount: sheets.reduce((total, sheet) => total + sheet.chartCount, 0),
     truncated,
     sheets
   }
@@ -506,6 +691,7 @@ async function extractSpreadsheetXmlFallback(buffer: Buffer): Promise<Attachment
 
 async function extractSpreadsheet(buffer: Buffer): Promise<AttachmentTextResult> {
   const workbook = new ExcelJS.Workbook()
+  const archive = await JSZip.loadAsync(buffer)
   try {
     await workbook.xlsx.load(buffer)
   } catch {
@@ -513,6 +699,20 @@ async function extractSpreadsheet(buffer: Buffer): Promise<AttachmentTextResult>
   }
   const output: string[] = []
   const sheets: SpreadsheetSheetStructure[] = []
+  const workbookXml = await archive.file('xl/workbook.xml')?.async('string') || ''
+  const relationshipsXml = await archive.file('xl/_rels/workbook.xml.rels')?.async('string') || ''
+  const worksheetRelationships = new Map(
+    [...relationshipsXml.matchAll(/<Relationship\b[^>]*\/?>/gi)].map(match => [
+      xmlAttribute(match[0], 'Id'),
+      xmlAttribute(match[0], 'Target').replace(/^\/?xl\//, '')
+    ])
+  )
+  const worksheetPaths = new Map(
+    [...workbookXml.matchAll(/<(?:\w+:)?sheet\b[^>]*\/?>/gi)].map(match => [
+      xmlAttribute(match[0], 'name'),
+      worksheetRelationships.get(xmlAttribute(match[0], 'r:id')) || ''
+    ])
+  )
   let indexedCells = 0
   let truncated = workbook.worksheets.length > MAX_SPREADSHEET_SHEETS
 
@@ -530,6 +730,8 @@ async function extractSpreadsheet(buffer: Buffer): Promise<AttachmentTextResult>
       indexedRows: 0,
       indexedCells: 0,
       headers: [],
+      chartCount: 0,
+      charts: [],
       truncated: actualRows > MAX_SPREADSHEET_ROWS_PER_SHEET
     }
     const lines: string[] = [`[工作表：${worksheet.name}]`]
@@ -567,6 +769,20 @@ async function extractSpreadsheet(buffer: Buffer): Promise<AttachmentTextResult>
       sheet.indexedCells += cells.length
       indexedCells += cells.length
     }
+    const worksheetPath = worksheetPaths.get(worksheet.name) || ''
+    if (worksheetPath) {
+      const normalizedPath = worksheetPath.startsWith('worksheets/')
+        ? `xl/${worksheetPath}`
+        : `xl/${worksheetPath.replace(/^\/+/, '')}`
+      sheet.charts = await extractOwnerCharts(
+        archive,
+        normalizedPath,
+        sheets.reduce((total, item) => total + item.chartCount, 0) + 1,
+        MAX_ATTACHMENT_CHARTS - sheets.reduce((total, item) => total + item.chartCount, 0)
+      )
+      sheet.chartCount = sheet.charts.length
+      sheet.charts.forEach(chart => lines.push(...chartTextLines(chart, `工作表 ${worksheet.name}`)))
+    }
     if (sheet.truncated) truncated = true
     sheets.push(sheet)
     output.push(lines.join('\n'))
@@ -578,6 +794,7 @@ async function extractSpreadsheet(buffer: Buffer): Promise<AttachmentTextResult>
     sheetCount: workbook.worksheets.length,
     indexedSheetCount: sheets.length,
     indexedCells,
+    chartCount: sheets.reduce((total, sheet) => total + sheet.chartCount, 0),
     truncated,
     sheets
   }
@@ -816,5 +1033,8 @@ export const ATTACHMENT_TEXT_LIMITS = {
   maxSpreadsheetCells: MAX_SPREADSHEET_CELLS,
   maxDocumentBlocks: MAX_DOCUMENT_BLOCKS,
   maxPresentationSlides: MAX_PRESENTATION_SLIDES,
-  maxPresentationTextBlocks: MAX_PRESENTATION_TEXT_BLOCKS
+  maxPresentationTextBlocks: MAX_PRESENTATION_TEXT_BLOCKS,
+  maxAttachmentCharts: MAX_ATTACHMENT_CHARTS,
+  maxChartSeries: MAX_CHART_SERIES,
+  maxChartPoints: MAX_CHART_POINTS
 }

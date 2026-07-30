@@ -57,6 +57,27 @@ function createPositionedPdf(items: Array<{ x: number, y: number, text: string }
   return Buffer.from(output)
 }
 
+function createChartXml(title = '季度收入趋势', pointCount = 2): string {
+  const categories = Array.from({ length: pointCount }, (_, index) =>
+    `<c:pt idx="${index}"><c:v>${pointCount === 2 ? ['第一季度', '第二季度'][index] : `分类${index + 1}`}</c:v></c:pt>`).join('')
+  const values = Array.from({ length: pointCount }, (_, index) =>
+    `<c:pt idx="${index}"><c:v>${pointCount === 2 ? [120, 180][index] : index + 1}</c:v></c:pt>`).join('')
+  return [
+    '<c:chartSpace><c:chart>',
+    `<c:title><c:tx><c:rich><a:p><a:r><a:t>${title}</a:t></a:r></a:p></c:rich></c:tx></c:title>`,
+    '<c:plotArea><c:barChart><c:ser>',
+    '<c:tx><c:strRef><c:strCache><c:pt idx="0"><c:v>收入</c:v></c:pt></c:strCache></c:strRef></c:tx>',
+    `<c:cat><c:strRef><c:strCache>${categories}</c:strCache></c:strRef></c:cat>`,
+    `<c:val><c:numRef><c:numCache>${values}</c:numCache></c:numRef></c:val>`,
+    '</c:ser></c:barChart></c:plotArea>',
+    '</c:chart></c:chartSpace>'
+  ].join('')
+}
+
+function chartRelationship(target: string): string {
+  return `<Relationships><Relationship Id="rIdChart1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/chart" Target="${target}"/></Relationships>`
+}
+
 test('attachment text extractor reads bounded UTF-8 text and rejects oversized input', async () => {
   const directory = mkdtempSync(join(tmpdir(), 'weflow-attachment-text-'))
   try {
@@ -164,6 +185,75 @@ test('attachment text extractor preserves PPTX slide order, titles and tables', 
       assert.equal(result.structure.slides[2].title, '附录')
       assert.equal(result.structure.slides[2].titleSource, 'layout-inference')
       assert.equal(result.structure.tableCount, 1)
+    }
+  } finally {
+    rmSync(directory, { recursive: true, force: true })
+  }
+})
+
+test('attachment text extractor recovers chart semantics from DOCX, PPTX and XLSX locally', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'weflow-attachment-charts-'))
+  try {
+    const docx = new JSZip()
+    docx.file('word/document.xml', '<w:document><w:body><w:p><w:r><w:t>经营报告</w:t></w:r></w:p></w:body></w:document>')
+    docx.file('word/_rels/document.xml.rels', chartRelationship('charts/chart1.xml'))
+    docx.file('word/charts/chart1.xml', createChartXml())
+    const docxPath = join(directory, '经营报告.docx')
+    writeFileSync(docxPath, await docx.generateAsync({ type: 'nodebuffer' }))
+
+    const pptx = new JSZip()
+    pptx.file('ppt/slides/slide1.xml', '<p:sld><p:cSld><p:spTree><p:sp><p:txBody><a:p><a:r><a:t>经营汇报</a:t></a:r></a:p></p:txBody></p:sp></p:spTree></p:cSld></p:sld>')
+    pptx.file('ppt/slides/_rels/slide1.xml.rels', chartRelationship('../charts/chart1.xml'))
+    pptx.file('ppt/charts/chart1.xml', createChartXml())
+    const pptxPath = join(directory, '经营汇报.pptx')
+    writeFileSync(pptxPath, await pptx.generateAsync({ type: 'nodebuffer' }))
+
+    const workbook = new ExcelJS.Workbook()
+    workbook.addWorksheet('经营数据').addRows([['季度', '收入'], ['第一季度', 120], ['第二季度', 180]])
+    const xlsxArchive = await JSZip.loadAsync(await workbook.xlsx.writeBuffer())
+    xlsxArchive.file('xl/worksheets/_rels/sheet1.xml.rels',
+      '<Relationships><Relationship Id="rIdDrawing1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/drawing" Target="../drawings/drawing1.xml"/></Relationships>')
+    xlsxArchive.file('xl/drawings/_rels/drawing1.xml.rels', chartRelationship('../charts/chart1.xml'))
+    xlsxArchive.file('xl/charts/chart1.xml', createChartXml())
+    const xlsxPath = join(directory, '经营数据.xlsx')
+    writeFileSync(xlsxPath, await xlsxArchive.generateAsync({ type: 'nodebuffer' }))
+
+    for (const filePath of [docxPath, pptxPath, xlsxPath]) {
+      const result = await extractAttachmentText(filePath)
+      assert.equal(result.success, true)
+      assert.match(result.text, /季度收入趋势/)
+      assert.match(result.text, /系列：收入/)
+      assert.match(result.text, /第一季度=120/)
+      assert.match(result.text, /第二季度=180/)
+      const chartCount = result.structure?.kind === 'document'
+        ? result.structure.chartCount
+        : result.structure?.kind === 'presentation'
+          ? result.structure.chartCount
+          : result.structure?.kind === 'spreadsheet'
+            ? result.structure.chartCount
+            : 0
+      assert.equal(chartCount, 1)
+    }
+  } finally {
+    rmSync(directory, { recursive: true, force: true })
+  }
+})
+
+test('attachment chart semantics enforce a bounded point budget', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'weflow-attachment-chart-budget-'))
+  try {
+    const archive = new JSZip()
+    archive.file('word/document.xml', '<w:document><w:body><w:p><w:r><w:t>大型图表</w:t></w:r></w:p></w:body></w:document>')
+    archive.file('word/_rels/document.xml.rels', chartRelationship('charts/chart1.xml'))
+    archive.file('word/charts/chart1.xml', createChartXml('大型趋势', ATTACHMENT_TEXT_LIMITS.maxChartPoints + 25))
+    const filePath = join(directory, '大型图表.docx')
+    writeFileSync(filePath, await archive.generateAsync({ type: 'nodebuffer' }))
+    const result = await extractAttachmentText(filePath)
+    assert.equal(result.structure?.kind, 'document')
+    if (result.structure?.kind === 'document') {
+      assert.equal(result.structure.charts[0].pointCount, ATTACHMENT_TEXT_LIMITS.maxChartPoints)
+      assert.equal(result.structure.charts[0].truncated, true)
+      assert.ok(result.structure.charts[0].series[0].values.length <= ATTACHMENT_TEXT_LIMITS.maxChartPoints)
     }
   } finally {
     rmSync(directory, { recursive: true, force: true })
