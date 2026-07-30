@@ -106,6 +106,7 @@ function AiAssistantPage() {
   const [pathToId, setPathToId] = useState('')
   const [graphPath, setGraphPath] = useState<any>(null)
   const [graphCommonNeighbors, setGraphCommonNeighbors] = useState<any>(null)
+  const [mergeTargets, setMergeTargets] = useState<Record<string, string>>({})
   const [memoryDiagnostics, setMemoryDiagnostics] = useState<any>(null)
   const [showDiagnostics, setShowDiagnostics] = useState(false)
   const [backingUpMemory, setBackingUpMemory] = useState(false)
@@ -490,8 +491,17 @@ function AiAssistantPage() {
     }
   }
 
-  const decideReview = async (id: string, decision: 'confirmed' | 'rejected') => {
-    await window.electronAPI.aiAssistant.updateGraphReview(id, decision)
+  const decideReview = async (
+    id: string,
+    decision: 'confirmed' | 'rejected',
+    options?: { mergeTargetEntityId?: string }
+  ) => {
+    await window.electronAPI.aiAssistant.updateGraphReview(id, decision, options)
+    setMergeTargets(current => {
+      const next = { ...current }
+      delete next[id]
+      return next
+    })
     await load()
   }
 
@@ -1790,17 +1800,33 @@ function AiAssistantPage() {
                 const relation = review.kind === 'relation' ? graph.relations.find((item: any) => item.id === review.relationId) : null
                 const subject = relation ? graph.entities.find((item: any) => item.id === relation.subjectId) : null
                 const object = relation ? graph.entities.find((item: any) => item.id === relation.objectId) : null
+                const duplicateEntities = review.kind === 'possible_duplicate'
+                  ? [review.leftEntityId, review.rightEntityId]
+                    .map((entityId: string) => graph.entities.find((item: any) => item.id === entityId))
+                  : []
+                const selectedMergeTargetId = mergeTargets[review.id] || ''
+                const selectedMergeTarget = duplicateEntities.find((entity: any) => entity?.id === selectedMergeTargetId)
+                const selectedMergeSource = duplicateEntities.find((entity: any) => entity?.id && entity.id !== selectedMergeTargetId)
                 const relationEntityBlocked = Boolean(relation &&
                   (subject?.trustStatus !== 'confirmed' || object?.trustStatus !== 'confirmed'))
                 return <><div><strong>{review.kind === 'possible_duplicate' ? `可能是同一个人：${review.title}` : review.title}</strong>
                 {review.kind === 'possible_duplicate' && <div className="assistant-identity-pair">
                   {[review.leftEntityId, review.rightEntityId].map((entityId: string) => {
                     const entity = graph.entities.find((item: any) => item.id === entityId)
-                    return <span key={entityId}><b>{entity?.canonicalName || '未知人物'}</b><small>{
+                    const selected = selectedMergeTargetId === entityId
+                    return <button type="button" className={selected ? 'selected' : ''} key={entityId}
+                      onClick={() => setMergeTargets(current => ({ ...current, [review.id]: entityId }))}>
+                      <span>{selected ? '✓ 将保留此身份' : '选择保留此身份'}</span>
+                      <b>{entity?.canonicalName || '未知人物'}</b><small>{
                       entity?.externalIdentities?.map((identity: any) => identity.accountId).join('、') ||
                       entity?.aliases?.join('、') || entity?.accountIds?.join('、') || '暂无别名或账号'
-                    }</small></span>
+                    }</small></button>
                   })}
+                </div>}
+                {review.kind === 'possible_duplicate' && <div className={`assistant-merge-preview${selectedMergeTarget ? ' ready' : ''}`}>
+                  {selectedMergeTarget
+                    ? <><b>合并预览：</b><span>{selectedMergeSource?.canonicalName || '被合并身份'} → {selectedMergeTarget.canonicalName || '保留身份'}</span><small>右侧身份会消失；保留身份的名称和档案作为主记录，账号、别名、证据、关系和事件会迁入。之后仍可从合并历史撤销。</small></>
+                    : <><b>请先选择保留哪一个身份</b><small>系统不会再替你默认决定合并方向。</small></>}
                 </div>}
                 {review.kind === 'possible_duplicate' && <div className="assistant-review-note">
                   <b>候选来源：</b>{review.candidateSource === 'llm_suggestion' ? '模型基于上下文建议' : '确定性身份规则'}
@@ -1848,14 +1874,14 @@ function AiAssistantPage() {
                           ? '确认后启用可信实体'
                       : '确认后写入关系'
                 }</small></div>
-              <div><button onClick={() => void decideReview(review.id, 'rejected')}>拒绝</button><button className="primary" disabled={(review.kind === 'possible_duplicate' && (!review.leftEntityId || !review.rightEntityId)) || relationEntityBlocked} title={review.kind === 'possible_duplicate' && (!review.leftEntityId || !review.rightEntityId) ? '候选信息不完整，暂不能合并' : relationEntityBlocked ? '请先确认关系两端的实体' : ''} onClick={() => void decideReview(review.id, 'confirmed')}>{review.kind === 'relation' ? '确认此方向' : '确认'}</button></div></>
+              <div><button onClick={() => void decideReview(review.id, 'rejected')}>拒绝</button><button className="primary" disabled={(review.kind === 'possible_duplicate' && (!review.leftEntityId || !review.rightEntityId || !selectedMergeTargetId)) || relationEntityBlocked} title={review.kind === 'possible_duplicate' && (!review.leftEntityId || !review.rightEntityId) ? '候选信息不完整，暂不能合并' : review.kind === 'possible_duplicate' && !selectedMergeTargetId ? '请先选择合并后保留的身份' : relationEntityBlocked ? '请先确认关系两端的实体' : ''} onClick={() => void decideReview(review.id, 'confirmed', review.kind === 'possible_duplicate' ? { mergeTargetEntityId: selectedMergeTargetId } : undefined)}>{review.kind === 'relation' ? '确认此方向' : review.kind === 'possible_duplicate' ? '按此方向合并' : '确认'}</button></div></>
               })()}
             </article>)}
             {!pendingReviews.length && <div className="assistant-empty">当前没有等待确认的身份或关系。</div>}
             {mergeHistory.length > 0 && <>
               <div className="assistant-section-heading"><div><span className="assistant-eyebrow">MERGE HISTORY</span><h3>最近身份合并</h3></div></div>
               {mergeHistory.map((merge: any) => <article className="assistant-review-item" key={`merge-${merge.id}`}>
-                <div><strong>已合并身份</strong><p>{merge.source_entity_id} → {merge.target_entity_id}</p><small>{new Date(merge.created_at).toLocaleString('zh-CN')}</small></div>
+                <div><strong>已合并身份</strong><p>{merge.source_name || merge.source_entity_id} → {merge.target_name || merge.target_entity_id}</p><small>被合并 → 保留 · {new Date(merge.created_at).toLocaleString('zh-CN')}</small></div>
                 <div><button onClick={() => void revertMerge(Number(merge.id))}>撤销合并</button></div>
               </article>)}
             </>}

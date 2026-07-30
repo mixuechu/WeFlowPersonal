@@ -49,6 +49,7 @@ import {
   isTrustedEntity,
   type EntityTrustStatus
 } from './entityTrustPolicy'
+import { planEntityMerge } from './entityMergeDirection'
 import {
   enqueueUniqueNotification,
   markNotificationAttempt,
@@ -171,7 +172,7 @@ type AssistantState = {
   graph: {
     entities: GraphEntity[]
     relations: GraphRelation[]
-    reviewQueue: Array<{ id: string; kind: 'possible_duplicate' | 'relation' | 'entity_summary' | 'entity_alias' | 'entity_creation'; title: string; detail: string; confidence: number; status: 'pending' | 'confirmed' | 'rejected'; createdAt: string; leftEntityId?: string; rightEntityId?: string; relationId?: string; entityId?: string; entityIdentityVersion?: number; entityCanonicalName?: string; entityType?: string; legacyReview?: boolean; previousSummary?: string; summaryText?: string; aliasText?: string; evidence?: Array<{ messageId: string; sessionId: string; timestamp: number; sender: string; excerpt: string }>; candidateSource?: string; candidateSignals?: Array<{ source: string; label: string; value: string }> }>
+    reviewQueue: Array<{ id: string; kind: 'possible_duplicate' | 'relation' | 'entity_summary' | 'entity_alias' | 'entity_creation'; title: string; detail: string; confidence: number; status: 'pending' | 'confirmed' | 'rejected'; createdAt: string; leftEntityId?: string; rightEntityId?: string; mergeSourceEntityId?: string; mergeTargetEntityId?: string; relationId?: string; entityId?: string; entityIdentityVersion?: number; entityCanonicalName?: string; entityType?: string; legacyReview?: boolean; previousSummary?: string; summaryText?: string; aliasText?: string; evidence?: Array<{ messageId: string; sessionId: string; timestamp: number; sender: string; excerpt: string }>; candidateSource?: string; candidateSignals?: Array<{ source: string; label: string; value: string }> }>
     identityScan: { lastFullScanAt: string | null; lastRunAt: string | null; lastMode: 'incremental' | 'full' | null; lastCandidateCount: number }
   }
 }
@@ -2895,9 +2896,16 @@ export class AiAssistantService {
     return preferences
   }
 
-  updateGraphReview(id: string, decision: 'confirmed' | 'rejected'): any {
+  updateGraphReview(
+    id: string,
+    decision: 'confirmed' | 'rejected',
+    options?: { mergeTargetEntityId?: string }
+  ): any {
     const review = this.state.graph.reviewQueue.find(item => item.id === id)
     if (!review || review.status !== 'pending') return null
+    const mergePlan = review.kind === 'possible_duplicate' && decision === 'confirmed'
+      ? planEntityMerge(review, this.state.graph.entities, options?.mergeTargetEntityId)
+      : null
     review.status = decision
     if (review.kind === 'entity_summary' && review.entityId) {
       const entity = this.state.graph.entities.find(item => item.id === review.entityId)
@@ -2986,10 +2994,18 @@ export class AiAssistantService {
         relation.updatedAt = new Date().toISOString()
       }
     }
-    if (review.kind === 'possible_duplicate' && decision === 'confirmed' && review.leftEntityId && review.rightEntityId) {
-      const source = this.state.graph.entities.find(entity => entity.id === review.leftEntityId)
-      const target = this.state.graph.entities.find(entity => entity.id === review.rightEntityId)
-      if (source && target) {
+    if (review.kind === 'possible_duplicate' && decision === 'confirmed' && mergePlan) {
+      const { source, target } = mergePlan
+      {
+        const affectedReviews = this.state.graph.reviewQueue
+          .filter(pending =>
+            pending.id === review.id ||
+            pending.entityId === source.id ||
+            pending.leftEntityId === source.id ||
+            pending.rightEntityId === source.id)
+          .map(pending => pending.id === review.id
+            ? { ...structuredClone(pending), status: 'pending' as const, mergeSourceEntityId: undefined, mergeTargetEntityId: undefined }
+            : structuredClone(pending))
         const sourceEventParticipants = personalMemoryStore.listEntityEventParticipants(source.id)
         const targetEventParticipants = personalMemoryStore.listEntityEventParticipants(target.id)
         personalMemoryStore.recordMerge(source.id, target.id, {
@@ -2997,8 +3013,11 @@ export class AiAssistantService {
           target: structuredClone(target),
           relations: structuredClone(this.state.graph.relations),
           sourceEventParticipants,
-          targetEventParticipants
+          targetEventParticipants,
+          affectedReviews
         })
+        review.mergeSourceEntityId = source.id
+        review.mergeTargetEntityId = target.id
         target.aliases = [...new Set([...target.aliases, source.canonicalName, ...source.aliases])].filter(alias => alias !== target.canonicalName)
         target.accountIds = [...new Set([...target.accountIds, ...source.accountIds])]
         const identities = new Map(
@@ -3037,8 +3056,10 @@ export class AiAssistantService {
         this.state.graph.relations = [...normalizedRelations.values()]
         this.state.graph.entities = this.state.graph.entities.filter(entity => entity.id !== source.id)
         for (const pending of this.state.graph.reviewQueue) {
-          if (pending.status === 'pending' && pending.entityId === source.id &&
-              (pending.kind === 'entity_alias' || pending.kind === 'entity_summary')) {
+          if (pending.id !== review.id && pending.status === 'pending' &&
+              (pending.entityId === source.id ||
+               pending.leftEntityId === source.id ||
+               pending.rightEntityId === source.id)) {
             pending.status = 'rejected'
             pending.detail = `${pending.detail} 原实体已合并，此候选自动关闭。`
           }
@@ -3063,6 +3084,12 @@ export class AiAssistantService {
     this.state.graph.entities = this.state.graph.entities.filter(entity => entity.id !== snapshot.source.id && entity.id !== snapshot.target.id)
     this.state.graph.entities.push(snapshot.source, snapshot.target)
     this.state.graph.relations = snapshot.relations
+    if (Array.isArray(snapshot.affectedReviews)) {
+      const affectedIds = new Set(snapshot.affectedReviews.map((review: any) => review.id))
+      this.state.graph.reviewQueue = this.state.graph.reviewQueue
+        .filter(review => !affectedIds.has(review.id))
+        .concat(snapshot.affectedReviews)
+    }
     personalMemoryStore.restoreMergedEventParticipants(
       snapshot.source.id,
       snapshot.target.id,

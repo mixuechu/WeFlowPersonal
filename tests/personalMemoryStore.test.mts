@@ -45,6 +45,7 @@ import {
   inferLegacyEntityTrustStatus,
   isTrustedEntity
 } from '../electron/services/entityTrustPolicy.ts'
+import { planEntityMerge } from '../electron/services/entityMergeDirection.ts'
 import { enqueueUniqueNotification, markNotificationAttempt } from '../electron/services/notificationOutbox.ts'
 import { findCommonGraphNeighbors } from '../electron/services/graphCommonNeighbors.ts'
 import { buildProjectInsights } from '../electron/services/projectInsights.ts'
@@ -73,6 +74,28 @@ const evidence = (messageId: string, excerpt: string) => [{
   excerpt,
   role: 'support'
 }]
+
+test('entity merge direction must explicitly preserve one candidate', () => {
+  const entities = [
+    { id: 'left', type: 'person', canonicalName: '左边身份' },
+    { id: 'right', type: 'person', canonicalName: '右边身份' }
+  ]
+  assert.throws(
+    () => planEntityMerge({ leftEntityId: 'left', rightEntityId: 'right' }, entities),
+    /请选择合并后要保留的身份/
+  )
+  const preserveLeft = planEntityMerge(
+    { leftEntityId: 'left', rightEntityId: 'right' },
+    entities,
+    'left'
+  )
+  assert.equal(preserveLeft.source.id, 'right')
+  assert.equal(preserveLeft.target.id, 'left')
+  assert.throws(
+    () => planEntityMerge({ leftEntityId: 'left', rightEntityId: 'right' }, entities, 'other'),
+    /不属于当前合并候选/
+  )
+})
 
 test('identity candidates explain their source and preserve current negative decisions', () => {
   const left = { id: 'a', type: 'person', canonicalName: '同名用户', aliases: ['小同'], accountIds: ['wx-a'], identityVersion: 2 }

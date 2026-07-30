@@ -1052,7 +1052,23 @@ export class PersonalMemoryStore {
 
   listActiveMerges(limit = 20): any[] {
     if (!this.db) return []
-    return this.db.prepare('SELECT id,source_entity_id,target_entity_id,created_at FROM merge_history WHERE reverted_at IS NULL ORDER BY id DESC LIMIT ?').all(limit) as any[]
+    const rows = this.db.prepare('SELECT id,source_entity_id,target_entity_id,snapshot_json,created_at FROM merge_history WHERE reverted_at IS NULL ORDER BY id DESC LIMIT ?').all(limit) as any[]
+    return rows.map(row => {
+      try {
+        const snapshot = JSON.parse(String(row.snapshot_json || '{}'))
+        return {
+          id: row.id,
+          source_entity_id: row.source_entity_id,
+          target_entity_id: row.target_entity_id,
+          source_name: snapshot.source?.canonicalName || '',
+          target_name: snapshot.target?.canonicalName || '',
+          created_at: row.created_at
+        }
+      } catch {
+        const { snapshot_json: _snapshotJson, ...safeRow } = row
+        return safeRow
+      }
+    })
   }
 
   upsertClaims(claims: any[]): void {
