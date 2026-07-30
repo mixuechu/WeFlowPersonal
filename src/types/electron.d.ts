@@ -1650,7 +1650,7 @@ export interface ElectronAPI {
       createTaskFromMemory: (input: any) => Promise<any>
       updateTaskReview: (id: string, decision: 'mine' | 'rejected') => Promise<any>
       updateReminderPreference: (input: any) => Promise<any>
-      updateGraphReview: (id: string, decision: 'confirmed' | 'rejected', options?: { mergeTargetEntityId?: string; correctedCanonicalName?: string }) => Promise<any>
+      updateGraphReview: (id: string, decision: 'confirmed' | 'rejected', options?: { mergeTargetEntityId?: string; correctedCanonicalName?: string; relationCorrection?: { subjectId?: string; predicate?: string; objectId?: string } }) => Promise<any>
       revertMerge: (id: number) => Promise<any>
       updateMemoryItemStatus: (kind: 'claim' | 'event', id: string, status: 'confirmed' | 'rejected') => Promise<any>
       previewDeleteMemoryItem: (kind: 'claim' | 'event' | 'relation', id: string) => Promise<any>

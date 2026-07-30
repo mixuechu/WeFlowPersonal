@@ -47,6 +47,11 @@ import {
   planEntityCreationConfirmation
 } from '../electron/services/entityTrustPolicy.ts'
 import { planEntityMerge } from '../electron/services/entityMergeDirection.ts'
+import {
+  applyRelationConfirmation,
+  planRelationConfirmation,
+  relationSemanticId
+} from '../electron/services/relationCorrectionPolicy.ts'
 import { enqueueUniqueNotification, markNotificationAttempt } from '../electron/services/notificationOutbox.ts'
 import { findCommonGraphNeighbors } from '../electron/services/graphCommonNeighbors.ts'
 import { buildProjectInsights } from '../electron/services/projectInsights.ts'
@@ -139,6 +144,115 @@ test('entity name corrections are persisted as an auditable history', () => {
     assert.equal(rows[0].after_name, '正确名字')
     assert.equal(rows[0].reason, 'review_correction')
   })
+})
+
+test('relation confirmation can atomically correct direction and predicate', () => {
+  const entities = [
+    { id: 'a', canonicalName: '甲方', trustStatus: 'confirmed' },
+    { id: 'b', canonicalName: '乙方', trustStatus: 'confirmed' },
+    { id: 'candidate', canonicalName: '候选实体', trustStatus: 'candidate' }
+  ]
+  const relation = {
+    id: relationSemanticId('a', '服务对象', 'b'),
+    subjectId: 'a',
+    predicate: '服务对象',
+    objectId: 'b'
+  }
+  const review = { kind: 'relation', relationId: relation.id }
+  const plan = planRelationConfirmation({
+    review,
+    relation,
+    entities,
+    correction: { subjectId: 'b', predicate: '服务于', objectId: 'a' }
+  })
+  assert.equal(plan.changed, true)
+  assert.equal(plan.after.id, relationSemanticId('b', '服务于', 'a'))
+  assert.equal(plan.after.directionExplanation, '从“乙方”指向“甲方”：乙方 服务于 甲方。')
+  assert.throws(
+    () => planRelationConfirmation({
+      review,
+      relation,
+      entities,
+      correction: { subjectId: 'a', predicate: '相关', objectId: 'a' }
+    }),
+    /不能是同一个实体/
+  )
+  assert.throws(
+    () => planRelationConfirmation({
+      review,
+      relation,
+      entities,
+      correction: { subjectId: 'candidate', predicate: '服务于', objectId: 'a' }
+    }),
+    /先确认关系两端/
+  )
+  assert.throws(
+    () => planRelationConfirmation({
+      review,
+      relation: { ...relation, status: 'rejected' },
+      entities
+    }),
+    /已拒绝的关系/
+  )
+})
+
+test('relation corrections preserve before and after direction in audit history', () => {
+  withStore(store => {
+    const before = { id: 'before', subjectId: 'a', predicate: '服务对象', objectId: 'b' }
+    const after = { id: 'after', subjectId: 'b', predicate: '服务于', objectId: 'a' }
+    store.recordRelationCorrection('review-1', before, after)
+    store.recordRelationCorrection('review-2', after, after)
+    const rows = store.listRelationCorrections('a')
+    assert.equal(rows.length, 1)
+    assert.equal(rows[0].before_predicate, '服务对象')
+    assert.equal(rows[0].after_predicate, '服务于')
+    assert.equal(rows[0].after_subject_id, 'b')
+  })
+})
+
+test('relation correction merges into an existing semantic edge without losing evidence', () => {
+  const entities = [
+    { id: 'a', canonicalName: '甲方', trustStatus: 'confirmed' },
+    { id: 'b', canonicalName: '乙方', trustStatus: 'confirmed' }
+  ]
+  const source = {
+    id: relationSemanticId('a', '错误方向', 'b'),
+    subjectId: 'a',
+    predicate: '错误方向',
+    objectId: 'b',
+    evidence: [{ messageId: 'source-evidence' }, { messageId: 'shared-evidence' }],
+    confidence: 0.7,
+    status: 'candidate'
+  }
+  const existing = {
+    id: relationSemanticId('b', '服务于', 'a'),
+    subjectId: 'b',
+    predicate: '服务于',
+    objectId: 'a',
+    evidence: [{ messageId: 'existing-evidence' }, { messageId: 'shared-evidence' }],
+    confidence: 0.8,
+    status: 'candidate'
+  }
+  const plan = planRelationConfirmation({
+    review: { kind: 'relation', relationId: source.id },
+    relation: source,
+    entities,
+    correction: { subjectId: 'b', predicate: '服务于', objectId: 'a' }
+  })
+  const result = applyRelationConfirmation({
+    relations: [source, existing],
+    sourceRelationId: source.id,
+    plan,
+    now: '2026-07-30T00:00:00.000Z'
+  })
+  assert.equal(result.mergedIntoExisting, true)
+  assert.equal(result.relations.length, 1)
+  assert.equal(result.confirmedRelation.status, 'confirmed')
+  assert.equal(result.confirmedRelation.confidence, 0.8)
+  assert.deepEqual(
+    result.confirmedRelation.evidence.map((item: any) => item.messageId).sort(),
+    ['existing-evidence', 'shared-evidence', 'source-evidence']
+  )
 })
 
 test('identity candidates explain their source and preserve current negative decisions', () => {

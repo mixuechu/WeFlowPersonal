@@ -108,6 +108,7 @@ function AiAssistantPage() {
   const [graphCommonNeighbors, setGraphCommonNeighbors] = useState<any>(null)
   const [mergeTargets, setMergeTargets] = useState<Record<string, string>>({})
   const [entityNameEdits, setEntityNameEdits] = useState<Record<string, string>>({})
+  const [relationEdits, setRelationEdits] = useState<Record<string, { subjectId: string; predicate: string; objectId: string }>>({})
   const [memoryDiagnostics, setMemoryDiagnostics] = useState<any>(null)
   const [showDiagnostics, setShowDiagnostics] = useState(false)
   const [backingUpMemory, setBackingUpMemory] = useState(false)
@@ -259,6 +260,7 @@ function AiAssistantPage() {
   const identityDisambiguation = dashboard?.identityDisambiguation
   const mergeHistory = dashboard?.mergeHistory || []
   const entityCorrections = dashboard?.entityCorrections || []
+  const relationCorrections = dashboard?.relationCorrections || []
   const memoryFeed = dashboard?.memoryFeed || { claims: [], events: [], resources: [] }
   const ingestionStatus = dashboard?.ingestionStatus
   const ingestionCounts = Object.fromEntries((ingestionStatus?.batches || []).map((item: any) => [item.status, Number(item.count || 0)]))
@@ -283,6 +285,13 @@ function AiAssistantPage() {
     : []
   const selectedEntityCorrections = selectedEntity
     ? entityCorrections.filter((item: any) => item.entity_id === selectedEntity.id)
+    : []
+  const selectedEntityRelationCorrections = selectedEntity
+    ? relationCorrections.filter((item: any) =>
+      item.before_subject_id === selectedEntity.id ||
+      item.before_object_id === selectedEntity.id ||
+      item.after_subject_id === selectedEntity.id ||
+      item.after_object_id === selectedEntity.id)
     : []
   const selectedEntityTasks = selectedEntity
     ? tasks.filter(task => {
@@ -499,7 +508,11 @@ function AiAssistantPage() {
   const decideReview = async (
     id: string,
     decision: 'confirmed' | 'rejected',
-    options?: { mergeTargetEntityId?: string; correctedCanonicalName?: string }
+    options?: {
+      mergeTargetEntityId?: string
+      correctedCanonicalName?: string
+      relationCorrection?: { subjectId?: string; predicate?: string; objectId?: string }
+    }
   ) => {
     try {
       await window.electronAPI.aiAssistant.updateGraphReview(id, decision, options)
@@ -509,6 +522,11 @@ function AiAssistantPage() {
         return next
       })
       setEntityNameEdits(current => {
+        const next = { ...current }
+        delete next[id]
+        return next
+      })
+      setRelationEdits(current => {
         const next = { ...current }
         delete next[id]
         return next
@@ -1814,6 +1832,30 @@ function AiAssistantPage() {
                 const relation = review.kind === 'relation' ? graph.relations.find((item: any) => item.id === review.relationId) : null
                 const subject = relation ? graph.entities.find((item: any) => item.id === relation.subjectId) : null
                 const object = relation ? graph.entities.find((item: any) => item.id === relation.objectId) : null
+                const relationEdit = relation
+                  ? relationEdits[review.id] || {
+                      subjectId: relation.subjectId,
+                      predicate: relation.predicate,
+                      objectId: relation.objectId
+                    }
+                  : null
+                const correctedRelationSubject = relationEdit
+                  ? graph.entities.find((item: any) => item.id === relationEdit.subjectId)
+                  : null
+                const correctedRelationObject = relationEdit
+                  ? graph.entities.find((item: any) => item.id === relationEdit.objectId)
+                  : null
+                const relationInvalidReason = !relationEdit
+                  ? ''
+                  : !relationEdit.subjectId || !relationEdit.predicate.trim() || !relationEdit.objectId
+                    ? '主语、谓词和宾语均不能为空'
+                    : relationEdit.subjectId === relationEdit.objectId
+                      ? '主语和宾语不能是同一个实体'
+                      : correctedRelationSubject?.trustStatus !== 'confirmed' || correctedRelationObject?.trustStatus !== 'confirmed'
+                        ? '请先确认关系两端的实体'
+                        : /[\u0000-\u001f\u007f]/.test(relationEdit.predicate)
+                          ? '谓词不能包含控制字符'
+                          : ''
                 const duplicateEntities = review.kind === 'possible_duplicate'
                   ? [review.leftEntityId, review.rightEntityId]
                     .map((entityId: string) => graph.entities.find((item: any) => item.id === entityId))
@@ -1839,8 +1881,6 @@ function AiAssistantPage() {
                     String(entity.canonicalName || '').trim().toLocaleLowerCase('zh-CN') ===
                       correctedEntityName.toLocaleLowerCase('zh-CN'))
                   : []
-                const relationEntityBlocked = Boolean(relation &&
-                  (subject?.trustStatus !== 'confirmed' || object?.trustStatus !== 'confirmed'))
                 return <><div><strong>{review.kind === 'possible_duplicate' ? `可能是同一个人：${review.title}` : review.title}</strong>
                 {review.kind === 'possible_duplicate' && <div className="assistant-identity-pair">
                   {[review.leftEntityId, review.rightEntityId].map((entityId: string) => {
@@ -1867,12 +1907,34 @@ function AiAssistantPage() {
                   <div><small>拒绝后会记为负样本；两边身份信息未变化前不会再次出现。</small></div>
                 </div>}
                 {relation && <div className="assistant-review-note">
-                  <b>方向说明：</b>{relation.directionExplanation || (
+                  <div><b>模型原始方向：</b>{relation.directionExplanation || (
                     relation.predicate === '服务对象'
                       ? `${object?.canonicalName || '宾语'}向${subject?.canonicalName || '主语'}提供服务；${subject?.canonicalName || '主语'}是${object?.canonicalName || '宾语'}的服务对象。`
                       : `从“${subject?.canonicalName || '主语'}”指向“${object?.canonicalName || '宾语'}”：${subject?.canonicalName || '主语'} ${relation.predicate} ${object?.canonicalName || '宾语'}。`
-                  )}
-                  <div><small>主语：{subject?.canonicalName || relation.subjectId}　→　宾语：{object?.canonicalName || relation.objectId}</small></div>
+                  )}</div>
+                  {relationEdit && <div className="assistant-relation-correction">
+                    <label><span>主语</span><select value={relationEdit.subjectId} onChange={event =>
+                      setRelationEdits(current => ({ ...current, [review.id]: { ...relationEdit, subjectId: event.target.value } }))}>
+                      {trustedGraphEntities.map((entity: any) => <option key={`relation-subject-${entity.id}`} value={entity.id}>{entity.canonicalName} · {entity.type}</option>)}
+                    </select></label>
+                    <label><span>有向谓词</span><input value={relationEdit.predicate} maxLength={100} onChange={event =>
+                      setRelationEdits(current => ({ ...current, [review.id]: { ...relationEdit, predicate: event.target.value } }))} /></label>
+                    <label><span>宾语</span><select value={relationEdit.objectId} onChange={event =>
+                      setRelationEdits(current => ({ ...current, [review.id]: { ...relationEdit, objectId: event.target.value } }))}>
+                      {trustedGraphEntities.map((entity: any) => <option key={`relation-object-${entity.id}`} value={entity.id}>{entity.canonicalName} · {entity.type}</option>)}
+                    </select></label>
+                    <button type="button" onClick={() => setRelationEdits(current => ({
+                      ...current,
+                      [review.id]: { ...relationEdit, subjectId: relationEdit.objectId, objectId: relationEdit.subjectId }
+                    }))}>交换主语与宾语</button>
+                  </div>}
+                  {relationEdit && <div className={`assistant-relation-preview${relationInvalidReason ? ' invalid' : ''}`}>
+                    <b>确认后方向：</b>
+                    <span>{correctedRelationSubject?.canonicalName || '主语待选择'} — {relationEdit.predicate || '谓词待填写'} → {correctedRelationObject?.canonicalName || '宾语待选择'}</span>
+                    {relationInvalidReason
+                      ? <small>{relationInvalidReason}</small>
+                      : <small>修改会重算关系 ID、迁移原文证据并保留旧值→新值审计；不会静默丢失证据。</small>}
+                  </div>}
                   {(relation.evidence || []).map((evidence: any) => <div key={evidence.messageId}><small>证据：“{evidence.excerpt}”</small></div>)}
                 </div>}
                 {review.kind === 'entity_summary' && <div className="assistant-review-note">
@@ -1921,7 +1983,7 @@ function AiAssistantPage() {
                           ? '确认后启用可信实体'
                       : '确认后写入关系'
                 }</small></div>
-              <div><button onClick={() => void decideReview(review.id, 'rejected')}>拒绝</button><button className="primary" disabled={(review.kind === 'possible_duplicate' && (!review.leftEntityId || !review.rightEntityId || !selectedMergeTargetId)) || Boolean(entityNameInvalidReason) || relationEntityBlocked} title={review.kind === 'possible_duplicate' && (!review.leftEntityId || !review.rightEntityId) ? '候选信息不完整，暂不能合并' : review.kind === 'possible_duplicate' && !selectedMergeTargetId ? '请先选择合并后保留的身份' : entityNameInvalidReason || (relationEntityBlocked ? '请先确认关系两端的实体' : '')} onClick={() => void decideReview(review.id, 'confirmed', review.kind === 'possible_duplicate' ? { mergeTargetEntityId: selectedMergeTargetId } : review.kind === 'entity_creation' ? { correctedCanonicalName: entityNameEdits[review.id] ?? review.entityCanonicalName ?? '' } : undefined)}>{review.kind === 'relation' ? '确认此方向' : review.kind === 'possible_duplicate' ? '按此方向合并' : review.kind === 'entity_creation' ? '确认名称并启用' : '确认'}</button></div></>
+              <div><button onClick={() => void decideReview(review.id, 'rejected')}>拒绝</button><button className="primary" disabled={(review.kind === 'possible_duplicate' && (!review.leftEntityId || !review.rightEntityId || !selectedMergeTargetId)) || Boolean(entityNameInvalidReason) || Boolean(relationInvalidReason)} title={review.kind === 'possible_duplicate' && (!review.leftEntityId || !review.rightEntityId) ? '候选信息不完整，暂不能合并' : review.kind === 'possible_duplicate' && !selectedMergeTargetId ? '请先选择合并后保留的身份' : entityNameInvalidReason || relationInvalidReason} onClick={() => void decideReview(review.id, 'confirmed', review.kind === 'possible_duplicate' ? { mergeTargetEntityId: selectedMergeTargetId } : review.kind === 'entity_creation' ? { correctedCanonicalName: entityNameEdits[review.id] ?? review.entityCanonicalName ?? '' } : review.kind === 'relation' && relationEdit ? { relationCorrection: relationEdit } : undefined)}>{review.kind === 'relation' ? '确认修正后方向' : review.kind === 'possible_duplicate' ? '按此方向合并' : review.kind === 'entity_creation' ? '确认名称并启用' : '确认'}</button></div></>
               })()}
             </article>)}
             {!pendingReviews.length && <div className="assistant-empty">当前没有等待确认的身份或关系。</div>}
@@ -2029,6 +2091,18 @@ function AiAssistantPage() {
                   <small>{new Date(item.created_at).toLocaleString('zh-CN')} · 原错误名称未写入可信别名</small>
                 </article>)}
                 {!selectedEntityCorrections.length && <em>尚无名称修正记录</em>}
+              </section>
+              <section className="assistant-dossier-wide">
+                <h3>关系人工修正 <small>{selectedEntityRelationCorrections.length}</small></h3>
+                {selectedEntityRelationCorrections.map((item: any) => {
+                  const entityName = (id: string) => graph.entities.find((entity: any) => entity.id === id)?.canonicalName || id
+                  return <article key={item.id} className="assistant-dossier-history-row">
+                    <div><b>{entityName(item.before_subject_id)} — {item.before_predicate} → {entityName(item.before_object_id)}</b><span>修正为</span></div>
+                    <div><b>{entityName(item.after_subject_id)} — {item.after_predicate} → {entityName(item.after_object_id)}</b></div>
+                    <small>{new Date(item.created_at).toLocaleString('zh-CN')} · 原文证据已迁移至修正后关系</small>
+                  </article>
+                })}
+                {!selectedEntityRelationCorrections.length && <em>尚无关系人工修正记录</em>}
               </section>
             </div>
             <footer>

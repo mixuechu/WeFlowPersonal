@@ -233,6 +233,22 @@ export class PersonalMemoryStore {
       ) STRICT;
       CREATE INDEX IF NOT EXISTS idx_entity_corrections_entity ON entity_corrections(entity_id,created_at);
 
+      CREATE TABLE IF NOT EXISTS relation_corrections (
+        id INTEGER PRIMARY KEY,
+        review_id TEXT NOT NULL,
+        before_relation_id TEXT NOT NULL,
+        after_relation_id TEXT NOT NULL,
+        before_subject_id TEXT NOT NULL,
+        before_predicate TEXT NOT NULL,
+        before_object_id TEXT NOT NULL,
+        after_subject_id TEXT NOT NULL,
+        after_predicate TEXT NOT NULL,
+        after_object_id TEXT NOT NULL,
+        created_at TEXT NOT NULL
+      ) STRICT;
+      CREATE INDEX IF NOT EXISTS idx_relation_corrections_before ON relation_corrections(before_subject_id,before_object_id,created_at);
+      CREATE INDEX IF NOT EXISTS idx_relation_corrections_after ON relation_corrections(after_subject_id,after_object_id,created_at);
+
       CREATE TABLE IF NOT EXISTS task_history (
         id INTEGER PRIMARY KEY,
         task_id TEXT NOT NULL,
@@ -711,6 +727,33 @@ export class PersonalMemoryStore {
       : this.db.prepare('SELECT * FROM entity_corrections ORDER BY id DESC LIMIT ?').all(limit) as any[]
   }
 
+  recordRelationCorrection(reviewId: string, before: any, after: any): void {
+    if (!this.db || before.id === after.id) return
+    this.db.prepare(`
+      INSERT INTO relation_corrections(
+        review_id,before_relation_id,after_relation_id,
+        before_subject_id,before_predicate,before_object_id,
+        after_subject_id,after_predicate,after_object_id,created_at
+      ) VALUES(?,?,?,?,?,?,?,?,?,?)
+    `).run(
+      reviewId, before.id, after.id,
+      before.subjectId, before.predicate, before.objectId,
+      after.subjectId, after.predicate, after.objectId,
+      new Date().toISOString()
+    )
+  }
+
+  listRelationCorrections(entityId = '', limit = 300): any[] {
+    if (!this.db) return []
+    return entityId
+      ? this.db.prepare(`
+          SELECT * FROM relation_corrections
+          WHERE before_subject_id=? OR before_object_id=? OR after_subject_id=? OR after_object_id=?
+          ORDER BY id DESC LIMIT ?
+        `).all(entityId, entityId, entityId, entityId, limit) as any[]
+      : this.db.prepare('SELECT * FROM relation_corrections ORDER BY id DESC LIMIT ?').all(limit) as any[]
+  }
+
   forgetEntity(entityId: string, taskIds: string[] = []): any {
     if (!this.db) return null
     const preview = this.previewForgetEntity(entityId)
@@ -739,6 +782,10 @@ export class PersonalMemoryStore {
       this.db.prepare('DELETE FROM merge_history WHERE source_entity_id=? OR target_entity_id=?').run(entityId, entityId)
       this.db.prepare('DELETE FROM identity_decisions WHERE left_entity_id=? OR right_entity_id=?').run(entityId, entityId)
       this.db.prepare('DELETE FROM entity_corrections WHERE entity_id=?').run(entityId)
+      this.db.prepare(`
+        DELETE FROM relation_corrections
+        WHERE before_subject_id=? OR before_object_id=? OR after_subject_id=? OR after_object_id=?
+      `).run(entityId, entityId, entityId, entityId)
       for (const name of preview.names) {
         const pattern = `%${name.replace(/[%_]/g, value => `\\${value}`)}%`
         this.db.prepare(`DELETE FROM assistant_messages

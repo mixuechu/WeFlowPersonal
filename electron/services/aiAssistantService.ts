@@ -51,6 +51,7 @@ import {
   type EntityTrustStatus
 } from './entityTrustPolicy'
 import { planEntityMerge } from './entityMergeDirection'
+import { applyRelationConfirmation, planRelationConfirmation, type RelationCorrection } from './relationCorrectionPolicy'
 import {
   enqueueUniqueNotification,
   markNotificationAttempt,
@@ -173,7 +174,7 @@ type AssistantState = {
   graph: {
     entities: GraphEntity[]
     relations: GraphRelation[]
-    reviewQueue: Array<{ id: string; kind: 'possible_duplicate' | 'relation' | 'entity_summary' | 'entity_alias' | 'entity_creation'; title: string; detail: string; confidence: number; status: 'pending' | 'confirmed' | 'rejected'; createdAt: string; leftEntityId?: string; rightEntityId?: string; mergeSourceEntityId?: string; mergeTargetEntityId?: string; relationId?: string; entityId?: string; entityIdentityVersion?: number; entityCanonicalName?: string; originalEntityCanonicalName?: string; correctedCanonicalName?: string; entityType?: string; legacyReview?: boolean; previousSummary?: string; summaryText?: string; aliasText?: string; evidence?: Array<{ messageId: string; sessionId: string; timestamp: number; sender: string; excerpt: string }>; candidateSource?: string; candidateSignals?: Array<{ source: string; label: string; value: string }> }>
+    reviewQueue: Array<{ id: string; kind: 'possible_duplicate' | 'relation' | 'entity_summary' | 'entity_alias' | 'entity_creation'; title: string; detail: string; confidence: number; status: 'pending' | 'confirmed' | 'rejected'; createdAt: string; leftEntityId?: string; rightEntityId?: string; mergeSourceEntityId?: string; mergeTargetEntityId?: string; relationId?: string; originalRelationId?: string; correctedRelationId?: string; relationCorrection?: RelationCorrection; entityId?: string; entityIdentityVersion?: number; entityCanonicalName?: string; originalEntityCanonicalName?: string; correctedCanonicalName?: string; entityType?: string; legacyReview?: boolean; previousSummary?: string; summaryText?: string; aliasText?: string; evidence?: Array<{ messageId: string; sessionId: string; timestamp: number; sender: string; excerpt: string }>; candidateSource?: string; candidateSignals?: Array<{ source: string; label: string; value: string }> }>
     identityScan: { lastFullScanAt: string | null; lastRunAt: string | null; lastMode: 'incremental' | 'full' | null; lastCandidateCount: number }
   }
 }
@@ -2478,6 +2479,7 @@ export class AiAssistantService {
       },
       mergeHistory: personalMemoryStore.listActiveMerges(),
       entityCorrections: personalMemoryStore.listEntityCorrections('', 300),
+      relationCorrections: personalMemoryStore.listRelationCorrections('', 300),
       memoryDeletionAudit: personalMemoryStore.listMemoryDeletionAudit(50),
       memoryStats: personalMemoryStore.getMemoryStats(),
       attachmentStructureMigration: personalMemoryStore.getAttachmentStructureMigrationStats(
@@ -2901,12 +2903,26 @@ export class AiAssistantService {
   updateGraphReview(
     id: string,
     decision: 'confirmed' | 'rejected',
-    options?: { mergeTargetEntityId?: string; correctedCanonicalName?: string }
+    options?: { mergeTargetEntityId?: string; correctedCanonicalName?: string; relationCorrection?: RelationCorrection }
   ): any {
     const review = this.state.graph.reviewQueue.find(item => item.id === id)
     if (!review || review.status !== 'pending') return null
     const mergePlan = review.kind === 'possible_duplicate' && decision === 'confirmed'
       ? planEntityMerge(review, this.state.graph.entities, options?.mergeTargetEntityId)
+      : null
+    const relation = review.kind === 'relation' && review.relationId
+      ? this.state.graph.relations.find(item => item.id === review.relationId)
+      : null
+    if (review.kind === 'relation' && decision === 'confirmed' && !relation) {
+      throw new Error('关系候选已失效，请刷新后重试')
+    }
+    const relationPlan = review.kind === 'relation' && decision === 'confirmed' && relation
+      ? planRelationConfirmation({
+          review,
+          relation,
+          entities: this.state.graph.entities,
+          correction: options?.relationCorrection
+        })
       : null
     review.status = decision
     if (review.kind === 'entity_summary' && review.entityId) {
@@ -3002,16 +3018,48 @@ export class AiAssistantService {
       }
     }
     if (review.kind === 'relation' && review.relationId) {
-      const relation = this.state.graph.relations.find(item => item.id === review.relationId)
       if (relation) {
-        const subject = this.state.graph.entities.find(entity => entity.id === relation.subjectId)
-        const object = this.state.graph.entities.find(entity => entity.id === relation.objectId)
-        if (decision === 'confirmed' && (!isTrustedEntity(subject) || !isTrustedEntity(object))) {
-          review.status = 'pending'
-          throw new Error('请先确认关系两端的实体，再确认关系')
+        if (decision === 'confirmed' && relationPlan) {
+          const now = new Date().toISOString()
+          if (relationPlan.changed && personalMemoryStore.isExtractedMemoryItemSuppressed('relation', {
+            ...relationPlan.after,
+            evidence: relation.evidence
+          })) {
+            review.status = 'pending'
+            throw new Error('修正后的关系曾被永久删除，不能通过重新抽取恢复')
+          }
+          const applied = applyRelationConfirmation({
+            relations: this.state.graph.relations,
+            sourceRelationId: relation.id,
+            plan: relationPlan,
+            now
+          })
+          this.state.graph.relations = applied.relations
+          if (relationPlan.changed) {
+            review.originalRelationId = relationPlan.before.id
+            review.correctedRelationId = relationPlan.after.id
+            review.relationCorrection = {
+              subjectId: relationPlan.after.subjectId,
+              predicate: relationPlan.after.predicate,
+              objectId: relationPlan.after.objectId
+            }
+            review.relationId = relationPlan.after.id
+            const subjectName = this.state.graph.entities.find(entity => entity.id === relationPlan.after.subjectId)?.canonicalName || relationPlan.after.subjectId
+            const objectName = this.state.graph.entities.find(entity => entity.id === relationPlan.after.objectId)?.canonicalName || relationPlan.after.objectId
+            review.title = `${subjectName} — ${relationPlan.after.predicate} → ${objectName}`
+            personalMemoryStore.recordRelationCorrection(review.id, relationPlan.before, relationPlan.after)
+            for (const pending of this.state.graph.reviewQueue) {
+              if (pending.id !== review.id && pending.status === 'pending' &&
+                  (pending.relationId === relationPlan.before.id || pending.relationId === relationPlan.after.id)) {
+                pending.status = 'rejected'
+                pending.detail = `${pending.detail} 关系已由另一条人工纠正合并，此候选自动关闭。`
+              }
+            }
+          }
+        } else {
+          relation.status = decision
+          relation.updatedAt = new Date().toISOString()
         }
-        relation.status = decision
-        relation.updatedAt = new Date().toISOString()
       }
     }
     if (review.kind === 'possible_duplicate' && decision === 'confirmed' && mergePlan) {
