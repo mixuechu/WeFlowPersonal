@@ -362,7 +362,11 @@ export class PersonalMemoryStore {
         prepared_at TEXT NOT NULL,
         applied_at TEXT,
         recovery_attempts INTEGER NOT NULL DEFAULT 0,
-        last_error TEXT
+        last_error TEXT,
+        source_kind TEXT NOT NULL DEFAULT 'wechat',
+        resource_id TEXT NOT NULL DEFAULT '',
+        resource_content_hash TEXT NOT NULL DEFAULT '',
+        completion_json TEXT NOT NULL DEFAULT '{}'
       ) STRICT;
       CREATE INDEX IF NOT EXISTS idx_ingestion_batch_commits_pending
         ON ingestion_batch_commits(status,prepared_at);
@@ -530,6 +534,10 @@ export class PersonalMemoryStore {
     this.ensureColumn('ingestion_batches', 'duration_ms', `INTEGER NOT NULL DEFAULT 0`)
     this.ensureColumn('ingestion_batches', 'redaction_summary_json', `TEXT NOT NULL DEFAULT '{}'`)
     this.ensureColumn('ingestion_batches', 'evidence_validation_json', `TEXT NOT NULL DEFAULT '{}'`)
+    this.ensureColumn('ingestion_batch_commits', 'source_kind', `TEXT NOT NULL DEFAULT 'wechat'`)
+    this.ensureColumn('ingestion_batch_commits', 'resource_id', `TEXT NOT NULL DEFAULT ''`)
+    this.ensureColumn('ingestion_batch_commits', 'resource_content_hash', `TEXT NOT NULL DEFAULT ''`)
+    this.ensureColumn('ingestion_batch_commits', 'completion_json', `TEXT NOT NULL DEFAULT '{}'`)
     this.ensureColumn('memory_item_suppressions', 'semantic_fingerprint', `TEXT NOT NULL DEFAULT ''`)
     this.ensureColumn('data_source_connectors', 'config_json', `TEXT NOT NULL DEFAULT '{}'`)
     this.ensureColumn('task_review_decisions', 'task_json', `TEXT NOT NULL DEFAULT '{}'`)
@@ -2560,13 +2568,18 @@ export class PersonalMemoryStore {
     messages: any[]
     checkpointKeys: string[]
     createdAt: string
+    sourceKind?: 'wechat' | 'document'
+    resourceId?: string
+    resourceContentHash?: string
+    completion?: Record<string, any>
   }): void {
     if (!this.db) return
     this.db.prepare(`
       INSERT INTO ingestion_batch_commits(
         commit_id,run_id,batch_index,status,digest_json,messages_json,
-        checkpoint_keys_json,created_at,prepared_at
-      ) VALUES(?,?,?,'prepared',?,?,?,?,?)
+        checkpoint_keys_json,created_at,prepared_at,source_kind,resource_id,
+        resource_content_hash,completion_json
+      ) VALUES(?,?,?,'prepared',?,?,?,?,?,?,?,?,?)
       ON CONFLICT(commit_id) DO UPDATE SET
         digest_json=CASE WHEN ingestion_batch_commits.status='committed'
           THEN ingestion_batch_commits.digest_json ELSE excluded.digest_json END,
@@ -2574,6 +2587,14 @@ export class PersonalMemoryStore {
           THEN ingestion_batch_commits.messages_json ELSE excluded.messages_json END,
         checkpoint_keys_json=CASE WHEN ingestion_batch_commits.status='committed'
           THEN ingestion_batch_commits.checkpoint_keys_json ELSE excluded.checkpoint_keys_json END,
+        source_kind=CASE WHEN ingestion_batch_commits.status='committed'
+          THEN ingestion_batch_commits.source_kind ELSE excluded.source_kind END,
+        resource_id=CASE WHEN ingestion_batch_commits.status='committed'
+          THEN ingestion_batch_commits.resource_id ELSE excluded.resource_id END,
+        resource_content_hash=CASE WHEN ingestion_batch_commits.status='committed'
+          THEN ingestion_batch_commits.resource_content_hash ELSE excluded.resource_content_hash END,
+        completion_json=CASE WHEN ingestion_batch_commits.status='committed'
+          THEN ingestion_batch_commits.completion_json ELSE excluded.completion_json END,
         last_error=NULL
     `).run(
       input.commitId,
@@ -2583,7 +2604,11 @@ export class PersonalMemoryStore {
       JSON.stringify(input.messages),
       JSON.stringify(input.checkpointKeys),
       input.createdAt,
-      new Date().toISOString()
+      new Date().toISOString(),
+      String(input.sourceKind || 'wechat'),
+      String(input.resourceId || ''),
+      String(input.resourceContentHash || ''),
+      JSON.stringify(input.completion || {})
     )
   }
 
@@ -2596,6 +2621,10 @@ export class PersonalMemoryStore {
     checkpointKeys: string[]
     createdAt: string
     recoveryAttempts: number
+    sourceKind: 'wechat' | 'document'
+    resourceId: string
+    resourceContentHash: string
+    completion: Record<string, any>
   }> {
     if (!this.db) return []
     const safeLimit = Math.max(1, Math.min(500, Number(limit) || 100))
@@ -2610,7 +2639,11 @@ export class PersonalMemoryStore {
       messages: JSON.parse(String(row.messages_json || '[]')),
       checkpointKeys: JSON.parse(String(row.checkpoint_keys_json || '[]')),
       createdAt: String(row.created_at),
-      recoveryAttempts: Number(row.recovery_attempts || 0)
+      recoveryAttempts: Number(row.recovery_attempts || 0),
+      sourceKind: row.source_kind === 'document' ? 'document' : 'wechat',
+      resourceId: String(row.resource_id || ''),
+      resourceContentHash: String(row.resource_content_hash || ''),
+      completion: JSON.parse(String(row.completion_json || '{}'))
     }))
   }
 
@@ -2636,19 +2669,33 @@ export class PersonalMemoryStore {
       sensitiveRedaction?: any
       structuredEvidence?: any
     } = {}
-  ): void {
-    if (!this.db) return
+  ): { resourceCheckpointApplied: boolean } {
+    if (!this.db) return { resourceCheckpointApplied: false }
+    let resourceCheckpointApplied = false
     const transaction = this.db.transaction(() => {
       const row = this.db!.prepare(`
-        SELECT run_id,batch_index,messages_json,status
+        SELECT run_id,batch_index,messages_json,status,source_kind,resource_id,
+          resource_content_hash,completion_json
         FROM ingestion_batch_commits WHERE commit_id=?
       `).get(commitId) as any
       if (!row) throw new Error(`找不到待提交的记忆批次：${commitId}`)
+      if (row.status === 'committed') return
       let messageCount = 0
       try { messageCount = JSON.parse(String(row.messages_json || '[]')).length } catch {}
-      if (row.status !== 'committed') {
-        this.markIngestionBatchCommitApplied(commitId)
+      if (row.source_kind === 'document' && row.resource_id) {
+        const resource = this.db!.prepare(`
+          SELECT content,metadata_json FROM memory_resources WHERE id=?
+        `).get(String(row.resource_id)) as any
+        let metadata: any = {}
+        let completion: any = {}
+        try { metadata = JSON.parse(String(resource?.metadata_json || '{}')) } catch {}
+        try { completion = JSON.parse(String(row.completion_json || '{}')) } catch {}
+        if (resource && String(metadata.contentHash || '') === String(row.resource_content_hash || '')) {
+          this.replaceResourceContent(String(row.resource_id), String(resource.content || ''), completion)
+          resourceCheckpointApplied = true
+        }
       }
+      this.markIngestionBatchCommitApplied(commitId)
       this.recordIngestionBatch(
         String(row.run_id),
         Number(row.batch_index),
@@ -2657,8 +2704,16 @@ export class PersonalMemoryStore {
         '',
         metrics
       )
+      if (row.source_kind === 'document') {
+        this.db!.prepare(`
+          UPDATE ingestion_runs
+          SET finished_at=?,message_count=?,status='completed',error=NULL
+          WHERE id=?
+        `).run(new Date().toISOString(), messageCount, String(row.run_id))
+      }
     })
     transaction()
+    return { resourceCheckpointApplied }
   }
 
   recordIngestionBatchCommitRecoveryFailure(commitId: string, error: string): void {
@@ -2672,14 +2727,25 @@ export class PersonalMemoryStore {
 
   getIngestionCommitHealth(): {
     prepared: number
+    preparedWechat: number
+    preparedDocuments: number
     committed: number
     recoveryFailures: number
     oldestPreparedAt: string | null
   } {
-    if (!this.db) return { prepared: 0, committed: 0, recoveryFailures: 0, oldestPreparedAt: null }
+    if (!this.db) return {
+      prepared: 0,
+      preparedWechat: 0,
+      preparedDocuments: 0,
+      committed: 0,
+      recoveryFailures: 0,
+      oldestPreparedAt: null
+    }
     const row = this.db.prepare(`
       SELECT
         SUM(CASE WHEN status='prepared' THEN 1 ELSE 0 END) AS prepared,
+        SUM(CASE WHEN status='prepared' AND source_kind='wechat' THEN 1 ELSE 0 END) AS prepared_wechat,
+        SUM(CASE WHEN status='prepared' AND source_kind='document' THEN 1 ELSE 0 END) AS prepared_documents,
         SUM(CASE WHEN status='committed' THEN 1 ELSE 0 END) AS committed,
         SUM(CASE WHEN status='prepared' AND recovery_attempts>0 THEN 1 ELSE 0 END) AS recovery_failures,
         MIN(CASE WHEN status='prepared' THEN prepared_at END) AS oldest_prepared_at
@@ -2687,6 +2753,8 @@ export class PersonalMemoryStore {
     `).get() as any
     return {
       prepared: Number(row?.prepared || 0),
+      preparedWechat: Number(row?.prepared_wechat || 0),
+      preparedDocuments: Number(row?.prepared_documents || 0),
       committed: Number(row?.committed || 0),
       recoveryFailures: Number(row?.recovery_failures || 0),
       oldestPreparedAt: row?.oldest_prepared_at ? String(row.oldest_prepared_at) : null

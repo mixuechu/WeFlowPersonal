@@ -2091,6 +2091,8 @@ test('prepared ingestion commits survive retries and become an auditable committ
   store.prepareIngestionBatchCommit(input)
   const preparedHealth = store.getIngestionCommitHealth()
   assert.equal(preparedHealth.prepared, 1)
+  assert.equal(preparedHealth.preparedWechat, 1)
+  assert.equal(preparedHealth.preparedDocuments, 0)
   assert.equal(preparedHealth.committed, 0)
   assert.equal(preparedHealth.recoveryFailures, 0)
   assert.match(String(preparedHealth.oldestPreparedAt), /^20/)
@@ -2114,6 +2116,8 @@ test('prepared ingestion commits survive retries and become an auditable committ
   assert.deepEqual(store.listPreparedIngestionBatchCommits(), [])
   assert.deepEqual(store.getIngestionCommitHealth(), {
     prepared: 0,
+    preparedWechat: 0,
+    preparedDocuments: 0,
     committed: 1,
     recoveryFailures: 0,
     oldestPreparedAt: null
@@ -2121,6 +2125,79 @@ test('prepared ingestion commits survive retries and become an auditable committ
   const status = store.getIngestionStatus()
   assert.equal(status.batches.find((row: any) => row.status === 'completed')?.count, 1)
   assert.equal(status.commitHealth.committed, 1)
+}))
+
+test('document ingestion commit advances the content-version checkpoint atomically and rejects stale content', () => withStore(store => {
+  const createdAt = '2026-07-30T10:00:00.000Z'
+  store.upsertResources([{
+    id: 'document-commit-test',
+    resourceType: 'document',
+    title: '项目说明',
+    content: '第一版内容',
+    metadata: {
+      sourceId: 'documents',
+      contentHash: 'hash-v1',
+      scopeName: '测试目录'
+    },
+    createdAt,
+    updatedAt: createdAt,
+    evidence: [{
+      messageId: 'document-message-v1',
+      sessionId: 'data-source:documents',
+      timestamp: 1_775_000_000,
+      sender: '本机文档连接器',
+      excerpt: '第一版内容'
+    }]
+  }])
+  store.startIngestionRun('document-run-v1', 'deepseek-test', 'document-v1')
+  store.recordIngestionBatch('document-run-v1', 0, 1, 'running')
+  store.prepareIngestionBatchCommit({
+    commitId: 'document-commit-v1',
+    runId: 'document-run-v1',
+    batchIndex: 0,
+    digest: { claims: [] },
+    messages: [{ id: 'document-message-v1' }],
+    checkpointKeys: ['documents:data-source:documents:document-message-v1'],
+    createdAt,
+    sourceKind: 'document',
+    resourceId: 'document-commit-test',
+    resourceContentHash: 'hash-v1',
+    completion: {
+      documentAnalysisStatus: 'completed',
+      documentAnalysisVersion: 'document-v1',
+      documentAnalysisContentHash: 'hash-v1'
+    }
+  })
+  assert.equal(store.listPreparedIngestionBatchCommits()[0].sourceKind, 'document')
+  assert.equal(store.finalizeIngestionBatchCommit('document-commit-v1').resourceCheckpointApplied, true)
+  assert.equal(store.getDocumentAnalysisStats('document-v1').completed, 1)
+  assert.equal(store.getIngestionStatus().status, 'completed')
+
+  store.replaceResourceContent('document-commit-test', '第二版内容', {
+    contentHash: 'hash-v2',
+    documentAnalysisStatus: 'pending'
+  })
+  store.startIngestionRun('document-run-stale', 'deepseek-test', 'document-v1')
+  store.recordIngestionBatch('document-run-stale', 0, 1, 'running')
+  store.prepareIngestionBatchCommit({
+    commitId: 'document-commit-stale',
+    runId: 'document-run-stale',
+    batchIndex: 0,
+    digest: { claims: [] },
+    messages: [{ id: 'document-message-v1' }],
+    checkpointKeys: ['documents:data-source:documents:document-message-v1'],
+    createdAt,
+    sourceKind: 'document',
+    resourceId: 'document-commit-test',
+    resourceContentHash: 'hash-v1',
+    completion: {
+      documentAnalysisStatus: 'completed',
+      documentAnalysisVersion: 'document-v1',
+      documentAnalysisContentHash: 'hash-v1'
+    }
+  })
+  assert.equal(store.finalizeIngestionBatchCommit('document-commit-stale').resourceCheckpointApplied, false)
+  assert.equal(store.getDocumentAnalysisStats('document-v1').pending, 1)
 }))
 
 test('entity insight strength is explainable and deduplicates shared evidence', () => {

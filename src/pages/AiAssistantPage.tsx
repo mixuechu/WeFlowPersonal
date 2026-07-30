@@ -1233,6 +1233,8 @@ function AiAssistantPage() {
             </small>}
             {Number(ingestionStatus.commitHealth?.prepared || 0) > 0 && <small>
               检测到 {Number(ingestionStatus.commitHealth.prepared)} 个已保存但尚未完成应用的批次，
+              其中微信 {Number(ingestionStatus.commitHealth.preparedWechat || 0)} 个、
+              文档 {Number(ingestionStatus.commitHealth.preparedDocuments || 0)} 个；
               下次启动会从加密恢复日志自动续写，不会重新请求模型。
             </small>}
             {Number(ingestionStatus.commitHealth?.recoveryFailures || 0) > 0 && <small>

@@ -656,17 +656,29 @@ export class AiAssistantService {
       try {
         const tempIds = this.mergeGraphDigest(commit.digest, commit.messages, commit.createdAt, commit.commitId)
         this.persistClaimsAndEvents(commit.digest, tempIds, commit.messages, commit.createdAt)
-        this.mergeRecoveredWechatTasks(commit.digest, commit.messages, commit.createdAt)
-        this.state.cursor.recentMessageIds = [...new Set([
-          ...this.state.cursor.recentMessageIds,
-          ...commit.checkpointKeys
-        ])].slice(-20_000)
+        if (commit.sourceKind === 'document') {
+          this.persistDocumentTasks(commit.digest, commit.messages, commit.createdAt)
+        } else {
+          this.mergeRecoveredWechatTasks(commit.digest, commit.messages, commit.createdAt)
+          this.state.cursor.recentMessageIds = [...new Set([
+            ...this.state.cursor.recentMessageIds,
+            ...commit.checkpointKeys
+          ])].slice(-20_000)
+        }
         this.saveState(true)
         personalMemoryStore.finalizeIngestionBatchCommit(commit.commitId, {
           ...commit.digest.__meta,
           promptVersion: EXTRACTION_PROMPT_VERSION,
           schemaVersion: EXTRACTION_SCHEMA_VERSION
         })
+        if (commit.sourceKind === 'document') {
+          personalMemoryStore.finishIngestionRun(commit.runId, {
+            status: 'completed',
+            messageCount: commit.messages.length,
+            entityCount: this.state.graph.entities.length,
+            relationCount: this.state.graph.relations.length
+          })
+        }
       } catch (error) {
         this.state = stateBeforeRecovery
         personalMemoryStore.recordIngestionBatchCommitRecoveryFailure(
@@ -2033,9 +2045,15 @@ export class AiAssistantService {
     const existing = new Map(this.state.tasks.map(task => [task.id, task]))
     let saved = 0
     for (const item of Array.isArray(digest.tasks) ? digest.tasks : []) {
-      const sourceMessageIds = (Array.isArray(item.sourceMessageIds) ? item.sourceMessageIds : [])
+      const sourceMessageIds = (Array.isArray(item.sourceEvidenceKeys)
+        ? item.sourceEvidenceKeys
+        : Array.isArray(item.sourceMessageIds) ? item.sourceMessageIds : [])
         .map(String).slice(0, 20)
-      const evidenceMessages = messages.filter(message => sourceMessageIds.includes(String(message.id)))
+      const evidenceMessages = Array.isArray(item.__evidenceMessages)
+        ? item.__evidenceMessages
+        : messages.filter(message =>
+          sourceMessageIds.includes(String(message.id)) ||
+          sourceMessageIds.includes(structuredEvidenceKey(message)))
       if (!evidenceMessages.length) continue
       const evidenceText = evidenceMessages.map(message => String(message.content || '')).join('\n')
       const classification = classifyDocumentTaskOwnership(
@@ -2165,21 +2183,47 @@ export class AiAssistantService {
         schemaVersion: EXTRACTION_SCHEMA_VERSION
       })
       try {
-        const digest = await this.callAi([message])
-        const tempIds = this.mergeGraphDigest(digest, [message], createdAt)
+        const rawDigest = await this.callAi([message])
+        const evidenceValidation = validateStructuredDigestEvidence(rawDigest, [message])
+        const digest = {
+          ...evidenceValidation.digest,
+          __meta: {
+            ...rawDigest.__meta,
+            structuredEvidence: {
+              version: 'structured-evidence-v1',
+              accepted: evidenceValidation.accepted,
+              rejected: evidenceValidation.rejected
+            }
+          }
+        }
+        const checkpointKeys = [messageKey(message)]
+        const commitId = this.ingestionCommitId(runId, 0, checkpointKeys)
+        personalMemoryStore.prepareIngestionBatchCommit({
+          commitId,
+          runId,
+          batchIndex: 0,
+          digest,
+          messages: [message],
+          checkpointKeys,
+          createdAt,
+          sourceKind: 'document',
+          resourceId: resource.id,
+          resourceContentHash: String(resource.metadata?.contentHash || ''),
+          completion: {
+            documentAnalysisStatus: 'completed',
+            documentAnalysisVersion: DOCUMENT_ANALYSIS_VERSION,
+            documentAnalysisContentHash: resource.metadata?.contentHash || '',
+            documentAnalysisCompletedAt: new Date().toISOString(),
+            documentAnalysisNextAt: '',
+            documentAnalysisError: ''
+          }
+        })
+        const tempIds = this.mergeGraphDigest(digest, [message], createdAt, commitId)
         personalMemoryStore.syncGraph(this.state.graph)
         this.persistClaimsAndEvents(digest, tempIds, [message], createdAt)
         tasks += this.persistDocumentTasks(digest, [message], createdAt)
-        this.saveState()
-        personalMemoryStore.replaceResourceContent(resource.id, resource.content, {
-          documentAnalysisStatus: 'completed',
-          documentAnalysisVersion: DOCUMENT_ANALYSIS_VERSION,
-          documentAnalysisContentHash: resource.metadata?.contentHash || '',
-          documentAnalysisCompletedAt: new Date().toISOString(),
-          documentAnalysisNextAt: '',
-          documentAnalysisError: ''
-        })
-        personalMemoryStore.recordIngestionBatch(runId, 0, 1, 'completed', '', {
+        this.saveState(true)
+        personalMemoryStore.finalizeIngestionBatchCommit(commitId, {
           ...digest.__meta,
           promptVersion: `${EXTRACTION_PROMPT_VERSION}/document-v1`,
           durationMs: Number(digest.__meta?.durationMs || Date.now() - startedAt)
