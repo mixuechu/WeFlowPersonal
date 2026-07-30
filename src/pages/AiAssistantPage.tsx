@@ -48,7 +48,9 @@ function AiAssistantPage() {
   const [selectedProjectId, setSelectedProjectId] = useState('')
   const [forgettingEntityId, setForgettingEntityId] = useState('')
   const [showSources, setShowSources] = useState(false)
+  const [showDataSources, setShowDataSources] = useState(false)
   const [sources, setSources] = useState<any[]>([])
+  const [dataSources, setDataSources] = useState<any[]>([])
   const [sourceQuery, setSourceQuery] = useState('')
   const [memoryQuery, setMemoryQuery] = useState('')
   const [memoryResults, setMemoryResults] = useState<any[]>([])
@@ -104,6 +106,7 @@ function AiAssistantPage() {
     void load()
     void window.electronAPI.aiAssistant.getMemoryDiagnostics().then(setMemoryDiagnostics).catch(() => {})
     void window.electronAPI.aiAssistant.getConversationSources().then(setSources).catch(() => {})
+    void window.electronAPI.aiAssistant.getDataSources().then(setDataSources).catch(() => {})
     const timer = window.setInterval(() => void load(), 15_000)
     return () => window.clearInterval(timer)
   }, [load])
@@ -625,6 +628,17 @@ function AiAssistantPage() {
     setSources(current => current.map(item => item.type === type ? { ...item, enabled } : item))
   }
 
+  const toggleDataSource = async (source: any) => {
+    try {
+      const updated = await window.electronAPI.aiAssistant.setDataSourceEnabled(source.id, !source.enabled)
+      setDataSources(current => current.map(item => item.id === source.id ? updated : item))
+      setStatus(await window.electronAPI.aiAssistant.status())
+      setMessage(`${source.displayName}数据源已${updated.enabled ? '开启' : '暂停'}。`)
+    } catch (error: any) {
+      setMessage(error?.message || String(error))
+    }
+  }
+
   return (
     <div className="ai-assistant-page native">
       <div className="ai-assistant-toolbar">
@@ -637,6 +651,7 @@ function AiAssistantPage() {
           <span>{syncing || status?.syncing ? '正在补齐消息' : status?.cursor?.lastError ? '等待自动重试' : '增量服务正常'}</span>
           <span className="service-divider" />
           <ShieldCheck size={13} /><span>Key 已加密存储</span>
+          <button type="button" onClick={() => setShowDataSources(true)} aria-label="数据源连接器" title="管理数据源连接器"><Network size={14} /></button>
           <button type="button" onClick={openSources} aria-label="信息来源" title="管理分析信息来源"><Filter size={14} /></button>
           <button type="button" onClick={openSettings} aria-label="AI 助理设置"><Settings2 size={14} /></button>
         </div>
@@ -1822,6 +1837,39 @@ function AiAssistantPage() {
               ))}
             </div>
             <div className="assistant-source-footer"><span>{sources.filter(source => source.enabled).length} 个来源已开启</span><button className="primary" onClick={() => setShowSources(false)}>完成</button></div>
+          </div>
+        </div>
+      )}
+
+      {showDataSources && (
+        <div className="assistant-modal-backdrop">
+          <div className="assistant-modal assistant-source-modal">
+            <div className="assistant-modal-title"><div><h2>数据源连接器</h2>
+              <p>每个连接器拥有独立状态和 checkpoint；只有消费成功后才推进断点。</p>
+            </div><button onClick={() => setShowDataSources(false)}><X size={16} /></button></div>
+            <div className="assistant-source-list">
+              {dataSources.map(source => (
+                <label className="assistant-source-row" key={source.id}>
+                  <span><strong>{source.displayName}</strong>
+                    <small>{source.description}</small>
+                    <small>
+                      {source.localOnly ? '仅本机' : '需要单独授权'}
+                      {' · '}{source.available ? source.status === 'running' ? '正在同步' : source.status === 'error' ? '需要重试' : source.lastSuccessAt ? `最近成功 ${new Date(source.lastSuccessAt).toLocaleString('zh-CN')}` : '已就绪' : '连接器待接入'}
+                    </small>
+                    <small>{(source.capabilities || []).map((capability: string) => ({
+                      incremental: '增量断点', 'original-evidence': '原文证据', tasks: '待办',
+                      claims: '事实', events: '事件', attachments: '附件'
+                    } as Record<string, string>)[capability] || capability).join(' · ')}</small>
+                    {source.lastError && <small className="assistant-error">{source.lastError}</small>}
+                  </span>
+                  <input type="checkbox" checked={Boolean(source.enabled)} disabled={!source.available}
+                    title={source.available ? '开启或暂停该数据源' : '该连接器尚未安装'}
+                    onChange={() => void toggleDataSource(source)} />
+                </label>
+              ))}
+            </div>
+            <div className="assistant-source-footer"><span>{dataSources.filter(source => source.enabled).length} 个连接器已开启</span>
+              <button className="primary" onClick={() => setShowDataSources(false)}>完成</button></div>
           </div>
         </div>
       )}

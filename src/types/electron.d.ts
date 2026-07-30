@@ -1674,6 +1674,8 @@ export interface ElectronAPI {
       correctClaim: (id: string, input: any) => Promise<any>
       askMemory: (question: string, conversationId?: string, options?: any) => Promise<any>
       getConversationSources: () => Promise<any[]>
+      getDataSources: () => Promise<any[]>
+      setDataSourceEnabled: (sourceId: string, enabled: boolean) => Promise<any>
       setConversationSource: (input: any) => Promise<any>
       setConversationSourcesBulk: (input: any) => Promise<any>
   }

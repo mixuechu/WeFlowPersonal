@@ -282,6 +282,23 @@ export class PersonalMemoryStore {
         updated_at TEXT NOT NULL
       ) STRICT;
 
+      CREATE TABLE IF NOT EXISTS data_source_connectors (
+        source_id TEXT PRIMARY KEY,
+        source_kind TEXT NOT NULL,
+        display_name TEXT NOT NULL,
+        description TEXT NOT NULL DEFAULT '',
+        enabled INTEGER NOT NULL DEFAULT 0,
+        available INTEGER NOT NULL DEFAULT 0,
+        local_only INTEGER NOT NULL DEFAULT 1,
+        capabilities_json TEXT NOT NULL DEFAULT '[]',
+        checkpoint TEXT NOT NULL DEFAULT '',
+        status TEXT NOT NULL DEFAULT 'idle',
+        last_attempt_at TEXT,
+        last_success_at TEXT,
+        last_error TEXT,
+        updated_at TEXT NOT NULL
+      ) STRICT;
+
       CREATE TABLE IF NOT EXISTS search_documents (
         id TEXT PRIMARY KEY,
         document_type TEXT NOT NULL,
@@ -1958,6 +1975,90 @@ export class PersonalMemoryStore {
       ON CONFLICT(session_id) DO UPDATE SET display_name=excluded.display_name,session_type=excluded.session_type,
         analysis_enabled=excluded.analysis_enabled,updated_at=excluded.updated_at
     `).run(sessionId, displayName, sessionType, enabled ? 1 : 0, 'from_now', new Date().toISOString())
+  }
+
+  registerDataSources(catalog: readonly any[]): void {
+    if (!this.db) return
+    const now = new Date().toISOString()
+    const statement = this.db.prepare(`
+      INSERT INTO data_source_connectors(
+        source_id,source_kind,display_name,description,enabled,available,local_only,
+        capabilities_json,checkpoint,status,updated_at
+      ) VALUES(?,?,?,?,?,?,?,?,?,'idle',?)
+      ON CONFLICT(source_id) DO UPDATE SET
+        source_kind=excluded.source_kind,display_name=excluded.display_name,
+        description=excluded.description,available=excluded.available,
+        local_only=excluded.local_only,capabilities_json=excluded.capabilities_json,
+        updated_at=excluded.updated_at
+    `)
+    const transaction = this.db.transaction(() => {
+      for (const source of catalog) {
+        statement.run(
+          String(source.id), String(source.kind), String(source.displayName),
+          String(source.description || ''), source.id === 'wechat' ? 1 : 0,
+          source.available ? 1 : 0, source.localOnly ? 1 : 0,
+          JSON.stringify(source.capabilities || []), '', now
+        )
+      }
+    })
+    transaction()
+    this.db.prepare(`
+      UPDATE data_source_connectors
+      SET status='error',last_error='上次连接器运行被应用退出中断，将从原 checkpoint 重试',updated_at=?
+      WHERE status='running'
+    `).run(now)
+  }
+
+  listDataSources(): any[] {
+    if (!this.db) return []
+    const rows = this.db.prepare('SELECT * FROM data_source_connectors ORDER BY available DESC,source_id').all() as any[]
+    return rows.map(row => ({
+      id: row.source_id,
+      kind: row.source_kind,
+      displayName: row.display_name,
+      description: row.description,
+      enabled: row.enabled === 1,
+      available: row.available === 1,
+      localOnly: row.local_only === 1,
+      capabilities: JSON.parse(row.capabilities_json || '[]'),
+      checkpoint: row.checkpoint,
+      status: row.status,
+      lastAttemptAt: row.last_attempt_at,
+      lastSuccessAt: row.last_success_at,
+      lastError: row.last_error,
+      updatedAt: row.updated_at
+    }))
+  }
+
+  setDataSourceEnabled(sourceId: string, enabled: boolean): any {
+    if (!this.db) throw new Error('个人记忆数据库尚未初始化')
+    const source = this.db.prepare('SELECT available FROM data_source_connectors WHERE source_id=?').get(sourceId) as any
+    if (!source) throw new Error('未知数据源')
+    if (enabled && source.available !== 1) throw new Error('该数据源连接器尚未安装')
+    this.db.prepare('UPDATE data_source_connectors SET enabled=?,updated_at=? WHERE source_id=?')
+      .run(enabled ? 1 : 0, new Date().toISOString(), sourceId)
+    return this.listDataSources().find(item => item.id === sourceId)
+  }
+
+  updateDataSourceRun(sourceId: string, patch: {
+    status: 'idle' | 'running' | 'healthy' | 'error'
+    checkpoint?: string
+    attemptedAt?: string
+    succeededAt?: string
+    error?: string
+  }): void {
+    if (!this.db) return
+    this.db.prepare(`
+      UPDATE data_source_connectors SET status=?,
+        checkpoint=COALESCE(?,checkpoint),
+        last_attempt_at=COALESCE(?,last_attempt_at),
+        last_success_at=COALESCE(?,last_success_at),
+        last_error=?,updated_at=?
+      WHERE source_id=?
+    `).run(
+      patch.status, patch.checkpoint ?? null, patch.attemptedAt ?? null,
+      patch.succeededAt ?? null, patch.error || null, new Date().toISOString(), sourceId
+    )
   }
 
   private upsertSearchDocument(id: string, type: string, sourceId: string, title: string, searchText: string, metadata: any, now: string): void {

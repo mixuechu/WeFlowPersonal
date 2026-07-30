@@ -1274,3 +1274,43 @@ test('portable import rekeys a foreign SQLCipher database for the current device
     rmSync(directory, { recursive: true, force: true })
   }
 })
+
+test('data source registry persists enablement, capability and independent run health', () => withStore(store => {
+  store.registerDataSources([
+    {
+      id: 'wechat', kind: 'chat', displayName: '微信', description: '本机微信',
+      available: true, localOnly: true, capabilities: ['incremental', 'original-evidence']
+    },
+    {
+      id: 'calendar', kind: 'calendar', displayName: '日历', description: '待接入',
+      available: false, localOnly: false, capabilities: ['incremental', 'events']
+    }
+  ])
+  assert.equal(store.listDataSources().find(item => item.id === 'wechat')?.enabled, true)
+  assert.throws(() => store.setDataSourceEnabled('calendar', true), /尚未安装/)
+
+  store.setDataSourceEnabled('wechat', false)
+  store.updateDataSourceRun('wechat', {
+    status: 'healthy',
+    checkpoint: 'cursor-42',
+    attemptedAt: '2026-07-30T00:00:00.000Z',
+    succeededAt: '2026-07-30T00:00:01.000Z'
+  })
+  const source = store.listDataSources().find(item => item.id === 'wechat')
+  assert.equal(source.enabled, false)
+  assert.equal(source.checkpoint, 'cursor-42')
+  assert.equal(source.status, 'healthy')
+  assert.deepEqual(source.capabilities, ['incremental', 'original-evidence'])
+
+  store.updateDataSourceRun('wechat', { status: 'running', attemptedAt: '2026-07-30T00:01:00.000Z' })
+  store.registerDataSources([
+    {
+      id: 'wechat', kind: 'chat', displayName: '微信', description: '本机微信',
+      available: true, localOnly: true, capabilities: ['incremental', 'original-evidence']
+    }
+  ])
+  const recovered = store.listDataSources().find(item => item.id === 'wechat')
+  assert.equal(recovered.status, 'error')
+  assert.equal(recovered.checkpoint, 'cursor-42')
+  assert.match(recovered.lastError, /原 checkpoint 重试/)
+}))

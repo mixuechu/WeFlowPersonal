@@ -38,6 +38,7 @@ import { summarizeIngestionRuns } from './ingestionDiagnostics'
 import { attachLocalImageOcr, attachLocalVoiceTranscript, recoverMessageSemantics } from './messageSemanticRecovery'
 import { sanitizeDiagnosticText } from './diagnosticRedaction'
 import { getAppRunRecoveryDiagnostics } from './appRunRecoveryService'
+import { PERSONAL_DATA_SOURCE_CATALOG } from './personalDataSources'
 import {
   decryptPortableMemoryBundle,
   encryptPortableMemoryBundle,
@@ -186,7 +187,7 @@ function shanghaiDate(timestampMs = Date.now()): string {
 }
 
 function messageKey(message: any): string {
-  return `${message.sessionId}:${message.id}`
+  return `${message.sourceId || 'wechat'}:${message.sessionId}:${message.id}`
 }
 
 function stableTaskId(task: any): string {
@@ -259,6 +260,7 @@ export class AiAssistantService {
       throw new Error('个人记忆数据库密钥未能写入 macOS 安全存储')
     }
     personalMemoryStore.initialize(databasePath, databaseKey)
+    personalMemoryStore.registerDataSources(PERSONAL_DATA_SOURCE_CATALOG)
     personalMemoryStore.purgeExpiredResourceTrash(
       Number(this.config.get('aiAssistantResourceTrashRetentionDays') || 0)
     )
@@ -1296,10 +1298,25 @@ export class AiAssistantService {
   }
 
   private async runSync(): Promise<any> {
+    const wechatSource = personalMemoryStore.listDataSources().find(source => source.id === 'wechat')
+    if (wechatSource && !wechatSource.enabled) {
+      return {
+        success: true,
+        cancelled: false,
+        newMessageCount: 0,
+        newTaskCount: 0,
+        failedSessions: 0,
+        message: '微信数据源已暂停；增量游标保持不变'
+      }
+    }
     const runId = `run_${crypto.randomUUID()}`
     let runFinished = false
     let cancelled = false
     this.state.cursor.lastAttemptAt = new Date().toISOString()
+    personalMemoryStore.updateDataSourceRun('wechat', {
+      status: 'running',
+      attemptedAt: this.state.cursor.lastAttemptAt
+    })
     this.saveState()
     personalMemoryStore.startIngestionRun(
       runId,
@@ -1476,6 +1493,19 @@ export class AiAssistantService {
         error: batchErrors[0]
       })
       runFinished = true
+      if (!batchErrors.length) {
+        personalMemoryStore.updateDataSourceRun('wechat', {
+          status: 'healthy',
+          checkpoint: String(now),
+          succeededAt: createdAt
+        })
+      } else {
+        personalMemoryStore.updateDataSourceRun('wechat', {
+          status: cancelled ? 'idle' : 'error',
+          attemptedAt: this.state.cursor.lastAttemptAt || createdAt,
+          error: cancelled ? '' : batchErrors[0]
+        })
+      }
       const mineTasks = [...tasks.values()].filter(task => task.classification === 'mine')
       if (mineTasks.length > 0) {
         this.enqueueNotification({
@@ -1498,6 +1528,11 @@ export class AiAssistantService {
       }
     } catch (error: any) {
       this.state.cursor.lastError = sanitizeDiagnosticText(error)
+      personalMemoryStore.updateDataSourceRun('wechat', {
+        status: 'error',
+        attemptedAt: this.state.cursor.lastAttemptAt || new Date().toISOString(),
+        error: this.state.cursor.lastError
+      })
       this.saveState()
       if (!runFinished) {
         personalMemoryStore.finishIngestionRun(runId, {
@@ -1518,8 +1553,21 @@ export class AiAssistantService {
       cancelling: this.cancelRequested,
       scheduleTime: this.config.get('aiAssistantScheduleTime'),
       model: this.config.get('aiAssistantApiModel'),
-      cursor: this.state.cursor
+      cursor: this.state.cursor,
+      dataSources: personalMemoryStore.listDataSources()
     }
+  }
+
+  getDataSources(): any[] {
+    return personalMemoryStore.listDataSources()
+  }
+
+  setDataSourceEnabled(sourceId: string, enabled: boolean): any {
+    const result = personalMemoryStore.setDataSourceEnabled(String(sourceId || ''), Boolean(enabled))
+    if (sourceId === 'wechat' && !enabled && this.activeSync) {
+      this.cancelRequested = true
+    }
+    return result
   }
 
   cancelSync(): any {

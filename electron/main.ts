@@ -4565,6 +4565,9 @@ function registerIpcHandlers() {
   ipcMain.handle('ai-assistant:correctClaim', (_, id: string, input: any) => aiAssistantService.correctClaim(id, input))
   ipcMain.handle('ai-assistant:askMemory', (_, question: string, conversationId?: string, options?: any) => aiAssistantService.askMemory(question, conversationId, options))
   ipcMain.handle('ai-assistant:getConversationSources', () => aiAssistantService.getConversationSources())
+  ipcMain.handle('ai-assistant:getDataSources', () => aiAssistantService.getDataSources())
+  ipcMain.handle('ai-assistant:setDataSourceEnabled', (_, sourceId: string, enabled: boolean) =>
+    aiAssistantService.setDataSourceEnabled(sourceId, enabled))
   ipcMain.handle('ai-assistant:setConversationSource', (_, input: any) => aiAssistantService.setConversationSource(input))
   ipcMain.handle('ai-assistant:setConversationSourcesBulk', (_, input: any) => aiAssistantService.setConversationSourcesBulk(input))
 
