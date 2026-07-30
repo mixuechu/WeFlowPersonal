@@ -42,6 +42,7 @@ import { redactLocalSecrets, redactSensitiveText, type SensitiveRedactionLevel }
 import { chatService } from './chatService'
 import { voiceTranscribeService } from './voiceTranscribeService'
 import { localOcrService } from './localOcrService'
+import { buildImageSemanticText, localImageSemanticService } from './localImageSemanticService'
 import {
   assessIdentityPair,
   buildGraphIdentitySuggestions,
@@ -158,6 +159,7 @@ const SYSTEM_PROMPT = `你是一个谨慎的中文私人助理兼个人记忆图
 “我发送”只表示消息方向，绝不表示任务负责人是用户。用户发出的“查一下、看一下、确认一下、问一下、发一下、快、请、麻烦、帮我”等祈使句或请求，默认是要求收件人/群友执行，必须标为 others；只有同时出现“我来、我会、我负责、我去、我处理、我跟进、我要”等明确自我承诺，才可能标为 mine。
 群聊必须结合 sender、direction、被提及名字和前后文判断，不能因为群内出现祈使句就默认属于用户。每个任务必须给出 assignmentEvidence。
 引用消息规则：semanticType=quote 时，content 中“[引用上下文｜发送者：原文]”属于被引用的原作者，不是当前回复者的新陈述；它只能用于理解指代、回复对象和上下文，不得把引用原文的承诺或任务重新归到当前回复者名下。链接、文件、聊天记录、小程序、图片、语音、视频和表情的 semanticType 必须保留其媒介性质。
+图片视觉规则：content 中“[图片视觉·Apple Vision 本地候选｜未经人工确认]”只是设备端分类线索，不是图片事实描述，也不能单独支持任务、人物、关系、claim 或 event；只能辅助理解和检索，必须结合原消息文字、OCR 或其他直接证据。
 身份映射规则：每个会话的 participants 提供 wxid、通讯录备注 contactRemark、微信昵称 wechatNickname、群昵称 groupNickname、微信号 alias 和 displayName。wxid 是稳定身份主键，其余名称都是该身份在不同场景下的别名；同一个 wxid 的多个名称必须视为同一人，不同 wxid 即使同名也不得自动合并。理解消息中的称呼时优先结合群昵称和通讯录备注。
 分片规则：消息的 analysisScope 为 core 时才允许产生待办、实体、关系或合并候选；context 消息仅用于理解 core 的前后文，绝对不能单独据此重复产出结果。
 知识图谱规则：提取人物、组织、群和项目，以及有明确消息证据的关系。不要因名字相同就合并人物；一个人可以有多个账号和别名。身份不确定时创建候选，不做硬合并。所有关系必须带 messageId 证据。
@@ -230,6 +232,7 @@ export class AiAssistantService {
     this.statePath = join(app.getPath('userData'), 'ai-assistant-state.json')
     localEmbeddingService.initialize(app.getPath('userData'))
     localOcrService.initialize(join(app.getPath('userData'), 'ai-ocr-cache.json'))
+    localImageSemanticService.initialize(join(app.getPath('userData'), 'ai-image-semantic-cache.json'))
     personalMemoryStore.initialize(join(app.getPath('userData'), 'personal-memory.sqlite'))
     personalMemoryStore.purgeExpiredResourceTrash(
       Number(this.config.get('aiAssistantResourceTrashRetentionDays') || 0)
@@ -414,6 +417,8 @@ export class AiAssistantService {
       return Number(session.lastTimestamp || 0) >= sessionStart
     })
     const ocrImages = Boolean(this.config.get('aiAssistantOcrImages'))
+    const analyzeImages = Boolean(this.config.get('aiAssistantAnalyzeImages'))
+    const loadImages = ocrImages || analyzeImages
     const results = await Promise.allSettled(sessions.map(async (session: any) => {
       const rawRows: any[] = []
       const sessionStart = Math.max(0, Number(this.state.cursor.sessionCursors[session.username] || start) - 300)
@@ -425,11 +430,11 @@ export class AiAssistantService {
           offset,
           start: sessionStart,
           end,
-          media: ocrImages ? '1' : undefined,
-          image: ocrImages ? '1' : undefined,
-          voice: ocrImages ? '0' : undefined,
-          video: ocrImages ? '0' : undefined,
-          emoji: ocrImages ? '0' : undefined
+          media: loadImages ? '1' : undefined,
+          image: loadImages ? '1' : undefined,
+          voice: loadImages ? '0' : undefined,
+          video: loadImages ? '0' : undefined,
+          emoji: loadImages ? '0' : undefined
         })
         const pageRows = Array.isArray(payload.messages) ? payload.messages : []
         rawRows.push(...pageRows)
@@ -503,6 +508,7 @@ export class AiAssistantService {
     const sorted = [...deduped.values()].sort((a, b) => a.timestamp - b.timestamp)
     await this.enrichVoiceTranscripts(sorted)
     await this.enrichImageOcr(sorted)
+    await this.enrichImageSemantics(sorted)
     await this.enrichAttachmentText(sorted)
     await this.enrichWebSnapshots(sorted)
     return { messages: sorted, failed, successful }
@@ -547,6 +553,67 @@ export class AiAssistantService {
         message.ocrSource = 'tesseract-local'
         message.ocrStructure = structureOcrText(redact(result.text))
       }
+    }
+  }
+
+  private async enrichImageSemantics(messages: any[]): Promise<void> {
+    if (!this.config.get('aiAssistantAnalyzeImages')) return
+    if (!localImageSemanticService.getStatus().available) return
+    const candidates = messages.filter(message =>
+      message.semanticType === 'image'
+      && message.mediaLocalPath
+      && !String(message.content || '').includes('图片视觉·Apple Vision')
+    ).slice(-4)
+    for (const message of candidates) {
+      const result = await localImageSemanticService.classify(message.mediaLocalPath)
+      const semanticText = result.success ? buildImageSemanticText(result.labels) : ''
+      if (!semanticText) continue
+      message.content = `${message.content}\n${semanticText}`.trim().slice(0, 18_000)
+      message.visualSource = 'apple-vision-local'
+      message.visualLabels = result.labels
+      message.visualModelVersion = localImageSemanticService.getStatus().modelVersion
+    }
+  }
+
+  private async continuePendingImageSemantics(): Promise<void> {
+    if (!this.config.get('aiAssistantAnalyzeImages')) return
+    const status = localImageSemanticService.getStatus()
+    if (!status.available) return
+    const pending = personalMemoryStore.listPendingImageSemanticResources(status.modelVersion, 1)
+    for (const resource of pending) {
+      const filePath = String(resource.metadata?.mediaLocalPath || '')
+      const attempts = Number(resource.metadata?.visualMigrationAttempts || 0)
+      if (!filePath || !existsSync(filePath)) {
+        personalMemoryStore.replaceResourceContent(resource.id, resource.content, {
+          visualMigrationStatus: 'not_found',
+          visualMigrationAttempts: attempts + 1,
+          visualMigrationNextAt: new Date(Date.now() + 7 * 86_400_000).toISOString()
+        })
+        continue
+      }
+      const result = await localImageSemanticService.classify(filePath)
+      if (!result.success) {
+        const retryDays = Math.min(7, Math.max(1, 2 ** attempts))
+        personalMemoryStore.replaceResourceContent(resource.id, resource.content, {
+          visualMigrationStatus: 'failed',
+          visualMigrationAttempts: attempts + 1,
+          visualMigrationNextAt: new Date(Date.now() + retryDays * 86_400_000).toISOString()
+        })
+        continue
+      }
+      const semanticText = buildImageSemanticText(result.labels)
+      const baseContent = String(resource.content || '')
+        .replace(/\n?\[图片视觉·Apple Vision 本地候选｜未经人工确认\][\s\S]*$/u, '')
+        .trim()
+      personalMemoryStore.replaceResourceContent(resource.id, `${baseContent}${semanticText ? `\n${semanticText}` : ''}`.trim(), {
+        visualSource: 'apple-vision-local',
+        visualLabels: result.labels,
+        visualModelVersion: status.modelVersion,
+        visualMigrationStatus: semanticText ? 'completed' : 'empty',
+        visualMigrationAttempts: attempts + 1,
+        visualMigrationNextAt: '',
+        visualMigratedAt: new Date().toISOString()
+      })
     }
   }
 
@@ -686,7 +753,7 @@ export class AiAssistantService {
     const resourceTypes = new Set(['link', 'file', 'forward', 'miniapp', 'image', 'voice'])
     const resources = messages.flatMap(message => {
       if (!resourceTypes.has(message.semanticType)) return []
-      if (message.semanticType === 'image' && !message.ocrSource) return []
+      if (message.semanticType === 'image' && !message.ocrSource && !message.visualSource) return []
       if (message.semanticType === 'voice' && !message.transcriptionSource) return []
       const recoveredContent = String(message.content || '')
         .replace(/^\[(?:图片·本地OCR|语音·本地转写)\]\s*/, '')
@@ -723,6 +790,9 @@ export class AiAssistantService {
           transcriptionSource: message.transcriptionSource || '',
           ocrSource: message.ocrSource || '',
           ocrStructure: message.ocrStructure || null,
+          visualSource: message.visualSource || '',
+          visualLabels: message.visualLabels || [],
+          visualModelVersion: message.visualModelVersion || '',
           attachmentLocalPath: message.attachmentLocalPath || '',
           attachmentMatchedBy: message.attachmentMatchedBy || '',
           attachmentIndexStatus: message.attachmentIndexStatus || '',
@@ -774,6 +844,7 @@ export class AiAssistantService {
       semanticType: message.semanticType,
       transcriptionSource: message.transcriptionSource || undefined,
       ocrSource: message.ocrSource || undefined,
+      visualSource: message.visualSource || undefined,
       replyToMessageId: message.replyToMessageId || undefined,
       quotedSender: message.quotedSender || undefined,
       content: redact(message.content)
@@ -1209,6 +1280,7 @@ export class AiAssistantService {
       const createdAt = new Date().toISOString()
       await this.continuePendingPdfOcr()
       this.persistMessageResources(fresh, createdAt)
+      await this.continuePendingImageSemantics()
       await this.continuePendingAttachmentStructures()
       const successfulMessageKeys: string[] = []
       const batchErrors: string[] = []
@@ -1468,6 +1540,9 @@ export class AiAssistantService {
       attachmentStructureMigration: personalMemoryStore.getAttachmentStructureMigrationStats(
         ATTACHMENT_STRUCTURE_PARSER_VERSION
       ),
+      imageSemanticMigration: personalMemoryStore.getImageSemanticMigrationStats(
+        localImageSemanticService.getStatus().modelVersion
+      ),
       memoryFeed,
       resourceTrash: personalMemoryStore.listResourceTrash(),
       ingestionStatus: personalMemoryStore.getIngestionStatus(),
@@ -1489,6 +1564,7 @@ export class AiAssistantService {
   async getMemoryDiagnostics(): Promise<any> {
     const ingestionRuns = personalMemoryStore.listIngestionRuns(20)
     const ocr = await localOcrService.getStatus()
+    const imageSemantics = localImageSemanticService.getStatus()
     const pdfOcr = await getPdfOcrStatus()
     return {
       ...personalMemoryStore.getDiagnostics(),
@@ -1512,6 +1588,7 @@ export class AiAssistantService {
       },
       appRecovery: getAppRunRecoveryDiagnostics(),
       ocr: { ...ocr, enabled: Boolean(this.config.get('aiAssistantOcrImages')) },
+      imageSemantics: { ...imageSemantics, enabled: Boolean(this.config.get('aiAssistantAnalyzeImages')) },
       pdfOcr: { ...pdfOcr, enabled: Boolean(this.config.get('aiAssistantOcrImages')) }
     }
   }
@@ -1628,6 +1705,7 @@ export class AiAssistantService {
       ownerBackground: this.config.get('aiAssistantOwnerBackground'),
       transcribeVoice: this.config.get('autoTranscribeVoice'),
       ocrImages: this.config.get('aiAssistantOcrImages'),
+      analyzeImages: this.config.get('aiAssistantAnalyzeImages'),
       indexWebLinks: this.config.get('aiAssistantIndexWebLinks'),
       resourceTrashRetentionDays: this.config.get('aiAssistantResourceTrashRetentionDays'),
       sensitiveRedactionLevel: this.config.get('aiAssistantSensitiveRedactionLevel')
@@ -1694,6 +1772,7 @@ export class AiAssistantService {
     if (typeof input.ownerBackground === 'string') this.config.set('aiAssistantOwnerBackground', input.ownerBackground.trim())
     if (typeof input.transcribeVoice === 'boolean') this.config.set('autoTranscribeVoice', input.transcribeVoice)
     if (typeof input.ocrImages === 'boolean') this.config.set('aiAssistantOcrImages', input.ocrImages)
+    if (typeof input.analyzeImages === 'boolean') this.config.set('aiAssistantAnalyzeImages', input.analyzeImages)
     if (typeof input.indexWebLinks === 'boolean') this.config.set('aiAssistantIndexWebLinks', input.indexWebLinks)
     if ([0, 7, 30, 90].includes(Number(input.resourceTrashRetentionDays))) {
       this.config.set('aiAssistantResourceTrashRetentionDays', Number(input.resourceTrashRetentionDays))

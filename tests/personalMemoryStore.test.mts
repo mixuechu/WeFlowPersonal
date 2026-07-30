@@ -1068,3 +1068,35 @@ test('Office and PDF attachment structure migration is resumable, deferred and i
   assert.equal(store.getAttachmentStructureMigrationStats(parserVersion).deferred, 1)
   assert.equal(store.listPendingAttachmentStructureResources(parserVersion, 10).length, 0)
 }))
+
+test('historical image semantics resume by model version and invalidate stale vectors', () => withStore(store => {
+  const modelVersion = 'apple-vision-classify-v1'
+  store.upsertResources([{
+    id: 'resource-image-vision',
+    resourceType: 'image',
+    title: '历史图片',
+    content: '图片消息',
+    metadata: {
+      mediaLocalPath: '/tmp/history-image.png',
+      ocrSource: 'tesseract-local'
+    },
+    evidence: []
+  }])
+  assert.equal(store.getImageSemanticMigrationStats(modelVersion).pending, 1)
+  assert.equal(store.listPendingImageSemanticResources(modelVersion, 1)[0].id, 'resource-image-vision')
+  store.saveEmbedding('resource:resource-image-vision', 'test-vector', [1, 0])
+  store.replaceResourceContent(
+    'resource-image-vision',
+    '图片消息\n[图片视觉·Apple Vision 本地候选｜未经人工确认] 可能包含：文档 81%',
+    {
+      visualSource: 'apple-vision-local',
+      visualLabels: [{ identifier: 'document', displayName: '文档', confidence: 0.81 }],
+      visualModelVersion: modelVersion,
+      visualMigrationStatus: 'completed'
+    }
+  )
+  assert.equal(store.getImageSemanticMigrationStats(modelVersion).completed, 1)
+  assert.equal(store.listPendingImageSemanticResources(modelVersion, 1).length, 0)
+  assert.ok(store.searchText('Apple Vision').some(item => item.id === 'resource:resource-image-vision'))
+  assert.equal(store.getEmbeddingStats('test-vector').pending, 1)
+}))

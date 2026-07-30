@@ -1109,6 +1109,49 @@ export class PersonalMemoryStore {
     }).slice(0, Math.max(1, Math.min(10, limit)))
   }
 
+  listPendingImageSemanticResources(modelVersion: string, limit = 1, now = new Date()): any[] {
+    if (!this.db) return []
+    const rows = this.db.prepare(`
+      SELECT r.* FROM memory_resources r
+      LEFT JOIN resource_suppressions s ON s.resource_id=r.id
+      WHERE r.resource_type='image' AND s.resource_id IS NULL
+      ORDER BY r.updated_at ASC
+    `).all() as any[]
+    return rows.flatMap(row => {
+      try {
+        const metadata = JSON.parse(row.metadata_json || '{}')
+        if (!metadata.mediaLocalPath || metadata.visualModelVersion === modelVersion) return []
+        const nextAt = Date.parse(String(metadata.visualMigrationNextAt || ''))
+        if (Number.isFinite(nextAt) && nextAt > now.getTime()) return []
+        return [{ ...row, metadata }]
+      } catch {
+        return []
+      }
+    }).slice(0, Math.max(1, Math.min(10, limit)))
+  }
+
+  getImageSemanticMigrationStats(modelVersion: string, now = new Date()): any {
+    if (!this.db) return { total: 0, completed: 0, pending: 0, deferred: 0 }
+    const rows = this.db.prepare(`
+      SELECT r.metadata_json FROM memory_resources r
+      LEFT JOIN resource_suppressions s ON s.resource_id=r.id
+      WHERE r.resource_type='image' AND s.resource_id IS NULL
+    `).all() as any[]
+    let total = 0
+    let completed = 0
+    let deferred = 0
+    for (const row of rows) {
+      try {
+        const metadata = JSON.parse(row.metadata_json || '{}')
+        if (!metadata.mediaLocalPath) continue
+        total += 1
+        if (metadata.visualModelVersion === modelVersion) completed += 1
+        else if (Date.parse(String(metadata.visualMigrationNextAt || '')) > now.getTime()) deferred += 1
+      } catch {}
+    }
+    return { total, completed, pending: Math.max(0, total - completed - deferred), deferred }
+  }
+
   getAttachmentStructureMigrationStats(parserVersion: string, now = new Date()): any {
     if (!this.db) return { total: 0, completed: 0, pending: 0, deferred: 0 }
     const rows = this.db.prepare(`

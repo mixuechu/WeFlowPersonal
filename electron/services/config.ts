@@ -111,6 +111,7 @@ interface ConfigSchema {
   aiAssistantOwnerAliases: string
   aiAssistantOwnerBackground: string
   aiAssistantOcrImages: boolean
+  aiAssistantAnalyzeImages: boolean
   aiAssistantIndexWebLinks: boolean
   aiAssistantResourceTrashRetentionDays: number
   aiAssistantSensitiveRedactionLevel: 'credentials' | 'standard' | 'strict'
@@ -280,6 +281,7 @@ export class ConfigService {
       aiAssistantOwnerAliases: '',
       aiAssistantOwnerBackground: '',
       aiAssistantOcrImages: false,
+      aiAssistantAnalyzeImages: true,
       aiAssistantIndexWebLinks: false,
       aiAssistantResourceTrashRetentionDays: 0,
       aiAssistantSensitiveRedactionLevel: 'standard',

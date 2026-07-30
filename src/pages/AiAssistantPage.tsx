@@ -630,6 +630,7 @@ function AiAssistantPage() {
                   {' · '}{memoryDiagnostics.backups?.length || 0} 个本地快照
                   {memoryDiagnostics.embeddings ? ` · 语义索引 ${memoryDiagnostics.embeddings.indexed}/${memoryDiagnostics.embeddings.total}` : ''}
                   {memoryDiagnostics.ocr ? ` · OCR ${memoryDiagnostics.ocr.chinese ? '中文可用' : '未就绪'}` : ''}
+                  {memoryDiagnostics.imageSemantics ? ` · 图片视觉 ${memoryDiagnostics.imageSemantics.available ? '本地可用' : '未就绪'}` : ''}
                 </small>
               </span>
             </div>
@@ -1062,6 +1063,12 @@ function AiAssistantPage() {
               {!!dashboard.attachmentStructureMigration.pending && ` · ${dashboard.attachmentStructureMigration.pending} 个将在后续同步中继续`}
               {!!dashboard.attachmentStructureMigration.deferred && ` · ${dashboard.attachmentStructureMigration.deferred} 个正在退避等待`}
             </div>}
+            {!!dashboard?.imageSemanticMigration?.total && <div className="assistant-query-plan">
+              历史图片视觉理解：{dashboard.imageSemanticMigration.completed || 0}
+              {' / '}{dashboard.imageSemanticMigration.total} 已完成
+              {!!dashboard.imageSemanticMigration.pending && ` · ${dashboard.imageSemanticMigration.pending} 张将在后续同步中继续`}
+              {!!dashboard.imageSemanticMigration.deferred && ` · ${dashboard.imageSemanticMigration.deferred} 张正在退避等待`}
+            </div>}
             <div className="assistant-memory-list">
               {visibleResources.map((resource: any) => <article className="assistant-memory-item" key={resource.id}>
                 <div className="assistant-memory-item-head">
@@ -1182,6 +1189,13 @@ function AiAssistantPage() {
                   {!!resource.metadata.ocrStructure.dates?.length && <small>日期：{resource.metadata.ocrStructure.dates.join('、')}</small>}
                   {!!resource.metadata.ocrStructure.amounts?.length && <small>金额：{resource.metadata.ocrStructure.amounts.join('、')}</small>}
                   {!!resource.metadata.ocrStructure.urls?.length && <small>链接：{resource.metadata.ocrStructure.urls.join('、')}</small>}
+                </div>}
+                {resource.resource_type === 'image' && resource.metadata?.visualSource && <div className="assistant-evidence-stack">
+                  <small>图片视觉：Apple Vision 本地候选 · 未经人工确认，不单独作为事实证据</small>
+                  {!!resource.metadata.visualLabels?.length && <small>
+                    可能包含：{resource.metadata.visualLabels.slice(0, 8).map((label: any) =>
+                      `${label.displayName || label.identifier} ${Math.round(Number(label.confidence || 0) * 100)}%`).join('；')}
+                  </small>}
                 </div>}
                 {resource.resource_type === 'link' && <small>
                   网页快照：{resource.metadata?.webSnapshotStatus === 'indexed' ? '已安全索引'
@@ -1664,6 +1678,7 @@ function AiAssistantPage() {
             <small className="assistant-settings-note">DeepSeek 费率可能调整，成本只按你填写的当前费率本地估算。</small>
             <label className="assistant-toggle"><input type="checkbox" checked={Boolean(settings.transcribeVoice)} onChange={event => setSettings({ ...settings, transcribeVoice: event.target.checked })} /><span>增量整理时本地转写语音（每次最多 12 条，需已安装 SenseVoice 模型）</span></label>
             <label className="assistant-toggle"><input type="checkbox" checked={Boolean(settings.ocrImages)} onChange={event => setSettings({ ...settings, ocrImages: event.target.checked })} /><span>增量整理时本地识别图片文字（每次最多 8 张，需本机 Tesseract 中文模型）</span></label>
+            <label className="assistant-toggle"><input type="checkbox" checked={Boolean(settings.analyzeImages)} onChange={event => setSettings({ ...settings, analyzeImages: event.target.checked })} /><span>用 macOS Apple Vision 本地提取图片场景候选（每次最多 4 张，不上传原图）</span></label>
             <label className="assistant-toggle"><input type="checkbox" checked={Boolean(settings.indexWebLinks)} onChange={event => setSettings({ ...settings, indexWebLinks: event.target.checked })} /><span>安全抓取公开网页正文（每次最多 4 个；拒绝内网地址，默认关闭）</span></label>
             <label><span>资源回收站保留</span><select value={Number(settings.resourceTrashRetentionDays || 0)} onChange={event => setSettings({ ...settings, resourceTrashRetentionDays: Number(event.target.value) })}>
               <option value={0}>永不自动清空</option><option value={7}>7 天</option><option value={30}>30 天</option><option value={90}>90 天</option>

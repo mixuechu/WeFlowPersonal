@@ -1,5 +1,5 @@
 const { execFileSync } = require('child_process')
-const { existsSync, readdirSync, rmSync, statSync } = require('fs')
+const { chmodSync, existsSync, mkdirSync, readdirSync, rmSync, statSync } = require('fs')
 const { join } = require('path')
 
 const WCDB_FRAMEWORK_ID = '@rpath/WCDB.framework/Versions/2.1.15/WCDB'
@@ -59,6 +59,30 @@ module.exports = async function afterPack(context) {
 
   const appPath = join(context.appOutDir, `${context.packager.appInfo.productFilename}.app`)
   const resourcesDir = join(appPath, 'Contents', 'Resources')
+  const imageSemanticSource = join(process.cwd(), 'electron', 'helpers', 'ImageSemanticHelper.swift')
+  const imageSemanticDir = join(resourcesDir, 'resources')
+  const imageSemanticExecutable = join(imageSemanticDir, 'image-semantic-helper')
+  if (existsSync(imageSemanticSource)) {
+    try {
+      mkdirSync(imageSemanticDir, { recursive: true })
+      execFileSync('xcrun', ['swiftc', '-O', imageSemanticSource, '-o', imageSemanticExecutable], { stdio: 'inherit' })
+      chmodSync(imageSemanticExecutable, 0o755)
+      console.log(`[afterPack] Compiled local Apple Vision helper at ${imageSemanticExecutable}`)
+    } catch (error) {
+      console.warn(`[afterPack] Apple Vision helper unavailable: ${error?.message || error}`)
+    }
+  }
+  if (existsSync(imageSemanticExecutable)) {
+    const helperIdentity = findStableLocalSigningIdentity()
+    execFileSync('codesign', [
+      '--force',
+      '--timestamp=none',
+      '--sign',
+      helperIdentity || '-',
+      imageSemanticExecutable,
+    ], { stdio: 'inherit' })
+    console.log(`[afterPack] Signed Apple Vision helper with ${helperIdentity || 'ad-hoc fallback'}`)
+  }
   const dylibs = walk(resourcesDir)
 
   for (const dylibPath of dylibs) {
