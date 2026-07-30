@@ -27,6 +27,7 @@ import {
 import { buildEntityInsights } from './relationshipInsights'
 import { classifyTaskAssignment, evaluateTaskAssignmentPolicy } from './taskAssignmentPolicy'
 import { buildWeeklyBriefing, isQuietTime } from './briefingIntelligence'
+import { groundBriefingDigest } from './briefingEvidencePolicy'
 import {
   enqueueUniqueNotification,
   markNotificationAttempt,
@@ -172,8 +173,8 @@ const EMPTY_STATE: AssistantState = {
   graph: { entities: [], relations: [], reviewQueue: [], identityScan: { lastFullScanAt: null, lastRunAt: null, lastMode: null, lastCandidateCount: 0 } }
 }
 
-const EXTRACTION_PROMPT_VERSION = 'personal-os-prompt-v5'
-const EXTRACTION_SCHEMA_VERSION = 'personal-memory-schema-v4'
+const EXTRACTION_PROMPT_VERSION = 'personal-os-prompt-v6'
+const EXTRACTION_SCHEMA_VERSION = 'personal-memory-schema-v5'
 const DOCUMENT_ANALYSIS_VERSION = `${EXTRACTION_PROMPT_VERSION}/${EXTRACTION_SCHEMA_VERSION}/document-v1`
 
 const SYSTEM_PROMPT = `你是一个谨慎的中文私人助理兼个人记忆图谱分析器。输入包含按会话组织的连续微信消息和用户身份档案。
@@ -191,8 +192,9 @@ const SYSTEM_PROMPT = `你是一个谨慎的中文私人助理兼个人记忆图
 输出预算：每批最多 30 个实体、30 条关系、20 条高价值 claims、15 个 events 和 20 个 tasks；优先保留与用户本人、重要人物、项目和行动有关且证据最强的内容，禁止为了凑数量记录琐碎事实。
 “用户”“我”“本人”“对方”“群友”“某人”“未知”等只是角色占位词，绝对不能作为实体名称。用户本人必须使用身份档案里的真实姓名；身份档案没有姓名时，不创建用户本人的人物实体。
 只根据消息证据，不臆测；title 用动词开头；不确定日期时 due 为空；source 使用会话显示名。
+简报证据规则：summary 必须列出 summaryEvidenceKeys；highlights 中每一项必须是 {"text":"重点","sourceEvidenceKeys":["证据键"]}。证据键必须逐字复制输入消息的 evidenceKey，且只能引用 analysisScope=core 的消息。无法引用真实 core 证据时 summary 为空、highlights 不输出该项。
 只返回 JSON：
-{"headline":"标题","summary":"摘要","highlights":["重要信息"],"tasks":[{"title":"待办","detail":"上下文","owner":"负责人真实名称","collaborators":["协作者"],"project":"所属项目","dependsOnTitles":["依赖待办标题"],"taskKind":"action|delegated|waiting","due":"","priority":"high|medium|low","source":"会话名","confidence":0.8,"classification":"mine|uncertain|others","assignmentEvidence":"归属证据","sourceMessageIds":["消息ID"]}],"entities":[{"tempId":"e1","type":"person|organization|group|project","canonicalName":"名称","aliases":[],"accountIds":[],"summary":"仅基于证据的简述","confidence":0.8,"evidenceMessageIds":["消息ID"]}],"relations":[{"subjectTempId":"e1","predicate":"从主语到宾语可直接朗读的有向关系","objectTempId":"e2","directionExplanation":"完整自然语言，例如A向B提供服务","confidence":0.8,"evidenceMessageIds":["消息ID"]}],"claims":[{"subjectTempId":"e1","predicate":"肯定式标准事实属性","objectTempId":"","objectValue":"事实值","polarity":"positive|negative","valueType":"text|number|date|boolean","validFrom":"","validTo":"","confidence":0.8,"sourceNature":"self_statement|other_statement|inference","evidenceMessageIds":["消息ID"]}],"events":[{"eventType":"meeting|commitment|delivery|travel|payment|organization_change|decision|other","title":"事件","description":"描述","startAt":"","endAt":"","location":"","participants":[{"tempId":"e1","role":"参与者角色"}],"confidence":0.8,"evidenceMessageIds":["消息ID"]}],"possibleDuplicates":[{"leftTempId":"e1","rightExistingName":"已有实体名","confidence":0.7,"reason":"原因"}]}`
+{"headline":"标题","summary":"摘要","summaryEvidenceKeys":["sourceId:sessionId:messageId"],"highlights":[{"text":"重要信息","sourceEvidenceKeys":["sourceId:sessionId:messageId"]}],"tasks":[{"title":"待办","detail":"上下文","owner":"负责人真实名称","collaborators":["协作者"],"project":"所属项目","dependsOnTitles":["依赖待办标题"],"taskKind":"action|delegated|waiting","due":"","priority":"high|medium|low","source":"会话名","confidence":0.8,"classification":"mine|uncertain|others","assignmentEvidence":"归属证据","sourceMessageIds":["消息ID"]}],"entities":[{"tempId":"e1","type":"person|organization|group|project","canonicalName":"名称","aliases":[],"accountIds":[],"summary":"仅基于证据的简述","confidence":0.8,"evidenceMessageIds":["消息ID"]}],"relations":[{"subjectTempId":"e1","predicate":"从主语到宾语可直接朗读的有向关系","objectTempId":"e2","directionExplanation":"完整自然语言，例如A向B提供服务","confidence":0.8,"evidenceMessageIds":["消息ID"]}],"claims":[{"subjectTempId":"e1","predicate":"肯定式标准事实属性","objectTempId":"","objectValue":"事实值","polarity":"positive|negative","valueType":"text|number|date|boolean","validFrom":"","validTo":"","confidence":0.8,"sourceNature":"self_statement|other_statement|inference","evidenceMessageIds":["消息ID"]}],"events":[{"eventType":"meeting|commitment|delivery|travel|payment|organization_change|decision|other","title":"事件","description":"描述","startAt":"","endAt":"","location":"","participants":[{"tempId":"e1","role":"参与者角色"}],"confidence":0.8,"evidenceMessageIds":["消息ID"]}],"possibleDuplicates":[{"leftTempId":"e1","rightExistingName":"已有实体名","confidence":0.7,"reason":"原因"}]}`
 
 function shanghaiDate(timestampMs = Date.now()): string {
   return new Intl.DateTimeFormat('en-CA', {
@@ -917,6 +919,7 @@ export class AiAssistantService {
     const model = String(this.config.get('aiAssistantApiModel') || 'deepseek-v4-flash')
     const compact = messages.map(message => ({
       messageId: message.id,
+      evidenceKey: messageKey(message),
       time: new Date(message.timestamp * 1000).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' }),
       session: message.sessionName,
       sessionId: message.sessionId,
@@ -1876,7 +1879,7 @@ export class AiAssistantService {
       const collected = await this.collectMessages(start, now)
       const seen = new Set(this.state.cursor.recentMessageIds)
       const fresh = collected.messages.filter(message => !seen.has(messageKey(message)))
-      const digests: any[] = []
+      const digests: Array<{ digest: any; batch: any[] }> = []
       const createdAt = new Date().toISOString()
       await this.continuePendingPdfOcr()
       this.persistMessageResources(fresh, createdAt)
@@ -1900,7 +1903,7 @@ export class AiAssistantService {
         })
         try {
           const digest = await this.callAi(batch)
-          digests.push(digest)
+          digests.push({ digest, batch })
           const tempIds = this.mergeGraphDigest(digest, batch, createdAt)
           personalMemoryStore.syncGraph(this.state.graph)
           this.persistClaimsAndEvents(digest, tempIds, batch, createdAt)
@@ -1929,11 +1932,18 @@ export class AiAssistantService {
         }
       }
       const tasks = new Map<string, AssistantTask>()
-      const highlights: string[] = []
+      const highlightItems: any[] = []
       const summaries: string[] = []
-      for (const digest of digests) {
-        highlights.push(...(Array.isArray(digest.highlights) ? digest.highlights : []))
-        if (digest.summary) summaries.push(String(digest.summary))
+      const summaryEvidence: any[] = []
+      let rejectedSummaryCount = 0
+      let rejectedHighlightCount = 0
+      for (const { digest, batch } of digests) {
+        const groundedBriefing = groundBriefingDigest(digest, batch)
+        highlightItems.push(...groundedBriefing.highlights)
+        if (groundedBriefing.summary) summaries.push(groundedBriefing.summary)
+        summaryEvidence.push(...groundedBriefing.summaryEvidence)
+        if (groundedBriefing.rejectedSummary) rejectedSummaryCount += 1
+        rejectedHighlightCount += groundedBriefing.rejectedHighlightCount
         for (const item of Array.isArray(digest.tasks) ? digest.tasks : []) {
           const sourceMessageIds = Array.isArray(item.sourceMessageIds) ? item.sourceMessageIds.map(String).slice(0, 20) : []
           const evidenceMessages = fresh.filter(message => sourceMessageIds.includes(String(message.id)))
@@ -2010,7 +2020,15 @@ export class AiAssistantService {
           date: today,
           headline: `已整理 ${fresh.length} 条新增消息`,
           summary: summaries.join(' ').slice(0, 900),
-          highlights: [...new Set(highlights)].slice(0, 8),
+          summaryEvidence,
+          summaryVerified: summaries.length > 0,
+          highlightItems: [...new Map(highlightItems.map(item => [item.text, item])).values()].slice(0, 8),
+          highlights: [...new Set(highlightItems.map(item => item.text))].slice(0, 8),
+          evidencePolicy: {
+            version: 'briefing-evidence-v1',
+            rejectedSummaryCount,
+            rejectedHighlightCount
+          },
           tasks: [...tasks.values()].filter(task => task.classification === 'mine'),
           messageCount: fresh.length,
           failedSessions: collected.failed.length,

@@ -343,6 +343,10 @@
 .priority.high { background: #d76051; }.priority.medium { background: #dba04c; }.priority.low { background: #75a082; }
 .assistant-highlight { padding: 14px 0; border-bottom: 1px solid #ebe8e1; display: flex; gap: 10px; color: #515750; font-size: 12px; line-height: 1.65; }
 .assistant-highlight svg { flex: 0 0 auto; margin-top: 3px; color: #d87945; }
+.assistant-highlight > span { min-width: 0; }
+.assistant-highlight small { display: block; color: #969b95; font-size: 9px; }
+.assistant-highlight details { margin-top: 4px; color: #7d847d; font-size: 9px; }
+.assistant-highlight details i { display: block; margin-top: 3px; font-style: normal; line-height: 1.45; }
 .assistant-empty { padding: 24px; border: 1px dashed #deddd5; border-radius: 12px; color: #898d86; text-align: center; font-size: 11px; }
 .assistant-error { margin-top: 18px; padding: 13px; border-radius: 10px; display: grid; gap: 4px; color: #8a4d46; background: #fff0ed; font-size: 10px; }
 

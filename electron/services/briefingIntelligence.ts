@@ -31,7 +31,13 @@ export function buildWeeklyBriefing(
     activeTaskCount: activeTasks.length,
     waitingTaskCount: activeTasks.filter(task => task.status === 'waiting' || task.taskKind === 'waiting').length,
     highPriorityTaskCount: activeTasks.filter(task => task.priority === 'high').length,
-    summaries: entries.map(([date, briefing]) => ({ date, summary: String(briefing?.summary || ''), headline: String(briefing?.headline || '') }))
+    summaries: entries.map(([date, briefing]) => ({
+      date,
+      summary: String(briefing?.summary || ''),
+      headline: String(briefing?.headline || ''),
+      verified: briefing?.summaryVerified === true,
+      evidence: Array.isArray(briefing?.summaryEvidence) ? briefing.summaryEvidence : []
+    }))
       .filter(item => item.summary || item.headline)
   }
 }

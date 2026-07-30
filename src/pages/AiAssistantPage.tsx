@@ -1008,9 +1008,20 @@ function AiAssistantPage() {
             {briefingPeriod === 'latest' ? <>
               <h2>{briefing?.headline || '等待第一次增量整理'}</h2>
               <p>{briefing?.summary || '服务会在启动时自动补齐，也会在每天设定时间整理新增消息。'}</p>
+              {briefing?.summary && <details className="assistant-query-plan">
+                <summary>{briefing.summaryVerified ? `查看摘要原文（${briefing.summaryEvidence?.length || 0}）` : '历史摘要 · 生成时尚未保存逐条引用'}</summary>
+                {briefing.summaryVerified
+                  ? <div>{(briefing.summaryEvidence || []).map((item: any) => <span key={item.evidenceKey}>
+                    {item.sessionName} · {item.sender}：“{item.excerpt}”
+                  </span>)}</div>
+                  : <small>该摘要可以作为历史阅读材料，但不会作为新的可信事实或问答证据。</small>}
+              </details>}
             </> : <>
               <h2>{weeklyBriefing?.daysWithUpdates || 0} 天有新增信息，{weeklyBriefing?.activeTaskCount || 0} 项仍在推进</h2>
-              <p>{(weeklyBriefing?.summaries || []).map((item: any) => item.summary || item.headline).filter(Boolean).slice(0, 3).join(' ') || '本周尚无可汇总的新增信息。'}</p>
+              <p>{(weeklyBriefing?.summaries || []).map((item: any) => {
+                const text = item.summary || item.headline
+                return text && item.summary && !item.verified ? `【历史未验证摘要】${text}` : text
+              }).filter(Boolean).slice(0, 3).join(' ') || '本周尚无可汇总的新增信息。'}</p>
             </>}
           </div>
           <div className="assistant-stat">
@@ -1174,8 +1185,16 @@ function AiAssistantPage() {
 
           <aside className="assistant-panel assistant-signals">
             <div className="assistant-section-heading"><div><span className="assistant-eyebrow">SIGNALS</span><h3>值得留意</h3></div></div>
-            {(briefing?.highlights || []).map((highlight: string, index: number) => (
-              <div className="assistant-highlight" key={`${index}-${highlight}`}><Sparkles size={13} /><span>{highlight}</span></div>
+            {(briefing?.highlightItems?.length ? briefing.highlightItems : (briefing?.highlights || []).map((text: string) => ({ text, evidence: [], legacy: true })))
+              .map((highlight: any, index: number) => (
+              <div className="assistant-highlight" key={`${index}-${highlight.text}`}>
+                <Sparkles size={13} /><span>{highlight.text}
+                  <small>{highlight.legacy ? '历史重点 · 未保存逐条引用' : `${highlight.evidence.length} 条原文依据`}</small>
+                  {!!highlight.evidence?.length && <details><summary>查看原文</summary>
+                    {highlight.evidence.map((item: any) => <i key={item.evidenceKey}>{item.sessionName} · {item.sender}：“{item.excerpt}”</i>)}
+                  </details>}
+                </span>
+              </div>
             ))}
             {!(briefing?.highlights?.length) && <div className="assistant-empty">暂无重要动态</div>}
             {status?.cursor?.lastError && <div className="assistant-error"><strong>上次同步未完成</strong><span>{status.cursor.lastError}</span></div>}

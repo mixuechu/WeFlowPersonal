@@ -24,6 +24,7 @@ import {
 } from '../electron/services/identityDisambiguation.ts'
 import { editDistance, entityPinyinTerms, fuzzyEntityScore, pinyinEntityScore } from '../electron/services/fuzzyEntitySearch.ts'
 import { buildWeeklyBriefing, isQuietTime } from '../electron/services/briefingIntelligence.ts'
+import { groundBriefingDigest } from '../electron/services/briefingEvidencePolicy.ts'
 import { enqueueUniqueNotification, markNotificationAttempt } from '../electron/services/notificationOutbox.ts'
 import { findCommonGraphNeighbors } from '../electron/services/graphCommonNeighbors.ts'
 import { buildProjectInsights } from '../electron/services/projectInsights.ts'
@@ -397,6 +398,55 @@ test('weekly briefing aggregates Shanghai dates and quiet hours cross midnight',
   assert.equal(briefing.waitingTaskCount, 1)
   assert.equal(briefing.highPriorityTaskCount, 1)
   assert.deepEqual(briefing.highlights, ['完成演示', '客户反馈'])
+  assert.equal(briefing.summaries[0].verified, false)
+})
+
+test('briefing prose requires exact core-message evidence keys', () => {
+  const batch = [{
+    sourceId: 'wechat',
+    sessionId: 'session-a',
+    sessionName: '项目群',
+    id: 'message-core',
+    timestamp: 1_775_000_000,
+    direction: '对方发送',
+    senderName: '负责人甲',
+    content: '客户已确认周五演示。',
+    analysisScope: 'core'
+  }, {
+    sourceId: 'wechat',
+    sessionId: 'session-a',
+    sessionName: '项目群',
+    id: 'message-context',
+    timestamp: 1_774_999_900,
+    direction: '对方发送',
+    senderName: '负责人乙',
+    content: '仅用于分片上下文。',
+    analysisScope: 'context'
+  }]
+  const grounded = groundBriefingDigest({
+    summary: '周五演示已经确认。',
+    summaryEvidenceKeys: ['wechat:session-a:message-core', 'wechat:session-a:invented'],
+    highlights: [{
+      text: '客户确认周五演示',
+      sourceEvidenceKeys: ['wechat:session-a:message-core']
+    }, {
+      text: '上下文也算新增重点',
+      sourceEvidenceKeys: ['wechat:session-a:message-context']
+    }, '旧版无引用重点']
+  }, batch)
+  assert.equal(grounded.summary, '周五演示已经确认。')
+  assert.deepEqual(grounded.summaryEvidence.map(item => item.messageId), ['message-core'])
+  assert.deepEqual(grounded.highlights.map(item => item.text), ['客户确认周五演示'])
+  assert.equal(grounded.rejectedHighlightCount, 2)
+  assert.match(grounded.highlights[0].evidence[0].excerpt, /周五演示/)
+
+  const ungrounded = groundBriefingDigest({
+    summary: '模型自行生成的结论',
+    summaryEvidenceKeys: ['wechat:session-a:message-context'],
+    highlights: []
+  }, batch)
+  assert.equal(ungrounded.summary, '')
+  assert.equal(ungrounded.rejectedSummary, true)
 })
 
 test('notification outbox persists unique work until a successful delivery', () => {
