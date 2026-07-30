@@ -42,6 +42,14 @@ import {
   canApplyEntityAliasCandidate
 } from './entityAliasPolicy'
 import {
+  buildEntityCreationReview,
+  buildLegacyEntityReview,
+  canConfirmEntityCreation,
+  inferLegacyEntityTrustStatus,
+  isTrustedEntity,
+  type EntityTrustStatus
+} from './entityTrustPolicy'
+import {
   enqueueUniqueNotification,
   markNotificationAttempt,
   type NotificationOutbox
@@ -121,6 +129,7 @@ type GraphEntity = {
   externalIdentities: ExternalIdentity[]
   summary: string
   summaryStatus: 'confirmed' | 'legacy_unverified' | 'empty'
+  trustStatus: EntityTrustStatus
   confidence: number
   evidenceMessageIds: string[]
   createdAt: string
@@ -162,7 +171,7 @@ type AssistantState = {
   graph: {
     entities: GraphEntity[]
     relations: GraphRelation[]
-    reviewQueue: Array<{ id: string; kind: 'possible_duplicate' | 'relation' | 'entity_summary' | 'entity_alias'; title: string; detail: string; confidence: number; status: 'pending' | 'confirmed' | 'rejected'; createdAt: string; leftEntityId?: string; rightEntityId?: string; relationId?: string; entityId?: string; entityIdentityVersion?: number; entityCanonicalName?: string; previousSummary?: string; summaryText?: string; aliasText?: string; evidence?: Array<{ messageId: string; sessionId: string; timestamp: number; sender: string; excerpt: string }>; candidateSource?: string; candidateSignals?: Array<{ source: string; label: string; value: string }> }>
+    reviewQueue: Array<{ id: string; kind: 'possible_duplicate' | 'relation' | 'entity_summary' | 'entity_alias' | 'entity_creation'; title: string; detail: string; confidence: number; status: 'pending' | 'confirmed' | 'rejected'; createdAt: string; leftEntityId?: string; rightEntityId?: string; relationId?: string; entityId?: string; entityIdentityVersion?: number; entityCanonicalName?: string; entityType?: string; legacyReview?: boolean; previousSummary?: string; summaryText?: string; aliasText?: string; evidence?: Array<{ messageId: string; sessionId: string; timestamp: number; sender: string; excerpt: string }>; candidateSource?: string; candidateSignals?: Array<{ source: string; label: string; value: string }> }>
     identityScan: { lastFullScanAt: string | null; lastRunAt: string | null; lastMode: 'incremental' | 'full' | null; lastCandidateCount: number }
   }
 }
@@ -386,6 +395,7 @@ export class AiAssistantService {
             ...entity,
             externalIdentities: Array.isArray(entity.externalIdentities) ? entity.externalIdentities : [],
             summaryStatus: entity.summaryStatus || (entity.summary ? 'legacy_unverified' : 'empty'),
+            trustStatus: inferLegacyEntityTrustStatus(entity),
             identityVersion: Number(entity.identityVersion || 1),
             lastDisambiguatedAt: entity.lastDisambiguatedAt || null
           })) : [],
@@ -399,6 +409,18 @@ export class AiAssistantService {
       }
       this.repairPlaceholderEntities()
       this.repairInvalidRelations()
+      const confirmedEntityIds = new Set(this.state.graph.reviewQueue.flatMap(review =>
+        review.status === 'confirmed' && review.kind === 'entity_creation' && review.entityId
+          ? [review.entityId]
+          : []))
+      for (const merge of personalMemoryStore.listActiveMerges()) {
+        if (merge.target_entity_id) confirmedEntityIds.add(String(merge.target_entity_id))
+      }
+      for (const entity of this.state.graph.entities) {
+        if (confirmedEntityIds.has(entity.id)) entity.trustStatus = 'confirmed'
+      }
+      this.enforceEntityTrustOnDerivedMemory()
+      this.ensureLegacyEntityReviews()
     } catch {
       this.state = structuredClone(EMPTY_STATE)
     }
@@ -412,6 +434,57 @@ export class AiAssistantService {
     this.state.graph.relations = this.state.graph.relations.filter(relation => !suppressedRelationIds.has(relation.id))
     this.state.graph.reviewQueue = this.state.graph.reviewQueue.filter(review =>
       !review.relationId || !suppressedRelationIds.has(review.relationId))
+  }
+
+  private enforceEntityTrustOnDerivedMemory(): void {
+    const trustedIds = new Set(this.state.graph.entities.filter(isTrustedEntity).map(entity => entity.id))
+    for (const relation of this.state.graph.relations) {
+      if (relation.status === 'confirmed' &&
+          (!trustedIds.has(relation.subjectId) || !trustedIds.has(relation.objectId))) {
+        relation.status = 'candidate'
+      }
+    }
+    const feed = personalMemoryStore.getMemoryFeed()
+    for (const claim of feed.claims || []) {
+      if (claim.status === 'confirmed' &&
+          (!trustedIds.has(claim.subject_id) ||
+           (claim.object_entity_id && !trustedIds.has(claim.object_entity_id)))) {
+        personalMemoryStore.updateMemoryItemStatus('claim', claim.id, 'candidate')
+      }
+    }
+    for (const event of feed.events || []) {
+      const participantIds = (event.participants || []).map((item: any) => item.entity_id).filter(Boolean)
+      if (event.status === 'confirmed' && participantIds.some((id: string) => !trustedIds.has(id))) {
+        personalMemoryStore.updateMemoryItemStatus('event', event.id, 'candidate')
+      }
+    }
+  }
+
+  private ensureLegacyEntityReviews(): void {
+    const feed = personalMemoryStore.getMemoryFeed()
+    for (const entity of this.state.graph.entities) {
+      if (entity.trustStatus !== 'legacy_unverified') continue
+      if (this.state.graph.reviewQueue.some(review =>
+        review.kind === 'entity_creation' && review.entityId === entity.id)) continue
+      const evidence = [
+        ...this.state.graph.relations
+          .filter(relation => relation.subjectId === entity.id || relation.objectId === entity.id)
+          .flatMap(relation => relation.evidence || []),
+        ...(feed.claims || [])
+          .filter((claim: any) => claim.subject_id === entity.id || claim.object_entity_id === entity.id)
+          .flatMap((claim: any) => claim.evidence || []),
+        ...(feed.events || [])
+          .filter((event: any) => (event.participants || []).some((participant: any) =>
+            participant.entity_id === entity.id))
+          .flatMap((event: any) => event.evidence || [])
+      ]
+      const review = buildLegacyEntityReview({
+        entity,
+        evidence,
+        createdAt: entity.createdAt || new Date().toISOString()
+      })
+      if (review) this.state.graph.reviewQueue.push(review)
+    }
   }
 
   private repairPlaceholderEntities(): void {
@@ -982,7 +1055,7 @@ export class AiAssistantService {
       wxid: String(selfIdentity?.wxid || ''),
       background: String(this.config.get('aiAssistantOwnerBackground') || '').trim()
     }
-    const existingGraph = this.state.graph.entities.slice(-200).map(entity => ({
+    const existingGraph = this.state.graph.entities.filter(isTrustedEntity).slice(-200).map(entity => ({
       id: entity.id,
       type: entity.type,
       canonicalName: entity.canonicalName,
@@ -1103,6 +1176,15 @@ export class AiAssistantService {
         const before = JSON.stringify([existing.canonicalName, existing.aliases, existing.accountIds, existing.summary])
         existing.aliases = [...new Set([...existing.aliases, ...aliases])]
         existing.accountIds = [...new Set([...existing.accountIds, ...accountIds])]
+        if (accountIds.length) {
+          existing.trustStatus = 'confirmed'
+          for (const pending of this.state.graph.reviewQueue) {
+            if (pending.kind === 'entity_creation' && pending.entityId === existing.id && pending.status === 'pending') {
+              pending.status = 'confirmed'
+              pending.detail = `${pending.detail} 后续新增原文提供了可验证身份锚点，已自动确认。`
+            }
+          }
+        }
         existing.confidence = Math.max(existing.confidence, Number(item.confidence || 0))
         existing.evidenceMessageIds = [...new Set([...existing.evidenceMessageIds, ...evidenceIds])].slice(-500)
         existing.updatedAt = now
@@ -1144,6 +1226,7 @@ export class AiAssistantService {
           externalIdentities: [],
           summary: '',
           summaryStatus: 'empty',
+          trustStatus: accountIds.length ? 'confirmed' : 'candidate',
           confidence: Math.max(0, Math.min(1, Number(item.confidence || 0.6))),
           evidenceMessageIds: evidenceIds,
           createdAt: now,
@@ -1152,6 +1235,13 @@ export class AiAssistantService {
           lastDisambiguatedAt: null
         }
         this.state.graph.entities.push(created)
+        const entityReview = buildEntityCreationReview({
+          entity: created,
+          evidenceMessages: item.__evidenceMessages,
+          evidenceKeys: evidenceIds,
+          createdAt: now
+        })
+        if (entityReview) this.state.graph.reviewQueue.push(entityReview)
         const summaryCandidate = buildEntitySummaryCandidate({
           entityId: created.id,
           entityName: created.canonicalName,
@@ -2837,9 +2927,61 @@ export class AiAssistantService {
         }
       }
     }
+    if (review.kind === 'entity_creation' && review.entityId) {
+      const entity = this.state.graph.entities.find(item => item.id === review.entityId)
+      if (decision === 'confirmed' && entity) {
+        if (canConfirmEntityCreation(review, entity)) {
+          entity.trustStatus = 'confirmed'
+          entity.updatedAt = new Date().toISOString()
+        } else {
+          review.status = 'rejected'
+          review.detail = `${review.detail} 实体名称已变化或候选无效，未执行确认。`
+        }
+      } else if (decision === 'rejected' && entity) {
+        entity.trustStatus = 'rejected'
+        entity.updatedAt = new Date().toISOString()
+        for (const relation of this.state.graph.relations) {
+          if (relation.subjectId === entity.id || relation.objectId === entity.id) {
+            relation.status = 'rejected'
+            relation.updatedAt = entity.updatedAt
+          }
+        }
+        for (const pending of this.state.graph.reviewQueue) {
+          if (pending.status !== 'pending') continue
+          const connectedRelation = pending.relationId
+            ? this.state.graph.relations.find(relation => relation.id === pending.relationId)
+            : null
+          if (pending.entityId === entity.id ||
+              pending.leftEntityId === entity.id ||
+              pending.rightEntityId === entity.id ||
+              connectedRelation?.subjectId === entity.id ||
+              connectedRelation?.objectId === entity.id) {
+            pending.status = 'rejected'
+            pending.detail = `${pending.detail} 关联实体已被拒绝，此候选自动关闭。`
+          }
+        }
+        const feed = personalMemoryStore.getMemoryFeed()
+        for (const claim of feed.claims || []) {
+          if (claim.subject_id === entity.id || claim.object_entity_id === entity.id) {
+            personalMemoryStore.updateMemoryItemStatus('claim', claim.id, 'rejected')
+          }
+        }
+        for (const event of feed.events || []) {
+          if ((event.participants || []).some((participant: any) => participant.entity_id === entity.id)) {
+            personalMemoryStore.updateMemoryItemStatus('event', event.id, 'rejected')
+          }
+        }
+      }
+    }
     if (review.kind === 'relation' && review.relationId) {
       const relation = this.state.graph.relations.find(item => item.id === review.relationId)
       if (relation) {
+        const subject = this.state.graph.entities.find(entity => entity.id === relation.subjectId)
+        const object = this.state.graph.entities.find(entity => entity.id === relation.objectId)
+        if (decision === 'confirmed' && (!isTrustedEntity(subject) || !isTrustedEntity(object))) {
+          review.status = 'pending'
+          throw new Error('请先确认关系两端的实体，再确认关系')
+        }
         relation.status = decision
         relation.updatedAt = new Date().toISOString()
       }
@@ -2873,6 +3015,7 @@ export class AiAssistantService {
         target.updatedAt = new Date().toISOString()
         target.identityVersion += 1
         target.lastDisambiguatedAt = target.updatedAt
+        target.trustStatus = 'confirmed'
         for (const relation of this.state.graph.relations) {
           if (relation.subjectId === source.id) relation.subjectId = target.id
           if (relation.objectId === source.id) relation.objectId = target.id
@@ -2933,7 +3076,25 @@ export class AiAssistantService {
   }
 
   updateMemoryItemStatus(kind: 'claim' | 'event', id: string, status: 'confirmed' | 'rejected'): any {
+    if (status === 'confirmed') this.assertStructuredEntityTrust(kind, id)
     return personalMemoryStore.updateMemoryItemStatus(kind, id, status)
+  }
+
+  private assertStructuredEntityTrust(kind: 'claim' | 'event', id: string): void {
+    const feed = personalMemoryStore.getMemoryFeed()
+    if (kind === 'claim') {
+      const claim = (feed.claims || []).find((item: any) => item.id === id)
+      const entityIds = [claim?.subject_id, claim?.object_entity_id].filter(Boolean)
+      if (entityIds.some(entityId => !isTrustedEntity(this.state.graph.entities.find(entity => entity.id === entityId)))) {
+        throw new Error('请先确认事实涉及的实体，再确认事实')
+      }
+    } else {
+      const event = (feed.events || []).find((item: any) => item.id === id)
+      const entityIds = (event?.participants || []).map((item: any) => item.entity_id).filter(Boolean)
+      if (entityIds.some((entityId: string) => !isTrustedEntity(this.state.graph.entities.find(entity => entity.id === entityId)))) {
+        throw new Error('请先确认事件参与实体，再确认事件')
+      }
+    }
   }
 
   previewDeleteMemoryItem(kind: 'claim' | 'event' | 'relation', id: string): any {
@@ -2963,9 +3124,14 @@ export class AiAssistantService {
   }
 
   reviewMemoryDocument(kind: 'relation' | 'claim' | 'event', id: string, decision: 'confirmed' | 'rejected'): any {
-    if (kind === 'claim' || kind === 'event') return personalMemoryStore.updateMemoryItemStatus(kind, id, decision)
+    if (kind === 'claim' || kind === 'event') return this.updateMemoryItemStatus(kind, id, decision)
     const relation = this.state.graph.relations.find(item => item.id === id)
     if (!relation) return null
+    if (decision === 'confirmed') {
+      const subject = this.state.graph.entities.find(entity => entity.id === relation.subjectId)
+      const object = this.state.graph.entities.find(entity => entity.id === relation.objectId)
+      if (!isTrustedEntity(subject) || !isTrustedEntity(object)) throw new Error('请先确认关系两端的实体，再确认关系')
+    }
     relation.status = decision
     relation.updatedAt = new Date().toISOString()
     for (const review of this.state.graph.reviewQueue) {
@@ -3034,7 +3200,7 @@ export class AiAssistantService {
   }
 
   async searchMemoryHybrid(query: string, options: MemorySearchOptions = {}): Promise<any[]> {
-    const selectedEntity = options.entityId ? this.state.graph.entities.find(entity => entity.id === options.entityId) : null
+    const selectedEntity = options.entityId ? this.state.graph.entities.find(entity => entity.id === options.entityId && isTrustedEntity(entity)) : null
     const scopedOptions = selectedEntity
       ? {
           ...options,
@@ -3112,10 +3278,11 @@ export class AiAssistantService {
   }
 
   findGraphPath(fromId: string, toId: string, maxDepth = 5): any {
-    const entities = new Map(this.state.graph.entities.map(entity => [entity.id, entity]))
+    const entities = new Map(this.state.graph.entities.filter(isTrustedEntity).map(entity => [entity.id, entity]))
     if (!entities.has(fromId) || !entities.has(toId)) return { found: false, entities: [], steps: [] }
     if (fromId === toId) return { found: true, entities: [entities.get(fromId)], steps: [] }
-    const relations = this.state.graph.relations.filter(relation => relation.status !== 'rejected')
+    const relations = this.state.graph.relations.filter(relation =>
+      relation.status === 'confirmed' && entities.has(relation.subjectId) && entities.has(relation.objectId))
     const adjacency = new Map<string, Array<{ nextId: string; relation: GraphRelation; forward: boolean }>>()
     for (const relation of relations) {
       adjacency.set(relation.subjectId, [...(adjacency.get(relation.subjectId) || []), { nextId: relation.objectId, relation, forward: true }])
@@ -3151,17 +3318,21 @@ export class AiAssistantService {
   }
 
   findCommonNeighbors(fromId: string, toId: string): any {
+    const entities = this.state.graph.entities.filter(isTrustedEntity)
+    const entityIds = new Set(entities.map(entity => entity.id))
     return {
-      from: this.state.graph.entities.find(entity => entity.id === fromId) || null,
-      to: this.state.graph.entities.find(entity => entity.id === toId) || null,
-      common: findCommonGraphNeighbors(fromId, toId, this.state.graph.entities, this.state.graph.relations)
+      from: entities.find(entity => entity.id === fromId) || null,
+      to: entities.find(entity => entity.id === toId) || null,
+      common: findCommonGraphNeighbors(fromId, toId, entities, this.state.graph.relations.filter(relation =>
+        relation.status === 'confirmed' && entityIds.has(relation.subjectId) && entityIds.has(relation.objectId)))
     }
   }
 
   async askMemory(question: string, conversationId?: string, options: MemorySearchOptions = {}): Promise<any> {
     const query = String(question || '').trim()
     if (!query) throw new Error('请输入问题')
-    const plan = buildMemoryQueryPlan(query, this.state.graph.entities)
+    const trustedEntities = this.state.graph.entities.filter(isTrustedEntity)
+    const plan = buildMemoryQueryPlan(query, trustedEntities)
     const plannedOptions: MemorySearchOptions = {
       ...plan.inferredOptions,
       ...options,
@@ -3169,7 +3340,7 @@ export class AiAssistantService {
       relationTypes: options.relationTypes?.length ? options.relationTypes : plan.inferredOptions.relationTypes
     }
     const plannedEntity = plannedOptions.entityId
-      ? this.state.graph.entities.find(entity => entity.id === plannedOptions.entityId)
+      ? trustedEntities.find(entity => entity.id === plannedOptions.entityId)
       : null
     const scopeAuditOptions: MemorySearchOptions = plannedEntity ? {
       ...plannedOptions,
@@ -3187,7 +3358,7 @@ export class AiAssistantService {
     if (plan.matchedEntities.length >= 2) {
       plannedGraphPath = this.findGraphPath(plan.matchedEntities[0].id, plan.matchedEntities[1].id, 6)
       if (plannedGraphPath.found && plannedGraphPath.steps.length) {
-        const names = new Map(this.state.graph.entities.map(entity => [entity.id, entity.canonicalName]))
+        const names = new Map(trustedEntities.map(entity => [entity.id, entity.canonicalName]))
         const pathResults = plannedGraphPath.steps.map((step: any) => ({
           id: `relation:${step.relationId}`,
           document_type: 'relation',
@@ -3272,10 +3443,12 @@ export class AiAssistantService {
   }
 
   correctClaim(id: string, input: any): any {
+    this.assertStructuredEntityTrust('claim', id)
     return personalMemoryStore.correctClaim(id, input)
   }
 
   correctEvent(id: string, input: any): any {
+    this.assertStructuredEntityTrust('event', id)
     return personalMemoryStore.correctEvent(id, input)
   }
 

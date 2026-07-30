@@ -25,7 +25,8 @@ export function buildProjectInsights(input: {
 }): any[] {
   const now = input.now || new Date()
   const today = now.toISOString().slice(0, 10)
-  const entityProjects = input.entities.filter(entity => entity.type === 'project')
+  const trustedEntities = input.entities.filter(entity => entity.trustStatus === 'confirmed')
+  const entityProjects = trustedEntities.filter(entity => entity.type === 'project')
   const derivedNames = [...new Set(input.tasks.map(task => String(task.project || '').trim()).filter(Boolean))]
     .filter(name => !entityProjects.some(entity => [entity.canonicalName, ...(entity.aliases || [])]
       .some(value => normalize(value) === normalize(name))))
@@ -49,7 +50,7 @@ export function buildProjectInsights(input: {
     const candidateRelations = relevantRelations.filter(relation => relation.status === 'candidate')
     const memberIds = [...new Set(relations.map(relation =>
       relation.subjectId === project.id ? relation.objectId : relation.subjectId))]
-    const members = memberIds.map(id => input.entities.find(entity => entity.id === id))
+    const members = memberIds.map(id => trustedEntities.find(entity => entity.id === id))
       .filter(entity => entity?.type === 'person')
       .map(entity => ({ id: entity.id, name: entity.canonicalName }))
     const relevantClaims = project.entity ? input.claims.filter(claim =>

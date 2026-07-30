@@ -21,11 +21,13 @@ export function buildEntityInsights(input: {
 }): Record<string, EntityInsight> {
   const now = (input.now || new Date()).getTime()
   const result: Record<string, EntityInsight> = {}
-  for (const entity of input.entities) {
+  const trustedIds = new Set(input.entities.filter(entity => entity.trustStatus === 'confirmed').map(entity => entity.id))
+  for (const entity of input.entities.filter(entity => entity.trustStatus === 'confirmed')) {
     const names = [entity.canonicalName, ...(entity.aliases || []), ...(entity.accountIds || [])]
       .map((value: any) => String(value || '').trim().toLowerCase()).filter(Boolean)
     const relevantRelations = input.relations.filter(relation =>
-      relation.status !== 'rejected' && (relation.subjectId === entity.id || relation.objectId === entity.id))
+      relation.status !== 'rejected' && trustedIds.has(relation.subjectId) && trustedIds.has(relation.objectId) &&
+      (relation.subjectId === entity.id || relation.objectId === entity.id))
     const relations = relevantRelations.filter(relation => relation.status === 'confirmed')
     const candidateRelations = relevantRelations.filter(relation => relation.status === 'candidate')
     const claims = input.claims.filter(claim => claim.status !== 'rejected' && claim.subject_id === entity.id)

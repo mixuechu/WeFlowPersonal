@@ -88,6 +88,8 @@ export function mapCalendarParticipantIdentities(
             confidence: 1
           }],
           summary: '在用户明确选择的 macOS 日历事件中出现的参与者；邮箱是来源提供的稳定身份锚点。',
+          summaryStatus: 'confirmed',
+          trustStatus: 'confirmed',
           confidence: 0.95,
           evidenceMessageIds: [evidenceId],
           createdAt: now,

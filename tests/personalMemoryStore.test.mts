@@ -38,6 +38,13 @@ import {
   buildEntityAliasCandidates,
   canApplyEntityAliasCandidate
 } from '../electron/services/entityAliasPolicy.ts'
+import {
+  buildEntityCreationReview,
+  buildLegacyEntityReview,
+  canConfirmEntityCreation,
+  inferLegacyEntityTrustStatus,
+  isTrustedEntity
+} from '../electron/services/entityTrustPolicy.ts'
 import { enqueueUniqueNotification, markNotificationAttempt } from '../electron/services/notificationOutbox.ts'
 import { findCommonGraphNeighbors } from '../electron/services/graphCommonNeighbors.ts'
 import { buildProjectInsights } from '../electron/services/projectInsights.ts'
@@ -166,6 +173,8 @@ test('calendar participant identities persist as email anchors and event merges 
       platform: 'email', accountId: 'hun@example.test', displayName: 'Hun', confidence: 1
     }],
     summary: '日历参与者',
+    summaryStatus: 'confirmed',
+    trustStatus: 'confirmed',
     confidence: 0.95,
     evidenceMessageIds: ['calendar-message'],
     identityVersion: 1
@@ -178,6 +187,8 @@ test('calendar participant identities persist as email anchors and event merges 
     accountIds: ['wxid_hun'],
     externalIdentities: [],
     summary: '微信实体',
+    summaryStatus: 'confirmed',
+    trustStatus: 'confirmed',
     confidence: 1,
     evidenceMessageIds: ['wechat-message'],
     identityVersion: 1
@@ -247,7 +258,7 @@ test('identity disambiguation recalls multi-account candidates from graph and lo
   assert.equal(graph[0].source, 'graph_neighbors')
   assert.equal(graph[0].value, '2 个')
 
-  store.syncGraph({ entities, relations: [], reviewQueue: [] })
+  store.syncGraph({ entities: entities.map(entity => ({ ...entity, trustStatus: 'confirmed' })), relations: [], reviewQueue: [] })
   store.saveEmbedding('entity:person-a', 'identity-test', [1, 0])
   store.saveEmbedding('entity:person-b', 'identity-test', [0.9, Math.sqrt(0.19)])
   store.saveEmbedding('entity:person-c', 'identity-test', [0, 1])
@@ -365,6 +376,7 @@ test('entity search indexes WeChat IDs and tolerates one-character name errors',
       id: 'person-search',
       type: 'person',
       canonicalName: '邢爱妮',
+      trustStatus: 'confirmed',
       aliases: ['爱妮'],
       accountIds: ['wxid_onyx_contact']
     }],
@@ -397,7 +409,8 @@ test('only confirmed entity summaries enter trusted entity search', () => withSt
     aliases: [],
     accountIds: [],
     summary: '独特候选线索火星罗盘',
-    confidence: 0.8
+    confidence: 0.8,
+    trustStatus: 'confirmed'
   }
   store.syncGraph({
     entities: [{ ...base, summaryStatus: 'legacy_unverified' }],
@@ -662,6 +675,116 @@ test('unverified aliases remain evidence-backed review candidates', () => {
   }), [])
 })
 
+test('unanchored entities remain evidence-backed candidates outside trusted search', () => withStore(store => {
+  const entity = {
+    id: 'candidate-person',
+    type: 'person',
+    canonicalName: '候选火星人物',
+    aliases: [],
+    accountIds: [],
+    externalIdentities: [],
+    trustStatus: 'candidate',
+    confidence: 0.79
+  }
+  const review = buildEntityCreationReview({
+    entity,
+    evidenceMessages: [{
+      sessionId: 'session-a',
+      timestamp: 1720000000,
+      sender: '李四',
+      content: '候选火星人物说周五交付。'
+    }],
+    evidenceKeys: ['wechat:session-a:message-a'],
+    createdAt: '2026-07-30T12:00:00.000Z'
+  })
+  assert.ok(review)
+  assert.equal(review.kind, 'entity_creation')
+  assert.equal(review.status, 'pending')
+  assert.equal(review.evidence[0].messageId, 'wechat:session-a:message-a')
+  assert.equal(canConfirmEntityCreation(review, entity), true)
+  assert.equal(canConfirmEntityCreation(review, { ...entity, canonicalName: '名字已变化' }), false)
+  assert.equal(isTrustedEntity(entity), false)
+  assert.equal(inferLegacyEntityTrustStatus({ accountIds: ['wxid_stable'] }), 'confirmed')
+  assert.equal(inferLegacyEntityTrustStatus({ accountIds: [], externalIdentities: [] }), 'legacy_unverified')
+
+  store.syncGraph({ entities: [entity], relations: [], reviewQueue: [review] })
+  assert.equal(store.searchText('候选火星人物').length, 0)
+  store.syncGraph({
+    entities: [{ ...entity, trustStatus: 'confirmed' }],
+    relations: [],
+    reviewQueue: [{ ...review, status: 'confirmed' }]
+  })
+  assert.equal(store.searchText('候选火星人物')[0]?.source_id, entity.id)
+}))
+
+test('legacy unverified entities receive actionable reviews with recovered evidence', () => {
+  const entity = {
+    id: 'legacy-person',
+    type: 'person',
+    canonicalName: '旧版人物',
+    trustStatus: 'legacy_unverified',
+    confidence: 0.67
+  }
+  const review = buildLegacyEntityReview({
+    entity,
+    evidence: [{
+      message_id: 'wechat:legacy-session:legacy-message',
+      session_id: 'legacy-session',
+      timestamp: 1710000000,
+      excerpt: '旧版人物确认参加项目。'
+    }],
+    createdAt: '2026-07-30T12:00:00.000Z'
+  })
+  assert.ok(review)
+  assert.equal(review.kind, 'entity_creation')
+  assert.equal(review.legacyReview, true)
+  assert.equal(review.evidence[0].messageId, 'wechat:legacy-session:legacy-message')
+  assert.equal(canConfirmEntityCreation(review, entity), true)
+
+  const withoutEvidence = buildLegacyEntityReview({
+    entity,
+    evidence: [],
+    createdAt: '2026-07-30T12:00:00.000Z'
+  })
+  assert.ok(withoutEvidence)
+  assert.equal(withoutEvidence.evidence.length, 0)
+  assert.match(withoutEvidence.detail, /无法恢复/)
+})
+
+test('graph sync removes stale aliases and identities from trusted lookup', () => withStore(store => {
+  const base = {
+    id: 'identity-replacement',
+    type: 'person',
+    canonicalName: '身份替换对象',
+    trustStatus: 'confirmed'
+  }
+  store.syncGraph({
+    entities: [{
+      ...base,
+      aliases: ['绝版旧别名'],
+      accountIds: ['legacy_account_zeta_777'],
+      externalIdentities: []
+    }],
+    relations: [],
+    reviewQueue: []
+  })
+  assert.equal(store.searchText('绝版旧别名')[0]?.source_id, base.id)
+  store.syncGraph({
+    entities: [{
+      ...base,
+      aliases: ['全新别名'],
+      accountIds: ['brand_new_account_omega_999'],
+      externalIdentities: []
+    }],
+    relations: [],
+    reviewQueue: []
+  })
+  assert.equal(store.searchText('绝版旧别名').some(item => item.source_id === base.id), false)
+  assert.equal(store.searchText('legacy_account_zeta_777').some(item => item.source_id === base.id), false)
+  assert.equal(store.searchText('全新别名')[0]?.source_id, base.id)
+  assert.equal(store.searchText('brand_new_account_omega_999')[0]?.source_id, base.id)
+}))
+
 test('entity summaries remain evidence-backed candidates until non-stale confirmation', () => {
   const candidate = buildEntitySummaryCandidate({
     entityId: 'person-a',
@@ -751,8 +874,8 @@ test('common-neighbor graph query keeps relation direction, status and evidence'
 test('project intelligence aggregates members, progress, risks, decisions and evidence', () => {
   const projects = buildProjectInsights({
     entities: [
-      { id: 'project-demo', type: 'project', canonicalName: '升级版演示', aliases: ['演示项目'], summary: '客户演示项目' },
-      { id: 'person-owner', type: 'person', canonicalName: '负责人甲', aliases: [] }
+      { id: 'project-demo', type: 'project', canonicalName: '升级版演示', aliases: ['演示项目'], summary: '客户演示项目', trustStatus: 'confirmed' },
+      { id: 'person-owner', type: 'person', canonicalName: '负责人甲', aliases: [], trustStatus: 'confirmed' }
     ],
     relations: [{
       id: 'member-relation', subjectId: 'person-owner', objectId: 'project-demo', predicate: '负责', status: 'confirmed', confidence: 0.9,
@@ -1095,8 +1218,8 @@ test('retrieval scope is applied before lexical and vector top-k ranking', () =>
 test('database retrieval scope covers entity links, relation type and evidence time', () => withStore(store => {
   store.syncGraph({
     entities: [
-      { id: 'scope-person', type: 'person', canonicalName: '范围人物', aliases: ['范围别名'], accountIds: [] },
-      { id: 'scope-org', type: 'organization', canonicalName: '范围组织', aliases: [], accountIds: [] }
+      { id: 'scope-person', type: 'person', canonicalName: '范围人物', aliases: ['范围别名'], accountIds: [], trustStatus: 'confirmed' },
+      { id: 'scope-org', type: 'organization', canonicalName: '范围组织', aliases: [], accountIds: [], trustStatus: 'confirmed' }
     ],
     relations: [{
       id: 'scope-relation',
@@ -1471,7 +1594,11 @@ test('partial ingestion keeps completed checkpoints visible for safe resume', ()
 
 test('entity insight strength is explainable and deduplicates shared evidence', () => {
   const insight = buildEntityInsights({
-    entities: [{ id: 'person-a', canonicalName: '张三', aliases: ['老张'], accountIds: [] }],
+    entities: [
+      { id: 'person-a', canonicalName: '张三', aliases: ['老张'], accountIds: [], trustStatus: 'confirmed' },
+      { id: 'org-a', canonicalName: '组织甲', aliases: [], accountIds: [], trustStatus: 'confirmed' },
+      { id: 'project-unconfirmed', canonicalName: '候选项目', aliases: [], accountIds: [], trustStatus: 'confirmed' }
+    ],
     relations: [{
       subjectId: 'person-a',
       objectId: 'org-a',
@@ -1536,12 +1663,14 @@ test('forget entity transaction removes graph, memory, search, task audit and as
       id: 'person-forget',
       type: 'person',
       canonicalName: '隐私测试人',
+      trustStatus: 'confirmed',
       aliases: ['测试别名'],
       accountIds: ['wxid_forget']
     }, {
       id: 'org-keep',
       type: 'organization',
       canonicalName: '保留组织',
+      trustStatus: 'confirmed',
       aliases: [],
       accountIds: []
     }],
@@ -1924,7 +2053,7 @@ test('personal memory migrates atomically to SQLCipher and keeps encrypted backu
   try {
     plaintext.initialize(databasePath)
     plaintext.syncGraph({
-      entities: [{ id: 'cipher-person', type: 'person', canonicalName: '加密测试人物', aliases: [], accountIds: [] }],
+      entities: [{ id: 'cipher-person', type: 'person', canonicalName: '加密测试人物', aliases: [], accountIds: [], trustStatus: 'confirmed' }],
       relations: [],
       reviewQueue: []
     })
@@ -1998,7 +2127,7 @@ test('portable import rekeys a foreign SQLCipher database for the current device
   try {
     source.initialize(sourcePath, sourceKey)
     source.syncGraph({
-      entities: [{ id: 'portable-person', type: 'person', canonicalName: '跨设备人物', aliases: [], accountIds: [] }],
+      entities: [{ id: 'portable-person', type: 'person', canonicalName: '跨设备人物', aliases: [], accountIds: [], trustStatus: 'confirmed' }],
       relations: [],
       reviewQueue: []
     })

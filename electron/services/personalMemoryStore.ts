@@ -902,11 +902,15 @@ export class PersonalMemoryStore {
           identity_version=excluded.identity_version,last_disambiguated_at=excluded.last_disambiguated_at,deleted_at=NULL
       `)
       const insertAlias = this.db.prepare(`INSERT OR IGNORE INTO aliases(entity_id,value,normalized_value,alias_type,confidence) VALUES(?,?,?,?,?)`)
+      const deleteAliases = this.db.prepare('DELETE FROM aliases WHERE entity_id=?')
       const insertIdentity = this.db.prepare(`INSERT INTO identities(entity_id,platform,account_id,display_name,confidence) VALUES(?,?,?,?,?)
         ON CONFLICT(platform,account_id) DO UPDATE SET entity_id=excluded.entity_id, display_name=excluded.display_name, confidence=excluded.confidence`)
+      const deleteIdentities = this.db.prepare('DELETE FROM identities WHERE entity_id=?')
       for (const entity of graph.entities) {
         const trustedSummary = entity.summaryStatus === 'confirmed' ? (entity.summary || '') : ''
         upsertEntity.run(entity.id, entity.type, entity.canonicalName, trustedSummary, Number(entity.confidence || 0), entity.createdAt || now, entity.updatedAt || now, Number(entity.identityVersion || 1), entity.lastDisambiguatedAt || null)
+        deleteAliases.run(entity.id)
+        deleteIdentities.run(entity.id)
         for (const alias of entity.aliases || []) insertAlias.run(entity.id, alias, String(alias).trim().toLowerCase(), 'name', 1)
         for (const accountId of entity.accountIds || []) insertIdentity.run(entity.id, 'wechat', accountId, entity.canonicalName, 1)
         for (const identity of entity.externalIdentities || []) {
@@ -921,7 +925,7 @@ export class PersonalMemoryStore {
             Math.max(0, Math.min(1, Number(identity.confidence ?? 1)))
           )
         }
-        this.upsertSearchDocument(`entity:${entity.id}`, 'entity', entity.id, entity.canonicalName,
+        if (entity.trustStatus === 'confirmed') this.upsertSearchDocument(`entity:${entity.id}`, 'entity', entity.id, entity.canonicalName,
           [
             entity.canonicalName,
             ...(entity.aliases || []),
@@ -935,6 +939,10 @@ export class PersonalMemoryStore {
             externalIdentities: entity.externalIdentities || [],
             summaryStatus: entity.summaryStatus || (entity.summary ? 'legacy_unverified' : 'empty')
           }, now)
+        else {
+          this.db.prepare('DELETE FROM search_fts WHERE document_id=?').run(`entity:${entity.id}`)
+          this.db.prepare('DELETE FROM search_documents WHERE id=?').run(`entity:${entity.id}`)
+        }
       }
       const entityNames = new Map(graph.entities.map(entity => [entity.id, entity.canonicalName]))
       const upsertRelation = this.db.prepare(`
@@ -1923,7 +1931,7 @@ export class PersonalMemoryStore {
     }))
   }
 
-  updateMemoryItemStatus(kind: 'claim' | 'event', id: string, status: 'confirmed' | 'rejected'): any {
+  updateMemoryItemStatus(kind: 'claim' | 'event', id: string, status: 'candidate' | 'confirmed' | 'rejected'): any {
     if (!this.db) return null
     const table = kind === 'claim' ? 'claims' : 'events'
     const now = new Date().toISOString()

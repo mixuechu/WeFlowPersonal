@@ -592,6 +592,8 @@
 .graph-node { cursor: pointer; }
 .graph-node circle { fill: #dfeae3; stroke: #678472; stroke-width: 1.5; transition: .15s ease; }
 .graph-node:nth-of-type(3n) circle { fill: #f0e6d8; stroke: #a77a4d; }
+.graph-node.candidate circle,
+.graph-node.legacy_unverified circle { fill: #fff8e8; stroke: #b98a37; stroke-dasharray: 4 3; }
 .graph-node.selected circle { fill: #255f4b; stroke: #173d30; stroke-width: 3; }
 .graph-node text { fill: #3e4640; font-size: 10px; font-weight: 600; pointer-events: none; }
 .assistant-graph-detail { padding: 18px; border-left: 1px solid #e3e1da; background: #fffdf8; }

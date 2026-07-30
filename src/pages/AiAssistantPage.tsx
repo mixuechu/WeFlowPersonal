@@ -214,16 +214,26 @@ function AiAssistantPage() {
     setSelectedCalendarDate(`${next}-01`)
   }
   const graph = dashboard?.graph || { entities: [], relations: [], reviewQueue: [] }
+  const trustedGraphEntities = useMemo(() =>
+    graph.entities.filter((entity: any) => entity.trustStatus === 'confirmed'), [graph.entities])
+  const trustedGraphEntityIds = useMemo(() =>
+    new Set(trustedGraphEntities.map((entity: any) => entity.id)), [trustedGraphEntities])
+  const claimEntitiesTrusted = (claim: any) =>
+    Boolean(claim?.subject_id && trustedGraphEntityIds.has(claim.subject_id)) &&
+    (!claim?.object_entity_id || trustedGraphEntityIds.has(claim.object_entity_id))
+  const eventEntitiesTrusted = (event: any) =>
+    (event?.participants || []).every((participant: any) => trustedGraphEntityIds.has(participant.entity_id))
   const graphEntities = useMemo(() => {
     const query = graphQuery.trim().toLowerCase()
+    const available = graph.entities.filter((entity: any) => entity.trustStatus !== 'rejected')
     const rows = query
-      ? graph.entities.filter((entity: any) => [
+      ? available.filter((entity: any) => [
         entity.canonicalName,
         ...(entity.aliases || []),
         ...(entity.accountIds || []),
         ...(entity.externalIdentities || []).flatMap((identity: any) => [identity.accountId, identity.displayName])
       ].some((value: string) => value.toLowerCase().includes(query)))
-      : graph.entities
+      : available
     return rows.slice(-60)
   }, [graph.entities, graphQuery])
   const graphEntityIds = useMemo(() => new Set(graphEntities.map((entity: any) => entity.id)), [graphEntities])
@@ -1250,7 +1260,7 @@ function AiAssistantPage() {
           <div className="assistant-memory-scope">
             <select value={memoryEntityFilter} onChange={event => setMemoryEntityFilter(event.target.value)}>
               <option value="">所有人物与实体</option>
-              {graph.entities.map((entity: any) => <option key={entity.id} value={entity.id}>{entity.canonicalName} · {entity.type}</option>)}
+              {trustedGraphEntities.map((entity: any) => <option key={entity.id} value={entity.id}>{entity.canonicalName} · {entity.type}</option>)}
             </select>
             <select value={memorySessionFilter} onChange={event => setMemorySessionFilter(event.target.value)}>
               <option value="">所有会话</option>
@@ -1357,6 +1367,7 @@ function AiAssistantPage() {
                   <input value={editingClaim.validTo} onChange={event => setEditingClaim({ ...editingClaim, validTo: event.target.value })} placeholder="失效时间（可选）" />
                 </div> : <p>{claim.polarity === 'negative' ? '否定：' : ''}{claim.object_entity_name || claim.object_value || '未记录值'}</p>}
                 <small>来源：{claim.source_nature === 'self_statement' ? '本人明确陈述' : claim.source_nature === 'other_statement' ? '他人陈述' : claim.source_nature === 'human_confirmation' ? '人工纠正确认' : '模型推断'} · {Math.round(Number(claim.confidence || 0) * 100)}% 可信{claim.conflict_group ? ' · 与其他事实冲突' : ''}</small>
+                {!claimEntitiesTrusted(claim) && <small>涉及的实体尚未确认；请先在图谱候选区确认实体，之后才能确认或纠正此事实。</small>}
                 {claim.polarity === 'negative' && <small>该条是对“{claim.predicate}”的明确否定陈述，仍需结合反证人工确认。</small>}
                 {(claim.valid_from || claim.valid_to) && <small>有效期：{claim.valid_from || '未知'} — {claim.valid_to || '至今'}</small>}
                 <div className="assistant-evidence-stack">
@@ -1366,9 +1377,9 @@ function AiAssistantPage() {
                 <div className="assistant-memory-actions">
                   {editingClaim?.id === claim.id
                     ? <><button onClick={() => setEditingClaim(null)}>取消</button><button className="primary" onClick={() => void saveClaimCorrection()}>保存纠正</button></>
-                    : <button onClick={() => setEditingClaim({ id: claim.id, value: claim.object_entity_name || claim.object_value || '', validFrom: claim.valid_from || '', validTo: claim.valid_to || '' })}>纠正</button>}
+                    : <button disabled={!claimEntitiesTrusted(claim)} title={!claimEntitiesTrusted(claim) ? '请先确认事实涉及的实体' : ''} onClick={() => setEditingClaim({ id: claim.id, value: claim.object_entity_name || claim.object_value || '', validFrom: claim.valid_from || '', validTo: claim.valid_to || '' })}>纠正</button>}
                   <button onClick={() => void updateMemoryStatus('claim', claim.id, 'rejected')}>不准确</button>
-                  {claim.status === 'candidate' && <button className="primary" onClick={() => void updateMemoryStatus('claim', claim.id, 'confirmed')}>确认事实</button>}
+                  {claim.status === 'candidate' && <button className="primary" disabled={!claimEntitiesTrusted(claim)} title={!claimEntitiesTrusted(claim) ? '请先确认事实涉及的实体' : ''} onClick={() => void updateMemoryStatus('claim', claim.id, 'confirmed')}>确认事实</button>}
                   <button className="danger" onClick={() => void permanentlyDeleteMemoryItem('claim', claim)}>永久删除</button>
                 </div>
               </article>)}
@@ -1432,6 +1443,7 @@ function AiAssistantPage() {
                 <small>来源：{event.source_id === 'calendar' ? 'macOS 日历' : event.source_id === 'documents' ? '本机文档' : '微信'}</small>
                 {!!event.correction_count && <small>人工纠正 {event.correction_count} 次{event.corrected_at ? ` · 最近 ${new Date(event.corrected_at).toLocaleString('zh-CN')}` : ''}；后续自动抽取不会覆盖。</small>}
                 {!!event.participants?.length && <small>参与者：{event.participants.map((item: any) => `${item.canonical_name}（${item.role}）`).join('、')}</small>}
+                {!eventEntitiesTrusted(event) && <small>存在尚未确认的参与实体；请先在图谱候选区确认实体，之后才能确认或纠正此事件。</small>}
                 <div className="assistant-evidence-stack">
                   {(event.evidence || []).map((evidence: any) =>
                     <small key={evidence.message_id}>证据 · {new Date(evidence.timestamp * 1000).toLocaleString('zh-CN')}：“{evidence.excerpt}”</small>)}
@@ -1439,9 +1451,9 @@ function AiAssistantPage() {
                 <div className="assistant-memory-actions">
                   {editingEvent?.id === event.id
                     ? <><button onClick={() => setEditingEvent(null)}>取消</button><button className="primary" onClick={() => void saveEventCorrection()}>保存并确认</button></>
-                    : <button onClick={() => beginEventCorrection(event)}>纠正</button>}
+                    : <button disabled={!eventEntitiesTrusted(event)} title={!eventEntitiesTrusted(event) ? '请先确认事件参与实体' : ''} onClick={() => beginEventCorrection(event)}>纠正</button>}
                   <button onClick={() => void updateMemoryStatus('event', event.id, 'rejected')}>不准确</button>
-                  {event.status === 'candidate' && <button className="primary" onClick={() => void updateMemoryStatus('event', event.id, 'confirmed')}>确认事件</button>}
+                  {event.status === 'candidate' && <button className="primary" disabled={!eventEntitiesTrusted(event)} title={!eventEntitiesTrusted(event) ? '请先确认事件参与实体' : ''} onClick={() => void updateMemoryStatus('event', event.id, 'confirmed')}>确认事件</button>}
                   <button className="danger" onClick={() => void permanentlyDeleteMemoryItem('event', event)}>永久删除</button>
                 </div>
               </article>)}
@@ -1663,12 +1675,12 @@ function AiAssistantPage() {
           <div className="assistant-path-finder">
             <select value={pathFromId} onChange={event => { setPathFromId(event.target.value); setGraphPath(null); setGraphCommonNeighbors(null) }}>
               <option value="">选择起点</option>
-              {graph.entities.map((entity: any) => <option key={`from-${entity.id}`} value={entity.id}>{entity.canonicalName} · {entity.type}</option>)}
+              {trustedGraphEntities.map((entity: any) => <option key={`from-${entity.id}`} value={entity.id}>{entity.canonicalName} · {entity.type}</option>)}
             </select>
             <span>→</span>
             <select value={pathToId} onChange={event => { setPathToId(event.target.value); setGraphPath(null); setGraphCommonNeighbors(null) }}>
               <option value="">选择终点</option>
-              {graph.entities.map((entity: any) => <option key={`to-${entity.id}`} value={entity.id}>{entity.canonicalName} · {entity.type}</option>)}
+              {trustedGraphEntities.map((entity: any) => <option key={`to-${entity.id}`} value={entity.id}>{entity.canonicalName} · {entity.type}</option>)}
             </select>
             <button onClick={() => void findGraphPath()} disabled={!pathFromId || !pathToId}>查找关系路径</button>
           </div>
@@ -1705,7 +1717,7 @@ function AiAssistantPage() {
                 })}
                 {graphEntities.map((entity: any) => {
                   const point = graphPositions.get(entity.id) as any
-                  return <g key={entity.id} className={`graph-node ${selectedEntityId === entity.id ? 'selected' : ''}`} onClick={() => setSelectedEntityId(entity.id)}>
+                  return <g key={entity.id} className={`graph-node ${entity.trustStatus || 'legacy_unverified'} ${selectedEntityId === entity.id ? 'selected' : ''}`} onClick={() => setSelectedEntityId(entity.id)}>
                     <circle cx={point.x} cy={point.y} r={entity.type === 'person' ? 18 : 14} />
                     <text x={point.x} y={point.y + 32} textAnchor="middle">{entity.canonicalName.slice(0, 12)}</text>
                   </g>
@@ -1715,6 +1727,7 @@ function AiAssistantPage() {
                 {selectedEntity ? <>
                   <span>{selectedEntity.type}</span>
                   <h4>{selectedEntity.canonicalName}</h4>
+                  <small>实体状态：{selectedEntity.trustStatus === 'confirmed' ? '已确认' : selectedEntity.trustStatus === 'candidate' ? '待确认（不参与可信检索）' : selectedEntity.trustStatus === 'legacy_unverified' ? '历史未验证（不参与可信检索）' : '已拒绝'}</small>
                   <p>{selectedEntity.summary || '等待更多证据补充'}</p>
                   <small>摘要状态：{selectedEntity.summaryStatus === 'confirmed' ? '已确认' : selectedEntity.summaryStatus === 'legacy_unverified' ? '历史未验证（不参与可信检索）' : '尚无已确认摘要'}</small>
                   <small>别名：{selectedEntity.aliases?.join('、') || '无'}</small>
@@ -1777,6 +1790,8 @@ function AiAssistantPage() {
                 const relation = review.kind === 'relation' ? graph.relations.find((item: any) => item.id === review.relationId) : null
                 const subject = relation ? graph.entities.find((item: any) => item.id === relation.subjectId) : null
                 const object = relation ? graph.entities.find((item: any) => item.id === relation.objectId) : null
+                const relationEntityBlocked = Boolean(relation &&
+                  (subject?.trustStatus !== 'confirmed' || object?.trustStatus !== 'confirmed'))
                 return <><div><strong>{review.kind === 'possible_duplicate' ? `可能是同一个人：${review.title}` : review.title}</strong>
                 {review.kind === 'possible_duplicate' && <div className="assistant-identity-pair">
                   {[review.leftEntityId, review.rightEntityId].map((entityId: string) => {
@@ -1815,6 +1830,13 @@ function AiAssistantPage() {
                     <div key={evidence.messageId}><small>{evidence.sender || '原文'}：“{evidence.excerpt}”</small></div>)}
                   <div><small>确认后才会参与身份消歧、合并建议和统一检索。</small></div>
                 </div>}
+                {review.kind === 'entity_creation' && <div className="assistant-review-note">
+                  <div><b>候选实体：</b><span>{review.entityCanonicalName} · {review.entityType}</span></div>
+                  {(review.evidence || []).map((evidence: any) =>
+                    <div key={evidence.messageId}><small>{evidence.sender || '原文'}：“{evidence.excerpt}”</small></div>)}
+                  <div><small>确认后才会进入统一检索、RAG 查询规划、图路径和确定性派生视图。</small></div>
+                  {review.legacyReview && !(review.evidence || []).length && <div><small>⚠ 此旧版实体没有可恢复的关联原文，请仅在你能确认身份时通过。</small></div>}
+                </div>}
                 <p>{review.detail}</p><small>{Math.round(review.confidence * 100)}% 可信 · {
                   review.kind === 'possible_duplicate'
                     ? '确认后合并身份'
@@ -1822,9 +1844,11 @@ function AiAssistantPage() {
                       ? '确认后写入可信摘要'
                       : review.kind === 'entity_alias'
                         ? '确认后写入身份别名'
+                        : review.kind === 'entity_creation'
+                          ? '确认后启用可信实体'
                       : '确认后写入关系'
                 }</small></div>
-              <div><button onClick={() => void decideReview(review.id, 'rejected')}>拒绝</button><button className="primary" disabled={review.kind === 'possible_duplicate' && (!review.leftEntityId || !review.rightEntityId)} title={review.kind === 'possible_duplicate' && (!review.leftEntityId || !review.rightEntityId) ? '候选信息不完整，暂不能合并' : ''} onClick={() => void decideReview(review.id, 'confirmed')}>{review.kind === 'relation' ? '确认此方向' : '确认'}</button></div></>
+              <div><button onClick={() => void decideReview(review.id, 'rejected')}>拒绝</button><button className="primary" disabled={(review.kind === 'possible_duplicate' && (!review.leftEntityId || !review.rightEntityId)) || relationEntityBlocked} title={review.kind === 'possible_duplicate' && (!review.leftEntityId || !review.rightEntityId) ? '候选信息不完整，暂不能合并' : relationEntityBlocked ? '请先确认关系两端的实体' : ''} onClick={() => void decideReview(review.id, 'confirmed')}>{review.kind === 'relation' ? '确认此方向' : '确认'}</button></div></>
               })()}
             </article>)}
             {!pendingReviews.length && <div className="assistant-empty">当前没有等待确认的身份或关系。</div>}
@@ -1846,6 +1870,7 @@ function AiAssistantPage() {
               <div>
                 <span className="assistant-eyebrow">{selectedEntity.type.toUpperCase()} DOSSIER</span>
                 <h2>{selectedEntity.canonicalName}</h2>
+                <small>{selectedEntity.trustStatus === 'confirmed' ? '已确认实体' : selectedEntity.trustStatus === 'candidate' ? '待确认实体，不参与可信检索' : selectedEntity.trustStatus === 'legacy_unverified' ? '历史未验证实体，不参与可信检索' : '已拒绝实体'}</small>
                 <p>{selectedEntity.summary || '等待更多可靠证据补充人物摘要。'}</p>
                 <small>{selectedEntity.summaryStatus === 'confirmed' ? '已确认摘要' : selectedEntity.summaryStatus === 'legacy_unverified' ? '历史未验证摘要，不参与可信检索' : '尚无已确认摘要'}</small>
               </div>
