@@ -129,6 +129,8 @@ test('saturated ascending pagination commits a continuation without advancing th
   assert.equal(failedRetry.advanceGlobal, false)
   assert.equal(failedRetry.sessionCursors['busy-chat'], 1_710_000_000)
   assert.equal(failedRetry.sessionOffsets['busy-chat'], 9_980)
+  assert.deepEqual(failedRetry.backlogSessionIds, ['busy-chat'])
+  assert.equal(failedRetry.complete, false)
 
   const completedRetry = planSessionCursorProgress({
     current: firstChunk.sessionCursors,
@@ -156,6 +158,7 @@ test('source failure preserves an existing high-volume continuation offset', () 
   })
   assert.equal(progress.complete, false)
   assert.deepEqual(progress.pendingSessionIds, ['busy-chat'])
+  assert.deepEqual(progress.backlogSessionIds, ['busy-chat'])
   assert.equal(progress.sessionCursors['busy-chat'], 1_710_000_000)
   assert.equal(progress.sessionOffsets['busy-chat'], 19_960)
 })

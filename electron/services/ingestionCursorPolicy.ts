@@ -52,7 +52,6 @@ export function planSessionCursorProgress(input: {
   const windowEnd = Math.max(0, Math.floor(Number(input.windowEnd) || 0))
   const pendingSessionIds = [...new Set((input.failedSessionIds || [])
     .map(value => String(value || '').trim()).filter(Boolean))]
-  const backlogSessionIds: string[] = []
   if (input.modelBatchesSucceeded) {
     for (const rawId of input.successfulSessionIds || []) {
       const sessionId = String(rawId || '').trim()
@@ -61,13 +60,15 @@ export function planSessionCursorProgress(input: {
         Math.floor(Number(input.continuationOffsets?.[sessionId]) || 0))
       if (continuationOffset > 0) {
         sessionOffsets[sessionId] = continuationOffset
-        backlogSessionIds.push(sessionId)
       } else {
         sessionCursors[sessionId] = windowEnd
         delete sessionOffsets[sessionId]
       }
     }
   }
+  const backlogSessionIds = Object.keys(sessionOffsets)
+    .filter(sessionId => Number(sessionOffsets[sessionId]) > 0)
+    .sort()
   return {
     sessionCursors,
     sessionOffsets,

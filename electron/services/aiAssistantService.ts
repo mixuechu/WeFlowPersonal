@@ -78,6 +78,16 @@ import {
   planSessionCursorProgress
 } from './ingestionCursorPolicy'
 import { buildOverlappingAnalysisBatches } from './analysisBatching'
+import {
+  EMPTY_BACKLOG_RETRY_STATE,
+  isBacklogRetryDue,
+  planBacklogRetry,
+  type BacklogRetryState
+} from './backlogRetryPolicy'
+import {
+  includeContinuationSessions,
+  settleWithConcurrency
+} from './sessionCollectionPolicy'
 import { getAppRunRecoveryDiagnostics } from './appRunRecoveryService'
 import type { DurableJsonRecovery } from './durableJsonState'
 import {
@@ -198,6 +208,7 @@ type AssistantState = {
     lastError: string | null
     pendingSessionRetryCount: number
     pendingSessionBacklogCount: number
+    backlogRetry: BacklogRetryState
   }
   graph: {
     entities: GraphEntity[]
@@ -225,7 +236,8 @@ const EMPTY_STATE: AssistantState = {
     lastAttemptAt: null,
     lastError: null,
     pendingSessionRetryCount: 0,
-    pendingSessionBacklogCount: 0
+    pendingSessionBacklogCount: 0,
+    backlogRetry: { ...EMPTY_BACKLOG_RETRY_STATE }
   },
   graph: { entities: [], relations: [], reviewQueue: [], identityScan: { lastFullScanAt: null, lastRunAt: null, lastMode: null, lastCandidateCount: 0 } }
 }
@@ -309,6 +321,7 @@ export class AiAssistantService {
   private statePath = ''
   private stateEncryptionKey = ''
   private activeSync: Promise<any> | null = null
+  private activeSyncTrigger: 'manual' | 'startup' | 'daily' | 'backlog' | null = null
   private scheduler: ReturnType<typeof setInterval> | null = null
   private lastSchedulerAttemptAt = 0
   private vectorIndexPromise: Promise<any> | null = null
@@ -429,7 +442,7 @@ export class AiAssistantService {
     this.scheduler = setInterval(() => void this.schedulerTick(), 60_000)
     this.scheduler.unref()
     if (this.config.get('aiAssistantEnabled')) {
-      setTimeout(() => void this.sync().catch(() => undefined), 5_000)
+      setTimeout(() => void this.sync('startup').catch(() => undefined), 5_000)
     }
     setTimeout(() => void this.flushNotificationOutbox(new Date()), 8_000)
     setTimeout(() => void this.ensureVectorIndex().catch(error =>
@@ -493,7 +506,14 @@ export class AiAssistantService {
         ...structuredClone(EMPTY_STATE),
         ...loaded,
         version: 3,
-        cursor: { ...structuredClone(EMPTY_STATE.cursor), ...(loaded.cursor || {}) },
+        cursor: {
+          ...structuredClone(EMPTY_STATE.cursor),
+          ...(loaded.cursor || {}),
+          backlogRetry: {
+            ...EMPTY_BACKLOG_RETRY_STATE,
+            ...(loaded.cursor?.backlogRetry || {})
+          }
+        },
         notifications: {
           pending: Array.isArray(loaded.notifications?.pending) ? loaded.notifications.pending : [],
           sentKeys: Array.isArray(loaded.notifications?.sentKeys) ? loaded.notifications.sentKeys : []
@@ -758,11 +778,15 @@ export class AiAssistantService {
     successful: string[]
     continuationOffsets: Record<string, number>
   }> {
-    const sessionPayload = await this.api('/api/v1/sessions', { limit: 500 })
+    const sessionPayload = await this.api('/api/v1/sessions', { limit: 10_000 })
     const contactsPayload = await this.api('/api/v1/contacts', { limit: 10_000 }).catch(() => ({ contacts: [] }))
     const contactsById = new Map((contactsPayload.contacts || []).map((contact: any) => [String(contact.username), contact]))
     const policies = personalMemoryStore.getConversationPolicies()
-    const allSessions = sessionPayload.sessions || []
+    const allSessions = includeContinuationSessions(
+      sessionPayload.sessions || [],
+      this.state.cursor.sessionOffsets,
+      end
+    )
     for (const session of allSessions) {
       if (isOfficialAccountSession(session) || policies.get(session.username) === false) {
         // 忽略期间持续推进该会话游标，重新启用时默认从启用时刻开始，
@@ -786,7 +810,7 @@ export class AiAssistantService {
     const ocrImages = Boolean(this.config.get('aiAssistantOcrImages'))
     const analyzeImages = Boolean(this.config.get('aiAssistantAnalyzeImages'))
     const loadImages = ocrImages || analyzeImages
-    const results = await Promise.allSettled(sessions.map(async (session: any) => {
+    const results = await settleWithConcurrency(sessions, 8, async (session: any) => {
       const rawRows: any[] = []
       const persistedOffset = Math.max(0,
         Math.floor(Number(this.state.cursor.sessionOffsets[session.username]) || 0))
@@ -870,7 +894,7 @@ export class AiAssistantService {
         rows,
         continuationOffset: nextSessionContinuationOffset(persistedOffset, offset, hasMore, 20)
       }
-    }))
+    })
     const messages: any[] = []
     const failed: string[] = []
     const successful: string[] = []
@@ -2338,14 +2362,23 @@ export class AiAssistantService {
     return { completed, failed, tasks }
   }
 
-  async sync(): Promise<any> {
+  async sync(trigger: 'manual' | 'startup' | 'daily' | 'backlog' = 'manual'): Promise<any> {
     if (this.activeSync) return this.activeSync
     this.cancelRequested = false
+    if (trigger !== 'backlog' && this.state.cursor.backlogRetry.paused) {
+      this.state.cursor.backlogRetry = {
+        ...this.state.cursor.backlogRetry,
+        paused: false
+      }
+      this.saveState()
+    }
+    this.activeSyncTrigger = trigger
     this.activeSync = this.runSync()
     try {
       return await this.activeSync
     } finally {
       this.activeSync = null
+      this.activeSyncTrigger = null
       this.cancelRequested = false
     }
   }
@@ -2376,6 +2409,7 @@ export class AiAssistantService {
     const runId = `run_${crypto.randomUUID()}`
     let runFinished = false
     let cancelled = false
+    const previousSessionOffsets = { ...this.state.cursor.sessionOffsets }
     this.state.cursor.lastAttemptAt = new Date().toISOString()
     personalMemoryStore.updateDataSourceRun('wechat', {
       status: 'running',
@@ -2613,15 +2647,26 @@ export class AiAssistantService {
       this.state.cursor.sessionOffsets = cursorProgress.sessionOffsets
       this.state.cursor.pendingSessionRetryCount = cursorProgress.pendingSessionIds.length
       this.state.cursor.pendingSessionBacklogCount = cursorProgress.backlogSessionIds.length
+      this.state.cursor.backlogRetry = planBacklogRetry({
+        previous: this.state.cursor.backlogRetry,
+        previousOffsets: previousSessionOffsets,
+        currentOffsets: cursorProgress.sessionOffsets,
+        now: new Date(createdAt),
+        operationalFailure: batchErrors.length > 0 || collected.failed.length > 0,
+        cancelled
+      })
       const collectionError = cursorProgress.pendingSessionIds.length
         ? `${cursorProgress.pendingSessionIds.length} 个会话读取失败，已保留各自原始起点等待自动补齐`
         : ''
       const backlogNotice = cursorProgress.backlogSessionIds.length
         ? `${cursorProgress.backlogSessionIds.length} 个高流量会话仍有后续分页，已保存下一页位置等待继续补齐`
         : ''
-      const runErrors = [
+      const operationalErrors = [
         ...batchErrors,
-        ...(collectionError ? [collectionError] : []),
+        ...(collectionError ? [collectionError] : [])
+      ]
+      const runErrors = [
+        ...operationalErrors,
         ...(backlogNotice ? [backlogNotice] : [])
       ]
       if (cursorProgress.advanceGlobal) {
@@ -2651,6 +2696,12 @@ export class AiAssistantService {
           checkpoint: String(now),
           succeededAt: createdAt
         })
+      } else if (!operationalErrors.length && backlogNotice) {
+        personalMemoryStore.updateDataSourceRun('wechat', {
+          status: 'idle',
+          attemptedAt: this.state.cursor.lastAttemptAt || createdAt,
+          error: backlogNotice
+        })
       } else {
         personalMemoryStore.updateDataSourceRun('wechat', {
           status: cancelled ? 'idle' : 'error',
@@ -2669,9 +2720,12 @@ export class AiAssistantService {
         this.saveState()
         await this.flushNotificationOutbox(new Date())
       }
-      if (runErrors.length && !cancelled) throw new Error(this.state.cursor.lastError || '部分消息或会话等待重试')
+      if (operationalErrors.length && !cancelled) {
+        throw new Error(this.state.cursor.lastError || '部分消息或会话等待重试')
+      }
       return {
-        success: !runErrors.length,
+        success: !operationalErrors.length,
+        partial: Boolean(runErrors.length),
         cancelled,
         newMessageCount: successfulMessageKeys.length,
         newTaskCount: mineTasks.length,
@@ -2684,10 +2738,24 @@ export class AiAssistantService {
         documentSourceError: documentSync.error || null,
         calendarSourceError: calendarSync.error || null,
         mailSourceError: mailSync.error || null,
-        message: cancelled ? '已安全暂停，成功批次已保存；下次将从断点继续' : ''
+        message: cancelled
+          ? '已安全暂停，成功批次已保存；下次将从断点继续'
+          : backlogNotice
       }
     } catch (error: any) {
       this.state.cursor.lastError = sanitizeDiagnosticText(error)
+      if (!runFinished) {
+        this.state.cursor.pendingSessionBacklogCount = Object.keys(this.state.cursor.sessionOffsets)
+          .filter(sessionId => Number(this.state.cursor.sessionOffsets[sessionId]) > 0).length
+        this.state.cursor.backlogRetry = planBacklogRetry({
+          previous: this.state.cursor.backlogRetry,
+          previousOffsets: previousSessionOffsets,
+          currentOffsets: this.state.cursor.sessionOffsets,
+          now: new Date(),
+          operationalFailure: true,
+          cancelled: this.cancelRequested
+        })
+      }
       personalMemoryStore.updateDataSourceRun('wechat', {
         status: 'error',
         attemptedAt: this.state.cursor.lastAttemptAt || new Date().toISOString(),
@@ -2710,6 +2778,7 @@ export class AiAssistantService {
     return {
       configured: Boolean(this.config.get('aiAssistantApiKey')),
       syncing: Boolean(this.activeSync),
+      syncTrigger: this.activeSyncTrigger,
       cancelling: this.cancelRequested,
       scheduleTime: this.config.get('aiAssistantScheduleTime'),
       model: this.config.get('aiAssistantApiModel'),
@@ -3305,6 +3374,9 @@ export class AiAssistantService {
     this.state.cursor.sessionCursors[sessionId] = Math.floor(Date.now() / 1000)
     delete this.state.cursor.sessionOffsets[sessionId]
     this.state.cursor.pendingSessionBacklogCount = Object.keys(this.state.cursor.sessionOffsets).length
+    if (!this.state.cursor.pendingSessionBacklogCount) {
+      this.state.cursor.backlogRetry = { ...EMPTY_BACKLOG_RETRY_STATE }
+    }
     this.saveState()
     return { success: true, sessionId, enabled: Boolean(input.enabled) }
   }
@@ -3322,6 +3394,9 @@ export class AiAssistantService {
       updated += 1
     }
     this.state.cursor.pendingSessionBacklogCount = Object.keys(this.state.cursor.sessionOffsets).length
+    if (!this.state.cursor.pendingSessionBacklogCount) {
+      this.state.cursor.backlogRetry = { ...EMPTY_BACKLOG_RETRY_STATE }
+    }
     this.saveState()
     return { success: true, updated }
   }
@@ -4281,6 +4356,20 @@ export class AiAssistantService {
     const now = new Date()
     if (!this.activeSync) await this.flushNotificationOutbox(now)
     if (this.activeSync) return
+    const wechatSource = personalMemoryStore.listDataSources().find(source => source.id === 'wechat')
+    if (isBacklogRetryDue({
+      state: this.state.cursor.backlogRetry,
+      offsets: this.state.cursor.sessionOffsets,
+      sourceEnabled: Boolean(wechatSource?.enabled),
+      now
+    })) {
+      if (Date.now() - this.lastSchedulerAttemptAt < 60_000) return
+      this.lastSchedulerAttemptAt = Date.now()
+      try {
+        await this.sync('backlog')
+      } catch {}
+      return
+    }
     const time = new Intl.DateTimeFormat('en-GB', { timeZone: 'Asia/Shanghai', hour: '2-digit', minute: '2-digit', hour12: false }).format(now)
     const today = shanghaiDate()
     const schedule = String(this.config.get('aiAssistantScheduleTime') || '20:00')
@@ -4288,7 +4377,7 @@ export class AiAssistantService {
     if (Date.now() - this.lastSchedulerAttemptAt < 15 * 60_000) return
     this.lastSchedulerAttemptAt = Date.now()
     try {
-      await this.sync()
+      await this.sync('daily')
       this.state.cursor.lastScheduledRunDate = today
       const reminders = applyReminderPreferences(
         buildTaskReminders(this.state.tasks.filter(task => task.classification === 'mine'), now),
