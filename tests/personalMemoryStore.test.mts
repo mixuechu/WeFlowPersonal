@@ -140,6 +140,65 @@ test('event timeline filters cross-source evidence, status and time with stable 
   assert.equal(store.listEventTimeline({ sourceId: 'wechat' }).items[0].id, 'wechat-event')
 }))
 
+test('calendar participant identities persist as email anchors and event merges are reversible', () => withStore(store => {
+  const source = {
+    id: 'email-person',
+    type: 'person',
+    canonicalName: 'Hun',
+    aliases: [],
+    accountIds: [],
+    externalIdentities: [{
+      platform: 'email', accountId: 'hun@example.test', displayName: 'Hun', confidence: 1
+    }],
+    summary: '日历参与者',
+    confidence: 0.95,
+    evidenceMessageIds: ['calendar-message'],
+    identityVersion: 1
+  }
+  const target = {
+    id: 'wechat-person',
+    type: 'person',
+    canonicalName: 'Hun',
+    aliases: [],
+    accountIds: ['wxid_hun'],
+    externalIdentities: [],
+    summary: '微信实体',
+    confidence: 1,
+    evidenceMessageIds: ['wechat-message'],
+    identityVersion: 1
+  }
+  store.syncGraph({ entities: [source, target], relations: [], reviewQueue: [] })
+  store.upsertEvents([{
+    id: 'calendar-event-with-person',
+    eventType: 'calendar',
+    title: '产品评审',
+    description: '',
+    startAt: '2026-07-30T10:00:00.000Z',
+    confidence: 1,
+    status: 'confirmed',
+    searchText: '产品评审 Hun',
+    participants: [{ entityId: source.id, role: 'required' }],
+    evidence: [{
+      messageId: 'calendar-message',
+      sessionId: 'data-source:calendar:work',
+      timestamp: 1_753_869_600,
+      excerpt: '产品评审',
+      role: 'direct'
+    }]
+  }])
+  assert.equal(store.searchText('hun@example.test', 10)[0]?.source_id, source.id)
+  const sourceParticipants = store.listEntityEventParticipants(source.id)
+  const targetParticipants = store.listEntityEventParticipants(target.id)
+  store.mergeEntityEventParticipants(source.id, target.id)
+  assert.equal(store.listEntityEventParticipants(source.id).length, 0)
+  assert.deepEqual(store.listEntityEventParticipants(target.id), [{
+    eventId: 'calendar-event-with-person', role: 'required'
+  }])
+  store.restoreMergedEventParticipants(source.id, target.id, sourceParticipants, targetParticipants)
+  assert.deepEqual(store.listEntityEventParticipants(source.id), sourceParticipants)
+  assert.deepEqual(store.listEntityEventParticipants(target.id), targetParticipants)
+}))
+
 test('large identity graphs switch to a weekly indexed full scan', () => {
   const now = new Date('2026-07-30T12:00:00.000Z')
   assert.equal(getFullIdentityScanSchedule(499, null, now).mode, 'incremental')

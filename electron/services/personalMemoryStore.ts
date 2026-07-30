@@ -852,9 +852,31 @@ export class PersonalMemoryStore {
         upsertEntity.run(entity.id, entity.type, entity.canonicalName, entity.summary || '', Number(entity.confidence || 0), entity.createdAt || now, entity.updatedAt || now, Number(entity.identityVersion || 1), entity.lastDisambiguatedAt || null)
         for (const alias of entity.aliases || []) insertAlias.run(entity.id, alias, String(alias).trim().toLowerCase(), 'name', 1)
         for (const accountId of entity.accountIds || []) insertIdentity.run(entity.id, 'wechat', accountId, entity.canonicalName, 1)
+        for (const identity of entity.externalIdentities || []) {
+          const platform = String(identity.platform || '').trim().toLowerCase()
+          const accountId = String(identity.accountId || '').trim()
+          if (!platform || !accountId || platform === 'wechat') continue
+          insertIdentity.run(
+            entity.id,
+            platform,
+            accountId,
+            String(identity.displayName || entity.canonicalName),
+            Math.max(0, Math.min(1, Number(identity.confidence ?? 1)))
+          )
+        }
         this.upsertSearchDocument(`entity:${entity.id}`, 'entity', entity.id, entity.canonicalName,
-          [entity.canonicalName, ...(entity.aliases || []), ...(entity.accountIds || []), entity.summary || ''].join('；'),
-          { entityType: entity.type, accountIds: entity.accountIds || [] }, now)
+          [
+            entity.canonicalName,
+            ...(entity.aliases || []),
+            ...(entity.accountIds || []),
+            ...(entity.externalIdentities || []).flatMap((identity: any) => [identity.accountId, identity.displayName]),
+            entity.summary || ''
+          ].join('；'),
+          {
+            entityType: entity.type,
+            accountIds: entity.accountIds || [],
+            externalIdentities: entity.externalIdentities || []
+          }, now)
       }
       const entityNames = new Map(graph.entities.map(entity => [entity.id, entity.canonicalName]))
       const upsertRelation = this.db.prepare(`
@@ -1086,6 +1108,51 @@ export class PersonalMemoryStore {
     if (!this.db) return { claims: 0, events: 0, resources: 0 }
     const count = (table: string) => Number((this.db!.prepare(`SELECT COUNT(*) AS count FROM ${table}`).get() as { count: number }).count)
     return { claims: count('claims'), events: count('events'), resources: count('memory_resources') }
+  }
+
+  listEntityEventParticipants(entityId: string): Array<{ eventId: string; role: string }> {
+    if (!this.db) return []
+    return (this.db.prepare(`
+      SELECT event_id AS eventId,role FROM event_participants
+      WHERE entity_id=? ORDER BY event_id,role
+    `).all(entityId) as Array<{ eventId: string; role: string }>)
+  }
+
+  mergeEntityEventParticipants(sourceId: string, targetId: string): void {
+    if (!this.db || !sourceId || !targetId || sourceId === targetId) return
+    const transaction = this.db.transaction(() => {
+      this.db!.prepare(`
+        INSERT OR IGNORE INTO event_participants(event_id,entity_id,role)
+        SELECT event_id,?,role FROM event_participants WHERE entity_id=?
+      `).run(targetId, sourceId)
+      this.db!.prepare('DELETE FROM event_participants WHERE entity_id=?').run(sourceId)
+    })
+    transaction()
+  }
+
+  restoreMergedEventParticipants(
+    sourceId: string,
+    targetId: string,
+    sourceParticipants: Array<{ eventId: string; role: string }>,
+    targetParticipants: Array<{ eventId: string; role: string }>
+  ): void {
+    if (!this.db || !sourceId || !targetId) return
+    const targetOriginal = new Set(targetParticipants.map(item => `${item.eventId}\0${item.role}`))
+    const insert = this.db.prepare(
+      'INSERT OR IGNORE INTO event_participants(event_id,entity_id,role) VALUES(?,?,?)'
+    )
+    const remove = this.db.prepare(
+      'DELETE FROM event_participants WHERE event_id=? AND entity_id=? AND role=?'
+    )
+    const transaction = this.db.transaction(() => {
+      for (const item of sourceParticipants) {
+        insert.run(item.eventId, sourceId, item.role)
+        if (!targetOriginal.has(`${item.eventId}\0${item.role}`)) {
+          remove.run(item.eventId, targetId, item.role)
+        }
+      }
+    })
+    transaction()
   }
 
   upsertResources(resources: any[]): void {

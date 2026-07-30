@@ -47,6 +47,10 @@ import {
 import { LocalDocumentDataSource } from './localDocumentDataSource'
 import { LocalCalendarDataSource, localCalendarService } from './localCalendarDataSource'
 import {
+  mapCalendarParticipantIdentities,
+  type ExternalIdentity
+} from './calendarParticipantIdentity'
+import {
   decryptPortableMemoryBundle,
   encryptPortableMemoryBundle,
   isPortableMemoryBundle
@@ -97,6 +101,7 @@ type GraphEntity = {
   canonicalName: string
   aliases: string[]
   accountIds: string[]
+  externalIdentities: ExternalIdentity[]
   summary: string
   confidence: number
   evidenceMessageIds: string[]
@@ -352,7 +357,10 @@ export class AiAssistantService {
           : [],
         graph: {
           entities: Array.isArray(loaded.graph?.entities) ? loaded.graph.entities.map((entity: any) => ({
-            ...entity, identityVersion: Number(entity.identityVersion || 1), lastDisambiguatedAt: entity.lastDisambiguatedAt || null
+            ...entity,
+            externalIdentities: Array.isArray(entity.externalIdentities) ? entity.externalIdentities : [],
+            identityVersion: Number(entity.identityVersion || 1),
+            lastDisambiguatedAt: entity.lastDisambiguatedAt || null
           })) : [],
           relations: Array.isArray(loaded.graph?.relations) ? loaded.graph.relations : [],
           reviewQueue: Array.isArray(loaded.graph?.reviewQueue) ? loaded.graph.reviewQueue : [],
@@ -1077,6 +1085,7 @@ export class AiAssistantService {
           canonicalName: canonicalName.slice(0, 100),
           aliases,
           accountIds,
+          externalIdentities: [],
           summary: String(item.summary || '').slice(0, 800),
           confidence: Math.max(0, Math.min(1, Number(item.confidence || 0.6))),
           evidenceMessageIds: evidenceIds,
@@ -1420,6 +1429,35 @@ export class AiAssistantService {
           checkpoint,
           async items => {
             const updatedAt = new Date().toISOString()
+            const identityMapping = mapCalendarParticipantIdentities(
+              items,
+              this.state.graph.entities,
+              updatedAt
+            )
+            if (identityMapping.changed || identityMapping.duplicateSuggestions.length) {
+              const graphBeforeCalendarIdentity = structuredClone(this.state.graph)
+              try {
+                this.state.graph.entities = identityMapping.entities as GraphEntity[]
+                for (const suggestion of identityMapping.duplicateSuggestions) {
+                  const left = this.state.graph.entities.find(entity => entity.id === suggestion.leftEntityId)
+                  const right = this.state.graph.entities.find(entity => entity.id === suggestion.rightEntityId)
+                  if (left && right && this.enqueueIdentityPair(left, right, updatedAt, {
+                    source: 'calendar_name_match',
+                    label: '日历显示名相同',
+                    value: suggestion.name,
+                    detail: `日历邮箱身份“${left.canonicalName}”与已有实体“${right.canonicalName}”显示名相同，但邮箱与微信身份不能据此自动合并。`,
+                    confidence: 0.75
+                  })) {
+                    this.state.graph.identityScan.lastCandidateCount += 1
+                  }
+                }
+                personalMemoryStore.syncGraph(this.state.graph)
+                this.saveState()
+              } catch (error) {
+                this.state.graph = graphBeforeCalendarIdentity
+                throw error
+              }
+            }
             const resources = items.map(item => {
               const metadata: any = item.metadata || {}
               const contentHash = String(metadata.contentHash || '')
@@ -1462,6 +1500,7 @@ export class AiAssistantService {
                 location: String(metadata.location || ''),
                 confidence: 1,
                 status: metadata.deleted ? 'cancelled' : 'confirmed',
+                participants: identityMapping.participantsByEventId.get(item.externalId) || [],
                 searchText: [
                   item.title, item.content, item.scopeName,
                   ...(item.participants || []).flatMap(value => [value.name, value.id])
@@ -2544,13 +2583,22 @@ export class AiAssistantService {
       const source = this.state.graph.entities.find(entity => entity.id === review.leftEntityId)
       const target = this.state.graph.entities.find(entity => entity.id === review.rightEntityId)
       if (source && target) {
+        const sourceEventParticipants = personalMemoryStore.listEntityEventParticipants(source.id)
+        const targetEventParticipants = personalMemoryStore.listEntityEventParticipants(target.id)
         personalMemoryStore.recordMerge(source.id, target.id, {
           source: structuredClone(source),
           target: structuredClone(target),
-          relations: structuredClone(this.state.graph.relations)
+          relations: structuredClone(this.state.graph.relations),
+          sourceEventParticipants,
+          targetEventParticipants
         })
         target.aliases = [...new Set([...target.aliases, source.canonicalName, ...source.aliases])].filter(alias => alias !== target.canonicalName)
         target.accountIds = [...new Set([...target.accountIds, ...source.accountIds])]
+        const identities = new Map(
+          [...(target.externalIdentities || []), ...(source.externalIdentities || [])]
+            .map(identity => [`${identity.platform}:${identity.accountId.toLowerCase()}`, identity])
+        )
+        target.externalIdentities = [...identities.values()]
         target.evidenceMessageIds = [...new Set([...target.evidenceMessageIds, ...source.evidenceMessageIds])]
         target.summary = target.summary || source.summary
         target.confidence = Math.max(target.confidence, source.confidence)
@@ -2577,6 +2625,8 @@ export class AiAssistantService {
         }
         this.state.graph.relations = [...normalizedRelations.values()]
         this.state.graph.entities = this.state.graph.entities.filter(entity => entity.id !== source.id)
+        personalMemoryStore.mergeEntityEventParticipants(source.id, target.id)
+        personalMemoryStore.syncGraph(this.state.graph)
         personalMemoryStore.recordIdentityDecision(source.id, target.id, 'merged', source.identityVersion, target.identityVersion, review.detail)
       }
     }
@@ -2595,6 +2645,13 @@ export class AiAssistantService {
     this.state.graph.entities = this.state.graph.entities.filter(entity => entity.id !== snapshot.source.id && entity.id !== snapshot.target.id)
     this.state.graph.entities.push(snapshot.source, snapshot.target)
     this.state.graph.relations = snapshot.relations
+    personalMemoryStore.restoreMergedEventParticipants(
+      snapshot.source.id,
+      snapshot.target.id,
+      Array.isArray(snapshot.sourceEventParticipants) ? snapshot.sourceEventParticipants : [],
+      Array.isArray(snapshot.targetEventParticipants) ? snapshot.targetEventParticipants : []
+    )
+    personalMemoryStore.syncGraph(this.state.graph)
     personalMemoryStore.markMergeReverted(id)
     this.saveState()
     return { success: true }
@@ -2704,7 +2761,15 @@ export class AiAssistantService {
   async searchMemoryHybrid(query: string, options: MemorySearchOptions = {}): Promise<any[]> {
     const selectedEntity = options.entityId ? this.state.graph.entities.find(entity => entity.id === options.entityId) : null
     const scopedOptions = selectedEntity
-      ? { ...options, entityTerms: [selectedEntity.canonicalName, ...(selectedEntity.aliases || []), ...(selectedEntity.accountIds || [])] }
+      ? {
+          ...options,
+          entityTerms: [
+            selectedEntity.canonicalName,
+            ...(selectedEntity.aliases || []),
+            ...(selectedEntity.accountIds || []),
+            ...(selectedEntity.externalIdentities || []).flatMap(identity => [identity.accountId, identity.displayName])
+          ]
+        }
       : options
     const lexical = this.searchMemory(query, 300)
     try {

@@ -190,7 +190,12 @@ function AiAssistantPage() {
   const graphEntities = useMemo(() => {
     const query = graphQuery.trim().toLowerCase()
     const rows = query
-      ? graph.entities.filter((entity: any) => [entity.canonicalName, ...(entity.aliases || [])].some((value: string) => value.toLowerCase().includes(query)))
+      ? graph.entities.filter((entity: any) => [
+        entity.canonicalName,
+        ...(entity.aliases || []),
+        ...(entity.accountIds || []),
+        ...(entity.externalIdentities || []).flatMap((identity: any) => [identity.accountId, identity.displayName])
+      ].some((value: string) => value.toLowerCase().includes(query)))
       : graph.entities
     return rows.slice(-60)
   }, [graph.entities, graphQuery])
@@ -238,7 +243,12 @@ function AiAssistantPage() {
     : []
   const selectedEntityTasks = selectedEntity
     ? tasks.filter(task => {
-      const names = [selectedEntity.canonicalName, ...(selectedEntity.aliases || []), ...(selectedEntity.accountIds || [])]
+      const names = [
+        selectedEntity.canonicalName,
+        ...(selectedEntity.aliases || []),
+        ...(selectedEntity.accountIds || []),
+        ...(selectedEntity.externalIdentities || []).flatMap((identity: any) => [identity.accountId, identity.displayName])
+      ]
         .map((value: string) => value.trim().toLowerCase()).filter(Boolean)
       const haystack = [
         task.title, task.detail, task.owner, task.project, ...(task.collaborators || []),
@@ -1520,7 +1530,8 @@ function AiAssistantPage() {
                   <h4>{selectedEntity.canonicalName}</h4>
                   <p>{selectedEntity.summary || '等待更多证据补充'}</p>
                   <small>别名：{selectedEntity.aliases?.join('、') || '无'}</small>
-                  <small>账号：{selectedEntity.accountIds?.join('、') || '未关联'}</small>
+                  <small>微信：{selectedEntity.accountIds?.join('、') || '未关联'}</small>
+                  <small>邮箱：{selectedEntity.externalIdentities?.filter((identity: any) => identity.platform === 'email').map((identity: any) => identity.accountId).join('、') || '未关联'}</small>
                   <small>证据消息：{selectedEntity.evidenceMessageIds?.length || 0} 条</small>
                   <button className="assistant-open-dossier" onClick={() => setShowEntityDossier(true)}>打开完整档案</button>
                   <button className="assistant-forget-entity" onClick={() => void forgetSelectedEntity()} disabled={forgettingEntityId === selectedEntity.id}>
@@ -1582,7 +1593,10 @@ function AiAssistantPage() {
                 {review.kind === 'possible_duplicate' && <div className="assistant-identity-pair">
                   {[review.leftEntityId, review.rightEntityId].map((entityId: string) => {
                     const entity = graph.entities.find((item: any) => item.id === entityId)
-                    return <span key={entityId}><b>{entity?.canonicalName || '未知人物'}</b><small>{entity?.aliases?.join('、') || entity?.accountIds?.join('、') || '暂无别名或账号'}</small></span>
+                    return <span key={entityId}><b>{entity?.canonicalName || '未知人物'}</b><small>{
+                      entity?.externalIdentities?.map((identity: any) => identity.accountId).join('、') ||
+                      entity?.aliases?.join('、') || entity?.accountIds?.join('、') || '暂无别名或账号'
+                    }</small></span>
                   })}
                 </div>}
                 {review.kind === 'possible_duplicate' && <div className="assistant-review-note">
@@ -1630,6 +1644,7 @@ function AiAssistantPage() {
             <div className="assistant-dossier-identity">
               <span><small>别名</small><b>{selectedEntity.aliases?.join('、') || '暂无'}</b></span>
               <span><small>微信身份锚点</small><b>{selectedEntity.accountIds?.join('、') || '尚未关联'}</b></span>
+              <span><small>邮箱身份锚点</small><b>{selectedEntity.externalIdentities?.filter((identity: any) => identity.platform === 'email').map((identity: any) => identity.accountId).join('、') || '尚未关联'}</b></span>
               <span><small>原文证据</small><b>{selectedEntity.evidenceMessageIds?.length || 0} 条</b></span>
               <span><small>身份版本</small><b>v{selectedEntity.identityVersion || 1}</b></span>
             </div>
