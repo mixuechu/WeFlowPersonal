@@ -18,6 +18,7 @@
     "dev": "node scripts/prepare-electron-runtime.cjs && vite",
     "typecheck": "tsc --noEmit",
     "test": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types --test tests/*.test.mts",
+    "verify:packaged-sqlcipher": "electron scripts/verify-packaged-sqlcipher.cjs \"release/mac-arm64/WeFlow.app/Contents/Resources/app.asar.unpacked/node_modules/better-sqlite3-multiple-ciphers\"",
     "build": "node scripts/clean-dist-electron.cjs && tsc && vite build && electron-builder",
     "preview": "vite preview",
     "electron:dev": "node scripts/prepare-electron-runtime.cjs && vite --mode electron",

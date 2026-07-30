@@ -1,12 +1,13 @@
 const { app } = require('electron')
 const { randomBytes } = require('node:crypto')
 const { existsSync, unlinkSync } = require('node:fs')
-const { join } = require('node:path')
+const { join, resolve } = require('node:path')
 const { tmpdir } = require('node:os')
 
 app.whenReady().then(() => {
-  const addonPath = process.argv[2]
-  if (!addonPath) throw new Error('Usage: electron verify-packaged-sqlcipher.cjs <module-directory>')
+  const addonArgument = process.argv[2]
+  if (!addonArgument) throw new Error('Usage: electron verify-packaged-sqlcipher.cjs <module-directory>')
+  const addonPath = resolve(addonArgument)
   const Database = require(addonPath)
   const databasePath = join(tmpdir(), `weflow-packaged-sqlcipher-proof-${process.pid}.sqlite`)
   const key = randomBytes(32)
