@@ -249,6 +249,17 @@ export class PersonalMemoryStore {
       CREATE INDEX IF NOT EXISTS idx_relation_corrections_before ON relation_corrections(before_subject_id,before_object_id,created_at);
       CREATE INDEX IF NOT EXISTS idx_relation_corrections_after ON relation_corrections(after_subject_id,after_object_id,created_at);
 
+      CREATE TABLE IF NOT EXISTS entity_profile_corrections (
+        id INTEGER PRIMARY KEY,
+        entity_id TEXT NOT NULL,
+        review_id TEXT NOT NULL,
+        field TEXT NOT NULL,
+        suggested_value TEXT NOT NULL,
+        final_value TEXT NOT NULL,
+        created_at TEXT NOT NULL
+      ) STRICT;
+      CREATE INDEX IF NOT EXISTS idx_entity_profile_corrections_entity ON entity_profile_corrections(entity_id,created_at);
+
       CREATE TABLE IF NOT EXISTS task_history (
         id INTEGER PRIMARY KEY,
         task_id TEXT NOT NULL,
@@ -754,6 +765,27 @@ export class PersonalMemoryStore {
       : this.db.prepare('SELECT * FROM relation_corrections ORDER BY id DESC LIMIT ?').all(limit) as any[]
   }
 
+  recordEntityProfileCorrection(
+    entityId: string,
+    reviewId: string,
+    field: 'summary' | 'alias',
+    suggestedValue: string,
+    finalValue: string
+  ): void {
+    if (!this.db || suggestedValue === finalValue) return
+    this.db.prepare(`
+      INSERT INTO entity_profile_corrections(entity_id,review_id,field,suggested_value,final_value,created_at)
+      VALUES(?,?,?,?,?,?)
+    `).run(entityId, reviewId, field, suggestedValue, finalValue, new Date().toISOString())
+  }
+
+  listEntityProfileCorrections(entityId = '', limit = 300): any[] {
+    if (!this.db) return []
+    return entityId
+      ? this.db.prepare('SELECT * FROM entity_profile_corrections WHERE entity_id=? ORDER BY id DESC LIMIT ?').all(entityId, limit) as any[]
+      : this.db.prepare('SELECT * FROM entity_profile_corrections ORDER BY id DESC LIMIT ?').all(limit) as any[]
+  }
+
   forgetEntity(entityId: string, taskIds: string[] = []): any {
     if (!this.db) return null
     const preview = this.previewForgetEntity(entityId)
@@ -786,6 +818,7 @@ export class PersonalMemoryStore {
         DELETE FROM relation_corrections
         WHERE before_subject_id=? OR before_object_id=? OR after_subject_id=? OR after_object_id=?
       `).run(entityId, entityId, entityId, entityId)
+      this.db.prepare('DELETE FROM entity_profile_corrections WHERE entity_id=?').run(entityId)
       for (const name of preview.names) {
         const pattern = `%${name.replace(/[%_]/g, value => `\\${value}`)}%`
         this.db.prepare(`DELETE FROM assistant_messages

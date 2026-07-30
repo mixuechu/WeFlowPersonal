@@ -32,11 +32,13 @@ import {
 import { planExtractedEntityResolution } from '../electron/services/entityResolutionPolicy.ts'
 import {
   buildEntitySummaryCandidate,
-  canApplyEntitySummaryCandidate
+  canApplyEntitySummaryCandidate,
+  planEntitySummaryConfirmation
 } from '../electron/services/entitySummaryPolicy.ts'
 import {
   buildEntityAliasCandidates,
-  canApplyEntityAliasCandidate
+  canApplyEntityAliasCandidate,
+  planEntityAliasConfirmation
 } from '../electron/services/entityAliasPolicy.ts'
 import {
   buildEntityCreationReview,
@@ -143,6 +145,60 @@ test('entity name corrections are persisted as an auditable history', () => {
     assert.equal(rows[0].before_name, '错误名字')
     assert.equal(rows[0].after_name, '正确名字')
     assert.equal(rows[0].reason, 'review_correction')
+  })
+})
+
+test('entity summary and alias candidates accept human final values without bypassing stale guards', () => {
+  const entity = {
+    id: 'entity-1',
+    canonicalName: '张三',
+    aliases: [],
+    summary: '当前摘要'
+  }
+  const summaryReview = {
+    kind: 'entity_summary',
+    entityId: 'entity-1',
+    previousSummary: '当前摘要',
+    summaryText: '模型建议摘要'
+  }
+  assert.deepEqual(planEntitySummaryConfirmation(summaryReview, entity, '人工纠正摘要'), {
+    suggestedValue: '模型建议摘要',
+    finalValue: '人工纠正摘要',
+    changed: true
+  })
+  assert.throws(
+    () => planEntitySummaryConfirmation(summaryReview, { ...entity, summary: '后来摘要' }, '人工纠正摘要'),
+    /候选已过期/
+  )
+  const aliasReview = {
+    kind: 'entity_alias',
+    entityId: 'entity-1',
+    entityCanonicalName: '张三',
+    aliasText: '模型错别名'
+  }
+  assert.deepEqual(planEntityAliasConfirmation(aliasReview, entity, '老张'), {
+    suggestedValue: '模型错别名',
+    finalValue: '老张',
+    changed: true
+  })
+  assert.throws(() => planEntityAliasConfirmation(aliasReview, entity, '用户'), /占位词/)
+  assert.throws(() => planEntityAliasConfirmation(aliasReview, entity, '张三'), /规范名相同/)
+  assert.throws(
+    () => planEntityAliasConfirmation(aliasReview, { ...entity, canonicalName: '后来名称' }, '老张'),
+    /候选已失效/
+  )
+})
+
+test('entity profile corrections persist model suggestion and human final value', () => {
+  withStore(store => {
+    store.recordEntityProfileCorrection('entity-1', 'summary-review', 'summary', '模型摘要', '人工摘要')
+    store.recordEntityProfileCorrection('entity-1', 'alias-review', 'alias', '错误别名', '正确别名')
+    store.recordEntityProfileCorrection('entity-1', 'same-review', 'alias', '相同', '相同')
+    const rows = store.listEntityProfileCorrections('entity-1')
+    assert.equal(rows.length, 2)
+    assert.deepEqual(new Set(rows.map((row: any) => row.field)), new Set(['summary', 'alias']))
+    assert.equal(rows.find((row: any) => row.field === 'summary')?.final_value, '人工摘要')
+    assert.equal(rows.find((row: any) => row.field === 'alias')?.suggested_value, '错误别名')
   })
 })
 

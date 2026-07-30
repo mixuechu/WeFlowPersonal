@@ -35,11 +35,11 @@ import {
 import { planExtractedEntityResolution } from './entityResolutionPolicy'
 import {
   buildEntitySummaryCandidate,
-  canApplyEntitySummaryCandidate
+  planEntitySummaryConfirmation
 } from './entitySummaryPolicy'
 import {
   buildEntityAliasCandidates,
-  canApplyEntityAliasCandidate
+  planEntityAliasConfirmation
 } from './entityAliasPolicy'
 import {
   buildEntityCreationReview,
@@ -174,7 +174,7 @@ type AssistantState = {
   graph: {
     entities: GraphEntity[]
     relations: GraphRelation[]
-    reviewQueue: Array<{ id: string; kind: 'possible_duplicate' | 'relation' | 'entity_summary' | 'entity_alias' | 'entity_creation'; title: string; detail: string; confidence: number; status: 'pending' | 'confirmed' | 'rejected'; createdAt: string; leftEntityId?: string; rightEntityId?: string; mergeSourceEntityId?: string; mergeTargetEntityId?: string; relationId?: string; originalRelationId?: string; correctedRelationId?: string; relationCorrection?: RelationCorrection; entityId?: string; entityIdentityVersion?: number; entityCanonicalName?: string; originalEntityCanonicalName?: string; correctedCanonicalName?: string; entityType?: string; legacyReview?: boolean; previousSummary?: string; summaryText?: string; aliasText?: string; evidence?: Array<{ messageId: string; sessionId: string; timestamp: number; sender: string; excerpt: string }>; candidateSource?: string; candidateSignals?: Array<{ source: string; label: string; value: string }> }>
+    reviewQueue: Array<{ id: string; kind: 'possible_duplicate' | 'relation' | 'entity_summary' | 'entity_alias' | 'entity_creation'; title: string; detail: string; confidence: number; status: 'pending' | 'confirmed' | 'rejected'; createdAt: string; leftEntityId?: string; rightEntityId?: string; mergeSourceEntityId?: string; mergeTargetEntityId?: string; relationId?: string; originalRelationId?: string; correctedRelationId?: string; relationCorrection?: RelationCorrection; entityId?: string; entityIdentityVersion?: number; entityCanonicalName?: string; originalEntityCanonicalName?: string; correctedCanonicalName?: string; entityType?: string; legacyReview?: boolean; previousSummary?: string; summaryText?: string; originalSummaryText?: string; correctedSummaryText?: string; aliasText?: string; originalAliasText?: string; correctedAliasText?: string; evidence?: Array<{ messageId: string; sessionId: string; timestamp: number; sender: string; excerpt: string }>; candidateSource?: string; candidateSignals?: Array<{ source: string; label: string; value: string }> }>
     identityScan: { lastFullScanAt: string | null; lastRunAt: string | null; lastMode: 'incremental' | 'full' | null; lastCandidateCount: number }
   }
 }
@@ -2480,6 +2480,7 @@ export class AiAssistantService {
       mergeHistory: personalMemoryStore.listActiveMerges(),
       entityCorrections: personalMemoryStore.listEntityCorrections('', 300),
       relationCorrections: personalMemoryStore.listRelationCorrections('', 300),
+      entityProfileCorrections: personalMemoryStore.listEntityProfileCorrections('', 300),
       memoryDeletionAudit: personalMemoryStore.listMemoryDeletionAudit(50),
       memoryStats: personalMemoryStore.getMemoryStats(),
       attachmentStructureMigration: personalMemoryStore.getAttachmentStructureMigrationStats(
@@ -2903,7 +2904,7 @@ export class AiAssistantService {
   updateGraphReview(
     id: string,
     decision: 'confirmed' | 'rejected',
-    options?: { mergeTargetEntityId?: string; correctedCanonicalName?: string; relationCorrection?: RelationCorrection }
+    options?: { mergeTargetEntityId?: string; correctedCanonicalName?: string; correctedSummaryText?: string; correctedAliasText?: string; relationCorrection?: RelationCorrection }
   ): any {
     const review = this.state.graph.reviewQueue.find(item => item.id === id)
     if (!review || review.status !== 'pending') return null
@@ -2924,33 +2925,50 @@ export class AiAssistantService {
           correction: options?.relationCorrection
         })
       : null
+    const profileEntity = (review.kind === 'entity_summary' || review.kind === 'entity_alias') && review.entityId
+      ? this.state.graph.entities.find(item => item.id === review.entityId)
+      : null
+    if ((review.kind === 'entity_summary' || review.kind === 'entity_alias') && decision === 'confirmed' && !profileEntity) {
+      throw new Error('实体候选已失效，请刷新后重试')
+    }
+    const summaryPlan = review.kind === 'entity_summary' && decision === 'confirmed' && profileEntity
+      ? planEntitySummaryConfirmation(review, profileEntity, options?.correctedSummaryText)
+      : null
+    const aliasPlan = review.kind === 'entity_alias' && decision === 'confirmed' && profileEntity
+      ? planEntityAliasConfirmation(review, profileEntity, options?.correctedAliasText)
+      : null
     review.status = decision
     if (review.kind === 'entity_summary' && review.entityId) {
       const entity = this.state.graph.entities.find(item => item.id === review.entityId)
-      if (decision === 'confirmed' && entity) {
-        if (canApplyEntitySummaryCandidate(review, entity)) {
-          entity.summary = String(review.summaryText || '').slice(0, 800)
-          entity.summaryStatus = entity.summary ? 'confirmed' : 'empty'
-          entity.updatedAt = new Date().toISOString()
-        } else {
-          review.status = 'rejected'
-          review.detail = `${review.detail} 当前摘要已发生变化，此候选已过期，未执行覆盖。`
+      if (decision === 'confirmed' && entity && summaryPlan) {
+        if (summaryPlan.changed) {
+          review.originalSummaryText = summaryPlan.suggestedValue
+          review.correctedSummaryText = summaryPlan.finalValue
+          review.summaryText = summaryPlan.finalValue
+          personalMemoryStore.recordEntityProfileCorrection(
+            entity.id, review.id, 'summary', summaryPlan.suggestedValue, summaryPlan.finalValue
+          )
         }
+        entity.summary = summaryPlan.finalValue
+        entity.summaryStatus = 'confirmed'
+        entity.updatedAt = new Date().toISOString()
       }
     }
     if (review.kind === 'entity_alias' && review.entityId) {
       const entity = this.state.graph.entities.find(item => item.id === review.entityId)
-      if (decision === 'confirmed' && entity) {
-        if (canApplyEntityAliasCandidate(review, entity)) {
-          const alias = String(review.aliasText || '').trim().slice(0, 100)
-          entity.aliases = [...new Set([...entity.aliases, alias])]
-          entity.identityVersion += 1
-          entity.updatedAt = new Date().toISOString()
-          this.enqueueIdentityCandidates(entity, entity.updatedAt)
-        } else {
-          review.status = 'rejected'
-          review.detail = `${review.detail} 实体名称已变化或候选无效，未写入别名。`
+      if (decision === 'confirmed' && entity && aliasPlan) {
+        if (aliasPlan.changed) {
+          review.originalAliasText = aliasPlan.suggestedValue
+          review.correctedAliasText = aliasPlan.finalValue
+          review.aliasText = aliasPlan.finalValue
+          personalMemoryStore.recordEntityProfileCorrection(
+            entity.id, review.id, 'alias', aliasPlan.suggestedValue, aliasPlan.finalValue
+          )
         }
+        entity.aliases = [...new Set([...entity.aliases, aliasPlan.finalValue])]
+        entity.identityVersion += 1
+        entity.updatedAt = new Date().toISOString()
+        this.enqueueIdentityCandidates(entity, entity.updatedAt)
       }
     }
     if (review.kind === 'entity_creation' && review.entityId) {

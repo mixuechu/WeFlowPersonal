@@ -62,3 +62,22 @@ export function canApplyEntitySummaryCandidate(review: any, entity: any): boolea
     compact(entity?.summary, 800) === compact(review?.previousSummary, 800)
   )
 }
+
+export function planEntitySummaryConfirmation(
+  review: any,
+  entity: any,
+  correctedSummaryText?: string
+): { suggestedValue: string; finalValue: string; changed: boolean } {
+  if (!canApplyEntitySummaryCandidate(review, entity)) {
+    throw new Error('当前摘要已发生变化，此候选已过期，请刷新后重试')
+  }
+  const suggestedValue = compact(review?.summaryText, 800)
+  const finalValue = correctedSummaryText === undefined
+    ? suggestedValue
+    : compact(correctedSummaryText, 800)
+  if (!finalValue) throw new Error('确认摘要不能为空')
+  if (/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/.test(String(correctedSummaryText ?? finalValue))) {
+    throw new Error('摘要不能包含控制字符')
+  }
+  return { suggestedValue, finalValue, changed: suggestedValue !== finalValue }
+}

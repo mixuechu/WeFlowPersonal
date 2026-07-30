@@ -109,6 +109,7 @@ function AiAssistantPage() {
   const [mergeTargets, setMergeTargets] = useState<Record<string, string>>({})
   const [entityNameEdits, setEntityNameEdits] = useState<Record<string, string>>({})
   const [relationEdits, setRelationEdits] = useState<Record<string, { subjectId: string; predicate: string; objectId: string }>>({})
+  const [profileEdits, setProfileEdits] = useState<Record<string, string>>({})
   const [memoryDiagnostics, setMemoryDiagnostics] = useState<any>(null)
   const [showDiagnostics, setShowDiagnostics] = useState(false)
   const [backingUpMemory, setBackingUpMemory] = useState(false)
@@ -261,6 +262,7 @@ function AiAssistantPage() {
   const mergeHistory = dashboard?.mergeHistory || []
   const entityCorrections = dashboard?.entityCorrections || []
   const relationCorrections = dashboard?.relationCorrections || []
+  const entityProfileCorrections = dashboard?.entityProfileCorrections || []
   const memoryFeed = dashboard?.memoryFeed || { claims: [], events: [], resources: [] }
   const ingestionStatus = dashboard?.ingestionStatus
   const ingestionCounts = Object.fromEntries((ingestionStatus?.batches || []).map((item: any) => [item.status, Number(item.count || 0)]))
@@ -292,6 +294,9 @@ function AiAssistantPage() {
       item.before_object_id === selectedEntity.id ||
       item.after_subject_id === selectedEntity.id ||
       item.after_object_id === selectedEntity.id)
+    : []
+  const selectedEntityProfileCorrections = selectedEntity
+    ? entityProfileCorrections.filter((item: any) => item.entity_id === selectedEntity.id)
     : []
   const selectedEntityTasks = selectedEntity
     ? tasks.filter(task => {
@@ -511,6 +516,8 @@ function AiAssistantPage() {
     options?: {
       mergeTargetEntityId?: string
       correctedCanonicalName?: string
+      correctedSummaryText?: string
+      correctedAliasText?: string
       relationCorrection?: { subjectId?: string; predicate?: string; objectId?: string }
     }
   ) => {
@@ -527,6 +534,11 @@ function AiAssistantPage() {
         return next
       })
       setRelationEdits(current => {
+        const next = { ...current }
+        delete next[id]
+        return next
+      })
+      setProfileEdits(current => {
         const next = { ...current }
         delete next[id]
         return next
@@ -1881,6 +1893,27 @@ function AiAssistantPage() {
                     String(entity.canonicalName || '').trim().toLocaleLowerCase('zh-CN') ===
                       correctedEntityName.toLocaleLowerCase('zh-CN'))
                   : []
+                const profileEditValue = review.kind === 'entity_summary'
+                  ? String(profileEdits[review.id] ?? review.summaryText ?? '')
+                  : review.kind === 'entity_alias'
+                    ? String(profileEdits[review.id] ?? review.aliasText ?? '')
+                    : ''
+                const compactProfileEditValue = profileEditValue.replace(/\s+/g, ' ').trim()
+                const profileInvalidReason = review.kind === 'entity_summary'
+                  ? !compactProfileEditValue
+                    ? '确认摘要不能为空'
+                    : /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/.test(profileEditValue)
+                      ? '摘要不能包含控制字符'
+                      : ''
+                  : review.kind === 'entity_alias'
+                    ? !compactProfileEditValue
+                      ? '确认别名不能为空'
+                      : /[\u0000-\u001f\u007f]/.test(profileEditValue)
+                        ? '别名不能包含控制字符'
+                        : new Set(['我', '你', '用户', '群友', '对方', '某人', '未知', 'unknown', 'user']).has(compactProfileEditValue.toLocaleLowerCase('zh-CN').replace(/\s+/g, ''))
+                          ? '不能使用占位词作为实体别名'
+                          : ''
+                    : ''
                 return <><div><strong>{review.kind === 'possible_duplicate' ? `可能是同一个人：${review.title}` : review.title}</strong>
                 {review.kind === 'possible_duplicate' && <div className="assistant-identity-pair">
                   {[review.leftEntityId, review.rightEntityId].map((entityId: string) => {
@@ -1939,13 +1972,27 @@ function AiAssistantPage() {
                 </div>}
                 {review.kind === 'entity_summary' && <div className="assistant-review-note">
                   {review.previousSummary && <div><b>当前摘要：</b><span>{review.previousSummary}</span></div>}
-                  <div><b>建议摘要：</b><span>{review.summaryText}</span></div>
+                  <div><b>模型建议：</b><span>{review.summaryText}</span></div>
+                  <label className="assistant-profile-correction">
+                    <span>确认写入的摘要</span>
+                    <textarea value={profileEditValue} maxLength={800} rows={4}
+                      onChange={event => setProfileEdits(current => ({ ...current, [review.id]: event.target.value }))} />
+                    <small>可在不丢失原文证据的前提下修改措辞或纠正事实；模型建议和人工最终值都会进入审计。</small>
+                    {profileInvalidReason && <small className="error">{profileInvalidReason}</small>}
+                  </label>
                   {(review.evidence || []).map((evidence: any) =>
                     <div key={evidence.messageId}><small>{evidence.sender || '原文'}：“{evidence.excerpt}”</small></div>)}
                   <div><small>确认后才会写入档案和可信检索；拒绝不会修改现有摘要。</small></div>
                 </div>}
                 {review.kind === 'entity_alias' && <div className="assistant-review-note">
-                  <div><b>建议别名：</b><span>{review.aliasText}</span></div>
+                  <div><b>模型建议别名：</b><span>{review.aliasText}</span></div>
+                  <label className="assistant-profile-correction">
+                    <span>确认写入的别名</span>
+                    <input value={profileEditValue} maxLength={100}
+                      onChange={event => setProfileEdits(current => ({ ...current, [review.id]: event.target.value }))} />
+                    <small>错误建议可以直接改成正确别名；占位词、规范名和已经存在的别名会由后端再次拦截。</small>
+                    {profileInvalidReason && <small className="error">{profileInvalidReason}</small>}
+                  </label>
                   {(review.evidence || []).map((evidence: any) =>
                     <div key={evidence.messageId}><small>{evidence.sender || '原文'}：“{evidence.excerpt}”</small></div>)}
                   <div><small>确认后才会参与身份消歧、合并建议和统一检索。</small></div>
@@ -1983,7 +2030,7 @@ function AiAssistantPage() {
                           ? '确认后启用可信实体'
                       : '确认后写入关系'
                 }</small></div>
-              <div><button onClick={() => void decideReview(review.id, 'rejected')}>拒绝</button><button className="primary" disabled={(review.kind === 'possible_duplicate' && (!review.leftEntityId || !review.rightEntityId || !selectedMergeTargetId)) || Boolean(entityNameInvalidReason) || Boolean(relationInvalidReason)} title={review.kind === 'possible_duplicate' && (!review.leftEntityId || !review.rightEntityId) ? '候选信息不完整，暂不能合并' : review.kind === 'possible_duplicate' && !selectedMergeTargetId ? '请先选择合并后保留的身份' : entityNameInvalidReason || relationInvalidReason} onClick={() => void decideReview(review.id, 'confirmed', review.kind === 'possible_duplicate' ? { mergeTargetEntityId: selectedMergeTargetId } : review.kind === 'entity_creation' ? { correctedCanonicalName: entityNameEdits[review.id] ?? review.entityCanonicalName ?? '' } : review.kind === 'relation' && relationEdit ? { relationCorrection: relationEdit } : undefined)}>{review.kind === 'relation' ? '确认修正后方向' : review.kind === 'possible_duplicate' ? '按此方向合并' : review.kind === 'entity_creation' ? '确认名称并启用' : '确认'}</button></div></>
+              <div><button onClick={() => void decideReview(review.id, 'rejected')}>拒绝</button><button className="primary" disabled={(review.kind === 'possible_duplicate' && (!review.leftEntityId || !review.rightEntityId || !selectedMergeTargetId)) || Boolean(entityNameInvalidReason) || Boolean(relationInvalidReason) || Boolean(profileInvalidReason)} title={review.kind === 'possible_duplicate' && (!review.leftEntityId || !review.rightEntityId) ? '候选信息不完整，暂不能合并' : review.kind === 'possible_duplicate' && !selectedMergeTargetId ? '请先选择合并后保留的身份' : entityNameInvalidReason || relationInvalidReason || profileInvalidReason} onClick={() => void decideReview(review.id, 'confirmed', review.kind === 'possible_duplicate' ? { mergeTargetEntityId: selectedMergeTargetId } : review.kind === 'entity_creation' ? { correctedCanonicalName: entityNameEdits[review.id] ?? review.entityCanonicalName ?? '' } : review.kind === 'relation' && relationEdit ? { relationCorrection: relationEdit } : review.kind === 'entity_summary' ? { correctedSummaryText: profileEditValue } : review.kind === 'entity_alias' ? { correctedAliasText: profileEditValue } : undefined)}>{review.kind === 'relation' ? '确认修正后方向' : review.kind === 'possible_duplicate' ? '按此方向合并' : review.kind === 'entity_creation' ? '确认名称并启用' : review.kind === 'entity_summary' || review.kind === 'entity_alias' ? '确认人工最终值' : '确认'}</button></div></>
               })()}
             </article>)}
             {!pendingReviews.length && <div className="assistant-empty">当前没有等待确认的身份或关系。</div>}
@@ -2103,6 +2150,15 @@ function AiAssistantPage() {
                   </article>
                 })}
                 {!selectedEntityRelationCorrections.length && <em>尚无关系人工修正记录</em>}
+              </section>
+              <section className="assistant-dossier-wide">
+                <h3>档案字段人工修正 <small>{selectedEntityProfileCorrections.length}</small></h3>
+                {selectedEntityProfileCorrections.map((item: any) => <article key={item.id} className="assistant-dossier-history-row">
+                  <div><b>{item.field === 'summary' ? '实体摘要' : '实体别名'}</b><span>模型建议：“{item.suggested_value}”</span></div>
+                  <div><b>人工最终值</b><span>“{item.final_value}”</span></div>
+                  <small>{new Date(item.created_at).toLocaleString('zh-CN')} · 原文证据仍绑定原候选</small>
+                </article>)}
+                {!selectedEntityProfileCorrections.length && <em>尚无摘要或别名修正记录</em>}
               </section>
             </div>
             <footer>
