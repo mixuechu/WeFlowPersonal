@@ -646,9 +646,12 @@ contextBridge.exposeInMainWorld('electronAPI', {
     getMemoryDiagnostics: () => ipcRenderer.invoke('ai-assistant:getMemoryDiagnostics'),
     createMemoryBackup: () => ipcRenderer.invoke('ai-assistant:createMemoryBackup'),
     restoreMemoryBackup: (path: string) => ipcRenderer.invoke('ai-assistant:restoreMemoryBackup', path),
-    exportMemoryBundle: (path: string) => ipcRenderer.invoke('ai-assistant:exportMemoryBundle', path),
-    inspectMemoryBundle: (path: string) => ipcRenderer.invoke('ai-assistant:inspectMemoryBundle', path),
-    importMemoryBundle: (path: string) => ipcRenderer.invoke('ai-assistant:importMemoryBundle', path),
+    exportMemoryBundle: (path: string, passphrase: string) =>
+      ipcRenderer.invoke('ai-assistant:exportMemoryBundle', path, passphrase),
+    inspectMemoryBundle: (path: string, passphrase?: string) =>
+      ipcRenderer.invoke('ai-assistant:inspectMemoryBundle', path, passphrase),
+    importMemoryBundle: (path: string, passphrase?: string) =>
+      ipcRenderer.invoke('ai-assistant:importMemoryBundle', path, passphrase),
     correctClaim: (id: string, input: any) => ipcRenderer.invoke('ai-assistant:correctClaim', id, input),
     askMemory: (question: string, conversationId?: string, options?: any) => ipcRenderer.invoke('ai-assistant:askMemory', question, conversationId, options),
     getConversationSources: () => ipcRenderer.invoke('ai-assistant:getConversationSources'),

@@ -447,7 +447,9 @@ export class PersonalMemoryStore {
         unlinkSync(plaintextBackup)
       }
     }
-    if (existsSync(temporary)) unlinkSync(temporary)
+    for (const suffix of ['', '-wal', '-shm']) {
+      try { if (existsSync(`${temporary}${suffix}`)) unlinkSync(`${temporary}${suffix}`) } catch {}
+    }
     if (!existsSync(path) || !this.isPlaintextDatabase(path)) return
 
     const plaintext = new Database(path)
@@ -475,7 +477,7 @@ export class PersonalMemoryStore {
       renameSync(temporary, path)
       this.verifyDatabase(path)
       unlinkSync(plaintextBackup)
-      for (const suffix of ['-wal', '-shm']) {
+      for (const suffix of ['-wal', '-shm', '.encrypting-wal', '.encrypting-shm']) {
         try { unlinkSync(`${path}${suffix}`) } catch {}
       }
       this.encryptionMigrated = true
@@ -713,7 +715,7 @@ export class PersonalMemoryStore {
     }
   }
 
-  registerImportedBackup(databaseBytes: Uint8Array, stateText: string): any {
+  registerImportedBackup(databaseBytes: Uint8Array, stateText: string, sourceEncryptionKey?: Buffer | string): any {
     if (!this.db || !this.databasePath) throw new Error('个人记忆数据库尚未初始化')
     JSON.parse(stateText)
     const backupDirectory = join(dirname(this.databasePath), 'personal-memory-backups')
@@ -723,17 +725,45 @@ export class PersonalMemoryStore {
     const backupPath = join(backupDirectory, `personal-memory-imported-${timestamp}.sqlite`)
     const temporary = `${backupPath}.tmp`
     writeFileSync(temporary, databaseBytes)
-    if (this.encryptionKey && this.isPlaintextDatabase(temporary)) {
-      this.prepareEncryptedDatabase(temporary, this.encryptionKey)
+    const sourceKey = sourceEncryptionKey === undefined
+      ? null
+      : Buffer.isBuffer(sourceEncryptionKey)
+        ? Buffer.from(sourceEncryptionKey)
+        : Buffer.from(String(sourceEncryptionKey), 'hex')
+    if (sourceKey && sourceKey.length !== 32) {
+      try { unlinkSync(temporary) } catch {}
+      throw new Error('迁移包中的数据库密钥无效')
     }
-    this.verifyDatabase(temporary)
-    renameSync(temporary, backupPath)
-    writeFileSync(`${backupPath}.state.json`, stateText, 'utf8')
     try {
-      chmodSync(backupPath, 0o600)
-      chmodSync(`${backupPath}.state.json`, 0o600)
-    } catch {}
-    return { path: backupPath, bytes: statSync(backupPath).size, createdAt: new Date().toISOString(), hasState: true }
+      if (sourceKey && !this.isPlaintextDatabase(temporary)) {
+        const imported = new Database(temporary)
+        try {
+          imported.pragma('cipher=sqlcipher')
+          imported.pragma('legacy=4')
+          imported.key(sourceKey)
+          const integrity = imported.pragma('integrity_check', { simple: true })
+          if (integrity !== 'ok') throw new Error('迁移包数据库一致性检查失败')
+          if (!this.encryptionKey) throw new Error('当前个人记忆库没有可用的目标加密密钥')
+          imported.rekey(this.encryptionKey)
+        } finally {
+          sourceKey.fill(0)
+          imported.close()
+        }
+      } else if (this.encryptionKey && this.isPlaintextDatabase(temporary)) {
+        this.prepareEncryptedDatabase(temporary, this.encryptionKey)
+      }
+      this.verifyDatabase(temporary)
+      renameSync(temporary, backupPath)
+      writeFileSync(`${backupPath}.state.json`, stateText, 'utf8')
+      try {
+        chmodSync(backupPath, 0o600)
+        chmodSync(`${backupPath}.state.json`, 0o600)
+      } catch {}
+      return { path: backupPath, bytes: statSync(backupPath).size, createdAt: new Date().toISOString(), hasState: true }
+    } catch (error) {
+      try { unlinkSync(temporary) } catch {}
+      throw error
+    }
   }
 
   private listBackups(backupDirectory: string): Array<{ path: string; name: string; bytes: number; createdAt: string; hasState: boolean }> {

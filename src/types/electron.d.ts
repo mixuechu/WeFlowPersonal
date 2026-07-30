@@ -1668,9 +1668,9 @@ export interface ElectronAPI {
       getMemoryDiagnostics: () => Promise<any>
       createMemoryBackup: () => Promise<any>
       restoreMemoryBackup: (path: string) => Promise<any>
-      exportMemoryBundle: (path: string) => Promise<any>
-      inspectMemoryBundle: (path: string) => Promise<any>
-      importMemoryBundle: (path: string) => Promise<any>
+      exportMemoryBundle: (path: string, passphrase: string) => Promise<any>
+      inspectMemoryBundle: (path: string, passphrase?: string) => Promise<any>
+      importMemoryBundle: (path: string, passphrase?: string) => Promise<any>
       correctClaim: (id: string, input: any) => Promise<any>
       askMemory: (question: string, conversationId?: string, options?: any) => Promise<any>
       getConversationSources: () => Promise<any[]>

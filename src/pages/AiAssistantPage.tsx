@@ -69,6 +69,9 @@ function AiAssistantPage() {
   const [backingUpMemory, setBackingUpMemory] = useState(false)
   const [restoringMemory, setRestoringMemory] = useState(false)
   const [migratingMemory, setMigratingMemory] = useState(false)
+  const [migrationDialog, setMigrationDialog] = useState<{ mode: 'export' | 'import'; bundlePath?: string } | null>(null)
+  const [migrationPassphrase, setMigrationPassphrase] = useState('')
+  const [migrationPassphraseConfirmation, setMigrationPassphraseConfirmation] = useState('')
   const [indexingVectors, setIndexingVectors] = useState(false)
   const [memoryQuestion, setMemoryQuestion] = useState('')
   const [memoryAnswer, setMemoryAnswer] = useState<any>(null)
@@ -317,8 +320,22 @@ function AiAssistantPage() {
     }
   }
 
+  const openExportMemoryBundle = () => {
+    setMigrationPassphrase('')
+    setMigrationPassphraseConfirmation('')
+    setMigrationDialog({ mode: 'export' })
+  }
+
   const exportMemoryBundle = async () => {
     if (migratingMemory) return
+    if (migrationPassphrase.normalize('NFKC').length < 12) {
+      setMessage('迁移口令至少需要 12 个字符。')
+      return
+    }
+    if (migrationPassphraseConfirmation !== migrationPassphrase) {
+      setMessage('两次输入的迁移口令不一致。')
+      return
+    }
     const selected = await window.electronAPI.dialog.saveFile({
       title: '导出个人记忆迁移包',
       defaultPath: `WeFlow-个人记忆-${new Date().toISOString().slice(0, 10)}.weflow-memory`,
@@ -327,8 +344,11 @@ function AiAssistantPage() {
     if (selected.canceled || !selected.filePath) return
     setMigratingMemory(true)
     try {
-      const result = await window.electronAPI.aiAssistant.exportMemoryBundle(selected.filePath)
-      setMessage(`迁移包已校验并导出：${result.path}`)
+      const result = await window.electronAPI.aiAssistant.exportMemoryBundle(selected.filePath, migrationPassphrase)
+      setMigrationDialog(null)
+      setMigrationPassphrase('')
+      setMigrationPassphraseConfirmation('')
+      setMessage(`口令保护的便携迁移包已校验并导出：${result.path}`)
       setMemoryDiagnostics(await window.electronAPI.aiAssistant.getMemoryDiagnostics())
     } catch (error: any) {
       setMessage(error?.message || String(error))
@@ -337,7 +357,7 @@ function AiAssistantPage() {
     }
   }
 
-  const importMemoryBundle = async () => {
+  const openImportMemoryBundle = async () => {
     if (migratingMemory || restoringMemory) return
     const selected = await window.electronAPI.dialog.openFile({
       title: '选择个人记忆迁移包',
@@ -346,16 +366,26 @@ function AiAssistantPage() {
     })
     const bundlePath = selected.filePaths?.[0]
     if (selected.canceled || !bundlePath) return
+    setMigrationPassphrase('')
+    setMigrationPassphraseConfirmation('')
+    setMigrationDialog({ mode: 'import', bundlePath })
+  }
+
+  const importMemoryBundle = async () => {
+    const bundlePath = migrationDialog?.bundlePath
+    if (!bundlePath || migratingMemory || restoringMemory) return
     setMigratingMemory(true)
     try {
-      const inspected = await window.electronAPI.aiAssistant.inspectMemoryBundle(bundlePath)
+      const inspected = await window.electronAPI.aiAssistant.inspectMemoryBundle(bundlePath, migrationPassphrase)
       const summary = inspected.stateSummary
       if (!window.confirm(
         `迁移包校验通过。\n创建时间：${new Date(inspected.manifest.createdAt).toLocaleString('zh-CN')}\n` +
         `包含 ${summary.entities} 个实体、${summary.relations} 条关系、${summary.tasks} 项任务。\n\n` +
         '确定导入并替换当前个人记忆吗？当前数据会先自动创建安全快照。'
       )) return
-      await window.electronAPI.aiAssistant.importMemoryBundle(bundlePath)
+      await window.electronAPI.aiAssistant.importMemoryBundle(bundlePath, migrationPassphrase)
+      setMigrationDialog(null)
+      setMigrationPassphrase('')
       setMessage('个人记忆迁移完成；导入前的安全快照已保留。')
       setMemoryDiagnostics(await window.electronAPI.aiAssistant.getMemoryDiagnostics())
       await load()
@@ -675,10 +705,10 @@ function AiAssistantPage() {
               <button onClick={() => void backupMemory()} disabled={backingUpMemory || restoringMemory || !memoryDiagnostics.healthy}>
                 {backingUpMemory ? '正在验证并备份…' : '立即备份个人记忆'}
               </button>
-              <button onClick={() => void exportMemoryBundle()} disabled={migratingMemory || !memoryDiagnostics.healthy}>
+              <button onClick={openExportMemoryBundle} disabled={migratingMemory || !memoryDiagnostics.healthy}>
                 {migratingMemory ? '正在处理迁移包…' : '导出到其他电脑'}
               </button>
-              <button onClick={() => void importMemoryBundle()} disabled={migratingMemory || restoringMemory}>导入迁移包</button>
+              <button onClick={() => void openImportMemoryBundle()} disabled={migratingMemory || restoringMemory}>导入迁移包</button>
               {memoryDiagnostics.embeddings?.pending > 0 && <button onClick={() => void indexMemoryVectors()} disabled={indexingVectors}>
                 {indexingVectors ? '正在本地生成向量…' : '补齐语义索引'}
               </button>}
@@ -1740,6 +1770,35 @@ function AiAssistantPage() {
             <small className="assistant-settings-note">到期只清除回收站快照；删除抑制仍保留，原消息不会让资源复活。</small>
             <label className="assistant-toggle"><input type="checkbox" checked={settings.enabled} onChange={event => setSettings({ ...settings, enabled: event.target.checked })} /><span>启用启动补齐与每日自动整理</span></label>
             <div className="assistant-modal-actions"><button onClick={() => setShowSettings(false)}>取消</button><button className="primary" onClick={saveSettings}>保存设置</button></div>
+          </div>
+        </div>
+      )}
+
+      {migrationDialog && (
+        <div className="assistant-modal-backdrop">
+          <div className="assistant-modal">
+            <div className="assistant-modal-title"><div>
+              <h2>{migrationDialog.mode === 'export' ? '创建便携迁移包' : '解锁便携迁移包'}</h2>
+              <p>{migrationDialog.mode === 'export'
+                ? '数据库、图谱、任务和增量游标会用迁移口令整体加密。口令不会保存，也无法找回。'
+                : '输入原设备导出时设置的口令。导入前会验证密文、文件哈希和数据库一致性，并创建本机安全快照。'}</p>
+            </div><button aria-label="关闭迁移向导" onClick={() => setMigrationDialog(null)}><X size={16} /></button></div>
+            <label><span>迁移口令</span><input type="password" autoFocus value={migrationPassphrase}
+              placeholder={migrationDialog.mode === 'export' ? '至少 12 个字符' : '旧版同机迁移包可留空'}
+              onChange={event => setMigrationPassphrase(event.target.value)} /></label>
+            {migrationDialog.mode === 'export' && <label><span>再次输入</span><input type="password"
+              value={migrationPassphraseConfirmation}
+              onChange={event => setMigrationPassphraseConfirmation(event.target.value)} /></label>}
+            <small className="assistant-settings-note">
+              采用 scrypt 派生密钥和 AES-256-GCM 认证加密；目标电脑导入后会自动换成自己的 macOS 钥匙串密钥。
+            </small>
+            <div className="assistant-modal-actions">
+              <button onClick={() => setMigrationDialog(null)}>取消</button>
+              <button className="primary" disabled={migratingMemory}
+                onClick={() => void (migrationDialog.mode === 'export' ? exportMemoryBundle() : importMemoryBundle())}>
+                {migratingMemory ? '正在验证…' : migrationDialog.mode === 'export' ? '选择位置并导出' : '验证并预览'}
+              </button>
+            </div>
           </div>
         </div>
       )}

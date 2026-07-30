@@ -20,9 +20,9 @@ test('standard outbound redaction keeps stable placeholders without changing loc
 })
 
 test('credential-only mode always hides secrets but leaves ordinary contact data intact', () => {
-  const source = 'API Key: sk-fff8869145ad40048c9d571594df6241，手机 13800138000'
+  const source = 'API Key: sk-0123456789abcdef0123456789abcdef，手机 13800138000'
   const result = redactSensitiveText(source, 'credentials')
-  assert.equal(result.text.includes('sk-fff8869145ad40048c9d571594df6241'), false)
+  assert.equal(result.text.includes('sk-0123456789abcdef0123456789abcdef'), false)
   assert.equal(result.text.includes('13800138000'), true)
   assert.ok(result.summary.total >= 1)
   assert.equal(redactLocalSecrets(source).includes('13800138000'), true)

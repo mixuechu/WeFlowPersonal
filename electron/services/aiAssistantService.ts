@@ -38,6 +38,11 @@ import { summarizeIngestionRuns } from './ingestionDiagnostics'
 import { attachLocalImageOcr, attachLocalVoiceTranscript, recoverMessageSemantics } from './messageSemanticRecovery'
 import { sanitizeDiagnosticText } from './diagnosticRedaction'
 import { getAppRunRecoveryDiagnostics } from './appRunRecoveryService'
+import {
+  decryptPortableMemoryBundle,
+  encryptPortableMemoryBundle,
+  isPortableMemoryBundle
+} from './portableMemoryBundle'
 import { redactLocalSecrets, redactSensitiveText, type SensitiveRedactionLevel } from './sensitiveRedaction'
 import { chatService } from './chatService'
 import { voiceTranscribeService } from './voiceTranscribeService'
@@ -1664,41 +1669,61 @@ export class AiAssistantService {
     }
   }
 
-  async exportMemoryBundle(outputPath: string): Promise<any> {
+  private async readMemoryBundle(bundlePath: string, passphrase?: string): Promise<{
+    zip: JSZip
+    portable: boolean
+  }> {
+    const bundleBytes = readFileSync(bundlePath)
+    const portable = isPortableMemoryBundle(bundleBytes)
+    const zipBytes = portable
+      ? decryptPortableMemoryBundle(bundleBytes, String(passphrase || ''))
+      : bundleBytes
+    return { zip: await JSZip.loadAsync(zipBytes), portable }
+  }
+
+  async exportMemoryBundle(outputPath: string, passphrase: string): Promise<any> {
     if (!String(outputPath || '').trim()) throw new Error('未选择导出位置')
+    if (String(passphrase || '').normalize('NFKC').length < 12) throw new Error('迁移口令至少需要 12 个字符')
     const backup = this.createMemoryBackup()
     const databaseBytes = readFileSync(backup.path)
     const stateBytes = readFileSync(backup.stateBackupPath)
+    const databaseKey = String(this.config.get('aiAssistantDatabaseKey') || '')
+    if (!/^[a-f0-9]{64}$/i.test(databaseKey)) throw new Error('无法读取个人记忆数据库密钥，迁移包未创建')
     const manifest = {
       format: 'weflow-personal-memory',
-      version: 1,
+      version: 2,
       appVersion: app.getVersion(),
       createdAt: new Date().toISOString(),
       databaseSha256: crypto.createHash('sha256').update(databaseBytes).digest('hex'),
       stateSha256: crypto.createHash('sha256').update(stateBytes).digest('hex'),
       databaseEncryption: {
         ...personalMemoryStore.getEncryptionMetadata(),
-        keyScope: 'macos-safe-storage'
+        keyScope: 'portable-passphrase-envelope',
+        rekeyOnImport: true
       }
     }
     const zip = new JSZip()
     zip.file('manifest.json', JSON.stringify(manifest, null, 2))
     zip.file('personal-memory.sqlite', databaseBytes)
     zip.file('ai-assistant-state.json', stateBytes)
-    const payload = await zip.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE', compressionOptions: { level: 6 } })
+    zip.file('database-key.bin', Buffer.from(databaseKey, 'hex'))
+    const archive = await zip.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE', compressionOptions: { level: 6 } })
+    const payload = encryptPortableMemoryBundle(archive, passphrase)
     writeFileSync(outputPath, payload, { mode: 0o600 })
     try { chmodSync(outputPath, 0o600) } catch {}
     return { success: true, path: outputPath, bytes: payload.length, manifest }
   }
 
-  async inspectMemoryBundle(bundlePath: string): Promise<any> {
-    const zip = await JSZip.loadAsync(readFileSync(bundlePath))
+  async inspectMemoryBundle(bundlePath: string, passphrase?: string): Promise<any> {
+    const { zip, portable } = await this.readMemoryBundle(bundlePath, passphrase)
     const manifestEntry = zip.file('manifest.json')
     const databaseEntry = zip.file('personal-memory.sqlite')
     const stateEntry = zip.file('ai-assistant-state.json')
     if (!manifestEntry || !databaseEntry || !stateEntry) throw new Error('迁移包不完整')
     const manifest = JSON.parse(await manifestEntry.async('string'))
-    if (manifest?.format !== 'weflow-personal-memory' || manifest?.version !== 1) throw new Error('不支持的迁移包格式')
+    if (manifest?.format !== 'weflow-personal-memory' || ![1, 2].includes(Number(manifest?.version))) {
+      throw new Error('不支持的迁移包格式')
+    }
     const databaseBytes = await databaseEntry.async('nodebuffer')
     const stateBytes = await stateEntry.async('nodebuffer')
     const databaseSha256 = crypto.createHash('sha256').update(databaseBytes).digest('hex')
@@ -1707,13 +1732,17 @@ export class AiAssistantService {
       throw new Error('迁移包校验失败，文件可能损坏')
     }
     const currentEncryption = personalMemoryStore.getEncryptionMetadata()
-    if (manifest.databaseEncryption?.keyFingerprint &&
+    if (!portable && manifest.databaseEncryption?.keyFingerprint &&
         manifest.databaseEncryption.keyFingerprint !== currentEncryption.keyFingerprint) {
-      throw new Error('该迁移包由另一台设备的安全存储密钥加密；当前版本不会尝试猜测或覆盖密钥，请在原设备导出兼容迁移包')
+      throw new Error('这是旧版设备绑定迁移包，且密钥与本机不同；请在原设备重新导出口令保护的迁移包')
+    }
+    if (portable && (!zip.file('database-key.bin') || Number(manifest.version) !== 2)) {
+      throw new Error('便携迁移包缺少安全换钥信息')
     }
     const state = JSON.parse(stateBytes.toString('utf8'))
     return {
       valid: true,
+      portable,
       manifest,
       databaseBytes: databaseBytes.length,
       stateSummary: {
@@ -1726,13 +1755,20 @@ export class AiAssistantService {
     }
   }
 
-  async importMemoryBundle(bundlePath: string): Promise<any> {
-    await this.inspectMemoryBundle(bundlePath)
-    const zip = await JSZip.loadAsync(readFileSync(bundlePath))
+  async importMemoryBundle(bundlePath: string, passphrase?: string): Promise<any> {
+    const inspected = await this.inspectMemoryBundle(bundlePath, passphrase)
+    const { zip } = await this.readMemoryBundle(bundlePath, passphrase)
     const databaseBytes = await zip.file('personal-memory.sqlite')!.async('uint8array')
     const stateText = await zip.file('ai-assistant-state.json')!.async('string')
-    const imported = personalMemoryStore.registerImportedBackup(databaseBytes, stateText)
-    return { ...this.restoreMemoryBackup(imported.path), importedFrom: bundlePath }
+    const sourceKey = inspected.portable
+      ? await zip.file('database-key.bin')!.async('nodebuffer')
+      : undefined
+    try {
+      const imported = personalMemoryStore.registerImportedBackup(databaseBytes, stateText, sourceKey)
+      return { ...this.restoreMemoryBackup(imported.path), importedFrom: bundlePath }
+    } finally {
+      if (sourceKey) sourceKey.fill(0)
+    }
   }
 
   getSettings(): any {

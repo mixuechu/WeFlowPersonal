@@ -4556,9 +4556,12 @@ function registerIpcHandlers() {
   ipcMain.handle('ai-assistant:getMemoryDiagnostics', () => aiAssistantService.getMemoryDiagnostics())
   ipcMain.handle('ai-assistant:createMemoryBackup', () => aiAssistantService.createMemoryBackup())
   ipcMain.handle('ai-assistant:restoreMemoryBackup', (_, path: string) => aiAssistantService.restoreMemoryBackup(path))
-  ipcMain.handle('ai-assistant:exportMemoryBundle', (_, path: string) => aiAssistantService.exportMemoryBundle(path))
-  ipcMain.handle('ai-assistant:inspectMemoryBundle', (_, path: string) => aiAssistantService.inspectMemoryBundle(path))
-  ipcMain.handle('ai-assistant:importMemoryBundle', (_, path: string) => aiAssistantService.importMemoryBundle(path))
+  ipcMain.handle('ai-assistant:exportMemoryBundle', (_, path: string, passphrase: string) =>
+    aiAssistantService.exportMemoryBundle(path, passphrase))
+  ipcMain.handle('ai-assistant:inspectMemoryBundle', (_, path: string, passphrase?: string) =>
+    aiAssistantService.inspectMemoryBundle(path, passphrase))
+  ipcMain.handle('ai-assistant:importMemoryBundle', (_, path: string, passphrase?: string) =>
+    aiAssistantService.importMemoryBundle(path, passphrase))
   ipcMain.handle('ai-assistant:correctClaim', (_, id: string, input: any) => aiAssistantService.correctClaim(id, input))
   ipcMain.handle('ai-assistant:askMemory', (_, question: string, conversationId?: string, options?: any) => aiAssistantService.askMemory(question, conversationId, options))
   ipcMain.handle('ai-assistant:getConversationSources', () => aiAssistantService.getConversationSources())

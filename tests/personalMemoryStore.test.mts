@@ -1202,6 +1202,8 @@ test('personal memory migrates atomically to SQLCipher and keeps encrypted backu
     assert.notEqual(readFileSync(databasePath).subarray(0, 16).toString('utf8'), 'SQLite format 3\0')
     assert.equal(existsSync(`${databasePath}.plaintext-migration-backup`), false)
     assert.equal(existsSync(`${databasePath}.encrypting`), false)
+    assert.equal(existsSync(`${databasePath}.encrypting-wal`), false)
+    assert.equal(existsSync(`${databasePath}.encrypting-shm`), false)
     assert.notEqual(readFileSync(legacyPlaintextBackup.path).subarray(0, 16).toString('utf8'), 'SQLite format 3\0')
     const importedLegacy = encrypted.registerImportedBackup(legacyBundleDatabaseBytes, JSON.stringify({ version: 3 }))
     assert.notEqual(readFileSync(importedLegacy.path).subarray(0, 16).toString('utf8'), 'SQLite format 3\0')
@@ -1235,6 +1237,40 @@ test('personal memory migrates atomically to SQLCipher and keeps encrypted backu
   } finally {
     plaintext.close()
     encrypted.close()
+    rmSync(directory, { recursive: true, force: true })
+  }
+})
+
+test('portable import rekeys a foreign SQLCipher database for the current device', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'weflow-memory-portable-rekey-test-'))
+  const sourcePath = join(directory, 'source-device', 'memory.sqlite')
+  const targetPath = join(directory, 'target-device', 'memory.sqlite')
+  const sourceKey = randomBytes(32)
+  const targetKey = randomBytes(32)
+  const source = new PersonalMemoryStore()
+  const target = new PersonalMemoryStore()
+  try {
+    source.initialize(sourcePath, sourceKey)
+    source.syncGraph({
+      entities: [{ id: 'portable-person', type: 'person', canonicalName: '跨设备人物', aliases: [], accountIds: [] }],
+      relations: [],
+      reviewQueue: []
+    })
+    const sourceBackup = source.createBackup()
+    const sourceBytes = readFileSync(sourceBackup.path)
+
+    target.initialize(targetPath, targetKey)
+    const imported = target.registerImportedBackup(sourceBytes, JSON.stringify({ version: 3 }), sourceKey)
+    assert.notEqual(readFileSync(imported.path).subarray(0, 16).toString('utf8'), 'SQLite format 3\0')
+    target.restoreBackup(imported.path)
+    assert.ok(target.searchText('跨设备人物').some(item => item.id === 'entity:portable-person'))
+
+    const wrongDevice = new PersonalMemoryStore()
+    assert.throws(() => wrongDevice.initialize(imported.path, sourceKey))
+    wrongDevice.close()
+  } finally {
+    source.close()
+    target.close()
     rmSync(directory, { recursive: true, force: true })
   }
 })
