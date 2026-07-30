@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import { BookOpen, Bot, CalendarDays, Check, Clock3, Filter, Network, Paperclip, RefreshCw, Search, Settings2, ShieldCheck, Sparkles, X } from 'lucide-react'
 import { buildTaskCalendar, shanghaiToday } from '../utils/taskCalendar'
 import { filterGraphReviews, type ReviewStatusFilter } from '../utils/graphReviewFilters'
+import { evidenceLocalMessageId, groupMemorySearchResults, MEMORY_TYPE_LABELS, normalizeMemoryEvidence, type MemoryEvidence } from '../utils/memorySearchPresentation'
 import './AiAssistantPage.scss'
 
 type Task = {
@@ -270,6 +271,7 @@ function AiAssistantPage() {
       query: reviewQuery
     })
   }, [graph.reviewQueue, reviewStatusFilter, reviewKindFilter, reviewQuery])
+  const groupedMemoryResults = useMemo(() => groupMemorySearchResults(memoryResults), [memoryResults])
   const identityDisambiguation = dashboard?.identityDisambiguation
   const mergeHistory = dashboard?.mergeHistory || []
   const entityCorrections = dashboard?.entityCorrections || []
@@ -1347,7 +1349,11 @@ function AiAssistantPage() {
               {memoryResults[0]?.retrieval_scope_applied && ` · 当前候选 ${Number(memoryResults[0].retrieval_scope_candidates || 0).toLocaleString()} 条`}
             </small>}
           {!!memoryQuery.trim() && <div className="assistant-search-results">
-            {memoryResults.map(result => {
+            {groupedMemoryResults.map(group => <section className="assistant-search-result-group" key={group.type}>
+              <div className="assistant-search-result-group-heading">
+                <strong>{group.label}</strong><span>{group.results.length} 条</span>
+              </div>
+              <div className="assistant-search-result-grid">{group.results.map(result => {
               const resultStatus = ['claim', 'relation', 'event'].includes(result.document_type)
                 ? result.metadata?.status
                 : ''
@@ -1355,8 +1361,9 @@ function AiAssistantPage() {
                 : resultStatus === 'candidate' ? '待确认'
                   : resultStatus === 'cancelled' ? '已取消'
                     : '原始资料'
+              const evidence: MemoryEvidence[] = (result.evidence || []).map(normalizeMemoryEvidence)
               return <article key={result.id}>
-              <span>{result.document_type}
+              <span>{MEMORY_TYPE_LABELS[result.document_type] || result.document_type}
                 {result.match_source ? ` · ${result.match_source}匹配` : ''}
                 {result.match_reason === 'pinyin_entity' ? ' · 拼音命中' : result.match_reason === 'fuzzy_entity' ? ' · 名称近似召回' : result.match_reason === 'entity_alias_or_account' ? ' · 别名/微信 ID 命中' : ''}
                 {result.semantic_score ? ` · ${Math.round(result.semantic_score * 100)}%` : ''}
@@ -1364,7 +1371,27 @@ function AiAssistantPage() {
               </span>
               <small className={`assistant-memory-trust ${resultStatus || 'source'}`}>{statusLabel}{resultStatus === 'candidate' ? ' · 不能作为已确认事实回答' : resultStatus === 'cancelled' ? ' · 仅作历史记录' : ''}</small>
               <strong>{result.title}</strong><p>{result.search_text}</p>
-            </article>})}
+              <details className="assistant-search-evidence">
+                <summary>{evidence.length ? `核验原始证据（${evidence.length}）` : '暂无可展开的原始证据'}</summary>
+                {evidence.length
+                  ? <div>{evidence.map((item, index) => {
+                    const localMessageId = evidenceLocalMessageId(item)
+                    return <blockquote key={`${item.sessionId}-${item.messageId}-${index}`}>
+                      <header>
+                        <span>{item.sender || '原文'}{item.timestamp ? ` · ${new Date(item.timestamp * 1000).toLocaleString('zh-CN')}` : ''}</span>
+                        {item.sessionId && localMessageId && <button onClick={() =>
+                          void window.electronAPI.window.openChatHistoryWindow(item.sessionId, localMessageId)}>打开原消息</button>}
+                      </header>
+                      <p>“{item.excerpt || '原文摘录为空'}”</p>
+                      {item.role && item.role !== 'support' && <small>{
+                        item.role === 'direct' ? '直接证据' : item.role === 'indirect' ? '间接证据' : item.role === 'contradiction' ? '反证' : item.role
+                      }</small>}
+                    </blockquote>
+                  })}</div>
+                  : <p>该结果只能作为检索线索，不能单独支撑事实结论。</p>}
+              </details>
+            </article>})}</div>
+            </section>)}
             {!memoryResults.length && <div className="assistant-empty">没有找到相关记忆。</div>}
           </div>}
         </section>
@@ -1402,7 +1429,15 @@ function AiAssistantPage() {
                   setMemoryTypeFilter(citation.type)
                 }}>定位到检索</button>
                 <strong>{citation.title}</strong><span>{citation.type} · {citation.trustLabel || (citation.status === 'confirmed' ? '已确认' : '原始资料')}</span><p>{citation.content}</p>
-                {(citation.evidence || []).map((evidence: any) => <small key={evidence.message_id || evidence.messageId}>“{evidence.excerpt}”</small>)}
+                {(citation.evidence || []).map((rawEvidence: any, index: number) => {
+                  const evidence = normalizeMemoryEvidence(rawEvidence)
+                  const localMessageId = evidenceLocalMessageId(evidence)
+                  return <small className="assistant-citation-evidence" key={`${evidence.sessionId}-${evidence.messageId}-${index}`}>
+                    <span>{evidence.sender || '原文'}{evidence.timestamp ? ` · ${new Date(evidence.timestamp * 1000).toLocaleString('zh-CN')}` : ''}：“{evidence.excerpt}”</span>
+                    {evidence.sessionId && localMessageId && <button onClick={() =>
+                      void window.electronAPI.window.openChatHistoryWindow(evidence.sessionId, localMessageId)}>打开原消息</button>}
+                  </small>
+                })}
                 {['relation', 'claim', 'event'].includes(citation.type) && <div className="assistant-citation-actions">
                   {citation.type === 'claim' && <button onClick={() => openClaimCorrection(citation)}>纠正事实</button>}
                   {citation.type === 'event' && <button onClick={() => void openEventCorrection(citation)}>纠正事件</button>}
