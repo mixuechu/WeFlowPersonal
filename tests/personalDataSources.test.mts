@@ -1,6 +1,8 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import {
+  classifyDocumentTaskOwnership,
+  normalizeDataSourceClaimNature,
   runPersonalDataSourceBatch,
   type PersonalDataSourceConnector
 } from '../electron/services/personalDataSources.ts'
@@ -58,6 +60,20 @@ test('data source checkpoint advances only after deduplicated items are consumed
     /consumer transaction failed/
   )
   assert.equal(committedCheckpoint, 'cursor-1')
+})
+
+test('document evidence cannot impersonate the owner or silently assign generic tasks', () => {
+  assert.equal(normalizeDataSourceClaimNature('documents', 'self_statement'), 'other_statement')
+  assert.equal(normalizeDataSourceClaimNature('wechat', 'self_statement'), 'self_statement')
+  assert.equal(
+    classifyDocumentTaskOwnership('mine', '负责人：王小明，下周交付', ['李金石']),
+    'uncertain'
+  )
+  assert.equal(
+    classifyDocumentTaskOwnership('mine', '负责人：李金石，下周交付', ['李金石']),
+    'mine'
+  )
+  assert.equal(classifyDocumentTaskOwnership('others', '李金石旁听', ['李金石']), 'others')
 })
 
 test('data source contract rejects invalid attribution before consumption', async () => {

@@ -1320,3 +1320,52 @@ test('data source registry persists enablement, capability and independent run h
   assert.deepEqual(configured.config, { calendarIds: ['work'] })
   assert.equal(configured.checkpoint, '')
 }))
+
+test('document structured analysis has an independent content-version checkpoint and retry window', () => withStore(store => {
+  const now = new Date('2026-07-30T00:00:00.000Z')
+  store.upsertResources([{
+    id: 'local-document:analysis-test',
+    resourceType: 'document',
+    title: '项目方案.md',
+    fileName: '项目方案.md',
+    fileExt: '.md',
+    content: '负责人：李金石',
+    metadata: {
+      sourceId: 'documents',
+      contentHash: 'hash-v1',
+      scopeName: '测试目录'
+    },
+    createdAt: now.toISOString(),
+    updatedAt: now.toISOString(),
+    evidence: [{
+      messageId: 'doc-evidence-v1',
+      sessionId: 'data-source:documents',
+      timestamp: Math.floor(now.getTime() / 1000),
+      sender: '本机文档连接器',
+      excerpt: '负责人：李金石'
+    }]
+  }])
+  assert.deepEqual(store.getDocumentAnalysisStats('document-analysis-v1', now), {
+    total: 1, completed: 0, pending: 1, deferred: 0, failed: 0
+  })
+  const pending = store.listPendingDocumentAnalysis('document-analysis-v1', 2, now)
+  assert.equal(pending.length, 1)
+  assert.equal(pending[0].evidence[0].message_id, 'doc-evidence-v1')
+
+  store.replaceResourceContent('local-document:analysis-test', '负责人：李金石', {
+    documentAnalysisStatus: 'completed',
+    documentAnalysisVersion: 'document-analysis-v1',
+    documentAnalysisContentHash: 'hash-v1'
+  })
+  assert.equal(store.getDocumentAnalysisStats('document-analysis-v1', now).completed, 1)
+
+  store.replaceResourceContent('local-document:analysis-test', '负责人：李金石', {
+    contentHash: 'hash-v2',
+    documentAnalysisStatus: 'failed',
+    documentAnalysisNextAt: '2026-08-01T00:00:00.000Z'
+  })
+  assert.deepEqual(store.getDocumentAnalysisStats('document-analysis-v1', now), {
+    total: 1, completed: 0, pending: 0, deferred: 1, failed: 1
+  })
+  assert.equal(store.listPendingDocumentAnalysis('document-analysis-v1', 2, now).length, 0)
+}))

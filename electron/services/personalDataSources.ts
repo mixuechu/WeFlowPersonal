@@ -77,6 +77,32 @@ export const PERSONAL_DATA_SOURCE_CATALOG = [
   }
 ] as const
 
+export function normalizeDataSourceClaimNature(
+  sourceId: string,
+  requested: string
+): 'self_statement' | 'other_statement' | 'inference' {
+  const normalized = ['self_statement', 'other_statement', 'inference'].includes(requested)
+    ? requested as 'self_statement' | 'other_statement' | 'inference'
+    : 'inference'
+  return sourceId === 'documents' && normalized === 'self_statement'
+    ? 'other_statement'
+    : normalized
+}
+
+export function classifyDocumentTaskOwnership(
+  modelClassification: string,
+  content: string,
+  ownerTerms: string[]
+): 'mine' | 'uncertain' | 'others' {
+  if (modelClassification === 'others') return 'others'
+  const normalizedContent = String(content || '').toLowerCase()
+  const explicitlyNamesOwner = ownerTerms
+    .map(term => String(term || '').trim().toLowerCase())
+    .filter(Boolean)
+    .some(term => normalizedContent.includes(term))
+  return modelClassification === 'mine' && explicitlyNamesOwner ? 'mine' : 'uncertain'
+}
+
 function validateItem(connector: PersonalDataSourceConnector, item: PersonalDataSourceItem): void {
   if (item.sourceId !== connector.id) throw new Error(`数据源 ${connector.id} 返回了错误的 sourceId`)
   if (!String(item.externalId || '').trim()) throw new Error(`数据源 ${connector.id} 返回了空 externalId`)

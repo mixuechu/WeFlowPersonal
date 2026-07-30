@@ -38,7 +38,12 @@ import { summarizeIngestionRuns } from './ingestionDiagnostics'
 import { attachLocalImageOcr, attachLocalVoiceTranscript, recoverMessageSemantics } from './messageSemanticRecovery'
 import { sanitizeDiagnosticText } from './diagnosticRedaction'
 import { getAppRunRecoveryDiagnostics } from './appRunRecoveryService'
-import { PERSONAL_DATA_SOURCE_CATALOG, runPersonalDataSourceBatch } from './personalDataSources'
+import {
+  PERSONAL_DATA_SOURCE_CATALOG,
+  classifyDocumentTaskOwnership,
+  normalizeDataSourceClaimNature,
+  runPersonalDataSourceBatch
+} from './personalDataSources'
 import { LocalDocumentDataSource } from './localDocumentDataSource'
 import {
   decryptPortableMemoryBundle,
@@ -160,8 +165,10 @@ const EMPTY_STATE: AssistantState = {
 
 const EXTRACTION_PROMPT_VERSION = 'personal-os-prompt-v5'
 const EXTRACTION_SCHEMA_VERSION = 'personal-memory-schema-v4'
+const DOCUMENT_ANALYSIS_VERSION = `${EXTRACTION_PROMPT_VERSION}/${EXTRACTION_SCHEMA_VERSION}/document-v1`
 
 const SYSTEM_PROMPT = `你是一个谨慎的中文私人助理兼个人记忆图谱分析器。输入包含按会话组织的连续微信消息和用户身份档案。
+输入也可能包含 sourceId=documents 的本机文档证据。文档中的“我”不得自动视为用户本人；除非文档明确写出用户姓名或身份，否则文档事实的 sourceNature 只能是 other_statement 或 inference。文档中的动作、计划和模板条目只有明确写出用户姓名/别名为负责人时才能标为 mine，否则进入 uncertain 或 others。不得把示例、目录、模板字段、历史完成项冒充当前任务。
 待办归属规则：只有明确@用户、称呼用户、上下文明确指派用户，或用户自己明确承诺承担的事项才进入 mine；可能相关但证据不足进入 uncertain；明确分配给他人则标为 others；群公告、@所有人和泛泛讨论不得成为任务。
 “我发送”只表示消息方向，绝不表示任务负责人是用户。用户发出的“查一下、看一下、确认一下、问一下、发一下、快、请、麻烦、帮我”等祈使句或请求，默认是要求收件人/群友执行，必须标为 others；只有同时出现“我来、我会、我负责、我去、我处理、我跟进、我要”等明确自我承诺，才可能标为 mine。
 群聊必须结合 sender、direction、被提及名字和前后文判断，不能因为群内出现祈使句就默认属于用户。每个任务必须给出 assignmentEvidence。
@@ -896,6 +903,8 @@ export class AiAssistantService {
       senderId: message.senderId,
       sender: message.direction === '我发送' ? '我' : (message.senderName || message.senderId || '未知发送者'),
       analysisScope: message.analysisScope || 'core',
+      sourceId: message.sourceId || 'wechat',
+      sourceKind: message.sourceKind || 'chat',
       senderIdentity: message.senderIdentity,
       semanticType: message.semanticType,
       transcriptionSource: message.transcriptionSource || undefined,
@@ -942,7 +951,7 @@ export class AiAssistantService {
     const redactionLevel = String(this.config.get('aiAssistantSensitiveRedactionLevel') || 'standard') as SensitiveRedactionLevel
     const outbound = redactSensitiveText(`用户身份档案：${JSON.stringify(ownerProfile)}
 现有知识图谱实体（用于关联，不得仅凭同名合并）：${JSON.stringify(existingGraph)}
-按会话组织的新增消息：${JSON.stringify(conversations)}
+按来源范围组织的新增证据：${JSON.stringify(conversations)}
 请输出 json。`, redactionLevel)
     let lastError: any = null
     for (let attempt = 0; attempt < 2; attempt += 1) {
@@ -1156,7 +1165,10 @@ export class AiAssistantService {
       const predicate = String(item.predicate || '').trim().slice(0, 100)
       const objectValue = String(item.objectValue || '').trim().slice(0, 1000)
       const polarity = item.polarity === 'negative' ? 'negative' : 'positive'
-      const sourceNature = ['self_statement', 'other_statement', 'inference'].includes(item.sourceNature) ? item.sourceNature : 'inference'
+      const sourceNature = normalizeDataSourceClaimNature(
+        sourceMessages.some(message => message.sourceId === 'documents') ? 'documents' : 'wechat',
+        String(item.sourceNature || '')
+      )
       const evidence = evidenceFor(item.evidenceMessageIds, sourceNature === 'self_statement' ? 'direct' : 'indirect')
       if (!subjectId || !predicate || (!objectEntityId && !objectValue) || !evidence.length) return []
       const value = objectEntityId || objectValue
@@ -1380,6 +1392,189 @@ export class AiAssistantService {
     }
   }
 
+  private persistDocumentTasks(digest: any, messages: any[], createdAt: string): number {
+    const ownerTerms = [
+      String(this.config.get('aiAssistantOwnerName') || ''),
+      ...String(this.config.get('aiAssistantOwnerAliases') || '').split(/[,，、\n]/)
+    ].map(value => value.trim().toLowerCase()).filter(Boolean)
+    const existing = new Map(this.state.tasks.map(task => [task.id, task]))
+    let saved = 0
+    for (const item of Array.isArray(digest.tasks) ? digest.tasks : []) {
+      const sourceMessageIds = (Array.isArray(item.sourceMessageIds) ? item.sourceMessageIds : [])
+        .map(String).slice(0, 20)
+      const evidenceMessages = messages.filter(message => sourceMessageIds.includes(String(message.id)))
+      if (!evidenceMessages.length) continue
+      const evidenceText = evidenceMessages.map(message => String(message.content || '')).join('\n')
+      const classification = classifyDocumentTaskOwnership(
+        String(item.classification || ''),
+        evidenceText,
+        ownerTerms
+      )
+      if (classification === 'others') continue
+      const task: AssistantTask = {
+        id: stableTaskId({ ...item, source: `本机文档：${evidenceMessages[0].sessionName}`, sourceMessageIds }),
+        title: String(item.title || '文档待确认事项').slice(0, 160),
+        detail: String(item.detail || '').slice(0, 500),
+        owner: classification === 'mine'
+          ? String(item.owner || this.config.get('aiAssistantOwnerName') || '我').slice(0, 80)
+          : String(item.owner || '待确认').slice(0, 80),
+        collaborators: (Array.isArray(item.collaborators) ? item.collaborators : [])
+          .map((value: any) => String(value || '').trim().slice(0, 80)).filter(Boolean).slice(0, 20),
+        project: String(item.project || '').trim().slice(0, 160),
+        dependsOnIds: [],
+        taskKind: ['action', 'delegated', 'waiting'].includes(item.taskKind) ? item.taskKind : 'action',
+        due: String(item.due || '').slice(0, 40),
+        priority: ['high', 'medium', 'low'].includes(item.priority) ? item.priority : 'medium',
+        source: `本机文档：${evidenceMessages[0].sessionName}`.slice(0, 100),
+        sourceSessionId: 'data-source:documents',
+        confidence: Math.max(0, Math.min(1, Number(item.confidence ?? 0.6))),
+        status: item.taskKind === 'waiting' ? 'waiting' : 'todo',
+        classification,
+        assignmentEvidence: String(item.assignmentEvidence || '').slice(0, 300),
+        ownershipPolicyReason: classification === 'mine'
+          ? '文档正文明确出现用户姓名或别名，仍保留原文证据'
+          : '文档没有明确把事项指派给用户，进入人工归属确认',
+        sourceMessageIds,
+        evidence: evidenceMessages.map(message => ({
+          messageId: String(message.id),
+          timestamp: Number(message.timestamp),
+          sender: String(message.senderName || '本机文档连接器'),
+          excerpt: redact(String(message.content)).slice(0, 300)
+        }))
+      }
+      const previous = existing.get(task.id) || findMatchingTask(task, this.state.tasks)
+      if (previous) task.id = previous.id
+      const merged: AssistantTask = previous ? {
+        ...task,
+        status: previous.status,
+        owner: previous.owner || task.owner,
+        classification: previous.classification || task.classification,
+        evidence: [...(previous.evidence || []), ...(task.evidence || [])]
+          .filter((item, index, rows) => rows.findIndex(candidate => candidate.messageId === item.messageId) === index)
+          .slice(-50),
+        createdAt: previous.createdAt,
+        updatedAt: createdAt
+      } : { ...task, createdAt, updatedAt: createdAt }
+      existing.set(merged.id, merged)
+      personalMemoryStore.recordTaskChanges(
+        merged.id,
+        previous || {},
+        merged,
+        previous ? 'document_content_update' : 'created_from_document',
+        merged.evidence || []
+      )
+      saved += 1
+    }
+    this.state.tasks = [...existing.values()].sort((left, right) =>
+      String(right.createdAt).localeCompare(String(left.createdAt)))
+    return saved
+  }
+
+  private async processPendingDocumentAnalysis(): Promise<{
+    completed: number
+    failed: number
+    tasks: number
+  }> {
+    if (!String(this.config.get('aiAssistantApiKey') || '').trim()) {
+      return { completed: 0, failed: 0, tasks: 0 }
+    }
+    const source = personalMemoryStore.listDataSources().find(item => item.id === 'documents')
+    if (!source?.enabled || !source.available) return { completed: 0, failed: 0, tasks: 0 }
+    const pending = personalMemoryStore.listPendingDocumentAnalysis(DOCUMENT_ANALYSIS_VERSION, 2)
+    let completed = 0
+    let failed = 0
+    let tasks = 0
+    for (const resource of pending) {
+      const attempts = Number(resource.metadata?.documentAnalysisAttempts || 0)
+      const evidence = resource.evidence?.[0]
+      const message = {
+        id: String(evidence?.message_id || `${resource.id}:${resource.metadata?.contentHash || ''}`),
+        sourceId: 'documents',
+        sourceKind: 'document',
+        sessionId: 'data-source:documents',
+        sessionName: String(resource.metadata?.scopeName || resource.file_name || '本机文档'),
+        timestamp: Number(evidence?.timestamp || Math.floor(Date.parse(resource.updated_at) / 1000)),
+        direction: '资料来源',
+        senderId: 'local-document-connector',
+        senderName: String(resource.file_name || resource.title || '本机文档'),
+        senderIdentity: { displayName: '本机文档连接器' },
+        isGroup: false,
+        semanticType: 'document',
+        analysisScope: 'core',
+        content: `[本机文档：${resource.file_name || resource.title}]\n${String(resource.content || '')}`.slice(0, 18_000)
+      }
+      const runId = `doc_run_${crypto.randomUUID()}`
+      const startedAt = Date.now()
+      const createdAt = new Date().toISOString()
+      personalMemoryStore.replaceResourceContent(resource.id, resource.content, {
+        documentAnalysisStatus: 'running',
+        documentAnalysisAttempts: attempts + 1,
+        documentAnalysisLastAttemptAt: createdAt
+      })
+      personalMemoryStore.startIngestionRun(
+        runId,
+        String(this.config.get('aiAssistantApiModel') || ''),
+        DOCUMENT_ANALYSIS_VERSION
+      )
+      personalMemoryStore.recordIngestionBatch(runId, 0, 1, 'running', '', {
+        model: String(this.config.get('aiAssistantApiModel') || ''),
+        promptVersion: `${EXTRACTION_PROMPT_VERSION}/document-v1`,
+        schemaVersion: EXTRACTION_SCHEMA_VERSION
+      })
+      try {
+        const digest = await this.callAi([message])
+        const tempIds = this.mergeGraphDigest(digest, [message], createdAt)
+        personalMemoryStore.syncGraph(this.state.graph)
+        this.persistClaimsAndEvents(digest, tempIds, [message], createdAt)
+        tasks += this.persistDocumentTasks(digest, [message], createdAt)
+        this.saveState()
+        personalMemoryStore.replaceResourceContent(resource.id, resource.content, {
+          documentAnalysisStatus: 'completed',
+          documentAnalysisVersion: DOCUMENT_ANALYSIS_VERSION,
+          documentAnalysisContentHash: resource.metadata?.contentHash || '',
+          documentAnalysisCompletedAt: new Date().toISOString(),
+          documentAnalysisNextAt: '',
+          documentAnalysisError: ''
+        })
+        personalMemoryStore.recordIngestionBatch(runId, 0, 1, 'completed', '', {
+          ...digest.__meta,
+          promptVersion: `${EXTRACTION_PROMPT_VERSION}/document-v1`,
+          durationMs: Number(digest.__meta?.durationMs || Date.now() - startedAt)
+        })
+        personalMemoryStore.finishIngestionRun(runId, {
+          status: 'completed',
+          messageCount: 1,
+          entityCount: this.state.graph.entities.length,
+          relationCount: this.state.graph.relations.length
+        })
+        completed += 1
+      } catch (error) {
+        const detail = sanitizeDiagnosticText(error)
+        const retryDays = Math.min(7, Math.max(1, 2 ** attempts))
+        personalMemoryStore.replaceResourceContent(resource.id, resource.content, {
+          documentAnalysisStatus: 'failed',
+          documentAnalysisError: detail,
+          documentAnalysisNextAt: new Date(Date.now() + retryDays * 86_400_000).toISOString()
+        })
+        personalMemoryStore.recordIngestionBatch(runId, 0, 1, 'failed', detail, {
+          model: String(this.config.get('aiAssistantApiModel') || ''),
+          promptVersion: `${EXTRACTION_PROMPT_VERSION}/document-v1`,
+          schemaVersion: EXTRACTION_SCHEMA_VERSION,
+          durationMs: Date.now() - startedAt
+        })
+        personalMemoryStore.finishIngestionRun(runId, {
+          status: 'failed',
+          messageCount: 0,
+          entityCount: this.state.graph.entities.length,
+          relationCount: this.state.graph.relations.length,
+          error: detail
+        })
+        failed += 1
+      }
+    }
+    return { completed, failed, tasks }
+  }
+
   async sync(): Promise<any> {
     if (this.activeSync) return this.activeSync
     this.cancelRequested = false
@@ -1394,6 +1589,7 @@ export class AiAssistantService {
 
   private async runSync(): Promise<any> {
     const documentSync = await this.syncLocalDocuments()
+    const documentAnalysis = await this.processPendingDocumentAnalysis()
     const wechatSource = personalMemoryStore.listDataSources().find(source => source.id === 'wechat')
     if (wechatSource && !wechatSource.enabled) {
       return {
@@ -1403,6 +1599,8 @@ export class AiAssistantService {
         newTaskCount: 0,
         failedSessions: 0,
         indexedDocumentCount: documentSync.indexed,
+        analyzedDocumentCount: documentAnalysis.completed,
+        newDocumentTaskCount: documentAnalysis.tasks,
         message: documentSync.error
           ? `微信数据源已暂停；本机文档同步失败：${documentSync.error}`
           : '微信数据源已暂停；增量游标保持不变'
@@ -1624,6 +1822,8 @@ export class AiAssistantService {
         newTaskCount: mineTasks.length,
         failedSessions: collected.failed.length,
         indexedDocumentCount: documentSync.indexed,
+        analyzedDocumentCount: documentAnalysis.completed,
+        newDocumentTaskCount: documentAnalysis.tasks,
         documentSourceError: documentSync.error || null,
         message: cancelled ? '已安全暂停，成功批次已保存；下次将从断点继续' : ''
       }
@@ -1660,7 +1860,9 @@ export class AiAssistantService {
   }
 
   getDataSources(): any[] {
-    return personalMemoryStore.listDataSources()
+    const analysis = personalMemoryStore.getDocumentAnalysisStats(DOCUMENT_ANALYSIS_VERSION)
+    return personalMemoryStore.listDataSources().map(source =>
+      source.id === 'documents' ? { ...source, analysis } : source)
   }
 
   setDataSourceEnabled(sourceId: string, enabled: boolean): any {

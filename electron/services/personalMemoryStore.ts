@@ -1117,6 +1117,23 @@ export class PersonalMemoryStore {
         metadata.attachmentStructureMigrationStatus = existingMetadata.attachmentStructureMigrationStatus || ''
         metadata.attachmentStructureMigratedAt = existingMetadata.attachmentStructureMigratedAt || ''
       }
+      if (resource.resourceType === 'document' && metadata.contentHash &&
+          metadata.contentHash === existingMetadata.contentHash) {
+        for (const key of [
+          'documentAnalysisStatus',
+          'documentAnalysisVersion',
+          'documentAnalysisContentHash',
+          'documentAnalysisAttempts',
+          'documentAnalysisLastAttemptAt',
+          'documentAnalysisCompletedAt',
+          'documentAnalysisNextAt',
+          'documentAnalysisError'
+        ]) {
+          if (existingMetadata[key] !== undefined && metadata[key] === undefined) {
+            metadata[key] = existingMetadata[key]
+          }
+        }
+      }
       upsert.run(
         resourceId, String(resource.resourceType || 'resource'),
         String(resource.title || '未命名资源'), String(resource.url || ''),
@@ -2061,6 +2078,63 @@ export class PersonalMemoryStore {
     this.db.prepare(`
       UPDATE data_source_connectors SET available=?,status=?,last_error=?,updated_at=? WHERE source_id=?
     `).run(available ? 1 : 0, available ? 'idle' : 'error', error || null, new Date().toISOString(), sourceId)
+  }
+
+  listPendingDocumentAnalysis(version: string, limit = 2, now = new Date()): any[] {
+    if (!this.db) return []
+    const rows = this.db.prepare(`
+      SELECT r.* FROM memory_resources r
+      LEFT JOIN resource_suppressions s ON s.resource_id=r.id
+      WHERE r.resource_type='document' AND s.resource_id IS NULL
+      ORDER BY r.updated_at ASC
+    `).all() as any[]
+    const evidence = this.db.prepare(`
+      SELECT message_id,session_id,timestamp,sender,excerpt
+      FROM search_document_evidence WHERE document_id=? ORDER BY timestamp DESC LIMIT 1
+    `)
+    return rows.flatMap(row => {
+      try {
+        const metadata = JSON.parse(row.metadata_json || '{}')
+        if (metadata.sourceId !== 'documents') return []
+        if (metadata.documentAnalysisVersion === version &&
+            metadata.documentAnalysisContentHash === metadata.contentHash &&
+            metadata.documentAnalysisStatus === 'completed') return []
+        if (metadata.documentAnalysisNextAt && Date.parse(metadata.documentAnalysisNextAt) > now.getTime()) return []
+        return [{
+          ...row,
+          metadata,
+          evidence: evidence.all(`resource:${row.id}`) as any[]
+        }]
+      } catch {
+        return []
+      }
+    }).slice(0, Math.max(1, Math.min(10, limit)))
+  }
+
+  getDocumentAnalysisStats(version: string, now = new Date()): any {
+    if (!this.db) return { total: 0, completed: 0, pending: 0, deferred: 0, failed: 0 }
+    const rows = this.db.prepare(`
+      SELECT metadata_json FROM memory_resources WHERE resource_type='document'
+    `).all() as Array<{ metadata_json: string }>
+    const stats = { total: 0, completed: 0, pending: 0, deferred: 0, failed: 0 }
+    for (const row of rows) {
+      try {
+        const metadata = JSON.parse(row.metadata_json || '{}')
+        if (metadata.sourceId !== 'documents') continue
+        stats.total += 1
+        const completed = metadata.documentAnalysisVersion === version &&
+          metadata.documentAnalysisContentHash === metadata.contentHash &&
+          metadata.documentAnalysisStatus === 'completed'
+        if (completed) stats.completed += 1
+        else if (metadata.documentAnalysisNextAt && Date.parse(metadata.documentAnalysisNextAt) > now.getTime()) {
+          stats.deferred += 1
+        } else {
+          stats.pending += 1
+        }
+        if (metadata.documentAnalysisStatus === 'failed') stats.failed += 1
+      } catch {}
+    }
+    return stats
   }
 
   updateDataSourceRun(sourceId: string, patch: {

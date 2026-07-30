@@ -94,12 +94,14 @@ function AiAssistantPage() {
   }), [memoryEntityFilter, memorySessionFilter, memoryTypeFilter, memoryFrom, memoryTo, sources])
 
   const load = useCallback(async () => {
-    const [nextStatus, nextDashboard] = await Promise.all([
+    const [nextStatus, nextDashboard, nextDataSources] = await Promise.all([
       window.electronAPI.aiAssistant.status(),
-      window.electronAPI.aiAssistant.dashboard()
+      window.electronAPI.aiAssistant.dashboard(),
+      window.electronAPI.aiAssistant.getDataSources()
     ])
     setStatus(nextStatus)
     setDashboard(nextDashboard)
+    setDataSources(nextDataSources)
   }, [])
 
   useEffect(() => {
@@ -1876,6 +1878,12 @@ function AiAssistantPage() {
                       incremental: '增量断点', 'original-evidence': '原文证据', tasks: '待办',
                       claims: '事实', events: '事件', attachments: '附件'
                     } as Record<string, string>)[capability] || capability).join(' · ')}</small>
+                    {source.id === 'documents' && source.analysis && <small>
+                      结构化抽取：{source.analysis.completed}/{source.analysis.total} 已完成
+                      {source.analysis.pending ? ` · ${source.analysis.pending} 个待处理` : ''}
+                      {source.analysis.deferred ? ` · ${source.analysis.deferred} 个退避等待` : ''}
+                      {source.analysis.failed ? ` · ${source.analysis.failed} 个最近失败` : ''}
+                    </small>}
                     {source.lastError && <small className="assistant-error">{source.lastError}</small>}
                     {source.id === 'documents' && <button type="button" onClick={event => {
                       event.preventDefault()
