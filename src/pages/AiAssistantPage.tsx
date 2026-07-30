@@ -201,7 +201,7 @@ function AiAssistantPage() {
   const taskReminders: any[] = dashboard?.taskReminders || []
   const reminderPreferences = dashboard?.reminderPreferences
   const taskHistory: any[] = dashboard?.taskHistory || []
-  const taskReviewFeedback = dashboard?.taskReviewFeedback || { mine: 0, rejected: 0, suppressed: 0, recent: [] }
+  const taskReviewFeedback = dashboard?.taskReviewFeedback || { mine: 0, rejected: 0, suppressed: 0, reconciled: 0, recent: [] }
   const openTasks = useMemo(() => tasks.filter(task => !['done', 'cancelled'].includes(task.status)), [tasks])
   const displayedTasks = useMemo(() => tasks.filter(task =>
     (taskStatusFilter === 'all' || task.status === taskStatusFilter) &&
@@ -1358,7 +1358,11 @@ function AiAssistantPage() {
               <span><b>{Number(taskReviewFeedback.mine || 0)}</b><small>已确认为我的</small></span>
               <span><b>{Number(taskReviewFeedback.rejected || 0)}</b><small>已标记不是我的</small></span>
               <span><b>{Number(taskReviewFeedback.suppressed || 0)}</b><small>重复候选已拦截</small></span>
-              <p>反馈只绑定原始证据，不按相似文字猜测。相同证据不会反复询问；出现新证据时仍会重新判断。</p>
+              <span><b>{Number(taskReviewFeedback.reconciled || 0)}</b><small>启动状态已修复</small></span>
+              <p>
+                反馈只绑定原始证据，不按相似文字猜测。相同证据不会反复询问；出现新证据时仍会重新判断。
+                {taskReviewFeedback.reconciliation?.lastRunAt && ` 本次启动核对 ${taskReviewFeedback.reconciliation.checked} 条判断，修复 ${Number(taskReviewFeedback.reconciliation.removed || 0) + Number(taskReviewFeedback.reconciliation.confirmed || 0) + Number(taskReviewFeedback.reconciliation.restored || 0)} 项状态。`}
+              </p>
             </div>
             {taskReviewQueue.map(task => (
               <article className="assistant-review-item" key={task.id}>

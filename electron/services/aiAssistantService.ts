@@ -16,7 +16,11 @@ import { extractScannedPdfText, getPdfOcrStatus } from './pdfOcrService'
 import { exportService } from './export'
 import { filterMemorySearchResults, type MemorySearchOptions } from './memorySearchFilters'
 import { buildContextualMemoryQuestion, buildMemoryQueryPlan } from './memoryQueryPlanner'
-import { applyTaskReviewFeedback, taskEvidenceFingerprint } from './taskReviewFeedback'
+import {
+  applyTaskReviewFeedback,
+  reconcileTasksWithReviewDecisions,
+  taskEvidenceFingerprint
+} from './taskReviewFeedback'
 import {
   applyReminderPreferences,
   buildTaskReminders,
@@ -281,6 +285,13 @@ export class AiAssistantService {
   private lastSchedulerAttemptAt = 0
   private vectorIndexPromise: Promise<any> | null = null
   private cancelRequested = false
+  private taskReviewReconciliation = {
+    checked: 0,
+    removed: 0,
+    confirmed: 0,
+    restored: 0,
+    lastRunAt: ''
+  }
 
   async initialize(): Promise<void> {
     this.statePath = join(app.getPath('userData'), 'ai-assistant-state.json')
@@ -341,6 +352,7 @@ export class AiAssistantService {
     )
     this.migrateLegacyData()
     this.loadState()
+    this.reconcileTaskReviewFeedbackOnStartup()
     this.removeSuppressedRelationsFromState()
     this.saveState()
     this.scheduler = setInterval(() => void this.schedulerTick(), 60_000)
@@ -427,6 +439,24 @@ export class AiAssistantService {
       this.ensureLegacyEntityReviews()
     } catch {
       this.state = structuredClone(EMPTY_STATE)
+    }
+  }
+
+  private reconcileTaskReviewFeedbackOnStartup(): void {
+    const result = reconcileTasksWithReviewDecisions(
+      this.state.tasks,
+      personalMemoryStore.listActiveTaskReviewDecisions()
+    )
+    this.state.tasks = result.tasks
+    for (const effect of result.effects) {
+      personalMemoryStore.recordTaskReviewReconciliation(effect.evidenceFingerprint)
+    }
+    this.taskReviewReconciliation = {
+      checked: result.checked,
+      removed: result.effects.filter(effect => effect.action === 'removed').length,
+      confirmed: result.effects.filter(effect => effect.action === 'confirmed').length,
+      restored: result.effects.filter(effect => effect.action === 'restored').length,
+      lastRunAt: new Date().toISOString()
     }
   }
 
@@ -2491,6 +2521,7 @@ export class AiAssistantService {
       taskHistory,
       taskReviewFeedback: {
         ...personalMemoryStore.getTaskReviewFeedbackStats(),
+        reconciliation: this.taskReviewReconciliation,
         recent: personalMemoryStore.listTaskReviewDecisions(20).map(item => ({
           ...item,
           canRevert: Boolean(item.active && (

@@ -281,7 +281,9 @@ export class PersonalMemoryStore {
         evidence_json TEXT NOT NULL DEFAULT '[]',
         task_json TEXT NOT NULL DEFAULT '{}',
         suppression_count INTEGER NOT NULL DEFAULT 0,
+        reconciliation_count INTEGER NOT NULL DEFAULT 0,
         last_suppressed_at TEXT,
+        last_reconciled_at TEXT,
         revoked_at TEXT,
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL
@@ -514,6 +516,8 @@ export class PersonalMemoryStore {
     this.ensureColumn('memory_item_suppressions', 'semantic_fingerprint', `TEXT NOT NULL DEFAULT ''`)
     this.ensureColumn('data_source_connectors', 'config_json', `TEXT NOT NULL DEFAULT '{}'`)
     this.ensureColumn('task_review_decisions', 'task_json', `TEXT NOT NULL DEFAULT '{}'`)
+    this.ensureColumn('task_review_decisions', 'reconciliation_count', 'INTEGER NOT NULL DEFAULT 0')
+    this.ensureColumn('task_review_decisions', 'last_reconciled_at', 'TEXT')
     this.ensureColumn('task_review_decisions', 'revoked_at', 'TEXT')
     this.db.exec(`CREATE INDEX IF NOT EXISTS idx_memory_corrections_item
       ON memory_corrections(item_kind,item_id,created_at DESC)`)
@@ -2189,6 +2193,27 @@ export class PersonalMemoryStore {
     `).get(evidenceFingerprint) || null
   }
 
+  listActiveTaskReviewDecisions(): any[] {
+    if (!this.db) return []
+    return (this.db.prepare(`
+      SELECT * FROM task_review_decisions WHERE revoked_at IS NULL ORDER BY updated_at,evidence_fingerprint
+    `).all() as any[]).map(row => {
+      let task: any = {}
+      try { task = JSON.parse(String(row.task_json || '{}')) } catch {}
+      return { ...row, task }
+    })
+  }
+
+  recordTaskReviewReconciliation(evidenceFingerprint: string): void {
+    if (!this.db) return
+    const now = new Date().toISOString()
+    this.db.prepare(`
+      UPDATE task_review_decisions
+      SET reconciliation_count=reconciliation_count+1,last_reconciled_at=?,updated_at=?
+      WHERE evidence_fingerprint=? AND revoked_at IS NULL
+    `).run(now, now, evidenceFingerprint)
+  }
+
   revokeTaskReviewDecision(evidenceFingerprint: string): any {
     if (!this.db || !String(evidenceFingerprint || '').trim()) return null
     const row = this.db.prepare(`
@@ -2248,14 +2273,15 @@ export class PersonalMemoryStore {
   }
 
   getTaskReviewFeedbackStats(): any {
-    if (!this.db) return { mine: 0, rejected: 0, suppressed: 0 }
+    if (!this.db) return { mine: 0, rejected: 0, suppressed: 0, reconciled: 0 }
     return this.db.prepare(`
       SELECT
         SUM(CASE WHEN revoked_at IS NULL AND decision='mine' THEN 1 ELSE 0 END) AS mine,
         SUM(CASE WHEN revoked_at IS NULL AND decision='rejected' THEN 1 ELSE 0 END) AS rejected,
-        COALESCE(SUM(CASE WHEN revoked_at IS NULL THEN suppression_count ELSE 0 END),0) AS suppressed
+        COALESCE(SUM(CASE WHEN revoked_at IS NULL THEN suppression_count ELSE 0 END),0) AS suppressed,
+        COALESCE(SUM(CASE WHEN revoked_at IS NULL THEN reconciliation_count ELSE 0 END),0) AS reconciled
       FROM task_review_decisions
-    `).get() || { mine: 0, rejected: 0, suppressed: 0 }
+    `).get() || { mine: 0, rejected: 0, suppressed: 0, reconciled: 0 }
   }
 
   correctClaim(id: string, input: { value: string; validFrom?: string; validTo?: string }): any {

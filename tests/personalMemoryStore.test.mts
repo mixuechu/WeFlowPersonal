@@ -2127,8 +2127,13 @@ test('task ownership feedback persists evidence-scoped decisions and suppression
   assert.deepEqual(store.getTaskReviewFeedbackStats(), {
     mine: 0,
     rejected: 1,
-    suppressed: 2
+    suppressed: 2,
+    reconciled: 0
   })
+
+  store.recordTaskReviewReconciliation('evidence-task-1')
+  assert.equal(store.listActiveTaskReviewDecisions()[0].reconciliation_count, 1)
+  assert.equal(store.getTaskReviewFeedbackStats().reconciled, 1)
 
   const reverted = store.revokeTaskReviewDecision('evidence-task-1')
   assert.equal(reverted.task.id, 'task-review-1')
@@ -2141,7 +2146,8 @@ test('task ownership feedback persists evidence-scoped decisions and suppression
   assert.deepEqual(store.getTaskReviewFeedbackStats(), {
     mine: 0,
     rejected: 0,
-    suppressed: 0
+    suppressed: 0,
+    reconciled: 0
   })
 }))
 

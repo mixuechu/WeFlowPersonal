@@ -655,7 +655,7 @@
 .assistant-review-item.resolved { background: rgba(247,247,243,.66); }
 .assistant-review-item p { margin: 5px 0; color: #74786f; font-size: 11px; }
 .assistant-review-item small { color: #8b8f88; font-size: 9px; }
-.assistant-task-feedback-summary { display: grid; grid-template-columns: repeat(3,minmax(90px,1fr)); gap: 7px; margin: 8px 0 4px; }
+.assistant-task-feedback-summary { display: grid; grid-template-columns: repeat(4,minmax(80px,1fr)); gap: 7px; margin: 8px 0 4px; }
 .assistant-task-feedback-summary > span { padding: 8px 9px; border-radius: 8px; background: #f1f4f0; }
 .assistant-task-feedback-summary b,.assistant-task-feedback-summary small { display: block; }
 .assistant-task-feedback-summary b { color: #355344; font-size: 14px; }
