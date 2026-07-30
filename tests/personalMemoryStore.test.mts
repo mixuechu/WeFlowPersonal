@@ -2071,7 +2071,8 @@ test('forget entity transaction removes graph, memory, search, task audit and as
     decision: 'rejected',
     title: '回复隐私测试人',
     source: '隐私测试群',
-    evidence: evidence('message-task-forget', '请回复隐私测试人')
+    evidence: evidence('message-task-forget', '请回复隐私测试人'),
+    task: { id: 'task-forget', title: '回复隐私测试人', classification: 'uncertain' }
   })
   store.saveAssistantExchange('隐私测试人是谁', '隐私测试人住在上海', [])
 
@@ -2089,6 +2090,7 @@ test('forget entity transaction removes graph, memory, search, task audit and as
   assert.equal(store.listRelationHistory('person-forget').length, 0)
   assert.equal(store.listTaskHistory(['task-forget']).length, 0)
   assert.equal(store.getTaskReviewDecision('evidence-forget'), null)
+  assert.equal(store.listTaskReviewHistory('evidence-forget').length, 0)
   assert.equal(store.getRecentAssistantExchanges().length, 0)
   assert.equal(store.getDiagnostics().integrity, 'ok')
   assert.ok(store.searchText('保留组织').some(item => item.id === 'entity:org-keep'))
@@ -2101,7 +2103,13 @@ test('task ownership feedback persists evidence-scoped decisions and suppression
     decision: 'rejected',
     title: '查一下几点更新',
     source: '项目群',
-    evidence: evidence('message-task-review-1', '我让对方查一下几点更新')
+    evidence: evidence('message-task-review-1', '我让对方查一下几点更新'),
+    task: {
+      id: 'task-review-1',
+      title: '查一下几点更新',
+      status: 'todo',
+      classification: 'uncertain'
+    }
   })
   assert.equal(recorded.decision, 'rejected')
   assert.equal(recorded.suppression_count, 0)
@@ -2114,10 +2122,26 @@ test('task ownership feedback persists evidence-scoped decisions and suppression
   const recent = store.listTaskReviewDecisions()
   assert.equal(recent.length, 1)
   assert.equal(recent[0].evidence[0].messageId, 'message-task-review-1')
+  assert.equal(recent[0].can_restore_snapshot, true)
+  assert.equal('task_json' in recent[0], false)
   assert.deepEqual(store.getTaskReviewFeedbackStats(), {
     mine: 0,
     rejected: 1,
     suppressed: 2
+  })
+
+  const reverted = store.revokeTaskReviewDecision('evidence-task-1')
+  assert.equal(reverted.task.id, 'task-review-1')
+  assert.equal(store.getTaskReviewDecision('evidence-task-1'), null)
+  assert.equal(store.listTaskReviewDecisions()[0].active, false)
+  assert.deepEqual(
+    store.listTaskReviewHistory('evidence-task-1').map(item => item.action),
+    ['revoked', 'rejected']
+  )
+  assert.deepEqual(store.getTaskReviewFeedbackStats(), {
+    mine: 0,
+    rejected: 0,
+    suppressed: 0
   })
 }))
 

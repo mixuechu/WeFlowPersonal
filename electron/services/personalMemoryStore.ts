@@ -279,12 +279,25 @@ export class PersonalMemoryStore {
         title TEXT NOT NULL DEFAULT '',
         source TEXT NOT NULL DEFAULT '',
         evidence_json TEXT NOT NULL DEFAULT '[]',
+        task_json TEXT NOT NULL DEFAULT '{}',
         suppression_count INTEGER NOT NULL DEFAULT 0,
         last_suppressed_at TEXT,
+        revoked_at TEXT,
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL
       ) STRICT;
       CREATE INDEX IF NOT EXISTS idx_task_review_decisions_updated ON task_review_decisions(updated_at);
+
+      CREATE TABLE IF NOT EXISTS task_review_history (
+        id INTEGER PRIMARY KEY,
+        evidence_fingerprint TEXT NOT NULL,
+        task_id TEXT NOT NULL,
+        action TEXT NOT NULL CHECK(action IN ('mine','rejected','revoked')),
+        task_json TEXT NOT NULL DEFAULT '{}',
+        created_at TEXT NOT NULL
+      ) STRICT;
+      CREATE INDEX IF NOT EXISTS idx_task_review_history_fingerprint
+        ON task_review_history(evidence_fingerprint,created_at);
 
       CREATE TABLE IF NOT EXISTS assistant_conversations (
         id TEXT PRIMARY KEY,
@@ -500,6 +513,8 @@ export class PersonalMemoryStore {
     this.ensureColumn('ingestion_batches', 'evidence_validation_json', `TEXT NOT NULL DEFAULT '{}'`)
     this.ensureColumn('memory_item_suppressions', 'semantic_fingerprint', `TEXT NOT NULL DEFAULT ''`)
     this.ensureColumn('data_source_connectors', 'config_json', `TEXT NOT NULL DEFAULT '{}'`)
+    this.ensureColumn('task_review_decisions', 'task_json', `TEXT NOT NULL DEFAULT '{}'`)
+    this.ensureColumn('task_review_decisions', 'revoked_at', 'TEXT')
     this.db.exec(`CREATE INDEX IF NOT EXISTS idx_memory_corrections_item
       ON memory_corrections(item_kind,item_id,created_at DESC)`)
     this.db.exec(`CREATE INDEX IF NOT EXISTS idx_memory_item_suppressions_semantic
@@ -825,6 +840,7 @@ export class PersonalMemoryStore {
       deleteIds('events', 'id', preview.eventIds)
       deleteIds('task_history', 'task_id', taskIds)
       deleteIds('task_review_decisions', 'task_id', taskIds)
+      deleteIds('task_review_history', 'task_id', taskIds)
       this.db.prepare('DELETE FROM review_queue WHERE payload_json LIKE ?').run(`%${entityId}%`)
       this.db.prepare('DELETE FROM merge_history WHERE source_entity_id=? OR target_entity_id=?').run(entityId, entityId)
       this.db.prepare('DELETE FROM identity_decisions WHERE left_entity_id=? OR right_entity_id=?').run(entityId, entityId)
@@ -2140,28 +2156,67 @@ export class PersonalMemoryStore {
     title?: string
     source?: string
     evidence?: any[]
+    task?: any
   }): any {
     if (!this.db) return null
     const now = new Date().toISOString()
-    this.db.prepare(`
-      INSERT INTO task_review_decisions(
-        evidence_fingerprint,task_id,decision,title,source,evidence_json,created_at,updated_at
-      ) VALUES(?,?,?,?,?,?,?,?)
-      ON CONFLICT(evidence_fingerprint) DO UPDATE SET
-        task_id=excluded.task_id,decision=excluded.decision,title=excluded.title,source=excluded.source,
-        evidence_json=excluded.evidence_json,updated_at=excluded.updated_at
-    `).run(
-      input.evidenceFingerprint, input.taskId, input.decision, String(input.title || ''),
-      String(input.source || ''), JSON.stringify(input.evidence || []), now, now
-    )
+    const taskJson = JSON.stringify(input.task || {})
+    const transaction = this.db.transaction(() => {
+      this.db!.prepare(`
+        INSERT INTO task_review_decisions(
+          evidence_fingerprint,task_id,decision,title,source,evidence_json,task_json,created_at,updated_at
+        ) VALUES(?,?,?,?,?,?,?,?,?)
+        ON CONFLICT(evidence_fingerprint) DO UPDATE SET
+          task_id=excluded.task_id,decision=excluded.decision,title=excluded.title,source=excluded.source,
+          evidence_json=excluded.evidence_json,task_json=excluded.task_json,revoked_at=NULL,updated_at=excluded.updated_at
+      `).run(
+        input.evidenceFingerprint, input.taskId, input.decision, String(input.title || ''),
+        String(input.source || ''), JSON.stringify(input.evidence || []), taskJson, now, now
+      )
+      this.db!.prepare(`
+        INSERT INTO task_review_history(evidence_fingerprint,task_id,action,task_json,created_at)
+        VALUES(?,?,?,?,?)
+      `).run(input.evidenceFingerprint, input.taskId, input.decision, taskJson, now)
+    })
+    transaction()
     return this.getTaskReviewDecision(input.evidenceFingerprint)
   }
 
   getTaskReviewDecision(evidenceFingerprint: string): any {
     if (!this.db) return null
     return this.db.prepare(`
-      SELECT * FROM task_review_decisions WHERE evidence_fingerprint=?
+      SELECT * FROM task_review_decisions WHERE evidence_fingerprint=? AND revoked_at IS NULL
     `).get(evidenceFingerprint) || null
+  }
+
+  revokeTaskReviewDecision(evidenceFingerprint: string): any {
+    if (!this.db || !String(evidenceFingerprint || '').trim()) return null
+    const row = this.db.prepare(`
+      SELECT * FROM task_review_decisions WHERE evidence_fingerprint=? AND revoked_at IS NULL
+    `).get(evidenceFingerprint) as any
+    if (!row) return null
+    const now = new Date().toISOString()
+    const transaction = this.db.transaction(() => {
+      this.db!.prepare(`
+        UPDATE task_review_decisions SET revoked_at=?,updated_at=? WHERE evidence_fingerprint=?
+      `).run(now, now, evidenceFingerprint)
+      this.db!.prepare(`
+        INSERT INTO task_review_history(evidence_fingerprint,task_id,action,task_json,created_at)
+        VALUES(?,?,?,?,?)
+      `).run(evidenceFingerprint, row.task_id, 'revoked', row.task_json || '{}', now)
+    })
+    transaction()
+    let task: any = {}
+    try { task = JSON.parse(String(row.task_json || '{}')) } catch {}
+    return { ...row, task, revoked_at: now, updated_at: now }
+  }
+
+  listTaskReviewHistory(evidenceFingerprint: string, limit = 100): any[] {
+    if (!this.db) return []
+    return this.db.prepare(`
+      SELECT * FROM task_review_history WHERE evidence_fingerprint=?
+      ORDER BY created_at DESC,id DESC LIMIT ?
+    `).all(evidenceFingerprint, Math.max(1, Math.min(300, Number(limit) || 100))) as any[]
   }
 
   recordTaskReviewSuppression(evidenceFingerprint: string): void {
@@ -2179,8 +2234,16 @@ export class PersonalMemoryStore {
       SELECT * FROM task_review_decisions ORDER BY updated_at DESC LIMIT ?
     `).all(Math.max(1, Math.min(300, Number(limit) || 50))) as any[]).map(row => {
       let evidence: any[] = []
+      let task: any = {}
       try { evidence = JSON.parse(String(row.evidence_json || '[]')) } catch {}
-      return { ...row, evidence }
+      try { task = JSON.parse(String(row.task_json || '{}')) } catch {}
+      const { task_json: _taskJson, evidence_json: _evidenceJson, ...safeRow } = row
+      return {
+        ...safeRow,
+        evidence,
+        active: !row.revoked_at,
+        can_restore_snapshot: Boolean(task?.id && task?.title)
+      }
     })
   }
 
@@ -2188,9 +2251,9 @@ export class PersonalMemoryStore {
     if (!this.db) return { mine: 0, rejected: 0, suppressed: 0 }
     return this.db.prepare(`
       SELECT
-        SUM(CASE WHEN decision='mine' THEN 1 ELSE 0 END) AS mine,
-        SUM(CASE WHEN decision='rejected' THEN 1 ELSE 0 END) AS rejected,
-        COALESCE(SUM(suppression_count),0) AS suppressed
+        SUM(CASE WHEN revoked_at IS NULL AND decision='mine' THEN 1 ELSE 0 END) AS mine,
+        SUM(CASE WHEN revoked_at IS NULL AND decision='rejected' THEN 1 ELSE 0 END) AS rejected,
+        COALESCE(SUM(CASE WHEN revoked_at IS NULL THEN suppression_count ELSE 0 END),0) AS suppressed
       FROM task_review_decisions
     `).get() || { mine: 0, rejected: 0, suppressed: 0 }
   }

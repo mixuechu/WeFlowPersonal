@@ -663,7 +663,9 @@
 .assistant-task-feedback-summary p { grid-column: 1 / -1; margin: 0; color: #7b847d; font-size: 8px; line-height: 1.5; }
 .assistant-task-feedback-history { margin-top: 8px; color: #68746b; font-size: 9px; }
 .assistant-task-feedback-history summary { cursor: pointer; }
-.assistant-task-feedback-history small { display: block; margin-top: 5px; }
+.assistant-task-feedback-history > div { display: flex; align-items: center; gap: 8px; margin-top: 5px; }
+.assistant-task-feedback-history small { display: block; flex: 1; }
+.assistant-task-feedback-history button { flex: 0 0 auto; border: 1px solid #d7ddd8; border-radius: 6px; background: #fff; color: #536158; font-size: 8px; padding: 3px 7px; cursor: pointer; }
 .assistant-identity-pair { margin: 9px 0; display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
 .assistant-identity-pair > button { padding: 9px; border: 1px solid #e3e1da; border-radius: 9px; display: grid; gap: 3px; text-align: left; color: inherit; background: #faf8f2; cursor: pointer; }
 .assistant-identity-pair > button:hover { border-color: #9eb4a4; }

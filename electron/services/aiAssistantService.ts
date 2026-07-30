@@ -2491,7 +2491,12 @@ export class AiAssistantService {
       taskHistory,
       taskReviewFeedback: {
         ...personalMemoryStore.getTaskReviewFeedbackStats(),
-        recent: personalMemoryStore.listTaskReviewDecisions(20)
+        recent: personalMemoryStore.listTaskReviewDecisions(20).map(item => ({
+          ...item,
+          canRevert: Boolean(item.active && (
+            item.can_restore_snapshot || this.state.tasks.some(task => task.id === item.task_id)
+          ))
+        }))
       },
       entityInsights,
       projectInsights,
@@ -2895,18 +2900,59 @@ export class AiAssistantService {
         decision,
         title: task.title,
         source: task.source,
-        evidence: task.evidence || []
+        evidence: task.evidence || [],
+        task
       })
     }
     if (decision === 'rejected') {
+      personalMemoryStore.recordTaskChanges(
+        task.id,
+        task,
+        { ...task, classification: 'rejected' },
+        'ownership_review_rejected',
+        task.evidence || []
+      )
       this.state.tasks.splice(index, 1)
       this.saveState()
       return task
     }
+    const before = { ...task }
     task.classification = 'mine'
     task.updatedAt = new Date().toISOString()
+    personalMemoryStore.recordTaskChanges(task.id, before, task, 'ownership_review_confirmed', task.evidence || [])
     this.saveState()
     return task
+  }
+
+  revertTaskReview(evidenceFingerprint: string): AssistantTask | null {
+    const fingerprint = String(evidenceFingerprint || '').trim()
+    const decision = personalMemoryStore.getTaskReviewDecision(fingerprint)
+    if (!decision) return null
+    const existing = this.state.tasks.find(item => item.id === decision.task_id)
+    let snapshot: AssistantTask | null = null
+    try { snapshot = JSON.parse(String(decision.task_json || '{}')) as AssistantTask } catch {}
+    if (!existing && (!snapshot?.id || !snapshot?.title)) {
+      throw new Error('这条旧反馈没有可恢复的任务快照，尚不能安全撤销')
+    }
+    const reverted = personalMemoryStore.revokeTaskReviewDecision(fingerprint)
+    if (!reverted) return null
+    if (existing) {
+      const before = { ...existing }
+      existing.classification = 'uncertain'
+      existing.updatedAt = new Date().toISOString()
+      personalMemoryStore.recordTaskChanges(existing.id, before, existing, 'ownership_review_reverted', existing.evidence || [])
+      this.saveState()
+      return existing
+    }
+    const restored: AssistantTask = {
+      ...snapshot!,
+      classification: 'uncertain',
+      updatedAt: new Date().toISOString()
+    }
+    this.state.tasks.unshift(restored)
+    personalMemoryStore.recordTaskChanges(restored.id, {}, restored, 'ownership_review_restored', restored.evidence || [])
+    this.saveState()
+    return restored
   }
 
   updateReminderPreference(input: {

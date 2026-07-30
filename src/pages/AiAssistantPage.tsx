@@ -566,6 +566,15 @@ function AiAssistantPage() {
     await load()
   }
 
+  const revertTaskReview = async (evidenceFingerprint: string) => {
+    try {
+      await window.electronAPI.aiAssistant.revertTaskReview(evidenceFingerprint)
+      await load()
+    } catch (error: any) {
+      setMessage(error?.message || String(error))
+    }
+  }
+
   const revertMerge = async (id: number) => {
     await window.electronAPI.aiAssistant.revertMerge(id)
     await load()
@@ -1366,10 +1375,13 @@ function AiAssistantPage() {
             ))}
             {!!taskReviewFeedback.recent?.length && <details className="assistant-task-feedback-history">
               <summary>查看最近归属反馈</summary>
-              {taskReviewFeedback.recent.map((item: any) => <small key={item.evidence_fingerprint}>
-                {new Date(item.updated_at).toLocaleString('zh-CN')} · {item.decision === 'mine' ? '确认为我的' : '不是我的'} · {item.title || '未命名事项'}
-                {item.suppression_count ? ` · 已拦截 ${item.suppression_count} 次重复抽取` : ''}
-              </small>)}
+              {taskReviewFeedback.recent.map((item: any) => <div key={item.evidence_fingerprint}>
+                <small>
+                  {new Date(item.updated_at).toLocaleString('zh-CN')} · {!item.active ? '已撤销' : item.decision === 'mine' ? '确认为我的' : '不是我的'} · {item.title || '未命名事项'}
+                  {item.active && item.suppression_count ? ` · 已拦截 ${item.suppression_count} 次重复抽取` : ''}
+                </small>
+                {item.active && item.canRevert && <button onClick={() => void revertTaskReview(item.evidence_fingerprint)}>撤销反馈</button>}
+              </div>)}
             </details>}
           </section>
         )}
