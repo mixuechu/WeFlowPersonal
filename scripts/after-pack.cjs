@@ -1,5 +1,5 @@
 const { execFileSync } = require('child_process')
-const { chmodSync, existsSync, mkdirSync, readdirSync, rmSync, statSync } = require('fs')
+const { chmodSync, copyFileSync, existsSync, mkdirSync, readdirSync, rmSync, statSync } = require('fs')
 const { join } = require('path')
 
 const WCDB_FRAMEWORK_ID = '@rpath/WCDB.framework/Versions/2.1.15/WCDB'
@@ -59,6 +59,30 @@ module.exports = async function afterPack(context) {
 
   const appPath = join(context.appOutDir, `${context.packager.appInfo.productFilename}.app`)
   const resourcesDir = join(appPath, 'Contents', 'Resources')
+  const encryptedSqliteModule = 'better-sqlite3-multiple-ciphers'
+  const targetArch = context.arch === 3 || String(context.appOutDir).includes('arm64') ? 'arm64'
+    : context.arch === 1 || String(context.appOutDir).includes('x64') ? 'x64'
+      : process.arch
+  const electronVersion = String(context.packager.config.electronVersion || require('electron/package.json').version)
+  const electronRebuild = join(process.cwd(), 'node_modules', '.bin', 'electron-rebuild')
+  const encryptedSqliteSource = join(
+    process.cwd(), 'node_modules', encryptedSqliteModule, 'build', 'Release', 'better_sqlite3.node'
+  )
+  const encryptedSqliteTarget = join(
+    resourcesDir, 'app.asar.unpacked', 'node_modules', encryptedSqliteModule,
+    'build', 'Release', 'better_sqlite3.node'
+  )
+  execFileSync(electronRebuild, [
+    '-v', electronVersion,
+    '-a', targetArch,
+    '-w', encryptedSqliteModule,
+    '-f',
+  ], { stdio: 'inherit' })
+  if (!existsSync(encryptedSqliteSource)) throw new Error('SQLCipher 原生模块重编译后不存在')
+  mkdirSync(join(encryptedSqliteTarget, '..'), { recursive: true })
+  copyFileSync(encryptedSqliteSource, encryptedSqliteTarget)
+  chmodSync(encryptedSqliteTarget, 0o755)
+  console.log(`[afterPack] Rebuilt SQLCipher addon for Electron ${electronVersion}/${targetArch}`)
   const imageSemanticSource = join(process.cwd(), 'electron', 'helpers', 'ImageSemanticHelper.swift')
   const imageSemanticDir = join(resourcesDir, 'resources')
   const imageSemanticExecutable = join(imageSemanticDir, 'image-semantic-helper')

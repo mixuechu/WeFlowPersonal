@@ -3,6 +3,7 @@ import assert from 'node:assert/strict'
 import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
+import { randomBytes } from 'node:crypto'
 import { PersonalMemoryStore } from '../electron/services/personalMemoryStore.ts'
 import { filterMemorySearchResults } from '../electron/services/memorySearchFilters.ts'
 import { buildMemoryQueryPlan } from '../electron/services/memoryQueryPlanner.ts'
@@ -1167,3 +1168,73 @@ test('permanent structured-memory deletion is audited and suppresses identical r
   assert.equal(JSON.stringify(audit).includes('敏感'), false)
   assert.equal(store.getDiagnostics().integrity, 'ok')
 }))
+
+test('personal memory migrates atomically to SQLCipher and keeps encrypted backups restorable', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'weflow-memory-cipher-test-'))
+  const databasePath = join(directory, 'memory.sqlite')
+  const key = randomBytes(32)
+  const plaintext = new PersonalMemoryStore()
+  const encrypted = new PersonalMemoryStore()
+  try {
+    plaintext.initialize(databasePath)
+    plaintext.syncGraph({
+      entities: [{ id: 'cipher-person', type: 'person', canonicalName: '加密测试人物', aliases: [], accountIds: [] }],
+      relations: [],
+      reviewQueue: []
+    })
+    const legacyPlaintextBackup = plaintext.createBackup()
+    const legacyBundleDatabaseBytes = readFileSync(legacyPlaintextBackup.path)
+    plaintext.close()
+    assert.equal(readFileSync(databasePath).subarray(0, 16).toString('utf8'), 'SQLite format 3\0')
+    assert.equal(readFileSync(legacyPlaintextBackup.path).subarray(0, 16).toString('utf8'), 'SQLite format 3\0')
+
+    encrypted.initialize(databasePath, key)
+    const diagnostics = encrypted.getDiagnostics()
+    assert.equal(diagnostics.integrity, 'ok')
+    assert.deepEqual(diagnostics.encryption, {
+      enabled: true,
+      cipher: 'sqlcipher',
+      plaintextHeader: false,
+      migratedThisStart: true
+    })
+    assert.match(encrypted.getEncryptionMetadata().keyFingerprint, /^[a-f0-9]{24}$/)
+    assert.ok(encrypted.searchText('加密测试人物').some(item => item.id === 'entity:cipher-person'))
+    assert.notEqual(readFileSync(databasePath).subarray(0, 16).toString('utf8'), 'SQLite format 3\0')
+    assert.equal(existsSync(`${databasePath}.plaintext-migration-backup`), false)
+    assert.equal(existsSync(`${databasePath}.encrypting`), false)
+    assert.notEqual(readFileSync(legacyPlaintextBackup.path).subarray(0, 16).toString('utf8'), 'SQLite format 3\0')
+    const importedLegacy = encrypted.registerImportedBackup(legacyBundleDatabaseBytes, JSON.stringify({ version: 3 }))
+    assert.notEqual(readFileSync(importedLegacy.path).subarray(0, 16).toString('utf8'), 'SQLite format 3\0')
+
+    const backup = encrypted.createBackup()
+    assert.notEqual(readFileSync(backup.path).subarray(0, 16).toString('utf8'), 'SQLite format 3\0')
+    encrypted.upsertClaims([{
+      id: 'cipher-temporary-claim',
+      subjectId: 'cipher-person',
+      predicate: '临时字段',
+      objectValue: '恢复时应消失',
+      confidence: 1,
+      status: 'confirmed',
+      sourceNature: 'human_confirmation',
+      searchText: '恢复时应消失',
+      evidence: []
+    }])
+    assert.equal(encrypted.getMemoryFeed().claims.length, 1)
+    encrypted.restoreBackup(backup.path)
+    assert.equal(encrypted.getMemoryFeed().claims.length, 0)
+    encrypted.close()
+
+    const wrongKeyStore = new PersonalMemoryStore()
+    assert.throws(() => wrongKeyStore.initialize(databasePath, randomBytes(32)))
+    wrongKeyStore.close()
+    const reopened = new PersonalMemoryStore()
+    reopened.initialize(databasePath, key)
+    assert.equal(reopened.getDiagnostics().encryption.migratedThisStart, false)
+    assert.ok(reopened.searchText('加密测试人物').length)
+    reopened.close()
+  } finally {
+    plaintext.close()
+    encrypted.close()
+    rmSync(directory, { recursive: true, force: true })
+  }
+})

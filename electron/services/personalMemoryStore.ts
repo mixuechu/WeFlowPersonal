@@ -1,6 +1,6 @@
-import { DatabaseSync } from 'node:sqlite'
+import Database from 'better-sqlite3-multiple-ciphers'
 import { createHash } from 'node:crypto'
-import { chmodSync, copyFileSync, existsSync, mkdirSync, readdirSync, renameSync, statSync, unlinkSync, writeFileSync } from 'fs'
+import { chmodSync, copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, statSync, unlinkSync, writeFileSync } from 'fs'
 import { dirname, join, resolve } from 'path'
 import { fuzzyEntityScore, pinyinEntityScore } from './fuzzyEntitySearch.ts'
 
@@ -11,14 +11,24 @@ type MemoryGraph = {
 }
 
 export class PersonalMemoryStore {
-  private db: DatabaseSync | null = null
+  private db: Database.Database | null = null
   private databasePath = ''
+  private encryptionKey: Buffer | null = null
+  private encryptionMigrated = false
 
-  initialize(databasePath: string): void {
+  initialize(databasePath: string, encryptionKey?: Buffer | string): void {
     mkdirSync(dirname(databasePath), { recursive: true })
     try { chmodSync(dirname(databasePath), 0o700) } catch {}
     this.databasePath = databasePath
-    this.db = new DatabaseSync(databasePath)
+    if (encryptionKey !== undefined) {
+      this.encryptionKey = Buffer.isBuffer(encryptionKey)
+        ? Buffer.from(encryptionKey)
+        : Buffer.from(String(encryptionKey), 'hex')
+    }
+    if (this.encryptionKey && this.encryptionKey.length !== 32) throw new Error('个人记忆数据库密钥长度无效')
+    this.encryptionMigrated = false
+    if (this.encryptionKey) this.prepareEncryptedDatabase(databasePath, this.encryptionKey)
+    this.db = this.openDatabase(databasePath, false)
     try { chmodSync(databasePath, 0o600) } catch {}
     this.db.exec(`
       PRAGMA journal_mode = WAL;
@@ -383,6 +393,116 @@ export class PersonalMemoryStore {
       INSERT INTO schema_meta(key, value, updated_at) VALUES('schema_version', '1', ?)
       ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at
     `).run(new Date().toISOString())
+    if (this.encryptionKey) this.encryptLegacyBackups()
+  }
+
+  private isPlaintextDatabase(path: string): boolean {
+    if (!existsSync(path) || statSync(path).size < 16) return false
+    return readFileSync(path).subarray(0, 16).equals(Buffer.from('SQLite format 3\0'))
+  }
+
+  private openDatabase(path: string, readonly: boolean): Database.Database {
+    const db = new Database(path, { readonly, fileMustExist: readonly })
+    if (this.encryptionKey) {
+      db.pragma('cipher=sqlcipher')
+      db.pragma('legacy=4')
+      db.key(this.encryptionKey)
+    }
+    try {
+      db.prepare('SELECT COUNT(*) AS count FROM sqlite_master').get()
+      return db
+    } catch (error) {
+      try { db.close() } catch {}
+      throw error
+    }
+  }
+
+  private verifyDatabase(path: string): void {
+    const verification = this.openDatabase(path, true)
+    try {
+      const integrity = verification.pragma('integrity_check', { simple: true })
+      if (integrity !== 'ok') throw new Error(`数据库一致性检查失败：${String(integrity || 'unknown')}`)
+    } finally {
+      verification.close()
+    }
+  }
+
+  private prepareEncryptedDatabase(path: string, key: Buffer): void {
+    const temporary = `${path}.encrypting`
+    const plaintextBackup = `${path}.plaintext-migration-backup`
+    if (existsSync(plaintextBackup)) {
+      if (!existsSync(path)) {
+        renameSync(plaintextBackup, path)
+      } else if (!this.isPlaintextDatabase(path)) {
+        try {
+          this.verifyDatabase(path)
+          unlinkSync(plaintextBackup)
+        } catch {
+          const recovery = `${path}.recovery`
+          copyFileSync(plaintextBackup, recovery)
+          renameSync(recovery, path)
+          unlinkSync(plaintextBackup)
+        }
+      } else {
+        unlinkSync(plaintextBackup)
+      }
+    }
+    if (existsSync(temporary)) unlinkSync(temporary)
+    if (!existsSync(path) || !this.isPlaintextDatabase(path)) return
+
+    const plaintext = new Database(path)
+    try {
+      plaintext.pragma('wal_checkpoint(TRUNCATE)')
+      const integrity = plaintext.pragma('integrity_check', { simple: true })
+      if (integrity !== 'ok') throw new Error(`明文数据库迁移前检查失败：${String(integrity || 'unknown')}`)
+    } finally {
+      plaintext.close()
+    }
+    copyFileSync(path, temporary)
+    try { chmodSync(temporary, 0o600) } catch {}
+    const migrating = new Database(temporary)
+    try {
+      migrating.pragma('cipher=sqlcipher')
+      migrating.pragma('legacy=4')
+      migrating.rekey(key)
+    } finally {
+      migrating.close()
+    }
+    if (this.isPlaintextDatabase(temporary)) throw new Error('数据库加密迁移失败：文件头仍为明文 SQLite')
+    this.verifyDatabase(temporary)
+    renameSync(path, plaintextBackup)
+    try {
+      renameSync(temporary, path)
+      this.verifyDatabase(path)
+      unlinkSync(plaintextBackup)
+      for (const suffix of ['-wal', '-shm']) {
+        try { unlinkSync(`${path}${suffix}`) } catch {}
+      }
+      this.encryptionMigrated = true
+    } catch (error) {
+      try { if (existsSync(path)) unlinkSync(path) } catch {}
+      if (existsSync(plaintextBackup)) renameSync(plaintextBackup, path)
+      throw error
+    }
+  }
+
+  private encryptLegacyBackups(): void {
+    if (!this.encryptionKey || !this.databasePath) return
+    const backupDirectory = join(dirname(this.databasePath), 'personal-memory-backups')
+    for (const backup of this.listBackups(backupDirectory)) {
+      if (this.isPlaintextDatabase(backup.path)) this.prepareEncryptedDatabase(backup.path, this.encryptionKey)
+      this.verifyDatabase(backup.path)
+    }
+  }
+
+  getEncryptionMetadata(): any {
+    return {
+      enabled: Boolean(this.encryptionKey),
+      cipher: this.encryptionKey ? 'sqlcipher' : 'none',
+      keyFingerprint: this.encryptionKey
+        ? createHash('sha256').update(this.encryptionKey).digest('hex').slice(0, 24)
+        : null
+    }
   }
 
   private ensureColumn(table: string, column: string, definition: string): void {
@@ -445,6 +565,12 @@ export class PersonalMemoryStore {
     return {
       healthy: integrity === 'ok',
       integrity,
+      encryption: {
+        enabled: Boolean(this.encryptionKey),
+        cipher: this.encryptionKey ? String(this.db.pragma('cipher', { simple: true }) || '') : 'none',
+        plaintextHeader: this.isPlaintextDatabase(this.databasePath),
+        migratedThisStart: this.encryptionMigrated
+      },
       databasePath: this.databasePath,
       databaseBytes: statSync(this.databasePath).size,
       counts,
@@ -542,13 +668,8 @@ export class PersonalMemoryStore {
     const escapedPath = backupPath.replace(/'/g, "''")
     this.db.exec(`VACUUM INTO '${escapedPath}'`)
     try { chmodSync(backupPath, 0o600) } catch {}
-    const verification = new DatabaseSync(backupPath, { readOnly: true })
-    try {
-      const result = verification.prepare('PRAGMA integrity_check').get() as { integrity_check?: string }
-      if (result?.integrity_check !== 'ok') throw new Error(`备份验证失败：${result?.integrity_check || 'unknown'}`)
-    } finally {
-      verification.close()
-    }
+    this.verifyDatabase(backupPath)
+    if (this.encryptionKey && this.isPlaintextDatabase(backupPath)) throw new Error('备份验证失败：快照未加密')
     const backups = this.listBackups(backupDirectory)
     for (const stale of backups.slice(10)) {
       unlinkSync(stale.path)
@@ -568,13 +689,7 @@ export class PersonalMemoryStore {
     const backupDirectory = join(dirname(this.databasePath), 'personal-memory-backups')
     const allowed = this.listBackups(backupDirectory).find(item => resolve(item.path) === resolve(String(backupPath || '')))
     if (!allowed) throw new Error('只能恢复由本应用创建的个人记忆快照')
-    const verification = new DatabaseSync(allowed.path, { readOnly: true })
-    try {
-      const result = verification.prepare('PRAGMA integrity_check').get() as { integrity_check?: string }
-      if (result?.integrity_check !== 'ok') throw new Error(`所选快照验证失败：${result?.integrity_check || 'unknown'}`)
-    } finally {
-      verification.close()
-    }
+    this.verifyDatabase(allowed.path)
     const safetyBackup = this.createBackup()
     const temporary = `${this.databasePath}.restore-${Date.now()}.tmp`
     this.db.close()
@@ -608,13 +723,10 @@ export class PersonalMemoryStore {
     const backupPath = join(backupDirectory, `personal-memory-imported-${timestamp}.sqlite`)
     const temporary = `${backupPath}.tmp`
     writeFileSync(temporary, databaseBytes)
-    const verification = new DatabaseSync(temporary, { readOnly: true })
-    try {
-      const result = verification.prepare('PRAGMA integrity_check').get() as { integrity_check?: string }
-      if (result?.integrity_check !== 'ok') throw new Error(`导入数据库验证失败：${result?.integrity_check || 'unknown'}`)
-    } finally {
-      verification.close()
+    if (this.encryptionKey && this.isPlaintextDatabase(temporary)) {
+      this.prepareEncryptedDatabase(temporary, this.encryptionKey)
     }
+    this.verifyDatabase(temporary)
     renameSync(temporary, backupPath)
     writeFileSync(`${backupPath}.state.json`, stateText, 'utf8')
     try {

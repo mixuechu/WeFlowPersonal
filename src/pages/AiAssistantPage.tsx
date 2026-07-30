@@ -1636,7 +1636,13 @@ function AiAssistantPage() {
               <div><ShieldCheck size={15} /><span><b>本机隐私与权限审计</b>
                 <small>数据库 {memoryDiagnostics.privacy.databaseMode || '未知'} · 状态 {memoryDiagnostics.privacy.stateMode || '未知'} · 备份目录 {memoryDiagnostics.privacy.backupDirectoryMode || '尚未创建'}</small>
               </span></div>
-              <div><span>API Key：{memoryDiagnostics.privacy.apiKeyStorage}</span><span>数据接口：{memoryDiagnostics.privacy.httpBinding}</span><span>诊断日志：已脱敏</span>
+              <div><span>API Key：{memoryDiagnostics.privacy.apiKeyStorage}</span>
+                <span>个人记忆库：{memoryDiagnostics.privacy.databaseEncryption?.enabled &&
+                  memoryDiagnostics.privacy.databaseEncryption?.cipher === 'sqlcipher' &&
+                  !memoryDiagnostics.privacy.databaseEncryption?.plaintextHeader
+                  ? `SQLCipher 已加密${memoryDiagnostics.privacy.databaseEncryption?.migratedThisStart ? '（本次启动完成迁移）' : ''}`
+                  : '未验证加密'}</span>
+                <span>数据接口：{memoryDiagnostics.privacy.httpBinding}</span><span>诊断日志：已脱敏</span>
                 <span>模型外发脱敏：{memoryDiagnostics.privacy.sensitiveRedactionLevel === 'strict' ? '严格'
                   : memoryDiagnostics.privacy.sensitiveRedactionLevel === 'credentials' ? '仅凭证' : '标准'}</span></div>
             </div>}

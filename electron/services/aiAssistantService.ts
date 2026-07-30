@@ -233,7 +233,27 @@ export class AiAssistantService {
     localEmbeddingService.initialize(app.getPath('userData'))
     localOcrService.initialize(join(app.getPath('userData'), 'ai-ocr-cache.json'))
     localImageSemanticService.initialize(join(app.getPath('userData'), 'ai-image-semantic-cache.json'))
-    personalMemoryStore.initialize(join(app.getPath('userData'), 'personal-memory.sqlite'))
+    if (!this.config.isSafeStorageEncryptionAvailable()) {
+      throw new Error('macOS 安全存储当前不可用，不能安全初始化个人记忆数据库密钥')
+    }
+    const databasePath = join(app.getPath('userData'), 'personal-memory.sqlite')
+    const keyStored = this.config.isStoredWithSafeStorage('aiAssistantDatabaseKey')
+    let databaseKey = String(this.config.get('aiAssistantDatabaseKey') || '')
+    if (keyStored && !/^[a-f0-9]{64}$/i.test(databaseKey)) {
+      throw new Error('无法从 macOS 安全存储读取个人记忆数据库密钥；为避免覆盖密钥，数据库未打开')
+    }
+    if (!keyStored && existsSync(databasePath) && statSync(databasePath).size >= 16 &&
+        !readFileSync(databasePath).subarray(0, 16).equals(Buffer.from('SQLite format 3\0'))) {
+      throw new Error('检测到已加密的个人记忆库，但 macOS 安全存储中缺少对应密钥；数据库未被修改')
+    }
+    if (!/^[a-f0-9]{64}$/i.test(databaseKey)) databaseKey = crypto.randomBytes(32).toString('hex')
+    if (!keyStored) {
+      this.config.set('aiAssistantDatabaseKey', databaseKey)
+    }
+    if (!this.config.isStoredWithSafeStorage('aiAssistantDatabaseKey')) {
+      throw new Error('个人记忆数据库密钥未能写入 macOS 安全存储')
+    }
+    personalMemoryStore.initialize(databasePath, databaseKey)
     personalMemoryStore.purgeExpiredResourceTrash(
       Number(this.config.get('aiAssistantResourceTrashRetentionDays') || 0)
     )
@@ -1578,11 +1598,12 @@ export class AiAssistantService {
 
   async getMemoryDiagnostics(): Promise<any> {
     const ingestionRuns = personalMemoryStore.listIngestionRuns(20)
+    const databaseDiagnostics = personalMemoryStore.getDiagnostics()
     const ocr = await localOcrService.getStatus()
     const imageSemantics = localImageSemanticService.getStatus()
     const pdfOcr = await getPdfOcrStatus()
     return {
-      ...personalMemoryStore.getDiagnostics(),
+      ...databaseDiagnostics,
       ingestionRuns,
       ingestionSummary: summarizeIngestionRuns(ingestionRuns, {
         inputPerMillion: Number(this.config.get('aiAssistantInputCostPerMillion') || 0),
@@ -1595,6 +1616,7 @@ export class AiAssistantService {
       },
       privacy: {
         ...personalMemoryStore.getFilePermissionAudit(),
+        databaseEncryption: databaseDiagnostics.encryption,
         stateMode: (() => { try { return (statSync(this.statePath).mode & 0o777).toString(8).padStart(3, '0') } catch { return null } })(),
         apiKeyStorage: 'macOS Safe Storage',
         httpBinding: '127.0.0.1',
@@ -1653,7 +1675,11 @@ export class AiAssistantService {
       appVersion: app.getVersion(),
       createdAt: new Date().toISOString(),
       databaseSha256: crypto.createHash('sha256').update(databaseBytes).digest('hex'),
-      stateSha256: crypto.createHash('sha256').update(stateBytes).digest('hex')
+      stateSha256: crypto.createHash('sha256').update(stateBytes).digest('hex'),
+      databaseEncryption: {
+        ...personalMemoryStore.getEncryptionMetadata(),
+        keyScope: 'macos-safe-storage'
+      }
     }
     const zip = new JSZip()
     zip.file('manifest.json', JSON.stringify(manifest, null, 2))
@@ -1679,6 +1705,11 @@ export class AiAssistantService {
     const stateSha256 = crypto.createHash('sha256').update(stateBytes).digest('hex')
     if (databaseSha256 !== manifest.databaseSha256 || stateSha256 !== manifest.stateSha256) {
       throw new Error('迁移包校验失败，文件可能损坏')
+    }
+    const currentEncryption = personalMemoryStore.getEncryptionMetadata()
+    if (manifest.databaseEncryption?.keyFingerprint &&
+        manifest.databaseEncryption.keyFingerprint !== currentEncryption.keyFingerprint) {
+      throw new Error('该迁移包由另一台设备的安全存储密钥加密；当前版本不会尝试猜测或覆盖密钥，请在原设备导出兼容迁移包')
     }
     const state = JSON.parse(stateBytes.toString('utf8'))
     return {

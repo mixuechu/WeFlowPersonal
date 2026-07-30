@@ -100,6 +100,7 @@ interface ConfigSchema {
   aiAssistantEnabled: boolean
   aiAssistantApiBaseUrl: string
   aiAssistantApiKey: string
+  aiAssistantDatabaseKey: string
   aiAssistantApiModel: string
   aiAssistantScheduleTime: string
   aiAssistantQuietStart: string
@@ -172,6 +173,7 @@ const ENCRYPTED_STRING_KEYS: Set<string> = new Set([
   'httpApiToken',
   'aiModelApiKey',
   'aiAssistantApiKey',
+  'aiAssistantDatabaseKey',
   'aiInsightApiKey',
   'aiInsightWeiboCookie'
 ])
@@ -270,6 +272,7 @@ export class ConfigService {
       aiAssistantEnabled: true,
       aiAssistantApiBaseUrl: 'https://api.deepseek.com',
       aiAssistantApiKey: '',
+      aiAssistantDatabaseKey: '',
       aiAssistantApiModel: 'deepseek-v4-flash',
       aiAssistantScheduleTime: '20:00',
       aiAssistantQuietStart: '22:00',
@@ -388,6 +391,15 @@ export class ConfigService {
 
   isUnlocked(): boolean {
     return !this.isLockMode() || this.unlockedKeys.size > 0
+  }
+
+  isSafeStorageEncryptionAvailable(): boolean {
+    return isSafeStorageAvailable()
+  }
+
+  isStoredWithSafeStorage(key: keyof ConfigSchema): boolean {
+    const raw = this.store.get(key)
+    return typeof raw === 'string' && raw.startsWith(SAFE_PREFIX)
   }
 
   // === get / set ===

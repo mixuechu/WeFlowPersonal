@@ -27,6 +27,7 @@
     "@hicccc77/electron-liquid-glass": "^0.3.0",
     "@huggingface/transformers": "^4.2.0",
     "@vscode/sudo-prompt": "^9.3.2",
+    "better-sqlite3-multiple-ciphers": "12.11.1",
     "echarts": "^6.1.0",
     "echarts-for-react": "^3.0.2",
     "electron-store": "^11.0.2",

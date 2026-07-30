@@ -111,6 +111,7 @@ export default defineConfig({
             rollupOptions: {
               external: [
                 'better-sqlite3',
+                'better-sqlite3-multiple-ciphers',
                 'koffi',
                 'fsevents',
                 'whisper-node',
