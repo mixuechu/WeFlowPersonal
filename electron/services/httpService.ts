@@ -1048,6 +1048,7 @@ class HttpService {
     const startParam = url.searchParams.get('start')
     const endParam = url.searchParams.get('end')
     const chatlab = this.parseBooleanParam(url, ['chatlab'], false)
+    const ascending = this.parseBooleanParam(url, ['ascending', 'asc'], false)
     const formatParam = (url.searchParams.get('format') || '').trim().toLowerCase()
     const format = formatParam || (chatlab ? 'chatlab' : 'json')
     const mediaOptions = this.parseMediaOptions(url)
@@ -1091,7 +1092,7 @@ class HttpService {
     } else if (!mediaOptions.enabled) {
       // 非媒体路径（json 与 chatlab 共用）：取原始行后线程池并行映射，不卡本体、按核数提速。
       // 两种格式底层都用 lite 映射，输出与改前一致；随后再各自走 toApiMessage / convertToChatLab。
-      const result = await this.fetchApiMessagesParallel(talker, offset, limit, startTime, endTime)
+      const result = await this.fetchApiMessagesParallel(talker, offset, limit, startTime, endTime, ascending)
       if (!result.success || !result.messages) {
         this.sendError(res, 500, result.error || 'Failed to get messages')
         return
@@ -1105,7 +1106,7 @@ class HttpService {
         limit,
         startTime,
         endTime,
-        false,
+        ascending,
         !mediaOptions.enabled
       )
       if (!result.success || !result.messages) {

@@ -1252,6 +1252,10 @@ function AiAssistantPage() {
               仍有 {Number(status.cursor.pendingSessionRetryCount)} 个微信会话读取失败；
               每个会话的失败前起点已经独立保存，下次会从原位置继续，不会被全局时间戳跳过。
             </small>}
+            {Number(status?.cursor?.pendingSessionBacklogCount || 0) > 0 && <small>
+              仍有 {Number(status.cursor.pendingSessionBacklogCount)} 个高流量微信会话超过本轮安全分页上限；
+              下一页位置已经保存，继续补齐会从该位置向后读取，不会重复停在最新 10,000 条。
+            </small>}
             {ingestionStatus.error && <small>{ingestionStatus.error}</small>}
           </div>
         )}

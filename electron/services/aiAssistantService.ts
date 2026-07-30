@@ -74,8 +74,10 @@ import {
 } from './extractionMemoryContext'
 import {
   initializeSessionRetryCursors,
+  nextSessionContinuationOffset,
   planSessionCursorProgress
 } from './ingestionCursorPolicy'
+import { buildOverlappingAnalysisBatches } from './analysisBatching'
 import { getAppRunRecoveryDiagnostics } from './appRunRecoveryService'
 import type { DurableJsonRecovery } from './durableJsonState'
 import {
@@ -188,12 +190,14 @@ type AssistantState = {
     lastMessageTimestamp: number
     recentMessageIds: string[]
     sessionCursors: Record<string, number>
+    sessionOffsets: Record<string, number>
     lastSuccessfulRunAt: string | null
     lastScheduledRunDate: string | null
     lastReminderNotificationDate?: string | null
     lastAttemptAt: string | null
     lastError: string | null
     pendingSessionRetryCount: number
+    pendingSessionBacklogCount: number
   }
   graph: {
     entities: GraphEntity[]
@@ -214,12 +218,14 @@ const EMPTY_STATE: AssistantState = {
     lastMessageTimestamp: 0,
     recentMessageIds: [],
     sessionCursors: {},
+    sessionOffsets: {},
     lastSuccessfulRunAt: null,
     lastScheduledRunDate: null,
     lastReminderNotificationDate: null,
     lastAttemptAt: null,
     lastError: null,
-    pendingSessionRetryCount: 0
+    pendingSessionRetryCount: 0,
+    pendingSessionBacklogCount: 0
   },
   graph: { entities: [], relations: [], reviewQueue: [], identityScan: { lastFullScanAt: null, lastRunAt: null, lastMode: null, lastCandidateCount: 0 } }
 }
@@ -746,7 +752,12 @@ export class AiAssistantService {
     throw lastError
   }
 
-  private async collectMessages(start: number, end: number): Promise<{ messages: any[]; failed: string[]; successful: string[] }> {
+  private async collectMessages(start: number, end: number): Promise<{
+    messages: any[]
+    failed: string[]
+    successful: string[]
+    continuationOffsets: Record<string, number>
+  }> {
     const sessionPayload = await this.api('/api/v1/sessions', { limit: 500 })
     const contactsPayload = await this.api('/api/v1/contacts', { limit: 10_000 }).catch(() => ({ contacts: [] }))
     const contactsById = new Map((contactsPayload.contacts || []).map((contact: any) => [String(contact.username), contact]))
@@ -757,6 +768,7 @@ export class AiAssistantService {
         // 忽略期间持续推进该会话游标，重新启用时默认从启用时刻开始，
         // 避免突然补分析数月历史消息。
         this.state.cursor.sessionCursors[session.username] = end
+        delete this.state.cursor.sessionOffsets[session.username]
       }
     }
     const sessions = allSessions.filter((session: any) => {
@@ -776,8 +788,12 @@ export class AiAssistantService {
     const loadImages = ocrImages || analyzeImages
     const results = await Promise.allSettled(sessions.map(async (session: any) => {
       const rawRows: any[] = []
-      const sessionStart = Math.max(0, Number(this.state.cursor.sessionCursors[session.username] ?? start) - 300)
-      let offset = 0
+      const persistedOffset = Math.max(0,
+        Math.floor(Number(this.state.cursor.sessionOffsets[session.username]) || 0))
+      const sessionStart = Math.max(0,
+        Number(this.state.cursor.sessionCursors[session.username] ?? start) - (persistedOffset ? 0 : 300))
+      let offset = persistedOffset
+      let hasMore = false
       for (let page = 0; page < 50; page += 1) {
         const payload = await this.api('/api/v1/messages', {
           talker: session.username,
@@ -785,6 +801,7 @@ export class AiAssistantService {
           offset,
           start: sessionStart,
           end,
+          ascending: '1',
           media: loadImages ? '1' : undefined,
           image: loadImages ? '1' : undefined,
           voice: loadImages ? '0' : undefined,
@@ -793,7 +810,9 @@ export class AiAssistantService {
         })
         const pageRows = Array.isArray(payload.messages) ? payload.messages : []
         rawRows.push(...pageRows)
-        if (!payload.hasMore || pageRows.length < 200) break
+        hasMore = payload.hasMore === true
+        if (!hasMore) break
+        if (!pageRows.length) throw new Error('消息分页仍有后续但当前页为空')
         offset += pageRows.length
       }
       const isGroup = String(session.username).endsWith('@chatroom')
@@ -846,14 +865,22 @@ export class AiAssistantService {
           fileMd5: String(message.fileMd5 || '')
         }
       }).filter((message: any) => message.content)
-      return { sessionId: session.username, rows }
+      return {
+        sessionId: session.username,
+        rows,
+        continuationOffset: nextSessionContinuationOffset(persistedOffset, offset, hasMore, 20)
+      }
     }))
     const messages: any[] = []
     const failed: string[] = []
     const successful: string[] = []
+    const continuationOffsets: Record<string, number> = {}
     results.forEach((result, index) => {
       if (result.status === 'fulfilled') {
         successful.push(result.value.sessionId)
+        if (result.value.continuationOffset > 0) {
+          continuationOffsets[result.value.sessionId] = result.value.continuationOffset
+        }
         messages.push(...result.value.rows)
       } else {
         failed.push(sessions[index]?.username)
@@ -866,7 +893,7 @@ export class AiAssistantService {
     await this.enrichImageSemantics(sorted)
     await this.enrichAttachmentText(sorted)
     await this.enrichWebSnapshots(sorted)
-    return { messages: sorted, failed, successful }
+    return { messages: sorted, failed, successful, continuationOffsets }
   }
 
   private async enrichVoiceTranscripts(messages: any[]): Promise<void> {
@@ -1338,41 +1365,14 @@ export class AiAssistantService {
     throw lastError
   }
 
-  private buildAnalysisBatches(messages: any[]): any[][] {
-    const bySession = new Map<string, any[]>()
-    for (const message of messages) {
-      const rows = bySession.get(message.sessionId) || []
-      rows.push(message)
-      bySession.set(message.sessionId, rows)
-    }
-    const windows: any[][] = []
-    for (const rows of bySession.values()) {
-      rows.sort((a, b) => a.timestamp - b.timestamp)
-      if (rows.length <= 140) {
-        windows.push(rows.map(message => ({ ...message, analysisScope: 'core' })))
-        continue
-      }
-      for (let coreStart = 0; coreStart < rows.length; coreStart += 100) {
-        const coreEnd = Math.min(rows.length, coreStart + 100)
-        const windowStart = Math.max(0, coreStart - 20)
-        const windowEnd = Math.min(rows.length, coreEnd + 20)
-        windows.push(rows.slice(windowStart, windowEnd).map((message, index) => ({
-          ...message,
-          analysisScope: windowStart + index >= coreStart && windowStart + index < coreEnd ? 'core' : 'context'
-        })))
-      }
-    }
-    const batches: any[][] = []
-    let pending: any[] = []
-    for (const window of windows) {
-      if (pending.length && pending.length + window.length > 160) {
-        batches.push(pending)
-        pending = []
-      }
-      pending.push(...window)
-    }
-    if (pending.length) batches.push(pending)
-    return batches
+  private buildAnalysisBatches(messages: any[], forcedContextKeys = new Set<string>()): any[][] {
+    return buildOverlappingAnalysisBatches(messages, {
+      messageKey,
+      forcedContextKeys,
+      coreSize: 100,
+      overlap: 20,
+      maxBatchSize: 160
+    })
   }
 
   private mergeGraphDigest(
@@ -2402,6 +2402,10 @@ export class AiAssistantService {
         const key = messageKey(message)
         return !seen.has(key) && !durableSeen.has(key)
       })
+      const freshKeys = new Set(fresh.map(messageKey))
+      const forcedContextKeys = new Set(collected.messages
+        .filter(message => !freshKeys.has(messageKey(message)))
+        .map(messageKey))
       const digests: Array<{ digest: any; batch: any[] }> = []
       const createdAt = new Date().toISOString()
       await this.continuePendingPdfOcr()
@@ -2410,7 +2414,10 @@ export class AiAssistantService {
       await this.continuePendingAttachmentStructures()
       const successfulMessageKeys: string[] = []
       const batchErrors: string[] = []
-      const batches = this.buildAnalysisBatches(fresh)
+      const batches = this.buildAnalysisBatches(
+        collected.messages,
+        forcedContextKeys
+      )
       for (let batchIndex = 0; batchIndex < batches.length; batchIndex += 1) {
         if (this.cancelRequested) {
           cancelled = true
@@ -2595,17 +2602,28 @@ export class AiAssistantService {
       this.state.cursor.recentMessageIds = [...new Set([...this.state.cursor.recentMessageIds, ...successfulMessageKeys])].slice(-20_000)
       const cursorProgress = planSessionCursorProgress({
         current: this.state.cursor.sessionCursors,
+        currentOffsets: this.state.cursor.sessionOffsets,
         successfulSessionIds: collected.successful,
         failedSessionIds: collected.failed,
+        continuationOffsets: collected.continuationOffsets,
         windowEnd: now,
         modelBatchesSucceeded: batchErrors.length === 0
       })
       this.state.cursor.sessionCursors = cursorProgress.sessionCursors
+      this.state.cursor.sessionOffsets = cursorProgress.sessionOffsets
       this.state.cursor.pendingSessionRetryCount = cursorProgress.pendingSessionIds.length
+      this.state.cursor.pendingSessionBacklogCount = cursorProgress.backlogSessionIds.length
       const collectionError = cursorProgress.pendingSessionIds.length
         ? `${cursorProgress.pendingSessionIds.length} 个会话读取失败，已保留各自原始起点等待自动补齐`
         : ''
-      const runErrors = [...batchErrors, ...(collectionError ? [collectionError] : [])]
+      const backlogNotice = cursorProgress.backlogSessionIds.length
+        ? `${cursorProgress.backlogSessionIds.length} 个高流量会话仍有后续分页，已保存下一页位置等待继续补齐`
+        : ''
+      const runErrors = [
+        ...batchErrors,
+        ...(collectionError ? [collectionError] : []),
+        ...(backlogNotice ? [backlogNotice] : [])
+      ]
       if (cursorProgress.advanceGlobal) {
         this.state.cursor.lastMessageTimestamp = now
       }
@@ -2616,7 +2634,7 @@ export class AiAssistantService {
       } else {
         this.state.cursor.lastError = batchErrors.length
           ? `仍有 ${batchErrors.length} 个消息批次等待重试：${batchErrors[0]}`
-          : collectionError
+          : collectionError || backlogNotice
       }
       this.saveState()
       personalMemoryStore.finishIngestionRun(runId, {
@@ -3285,6 +3303,8 @@ export class AiAssistantService {
     const type = input.type === 'group' || sessionId.endsWith('@chatroom') ? 'group' : 'private'
     personalMemoryStore.setConversationPolicy(sessionId, String(input.displayName || sessionId), type, Boolean(input.enabled))
     this.state.cursor.sessionCursors[sessionId] = Math.floor(Date.now() / 1000)
+    delete this.state.cursor.sessionOffsets[sessionId]
+    this.state.cursor.pendingSessionBacklogCount = Object.keys(this.state.cursor.sessionOffsets).length
     this.saveState()
     return { success: true, sessionId, enabled: Boolean(input.enabled) }
   }
@@ -3298,8 +3318,10 @@ export class AiAssistantService {
       if (!sessionId || type !== input.type) continue
       personalMemoryStore.setConversationPolicy(sessionId, String(source.displayName || sessionId), type, Boolean(input.enabled))
       this.state.cursor.sessionCursors[sessionId] = now
+      delete this.state.cursor.sessionOffsets[sessionId]
       updated += 1
     }
+    this.state.cursor.pendingSessionBacklogCount = Object.keys(this.state.cursor.sessionOffsets).length
     this.saveState()
     return { success: true, updated }
   }
