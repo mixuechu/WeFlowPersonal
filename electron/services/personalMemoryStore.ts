@@ -2641,6 +2641,16 @@ export class PersonalMemoryStore {
     transaction()
   }
 
+  listSearchDocumentsInScope(allowedIds: Set<string>, limit = 500): any[] {
+    if (!this.db || !allowedIds.size) return []
+    this.replaceActiveSearchScope(allowedIds)
+    return this.db.prepare(`
+      SELECT d.* FROM search_documents d
+      JOIN active_memory_search_scope scope ON scope.id=d.id
+      ORDER BY d.updated_at DESC,d.id LIMIT ?
+    `).all(Math.max(1, Math.min(500, Number(limit) || 500))) as any[]
+  }
+
   searchText(query: string, limit = 20, allowedIds: Set<string> | null = null): any[] {
     if (!this.db || !query.trim()) return []
     if (allowedIds && !allowedIds.size) return []

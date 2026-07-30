@@ -102,7 +102,12 @@ function AiAssistantPage() {
     status: 'idle' | 'waiting' | 'searching' | 'ready' | 'error'
     query: string
     error?: string
+    total?: number
+    hasMore?: boolean
+    truncated?: boolean
+    scopeCandidates?: number | null
   }>({ status: 'idle', query: '' })
+  const [memoryLoadingMore, setMemoryLoadingMore] = useState(false)
   const memorySearchGate = useRef(new LatestRequestGate())
   const memoryConversationGate = useRef(new LatestRequestGate())
   const [editingClaim, setEditingClaim] = useState<any>(null)
@@ -153,6 +158,7 @@ function AiAssistantPage() {
     from: memoryFrom || undefined,
     to: memoryTo || undefined
   }), [memoryEntityFilter, memorySessionFilter, memoryTypeFilter, memoryFrom, memoryTo, sources])
+  const hasMemoryScope = Boolean(memoryEntityFilter || memorySessionFilter || memoryTypeFilter || memoryFrom || memoryTo)
   const eventTimelineOptions = useMemo(() => ({
     sourceId: eventSourceFilter || undefined,
     status: eventStatusFilter || undefined,
@@ -188,7 +194,8 @@ function AiAssistantPage() {
     const query = memoryQuery.trim()
     const request = memorySearchGate.current.begin()
     setMemoryResults([])
-    if (!query) {
+    setMemoryLoadingMore(false)
+    if (!query && !hasMemoryScope) {
       setMemorySearchState({ status: 'idle', query: '' })
       return
     }
@@ -196,10 +203,17 @@ function AiAssistantPage() {
     const timer = window.setTimeout(() => {
       if (!memorySearchGate.current.isCurrent(request)) return
       setMemorySearchState({ status: 'searching', query })
-      void window.electronAPI.aiAssistant.searchMemory(query, memorySearchOptions).then(results => {
+      void window.electronAPI.aiAssistant.searchMemoryPage(query, memorySearchOptions, { offset: 0, limit: 40 }).then(page => {
         if (!memorySearchGate.current.isCurrent(request)) return
-        setMemoryResults(results)
-        setMemorySearchState({ status: 'ready', query })
+        setMemoryResults(page.results)
+        setMemorySearchState({
+          status: 'ready',
+          query,
+          total: page.total,
+          hasMore: page.hasMore,
+          truncated: page.truncated,
+          scopeCandidates: page.scopeCandidates
+        })
       }).catch(error => {
         if (!memorySearchGate.current.isCurrent(request)) return
         setMemorySearchState({ status: 'error', query, error: error?.message || String(error) })
@@ -209,7 +223,7 @@ function AiAssistantPage() {
       window.clearTimeout(timer)
       if (memorySearchGate.current.isCurrent(request)) memorySearchGate.current.invalidate()
     }
-  }, [memoryQuery, memorySearchOptions])
+  }, [memoryQuery, memorySearchOptions, hasMemoryScope])
 
   useEffect(() => () => {
     memoryConversationGate.current.invalidate()
@@ -751,6 +765,40 @@ function AiAssistantPage() {
       }
     } finally {
       setAskingMemory(false)
+    }
+  }
+
+  const loadMoreMemoryResults = async () => {
+    if (memoryLoadingMore || !memorySearchState.hasMore) return
+    const query = memoryQuery.trim()
+    const request = memorySearchGate.current.begin()
+    setMemoryLoadingMore(true)
+    try {
+      const page = await window.electronAPI.aiAssistant.searchMemoryPage(
+        query,
+        memorySearchOptions,
+        { offset: memoryResults.length, limit: 40 }
+      )
+      if (!memorySearchGate.current.isCurrent(request)) return
+      setMemoryResults(current => {
+        const merged = new Map(current.map(item => [item.id, item]))
+        for (const item of page.results) merged.set(item.id, item)
+        return [...merged.values()]
+      })
+      setMemorySearchState({
+        status: 'ready',
+        query,
+        total: page.total,
+        hasMore: page.hasMore,
+        truncated: page.truncated,
+        scopeCandidates: page.scopeCandidates
+      })
+    } catch (error: any) {
+      if (memorySearchGate.current.isCurrent(request)) {
+        setMemorySearchState(current => ({ ...current, status: 'error', error: error?.message || String(error) }))
+      }
+    } finally {
+      if (memorySearchGate.current.isCurrent(request)) setMemoryLoadingMore(false)
     }
   }
 
@@ -1452,13 +1500,17 @@ function AiAssistantPage() {
           </div>
           {(memoryEntityFilter || memorySessionFilter || memoryTypeFilter || memoryFrom || memoryTo) &&
             <small className="assistant-scope-note">当前范围在全文/向量召回之前生效，范围外内容不会参与排序或发送给模型。
-              {memoryResults[0]?.retrieval_scope_applied && ` · 当前候选 ${Number(memoryResults[0].retrieval_scope_candidates || 0).toLocaleString()} 条`}
+              {memorySearchState.scopeCandidates !== null && memorySearchState.scopeCandidates !== undefined &&
+                ` · 当前候选 ${Number(memorySearchState.scopeCandidates || 0).toLocaleString()} 条`}
             </small>}
-          {!!memoryQuery.trim() && <div className="assistant-search-results">
+          {(!!memoryQuery.trim() || hasMemoryScope) && <div className="assistant-search-results">
             {['waiting', 'searching'].includes(memorySearchState.status) &&
-              <div className="assistant-search-status">正在检索“{memorySearchState.query}”… 当前区域只会接受这次查询的结果。</div>}
+              <div className="assistant-search-status">正在{memorySearchState.query ? `检索“${memorySearchState.query}”` : '浏览当前范围'}… 当前区域只会接受这次请求的结果。</div>}
             {memorySearchState.status === 'ready' &&
-              <div className="assistant-search-status ready">“{memorySearchState.query}” · {memoryResults.length} 条当前检索结果</div>}
+              <div className="assistant-search-status ready">
+                {memorySearchState.query ? `“${memorySearchState.query}”` : '当前范围'} · 已显示 {memoryResults.length} / {Number(memorySearchState.total || 0)} 条
+                {memorySearchState.truncated ? ' · 排序池已达 500 条上限' : ''}
+              </div>}
             {memorySearchState.status === 'error' &&
               <div className="assistant-search-status error">“{memorySearchState.query}”检索失败：{memorySearchState.error}</div>}
             {groupedMemoryResults.map(group => <section className="assistant-search-result-group" key={group.type}>
@@ -1505,6 +1557,10 @@ function AiAssistantPage() {
             </article>})}</div>
             </section>)}
             {memorySearchState.status === 'ready' && !memoryResults.length && <div className="assistant-empty">没有找到相关记忆。</div>}
+            {memorySearchState.status === 'ready' && memorySearchState.hasMore &&
+              <button className="assistant-search-load-more" onClick={() => void loadMoreMemoryResults()} disabled={memoryLoadingMore}>
+                {memoryLoadingMore ? '正在加载下一页…' : '加载更多结果'}
+              </button>}
           </div>}
         </section>
 

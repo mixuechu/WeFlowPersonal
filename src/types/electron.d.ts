@@ -1663,6 +1663,15 @@ export interface ElectronAPI {
       previewForgetEntity: (id: string) => Promise<any>
       forgetEntity: (id: string) => Promise<any>
       searchMemory: (query: string, options?: any) => Promise<any[]>
+      searchMemoryPage: (query: string, options?: any, pagination?: { offset?: number; limit?: number }) => Promise<{
+        results: any[]
+        offset: number
+        limit: number
+        total: number
+        hasMore: boolean
+        truncated: boolean
+        scopeCandidates: number | null
+      }>
       indexMemoryVectors: () => Promise<any>
       findGraphPath: (fromId: string, toId: string, maxDepth?: number) => Promise<any>
       findCommonNeighbors: (fromId: string, toId: string) => Promise<any>

@@ -5,7 +5,7 @@ import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { randomBytes } from 'node:crypto'
 import { PersonalMemoryStore } from '../electron/services/personalMemoryStore.ts'
-import { filterMemorySearchResults } from '../electron/services/memorySearchFilters.ts'
+import { filterMemorySearchResults, paginateMemoryResults } from '../electron/services/memorySearchFilters.ts'
 import { buildContextualMemoryQuestion, buildMemoryQueryPlan } from '../electron/services/memoryQueryPlanner.ts'
 import { applyReminderPreferences, buildTaskReminders, findMatchingTask } from '../electron/services/taskIntelligence.ts'
 import { buildEntityInsights } from '../electron/services/relationshipInsights.ts'
@@ -1511,6 +1511,7 @@ test('retrieval scope is applied before lexical and vector top-k ranking', () =>
   assert.deepEqual([...scope || []], ['task:scoped-target'])
   assert.equal(store.searchText('共同关键词', 300).some(item => item.id === 'task:scoped-target'), false)
   assert.deepEqual(store.searchText('共同关键词', 40, scope).map(item => item.id), ['task:scoped-target'])
+  assert.deepEqual(store.listSearchDocumentsInScope(scope!, 40).map(item => item.id), ['task:scoped-target'])
 
   const model = 'scoped-retrieval:2d'
   tasks.forEach((task, index) =>
@@ -1521,6 +1522,25 @@ test('retrieval scope is applied before lexical and vector top-k ranking', () =>
   assert.deepEqual(scopedVector.map(item => item.id), ['task:scoped-target'])
   assert.equal(scopedVector[0].semantic_search_mode, 'exact')
 }))
+
+test('memory result pages are stable, bounded and report remaining ranked candidates', () => {
+  const ranked = Array.from({ length: 95 }, (_, index) => ({ id: `result-${index}` }))
+  const first = paginateMemoryResults(ranked, 0, 40)
+  const second = paginateMemoryResults(ranked, 40, 40)
+  const final = paginateMemoryResults(ranked, 80, 40)
+  assert.deepEqual(first.results.map(item => item.id), ranked.slice(0, 40).map(item => item.id))
+  assert.deepEqual(second.results.map(item => item.id), ranked.slice(40, 80).map(item => item.id))
+  assert.deepEqual(final.results.map(item => item.id), ranked.slice(80).map(item => item.id))
+  assert.equal(first.total, 95)
+  assert.equal(first.hasMore, true)
+  assert.equal(final.hasMore, false)
+  assert.equal(final.truncated, false)
+
+  const capped = paginateMemoryResults(Array.from({ length: 520 }, (_, id) => ({ id })), 480, 40)
+  assert.equal(capped.total, 500)
+  assert.equal(capped.truncated, true)
+  assert.equal(capped.hasMore, false)
+})
 
 test('database retrieval scope covers entity links, relation type and evidence time', () => withStore(store => {
   store.syncGraph({

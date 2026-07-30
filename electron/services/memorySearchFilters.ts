@@ -9,6 +9,28 @@ export type MemorySearchOptions = {
   relationTypes?: string[]
 }
 
+export function paginateMemoryResults(items: any[], offset = 0, limit = 40, cap = 500): {
+  results: any[]
+  offset: number
+  limit: number
+  total: number
+  hasMore: boolean
+  truncated: boolean
+} {
+  const safeOffset = Math.max(0, Math.min(cap, Number(offset) || 0))
+  const safeLimit = Math.max(1, Math.min(100, Number(limit) || 40))
+  const bounded = items.slice(0, cap)
+  const results = bounded.slice(safeOffset, safeOffset + safeLimit)
+  return {
+    results,
+    offset: safeOffset,
+    limit: safeLimit,
+    total: bounded.length,
+    hasMore: safeOffset + results.length < bounded.length,
+    truncated: items.length >= cap
+  }
+}
+
 function isRejectedExtractedMemory(item: any): boolean {
   return ['claim', 'relation', 'event'].includes(String(item?.document_type || '')) &&
     String(item?.metadata?.status || '') === 'rejected'

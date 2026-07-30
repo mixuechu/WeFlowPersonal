@@ -641,6 +641,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
     previewForgetEntity: (id: string) => ipcRenderer.invoke('ai-assistant:previewForgetEntity', id),
     forgetEntity: (id: string) => ipcRenderer.invoke('ai-assistant:forgetEntity', id),
     searchMemory: (query: string, options?: any) => ipcRenderer.invoke('ai-assistant:searchMemory', query, options),
+    searchMemoryPage: (query: string, options?: any, pagination?: any) =>
+      ipcRenderer.invoke('ai-assistant:searchMemoryPage', query, options, pagination),
     indexMemoryVectors: () => ipcRenderer.invoke('ai-assistant:indexMemoryVectors'),
     findGraphPath: (fromId: string, toId: string, maxDepth?: number) => ipcRenderer.invoke('ai-assistant:findGraphPath', fromId, toId, maxDepth),
     findCommonNeighbors: (fromId: string, toId: string) => ipcRenderer.invoke('ai-assistant:findCommonNeighbors', fromId, toId),

@@ -14,7 +14,7 @@ import { structureOcrText } from './imageOcrStructuring'
 import { captureWebSnapshot } from './webSnapshotService'
 import { extractScannedPdfText, getPdfOcrStatus } from './pdfOcrService'
 import { exportService } from './export'
-import { filterMemorySearchResults, type MemorySearchOptions } from './memorySearchFilters'
+import { filterMemorySearchResults, paginateMemoryResults, type MemorySearchOptions } from './memorySearchFilters'
 import { buildContextualMemoryQuestion, buildMemoryQueryPlan } from './memoryQueryPlanner'
 import {
   applyTaskReviewFeedback,
@@ -3471,7 +3471,7 @@ export class AiAssistantService {
     }))
   }
 
-  async searchMemoryHybrid(query: string, options: MemorySearchOptions = {}): Promise<any[]> {
+  async searchMemoryHybrid(query: string, options: MemorySearchOptions = {}, maxResults = 40): Promise<any[]> {
     const selectedEntity = options.entityId ? this.state.graph.entities.find(entity => entity.id === options.entityId && isTrustedEntity(entity)) : null
     const scopedOptions = selectedEntity
       ? {
@@ -3486,11 +3486,12 @@ export class AiAssistantService {
       : options
     const allowedIds = personalMemoryStore.listScopedSearchDocumentIds(scopedOptions)
     const scopeCandidateCount = allowedIds?.size ?? null
-    const lexical = this.searchMemory(query, 300, allowedIds)
+    const candidateLimit = Math.max(300, Math.min(500, Number(maxResults) || 40))
+    const lexical = this.searchMemory(query, candidateLimit, allowedIds)
     try {
       await this.ensureVectorIndex()
       const [queryVector] = await localEmbeddingService.embed([String(query || '')])
-      const semantic = personalMemoryStore.searchVector(queryVector, localEmbeddingService.modelVersion, 300, {
+      const semantic = personalMemoryStore.searchVector(queryVector, localEmbeddingService.modelVersion, candidateLimit, {
         allowedIds
       })
       const merged = new Map<string, any>()
@@ -3516,18 +3517,63 @@ export class AiAssistantService {
       return filterMemorySearchResults(
         [...merged.values()].sort((left, right) => Number(right.hybrid_score || 0) - Number(left.hybrid_score || 0)),
         scopedOptions
-      ).slice(0, 40).map(item => ({
+      ).slice(0, Math.max(1, Math.min(500, maxResults))).map(item => ({
         ...item,
         retrieval_scope_applied: allowedIds !== null,
         retrieval_scope_candidates: scopeCandidateCount
       }))
     } catch (error) {
       console.warn('[AI Assistant] 向量检索回退为全文检索:', error)
-      return filterMemorySearchResults(lexical, scopedOptions).slice(0, 40).map(item => ({
+      return filterMemorySearchResults(lexical, scopedOptions).slice(0, Math.max(1, Math.min(500, maxResults))).map(item => ({
         ...item,
         retrieval_scope_applied: allowedIds !== null,
         retrieval_scope_candidates: scopeCandidateCount
       }))
+    }
+  }
+
+  async searchMemoryPage(
+    query: string,
+    options: MemorySearchOptions = {},
+    pagination: { offset?: number; limit?: number } = {}
+  ): Promise<any> {
+    const offset = Math.max(0, Math.min(500, Number(pagination.offset) || 0))
+    const limit = Math.max(1, Math.min(100, Number(pagination.limit) || 40))
+    const text = String(query || '').trim()
+    const selectedEntity = options.entityId
+      ? this.state.graph.entities.find(entity => entity.id === options.entityId && isTrustedEntity(entity))
+      : null
+    const scopedOptions = selectedEntity ? {
+      ...options,
+      entityTerms: [
+        selectedEntity.canonicalName,
+        ...(selectedEntity.aliases || []),
+        ...(selectedEntity.accountIds || []),
+        ...(selectedEntity.externalIdentities || []).flatMap(identity => [identity.accountId, identity.displayName])
+      ]
+    } : options
+    const allowedIds = personalMemoryStore.listScopedSearchDocumentIds(scopedOptions)
+    if (!text && allowedIds === null) {
+      return { results: [], offset, limit, total: 0, hasMore: false, truncated: false, scopeCandidates: null }
+    }
+    const ranked = text
+      ? await this.searchMemoryHybrid(text, scopedOptions, 500)
+      : filterMemorySearchResults(
+          personalMemoryStore.listSearchDocumentsInScope(allowedIds!, 500).map((item: any) => ({
+            ...item,
+            metadata: (() => { try { return JSON.parse(item.metadata_json || '{}') } catch { return {} } })(),
+            evidence: personalMemoryStore.getDocumentEvidence(item.document_type, item.source_id),
+            match_source: '范围浏览',
+            retrieval_scope_applied: true,
+            retrieval_scope_candidates: allowedIds!.size
+          })),
+          scopedOptions
+        )
+    const page = paginateMemoryResults(ranked, offset, limit, 500)
+    return {
+      ...page,
+      truncated: page.truncated || (!text && allowedIds!.size > 500),
+      scopeCandidates: allowedIds?.size ?? null
     }
   }
 
