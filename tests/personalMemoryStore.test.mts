@@ -58,6 +58,7 @@ import { enqueueUniqueNotification, markNotificationAttempt } from '../electron/
 import { findCommonGraphNeighbors } from '../electron/services/graphCommonNeighbors.ts'
 import { buildProjectInsights } from '../electron/services/projectInsights.ts'
 import { buildTaskCalendar, extractTaskDueDate } from '../src/utils/taskCalendar.ts'
+import { filterGraphReviews } from '../src/utils/graphReviewFilters.ts'
 import { summarizeIngestionRuns } from '../electron/services/ingestionDiagnostics.ts'
 import { attachLocalImageOcr, attachLocalVoiceTranscript, recoverMessageSemantics } from '../electron/services/messageSemanticRecovery.ts'
 import { sanitizeDiagnosticText } from '../electron/services/diagnosticRedaction.ts'
@@ -200,6 +201,75 @@ test('entity profile corrections persist model suggestion and human final value'
     assert.equal(rows.find((row: any) => row.field === 'summary')?.final_value, '人工摘要')
     assert.equal(rows.find((row: any) => row.field === 'alias')?.suggested_value, '错误别名')
   })
+})
+
+test('review ledger persists resolution time, actor and reason', () => {
+  withStore(store => {
+    store.syncGraph({
+      entities: [],
+      relations: [],
+      reviewQueue: [{
+        id: 'review-resolved',
+        kind: 'entity_alias',
+        title: '别名候选',
+        detail: '候选说明',
+        confidence: 0.8,
+        status: 'rejected',
+        createdAt: '2026-07-30T00:00:00.000Z',
+        resolvedAt: '2026-07-30T01:00:00.000Z',
+        resolutionActor: 'system',
+        resolutionReason: '关联实体已被拒绝'
+      }]
+    } as any)
+    const [row] = store.listReviewLedger()
+    assert.equal(row.status, 'rejected')
+    assert.equal(row.resolved_at, '2026-07-30T01:00:00.000Z')
+    assert.equal(row.payload.resolutionActor, 'system')
+    assert.equal(row.payload.resolutionReason, '关联实体已被拒绝')
+  })
+})
+
+test('review ledger filters pending and resolved decisions by kind, evidence and time', () => {
+  const reviews = [
+    {
+      id: 'pending-relation',
+      kind: 'relation',
+      status: 'pending',
+      title: '甲方服务乙方',
+      createdAt: '2026-07-30T01:00:00.000Z',
+      evidence: [{ sender: '张三', excerpt: '项目原文' }]
+    },
+    {
+      id: 'confirmed-alias',
+      kind: 'entity_alias',
+      status: 'confirmed',
+      title: '别名候选',
+      resolutionReason: '用户确认候选',
+      createdAt: '2026-07-29T00:00:00.000Z',
+      resolvedAt: '2026-07-30T03:00:00.000Z'
+    },
+    {
+      id: 'rejected-relation',
+      kind: 'relation',
+      status: 'rejected',
+      title: '错误关系',
+      resolutionReason: '关联实体已被拒绝',
+      createdAt: '2026-07-29T00:00:00.000Z',
+      resolvedAt: '2026-07-30T02:00:00.000Z'
+    }
+  ]
+  assert.deepEqual(
+    filterGraphReviews(reviews, { status: 'pending', kind: 'relation', query: '项目原文' }).map(item => item.id),
+    ['pending-relation']
+  )
+  assert.deepEqual(
+    filterGraphReviews(reviews, { status: 'resolved', query: '拒绝' }).map(item => item.id),
+    ['rejected-relation']
+  )
+  assert.deepEqual(
+    filterGraphReviews(reviews, { status: 'resolved' }).map(item => item.id),
+    ['confirmed-alias', 'rejected-relation']
+  )
 })
 
 test('relation confirmation can atomically correct direction and predicate', () => {

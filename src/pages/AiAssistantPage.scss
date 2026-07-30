@@ -610,7 +610,13 @@
 .assistant-entity-dossier > button span { font-size: 9px; overflow-wrap: anywhere; }
 .assistant-entity-dossier > em { color: #999d97; font-size: 9px; font-style: normal; }
 .assistant-review-section { margin-top: 24px; }
+.assistant-review-filters { margin: 8px 0 4px; display: grid; grid-template-columns: auto minmax(130px, .35fr) minmax(220px, 1fr); gap: 8px; align-items: center; }
+.assistant-review-filters > div { display: flex; gap: 5px; }
+.assistant-review-filters button, .assistant-review-filters select, .assistant-review-filters input { padding: 7px 9px; border: 1px solid #dcd9d0; border-radius: 8px; color: #62675f; background: #fff; font-size: 9px; }
+.assistant-review-filters button.active { border-color: #4c7c65; color: #315c4e; background: #eef6f0; }
+.assistant-review-filters input { min-width: 0; }
 .assistant-review-item { padding: 14px; border-top: 1px solid #e8e5dd; display: flex; justify-content: space-between; gap: 16px; }
+.assistant-review-item.resolved { background: rgba(247,247,243,.66); }
 .assistant-review-item p { margin: 5px 0; color: #74786f; font-size: 11px; }
 .assistant-review-item small { color: #8b8f88; font-size: 9px; }
 .assistant-identity-pair { margin: 9px 0; display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
@@ -643,6 +649,10 @@
 .assistant-profile-correction > span { color: #4f5b52; font-size: 10px; font-weight: 600; }
 .assistant-profile-correction input, .assistant-profile-correction textarea { width: min(620px, 100%); padding: 8px 9px; border: 1px solid #cfd8d0; border-radius: 8px; color: #303630; background: #fff; font: inherit; font-size: 10px; line-height: 1.55; resize: vertical; }
 .assistant-profile-correction small.error { color: #a03f35; }
+.assistant-review-resolution { margin: 9px 0; padding: 8px 9px; border: 1px solid #d8ded8; border-radius: 8px; display: grid; gap: 2px; color: #4f6457; background: #f4f8f4; }
+.assistant-review-resolution.rejected { border-color: #e2ceca; color: #895047; background: #fff6f4; }
+.assistant-review-resolution b, .assistant-review-resolution span { font-size: 10px; }
+@media (max-width: 900px) { .assistant-review-filters { grid-template-columns: 1fr; } }
 .assistant-identity-status { margin: 10px 0 14px; padding: 10px 12px; border: 1px solid #d8e3d9; border-radius: 10px; display: grid; grid-template-columns: minmax(220px, 1fr) auto auto; align-items: center; gap: 18px; color: #315c4e; background: #f5faf6; }
 .assistant-identity-status > span { display: grid; gap: 2px; }
 .assistant-identity-status strong, .assistant-identity-status b { font-size: 11px; }
@@ -683,7 +693,7 @@
   .assistant-dossier-wide { grid-column: auto; }
 }
 @media (max-width: 900px) { .assistant-identity-status { grid-template-columns: 1fr; gap: 8px; } }
-.assistant-review-item > div:last-child { display: flex; align-items: center; gap: 7px; }
+.assistant-review-actions { display: flex; align-items: center; gap: 7px; }
 .assistant-review-item button { padding: 7px 11px; border: 1px solid #d9d6cd; border-radius: 8px; background: transparent; }
 .assistant-review-item button.primary { border-color: #255f4b; color: #fff; background: #255f4b; }
 .assistant-source-modal { width: min(680px, calc(100vw - 48px)); max-height: min(760px, calc(100vh - 56px)); }

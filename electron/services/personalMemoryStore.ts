@@ -1097,14 +1097,17 @@ export class PersonalMemoryStore {
           { subjectId: relation.subjectId, objectId: relation.objectId, predicate: relation.predicate, status: relation.status }, now)
       }
       const upsertReview = this.db.prepare(`
-        INSERT INTO review_queue(id,kind,title,detail,confidence,status,payload_json,created_at)
-        VALUES(?,?,?,?,?,?,?,?)
+        INSERT INTO review_queue(id,kind,title,detail,confidence,status,payload_json,created_at,resolved_at)
+        VALUES(?,?,?,?,?,?,?,?,?)
         ON CONFLICT(id) DO UPDATE SET title=excluded.title,detail=excluded.detail,confidence=excluded.confidence,
-          status=excluded.status,payload_json=excluded.payload_json
+          status=excluded.status,payload_json=excluded.payload_json,resolved_at=excluded.resolved_at
       `)
       for (const review of graph.reviewQueue) {
         if (review.kind === 'relation' && review.relationId && this.isMemoryItemSuppressed('relation', review.relationId)) continue
-        upsertReview.run(review.id, review.kind, review.title, review.detail || '', Number(review.confidence || 0), review.status, JSON.stringify(review), review.createdAt || now)
+        upsertReview.run(
+          review.id, review.kind, review.title, review.detail || '', Number(review.confidence || 0),
+          review.status, JSON.stringify(review), review.createdAt || now, review.resolvedAt || null
+        )
       }
       this.db.exec('COMMIT')
     } catch (error) {
@@ -1132,6 +1135,18 @@ export class PersonalMemoryStore {
           ORDER BY h.id DESC LIMIT ?
         `).all(limit)
     return rows as any[]
+  }
+
+  listReviewLedger(limit = 300): any[] {
+    if (!this.db) return []
+    return (this.db.prepare(`
+      SELECT id,kind,title,detail,confidence,status,payload_json,created_at,resolved_at
+      FROM review_queue ORDER BY COALESCE(resolved_at,created_at) DESC LIMIT ?
+    `).all(limit) as any[]).map(row => {
+      let payload: any = {}
+      try { payload = JSON.parse(String(row.payload_json || '{}')) } catch {}
+      return { ...row, payload }
+    })
   }
 
   private pairKey(leftId: string, rightId: string): string {

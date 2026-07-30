@@ -174,7 +174,7 @@ type AssistantState = {
   graph: {
     entities: GraphEntity[]
     relations: GraphRelation[]
-    reviewQueue: Array<{ id: string; kind: 'possible_duplicate' | 'relation' | 'entity_summary' | 'entity_alias' | 'entity_creation'; title: string; detail: string; confidence: number; status: 'pending' | 'confirmed' | 'rejected'; createdAt: string; leftEntityId?: string; rightEntityId?: string; mergeSourceEntityId?: string; mergeTargetEntityId?: string; relationId?: string; originalRelationId?: string; correctedRelationId?: string; relationCorrection?: RelationCorrection; entityId?: string; entityIdentityVersion?: number; entityCanonicalName?: string; originalEntityCanonicalName?: string; correctedCanonicalName?: string; entityType?: string; legacyReview?: boolean; previousSummary?: string; summaryText?: string; originalSummaryText?: string; correctedSummaryText?: string; aliasText?: string; originalAliasText?: string; correctedAliasText?: string; evidence?: Array<{ messageId: string; sessionId: string; timestamp: number; sender: string; excerpt: string }>; candidateSource?: string; candidateSignals?: Array<{ source: string; label: string; value: string }> }>
+    reviewQueue: Array<{ id: string; kind: 'possible_duplicate' | 'relation' | 'entity_summary' | 'entity_alias' | 'entity_creation'; title: string; detail: string; confidence: number; status: 'pending' | 'confirmed' | 'rejected'; createdAt: string; resolvedAt?: string; resolutionActor?: 'user' | 'system'; resolutionReason?: string; leftEntityId?: string; rightEntityId?: string; mergeSourceEntityId?: string; mergeTargetEntityId?: string; relationId?: string; originalRelationId?: string; correctedRelationId?: string; relationCorrection?: RelationCorrection; entityId?: string; entityIdentityVersion?: number; entityCanonicalName?: string; originalEntityCanonicalName?: string; correctedCanonicalName?: string; entityType?: string; legacyReview?: boolean; previousSummary?: string; summaryText?: string; originalSummaryText?: string; correctedSummaryText?: string; aliasText?: string; originalAliasText?: string; correctedAliasText?: string; evidence?: Array<{ messageId: string; sessionId: string; timestamp: number; sender: string; excerpt: string }>; candidateSource?: string; candidateSignals?: Array<{ source: string; label: string; value: string }> }>
     identityScan: { lastFullScanAt: string | null; lastRunAt: string | null; lastMode: 'incremental' | 'full' | null; lastCandidateCount: number }
   }
 }
@@ -1185,6 +1185,9 @@ export class AiAssistantService {
             if (pending.kind === 'entity_creation' && pending.entityId === existing.id && pending.status === 'pending') {
               pending.status = 'confirmed'
               pending.detail = `${pending.detail} 后续新增原文提供了可验证身份锚点，已自动确认。`
+              pending.resolvedAt = now
+              pending.resolutionActor = 'system'
+              pending.resolutionReason = '新增原文提供了可验证身份锚点，系统按确定性规则自动确认'
             }
           }
         }
@@ -2908,6 +2911,7 @@ export class AiAssistantService {
   ): any {
     const review = this.state.graph.reviewQueue.find(item => item.id === id)
     if (!review || review.status !== 'pending') return null
+    const resolutionNow = new Date().toISOString()
     const mergePlan = review.kind === 'possible_duplicate' && decision === 'confirmed'
       ? planEntityMerge(review, this.state.graph.entities, options?.mergeTargetEntityId)
       : null
@@ -2998,6 +3002,8 @@ export class AiAssistantService {
         } else {
           review.status = 'rejected'
           review.detail = `${review.detail} 实体名称已变化或候选无效，未执行确认。`
+          review.resolutionActor = 'system'
+          review.resolutionReason = '实体名称已变化或候选已失效，系统拒绝过期确认'
         }
       } else if (decision === 'rejected' && entity) {
         entity.trustStatus = 'rejected'
@@ -3020,6 +3026,9 @@ export class AiAssistantService {
               connectedRelation?.objectId === entity.id) {
             pending.status = 'rejected'
             pending.detail = `${pending.detail} 关联实体已被拒绝，此候选自动关闭。`
+            pending.resolvedAt = resolutionNow
+            pending.resolutionActor = 'system'
+            pending.resolutionReason = '关联实体已被用户拒绝'
           }
         }
         const feed = personalMemoryStore.getMemoryFeed()
@@ -3071,6 +3080,9 @@ export class AiAssistantService {
                   (pending.relationId === relationPlan.before.id || pending.relationId === relationPlan.after.id)) {
                 pending.status = 'rejected'
                 pending.detail = `${pending.detail} 关系已由另一条人工纠正合并，此候选自动关闭。`
+                pending.resolvedAt = resolutionNow
+                pending.resolutionActor = 'system'
+                pending.resolutionReason = '关系已由另一条人工纠正合并'
               }
             }
           }
@@ -3148,6 +3160,9 @@ export class AiAssistantService {
                pending.rightEntityId === source.id)) {
             pending.status = 'rejected'
             pending.detail = `${pending.detail} 原实体已合并，此候选自动关闭。`
+            pending.resolvedAt = resolutionNow
+            pending.resolutionActor = 'system'
+            pending.resolutionReason = '原实体已被合并到保留实体'
           }
         }
         personalMemoryStore.mergeEntityEventParticipants(source.id, target.id)
@@ -3159,6 +3174,12 @@ export class AiAssistantService {
       const left = this.state.graph.entities.find(entity => entity.id === review.leftEntityId)
       const right = this.state.graph.entities.find(entity => entity.id === review.rightEntityId)
       if (left && right) personalMemoryStore.recordIdentityDecision(left.id, right.id, 'different', left.identityVersion, right.identityVersion, review.detail)
+    }
+    if (review.status !== 'pending') {
+      review.resolvedAt = resolutionNow
+      review.resolutionActor = review.resolutionActor || 'user'
+      review.resolutionReason = review.resolutionReason ||
+        (review.status === 'confirmed' ? '用户确认候选' : '用户拒绝候选')
     }
     this.saveState()
     return review
@@ -3248,7 +3269,12 @@ export class AiAssistantService {
     relation.status = decision
     relation.updatedAt = new Date().toISOString()
     for (const review of this.state.graph.reviewQueue) {
-      if (review.kind === 'relation' && review.relationId === id && review.status === 'pending') review.status = decision
+      if (review.kind === 'relation' && review.relationId === id && review.status === 'pending') {
+        review.status = decision
+        review.resolvedAt = new Date().toISOString()
+        review.resolutionActor = 'user'
+        review.resolutionReason = decision === 'confirmed' ? '用户在统一记忆中确认关系' : '用户在统一记忆中拒绝关系'
+      }
     }
     this.saveState()
     return relation
