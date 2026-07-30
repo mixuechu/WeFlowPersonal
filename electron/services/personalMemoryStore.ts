@@ -3,6 +3,14 @@ import { createHash } from 'node:crypto'
 import { chmodSync, copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, statSync, unlinkSync, writeFileSync } from 'fs'
 import { dirname, join, resolve } from 'path'
 import { fuzzyEntityScore, pinyinEntityScore } from './fuzzyEntitySearch.ts'
+import {
+  LOCAL_ANN_DEFAULT_BITS,
+  LOCAL_ANN_DEFAULT_MINIMUM_DOCUMENTS,
+  LOCAL_ANN_DEFAULT_TABLES,
+  LOCAL_ANN_INDEX_VERSION,
+  computeAnnSignatures,
+  listMultiProbeSignatures
+} from './localAnnIndex.ts'
 
 type MemoryGraph = {
   entities: any[]
@@ -314,6 +322,48 @@ export class PersonalMemoryStore {
         updated_at TEXT NOT NULL,
         UNIQUE(document_type, source_id)
       ) STRICT;
+
+      CREATE TABLE IF NOT EXISTS vector_ann_entries (
+        document_id TEXT NOT NULL,
+        model TEXT NOT NULL,
+        dimensions INTEGER NOT NULL,
+        table_id INTEGER NOT NULL,
+        signature INTEGER NOT NULL,
+        content_hash TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        PRIMARY KEY(document_id,model,table_id)
+      ) STRICT;
+      CREATE INDEX IF NOT EXISTS idx_vector_ann_bucket
+        ON vector_ann_entries(model,dimensions,table_id,signature);
+
+      CREATE TABLE IF NOT EXISTS vector_ann_state (
+        model TEXT NOT NULL,
+        dimensions INTEGER NOT NULL,
+        index_version TEXT NOT NULL,
+        table_count INTEGER NOT NULL,
+        bit_count INTEGER NOT NULL,
+        indexed_count INTEGER NOT NULL DEFAULT 0,
+        status TEXT NOT NULL DEFAULT 'ready',
+        last_built_at TEXT,
+        updated_at TEXT NOT NULL,
+        PRIMARY KEY(model,dimensions)
+      ) STRICT;
+
+      DROP TRIGGER IF EXISTS trg_search_documents_ann_content_update;
+      CREATE TRIGGER trg_search_documents_ann_content_update
+      AFTER UPDATE OF content_hash,embedding_model,embedding_dimensions,embedding_json ON search_documents
+      WHEN OLD.content_hash IS NOT NEW.content_hash
+        OR OLD.embedding_model IS NOT NEW.embedding_model
+        OR OLD.embedding_dimensions IS NOT NEW.embedding_dimensions
+        OR OLD.embedding_json IS NOT NEW.embedding_json
+      BEGIN
+        DELETE FROM vector_ann_entries WHERE document_id=OLD.id;
+      END;
+      CREATE TRIGGER IF NOT EXISTS trg_search_documents_ann_delete
+      AFTER DELETE ON search_documents
+      BEGIN
+        DELETE FROM vector_ann_entries WHERE document_id=OLD.id;
+      END;
 
       CREATE TABLE IF NOT EXISTS memory_resources (
         id TEXT PRIMARY KEY,
@@ -2034,27 +2084,212 @@ export class PersonalMemoryStore {
   }
 
   getEmbeddingStats(model: string): any {
-    if (!this.db) return { total: 0, indexed: 0, pending: 0, model }
+    if (!this.db) return {
+      total: 0, indexed: 0, pending: 0, model,
+      ann: { mode: 'exact', active: false, indexed: 0, eligible: 0, coverage: 0 }
+    }
     const row = this.db.prepare(`
       SELECT COUNT(*) AS total,
         SUM(CASE WHEN embedding_model=? AND embedding_json IS NOT NULL THEN 1 ELSE 0 END) AS indexed
       FROM search_documents
     `).get(model) as { total: number; indexed: number }
-    return { total: Number(row.total || 0), indexed: Number(row.indexed || 0), pending: Number(row.total || 0) - Number(row.indexed || 0), model }
+    const indexed = Number(row.indexed || 0)
+    return {
+      total: Number(row.total || 0),
+      indexed,
+      pending: Number(row.total || 0) - indexed,
+      model,
+      ann: this.getApproximateVectorIndexStats(model)
+    }
   }
 
-  searchVector(vector: number[], model: string, limit = 20): any[] {
-    if (!this.db || !vector.length) return []
+  getApproximateVectorIndexStats(model: string, dimensions?: number): any {
+    if (!this.db) return { mode: 'exact', active: false, indexed: 0, eligible: 0, coverage: 0 }
+    const eligible = this.db.prepare(`
+      SELECT COUNT(*) AS count FROM search_documents
+      WHERE embedding_model=? AND embedding_json IS NOT NULL
+        AND (? IS NULL OR embedding_dimensions=?)
+    `).get(model, dimensions ?? null, dimensions ?? null) as { count: number }
+    const state = this.db.prepare(`
+      SELECT * FROM vector_ann_state WHERE model=?
+        AND (? IS NULL OR dimensions=?)
+      ORDER BY indexed_count DESC LIMIT 1
+    `).get(model, dimensions ?? null, dimensions ?? null) as any
+    const eligibleCount = Number(eligible?.count || 0)
+    const actual = state ? this.db.prepare(`
+      SELECT COUNT(*) AS count FROM (
+        SELECT e.document_id FROM vector_ann_entries e
+        JOIN search_documents d ON d.id=e.document_id
+          AND d.content_hash=e.content_hash
+          AND d.embedding_model=e.model
+          AND d.embedding_dimensions=e.dimensions
+          AND d.embedding_json IS NOT NULL
+        WHERE e.model=? AND e.dimensions=?
+        GROUP BY e.document_id
+        HAVING COUNT(DISTINCT e.table_id)=?
+      )
+    `).get(model, Number(state.dimensions), Number(state.table_count)) as { count: number } : { count: 0 }
+    const indexedCount = Number(actual?.count || 0)
+    const active = Boolean(
+      state &&
+      state.status === 'ready' &&
+      state.index_version === LOCAL_ANN_INDEX_VERSION &&
+      indexedCount === eligibleCount &&
+      eligibleCount >= LOCAL_ANN_DEFAULT_MINIMUM_DOCUMENTS
+    )
+    return {
+      mode: active ? 'ann' : 'exact',
+      active,
+      status: state?.status || 'not_built',
+      version: state?.index_version || LOCAL_ANN_INDEX_VERSION,
+      dimensions: Number(state?.dimensions || dimensions || 0),
+      tables: Number(state?.table_count || LOCAL_ANN_DEFAULT_TABLES),
+      bits: Number(state?.bit_count || LOCAL_ANN_DEFAULT_BITS),
+      indexed: indexedCount,
+      eligible: eligibleCount,
+      coverage: eligibleCount ? Math.min(1, indexedCount / eligibleCount) : 0,
+      minimumDocuments: LOCAL_ANN_DEFAULT_MINIMUM_DOCUMENTS,
+      lastBuiltAt: state?.last_built_at || null
+    }
+  }
+
+  ensureApproximateVectorIndex(
+    model: string,
+    options: {
+      minimumDocuments?: number
+      tables?: number
+      bits?: number
+      force?: boolean
+    } = {}
+  ): any {
+    if (!this.db) return { rebuilt: false, ...this.getApproximateVectorIndexStats(model) }
+    const minimumDocuments = Math.max(1, Number(options.minimumDocuments || LOCAL_ANN_DEFAULT_MINIMUM_DOCUMENTS))
+    const tables = Math.max(2, Math.min(12, Number(options.tables || LOCAL_ANN_DEFAULT_TABLES)))
+    const bits = Math.max(4, Math.min(20, Number(options.bits || LOCAL_ANN_DEFAULT_BITS)))
+    const groups = this.db.prepare(`
+      SELECT embedding_dimensions AS dimensions,COUNT(*) AS count
+      FROM search_documents
+      WHERE embedding_model=? AND embedding_json IS NOT NULL
+      GROUP BY embedding_dimensions ORDER BY count DESC
+    `).all(model) as Array<{ dimensions: number; count: number }>
+    const group = groups[0]
+    if (!group || Number(group.count) < minimumDocuments) {
+      return { rebuilt: false, ...this.getApproximateVectorIndexStats(model, Number(group?.dimensions || 0)) }
+    }
+    const dimensions = Number(group.dimensions)
+    const existing = this.db.prepare(`
+      SELECT * FROM vector_ann_state WHERE model=? AND dimensions=?
+    `).get(model, dimensions) as any
+    const currentStats = this.getApproximateVectorIndexStats(model, dimensions)
+    if (!options.force &&
+      existing?.status === 'ready' &&
+      existing?.index_version === LOCAL_ANN_INDEX_VERSION &&
+      Number(existing.table_count) === tables &&
+      Number(existing.bit_count) === bits &&
+      currentStats.indexed === Number(group.count)) {
+      return { rebuilt: false, ...currentStats }
+    }
+    const documents = this.db.prepare(`
+      SELECT id,content_hash,embedding_json FROM search_documents
+      WHERE embedding_model=? AND embedding_dimensions=? AND embedding_json IS NOT NULL
+      ORDER BY id
+    `).all(model, dimensions) as Array<{ id: string; content_hash: string; embedding_json: string }>
+    const now = new Date().toISOString()
+    const replace = this.db.transaction(() => {
+      this.db!.prepare('DELETE FROM vector_ann_entries WHERE model=? AND dimensions=?').run(model, dimensions)
+      const insert = this.db!.prepare(`
+        INSERT INTO vector_ann_entries(
+          document_id,model,dimensions,table_id,signature,content_hash,updated_at
+        ) VALUES(?,?,?,?,?,?,?)
+      `)
+      for (const document of documents) {
+        let vector: number[] = []
+        try { vector = JSON.parse(document.embedding_json).map(Number) } catch {}
+        if (vector.length !== dimensions) continue
+        computeAnnSignatures(vector, model, tables, bits).forEach((signature, table) =>
+          insert.run(document.id, model, dimensions, table, signature, document.content_hash, now))
+      }
+      this.db!.prepare(`
+        INSERT INTO vector_ann_state(
+          model,dimensions,index_version,table_count,bit_count,indexed_count,status,last_built_at,updated_at
+        ) VALUES(?,?,?,?,?,?,'ready',?,?)
+        ON CONFLICT(model,dimensions) DO UPDATE SET
+          index_version=excluded.index_version,
+          table_count=excluded.table_count,
+          bit_count=excluded.bit_count,
+          indexed_count=excluded.indexed_count,
+          status='ready',
+          last_built_at=excluded.last_built_at,
+          updated_at=excluded.updated_at
+      `).run(model, dimensions, LOCAL_ANN_INDEX_VERSION, tables, bits, documents.length, now, now)
+    })
+    replace()
+    return { rebuilt: true, ...this.getApproximateVectorIndexStats(model, dimensions) }
+  }
+
+  private searchVectorExact(vector: number[], model: string, limit: number): any[] {
+    if (!this.db) return []
     const rows = this.db.prepare(`
       SELECT * FROM search_documents WHERE embedding_model=? AND embedding_dimensions=? AND embedding_json IS NOT NULL
     `).all(model, vector.length) as any[]
+    return this.rankVectorRows(rows, vector, limit, 'exact')
+  }
+
+  private rankVectorRows(rows: any[], vector: number[], limit: number, mode: 'exact' | 'ann'): any[] {
     return rows.map(row => {
       let candidate: number[] = []
       try { candidate = JSON.parse(row.embedding_json) } catch {}
       let score = 0
       for (let index = 0; index < vector.length && index < candidate.length; index += 1) score += vector[index] * candidate[index]
-      return { ...row, semantic_score: score }
-    }).sort((left, right) => right.semantic_score - left.semantic_score).slice(0, Math.max(1, Math.min(500, limit)))
+      return { ...row, semantic_score: score, semantic_search_mode: mode }
+    }).sort((left, right) => right.semantic_score - left.semantic_score)
+      .slice(0, Math.max(1, Math.min(500, limit)))
+  }
+
+  searchVector(
+    vector: number[],
+    model: string,
+    limit = 20,
+    options: { minimumDocuments?: number; minimumCandidates?: number } = {}
+  ): any[] {
+    if (!this.db || !vector.length) return []
+    const minimumDocuments = Math.max(1, Number(options.minimumDocuments || LOCAL_ANN_DEFAULT_MINIMUM_DOCUMENTS))
+    const stats = this.getApproximateVectorIndexStats(model, vector.length)
+    const canUseAnn = stats.status === 'ready' &&
+      stats.version === LOCAL_ANN_INDEX_VERSION &&
+      stats.indexed === stats.eligible &&
+      stats.eligible >= minimumDocuments
+    if (!canUseAnn) return this.searchVectorExact(vector, model, limit)
+    const signatures = computeAnnSignatures(vector, model, stats.tables, stats.bits)
+    const candidateIds = new Set<string>()
+    const lookup = this.db.prepare(`
+      SELECT document_id FROM vector_ann_entries
+      WHERE model=? AND dimensions=? AND table_id=? AND signature IN (${Array.from({ length: stats.bits + 1 }, () => '?').join(',')})
+    `)
+    signatures.forEach((signature, table) => {
+      const probes = listMultiProbeSignatures(signature, stats.bits)
+      for (const row of lookup.all(model, vector.length, table, ...probes) as Array<{ document_id: string }>) {
+        candidateIds.add(row.document_id)
+      }
+    })
+    const minimumCandidates = Math.max(
+      limit,
+      Number(options.minimumCandidates || Math.max(64, Math.min(256, limit * 2)))
+    )
+    if (candidateIds.size < Math.min(minimumCandidates, stats.eligible)) {
+      return this.searchVectorExact(vector, model, limit)
+    }
+    const ids = [...candidateIds]
+    const rows: any[] = []
+    for (let offset = 0; offset < ids.length; offset += 500) {
+      const chunk = ids.slice(offset, offset + 500)
+      rows.push(...this.db.prepare(`
+        SELECT d.* FROM search_documents d
+        WHERE d.id IN (${chunk.map(() => '?').join(',')})
+          AND d.embedding_model=? AND d.embedding_dimensions=? AND d.embedding_json IS NOT NULL
+      `).all(...chunk, model, vector.length) as any[])
+    }
+    return this.rankVectorRows(rows, vector, limit, 'ann')
   }
 
   listSimilarEntityPairs(model: string, minimumScore = 0.88, limit = 200): Array<{ leftId: string; rightId: string; score: number }> {

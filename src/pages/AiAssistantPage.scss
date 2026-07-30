@@ -438,6 +438,15 @@
 .assistant-diagnostics-modal > header p { margin: 0; color: var(--text-tertiary); font-size: 10px; }
 .assistant-diagnostics-modal > header button { border: 0; color: var(--text-secondary); background: transparent; cursor: pointer; }
 .assistant-diagnostics-summary { padding: 10px 12px; border: 1px solid #dde4dd; border-radius: 10px; display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap; color: #6c766e; background: #f7faf7; font-size: 9px; }
+.assistant-ann-audit { padding: 11px 12px; border: 1px solid #dce5de; border-radius: 11px; display: grid; gap: 8px; background: #f8fbf8; }
+.assistant-ann-audit > div { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.assistant-ann-audit > div:first-child span { display: grid; gap: 2px; flex: 1; min-width: 220px; }
+.assistant-ann-audit > div:nth-child(2) { padding-left: 23px; color: #68756b; }
+.assistant-ann-audit > div:nth-child(2) span { padding-right: 12px; font-size: 9px; }
+.assistant-ann-audit b { color: #315c4e; font-size: 9px; }
+.assistant-ann-audit small { color: #7d887f; font-size: 8px; line-height: 1.5; }
+.assistant-ann-audit > small { padding-left: 23px; }
+.assistant-ann-audit.active { border-color: #b8d4c0; background: #f2f9f4; }
 .assistant-privacy-audit { padding: 9px 11px; border: 1px solid #d6e5da; border-radius: 10px; display: flex; justify-content: space-between; gap: 12px; color: #3f6856; background: #f3faf6; }
 .assistant-privacy-audit.warning { border-color: #ead5aa; color: #896a35; background: #fff9ed; }
 .assistant-privacy-audit > div { display: flex; align-items: center; gap: 7px; }

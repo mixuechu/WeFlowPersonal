@@ -31,6 +31,7 @@ import { buildTaskCalendar, extractTaskDueDate } from '../src/utils/taskCalendar
 import { summarizeIngestionRuns } from '../electron/services/ingestionDiagnostics.ts'
 import { attachLocalImageOcr, attachLocalVoiceTranscript, recoverMessageSemantics } from '../electron/services/messageSemanticRecovery.ts'
 import { sanitizeDiagnosticText } from '../electron/services/diagnosticRedaction.ts'
+import { computeAnnSignatures, listMultiProbeSignatures } from '../electron/services/localAnnIndex.ts'
 
 function withStore(run: (store: PersonalMemoryStore) => void): void {
   const directory = mkdtempSync(join(tmpdir(), 'weflow-memory-test-'))
@@ -551,7 +552,11 @@ test('vector metadata is retained for unchanged content and invalidated after ed
   store.syncTasks([task])
   assert.equal(store.listEmbeddingCandidates(model).length, 1)
   store.saveEmbedding('task:task-vector', model, [1, 0])
-  assert.deepEqual(store.getEmbeddingStats(model), { total: 1, indexed: 1, pending: 0, model })
+  assert.deepEqual(
+    (({ total, indexed, pending, model: currentModel }) => ({ total, indexed, pending, model: currentModel }))(store.getEmbeddingStats(model)),
+    { total: 1, indexed: 1, pending: 0, model }
+  )
+  assert.equal(store.getEmbeddingStats(model).ann.mode, 'exact')
   assert.equal(store.searchVector([0.9, 0.1], model)[0].source_id, 'task-vector')
 
   store.syncTasks([task])
@@ -559,6 +564,121 @@ test('vector metadata is retained for unchanged content and invalidated after ed
   store.syncTasks([{ ...task, detail: '整理产品介绍与报价材料' }])
   assert.equal(store.listEmbeddingCandidates(model).length, 1)
   assert.equal(store.getEmbeddingStats(model).pending, 1)
+}))
+
+test('local ANN index is deterministic, persistent, invalidated safely and falls back to exact search', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'weflow-ann-test-'))
+  const databasePath = join(directory, 'memory.sqlite')
+  const model = 'test-ann:8d'
+  const createTasks = () => Array.from({ length: 40 }, (_, index) => ({
+    id: `ann-task-${index}`,
+    title: `ANN 测试任务 ${index}`,
+    detail: `近邻簇 ${index}`,
+    priority: 'medium',
+    status: 'todo',
+    classification: 'mine'
+  }))
+  const vectorFor = (index: number) => {
+    const vector = [1, (index + 1) / 10_000, 0.04, 0.03, 0.02, 0.01, 0.005, 0.002]
+    const norm = Math.sqrt(vector.reduce((sum, value) => sum + value * value, 0))
+    return vector.map(value => value / norm)
+  }
+  const first = new PersonalMemoryStore()
+  try {
+    first.initialize(databasePath)
+    first.syncTasks(createTasks())
+    for (let index = 0; index < 40; index += 1) {
+      first.saveEmbedding(`task:ann-task-${index}`, model, vectorFor(index))
+    }
+    const build = first.ensureApproximateVectorIndex(model, { minimumDocuments: 20 })
+    assert.equal(build.rebuilt, true)
+    assert.equal(build.indexed, 40)
+    assert.equal(build.coverage, 1)
+    const results = first.searchVector(vectorFor(18), model, 5, {
+      minimumDocuments: 20,
+      minimumCandidates: 10
+    })
+    assert.equal(results[0].source_id, 'ann-task-18')
+    assert.equal(results[0].semantic_search_mode, 'ann')
+    first.close()
+
+    const reopened = new PersonalMemoryStore()
+    reopened.initialize(databasePath)
+    const persisted = reopened.ensureApproximateVectorIndex(model, { minimumDocuments: 20 })
+    assert.equal(persisted.rebuilt, false)
+    assert.equal(persisted.indexed, 40)
+    reopened.syncTasks(createTasks().map(task =>
+      task.id === 'ann-task-18' ? { ...task, detail: '内容变化使旧向量和 ANN 条目失效' } : task))
+    const stale = reopened.getApproximateVectorIndexStats(model, 8)
+    assert.equal(stale.indexed, 39)
+    assert.equal(stale.eligible, 39)
+    assert.equal(stale.coverage, 1)
+    reopened.saveEmbedding('task:ann-task-18', model, vectorFor(18))
+    const incomplete = reopened.getApproximateVectorIndexStats(model, 8)
+    assert.equal(incomplete.indexed, 39)
+    assert.equal(incomplete.eligible, 40)
+    assert.equal(incomplete.coverage, 39 / 40)
+    const fallback = reopened.searchVector(vectorFor(17), model, 5, {
+      minimumDocuments: 20,
+      minimumCandidates: 10
+    })
+    assert.equal(fallback[0].semantic_search_mode, 'exact')
+    const rebuilt = reopened.ensureApproximateVectorIndex(model, { minimumDocuments: 20 })
+    assert.equal(rebuilt.rebuilt, true)
+    assert.equal(rebuilt.indexed, 40)
+    assert.equal(rebuilt.coverage, 1)
+    reopened.close()
+  } finally {
+    rmSync(directory, { recursive: true, force: true })
+  }
+})
+
+test('ANN signatures and one-bit probes are deterministic and bounded', () => {
+  const vector = [0.5, -0.5, 0.25, 0.125]
+  const first = computeAnnSignatures(vector, 'ann-signature-test', 4, 8)
+  assert.deepEqual(first, computeAnnSignatures(vector, 'ann-signature-test', 4, 8))
+  assert.equal(first.length, 4)
+  const probes = listMultiProbeSignatures(first[0], 8)
+  assert.equal(probes.length, 9)
+  assert.equal(new Set(probes).size, 9)
+})
+
+test('local ANN keeps clustered semantic recall while reducing the exact candidate set', () => withStore(store => {
+  const model = 'test-ann-recall:32d'
+  const documents = Array.from({ length: 300 }, (_, index) => ({
+    id: `ann-recall-${index}`,
+    title: `召回样本 ${index}`,
+    detail: `聚类 ${Math.floor(index / 10)}`,
+    priority: 'low',
+    status: 'todo',
+    classification: 'mine'
+  }))
+  const normalized = (values: number[]) => {
+    const norm = Math.sqrt(values.reduce((sum, value) => sum + value * value, 0))
+    return values.map(value => value / norm)
+  }
+  const vectorFor = (index: number) => {
+    const cluster = Math.floor(index / 10)
+    return normalized(Array.from({ length: 32 }, (_, dimension) => {
+      const base = Math.sin((cluster + 1) * (dimension + 1) * 0.37)
+      const noise = Math.sin((index + 3) * (dimension + 5) * 0.11) * 0.015
+      return base + noise
+    }))
+  }
+  store.syncTasks(documents)
+  documents.forEach((document, index) =>
+    store.saveEmbedding(`task:${document.id}`, model, vectorFor(index)))
+  store.ensureApproximateVectorIndex(model, { minimumDocuments: 100 })
+  const query = vectorFor(124)
+  const exact = store.searchVector(query, model, 10, { minimumDocuments: 1_000 })
+  const approximate = store.searchVector(query, model, 10, {
+    minimumDocuments: 100,
+    minimumCandidates: 30
+  })
+  assert.equal(approximate[0].semantic_search_mode, 'ann')
+  const exactIds = new Set(exact.map(item => item.id))
+  const overlap = approximate.filter(item => exactIds.has(item.id)).length
+  assert.ok(overlap >= 8, `expected ANN recall@10 >= 0.8, received ${overlap / 10}`)
 }))
 
 test('memory scope filters apply entity, session, date and document type together', () => {

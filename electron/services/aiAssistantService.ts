@@ -2932,6 +2932,7 @@ export class AiAssistantService {
         merged.set(item.id, {
           ...(existing || item),
           semantic_score: item.semantic_score,
+          semantic_search_mode: item.semantic_search_mode,
           hybrid_score: Number(existing?.hybrid_score || 0) + semanticContribution,
           match_source: existing ? '全文 + 语义' : '语义',
           metadata: existing?.metadata || (() => { try { return JSON.parse(item.metadata_json || '{}') } catch { return {} } })(),
@@ -2960,7 +2961,8 @@ export class AiAssistantService {
           personalMemoryStore.saveEmbedding(item.id, localEmbeddingService.modelVersion, vectors[index]))
         indexed += documents.length
       }
-      return { indexed, ...personalMemoryStore.getEmbeddingStats(localEmbeddingService.modelVersion) }
+      const ann = personalMemoryStore.ensureApproximateVectorIndex(localEmbeddingService.modelVersion)
+      return { indexed, ...personalMemoryStore.getEmbeddingStats(localEmbeddingService.modelVersion), ann }
     })().finally(() => { this.vectorIndexPromise = null })
     return this.vectorIndexPromise
   }
