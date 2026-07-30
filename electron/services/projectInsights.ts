@@ -11,7 +11,7 @@ function normalize(value: unknown): string {
 
 function taskBelongsToProject(task: any, names: string[]): boolean {
   const project = normalize(task.project)
-  if (project && names.some(name => project === name || project.includes(name) || name.includes(project))) return true
+  if (project) return names.some(name => project === name)
   const text = normalize(`${task.title || ''} ${task.detail || ''}`)
   return names.some(name => name.length >= 3 && text.includes(name))
 }
@@ -22,14 +22,19 @@ function eventBelongsToProject(event: any, entityId: string, names: string[]): b
   return names.some(name => name.length >= 3 && text.includes(name))
 }
 
-export function buildProjectInsights(input: {
+export type ProjectInsightInput = {
   entities: any[]
   relations: any[]
   claims: any[]
   events: any[]
   tasks: any[]
   now?: Date
-}): any[] {
+}
+
+function buildProjectInsightsInternal(
+  input: ProjectInsightInput,
+  options: { includeDetails: boolean; projectId?: string }
+): any[] {
   const now = input.now || new Date()
   const today = now.toISOString().slice(0, 10)
   const trustedEntities = input.entities.filter(entity => entity.trustStatus === 'confirmed')
@@ -40,7 +45,7 @@ export function buildProjectInsights(input: {
   const projects = [
     ...entityProjects.map(entity => ({ entity, id: entity.id, name: entity.canonicalName, aliases: entity.aliases || [], inferred: false })),
     ...derivedNames.map(name => ({ entity: null, id: `derived:${normalize(name)}`, name, aliases: [], inferred: true }))
-  ]
+  ].filter(project => !options.projectId || project.id === options.projectId)
   const taskById = new Map(input.tasks.map(task => [task.id, task]))
   return projects.map(project => {
     const names = [project.name, ...project.aliases].map(normalize).filter(Boolean)
@@ -87,6 +92,29 @@ export function buildProjectInsights(input: {
     const pendingMilestones = candidateEvents.filter(event =>
       ['delivery', 'meeting', 'organization_change'].includes(event.event_type))
     const pendingDecisions = candidateEvents.filter(event => event.event_type === 'decision')
+    const totalForProgress = tasks.filter(task => task.status !== 'cancelled').length
+    const progress = totalForProgress ? Math.round(completedTasks.length / totalForProgress * 100) : 0
+    const phase = totalForProgress && completedTasks.length === totalForProgress
+      ? 'completed'
+      : activeTasks.some(task => task.status === 'doing') ? 'active'
+        : totalForProgress ? 'planned' : 'discovery'
+    const pendingReviewTotal = candidateRelations.length + candidateClaims.length +
+      pendingMilestones.length + pendingDecisions.length
+    if (!options.includeDetails) {
+      return {
+        id: project.id,
+        entityId: project.entity?.id || null,
+        name: project.name,
+        summary: project.entity?.summary || '',
+        inferred: project.inferred,
+        phase,
+        progress,
+        memberCount: members.length,
+        activeTaskCount: activeTasks.length,
+        riskCount: risks.length,
+        pendingReviewTotal
+      }
+    }
     const evidence = [
       ...relations.flatMap(relation => relation.evidence || []),
       ...events.flatMap(event => event.evidence || []),
@@ -95,12 +123,6 @@ export function buildProjectInsights(input: {
     ]
     const uniqueEvidence = new Map(evidence.map((item: any) =>
       [String(item.messageId || item.message_id || `${item.timestamp}:${item.excerpt}`), item]))
-    const totalForProgress = tasks.filter(task => task.status !== 'cancelled').length
-    const progress = totalForProgress ? Math.round(completedTasks.length / totalForProgress * 100) : 0
-    const phase = totalForProgress && completedTasks.length === totalForProgress
-      ? 'completed'
-      : activeTasks.some(task => task.status === 'doing') ? 'active'
-        : totalForProgress ? 'planned' : 'discovery'
     return {
       id: project.id,
       entityId: project.entity?.id || null,
@@ -147,12 +169,29 @@ export function buildProjectInsights(input: {
           ...event,
           ...boundedEvidencePayload(event.evidence, MEMORY_CARD_EVIDENCE_LIMIT)
         })),
-        total: candidateRelations.length + candidateClaims.length + pendingMilestones.length + pendingDecisions.length
+        total: pendingReviewTotal
       },
       ...boundedEvidencePayload([...uniqueEvidence.values()], PROJECT_EVIDENCE_LIMIT)
     }
   }).sort((left, right) => {
-    const severity = (project: any) => project.risks.filter((risk: any) => risk.severity === 'high').length * 10 + project.activeTaskCount
+    const severity = (project: any) => (project.risks
+      ? project.risks.filter((risk: any) => risk.severity === 'high').length
+      : Number(project.riskCount || 0)) * 10 + project.activeTaskCount
     return severity(right) - severity(left)
   })
+}
+
+export function buildProjectInsights(input: ProjectInsightInput): any[] {
+  return buildProjectInsightsInternal(input, { includeDetails: true })
+}
+
+export function buildProjectDirectory(input: ProjectInsightInput): any[] {
+  return buildProjectInsightsInternal(input, { includeDetails: false })
+}
+
+export function buildProjectInsight(input: ProjectInsightInput, projectId: string): any | null {
+  return buildProjectInsightsInternal(input, {
+    includeDetails: true,
+    projectId: String(projectId || '').trim()
+  })[0] || null
 }

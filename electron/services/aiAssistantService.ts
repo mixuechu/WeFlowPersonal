@@ -68,7 +68,7 @@ import {
   GRAPH_QUERY_EVIDENCE_LIMIT,
   MEMORY_CARD_EVIDENCE_LIMIT
 } from '../../shared/evidencePayload'
-import { buildProjectInsights } from './projectInsights'
+import { buildProjectDirectory, buildProjectInsight } from './projectInsights'
 import { summarizeIngestionRuns } from './ingestionDiagnostics'
 import { attachLocalImageOcr, attachLocalVoiceTranscript, recoverMessageSemantics } from './messageSemanticRecovery'
 import { sanitizeDiagnosticText } from './diagnosticRedaction'
@@ -2947,7 +2947,7 @@ export class AiAssistantService {
     const reminderResult = applyReminderPreferences(allTaskReminders, this.state.reminderPreferences)
     const taskHistory = personalMemoryStore.listTaskHistory(tasks.map(task => task.id))
     const memoryFeed = personalMemoryStore.getMemoryFeed()
-    const projectInsights = buildProjectInsights({
+    const projectInsights = buildProjectDirectory({
       entities: this.state.graph.entities,
       relations: this.state.graph.relations,
       claims: memoryFeed.claims,
@@ -2967,6 +2967,18 @@ export class AiAssistantService {
         ...this.state.graph.relations.map(relation =>
           `${relation.id}\u0000${relation.status}\u0000${relation.updatedAt || relation.createdAt || ''}`)
       ].join('\u0001'))
+      .digest('hex')
+      .slice(0, 16)
+    const projectRevision = crypto.createHash('sha256')
+      .update(JSON.stringify({
+        directory: projectInsights,
+        tasks: tasks.map(task => [
+          task.id, task.status, task.title, task.project, task.updatedAt || '',
+          (task.evidence || []).length
+        ]),
+        claims: memoryFeed.claims.map((claim: any) => [claim.id, claim.updated_at, claim.evidence_count]),
+        events: memoryFeed.events.map((event: any) => [event.id, event.updated_at, event.evidence_count])
+      }))
       .digest('hex')
       .slice(0, 16)
     return {
@@ -2991,6 +3003,12 @@ export class AiAssistantService {
         }))
       },
       projectInsights,
+      projectPayloadPolicy: {
+        version: 'project-directory-v1',
+        directoryFields: 'summary_only',
+        dossier: 'on_demand'
+      },
+      projectRevision,
       cursor: this.state.cursor,
       graph: buildGraphDashboardPayload(this.state.graph.entities),
       graphSummary: {
@@ -3140,6 +3158,28 @@ export class AiAssistantService {
         focusProfile: focus ? 'loaded' : 'not_requested'
       },
       focus
+    }
+  }
+
+  getProjectWorkspace(projectId: string): any {
+    const id = String(projectId || '').trim()
+    if (!id) throw new Error('请选择项目')
+    const memoryFeed = personalMemoryStore.getMemoryFeed(500)
+    const project = buildProjectInsight({
+      entities: this.state.graph.entities,
+      relations: this.state.graph.relations,
+      claims: memoryFeed.claims,
+      events: memoryFeed.events,
+      tasks: this.state.tasks.filter(task => task.classification === 'mine')
+    }, id)
+    if (!project) throw new Error('项目不存在或已经不在当前可信视图中')
+    return {
+      project,
+      payloadPolicy: {
+        version: 'project-dossier-v1',
+        evidence: 'bounded',
+        loadedOnDemand: true
+      }
     }
   }
 

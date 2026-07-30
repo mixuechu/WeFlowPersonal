@@ -4529,6 +4529,8 @@ function registerIpcHandlers() {
     aiAssistantService.getGraphReviewPage(options))
   ipcMain.handle('ai-assistant:getGraphWorkspace', (_, options?: any) =>
     aiAssistantService.getGraphWorkspace(options))
+  ipcMain.handle('ai-assistant:getProjectWorkspace', (_, projectId: string) =>
+    aiAssistantService.getProjectWorkspace(projectId))
   ipcMain.handle('ai-assistant:sync', () => aiAssistantService.sync())
   ipcMain.handle('ai-assistant:cancelSync', () => aiAssistantService.cancelSync())
   ipcMain.handle('ai-assistant:getSettings', () => aiAssistantService.getSettings())

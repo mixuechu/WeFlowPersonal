@@ -56,7 +56,7 @@ import {
 } from '../electron/services/relationCorrectionPolicy.ts'
 import { enqueueUniqueNotification, markNotificationAttempt } from '../electron/services/notificationOutbox.ts'
 import { GRAPH_QUERY_EVIDENCE_LIMIT, findCommonGraphNeighbors } from '../electron/services/graphCommonNeighbors.ts'
-import { buildProjectInsights } from '../electron/services/projectInsights.ts'
+import { buildProjectDirectory, buildProjectInsight, buildProjectInsights } from '../electron/services/projectInsights.ts'
 import { MEMORY_CARD_EVIDENCE_LIMIT, PROJECT_EVIDENCE_LIMIT } from '../shared/evidencePayload.ts'
 import { buildTaskCalendar, extractTaskDueDate } from '../src/utils/taskCalendar.ts'
 import { filterGraphReviews, paginateGraphReviews } from '../src/utils/graphReviewFilters.ts'
@@ -1457,6 +1457,46 @@ test('project dossiers bound task and aggregate evidence without hiding totals',
   assert.equal(project.tasks[0].evidenceTotal, taskEvidence.length)
   assert.equal(project.tasks[0].evidence.length, MEMORY_CARD_EVIDENCE_LIMIT)
   assert.equal(project.tasks[0].evidence.at(-1).messageId, `wechat:task:${taskEvidence.length}`)
+})
+
+test('project dashboard is a light directory and dossiers are selected on demand', () => {
+  const entities = Array.from({ length: 100 }, (_, index) => ({
+    id: `project-${index}`,
+    type: 'project',
+    canonicalName: `规模项目 ${index}`,
+    aliases: [],
+    summary: `项目摘要 ${index}`,
+    trustStatus: 'confirmed'
+  }))
+  const tasks = entities.map((entity, index) => ({
+    id: `task-${index}`,
+    title: `处理 ${entity.canonicalName}`,
+    project: entity.canonicalName,
+    status: index % 2 ? 'doing' : 'done',
+    priority: 'medium',
+    evidence: Array.from({ length: 100 }, (_, evidenceIndex) => ({
+      messageId: `wechat:project-${index}:${evidenceIndex}`,
+      sessionId: `project-${index}`,
+      timestamp: evidenceIndex,
+      excerpt: `不应进入目录的长证据 ${index} ${evidenceIndex} ${'证据'.repeat(200)}`
+    }))
+  }))
+  const input = { entities, relations: [], claims: [], events: [], tasks }
+  const directory = buildProjectDirectory(input)
+  const serialized = JSON.stringify(directory)
+  assert.equal(directory.length, 100)
+  assert.equal(directory[0].tasks, undefined)
+  assert.equal(directory[0].evidence, undefined)
+  assert.equal(serialized.includes('不应进入目录的长证据'), false)
+  assert.ok(Buffer.byteLength(serialized) < 40_000)
+  const fullPayloadBytes = Buffer.byteLength(JSON.stringify(buildProjectInsights(input)))
+  assert.ok(Buffer.byteLength(serialized) < fullPayloadBytes * 0.05)
+
+  const dossier = buildProjectInsight(input, 'project-42')
+  assert.equal(dossier.id, 'project-42')
+  assert.equal(dossier.tasks.length, 1)
+  assert.equal(dossier.tasks[0].evidenceTotal, 100)
+  assert.equal(buildProjectInsight(input, 'missing-project'), null)
 })
 
 test('task calendar handles leap months, Shanghai today, overdue and unscheduled work', () => {

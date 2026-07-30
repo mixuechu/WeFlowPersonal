@@ -1675,6 +1675,10 @@ export interface ElectronAPI {
         predicates: string[]
         focus: any | null
       }>
+      getProjectWorkspace: (projectId: string) => Promise<{
+        project: any
+        payloadPolicy: { version: string; evidence: string; loadedOnDemand: boolean }
+      }>
       sync: () => Promise<any>
       cancelSync: () => Promise<any>
     getSettings: () => Promise<any>

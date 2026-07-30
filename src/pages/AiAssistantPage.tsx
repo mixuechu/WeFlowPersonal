@@ -113,6 +113,9 @@ function AiAssistantPage() {
   const [showEntityDossier, setShowEntityDossier] = useState(false)
   const [briefingPeriod, setBriefingPeriod] = useState<'latest' | 'week'>('latest')
   const [selectedProjectId, setSelectedProjectId] = useState('')
+  const [projectWorkspace, setProjectWorkspace] = useState<any>({ project: null, status: 'idle' })
+  const [projectWorkspaceRefreshKey, setProjectWorkspaceRefreshKey] = useState(0)
+  const projectWorkspaceGate = useRef(new LatestRequestGate())
   const [forgettingEntityId, setForgettingEntityId] = useState('')
   const [showSources, setShowSources] = useState(false)
   const [showDataSources, setShowDataSources] = useState(false)
@@ -350,6 +353,31 @@ function AiAssistantPage() {
     }
   }, [graphQuery, graphRelationType, graphRelationStatus, selectedEntityId, graphFocusDepth, dashboard?.graphRevision])
 
+  useEffect(() => {
+    const request = projectWorkspaceGate.current.begin()
+    if (!selectedProjectId) {
+      setProjectWorkspace({ project: null, status: 'idle' })
+      return () => {
+        if (projectWorkspaceGate.current.isCurrent(request)) projectWorkspaceGate.current.invalidate()
+      }
+    }
+    setProjectWorkspace({ project: null, status: 'loading' })
+    void window.electronAPI.aiAssistant.getProjectWorkspace(selectedProjectId).then(workspace => {
+      if (!projectWorkspaceGate.current.isCurrent(request)) return
+      setProjectWorkspace({ ...workspace, status: 'ready' })
+    }).catch(error => {
+      if (!projectWorkspaceGate.current.isCurrent(request)) return
+      setProjectWorkspace({
+        project: null,
+        status: 'error',
+        error: error?.message || String(error)
+      })
+    })
+    return () => {
+      if (projectWorkspaceGate.current.isCurrent(request)) projectWorkspaceGate.current.invalidate()
+    }
+  }, [selectedProjectId, projectWorkspaceRefreshKey, dashboard?.projectRevision])
+
   useEffect(() => () => {
     memoryConversationGate.current.invalidate()
   }, [])
@@ -361,7 +389,8 @@ function AiAssistantPage() {
   const briefing = dashboard?.briefing
   const weeklyBriefing = dashboard?.weeklyBriefing
   const projectInsights: any[] = dashboard?.projectInsights || []
-  const selectedProject = projectInsights.find(project => project.id === selectedProjectId)
+  const selectedProject = projectWorkspace.status === 'ready' &&
+    projectWorkspace.project?.id === selectedProjectId ? projectWorkspace.project : null
   const tasks: Task[] = dashboard?.tasks || []
   const taskReviewQueue: Task[] = dashboard?.taskReviewQueue || []
   const taskReminders: any[] = dashboard?.taskReminders || []
@@ -500,6 +529,7 @@ function AiAssistantPage() {
       status: task.status === 'done' ? 'todo' : 'done'
     })
     await load()
+    if (selectedProjectId) setProjectWorkspaceRefreshKey(value => value + 1)
   }
 
   const saveTask = async () => {
@@ -1572,13 +1602,16 @@ function AiAssistantPage() {
             <div><span className="assistant-eyebrow">PROJECT INTELLIGENCE</span><h3>项目驾驶舱</h3></div>
             <span className="assistant-count">{projectInsights.length} 个项目</span>
           </div>
+          {dashboard?.projectPayloadPolicy?.dossier === 'on_demand' && <small className="assistant-evidence">
+            首页只加载项目进度目录；任务、事件、候选与原文证据会在点击项目后按需读取。
+          </small>}
           {projectInsights.length ? <div className="assistant-project-grid">
             {projectInsights.map(project => <button key={project.id} onClick={() => setSelectedProjectId(project.id)}>
               <div><strong>{project.name}</strong><span>{project.phase === 'completed' ? '已完成' : project.phase === 'active' ? '推进中' : project.phase === 'planned' ? '已规划' : '发现阶段'}</span></div>
               <p>{project.summary || (project.inferred ? '从待办项目字段识别，等待更多图谱证据。' : '等待更多项目证据补充。')}</p>
               <div className="assistant-project-progress"><i style={{ width: `${project.progress}%` }} /><span>{project.progress}%</span></div>
-              <small>{project.activeTaskCount} 项进行中 · {project.members.length} 位已确认参与者 · {project.risks.length} 个风险
-                {project.pendingReview?.total ? ` · ${project.pendingReview.total} 条候选待确认` : ''}
+              <small>{project.activeTaskCount} 项进行中 · {project.memberCount} 位已确认参与者 · {project.riskCount} 个风险
+                {project.pendingReviewTotal ? ` · ${project.pendingReviewTotal} 条候选待确认` : ''}
               </small>
             </button>)}
           </div> : <div className="assistant-empty">当聊天中识别到项目实体或待办归属项目后，这里会自动形成项目进度、风险、里程碑和决策视图。</div>}
@@ -2641,6 +2674,27 @@ function AiAssistantPage() {
               }}>在统一记忆中检索此实体</button>
               <button className="primary" onClick={() => setShowEntityDossier(false)}>完成</button>
             </footer>
+          </div>
+        </div>
+      )}
+
+      {selectedProjectId && projectWorkspace.status === 'loading' && (
+        <div className="assistant-modal-backdrop">
+          <div className="assistant-project-modal assistant-project-state">
+            <header><div><span className="assistant-eyebrow">PROJECT DOSSIER</span><h2>正在加载项目档案…</h2></div>
+              <button aria-label="关闭项目详情" onClick={() => setSelectedProjectId('')}><X size={18} /></button></header>
+            <div className="assistant-empty">正在本机聚合任务、可信关系、事实、事件和有界原文证据。</div>
+          </div>
+        </div>
+      )}
+
+      {selectedProjectId && projectWorkspace.status === 'error' && (
+        <div className="assistant-modal-backdrop">
+          <div className="assistant-project-modal assistant-project-state">
+            <header><div><span className="assistant-eyebrow">PROJECT DOSSIER</span><h2>项目档案读取失败</h2></div>
+              <button aria-label="关闭项目详情" onClick={() => setSelectedProjectId('')}><X size={18} /></button></header>
+            <div className="assistant-empty">{projectWorkspace.error}</div>
+            <footer><button onClick={() => setProjectWorkspaceRefreshKey(value => value + 1)}>重试</button></footer>
           </div>
         </div>
       )}

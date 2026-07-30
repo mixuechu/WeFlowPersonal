@@ -618,6 +618,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     dashboard: () => ipcRenderer.invoke('ai-assistant:dashboard'),
     getGraphReviewPage: (options?: any) => ipcRenderer.invoke('ai-assistant:getGraphReviewPage', options),
     getGraphWorkspace: (options?: any) => ipcRenderer.invoke('ai-assistant:getGraphWorkspace', options),
+    getProjectWorkspace: (projectId: string) => ipcRenderer.invoke('ai-assistant:getProjectWorkspace', projectId),
     sync: () => ipcRenderer.invoke('ai-assistant:sync'),
     cancelSync: () => ipcRenderer.invoke('ai-assistant:cancelSync'),
     getSettings: () => ipcRenderer.invoke('ai-assistant:getSettings'),
