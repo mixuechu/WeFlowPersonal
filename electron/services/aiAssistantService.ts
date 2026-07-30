@@ -38,6 +38,10 @@ import {
   canApplyEntitySummaryCandidate
 } from './entitySummaryPolicy'
 import {
+  buildEntityAliasCandidates,
+  canApplyEntityAliasCandidate
+} from './entityAliasPolicy'
+import {
   enqueueUniqueNotification,
   markNotificationAttempt,
   type NotificationOutbox
@@ -158,7 +162,7 @@ type AssistantState = {
   graph: {
     entities: GraphEntity[]
     relations: GraphRelation[]
-    reviewQueue: Array<{ id: string; kind: 'possible_duplicate' | 'relation' | 'entity_summary'; title: string; detail: string; confidence: number; status: 'pending' | 'confirmed' | 'rejected'; createdAt: string; leftEntityId?: string; rightEntityId?: string; relationId?: string; entityId?: string; entityIdentityVersion?: number; previousSummary?: string; summaryText?: string; evidence?: Array<{ messageId: string; sessionId: string; timestamp: number; sender: string; excerpt: string }>; candidateSource?: string; candidateSignals?: Array<{ source: string; label: string; value: string }> }>
+    reviewQueue: Array<{ id: string; kind: 'possible_duplicate' | 'relation' | 'entity_summary' | 'entity_alias'; title: string; detail: string; confidence: number; status: 'pending' | 'confirmed' | 'rejected'; createdAt: string; leftEntityId?: string; rightEntityId?: string; relationId?: string; entityId?: string; entityIdentityVersion?: number; entityCanonicalName?: string; previousSummary?: string; summaryText?: string; aliasText?: string; evidence?: Array<{ messageId: string; sessionId: string; timestamp: number; sender: string; excerpt: string }>; candidateSource?: string; candidateSignals?: Array<{ source: string; label: string; value: string }> }>
     identityScan: { lastFullScanAt: string | null; lastRunAt: string | null; lastMode: 'incremental' | 'full' | null; lastCandidateCount: number }
   }
 }
@@ -1082,9 +1086,15 @@ export class AiAssistantService {
         ? ownerName
         : rawName
       if (!canonicalName || reservedNames.has(canonicalName.toLowerCase())) continue
-      const resolution = planExtractedEntityResolution(item, this.state.graph.entities)
+      const resolution = planExtractedEntityResolution(
+        { ...item, canonicalName, aliases: itemAliases },
+        this.state.graph.entities
+      )
       const accountIds = resolution.verifiedAccountIds
-      const aliases = [...new Set(itemAliases.filter(alias => !reservedNames.has(alias.trim().toLowerCase()) && alias !== canonicalName))]
+      const aliases = [...new Set(resolution.verifiedAliases
+        .filter(alias => !reservedNames.has(alias.trim().toLowerCase()) && alias !== canonicalName))]
+      const candidateAliases = [...new Set(resolution.candidateAliases
+        .filter(alias => !reservedNames.has(alias.trim().toLowerCase()) && alias !== canonicalName))]
       const existing = resolution.existing || undefined
       const id = existing?.id || `ent_${crypto.randomUUID()}`
       tempIds.set(String(item.tempId || id), id)
@@ -1110,6 +1120,18 @@ export class AiAssistantService {
         })
         if (summaryCandidate && !this.state.graph.reviewQueue.some(review => review.id === summaryCandidate.id)) {
           this.state.graph.reviewQueue.push(summaryCandidate)
+        }
+        for (const aliasCandidate of buildEntityAliasCandidates({
+          entity: existing,
+          aliases: candidateAliases,
+          evidenceMessages: item.__evidenceMessages,
+          evidenceKeys: evidenceIds,
+          confidence: item.confidence,
+          createdAt: now
+        })) {
+          if (!this.state.graph.reviewQueue.some(review => review.id === aliasCandidate.id)) {
+            this.state.graph.reviewQueue.push(aliasCandidate)
+          }
         }
         this.enqueueIdentityCandidates(existing, now)
       } else {
@@ -1142,6 +1164,14 @@ export class AiAssistantService {
           createdAt: now
         })
         if (summaryCandidate) this.state.graph.reviewQueue.push(summaryCandidate)
+        this.state.graph.reviewQueue.push(...buildEntityAliasCandidates({
+          entity: created,
+          aliases: candidateAliases,
+          evidenceMessages: item.__evidenceMessages,
+          evidenceKeys: evidenceIds,
+          confidence: item.confidence,
+          createdAt: now
+        }))
         this.enqueueIdentityCandidates(created, now)
       }
     }
@@ -2792,6 +2822,21 @@ export class AiAssistantService {
         }
       }
     }
+    if (review.kind === 'entity_alias' && review.entityId) {
+      const entity = this.state.graph.entities.find(item => item.id === review.entityId)
+      if (decision === 'confirmed' && entity) {
+        if (canApplyEntityAliasCandidate(review, entity)) {
+          const alias = String(review.aliasText || '').trim().slice(0, 100)
+          entity.aliases = [...new Set([...entity.aliases, alias])]
+          entity.identityVersion += 1
+          entity.updatedAt = new Date().toISOString()
+          this.enqueueIdentityCandidates(entity, entity.updatedAt)
+        } else {
+          review.status = 'rejected'
+          review.detail = `${review.detail} 实体名称已变化或候选无效，未写入别名。`
+        }
+      }
+    }
     if (review.kind === 'relation' && review.relationId) {
       const relation = this.state.graph.relations.find(item => item.id === review.relationId)
       if (relation) {
@@ -2848,6 +2893,13 @@ export class AiAssistantService {
         }
         this.state.graph.relations = [...normalizedRelations.values()]
         this.state.graph.entities = this.state.graph.entities.filter(entity => entity.id !== source.id)
+        for (const pending of this.state.graph.reviewQueue) {
+          if (pending.status === 'pending' && pending.entityId === source.id &&
+              (pending.kind === 'entity_alias' || pending.kind === 'entity_summary')) {
+            pending.status = 'rejected'
+            pending.detail = `${pending.detail} 原实体已合并，此候选自动关闭。`
+          }
+        }
         personalMemoryStore.mergeEntityEventParticipants(source.id, target.id)
         personalMemoryStore.syncGraph(this.state.graph)
         personalMemoryStore.recordIdentityDecision(source.id, target.id, 'merged', source.identityVersion, target.identityVersion, review.detail)

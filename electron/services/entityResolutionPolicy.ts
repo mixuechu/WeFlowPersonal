@@ -12,6 +12,11 @@ function identityNames(identity: any): string[] {
   ].map(normalize).filter(value => value.length >= 2)
 }
 
+function requestedAliases(item: any): string[] {
+  return [...new Set((Array.isArray(item?.aliases) ? item.aliases : [])
+    .map((value: unknown) => String(value || '').trim()).filter(Boolean))]
+}
+
 export function planExtractedEntityResolution(
   item: any,
   existingEntities: any[]
@@ -19,25 +24,36 @@ export function planExtractedEntityResolution(
   existing: any | null
   verifiedAccountIds: string[]
   rejectedAccountIds: string[]
+  verifiedAliases: string[]
+  candidateAliases: string[]
   sameNameCandidates: any[]
   resolution: 'verified_account' | 'non_person_exact_name' | 'create_candidate'
 } {
   const type = String(item?.type || 'person')
-  const names = new Set([
-    item?.canonicalName,
-    ...(Array.isArray(item?.aliases) ? item.aliases : [])
-  ].map(normalize).filter(value => value.length >= 2))
   const requestedAccounts = [...new Set(
     (Array.isArray(item?.accountIds) ? item.accountIds : []).map(String).filter(Boolean)
   )]
   const messages = Array.isArray(item?.__evidenceMessages) ? item.__evidenceMessages : []
+  const aliases = requestedAliases(item)
+  const canonicalName = normalize(item?.canonicalName)
+  const verifiedAliases = aliases.filter(alias => {
+    const normalizedAlias = normalize(alias)
+    return messages.some(message => {
+      if (type === 'group' && message?.isGroup && normalize(message?.sessionName) === canonicalName) {
+        return normalize(message?.sessionName) === normalizedAlias
+      }
+      const names = identityNames(message?.senderIdentity)
+      return names.includes(canonicalName) && names.includes(normalizedAlias)
+    })
+  })
+  const candidateAliases = aliases.filter(alias => !verifiedAliases.includes(alias))
   const verifiedAccountIds = requestedAccounts.filter(accountId => messages.some(message => {
     if (type === 'group' && message?.isGroup && String(message.sessionId || '') === accountId) {
-      return names.has(normalize(message.sessionName))
+      return canonicalName === normalize(message.sessionName)
     }
     const identity = message?.senderIdentity
     return String(identity?.wxid || '') === accountId &&
-      identityNames(identity).some(name => names.has(name))
+      identityNames(identity).includes(canonicalName)
   }))
   const rejectedAccountIds = requestedAccounts.filter(accountId => !verifiedAccountIds.includes(accountId))
   const accountMatches = existingEntities.filter(entity =>
@@ -47,6 +63,8 @@ export function planExtractedEntityResolution(
       existing: accountMatches[0],
       verifiedAccountIds,
       rejectedAccountIds,
+      verifiedAliases,
+      candidateAliases,
       sameNameCandidates: [],
       resolution: 'verified_account'
     }
@@ -59,6 +77,8 @@ export function planExtractedEntityResolution(
       existing: sameNameCandidates[0],
       verifiedAccountIds,
       rejectedAccountIds,
+      verifiedAliases,
+      candidateAliases,
       sameNameCandidates,
       resolution: 'non_person_exact_name'
     }
@@ -67,6 +87,8 @@ export function planExtractedEntityResolution(
     existing: null,
     verifiedAccountIds,
     rejectedAccountIds,
+    verifiedAliases,
+    candidateAliases,
     sameNameCandidates,
     resolution: 'create_candidate'
   }

@@ -34,6 +34,10 @@ import {
   buildEntitySummaryCandidate,
   canApplyEntitySummaryCandidate
 } from '../electron/services/entitySummaryPolicy.ts'
+import {
+  buildEntityAliasCandidates,
+  canApplyEntityAliasCandidate
+} from '../electron/services/entityAliasPolicy.ts'
 import { enqueueUniqueNotification, markNotificationAttempt } from '../electron/services/notificationOutbox.ts'
 import { findCommonGraphNeighbors } from '../electron/services/graphCommonNeighbors.ts'
 import { buildProjectInsights } from '../electron/services/projectInsights.ts'
@@ -553,7 +557,8 @@ test('extracted people reuse only evidence-verified account anchors, never names
       wxid: 'wxid_zhang',
       contactRemark: '张三',
       wechatNickname: 'Zhang',
-      displayName: '张三'
+      displayName: '张三',
+      alias: '老张'
     }
   }]
   const sameNameOnly = planExtractedEntityResolution({
@@ -570,13 +575,15 @@ test('extracted people reuse only evidence-verified account anchors, never names
   const verified = planExtractedEntityResolution({
     type: 'person',
     canonicalName: '张三',
-    aliases: ['老张'],
+    aliases: ['老张', '虚构别名'],
     accountIds: ['wxid_zhang', 'wxid_forged'],
     __evidenceMessages: senderEvidence
   }, existing)
   assert.equal(verified.existing?.id, 'person-existing')
   assert.deepEqual(verified.verifiedAccountIds, ['wxid_zhang'])
   assert.deepEqual(verified.rejectedAccountIds, ['wxid_forged'])
+  assert.deepEqual(verified.verifiedAliases, ['老张'])
+  assert.deepEqual(verified.candidateAliases, ['虚构别名'])
 
   const nameMismatch = planExtractedEntityResolution({
     type: 'person',
@@ -588,6 +595,22 @@ test('extracted people reuse only evidence-verified account anchors, never names
   assert.deepEqual(nameMismatch.verifiedAccountIds, [])
   assert.deepEqual(nameMismatch.rejectedAccountIds, ['wxid_zhang'])
 
+  const crossSenderAlias = planExtractedEntityResolution({
+    type: 'person',
+    canonicalName: '张三',
+    aliases: ['李四'],
+    accountIds: ['wxid_other'],
+    __evidenceMessages: [{
+      senderIdentity: {
+        wxid: 'wxid_other',
+        displayName: '李四'
+      }
+    }]
+  }, existing)
+  assert.deepEqual(crossSenderAlias.verifiedAccountIds, [])
+  assert.deepEqual(crossSenderAlias.verifiedAliases, [])
+  assert.deepEqual(crossSenderAlias.candidateAliases, ['李四'])
+
   const organization = planExtractedEntityResolution({
     type: 'organization',
     canonicalName: '示例公司',
@@ -597,6 +620,46 @@ test('extracted people reuse only evidence-verified account anchors, never names
   }, existing)
   assert.equal(organization.existing?.id, 'org-existing')
   assert.equal(organization.resolution, 'non_person_exact_name')
+})
+
+test('unverified aliases remain evidence-backed review candidates', () => {
+  const entity = {
+    id: 'person-a',
+    canonicalName: '张三',
+    aliases: ['老张']
+  }
+  const candidates = buildEntityAliasCandidates({
+    entity,
+    aliases: ['老张', '三哥', '三哥'],
+    evidenceMessages: [{
+      sessionId: 'session-a',
+      timestamp: 1720000000,
+      sender: '李四',
+      content: '三哥说这个项目周五完成。'
+    }],
+    evidenceKeys: ['wechat:session-a:message-a'],
+    confidence: 0.76,
+    createdAt: '2026-07-30T12:00:00.000Z'
+  })
+  assert.equal(candidates.length, 1)
+  assert.equal(candidates[0].kind, 'entity_alias')
+  assert.equal(candidates[0].aliasText, '三哥')
+  assert.equal(candidates[0].status, 'pending')
+  assert.match(candidates[0].evidence[0].excerpt, /三哥/)
+  assert.equal(canApplyEntityAliasCandidate(candidates[0], entity), true)
+  assert.equal(canApplyEntityAliasCandidate(candidates[0], {
+    ...entity,
+    canonicalName: '已改名实体'
+  }), false)
+
+  assert.deepEqual(buildEntityAliasCandidates({
+    entity,
+    aliases: ['三哥'],
+    evidenceMessages: [],
+    evidenceKeys: [],
+    confidence: 0.8,
+    createdAt: '2026-07-30T12:00:00.000Z'
+  }), [])
 })
 
 test('entity summaries remain evidence-backed candidates until non-stale confirmation', () => {

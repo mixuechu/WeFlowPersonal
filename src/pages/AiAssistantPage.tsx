@@ -1809,14 +1809,22 @@ function AiAssistantPage() {
                     <div key={evidence.messageId}><small>{evidence.sender || '原文'}：“{evidence.excerpt}”</small></div>)}
                   <div><small>确认后才会写入档案和可信检索；拒绝不会修改现有摘要。</small></div>
                 </div>}
+                {review.kind === 'entity_alias' && <div className="assistant-review-note">
+                  <div><b>建议别名：</b><span>{review.aliasText}</span></div>
+                  {(review.evidence || []).map((evidence: any) =>
+                    <div key={evidence.messageId}><small>{evidence.sender || '原文'}：“{evidence.excerpt}”</small></div>)}
+                  <div><small>确认后才会参与身份消歧、合并建议和统一检索。</small></div>
+                </div>}
                 <p>{review.detail}</p><small>{Math.round(review.confidence * 100)}% 可信 · {
                   review.kind === 'possible_duplicate'
                     ? '确认后合并身份'
                     : review.kind === 'entity_summary'
                       ? '确认后写入可信摘要'
+                      : review.kind === 'entity_alias'
+                        ? '确认后写入身份别名'
                       : '确认后写入关系'
                 }</small></div>
-              <div><button onClick={() => void decideReview(review.id, 'rejected')}>拒绝</button><button className="primary" disabled={review.kind === 'possible_duplicate' && (!review.leftEntityId || !review.rightEntityId)} title={!review.leftEntityId || !review.rightEntityId ? '候选信息不完整，暂不能合并' : ''} onClick={() => void decideReview(review.id, 'confirmed')}>{review.kind === 'relation' ? '确认此方向' : '确认'}</button></div></>
+              <div><button onClick={() => void decideReview(review.id, 'rejected')}>拒绝</button><button className="primary" disabled={review.kind === 'possible_duplicate' && (!review.leftEntityId || !review.rightEntityId)} title={review.kind === 'possible_duplicate' && (!review.leftEntityId || !review.rightEntityId) ? '候选信息不完整，暂不能合并' : ''} onClick={() => void decideReview(review.id, 'confirmed')}>{review.kind === 'relation' ? '确认此方向' : '确认'}</button></div></>
               })()}
             </article>)}
             {!pendingReviews.length && <div className="assistant-empty">当前没有等待确认的身份或关系。</div>}
