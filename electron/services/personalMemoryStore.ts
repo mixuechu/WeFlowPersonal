@@ -272,6 +272,20 @@ export class PersonalMemoryStore {
       ) STRICT;
       CREATE INDEX IF NOT EXISTS idx_task_history_task ON task_history(task_id,created_at);
 
+      CREATE TABLE IF NOT EXISTS task_review_decisions (
+        evidence_fingerprint TEXT PRIMARY KEY,
+        task_id TEXT NOT NULL,
+        decision TEXT NOT NULL CHECK(decision IN ('mine','rejected')),
+        title TEXT NOT NULL DEFAULT '',
+        source TEXT NOT NULL DEFAULT '',
+        evidence_json TEXT NOT NULL DEFAULT '[]',
+        suppression_count INTEGER NOT NULL DEFAULT 0,
+        last_suppressed_at TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      ) STRICT;
+      CREATE INDEX IF NOT EXISTS idx_task_review_decisions_updated ON task_review_decisions(updated_at);
+
       CREATE TABLE IF NOT EXISTS assistant_conversations (
         id TEXT PRIMARY KEY,
         title TEXT NOT NULL,
@@ -810,6 +824,7 @@ export class PersonalMemoryStore {
       this.db.prepare('DELETE FROM relation_history WHERE subject_id=? OR object_id=?').run(entityId, entityId)
       deleteIds('events', 'id', preview.eventIds)
       deleteIds('task_history', 'task_id', taskIds)
+      deleteIds('task_review_decisions', 'task_id', taskIds)
       this.db.prepare('DELETE FROM review_queue WHERE payload_json LIKE ?').run(`%${entityId}%`)
       this.db.prepare('DELETE FROM merge_history WHERE source_entity_id=? OR target_entity_id=?').run(entityId, entityId)
       this.db.prepare('DELETE FROM identity_decisions WHERE left_entity_id=? OR right_entity_id=?').run(entityId, entityId)
@@ -2116,6 +2131,68 @@ export class PersonalMemoryStore {
       SELECT * FROM task_history WHERE task_id IN (${placeholders})
       ORDER BY created_at DESC,id DESC LIMIT ?
     `).all(...ids, Math.max(1, Math.min(1000, limit))) as any[]
+  }
+
+  recordTaskReviewDecision(input: {
+    evidenceFingerprint: string
+    taskId: string
+    decision: 'mine' | 'rejected'
+    title?: string
+    source?: string
+    evidence?: any[]
+  }): any {
+    if (!this.db) return null
+    const now = new Date().toISOString()
+    this.db.prepare(`
+      INSERT INTO task_review_decisions(
+        evidence_fingerprint,task_id,decision,title,source,evidence_json,created_at,updated_at
+      ) VALUES(?,?,?,?,?,?,?,?)
+      ON CONFLICT(evidence_fingerprint) DO UPDATE SET
+        task_id=excluded.task_id,decision=excluded.decision,title=excluded.title,source=excluded.source,
+        evidence_json=excluded.evidence_json,updated_at=excluded.updated_at
+    `).run(
+      input.evidenceFingerprint, input.taskId, input.decision, String(input.title || ''),
+      String(input.source || ''), JSON.stringify(input.evidence || []), now, now
+    )
+    return this.getTaskReviewDecision(input.evidenceFingerprint)
+  }
+
+  getTaskReviewDecision(evidenceFingerprint: string): any {
+    if (!this.db) return null
+    return this.db.prepare(`
+      SELECT * FROM task_review_decisions WHERE evidence_fingerprint=?
+    `).get(evidenceFingerprint) || null
+  }
+
+  recordTaskReviewSuppression(evidenceFingerprint: string): void {
+    if (!this.db) return
+    const now = new Date().toISOString()
+    this.db.prepare(`
+      UPDATE task_review_decisions SET suppression_count=suppression_count+1,
+        last_suppressed_at=?,updated_at=? WHERE evidence_fingerprint=? AND decision='rejected'
+    `).run(now, now, evidenceFingerprint)
+  }
+
+  listTaskReviewDecisions(limit = 50): any[] {
+    if (!this.db) return []
+    return (this.db.prepare(`
+      SELECT * FROM task_review_decisions ORDER BY updated_at DESC LIMIT ?
+    `).all(Math.max(1, Math.min(300, Number(limit) || 50))) as any[]).map(row => {
+      let evidence: any[] = []
+      try { evidence = JSON.parse(String(row.evidence_json || '[]')) } catch {}
+      return { ...row, evidence }
+    })
+  }
+
+  getTaskReviewFeedbackStats(): any {
+    if (!this.db) return { mine: 0, rejected: 0, suppressed: 0 }
+    return this.db.prepare(`
+      SELECT
+        SUM(CASE WHEN decision='mine' THEN 1 ELSE 0 END) AS mine,
+        SUM(CASE WHEN decision='rejected' THEN 1 ELSE 0 END) AS rejected,
+        COALESCE(SUM(suppression_count),0) AS suppressed
+      FROM task_review_decisions
+    `).get() || { mine: 0, rejected: 0, suppressed: 0 }
   }
 
   correctClaim(id: string, input: { value: string; validFrom?: string; validTo?: string }): any {

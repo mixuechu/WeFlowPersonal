@@ -655,6 +655,15 @@
 .assistant-review-item.resolved { background: rgba(247,247,243,.66); }
 .assistant-review-item p { margin: 5px 0; color: #74786f; font-size: 11px; }
 .assistant-review-item small { color: #8b8f88; font-size: 9px; }
+.assistant-task-feedback-summary { display: grid; grid-template-columns: repeat(3,minmax(90px,1fr)); gap: 7px; margin: 8px 0 4px; }
+.assistant-task-feedback-summary > span { padding: 8px 9px; border-radius: 8px; background: #f1f4f0; }
+.assistant-task-feedback-summary b,.assistant-task-feedback-summary small { display: block; }
+.assistant-task-feedback-summary b { color: #355344; font-size: 14px; }
+.assistant-task-feedback-summary small { margin-top: 2px; color: #7d887f; font-size: 8px; }
+.assistant-task-feedback-summary p { grid-column: 1 / -1; margin: 0; color: #7b847d; font-size: 8px; line-height: 1.5; }
+.assistant-task-feedback-history { margin-top: 8px; color: #68746b; font-size: 9px; }
+.assistant-task-feedback-history summary { cursor: pointer; }
+.assistant-task-feedback-history small { display: block; margin-top: 5px; }
 .assistant-identity-pair { margin: 9px 0; display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
 .assistant-identity-pair > button { padding: 9px; border: 1px solid #e3e1da; border-radius: 9px; display: grid; gap: 3px; text-align: left; color: inherit; background: #faf8f2; cursor: pointer; }
 .assistant-identity-pair > button:hover { border-color: #9eb4a4; }

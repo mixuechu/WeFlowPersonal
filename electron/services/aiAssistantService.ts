@@ -16,6 +16,7 @@ import { extractScannedPdfText, getPdfOcrStatus } from './pdfOcrService'
 import { exportService } from './export'
 import { filterMemorySearchResults, type MemorySearchOptions } from './memorySearchFilters'
 import { buildContextualMemoryQuestion, buildMemoryQueryPlan } from './memoryQueryPlanner'
+import { applyTaskReviewFeedback, taskEvidenceFingerprint } from './taskReviewFeedback'
 import {
   applyReminderPreferences,
   buildTaskReminders,
@@ -1847,6 +1848,16 @@ export class AiAssistantService {
           excerpt: redact(String(message.content)).slice(0, 300)
         }))
       }
+      const feedbackFingerprint = taskEvidenceFingerprint(task)
+      const feedback = feedbackFingerprint
+        ? personalMemoryStore.getTaskReviewDecision(feedbackFingerprint)
+        : null
+      const reviewedTask = applyTaskReviewFeedback(task, feedback)
+      if (!reviewedTask) {
+        personalMemoryStore.recordTaskReviewSuppression(feedbackFingerprint)
+        continue
+      }
+      Object.assign(task, reviewedTask)
       const previous = existing.get(task.id) || findMatchingTask(task, this.state.tasks)
       if (previous) task.id = previous.id
       const merged: AssistantTask = previous ? {
@@ -2152,6 +2163,16 @@ export class AiAssistantService {
               excerpt: redact(String(message.content)).slice(0, 300)
             }))
           }
+          const feedbackFingerprint = taskEvidenceFingerprint(task)
+          const feedback = feedbackFingerprint
+            ? personalMemoryStore.getTaskReviewDecision(feedbackFingerprint)
+            : null
+          const reviewedTask = applyTaskReviewFeedback(task, feedback)
+          if (!reviewedTask) {
+            personalMemoryStore.recordTaskReviewSuppression(feedbackFingerprint)
+            continue
+          }
+          Object.assign(task, reviewedTask)
           ;(task as any).dependsOnTitles = (Array.isArray(item.dependsOnTitles) ? item.dependsOnTitles : [])
             .map((value: any) => String(value || '').trim()).filter(Boolean).slice(0, 20)
           tasks.set(task.id, task)
@@ -2468,6 +2489,10 @@ export class AiAssistantService {
         total: allTaskReminders.length
       },
       taskHistory,
+      taskReviewFeedback: {
+        ...personalMemoryStore.getTaskReviewFeedbackStats(),
+        recent: personalMemoryStore.listTaskReviewDecisions(20)
+      },
       entityInsights,
       projectInsights,
       cursor: this.state.cursor,
@@ -2862,6 +2887,17 @@ export class AiAssistantService {
     const index = this.state.tasks.findIndex(item => item.id === id && item.classification !== 'mine')
     if (index < 0) return null
     const task = this.state.tasks[index]
+    const evidenceFingerprint = taskEvidenceFingerprint(task)
+    if (evidenceFingerprint) {
+      personalMemoryStore.recordTaskReviewDecision({
+        evidenceFingerprint,
+        taskId: task.id,
+        decision,
+        title: task.title,
+        source: task.source,
+        evidence: task.evidence || []
+      })
+    }
     if (decision === 'rejected') {
       this.state.tasks.splice(index, 1)
       this.saveState()

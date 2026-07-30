@@ -201,6 +201,7 @@ function AiAssistantPage() {
   const taskReminders: any[] = dashboard?.taskReminders || []
   const reminderPreferences = dashboard?.reminderPreferences
   const taskHistory: any[] = dashboard?.taskHistory || []
+  const taskReviewFeedback = dashboard?.taskReviewFeedback || { mine: 0, rejected: 0, suppressed: 0, recent: [] }
   const openTasks = useMemo(() => tasks.filter(task => !['done', 'cancelled'].includes(task.status)), [tasks])
   const displayedTasks = useMemo(() => tasks.filter(task =>
     (taskStatusFilter === 'all' || task.status === taskStatusFilter) &&
@@ -1338,11 +1339,17 @@ function AiAssistantPage() {
           </div> : <div className="assistant-empty">当聊天中识别到项目实体或待办归属项目后，这里会自动形成项目进度、风险、里程碑和决策视图。</div>}
         </section>
 
-        {taskReviewQueue.length > 0 && (
+        {(taskReviewQueue.length > 0 || taskReviewFeedback.mine || taskReviewFeedback.rejected) && (
           <section className="assistant-panel assistant-review-section">
             <div className="assistant-section-heading">
               <div><span className="assistant-eyebrow">ASSIGNEE REVIEW</span><h3>待确认归属</h3></div>
               <span className="assistant-count">{taskReviewQueue.length} 项不会计入你的待办</span>
+            </div>
+            <div className="assistant-task-feedback-summary">
+              <span><b>{Number(taskReviewFeedback.mine || 0)}</b><small>已确认为我的</small></span>
+              <span><b>{Number(taskReviewFeedback.rejected || 0)}</b><small>已标记不是我的</small></span>
+              <span><b>{Number(taskReviewFeedback.suppressed || 0)}</b><small>重复候选已拦截</small></span>
+              <p>反馈只绑定原始证据，不按相似文字猜测。相同证据不会反复询问；出现新证据时仍会重新判断。</p>
             </div>
             {taskReviewQueue.map(task => (
               <article className="assistant-review-item" key={task.id}>
@@ -1357,6 +1364,13 @@ function AiAssistantPage() {
                 </div>
               </article>
             ))}
+            {!!taskReviewFeedback.recent?.length && <details className="assistant-task-feedback-history">
+              <summary>查看最近归属反馈</summary>
+              {taskReviewFeedback.recent.map((item: any) => <small key={item.evidence_fingerprint}>
+                {new Date(item.updated_at).toLocaleString('zh-CN')} · {item.decision === 'mine' ? '确认为我的' : '不是我的'} · {item.title || '未命名事项'}
+                {item.suppression_count ? ` · 已拦截 ${item.suppression_count} 次重复抽取` : ''}
+              </small>)}
+            </details>}
           </section>
         )}
 
