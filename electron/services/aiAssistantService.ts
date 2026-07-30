@@ -4031,6 +4031,14 @@ export class AiAssistantService {
     return result
   }
 
+  ignoreMemoryItem(kind: 'claim' | 'event', id: string): any {
+    if (kind !== 'claim' && kind !== 'event') throw new Error('只有事实和事件可以标记为不重要')
+    return {
+      ...personalMemoryStore.deleteMemoryItem(kind, id, 'not_important'),
+      spaceReclaimedForReuse: true
+    }
+  }
+
   deleteMemoryResource(id: string): any {
     return personalMemoryStore.deleteResource(id)
   }

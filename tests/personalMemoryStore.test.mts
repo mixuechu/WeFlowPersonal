@@ -3346,7 +3346,7 @@ test('permanent structured-memory deletion is audited and suppresses identical r
     evidence: 1, related: 0, searchDocuments: 1, assistantMessages: 1
   })
   assert.equal(store.deleteMemoryItem('claim', claim.id).suppressed, true)
-  assert.equal(store.deleteMemoryItem('event', event.id).suppressed, true)
+  assert.equal(store.deleteMemoryItem('event', event.id, 'not_important').suppressed, true)
   assert.equal(store.deleteMemoryItem('relation', relation.id).suppressed, true)
   assert.equal(store.getMemoryFeed().claims.length, 0)
   assert.equal(store.getMemoryFeed().events.length, 0)
@@ -3367,6 +3367,7 @@ test('permanent structured-memory deletion is audited and suppresses identical r
 
   const audit = store.listMemoryDeletionAudit()
   assert.equal(audit.length, 3)
+  assert.equal(audit.find(item => item.item_kind === 'event')?.reason, 'not_important')
   assert.equal(audit.every(item => /^[a-f0-9]{20}$/.test(item.item_fingerprint)), true)
   assert.equal(JSON.stringify(audit).includes('敏感'), false)
   assert.equal(store.getDiagnostics().integrity, 'ok')
