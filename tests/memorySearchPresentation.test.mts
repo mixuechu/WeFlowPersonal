@@ -43,4 +43,5 @@ test('memory evidence presentation preserves provenance and opens only valid loc
   assert.equal(evidenceLocalMessageId({ messageId: 'calendar:event:12345' }), null)
   assert.equal(evidenceLocalMessageId({ messageId: 'not-a-local-id' }), null)
   assert.equal(evidenceLocalMessageId({ messageId: '-1' }), null)
+  assert.equal(normalizeMemoryEvidence({ role: 'contradiction' }).role, 'contradiction')
 })

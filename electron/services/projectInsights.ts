@@ -1,3 +1,10 @@
+import {
+  boundedEvidencePayload,
+  GRAPH_QUERY_EVIDENCE_LIMIT,
+  MEMORY_CARD_EVIDENCE_LIMIT,
+  PROJECT_EVIDENCE_LIMIT
+} from '../../shared/evidencePayload.ts'
+
 function normalize(value: unknown): string {
   return String(value || '').trim().toLocaleLowerCase('zh-CN').replace(/\s+/g, '')
 }
@@ -103,21 +110,46 @@ export function buildProjectInsights(input: {
       phase,
       progress,
       members,
-      tasks,
+      tasks: tasks.map(task => ({
+        ...task,
+        ...boundedEvidencePayload(task.evidence, MEMORY_CARD_EVIDENCE_LIMIT)
+      })),
+      taskTotal: tasks.length,
       activeTaskCount: activeTasks.length,
       completedTaskCount: completedTasks.length,
       risks,
-      milestones,
-      decisions,
-      claims,
+      milestones: milestones.map(event => ({
+        ...event,
+        ...boundedEvidencePayload(event.evidence, MEMORY_CARD_EVIDENCE_LIMIT)
+      })),
+      decisions: decisions.map(event => ({
+        ...event,
+        ...boundedEvidencePayload(event.evidence, MEMORY_CARD_EVIDENCE_LIMIT)
+      })),
+      claims: claims.map(claim => ({
+        ...claim,
+        ...boundedEvidencePayload(claim.evidence, MEMORY_CARD_EVIDENCE_LIMIT)
+      })),
       pendingReview: {
-        relations: candidateRelations,
-        claims: candidateClaims,
-        milestones: pendingMilestones,
-        decisions: pendingDecisions,
+        relations: candidateRelations.map(relation => ({
+          ...relation,
+          ...boundedEvidencePayload(relation.evidence, GRAPH_QUERY_EVIDENCE_LIMIT)
+        })),
+        claims: candidateClaims.map(claim => ({
+          ...claim,
+          ...boundedEvidencePayload(claim.evidence, MEMORY_CARD_EVIDENCE_LIMIT)
+        })),
+        milestones: pendingMilestones.map(event => ({
+          ...event,
+          ...boundedEvidencePayload(event.evidence, MEMORY_CARD_EVIDENCE_LIMIT)
+        })),
+        decisions: pendingDecisions.map(event => ({
+          ...event,
+          ...boundedEvidencePayload(event.evidence, MEMORY_CARD_EVIDENCE_LIMIT)
+        })),
         total: candidateRelations.length + candidateClaims.length + pendingMilestones.length + pendingDecisions.length
       },
-      evidence: [...uniqueEvidence.values()].sort((left: any, right: any) => Number(right.timestamp || 0) - Number(left.timestamp || 0))
+      ...boundedEvidencePayload([...uniqueEvidence.values()], PROJECT_EVIDENCE_LIMIT)
     }
   }).sort((left, right) => {
     const severity = (project: any) => project.risks.filter((risk: any) => risk.severity === 'high').length * 10 + project.activeTaskCount

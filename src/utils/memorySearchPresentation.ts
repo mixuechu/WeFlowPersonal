@@ -26,7 +26,7 @@ export function normalizeMemoryEvidence(input: any): MemoryEvidence {
     timestamp: Number.isFinite(timestamp) ? timestamp : 0,
     sender: String(input?.sender || ''),
     excerpt: String(input?.excerpt || ''),
-    role: String(input?.evidence_role ?? input?.evidenceRole ?? 'support')
+    role: String(input?.evidence_role ?? input?.evidenceRole ?? input?.role ?? 'support')
   }
 }
 

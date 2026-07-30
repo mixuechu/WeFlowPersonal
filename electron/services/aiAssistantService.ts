@@ -62,7 +62,12 @@ import {
   markNotificationAttempt,
   type NotificationOutbox
 } from './notificationOutbox'
-import { boundedGraphEvidence, findCommonGraphNeighbors } from './graphCommonNeighbors'
+import { findCommonGraphNeighbors } from './graphCommonNeighbors'
+import {
+  boundedEvidencePayload,
+  GRAPH_QUERY_EVIDENCE_LIMIT,
+  MEMORY_CARD_EVIDENCE_LIMIT
+} from '../../shared/evidencePayload'
 import { buildProjectInsights } from './projectInsights'
 import { summarizeIngestionRuns } from './ingestionDiagnostics'
 import { attachLocalImageOcr, attachLocalVoiceTranscript, recoverMessageSemantics } from './messageSemanticRecovery'
@@ -2932,6 +2937,12 @@ export class AiAssistantService {
     const latest = dates[0] ? this.state.briefings[dates[0]] : null
     const tasks = this.state.tasks.filter(task => task.classification === 'mine')
     const taskReviewQueue = this.state.tasks.filter(task => task.classification !== 'mine')
+    const boundedTask = (task: AssistantTask): any => ({
+      ...task,
+      ...boundedEvidencePayload(task.evidence, MEMORY_CARD_EVIDENCE_LIMIT)
+    })
+    const taskPayload = tasks.map(boundedTask)
+    const taskReviewPayload = taskReviewQueue.map(boundedTask)
     const allTaskReminders = buildTaskReminders(tasks)
     const reminderResult = applyReminderPreferences(allTaskReminders, this.state.reminderPreferences)
     const taskHistory = personalMemoryStore.listTaskHistory(tasks.map(task => task.id))
@@ -2959,9 +2970,9 @@ export class AiAssistantService {
       .digest('hex')
       .slice(0, 16)
     return {
-      briefing: latest ? { ...latest, tasks } : null,
-      tasks,
-      taskReviewQueue,
+      briefing: latest ? { ...latest, tasks: taskPayload } : null,
+      tasks: taskPayload,
+      taskReviewQueue: taskReviewPayload,
       taskReminders: reminderResult.visible,
       reminderPreferences: {
         ...this.state.reminderPreferences,
@@ -3096,7 +3107,10 @@ export class AiAssistantService {
         insight: insights[focusEntity.id] || null,
         claims: memory.claims,
         events: memory.events,
-        relations: allRelations.slice(0, 200),
+        relations: allRelations.slice(0, 200).map(relation => ({
+          ...relation,
+          ...boundedEvidencePayload(relation.evidence, GRAPH_QUERY_EVIDENCE_LIMIT)
+        })),
         relationTotal: allRelations.length,
         relationHistory: personalMemoryStore.listRelationHistory(focusEntity.id, 300),
         entityCorrections: personalMemoryStore.listEntityCorrections(focusEntity.id, 300),
@@ -4202,7 +4216,7 @@ export class AiAssistantService {
           forward: edge.forward,
           status: edge.relation.status,
           confidence: edge.relation.confidence,
-          ...boundedGraphEvidence(edge.relation.evidence)
+          ...boundedEvidencePayload(edge.relation.evidence, GRAPH_QUERY_EVIDENCE_LIMIT)
         }]
         if (edge.nextId === toId) {
           const pathIds = [fromId, ...steps.map(step => step.toId)]

@@ -57,6 +57,7 @@ import {
 import { enqueueUniqueNotification, markNotificationAttempt } from '../electron/services/notificationOutbox.ts'
 import { GRAPH_QUERY_EVIDENCE_LIMIT, findCommonGraphNeighbors } from '../electron/services/graphCommonNeighbors.ts'
 import { buildProjectInsights } from '../electron/services/projectInsights.ts'
+import { MEMORY_CARD_EVIDENCE_LIMIT, PROJECT_EVIDENCE_LIMIT } from '../shared/evidencePayload.ts'
 import { buildTaskCalendar, extractTaskDueDate } from '../src/utils/taskCalendar.ts'
 import { filterGraphReviews, paginateGraphReviews } from '../src/utils/graphReviewFilters.ts'
 import { summarizeIngestionRuns } from '../electron/services/ingestionDiagnostics.ts'
@@ -520,6 +521,23 @@ test('event timeline filters cross-source evidence, status and time with stable 
   assert.deepEqual(confirmed.items.map(item => item.id), ['calendar-event'])
   assert.equal(store.listEventTimeline({ sourceId: 'documents' }).items[0].id, 'document-event')
   assert.equal(store.listEventTimeline({ sourceId: 'wechat' }).items[0].id, 'wechat-event')
+
+  const manyEvidence = Array.from({ length: 25 }, (_, index) => ({
+    messageId: `wechat:timeline:${index + 1}`,
+    sessionId: 'timeline-session',
+    timestamp: 1_700_000_000 + index,
+    excerpt: `时间线证据 ${index + 1}`,
+    role: 'direct'
+  }))
+  store.upsertEvents([{
+    ...makeEvent('bounded-timeline-event', 'timeline-session', '2026-07-27T10:00:00.000Z', 'candidate'),
+    evidence: manyEvidence
+  }])
+  const bounded = store.listEventTimeline({ sourceId: 'wechat' }).items
+    .find(item => item.id === 'bounded-timeline-event')
+  assert.equal(bounded.evidence_count, 25)
+  assert.equal(bounded.evidence.length, 20)
+  assert.equal(bounded.evidence.at(-1).message_id, 'wechat:timeline:25')
 }))
 
 test('calendar participant identities persist as email anchors and event merges are reversible', () => withStore(store => {
@@ -1390,8 +1408,55 @@ test('project intelligence aggregates members, progress, risks, decisions and ev
   assert.equal(project.decisions[0].id, 'decision-project')
   assert.equal(project.milestones.length, 0)
   assert.equal(project.evidence.length, 3)
+  assert.equal(project.evidenceTotal, 3)
+  assert.equal(project.taskTotal, 3)
   assert.equal(project.pendingReview.milestones[0].id, 'delivery-project')
   assert.equal(project.pendingReview.total, 1)
+})
+
+test('project dossiers bound task and aggregate evidence without hiding totals', () => {
+  const relationEvidence = Array.from({ length: PROJECT_EVIDENCE_LIMIT + 10 }, (_, index) => ({
+    messageId: `wechat:project:${index + 1}`,
+    sessionId: 'project',
+    timestamp: index + 1,
+    excerpt: `项目关系证据 ${index + 1}`
+  }))
+  const taskEvidence = Array.from({ length: MEMORY_CARD_EVIDENCE_LIMIT + 5 }, (_, index) => ({
+    messageId: `wechat:task:${index + 1}`,
+    sessionId: 'task',
+    timestamp: 100 + index,
+    excerpt: `任务证据 ${index + 1}`
+  }))
+  const [project] = buildProjectInsights({
+    entities: [
+      { id: 'bounded-project', type: 'project', canonicalName: '有界项目', aliases: [], trustStatus: 'confirmed' },
+      { id: 'bounded-person', type: 'person', canonicalName: '项目成员', aliases: [], trustStatus: 'confirmed' }
+    ],
+    relations: [{
+      id: 'bounded-project-relation',
+      subjectId: 'bounded-person',
+      objectId: 'bounded-project',
+      predicate: '参与',
+      status: 'confirmed',
+      confidence: 1,
+      evidence: relationEvidence
+    }],
+    claims: [],
+    events: [],
+    tasks: [{
+      id: 'bounded-project-task',
+      title: '处理有界项目',
+      project: '有界项目',
+      status: 'todo',
+      priority: 'medium',
+      evidence: taskEvidence
+    }]
+  })
+  assert.equal(project.evidenceTotal, relationEvidence.length + taskEvidence.length)
+  assert.equal(project.evidence.length, PROJECT_EVIDENCE_LIMIT)
+  assert.equal(project.tasks[0].evidenceTotal, taskEvidence.length)
+  assert.equal(project.tasks[0].evidence.length, MEMORY_CARD_EVIDENCE_LIMIT)
+  assert.equal(project.tasks[0].evidence.at(-1).messageId, `wechat:task:${taskEvidence.length}`)
 })
 
 test('task calendar handles leap months, Shanghai today, overdue and unscheduled work', () => {

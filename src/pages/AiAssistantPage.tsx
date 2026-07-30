@@ -2546,7 +2546,7 @@ function AiAssistantPage() {
                 {selectedEntityClaims.map((claim: any) => <article key={claim.id}>
                   <div><b>{claim.polarity === 'negative' ? '并非 ' : ''}{claim.predicate}</b><span>{claim.object_entity_name || claim.object_value || '待确认'}</span></div>
                   <small>{claim.status === 'confirmed' ? '已确认' : '待确认'} · {Math.round(Number(claim.confidence || 0) * 100)}% · {claim.source_nature === 'self_statement' ? '本人陈述' : claim.source_nature === 'other_statement' ? '他人陈述' : '模型推断'}</small>
-                  {(claim.evidence || []).map((evidence: any) => <blockquote key={`${claim.id}-${evidence.message_id}`}>“{evidence.excerpt}”</blockquote>)}
+                  <div className="assistant-evidence-stack"><EvidenceRows evidence={claim.evidence} total={claim.evidence_count} roleLabels /></div>
                 </article>)}
                 {!selectedEntityClaims.length && <em>尚无结构化事实</em>}
                 {Number(graphWorkspace.focus?.claimTotal || 0) > selectedEntityClaims.length && <em>当前档案先显示最近 {selectedEntityClaims.length} 条；可从统一记忆继续检索全部事实。</em>}
@@ -2562,7 +2562,7 @@ function AiAssistantPage() {
                       <b>{outgoing ? relation.predicate : `被${relation.predicate}`}</b><span>{neighbor?.canonicalName || neighborId}</span>
                     </button>
                     <small>{relation.status === 'confirmed' ? '已确认' : '待确认'} · {Math.round(Number(relation.confidence || 0) * 100)}%</small>
-                    {(relation.evidence || []).map((evidence: any) => <blockquote key={`${relation.id}-${evidence.messageId}`}>“{evidence.excerpt}”</blockquote>)}
+                    <div className="assistant-evidence-stack"><EvidenceRows evidence={relation.evidence} total={relation.evidenceTotal} /></div>
                     <button className="assistant-dossier-task-action danger" onClick={() => void permanentlyDeleteMemoryItem('relation', relation)}>永久删除关系</button>
                   </article>
                 })}
@@ -2575,7 +2575,7 @@ function AiAssistantPage() {
                   <div><b>{event.title}</b><span>{event.start_at || '时间待确认'}</span></div>
                   {event.description && <p>{event.description}</p>}
                   <small>{event.event_type} · {event.status === 'confirmed' ? '已确认' : '待确认'} · {event.location || '地点未记录'}</small>
-                  {(event.evidence || []).map((evidence: any) => <blockquote key={`${event.id}-${evidence.message_id}`}>“{evidence.excerpt}”</blockquote>)}
+                  <div className="assistant-evidence-stack"><EvidenceRows evidence={event.evidence} total={event.evidence_count} /></div>
                 </article>)}
                 {!selectedEntityEvents.length && <em>尚无相关事件</em>}
                 {Number(graphWorkspace.focus?.eventTotal || 0) > selectedEntityEvents.length && <em>当前档案先显示最近 {selectedEntityEvents.length} 条；可从事件时间线继续查看全部记录。</em>}
@@ -2587,7 +2587,7 @@ function AiAssistantPage() {
                     <b>{task.title}</b><span>{task.status}</span>
                   </div>
                   <small>{task.taskKind || 'action'} · {task.owner || '负责人待确认'} · {task.due || '无截止时间'}</small>
-                  {(task.evidence || []).map(evidence => <blockquote key={`${task.id}-${evidence.messageId}`}>{evidence.sender}：“{evidence.excerpt}”</blockquote>)}
+                  <div className="assistant-evidence-stack"><EvidenceRows evidence={task.evidence} total={(task as any).evidenceTotal} /></div>
                   {!['cancelled'].includes(task.status) && <button className="assistant-dossier-task-action" onClick={() => void toggleTask(task)}>
                     {task.status === 'done' ? '恢复为待处理' : '标记完成'}
                   </button>}
@@ -2657,7 +2657,7 @@ function AiAssistantPage() {
               <span><b>{selectedProject.progress}%</b><small>任务完成度</small></span>
               <span><b>{selectedProject.activeTaskCount}</b><small>进行中任务</small></span>
               <span><b>{selectedProject.risks.length}</b><small>可解释风险</small></span>
-              <span><b>{selectedProject.evidence.length}</b><small>去重证据</small></span>
+              <span><b>{selectedProject.evidenceTotal ?? selectedProject.evidence.length}</b><small>去重证据</small></span>
               <span><b>{selectedProject.pendingReview?.total || 0}</b><small>候选待确认</small></span>
             </div>
             <div className="assistant-dossier-grid">
@@ -2676,11 +2676,11 @@ function AiAssistantPage() {
                 {!selectedProject.risks.length && <em>当前没有确定性规则识别出的风险</em>}
               </section>
               <section>
-                <h3>项目任务 <small>{selectedProject.tasks.length}</small></h3>
+                <h3>项目任务 <small>{selectedProject.taskTotal ?? selectedProject.tasks.length}</small></h3>
                 {selectedProject.tasks.map((task: Task) => <article key={task.id}>
                   <div><b>{task.title}</b><span>{task.status}</span></div>
                   <small>{task.owner || '负责人待确认'} · {task.due || '无截止时间'} · {task.priority}</small>
-                  {(task.evidence || []).slice(0, 2).map(evidence => <blockquote key={evidence.messageId}>{evidence.sender}：“{evidence.excerpt}”</blockquote>)}
+                  <div className="assistant-evidence-stack"><EvidenceRows evidence={(task.evidence || []).slice(-2)} total={(task as any).evidenceTotal} /></div>
                   {task.status !== 'cancelled' && <button className="assistant-dossier-task-action" onClick={() => void toggleTask(task)}>{task.status === 'done' ? '恢复待处理' : '标记完成'}</button>}
                 </article>)}
                 {!selectedProject.tasks.length && <em>尚无归入项目的任务</em>}
@@ -2690,7 +2690,7 @@ function AiAssistantPage() {
                 {[...selectedProject.decisions, ...selectedProject.milestones].map((event: any) => <article key={event.id}>
                   <div><b>{event.title}</b><span>{event.event_type}</span></div>
                   <small>{event.start_at || '时间待确认'} · {event.status === 'confirmed' ? '已确认' : '待确认'}</small>
-                  {(event.evidence || []).slice(0, 2).map((evidence: any) => <blockquote key={evidence.message_id}>“{evidence.excerpt}”</blockquote>)}
+                  <div className="assistant-evidence-stack"><EvidenceRows evidence={(event.evidence || []).slice(-2)} total={event.evidenceTotal} /></div>
                 </article>)}
                 {!selectedProject.milestones.length && !selectedProject.decisions.length && <em>尚无里程碑或决策事件</em>}
               </section>
@@ -2711,10 +2711,8 @@ function AiAssistantPage() {
                 </article>)}
               </section>}
               <section className="assistant-dossier-wide">
-                <h3>最近原文证据 <small>{selectedProject.evidence.length}</small></h3>
-                {selectedProject.evidence.slice(0, 12).map((evidence: any, index: number) =>
-                  <blockquote key={String(evidence.messageId || evidence.message_id || index)}>“{evidence.excerpt}”</blockquote>)}
-                {!selectedProject.evidence.length && <em>等待带原文的关系、事件或任务证据</em>}
+                <h3>最近原文证据 <small>{selectedProject.evidenceTotal ?? selectedProject.evidence.length}</small></h3>
+                <div className="assistant-evidence-stack"><EvidenceRows evidence={selectedProject.evidence?.slice(-12)} total={selectedProject.evidenceTotal} /></div>
               </section>
             </div>
             <footer>

@@ -12,8 +12,7 @@ import {
   listMultiProbeSignatures
 } from './localAnnIndex.ts'
 import type { MemorySearchOptions } from './memorySearchFilters.ts'
-
-const MEMORY_CARD_EVIDENCE_LIMIT = 20
+import { MEMORY_CARD_EVIDENCE_LIMIT } from '../../shared/evidencePayload.ts'
 
 type MemoryGraph = {
   entities: any[]
@@ -1457,6 +1456,7 @@ export class PersonalMemoryStore {
       SELECT ev.*,
         (SELECT COUNT(*) FROM memory_corrections mc
           WHERE mc.item_kind='event' AND mc.item_id=ev.id) AS correction_count,
+        (SELECT COUNT(*) FROM evidence e WHERE e.event_id=ev.id) AS evidence_count,
         (SELECT mc.created_at FROM memory_corrections mc
           WHERE mc.item_kind='event' AND mc.item_id=ev.id
           ORDER BY mc.id DESC LIMIT 1) AS corrected_at
@@ -2136,6 +2136,7 @@ export class PersonalMemoryStore {
       SELECT ev.*,
         (SELECT COUNT(*) FROM memory_corrections mc
           WHERE mc.item_kind='event' AND mc.item_id=ev.id) AS correction_count,
+        (SELECT COUNT(*) FROM evidence e WHERE e.event_id=ev.id) AS evidence_count,
         (SELECT mc.created_at FROM memory_corrections mc
           WHERE mc.item_kind='event' AND mc.item_id=ev.id
           ORDER BY mc.id DESC LIMIT 1) AS corrected_at,
@@ -2151,7 +2152,10 @@ export class PersonalMemoryStore {
     `).all(...parameters, limit, offset) as any[]
     const evidenceStatement = this.db.prepare(`
       SELECT message_id,session_id,timestamp,excerpt,evidence_role
-      FROM evidence WHERE event_id=? ORDER BY timestamp
+      FROM evidence WHERE event_id=?
+      ORDER BY timestamp DESC,
+        CASE WHEN evidence_role='contradiction' THEN 0 ELSE 1 END,
+        message_id DESC LIMIT ?
     `)
     const participantStatement = this.db.prepare(`
       SELECT ep.entity_id,ep.role,e.canonical_name
@@ -2161,7 +2165,7 @@ export class PersonalMemoryStore {
       items: rows.map(event => ({
         ...event,
         participants: participantStatement.all(event.id) as any[],
-        evidence: evidenceStatement.all(event.id) as any[]
+        evidence: (evidenceStatement.all(event.id, MEMORY_CARD_EVIDENCE_LIMIT) as any[]).reverse()
       })),
       total,
       hasMore: offset + rows.length < total
