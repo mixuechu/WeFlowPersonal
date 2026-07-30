@@ -45,6 +45,7 @@ import {
   runPersonalDataSourceBatch
 } from './personalDataSources'
 import { LocalDocumentDataSource } from './localDocumentDataSource'
+import { LocalCalendarDataSource, localCalendarService } from './localCalendarDataSource'
 import {
   decryptPortableMemoryBundle,
   encryptPortableMemoryBundle,
@@ -269,6 +270,11 @@ export class AiAssistantService {
     }
     personalMemoryStore.initialize(databasePath, databaseKey)
     personalMemoryStore.registerDataSources(PERSONAL_DATA_SOURCE_CATALOG)
+    personalMemoryStore.setDataSourceAvailability(
+      'calendar',
+      localCalendarService.isAvailable(),
+      localCalendarService.isAvailable() ? '' : '当前构建未包含 macOS 日历 helper'
+    )
     const documentSource = personalMemoryStore.listDataSources().find(source => source.id === 'documents')
     const documentFolder = String(documentSource?.config?.folderPath || '')
     if (documentFolder) {
@@ -1392,6 +1398,116 @@ export class AiAssistantService {
     }
   }
 
+  private async syncLocalCalendar(): Promise<{ indexed: number; error?: string }> {
+    const source = personalMemoryStore.listDataSources().find(item => item.id === 'calendar')
+    const calendarIds = Array.isArray(source?.config?.calendarIds)
+      ? source.config.calendarIds.map(String).filter(Boolean)
+      : []
+    if (!source?.enabled || !source.available || !calendarIds.length) return { indexed: 0 }
+    const attemptedAt = new Date().toISOString()
+    personalMemoryStore.updateDataSourceRun('calendar', { status: 'running', attemptedAt })
+    let checkpoint = String(source.checkpoint || '')
+    let indexed = 0
+    try {
+      const authorization = await localCalendarService.getStatus()
+      if (!['fullAccess', 'authorized'].includes(authorization.authorization)) {
+        throw new Error('日历读取权限已失效；请在数据源连接器中重新授权')
+      }
+      const connector = new LocalCalendarDataSource(calendarIds)
+      for (let page = 0; page < 5; page += 1) {
+        const result = await runPersonalDataSourceBatch(
+          connector,
+          checkpoint,
+          async items => {
+            const updatedAt = new Date().toISOString()
+            const resources = items.map(item => {
+              const metadata: any = item.metadata || {}
+              const contentHash = String(metadata.contentHash || '')
+              const messageId = `${item.externalId}:${contentHash.slice(0, 16)}`
+              return {
+                id: `calendar-event:${item.externalId}`,
+                resourceType: 'calendar-event',
+                title: item.title,
+                url: String(metadata.url || ''),
+                content: item.content,
+                metadata: {
+                  ...metadata,
+                  sourceId: item.sourceId,
+                  scopeId: item.scopeId || '',
+                  scopeName: item.scopeName || '',
+                  sessionName: item.scopeName || 'macOS 日历',
+                  senderName: 'macOS 日历连接器'
+                },
+                createdAt: item.occurredAt,
+                updatedAt,
+                evidence: [{
+                  messageId,
+                  sessionId: `data-source:${item.sourceId}:${item.scopeId || 'calendar'}`,
+                  timestamp: Math.floor(Date.parse(item.occurredAt) / 1000),
+                  sender: 'macOS 日历连接器',
+                  excerpt: String(item.content || item.title).slice(0, 2000)
+                }]
+              }
+            })
+            const events = items.map(item => {
+              const metadata: any = item.metadata || {}
+              const contentHash = String(metadata.contentHash || '')
+              return {
+                id: `calendar-${item.externalId}`,
+                eventType: 'calendar',
+                title: item.title,
+                description: item.content,
+                startAt: String(metadata.startAt || item.occurredAt),
+                endAt: String(metadata.endAt || ''),
+                location: String(metadata.location || ''),
+                confidence: 1,
+                status: metadata.deleted ? 'cancelled' : 'confirmed',
+                searchText: [
+                  item.title, item.content, item.scopeName,
+                  ...(item.participants || []).flatMap(value => [value.name, value.id])
+                ].filter(Boolean).join('；'),
+                createdAt: item.occurredAt,
+                evidence: [{
+                  messageId: `${item.externalId}:${contentHash.slice(0, 16)}`,
+                  sessionId: `data-source:${item.sourceId}:${item.scopeId || 'calendar'}`,
+                  timestamp: Math.floor(Date.parse(item.occurredAt) / 1000),
+                  excerpt: String(item.content || item.title).slice(0, 2000),
+                  role: 'direct'
+                }]
+              }
+            })
+            personalMemoryStore.upsertResources(resources)
+            personalMemoryStore.upsertEvents(events)
+          },
+          { limit: 100 }
+        )
+        checkpoint = result.checkpoint
+        indexed += result.pulled
+        personalMemoryStore.updateDataSourceRun('calendar', {
+          status: 'running',
+          checkpoint,
+          attemptedAt
+        })
+        if (!result.hasMore) break
+      }
+      personalMemoryStore.updateDataSourceRun('calendar', {
+        status: 'healthy',
+        checkpoint,
+        succeededAt: new Date().toISOString(),
+        error: ''
+      })
+      return { indexed }
+    } catch (error) {
+      const message = sanitizeDiagnosticText(error)
+      personalMemoryStore.updateDataSourceRun('calendar', {
+        status: 'error',
+        attemptedAt,
+        error: message
+      })
+      return { indexed, error: message }
+    }
+  }
+
   private persistDocumentTasks(digest: any, messages: any[], createdAt: string): number {
     const ownerTerms = [
       String(this.config.get('aiAssistantOwnerName') || ''),
@@ -1588,6 +1704,7 @@ export class AiAssistantService {
   }
 
   private async runSync(): Promise<any> {
+    const calendarSync = await this.syncLocalCalendar()
     const documentSync = await this.syncLocalDocuments()
     const documentAnalysis = await this.processPendingDocumentAnalysis()
     const wechatSource = personalMemoryStore.listDataSources().find(source => source.id === 'wechat')
@@ -1599,10 +1716,11 @@ export class AiAssistantService {
         newTaskCount: 0,
         failedSessions: 0,
         indexedDocumentCount: documentSync.indexed,
+        indexedCalendarEventCount: calendarSync.indexed,
         analyzedDocumentCount: documentAnalysis.completed,
         newDocumentTaskCount: documentAnalysis.tasks,
-        message: documentSync.error
-          ? `微信数据源已暂停；本机文档同步失败：${documentSync.error}`
+        message: documentSync.error || calendarSync.error
+          ? `微信数据源已暂停；其他数据源需要重试：${documentSync.error || calendarSync.error}`
           : '微信数据源已暂停；增量游标保持不变'
       }
     }
@@ -1822,9 +1940,11 @@ export class AiAssistantService {
         newTaskCount: mineTasks.length,
         failedSessions: collected.failed.length,
         indexedDocumentCount: documentSync.indexed,
+        indexedCalendarEventCount: calendarSync.indexed,
         analyzedDocumentCount: documentAnalysis.completed,
         newDocumentTaskCount: documentAnalysis.tasks,
         documentSourceError: documentSync.error || null,
+        calendarSourceError: calendarSync.error || null,
         message: cancelled ? '已安全暂停，成功批次已保存；下次将从断点继续' : ''
       }
     } catch (error: any) {
@@ -1859,13 +1979,49 @@ export class AiAssistantService {
     }
   }
 
-  getDataSources(): any[] {
+  async getDataSources(): Promise<any[]> {
     const analysis = personalMemoryStore.getDocumentAnalysisStats(DOCUMENT_ANALYSIS_VERSION)
+    let calendarAuthorization = 'unavailable'
+    try {
+      calendarAuthorization = (await localCalendarService.getStatus()).authorization
+    } catch {}
     return personalMemoryStore.listDataSources().map(source =>
-      source.id === 'documents' ? { ...source, analysis } : source)
+      source.id === 'documents'
+        ? { ...source, analysis }
+        : source.id === 'calendar'
+          ? {
+              ...source,
+              authorization: calendarAuthorization,
+              selectedCalendarCount: Array.isArray(source.config?.calendarIds)
+                ? source.config.calendarIds.length
+                : 0
+            }
+          : source)
+  }
+
+  async getCalendarAuthorization(): Promise<any> {
+    return localCalendarService.getStatus()
+  }
+
+  async requestCalendarAccess(): Promise<any> {
+    return localCalendarService.requestAccess()
+  }
+
+  async listCalendars(): Promise<any[]> {
+    const status = await localCalendarService.getStatus()
+    if (!['fullAccess', 'authorized'].includes(status.authorization)) {
+      throw new Error('请先明确授权读取日历')
+    }
+    return localCalendarService.listCalendars()
   }
 
   setDataSourceEnabled(sourceId: string, enabled: boolean): any {
+    if (sourceId === 'calendar' && enabled) {
+      const source = personalMemoryStore.listDataSources().find(item => item.id === 'calendar')
+      if (!Array.isArray(source?.config?.calendarIds) || !source.config.calendarIds.length) {
+        throw new Error('请先授权并至少选择一个日历')
+      }
+    }
     const result = personalMemoryStore.setDataSourceEnabled(String(sourceId || ''), Boolean(enabled))
     if (sourceId === 'wechat' && !enabled && this.activeSync) {
       this.cancelRequested = true
@@ -1873,14 +2029,31 @@ export class AiAssistantService {
     return result
   }
 
-  configureDataSource(sourceId: string, input: any): any {
-    if (sourceId !== 'documents') throw new Error('该数据源暂不支持本机配置')
-    const connector = new LocalDocumentDataSource(String(input?.folderPath || ''))
-    return personalMemoryStore.configureDataSource(
-      'documents',
-      { folderPath: connector.root },
-      true
-    )
+  async configureDataSource(sourceId: string, input: any): Promise<any> {
+    if (sourceId === 'documents') {
+      const connector = new LocalDocumentDataSource(String(input?.folderPath || ''))
+      return personalMemoryStore.configureDataSource(
+        'documents',
+        { folderPath: connector.root },
+        true
+      )
+    }
+    if (sourceId === 'calendar') {
+      const status = await localCalendarService.getStatus()
+      if (!['fullAccess', 'authorized'].includes(status.authorization)) {
+        throw new Error('请先明确授权读取日历')
+      }
+      const available = await localCalendarService.listCalendars()
+      const availableIds = new Set(available.map(item => String(item.id)))
+      const calendarIds = [...new Set(
+        (Array.isArray(input?.calendarIds) ? input.calendarIds : [])
+          .map(String)
+          .filter(id => availableIds.has(id))
+      )]
+      if (!calendarIds.length) throw new Error('请至少选择一个日历')
+      return personalMemoryStore.configureDataSource('calendar', { calendarIds }, true)
+    }
+    throw new Error('该数据源暂不支持本机配置')
   }
 
   cancelSync(): any {

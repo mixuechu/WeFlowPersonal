@@ -97,7 +97,9 @@
     "mac": {
       "executableName": "WeFlow",
       "extendInfo": {
-        "CFBundleDisplayName": "WeFlow 升级版"
+        "CFBundleDisplayName": "WeFlow 升级版",
+        "NSCalendarsUsageDescription": "WeFlow 升级版仅在你明确启用日历连接器后读取所选日历，用于本机时间线和记忆检索。",
+        "NSCalendarsFullAccessUsageDescription": "WeFlow 升级版仅在你明确启用日历连接器后读取所选日历，用于本机时间线和记忆检索。"
       },
       "target": [
         "dmg",

@@ -2075,9 +2075,15 @@ export class PersonalMemoryStore {
 
   setDataSourceAvailability(sourceId: string, available: boolean, error = ''): void {
     if (!this.db) return
+    if (available) {
+      this.db.prepare(`
+        UPDATE data_source_connectors SET available=1,updated_at=? WHERE source_id=?
+      `).run(new Date().toISOString(), sourceId)
+      return
+    }
     this.db.prepare(`
-      UPDATE data_source_connectors SET available=?,status=?,last_error=?,updated_at=? WHERE source_id=?
-    `).run(available ? 1 : 0, available ? 'idle' : 'error', error || null, new Date().toISOString(), sourceId)
+      UPDATE data_source_connectors SET available=0,status='error',last_error=?,updated_at=? WHERE source_id=?
+    `).run(error || '该数据源连接器当前不可用', new Date().toISOString(), sourceId)
   }
 
   listPendingDocumentAnalysis(version: string, limit = 2, now = new Date()): any[] {

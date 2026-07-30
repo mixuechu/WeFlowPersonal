@@ -60,11 +60,11 @@ export const PERSONAL_DATA_SOURCE_CATALOG = [
   {
     id: 'calendar',
     kind: 'calendar',
-    displayName: '日历',
-    description: '预留日历连接器；事件、参与人和提醒将保留来源证据',
+    displayName: 'macOS 日历',
+    description: '只读索引你明确授权并选择的日历；事件和参与人保留原始证据',
     available: false,
-    localOnly: false,
-    capabilities: ['incremental', 'original-evidence', 'tasks', 'events']
+    localOnly: true,
+    capabilities: ['incremental', 'original-evidence', 'events']
   },
   {
     id: 'documents',

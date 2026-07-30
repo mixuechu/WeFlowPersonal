@@ -107,6 +107,34 @@ module.exports = async function afterPack(context) {
     ], { stdio: 'inherit' })
     console.log(`[afterPack] Signed Apple Vision helper with ${helperIdentity || 'ad-hoc fallback'}`)
   }
+  const calendarSource = join(process.cwd(), 'electron', 'helpers', 'CalendarHelper.swift')
+  const calendarInfo = join(process.cwd(), 'electron', 'helpers', 'CalendarHelper-Info.plist')
+  const calendarExecutable = join(imageSemanticDir, 'calendar-helper')
+  if (existsSync(calendarSource) && existsSync(calendarInfo)) {
+    try {
+      mkdirSync(imageSemanticDir, { recursive: true })
+      execFileSync('xcrun', [
+        'swiftc', '-O', calendarSource,
+        '-Xlinker', '-sectcreate',
+        '-Xlinker', '__TEXT',
+        '-Xlinker', '__info_plist',
+        '-Xlinker', calendarInfo,
+        '-o', calendarExecutable,
+      ], { stdio: 'inherit' })
+      chmodSync(calendarExecutable, 0o755)
+      const helperIdentity = findStableLocalSigningIdentity()
+      execFileSync('codesign', [
+        '--force',
+        '--timestamp=none',
+        '--sign',
+        helperIdentity || '-',
+        calendarExecutable,
+      ], { stdio: 'inherit' })
+      console.log(`[afterPack] Compiled and signed EventKit helper with ${helperIdentity || 'ad-hoc fallback'}`)
+    } catch (error) {
+      console.warn(`[afterPack] EventKit helper unavailable: ${error?.message || error}`)
+    }
+  }
   const dylibs = walk(resourcesDir)
 
   for (const dylibPath of dylibs) {

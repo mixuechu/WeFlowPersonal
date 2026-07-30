@@ -647,6 +647,17 @@
 .assistant-source-row input { width: auto; flex: 0 0 auto; }
 .assistant-source-footer { display: flex; justify-content: space-between; align-items: center; color: var(--text-tertiary); font-size: 10px; }
 .assistant-source-footer button { padding: 9px 14px; border: 0; border-radius: 9px; color: #fff; background: #255f4b; }
+.assistant-calendar-picker { display: grid; gap: 10px; padding: 13px; border: 1px solid var(--border-color); border-radius: 12px; background: var(--bg-secondary); }
+.assistant-calendar-picker > div:first-child { display: grid; gap: 3px; }
+.assistant-calendar-picker small { color: var(--text-tertiary); font-size: 9px; }
+.assistant-calendar-list { max-height: 220px; overflow: auto; display: grid; gap: 5px; }
+.assistant-calendar-list label { display: flex; grid-template-columns: auto 1fr; align-items: center; gap: 9px; padding: 8px; border-radius: 8px; background: var(--bg-primary); }
+.assistant-calendar-list input { width: auto; }
+.assistant-calendar-list span { min-width: 0; display: grid; gap: 2px; }
+.assistant-calendar-list strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; }
+.assistant-calendar-actions { display: flex; justify-content: flex-end; gap: 8px; }
+.assistant-calendar-actions button { padding: 8px 12px; border: 1px solid var(--border-color); border-radius: 8px; color: var(--text-secondary); background: var(--bg-primary); }
+.assistant-calendar-actions button.primary { border-color: #255f4b; color: #fff; background: #255f4b; }
 
 @media (max-width: 920px) {
   .assistant-grid { grid-template-columns: 1fr; }

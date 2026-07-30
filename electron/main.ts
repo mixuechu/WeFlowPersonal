@@ -4566,6 +4566,9 @@ function registerIpcHandlers() {
   ipcMain.handle('ai-assistant:askMemory', (_, question: string, conversationId?: string, options?: any) => aiAssistantService.askMemory(question, conversationId, options))
   ipcMain.handle('ai-assistant:getConversationSources', () => aiAssistantService.getConversationSources())
   ipcMain.handle('ai-assistant:getDataSources', () => aiAssistantService.getDataSources())
+  ipcMain.handle('ai-assistant:getCalendarAuthorization', () => aiAssistantService.getCalendarAuthorization())
+  ipcMain.handle('ai-assistant:requestCalendarAccess', () => aiAssistantService.requestCalendarAccess())
+  ipcMain.handle('ai-assistant:listCalendars', () => aiAssistantService.listCalendars())
   ipcMain.handle('ai-assistant:setDataSourceEnabled', (_, sourceId: string, enabled: boolean) =>
     aiAssistantService.setDataSourceEnabled(sourceId, enabled))
   ipcMain.handle('ai-assistant:configureDataSource', (_, sourceId: string, input: any) =>

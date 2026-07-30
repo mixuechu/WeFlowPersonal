@@ -1675,6 +1675,9 @@ export interface ElectronAPI {
       askMemory: (question: string, conversationId?: string, options?: any) => Promise<any>
       getConversationSources: () => Promise<any[]>
       getDataSources: () => Promise<any[]>
+      getCalendarAuthorization: () => Promise<{ available: boolean; authorization: string }>
+      requestCalendarAccess: () => Promise<{ available: boolean; authorization: string; granted: boolean }>
+      listCalendars: () => Promise<Array<{ id: string; title: string; source: string; type: string }>>
       setDataSourceEnabled: (sourceId: string, enabled: boolean) => Promise<any>
       configureDataSource: (sourceId: string, input: any) => Promise<any>
       setConversationSource: (input: any) => Promise<any>

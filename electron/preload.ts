@@ -656,6 +656,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
     askMemory: (question: string, conversationId?: string, options?: any) => ipcRenderer.invoke('ai-assistant:askMemory', question, conversationId, options),
     getConversationSources: () => ipcRenderer.invoke('ai-assistant:getConversationSources'),
     getDataSources: () => ipcRenderer.invoke('ai-assistant:getDataSources'),
+    getCalendarAuthorization: () => ipcRenderer.invoke('ai-assistant:getCalendarAuthorization'),
+    requestCalendarAccess: () => ipcRenderer.invoke('ai-assistant:requestCalendarAccess'),
+    listCalendars: () => ipcRenderer.invoke('ai-assistant:listCalendars'),
     setDataSourceEnabled: (sourceId: string, enabled: boolean) =>
       ipcRenderer.invoke('ai-assistant:setDataSourceEnabled', sourceId, enabled),
     configureDataSource: (sourceId: string, input: any) =>

@@ -1313,6 +1313,10 @@ test('data source registry persists enablement, capability and independent run h
   assert.equal(recovered.status, 'error')
   assert.equal(recovered.checkpoint, 'cursor-42')
   assert.match(recovered.lastError, /原 checkpoint 重试/)
+  store.setDataSourceAvailability('wechat', true)
+  const availabilityRefreshed = store.listDataSources().find(item => item.id === 'wechat')
+  assert.equal(availabilityRefreshed.status, 'error')
+  assert.match(availabilityRefreshed.lastError, /原 checkpoint 重试/)
 
   const configured = store.configureDataSource('calendar', { calendarIds: ['work'] }, true)
   assert.equal(configured.available, true)

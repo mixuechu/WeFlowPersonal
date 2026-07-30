@@ -51,6 +51,11 @@ function AiAssistantPage() {
   const [showDataSources, setShowDataSources] = useState(false)
   const [sources, setSources] = useState<any[]>([])
   const [dataSources, setDataSources] = useState<any[]>([])
+  const [calendarPicker, setCalendarPicker] = useState<{
+    calendars: Array<{ id: string; title: string; source: string; type: string }>
+    selectedIds: string[]
+  } | null>(null)
+  const [calendarConnecting, setCalendarConnecting] = useState(false)
   const [sourceQuery, setSourceQuery] = useState('')
   const [memoryQuery, setMemoryQuery] = useState('')
   const [memoryResults, setMemoryResults] = useState<any[]>([])
@@ -654,6 +659,57 @@ function AiAssistantPage() {
       setMessage('本机文档目录已连接；下次立即补齐或自动整理时开始增量索引。')
     } catch (error: any) {
       setMessage(error?.message || String(error))
+    }
+  }
+
+  const configureCalendarSource = async (source: any) => {
+    setCalendarConnecting(true)
+    try {
+      let authorization = String(source.authorization || '')
+      if (!['fullAccess', 'authorized'].includes(authorization)) {
+        const result = await window.electronAPI.aiAssistant.requestCalendarAccess()
+        authorization = result.authorization
+        if (!result.granted) {
+          throw new Error(
+            authorization === 'denied'
+              ? '日历权限已被拒绝。请在“系统设置 → 隐私与安全性 → 日历”中允许 WeFlow 升级版，然后重试。'
+              : '未获得日历读取权限；没有任何日历数据被读取。'
+          )
+        }
+      }
+      const calendars = await window.electronAPI.aiAssistant.listCalendars()
+      const configuredIds = Array.isArray(source.config?.calendarIds)
+        ? source.config.calendarIds.map(String)
+        : []
+      setCalendarPicker({
+        calendars,
+        selectedIds: configuredIds.filter((id: string) => calendars.some(calendar => calendar.id === id))
+      })
+      setDataSources(await window.electronAPI.aiAssistant.getDataSources())
+    } catch (error: any) {
+      setMessage(error?.message || String(error))
+    } finally {
+      setCalendarConnecting(false)
+    }
+  }
+
+  const saveCalendarSelection = async () => {
+    if (!calendarPicker?.selectedIds.length) {
+      setMessage('请至少选择一个要索引的日历。')
+      return
+    }
+    setCalendarConnecting(true)
+    try {
+      await window.electronAPI.aiAssistant.configureDataSource('calendar', {
+        calendarIds: calendarPicker.selectedIds
+      })
+      setDataSources(await window.electronAPI.aiAssistant.getDataSources())
+      setCalendarPicker(null)
+      setMessage('所选日历已连接；只会在本机增量索引事件，不会自动生成待办。')
+    } catch (error: any) {
+      setMessage(error?.message || String(error))
+    } finally {
+      setCalendarConnecting(false)
     }
   }
 
@@ -1884,19 +1940,60 @@ function AiAssistantPage() {
                       {source.analysis.deferred ? ` · ${source.analysis.deferred} 个退避等待` : ''}
                       {source.analysis.failed ? ` · ${source.analysis.failed} 个最近失败` : ''}
                     </small>}
+                    {source.id === 'calendar' && <small>
+                      权限：{({
+                        fullAccess: '已授权读取', authorized: '已授权读取',
+                        notDetermined: '尚未请求', denied: '已拒绝',
+                        restricted: '受系统限制', writeOnly: '仅写入（无法索引）',
+                        unavailable: 'helper 不可用'
+                      } as Record<string, string>)[source.authorization] || source.authorization || '未知'}
+                      {' · '}{source.selectedCalendarCount || 0} 个日历已选择
+                    </small>}
                     {source.lastError && <small className="assistant-error">{source.lastError}</small>}
                     {source.id === 'documents' && <button type="button" onClick={event => {
                       event.preventDefault()
                       event.stopPropagation()
                       void configureDocumentSource()
                     }}>{source.config?.folderPath ? '更换文档目录' : '选择文档目录'}</button>}
+                    {source.id === 'calendar' && source.available && <button type="button" disabled={calendarConnecting}
+                      onClick={event => {
+                        event.preventDefault()
+                        event.stopPropagation()
+                        void configureCalendarSource(source)
+                      }}>
+                      {calendarConnecting ? '正在连接…' : source.selectedCalendarCount ? '更改所选日历' : '授权并选择日历'}
+                    </button>}
                   </span>
-                  <input type="checkbox" checked={Boolean(source.enabled)} disabled={!source.available}
-                    title={source.available ? '开启或暂停该数据源' : '该连接器尚未安装'}
+                  <input type="checkbox" checked={Boolean(source.enabled)}
+                    disabled={!source.available || (source.id === 'calendar' && !source.selectedCalendarCount)}
+                    title={!source.available ? '该连接器尚未安装' : source.id === 'calendar' && !source.selectedCalendarCount ? '请先授权并选择日历' : '开启或暂停该数据源'}
                     onChange={() => void toggleDataSource(source)} />
                 </label>
               ))}
             </div>
+            {calendarPicker && <div className="assistant-calendar-picker">
+              <div><strong>选择允许本机索引的日历</strong>
+                <small>未选择的日历不会读取；事件按独立 checkpoint 增量保存，并保留来源证据。</small></div>
+              <div className="assistant-calendar-list">
+                {calendarPicker.calendars.map(calendar => (
+                  <label key={calendar.id}>
+                    <input type="checkbox" checked={calendarPicker.selectedIds.includes(calendar.id)}
+                      onChange={() => setCalendarPicker(current => current ? {
+                        ...current,
+                        selectedIds: current.selectedIds.includes(calendar.id)
+                          ? current.selectedIds.filter(id => id !== calendar.id)
+                          : [...current.selectedIds, calendar.id]
+                      } : current)} />
+                    <span><strong>{calendar.title}</strong><small>{calendar.source}</small></span>
+                  </label>
+                ))}
+              </div>
+              <div className="assistant-calendar-actions">
+                <button onClick={() => setCalendarPicker(null)}>取消</button>
+                <button className="primary" disabled={calendarConnecting || !calendarPicker.selectedIds.length}
+                  onClick={() => void saveCalendarSelection()}>保存选择</button>
+              </div>
+            </div>}
             <div className="assistant-source-footer"><span>{dataSources.filter(source => source.enabled).length} 个连接器已开启</span>
               <button className="primary" onClick={() => setShowDataSources(false)}>完成</button></div>
           </div>
