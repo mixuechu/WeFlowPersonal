@@ -46,6 +46,22 @@ test('a graceful shutdown is retained as a clean historical run', () => withTemp
   next.dispose()
 }))
 
+test('a persisted shutdown intent is clean even when Electron exits before async cleanup finishes', () => withTempDirectory(directory => {
+  const service = new AppRunRecoveryService(directory)
+  service.start('5.1.0', new Date('2026-07-29T20:00:00.000Z'))
+  service.beginShutdown('normal', new Date('2026-07-29T20:05:00.000Z'))
+  service.dispose()
+
+  const next = new AppRunRecoveryService(directory)
+  next.start('5.1.0', new Date('2026-07-29T20:06:00.000Z'))
+  const diagnostics = next.getDiagnostics()
+  assert.equal(diagnostics.previous?.cleanExit, true)
+  assert.equal(diagnostics.previous?.exitReason, 'normal')
+  assert.equal(diagnostics.recoveredFromInterruption, false)
+  assert.equal(diagnostics.recoveryMessage, '上次运行正常结束')
+  next.dispose()
+}))
+
 test('runtime incidents are redacted and ledger permissions are private', () => withTempDirectory(directory => {
   const service = new AppRunRecoveryService(directory)
   service.start('5.1.0', new Date('2026-07-29T20:00:00.000Z'))
@@ -65,4 +81,3 @@ test('runtime incidents are redacted and ledger permissions are private', () => 
   assert.doesNotThrow(() => JSON.parse(readFileSync(ledgerPath, 'utf8')))
   service.dispose()
 }))
-

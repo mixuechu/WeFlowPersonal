@@ -1057,7 +1057,7 @@ function AiAssistantPage() {
               <span className="assistant-count">{visibleResources.length} 项</span>
             </div>
             {!!dashboard?.attachmentStructureMigration?.total && <div className="assistant-query-plan">
-              历史 Office 附件结构化：{dashboard.attachmentStructureMigration.completed || 0}
+              历史附件结构化：{dashboard.attachmentStructureMigration.completed || 0}
               {' / '}{dashboard.attachmentStructureMigration.total} 已完成
               {!!dashboard.attachmentStructureMigration.pending && ` · ${dashboard.attachmentStructureMigration.pending} 个将在后续同步中继续`}
               {!!dashboard.attachmentStructureMigration.deferred && ` · ${dashboard.attachmentStructureMigration.deferred} 个正在退避等待`}
@@ -1132,6 +1132,22 @@ function AiAssistantPage() {
                     .map((slide: any) => <small key={slide.number}>
                       第 {slide.number} 页{slide.titleSource === 'layout-inference' ? '推断标题' : '标题'}：{slide.title}
                       {slide.titleSource === 'layout-inference' ? ` · ${Math.round(Number(slide.titleConfidence || 0) * 100)}% 可信` : ''}
+                    </small>)}
+                </div>}
+                {resource.metadata?.attachmentStructure?.kind === 'pdf' && <div className="assistant-evidence-stack">
+                  <small>
+                    PDF 版面：已读取 {resource.metadata.attachmentStructure.indexedPageCount || 0}
+                    {resource.metadata.attachmentStructure.pageCount
+                      ? ` / ${resource.metadata.attachmentStructure.pageCount}` : ''} 页
+                    · {resource.metadata.attachmentStructure.blockCount || 0} 个文本块
+                    · {resource.metadata.attachmentStructure.multiColumnPageCount || 0} 页检测为多栏
+                    {resource.metadata.attachmentStructure.truncated ? ' · 已按本地安全预算截断' : ''}
+                  </small>
+                  {(resource.metadata.attachmentStructure.pages || []).slice(0, 12).map((page: any) =>
+                    <small key={page.number}>
+                      第 {page.number} 页：{page.columnCount === 2 ? '双栏，按左栏→右栏读取' : '单栏，从上到下读取'}
+                      {' · '}{page.blockCount || 0} 个区块
+                      {page.columnCount === 2 ? ` · ${Math.round(Number(page.columnConfidence || 0) * 100)}% 版面可信` : ''}
                     </small>)}
                 </div>}
                 {resource.resource_type === 'image' && resource.metadata?.ocrStructure && <div className="assistant-evidence-stack">

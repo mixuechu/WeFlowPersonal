@@ -973,8 +973,8 @@ test('long scanned PDF resources resume by persisted page cursor and invalidate 
   assert.equal(store.listPendingPdfOcrResources(1)[0].metadata.attachmentPdfOcrNextPage, 7)
 }))
 
-test('Office attachment structure migration is resumable, deferred and invalidates stale vectors', () => withStore(store => {
-  const parserVersion = 'office-layout-v1'
+test('Office and PDF attachment structure migration is resumable, deferred and invalidates stale vectors', () => withStore(store => {
+  const parserVersion = 'attachment-layout-v2'
   store.upsertResources([{
     id: 'resource-doc-migrate',
     resourceType: 'file',
@@ -1021,6 +1021,36 @@ test('Office attachment structure migration is resumable, deferred and invalidat
   }])
   assert.equal(store.getMemoryFeed().resources.find(item => item.id === 'resource-doc-migrate')?.metadata?.attachmentStructure?.kind, 'document')
   assert.equal(store.getAttachmentStructureMigrationStats(parserVersion).completed, 1)
+
+  store.upsertResources([{
+    id: 'resource-pdf-layout-migrate',
+    resourceType: 'file',
+    title: '历史双栏报告.pdf',
+    fileExt: '.pdf',
+    content: '旧 PDF 正文',
+    metadata: {
+      attachmentFormat: '.pdf',
+      attachmentLocalPath: '/tmp/history-report.pdf'
+    },
+    evidence: []
+  }])
+  assert.equal(store.listPendingAttachmentStructureResources(parserVersion, 10)
+    .some(item => item.id === 'resource-pdf-layout-migrate'), true)
+  store.replaceResourceContent('resource-pdf-layout-migrate', '新版 PDF 阅读顺序', {
+    attachmentStructure: {
+      kind: 'pdf',
+      pageCount: 1,
+      indexedPageCount: 1,
+      blockCount: 4,
+      multiColumnPageCount: 1,
+      readingOrder: 'bbox-layout',
+      truncated: false,
+      pages: [{ number: 1, width: 612, height: 792, columnCount: 2, columnConfidence: 0.8, blockCount: 4 }]
+    },
+    attachmentStructureParserVersion: parserVersion,
+    attachmentStructureMigrationStatus: 'completed'
+  })
+  assert.equal(store.getAttachmentStructureMigrationStats(parserVersion).completed, 2)
 
   store.upsertResources([{
     id: 'resource-ppt-deferred',

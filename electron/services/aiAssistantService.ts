@@ -51,7 +51,7 @@ import {
   isNegativeDecisionCurrent
 } from './identityDisambiguation'
 
-const ATTACHMENT_STRUCTURE_PARSER_VERSION = 'office-layout-v1'
+const ATTACHMENT_STRUCTURE_PARSER_VERSION = 'attachment-layout-v2'
 
 type AssistantTask = {
   id: string

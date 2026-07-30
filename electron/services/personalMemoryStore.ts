@@ -1098,7 +1098,7 @@ export class PersonalMemoryStore {
       try {
         const metadata = JSON.parse(row.metadata_json || '{}')
         const extension = String(metadata.attachmentFormat || row.file_ext || '').toLowerCase()
-        if (!['.docx', '.pptx', '.xlsx'].includes(extension) || !metadata.attachmentLocalPath) return []
+        if (!['.docx', '.pptx', '.xlsx', '.pdf'].includes(extension) || !metadata.attachmentLocalPath) return []
         if (metadata.attachmentStructureParserVersion === parserVersion && metadata.attachmentStructure) return []
         const nextAt = Date.parse(String(metadata.attachmentStructureMigrationNextAt || ''))
         if (Number.isFinite(nextAt) && nextAt > now.getTime()) return []
@@ -1123,7 +1123,7 @@ export class PersonalMemoryStore {
       try {
         const metadata = JSON.parse(row.metadata_json || '{}')
         const extension = String(metadata.attachmentFormat || row.file_ext || '').toLowerCase()
-        if (!['.docx', '.pptx', '.xlsx'].includes(extension) || !metadata.attachmentLocalPath) continue
+        if (!['.docx', '.pptx', '.xlsx', '.pdf'].includes(extension) || !metadata.attachmentLocalPath) continue
         total += 1
         if (metadata.attachmentStructureParserVersion === parserVersion && metadata.attachmentStructure) completed += 1
         else if (Date.parse(String(metadata.attachmentStructureMigrationNextAt || '')) > now.getTime()) deferred += 1

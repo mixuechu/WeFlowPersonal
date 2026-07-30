@@ -53,10 +53,29 @@ export type PresentationAttachmentStructure = {
   }>
 }
 
+export type PdfAttachmentStructure = {
+  kind: 'pdf'
+  pageCount: number
+  indexedPageCount: number
+  blockCount: number
+  multiColumnPageCount: number
+  readingOrder: 'bbox-layout'
+  truncated: boolean
+  pages: Array<{
+    number: number
+    width: number
+    height: number
+    columnCount: 1 | 2
+    columnConfidence: number
+    blockCount: number
+  }>
+}
+
 export type AttachmentStructure =
   | SpreadsheetAttachmentStructure
   | DocumentAttachmentStructure
   | PresentationAttachmentStructure
+  | PdfAttachmentStructure
 
 export type AttachmentTextResult = {
   success: boolean
@@ -572,11 +591,158 @@ function resolvePdfTextBinary(): string {
     .find(existsSync) || ''
 }
 
+type PdfLayoutBlock = {
+  xMin: number
+  yMin: number
+  xMax: number
+  yMax: number
+  text: string
+}
+
+function decodeHtmlText(value: string): string {
+  return decodeXmlEntities(value)
+    .replace(/&#(\d+);/g, (_, code) => String.fromCodePoint(Number(code)))
+    .replace(/&#x([0-9a-f]+);/gi, (_, code) => String.fromCodePoint(Number.parseInt(code, 16)))
+}
+
+function pdfNumberAttribute(tag: string, name: string): number {
+  const value = Number(tag.match(new RegExp(`\\b${name}="([^"]+)"`, 'i'))?.[1])
+  return Number.isFinite(value) ? value : 0
+}
+
+function parsePdfLayoutBlock(xml: string): PdfLayoutBlock | null {
+  const opening = xml.match(/^<block\b[^>]*>/i)?.[0] || ''
+  const lines: Array<{ y: number, x: number, text: string }> = []
+  for (const line of xml.matchAll(/<line\b([^>]*)>([\s\S]*?)<\/line>/gi)) {
+    const words = [...line[2].matchAll(/<word\b[^>]*>([\s\S]*?)<\/word>/gi)]
+      .map(word => normalizeText(decodeHtmlText(word[1])))
+      .filter(Boolean)
+    if (!words.length) continue
+    lines.push({
+      y: pdfNumberAttribute(line[0], 'yMin'),
+      x: pdfNumberAttribute(line[0], 'xMin'),
+      text: words.join(' ')
+    })
+  }
+  lines.sort((a, b) => a.y - b.y || a.x - b.x)
+  const text = normalizeText(lines.map(line => line.text).join('\n'))
+  if (!text) return null
+  return {
+    xMin: pdfNumberAttribute(opening, 'xMin'),
+    yMin: pdfNumberAttribute(opening, 'yMin'),
+    xMax: pdfNumberAttribute(opening, 'xMax'),
+    yMax: pdfNumberAttribute(opening, 'yMax'),
+    text
+  }
+}
+
+function blocksOverlapVertically(a: PdfLayoutBlock, b: PdfLayoutBlock): boolean {
+  return Math.min(a.yMax, b.yMax) - Math.max(a.yMin, b.yMin) > 0
+}
+
+function orderPdfPageBlocks(blocks: PdfLayoutBlock[], pageWidth: number): {
+  blocks: PdfLayoutBlock[]
+  columnCount: 1 | 2
+  columnConfidence: number
+} {
+  const center = pageWidth / 2
+  const margin = pageWidth * 0.035
+  const left = blocks.filter(block => block.xMax < center + margin)
+  const right = blocks.filter(block => block.xMin > center - margin)
+  const overlappingPairs = left.reduce((count, leftBlock) =>
+    count + right.filter(rightBlock => blocksOverlapVertically(leftBlock, rightBlock)).length, 0)
+  const isTwoColumn = left.length > 0 && right.length > 0 && overlappingPairs > 0
+  if (!isTwoColumn) {
+    return {
+      blocks: [...blocks].sort((a, b) => a.yMin - b.yMin || a.xMin - b.xMin),
+      columnCount: 1,
+      columnConfidence: 1
+    }
+  }
+
+  const spanning = blocks
+    .filter(block => block.xMin < center - margin && block.xMax > center + margin)
+    .sort((a, b) => a.yMin - b.yMin || a.xMin - b.xMin)
+  const nonSpanning = blocks.filter(block => !spanning.includes(block))
+  const ordered: PdfLayoutBlock[] = []
+  let bandTop = Number.NEGATIVE_INFINITY
+  const appendBand = (bandBottom: number) => {
+    const band = nonSpanning.filter(block => {
+      const centerY = (block.yMin + block.yMax) / 2
+      return centerY >= bandTop && centerY < bandBottom
+    })
+    ordered.push(
+      ...band.filter(block => (block.xMin + block.xMax) / 2 <= center)
+        .sort((a, b) => a.yMin - b.yMin || a.xMin - b.xMin),
+      ...band.filter(block => (block.xMin + block.xMax) / 2 > center)
+        .sort((a, b) => a.yMin - b.yMin || a.xMin - b.xMin)
+    )
+  }
+  for (const separator of spanning) {
+    appendBand(separator.yMin)
+    ordered.push(separator)
+    bandTop = separator.yMax
+  }
+  appendBand(Number.POSITIVE_INFINITY)
+  return {
+    blocks: ordered,
+    columnCount: 2,
+    columnConfidence: Math.min(0.95, 0.7 + Math.min(left.length, right.length) * 0.05)
+  }
+}
+
+export function parsePdfLayout(xml: string): { text: string, structure: PdfAttachmentStructure } {
+  const output: string[] = []
+  const pages: PdfAttachmentStructure['pages'] = []
+  let blockCount = 0
+  let truncated = false
+  const pageMatches = [...xml.matchAll(/<page\b([^>]*)>([\s\S]*?)<\/page>/gi)]
+  for (const [index, pageMatch] of pageMatches.entries()) {
+    if (output.join('\n').length >= MAX_TEXT_CHARS) {
+      truncated = true
+      break
+    }
+    const pageTag = pageMatch[0].match(/^<page\b[^>]*>/i)?.[0] || ''
+    const width = pdfNumberAttribute(pageTag, 'width')
+    const height = pdfNumberAttribute(pageTag, 'height')
+    const blocks = [...pageMatch[2].matchAll(/<block\b[^>]*>[\s\S]*?<\/block>/gi)]
+      .map(match => parsePdfLayoutBlock(match[0]))
+      .filter((block): block is PdfLayoutBlock => Boolean(block))
+    if (!blocks.length) continue
+    const ordered = orderPdfPageBlocks(blocks, width || 612)
+    output.push(`[PDF 第 ${index + 1} 页${ordered.columnCount === 2 ? ' · 双栏阅读顺序' : ''}]`)
+    ordered.blocks.forEach(block => output.push(block.text))
+    blockCount += blocks.length
+    pages.push({
+      number: index + 1,
+      width,
+      height,
+      columnCount: ordered.columnCount,
+      columnConfidence: ordered.columnConfidence,
+      blockCount: blocks.length
+    })
+  }
+  const text = normalizeText(output.join('\n'))
+  return {
+    text,
+    structure: {
+      kind: 'pdf',
+      pageCount: pageMatches.length,
+      indexedPageCount: pages.length,
+      blockCount,
+      multiColumnPageCount: pages.filter(page => page.columnCount === 2).length,
+      readingOrder: 'bbox-layout',
+      truncated: truncated || output.join('\n').length > MAX_TEXT_CHARS,
+      pages
+    }
+  }
+}
+
 async function extractPdfText(filePath: string): Promise<AttachmentTextResult> {
   const binary = resolvePdfTextBinary()
   if (!binary) return { success: false, text: '', format: '.pdf', status: 'dependency_missing' }
   return new Promise(resolve => {
-    const child = spawn(binary, ['-layout', '-nopgbrk', filePath, '-'], {
+    const child = spawn(binary, ['-bbox-layout', '-enc', 'UTF-8', filePath, '-'], {
       stdio: ['ignore', 'pipe', 'ignore']
     })
     const chunks: Buffer[] = []
@@ -608,10 +774,11 @@ async function extractPdfText(filePath: string): Promise<AttachmentTextResult> {
         finish({ success: false, text: '', format: '.pdf', status: 'failed', error: `pdftotext_exit_${code}` })
         return
       }
-      const text = normalizeText(Buffer.concat(chunks).toString('utf8'))
+      const parsed = parsePdfLayout(Buffer.concat(chunks).toString('utf8'))
+      const text = parsed.text
       finish(text
-        ? { success: true, text, format: '.pdf', status: 'indexed' }
-        : { success: false, text: '', format: '.pdf', status: 'ocr_required' })
+        ? { success: true, text, format: '.pdf', status: 'indexed', structure: parsed.structure }
+        : { success: false, text: '', format: '.pdf', status: 'ocr_required', structure: parsed.structure })
     })
   })
 }

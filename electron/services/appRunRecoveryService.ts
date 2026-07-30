@@ -52,12 +52,14 @@ export class AppRunRecoveryService {
   start(version: string, now = new Date()): AppRunSession {
     this.ledger = this.readLedger()
     if (this.ledger.current) {
+      const expectedExit = this.ledger.current.stage === 'shutting_down'
+        && ['normal', 'update_restart'].includes(this.ledger.current.exitReason || '')
       const interrupted: AppRunSession = {
         ...this.ledger.current,
         stage: 'ended',
         endedAt: now.toISOString(),
-        exitReason: this.ledger.current.exitReason || 'unknown_interruption',
-        cleanExit: false
+        exitReason: expectedExit ? this.ledger.current.exitReason : this.ledger.current.exitReason || 'unknown_interruption',
+        cleanExit: expectedExit
       }
       this.ledger.history.unshift(interrupted)
     }
@@ -154,9 +156,10 @@ export class AppRunRecoveryService {
   } {
     const history = this.ledger.history.slice(0, 12)
     const previous = history[0] || null
-    const recoveredFromInterruption = previous?.exitReason === 'unknown_interruption'
+    const previousExpectedExit = previous?.exitReason === 'normal' || previous?.exitReason === 'update_restart'
+    const recoveredFromInterruption = !previousExpectedExit && (previous?.exitReason === 'unknown_interruption'
       || previous?.exitReason === 'uncaught_exception'
-      || previous?.exitReason === 'forced_timeout'
+      || previous?.exitReason === 'forced_timeout')
     return {
       current: this.ledger.current ? { ...this.ledger.current } : null,
       previous,
@@ -164,7 +167,7 @@ export class AppRunRecoveryService {
       recoveredFromInterruption,
       recoveryMessage: !previous
         ? '尚无历史运行记录'
-        : previous.cleanExit
+        : previous.cleanExit || previousExpectedExit
           ? '上次运行正常结束'
           : previous.exitReason === 'unknown_interruption'
             ? '检测到上次进程未完成退出，已按持久化 checkpoint 恢复'

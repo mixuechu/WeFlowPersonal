@@ -32,6 +32,31 @@ function createMinimalPdf(text: string): Buffer {
   return Buffer.from(output)
 }
 
+function createPositionedPdf(items: Array<{ x: number, y: number, text: string }>): Buffer {
+  const stream = items.map(item => {
+    const escaped = item.text.replace(/([\\()])/g, '\\$1')
+    return `BT /F1 12 Tf ${item.x} ${item.y} Td (${escaped}) Tj ET`
+  }).join('\n')
+  const objects = [
+    '<< /Type /Catalog /Pages 2 0 R >>',
+    '<< /Type /Pages /Kids [3 0 R] /Count 1 >>',
+    '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>',
+    '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>',
+    `<< /Length ${Buffer.byteLength(stream)} >>\nstream\n${stream}\nendstream`
+  ]
+  let output = '%PDF-1.4\n'
+  const offsets = [0]
+  objects.forEach((object, index) => {
+    offsets.push(Buffer.byteLength(output))
+    output += `${index + 1} 0 obj\n${object}\nendobj\n`
+  })
+  const xref = Buffer.byteLength(output)
+  output += `xref\n0 ${objects.length + 1}\n0000000000 65535 f \n`
+  output += offsets.slice(1).map(offset => `${String(offset).padStart(10, '0')} 00000 n \n`).join('')
+  output += `trailer\n<< /Size ${objects.length + 1} /Root 1 0 R >>\nstartxref\n${xref}\n%%EOF\n`
+  return Buffer.from(output)
+}
+
 test('attachment text extractor reads bounded UTF-8 text and rejects oversized input', async () => {
   const directory = mkdtempSync(join(tmpdir(), 'weflow-attachment-text-'))
   try {
@@ -155,8 +180,40 @@ test('attachment text extractor indexes text-layer PDFs and marks image-only PDF
     const indexed = await extractAttachmentText(textPdf)
     assert.equal(indexed.status, 'indexed')
     assert.match(indexed.text, /WeFlow PDF attachment index test/)
+    assert.equal(indexed.structure?.kind, 'pdf')
+    if (indexed.structure?.kind === 'pdf') {
+      assert.equal(indexed.structure.pages[0].columnCount, 1)
+      assert.equal(indexed.structure.multiColumnPageCount, 0)
+    }
     const scan = await extractAttachmentText(imageOnlyPdf)
     assert.equal(scan.status, 'ocr_required')
+  } finally {
+    rmSync(directory, { recursive: true, force: true })
+  }
+})
+
+test('attachment text extractor preserves two-column PDF reading order and layout evidence', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'weflow-attachment-pdf-columns-'))
+  try {
+    const filePath = join(directory, 'two-columns.pdf')
+    writeFileSync(filePath, createPositionedPdf([
+      { x: 220, y: 740, text: 'PROJECT STATUS HEADER' },
+      { x: 72, y: 690, text: 'LEFT ITEM ONE' },
+      { x: 72, y: 660, text: 'LEFT ITEM TWO' },
+      { x: 340, y: 690, text: 'RIGHT ITEM ONE' },
+      { x: 340, y: 660, text: 'RIGHT ITEM TWO' }
+    ]))
+    const result = await extractAttachmentText(filePath)
+    assert.equal(result.status, 'indexed')
+    assert.equal(result.structure?.kind, 'pdf')
+    assert.match(result.text, /双栏阅读顺序/)
+    assert.ok(result.text.indexOf('LEFT ITEM TWO') < result.text.indexOf('RIGHT ITEM ONE'))
+    if (result.structure?.kind === 'pdf') {
+      assert.equal(result.structure.pageCount, 1)
+      assert.equal(result.structure.multiColumnPageCount, 1)
+      assert.equal(result.structure.pages[0].columnCount, 2)
+      assert.ok(result.structure.pages[0].columnConfidence >= 0.7)
+    }
   } finally {
     rmSync(directory, { recursive: true, force: true })
   }
