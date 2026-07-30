@@ -107,6 +107,7 @@ function AiAssistantPage() {
   const [graphPath, setGraphPath] = useState<any>(null)
   const [graphCommonNeighbors, setGraphCommonNeighbors] = useState<any>(null)
   const [mergeTargets, setMergeTargets] = useState<Record<string, string>>({})
+  const [entityNameEdits, setEntityNameEdits] = useState<Record<string, string>>({})
   const [memoryDiagnostics, setMemoryDiagnostics] = useState<any>(null)
   const [showDiagnostics, setShowDiagnostics] = useState(false)
   const [backingUpMemory, setBackingUpMemory] = useState(false)
@@ -257,6 +258,7 @@ function AiAssistantPage() {
   const pendingReviews = graph.reviewQueue.filter((item: any) => item.status === 'pending')
   const identityDisambiguation = dashboard?.identityDisambiguation
   const mergeHistory = dashboard?.mergeHistory || []
+  const entityCorrections = dashboard?.entityCorrections || []
   const memoryFeed = dashboard?.memoryFeed || { claims: [], events: [], resources: [] }
   const ingestionStatus = dashboard?.ingestionStatus
   const ingestionCounts = Object.fromEntries((ingestionStatus?.batches || []).map((item: any) => [item.status, Number(item.count || 0)]))
@@ -278,6 +280,9 @@ function AiAssistantPage() {
   const selectedEntityRelationHistory = selectedEntity
     ? (dashboard?.relationHistory || []).filter((item: any) =>
       item.subject_id === selectedEntity.id || item.object_id === selectedEntity.id)
+    : []
+  const selectedEntityCorrections = selectedEntity
+    ? entityCorrections.filter((item: any) => item.entity_id === selectedEntity.id)
     : []
   const selectedEntityTasks = selectedEntity
     ? tasks.filter(task => {
@@ -494,15 +499,24 @@ function AiAssistantPage() {
   const decideReview = async (
     id: string,
     decision: 'confirmed' | 'rejected',
-    options?: { mergeTargetEntityId?: string }
+    options?: { mergeTargetEntityId?: string; correctedCanonicalName?: string }
   ) => {
-    await window.electronAPI.aiAssistant.updateGraphReview(id, decision, options)
-    setMergeTargets(current => {
-      const next = { ...current }
-      delete next[id]
-      return next
-    })
-    await load()
+    try {
+      await window.electronAPI.aiAssistant.updateGraphReview(id, decision, options)
+      setMergeTargets(current => {
+        const next = { ...current }
+        delete next[id]
+        return next
+      })
+      setEntityNameEdits(current => {
+        const next = { ...current }
+        delete next[id]
+        return next
+      })
+      await load()
+    } catch (error: any) {
+      setMessage(error?.message || String(error))
+    }
   }
 
   const decideTaskReview = async (id: string, decision: 'mine' | 'rejected') => {
@@ -1807,6 +1821,24 @@ function AiAssistantPage() {
                 const selectedMergeTargetId = mergeTargets[review.id] || ''
                 const selectedMergeTarget = duplicateEntities.find((entity: any) => entity?.id === selectedMergeTargetId)
                 const selectedMergeSource = duplicateEntities.find((entity: any) => entity?.id && entity.id !== selectedMergeTargetId)
+                const correctedEntityName = String(entityNameEdits[review.id] ?? review.entityCanonicalName ?? '').trim()
+                const correctedEntityNameLower = correctedEntityName.toLocaleLowerCase('zh-CN')
+                const entityNameInvalidReason = review.kind !== 'entity_creation'
+                  ? ''
+                  : !correctedEntityName
+                    ? '规范名不能为空'
+                    : /[\u0000-\u001f\u007f]/.test(String(entityNameEdits[review.id] ?? review.entityCanonicalName ?? ''))
+                      ? '规范名不能包含控制字符'
+                      : new Set(['我', '你', '用户', '群友', '对方', '某人', '未知', 'unknown', 'user']).has(correctedEntityNameLower)
+                        ? '不能使用“我、你、用户、群友”等占位词作为规范名'
+                        : ''
+                const sameNameEntities = review.kind === 'entity_creation' && correctedEntityName
+                  ? graph.entities.filter((entity: any) =>
+                    entity.id !== review.entityId &&
+                    entity.trustStatus !== 'rejected' &&
+                    String(entity.canonicalName || '').trim().toLocaleLowerCase('zh-CN') ===
+                      correctedEntityName.toLocaleLowerCase('zh-CN'))
+                  : []
                 const relationEntityBlocked = Boolean(relation &&
                   (subject?.trustStatus !== 'confirmed' || object?.trustStatus !== 'confirmed'))
                 return <><div><strong>{review.kind === 'possible_duplicate' ? `可能是同一个人：${review.title}` : review.title}</strong>
@@ -1857,7 +1889,22 @@ function AiAssistantPage() {
                   <div><small>确认后才会参与身份消歧、合并建议和统一检索。</small></div>
                 </div>}
                 {review.kind === 'entity_creation' && <div className="assistant-review-note">
-                  <div><b>候选实体：</b><span>{review.entityCanonicalName} · {review.entityType}</span></div>
+                  <div><b>模型识别名称：</b><span>{review.entityCanonicalName} · {review.entityType}</span></div>
+                  <label className="assistant-entity-name-correction">
+                    <span>确认使用的规范名</span>
+                    <input
+                      value={entityNameEdits[review.id] ?? review.entityCanonicalName ?? ''}
+                      maxLength={100}
+                      onChange={event => setEntityNameEdits(current => ({ ...current, [review.id]: event.target.value }))}
+                    />
+                    <small>名字不准确时请先修正；原值、新值和确认时间都会保留在人物档案中。错误旧名不会自动变成别名。</small>
+                    {entityNameInvalidReason && <small className="error">{entityNameInvalidReason}</small>}
+                  </label>
+                  {sameNameEntities.length > 0 && <div className="assistant-name-collision">
+                    <b>发现 {sameNameEntities.length} 个同名实体：</b>
+                    <span>{sameNameEntities.map((entity: any) => entity.canonicalName).join('、')}</span>
+                    <small>本次确认仍会建立独立实体，不会因同名自动合并；人物会另行进入“可能是同一人”审阅。</small>
+                  </div>}
                   {(review.evidence || []).map((evidence: any) =>
                     <div key={evidence.messageId}><small>{evidence.sender || '原文'}：“{evidence.excerpt}”</small></div>)}
                   <div><small>确认后才会进入统一检索、RAG 查询规划、图路径和确定性派生视图。</small></div>
@@ -1874,7 +1921,7 @@ function AiAssistantPage() {
                           ? '确认后启用可信实体'
                       : '确认后写入关系'
                 }</small></div>
-              <div><button onClick={() => void decideReview(review.id, 'rejected')}>拒绝</button><button className="primary" disabled={(review.kind === 'possible_duplicate' && (!review.leftEntityId || !review.rightEntityId || !selectedMergeTargetId)) || relationEntityBlocked} title={review.kind === 'possible_duplicate' && (!review.leftEntityId || !review.rightEntityId) ? '候选信息不完整，暂不能合并' : review.kind === 'possible_duplicate' && !selectedMergeTargetId ? '请先选择合并后保留的身份' : relationEntityBlocked ? '请先确认关系两端的实体' : ''} onClick={() => void decideReview(review.id, 'confirmed', review.kind === 'possible_duplicate' ? { mergeTargetEntityId: selectedMergeTargetId } : undefined)}>{review.kind === 'relation' ? '确认此方向' : review.kind === 'possible_duplicate' ? '按此方向合并' : '确认'}</button></div></>
+              <div><button onClick={() => void decideReview(review.id, 'rejected')}>拒绝</button><button className="primary" disabled={(review.kind === 'possible_duplicate' && (!review.leftEntityId || !review.rightEntityId || !selectedMergeTargetId)) || Boolean(entityNameInvalidReason) || relationEntityBlocked} title={review.kind === 'possible_duplicate' && (!review.leftEntityId || !review.rightEntityId) ? '候选信息不完整，暂不能合并' : review.kind === 'possible_duplicate' && !selectedMergeTargetId ? '请先选择合并后保留的身份' : entityNameInvalidReason || (relationEntityBlocked ? '请先确认关系两端的实体' : '')} onClick={() => void decideReview(review.id, 'confirmed', review.kind === 'possible_duplicate' ? { mergeTargetEntityId: selectedMergeTargetId } : review.kind === 'entity_creation' ? { correctedCanonicalName: entityNameEdits[review.id] ?? review.entityCanonicalName ?? '' } : undefined)}>{review.kind === 'relation' ? '确认此方向' : review.kind === 'possible_duplicate' ? '按此方向合并' : review.kind === 'entity_creation' ? '确认名称并启用' : '确认'}</button></div></>
               })()}
             </article>)}
             {!pendingReviews.length && <div className="assistant-empty">当前没有等待确认的身份或关系。</div>}
@@ -1974,6 +2021,14 @@ function AiAssistantPage() {
                   <small>{new Date(item.created_at).toLocaleString('zh-CN')} · {item.status} · {Math.round(Number(item.confidence || 0) * 100)}%</small>
                 </article>)}
                 {!selectedEntityRelationHistory.length && <em>尚无关系变化历史</em>}
+              </section>
+              <section className="assistant-dossier-wide">
+                <h3>身份名称修正 <small>{selectedEntityCorrections.length}</small></h3>
+                {selectedEntityCorrections.map((item: any) => <article key={item.id} className="assistant-dossier-history-row">
+                  <div><b>{item.before_name} → {item.after_name}</b><span>人工确认实体时修正</span></div>
+                  <small>{new Date(item.created_at).toLocaleString('zh-CN')} · 原错误名称未写入可信别名</small>
+                </article>)}
+                {!selectedEntityCorrections.length && <em>尚无名称修正记录</em>}
               </section>
             </div>
             <footer>

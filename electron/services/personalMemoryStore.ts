@@ -222,6 +222,17 @@ export class PersonalMemoryStore {
         created_at TEXT NOT NULL
       ) STRICT;
 
+      CREATE TABLE IF NOT EXISTS entity_corrections (
+        id INTEGER PRIMARY KEY,
+        entity_id TEXT NOT NULL,
+        review_id TEXT NOT NULL,
+        before_name TEXT NOT NULL,
+        after_name TEXT NOT NULL,
+        reason TEXT NOT NULL DEFAULT 'review_correction',
+        created_at TEXT NOT NULL
+      ) STRICT;
+      CREATE INDEX IF NOT EXISTS idx_entity_corrections_entity ON entity_corrections(entity_id,created_at);
+
       CREATE TABLE IF NOT EXISTS task_history (
         id INTEGER PRIMARY KEY,
         task_id TEXT NOT NULL,
@@ -679,6 +690,27 @@ export class PersonalMemoryStore {
     }
   }
 
+  recordEntityCorrection(
+    entityId: string,
+    reviewId: string,
+    beforeName: string,
+    afterName: string,
+    reason = 'review_correction'
+  ): void {
+    if (!this.db || beforeName === afterName) return
+    this.db.prepare(`
+      INSERT INTO entity_corrections(entity_id,review_id,before_name,after_name,reason,created_at)
+      VALUES(?,?,?,?,?,?)
+    `).run(entityId, reviewId, beforeName, afterName, reason, new Date().toISOString())
+  }
+
+  listEntityCorrections(entityId = '', limit = 300): any[] {
+    if (!this.db) return []
+    return entityId
+      ? this.db.prepare('SELECT * FROM entity_corrections WHERE entity_id=? ORDER BY id DESC LIMIT ?').all(entityId, limit) as any[]
+      : this.db.prepare('SELECT * FROM entity_corrections ORDER BY id DESC LIMIT ?').all(limit) as any[]
+  }
+
   forgetEntity(entityId: string, taskIds: string[] = []): any {
     if (!this.db) return null
     const preview = this.previewForgetEntity(entityId)
@@ -706,6 +738,7 @@ export class PersonalMemoryStore {
       this.db.prepare('DELETE FROM review_queue WHERE payload_json LIKE ?').run(`%${entityId}%`)
       this.db.prepare('DELETE FROM merge_history WHERE source_entity_id=? OR target_entity_id=?').run(entityId, entityId)
       this.db.prepare('DELETE FROM identity_decisions WHERE left_entity_id=? OR right_entity_id=?').run(entityId, entityId)
+      this.db.prepare('DELETE FROM entity_corrections WHERE entity_id=?').run(entityId)
       for (const name of preview.names) {
         const pattern = `%${name.replace(/[%_]/g, value => `\\${value}`)}%`
         this.db.prepare(`DELETE FROM assistant_messages

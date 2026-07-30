@@ -47,6 +47,7 @@ import {
   canConfirmEntityCreation,
   inferLegacyEntityTrustStatus,
   isTrustedEntity,
+  planEntityCreationConfirmation,
   type EntityTrustStatus
 } from './entityTrustPolicy'
 import { planEntityMerge } from './entityMergeDirection'
@@ -172,7 +173,7 @@ type AssistantState = {
   graph: {
     entities: GraphEntity[]
     relations: GraphRelation[]
-    reviewQueue: Array<{ id: string; kind: 'possible_duplicate' | 'relation' | 'entity_summary' | 'entity_alias' | 'entity_creation'; title: string; detail: string; confidence: number; status: 'pending' | 'confirmed' | 'rejected'; createdAt: string; leftEntityId?: string; rightEntityId?: string; mergeSourceEntityId?: string; mergeTargetEntityId?: string; relationId?: string; entityId?: string; entityIdentityVersion?: number; entityCanonicalName?: string; entityType?: string; legacyReview?: boolean; previousSummary?: string; summaryText?: string; aliasText?: string; evidence?: Array<{ messageId: string; sessionId: string; timestamp: number; sender: string; excerpt: string }>; candidateSource?: string; candidateSignals?: Array<{ source: string; label: string; value: string }> }>
+    reviewQueue: Array<{ id: string; kind: 'possible_duplicate' | 'relation' | 'entity_summary' | 'entity_alias' | 'entity_creation'; title: string; detail: string; confidence: number; status: 'pending' | 'confirmed' | 'rejected'; createdAt: string; leftEntityId?: string; rightEntityId?: string; mergeSourceEntityId?: string; mergeTargetEntityId?: string; relationId?: string; entityId?: string; entityIdentityVersion?: number; entityCanonicalName?: string; originalEntityCanonicalName?: string; correctedCanonicalName?: string; entityType?: string; legacyReview?: boolean; previousSummary?: string; summaryText?: string; aliasText?: string; evidence?: Array<{ messageId: string; sessionId: string; timestamp: number; sender: string; excerpt: string }>; candidateSource?: string; candidateSignals?: Array<{ source: string; label: string; value: string }> }>
     identityScan: { lastFullScanAt: string | null; lastRunAt: string | null; lastMode: 'incremental' | 'full' | null; lastCandidateCount: number }
   }
 }
@@ -2476,6 +2477,7 @@ export class AiAssistantService {
         )
       },
       mergeHistory: personalMemoryStore.listActiveMerges(),
+      entityCorrections: personalMemoryStore.listEntityCorrections('', 300),
       memoryDeletionAudit: personalMemoryStore.listMemoryDeletionAudit(50),
       memoryStats: personalMemoryStore.getMemoryStats(),
       attachmentStructureMigration: personalMemoryStore.getAttachmentStructureMigrationStats(
@@ -2899,7 +2901,7 @@ export class AiAssistantService {
   updateGraphReview(
     id: string,
     decision: 'confirmed' | 'rejected',
-    options?: { mergeTargetEntityId?: string }
+    options?: { mergeTargetEntityId?: string; correctedCanonicalName?: string }
   ): any {
     const review = this.state.graph.reviewQueue.find(item => item.id === id)
     if (!review || review.status !== 'pending') return null
@@ -2938,9 +2940,27 @@ export class AiAssistantService {
     if (review.kind === 'entity_creation' && review.entityId) {
       const entity = this.state.graph.entities.find(item => item.id === review.entityId)
       if (decision === 'confirmed' && entity) {
+        const correction = planEntityCreationConfirmation(review, entity, options?.correctedCanonicalName)
+        if (correction.changed) {
+          review.originalEntityCanonicalName = review.originalEntityCanonicalName || correction.beforeName
+          review.correctedCanonicalName = correction.canonicalName
+          review.entityCanonicalName = correction.canonicalName
+          review.title = `${correction.canonicalName} · ${review.legacyReview ? '历史实体确认' : '实体候选'}`
+          entity.canonicalName = correction.canonicalName
+          entity.identityVersion += 1
+        }
         if (canConfirmEntityCreation(review, entity)) {
           entity.trustStatus = 'confirmed'
           entity.updatedAt = new Date().toISOString()
+          if (correction.changed) {
+            personalMemoryStore.recordEntityCorrection(
+              entity.id,
+              review.id,
+              correction.beforeName,
+              correction.canonicalName
+            )
+            this.enqueueIdentityCandidates(entity, entity.updatedAt)
+          }
         } else {
           review.status = 'rejected'
           review.detail = `${review.detail} 实体名称已变化或候选无效，未执行确认。`

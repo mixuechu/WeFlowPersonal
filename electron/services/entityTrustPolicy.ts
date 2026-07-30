@@ -61,6 +61,39 @@ export function canConfirmEntityCreation(review: any, entity: any): boolean {
   )
 }
 
+const RESERVED_ENTITY_NAMES = new Set(['我', '你', '用户', '群友', '对方', '某人', '未知', 'unknown', 'user'])
+
+export function planEntityCreationConfirmation(
+  review: any,
+  entity: any,
+  correctedCanonicalName?: string
+): { beforeName: string; canonicalName: string; changed: boolean } {
+  if (review?.kind !== 'entity_creation' || review?.entityId !== entity?.id) {
+    throw new Error('实体候选已失效，请刷新后重试')
+  }
+  if (entity?.trustStatus === 'rejected') throw new Error('已拒绝的实体不能再次确认')
+  const beforeName = compact(entity?.canonicalName, 100)
+  const reviewedName = compact(review?.entityCanonicalName, 100)
+  if (beforeName.toLocaleLowerCase('zh-CN') !== reviewedName.toLocaleLowerCase('zh-CN')) {
+    throw new Error('实体名称已在其他操作中变化，此候选已过期，请刷新后重新审阅')
+  }
+  const requested = correctedCanonicalName === undefined
+    ? reviewedName
+    : compact(correctedCanonicalName, 100)
+  if (!requested) throw new Error('实体名称不能为空')
+  if (/[\u0000-\u001f\u007f]/.test(String(correctedCanonicalName ?? requested))) {
+    throw new Error('实体名称不能包含控制字符')
+  }
+  if (RESERVED_ENTITY_NAMES.has(requested.toLocaleLowerCase('zh-CN'))) {
+    throw new Error('不能使用“我、你、用户、群友”等占位词作为实体名称')
+  }
+  return {
+    beforeName,
+    canonicalName: requested,
+    changed: beforeName.toLocaleLowerCase('zh-CN') !== requested.toLocaleLowerCase('zh-CN')
+  }
+}
+
 export function buildLegacyEntityReview(input: {
   entity: any
   evidence: any[]

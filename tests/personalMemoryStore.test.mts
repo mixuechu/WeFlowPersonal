@@ -43,7 +43,8 @@ import {
   buildLegacyEntityReview,
   canConfirmEntityCreation,
   inferLegacyEntityTrustStatus,
-  isTrustedEntity
+  isTrustedEntity,
+  planEntityCreationConfirmation
 } from '../electron/services/entityTrustPolicy.ts'
 import { planEntityMerge } from '../electron/services/entityMergeDirection.ts'
 import { enqueueUniqueNotification, markNotificationAttempt } from '../electron/services/notificationOutbox.ts'
@@ -95,6 +96,49 @@ test('entity merge direction must explicitly preserve one candidate', () => {
     () => planEntityMerge({ leftEntityId: 'left', rightEntityId: 'right' }, entities, 'other'),
     /不属于当前合并候选/
   )
+})
+
+test('entity creation review accepts a corrected canonical name but rejects placeholders', () => {
+  const review = {
+    id: 'review-1',
+    kind: 'entity_creation',
+    entityId: 'entity-1',
+    entityCanonicalName: '错误名字'
+  }
+  const entity = {
+    id: 'entity-1',
+    canonicalName: '错误名字',
+    trustStatus: 'candidate'
+  }
+  assert.deepEqual(planEntityCreationConfirmation(review, entity, '正确名字'), {
+    beforeName: '错误名字',
+    canonicalName: '正确名字',
+    changed: true
+  })
+  assert.throws(
+    () => planEntityCreationConfirmation(review, entity, '用户'),
+    /占位词/
+  )
+  assert.throws(
+    () => planEntityCreationConfirmation(review, entity, '   '),
+    /不能为空/
+  )
+  assert.throws(
+    () => planEntityCreationConfirmation(review, { ...entity, canonicalName: '后来修改的名字' }, '正确名字'),
+    /候选已过期/
+  )
+})
+
+test('entity name corrections are persisted as an auditable history', () => {
+  withStore(store => {
+    store.recordEntityCorrection('entity-1', 'review-1', '错误名字', '正确名字')
+    store.recordEntityCorrection('entity-1', 'review-1', '正确名字', '正确名字')
+    const rows = store.listEntityCorrections('entity-1')
+    assert.equal(rows.length, 1)
+    assert.equal(rows[0].before_name, '错误名字')
+    assert.equal(rows[0].after_name, '正确名字')
+    assert.equal(rows[0].reason, 'review_correction')
+  })
 })
 
 test('identity candidates explain their source and preserve current negative decisions', () => {
