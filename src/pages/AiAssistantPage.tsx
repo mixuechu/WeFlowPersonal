@@ -3,6 +3,7 @@ import { BookOpen, Bot, CalendarDays, Check, Clock3, Filter, Network, Paperclip,
 import { buildTaskCalendar, shanghaiToday } from '../utils/taskCalendar'
 import { filterGraphReviews, type ReviewStatusFilter } from '../utils/graphReviewFilters'
 import { evidenceLocalMessageId, groupMemorySearchResults, MEMORY_TYPE_LABELS, normalizeMemoryEvidence, type MemoryEvidence } from '../utils/memorySearchPresentation'
+import { buildGraphViewport } from '../utils/graphViewport'
 import './AiAssistantPage.scss'
 
 type Task = {
@@ -64,6 +65,7 @@ function AiAssistantPage() {
   const [graphQuery, setGraphQuery] = useState('')
   const [graphRelationType, setGraphRelationType] = useState('')
   const [graphRelationStatus, setGraphRelationStatus] = useState('')
+  const [graphFocusDepth, setGraphFocusDepth] = useState(1)
   const [selectedEntityId, setSelectedEntityId] = useState('')
   const [showEntityDossier, setShowEntityDossier] = useState(false)
   const [briefingPeriod, setBriefingPeriod] = useState<'latest' | 'week'>('latest')
@@ -234,31 +236,23 @@ function AiAssistantPage() {
     (!claim?.object_entity_id || trustedGraphEntityIds.has(claim.object_entity_id))
   const eventEntitiesTrusted = (event: any) =>
     (event?.participants || []).every((participant: any) => trustedGraphEntityIds.has(participant.entity_id))
-  const graphEntities = useMemo(() => {
-    const query = graphQuery.trim().toLowerCase()
-    const available = graph.entities.filter((entity: any) => entity.trustStatus !== 'rejected')
-    const rows = query
-      ? available.filter((entity: any) => [
-        entity.canonicalName,
-        ...(entity.aliases || []),
-        ...(entity.accountIds || []),
-        ...(entity.externalIdentities || []).flatMap((identity: any) => [identity.accountId, identity.displayName])
-      ].some((value: string) => value.toLowerCase().includes(query)))
-      : available
-    return rows.slice(-60)
-  }, [graph.entities, graphQuery])
-  const graphEntityIds = useMemo(() => new Set(graphEntities.map((entity: any) => entity.id)), [graphEntities])
-  const graphRelations = useMemo(() => graph.relations.filter((relation: any) =>
-    relation.status !== 'rejected' &&
-    (!graphRelationType || relation.predicate === graphRelationType) &&
-    (!graphRelationStatus || relation.status === graphRelationStatus) &&
-    graphEntityIds.has(relation.subjectId) && graphEntityIds.has(relation.objectId)),
-  [graph.relations, graphEntityIds, graphRelationType, graphRelationStatus])
+  const graphViewport = useMemo(() => buildGraphViewport(graph.entities, graph.relations, {
+    query: graphQuery,
+    relationType: graphRelationType,
+    relationStatus: graphRelationStatus,
+    focusEntityId: selectedEntityId,
+    depth: graphFocusDepth,
+    maxNodes: 60
+  }), [graph.entities, graph.relations, graphQuery, graphRelationType, graphRelationStatus, selectedEntityId, graphFocusDepth])
+  const graphEntities = graphViewport.entities
+  const graphRelations = graphViewport.relations
   const graphPositions = useMemo(() => new Map(graphEntities.map((entity: any, index: number) => {
+    if (graphViewport.mode === 'focus' && entity.id === selectedEntityId) return [entity.id, { x: 250, y: 170 }]
     const angle = (Math.PI * 2 * index) / Math.max(1, graphEntities.length) - Math.PI / 2
-    const ring = 105 + (index % 3) * 35
+    const level = graphViewport.levels.get(entity.id) || 1
+    const ring = graphViewport.mode === 'focus' ? 70 + (level - 1) * 65 + (index % 2) * 18 : 105 + (index % 3) * 35
     return [entity.id, { x: 250 + Math.cos(angle) * ring, y: 170 + Math.sin(angle) * ring }]
-  })), [graphEntities])
+  })), [graphEntities, graphViewport, selectedEntityId])
   const selectedEntity = graph.entities.find((entity: any) => entity.id === selectedEntityId)
   const selectedEntityInsight = dashboard?.entityInsights?.[selectedEntityId]
   const relationPredicates = useMemo<string[]>(() => [...new Set<string>(graph.relations
@@ -1852,6 +1846,18 @@ function AiAssistantPage() {
             <select value={graphRelationStatus} onChange={event => setGraphRelationStatus(event.target.value)}>
               <option value="">全部可信状态</option><option value="confirmed">已确认</option><option value="candidate">待确认</option>
             </select>
+            {(selectedEntityId || graphQuery) && <select value={graphFocusDepth} onChange={event => setGraphFocusDepth(Number(event.target.value))}>
+              <option value={1}>展开 1 跳邻居</option><option value={2}>展开 2 跳邻居</option><option value={3}>展开 3 跳邻居</option>
+            </select>}
+            {selectedEntityId && <button onClick={() => setSelectedEntityId('')}>退出人物聚焦</button>}
+          </div>
+          <div className="assistant-graph-viewport-note">
+            <span>{graphViewport.mode === 'focus' ? `正聚焦 ${selectedEntity?.canonicalName || '选中实体'}`
+              : graphViewport.mode === 'search' ? `搜索命中并展开 ${graphFocusDepth} 跳关系`
+                : '默认优先展示连接度最高的实体'}</span>
+            <small>当前画布 {graphEntities.length} 个节点 · {graphRelations.length} 条边
+              {graphViewport.truncated ? ` · 为保持流畅另有 ${graphViewport.truncated} 个相关节点未展开` : ''}
+            </small>
           </div>
           {identityDisambiguation && <div className="assistant-identity-status">
             <span><strong>{identityDisambiguation.mode === 'full' ? '全图身份巡检' : '增量身份消歧'}</strong>

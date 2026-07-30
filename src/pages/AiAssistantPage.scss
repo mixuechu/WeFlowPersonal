@@ -591,6 +591,9 @@
 .assistant-graph-toolbar { display: flex; gap: 7px; flex-wrap: wrap; }
 .assistant-graph-toolbar input { width: min(360px, 100%); padding: 9px 12px; border: 1px solid #deddd5; border-radius: 9px; background: #fff; }
 .assistant-graph-toolbar select { min-width: 125px; padding: 8px; border: 1px solid #deddd5; border-radius: 9px; color: #616861; background: #fff; font-size: 9px; }
+.assistant-graph-toolbar button { padding: 7px 9px; border: 1px solid #d7ddd7; border-radius: 8px; color: #526259; background: #fff; font-size: 9px; cursor: pointer; }
+.assistant-graph-viewport-note { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin: -4px 0 10px; padding: 7px 9px; border-radius: 8px; color: #57655c; background: #f0f4f0; font-size: 9px; }
+.assistant-graph-viewport-note small { color: #7d867f; font-size: 8px; text-align: right; }
 .assistant-relationship-metrics { margin-top: 9px; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 5px; }
 .assistant-relationship-metrics > div { padding: 7px; border-radius: 7px; display: grid; background: #eef4ef; }
 .assistant-relationship-metrics > div strong { color: #285d49; font-size: 15px; }
