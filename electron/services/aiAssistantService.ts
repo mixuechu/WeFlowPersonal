@@ -15,7 +15,7 @@ import { captureWebSnapshot } from './webSnapshotService'
 import { extractScannedPdfText, getPdfOcrStatus } from './pdfOcrService'
 import { exportService } from './export'
 import { filterMemorySearchResults, type MemorySearchOptions } from './memorySearchFilters'
-import { buildMemoryQueryPlan } from './memoryQueryPlanner'
+import { buildContextualMemoryQuestion, buildMemoryQueryPlan } from './memoryQueryPlanner'
 import {
   applyReminderPreferences,
   buildTaskReminders,
@@ -2496,6 +2496,7 @@ export class AiAssistantService {
       resourceTrash: personalMemoryStore.listResourceTrash(),
       ingestionStatus: personalMemoryStore.getIngestionStatus(),
       assistantHistory: personalMemoryStore.getRecentAssistantExchanges(),
+      assistantConversations: personalMemoryStore.listAssistantConversations(),
       qualityBaseline: evaluateTaskAssignmentPolicy(),
       weeklyBriefing: buildWeeklyBriefing(this.state.briefings, tasks),
       notificationDelivery: {
@@ -3470,8 +3471,15 @@ export class AiAssistantService {
   async askMemory(question: string, conversationId?: string, options: MemorySearchOptions = {}): Promise<any> {
     const query = String(question || '').trim()
     if (!query) throw new Error('请输入问题')
+    const conversationHistory = conversationId
+      ? (personalMemoryStore.getAssistantConversation(conversationId, 8)?.messages || [])
+        .filter((message: any) => message.role === 'user' || message.role === 'assistant')
+        .map((message: any) => ({ role: message.role, content: String(message.content || '').slice(0, 3000) }))
+      : []
+    const contextualQuestion = buildContextualMemoryQuestion(query, conversationHistory)
     const trustedEntities = this.state.graph.entities.filter(isTrustedEntity)
-    const plan = buildMemoryQueryPlan(query, trustedEntities)
+    const plan = buildMemoryQueryPlan(contextualQuestion.query, trustedEntities)
+    if (contextualQuestion.usedHistory) plan.explanation.unshift('结合上一轮问题解析本次指代')
     const plannedOptions: MemorySearchOptions = {
       ...plan.inferredOptions,
       ...options,
@@ -3542,7 +3550,7 @@ export class AiAssistantService {
     const model = String(this.config.get('aiAssistantApiModel') || 'deepseek-v4-flash')
     const redactionLevel = String(this.config.get('aiAssistantSensitiveRedactionLevel') || 'standard') as SensitiveRedactionLevel
     const outbound = redactSensitiveText(
-      `问题：${query}\n查询规划：${JSON.stringify(plan)}\n最终检索范围：${JSON.stringify(plannedOptions)}\n本地检索结果：${JSON.stringify(context)}`,
+      `当前问题：${query}\n历史对话（只用于理解指代和追问，不是事实证据）：${JSON.stringify(conversationHistory)}\n查询规划：${JSON.stringify(plan)}\n最终检索范围：${JSON.stringify(plannedOptions)}\n本地检索结果：${JSON.stringify(context)}`,
       redactionLevel
     )
     const response = await fetch(`${baseUrl}/chat/completions`, {
@@ -3551,7 +3559,7 @@ export class AiAssistantService {
       body: JSON.stringify({
         model, temperature: 0.1, max_tokens: 1800, response_format: { type: 'json_object' },
         messages: [
-          { role: 'system', content: '你是本地个人记忆问答助手。只能依据提供的检索结果回答；证据不足必须明确说不知道。只有 canSupportFacts=true 且包含原始 evidence 的文档可以支持事实结论。status=candidate 是待人工确认的模型候选，只能说明“存在待确认候选”，绝不能当作事实；status=cancelled 仅表示历史记录已取消，绝不能据此声称事件当前有效或已经发生；已拒绝记录不会提供给你。没有原始 evidence 的实体摘要只能作为检索线索。每个事实结论必须引用能够支持它的 documentId；不得引用 canSupportFacts=false 的文档。只输出 JSON：{"answer":"回答","citationIds":["documentId"],"uncertainty":"不确定性说明"}。' },
+          { role: 'system', content: '你是本地个人记忆问答助手。历史对话只能帮助理解代词、指代和追问，绝不是事实证据，不得引用或复述其中未经本次检索重新支持的结论。只能依据本次提供的检索结果回答；证据不足必须明确说不知道。只有 canSupportFacts=true 且包含原始 evidence 的文档可以支持事实结论。status=candidate 是待人工确认的模型候选，只能说明“存在待确认候选”，绝不能当作事实；status=cancelled 仅表示历史记录已取消，绝不能据此声称事件当前有效或已经发生；已拒绝记录不会提供给你。没有原始 evidence 的实体摘要只能作为检索线索。每个事实结论必须引用能够支持它的 documentId；不得引用 canSupportFacts=false 的文档。只输出 JSON：{"answer":"回答","citationIds":["documentId"],"uncertainty":"不确定性说明"}。' },
           { role: 'user', content: outbound.text }
         ]
       }),
@@ -3565,6 +3573,7 @@ export class AiAssistantService {
     const id = personalMemoryStore.saveAssistantExchange(query, answer, citations, conversationId)
     return {
       conversationId: id,
+      question: query,
       answer,
       uncertainty: String(parsed.uncertainty || ''),
       citations,
@@ -3579,6 +3588,14 @@ export class AiAssistantService {
         } : null
       }
     }
+  }
+
+  getAssistantConversation(id: string): any {
+    return personalMemoryStore.getAssistantConversation(String(id || '').trim())
+  }
+
+  deleteAssistantConversation(id: string): boolean {
+    return personalMemoryStore.deleteAssistantConversation(String(id || '').trim())
   }
 
   correctClaim(id: string, input: any): any {

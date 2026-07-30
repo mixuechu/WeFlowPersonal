@@ -14,6 +14,23 @@ export type MemoryQueryPlan = {
   explanation: string[]
 }
 
+export function buildContextualMemoryQuestion(
+  question: string,
+  history: Array<{ role?: string; content?: string }>
+): { query: string; usedHistory: boolean } {
+  const current = String(question || '').trim()
+  const needsContext = /(?:^|[，。？！\s])(他|她|它|他们|她们|这个|那个|这件事|那件事|对方|后来|然后|之后|前面|上述|呢)(?:$|[，。？！\s])/.test(current) ||
+    /^(那|所以|还有|后来|然后|之后|呢)/.test(current)
+  if (!needsContext) return { query: current, usedHistory: false }
+  const previousQuestion = [...(history || [])].reverse()
+    .find(message => message?.role === 'user' && String(message.content || '').trim())
+  if (!previousQuestion) return { query: current, usedHistory: false }
+  return {
+    query: `${String(previousQuestion.content).trim().slice(0, 500)}\n追问：${current}`,
+    usedHistory: true
+  }
+}
+
 function shanghaiDate(value: Date): string {
   return new Intl.DateTimeFormat('en-CA', {
     timeZone: 'Asia/Shanghai',

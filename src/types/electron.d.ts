@@ -1675,6 +1675,8 @@ export interface ElectronAPI {
       correctEvent: (id: string, input: any) => Promise<any>
       getMemoryEvent: (id: string) => Promise<any>
       askMemory: (question: string, conversationId?: string, options?: any) => Promise<any>
+      getAssistantConversation: (id: string) => Promise<any>
+      deleteAssistantConversation: (id: string) => Promise<boolean>
       getConversationSources: () => Promise<any[]>
       getDataSources: () => Promise<any[]>
       getEventTimeline: (options?: any) => Promise<{ items: any[]; total: number; hasMore: boolean }>

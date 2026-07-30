@@ -546,6 +546,22 @@
 .assistant-event-editor input, .assistant-event-editor textarea { min-width: 0; padding: 7px 9px; border: 1px solid #dcd9d0; border-radius: 8px; color: var(--text-primary); background: #fff; font: inherit; font-size: 10px; }
 .assistant-event-editor textarea { min-height: 66px; grid-column: 1 / -1; resize: vertical; }
 .assistant-memory-chat { margin-top: 18px; }
+.assistant-conversation-layout { display: grid; grid-template-columns: minmax(170px, .34fr) 1fr; gap: 10px; margin-bottom: 10px; }
+.assistant-conversation-list { display: grid; align-content: start; gap: 5px; max-height: 300px; overflow: auto; padding: 8px; border: 1px solid #e3e2da; border-radius: 10px; background: rgba(250,250,247,.72); }
+.assistant-conversation-list > strong { padding: 2px 4px 5px; color: #69736b; font-size: 9px; }
+.assistant-conversation-list > button { display: grid; gap: 2px; width: 100%; padding: 7px 8px; border: 1px solid transparent; border-radius: 8px; text-align: left; color: #566158; background: transparent; cursor: pointer; }
+.assistant-conversation-list > button.active { border-color: #b9cbbf; background: #edf3ee; }
+.assistant-conversation-list b { overflow: hidden; font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
+.assistant-conversation-list span,.assistant-conversation-list small { overflow: hidden; color: #899089; font-size: 7px; text-overflow: ellipsis; white-space: nowrap; }
+.assistant-conversation-thread { display: grid; align-content: start; gap: 7px; max-height: 300px; overflow: auto; padding: 10px; border: 1px solid #e3e2da; border-radius: 10px; background: rgba(255,255,255,.55); }
+.assistant-conversation-thread article { max-width: 88%; padding: 8px 10px; border-radius: 10px; background: #eef1ed; }
+.assistant-conversation-thread article.user { justify-self: end; background: #e5efe9; }
+.assistant-conversation-thread article span { color: #818a82; font-size: 7px; }
+.assistant-conversation-thread article p { margin: 4px 0 0; color: #414c44; font-size: 10px; line-height: 1.5; white-space: pre-wrap; }
+.assistant-conversation-thread article button { margin-top: 5px; padding: 3px 6px; border: 1px solid #cad8ce; border-radius: 5px; color: #456353; background: #fff; font-size: 8px; cursor: pointer; }
+.assistant-conversation-controls { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin: -2px 0 10px; }
+.assistant-conversation-controls small { color: #7f887f; font-size: 8px; line-height: 1.4; }
+.assistant-conversation-controls button { flex: 0 0 auto; padding: 4px 7px; border: 1px solid #ddcaca; border-radius: 6px; color: #8b4b4b; background: #fff; font-size: 8px; cursor: pointer; }
 .assistant-memory-question { display: flex; gap: 8px; }
 .assistant-memory-question input { flex: 1; padding: 10px 12px; border: 1px solid #dcd9d0; border-radius: 9px; background: #fff; }
 .assistant-memory-question button { padding: 9px 16px; border: 0; border-radius: 9px; color: #fff; background: #255f4b; }
@@ -570,6 +586,7 @@
 .assistant-citation-actions button { padding: 4px 7px; border: 1px solid #d4ddd5; border-radius: 6px; color: #587162; background: #fff; font-size: 8px; cursor: pointer; }
 .assistant-citation-actions button.primary { border-color: #2f6b55; color: #fff; background: #2f6b55; }
 @media (max-width: 980px) { .assistant-memory-feed { grid-template-columns: 1fr; } }
+@media (max-width: 760px) { .assistant-conversation-layout { grid-template-columns: 1fr; } }
 .assistant-graph-toolbar { margin-bottom: 12px; }
 .assistant-graph-toolbar { display: flex; gap: 7px; flex-wrap: wrap; }
 .assistant-graph-toolbar input { width: min(360px, 100%); padding: 9px 12px; border: 1px solid #deddd5; border-radius: 9px; background: #fff; }

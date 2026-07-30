@@ -126,6 +126,8 @@ function AiAssistantPage() {
   const [indexingVectors, setIndexingVectors] = useState(false)
   const [memoryQuestion, setMemoryQuestion] = useState('')
   const [memoryAnswer, setMemoryAnswer] = useState<any>(null)
+  const [memoryConversationId, setMemoryConversationId] = useState<string | null>(null)
+  const [memoryConversation, setMemoryConversation] = useState<any>(null)
   const [askingMemory, setAskingMemory] = useState(false)
   const [creatingMemoryTask, setCreatingMemoryTask] = useState(false)
   const [memoryEntityFilter, setMemoryEntityFilter] = useState('')
@@ -272,6 +274,7 @@ function AiAssistantPage() {
     })
   }, [graph.reviewQueue, reviewStatusFilter, reviewKindFilter, reviewQuery])
   const groupedMemoryResults = useMemo(() => groupMemorySearchResults(memoryResults), [memoryResults])
+  const assistantConversations: any[] = dashboard?.assistantConversations || []
   const identityDisambiguation = dashboard?.identityDisambiguation
   const mergeHistory = dashboard?.mergeHistory || []
   const entityCorrections = dashboard?.entityCorrections || []
@@ -703,13 +706,58 @@ function AiAssistantPage() {
     if (!question || askingMemory) return
     setAskingMemory(true)
     try {
-      const answer = await window.electronAPI.aiAssistant.askMemory(question, memoryAnswer?.conversationId, memorySearchOptions)
+      const answer = await window.electronAPI.aiAssistant.askMemory(question, memoryConversationId || undefined, memorySearchOptions)
       setMemoryAnswer({ ...answer, question })
+      setMemoryConversationId(answer.conversationId)
+      setMemoryConversation(await window.electronAPI.aiAssistant.getAssistantConversation(answer.conversationId))
+      setMemoryQuestion('')
+      await load()
     } catch (error: any) {
       setMemoryAnswer({ answer: error?.message || String(error), citations: [], uncertainty: '' })
     } finally {
       setAskingMemory(false)
     }
+  }
+
+  const openMemoryConversation = useCallback(async (id: string) => {
+    const conversation = await window.electronAPI.aiAssistant.getAssistantConversation(id)
+    if (!conversation) return
+    setMemoryConversationId(id)
+    setMemoryConversation(conversation)
+    const messages = conversation.messages || []
+    const assistantIndex = messages.map((item: any) => item.role).lastIndexOf('assistant')
+    if (assistantIndex >= 0) {
+      const assistant = messages[assistantIndex]
+      const question = [...messages.slice(0, assistantIndex)].reverse().find((item: any) => item.role === 'user')
+      setMemoryAnswer({
+        conversationId: id,
+        question: question?.content || conversation.title,
+        answer: assistant.content,
+        citations: assistant.citations || [],
+        uncertainty: ''
+      })
+    } else {
+      setMemoryAnswer(null)
+    }
+  }, [])
+
+  useEffect(() => {
+    if (memoryConversationId !== null || !assistantConversations.length) return
+    void openMemoryConversation(assistantConversations[0].id)
+  }, [assistantConversations, memoryConversationId, openMemoryConversation])
+
+  const startNewMemoryConversation = () => {
+    setMemoryConversationId('')
+    setMemoryConversation(null)
+    setMemoryAnswer(null)
+    setMemoryQuestion('')
+  }
+
+  const deleteMemoryConversation = async () => {
+    if (!memoryConversationId || !window.confirm('确定删除这段本地问答历史吗？该操作不会删除引用的原始记忆。')) return
+    await window.electronAPI.aiAssistant.deleteAssistantConversation(memoryConversationId)
+    startNewMemoryConversation()
+    await load()
   }
 
   const createTaskFromMemory = async () => {
@@ -1399,7 +1447,45 @@ function AiAssistantPage() {
         <section className="assistant-panel assistant-memory-chat">
           <div className="assistant-section-heading">
             <div><span className="assistant-eyebrow">EVIDENCE Q&A</span><h3><Bot size={16} /> 向个人记忆提问</h3></div>
+            <button onClick={startNewMemoryConversation}>新对话</button>
           </div>
+          <div className="assistant-conversation-layout">
+            <aside className="assistant-conversation-list">
+              <strong>本机历史</strong>
+              {assistantConversations.map(conversation => <button
+                className={memoryConversationId === conversation.id ? 'active' : ''}
+                key={conversation.id}
+                onClick={() => void openMemoryConversation(conversation.id)}>
+                <b>{conversation.title}</b>
+                <span>{Number(conversation.message_count || 0)} 条消息 · {new Date(conversation.updated_at).toLocaleString('zh-CN')}</span>
+                <small>{conversation.preview}</small>
+              </button>)}
+              {!assistantConversations.length && <small>还没有本地问答记录。</small>}
+            </aside>
+            <div className="assistant-conversation-thread">
+              {memoryConversation?.messages?.map((item: any) => <article className={item.role} key={item.id}>
+                <span>{item.role === 'user' ? '你' : 'AI 助理'} · {new Date(item.created_at).toLocaleString('zh-CN')}</span>
+                <p>{item.content}</p>
+                {item.role === 'assistant' && !!item.citations?.length && <button onClick={() => {
+                  const messages = memoryConversation.messages || []
+                  const index = messages.findIndex((message: any) => message.id === item.id)
+                  const question = [...messages.slice(0, index)].reverse().find((message: any) => message.role === 'user')
+                  setMemoryAnswer({
+                    conversationId: memoryConversation.id,
+                    question: question?.content || memoryConversation.title,
+                    answer: item.content,
+                    citations: item.citations,
+                    uncertainty: ''
+                  })
+                }}>查看 {item.citations.length} 条引用</button>}
+              </article>)}
+              {!memoryConversation && <div className="assistant-empty">新对话会在首次回答后加密保存；重启后可以从左侧继续。</div>}
+            </div>
+          </div>
+          {memoryConversationId && <div className="assistant-conversation-controls">
+            <small>后续追问会携带最近 8 条对话帮助理解指代；历史回答不能作为事实证据，结论仍须重新引用本次检索原文。</small>
+            <button className="danger" onClick={() => void deleteMemoryConversation()}>删除这段历史</button>
+          </div>}
           <div className="assistant-memory-question">
             <input value={memoryQuestion} onChange={event => setMemoryQuestion(event.target.value)} onKeyDown={event => {
               if (event.key === 'Enter') void askMemory()

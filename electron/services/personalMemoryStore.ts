@@ -2814,16 +2814,69 @@ export class PersonalMemoryStore {
 
   saveAssistantExchange(question: string, answer: string, citations: any[], conversationId?: string): string {
     if (!this.db) return ''
-    const now = new Date().toISOString()
-    const id = conversationId || `chat_${Date.now()}_${Math.random().toString(16).slice(2)}`
+    const existing = conversationId
+      ? this.db.prepare('SELECT updated_at FROM assistant_conversations WHERE id=?').get(conversationId) as any
+      : null
+    const previousMs = Number.isFinite(Date.parse(String(existing?.updated_at || '')))
+      ? Date.parse(String(existing.updated_at))
+      : 0
+    const questionMs = Math.max(Date.now(), previousMs + 1)
+    const now = new Date(questionMs).toISOString()
+    const answerAt = new Date(questionMs + 1).toISOString()
+    const id = conversationId || `chat_${questionMs}_${Math.random().toString(16).slice(2)}`
     this.db.prepare(`
       INSERT INTO assistant_conversations(id,title,created_at,updated_at) VALUES(?,?,?,?)
       ON CONFLICT(id) DO UPDATE SET updated_at=excluded.updated_at
-    `).run(id, question.slice(0, 80), now, now)
+    `).run(id, question.slice(0, 80), now, answerAt)
     const insert = this.db.prepare('INSERT INTO assistant_messages(id,conversation_id,role,content,citations_json,created_at) VALUES(?,?,?,?,?,?)')
-    insert.run(`msg_${Date.now()}_q`, id, 'user', question, '[]', now)
-    insert.run(`msg_${Date.now()}_a`, id, 'assistant', answer, JSON.stringify(citations || []), now)
+    const messageNonce = Math.random().toString(16).slice(2)
+    insert.run(`msg_${Date.now()}_${messageNonce}_q`, id, 'user', question, '[]', now)
+    insert.run(`msg_${Date.now()}_${messageNonce}_a`, id, 'assistant', answer, JSON.stringify(citations || []), answerAt)
     return id
+  }
+
+  listAssistantConversations(limit = 30): any[] {
+    if (!this.db) return []
+    return this.db.prepare(`
+      SELECT c.id,c.title,c.created_at,c.updated_at,COUNT(m.id) AS message_count,
+        COALESCE((
+          SELECT content FROM assistant_messages latest
+          WHERE latest.conversation_id=c.id
+          ORDER BY latest.created_at DESC,latest.id DESC LIMIT 1
+        ),'') AS preview
+      FROM assistant_conversations c
+      LEFT JOIN assistant_messages m ON m.conversation_id=c.id
+      GROUP BY c.id
+      ORDER BY c.updated_at DESC,c.id DESC LIMIT ?
+    `).all(Math.max(1, Math.min(100, Number(limit) || 30))) as any[]
+  }
+
+  getAssistantConversation(id: string, limit = 40): any {
+    if (!this.db) return null
+    const conversation = this.db.prepare(`
+      SELECT id,title,created_at,updated_at FROM assistant_conversations WHERE id=?
+    `).get(id) as any
+    if (!conversation) return null
+    const rows = this.db.prepare(`
+      SELECT id,role,content,citations_json,created_at FROM (
+        SELECT id,role,content,citations_json,created_at
+        FROM assistant_messages WHERE conversation_id=?
+        ORDER BY created_at DESC,id DESC LIMIT ?
+      ) ORDER BY created_at,id
+    `).all(id, Math.max(1, Math.min(200, Number(limit) || 40))) as any[]
+    return {
+      ...conversation,
+      messages: rows.map(row => {
+        let citations: any[] = []
+        try { citations = JSON.parse(String(row.citations_json || '[]')) } catch {}
+        return { ...row, citations }
+      })
+    }
+  }
+
+  deleteAssistantConversation(id: string): boolean {
+    if (!this.db) return false
+    return this.db.prepare('DELETE FROM assistant_conversations WHERE id=?').run(id).changes > 0
   }
 
   getRecentAssistantExchanges(limit = 10): any[] {

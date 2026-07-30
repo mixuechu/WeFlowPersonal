@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os'
 import { randomBytes } from 'node:crypto'
 import { PersonalMemoryStore } from '../electron/services/personalMemoryStore.ts'
 import { filterMemorySearchResults } from '../electron/services/memorySearchFilters.ts'
-import { buildMemoryQueryPlan } from '../electron/services/memoryQueryPlanner.ts'
+import { buildContextualMemoryQuestion, buildMemoryQueryPlan } from '../electron/services/memoryQueryPlanner.ts'
 import { applyReminderPreferences, buildTaskReminders, findMatchingTask } from '../electron/services/taskIntelligence.ts'
 import { buildEntityInsights } from '../electron/services/relationshipInsights.ts'
 import {
@@ -1591,6 +1591,17 @@ test('memory query planner infers Shanghai time, entity and intent scopes', () =
   const relationPlan = buildMemoryQueryPlan('Onyx 是我的客户吗？', entities, new Date('2026-07-30T02:00:00Z'))
   assert.deepEqual(relationPlan.inferredOptions.documentTypes, ['relation'])
   assert.deepEqual(relationPlan.inferredOptions.relationTypes, ['客户'])
+  const contextual = buildContextualMemoryQuestion('那他后来怎么说？', [
+    { role: 'user', content: 'Onyx 的负责人是谁？' },
+    { role: 'assistant', content: '根据证据，负责人是某人。' }
+  ])
+  assert.equal(contextual.usedHistory, true)
+  assert.match(contextual.query, /Onyx 的负责人是谁/)
+  const standalone = buildContextualMemoryQuestion('最近三天有哪些待办？', [
+    { role: 'user', content: 'Onyx 的负责人是谁？' }
+  ])
+  assert.equal(standalone.usedHistory, false)
+  assert.equal(standalone.query, '最近三天有哪些待办？')
 })
 
 test('manual memory review updates searchable status metadata', () => withStore(store => {
@@ -1614,6 +1625,38 @@ test('manual memory review updates searchable status metadata', () => withStore(
   const result = store.searchText('审核对象').find(item => item.id === 'claim:claim-review')
   assert.ok(result)
   assert.equal(JSON.parse(result.metadata_json).status, 'confirmed')
+}))
+
+test('assistant conversations persist ordered turns, citations and deletion across reloads', () => withStore(store => {
+  const conversationId = store.saveAssistantExchange('第一问', '第一答', [{
+    documentId: 'claim:one',
+    title: '证据一'
+  }])
+  store.saveAssistantExchange('第二问', '第二答', [{
+    documentId: 'event:two',
+    title: '证据二'
+  }], conversationId)
+  store.saveAssistantExchange('第三问', '第三答', [], conversationId)
+
+  const summaries = store.listAssistantConversations()
+  assert.equal(summaries.length, 1)
+  assert.equal(summaries[0].id, conversationId)
+  assert.equal(summaries[0].title, '第一问')
+  assert.equal(summaries[0].message_count, 6)
+  assert.equal(summaries[0].preview, '第三答')
+
+  const conversation = store.getAssistantConversation(conversationId, 4)
+  assert.deepEqual(conversation.messages.map((message: any) => [message.role, message.content]), [
+    ['user', '第二问'],
+    ['assistant', '第二答'],
+    ['user', '第三问'],
+    ['assistant', '第三答']
+  ])
+  assert.equal(conversation.messages[1].citations[0].documentId, 'event:two')
+
+  assert.equal(store.deleteAssistantConversation(conversationId), true)
+  assert.equal(store.getAssistantConversation(conversationId), null)
+  assert.equal(store.listAssistantConversations().length, 0)
 }))
 
 test('human claim correction survives repeated extraction while new evidence is retained', () => withStore(store => {
