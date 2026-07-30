@@ -4568,6 +4568,8 @@ function registerIpcHandlers() {
   ipcMain.handle('ai-assistant:getDataSources', () => aiAssistantService.getDataSources())
   ipcMain.handle('ai-assistant:setDataSourceEnabled', (_, sourceId: string, enabled: boolean) =>
     aiAssistantService.setDataSourceEnabled(sourceId, enabled))
+  ipcMain.handle('ai-assistant:configureDataSource', (_, sourceId: string, input: any) =>
+    aiAssistantService.configureDataSource(sourceId, input))
   ipcMain.handle('ai-assistant:setConversationSource', (_, input: any) => aiAssistantService.setConversationSource(input))
   ipcMain.handle('ai-assistant:setConversationSourcesBulk', (_, input: any) => aiAssistantService.setConversationSourcesBulk(input))
 

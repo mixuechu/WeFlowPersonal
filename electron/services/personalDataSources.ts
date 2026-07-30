@@ -24,6 +24,7 @@ export type PersonalDataSourcePullResult = {
   items: PersonalDataSourceItem[]
   nextCheckpoint: string
   hasMore: boolean
+  warnings?: string[]
 }
 
 export interface PersonalDataSourceConnector {
@@ -33,7 +34,7 @@ export interface PersonalDataSourceConnector {
   description: string
   available: boolean
   localOnly: boolean
-  capabilities: PersonalDataSourceCapability[]
+  capabilities: readonly PersonalDataSourceCapability[]
   pull(input: { checkpoint: string; limit: number; signal?: AbortSignal }): Promise<PersonalDataSourcePullResult>
 }
 
@@ -90,7 +91,7 @@ export async function runPersonalDataSourceBatch(
   checkpoint: string,
   consume: (items: PersonalDataSourceItem[]) => Promise<void>,
   options: { limit?: number; signal?: AbortSignal } = {}
-): Promise<{ checkpoint: string; pulled: number; hasMore: boolean }> {
+): Promise<{ checkpoint: string; pulled: number; hasMore: boolean; warnings: string[] }> {
   if (!connector.available) throw new Error(`数据源 ${connector.displayName} 尚不可用`)
   const result = await connector.pull({
     checkpoint,
@@ -108,6 +109,7 @@ export async function runPersonalDataSourceBatch(
   return {
     checkpoint: String(result.nextCheckpoint || checkpoint),
     pulled: items.length,
-    hasMore: Boolean(result.hasMore)
+    hasMore: Boolean(result.hasMore),
+    warnings: (result.warnings || []).map(value => String(value).slice(0, 500)).slice(0, 20)
   }
 }

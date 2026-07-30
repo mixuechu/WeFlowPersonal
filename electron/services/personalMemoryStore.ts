@@ -291,6 +291,7 @@ export class PersonalMemoryStore {
         available INTEGER NOT NULL DEFAULT 0,
         local_only INTEGER NOT NULL DEFAULT 1,
         capabilities_json TEXT NOT NULL DEFAULT '[]',
+        config_json TEXT NOT NULL DEFAULT '{}',
         checkpoint TEXT NOT NULL DEFAULT '',
         status TEXT NOT NULL DEFAULT 'idle',
         last_attempt_at TEXT,
@@ -392,6 +393,7 @@ export class PersonalMemoryStore {
     this.ensureColumn('ingestion_batches', 'duration_ms', `INTEGER NOT NULL DEFAULT 0`)
     this.ensureColumn('ingestion_batches', 'redaction_summary_json', `TEXT NOT NULL DEFAULT '{}'`)
     this.ensureColumn('memory_item_suppressions', 'semantic_fingerprint', `TEXT NOT NULL DEFAULT ''`)
+    this.ensureColumn('data_source_connectors', 'config_json', `TEXT NOT NULL DEFAULT '{}'`)
     this.db.exec(`CREATE INDEX IF NOT EXISTS idx_memory_item_suppressions_semantic
       ON memory_item_suppressions(item_kind,semantic_fingerprint)`)
     this.db.prepare(`UPDATE claims SET status='candidate' WHERE source_nature!='self_statement' AND status='confirmed'`).run()
@@ -2021,6 +2023,7 @@ export class PersonalMemoryStore {
       available: row.available === 1,
       localOnly: row.local_only === 1,
       capabilities: JSON.parse(row.capabilities_json || '[]'),
+      config: JSON.parse(row.config_json || '{}'),
       checkpoint: row.checkpoint,
       status: row.status,
       lastAttemptAt: row.last_attempt_at,
@@ -2038,6 +2041,26 @@ export class PersonalMemoryStore {
     this.db.prepare('UPDATE data_source_connectors SET enabled=?,updated_at=? WHERE source_id=?')
       .run(enabled ? 1 : 0, new Date().toISOString(), sourceId)
     return this.listDataSources().find(item => item.id === sourceId)
+  }
+
+  configureDataSource(sourceId: string, config: Record<string, unknown>, available: boolean): any {
+    if (!this.db) throw new Error('个人记忆数据库尚未初始化')
+    const source = this.db.prepare('SELECT 1 FROM data_source_connectors WHERE source_id=?').get(sourceId)
+    if (!source) throw new Error('未知数据源')
+    this.db.prepare(`
+      UPDATE data_source_connectors
+      SET config_json=?,available=?,enabled=?,checkpoint='',status='idle',
+        last_error=NULL,updated_at=?
+      WHERE source_id=?
+    `).run(JSON.stringify(config || {}), available ? 1 : 0, available ? 1 : 0, new Date().toISOString(), sourceId)
+    return this.listDataSources().find(item => item.id === sourceId)
+  }
+
+  setDataSourceAvailability(sourceId: string, available: boolean, error = ''): void {
+    if (!this.db) return
+    this.db.prepare(`
+      UPDATE data_source_connectors SET available=?,status=?,last_error=?,updated_at=? WHERE source_id=?
+    `).run(available ? 1 : 0, available ? 'idle' : 'error', error || null, new Date().toISOString(), sourceId)
   }
 
   updateDataSourceRun(sourceId: string, patch: {

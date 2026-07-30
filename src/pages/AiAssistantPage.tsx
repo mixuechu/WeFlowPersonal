@@ -639,6 +639,22 @@ function AiAssistantPage() {
     }
   }
 
+  const configureDocumentSource = async () => {
+    const selected = await window.electronAPI.dialog.openFile({
+      title: '选择要持续索引的本机文档目录',
+      properties: ['openDirectory', 'createDirectory']
+    })
+    const folderPath = selected.filePaths?.[0]
+    if (selected.canceled || !folderPath) return
+    try {
+      const updated = await window.electronAPI.aiAssistant.configureDataSource('documents', { folderPath })
+      setDataSources(current => current.map(item => item.id === 'documents' ? updated : item))
+      setMessage('本机文档目录已连接；下次立即补齐或自动整理时开始增量索引。')
+    } catch (error: any) {
+      setMessage(error?.message || String(error))
+    }
+  }
+
   return (
     <div className="ai-assistant-page native">
       <div className="ai-assistant-toolbar">
@@ -1861,6 +1877,11 @@ function AiAssistantPage() {
                       claims: '事实', events: '事件', attachments: '附件'
                     } as Record<string, string>)[capability] || capability).join(' · ')}</small>
                     {source.lastError && <small className="assistant-error">{source.lastError}</small>}
+                    {source.id === 'documents' && <button type="button" onClick={event => {
+                      event.preventDefault()
+                      event.stopPropagation()
+                      void configureDocumentSource()
+                    }}>{source.config?.folderPath ? '更换文档目录' : '选择文档目录'}</button>}
                   </span>
                   <input type="checkbox" checked={Boolean(source.enabled)} disabled={!source.available}
                     title={source.available ? '开启或暂停该数据源' : '该连接器尚未安装'}

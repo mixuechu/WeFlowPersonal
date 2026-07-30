@@ -1676,6 +1676,7 @@ export interface ElectronAPI {
       getConversationSources: () => Promise<any[]>
       getDataSources: () => Promise<any[]>
       setDataSourceEnabled: (sourceId: string, enabled: boolean) => Promise<any>
+      configureDataSource: (sourceId: string, input: any) => Promise<any>
       setConversationSource: (input: any) => Promise<any>
       setConversationSourcesBulk: (input: any) => Promise<any>
   }

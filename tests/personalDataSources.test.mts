@@ -48,7 +48,7 @@ test('data source checkpoint advances only after deduplicated items are consumed
   })
   assert.equal(consumed.length, 1)
   assert.equal(consumed[0].title, '重复文档')
-  assert.deepEqual(result, { checkpoint: 'cursor-1-next', pulled: 1, hasMore: false })
+  assert.deepEqual(result, { checkpoint: 'cursor-1-next', pulled: 1, hasMore: false, warnings: [] })
 
   let committedCheckpoint = 'cursor-1'
   await assert.rejects(

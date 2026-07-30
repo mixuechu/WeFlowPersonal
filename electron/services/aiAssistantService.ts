@@ -38,7 +38,8 @@ import { summarizeIngestionRuns } from './ingestionDiagnostics'
 import { attachLocalImageOcr, attachLocalVoiceTranscript, recoverMessageSemantics } from './messageSemanticRecovery'
 import { sanitizeDiagnosticText } from './diagnosticRedaction'
 import { getAppRunRecoveryDiagnostics } from './appRunRecoveryService'
-import { PERSONAL_DATA_SOURCE_CATALOG } from './personalDataSources'
+import { PERSONAL_DATA_SOURCE_CATALOG, runPersonalDataSourceBatch } from './personalDataSources'
+import { LocalDocumentDataSource } from './localDocumentDataSource'
 import {
   decryptPortableMemoryBundle,
   encryptPortableMemoryBundle,
@@ -261,6 +262,23 @@ export class AiAssistantService {
     }
     personalMemoryStore.initialize(databasePath, databaseKey)
     personalMemoryStore.registerDataSources(PERSONAL_DATA_SOURCE_CATALOG)
+    const documentSource = personalMemoryStore.listDataSources().find(source => source.id === 'documents')
+    const documentFolder = String(documentSource?.config?.folderPath || '')
+    if (documentFolder) {
+      try {
+        const connector = new LocalDocumentDataSource(documentFolder)
+        personalMemoryStore.setDataSourceAvailability('documents', true)
+        if (connector.root !== documentFolder) {
+          personalMemoryStore.configureDataSource('documents', { folderPath: connector.root }, true)
+        }
+      } catch (error) {
+        personalMemoryStore.setDataSourceAvailability(
+          'documents',
+          false,
+          `已配置的文档目录当前不可访问：${sanitizeDiagnosticText(error)}`
+        )
+      }
+    }
     personalMemoryStore.purgeExpiredResourceTrash(
       Number(this.config.get('aiAssistantResourceTrashRetentionDays') || 0)
     )
@@ -1285,6 +1303,83 @@ export class AiAssistantService {
     this.state.graph.identityScan.lastCandidateCount += candidates
   }
 
+  private async syncLocalDocuments(): Promise<{ indexed: number; error?: string }> {
+    const source = personalMemoryStore.listDataSources().find(item => item.id === 'documents')
+    if (!source?.enabled || !source.available || !source.config?.folderPath) return { indexed: 0 }
+    const attemptedAt = new Date().toISOString()
+    personalMemoryStore.updateDataSourceRun('documents', { status: 'running', attemptedAt })
+    let checkpoint = String(source.checkpoint || '')
+    let indexed = 0
+    const warnings: string[] = []
+    try {
+      const connector = new LocalDocumentDataSource(source.config.folderPath)
+      for (let page = 0; page < 5; page += 1) {
+        const result = await runPersonalDataSourceBatch(
+          connector,
+          checkpoint,
+          async items => {
+            const updatedAt = new Date().toISOString()
+            personalMemoryStore.upsertResources(items.map(item => {
+              const metadata = item.metadata || {}
+              const contentHash = String(metadata.contentHash || '')
+              return {
+                id: `local-document:${item.externalId}`,
+                resourceType: 'document',
+                title: item.title,
+                fileName: item.title,
+                fileExt: String(metadata.extension || ''),
+                content: item.content,
+                metadata: {
+                  ...metadata,
+                  sourceId: item.sourceId,
+                  scopeId: item.scopeId || '',
+                  scopeName: item.scopeName || '',
+                  sessionName: item.scopeName || '本机文档',
+                  senderName: '本机文档连接器'
+                },
+                createdAt: item.occurredAt,
+                updatedAt,
+                evidence: [{
+                  messageId: `${item.externalId}:${contentHash.slice(0, 16)}`,
+                  sessionId: `data-source:${item.sourceId}`,
+                  timestamp: Math.floor(Date.parse(item.occurredAt) / 1000),
+                  sender: '本机文档连接器',
+                  excerpt: String(item.content || item.title).slice(0, 2000)
+                }]
+              }
+            }))
+          },
+          { limit: 10 }
+        )
+        checkpoint = result.checkpoint
+        indexed += result.pulled
+        warnings.push(...result.warnings)
+        personalMemoryStore.updateDataSourceRun('documents', {
+          status: 'running',
+          checkpoint,
+          attemptedAt
+        })
+        if (!result.hasMore) break
+      }
+      const warning = warnings[0] ? `仍有 ${warnings.length} 个文档等待重试：${warnings[0]}` : ''
+      personalMemoryStore.updateDataSourceRun('documents', {
+        status: warning ? 'error' : 'healthy',
+        checkpoint,
+        succeededAt: new Date().toISOString(),
+        error: warning
+      })
+      return { indexed, error: warning || undefined }
+    } catch (error) {
+      const message = sanitizeDiagnosticText(error)
+      personalMemoryStore.updateDataSourceRun('documents', {
+        status: 'error',
+        attemptedAt,
+        error: message
+      })
+      return { indexed, error: message }
+    }
+  }
+
   async sync(): Promise<any> {
     if (this.activeSync) return this.activeSync
     this.cancelRequested = false
@@ -1298,6 +1393,7 @@ export class AiAssistantService {
   }
 
   private async runSync(): Promise<any> {
+    const documentSync = await this.syncLocalDocuments()
     const wechatSource = personalMemoryStore.listDataSources().find(source => source.id === 'wechat')
     if (wechatSource && !wechatSource.enabled) {
       return {
@@ -1306,7 +1402,10 @@ export class AiAssistantService {
         newMessageCount: 0,
         newTaskCount: 0,
         failedSessions: 0,
-        message: '微信数据源已暂停；增量游标保持不变'
+        indexedDocumentCount: documentSync.indexed,
+        message: documentSync.error
+          ? `微信数据源已暂停；本机文档同步失败：${documentSync.error}`
+          : '微信数据源已暂停；增量游标保持不变'
       }
     }
     const runId = `run_${crypto.randomUUID()}`
@@ -1524,6 +1623,8 @@ export class AiAssistantService {
         newMessageCount: successfulMessageKeys.length,
         newTaskCount: mineTasks.length,
         failedSessions: collected.failed.length,
+        indexedDocumentCount: documentSync.indexed,
+        documentSourceError: documentSync.error || null,
         message: cancelled ? '已安全暂停，成功批次已保存；下次将从断点继续' : ''
       }
     } catch (error: any) {
@@ -1568,6 +1669,16 @@ export class AiAssistantService {
       this.cancelRequested = true
     }
     return result
+  }
+
+  configureDataSource(sourceId: string, input: any): any {
+    if (sourceId !== 'documents') throw new Error('该数据源暂不支持本机配置')
+    const connector = new LocalDocumentDataSource(String(input?.folderPath || ''))
+    return personalMemoryStore.configureDataSource(
+      'documents',
+      { folderPath: connector.root },
+      true
+    )
   }
 
   cancelSync(): any {

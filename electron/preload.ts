@@ -658,6 +658,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
     getDataSources: () => ipcRenderer.invoke('ai-assistant:getDataSources'),
     setDataSourceEnabled: (sourceId: string, enabled: boolean) =>
       ipcRenderer.invoke('ai-assistant:setDataSourceEnabled', sourceId, enabled),
+    configureDataSource: (sourceId: string, input: any) =>
+      ipcRenderer.invoke('ai-assistant:configureDataSource', sourceId, input),
     setConversationSource: (input: any) => ipcRenderer.invoke('ai-assistant:setConversationSource', input),
     setConversationSourcesBulk: (input: any) => ipcRenderer.invoke('ai-assistant:setConversationSourcesBulk', input)
   },
