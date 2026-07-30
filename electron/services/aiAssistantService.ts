@@ -147,6 +147,7 @@ import {
   TASK_DIRECTORY_PAYLOAD_VERSION,
   TASK_HISTORY_LIMIT
 } from '../../shared/taskPayload'
+import { buildCursorStatusPayload } from '../../shared/cursorPayload'
 
 const ATTACHMENT_STRUCTURE_PARSER_VERSION = 'attachment-layout-v3'
 
@@ -2798,7 +2799,7 @@ export class AiAssistantService {
       cancelling: this.cancelRequested,
       scheduleTime: this.config.get('aiAssistantScheduleTime'),
       model: this.config.get('aiAssistantApiModel'),
-      cursor: this.state.cursor,
+      cursor: buildCursorStatusPayload(this.state.cursor),
       dataSources: personalMemoryStore.listDataSources()
     }
   }
@@ -3021,7 +3022,6 @@ export class AiAssistantService {
         dossier: 'on_demand'
       },
       projectRevision,
-      cursor: this.state.cursor,
       graph: buildGraphDashboardPayload(this.state.graph.entities),
       graphSummary: {
         entities: this.state.graph.entities.filter(entity => entity.trustStatus !== 'rejected').length,

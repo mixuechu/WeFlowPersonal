@@ -63,6 +63,7 @@ import {
   buildTaskDossier,
   TASK_HISTORY_LIMIT
 } from '../shared/taskPayload.ts'
+import { buildCursorStatusPayload, CURSOR_STATUS_PAYLOAD_VERSION } from '../shared/cursorPayload.ts'
 import { buildTaskCalendar, extractTaskDueDate } from '../src/utils/taskCalendar.ts'
 import { filterGraphReviews, paginateGraphReviews } from '../src/utils/graphReviewFilters.ts'
 import { summarizeIngestionRuns } from '../electron/services/ingestionDiagnostics.ts'
@@ -1546,6 +1547,42 @@ test('task dashboard keeps structure but loads evidence and audit history on dem
   assert.equal(dossier.history.length, TASK_HISTORY_LIMIT)
   assert.equal(dossier.historyTotal, history.length)
   assert.equal(dossier.payloadPolicy.loadedOnDemand, true)
+})
+
+test('renderer cursor status exposes counts but keeps durable keys and session maps private', () => {
+  const cursor = {
+    lastMessageTimestamp: 1_800_000_000,
+    recentMessageIds: Array.from({ length: 20_000 }, (_, index) => `private-message-key-${index}`),
+    sessionCursors: Object.fromEntries(Array.from({ length: 10_000 }, (_, index) => [
+      `private-session-${index}`, 1_700_000_000 + index
+    ])),
+    sessionOffsets: Object.fromEntries(Array.from({ length: 2_000 }, (_, index) => [
+      `private-backlog-${index}`, index % 2 ? index : 0
+    ])),
+    lastSuccessfulRunAt: '2026-07-31T00:00:00.000Z',
+    lastAttemptAt: '2026-07-31T00:01:00.000Z',
+    lastError: null,
+    pendingSessionRetryCount: 3,
+    pendingSessionBacklogCount: 1_000,
+    backlogRetry: {
+      nextAttemptAt: '2026-07-31T00:15:00.000Z',
+      failureCount: 2,
+      paused: false,
+      lastProgressAt: '2026-07-31T00:00:00.000Z'
+    }
+  }
+  const payload = buildCursorStatusPayload(cursor)
+  const serialized = JSON.stringify(payload)
+  assert.equal(payload.payloadPolicy.version, CURSOR_STATUS_PAYLOAD_VERSION)
+  assert.equal(payload.privateStateCounts.recentMessageKeys, 20_000)
+  assert.equal(payload.privateStateCounts.sessionCursors, 10_000)
+  assert.equal(payload.privateStateCounts.continuationOffsets, 1_000)
+  assert.equal(payload.recentMessageIds, undefined)
+  assert.equal(payload.sessionCursors, undefined)
+  assert.equal(payload.sessionOffsets, undefined)
+  assert.equal(serialized.includes('private-message-key'), false)
+  assert.equal(serialized.includes('private-session'), false)
+  assert.ok(Buffer.byteLength(serialized) < 2_000)
 })
 
 test('task calendar handles leap months, Shanghai today, overdue and unscheduled work', () => {

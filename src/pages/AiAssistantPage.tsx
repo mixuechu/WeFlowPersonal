@@ -1333,6 +1333,13 @@ function AiAssistantPage() {
               持久消息去重账本 {Number(ingestionStatus.messageLedger.total || 0).toLocaleString()} 条
               {' · '}不受 20,000 条热缓存上限影响
             </small>}
+            {status?.cursor?.payloadPolicy?.durableKeys === 'main_process_only' && <small>
+              增量断点仅保留在加密主进程：
+              热缓存键 {Number(status.cursor.privateStateCounts?.recentMessageKeys || 0).toLocaleString()} 条
+              {' · '}会话水位 {Number(status.cursor.privateStateCounts?.sessionCursors || 0).toLocaleString()} 个
+              {' · '}分页续传 {Number(status.cursor.privateStateCounts?.continuationOffsets || 0).toLocaleString()} 个；
+              界面只接收计数和运行状态。
+            </small>}
             {Number(ingestionStatus.commitHealth?.prepared || 0) > 0 && <small>
               检测到 {Number(ingestionStatus.commitHealth.prepared)} 个已保存但尚未完成应用的批次，
               其中微信 {Number(ingestionStatus.commitHealth.preparedWechat || 0)} 个、
