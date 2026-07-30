@@ -67,6 +67,10 @@ import { buildProjectInsights } from './projectInsights'
 import { summarizeIngestionRuns } from './ingestionDiagnostics'
 import { attachLocalImageOcr, attachLocalVoiceTranscript, recoverMessageSemantics } from './messageSemanticRecovery'
 import { sanitizeDiagnosticText } from './diagnosticRedaction'
+import {
+  EXTRACTION_MEMORY_CONTEXT_VERSION,
+  selectTrustedExtractionEntities
+} from './extractionMemoryContext'
 import { getAppRunRecoveryDiagnostics } from './appRunRecoveryService'
 import type { DurableJsonRecovery } from './durableJsonState'
 import {
@@ -213,7 +217,7 @@ const EMPTY_STATE: AssistantState = {
   graph: { entities: [], relations: [], reviewQueue: [], identityScan: { lastFullScanAt: null, lastRunAt: null, lastMode: null, lastCandidateCount: 0 } }
 }
 
-const EXTRACTION_PROMPT_VERSION = 'personal-os-prompt-v6'
+const EXTRACTION_PROMPT_VERSION = 'personal-os-prompt-v7'
 const EXTRACTION_SCHEMA_VERSION = 'personal-memory-schema-v6'
 const DOCUMENT_ANALYSIS_VERSION = `${EXTRACTION_PROMPT_VERSION}/${EXTRACTION_SCHEMA_VERSION}/document-v1`
 
@@ -225,6 +229,7 @@ const SYSTEM_PROMPT = `你是一个谨慎的中文私人助理兼个人记忆图
 引用消息规则：semanticType=quote 时，content 中“[引用上下文｜发送者：原文]”属于被引用的原作者，不是当前回复者的新陈述；它只能用于理解指代、回复对象和上下文，不得把引用原文的承诺或任务重新归到当前回复者名下。链接、文件、聊天记录、小程序、图片、语音、视频和表情的 semanticType 必须保留其媒介性质。
 图片视觉规则：content 中“[图片视觉·Apple Vision 本地候选｜未经人工确认]”只是设备端分类线索，不是图片事实描述，也不能单独支持任务、人物、关系、claim 或 event；只能辅助理解和检索，必须结合原消息文字、OCR 或其他直接证据。
 身份映射规则：每个会话的 participants 提供 wxid、通讯录备注 contactRemark、微信昵称 wechatNickname、群昵称 groupNickname、微信号 alias 和 displayName。wxid 是稳定身份主键，其余名称都是该身份在不同场景下的别名；同一个 wxid 的多个名称必须视为同一人，不同 wxid 即使同名也不得自动合并。理解消息中的称呼时优先结合群昵称和通讯录备注。
+可信长期上下文规则：输入可能包含“与本批相关的已确认长期记忆”，它只用于识别已知实体、别名、项目和理解代词/简称。它不是本批新结论的消息证据，绝不能单独支持 task、entity、relation、claim、event、摘要或重点，也不能被复制为新增事实。所有输出仍必须引用本批 analysisScope=core 的真实 evidenceKey。长期上下文中不同 entityId 即使同名也必须保持为不同实体；没有当前 core 原文支持时不要输出。
 分片规则：消息的 analysisScope 为 core 时才允许产生待办、实体、关系或合并候选；context 消息仅用于理解 core 的前后文，绝对不能单独据此重复产出结果。
 知识图谱规则：提取人物、组织、群和项目，以及有明确消息证据的关系。不要因名字相同就合并人物；一个人可以有多个账号和别名。身份不确定时创建候选，不做硬合并。每个实体、关系和合并建议都必须带 evidenceKeys。
 事实记忆规则：必须检查 core 消息中是否包含可长期复用的事实，例如身份、职业、组织、技能、偏好、所在地、项目属性、联系方式和状态变化；有则写入 claims。本人明确陈述标记 self_statement，他人陈述标记 other_statement，仅从上下文推断标记 inference。事实必须带直接 evidenceKeys；短暂寒暄和纯情绪不作为事实。明确否定或更正（例如“我不是某公司员工”“我已经不住上海”）也必须抽取，predicate 保持肯定式标准属性名，polarity 标为 negative；不要把“不任职于”另造为一个无法比较的新 predicate。
@@ -1215,18 +1220,56 @@ export class AiAssistantService {
       wxid: String(selfIdentity?.wxid || ''),
       background: String(this.config.get('aiAssistantOwnerBackground') || '').trim()
     }
-    const existingGraph = this.state.graph.entities.filter(isTrustedEntity).slice(-200).map(entity => ({
-      id: entity.id,
-      type: entity.type,
-      canonicalName: entity.canonicalName,
-      aliases: entity.aliases,
-      accountIds: entity.accountIds,
-      summary: entity.summary
-        && entity.summaryStatus === 'confirmed' ? entity.summary : ''
-    }))
+    const contextSelection = selectTrustedExtractionEntities({
+      messages,
+      entities: this.state.graph.entities.filter(isTrustedEntity),
+      relations: this.state.graph.relations,
+      ownerNames: [ownerProfile.name, ...ownerProfile.aliases],
+      limit: 24
+    })
+    const contextEntityIds = contextSelection.entities.map(entity => entity.id)
+    const contextMemory = personalMemoryStore.getTrustedExtractionMemory(contextEntityIds, {
+      claimLimit: 36,
+      eventLimit: 16
+    })
+    const contextEntityNames = new Map(contextSelection.entities.map(entity => [entity.id, entity.canonicalName]))
+    const extractionContext = {
+      version: EXTRACTION_MEMORY_CONTEXT_VERSION,
+      policy: '仅用于实体消歧和理解指代；不能作为本批任何输出的证据',
+      entities: contextSelection.entities.map(entity => ({
+        id: entity.id,
+        type: entity.type,
+        canonicalName: entity.canonicalName,
+        aliases: entity.aliases,
+        accountIds: entity.accountIds,
+        summary: entity.summary && entity.summaryStatus === 'confirmed' ? entity.summary : '',
+        selectionReasons: contextSelection.reasons[entity.id] || []
+      })),
+      relations: contextSelection.relations.map(relation => ({
+        id: relation.id,
+        subjectId: relation.subjectId,
+        subjectName: contextEntityNames.get(relation.subjectId) || '',
+        predicate: relation.predicate,
+        objectId: relation.objectId,
+        objectName: contextEntityNames.get(relation.objectId) || '',
+        confidence: relation.confidence
+      })),
+      claims: contextMemory.claims,
+      events: contextMemory.events,
+      totals: {
+        selectedEntities: contextSelection.entities.length,
+        directEntities: contextSelection.directEntityIds.length,
+        expandedEntities: contextSelection.expandedEntityIds.length,
+        relations: contextSelection.relations.length,
+        claims: contextMemory.claims.length,
+        claimMatches: contextMemory.claimTotal,
+        events: contextMemory.events.length,
+        eventMatches: contextMemory.eventTotal
+      }
+    }
     const redactionLevel = String(this.config.get('aiAssistantSensitiveRedactionLevel') || 'standard') as SensitiveRedactionLevel
     const outbound = redactSensitiveText(`用户身份档案：${JSON.stringify(ownerProfile)}
-现有知识图谱实体（用于关联，不得仅凭同名合并）：${JSON.stringify(existingGraph)}
+与本批相关的已确认长期记忆（只能用于消歧，不能充当新结论证据）：${JSON.stringify(extractionContext)}
 按来源范围组织的新增证据：${JSON.stringify(conversations)}
 请输出 json。`, redactionLevel)
     let lastError: any = null
@@ -1260,7 +1303,11 @@ export class AiAssistantService {
             outputTokens: Number(payload?.usage?.completion_tokens || 0),
             durationMs: Date.now() - startedAt,
             attempt: attempt + 1,
-            sensitiveRedaction: outbound.summary
+            sensitiveRedaction: outbound.summary,
+            extractionContext: {
+              version: EXTRACTION_MEMORY_CONTEXT_VERSION,
+              ...extractionContext.totals
+            }
           }
         }
       } catch (error) {

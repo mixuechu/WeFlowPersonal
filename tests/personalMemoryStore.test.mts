@@ -63,6 +63,10 @@ import { summarizeIngestionRuns } from '../electron/services/ingestionDiagnostic
 import { attachLocalImageOcr, attachLocalVoiceTranscript, recoverMessageSemantics } from '../electron/services/messageSemanticRecovery.ts'
 import { sanitizeDiagnosticText } from '../electron/services/diagnosticRedaction.ts'
 import { computeAnnSignatures, listMultiProbeSignatures } from '../electron/services/localAnnIndex.ts'
+import {
+  EXTRACTION_MEMORY_CONTEXT_VERSION,
+  selectTrustedExtractionEntities
+} from '../electron/services/extractionMemoryContext.ts'
 
 function withStore(run: (store: PersonalMemoryStore) => void): void {
   const directory = mkdtempSync(join(tmpdir(), 'weflow-memory-test-'))
@@ -2005,6 +2009,202 @@ test('diagnostic errors redact local identifiers, credentials and home paths', (
   assert.match(sanitized, /\/Users\/\[本机用户\]/)
 })
 
+test('trusted extraction context excludes candidates and keeps same-name confirmed identities distinct', () => {
+  const entities = [
+    {
+      id: 'person-zhang-a',
+      type: 'person',
+      canonicalName: '张伟',
+      aliases: ['张老师'],
+      accountIds: ['wxid_zhang_a'],
+      trustStatus: 'confirmed'
+    },
+    {
+      id: 'person-zhang-b',
+      type: 'person',
+      canonicalName: '张伟',
+      aliases: ['产品张伟'],
+      accountIds: ['wxid_zhang_b'],
+      trustStatus: 'confirmed'
+    },
+    {
+      id: 'person-zhang-candidate',
+      type: 'person',
+      canonicalName: '张伟',
+      aliases: ['候选张伟'],
+      accountIds: ['wxid_zhang_candidate'],
+      trustStatus: 'candidate'
+    }
+  ]
+  const selected = selectTrustedExtractionEntities({
+    messages: [{
+      content: '张伟和产品张伟都参加，张老师负责现场确认',
+      sessionName: '项目群',
+      senderIdentity: { wxid: 'wxid_zhang_a' }
+    }],
+    entities,
+    relations: [],
+    limit: 24
+  })
+  assert.equal(EXTRACTION_MEMORY_CONTEXT_VERSION, 'trusted-extraction-context-v1')
+  assert.deepEqual(new Set(selected.entities.map(entity => entity.id)),
+    new Set(['person-zhang-a', 'person-zhang-b']))
+  assert.equal(selected.entities.some(entity => entity.id === 'person-zhang-candidate'), false)
+  assert.equal(selected.directEntityIds.length, 2)
+})
+
+test('trusted extraction context anchors senders, expands only confirmed one-hop relations and stays bounded', () => {
+  const entities = [
+    {
+      id: 'sender',
+      type: 'person',
+      canonicalName: '发送者',
+      accountIds: ['wxid_sender'],
+      trustStatus: 'confirmed'
+    },
+    {
+      id: 'confirmed-project',
+      type: 'project',
+      canonicalName: '可信项目',
+      trustStatus: 'confirmed'
+    },
+    {
+      id: 'candidate-project',
+      type: 'project',
+      canonicalName: '候选项目',
+      trustStatus: 'confirmed'
+    },
+    {
+      id: 'two-hop-org',
+      type: 'organization',
+      canonicalName: '二跳组织',
+      trustStatus: 'confirmed'
+    },
+    ...Array.from({ length: 60 }, (_, index) => ({
+      id: `match-${String(index).padStart(2, '0')}`,
+      type: 'person',
+      canonicalName: `测试成员${String(index).padStart(2, '0')}`,
+      aliases: ['共同别名'],
+      trustStatus: 'confirmed',
+      updatedAt: `2026-07-31T00:${String(index).padStart(2, '0')}:00.000Z`
+    }))
+  ]
+  const selected = selectTrustedExtractionEntities({
+    messages: [{
+      content: '请确认',
+      senderIdentity: { wxid: 'wxid_sender' }
+    }],
+    entities,
+    relations: [
+      {
+        id: 'confirmed-edge',
+        subjectId: 'sender',
+        predicate: '负责',
+        objectId: 'confirmed-project',
+        status: 'confirmed'
+      },
+      {
+        id: 'candidate-edge',
+        subjectId: 'sender',
+        predicate: '可能负责',
+        objectId: 'candidate-project',
+        status: 'candidate'
+      },
+      {
+        id: 'two-hop-edge',
+        subjectId: 'confirmed-project',
+        predicate: '属于',
+        objectId: 'two-hop-org',
+        status: 'confirmed'
+      }
+    ],
+    limit: 24
+  })
+  assert.ok(selected.entities.length <= 24)
+  assert.ok(selected.directEntityIds.includes('sender'))
+  assert.ok(selected.entities.some(entity => entity.id === 'confirmed-project'))
+  assert.equal(selected.entities.some(entity => entity.id === 'candidate-project'), false)
+  assert.equal(selected.entities.some(entity => entity.id === 'two-hop-org'), false)
+  assert.deepEqual(selected.relations.map(relation => relation.id), ['confirmed-edge'])
+  assert.deepEqual(selected.reasons['confirmed-project'], ['可信关系一跳邻居'])
+  const bounded = selectTrustedExtractionEntities({
+    messages: [{ content: '共同别名请确认' }],
+    entities,
+    relations: [],
+    limit: 24
+  })
+  assert.equal(bounded.entities.length, 24)
+})
+
+test('trusted extraction memory returns only confirmed bounded claims and events', () => withStore(store => {
+  store.syncGraph({
+    entities: [
+      { id: 'context-person', type: 'person', canonicalName: '上下文人物', trustStatus: 'confirmed' },
+      { id: 'context-project', type: 'project', canonicalName: '上下文项目', trustStatus: 'confirmed' }
+    ],
+    relations: [],
+    reviewQueue: []
+  })
+  store.upsertClaims([
+    {
+      id: 'confirmed-context-claim',
+      subjectId: 'context-person',
+      predicate: '负责',
+      objectEntityId: 'context-project',
+      confidence: 1,
+      status: 'confirmed',
+      sourceNature: 'human_confirmation',
+      searchText: '上下文人物负责上下文项目',
+      evidence: evidence('confirmed-context-claim-message', '确认负责上下文项目')
+    },
+    {
+      id: 'candidate-context-claim',
+      subjectId: 'context-person',
+      predicate: '所在城市',
+      objectValue: '上海',
+      confidence: 0.7,
+      status: 'candidate',
+      sourceNature: 'inference',
+      searchText: '上下文人物所在城市上海',
+      evidence: evidence('candidate-context-claim-message', '可能在上海')
+    }
+  ])
+  store.upsertEvents([
+    {
+      id: 'confirmed-context-event',
+      eventType: 'meeting',
+      title: '确认会议',
+      confidence: 1,
+      status: 'confirmed',
+      sourceNature: 'human_confirmation',
+      searchText: '上下文人物参加确认会议',
+      participants: [{ entityId: 'context-person', role: 'participant' }],
+      evidence: evidence('confirmed-context-event-message', '确认参加会议')
+    },
+    {
+      id: 'candidate-context-event',
+      eventType: 'meeting',
+      title: '候选会议',
+      confidence: 0.7,
+      status: 'candidate',
+      sourceNature: 'inference',
+      searchText: '上下文人物可能参加候选会议',
+      participants: [{ entityId: 'context-person', role: 'participant' }],
+      evidence: evidence('candidate-context-event-message', '可能参加会议')
+    }
+  ])
+  const context = store.getTrustedExtractionMemory(['context-person'], {
+    claimLimit: 1,
+    eventLimit: 1
+  })
+  assert.deepEqual(context.claims.map(claim => claim.id), ['confirmed-context-claim'])
+  assert.deepEqual(context.events.map(event => event.id), ['confirmed-context-event'])
+  assert.equal(context.claimTotal, 1)
+  assert.equal(context.eventTotal, 1)
+  assert.deepEqual(context.events[0].participants.map((participant: any) => participant.entity_id),
+    ['context-person'])
+}))
+
 test('task status changes are persisted as an auditable history', () => withStore(store => {
   const before = { id: 'task-history', status: 'todo', due: '2026-07-30', priority: 'medium' }
   const after = { ...before, status: 'waiting', due: '2026-08-02' }
@@ -2030,6 +2230,17 @@ test('partial ingestion keeps completed checkpoints visible for safe resume', ()
       version: 'structured-evidence-v1',
       accepted: { tasks: 2, entities: 1 },
       rejected: { tasks: 1, entities: 0 }
+    },
+    extractionContext: {
+      version: 'trusted-extraction-context-v1',
+      selectedEntities: 4,
+      directEntities: 3,
+      expandedEntities: 1,
+      relations: 2,
+      claims: 5,
+      claimMatches: 7,
+      events: 2,
+      eventMatches: 3
     }
   })
   store.recordIngestionBatch('run-resume', 1, 80, 'running')
@@ -2067,6 +2278,17 @@ test('partial ingestion keeps completed checkpoints visible for safe resume', ()
     version: 'structured-evidence-v1',
     accepted: { tasks: 2, entities: 1 },
     rejected: { tasks: 1, entities: 0 }
+  })
+  assert.deepEqual(runs[0].batches[0].extractionContext, {
+    version: 'trusted-extraction-context-v1',
+    selectedEntities: 4,
+    directEntities: 3,
+    expandedEntities: 1,
+    relations: 2,
+    claims: 5,
+    claimMatches: 7,
+    events: 2,
+    eventMatches: 3
   })
   assert.deepEqual(runs[0].usage, { input_tokens: 1200, output_tokens: 300, duration_ms: 2500 })
   const summary = summarizeIngestionRuns(runs, { inputPerMillion: 1, outputPerMillion: 2 })

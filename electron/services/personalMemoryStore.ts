@@ -542,6 +542,7 @@ export class PersonalMemoryStore {
     this.ensureColumn('ingestion_batches', 'duration_ms', `INTEGER NOT NULL DEFAULT 0`)
     this.ensureColumn('ingestion_batches', 'redaction_summary_json', `TEXT NOT NULL DEFAULT '{}'`)
     this.ensureColumn('ingestion_batches', 'evidence_validation_json', `TEXT NOT NULL DEFAULT '{}'`)
+    this.ensureColumn('ingestion_batches', 'extraction_context_json', `TEXT NOT NULL DEFAULT '{}'`)
     this.ensureColumn('ingestion_runs', 'recovered_at', 'TEXT')
     this.ensureColumn('ingestion_runs', 'recovered_batch_count', 'INTEGER NOT NULL DEFAULT 0')
     this.ensureColumn('ingestion_runs', 'interrupted_batch_count', 'INTEGER NOT NULL DEFAULT 0')
@@ -2001,6 +2002,72 @@ export class PersonalMemoryStore {
     }
   }
 
+  getTrustedExtractionMemory(
+    entityIds: string[],
+    options: { claimLimit?: number; eventLimit?: number } = {}
+  ): {
+    claims: any[]
+    events: any[]
+    claimTotal: number
+    eventTotal: number
+  } {
+    if (!this.db) return { claims: [], events: [], claimTotal: 0, eventTotal: 0 }
+    const ids = [...new Set((entityIds || []).map(String).filter(Boolean))].slice(0, 40)
+    if (!ids.length) return { claims: [], events: [], claimTotal: 0, eventTotal: 0 }
+    const placeholders = ids.map(() => '?').join(',')
+    const claimLimit = Math.max(1, Math.min(80, Number(options.claimLimit || 36)))
+    const eventLimit = Math.max(1, Math.min(40, Number(options.eventLimit || 16)))
+    const claimWhere = `c.status='confirmed' AND
+      (c.subject_id IN (${placeholders}) OR c.object_entity_id IN (${placeholders}))`
+    const claims = this.db.prepare(`
+      SELECT c.id,c.subject_id,c.predicate,c.object_entity_id,c.object_value,c.polarity,
+        c.value_type,c.source_nature,c.valid_from,c.valid_to,c.updated_at,
+        s.canonical_name AS subject_name,o.canonical_name AS object_entity_name
+      FROM claims c
+      LEFT JOIN entities s ON s.id=c.subject_id
+      LEFT JOIN entities o ON o.id=c.object_entity_id
+      WHERE ${claimWhere}
+      ORDER BY c.updated_at DESC,c.id LIMIT ?
+    `).all(...ids, ...ids, claimLimit) as any[]
+    const claimTotal = Number((this.db.prepare(`
+      SELECT COUNT(*) AS count FROM claims c WHERE ${claimWhere}
+    `).get(...ids, ...ids) as any)?.count || 0)
+    const eventWhere = `ev.status='confirmed' AND EXISTS(
+      SELECT 1 FROM event_participants ep
+      WHERE ep.event_id=ev.id AND ep.entity_id IN (${placeholders})
+    )`
+    const events = this.db.prepare(`
+      SELECT ev.id,ev.event_type,ev.title,ev.description,ev.start_at,ev.end_at,
+        ev.location,ev.source_nature,ev.updated_at
+      FROM events ev WHERE ${eventWhere}
+      ORDER BY COALESCE(ev.start_at,ev.updated_at) DESC,ev.id LIMIT ?
+    `).all(...ids, eventLimit) as any[]
+    const eventTotal = Number((this.db.prepare(`
+      SELECT COUNT(*) AS count FROM events ev WHERE ${eventWhere}
+    `).get(...ids) as any)?.count || 0)
+    const participants = this.db.prepare(`
+      SELECT ep.event_id,ep.entity_id,ep.role,e.canonical_name
+      FROM event_participants ep JOIN entities e ON e.id=ep.entity_id
+      WHERE ep.event_id IN (${events.length ? events.map(() => '?').join(',') : "''"})
+      ORDER BY ep.event_id,ep.entity_id,ep.role
+    `).all(...events.map(event => event.id)) as any[]
+    const participantsByEvent = new Map<string, any[]>()
+    for (const participant of participants) {
+      const rows = participantsByEvent.get(String(participant.event_id)) || []
+      rows.push(participant)
+      participantsByEvent.set(String(participant.event_id), rows)
+    }
+    return {
+      claims,
+      events: events.map(event => ({
+        ...event,
+        participants: participantsByEvent.get(String(event.id)) || []
+      })),
+      claimTotal,
+      eventTotal
+    }
+  }
+
   listEventTimeline(options: {
     sourceId?: 'wechat' | 'documents' | 'calendar'
     status?: 'candidate' | 'confirmed' | 'cancelled'
@@ -2543,14 +2610,16 @@ export class PersonalMemoryStore {
       durationMs?: number
       sensitiveRedaction?: any
       structuredEvidence?: any
+      extractionContext?: any
     } = {}
   ): void {
     if (!this.db) return
     const now = new Date().toISOString()
     this.db.prepare(`
       INSERT INTO ingestion_batches(run_id,batch_index,message_count,status,error,started_at,finished_at,
-        model,prompt_version,schema_version,input_tokens,output_tokens,duration_ms,redaction_summary_json,evidence_validation_json)
-      VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+        model,prompt_version,schema_version,input_tokens,output_tokens,duration_ms,redaction_summary_json,
+        evidence_validation_json,extraction_context_json)
+      VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
       ON CONFLICT(run_id,batch_index) DO UPDATE SET status=excluded.status,error=excluded.error,
         attempts=CASE WHEN excluded.status='running' THEN ingestion_batches.attempts+1 ELSE ingestion_batches.attempts END,
         finished_at=excluded.finished_at,
@@ -2561,13 +2630,14 @@ export class PersonalMemoryStore {
         output_tokens=CASE WHEN excluded.output_tokens>0 THEN excluded.output_tokens ELSE ingestion_batches.output_tokens END,
         duration_ms=CASE WHEN excluded.duration_ms>0 THEN excluded.duration_ms ELSE ingestion_batches.duration_ms END,
         redaction_summary_json=CASE WHEN excluded.redaction_summary_json!='{}' THEN excluded.redaction_summary_json ELSE ingestion_batches.redaction_summary_json END,
-        evidence_validation_json=CASE WHEN excluded.evidence_validation_json!='{}' THEN excluded.evidence_validation_json ELSE ingestion_batches.evidence_validation_json END
+        evidence_validation_json=CASE WHEN excluded.evidence_validation_json!='{}' THEN excluded.evidence_validation_json ELSE ingestion_batches.evidence_validation_json END,
+        extraction_context_json=CASE WHEN excluded.extraction_context_json!='{}' THEN excluded.extraction_context_json ELSE ingestion_batches.extraction_context_json END
     `).run(
       runId, batchIndex, messageCount, status, error || null, now, status === 'running' ? null : now,
       String(metrics.model || ''), String(metrics.promptVersion || ''), String(metrics.schemaVersion || ''),
       Math.max(0, Number(metrics.inputTokens || 0)), Math.max(0, Number(metrics.outputTokens || 0)),
       Math.max(0, Number(metrics.durationMs || 0)), JSON.stringify(metrics.sensitiveRedaction || {}),
-      JSON.stringify(metrics.structuredEvidence || {})
+      JSON.stringify(metrics.structuredEvidence || {}), JSON.stringify(metrics.extractionContext || {})
     )
   }
 
@@ -2740,6 +2810,7 @@ export class PersonalMemoryStore {
       durationMs?: number
       sensitiveRedaction?: any
       structuredEvidence?: any
+      extractionContext?: any
     } = {}
   ): { resourceCheckpointApplied: boolean } {
     if (!this.db) return { resourceCheckpointApplied: false }
@@ -2963,9 +3034,11 @@ export class PersonalMemoryStore {
         batches: runBatches.map(batch => {
           let sensitiveRedaction: any = {}
           let structuredEvidence: any = {}
+          let extractionContext: any = {}
           try { sensitiveRedaction = JSON.parse(batch.redaction_summary_json || '{}') } catch {}
           try { structuredEvidence = JSON.parse(batch.evidence_validation_json || '{}') } catch {}
-          return { ...batch, sensitiveRedaction, structuredEvidence }
+          try { extractionContext = JSON.parse(batch.extraction_context_json || '{}') } catch {}
+          return { ...batch, sensitiveRedaction, structuredEvidence, extractionContext }
         }),
         usage
       }

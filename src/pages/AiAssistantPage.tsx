@@ -2780,6 +2780,15 @@ function AiAssistantPage() {
                       接受 {Object.values(batch.structuredEvidence.accepted || {}).reduce((sum: number, count: any) => sum + Number(count || 0), 0)} 项
                       {' · '}拒绝 {Object.values(batch.structuredEvidence.rejected || {}).reduce((sum: number, count: any) => sum + Number(count || 0), 0)} 项无效引用
                     </small>}
+                    {!!batch.extractionContext?.version && <small>
+                      可信长期上下文：
+                      实体 {Number(batch.extractionContext.selectedEntities || 0)}
+                      （直接命中 {Number(batch.extractionContext.directEntities || 0)}
+                      {' / '}一跳扩展 {Number(batch.extractionContext.expandedEntities || 0)}）
+                      {' · '}关系 {Number(batch.extractionContext.relations || 0)}
+                      {' · '}事实 {Number(batch.extractionContext.claims || 0)} / {Number(batch.extractionContext.claimMatches || 0)}
+                      {' · '}事件 {Number(batch.extractionContext.events || 0)} / {Number(batch.extractionContext.eventMatches || 0)}
+                    </small>}
                     {batch.error && <p>{batch.error}</p>}
                   </article>)}
                   {!run.batches?.length && <em>该次运行没有创建模型批次</em>}
