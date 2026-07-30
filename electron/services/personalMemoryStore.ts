@@ -343,6 +343,7 @@ export class PersonalMemoryStore {
     this.ensureColumn('ingestion_batches', 'input_tokens', `INTEGER NOT NULL DEFAULT 0`)
     this.ensureColumn('ingestion_batches', 'output_tokens', `INTEGER NOT NULL DEFAULT 0`)
     this.ensureColumn('ingestion_batches', 'duration_ms', `INTEGER NOT NULL DEFAULT 0`)
+    this.ensureColumn('ingestion_batches', 'redaction_summary_json', `TEXT NOT NULL DEFAULT '{}'`)
     this.db.prepare(`UPDATE claims SET status='candidate' WHERE source_nature!='self_statement' AND status='confirmed'`).run()
     this.db.prepare(`
       UPDATE evidence SET evidence_role=CASE
@@ -1358,14 +1359,15 @@ export class PersonalMemoryStore {
       inputTokens?: number
       outputTokens?: number
       durationMs?: number
+      sensitiveRedaction?: any
     } = {}
   ): void {
     if (!this.db) return
     const now = new Date().toISOString()
     this.db.prepare(`
       INSERT INTO ingestion_batches(run_id,batch_index,message_count,status,error,started_at,finished_at,
-        model,prompt_version,schema_version,input_tokens,output_tokens,duration_ms)
-      VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)
+        model,prompt_version,schema_version,input_tokens,output_tokens,duration_ms,redaction_summary_json)
+      VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)
       ON CONFLICT(run_id,batch_index) DO UPDATE SET status=excluded.status,error=excluded.error,
         attempts=CASE WHEN excluded.status='running' THEN ingestion_batches.attempts+1 ELSE ingestion_batches.attempts END,
         finished_at=excluded.finished_at,
@@ -1374,12 +1376,13 @@ export class PersonalMemoryStore {
         schema_version=CASE WHEN excluded.schema_version!='' THEN excluded.schema_version ELSE ingestion_batches.schema_version END,
         input_tokens=CASE WHEN excluded.input_tokens>0 THEN excluded.input_tokens ELSE ingestion_batches.input_tokens END,
         output_tokens=CASE WHEN excluded.output_tokens>0 THEN excluded.output_tokens ELSE ingestion_batches.output_tokens END,
-        duration_ms=CASE WHEN excluded.duration_ms>0 THEN excluded.duration_ms ELSE ingestion_batches.duration_ms END
+        duration_ms=CASE WHEN excluded.duration_ms>0 THEN excluded.duration_ms ELSE ingestion_batches.duration_ms END,
+        redaction_summary_json=CASE WHEN excluded.redaction_summary_json!='{}' THEN excluded.redaction_summary_json ELSE ingestion_batches.redaction_summary_json END
     `).run(
       runId, batchIndex, messageCount, status, error || null, now, status === 'running' ? null : now,
       String(metrics.model || ''), String(metrics.promptVersion || ''), String(metrics.schemaVersion || ''),
       Math.max(0, Number(metrics.inputTokens || 0)), Math.max(0, Number(metrics.outputTokens || 0)),
-      Math.max(0, Number(metrics.durationMs || 0))
+      Math.max(0, Number(metrics.durationMs || 0)), JSON.stringify(metrics.sensitiveRedaction || {})
     )
   }
 
@@ -1422,7 +1425,15 @@ export class PersonalMemoryStore {
         output_tokens: result.output_tokens + Number(batch.output_tokens || 0),
         duration_ms: result.duration_ms + Number(batch.duration_ms || 0)
       }), { input_tokens: 0, output_tokens: 0, duration_ms: 0 })
-      return { ...run, batches: runBatches, usage }
+      return {
+        ...run,
+        batches: runBatches.map(batch => {
+          let sensitiveRedaction: any = {}
+          try { sensitiveRedaction = JSON.parse(batch.redaction_summary_json || '{}') } catch {}
+          return { ...batch, sensitiveRedaction }
+        }),
+        usage
+      }
     })
   }
 

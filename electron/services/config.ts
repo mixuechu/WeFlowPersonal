@@ -113,6 +113,7 @@ interface ConfigSchema {
   aiAssistantOcrImages: boolean
   aiAssistantIndexWebLinks: boolean
   aiAssistantResourceTrashRetentionDays: number
+  aiAssistantSensitiveRedactionLevel: 'credentials' | 'standard' | 'strict'
   aiInsightEnabled: boolean
   aiInsightApiBaseUrl: string
   aiInsightApiKey: string
@@ -281,6 +282,7 @@ export class ConfigService {
       aiAssistantOcrImages: false,
       aiAssistantIndexWebLinks: false,
       aiAssistantResourceTrashRetentionDays: 0,
+      aiAssistantSensitiveRedactionLevel: 'standard',
       aiInsightEnabled: false,
       aiInsightApiBaseUrl: '',
       aiInsightApiKey: '',

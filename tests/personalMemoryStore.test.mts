@@ -688,7 +688,8 @@ test('partial ingestion keeps completed checkpoints visible for safe resume', ()
     schemaVersion: 'schema-test',
     inputTokens: 1200,
     outputTokens: 300,
-    durationMs: 2500
+    durationMs: 2500,
+    sensitiveRedaction: { level: 'standard', total: 2, counts: { 手机号: 1, 邮箱: 1 } }
   })
   store.recordIngestionBatch('run-resume', 1, 80, 'running')
   store.recordIngestionBatch('run-resume', 1, 80, 'failed', '用户已安全暂停')
@@ -718,6 +719,9 @@ test('partial ingestion keeps completed checkpoints visible for safe resume', ()
   const runs = store.listIngestionRuns()
   assert.equal(runs.length, 1)
   assert.equal(runs[0].batches[1].error, '用户已安全暂停')
+  assert.deepEqual(runs[0].batches[0].sensitiveRedaction, {
+    level: 'standard', total: 2, counts: { 手机号: 1, 邮箱: 1 }
+  })
   assert.deepEqual(runs[0].usage, { input_tokens: 1200, output_tokens: 300, duration_ms: 2500 })
   const summary = summarizeIngestionRuns(runs, { inputPerMillion: 1, outputPerMillion: 2 })
   assert.equal(summary.partialRuns, 1)

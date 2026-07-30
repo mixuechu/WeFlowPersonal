@@ -948,6 +948,10 @@ function AiAssistantPage() {
           {memoryAnswer && <div className="assistant-memory-answer">
             <p>{memoryAnswer.answer}</p>
             {memoryAnswer.uncertainty && <small>不确定性：{memoryAnswer.uncertainty}</small>}
+            {!!memoryAnswer.sensitiveRedaction?.total && <small>
+              本次发送前已本地脱敏 {memoryAnswer.sensitiveRedaction.total} 处：
+              {Object.entries(memoryAnswer.sensitiveRedaction.counts || {}).map(([type, count]) => `${type} ${count}`).join('、')}
+            </small>}
             {!!memoryAnswer.queryPlan?.explanation?.length && <details className="assistant-query-plan">
               <summary>查看本次查询规划</summary>
               <div>{memoryAnswer.queryPlan.explanation.map((item: string) => <span key={item}>{item}</span>)}</div>
@@ -1534,7 +1538,9 @@ function AiAssistantPage() {
               <div><ShieldCheck size={15} /><span><b>本机隐私与权限审计</b>
                 <small>数据库 {memoryDiagnostics.privacy.databaseMode || '未知'} · 状态 {memoryDiagnostics.privacy.stateMode || '未知'} · 备份目录 {memoryDiagnostics.privacy.backupDirectoryMode || '尚未创建'}</small>
               </span></div>
-              <div><span>API Key：{memoryDiagnostics.privacy.apiKeyStorage}</span><span>数据接口：{memoryDiagnostics.privacy.httpBinding}</span><span>诊断日志：已脱敏</span></div>
+              <div><span>API Key：{memoryDiagnostics.privacy.apiKeyStorage}</span><span>数据接口：{memoryDiagnostics.privacy.httpBinding}</span><span>诊断日志：已脱敏</span>
+                <span>模型外发脱敏：{memoryDiagnostics.privacy.sensitiveRedactionLevel === 'strict' ? '严格'
+                  : memoryDiagnostics.privacy.sensitiveRedactionLevel === 'credentials' ? '仅凭证' : '标准'}</span></div>
             </div>}
             <div className="assistant-diagnostics-runs">
               {(memoryDiagnostics.ingestionRuns || []).map((run: any) => <details key={run.id} open={run.status !== 'completed'}>
@@ -1546,6 +1552,10 @@ function AiAssistantPage() {
                     <div><b>批次 {Number(batch.batch_index) + 1}</b><span>{batch.status} · {batch.message_count} 条 · 尝试 {batch.attempts} 次</span></div>
                     <small>{batch.model || run.model} · {batch.prompt_version || run.prompt_version}{batch.schema_version ? ` / ${batch.schema_version}` : ''}</small>
                     <small>Token {Number(batch.input_tokens || 0).toLocaleString()} 入 / {Number(batch.output_tokens || 0).toLocaleString()} 出 · {(Number(batch.duration_ms || 0) / 1000).toFixed(1)} 秒</small>
+                    {!!batch.sensitiveRedaction?.total && <small>
+                      发送前脱敏 {batch.sensitiveRedaction.total} 处 · {Object.entries(batch.sensitiveRedaction.counts || {})
+                        .map(([type, count]) => `${type} ${count}`).join('、')}
+                    </small>}
                     {batch.error && <p>{batch.error}</p>}
                   </article>)}
                   {!run.batches?.length && <em>该次运行没有创建模型批次</em>}
@@ -1569,6 +1579,12 @@ function AiAssistantPage() {
             <label><span>我的姓名</span><input value={settings.ownerName || ''} placeholder="用于判断群聊任务是否指向你" onChange={event => setSettings({ ...settings, ownerName: event.target.value })} /></label>
             <label><span>我的常用称呼</span><input value={settings.ownerAliases || ''} placeholder="昵称、群昵称，用逗号分隔" onChange={event => setSettings({ ...settings, ownerAliases: event.target.value })} /></label>
             <label><span>我的背景信息</span><textarea value={settings.ownerBackground || ''} placeholder="公司、职位、负责项目等，帮助理解聊天上下文" onChange={event => setSettings({ ...settings, ownerBackground: event.target.value })} /></label>
+            <label><span>发送给模型前的敏感信息脱敏</span><select value={settings.sensitiveRedactionLevel || 'standard'} onChange={event => setSettings({ ...settings, sensitiveRedactionLevel: event.target.value })}>
+              <option value="credentials">仅凭证：API Key、密码、访问令牌</option>
+              <option value="standard">标准：再隐藏邮箱、手机号、身份证、银行卡</option>
+              <option value="strict">严格：再隐藏 IP 地址和链接凭证</option>
+            </select></label>
+            <small className="assistant-settings-note">只改变发送给 DeepSeek 的副本；本机原始微信数据与证据不会被改写。同一敏感值会映射为同一占位符，保留上下文关联。</small>
             <label><span>每日整理时间</span><input type="time" value={settings.scheduleTime} onChange={event => setSettings({ ...settings, scheduleTime: event.target.value })} /></label>
             <div className="assistant-settings-inline">
               <label><span>静默开始</span><input type="time" value={settings.quietStart || '22:00'} onChange={event => setSettings({ ...settings, quietStart: event.target.value })} /></label>

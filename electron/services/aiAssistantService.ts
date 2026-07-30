@@ -37,6 +37,7 @@ import { buildProjectInsights } from './projectInsights'
 import { summarizeIngestionRuns } from './ingestionDiagnostics'
 import { attachLocalImageOcr, attachLocalVoiceTranscript, recoverMessageSemantics } from './messageSemanticRecovery'
 import { sanitizeDiagnosticText } from './diagnosticRedaction'
+import { redactLocalSecrets, redactSensitiveText, type SensitiveRedactionLevel } from './sensitiveRedaction'
 import { chatService } from './chatService'
 import { voiceTranscribeService } from './voiceTranscribeService'
 import { localOcrService } from './localOcrService'
@@ -204,10 +205,7 @@ function parseModelJson(text: string): any {
 }
 
 function redact(text: string): string {
-  return String(text || '')
-    .replace(/\bsk-[A-Za-z0-9._-]{12,}\b/g, '[已隐藏的 API Key]')
-    .replace(/\b[A-Fa-f0-9]{32,}\b/g, '[已隐藏的长令牌]')
-    .replace(/\b[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}\b/g, '[已隐藏的邮箱]')
+  return redactLocalSecrets(text)
 }
 
 function isOfficialAccountSession(session: any): boolean {
@@ -813,6 +811,11 @@ export class AiAssistantService {
       accountIds: entity.accountIds,
       summary: entity.summary
     }))
+    const redactionLevel = String(this.config.get('aiAssistantSensitiveRedactionLevel') || 'standard') as SensitiveRedactionLevel
+    const outbound = redactSensitiveText(`用户身份档案：${JSON.stringify(ownerProfile)}
+现有知识图谱实体（用于关联，不得仅凭同名合并）：${JSON.stringify(existingGraph)}
+按会话组织的新增消息：${JSON.stringify(conversations)}
+请输出 json。`, redactionLevel)
     let lastError: any = null
     for (let attempt = 0; attempt < 2; attempt += 1) {
       const startedAt = Date.now()
@@ -826,10 +829,7 @@ export class AiAssistantService {
           response_format: { type: 'json_object' },
           messages: [
             { role: 'system', content: SYSTEM_PROMPT + (attempt ? '\n务必输出单个完整 JSON 对象。' : '') },
-            { role: 'user', content: `用户身份档案：${JSON.stringify(ownerProfile)}
-现有知识图谱实体（用于关联，不得仅凭同名合并）：${JSON.stringify(existingGraph)}
-按会话组织的新增消息：${JSON.stringify(conversations)}
-请输出 json。` }
+            { role: 'user', content: outbound.text }
           ]
         }),
         signal: AbortSignal.timeout(90_000)
@@ -846,7 +846,8 @@ export class AiAssistantService {
             inputTokens: Number(payload?.usage?.prompt_tokens || 0),
             outputTokens: Number(payload?.usage?.completion_tokens || 0),
             durationMs: Date.now() - startedAt,
-            attempt: attempt + 1
+            attempt: attempt + 1,
+            sensitiveRedaction: outbound.summary
           }
         }
       } catch (error) {
@@ -1505,7 +1506,8 @@ export class AiAssistantService {
         stateMode: (() => { try { return (statSync(this.statePath).mode & 0o777).toString(8).padStart(3, '0') } catch { return null } })(),
         apiKeyStorage: 'macOS Safe Storage',
         httpBinding: '127.0.0.1',
-        logsRedacted: true
+        logsRedacted: true,
+        sensitiveRedactionLevel: this.config.get('aiAssistantSensitiveRedactionLevel')
       },
       ocr: { ...ocr, enabled: Boolean(this.config.get('aiAssistantOcrImages')) },
       pdfOcr: { ...pdfOcr, enabled: Boolean(this.config.get('aiAssistantOcrImages')) }
@@ -1625,7 +1627,8 @@ export class AiAssistantService {
       transcribeVoice: this.config.get('autoTranscribeVoice'),
       ocrImages: this.config.get('aiAssistantOcrImages'),
       indexWebLinks: this.config.get('aiAssistantIndexWebLinks'),
-      resourceTrashRetentionDays: this.config.get('aiAssistantResourceTrashRetentionDays')
+      resourceTrashRetentionDays: this.config.get('aiAssistantResourceTrashRetentionDays'),
+      sensitiveRedactionLevel: this.config.get('aiAssistantSensitiveRedactionLevel')
     }
   }
 
@@ -1693,6 +1696,9 @@ export class AiAssistantService {
     if ([0, 7, 30, 90].includes(Number(input.resourceTrashRetentionDays))) {
       this.config.set('aiAssistantResourceTrashRetentionDays', Number(input.resourceTrashRetentionDays))
       personalMemoryStore.purgeExpiredResourceTrash(Number(input.resourceTrashRetentionDays))
+    }
+    if (['credentials', 'standard', 'strict'].includes(String(input.sensitiveRedactionLevel))) {
+      this.config.set('aiAssistantSensitiveRedactionLevel', input.sensitiveRedactionLevel)
     }
     this.repairPlaceholderEntities()
     this.saveState()
@@ -2136,6 +2142,11 @@ export class AiAssistantService {
     if (!apiKey) throw new Error('请先设置 DeepSeek API Key')
     const baseUrl = String(this.config.get('aiAssistantApiBaseUrl') || 'https://api.deepseek.com').replace(/\/$/, '')
     const model = String(this.config.get('aiAssistantApiModel') || 'deepseek-v4-flash')
+    const redactionLevel = String(this.config.get('aiAssistantSensitiveRedactionLevel') || 'standard') as SensitiveRedactionLevel
+    const outbound = redactSensitiveText(
+      `问题：${query}\n查询规划：${JSON.stringify(plan)}\n最终检索范围：${JSON.stringify(plannedOptions)}\n本地检索结果：${JSON.stringify(context)}`,
+      redactionLevel
+    )
     const response = await fetch(`${baseUrl}/chat/completions`, {
       method: 'POST',
       headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
@@ -2143,7 +2154,7 @@ export class AiAssistantService {
         model, temperature: 0.1, max_tokens: 1800, response_format: { type: 'json_object' },
         messages: [
           { role: 'system', content: '你是本地个人记忆问答助手。只能依据提供的检索结果回答；证据不足必须明确说不知道。只有 canSupportFacts=true 且包含原始 evidence 的文档可以支持事实结论；没有原始 evidence 的实体摘要只能作为检索线索，不能作为事实依据。每个事实结论必须引用能够支持它的 documentId。只输出 JSON：{"answer":"回答","citationIds":["documentId"],"uncertainty":"不确定性说明"}。' },
-          { role: 'user', content: `问题：${query}\n查询规划：${JSON.stringify(plan)}\n最终检索范围：${JSON.stringify(plannedOptions)}\n本地检索结果：${JSON.stringify(context)}` }
+          { role: 'user', content: outbound.text }
         ]
       }),
       signal: AbortSignal.timeout(90_000)
@@ -2161,6 +2172,7 @@ export class AiAssistantService {
       answer,
       uncertainty: String(parsed.uncertainty || ''),
       citations,
+      sensitiveRedaction: outbound.summary,
       queryPlan: {
         ...plan,
         appliedOptions: plannedOptions,
