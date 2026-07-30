@@ -2125,6 +2125,35 @@ test('prepared ingestion commits survive retries and become an auditable committ
   const status = store.getIngestionStatus()
   assert.equal(status.batches.find((row: any) => row.status === 'completed')?.count, 1)
   assert.equal(status.commitHealth.committed, 1)
+  assert.deepEqual(
+    [...store.getProcessedIngestionMessageKeys(input.checkpointKeys)],
+    input.checkpointKeys
+  )
+  assert.equal(status.messageLedger.total, 1)
+}))
+
+test('durable processed-message ledger exceeds the JSON hot-cache limit and queries in bounded chunks', () => withStore(store => {
+  const keys = Array.from({ length: 20_050 }, (_, index) =>
+    `wechat:session-${Math.floor(index / 100)}:message-${index}`)
+  assert.equal(
+    store.recordProcessedIngestionMessageKeys(keys, 'bulk-ledger-test', '2026-07-31T00:00:00.000Z'),
+    keys.length
+  )
+  assert.equal(store.recordProcessedIngestionMessageKeys(keys, 'bulk-ledger-retry'), 0)
+  const query = [
+    ...keys.slice(0, 405),
+    ...keys.slice(9_000, 9_405),
+    ...keys.slice(-405),
+    'wechat:session-missing:message-missing'
+  ]
+  const processed = store.getProcessedIngestionMessageKeys(query)
+  assert.equal(processed.size, 1_215)
+  assert.equal(processed.has('wechat:session-missing:message-missing'), false)
+  assert.deepEqual(store.getProcessedIngestionMessageStats(), {
+    total: 20_050,
+    oldestProcessedAt: '2026-07-31T00:00:00.000Z',
+    latestProcessedAt: '2026-07-31T00:00:00.000Z'
+  })
 }))
 
 test('document ingestion commit advances the content-version checkpoint atomically and rejects stale content', () => withStore(store => {
@@ -2172,6 +2201,7 @@ test('document ingestion commit advances the content-version checkpoint atomical
   assert.equal(store.finalizeIngestionBatchCommit('document-commit-v1').resourceCheckpointApplied, true)
   assert.equal(store.getDocumentAnalysisStats('document-v1').completed, 1)
   assert.equal(store.getIngestionStatus().status, 'completed')
+  assert.equal(store.getProcessedIngestionMessageStats().total, 0)
 
   store.replaceResourceContent('document-commit-test', '第二版内容', {
     contentHash: 'hash-v2',

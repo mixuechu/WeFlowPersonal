@@ -396,6 +396,10 @@ export class AiAssistantService {
     )
     this.migrateLegacyData()
     this.loadState()
+    personalMemoryStore.recordProcessedIngestionMessageKeys(
+      this.state.cursor.recentMessageIds,
+      'legacy-state-hot-cache-migration'
+    )
     this.recoverPreparedIngestionBatchCommits()
     personalMemoryStore.reconcileInterruptedIngestionRuns({
       entityCount: this.state.graph.entities.length,
@@ -2323,7 +2327,13 @@ export class AiAssistantService {
     try {
       const collected = await this.collectMessages(start, now)
       const seen = new Set(this.state.cursor.recentMessageIds)
-      const fresh = collected.messages.filter(message => !seen.has(messageKey(message)))
+      const durableSeen = personalMemoryStore.getProcessedIngestionMessageKeys(
+        collected.messages.map(messageKey)
+      )
+      const fresh = collected.messages.filter(message => {
+        const key = messageKey(message)
+        return !seen.has(key) && !durableSeen.has(key)
+      })
       const digests: Array<{ digest: any; batch: any[] }> = []
       const createdAt = new Date().toISOString()
       await this.continuePendingPdfOcr()

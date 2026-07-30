@@ -371,6 +371,14 @@ export class PersonalMemoryStore {
       CREATE INDEX IF NOT EXISTS idx_ingestion_batch_commits_pending
         ON ingestion_batch_commits(status,prepared_at);
 
+      CREATE TABLE IF NOT EXISTS processed_ingestion_messages (
+        message_key TEXT PRIMARY KEY,
+        commit_id TEXT NOT NULL,
+        processed_at TEXT NOT NULL
+      ) STRICT;
+      CREATE INDEX IF NOT EXISTS idx_processed_ingestion_messages_time
+        ON processed_ingestion_messages(processed_at);
+
       CREATE TABLE IF NOT EXISTS conversation_policy (
         session_id TEXT PRIMARY KEY,
         display_name TEXT NOT NULL DEFAULT '',
@@ -2660,6 +2668,67 @@ export class PersonalMemoryStore {
     `).run(new Date().toISOString(), commitId)
   }
 
+  recordProcessedIngestionMessageKeys(
+    messageKeys: string[],
+    commitId: string,
+    processedAt = new Date().toISOString()
+  ): number {
+    if (!this.db) return 0
+    const keys = [...new Set((Array.isArray(messageKeys) ? messageKeys : [])
+      .map(value => String(value || '').trim())
+      .filter(Boolean))]
+    if (!keys.length) return 0
+    const insert = this.db.prepare(`
+      INSERT OR IGNORE INTO processed_ingestion_messages(message_key,commit_id,processed_at)
+      VALUES(?,?,?)
+    `)
+    const transaction = this.db.transaction(() => {
+      let inserted = 0
+      for (const key of keys) {
+        inserted += Number(insert.run(key, String(commitId || 'unknown'), processedAt).changes || 0)
+      }
+      return inserted
+    })
+    return transaction()
+  }
+
+  getProcessedIngestionMessageKeys(messageKeys: string[]): Set<string> {
+    if (!this.db) return new Set()
+    const keys = [...new Set((Array.isArray(messageKeys) ? messageKeys : [])
+      .map(value => String(value || '').trim())
+      .filter(Boolean))]
+    const processed = new Set<string>()
+    for (let offset = 0; offset < keys.length; offset += 400) {
+      const chunk = keys.slice(offset, offset + 400)
+      const placeholders = chunk.map(() => '?').join(',')
+      for (const row of this.db.prepare(`
+        SELECT message_key FROM processed_ingestion_messages
+        WHERE message_key IN (${placeholders})
+      `).all(...chunk) as Array<{ message_key: string }>) {
+        processed.add(String(row.message_key))
+      }
+    }
+    return processed
+  }
+
+  getProcessedIngestionMessageStats(): {
+    total: number
+    oldestProcessedAt: string | null
+    latestProcessedAt: string | null
+  } {
+    if (!this.db) return { total: 0, oldestProcessedAt: null, latestProcessedAt: null }
+    const row = this.db.prepare(`
+      SELECT COUNT(*) AS total,MIN(processed_at) AS oldest_processed_at,
+        MAX(processed_at) AS latest_processed_at
+      FROM processed_ingestion_messages
+    `).get() as any
+    return {
+      total: Number(row?.total || 0),
+      oldestProcessedAt: row?.oldest_processed_at ? String(row.oldest_processed_at) : null,
+      latestProcessedAt: row?.latest_processed_at ? String(row.latest_processed_at) : null
+    }
+  }
+
   finalizeIngestionBatchCommit(
     commitId: string,
     metrics: {
@@ -2677,14 +2746,18 @@ export class PersonalMemoryStore {
     let resourceCheckpointApplied = false
     const transaction = this.db.transaction(() => {
       const row = this.db!.prepare(`
-        SELECT run_id,batch_index,messages_json,status,source_kind,resource_id,
+        SELECT run_id,batch_index,messages_json,checkpoint_keys_json,status,source_kind,resource_id,
           resource_content_hash,completion_json
         FROM ingestion_batch_commits WHERE commit_id=?
       `).get(commitId) as any
       if (!row) throw new Error(`找不到待提交的记忆批次：${commitId}`)
       if (row.status === 'committed') return
       let messageCount = 0
+      let checkpointKeys: string[] = []
       try { messageCount = JSON.parse(String(row.messages_json || '[]')).length } catch {}
+      try {
+        checkpointKeys = JSON.parse(String(row.checkpoint_keys_json || '[]'))
+      } catch {}
       if (row.source_kind === 'document' && row.resource_id) {
         const resource = this.db!.prepare(`
           SELECT content,metadata_json FROM memory_resources WHERE id=?
@@ -2697,6 +2770,9 @@ export class PersonalMemoryStore {
           this.replaceResourceContent(String(row.resource_id), String(resource.content || ''), completion)
           resourceCheckpointApplied = true
         }
+      }
+      if (row.source_kind === 'wechat') {
+        this.recordProcessedIngestionMessageKeys(checkpointKeys, commitId, new Date().toISOString())
       }
       this.markIngestionBatchCommitApplied(commitId)
       this.recordIngestionBatch(
@@ -2841,7 +2917,13 @@ export class PersonalMemoryStore {
   getIngestionStatus(): any {
     if (!this.db) return null
     const latest = this.db.prepare('SELECT * FROM ingestion_runs ORDER BY started_at DESC LIMIT 1').get() as any
-    if (!latest) return { status: 'idle', batches: [], usage: {}, commitHealth: this.getIngestionCommitHealth() }
+    if (!latest) return {
+      status: 'idle',
+      batches: [],
+      usage: {},
+      commitHealth: this.getIngestionCommitHealth(),
+      messageLedger: this.getProcessedIngestionMessageStats()
+    }
     const batches = this.db.prepare(`
       SELECT status,COUNT(*) AS count,SUM(message_count) AS messages
       FROM ingestion_batches WHERE run_id=? GROUP BY status
@@ -2853,7 +2935,13 @@ export class PersonalMemoryStore {
         MAX(model) AS model,MAX(prompt_version) AS prompt_version,MAX(schema_version) AS schema_version
       FROM ingestion_batches WHERE run_id=?
     `).get(latest.id) as any
-    return { ...latest, batches, usage, commitHealth: this.getIngestionCommitHealth() }
+    return {
+      ...latest,
+      batches,
+      usage,
+      commitHealth: this.getIngestionCommitHealth(),
+      messageLedger: this.getProcessedIngestionMessageStats()
+    }
   }
 
   listIngestionRuns(limit = 20): any[] {

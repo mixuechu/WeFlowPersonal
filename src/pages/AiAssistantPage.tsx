@@ -1231,6 +1231,10 @@ function AiAssistantPage() {
               {' · '}Token {Number(ingestionStatus.usage.input_tokens || 0).toLocaleString()} 入 / {Number(ingestionStatus.usage.output_tokens || 0).toLocaleString()} 出
               {' · '}{(Number(ingestionStatus.usage.duration_ms || 0) / 1000).toFixed(1)} 秒
             </small>}
+            {ingestionStatus.messageLedger && <small>
+              持久消息去重账本 {Number(ingestionStatus.messageLedger.total || 0).toLocaleString()} 条
+              {' · '}不受 20,000 条热缓存上限影响
+            </small>}
             {Number(ingestionStatus.commitHealth?.prepared || 0) > 0 && <small>
               检测到 {Number(ingestionStatus.commitHealth.prepared)} 个已保存但尚未完成应用的批次，
               其中微信 {Number(ingestionStatus.commitHealth.preparedWechat || 0)} 个、
