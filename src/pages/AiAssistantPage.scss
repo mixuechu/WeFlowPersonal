@@ -375,6 +375,10 @@
 .assistant-memory-item-head strong { color: #303731; font-size: 13px; }
 .assistant-memory-item-head span { flex: none; padding: 3px 7px; border-radius: 999px; font-size: 9px; color: #8a5a14; background: #fff3d8; }
 .assistant-memory-item-head span.confirmed { color: #255f4b; background: #e5f2ec; }
+.assistant-memory-item-head span.cancelled { color: #7a6060; background: #eee8e8; }
+.assistant-event-scope { grid-template-columns: repeat(2, minmax(130px, 1fr)) repeat(2, minmax(125px, .8fr)) auto; margin-bottom: 10px; }
+.assistant-timeline-more { display: flex; justify-content: center; padding-top: 10px; }
+.assistant-timeline-more button { padding: 8px 12px; border: 1px solid var(--border-color); border-radius: 8px; color: var(--text-secondary); background: transparent; cursor: pointer; }
 .assistant-memory-item p { margin: 7px 0; color: #555d56; font-size: 12px; line-height: 1.55; }
 .assistant-memory-item > small { display: block; margin-top: 5px; color: #7d847d; font-size: 10px; }
 .assistant-evidence-stack { display: grid; gap: 4px; margin-top: 10px; padding-top: 9px; border-top: 1px dashed #dedbd2; }

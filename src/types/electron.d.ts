@@ -1675,6 +1675,7 @@ export interface ElectronAPI {
       askMemory: (question: string, conversationId?: string, options?: any) => Promise<any>
       getConversationSources: () => Promise<any[]>
       getDataSources: () => Promise<any[]>
+      getEventTimeline: (options?: any) => Promise<{ items: any[]; total: number; hasMore: boolean }>
       getCalendarAuthorization: () => Promise<{ available: boolean; authorization: string }>
       requestCalendarAccess: () => Promise<{ available: boolean; authorization: string; granted: boolean }>
       listCalendars: () => Promise<Array<{ id: string; title: string; source: string; type: string }>>

@@ -1512,6 +1512,83 @@ export class PersonalMemoryStore {
     }
   }
 
+  listEventTimeline(options: {
+    sourceId?: 'wechat' | 'documents' | 'calendar'
+    status?: 'candidate' | 'confirmed' | 'cancelled'
+    from?: string
+    to?: string
+    limit?: number
+    offset?: number
+  } = {}): { items: any[]; total: number; hasMore: boolean } {
+    if (!this.db) return { items: [], total: 0, hasMore: false }
+    const conditions = [`ev.status!='rejected'`]
+    const parameters: Array<string | number> = []
+    if (options.status) {
+      conditions.push('ev.status=?')
+      parameters.push(options.status)
+    }
+    const validFrom = options.from && Number.isFinite(Date.parse(options.from)) ? options.from : ''
+    const validTo = options.to && Number.isFinite(Date.parse(options.to)) ? options.to : ''
+    if (validFrom) {
+      conditions.push('COALESCE(ev.start_at,ev.created_at)>=?')
+      parameters.push(validFrom)
+    }
+    if (validTo) {
+      conditions.push('COALESCE(ev.start_at,ev.created_at)<=?')
+      parameters.push(validTo)
+    }
+    if (options.sourceId === 'calendar') {
+      conditions.push(`EXISTS (
+        SELECT 1 FROM evidence source_evidence
+        WHERE source_evidence.event_id=ev.id AND source_evidence.session_id LIKE 'data-source:calendar:%'
+      )`)
+    } else if (options.sourceId === 'documents') {
+      conditions.push(`EXISTS (
+        SELECT 1 FROM evidence source_evidence
+        WHERE source_evidence.event_id=ev.id AND source_evidence.session_id LIKE 'data-source:documents%'
+      )`)
+    } else if (options.sourceId === 'wechat') {
+      conditions.push(`NOT EXISTS (
+        SELECT 1 FROM evidence source_evidence
+        WHERE source_evidence.event_id=ev.id AND source_evidence.session_id LIKE 'data-source:%'
+      )`)
+    }
+    const where = conditions.join(' AND ')
+    const total = Number((this.db.prepare(`SELECT COUNT(*) AS count FROM events ev WHERE ${where}`)
+      .get(...parameters) as any)?.count || 0)
+    const limit = Math.max(1, Math.min(300, Number(options.limit || 100)))
+    const offset = Math.max(0, Number(options.offset || 0))
+    const rows = this.db.prepare(`
+      SELECT ev.*,
+        CASE
+          WHEN EXISTS (SELECT 1 FROM evidence e WHERE e.event_id=ev.id AND e.session_id LIKE 'data-source:calendar:%') THEN 'calendar'
+          WHEN EXISTS (SELECT 1 FROM evidence e WHERE e.event_id=ev.id AND e.session_id LIKE 'data-source:documents%') THEN 'documents'
+          ELSE 'wechat'
+        END AS source_id
+      FROM events ev
+      WHERE ${where}
+      ORDER BY COALESCE(ev.start_at,ev.created_at) DESC,ev.id
+      LIMIT ? OFFSET ?
+    `).all(...parameters, limit, offset) as any[]
+    const evidenceStatement = this.db.prepare(`
+      SELECT message_id,session_id,timestamp,excerpt,evidence_role
+      FROM evidence WHERE event_id=? ORDER BY timestamp
+    `)
+    const participantStatement = this.db.prepare(`
+      SELECT ep.entity_id,ep.role,e.canonical_name
+      FROM event_participants ep JOIN entities e ON e.id=ep.entity_id WHERE ep.event_id=?
+    `)
+    return {
+      items: rows.map(event => ({
+        ...event,
+        participants: participantStatement.all(event.id) as any[],
+        evidence: evidenceStatement.all(event.id) as any[]
+      })),
+      total,
+      hasMore: offset + rows.length < total
+    }
+  }
+
   private memoryItemSemanticFingerprint(kind: 'claim' | 'event' | 'relation', item: any): string {
     const evidenceIds = [...new Set((item.evidence || []).map((entry: any) =>
       String(entry.messageId || entry.message_id || '')).filter(Boolean))].sort()

@@ -2135,6 +2135,21 @@ export class AiAssistantService {
     }
   }
 
+  getEventTimeline(options: any = {}): any {
+    return personalMemoryStore.listEventTimeline({
+      sourceId: ['wechat', 'documents', 'calendar'].includes(options?.sourceId)
+        ? options.sourceId
+        : undefined,
+      status: ['candidate', 'confirmed', 'cancelled'].includes(options?.status)
+        ? options.status
+        : undefined,
+      from: String(options?.from || ''),
+      to: String(options?.to || ''),
+      limit: Number(options?.limit || 100),
+      offset: Number(options?.offset || 0)
+    })
+  }
+
   async getMemoryDiagnostics(): Promise<any> {
     const ingestionRuns = personalMemoryStore.listIngestionRuns(20)
     const databaseDiagnostics = personalMemoryStore.getDiagnostics()

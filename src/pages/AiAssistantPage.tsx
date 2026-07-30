@@ -51,6 +51,14 @@ function AiAssistantPage() {
   const [showDataSources, setShowDataSources] = useState(false)
   const [sources, setSources] = useState<any[]>([])
   const [dataSources, setDataSources] = useState<any[]>([])
+  const [eventTimeline, setEventTimeline] = useState<{ items: any[]; total: number; hasMore: boolean }>({
+    items: [], total: 0, hasMore: false
+  })
+  const [eventSourceFilter, setEventSourceFilter] = useState('')
+  const [eventStatusFilter, setEventStatusFilter] = useState('')
+  const [eventFrom, setEventFrom] = useState('')
+  const [eventTo, setEventTo] = useState('')
+  const [eventTimelineLimit, setEventTimelineLimit] = useState(100)
   const [calendarPicker, setCalendarPicker] = useState<{
     calendars: Array<{ id: string; title: string; source: string; type: string }>
     selectedIds: string[]
@@ -97,17 +105,27 @@ function AiAssistantPage() {
     from: memoryFrom || undefined,
     to: memoryTo || undefined
   }), [memoryEntityFilter, memorySessionFilter, memoryTypeFilter, memoryFrom, memoryTo, sources])
+  const eventTimelineOptions = useMemo(() => ({
+    sourceId: eventSourceFilter || undefined,
+    status: eventStatusFilter || undefined,
+    from: eventFrom ? new Date(`${eventFrom}T00:00:00+08:00`).toISOString() : undefined,
+    to: eventTo ? new Date(`${eventTo}T23:59:59.999+08:00`).toISOString() : undefined,
+    limit: eventTimelineLimit,
+    offset: 0
+  }), [eventSourceFilter, eventStatusFilter, eventFrom, eventTo, eventTimelineLimit])
 
   const load = useCallback(async () => {
-    const [nextStatus, nextDashboard, nextDataSources] = await Promise.all([
+    const [nextStatus, nextDashboard, nextDataSources, nextEventTimeline] = await Promise.all([
       window.electronAPI.aiAssistant.status(),
       window.electronAPI.aiAssistant.dashboard(),
-      window.electronAPI.aiAssistant.getDataSources()
+      window.electronAPI.aiAssistant.getDataSources(),
+      window.electronAPI.aiAssistant.getEventTimeline(eventTimelineOptions)
     ])
     setStatus(nextStatus)
     setDashboard(nextDashboard)
     setDataSources(nextDataSources)
-  }, [])
+    setEventTimeline(nextEventTimeline)
+  }, [eventTimelineOptions])
 
   useEffect(() => {
     void load()
@@ -129,6 +147,10 @@ function AiAssistantPage() {
     }, 250)
     return () => window.clearTimeout(timer)
   }, [memoryQuery, memorySearchOptions])
+
+  useEffect(() => {
+    setEventTimelineLimit(100)
+  }, [eventSourceFilter, eventStatusFilter, eventFrom, eventTo])
 
   const briefing = dashboard?.briefing
   const weeklyBriefing = dashboard?.weeklyBriefing
@@ -196,14 +218,15 @@ function AiAssistantPage() {
   const ingestionStatus = dashboard?.ingestionStatus
   const ingestionCounts = Object.fromEntries((ingestionStatus?.batches || []).map((item: any) => [item.status, Number(item.count || 0)]))
   const visibleClaims = memoryFeed.claims.filter((item: any) => item.status !== 'rejected')
-  const visibleEvents = memoryFeed.events.filter((item: any) => item.status !== 'rejected')
+  const feedEvents = memoryFeed.events.filter((item: any) => item.status !== 'rejected')
+  const visibleEvents = eventTimeline.items || []
   const visibleResources = memoryFeed.resources || []
   const resourceTrash = dashboard?.resourceTrash || []
   const selectedEntityClaims = selectedEntity
     ? visibleClaims.filter((item: any) => item.subject_id === selectedEntity.id)
     : []
   const selectedEntityEvents = selectedEntity
-    ? visibleEvents.filter((item: any) => item.participants?.some((participant: any) => participant.entity_id === selectedEntity.id))
+    ? feedEvents.filter((item: any) => item.participants?.some((participant: any) => participant.entity_id === selectedEntity.id))
     : []
   const selectedEntityRelations = selectedEntity
     ? graph.relations.filter((item: any) =>
@@ -1185,16 +1208,35 @@ function AiAssistantPage() {
           <section className="assistant-panel">
             <div className="assistant-section-heading">
               <div><span className="assistant-eyebrow">EVENT TIMELINE</span><h3><CalendarDays size={16} /> 事件时间线</h3></div>
-              <span className="assistant-count">{visibleEvents.length} 项</span>
+              <span className="assistant-count">{eventTimeline.total} 项</span>
+            </div>
+            <div className="assistant-memory-scope assistant-event-scope">
+              <select value={eventSourceFilter} onChange={event => setEventSourceFilter(event.target.value)}>
+                <option value="">所有来源</option>
+                <option value="wechat">微信</option>
+                <option value="documents">本机文档</option>
+                <option value="calendar">macOS 日历</option>
+              </select>
+              <select value={eventStatusFilter} onChange={event => setEventStatusFilter(event.target.value)}>
+                <option value="">所有状态</option>
+                <option value="candidate">待确认</option>
+                <option value="confirmed">已确认</option>
+                <option value="cancelled">已取消</option>
+              </select>
+              <label><span>从</span><input type="date" value={eventFrom} onChange={event => setEventFrom(event.target.value)} /></label>
+              <label><span>至</span><input type="date" value={eventTo} onChange={event => setEventTo(event.target.value)} /></label>
+              {(eventSourceFilter || eventStatusFilter || eventFrom || eventTo) &&
+                <button onClick={() => { setEventSourceFilter(''); setEventStatusFilter(''); setEventFrom(''); setEventTo('') }}>清除范围</button>}
             </div>
             <div className="assistant-memory-list">
               {visibleEvents.map((event: any) => <article className="assistant-memory-item" key={event.id}>
                 <div className="assistant-memory-item-head">
                   <strong>{event.title}</strong>
-                  <span className={event.status}>{event.status === 'confirmed' ? '已确认' : '待确认'}</span>
+                  <span className={event.status}>{event.status === 'confirmed' ? '已确认' : event.status === 'cancelled' ? '已取消' : '待确认'}</span>
                 </div>
                 {event.description && <p>{event.description}</p>}
-                <small>{event.start_at || '时间待确认'}{event.location ? ` · ${event.location}` : ''}</small>
+                <small>{event.start_at || '时间待确认'}{event.end_at ? ` — ${event.end_at}` : ''}{event.location ? ` · ${event.location}` : ''}</small>
+                <small>来源：{event.source_id === 'calendar' ? 'macOS 日历' : event.source_id === 'documents' ? '本机文档' : '微信'}</small>
                 {!!event.participants?.length && <small>参与者：{event.participants.map((item: any) => `${item.canonical_name}（${item.role}）`).join('、')}</small>}
                 <div className="assistant-evidence-stack">
                   {(event.evidence || []).map((evidence: any) =>
@@ -1208,6 +1250,11 @@ function AiAssistantPage() {
               </article>)}
               {!visibleEvents.length && <div className="assistant-empty">会议、决定、交付和承诺等事件会显示在这里。</div>}
             </div>
+            {eventTimeline.hasMore && <div className="assistant-timeline-more">
+              <button onClick={() => setEventTimelineLimit(limit => Math.min(300, limit + 100))}>
+                加载更多（已显示 {visibleEvents.length}/{eventTimeline.total}）
+              </button>
+            </div>}
           </section>
 
           <section className="assistant-panel">

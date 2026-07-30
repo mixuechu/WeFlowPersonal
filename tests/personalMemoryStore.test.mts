@@ -94,6 +94,52 @@ test('relationship history keeps creation and later review state instead of over
   assert.deepEqual(history.map(item => item.status), ['confirmed', 'candidate'])
 }))
 
+test('event timeline filters cross-source evidence, status and time with stable pagination', () => withStore(store => {
+  const makeEvent = (id: string, sourceSession: string, startAt: string, status: string) => ({
+    id,
+    eventType: sourceSession.includes('calendar') ? 'calendar' : 'meeting',
+    title: `事件 ${id}`,
+    description: `证据 ${id}`,
+    startAt,
+    endAt: '',
+    location: '',
+    confidence: 1,
+    status,
+    searchText: `事件 ${id}`,
+    createdAt: startAt,
+    evidence: [{
+      messageId: `message-${id}`,
+      sessionId: sourceSession,
+      timestamp: Math.floor(Date.parse(startAt) / 1000),
+      excerpt: `证据 ${id}`,
+      role: 'direct'
+    }]
+  })
+  store.upsertEvents([
+    makeEvent('wechat-event', 'wechat-session', '2026-07-28T10:00:00.000Z', 'candidate'),
+    makeEvent('document-event', 'data-source:documents', '2026-07-29T10:00:00.000Z', 'candidate'),
+    makeEvent('calendar-event', 'data-source:calendar:work', '2026-07-30T10:00:00.000Z', 'confirmed'),
+    makeEvent('cancelled-event', 'data-source:calendar:work', '2026-07-31T10:00:00.000Z', 'cancelled'),
+    makeEvent('rejected-event', 'data-source:calendar:work', '2026-08-01T10:00:00.000Z', 'rejected')
+  ])
+
+  const calendar = store.listEventTimeline({ sourceId: 'calendar', limit: 1 })
+  assert.equal(calendar.total, 2)
+  assert.equal(calendar.items[0].id, 'cancelled-event')
+  assert.equal(calendar.items[0].source_id, 'calendar')
+  assert.equal(calendar.hasMore, true)
+  assert.equal(calendar.items[0].evidence[0].session_id, 'data-source:calendar:work')
+
+  const confirmed = store.listEventTimeline({
+    status: 'confirmed',
+    from: '2026-07-30T00:00:00.000Z',
+    to: '2026-07-30T23:59:59.999Z'
+  })
+  assert.deepEqual(confirmed.items.map(item => item.id), ['calendar-event'])
+  assert.equal(store.listEventTimeline({ sourceId: 'documents' }).items[0].id, 'document-event')
+  assert.equal(store.listEventTimeline({ sourceId: 'wechat' }).items[0].id, 'wechat-event')
+}))
+
 test('large identity graphs switch to a weekly indexed full scan', () => {
   const now = new Date('2026-07-30T12:00:00.000Z')
   assert.equal(getFullIdentityScanSchedule(499, null, now).mode, 'incremental')
