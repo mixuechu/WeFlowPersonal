@@ -29,6 +29,10 @@ import { classifyTaskAssignment, evaluateTaskAssignmentPolicy } from './taskAssi
 import { buildWeeklyBriefing, isQuietTime } from './briefingIntelligence'
 import { groundBriefingDigest } from './briefingEvidencePolicy'
 import {
+  structuredEvidenceKey,
+  validateStructuredDigestEvidence
+} from './structuredEvidencePolicy'
+import {
   enqueueUniqueNotification,
   markNotificationAttempt,
   type NotificationOutbox
@@ -174,7 +178,7 @@ const EMPTY_STATE: AssistantState = {
 }
 
 const EXTRACTION_PROMPT_VERSION = 'personal-os-prompt-v6'
-const EXTRACTION_SCHEMA_VERSION = 'personal-memory-schema-v5'
+const EXTRACTION_SCHEMA_VERSION = 'personal-memory-schema-v6'
 const DOCUMENT_ANALYSIS_VERSION = `${EXTRACTION_PROMPT_VERSION}/${EXTRACTION_SCHEMA_VERSION}/document-v1`
 
 const SYSTEM_PROMPT = `你是一个谨慎的中文私人助理兼个人记忆图谱分析器。输入包含按会话组织的连续微信消息和用户身份档案。
@@ -186,15 +190,15 @@ const SYSTEM_PROMPT = `你是一个谨慎的中文私人助理兼个人记忆图
 图片视觉规则：content 中“[图片视觉·Apple Vision 本地候选｜未经人工确认]”只是设备端分类线索，不是图片事实描述，也不能单独支持任务、人物、关系、claim 或 event；只能辅助理解和检索，必须结合原消息文字、OCR 或其他直接证据。
 身份映射规则：每个会话的 participants 提供 wxid、通讯录备注 contactRemark、微信昵称 wechatNickname、群昵称 groupNickname、微信号 alias 和 displayName。wxid 是稳定身份主键，其余名称都是该身份在不同场景下的别名；同一个 wxid 的多个名称必须视为同一人，不同 wxid 即使同名也不得自动合并。理解消息中的称呼时优先结合群昵称和通讯录备注。
 分片规则：消息的 analysisScope 为 core 时才允许产生待办、实体、关系或合并候选；context 消息仅用于理解 core 的前后文，绝对不能单独据此重复产出结果。
-知识图谱规则：提取人物、组织、群和项目，以及有明确消息证据的关系。不要因名字相同就合并人物；一个人可以有多个账号和别名。身份不确定时创建候选，不做硬合并。所有关系必须带 messageId 证据。
-事实记忆规则：必须检查 core 消息中是否包含可长期复用的事实，例如身份、职业、组织、技能、偏好、所在地、项目属性、联系方式和状态变化；有则写入 claims。本人明确陈述标记 self_statement，他人陈述标记 other_statement，仅从上下文推断标记 inference。事实必须带直接 evidenceMessageIds；短暂寒暄和纯情绪不作为事实。明确否定或更正（例如“我不是某公司员工”“我已经不住上海”）也必须抽取，predicate 保持肯定式标准属性名，polarity 标为 negative；不要把“不任职于”另造为一个无法比较的新 predicate。
-事件记忆规则：必须检查 core 消息中是否发生或计划会议、承诺、交付、旅行、付款、组织变化、决定等有时间意义的事件；有则写入 events。事件必须带 evidenceMessageIds，参与实体必须引用本次 entities 的 tempId。没有合格内容时数组为空，claims 和 events 两个字段仍必须返回。
+知识图谱规则：提取人物、组织、群和项目，以及有明确消息证据的关系。不要因名字相同就合并人物；一个人可以有多个账号和别名。身份不确定时创建候选，不做硬合并。每个实体、关系和合并建议都必须带 evidenceKeys。
+事实记忆规则：必须检查 core 消息中是否包含可长期复用的事实，例如身份、职业、组织、技能、偏好、所在地、项目属性、联系方式和状态变化；有则写入 claims。本人明确陈述标记 self_statement，他人陈述标记 other_statement，仅从上下文推断标记 inference。事实必须带直接 evidenceKeys；短暂寒暄和纯情绪不作为事实。明确否定或更正（例如“我不是某公司员工”“我已经不住上海”）也必须抽取，predicate 保持肯定式标准属性名，polarity 标为 negative；不要把“不任职于”另造为一个无法比较的新 predicate。
+事件记忆规则：必须检查 core 消息中是否发生或计划会议、承诺、交付、旅行、付款、组织变化、决定等有时间意义的事件；有则写入 events。事件必须带 evidenceKeys，参与实体必须引用本次 entities 的 tempId。没有合格内容时数组为空，claims 和 events 两个字段仍必须返回。
 输出预算：每批最多 30 个实体、30 条关系、20 条高价值 claims、15 个 events 和 20 个 tasks；优先保留与用户本人、重要人物、项目和行动有关且证据最强的内容，禁止为了凑数量记录琐碎事实。
 “用户”“我”“本人”“对方”“群友”“某人”“未知”等只是角色占位词，绝对不能作为实体名称。用户本人必须使用身份档案里的真实姓名；身份档案没有姓名时，不创建用户本人的人物实体。
 只根据消息证据，不臆测；title 用动词开头；不确定日期时 due 为空；source 使用会话显示名。
-简报证据规则：summary 必须列出 summaryEvidenceKeys；highlights 中每一项必须是 {"text":"重点","sourceEvidenceKeys":["证据键"]}。证据键必须逐字复制输入消息的 evidenceKey，且只能引用 analysisScope=core 的消息。无法引用真实 core 证据时 summary 为空、highlights 不输出该项。
+统一证据键规则：所有 evidenceKeys、sourceEvidenceKeys、summaryEvidenceKeys 都必须逐字复制输入消息的 evidenceKey，且只能引用 analysisScope=core 的消息。context 消息可以帮助理解，但绝不能成为任何输出的证据。无法引用真实 core 证据时不要输出该条结构。summary 必须列出 summaryEvidenceKeys；highlights 中每一项必须是 {"text":"重点","sourceEvidenceKeys":["证据键"]}。
 只返回 JSON：
-{"headline":"标题","summary":"摘要","summaryEvidenceKeys":["sourceId:sessionId:messageId"],"highlights":[{"text":"重要信息","sourceEvidenceKeys":["sourceId:sessionId:messageId"]}],"tasks":[{"title":"待办","detail":"上下文","owner":"负责人真实名称","collaborators":["协作者"],"project":"所属项目","dependsOnTitles":["依赖待办标题"],"taskKind":"action|delegated|waiting","due":"","priority":"high|medium|low","source":"会话名","confidence":0.8,"classification":"mine|uncertain|others","assignmentEvidence":"归属证据","sourceMessageIds":["消息ID"]}],"entities":[{"tempId":"e1","type":"person|organization|group|project","canonicalName":"名称","aliases":[],"accountIds":[],"summary":"仅基于证据的简述","confidence":0.8,"evidenceMessageIds":["消息ID"]}],"relations":[{"subjectTempId":"e1","predicate":"从主语到宾语可直接朗读的有向关系","objectTempId":"e2","directionExplanation":"完整自然语言，例如A向B提供服务","confidence":0.8,"evidenceMessageIds":["消息ID"]}],"claims":[{"subjectTempId":"e1","predicate":"肯定式标准事实属性","objectTempId":"","objectValue":"事实值","polarity":"positive|negative","valueType":"text|number|date|boolean","validFrom":"","validTo":"","confidence":0.8,"sourceNature":"self_statement|other_statement|inference","evidenceMessageIds":["消息ID"]}],"events":[{"eventType":"meeting|commitment|delivery|travel|payment|organization_change|decision|other","title":"事件","description":"描述","startAt":"","endAt":"","location":"","participants":[{"tempId":"e1","role":"参与者角色"}],"confidence":0.8,"evidenceMessageIds":["消息ID"]}],"possibleDuplicates":[{"leftTempId":"e1","rightExistingName":"已有实体名","confidence":0.7,"reason":"原因"}]}`
+{"headline":"标题","summary":"摘要","summaryEvidenceKeys":["sourceId:sessionId:messageId"],"highlights":[{"text":"重要信息","sourceEvidenceKeys":["sourceId:sessionId:messageId"]}],"tasks":[{"title":"待办","detail":"上下文","owner":"负责人真实名称","collaborators":["协作者"],"project":"所属项目","dependsOnTitles":["依赖待办标题"],"taskKind":"action|delegated|waiting","due":"","priority":"high|medium|low","source":"会话名","confidence":0.8,"classification":"mine|uncertain|others","assignmentEvidence":"归属证据","sourceEvidenceKeys":["sourceId:sessionId:messageId"]}],"entities":[{"tempId":"e1","type":"person|organization|group|project","canonicalName":"名称","aliases":[],"accountIds":[],"summary":"仅基于证据的简述","confidence":0.8,"evidenceKeys":["sourceId:sessionId:messageId"]}],"relations":[{"subjectTempId":"e1","predicate":"从主语到宾语可直接朗读的有向关系","objectTempId":"e2","directionExplanation":"完整自然语言，例如A向B提供服务","confidence":0.8,"evidenceKeys":["sourceId:sessionId:messageId"]}],"claims":[{"subjectTempId":"e1","predicate":"肯定式标准事实属性","objectTempId":"","objectValue":"事实值","polarity":"positive|negative","valueType":"text|number|date|boolean","validFrom":"","validTo":"","confidence":0.8,"sourceNature":"self_statement|other_statement|inference","evidenceKeys":["sourceId:sessionId:messageId"]}],"events":[{"eventType":"meeting|commitment|delivery|travel|payment|organization_change|decision|other","title":"事件","description":"描述","startAt":"","endAt":"","location":"","participants":[{"tempId":"e1","role":"参与者角色"}],"confidence":0.8,"evidenceKeys":["sourceId:sessionId:messageId"]}],"possibleDuplicates":[{"leftTempId":"e1","rightExistingName":"已有实体名","confidence":0.7,"reason":"原因","evidenceKeys":["sourceId:sessionId:messageId"]}]}`
 
 function shanghaiDate(timestampMs = Date.now()): string {
   return new Intl.DateTimeFormat('en-CA', {
@@ -210,7 +214,9 @@ function messageKey(message: any): string {
 }
 
 function stableTaskId(task: any): string {
-  const evidence = (Array.isArray(task.sourceMessageIds) ? task.sourceMessageIds : []).map(String).sort().join(',')
+  const evidence = (Array.isArray(task.sourceEvidenceKeys)
+    ? task.sourceEvidenceKeys
+    : Array.isArray(task.sourceMessageIds) ? task.sourceMessageIds : []).map(String).sort().join(',')
   const value = [task.title, task.source, evidence].map(item => String(item || '').trim().toLowerCase()).join('|')
   return crypto.createHash('sha256').update(value).digest('hex').slice(0, 20)
 }
@@ -1078,7 +1084,7 @@ export class AiAssistantService {
       const existing = byAccount || (exactNameMatches.length === 1 && Number(item.confidence || 0) >= 0.9 ? exactNameMatches[0] : undefined)
       const id = existing?.id || `ent_${crypto.randomUUID()}`
       tempIds.set(String(item.tempId || id), id)
-      const evidenceIds = [...new Set((Array.isArray(item.evidenceMessageIds) ? item.evidenceMessageIds : []).map(String))]
+      const evidenceIds = [...new Set((Array.isArray(item.evidenceKeys) ? item.evidenceKeys : []).map(String))]
       if (existing) {
         const before = JSON.stringify([existing.canonicalName, existing.aliases, existing.accountIds, existing.summary])
         existing.aliases = [...new Set([...existing.aliases, ...aliases])]
@@ -1120,9 +1126,8 @@ export class AiAssistantService {
       if (/伴侣|配偶|夫妻|父亲|母亲|兄弟|姐妹|朋友|同学/.test(predicate) &&
           (subjectType !== 'person' || objectType !== 'person')) continue
       const id = crypto.createHash('sha256').update(`${subjectId}|${predicate}|${objectId}`).digest('hex').slice(0, 20)
-      const evidenceIds = (Array.isArray(item.evidenceMessageIds) ? item.evidenceMessageIds : []).map(String)
-      const evidence = sourceMessages.filter(message => evidenceIds.includes(String(message.id))).map(message => ({
-        messageId: String(message.id),
+      const evidence = (Array.isArray(item.__evidenceMessages) ? item.__evidenceMessages : []).map((message: any) => ({
+        messageId: structuredEvidenceKey(message),
         sessionId: String(message.sessionId),
         timestamp: Number(message.timestamp),
         excerpt: redact(String(message.content)).slice(0, 160)
@@ -1175,16 +1180,14 @@ export class AiAssistantService {
   }
 
   private persistClaimsAndEvents(digest: any, tempIds: Map<string, string>, sourceMessages: any[], now: string): void {
-    const evidenceFor = (ids: any[], role: 'direct' | 'indirect' | 'contradiction' = 'direct') => {
-      const wanted = new Set((Array.isArray(ids) ? ids : []).map(String))
-      return sourceMessages.filter(message => wanted.has(String(message.id))).map(message => ({
-        messageId: String(message.id),
+    const evidenceFor = (messages: any[], role: 'direct' | 'indirect' | 'contradiction' = 'direct') =>
+      (Array.isArray(messages) ? messages : []).map(message => ({
+        messageId: structuredEvidenceKey(message),
         sessionId: String(message.sessionId),
         timestamp: Number(message.timestamp),
         excerpt: redact(String(message.content)).slice(0, 300),
         role
       }))
-    }
     const claims = (Array.isArray(digest.claims) ? digest.claims : []).flatMap((item: any) => {
       const subjectId = tempIds.get(String(item.subjectTempId || ''))
       const objectEntityId = tempIds.get(String(item.objectTempId || ''))
@@ -1195,7 +1198,7 @@ export class AiAssistantService {
         sourceMessages.some(message => message.sourceId === 'documents') ? 'documents' : 'wechat',
         String(item.sourceNature || '')
       )
-      const evidence = evidenceFor(item.evidenceMessageIds, sourceNature === 'self_statement' ? 'direct' : 'indirect')
+      const evidence = evidenceFor(item.__evidenceMessages, sourceNature === 'self_statement' ? 'direct' : 'indirect')
       if (!subjectId || !predicate || (!objectEntityId && !objectValue) || !evidence.length) return []
       const value = objectEntityId || objectValue
       const subjectName = this.state.graph.entities.find(entity => entity.id === subjectId)?.canonicalName || ''
@@ -1214,7 +1217,7 @@ export class AiAssistantService {
     })
     const events = (Array.isArray(digest.events) ? digest.events : []).flatMap((item: any) => {
       const title = String(item.title || '').trim().slice(0, 200)
-      const evidence = evidenceFor(item.evidenceMessageIds)
+      const evidence = evidenceFor(item.__evidenceMessages)
       if (!title || !evidence.length) return []
       const participants = (Array.isArray(item.participants) ? item.participants : []).flatMap((participant: any) => {
         const entityId = tempIds.get(String(participant.tempId || ''))
@@ -1902,7 +1905,19 @@ export class AiAssistantService {
           schemaVersion: EXTRACTION_SCHEMA_VERSION
         })
         try {
-          const digest = await this.callAi(batch)
+          const rawDigest = await this.callAi(batch)
+          const evidenceValidation = validateStructuredDigestEvidence(rawDigest, batch)
+          const digest = {
+            ...evidenceValidation.digest,
+            __meta: {
+              ...rawDigest.__meta,
+              structuredEvidence: {
+                version: 'structured-evidence-v1',
+                accepted: evidenceValidation.accepted,
+                rejected: evidenceValidation.rejected
+              }
+            }
+          }
           digests.push({ digest, batch })
           const tempIds = this.mergeGraphDigest(digest, batch, createdAt)
           personalMemoryStore.syncGraph(this.state.graph)
@@ -1945,8 +1960,8 @@ export class AiAssistantService {
         if (groundedBriefing.rejectedSummary) rejectedSummaryCount += 1
         rejectedHighlightCount += groundedBriefing.rejectedHighlightCount
         for (const item of Array.isArray(digest.tasks) ? digest.tasks : []) {
-          const sourceMessageIds = Array.isArray(item.sourceMessageIds) ? item.sourceMessageIds.map(String).slice(0, 20) : []
-          const evidenceMessages = fresh.filter(message => sourceMessageIds.includes(String(message.id)))
+          const sourceMessageIds = Array.isArray(item.sourceEvidenceKeys) ? item.sourceEvidenceKeys.map(String).slice(0, 20) : []
+          const evidenceMessages = Array.isArray(item.__evidenceMessages) ? item.__evidenceMessages : []
           const assignment = classifyTaskAssignment({
             evidenceMessages,
             modelClassification: item.classification,
@@ -1975,7 +1990,7 @@ export class AiAssistantService {
             ownershipPolicyReason: assignment.rationale,
             sourceMessageIds,
             evidence: evidenceMessages.map(message => ({
-              messageId: String(message.id),
+              messageId: structuredEvidenceKey(message),
               timestamp: Number(message.timestamp),
               sender: message.direction === '我发送' ? '我' : String(message.senderName || message.senderId || '对方'),
               excerpt: redact(String(message.content)).slice(0, 300)

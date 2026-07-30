@@ -25,6 +25,10 @@ import {
 import { editDistance, entityPinyinTerms, fuzzyEntityScore, pinyinEntityScore } from '../electron/services/fuzzyEntitySearch.ts'
 import { buildWeeklyBriefing, isQuietTime } from '../electron/services/briefingIntelligence.ts'
 import { groundBriefingDigest } from '../electron/services/briefingEvidencePolicy.ts'
+import {
+  structuredEvidenceKey,
+  validateStructuredDigestEvidence
+} from '../electron/services/structuredEvidencePolicy.ts'
 import { enqueueUniqueNotification, markNotificationAttempt } from '../electron/services/notificationOutbox.ts'
 import { findCommonGraphNeighbors } from '../electron/services/graphCommonNeighbors.ts'
 import { buildProjectInsights } from '../electron/services/projectInsights.ts'
@@ -447,6 +451,56 @@ test('briefing prose requires exact core-message evidence keys', () => {
   }, batch)
   assert.equal(ungrounded.summary, '')
   assert.equal(ungrounded.rejectedSummary, true)
+})
+
+test('all structured extraction rejects forged, context and cross-session evidence', () => {
+  const coreA = {
+    sourceId: 'wechat', sessionId: 'session-a', id: 'same-local-id',
+    content: '张三负责项目甲。', analysisScope: 'core'
+  }
+  const coreB = {
+    sourceId: 'wechat', sessionId: 'session-b', id: 'same-local-id',
+    content: '李四负责项目乙。', analysisScope: 'core'
+  }
+  const context = {
+    sourceId: 'wechat', sessionId: 'session-a', id: 'context-only',
+    content: '上下文中的旧任务。', analysisScope: 'context'
+  }
+  assert.notEqual(structuredEvidenceKey(coreA), structuredEvidenceKey(coreB))
+  const validKey = structuredEvidenceKey(coreA)
+  const invalidCases = [
+    'wechat:session-b:missing',
+    structuredEvidenceKey(context),
+    'same-local-id'
+  ]
+  const validated = validateStructuredDigestEvidence({
+    tasks: [
+      { title: '处理项目甲', sourceEvidenceKeys: [validKey] },
+      ...invalidCases.map((key, index) => ({ title: `错误任务${index}`, sourceEvidenceKeys: [key] }))
+    ],
+    entities: [{ tempId: 'person-a', canonicalName: '张三', evidenceKeys: [validKey] }],
+    relations: [{ subjectTempId: 'person-a', objectTempId: 'project-a', evidenceKeys: [structuredEvidenceKey(coreB)] }],
+    claims: [{ subjectTempId: 'person-a', predicate: '负责', evidenceKeys: [structuredEvidenceKey(context)] }],
+    events: [{ title: '项目启动', evidenceKeys: ['forged:key'] }],
+    possibleDuplicates: [{ leftTempId: 'person-a', rightExistingName: '张三旧号', evidenceKeys: [validKey] }]
+  }, [coreA, coreB, context])
+
+  assert.deepEqual(validated.digest.tasks.map((item: any) => item.title), ['处理项目甲'])
+  assert.equal(validated.digest.tasks[0].__evidenceMessages[0], coreA)
+  assert.equal(validated.digest.entities.length, 1)
+  assert.equal(validated.digest.relations.length, 1)
+  assert.equal(validated.digest.relations[0].__evidenceMessages[0], coreB)
+  assert.equal(validated.digest.claims.length, 0)
+  assert.equal(validated.digest.events.length, 0)
+  assert.equal(validated.digest.possibleDuplicates.length, 1)
+  assert.deepEqual(validated.rejected, {
+    tasks: 3,
+    entities: 0,
+    relations: 0,
+    claims: 1,
+    events: 1,
+    possibleDuplicates: 0
+  })
 })
 
 test('notification outbox persists unique work until a successful delivery', () => {
@@ -1160,7 +1214,12 @@ test('partial ingestion keeps completed checkpoints visible for safe resume', ()
     inputTokens: 1200,
     outputTokens: 300,
     durationMs: 2500,
-    sensitiveRedaction: { level: 'standard', total: 2, counts: { 手机号: 1, 邮箱: 1 } }
+    sensitiveRedaction: { level: 'standard', total: 2, counts: { 手机号: 1, 邮箱: 1 } },
+    structuredEvidence: {
+      version: 'structured-evidence-v1',
+      accepted: { tasks: 2, entities: 1 },
+      rejected: { tasks: 1, entities: 0 }
+    }
   })
   store.recordIngestionBatch('run-resume', 1, 80, 'running')
   store.recordIngestionBatch('run-resume', 1, 80, 'failed', '用户已安全暂停')
@@ -1192,6 +1251,11 @@ test('partial ingestion keeps completed checkpoints visible for safe resume', ()
   assert.equal(runs[0].batches[1].error, '用户已安全暂停')
   assert.deepEqual(runs[0].batches[0].sensitiveRedaction, {
     level: 'standard', total: 2, counts: { 手机号: 1, 邮箱: 1 }
+  })
+  assert.deepEqual(runs[0].batches[0].structuredEvidence, {
+    version: 'structured-evidence-v1',
+    accepted: { tasks: 2, entities: 1 },
+    rejected: { tasks: 1, entities: 0 }
   })
   assert.deepEqual(runs[0].usage, { input_tokens: 1200, output_tokens: 300, duration_ms: 2500 })
   const summary = summarizeIngestionRuns(runs, { inputPerMillion: 1, outputPerMillion: 2 })

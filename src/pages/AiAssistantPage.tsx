@@ -2090,6 +2090,11 @@ function AiAssistantPage() {
                       发送前脱敏 {batch.sensitiveRedaction.total} 处 · {Object.entries(batch.sensitiveRedaction.counts || {})
                         .map(([type, count]) => `${type} ${count}`).join('、')}
                     </small>}
+                    {!!batch.structuredEvidence?.version && <small>
+                      结构化证据门禁：
+                      接受 {Object.values(batch.structuredEvidence.accepted || {}).reduce((sum: number, count: any) => sum + Number(count || 0), 0)} 项
+                      {' · '}拒绝 {Object.values(batch.structuredEvidence.rejected || {}).reduce((sum: number, count: any) => sum + Number(count || 0), 0)} 项无效引用
+                    </small>}
                     {batch.error && <p>{batch.error}</p>}
                   </article>)}
                   {!run.batches?.length && <em>该次运行没有创建模型批次</em>}
