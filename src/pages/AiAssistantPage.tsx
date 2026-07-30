@@ -1248,6 +1248,10 @@ function AiAssistantPage() {
               检测到上次运行被退出打断：已保留 {Number(ingestionStatus.recovered_batch_count || 0)} 个成功批次，
               {Number(ingestionStatus.interrupted_batch_count || 0)} 个在途批次将按 checkpoint 重试。
             </small>}
+            {Number(status?.cursor?.pendingSessionRetryCount || 0) > 0 && <small>
+              仍有 {Number(status.cursor.pendingSessionRetryCount)} 个微信会话读取失败；
+              每个会话的失败前起点已经独立保存，下次会从原位置继续，不会被全局时间戳跳过。
+            </small>}
             {ingestionStatus.error && <small>{ingestionStatus.error}</small>}
           </div>
         )}

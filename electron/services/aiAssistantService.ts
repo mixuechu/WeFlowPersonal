@@ -72,6 +72,10 @@ import {
   EXTRACTION_MEMORY_CONTEXT_VERSION,
   selectTrustedExtractionEntities
 } from './extractionMemoryContext'
+import {
+  initializeSessionRetryCursors,
+  planSessionCursorProgress
+} from './ingestionCursorPolicy'
 import { getAppRunRecoveryDiagnostics } from './appRunRecoveryService'
 import type { DurableJsonRecovery } from './durableJsonState'
 import {
@@ -189,6 +193,7 @@ type AssistantState = {
     lastReminderNotificationDate?: string | null
     lastAttemptAt: string | null
     lastError: string | null
+    pendingSessionRetryCount: number
   }
   graph: {
     entities: GraphEntity[]
@@ -213,7 +218,8 @@ const EMPTY_STATE: AssistantState = {
     lastScheduledRunDate: null,
     lastReminderNotificationDate: null,
     lastAttemptAt: null,
-    lastError: null
+    lastError: null,
+    pendingSessionRetryCount: 0
   },
   graph: { entities: [], relations: [], reviewQueue: [], identityScan: { lastFullScanAt: null, lastRunAt: null, lastMode: null, lastCandidateCount: 0 } }
 }
@@ -756,15 +762,21 @@ export class AiAssistantService {
     const sessions = allSessions.filter((session: any) => {
       if (isOfficialAccountSession(session)) return false
       if (policies.get(session.username) === false) return false
-      const sessionStart = Number(this.state.cursor.sessionCursors[session.username] || start)
+      const sessionStart = Number(this.state.cursor.sessionCursors[session.username] ?? start)
       return Number(session.lastTimestamp || 0) >= sessionStart
     })
+    const retryCursors = initializeSessionRetryCursors(
+      this.state.cursor.sessionCursors,
+      sessions.map((session: any) => String(session.username || '')),
+      start
+    )
+    this.state.cursor.sessionCursors = retryCursors.sessionCursors
     const ocrImages = Boolean(this.config.get('aiAssistantOcrImages'))
     const analyzeImages = Boolean(this.config.get('aiAssistantAnalyzeImages'))
     const loadImages = ocrImages || analyzeImages
     const results = await Promise.allSettled(sessions.map(async (session: any) => {
       const rawRows: any[] = []
-      const sessionStart = Math.max(0, Number(this.state.cursor.sessionCursors[session.username] || start) - 300)
+      const sessionStart = Math.max(0, Number(this.state.cursor.sessionCursors[session.username] ?? start) - 300)
       let offset = 0
       for (let page = 0; page < 50; page += 1) {
         const payload = await this.api('/api/v1/messages', {
@@ -2581,25 +2593,41 @@ export class AiAssistantService {
       }
       this.state.tasks = [...existing.values()].sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)))
       this.state.cursor.recentMessageIds = [...new Set([...this.state.cursor.recentMessageIds, ...successfulMessageKeys])].slice(-20_000)
-      if (!batchErrors.length) {
-        for (const sessionId of collected.successful) this.state.cursor.sessionCursors[sessionId] = now
+      const cursorProgress = planSessionCursorProgress({
+        current: this.state.cursor.sessionCursors,
+        successfulSessionIds: collected.successful,
+        failedSessionIds: collected.failed,
+        windowEnd: now,
+        modelBatchesSucceeded: batchErrors.length === 0
+      })
+      this.state.cursor.sessionCursors = cursorProgress.sessionCursors
+      this.state.cursor.pendingSessionRetryCount = cursorProgress.pendingSessionIds.length
+      const collectionError = cursorProgress.pendingSessionIds.length
+        ? `${cursorProgress.pendingSessionIds.length} 个会话读取失败，已保留各自原始起点等待自动补齐`
+        : ''
+      const runErrors = [...batchErrors, ...(collectionError ? [collectionError] : [])]
+      if (cursorProgress.advanceGlobal) {
         this.state.cursor.lastMessageTimestamp = now
+      }
+      if (cursorProgress.complete) {
         this.state.cursor.lastSuccessfulRunAt = createdAt
         this.state.cursor.lastError = null
         this.state.lastSyncAt = createdAt
       } else {
-        this.state.cursor.lastError = `仍有 ${batchErrors.length} 个消息批次等待重试：${batchErrors[0]}`
+        this.state.cursor.lastError = batchErrors.length
+          ? `仍有 ${batchErrors.length} 个消息批次等待重试：${batchErrors[0]}`
+          : collectionError
       }
       this.saveState()
       personalMemoryStore.finishIngestionRun(runId, {
-        status: batchErrors.length ? 'partial' : 'completed',
+        status: runErrors.length ? 'partial' : 'completed',
         messageCount: successfulMessageKeys.length,
         entityCount: this.state.graph.entities.length,
         relationCount: this.state.graph.relations.length,
-        error: batchErrors[0]
+        error: runErrors[0]
       })
       runFinished = true
-      if (!batchErrors.length) {
+      if (!runErrors.length) {
         personalMemoryStore.updateDataSourceRun('wechat', {
           status: 'healthy',
           checkpoint: String(now),
@@ -2609,7 +2637,7 @@ export class AiAssistantService {
         personalMemoryStore.updateDataSourceRun('wechat', {
           status: cancelled ? 'idle' : 'error',
           attemptedAt: this.state.cursor.lastAttemptAt || createdAt,
-          error: cancelled ? '' : batchErrors[0]
+          error: cancelled ? '' : runErrors[0]
         })
       }
       const mineTasks = [...tasks.values()].filter(task => task.classification === 'mine')
@@ -2623,9 +2651,9 @@ export class AiAssistantService {
         this.saveState()
         await this.flushNotificationOutbox(new Date())
       }
-      if (batchErrors.length && !cancelled) throw new Error(this.state.cursor.lastError || '部分消息批次等待重试')
+      if (runErrors.length && !cancelled) throw new Error(this.state.cursor.lastError || '部分消息或会话等待重试')
       return {
-        success: !batchErrors.length,
+        success: !runErrors.length,
         cancelled,
         newMessageCount: successfulMessageKeys.length,
         newTaskCount: mineTasks.length,
