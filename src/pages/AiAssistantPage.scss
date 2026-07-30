@@ -517,6 +517,9 @@
 .assistant-scope-note { display: block; margin-top: 8px; color: #6e7d73; font-size: 9px; }
 .assistant-search-results { display: grid; gap: 13px; margin-top: 12px; }
 .assistant-search-result-group { display: grid; gap: 7px; }
+.assistant-search-status { margin: 8px 0; padding: 8px 10px; border-radius: 8px; background: #f4f5f1; color: #687168; font-size: 9px; }
+.assistant-search-status.ready { background: #eef5ef; color: #42614d; }
+.assistant-search-status.error { background: #fff1ef; color: #9a4e45; }
 .assistant-search-result-group-heading { display: flex; align-items: center; justify-content: space-between; padding: 0 2px; color: #626b64; }
 .assistant-search-result-group-heading strong { font-size: 11px; }
 .assistant-search-result-group-heading span { font-size: 9px; }

@@ -1,9 +1,10 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { BookOpen, Bot, CalendarDays, Check, Clock3, Filter, Network, Paperclip, RefreshCw, Search, Settings2, ShieldCheck, Sparkles, X } from 'lucide-react'
 import { buildTaskCalendar, shanghaiToday } from '../utils/taskCalendar'
 import { filterGraphReviews, type ReviewStatusFilter } from '../utils/graphReviewFilters'
 import { evidenceLocalMessageId, groupMemorySearchResults, MEMORY_TYPE_LABELS, normalizeMemoryEvidence, type MemoryEvidence } from '../utils/memorySearchPresentation'
 import { buildGraphViewport } from '../utils/graphViewport'
+import { LatestRequestGate } from '../utils/latestRequestGate'
 import './AiAssistantPage.scss'
 
 type Task = {
@@ -97,6 +98,13 @@ function AiAssistantPage() {
   const [sourceQuery, setSourceQuery] = useState('')
   const [memoryQuery, setMemoryQuery] = useState('')
   const [memoryResults, setMemoryResults] = useState<any[]>([])
+  const [memorySearchState, setMemorySearchState] = useState<{
+    status: 'idle' | 'waiting' | 'searching' | 'ready' | 'error'
+    query: string
+    error?: string
+  }>({ status: 'idle', query: '' })
+  const memorySearchGate = useRef(new LatestRequestGate())
+  const memoryConversationGate = useRef(new LatestRequestGate())
   const [editingClaim, setEditingClaim] = useState<any>(null)
   const [editingEvent, setEditingEvent] = useState<any>(null)
   const [editingTask, setEditingTask] = useState<any>(null)
@@ -178,15 +186,34 @@ function AiAssistantPage() {
 
   useEffect(() => {
     const query = memoryQuery.trim()
+    const request = memorySearchGate.current.begin()
+    setMemoryResults([])
     if (!query) {
-      setMemoryResults([])
+      setMemorySearchState({ status: 'idle', query: '' })
       return
     }
+    setMemorySearchState({ status: 'waiting', query })
     const timer = window.setTimeout(() => {
-      void window.electronAPI.aiAssistant.searchMemory(query, memorySearchOptions).then(setMemoryResults)
+      if (!memorySearchGate.current.isCurrent(request)) return
+      setMemorySearchState({ status: 'searching', query })
+      void window.electronAPI.aiAssistant.searchMemory(query, memorySearchOptions).then(results => {
+        if (!memorySearchGate.current.isCurrent(request)) return
+        setMemoryResults(results)
+        setMemorySearchState({ status: 'ready', query })
+      }).catch(error => {
+        if (!memorySearchGate.current.isCurrent(request)) return
+        setMemorySearchState({ status: 'error', query, error: error?.message || String(error) })
+      })
     }, 250)
-    return () => window.clearTimeout(timer)
+    return () => {
+      window.clearTimeout(timer)
+      if (memorySearchGate.current.isCurrent(request)) memorySearchGate.current.invalidate()
+    }
   }, [memoryQuery, memorySearchOptions])
+
+  useEffect(() => () => {
+    memoryConversationGate.current.invalidate()
+  }, [])
 
   useEffect(() => {
     setEventTimelineLimit(100)
@@ -709,23 +736,28 @@ function AiAssistantPage() {
     const question = memoryQuestion.trim()
     if (!question || askingMemory) return
     setAskingMemory(true)
+    const request = memoryConversationGate.current.begin()
     try {
       const answer = await window.electronAPI.aiAssistant.askMemory(question, memoryConversationId || undefined, memorySearchOptions)
+      if (!memoryConversationGate.current.isCurrent(request)) return
       setMemoryAnswer({ ...answer, question })
       setMemoryConversationId(answer.conversationId)
       setMemoryConversation(await window.electronAPI.aiAssistant.getAssistantConversation(answer.conversationId))
       setMemoryQuestion('')
       await load()
     } catch (error: any) {
-      setMemoryAnswer({ answer: error?.message || String(error), citations: [], uncertainty: '' })
+      if (memoryConversationGate.current.isCurrent(request)) {
+        setMemoryAnswer({ answer: error?.message || String(error), citations: [], uncertainty: '' })
+      }
     } finally {
       setAskingMemory(false)
     }
   }
 
   const openMemoryConversation = useCallback(async (id: string) => {
+    const request = memoryConversationGate.current.begin()
     const conversation = await window.electronAPI.aiAssistant.getAssistantConversation(id)
-    if (!conversation) return
+    if (!conversation || !memoryConversationGate.current.isCurrent(request)) return
     setMemoryConversationId(id)
     setMemoryConversation(conversation)
     const messages = conversation.messages || []
@@ -751,6 +783,7 @@ function AiAssistantPage() {
   }, [assistantConversations, memoryConversationId, openMemoryConversation])
 
   const startNewMemoryConversation = () => {
+    memoryConversationGate.current.invalidate()
     setMemoryConversationId('')
     setMemoryConversation(null)
     setMemoryAnswer(null)
@@ -1422,6 +1455,12 @@ function AiAssistantPage() {
               {memoryResults[0]?.retrieval_scope_applied && ` · 当前候选 ${Number(memoryResults[0].retrieval_scope_candidates || 0).toLocaleString()} 条`}
             </small>}
           {!!memoryQuery.trim() && <div className="assistant-search-results">
+            {['waiting', 'searching'].includes(memorySearchState.status) &&
+              <div className="assistant-search-status">正在检索“{memorySearchState.query}”… 当前区域只会接受这次查询的结果。</div>}
+            {memorySearchState.status === 'ready' &&
+              <div className="assistant-search-status ready">“{memorySearchState.query}” · {memoryResults.length} 条当前检索结果</div>}
+            {memorySearchState.status === 'error' &&
+              <div className="assistant-search-status error">“{memorySearchState.query}”检索失败：{memorySearchState.error}</div>}
             {groupedMemoryResults.map(group => <section className="assistant-search-result-group" key={group.type}>
               <div className="assistant-search-result-group-heading">
                 <strong>{group.label}</strong><span>{group.results.length} 条</span>
@@ -1465,7 +1504,7 @@ function AiAssistantPage() {
               </details>
             </article>})}</div>
             </section>)}
-            {!memoryResults.length && <div className="assistant-empty">没有找到相关记忆。</div>}
+            {memorySearchState.status === 'ready' && !memoryResults.length && <div className="assistant-empty">没有找到相关记忆。</div>}
           </div>}
         </section>
 
