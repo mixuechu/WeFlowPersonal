@@ -141,6 +141,12 @@ import {
   toGraphViewportEdge,
   toGraphViewportNode
 } from '../../shared/graphPayload'
+import {
+  buildTaskDirectoryItem,
+  buildTaskDossier,
+  TASK_DIRECTORY_PAYLOAD_VERSION,
+  TASK_HISTORY_LIMIT
+} from '../../shared/taskPayload'
 
 const ATTACHMENT_STRUCTURE_PARSER_VERSION = 'attachment-layout-v3'
 
@@ -2937,15 +2943,10 @@ export class AiAssistantService {
     const latest = dates[0] ? this.state.briefings[dates[0]] : null
     const tasks = this.state.tasks.filter(task => task.classification === 'mine')
     const taskReviewQueue = this.state.tasks.filter(task => task.classification !== 'mine')
-    const boundedTask = (task: AssistantTask): any => ({
-      ...task,
-      ...boundedEvidencePayload(task.evidence, MEMORY_CARD_EVIDENCE_LIMIT)
-    })
-    const taskPayload = tasks.map(boundedTask)
-    const taskReviewPayload = taskReviewQueue.map(boundedTask)
+    const taskPayload = tasks.map(buildTaskDirectoryItem)
+    const taskReviewPayload = taskReviewQueue.map(buildTaskDirectoryItem)
     const allTaskReminders = buildTaskReminders(tasks)
     const reminderResult = applyReminderPreferences(allTaskReminders, this.state.reminderPreferences)
-    const taskHistory = personalMemoryStore.listTaskHistory(tasks.map(task => task.id))
     const memoryFeed = personalMemoryStore.getMemoryFeed()
     const projectInsights = buildProjectDirectory({
       entities: this.state.graph.entities,
@@ -2982,16 +2983,27 @@ export class AiAssistantService {
       .digest('hex')
       .slice(0, 16)
     return {
-      briefing: latest ? { ...latest, tasks: taskPayload } : null,
+      briefing: latest ? { ...latest, tasks: undefined } : null,
       tasks: taskPayload,
       taskReviewQueue: taskReviewPayload,
+      taskPayloadPolicy: {
+        version: TASK_DIRECTORY_PAYLOAD_VERSION,
+        directoryEvidence: 'count_only',
+        dossier: 'on_demand'
+      },
+      taskRevision: crypto.createHash('sha256')
+        .update(this.state.tasks.map(task => [
+          task.id, task.updatedAt || task.createdAt || '', task.status,
+          task.classification, task.evidence?.length || 0
+        ].join('\u0000')).join('\u0001'))
+        .digest('hex')
+        .slice(0, 16),
       taskReminders: reminderResult.visible,
       reminderPreferences: {
         ...this.state.reminderPreferences,
         suppressed: reminderResult.suppressed,
         total: allTaskReminders.length
       },
-      taskHistory,
       taskReviewFeedback: {
         ...personalMemoryStore.getTaskReviewFeedbackStats(),
         reconciliation: this.taskReviewReconciliation,
@@ -3056,6 +3068,13 @@ export class AiAssistantService {
         lastError: this.state.notifications.pending.find(item => item.lastError)?.lastError || null
       }
     }
+  }
+
+  getTaskWorkspace(taskId: string): any {
+    const task = this.state.tasks.find(item => item.id === String(taskId || ''))
+    if (!task) return null
+    const history = personalMemoryStore.listTaskHistory([task.id], TASK_HISTORY_LIMIT)
+    return buildTaskDossier(task, history, personalMemoryStore.countTaskHistory(task.id))
   }
 
   getGraphReviewPage(options?: Partial<GraphReviewPageOptions>): any {

@@ -58,6 +58,11 @@ import { enqueueUniqueNotification, markNotificationAttempt } from '../electron/
 import { GRAPH_QUERY_EVIDENCE_LIMIT, findCommonGraphNeighbors } from '../electron/services/graphCommonNeighbors.ts'
 import { buildProjectDirectory, buildProjectInsight, buildProjectInsights } from '../electron/services/projectInsights.ts'
 import { MEMORY_CARD_EVIDENCE_LIMIT, PROJECT_EVIDENCE_LIMIT } from '../shared/evidencePayload.ts'
+import {
+  buildTaskDirectoryItem,
+  buildTaskDossier,
+  TASK_HISTORY_LIMIT
+} from '../shared/taskPayload.ts'
 import { buildTaskCalendar, extractTaskDueDate } from '../src/utils/taskCalendar.ts'
 import { filterGraphReviews, paginateGraphReviews } from '../src/utils/graphReviewFilters.ts'
 import { summarizeIngestionRuns } from '../electron/services/ingestionDiagnostics.ts'
@@ -1499,6 +1504,50 @@ test('project dashboard is a light directory and dossiers are selected on demand
   assert.equal(buildProjectInsight(input, 'missing-project'), null)
 })
 
+test('task dashboard keeps structure but loads evidence and audit history on demand', () => {
+  const longEvidence = Array.from({ length: 250 }, (_, index) => ({
+    messageId: `wechat:task-scale:${index}`,
+    sessionId: 'task-scale',
+    timestamp: index,
+    sender: '项目群',
+    excerpt: `只应进入按需档案的任务证据 ${index} ${'原文'.repeat(200)}`
+  }))
+  const fullTask = {
+    id: 'task-scale',
+    title: '完成规模测试',
+    detail: '结构化字段仍用于筛选、月历和编辑',
+    owner: '我',
+    project: 'Personal OS',
+    due: '2026-08-01',
+    priority: 'high',
+    status: 'doing',
+    confidence: 0.9,
+    sourceMessageIds: longEvidence.map(item => item.messageId),
+    evidence: longEvidence
+  }
+  const directory = buildTaskDirectoryItem(fullTask)
+  assert.equal(directory.id, fullTask.id)
+  assert.equal(directory.project, fullTask.project)
+  assert.equal(directory.evidenceTotal, longEvidence.length)
+  assert.equal(directory.evidence, undefined)
+  assert.equal(directory.sourceMessageIds, undefined)
+  assert.equal(JSON.stringify(directory).includes('只应进入按需档案'), false)
+  assert.ok(Buffer.byteLength(JSON.stringify(directory)) < Buffer.byteLength(JSON.stringify(fullTask)) * 0.02)
+
+  const history = Array.from({ length: TASK_HISTORY_LIMIT + 25 }, (_, index) => ({
+    id: index + 1,
+    task_id: fullTask.id,
+    field: 'status',
+    created_at: new Date(1_700_000_000_000 + index * 1000).toISOString()
+  })).reverse()
+  const dossier = buildTaskDossier(fullTask, history, history.length)
+  assert.equal(dossier.task.evidence.length, MEMORY_CARD_EVIDENCE_LIMIT)
+  assert.equal(dossier.task.evidenceTotal, longEvidence.length)
+  assert.equal(dossier.history.length, TASK_HISTORY_LIMIT)
+  assert.equal(dossier.historyTotal, history.length)
+  assert.equal(dossier.payloadPolicy.loadedOnDemand, true)
+})
+
 test('task calendar handles leap months, Shanghai today, overdue and unscheduled work', () => {
   assert.equal(extractTaskDueDate('2028-02-29 18:00'), '2028-02-29')
   assert.equal(extractTaskDueDate('2027-02-29'), null)
@@ -2431,6 +2480,8 @@ test('task status changes are persisted as an auditable history', () => withStor
   const after = { ...before, status: 'waiting', due: '2026-08-02' }
   store.recordTaskChanges('task-history', before, after, 'manual_edit', [{ messageId: 'message-history' }])
   const history = store.listTaskHistory(['task-history'])
+  assert.equal(store.countTaskHistory('task-history'), 2)
+  assert.equal(store.countTaskHistory('missing-task'), 0)
   assert.deepEqual(new Set(history.map(item => item.field)), new Set(['status', 'due']))
   assert.ok(history.every(item => item.reason === 'manual_edit'))
   assert.ok(history.every(item => JSON.parse(item.evidence_json)[0].messageId === 'message-history'))

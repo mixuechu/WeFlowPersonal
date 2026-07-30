@@ -116,6 +116,10 @@ function AiAssistantPage() {
   const [projectWorkspace, setProjectWorkspace] = useState<any>({ project: null, status: 'idle' })
   const [projectWorkspaceRefreshKey, setProjectWorkspaceRefreshKey] = useState(0)
   const projectWorkspaceGate = useRef(new LatestRequestGate())
+  const [selectedTaskId, setSelectedTaskId] = useState('')
+  const [taskWorkspace, setTaskWorkspace] = useState<any>({ task: null, history: [], status: 'idle' })
+  const [taskWorkspaceRefreshKey, setTaskWorkspaceRefreshKey] = useState(0)
+  const taskWorkspaceGate = useRef(new LatestRequestGate())
   const [forgettingEntityId, setForgettingEntityId] = useState('')
   const [showSources, setShowSources] = useState(false)
   const [showDataSources, setShowDataSources] = useState(false)
@@ -378,6 +382,36 @@ function AiAssistantPage() {
     }
   }, [selectedProjectId, projectWorkspaceRefreshKey, dashboard?.projectRevision])
 
+  useEffect(() => {
+    const request = taskWorkspaceGate.current.begin()
+    if (!selectedTaskId) {
+      setTaskWorkspace({ task: null, history: [], status: 'idle' })
+      return () => {
+        if (taskWorkspaceGate.current.isCurrent(request)) taskWorkspaceGate.current.invalidate()
+      }
+    }
+    setTaskWorkspace({ task: null, history: [], status: 'loading' })
+    void window.electronAPI.aiAssistant.getTaskWorkspace(selectedTaskId).then(workspace => {
+      if (!taskWorkspaceGate.current.isCurrent(request)) return
+      if (!workspace) {
+        setTaskWorkspace({ task: null, history: [], status: 'error', error: '该待办已不存在' })
+        return
+      }
+      setTaskWorkspace({ ...workspace, status: 'ready' })
+    }).catch(error => {
+      if (!taskWorkspaceGate.current.isCurrent(request)) return
+      setTaskWorkspace({
+        task: null,
+        history: [],
+        status: 'error',
+        error: error?.message || String(error)
+      })
+    })
+    return () => {
+      if (taskWorkspaceGate.current.isCurrent(request)) taskWorkspaceGate.current.invalidate()
+    }
+  }, [selectedTaskId, taskWorkspaceRefreshKey, dashboard?.taskRevision])
+
   useEffect(() => () => {
     memoryConversationGate.current.invalidate()
   }, [])
@@ -395,7 +429,6 @@ function AiAssistantPage() {
   const taskReviewQueue: Task[] = dashboard?.taskReviewQueue || []
   const taskReminders: any[] = dashboard?.taskReminders || []
   const reminderPreferences = dashboard?.reminderPreferences
-  const taskHistory: any[] = dashboard?.taskHistory || []
   const taskReviewFeedback = dashboard?.taskReviewFeedback || { mine: 0, rejected: 0, suppressed: 0, reconciled: 0, recent: [] }
   const openTasks = useMemo(() => tasks.filter(task => !['done', 'cancelled'].includes(task.status)), [tasks])
   const displayedTasks = useMemo(() => tasks.filter(task =>
@@ -1451,6 +1484,9 @@ function AiAssistantPage() {
               </div>
               <button disabled={!displayedTasks.some(task => !['done', 'cancelled'].includes(task.status))} onClick={() => void completeVisibleTasks()}>完成当前筛选</button>
             </div>
+            {dashboard?.taskPayloadPolicy?.dossier === 'on_demand' && <small className="assistant-evidence">
+              日历与筛选使用轻量任务目录；原文证据和修改历史仅在你展开单条待办时读取。
+            </small>}
             {(!!taskReminders.length || reminderPreferences?.mutedKinds?.length) && <div className="assistant-task-reminders">
               {taskReminders.slice(0, 8).map(reminder => <article key={reminder.id} className={reminder.severity}>
                 <button className="assistant-reminder-main"
@@ -1549,9 +1585,6 @@ function AiAssistantPage() {
                     </div>
                     {task.assignmentEvidence && <small className="assistant-evidence">归属依据：{task.assignmentEvidence}</small>}
                     {task.ownershipPolicyReason && <small className="assistant-evidence">策略判断：{task.ownershipPolicyReason}</small>}
-                    {!!task.evidence?.length && <div className="assistant-evidence-stack">
-                      {task.evidence.map(item => <small key={item.messageId}>{item.sender} · {new Date(item.timestamp * 1000).toLocaleString('zh-CN')}：“{item.excerpt}”</small>)}
-                    </div>}
                     {editingTask?.id !== task.id && <div className="assistant-task-actions">
                       <button onClick={() => setEditingTask({
                         ...task,
@@ -1563,14 +1596,34 @@ function AiAssistantPage() {
                         detail: task.detail || '',
                         due: task.due || ''
                       })}>编辑待办</button>
-                      {!!taskHistory.some(item => item.task_id === task.id) && <details>
-                        <summary>状态历史</summary>
-                        <div className="assistant-task-history">
-                          {taskHistory.filter(item => item.task_id === task.id).slice(0, 12).map(item => <small key={item.id}>
-                            {new Date(item.created_at).toLocaleString('zh-CN')} · {item.field}：{taskHistoryValue(item.before_value)} → {taskHistoryValue(item.after_value)}
-                          </small>)}
-                        </div>
-                      </details>}
+                      <button onClick={() => setSelectedTaskId(current => current === task.id ? '' : task.id)}>
+                        {selectedTaskId === task.id ? '收起原文与历史' : `查看原文与历史${Number((task as any).evidenceTotal || 0) ? `（${(task as any).evidenceTotal}）` : ''}`}
+                      </button>
+                    </div>}
+                    {selectedTaskId === task.id && <div className="assistant-task-history">
+                      {taskWorkspace.status === 'loading' && <small>正在读取这条待办的原文与审计历史…</small>}
+                      {taskWorkspace.status === 'error' && <>
+                        <small className="assistant-error">{taskWorkspace.error || '读取失败'}</small>
+                        <button onClick={() => setTaskWorkspaceRefreshKey(value => value + 1)}>重试</button>
+                      </>}
+                      {taskWorkspace.status === 'ready' && taskWorkspace.task?.id === task.id && <>
+                        <EvidenceRows
+                          evidence={taskWorkspace.task.evidence}
+                          total={taskWorkspace.task.evidenceTotal}
+                        />
+                        {!!taskWorkspace.history?.length && <details open>
+                          <summary>状态历史（{taskWorkspace.historyTotal || taskWorkspace.history.length}）</summary>
+                          <div className="assistant-task-history">
+                            {taskWorkspace.history.map((item: any) => <small key={item.id}>
+                              {new Date(item.created_at).toLocaleString('zh-CN')} · {item.field}：{taskHistoryValue(item.before_value)} → {taskHistoryValue(item.after_value)}
+                            </small>)}
+                            {Number(taskWorkspace.historyTotal || 0) > taskWorkspace.history.length &&
+                              <small>当前显示最近 {taskWorkspace.history.length} / {taskWorkspace.historyTotal} 条。</small>}
+                          </div>
+                        </details>}
+                        {!taskWorkspace.task.evidence?.length && !taskWorkspace.history?.length &&
+                          <small>这条待办目前没有可展示的原文或修改历史。</small>}
+                      </>}
                     </div>}
                   </div>
                   <i className={`priority ${task.priority}`} />

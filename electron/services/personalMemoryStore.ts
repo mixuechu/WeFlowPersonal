@@ -2352,6 +2352,12 @@ export class PersonalMemoryStore {
     `).all(...ids, Math.max(1, Math.min(1000, limit))) as any[]
   }
 
+  countTaskHistory(taskId: string): number {
+    if (!this.db || !taskId) return 0
+    const row = this.db.prepare('SELECT COUNT(*) AS count FROM task_history WHERE task_id=?').get(taskId) as any
+    return Number(row?.count || 0)
+  }
+
   recordTaskReviewDecision(input: {
     evidenceFingerprint: string
     taskId: string
