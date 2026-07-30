@@ -659,6 +659,15 @@ function AiAssistantPage() {
             </div>
           </section>
         )}
+        {memoryDiagnostics?.appRecovery?.recoveredFromInterruption && (
+          <section className="assistant-recovery-banner">
+            <RefreshCw size={15} />
+            <span><strong>已从上次异常中恢复</strong>
+              <small>{memoryDiagnostics.appRecovery.recoveryMessage}；未完成的增量批次会沿 checkpoint 继续。</small>
+            </span>
+            <button onClick={() => setShowDiagnostics(true)}>查看运行记录</button>
+          </section>
+        )}
         {dashboard?.qualityBaseline && <section className={`assistant-quality-baseline ${dashboard.qualityBaseline.failures?.length ? 'warning' : ''}`}>
           <div><ShieldCheck size={15} /><span><strong>任务归属质量基线 · {dashboard.qualityBaseline.version}</strong>
             <small>{dashboard.qualityBaseline.samples} 个匿名化合成样本 · 精确率 {Math.round(dashboard.qualityBaseline.minePrecision * 100)}% · 召回率 {Math.round(dashboard.qualityBaseline.mineRecall * 100)}% · 全字段准确率 {Math.round(dashboard.qualityBaseline.exactAccuracy * 100)}%</small>
@@ -1541,6 +1550,28 @@ function AiAssistantPage() {
               <div><span>API Key：{memoryDiagnostics.privacy.apiKeyStorage}</span><span>数据接口：{memoryDiagnostics.privacy.httpBinding}</span><span>诊断日志：已脱敏</span>
                 <span>模型外发脱敏：{memoryDiagnostics.privacy.sensitiveRedactionLevel === 'strict' ? '严格'
                   : memoryDiagnostics.privacy.sensitiveRedactionLevel === 'credentials' ? '仅凭证' : '标准'}</span></div>
+            </div>}
+            {memoryDiagnostics.appRecovery && <div className={`assistant-recovery-audit ${memoryDiagnostics.appRecovery.recoveredFromInterruption ? 'warning' : 'healthy'}`}>
+              <header><RefreshCw size={15} /><span><b>应用运行与恢复</b>
+                <small>{memoryDiagnostics.appRecovery.recoveryMessage}</small></span></header>
+              <div className="assistant-recovery-current">
+                <span>本次启动 <b>{memoryDiagnostics.appRecovery.current?.startedAt
+                  ? new Date(memoryDiagnostics.appRecovery.current.startedAt).toLocaleString('zh-CN') : '未记录'}</b></span>
+                <span>阶段 <b>{memoryDiagnostics.appRecovery.current?.stage || '未知'}</b></span>
+                <span>上次退出 <b>{memoryDiagnostics.appRecovery.previous?.cleanExit ? '正常' : memoryDiagnostics.appRecovery.previous?.exitReason || '无记录'}</b></span>
+              </div>
+              <details>
+                <summary>最近运行记录（{memoryDiagnostics.appRecovery.history?.length || 0}）</summary>
+                <div>
+                  {(memoryDiagnostics.appRecovery.history || []).map((run: any) => <article key={run.id}>
+                    <span><b>{new Date(run.startedAt).toLocaleString('zh-CN')}</b><small>{run.version} · {run.cleanExit ? '正常结束' : '异常中断'} · {run.exitReason || '未知原因'}</small></span>
+                    <span>{run.incidents?.length || 0} 个异常事件</span>
+                    {(run.incidents || []).map((incident: any, index: number) =>
+                      <p key={`${run.id}-${index}`}>{new Date(incident.at).toLocaleTimeString('zh-CN')} · {incident.kind} · {incident.detail}</p>)}
+                  </article>)}
+                  {!memoryDiagnostics.appRecovery.history?.length && <em>首次记录，尚无历史会话。</em>}
+                </div>
+              </details>
             </div>}
             <div className="assistant-diagnostics-runs">
               {(memoryDiagnostics.ingestionRuns || []).map((run: any) => <details key={run.id} open={run.status !== 'completed'}>

@@ -37,6 +37,7 @@ import { buildProjectInsights } from './projectInsights'
 import { summarizeIngestionRuns } from './ingestionDiagnostics'
 import { attachLocalImageOcr, attachLocalVoiceTranscript, recoverMessageSemantics } from './messageSemanticRecovery'
 import { sanitizeDiagnosticText } from './diagnosticRedaction'
+import { getAppRunRecoveryDiagnostics } from './appRunRecoveryService'
 import { redactLocalSecrets, redactSensitiveText, type SensitiveRedactionLevel } from './sensitiveRedaction'
 import { chatService } from './chatService'
 import { voiceTranscribeService } from './voiceTranscribeService'
@@ -1509,6 +1510,7 @@ export class AiAssistantService {
         logsRedacted: true,
         sensitiveRedactionLevel: this.config.get('aiAssistantSensitiveRedactionLevel')
       },
+      appRecovery: getAppRunRecoveryDiagnostics(),
       ocr: { ...ocr, enabled: Boolean(this.config.get('aiAssistantOcrImages')) },
       pdfOcr: { ...pdfOcr, enabled: Boolean(this.config.get('aiAssistantOcrImages')) }
     }

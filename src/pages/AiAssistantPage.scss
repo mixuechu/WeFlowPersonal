@@ -469,6 +469,22 @@
 .assistant-memory-health-actions summary { color: #65736a; font-size: 9px; cursor: pointer; }
 .assistant-memory-health-actions details > div { position: absolute; z-index: 10; top: calc(100% + 6px); right: 0; width: 230px; padding: 7px; border: 1px solid #d6ded7; border-radius: 9px; display: grid; gap: 5px; background: #fff; box-shadow: 0 12px 28px rgba(40, 55, 45, .14); }
 .assistant-memory-health-actions details button { width: 100%; text-align: left; }
+.assistant-recovery-banner { margin: 10px 0; padding: 10px 12px; border: 1px solid #e3c886; border-radius: 10px; display: flex; align-items: center; gap: 9px; color: #805d22; background: #fff8e8; }
+.assistant-recovery-banner span { flex: 1; display: grid; gap: 2px; }
+.assistant-recovery-banner strong { font-size: 10px; }
+.assistant-recovery-banner small { font-size: 8px; }
+.assistant-recovery-banner button { padding: 6px 9px; border: 1px solid #d8b866; border-radius: 7px; color: #805d22; background: #fff; font-size: 8px; cursor: pointer; }
+.assistant-recovery-audit { padding: 10px 11px; border: 1px solid #d7e3d9; border-radius: 10px; display: grid; gap: 8px; color: #496454; background: #f6faf7; }
+.assistant-recovery-audit.warning { border-color: #e3c886; color: #805d22; background: #fff8e8; }
+.assistant-recovery-audit > header { display: flex; align-items: center; gap: 7px; }
+.assistant-recovery-audit > header span { display: grid; gap: 2px; }
+.assistant-recovery-audit b { font-size: 9px; }
+.assistant-recovery-audit small, .assistant-recovery-audit span, .assistant-recovery-audit summary, .assistant-recovery-audit p { font-size: 8px; }
+.assistant-recovery-current { display: flex; gap: 14px; flex-wrap: wrap; }
+.assistant-recovery-audit details > div { margin-top: 7px; display: grid; gap: 6px; }
+.assistant-recovery-audit article { padding: 7px 8px; border-radius: 7px; display: flex; justify-content: space-between; gap: 8px; flex-wrap: wrap; background: rgba(255,255,255,.72); }
+.assistant-recovery-audit article > span:first-child { display: grid; gap: 2px; }
+.assistant-recovery-audit article p { width: 100%; margin: 0; color: #9a594b; }
 .assistant-memory-search { margin-top: 18px; }
 .assistant-memory-scope { display: grid; grid-template-columns: repeat(3, minmax(130px, 1fr)) repeat(2, minmax(125px, .7fr)) auto; gap: 7px; align-items: end; }
 .assistant-memory-scope select, .assistant-memory-scope input, .assistant-memory-scope button { min-width: 0; width: 100%; padding: 7px 8px; border: 1px solid #deddd5; border-radius: 7px; color: #626962; background: #fff; font-size: 9px; }

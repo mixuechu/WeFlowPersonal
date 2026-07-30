@@ -39,10 +39,33 @@ import { bizService } from './services/bizService'
 import { backupService } from './services/backupService'
 import { imageDownloadService } from './services/imageDownloadService'
 import { aiAssistantService } from './services/aiAssistantService'
+import { initializeAppRunRecoveryService } from './services/appRunRecoveryService'
 
 // 桌面产品名可独立定制，但始终沿用原 WeFlow 数据目录，避免升级后
 // 配置、解密信息和 AI 助理游标被 Electron 视为一套全新的应用数据。
 app.setPath('userData', join(app.getPath('appData'), 'weflow'))
+const appRunRecoveryService = initializeAppRunRecoveryService(app.getPath('userData'))
+appRunRecoveryService.start(app.getVersion())
+process.on('uncaughtExceptionMonitor', error => {
+  appRunRecoveryService.recordIncident('uncaught_exception', error, true)
+})
+process.on('unhandledRejection', reason => {
+  appRunRecoveryService.recordIncident('unhandled_rejection', reason, false)
+})
+app.on('render-process-gone', (_event, _webContents, details) => {
+  appRunRecoveryService.recordIncident(
+    'renderer_gone',
+    `${details.reason}${details.exitCode !== undefined ? ` (${details.exitCode})` : ''}`,
+    false
+  )
+})
+app.on('child-process-gone', (_event, details) => {
+  appRunRecoveryService.recordIncident(
+    'child_process_gone',
+    `${details.type}: ${details.reason}${details.exitCode !== undefined ? ` (${details.exitCode})` : ''}`,
+    false
+  )
+})
 
 // 屏幕采集去节流（仅影响通知玻璃的 Chromium 流回退管线；Windows 主路径为
 // 原生面板渲染，不经过 Chromium 采集）：默认桌面采集 CPU 预算限制在 50%，
@@ -4756,6 +4779,7 @@ app.whenReady().then(async () => {
 
   // 加载完成，收尾
   updateSplashProgress(100, '启动完成')
+  appRunRecoveryService.markReady()
   closeSplash()
 
   if (!onboardingDone) {
@@ -4783,6 +4807,7 @@ app.whenReady().then(async () => {
 
   await httpService.autoStart()
   await aiAssistantService.initialize()
+  appRunRecoveryService.markServicesReady()
 
   app.on('activate', () => {
     if (mainWindow && !mainWindow.isDestroyed()) {
@@ -4814,6 +4839,7 @@ const shutdownAppServices = async (): Promise<void> => {
     // 兜底：5秒后强制退出，防止某个异步任务卡住导致进程残留
     const forceExitTimer = setTimeout(() => {
       console.warn('[App] Force exit after timeout')
+      appRunRecoveryService.finishShutdown('forced_timeout')
       app.exit(0)
     }, 5000)
     forceExitTimer.unref()
@@ -4826,11 +4852,14 @@ const shutdownAppServices = async (): Promise<void> => {
     try { await httpService.stop() } catch {}
     // 终止 wcdb Worker 线程，避免线程阻止进程退出
     try { await wcdbService.shutdown() } catch {}
+    appRunRecoveryService.finishShutdown()
+    clearTimeout(forceExitTimer)
   })()
   return shutdownPromise
 }
 
 app.on('before-quit', () => {
+  appRunRecoveryService.beginShutdown('normal')
   void shutdownAppServices()
 })
 
