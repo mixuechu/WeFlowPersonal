@@ -1,3 +1,20 @@
+export const GRAPH_QUERY_EVIDENCE_LIMIT = 8
+
+export function boundedGraphEvidence(evidence: any): { evidence: any[]; evidenceTotal: number } {
+  const rows = Array.isArray(evidence) ? evidence : []
+  const normalized = rows.map(item => ({
+    messageId: String(item?.messageId || item?.message_id || ''),
+    sessionId: String(item?.sessionId || item?.session_id || ''),
+    timestamp: Number(item?.timestamp || 0),
+    excerpt: String(item?.excerpt || '').slice(0, 1000)
+  })).filter(item => item.messageId || item.excerpt)
+  normalized.sort((left, right) => right.timestamp - left.timestamp || right.messageId.localeCompare(left.messageId))
+  return {
+    evidence: normalized.slice(0, GRAPH_QUERY_EVIDENCE_LIMIT).reverse(),
+    evidenceTotal: normalized.length
+  }
+}
+
 export function findCommonGraphNeighbors(
   fromId: string,
   toId: string,
@@ -32,7 +49,7 @@ export function findCommonGraphNeighbors(
         forward: edge.forward,
         status: edge.relation.status,
         confidence: edge.relation.confidence,
-        evidence: edge.relation.evidence || []
+        ...boundedGraphEvidence(edge.relation.evidence)
       })),
       rightEdges: rightEdges.map(edge => ({
         relationId: edge.relation.id,
@@ -40,7 +57,7 @@ export function findCommonGraphNeighbors(
         forward: edge.forward,
         status: edge.relation.status,
         confidence: edge.relation.confidence,
-        evidence: edge.relation.evidence || []
+        ...boundedGraphEvidence(edge.relation.evidence)
       }))
     }]
   }).sort((left, right) => right.score - left.score)

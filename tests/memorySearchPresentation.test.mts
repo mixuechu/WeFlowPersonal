@@ -38,6 +38,9 @@ test('memory evidence presentation preserves provenance and opens only valid loc
     role: 'direct'
   })
   assert.equal(evidenceLocalMessageId(evidence), 987654)
+  assert.equal(evidenceLocalMessageId({ messageId: '12345' }), 12345)
+  assert.equal(evidenceLocalMessageId({ messageId: 'document:report:12345' }), null)
+  assert.equal(evidenceLocalMessageId({ messageId: 'calendar:event:12345' }), null)
   assert.equal(evidenceLocalMessageId({ messageId: 'not-a-local-id' }), null)
   assert.equal(evidenceLocalMessageId({ messageId: '-1' }), null)
 })

@@ -32,7 +32,7 @@ export function normalizeMemoryEvidence(input: any): MemoryEvidence {
 
 export function evidenceLocalMessageId(input: any): number | null {
   const raw = String(input?.message_id ?? input?.messageId ?? '').trim()
-  const candidate = /^\d+$/.test(raw) ? raw : raw.match(/(?:^|:)(\d+)$/)?.[1]
+  const candidate = /^\d+$/.test(raw) ? raw : raw.match(/^wechat:.+:(\d+)$/)?.[1]
   if (!candidate) return null
   const value = Number(candidate)
   return Number.isSafeInteger(value) && value > 0 ? value : null

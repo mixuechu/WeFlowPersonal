@@ -55,6 +55,41 @@ function shanghaiInputToIso(value?: string): string {
   return normalized ? new Date(`${normalized}:00+08:00`).toISOString() : ''
 }
 
+function evidenceTime(timestamp: number): string {
+  if (!Number(timestamp)) return '时间未知'
+  const milliseconds = timestamp > 10_000_000_000 ? timestamp : timestamp * 1000
+  return new Date(milliseconds).toLocaleString('zh-CN')
+}
+
+function EvidenceRows({
+  evidence: rawEvidence,
+  total,
+  roleLabels = false
+}: {
+  evidence?: any[]
+  total?: number
+  roleLabels?: boolean
+}) {
+  const evidence = (rawEvidence || []).map(normalizeMemoryEvidence)
+  if (!evidence.length) return <small className="assistant-evidence-empty">尚无可展示的原文证据</small>
+  return <>
+    {evidence.map((item, index) => {
+      const localMessageId = evidenceLocalMessageId(item)
+      const role = item.role === 'indirect' ? '间接证据'
+        : item.role === 'contradiction' ? '反证'
+          : roleLabels ? '直接证据' : '证据'
+      return <div className="assistant-evidence-row" key={`${item.sessionId}-${item.messageId}-${index}`}>
+        <small>{role} · {evidenceTime(item.timestamp)}：“{item.excerpt}”</small>
+        {item.sessionId && localMessageId && <button onClick={() =>
+          void window.electronAPI.window.openChatHistoryWindow(item.sessionId, localMessageId)}>打开原消息</button>}
+      </div>
+    })}
+    {Number(total || 0) > evidence.length && <small className="assistant-evidence-limit">
+      当前显示最近 {evidence.length} / {total} 条；完整历史可在统一检索中查看。
+    </small>}
+  </>
+}
+
 function AiAssistantPage() {
   const [status, setStatus] = useState<any>(null)
   const [dashboard, setDashboard] = useState<any>(null)
@@ -1797,8 +1832,7 @@ function AiAssistantPage() {
                 {claim.polarity === 'negative' && <small>该条是对“{claim.predicate}”的明确否定陈述，仍需结合反证人工确认。</small>}
                 {(claim.valid_from || claim.valid_to) && <small>有效期：{claim.valid_from || '未知'} — {claim.valid_to || '至今'}</small>}
                 <div className="assistant-evidence-stack">
-                  {(claim.evidence || []).map((evidence: any) =>
-                    <small key={evidence.message_id}>{evidence.evidence_role === 'indirect' ? '间接证据' : evidence.evidence_role === 'contradiction' ? '反证' : '直接证据'} · {new Date(evidence.timestamp * 1000).toLocaleString('zh-CN')}：“{evidence.excerpt}”</small>)}
+                  <EvidenceRows evidence={claim.evidence} total={claim.evidence_count} roleLabels />
                 </div>
                 <div className="assistant-memory-actions">
                   {editingClaim?.id === claim.id
@@ -1871,8 +1905,7 @@ function AiAssistantPage() {
                 {!!event.participants?.length && <small>参与者：{event.participants.map((item: any) => `${item.canonical_name}（${item.role}）`).join('、')}</small>}
                 {!eventEntitiesTrusted(event) && <small>存在尚未确认的参与实体；请先在图谱候选区确认实体，之后才能确认或纠正此事件。</small>}
                 <div className="assistant-evidence-stack">
-                  {(event.evidence || []).map((evidence: any) =>
-                    <small key={evidence.message_id}>证据 · {new Date(evidence.timestamp * 1000).toLocaleString('zh-CN')}：“{evidence.excerpt}”</small>)}
+                  <EvidenceRows evidence={event.evidence} total={event.evidence_count} />
                 </div>
                 <div className="assistant-memory-actions">
                   {editingEvent?.id === event.id
@@ -2126,24 +2159,35 @@ function AiAssistantPage() {
             <button onClick={() => void findGraphPath()} disabled={!pathFromId || !pathToId}>查找关系路径</button>
           </div>
           {graphPath && <div className={`assistant-path-result ${graphPath.found ? '' : 'missing'}`}>
-            {graphPath.found ? graphPath.entities.map((entity: any, index: number) => <span key={entity.id}>
-              <button onClick={() => setSelectedEntityId(entity.id)}>{entity.canonicalName}</button>
-              {graphPath.steps[index] && <i>{graphPath.steps[index].forward ? graphPath.steps[index].predicate : `被${graphPath.steps[index].predicate}`} →</i>}
-            </span>) : <p>在 6 层关系内没有找到路径。候选关系被保留，已拒绝关系不会参与计算。</p>}
+            {graphPath.found ? <>
+              <div className="assistant-path-chain">{graphPath.entities.map((entity: any, index: number) => <span key={entity.id}>
+                <button onClick={() => setSelectedEntityId(entity.id)}>{entity.canonicalName}</button>
+                {graphPath.steps[index] && <i>{graphPath.steps[index].forward ? graphPath.steps[index].predicate : `被${graphPath.steps[index].predicate}`} →</i>}
+              </span>)}</div>
+              {!!graphPath.steps?.length && <details className="assistant-path-evidence">
+                <summary>核验这条路径的原文证据</summary>
+                {graphPath.steps.map((step: any, index: number) => <section key={step.relationId}>
+                  <strong>{graphPath.entities[index]?.canonicalName} {step.forward ? step.predicate : `被${step.predicate}`} {graphPath.entities[index + 1]?.canonicalName}</strong>
+                  <EvidenceRows evidence={step.evidence} total={step.evidenceTotal} />
+                </section>)}
+              </details>}
+            </> : <p>在 6 层关系内没有找到路径。候选关系被保留，已拒绝关系不会参与计算。</p>}
           </div>}
           {graphCommonNeighbors && <div className="assistant-common-neighbors">
             <div className="assistant-section-heading"><div><span className="assistant-eyebrow">COMMON CONNECTIONS</span><h3>共同联系人与实体</h3></div><span className="assistant-count">{graphCommonNeighbors.common.length} 个</span></div>
             {graphCommonNeighbors.common.map((item: any) => <article key={item.entity.id}>
               <button onClick={() => setSelectedEntityId(item.entity.id)}>{item.entity.canonicalName}</button>
               <div>
-                {item.leftEdges.map((edge: any) => <span key={`left-${edge.relationId}`}>
+                {item.leftEdges.map((edge: any) => <div className="assistant-common-edge" key={`left-${edge.relationId}`}>
                   {graphCommonNeighbors.from?.canonicalName} {edge.forward ? edge.predicate : `被${edge.predicate}`} {item.entity.canonicalName}
                   <small>{edge.status === 'confirmed' ? '已确认' : '待确认'} · {Math.round(Number(edge.confidence || 0) * 100)}%</small>
-                </span>)}
-                {item.rightEdges.map((edge: any) => <span key={`right-${edge.relationId}`}>
+                  <details><summary>原文证据 {edge.evidenceTotal || 0} 条</summary><EvidenceRows evidence={edge.evidence} total={edge.evidenceTotal} /></details>
+                </div>)}
+                {item.rightEdges.map((edge: any) => <div className="assistant-common-edge" key={`right-${edge.relationId}`}>
                   {graphCommonNeighbors.to?.canonicalName} {edge.forward ? edge.predicate : `被${edge.predicate}`} {item.entity.canonicalName}
                   <small>{edge.status === 'confirmed' ? '已确认' : '待确认'} · {Math.round(Number(edge.confidence || 0) * 100)}%</small>
-                </span>)}
+                  <details><summary>原文证据 {edge.evidenceTotal || 0} 条</summary><EvidenceRows evidence={edge.evidence} total={edge.evidenceTotal} /></details>
+                </div>)}
               </div>
             </article>)}
             {!graphCommonNeighbors.common.length && <div className="assistant-empty">当前图谱中没有共同的一跳联系人或实体。</div>}

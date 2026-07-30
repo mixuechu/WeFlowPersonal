@@ -13,6 +13,8 @@ import {
 } from './localAnnIndex.ts'
 import type { MemorySearchOptions } from './memorySearchFilters.ts'
 
+const MEMORY_CARD_EVIDENCE_LIMIT = 20
+
 type MemoryGraph = {
   entities: any[]
   relations: any[]
@@ -1892,50 +1894,61 @@ export class PersonalMemoryStore {
 
   getMemoryFeed(limit = 100): { claims: any[]; events: any[]; resources: any[] } {
     if (!this.db) return { claims: [], events: [], resources: [] }
+    const safeLimit = Math.max(1, Math.min(500, Math.floor(Number(limit) || 100)))
     const claims = this.db.prepare(`
       SELECT c.*,s.canonical_name AS subject_name,o.canonical_name AS object_entity_name,
         (SELECT COUNT(*) FROM memory_corrections mc
-          WHERE mc.item_kind='claim' AND mc.item_id=c.id) AS correction_count
+          WHERE mc.item_kind='claim' AND mc.item_id=c.id) AS correction_count,
+        (SELECT COUNT(*) FROM evidence e WHERE e.claim_id=c.id) AS evidence_count
       FROM claims c
       LEFT JOIN entities s ON s.id=c.subject_id
       LEFT JOIN entities o ON o.id=c.object_entity_id
       ORDER BY c.updated_at DESC LIMIT ?
-    `).all(limit) as any[]
+    `).all(safeLimit) as any[]
     const events = this.db.prepare(`
       SELECT ev.*,
         (SELECT COUNT(*) FROM memory_corrections mc
-          WHERE mc.item_kind='event' AND mc.item_id=ev.id) AS correction_count
+          WHERE mc.item_kind='event' AND mc.item_id=ev.id) AS correction_count,
+        (SELECT COUNT(*) FROM evidence e WHERE e.event_id=ev.id) AS evidence_count
       FROM events ev ORDER BY COALESCE(start_at,updated_at) DESC LIMIT ?
-    `).all(limit) as any[]
+    `).all(safeLimit) as any[]
     const evidenceStatement = this.db.prepare(`
       SELECT message_id,session_id,timestamp,excerpt,evidence_role
-      FROM evidence WHERE claim_id=? OR event_id=? ORDER BY timestamp
+      FROM evidence WHERE claim_id=? OR event_id=?
+      ORDER BY timestamp DESC,
+        CASE WHEN evidence_role='contradiction' THEN 0 ELSE 1 END,
+        message_id DESC LIMIT ?
     `)
     const participantStatement = this.db.prepare(`
       SELECT ep.entity_id,ep.role,e.canonical_name
       FROM event_participants ep JOIN entities e ON e.id=ep.entity_id WHERE ep.event_id=?
     `)
     const resources = this.db.prepare(`
-      SELECT * FROM memory_resources ORDER BY updated_at DESC LIMIT ?
-    `).all(limit) as any[]
+      SELECT mr.*,
+        (SELECT COUNT(*) FROM search_document_evidence sde
+          WHERE sde.document_id='resource:' || mr.id) AS evidence_count
+      FROM memory_resources mr ORDER BY updated_at DESC LIMIT ?
+    `).all(safeLimit) as any[]
     const resourceEvidence = this.db.prepare(`
       SELECT message_id,session_id,timestamp,sender,excerpt
-      FROM search_document_evidence WHERE document_id=? ORDER BY timestamp
+      FROM search_document_evidence WHERE document_id=?
+      ORDER BY timestamp DESC,message_id DESC LIMIT ?
     `)
+    const latestEvidence = (rows: any[]): any[] => rows.reverse()
     return {
       claims: claims.map(claim => ({
         ...claim,
-        evidence: evidenceStatement.all(claim.id, '') as any[]
+        evidence: latestEvidence(evidenceStatement.all(claim.id, '', MEMORY_CARD_EVIDENCE_LIMIT) as any[])
       })),
       events: events.map(event => ({
         ...event,
         participants: participantStatement.all(event.id) as any[],
-        evidence: evidenceStatement.all('', event.id) as any[]
+        evidence: latestEvidence(evidenceStatement.all('', event.id, MEMORY_CARD_EVIDENCE_LIMIT) as any[])
       })),
       resources: resources.map(resource => ({
         ...resource,
         metadata: JSON.parse(resource.metadata_json || '{}'),
-        evidence: resourceEvidence.all(`resource:${resource.id}`) as any[]
+        evidence: latestEvidence(resourceEvidence.all(`resource:${resource.id}`, MEMORY_CARD_EVIDENCE_LIMIT) as any[])
       }))
     }
   }
@@ -1953,7 +1966,8 @@ export class PersonalMemoryStore {
     const claims = this.db.prepare(`
       SELECT c.*,s.canonical_name AS subject_name,o.canonical_name AS object_entity_name,
         (SELECT COUNT(*) FROM memory_corrections mc
-          WHERE mc.item_kind='claim' AND mc.item_id=c.id) AS correction_count
+          WHERE mc.item_kind='claim' AND mc.item_id=c.id) AS correction_count,
+        (SELECT COUNT(*) FROM evidence e WHERE e.claim_id=c.id) AS evidence_count
       FROM claims c
       LEFT JOIN entities s ON s.id=c.subject_id
       LEFT JOIN entities o ON o.id=c.object_entity_id
@@ -1963,7 +1977,8 @@ export class PersonalMemoryStore {
     const events = this.db.prepare(`
       SELECT ev.*,
         (SELECT COUNT(*) FROM memory_corrections mc
-          WHERE mc.item_kind='event' AND mc.item_id=ev.id) AS correction_count
+          WHERE mc.item_kind='event' AND mc.item_id=ev.id) AS correction_count,
+        (SELECT COUNT(*) FROM evidence e WHERE e.event_id=ev.id) AS evidence_count
       FROM events ev
       WHERE ev.status!='rejected' AND EXISTS(
         SELECT 1 FROM event_participants ep WHERE ep.event_id=ev.id AND ep.entity_id=?
@@ -1972,7 +1987,10 @@ export class PersonalMemoryStore {
     `).all(entityId, safeLimit) as any[]
     const evidenceStatement = this.db.prepare(`
       SELECT message_id,session_id,timestamp,excerpt,evidence_role
-      FROM evidence WHERE claim_id=? OR event_id=? ORDER BY timestamp
+      FROM evidence WHERE claim_id=? OR event_id=?
+      ORDER BY timestamp DESC,
+        CASE WHEN evidence_role='contradiction' THEN 0 ELSE 1 END,
+        message_id DESC LIMIT ?
     `)
     const participantStatement = this.db.prepare(`
       SELECT ep.entity_id,ep.role,e.canonical_name
@@ -1990,12 +2008,12 @@ export class PersonalMemoryStore {
     return {
       claims: claims.map(claim => ({
         ...claim,
-        evidence: evidenceStatement.all(claim.id, '') as any[]
+        evidence: (evidenceStatement.all(claim.id, '', MEMORY_CARD_EVIDENCE_LIMIT) as any[]).reverse()
       })),
       events: events.map(event => ({
         ...event,
         participants: participantStatement.all(event.id) as any[],
-        evidence: evidenceStatement.all('', event.id) as any[]
+        evidence: (evidenceStatement.all('', event.id, MEMORY_CARD_EVIDENCE_LIMIT) as any[]).reverse()
       })),
       claimTotal,
       eventTotal

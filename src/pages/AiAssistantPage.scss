@@ -387,6 +387,10 @@
 .assistant-memory-item > small { display: block; margin-top: 5px; color: #7d847d; font-size: 10px; }
 .assistant-evidence-stack { display: grid; gap: 4px; margin-top: 10px; padding-top: 9px; border-top: 1px dashed #dedbd2; }
 .assistant-evidence-stack small { color: #777f78; font-size: 10px; line-height: 1.5; }
+.assistant-evidence-row { display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; }
+.assistant-evidence-row small { min-width: 0; overflow-wrap: anywhere; }
+.assistant-evidence-row button { flex: none; padding: 3px 6px; border: 1px solid #ccd9cf; border-radius: 6px; color: #255f4b; background: #fff; font-size: 8px; cursor: pointer; }
+.assistant-evidence-limit, .assistant-evidence-empty { color: #929890 !important; font-style: italic; }
 .assistant-memory-actions { display: flex; justify-content: flex-end; gap: 7px; margin-top: 10px; }
 .assistant-memory-actions button { padding: 6px 10px; border: 1px solid #d9d6cd; border-radius: 8px; background: transparent; }
 .assistant-memory-actions button.primary { color: #fff; border-color: #255f4b; background: #255f4b; }
@@ -618,19 +622,27 @@
 .assistant-path-finder select, .assistant-path-finder button { min-width: 0; padding: 7px 8px; border: 1px solid #deddd5; border-radius: 8px; color: #60665f; background: #fff; font-size: 9px; }
 .assistant-path-finder button { cursor: pointer; }
 .assistant-path-finder button:disabled { opacity: .45; cursor: default; }
-.assistant-path-result { margin-bottom: 12px; padding: 10px; border: 1px solid #d9e4da; border-radius: 9px; display: flex; gap: 7px; align-items: center; flex-wrap: wrap; background: #f4f9f4; }
+.assistant-path-result { margin-bottom: 12px; padding: 10px; border: 1px solid #d9e4da; border-radius: 9px; display: grid; gap: 8px; background: #f4f9f4; }
+.assistant-path-chain { display: flex; gap: 7px; align-items: center; flex-wrap: wrap; }
 .assistant-path-result span { display: inline-flex; gap: 7px; align-items: center; }
 .assistant-path-result button { padding: 4px 7px; border: 1px solid #c8d7ca; border-radius: 6px; color: #255f4b; background: #fff; font-size: 9px; cursor: pointer; }
 .assistant-path-result i { color: #747b73; font-size: 9px; font-style: normal; }
 .assistant-path-result.missing { border-color: #e5ddd3; background: #fbf7f1; }
 .assistant-path-result p { margin: 0; color: #7d786f; font-size: 9px; }
+.assistant-path-evidence { border-top: 1px dashed #d6dfd7; padding-top: 7px; color: #586159; font-size: 9px; }
+.assistant-path-evidence summary { cursor: pointer; }
+.assistant-path-evidence section { margin-top: 7px; padding: 7px; border-radius: 7px; background: rgba(255,255,255,.75); }
+.assistant-path-evidence section > strong { display: block; margin-bottom: 5px; font-size: 9px; }
 .assistant-common-neighbors { margin: 10px 0 14px; padding: 12px; border: 1px solid #e0e5de; border-radius: 11px; display: grid; gap: 8px; background: #fbfcf9; }
 .assistant-common-neighbors .assistant-section-heading { margin-bottom: 0; }
 .assistant-common-neighbors article { padding: 9px 10px; border: 1px solid #e7e9e3; border-radius: 9px; display: grid; grid-template-columns: 150px 1fr; gap: 12px; background: #fff; }
 .assistant-common-neighbors article > button { border: 0; color: #315c4e; background: transparent; text-align: left; font-weight: 600; cursor: pointer; }
 .assistant-common-neighbors article > div { display: grid; gap: 4px; }
-.assistant-common-neighbors article span { color: #586159; font-size: 10px; }
+.assistant-common-edge { color: #586159; font-size: 10px; }
 .assistant-common-neighbors article small { margin-left: 7px; color: #858d86; font-size: 8px; }
+.assistant-common-neighbors article details { margin: 4px 0 7px 10px; font-size: 8px; }
+.assistant-common-neighbors article summary { color: #65766b; cursor: pointer; }
+.assistant-common-neighbors .assistant-evidence-row { margin-top: 4px; }
 .assistant-graph-layout { min-height: 340px; display: grid; grid-template-columns: minmax(0, 1fr) 220px; border: 1px solid #e3e1da; border-radius: 14px; overflow: hidden; }
 .assistant-graph-canvas { width: 100%; height: 340px; background: radial-gradient(circle at center, #fff 0, #faf8f2 72%); }
 .assistant-graph-canvas line { stroke: #aeb8b1; stroke-width: 1.2; }

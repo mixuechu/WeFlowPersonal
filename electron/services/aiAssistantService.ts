@@ -62,7 +62,7 @@ import {
   markNotificationAttempt,
   type NotificationOutbox
 } from './notificationOutbox'
-import { findCommonGraphNeighbors } from './graphCommonNeighbors'
+import { boundedGraphEvidence, findCommonGraphNeighbors } from './graphCommonNeighbors'
 import { buildProjectInsights } from './projectInsights'
 import { summarizeIngestionRuns } from './ingestionDiagnostics'
 import { attachLocalImageOcr, attachLocalVoiceTranscript, recoverMessageSemantics } from './messageSemanticRecovery'
@@ -4202,7 +4202,7 @@ export class AiAssistantService {
           forward: edge.forward,
           status: edge.relation.status,
           confidence: edge.relation.confidence,
-          evidence: edge.relation.evidence
+          ...boundedGraphEvidence(edge.relation.evidence)
         }]
         if (edge.nextId === toId) {
           const pathIds = [fromId, ...steps.map(step => step.toId)]

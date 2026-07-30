@@ -55,7 +55,7 @@ import {
   relationSemanticId
 } from '../electron/services/relationCorrectionPolicy.ts'
 import { enqueueUniqueNotification, markNotificationAttempt } from '../electron/services/notificationOutbox.ts'
-import { findCommonGraphNeighbors } from '../electron/services/graphCommonNeighbors.ts'
+import { GRAPH_QUERY_EVIDENCE_LIMIT, findCommonGraphNeighbors } from '../electron/services/graphCommonNeighbors.ts'
 import { buildProjectInsights } from '../electron/services/projectInsights.ts'
 import { buildTaskCalendar, extractTaskDueDate } from '../src/utils/taskCalendar.ts'
 import { filterGraphReviews, paginateGraphReviews } from '../src/utils/graphReviewFilters.ts'
@@ -737,6 +737,42 @@ test('entity dossier memory is scoped before its bounded result limit', () => wi
   assert.equal(dossier.events[0].participants[0].entity_id, 'dossier-person')
 }))
 
+test('memory cards expose evidence totals but bound their latest evidence payload', () => withStore(store => {
+  store.syncGraph({
+    entities: [{ id: 'bounded-person', type: 'person', canonicalName: '证据人物', trustStatus: 'confirmed' }],
+    relations: [],
+    reviewQueue: []
+  })
+  const manyEvidence = Array.from({ length: 25 }, (_, index) => ({
+    messageId: `wechat:bounded-session:${index + 1}`,
+    sessionId: 'bounded-session',
+    timestamp: 1_700_000_000 + index,
+    excerpt: `证据 ${index + 1}`,
+    role: 'direct'
+  }))
+  store.upsertClaims([{
+    id: 'bounded-claim',
+    subjectId: 'bounded-person',
+    predicate: '负责',
+    objectValue: '证据边界',
+    confidence: 0.9,
+    status: 'candidate',
+    sourceNature: 'self_statement',
+    searchText: '证据人物负责证据边界',
+    evidence: manyEvidence
+  }])
+
+  const feedClaim = store.getMemoryFeed().claims.find(item => item.id === 'bounded-claim')
+  assert.equal(feedClaim.evidence_count, 25)
+  assert.equal(feedClaim.evidence.length, 20)
+  assert.deepEqual(feedClaim.evidence.map((item: any) => item.message_id), manyEvidence.slice(5).map(item => item.messageId))
+
+  const dossierClaim = store.getEntityMemory('bounded-person').claims[0]
+  assert.equal(dossierClaim.evidence_count, 25)
+  assert.equal(dossierClaim.evidence.length, 20)
+  assert.equal(dossierClaim.evidence.at(-1).message_id, 'wechat:bounded-session:25')
+}))
+
 test('task search keeps original message evidence', () => withStore(store => {
   store.syncTasks([{
     id: 'task-1',
@@ -1295,6 +1331,24 @@ test('common-neighbor graph query keeps relation direction, status and evidence'
   assert.equal(result.rightEdges[0].forward, false)
   assert.equal(result.rightEdges[0].status, 'candidate')
   assert.equal(result.leftEdges[0].evidence[0].messageId, 'evidence-left')
+})
+
+test('common-neighbor graph evidence is newest-first bounded with a truthful total', () => {
+  const evidence = Array.from({ length: GRAPH_QUERY_EVIDENCE_LIMIT + 3 }, (_, index) => ({
+    messageId: `wechat:graph:${index + 1}`,
+    sessionId: 'graph',
+    timestamp: index + 1,
+    excerpt: `证据 ${index + 1}`
+  }))
+  const [result] = findCommonGraphNeighbors('left', 'right', [
+    { id: 'left' }, { id: 'right' }, { id: 'common' }
+  ], [
+    { id: 'left-common', subjectId: 'left', objectId: 'common', predicate: '参与', status: 'confirmed', evidence },
+    { id: 'right-common', subjectId: 'right', objectId: 'common', predicate: '参与', status: 'confirmed', evidence: [] }
+  ])
+  assert.equal(result.leftEdges[0].evidenceTotal, GRAPH_QUERY_EVIDENCE_LIMIT + 3)
+  assert.equal(result.leftEdges[0].evidence.length, GRAPH_QUERY_EVIDENCE_LIMIT)
+  assert.equal(result.leftEdges[0].evidence.at(-1).messageId, `wechat:graph:${GRAPH_QUERY_EVIDENCE_LIMIT + 3}`)
 })
 
 test('project intelligence aggregates members, progress, risks, decisions and evidence', () => {
