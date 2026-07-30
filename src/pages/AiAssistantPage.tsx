@@ -1192,7 +1192,9 @@ function AiAssistantPage() {
               <div><strong>{project.name}</strong><span>{project.phase === 'completed' ? '已完成' : project.phase === 'active' ? '推进中' : project.phase === 'planned' ? '已规划' : '发现阶段'}</span></div>
               <p>{project.summary || (project.inferred ? '从待办项目字段识别，等待更多图谱证据。' : '等待更多项目证据补充。')}</p>
               <div className="assistant-project-progress"><i style={{ width: `${project.progress}%` }} /><span>{project.progress}%</span></div>
-              <small>{project.activeTaskCount} 项进行中 · {project.members.length} 位参与者 · {project.risks.length} 个风险</small>
+              <small>{project.activeTaskCount} 项进行中 · {project.members.length} 位已确认参与者 · {project.risks.length} 个风险
+                {project.pendingReview?.total ? ` · ${project.pendingReview.total} 条候选待确认` : ''}
+              </small>
             </button>)}
           </div> : <div className="assistant-empty">当聊天中识别到项目实体或待办归属项目后，这里会自动形成项目进度、风险、里程碑和决策视图。</div>}
         </section>
@@ -1906,6 +1908,7 @@ function AiAssistantPage() {
               <span><b>{selectedProject.activeTaskCount}</b><small>进行中任务</small></span>
               <span><b>{selectedProject.risks.length}</b><small>可解释风险</small></span>
               <span><b>{selectedProject.evidence.length}</b><small>去重证据</small></span>
+              <span><b>{selectedProject.pendingReview?.total || 0}</b><small>候选待确认</small></span>
             </div>
             <div className="assistant-dossier-grid">
               <section>
@@ -1941,6 +1944,22 @@ function AiAssistantPage() {
                 </article>)}
                 {!selectedProject.milestones.length && !selectedProject.decisions.length && <em>尚无里程碑或决策事件</em>}
               </section>
+              {!!selectedProject.pendingReview?.total && <section>
+                <h3>候选线索 <small>{selectedProject.pendingReview.total}</small></h3>
+                <small className="assistant-evidence">以下内容尚未确认，不参与成员、里程碑、决策或项目事实的确定性统计。</small>
+                {selectedProject.pendingReview.relations.map((relation: any) => <article key={relation.id}>
+                  <strong>待确认关系 · {relation.predicate}</strong>
+                  <small>{Math.round(Number(relation.confidence || 0) * 100)}% 可信</small>
+                </article>)}
+                {[...selectedProject.pendingReview.decisions, ...selectedProject.pendingReview.milestones].map((event: any) => <article key={event.id}>
+                  <strong>待确认{event.event_type === 'decision' ? '决策' : '里程碑'} · {event.title}</strong>
+                  <small>{event.start_at || '时间待确认'} · 不计入已确认项目时间线</small>
+                </article>)}
+                {selectedProject.pendingReview.claims.map((claim: any) => <article key={claim.id}>
+                  <strong>待确认事实 · {claim.predicate}</strong>
+                  <small>{claim.object_value || '值待确认'}</small>
+                </article>)}
+              </section>}
               <section className="assistant-dossier-wide">
                 <h3>最近原文证据 <small>{selectedProject.evidence.length}</small></h3>
                 {selectedProject.evidence.slice(0, 12).map((evidence: any, index: number) =>

@@ -451,7 +451,7 @@ test('project intelligence aggregates members, progress, risks, decisions and ev
     }],
     claims: [],
     events: [{
-      id: 'decision-project', event_type: 'decision', title: '决定周五演示', description: '', status: 'candidate', start_at: '2026-07-31',
+      id: 'decision-project', event_type: 'decision', title: '决定周五演示', description: '', status: 'confirmed', start_at: '2026-07-31',
       participants: [{ entity_id: 'project-demo' }],
       evidence: [{ message_id: 'message-decision', timestamp: 1_775_000_100, excerpt: '决定周五演示' }]
     }, {
@@ -476,8 +476,10 @@ test('project intelligence aggregates members, progress, risks, decisions and ev
   assert.ok(project.risks.some((risk: any) => risk.kind === 'overdue'))
   assert.ok(project.risks.some((risk: any) => risk.kind === 'waiting'))
   assert.equal(project.decisions[0].id, 'decision-project')
-  assert.equal(project.milestones[0].id, 'delivery-project')
-  assert.equal(project.evidence.length, 4)
+  assert.equal(project.milestones.length, 0)
+  assert.equal(project.evidence.length, 3)
+  assert.equal(project.pendingReview.milestones[0].id, 'delivery-project')
+  assert.equal(project.pendingReview.total, 1)
 })
 
 test('task calendar handles leap months, Shanghai today, overdue and unscheduled work', () => {
@@ -1157,6 +1159,12 @@ test('entity insight strength is explainable and deduplicates shared evidence', 
       status: 'confirmed',
       confidence: 0.9,
       evidence: [{ messageId: 'message-shared', timestamp: 1_775_000_000 }]
+    }, {
+      subjectId: 'person-a',
+      objectId: 'project-unconfirmed',
+      status: 'candidate',
+      confidence: 0.95,
+      evidence: [{ messageId: 'message-shared', timestamp: 1_775_000_000 }]
     }],
     claims: [{
       subject_id: 'person-a',
@@ -1180,6 +1188,7 @@ test('entity insight strength is explainable and deduplicates shared evidence', 
   })['person-a']
   assert.equal(insight.evidenceCount, 3)
   assert.equal(insight.relationCount, 1)
+  assert.equal(insight.pendingRelationCount, 1)
   assert.equal(insight.openTaskCount, 1)
   assert.equal(insight.pendingCommitmentCount, 1)
   assert.equal(insight.strength, 62)

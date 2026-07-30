@@ -39,17 +39,23 @@ export function buildProjectInsights(input: {
     const tasks = input.tasks.filter(task => taskBelongsToProject(task, names))
     const activeTasks = tasks.filter(task => !['done', 'cancelled'].includes(task.status))
     const completedTasks = tasks.filter(task => task.status === 'done')
-    const events = input.events.filter(event => event.status !== 'rejected' &&
+    const relevantEvents = input.events.filter(event => !['rejected', 'cancelled'].includes(event.status) &&
       eventBelongsToProject(event, project.entity?.id || '', names))
-    const relations = project.entity ? input.relations.filter(relation =>
+    const events = relevantEvents.filter(event => event.status === 'confirmed')
+    const candidateEvents = relevantEvents.filter(event => event.status === 'candidate')
+    const relevantRelations = project.entity ? input.relations.filter(relation =>
       relation.status !== 'rejected' && (relation.subjectId === project.id || relation.objectId === project.id)) : []
+    const relations = relevantRelations.filter(relation => relation.status === 'confirmed')
+    const candidateRelations = relevantRelations.filter(relation => relation.status === 'candidate')
     const memberIds = [...new Set(relations.map(relation =>
       relation.subjectId === project.id ? relation.objectId : relation.subjectId))]
     const members = memberIds.map(id => input.entities.find(entity => entity.id === id))
       .filter(entity => entity?.type === 'person')
       .map(entity => ({ id: entity.id, name: entity.canonicalName }))
-    const claims = project.entity ? input.claims.filter(claim =>
+    const relevantClaims = project.entity ? input.claims.filter(claim =>
       claim.status !== 'rejected' && claim.subject_id === project.id) : []
+    const claims = relevantClaims.filter(claim => claim.status === 'confirmed')
+    const candidateClaims = relevantClaims.filter(claim => claim.status === 'candidate')
     const risks = activeTasks.flatMap(task => {
       const taskRisks: any[] = []
       if (task.due && String(task.due).slice(0, 10) < today) {
@@ -70,6 +76,9 @@ export function buildProjectInsights(input: {
     })
     const milestones = events.filter(event => ['delivery', 'meeting', 'organization_change'].includes(event.event_type))
     const decisions = events.filter(event => event.event_type === 'decision')
+    const pendingMilestones = candidateEvents.filter(event =>
+      ['delivery', 'meeting', 'organization_change'].includes(event.event_type))
+    const pendingDecisions = candidateEvents.filter(event => event.event_type === 'decision')
     const evidence = [
       ...relations.flatMap(relation => relation.evidence || []),
       ...events.flatMap(event => event.evidence || []),
@@ -100,6 +109,13 @@ export function buildProjectInsights(input: {
       milestones,
       decisions,
       claims,
+      pendingReview: {
+        relations: candidateRelations,
+        claims: candidateClaims,
+        milestones: pendingMilestones,
+        decisions: pendingDecisions,
+        total: candidateRelations.length + candidateClaims.length + pendingMilestones.length + pendingDecisions.length
+      },
       evidence: [...uniqueEvidence.values()].sort((left: any, right: any) => Number(right.timestamp || 0) - Number(left.timestamp || 0))
     }
   }).sort((left, right) => {
