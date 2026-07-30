@@ -315,6 +315,26 @@ export class PersonalMemoryStore {
         deleted_at TEXT NOT NULL
       ) STRICT;
 
+      CREATE TABLE IF NOT EXISTS memory_item_suppressions (
+        item_kind TEXT NOT NULL,
+        item_id TEXT NOT NULL,
+        semantic_fingerprint TEXT NOT NULL DEFAULT '',
+        reason TEXT NOT NULL DEFAULT 'manual_delete',
+        created_at TEXT NOT NULL,
+        PRIMARY KEY(item_kind,item_id)
+      ) STRICT;
+
+      CREATE TABLE IF NOT EXISTS memory_deletion_audit (
+        id INTEGER PRIMARY KEY,
+        item_kind TEXT NOT NULL,
+        item_fingerprint TEXT NOT NULL,
+        reason TEXT NOT NULL DEFAULT 'manual_delete',
+        impact_json TEXT NOT NULL DEFAULT '{}',
+        created_at TEXT NOT NULL
+      ) STRICT;
+      CREATE INDEX IF NOT EXISTS idx_memory_deletion_audit_created
+        ON memory_deletion_audit(created_at DESC);
+
       CREATE VIRTUAL TABLE IF NOT EXISTS search_fts USING fts5(
         document_id UNINDEXED,
         title,
@@ -344,6 +364,9 @@ export class PersonalMemoryStore {
     this.ensureColumn('ingestion_batches', 'output_tokens', `INTEGER NOT NULL DEFAULT 0`)
     this.ensureColumn('ingestion_batches', 'duration_ms', `INTEGER NOT NULL DEFAULT 0`)
     this.ensureColumn('ingestion_batches', 'redaction_summary_json', `TEXT NOT NULL DEFAULT '{}'`)
+    this.ensureColumn('memory_item_suppressions', 'semantic_fingerprint', `TEXT NOT NULL DEFAULT ''`)
+    this.db.exec(`CREATE INDEX IF NOT EXISTS idx_memory_item_suppressions_semantic
+      ON memory_item_suppressions(item_kind,semantic_fingerprint)`)
     this.db.prepare(`UPDATE claims SET status='candidate' WHERE source_nature!='self_statement' AND status='confirmed'`).run()
     this.db.prepare(`
       UPDATE evidence SET evidence_role=CASE
@@ -643,7 +666,9 @@ export class PersonalMemoryStore {
         this.db.prepare('DELETE FROM search_fts WHERE document_id=?').run(`entity:${id}`)
         this.db.prepare('DELETE FROM search_documents WHERE id=?').run(`entity:${id}`)
       }
-      const activeRelationIds = new Set(graph.relations.map(relation => relation.id))
+      const allowedRelations = graph.relations.filter(relation =>
+        !this.isMemoryItemSuppressed('relation', relation.id, this.memoryItemSemanticFingerprint('relation', relation)))
+      const activeRelationIds = new Set(allowedRelations.map(relation => relation.id))
       const storedRelationIds = this.db.prepare('SELECT id FROM relations').all() as Array<{ id: string }>
       for (const { id } of storedRelationIds) {
         if (activeRelationIds.has(id)) continue
@@ -683,7 +708,7 @@ export class PersonalMemoryStore {
         VALUES(?,?,?,?,?,?,?,?,?)
       `)
       const insertEvidence = this.db.prepare(`INSERT OR IGNORE INTO evidence(relation_id,message_id,session_id,timestamp,excerpt,evidence_role) VALUES(?,?,?,?,?,'direct')`)
-      for (const relation of graph.relations) {
+      for (const relation of allowedRelations) {
         const searchText = `${entityNames.get(relation.subjectId) || relation.subjectId} ${relation.predicate} ${entityNames.get(relation.objectId) || relation.objectId}`
         const stored = getStoredRelation.get(relation.id) as any
         const nextSnapshot = {
@@ -716,6 +741,7 @@ export class PersonalMemoryStore {
           status=excluded.status,payload_json=excluded.payload_json
       `)
       for (const review of graph.reviewQueue) {
+        if (review.kind === 'relation' && review.relationId && this.isMemoryItemSuppressed('relation', review.relationId)) continue
         upsertReview.run(review.id, review.kind, review.title, review.detail || '', Number(review.confidence || 0), review.status, JSON.stringify(review), review.createdAt || now)
       }
       this.db.exec('COMMIT')
@@ -796,6 +822,7 @@ export class PersonalMemoryStore {
       VALUES(?,?,?,?,?,?)
     `)
     for (const claim of claims) {
+      if (this.isMemoryItemSuppressed('claim', claim.id, this.memoryItemSemanticFingerprint('claim', claim))) continue
       const sourceNature = claim.sourceNature || 'inference'
       const existingValues = this.db.prepare(`
         SELECT id,COALESCE(object_entity_id,object_value,'') AS value,polarity,valid_from,valid_to
@@ -883,6 +910,7 @@ export class PersonalMemoryStore {
         const reusable = matches.find(match => !match.start_at || !event.startAt || match.start_at === event.startAt)
         if (reusable) event.id = reusable.id
       }
+      if (this.isMemoryItemSuppressed('event', event.id, this.memoryItemSemanticFingerprint('event', event))) continue
       upsert.run(event.id, event.eventType, event.title, event.description || '', event.startAt || null, event.endAt || null,
         event.location || null, event.confidence, event.status || 'candidate', event.searchText, event.createdAt || now, now)
       for (const item of event.participants || []) participant.run(event.id, item.entityId, item.role || 'participant')
@@ -1304,6 +1332,142 @@ export class PersonalMemoryStore {
         evidence: resourceEvidence.all(`resource:${resource.id}`) as any[]
       }))
     }
+  }
+
+  private memoryItemSemanticFingerprint(kind: 'claim' | 'event' | 'relation', item: any): string {
+    const evidenceIds = [...new Set((item.evidence || []).map((entry: any) =>
+      String(entry.messageId || entry.message_id || '')).filter(Boolean))].sort()
+    const semanticKey = kind === 'claim'
+      ? [kind, item.subjectId || item.subject_id || '', item.predicate || '', ...evidenceIds]
+      : kind === 'event'
+        ? [kind, item.eventType || item.event_type || '', ...evidenceIds]
+        : [kind, item.subjectId || item.subject_id || '', item.predicate || '',
+            item.objectId || item.object_id || '', ...evidenceIds]
+    return createHash('sha256').update(semanticKey.join('|')).digest('hex')
+  }
+
+  isMemoryItemSuppressed(kind: 'claim' | 'event' | 'relation', id: string, semanticFingerprint = ''): boolean {
+    if (!this.db) return false
+    return Boolean(this.db.prepare(`
+      SELECT 1 FROM memory_item_suppressions
+      WHERE item_kind=? AND (item_id=? OR (?!='' AND semantic_fingerprint=?))
+    `).get(kind, String(id || ''), semanticFingerprint, semanticFingerprint))
+  }
+
+  isExtractedMemoryItemSuppressed(kind: 'claim' | 'event' | 'relation', item: any): boolean {
+    return this.isMemoryItemSuppressed(kind, String(item?.id || ''), this.memoryItemSemanticFingerprint(kind, item))
+  }
+
+  previewDeleteMemoryItem(kind: 'claim' | 'event' | 'relation', id: string): any | null {
+    if (!this.db) return null
+    const itemId = String(id || '').trim()
+    if (!itemId) return null
+    const table = kind === 'claim' ? 'claims' : kind === 'event' ? 'events' : 'relations'
+    const row = this.db.prepare(`SELECT * FROM ${table} WHERE id=?`).get(itemId) as any
+    if (!row) return null
+    const documentId = `${kind}:${itemId}`
+    const evidence = Number((this.db.prepare(`
+      SELECT COUNT(*) AS count FROM evidence
+      WHERE ${kind === 'claim' ? 'claim_id' : kind === 'event' ? 'event_id' : 'relation_id'}=?
+    `).get(itemId) as any)?.count || 0)
+    const related = kind === 'claim'
+      ? Number((this.db.prepare(`SELECT COUNT(*) AS count FROM memory_corrections WHERE item_kind='claim' AND item_id=?`).get(itemId) as any)?.count || 0)
+      : kind === 'event'
+        ? Number((this.db.prepare('SELECT COUNT(*) AS count FROM event_participants WHERE event_id=?').get(itemId) as any)?.count || 0)
+        : Number((this.db.prepare('SELECT COUNT(*) AS count FROM relation_history WHERE relation_id=?').get(itemId) as any)?.count || 0)
+    const assistantMessages = Number((this.db.prepare(`
+      SELECT COUNT(DISTINCT conversation_id) AS count FROM assistant_messages WHERE citations_json LIKE ?
+    `).get(`%${documentId}%`) as any)?.count || 0)
+    const evidenceRows = this.db.prepare(`
+      SELECT message_id FROM evidence
+      WHERE ${kind === 'claim' ? 'claim_id' : kind === 'event' ? 'event_id' : 'relation_id'}=?
+    `).all(itemId) as Array<{ message_id: string }>
+    const semanticFingerprint = this.memoryItemSemanticFingerprint(kind, {
+      ...row,
+      evidence: evidenceRows
+    })
+    return {
+      kind,
+      id: itemId,
+      label: kind === 'claim' ? String(row.predicate || '事实')
+        : kind === 'event' ? String(row.title || '事件')
+          : String(row.predicate || '关系'),
+      documentId,
+      fingerprint: createHash('sha256').update(`${kind}:${itemId}`).digest('hex').slice(0, 20),
+      semanticFingerprint,
+      counts: {
+        evidence,
+        related,
+        searchDocuments: Number(Boolean(this.db.prepare('SELECT 1 FROM search_documents WHERE id=?').get(documentId))),
+        assistantMessages
+      }
+    }
+  }
+
+  deleteMemoryItem(kind: 'claim' | 'event' | 'relation', id: string, reason = 'manual_delete'): any {
+    if (!this.db) throw new Error('个人记忆库尚未初始化')
+    const preview = this.previewDeleteMemoryItem(kind, id)
+    if (!preview) throw new Error('该记忆不存在或已删除')
+    const now = new Date().toISOString()
+    const itemId = preview.id
+    const documentId = preview.documentId
+    this.db.exec('BEGIN IMMEDIATE')
+    try {
+      this.db.prepare(`
+        INSERT INTO memory_item_suppressions(item_kind,item_id,semantic_fingerprint,reason,created_at)
+        VALUES(?,?,?,?,?)
+        ON CONFLICT(item_kind,item_id) DO UPDATE SET
+          semantic_fingerprint=excluded.semantic_fingerprint,reason=excluded.reason
+      `).run(kind, itemId, preview.semanticFingerprint, String(reason || 'manual_delete').slice(0, 200), now)
+      this.db.prepare('DELETE FROM search_document_evidence WHERE document_id=?').run(documentId)
+      this.db.prepare('DELETE FROM search_fts WHERE document_id=?').run(documentId)
+      this.db.prepare('DELETE FROM search_documents WHERE id=?').run(documentId)
+      this.db.prepare(`
+        DELETE FROM assistant_conversations WHERE id IN (
+          SELECT conversation_id FROM assistant_messages WHERE citations_json LIKE ?
+        )
+      `).run(`%${documentId}%`)
+      if (kind === 'claim') {
+        this.db.prepare('DELETE FROM evidence WHERE claim_id=?').run(itemId)
+        this.db.prepare(`DELETE FROM memory_corrections WHERE item_kind='claim' AND item_id=?`).run(itemId)
+        this.db.prepare('DELETE FROM claims WHERE id=?').run(itemId)
+      } else if (kind === 'event') {
+        this.db.prepare('DELETE FROM evidence WHERE event_id=?').run(itemId)
+        this.db.prepare('DELETE FROM event_participants WHERE event_id=?').run(itemId)
+        this.db.prepare('DELETE FROM events WHERE id=?').run(itemId)
+      } else {
+        this.db.prepare('DELETE FROM evidence WHERE relation_id=?').run(itemId)
+        this.db.prepare('DELETE FROM relation_history WHERE relation_id=?').run(itemId)
+        this.db.prepare('DELETE FROM review_queue WHERE id=?').run(`review_rel_${itemId}`)
+        this.db.prepare('DELETE FROM relations WHERE id=?').run(itemId)
+      }
+      this.db.prepare(`
+        INSERT INTO memory_deletion_audit(item_kind,item_fingerprint,reason,impact_json,created_at)
+        VALUES(?,?,?,?,?)
+      `).run(
+        kind,
+        preview.fingerprint,
+        String(reason || 'manual_delete').slice(0, 200),
+        JSON.stringify(preview.counts),
+        now
+      )
+      this.db.exec('COMMIT')
+      return { success: true, kind, id: itemId, fingerprint: preview.fingerprint, removed: preview.counts, suppressed: true }
+    } catch (error) {
+      this.db.exec('ROLLBACK')
+      throw error
+    }
+  }
+
+  listMemoryDeletionAudit(limit = 50): any[] {
+    if (!this.db) return []
+    return (this.db.prepare(`
+      SELECT id,item_kind,item_fingerprint,reason,impact_json,created_at
+      FROM memory_deletion_audit ORDER BY id DESC LIMIT ?
+    `).all(Math.max(1, Math.min(200, limit))) as any[]).map(row => ({
+      ...row,
+      impact: JSON.parse(row.impact_json || '{}')
+    }))
   }
 
   updateMemoryItemStatus(kind: 'claim' | 'event', id: string, status: 'confirmed' | 'rejected'): any {

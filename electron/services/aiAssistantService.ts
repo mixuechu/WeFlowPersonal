@@ -239,6 +239,7 @@ export class AiAssistantService {
     )
     this.migrateLegacyData()
     this.loadState()
+    this.removeSuppressedRelationsFromState()
     this.saveState()
     this.scheduler = setInterval(() => void this.schedulerTick(), 60_000)
     this.scheduler.unref()
@@ -308,6 +309,16 @@ export class AiAssistantService {
     } catch {
       this.state = structuredClone(EMPTY_STATE)
     }
+  }
+
+  private removeSuppressedRelationsFromState(): void {
+    const suppressedRelationIds = new Set(this.state.graph.relations
+      .filter(relation => personalMemoryStore.isMemoryItemSuppressed('relation', relation.id))
+      .map(relation => relation.id))
+    if (!suppressedRelationIds.size) return
+    this.state.graph.relations = this.state.graph.relations.filter(relation => !suppressedRelationIds.has(relation.id))
+    this.state.graph.reviewQueue = this.state.graph.reviewQueue.filter(review =>
+      !review.relationId || !suppressedRelationIds.has(review.relationId))
   }
 
   private repairPlaceholderEntities(): void {
@@ -1036,6 +1047,9 @@ export class AiAssistantService {
         timestamp: Number(message.timestamp),
         excerpt: redact(String(message.content)).slice(0, 160)
       }))
+      if (personalMemoryStore.isExtractedMemoryItemSuppressed('relation', {
+        id, subjectId, predicate, objectId, evidence
+      })) continue
       const existing = this.state.graph.relations.find(relation => relation.id === id)
       if (existing) {
         const known = new Set(existing.evidence.map(item => item.messageId))
@@ -1536,6 +1550,7 @@ export class AiAssistantService {
         )
       },
       mergeHistory: personalMemoryStore.listActiveMerges(),
+      memoryDeletionAudit: personalMemoryStore.listMemoryDeletionAudit(50),
       memoryStats: personalMemoryStore.getMemoryStats(),
       attachmentStructureMigration: personalMemoryStore.getAttachmentStructureMigrationStats(
         ATTACHMENT_STRUCTURE_PARSER_VERSION
@@ -1971,6 +1986,20 @@ export class AiAssistantService {
 
   updateMemoryItemStatus(kind: 'claim' | 'event', id: string, status: 'confirmed' | 'rejected'): any {
     return personalMemoryStore.updateMemoryItemStatus(kind, id, status)
+  }
+
+  previewDeleteMemoryItem(kind: 'claim' | 'event' | 'relation', id: string): any {
+    return personalMemoryStore.previewDeleteMemoryItem(kind, id)
+  }
+
+  deleteMemoryItem(kind: 'claim' | 'event' | 'relation', id: string): any {
+    const result = personalMemoryStore.deleteMemoryItem(kind, id)
+    if (kind === 'relation') {
+      this.state.graph.relations = this.state.graph.relations.filter(relation => relation.id !== id)
+      this.state.graph.reviewQueue = this.state.graph.reviewQueue.filter(review => review.relationId !== id)
+      this.saveState()
+    }
+    return result
   }
 
   deleteMemoryResource(id: string): any {

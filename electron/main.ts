@@ -4536,6 +4536,10 @@ function registerIpcHandlers() {
   ipcMain.handle('ai-assistant:revertMerge', (_, id: number) => aiAssistantService.revertMerge(id))
   ipcMain.handle('ai-assistant:updateMemoryItemStatus', (_, kind: 'claim' | 'event', id: string, status: 'confirmed' | 'rejected') =>
     aiAssistantService.updateMemoryItemStatus(kind, id, status))
+  ipcMain.handle('ai-assistant:previewDeleteMemoryItem', (_, kind: 'claim' | 'event' | 'relation', id: string) =>
+    aiAssistantService.previewDeleteMemoryItem(kind, id))
+  ipcMain.handle('ai-assistant:deleteMemoryItem', (_, kind: 'claim' | 'event' | 'relation', id: string) =>
+    aiAssistantService.deleteMemoryItem(kind, id))
   ipcMain.handle('ai-assistant:deleteMemoryResource', (_, id: string) => aiAssistantService.deleteMemoryResource(id))
   ipcMain.handle('ai-assistant:restoreMemoryResource', (_, id: string) => aiAssistantService.restoreMemoryResource(id))
   ipcMain.handle('ai-assistant:purgeMemoryResourceTrash', (_, id: string) => aiAssistantService.purgeMemoryResourceTrash(id))

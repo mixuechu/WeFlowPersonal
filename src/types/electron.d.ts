@@ -1653,6 +1653,8 @@ export interface ElectronAPI {
       updateGraphReview: (id: string, decision: 'confirmed' | 'rejected') => Promise<any>
       revertMerge: (id: number) => Promise<any>
       updateMemoryItemStatus: (kind: 'claim' | 'event', id: string, status: 'confirmed' | 'rejected') => Promise<any>
+      previewDeleteMemoryItem: (kind: 'claim' | 'event' | 'relation', id: string) => Promise<any>
+      deleteMemoryItem: (kind: 'claim' | 'event' | 'relation', id: string) => Promise<any>
       deleteMemoryResource: (id: string) => Promise<any>
       restoreMemoryResource: (id: string) => Promise<any>
       purgeMemoryResourceTrash: (id: string) => Promise<any>

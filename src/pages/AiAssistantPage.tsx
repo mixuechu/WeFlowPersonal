@@ -400,6 +400,42 @@ function AiAssistantPage() {
     await load()
   }
 
+  const permanentlyDeleteMemoryItem = async (
+    kind: 'claim' | 'event' | 'relation',
+    item: { id?: string; sourceId?: string; title?: string; predicate?: string }
+  ) => {
+    const id = String(item.id || item.sourceId || '')
+    if (!id) return
+    try {
+      const preview = await window.electronAPI.aiAssistant.previewDeleteMemoryItem(kind, id)
+      if (!preview) {
+        setMessage('该条记忆不存在或已经被删除。')
+        await load()
+        return
+      }
+      const kindLabel = kind === 'claim' ? '事实' : kind === 'event' ? '事件' : '关系'
+      const confirmed = window.confirm(
+        `永久删除这条${kindLabel}“${preview.label}”？\n\n` +
+        `将同时清理 ${preview.counts.evidence} 条原文证据、${preview.counts.related} 条关联记录、` +
+        `${preview.counts.searchDocuments} 个全文/向量索引，以及 ${preview.counts.assistantMessages} 条引用过它的问答记录。\n\n` +
+        '系统只保留不含原文的抑制指纹和删除审计；以后重新处理相同消息也不会让它复活。'
+      )
+      if (!confirmed) return
+      const exactConfirmed = window.prompt('此操作不可撤销。请输入“永久删除”继续：') === '永久删除'
+      if (!exactConfirmed) {
+        setMessage('确认文字不匹配，已取消删除。')
+        return
+      }
+      const result = await window.electronAPI.aiAssistant.deleteMemoryItem(kind, id)
+      setMessage(`已永久删除${kindLabel}；抑制指纹 ${result.fingerprint} 已保存。`)
+      if (memoryAnswer?.citations?.some((citation: any) => citation.documentId === `${kind}:${id}`)) setMemoryAnswer(null)
+      await load()
+      setMemoryDiagnostics(await window.electronAPI.aiAssistant.getMemoryDiagnostics())
+    } catch (error: any) {
+      setMessage(error?.message || String(error))
+    }
+  }
+
   const deleteMemoryResource = async (resource: any) => {
     const confirmed = window.confirm(
       `确定从个人记忆中删除“${resource.title || '未命名资源'}”吗？\n\n` +
@@ -983,6 +1019,7 @@ function AiAssistantPage() {
                   {citation.type === 'claim' && <button onClick={() => openClaimCorrection(citation)}>纠正事实</button>}
                   {citation.status !== 'confirmed' && <button className="primary" onClick={() => void reviewMemoryCitation(citation, 'confirmed')}>确认</button>}
                   {citation.status !== 'rejected' && <button onClick={() => void reviewMemoryCitation(citation, 'rejected')}>不准确</button>}
+                  <button className="danger" onClick={() => void permanentlyDeleteMemoryItem(citation.type, citation)}>永久删除</button>
                 </div>}
               </article>)}
             </div>}
@@ -1019,6 +1056,7 @@ function AiAssistantPage() {
                     : <button onClick={() => setEditingClaim({ id: claim.id, value: claim.object_entity_name || claim.object_value || '', validFrom: claim.valid_from || '', validTo: claim.valid_to || '' })}>纠正</button>}
                   <button onClick={() => void updateMemoryStatus('claim', claim.id, 'rejected')}>不准确</button>
                   {claim.status === 'candidate' && <button className="primary" onClick={() => void updateMemoryStatus('claim', claim.id, 'confirmed')}>确认事实</button>}
+                  <button className="danger" onClick={() => void permanentlyDeleteMemoryItem('claim', claim)}>永久删除</button>
                 </div>
               </article>)}
               {!visibleClaims.length && <div className="assistant-empty">后续增量消息会在这里形成带原文证据的个人事实。</div>}
@@ -1046,6 +1084,7 @@ function AiAssistantPage() {
                 <div className="assistant-memory-actions">
                   <button onClick={() => void updateMemoryStatus('event', event.id, 'rejected')}>不准确</button>
                   {event.status === 'candidate' && <button className="primary" onClick={() => void updateMemoryStatus('event', event.id, 'confirmed')}>确认事件</button>}
+                  <button className="danger" onClick={() => void permanentlyDeleteMemoryItem('event', event)}>永久删除</button>
                 </div>
               </article>)}
               {!visibleEvents.length && <div className="assistant-empty">会议、决定、交付和承诺等事件会显示在这里。</div>}
@@ -1456,6 +1495,7 @@ function AiAssistantPage() {
                     </button>
                     <small>{relation.status === 'confirmed' ? '已确认' : '待确认'} · {Math.round(Number(relation.confidence || 0) * 100)}%</small>
                     {(relation.evidence || []).map((evidence: any) => <blockquote key={`${relation.id}-${evidence.messageId}`}>“{evidence.excerpt}”</blockquote>)}
+                    <button className="assistant-dossier-task-action danger" onClick={() => void permanentlyDeleteMemoryItem('relation', relation)}>永久删除关系</button>
                   </article>
                 })}
                 {!selectedEntityRelations.length && <em>尚无关系</em>}
@@ -1621,6 +1661,14 @@ function AiAssistantPage() {
                   {!memoryDiagnostics.appRecovery.history?.length && <em>首次记录，尚无历史会话。</em>}
                 </div>
               </details>
+            </div>}
+            {!!dashboard?.memoryDeletionAudit?.length && <div className="assistant-deletion-audit">
+              <header><ShieldCheck size={15} /><span><b>永久删除审计</b><small>只保留不可逆指纹和影响计数，不保留被删除正文。</small></span></header>
+              {(dashboard.memoryDeletionAudit || []).slice(0, 12).map((entry: any) => <article key={entry.id}>
+                <span><b>{entry.item_kind === 'claim' ? '事实' : entry.item_kind === 'event' ? '事件' : '关系'} · {entry.item_fingerprint}</b>
+                  <small>{new Date(entry.created_at).toLocaleString('zh-CN')}</small></span>
+                <span>证据 {entry.impact?.evidence || 0} · 关联 {entry.impact?.related || 0} · 索引 {entry.impact?.searchDocuments || 0} · 问答 {entry.impact?.assistantMessages || 0}</span>
+              </article>)}
             </div>}
             <div className="assistant-diagnostics-runs">
               {(memoryDiagnostics.ingestionRuns || []).map((run: any) => <details key={run.id} open={run.status !== 'completed'}>

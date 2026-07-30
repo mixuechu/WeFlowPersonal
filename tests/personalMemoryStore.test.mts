@@ -1100,3 +1100,70 @@ test('historical image semantics resume by model version and invalidate stale ve
   assert.ok(store.searchText('Apple Vision').some(item => item.id === 'resource:resource-image-vision'))
   assert.equal(store.getEmbeddingStats('test-vector').pending, 1)
 }))
+
+test('permanent structured-memory deletion is audited and suppresses identical re-extraction', () => withStore(store => {
+  const entities = [
+    { id: 'person-delete', type: 'person', canonicalName: '待删除人物', aliases: [], accountIds: [] },
+    { id: 'org-delete', type: 'organization', canonicalName: '待删除组织', aliases: [], accountIds: [] }
+  ]
+  const relation = {
+    id: 'relation-delete', subjectId: 'person-delete', predicate: '任职于', objectId: 'org-delete',
+    confidence: 0.91, status: 'candidate',
+    evidence: evidence('message-relation-delete', '待删除人物任职于待删除组织')
+  }
+  const claim = {
+    id: 'claim-delete', subjectId: 'person-delete', predicate: '所在城市', objectValue: '敏感城市原文',
+    confidence: 0.92, status: 'candidate', sourceNature: 'self_statement',
+    searchText: '待删除人物 所在城市 敏感城市原文',
+    evidence: evidence('message-claim-delete', '我住在敏感城市原文')
+  }
+  const event = {
+    id: 'event-delete', eventType: 'meeting', title: '敏感会议原文', description: '不可保留的事件正文',
+    confidence: 0.9, status: 'candidate', searchText: '敏感会议原文 不可保留的事件正文',
+    participants: [{ entityId: 'person-delete', role: '参与者' }],
+    evidence: evidence('message-event-delete', '明天召开敏感会议原文')
+  }
+  const review = {
+    id: 'review_rel_relation-delete', kind: 'relation', relationId: relation.id, title: '关系候选',
+    detail: '', confidence: 0.91, status: 'pending'
+  }
+  store.syncGraph({ entities, relations: [relation], reviewQueue: [review] })
+  store.upsertClaims([claim])
+  store.upsertEvents([event])
+  store.saveEmbedding(`claim:${claim.id}`, 'test-vector', [1, 0])
+  store.saveEmbedding(`event:${event.id}`, 'test-vector', [0, 1])
+  store.saveEmbedding(`relation:${relation.id}`, 'test-vector', [0.5, 0.5])
+  store.saveAssistantExchange('敏感问题', '敏感答案', [{
+    documentId: `claim:${claim.id}`, type: 'claim', sourceId: claim.id,
+    title: claim.predicate, content: claim.searchText, evidence: claim.evidence
+  }])
+
+  assert.deepEqual(store.previewDeleteMemoryItem('claim', claim.id)?.counts, {
+    evidence: 1, related: 0, searchDocuments: 1, assistantMessages: 1
+  })
+  assert.equal(store.deleteMemoryItem('claim', claim.id).suppressed, true)
+  assert.equal(store.deleteMemoryItem('event', event.id).suppressed, true)
+  assert.equal(store.deleteMemoryItem('relation', relation.id).suppressed, true)
+  assert.equal(store.getMemoryFeed().claims.length, 0)
+  assert.equal(store.getMemoryFeed().events.length, 0)
+  assert.equal(store.searchText('敏感').length, 0)
+  assert.equal(store.getRecentAssistantExchanges().length, 0)
+  assert.equal(store.getEmbeddingStats('test-vector').indexed, 0)
+
+  store.syncGraph({ entities, relations: [relation], reviewQueue: [review] })
+  store.upsertClaims([claim])
+  store.upsertEvents([event])
+  store.syncGraph({ entities, relations: [{ ...relation, id: 'relation-rephrased' }], reviewQueue: [] })
+  store.upsertClaims([{ ...claim, id: 'claim-rephrased', objectValue: '换一种模型措辞' }])
+  store.upsertEvents([{ ...event, id: 'event-rephrased', title: '换一种会议措辞' }])
+  assert.equal(store.getMemoryFeed().claims.length, 0)
+  assert.equal(store.getMemoryFeed().events.length, 0)
+  assert.equal(store.searchText('任职于').some(item => item.id === `relation:${relation.id}`), false)
+  assert.equal(store.listRelationHistory('person-delete').length, 0)
+
+  const audit = store.listMemoryDeletionAudit()
+  assert.equal(audit.length, 3)
+  assert.equal(audit.every(item => /^[a-f0-9]{20}$/.test(item.item_fingerprint)), true)
+  assert.equal(JSON.stringify(audit).includes('敏感'), false)
+  assert.equal(store.getDiagnostics().integrity, 'ok')
+}))

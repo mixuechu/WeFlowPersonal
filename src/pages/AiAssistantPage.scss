@@ -382,6 +382,7 @@
 .assistant-memory-actions { display: flex; justify-content: flex-end; gap: 7px; margin-top: 10px; }
 .assistant-memory-actions button { padding: 6px 10px; border: 1px solid #d9d6cd; border-radius: 8px; background: transparent; }
 .assistant-memory-actions button.primary { color: #fff; border-color: #255f4b; background: #255f4b; }
+.assistant-memory-actions button.danger, .assistant-citation-actions button.danger, .assistant-dossier-task-action.danger { color: #9b4339; border-color: #dfb9b4; background: #fff7f6; }
 .assistant-ingestion-status { display: flex; justify-content: space-between; gap: 16px; margin: 12px 0; padding: 10px 13px; border-radius: 10px; color: #315c4e; background: #e8f3ee; font-size: 11px; }
 .assistant-ingestion-status.partial, .assistant-ingestion-status.failed { color: #8a5a14; background: #fff3d8; }
 .assistant-ingestion-status span { color: inherit; opacity: .78; }
@@ -457,6 +458,11 @@
 .assistant-diagnostics-runs article p, .assistant-diagnostics-error { margin: 3px 0 0; color: #9b4f42; font-size: 9px; line-height: 1.5; }
 .assistant-diagnostics-error { padding: 0 12px 8px; }
 .assistant-diagnostics-runs em { color: #919891; font-size: 9px; font-style: normal; }
+.assistant-deletion-audit { padding: 11px 12px; border: 1px solid #ead6d2; border-radius: 10px; display: grid; gap: 7px; background: #fffafa; }
+.assistant-deletion-audit > header { display: flex; align-items: center; gap: 7px; color: #7c4e48; }
+.assistant-deletion-audit > header span, .assistant-deletion-audit article > span:first-child { display: grid; gap: 2px; }
+.assistant-deletion-audit small { color: #8e7b78; font-size: 8px; }
+.assistant-deletion-audit article { padding-top: 7px; border-top: 1px solid #efe2df; display: flex; justify-content: space-between; gap: 12px; color: #6f5a57; font-size: 8px; }
 .assistant-diagnostics-modal > footer { display: flex; justify-content: flex-end; gap: 8px; }
 .assistant-diagnostics-modal > footer button { padding: 8px 12px; border: 1px solid #ccd8ce; border-radius: 8px; color: #315c4e; background: #fff; cursor: pointer; }
 .assistant-diagnostics-modal > footer button.primary { color: #fff; border-color: #255f4b; background: #255f4b; }
