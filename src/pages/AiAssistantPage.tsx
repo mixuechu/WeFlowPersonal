@@ -3,7 +3,6 @@ import { BookOpen, Bot, CalendarDays, Check, Clock3, Filter, Network, Paperclip,
 import { buildTaskCalendar, shanghaiToday } from '../utils/taskCalendar'
 import type { ReviewStatusFilter } from '../utils/graphReviewFilters'
 import { evidenceLocalMessageId, groupMemorySearchResults, MEMORY_TYPE_LABELS, normalizeMemoryEvidence, type MemoryEvidence } from '../utils/memorySearchPresentation'
-import { buildGraphViewport } from '../utils/graphViewport'
 import { LatestRequestGate } from '../utils/latestRequestGate'
 import './AiAssistantPage.scss'
 
@@ -68,6 +67,14 @@ function AiAssistantPage() {
   const [graphRelationStatus, setGraphRelationStatus] = useState('')
   const [graphFocusDepth, setGraphFocusDepth] = useState(1)
   const [selectedEntityId, setSelectedEntityId] = useState('')
+  const [graphWorkspace, setGraphWorkspace] = useState<any>({
+    viewport: { entities: [], relations: [], levels: {}, mode: 'overview', totalAvailable: 0, truncated: 0 },
+    summary: { entities: 0, relations: 0 },
+    predicates: [],
+    focus: null,
+    status: 'idle'
+  })
+  const graphWorkspaceGate = useRef(new LatestRequestGate())
   const [showEntityDossier, setShowEntityDossier] = useState(false)
   const [briefingPeriod, setBriefingPeriod] = useState<'latest' | 'week'>('latest')
   const [selectedProjectId, setSelectedProjectId] = useState('')
@@ -274,6 +281,40 @@ function AiAssistantPage() {
     }
   }, [reviewStatusFilter, reviewKindFilter, reviewQuery, reviewRefreshKey, dashboard?.graphReviewRevision])
 
+  useEffect(() => {
+    const request = graphWorkspaceGate.current.begin()
+    setGraphWorkspace((current: any) => ({
+      ...current,
+      viewport: { entities: [], relations: [], levels: {}, mode: selectedEntityId ? 'focus' : graphQuery.trim() ? 'search' : 'overview', totalAvailable: 0, truncated: 0 },
+      focus: null,
+      status: 'loading',
+      error: undefined
+    }))
+    const timer = window.setTimeout(() => {
+      void window.electronAPI.aiAssistant.getGraphWorkspace({
+        query: graphQuery.trim() || undefined,
+        relationType: graphRelationType || undefined,
+        relationStatus: graphRelationStatus || undefined,
+        focusEntityId: selectedEntityId || undefined,
+        depth: graphFocusDepth
+      }).then(workspace => {
+        if (!graphWorkspaceGate.current.isCurrent(request)) return
+        setGraphWorkspace({ ...workspace, status: 'ready' })
+      }).catch(error => {
+        if (!graphWorkspaceGate.current.isCurrent(request)) return
+        setGraphWorkspace((current: any) => ({
+          ...current,
+          status: 'error',
+          error: error?.message || String(error)
+        }))
+      })
+    }, 180)
+    return () => {
+      window.clearTimeout(timer)
+      if (graphWorkspaceGate.current.isCurrent(request)) graphWorkspaceGate.current.invalidate()
+    }
+  }, [graphQuery, graphRelationType, graphRelationStatus, selectedEntityId, graphFocusDepth, dashboard?.graphRevision])
+
   useEffect(() => () => {
     memoryConversationGate.current.invalidate()
   }, [])
@@ -327,14 +368,11 @@ function AiAssistantPage() {
     (!claim?.object_entity_id || trustedGraphEntityIds.has(claim.object_entity_id))
   const eventEntitiesTrusted = (event: any) =>
     (event?.participants || []).every((participant: any) => trustedGraphEntityIds.has(participant.entity_id))
-  const graphViewport = useMemo(() => buildGraphViewport(graph.entities, graph.relations, {
-    query: graphQuery,
-    relationType: graphRelationType,
-    relationStatus: graphRelationStatus,
-    focusEntityId: selectedEntityId,
-    depth: graphFocusDepth,
-    maxNodes: 60
-  }), [graph.entities, graph.relations, graphQuery, graphRelationType, graphRelationStatus, selectedEntityId, graphFocusDepth])
+  const graphViewport = useMemo(() => ({
+    ...(graphWorkspace.viewport || {}),
+    levels: new Map<string, number>(Object.entries(graphWorkspace.viewport?.levels || {})
+      .map(([id, level]) => [id, Number(level)]))
+  }), [graphWorkspace.viewport])
   const graphEntities = graphViewport.entities
   const graphRelations = graphViewport.relations
   const graphPositions = useMemo(() => new Map(graphEntities.map((entity: any, index: number) => {
@@ -344,11 +382,10 @@ function AiAssistantPage() {
     const ring = graphViewport.mode === 'focus' ? 70 + (level - 1) * 65 + (index % 2) * 18 : 105 + (index % 3) * 35
     return [entity.id, { x: 250 + Math.cos(angle) * ring, y: 170 + Math.sin(angle) * ring }]
   })), [graphEntities, graphViewport, selectedEntityId])
-  const selectedEntity = graph.entities.find((entity: any) => entity.id === selectedEntityId)
-  const selectedEntityInsight = dashboard?.entityInsights?.[selectedEntityId]
-  const relationPredicates = useMemo<string[]>(() => [...new Set<string>(graph.relations
-    .filter((relation: any) => relation.status !== 'rejected')
-    .map((relation: any) => String(relation.predicate || '')).filter(Boolean))].sort(), [graph.relations])
+  const selectedEntity = graphWorkspace.focus?.entity ||
+    graph.entities.find((entity: any) => entity.id === selectedEntityId)
+  const selectedEntityInsight = graphWorkspace.focus?.insight
+  const relationPredicates: string[] = graphWorkspace.predicates || []
   const pendingReviewCount = reviewPage.counts.pending
   const resolvedReviewCount = reviewPage.counts.resolved
   const visibleReviews = reviewPage.items
@@ -356,9 +393,6 @@ function AiAssistantPage() {
   const assistantConversations: any[] = dashboard?.assistantConversations || []
   const identityDisambiguation = dashboard?.identityDisambiguation
   const mergeHistory = dashboard?.mergeHistory || []
-  const entityCorrections = dashboard?.entityCorrections || []
-  const relationCorrections = dashboard?.relationCorrections || []
-  const entityProfileCorrections = dashboard?.entityProfileCorrections || []
   const memoryFeed = dashboard?.memoryFeed || { claims: [], events: [], resources: [] }
   const ingestionStatus = dashboard?.ingestionStatus
   const ingestionCounts = Object.fromEntries((ingestionStatus?.batches || []).map((item: any) => [item.status, Number(item.count || 0)]))
@@ -367,33 +401,13 @@ function AiAssistantPage() {
   const visibleEvents = eventTimeline.items || []
   const visibleResources = memoryFeed.resources || []
   const resourceTrash = dashboard?.resourceTrash || []
-  const selectedEntityClaims = selectedEntity
-    ? visibleClaims.filter((item: any) => item.subject_id === selectedEntity.id)
-    : []
-  const selectedEntityEvents = selectedEntity
-    ? feedEvents.filter((item: any) => item.participants?.some((participant: any) => participant.entity_id === selectedEntity.id))
-    : []
-  const selectedEntityRelations = selectedEntity
-    ? graph.relations.filter((item: any) =>
-      item.status !== 'rejected' && (item.subjectId === selectedEntity.id || item.objectId === selectedEntity.id))
-    : []
-  const selectedEntityRelationHistory = selectedEntity
-    ? (dashboard?.relationHistory || []).filter((item: any) =>
-      item.subject_id === selectedEntity.id || item.object_id === selectedEntity.id)
-    : []
-  const selectedEntityCorrections = selectedEntity
-    ? entityCorrections.filter((item: any) => item.entity_id === selectedEntity.id)
-    : []
-  const selectedEntityRelationCorrections = selectedEntity
-    ? relationCorrections.filter((item: any) =>
-      item.before_subject_id === selectedEntity.id ||
-      item.before_object_id === selectedEntity.id ||
-      item.after_subject_id === selectedEntity.id ||
-      item.after_object_id === selectedEntity.id)
-    : []
-  const selectedEntityProfileCorrections = selectedEntity
-    ? entityProfileCorrections.filter((item: any) => item.entity_id === selectedEntity.id)
-    : []
+  const selectedEntityClaims = graphWorkspace.focus?.claims || []
+  const selectedEntityEvents = graphWorkspace.focus?.events || []
+  const selectedEntityRelations = graphWorkspace.focus?.relations || []
+  const selectedEntityRelationHistory = graphWorkspace.focus?.relationHistory || []
+  const selectedEntityCorrections = graphWorkspace.focus?.entityCorrections || []
+  const selectedEntityRelationCorrections = graphWorkspace.focus?.relationCorrections || []
+  const selectedEntityProfileCorrections = graphWorkspace.focus?.entityProfileCorrections || []
   const selectedEntityTasks = selectedEntity
     ? tasks.filter(task => {
       const names = [
@@ -2036,7 +2050,7 @@ function AiAssistantPage() {
         <section className="assistant-panel assistant-memory">
           <div className="assistant-section-heading">
             <div><span className="assistant-eyebrow">PERSONAL MEMORY GRAPH</span><h3><Network size={16} /> 持续生长的个人知识图谱</h3></div>
-            <span className="assistant-count">{graph.entities.length} 个实体 · {graph.relations.length} 条关系</span>
+            <span className="assistant-count">{Number(graphWorkspace.summary?.entities || dashboard?.graphSummary?.entities || 0)} 个实体 · {Number(graphWorkspace.summary?.relations || dashboard?.graphSummary?.relations || 0)} 条关系</span>
           </div>
           <div className="assistant-graph-toolbar">
             <input value={graphQuery} onChange={event => setGraphQuery(event.target.value)} placeholder="搜索人物、别名、组织或项目" />
@@ -2101,7 +2115,9 @@ function AiAssistantPage() {
             </article>)}
             {!graphCommonNeighbors.common.length && <div className="assistant-empty">当前图谱中没有共同的一跳联系人或实体。</div>}
           </div>}
-          {graphEntities.length ? (
+          {graphWorkspace.status === 'loading' ? <div className="assistant-empty">正在从本机图谱构建当前语义视口…</div>
+          : graphWorkspace.status === 'error' ? <div className="assistant-empty">图谱视口读取失败：{graphWorkspace.error}</div>
+          : graphEntities.length ? (
             <div className="assistant-graph-layout">
               <svg className="assistant-graph-canvas" viewBox="0 0 500 340" role="img" aria-label="个人知识关系图">
                 {graphRelations.map((relation: any) => {
@@ -2198,10 +2214,8 @@ function AiAssistantPage() {
             {visibleReviews.map((review: any) => <article className={`assistant-review-item ${review.status !== 'pending' ? 'resolved' : ''}`} key={review.id}>
               {(() => {
                 const isPending = review.status === 'pending'
-                const relation = review.kind === 'relation' ? graph.relations.find((item: any) => item.id === review.relationId) : null
-                const relationCorrectionAudit = review.kind === 'relation'
-                  ? relationCorrections.find((item: any) => item.review_id === review.id)
-                  : null
+                const relation = review.kind === 'relation' ? review.relation : null
+                const relationCorrectionAudit = review.kind === 'relation' ? review.relationCorrection : null
                 const subject = relation ? graph.entities.find((item: any) => item.id === relation.subjectId) : null
                 const object = relation ? graph.entities.find((item: any) => item.id === relation.objectId) : null
                 const relationEdit = relation
@@ -2451,16 +2465,17 @@ function AiAssistantPage() {
             </div>}
             <div className="assistant-dossier-grid">
               <section>
-                <h3>结构化事实 <small>{selectedEntityClaims.length}</small></h3>
+                <h3>结构化事实 <small>{Number(graphWorkspace.focus?.claimTotal ?? selectedEntityClaims.length)}</small></h3>
                 {selectedEntityClaims.map((claim: any) => <article key={claim.id}>
                   <div><b>{claim.polarity === 'negative' ? '并非 ' : ''}{claim.predicate}</b><span>{claim.object_entity_name || claim.object_value || '待确认'}</span></div>
                   <small>{claim.status === 'confirmed' ? '已确认' : '待确认'} · {Math.round(Number(claim.confidence || 0) * 100)}% · {claim.source_nature === 'self_statement' ? '本人陈述' : claim.source_nature === 'other_statement' ? '他人陈述' : '模型推断'}</small>
                   {(claim.evidence || []).map((evidence: any) => <blockquote key={`${claim.id}-${evidence.message_id}`}>“{evidence.excerpt}”</blockquote>)}
                 </article>)}
                 {!selectedEntityClaims.length && <em>尚无结构化事实</em>}
+                {Number(graphWorkspace.focus?.claimTotal || 0) > selectedEntityClaims.length && <em>当前档案先显示最近 {selectedEntityClaims.length} 条；可从统一记忆继续检索全部事实。</em>}
               </section>
               <section>
-                <h3>关系与证据 <small>{selectedEntityRelations.length}</small></h3>
+                <h3>关系与证据 <small>{Number(graphWorkspace.focus?.relationTotal ?? selectedEntityRelations.length)}</small></h3>
                 {selectedEntityRelations.map((relation: any) => {
                   const outgoing = relation.subjectId === selectedEntity.id
                   const neighborId = outgoing ? relation.objectId : relation.subjectId
@@ -2475,9 +2490,10 @@ function AiAssistantPage() {
                   </article>
                 })}
                 {!selectedEntityRelations.length && <em>尚无关系</em>}
+                {Number(graphWorkspace.focus?.relationTotal || 0) > selectedEntityRelations.length && <em>当前档案先显示强度最高的 {selectedEntityRelations.length} 条关系。</em>}
               </section>
               <section>
-                <h3>事件时间线 <small>{selectedEntityEvents.length}</small></h3>
+                <h3>事件时间线 <small>{Number(graphWorkspace.focus?.eventTotal ?? selectedEntityEvents.length)}</small></h3>
                 {selectedEntityEvents.map((event: any) => <article key={event.id}>
                   <div><b>{event.title}</b><span>{event.start_at || '时间待确认'}</span></div>
                   {event.description && <p>{event.description}</p>}
@@ -2485,6 +2501,7 @@ function AiAssistantPage() {
                   {(event.evidence || []).map((evidence: any) => <blockquote key={`${event.id}-${evidence.message_id}`}>“{evidence.excerpt}”</blockquote>)}
                 </article>)}
                 {!selectedEntityEvents.length && <em>尚无相关事件</em>}
+                {Number(graphWorkspace.focus?.eventTotal || 0) > selectedEntityEvents.length && <em>当前档案先显示最近 {selectedEntityEvents.length} 条；可从事件时间线继续查看全部记录。</em>}
               </section>
               <section>
                 <h3>关联事项 <small>{selectedEntityTasks.length}</small></h3>

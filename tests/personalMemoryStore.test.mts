@@ -665,6 +665,72 @@ test('conflicting current claims coexist as review candidates', () => withStore(
   assert.deepEqual(new Set(claims.map(claim => claim.evidence[0].evidence_role)), new Set(['direct', 'indirect']))
 }))
 
+test('entity dossier memory is scoped before its bounded result limit', () => withStore(store => {
+  store.syncGraph({
+    entities: [
+      { id: 'dossier-person', type: 'person', canonicalName: '档案人物', trustStatus: 'confirmed' },
+      { id: 'other-person', type: 'person', canonicalName: '其他人物', trustStatus: 'confirmed' }
+    ],
+    relations: [],
+    reviewQueue: []
+  })
+  store.upsertClaims([
+    {
+      id: 'dossier-claim',
+      subjectId: 'dossier-person',
+      predicate: '负责',
+      objectValue: '产品演示',
+      confidence: 0.9,
+      status: 'candidate',
+      sourceNature: 'other_statement',
+      searchText: '档案人物负责产品演示',
+      evidence: evidence('dossier-claim-message', '负责产品演示')
+    },
+    {
+      id: 'other-claim',
+      subjectId: 'other-person',
+      predicate: '负责',
+      objectValue: '无关工作',
+      confidence: 0.9,
+      status: 'candidate',
+      sourceNature: 'other_statement',
+      searchText: '其他人物负责无关工作',
+      evidence: evidence('other-claim-message', '负责无关工作')
+    }
+  ])
+  store.upsertEvents([
+    {
+      id: 'dossier-event',
+      eventType: 'meeting',
+      title: '档案会议',
+      startAt: '2026-07-30T10:00:00.000Z',
+      confidence: 0.9,
+      status: 'candidate',
+      searchText: '档案人物参加档案会议',
+      participants: [{ entityId: 'dossier-person', role: 'participant' }],
+      evidence: evidence('dossier-event-message', '参加档案会议')
+    },
+    {
+      id: 'other-event',
+      eventType: 'meeting',
+      title: '其他会议',
+      startAt: '2026-07-30T11:00:00.000Z',
+      confidence: 0.9,
+      status: 'candidate',
+      searchText: '其他人物参加其他会议',
+      participants: [{ entityId: 'other-person', role: 'participant' }],
+      evidence: evidence('other-event-message', '参加其他会议')
+    }
+  ])
+  const dossier = store.getEntityMemory('dossier-person', 1)
+  assert.deepEqual(dossier.claims.map(item => item.id), ['dossier-claim'])
+  assert.deepEqual(dossier.events.map(item => item.id), ['dossier-event'])
+  assert.equal(dossier.claimTotal, 1)
+  assert.equal(dossier.eventTotal, 1)
+  assert.equal(dossier.claims[0].evidence[0].message_id, 'dossier-claim-message')
+  assert.equal(dossier.events[0].participants[0].entity_id, 'dossier-person')
+}))
+
 test('task search keeps original message evidence', () => withStore(store => {
   store.syncTasks([{
     id: 'task-1',

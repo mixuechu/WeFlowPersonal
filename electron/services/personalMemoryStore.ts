@@ -798,6 +798,13 @@ export class PersonalMemoryStore {
       : this.db.prepare('SELECT * FROM relation_corrections ORDER BY id DESC LIMIT ?').all(limit) as any[]
   }
 
+  getRelationCorrectionByReview(reviewId: string): any | null {
+    if (!this.db || !String(reviewId || '').trim()) return null
+    return this.db.prepare(
+      'SELECT * FROM relation_corrections WHERE review_id=? ORDER BY id DESC LIMIT 1'
+    ).get(String(reviewId)) as any || null
+  }
+
   recordEntityProfileCorrection(
     entityId: string,
     reviewId: string,
@@ -1893,6 +1900,68 @@ export class PersonalMemoryStore {
         metadata: JSON.parse(resource.metadata_json || '{}'),
         evidence: resourceEvidence.all(`resource:${resource.id}`) as any[]
       }))
+    }
+  }
+
+  getEntityMemory(entityId: string, limit = 200): {
+    claims: any[]
+    events: any[]
+    claimTotal: number
+    eventTotal: number
+  } {
+    if (!this.db || !String(entityId || '').trim()) {
+      return { claims: [], events: [], claimTotal: 0, eventTotal: 0 }
+    }
+    const safeLimit = Math.max(1, Math.min(500, Math.floor(Number(limit) || 200)))
+    const claims = this.db.prepare(`
+      SELECT c.*,s.canonical_name AS subject_name,o.canonical_name AS object_entity_name,
+        (SELECT COUNT(*) FROM memory_corrections mc
+          WHERE mc.item_kind='claim' AND mc.item_id=c.id) AS correction_count
+      FROM claims c
+      LEFT JOIN entities s ON s.id=c.subject_id
+      LEFT JOIN entities o ON o.id=c.object_entity_id
+      WHERE c.status!='rejected' AND (c.subject_id=? OR c.object_entity_id=?)
+      ORDER BY c.updated_at DESC LIMIT ?
+    `).all(entityId, entityId, safeLimit) as any[]
+    const events = this.db.prepare(`
+      SELECT ev.*,
+        (SELECT COUNT(*) FROM memory_corrections mc
+          WHERE mc.item_kind='event' AND mc.item_id=ev.id) AS correction_count
+      FROM events ev
+      WHERE ev.status!='rejected' AND EXISTS(
+        SELECT 1 FROM event_participants ep WHERE ep.event_id=ev.id AND ep.entity_id=?
+      )
+      ORDER BY COALESCE(ev.start_at,ev.updated_at) DESC LIMIT ?
+    `).all(entityId, safeLimit) as any[]
+    const evidenceStatement = this.db.prepare(`
+      SELECT message_id,session_id,timestamp,excerpt,evidence_role
+      FROM evidence WHERE claim_id=? OR event_id=? ORDER BY timestamp
+    `)
+    const participantStatement = this.db.prepare(`
+      SELECT ep.entity_id,ep.role,e.canonical_name
+      FROM event_participants ep JOIN entities e ON e.id=ep.entity_id WHERE ep.event_id=?
+    `)
+    const claimTotal = Number((this.db.prepare(
+      `SELECT COUNT(*) AS count FROM claims
+       WHERE status!='rejected' AND (subject_id=? OR object_entity_id=?)`
+    ).get(entityId, entityId) as any)?.count || 0)
+    const eventTotal = Number((this.db.prepare(`
+      SELECT COUNT(DISTINCT ep.event_id) AS count
+      FROM event_participants ep JOIN events ev ON ev.id=ep.event_id
+      WHERE ep.entity_id=? AND ev.status!='rejected'
+    `).get(entityId) as any)?.count || 0)
+    return {
+      claims: claims.map(claim => ({
+        ...claim,
+        evidence: evidenceStatement.all(claim.id, '') as any[]
+      })),
+      events: events.map(event => ({
+        ...event,
+        participants: participantStatement.all(event.id) as any[],
+        evidence: evidenceStatement.all('', event.id) as any[]
+      })),
+      claimTotal,
+      eventTotal
     }
   }
 

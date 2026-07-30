@@ -109,6 +109,7 @@ import {
   isNegativeDecisionCurrent
 } from './identityDisambiguation'
 import { paginateGraphReviews, type GraphReviewPageOptions } from '../../shared/graphReviewPagination'
+import { buildGraphViewport, type GraphViewportOptions } from '../../shared/graphViewport'
 
 const ATTACHMENT_STRUCTURE_PARSER_VERSION = 'attachment-layout-v3'
 
@@ -2562,13 +2563,6 @@ export class AiAssistantService {
     const reminderResult = applyReminderPreferences(allTaskReminders, this.state.reminderPreferences)
     const taskHistory = personalMemoryStore.listTaskHistory(tasks.map(task => task.id))
     const memoryFeed = personalMemoryStore.getMemoryFeed()
-    const entityInsights = buildEntityInsights({
-      entities: this.state.graph.entities,
-      relations: this.state.graph.relations,
-      claims: memoryFeed.claims,
-      events: memoryFeed.events,
-      tasks
-    })
     const projectInsights = buildProjectInsights({
       entities: this.state.graph.entities,
       relations: this.state.graph.relations,
@@ -2580,6 +2574,15 @@ export class AiAssistantService {
       .update(this.state.graph.reviewQueue.map(review =>
         `${review.id}\u0000${review.status}\u0000${review.createdAt || ''}\u0000${review.resolvedAt || ''}`
       ).join('\u0001'))
+      .digest('hex')
+      .slice(0, 16)
+    const graphRevision = crypto.createHash('sha256')
+      .update([
+        ...this.state.graph.entities.map(entity =>
+          `${entity.id}\u0000${entity.trustStatus}\u0000${entity.updatedAt || entity.createdAt || ''}`),
+        ...this.state.graph.relations.map(relation =>
+          `${relation.id}\u0000${relation.status}\u0000${relation.updatedAt || relation.createdAt || ''}`)
+      ].join('\u0001'))
       .digest('hex')
       .slice(0, 16)
     return {
@@ -2603,12 +2606,15 @@ export class AiAssistantService {
           ))
         }))
       },
-      entityInsights,
       projectInsights,
       cursor: this.state.cursor,
-      graph: { ...this.state.graph, reviewQueue: [] },
+      graph: { ...this.state.graph, relations: [], reviewQueue: [] },
+      graphSummary: {
+        entities: this.state.graph.entities.filter(entity => entity.trustStatus !== 'rejected').length,
+        relations: this.state.graph.relations.filter(relation => relation.status !== 'rejected').length
+      },
+      graphRevision,
       graphReviewRevision,
-      relationHistory: personalMemoryStore.listRelationHistory('', 300),
       identityDisambiguation: {
         ...this.state.graph.identityScan,
         ...getFullIdentityScanSchedule(
@@ -2617,9 +2623,6 @@ export class AiAssistantService {
         )
       },
       mergeHistory: personalMemoryStore.listActiveMerges(),
-      entityCorrections: personalMemoryStore.listEntityCorrections('', 300),
-      relationCorrections: personalMemoryStore.listRelationCorrections('', 300),
-      entityProfileCorrections: personalMemoryStore.listEntityProfileCorrections('', 300),
       memoryDeletionAudit: personalMemoryStore.listMemoryDeletionAudit(50),
       memoryStats: personalMemoryStore.getMemoryStats(),
       attachmentStructureMigration: personalMemoryStore.getAttachmentStructureMigrationStats(
@@ -2651,13 +2654,92 @@ export class AiAssistantService {
     const status = options?.status === 'resolved' || options?.status === 'all'
       ? options.status
       : 'pending'
-    return paginateGraphReviews(this.state.graph.reviewQueue, {
+    const page = paginateGraphReviews(this.state.graph.reviewQueue, {
       status,
       kind: String(options?.kind || '').trim(),
       query: String(options?.query || '').trim(),
       offset: options?.offset,
       limit: options?.limit
     })
+    return {
+      ...page,
+      items: page.items.map(review => {
+        const relationId = review.correctedRelationId || review.relationId || review.originalRelationId
+        return {
+          ...review,
+          relation: relationId
+            ? this.state.graph.relations.find(relation => relation.id === relationId) || null
+            : null,
+          relationCorrection: review.kind === 'relation'
+            ? personalMemoryStore.getRelationCorrectionByReview(review.id)
+            : null
+        }
+      })
+    }
+  }
+
+  getGraphWorkspace(options?: Partial<GraphViewportOptions>): any {
+    const viewport = buildGraphViewport(this.state.graph.entities, this.state.graph.relations, {
+      query: String(options?.query || '').trim(),
+      relationType: String(options?.relationType || '').trim(),
+      relationStatus: ['candidate', 'confirmed'].includes(String(options?.relationStatus || ''))
+        ? String(options?.relationStatus)
+        : '',
+      focusEntityId: String(options?.focusEntityId || '').trim(),
+      depth: Number(options?.depth || 1),
+      maxNodes: 60
+    })
+    const focusEntity = options?.focusEntityId
+      ? this.state.graph.entities.find(entity =>
+        entity.id === options.focusEntityId && entity.trustStatus !== 'rejected') || null
+      : null
+    let focus: any = null
+    if (focusEntity) {
+      const memory = personalMemoryStore.getEntityMemory(focusEntity.id, 200)
+      const allRelations = this.state.graph.relations
+        .filter(relation => relation.status !== 'rejected' &&
+          (relation.subjectId === focusEntity.id || relation.objectId === focusEntity.id))
+        .sort((left, right) =>
+          Number(right.status === 'confirmed') - Number(left.status === 'confirmed') ||
+          Number(right.confidence || 0) - Number(left.confidence || 0) ||
+          String(right.updatedAt || right.createdAt || '').localeCompare(String(left.updatedAt || left.createdAt || '')))
+      const insights = buildEntityInsights({
+        entities: this.state.graph.entities,
+        relations: this.state.graph.relations,
+        claims: memory.claims,
+        claimTotal: memory.claimTotal,
+        events: memory.events,
+        eventTotal: memory.eventTotal,
+        tasks: this.state.tasks.filter(task => task.classification === 'mine')
+      })
+      focus = {
+        entity: focusEntity,
+        insight: insights[focusEntity.id] || null,
+        claims: memory.claims,
+        events: memory.events,
+        relations: allRelations.slice(0, 200),
+        relationTotal: allRelations.length,
+        relationHistory: personalMemoryStore.listRelationHistory(focusEntity.id, 300),
+        entityCorrections: personalMemoryStore.listEntityCorrections(focusEntity.id, 300),
+        relationCorrections: personalMemoryStore.listRelationCorrections(focusEntity.id, 300),
+        entityProfileCorrections: personalMemoryStore.listEntityProfileCorrections(focusEntity.id, 300)
+      }
+    }
+    return {
+      viewport: {
+        ...viewport,
+        levels: Object.fromEntries(viewport.levels)
+      },
+      summary: {
+        entities: this.state.graph.entities.filter(entity => entity.trustStatus !== 'rejected').length,
+        relations: this.state.graph.relations.filter(relation => relation.status !== 'rejected').length
+      },
+      predicates: [...new Set(this.state.graph.relations
+        .filter(relation => relation.status !== 'rejected')
+        .map(relation => relation.predicate)
+        .filter(Boolean))].sort((left, right) => left.localeCompare(right, 'zh-CN')),
+      focus
+    }
   }
 
   getEventTimeline(options: any = {}): any {

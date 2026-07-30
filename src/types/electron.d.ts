@@ -1656,6 +1656,25 @@ export interface ElectronAPI {
         hasMore: boolean
         counts: { pending: number; resolved: number; all: number }
       }>
+      getGraphWorkspace: (options?: {
+        query?: string
+        relationType?: string
+        relationStatus?: string
+        focusEntityId?: string
+        depth?: number
+      }) => Promise<{
+        viewport: {
+          entities: any[]
+          relations: any[]
+          levels: Record<string, number>
+          mode: 'overview' | 'search' | 'focus'
+          totalAvailable: number
+          truncated: number
+        }
+        summary: { entities: number; relations: number }
+        predicates: string[]
+        focus: any | null
+      }>
       sync: () => Promise<any>
       cancelSync: () => Promise<any>
     getSettings: () => Promise<any>
