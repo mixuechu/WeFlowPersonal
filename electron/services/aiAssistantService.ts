@@ -397,6 +397,10 @@ export class AiAssistantService {
     this.migrateLegacyData()
     this.loadState()
     this.recoverPreparedIngestionBatchCommits()
+    personalMemoryStore.reconcileInterruptedIngestionRuns({
+      entityCount: this.state.graph.entities.length,
+      relationCount: this.state.graph.relations.length
+    })
     this.reconcileTaskReviewFeedbackOnStartup()
     this.removeSuppressedRelationsFromState()
     this.saveState()

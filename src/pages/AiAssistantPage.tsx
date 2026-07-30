@@ -1240,6 +1240,10 @@ function AiAssistantPage() {
             {Number(ingestionStatus.commitHealth?.recoveryFailures || 0) > 0 && <small>
               其中 {Number(ingestionStatus.commitHealth.recoveryFailures)} 个批次曾恢复失败，原始恢复载荷仍保留。
             </small>}
+            {ingestionStatus.recovered_at && <small>
+              检测到上次运行被退出打断：已保留 {Number(ingestionStatus.recovered_batch_count || 0)} 个成功批次，
+              {Number(ingestionStatus.interrupted_batch_count || 0)} 个在途批次将按 checkpoint 重试。
+            </small>}
             {ingestionStatus.error && <small>{ingestionStatus.error}</small>}
           </div>
         )}
@@ -2752,6 +2756,11 @@ function AiAssistantPage() {
               {(memoryDiagnostics.ingestionRuns || []).map((run: any) => <details key={run.id} open={run.status !== 'completed'}>
                 <summary><span><b>{new Date(run.started_at).toLocaleString('zh-CN')}</b><small>{run.model || '模型待记录'} · {run.prompt_version || '版本待记录'}</small></span>
                   <span className={run.status}>{run.status} · {run.message_count} 条 · {(Number(run.usage?.duration_ms || 0) / 1000).toFixed(1)} 秒</span></summary>
+                {run.recovered_at && <p>
+                  本次运行在上次退出时尚未结束，已于 {new Date(run.recovered_at).toLocaleString('zh-CN')} 完成账本对账：
+                  保留 {Number(run.recovered_batch_count || 0)} 个成功批次，
+                  {Number(run.interrupted_batch_count || 0)} 个在途批次已转为等待 checkpoint 重试。
+                </p>}
                 {run.error && <p className="assistant-diagnostics-error">{run.error}</p>}
                 <div>
                   {(run.batches || []).map((batch: any) => <article key={`${run.id}-${batch.batch_index}`} className={batch.status}>

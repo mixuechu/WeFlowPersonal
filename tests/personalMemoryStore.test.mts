@@ -2200,6 +2200,81 @@ test('document ingestion commit advances the content-version checkpoint atomical
   assert.equal(store.getDocumentAnalysisStats('document-v1').pending, 1)
 }))
 
+test('startup reconciliation closes interrupted run ledgers without losing prepared recovery payloads', () => withStore(store => {
+  store.startIngestionRun('run-interrupted', 'deepseek-test', 'prompt-test')
+  store.recordIngestionBatch('run-interrupted', 0, 20, 'running')
+  store.recordIngestionBatch('run-interrupted', 0, 20, 'completed')
+  store.recordIngestionBatch('run-interrupted', 1, 10, 'running')
+  store.prepareIngestionBatchCommit({
+    commitId: 'commit-still-prepared',
+    runId: 'run-interrupted',
+    batchIndex: 1,
+    digest: { tasks: [] },
+    messages: [{ id: 'message-pending' }],
+    checkpointKeys: ['wechat:session:message-pending'],
+    createdAt: '2026-07-31T00:00:00.000Z'
+  })
+
+  const reconciliation = store.reconcileInterruptedIngestionRuns({
+    entityCount: 7,
+    relationCount: 9
+  })
+  assert.deepEqual(reconciliation, {
+    runs: 1,
+    interruptedBatches: 1,
+    recoveredBatches: 1,
+    pendingCommits: 1
+  })
+  const run = store.listIngestionRuns().find(item => item.id === 'run-interrupted')
+  assert.equal(run.status, 'partial')
+  assert.equal(run.message_count, 20)
+  assert.equal(run.entity_count, 7)
+  assert.equal(run.relation_count, 9)
+  assert.equal(run.recovered_batch_count, 1)
+  assert.equal(run.interrupted_batch_count, 1)
+  assert.match(run.error, /1 个加密批次仍等待自动恢复/)
+  assert.equal(run.batches[1].status, 'failed')
+  assert.equal(store.listPreparedIngestionBatchCommits().length, 1)
+
+  assert.deepEqual(store.reconcileInterruptedIngestionRuns({
+    entityCount: 99,
+    relationCount: 99
+  }), {
+    runs: 0,
+    interruptedBatches: 0,
+    recoveredBatches: 0,
+    pendingCommits: 0
+  })
+  assert.equal(store.listIngestionRuns().find(item => item.id === 'run-interrupted').entity_count, 7)
+}))
+
+test('a recovered final batch is archived as an interrupted partial run instead of permanent running', () => withStore(store => {
+  store.startIngestionRun('run-replayed', 'deepseek-test', 'prompt-test')
+  store.recordIngestionBatch('run-replayed', 0, 1, 'running')
+  store.prepareIngestionBatchCommit({
+    commitId: 'commit-replayed',
+    runId: 'run-replayed',
+    batchIndex: 0,
+    digest: { tasks: [] },
+    messages: [{ id: 'message-replayed' }],
+    checkpointKeys: ['wechat:session:message-replayed'],
+    createdAt: '2026-07-31T00:00:00.000Z'
+  })
+  store.finalizeIngestionBatchCommit('commit-replayed')
+  const reconciliation = store.reconcileInterruptedIngestionRuns({
+    entityCount: 2,
+    relationCount: 3
+  })
+  assert.equal(reconciliation.runs, 1)
+  assert.equal(reconciliation.recoveredBatches, 1)
+  assert.equal(reconciliation.interruptedBatches, 0)
+  const run = store.listIngestionRuns()[0]
+  assert.equal(run.status, 'partial')
+  assert.equal(run.message_count, 1)
+  assert.equal(run.batches[0].status, 'completed')
+  assert.match(run.error, /1 个成功批次已保存/)
+}))
+
 test('entity insight strength is explainable and deduplicates shared evidence', () => {
   const insight = buildEntityInsights({
     entities: [

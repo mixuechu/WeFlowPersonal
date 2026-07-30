@@ -534,6 +534,9 @@ export class PersonalMemoryStore {
     this.ensureColumn('ingestion_batches', 'duration_ms', `INTEGER NOT NULL DEFAULT 0`)
     this.ensureColumn('ingestion_batches', 'redaction_summary_json', `TEXT NOT NULL DEFAULT '{}'`)
     this.ensureColumn('ingestion_batches', 'evidence_validation_json', `TEXT NOT NULL DEFAULT '{}'`)
+    this.ensureColumn('ingestion_runs', 'recovered_at', 'TEXT')
+    this.ensureColumn('ingestion_runs', 'recovered_batch_count', 'INTEGER NOT NULL DEFAULT 0')
+    this.ensureColumn('ingestion_runs', 'interrupted_batch_count', 'INTEGER NOT NULL DEFAULT 0')
     this.ensureColumn('ingestion_batch_commits', 'source_kind', `TEXT NOT NULL DEFAULT 'wechat'`)
     this.ensureColumn('ingestion_batch_commits', 'resource_id', `TEXT NOT NULL DEFAULT ''`)
     this.ensureColumn('ingestion_batch_commits', 'resource_content_hash', `TEXT NOT NULL DEFAULT ''`)
@@ -2766,6 +2769,73 @@ export class PersonalMemoryStore {
     this.db.prepare(`
       UPDATE ingestion_runs SET finished_at=?,message_count=?,entity_count=?,relation_count=?,status=?,error=? WHERE id=?
     `).run(new Date().toISOString(), input.messageCount, input.entityCount, input.relationCount, input.status, input.error || null, id)
+  }
+
+  reconcileInterruptedIngestionRuns(input: {
+    entityCount: number
+    relationCount: number
+  }): {
+    runs: number
+    interruptedBatches: number
+    recoveredBatches: number
+    pendingCommits: number
+  } {
+    const empty = { runs: 0, interruptedBatches: 0, recoveredBatches: 0, pendingCommits: 0 }
+    if (!this.db) return empty
+    const runningRuns = this.db.prepare(`
+      SELECT id FROM ingestion_runs WHERE status='running' ORDER BY started_at
+    `).all() as Array<{ id: string }>
+    if (!runningRuns.length) return empty
+    const result = { ...empty }
+    const now = new Date().toISOString()
+    const transaction = this.db.transaction(() => {
+      for (const run of runningRuns) {
+        const counts = this.db!.prepare(`
+          SELECT
+            SUM(CASE WHEN status='completed' THEN 1 ELSE 0 END) AS completed_batches,
+            SUM(CASE WHEN status='running' THEN 1 ELSE 0 END) AS running_batches,
+            SUM(CASE WHEN status='completed' THEN message_count ELSE 0 END) AS completed_messages
+          FROM ingestion_batches WHERE run_id=?
+        `).get(run.id) as any
+        const pending = Number((this.db!.prepare(`
+          SELECT COUNT(*) AS count FROM ingestion_batch_commits
+          WHERE run_id=? AND status='prepared'
+        `).get(run.id) as any)?.count || 0)
+        const interrupted = Number(counts?.running_batches || 0)
+        const recovered = Number(counts?.completed_batches || 0)
+        const note = pending
+          ? `应用在记忆处理期间退出；${recovered} 个批次已保存，${pending} 个加密批次仍等待自动恢复`
+          : `应用在记忆处理期间退出；${recovered} 个成功批次已保存，未完成内容将按 checkpoint 继续`
+        this.db!.prepare(`
+          UPDATE ingestion_batches
+          SET status='failed',finished_at=?,error=?
+          WHERE run_id=? AND status='running'
+        `).run(now, pending ? '应用退出中断；加密恢复载荷仍保留' : '应用退出中断；等待按 checkpoint 重试', run.id)
+        this.db!.prepare(`
+          UPDATE ingestion_runs
+          SET finished_at=?,message_count=?,entity_count=?,relation_count=?,
+            status='partial',error=?,recovered_at=?,recovered_batch_count=?,
+            interrupted_batch_count=?
+          WHERE id=? AND status='running'
+        `).run(
+          now,
+          Number(counts?.completed_messages || 0),
+          Math.max(0, Number(input.entityCount || 0)),
+          Math.max(0, Number(input.relationCount || 0)),
+          note,
+          now,
+          recovered,
+          interrupted,
+          run.id
+        )
+        result.runs += 1
+        result.interruptedBatches += interrupted
+        result.recoveredBatches += recovered
+        result.pendingCommits += pending
+      }
+    })
+    transaction()
+    return result
   }
 
   getIngestionStatus(): any {
