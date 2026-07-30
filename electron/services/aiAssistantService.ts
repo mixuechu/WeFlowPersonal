@@ -68,7 +68,13 @@ import { summarizeIngestionRuns } from './ingestionDiagnostics'
 import { attachLocalImageOcr, attachLocalVoiceTranscript, recoverMessageSemantics } from './messageSemanticRecovery'
 import { sanitizeDiagnosticText } from './diagnosticRedaction'
 import { getAppRunRecoveryDiagnostics } from './appRunRecoveryService'
-import { readDurableJson, writeDurableJson, type DurableJsonRecovery } from './durableJsonState'
+import type { DurableJsonRecovery } from './durableJsonState'
+import {
+  encodeEncryptedDurableJson,
+  isEncryptedDurableJson,
+  readEncryptedDurableJson,
+  writeEncryptedDurableJson
+} from './encryptedDurableJsonState'
 import {
   PERSONAL_DATA_SOURCE_CATALOG,
   buildModelMemoryContext,
@@ -282,6 +288,7 @@ export class AiAssistantService {
   private config = ConfigService.getInstance()
   private state: AssistantState = structuredClone(EMPTY_STATE)
   private statePath = ''
+  private stateEncryptionKey = ''
   private activeSync: Promise<any> | null = null
   private scheduler: ReturnType<typeof setInterval> | null = null
   private lastSchedulerAttemptAt = 0
@@ -294,13 +301,21 @@ export class AiAssistantService {
     restored: 0,
     lastRunAt: ''
   }
-  private stateStorage: DurableJsonRecovery & { lastWriteAt: string } = {
+  private stateStorage: DurableJsonRecovery & {
+    lastWriteAt: string
+    encrypted: boolean
+    migratedPlaintext: boolean
+    keyStorage: string
+  } = {
     source: 'empty',
     recovered: false,
     repairedPrimary: false,
     primaryError: '',
     backupError: '',
-    lastWriteAt: ''
+    lastWriteAt: '',
+    encrypted: false,
+    migratedPlaintext: false,
+    keyStorage: ''
   }
 
   async initialize(): Promise<void> {
@@ -328,6 +343,24 @@ export class AiAssistantService {
     if (!this.config.isStoredWithSafeStorage('aiAssistantDatabaseKey')) {
       throw new Error('个人记忆数据库密钥未能写入 macOS 安全存储')
     }
+    const stateKeyStored = this.config.isStoredWithSafeStorage('aiAssistantStateKey')
+    let stateKey = String(this.config.get('aiAssistantStateKey') || '')
+    if (stateKeyStored && !/^[a-f0-9]{64}$/i.test(stateKey)) {
+      throw new Error('无法从 macOS 安全存储读取 AI 状态密钥；为避免覆盖状态，初始化已停止')
+    }
+    if (!stateKeyStored) {
+      const encryptedStateExists = [this.statePath, `${this.statePath}.bak`]
+        .some(path => existsSync(path) && isEncryptedDurableJson(readFileSync(path)))
+      if (encryptedStateExists) {
+        throw new Error('检测到已加密的 AI 状态，但 macOS 安全存储中缺少对应密钥；状态文件未被修改')
+      }
+      stateKey = crypto.randomBytes(32).toString('hex')
+      this.config.set('aiAssistantStateKey', stateKey)
+    }
+    if (!this.config.isStoredWithSafeStorage('aiAssistantStateKey') || !/^[a-f0-9]{64}$/i.test(stateKey)) {
+      throw new Error('AI 状态密钥未能写入 macOS 安全存储')
+    }
+    this.stateEncryptionKey = stateKey
     personalMemoryStore.initialize(databasePath, databaseKey)
     personalMemoryStore.registerDataSources(PERSONAL_DATA_SOURCE_CATALOG)
     personalMemoryStore.setDataSourceAvailability(
@@ -385,7 +418,11 @@ export class AiAssistantService {
     const legacyRoot = join(app.getAppPath(), 'daily-ai-assistant')
     const legacyState = join(legacyRoot, 'data', 'state.json')
     if (!existsSync(this.statePath) && existsSync(legacyState)) {
-      writeDurableJson(this.statePath, JSON.parse(readFileSync(legacyState, 'utf8')))
+      writeEncryptedDurableJson(
+        this.statePath,
+        JSON.parse(readFileSync(legacyState, 'utf8')),
+        this.stateEncryptionKey
+      )
     }
     if (!this.config.get('aiAssistantApiKey')) {
       const envPath = join(legacyRoot, '.env')
@@ -401,13 +438,24 @@ export class AiAssistantService {
 
   private loadState(): void {
     try {
-      const durable = readDurableJson<any>(this.statePath, structuredClone(EMPTY_STATE))
+      const durable = readEncryptedDurableJson<any>(
+        this.statePath,
+        structuredClone(EMPTY_STATE),
+        this.stateEncryptionKey
+      )
       const loaded = durable.value
+      const migratedPlaintext = durable.recovery.source !== 'empty' && !durable.encrypted
+      if (migratedPlaintext) {
+        writeEncryptedDurableJson(this.statePath, loaded, this.stateEncryptionKey)
+      }
       this.stateStorage = {
         ...durable.recovery,
         primaryError: durable.recovery.primaryError ? sanitizeDiagnosticText(durable.recovery.primaryError) : '',
         backupError: durable.recovery.backupError ? sanitizeDiagnosticText(durable.recovery.backupError) : '',
-        lastWriteAt: this.stateStorage.lastWriteAt
+        lastWriteAt: this.stateStorage.lastWriteAt,
+        encrypted: durable.recovery.source !== 'empty',
+        migratedPlaintext,
+        keyStorage: 'macOS Safe Storage'
       }
       if (durable.recovery.source === 'empty' &&
           (durable.recovery.primaryError !== 'missing' || durable.recovery.backupError !== 'missing')) {
@@ -580,7 +628,8 @@ export class AiAssistantService {
   }
 
   private saveState(): void {
-    writeDurableJson(this.statePath, this.state)
+    writeEncryptedDurableJson(this.statePath, this.state, this.stateEncryptionKey)
+    this.stateStorage.encrypted = true
     this.stateStorage.lastWriteAt = new Date().toISOString()
     try {
       personalMemoryStore.syncGraph(this.state.graph)
@@ -2649,6 +2698,9 @@ export class AiAssistantService {
         databaseEncryption: databaseDiagnostics.encryption,
         stateMode: (() => { try { return (statSync(this.statePath).mode & 0o777).toString(8).padStart(3, '0') } catch { return null } })(),
         stateBackupMode: (() => { try { return (statSync(`${this.statePath}.bak`).mode & 0o777).toString(8).padStart(3, '0') } catch { return null } })(),
+        stateEncryption: isEncryptedDurableJson(readFileSync(this.statePath))
+          ? 'AES-256-GCM · key in macOS Safe Storage'
+          : 'not encrypted',
         apiKeyStorage: 'macOS Safe Storage',
         httpBinding: '127.0.0.1',
         logsRedacted: true,
@@ -2663,22 +2715,32 @@ export class AiAssistantService {
   }
 
   createMemoryBackup(): any {
+    const durable = readEncryptedDurableJson<any>(
+      this.statePath,
+      structuredClone(EMPTY_STATE),
+      this.stateEncryptionKey
+    )
+    if (durable.recovery.source === 'empty') throw new Error('AI 状态不可读取，未创建不完整快照')
     const result = personalMemoryStore.createBackup()
     const stateBackupPath = `${result.path}.state.json`
-    if (existsSync(this.statePath)) {
-      writeDurableJson(stateBackupPath, JSON.parse(readFileSync(this.statePath, 'utf8')))
-    }
+    writeEncryptedDurableJson(stateBackupPath, durable.value, this.stateEncryptionKey)
     return { ...result, stateBackupPath }
   }
 
   restoreMemoryBackup(path: string): any {
     const stateBackupPath = `${path}.state.json`
     if (!existsSync(stateBackupPath)) throw new Error('该快照缺少 AI 助理状态文件，无法完整恢复')
-    const restoredState = JSON.parse(readFileSync(stateBackupPath, 'utf8'))
+    const restored = readEncryptedDurableJson<any>(
+      stateBackupPath,
+      structuredClone(EMPTY_STATE),
+      this.stateEncryptionKey
+    )
+    if (restored.recovery.source === 'empty') throw new Error('快照中的 AI 状态损坏或密钥不匹配')
+    const restoredState = restored.value
     const safety = this.createMemoryBackup()
     try {
       const result = personalMemoryStore.restoreBackup(path)
-      writeDurableJson(this.statePath, restoredState)
+      writeEncryptedDurableJson(this.statePath, restoredState, this.stateEncryptionKey)
       this.loadState()
       this.saveState()
       return { ...result, safetyBackup: safety.path, restoredStateFrom: stateBackupPath }
@@ -2686,7 +2748,14 @@ export class AiAssistantService {
       try {
         personalMemoryStore.restoreBackup(safety.path)
         if (safety.stateBackupPath && existsSync(safety.stateBackupPath)) {
-          writeDurableJson(this.statePath, JSON.parse(readFileSync(safety.stateBackupPath, 'utf8')))
+          const safetyState = readEncryptedDurableJson<any>(
+            safety.stateBackupPath,
+            structuredClone(EMPTY_STATE),
+            this.stateEncryptionKey
+          )
+          if (safetyState.recovery.source !== 'empty') {
+            writeEncryptedDurableJson(this.statePath, safetyState.value, this.stateEncryptionKey)
+          }
         }
         this.loadState()
         this.saveState()
@@ -2712,7 +2781,13 @@ export class AiAssistantService {
     if (String(passphrase || '').normalize('NFKC').length < 12) throw new Error('迁移口令至少需要 12 个字符')
     const backup = this.createMemoryBackup()
     const databaseBytes = readFileSync(backup.path)
-    const stateBytes = readFileSync(backup.stateBackupPath)
+    const backupState = readEncryptedDurableJson<any>(
+      backup.stateBackupPath,
+      structuredClone(EMPTY_STATE),
+      this.stateEncryptionKey
+    )
+    if (backupState.recovery.source === 'empty') throw new Error('AI 状态快照无法解密，迁移包未创建')
+    const stateBytes = Buffer.from(JSON.stringify(backupState.value), 'utf8')
     const databaseKey = String(this.config.get('aiAssistantDatabaseKey') || '')
     if (!/^[a-f0-9]{64}$/i.test(databaseKey)) throw new Error('无法读取个人记忆数据库密钥，迁移包未创建')
     const manifest = {
@@ -2790,7 +2865,12 @@ export class AiAssistantService {
       ? await zip.file('database-key.bin')!.async('nodebuffer')
       : undefined
     try {
-      const imported = personalMemoryStore.registerImportedBackup(databaseBytes, stateText, sourceKey)
+      const imported = personalMemoryStore.registerImportedBackup(
+        databaseBytes,
+        stateText,
+        sourceKey,
+        encodeEncryptedDurableJson(JSON.parse(stateText), this.stateEncryptionKey)
+      )
       return { ...this.restoreMemoryBackup(imported.path), importedFrom: bundlePath }
     } finally {
       if (sourceKey) sourceKey.fill(0)

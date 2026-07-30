@@ -101,6 +101,7 @@ interface ConfigSchema {
   aiAssistantApiBaseUrl: string
   aiAssistantApiKey: string
   aiAssistantDatabaseKey: string
+  aiAssistantStateKey: string
   aiAssistantApiModel: string
   aiAssistantScheduleTime: string
   aiAssistantQuietStart: string
@@ -174,6 +175,7 @@ const ENCRYPTED_STRING_KEYS: Set<string> = new Set([
   'aiModelApiKey',
   'aiAssistantApiKey',
   'aiAssistantDatabaseKey',
+  'aiAssistantStateKey',
   'aiInsightApiKey',
   'aiInsightWeiboCookie'
 ])
@@ -273,6 +275,7 @@ export class ConfigService {
       aiAssistantApiBaseUrl: 'https://api.deepseek.com',
       aiAssistantApiKey: '',
       aiAssistantDatabaseKey: '',
+      aiAssistantStateKey: '',
       aiAssistantApiModel: 'deepseek-v4-flash',
       aiAssistantScheduleTime: '20:00',
       aiAssistantQuietStart: '22:00',

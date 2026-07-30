@@ -2669,7 +2669,7 @@ function AiAssistantPage() {
               </div>
               <small>索引可由加密库中的原始向量完全重建；版本、覆盖率或候选量不满足要求时自动回退精确扫描。</small>
             </div>}
-            {memoryDiagnostics.privacy && <div className={`assistant-privacy-audit ${memoryDiagnostics.privacy.secure && memoryDiagnostics.privacy.stateMode === '600' ? 'secure' : 'warning'}`}>
+            {memoryDiagnostics.privacy && <div className={`assistant-privacy-audit ${memoryDiagnostics.privacy.secure && memoryDiagnostics.privacy.stateMode === '600' && memoryDiagnostics.stateStorage?.encrypted ? 'secure' : 'warning'}`}>
               <div><ShieldCheck size={15} /><span><b>本机隐私与权限审计</b>
                 <small>数据库 {memoryDiagnostics.privacy.databaseMode || '未知'} · 状态 {memoryDiagnostics.privacy.stateMode || '未知'} / 副本 {memoryDiagnostics.privacy.stateBackupMode || '尚未生成'} · 备份目录 {memoryDiagnostics.privacy.backupDirectoryMode || '尚未创建'}</small>
               </span></div>
@@ -2678,6 +2678,9 @@ function AiAssistantPage() {
                   memoryDiagnostics.privacy.databaseEncryption?.cipher === 'sqlcipher' &&
                   !memoryDiagnostics.privacy.databaseEncryption?.plaintextHeader
                   ? `SQLCipher 已加密${memoryDiagnostics.privacy.databaseEncryption?.migratedThisStart ? '（本次启动完成迁移）' : ''}`
+                  : '未验证加密'}</span>
+                <span>任务与图谱状态：{memoryDiagnostics.stateStorage?.encrypted
+                  ? `AES-256-GCM 已加密${memoryDiagnostics.stateStorage?.migratedPlaintext ? '（本次启动完成明文迁移）' : ''}`
                   : '未验证加密'}</span>
                 <span>数据接口：{memoryDiagnostics.privacy.httpBinding}</span><span>诊断日志：已脱敏</span>
                 <span>模型外发脱敏：{memoryDiagnostics.privacy.sensitiveRedactionLevel === 'strict' ? '严格'

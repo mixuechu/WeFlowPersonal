@@ -938,7 +938,12 @@ export class PersonalMemoryStore {
     }
   }
 
-  registerImportedBackup(databaseBytes: Uint8Array, stateText: string, sourceEncryptionKey?: Buffer | string): any {
+  registerImportedBackup(
+    databaseBytes: Uint8Array,
+    stateText: string,
+    sourceEncryptionKey?: Buffer | string,
+    storedStateText?: string
+  ): any {
     if (!this.db || !this.databasePath) throw new Error('个人记忆数据库尚未初始化')
     JSON.parse(stateText)
     const backupDirectory = join(dirname(this.databasePath), 'personal-memory-backups')
@@ -977,7 +982,7 @@ export class PersonalMemoryStore {
       }
       this.verifyDatabase(temporary)
       renameSync(temporary, backupPath)
-      writeFileSync(`${backupPath}.state.json`, stateText, 'utf8')
+      writeFileSync(`${backupPath}.state.json`, storedStateText || stateText, 'utf8')
       try {
         chmodSync(backupPath, 0o600)
         chmodSync(`${backupPath}.state.json`, 0o600)
