@@ -905,7 +905,8 @@ export class PersonalMemoryStore {
       const insertIdentity = this.db.prepare(`INSERT INTO identities(entity_id,platform,account_id,display_name,confidence) VALUES(?,?,?,?,?)
         ON CONFLICT(platform,account_id) DO UPDATE SET entity_id=excluded.entity_id, display_name=excluded.display_name, confidence=excluded.confidence`)
       for (const entity of graph.entities) {
-        upsertEntity.run(entity.id, entity.type, entity.canonicalName, entity.summary || '', Number(entity.confidence || 0), entity.createdAt || now, entity.updatedAt || now, Number(entity.identityVersion || 1), entity.lastDisambiguatedAt || null)
+        const trustedSummary = entity.summaryStatus === 'confirmed' ? (entity.summary || '') : ''
+        upsertEntity.run(entity.id, entity.type, entity.canonicalName, trustedSummary, Number(entity.confidence || 0), entity.createdAt || now, entity.updatedAt || now, Number(entity.identityVersion || 1), entity.lastDisambiguatedAt || null)
         for (const alias of entity.aliases || []) insertAlias.run(entity.id, alias, String(alias).trim().toLowerCase(), 'name', 1)
         for (const accountId of entity.accountIds || []) insertIdentity.run(entity.id, 'wechat', accountId, entity.canonicalName, 1)
         for (const identity of entity.externalIdentities || []) {
@@ -926,12 +927,13 @@ export class PersonalMemoryStore {
             ...(entity.aliases || []),
             ...(entity.accountIds || []),
             ...(entity.externalIdentities || []).flatMap((identity: any) => [identity.accountId, identity.displayName]),
-            entity.summary || ''
+            trustedSummary
           ].join('；'),
           {
             entityType: entity.type,
             accountIds: entity.accountIds || [],
-            externalIdentities: entity.externalIdentities || []
+            externalIdentities: entity.externalIdentities || [],
+            summaryStatus: entity.summaryStatus || (entity.summary ? 'legacy_unverified' : 'empty')
           }, now)
       }
       const entityNames = new Map(graph.entities.map(entity => [entity.id, entity.canonicalName]))

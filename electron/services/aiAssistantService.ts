@@ -34,6 +34,10 @@ import {
 } from './structuredEvidencePolicy'
 import { planExtractedEntityResolution } from './entityResolutionPolicy'
 import {
+  buildEntitySummaryCandidate,
+  canApplyEntitySummaryCandidate
+} from './entitySummaryPolicy'
+import {
   enqueueUniqueNotification,
   markNotificationAttempt,
   type NotificationOutbox
@@ -112,6 +116,7 @@ type GraphEntity = {
   accountIds: string[]
   externalIdentities: ExternalIdentity[]
   summary: string
+  summaryStatus: 'confirmed' | 'legacy_unverified' | 'empty'
   confidence: number
   evidenceMessageIds: string[]
   createdAt: string
@@ -153,7 +158,7 @@ type AssistantState = {
   graph: {
     entities: GraphEntity[]
     relations: GraphRelation[]
-    reviewQueue: Array<{ id: string; kind: 'possible_duplicate' | 'relation'; title: string; detail: string; confidence: number; status: 'pending' | 'confirmed' | 'rejected'; createdAt: string; leftEntityId?: string; rightEntityId?: string; relationId?: string; candidateSource?: string; candidateSignals?: Array<{ source: string; label: string; value: string }> }>
+    reviewQueue: Array<{ id: string; kind: 'possible_duplicate' | 'relation' | 'entity_summary'; title: string; detail: string; confidence: number; status: 'pending' | 'confirmed' | 'rejected'; createdAt: string; leftEntityId?: string; rightEntityId?: string; relationId?: string; entityId?: string; entityIdentityVersion?: number; previousSummary?: string; summaryText?: string; evidence?: Array<{ messageId: string; sessionId: string; timestamp: number; sender: string; excerpt: string }>; candidateSource?: string; candidateSignals?: Array<{ source: string; label: string; value: string }> }>
     identityScan: { lastFullScanAt: string | null; lastRunAt: string | null; lastMode: 'incremental' | 'full' | null; lastCandidateCount: number }
   }
 }
@@ -199,7 +204,7 @@ const SYSTEM_PROMPT = `你是一个谨慎的中文私人助理兼个人记忆图
 只根据消息证据，不臆测；title 用动词开头；不确定日期时 due 为空；source 使用会话显示名。
 统一证据键规则：所有 evidenceKeys、sourceEvidenceKeys、summaryEvidenceKeys 都必须逐字复制输入消息的 evidenceKey，且只能引用 analysisScope=core 的消息。context 消息可以帮助理解，但绝不能成为任何输出的证据。无法引用真实 core 证据时不要输出该条结构。summary 必须列出 summaryEvidenceKeys；highlights 中每一项必须是 {"text":"重点","sourceEvidenceKeys":["证据键"]}。
 只返回 JSON：
-{"headline":"标题","summary":"摘要","summaryEvidenceKeys":["sourceId:sessionId:messageId"],"highlights":[{"text":"重要信息","sourceEvidenceKeys":["sourceId:sessionId:messageId"]}],"tasks":[{"title":"待办","detail":"上下文","owner":"负责人真实名称","collaborators":["协作者"],"project":"所属项目","dependsOnTitles":["依赖待办标题"],"taskKind":"action|delegated|waiting","due":"","priority":"high|medium|low","source":"会话名","confidence":0.8,"classification":"mine|uncertain|others","assignmentEvidence":"归属证据","sourceEvidenceKeys":["sourceId:sessionId:messageId"]}],"entities":[{"tempId":"e1","type":"person|organization|group|project","canonicalName":"名称","aliases":[],"accountIds":[],"summary":"仅基于证据的简述","confidence":0.8,"evidenceKeys":["sourceId:sessionId:messageId"]}],"relations":[{"subjectTempId":"e1","predicate":"从主语到宾语可直接朗读的有向关系","objectTempId":"e2","directionExplanation":"完整自然语言，例如A向B提供服务","confidence":0.8,"evidenceKeys":["sourceId:sessionId:messageId"]}],"claims":[{"subjectTempId":"e1","predicate":"肯定式标准事实属性","objectTempId":"","objectValue":"事实值","polarity":"positive|negative","valueType":"text|number|date|boolean","validFrom":"","validTo":"","confidence":0.8,"sourceNature":"self_statement|other_statement|inference","evidenceKeys":["sourceId:sessionId:messageId"]}],"events":[{"eventType":"meeting|commitment|delivery|travel|payment|organization_change|decision|other","title":"事件","description":"描述","startAt":"","endAt":"","location":"","participants":[{"tempId":"e1","role":"参与者角色"}],"confidence":0.8,"evidenceKeys":["sourceId:sessionId:messageId"]}],"possibleDuplicates":[{"leftTempId":"e1","rightExistingName":"已有实体名","confidence":0.7,"reason":"原因","evidenceKeys":["sourceId:sessionId:messageId"]}]}`
+{"headline":"标题","summary":"摘要","summaryEvidenceKeys":["sourceId:sessionId:messageId"],"highlights":[{"text":"重要信息","sourceEvidenceKeys":["sourceId:sessionId:messageId"]}],"tasks":[{"title":"待办","detail":"上下文","owner":"负责人真实名称","collaborators":["协作者"],"project":"所属项目","dependsOnTitles":["依赖待办标题"],"taskKind":"action|delegated|waiting","due":"","priority":"high|medium|low","source":"会话名","confidence":0.8,"classification":"mine|uncertain|others","assignmentEvidence":"归属证据","sourceEvidenceKeys":["sourceId:sessionId:messageId"]}],"entities":[{"tempId":"e1","type":"person|organization|group|project","canonicalName":"名称","aliases":[],"accountIds":[],"summary":"仅基于引用原文的简述；它只是待用户确认的摘要候选","confidence":0.8,"evidenceKeys":["sourceId:sessionId:messageId"]}],"relations":[{"subjectTempId":"e1","predicate":"从主语到宾语可直接朗读的有向关系","objectTempId":"e2","directionExplanation":"完整自然语言，例如A向B提供服务","confidence":0.8,"evidenceKeys":["sourceId:sessionId:messageId"]}],"claims":[{"subjectTempId":"e1","predicate":"肯定式标准事实属性","objectTempId":"","objectValue":"事实值","polarity":"positive|negative","valueType":"text|number|date|boolean","validFrom":"","validTo":"","confidence":0.8,"sourceNature":"self_statement|other_statement|inference","evidenceKeys":["sourceId:sessionId:messageId"]}],"events":[{"eventType":"meeting|commitment|delivery|travel|payment|organization_change|decision|other","title":"事件","description":"描述","startAt":"","endAt":"","location":"","participants":[{"tempId":"e1","role":"参与者角色"}],"confidence":0.8,"evidenceKeys":["sourceId:sessionId:messageId"]}],"possibleDuplicates":[{"leftTempId":"e1","rightExistingName":"已有实体名","confidence":0.7,"reason":"原因","evidenceKeys":["sourceId:sessionId:messageId"]}]}`
 
 function shanghaiDate(timestampMs = Date.now()): string {
   return new Intl.DateTimeFormat('en-CA', {
@@ -376,6 +381,7 @@ export class AiAssistantService {
           entities: Array.isArray(loaded.graph?.entities) ? loaded.graph.entities.map((entity: any) => ({
             ...entity,
             externalIdentities: Array.isArray(entity.externalIdentities) ? entity.externalIdentities : [],
+            summaryStatus: entity.summaryStatus || (entity.summary ? 'legacy_unverified' : 'empty'),
             identityVersion: Number(entity.identityVersion || 1),
             lastDisambiguatedAt: entity.lastDisambiguatedAt || null
           })) : [],
@@ -979,6 +985,7 @@ export class AiAssistantService {
       aliases: entity.aliases,
       accountIds: entity.accountIds,
       summary: entity.summary
+        && entity.summaryStatus === 'confirmed' ? entity.summary : ''
     }))
     const redactionLevel = String(this.config.get('aiAssistantSensitiveRedactionLevel') || 'standard') as SensitiveRedactionLevel
     const outbound = redactSensitiveText(`用户身份档案：${JSON.stringify(ownerProfile)}
@@ -1086,11 +1093,24 @@ export class AiAssistantService {
         const before = JSON.stringify([existing.canonicalName, existing.aliases, existing.accountIds, existing.summary])
         existing.aliases = [...new Set([...existing.aliases, ...aliases])]
         existing.accountIds = [...new Set([...existing.accountIds, ...accountIds])]
-        existing.summary = String(item.summary || existing.summary).slice(0, 800)
         existing.confidence = Math.max(existing.confidence, Number(item.confidence || 0))
         existing.evidenceMessageIds = [...new Set([...existing.evidenceMessageIds, ...evidenceIds])].slice(-500)
         existing.updatedAt = now
         if (before !== JSON.stringify([existing.canonicalName, existing.aliases, existing.accountIds, existing.summary])) existing.identityVersion += 1
+        const summaryCandidate = buildEntitySummaryCandidate({
+          entityId: existing.id,
+          entityName: existing.canonicalName,
+          previousSummary: existing.summary,
+          summary: item.summary,
+          confidence: item.confidence,
+          evidenceMessages: item.__evidenceMessages,
+          evidenceKeys: evidenceIds,
+          identityVersion: existing.identityVersion,
+          createdAt: now
+        })
+        if (summaryCandidate && !this.state.graph.reviewQueue.some(review => review.id === summaryCandidate.id)) {
+          this.state.graph.reviewQueue.push(summaryCandidate)
+        }
         this.enqueueIdentityCandidates(existing, now)
       } else {
         const created: GraphEntity = {
@@ -1100,7 +1120,8 @@ export class AiAssistantService {
           aliases,
           accountIds,
           externalIdentities: [],
-          summary: String(item.summary || '').slice(0, 800),
+          summary: '',
+          summaryStatus: 'empty',
           confidence: Math.max(0, Math.min(1, Number(item.confidence || 0.6))),
           evidenceMessageIds: evidenceIds,
           createdAt: now,
@@ -1109,6 +1130,18 @@ export class AiAssistantService {
           lastDisambiguatedAt: null
         }
         this.state.graph.entities.push(created)
+        const summaryCandidate = buildEntitySummaryCandidate({
+          entityId: created.id,
+          entityName: created.canonicalName,
+          previousSummary: '',
+          summary: item.summary,
+          confidence: item.confidence,
+          evidenceMessages: item.__evidenceMessages,
+          evidenceKeys: evidenceIds,
+          identityVersion: created.identityVersion,
+          createdAt: now
+        })
+        if (summaryCandidate) this.state.graph.reviewQueue.push(summaryCandidate)
         this.enqueueIdentityCandidates(created, now)
       }
     }
@@ -2746,6 +2779,19 @@ export class AiAssistantService {
     const review = this.state.graph.reviewQueue.find(item => item.id === id)
     if (!review || review.status !== 'pending') return null
     review.status = decision
+    if (review.kind === 'entity_summary' && review.entityId) {
+      const entity = this.state.graph.entities.find(item => item.id === review.entityId)
+      if (decision === 'confirmed' && entity) {
+        if (canApplyEntitySummaryCandidate(review, entity)) {
+          entity.summary = String(review.summaryText || '').slice(0, 800)
+          entity.summaryStatus = entity.summary ? 'confirmed' : 'empty'
+          entity.updatedAt = new Date().toISOString()
+        } else {
+          review.status = 'rejected'
+          review.detail = `${review.detail} 当前摘要已发生变化，此候选已过期，未执行覆盖。`
+        }
+      }
+    }
     if (review.kind === 'relation' && review.relationId) {
       const relation = this.state.graph.relations.find(item => item.id === review.relationId)
       if (relation) {
@@ -2775,6 +2821,9 @@ export class AiAssistantService {
         target.externalIdentities = [...identities.values()]
         target.evidenceMessageIds = [...new Set([...target.evidenceMessageIds, ...source.evidenceMessageIds])]
         target.summary = target.summary || source.summary
+        target.summaryStatus = target.summary === source.summary
+          ? source.summaryStatus
+          : target.summaryStatus
         target.confidence = Math.max(target.confidence, source.confidence)
         target.updatedAt = new Date().toISOString()
         target.identityVersion += 1

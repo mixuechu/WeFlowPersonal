@@ -30,6 +30,10 @@ import {
   validateStructuredDigestEvidence
 } from '../electron/services/structuredEvidencePolicy.ts'
 import { planExtractedEntityResolution } from '../electron/services/entityResolutionPolicy.ts'
+import {
+  buildEntitySummaryCandidate,
+  canApplyEntitySummaryCandidate
+} from '../electron/services/entitySummaryPolicy.ts'
 import { enqueueUniqueNotification, markNotificationAttempt } from '../electron/services/notificationOutbox.ts'
 import { findCommonGraphNeighbors } from '../electron/services/graphCommonNeighbors.ts'
 import { buildProjectInsights } from '../electron/services/projectInsights.ts'
@@ -381,6 +385,31 @@ test('entity search indexes WeChat IDs and tolerates one-character name errors',
   assert.equal(pinyinResult[0].match_reason, 'pinyin_entity')
 }))
 
+test('only confirmed entity summaries enter trusted entity search', () => withStore(store => {
+  const base = {
+    id: 'person-summary-search',
+    type: 'person',
+    canonicalName: '摘要审阅对象',
+    aliases: [],
+    accountIds: [],
+    summary: '独特候选线索火星罗盘',
+    confidence: 0.8
+  }
+  store.syncGraph({
+    entities: [{ ...base, summaryStatus: 'legacy_unverified' }],
+    relations: [],
+    reviewQueue: []
+  })
+  assert.equal(store.searchText('火星罗盘').some(result => result.source_id === base.id), false)
+
+  store.syncGraph({
+    entities: [{ ...base, summaryStatus: 'confirmed' }],
+    relations: [],
+    reviewQueue: []
+  })
+  assert.equal(store.searchText('火星罗盘').some(result => result.source_id === base.id), true)
+}))
+
 test('weekly briefing aggregates Shanghai dates and quiet hours cross midnight', () => {
   assert.equal(isQuietTime('23:30', '22:00', '08:00'), true)
   assert.equal(isQuietTime('07:59', '22:00', '08:00'), true)
@@ -568,6 +597,52 @@ test('extracted people reuse only evidence-verified account anchors, never names
   }, existing)
   assert.equal(organization.existing?.id, 'org-existing')
   assert.equal(organization.resolution, 'non_person_exact_name')
+})
+
+test('entity summaries remain evidence-backed candidates until non-stale confirmation', () => {
+  const candidate = buildEntitySummaryCandidate({
+    entityId: 'person-a',
+    entityName: '张三',
+    previousSummary: '旧摘要',
+    summary: '张三正在负责新产品演示。',
+    confidence: 0.88,
+    evidenceMessages: [{
+      sessionId: 'session-a',
+      timestamp: 1720000000,
+      sender: '张三',
+      content: '新产品演示这块我来负责。'
+    }],
+    evidenceKeys: ['wechat:session-a:message-a'],
+    identityVersion: 2,
+    createdAt: '2026-07-30T12:00:00.000Z'
+  })
+  assert.ok(candidate)
+  assert.equal(candidate.kind, 'entity_summary')
+  assert.equal(candidate.status, 'pending')
+  assert.equal(candidate.previousSummary, '旧摘要')
+  assert.equal(candidate.summaryText, '张三正在负责新产品演示。')
+  assert.equal(candidate.evidence[0].messageId, 'wechat:session-a:message-a')
+  assert.match(candidate.evidence[0].excerpt, /我来负责/)
+  assert.equal(canApplyEntitySummaryCandidate(candidate, {
+    id: 'person-a',
+    summary: '旧摘要'
+  }), true)
+  assert.equal(canApplyEntitySummaryCandidate(candidate, {
+    id: 'person-a',
+    summary: '用户刚刚手动确认的另一版摘要'
+  }), false)
+
+  assert.equal(buildEntitySummaryCandidate({
+    entityId: 'person-a',
+    entityName: '张三',
+    previousSummary: '',
+    summary: '没有证据的摘要',
+    confidence: 0.9,
+    evidenceMessages: [],
+    evidenceKeys: [],
+    identityVersion: 1,
+    createdAt: '2026-07-30T12:00:00.000Z'
+  }), null)
 })
 
 test('notification outbox persists unique work until a successful delivery', () => {

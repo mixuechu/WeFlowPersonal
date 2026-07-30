@@ -1716,6 +1716,7 @@ function AiAssistantPage() {
                   <span>{selectedEntity.type}</span>
                   <h4>{selectedEntity.canonicalName}</h4>
                   <p>{selectedEntity.summary || '等待更多证据补充'}</p>
+                  <small>摘要状态：{selectedEntity.summaryStatus === 'confirmed' ? '已确认' : selectedEntity.summaryStatus === 'legacy_unverified' ? '历史未验证（不参与可信检索）' : '尚无已确认摘要'}</small>
                   <small>别名：{selectedEntity.aliases?.join('、') || '无'}</small>
                   <small>微信：{selectedEntity.accountIds?.join('、') || '未关联'}</small>
                   <small>邮箱：{selectedEntity.externalIdentities?.filter((identity: any) => identity.platform === 'email').map((identity: any) => identity.accountId).join('、') || '未关联'}</small>
@@ -1801,7 +1802,20 @@ function AiAssistantPage() {
                   <div><small>主语：{subject?.canonicalName || relation.subjectId}　→　宾语：{object?.canonicalName || relation.objectId}</small></div>
                   {(relation.evidence || []).map((evidence: any) => <div key={evidence.messageId}><small>证据：“{evidence.excerpt}”</small></div>)}
                 </div>}
-                <p>{review.detail}</p><small>{Math.round(review.confidence * 100)}% 可信 · {review.kind === 'possible_duplicate' ? '确认后合并身份' : '确认后写入关系'}</small></div>
+                {review.kind === 'entity_summary' && <div className="assistant-review-note">
+                  {review.previousSummary && <div><b>当前摘要：</b><span>{review.previousSummary}</span></div>}
+                  <div><b>建议摘要：</b><span>{review.summaryText}</span></div>
+                  {(review.evidence || []).map((evidence: any) =>
+                    <div key={evidence.messageId}><small>{evidence.sender || '原文'}：“{evidence.excerpt}”</small></div>)}
+                  <div><small>确认后才会写入档案和可信检索；拒绝不会修改现有摘要。</small></div>
+                </div>}
+                <p>{review.detail}</p><small>{Math.round(review.confidence * 100)}% 可信 · {
+                  review.kind === 'possible_duplicate'
+                    ? '确认后合并身份'
+                    : review.kind === 'entity_summary'
+                      ? '确认后写入可信摘要'
+                      : '确认后写入关系'
+                }</small></div>
               <div><button onClick={() => void decideReview(review.id, 'rejected')}>拒绝</button><button className="primary" disabled={review.kind === 'possible_duplicate' && (!review.leftEntityId || !review.rightEntityId)} title={!review.leftEntityId || !review.rightEntityId ? '候选信息不完整，暂不能合并' : ''} onClick={() => void decideReview(review.id, 'confirmed')}>{review.kind === 'relation' ? '确认此方向' : '确认'}</button></div></>
               })()}
             </article>)}
@@ -1825,6 +1839,7 @@ function AiAssistantPage() {
                 <span className="assistant-eyebrow">{selectedEntity.type.toUpperCase()} DOSSIER</span>
                 <h2>{selectedEntity.canonicalName}</h2>
                 <p>{selectedEntity.summary || '等待更多可靠证据补充人物摘要。'}</p>
+                <small>{selectedEntity.summaryStatus === 'confirmed' ? '已确认摘要' : selectedEntity.summaryStatus === 'legacy_unverified' ? '历史未验证摘要，不参与可信检索' : '尚无已确认摘要'}</small>
               </div>
               <button aria-label="关闭人物档案" onClick={() => setShowEntityDossier(false)}><X size={18} /></button>
             </header>
