@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleIdentifier</key>
+  <string>com.WeFlow.app.mail-helper</string>
+  <key>CFBundleName</key>
+  <string>WeFlow Mail Helper</string>
+  <key>CFBundleDisplayName</key>
+  <string>WeFlow 升级版邮件连接器</string>
+  <key>CFBundleVersion</key>
+  <string>1</string>
+  <key>CFBundleShortVersionString</key>
+  <string>1.0</string>
+  <key>NSAppleEventsUsageDescription</key>
+  <string>WeFlow 升级版仅在你明确启用邮件连接器后只读访问所选 Mail 邮箱，用于本机记忆检索。</string>
+</dict>
+</plist>

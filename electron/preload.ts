@@ -660,6 +660,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
     getCalendarAuthorization: () => ipcRenderer.invoke('ai-assistant:getCalendarAuthorization'),
     requestCalendarAccess: () => ipcRenderer.invoke('ai-assistant:requestCalendarAccess'),
     listCalendars: () => ipcRenderer.invoke('ai-assistant:listCalendars'),
+    getMailAuthorization: () => ipcRenderer.invoke('ai-assistant:getMailAuthorization'),
+    requestMailAccess: () => ipcRenderer.invoke('ai-assistant:requestMailAccess'),
+    listMailboxes: () => ipcRenderer.invoke('ai-assistant:listMailboxes'),
     setDataSourceEnabled: (sourceId: string, enabled: boolean) =>
       ipcRenderer.invoke('ai-assistant:setDataSourceEnabled', sourceId, enabled),
     configureDataSource: (sourceId: string, input: any) =>

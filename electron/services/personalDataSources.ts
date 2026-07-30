@@ -51,11 +51,11 @@ export const PERSONAL_DATA_SOURCE_CATALOG = [
   {
     id: 'mail',
     kind: 'email',
-    displayName: '邮件',
-    description: '预留标准邮件连接器；凭证和范围将由用户单独授权',
+    displayName: 'macOS Mail',
+    description: '只读索引你明确授权并选择的 Mail 邮箱；正文默认仅保存在本机',
     available: false,
-    localOnly: false,
-    capabilities: ['incremental', 'original-evidence', 'tasks', 'claims', 'events', 'attachments']
+    localOnly: true,
+    capabilities: ['incremental', 'original-evidence', 'attachments']
   },
   {
     id: 'calendar',
@@ -101,6 +101,19 @@ export function classifyDocumentTaskOwnership(
     .filter(Boolean)
     .some(term => normalizedContent.includes(term))
   return modelClassification === 'mine' && explicitlyNamesOwner ? 'mine' : 'uncertain'
+}
+
+export function filterModelEligibleMemoryResults(
+  results: any[],
+  sourcePolicies: Record<string, { allowModelAnalysis?: boolean }> = {}
+): any[] {
+  return (results || []).filter(item => {
+    if (item?.metadata?.modelAnalysisAllowed === false) return false
+    const sourceId = String(item?.metadata?.sourceId || '')
+    if (!sourceId) return true
+    const policy = sourcePolicies[sourceId]
+    return !policy || policy.allowModelAnalysis !== false
+  })
 }
 
 function validateItem(connector: PersonalDataSourceConnector, item: PersonalDataSourceItem): void {

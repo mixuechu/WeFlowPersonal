@@ -99,7 +99,8 @@
       "extendInfo": {
         "CFBundleDisplayName": "WeFlow 升级版",
         "NSCalendarsUsageDescription": "WeFlow 升级版仅在你明确启用日历连接器后读取所选日历，用于本机时间线和记忆检索。",
-        "NSCalendarsFullAccessUsageDescription": "WeFlow 升级版仅在你明确启用日历连接器后读取所选日历，用于本机时间线和记忆检索。"
+        "NSCalendarsFullAccessUsageDescription": "WeFlow 升级版仅在你明确启用日历连接器后读取所选日历，用于本机时间线和记忆检索。",
+        "NSAppleEventsUsageDescription": "WeFlow 升级版仅在你明确启用邮件连接器后只读访问所选 Mail 邮箱，用于本机记忆检索。"
       },
       "target": [
         "dmg",

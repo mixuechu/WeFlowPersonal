@@ -135,6 +135,34 @@ module.exports = async function afterPack(context) {
       console.warn(`[afterPack] EventKit helper unavailable: ${error?.message || error}`)
     }
   }
+  const mailSource = join(process.cwd(), 'electron', 'helpers', 'MailHelper.swift')
+  const mailInfo = join(process.cwd(), 'electron', 'helpers', 'MailHelper-Info.plist')
+  const mailExecutable = join(imageSemanticDir, 'mail-helper')
+  if (existsSync(mailSource) && existsSync(mailInfo)) {
+    try {
+      mkdirSync(imageSemanticDir, { recursive: true })
+      execFileSync('xcrun', [
+        'swiftc', '-O', mailSource,
+        '-Xlinker', '-sectcreate',
+        '-Xlinker', '__TEXT',
+        '-Xlinker', '__info_plist',
+        '-Xlinker', mailInfo,
+        '-o', mailExecutable,
+      ], { stdio: 'inherit' })
+      chmodSync(mailExecutable, 0o755)
+      const helperIdentity = findStableLocalSigningIdentity()
+      execFileSync('codesign', [
+        '--force',
+        '--timestamp=none',
+        '--sign',
+        helperIdentity || '-',
+        mailExecutable,
+      ], { stdio: 'inherit' })
+      console.log(`[afterPack] Compiled and signed Mail automation helper with ${helperIdentity || 'ad-hoc fallback'}`)
+    } catch (error) {
+      console.warn(`[afterPack] Mail automation helper unavailable: ${error?.message || error}`)
+    }
+  }
   const dylibs = walk(resourcesDir)
 
   for (const dylibPath of dylibs) {

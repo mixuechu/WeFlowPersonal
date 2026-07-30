@@ -1679,6 +1679,15 @@ export interface ElectronAPI {
       getCalendarAuthorization: () => Promise<{ available: boolean; authorization: string }>
       requestCalendarAccess: () => Promise<{ available: boolean; authorization: string; granted: boolean }>
       listCalendars: () => Promise<Array<{ id: string; title: string; source: string; type: string }>>
+      getMailAuthorization: () => Promise<{ available: boolean; authorization: string }>
+      requestMailAccess: () => Promise<{ available: boolean; authorization: string; granted: boolean }>
+      listMailboxes: () => Promise<Array<{
+        id: string
+        accountId: string
+        accountName: string
+        path: string[]
+        displayName: string
+      }>>
       setDataSourceEnabled: (sourceId: string, enabled: boolean) => Promise<any>
       configureDataSource: (sourceId: string, input: any) => Promise<any>
       setConversationSource: (input: any) => Promise<any>

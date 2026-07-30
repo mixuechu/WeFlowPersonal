@@ -4570,6 +4570,9 @@ function registerIpcHandlers() {
   ipcMain.handle('ai-assistant:getCalendarAuthorization', () => aiAssistantService.getCalendarAuthorization())
   ipcMain.handle('ai-assistant:requestCalendarAccess', () => aiAssistantService.requestCalendarAccess())
   ipcMain.handle('ai-assistant:listCalendars', () => aiAssistantService.listCalendars())
+  ipcMain.handle('ai-assistant:getMailAuthorization', () => aiAssistantService.getMailAuthorization())
+  ipcMain.handle('ai-assistant:requestMailAccess', () => aiAssistantService.requestMailAccess())
+  ipcMain.handle('ai-assistant:listMailboxes', () => aiAssistantService.listMailboxes())
   ipcMain.handle('ai-assistant:setDataSourceEnabled', (_, sourceId: string, enabled: boolean) =>
     aiAssistantService.setDataSourceEnabled(sourceId, enabled))
   ipcMain.handle('ai-assistant:configureDataSource', (_, sourceId: string, input: any) =>

@@ -41,11 +41,13 @@ import { getAppRunRecoveryDiagnostics } from './appRunRecoveryService'
 import {
   PERSONAL_DATA_SOURCE_CATALOG,
   classifyDocumentTaskOwnership,
+  filterModelEligibleMemoryResults,
   normalizeDataSourceClaimNature,
   runPersonalDataSourceBatch
 } from './personalDataSources'
 import { LocalDocumentDataSource } from './localDocumentDataSource'
 import { LocalCalendarDataSource, localCalendarService } from './localCalendarDataSource'
+import { LocalMailDataSource, localMailService } from './localMailDataSource'
 import {
   mapCalendarParticipantIdentities,
   type ExternalIdentity
@@ -279,6 +281,11 @@ export class AiAssistantService {
       'calendar',
       localCalendarService.isAvailable(),
       localCalendarService.isAvailable() ? '' : '当前构建未包含 macOS 日历 helper'
+    )
+    personalMemoryStore.setDataSourceAvailability(
+      'mail',
+      localMailService.isAvailable(),
+      localMailService.isAvailable() ? '' : '当前构建未包含 macOS Mail helper'
     )
     const documentSource = personalMemoryStore.listDataSources().find(source => source.id === 'documents')
     const documentFolder = String(documentSource?.config?.folderPath || '')
@@ -1547,6 +1554,86 @@ export class AiAssistantService {
     }
   }
 
+  private async syncLocalMail(): Promise<{ indexed: number; error?: string }> {
+    const source = personalMemoryStore.listDataSources().find(item => item.id === 'mail')
+    const mailboxIds = Array.isArray(source?.config?.mailboxIds)
+      ? source.config.mailboxIds.map(String).filter(Boolean)
+      : []
+    if (!source?.enabled || !source.available || !mailboxIds.length) return { indexed: 0 }
+    const attemptedAt = new Date().toISOString()
+    personalMemoryStore.updateDataSourceRun('mail', { status: 'running', attemptedAt })
+    let checkpoint = String(source.checkpoint || '')
+    let indexed = 0
+    try {
+      const authorization = await localMailService.getStatus()
+      if (!['authorized', 'mailNotRunning'].includes(authorization.authorization)) {
+        throw new Error('Mail 只读权限当前不可用；请在数据源连接器中重新授权，并保持 Mail 可启动')
+      }
+      const connector = new LocalMailDataSource(mailboxIds)
+      for (let page = 0; page < 5; page += 1) {
+        const result = await runPersonalDataSourceBatch(
+          connector,
+          checkpoint,
+          async items => {
+            const updatedAt = new Date().toISOString()
+            personalMemoryStore.upsertResources(items.map(item => {
+              const metadata: any = item.metadata || {}
+              const contentHash = String(metadata.contentHash || '')
+              return {
+                id: `mail-message:${item.externalId}`,
+                resourceType: 'email',
+                title: item.title,
+                content: item.content,
+                metadata: {
+                  ...metadata,
+                  sourceId: item.sourceId,
+                  scopeId: item.scopeId || '',
+                  scopeName: item.scopeName || '',
+                  sessionName: item.scopeName || 'macOS Mail',
+                  senderName: String(metadata.sender || 'macOS Mail 连接器'),
+                  modelAnalysisAllowed: Boolean(source.config?.allowModelAnalysis)
+                },
+                createdAt: item.occurredAt,
+                updatedAt,
+                evidence: [{
+                  messageId: `${item.externalId}:${contentHash.slice(0, 16)}`,
+                  sessionId: `data-source:${item.sourceId}:${item.scopeId || 'mailbox'}`,
+                  timestamp: Math.floor(Date.parse(item.occurredAt) / 1000),
+                  sender: String(metadata.sender || 'macOS Mail 连接器'),
+                  excerpt: String(item.content || item.title).slice(0, 2000)
+                }]
+              }
+            }))
+          },
+          { limit: 50 }
+        )
+        checkpoint = result.checkpoint
+        indexed += result.pulled
+        personalMemoryStore.updateDataSourceRun('mail', {
+          status: 'running',
+          checkpoint,
+          attemptedAt
+        })
+        if (!result.hasMore) break
+      }
+      personalMemoryStore.updateDataSourceRun('mail', {
+        status: 'healthy',
+        checkpoint,
+        succeededAt: new Date().toISOString(),
+        error: ''
+      })
+      return { indexed }
+    } catch (error) {
+      const message = sanitizeDiagnosticText(error)
+      personalMemoryStore.updateDataSourceRun('mail', {
+        status: 'error',
+        attemptedAt,
+        error: message
+      })
+      return { indexed, error: message }
+    }
+  }
+
   private persistDocumentTasks(digest: any, messages: any[], createdAt: string): number {
     const ownerTerms = [
       String(this.config.get('aiAssistantOwnerName') || ''),
@@ -1743,6 +1830,7 @@ export class AiAssistantService {
   }
 
   private async runSync(): Promise<any> {
+    const mailSync = await this.syncLocalMail()
     const calendarSync = await this.syncLocalCalendar()
     const documentSync = await this.syncLocalDocuments()
     const documentAnalysis = await this.processPendingDocumentAnalysis()
@@ -1756,10 +1844,11 @@ export class AiAssistantService {
         failedSessions: 0,
         indexedDocumentCount: documentSync.indexed,
         indexedCalendarEventCount: calendarSync.indexed,
+        indexedMailMessageCount: mailSync.indexed,
         analyzedDocumentCount: documentAnalysis.completed,
         newDocumentTaskCount: documentAnalysis.tasks,
-        message: documentSync.error || calendarSync.error
-          ? `微信数据源已暂停；其他数据源需要重试：${documentSync.error || calendarSync.error}`
+        message: documentSync.error || calendarSync.error || mailSync.error
+          ? `微信数据源已暂停；其他数据源需要重试：${documentSync.error || calendarSync.error || mailSync.error}`
           : '微信数据源已暂停；增量游标保持不变'
       }
     }
@@ -1980,10 +2069,12 @@ export class AiAssistantService {
         failedSessions: collected.failed.length,
         indexedDocumentCount: documentSync.indexed,
         indexedCalendarEventCount: calendarSync.indexed,
+        indexedMailMessageCount: mailSync.indexed,
         analyzedDocumentCount: documentAnalysis.completed,
         newDocumentTaskCount: documentAnalysis.tasks,
         documentSourceError: documentSync.error || null,
         calendarSourceError: calendarSync.error || null,
+        mailSourceError: mailSync.error || null,
         message: cancelled ? '已安全暂停，成功批次已保存；下次将从断点继续' : ''
       }
     } catch (error: any) {
@@ -2021,8 +2112,12 @@ export class AiAssistantService {
   async getDataSources(): Promise<any[]> {
     const analysis = personalMemoryStore.getDocumentAnalysisStats(DOCUMENT_ANALYSIS_VERSION)
     let calendarAuthorization = 'unavailable'
+    let mailAuthorization = 'unavailable'
     try {
       calendarAuthorization = (await localCalendarService.getStatus()).authorization
+    } catch {}
+    try {
+      mailAuthorization = (await localMailService.getStatus()).authorization
     } catch {}
     return personalMemoryStore.listDataSources().map(source =>
       source.id === 'documents'
@@ -2035,6 +2130,14 @@ export class AiAssistantService {
                 ? source.config.calendarIds.length
                 : 0
             }
+          : source.id === 'mail'
+            ? {
+                ...source,
+                authorization: mailAuthorization,
+                selectedMailboxCount: Array.isArray(source.config?.mailboxIds)
+                  ? source.config.mailboxIds.length
+                  : 0
+              }
           : source)
   }
 
@@ -2054,11 +2157,33 @@ export class AiAssistantService {
     return localCalendarService.listCalendars()
   }
 
+  async getMailAuthorization(): Promise<any> {
+    return localMailService.getStatus()
+  }
+
+  async requestMailAccess(): Promise<any> {
+    return localMailService.requestAccess()
+  }
+
+  async listMailboxes(): Promise<any[]> {
+    const status = await localMailService.getStatus()
+    if (status.authorization !== 'authorized') {
+      throw new Error('请先明确授权只读访问 macOS Mail')
+    }
+    return localMailService.listMailboxes()
+  }
+
   setDataSourceEnabled(sourceId: string, enabled: boolean): any {
     if (sourceId === 'calendar' && enabled) {
       const source = personalMemoryStore.listDataSources().find(item => item.id === 'calendar')
       if (!Array.isArray(source?.config?.calendarIds) || !source.config.calendarIds.length) {
         throw new Error('请先授权并至少选择一个日历')
+      }
+    }
+    if (sourceId === 'mail' && enabled) {
+      const source = personalMemoryStore.listDataSources().find(item => item.id === 'mail')
+      if (!Array.isArray(source?.config?.mailboxIds) || !source.config.mailboxIds.length) {
+        throw new Error('请先授权并至少选择一个 Mail 邮箱')
       }
     }
     const result = personalMemoryStore.setDataSourceEnabled(String(sourceId || ''), Boolean(enabled))
@@ -2091,6 +2216,24 @@ export class AiAssistantService {
       )]
       if (!calendarIds.length) throw new Error('请至少选择一个日历')
       return personalMemoryStore.configureDataSource('calendar', { calendarIds }, true)
+    }
+    if (sourceId === 'mail') {
+      const status = await localMailService.getStatus()
+      if (status.authorization !== 'authorized') {
+        throw new Error('请先明确授权只读访问 macOS Mail')
+      }
+      const available = await localMailService.listMailboxes()
+      const availableIds = new Set(available.map(item => String(item.id)))
+      const mailboxIds = [...new Set(
+        (Array.isArray(input?.mailboxIds) ? input.mailboxIds : [])
+          .map(String)
+          .filter(id => availableIds.has(id))
+      )]
+      if (!mailboxIds.length) throw new Error('请至少选择一个 Mail 邮箱')
+      return personalMemoryStore.configureDataSource('mail', {
+        mailboxIds,
+        allowModelAnalysis: Boolean(input?.allowModelAnalysis)
+      }, true)
     }
     throw new Error('该数据源暂不支持本机配置')
   }
@@ -2919,7 +3062,11 @@ export class AiAssistantService {
       }
       results = [...merged.values()].slice(0, 30)
     }
-    const context = results.slice(0, 20).map((item: any) => ({
+    const mailSource = personalMemoryStore.listDataSources().find(source => source.id === 'mail')
+    const context = filterModelEligibleMemoryResults(results, {
+      mail: { allowModelAnalysis: Boolean(mailSource?.config?.allowModelAnalysis) }
+    })
+      .slice(0, 20).map((item: any) => ({
       documentId: item.id,
       sourceId: item.source_id,
       type: item.document_type,

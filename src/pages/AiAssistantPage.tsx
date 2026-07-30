@@ -64,6 +64,12 @@ function AiAssistantPage() {
     selectedIds: string[]
   } | null>(null)
   const [calendarConnecting, setCalendarConnecting] = useState(false)
+  const [mailPicker, setMailPicker] = useState<{
+    mailboxes: Array<{ id: string; accountId: string; accountName: string; path: string[]; displayName: string }>
+    selectedIds: string[]
+    allowModelAnalysis: boolean
+  } | null>(null)
+  const [mailConnecting, setMailConnecting] = useState(false)
   const [sourceQuery, setSourceQuery] = useState('')
   const [memoryQuery, setMemoryQuery] = useState('')
   const [memoryResults, setMemoryResults] = useState<any[]>([])
@@ -697,6 +703,7 @@ function AiAssistantPage() {
 
   const configureCalendarSource = async (source: any) => {
     setCalendarConnecting(true)
+    setMailPicker(null)
     try {
       let authorization = String(source.authorization || '')
       if (!['fullAccess', 'authorized'].includes(authorization)) {
@@ -743,6 +750,58 @@ function AiAssistantPage() {
       setMessage(error?.message || String(error))
     } finally {
       setCalendarConnecting(false)
+    }
+  }
+
+  const configureMailSource = async (source: any) => {
+    setMailConnecting(true)
+    setCalendarPicker(null)
+    try {
+      let authorization = String(source.authorization || '')
+      if (authorization !== 'authorized') {
+        const result = await window.electronAPI.aiAssistant.requestMailAccess()
+        authorization = result.authorization
+        if (!result.granted) {
+          throw new Error(
+            '未获得 macOS Mail 只读自动化权限。请在“系统设置 → 隐私与安全性 → 自动化”中允许 WeFlow 升级版邮件连接器控制 Mail，然后重试。'
+          )
+        }
+      }
+      const mailboxes = await window.electronAPI.aiAssistant.listMailboxes()
+      const configuredIds = Array.isArray(source.config?.mailboxIds)
+        ? source.config.mailboxIds.map(String)
+        : []
+      setMailPicker({
+        mailboxes,
+        selectedIds: configuredIds.filter((id: string) => mailboxes.some(mailbox => mailbox.id === id)),
+        allowModelAnalysis: Boolean(source.config?.allowModelAnalysis)
+      })
+      setDataSources(await window.electronAPI.aiAssistant.getDataSources())
+    } catch (error: any) {
+      setMessage(error?.message || String(error))
+    } finally {
+      setMailConnecting(false)
+    }
+  }
+
+  const saveMailSelection = async () => {
+    if (!mailPicker?.selectedIds.length) {
+      setMessage('请至少选择一个要索引的 Mail 邮箱。')
+      return
+    }
+    setMailConnecting(true)
+    try {
+      await window.electronAPI.aiAssistant.configureDataSource('mail', {
+        mailboxIds: mailPicker.selectedIds,
+        allowModelAnalysis: mailPicker.allowModelAnalysis
+      })
+      setDataSources(await window.electronAPI.aiAssistant.getDataSources())
+      setMailPicker(null)
+      setMessage('所选 Mail 邮箱已连接；邮件正文只进入本机检索，不会默认发送给模型或生成待办。')
+    } catch (error: any) {
+      setMessage(error?.message || String(error))
+    } finally {
+      setMailConnecting(false)
     }
   }
 
@@ -2011,6 +2070,17 @@ function AiAssistantPage() {
                       } as Record<string, string>)[source.authorization] || source.authorization || '未知'}
                       {' · '}{source.selectedCalendarCount || 0} 个日历已选择
                     </small>}
+                    {source.id === 'mail' && <small>
+                      权限：{({
+                        authorized: '已授权只读访问',
+                        notAuthorized: '尚未授权或已拒绝',
+                        mailNotRunning: 'Mail 当前未运行',
+                        unavailable: 'helper 不可用',
+                        unknown: '状态未知'
+                      } as Record<string, string>)[source.authorization] || source.authorization || '未知'}
+                      {' · '}{source.selectedMailboxCount || 0} 个邮箱已选择
+                      {' · '}{source.config?.allowModelAnalysis ? '已允许进入 DeepSeek 问答上下文' : '正文仅本机'}
+                    </small>}
                     {source.lastError && <small className="assistant-error">{source.lastError}</small>}
                     {source.id === 'documents' && <button type="button" onClick={event => {
                       event.preventDefault()
@@ -2025,10 +2095,26 @@ function AiAssistantPage() {
                       }}>
                       {calendarConnecting ? '正在连接…' : source.selectedCalendarCount ? '更改所选日历' : '授权并选择日历'}
                     </button>}
+                    {source.id === 'mail' && source.available && <button type="button" disabled={mailConnecting}
+                      onClick={event => {
+                        event.preventDefault()
+                        event.stopPropagation()
+                        void configureMailSource(source)
+                      }}>
+                      {mailConnecting ? '正在连接…' : source.selectedMailboxCount ? '更改所选邮箱' : '授权并选择邮箱'}
+                    </button>}
                   </span>
                   <input type="checkbox" checked={Boolean(source.enabled)}
-                    disabled={!source.available || (source.id === 'calendar' && !source.selectedCalendarCount)}
-                    title={!source.available ? '该连接器尚未安装' : source.id === 'calendar' && !source.selectedCalendarCount ? '请先授权并选择日历' : '开启或暂停该数据源'}
+                    disabled={!source.available ||
+                      (source.id === 'calendar' && !source.selectedCalendarCount) ||
+                      (source.id === 'mail' && !source.selectedMailboxCount)}
+                    title={!source.available
+                      ? '该连接器尚未安装'
+                      : source.id === 'calendar' && !source.selectedCalendarCount
+                        ? '请先授权并选择日历'
+                        : source.id === 'mail' && !source.selectedMailboxCount
+                          ? '请先授权并选择邮箱'
+                          : '开启或暂停该数据源'}
                     onChange={() => void toggleDataSource(source)} />
                 </label>
               ))}
@@ -2054,6 +2140,38 @@ function AiAssistantPage() {
                 <button onClick={() => setCalendarPicker(null)}>取消</button>
                 <button className="primary" disabled={calendarConnecting || !calendarPicker.selectedIds.length}
                   onClick={() => void saveCalendarSelection()}>保存选择</button>
+              </div>
+            </div>}
+            {mailPicker && <div className="assistant-calendar-picker">
+              <div><strong>选择允许本机索引的 Mail 邮箱</strong>
+                <small>未选择的邮箱不会读取；正文仅进入本机加密资源库和统一检索，不会默认发送给 DeepSeek。</small></div>
+              <div className="assistant-calendar-list">
+                {mailPicker.mailboxes.map(mailbox => (
+                  <label key={mailbox.id}>
+                    <input type="checkbox" checked={mailPicker.selectedIds.includes(mailbox.id)}
+                      onChange={() => setMailPicker(current => current ? {
+                        ...current,
+                        selectedIds: current.selectedIds.includes(mailbox.id)
+                          ? current.selectedIds.filter(id => id !== mailbox.id)
+                          : [...current.selectedIds, mailbox.id]
+                      } : current)} />
+                    <span><strong>{mailbox.path.join(' / ')}</strong><small>{mailbox.accountName}</small></span>
+                  </label>
+                ))}
+              </div>
+              <label className="assistant-mail-model-toggle">
+                <input type="checkbox" checked={mailPicker.allowModelAnalysis}
+                  onChange={event => setMailPicker(current => current ? {
+                    ...current,
+                    allowModelAnalysis: event.target.checked
+                  } : current)} />
+                <span><strong>允许邮件片段进入 DeepSeek 问答上下文</strong>
+                  <small>默认关闭。开启后，仅命中你问题的邮件片段会按当前脱敏策略发送；仍不会自动生成待办。</small></span>
+              </label>
+              <div className="assistant-calendar-actions">
+                <button onClick={() => setMailPicker(null)}>取消</button>
+                <button className="primary" disabled={mailConnecting || !mailPicker.selectedIds.length}
+                  onClick={() => void saveMailSelection()}>保存选择</button>
               </div>
             </div>}
             <div className="assistant-source-footer"><span>{dataSources.filter(source => source.enabled).length} 个连接器已开启</span>
