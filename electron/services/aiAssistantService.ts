@@ -32,6 +32,7 @@ import {
   structuredEvidenceKey,
   validateStructuredDigestEvidence
 } from './structuredEvidencePolicy'
+import { planExtractedEntityResolution } from './entityResolutionPolicy'
 import {
   enqueueUniqueNotification,
   markNotificationAttempt,
@@ -1074,14 +1075,10 @@ export class AiAssistantService {
         ? ownerName
         : rawName
       if (!canonicalName || reservedNames.has(canonicalName.toLowerCase())) continue
-      const accountIds = [...new Set((Array.isArray(item.accountIds) ? item.accountIds : []).map(String).filter(Boolean))]
+      const resolution = planExtractedEntityResolution(item, this.state.graph.entities)
+      const accountIds = resolution.verifiedAccountIds
       const aliases = [...new Set(itemAliases.filter(alias => !reservedNames.has(alias.trim().toLowerCase()) && alias !== canonicalName))]
-      const byAccount = accountIds.length
-        ? this.state.graph.entities.find(entity => entity.accountIds.some(id => accountIds.includes(id)))
-        : undefined
-      const exactNameMatches = this.state.graph.entities.filter(entity =>
-        entity.type === item.type && entity.canonicalName === canonicalName)
-      const existing = byAccount || (exactNameMatches.length === 1 && Number(item.confidence || 0) >= 0.9 ? exactNameMatches[0] : undefined)
+      const existing = resolution.existing || undefined
       const id = existing?.id || `ent_${crypto.randomUUID()}`
       tempIds.set(String(item.tempId || id), id)
       const evidenceIds = [...new Set((Array.isArray(item.evidenceKeys) ? item.evidenceKeys : []).map(String))]

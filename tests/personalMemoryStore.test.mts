@@ -29,6 +29,7 @@ import {
   structuredEvidenceKey,
   validateStructuredDigestEvidence
 } from '../electron/services/structuredEvidencePolicy.ts'
+import { planExtractedEntityResolution } from '../electron/services/entityResolutionPolicy.ts'
 import { enqueueUniqueNotification, markNotificationAttempt } from '../electron/services/notificationOutbox.ts'
 import { findCommonGraphNeighbors } from '../electron/services/graphCommonNeighbors.ts'
 import { buildProjectInsights } from '../electron/services/projectInsights.ts'
@@ -501,6 +502,72 @@ test('all structured extraction rejects forged, context and cross-session eviden
     events: 1,
     possibleDuplicates: 0
   })
+})
+
+test('extracted people reuse only evidence-verified account anchors, never names alone', () => {
+  const existing = [{
+    id: 'person-existing',
+    type: 'person',
+    canonicalName: '张三',
+    aliases: ['老张'],
+    accountIds: ['wxid_zhang']
+  }, {
+    id: 'org-existing',
+    type: 'organization',
+    canonicalName: '示例公司',
+    aliases: [],
+    accountIds: []
+  }]
+  const senderEvidence = [{
+    sessionId: 'session-a',
+    senderIdentity: {
+      wxid: 'wxid_zhang',
+      contactRemark: '张三',
+      wechatNickname: 'Zhang',
+      displayName: '张三'
+    }
+  }]
+  const sameNameOnly = planExtractedEntityResolution({
+    type: 'person',
+    canonicalName: '张三',
+    confidence: 0.99,
+    accountIds: [],
+    __evidenceMessages: senderEvidence
+  }, existing)
+  assert.equal(sameNameOnly.existing, null)
+  assert.equal(sameNameOnly.resolution, 'create_candidate')
+  assert.deepEqual(sameNameOnly.sameNameCandidates.map(item => item.id), ['person-existing'])
+
+  const verified = planExtractedEntityResolution({
+    type: 'person',
+    canonicalName: '张三',
+    aliases: ['老张'],
+    accountIds: ['wxid_zhang', 'wxid_forged'],
+    __evidenceMessages: senderEvidence
+  }, existing)
+  assert.equal(verified.existing?.id, 'person-existing')
+  assert.deepEqual(verified.verifiedAccountIds, ['wxid_zhang'])
+  assert.deepEqual(verified.rejectedAccountIds, ['wxid_forged'])
+
+  const nameMismatch = planExtractedEntityResolution({
+    type: 'person',
+    canonicalName: '李四',
+    accountIds: ['wxid_zhang'],
+    __evidenceMessages: senderEvidence
+  }, existing)
+  assert.equal(nameMismatch.existing, null)
+  assert.deepEqual(nameMismatch.verifiedAccountIds, [])
+  assert.deepEqual(nameMismatch.rejectedAccountIds, ['wxid_zhang'])
+
+  const organization = planExtractedEntityResolution({
+    type: 'organization',
+    canonicalName: '示例公司',
+    confidence: 0.95,
+    accountIds: [],
+    __evidenceMessages: senderEvidence
+  }, existing)
+  assert.equal(organization.existing?.id, 'org-existing')
+  assert.equal(organization.resolution, 'non_person_exact_name')
 })
 
 test('notification outbox persists unique work until a successful delivery', () => {
