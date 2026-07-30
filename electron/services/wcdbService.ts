@@ -24,6 +24,7 @@ export class WcdbService {
   private userDataPath: string | null = null
   private logEnabled = false
   private monitorListener: ((type: string, json: string) => void) | null = null
+  private shuttingDown = false
 
   constructor() {}
 
@@ -31,7 +32,7 @@ export class WcdbService {
    * 初始化 Worker 线程
    */
   private initWorker() {
-    if (this.worker) return
+    if (this.worker || this.shuttingDown) return
 
     const isDev = process.env.NODE_ENV === 'development'
     const workerPath = isDev
@@ -76,7 +77,7 @@ export class WcdbService {
 
       this.worker.on('exit', (code) => {
         // Worker 退出，需要 reject 所有 pending promises
-        if (code !== 0) {
+        if (code !== 0 && !this.shuttingDown) {
           console.error('WCDB Worker 异常退出，退出码:', code)
           const errorMsg = `Worker 异常退出 (退出码: ${code})。可能是数据服务加载失败，请检查是否安装了 Visual C++ Redistributable。`
           for (const [id, p] of this.pending) {
@@ -105,6 +106,7 @@ export class WcdbService {
    * 发送消息到 Worker 并等待响应
    */
   private callWorker<T>(type: string, payload: any = {}): Promise<T> {
+    if (this.shuttingDown) return Promise.reject(new Error('WCDB Worker 正在退出'))
     if (!this.worker) this.initWorker()
     if (!this.worker) return Promise.reject(new Error('WCDB Worker 不可用'))
 
@@ -181,11 +183,60 @@ export class WcdbService {
   /**
    * 关闭服务
    */
-  async shutdown(): Promise<void> {
-    try { await this.close() } catch {}
-    if (this.worker) {
-      try { await this.worker.terminate() } catch {}
-      this.worker = null
+  async shutdown(): Promise<{
+    gracefulClose: boolean
+    workerTerminated: boolean
+    boundedFallback: boolean
+  }> {
+    if (this.shuttingDown) {
+      return { gracefulClose: false, workerTerminated: false, boundedFallback: true }
+    }
+    const worker = this.worker
+    if (!worker) {
+      this.shuttingDown = true
+      return { gracefulClose: true, workerTerminated: true, boundedFallback: false }
+    }
+    const settleWithin = async (promise: Promise<unknown>, timeoutMs: number): Promise<boolean> =>
+      await new Promise(resolve => {
+        let settled = false
+        const timer = setTimeout(() => {
+          if (settled) return
+          settled = true
+          resolve(false)
+        }, timeoutMs)
+        promise.then(
+          () => {
+            if (settled) return
+            settled = true
+            clearTimeout(timer)
+            resolve(true)
+          },
+          () => {
+            if (settled) return
+            settled = true
+            clearTimeout(timer)
+            resolve(false)
+          }
+        )
+      })
+
+    // A native cloud report can be non-cancellable. Give the ordered WCDB close
+    // a short grace period, then detach this read-only worker so app shutdown is
+    // never held hostage by an RPC that cannot observe an AbortSignal.
+    const closePromise = this.callWorker('close')
+    this.shuttingDown = true
+    const gracefulClose = await settleWithin(closePromise, 2_000)
+    const workerTerminated = await settleWithin(worker.terminate(), 1_500)
+    worker.unref()
+    if (this.worker === worker) this.worker = null
+    for (const pending of this.pending.values()) {
+      pending.reject(new Error('WCDB Worker 已在应用退出时停止'))
+    }
+    this.pending.clear()
+    return {
+      gracefulClose,
+      workerTerminated,
+      boundedFallback: !gracefulClose || !workerTerminated
     }
   }
 

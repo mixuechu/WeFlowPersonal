@@ -46,6 +46,31 @@ test('a graceful shutdown is retained as a clean historical run', () => withTemp
   next.dispose()
 }))
 
+test('shutdown steps retain the running phase when a later forced exit interrupts cleanup', () => withTempDirectory(directory => {
+  const service = new AppRunRecoveryService(directory)
+  service.start('5.1.0', new Date('2026-07-30T00:00:00.000Z'))
+  service.beginShutdown('normal', new Date('2026-07-30T00:01:00.000Z'))
+  service.startShutdownStep('http-server-stop', new Date('2026-07-30T00:01:01.000Z'))
+  service.finishShutdownStep('http-server-stop', 'completed', undefined, new Date('2026-07-30T00:01:01.250Z'))
+  service.startShutdownStep('wcdb-worker-stop', new Date('2026-07-30T00:01:02.000Z'))
+  service.finishShutdown('forced_timeout', new Date('2026-07-30T00:01:10.000Z'))
+  const previous = service.getDiagnostics().previous
+  assert.deepEqual(previous?.shutdownSteps, [
+    {
+      name: 'http-server-stop',
+      status: 'completed',
+      startedAt: '2026-07-30T00:01:01.000Z',
+      endedAt: '2026-07-30T00:01:01.250Z',
+      durationMs: 250
+    },
+    {
+      name: 'wcdb-worker-stop',
+      status: 'running',
+      startedAt: '2026-07-30T00:01:02.000Z'
+    }
+  ])
+}))
+
 test('a persisted shutdown intent is clean even when Electron exits before async cleanup finishes', () => withTempDirectory(directory => {
   const service = new AppRunRecoveryService(directory)
   service.start('5.1.0', new Date('2026-07-29T20:00:00.000Z'))

@@ -770,6 +770,17 @@ class ChatService {
   }
 
   /**
+   * App shutdown owns the native WCDB teardown. Clear only JS-side cursor and
+   * connection state here so we do not enqueue many fire-and-forget close calls
+   * immediately before WcdbService sends its single ordered shutdown request.
+   */
+  prepareForAppShutdown(): void {
+    this.messageCursors.clear()
+    this.connected = false
+    this.monitorSetup = false
+  }
+
+  /**
    * 修改消息内容
    */
   async updateMessage(sessionId: string, localId: number, createTime: number, newContent: string): Promise<{ success: boolean; error?: string }> {

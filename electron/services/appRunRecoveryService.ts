@@ -17,6 +17,15 @@ export type AppRunIncident = {
   fatal: boolean
 }
 
+export type AppRunShutdownStep = {
+  name: string
+  status: 'running' | 'completed' | 'failed'
+  startedAt: string
+  endedAt?: string
+  durationMs?: number
+  detail?: string
+}
+
 export type AppRunSession = {
   id: string
   version: string
@@ -30,6 +39,7 @@ export type AppRunSession = {
   exitReason?: AppRunExitReason
   cleanExit: boolean
   incidents: AppRunIncident[]
+  shutdownSteps?: AppRunShutdownStep[]
 }
 
 type AppRunLedger = {
@@ -107,6 +117,42 @@ export class AppRunRecoveryService {
       lastHeartbeatAt: now.toISOString(),
       exitReason: reason
     }))
+  }
+
+  startShutdownStep(name: string, now = new Date()): void {
+    const normalizedName = String(name || '').trim().slice(0, 80)
+    if (!normalizedName) return
+    this.updateCurrent(session => ({
+      ...session,
+      lastHeartbeatAt: now.toISOString(),
+      shutdownSteps: [
+        ...(session.shutdownSteps || []),
+        { name: normalizedName, status: 'running', startedAt: now.toISOString() } as AppRunShutdownStep
+      ].slice(-20)
+    }))
+  }
+
+  finishShutdownStep(
+    name: string,
+    status: 'completed' | 'failed' = 'completed',
+    detail?: unknown,
+    now = new Date()
+  ): void {
+    const normalizedName = String(name || '').trim().slice(0, 80)
+    this.updateCurrent(session => {
+      const steps = [...(session.shutdownSteps || [])]
+      const index = steps.findLastIndex(step => step.name === normalizedName && step.status === 'running')
+      if (index < 0) return session
+      const startedAt = Date.parse(steps[index].startedAt)
+      steps[index] = {
+        ...steps[index],
+        status,
+        endedAt: now.toISOString(),
+        durationMs: Number.isFinite(startedAt) ? Math.max(0, now.getTime() - startedAt) : undefined,
+        ...(detail == null ? {} : { detail: sanitizeDiagnosticText(detail).slice(0, 300) })
+      }
+      return { ...session, lastHeartbeatAt: now.toISOString(), shutdownSteps: steps }
+    })
   }
 
   finishShutdown(reason?: Exclude<AppRunExitReason, 'unknown_interruption'>, now = new Date()): void {

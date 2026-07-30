@@ -218,7 +218,7 @@ class CloudControlService {
     this.pages.add(pageName)
   }
 
-  async stop(): Promise<void> {
+  private resetRuntimeState(): void {
     if (this.timer) {
       clearTimeout(this.timer)
       this.timer = null
@@ -230,6 +230,19 @@ class CloudControlService {
     this.circuitOpenedAt = 0
     this.nextDelayOverrideMs = null
     this.initialized = false
+  }
+
+  /**
+   * During app exit, WcdbCore.close() performs cloudStop immediately before
+   * wcdb_shutdown. Only clear JS timers here so a second worker RPC cannot sit
+   * behind an in-flight report and consume the entire shutdown deadline.
+   */
+  prepareForAppShutdown(): void {
+    this.resetRuntimeState()
+  }
+
+  async stop(): Promise<void> {
+    this.resetRuntimeState()
     if (wcdbService.isReady()) {
       try {
         await wcdbService.cloudStop()

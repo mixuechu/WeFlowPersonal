@@ -663,6 +663,7 @@ let mainWindowReady = false
 let shouldShowMain = true
 let isAppQuitting = false
 let shutdownPromise: Promise<void> | null = null
+let appExitCommitted = false
 let tray: Tray | null = null
 let isClosePromptVisible = false
 
@@ -4847,6 +4848,16 @@ const shutdownAppServices = async (): Promise<void> => {
   if (shutdownPromise) return shutdownPromise
   shutdownPromise = (async () => {
     isAppQuitting = true
+    const runShutdownStep = async (name: string, action: () => unknown | Promise<unknown>) => {
+      appRunRecoveryService.startShutdownStep(name)
+      try {
+        const result = await action()
+        const detail = result && typeof result === 'object' ? JSON.stringify(result) : undefined
+        appRunRecoveryService.finishShutdownStep(name, 'completed', detail)
+      } catch (error) {
+        appRunRecoveryService.finishShutdownStep(name, 'failed', error)
+      }
+    }
     // 销毁 tray 图标
     if (tray) { try { tray.destroy() } catch {} tray = null }
     // 通知窗使用 hide 而非 close，退出时主动销毁，避免残留窗口阻塞进程退出。
@@ -4855,31 +4866,38 @@ const shutdownAppServices = async (): Promise<void> => {
     insightService.stop()
     groupSummaryService.stop()
     aiAssistantService.dispose()
-    // 兜底：5秒后强制退出，防止某个异步任务卡住导致进程残留
+    // 兜底：10秒后强制退出，防止某个异步任务卡住导致进程残留。
+    // 正常路径会等待服务和 WCDB worker 完整清理后立即退出。
     const forceExitTimer = setTimeout(() => {
       console.warn('[App] Force exit after timeout')
       appRunRecoveryService.finishShutdown('forced_timeout')
       app.exit(0)
-    }, 5000)
+    }, 10_000)
     forceExitTimer.unref()
-    try { await cloudControlService.stop() } catch {}
+    await runShutdownStep('cloud-control-stop', () => cloudControlService.prepareForAppShutdown())
     // 停止自动下载服务
-    try { await imageDownloadService.stopAutoDownload() } catch {}
-    // 停止 chatService（内部会关闭 cursor 与 DB），避免退出阶段仍触发监控回调
-    try { chatService.close() } catch {}
+    await runShutdownStep('image-download-stop', () => imageDownloadService.stopAutoDownload())
+    // 清理 JS 状态；native 端只由下面的 wcdbService.shutdown 顺序关闭一次，
+    // 避免重复的 fire-and-forget cursor/DB close 请求堵塞 worker 退出队列。
+    await runShutdownStep('chat-js-state-stop', () => chatService.prepareForAppShutdown())
     // 停止 HTTP 服务器，释放 TCP 端口占用，避免进程无法退出
-    try { await httpService.stop() } catch {}
+    await runShutdownStep('http-server-stop', () => httpService.stop())
     // 终止 wcdb Worker 线程，避免线程阻止进程退出
-    try { await wcdbService.shutdown() } catch {}
+    await runShutdownStep('wcdb-worker-stop', () => wcdbService.shutdown())
     appRunRecoveryService.finishShutdown()
     clearTimeout(forceExitTimer)
   })()
   return shutdownPromise
 }
 
-app.on('before-quit', () => {
+app.on('before-quit', (event) => {
+  if (appExitCommitted) return
+  event.preventDefault()
   appRunRecoveryService.beginShutdown('normal')
-  void shutdownAppServices()
+  void shutdownAppServices().finally(() => {
+    appExitCommitted = true
+    app.exit(0)
+  })
 })
 
 app.on('window-all-closed', () => {

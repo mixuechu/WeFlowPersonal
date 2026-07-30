@@ -4,6 +4,7 @@ import { appendFile } from 'fs/promises'
 import { tmpdir } from 'os'
 import * as fzstd from 'fzstd'
 import { expandHomePath } from '../utils/pathUtils'
+import { pinNativeLibraryForProcessLifetime } from './nativeLibraryLifetime'
 
 //数据服务初始化错误信息，用于帮助用户诊断问题
 let lastDllInitError: string | null = null
@@ -48,6 +49,7 @@ export class WcdbCore {
   private logEnabled = false
   private lib: any = null
   private koffi: any = null
+  private processLifetimeLibraryPins = new Map<string, { runtime: any; handle: any }>()
   private initialized = false
   private handle: number | null = null
   private currentPath: string | null = null
@@ -378,6 +380,22 @@ export class WcdbCore {
     }
 
     return candidates[0] || libName
+  }
+
+  /**
+   * Koffi automatically calls dlclose when a worker environment is finalized.
+   * The macOS WCDB bridge owns native background threads and static destructors,
+   * so unloading its image while the process is still tearing down can execute
+   * stale code and crash in Koffi's LibraryHandle finalizer. Hold one deliberate
+   * RTLD_NODELETE reference until process exit; wcdb_shutdown still releases all
+   * database resources, while dyld keeps the executable image mapped safely.
+   */
+  private pinDarwinLibraryForProcessLifetime(libraryPath: string): void {
+    if (process.platform !== 'darwin' || this.processLifetimeLibraryPins.has(libraryPath)) return
+    const pin = pinNativeLibraryForProcessLifetime(this.koffi, libraryPath)
+    if (!pin) return
+    this.processLifetimeLibraryPins.set(libraryPath, pin)
+    this.writeLog(`[bootstrap] pinned process-lifetime library path=${libraryPath}`, true)
   }
 
   private formatInitProtectionError(code: number): string {
@@ -810,6 +828,7 @@ export class WcdbCore {
       }
 
       this.writeLog(`[bootstrap] koffi.load begin path=${dllPath}`, true)
+      this.pinDarwinLibraryForProcessLifetime(dllPath)
       this.lib = this.koffi.load(dllPath)
       this.writeLog('[bootstrap] koffi.load ok', true)
 
