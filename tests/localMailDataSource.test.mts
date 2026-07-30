@@ -6,7 +6,10 @@ import {
   type LocalMailMessage
 } from '../electron/services/localMailDataSource.ts'
 import {
+  buildModelMemoryContext,
   filterModelEligibleMemoryResults,
+  finalizeGroundedMemoryAnswer,
+  getMemoryEvidenceEligibility,
   runPersonalDataSourceBatch
 } from '../electron/services/personalDataSources.ts'
 
@@ -76,6 +79,64 @@ test('mail evidence stays searchable locally but current connector policy gates 
     ['mail-message:1', 'chat-message:1']
   )
   assert.equal(localResults.length, 2)
+})
+
+test('memory evidence eligibility keeps review status separate from factual support', () => {
+  const evidence = [{ message_id: 'message-1', excerpt: '原始证据' }]
+  const item = (type: string, status?: string, withEvidence = true) => ({
+    document_type: type,
+    metadata: status ? { status } : {},
+    evidence: withEvidence ? evidence : []
+  })
+
+  assert.deepEqual(
+    ['candidate', 'confirmed', 'rejected', 'cancelled'].map(status =>
+      getMemoryEvidenceEligibility(item('claim', status)).canSupportFacts),
+    [false, true, false, false]
+  )
+  assert.equal(getMemoryEvidenceEligibility(item('confirmed', undefined)).status, 'not_applicable')
+  assert.equal(getMemoryEvidenceEligibility(item('message', undefined)).canSupportFacts, true)
+  assert.equal(getMemoryEvidenceEligibility(item('claim', 'confirmed', false)).canSupportFacts, false)
+
+  const results = [
+    { id: 'candidate', ...item('claim', 'candidate') },
+    { id: 'confirmed', ...item('claim', 'confirmed') },
+    { id: 'rejected', ...item('claim', 'rejected') },
+    { id: 'cancelled', ...item('event', 'cancelled') },
+    { id: 'raw', ...item('message') }
+  ]
+  assert.deepEqual(
+    filterModelEligibleMemoryResults(results).map(result => result.id),
+    ['candidate', 'confirmed', 'cancelled', 'raw']
+  )
+  assert.deepEqual(
+    buildModelMemoryContext(results).map(result => ({
+      id: result.documentId,
+      status: result.status,
+      canSupportFacts: result.canSupportFacts
+    })),
+    [
+      { id: 'candidate', status: 'candidate', canSupportFacts: false },
+      { id: 'confirmed', status: 'confirmed', canSupportFacts: true },
+      { id: 'cancelled', status: 'cancelled', canSupportFacts: false },
+      { id: 'raw', status: 'not_applicable', canSupportFacts: true }
+    ]
+  )
+
+  const context = buildModelMemoryContext(results)
+  const rejectedHallucination = finalizeGroundedMemoryAnswer({
+    answer: '候选内容一定是真的。',
+    citationIds: ['candidate', 'rejected', 'cancelled']
+  }, context)
+  assert.deepEqual(rejectedHallucination.citationIds, [])
+  assert.match(rejectedHallucination.answer, /没有足够的已确认原始证据/)
+
+  const grounded = finalizeGroundedMemoryAnswer({
+    answer: '这是有依据的回答。',
+    citationIds: ['candidate', 'confirmed', 'confirmed']
+  }, context)
+  assert.deepEqual(grounded.citationIds, ['confirmed'])
+  assert.equal(grounded.answer, '这是有依据的回答。')
 })
 
 test('mail connector keeps independent mailbox cursors and retries failed consumption', async () => {

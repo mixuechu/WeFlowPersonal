@@ -1250,14 +1250,24 @@ function AiAssistantPage() {
               {memoryResults[0]?.retrieval_scope_applied && ` · 当前候选 ${Number(memoryResults[0].retrieval_scope_candidates || 0).toLocaleString()} 条`}
             </small>}
           {!!memoryQuery.trim() && <div className="assistant-search-results">
-            {memoryResults.map(result => <article key={result.id}>
+            {memoryResults.map(result => {
+              const resultStatus = ['claim', 'relation', 'event'].includes(result.document_type)
+                ? result.metadata?.status
+                : ''
+              const statusLabel = resultStatus === 'confirmed' ? '已确认'
+                : resultStatus === 'candidate' ? '待确认'
+                  : resultStatus === 'cancelled' ? '已取消'
+                    : '原始资料'
+              return <article key={result.id}>
               <span>{result.document_type}
                 {result.match_source ? ` · ${result.match_source}匹配` : ''}
                 {result.match_reason === 'pinyin_entity' ? ' · 拼音命中' : result.match_reason === 'fuzzy_entity' ? ' · 名称近似召回' : result.match_reason === 'entity_alias_or_account' ? ' · 别名/微信 ID 命中' : ''}
                 {result.semantic_score ? ` · ${Math.round(result.semantic_score * 100)}%` : ''}
                 {result.semantic_search_mode === 'ann' ? ' · ANN 召回' : result.semantic_search_mode === 'exact' ? ' · 精确向量召回' : ''}
-              </span><strong>{result.title}</strong><p>{result.search_text}</p>
-            </article>)}
+              </span>
+              <small className={`assistant-memory-trust ${resultStatus || 'source'}`}>{statusLabel}{resultStatus === 'candidate' ? ' · 不能作为已确认事实回答' : resultStatus === 'cancelled' ? ' · 仅作历史记录' : ''}</small>
+              <strong>{result.title}</strong><p>{result.search_text}</p>
+            </article>})}
             {!memoryResults.length && <div className="assistant-empty">没有找到相关记忆。</div>}
           </div>}
         </section>
@@ -1294,7 +1304,7 @@ function AiAssistantPage() {
                   setMemoryQuery(citation.title)
                   setMemoryTypeFilter(citation.type)
                 }}>定位到检索</button>
-                <strong>{citation.title}</strong><span>{citation.type}</span><p>{citation.content}</p>
+                <strong>{citation.title}</strong><span>{citation.type} · {citation.trustLabel || (citation.status === 'confirmed' ? '已确认' : '原始资料')}</span><p>{citation.content}</p>
                 {(citation.evidence || []).map((evidence: any) => <small key={evidence.message_id || evidence.messageId}>“{evidence.excerpt}”</small>)}
                 {['relation', 'claim', 'event'].includes(citation.type) && <div className="assistant-citation-actions">
                   {citation.type === 'claim' && <button onClick={() => openClaimCorrection(citation)}>纠正事实</button>}

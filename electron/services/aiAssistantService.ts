@@ -40,8 +40,9 @@ import { sanitizeDiagnosticText } from './diagnosticRedaction'
 import { getAppRunRecoveryDiagnostics } from './appRunRecoveryService'
 import {
   PERSONAL_DATA_SOURCE_CATALOG,
+  buildModelMemoryContext,
   classifyDocumentTaskOwnership,
-  filterModelEligibleMemoryResults,
+  finalizeGroundedMemoryAnswer,
   normalizeDataSourceClaimNature,
   runPersonalDataSourceBatch
 } from './personalDataSources'
@@ -3091,19 +3092,9 @@ export class AiAssistantService {
       results = [...merged.values()].slice(0, 30)
     }
     const mailSource = personalMemoryStore.listDataSources().find(source => source.id === 'mail')
-    const context = filterModelEligibleMemoryResults(results, {
+    const context = buildModelMemoryContext(results, {
       mail: { allowModelAnalysis: Boolean(mailSource?.config?.allowModelAnalysis) }
-    })
-      .slice(0, 20).map((item: any) => ({
-      documentId: item.id,
-      sourceId: item.source_id,
-      type: item.document_type,
-      title: item.title,
-      content: item.search_text,
-      status: item.metadata?.status,
-      evidence: item.evidence,
-      canSupportFacts: Array.isArray(item.evidence) && item.evidence.length > 0
-    }))
+    }, 20)
     const apiKey = String(this.config.get('aiAssistantApiKey') || '').trim()
     if (!apiKey) throw new Error('请先设置 DeepSeek API Key')
     const baseUrl = String(this.config.get('aiAssistantApiBaseUrl') || 'https://api.deepseek.com').replace(/\/$/, '')
@@ -3119,7 +3110,7 @@ export class AiAssistantService {
       body: JSON.stringify({
         model, temperature: 0.1, max_tokens: 1800, response_format: { type: 'json_object' },
         messages: [
-          { role: 'system', content: '你是本地个人记忆问答助手。只能依据提供的检索结果回答；证据不足必须明确说不知道。只有 canSupportFacts=true 且包含原始 evidence 的文档可以支持事实结论；没有原始 evidence 的实体摘要只能作为检索线索，不能作为事实依据。每个事实结论必须引用能够支持它的 documentId。只输出 JSON：{"answer":"回答","citationIds":["documentId"],"uncertainty":"不确定性说明"}。' },
+          { role: 'system', content: '你是本地个人记忆问答助手。只能依据提供的检索结果回答；证据不足必须明确说不知道。只有 canSupportFacts=true 且包含原始 evidence 的文档可以支持事实结论。status=candidate 是待人工确认的模型候选，只能说明“存在待确认候选”，绝不能当作事实；status=cancelled 仅表示历史记录已取消，绝不能据此声称事件当前有效或已经发生；已拒绝记录不会提供给你。没有原始 evidence 的实体摘要只能作为检索线索。每个事实结论必须引用能够支持它的 documentId；不得引用 canSupportFacts=false 的文档。只输出 JSON：{"answer":"回答","citationIds":["documentId"],"uncertainty":"不确定性说明"}。' },
           { role: 'user', content: outbound.text }
         ]
       }),
@@ -3128,10 +3119,8 @@ export class AiAssistantService {
     const payload = await response.json().catch(() => ({}))
     if (!response.ok) throw new Error(payload?.error?.message || `DeepSeek 请求失败 (${response.status})`)
     const parsed = parseModelJson(payload?.choices?.[0]?.message?.content)
-    const allowed = new Set(context.filter(item => item.canSupportFacts).map(item => item.documentId))
-    const citationIds = (Array.isArray(parsed.citationIds) ? parsed.citationIds : []).map(String).filter((id: string) => allowed.has(id))
-    const citations = context.filter(item => citationIds.includes(item.documentId))
-    const answer = String(parsed.answer || '没有足够证据回答。').slice(0, 6000)
+    const grounded = finalizeGroundedMemoryAnswer(parsed, context)
+    const { answer, citations } = grounded
     const id = personalMemoryStore.saveAssistantExchange(query, answer, citations, conversationId)
     return {
       conversationId: id,

@@ -108,12 +108,126 @@ export function filterModelEligibleMemoryResults(
   sourcePolicies: Record<string, { allowModelAnalysis?: boolean }> = {}
 ): any[] {
   return (results || []).filter(item => {
+    if (getMemoryEvidenceEligibility(item).visibility === 'excluded') return false
     if (item?.metadata?.modelAnalysisAllowed === false) return false
     const sourceId = String(item?.metadata?.sourceId || '')
     if (!sourceId) return true
     const policy = sourcePolicies[sourceId]
     return !policy || policy.allowModelAnalysis !== false
   })
+}
+
+export type MemoryEvidenceEligibility = {
+  status: 'candidate' | 'confirmed' | 'rejected' | 'cancelled' | 'not_applicable'
+  visibility: 'normal' | 'excluded'
+  canSupportFacts: boolean
+  trustLabel: string
+  policyReason: string
+}
+
+/**
+ * One policy shared by local search presentation and outbound model context.
+ * `status` is epistemic only for extracted claims, relations and events; task
+ * workflow states such as `todo` or `cancelled` must not accidentally become
+ * trust judgements.
+ */
+export function getMemoryEvidenceEligibility(item: any): MemoryEvidenceEligibility {
+  const type = String(item?.document_type || item?.type || '')
+  const epistemic = ['claim', 'relation', 'event'].includes(type)
+  const rawStatus = epistemic ? String(item?.metadata?.status || item?.status || '') : ''
+  const status = (['candidate', 'confirmed', 'rejected', 'cancelled'].includes(rawStatus)
+    ? rawStatus
+    : 'not_applicable') as MemoryEvidenceEligibility['status']
+  const hasEvidence = Array.isArray(item?.evidence) && item.evidence.length > 0
+
+  if (status === 'rejected') {
+    return {
+      status,
+      visibility: 'excluded',
+      canSupportFacts: false,
+      trustLabel: '已拒绝',
+      policyReason: '人工已判定不准确，默认搜索与模型上下文均排除'
+    }
+  }
+  if (status === 'candidate') {
+    return {
+      status,
+      visibility: 'normal',
+      canSupportFacts: false,
+      trustLabel: '待确认',
+      policyReason: '模型抽取候选仅用于审阅和继续检索，不能支持事实结论'
+    }
+  }
+  if (status === 'cancelled') {
+    return {
+      status,
+      visibility: 'normal',
+      canSupportFacts: false,
+      trustLabel: '已取消',
+      policyReason: '仅保留为历史状态，不能支持当前或已发生事实结论'
+    }
+  }
+  if (status === 'confirmed') {
+    return {
+      status,
+      visibility: 'normal',
+      canSupportFacts: hasEvidence,
+      trustLabel: '已确认',
+      policyReason: hasEvidence ? '已确认且包含原始证据' : '已确认但缺少原始证据'
+    }
+  }
+  return {
+    status,
+    visibility: 'normal',
+    canSupportFacts: hasEvidence,
+    trustLabel: hasEvidence ? '原始资料' : '检索线索',
+    policyReason: hasEvidence ? '非推断型资料且包含原始证据' : '缺少原始证据'
+  }
+}
+
+export function buildModelMemoryContext(
+  results: any[],
+  sourcePolicies: Record<string, { allowModelAnalysis?: boolean }> = {},
+  limit = 20
+): any[] {
+  return filterModelEligibleMemoryResults(results, sourcePolicies)
+    .slice(0, Math.max(0, limit))
+    .map(item => {
+      const eligibility = getMemoryEvidenceEligibility(item)
+      return {
+        documentId: item.id,
+        sourceId: item.source_id,
+        type: item.document_type,
+        title: item.title,
+        content: item.search_text,
+        status: eligibility.status,
+        trustLabel: eligibility.trustLabel,
+        evidencePolicy: eligibility.policyReason,
+        evidence: item.evidence,
+        canSupportFacts: eligibility.canSupportFacts
+      }
+    })
+}
+
+export function finalizeGroundedMemoryAnswer(
+  parsed: any,
+  context: any[]
+): { answer: string; citationIds: string[]; citations: any[] } {
+  const allowed = new Set((context || [])
+    .filter(item => item.canSupportFacts === true && Array.isArray(item.evidence) && item.evidence.length > 0)
+    .map(item => String(item.documentId)))
+  const citationIds = [...new Set((Array.isArray(parsed?.citationIds) ? parsed.citationIds : [])
+    .map(String)
+    .filter((id: string) => allowed.has(id)))]
+  const citations = (context || []).filter(item => citationIds.includes(String(item.documentId)))
+  const proposedAnswer = String(parsed?.answer || '').trim()
+  return {
+    answer: (citationIds.length
+      ? proposedAnswer || '没有足够证据回答。'
+      : '没有足够的已确认原始证据回答。检索到的待确认候选或线索不会被当作事实。').slice(0, 6000),
+    citationIds,
+    citations
+  }
 }
 
 function validateItem(connector: PersonalDataSourceConnector, item: PersonalDataSourceItem): void {

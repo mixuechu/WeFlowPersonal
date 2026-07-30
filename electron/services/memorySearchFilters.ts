@@ -9,6 +9,11 @@ export type MemorySearchOptions = {
   relationTypes?: string[]
 }
 
+function isRejectedExtractedMemory(item: any): boolean {
+  return ['claim', 'relation', 'event'].includes(String(item?.document_type || '')) &&
+    String(item?.metadata?.status || '') === 'rejected'
+}
+
 function dateBoundary(value: string | undefined, endOfDay = false): number | null {
   const text = String(value || '').trim()
   if (!text) return null
@@ -43,6 +48,9 @@ export function filterMemorySearchResults(items: any[], options: MemorySearchOpt
   const from = dateBoundary(options.from)
   const to = dateBoundary(options.to, true)
   return items.filter(item => {
+    // Rejected extractions remain in the encrypted audit/history tables but
+    // must not re-enter ordinary retrieval or downstream model context.
+    if (isRejectedExtractedMemory(item)) return false
     if (types.size && !types.has(String(item.document_type || ''))) return false
     if (relationTypes.size && item.document_type === 'relation') {
       const predicate = String(item.metadata?.predicate || item.title || '').trim().toLowerCase()

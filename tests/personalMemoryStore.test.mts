@@ -689,7 +689,7 @@ test('memory scope filters apply entity, session, date and document type togethe
     source_id: 'relation-1',
     title: '服务对象',
     search_text: '邢爱妮 服务对象 Onyx Devs Lab',
-    metadata: { subjectId: 'person-xing', objectId: 'org-onyx' },
+    metadata: { subjectId: 'person-xing', objectId: 'org-onyx', status: 'confirmed' },
     evidence: [{ session_id: 'session-onyx', timestamp: inRange }]
   }, {
     id: 'task-1',
@@ -709,6 +709,14 @@ test('memory scope filters apply entity, session, date and document type togethe
     metadata: {},
     updated_at: '2026-07-29T10:00:00+08:00',
     evidence: []
+  }, {
+    id: 'rejected-relation',
+    document_type: 'relation',
+    source_id: 'rejected-relation',
+    title: '错误关系',
+    search_text: 'Onyx 错误关系',
+    metadata: { subjectId: 'person-xing', objectId: 'org-onyx', status: 'rejected' },
+    evidence: [{ session_id: 'session-onyx', timestamp: inRange }]
   }]
 
   assert.deepEqual(filterMemorySearchResults(items, {
