@@ -32,6 +32,26 @@ function taskHistoryValue(value: string): string {
   }
 }
 
+function isoToShanghaiInput(value?: string | null): string {
+  if (!value || !Number.isFinite(Date.parse(value))) return ''
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Shanghai',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false
+  }).formatToParts(new Date(value))
+  const get = (type: Intl.DateTimeFormatPartTypes) => parts.find(part => part.type === type)?.value || ''
+  return `${get('year')}-${get('month')}-${get('day')}T${get('hour')}:${get('minute')}`
+}
+
+function shanghaiInputToIso(value?: string): string {
+  const normalized = String(value || '').trim()
+  return normalized ? new Date(`${normalized}:00+08:00`).toISOString() : ''
+}
+
 function AiAssistantPage() {
   const [status, setStatus] = useState<any>(null)
   const [dashboard, setDashboard] = useState<any>(null)
@@ -74,6 +94,7 @@ function AiAssistantPage() {
   const [memoryQuery, setMemoryQuery] = useState('')
   const [memoryResults, setMemoryResults] = useState<any[]>([])
   const [editingClaim, setEditingClaim] = useState<any>(null)
+  const [editingEvent, setEditingEvent] = useState<any>(null)
   const [editingTask, setEditingTask] = useState<any>(null)
   const [taskStatusFilter, setTaskStatusFilter] = useState<'all' | Task['status']>('all')
   const [taskPriorityFilter, setTaskPriorityFilter] = useState<'all' | Task['priority']>('all')
@@ -566,6 +587,39 @@ function AiAssistantPage() {
     await load()
   }
 
+  const beginEventCorrection = (event: any) => {
+    setEditingEvent({
+      id: event.id,
+      title: event.title || '',
+      eventType: event.event_type || 'event',
+      description: event.description || '',
+      startAt: isoToShanghaiInput(event.start_at),
+      endAt: isoToShanghaiInput(event.end_at),
+      location: event.location || ''
+    })
+    window.setTimeout(() =>
+      document.getElementById(`memory-event-${event.id}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' }), 0)
+  }
+
+  const saveEventCorrection = async () => {
+    if (!editingEvent?.id || !String(editingEvent.title || '').trim()) return
+    try {
+      await window.electronAPI.aiAssistant.correctEvent(editingEvent.id, {
+        title: editingEvent.title,
+        eventType: editingEvent.eventType,
+        description: editingEvent.description,
+        startAt: shanghaiInputToIso(editingEvent.startAt),
+        endAt: shanghaiInputToIso(editingEvent.endAt),
+        location: editingEvent.location
+      })
+      setEditingEvent(null)
+      setMessage('事件纠正已确认并写入版本审计；后续重抽取只会追加证据。')
+      await load()
+    } catch (error: any) {
+      setMessage(error?.message || String(error))
+    }
+  }
+
   const askMemory = async () => {
     const question = memoryQuestion.trim()
     if (!question || askingMemory) return
@@ -627,6 +681,19 @@ function AiAssistantPage() {
       validTo: claim.valid_to || ''
     })
     window.setTimeout(() => document.getElementById(`memory-claim-${claim.id}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' }), 0)
+  }
+
+  const openEventCorrection = async (citation: any) => {
+    const event = await window.electronAPI.aiAssistant.getMemoryEvent(citation.sourceId)
+    if (!event) {
+      setMessage('该事件不存在或已经被删除。')
+      return
+    }
+    setEventSourceFilter('')
+    setEventStatusFilter('')
+    setEventFrom('')
+    setEventTo('')
+    beginEventCorrection(event)
   }
 
   const openSources = async () => {
@@ -1229,6 +1296,7 @@ function AiAssistantPage() {
                 {(citation.evidence || []).map((evidence: any) => <small key={evidence.message_id || evidence.messageId}>“{evidence.excerpt}”</small>)}
                 {['relation', 'claim', 'event'].includes(citation.type) && <div className="assistant-citation-actions">
                   {citation.type === 'claim' && <button onClick={() => openClaimCorrection(citation)}>纠正事实</button>}
+                  {citation.type === 'event' && <button onClick={() => void openEventCorrection(citation)}>纠正事件</button>}
                   {citation.status !== 'confirmed' && <button className="primary" onClick={() => void reviewMemoryCitation(citation, 'confirmed')}>确认</button>}
                   {citation.status !== 'rejected' && <button onClick={() => void reviewMemoryCitation(citation, 'rejected')}>不准确</button>}
                   <button className="danger" onClick={() => void permanentlyDeleteMemoryItem(citation.type, citation)}>永久删除</button>
@@ -1299,20 +1367,46 @@ function AiAssistantPage() {
                 <button onClick={() => { setEventSourceFilter(''); setEventStatusFilter(''); setEventFrom(''); setEventTo('') }}>清除范围</button>}
             </div>
             <div className="assistant-memory-list">
-              {visibleEvents.map((event: any) => <article className="assistant-memory-item" key={event.id}>
+              {editingEvent && !visibleEvents.some((event: any) => event.id === editingEvent.id) &&
+                <article className="assistant-memory-item" id={`memory-event-${editingEvent.id}`}>
+                  <div className="assistant-memory-item-head"><strong>正在纠正历史事件</strong><span className="confirmed">人工编辑</span></div>
+                  <div className="assistant-event-editor">
+                    <input value={editingEvent.title} onChange={event => setEditingEvent({ ...editingEvent, title: event.target.value })} placeholder="事件标题" />
+                    <input value={editingEvent.eventType} onChange={event => setEditingEvent({ ...editingEvent, eventType: event.target.value })} placeholder="事件类型" />
+                    <textarea value={editingEvent.description} onChange={event => setEditingEvent({ ...editingEvent, description: event.target.value })} placeholder="事件说明" />
+                    <input type="datetime-local" value={editingEvent.startAt} onChange={event => setEditingEvent({ ...editingEvent, startAt: event.target.value })} />
+                    <input type="datetime-local" value={editingEvent.endAt} onChange={event => setEditingEvent({ ...editingEvent, endAt: event.target.value })} />
+                    <input value={editingEvent.location} onChange={event => setEditingEvent({ ...editingEvent, location: event.target.value })} placeholder="地点" />
+                  </div>
+                  <div className="assistant-memory-actions"><button onClick={() => setEditingEvent(null)}>取消</button><button className="primary" onClick={() => void saveEventCorrection()}>保存并确认</button></div>
+                </article>}
+              {visibleEvents.map((event: any) => <article className="assistant-memory-item" id={`memory-event-${event.id}`} key={event.id}>
                 <div className="assistant-memory-item-head">
                   <strong>{event.title}</strong>
                   <span className={event.status}>{event.status === 'confirmed' ? '已确认' : event.status === 'cancelled' ? '已取消' : '待确认'}</span>
                 </div>
-                {event.description && <p>{event.description}</p>}
-                <small>{event.start_at || '时间待确认'}{event.end_at ? ` — ${event.end_at}` : ''}{event.location ? ` · ${event.location}` : ''}</small>
+                {editingEvent?.id === event.id ? <div className="assistant-event-editor">
+                  <input value={editingEvent.title} onChange={input => setEditingEvent({ ...editingEvent, title: input.target.value })} placeholder="事件标题" />
+                  <input value={editingEvent.eventType} onChange={input => setEditingEvent({ ...editingEvent, eventType: input.target.value })} placeholder="事件类型" />
+                  <textarea value={editingEvent.description} onChange={input => setEditingEvent({ ...editingEvent, description: input.target.value })} placeholder="事件说明" />
+                  <input type="datetime-local" value={editingEvent.startAt} onChange={input => setEditingEvent({ ...editingEvent, startAt: input.target.value })} />
+                  <input type="datetime-local" value={editingEvent.endAt} onChange={input => setEditingEvent({ ...editingEvent, endAt: input.target.value })} />
+                  <input value={editingEvent.location} onChange={input => setEditingEvent({ ...editingEvent, location: input.target.value })} placeholder="地点" />
+                </div> : <>
+                  {event.description && <p>{event.description}</p>}
+                  <small>{event.start_at || '时间待确认'}{event.end_at ? ` — ${event.end_at}` : ''}{event.location ? ` · ${event.location}` : ''}</small>
+                </>}
                 <small>来源：{event.source_id === 'calendar' ? 'macOS 日历' : event.source_id === 'documents' ? '本机文档' : '微信'}</small>
+                {!!event.correction_count && <small>人工纠正 {event.correction_count} 次{event.corrected_at ? ` · 最近 ${new Date(event.corrected_at).toLocaleString('zh-CN')}` : ''}；后续自动抽取不会覆盖。</small>}
                 {!!event.participants?.length && <small>参与者：{event.participants.map((item: any) => `${item.canonical_name}（${item.role}）`).join('、')}</small>}
                 <div className="assistant-evidence-stack">
                   {(event.evidence || []).map((evidence: any) =>
                     <small key={evidence.message_id}>证据 · {new Date(evidence.timestamp * 1000).toLocaleString('zh-CN')}：“{evidence.excerpt}”</small>)}
                 </div>
                 <div className="assistant-memory-actions">
+                  {editingEvent?.id === event.id
+                    ? <><button onClick={() => setEditingEvent(null)}>取消</button><button className="primary" onClick={() => void saveEventCorrection()}>保存并确认</button></>
+                    : <button onClick={() => beginEventCorrection(event)}>纠正</button>}
                   <button onClick={() => void updateMemoryStatus('event', event.id, 'rejected')}>不准确</button>
                   {event.status === 'candidate' && <button className="primary" onClick={() => void updateMemoryStatus('event', event.id, 'confirmed')}>确认事件</button>}
                   <button className="danger" onClick={() => void permanentlyDeleteMemoryItem('event', event)}>永久删除</button>

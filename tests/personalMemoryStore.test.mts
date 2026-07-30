@@ -776,6 +776,100 @@ test('manual memory review updates searchable status metadata', () => withStore(
   assert.equal(JSON.parse(result.metadata_json).status, 'confirmed')
 }))
 
+test('human claim correction survives repeated extraction while new evidence is retained', () => withStore(store => {
+  store.syncGraph({
+    entities: [{ id: 'person-corrected', type: 'person', canonicalName: '纠正对象', aliases: [], accountIds: [] }],
+    relations: [],
+    reviewQueue: []
+  })
+  const extracted = {
+    id: 'claim-corrected',
+    subjectId: 'person-corrected',
+    predicate: '所在城市',
+    objectValue: '上海',
+    confidence: 0.72,
+    status: 'candidate',
+    sourceNature: 'other_statement',
+    searchText: '纠正对象 所在城市 上海',
+    evidence: evidence('message-corrected-1', '听说现在住在上海')
+  }
+  store.upsertClaims([extracted])
+  store.correctClaim('claim-corrected', { value: '北京', validFrom: '2026-07-01' })
+  store.upsertClaims([{
+    ...extracted,
+    confidence: 0.98,
+    searchText: '模型再次认为纠正对象在上海',
+    evidence: evidence('message-corrected-2', '旧消息再次被模型处理')
+  }])
+  const claim = store.getMemoryFeed().claims.find(item => item.id === 'claim-corrected')
+  assert.equal(claim.object_value, '北京')
+  assert.equal(claim.status, 'confirmed')
+  assert.equal(claim.source_nature, 'human_confirmation')
+  assert.equal(claim.correction_count, 1)
+  assert.deepEqual(claim.evidence.map((item: any) => item.message_id),
+    ['message-corrected-1', 'message-corrected-2'])
+  const search = store.searchText('北京').find(item => item.id === 'claim:claim-corrected')
+  assert.ok(search)
+  assert.equal(JSON.parse(search.metadata_json).status, 'confirmed')
+}))
+
+test('human event correction is audited, searchable and protected from repeated extraction', () => withStore(store => {
+  const extracted = {
+    id: 'event-corrected',
+    eventType: 'meeting',
+    title: '错误的会议',
+    description: '模型原始说明',
+    startAt: '2026-07-30T01:00:00.000Z',
+    endAt: '2026-07-30T02:00:00.000Z',
+    location: '旧地点',
+    confidence: 0.7,
+    status: 'candidate',
+    sourceNature: 'inference',
+    searchText: '错误的会议 模型原始说明 旧地点',
+    evidence: evidence('event-message-1', '会议原文')
+  }
+  store.upsertEvents([extracted])
+  const corrected = store.correctEvent('event-corrected', {
+    title: '客户方案评审',
+    eventType: 'review',
+    description: '确认第二版方案与报价',
+    startAt: '2026-07-31T06:00:00.000Z',
+    endAt: '2026-07-31T07:30:00.000Z',
+    location: '上海会议室'
+  })
+  assert.equal(corrected.status, 'confirmed')
+  assert.equal(corrected.source_nature, 'human_confirmation')
+  assert.equal(corrected.correction_count, 1)
+  store.saveEmbedding('event:event-corrected', 'event-correction-vector', [1, 0])
+  store.upsertEvents([{
+    ...extracted,
+    confidence: 0.99,
+    title: '模型再次输出的错误会议',
+    evidence: evidence('event-message-2', '重新抽取追加的证据')
+  }])
+  const event = store.getEvent('event-corrected')
+  assert.equal(event.title, '客户方案评审')
+  assert.equal(event.event_type, 'review')
+  assert.equal(event.location, '上海会议室')
+  assert.equal(event.status, 'confirmed')
+  assert.equal(event.source_nature, 'human_confirmation')
+  assert.equal(event.correction_count, 1)
+  assert.deepEqual(event.evidence.map((item: any) => item.message_id), ['event-message-1', 'event-message-2'])
+  assert.ok(store.searchText('报价').some(item => item.id === 'event:event-corrected'))
+  assert.equal(store.getEmbeddingStats('event-correction-vector').pending, 0)
+  const timeline = store.listEventTimeline()
+  assert.equal(timeline.items[0].corrected_at !== null, true)
+  store.upsertEvents([{ ...extracted, status: 'cancelled', evidence: evidence('event-message-cancelled', '来源事件已取消') }])
+  assert.equal(store.getEvent('event-corrected').status, 'cancelled')
+  assert.equal(store.getEvent('event-corrected').title, '客户方案评审')
+  assert.equal(JSON.parse(store.searchText('报价')[0].metadata_json).status, 'cancelled')
+  assert.throws(() => store.correctEvent('event-corrected', {
+    title: '非法时间',
+    startAt: '2026-08-01T10:00:00.000Z',
+    endAt: '2026-08-01T09:00:00.000Z'
+  }), /结束时间不能早于开始时间/)
+}))
+
 test('negative claims preserve polarity and attach contradiction evidence both ways', () => withStore(store => {
   store.syncGraph({
     entities: [{ id: 'person-polarity', type: 'person', canonicalName: '极性测试', aliases: [], accountIds: [] }],

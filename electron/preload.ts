@@ -653,6 +653,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
     importMemoryBundle: (path: string, passphrase?: string) =>
       ipcRenderer.invoke('ai-assistant:importMemoryBundle', path, passphrase),
     correctClaim: (id: string, input: any) => ipcRenderer.invoke('ai-assistant:correctClaim', id, input),
+    correctEvent: (id: string, input: any) => ipcRenderer.invoke('ai-assistant:correctEvent', id, input),
+    getMemoryEvent: (id: string) => ipcRenderer.invoke('ai-assistant:getMemoryEvent', id),
     askMemory: (question: string, conversationId?: string, options?: any) => ipcRenderer.invoke('ai-assistant:askMemory', question, conversationId, options),
     getConversationSources: () => ipcRenderer.invoke('ai-assistant:getConversationSources'),
     getDataSources: () => ipcRenderer.invoke('ai-assistant:getDataSources'),

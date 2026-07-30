@@ -166,6 +166,7 @@ export class PersonalMemoryStore {
         location TEXT,
         confidence REAL NOT NULL,
         status TEXT NOT NULL DEFAULT 'candidate',
+        source_nature TEXT NOT NULL DEFAULT 'inference',
         search_text TEXT NOT NULL,
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL
@@ -435,6 +436,7 @@ export class PersonalMemoryStore {
     this.ensureColumn('claims', 'source_nature', `TEXT NOT NULL DEFAULT 'inference'`)
     this.ensureColumn('claims', 'conflict_group', 'TEXT')
     this.ensureColumn('claims', 'polarity', `TEXT NOT NULL DEFAULT 'positive'`)
+    this.ensureColumn('events', 'source_nature', `TEXT NOT NULL DEFAULT 'inference'`)
     this.ensureColumn('ingestion_batches', 'model', `TEXT NOT NULL DEFAULT ''`)
     this.ensureColumn('ingestion_batches', 'prompt_version', `TEXT NOT NULL DEFAULT ''`)
     this.ensureColumn('ingestion_batches', 'schema_version', `TEXT NOT NULL DEFAULT ''`)
@@ -444,6 +446,8 @@ export class PersonalMemoryStore {
     this.ensureColumn('ingestion_batches', 'redaction_summary_json', `TEXT NOT NULL DEFAULT '{}'`)
     this.ensureColumn('memory_item_suppressions', 'semantic_fingerprint', `TEXT NOT NULL DEFAULT ''`)
     this.ensureColumn('data_source_connectors', 'config_json', `TEXT NOT NULL DEFAULT '{}'`)
+    this.db.exec(`CREATE INDEX IF NOT EXISTS idx_memory_corrections_item
+      ON memory_corrections(item_kind,item_id,created_at DESC)`)
     this.db.exec(`CREATE INDEX IF NOT EXISTS idx_memory_item_suppressions_semantic
       ON memory_item_suppressions(item_kind,semantic_fingerprint)`)
     this.db.prepare(`UPDATE claims SET status='candidate' WHERE source_nature!='self_statement' AND status='confirmed'`).run()
@@ -1057,6 +1061,18 @@ export class PersonalMemoryStore {
     for (const claim of claims) {
       if (this.isMemoryItemSuppressed('claim', claim.id, this.memoryItemSemanticFingerprint('claim', claim))) continue
       const sourceNature = claim.sourceNature || 'inference'
+      const manuallyCorrected = Boolean(this.db.prepare(`
+        SELECT 1 FROM memory_corrections WHERE item_kind='claim' AND item_id=? LIMIT 1
+      `).get(claim.id))
+      if (manuallyCorrected) {
+        for (const item of claim.evidence || []) {
+          const evidenceRole = item.role && item.role !== 'support'
+            ? item.role
+            : sourceNature === 'self_statement' ? 'direct' : 'indirect'
+          evidence.run(claim.id, item.messageId, item.sessionId, item.timestamp, item.excerpt, evidenceRole)
+        }
+        continue
+      }
       const existingValues = this.db.prepare(`
         SELECT id,COALESCE(object_entity_id,object_value,'') AS value,polarity,valid_from,valid_to
         FROM claims WHERE subject_id=? AND predicate=? AND status!='rejected' AND id!=?
@@ -1121,11 +1137,14 @@ export class PersonalMemoryStore {
     if (!this.db || !events.length) return
     const now = new Date().toISOString()
     const upsert = this.db.prepare(`
-      INSERT INTO events(id,event_type,title,description,start_at,end_at,location,confidence,status,search_text,created_at,updated_at)
-      VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
+      INSERT INTO events(
+        id,event_type,title,description,start_at,end_at,location,confidence,status,source_nature,search_text,created_at,updated_at
+      )
+      VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)
       ON CONFLICT(id) DO UPDATE SET description=excluded.description,start_at=COALESCE(excluded.start_at,start_at),
         end_at=COALESCE(excluded.end_at,end_at),location=COALESCE(excluded.location,location),
-        confidence=MAX(confidence,excluded.confidence),status=excluded.status,search_text=excluded.search_text,updated_at=excluded.updated_at
+        confidence=MAX(confidence,excluded.confidence),status=excluded.status,source_nature=excluded.source_nature,
+        search_text=excluded.search_text,updated_at=excluded.updated_at
     `)
     const participant = this.db.prepare('INSERT OR IGNORE INTO event_participants(event_id,entity_id,role) VALUES(?,?,?)')
     const evidence = this.db.prepare(`
@@ -1144,8 +1163,30 @@ export class PersonalMemoryStore {
         if (reusable) event.id = reusable.id
       }
       if (this.isMemoryItemSuppressed('event', event.id, this.memoryItemSemanticFingerprint('event', event))) continue
+      const manuallyCorrected = Boolean(this.db.prepare(`
+        SELECT 1 FROM memory_corrections WHERE item_kind='event' AND item_id=? LIMIT 1
+      `).get(event.id))
+      if (manuallyCorrected) {
+        for (const item of event.participants || []) participant.run(event.id, item.entityId, item.role || 'participant')
+        for (const item of event.evidence || []) evidence.run(event.id, item.messageId, item.sessionId, item.timestamp, item.excerpt,
+          item.role && item.role !== 'support' ? item.role : 'indirect')
+        if (event.status === 'cancelled') {
+          this.db.prepare(`UPDATE events SET status='cancelled',updated_at=? WHERE id=?`).run(now, event.id)
+          const document = this.db.prepare('SELECT metadata_json FROM search_documents WHERE id=?')
+            .get(`event:${event.id}`) as any
+          if (document) {
+            let metadata: any = {}
+            try { metadata = JSON.parse(document.metadata_json || '{}') } catch {}
+            metadata.status = 'cancelled'
+            this.db.prepare('UPDATE search_documents SET metadata_json=?,updated_at=? WHERE id=?')
+              .run(JSON.stringify(metadata), now, `event:${event.id}`)
+          }
+        }
+        continue
+      }
       upsert.run(event.id, event.eventType, event.title, event.description || '', event.startAt || null, event.endAt || null,
-        event.location || null, event.confidence, event.status || 'candidate', event.searchText, event.createdAt || now, now)
+        event.location || null, event.confidence, event.status || 'candidate', event.sourceNature || 'inference',
+        event.searchText, event.createdAt || now, now)
       for (const item of event.participants || []) participant.run(event.id, item.entityId, item.role || 'participant')
       for (const item of event.evidence || []) evidence.run(event.id, item.messageId, item.sessionId, item.timestamp, item.excerpt,
         item.role && item.role !== 'support' ? item.role : 'direct')
@@ -1166,6 +1207,31 @@ export class PersonalMemoryStore {
       SELECT event_id AS eventId,role FROM event_participants
       WHERE entity_id=? ORDER BY event_id,role
     `).all(entityId) as Array<{ eventId: string; role: string }>)
+  }
+
+  getEvent(id: string): any | null {
+    if (!this.db) return null
+    const event = this.db.prepare(`
+      SELECT ev.*,
+        (SELECT COUNT(*) FROM memory_corrections mc
+          WHERE mc.item_kind='event' AND mc.item_id=ev.id) AS correction_count,
+        (SELECT mc.created_at FROM memory_corrections mc
+          WHERE mc.item_kind='event' AND mc.item_id=ev.id
+          ORDER BY mc.id DESC LIMIT 1) AS corrected_at
+      FROM events ev WHERE ev.id=?
+    `).get(String(id || '')) as any
+    if (!event) return null
+    return {
+      ...event,
+      participants: this.db.prepare(`
+        SELECT ep.entity_id,ep.role,e.canonical_name
+        FROM event_participants ep JOIN entities e ON e.id=ep.entity_id WHERE ep.event_id=?
+      `).all(event.id),
+      evidence: this.db.prepare(`
+        SELECT message_id,session_id,timestamp,excerpt,evidence_role
+        FROM evidence WHERE event_id=? ORDER BY timestamp
+      `).all(event.id)
+    }
   }
 
   mergeEntityEventParticipants(sourceId: string, targetId: string): void {
@@ -1587,14 +1653,19 @@ export class PersonalMemoryStore {
   getMemoryFeed(limit = 100): { claims: any[]; events: any[]; resources: any[] } {
     if (!this.db) return { claims: [], events: [], resources: [] }
     const claims = this.db.prepare(`
-      SELECT c.*,s.canonical_name AS subject_name,o.canonical_name AS object_entity_name
+      SELECT c.*,s.canonical_name AS subject_name,o.canonical_name AS object_entity_name,
+        (SELECT COUNT(*) FROM memory_corrections mc
+          WHERE mc.item_kind='claim' AND mc.item_id=c.id) AS correction_count
       FROM claims c
       LEFT JOIN entities s ON s.id=c.subject_id
       LEFT JOIN entities o ON o.id=c.object_entity_id
       ORDER BY c.updated_at DESC LIMIT ?
     `).all(limit) as any[]
     const events = this.db.prepare(`
-      SELECT * FROM events ORDER BY COALESCE(start_at,updated_at) DESC LIMIT ?
+      SELECT ev.*,
+        (SELECT COUNT(*) FROM memory_corrections mc
+          WHERE mc.item_kind='event' AND mc.item_id=ev.id) AS correction_count
+      FROM events ev ORDER BY COALESCE(start_at,updated_at) DESC LIMIT ?
     `).all(limit) as any[]
     const evidenceStatement = this.db.prepare(`
       SELECT message_id,session_id,timestamp,excerpt,evidence_role
@@ -1677,6 +1748,11 @@ export class PersonalMemoryStore {
     const offset = Math.max(0, Number(options.offset || 0))
     const rows = this.db.prepare(`
       SELECT ev.*,
+        (SELECT COUNT(*) FROM memory_corrections mc
+          WHERE mc.item_kind='event' AND mc.item_id=ev.id) AS correction_count,
+        (SELECT mc.created_at FROM memory_corrections mc
+          WHERE mc.item_kind='event' AND mc.item_id=ev.id
+          ORDER BY mc.id DESC LIMIT 1) AS corrected_at,
         CASE
           WHEN EXISTS (SELECT 1 FROM evidence e WHERE e.event_id=ev.id AND e.session_id LIKE 'data-source:calendar:%') THEN 'calendar'
           WHEN EXISTS (SELECT 1 FROM evidence e WHERE e.event_id=ev.id AND e.session_id LIKE 'data-source:documents%') THEN 'documents'
@@ -1806,6 +1882,7 @@ export class PersonalMemoryStore {
       } else if (kind === 'event') {
         this.db.prepare('DELETE FROM evidence WHERE event_id=?').run(itemId)
         this.db.prepare('DELETE FROM event_participants WHERE event_id=?').run(itemId)
+        this.db.prepare(`DELETE FROM memory_corrections WHERE item_kind='event' AND item_id=?`).run(itemId)
         this.db.prepare('DELETE FROM events WHERE id=?').run(itemId)
       } else {
         this.db.prepare('DELETE FROM evidence WHERE relation_id=?').run(itemId)
@@ -1903,18 +1980,112 @@ export class PersonalMemoryStore {
       updated_at: now
     }
     if (!after.object_value) return null
-    this.db.prepare(`
-      UPDATE claims SET object_entity_id=NULL,object_value=?,polarity='positive',valid_from=?,valid_to=?,status='confirmed',
-        source_nature='human_confirmation',conflict_group=NULL,updated_at=? WHERE id=?
-    `).run(after.object_value, after.valid_from, after.valid_to, now, id)
-    this.db.prepare(`
-      INSERT INTO memory_corrections(item_kind,item_id,before_json,after_json,created_at) VALUES('claim',?,?,?,?)
-    `).run(id, JSON.stringify(before), JSON.stringify(after), now)
     const subject = this.db.prepare('SELECT canonical_name FROM entities WHERE id=?').get(before.subject_id) as { canonical_name?: string } | undefined
-    this.upsertSearchDocument(`claim:${id}`, 'claim', id, before.predicate,
-      `${subject?.canonical_name || ''} ${before.predicate} ${after.object_value}`.trim(),
-      { subjectId: before.subject_id, polarity: 'positive', status: 'confirmed', validFrom: after.valid_from, validTo: after.valid_to }, now)
+    const transaction = this.db.transaction(() => {
+      this.db!.prepare(`
+        UPDATE claims SET object_entity_id=NULL,object_value=?,polarity='positive',valid_from=?,valid_to=?,status='confirmed',
+          source_nature='human_confirmation',conflict_group=NULL,updated_at=? WHERE id=?
+      `).run(after.object_value, after.valid_from, after.valid_to, now, id)
+      this.db!.prepare(`
+        INSERT INTO memory_corrections(item_kind,item_id,before_json,after_json,created_at) VALUES('claim',?,?,?,?)
+      `).run(id, JSON.stringify(before), JSON.stringify(after), now)
+      this.upsertSearchDocument(`claim:${id}`, 'claim', id, before.predicate,
+        `${subject?.canonical_name || ''} ${before.predicate} ${after.object_value}`.trim(),
+        {
+          subjectId: before.subject_id,
+          polarity: 'positive',
+          status: 'confirmed',
+          sourceNature: 'human_confirmation',
+          validFrom: after.valid_from,
+          validTo: after.valid_to
+        }, now)
+    })
+    transaction()
     return this.db.prepare('SELECT * FROM claims WHERE id=?').get(id) || null
+  }
+
+  correctEvent(id: string, input: {
+    title: string
+    eventType?: string
+    description?: string
+    startAt?: string
+    endAt?: string
+    location?: string
+  }): any {
+    if (!this.db) return null
+    const before = this.db.prepare('SELECT * FROM events WHERE id=?').get(id) as any
+    if (!before) return null
+    const normalized = {
+      title: String(input.title || '').trim().slice(0, 500),
+      eventType: String(input.eventType || before.event_type || 'event').trim().slice(0, 120),
+      description: String(input.description || '').trim().slice(0, 4_000),
+      startAt: String(input.startAt || '').trim().slice(0, 100) || null,
+      endAt: String(input.endAt || '').trim().slice(0, 100) || null,
+      location: String(input.location || '').trim().slice(0, 500) || null
+    }
+    if (!normalized.title) throw new Error('事件标题不能为空')
+    if (normalized.startAt && !Number.isFinite(Date.parse(normalized.startAt))) throw new Error('事件开始时间格式无效')
+    if (normalized.endAt && !Number.isFinite(Date.parse(normalized.endAt))) throw new Error('事件结束时间格式无效')
+    if (normalized.startAt && normalized.endAt &&
+      Date.parse(normalized.endAt) < Date.parse(normalized.startAt)) throw new Error('事件结束时间不能早于开始时间')
+    const now = new Date().toISOString()
+    const after = {
+      ...before,
+      event_type: normalized.eventType,
+      title: normalized.title,
+      description: normalized.description,
+      start_at: normalized.startAt,
+      end_at: normalized.endAt,
+      location: normalized.location,
+      confidence: 1,
+      status: 'confirmed',
+      source_nature: 'human_confirmation',
+      search_text: [
+        normalized.title, normalized.eventType, normalized.description,
+        normalized.startAt, normalized.endAt, normalized.location
+      ].filter(Boolean).join('；'),
+      updated_at: now
+    }
+    const transaction = this.db.transaction(() => {
+      this.db!.prepare(`
+        UPDATE events SET event_type=?,title=?,description=?,start_at=?,end_at=?,location=?,
+          confidence=1,status='confirmed',source_nature='human_confirmation',search_text=?,updated_at=?
+        WHERE id=?
+      `).run(
+        after.event_type, after.title, after.description, after.start_at, after.end_at,
+        after.location, after.search_text, now, id
+      )
+      this.db!.prepare(`
+        INSERT INTO memory_corrections(item_kind,item_id,before_json,after_json,created_at)
+        VALUES('event',?,?,?,?)
+      `).run(id, JSON.stringify(before), JSON.stringify(after), now)
+      const participants = this.db!.prepare(`
+        SELECT ep.entity_id,e.canonical_name,ep.role
+        FROM event_participants ep LEFT JOIN entities e ON e.id=ep.entity_id
+        WHERE ep.event_id=?
+      `).all(id) as any[]
+      const searchText = [
+        after.search_text,
+        ...participants.flatMap(participant => [participant.canonical_name, participant.role])
+      ].filter(Boolean).join('；')
+      this.upsertSearchDocument(`event:${id}`, 'event', id, after.title, searchText, {
+        eventType: after.event_type,
+        startAt: after.start_at,
+        endAt: after.end_at,
+        participantIds: participants.map(participant => participant.entity_id),
+        status: 'confirmed',
+        sourceNature: 'human_confirmation',
+        correctionCount: Number((this.db!.prepare(`
+          SELECT COUNT(*) AS count FROM memory_corrections WHERE item_kind='event' AND item_id=?
+        `).get(id) as any)?.count || 0)
+      }, now)
+    })
+    transaction()
+    return this.db.prepare(`
+      SELECT ev.*,
+        (SELECT COUNT(*) FROM memory_corrections mc WHERE mc.item_kind='event' AND mc.item_id=ev.id) AS correction_count
+      FROM events ev WHERE ev.id=?
+    `).get(id) || null
   }
 
   startIngestionRun(id: string, model: string, promptVersion: string): void {

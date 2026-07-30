@@ -3129,6 +3129,14 @@ export class AiAssistantService {
     return personalMemoryStore.correctClaim(id, input)
   }
 
+  correctEvent(id: string, input: any): any {
+    return personalMemoryStore.correctEvent(id, input)
+  }
+
+  getMemoryEvent(id: string): any {
+    return personalMemoryStore.getEvent(id)
+  }
+
   private async schedulerTick(): Promise<void> {
     if (!this.config.get('aiAssistantEnabled')) return
     const now = new Date()
