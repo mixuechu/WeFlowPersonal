@@ -1,7 +1,7 @@
 import { app } from 'electron'
 import crypto from 'crypto'
-import { chmodSync, copyFileSync, existsSync, mkdirSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from 'fs'
-import { dirname, join } from 'path'
+import { chmodSync, existsSync, readFileSync, statSync, unlinkSync, writeFileSync } from 'fs'
+import { join } from 'path'
 import { jsonrepair } from 'jsonrepair'
 import JSZip from 'jszip'
 import { ConfigService } from './config'
@@ -68,6 +68,7 @@ import { summarizeIngestionRuns } from './ingestionDiagnostics'
 import { attachLocalImageOcr, attachLocalVoiceTranscript, recoverMessageSemantics } from './messageSemanticRecovery'
 import { sanitizeDiagnosticText } from './diagnosticRedaction'
 import { getAppRunRecoveryDiagnostics } from './appRunRecoveryService'
+import { readDurableJson, writeDurableJson, type DurableJsonRecovery } from './durableJsonState'
 import {
   PERSONAL_DATA_SOURCE_CATALOG,
   buildModelMemoryContext,
@@ -292,6 +293,14 @@ export class AiAssistantService {
     restored: 0,
     lastRunAt: ''
   }
+  private stateStorage: DurableJsonRecovery & { lastWriteAt: string } = {
+    source: 'empty',
+    recovered: false,
+    repairedPrimary: false,
+    primaryError: '',
+    backupError: '',
+    lastWriteAt: ''
+  }
 
   async initialize(): Promise<void> {
     this.statePath = join(app.getPath('userData'), 'ai-assistant-state.json')
@@ -375,8 +384,7 @@ export class AiAssistantService {
     const legacyRoot = join(app.getAppPath(), 'daily-ai-assistant')
     const legacyState = join(legacyRoot, 'data', 'state.json')
     if (!existsSync(this.statePath) && existsSync(legacyState)) {
-      mkdirSync(dirname(this.statePath), { recursive: true })
-      writeFileSync(this.statePath, readFileSync(legacyState))
+      writeDurableJson(this.statePath, JSON.parse(readFileSync(legacyState, 'utf8')))
     }
     if (!this.config.get('aiAssistantApiKey')) {
       const envPath = join(legacyRoot, '.env')
@@ -392,7 +400,18 @@ export class AiAssistantService {
 
   private loadState(): void {
     try {
-      const loaded = JSON.parse(readFileSync(this.statePath, 'utf8'))
+      const durable = readDurableJson<any>(this.statePath, structuredClone(EMPTY_STATE))
+      const loaded = durable.value
+      this.stateStorage = {
+        ...durable.recovery,
+        primaryError: durable.recovery.primaryError ? sanitizeDiagnosticText(durable.recovery.primaryError) : '',
+        backupError: durable.recovery.backupError ? sanitizeDiagnosticText(durable.recovery.backupError) : '',
+        lastWriteAt: this.stateStorage.lastWriteAt
+      }
+      if (durable.recovery.source === 'empty' &&
+          (durable.recovery.primaryError !== 'missing' || durable.recovery.backupError !== 'missing')) {
+        throw new Error('主状态文件和最近良好副本均无法解析；为避免覆盖可恢复数据，已停止初始化')
+      }
       this.state = {
         ...structuredClone(EMPTY_STATE),
         ...loaded,
@@ -437,8 +456,9 @@ export class AiAssistantService {
       }
       this.enforceEntityTrustOnDerivedMemory()
       this.ensureLegacyEntityReviews()
-    } catch {
+    } catch (error) {
       this.state = structuredClone(EMPTY_STATE)
+      throw new Error(`AI 助理状态加载失败：${sanitizeDiagnosticText(error)}`)
     }
   }
 
@@ -559,10 +579,8 @@ export class AiAssistantService {
   }
 
   private saveState(): void {
-    mkdirSync(dirname(this.statePath), { recursive: true })
-    const temporary = `${this.statePath}.tmp`
-    writeFileSync(temporary, `${JSON.stringify(this.state, null, 2)}\n`, { mode: 0o600 })
-    renameSync(temporary, this.statePath)
+    writeDurableJson(this.statePath, this.state)
+    this.stateStorage.lastWriteAt = new Date().toISOString()
     try {
       personalMemoryStore.syncGraph(this.state.graph)
       personalMemoryStore.syncTasks(this.state.tasks)
@@ -2609,11 +2627,13 @@ export class AiAssistantService {
         ...personalMemoryStore.getFilePermissionAudit(),
         databaseEncryption: databaseDiagnostics.encryption,
         stateMode: (() => { try { return (statSync(this.statePath).mode & 0o777).toString(8).padStart(3, '0') } catch { return null } })(),
+        stateBackupMode: (() => { try { return (statSync(`${this.statePath}.bak`).mode & 0o777).toString(8).padStart(3, '0') } catch { return null } })(),
         apiKeyStorage: 'macOS Safe Storage',
         httpBinding: '127.0.0.1',
         logsRedacted: true,
         sensitiveRedactionLevel: this.config.get('aiAssistantSensitiveRedactionLevel')
       },
+      stateStorage: this.stateStorage,
       appRecovery: getAppRunRecoveryDiagnostics(),
       ocr: { ...ocr, enabled: Boolean(this.config.get('aiAssistantOcrImages')) },
       imageSemantics: { ...imageSemantics, enabled: Boolean(this.config.get('aiAssistantAnalyzeImages')) },
@@ -2625,8 +2645,7 @@ export class AiAssistantService {
     const result = personalMemoryStore.createBackup()
     const stateBackupPath = `${result.path}.state.json`
     if (existsSync(this.statePath)) {
-      copyFileSync(this.statePath, stateBackupPath)
-      try { chmodSync(stateBackupPath, 0o600) } catch {}
+      writeDurableJson(stateBackupPath, JSON.parse(readFileSync(this.statePath, 'utf8')))
     }
     return { ...result, stateBackupPath }
   }
@@ -2634,20 +2653,20 @@ export class AiAssistantService {
   restoreMemoryBackup(path: string): any {
     const stateBackupPath = `${path}.state.json`
     if (!existsSync(stateBackupPath)) throw new Error('该快照缺少 AI 助理状态文件，无法完整恢复')
-    JSON.parse(readFileSync(stateBackupPath, 'utf8'))
+    const restoredState = JSON.parse(readFileSync(stateBackupPath, 'utf8'))
     const safety = this.createMemoryBackup()
     try {
       const result = personalMemoryStore.restoreBackup(path)
-      const temporary = `${this.statePath}.restore-${Date.now()}.tmp`
-      copyFileSync(stateBackupPath, temporary)
-      renameSync(temporary, this.statePath)
+      writeDurableJson(this.statePath, restoredState)
       this.loadState()
       this.saveState()
       return { ...result, safetyBackup: safety.path, restoredStateFrom: stateBackupPath }
     } catch (error) {
       try {
         personalMemoryStore.restoreBackup(safety.path)
-        if (safety.stateBackupPath && existsSync(safety.stateBackupPath)) copyFileSync(safety.stateBackupPath, this.statePath)
+        if (safety.stateBackupPath && existsSync(safety.stateBackupPath)) {
+          writeDurableJson(this.statePath, JSON.parse(readFileSync(safety.stateBackupPath, 'utf8')))
+        }
         this.loadState()
         this.saveState()
       } catch {}

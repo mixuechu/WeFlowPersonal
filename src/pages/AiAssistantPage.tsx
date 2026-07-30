@@ -1075,6 +1075,7 @@ function AiAssistantPage() {
                   {memoryDiagnostics.embeddings ? ` · 语义索引 ${memoryDiagnostics.embeddings.indexed}/${memoryDiagnostics.embeddings.total}（${memoryDiagnostics.embeddings.ann?.active ? 'ANN' : '精确'}）` : ''}
                   {memoryDiagnostics.ocr ? ` · OCR ${memoryDiagnostics.ocr.chinese ? '中文可用' : '未就绪'}` : ''}
                   {memoryDiagnostics.imageSemantics ? ` · 图片视觉 ${memoryDiagnostics.imageSemantics.available ? '本地可用' : '未就绪'}` : ''}
+                  {memoryDiagnostics.stateStorage ? ` · 状态文件${memoryDiagnostics.stateStorage.recovered ? '已从备份恢复' : '耐久写入正常'}` : ''}
                 </small>
               </span>
             </div>
@@ -2492,7 +2493,7 @@ function AiAssistantPage() {
             </div>}
             {memoryDiagnostics.privacy && <div className={`assistant-privacy-audit ${memoryDiagnostics.privacy.secure && memoryDiagnostics.privacy.stateMode === '600' ? 'secure' : 'warning'}`}>
               <div><ShieldCheck size={15} /><span><b>本机隐私与权限审计</b>
-                <small>数据库 {memoryDiagnostics.privacy.databaseMode || '未知'} · 状态 {memoryDiagnostics.privacy.stateMode || '未知'} · 备份目录 {memoryDiagnostics.privacy.backupDirectoryMode || '尚未创建'}</small>
+                <small>数据库 {memoryDiagnostics.privacy.databaseMode || '未知'} · 状态 {memoryDiagnostics.privacy.stateMode || '未知'} / 副本 {memoryDiagnostics.privacy.stateBackupMode || '尚未生成'} · 备份目录 {memoryDiagnostics.privacy.backupDirectoryMode || '尚未创建'}</small>
               </span></div>
               <div><span>API Key：{memoryDiagnostics.privacy.apiKeyStorage}</span>
                 <span>个人记忆库：{memoryDiagnostics.privacy.databaseEncryption?.enabled &&
@@ -2512,7 +2513,13 @@ function AiAssistantPage() {
                   ? new Date(memoryDiagnostics.appRecovery.current.startedAt).toLocaleString('zh-CN') : '未记录'}</b></span>
                 <span>阶段 <b>{memoryDiagnostics.appRecovery.current?.stage || '未知'}</b></span>
                 <span>上次退出 <b>{memoryDiagnostics.appRecovery.previous?.cleanExit ? '正常' : memoryDiagnostics.appRecovery.previous?.exitReason || '无记录'}</b></span>
+                {memoryDiagnostics.stateStorage && <span>状态文件 <b>{memoryDiagnostics.stateStorage.source === 'backup'
+                  ? '已从良好副本恢复'
+                  : memoryDiagnostics.stateStorage.source === 'primary' ? '主副本正常' : '首次初始化'}</b></span>}
               </div>
+              {memoryDiagnostics.stateStorage?.recovered && <p className="assistant-diagnostics-error">
+                检测到主状态文件不可用，已验证最近良好副本并{memoryDiagnostics.stateStorage.repairedPrimary ? '自动修复主文件' : '以内存恢复运行'}。
+              </p>}
               <details>
                 <summary>最近运行记录（{memoryDiagnostics.appRecovery.history?.length || 0}）</summary>
                 <div>
