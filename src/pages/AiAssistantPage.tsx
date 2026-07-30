@@ -1231,6 +1231,13 @@ function AiAssistantPage() {
               {' · '}Token {Number(ingestionStatus.usage.input_tokens || 0).toLocaleString()} 入 / {Number(ingestionStatus.usage.output_tokens || 0).toLocaleString()} 出
               {' · '}{(Number(ingestionStatus.usage.duration_ms || 0) / 1000).toFixed(1)} 秒
             </small>}
+            {Number(ingestionStatus.commitHealth?.prepared || 0) > 0 && <small>
+              检测到 {Number(ingestionStatus.commitHealth.prepared)} 个已保存但尚未完成应用的批次，
+              下次启动会从加密恢复日志自动续写，不会重新请求模型。
+            </small>}
+            {Number(ingestionStatus.commitHealth?.recoveryFailures || 0) > 0 && <small>
+              其中 {Number(ingestionStatus.commitHealth.recoveryFailures)} 个批次曾恢复失败，原始恢复载荷仍保留。
+            </small>}
             {ingestionStatus.error && <small>{ingestionStatus.error}</small>}
           </div>
         )}

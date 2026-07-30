@@ -396,6 +396,7 @@ export class AiAssistantService {
     )
     this.migrateLegacyData()
     this.loadState()
+    this.recoverPreparedIngestionBatchCommits()
     this.reconcileTaskReviewFeedbackOnStartup()
     this.removeSuppressedRelationsFromState()
     this.saveState()
@@ -628,7 +629,7 @@ export class AiAssistantService {
     this.state.graph.reviewQueue = this.state.graph.reviewQueue.filter(review => !review.relationId || !removed.has(review.relationId))
   }
 
-  private saveState(): void {
+  private saveState(strictMemorySync = false): void {
     writeEncryptedDurableJson(this.statePath, this.state, this.stateEncryptionKey)
     this.stateStorage.encrypted = true
     this.stateStorage.lastWriteAt = new Date().toISOString()
@@ -637,6 +638,42 @@ export class AiAssistantService {
       personalMemoryStore.syncTasks(this.state.tasks)
     } catch (error) {
       console.error('[AI Assistant] 个人记忆数据库同步失败:', sanitizeDiagnosticText(error))
+      if (strictMemorySync) throw error
+    }
+  }
+
+  private ingestionCommitId(runId: string, batchIndex: number, checkpointKeys: string[]): string {
+    const fingerprint = checkpointKeys.slice().sort().join('\n')
+    return `batch_${crypto.createHash('sha256')
+      .update(`${runId}\n${batchIndex}\n${EXTRACTION_PROMPT_VERSION}\n${EXTRACTION_SCHEMA_VERSION}\n${fingerprint}`)
+      .digest('hex')
+      .slice(0, 32)}`
+  }
+
+  private recoverPreparedIngestionBatchCommits(): void {
+    for (const commit of personalMemoryStore.listPreparedIngestionBatchCommits()) {
+      const stateBeforeRecovery = structuredClone(this.state)
+      try {
+        const tempIds = this.mergeGraphDigest(commit.digest, commit.messages, commit.createdAt, commit.commitId)
+        this.persistClaimsAndEvents(commit.digest, tempIds, commit.messages, commit.createdAt)
+        this.mergeRecoveredWechatTasks(commit.digest, commit.messages, commit.createdAt)
+        this.state.cursor.recentMessageIds = [...new Set([
+          ...this.state.cursor.recentMessageIds,
+          ...commit.checkpointKeys
+        ])].slice(-20_000)
+        this.saveState(true)
+        personalMemoryStore.finalizeIngestionBatchCommit(commit.commitId, {
+          ...commit.digest.__meta,
+          promptVersion: EXTRACTION_PROMPT_VERSION,
+          schemaVersion: EXTRACTION_SCHEMA_VERSION
+        })
+      } catch (error) {
+        this.state = stateBeforeRecovery
+        personalMemoryStore.recordIngestionBatchCommitRecoveryFailure(
+          commit.commitId,
+          sanitizeDiagnosticText(error)
+        )
+      }
     }
   }
 
@@ -1250,7 +1287,12 @@ export class AiAssistantService {
     return batches
   }
 
-  private mergeGraphDigest(digest: any, sourceMessages: any[], now: string): Map<string, string> {
+  private mergeGraphDigest(
+    digest: any,
+    sourceMessages: any[],
+    now: string,
+    commitId = ''
+  ): Map<string, string> {
     const tempIds = new Map<string, string>()
     const entities = Array.isArray(digest.entities) ? digest.entities : []
     for (const item of entities) {
@@ -1272,7 +1314,10 @@ export class AiAssistantService {
       const candidateAliases = [...new Set(resolution.candidateAliases
         .filter(alias => !reservedNames.has(alias.trim().toLowerCase()) && alias !== canonicalName))]
       const existing = resolution.existing || undefined
-      const id = existing?.id || `ent_${crypto.randomUUID()}`
+      const stableSeed = `${commitId}|${String(item.tempId || '')}|${canonicalName}|${String(item.type || 'person')}`
+      const id = existing?.id || (commitId
+        ? `ent_${crypto.createHash('sha256').update(stableSeed).digest('hex').slice(0, 32)}`
+        : `ent_${crypto.randomUUID()}`)
       tempIds.set(String(item.tempId || id), id)
       const evidenceIds = [...new Set((Array.isArray(item.evidenceKeys) ? item.evidenceKeys : []).map(String))]
       if (existing) {
@@ -1897,6 +1942,89 @@ export class AiAssistantService {
     }
   }
 
+  private mergeRecoveredWechatTasks(digest: any, messages: any[], createdAt: string): number {
+    const existing = new Map(this.state.tasks.map(task => [task.id, task]))
+    let saved = 0
+    for (const item of Array.isArray(digest.tasks) ? digest.tasks : []) {
+      const sourceMessageIds = Array.isArray(item.sourceEvidenceKeys)
+        ? item.sourceEvidenceKeys.map(String).slice(0, 20)
+        : []
+      const evidenceMessages = Array.isArray(item.__evidenceMessages) ? item.__evidenceMessages : []
+      const assignment = classifyTaskAssignment({
+        evidenceMessages,
+        modelClassification: item.classification,
+        modelTaskKind: item.taskKind
+      })
+      if (!assignment.keep) continue
+      const taskKind = assignment.taskKind
+      const task: AssistantTask = {
+        id: stableTaskId(item),
+        title: String(item.title || '待确认事项').slice(0, 160),
+        detail: String(item.detail || '').slice(0, 500),
+        owner: String(item.owner || '我').slice(0, 50),
+        collaborators: (Array.isArray(item.collaborators) ? item.collaborators : [])
+          .map((value: any) => String(value || '').trim().slice(0, 80)).filter(Boolean).slice(0, 20),
+        project: String(item.project || '').trim().slice(0, 160),
+        dependsOnIds: [],
+        taskKind,
+        due: String(item.due || '').slice(0, 40),
+        priority: ['high', 'medium', 'low'].includes(item.priority) ? item.priority : 'medium',
+        source: String(item.source || '').slice(0, 100),
+        sourceSessionId: String(evidenceMessages[0]?.sessionId || ''),
+        confidence: Math.max(0, Math.min(1, Number(item.confidence ?? 0.7))),
+        status: taskKind === 'waiting' ? 'waiting' : 'todo',
+        classification: assignment.classification,
+        assignmentEvidence: String(item.assignmentEvidence || '').slice(0, 300),
+        ownershipPolicyReason: assignment.rationale,
+        sourceMessageIds,
+        evidence: evidenceMessages.map((message: any) => ({
+          messageId: structuredEvidenceKey(message),
+          timestamp: Number(message.timestamp),
+          sender: message.direction === '我发送' ? '我' : String(message.senderName || message.senderId || '对方'),
+          excerpt: redact(String(message.content)).slice(0, 300)
+        }))
+      }
+      const feedbackFingerprint = taskEvidenceFingerprint(task)
+      const reviewedTask = applyTaskReviewFeedback(
+        task,
+        feedbackFingerprint ? personalMemoryStore.getTaskReviewDecision(feedbackFingerprint) : null
+      )
+      if (!reviewedTask) {
+        personalMemoryStore.recordTaskReviewSuppression(feedbackFingerprint)
+        continue
+      }
+      Object.assign(task, reviewedTask)
+      const previous = existing.get(task.id) || findMatchingTask(task, this.state.tasks)
+      if (previous) task.id = previous.id
+      const merged: AssistantTask = previous ? {
+        ...task,
+        status: previous.status,
+        owner: previous.owner || task.owner,
+        collaborators: previous.collaborators || task.collaborators,
+        project: previous.project || task.project,
+        dependsOnIds: previous.dependsOnIds || task.dependsOnIds,
+        taskKind: previous.taskKind || task.taskKind,
+        evidence: [...(previous.evidence || []), ...(task.evidence || [])]
+          .filter((value, index, rows) => rows.findIndex(candidate => candidate.messageId === value.messageId) === index)
+          .slice(-50),
+        createdAt: previous.createdAt,
+        updatedAt: createdAt
+      } : { ...task, createdAt, updatedAt: createdAt }
+      existing.set(merged.id, merged)
+      personalMemoryStore.recordTaskChanges(
+        merged.id,
+        previous || {},
+        merged,
+        previous ? 'replayed_ingestion_batch' : 'recovered_from_ingestion_batch',
+        merged.evidence || []
+      )
+      saved += 1
+    }
+    this.state.tasks = [...existing.values()].sort((left, right) =>
+      String(right.createdAt).localeCompare(String(left.createdAt)))
+    return saved
+  }
+
   private persistDocumentTasks(digest: any, messages: any[], createdAt: string): number {
     const ownerTerms = [
       String(this.config.get('aiAssistantOwnerName') || ''),
@@ -2184,15 +2312,26 @@ export class AiAssistantService {
               }
             }
           }
+          const checkpointKeys = batch.filter(message => message.analysisScope === 'core').map(messageKey)
+          const commitId = this.ingestionCommitId(runId, batchIndex, checkpointKeys)
+          personalMemoryStore.prepareIngestionBatchCommit({
+            commitId,
+            runId,
+            batchIndex,
+            digest,
+            messages: batch,
+            checkpointKeys,
+            createdAt
+          })
           digests.push({ digest, batch })
-          const tempIds = this.mergeGraphDigest(digest, batch, createdAt)
+          const tempIds = this.mergeGraphDigest(digest, batch, createdAt, commitId)
           personalMemoryStore.syncGraph(this.state.graph)
           this.persistClaimsAndEvents(digest, tempIds, batch, createdAt)
-          const checkpointKeys = batch.filter(message => message.analysisScope === 'core').map(messageKey)
+          this.mergeRecoveredWechatTasks(digest, batch, createdAt)
           successfulMessageKeys.push(...checkpointKeys)
           this.state.cursor.recentMessageIds = [...new Set([...this.state.cursor.recentMessageIds, ...checkpointKeys])].slice(-20_000)
-          this.saveState()
-          personalMemoryStore.recordIngestionBatch(runId, batchIndex, batch.length, 'completed', '', {
+          this.saveState(true)
+          personalMemoryStore.finalizeIngestionBatchCommit(commitId, {
             ...digest.__meta,
             durationMs: Number(digest.__meta?.durationMs || Date.now() - batchStartedAt)
           })

@@ -2075,6 +2075,54 @@ test('partial ingestion keeps completed checkpoints visible for safe resume', ()
   assert.equal(summary.estimatedCost, 0.0018)
 }))
 
+test('prepared ingestion commits survive retries and become an auditable committed checkpoint', () => withStore(store => {
+  const input = {
+    commitId: 'batch-commit-test',
+    runId: 'run-commit-test',
+    batchIndex: 2,
+    digest: { tasks: [{ title: '确认合同' }], __meta: { model: 'deepseek-test' } },
+    messages: [{ id: 'message-1', sessionId: 'session-1', content: '请确认合同' }],
+    checkpointKeys: ['wechat:session-1:message-1'],
+    createdAt: '2026-07-30T10:00:00.000Z'
+  }
+  store.startIngestionRun(input.runId, 'deepseek-test', 'prompt-test')
+  store.recordIngestionBatch(input.runId, input.batchIndex, input.messages.length, 'running')
+  store.prepareIngestionBatchCommit(input)
+  store.prepareIngestionBatchCommit(input)
+  const preparedHealth = store.getIngestionCommitHealth()
+  assert.equal(preparedHealth.prepared, 1)
+  assert.equal(preparedHealth.committed, 0)
+  assert.equal(preparedHealth.recoveryFailures, 0)
+  assert.match(String(preparedHealth.oldestPreparedAt), /^20/)
+  const prepared = store.listPreparedIngestionBatchCommits()
+  assert.equal(prepared.length, 1)
+  assert.equal(prepared[0].commitId, input.commitId)
+  assert.deepEqual(prepared[0].digest, input.digest)
+  assert.deepEqual(prepared[0].messages, input.messages)
+  assert.deepEqual(prepared[0].checkpointKeys, input.checkpointKeys)
+
+  store.recordIngestionBatchCommitRecoveryFailure(input.commitId, 'simulated power loss')
+  assert.equal(store.getIngestionCommitHealth().recoveryFailures, 1)
+  assert.equal(store.listPreparedIngestionBatchCommits()[0].recoveryAttempts, 1)
+
+  store.finalizeIngestionBatchCommit(input.commitId, {
+    model: 'deepseek-test',
+    promptVersion: 'prompt-test',
+    schemaVersion: 'schema-test',
+    durationMs: 123
+  })
+  assert.deepEqual(store.listPreparedIngestionBatchCommits(), [])
+  assert.deepEqual(store.getIngestionCommitHealth(), {
+    prepared: 0,
+    committed: 1,
+    recoveryFailures: 0,
+    oldestPreparedAt: null
+  })
+  const status = store.getIngestionStatus()
+  assert.equal(status.batches.find((row: any) => row.status === 'completed')?.count, 1)
+  assert.equal(status.commitHealth.committed, 1)
+}))
+
 test('entity insight strength is explainable and deduplicates shared evidence', () => {
   const insight = buildEntityInsights({
     entities: [

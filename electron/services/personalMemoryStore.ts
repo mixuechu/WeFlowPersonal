@@ -350,6 +350,23 @@ export class PersonalMemoryStore {
       ) STRICT;
       CREATE INDEX IF NOT EXISTS idx_ingestion_batches_status ON ingestion_batches(status,started_at);
 
+      CREATE TABLE IF NOT EXISTS ingestion_batch_commits (
+        commit_id TEXT PRIMARY KEY,
+        run_id TEXT NOT NULL,
+        batch_index INTEGER NOT NULL,
+        status TEXT NOT NULL,
+        digest_json TEXT NOT NULL,
+        messages_json TEXT NOT NULL,
+        checkpoint_keys_json TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        prepared_at TEXT NOT NULL,
+        applied_at TEXT,
+        recovery_attempts INTEGER NOT NULL DEFAULT 0,
+        last_error TEXT
+      ) STRICT;
+      CREATE INDEX IF NOT EXISTS idx_ingestion_batch_commits_pending
+        ON ingestion_batch_commits(status,prepared_at);
+
       CREATE TABLE IF NOT EXISTS conversation_policy (
         session_id TEXT PRIMARY KEY,
         display_name TEXT NOT NULL DEFAULT '',
@@ -2535,6 +2552,147 @@ export class PersonalMemoryStore {
     )
   }
 
+  prepareIngestionBatchCommit(input: {
+    commitId: string
+    runId: string
+    batchIndex: number
+    digest: any
+    messages: any[]
+    checkpointKeys: string[]
+    createdAt: string
+  }): void {
+    if (!this.db) return
+    this.db.prepare(`
+      INSERT INTO ingestion_batch_commits(
+        commit_id,run_id,batch_index,status,digest_json,messages_json,
+        checkpoint_keys_json,created_at,prepared_at
+      ) VALUES(?,?,?,'prepared',?,?,?,?,?)
+      ON CONFLICT(commit_id) DO UPDATE SET
+        digest_json=CASE WHEN ingestion_batch_commits.status='committed'
+          THEN ingestion_batch_commits.digest_json ELSE excluded.digest_json END,
+        messages_json=CASE WHEN ingestion_batch_commits.status='committed'
+          THEN ingestion_batch_commits.messages_json ELSE excluded.messages_json END,
+        checkpoint_keys_json=CASE WHEN ingestion_batch_commits.status='committed'
+          THEN ingestion_batch_commits.checkpoint_keys_json ELSE excluded.checkpoint_keys_json END,
+        last_error=NULL
+    `).run(
+      input.commitId,
+      input.runId,
+      input.batchIndex,
+      JSON.stringify(input.digest),
+      JSON.stringify(input.messages),
+      JSON.stringify(input.checkpointKeys),
+      input.createdAt,
+      new Date().toISOString()
+    )
+  }
+
+  listPreparedIngestionBatchCommits(limit = 100): Array<{
+    commitId: string
+    runId: string
+    batchIndex: number
+    digest: any
+    messages: any[]
+    checkpointKeys: string[]
+    createdAt: string
+    recoveryAttempts: number
+  }> {
+    if (!this.db) return []
+    const safeLimit = Math.max(1, Math.min(500, Number(limit) || 100))
+    return (this.db.prepare(`
+      SELECT * FROM ingestion_batch_commits
+      WHERE status='prepared' ORDER BY prepared_at,commit_id LIMIT ?
+    `).all(safeLimit) as any[]).map(row => ({
+      commitId: String(row.commit_id),
+      runId: String(row.run_id),
+      batchIndex: Number(row.batch_index),
+      digest: JSON.parse(String(row.digest_json || '{}')),
+      messages: JSON.parse(String(row.messages_json || '[]')),
+      checkpointKeys: JSON.parse(String(row.checkpoint_keys_json || '[]')),
+      createdAt: String(row.created_at),
+      recoveryAttempts: Number(row.recovery_attempts || 0)
+    }))
+  }
+
+  markIngestionBatchCommitApplied(commitId: string): void {
+    if (!this.db) return
+    this.db.prepare(`
+      UPDATE ingestion_batch_commits
+      SET status='committed',applied_at=?,last_error=NULL,
+        digest_json='{}',messages_json='[]'
+      WHERE commit_id=?
+    `).run(new Date().toISOString(), commitId)
+  }
+
+  finalizeIngestionBatchCommit(
+    commitId: string,
+    metrics: {
+      model?: string
+      promptVersion?: string
+      schemaVersion?: string
+      inputTokens?: number
+      outputTokens?: number
+      durationMs?: number
+      sensitiveRedaction?: any
+      structuredEvidence?: any
+    } = {}
+  ): void {
+    if (!this.db) return
+    const transaction = this.db.transaction(() => {
+      const row = this.db!.prepare(`
+        SELECT run_id,batch_index,messages_json,status
+        FROM ingestion_batch_commits WHERE commit_id=?
+      `).get(commitId) as any
+      if (!row) throw new Error(`找不到待提交的记忆批次：${commitId}`)
+      let messageCount = 0
+      try { messageCount = JSON.parse(String(row.messages_json || '[]')).length } catch {}
+      if (row.status !== 'committed') {
+        this.markIngestionBatchCommitApplied(commitId)
+      }
+      this.recordIngestionBatch(
+        String(row.run_id),
+        Number(row.batch_index),
+        messageCount,
+        'completed',
+        '',
+        metrics
+      )
+    })
+    transaction()
+  }
+
+  recordIngestionBatchCommitRecoveryFailure(commitId: string, error: string): void {
+    if (!this.db) return
+    this.db.prepare(`
+      UPDATE ingestion_batch_commits
+      SET recovery_attempts=recovery_attempts+1,last_error=?
+      WHERE commit_id=? AND status='prepared'
+    `).run(String(error || '').slice(0, 1000), commitId)
+  }
+
+  getIngestionCommitHealth(): {
+    prepared: number
+    committed: number
+    recoveryFailures: number
+    oldestPreparedAt: string | null
+  } {
+    if (!this.db) return { prepared: 0, committed: 0, recoveryFailures: 0, oldestPreparedAt: null }
+    const row = this.db.prepare(`
+      SELECT
+        SUM(CASE WHEN status='prepared' THEN 1 ELSE 0 END) AS prepared,
+        SUM(CASE WHEN status='committed' THEN 1 ELSE 0 END) AS committed,
+        SUM(CASE WHEN status='prepared' AND recovery_attempts>0 THEN 1 ELSE 0 END) AS recovery_failures,
+        MIN(CASE WHEN status='prepared' THEN prepared_at END) AS oldest_prepared_at
+      FROM ingestion_batch_commits
+    `).get() as any
+    return {
+      prepared: Number(row?.prepared || 0),
+      committed: Number(row?.committed || 0),
+      recoveryFailures: Number(row?.recovery_failures || 0),
+      oldestPreparedAt: row?.oldest_prepared_at ? String(row.oldest_prepared_at) : null
+    }
+  }
+
   finishIngestionRun(id: string, input: { status: 'completed' | 'partial' | 'failed'; messageCount: number; entityCount: number; relationCount: number; error?: string }): void {
     if (!this.db) return
     this.db.prepare(`
@@ -2545,7 +2703,7 @@ export class PersonalMemoryStore {
   getIngestionStatus(): any {
     if (!this.db) return null
     const latest = this.db.prepare('SELECT * FROM ingestion_runs ORDER BY started_at DESC LIMIT 1').get() as any
-    if (!latest) return null
+    if (!latest) return { status: 'idle', batches: [], usage: {}, commitHealth: this.getIngestionCommitHealth() }
     const batches = this.db.prepare(`
       SELECT status,COUNT(*) AS count,SUM(message_count) AS messages
       FROM ingestion_batches WHERE run_id=? GROUP BY status
@@ -2557,7 +2715,7 @@ export class PersonalMemoryStore {
         MAX(model) AS model,MAX(prompt_version) AS prompt_version,MAX(schema_version) AS schema_version
       FROM ingestion_batches WHERE run_id=?
     `).get(latest.id) as any
-    return { ...latest, batches, usage }
+    return { ...latest, batches, usage, commitHealth: this.getIngestionCommitHealth() }
   }
 
   listIngestionRuns(limit = 20): any[] {
