@@ -64,6 +64,8 @@ import { attachLocalImageOcr, attachLocalVoiceTranscript, recoverMessageSemantic
 import { sanitizeDiagnosticText } from '../electron/services/diagnosticRedaction.ts'
 import { computeAnnSignatures, listMultiProbeSignatures } from '../electron/services/localAnnIndex.ts'
 import {
+  buildExtractionContextAudit,
+  EXTRACTION_CONTEXT_AUDIT_VERSION,
   EXTRACTION_MEMORY_CONTEXT_VERSION,
   selectTrustedExtractionEntities
 } from '../electron/services/extractionMemoryContext.ts'
@@ -2205,6 +2207,66 @@ test('trusted extraction memory returns only confirmed bounded claims and events
     ['context-person'])
 }))
 
+test('extraction context audit is bounded, fingerprinted and never copies chat content', () => {
+  const privateChatMarker = '这段私密聊天原文绝不能进入审计清单'
+  const audit = buildExtractionContextAudit({
+    inputFingerprint: 'A'.repeat(64),
+    messages: [
+      { analysisScope: 'core', content: privateChatMarker },
+      { analysisScope: 'core', content: '第二条正文' },
+      { analysisScope: 'context', content: '重叠正文' }
+    ],
+    entities: Array.from({ length: 40 }, (_, index) => ({
+      id: `entity-${index}`,
+      type: 'person',
+      canonicalName: `人物${index}${'名'.repeat(300)}`,
+      selectionReasons: ['当前发送者身份锚点', '正文或会话出现规范名', '额外原因一', '额外原因二', '超额原因']
+    })),
+    relations: Array.from({ length: 60 }, (_, index) => ({
+      id: `relation-${index}`,
+      subjectName: `人物${index}`,
+      predicate: '负责',
+      objectName: `项目${index}`
+    })),
+    claims: Array.from({ length: 60 }, (_, index) => ({
+      id: `claim-${index}`,
+      subject_name: `人物${index}`,
+      predicate: '负责',
+      object_value: `事项${index}${'值'.repeat(400)}`,
+      polarity: index % 2 ? 'negative' : 'positive'
+    })),
+    events: Array.from({ length: 40 }, (_, index) => ({
+      id: `event-${index}`,
+      event_type: 'meeting',
+      title: `会议${index}`,
+      start_at: '2026-07-31T09:00:00.000Z'
+    })),
+    totals: Object.fromEntries(Array.from({ length: 30 }, (_, index) => [`metric-${index}`, index]))
+  })
+  assert.equal(audit.version, EXTRACTION_CONTEXT_AUDIT_VERSION)
+  assert.equal(audit.contextVersion, EXTRACTION_MEMORY_CONTEXT_VERSION)
+  assert.equal(audit.inputFingerprint, 'a'.repeat(64))
+  assert.deepEqual(audit.messageScope, { core: 2, context: 1 })
+  assert.equal(audit.entities.length, 24)
+  assert.equal(audit.relations.length, 40)
+  assert.equal(audit.claims.length, 36)
+  assert.equal(audit.events.length, 16)
+  assert.equal(Object.keys(audit.totals).length, 16)
+  assert.ok(audit.entities[0].name.length <= 160)
+  assert.ok(audit.entities[0].reasons.length <= 4)
+  assert.ok(audit.claims[0].value.length <= 240)
+  assert.doesNotMatch(JSON.stringify(audit), new RegExp(privateChatMarker))
+  assert.equal(buildExtractionContextAudit({
+    inputFingerprint: 'not-a-fingerprint',
+    messages: [],
+    entities: [],
+    relations: [],
+    claims: [],
+    events: [],
+    totals: {}
+  }).inputFingerprint, '')
+})
+
 test('task status changes are persisted as an auditable history', () => withStore(store => {
   const before = { id: 'task-history', status: 'todo', due: '2026-07-30', priority: 'medium' }
   const after = { ...before, status: 'waiting', due: '2026-08-02' }
@@ -2232,15 +2294,24 @@ test('partial ingestion keeps completed checkpoints visible for safe resume', ()
       rejected: { tasks: 1, entities: 0 }
     },
     extractionContext: {
-      version: 'trusted-extraction-context-v1',
-      selectedEntities: 4,
-      directEntities: 3,
-      expandedEntities: 1,
-      relations: 2,
-      claims: 5,
-      claimMatches: 7,
-      events: 2,
-      eventMatches: 3
+      version: 'extraction-context-audit-v1',
+      contextVersion: 'trusted-extraction-context-v1',
+      inputFingerprint: 'a'.repeat(64),
+      messageScope: { core: 100, context: 40 },
+      entities: [{ id: 'person-1', type: 'person', name: '人物一', reasons: ['当前发送者身份锚点'] }],
+      relations: [{ id: 'relation-1', subject: '人物一', predicate: '负责', object: '项目一' }],
+      claims: [{ id: 'claim-1', subject: '人物一', predicate: '负责', value: '项目一', polarity: 'positive' }],
+      events: [{ id: 'event-1', type: 'meeting', title: '项目会议', startAt: '2026-07-31T09:00:00.000Z' }],
+      totals: {
+        selectedEntities: 4,
+        directEntities: 3,
+        expandedEntities: 1,
+        relations: 2,
+        claims: 5,
+        claimMatches: 7,
+        events: 2,
+        eventMatches: 3
+      }
     }
   })
   store.recordIngestionBatch('run-resume', 1, 80, 'running')
@@ -2280,15 +2351,24 @@ test('partial ingestion keeps completed checkpoints visible for safe resume', ()
     rejected: { tasks: 1, entities: 0 }
   })
   assert.deepEqual(runs[0].batches[0].extractionContext, {
-    version: 'trusted-extraction-context-v1',
-    selectedEntities: 4,
-    directEntities: 3,
-    expandedEntities: 1,
-    relations: 2,
-    claims: 5,
-    claimMatches: 7,
-    events: 2,
-    eventMatches: 3
+    version: 'extraction-context-audit-v1',
+    contextVersion: 'trusted-extraction-context-v1',
+    inputFingerprint: 'a'.repeat(64),
+    messageScope: { core: 100, context: 40 },
+    entities: [{ id: 'person-1', type: 'person', name: '人物一', reasons: ['当前发送者身份锚点'] }],
+    relations: [{ id: 'relation-1', subject: '人物一', predicate: '负责', object: '项目一' }],
+    claims: [{ id: 'claim-1', subject: '人物一', predicate: '负责', value: '项目一', polarity: 'positive' }],
+    events: [{ id: 'event-1', type: 'meeting', title: '项目会议', startAt: '2026-07-31T09:00:00.000Z' }],
+    totals: {
+      selectedEntities: 4,
+      directEntities: 3,
+      expandedEntities: 1,
+      relations: 2,
+      claims: 5,
+      claimMatches: 7,
+      events: 2,
+      eventMatches: 3
+    }
   })
   assert.deepEqual(runs[0].usage, { input_tokens: 1200, output_tokens: 300, duration_ms: 2500 })
   const summary = summarizeIngestionRuns(runs, { inputPerMillion: 1, outputPerMillion: 2 })

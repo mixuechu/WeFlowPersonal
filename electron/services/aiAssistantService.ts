@@ -68,6 +68,7 @@ import { summarizeIngestionRuns } from './ingestionDiagnostics'
 import { attachLocalImageOcr, attachLocalVoiceTranscript, recoverMessageSemantics } from './messageSemanticRecovery'
 import { sanitizeDiagnosticText } from './diagnosticRedaction'
 import {
+  buildExtractionContextAudit,
   EXTRACTION_MEMORY_CONTEXT_VERSION,
   selectTrustedExtractionEntities
 } from './extractionMemoryContext'
@@ -1272,6 +1273,17 @@ export class AiAssistantService {
 与本批相关的已确认长期记忆（只能用于消歧，不能充当新结论证据）：${JSON.stringify(extractionContext)}
 按来源范围组织的新增证据：${JSON.stringify(conversations)}
 请输出 json。`, redactionLevel)
+    const extractionContextAudit = buildExtractionContextAudit({
+      inputFingerprint: crypto.createHash('sha256')
+        .update(`${SYSTEM_PROMPT}\n${outbound.text}`)
+        .digest('hex'),
+      messages,
+      entities: extractionContext.entities,
+      relations: extractionContext.relations,
+      claims: extractionContext.claims,
+      events: extractionContext.events,
+      totals: extractionContext.totals
+    })
     let lastError: any = null
     for (let attempt = 0; attempt < 2; attempt += 1) {
       const startedAt = Date.now()
@@ -1304,10 +1316,7 @@ export class AiAssistantService {
             durationMs: Date.now() - startedAt,
             attempt: attempt + 1,
             sensitiveRedaction: outbound.summary,
-            extractionContext: {
-              version: EXTRACTION_MEMORY_CONTEXT_VERSION,
-              ...extractionContext.totals
-            }
+            extractionContext: extractionContextAudit
           }
         }
       } catch (error) {

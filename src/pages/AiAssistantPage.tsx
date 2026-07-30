@@ -2782,13 +2782,46 @@ function AiAssistantPage() {
                     </small>}
                     {!!batch.extractionContext?.version && <small>
                       可信长期上下文：
-                      实体 {Number(batch.extractionContext.selectedEntities || 0)}
-                      （直接命中 {Number(batch.extractionContext.directEntities || 0)}
-                      {' / '}一跳扩展 {Number(batch.extractionContext.expandedEntities || 0)}）
-                      {' · '}关系 {Number(batch.extractionContext.relations || 0)}
-                      {' · '}事实 {Number(batch.extractionContext.claims || 0)} / {Number(batch.extractionContext.claimMatches || 0)}
-                      {' · '}事件 {Number(batch.extractionContext.events || 0)} / {Number(batch.extractionContext.eventMatches || 0)}
+                      实体 {Number(batch.extractionContext.totals?.selectedEntities ?? batch.extractionContext.selectedEntities ?? 0)}
+                      （直接命中 {Number(batch.extractionContext.totals?.directEntities ?? batch.extractionContext.directEntities ?? 0)}
+                      {' / '}一跳扩展 {Number(batch.extractionContext.totals?.expandedEntities ?? batch.extractionContext.expandedEntities ?? 0)}）
+                      {' · '}关系 {Number(batch.extractionContext.totals?.relations ?? batch.extractionContext.relations ?? 0)}
+                      {' · '}事实 {Number(batch.extractionContext.totals?.claims ?? batch.extractionContext.claims ?? 0)} / {Number(batch.extractionContext.totals?.claimMatches ?? batch.extractionContext.claimMatches ?? 0)}
+                      {' · '}事件 {Number(batch.extractionContext.totals?.events ?? batch.extractionContext.events ?? 0)} / {Number(batch.extractionContext.totals?.eventMatches ?? batch.extractionContext.eventMatches ?? 0)}
                     </small>}
+                    {!!batch.extractionContext?.entities?.length && <details className="assistant-extraction-context-audit">
+                      <summary>
+                        查看模型当时使用的长期记忆清单
+                        {batch.extractionContext.inputFingerprint
+                          ? ` · 输入指纹 ${String(batch.extractionContext.inputFingerprint).slice(0, 12)}`
+                          : ''}
+                      </summary>
+                      <p>
+                        该清单只记录有界结构化记忆，不复制整段聊天。
+                        本批核心消息 {Number(batch.extractionContext.messageScope?.core || 0)} 条，
+                        重叠上下文 {Number(batch.extractionContext.messageScope?.context || 0)} 条。
+                      </p>
+                      <section>
+                        <b>实体与命中原因</b>
+                        {batch.extractionContext.entities.map((entity: any) =>
+                          <small key={entity.id}>{entity.name || entity.id} · {entity.type || 'entity'} · {(entity.reasons || []).join('、') || '可信上下文'}</small>)}
+                      </section>
+                      {!!batch.extractionContext.relations?.length && <section>
+                        <b>已确认关系</b>
+                        {batch.extractionContext.relations.map((relation: any) =>
+                          <small key={relation.id}>{relation.subject} — {relation.predicate} → {relation.object}</small>)}
+                      </section>}
+                      {!!batch.extractionContext.claims?.length && <section>
+                        <b>已确认事实</b>
+                        {batch.extractionContext.claims.map((claim: any) =>
+                          <small key={claim.id}>{claim.subject} · {claim.predicate} · {claim.polarity === 'negative' ? '非 ' : ''}{claim.value || '结构化实体'}</small>)}
+                      </section>}
+                      {!!batch.extractionContext.events?.length && <section>
+                        <b>已确认事件</b>
+                        {batch.extractionContext.events.map((event: any) =>
+                          <small key={event.id}>{event.title || event.type}{event.startAt ? ` · ${event.startAt}` : ''}</small>)}
+                      </section>}
+                    </details>}
                     {batch.error && <p>{batch.error}</p>}
                   </article>)}
                   {!run.batches?.length && <em>该次运行没有创建模型批次</em>}

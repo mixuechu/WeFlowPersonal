@@ -1,4 +1,5 @@
 export const EXTRACTION_MEMORY_CONTEXT_VERSION = 'trusted-extraction-context-v1'
+export const EXTRACTION_CONTEXT_AUDIT_VERSION = 'extraction-context-audit-v1'
 
 type ContextEntity = {
   id: string
@@ -25,6 +26,10 @@ type ContextRelation = {
 
 function normalized(value: unknown): string {
   return String(value || '').trim().toLocaleLowerCase('zh-CN')
+}
+
+function compact(value: unknown, limit: number): string {
+  return String(value || '').replace(/\s+/g, ' ').trim().slice(0, limit)
 }
 
 function searchableTerm(value: unknown): string {
@@ -143,5 +148,70 @@ export function selectTrustedExtractionEntities(input: {
     reasons: Object.fromEntries([...reasons.entries()]
       .filter(([id]) => selected.has(id))
       .map(([id, values]) => [id, [...values]]))
+  }
+}
+
+export function buildExtractionContextAudit(input: {
+  inputFingerprint: string
+  messages: any[]
+  entities: any[]
+  relations: any[]
+  claims: any[]
+  events: any[]
+  totals: Record<string, number>
+}): {
+  version: string
+  contextVersion: string
+  inputFingerprint: string
+  messageScope: { core: number; context: number }
+  entities: any[]
+  relations: any[]
+  claims: any[]
+  events: any[]
+  totals: Record<string, number>
+} {
+  const fingerprint = /^[a-f0-9]{64}$/i.test(String(input.inputFingerprint || ''))
+    ? String(input.inputFingerprint).toLowerCase()
+    : ''
+  return {
+    version: EXTRACTION_CONTEXT_AUDIT_VERSION,
+    contextVersion: EXTRACTION_MEMORY_CONTEXT_VERSION,
+    inputFingerprint: fingerprint,
+    messageScope: {
+      core: (input.messages || []).filter(message => (message.analysisScope || 'core') === 'core').length,
+      context: (input.messages || []).filter(message => message.analysisScope === 'context').length
+    },
+    entities: (input.entities || []).slice(0, 24).map(entity => ({
+      id: compact(entity.id, 160),
+      type: compact(entity.type, 40),
+      name: compact(entity.canonicalName || entity.name, 160),
+      reasons: (entity.selectionReasons || []).slice(0, 4)
+        .map((reason: unknown) => compact(reason, 80)).filter(Boolean)
+    })),
+    relations: (input.relations || []).slice(0, 40).map(relation => ({
+      id: compact(relation.id, 160),
+      subject: compact(relation.subjectName || relation.subjectId, 160),
+      predicate: compact(relation.predicate, 80),
+      object: compact(relation.objectName || relation.objectId, 160)
+    })),
+    claims: (input.claims || []).slice(0, 36).map(claim => ({
+      id: compact(claim.id, 160),
+      subject: compact(claim.subject_name || claim.subjectName || claim.subject_id, 160),
+      predicate: compact(claim.predicate, 80),
+      value: compact(
+        claim.object_entity_name || claim.objectEntityName || claim.object_value || claim.objectValue,
+        240
+      ),
+      polarity: claim.polarity === 'negative' ? 'negative' : 'positive'
+    })),
+    events: (input.events || []).slice(0, 16).map(event => ({
+      id: compact(event.id, 160),
+      type: compact(event.event_type || event.eventType, 80),
+      title: compact(event.title, 240),
+      startAt: compact(event.start_at || event.startAt, 100)
+    })),
+    totals: Object.fromEntries(Object.entries(input.totals || {})
+      .slice(0, 16)
+      .map(([key, value]) => [compact(key, 80), Math.max(0, Number(value) || 0)]))
   }
 }
