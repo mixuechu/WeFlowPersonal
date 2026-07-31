@@ -20,6 +20,13 @@ import { voiceTranscribeService } from './voiceTranscribeService'
 import { ImageDecryptService } from './imageDecryptService'
 import { CONTACT_REGION_LOOKUP_DATA } from './contactRegionLookupData'
 import { LRUCache } from '../utils/LRUCache.js'
+import {
+  emptySensitiveCachePrivacy,
+  inspectSensitiveCacheFile,
+  loadEncryptedSensitiveCache,
+  writeEncryptedSensitiveCache,
+  type SensitiveCachePrivacy
+} from './encryptedSensitiveCache.ts'
 
 export interface ChatSession {
   username: string
@@ -381,6 +388,8 @@ class ChatService {
   private transcriptCacheLoaded = false
   private transcriptCacheDirty = false
   private transcriptFlushTimer: ReturnType<typeof setTimeout> | null = null
+  private transcriptCacheEncryptionKey: Buffer | string = ''
+  private transcriptCachePrivacy: SensitiveCachePrivacy = emptySensitiveCachePrivacy()
   private mediaDbsCache: string[] | null = null
   private mediaDbsCacheTime = 0
   private readonly mediaDbsCacheTtl = 300000 // 5分钟
@@ -473,6 +482,22 @@ class ChatService {
 
   setRuntimeConfig(config: { dbPath?: string; decryptKey?: string; myWxid?: string; resourcesPath?: string; appPath?: string; isPackaged?: boolean }): void {
     this.runtimeConfig = config
+  }
+
+  initializeTranscriptCacheEncryption(encryptionKey: Buffer | string): void {
+    this.transcriptCacheEncryptionKey = encryptionKey
+    if (this.transcriptCacheLoaded) {
+      if (!this.transcriptCachePrivacy.writable) {
+        this.transcriptCacheLoaded = false
+        this.transcriptCachePrivacy = emptySensitiveCachePrivacy()
+        this.loadTranscriptCacheIfNeeded()
+        return
+      }
+      this.transcriptCacheDirty = true
+      this.flushTranscriptCache()
+      return
+    }
+    this.loadTranscriptCacheIfNeeded()
   }
 
   /**
@@ -9831,14 +9856,23 @@ class ChatService {
     try {
       const filePath = this.getTranscriptCachePath()
       if (existsSync(filePath)) {
-        const raw = readFileSync(filePath, 'utf-8')
-        const data = JSON.parse(raw) as Record<string, string>
+        const loaded = loadEncryptedSensitiveCache<Record<string, unknown>>(
+          filePath,
+          this.transcriptCacheEncryptionKey
+        )
+        const data = loaded.value
+        this.transcriptCachePrivacy = loaded.privacy
         for (const [k, v] of Object.entries(data)) {
           if (typeof v === 'string') this.voiceTranscriptCache.set(k, v)
         }
         console.log(`[Transcribe] 从磁盘加载了 ${this.voiceTranscriptCache.size} 条转写缓存`)
       }
     } catch (e) {
+      this.transcriptCachePrivacy = {
+        ...emptySensitiveCachePrivacy(),
+        writable: false,
+        error: String(e instanceof Error ? e.message : e)
+      }
       console.error('[Transcribe] 加载转写缓存失败:', e)
     }
   }
@@ -9854,17 +9888,27 @@ class ChatService {
 
   /** 立即写入转写缓存到磁盘 */
   flushTranscriptCache(): void {
-    if (!this.transcriptCacheDirty) return
+    if (!this.transcriptCacheDirty || !this.transcriptCachePrivacy.writable) return
     try {
       const filePath = this.getTranscriptCachePath()
       const dir = dirname(filePath)
-      if (!existsSync(dir)) mkdirSync(dir, { recursive: true })
       const obj: Record<string, string> = {}
       for (const [k, v] of this.voiceTranscriptCache) obj[k] = v
-      writeFileSync(filePath, JSON.stringify(obj), 'utf-8')
+      this.transcriptCachePrivacy = {
+        ...writeEncryptedSensitiveCache(filePath, obj, this.transcriptCacheEncryptionKey),
+        migratedPlaintext: this.transcriptCachePrivacy.migratedPlaintext
+      }
       this.transcriptCacheDirty = false
     } catch (e) {
       console.error('[Transcribe] 写入转写缓存失败:', e)
+    }
+  }
+
+  getTranscriptCachePrivacyStatus(): any {
+    return {
+      ...this.transcriptCachePrivacy,
+      ...inspectSensitiveCacheFile(this.getTranscriptCachePath()),
+      entries: this.voiceTranscriptCache.size
     }
   }
 

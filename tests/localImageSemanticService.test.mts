@@ -1,6 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { chmodSync, mkdtempSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { chmodSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { randomBytes } from 'node:crypto'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
@@ -8,6 +9,7 @@ import {
   localImageSemanticService,
   parseImageSemanticOutput
 } from '../electron/services/localImageSemanticService.ts'
+import { isEncryptedDurableJson } from '../electron/services/encryptedDurableJsonState.ts'
 
 test('Apple Vision output is validated, localized and sorted without inventing labels', () => {
   const labels = parseImageSemanticOutput(JSON.stringify({
@@ -53,7 +55,7 @@ printf '%s' '{"labels":[{"identifier":"document","confidence":0.8}]}'
     chmodSync(helper, 0o755)
     writeFileSync(image, 'not-a-real-image-but-the-helper-is-controlled')
     process.env.WEFLOW_IMAGE_SEMANTIC_HELPER = helper
-    localImageSemanticService.initialize(cache)
+    localImageSemanticService.initialize(cache, randomBytes(32))
     const first = await localImageSemanticService.classify(image)
     const second = await localImageSemanticService.classify(image)
     assert.equal(first.success, true)
@@ -63,6 +65,8 @@ printf '%s' '{"labels":[{"identifier":"document","confidence":0.8}]}'
     assert.equal(second.labels[0].displayName, '文档')
     assert.equal(statSync(cache).mode & 0o777, 0o600)
     assert.equal(statSync(join(directory, 'private')).mode & 0o777, 0o700)
+    assert.equal(isEncryptedDurableJson(readFileSync(cache)), true)
+    assert.equal(readFileSync(cache, 'utf8').includes('document'), false)
   } finally {
     delete process.env.WEFLOW_IMAGE_SEMANTIC_HELPER
     rmSync(directory, { recursive: true, force: true })

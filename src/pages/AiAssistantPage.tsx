@@ -426,6 +426,11 @@ function AiAssistantPage() {
     to: memoryTo || undefined
   }), [memoryEntityFilter, memorySessionFilter, memorySourceFilter, memoryTypeFilter, memoryFrom, memoryTo, sources])
   const hasMemoryScope = Boolean(memoryEntityFilter || memorySessionFilter || memorySourceFilter || memoryTypeFilter || memoryFrom || memoryTo)
+  const sensitiveCaches = memoryDiagnostics?.privacy?.sensitiveCaches
+  const sensitiveCachesSecure = ['ocr', 'imageSemantics', 'voiceTranscripts'].every(kind => {
+    const cache = sensitiveCaches?.[kind]
+    return !cache?.exists || (cache.encrypted === true && cache.writable !== false && cache.mode === '600')
+  })
   const eventTimelineOptions = useMemo(() => ({
     sourceId: eventSourceFilter || undefined,
     status: eventStatusFilter || undefined,
@@ -4485,7 +4490,7 @@ function AiAssistantPage() {
               </div>
               <small>索引可由加密库中的原始向量完全重建；版本、覆盖率或候选量不满足要求时自动回退精确扫描。</small>
             </div>}
-            {memoryDiagnostics.privacy && <div className={`assistant-privacy-audit ${memoryDiagnostics.privacy.secure && memoryDiagnostics.privacy.stateMode === '600' && memoryDiagnostics.stateStorage?.encrypted ? 'secure' : 'warning'}`}>
+            {memoryDiagnostics.privacy && <div className={`assistant-privacy-audit ${memoryDiagnostics.privacy.secure && memoryDiagnostics.privacy.stateMode === '600' && memoryDiagnostics.stateStorage?.encrypted && sensitiveCachesSecure ? 'secure' : 'warning'}`}>
               <div><ShieldCheck size={15} /><span><b>本机隐私与权限审计</b>
                 <small>数据库 {memoryDiagnostics.privacy.databaseMode || '未知'} · 状态 {memoryDiagnostics.privacy.stateMode || '未知'} / 副本 {memoryDiagnostics.privacy.stateBackupMode || '尚未生成'} · 备份目录 {memoryDiagnostics.privacy.backupDirectoryMode || '尚未创建'}</small>
               </span></div>
@@ -4498,6 +4503,12 @@ function AiAssistantPage() {
                 <span>任务与图谱状态：{memoryDiagnostics.stateStorage?.encrypted
                   ? `AES-256-GCM 已加密${memoryDiagnostics.stateStorage?.migratedPlaintext ? '（本次启动完成明文迁移）' : ''}`
                   : '未验证加密'}</span>
+                <span>OCR 缓存：{!sensitiveCaches?.ocr?.exists ? '尚未生成'
+                  : sensitiveCaches.ocr.encrypted ? `AES-256-GCM · ${Number(sensitiveCaches.ocr.entries || 0).toLocaleString()} 条${sensitiveCaches.ocr.migratedPlaintext ? '（本次迁移）' : ''}` : '未验证加密'}</span>
+                <span>图片语义缓存：{!sensitiveCaches?.imageSemantics?.exists ? '尚未生成'
+                  : sensitiveCaches.imageSemantics.encrypted ? `AES-256-GCM · ${Number(sensitiveCaches.imageSemantics.entries || 0).toLocaleString()} 条${sensitiveCaches.imageSemantics.migratedPlaintext ? '（本次迁移）' : ''}` : '未验证加密'}</span>
+                <span>语音转写缓存：{!sensitiveCaches?.voiceTranscripts?.exists ? '尚未生成'
+                  : sensitiveCaches.voiceTranscripts.encrypted ? `AES-256-GCM · ${Number(sensitiveCaches.voiceTranscripts.entries || 0).toLocaleString()} 条${sensitiveCaches.voiceTranscripts.migratedPlaintext ? '（本次迁移）' : ''}` : '未验证加密'}</span>
                 <span>数据接口：{memoryDiagnostics.privacy.httpBinding}</span>
                 <span>敏感运行日志：{memoryDiagnostics.privacy.sensitiveLogRetention?.enabled
                   ? `显式开启 · ${(Number(memoryDiagnostics.privacy.sensitiveLogRetention.currentBytes || 0) / 1024).toFixed(0)} KB / 最多 ${(Number(memoryDiagnostics.privacy.sensitiveLogRetention.maxBytes || 0) / 1024 / 1024).toFixed(0)} MB`
@@ -4508,6 +4519,9 @@ function AiAssistantPage() {
                 本次启动清理 {(Number(memoryDiagnostics.privacy.sensitiveLogRetention.bytesRemovedThisStart || 0) / 1024).toFixed(1)} KB，
                 累计清理 {(Number(memoryDiagnostics.privacy.sensitiveLogRetention.bytesRemovedTotal || 0) / 1024).toFixed(1)} KB；
                 日志文件权限 {memoryDiagnostics.privacy.sensitiveLogRetention.mode || '尚未创建'}。只有在设置中显式开启诊断日志时才保留最近片段。
+              </small>}
+              {!sensitiveCachesSecure && <small className="assistant-diagnostics-error">
+                至少一个本地识别缓存未通过加密、权限或可写性校验；认证失败时系统会保留现场并停止覆盖，请先备份后检查完整诊断。
               </small>}
             </div>}
             {memoryDiagnostics.appRecovery && <div className={`assistant-recovery-audit ${memoryDiagnostics.appRecovery.recoveredFromInterruption ? 'warning' : 'healthy'}`}>

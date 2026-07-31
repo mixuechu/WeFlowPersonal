@@ -1,8 +1,15 @@
 import { createHash } from 'node:crypto'
 import { execFile } from 'node:child_process'
-import { chmodSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
-import { dirname, join } from 'node:path'
+import { existsSync, readFileSync, statSync } from 'node:fs'
+import { join } from 'node:path'
 import { promisify } from 'node:util'
+import {
+  emptySensitiveCachePrivacy,
+  inspectSensitiveCacheFile,
+  loadEncryptedSensitiveCache,
+  writeEncryptedSensitiveCache,
+  type SensitiveCachePrivacy
+} from './encryptedSensitiveCache.ts'
 
 const execFileAsync = promisify(execFile)
 const MODEL_VERSION = 'apple-vision-classify-v1'
@@ -78,9 +85,16 @@ class LocalImageSemanticService {
   private cachePath = ''
   private cache: Record<string, { labels: LocalImageSemanticLabel[], modelVersion: string }> = {}
   private loaded = false
+  private encryptionKey: Buffer | string = ''
+  private privacy: SensitiveCachePrivacy = emptySensitiveCachePrivacy()
 
-  initialize(cachePath: string): void {
+  initialize(cachePath: string, encryptionKey: Buffer | string): void {
     this.cachePath = cachePath
+    this.encryptionKey = encryptionKey
+    this.cache = {}
+    this.loaded = false
+    this.privacy = emptySensitiveCachePrivacy()
+    this.load()
   }
 
   private executable(): string | null {
@@ -95,23 +109,41 @@ class LocalImageSemanticService {
     if (this.loaded) return
     this.loaded = true
     try {
-      const parsed = JSON.parse(readFileSync(this.cachePath, 'utf8'))
-      this.cache = parsed && typeof parsed === 'object' ? parsed : {}
-    } catch {
+      const loaded = loadEncryptedSensitiveCache<Record<string, any>>(this.cachePath, this.encryptionKey)
+      this.cache = Object.fromEntries(Object.entries(loaded.value).filter(([, value]) =>
+        value && Array.isArray(value.labels) && typeof value.modelVersion === 'string'))
+      this.privacy = loaded.privacy
+    } catch (error) {
       this.cache = {}
+      this.privacy = {
+        ...emptySensitiveCachePrivacy(),
+        writable: false,
+        error: String(error instanceof Error ? error.message : error)
+      }
     }
   }
 
   private save(): void {
     if (!this.cachePath) return
-    mkdirSync(dirname(this.cachePath), { recursive: true, mode: 0o700 })
-    writeFileSync(this.cachePath, JSON.stringify(this.cache), { mode: 0o600 })
-    try { chmodSync(this.cachePath, 0o600) } catch {}
+    if (!this.privacy.writable) return
+    this.privacy = {
+      ...writeEncryptedSensitiveCache(this.cachePath, this.cache, this.encryptionKey),
+      migratedPlaintext: this.privacy.migratedPlaintext
+    }
   }
 
-  getStatus(): { available: boolean, executable: string | null, modelVersion: string } {
+  getStatus(): { available: boolean, executable: string | null, modelVersion: string, privacy: any } {
     const executable = this.executable()
-    return { available: Boolean(executable), executable, modelVersion: MODEL_VERSION }
+    return {
+      available: Boolean(executable),
+      executable,
+      modelVersion: MODEL_VERSION,
+      privacy: {
+        ...this.privacy,
+        ...inspectSensitiveCacheFile(this.cachePath),
+        entries: Object.keys(this.cache).length
+      }
+    }
   }
 
   async classify(imagePath: string, timeoutMs = 20_000): Promise<LocalImageSemanticResult> {

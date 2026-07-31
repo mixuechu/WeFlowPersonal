@@ -452,8 +452,6 @@ export class AiAssistantService {
   async initialize(): Promise<void> {
     this.statePath = join(app.getPath('userData'), 'ai-assistant-state.json')
     localEmbeddingService.initialize(app.getPath('userData'))
-    localOcrService.initialize(join(app.getPath('userData'), 'ai-ocr-cache.json'))
-    localImageSemanticService.initialize(join(app.getPath('userData'), 'ai-image-semantic-cache.json'))
     if (!this.config.isSafeStorageEncryptionAvailable()) {
       throw new Error('macOS 安全存储当前不可用，不能安全初始化个人记忆数据库密钥')
     }
@@ -492,6 +490,9 @@ export class AiAssistantService {
       throw new Error('AI 状态密钥未能写入 macOS 安全存储')
     }
     this.stateEncryptionKey = stateKey
+    localOcrService.initialize(join(app.getPath('userData'), 'ai-ocr-cache.json'), stateKey)
+    localImageSemanticService.initialize(join(app.getPath('userData'), 'ai-image-semantic-cache.json'), stateKey)
+    chatService.initializeTranscriptCacheEncryption(stateKey)
     personalMemoryStore.initialize(databasePath, databaseKey)
     personalMemoryStore.registerDataSources(PERSONAL_DATA_SOURCE_CATALOG)
     personalMemoryStore.setDataSourceAvailability(
@@ -3677,6 +3678,12 @@ export class AiAssistantService {
           app.getPath('userData'),
           this.config.get('logEnabled') === true
         ),
+        sensitiveCaches: {
+          version: 'encrypted-sensitive-cache-v1',
+          ocr: ocr.privacy,
+          imageSemantics: imageSemantics.privacy,
+          voiceTranscripts: chatService.getTranscriptCachePrivacyStatus()
+        },
         sensitiveRedactionLevel: this.config.get('aiAssistantSensitiveRedactionLevel')
       },
       automaticBackup: {

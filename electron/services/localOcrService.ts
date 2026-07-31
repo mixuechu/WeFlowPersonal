@@ -1,7 +1,14 @@
 import { createHash } from 'node:crypto'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
-import { chmodSync, existsSync, readFileSync, statSync, writeFileSync } from 'node:fs'
+import { existsSync, readFileSync, statSync } from 'node:fs'
+import {
+  emptySensitiveCachePrivacy,
+  inspectSensitiveCacheFile,
+  loadEncryptedSensitiveCache,
+  writeEncryptedSensitiveCache,
+  type SensitiveCachePrivacy
+} from './encryptedSensitiveCache.ts'
 
 const execFileAsync = promisify(execFile)
 
@@ -9,9 +16,16 @@ class LocalOcrService {
   private cachePath = ''
   private cache: Record<string, string> = {}
   private loaded = false
+  private encryptionKey: Buffer | string = ''
+  private privacy: SensitiveCachePrivacy = emptySensitiveCachePrivacy()
 
-  initialize(cachePath: string): void {
+  initialize(cachePath: string, encryptionKey: Buffer | string): void {
     this.cachePath = cachePath
+    this.encryptionKey = encryptionKey
+    this.cache = {}
+    this.loaded = false
+    this.privacy = emptySensitiveCachePrivacy()
+    this.load()
   }
 
   private executable(): string | null {
@@ -25,27 +39,45 @@ class LocalOcrService {
     if (this.loaded) return
     this.loaded = true
     try {
-      const parsed = JSON.parse(readFileSync(this.cachePath, 'utf8'))
-      this.cache = parsed && typeof parsed === 'object' ? parsed : {}
-    } catch {
+      const loaded = loadEncryptedSensitiveCache<Record<string, unknown>>(this.cachePath, this.encryptionKey)
+      this.cache = Object.fromEntries(Object.entries(loaded.value)
+        .filter((entry): entry is [string, string] => typeof entry[1] === 'string'))
+      this.privacy = loaded.privacy
+    } catch (error) {
       this.cache = {}
+      this.privacy = {
+        ...emptySensitiveCachePrivacy(),
+        writable: false,
+        error: String(error instanceof Error ? error.message : error)
+      }
     }
   }
 
   private save(): void {
     if (!this.cachePath) return
-    writeFileSync(this.cachePath, JSON.stringify(this.cache), { mode: 0o600 })
-    try { chmodSync(this.cachePath, 0o600) } catch {}
+    if (!this.privacy.writable) return
+    this.privacy = {
+      ...writeEncryptedSensitiveCache(this.cachePath, this.cache, this.encryptionKey),
+      migratedPlaintext: this.privacy.migratedPlaintext
+    }
   }
 
-  async getStatus(): Promise<{ available: boolean; chinese: boolean; executable: string | null }> {
+  getPrivacyStatus(): any {
+    return {
+      ...this.privacy,
+      ...inspectSensitiveCacheFile(this.cachePath),
+      entries: Object.keys(this.cache).length
+    }
+  }
+
+  async getStatus(): Promise<{ available: boolean; chinese: boolean; executable: string | null; privacy: any }> {
     const executable = this.executable()
-    if (!executable) return { available: false, chinese: false, executable: null }
+    if (!executable) return { available: false, chinese: false, executable: null, privacy: this.getPrivacyStatus() }
     try {
       const { stdout } = await execFileAsync(executable, ['--list-langs'], { timeout: 10_000 })
-      return { available: true, chinese: /(^|\s)chi_sim(\s|$)/m.test(stdout), executable }
+      return { available: true, chinese: /(^|\s)chi_sim(\s|$)/m.test(stdout), executable, privacy: this.getPrivacyStatus() }
     } catch {
-      return { available: false, chinese: false, executable }
+      return { available: false, chinese: false, executable, privacy: this.getPrivacyStatus() }
     }
   }
 
