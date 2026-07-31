@@ -1888,6 +1888,107 @@ test('task search keeps original message evidence', () => withStore(store => {
   }])
 }))
 
+test('generic search evidence migrates to session-scoped identity and preserves same message ids', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'weflow-generic-evidence-identity-test-'))
+  const databasePath = join(directory, 'memory.sqlite')
+  const first = new PersonalMemoryStore()
+  try {
+    first.initialize(databasePath)
+    first.upsertResources([{
+      id: 'resource-cross-session-evidence',
+      resourceType: 'chat-history',
+      title: '跨会话同号证据',
+      content: '复合证据身份',
+      evidence: [{
+        messageId: 'same-local-message-id',
+        sessionId: 'legacy-session',
+        timestamp: 1_700_003_001,
+        sender: '旧会话发送者',
+        excerpt: '旧会话证据'
+      }]
+    }])
+    ;(first as any).db.exec(`
+      DROP TRIGGER trg_search_documents_delete_payload;
+      CREATE TABLE search_document_evidence_legacy (
+        document_id TEXT NOT NULL,
+        message_id TEXT NOT NULL,
+        session_id TEXT NOT NULL DEFAULT '',
+        timestamp INTEGER NOT NULL DEFAULT 0,
+        sender TEXT NOT NULL DEFAULT '',
+        excerpt TEXT NOT NULL DEFAULT '',
+        PRIMARY KEY(document_id,message_id)
+      ) STRICT;
+      INSERT INTO search_document_evidence_legacy
+      SELECT * FROM search_document_evidence;
+      DROP TABLE search_document_evidence;
+      ALTER TABLE search_document_evidence_legacy RENAME TO search_document_evidence;
+      CREATE TRIGGER trg_search_documents_delete_payload
+      AFTER DELETE ON search_documents
+      BEGIN
+        DELETE FROM search_fts WHERE document_id=OLD.id;
+        DELETE FROM search_document_evidence WHERE document_id=OLD.id;
+      END;
+    `)
+    first.close()
+
+    const migrated = new PersonalMemoryStore()
+    try {
+      migrated.initialize(databasePath)
+      const migration = migrated.getDiagnostics().genericSearchEvidenceIdentity
+      assert.equal(migration.constraintsHealthy, true)
+      assert.equal(migration.migratedThisStart, true)
+      assert.deepEqual(migration.primaryKey, ['document_id', 'session_id', 'message_id'])
+      assert.equal(migration.migrationsTotal, 1)
+      migrated.upsertResources([{
+        id: 'resource-cross-session-evidence',
+        resourceType: 'chat-history',
+        title: '跨会话同号证据',
+        content: '复合证据身份',
+        evidence: [{
+          messageId: 'same-local-message-id',
+          sessionId: 'session-alpha',
+          timestamp: 1_700_003_002,
+          sender: '甲会话发送者',
+          excerpt: '甲会话证据'
+        }, {
+          messageId: 'same-local-message-id',
+          sessionId: 'session-beta',
+          timestamp: 1_700_003_003,
+          sender: '乙会话发送者',
+          excerpt: '乙会话证据'
+        }]
+      }])
+      assert.deepEqual(
+        migrated.getDocumentEvidence('resource', 'resource-cross-session-evidence')
+          .map(item => item.session_id).sort(),
+        ['session-alpha', 'session-beta']
+      )
+    } finally {
+      migrated.close()
+    }
+
+    const reopened = new PersonalMemoryStore()
+    try {
+      reopened.initialize(databasePath)
+      const migration = reopened.getDiagnostics().genericSearchEvidenceIdentity
+      assert.equal(migration.constraintsHealthy, true)
+      assert.equal(migration.migratedThisStart, false)
+      assert.equal(migration.migrationsTotal, 1)
+      assert.equal(
+        reopened.getDocumentEvidencePage(
+          'resource', 'resource-cross-session-evidence'
+        ).total,
+        2
+      )
+    } finally {
+      reopened.close()
+    }
+  } finally {
+    first.close()
+    rmSync(directory, { recursive: true, force: true })
+  }
+})
+
 test('unchanged tasks repair missing search documents and evidence after an interrupted write', () => withStore(store => {
   const task = {
     id: 'task-search-repair',

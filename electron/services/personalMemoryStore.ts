@@ -576,7 +576,7 @@ export class PersonalMemoryStore {
         timestamp INTEGER NOT NULL DEFAULT 0,
         sender TEXT NOT NULL DEFAULT '',
         excerpt TEXT NOT NULL DEFAULT '',
-        PRIMARY KEY(document_id,message_id)
+        PRIMARY KEY(document_id,session_id,message_id)
       ) STRICT;
     `)
     this.ensureColumn('entities', 'identity_version', 'INTEGER NOT NULL DEFAULT 1')
@@ -631,6 +631,7 @@ export class PersonalMemoryStore {
     `)
     this.repairStructuredEvidenceIdentity()
     this.repairStructuredEvidenceReferences()
+    this.repairGenericSearchEvidenceIdentity()
     this.repairStructuredSearchIndex()
     this.backfillMergeHistoryNames()
     this.db.exec(`CREATE INDEX IF NOT EXISTS idx_memory_corrections_item
@@ -1041,6 +1042,84 @@ export class PersonalMemoryStore {
       }
       this.db!.prepare(`
         INSERT INTO schema_meta(key,value,updated_at) VALUES('structured_evidence_reference_integrity',?,?)
+        ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_at=excluded.updated_at
+      `).run(JSON.stringify(audit), checkedAt)
+    })()
+  }
+
+  private repairGenericSearchEvidenceIdentity(): void {
+    if (!this.db) return
+    const expectedPrimaryKey = ['document_id', 'session_id', 'message_id']
+    const primaryKey = (this.db.prepare(`
+      PRAGMA table_info(search_document_evidence)
+    `).all() as Array<{ name: string; pk: number }>)
+      .filter(column => Number(column.pk || 0) > 0)
+      .sort((left, right) => left.pk - right.pk)
+      .map(column => column.name)
+    const constraintsHealthyBefore =
+      JSON.stringify(primaryKey) === JSON.stringify(expectedPrimaryKey)
+    const previousRow = this.db.prepare(`
+      SELECT value FROM schema_meta WHERE key='generic_search_evidence_identity'
+    `).get() as any
+    let previousAudit: any = {}
+    try { previousAudit = JSON.parse(String(previousRow?.value || '{}')) } catch {}
+    const checkedAt = new Date().toISOString()
+    const rowsBefore = Number((this.db.prepare(`
+      SELECT COUNT(*) AS count FROM search_document_evidence
+    `).get() as any)?.count || 0)
+    let rowsAfter = rowsBefore
+    this.db.transaction(() => {
+      if (!constraintsHealthyBefore) {
+        this.db!.exec(`
+          DROP TRIGGER IF EXISTS trg_search_documents_delete_payload;
+          DROP TABLE IF EXISTS search_document_evidence_v2;
+          CREATE TABLE search_document_evidence_v2 (
+            document_id TEXT NOT NULL,
+            message_id TEXT NOT NULL,
+            session_id TEXT NOT NULL DEFAULT '',
+            timestamp INTEGER NOT NULL DEFAULT 0,
+            sender TEXT NOT NULL DEFAULT '',
+            excerpt TEXT NOT NULL DEFAULT '',
+            PRIMARY KEY(document_id,session_id,message_id)
+          ) STRICT;
+          INSERT OR IGNORE INTO search_document_evidence_v2(
+            document_id,message_id,session_id,timestamp,sender,excerpt
+          )
+          SELECT document_id,message_id,session_id,timestamp,sender,excerpt
+          FROM search_document_evidence
+          ORDER BY timestamp DESC,rowid DESC;
+          DROP TABLE search_document_evidence;
+          ALTER TABLE search_document_evidence_v2 RENAME TO search_document_evidence;
+          CREATE TRIGGER trg_search_documents_delete_payload
+          AFTER DELETE ON search_documents
+          BEGIN
+            DELETE FROM search_fts WHERE document_id=OLD.id;
+            DELETE FROM search_document_evidence WHERE document_id=OLD.id;
+          END;
+        `)
+        rowsAfter = Number((this.db!.prepare(`
+          SELECT COUNT(*) AS count FROM search_document_evidence
+        `).get() as any)?.count || 0)
+      }
+      const audit = {
+        version: 1,
+        checkedAt,
+        migratedThisStart: !constraintsHealthyBefore,
+        rowsBefore,
+        rowsAfter,
+        duplicatesRemovedThisStart: Math.max(0, rowsBefore - rowsAfter),
+        migrationsTotal: Math.max(0, Number(previousAudit?.migrationsTotal || 0))
+          + (constraintsHealthyBefore ? 0 : 1),
+        duplicatesRemovedTotal: Math.max(
+          0,
+          Number(previousAudit?.duplicatesRemovedTotal || 0)
+        ) + Math.max(0, rowsBefore - rowsAfter),
+        primaryKey: expectedPrimaryKey,
+        constraintsHealthy: true
+      }
+      this.db!.prepare(`
+        INSERT INTO schema_meta(key,value,updated_at)
+        VALUES('generic_search_evidence_identity',?,?)
         ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_at=excluded.updated_at
       `).run(JSON.stringify(audit), checkedAt)
     })()
@@ -1770,6 +1849,40 @@ export class PersonalMemoryStore {
     const referentialIntegrityHealthy = foreignKeyViolations === 0
       && structuredEvidenceReferences.triggersHealthy
       && structuredEvidenceReferences.currentOrphans === 0
+    const genericSearchEvidenceIdentity = (() => {
+      const row = this.db!.prepare(`
+        SELECT value,updated_at FROM schema_meta
+        WHERE key='generic_search_evidence_identity'
+      `).get() as any
+      try {
+        const audit = JSON.parse(String(row?.value || '{}'))
+        return {
+          version: Number(audit.version || 0),
+          checkedAt: String(audit.checkedAt || row?.updated_at || ''),
+          migratedThisStart: audit.migratedThisStart === true,
+          rowsBefore: Number(audit.rowsBefore || 0),
+          rowsAfter: Number(audit.rowsAfter || 0),
+          duplicatesRemovedThisStart: Number(audit.duplicatesRemovedThisStart || 0),
+          migrationsTotal: Number(audit.migrationsTotal || 0),
+          duplicatesRemovedTotal: Number(audit.duplicatesRemovedTotal || 0),
+          primaryKey: Array.isArray(audit.primaryKey) ? audit.primaryKey.map(String) : [],
+          constraintsHealthy: audit.constraintsHealthy === true
+        }
+      } catch {
+        return {
+          version: 0,
+          checkedAt: String(row?.updated_at || ''),
+          migratedThisStart: false,
+          rowsBefore: 0,
+          rowsAfter: 0,
+          duplicatesRemovedThisStart: 0,
+          migrationsTotal: 0,
+          duplicatesRemovedTotal: 0,
+          primaryKey: [],
+          constraintsHealthy: false
+        }
+      }
+    })()
     const structuredSearchIndex = (() => {
       const row = this.db!.prepare(`
         SELECT value,updated_at FROM schema_meta
@@ -1889,11 +2002,13 @@ export class PersonalMemoryStore {
       healthy: integrity === 'ok'
         && structuredEvidenceMigration.constraintsHealthy
         && referentialIntegrityHealthy
+        && genericSearchEvidenceIdentity.constraintsHealthy
         && structuredSearchIndexHealthy
         && taskSearchIndexHealthy,
       integrity,
       foreignKeyViolations,
       referentialIntegrityHealthy,
+      genericSearchEvidenceIdentityHealthy: genericSearchEvidenceIdentity.constraintsHealthy,
       structuredSearchIndexHealthy,
       taskSearchIndexHealthy,
       encryption: {
@@ -1907,6 +2022,7 @@ export class PersonalMemoryStore {
       counts,
       structuredEvidenceMigration,
       structuredEvidenceReferences,
+      genericSearchEvidenceIdentity,
       structuredSearchIndex,
       taskSearchIndex,
       backups
