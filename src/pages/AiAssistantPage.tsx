@@ -20,7 +20,7 @@ type Task = {
   priority: 'high' | 'medium' | 'low'
   confidence: number
   status: 'todo' | 'doing' | 'waiting' | 'done' | 'cancelled'
-  classification?: 'mine' | 'uncertain'
+  classification?: 'mine' | 'uncertain' | 'others'
   assignmentEvidence?: string
   ownershipPolicyReason?: string
   createdAt?: string
@@ -199,6 +199,20 @@ function AiAssistantPage() {
   const [taskArchiveTo, setTaskArchiveTo] = useState('')
   const [taskArchiveLoadingMore, setTaskArchiveLoadingMore] = useState(false)
   const taskArchiveGate = useRef(new LatestRequestGate())
+  const [taskOwnershipReviews, setTaskOwnershipReviews] = useState<{
+    items: Task[]
+    total: number
+    hasMore: boolean
+    counts: Record<string, number>
+    loading?: boolean
+  }>({ items: [], total: 0, hasMore: false, counts: {} })
+  const [taskOwnershipClassification, setTaskOwnershipClassification] = useState('')
+  const [taskOwnershipPriority, setTaskOwnershipPriority] = useState('')
+  const [taskOwnershipQuery, setTaskOwnershipQuery] = useState('')
+  const [taskOwnershipFrom, setTaskOwnershipFrom] = useState('')
+  const [taskOwnershipTo, setTaskOwnershipTo] = useState('')
+  const [taskOwnershipLoadingMore, setTaskOwnershipLoadingMore] = useState(false)
+  const taskOwnershipGate = useRef(new LatestRequestGate())
   const [calendarMonth, setCalendarMonth] = useState(() => shanghaiToday().slice(0, 7))
   const [selectedCalendarDate, setSelectedCalendarDate] = useState(() => shanghaiToday())
   const [pathFromId, setPathFromId] = useState('')
@@ -305,6 +319,18 @@ function AiAssistantPage() {
     offset: 0,
     limit: 30
   }), [assistantArchiveQuery, assistantArchiveFrom, assistantArchiveTo])
+  const taskOwnershipOptions = useMemo(() => ({
+    classification: taskOwnershipClassification || undefined,
+    priority: taskOwnershipPriority || undefined,
+    query: taskOwnershipQuery || undefined,
+    from: taskOwnershipFrom ? new Date(`${taskOwnershipFrom}T00:00:00+08:00`).toISOString() : undefined,
+    to: taskOwnershipTo ? new Date(`${taskOwnershipTo}T23:59:59.999+08:00`).toISOString() : undefined,
+    limit: 40,
+    offset: 0
+  }), [
+    taskOwnershipClassification, taskOwnershipPriority, taskOwnershipQuery,
+    taskOwnershipFrom, taskOwnershipTo
+  ])
 
   const load = useCallback(async () => {
     const request = dashboardLoadGate.current.begin()
@@ -394,6 +420,25 @@ function AiAssistantPage() {
       if (assistantArchiveGate.current.isCurrent(request)) assistantArchiveGate.current.invalidate()
     }
   }, [assistantArchiveOptions, dashboard?.assistantArchive?.revision])
+
+  useEffect(() => {
+    const request = taskOwnershipGate.current.begin()
+    setTaskOwnershipLoadingMore(false)
+    setTaskOwnershipReviews(current => ({ ...current, items: [], loading: true }))
+    const timer = window.setTimeout(() => {
+      void window.electronAPI.aiAssistant.getTaskOwnershipReviews(taskOwnershipOptions).then(result => {
+        if (!taskOwnershipGate.current.isCurrent(request)) return
+        setTaskOwnershipReviews({ ...result, loading: false })
+      }).catch(() => {
+        if (!taskOwnershipGate.current.isCurrent(request)) return
+        setTaskOwnershipReviews({ items: [], total: 0, hasMore: false, counts: {}, loading: false })
+      })
+    }, taskOwnershipQuery ? 200 : 0)
+    return () => {
+      window.clearTimeout(timer)
+      if (taskOwnershipGate.current.isCurrent(request)) taskOwnershipGate.current.invalidate()
+    }
+  }, [taskOwnershipOptions, dashboard?.taskOwnershipReviews?.revision])
 
   useEffect(() => {
     const query = memoryQuery.trim()
@@ -561,7 +606,7 @@ function AiAssistantPage() {
   const selectedProject = projectWorkspace.status === 'ready' &&
     projectWorkspace.project?.id === selectedProjectId ? projectWorkspace.project : null
   const tasks: Task[] = dashboard?.tasks || []
-  const taskReviewQueue: Task[] = dashboard?.taskReviewQueue || []
+  const taskReviewQueue: Task[] = taskOwnershipReviews.items
   const taskReminders: any[] = dashboard?.taskReminders || []
   const reminderPreferences = dashboard?.reminderPreferences
   const taskReviewFeedback = dashboard?.taskReviewFeedback || { mine: 0, rejected: 0, suppressed: 0, reconciled: 0, recent: [] }
@@ -773,6 +818,30 @@ function AiAssistantPage() {
       if (taskArchiveGate.current.isCurrent(request)) setMessage(error?.message || String(error))
     } finally {
       if (taskArchiveGate.current.isCurrent(request)) setTaskArchiveLoadingMore(false)
+    }
+  }
+
+  const loadMoreTaskOwnershipReviews = async () => {
+    if (taskOwnershipLoadingMore || !taskOwnershipReviews.hasMore) return
+    const request = taskOwnershipGate.current.begin()
+    setTaskOwnershipLoadingMore(true)
+    try {
+      const result = await window.electronAPI.aiAssistant.getTaskOwnershipReviews({
+        ...taskOwnershipOptions,
+        offset: taskOwnershipReviews.items.length,
+        limit: 40
+      })
+      if (!taskOwnershipGate.current.isCurrent(request)) return
+      setTaskOwnershipReviews(current => ({
+        ...result,
+        items: [...current.items, ...result.items.filter((item: Task) =>
+          !current.items.some(known => known.id === item.id))],
+        loading: false
+      }))
+    } catch (error: any) {
+      if (taskOwnershipGate.current.isCurrent(request)) setMessage(error?.message || String(error))
+    } finally {
+      if (taskOwnershipGate.current.isCurrent(request)) setTaskOwnershipLoadingMore(false)
     }
   }
 
@@ -2087,11 +2156,11 @@ function AiAssistantPage() {
           </div> : <div className="assistant-empty">当聊天中识别到项目实体或待办归属项目后，这里会自动形成项目进度、风险、里程碑和决策视图。</div>}
         </section>
 
-        {(taskReviewQueue.length > 0 || taskReviewFeedback.mine || taskReviewFeedback.rejected) && (
+        {(taskOwnershipReviews.total > 0 || taskReviewFeedback.mine || taskReviewFeedback.rejected) && (
           <section className="assistant-panel assistant-review-section">
             <div className="assistant-section-heading">
               <div><span className="assistant-eyebrow">ASSIGNEE REVIEW</span><h3>待确认归属</h3></div>
-              <span className="assistant-count">{taskReviewQueue.length} 项不会计入你的待办</span>
+              <span className="assistant-count">{taskOwnershipReviews.total} 项不会计入你的待办</span>
             </div>
             <div className="assistant-task-feedback-summary">
               <span><b>{Number(taskReviewFeedback.mine || 0)}</b><small>已确认为我的</small></span>
@@ -2103,6 +2172,31 @@ function AiAssistantPage() {
                 {taskReviewFeedback.reconciliation?.lastRunAt && ` 本次启动核对 ${taskReviewFeedback.reconciliation.checked} 条判断，修复 ${Number(taskReviewFeedback.reconciliation.removed || 0) + Number(taskReviewFeedback.reconciliation.confirmed || 0) + Number(taskReviewFeedback.reconciliation.restored || 0)} 项状态。`}
               </p>
             </div>
+            <div className="assistant-task-filters">
+              <select value={taskOwnershipClassification}
+                onChange={event => setTaskOwnershipClassification(event.target.value)}>
+                <option value="">全部待确认类型</option>
+                <option value="uncertain">归属不确定</option>
+                <option value="others">模型认为属于他人</option>
+              </select>
+              <select value={taskOwnershipPriority}
+                onChange={event => setTaskOwnershipPriority(event.target.value)}>
+                <option value="">全部优先级</option>
+                <option value="high">高优先级</option>
+                <option value="medium">中优先级</option>
+                <option value="low">低优先级</option>
+              </select>
+              <input value={taskOwnershipQuery} onChange={event => setTaskOwnershipQuery(event.target.value)}
+                placeholder="搜索标题、说明、来源或归属依据" />
+              <label>从<input type="date" value={taskOwnershipFrom}
+                onChange={event => setTaskOwnershipFrom(event.target.value)} /></label>
+              <label>到<input type="date" value={taskOwnershipTo}
+                onChange={event => setTaskOwnershipTo(event.target.value)} /></label>
+            </div>
+            {dashboard?.taskOwnershipReviews?.directory === 'paginated_on_demand' && <small className="assistant-evidence">
+              候选按需从 SQLCipher 分页读取；原文只在点击单条后加载，不进入首页轮询。
+              当前全库：不确定 {taskOwnershipReviews.counts.uncertain || 0} · 属于他人 {taskOwnershipReviews.counts.others || 0}。
+            </small>}
             {taskReviewQueue.map(task => (
               <article className="assistant-review-item" key={task.id}>
                 <div>
@@ -2111,11 +2205,20 @@ function AiAssistantPage() {
                   <small>{task.assignmentEvidence || '缺少足够的归属证据'}{task.source ? ` · 来自 ${task.source}` : ''}</small>
                 </div>
                 <div>
+                  <button onClick={() => setSelectedTaskId(task.id)}>查看原文</button>
                   <button onClick={() => void decideTaskReview(task.id, 'rejected')}>不是我的</button>
                   <button className="primary" onClick={() => void decideTaskReview(task.id, 'mine')}>归为我的待办</button>
                 </div>
               </article>
             ))}
+            {taskOwnershipReviews.loading && <div className="assistant-empty">正在读取待确认归属…</div>}
+            {!taskOwnershipReviews.loading && !taskReviewQueue.length && <div className="assistant-empty">
+              当前筛选下没有待确认归属。
+            </div>}
+            {taskOwnershipReviews.hasMore && <button onClick={() => void loadMoreTaskOwnershipReviews()}
+              disabled={taskOwnershipLoadingMore}>
+              {taskOwnershipLoadingMore ? '正在加载下一页…' : '加载更多待确认归属'}
+            </button>}
             {!!taskReviewFeedback.recent?.length && <details className="assistant-task-feedback-history">
               <summary>查看最近归属反馈</summary>
               {taskReviewFeedback.recent.map((item: any) => <div key={item.evidence_fingerprint}>

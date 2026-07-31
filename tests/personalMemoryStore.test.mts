@@ -1864,6 +1864,89 @@ test('task archive survives a SQLCipher process-style reopen', () => {
   }
 })
 
+test('task ownership reviews stay pageable and leave evidence in on-demand dossiers', () => withStore(store => {
+  const tasks = Array.from({ length: 1_500 }, (_, index) => ({
+    id: `ownership-task-${String(index).padStart(4, '0')}`,
+    title: index === 997 ? '唯一归属候选关键词' : `归属候选 ${index}`,
+    detail: `归属说明 ${index}`,
+    owner: index % 3 === 0 ? '我' : `群成员 ${index % 20}`,
+    source: `来源群 ${index % 12}`,
+    sourceSessionId: `ownership-session-${index % 12}`,
+    assignmentEvidence: `归属判断依据 ${index}`,
+    priority: ['high', 'medium', 'low'][index % 3],
+    confidence: 0.7,
+    classification: ['mine', 'uncertain', 'others'][index % 3],
+    status: 'todo',
+    createdAt: new Date(1_500_000_000_000 + index * 10_000).toISOString(),
+    updatedAt: new Date(1_700_000_000_000 + index * 10_000).toISOString(),
+    evidence: [{
+      messageId: `ownership-message-${index}`,
+      sessionId: `ownership-session-${index % 12}`,
+      timestamp: 1_700_000_000 + index,
+      sender: `群成员 ${index % 20}`,
+      excerpt: `只能按需读取的归属原文 ${index} ${'x'.repeat(500)}`
+    }]
+  }))
+  store.syncTasks(tasks)
+
+  const first = store.listTaskOwnershipReviews({ limit: 100 })
+  const second = store.listTaskOwnershipReviews({ offset: 100, limit: 100 })
+  assert.equal(first.total, 1_000)
+  assert.equal(first.items.length, 100)
+  assert.equal(new Set([...first.items, ...second.items].map(item => item.id)).size, 200)
+  assert.deepEqual(first.counts, { others: 500, uncertain: 500 })
+  assert.ok(first.items.every(item => item.classification !== 'mine' && item.evidenceTotal === 1))
+  assert.equal(JSON.stringify(first.items).includes('只能按需读取的归属原文'), false)
+  assert.equal(store.listTaskOwnershipReviews({ classification: 'uncertain' }).total, 500)
+  assert.equal(store.listTaskOwnershipReviews({ classification: 'others' }).total, 500)
+  assert.equal(store.listTaskOwnershipReviews({ priority: 'medium' }).total, 500)
+  const special = store.listTaskOwnershipReviews({ query: '唯一归属候选关键词' })
+  assert.equal(special.total, 1)
+  assert.equal(special.items[0]?.id, 'ownership-task-0997')
+  assert.deepEqual(Object.keys(store.getTaskOwnershipReviewStats()).sort(), [
+    'latestClassification', 'latestId', 'latestUpdatedAt', 'total'
+  ])
+
+  store.syncTasks(tasks.map(task => task.id === 'ownership-task-0997'
+    ? { ...task, classification: 'mine', updatedAt: '2026-07-31T00:00:00.000Z' }
+    : task))
+  assert.equal(store.listTaskOwnershipReviews({ query: '唯一归属候选关键词' }).total, 0)
+  assert.equal(store.getTaskOwnershipReviewStats().total, 999)
+}))
+
+test('task ownership review pages survive a SQLCipher process-style reopen', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'weflow-task-ownership-restart-'))
+  const databasePath = join(directory, 'memory.sqlite')
+  const key = randomBytes(32)
+  const first = new PersonalMemoryStore()
+  const second = new PersonalMemoryStore()
+  try {
+    first.initialize(databasePath, key)
+    first.syncTasks([{
+      id: 'ownership-after-restart',
+      title: '跨重启归属候选',
+      detail: '数据库重新打开后仍然等待确认',
+      priority: 'high',
+      confidence: 0.7,
+      classification: 'uncertain',
+      status: 'todo',
+      createdAt: '2026-07-30T00:00:00.000Z',
+      updatedAt: '2026-07-31T00:00:00.000Z',
+      evidence: evidence('ownership-after-restart-message', '这件事可能需要你处理')
+    }])
+    first.close()
+    second.initialize(databasePath, key)
+    const page = second.listTaskOwnershipReviews({ query: '跨重启归属候选' })
+    assert.equal(page.total, 1)
+    assert.equal(page.items[0]?.evidenceTotal, 1)
+    assert.equal(second.getTaskOwnershipReviewStats().total, 1)
+  } finally {
+    first.close()
+    second.close()
+    rmSync(directory, { recursive: true, force: true })
+  }
+})
+
 test('renderer cursor status exposes counts but keeps durable keys and session maps private', () => {
   const cursor = {
     lastMessageTimestamp: 1_800_000_000,

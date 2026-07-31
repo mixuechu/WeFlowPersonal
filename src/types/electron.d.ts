@@ -1691,6 +1691,12 @@ export interface ElectronAPI {
         hasMore: boolean
         projects: string[]
       }>
+      getTaskOwnershipReviews: (options?: any) => Promise<{
+        items: any[]
+        total: number
+        hasMore: boolean
+        counts: Record<string, number>
+      }>
       sync: () => Promise<any>
       cancelSync: () => Promise<any>
     getSettings: () => Promise<any>

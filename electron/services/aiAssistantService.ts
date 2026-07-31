@@ -3004,9 +3004,8 @@ export class AiAssistantService {
     const latest = dates[0] ? this.state.briefings[dates[0]] : null
     const tasks = this.state.tasks.filter(task => task.classification === 'mine')
     const activeTasks = tasks.filter(task => !['done', 'cancelled'].includes(task.status))
-    const taskReviewQueue = this.state.tasks.filter(task => task.classification !== 'mine')
     const taskPayload = activeTasks.map(buildTaskDirectoryItem)
-    const taskReviewPayload = taskReviewQueue.map(buildTaskDirectoryItem)
+    const taskOwnershipReviewStats = personalMemoryStore.getTaskOwnershipReviewStats()
     const allTaskReminders = buildTaskReminders(tasks)
     const reminderResult = applyReminderPreferences(allTaskReminders, this.state.reminderPreferences)
     const memoryFeed = personalMemoryStore.getMemoryFeed()
@@ -3050,7 +3049,16 @@ export class AiAssistantService {
       briefing: latest ? { ...latest, tasks: undefined } : null,
       briefingStorage: this.briefingStorage,
       tasks: taskPayload,
-      taskReviewQueue: taskReviewPayload,
+      taskOwnershipReviews: {
+        total: taskOwnershipReviewStats.total,
+        revision: crypto.createHash('sha256')
+          .update(JSON.stringify(taskOwnershipReviewStats))
+          .digest('hex')
+          .slice(0, 16),
+        version: 'task-ownership-review-v1',
+        directory: 'paginated_on_demand',
+        dossier: 'on_demand'
+      },
       taskPayloadPolicy: {
         version: 'task-active-workset-v2',
         directoryEvidence: 'count_only',
@@ -3184,6 +3192,18 @@ export class AiAssistantService {
         ? options.priority
         : '',
       project: String(options?.project || ''),
+      query: String(options?.query || ''),
+      from: String(options?.from || ''),
+      to: String(options?.to || ''),
+      limit: Number(options?.limit || 40),
+      offset: Number(options?.offset || 0)
+    })
+  }
+
+  getTaskOwnershipReviews(options: any = {}): any {
+    return personalMemoryStore.listTaskOwnershipReviews({
+      classification: String(options?.classification || ''),
+      priority: String(options?.priority || ''),
       query: String(options?.query || ''),
       from: String(options?.from || ''),
       to: String(options?.to || ''),

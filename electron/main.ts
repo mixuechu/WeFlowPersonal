@@ -4535,6 +4535,8 @@ function registerIpcHandlers() {
     aiAssistantService.getTaskWorkspace(taskId))
   ipcMain.handle('ai-assistant:getTaskArchive', (_, options?: any) =>
     aiAssistantService.getTaskArchive(options))
+  ipcMain.handle('ai-assistant:getTaskOwnershipReviews', (_, options?: any) =>
+    aiAssistantService.getTaskOwnershipReviews(options))
   ipcMain.handle('ai-assistant:sync', () => aiAssistantService.sync())
   ipcMain.handle('ai-assistant:cancelSync', () => aiAssistantService.cancelSync())
   ipcMain.handle('ai-assistant:getSettings', () => aiAssistantService.getSettings())

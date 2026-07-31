@@ -2152,6 +2152,114 @@ export class PersonalMemoryStore {
     }
   }
 
+  listTaskOwnershipReviews(options: {
+    classification?: string
+    priority?: string
+    query?: string
+    from?: string
+    to?: string
+    limit?: number
+    offset?: number
+  } = {}): { items: any[]; total: number; hasMore: boolean; counts: Record<string, number> } {
+    if (!this.db) return { items: [], total: 0, hasMore: false, counts: {} }
+    const conditions = [`classification!='mine'`]
+    const parameters: Array<string | number> = []
+    const classification = String(options.classification || '').trim()
+    if (classification && classification !== 'all') {
+      conditions.push('classification=?')
+      parameters.push(classification)
+    }
+    const priority = String(options.priority || '').trim()
+    if (priority && priority !== 'all') {
+      conditions.push('priority=?')
+      parameters.push(priority)
+    }
+    const query = String(options.query || '').trim().toLocaleLowerCase('zh-CN')
+    if (query) {
+      conditions.push(`instr(lower(title || char(0) || payload_json),?)>0`)
+      parameters.push(query)
+    }
+    const from = options.from && Number.isFinite(Date.parse(options.from)) ? String(options.from) : ''
+    const to = options.to && Number.isFinite(Date.parse(options.to)) ? String(options.to) : ''
+    if (from) {
+      conditions.push('updated_at>=?')
+      parameters.push(from)
+    }
+    if (to) {
+      conditions.push('updated_at<=?')
+      parameters.push(to)
+    }
+    const where = conditions.join(' AND ')
+    const total = Number((this.db.prepare(`
+      SELECT COUNT(*) AS count FROM task_directory WHERE ${where}
+    `).get(...parameters) as any)?.count || 0)
+    const limit = Math.max(1, Math.min(100, Math.floor(Number(options.limit) || 40)))
+    const offset = Math.max(0, Math.min(1_000_000, Math.floor(Number(options.offset) || 0)))
+    const rows = this.db.prepare(`
+      SELECT td.*,
+        (SELECT COUNT(*) FROM search_document_evidence sde
+          WHERE sde.document_id='task:' || td.id) AS evidence_count,
+        (SELECT COUNT(*) FROM task_history th WHERE th.task_id=td.id) AS history_count
+      FROM task_directory td
+      WHERE ${where}
+      ORDER BY updated_at DESC,id ASC
+      LIMIT ? OFFSET ?
+    `).all(...parameters, limit, offset) as any[]
+    const counts = Object.fromEntries((this.db.prepare(`
+      SELECT classification,COUNT(*) AS count
+      FROM task_directory WHERE classification!='mine'
+      GROUP BY classification
+    `).all() as Array<{ classification: string; count: number }>)
+      .map(row => [row.classification, Number(row.count || 0)]))
+    return {
+      items: rows.map(row => {
+        let payload: any = {}
+        try { payload = JSON.parse(String(row.payload_json || '{}')) } catch {}
+        return {
+          ...payload,
+          id: row.id,
+          title: row.title,
+          status: row.status,
+          classification: row.classification,
+          priority: row.priority,
+          due: row.due,
+          project: row.project,
+          taskKind: row.task_kind,
+          createdAt: row.created_at,
+          updatedAt: row.updated_at,
+          evidenceTotal: Number(row.evidence_count || 0),
+          historyTotal: Number(row.history_count || 0)
+        }
+      }),
+      total,
+      hasMore: offset + rows.length < total,
+      counts
+    }
+  }
+
+  getTaskOwnershipReviewStats(): {
+    total: number
+    latestId: string
+    latestUpdatedAt: string
+    latestClassification: string
+  } {
+    if (!this.db) return { total: 0, latestId: '', latestUpdatedAt: '', latestClassification: '' }
+    const total = Number((this.db.prepare(`
+      SELECT COUNT(*) AS count FROM task_directory WHERE classification!='mine'
+    `).get() as any)?.count || 0)
+    const latest = this.db.prepare(`
+      SELECT id,updated_at,classification FROM task_directory
+      WHERE classification!='mine'
+      ORDER BY updated_at DESC,id ASC LIMIT 1
+    `).get() as any
+    return {
+      total,
+      latestId: String(latest?.id || ''),
+      latestUpdatedAt: String(latest?.updated_at || ''),
+      latestClassification: String(latest?.classification || '')
+    }
+  }
+
   getMemoryFeed(limit = 100): { claims: any[]; events: any[]; resources: any[] } {
     if (!this.db) return { claims: [], events: [], resources: [] }
     const safeLimit = Math.max(1, Math.min(500, Math.floor(Number(limit) || 100)))
