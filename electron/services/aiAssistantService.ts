@@ -156,6 +156,11 @@ import {
   compactGraphReviewWorkset
 } from '../../shared/graphReviewStorage'
 import {
+  GRAPH_COMMIT_RECOVERY_VERSION,
+  recoverGraphStateFromSql,
+  shouldRecoverGraphFromSql
+} from '../../shared/graphCommitRecovery'
+import {
   assessScheduledSyncResult,
   planScheduledSyncState,
   scheduledSyncTargetTimestamp,
@@ -256,6 +261,7 @@ type AssistantState = {
   graph: {
     entities: GraphEntity[]
     relations: GraphRelation[]
+    lastSqlCommitId?: string | null
     reviewQueue: Array<{ id: string; kind: 'possible_duplicate' | 'relation' | 'entity_summary' | 'entity_alias' | 'entity_creation'; title: string; detail: string; confidence: number; status: 'pending' | 'confirmed' | 'rejected'; createdAt: string; resolvedAt?: string; resolutionActor?: 'user' | 'system'; resolutionReason?: string; leftEntityId?: string; rightEntityId?: string; mergeSourceEntityId?: string; mergeTargetEntityId?: string; relationId?: string; originalRelationId?: string; correctedRelationId?: string; relationCorrection?: RelationCorrection; entityId?: string; entityIdentityVersion?: number; entityCanonicalName?: string; originalEntityCanonicalName?: string; correctedCanonicalName?: string; entityType?: string; legacyReview?: boolean; previousSummary?: string; summaryText?: string; originalSummaryText?: string; correctedSummaryText?: string; aliasText?: string; originalAliasText?: string; correctedAliasText?: string; evidence?: Array<{ messageId: string; sessionId: string; timestamp: number; sender: string; excerpt: string }>; candidateSource?: string; candidateSignals?: Array<{ source: string; label: string; value: string }> }>
     identityScan: { lastFullScanAt: string | null; lastRunAt: string | null; lastMode: 'incremental' | 'full' | null; lastCandidateCount: number }
   }
@@ -288,7 +294,7 @@ const EMPTY_STATE: AssistantState = {
     pendingSessionBacklogCount: 0,
     backlogRetry: { ...EMPTY_BACKLOG_RETRY_STATE }
   },
-  graph: { entities: [], relations: [], reviewQueue: [], identityScan: { lastFullScanAt: null, lastRunAt: null, lastMode: null, lastCandidateCount: 0 } }
+  graph: { entities: [], relations: [], lastSqlCommitId: null, reviewQueue: [], identityScan: { lastFullScanAt: null, lastRunAt: null, lastMode: null, lastCandidateCount: 0 } }
 }
 
 const EXTRACTION_PROMPT_VERSION = 'personal-os-prompt-v7'
@@ -401,11 +407,17 @@ export class AiAssistantService {
   }
   private graphReviewStorage = {
     version: GRAPH_REVIEW_STORAGE_VERSION,
+    recoveryVersion: GRAPH_COMMIT_RECOVERY_VERSION,
     statePolicy: 'pending_only',
     pending: 0,
     archivedThisRun: 0,
     archivedEvidenceThisRun: 0,
-    lastArchivedAt: ''
+    lastArchivedAt: '',
+    recoveredFromSqlThisStart: false,
+    recoveredAt: '',
+    recoveredEntities: 0,
+    recoveredRelations: 0,
+    recoveredPendingReviews: 0
   }
   private stateStorage: DurableJsonRecovery & {
     lastWriteAt: string
@@ -606,12 +618,23 @@ export class AiAssistantService {
             lastDisambiguatedAt: entity.lastDisambiguatedAt || null
           })) : [],
           relations: Array.isArray(loaded.graph?.relations) ? loaded.graph.relations : [],
+          lastSqlCommitId: loaded.graph?.lastSqlCommitId || null,
           reviewQueue: Array.isArray(loaded.graph?.reviewQueue) ? loaded.graph.reviewQueue : [],
           identityScan: {
             ...structuredClone(EMPTY_STATE.graph.identityScan),
             ...(loaded.graph?.identityScan || {})
           }
         }
+      }
+      const sqlCommitId = personalMemoryStore.getGraphCommitId()
+      if (shouldRecoverGraphFromSql(sqlCommitId, this.state.graph.lastSqlCommitId)) {
+        const snapshot = personalMemoryStore.loadGraphSnapshot()
+        this.state.graph = recoverGraphStateFromSql(this.state.graph, snapshot, sqlCommitId)
+        this.graphReviewStorage.recoveredFromSqlThisStart = true
+        this.graphReviewStorage.recoveredAt = new Date().toISOString()
+        this.graphReviewStorage.recoveredEntities = snapshot.entities.length
+        this.graphReviewStorage.recoveredRelations = snapshot.relations.length
+        this.graphReviewStorage.recoveredPendingReviews = snapshot.reviewQueue.length
       }
       this.compactBriefingState()
       this.repairPlaceholderEntities()
@@ -761,8 +784,10 @@ export class AiAssistantService {
   private saveState(strictMemorySync = false): void {
     this.compactBriefingState()
     let graphSynced = false
+    const graphCommitId = crypto.randomUUID()
     try {
-      personalMemoryStore.syncGraph(this.state.graph)
+      personalMemoryStore.syncGraph(this.state.graph, graphCommitId)
+      this.state.graph.lastSqlCommitId = graphCommitId
       graphSynced = true
     } catch (error) {
       console.error('[AI Assistant] 个人记忆数据库同步失败:', sanitizeDiagnosticText(error))
@@ -778,6 +803,10 @@ export class AiAssistantService {
       console.error('[AI Assistant] 个人记忆任务同步失败:', sanitizeDiagnosticText(error))
       if (strictMemorySync) throw error
     }
+  }
+
+  private checkpointGraphToSql(): void {
+    personalMemoryStore.syncGraph(this.state.graph, crypto.randomUUID())
   }
 
   private compactBriefingState(): void {
@@ -1999,7 +2028,7 @@ export class AiAssistantService {
                     this.state.graph.identityScan.lastCandidateCount += 1
                   }
                 }
-                personalMemoryStore.syncGraph(this.state.graph)
+                this.checkpointGraphToSql()
                 this.saveState()
               } catch (error) {
                 this.state.graph = graphBeforeCalendarIdentity
@@ -2447,7 +2476,7 @@ export class AiAssistantService {
           }
         })
         const tempIds = this.mergeGraphDigest(digest, [message], createdAt, commitId)
-        personalMemoryStore.syncGraph(this.state.graph)
+        this.checkpointGraphToSql()
         this.persistClaimsAndEvents(digest, tempIds, [message], createdAt)
         tasks += this.persistDocumentTasks(digest, [message], createdAt)
         this.saveState(true)
@@ -2660,7 +2689,7 @@ export class AiAssistantService {
           })
           digests.push({ digest, batch })
           const tempIds = this.mergeGraphDigest(digest, batch, createdAt, commitId)
-          personalMemoryStore.syncGraph(this.state.graph)
+          this.checkpointGraphToSql()
           this.persistClaimsAndEvents(digest, tempIds, batch, createdAt)
           this.mergeRecoveredWechatTasks(digest, batch, createdAt)
           successfulMessageKeys.push(...checkpointKeys)
@@ -4341,7 +4370,7 @@ export class AiAssistantService {
           }
         }
         personalMemoryStore.mergeEntityEventParticipants(source.id, target.id)
-        personalMemoryStore.syncGraph(this.state.graph)
+        this.checkpointGraphToSql()
         personalMemoryStore.recordIdentityDecision(source.id, target.id, 'merged', source.identityVersion, target.identityVersion, review.detail)
       }
     }
@@ -4378,7 +4407,7 @@ export class AiAssistantService {
       Array.isArray(snapshot.sourceEventParticipants) ? snapshot.sourceEventParticipants : [],
       Array.isArray(snapshot.targetEventParticipants) ? snapshot.targetEventParticipants : []
     )
-    personalMemoryStore.syncGraph(this.state.graph)
+    this.checkpointGraphToSql()
     personalMemoryStore.markMergeReverted(id)
     this.saveState()
     return { success: true }

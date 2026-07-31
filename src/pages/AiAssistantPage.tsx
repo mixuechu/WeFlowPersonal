@@ -3712,6 +3712,9 @@ function AiAssistantPage() {
               {dashboard.graphReviewStorage.archivedThisRun
                 ? ` 本次启动已迁移 ${dashboard.graphReviewStorage.archivedThisRun} 条历史、移除 ${dashboard.graphReviewStorage.archivedEvidenceThisRun || 0} 份重复原文副本。`
                 : ''}
+              {dashboard.graphReviewStorage.recoveredFromSqlThisStart
+                ? ` 检测到上次退出发生在 SQLCipher 提交与状态文件写入之间，已从权威数据库恢复 ${dashboard.graphReviewStorage.recoveredEntities || 0} 个实体、${dashboard.graphReviewStorage.recoveredRelations || 0} 条关系和 ${dashboard.graphReviewStorage.recoveredPendingReviews || 0} 个待处理候选。`
+                : ' 图谱跨存储提交点一致。'}
             </small>}
             <div className="assistant-review-filters">
               <div>

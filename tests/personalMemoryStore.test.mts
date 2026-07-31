@@ -73,6 +73,11 @@ import {
   compactBriefings
 } from '../shared/briefingRetention.ts'
 import { compactGraphReviewWorkset } from '../shared/graphReviewStorage.ts'
+import {
+  GRAPH_COMMIT_RECOVERY_VERSION,
+  recoverGraphStateFromSql,
+  shouldRecoverGraphFromSql
+} from '../shared/graphCommitRecovery.ts'
 import { buildTaskCalendar, extractTaskDueDate } from '../src/utils/taskCalendar.ts'
 import { filterGraphReviews, paginateGraphReviews } from '../src/utils/graphReviewFilters.ts'
 import { summarizeIngestionRuns } from '../electron/services/ingestionDiagnostics.ts'
@@ -3407,6 +3412,140 @@ test('daily schedule is acknowledged only after every enabled source and backlog
     scheduledSyncTargetTimestamp(null, Date.parse('2026-07-31T00:00:00.000Z')),
     Date.parse('2026-07-31T00:00:00.000Z')
   )
+})
+
+test('graph commit mismatch recovers authoritative entities relations evidence and pending reviews', () => {
+  withStore(store => {
+    const graph = {
+      entities: [{
+        id: 'graph-recovery-a',
+        type: 'person',
+        canonicalName: '恢复甲',
+        aliases: ['甲别名'],
+        accountIds: ['wxid-recovery-a'],
+        externalIdentities: [{
+          platform: 'email',
+          accountId: 'a@example.com',
+          displayName: '恢复甲',
+          confidence: 1
+        }],
+        summary: '已确认摘要',
+        summaryStatus: 'confirmed',
+        trustStatus: 'confirmed',
+        confidence: 0.9,
+        evidenceMessageIds: ['wechat:recovery-session:recovery-message'],
+        createdAt: '2026-07-31T00:00:00.000Z',
+        updatedAt: '2026-07-31T00:00:00.000Z',
+        identityVersion: 2,
+        lastDisambiguatedAt: null
+      }, {
+        id: 'graph-recovery-b',
+        type: 'organization',
+        canonicalName: '恢复组织',
+        aliases: [],
+        accountIds: [],
+        externalIdentities: [],
+        summary: '',
+        summaryStatus: 'empty',
+        trustStatus: 'confirmed',
+        confidence: 0.8,
+        evidenceMessageIds: [],
+        createdAt: '2026-07-31T00:00:00.000Z',
+        updatedAt: '2026-07-31T00:00:00.000Z',
+        identityVersion: 1,
+        lastDisambiguatedAt: null
+      }],
+      relations: [{
+        id: 'graph-recovery-relation',
+        subjectId: 'graph-recovery-a',
+        predicate: '服务于',
+        objectId: 'graph-recovery-b',
+        confidence: 0.92,
+        status: 'confirmed',
+        directionExplanation: '恢复甲向恢复组织',
+        evidence: [{
+          sourceId: 'wechat',
+          messageId: 'wechat:recovery-session:recovery-message',
+          sessionId: 'recovery-session',
+          timestamp: 1_700_000_000,
+          sender: '恢复甲',
+          excerpt: '我在恢复组织工作'
+        }],
+        createdAt: '2026-07-31T00:00:00.000Z',
+        updatedAt: '2026-07-31T00:00:00.000Z'
+      }],
+      reviewQueue: [{
+        id: 'graph-recovery-pending',
+        kind: 'relation',
+        title: '仍需审阅',
+        detail: '待处理关系',
+        confidence: 0.7,
+        status: 'pending',
+        relationId: 'graph-recovery-relation',
+        createdAt: '2026-07-31T00:00:00.000Z'
+      }, {
+        id: 'graph-recovery-resolved',
+        kind: 'entity_alias',
+        title: '已处理别名',
+        detail: '',
+        confidence: 0.8,
+        status: 'confirmed',
+        createdAt: '2026-07-31T00:00:00.000Z',
+        resolvedAt: '2026-07-31T01:00:00.000Z'
+      }]
+    }
+    store.syncGraph(graph as any, 'graph-commit-authoritative')
+    assert.equal(store.getGraphCommitId(), 'graph-commit-authoritative')
+    assert.equal(GRAPH_COMMIT_RECOVERY_VERSION, 'graph-sql-authority-v1')
+    assert.equal(shouldRecoverGraphFromSql('graph-commit-authoritative', 'graph-commit-stale'), true)
+    assert.equal(shouldRecoverGraphFromSql('graph-commit-authoritative', 'graph-commit-authoritative'), false)
+    assert.equal(shouldRecoverGraphFromSql('', 'graph-commit-stale'), false)
+    const snapshot = store.loadGraphSnapshot()
+    assert.equal(snapshot.entities.length, 2)
+    assert.equal(snapshot.entities[0].aliases[0], '甲别名')
+    assert.equal(snapshot.entities[0].accountIds[0], 'wxid-recovery-a')
+    assert.equal(snapshot.entities[0].externalIdentities[0].accountId, 'a@example.com')
+    assert.ok(snapshot.entities[0].evidenceMessageIds.includes('wechat:recovery-session:recovery-message'))
+    assert.equal(snapshot.relations.length, 1)
+    assert.equal(snapshot.relations[0].status, 'confirmed')
+    assert.equal(snapshot.relations[0].evidence[0].sender, '恢复甲')
+    assert.equal(snapshot.reviewQueue.length, 1)
+    assert.equal(snapshot.reviewQueue[0].id, 'graph-recovery-pending')
+    const recovered = recoverGraphStateFromSql({
+      entities: [{
+        ...graph.entities[0],
+        canonicalName: '过期姓名',
+        evidenceMessageIds: ['json-only-evidence']
+      }, {
+        id: 'json-only-entity',
+        canonicalName: '不应复活',
+        evidenceMessageIds: []
+      }],
+      relations: [{
+        ...graph.relations[0],
+        status: 'candidate',
+        directionExplanation: '保留的人类可读方向'
+      }, {
+        id: 'json-only-relation',
+        subjectId: 'graph-recovery-a',
+        predicate: '错误关系',
+        objectId: 'json-only-entity',
+        status: 'candidate'
+      }],
+      reviewQueue: [graph.reviewQueue[1]],
+      identityScan: { lastFullScanAt: '2026-07-30T00:00:00.000Z' },
+      lastSqlCommitId: 'graph-commit-stale'
+    }, snapshot, 'graph-commit-authoritative')
+    assert.equal(recovered.entities.length, 2)
+    assert.equal(recovered.entities[0].canonicalName, '恢复甲')
+    assert.ok(recovered.entities[0].evidenceMessageIds.includes('json-only-evidence'))
+    assert.equal(recovered.relations.length, 1)
+    assert.equal(recovered.relations[0].status, 'confirmed')
+    assert.equal(recovered.relations[0].directionExplanation, '保留的人类可读方向')
+    assert.deepEqual(recovered.reviewQueue.map((review: any) => review.id), ['graph-recovery-pending'])
+    assert.equal(recovered.identityScan.lastFullScanAt, '2026-07-30T00:00:00.000Z')
+    assert.equal(recovered.lastSqlCommitId, 'graph-commit-authoritative')
+  })
 })
 
 test('task calendar handles leap months, Shanghai today, overdue and unscheduled work', () => {

@@ -2549,7 +2549,115 @@ export class PersonalMemoryStore {
     }
   }
 
-  syncGraph(graph: MemoryGraph): void {
+  getGraphCommitId(): string {
+    if (!this.db) return ''
+    return String((this.db.prepare(`
+      SELECT value FROM schema_meta WHERE key='graph_state_commit'
+    `).get() as any)?.value || '')
+  }
+
+  loadGraphSnapshot(): MemoryGraph {
+    if (!this.db) return { entities: [], relations: [], reviewQueue: [] }
+    const entityRows = this.db.prepare(`
+      SELECT * FROM entities WHERE deleted_at IS NULL ORDER BY id
+    `).all() as any[]
+    const aliases = this.db.prepare(`
+      SELECT value FROM aliases WHERE entity_id=? ORDER BY id
+    `)
+    const identities = this.db.prepare(`
+      SELECT platform,account_id,display_name,confidence
+      FROM identities WHERE entity_id=? ORDER BY platform,account_id
+    `)
+    const entityEvidence = this.db.prepare(`
+      SELECT DISTINCT evidence.message_id
+      FROM evidence
+      LEFT JOIN relations ON relations.id=evidence.relation_id
+      LEFT JOIN claims ON claims.id=evidence.claim_id
+      LEFT JOIN event_participants ON event_participants.event_id=evidence.event_id
+      WHERE relations.subject_id=? OR relations.object_id=?
+        OR claims.subject_id=? OR claims.object_entity_id=?
+        OR event_participants.entity_id=?
+      ORDER BY evidence.timestamp DESC,evidence.message_id
+      LIMIT 500
+    `)
+    const evidence = this.db.prepare(`
+      SELECT source_id,message_id,session_id,timestamp,sender,excerpt
+      FROM evidence WHERE relation_id=?
+      ORDER BY timestamp,message_id
+    `)
+    const relationRows = this.db.prepare(`
+      SELECT * FROM relations ORDER BY id
+    `).all() as any[]
+    const reviewRows = this.db.prepare(`
+      SELECT payload_json FROM review_queue WHERE status='pending'
+      ORDER BY created_at,id
+    `).all() as Array<{ payload_json: string }>
+    return {
+      entities: entityRows.map(row => {
+        const entityIdentities = identities.all(row.id) as any[]
+        return {
+          id: row.id,
+          type: row.type,
+          canonicalName: row.canonical_name,
+          aliases: (aliases.all(row.id) as Array<{ value: string }>).map(item => item.value),
+          accountIds: entityIdentities
+            .filter(item => item.platform === 'wechat')
+            .map(item => item.account_id),
+          externalIdentities: entityIdentities
+            .filter(item => item.platform !== 'wechat')
+            .map(item => ({
+              platform: item.platform,
+              accountId: item.account_id,
+              displayName: item.display_name,
+              confidence: Number(item.confidence || 0)
+            })),
+          summary: row.summary,
+          summaryStatus: row.summary_status,
+          trustStatus: row.trust_status,
+          confidence: Number(row.confidence || 0),
+          evidenceMessageIds: (entityEvidence.all(
+            row.id, row.id, row.id, row.id, row.id
+          ) as Array<{ message_id: string }>).map(item => item.message_id),
+          createdAt: row.created_at,
+          updatedAt: row.updated_at,
+          identityVersion: Number(row.identity_version || 1),
+          lastDisambiguatedAt: row.last_disambiguated_at || null
+        }
+      }),
+      relations: relationRows.map(row => ({
+        id: row.id,
+        subjectId: row.subject_id,
+        predicate: row.predicate,
+        objectId: row.object_id,
+        confidence: Number(row.confidence || 0),
+        directionExplanation: '',
+        status: row.status,
+        validFrom: row.valid_from || undefined,
+        validTo: row.valid_to || undefined,
+        searchText: row.search_text,
+        evidence: (evidence.all(row.id) as any[]).map(item => ({
+          sourceId: item.source_id,
+          messageId: item.message_id,
+          sessionId: item.session_id,
+          timestamp: Number(item.timestamp || 0),
+          sender: item.sender,
+          excerpt: item.excerpt
+        })),
+        createdAt: row.created_at,
+        updatedAt: row.updated_at
+      })),
+      reviewQueue: reviewRows.flatMap(row => {
+        try {
+          const review = JSON.parse(String(row.payload_json || '{}'))
+          return review?.id && review?.status === 'pending' ? [review] : []
+        } catch {
+          return []
+        }
+      })
+    }
+  }
+
+  syncGraph(graph: MemoryGraph, commitId = ''): void {
     if (!this.db) return
     const now = new Date().toISOString()
     this.db.exec('BEGIN IMMEDIATE')
@@ -2727,6 +2835,13 @@ export class PersonalMemoryStore {
           review.id, review.kind, review.title, review.detail || '', Number(review.confidence || 0),
           review.status, JSON.stringify(review), review.createdAt || now, review.resolvedAt || null
         )
+      }
+      if (commitId) {
+        this.db.prepare(`
+          INSERT INTO schema_meta(key,value,updated_at)
+          VALUES('graph_state_commit',?,?)
+          ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_at=excluded.updated_at
+        `).run(commitId, now)
       }
       this.db.exec('COMMIT')
     } catch (error) {
