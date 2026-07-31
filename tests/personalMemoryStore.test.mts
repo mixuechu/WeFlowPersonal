@@ -5,6 +5,7 @@ import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { createHash, randomBytes } from 'node:crypto'
 import { PersonalMemoryStore } from '../electron/services/personalMemoryStore.ts'
+import { buildMemorySearchFeedbackContext } from '../electron/services/memorySearchFeedback.ts'
 import { filterMemorySearchResults, paginateMemoryResults } from '../electron/services/memorySearchFilters.ts'
 import { buildContextualMemoryQuestion, buildMemoryQueryPlan } from '../electron/services/memoryQueryPlanner.ts'
 import { applyReminderPreferences, buildTaskReminders, findMatchingTask } from '../electron/services/taskIntelligence.ts'
@@ -117,6 +118,69 @@ const evidence = (messageId: string, excerpt: string) => [{
   excerpt,
   role: 'support'
 }]
+
+test('search relevance feedback is append-only, query-scoped and reversible after reopen', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'weflow-search-feedback-'))
+  const databasePath = join(directory, 'memory.sqlite')
+  const key = randomBytes(32).toString('hex')
+  const first = new PersonalMemoryStore()
+  try {
+    first.initialize(databasePath, key)
+    first.syncGraph({
+      entities: [{
+        id: 'person-feedback',
+        type: 'person',
+        canonicalName: '反馈测试人物',
+        trustStatus: 'confirmed'
+      }],
+      relations: [],
+      reviewQueue: []
+    } as any)
+    const context = buildMemorySearchFeedbackContext('测试查询', { sourceIds: ['wechat'] })
+    const otherContext = buildMemorySearchFeedbackContext('另一个查询', { sourceIds: ['wechat'] })
+    first.recordMemorySearchFeedback({
+      queryFingerprint: context.queryFingerprint,
+      scopeFingerprint: context.scopeFingerprint,
+      queryText: context.query,
+      scopeJson: context.scopeJson,
+      documentId: 'entity:person-feedback',
+      action: 'helpful'
+    })
+    first.recordMemorySearchFeedback({
+      queryFingerprint: otherContext.queryFingerprint,
+      scopeFingerprint: otherContext.scopeFingerprint,
+      queryText: otherContext.query,
+      scopeJson: otherContext.scopeJson,
+      documentId: 'entity:person-feedback',
+      action: 'not_relevant'
+    })
+    assert.equal(first.listMemorySearchFeedback(context.queryFingerprint, context.scopeFingerprint)[0].action, 'helpful')
+    first.close()
+
+    const reopened = new PersonalMemoryStore()
+    try {
+      reopened.initialize(databasePath, key)
+      assert.equal(reopened.listMemorySearchFeedback(context.queryFingerprint, context.scopeFingerprint)[0].action, 'helpful')
+      reopened.recordMemorySearchFeedback({
+        queryFingerprint: context.queryFingerprint,
+        scopeFingerprint: context.scopeFingerprint,
+        queryText: context.query,
+        scopeJson: context.scopeJson,
+        documentId: 'entity:person-feedback',
+        action: 'cleared'
+      })
+      assert.deepEqual(reopened.listMemorySearchFeedback(context.queryFingerprint, context.scopeFingerprint), [])
+      assert.equal(reopened.listMemorySearchFeedback(otherContext.queryFingerprint, otherContext.scopeFingerprint)[0].action, 'not_relevant')
+      reopened.forgetEntity('person-feedback')
+      assert.deepEqual(reopened.listMemorySearchFeedback(otherContext.queryFingerprint, otherContext.scopeFingerprint), [])
+    } finally {
+      reopened.close()
+    }
+  } finally {
+    first.close()
+    rmSync(directory, { recursive: true, force: true })
+  }
+})
 
 test('derived briefings stay bounded without duplicating durable task evidence', () => {
   const briefings: Record<string, any> = {}

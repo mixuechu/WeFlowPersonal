@@ -511,6 +511,24 @@ export class PersonalMemoryStore {
         UNIQUE(document_type, source_id)
       ) STRICT;
 
+      CREATE TABLE IF NOT EXISTS memory_search_feedback (
+        id INTEGER PRIMARY KEY,
+        query_fingerprint TEXT NOT NULL,
+        scope_fingerprint TEXT NOT NULL,
+        query_text TEXT NOT NULL DEFAULT '',
+        scope_json TEXT NOT NULL DEFAULT '{}',
+        document_id TEXT NOT NULL,
+        document_type TEXT NOT NULL DEFAULT '',
+        document_title TEXT NOT NULL DEFAULT '',
+        action TEXT NOT NULL CHECK(action IN ('helpful','not_relevant','cleared')),
+        created_at TEXT NOT NULL,
+        FOREIGN KEY(document_id) REFERENCES search_documents(id) ON DELETE CASCADE
+      ) STRICT;
+      CREATE INDEX IF NOT EXISTS idx_memory_search_feedback_context
+        ON memory_search_feedback(query_fingerprint,scope_fingerprint,document_id,id DESC);
+      CREATE INDEX IF NOT EXISTS idx_memory_search_feedback_created
+        ON memory_search_feedback(created_at DESC,id DESC);
+
       CREATE TABLE IF NOT EXISTS vector_ann_entries (
         document_id TEXT NOT NULL,
         model TEXT NOT NULL,
@@ -6157,6 +6175,76 @@ export class PersonalMemoryStore {
       JOIN active_memory_search_scope scope ON scope.id=d.id
       ORDER BY d.updated_at DESC,d.id LIMIT ?
     `).all(Math.max(1, Math.min(500, Number(limit) || 500))) as any[]
+  }
+
+  recordMemorySearchFeedback(input: {
+    queryFingerprint: string
+    scopeFingerprint: string
+    queryText: string
+    scopeJson: string
+    documentId: string
+    action: 'helpful' | 'not_relevant' | 'cleared'
+  }): any {
+    if (!this.db) throw new Error('个人记忆数据库尚未初始化')
+    const queryFingerprint = String(input.queryFingerprint || '').trim().toLowerCase()
+    const scopeFingerprint = String(input.scopeFingerprint || '').trim().toLowerCase()
+    const documentId = String(input.documentId || '').trim()
+    const action = String(input.action || '') as 'helpful' | 'not_relevant' | 'cleared'
+    if (!/^[a-f0-9]{64}$/.test(queryFingerprint) || !/^[a-f0-9]{64}$/.test(scopeFingerprint)) {
+      throw new Error('检索反馈上下文无效')
+    }
+    if (!documentId || documentId.length > 512 || /[\u0000-\u001f]/.test(documentId)) {
+      throw new Error('检索反馈记忆标识无效')
+    }
+    if (!new Set(['helpful', 'not_relevant', 'cleared']).has(action)) throw new Error('检索反馈动作无效')
+    const document = this.db.prepare(`
+      SELECT id,document_type,title FROM search_documents WHERE id=?
+    `).get(documentId) as any
+    if (!document) throw new Error('检索结果已不存在')
+    const createdAt = new Date().toISOString()
+    const result = this.db.prepare(`
+      INSERT INTO memory_search_feedback(
+        query_fingerprint,scope_fingerprint,query_text,scope_json,
+        document_id,document_type,document_title,action,created_at
+      ) VALUES(?,?,?,?,?,?,?,?,?)
+    `).run(
+      queryFingerprint,
+      scopeFingerprint,
+      String(input.queryText || '').slice(0, 1000),
+      String(input.scopeJson || '{}').slice(0, 4000),
+      documentId,
+      String(document.document_type || ''),
+      String(document.title || '').slice(0, 500),
+      action,
+      createdAt
+    )
+    return {
+      id: Number(result.lastInsertRowid),
+      documentId,
+      action,
+      createdAt
+    }
+  }
+
+  listMemorySearchFeedback(queryFingerprint: string, scopeFingerprint: string, limit = 500): any[] {
+    if (!this.db) return []
+    const safeLimit = Math.max(1, Math.min(500, Number(limit) || 500))
+    return this.db.prepare(`
+      SELECT feedback.id,feedback.document_id AS documentId,
+        feedback.document_type AS documentType,feedback.document_title AS documentTitle,
+        feedback.action,feedback.created_at AS createdAt
+      FROM memory_search_feedback feedback
+      WHERE feedback.query_fingerprint=? AND feedback.scope_fingerprint=?
+        AND feedback.id=(
+          SELECT MAX(latest.id) FROM memory_search_feedback latest
+          WHERE latest.query_fingerprint=feedback.query_fingerprint
+            AND latest.scope_fingerprint=feedback.scope_fingerprint
+            AND latest.document_id=feedback.document_id
+        )
+        AND feedback.action!='cleared'
+      ORDER BY feedback.created_at DESC,feedback.id DESC
+      LIMIT ?
+    `).all(queryFingerprint, scopeFingerprint, safeLimit) as any[]
   }
 
   searchText(query: string, limit = 20, allowedIds: Set<string> | null = null): any[] {

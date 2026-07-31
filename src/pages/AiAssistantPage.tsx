@@ -232,6 +232,9 @@ function AiAssistantPage() {
     scopeCandidates?: number | null
   }>({ status: 'idle', query: '' })
   const [memoryLoadingMore, setMemoryLoadingMore] = useState(false)
+  const [memorySearchFeedback, setMemorySearchFeedback] = useState<any[]>([])
+  const [memorySearchFeedbackSaving, setMemorySearchFeedbackSaving] = useState('')
+  const [memorySearchRefreshKey, setMemorySearchRefreshKey] = useState(0)
   const memorySearchGate = useRef(new LatestRequestGate())
   const [memoryEvidenceArchive, setMemoryEvidenceArchive] = useState<{
     documentType: string
@@ -717,6 +720,7 @@ function AiAssistantPage() {
     const query = memoryQuery.trim()
     const request = memorySearchGate.current.begin()
     setMemoryResults([])
+    setMemorySearchFeedback([])
     setMemoryLoadingMore(false)
     if (!query && !hasMemoryScope) {
       setMemorySearchState({ status: 'idle', query: '' })
@@ -729,6 +733,7 @@ function AiAssistantPage() {
       void window.electronAPI.aiAssistant.searchMemoryPage(query, memorySearchOptions, { offset: 0, limit: 40 }).then(page => {
         if (!memorySearchGate.current.isCurrent(request)) return
         setMemoryResults(page.results)
+        setMemorySearchFeedback(page.feedback || [])
         setMemorySearchState({
           status: 'ready',
           query,
@@ -746,7 +751,7 @@ function AiAssistantPage() {
       window.clearTimeout(timer)
       if (memorySearchGate.current.isCurrent(request)) memorySearchGate.current.invalidate()
     }
-  }, [memoryQuery, memorySearchOptions, hasMemoryScope])
+  }, [memoryQuery, memorySearchOptions, hasMemoryScope, memorySearchRefreshKey])
 
   useEffect(() => {
     const request = reviewPageGate.current.begin()
@@ -1865,6 +1870,7 @@ function AiAssistantPage() {
         for (const item of page.results) merged.set(item.id, item)
         return [...merged.values()]
       })
+      setMemorySearchFeedback(page.feedback || [])
       setMemorySearchState({
         status: 'ready',
         query,
@@ -1879,6 +1885,34 @@ function AiAssistantPage() {
       }
     } finally {
       if (memorySearchGate.current.isCurrent(request)) setMemoryLoadingMore(false)
+    }
+  }
+
+  const updateMemorySearchFeedback = async (
+    documentId: string,
+    action: 'helpful' | 'not_relevant' | 'cleared'
+  ) => {
+    const query = memoryQuery.trim()
+    const saveKey = `${documentId}:${action}`
+    setMemorySearchFeedbackSaving(saveKey)
+    try {
+      const result = await window.electronAPI.aiAssistant.updateMemorySearchFeedback({
+        query,
+        options: memorySearchOptions,
+        documentId,
+        action
+      })
+      setMemorySearchFeedback(result.feedback || [])
+      setMessage(action === 'helpful'
+        ? '已记录为有用；只会提升同一查询和范围内的排序。'
+        : action === 'not_relevant'
+          ? '已记录为无关；不会全局删除或拒绝这条记忆。'
+          : '已撤销这条检索反馈。')
+      setMemorySearchRefreshKey(value => value + 1)
+    } catch (error: any) {
+      setMessage(error?.message || String(error))
+    } finally {
+      setMemorySearchFeedbackSaving('')
     }
   }
 
@@ -3039,6 +3073,21 @@ function AiAssistantPage() {
               </div>}
             {memorySearchState.status === 'error' &&
               <div className="assistant-search-status error">“{memorySearchState.query}”检索失败：{memorySearchState.error}</div>}
+            {memorySearchFeedback.length > 0 && <details className="assistant-search-feedback-ledger">
+              <summary>本查询的相关性反馈（{memorySearchFeedback.length}）</summary>
+              <small>反馈只影响完全相同的查询与当前人物、会话、来源、类型和时间范围；原记忆及其可信状态不会改变。</small>
+              <div className="assistant-search-feedback-list">
+                {memorySearchFeedback.map((feedback: any) => <div key={feedback.id}>
+                  <span>{feedback.action === 'helpful' ? '有用' : '无关'} · {feedback.documentTitle || feedback.documentId}</span>
+                  <small>{feedback.documentType || '记忆'} · {new Date(feedback.createdAt).toLocaleString('zh-CN')}</small>
+                  <button
+                    disabled={Boolean(memorySearchFeedbackSaving)}
+                    onClick={() => void updateMemorySearchFeedback(feedback.documentId, 'cleared')}>
+                    {memorySearchFeedbackSaving === `${feedback.documentId}:cleared` ? '正在撤销…' : '撤销'}
+                  </button>
+                </div>)}
+              </div>
+            </details>}
             {groupedMemoryResults.map(group => <section className="assistant-search-result-group" key={group.type}>
               <div className="assistant-search-result-group-heading">
                 <strong>{group.label}</strong><span>{group.results.length} 条</span>
@@ -3062,6 +3111,26 @@ function AiAssistantPage() {
               </span>
               <small className={`assistant-memory-trust ${resultStatus || 'source'}`}>{statusLabel}{resultStatus === 'candidate' ? ' · 不能作为已确认事实回答' : resultStatus === 'cancelled' ? ' · 仅作历史记录' : ''}</small>
               <strong>{result.title}</strong><p>{result.search_text}</p>
+              <div className="assistant-search-feedback-actions">
+                <button
+                  className={result.relevance_feedback === 'helpful' ? 'active' : ''}
+                  disabled={Boolean(memorySearchFeedbackSaving)}
+                  onClick={() => void updateMemorySearchFeedback(result.id, 'helpful')}>
+                  {memorySearchFeedbackSaving === `${result.id}:helpful` ? '记录中…' : '有用'}
+                </button>
+                <button
+                  className={result.relevance_feedback === 'not_relevant' ? 'active' : ''}
+                  disabled={Boolean(memorySearchFeedbackSaving)}
+                  onClick={() => void updateMemorySearchFeedback(result.id, 'not_relevant')}>
+                  {memorySearchFeedbackSaving === `${result.id}:not_relevant` ? '记录中…' : '与本次检索无关'}
+                </button>
+                {result.relevance_feedback && <button
+                  disabled={Boolean(memorySearchFeedbackSaving)}
+                  onClick={() => void updateMemorySearchFeedback(result.id, 'cleared')}>撤销反馈</button>}
+                {result.relevance_feedback && <small>
+                  已按你的反馈{result.relevance_feedback === 'helpful' ? '保守提升' : '保守降低'}本查询排序
+                </small>}
+              </div>
               <details className="assistant-search-evidence">
                 <summary>{evidence.length
                   ? evidenceTotal > evidence.length

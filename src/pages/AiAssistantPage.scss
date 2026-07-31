@@ -550,6 +550,17 @@
 .assistant-search-status { margin: 8px 0; padding: 8px 10px; border-radius: 8px; background: #f4f5f1; color: #687168; font-size: 9px; }
 .assistant-search-status.ready { background: #eef5ef; color: #42614d; }
 .assistant-search-status.error { background: #fff1ef; color: #9a4e45; }
+.assistant-search-feedback-ledger { padding: 9px 10px; border: 1px solid #dfe6df; border-radius: 9px; background: #f8faf8; color: #526059; }
+.assistant-search-feedback-ledger summary { cursor: pointer; font-size: 9px; font-weight: 600; }
+.assistant-search-feedback-ledger > small { display: block; margin-top: 5px; color: #788079; font-size: 8px; }
+.assistant-search-feedback-list { display: grid; gap: 6px; margin-top: 8px; }
+.assistant-search-feedback-list > div { display: grid; grid-template-columns: minmax(0,1fr) auto auto; align-items: center; gap: 8px; padding: 6px 7px; border-radius: 7px; background: #fff; }
+.assistant-search-feedback-list span, .assistant-search-feedback-list small { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 8px; }
+.assistant-search-feedback-list button, .assistant-search-feedback-actions button { padding: 4px 7px; border: 1px solid #d5dcd6; border-radius: 6px; color: #536159; background: #fff; font-size: 8px; cursor: pointer; }
+.assistant-search-feedback-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 5px; margin-top: 8px; }
+.assistant-search-feedback-actions button.active { border-color: #6f937d; color: #315d48; background: #eaf3ed; }
+.assistant-search-feedback-actions button:disabled, .assistant-search-feedback-list button:disabled { opacity: .55; cursor: default; }
+.assistant-search-feedback-actions small { color: #6c786f; font-size: 8px; }
 .assistant-search-load-more { justify-self: center; margin: 4px auto 0; padding: 7px 14px; border: 1px solid #cfd8d1; border-radius: 8px; background: #fff; color: #456050; font-size: 9px; cursor: pointer; }
 .assistant-search-load-more:disabled { opacity: .55; cursor: default; }
 .assistant-search-result-group-heading { display: flex; align-items: center; justify-content: space-between; padding: 0 2px; color: #626b64; }

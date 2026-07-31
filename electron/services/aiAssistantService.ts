@@ -15,6 +15,12 @@ import { captureWebSnapshot } from './webSnapshotService'
 import { extractScannedPdfText, getPdfOcrStatus } from './pdfOcrService'
 import { exportService } from './export'
 import { filterMemorySearchResults, paginateMemoryResults, type MemorySearchOptions } from './memorySearchFilters'
+import {
+  applyMemorySearchFeedback,
+  buildMemorySearchFeedbackContext,
+  MEMORY_SEARCH_FEEDBACK_VERSION,
+  type MemorySearchFeedbackAction
+} from './memorySearchFeedback.ts'
 import { buildContextualMemoryQuestion, buildMemoryQueryPlan } from './memoryQueryPlanner'
 import {
   applyTaskReviewFeedback,
@@ -4711,22 +4717,78 @@ export class AiAssistantService {
           ...evidencePayload
         })
       })
-      return filterMemorySearchResults(
+      const filtered = filterMemorySearchResults(
         [...merged.values()].sort((left, right) => Number(right.hybrid_score || 0) - Number(left.hybrid_score || 0)),
         scopedOptions,
         allowedIds !== null
-      ).slice(0, Math.max(1, Math.min(500, maxResults))).map(item => ({
+      )
+      return this.applyStoredMemorySearchFeedback(query, scopedOptions, filtered)
+        .slice(0, Math.max(1, Math.min(500, maxResults))).map(item => ({
         ...item,
         retrieval_scope_applied: allowedIds !== null,
         retrieval_scope_candidates: scopeCandidateCount
       }))
     } catch (error) {
       console.warn('[AI Assistant] 向量检索回退为全文检索:', error)
-      return filterMemorySearchResults(lexical, scopedOptions, allowedIds !== null).slice(0, Math.max(1, Math.min(500, maxResults))).map(item => ({
+      const filtered = filterMemorySearchResults(lexical, scopedOptions, allowedIds !== null)
+      return this.applyStoredMemorySearchFeedback(query, scopedOptions, filtered)
+        .slice(0, Math.max(1, Math.min(500, maxResults))).map(item => ({
         ...item,
         retrieval_scope_applied: allowedIds !== null,
         retrieval_scope_candidates: scopeCandidateCount
       }))
+    }
+  }
+
+  private memorySearchFeedbackContext(query: string, options: MemorySearchOptions): {
+    context: ReturnType<typeof buildMemorySearchFeedbackContext>
+    entries: any[]
+  } {
+    const context = buildMemorySearchFeedbackContext(query, options)
+    return {
+      context,
+      entries: personalMemoryStore.listMemorySearchFeedback(
+        context.queryFingerprint,
+        context.scopeFingerprint,
+        500
+      )
+    }
+  }
+
+  private applyStoredMemorySearchFeedback(query: string, options: MemorySearchOptions, items: any[]): any[] {
+    const { entries } = this.memorySearchFeedbackContext(query, options)
+    const decisions = new Map(entries.map(entry => [
+      String(entry.documentId || ''),
+      entry.action as 'helpful' | 'not_relevant'
+    ]))
+    return applyMemorySearchFeedback(items, decisions)
+  }
+
+  updateMemorySearchFeedback(input: {
+    query?: string
+    options?: MemorySearchOptions
+    documentId?: string
+    action?: MemorySearchFeedbackAction
+  }): any {
+    const query = String(input?.query || '')
+    const options = input?.options || {}
+    const context = buildMemorySearchFeedbackContext(query, options)
+    const result = personalMemoryStore.recordMemorySearchFeedback({
+      queryFingerprint: context.queryFingerprint,
+      scopeFingerprint: context.scopeFingerprint,
+      queryText: context.query,
+      scopeJson: context.scopeJson,
+      documentId: String(input?.documentId || ''),
+      action: input?.action as MemorySearchFeedbackAction
+    })
+    return {
+      ...result,
+      version: MEMORY_SEARCH_FEEDBACK_VERSION,
+      feedback: personalMemoryStore.listMemorySearchFeedback(
+        context.queryFingerprint,
+        context.scopeFingerprint,
+        500
+      )
     }
   }
 
@@ -4756,7 +4818,7 @@ export class AiAssistantService {
     }
     const ranked = text
       ? await this.searchMemoryHybrid(text, scopedOptions, 500)
-      : filterMemorySearchResults(
+      : this.applyStoredMemorySearchFeedback(text, scopedOptions, filterMemorySearchResults(
           personalMemoryStore.listSearchDocumentsInScope(allowedIds!, 500).map((item: any) => {
             const evidencePayload = personalMemoryStore.getDocumentEvidencePayload(
               item.document_type,
@@ -4774,12 +4836,15 @@ export class AiAssistantService {
           }),
           scopedOptions,
           true
-        )
+        ))
     const page = paginateMemoryResults(ranked, offset, limit, 500)
+    const feedback = this.memorySearchFeedbackContext(text, scopedOptions).entries
     return {
       ...page,
       truncated: page.truncated || (!text && allowedIds!.size > 500),
-      scopeCandidates: allowedIds?.size ?? null
+      scopeCandidates: allowedIds?.size ?? null,
+      feedback,
+      feedbackVersion: MEMORY_SEARCH_FEEDBACK_VERSION
     }
   }
 

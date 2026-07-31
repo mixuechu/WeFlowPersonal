@@ -4582,6 +4582,8 @@ function registerIpcHandlers() {
   ipcMain.handle('ai-assistant:searchMemory', (_, query: string, options?: any) => aiAssistantService.searchMemoryHybrid(query, options))
   ipcMain.handle('ai-assistant:searchMemoryPage', (_, query: string, options?: any, pagination?: any) =>
     aiAssistantService.searchMemoryPage(query, options, pagination))
+  ipcMain.handle('ai-assistant:updateMemorySearchFeedback', (_, input: any) =>
+    aiAssistantService.updateMemorySearchFeedback(input))
   ipcMain.handle('ai-assistant:getMemoryEvidencePage', (_, documentType: string, sourceId: string, pagination?: any) =>
     aiAssistantService.getMemoryEvidencePage(documentType, sourceId, pagination))
   ipcMain.handle('ai-assistant:indexMemoryVectors', () => aiAssistantService.ensureVectorIndex())

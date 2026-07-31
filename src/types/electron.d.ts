@@ -1757,7 +1757,22 @@ export interface ElectronAPI {
         hasMore: boolean
         truncated: boolean
         scopeCandidates: number | null
+        feedback: Array<{
+          id: number
+          documentId: string
+          documentType: string
+          documentTitle: string
+          action: 'helpful' | 'not_relevant'
+          createdAt: string
+        }>
+        feedbackVersion: string
       }>
+      updateMemorySearchFeedback: (input: {
+        query: string
+        options?: any
+        documentId: string
+        action: 'helpful' | 'not_relevant' | 'cleared'
+      }) => Promise<any>
       getMemoryEvidencePage: (
         documentType: string,
         sourceId: string,
