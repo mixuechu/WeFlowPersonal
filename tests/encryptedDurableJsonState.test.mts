@@ -49,7 +49,8 @@ test('wrong keys and tampering never produce a fallback state over existing data
   assert.equal(wrongKey.recovery.source, 'empty')
   assert.match(wrongKey.recovery.primaryError, /认证失败/)
   const envelope = JSON.parse(readFileSync(path, 'utf8'))
-  envelope.ciphertext = `A${String(envelope.ciphertext).slice(1)}`
+  const ciphertext = String(envelope.ciphertext)
+  envelope.ciphertext = `${ciphertext.startsWith('A') ? 'B' : 'A'}${ciphertext.slice(1)}`
   writeFileSync(path, JSON.stringify(envelope))
   const tampered = readEncryptedDurableJson(path, { generation: 0 }, key)
   assert.equal(tampered.recovery.source, 'empty')

@@ -273,6 +273,25 @@ export class PersonalMemoryStore {
       ) STRICT;
       CREATE INDEX IF NOT EXISTS idx_task_history_task ON task_history(task_id,created_at);
 
+      CREATE TABLE IF NOT EXISTS task_directory (
+        id TEXT PRIMARY KEY,
+        status TEXT NOT NULL,
+        classification TEXT NOT NULL,
+        priority TEXT NOT NULL,
+        due TEXT,
+        project TEXT NOT NULL DEFAULT '',
+        task_kind TEXT NOT NULL DEFAULT 'action',
+        title TEXT NOT NULL,
+        payload_json TEXT NOT NULL DEFAULT '{}',
+        evidence_fingerprint TEXT NOT NULL DEFAULT '',
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      ) STRICT;
+      CREATE INDEX IF NOT EXISTS idx_task_directory_status_updated
+        ON task_directory(classification,status,updated_at);
+      CREATE INDEX IF NOT EXISTS idx_task_directory_project
+        ON task_directory(project,updated_at);
+
       CREATE TABLE IF NOT EXISTS task_review_decisions (
         evidence_fingerprint TEXT PRIMARY KEY,
         task_id TEXT NOT NULL,
@@ -557,6 +576,7 @@ export class PersonalMemoryStore {
     this.ensureColumn('task_review_decisions', 'reconciliation_count', 'INTEGER NOT NULL DEFAULT 0')
     this.ensureColumn('task_review_decisions', 'last_reconciled_at', 'TEXT')
     this.ensureColumn('task_review_decisions', 'revoked_at', 'TEXT')
+    this.ensureColumn('task_directory', 'evidence_fingerprint', `TEXT NOT NULL DEFAULT ''`)
     this.db.exec(`CREATE INDEX IF NOT EXISTS idx_memory_corrections_item
       ON memory_corrections(item_kind,item_id,created_at DESC)`)
     this.db.exec(`CREATE INDEX IF NOT EXISTS idx_memory_item_suppressions_semantic
@@ -1952,6 +1972,26 @@ export class PersonalMemoryStore {
     if (!this.db) return
     const now = new Date().toISOString()
     const activeIds = new Set(tasks.map(task => `task:${task.id}`))
+    const activeTaskIds = new Set(tasks.map(task => String(task.id)))
+    const storedTasks = this.db.prepare(
+      `SELECT id,payload_json,evidence_fingerprint FROM task_directory`
+    ).all() as Array<{ id: string; payload_json: string; evidence_fingerprint: string }>
+    const storedTaskMap = new Map(storedTasks.map(task => [task.id, task]))
+    const deleteTask = this.db.prepare(`DELETE FROM task_directory WHERE id=?`)
+    for (const { id } of storedTasks) {
+      if (!activeTaskIds.has(id)) deleteTask.run(id)
+    }
+    const upsertTask = this.db.prepare(`
+      INSERT INTO task_directory(
+        id,status,classification,priority,due,project,task_kind,title,payload_json,
+        evidence_fingerprint,created_at,updated_at
+      ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
+      ON CONFLICT(id) DO UPDATE SET
+        status=excluded.status,classification=excluded.classification,priority=excluded.priority,
+        due=excluded.due,project=excluded.project,task_kind=excluded.task_kind,title=excluded.title,
+        payload_json=excluded.payload_json,evidence_fingerprint=excluded.evidence_fingerprint,
+        updated_at=excluded.updated_at
+    `)
     const existing = this.db.prepare(`SELECT id FROM search_documents WHERE document_type='task'`).all() as Array<{ id: string }>
     for (const { id } of existing) {
       if (activeIds.has(id)) continue
@@ -1960,6 +2000,35 @@ export class PersonalMemoryStore {
       this.db.prepare('DELETE FROM search_documents WHERE id=?').run(id)
     }
     for (const task of tasks) {
+      const {
+        evidence: _evidence,
+        sourceMessageIds: _sourceMessageIds,
+        ...directoryTask
+      } = task || {}
+      const payloadJson = JSON.stringify(directoryTask)
+      const evidenceFingerprint = createHash('sha256')
+        .update(JSON.stringify((task.evidence || []).map((item: any) => [
+          item.messageId || '', item.sessionId || '', Number(item.timestamp || 0),
+          item.sender || '', item.excerpt || ''
+        ])))
+        .digest('hex')
+      const storedTask = storedTaskMap.get(String(task.id))
+      if (storedTask?.payload_json === payloadJson &&
+          storedTask.evidence_fingerprint === evidenceFingerprint) continue
+      upsertTask.run(
+        String(task.id),
+        String(task.status || 'todo'),
+        String(task.classification || 'uncertain'),
+        String(task.priority || 'medium'),
+        String(task.due || '') || null,
+        String(task.project || ''),
+        String(task.taskKind || 'action'),
+        String(task.title || ''),
+        payloadJson,
+        evidenceFingerprint,
+        String(task.createdAt || now),
+        String(task.updatedAt || task.createdAt || now)
+      )
       const documentId = `task:${task.id}`
       this.upsertSearchDocument(documentId, 'task', task.id, task.title,
         [task.title, task.detail, task.owner, ...(task.collaborators || []), task.project, task.source, task.assignmentEvidence].filter(Boolean).join('；'),
@@ -1987,6 +2056,95 @@ export class PersonalMemoryStore {
         insertEvidence.run(documentId, messageId, String(task.sourceSessionId || task.source || ''),
           Number(item.timestamp || 0), String(item.sender || ''), String(item.excerpt || '').slice(0, 2000))
       }
+    }
+  }
+
+  listTaskArchive(options: {
+    status?: 'done' | 'cancelled' | 'all'
+    priority?: string
+    project?: string
+    query?: string
+    from?: string
+    to?: string
+    limit?: number
+    offset?: number
+  } = {}): { items: any[]; total: number; hasMore: boolean; projects: string[] } {
+    if (!this.db) return { items: [], total: 0, hasMore: false, projects: [] }
+    const conditions = [`classification='mine'`]
+    const parameters: Array<string | number> = []
+    if (options.status === 'done' || options.status === 'cancelled') {
+      conditions.push('status=?')
+      parameters.push(options.status)
+    } else {
+      conditions.push(`status IN ('done','cancelled')`)
+    }
+    const priority = String(options.priority || '').trim()
+    if (priority) {
+      conditions.push('priority=?')
+      parameters.push(priority)
+    }
+    const project = String(options.project || '').trim()
+    if (project) {
+      conditions.push('project=?')
+      parameters.push(project)
+    }
+    const query = String(options.query || '').trim().toLocaleLowerCase('zh-CN')
+    if (query) {
+      conditions.push(`instr(lower(title || char(0) || payload_json),?)>0`)
+      parameters.push(query)
+    }
+    const validFrom = options.from && Number.isFinite(Date.parse(options.from)) ? options.from : ''
+    const validTo = options.to && Number.isFinite(Date.parse(options.to)) ? options.to : ''
+    if (validFrom) {
+      conditions.push('updated_at>=?')
+      parameters.push(validFrom)
+    }
+    if (validTo) {
+      conditions.push('updated_at<=?')
+      parameters.push(validTo)
+    }
+    const where = conditions.join(' AND ')
+    const total = Number((this.db.prepare(`SELECT COUNT(*) AS count FROM task_directory WHERE ${where}`)
+      .get(...parameters) as any)?.count || 0)
+    const limit = Math.max(1, Math.min(100, Math.floor(Number(options.limit) || 40)))
+    const offset = Math.max(0, Math.min(1_000_000, Math.floor(Number(options.offset) || 0)))
+    const rows = this.db.prepare(`
+      SELECT td.*,
+        (SELECT COUNT(*) FROM search_document_evidence sde
+          WHERE sde.document_id='task:' || td.id) AS evidence_count,
+        (SELECT COUNT(*) FROM task_history th WHERE th.task_id=td.id) AS history_count
+      FROM task_directory td
+      WHERE ${where}
+      ORDER BY updated_at DESC,id ASC
+      LIMIT ? OFFSET ?
+    `).all(...parameters, limit, offset) as any[]
+    const projects = (this.db.prepare(`
+      SELECT DISTINCT project FROM task_directory
+      WHERE classification='mine' AND status IN ('done','cancelled') AND project!=''
+      ORDER BY project COLLATE NOCASE LIMIT 500
+    `).all() as Array<{ project: string }>).map(row => row.project)
+    return {
+      items: rows.map(row => {
+        let payload: any = {}
+        try { payload = JSON.parse(String(row.payload_json || '{}')) } catch {}
+        return {
+          ...payload,
+          id: row.id,
+          title: row.title,
+          status: row.status,
+          priority: row.priority,
+          due: row.due,
+          project: row.project,
+          taskKind: row.task_kind,
+          createdAt: row.created_at,
+          updatedAt: row.updated_at,
+          evidenceTotal: Number(row.evidence_count || 0),
+          historyTotal: Number(row.history_count || 0)
+        }
+      }),
+      total,
+      hasMore: offset + rows.length < total,
+      projects
     }
   }
 

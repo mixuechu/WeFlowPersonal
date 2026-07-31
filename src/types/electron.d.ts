@@ -1685,6 +1685,12 @@ export interface ElectronAPI {
         historyTotal: number
         payloadPolicy: { version: string; evidenceLimit: number; historyLimit: number; loadedOnDemand: boolean }
       } | null>
+      getTaskArchive: (options?: any) => Promise<{
+        items: any[]
+        total: number
+        hasMore: boolean
+        projects: string[]
+      }>
       sync: () => Promise<any>
       cancelSync: () => Promise<any>
     getSettings: () => Promise<any>

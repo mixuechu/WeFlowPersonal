@@ -1757,6 +1757,113 @@ test('task dashboard keeps structure but loads evidence and audit history on dem
   assert.equal(dossier.payloadPolicy.loadedOnDemand, true)
 })
 
+test('closed task archive stays fully pageable without copying evidence into its directory', () => withStore(store => {
+  const tasks = Array.from({ length: 1_000 }, (_, index) => ({
+    id: `archive-task-${String(index).padStart(4, '0')}`,
+    title: index === 778 ? '特殊历史任务关键词' : `多年任务 ${index}`,
+    detail: `任务说明 ${index}`,
+    owner: '我',
+    collaborators: [`协作者 ${index % 7}`],
+    project: `项目 ${index % 10}`,
+    taskKind: index % 3 === 0 ? 'waiting' : 'action',
+    due: `202${index % 6}-12-31`,
+    priority: ['high', 'medium', 'low'][index % 3],
+    confidence: 0.9,
+    classification: 'mine',
+    status: ['todo', 'doing', 'waiting', 'done', 'cancelled'][index % 5],
+    createdAt: new Date(1_500_000_000_000 + index * 10_000).toISOString(),
+    updatedAt: new Date(1_700_000_000_000 + index * 10_000).toISOString(),
+    evidence: [{
+      messageId: `archive-task-message-${index}`,
+      sessionId: 'archive-task-session',
+      timestamp: 1_700_000_000 + index,
+      sender: '项目群',
+      excerpt: `不应复制进任务目录的长原文 ${index} ${'x'.repeat(500)}`
+    }]
+  }))
+  store.syncTasks(tasks)
+  store.recordTaskChanges(
+    tasks[778].id,
+    { status: 'doing' },
+    { status: 'done' },
+    'archive-scale-test',
+    tasks[778].evidence
+  )
+
+  const first = store.listTaskArchive({ limit: 100 })
+  const second = store.listTaskArchive({ offset: 100, limit: 100 })
+  assert.equal(first.total, 400)
+  assert.equal(first.items.length, 100)
+  assert.equal(second.items.length, 100)
+  assert.equal(new Set([...first.items, ...second.items].map(item => item.id)).size, 200)
+  assert.ok(first.items.every(item => ['done', 'cancelled'].includes(item.status)))
+  assert.ok(first.items.every(item => item.evidenceTotal === 1))
+  assert.equal(JSON.stringify(first.items).includes('不应复制进任务目录的长原文'), false)
+  assert.equal(store.listTaskArchive({ status: 'done' }).total, 200)
+  assert.equal(store.listTaskArchive({ status: 'cancelled' }).total, 200)
+  assert.equal(store.listTaskArchive({ project: '项目 3' }).total, 100)
+  const special = store.listTaskArchive({ query: '特殊历史任务关键词' })
+  assert.equal(special.items[0]?.id, 'archive-task-0778')
+  assert.equal(special.items[0]?.historyTotal, 1)
+
+  const withNewEvidence = tasks.map(task => task.id === 'archive-task-0778'
+    ? {
+        ...task,
+        evidence: [...task.evidence, {
+          messageId: 'archive-task-message-0778-followup',
+          sessionId: 'archive-task-session',
+          timestamp: 1_800_000_000,
+          sender: '项目群',
+          excerpt: '仅证据变化也必须增量刷新'
+        }]
+      }
+    : task)
+  store.syncTasks(withNewEvidence)
+  assert.equal(
+    store.listTaskArchive({ query: '特殊历史任务关键词' }).items[0]?.evidenceTotal,
+    2
+  )
+
+  store.syncTasks(withNewEvidence.map(task => task.id === 'archive-task-0778'
+    ? { ...task, status: 'todo', updatedAt: '2026-07-31T00:00:00.000Z' }
+    : task))
+  assert.equal(store.listTaskArchive({ query: '特殊历史任务关键词' }).total, 0)
+  assert.equal(store.listTaskArchive().total, 399)
+}))
+
+test('task archive survives a SQLCipher process-style reopen', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'weflow-task-archive-restart-'))
+  const databasePath = join(directory, 'memory.sqlite')
+  const key = randomBytes(32)
+  const first = new PersonalMemoryStore()
+  const second = new PersonalMemoryStore()
+  try {
+    first.initialize(databasePath, key)
+    first.syncTasks([{
+      id: 'closed-after-restart',
+      title: '跨重启历史任务',
+      detail: '数据库重新打开后仍然可见',
+      priority: 'high',
+      confidence: 1,
+      classification: 'mine',
+      status: 'done',
+      createdAt: '2026-07-30T00:00:00.000Z',
+      updatedAt: '2026-07-31T00:00:00.000Z',
+      evidence: evidence('closed-after-restart-message', '完成了跨重启任务')
+    }])
+    first.close()
+    second.initialize(databasePath, key)
+    const page = second.listTaskArchive({ query: '跨重启历史任务' })
+    assert.equal(page.total, 1)
+    assert.equal(page.items[0]?.id, 'closed-after-restart')
+    assert.equal(page.items[0]?.evidenceTotal, 1)
+  } finally {
+    first.close()
+    second.close()
+    rmSync(directory, { recursive: true, force: true })
+  }
+})
+
 test('renderer cursor status exposes counts but keeps durable keys and session maps private', () => {
   const cursor = {
     lastMessageTimestamp: 1_800_000_000,

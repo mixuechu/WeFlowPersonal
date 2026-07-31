@@ -144,7 +144,6 @@ import {
 import {
   buildTaskDirectoryItem,
   buildTaskDossier,
-  TASK_DIRECTORY_PAYLOAD_VERSION,
   TASK_HISTORY_LIMIT
 } from '../../shared/taskPayload'
 import { buildCursorStatusPayload } from '../../shared/cursorPayload'
@@ -3004,8 +3003,9 @@ export class AiAssistantService {
     const dates = Object.keys(this.state.briefings).sort().reverse()
     const latest = dates[0] ? this.state.briefings[dates[0]] : null
     const tasks = this.state.tasks.filter(task => task.classification === 'mine')
+    const activeTasks = tasks.filter(task => !['done', 'cancelled'].includes(task.status))
     const taskReviewQueue = this.state.tasks.filter(task => task.classification !== 'mine')
-    const taskPayload = tasks.map(buildTaskDirectoryItem)
+    const taskPayload = activeTasks.map(buildTaskDirectoryItem)
     const taskReviewPayload = taskReviewQueue.map(buildTaskDirectoryItem)
     const allTaskReminders = buildTaskReminders(tasks)
     const reminderResult = applyReminderPreferences(allTaskReminders, this.state.reminderPreferences)
@@ -3051,9 +3051,11 @@ export class AiAssistantService {
       tasks: taskPayload,
       taskReviewQueue: taskReviewPayload,
       taskPayloadPolicy: {
-        version: TASK_DIRECTORY_PAYLOAD_VERSION,
+        version: 'task-active-workset-v2',
         directoryEvidence: 'count_only',
-        dossier: 'on_demand'
+        dossier: 'on_demand',
+        activeStatuses: ['todo', 'doing', 'waiting'],
+        closedTasks: 'sqlcipher_archive'
       },
       taskRevision: crypto.createHash('sha256')
         .update(this.state.tasks.map(task => [
@@ -3157,6 +3159,23 @@ export class AiAssistantService {
     if (!task) return null
     const history = personalMemoryStore.listTaskHistory([task.id], TASK_HISTORY_LIMIT)
     return buildTaskDossier(task, history, personalMemoryStore.countTaskHistory(task.id))
+  }
+
+  getTaskArchive(options: any = {}): any {
+    return personalMemoryStore.listTaskArchive({
+      status: options?.status === 'done' || options?.status === 'cancelled'
+        ? options.status
+        : 'all',
+      priority: ['high', 'medium', 'low'].includes(options?.priority)
+        ? options.priority
+        : '',
+      project: String(options?.project || ''),
+      query: String(options?.query || ''),
+      from: String(options?.from || ''),
+      to: String(options?.to || ''),
+      limit: Number(options?.limit || 40),
+      offset: Number(options?.offset || 0)
+    })
   }
 
   getGraphReviewPage(options?: Partial<GraphReviewPageOptions>): any {

@@ -23,6 +23,8 @@ type Task = {
   classification?: 'mine' | 'uncertain'
   assignmentEvidence?: string
   ownershipPolicyReason?: string
+  createdAt?: string
+  updatedAt?: string
   evidence?: Array<{ messageId: string; timestamp: number; sender: string; excerpt: string }>
 }
 
@@ -182,6 +184,21 @@ function AiAssistantPage() {
   const [taskPriorityFilter, setTaskPriorityFilter] = useState<'all' | Task['priority']>('all')
   const [taskKindFilter, setTaskKindFilter] = useState<'all' | NonNullable<Task['taskKind']>>('all')
   const [taskView, setTaskView] = useState<'list' | 'calendar'>('list')
+  const [taskArchive, setTaskArchive] = useState<{
+    items: Task[]
+    total: number
+    hasMore: boolean
+    projects: string[]
+    loading?: boolean
+  }>({ items: [], total: 0, hasMore: false, projects: [] })
+  const [taskArchiveStatus, setTaskArchiveStatus] = useState<'all' | 'done' | 'cancelled'>('all')
+  const [taskArchivePriority, setTaskArchivePriority] = useState('')
+  const [taskArchiveProject, setTaskArchiveProject] = useState('')
+  const [taskArchiveQuery, setTaskArchiveQuery] = useState('')
+  const [taskArchiveFrom, setTaskArchiveFrom] = useState('')
+  const [taskArchiveTo, setTaskArchiveTo] = useState('')
+  const [taskArchiveLoadingMore, setTaskArchiveLoadingMore] = useState(false)
+  const taskArchiveGate = useRef(new LatestRequestGate())
   const [calendarMonth, setCalendarMonth] = useState(() => shanghaiToday().slice(0, 7))
   const [selectedCalendarDate, setSelectedCalendarDate] = useState(() => shanghaiToday())
   const [pathFromId, setPathFromId] = useState('')
@@ -259,6 +276,16 @@ function AiAssistantPage() {
     limit: 100,
     offset: 0
   }), [claimEntityFilter, claimSourceFilter, claimStatusFilter, claimPredicateFilter, claimFrom, claimTo])
+  const taskArchiveOptions = useMemo(() => ({
+    status: taskArchiveStatus,
+    priority: taskArchivePriority || undefined,
+    project: taskArchiveProject || undefined,
+    query: taskArchiveQuery || undefined,
+    from: taskArchiveFrom ? new Date(`${taskArchiveFrom}T00:00:00+08:00`).toISOString() : undefined,
+    to: taskArchiveTo ? new Date(`${taskArchiveTo}T23:59:59.999+08:00`).toISOString() : undefined,
+    limit: 40,
+    offset: 0
+  }), [taskArchiveStatus, taskArchivePriority, taskArchiveProject, taskArchiveQuery, taskArchiveFrom, taskArchiveTo])
 
   const load = useCallback(async () => {
     const request = dashboardLoadGate.current.begin()
@@ -313,6 +340,22 @@ function AiAssistantPage() {
       if (eventTimelineGate.current.isCurrent(request)) eventTimelineGate.current.invalidate()
     }
   }, [eventTimelineOptions, dashboard?.memoryRevision])
+
+  useEffect(() => {
+    const request = taskArchiveGate.current.begin()
+    setTaskArchiveLoadingMore(false)
+    setTaskArchive(current => ({ ...current, items: [], loading: true }))
+    void window.electronAPI.aiAssistant.getTaskArchive(taskArchiveOptions).then(result => {
+      if (!taskArchiveGate.current.isCurrent(request)) return
+      setTaskArchive({ ...result, loading: false })
+    }).catch(() => {
+      if (!taskArchiveGate.current.isCurrent(request)) return
+      setTaskArchive({ items: [], total: 0, hasMore: false, projects: [], loading: false })
+    })
+    return () => {
+      if (taskArchiveGate.current.isCurrent(request)) taskArchiveGate.current.invalidate()
+    }
+  }, [taskArchiveOptions, dashboard?.taskRevision])
 
   useEffect(() => {
     const query = memoryQuery.trim()
@@ -660,6 +703,39 @@ function AiAssistantPage() {
     })
     await load()
     if (selectedProjectId) setProjectWorkspaceRefreshKey(value => value + 1)
+  }
+
+  const restoreArchivedTask = async (task: Task) => {
+    await window.electronAPI.aiAssistant.updateTask(task.id, { status: 'todo' })
+    setSelectedTaskId('')
+    await load()
+    if (task.project && selectedProjectId === task.project) {
+      setProjectWorkspaceRefreshKey(value => value + 1)
+    }
+  }
+
+  const loadMoreTaskArchive = async () => {
+    if (taskArchiveLoadingMore || !taskArchive.hasMore) return
+    const request = taskArchiveGate.current.begin()
+    setTaskArchiveLoadingMore(true)
+    try {
+      const result = await window.electronAPI.aiAssistant.getTaskArchive({
+        ...taskArchiveOptions,
+        offset: taskArchive.items.length,
+        limit: 40
+      })
+      if (!taskArchiveGate.current.isCurrent(request)) return
+      setTaskArchive(current => ({
+        ...result,
+        items: [...current.items, ...result.items.filter((item: Task) =>
+          !current.items.some(known => known.id === item.id))],
+        loading: false
+      }))
+    } catch (error: any) {
+      if (taskArchiveGate.current.isCurrent(request)) setMessage(error?.message || String(error))
+    } finally {
+      if (taskArchiveGate.current.isCurrent(request)) setTaskArchiveLoadingMore(false)
+    }
   }
 
   const saveTask = async () => {
@@ -1643,7 +1719,7 @@ function AiAssistantPage() {
             </div>
             <div className="assistant-task-filters">
               <select value={taskStatusFilter} onChange={event => setTaskStatusFilter(event.target.value as any)}>
-                <option value="all">全部状态</option><option value="todo">待处理</option><option value="doing">进行中</option><option value="waiting">等待中</option><option value="done">已完成</option><option value="cancelled">已取消</option>
+                <option value="all">全部进行中状态</option><option value="todo">待处理</option><option value="doing">进行中</option><option value="waiting">等待中</option>
               </select>
               <select value={taskPriorityFilter} onChange={event => setTaskPriorityFilter(event.target.value as any)}>
                 <option value="all">全部优先级</option><option value="high">高优先级</option><option value="medium">中优先级</option><option value="low">低优先级</option>
@@ -1658,7 +1734,7 @@ function AiAssistantPage() {
               <button disabled={!displayedTasks.some(task => !['done', 'cancelled'].includes(task.status))} onClick={() => void completeVisibleTasks()}>完成当前筛选</button>
             </div>
             {dashboard?.taskPayloadPolicy?.dossier === 'on_demand' && <small className="assistant-evidence">
-              日历与筛选使用轻量任务目录；原文证据和修改历史仅在你展开单条待办时读取。
+              首页只保留当前行动工作集；已完成和已取消任务进入下方 SQLCipher 档案。原文证据和修改历史仅在展开单条任务时读取。
             </small>}
             {(!!taskReminders.length || reminderPreferences?.mutedKinds?.length) && <div className="assistant-task-reminders">
               {taskReminders.slice(0, 8).map(reminder => <article key={reminder.id} className={reminder.severity}>
@@ -1822,6 +1898,83 @@ function AiAssistantPage() {
             {status?.cursor?.lastError && <div className="assistant-error"><strong>上次同步未完成</strong><span>{status.cursor.lastError}</span></div>}
           </aside>
         </div>
+
+        <section className="assistant-panel assistant-project-portfolio">
+          <div className="assistant-section-heading">
+            <div><span className="assistant-eyebrow">TASK ARCHIVE</span><h3>已关闭任务档案</h3></div>
+            <span className="assistant-count">{taskArchive.total} 项</span>
+          </div>
+          <div className="assistant-memory-scope assistant-event-scope">
+            <select value={taskArchiveStatus} onChange={event => setTaskArchiveStatus(event.target.value as any)}>
+              <option value="all">已完成与已取消</option>
+              <option value="done">已完成</option>
+              <option value="cancelled">已取消</option>
+            </select>
+            <select value={taskArchivePriority} onChange={event => setTaskArchivePriority(event.target.value)}>
+              <option value="">所有优先级</option>
+              <option value="high">高优先级</option><option value="medium">中优先级</option><option value="low">低优先级</option>
+            </select>
+            <select value={taskArchiveProject} onChange={event => setTaskArchiveProject(event.target.value)}>
+              <option value="">所有项目</option>
+              {taskArchive.projects.map(project => <option key={`task-archive-project-${project}`} value={project}>{project}</option>)}
+            </select>
+            <input value={taskArchiveQuery} onChange={event => setTaskArchiveQuery(event.target.value)}
+              placeholder="搜索标题、负责人、协作者或说明" />
+            <label><span>关闭/更新从</span><input type="date" value={taskArchiveFrom} onChange={event => setTaskArchiveFrom(event.target.value)} /></label>
+            <label><span>到</span><input type="date" value={taskArchiveTo} onChange={event => setTaskArchiveTo(event.target.value)} /></label>
+            {(taskArchiveStatus !== 'all' || taskArchivePriority || taskArchiveProject || taskArchiveQuery || taskArchiveFrom || taskArchiveTo) &&
+              <button onClick={() => {
+                setTaskArchiveStatus('all'); setTaskArchivePriority(''); setTaskArchiveProject('')
+                setTaskArchiveQuery(''); setTaskArchiveFrom(''); setTaskArchiveTo('')
+              }}>清除范围</button>}
+          </div>
+          <small className="assistant-evidence">
+            历史任务从本机 SQLCipher 目录按需分页读取，不参与 15 秒首页轮询；恢复后会重新进入当前行动工作集。
+          </small>
+          <div className="assistant-memory-list">
+            {taskArchive.items.map(task => <article className="assistant-memory-item" key={`task-archive-${task.id}`}>
+              <div className="assistant-memory-item-head">
+                <strong>{task.title}</strong>
+                <span className={task.status}>{task.status === 'done' ? '已完成' : '已取消'}</span>
+              </div>
+              {task.detail && <p>{task.detail}</p>}
+              <small>{task.updatedAt ? new Date(task.updatedAt).toLocaleString('zh-CN') : '时间未知'}
+                {task.project ? ` · 项目 ${task.project}` : ''}
+                {task.due ? ` · 原截止 ${task.due}` : ''}
+                {` · ${task.priority === 'high' ? '高' : task.priority === 'low' ? '低' : '中'}优先级`}
+              </small>
+              <div className="assistant-memory-actions">
+                <button onClick={() => setSelectedTaskId(current => current === task.id ? '' : task.id)}>
+                  {selectedTaskId === task.id ? '收起原文与历史' : `查看原文与历史（${Number((task as any).evidenceTotal || 0)}）`}
+                </button>
+                <button className="primary" onClick={() => void restoreArchivedTask(task)}>恢复到待处理</button>
+              </div>
+              {selectedTaskId === task.id && <div className="assistant-task-history">
+                {taskWorkspace.status === 'loading' && <small>正在读取任务原文与审计历史…</small>}
+                {taskWorkspace.status === 'error' && <small className="assistant-error">{taskWorkspace.error || '读取失败'}</small>}
+                {taskWorkspace.status === 'ready' && taskWorkspace.task?.id === task.id && <>
+                  <EvidenceRows evidence={taskWorkspace.task.evidence} total={taskWorkspace.task.evidenceTotal} />
+                  {!!taskWorkspace.history?.length && <details open>
+                    <summary>修改历史（{taskWorkspace.historyTotal || taskWorkspace.history.length}）</summary>
+                    <div className="assistant-task-history">
+                      {taskWorkspace.history.map((item: any) => <small key={`archive-history-${item.id}`}>
+                        {new Date(item.created_at).toLocaleString('zh-CN')} · {item.field}：{taskHistoryValue(item.before_value)} → {taskHistoryValue(item.after_value)}
+                      </small>)}
+                    </div>
+                  </details>}
+                </>}
+              </div>}
+            </article>)}
+            {!taskArchive.items.length && <div className="assistant-empty">
+              {taskArchive.loading ? '正在读取任务档案…' : '当前范围没有已完成或已取消任务。'}
+            </div>}
+          </div>
+          {taskArchive.hasMore && <div className="assistant-timeline-more">
+            <button disabled={taskArchiveLoadingMore} onClick={() => void loadMoreTaskArchive()}>
+              {taskArchiveLoadingMore ? '正在加载…' : `加载更多（已显示 ${taskArchive.items.length}/${taskArchive.total}）`}
+            </button>
+          </div>}
+        </section>
 
         <section className="assistant-panel assistant-project-portfolio">
           <div className="assistant-section-heading">
