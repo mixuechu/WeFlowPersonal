@@ -2362,6 +2362,9 @@ function AiAssistantPage() {
                   {memoryDiagnostics.structuredEvidenceMigration?.version
                     ? ` · 证据去重 ${Number(memoryDiagnostics.structuredEvidenceMigration.duplicatesRemoved || 0).toLocaleString()} 条 / 恢复发送者 ${Number(memoryDiagnostics.structuredEvidenceMigration.sendersRecovered || 0).toLocaleString()} 条 / 约束${memoryDiagnostics.structuredEvidenceMigration.constraintsHealthy === false ? '异常' : '正常'}`
                     : ''}
+                  {memoryDiagnostics.structuredEvidenceReferences?.version
+                    ? ` · 引用${memoryDiagnostics.referentialIntegrityHealthy ? '完整' : '异常'} / 清理孤儿 ${Number(memoryDiagnostics.structuredEvidenceReferences.orphansRemovedTotal || 0).toLocaleString()} 条`
+                    : ''}
                 </small>
               </span>
             </div>
@@ -4257,6 +4260,20 @@ function AiAssistantPage() {
                 <span>启动自愈 <b>{Number(memoryDiagnostics.structuredEvidenceMigration.constraintDriftRepairs || 0).toLocaleString()}</b> 次</span>
                 <span>迁移时间 <b>{memoryDiagnostics.structuredEvidenceMigration.migratedAt
                   ? new Date(memoryDiagnostics.structuredEvidenceMigration.migratedAt).toLocaleString('zh-CN')
+                  : '未知'}</b></span>
+              </div>
+            </div>}
+            {memoryDiagnostics.structuredEvidenceReferences?.version && <div className={`assistant-recovery-audit ${memoryDiagnostics.referentialIntegrityHealthy ? 'healthy' : 'unhealthy'}`}>
+              <header><ShieldCheck size={15} /><span><b>结构化证据引用完整性</b>
+                <small>关系或事件删除时同步删除其原文证据；每次启动独立扫描历史孤儿引用，不依赖普通 SQLite 文件完整性检查。</small>
+              </span></header>
+              <div className="assistant-recovery-current">
+                <span>当前状态 <b>{memoryDiagnostics.referentialIntegrityHealthy ? '完整' : '需要检查'}</b></span>
+                <span>外键异常 <b>{Number(memoryDiagnostics.foreignKeyViolations || 0).toLocaleString()}</b></span>
+                <span>累计清理孤儿 <b>{Number(memoryDiagnostics.structuredEvidenceReferences.orphansRemovedTotal || 0).toLocaleString()}</b></span>
+                <span>删除保护修复 <b>{Number(memoryDiagnostics.structuredEvidenceReferences.triggerRepairs || 0).toLocaleString()}</b> 次</span>
+                <span>本次检查 <b>{memoryDiagnostics.structuredEvidenceReferences.checkedAt
+                  ? new Date(memoryDiagnostics.structuredEvidenceReferences.checkedAt).toLocaleString('zh-CN')
                   : '未知'}</b></span>
               </div>
             </div>}

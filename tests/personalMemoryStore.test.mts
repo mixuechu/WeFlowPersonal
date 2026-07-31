@@ -1403,6 +1403,112 @@ test('relation and event evidence keep senders without duplicating repeated extr
   assert.equal(eventPage.items[0].sender, '事件发送者新备注')
 }))
 
+test('structured evidence reference integrity removes legacy orphans and protects future deletes', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'weflow-evidence-reference-test-'))
+  const databasePath = join(directory, 'memory.sqlite')
+  const first = new PersonalMemoryStore()
+  const entities = [
+    { id: 'reference-person-a', type: 'person', canonicalName: '引用甲', trustStatus: 'confirmed' },
+    { id: 'reference-person-b', type: 'person', canonicalName: '引用乙', trustStatus: 'confirmed' }
+  ]
+  const relation = {
+    id: 'orphan-relation',
+    subjectId: 'reference-person-a',
+    predicate: '协作',
+    objectId: 'reference-person-b',
+    confidence: 0.9,
+    status: 'candidate',
+    evidence: [{
+      messageId: 'orphan-relation-message',
+      sessionId: 'reference-session',
+      timestamp: 1_700_001_000,
+      sender: '关系发送者',
+      excerpt: '关系孤儿测试'
+    }]
+  }
+  const event = {
+    id: 'orphan-event',
+    eventType: 'meeting',
+    title: '事件孤儿测试',
+    description: '',
+    confidence: 0.9,
+    status: 'candidate',
+    sourceNature: 'other_statement',
+    searchText: '事件孤儿测试',
+    participants: [{ entityId: 'reference-person-a', role: 'participant' }],
+    evidence: [{
+      messageId: 'orphan-event-message',
+      sessionId: 'reference-session',
+      timestamp: 1_700_001_001,
+      sender: '事件发送者',
+      excerpt: '事件孤儿测试'
+    }]
+  }
+  try {
+    first.initialize(databasePath)
+    first.syncGraph({ entities, relations: [relation], reviewQueue: [] })
+    first.upsertEvents([event])
+    const database = (first as any).db
+    database.exec(`
+      DROP TRIGGER trg_relations_delete_evidence;
+      DROP TRIGGER trg_events_delete_evidence;
+      DELETE FROM event_participants WHERE event_id='orphan-event';
+      DELETE FROM relations WHERE id='orphan-relation';
+      DELETE FROM events WHERE id='orphan-event';
+    `)
+    assert.equal(Number(database.prepare(`
+      SELECT COUNT(*) AS count FROM evidence
+      WHERE relation_id='orphan-relation' OR event_id='orphan-event'
+    `).get().count), 2)
+    first.close()
+
+    const reopened = new PersonalMemoryStore()
+    try {
+      reopened.initialize(databasePath)
+      const diagnostics = reopened.getDiagnostics()
+      assert.equal(diagnostics.healthy, true)
+      assert.equal(diagnostics.referentialIntegrityHealthy, true)
+      assert.equal(diagnostics.foreignKeyViolations, 0)
+      assert.deepEqual(diagnostics.structuredEvidenceReferences.orphansFoundThisStart, {
+        claims: 0,
+        relations: 1,
+        events: 1
+      })
+      assert.equal(diagnostics.structuredEvidenceReferences.orphansRemovedTotal, 2)
+      assert.equal(diagnostics.structuredEvidenceReferences.triggerRepairs, 2)
+      assert.equal(Number((reopened as any).db.prepare(`
+        SELECT COUNT(*) AS count FROM evidence
+        WHERE relation_id='orphan-relation' OR event_id='orphan-event'
+      `).get().count), 0)
+
+      const protectedRelation = { ...relation, id: 'protected-relation', evidence: [{
+        ...relation.evidence[0],
+        messageId: 'protected-relation-message'
+      }] }
+      const protectedEvent = { ...event, id: 'protected-event', evidence: [{
+        ...event.evidence[0],
+        messageId: 'protected-event-message'
+      }] }
+      reopened.syncGraph({ entities, relations: [protectedRelation], reviewQueue: [] })
+      reopened.upsertEvents([protectedEvent])
+      ;(reopened as any).db.exec(`
+        DELETE FROM event_participants WHERE event_id='protected-event';
+        DELETE FROM relations WHERE id='protected-relation';
+        DELETE FROM events WHERE id='protected-event';
+      `)
+      assert.equal(Number((reopened as any).db.prepare(`
+        SELECT COUNT(*) AS count FROM evidence
+        WHERE relation_id='protected-relation' OR event_id='protected-event'
+      `).get().count), 0)
+    } finally {
+      reopened.close()
+    }
+  } finally {
+    first.close()
+    rmSync(directory, { recursive: true, force: true })
+  }
+})
+
 test('task search keeps original message evidence', () => withStore(store => {
   store.syncTasks([{
     id: 'task-1',

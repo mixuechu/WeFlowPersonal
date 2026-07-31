@@ -610,6 +610,7 @@ export class PersonalMemoryStore {
     this.ensureColumn('merge_history', 'source_name', `TEXT NOT NULL DEFAULT ''`)
     this.ensureColumn('merge_history', 'target_name', `TEXT NOT NULL DEFAULT ''`)
     this.repairStructuredEvidenceIdentity()
+    this.repairStructuredEvidenceReferences()
     this.backfillMergeHistoryNames()
     this.db.exec(`CREATE INDEX IF NOT EXISTS idx_memory_corrections_item
       ON memory_corrections(item_kind,item_id,created_at DESC)`)
@@ -936,6 +937,94 @@ export class PersonalMemoryStore {
     transaction()
   }
 
+  private repairStructuredEvidenceReferences(): void {
+    if (!this.db) return
+    const auditRow = this.db.prepare(`
+      SELECT value FROM schema_meta WHERE key='structured_evidence_reference_integrity'
+    `).get() as any
+    let previousAudit: any = {}
+    try { previousAudit = JSON.parse(String(auditRow?.value || '{}')) } catch {}
+    const triggers = [
+      {
+        name: 'trg_relations_delete_evidence',
+        table: 'relations',
+        column: 'relation_id'
+      },
+      {
+        name: 'trg_events_delete_evidence',
+        table: 'events',
+        column: 'event_id'
+      }
+    ]
+    const triggersHealthyBefore = triggers.every(trigger => {
+      const sql = String((this.db!.prepare(`
+        SELECT sql FROM sqlite_master WHERE type='trigger' AND name=?
+      `).get(trigger.name) as any)?.sql || '').toLowerCase().replace(/\s+/g, ' ')
+      return sql.includes(`after delete on ${trigger.table}`)
+        && sql.includes(`delete from evidence where ${trigger.column}=old.id`)
+    })
+    const orphanCounts = this.db.prepare(`
+      SELECT
+        SUM(CASE WHEN claim_id IS NOT NULL AND NOT EXISTS(
+          SELECT 1 FROM claims WHERE claims.id=evidence.claim_id
+        ) THEN 1 ELSE 0 END) AS claims,
+        SUM(CASE WHEN relation_id IS NOT NULL AND NOT EXISTS(
+          SELECT 1 FROM relations WHERE relations.id=evidence.relation_id
+        ) THEN 1 ELSE 0 END) AS relations,
+        SUM(CASE WHEN event_id IS NOT NULL AND NOT EXISTS(
+          SELECT 1 FROM events WHERE events.id=evidence.event_id
+        ) THEN 1 ELSE 0 END) AS events
+      FROM evidence
+    `).get() as any
+    const found = {
+      claims: Number(orphanCounts?.claims || 0),
+      relations: Number(orphanCounts?.relations || 0),
+      events: Number(orphanCounts?.events || 0)
+    }
+    const totalFound = found.claims + found.relations + found.events
+    const checkedAt = new Date().toISOString()
+    this.db.transaction(() => {
+      this.db!.exec(`
+        DELETE FROM evidence
+        WHERE (claim_id IS NOT NULL AND NOT EXISTS(
+            SELECT 1 FROM claims WHERE claims.id=evidence.claim_id
+          ))
+          OR (relation_id IS NOT NULL AND NOT EXISTS(
+            SELECT 1 FROM relations WHERE relations.id=evidence.relation_id
+          ))
+          OR (event_id IS NOT NULL AND NOT EXISTS(
+            SELECT 1 FROM events WHERE events.id=evidence.event_id
+          ));
+      `)
+      if (!triggersHealthyBefore) {
+        for (const trigger of triggers) {
+          this.db!.exec(`
+            DROP TRIGGER IF EXISTS ${trigger.name};
+            CREATE TRIGGER ${trigger.name}
+            AFTER DELETE ON ${trigger.table}
+            BEGIN
+              DELETE FROM evidence WHERE ${trigger.column}=OLD.id;
+            END;
+          `)
+        }
+      }
+      const audit = {
+        version: 1,
+        checkedAt,
+        orphansFoundThisStart: found,
+        orphansRemovedTotal: Math.max(0, Number(previousAudit?.orphansRemovedTotal || 0)) + totalFound,
+        triggerRepairs: Math.max(0, Number(previousAudit?.triggerRepairs || 0))
+          + (triggersHealthyBefore ? 0 : 1),
+        triggersHealthy: true,
+        currentOrphans: 0
+      }
+      this.db!.prepare(`
+        INSERT INTO schema_meta(key,value,updated_at) VALUES('structured_evidence_reference_integrity',?,?)
+        ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_at=excluded.updated_at
+      `).run(JSON.stringify(audit), checkedAt)
+    })()
+  }
+
   private backfillMergeHistoryNames(): void {
     if (!this.db) return
     const rows = this.db.prepare(`
@@ -999,6 +1088,7 @@ export class PersonalMemoryStore {
     if (!this.db || !this.databasePath) return { healthy: false, integrity: 'not_initialized' }
     const integrityRows = this.db.prepare('PRAGMA integrity_check').all() as Array<{ integrity_check: string }>
     const integrity = integrityRows.map(row => row.integrity_check).join('; ')
+    const foreignKeyViolations = (this.db.prepare('PRAGMA foreign_key_check').all() as any[]).length
     const counts = this.db.prepare(`
       SELECT
         (SELECT COUNT(*) FROM entities WHERE deleted_at IS NULL) AS entities,
@@ -1048,9 +1138,48 @@ export class PersonalMemoryStore {
         }
       }
     })()
+    const structuredEvidenceReferences = (() => {
+      const row = this.db!.prepare(`
+        SELECT value,updated_at FROM schema_meta
+        WHERE key='structured_evidence_reference_integrity'
+      `).get() as any
+      try {
+        const audit = JSON.parse(String(row?.value || '{}'))
+        return {
+          version: Number(audit.version || 0),
+          checkedAt: String(audit.checkedAt || row?.updated_at || ''),
+          orphansFoundThisStart: {
+            claims: Number(audit.orphansFoundThisStart?.claims || 0),
+            relations: Number(audit.orphansFoundThisStart?.relations || 0),
+            events: Number(audit.orphansFoundThisStart?.events || 0)
+          },
+          orphansRemovedTotal: Number(audit.orphansRemovedTotal || 0),
+          triggerRepairs: Number(audit.triggerRepairs || 0),
+          triggersHealthy: audit.triggersHealthy === true,
+          currentOrphans: Number(audit.currentOrphans || 0)
+        }
+      } catch {
+        return {
+          version: 0,
+          checkedAt: String(row?.updated_at || ''),
+          orphansFoundThisStart: { claims: 0, relations: 0, events: 0 },
+          orphansRemovedTotal: 0,
+          triggerRepairs: 0,
+          triggersHealthy: false,
+          currentOrphans: 0
+        }
+      }
+    })()
+    const referentialIntegrityHealthy = foreignKeyViolations === 0
+      && structuredEvidenceReferences.triggersHealthy
+      && structuredEvidenceReferences.currentOrphans === 0
     return {
-      healthy: integrity === 'ok',
+      healthy: integrity === 'ok'
+        && structuredEvidenceMigration.constraintsHealthy
+        && referentialIntegrityHealthy,
       integrity,
+      foreignKeyViolations,
+      referentialIntegrityHealthy,
       encryption: {
         enabled: Boolean(this.encryptionKey),
         cipher: this.encryptionKey ? String(this.db.pragma('cipher', { simple: true }) || '') : 'none',
@@ -1061,6 +1190,7 @@ export class PersonalMemoryStore {
       databaseBytes: statSync(this.databasePath).size,
       counts,
       structuredEvidenceMigration,
+      structuredEvidenceReferences,
       backups
     }
   }
