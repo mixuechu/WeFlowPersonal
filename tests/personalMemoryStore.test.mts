@@ -1514,8 +1514,24 @@ test('structured search index reconciliation removes ghosts and rebuilds missing
   const databasePath = join(directory, 'memory.sqlite')
   const first = new PersonalMemoryStore()
   const entities = [
-    { id: 'search-person-a', type: 'person', canonicalName: '检索甲', trustStatus: 'confirmed' },
-    { id: 'search-person-b', type: 'person', canonicalName: '检索乙', trustStatus: 'confirmed' }
+    {
+      id: 'search-person-a',
+      type: 'person',
+      canonicalName: '检索甲',
+      trustStatus: 'confirmed',
+      aliases: ['检索阿甲'],
+      accountIds: ['wxid_search_a'],
+      externalIdentities: [{
+        platform: 'email',
+        accountId: 'search-a@example.com',
+        displayName: '检索甲邮箱',
+        confidence: 1
+      }],
+      summary: '负责可信实体检索',
+      summaryStatus: 'confirmed'
+    },
+    { id: 'search-person-b', type: 'person', canonicalName: '检索乙', trustStatus: 'confirmed' },
+    { id: 'search-person-candidate', type: 'person', canonicalName: '候选幽灵实体', trustStatus: 'candidate' }
   ]
   try {
     first.initialize(databasePath)
@@ -1626,6 +1642,7 @@ test('structured search index reconciliation removes ghosts and rebuilds missing
       DROP TRIGGER trg_relations_delete_search;
       DROP TRIGGER trg_events_delete_search;
       DROP TRIGGER trg_memory_resources_delete_search;
+      DROP TRIGGER trg_entities_delete_search;
       DROP TRIGGER trg_search_documents_delete_payload;
       DROP TRIGGER trg_search_documents_ann_delete;
       CREATE TRIGGER trg_search_documents_ann_delete
@@ -1636,7 +1653,8 @@ test('structured search index reconciliation removes ghosts and rebuilds missing
       DELETE FROM search_documents
         WHERE id IN(
           'claim:search-missing-claim',
-          'resource:search-missing-resource'
+          'resource:search-missing-resource',
+          'entity:search-person-b'
         );
       UPDATE search_documents
         SET document_type='resource',source_id='wrong-event-source'
@@ -1676,6 +1694,21 @@ test('structured search index reconciliation removes ghosts and rebuilds missing
         WHERE id='resource:search-stale-resource';
       UPDATE search_fts SET title='漂移资源标题',search_text='漂移资源正文'
         WHERE document_id='resource:search-stale-resource';
+      UPDATE search_documents
+        SET title='漂移实体标题',search_text='漂移实体正文',
+          metadata_json='{"entityType":"organization","accountIds":[]}'
+        WHERE id='entity:search-person-a';
+      UPDATE search_fts SET title='漂移实体标题',search_text='漂移实体正文'
+        WHERE document_id='entity:search-person-a';
+      INSERT INTO search_documents(
+        id,document_type,source_id,title,search_text,metadata_json,content_hash,updated_at
+      ) VALUES(
+        'entity:search-person-candidate','entity','search-person-candidate',
+        '候选幽灵实体','候选幽灵实体','{"entityType":"person"}','candidate-hash',
+        '2026-07-31T00:00:00.000Z'
+      );
+      INSERT INTO search_fts(document_id,title,search_text)
+        VALUES('entity:search-person-candidate','候选幽灵实体','候选幽灵实体');
     `)
     first.close()
 
@@ -1685,26 +1718,29 @@ test('structured search index reconciliation removes ghosts and rebuilds missing
       const diagnostics = reopened.getDiagnostics()
       assert.equal(diagnostics.healthy, true)
       assert.equal(diagnostics.structuredSearchIndexHealthy, true)
-      assert.equal(diagnostics.structuredSearchIndex.ghostDocumentsRemovedThisStart, 2)
+      assert.equal(diagnostics.structuredSearchIndex.ghostDocumentsRemovedThisStart, 3)
       assert.deepEqual(diagnostics.structuredSearchIndex.missingDocumentsRebuiltThisStart, {
         claims: 1,
         relations: 0,
         events: 1,
-        resources: 1
+        resources: 1,
+        entities: 1
       })
-      assert.equal(diagnostics.structuredSearchIndex.orphanPayloadRowsRemovedThisStart, 8)
+      assert.equal(diagnostics.structuredSearchIndex.orphanPayloadRowsRemovedThisStart, 9)
       assert.equal(diagnostics.structuredSearchIndex.orphanAnnRowsRemovedThisStart, 1)
       assert.equal(diagnostics.structuredSearchIndex.orphanAnnRowsRemovedTotal, 1)
-      assert.equal(diagnostics.structuredSearchIndex.missingDocumentsRebuiltTotal, 3)
-      assert.equal(diagnostics.structuredSearchIndex.ghostRowsRemovedTotal, 10)
-      assert.equal(diagnostics.structuredSearchIndex.ftsPayloadsRebuiltThisStart, 2)
-      assert.equal(diagnostics.structuredSearchIndex.ftsPayloadsRebuiltTotal, 2)
+      assert.equal(diagnostics.structuredSearchIndex.missingDocumentsRebuiltTotal, 4)
+      assert.equal(diagnostics.structuredSearchIndex.ghostRowsRemovedTotal, 12)
+      assert.equal(diagnostics.structuredSearchIndex.ftsPayloadsRebuiltThisStart, 1)
+      assert.equal(diagnostics.structuredSearchIndex.ftsPayloadsRebuiltTotal, 1)
       assert.equal(diagnostics.structuredSearchIndex.metadataDocumentsRepairedThisStart, 1)
       assert.equal(diagnostics.structuredSearchIndex.metadataDocumentsRepairedTotal, 1)
       assert.equal(diagnostics.structuredSearchIndex.structuredDocumentsRepairedThisStart, 1)
       assert.equal(diagnostics.structuredSearchIndex.structuredDocumentsRepairedTotal, 1)
       assert.equal(diagnostics.structuredSearchIndex.resourceDocumentsRepairedThisStart, 1)
       assert.equal(diagnostics.structuredSearchIndex.resourceDocumentsRepairedTotal, 1)
+      assert.equal(diagnostics.structuredSearchIndex.entityDocumentsRepairedThisStart, 1)
+      assert.equal(diagnostics.structuredSearchIndex.entityDocumentsRepairedTotal, 1)
       assert.equal(diagnostics.structuredSearchIndex.triggerRepairs, 2)
       assert.equal(reopened.searchText('索引重建关键词').some((row: any) =>
         row.id === 'claim:search-missing-claim'), true)
@@ -1721,6 +1757,16 @@ test('structured search index reconciliation removes ghosts and rebuilds missing
         row.id === 'entity:search-person-a'), true)
       assert.equal(reopened.searchText('检索乙').some((row: any) =>
         row.id === 'entity:search-person-b'), true)
+      assert.equal(reopened.searchText('检索阿甲').some((row: any) =>
+        row.id === 'entity:search-person-a'), true)
+      assert.equal(reopened.searchText('wxid_search_a').some((row: any) =>
+        row.id === 'entity:search-person-a'), true)
+      assert.equal(reopened.searchText('search-a@example.com').some((row: any) =>
+        row.id === 'entity:search-person-a'), true)
+      assert.equal(reopened.searchText('负责可信实体检索').some((row: any) =>
+        row.id === 'entity:search-person-a'), true)
+      assert.equal(reopened.searchText('漂移实体正文').length, 0)
+      assert.equal(reopened.searchText('候选幽灵实体').length, 0)
       assert.equal(reopened.searchText('过期检索载荷').length, 0)
       assert.equal(reopened.searchText('权威正文恢复').some((row: any) =>
         row.id === 'claim:search-stale-content-claim'), true)
@@ -1761,12 +1807,13 @@ test('structured search index reconciliation removes ghosts and rebuilds missing
         DELETE FROM event_participants WHERE event_id='search-missing-event';
         DELETE FROM events WHERE id='search-missing-event';
         DELETE FROM memory_resources WHERE id='search-missing-resource';
+        DELETE FROM entities WHERE id='search-person-b';
       `)
       assert.equal(Number((reopened as any).db.prepare(`
         SELECT COUNT(*) AS count FROM search_documents
         WHERE id IN(
           'claim:search-missing-claim','event:search-missing-event',
-          'resource:search-missing-resource'
+          'resource:search-missing-resource','entity:search-person-b'
         )
       `).get().count), 0)
       assert.equal(Number((reopened as any).db.prepare(`

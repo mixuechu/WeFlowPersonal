@@ -2366,7 +2366,7 @@ function AiAssistantPage() {
                     ? ` · 引用${memoryDiagnostics.referentialIntegrityHealthy ? '完整' : '异常'} / 清理孤儿 ${Number(memoryDiagnostics.structuredEvidenceReferences.orphansRemovedTotal || 0).toLocaleString()} 条`
                     : ''}
                   {memoryDiagnostics.structuredSearchIndex?.version
-                    ? ` · 检索索引${memoryDiagnostics.structuredSearchIndexHealthy ? '一致' : '异常'} / 缺失 ${Number(memoryDiagnostics.structuredSearchIndex.missingDocumentsRebuiltTotal || 0).toLocaleString()} / 正文 ${Number(memoryDiagnostics.structuredSearchIndex.structuredDocumentsRepairedTotal || 0).toLocaleString()} / FTS ${Number(memoryDiagnostics.structuredSearchIndex.ftsPayloadsRebuiltTotal || 0).toLocaleString()} / ANN 孤儿 ${Number(memoryDiagnostics.structuredSearchIndex.orphanAnnRowsRemovedTotal || 0).toLocaleString()} / 元数据 ${Number(memoryDiagnostics.structuredSearchIndex.metadataDocumentsRepairedTotal || 0).toLocaleString()} / 资源 ${Number(memoryDiagnostics.structuredSearchIndex.resourceDocumentsRepairedTotal || 0).toLocaleString()}`
+                    ? ` · 检索索引${memoryDiagnostics.structuredSearchIndexHealthy ? '一致' : '异常'} / 缺失 ${Number(memoryDiagnostics.structuredSearchIndex.missingDocumentsRebuiltTotal || 0).toLocaleString()} / 正文 ${Number(memoryDiagnostics.structuredSearchIndex.structuredDocumentsRepairedTotal || 0).toLocaleString()} / FTS ${Number(memoryDiagnostics.structuredSearchIndex.ftsPayloadsRebuiltTotal || 0).toLocaleString()} / ANN 孤儿 ${Number(memoryDiagnostics.structuredSearchIndex.orphanAnnRowsRemovedTotal || 0).toLocaleString()} / 元数据 ${Number(memoryDiagnostics.structuredSearchIndex.metadataDocumentsRepairedTotal || 0).toLocaleString()} / 实体 ${Number(memoryDiagnostics.structuredSearchIndex.entityDocumentsRepairedTotal || 0).toLocaleString()} / 资源 ${Number(memoryDiagnostics.structuredSearchIndex.resourceDocumentsRepairedTotal || 0).toLocaleString()}`
                     : ''}
                   {memoryDiagnostics.taskSearchIndex?.version
                     ? ` · 待办检索${memoryDiagnostics.taskSearchIndexHealthy ? '一致' : '异常'} / 自愈 ${Number(memoryDiagnostics.taskSearchIndex.repairedDerivedDocumentsTotal || 0).toLocaleString()}`
@@ -4296,6 +4296,7 @@ function AiAssistantPage() {
                 <span>累计清理 ANN 孤儿 <b>{Number(memoryDiagnostics.structuredSearchIndex.orphanAnnRowsRemovedTotal || 0).toLocaleString()}</b></span>
                 <span>累计修复可信元数据 <b>{Number(memoryDiagnostics.structuredSearchIndex.metadataDocumentsRepairedTotal || 0).toLocaleString()}</b></span>
                 <span>累计修复资源文档 <b>{Number(memoryDiagnostics.structuredSearchIndex.resourceDocumentsRepairedTotal || 0).toLocaleString()}</b></span>
+                <span>累计修复实体文档 <b>{Number(memoryDiagnostics.structuredSearchIndex.entityDocumentsRepairedTotal || 0).toLocaleString()}</b></span>
                 <span>删除保护修复 <b>{Number(memoryDiagnostics.structuredSearchIndex.triggerRepairs || 0).toLocaleString()}</b> 次</span>
                 <span>本次检查 <b>{memoryDiagnostics.structuredSearchIndex.checkedAt
                   ? new Date(memoryDiagnostics.structuredSearchIndex.checkedAt).toLocaleString('zh-CN')

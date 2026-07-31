@@ -79,7 +79,9 @@ export class PersonalMemoryStore {
         confidence REAL NOT NULL DEFAULT 0,
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL,
-        deleted_at TEXT
+        deleted_at TEXT,
+        trust_status TEXT NOT NULL DEFAULT 'legacy_unknown',
+        summary_status TEXT NOT NULL DEFAULT 'empty'
       ) STRICT;
       CREATE INDEX IF NOT EXISTS idx_entities_type_name ON entities(type, canonical_name);
 
@@ -579,6 +581,8 @@ export class PersonalMemoryStore {
     `)
     this.ensureColumn('entities', 'identity_version', 'INTEGER NOT NULL DEFAULT 1')
     this.ensureColumn('entities', 'last_disambiguated_at', 'TEXT')
+    this.ensureColumn('entities', 'trust_status', `TEXT NOT NULL DEFAULT 'legacy_unknown'`)
+    this.ensureColumn('entities', 'summary_status', `TEXT NOT NULL DEFAULT 'empty'`)
     this.ensureColumn('claims', 'source_nature', `TEXT NOT NULL DEFAULT 'inference'`)
     this.ensureColumn('claims', 'conflict_group', 'TEXT')
     this.ensureColumn('claims', 'polarity', `TEXT NOT NULL DEFAULT 'positive'`)
@@ -609,6 +613,22 @@ export class PersonalMemoryStore {
     this.ensureColumn('task_directory', 'evidence_fingerprint', `TEXT NOT NULL DEFAULT ''`)
     this.ensureColumn('merge_history', 'source_name', `TEXT NOT NULL DEFAULT ''`)
     this.ensureColumn('merge_history', 'target_name', `TEXT NOT NULL DEFAULT ''`)
+    this.db.exec(`
+      UPDATE entities
+      SET trust_status=CASE
+        WHEN EXISTS(
+          SELECT 1 FROM search_documents d
+          WHERE d.id='entity:' || entities.id
+            AND d.document_type='entity'
+            AND d.source_id=entities.id
+        ) THEN 'confirmed'
+        ELSE 'candidate'
+      END
+      WHERE trust_status='legacy_unknown';
+      UPDATE entities
+      SET summary_status=CASE WHEN summary!='' THEN 'confirmed' ELSE 'empty' END
+      WHERE summary_status='empty' AND summary!='';
+    `)
     this.repairStructuredEvidenceIdentity()
     this.repairStructuredEvidenceReferences()
     this.repairStructuredSearchIndex()
@@ -1059,6 +1079,12 @@ export class PersonalMemoryStore {
           BEGIN DELETE FROM search_documents WHERE id='resource:' || OLD.id; END`
       },
       {
+        name: 'trg_entities_delete_search',
+        expected: ['after delete on entities', "delete from search_documents where id='entity:' || old.id"],
+        sql: `CREATE TRIGGER trg_entities_delete_search AFTER DELETE ON entities
+          BEGIN DELETE FROM search_documents WHERE id='entity:' || OLD.id; END`
+      },
+      {
         name: 'trg_search_documents_delete_payload',
         expected: [
           'after delete on search_documents',
@@ -1106,6 +1132,12 @@ export class PersonalMemoryStore {
         OR ((d.document_type='resource' OR d.id LIKE 'resource:%') AND NOT EXISTS(
           SELECT 1 FROM memory_resources item
           WHERE d.id='resource:' || item.id AND d.source_id=item.id AND d.document_type='resource'
+        ))
+        OR ((d.document_type='entity' OR d.id LIKE 'entity:%') AND NOT EXISTS(
+          SELECT 1 FROM entities item
+          WHERE d.id='entity:' || item.id AND d.source_id=item.id
+            AND d.document_type='entity' AND item.deleted_at IS NULL
+            AND item.trust_status='confirmed'
         ))
     `).all() as Array<{ id: string }>
     const ghostDocumentIds = new Set(ghostDocuments.map(item => item.id))
@@ -1174,6 +1206,14 @@ export class PersonalMemoryStore {
       )
         AND NOT EXISTS(SELECT 1 FROM resource_suppressions s WHERE s.resource_id=r.id)
     `).all() as any[]
+    const missingEntities = this.db.prepare(`
+      SELECT * FROM entities e
+      WHERE e.deleted_at IS NULL AND e.trust_status='confirmed'
+        AND NOT EXISTS(
+          SELECT 1 FROM search_documents d
+          WHERE d.id='entity:' || e.id AND d.document_type='entity' AND d.source_id=e.id
+        )
+    `).all() as any[]
     const checkedAt = new Date().toISOString()
     const metadataRepairs: Array<{ id: string; metadataJson: string; updatedAt: string }> = []
     const structuredDocumentRepairs: Array<{
@@ -1186,6 +1226,14 @@ export class PersonalMemoryStore {
       updatedAt: string
     }> = []
     const resourceRepairs: Array<{
+      id: string
+      sourceId: string
+      title: string
+      searchText: string
+      metadata: any
+      updatedAt: string
+    }> = []
+    const entityRepairs: Array<{
       id: string
       sourceId: string
       title: string
@@ -1326,6 +1374,66 @@ export class PersonalMemoryStore {
         })
       }
     }
+    const buildEntityPayload = (row: any) => {
+      const aliases = (this.db!.prepare(`
+        SELECT value FROM aliases WHERE entity_id=? ORDER BY value
+      `).all(row.id) as Array<{ value: string }>).map(item => item.value)
+      const identities = this.db!.prepare(`
+        SELECT platform,account_id,display_name,confidence
+        FROM identities WHERE entity_id=? ORDER BY platform,account_id
+      `).all(row.id) as any[]
+      const accountIds = identities
+        .filter(identity => identity.platform === 'wechat')
+        .map(identity => String(identity.account_id))
+      const externalIdentities = identities
+        .filter(identity => identity.platform !== 'wechat')
+        .map(identity => ({
+          platform: String(identity.platform),
+          accountId: String(identity.account_id),
+          displayName: String(identity.display_name || row.canonical_name),
+          confidence: Number(identity.confidence || 0)
+        }))
+      const trustedSummary = row.summary_status === 'confirmed' ? String(row.summary || '') : ''
+      return {
+        title: String(row.canonical_name),
+        searchText: [
+          row.canonical_name, ...aliases, ...accountIds,
+          ...externalIdentities.flatMap(identity => [identity.accountId, identity.displayName]),
+          trustedSummary
+        ].join('；'),
+        metadata: {
+          entityType: row.type,
+          accountIds,
+          externalIdentities,
+          summaryStatus: row.summary_status
+        }
+      }
+    }
+    for (const row of this.db.prepare(`
+      SELECT d.id AS document_id,d.title AS document_title,
+        d.search_text AS document_search_text,d.metadata_json AS document_metadata_json,
+        d.content_hash AS document_content_hash,e.*
+      FROM search_documents d
+      JOIN entities e ON e.id=d.source_id
+      WHERE d.document_type='entity' AND e.deleted_at IS NULL
+        AND e.trust_status='confirmed' AND d.id='entity:' || e.id
+    `).all() as any[]) {
+      const expected = buildEntityPayload(row)
+      let currentMetadata: any = null
+      try { currentMetadata = JSON.parse(String(row.document_metadata_json || '')) } catch {}
+      const expectedHash = createHash('sha256').update(expected.searchText).digest('hex')
+      if (row.document_title !== expected.title
+          || row.document_search_text !== expected.searchText
+          || row.document_content_hash !== expectedHash
+          || JSON.stringify(currentMetadata) !== JSON.stringify(expected.metadata)) {
+        entityRepairs.push({
+          id: String(row.document_id),
+          sourceId: String(row.id),
+          ...expected,
+          updatedAt: String(row.updated_at || checkedAt)
+        })
+      }
+    }
     this.db.transaction(() => {
       if (!triggersHealthyBefore) {
         for (const trigger of triggerDefinitions) {
@@ -1369,6 +1477,12 @@ export class PersonalMemoryStore {
       for (const repair of resourceRepairs) {
         this.upsertSearchDocument(
           repair.id, 'resource', repair.sourceId, repair.title,
+          repair.searchText, repair.metadata, repair.updatedAt
+        )
+      }
+      for (const repair of entityRepairs) {
+        this.upsertSearchDocument(
+          repair.id, 'entity', repair.sourceId, repair.title,
           repair.searchText, repair.metadata, repair.updatedAt
         )
       }
@@ -1434,19 +1548,27 @@ export class PersonalMemoryStore {
           resource.updated_at || checkedAt
         )
       }
+      for (const entity of missingEntities) {
+        const payload = buildEntityPayload(entity)
+        this.upsertSearchDocument(
+          `entity:${entity.id}`, 'entity', entity.id, payload.title,
+          payload.searchText, payload.metadata, entity.updated_at || checkedAt
+        )
+      }
       const rebuilt = missingClaims.length + missingRelations.length + missingEvents.length
-        + missingResources.length
+        + missingResources.length + missingEntities.length
       const payloadRowsRemoved = orphanFts + orphanEvidence + orphanAnn + ghostDocumentPayloadRows
       const removed = ghostDocuments.length + payloadRowsRemoved
       const audit = {
-        version: 6,
+        version: 7,
         checkedAt,
         ghostDocumentsRemovedThisStart: ghostDocuments.length,
         missingDocumentsRebuiltThisStart: {
           claims: missingClaims.length,
           relations: missingRelations.length,
           events: missingEvents.length,
-          resources: missingResources.length
+          resources: missingResources.length,
+          entities: missingEntities.length
         },
         orphanPayloadRowsRemovedThisStart: payloadRowsRemoved,
         orphanAnnRowsRemovedThisStart: orphanAnn,
@@ -1454,6 +1576,7 @@ export class PersonalMemoryStore {
         metadataDocumentsRepairedThisStart: metadataRepairs.length,
         structuredDocumentsRepairedThisStart: structuredDocumentRepairs.length,
         resourceDocumentsRepairedThisStart: resourceRepairs.length,
+        entityDocumentsRepairedThisStart: entityRepairs.length,
         ghostRowsRemovedTotal: Math.max(0, Number(previousAudit?.ghostRowsRemovedTotal || 0)) + removed,
         orphanAnnRowsRemovedTotal: Math.max(
           0,
@@ -1479,6 +1602,10 @@ export class PersonalMemoryStore {
           0,
           Number(previousAudit?.resourceDocumentsRepairedTotal || 0)
         ) + resourceRepairs.length,
+        entityDocumentsRepairedTotal: Math.max(
+          0,
+          Number(previousAudit?.entityDocumentsRepairedTotal || 0)
+        ) + entityRepairs.length,
         triggerRepairs: Math.max(0, Number(previousAudit?.triggerRepairs || 0))
           + (triggersHealthyBefore ? 0 : 1),
         triggersHealthy: true,
@@ -1658,7 +1785,8 @@ export class PersonalMemoryStore {
             claims: Number(audit.missingDocumentsRebuiltThisStart?.claims || 0),
             relations: Number(audit.missingDocumentsRebuiltThisStart?.relations || 0),
             events: Number(audit.missingDocumentsRebuiltThisStart?.events || 0),
-            resources: Number(audit.missingDocumentsRebuiltThisStart?.resources || 0)
+            resources: Number(audit.missingDocumentsRebuiltThisStart?.resources || 0),
+            entities: Number(audit.missingDocumentsRebuiltThisStart?.entities || 0)
           },
           orphanPayloadRowsRemovedThisStart: Number(audit.orphanPayloadRowsRemovedThisStart || 0),
           orphanAnnRowsRemovedThisStart: Number(audit.orphanAnnRowsRemovedThisStart || 0),
@@ -1666,6 +1794,7 @@ export class PersonalMemoryStore {
           metadataDocumentsRepairedThisStart: Number(audit.metadataDocumentsRepairedThisStart || 0),
           structuredDocumentsRepairedThisStart: Number(audit.structuredDocumentsRepairedThisStart || 0),
           resourceDocumentsRepairedThisStart: Number(audit.resourceDocumentsRepairedThisStart || 0),
+          entityDocumentsRepairedThisStart: Number(audit.entityDocumentsRepairedThisStart || 0),
           ghostRowsRemovedTotal: Number(audit.ghostRowsRemovedTotal || 0),
           orphanAnnRowsRemovedTotal: Number(audit.orphanAnnRowsRemovedTotal || 0),
           missingDocumentsRebuiltTotal: Number(audit.missingDocumentsRebuiltTotal || 0),
@@ -1673,6 +1802,7 @@ export class PersonalMemoryStore {
           metadataDocumentsRepairedTotal: Number(audit.metadataDocumentsRepairedTotal || 0),
           structuredDocumentsRepairedTotal: Number(audit.structuredDocumentsRepairedTotal || 0),
           resourceDocumentsRepairedTotal: Number(audit.resourceDocumentsRepairedTotal || 0),
+          entityDocumentsRepairedTotal: Number(audit.entityDocumentsRepairedTotal || 0),
           triggerRepairs: Number(audit.triggerRepairs || 0),
           triggersHealthy: audit.triggersHealthy === true,
           currentGhostDocuments: Number(audit.currentGhostDocuments || 0),
@@ -1686,13 +1816,16 @@ export class PersonalMemoryStore {
           version: 0,
           checkedAt: String(row?.updated_at || ''),
           ghostDocumentsRemovedThisStart: 0,
-          missingDocumentsRebuiltThisStart: { claims: 0, relations: 0, events: 0, resources: 0 },
+          missingDocumentsRebuiltThisStart: {
+            claims: 0, relations: 0, events: 0, resources: 0, entities: 0
+          },
           orphanPayloadRowsRemovedThisStart: 0,
           orphanAnnRowsRemovedThisStart: 0,
           ftsPayloadsRebuiltThisStart: 0,
           metadataDocumentsRepairedThisStart: 0,
           structuredDocumentsRepairedThisStart: 0,
           resourceDocumentsRepairedThisStart: 0,
+          entityDocumentsRepairedThisStart: 0,
           ghostRowsRemovedTotal: 0,
           orphanAnnRowsRemovedTotal: 0,
           missingDocumentsRebuiltTotal: 0,
@@ -1700,6 +1833,7 @@ export class PersonalMemoryStore {
           metadataDocumentsRepairedTotal: 0,
           structuredDocumentsRepairedTotal: 0,
           resourceDocumentsRepairedTotal: 0,
+          entityDocumentsRepairedTotal: 0,
           triggerRepairs: 0,
           triggersHealthy: false,
           currentGhostDocuments: 0,
@@ -2108,11 +2242,15 @@ export class PersonalMemoryStore {
         this.db.prepare('DELETE FROM search_documents WHERE id=?').run(`relation:${id}`)
       }
       const upsertEntity = this.db.prepare(`
-        INSERT INTO entities(id,type,canonical_name,summary,confidence,created_at,updated_at,identity_version,last_disambiguated_at)
-        VALUES(?,?,?,?,?,?,?,?,?)
+        INSERT INTO entities(
+          id,type,canonical_name,summary,confidence,created_at,updated_at,
+          identity_version,last_disambiguated_at,trust_status,summary_status
+        )
+        VALUES(?,?,?,?,?,?,?,?,?,?,?)
         ON CONFLICT(id) DO UPDATE SET type=excluded.type, canonical_name=excluded.canonical_name,
           summary=excluded.summary, confidence=excluded.confidence, updated_at=excluded.updated_at,
-          identity_version=excluded.identity_version,last_disambiguated_at=excluded.last_disambiguated_at,deleted_at=NULL
+          identity_version=excluded.identity_version,last_disambiguated_at=excluded.last_disambiguated_at,
+          trust_status=excluded.trust_status,summary_status=excluded.summary_status,deleted_at=NULL
       `)
       const insertAlias = this.db.prepare(`INSERT OR IGNORE INTO aliases(entity_id,value,normalized_value,alias_type,confidence) VALUES(?,?,?,?,?)`)
       const deleteAliases = this.db.prepare('DELETE FROM aliases WHERE entity_id=?')
@@ -2121,7 +2259,13 @@ export class PersonalMemoryStore {
       const deleteIdentities = this.db.prepare('DELETE FROM identities WHERE entity_id=?')
       for (const entity of graph.entities) {
         const trustedSummary = entity.summaryStatus === 'confirmed' ? (entity.summary || '') : ''
-        upsertEntity.run(entity.id, entity.type, entity.canonicalName, trustedSummary, Number(entity.confidence || 0), entity.createdAt || now, entity.updatedAt || now, Number(entity.identityVersion || 1), entity.lastDisambiguatedAt || null)
+        upsertEntity.run(
+          entity.id, entity.type, entity.canonicalName, trustedSummary,
+          Number(entity.confidence || 0), entity.createdAt || now, entity.updatedAt || now,
+          Number(entity.identityVersion || 1), entity.lastDisambiguatedAt || null,
+          entity.trustStatus || 'candidate',
+          entity.summaryStatus || (entity.summary ? 'legacy_unverified' : 'empty')
+        )
         deleteAliases.run(entity.id)
         deleteIdentities.run(entity.id)
         for (const alias of entity.aliases || []) insertAlias.run(entity.id, alias, String(alias).trim().toLowerCase(), 'name', 1)
@@ -2138,21 +2282,37 @@ export class PersonalMemoryStore {
             Math.max(0, Math.min(1, Number(identity.confidence ?? 1)))
           )
         }
-        if (entity.trustStatus === 'confirmed') this.upsertSearchDocument(`entity:${entity.id}`, 'entity', entity.id, entity.canonicalName,
+        if (entity.trustStatus === 'confirmed') {
+          const accountIds = [...new Set((entity.accountIds || []).map(String))].sort()
+          const externalIdentities = (entity.externalIdentities || [])
+            .map((identity: any) => ({
+              platform: String(identity.platform || '').trim().toLowerCase(),
+              accountId: String(identity.accountId || '').trim(),
+              displayName: String(identity.displayName || entity.canonicalName),
+              confidence: Math.max(0, Math.min(1, Number(identity.confidence ?? 1)))
+            }))
+            .filter((identity: any) => identity.platform && identity.accountId
+              && identity.platform !== 'wechat')
+            .sort((left: any, right: any) => {
+              const leftKey = `${left.platform}\0${left.accountId}`
+              const rightKey = `${right.platform}\0${right.accountId}`
+              return leftKey < rightKey ? -1 : leftKey > rightKey ? 1 : 0
+            })
+          this.upsertSearchDocument(`entity:${entity.id}`, 'entity', entity.id, entity.canonicalName,
           [
             entity.canonicalName,
-            ...(entity.aliases || []),
-            ...(entity.accountIds || []),
-            ...(entity.externalIdentities || []).flatMap((identity: any) => [identity.accountId, identity.displayName]),
+            ...[...new Set((entity.aliases || []).map(String))].sort(),
+            ...accountIds,
+            ...externalIdentities.flatMap((identity: any) => [identity.accountId, identity.displayName]),
             trustedSummary
           ].join('；'),
           {
             entityType: entity.type,
-            accountIds: entity.accountIds || [],
-            externalIdentities: entity.externalIdentities || [],
+            accountIds,
+            externalIdentities,
             summaryStatus: entity.summaryStatus || (entity.summary ? 'legacy_unverified' : 'empty')
           }, now)
-        else {
+        } else {
           this.db.prepare('DELETE FROM search_fts WHERE document_id=?').run(`entity:${entity.id}`)
           this.db.prepare('DELETE FROM search_documents WHERE id=?').run(`entity:${entity.id}`)
         }
