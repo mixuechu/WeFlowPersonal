@@ -2366,7 +2366,10 @@ function AiAssistantPage() {
                     ? ` · 引用${memoryDiagnostics.referentialIntegrityHealthy ? '完整' : '异常'} / 清理孤儿 ${Number(memoryDiagnostics.structuredEvidenceReferences.orphansRemovedTotal || 0).toLocaleString()} 条`
                     : ''}
                   {memoryDiagnostics.structuredSearchIndex?.version
-                    ? ` · 检索索引${memoryDiagnostics.structuredSearchIndexHealthy ? '一致' : '异常'} / 文档 ${Number(memoryDiagnostics.structuredSearchIndex.missingDocumentsRebuiltTotal || 0).toLocaleString()} / FTS ${Number(memoryDiagnostics.structuredSearchIndex.ftsPayloadsRebuiltTotal || 0).toLocaleString()} / 可信元数据 ${Number(memoryDiagnostics.structuredSearchIndex.metadataDocumentsRepairedTotal || 0).toLocaleString()}`
+                    ? ` · 检索索引${memoryDiagnostics.structuredSearchIndexHealthy ? '一致' : '异常'} / 文档 ${Number(memoryDiagnostics.structuredSearchIndex.missingDocumentsRebuiltTotal || 0).toLocaleString()} / FTS ${Number(memoryDiagnostics.structuredSearchIndex.ftsPayloadsRebuiltTotal || 0).toLocaleString()} / 可信元数据 ${Number(memoryDiagnostics.structuredSearchIndex.metadataDocumentsRepairedTotal || 0).toLocaleString()} / 资源 ${Number(memoryDiagnostics.structuredSearchIndex.resourceDocumentsRepairedTotal || 0).toLocaleString()}`
+                    : ''}
+                  {memoryDiagnostics.taskSearchIndex?.version
+                    ? ` · 待办检索${memoryDiagnostics.taskSearchIndexHealthy ? '一致' : '异常'} / 自愈 ${Number(memoryDiagnostics.taskSearchIndex.repairedDerivedDocumentsTotal || 0).toLocaleString()}`
                     : ''}
                 </small>
               </span>
@@ -4281,8 +4284,8 @@ function AiAssistantPage() {
               </div>
             </div>}
             {memoryDiagnostics.structuredSearchIndex?.version && <div className={`assistant-recovery-audit ${memoryDiagnostics.structuredSearchIndexHealthy ? 'healthy' : 'unhealthy'}`}>
-              <header><Search size={15} /><span><b>结构化记忆与检索索引对账</b>
-                <small>事实、关系和事件与全文/向量文档双向核对：删除幽灵结果，重建存在但搜不到的记忆；原文仍从保留证据角色的权威表读取。</small>
+              <header><Search size={15} /><span><b>记忆本体与检索索引对账</b>
+                <small>事实、关系、事件和资源与全文/向量文档双向核对：删除幽灵结果，重建存在但搜不到的记忆；原文仍从保留证据角色的权威表读取。</small>
               </span></header>
               <div className="assistant-recovery-current">
                 <span>当前状态 <b>{memoryDiagnostics.structuredSearchIndexHealthy ? '一致' : '需要检查'}</b></span>
@@ -4290,9 +4293,25 @@ function AiAssistantPage() {
                 <span>累计重建缺失 <b>{Number(memoryDiagnostics.structuredSearchIndex.missingDocumentsRebuiltTotal || 0).toLocaleString()}</b></span>
                 <span>累计修复 FTS <b>{Number(memoryDiagnostics.structuredSearchIndex.ftsPayloadsRebuiltTotal || 0).toLocaleString()}</b></span>
                 <span>累计修复可信元数据 <b>{Number(memoryDiagnostics.structuredSearchIndex.metadataDocumentsRepairedTotal || 0).toLocaleString()}</b></span>
+                <span>累计修复资源文档 <b>{Number(memoryDiagnostics.structuredSearchIndex.resourceDocumentsRepairedTotal || 0).toLocaleString()}</b></span>
                 <span>删除保护修复 <b>{Number(memoryDiagnostics.structuredSearchIndex.triggerRepairs || 0).toLocaleString()}</b> 次</span>
                 <span>本次检查 <b>{memoryDiagnostics.structuredSearchIndex.checkedAt
                   ? new Date(memoryDiagnostics.structuredSearchIndex.checkedAt).toLocaleString('zh-CN')
+                  : '未知'}</b></span>
+              </div>
+            </div>}
+            {memoryDiagnostics.taskSearchIndex?.version && <div className={`assistant-recovery-audit ${memoryDiagnostics.taskSearchIndexHealthy ? 'healthy' : 'unhealthy'}`}>
+              <header><Search size={15} /><span><b>待办目录与检索派生数据对账</b>
+                <small>每次同步以加密待办目录和当前任务证据为权威，核验搜索正文、范围元数据与证据数量；断电留下的半写入结果会在启动同步时事务化重建。</small>
+              </span></header>
+              <div className="assistant-recovery-current">
+                <span>当前状态 <b>{memoryDiagnostics.taskSearchIndexHealthy ? '一致' : '需要检查'}</b></span>
+                <span>权威待办 <b>{Number(memoryDiagnostics.taskSearchIndex.authoritativeTasks || 0).toLocaleString()}</b></span>
+                <span>累计修复派生文档 <b>{Number(memoryDiagnostics.taskSearchIndex.repairedDerivedDocumentsTotal || 0).toLocaleString()}</b></span>
+                <span>其中缺失文档 <b>{Number(memoryDiagnostics.taskSearchIndex.repairedMissingDocumentsTotal || 0).toLocaleString()}</b></span>
+                <span>证据集合修复 <b>{Number(memoryDiagnostics.taskSearchIndex.repairedEvidenceSetsTotal || 0).toLocaleString()}</b></span>
+                <span>最近核对 <b>{memoryDiagnostics.taskSearchIndex.checkedAt
+                  ? new Date(memoryDiagnostics.taskSearchIndex.checkedAt).toLocaleString('zh-CN')
                   : '未知'}</b></span>
               </div>
             </div>}

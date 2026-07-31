@@ -1053,6 +1053,12 @@ export class PersonalMemoryStore {
           BEGIN DELETE FROM search_documents WHERE id='event:' || OLD.id; END`
       },
       {
+        name: 'trg_memory_resources_delete_search',
+        expected: ['after delete on memory_resources', "delete from search_documents where id='resource:' || old.id"],
+        sql: `CREATE TRIGGER trg_memory_resources_delete_search AFTER DELETE ON memory_resources
+          BEGIN DELETE FROM search_documents WHERE id='resource:' || OLD.id; END`
+      },
+      {
         name: 'trg_search_documents_delete_payload',
         expected: [
           'after delete on search_documents',
@@ -1082,6 +1088,9 @@ export class PersonalMemoryStore {
         ))
         OR (d.document_type='event' AND NOT EXISTS(
           SELECT 1 FROM events item WHERE item.id=d.source_id
+        ))
+        OR (d.document_type='resource' AND NOT EXISTS(
+          SELECT 1 FROM memory_resources item WHERE item.id=d.source_id
         ))
     `).all() as Array<{ id: string }>
     const ghostDocumentIds = new Set(ghostDocuments.map(item => item.id))
@@ -1128,8 +1137,21 @@ export class PersonalMemoryStore {
       SELECT * FROM events ev
       WHERE NOT EXISTS(SELECT 1 FROM search_documents d WHERE d.id='event:' || ev.id)
     `).all() as any[]
+    const missingResources = this.db.prepare(`
+      SELECT * FROM memory_resources r
+      WHERE NOT EXISTS(SELECT 1 FROM search_documents d WHERE d.id='resource:' || r.id)
+        AND NOT EXISTS(SELECT 1 FROM resource_suppressions s WHERE s.resource_id=r.id)
+    `).all() as any[]
     const checkedAt = new Date().toISOString()
     const metadataRepairs: Array<{ id: string; metadataJson: string; updatedAt: string }> = []
+    const resourceRepairs: Array<{
+      id: string
+      sourceId: string
+      title: string
+      searchText: string
+      metadata: any
+      updatedAt: string
+    }> = []
     const queueMetadataRepair = (
       document: any,
       authoritative: Record<string, any>,
@@ -1202,6 +1224,40 @@ export class PersonalMemoryStore {
         status: row.status
       }, row.updated_at)
     }
+    for (const row of this.db.prepare(`
+      SELECT d.id AS document_id,d.title AS document_title,
+        d.search_text AS document_search_text,d.metadata_json AS document_metadata_json,r.*
+      FROM search_documents d
+      JOIN memory_resources r ON r.id=d.source_id WHERE d.document_type='resource'
+    `).all() as any[]) {
+      let metadata: any = {}
+      let currentMetadata: any = null
+      try { metadata = JSON.parse(String(row.metadata_json || '{}')) } catch {}
+      try { currentMetadata = JSON.parse(String(row.document_metadata_json || '')) } catch {}
+      const title = String(row.title || '未命名资源')
+      const searchText = [
+        row.title, row.content, row.url, row.file_name, row.file_ext,
+        metadata.sessionName, metadata.senderName, metadata.appMsgKind
+      ].filter(Boolean).join('；')
+      const expectedMetadata = {
+        ...metadata,
+        resourceType: row.resource_type,
+        url: row.url || '',
+        fileName: row.file_name || ''
+      }
+      if (row.document_title !== title
+          || row.document_search_text !== searchText
+          || JSON.stringify(currentMetadata) !== JSON.stringify(expectedMetadata)) {
+        resourceRepairs.push({
+          id: String(row.document_id),
+          sourceId: String(row.id),
+          title,
+          searchText,
+          metadata: expectedMetadata,
+          updatedAt: String(row.updated_at || checkedAt)
+        })
+      }
+    }
     this.db.transaction(() => {
       if (!triggersHealthyBefore) {
         for (const trigger of triggerDefinitions) {
@@ -1231,6 +1287,12 @@ export class PersonalMemoryStore {
       `)
       for (const repair of metadataRepairs) {
         updateMetadata.run(repair.metadataJson, repair.updatedAt, repair.id)
+      }
+      for (const repair of resourceRepairs) {
+        this.upsertSearchDocument(
+          repair.id, 'resource', repair.sourceId, repair.title,
+          repair.searchText, repair.metadata, repair.updatedAt
+        )
       }
       for (const claim of missingClaims) {
         this.upsertSearchDocument(
@@ -1275,21 +1337,43 @@ export class PersonalMemoryStore {
           event.updated_at || checkedAt
         )
       }
+      for (const resource of missingResources) {
+        let metadata: any = {}
+        try { metadata = JSON.parse(String(resource.metadata_json || '{}')) } catch {}
+        this.upsertSearchDocument(
+          `resource:${resource.id}`, 'resource', resource.id,
+          String(resource.title || '未命名资源'),
+          [
+            resource.title, resource.content, resource.url, resource.file_name, resource.file_ext,
+            metadata.sessionName, metadata.senderName, metadata.appMsgKind
+          ].filter(Boolean).join('；'),
+          {
+            ...metadata,
+            resourceType: resource.resource_type,
+            url: resource.url || '',
+            fileName: resource.file_name || ''
+          },
+          resource.updated_at || checkedAt
+        )
+      }
       const rebuilt = missingClaims.length + missingRelations.length + missingEvents.length
+        + missingResources.length
       const payloadRowsRemoved = orphanFts + orphanEvidence + ghostDocumentPayloadRows
       const removed = ghostDocuments.length + payloadRowsRemoved
       const audit = {
-        version: 3,
+        version: 4,
         checkedAt,
         ghostDocumentsRemovedThisStart: ghostDocuments.length,
         missingDocumentsRebuiltThisStart: {
           claims: missingClaims.length,
           relations: missingRelations.length,
-          events: missingEvents.length
+          events: missingEvents.length,
+          resources: missingResources.length
         },
         orphanPayloadRowsRemovedThisStart: payloadRowsRemoved,
         ftsPayloadsRebuiltThisStart: ftsMismatches.length,
         metadataDocumentsRepairedThisStart: metadataRepairs.length,
+        resourceDocumentsRepairedThisStart: resourceRepairs.length,
         ghostRowsRemovedTotal: Math.max(0, Number(previousAudit?.ghostRowsRemovedTotal || 0)) + removed,
         missingDocumentsRebuiltTotal: Math.max(
           0,
@@ -1303,6 +1387,10 @@ export class PersonalMemoryStore {
           0,
           Number(previousAudit?.metadataDocumentsRepairedTotal || 0)
         ) + metadataRepairs.length,
+        resourceDocumentsRepairedTotal: Math.max(
+          0,
+          Number(previousAudit?.resourceDocumentsRepairedTotal || 0)
+        ) + resourceRepairs.length,
         triggerRepairs: Math.max(0, Number(previousAudit?.triggerRepairs || 0))
           + (triggersHealthyBefore ? 0 : 1),
         triggersHealthy: true,
@@ -1480,15 +1568,18 @@ export class PersonalMemoryStore {
           missingDocumentsRebuiltThisStart: {
             claims: Number(audit.missingDocumentsRebuiltThisStart?.claims || 0),
             relations: Number(audit.missingDocumentsRebuiltThisStart?.relations || 0),
-            events: Number(audit.missingDocumentsRebuiltThisStart?.events || 0)
+            events: Number(audit.missingDocumentsRebuiltThisStart?.events || 0),
+            resources: Number(audit.missingDocumentsRebuiltThisStart?.resources || 0)
           },
           orphanPayloadRowsRemovedThisStart: Number(audit.orphanPayloadRowsRemovedThisStart || 0),
           ftsPayloadsRebuiltThisStart: Number(audit.ftsPayloadsRebuiltThisStart || 0),
           metadataDocumentsRepairedThisStart: Number(audit.metadataDocumentsRepairedThisStart || 0),
+          resourceDocumentsRepairedThisStart: Number(audit.resourceDocumentsRepairedThisStart || 0),
           ghostRowsRemovedTotal: Number(audit.ghostRowsRemovedTotal || 0),
           missingDocumentsRebuiltTotal: Number(audit.missingDocumentsRebuiltTotal || 0),
           ftsPayloadsRebuiltTotal: Number(audit.ftsPayloadsRebuiltTotal || 0),
           metadataDocumentsRepairedTotal: Number(audit.metadataDocumentsRepairedTotal || 0),
+          resourceDocumentsRepairedTotal: Number(audit.resourceDocumentsRepairedTotal || 0),
           triggerRepairs: Number(audit.triggerRepairs || 0),
           triggersHealthy: audit.triggersHealthy === true,
           currentGhostDocuments: Number(audit.currentGhostDocuments || 0),
@@ -1501,14 +1592,16 @@ export class PersonalMemoryStore {
           version: 0,
           checkedAt: String(row?.updated_at || ''),
           ghostDocumentsRemovedThisStart: 0,
-          missingDocumentsRebuiltThisStart: { claims: 0, relations: 0, events: 0 },
+          missingDocumentsRebuiltThisStart: { claims: 0, relations: 0, events: 0, resources: 0 },
           orphanPayloadRowsRemovedThisStart: 0,
           ftsPayloadsRebuiltThisStart: 0,
           metadataDocumentsRepairedThisStart: 0,
+          resourceDocumentsRepairedThisStart: 0,
           ghostRowsRemovedTotal: 0,
           missingDocumentsRebuiltTotal: 0,
           ftsPayloadsRebuiltTotal: 0,
           metadataDocumentsRepairedTotal: 0,
+          resourceDocumentsRepairedTotal: 0,
           triggerRepairs: 0,
           triggersHealthy: false,
           currentGhostDocuments: 0,
@@ -1523,15 +1616,52 @@ export class PersonalMemoryStore {
       && structuredSearchIndex.currentMissingDocuments === 0
       && structuredSearchIndex.currentFtsPayloadMismatches === 0
       && structuredSearchIndex.currentMetadataMismatches === 0
+    const taskSearchIndex = (() => {
+      const row = this.db!.prepare(`
+        SELECT value,updated_at FROM schema_meta WHERE key='task_search_index_integrity'
+      `).get() as any
+      try {
+        const audit = JSON.parse(String(row?.value || '{}'))
+        return {
+          version: Number(audit.version || 0),
+          checkedAt: String(audit.checkedAt || row?.updated_at || ''),
+          authoritativeTasks: Number(audit.authoritativeTasks || 0),
+          repairedDerivedDocumentsThisSync: Number(audit.repairedDerivedDocumentsThisSync || 0),
+          repairedMissingDocumentsThisSync: Number(audit.repairedMissingDocumentsThisSync || 0),
+          repairedEvidenceSetsThisSync: Number(audit.repairedEvidenceSetsThisSync || 0),
+          repairedDerivedDocumentsTotal: Number(audit.repairedDerivedDocumentsTotal || 0),
+          repairedMissingDocumentsTotal: Number(audit.repairedMissingDocumentsTotal || 0),
+          repairedEvidenceSetsTotal: Number(audit.repairedEvidenceSetsTotal || 0),
+          currentMismatches: Number(audit.currentMismatches || 0)
+        }
+      } catch {
+        return {
+          version: 0,
+          checkedAt: String(row?.updated_at || ''),
+          authoritativeTasks: 0,
+          repairedDerivedDocumentsThisSync: 0,
+          repairedMissingDocumentsThisSync: 0,
+          repairedEvidenceSetsThisSync: 0,
+          repairedDerivedDocumentsTotal: 0,
+          repairedMissingDocumentsTotal: 0,
+          repairedEvidenceSetsTotal: 0,
+          currentMismatches: 0
+        }
+      }
+    })()
+    const taskSearchIndexHealthy = taskSearchIndex.version === 0
+      || taskSearchIndex.currentMismatches === 0
     return {
       healthy: integrity === 'ok'
         && structuredEvidenceMigration.constraintsHealthy
         && referentialIntegrityHealthy
-        && structuredSearchIndexHealthy,
+        && structuredSearchIndexHealthy
+        && taskSearchIndexHealthy,
       integrity,
       foreignKeyViolations,
       referentialIntegrityHealthy,
       structuredSearchIndexHealthy,
+      taskSearchIndexHealthy,
       encryption: {
         enabled: Boolean(this.encryptionKey),
         cipher: this.encryptionKey ? String(this.db.pragma('cipher', { simple: true }) || '') : 'none',
@@ -1544,6 +1674,7 @@ export class PersonalMemoryStore {
       structuredEvidenceMigration,
       structuredEvidenceReferences,
       structuredSearchIndex,
+      taskSearchIndex,
       backups
     }
   }
@@ -2875,12 +3006,32 @@ export class PersonalMemoryStore {
   syncTasks(tasks: any[]): void {
     if (!this.db) return
     const now = new Date().toISOString()
-    const activeIds = new Set(tasks.map(task => `task:${task.id}`))
-    const activeTaskIds = new Set(tasks.map(task => String(task.id)))
-    const storedTasks = this.db.prepare(
+    this.db.exec('BEGIN IMMEDIATE')
+    try {
+      let repairedDerivedDocuments = 0
+      let repairedMissingDocuments = 0
+      let repairedEvidenceSets = 0
+      const activeIds = new Set(tasks.map(task => `task:${task.id}`))
+      const activeTaskIds = new Set(tasks.map(task => String(task.id)))
+      const storedTasks = this.db.prepare(
       `SELECT id,payload_json,evidence_fingerprint FROM task_directory`
     ).all() as Array<{ id: string; payload_json: string; evidence_fingerprint: string }>
     const storedTaskMap = new Map(storedTasks.map(task => [task.id, task]))
+    const storedSearchDocuments = this.db.prepare(`
+      SELECT d.id,d.document_type,d.source_id,d.title,d.search_text,d.metadata_json,d.content_hash,
+        (SELECT COUNT(*) FROM search_document_evidence e WHERE e.document_id=d.id) AS evidence_count
+      FROM search_documents d WHERE d.document_type='task'
+    `).all() as Array<{
+      id: string
+      document_type: string
+      source_id: string
+      title: string
+      search_text: string
+      metadata_json: string
+      content_hash: string
+      evidence_count: number
+    }>
+    const storedSearchDocumentMap = new Map(storedSearchDocuments.map(document => [document.id, document]))
     const deleteTask = this.db.prepare(`DELETE FROM task_directory WHERE id=?`)
     for (const { id } of storedTasks) {
       if (!activeTaskIds.has(id)) deleteTask.run(id)
@@ -2910,15 +3061,63 @@ export class PersonalMemoryStore {
         ...directoryTask
       } = task || {}
       const payloadJson = JSON.stringify(directoryTask)
+      const sourceSessionId = String(task.sourceSessionId || task.source || '')
+      const normalizedEvidence = (task.evidence || []).flatMap((item: any) => {
+        const messageId = String(item.messageId || '')
+        if (!messageId) return []
+        return [[
+          messageId,
+          String(item.sessionId || sourceSessionId),
+          Number(item.timestamp || 0),
+          String(item.sender || ''),
+          String(item.excerpt || '').slice(0, 2000)
+        ]]
+      })
       const evidenceFingerprint = createHash('sha256')
-        .update(JSON.stringify((task.evidence || []).map((item: any) => [
-          item.messageId || '', item.sessionId || '', Number(item.timestamp || 0),
-          item.sender || '', item.excerpt || ''
-        ])))
+        .update(JSON.stringify(normalizedEvidence))
         .digest('hex')
       const storedTask = storedTaskMap.get(String(task.id))
-      if (storedTask?.payload_json === payloadJson &&
-          storedTask.evidence_fingerprint === evidenceFingerprint) continue
+      const documentId = `task:${task.id}`
+      const searchText = [
+        task.title, task.detail, task.owner, ...(task.collaborators || []), task.project,
+        task.source, task.assignmentEvidence
+      ].filter(Boolean).join('；')
+      const searchMetadata = {
+        status: task.status,
+        priority: task.priority,
+        due: task.due,
+        classification: task.classification,
+        sourceSessionId: task.sourceSessionId,
+        owner: task.owner,
+        collaborators: task.collaborators || [],
+        project: task.project || '',
+        dependsOnIds: task.dependsOnIds || [],
+        taskKind: task.taskKind || 'action',
+        ownershipPolicyReason: task.ownershipPolicyReason || '',
+        evidenceFingerprint,
+        evidenceCount: new Set(normalizedEvidence.map((item: any[]) => `${item[0]}\0${item[1]}`)).size
+      }
+      const expectedContentHash = createHash('sha256').update(searchText).digest('hex')
+      const storedSearchDocument = storedSearchDocumentMap.get(documentId)
+      let storedSearchMetadata: any = null
+      try { storedSearchMetadata = JSON.parse(storedSearchDocument?.metadata_json || '') } catch {}
+      const searchDocumentHealthy = storedSearchDocument?.document_type === 'task'
+        && storedSearchDocument.source_id === String(task.id)
+        && storedSearchDocument.title === String(task.title || '')
+        && storedSearchDocument.search_text === searchText
+        && storedSearchDocument.content_hash === expectedContentHash
+        && JSON.stringify(storedSearchMetadata) === JSON.stringify(searchMetadata)
+        && Number(storedSearchDocument.evidence_count || 0) === searchMetadata.evidenceCount
+      const unchangedAuthoritativeTask = storedTask?.payload_json === payloadJson
+        && storedTask.evidence_fingerprint === evidenceFingerprint
+      if (unchangedAuthoritativeTask && !searchDocumentHealthy) {
+        repairedDerivedDocuments += 1
+        if (!storedSearchDocument) repairedMissingDocuments += 1
+        if (Number(storedSearchDocument?.evidence_count || 0) !== searchMetadata.evidenceCount) {
+          repairedEvidenceSets += 1
+        }
+      }
+      if (unchangedAuthoritativeTask && searchDocumentHealthy) continue
       upsertTask.run(
         String(task.id),
         String(task.status || 'todo'),
@@ -2933,22 +3132,8 @@ export class PersonalMemoryStore {
         String(task.createdAt || now),
         String(task.updatedAt || task.createdAt || now)
       )
-      const documentId = `task:${task.id}`
       this.upsertSearchDocument(documentId, 'task', task.id, task.title,
-        [task.title, task.detail, task.owner, ...(task.collaborators || []), task.project, task.source, task.assignmentEvidence].filter(Boolean).join('；'),
-        {
-          status: task.status,
-          priority: task.priority,
-          due: task.due,
-          classification: task.classification,
-          sourceSessionId: task.sourceSessionId,
-          owner: task.owner,
-          collaborators: task.collaborators || [],
-          project: task.project || '',
-          dependsOnIds: task.dependsOnIds || [],
-          taskKind: task.taskKind || 'action',
-          ownershipPolicyReason: task.ownershipPolicyReason || ''
-        }, now)
+        searchText, searchMetadata, now)
       this.db.prepare('DELETE FROM search_document_evidence WHERE document_id=?').run(documentId)
       const insertEvidence = this.db.prepare(`
         INSERT OR IGNORE INTO search_document_evidence(document_id,message_id,session_id,timestamp,sender,excerpt)
@@ -2957,9 +3142,41 @@ export class PersonalMemoryStore {
       for (const item of task.evidence || []) {
         const messageId = String(item.messageId || '')
         if (!messageId) continue
-        insertEvidence.run(documentId, messageId, String(task.sourceSessionId || task.source || ''),
+        insertEvidence.run(documentId, messageId, String(item.sessionId || sourceSessionId),
           Number(item.timestamp || 0), String(item.sender || ''), String(item.excerpt || '').slice(0, 2000))
       }
+    }
+      const previousRow = this.db.prepare(`
+        SELECT value FROM schema_meta WHERE key='task_search_index_integrity'
+      `).get() as any
+      let previousAudit: any = {}
+      try { previousAudit = JSON.parse(String(previousRow?.value || '{}')) } catch {}
+      this.db.prepare(`
+        INSERT INTO schema_meta(key,value,updated_at)
+        VALUES('task_search_index_integrity',?,?)
+        ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_at=excluded.updated_at
+      `).run(JSON.stringify({
+        version: 1,
+        checkedAt: now,
+        authoritativeTasks: tasks.length,
+        repairedDerivedDocumentsThisSync: repairedDerivedDocuments,
+        repairedMissingDocumentsThisSync: repairedMissingDocuments,
+        repairedEvidenceSetsThisSync: repairedEvidenceSets,
+        repairedDerivedDocumentsTotal:
+          Math.max(0, Number(previousAudit?.repairedDerivedDocumentsTotal || 0))
+          + repairedDerivedDocuments,
+        repairedMissingDocumentsTotal:
+          Math.max(0, Number(previousAudit?.repairedMissingDocumentsTotal || 0))
+          + repairedMissingDocuments,
+        repairedEvidenceSetsTotal:
+          Math.max(0, Number(previousAudit?.repairedEvidenceSetsTotal || 0))
+          + repairedEvidenceSets,
+        currentMismatches: 0
+      }), now)
+      this.db.exec('COMMIT')
+    } catch (error) {
+      this.db.exec('ROLLBACK')
+      throw error
     }
   }
 

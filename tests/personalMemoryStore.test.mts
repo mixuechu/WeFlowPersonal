@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
-import { randomBytes } from 'node:crypto'
+import { createHash, randomBytes } from 'node:crypto'
 import { PersonalMemoryStore } from '../electron/services/personalMemoryStore.ts'
 import { filterMemorySearchResults, paginateMemoryResults } from '../electron/services/memorySearchFilters.ts'
 import { buildContextualMemoryQuestion, buildMemoryQueryPlan } from '../electron/services/memoryQueryPlanner.ts'
@@ -1589,14 +1589,33 @@ test('structured search index reconciliation removes ghosts and rebuilds missing
         excerpt: '缺失事件索引恢复验证'
       }]
     }])
+    first.upsertResources([{
+      id: 'search-missing-resource',
+      resourceType: 'document',
+      title: '缺失资源索引',
+      content: '资源索引恢复关键词',
+      fileName: '恢复资料.txt',
+      metadata: { sourceId: 'documents' }
+    }, {
+      id: 'search-stale-resource',
+      resourceType: 'file',
+      title: '权威资源标题',
+      content: '权威资源正文关键词',
+      fileName: '权威资料.pdf',
+      metadata: { sourceId: 'wechat', sessionName: '资源测试群' }
+    }])
     const database = (first as any).db
     database.exec(`
       DROP TRIGGER trg_claims_delete_search;
       DROP TRIGGER trg_relations_delete_search;
       DROP TRIGGER trg_events_delete_search;
+      DROP TRIGGER trg_memory_resources_delete_search;
       DROP TRIGGER trg_search_documents_delete_payload;
       DELETE FROM search_documents
-        WHERE id IN('claim:search-missing-claim','event:search-missing-event');
+        WHERE id IN(
+          'claim:search-missing-claim','event:search-missing-event',
+          'resource:search-missing-resource'
+        );
       DELETE FROM relations WHERE id='search-ghost-relation';
       INSERT INTO search_fts(document_id,title,search_text)
         VALUES('orphan:fts','孤儿全文','孤儿全文载荷');
@@ -1614,6 +1633,12 @@ test('structured search index reconciliation removes ghosts and rebuilds missing
       UPDATE search_documents
         SET metadata_json='{"status":"confirmed","subjectId":"wrong-person","polarity":"negative"}'
         WHERE id='claim:search-stale-metadata-claim';
+      UPDATE search_documents
+        SET title='漂移资源标题',search_text='漂移资源正文',
+          metadata_json='{"resourceType":"link","sourceId":"wrong"}'
+        WHERE id='resource:search-stale-resource';
+      UPDATE search_fts SET title='漂移资源标题',search_text='漂移资源正文'
+        WHERE document_id='resource:search-stale-resource';
     `)
     first.close()
 
@@ -1627,20 +1652,28 @@ test('structured search index reconciliation removes ghosts and rebuilds missing
       assert.deepEqual(diagnostics.structuredSearchIndex.missingDocumentsRebuiltThisStart, {
         claims: 1,
         relations: 0,
-        events: 1
+        events: 1,
+        resources: 1
       })
-      assert.equal(diagnostics.structuredSearchIndex.orphanPayloadRowsRemovedThisStart, 5)
-      assert.equal(diagnostics.structuredSearchIndex.missingDocumentsRebuiltTotal, 2)
-      assert.equal(diagnostics.structuredSearchIndex.ghostRowsRemovedTotal, 6)
+      assert.equal(diagnostics.structuredSearchIndex.orphanPayloadRowsRemovedThisStart, 6)
+      assert.equal(diagnostics.structuredSearchIndex.missingDocumentsRebuiltTotal, 3)
+      assert.equal(diagnostics.structuredSearchIndex.ghostRowsRemovedTotal, 7)
       assert.equal(diagnostics.structuredSearchIndex.ftsPayloadsRebuiltThisStart, 2)
       assert.equal(diagnostics.structuredSearchIndex.ftsPayloadsRebuiltTotal, 2)
       assert.equal(diagnostics.structuredSearchIndex.metadataDocumentsRepairedThisStart, 1)
       assert.equal(diagnostics.structuredSearchIndex.metadataDocumentsRepairedTotal, 1)
+      assert.equal(diagnostics.structuredSearchIndex.resourceDocumentsRepairedThisStart, 1)
+      assert.equal(diagnostics.structuredSearchIndex.resourceDocumentsRepairedTotal, 1)
       assert.equal(diagnostics.structuredSearchIndex.triggerRepairs, 2)
       assert.equal(reopened.searchText('索引重建关键词').some((row: any) =>
         row.id === 'claim:search-missing-claim'), true)
       assert.equal(reopened.searchText('缺失事件索引恢复验证').some((row: any) =>
         row.id === 'event:search-missing-event'), true)
+      assert.equal(reopened.searchText('资源索引恢复关键词').some((row: any) =>
+        row.id === 'resource:search-missing-resource'), true)
+      assert.equal(reopened.searchText('权威资源正文关键词').some((row: any) =>
+        row.id === 'resource:search-stale-resource'), true)
+      assert.equal(reopened.searchText('漂移资源正文').length, 0)
       assert.equal(reopened.searchText('旧关系检索幽灵').some((row: any) =>
         row.id === 'relation:search-ghost-relation'), false)
       assert.equal(reopened.searchText('检索甲').some((row: any) =>
@@ -1664,10 +1697,14 @@ test('structured search index reconciliation removes ghosts and rebuilds missing
         DELETE FROM claims WHERE id='search-missing-claim';
         DELETE FROM event_participants WHERE event_id='search-missing-event';
         DELETE FROM events WHERE id='search-missing-event';
+        DELETE FROM memory_resources WHERE id='search-missing-resource';
       `)
       assert.equal(Number((reopened as any).db.prepare(`
         SELECT COUNT(*) AS count FROM search_documents
-        WHERE id IN('claim:search-missing-claim','event:search-missing-event')
+        WHERE id IN(
+          'claim:search-missing-claim','event:search-missing-event',
+          'resource:search-missing-resource'
+        )
       `).get().count), 0)
       assert.equal(Number((reopened as any).db.prepare(`
         SELECT COUNT(*) AS count FROM search_fts
@@ -1719,7 +1756,11 @@ test('task search keeps original message evidence', () => withStore(store => {
     project: '升级版演示',
     dependsOnIds: ['task-prerequisite'],
     taskKind: 'delegated',
-    ownershipPolicyReason: ''
+    ownershipPolicyReason: '',
+    evidenceFingerprint: createHash('sha256').update(JSON.stringify([[
+      'message-task-1', '项目群', 1_700_000_001, '客户甲', '麻烦你确认一下几点更新'
+    ]])).digest('hex'),
+    evidenceCount: 1
   })
   assert.deepEqual(store.getDocumentEvidence('task', 'task-1').map(item => ({ ...item })), [{
     message_id: 'message-task-1',
@@ -1728,6 +1769,93 @@ test('task search keeps original message evidence', () => withStore(store => {
     sender: '客户甲',
     excerpt: '麻烦你确认一下几点更新'
   }])
+}))
+
+test('unchanged tasks repair missing search documents and evidence after an interrupted write', () => withStore(store => {
+  const task = {
+    id: 'task-search-repair',
+    title: '恢复断电后的待办检索',
+    detail: '搜索派生数据必须从权威任务恢复',
+    source: '恢复测试群',
+    sourceSessionId: 'session-recovery',
+    priority: 'high',
+    status: 'todo',
+    classification: 'mine',
+    evidence: [{
+      messageId: 'message-task-repair',
+      sessionId: 'session-original-evidence',
+      timestamp: 1_700_000_123,
+      sender: '测试发送者',
+      excerpt: '请恢复这条待办'
+    }]
+  }
+  store.syncTasks([task])
+  ;(store as any).db.prepare('DELETE FROM search_documents WHERE id=?')
+    .run('task:task-search-repair')
+  assert.equal(store.searchText('恢复断电后的待办检索').length, 0)
+
+  store.syncTasks([task])
+
+  assert.equal(store.searchText('恢复断电后的待办检索')[0].source_id, 'task-search-repair')
+  assert.deepEqual(store.getDocumentEvidence('task', 'task-search-repair').map(item => ({
+    message_id: item.message_id,
+    session_id: item.session_id,
+    sender: item.sender,
+    excerpt: item.excerpt
+  })), [{
+    message_id: 'message-task-repair',
+    session_id: 'session-original-evidence',
+    sender: '测试发送者',
+    excerpt: '请恢复这条待办'
+  }])
+  const diagnostics = store.getDiagnostics()
+  assert.equal(diagnostics.taskSearchIndexHealthy, true)
+  assert.equal(diagnostics.taskSearchIndex.repairedDerivedDocumentsThisSync, 1)
+  assert.equal(diagnostics.taskSearchIndex.repairedMissingDocumentsThisSync, 1)
+  assert.equal(diagnostics.taskSearchIndex.repairedEvidenceSetsThisSync, 1)
+}))
+
+test('task directory and search payload roll back together when a derived write fails', () => withStore(store => {
+  const original = {
+    id: 'task-atomic-sync',
+    title: '事务前标题',
+    detail: '事务前正文',
+    source: '事务测试群',
+    priority: 'medium',
+    status: 'todo',
+    classification: 'mine',
+    evidence: [{
+      messageId: 'message-task-atomic',
+      timestamp: 1_700_000_456,
+      sender: '事务发送者',
+      excerpt: '事务前证据'
+    }]
+  }
+  store.syncTasks([original])
+  ;(store as any).db.exec(`
+    CREATE TRIGGER fail_task_search_update
+    BEFORE UPDATE ON search_documents
+    WHEN OLD.id='task:task-atomic-sync'
+    BEGIN
+      SELECT RAISE(ABORT,'forced derived write failure');
+    END;
+  `)
+
+  assert.throws(() => store.syncTasks([{
+    ...original,
+    title: '事务后标题',
+    detail: '事务后正文'
+  }]), /forced derived write failure/)
+
+  const directory = (store as any).db.prepare(`
+    SELECT title,payload_json FROM task_directory WHERE id='task-atomic-sync'
+  `).get()
+  assert.equal(directory.title, '事务前标题')
+  assert.equal(JSON.parse(directory.payload_json).detail, '事务前正文')
+  assert.equal(store.searchText('事务前正文')[0].source_id, 'task-atomic-sync')
+  assert.equal(store.searchText('事务后正文').length, 0)
+  assert.equal(store.getDocumentEvidencePage('task', 'task-atomic-sync').total, 1)
+  ;(store as any).db.exec('DROP TRIGGER fail_task_search_update')
 }))
 
 test('Chinese substring search falls back when the exact FTS phrase misses', () => withStore(store => {
