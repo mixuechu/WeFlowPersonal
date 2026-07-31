@@ -1520,9 +1520,24 @@ export class PersonalMemoryStore {
   }
 
   getMemoryStats(): any {
-    if (!this.db) return { claims: 0, events: 0, resources: 0 }
-    const count = (table: string) => Number((this.db!.prepare(`SELECT COUNT(*) AS count FROM ${table}`).get() as { count: number }).count)
-    return { claims: count('claims'), events: count('events'), resources: count('memory_resources') }
+    if (!this.db) return {
+      claims: 0, events: 0, resources: 0,
+      claimRevision: '', eventRevision: '', resourceRevision: ''
+    }
+    const stats = (table: string) => this.db!.prepare(`
+      SELECT COUNT(*) AS count,COALESCE(MAX(updated_at),'') AS revision FROM ${table}
+    `).get() as { count: number; revision: string }
+    const claims = stats('claims')
+    const events = stats('events')
+    const resources = stats('memory_resources')
+    return {
+      claims: Number(claims.count),
+      events: Number(events.count),
+      resources: Number(resources.count),
+      claimRevision: claims.revision,
+      eventRevision: events.revision,
+      resourceRevision: resources.revision
+    }
   }
 
   listEntityEventParticipants(entityId: string): Array<{ eventId: string; role: string }> {
@@ -2249,6 +2264,97 @@ export class PersonalMemoryStore {
         ...event,
         participants: participantStatement.all(event.id) as any[],
         evidence: (evidenceStatement.all(event.id, MEMORY_CARD_EVIDENCE_LIMIT) as any[]).reverse()
+      })),
+      total,
+      hasMore: offset + rows.length < total
+    }
+  }
+
+  listClaimArchive(options: {
+    entityId?: string
+    sourceId?: 'wechat' | 'documents'
+    status?: 'candidate' | 'confirmed' | 'rejected'
+    predicate?: string
+    from?: string
+    to?: string
+    limit?: number
+    offset?: number
+  } = {}): { items: any[]; total: number; hasMore: boolean } {
+    if (!this.db) return { items: [], total: 0, hasMore: false }
+    const conditions: string[] = []
+    const parameters: Array<string | number> = []
+    if (options.status) {
+      conditions.push('c.status=?')
+      parameters.push(options.status)
+    } else {
+      conditions.push(`c.status!='rejected'`)
+    }
+    const entityId = String(options.entityId || '').trim()
+    if (entityId) {
+      conditions.push('(c.subject_id=? OR c.object_entity_id=?)')
+      parameters.push(entityId, entityId)
+    }
+    const predicate = String(options.predicate || '').trim().toLocaleLowerCase('zh-CN')
+    if (predicate) {
+      conditions.push(`instr(lower(c.predicate || char(0) || c.search_text),?)>0`)
+      parameters.push(predicate)
+    }
+    const validFrom = options.from && Number.isFinite(Date.parse(options.from)) ? options.from : ''
+    const validTo = options.to && Number.isFinite(Date.parse(options.to)) ? options.to : ''
+    if (validFrom) {
+      conditions.push(`COALESCE(c.valid_to,'9999-12-31T23:59:59.999Z')>=?`)
+      parameters.push(validFrom)
+    }
+    if (validTo) {
+      conditions.push(`COALESCE(c.valid_from,c.created_at)<=?`)
+      parameters.push(validTo)
+    }
+    if (options.sourceId === 'documents') {
+      conditions.push(`EXISTS (
+        SELECT 1 FROM evidence source_evidence
+        WHERE source_evidence.claim_id=c.id AND source_evidence.session_id LIKE 'data-source:documents%'
+      )`)
+    } else if (options.sourceId === 'wechat') {
+      conditions.push(`NOT EXISTS (
+        SELECT 1 FROM evidence source_evidence
+        WHERE source_evidence.claim_id=c.id AND source_evidence.session_id LIKE 'data-source:%'
+      )`)
+    }
+    const where = conditions.join(' AND ')
+    const total = Number((this.db.prepare(`SELECT COUNT(*) AS count FROM claims c WHERE ${where}`)
+      .get(...parameters) as any)?.count || 0)
+    const limit = Math.max(1, Math.min(100, Math.floor(Number(options.limit) || 40)))
+    const offset = Math.max(0, Math.min(1_000_000, Math.floor(Number(options.offset) || 0)))
+    const rows = this.db.prepare(`
+      SELECT c.*,s.canonical_name AS subject_name,o.canonical_name AS object_entity_name,
+        (SELECT COUNT(*) FROM memory_corrections mc
+          WHERE mc.item_kind='claim' AND mc.item_id=c.id) AS correction_count,
+        (SELECT mc.created_at FROM memory_corrections mc
+          WHERE mc.item_kind='claim' AND mc.item_id=c.id
+          ORDER BY mc.id DESC LIMIT 1) AS corrected_at,
+        (SELECT COUNT(*) FROM evidence e WHERE e.claim_id=c.id) AS evidence_count,
+        CASE
+          WHEN EXISTS (SELECT 1 FROM evidence e WHERE e.claim_id=c.id AND e.session_id LIKE 'data-source:documents%') THEN 'documents'
+          ELSE 'wechat'
+        END AS source_id
+      FROM claims c
+      LEFT JOIN entities s ON s.id=c.subject_id
+      LEFT JOIN entities o ON o.id=c.object_entity_id
+      WHERE ${where}
+      ORDER BY c.updated_at DESC,c.id ASC
+      LIMIT ? OFFSET ?
+    `).all(...parameters, limit, offset) as any[]
+    const evidenceStatement = this.db.prepare(`
+      SELECT message_id,session_id,timestamp,excerpt,evidence_role
+      FROM evidence WHERE claim_id=?
+      ORDER BY timestamp DESC,
+        CASE WHEN evidence_role='contradiction' THEN 0 ELSE 1 END,
+        message_id DESC LIMIT ?
+    `)
+    return {
+      items: rows.map(claim => ({
+        ...claim,
+        evidence: (evidenceStatement.all(claim.id, MEMORY_CARD_EVIDENCE_LIMIT) as any[]).reverse()
       })),
       total,
       hasMore: offset + rows.length < total

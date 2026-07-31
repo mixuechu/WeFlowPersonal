@@ -128,11 +128,24 @@ function AiAssistantPage() {
   const [eventTimeline, setEventTimeline] = useState<{ items: any[]; total: number; hasMore: boolean }>({
     items: [], total: 0, hasMore: false
   })
+  const [claimArchive, setClaimArchive] = useState<{ items: any[]; total: number; hasMore: boolean; loading?: boolean }>({
+    items: [], total: 0, hasMore: false
+  })
+  const [claimLoadingMore, setClaimLoadingMore] = useState(false)
+  const [eventLoadingMore, setEventLoadingMore] = useState(false)
+  const [claimEntityFilter, setClaimEntityFilter] = useState('')
+  const [claimSourceFilter, setClaimSourceFilter] = useState('')
+  const [claimStatusFilter, setClaimStatusFilter] = useState('')
+  const [claimPredicateFilter, setClaimPredicateFilter] = useState('')
+  const [claimFrom, setClaimFrom] = useState('')
+  const [claimTo, setClaimTo] = useState('')
   const [eventSourceFilter, setEventSourceFilter] = useState('')
   const [eventStatusFilter, setEventStatusFilter] = useState('')
   const [eventFrom, setEventFrom] = useState('')
   const [eventTo, setEventTo] = useState('')
-  const [eventTimelineLimit, setEventTimelineLimit] = useState(100)
+  const dashboardLoadGate = useRef(new LatestRequestGate())
+  const claimArchiveGate = useRef(new LatestRequestGate())
+  const eventTimelineGate = useRef(new LatestRequestGate())
   const [calendarPicker, setCalendarPicker] = useState<{
     calendars: Array<{ id: string; title: string; source: string; type: string }>
     selectedIds: string[]
@@ -233,22 +246,32 @@ function AiAssistantPage() {
     status: eventStatusFilter || undefined,
     from: eventFrom ? new Date(`${eventFrom}T00:00:00+08:00`).toISOString() : undefined,
     to: eventTo ? new Date(`${eventTo}T23:59:59.999+08:00`).toISOString() : undefined,
-    limit: eventTimelineLimit,
+    limit: 100,
     offset: 0
-  }), [eventSourceFilter, eventStatusFilter, eventFrom, eventTo, eventTimelineLimit])
+  }), [eventSourceFilter, eventStatusFilter, eventFrom, eventTo])
+  const claimArchiveOptions = useMemo(() => ({
+    entityId: claimEntityFilter || undefined,
+    sourceId: claimSourceFilter || undefined,
+    status: claimStatusFilter || undefined,
+    predicate: claimPredicateFilter || undefined,
+    from: claimFrom ? new Date(`${claimFrom}T00:00:00+08:00`).toISOString() : undefined,
+    to: claimTo ? new Date(`${claimTo}T23:59:59.999+08:00`).toISOString() : undefined,
+    limit: 100,
+    offset: 0
+  }), [claimEntityFilter, claimSourceFilter, claimStatusFilter, claimPredicateFilter, claimFrom, claimTo])
 
   const load = useCallback(async () => {
-    const [nextStatus, nextDashboard, nextDataSources, nextEventTimeline] = await Promise.all([
+    const request = dashboardLoadGate.current.begin()
+    const [nextStatus, nextDashboard, nextDataSources] = await Promise.all([
       window.electronAPI.aiAssistant.status(),
       window.electronAPI.aiAssistant.dashboard(),
-      window.electronAPI.aiAssistant.getDataSources(),
-      window.electronAPI.aiAssistant.getEventTimeline(eventTimelineOptions)
+      window.electronAPI.aiAssistant.getDataSources()
     ])
+    if (!dashboardLoadGate.current.isCurrent(request)) return
     setStatus(nextStatus)
     setDashboard(nextDashboard)
     setDataSources(nextDataSources)
-    setEventTimeline(nextEventTimeline)
-  }, [eventTimelineOptions])
+  }, [])
 
   useEffect(() => {
     void load()
@@ -258,6 +281,38 @@ function AiAssistantPage() {
     const timer = window.setInterval(() => void load(), 15_000)
     return () => window.clearInterval(timer)
   }, [load])
+
+  useEffect(() => {
+    const request = claimArchiveGate.current.begin()
+    setClaimLoadingMore(false)
+    setClaimArchive(current => ({ ...current, items: [], loading: true }))
+    void window.electronAPI.aiAssistant.getClaimArchive(claimArchiveOptions).then(result => {
+      if (!claimArchiveGate.current.isCurrent(request)) return
+      setClaimArchive({ ...result, loading: false })
+    }).catch(() => {
+      if (!claimArchiveGate.current.isCurrent(request)) return
+      setClaimArchive({ items: [], total: 0, hasMore: false, loading: false })
+    })
+    return () => {
+      if (claimArchiveGate.current.isCurrent(request)) claimArchiveGate.current.invalidate()
+    }
+  }, [claimArchiveOptions, dashboard?.memoryRevision])
+
+  useEffect(() => {
+    const request = eventTimelineGate.current.begin()
+    setEventLoadingMore(false)
+    setEventTimeline(current => ({ ...current, items: [] }))
+    void window.electronAPI.aiAssistant.getEventTimeline(eventTimelineOptions).then(result => {
+      if (eventTimelineGate.current.isCurrent(request)) setEventTimeline(result)
+    }).catch(() => {
+      if (eventTimelineGate.current.isCurrent(request)) {
+        setEventTimeline({ items: [], total: 0, hasMore: false })
+      }
+    })
+    return () => {
+      if (eventTimelineGate.current.isCurrent(request)) eventTimelineGate.current.invalidate()
+    }
+  }, [eventTimelineOptions, dashboard?.memoryRevision])
 
   useEffect(() => {
     const query = memoryQuery.trim()
@@ -419,10 +474,6 @@ function AiAssistantPage() {
     memoryConversationGate.current.invalidate()
   }, [])
 
-  useEffect(() => {
-    setEventTimelineLimit(100)
-  }, [eventSourceFilter, eventStatusFilter, eventFrom, eventTo])
-
   const briefing = dashboard?.briefing
   const weeklyBriefing = dashboard?.weeklyBriefing
   const projectInsights: any[] = dashboard?.projectInsights || []
@@ -496,10 +547,53 @@ function AiAssistantPage() {
   const memoryFeed = dashboard?.memoryFeed || { claims: [], events: [], resources: [] }
   const ingestionStatus = dashboard?.ingestionStatus
   const ingestionCounts = Object.fromEntries((ingestionStatus?.batches || []).map((item: any) => [item.status, Number(item.count || 0)]))
-  const visibleClaims = memoryFeed.claims.filter((item: any) => item.status !== 'rejected')
-  const feedEvents = memoryFeed.events.filter((item: any) => item.status !== 'rejected')
+  const visibleClaims = claimArchive.items
   const visibleEvents = eventTimeline.items || []
   const visibleResources = memoryFeed.resources || []
+  const loadMoreClaims = async () => {
+    if (claimLoadingMore || !claimArchive.hasMore) return
+    const request = claimArchiveGate.current.begin()
+    setClaimLoadingMore(true)
+    try {
+      const result = await window.electronAPI.aiAssistant.getClaimArchive({
+        ...claimArchiveOptions,
+        offset: visibleClaims.length,
+        limit: 100
+      })
+      if (!claimArchiveGate.current.isCurrent(request)) return
+      setClaimArchive(current => ({
+        ...result,
+        items: [...current.items, ...result.items.filter((item: any) =>
+          !current.items.some((known: any) => known.id === item.id))]
+      }))
+    } catch (error: any) {
+      if (claimArchiveGate.current.isCurrent(request)) setMessage(error?.message || String(error))
+    } finally {
+      if (claimArchiveGate.current.isCurrent(request)) setClaimLoadingMore(false)
+    }
+  }
+  const loadMoreEvents = async () => {
+    if (eventLoadingMore || !eventTimeline.hasMore) return
+    const request = eventTimelineGate.current.begin()
+    setEventLoadingMore(true)
+    try {
+      const result = await window.electronAPI.aiAssistant.getEventTimeline({
+        ...eventTimelineOptions,
+        offset: visibleEvents.length,
+        limit: 100
+      })
+      if (!eventTimelineGate.current.isCurrent(request)) return
+      setEventTimeline(current => ({
+        ...result,
+        items: [...current.items, ...result.items.filter((item: any) =>
+          !current.items.some((known: any) => known.id === item.id))]
+      }))
+    } catch (error: any) {
+      if (eventTimelineGate.current.isCurrent(request)) setMessage(error?.message || String(error))
+    } finally {
+      if (eventTimelineGate.current.isCurrent(request)) setEventLoadingMore(false)
+    }
+  }
   const resourceTrash = dashboard?.resourceTrash || []
   const selectedEntityClaims = graphWorkspace.focus?.claims || []
   const selectedEntityEvents = graphWorkspace.focus?.events || []
@@ -1979,13 +2073,43 @@ function AiAssistantPage() {
           <section className="assistant-panel">
             <div className="assistant-section-heading">
               <div><span className="assistant-eyebrow">STRUCTURED CLAIMS</span><h3><BookOpen size={16} /> 持续积累的事实</h3></div>
-              <span className="assistant-count">{visibleClaims.length} 条</span>
+              <span className="assistant-count">{claimArchive.total} 条</span>
             </div>
+            <div className="assistant-memory-scope assistant-event-scope">
+              <select value={claimEntityFilter} onChange={event => setClaimEntityFilter(event.target.value)}>
+                <option value="">所有人物与实体</option>
+                {trustedGraphEntities.map((entity: any) =>
+                  <option key={`claim-entity-${entity.id}`} value={entity.id}>{entity.canonicalName} · {entity.type}</option>)}
+              </select>
+              <select value={claimSourceFilter} onChange={event => setClaimSourceFilter(event.target.value)}>
+                <option value="">所有来源</option>
+                <option value="wechat">微信</option>
+                <option value="documents">本机文档</option>
+              </select>
+              <select value={claimStatusFilter} onChange={event => setClaimStatusFilter(event.target.value)}>
+                <option value="">有效事实</option>
+                <option value="candidate">待确认</option>
+                <option value="confirmed">已确认</option>
+                <option value="rejected">已标记不准确</option>
+              </select>
+              <input value={claimPredicateFilter} onChange={event => setClaimPredicateFilter(event.target.value)}
+                placeholder="搜索谓词、事实值或关键词" />
+              <label><span>有效期从</span><input type="date" value={claimFrom} onChange={event => setClaimFrom(event.target.value)} /></label>
+              <label><span>到</span><input type="date" value={claimTo} onChange={event => setClaimTo(event.target.value)} /></label>
+              {(claimEntityFilter || claimSourceFilter || claimStatusFilter || claimPredicateFilter || claimFrom || claimTo) &&
+                <button onClick={() => {
+                  setClaimEntityFilter(''); setClaimSourceFilter(''); setClaimStatusFilter('')
+                  setClaimPredicateFilter(''); setClaimFrom(''); setClaimTo('')
+                }}>清除范围</button>}
+            </div>
+            {dashboard?.memoryFeedPayloadPolicy?.claims === 'paginated_on_demand' && <small className="assistant-evidence">
+              当前范围直接从本机 SQLCipher 档案分页读取；显示真实总数，早期事实不会因首页载荷边界而消失。
+            </small>}
             <div className="assistant-memory-list">
               {visibleClaims.map((claim: any) => <article className="assistant-memory-item" id={`memory-claim-${claim.id}`} key={claim.id}>
                 <div className="assistant-memory-item-head">
                   <strong>{claim.subject_name || '未知主体'} · {claim.predicate}</strong>
-                  <span className={claim.status}>{claim.status === 'confirmed' ? '已确认' : '待确认'}</span>
+                  <span className={claim.status}>{claim.status === 'confirmed' ? '已确认' : claim.status === 'rejected' ? '不准确' : '待确认'}</span>
                 </div>
                 {editingClaim?.id === claim.id ? <div className="assistant-claim-editor">
                   <input value={editingClaim.value} onChange={event => setEditingClaim({ ...editingClaim, value: event.target.value })} placeholder="正确的事实值" />
@@ -1993,6 +2117,9 @@ function AiAssistantPage() {
                   <input value={editingClaim.validTo} onChange={event => setEditingClaim({ ...editingClaim, validTo: event.target.value })} placeholder="失效时间（可选）" />
                 </div> : <p>{claim.polarity === 'negative' ? '否定：' : ''}{claim.object_entity_name || claim.object_value || '未记录值'}</p>}
                 <small>来源：{claim.source_nature === 'self_statement' ? '本人明确陈述' : claim.source_nature === 'other_statement' ? '他人陈述' : claim.source_nature === 'human_confirmation' ? '人工纠正确认' : '模型推断'} · {Math.round(Number(claim.confidence || 0) * 100)}% 可信{claim.conflict_group ? ' · 与其他事实冲突' : ''}</small>
+                <small>原始载体：{claim.source_id === 'documents' ? '本机文档' : '微信'}
+                  {!!claim.correction_count && ` · 人工纠正 ${claim.correction_count} 次${claim.corrected_at ? `（最近 ${new Date(claim.corrected_at).toLocaleString('zh-CN')}）` : ''}`}
+                </small>
                 {!claimEntitiesTrusted(claim) && <small>涉及的实体尚未确认；请先在图谱候选区确认实体，之后才能确认或纠正此事实。</small>}
                 {claim.polarity === 'negative' && <small>该条是对“{claim.predicate}”的明确否定陈述，仍需结合反证人工确认。</small>}
                 {(claim.valid_from || claim.valid_to) && <small>有效期：{claim.valid_from || '未知'} — {claim.valid_to || '至今'}</small>}
@@ -2003,14 +2130,22 @@ function AiAssistantPage() {
                   {editingClaim?.id === claim.id
                     ? <><button onClick={() => setEditingClaim(null)}>取消</button><button className="primary" onClick={() => void saveClaimCorrection()}>保存纠正</button></>
                     : <button disabled={!claimEntitiesTrusted(claim)} title={!claimEntitiesTrusted(claim) ? '请先确认事实涉及的实体' : ''} onClick={() => setEditingClaim({ id: claim.id, value: claim.object_entity_name || claim.object_value || '', validFrom: claim.valid_from || '', validTo: claim.valid_to || '' })}>纠正</button>}
-                  <button onClick={() => void updateMemoryStatus('claim', claim.id, 'rejected')}>不准确</button>
+                  {claim.status !== 'rejected' &&
+                    <button onClick={() => void updateMemoryStatus('claim', claim.id, 'rejected')}>不准确</button>}
                   <button onClick={() => void ignoreMemoryItem('claim', claim)}>不重要</button>
-                  {claim.status === 'candidate' && <button className="primary" disabled={!claimEntitiesTrusted(claim)} title={!claimEntitiesTrusted(claim) ? '请先确认事实涉及的实体' : ''} onClick={() => void updateMemoryStatus('claim', claim.id, 'confirmed')}>确认事实</button>}
+                  {claim.status !== 'confirmed' && <button className="primary" disabled={!claimEntitiesTrusted(claim)} title={!claimEntitiesTrusted(claim) ? '请先确认事实涉及的实体' : ''} onClick={() => void updateMemoryStatus('claim', claim.id, 'confirmed')}>{claim.status === 'rejected' ? '恢复并确认' : '确认事实'}</button>}
                   <button className="danger" onClick={() => void permanentlyDeleteMemoryItem('claim', claim)}>永久删除</button>
                 </div>
               </article>)}
-              {!visibleClaims.length && <div className="assistant-empty">后续增量消息会在这里形成带原文证据的个人事实。</div>}
+              {!visibleClaims.length && <div className="assistant-empty">
+                {claimArchive.loading ? '正在读取事实档案…' : '当前范围没有事实；后续增量消息会形成带原文证据的记录。'}
+              </div>}
             </div>
+            {claimArchive.hasMore && <div className="assistant-timeline-more">
+              <button disabled={claimLoadingMore} onClick={() => void loadMoreClaims()}>
+                {claimLoadingMore ? '正在加载…' : `加载更多（已显示 ${visibleClaims.length}/${claimArchive.total}）`}
+              </button>
+            </div>}
           </section>
 
           <section className="assistant-panel">
@@ -2086,8 +2221,8 @@ function AiAssistantPage() {
               {!visibleEvents.length && <div className="assistant-empty">会议、决定、交付和承诺等事件会显示在这里。</div>}
             </div>
             {eventTimeline.hasMore && <div className="assistant-timeline-more">
-              <button onClick={() => setEventTimelineLimit(limit => Math.min(300, limit + 100))}>
-                加载更多（已显示 {visibleEvents.length}/{eventTimeline.total}）
+              <button disabled={eventLoadingMore} onClick={() => void loadMoreEvents()}>
+                {eventLoadingMore ? '正在加载…' : `加载更多（已显示 ${visibleEvents.length}/${eventTimeline.total}）`}
               </button>
             </div>}
           </section>

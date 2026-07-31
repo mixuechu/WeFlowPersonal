@@ -3010,6 +3010,7 @@ export class AiAssistantService {
     const allTaskReminders = buildTaskReminders(tasks)
     const reminderResult = applyReminderPreferences(allTaskReminders, this.state.reminderPreferences)
     const memoryFeed = personalMemoryStore.getMemoryFeed()
+    const memoryStats = personalMemoryStore.getMemoryStats()
     const projectInsights = buildProjectDirectory({
       entities: this.state.graph.entities,
       relations: this.state.graph.relations,
@@ -3107,14 +3108,32 @@ export class AiAssistantService {
       },
       mergeHistory: personalMemoryStore.listActiveMerges(),
       memoryDeletionAudit: personalMemoryStore.listMemoryDeletionAudit(50),
-      memoryStats: personalMemoryStore.getMemoryStats(),
+      memoryStats,
+      memoryRevision: crypto.createHash('sha256')
+        .update(JSON.stringify({
+          claims: [memoryStats.claims, memoryStats.claimRevision],
+          events: [memoryStats.events, memoryStats.eventRevision],
+          resources: [memoryStats.resources, memoryStats.resourceRevision]
+        }))
+        .digest('hex')
+        .slice(0, 16),
       attachmentStructureMigration: personalMemoryStore.getAttachmentStructureMigrationStats(
         ATTACHMENT_STRUCTURE_PARSER_VERSION
       ),
       imageSemanticMigration: personalMemoryStore.getImageSemanticMigrationStats(
         localImageSemanticService.getStatus().modelVersion
       ),
-      memoryFeed,
+      memoryFeed: {
+        claims: [],
+        events: [],
+        resources: memoryFeed.resources
+      },
+      memoryFeedPayloadPolicy: {
+        version: 'memory-feed-directory-v2',
+        claims: 'paginated_on_demand',
+        events: 'paginated_on_demand',
+        resources: 'bounded_preview'
+      },
       resourceTrash: personalMemoryStore.listResourceTrash(),
       ingestionStatus: personalMemoryStore.getIngestionStatus(),
       assistantHistory: personalMemoryStore.getRecentAssistantExchanges(),
@@ -3276,6 +3295,23 @@ export class AiAssistantService {
       from: String(options?.from || ''),
       to: String(options?.to || ''),
       limit: Number(options?.limit || 100),
+      offset: Number(options?.offset || 0)
+    })
+  }
+
+  getClaimArchive(options: any = {}): any {
+    return personalMemoryStore.listClaimArchive({
+      entityId: String(options?.entityId || ''),
+      sourceId: ['wechat', 'documents'].includes(options?.sourceId)
+        ? options.sourceId
+        : undefined,
+      status: ['candidate', 'confirmed', 'rejected'].includes(options?.status)
+        ? options.status
+        : undefined,
+      predicate: String(options?.predicate || ''),
+      from: String(options?.from || ''),
+      to: String(options?.to || ''),
+      limit: Number(options?.limit || 40),
       offset: Number(options?.offset || 0)
     })
   }

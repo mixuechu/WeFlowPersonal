@@ -834,6 +834,75 @@ test('conflicting current claims coexist as review candidates', () => withStore(
   assert.deepEqual(new Set(claims.map(claim => claim.evidence[0].evidence_role)), new Set(['direct', 'indirect']))
 }))
 
+test('multi-year fact archive is fully pageable and filters before ranking', () => withStore(store => {
+  store.syncGraph({
+    entities: [{
+      id: 'fact-owner',
+      type: 'person',
+      canonicalName: '事实档案主人',
+      summary: '',
+      confidence: 1,
+      trustStatus: 'confirmed',
+      aliases: [],
+      accountIds: []
+    }],
+    relations: [],
+    reviewQueue: []
+  } as any)
+  const claims = Array.from({ length: 1_200 }, (_, index) => {
+    const year = 2020 + (index % 6)
+    return {
+      id: `archive-claim-${String(index).padStart(4, '0')}`,
+      subjectId: 'fact-owner',
+      predicate: index === 777 ? '特殊长期关键词' : `履历字段${String(index).padStart(4, '0')}`,
+      objectValue: `事实值 ${index}`,
+      confidence: 0.9,
+      status: index % 4 === 0 ? 'rejected' : index % 4 === 1 ? 'candidate' : 'confirmed',
+      sourceNature: index % 3 === 0 ? 'self_statement' : 'other_statement',
+      validFrom: `${year}-01-01`,
+      validTo: `${year + 1}-12-31`,
+      searchText: `事实档案主人 履历字段 ${index}`,
+      evidence: [{
+        messageId: `archive-message-${index}`,
+        sessionId: index % 2 === 0 ? `data-source:documents:file-${index}` : 'wechat-session',
+        timestamp: 1_700_000_000 + index,
+        excerpt: `事实原文 ${index}`
+      }]
+    }
+  })
+  store.upsertClaims(claims)
+
+  const first = store.listClaimArchive({ limit: 100 })
+  const second = store.listClaimArchive({ offset: 100, limit: 100 })
+  assert.equal(first.total, 900)
+  assert.equal(first.items.length, 100)
+  assert.equal(second.items.length, 100)
+  assert.equal(new Set([...first.items, ...second.items].map(item => item.id)).size, 200)
+  assert.ok(first.items.every(item => item.status !== 'rejected'))
+  assert.ok(first.items.every(item => item.evidence_count === 1 && item.evidence.length === 1))
+  assert.equal(store.listClaimArchive({
+    status: 'rejected',
+    entityId: 'fact-owner',
+    limit: 100
+  }).total, 300)
+  assert.equal(store.listClaimArchive({
+    sourceId: 'documents',
+    limit: 100
+  }).total, 300)
+  assert.equal(store.listClaimArchive({
+    predicate: '特殊长期关键词',
+    status: 'candidate'
+  }).items[0]?.id, 'archive-claim-0777')
+  const overlapping = store.listClaimArchive({
+    from: '2024-06-01T00:00:00.000Z',
+    to: '2024-06-30T23:59:59.999Z',
+    limit: 100
+  })
+  assert.ok(overlapping.total > 0)
+  assert.ok(overlapping.items.every(item =>
+    String(item.valid_to) >= '2024-06-01' && String(item.valid_from) <= '2024-06-30'))
+}))
+
 test('entity dossier memory is scoped before its bounded result limit', () => withStore(store => {
   store.syncGraph({
     entities: [
