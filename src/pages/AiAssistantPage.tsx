@@ -2366,7 +2366,7 @@ function AiAssistantPage() {
                     ? ` · 引用${memoryDiagnostics.referentialIntegrityHealthy ? '完整' : '异常'} / 清理孤儿 ${Number(memoryDiagnostics.structuredEvidenceReferences.orphansRemovedTotal || 0).toLocaleString()} 条`
                     : ''}
                   {memoryDiagnostics.genericSearchEvidenceIdentity?.version
-                    ? ` · 通用证据${memoryDiagnostics.genericSearchEvidenceIdentityHealthy ? '复合身份正常' : '身份异常'} / 迁移 ${Number(memoryDiagnostics.genericSearchEvidenceIdentity.migrationsTotal || 0).toLocaleString()}`
+                    ? ` · 通用证据${memoryDiagnostics.genericSearchEvidenceIdentityHealthy ? '身份与引用完整' : '约束异常'} / 迁移 ${Number(memoryDiagnostics.genericSearchEvidenceIdentity.migrationsTotal || 0).toLocaleString()} / 清理孤儿 ${Number(memoryDiagnostics.genericSearchEvidenceIdentity.orphanRowsRemovedTotal || 0).toLocaleString()}`
                     : ''}
                   {memoryDiagnostics.structuredSearchIndex?.version
                     ? ` · 检索索引${memoryDiagnostics.structuredSearchIndexHealthy ? '一致' : '异常'} / 缺失 ${Number(memoryDiagnostics.structuredSearchIndex.missingDocumentsRebuiltTotal || 0).toLocaleString()} / 正文 ${Number(memoryDiagnostics.structuredSearchIndex.structuredDocumentsRepairedTotal || 0).toLocaleString()} / FTS ${Number(memoryDiagnostics.structuredSearchIndex.ftsPayloadsRebuiltTotal || 0).toLocaleString()} / ANN 孤儿 ${Number(memoryDiagnostics.structuredSearchIndex.orphanAnnRowsRemovedTotal || 0).toLocaleString()} / 元数据 ${Number(memoryDiagnostics.structuredSearchIndex.metadataDocumentsRepairedTotal || 0).toLocaleString()} / 实体 ${Number(memoryDiagnostics.structuredSearchIndex.entityDocumentsRepairedTotal || 0).toLocaleString()} / 资源 ${Number(memoryDiagnostics.structuredSearchIndex.resourceDocumentsRepairedTotal || 0).toLocaleString()}`
@@ -4287,14 +4287,17 @@ function AiAssistantPage() {
               </div>
             </div>}
             {memoryDiagnostics.genericSearchEvidenceIdentity?.version && <div className={`assistant-recovery-audit ${memoryDiagnostics.genericSearchEvidenceIdentityHealthy ? 'healthy' : 'unhealthy'}`}>
-              <header><ShieldCheck size={15} /><span><b>通用搜索证据复合身份</b>
-                <small>资源、待办等通用证据以“文档＋会话＋消息”作为唯一身份；不同群聊出现相同消息 ID 时仍可分别保留、核验和跳回原文。</small>
+              <header><ShieldCheck size={15} /><span><b>通用搜索证据身份与引用完整性</b>
+                <small>资源、待办等证据以“文档＋会话＋消息”作为唯一身份，并由 SQLCipher 级联外键和自愈删除保护共同防止孤儿原文；会话消息索引也会在启动时核验。</small>
               </span></header>
               <div className="assistant-recovery-current">
                 <span>当前状态 <b>{memoryDiagnostics.genericSearchEvidenceIdentityHealthy ? '约束正常' : '需要检查'}</b></span>
+                <span>级联外键 <b>{memoryDiagnostics.genericSearchEvidenceIdentity.foreignKeyCascade ? '正常' : '缺失'}</b></span>
+                <span>消息定位索引 <b>{memoryDiagnostics.genericSearchEvidenceIdentity.lookupIndexHealthy ? '正常' : '缺失'}</b></span>
                 <span>本次检查行数 <b>{Number(memoryDiagnostics.genericSearchEvidenceIdentity.rowsAfter || 0).toLocaleString()}</b></span>
                 <span>累计迁移 <b>{Number(memoryDiagnostics.genericSearchEvidenceIdentity.migrationsTotal || 0).toLocaleString()}</b> 次</span>
                 <span>累计去重 <b>{Number(memoryDiagnostics.genericSearchEvidenceIdentity.duplicatesRemovedTotal || 0).toLocaleString()}</b></span>
+                <span>累计清理孤儿 <b>{Number(memoryDiagnostics.genericSearchEvidenceIdentity.orphanRowsRemovedTotal || 0).toLocaleString()}</b></span>
                 <span>本次检查 <b>{memoryDiagnostics.genericSearchEvidenceIdentity.checkedAt
                   ? new Date(memoryDiagnostics.genericSearchEvidenceIdentity.checkedAt).toLocaleString('zh-CN')
                   : '未知'}</b></span>

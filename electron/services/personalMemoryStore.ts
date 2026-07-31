@@ -576,7 +576,8 @@ export class PersonalMemoryStore {
         timestamp INTEGER NOT NULL DEFAULT 0,
         sender TEXT NOT NULL DEFAULT '',
         excerpt TEXT NOT NULL DEFAULT '',
-        PRIMARY KEY(document_id,session_id,message_id)
+        PRIMARY KEY(document_id,session_id,message_id),
+        FOREIGN KEY(document_id) REFERENCES search_documents(id) ON DELETE CASCADE
       ) STRICT;
     `)
     this.ensureColumn('entities', 'identity_version', 'INTEGER NOT NULL DEFAULT 1')
@@ -1056,8 +1057,30 @@ export class PersonalMemoryStore {
       .filter(column => Number(column.pk || 0) > 0)
       .sort((left, right) => left.pk - right.pk)
       .map(column => column.name)
-    const constraintsHealthyBefore =
+    const foreignKey = (this.db.prepare(`
+      PRAGMA foreign_key_list(search_document_evidence)
+    `).all() as Array<{
+      table: string
+      from: string
+      to: string
+      on_delete: string
+    }>).find(item =>
+      item.table === 'search_documents'
+      && item.from === 'document_id'
+      && item.to === 'id'
+      && String(item.on_delete || '').toUpperCase() === 'CASCADE'
+    )
+    const lookupIndexSql = String((this.db.prepare(`
+      SELECT sql FROM sqlite_master
+      WHERE type='index' AND name='idx_search_document_evidence_message'
+    `).get() as any)?.sql || '').toLowerCase().replace(/\s+/g, ' ')
+    const lookupIndexHealthy = lookupIndexSql.includes(
+      'on search_document_evidence(session_id,message_id)'
+    )
+    const structuralConstraintsHealthyBefore =
       JSON.stringify(primaryKey) === JSON.stringify(expectedPrimaryKey)
+      && Boolean(foreignKey)
+      && lookupIndexHealthy
     const previousRow = this.db.prepare(`
       SELECT value FROM schema_meta WHERE key='generic_search_evidence_identity'
     `).get() as any
@@ -1067,6 +1090,14 @@ export class PersonalMemoryStore {
     const rowsBefore = Number((this.db.prepare(`
       SELECT COUNT(*) AS count FROM search_document_evidence
     `).get() as any)?.count || 0)
+    const orphanRowsBefore = Number((this.db.prepare(`
+      SELECT COUNT(*) AS count FROM search_document_evidence evidence
+      WHERE NOT EXISTS(
+        SELECT 1 FROM search_documents document WHERE document.id=evidence.document_id
+      )
+    `).get() as any)?.count || 0)
+    const constraintsHealthyBefore =
+      structuralConstraintsHealthyBefore && orphanRowsBefore === 0
     let rowsAfter = rowsBefore
     this.db.transaction(() => {
       if (!constraintsHealthyBefore) {
@@ -1080,16 +1111,24 @@ export class PersonalMemoryStore {
             timestamp INTEGER NOT NULL DEFAULT 0,
             sender TEXT NOT NULL DEFAULT '',
             excerpt TEXT NOT NULL DEFAULT '',
-            PRIMARY KEY(document_id,session_id,message_id)
+            PRIMARY KEY(document_id,session_id,message_id),
+            FOREIGN KEY(document_id) REFERENCES search_documents(id) ON DELETE CASCADE
           ) STRICT;
           INSERT OR IGNORE INTO search_document_evidence_v2(
             document_id,message_id,session_id,timestamp,sender,excerpt
           )
-          SELECT document_id,message_id,session_id,timestamp,sender,excerpt
-          FROM search_document_evidence
-          ORDER BY timestamp DESC,rowid DESC;
+          SELECT evidence.document_id,evidence.message_id,evidence.session_id,
+            evidence.timestamp,evidence.sender,evidence.excerpt
+          FROM search_document_evidence evidence
+          WHERE EXISTS(
+            SELECT 1 FROM search_documents document
+            WHERE document.id=evidence.document_id
+          )
+          ORDER BY evidence.timestamp DESC,evidence.rowid DESC;
           DROP TABLE search_document_evidence;
           ALTER TABLE search_document_evidence_v2 RENAME TO search_document_evidence;
+          CREATE INDEX idx_search_document_evidence_message
+            ON search_document_evidence(session_id,message_id);
           CREATE TRIGGER trg_search_documents_delete_payload
           AFTER DELETE ON search_documents
           BEGIN
@@ -1102,19 +1141,26 @@ export class PersonalMemoryStore {
         `).get() as any)?.count || 0)
       }
       const audit = {
-        version: 1,
+        version: 2,
         checkedAt,
         migratedThisStart: !constraintsHealthyBefore,
         rowsBefore,
         rowsAfter,
-        duplicatesRemovedThisStart: Math.max(0, rowsBefore - rowsAfter),
+        duplicatesRemovedThisStart: Math.max(0, rowsBefore - rowsAfter - orphanRowsBefore),
+        orphanRowsRemovedThisStart: constraintsHealthyBefore ? 0 : orphanRowsBefore,
         migrationsTotal: Math.max(0, Number(previousAudit?.migrationsTotal || 0))
           + (constraintsHealthyBefore ? 0 : 1),
         duplicatesRemovedTotal: Math.max(
           0,
           Number(previousAudit?.duplicatesRemovedTotal || 0)
-        ) + Math.max(0, rowsBefore - rowsAfter),
+        ) + Math.max(0, rowsBefore - rowsAfter - orphanRowsBefore),
+        orphanRowsRemovedTotal: Math.max(
+          0,
+          Number(previousAudit?.orphanRowsRemovedTotal || 0)
+        ) + (constraintsHealthyBefore ? 0 : orphanRowsBefore),
         primaryKey: expectedPrimaryKey,
+        foreignKeyCascade: true,
+        lookupIndexHealthy: true,
         constraintsHealthy: true
       }
       this.db!.prepare(`
@@ -1863,9 +1909,13 @@ export class PersonalMemoryStore {
           rowsBefore: Number(audit.rowsBefore || 0),
           rowsAfter: Number(audit.rowsAfter || 0),
           duplicatesRemovedThisStart: Number(audit.duplicatesRemovedThisStart || 0),
+          orphanRowsRemovedThisStart: Number(audit.orphanRowsRemovedThisStart || 0),
           migrationsTotal: Number(audit.migrationsTotal || 0),
           duplicatesRemovedTotal: Number(audit.duplicatesRemovedTotal || 0),
+          orphanRowsRemovedTotal: Number(audit.orphanRowsRemovedTotal || 0),
           primaryKey: Array.isArray(audit.primaryKey) ? audit.primaryKey.map(String) : [],
+          foreignKeyCascade: audit.foreignKeyCascade === true,
+          lookupIndexHealthy: audit.lookupIndexHealthy === true,
           constraintsHealthy: audit.constraintsHealthy === true
         }
       } catch {
@@ -1876,9 +1926,13 @@ export class PersonalMemoryStore {
           rowsBefore: 0,
           rowsAfter: 0,
           duplicatesRemovedThisStart: 0,
+          orphanRowsRemovedThisStart: 0,
           migrationsTotal: 0,
           duplicatesRemovedTotal: 0,
+          orphanRowsRemovedTotal: 0,
           primaryKey: [],
+          foreignKeyCascade: false,
+          lookupIndexHealthy: false,
           constraintsHealthy: false
         }
       }

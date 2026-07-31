@@ -1201,6 +1201,19 @@ test('structured evidence migration deduplicates nullable legacy identities and 
         role: 'support'
       }]
     }])
+    first.upsertResources([{
+      id: 'legacy-sender-source',
+      resourceType: 'chat-history',
+      title: '迁移发送者来源',
+      content: '可用于回填发送者的旧索引',
+      evidence: [{
+        messageId: 'migration-message',
+        sessionId: 'migration-session',
+        timestamp: 1_700_000_000,
+        sender: '迁移发送者',
+        excerpt: '可用于回填发送者的旧索引'
+      }]
+    }])
     const database = (first as any).db
     database.exec(`
       DROP INDEX idx_evidence_claim_message;
@@ -1215,14 +1228,6 @@ test('structured evidence migration deduplicates nullable legacy identities and 
     `).run(
       'migration-claim', 'migration-message', 'migration-session', 1_700_000_000,
       '', '这是迁移时应保留的更完整摘录', 'direct'
-    )
-    database.prepare(`
-      INSERT INTO search_document_evidence(
-        document_id,message_id,session_id,timestamp,sender,excerpt
-      ) VALUES(?,?,?,?,?,?)
-    `).run(
-      'resource:legacy-sender-source', 'migration-message', 'migration-session',
-      1_700_000_000, '迁移发送者', '可用于回填发送者的旧索引'
     )
     assert.equal(database.prepare(
       'SELECT COUNT(*) AS count FROM evidence WHERE claim_id=?'
@@ -1637,6 +1642,8 @@ test('structured search index reconciliation removes ghosts and rebuilds missing
       metadata: { sourceId: 'wechat', sessionName: '资源测试群' }
     }])
     const database = (first as any).db
+    database.pragma('foreign_keys = OFF')
+    assert.equal(Number(database.pragma('foreign_keys', { simple: true })), 0)
     database.exec(`
       DROP TRIGGER trg_claims_delete_search;
       DROP TRIGGER trg_relations_delete_search;
@@ -1710,6 +1717,8 @@ test('structured search index reconciliation removes ghosts and rebuilds missing
       INSERT INTO search_fts(document_id,title,search_text)
         VALUES('entity:search-person-candidate','候选幽灵实体','候选幽灵实体');
     `)
+    database.pragma('foreign_keys = ON')
+    assert.equal(Number(database.pragma('foreign_keys', { simple: true })), 1)
     first.close()
 
     const reopened = new PersonalMemoryStore()
@@ -1726,11 +1735,12 @@ test('structured search index reconciliation removes ghosts and rebuilds missing
         resources: 1,
         entities: 1
       })
-      assert.equal(diagnostics.structuredSearchIndex.orphanPayloadRowsRemovedThisStart, 9)
+      assert.equal(diagnostics.genericSearchEvidenceIdentity.orphanRowsRemovedThisStart, 1)
+      assert.equal(diagnostics.structuredSearchIndex.orphanPayloadRowsRemovedThisStart, 8)
       assert.equal(diagnostics.structuredSearchIndex.orphanAnnRowsRemovedThisStart, 1)
       assert.equal(diagnostics.structuredSearchIndex.orphanAnnRowsRemovedTotal, 1)
       assert.equal(diagnostics.structuredSearchIndex.missingDocumentsRebuiltTotal, 4)
-      assert.equal(diagnostics.structuredSearchIndex.ghostRowsRemovedTotal, 12)
+      assert.equal(diagnostics.structuredSearchIndex.ghostRowsRemovedTotal, 11)
       assert.equal(diagnostics.structuredSearchIndex.ftsPayloadsRebuiltThisStart, 1)
       assert.equal(diagnostics.structuredSearchIndex.ftsPayloadsRebuiltTotal, 1)
       assert.equal(diagnostics.structuredSearchIndex.metadataDocumentsRepairedThisStart, 1)
@@ -1920,6 +1930,12 @@ test('generic search evidence migrates to session-scoped identity and preserves 
       ) STRICT;
       INSERT INTO search_document_evidence_legacy
       SELECT * FROM search_document_evidence;
+      INSERT INTO search_document_evidence_legacy(
+        document_id,message_id,session_id,timestamp,sender,excerpt
+      ) VALUES(
+        'missing-search-document','orphan-message','orphan-session',1,
+        '孤儿发送者','旧库孤儿证据'
+      );
       DROP TABLE search_document_evidence;
       ALTER TABLE search_document_evidence_legacy RENAME TO search_document_evidence;
       CREATE TRIGGER trg_search_documents_delete_payload
@@ -1937,8 +1953,33 @@ test('generic search evidence migrates to session-scoped identity and preserves 
       const migration = migrated.getDiagnostics().genericSearchEvidenceIdentity
       assert.equal(migration.constraintsHealthy, true)
       assert.equal(migration.migratedThisStart, true)
+      assert.equal(migration.version, 2)
       assert.deepEqual(migration.primaryKey, ['document_id', 'session_id', 'message_id'])
+      assert.equal(migration.foreignKeyCascade, true)
+      assert.equal(migration.lookupIndexHealthy, true)
+      assert.equal(migration.orphanRowsRemovedThisStart, 1)
+      assert.equal(migration.orphanRowsRemovedTotal, 1)
       assert.equal(migration.migrationsTotal, 1)
+      assert.deepEqual(
+        (migrated as any).db.prepare(`
+          PRAGMA foreign_key_list(search_document_evidence)
+        `).all().map((item: any) => ({
+          table: item.table,
+          from: item.from,
+          to: item.to,
+          onDelete: item.on_delete
+        })),
+        [{
+          table: 'search_documents',
+          from: 'document_id',
+          to: 'id',
+          onDelete: 'CASCADE'
+        }]
+      )
+      assert.match(String(((migrated as any).db.prepare(`
+        SELECT sql FROM sqlite_master
+        WHERE type='index' AND name='idx_search_document_evidence_message'
+      `).get() as any)?.sql || ''), /session_id\s*,\s*message_id/i)
       migrated.upsertResources([{
         id: 'resource-cross-session-evidence',
         resourceType: 'chat-history',
@@ -1963,6 +2004,26 @@ test('generic search evidence migrates to session-scoped identity and preserves 
           .map(item => item.session_id).sort(),
         ['session-alpha', 'session-beta']
       )
+      migrated.upsertResources([{
+        id: 'resource-cascade-evidence',
+        resourceType: 'chat-history',
+        title: '级联删除证据',
+        content: '外键删除保护',
+        evidence: [{
+          messageId: 'cascade-message',
+          sessionId: 'cascade-session',
+          timestamp: 1_700_003_004,
+          sender: '级联发送者',
+          excerpt: '级联删除证据'
+        }]
+      }])
+      ;(migrated as any).db.prepare(`
+        DELETE FROM search_documents WHERE id='resource:resource-cascade-evidence'
+      `).run()
+      assert.equal(Number(((migrated as any).db.prepare(`
+        SELECT COUNT(*) AS count FROM search_document_evidence
+        WHERE document_id='resource:resource-cascade-evidence'
+      `).get() as any)?.count || 0), 0)
     } finally {
       migrated.close()
     }
@@ -1974,6 +2035,7 @@ test('generic search evidence migrates to session-scoped identity and preserves 
       assert.equal(migration.constraintsHealthy, true)
       assert.equal(migration.migratedThisStart, false)
       assert.equal(migration.migrationsTotal, 1)
+      assert.equal(migration.orphanRowsRemovedTotal, 1)
       assert.equal(
         reopened.getDocumentEvidencePage(
           'resource', 'resource-cross-session-evidence'
