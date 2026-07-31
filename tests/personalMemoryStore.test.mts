@@ -55,7 +55,11 @@ import {
   relationSemanticId
 } from '../electron/services/relationCorrectionPolicy.ts'
 import { enqueueUniqueNotification, markNotificationAttempt } from '../electron/services/notificationOutbox.ts'
-import { GRAPH_QUERY_EVIDENCE_LIMIT, findCommonGraphNeighbors } from '../electron/services/graphCommonNeighbors.ts'
+import {
+  GRAPH_QUERY_EVIDENCE_LIMIT,
+  findCommonGraphNeighbors,
+  findScopedGraphPath
+} from '../electron/services/graphCommonNeighbors.ts'
 import { buildProjectDirectory, buildProjectInsight, buildProjectInsights } from '../electron/services/projectInsights.ts'
 import { MEMORY_CARD_EVIDENCE_LIMIT, PROJECT_EVIDENCE_LIMIT } from '../shared/evidencePayload.ts'
 import {
@@ -1486,6 +1490,15 @@ test('structured evidence preserves identical message ids from different sources
       const page = first.getDocumentEvidencePage(kind, id)
       assert.equal(page.total, 2)
       assert.deepEqual(page.items.map(item => item.source_id).sort(), ['documents', 'wechat'])
+      const scopedPayload = first.getDocumentEvidencePayload(kind, id, {
+        sourceIds: ['documents'],
+        sessionId: 'shared-session'
+      })
+      assert.equal(scopedPayload.evidenceTotal, 1)
+      assert.deepEqual(
+        scopedPayload.evidence.map(item => [item.source_id, item.sender, item.excerpt]),
+        [['documents', '文档连接器', '文档原文']]
+      )
     }
     first.close()
 
@@ -2119,6 +2132,24 @@ test('generic search evidence migrates to source-and-session identity and preser
         migrated.getDocumentEvidence('resource', 'resource-cross-session-evidence')
           .map(item => item.source_id).sort(),
         ['documents', 'wechat']
+      )
+      const documentOnly = migrated.getDocumentEvidencePayload(
+        'resource',
+        'resource-cross-session-evidence',
+        { sourceIds: ['documents'], sessionId: 'shared-session' }
+      )
+      assert.equal(documentOnly.evidenceTotal, 1)
+      assert.deepEqual(
+        documentOnly.evidence.map(item => [item.source_id, item.sender, item.excerpt]),
+        [['documents', '文档连接器', '文档来源证据']]
+      )
+      assert.deepEqual(
+        migrated.getDocumentEvidencePayload(
+          'resource',
+          'resource-cross-session-evidence',
+          { sourceIds: ['mail'] }
+        ),
+        { evidence: [], evidenceTotal: 0 }
       )
       migrated.upsertResources([{
         id: 'resource-cascade-evidence',
@@ -2816,6 +2847,73 @@ test('common-neighbor graph evidence is newest-first bounded with a truthful tot
   assert.equal(result.leftEdges[0].evidenceTotal, GRAPH_QUERY_EVIDENCE_LIMIT + 3)
   assert.equal(result.leftEdges[0].evidence.length, GRAPH_QUERY_EVIDENCE_LIMIT)
   assert.equal(result.leftEdges[0].evidence.at(-1).messageId, `wechat:graph:${GRAPH_QUERY_EVIDENCE_LIMIT + 3}`)
+})
+
+test('graph paths never traverse relations outside the retrieval scope', () => {
+  const entities = [
+    { id: 'left' },
+    { id: 'right' },
+    { id: 'calendar-bridge' },
+    { id: 'rejected-bridge' }
+  ]
+  const relations = [{
+    id: 'wechat-direct',
+    subjectId: 'left',
+    objectId: 'right',
+    predicate: '微信关系',
+    status: 'confirmed',
+    evidence: [{ sourceId: 'wechat', messageId: 'wechat-direct' }]
+  }, {
+    id: 'calendar-left',
+    subjectId: 'left',
+    objectId: 'calendar-bridge',
+    predicate: '日历同会',
+    status: 'confirmed',
+    evidence: [{ sourceId: 'calendar', messageId: 'calendar-left' }]
+  }, {
+    id: 'calendar-right',
+    subjectId: 'calendar-bridge',
+    objectId: 'right',
+    predicate: '日历同会',
+    status: 'confirmed',
+    evidence: [{ sourceId: 'calendar', messageId: 'calendar-right' }]
+  }, {
+    id: 'rejected-shortcut',
+    subjectId: 'left',
+    objectId: 'rejected-bridge',
+    predicate: '错误捷径',
+    status: 'rejected'
+  }, {
+    id: 'rejected-shortcut-end',
+    subjectId: 'rejected-bridge',
+    objectId: 'right',
+    predicate: '错误捷径',
+    status: 'confirmed'
+  }]
+  const unscoped = findScopedGraphPath('left', 'right', entities, relations, 6)
+  assert.deepEqual(unscoped.steps.map((step: any) => step.relationId), ['wechat-direct'])
+  const calendarOnly = findScopedGraphPath(
+    'left',
+    'right',
+    entities,
+    relations,
+    6,
+    new Set(['calendar-left', 'calendar-right'])
+  )
+  assert.deepEqual(
+    calendarOnly.steps.map((step: any) => step.relationId),
+    ['calendar-left', 'calendar-right']
+  )
+  const noEligiblePath = findScopedGraphPath(
+    'left',
+    'right',
+    entities,
+    relations,
+    6,
+    new Set(['calendar-left'])
+  )
+  assert.equal(noEligiblePath.found, false)
+  assert.deepEqual(noEligiblePath.steps, [])
 })
 
 test('project intelligence aggregates members, progress, risks, decisions and evidence', () => {

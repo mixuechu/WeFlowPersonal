@@ -62,7 +62,7 @@ import {
   markNotificationAttempt,
   type NotificationOutbox
 } from './notificationOutbox'
-import { findCommonGraphNeighbors } from './graphCommonNeighbors'
+import { findCommonGraphNeighbors, findScopedGraphPath } from './graphCommonNeighbors'
 import {
   boundedEvidencePayload,
   GRAPH_QUERY_EVIDENCE_LIMIT,
@@ -4431,9 +4431,18 @@ export class AiAssistantService {
     return result
   }
 
-  searchMemory(query: string, limit = 200, allowedIds: Set<string> | null = null): any[] {
+  searchMemory(
+    query: string,
+    limit = 200,
+    allowedIds: Set<string> | null = null,
+    evidenceScope: MemorySearchOptions = {}
+  ): any[] {
     return personalMemoryStore.searchText(String(query || ''), limit, allowedIds).map((item: any) => {
-      const evidencePayload = personalMemoryStore.getDocumentEvidencePayload(item.document_type, item.source_id)
+      const evidencePayload = personalMemoryStore.getDocumentEvidencePayload(
+        item.document_type,
+        item.source_id,
+        evidenceScope
+      )
       return {
         ...item,
         metadata: (() => { try { return JSON.parse(item.metadata_json || '{}') } catch { return {} } })(),
@@ -4458,7 +4467,7 @@ export class AiAssistantService {
     const allowedIds = personalMemoryStore.listScopedSearchDocumentIds(scopedOptions)
     const scopeCandidateCount = allowedIds?.size ?? null
     const candidateLimit = Math.max(300, Math.min(500, Number(maxResults) || 40))
-    const lexical = this.searchMemory(query, candidateLimit, allowedIds)
+    const lexical = this.searchMemory(query, candidateLimit, allowedIds, scopedOptions)
     try {
       await this.ensureVectorIndex()
       const [queryVector] = await localEmbeddingService.embed([String(query || '')])
@@ -4476,7 +4485,7 @@ export class AiAssistantService {
         const existing = merged.get(item.id)
         const evidencePayload = existing
           ? { evidence: existing.evidence, evidenceTotal: existing.evidenceTotal }
-          : personalMemoryStore.getDocumentEvidencePayload(item.document_type, item.source_id)
+          : personalMemoryStore.getDocumentEvidencePayload(item.document_type, item.source_id, scopedOptions)
         const semanticContribution = Math.max(0, Number(item.semantic_score || 0)) * 0.035 + 1 / (60 + index)
         merged.set(item.id, {
           ...(existing || item),
@@ -4535,7 +4544,11 @@ export class AiAssistantService {
       ? await this.searchMemoryHybrid(text, scopedOptions, 500)
       : filterMemorySearchResults(
           personalMemoryStore.listSearchDocumentsInScope(allowedIds!, 500).map((item: any) => {
-            const evidencePayload = personalMemoryStore.getDocumentEvidencePayload(item.document_type, item.source_id)
+            const evidencePayload = personalMemoryStore.getDocumentEvidencePayload(
+              item.document_type,
+              item.source_id,
+              scopedOptions
+            )
             return {
               ...item,
               metadata: (() => { try { return JSON.parse(item.metadata_json || '{}') } catch { return {} } })(),
@@ -4589,44 +4602,20 @@ export class AiAssistantService {
     return this.vectorIndexPromise
   }
 
-  findGraphPath(fromId: string, toId: string, maxDepth = 5): any {
-    const entities = new Map(this.state.graph.entities.filter(isTrustedEntity).map(entity => [entity.id, entity]))
-    if (!entities.has(fromId) || !entities.has(toId)) return { found: false, entities: [], steps: [] }
-    if (fromId === toId) return { found: true, entities: [entities.get(fromId)], steps: [] }
-    const relations = this.state.graph.relations.filter(relation =>
-      relation.status === 'confirmed' && entities.has(relation.subjectId) && entities.has(relation.objectId))
-    const adjacency = new Map<string, Array<{ nextId: string; relation: GraphRelation; forward: boolean }>>()
-    for (const relation of relations) {
-      adjacency.set(relation.subjectId, [...(adjacency.get(relation.subjectId) || []), { nextId: relation.objectId, relation, forward: true }])
-      adjacency.set(relation.objectId, [...(adjacency.get(relation.objectId) || []), { nextId: relation.subjectId, relation, forward: false }])
-    }
-    const queue: Array<{ entityId: string; steps: any[] }> = [{ entityId: fromId, steps: [] }]
-    const visited = new Set([fromId])
-    const safeDepth = Math.max(1, Math.min(8, Number(maxDepth) || 5))
-    while (queue.length) {
-      const current = queue.shift()!
-      if (current.steps.length >= safeDepth) continue
-      for (const edge of adjacency.get(current.entityId) || []) {
-        if (visited.has(edge.nextId)) continue
-        const steps = [...current.steps, {
-          relationId: edge.relation.id,
-          fromId: current.entityId,
-          toId: edge.nextId,
-          predicate: edge.relation.predicate,
-          forward: edge.forward,
-          status: edge.relation.status,
-          confidence: edge.relation.confidence,
-          ...boundedEvidencePayload(edge.relation.evidence, GRAPH_QUERY_EVIDENCE_LIMIT)
-        }]
-        if (edge.nextId === toId) {
-          const pathIds = [fromId, ...steps.map(step => step.toId)]
-          return { found: true, entities: pathIds.map(id => entities.get(id)), steps }
-        }
-        visited.add(edge.nextId)
-        queue.push({ entityId: edge.nextId, steps })
-      }
-    }
-    return { found: false, entities: [], steps: [] }
+  findGraphPath(
+    fromId: string,
+    toId: string,
+    maxDepth = 5,
+    allowedRelationIds: Set<string> | null = null
+  ): any {
+    return findScopedGraphPath(
+      fromId,
+      toId,
+      this.state.graph.entities.filter(isTrustedEntity),
+      this.state.graph.relations,
+      maxDepth,
+      allowedRelationIds
+    )
   }
 
   findCommonNeighbors(fromId: string, toId: string): any {
@@ -4676,7 +4665,18 @@ export class AiAssistantService {
     const mergedResults = new Map<string, any>()
     let plannedGraphPath: any = null
     if (plan.matchedEntities.length >= 2) {
-      plannedGraphPath = this.findGraphPath(plan.matchedEntities[0].id, plan.matchedEntities[1].id, 6)
+      if (plannedScopeIds !== null) plan.explanation.push('图路径同样受当前检索范围约束')
+      const allowedRelationIds = plannedScopeIds === null
+        ? null
+        : new Set([...plannedScopeIds]
+          .filter(documentId => documentId.startsWith('relation:'))
+          .map(documentId => documentId.slice('relation:'.length)))
+      plannedGraphPath = this.findGraphPath(
+        plan.matchedEntities[0].id,
+        plan.matchedEntities[1].id,
+        6,
+        allowedRelationIds
+      )
       if (plannedGraphPath.found && plannedGraphPath.steps.length) {
         const names = new Map(trustedEntities.map(entity => [entity.id, entity.canonicalName]))
         const pathResults = plannedGraphPath.steps.map((step: any) => ({
@@ -4686,15 +4686,20 @@ export class AiAssistantService {
           title: step.predicate,
           search_text: `${names.get(step.fromId) || step.fromId} ${step.forward ? step.predicate : `反向:${step.predicate}`} ${names.get(step.toId) || step.toId}`,
           metadata: { subjectId: step.fromId, objectId: step.toId, predicate: step.predicate, status: step.status },
-          evidence: step.evidence,
-          evidenceTotal: step.evidenceTotal,
+          ...personalMemoryStore.getDocumentEvidencePayload('relation', step.relationId, plannedOptions),
           hybrid_score: 1,
           match_source: '图路径'
         }))
-        for (const result of filterMemorySearchResults(pathResults, plannedOptions)) mergedResults.set(result.id, result)
+        for (const result of filterMemorySearchResults(
+          pathResults,
+          plannedOptions,
+          plannedScopeIds !== null
+        )) mergedResults.set(result.id, result)
         plan.explanation.push(`图路径：${plannedGraphPath.steps.length} 跳`)
       } else {
-        plan.explanation.push('图路径：未找到已知连接')
+        plan.explanation.push(plannedScopeIds === null
+          ? '图路径：未找到已知连接'
+          : '图路径：当前检索范围内未找到已知连接')
       }
     }
     for (const plannedQuery of plan.queries.slice(0, 6)) {

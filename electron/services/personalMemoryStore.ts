@@ -6172,20 +6172,46 @@ export class PersonalMemoryStore {
     return pairs.sort((left, right) => right.score - left.score).slice(0, Math.max(1, Math.min(1000, limit)))
   }
 
-  getDocumentEvidencePayload(documentType: string, sourceId: string): { evidence: any[]; evidenceTotal: number } {
+  getDocumentEvidencePayload(
+    documentType: string,
+    sourceId: string,
+    scope: Pick<MemorySearchOptions, 'sourceIds' | 'sessionId' | 'sessionName'> = {}
+  ): { evidence: any[]; evidenceTotal: number } {
     if (!this.db) return { evidence: [], evidenceTotal: 0 }
+    const sourceIds = [...new Set((scope.sourceIds || [])
+      .map(value => String(value).trim().toLowerCase()).filter(Boolean))]
+    const sessions = [...new Set([scope.sessionId, scope.sessionName]
+      .map(value => String(value || '').trim()).filter(Boolean))]
+    const evidenceScope = (alias: string): { sql: string; parameters: string[] } => {
+      const conditions: string[] = []
+      const parameters: string[] = []
+      if (sourceIds.length) {
+        conditions.push(`LOWER(${alias}.source_id) IN (${sourceIds.map(() => '?').join(',')})`)
+        parameters.push(...sourceIds)
+      }
+      if (sessions.length) {
+        conditions.push(`${alias}.session_id IN (${sessions.map(() => '?').join(',')})`)
+        parameters.push(...sessions)
+      }
+      return {
+        sql: conditions.length ? ` AND ${conditions.join(' AND ')}` : '',
+        parameters
+      }
+    }
     const documentId = `${documentType}:${sourceId}`
+    const genericScope = evidenceScope('sde')
     const genericTotal = Number((this.db.prepare(`
-      SELECT COUNT(*) AS count FROM search_document_evidence WHERE document_id=?
-    `).get(documentId) as any)?.count || 0)
+      SELECT COUNT(*) AS count FROM search_document_evidence sde
+      WHERE sde.document_id=?${genericScope.sql}
+    `).get(documentId, ...genericScope.parameters) as any)?.count || 0)
     if (genericTotal) {
       const evidence = (this.db.prepare(`
-        SELECT source_id,message_id,session_id,timestamp,sender,excerpt
-        FROM search_document_evidence
-        WHERE document_id=?
-        ORDER BY timestamp DESC,message_id DESC
+        SELECT sde.source_id,sde.message_id,sde.session_id,sde.timestamp,sde.sender,sde.excerpt
+        FROM search_document_evidence sde
+        WHERE sde.document_id=?${genericScope.sql}
+        ORDER BY sde.timestamp DESC,sde.message_id DESC
         LIMIT ?
-      `).all(documentId, MEMORY_CARD_EVIDENCE_LIMIT) as any[]).reverse()
+      `).all(documentId, ...genericScope.parameters, MEMORY_CARD_EVIDENCE_LIMIT) as any[]).reverse()
       return { evidence, evidenceTotal: genericTotal }
     }
     const foreignKey = documentType === 'claim'
@@ -6196,19 +6222,21 @@ export class PersonalMemoryStore {
           ? 'relation_id'
           : ''
     if (!foreignKey) return { evidence: [], evidenceTotal: 0 }
+    const structuredScope = evidenceScope('e')
     const evidenceTotal = Number((this.db.prepare(`
-      SELECT COUNT(*) AS count FROM evidence WHERE ${foreignKey}=?
-    `).get(sourceId) as any)?.count || 0)
+      SELECT COUNT(*) AS count FROM evidence e
+      WHERE e.${foreignKey}=?${structuredScope.sql}
+    `).get(sourceId, ...structuredScope.parameters) as any)?.count || 0)
     if (!evidenceTotal) return { evidence: [], evidenceTotal: 0 }
     const evidence = (this.db.prepare(`
       SELECT source_id,message_id,session_id,timestamp,sender,excerpt,evidence_role
-      FROM evidence
-      WHERE ${foreignKey}=?
-      ORDER BY timestamp DESC,
-        CASE WHEN evidence_role='contradiction' THEN 0 ELSE 1 END,
-        message_id DESC
+      FROM evidence e
+      WHERE e.${foreignKey}=?${structuredScope.sql}
+      ORDER BY e.timestamp DESC,
+        CASE WHEN e.evidence_role='contradiction' THEN 0 ELSE 1 END,
+        e.message_id DESC
       LIMIT ?
-    `).all(sourceId, MEMORY_CARD_EVIDENCE_LIMIT) as any[]).reverse()
+    `).all(sourceId, ...structuredScope.parameters, MEMORY_CARD_EVIDENCE_LIMIT) as any[]).reverse()
     return { evidence, evidenceTotal }
   }
 
