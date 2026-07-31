@@ -3,6 +3,7 @@ import test from 'node:test'
 import {
   evidenceLocalMessageId,
   groupMemorySearchResults,
+  memoryEvidenceSourceLabel,
   normalizeMemoryEvidence
 } from '../src/utils/memorySearchPresentation.ts'
 
@@ -30,6 +31,7 @@ test('memory evidence presentation preserves provenance and opens only valid loc
     evidence_role: 'direct'
   })
   assert.deepEqual(evidence, {
+    sourceId: 'wechat',
     messageId: 'wechat:group-1:987654',
     sessionId: 'group-1',
     timestamp: 1_700_000_000,
@@ -44,4 +46,13 @@ test('memory evidence presentation preserves provenance and opens only valid loc
   assert.equal(evidenceLocalMessageId({ messageId: 'not-a-local-id' }), null)
   assert.equal(evidenceLocalMessageId({ messageId: '-1' }), null)
   assert.equal(normalizeMemoryEvidence({ role: 'contradiction' }).role, 'contradiction')
+  assert.equal(memoryEvidenceSourceLabel(evidence), '微信')
+  assert.equal(memoryEvidenceSourceLabel(normalizeMemoryEvidence({
+    message_id: 'opaque-message',
+    session_id: 'data-source:calendar:work'
+  })), 'macOS 日历')
+  assert.equal(memoryEvidenceSourceLabel(normalizeMemoryEvidence({
+    message_id: 'opaque-message',
+    session_id: 'old-session'
+  })), '历史来源未标注')
 })

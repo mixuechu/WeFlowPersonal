@@ -1,10 +1,34 @@
 export type MemoryEvidence = {
+  sourceId: string
   messageId: string
   sessionId: string
   timestamp: number
   sender: string
   excerpt: string
   role: string
+}
+
+export const MEMORY_SOURCE_LABELS: Record<string, string> = {
+  wechat: '微信',
+  documents: '本机文档',
+  calendar: 'macOS 日历',
+  mail: 'macOS Mail',
+  legacy: '历史来源未标注'
+}
+
+function inferEvidenceSourceId(input: any): string {
+  const explicit = String(input?.source_id ?? input?.sourceId ?? '').trim()
+  if (explicit) return explicit
+  const sessionId = String(input?.session_id ?? input?.sessionId ?? '').trim()
+  const dataSource = sessionId.match(/^data-source:([^:]+)/)?.[1]
+  if (dataSource) return dataSource
+  const messageId = String(input?.message_id ?? input?.messageId ?? '').trim()
+  return messageId.match(/^(wechat|documents|calendar|mail):/)?.[1] || 'legacy'
+}
+
+export function memoryEvidenceSourceLabel(input: any): string {
+  const sourceId = typeof input === 'string' ? input : inferEvidenceSourceId(input)
+  return MEMORY_SOURCE_LABELS[sourceId] || sourceId || MEMORY_SOURCE_LABELS.legacy
 }
 
 const TYPE_ORDER = ['entity', 'relation', 'claim', 'event', 'task', 'resource']
@@ -21,6 +45,7 @@ export const MEMORY_TYPE_LABELS: Record<string, string> = {
 export function normalizeMemoryEvidence(input: any): MemoryEvidence {
   const timestamp = Number(input?.timestamp || 0)
   return {
+    sourceId: inferEvidenceSourceId(input),
     messageId: String(input?.message_id ?? input?.messageId ?? ''),
     sessionId: String(input?.session_id ?? input?.sessionId ?? ''),
     timestamp: Number.isFinite(timestamp) ? timestamp : 0,

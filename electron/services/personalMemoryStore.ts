@@ -40,6 +40,20 @@ function sanitizeMemoryDeletionImpact(value: unknown): {
   }
 }
 
+function evidenceSourceId(
+  evidence: any,
+  fallback = ''
+): string {
+  const explicit = String((evidence?.source_id ?? evidence?.sourceId ?? fallback) || '').trim()
+  if (explicit) return explicit.slice(0, 120)
+  const sessionId = String(evidence?.session_id ?? evidence?.sessionId ?? '').trim()
+  const dataSource = sessionId.match(/^data-source:([^:]+)/)?.[1]
+  if (dataSource) return dataSource.slice(0, 120)
+  const messageId = String(evidence?.message_id ?? evidence?.messageId ?? '').trim()
+  const embeddedSource = messageId.match(/^(wechat|documents|calendar|mail):/)?.[1]
+  return embeddedSource || 'legacy'
+}
+
 export class PersonalMemoryStore {
   private db: Database.Database | null = null
   private databasePath = ''
@@ -571,12 +585,13 @@ export class PersonalMemoryStore {
 
       CREATE TABLE IF NOT EXISTS search_document_evidence (
         document_id TEXT NOT NULL,
+        source_id TEXT NOT NULL DEFAULT 'legacy',
         message_id TEXT NOT NULL,
         session_id TEXT NOT NULL DEFAULT '',
         timestamp INTEGER NOT NULL DEFAULT 0,
         sender TEXT NOT NULL DEFAULT '',
         excerpt TEXT NOT NULL DEFAULT '',
-        PRIMARY KEY(document_id,session_id,message_id),
+        PRIMARY KEY(document_id,source_id,session_id,message_id),
         FOREIGN KEY(document_id) REFERENCES search_documents(id) ON DELETE CASCADE
       ) STRICT;
     `)
@@ -1050,10 +1065,12 @@ export class PersonalMemoryStore {
 
   private repairGenericSearchEvidenceIdentity(): void {
     if (!this.db) return
-    const expectedPrimaryKey = ['document_id', 'session_id', 'message_id']
-    const primaryKey = (this.db.prepare(`
+    const expectedPrimaryKey = ['document_id', 'source_id', 'session_id', 'message_id']
+    const tableColumns = this.db.prepare(`
       PRAGMA table_info(search_document_evidence)
-    `).all() as Array<{ name: string; pk: number }>)
+    `).all() as Array<{ name: string; pk: number }>
+    const hasSourceIdBefore = tableColumns.some(column => column.name === 'source_id')
+    const primaryKey = tableColumns
       .filter(column => Number(column.pk || 0) > 0)
       .sort((left, right) => left.pk - right.pk)
       .map(column => column.name)
@@ -1096,9 +1113,34 @@ export class PersonalMemoryStore {
         SELECT 1 FROM search_documents document WHERE document.id=evidence.document_id
       )
     `).get() as any)?.count || 0)
+    const unscopedRowsBefore = hasSourceIdBefore
+      ? Number((this.db.prepare(`
+          SELECT COUNT(*) AS count FROM search_document_evidence
+          WHERE trim(source_id)=''
+        `).get() as any)?.count || 0)
+      : Math.max(0, rowsBefore - orphanRowsBefore)
     const constraintsHealthyBefore =
-      structuralConstraintsHealthyBefore && orphanRowsBefore === 0
+      structuralConstraintsHealthyBefore
+      && orphanRowsBefore === 0
+      && unscopedRowsBefore === 0
     let rowsAfter = rowsBefore
+    const inferredSourceSql = `
+      CASE
+        WHEN evidence.session_id LIKE 'data-source:%' THEN
+          CASE
+            WHEN instr(substr(evidence.session_id,13),':')>0
+              THEN substr(substr(evidence.session_id,13),1,instr(substr(evidence.session_id,13),':')-1)
+            ELSE substr(evidence.session_id,13)
+          END
+        WHEN lower(substr(evidence.message_id,1,instr(evidence.message_id,':')-1))
+          IN ('wechat','documents','calendar','mail')
+          THEN lower(substr(evidence.message_id,1,instr(evidence.message_id,':')-1))
+        ELSE 'legacy'
+      END
+    `
+    const migratedSourceSql = hasSourceIdBefore
+      ? `COALESCE(NULLIF(evidence.source_id,''),${inferredSourceSql})`
+      : inferredSourceSql
     this.db.transaction(() => {
       if (!constraintsHealthyBefore) {
         this.db!.exec(`
@@ -1106,18 +1148,19 @@ export class PersonalMemoryStore {
           DROP TABLE IF EXISTS search_document_evidence_v2;
           CREATE TABLE search_document_evidence_v2 (
             document_id TEXT NOT NULL,
+            source_id TEXT NOT NULL DEFAULT 'legacy',
             message_id TEXT NOT NULL,
             session_id TEXT NOT NULL DEFAULT '',
             timestamp INTEGER NOT NULL DEFAULT 0,
             sender TEXT NOT NULL DEFAULT '',
             excerpt TEXT NOT NULL DEFAULT '',
-            PRIMARY KEY(document_id,session_id,message_id),
+            PRIMARY KEY(document_id,source_id,session_id,message_id),
             FOREIGN KEY(document_id) REFERENCES search_documents(id) ON DELETE CASCADE
           ) STRICT;
           INSERT OR IGNORE INTO search_document_evidence_v2(
-            document_id,message_id,session_id,timestamp,sender,excerpt
+            document_id,source_id,message_id,session_id,timestamp,sender,excerpt
           )
-          SELECT evidence.document_id,evidence.message_id,evidence.session_id,
+          SELECT evidence.document_id,${migratedSourceSql},evidence.message_id,evidence.session_id,
             evidence.timestamp,evidence.sender,evidence.excerpt
           FROM search_document_evidence evidence
           WHERE EXISTS(
@@ -1141,13 +1184,16 @@ export class PersonalMemoryStore {
         `).get() as any)?.count || 0)
       }
       const audit = {
-        version: 2,
+        version: 3,
         checkedAt,
         migratedThisStart: !constraintsHealthyBefore,
         rowsBefore,
         rowsAfter,
         duplicatesRemovedThisStart: Math.max(0, rowsBefore - rowsAfter - orphanRowsBefore),
         orphanRowsRemovedThisStart: constraintsHealthyBefore ? 0 : orphanRowsBefore,
+        sourceRowsBackfilledThisStart: constraintsHealthyBefore
+          ? 0
+          : Math.min(rowsAfter, unscopedRowsBefore),
         migrationsTotal: Math.max(0, Number(previousAudit?.migrationsTotal || 0))
           + (constraintsHealthyBefore ? 0 : 1),
         duplicatesRemovedTotal: Math.max(
@@ -1158,7 +1204,12 @@ export class PersonalMemoryStore {
           0,
           Number(previousAudit?.orphanRowsRemovedTotal || 0)
         ) + (constraintsHealthyBefore ? 0 : orphanRowsBefore),
+        sourceRowsBackfilledTotal: Math.max(
+          0,
+          Number(previousAudit?.sourceRowsBackfilledTotal || 0)
+        ) + (constraintsHealthyBefore ? 0 : Math.min(rowsAfter, unscopedRowsBefore)),
         primaryKey: expectedPrimaryKey,
+        sourceIdentity: true,
         foreignKeyCascade: true,
         lookupIndexHealthy: true,
         constraintsHealthy: true
@@ -1910,10 +1961,13 @@ export class PersonalMemoryStore {
           rowsAfter: Number(audit.rowsAfter || 0),
           duplicatesRemovedThisStart: Number(audit.duplicatesRemovedThisStart || 0),
           orphanRowsRemovedThisStart: Number(audit.orphanRowsRemovedThisStart || 0),
+          sourceRowsBackfilledThisStart: Number(audit.sourceRowsBackfilledThisStart || 0),
           migrationsTotal: Number(audit.migrationsTotal || 0),
           duplicatesRemovedTotal: Number(audit.duplicatesRemovedTotal || 0),
           orphanRowsRemovedTotal: Number(audit.orphanRowsRemovedTotal || 0),
+          sourceRowsBackfilledTotal: Number(audit.sourceRowsBackfilledTotal || 0),
           primaryKey: Array.isArray(audit.primaryKey) ? audit.primaryKey.map(String) : [],
+          sourceIdentity: audit.sourceIdentity === true,
           foreignKeyCascade: audit.foreignKeyCascade === true,
           lookupIndexHealthy: audit.lookupIndexHealthy === true,
           constraintsHealthy: audit.constraintsHealthy === true
@@ -1927,10 +1981,13 @@ export class PersonalMemoryStore {
           rowsAfter: 0,
           duplicatesRemovedThisStart: 0,
           orphanRowsRemovedThisStart: 0,
+          sourceRowsBackfilledThisStart: 0,
           migrationsTotal: 0,
           duplicatesRemovedTotal: 0,
           orphanRowsRemovedTotal: 0,
+          sourceRowsBackfilledTotal: 0,
           primaryKey: [],
+          sourceIdentity: false,
           foreignKeyCascade: false,
           lookupIndexHealthy: false,
           constraintsHealthy: false
@@ -3108,8 +3165,9 @@ export class PersonalMemoryStore {
         metadata_json=excluded.metadata_json,updated_at=excluded.updated_at
     `)
     const insertEvidence = this.db.prepare(`
-      INSERT OR IGNORE INTO search_document_evidence(document_id,message_id,session_id,timestamp,sender,excerpt)
-      VALUES(?,?,?,?,?,?)
+      INSERT OR IGNORE INTO search_document_evidence(
+        document_id,source_id,message_id,session_id,timestamp,sender,excerpt
+      ) VALUES(?,?,?,?,?,?,?)
     `)
     for (const resource of resources) {
       const resourceId = String(resource.id)
@@ -3159,7 +3217,8 @@ export class PersonalMemoryStore {
       this.db.prepare('DELETE FROM search_document_evidence WHERE document_id=?').run(documentId)
       for (const item of resource.evidence || []) {
         if (!item.messageId) continue
-        insertEvidence.run(documentId, String(item.messageId), String(item.sessionId || ''),
+        insertEvidence.run(documentId, evidenceSourceId(item, metadata.sourceId),
+          String(item.messageId), String(item.sessionId || ''),
           Number(item.timestamp || 0), String(item.sender || ''), String(item.excerpt || '').slice(0, 2000))
       }
     }
@@ -3175,7 +3234,7 @@ export class PersonalMemoryStore {
     try {
       const resource = this.db.prepare('SELECT * FROM memory_resources WHERE id=?').get(resourceId) as any
       const evidence = this.db.prepare(`
-        SELECT message_id,session_id,timestamp,sender,excerpt
+        SELECT source_id,message_id,session_id,timestamp,sender,excerpt
         FROM search_document_evidence WHERE document_id=? ORDER BY timestamp
       `).all(documentId) as any[]
       if (resource) {
@@ -3247,6 +3306,7 @@ export class PersonalMemoryStore {
         createdAt: row.created_at,
         updatedAt: new Date().toISOString(),
         evidence: (snapshot.evidence || []).map((item: any) => ({
+          sourceId: item.source_id,
           messageId: item.message_id,
           sessionId: item.session_id,
           timestamp: item.timestamp,
@@ -3496,6 +3556,7 @@ export class PersonalMemoryStore {
         const messageId = String(item.messageId || '')
         if (!messageId) return []
         return [[
+          evidenceSourceId({ ...item, sessionId: item.sessionId || sourceSessionId }),
           messageId,
           String(item.sessionId || sourceSessionId),
           Number(item.timestamp || 0),
@@ -3525,7 +3586,8 @@ export class PersonalMemoryStore {
         taskKind: task.taskKind || 'action',
         ownershipPolicyReason: task.ownershipPolicyReason || '',
         evidenceFingerprint,
-        evidenceCount: new Set(normalizedEvidence.map((item: any[]) => `${item[0]}\0${item[1]}`)).size
+        evidenceCount: new Set(normalizedEvidence.map((item: any[]) =>
+          `${item[0]}\0${item[1]}\0${item[2]}`)).size
       }
       const expectedContentHash = createHash('sha256').update(searchText).digest('hex')
       const storedSearchDocument = storedSearchDocumentMap.get(documentId)
@@ -3566,13 +3628,16 @@ export class PersonalMemoryStore {
         searchText, searchMetadata, now)
       this.db.prepare('DELETE FROM search_document_evidence WHERE document_id=?').run(documentId)
       const insertEvidence = this.db.prepare(`
-        INSERT OR IGNORE INTO search_document_evidence(document_id,message_id,session_id,timestamp,sender,excerpt)
-        VALUES(?,?,?,?,?,?)
+        INSERT OR IGNORE INTO search_document_evidence(
+          document_id,source_id,message_id,session_id,timestamp,sender,excerpt
+        ) VALUES(?,?,?,?,?,?,?)
       `)
       for (const item of task.evidence || []) {
         const messageId = String(item.messageId || '')
         if (!messageId) continue
-        insertEvidence.run(documentId, messageId, String(item.sessionId || sourceSessionId),
+        insertEvidence.run(documentId,
+          evidenceSourceId({ ...item, sessionId: item.sessionId || sourceSessionId }), messageId,
+          String(item.sessionId || sourceSessionId),
           Number(item.timestamp || 0), String(item.sender || ''), String(item.excerpt || '').slice(0, 2000))
       }
     }
@@ -3845,7 +3910,7 @@ export class PersonalMemoryStore {
       FROM memory_resources mr ORDER BY updated_at DESC LIMIT ?
     `).all(safeLimit) as any[]
     const resourceEvidence = this.db.prepare(`
-      SELECT message_id,session_id,timestamp,sender,excerpt
+      SELECT source_id,message_id,session_id,timestamp,sender,excerpt
       FROM search_document_evidence WHERE document_id=?
       ORDER BY timestamp DESC,message_id DESC LIMIT ?
     `)
@@ -6001,7 +6066,7 @@ export class PersonalMemoryStore {
     `).get(documentId) as any)?.count || 0)
     if (genericTotal) {
       const evidence = (this.db.prepare(`
-        SELECT message_id,session_id,timestamp,sender,excerpt
+        SELECT source_id,message_id,session_id,timestamp,sender,excerpt
         FROM search_document_evidence
         WHERE document_id=?
         ORDER BY timestamp DESC,message_id DESC
@@ -6068,7 +6133,7 @@ export class PersonalMemoryStore {
     `).get(documentId) as any)?.count || 0)
     if (genericTotal) {
       const items = this.db.prepare(`
-        SELECT message_id,session_id,timestamp,sender,excerpt
+        SELECT source_id,message_id,session_id,timestamp,sender,excerpt
         FROM search_document_evidence
         WHERE document_id=?
         ORDER BY timestamp DESC,message_id DESC
@@ -6382,7 +6447,7 @@ export class PersonalMemoryStore {
       ORDER BY r.updated_at ASC
     `).all() as any[]
     const evidence = this.db.prepare(`
-      SELECT message_id,session_id,timestamp,sender,excerpt
+      SELECT source_id,message_id,session_id,timestamp,sender,excerpt
       FROM search_document_evidence WHERE document_id=? ORDER BY timestamp DESC LIMIT 1
     `)
     return rows.flatMap(row => {

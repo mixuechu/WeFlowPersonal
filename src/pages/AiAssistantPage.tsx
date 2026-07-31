@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { BookOpen, Bot, CalendarDays, Check, Clock3, Filter, Network, Paperclip, RefreshCw, Search, Settings2, ShieldCheck, Sparkles, X } from 'lucide-react'
 import { buildTaskCalendar, shanghaiToday } from '../utils/taskCalendar'
 import type { ReviewStatusFilter } from '../utils/graphReviewFilters'
-import { evidenceLocalMessageId, groupMemorySearchResults, MEMORY_TYPE_LABELS, normalizeMemoryEvidence, type MemoryEvidence } from '../utils/memorySearchPresentation'
+import { evidenceLocalMessageId, groupMemorySearchResults, memoryEvidenceSourceLabel, MEMORY_TYPE_LABELS, normalizeMemoryEvidence, type MemoryEvidence } from '../utils/memorySearchPresentation'
 import { LatestRequestGate } from '../utils/latestRequestGate'
 import './AiAssistantPage.scss'
 
@@ -80,8 +80,8 @@ function EvidenceRows({
       const role = item.role === 'indirect' ? '间接证据'
         : item.role === 'contradiction' ? '反证'
           : roleLabels ? '直接证据' : '证据'
-      return <div className="assistant-evidence-row" key={`${item.sessionId}-${item.messageId}-${index}`}>
-        <small>{role} · {item.sender || '发送者未知'} · {evidenceTime(item.timestamp)}：“{item.excerpt}”</small>
+      return <div className="assistant-evidence-row" key={`${item.sourceId}-${item.sessionId}-${item.messageId}-${index}`}>
+        <small>{role} · {memoryEvidenceSourceLabel(item)} · {item.sender || '发送者未知'} · {evidenceTime(item.timestamp)}：“{item.excerpt}”</small>
         {item.sessionId && localMessageId && <button onClick={() =>
           void window.electronAPI.window.openChatHistoryWindow(item.sessionId, localMessageId)}>打开原消息</button>}
       </div>
@@ -2972,9 +2972,9 @@ function AiAssistantPage() {
                 {evidence.length
                   ? <div>{evidence.map((item, index) => {
                     const localMessageId = evidenceLocalMessageId(item)
-                    return <blockquote key={`${item.sessionId}-${item.messageId}-${index}`}>
+                    return <blockquote key={`${item.sourceId}-${item.sessionId}-${item.messageId}-${index}`}>
                       <header>
-                        <span>{item.sender || '原文'}{item.timestamp ? ` · ${new Date(item.timestamp * 1000).toLocaleString('zh-CN')}` : ''}</span>
+                        <span>{memoryEvidenceSourceLabel(item)} · {item.sender || '原文'}{item.timestamp ? ` · ${new Date(item.timestamp * 1000).toLocaleString('zh-CN')}` : ''}</span>
                         {item.sessionId && localMessageId && <button onClick={() =>
                           void window.electronAPI.window.openChatHistoryWindow(item.sessionId, localMessageId)}>打开原消息</button>}
                       </header>
@@ -3110,8 +3110,8 @@ function AiAssistantPage() {
                 {(citation.evidence || []).map((rawEvidence: any, index: number) => {
                   const evidence = normalizeMemoryEvidence(rawEvidence)
                   const localMessageId = evidenceLocalMessageId(evidence)
-                  return <small className="assistant-citation-evidence" key={`${evidence.sessionId}-${evidence.messageId}-${index}`}>
-                    <span>{evidence.sender || '原文'}{evidence.timestamp ? ` · ${new Date(evidence.timestamp * 1000).toLocaleString('zh-CN')}` : ''}：“{evidence.excerpt}”</span>
+                  return <small className="assistant-citation-evidence" key={`${evidence.sourceId}-${evidence.sessionId}-${evidence.messageId}-${index}`}>
+                    <span>{memoryEvidenceSourceLabel(evidence)} · {evidence.sender || '原文'}{evidence.timestamp ? ` · ${new Date(evidence.timestamp * 1000).toLocaleString('zh-CN')}` : ''}：“{evidence.excerpt}”</span>
                     {evidence.sessionId && localMessageId && <button onClick={() =>
                       void window.electronAPI.window.openChatHistoryWindow(evidence.sessionId, localMessageId)}>打开原消息</button>}
                   </small>
@@ -3964,9 +3964,9 @@ function AiAssistantPage() {
                 const role = evidence.role === 'indirect' ? '间接证据'
                   : evidence.role === 'contradiction' ? '反证'
                     : evidence.role === 'direct' ? '直接证据' : '原文'
-                return <article key={`${evidence.sessionId}-${evidence.messageId}-${index}`}>
+                return <article key={`${evidence.sourceId}-${evidence.sessionId}-${evidence.messageId}-${index}`}>
                   <header>
-                    <span>{role} · {evidence.sender || '来源未标注'} · {evidenceTime(evidence.timestamp)}</span>
+                    <span>{role} · {memoryEvidenceSourceLabel(evidence)} · {evidence.sender || '发送者未标注'} · {evidenceTime(evidence.timestamp)}</span>
                     {evidence.sessionId && localMessageId && <button onClick={() =>
                       void window.electronAPI.window.openChatHistoryWindow(evidence.sessionId, localMessageId)}>
                       打开原消息
@@ -4288,14 +4288,16 @@ function AiAssistantPage() {
             </div>}
             {memoryDiagnostics.genericSearchEvidenceIdentity?.version && <div className={`assistant-recovery-audit ${memoryDiagnostics.genericSearchEvidenceIdentityHealthy ? 'healthy' : 'unhealthy'}`}>
               <header><ShieldCheck size={15} /><span><b>通用搜索证据身份与引用完整性</b>
-                <small>资源、待办等证据以“文档＋会话＋消息”作为唯一身份，并由 SQLCipher 级联外键和自愈删除保护共同防止孤儿原文；会话消息索引也会在启动时核验。</small>
+                <small>资源、待办等证据以“文档＋来源＋会话＋消息”作为唯一身份，并由 SQLCipher 级联外键和自愈删除保护共同防止孤儿原文；会话消息索引也会在启动时核验。</small>
               </span></header>
               <div className="assistant-recovery-current">
                 <span>当前状态 <b>{memoryDiagnostics.genericSearchEvidenceIdentityHealthy ? '约束正常' : '需要检查'}</b></span>
+                <span>来源身份 <b>{memoryDiagnostics.genericSearchEvidenceIdentity.sourceIdentity ? '已持久化' : '缺失'}</b></span>
                 <span>级联外键 <b>{memoryDiagnostics.genericSearchEvidenceIdentity.foreignKeyCascade ? '正常' : '缺失'}</b></span>
                 <span>消息定位索引 <b>{memoryDiagnostics.genericSearchEvidenceIdentity.lookupIndexHealthy ? '正常' : '缺失'}</b></span>
                 <span>本次检查行数 <b>{Number(memoryDiagnostics.genericSearchEvidenceIdentity.rowsAfter || 0).toLocaleString()}</b></span>
                 <span>累计迁移 <b>{Number(memoryDiagnostics.genericSearchEvidenceIdentity.migrationsTotal || 0).toLocaleString()}</b> 次</span>
+                <span>来源回填 <b>{Number(memoryDiagnostics.genericSearchEvidenceIdentity.sourceRowsBackfilledTotal || 0).toLocaleString()}</b></span>
                 <span>累计去重 <b>{Number(memoryDiagnostics.genericSearchEvidenceIdentity.duplicatesRemovedTotal || 0).toLocaleString()}</b></span>
                 <span>累计清理孤儿 <b>{Number(memoryDiagnostics.genericSearchEvidenceIdentity.orphanRowsRemovedTotal || 0).toLocaleString()}</b></span>
                 <span>本次检查 <b>{memoryDiagnostics.genericSearchEvidenceIdentity.checkedAt

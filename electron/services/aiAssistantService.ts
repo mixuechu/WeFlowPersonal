@@ -179,7 +179,14 @@ type AssistantTask = {
   assignmentEvidence?: string
   ownershipPolicyReason?: string
   sourceMessageIds?: string[]
-  evidence?: Array<{ messageId: string; timestamp: number; sender: string; excerpt: string }>
+  evidence?: Array<{
+    sourceId?: string
+    sessionId?: string
+    messageId: string
+    timestamp: number
+    sender: string
+    excerpt: string
+  }>
 }
 
 type GraphEntity = {
@@ -1262,6 +1269,7 @@ export class AiAssistantService {
         fileExt: message.fileExt,
         content: recoveredContent,
         metadata: {
+          sourceId: String(message.sourceId || 'wechat'),
           sessionId: message.sessionId,
           sessionName: message.sessionName,
           senderId: message.senderId,
@@ -1297,6 +1305,7 @@ export class AiAssistantService {
         createdAt: new Date(Number(message.timestamp || 0) * 1000).toISOString(),
         updatedAt: createdAt,
         evidence: [{
+          sourceId: String(message.sourceId || 'wechat'),
           messageId,
           sessionId: message.sessionId,
           timestamp: message.timestamp,
@@ -1871,6 +1880,7 @@ export class AiAssistantService {
                 createdAt: item.occurredAt,
                 updatedAt,
                 evidence: [{
+                  sourceId: item.sourceId,
                   messageId: `${item.externalId}:${contentHash.slice(0, 16)}`,
                   sessionId: `data-source:${item.sourceId}`,
                   timestamp: Math.floor(Date.parse(item.occurredAt) / 1000),
@@ -1983,6 +1993,7 @@ export class AiAssistantService {
                 createdAt: item.occurredAt,
                 updatedAt,
                 evidence: [{
+                  sourceId: item.sourceId,
                   messageId,
                   sessionId: `data-source:${item.sourceId}:${item.scopeId || 'calendar'}`,
                   timestamp: Math.floor(Date.parse(item.occurredAt) / 1000),
@@ -2011,6 +2022,7 @@ export class AiAssistantService {
                 ].filter(Boolean).join('；'),
                 createdAt: item.occurredAt,
                 evidence: [{
+                  sourceId: item.sourceId,
                   messageId: `${item.externalId}:${contentHash.slice(0, 16)}`,
                   sessionId: `data-source:${item.sourceId}:${item.scopeId || 'calendar'}`,
                   timestamp: Math.floor(Date.parse(item.occurredAt) / 1000),
@@ -2093,6 +2105,7 @@ export class AiAssistantService {
                 createdAt: item.occurredAt,
                 updatedAt,
                 evidence: [{
+                  sourceId: item.sourceId,
                   messageId: `${item.externalId}:${contentHash.slice(0, 16)}`,
                   sessionId: `data-source:${item.sourceId}:${item.scopeId || 'mailbox'}`,
                   timestamp: Math.floor(Date.parse(item.occurredAt) / 1000),
@@ -2167,6 +2180,8 @@ export class AiAssistantService {
         ownershipPolicyReason: assignment.rationale,
         sourceMessageIds,
         evidence: evidenceMessages.map((message: any) => ({
+          sourceId: String(message.sourceId || 'wechat'),
+          sessionId: String(message.sessionId || ''),
           messageId: structuredEvidenceKey(message),
           timestamp: Number(message.timestamp),
           sender: message.direction === '我发送' ? '我' : String(message.senderName || message.senderId || '对方'),
@@ -2264,6 +2279,8 @@ export class AiAssistantService {
           : '文档没有明确把事项指派给用户，进入人工归属确认',
         sourceMessageIds,
         evidence: evidenceMessages.map(message => ({
+          sourceId: 'documents',
+          sessionId: 'data-source:documents',
           messageId: String(message.id),
           timestamp: Number(message.timestamp),
           sender: String(message.senderName || '本机文档连接器'),
@@ -2639,6 +2656,8 @@ export class AiAssistantService {
             ownershipPolicyReason: assignment.rationale,
             sourceMessageIds,
             evidence: evidenceMessages.map(message => ({
+              sourceId: String(message.sourceId || 'wechat'),
+              sessionId: String(message.sessionId || ''),
               messageId: structuredEvidenceKey(message),
               timestamp: Number(message.timestamp),
               sender: message.direction === '我发送' ? '我' : String(message.senderName || message.senderId || '对方'),

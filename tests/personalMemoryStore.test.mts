@@ -1885,11 +1885,13 @@ test('task search keeps original message evidence', () => withStore(store => {
     taskKind: 'delegated',
     ownershipPolicyReason: '',
     evidenceFingerprint: createHash('sha256').update(JSON.stringify([[
-      'message-task-1', '项目群', 1_700_000_001, '客户甲', '麻烦你确认一下几点更新'
+      'legacy', 'message-task-1', '项目群', 1_700_000_001, '客户甲',
+      '麻烦你确认一下几点更新'
     ]])).digest('hex'),
     evidenceCount: 1
   })
   assert.deepEqual(store.getDocumentEvidence('task', 'task-1').map(item => ({ ...item })), [{
+    source_id: 'legacy',
     message_id: 'message-task-1',
     session_id: '项目群',
     timestamp: 1_700_000_001,
@@ -1898,7 +1900,7 @@ test('task search keeps original message evidence', () => withStore(store => {
   }])
 }))
 
-test('generic search evidence migrates to session-scoped identity and preserves same message ids', () => {
+test('generic search evidence migrates to source-and-session identity and preserves same message ids', () => {
   const directory = mkdtempSync(join(tmpdir(), 'weflow-generic-evidence-identity-test-'))
   const databasePath = join(directory, 'memory.sqlite')
   const first = new PersonalMemoryStore()
@@ -1928,8 +1930,11 @@ test('generic search evidence migrates to session-scoped identity and preserves 
         excerpt TEXT NOT NULL DEFAULT '',
         PRIMARY KEY(document_id,message_id)
       ) STRICT;
-      INSERT INTO search_document_evidence_legacy
-      SELECT * FROM search_document_evidence;
+      INSERT INTO search_document_evidence_legacy(
+        document_id,message_id,session_id,timestamp,sender,excerpt
+      )
+      SELECT document_id,message_id,session_id,timestamp,sender,excerpt
+      FROM search_document_evidence;
       INSERT INTO search_document_evidence_legacy(
         document_id,message_id,session_id,timestamp,sender,excerpt
       ) VALUES(
@@ -1953,12 +1958,17 @@ test('generic search evidence migrates to session-scoped identity and preserves 
       const migration = migrated.getDiagnostics().genericSearchEvidenceIdentity
       assert.equal(migration.constraintsHealthy, true)
       assert.equal(migration.migratedThisStart, true)
-      assert.equal(migration.version, 2)
-      assert.deepEqual(migration.primaryKey, ['document_id', 'session_id', 'message_id'])
+      assert.equal(migration.version, 3)
+      assert.deepEqual(migration.primaryKey, [
+        'document_id', 'source_id', 'session_id', 'message_id'
+      ])
+      assert.equal(migration.sourceIdentity, true)
       assert.equal(migration.foreignKeyCascade, true)
       assert.equal(migration.lookupIndexHealthy, true)
       assert.equal(migration.orphanRowsRemovedThisStart, 1)
       assert.equal(migration.orphanRowsRemovedTotal, 1)
+      assert.equal(migration.sourceRowsBackfilledThisStart, 1)
+      assert.equal(migration.sourceRowsBackfilledTotal, 1)
       assert.equal(migration.migrationsTotal, 1)
       assert.deepEqual(
         (migrated as any).db.prepare(`
@@ -1986,23 +1996,25 @@ test('generic search evidence migrates to session-scoped identity and preserves 
         title: '跨会话同号证据',
         content: '复合证据身份',
         evidence: [{
+          sourceId: 'wechat',
           messageId: 'same-local-message-id',
-          sessionId: 'session-alpha',
+          sessionId: 'shared-session',
           timestamp: 1_700_003_002,
-          sender: '甲会话发送者',
-          excerpt: '甲会话证据'
+          sender: '微信发送者',
+          excerpt: '微信来源证据'
         }, {
+          sourceId: 'documents',
           messageId: 'same-local-message-id',
-          sessionId: 'session-beta',
+          sessionId: 'shared-session',
           timestamp: 1_700_003_003,
-          sender: '乙会话发送者',
-          excerpt: '乙会话证据'
+          sender: '文档连接器',
+          excerpt: '文档来源证据'
         }]
       }])
       assert.deepEqual(
         migrated.getDocumentEvidence('resource', 'resource-cross-session-evidence')
-          .map(item => item.session_id).sort(),
-        ['session-alpha', 'session-beta']
+          .map(item => item.source_id).sort(),
+        ['documents', 'wechat']
       )
       migrated.upsertResources([{
         id: 'resource-cascade-evidence',
@@ -2036,6 +2048,7 @@ test('generic search evidence migrates to session-scoped identity and preserves 
       assert.equal(migration.migratedThisStart, false)
       assert.equal(migration.migrationsTotal, 1)
       assert.equal(migration.orphanRowsRemovedTotal, 1)
+      assert.equal(migration.sourceRowsBackfilledTotal, 1)
       assert.equal(
         reopened.getDocumentEvidencePage(
           'resource', 'resource-cross-session-evidence'
