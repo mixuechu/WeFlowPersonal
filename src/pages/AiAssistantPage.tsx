@@ -179,6 +179,20 @@ function AiAssistantPage() {
   const [memoryDeletionDialog, setMemoryDeletionDialog] = useState<any>(null)
   const [memoryDeletionConfirmation, setMemoryDeletionConfirmation] = useState('')
   const memoryDeletionGate = useRef(new LatestRequestGate())
+  const [memoryDeletionArchive, setMemoryDeletionArchive] = useState<{
+    items: any[]
+    total: number
+    hasMore: boolean
+    counts: Record<string, number>
+    loading?: boolean
+  }>({ items: [], total: 0, hasMore: false, counts: {} })
+  const [memoryDeletionKind, setMemoryDeletionKind] = useState<'all' | 'claim' | 'event' | 'relation'>('all')
+  const [memoryDeletionReason, setMemoryDeletionReason] = useState<'all' | 'manual_delete' | 'not_important'>('all')
+  const [memoryDeletionQuery, setMemoryDeletionQuery] = useState('')
+  const [memoryDeletionFrom, setMemoryDeletionFrom] = useState('')
+  const [memoryDeletionTo, setMemoryDeletionTo] = useState('')
+  const [memoryDeletionLoadingMore, setMemoryDeletionLoadingMore] = useState(false)
+  const memoryDeletionArchiveGate = useRef(new LatestRequestGate())
   const [editingTask, setEditingTask] = useState<any>(null)
   const [taskStatusFilter, setTaskStatusFilter] = useState<'all' | Task['status']>('all')
   const [taskPriorityFilter, setTaskPriorityFilter] = useState<'all' | Task['priority']>('all')
@@ -357,6 +371,18 @@ function AiAssistantPage() {
     limit: 40,
     offset: 0
   }), [taskFeedbackStatus, taskFeedbackDecision, taskFeedbackQuery, taskFeedbackFrom, taskFeedbackTo])
+  const memoryDeletionOptions = useMemo(() => ({
+    kind: memoryDeletionKind,
+    reason: memoryDeletionReason,
+    query: memoryDeletionQuery || undefined,
+    from: memoryDeletionFrom ? new Date(`${memoryDeletionFrom}T00:00:00+08:00`).toISOString() : undefined,
+    to: memoryDeletionTo ? new Date(`${memoryDeletionTo}T23:59:59.999+08:00`).toISOString() : undefined,
+    limit: 40,
+    offset: 0
+  }), [
+    memoryDeletionKind, memoryDeletionReason, memoryDeletionQuery,
+    memoryDeletionFrom, memoryDeletionTo
+  ])
 
   const load = useCallback(async () => {
     const request = dashboardLoadGate.current.begin()
@@ -487,6 +513,34 @@ function AiAssistantPage() {
       if (taskFeedbackArchiveGate.current.isCurrent(request)) taskFeedbackArchiveGate.current.invalidate()
     }
   }, [taskFeedbackOptions, dashboard?.taskReviewFeedback?.archive?.revision])
+
+  useEffect(() => {
+    if (!showDiagnostics) {
+      memoryDeletionArchiveGate.current.invalidate()
+      return
+    }
+    const request = memoryDeletionArchiveGate.current.begin()
+    setMemoryDeletionLoadingMore(false)
+    setMemoryDeletionArchive(current => ({ ...current, items: [], loading: true }))
+    const timer = window.setTimeout(() => {
+      void window.electronAPI.aiAssistant.getMemoryDeletionAuditPage(memoryDeletionOptions).then(result => {
+        if (!memoryDeletionArchiveGate.current.isCurrent(request)) return
+        setMemoryDeletionArchive({ ...result, loading: false })
+      }).catch(() => {
+        if (!memoryDeletionArchiveGate.current.isCurrent(request)) return
+        setMemoryDeletionArchive({ items: [], total: 0, hasMore: false, counts: {}, loading: false })
+      })
+    }, memoryDeletionQuery ? 200 : 0)
+    return () => {
+      window.clearTimeout(timer)
+      if (memoryDeletionArchiveGate.current.isCurrent(request)) {
+        memoryDeletionArchiveGate.current.invalidate()
+      }
+    }
+  }, [
+    showDiagnostics, memoryDeletionOptions,
+    dashboard?.memoryDeletionArchive?.revision
+  ])
 
   useEffect(() => {
     const query = memoryQuery.trim()
@@ -914,6 +968,37 @@ function AiAssistantPage() {
       if (taskFeedbackArchiveGate.current.isCurrent(request)) setMessage(error?.message || String(error))
     } finally {
       if (taskFeedbackArchiveGate.current.isCurrent(request)) setTaskFeedbackLoadingMore(false)
+    }
+  }
+
+  const loadMoreMemoryDeletionAudit = async () => {
+    if (memoryDeletionLoadingMore || !memoryDeletionArchive.hasMore) return
+    const request = memoryDeletionArchiveGate.current.begin()
+    setMemoryDeletionLoadingMore(true)
+    try {
+      const result = await window.electronAPI.aiAssistant.getMemoryDeletionAuditPage({
+        ...memoryDeletionOptions,
+        offset: memoryDeletionArchive.items.length,
+        limit: 40
+      })
+      if (!memoryDeletionArchiveGate.current.isCurrent(request)) return
+      setMemoryDeletionArchive(current => ({
+        ...result,
+        items: [
+          ...current.items,
+          ...result.items.filter((item: any) =>
+            !current.items.some((known: any) => known.id === item.id))
+        ],
+        loading: false
+      }))
+    } catch (error: any) {
+      if (memoryDeletionArchiveGate.current.isCurrent(request)) {
+        setMessage(error?.message || String(error))
+      }
+    } finally {
+      if (memoryDeletionArchiveGate.current.isCurrent(request)) {
+        setMemoryDeletionLoadingMore(false)
+      }
     }
   }
 
@@ -3708,14 +3793,61 @@ function AiAssistantPage() {
                 </div>
               </details>
             </div>}
-            {!!dashboard?.memoryDeletionAudit?.length && <div className="assistant-deletion-audit">
-              <header><ShieldCheck size={15} /><span><b>删除与不重要审计</b><small>只保留不可逆指纹和影响计数，不保留被清理正文。</small></span></header>
-              {(dashboard.memoryDeletionAudit || []).slice(0, 12).map((entry: any) => <article key={entry.id}>
+            <div className="assistant-deletion-audit">
+              <header>
+                <ShieldCheck size={15} />
+                <span>
+                  <b>删除与不重要审计</b>
+                  <small>
+                    {memoryDeletionArchive.total} 条匹配 · 全部 {Number(memoryDeletionArchive.counts?.all || dashboard?.memoryDeletionArchive?.total || 0)} 条。
+                    只保留不可逆指纹和影响计数，不保留被清理正文。
+                  </small>
+                </span>
+              </header>
+              <div className="assistant-task-filters">
+                <select value={memoryDeletionKind}
+                  onChange={event => setMemoryDeletionKind(event.target.value as typeof memoryDeletionKind)}>
+                  <option value="all">所有记忆类型</option>
+                  <option value="claim">事实</option>
+                  <option value="event">事件</option>
+                  <option value="relation">关系</option>
+                </select>
+                <select value={memoryDeletionReason}
+                  onChange={event => setMemoryDeletionReason(event.target.value as typeof memoryDeletionReason)}>
+                  <option value="all">所有清理原因</option>
+                  <option value="not_important">不重要清理</option>
+                  <option value="manual_delete">永久删除</option>
+                </select>
+                <input value={memoryDeletionQuery}
+                  onChange={event => setMemoryDeletionQuery(event.target.value)}
+                  placeholder="搜索不可逆指纹" />
+                <label><span>清理从</span><input type="date" value={memoryDeletionFrom}
+                  onChange={event => setMemoryDeletionFrom(event.target.value)} /></label>
+                <label><span>到</span><input type="date" value={memoryDeletionTo}
+                  onChange={event => setMemoryDeletionTo(event.target.value)} /></label>
+                {(memoryDeletionKind !== 'all' || memoryDeletionReason !== 'all' || memoryDeletionQuery ||
+                  memoryDeletionFrom || memoryDeletionTo) && <button onClick={() => {
+                  setMemoryDeletionKind('all'); setMemoryDeletionReason('all'); setMemoryDeletionQuery('')
+                  setMemoryDeletionFrom(''); setMemoryDeletionTo('')
+                }}>清除范围</button>}
+              </div>
+              {memoryDeletionArchive.items.map((entry: any) => <article key={entry.id}>
                 <span><b>{entry.item_kind === 'claim' ? '事实' : entry.item_kind === 'event' ? '事件' : '关系'} · {entry.item_fingerprint}</b>
                   <small>{entry.reason === 'not_important' ? '不重要清理' : '永久删除'} · {new Date(entry.created_at).toLocaleString('zh-CN')}</small></span>
                 <span>证据 {entry.impact?.evidence || 0} · 关联 {entry.impact?.related || 0} · 索引 {entry.impact?.searchDocuments || 0} · 问答 {entry.impact?.assistantMessages || 0}</span>
               </article>)}
-            </div>}
+              {!memoryDeletionArchive.items.length && <div className="assistant-empty">
+                {memoryDeletionArchive.loading ? '正在读取完整删除审计…' : '当前范围没有删除或不重要清理记录。'}
+              </div>}
+              {memoryDeletionArchive.hasMore && <div className="assistant-timeline-more">
+                <button disabled={memoryDeletionLoadingMore}
+                  onClick={() => void loadMoreMemoryDeletionAudit()}>
+                  {memoryDeletionLoadingMore
+                    ? '正在加载…'
+                    : `加载更多（已显示 ${memoryDeletionArchive.items.length}/${memoryDeletionArchive.total}）`}
+                </button>
+              </div>}
+            </div>
             <div className="assistant-diagnostics-runs">
               {(memoryDiagnostics.ingestionRuns || []).map((run: any) => <details key={run.id} open={run.status !== 'completed'}>
                 <summary><span><b>{new Date(run.started_at).toLocaleString('zh-CN')}</b><small>{run.model || '模型待记录'} · {run.prompt_version || '版本待记录'}</small></span>

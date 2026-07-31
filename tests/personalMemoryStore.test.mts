@@ -3965,6 +3965,95 @@ test('permanent structured-memory deletion is audited and suppresses identical r
   assert.equal(store.getDiagnostics().integrity, 'ok')
 }))
 
+test('full deletion audit archive paginates safely and survives a SQLCipher reopen', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'weflow-deletion-audit-archive-'))
+  const databasePath = join(directory, 'memory.sqlite')
+  const key = randomBytes(32)
+  const first = new PersonalMemoryStore()
+  try {
+    first.initialize(databasePath, key)
+    const database = (first as any).db
+    const insert = database.prepare(`
+      INSERT INTO memory_deletion_audit(
+        item_kind,item_fingerprint,reason,impact_json,created_at
+      ) VALUES(?,?,?,?,?)
+    `)
+    const transaction = database.transaction(() => {
+      for (let index = 0; index < 2_500; index += 1) {
+        const kind = ['claim', 'event', 'relation'][index % 3]
+        const reason = index % 4 === 0 ? 'not_important' : 'manual_delete'
+        insert.run(
+          kind,
+          `archive-${String(index).padStart(5, '0')}`,
+          reason,
+          JSON.stringify({
+            evidence: index % 7,
+            related: index % 5,
+            searchDocuments: 1,
+            assistantMessages: index % 2,
+            forbiddenContent: `不应进入目录之外的正文 ${index} ${'x'.repeat(200)}`
+          }),
+          new Date(Date.UTC(2020, 0, 1, 0, index)).toISOString()
+        )
+      }
+    })
+    transaction()
+
+    const firstPage = first.listMemoryDeletionAuditPage({ limit: 40 })
+    const secondPage = first.listMemoryDeletionAuditPage({ limit: 40, offset: 40 })
+    assert.equal(firstPage.total, 2_500)
+    assert.equal(firstPage.items.length, 40)
+    assert.equal(secondPage.items.length, 40)
+    assert.equal(new Set([...firstPage.items, ...secondPage.items].map(item => item.id)).size, 80)
+    assert.deepEqual(firstPage.counts, {
+      all: 2_500,
+      claim: 834,
+      event: 833,
+      relation: 833,
+      manual_delete: 1_875,
+      not_important: 625
+    })
+    const filtered = first.listMemoryDeletionAuditPage({
+      kind: 'event',
+      reason: 'not_important',
+      query: 'archive-000',
+      from: new Date(Date.UTC(2020, 0, 1, 0, 0)).toISOString(),
+      to: new Date(Date.UTC(2020, 0, 1, 2, 0)).toISOString(),
+      limit: 100
+    })
+    assert.ok(filtered.items.length > 0)
+    assert.equal(filtered.items.every(item =>
+      item.item_kind === 'event' &&
+      item.reason === 'not_important' &&
+      item.item_fingerprint.includes('archive-000')
+    ), true)
+    assert.equal(JSON.stringify(firstPage.items).includes('forbiddenContent'), false)
+    assert.equal(JSON.stringify(firstPage.items).includes('不应进入目录之外的正文'), false)
+    assert.equal(JSON.stringify(firstPage.items).includes('impact_json'), false)
+    assert.deepEqual(first.getMemoryDeletionAuditStats(), {
+      total: 2_500,
+      latestId: 2_500,
+      latestCreatedAt: new Date(Date.UTC(2020, 0, 1, 0, 2_499)).toISOString()
+    })
+    first.close()
+
+    const reopened = new PersonalMemoryStore()
+    try {
+      reopened.initialize(databasePath, key)
+      const lastPage = reopened.listMemoryDeletionAuditPage({ offset: 2_480, limit: 40 })
+      assert.equal(lastPage.items.length, 20)
+      assert.equal(lastPage.hasMore, false)
+      assert.equal(reopened.getMemoryDeletionAuditStats().total, 2_500)
+    } finally {
+      reopened.close()
+    }
+  } finally {
+    first.close()
+    key.fill(0)
+    rmSync(directory, { recursive: true, force: true })
+  }
+})
+
 test('personal memory migrates atomically to SQLCipher and keeps encrypted backups restorable', () => {
   const directory = mkdtempSync(join(tmpdir(), 'weflow-memory-cipher-test-'))
   const databasePath = join(directory, 'memory.sqlite')

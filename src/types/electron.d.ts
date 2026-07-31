@@ -1704,6 +1704,19 @@ export interface ElectronAPI {
         counts: { active: number; revoked: number; all: number }
       }>
       getTaskReviewDecisionDossier: (evidenceFingerprint: string, options?: any) => Promise<any>
+      getMemoryDeletionAuditPage: (options?: any) => Promise<{
+        items: any[]
+        total: number
+        hasMore: boolean
+        counts: {
+          all: number
+          claim: number
+          event: number
+          relation: number
+          manual_delete: number
+          not_important: number
+        }
+      }>
       sync: () => Promise<any>
       cancelSync: () => Promise<any>
     getSettings: () => Promise<any>

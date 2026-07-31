@@ -3046,6 +3046,7 @@ export class AiAssistantService {
       .slice(0, 16)
     const assistantArchiveStats = personalMemoryStore.getAssistantArchiveStats()
     const taskReviewArchiveStats = personalMemoryStore.getTaskReviewArchiveStats()
+    const memoryDeletionArchiveStats = personalMemoryStore.getMemoryDeletionAuditStats()
     return {
       briefing: latest ? { ...latest, tasks: undefined } : null,
       briefingStorage: this.briefingStorage,
@@ -3123,7 +3124,15 @@ export class AiAssistantService {
         )
       },
       mergeHistory: personalMemoryStore.listActiveMerges(),
-      memoryDeletionAudit: personalMemoryStore.listMemoryDeletionAudit(50),
+      memoryDeletionArchive: {
+        total: memoryDeletionArchiveStats.total,
+        revision: crypto.createHash('sha256')
+          .update(JSON.stringify(memoryDeletionArchiveStats))
+          .digest('hex')
+          .slice(0, 16),
+        version: 'memory-deletion-audit-v1',
+        directory: 'paginated_without_content'
+      },
       memoryStats,
       memoryRevision: crypto.createHash('sha256')
         .update(JSON.stringify({
@@ -3253,6 +3262,22 @@ export class AiAssistantService {
         dossier.can_restore_snapshot || this.state.tasks.some(task => task.id === dossier.task_id)
       ))
     }
+  }
+
+  getMemoryDeletionAuditPage(options: any = {}): any {
+    return personalMemoryStore.listMemoryDeletionAuditPage({
+      kind: ['claim', 'event', 'relation', 'all'].includes(options?.kind)
+        ? options.kind
+        : 'all',
+      reason: ['manual_delete', 'not_important', 'all'].includes(options?.reason)
+        ? options.reason
+        : 'all',
+      query: String(options?.query || ''),
+      from: String(options?.from || ''),
+      to: String(options?.to || ''),
+      limit: Number(options?.limit || 40),
+      offset: Number(options?.offset || 0)
+    })
   }
 
   getGraphReviewPage(options?: Partial<GraphReviewPageOptions>): any {

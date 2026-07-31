@@ -20,6 +20,26 @@ type MemoryGraph = {
   reviewQueue: any[]
 }
 
+function sanitizeMemoryDeletionImpact(value: unknown): {
+  evidence: number
+  related: number
+  searchDocuments: number
+  assistantMessages: number
+} {
+  let parsed: any = {}
+  try {
+    parsed = typeof value === 'string' ? JSON.parse(value || '{}') : value || {}
+  } catch {}
+  const boundedCount = (input: unknown) =>
+    Math.max(0, Math.min(1_000_000_000, Math.floor(Number(input) || 0)))
+  return {
+    evidence: boundedCount(parsed.evidence),
+    related: boundedCount(parsed.related),
+    searchDocuments: boundedCount(parsed.searchDocuments),
+    assistantMessages: boundedCount(parsed.assistantMessages)
+  }
+}
+
 export class PersonalMemoryStore {
   private db: Database.Database | null = null
   private databasePath = ''
@@ -2764,8 +2784,117 @@ export class PersonalMemoryStore {
       FROM memory_deletion_audit ORDER BY id DESC LIMIT ?
     `).all(Math.max(1, Math.min(200, limit))) as any[]).map(row => ({
       ...row,
-      impact: JSON.parse(row.impact_json || '{}')
+      impact: sanitizeMemoryDeletionImpact(row.impact_json)
     }))
+  }
+
+  listMemoryDeletionAuditPage(options: {
+    kind?: 'claim' | 'event' | 'relation' | 'all'
+    reason?: 'manual_delete' | 'not_important' | 'all'
+    query?: string
+    from?: string
+    to?: string
+    limit?: number
+    offset?: number
+  } = {}): {
+    items: any[]
+    total: number
+    hasMore: boolean
+    counts: {
+      all: number
+      claim: number
+      event: number
+      relation: number
+      manual_delete: number
+      not_important: number
+    }
+  } {
+    const emptyCounts = {
+      all: 0, claim: 0, event: 0, relation: 0, manual_delete: 0, not_important: 0
+    }
+    if (!this.db) return { items: [], total: 0, hasMore: false, counts: emptyCounts }
+    const conditions: string[] = []
+    const parameters: Array<string | number> = []
+    if (options.kind === 'claim' || options.kind === 'event' || options.kind === 'relation') {
+      conditions.push('item_kind=?')
+      parameters.push(options.kind)
+    }
+    if (options.reason === 'manual_delete' || options.reason === 'not_important') {
+      conditions.push('reason=?')
+      parameters.push(options.reason)
+    }
+    const query = String(options.query || '').trim().toLocaleLowerCase('zh-CN')
+    if (query) {
+      conditions.push('instr(lower(item_fingerprint),?)>0')
+      parameters.push(query)
+    }
+    const from = options.from && Number.isFinite(Date.parse(options.from)) ? String(options.from) : ''
+    const to = options.to && Number.isFinite(Date.parse(options.to)) ? String(options.to) : ''
+    if (from) {
+      conditions.push('created_at>=?')
+      parameters.push(from)
+    }
+    if (to) {
+      conditions.push('created_at<=?')
+      parameters.push(to)
+    }
+    const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : ''
+    const total = Number((this.db.prepare(`
+      SELECT COUNT(*) AS count FROM memory_deletion_audit ${where}
+    `).get(...parameters) as any)?.count || 0)
+    const limit = Math.max(1, Math.min(100, Math.floor(Number(options.limit) || 40)))
+    const offset = Math.max(0, Math.min(1_000_000, Math.floor(Number(options.offset) || 0)))
+    const rows = this.db.prepare(`
+      SELECT id,item_kind,item_fingerprint,reason,impact_json,created_at
+      FROM memory_deletion_audit
+      ${where}
+      ORDER BY created_at DESC,id DESC
+      LIMIT ? OFFSET ?
+    `).all(...parameters, limit, offset) as any[]
+    const countsRow = this.db.prepare(`
+      SELECT
+        COUNT(*) AS all_count,
+        SUM(CASE WHEN item_kind='claim' THEN 1 ELSE 0 END) AS claim_count,
+        SUM(CASE WHEN item_kind='event' THEN 1 ELSE 0 END) AS event_count,
+        SUM(CASE WHEN item_kind='relation' THEN 1 ELSE 0 END) AS relation_count,
+        SUM(CASE WHEN reason='manual_delete' THEN 1 ELSE 0 END) AS manual_delete_count,
+        SUM(CASE WHEN reason='not_important' THEN 1 ELSE 0 END) AS not_important_count
+      FROM memory_deletion_audit
+    `).get() as any
+    return {
+      items: rows.map(row => {
+        const { impact_json: _impactJson, ...safeRow } = row
+        return { ...safeRow, impact: sanitizeMemoryDeletionImpact(row.impact_json) }
+      }),
+      total,
+      hasMore: offset + rows.length < total,
+      counts: {
+        all: Number(countsRow?.all_count || 0),
+        claim: Number(countsRow?.claim_count || 0),
+        event: Number(countsRow?.event_count || 0),
+        relation: Number(countsRow?.relation_count || 0),
+        manual_delete: Number(countsRow?.manual_delete_count || 0),
+        not_important: Number(countsRow?.not_important_count || 0)
+      }
+    }
+  }
+
+  getMemoryDeletionAuditStats(): {
+    total: number
+    latestId: number
+    latestCreatedAt: string
+  } {
+    if (!this.db) return { total: 0, latestId: 0, latestCreatedAt: '' }
+    const row = this.db.prepare(`
+      SELECT COUNT(*) AS total,COALESCE(MAX(id),0) AS latest_id,
+        COALESCE(MAX(created_at),'') AS latest_created_at
+      FROM memory_deletion_audit
+    `).get() as any
+    return {
+      total: Number(row?.total || 0),
+      latestId: Number(row?.latest_id || 0),
+      latestCreatedAt: String(row?.latest_created_at || '')
+    }
   }
 
   updateMemoryItemStatus(kind: 'claim' | 'event', id: string, status: 'candidate' | 'confirmed' | 'rejected'): any {
