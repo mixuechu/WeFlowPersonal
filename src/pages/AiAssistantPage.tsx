@@ -2360,7 +2360,7 @@ function AiAssistantPage() {
                   {memoryDiagnostics.imageSemantics ? ` · 图片视觉 ${memoryDiagnostics.imageSemantics.available ? '本地可用' : '未就绪'}` : ''}
                   {memoryDiagnostics.stateStorage ? ` · 状态文件${memoryDiagnostics.stateStorage.recovered ? '已从备份恢复' : '耐久写入正常'}` : ''}
                   {memoryDiagnostics.structuredEvidenceMigration?.version
-                    ? ` · 证据去重 ${Number(memoryDiagnostics.structuredEvidenceMigration.duplicatesRemoved || 0).toLocaleString()} 条 / 恢复发送者 ${Number(memoryDiagnostics.structuredEvidenceMigration.sendersRecovered || 0).toLocaleString()} 条 / 约束${memoryDiagnostics.structuredEvidenceMigration.constraintsHealthy === false ? '异常' : '正常'}`
+                    ? ` · 证据去重 ${Number(memoryDiagnostics.structuredEvidenceMigration.duplicatesRemoved || 0).toLocaleString()} 条 / 恢复发送者 ${Number(memoryDiagnostics.structuredEvidenceMigration.sendersRecovered || 0).toLocaleString()} 条 / 来源回填 ${Number(memoryDiagnostics.structuredEvidenceMigration.sourceRowsBackfilledTotal || 0).toLocaleString()} 条 / 来源身份${memoryDiagnostics.structuredEvidenceMigration.sourceIdentity === true ? '正常' : '待迁移'} / 约束${memoryDiagnostics.structuredEvidenceMigration.constraintsHealthy === false ? '异常' : '正常'}`
                     : ''}
                   {memoryDiagnostics.structuredEvidenceReferences?.version
                     ? ` · 引用${memoryDiagnostics.referentialIntegrityHealthy ? '完整' : '异常'} / 清理孤儿 ${Number(memoryDiagnostics.structuredEvidenceReferences.orphansRemovedTotal || 0).toLocaleString()} 条`
@@ -4251,7 +4251,7 @@ function AiAssistantPage() {
             </div>
             {memoryDiagnostics.structuredEvidenceMigration?.version && <div className="assistant-recovery-audit healthy">
               <header><ShieldCheck size={15} /><span><b>结构化证据身份迁移</b>
-                <small>事实、事件和关系按“结构 ID＋原消息”建立唯一约束；发送者未知的旧记录只做可验证回填，不进行猜测。</small>
+                <small>事实、事件和关系按“结构 ID＋来源＋会话＋原消息”建立唯一约束；旧记录的来源与发送者只做可验证回填，不进行猜测。</small>
               </span></header>
               <div className="assistant-recovery-current">
                 <span>证据行 <b>
@@ -4265,6 +4265,8 @@ function AiAssistantPage() {
                   {' → '}
                   {Number(memoryDiagnostics.structuredEvidenceMigration.sendersAfter || 0).toLocaleString()}
                 </b></span>
+                <span>来源回填 <b>{Number(memoryDiagnostics.structuredEvidenceMigration.sourceRowsBackfilledTotal || 0).toLocaleString()}</b></span>
+                <span>来源身份 <b>{memoryDiagnostics.structuredEvidenceMigration.sourceIdentity === true ? '正常' : '待迁移'}</b></span>
                 <span>唯一约束 <b>{memoryDiagnostics.structuredEvidenceMigration.constraintsHealthy === false ? '异常' : '正常'}</b></span>
                 <span>启动自愈 <b>{Number(memoryDiagnostics.structuredEvidenceMigration.constraintDriftRepairs || 0).toLocaleString()}</b> 次</span>
                 <span>迁移时间 <b>{memoryDiagnostics.structuredEvidenceMigration.migratedAt

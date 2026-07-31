@@ -1193,7 +1193,7 @@ test('structured evidence migration deduplicates nullable legacy identities and 
       sourceNature: 'self_statement',
       searchText: '迁移人物负责迁移验证',
       evidence: [{
-        messageId: 'migration-message',
+        messageId: 'wechat:migration-session:migration-message',
         sessionId: 'migration-session',
         timestamp: 1_700_000_000,
         sender: '',
@@ -1207,7 +1207,7 @@ test('structured evidence migration deduplicates nullable legacy identities and 
       title: '迁移发送者来源',
       content: '可用于回填发送者的旧索引',
       evidence: [{
-        messageId: 'migration-message',
+        messageId: 'wechat:migration-session:migration-message',
         sessionId: 'migration-session',
         timestamp: 1_700_000_000,
         sender: '迁移发送者',
@@ -1226,7 +1226,7 @@ test('structured evidence migration deduplicates nullable legacy identities and 
         claim_id,message_id,session_id,timestamp,sender,excerpt,evidence_role
       ) VALUES(?,?,?,?,?,?,?)
     `).run(
-      'migration-claim', 'migration-message', 'migration-session', 1_700_000_000,
+      'migration-claim', 'wechat:migration-session:migration-message', 'migration-session', 1_700_000_000,
       '', '这是迁移时应保留的更完整摘录', 'direct'
     )
     assert.equal(database.prepare(
@@ -1245,11 +1245,14 @@ test('structured evidence migration deduplicates nullable legacy identities and 
       const migrationAudit = JSON.parse(String(((reopened as any).db.prepare(`
         SELECT value FROM schema_meta WHERE key='structured_evidence_identity_version'
       `).get() as any).value))
-      assert.equal(migrationAudit.version, 2)
+      assert.equal(migrationAudit.version, 3)
       assert.equal(migrationAudit.evidenceBefore, 2)
       assert.equal(migrationAudit.evidenceAfter, 1)
       assert.equal(migrationAudit.duplicatesRemoved, 1)
       assert.equal(migrationAudit.sendersRecovered, 1)
+      assert.equal(migrationAudit.sourceRowsBackfilledThisStart, 1)
+      assert.equal(migrationAudit.sourceRowsBackfilledTotal, 1)
+      assert.equal(migrationAudit.sourceIdentity, true)
       assert.deepEqual(reopened.getDiagnostics().structuredEvidenceMigration, migrationAudit)
       assert.equal(Number(((reopened as any).db.prepare(`
         SELECT COUNT(*) AS count FROM pragma_index_list('evidence')
@@ -1257,6 +1260,13 @@ test('structured evidence migration deduplicates nullable legacy identities and 
           'idx_evidence_claim_message','idx_evidence_relation_message','idx_evidence_event_message'
         ) AND "unique"=1
       `).get() as any).count), 3)
+      assert.deepEqual(
+        ((reopened as any).db.prepare(`
+          SELECT name FROM pragma_index_info('idx_evidence_claim_message')
+          ORDER BY seqno
+        `).all() as Array<{ name: string }>).map(row => row.name),
+        ['claim_id', 'source_id', 'session_id', 'message_id']
+      )
     } finally {
       reopened.close()
     }
@@ -1299,7 +1309,7 @@ test('structured evidence constraints self-heal after index drift without trusti
     const auditBefore = JSON.parse(String(database.prepare(`
       SELECT value FROM schema_meta WHERE key='structured_evidence_identity_version'
     `).get().value))
-    assert.equal(auditBefore.version, 2)
+    assert.equal(auditBefore.version, 3)
     database.exec('DROP INDEX idx_evidence_claim_message')
     database.prepare(`
       INSERT INTO evidence(
@@ -1320,7 +1330,7 @@ test('structured evidence constraints self-heal after index drift without trusti
       assert.equal(page.items[0].excerpt, '索引漂移期间产生的更完整摘录')
       assert.equal(page.items[0].evidence_role, 'direct')
       const diagnostics = reopened.getDiagnostics().structuredEvidenceMigration
-      assert.equal(diagnostics.version, 2)
+      assert.equal(diagnostics.version, 3)
       assert.equal(diagnostics.constraintsHealthy, true)
       assert.equal(diagnostics.driftDetectedThisStart, true)
       assert.equal(diagnostics.constraintDriftRepairs, 1)
@@ -1407,6 +1417,100 @@ test('relation and event evidence keep senders without duplicating repeated extr
   assert.equal(eventPage.total, 1)
   assert.equal(eventPage.items[0].sender, '事件发送者新备注')
 }))
+
+test('structured evidence preserves identical message ids from different sources across restart', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'weflow-structured-source-evidence-test-'))
+  const databasePath = join(directory, 'memory.sqlite')
+  const evidence = [{
+    sourceId: 'wechat',
+    messageId: 'shared-message',
+    sessionId: 'shared-session',
+    timestamp: 1_700_000_301,
+    sender: '微信发送者',
+    excerpt: '微信原文'
+  }, {
+    sourceId: 'documents',
+    messageId: 'shared-message',
+    sessionId: 'shared-session',
+    timestamp: 1_700_000_302,
+    sender: '文档连接器',
+    excerpt: '文档原文'
+  }]
+  const first = new PersonalMemoryStore()
+  try {
+    first.initialize(databasePath)
+    first.syncGraph({
+      entities: [
+        { id: 'source-person-a', type: 'person', canonicalName: '来源甲', trustStatus: 'confirmed' },
+        { id: 'source-person-b', type: 'person', canonicalName: '来源乙', trustStatus: 'confirmed' }
+      ],
+      relations: [{
+        id: 'source-relation',
+        subjectId: 'source-person-a',
+        predicate: '协作',
+        objectId: 'source-person-b',
+        confidence: 0.9,
+        status: 'candidate',
+        evidence
+      }],
+      reviewQueue: []
+    })
+    first.upsertClaims([{
+      id: 'source-claim',
+      subjectId: 'source-person-a',
+      predicate: '负责',
+      objectValue: '跨来源验证',
+      confidence: 0.9,
+      status: 'candidate',
+      sourceNature: 'other_statement',
+      searchText: '来源甲负责跨来源验证',
+      evidence
+    }])
+    first.upsertEvents([{
+      id: 'source-event',
+      eventType: 'meeting',
+      title: '跨来源会议',
+      description: '',
+      confidence: 0.9,
+      status: 'candidate',
+      sourceNature: 'other_statement',
+      searchText: '跨来源会议',
+      participants: [{ entityId: 'source-person-a', role: 'participant' }],
+      evidence
+    }])
+    for (const [kind, id] of [
+      ['relation', 'source-relation'],
+      ['claim', 'source-claim'],
+      ['event', 'source-event']
+    ] as const) {
+      const page = first.getDocumentEvidencePage(kind, id)
+      assert.equal(page.total, 2)
+      assert.deepEqual(page.items.map(item => item.source_id).sort(), ['documents', 'wechat'])
+    }
+    first.close()
+
+    const reopened = new PersonalMemoryStore()
+    try {
+      reopened.initialize(databasePath)
+      for (const [kind, id] of [
+        ['relation', 'source-relation'],
+        ['claim', 'source-claim'],
+        ['event', 'source-event']
+      ] as const) {
+        assert.equal(reopened.getDocumentEvidencePage(kind, id).total, 2, `${kind} evidence after restart`)
+      }
+      const diagnostics = reopened.getDiagnostics().structuredEvidenceMigration
+      assert.equal(diagnostics.version, 3)
+      assert.equal(diagnostics.sourceIdentity, true)
+      assert.equal(diagnostics.constraintsHealthy, true)
+    } finally {
+      reopened.close()
+    }
+  } finally {
+    first.close()
+    rmSync(directory, { recursive: true, force: true })
+  }
+})
 
 test('structured evidence reference integrity removes legacy orphans and protects future deletes', () => {
   const directory = mkdtempSync(join(tmpdir(), 'weflow-evidence-reference-test-'))
