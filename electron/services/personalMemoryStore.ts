@@ -4592,17 +4592,48 @@ export class PersonalMemoryStore {
     return pairs.sort((left, right) => right.score - left.score).slice(0, Math.max(1, Math.min(1000, limit)))
   }
 
+  getDocumentEvidencePayload(documentType: string, sourceId: string): { evidence: any[]; evidenceTotal: number } {
+    if (!this.db) return { evidence: [], evidenceTotal: 0 }
+    const documentId = `${documentType}:${sourceId}`
+    const genericTotal = Number((this.db.prepare(`
+      SELECT COUNT(*) AS count FROM search_document_evidence WHERE document_id=?
+    `).get(documentId) as any)?.count || 0)
+    if (genericTotal) {
+      const evidence = (this.db.prepare(`
+        SELECT message_id,session_id,timestamp,sender,excerpt
+        FROM search_document_evidence
+        WHERE document_id=?
+        ORDER BY timestamp DESC,message_id DESC
+        LIMIT ?
+      `).all(documentId, MEMORY_CARD_EVIDENCE_LIMIT) as any[]).reverse()
+      return { evidence, evidenceTotal: genericTotal }
+    }
+    const foreignKey = documentType === 'claim'
+      ? 'claim_id'
+      : documentType === 'event'
+        ? 'event_id'
+        : documentType === 'relation'
+          ? 'relation_id'
+          : ''
+    if (!foreignKey) return { evidence: [], evidenceTotal: 0 }
+    const evidenceTotal = Number((this.db.prepare(`
+      SELECT COUNT(*) AS count FROM evidence WHERE ${foreignKey}=?
+    `).get(sourceId) as any)?.count || 0)
+    if (!evidenceTotal) return { evidence: [], evidenceTotal: 0 }
+    const evidence = (this.db.prepare(`
+      SELECT message_id,session_id,timestamp,excerpt,evidence_role
+      FROM evidence
+      WHERE ${foreignKey}=?
+      ORDER BY timestamp DESC,
+        CASE WHEN evidence_role='contradiction' THEN 0 ELSE 1 END,
+        message_id DESC
+      LIMIT ?
+    `).all(sourceId, MEMORY_CARD_EVIDENCE_LIMIT) as any[]).reverse()
+    return { evidence, evidenceTotal }
+  }
+
   getDocumentEvidence(documentType: string, sourceId: string): any[] {
-    if (!this.db) return []
-    const generic = this.db.prepare(`
-      SELECT message_id,session_id,timestamp,sender,excerpt
-      FROM search_document_evidence WHERE document_id=? ORDER BY timestamp LIMIT 10
-    `).all(`${documentType}:${sourceId}`) as any[]
-    if (generic.length) return generic
-    if (documentType === 'claim') return this.db.prepare('SELECT message_id,session_id,timestamp,excerpt,evidence_role FROM evidence WHERE claim_id=? ORDER BY timestamp LIMIT 10').all(sourceId) as any[]
-    if (documentType === 'event') return this.db.prepare('SELECT message_id,session_id,timestamp,excerpt,evidence_role FROM evidence WHERE event_id=? ORDER BY timestamp LIMIT 10').all(sourceId) as any[]
-    if (documentType === 'relation') return this.db.prepare('SELECT message_id,session_id,timestamp,excerpt,evidence_role FROM evidence WHERE relation_id=? ORDER BY timestamp LIMIT 10').all(sourceId) as any[]
-    return []
+    return this.getDocumentEvidencePayload(documentType, sourceId).evidence
   }
 
   saveAssistantExchange(question: string, answer: string, citations: any[], conversationId?: string): string {

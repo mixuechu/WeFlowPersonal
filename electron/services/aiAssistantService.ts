@@ -4413,11 +4413,14 @@ export class AiAssistantService {
   }
 
   searchMemory(query: string, limit = 200, allowedIds: Set<string> | null = null): any[] {
-    return personalMemoryStore.searchText(String(query || ''), limit, allowedIds).map((item: any) => ({
-      ...item,
-      metadata: (() => { try { return JSON.parse(item.metadata_json || '{}') } catch { return {} } })(),
-      evidence: personalMemoryStore.getDocumentEvidence(item.document_type, item.source_id)
-    }))
+    return personalMemoryStore.searchText(String(query || ''), limit, allowedIds).map((item: any) => {
+      const evidencePayload = personalMemoryStore.getDocumentEvidencePayload(item.document_type, item.source_id)
+      return {
+        ...item,
+        metadata: (() => { try { return JSON.parse(item.metadata_json || '{}') } catch { return {} } })(),
+        ...evidencePayload
+      }
+    })
   }
 
   async searchMemoryHybrid(query: string, options: MemorySearchOptions = {}, maxResults = 40): Promise<any[]> {
@@ -4452,6 +4455,9 @@ export class AiAssistantService {
       semantic.forEach((item: any, index: number) => {
         if (Number(item.semantic_score || 0) < 0.35) return
         const existing = merged.get(item.id)
+        const evidencePayload = existing
+          ? { evidence: existing.evidence, evidenceTotal: existing.evidenceTotal }
+          : personalMemoryStore.getDocumentEvidencePayload(item.document_type, item.source_id)
         const semanticContribution = Math.max(0, Number(item.semantic_score || 0)) * 0.035 + 1 / (60 + index)
         merged.set(item.id, {
           ...(existing || item),
@@ -4460,7 +4466,7 @@ export class AiAssistantService {
           hybrid_score: Number(existing?.hybrid_score || 0) + semanticContribution,
           match_source: existing ? '全文 + 语义' : '语义',
           metadata: existing?.metadata || (() => { try { return JSON.parse(item.metadata_json || '{}') } catch { return {} } })(),
-          evidence: existing?.evidence || personalMemoryStore.getDocumentEvidence(item.document_type, item.source_id)
+          ...evidencePayload
         })
       })
       return filterMemorySearchResults(
@@ -4508,14 +4514,17 @@ export class AiAssistantService {
     const ranked = text
       ? await this.searchMemoryHybrid(text, scopedOptions, 500)
       : filterMemorySearchResults(
-          personalMemoryStore.listSearchDocumentsInScope(allowedIds!, 500).map((item: any) => ({
-            ...item,
-            metadata: (() => { try { return JSON.parse(item.metadata_json || '{}') } catch { return {} } })(),
-            evidence: personalMemoryStore.getDocumentEvidence(item.document_type, item.source_id),
-            match_source: '范围浏览',
-            retrieval_scope_applied: true,
-            retrieval_scope_candidates: allowedIds!.size
-          })),
+          personalMemoryStore.listSearchDocumentsInScope(allowedIds!, 500).map((item: any) => {
+            const evidencePayload = personalMemoryStore.getDocumentEvidencePayload(item.document_type, item.source_id)
+            return {
+              ...item,
+              metadata: (() => { try { return JSON.parse(item.metadata_json || '{}') } catch { return {} } })(),
+              ...evidencePayload,
+              match_source: '范围浏览',
+              retrieval_scope_applied: true,
+              retrieval_scope_candidates: allowedIds!.size
+            }
+          }),
           scopedOptions
         )
     const page = paginateMemoryResults(ranked, offset, limit, 500)
@@ -4641,6 +4650,7 @@ export class AiAssistantService {
           search_text: `${names.get(step.fromId) || step.fromId} ${step.forward ? step.predicate : `反向:${step.predicate}`} ${names.get(step.toId) || step.toId}`,
           metadata: { subjectId: step.fromId, objectId: step.toId, predicate: step.predicate, status: step.status },
           evidence: step.evidence,
+          evidenceTotal: step.evidenceTotal,
           hybrid_score: 1,
           match_source: '图路径'
         }))

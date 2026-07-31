@@ -86,7 +86,8 @@ test('memory evidence eligibility keeps review status separate from factual supp
   const item = (type: string, status?: string, withEvidence = true) => ({
     document_type: type,
     metadata: status ? { status } : {},
-    evidence: withEvidence ? evidence : []
+    evidence: withEvidence ? evidence : [],
+    evidenceTotal: withEvidence ? 7 : 0
   })
 
   assert.deepEqual(
@@ -124,6 +125,7 @@ test('memory evidence eligibility keeps review status separate from factual supp
   )
 
   const context = buildModelMemoryContext(results)
+  assert.equal(context.find(result => result.documentId === 'confirmed')?.evidenceTotal, 7)
   const rejectedHallucination = finalizeGroundedMemoryAnswer({
     answer: '候选内容一定是真的。',
     citationIds: ['candidate', 'rejected', 'cancelled']

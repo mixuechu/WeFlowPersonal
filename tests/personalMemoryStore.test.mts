@@ -1089,6 +1089,25 @@ test('memory cards expose evidence totals but bound their latest evidence payloa
   assert.equal(dossierClaim.evidence_count, 25)
   assert.equal(dossierClaim.evidence.length, 20)
   assert.equal(dossierClaim.evidence.at(-1).message_id, 'wechat:bounded-session:25')
+
+  const searchPayload = store.getDocumentEvidencePayload('claim', 'bounded-claim')
+  assert.equal(searchPayload.evidenceTotal, 25)
+  assert.equal(searchPayload.evidence.length, MEMORY_CARD_EVIDENCE_LIMIT)
+  assert.deepEqual(
+    searchPayload.evidence.map(item => item.message_id),
+    manyEvidence.slice(-MEMORY_CARD_EVIDENCE_LIMIT).map(item => item.messageId)
+  )
+  assert.deepEqual(store.getDocumentEvidence('claim', 'bounded-claim'), searchPayload.evidence)
+
+  ;(store as any).db.prepare(
+    'DELETE FROM search_document_evidence WHERE document_id=?'
+  ).run('claim:bounded-claim')
+  const fallbackPayload = store.getDocumentEvidencePayload('claim', 'bounded-claim')
+  assert.equal(fallbackPayload.evidenceTotal, 25)
+  assert.deepEqual(
+    fallbackPayload.evidence.map(item => item.message_id),
+    manyEvidence.slice(-MEMORY_CARD_EVIDENCE_LIMIT).map(item => item.messageId)
+  )
 }))
 
 test('task search keeps original message evidence', () => withStore(store => {

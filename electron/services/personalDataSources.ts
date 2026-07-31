@@ -204,6 +204,10 @@ export function buildModelMemoryContext(
         trustLabel: eligibility.trustLabel,
         evidencePolicy: eligibility.policyReason,
         evidence: item.evidence,
+        evidenceTotal: Math.max(
+          Array.isArray(item.evidence) ? item.evidence.length : 0,
+          Number(item.evidenceTotal || 0)
+        ),
         canSupportFacts: eligibility.canSupportFacts
       }
     })

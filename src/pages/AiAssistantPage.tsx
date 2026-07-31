@@ -2837,6 +2837,7 @@ function AiAssistantPage() {
                   : resultStatus === 'cancelled' ? '已取消'
                     : '原始资料'
               const evidence: MemoryEvidence[] = (result.evidence || []).map(normalizeMemoryEvidence)
+              const evidenceTotal = Math.max(evidence.length, Number(result.evidenceTotal || 0))
               return <article key={result.id}>
               <span>{MEMORY_TYPE_LABELS[result.document_type] || result.document_type}
                 {result.match_source ? ` · ${result.match_source}匹配` : ''}
@@ -2847,7 +2848,11 @@ function AiAssistantPage() {
               <small className={`assistant-memory-trust ${resultStatus || 'source'}`}>{statusLabel}{resultStatus === 'candidate' ? ' · 不能作为已确认事实回答' : resultStatus === 'cancelled' ? ' · 仅作历史记录' : ''}</small>
               <strong>{result.title}</strong><p>{result.search_text}</p>
               <details className="assistant-search-evidence">
-                <summary>{evidence.length ? `核验原始证据（${evidence.length}）` : '暂无可展开的原始证据'}</summary>
+                <summary>{evidence.length
+                  ? evidenceTotal > evidence.length
+                    ? `核验原始证据（最近 ${evidence.length} / 共 ${evidenceTotal} 条）`
+                    : `核验原始证据（${evidenceTotal} 条）`
+                  : '暂无可展开的原始证据'}</summary>
                 {evidence.length
                   ? <div>{evidence.map((item, index) => {
                     const localMessageId = evidenceLocalMessageId(item)
@@ -2862,7 +2867,10 @@ function AiAssistantPage() {
                         item.role === 'direct' ? '直接证据' : item.role === 'indirect' ? '间接证据' : item.role === 'contradiction' ? '反证' : item.role
                       }</small>}
                     </blockquote>
-                  })}</div>
+                  })}
+                    {evidenceTotal > evidence.length &&
+                      <p className="assistant-evidence-limit-note">当前显示最近 {evidence.length} 条，共有 {evidenceTotal} 条去重原文证据；可结合来源、人物和时间范围继续检索。</p>}
+                  </div>
                   : <p>该结果只能作为检索线索，不能单独支撑事实结论。</p>}
               </details>
             </article>})}</div>
@@ -2975,6 +2983,10 @@ function AiAssistantPage() {
                   setMemoryTypeFilter(citation.type)
                 }}>定位到检索</button>
                 <strong>{citation.title}</strong><span>{citation.type} · {citation.trustLabel || (citation.status === 'confirmed' ? '已确认' : '原始资料')}</span><p>{citation.content}</p>
+                {Number(citation.evidenceTotal || 0) > (citation.evidence || []).length &&
+                  <small className="assistant-evidence-limit-note">
+                    本次回答核验了最近 {(citation.evidence || []).length} / 共 {Number(citation.evidenceTotal)} 条去重原文证据
+                  </small>}
                 {(citation.evidence || []).map((rawEvidence: any, index: number) => {
                   const evidence = normalizeMemoryEvidence(rawEvidence)
                   const localMessageId = evidenceLocalMessageId(evidence)
