@@ -427,7 +427,15 @@ function AiAssistantPage() {
   }), [memoryEntityFilter, memorySessionFilter, memorySourceFilter, memoryTypeFilter, memoryFrom, memoryTo, sources])
   const hasMemoryScope = Boolean(memoryEntityFilter || memorySessionFilter || memorySourceFilter || memoryTypeFilter || memoryFrom || memoryTo)
   const sensitiveCaches = memoryDiagnostics?.privacy?.sensitiveCaches
-  const sensitiveCachesSecure = ['ocr', 'imageSemantics', 'voiceTranscripts'].every(kind => {
+  const sensitiveCachesSecure = [
+    'ocr',
+    'imageSemantics',
+    'voiceTranscripts',
+    'contacts',
+    'sessionStats',
+    'groupMyMessageCounts',
+    'cacheMaps'
+  ].every(kind => {
     const cache = sensitiveCaches?.[kind]
     return !cache?.exists || (cache.encrypted === true && cache.writable !== false && cache.mode === '600')
   })
@@ -4509,6 +4517,14 @@ function AiAssistantPage() {
                   : sensitiveCaches.imageSemantics.encrypted ? `AES-256-GCM · ${Number(sensitiveCaches.imageSemantics.entries || 0).toLocaleString()} 条${sensitiveCaches.imageSemantics.migratedPlaintext ? '（本次迁移）' : ''}` : '未验证加密'}</span>
                 <span>语音转写缓存：{!sensitiveCaches?.voiceTranscripts?.exists ? '尚未生成'
                   : sensitiveCaches.voiceTranscripts.encrypted ? `AES-256-GCM · ${Number(sensitiveCaches.voiceTranscripts.entries || 0).toLocaleString()} 条${sensitiveCaches.voiceTranscripts.migratedPlaintext ? '（本次迁移）' : ''}` : '未验证加密'}</span>
+                <span>联系人显示缓存：{!sensitiveCaches?.contacts?.exists ? '尚未生成'
+                  : sensitiveCaches.contacts.encrypted ? `AES-256-GCM · ${Number(sensitiveCaches.contacts.entries || 0).toLocaleString()} 条${sensitiveCaches.contacts.migratedPlaintext ? '（本次迁移）' : ''}` : '未验证加密'}</span>
+                <span>会话统计缓存：{!sensitiveCaches?.sessionStats?.exists ? '尚未生成'
+                  : sensitiveCaches.sessionStats.encrypted ? `AES-256-GCM · ${Number(sensitiveCaches.sessionStats.entries || 0).toLocaleString()} 条${sensitiveCaches.sessionStats.migratedPlaintext ? '（本次迁移）' : ''}` : '未验证加密'}</span>
+                <span>群内本人消息计数：{!sensitiveCaches?.groupMyMessageCounts?.exists ? '尚未生成'
+                  : sensitiveCaches.groupMyMessageCounts.encrypted ? `AES-256-GCM · ${Number(sensitiveCaches.groupMyMessageCounts.entries || 0).toLocaleString()} 条${sensitiveCaches.groupMyMessageCounts.migratedPlaintext ? '（本次迁移）' : ''}` : '未验证加密'}</span>
+                <span>界面缓存映射：{!sensitiveCaches?.cacheMaps?.exists ? '尚未生成'
+                  : sensitiveCaches.cacheMaps.encrypted ? `AES-256-GCM · ${Number(sensitiveCaches.cacheMaps.entries || 0).toLocaleString()} 组${sensitiveCaches.cacheMaps.migratedPlaintext ? '（本次迁移）' : ''}` : '未验证加密'}</span>
                 <span>数据接口：{memoryDiagnostics.privacy.httpBinding}</span>
                 <span>敏感运行日志：{memoryDiagnostics.privacy.sensitiveLogRetention?.enabled
                   ? `显式开启 · ${(Number(memoryDiagnostics.privacy.sensitiveLogRetention.currentBytes || 0) / 1024).toFixed(0)} KB / 最多 ${(Number(memoryDiagnostics.privacy.sensitiveLogRetention.maxBytes || 0) / 1024 / 1024).toFixed(0)} MB`

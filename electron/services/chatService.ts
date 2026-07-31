@@ -468,12 +468,13 @@ class ChatService {
 
   constructor() {
     this.configService = new ConfigService()
-    this.contactCacheService = new ContactCacheService(this.configService.getCacheBasePath())
+    const localCacheKey = this.configService.getOrCreateLocalCacheEncryptionKey()
+    this.contactCacheService = new ContactCacheService(this.configService.getCacheBasePath(), localCacheKey)
     const persisted = this.contactCacheService.getAllEntries()
     this.avatarCache = new Map(Object.entries(persisted))
     this.messageCacheService = new MessageCacheService(this.configService.getCacheBasePath())
-    this.sessionStatsCacheService = new SessionStatsCacheService(this.configService.getCacheBasePath())
-    this.groupMyMessageCountCacheService = new GroupMyMessageCountCacheService(this.configService.getCacheBasePath())
+    this.sessionStatsCacheService = new SessionStatsCacheService(this.configService.getCacheBasePath(), localCacheKey)
+    this.groupMyMessageCountCacheService = new GroupMyMessageCountCacheService(this.configService.getCacheBasePath(), localCacheKey)
     this.imageDecryptService = new ImageDecryptService()
     // 初始化LRU缓存，限制大小防止内存泄漏
     this.voiceWavCache = new LRUCache(this.voiceWavCacheMaxEntries)
@@ -482,6 +483,12 @@ class ChatService {
 
   setRuntimeConfig(config: { dbPath?: string; decryptKey?: string; myWxid?: string; resourcesPath?: string; appPath?: string; isPackaged?: boolean }): void {
     this.runtimeConfig = config
+  }
+
+  initializeRuntimeCacheEncryption(encryptionKey: Buffer | string): void {
+    this.contactCacheService.initializeEncryption(encryptionKey)
+    this.sessionStatsCacheService.initializeEncryption(encryptionKey)
+    this.groupMyMessageCountCacheService.initializeEncryption(encryptionKey)
   }
 
   initializeTranscriptCacheEncryption(encryptionKey: Buffer | string): void {
@@ -9909,6 +9916,14 @@ class ChatService {
       ...this.transcriptCachePrivacy,
       ...inspectSensitiveCacheFile(this.getTranscriptCachePath()),
       entries: this.voiceTranscriptCache.size
+    }
+  }
+
+  getRuntimeCachePrivacyStatus(): any {
+    return {
+      contacts: this.contactCacheService.getPrivacyStatus(),
+      sessionStats: this.sessionStatsCacheService.getPrivacyStatus(),
+      groupMyMessageCounts: this.groupMyMessageCountCacheService.getPrivacyStatus()
     }
   }
 

@@ -373,12 +373,19 @@ class SnsService {
 
     constructor() {
         this.configService = new ConfigService()
-        this.contactCache = new ContactCacheService(this.configService.get('cachePath') as string)
+        this.contactCache = new ContactCacheService(
+            this.configService.get('cachePath') as string,
+            this.configService.getOrCreateLocalCacheEncryptionKey()
+        )
     }
 
     clearMemoryCache(): void {
         this.imageCache.clear()
         this.imageCacheMeta.clear()
+    }
+
+    initializeRuntimeCacheEncryption(encryptionKey: Buffer | string): void {
+        this.contactCache.initializeEncryption(encryptionKey)
     }
 
     private pruneImageCache(now: number = Date.now()): void {

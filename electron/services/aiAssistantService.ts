@@ -3682,7 +3682,9 @@ export class AiAssistantService {
           version: 'encrypted-sensitive-cache-v1',
           ocr: ocr.privacy,
           imageSemantics: imageSemantics.privacy,
-          voiceTranscripts: chatService.getTranscriptCachePrivacyStatus()
+          voiceTranscripts: chatService.getTranscriptCachePrivacyStatus(),
+          ...chatService.getRuntimeCachePrivacyStatus(),
+          cacheMaps: this.config.getCacheMapPrivacyStatus()
         },
         sensitiveRedactionLevel: this.config.get('aiAssistantSensitiveRedactionLevel')
       },

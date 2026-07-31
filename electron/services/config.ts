@@ -2,8 +2,8 @@
 import { existsSync, readdirSync, statSync } from 'fs'
 import crypto from 'crypto'
 import Store from 'electron-store'
-import { expandHomePath } from '../utils/pathUtils'
-import { CacheMapStore } from './cacheMapStore'
+import { expandHomePath } from '../utils/pathUtils.ts'
+import { CacheMapStore } from './cacheMapStore.ts'
 
 // 条件导入 electron（Worker 环境中不可用）
 let app: any = null
@@ -38,6 +38,7 @@ interface ConfigSchema {
   onboardingDone: boolean
   imageXorKey: number
   imageAesKey: string
+  localCacheEncryptionKey: string
   wxidConfigs: Record<string, { decryptKey?: string; imageXorKey?: number; imageAesKey?: string; updatedAt?: number }>
   exportPath?: string;
   // 缓存相关
@@ -170,6 +171,7 @@ interface ConfigSchema {
 const ENCRYPTED_STRING_KEYS: Set<string> = new Set([
   'decryptKey',
   'imageAesKey',
+  'localCacheEncryptionKey',
   'authPassword',
   'httpApiToken',
   'aiModelApiKey',
@@ -225,6 +227,7 @@ export class ConfigService {
       onboardingDone: false,
       imageXorKey: 0,
       imageAesKey: '',
+      localCacheEncryptionKey: '',
       wxidConfigs: {},
       cachePath: '',
       lastOpenedDb: '',
@@ -361,14 +364,17 @@ export class ConfigService {
     this.migrateAuthFields()
     this.migrateAiConfig()
     if (!runningInWorker) {
-      this.cacheMapStore = new CacheMapStore(this.getUserDataPath())
+      this.cacheMapStore = new CacheMapStore(
+        this.getUserDataPath(),
+        this.getOrCreateLocalCacheEncryptionKey()
+      )
       this.migrateCacheMapKeys()
     }
   }
 
   /** 一次性迁移：把主配置中的 *CacheMap 大键搬到旁路存储，缩小配置文件 */
   private migrateCacheMapKeys(): void {
-    if (!this.cacheMapStore) return
+    if (!this.cacheMapStore || !this.cacheMapStore.isWritable()) return
     try {
       const all = this.store.store as unknown as Record<string, unknown>
       const cacheKeys = Object.keys(all).filter(isCacheMapKey)
@@ -403,6 +409,28 @@ export class ConfigService {
   isStoredWithSafeStorage(key: keyof ConfigSchema): boolean {
     const raw = this.store.get(key)
     return typeof raw === 'string' && raw.startsWith(SAFE_PREFIX)
+  }
+
+  getOrCreateLocalCacheEncryptionKey(): string {
+    if (!isSafeStorageAvailable()) return ''
+    const existing = String(this.get('localCacheEncryptionKey') || '')
+    if (/^[a-f0-9]{64}$/i.test(existing)) return existing
+    const generated = crypto.randomBytes(32).toString('hex')
+    this.set('localCacheEncryptionKey', generated)
+    const verified = String(this.get('localCacheEncryptionKey') || '')
+    return /^[a-f0-9]{64}$/i.test(verified) ? verified : ''
+  }
+
+  initializeLocalCacheEncryption(): string {
+    const key = this.getOrCreateLocalCacheEncryptionKey()
+    if (!key) return ''
+    this.cacheMapStore?.initializeEncryption(key)
+    this.migrateCacheMapKeys()
+    return key
+  }
+
+  getCacheMapPrivacyStatus(): unknown {
+    return this.cacheMapStore?.getPrivacyStatus() || null
   }
 
   // === get / set ===

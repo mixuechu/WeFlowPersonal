@@ -1,8 +1,16 @@
 import { join, dirname } from 'path'
-import { existsSync, mkdirSync, readFileSync, writeFileSync, rmSync } from 'fs'
-import { writeFile } from 'fs/promises'
-import { app } from 'electron'
-import { ConfigService } from './config'
+import { existsSync, mkdirSync, rmSync } from 'fs'
+import { ConfigService } from './config.ts'
+import {
+  emptySensitiveCachePrivacy,
+  inspectSensitiveCacheFile,
+  loadEncryptedSensitiveCache,
+  writeEncryptedSensitiveCache,
+  type SensitiveCachePrivacy
+} from './encryptedSensitiveCache.ts'
+
+let electronApp: any = null
+try { electronApp = require('electron').app } catch {}
 
 /** 缓存版本号。增加/修改 SessionStatsCacheStats 字段后必须提升，避免旧缓存被误用。 */
 const CACHE_VERSION = 4
@@ -136,19 +144,22 @@ export class SessionStatsCacheService {
   private persistTimer: NodeJS.Timeout | null = null
   private persistInFlight = false
   private persistDirty = false
+  private privacy: SensitiveCachePrivacy = emptySensitiveCachePrivacy()
+  private encryptionKey: Buffer | string
   private store: SessionStatsCacheStore = {
     version: CACHE_VERSION,
     scopes: {}
   }
 
-  constructor(cacheBasePath?: string) {
+  constructor(cacheBasePath?: string, encryptionKey: Buffer | string = '') {
+    this.encryptionKey = encryptionKey
     const basePath = cacheBasePath && cacheBasePath.trim().length > 0
       ? cacheBasePath
       : ConfigService.getInstance().getCacheBasePath()
     this.cacheFilePath = join(basePath, 'session-stats.json')
     this.ensureCacheDir()
     this.load()
-    app?.once('will-quit', () => this.flushSync())
+    electronApp?.once?.('will-quit', () => this.flushSync())
   }
 
   private ensureCacheDir(): void {
@@ -159,10 +170,13 @@ export class SessionStatsCacheService {
   }
 
   private load(): void {
-    if (!existsSync(this.cacheFilePath)) return
     try {
-      const raw = readFileSync(this.cacheFilePath, 'utf8')
-      const parsed = JSON.parse(raw) as unknown
+      const loaded = loadEncryptedSensitiveCache<Record<string, unknown>>(
+        this.cacheFilePath,
+        this.encryptionKey
+      )
+      const parsed = loaded.value
+      this.privacy = loaded.privacy
       if (!parsed || typeof parsed !== 'object') {
         this.store = { version: CACHE_VERSION, scopes: {} }
         return
@@ -201,6 +215,11 @@ export class SessionStatsCacheService {
     } catch (error) {
       console.error('SessionStatsCacheService: 载入缓存失败', error)
       this.store = { version: CACHE_VERSION, scopes: {} }
+      this.privacy = {
+        ...emptySensitiveCachePrivacy(),
+        writable: false,
+        error: String(error instanceof Error ? error.message : error)
+      }
     }
   }
 
@@ -268,6 +287,29 @@ export class SessionStatsCacheService {
     }
   }
 
+  getPrivacyStatus(): unknown {
+    return {
+      ...this.privacy,
+      ...inspectSensitiveCacheFile(this.cacheFilePath),
+      entries: Object.values(this.store.scopes).reduce((total, scope) => total + Object.keys(scope).length, 0)
+    }
+  }
+
+  initializeEncryption(encryptionKey: Buffer | string): void {
+    if (!encryptionKey || (this.encryptionKey && this.privacy.writable)) return
+    const pending = this.store
+    this.encryptionKey = encryptionKey
+    this.store = { version: CACHE_VERSION, scopes: {} }
+    this.privacy = emptySensitiveCachePrivacy()
+    this.load()
+    let pendingEntries = 0
+    for (const [scopeKey, scope] of Object.entries(pending.scopes)) {
+      this.store.scopes[scopeKey] = { ...(this.store.scopes[scopeKey] || {}), ...scope }
+      pendingEntries += Object.keys(scope).length
+    }
+    if (pendingEntries > 0 && this.privacy.writable) this.persist()
+  }
+
   private trimScope(scopeKey: string): void {
     const scope = this.store.scopes[scopeKey]
     if (!scope) return
@@ -319,7 +361,11 @@ export class SessionStatsCacheService {
     }
     this.persistInFlight = true
     try {
-      await writeFile(this.cacheFilePath, JSON.stringify(this.store), 'utf8')
+      if (!this.privacy.writable) return
+      this.privacy = {
+        ...writeEncryptedSensitiveCache(this.cacheFilePath, this.store, this.encryptionKey),
+        migratedPlaintext: this.privacy.migratedPlaintext
+      }
     } catch (error) {
       console.error('SessionStatsCacheService: 保存缓存失败', error)
     } finally {
@@ -337,7 +383,11 @@ export class SessionStatsCacheService {
     clearTimeout(this.persistTimer)
     this.persistTimer = null
     try {
-      writeFileSync(this.cacheFilePath, JSON.stringify(this.store), 'utf8')
+      if (!this.privacy.writable) return
+      this.privacy = {
+        ...writeEncryptedSensitiveCache(this.cacheFilePath, this.store, this.encryptionKey),
+        migratedPlaintext: this.privacy.migratedPlaintext
+      }
     } catch (error) {
       console.error('SessionStatsCacheService: 保存缓存失败', error)
     }

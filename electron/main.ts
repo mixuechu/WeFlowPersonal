@@ -4686,6 +4686,9 @@ function checkForUpdatesOnStartup() {
 app.whenReady().then(async () => {
   // 先初始化配置，以便在启动早期判定是否需要静默启动
   configService = new ConfigService()
+  const localCacheEncryptionKey = configService.initializeLocalCacheEncryption()
+  chatService.initializeRuntimeCacheEncryption(localCacheEncryptionKey)
+  snsService.initializeRuntimeCacheEncryption(localCacheEncryptionKey)
   applyAutoUpdateChannel('startup')
   syncLaunchAtStartupPreference()
   const onboardingDone = configService.get('onboardingDone') === true
