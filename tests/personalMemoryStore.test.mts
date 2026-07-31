@@ -3607,6 +3607,42 @@ test('verified memory backup is created only from a healthy database', () => wit
   assert.ok(store.restoreBackup(imported.path).success)
 }))
 
+test('restoring an old snapshot protects it from safety-backup retention and reuses one rollback point', () => withStore(store => {
+  store.syncTasks([{
+    id: 'task-before-protected-backup',
+    title: '保留最旧快照',
+    priority: 'medium',
+    status: 'todo',
+    classification: 'mine'
+  }])
+  const backups = Array.from({ length: 10 }, () => {
+    const backup = store.createBackup()
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 2)
+    return backup
+  })
+  const oldest = backups[0]
+  const inspected = store.inspectBackup(oldest.path)
+  assert.equal(inspected.integrity, 'ok')
+  assert.equal(inspected.encrypted, false)
+  assert.equal(inspected.counts.searchDocuments, 1)
+
+  store.syncTasks([{
+    id: 'task-after-protected-backup',
+    title: '恢复后必须消失',
+    priority: 'low',
+    status: 'todo',
+    classification: 'mine'
+  }])
+  const safety = store.createBackup([oldest.path])
+  assert.equal(existsSync(oldest.path), true)
+  assert.equal(store.getDiagnostics().backups.length, 11)
+  const restored = store.restoreBackup(oldest.path, safety.path)
+  assert.equal(restored.safetyBackup, safety.path)
+  assert.equal(existsSync(oldest.path), true)
+  assert.equal(store.searchText('恢复后必须消失').length, 0)
+  assert.equal(store.getDiagnostics().backups.length, 11)
+}))
+
 test('vector metadata is retained for unchanged content and invalidated after edits', () => withStore(store => {
   const model = 'test-embedding:2d'
   const task = {

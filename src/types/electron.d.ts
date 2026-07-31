@@ -1783,6 +1783,7 @@ export interface ElectronAPI {
       }>
       getIngestionRunDossier: (runId: string, options?: any) => Promise<any>
       createMemoryBackup: () => Promise<any>
+      inspectMemoryBackup: (path: string) => Promise<any>
       restoreMemoryBackup: (path: string) => Promise<any>
       exportMemoryBundle: (path: string, passphrase: string) => Promise<any>
       inspectMemoryBundle: (path: string, passphrase?: string) => Promise<any>

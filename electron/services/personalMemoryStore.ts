@@ -2407,7 +2407,7 @@ export class PersonalMemoryStore {
     }
   }
 
-  createBackup(): any {
+  createBackup(protectedPaths: string[] = []): any {
     if (!this.db || !this.databasePath) throw new Error('个人记忆数据库尚未初始化')
     const diagnostics = this.getDiagnostics()
     if (!diagnostics.healthy) throw new Error(`数据库一致性检查失败：${diagnostics.integrity}`)
@@ -2421,8 +2421,16 @@ export class PersonalMemoryStore {
     try { chmodSync(backupPath, 0o600) } catch {}
     this.verifyDatabase(backupPath)
     if (this.encryptionKey && this.isPlaintextDatabase(backupPath)) throw new Error('备份验证失败：快照未加密')
+    const protectedBackupPaths = new Set(protectedPaths.map(path => resolve(String(path || ''))))
     const backups = this.listBackups(backupDirectory)
-    for (const stale of backups.slice(10)) {
+    const retained = backups.slice(0, 10)
+    for (const protectedBackup of backups.filter(item => protectedBackupPaths.has(resolve(item.path)))) {
+      if (!retained.some(item => resolve(item.path) === resolve(protectedBackup.path))) {
+        retained.push(protectedBackup)
+      }
+    }
+    const retainedPaths = new Set(retained.map(item => resolve(item.path)))
+    for (const stale of backups.filter(item => !retainedPaths.has(resolve(item.path)))) {
       unlinkSync(stale.path)
       try { unlinkSync(`${stale.path}.state.json`) } catch {}
     }
@@ -2431,17 +2439,44 @@ export class PersonalMemoryStore {
       path: backupPath,
       bytes: statSync(backupPath).size,
       createdAt: new Date().toISOString(),
-      retained: Math.min(backups.length, 10)
+      retained: retained.length
     }
   }
 
-  restoreBackup(backupPath: string): any {
+  inspectBackup(backupPath: string): any {
     if (!this.db || !this.databasePath) throw new Error('个人记忆数据库尚未初始化')
     const backupDirectory = join(dirname(this.databasePath), 'personal-memory-backups')
     const allowed = this.listBackups(backupDirectory).find(item => resolve(item.path) === resolve(String(backupPath || '')))
     if (!allowed) throw new Error('只能恢复由本应用创建的个人记忆快照')
     this.verifyDatabase(allowed.path)
-    const safetyBackup = this.createBackup()
+    const inspected = this.openDatabase(allowed.path, false)
+    try {
+      const counts = inspected.prepare(`
+        SELECT
+          (SELECT COUNT(*) FROM entities WHERE deleted_at IS NULL) AS entities,
+          (SELECT COUNT(*) FROM relations WHERE status!='rejected') AS relations,
+          (SELECT COUNT(*) FROM claims WHERE status!='rejected') AS claims,
+          (SELECT COUNT(*) FROM events WHERE status!='rejected') AS events,
+          (SELECT COUNT(*) FROM search_documents) AS searchDocuments,
+          (SELECT COUNT(*) FROM evidence) AS evidence
+      `).get() as any
+      return {
+        ...allowed,
+        integrity: 'ok',
+        encrypted: !this.isPlaintextDatabase(allowed.path),
+        counts
+      }
+    } finally {
+      inspected.close()
+    }
+  }
+
+  restoreBackup(backupPath: string, safetyBackupPath?: string): any {
+    if (!this.db || !this.databasePath) throw new Error('个人记忆数据库尚未初始化')
+    const allowed = this.inspectBackup(backupPath)
+    const safetyBackup = safetyBackupPath
+      ? this.inspectBackup(safetyBackupPath)
+      : this.createBackup([allowed.path])
     const temporary = `${this.databasePath}.restore-${Date.now()}.tmp`
     this.db.close()
     this.db = null

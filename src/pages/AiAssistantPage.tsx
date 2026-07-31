@@ -384,6 +384,9 @@ function AiAssistantPage() {
   const ingestionDossierGate = useRef(new LatestRequestGate())
   const [backingUpMemory, setBackingUpMemory] = useState(false)
   const [restoringMemory, setRestoringMemory] = useState(false)
+  const [memoryRestoreDialog, setMemoryRestoreDialog] = useState<any>(null)
+  const [memoryRestoreConfirmation, setMemoryRestoreConfirmation] = useState('')
+  const memoryRestoreGate = useRef(new LatestRequestGate())
   const [migratingMemory, setMigratingMemory] = useState(false)
   const [migrationDialog, setMigrationDialog] = useState<{ mode: 'export' | 'import'; bundlePath?: string } | null>(null)
   const [migrationPassphrase, setMigrationPassphrase] = useState('')
@@ -1350,17 +1353,54 @@ function AiAssistantPage() {
     }
   }
 
-  const restoreMemory = async (backup: any) => {
+  const openMemoryRestoreDialog = async (backup: any) => {
     if (restoringMemory || !backup?.path || !backup?.hasState) return
-    if (!window.confirm(`确定恢复到 ${new Date(backup.createdAt).toLocaleString('zh-CN')} 的个人记忆快照吗？恢复前会自动创建安全快照。`)) return
-    setRestoringMemory(true)
+    const requestId = memoryRestoreGate.current.begin()
+    setMemoryRestoreConfirmation('')
+    setMemoryRestoreDialog({ backup, status: 'loading' })
     try {
-      await window.electronAPI.aiAssistant.restoreMemoryBackup(backup.path)
+      const preview = await window.electronAPI.aiAssistant.inspectMemoryBackup(backup.path)
+      if (!memoryRestoreGate.current.isCurrent(requestId)) return
+      setMemoryRestoreDialog({ backup, preview, status: 'ready' })
+    } catch (error: any) {
+      if (!memoryRestoreGate.current.isCurrent(requestId)) return
+      setMemoryRestoreDialog({
+        backup,
+        status: 'error',
+        error: error?.message || String(error)
+      })
+    }
+  }
+
+  const closeMemoryRestoreDialog = () => {
+    if (restoringMemory) return
+    memoryRestoreGate.current.invalidate()
+    setMemoryRestoreDialog(null)
+    setMemoryRestoreConfirmation('')
+  }
+
+  const restoreMemory = async () => {
+    const path = memoryRestoreDialog?.preview?.path
+    if (
+      restoringMemory
+      || memoryRestoreDialog?.status !== 'ready'
+      || !path
+      || memoryRestoreConfirmation !== '恢复快照'
+    ) return
+    memoryRestoreGate.current.invalidate()
+    setRestoringMemory(true)
+    setMemoryRestoreDialog((current: any) => current ? { ...current, status: 'restoring', error: '' } : current)
+    try {
+      await window.electronAPI.aiAssistant.restoreMemoryBackup(path)
       setMessage('个人记忆已恢复；恢复前的安全快照已保留。')
+      setMemoryRestoreDialog(null)
+      setMemoryRestoreConfirmation('')
       setMemoryDiagnostics(await window.electronAPI.aiAssistant.getMemoryDiagnostics())
       await load()
     } catch (error: any) {
-      setMessage(error?.message || String(error))
+      const message = error?.message || String(error)
+      setMessage(message)
+      setMemoryRestoreDialog((current: any) => current ? { ...current, status: 'error', error: message } : current)
     } finally {
       setRestoringMemory(false)
     }
@@ -2421,7 +2461,7 @@ function AiAssistantPage() {
                   {memoryDiagnostics.backups.slice(0, 5).map((backup: any) => <button key={backup.path}
                     disabled={restoringMemory || !backup.hasState}
                     title={backup.hasState ? '恢复数据库、图谱、任务和增量游标' : '旧快照缺少完整状态文件'}
-                    onClick={() => void restoreMemory(backup)}>
+                    onClick={() => void openMemoryRestoreDialog(backup)}>
                     {new Date(backup.createdAt).toLocaleString('zh-CN')}{backup.hasState ? '' : '（仅数据库）'}
                   </button>)}
                 </div>
@@ -4669,6 +4709,74 @@ function AiAssistantPage() {
                 <button className="danger" disabled={memoryDeletionConfirmation !== '永久删除' || memoryDeletionDialog.status === 'deleting'}
                   onClick={() => void confirmPermanentMemoryDeletion()}>
                   {memoryDeletionDialog.status === 'deleting' ? '正在清理…' : '确认永久删除'}
+                </button>}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {memoryRestoreDialog && (
+        <div className="assistant-modal-backdrop" role="presentation">
+          <div className="assistant-modal assistant-delete-modal" role="dialog" aria-modal="true" aria-labelledby="memory-restore-title">
+            <div className="assistant-modal-title"><div>
+              <h2 id="memory-restore-title">恢复个人记忆快照</h2>
+              <p>恢复前会先创建一份当前数据库与加密状态的联合安全快照；失败时自动回滚。</p>
+            </div><button aria-label="关闭快照恢复确认" disabled={restoringMemory}
+              onClick={closeMemoryRestoreDialog}><X size={16} /></button></div>
+            {memoryRestoreDialog.status === 'loading' && <div className="assistant-delete-status">
+              <RefreshCw size={16} /><span><strong>正在只读验证快照…</strong><small>核对 SQLCipher 完整性、加密状态和内容规模，不会修改当前记忆。</small></span>
+            </div>}
+            {memoryRestoreDialog.status === 'error' && <div className="assistant-error">
+              <strong>快照验证或恢复失败</strong><span>{memoryRestoreDialog.error || '未知错误'}</span>
+            </div>}
+            {(memoryRestoreDialog.status === 'ready' || memoryRestoreDialog.status === 'restoring') && <>
+              <div className="assistant-delete-preview">
+                <strong>{new Date(memoryRestoreDialog.preview.createdAt).toLocaleString('zh-CN', { hour12: false })} 的联合快照</strong>
+                <p>
+                  SQLCipher {memoryRestoreDialog.preview.integrity === 'ok' ? '完整性通过' : '异常'}
+                  {' · '}{memoryRestoreDialog.preview.encrypted ? '数据库与状态均已加密' : '加密状态异常'}
+                  {' · '}{(Number(memoryRestoreDialog.preview.bytes || 0) / 1024 / 1024).toFixed(1)} MB
+                </p>
+                <p>
+                  {Number(memoryRestoreDialog.preview.counts?.tasks || 0).toLocaleString()} 条任务、
+                  {Number(memoryRestoreDialog.preview.counts?.entities || 0).toLocaleString()} 个实体、
+                  {Number(memoryRestoreDialog.preview.counts?.graphRelations || 0).toLocaleString()} 条图关系、
+                  {Number(memoryRestoreDialog.preview.counts?.claims || 0).toLocaleString()} 条事实、
+                  {Number(memoryRestoreDialog.preview.counts?.events || 0).toLocaleString()} 个事件、
+                  {Number(memoryRestoreDialog.preview.counts?.pendingReviews || 0).toLocaleString()} 个待审候选。
+                </p>
+                <p>
+                  最近完整同步：
+                  {memoryRestoreDialog.preview.lastSyncAt
+                    ? new Date(memoryRestoreDialog.preview.lastSyncAt).toLocaleString('zh-CN', { hour12: false })
+                    : '快照中尚无记录'}
+                  {Number(memoryRestoreDialog.preview.cursor?.pendingSessionRetryCount || 0) > 0
+                    ? ` · ${Number(memoryRestoreDialog.preview.cursor.pendingSessionRetryCount)} 个会话等待重试`
+                    : ''}
+                  {Number(memoryRestoreDialog.preview.cursor?.pendingSessionBacklogCount || 0) > 0
+                    ? ` · ${Number(memoryRestoreDialog.preview.cursor.pendingSessionBacklogCount)} 个会话仍有分页积压`
+                    : ''}
+                </p>
+              </div>
+              <label><span>输入“恢复快照”确认</span><input autoFocus value={memoryRestoreConfirmation}
+                disabled={memoryRestoreDialog.status === 'restoring'}
+                onChange={event => setMemoryRestoreConfirmation(event.target.value)}
+                onKeyDown={event => {
+                  if (event.key === 'Enter' && memoryRestoreConfirmation === '恢复快照') {
+                    void restoreMemory()
+                  }
+                }}
+                placeholder="恢复快照" /></label>
+            </>}
+            <div className="assistant-modal-actions">
+              <button disabled={restoringMemory} onClick={closeMemoryRestoreDialog}>取消</button>
+              {memoryRestoreDialog.status === 'error' && <button disabled={restoringMemory}
+                onClick={() => void openMemoryRestoreDialog(memoryRestoreDialog.backup)}>重新验证</button>}
+              {(memoryRestoreDialog.status === 'ready' || memoryRestoreDialog.status === 'restoring') &&
+                <button className="danger"
+                  disabled={memoryRestoreConfirmation !== '恢复快照' || restoringMemory}
+                  onClick={() => void restoreMemory()}>
+                  {restoringMemory ? '正在创建安全点并恢复…' : '确认恢复此快照'}
                 </button>}
             </div>
           </div>

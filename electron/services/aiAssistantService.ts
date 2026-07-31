@@ -3719,17 +3719,58 @@ export class AiAssistantService {
     )
   }
 
-  createMemoryBackup(): any {
+  createMemoryBackup(protectedPaths: string[] = []): any {
     const durable = readEncryptedDurableJson<any>(
       this.statePath,
       structuredClone(EMPTY_STATE),
       this.stateEncryptionKey
     )
     if (durable.recovery.source === 'empty') throw new Error('AI 状态不可读取，未创建不完整快照')
-    const result = personalMemoryStore.createBackup()
+    const result = personalMemoryStore.createBackup(protectedPaths)
     const stateBackupPath = `${result.path}.state.json`
     writeEncryptedDurableJson(stateBackupPath, durable.value, this.stateEncryptionKey)
     return { ...result, stateBackupPath }
+  }
+
+  inspectMemoryBackup(path: string): any {
+    const database = personalMemoryStore.inspectBackup(path)
+    const stateBackupPath = `${database.path}.state.json`
+    if (!existsSync(stateBackupPath)) throw new Error('该快照缺少 AI 助理状态文件，无法完整恢复')
+    const restored = readEncryptedDurableJson<any>(
+      stateBackupPath,
+      structuredClone(EMPTY_STATE),
+      this.stateEncryptionKey
+    )
+    if (restored.recovery.source === 'empty') throw new Error('快照中的 AI 状态损坏或密钥不匹配')
+    const state = restored.value || {}
+    return {
+      path: database.path,
+      name: database.name,
+      bytes: database.bytes,
+      createdAt: database.createdAt,
+      integrity: database.integrity,
+      encrypted: database.encrypted && restored.encrypted,
+      counts: {
+        ...database.counts,
+        tasks: Array.isArray(state.tasks) ? state.tasks.length : 0,
+        entities: Array.isArray(state.graph?.entities)
+          ? state.graph.entities.filter((item: any) => item?.trustStatus !== 'rejected').length
+          : Number(database.counts?.entities || 0),
+        graphRelations: Array.isArray(state.graph?.relations)
+          ? state.graph.relations.filter((item: any) => item?.status !== 'rejected').length
+          : Number(database.counts?.relations || 0),
+        pendingReviews: Array.isArray(state.graph?.reviewQueue)
+          ? state.graph.reviewQueue.filter((item: any) => item?.status === 'pending').length
+          : 0
+      },
+      lastSyncAt: state.lastSyncAt || state.cursor?.lastSuccessfulRunAt || null,
+      cursor: {
+        lastSuccessfulRunAt: state.cursor?.lastSuccessfulRunAt || null,
+        pendingSessionRetryCount: Number(state.cursor?.pendingSessionRetryCount || 0),
+        pendingSessionBacklogCount: Number(state.cursor?.pendingSessionBacklogCount || 0)
+      },
+      stateRecoverySource: restored.recovery.source
+    }
   }
 
   restoreMemoryBackup(path: string): any {
@@ -3742,16 +3783,16 @@ export class AiAssistantService {
     )
     if (restored.recovery.source === 'empty') throw new Error('快照中的 AI 状态损坏或密钥不匹配')
     const restoredState = restored.value
-    const safety = this.createMemoryBackup()
+    const safety = this.createMemoryBackup([path])
     try {
-      const result = personalMemoryStore.restoreBackup(path)
+      const result = personalMemoryStore.restoreBackup(path, safety.path)
       writeEncryptedDurableJson(this.statePath, restoredState, this.stateEncryptionKey)
       this.loadState()
       this.saveState()
       return { ...result, safetyBackup: safety.path, restoredStateFrom: stateBackupPath }
     } catch (error) {
       try {
-        personalMemoryStore.restoreBackup(safety.path)
+        personalMemoryStore.restoreBackup(safety.path, safety.path)
         if (safety.stateBackupPath && existsSync(safety.stateBackupPath)) {
           const safetyState = readEncryptedDurableJson<any>(
             safety.stateBackupPath,
