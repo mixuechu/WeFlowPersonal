@@ -167,6 +167,10 @@ import {
   scheduledSyncTargetTimestamp,
   shouldReconcileScheduledSync
 } from './scheduledSyncPolicy'
+import {
+  AUTOMATIC_MEMORY_BACKUP_POLICY_VERSION,
+  shouldCreateAutomaticMemoryBackup
+} from './automaticMemoryBackupPolicy'
 
 const ATTACHMENT_STRUCTURE_PARSER_VERSION = 'attachment-layout-v3'
 
@@ -252,6 +256,10 @@ type AssistantState = {
     scheduledRetryCount: number
     nextScheduledRetryAt: string | null
     pendingScheduledRunDate: string | null
+    lastAutomaticBackupDate: string | null
+    lastAutomaticBackupAt: string | null
+    lastAutomaticBackupAttemptAt: string | null
+    lastAutomaticBackupError: string | null
     lastReminderNotificationDate?: string | null
     lastAttemptAt: string | null
     lastError: string | null
@@ -288,6 +296,10 @@ const EMPTY_STATE: AssistantState = {
     scheduledRetryCount: 0,
     nextScheduledRetryAt: null,
     pendingScheduledRunDate: null,
+    lastAutomaticBackupDate: null,
+    lastAutomaticBackupAt: null,
+    lastAutomaticBackupAttemptAt: null,
+    lastAutomaticBackupError: null,
     lastReminderNotificationDate: null,
     lastAttemptAt: null,
     lastError: null,
@@ -2550,6 +2562,7 @@ export class AiAssistantService {
         ))
         this.saveState()
       }
+      this.maybeCreateAutomaticMemoryBackup(result)
       return result
     } catch (error) {
       if (shouldReconcileScheduledSync(trigger, this.state.cursor)) {
@@ -2569,6 +2582,32 @@ export class AiAssistantService {
       this.activeSync = null
       this.activeSyncTrigger = null
       this.cancelRequested = false
+    }
+  }
+
+  private maybeCreateAutomaticMemoryBackup(result: any): void {
+    const now = new Date()
+    const policy = shouldCreateAutomaticMemoryBackup(result, this.state.cursor, now.getTime())
+    if (!policy.create) return
+    this.state.cursor.lastAutomaticBackupAttemptAt = now.toISOString()
+    this.saveState()
+    try {
+      const backup = this.createMemoryBackup()
+      const completedAt = new Date().toISOString()
+      this.state.cursor.lastAutomaticBackupDate = policy.date
+      this.state.cursor.lastAutomaticBackupAt = completedAt
+      this.state.cursor.lastAutomaticBackupError = null
+      this.saveState()
+      // Make the joint snapshot self-describing: restoring it must retain the
+      // successful automatic-backup marker instead of immediately duplicating it.
+      writeEncryptedDurableJson(
+        `${backup.path}.state.json`,
+        this.state,
+        this.stateEncryptionKey
+      )
+    } catch (error) {
+      this.state.cursor.lastAutomaticBackupError = sanitizeDiagnosticText(error)
+      this.saveState()
     }
   }
 
@@ -3639,6 +3678,15 @@ export class AiAssistantService {
           this.config.get('logEnabled') === true
         ),
         sensitiveRedactionLevel: this.config.get('aiAssistantSensitiveRedactionLevel')
+      },
+      automaticBackup: {
+        policyVersion: AUTOMATIC_MEMORY_BACKUP_POLICY_VERSION,
+        cadence: 'after_complete_sync_once_per_shanghai_day',
+        lastBackupDate: this.state.cursor.lastAutomaticBackupDate,
+        lastBackupAt: this.state.cursor.lastAutomaticBackupAt,
+        lastAttemptAt: this.state.cursor.lastAutomaticBackupAttemptAt,
+        lastError: this.state.cursor.lastAutomaticBackupError,
+        retryAfterMinutes: 60
       },
       stateStorage: this.stateStorage,
       appRecovery: getAppRunRecoveryDiagnostics(),

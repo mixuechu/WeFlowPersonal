@@ -2378,6 +2378,9 @@ function AiAssistantPage() {
                 <small>{memoryDiagnostics.integrity === 'ok' ? 'SQLite 一致性检查通过' : memoryDiagnostics.integrity}
                   {' · '}{(Number(memoryDiagnostics.databaseBytes || 0) / 1024 / 1024).toFixed(1)} MB
                   {' · '}{memoryDiagnostics.backups?.length || 0} 个本地快照
+                  {memoryDiagnostics.automaticBackup?.lastBackupAt
+                    ? ` · 自动快照 ${new Date(memoryDiagnostics.automaticBackup.lastBackupAt).toLocaleString('zh-CN', { hour12: false })}`
+                    : ' · 自动快照等待首次完整同步'}
                   {memoryDiagnostics.embeddings ? ` · 语义索引 ${memoryDiagnostics.embeddings.indexed}/${memoryDiagnostics.embeddings.total}（${memoryDiagnostics.embeddings.ann?.active ? 'ANN' : '精确'}）` : ''}
                   {memoryDiagnostics.ocr ? ` · OCR ${memoryDiagnostics.ocr.chinese ? '中文可用' : '未就绪'}` : ''}
                   {memoryDiagnostics.imageSemantics ? ` · 图片视觉 ${memoryDiagnostics.imageSemantics.available ? '本地可用' : '未就绪'}` : ''}
@@ -2424,6 +2427,18 @@ function AiAssistantPage() {
                 </div>
               </details>}
             </div>
+          </section>
+        )}
+        {memoryDiagnostics?.automaticBackup?.lastError && (
+          <section className="assistant-ingestion-status partial">
+            <strong>自动记忆快照暂未完成</strong>
+            <span>
+              最近尝试 {memoryDiagnostics.automaticBackup.lastAttemptAt
+                ? new Date(memoryDiagnostics.automaticBackup.lastAttemptAt).toLocaleString('zh-CN', { hour12: false })
+                : '未知'}
+            </span>
+            <small>{memoryDiagnostics.automaticBackup.lastError}</small>
+            <small>完整同步成功后会自动重试，每次失败至少间隔 60 分钟；同步结果本身不受影响，也不会误记为已经备份。</small>
           </section>
         )}
         {memoryDiagnostics?.appRecovery?.recoveredFromInterruption && (
