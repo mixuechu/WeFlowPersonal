@@ -10,7 +10,8 @@ export function buildCursorStatusPayload(cursor: any): any {
     : {}
   const lastScheduledAttemptAt = cursor?.lastScheduledAttemptAt || null
   const scheduledRetryCount = Number(cursor?.scheduledRetryCount || 0)
-  const retryTimestamp = lastScheduledAttemptAt && cursor?.lastScheduledError
+  const persistedRetryAt = cursor?.nextScheduledRetryAt || null
+  const legacyRetryTimestamp = !persistedRetryAt && lastScheduledAttemptAt && cursor?.lastScheduledError
     ? Date.parse(lastScheduledAttemptAt) + 15 * 60_000
     : NaN
   return {
@@ -21,9 +22,9 @@ export function buildCursorStatusPayload(cursor: any): any {
     lastScheduledCompletedAt: cursor?.lastScheduledCompletedAt || null,
     lastScheduledError: cursor?.lastScheduledError || null,
     scheduledRetryCount,
-    nextScheduledRetryAt: Number.isFinite(retryTimestamp)
-      ? new Date(retryTimestamp).toISOString()
-      : null,
+    nextScheduledRetryAt: persistedRetryAt || (Number.isFinite(legacyRetryTimestamp)
+      ? new Date(legacyRetryTimestamp).toISOString()
+      : null),
     lastReminderNotificationDate: cursor?.lastReminderNotificationDate || null,
     lastAttemptAt: cursor?.lastAttemptAt || null,
     lastError: cursor?.lastError || null,

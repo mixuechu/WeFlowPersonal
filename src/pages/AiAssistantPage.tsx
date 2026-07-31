@@ -2366,6 +2366,7 @@ function AiAssistantPage() {
               {status.cursor.nextScheduledRetryAt
                 ? ` 最早于 ${new Date(status.cursor.nextScheduledRetryAt).toLocaleString('zh-CN', { hour12: false })} 自动重试。`
                 : ' 服务会在下一轮调度继续。'}
+              {' '}连续失败会按 15、30、60 分钟逐级退避，最长 6 小时；手动或启动补齐完整成功后会立即结清。
             </small>
           </div>
         )}

@@ -155,7 +155,12 @@ import {
   GRAPH_REVIEW_STORAGE_VERSION,
   compactGraphReviewWorkset
 } from '../../shared/graphReviewStorage'
-import { assessScheduledSyncResult, planScheduledSyncState } from './scheduledSyncPolicy'
+import {
+  assessScheduledSyncResult,
+  planScheduledSyncState,
+  scheduledSyncTargetTimestamp,
+  shouldReconcileScheduledSync
+} from './scheduledSyncPolicy'
 
 const ATTACHMENT_STRUCTURE_PARSER_VERSION = 'attachment-layout-v3'
 
@@ -239,6 +244,8 @@ type AssistantState = {
     lastScheduledCompletedAt: string | null
     lastScheduledError: string | null
     scheduledRetryCount: number
+    nextScheduledRetryAt: string | null
+    pendingScheduledRunDate: string | null
     lastReminderNotificationDate?: string | null
     lastAttemptAt: string | null
     lastError: string | null
@@ -272,6 +279,8 @@ const EMPTY_STATE: AssistantState = {
     lastScheduledCompletedAt: null,
     lastScheduledError: null,
     scheduledRetryCount: 0,
+    nextScheduledRetryAt: null,
+    pendingScheduledRunDate: null,
     lastReminderNotificationDate: null,
     lastAttemptAt: null,
     lastError: null,
@@ -313,6 +322,14 @@ function shanghaiDate(timestampMs = Date.now()): string {
     month: '2-digit',
     day: '2-digit'
   }).format(new Date(timestampMs))
+}
+
+function pendingScheduledDate(cursor: {
+  lastScheduledAttemptAt?: string | null
+  pendingScheduledRunDate?: string | null
+}): string {
+  const persisted = String(cursor?.pendingScheduledRunDate || '').trim()
+  return persisted || shanghaiDate(scheduledSyncTargetTimestamp(cursor?.lastScheduledAttemptAt, Date.now()))
 }
 
 function messageKey(message: any): string {
@@ -2478,7 +2495,38 @@ export class AiAssistantService {
     this.activeSyncTrigger = trigger
     this.activeSync = this.runSync()
     try {
-      return await this.activeSync
+      const result = await this.activeSync
+      if (shouldReconcileScheduledSync(trigger, this.state.cursor)) {
+        const scheduledDate = pendingScheduledDate(this.state.cursor)
+        const observedAt = new Date().toISOString()
+        const assessment = assessScheduledSyncResult(result)
+        this.state.cursor.lastScheduledAttemptAt = observedAt
+        Object.assign(this.state.cursor, planScheduledSyncState(
+          this.state.cursor,
+          {
+            ...assessment,
+            reason: assessment.complete ? '' : sanitizeDiagnosticText(assessment.reason)
+          },
+          scheduledDate,
+          observedAt
+        ))
+        this.saveState()
+      }
+      return result
+    } catch (error) {
+      if (shouldReconcileScheduledSync(trigger, this.state.cursor)) {
+        const scheduledDate = pendingScheduledDate(this.state.cursor)
+        const observedAt = new Date().toISOString()
+        this.state.cursor.lastScheduledAttemptAt = observedAt
+        Object.assign(this.state.cursor, planScheduledSyncState(
+          this.state.cursor,
+          { complete: false, reason: sanitizeDiagnosticText(error) },
+          scheduledDate,
+          observedAt
+        ))
+        this.saveState()
+      }
+      throw error
     } finally {
       this.activeSync = null
       this.activeSyncTrigger = null
@@ -4845,6 +4893,12 @@ export class AiAssistantService {
     const today = shanghaiDate()
     const schedule = String(this.config.get('aiAssistantScheduleTime') || '20:00')
     if (time < schedule || this.state.cursor.lastScheduledRunDate === today) return
+    const nextScheduledRetryAt = Date.parse(String(this.state.cursor.nextScheduledRetryAt || ''))
+    if (
+      this.state.cursor.lastScheduledError
+      && Number.isFinite(nextScheduledRetryAt)
+      && nextScheduledRetryAt > Date.now()
+    ) return
     if (Date.now() - this.lastSchedulerAttemptAt < 15 * 60_000) return
     this.lastSchedulerAttemptAt = Date.now()
     this.state.cursor.lastScheduledAttemptAt = new Date().toISOString()

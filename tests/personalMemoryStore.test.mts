@@ -87,7 +87,10 @@ import {
 } from '../electron/services/extractionMemoryContext.ts'
 import {
   assessScheduledSyncResult,
-  planScheduledSyncState
+  planScheduledSyncState,
+  scheduledSyncRetryDelayMs,
+  scheduledSyncTargetTimestamp,
+  shouldReconcileScheduledSync
 } from '../electron/services/scheduledSyncPolicy.ts'
 
 function withStore(run: (store: PersonalMemoryStore) => void): void {
@@ -3299,6 +3302,7 @@ test('renderer cursor status exposes counts but keeps durable keys and session m
     lastScheduledCompletedAt: '2026-07-30T12:00:00.000Z',
     lastScheduledError: '日历连接器暂时失败',
     scheduledRetryCount: 2,
+    nextScheduledRetryAt: '2026-07-31T00:32:00.000Z',
     lastAttemptAt: '2026-07-31T00:01:00.000Z',
     lastError: null,
     pendingSessionRetryCount: 3,
@@ -3318,7 +3322,7 @@ test('renderer cursor status exposes counts but keeps durable keys and session m
   assert.equal(payload.privateStateCounts.continuationOffsets, 1_000)
   assert.equal(payload.lastScheduledError, '日历连接器暂时失败')
   assert.equal(payload.scheduledRetryCount, 2)
-  assert.equal(payload.nextScheduledRetryAt, '2026-07-31T00:17:00.000Z')
+  assert.equal(payload.nextScheduledRetryAt, '2026-07-31T00:32:00.000Z')
   assert.equal(payload.recentMessageIds, undefined)
   assert.equal(payload.sessionCursors, undefined)
   assert.equal(payload.sessionOffsets, undefined)
@@ -3369,7 +3373,9 @@ test('daily schedule is acknowledged only after every enabled source and backlog
     lastScheduledRunDate: '2026-07-30',
     lastScheduledCompletedAt: '2026-07-30T12:00:00.000Z',
     lastScheduledError: '日历仍需重试',
-    scheduledRetryCount: 3
+    scheduledRetryCount: 3,
+    nextScheduledRetryAt: '2026-07-31T13:00:00.000Z',
+    pendingScheduledRunDate: '2026-07-31'
   })
   assert.deepEqual(planScheduledSyncState(
     previous,
@@ -3380,8 +3386,27 @@ test('daily schedule is acknowledged only after every enabled source and backlog
     lastScheduledRunDate: '2026-07-31',
     lastScheduledCompletedAt: '2026-07-31T12:15:00.000Z',
     lastScheduledError: null,
-    scheduledRetryCount: 0
+    scheduledRetryCount: 0,
+    nextScheduledRetryAt: null,
+    pendingScheduledRunDate: null
   })
+  assert.deepEqual(
+    [1, 2, 3, 4, 5, 6, 7].map(scheduledSyncRetryDelayMs),
+    [15, 30, 60, 120, 240, 360, 360].map(minutes => minutes * 60_000)
+  )
+  assert.equal(shouldReconcileScheduledSync('manual', { lastScheduledError: '失败' }), true)
+  assert.equal(shouldReconcileScheduledSync('startup', { lastScheduledError: '失败' }), true)
+  assert.equal(shouldReconcileScheduledSync('backlog', { lastScheduledError: '失败' }), true)
+  assert.equal(shouldReconcileScheduledSync('daily', { lastScheduledError: '失败' }), false)
+  assert.equal(shouldReconcileScheduledSync('manual', { lastScheduledError: null }), false)
+  assert.equal(
+    scheduledSyncTargetTimestamp('2026-07-30T12:00:00.000Z', Date.parse('2026-07-31T00:00:00.000Z')),
+    Date.parse('2026-07-30T12:00:00.000Z')
+  )
+  assert.equal(
+    scheduledSyncTargetTimestamp(null, Date.parse('2026-07-31T00:00:00.000Z')),
+    Date.parse('2026-07-31T00:00:00.000Z')
+  )
 })
 
 test('task calendar handles leap months, Shanghai today, overdue and unscheduled work', () => {
