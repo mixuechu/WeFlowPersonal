@@ -2366,7 +2366,7 @@ function AiAssistantPage() {
                     ? ` · 引用${memoryDiagnostics.referentialIntegrityHealthy ? '完整' : '异常'} / 清理孤儿 ${Number(memoryDiagnostics.structuredEvidenceReferences.orphansRemovedTotal || 0).toLocaleString()} 条`
                     : ''}
                   {memoryDiagnostics.structuredSearchIndex?.version
-                    ? ` · 检索索引${memoryDiagnostics.structuredSearchIndexHealthy ? '一致' : '异常'} / 文档重建 ${Number(memoryDiagnostics.structuredSearchIndex.missingDocumentsRebuiltTotal || 0).toLocaleString()} / FTS 修复 ${Number(memoryDiagnostics.structuredSearchIndex.ftsPayloadsRebuiltTotal || 0).toLocaleString()}`
+                    ? ` · 检索索引${memoryDiagnostics.structuredSearchIndexHealthy ? '一致' : '异常'} / 文档 ${Number(memoryDiagnostics.structuredSearchIndex.missingDocumentsRebuiltTotal || 0).toLocaleString()} / FTS ${Number(memoryDiagnostics.structuredSearchIndex.ftsPayloadsRebuiltTotal || 0).toLocaleString()} / 可信元数据 ${Number(memoryDiagnostics.structuredSearchIndex.metadataDocumentsRepairedTotal || 0).toLocaleString()}`
                     : ''}
                 </small>
               </span>
@@ -4289,6 +4289,7 @@ function AiAssistantPage() {
                 <span>累计删除幽灵 <b>{Number(memoryDiagnostics.structuredSearchIndex.ghostRowsRemovedTotal || 0).toLocaleString()}</b></span>
                 <span>累计重建缺失 <b>{Number(memoryDiagnostics.structuredSearchIndex.missingDocumentsRebuiltTotal || 0).toLocaleString()}</b></span>
                 <span>累计修复 FTS <b>{Number(memoryDiagnostics.structuredSearchIndex.ftsPayloadsRebuiltTotal || 0).toLocaleString()}</b></span>
+                <span>累计修复可信元数据 <b>{Number(memoryDiagnostics.structuredSearchIndex.metadataDocumentsRepairedTotal || 0).toLocaleString()}</b></span>
                 <span>删除保护修复 <b>{Number(memoryDiagnostics.structuredSearchIndex.triggerRepairs || 0).toLocaleString()}</b> 次</span>
                 <span>本次检查 <b>{memoryDiagnostics.structuredSearchIndex.checkedAt
                   ? new Date(memoryDiagnostics.structuredSearchIndex.checkedAt).toLocaleString('zh-CN')

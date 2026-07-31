@@ -1554,6 +1554,22 @@ test('structured search index reconciliation removes ghosts and rebuilds missing
         sender: '检索发送者',
         excerpt: '索引重建关键词'
       }]
+    }, {
+      id: 'search-stale-metadata-claim',
+      subjectId: 'search-person-b',
+      predicate: '保存',
+      objectValue: '可信元数据漂移',
+      confidence: 0.8,
+      status: 'candidate',
+      sourceNature: 'other_statement',
+      searchText: '检索乙保存可信元数据漂移',
+      evidence: [{
+        messageId: 'search-metadata-message',
+        sessionId: 'search-session',
+        timestamp: 1_700_002_003,
+        sender: '检索发送者',
+        excerpt: '可信元数据漂移'
+      }]
     }])
     first.upsertEvents([{
       id: 'search-missing-event',
@@ -1593,6 +1609,11 @@ test('structured search index reconciliation removes ghosts and rebuilds missing
         VALUES('entity:search-person-a','过期标题一','过期检索载荷一');
       INSERT INTO search_fts(document_id,title,search_text)
         VALUES('entity:search-person-a','过期标题二','过期检索载荷二');
+      UPDATE claims SET status='rejected'
+        WHERE id='search-stale-metadata-claim';
+      UPDATE search_documents
+        SET metadata_json='{"status":"confirmed","subjectId":"wrong-person","polarity":"negative"}'
+        WHERE id='claim:search-stale-metadata-claim';
     `)
     first.close()
 
@@ -1613,6 +1634,8 @@ test('structured search index reconciliation removes ghosts and rebuilds missing
       assert.equal(diagnostics.structuredSearchIndex.ghostRowsRemovedTotal, 6)
       assert.equal(diagnostics.structuredSearchIndex.ftsPayloadsRebuiltThisStart, 2)
       assert.equal(diagnostics.structuredSearchIndex.ftsPayloadsRebuiltTotal, 2)
+      assert.equal(diagnostics.structuredSearchIndex.metadataDocumentsRepairedThisStart, 1)
+      assert.equal(diagnostics.structuredSearchIndex.metadataDocumentsRepairedTotal, 1)
       assert.equal(diagnostics.structuredSearchIndex.triggerRepairs, 2)
       assert.equal(reopened.searchText('索引重建关键词').some((row: any) =>
         row.id === 'claim:search-missing-claim'), true)
@@ -1625,6 +1648,15 @@ test('structured search index reconciliation removes ghosts and rebuilds missing
       assert.equal(reopened.searchText('检索乙').some((row: any) =>
         row.id === 'entity:search-person-b'), true)
       assert.equal(reopened.searchText('过期检索载荷').length, 0)
+      const [repairedMetadataDocument] = reopened.searchText('可信元数据漂移')
+      const repairedMetadata = JSON.parse(repairedMetadataDocument.metadata_json)
+      assert.equal(repairedMetadata.status, 'rejected')
+      assert.equal(repairedMetadata.subjectId, 'search-person-b')
+      assert.equal(repairedMetadata.polarity, 'positive')
+      assert.equal(filterMemorySearchResults([{
+        ...repairedMetadataDocument,
+        metadata: repairedMetadata
+      }]).length, 0)
       assert.equal(reopened.getDocumentEvidencePage('claim', 'search-missing-claim').total, 1)
       assert.equal(reopened.getDocumentEvidencePage('event', 'search-missing-event').total, 1)
 

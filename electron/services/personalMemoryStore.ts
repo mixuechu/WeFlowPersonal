@@ -1129,6 +1129,79 @@ export class PersonalMemoryStore {
       WHERE NOT EXISTS(SELECT 1 FROM search_documents d WHERE d.id='event:' || ev.id)
     `).all() as any[]
     const checkedAt = new Date().toISOString()
+    const metadataRepairs: Array<{ id: string; metadataJson: string; updatedAt: string }> = []
+    const queueMetadataRepair = (
+      document: any,
+      authoritative: Record<string, any>,
+      updatedAt: string
+    ) => {
+      let current: any = {}
+      let parseFailed = false
+      try { current = JSON.parse(String(document.metadata_json || '{}')) } catch {
+        parseFailed = true
+      }
+      const next = { ...current, ...authoritative }
+      for (const [key, value] of Object.entries(next)) {
+        if (value === undefined) delete next[key]
+      }
+      const changed = parseFailed || Object.entries(authoritative).some(([key, value]) => {
+        if (Array.isArray(value)) {
+          const left = Array.isArray(current[key]) ? [...current[key]].map(String).sort() : []
+          const right = [...value].map(String).sort()
+          return JSON.stringify(left) !== JSON.stringify(right)
+        }
+        return value === undefined
+          ? Object.prototype.hasOwnProperty.call(current, key)
+          : current[key] !== value
+      })
+      if (changed) metadataRepairs.push({
+        id: String(document.document_id),
+        metadataJson: JSON.stringify(next),
+        updatedAt: String(updatedAt || checkedAt)
+      })
+    }
+    for (const row of this.db.prepare(`
+      SELECT d.id AS document_id,d.source_id AS document_source_id,d.metadata_json,c.*
+      FROM search_documents d
+      JOIN claims c ON c.id=d.source_id WHERE d.document_type='claim'
+    `).all() as any[]) {
+      queueMetadataRepair(row, {
+        subjectId: row.subject_id,
+        objectEntityId: row.object_entity_id || undefined,
+        polarity: row.polarity,
+        status: row.status,
+        validFrom: row.valid_from || undefined,
+        validTo: row.valid_to || undefined,
+        conflictGroup: row.conflict_group || undefined
+      }, row.updated_at)
+    }
+    for (const row of this.db.prepare(`
+      SELECT d.id AS document_id,d.source_id AS document_source_id,d.metadata_json,r.*
+      FROM search_documents d
+      JOIN relations r ON r.id=d.source_id WHERE d.document_type='relation'
+    `).all() as any[]) {
+      queueMetadataRepair(row, {
+        subjectId: row.subject_id,
+        objectId: row.object_id,
+        predicate: row.predicate,
+        status: row.status
+      }, row.updated_at)
+    }
+    for (const row of this.db.prepare(`
+      SELECT d.id AS document_id,d.source_id AS document_source_id,d.metadata_json,ev.*
+      FROM search_documents d
+      JOIN events ev ON ev.id=d.source_id WHERE d.document_type='event'
+    `).all() as any[]) {
+      queueMetadataRepair(row, {
+        eventType: row.event_type,
+        startAt: row.start_at || undefined,
+        endAt: row.end_at || undefined,
+        participantIds: (this.db.prepare(`
+          SELECT entity_id FROM event_participants WHERE event_id=? ORDER BY entity_id
+        `).all(row.document_source_id) as Array<{ entity_id: string }>).map(item => item.entity_id),
+        status: row.status
+      }, row.updated_at)
+    }
     this.db.transaction(() => {
       if (!triggersHealthyBefore) {
         for (const trigger of triggerDefinitions) {
@@ -1152,6 +1225,12 @@ export class PersonalMemoryStore {
       for (const document of ftsMismatches) {
         deleteFts.run(document.id)
         insertFts.run(document.id, document.title, document.search_text)
+      }
+      const updateMetadata = this.db!.prepare(`
+        UPDATE search_documents SET metadata_json=?,updated_at=? WHERE id=?
+      `)
+      for (const repair of metadataRepairs) {
+        updateMetadata.run(repair.metadataJson, repair.updatedAt, repair.id)
       }
       for (const claim of missingClaims) {
         this.upsertSearchDocument(
@@ -1200,7 +1279,7 @@ export class PersonalMemoryStore {
       const payloadRowsRemoved = orphanFts + orphanEvidence + ghostDocumentPayloadRows
       const removed = ghostDocuments.length + payloadRowsRemoved
       const audit = {
-        version: 2,
+        version: 3,
         checkedAt,
         ghostDocumentsRemovedThisStart: ghostDocuments.length,
         missingDocumentsRebuiltThisStart: {
@@ -1210,6 +1289,7 @@ export class PersonalMemoryStore {
         },
         orphanPayloadRowsRemovedThisStart: payloadRowsRemoved,
         ftsPayloadsRebuiltThisStart: ftsMismatches.length,
+        metadataDocumentsRepairedThisStart: metadataRepairs.length,
         ghostRowsRemovedTotal: Math.max(0, Number(previousAudit?.ghostRowsRemovedTotal || 0)) + removed,
         missingDocumentsRebuiltTotal: Math.max(
           0,
@@ -1219,12 +1299,17 @@ export class PersonalMemoryStore {
           0,
           Number(previousAudit?.ftsPayloadsRebuiltTotal || 0)
         ) + ftsMismatches.length,
+        metadataDocumentsRepairedTotal: Math.max(
+          0,
+          Number(previousAudit?.metadataDocumentsRepairedTotal || 0)
+        ) + metadataRepairs.length,
         triggerRepairs: Math.max(0, Number(previousAudit?.triggerRepairs || 0))
           + (triggersHealthyBefore ? 0 : 1),
         triggersHealthy: true,
         currentGhostDocuments: 0,
         currentMissingDocuments: 0,
-        currentFtsPayloadMismatches: 0
+        currentFtsPayloadMismatches: 0,
+        currentMetadataMismatches: 0
       }
       this.db!.prepare(`
         INSERT INTO schema_meta(key,value,updated_at) VALUES('structured_search_index_integrity',?,?)
@@ -1399,14 +1484,17 @@ export class PersonalMemoryStore {
           },
           orphanPayloadRowsRemovedThisStart: Number(audit.orphanPayloadRowsRemovedThisStart || 0),
           ftsPayloadsRebuiltThisStart: Number(audit.ftsPayloadsRebuiltThisStart || 0),
+          metadataDocumentsRepairedThisStart: Number(audit.metadataDocumentsRepairedThisStart || 0),
           ghostRowsRemovedTotal: Number(audit.ghostRowsRemovedTotal || 0),
           missingDocumentsRebuiltTotal: Number(audit.missingDocumentsRebuiltTotal || 0),
           ftsPayloadsRebuiltTotal: Number(audit.ftsPayloadsRebuiltTotal || 0),
+          metadataDocumentsRepairedTotal: Number(audit.metadataDocumentsRepairedTotal || 0),
           triggerRepairs: Number(audit.triggerRepairs || 0),
           triggersHealthy: audit.triggersHealthy === true,
           currentGhostDocuments: Number(audit.currentGhostDocuments || 0),
           currentMissingDocuments: Number(audit.currentMissingDocuments || 0),
-          currentFtsPayloadMismatches: Number(audit.currentFtsPayloadMismatches || 0)
+          currentFtsPayloadMismatches: Number(audit.currentFtsPayloadMismatches || 0),
+          currentMetadataMismatches: Number(audit.currentMetadataMismatches || 0)
         }
       } catch {
         return {
@@ -1416,14 +1504,17 @@ export class PersonalMemoryStore {
           missingDocumentsRebuiltThisStart: { claims: 0, relations: 0, events: 0 },
           orphanPayloadRowsRemovedThisStart: 0,
           ftsPayloadsRebuiltThisStart: 0,
+          metadataDocumentsRepairedThisStart: 0,
           ghostRowsRemovedTotal: 0,
           missingDocumentsRebuiltTotal: 0,
           ftsPayloadsRebuiltTotal: 0,
+          metadataDocumentsRepairedTotal: 0,
           triggerRepairs: 0,
           triggersHealthy: false,
           currentGhostDocuments: 0,
           currentMissingDocuments: 0,
-          currentFtsPayloadMismatches: 0
+          currentFtsPayloadMismatches: 0,
+          currentMetadataMismatches: 0
         }
       }
     })()
@@ -1431,6 +1522,7 @@ export class PersonalMemoryStore {
       && structuredSearchIndex.currentGhostDocuments === 0
       && structuredSearchIndex.currentMissingDocuments === 0
       && structuredSearchIndex.currentFtsPayloadMismatches === 0
+      && structuredSearchIndex.currentMetadataMismatches === 0
     return {
       healthy: integrity === 'ok'
         && structuredEvidenceMigration.constraintsHealthy
