@@ -68,6 +68,7 @@ import {
   BRIEFING_RETENTION_DAYS,
   compactBriefings
 } from '../shared/briefingRetention.ts'
+import { compactGraphReviewWorkset } from '../shared/graphReviewStorage.ts'
 import { buildTaskCalendar, extractTaskDueDate } from '../src/utils/taskCalendar.ts'
 import { filterGraphReviews, paginateGraphReviews } from '../src/utils/graphReviewFilters.ts'
 import { summarizeIngestionRuns } from '../electron/services/ingestionDiagnostics.ts'
@@ -278,6 +279,106 @@ test('review ledger persists resolution time, actor and reason', () => {
     assert.equal(row.payload.resolutionActor, 'system')
     assert.equal(row.payload.resolutionReason, '关联实体已被拒绝')
   })
+})
+
+test('resolved graph reviews leave encrypted state but remain paginated in SQLCipher', () => {
+  withStore(store => {
+    const reviews = [
+      ...Array.from({ length: 2_500 }, (_, index) => ({
+        id: `resolved-${String(index).padStart(4, '0')}`,
+        kind: index % 2 ? 'relation' : 'entity_alias',
+        title: index === 1_777 ? '需要长期检索的特殊候选' : `历史候选 ${index}`,
+        detail: `处理说明 ${index}`,
+        confidence: 0.8,
+        status: index % 3 ? 'confirmed' : 'rejected',
+        createdAt: new Date(1_700_000_000_000 + index * 1_000).toISOString(),
+        resolvedAt: new Date(1_710_000_000_000 + index * 1_000).toISOString(),
+        evidence: [{ excerpt: `不应继续复制进状态文件的原文 ${index} ${'x'.repeat(300)}` }]
+      })),
+      ...Array.from({ length: 3 }, (_, index) => ({
+        id: `pending-${index}`,
+        kind: 'entity_creation',
+        title: `待处理 ${index}`,
+        detail: '',
+        confidence: 0.7,
+        status: 'pending',
+        createdAt: new Date(1_720_000_000_000 + index * 1_000).toISOString()
+      }))
+    ]
+    store.syncGraph({ entities: [], relations: [], reviewQueue: reviews } as any)
+
+    const compacted = compactGraphReviewWorkset(reviews)
+    assert.equal(compacted.pending.length, 3)
+    assert.equal(compacted.resolved.length, 2_500)
+    assert.ok(Buffer.byteLength(JSON.stringify(compacted.pending)) <
+      Buffer.byteLength(JSON.stringify(reviews)) / 100)
+
+    store.syncGraph({ entities: [], relations: [], reviewQueue: compacted.pending } as any)
+    const firstPage = store.listReviewLedgerPage({ status: 'resolved', offset: 0, limit: 40 })
+    const secondPage = store.listReviewLedgerPage({ status: 'resolved', offset: 40, limit: 40 })
+    assert.equal(firstPage.total, 2_500)
+    assert.equal(firstPage.counts.pending, 3)
+    assert.equal(firstPage.counts.resolved, 2_500)
+    assert.equal(firstPage.items.length, 40)
+    assert.equal(secondPage.items.length, 40)
+    assert.equal(new Set([...firstPage.items, ...secondPage.items].map(item => item.id)).size, 80)
+    assert.ok(firstPage.items.every(item => item.status !== 'pending'))
+    assert.equal(store.listReviewLedgerPage({
+      status: 'all',
+      query: '特殊候选',
+      limit: 40
+    }).items[0]?.id, 'resolved-1777')
+    assert.equal(store.listReviewLedgerPage({
+      status: 'pending',
+      kind: 'entity_creation',
+      query: '待处理',
+      limit: 2
+    }).hasMore, true)
+    store.syncGraph({
+      entities: [],
+      relations: [],
+      reviewQueue: compacted.pending.slice(0, 2)
+    } as any)
+    assert.equal(store.listReviewLedgerPage({ status: 'pending' }).total, 2)
+    assert.equal(store.listReviewLedgerPage({ status: 'resolved' }).total, 2_500)
+  })
+})
+
+test('SQLCipher review ledger remains available after process-style reopen', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'weflow-review-restart-test-'))
+  const databasePath = join(directory, 'memory.sqlite')
+  const key = randomBytes(32)
+  const first = new PersonalMemoryStore()
+  const second = new PersonalMemoryStore()
+  try {
+    first.initialize(databasePath, key)
+    first.syncGraph({
+      entities: [],
+      relations: [],
+      reviewQueue: [{
+        id: 'restart-resolved',
+        kind: 'possible_duplicate',
+        title: '重启后仍可审阅',
+        detail: '持久记录',
+        confidence: 0.9,
+        status: 'confirmed',
+        createdAt: '2026-07-30T00:00:00.000Z',
+        resolvedAt: '2026-07-30T01:00:00.000Z',
+        evidence: [{ excerpt: '持久原文' }]
+      }]
+    } as any)
+    first.close()
+
+    second.initialize(databasePath, key)
+    const page = second.listReviewLedgerPage({ status: 'resolved', query: '持久原文' })
+    assert.equal(page.total, 1)
+    assert.equal(page.items[0]?.id, 'restart-resolved')
+    assert.equal(page.items[0]?.evidence[0]?.excerpt, '持久原文')
+  } finally {
+    first.close()
+    second.close()
+    rmSync(directory, { recursive: true, force: true })
+  }
 })
 
 test('review ledger filters pending and resolved decisions by kind, evidence and time', () => {

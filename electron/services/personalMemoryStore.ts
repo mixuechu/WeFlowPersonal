@@ -1187,6 +1187,14 @@ export class PersonalMemoryStore {
         ON CONFLICT(id) DO UPDATE SET title=excluded.title,detail=excluded.detail,confidence=excluded.confidence,
           status=excluded.status,payload_json=excluded.payload_json,resolved_at=excluded.resolved_at
       `)
+      const activeReviewIds = new Set(graph.reviewQueue.map(review => review.id))
+      const storedPendingReviewIds = this.db.prepare(
+        `SELECT id FROM review_queue WHERE status='pending'`
+      ).all() as Array<{ id: string }>
+      const deletePendingReview = this.db.prepare(`DELETE FROM review_queue WHERE id=? AND status='pending'`)
+      for (const { id } of storedPendingReviewIds) {
+        if (!activeReviewIds.has(id)) deletePendingReview.run(id)
+      }
       for (const review of graph.reviewQueue) {
         if (review.kind === 'relation' && review.relationId && this.isMemoryItemSuppressed('relation', review.relationId)) continue
         upsertReview.run(
@@ -1232,6 +1240,81 @@ export class PersonalMemoryStore {
       try { payload = JSON.parse(String(row.payload_json || '{}')) } catch {}
       return { ...row, payload }
     })
+  }
+
+  listReviewLedgerPage(options?: {
+    status?: 'pending' | 'resolved' | 'all'
+    kind?: string
+    query?: string
+    offset?: number
+    limit?: number
+  }): {
+    items: any[]
+    offset: number
+    limit: number
+    total: number
+    hasMore: boolean
+    counts: { pending: number; resolved: number; all: number }
+  } {
+    if (!this.db) return {
+      items: [], offset: 0, limit: 40, total: 0, hasMore: false,
+      counts: { pending: 0, resolved: 0, all: 0 }
+    }
+    const status = options?.status === 'resolved' || options?.status === 'all'
+      ? options.status
+      : 'pending'
+    const kind = String(options?.kind || '').trim()
+    const query = String(options?.query || '').trim().toLocaleLowerCase('zh-CN')
+    const offset = Math.max(0, Math.min(100_000, Math.floor(Number(options?.offset) || 0)))
+    const limit = Math.max(1, Math.min(100, Math.floor(Number(options?.limit) || 40)))
+    const scopeSql = `
+      FROM review_queue
+      WHERE (?='' OR kind=?)
+        AND (?='' OR instr(lower(title || char(0) || detail || char(0) || payload_json), ?) > 0)
+    `
+    const scopeParams = [kind, kind, query, query]
+    const countRows = this.db.prepare(`
+      SELECT CASE WHEN status='pending' THEN 'pending' ELSE 'resolved' END AS bucket, COUNT(*) AS count
+      ${scopeSql}
+      GROUP BY bucket
+    `).all(...scopeParams) as Array<{ bucket: 'pending' | 'resolved'; count: number }>
+    const pending = Number(countRows.find(row => row.bucket === 'pending')?.count || 0)
+    const resolved = Number(countRows.find(row => row.bucket === 'resolved')?.count || 0)
+    const statusSql = status === 'all'
+      ? ''
+      : status === 'pending'
+        ? ` AND status='pending'`
+        : ` AND status<>'pending'`
+    const total = status === 'all' ? pending + resolved : status === 'pending' ? pending : resolved
+    const rows = this.db.prepare(`
+      SELECT id,kind,title,detail,confidence,status,payload_json,created_at,resolved_at
+      ${scopeSql}${statusSql}
+      ORDER BY COALESCE(resolved_at,created_at) DESC, id ASC
+      LIMIT ? OFFSET ?
+    `).all(...scopeParams, limit, offset) as any[]
+    const items = rows.map(row => {
+      let payload: any = {}
+      try { payload = JSON.parse(String(row.payload_json || '{}')) } catch {}
+      return {
+        ...payload,
+        id: row.id,
+        kind: row.kind,
+        title: row.title,
+        detail: row.detail,
+        confidence: row.confidence,
+        status: row.status,
+        createdAt: row.created_at,
+        resolvedAt: row.resolved_at || payload.resolvedAt
+      }
+    })
+    return {
+      items,
+      offset,
+      limit,
+      total,
+      hasMore: offset + items.length < total,
+      counts: { pending, resolved, all: pending + resolved }
+    }
   }
 
   private pairKey(leftId: string, rightId: string): string {

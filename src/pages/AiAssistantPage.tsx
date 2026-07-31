@@ -2439,6 +2439,12 @@ function AiAssistantPage() {
           ) : <div className="assistant-empty">下一次同步会从新增消息开始建立人物、组织、项目和关系证据。</div>}
           <div className="assistant-review-section">
             <div className="assistant-section-heading"><div><span className="assistant-eyebrow">REVIEW LEDGER</span><h3>身份与关系审阅</h3></div><span className="assistant-count">{pendingReviewCount} 待处理 · {resolvedReviewCount} 已处理</span></div>
+            {dashboard?.graphReviewStorage?.statePolicy === 'pending_only' && <small className="assistant-evidence">
+              加密运行状态只保留 {dashboard.graphReviewStorage.pending || 0} 条待处理工作；已处理历史由 SQLCipher 审阅账本分页保存，可在重启后继续筛选查看。
+              {dashboard.graphReviewStorage.archivedThisRun
+                ? ` 本次启动已迁移 ${dashboard.graphReviewStorage.archivedThisRun} 条历史、移除 ${dashboard.graphReviewStorage.archivedEvidenceThisRun || 0} 份重复原文副本。`
+                : ''}
+            </small>}
             <div className="assistant-review-filters">
               <div>
                 <button className={reviewStatusFilter === 'pending' ? 'active' : ''} onClick={() => setReviewStatusFilter('pending')}>待处理 {pendingReviewCount}</button>

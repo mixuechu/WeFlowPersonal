@@ -134,7 +134,7 @@ import {
   identityPairKey,
   isNegativeDecisionCurrent
 } from './identityDisambiguation'
-import { paginateGraphReviews, type GraphReviewPageOptions } from '../../shared/graphReviewPagination'
+import { type GraphReviewPageOptions } from '../../shared/graphReviewPagination'
 import { buildGraphViewport, type GraphViewportOptions } from '../../shared/graphViewport'
 import {
   buildGraphDashboardPayload,
@@ -153,6 +153,10 @@ import {
   BRIEFING_STORAGE_VERSION,
   compactBriefings
 } from '../../shared/briefingRetention'
+import {
+  GRAPH_REVIEW_STORAGE_VERSION,
+  compactGraphReviewWorkset
+} from '../../shared/graphReviewStorage'
 
 const ATTACHMENT_STRUCTURE_PARSER_VERSION = 'attachment-layout-v3'
 
@@ -363,6 +367,14 @@ export class AiAssistantService {
     strippedTaskSnapshots: 0,
     strippedTaskCount: 0,
     lastCompactedAt: ''
+  }
+  private graphReviewStorage = {
+    version: GRAPH_REVIEW_STORAGE_VERSION,
+    statePolicy: 'pending_only',
+    pending: 0,
+    archivedThisRun: 0,
+    archivedEvidenceThisRun: 0,
+    lastArchivedAt: ''
   }
   private stateStorage: DurableJsonRecovery & {
     lastWriteAt: string
@@ -709,14 +721,22 @@ export class AiAssistantService {
 
   private saveState(strictMemorySync = false): void {
     this.compactBriefingState()
+    let graphSynced = false
+    try {
+      personalMemoryStore.syncGraph(this.state.graph)
+      graphSynced = true
+    } catch (error) {
+      console.error('[AI Assistant] 个人记忆数据库同步失败:', sanitizeDiagnosticText(error))
+      if (strictMemorySync) throw error
+    }
+    if (graphSynced) this.compactGraphReviewState()
     writeEncryptedDurableJson(this.statePath, this.state, this.stateEncryptionKey)
     this.stateStorage.encrypted = true
     this.stateStorage.lastWriteAt = new Date().toISOString()
     try {
-      personalMemoryStore.syncGraph(this.state.graph)
       personalMemoryStore.syncTasks(this.state.tasks)
     } catch (error) {
-      console.error('[AI Assistant] 个人记忆数据库同步失败:', sanitizeDiagnosticText(error))
+      console.error('[AI Assistant] 个人记忆任务同步失败:', sanitizeDiagnosticText(error))
       if (strictMemorySync) throw error
     }
   }
@@ -730,6 +750,20 @@ export class AiAssistantService {
       this.briefingStorage.strippedTaskSnapshots += result.strippedTaskSnapshots
       this.briefingStorage.strippedTaskCount += result.strippedTaskCount
       this.briefingStorage.lastCompactedAt = new Date().toISOString()
+    }
+  }
+
+  private compactGraphReviewState(): void {
+    const result = compactGraphReviewWorkset(this.state.graph.reviewQueue)
+    this.state.graph.reviewQueue = result.pending
+    this.graphReviewStorage.pending = result.pending.length
+    if (result.changed) {
+      this.graphReviewStorage.archivedThisRun += result.resolved.length
+      this.graphReviewStorage.archivedEvidenceThisRun += result.resolved.reduce(
+        (total, review) => total + (Array.isArray(review?.evidence) ? review.evidence.length : 0),
+        0
+      )
+      this.graphReviewStorage.lastArchivedAt = new Date().toISOString()
     }
   }
 
@@ -3063,6 +3097,7 @@ export class AiAssistantService {
       },
       graphRevision,
       graphReviewRevision,
+      graphReviewStorage: this.graphReviewStorage,
       identityDisambiguation: {
         ...this.state.graph.identityScan,
         ...getFullIdentityScanSchedule(
@@ -3109,7 +3144,7 @@ export class AiAssistantService {
     const status = options?.status === 'resolved' || options?.status === 'all'
       ? options.status
       : 'pending'
-    const page = paginateGraphReviews(this.state.graph.reviewQueue, {
+    const page = personalMemoryStore.listReviewLedgerPage({
       status,
       kind: String(options?.kind || '').trim(),
       query: String(options?.query || '').trim(),
