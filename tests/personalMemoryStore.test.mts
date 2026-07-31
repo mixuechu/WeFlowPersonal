@@ -1509,6 +1509,138 @@ test('structured evidence reference integrity removes legacy orphans and protect
   }
 })
 
+test('structured search index reconciliation removes ghosts and rebuilds missing memories', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'weflow-search-reconcile-test-'))
+  const databasePath = join(directory, 'memory.sqlite')
+  const first = new PersonalMemoryStore()
+  const entities = [
+    { id: 'search-person-a', type: 'person', canonicalName: '检索甲', trustStatus: 'confirmed' },
+    { id: 'search-person-b', type: 'person', canonicalName: '检索乙', trustStatus: 'confirmed' }
+  ]
+  try {
+    first.initialize(databasePath)
+    first.syncGraph({
+      entities,
+      relations: [{
+        id: 'search-ghost-relation',
+        subjectId: 'search-person-a',
+        predicate: '旧关系检索幽灵',
+        objectId: 'search-person-b',
+        confidence: 0.9,
+        status: 'candidate',
+        evidence: [{
+          messageId: 'search-ghost-message',
+          sessionId: 'search-session',
+          timestamp: 1_700_002_000,
+          sender: '检索发送者',
+          excerpt: '旧关系检索幽灵'
+        }]
+      }],
+      reviewQueue: []
+    })
+    first.upsertClaims([{
+      id: 'search-missing-claim',
+      subjectId: 'search-person-a',
+      predicate: '掌握',
+      objectValue: '索引重建关键词',
+      confidence: 0.9,
+      status: 'candidate',
+      sourceNature: 'self_statement',
+      searchText: '检索甲掌握索引重建关键词',
+      evidence: [{
+        messageId: 'search-claim-message',
+        sessionId: 'search-session',
+        timestamp: 1_700_002_001,
+        sender: '检索发送者',
+        excerpt: '索引重建关键词'
+      }]
+    }])
+    first.upsertEvents([{
+      id: 'search-missing-event',
+      eventType: 'meeting',
+      title: '缺失事件索引',
+      description: '',
+      confidence: 0.9,
+      status: 'candidate',
+      sourceNature: 'other_statement',
+      searchText: '缺失事件索引恢复验证',
+      participants: [{ entityId: 'search-person-a', role: 'participant' }],
+      evidence: [{
+        messageId: 'search-event-message',
+        sessionId: 'search-session',
+        timestamp: 1_700_002_002,
+        sender: '检索发送者',
+        excerpt: '缺失事件索引恢复验证'
+      }]
+    }])
+    const database = (first as any).db
+    database.exec(`
+      DROP TRIGGER trg_claims_delete_search;
+      DROP TRIGGER trg_relations_delete_search;
+      DROP TRIGGER trg_events_delete_search;
+      DROP TRIGGER trg_search_documents_delete_payload;
+      DELETE FROM search_documents
+        WHERE id IN('claim:search-missing-claim','event:search-missing-event');
+      DELETE FROM relations WHERE id='search-ghost-relation';
+      INSERT INTO search_fts(document_id,title,search_text)
+        VALUES('orphan:fts','孤儿全文','孤儿全文载荷');
+      INSERT INTO search_document_evidence(
+        document_id,message_id,session_id,timestamp,sender,excerpt
+      ) VALUES('orphan:evidence','orphan-message','orphan-session',1,'孤儿','孤儿证据载荷');
+    `)
+    first.close()
+
+    const reopened = new PersonalMemoryStore()
+    try {
+      reopened.initialize(databasePath)
+      const diagnostics = reopened.getDiagnostics()
+      assert.equal(diagnostics.healthy, true)
+      assert.equal(diagnostics.structuredSearchIndexHealthy, true)
+      assert.equal(diagnostics.structuredSearchIndex.ghostDocumentsRemovedThisStart, 1)
+      assert.deepEqual(diagnostics.structuredSearchIndex.missingDocumentsRebuiltThisStart, {
+        claims: 1,
+        relations: 0,
+        events: 1
+      })
+      assert.equal(diagnostics.structuredSearchIndex.orphanPayloadRowsRemovedThisStart, 5)
+      assert.equal(diagnostics.structuredSearchIndex.missingDocumentsRebuiltTotal, 2)
+      assert.equal(diagnostics.structuredSearchIndex.ghostRowsRemovedTotal, 6)
+      assert.equal(diagnostics.structuredSearchIndex.triggerRepairs, 2)
+      assert.equal(reopened.searchText('索引重建关键词').some((row: any) =>
+        row.id === 'claim:search-missing-claim'), true)
+      assert.equal(reopened.searchText('缺失事件索引恢复验证').some((row: any) =>
+        row.id === 'event:search-missing-event'), true)
+      assert.equal(reopened.searchText('旧关系检索幽灵').some((row: any) =>
+        row.id === 'relation:search-ghost-relation'), false)
+      assert.equal(reopened.getDocumentEvidencePage('claim', 'search-missing-claim').total, 1)
+      assert.equal(reopened.getDocumentEvidencePage('event', 'search-missing-event').total, 1)
+
+      ;(reopened as any).db.exec(`
+        DELETE FROM claims WHERE id='search-missing-claim';
+        DELETE FROM event_participants WHERE event_id='search-missing-event';
+        DELETE FROM events WHERE id='search-missing-event';
+      `)
+      assert.equal(Number((reopened as any).db.prepare(`
+        SELECT COUNT(*) AS count FROM search_documents
+        WHERE id IN('claim:search-missing-claim','event:search-missing-event')
+      `).get().count), 0)
+      assert.equal(Number((reopened as any).db.prepare(`
+        SELECT COUNT(*) AS count FROM search_fts
+        WHERE document_id IN('claim:search-missing-claim','event:search-missing-event')
+      `).get().count), 0)
+      assert.equal(Number((reopened as any).db.prepare(`
+        SELECT COUNT(*) AS count FROM search_document_evidence
+        WHERE document_id IN('claim:search-missing-claim','event:search-missing-event')
+      `).get().count), 0)
+    } finally {
+      reopened.close()
+    }
+  } finally {
+    first.close()
+    rmSync(directory, { recursive: true, force: true })
+  }
+})
+
 test('task search keeps original message evidence', () => withStore(store => {
   store.syncTasks([{
     id: 'task-1',

@@ -2365,6 +2365,9 @@ function AiAssistantPage() {
                   {memoryDiagnostics.structuredEvidenceReferences?.version
                     ? ` · 引用${memoryDiagnostics.referentialIntegrityHealthy ? '完整' : '异常'} / 清理孤儿 ${Number(memoryDiagnostics.structuredEvidenceReferences.orphansRemovedTotal || 0).toLocaleString()} 条`
                     : ''}
+                  {memoryDiagnostics.structuredSearchIndex?.version
+                    ? ` · 检索索引${memoryDiagnostics.structuredSearchIndexHealthy ? '一致' : '异常'} / 重建 ${Number(memoryDiagnostics.structuredSearchIndex.missingDocumentsRebuiltTotal || 0).toLocaleString()} 条`
+                    : ''}
                 </small>
               </span>
             </div>
@@ -4274,6 +4277,20 @@ function AiAssistantPage() {
                 <span>删除保护修复 <b>{Number(memoryDiagnostics.structuredEvidenceReferences.triggerRepairs || 0).toLocaleString()}</b> 次</span>
                 <span>本次检查 <b>{memoryDiagnostics.structuredEvidenceReferences.checkedAt
                   ? new Date(memoryDiagnostics.structuredEvidenceReferences.checkedAt).toLocaleString('zh-CN')
+                  : '未知'}</b></span>
+              </div>
+            </div>}
+            {memoryDiagnostics.structuredSearchIndex?.version && <div className={`assistant-recovery-audit ${memoryDiagnostics.structuredSearchIndexHealthy ? 'healthy' : 'unhealthy'}`}>
+              <header><Search size={15} /><span><b>结构化记忆与检索索引对账</b>
+                <small>事实、关系和事件与全文/向量文档双向核对：删除幽灵结果，重建存在但搜不到的记忆；原文仍从保留证据角色的权威表读取。</small>
+              </span></header>
+              <div className="assistant-recovery-current">
+                <span>当前状态 <b>{memoryDiagnostics.structuredSearchIndexHealthy ? '一致' : '需要检查'}</b></span>
+                <span>累计删除幽灵 <b>{Number(memoryDiagnostics.structuredSearchIndex.ghostRowsRemovedTotal || 0).toLocaleString()}</b></span>
+                <span>累计重建缺失 <b>{Number(memoryDiagnostics.structuredSearchIndex.missingDocumentsRebuiltTotal || 0).toLocaleString()}</b></span>
+                <span>删除保护修复 <b>{Number(memoryDiagnostics.structuredSearchIndex.triggerRepairs || 0).toLocaleString()}</b> 次</span>
+                <span>本次检查 <b>{memoryDiagnostics.structuredSearchIndex.checkedAt
+                  ? new Date(memoryDiagnostics.structuredSearchIndex.checkedAt).toLocaleString('zh-CN')
                   : '未知'}</b></span>
               </div>
             </div>}

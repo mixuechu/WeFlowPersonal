@@ -611,6 +611,7 @@ export class PersonalMemoryStore {
     this.ensureColumn('merge_history', 'target_name', `TEXT NOT NULL DEFAULT ''`)
     this.repairStructuredEvidenceIdentity()
     this.repairStructuredEvidenceReferences()
+    this.repairStructuredSearchIndex()
     this.backfillMergeHistoryNames()
     this.db.exec(`CREATE INDEX IF NOT EXISTS idx_memory_corrections_item
       ON memory_corrections(item_kind,item_id,created_at DESC)`)
@@ -1025,6 +1026,182 @@ export class PersonalMemoryStore {
     })()
   }
 
+  private repairStructuredSearchIndex(): void {
+    if (!this.db) return
+    const auditRow = this.db.prepare(`
+      SELECT value FROM schema_meta WHERE key='structured_search_index_integrity'
+    `).get() as any
+    let previousAudit: any = {}
+    try { previousAudit = JSON.parse(String(auditRow?.value || '{}')) } catch {}
+    const triggerDefinitions = [
+      {
+        name: 'trg_claims_delete_search',
+        expected: ['after delete on claims', "delete from search_documents where id='claim:' || old.id"],
+        sql: `CREATE TRIGGER trg_claims_delete_search AFTER DELETE ON claims
+          BEGIN DELETE FROM search_documents WHERE id='claim:' || OLD.id; END`
+      },
+      {
+        name: 'trg_relations_delete_search',
+        expected: ['after delete on relations', "delete from search_documents where id='relation:' || old.id"],
+        sql: `CREATE TRIGGER trg_relations_delete_search AFTER DELETE ON relations
+          BEGIN DELETE FROM search_documents WHERE id='relation:' || OLD.id; END`
+      },
+      {
+        name: 'trg_events_delete_search',
+        expected: ['after delete on events', "delete from search_documents where id='event:' || old.id"],
+        sql: `CREATE TRIGGER trg_events_delete_search AFTER DELETE ON events
+          BEGIN DELETE FROM search_documents WHERE id='event:' || OLD.id; END`
+      },
+      {
+        name: 'trg_search_documents_delete_payload',
+        expected: [
+          'after delete on search_documents',
+          'delete from search_fts where document_id=old.id',
+          'delete from search_document_evidence where document_id=old.id'
+        ],
+        sql: `CREATE TRIGGER trg_search_documents_delete_payload AFTER DELETE ON search_documents
+          BEGIN
+            DELETE FROM search_fts WHERE document_id=OLD.id;
+            DELETE FROM search_document_evidence WHERE document_id=OLD.id;
+          END`
+      }
+    ]
+    const triggersHealthyBefore = triggerDefinitions.every(trigger => {
+      const sql = String((this.db!.prepare(`
+        SELECT sql FROM sqlite_master WHERE type='trigger' AND name=?
+      `).get(trigger.name) as any)?.sql || '').toLowerCase().replace(/\s+/g, ' ')
+      return trigger.expected.every(fragment => sql.includes(fragment))
+    })
+    const ghostDocuments = this.db.prepare(`
+      SELECT id FROM search_documents d
+      WHERE (d.document_type='claim' AND NOT EXISTS(
+          SELECT 1 FROM claims item WHERE item.id=d.source_id
+        ))
+        OR (d.document_type='relation' AND NOT EXISTS(
+          SELECT 1 FROM relations item WHERE item.id=d.source_id
+        ))
+        OR (d.document_type='event' AND NOT EXISTS(
+          SELECT 1 FROM events item WHERE item.id=d.source_id
+        ))
+    `).all() as Array<{ id: string }>
+    const orphanFts = Number((this.db.prepare(`
+      SELECT COUNT(*) AS count FROM search_fts f
+      WHERE NOT EXISTS(SELECT 1 FROM search_documents d WHERE d.id=f.document_id)
+    `).get() as any)?.count || 0)
+    const orphanEvidence = Number((this.db.prepare(`
+      SELECT COUNT(*) AS count FROM search_document_evidence e
+      WHERE NOT EXISTS(SELECT 1 FROM search_documents d WHERE d.id=e.document_id)
+    `).get() as any)?.count || 0)
+    const payloadCount = this.db.prepare(`
+      SELECT
+        (SELECT COUNT(*) FROM search_fts WHERE document_id=?) +
+        (SELECT COUNT(*) FROM search_document_evidence WHERE document_id=?) AS count
+    `)
+    const ghostDocumentPayloadRows = ghostDocuments.reduce((total, document) =>
+      total + Number((payloadCount.get(document.id, document.id) as any)?.count || 0), 0)
+    const missingClaims = this.db.prepare(`
+      SELECT * FROM claims c
+      WHERE NOT EXISTS(SELECT 1 FROM search_documents d WHERE d.id='claim:' || c.id)
+    `).all() as any[]
+    const missingRelations = this.db.prepare(`
+      SELECT * FROM relations r
+      WHERE NOT EXISTS(SELECT 1 FROM search_documents d WHERE d.id='relation:' || r.id)
+    `).all() as any[]
+    const missingEvents = this.db.prepare(`
+      SELECT * FROM events ev
+      WHERE NOT EXISTS(SELECT 1 FROM search_documents d WHERE d.id='event:' || ev.id)
+    `).all() as any[]
+    const checkedAt = new Date().toISOString()
+    this.db.transaction(() => {
+      if (!triggersHealthyBefore) {
+        for (const trigger of triggerDefinitions) {
+          this.db!.exec(`DROP TRIGGER IF EXISTS ${trigger.name}; ${trigger.sql};`)
+        }
+      }
+      const deleteDocument = this.db!.prepare('DELETE FROM search_documents WHERE id=?')
+      for (const document of ghostDocuments) deleteDocument.run(document.id)
+      this.db!.exec(`
+        DELETE FROM search_fts
+        WHERE NOT EXISTS(SELECT 1 FROM search_documents d WHERE d.id=search_fts.document_id);
+        DELETE FROM search_document_evidence
+        WHERE NOT EXISTS(
+          SELECT 1 FROM search_documents d WHERE d.id=search_document_evidence.document_id
+        );
+      `)
+      for (const claim of missingClaims) {
+        this.upsertSearchDocument(
+          `claim:${claim.id}`, 'claim', claim.id, claim.predicate, claim.search_text,
+          {
+            subjectId: claim.subject_id,
+            objectEntityId: claim.object_entity_id || undefined,
+            polarity: claim.polarity,
+            status: claim.status,
+            validFrom: claim.valid_from || undefined,
+            validTo: claim.valid_to || undefined
+          },
+          claim.updated_at || checkedAt
+        )
+      }
+      for (const relation of missingRelations) {
+        this.upsertSearchDocument(
+          `relation:${relation.id}`, 'relation', relation.id, relation.predicate, relation.search_text,
+          {
+            subjectId: relation.subject_id,
+            objectId: relation.object_id,
+            predicate: relation.predicate,
+            status: relation.status
+          },
+          relation.updated_at || checkedAt
+        )
+      }
+      const participantIds = this.db!.prepare(`
+        SELECT entity_id FROM event_participants WHERE event_id=? ORDER BY entity_id
+      `)
+      for (const event of missingEvents) {
+        this.upsertSearchDocument(
+          `event:${event.id}`, 'event', event.id, event.title, event.search_text,
+          {
+            eventType: event.event_type,
+            startAt: event.start_at || undefined,
+            endAt: event.end_at || undefined,
+            participantIds: (participantIds.all(event.id) as Array<{ entity_id: string }>)
+              .map(item => item.entity_id),
+            status: event.status
+          },
+          event.updated_at || checkedAt
+        )
+      }
+      const rebuilt = missingClaims.length + missingRelations.length + missingEvents.length
+      const payloadRowsRemoved = orphanFts + orphanEvidence + ghostDocumentPayloadRows
+      const removed = ghostDocuments.length + payloadRowsRemoved
+      const audit = {
+        version: 1,
+        checkedAt,
+        ghostDocumentsRemovedThisStart: ghostDocuments.length,
+        missingDocumentsRebuiltThisStart: {
+          claims: missingClaims.length,
+          relations: missingRelations.length,
+          events: missingEvents.length
+        },
+        orphanPayloadRowsRemovedThisStart: payloadRowsRemoved,
+        ghostRowsRemovedTotal: Math.max(0, Number(previousAudit?.ghostRowsRemovedTotal || 0)) + removed,
+        missingDocumentsRebuiltTotal: Math.max(
+          0,
+          Number(previousAudit?.missingDocumentsRebuiltTotal || 0)
+        ) + rebuilt,
+        triggerRepairs: Math.max(0, Number(previousAudit?.triggerRepairs || 0))
+          + (triggersHealthyBefore ? 0 : 1),
+        triggersHealthy: true,
+        currentGhostDocuments: 0,
+        currentMissingDocuments: 0
+      }
+      this.db!.prepare(`
+        INSERT INTO schema_meta(key,value,updated_at) VALUES('structured_search_index_integrity',?,?)
+        ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_at=excluded.updated_at
+      `).run(JSON.stringify(audit), checkedAt)
+    })()
+  }
+
   private backfillMergeHistoryNames(): void {
     if (!this.db) return
     const rows = this.db.prepare(`
@@ -1173,13 +1350,58 @@ export class PersonalMemoryStore {
     const referentialIntegrityHealthy = foreignKeyViolations === 0
       && structuredEvidenceReferences.triggersHealthy
       && structuredEvidenceReferences.currentOrphans === 0
+    const structuredSearchIndex = (() => {
+      const row = this.db!.prepare(`
+        SELECT value,updated_at FROM schema_meta
+        WHERE key='structured_search_index_integrity'
+      `).get() as any
+      try {
+        const audit = JSON.parse(String(row?.value || '{}'))
+        return {
+          version: Number(audit.version || 0),
+          checkedAt: String(audit.checkedAt || row?.updated_at || ''),
+          ghostDocumentsRemovedThisStart: Number(audit.ghostDocumentsRemovedThisStart || 0),
+          missingDocumentsRebuiltThisStart: {
+            claims: Number(audit.missingDocumentsRebuiltThisStart?.claims || 0),
+            relations: Number(audit.missingDocumentsRebuiltThisStart?.relations || 0),
+            events: Number(audit.missingDocumentsRebuiltThisStart?.events || 0)
+          },
+          orphanPayloadRowsRemovedThisStart: Number(audit.orphanPayloadRowsRemovedThisStart || 0),
+          ghostRowsRemovedTotal: Number(audit.ghostRowsRemovedTotal || 0),
+          missingDocumentsRebuiltTotal: Number(audit.missingDocumentsRebuiltTotal || 0),
+          triggerRepairs: Number(audit.triggerRepairs || 0),
+          triggersHealthy: audit.triggersHealthy === true,
+          currentGhostDocuments: Number(audit.currentGhostDocuments || 0),
+          currentMissingDocuments: Number(audit.currentMissingDocuments || 0)
+        }
+      } catch {
+        return {
+          version: 0,
+          checkedAt: String(row?.updated_at || ''),
+          ghostDocumentsRemovedThisStart: 0,
+          missingDocumentsRebuiltThisStart: { claims: 0, relations: 0, events: 0 },
+          orphanPayloadRowsRemovedThisStart: 0,
+          ghostRowsRemovedTotal: 0,
+          missingDocumentsRebuiltTotal: 0,
+          triggerRepairs: 0,
+          triggersHealthy: false,
+          currentGhostDocuments: 0,
+          currentMissingDocuments: 0
+        }
+      }
+    })()
+    const structuredSearchIndexHealthy = structuredSearchIndex.triggersHealthy
+      && structuredSearchIndex.currentGhostDocuments === 0
+      && structuredSearchIndex.currentMissingDocuments === 0
     return {
       healthy: integrity === 'ok'
         && structuredEvidenceMigration.constraintsHealthy
-        && referentialIntegrityHealthy,
+        && referentialIntegrityHealthy
+        && structuredSearchIndexHealthy,
       integrity,
       foreignKeyViolations,
       referentialIntegrityHealthy,
+      structuredSearchIndexHealthy,
       encryption: {
         enabled: Boolean(this.encryptionKey),
         cipher: this.encryptionKey ? String(this.db.pragma('cipher', { simple: true }) || '') : 'none',
@@ -1191,6 +1413,7 @@ export class PersonalMemoryStore {
       counts,
       structuredEvidenceMigration,
       structuredEvidenceReferences,
+      structuredSearchIndex,
       backups
     }
   }
