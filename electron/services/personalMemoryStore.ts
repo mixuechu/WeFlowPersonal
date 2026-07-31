@@ -2936,6 +2936,159 @@ export class PersonalMemoryStore {
     })
   }
 
+  listTaskReviewDecisionPage(options: {
+    status?: 'active' | 'revoked' | 'all'
+    decision?: 'mine' | 'rejected' | 'all'
+    query?: string
+    from?: string
+    to?: string
+    limit?: number
+    offset?: number
+  } = {}): {
+    items: any[]
+    total: number
+    hasMore: boolean
+    counts: { active: number; revoked: number; all: number }
+  } {
+    if (!this.db) {
+      return { items: [], total: 0, hasMore: false, counts: { active: 0, revoked: 0, all: 0 } }
+    }
+    const conditions: string[] = []
+    const parameters: Array<string | number> = []
+    if (options.status === 'active') conditions.push('revoked_at IS NULL')
+    if (options.status === 'revoked') conditions.push('revoked_at IS NOT NULL')
+    if (options.decision === 'mine' || options.decision === 'rejected') {
+      conditions.push('decision=?')
+      parameters.push(options.decision)
+    }
+    const query = String(options.query || '').trim().toLocaleLowerCase('zh-CN')
+    if (query) {
+      conditions.push(`instr(lower(title || char(0) || source),?)>0`)
+      parameters.push(query)
+    }
+    const from = options.from && Number.isFinite(Date.parse(options.from)) ? String(options.from) : ''
+    const to = options.to && Number.isFinite(Date.parse(options.to)) ? String(options.to) : ''
+    if (from) {
+      conditions.push('updated_at>=?')
+      parameters.push(from)
+    }
+    if (to) {
+      conditions.push('updated_at<=?')
+      parameters.push(to)
+    }
+    const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : ''
+    const total = Number((this.db.prepare(`
+      SELECT COUNT(*) AS count FROM task_review_decisions ${where}
+    `).get(...parameters) as any)?.count || 0)
+    const limit = Math.max(1, Math.min(100, Math.floor(Number(options.limit) || 40)))
+    const offset = Math.max(0, Math.min(1_000_000, Math.floor(Number(options.offset) || 0)))
+    const rows = this.db.prepare(`
+      SELECT evidence_fingerprint,task_id,decision,title,source,suppression_count,
+        reconciliation_count,last_suppressed_at,last_reconciled_at,revoked_at,
+        created_at,updated_at,task_json
+      FROM task_review_decisions
+      ${where}
+      ORDER BY updated_at DESC,evidence_fingerprint ASC
+      LIMIT ? OFFSET ?
+    `).all(...parameters, limit, offset) as any[]
+    const countsRow = this.db.prepare(`
+      SELECT
+        SUM(CASE WHEN revoked_at IS NULL THEN 1 ELSE 0 END) AS active,
+        SUM(CASE WHEN revoked_at IS NOT NULL THEN 1 ELSE 0 END) AS revoked,
+        COUNT(*) AS all_count
+      FROM task_review_decisions
+    `).get() as any
+    return {
+      items: rows.map(row => {
+        let task: any = {}
+        try { task = JSON.parse(String(row.task_json || '{}')) } catch {}
+        const { task_json: _taskJson, ...safeRow } = row
+        return {
+          ...safeRow,
+          active: !row.revoked_at,
+          can_restore_snapshot: Boolean(task?.id && task?.title)
+        }
+      }),
+      total,
+      hasMore: offset + rows.length < total,
+      counts: {
+        active: Number(countsRow?.active || 0),
+        revoked: Number(countsRow?.revoked || 0),
+        all: Number(countsRow?.all_count || 0)
+      }
+    }
+  }
+
+  getTaskReviewDecisionDossier(evidenceFingerprint: string, options: {
+    historyOffset?: number
+    historyLimit?: number
+  } = {}): any {
+    if (!this.db || !String(evidenceFingerprint || '').trim()) return null
+    const row = this.db.prepare(`
+      SELECT * FROM task_review_decisions WHERE evidence_fingerprint=?
+    `).get(evidenceFingerprint) as any
+    if (!row) return null
+    let evidence: any[] = []
+    let task: any = {}
+    try { evidence = JSON.parse(String(row.evidence_json || '[]')) } catch {}
+    try { task = JSON.parse(String(row.task_json || '{}')) } catch {}
+    const historyOffset = Math.max(0, Math.min(1_000_000, Math.floor(Number(options.historyOffset) || 0)))
+    const historyLimit = Math.max(1, Math.min(100, Math.floor(Number(options.historyLimit) || 50)))
+    const historyTotal = Number((this.db.prepare(`
+      SELECT COUNT(*) AS count FROM task_review_history WHERE evidence_fingerprint=?
+    `).get(evidenceFingerprint) as any)?.count || 0)
+    const historyRows = this.db.prepare(`
+      SELECT id,action,created_at,task_json FROM task_review_history
+      WHERE evidence_fingerprint=?
+      ORDER BY created_at DESC,id DESC
+      LIMIT ? OFFSET ?
+    `).all(evidenceFingerprint, historyLimit, historyOffset) as any[]
+    const { task_json: _taskJson, evidence_json: _evidenceJson, ...safeRow } = row
+    return {
+      ...safeRow,
+      active: !row.revoked_at,
+      can_restore_snapshot: Boolean(task?.id && task?.title),
+      evidence: evidence.slice(-20),
+      evidenceTotal: evidence.length,
+      history: historyRows.map(item => {
+        let snapshot: any = {}
+        try { snapshot = JSON.parse(String(item.task_json || '{}')) } catch {}
+        return {
+          id: item.id,
+          action: item.action,
+          created_at: item.created_at,
+          snapshotAvailable: Boolean(snapshot?.id && snapshot?.title)
+        }
+      }),
+      historyTotal,
+      historyOffset,
+      historyLimit,
+      historyHasMore: historyOffset + historyRows.length < historyTotal
+    }
+  }
+
+  getTaskReviewArchiveStats(): {
+    total: number
+    latestFingerprint: string
+    latestUpdatedAt: string
+    latestActive: boolean
+  } {
+    if (!this.db) return { total: 0, latestFingerprint: '', latestUpdatedAt: '', latestActive: false }
+    const total = Number((this.db.prepare(`
+      SELECT COUNT(*) AS count FROM task_review_decisions
+    `).get() as any)?.count || 0)
+    const latest = this.db.prepare(`
+      SELECT evidence_fingerprint,updated_at,revoked_at FROM task_review_decisions
+      ORDER BY updated_at DESC,evidence_fingerprint ASC LIMIT 1
+    `).get() as any
+    return {
+      total,
+      latestFingerprint: String(latest?.evidence_fingerprint || ''),
+      latestUpdatedAt: String(latest?.updated_at || ''),
+      latestActive: Boolean(latest && !latest.revoked_at)
+    }
+  }
+
   getTaskReviewFeedbackStats(): any {
     if (!this.db) return { mine: 0, rejected: 0, suppressed: 0, reconciled: 0 }
     return this.db.prepare(`

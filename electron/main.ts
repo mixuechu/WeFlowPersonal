@@ -4537,6 +4537,10 @@ function registerIpcHandlers() {
     aiAssistantService.getTaskArchive(options))
   ipcMain.handle('ai-assistant:getTaskOwnershipReviews', (_, options?: any) =>
     aiAssistantService.getTaskOwnershipReviews(options))
+  ipcMain.handle('ai-assistant:getTaskReviewDecisionPage', (_, options?: any) =>
+    aiAssistantService.getTaskReviewDecisionPage(options))
+  ipcMain.handle('ai-assistant:getTaskReviewDecisionDossier', (_, evidenceFingerprint: string, options?: any) =>
+    aiAssistantService.getTaskReviewDecisionDossier(evidenceFingerprint, options))
   ipcMain.handle('ai-assistant:sync', () => aiAssistantService.sync())
   ipcMain.handle('ai-assistant:cancelSync', () => aiAssistantService.cancelSync())
   ipcMain.handle('ai-assistant:getSettings', () => aiAssistantService.getSettings())

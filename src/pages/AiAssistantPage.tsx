@@ -213,6 +213,23 @@ function AiAssistantPage() {
   const [taskOwnershipTo, setTaskOwnershipTo] = useState('')
   const [taskOwnershipLoadingMore, setTaskOwnershipLoadingMore] = useState(false)
   const taskOwnershipGate = useRef(new LatestRequestGate())
+  const [taskFeedbackArchive, setTaskFeedbackArchive] = useState<{
+    items: any[]
+    total: number
+    hasMore: boolean
+    counts: { active: number; revoked: number; all: number }
+    loading?: boolean
+  }>({ items: [], total: 0, hasMore: false, counts: { active: 0, revoked: 0, all: 0 } })
+  const [taskFeedbackStatus, setTaskFeedbackStatus] = useState<'all' | 'active' | 'revoked'>('all')
+  const [taskFeedbackDecision, setTaskFeedbackDecision] = useState<'all' | 'mine' | 'rejected'>('all')
+  const [taskFeedbackQuery, setTaskFeedbackQuery] = useState('')
+  const [taskFeedbackFrom, setTaskFeedbackFrom] = useState('')
+  const [taskFeedbackTo, setTaskFeedbackTo] = useState('')
+  const [taskFeedbackLoadingMore, setTaskFeedbackLoadingMore] = useState(false)
+  const [taskFeedbackDossier, setTaskFeedbackDossier] = useState<any>(null)
+  const [taskFeedbackHistoryLoadingMore, setTaskFeedbackHistoryLoadingMore] = useState(false)
+  const taskFeedbackArchiveGate = useRef(new LatestRequestGate())
+  const taskFeedbackDossierGate = useRef(new LatestRequestGate())
   const [calendarMonth, setCalendarMonth] = useState(() => shanghaiToday().slice(0, 7))
   const [selectedCalendarDate, setSelectedCalendarDate] = useState(() => shanghaiToday())
   const [pathFromId, setPathFromId] = useState('')
@@ -331,6 +348,15 @@ function AiAssistantPage() {
     taskOwnershipClassification, taskOwnershipPriority, taskOwnershipQuery,
     taskOwnershipFrom, taskOwnershipTo
   ])
+  const taskFeedbackOptions = useMemo(() => ({
+    status: taskFeedbackStatus,
+    decision: taskFeedbackDecision,
+    query: taskFeedbackQuery || undefined,
+    from: taskFeedbackFrom ? new Date(`${taskFeedbackFrom}T00:00:00+08:00`).toISOString() : undefined,
+    to: taskFeedbackTo ? new Date(`${taskFeedbackTo}T23:59:59.999+08:00`).toISOString() : undefined,
+    limit: 40,
+    offset: 0
+  }), [taskFeedbackStatus, taskFeedbackDecision, taskFeedbackQuery, taskFeedbackFrom, taskFeedbackTo])
 
   const load = useCallback(async () => {
     const request = dashboardLoadGate.current.begin()
@@ -439,6 +465,28 @@ function AiAssistantPage() {
       if (taskOwnershipGate.current.isCurrent(request)) taskOwnershipGate.current.invalidate()
     }
   }, [taskOwnershipOptions, dashboard?.taskOwnershipReviews?.revision])
+
+  useEffect(() => {
+    const request = taskFeedbackArchiveGate.current.begin()
+    setTaskFeedbackLoadingMore(false)
+    setTaskFeedbackArchive(current => ({ ...current, items: [], loading: true }))
+    const timer = window.setTimeout(() => {
+      void window.electronAPI.aiAssistant.getTaskReviewDecisionPage(taskFeedbackOptions).then(result => {
+        if (!taskFeedbackArchiveGate.current.isCurrent(request)) return
+        setTaskFeedbackArchive({ ...result, loading: false })
+      }).catch(() => {
+        if (!taskFeedbackArchiveGate.current.isCurrent(request)) return
+        setTaskFeedbackArchive({
+          items: [], total: 0, hasMore: false,
+          counts: { active: 0, revoked: 0, all: 0 }, loading: false
+        })
+      })
+    }, taskFeedbackQuery ? 200 : 0)
+    return () => {
+      window.clearTimeout(timer)
+      if (taskFeedbackArchiveGate.current.isCurrent(request)) taskFeedbackArchiveGate.current.invalidate()
+    }
+  }, [taskFeedbackOptions, dashboard?.taskReviewFeedback?.archive?.revision])
 
   useEffect(() => {
     const query = memoryQuery.trim()
@@ -845,6 +893,76 @@ function AiAssistantPage() {
     }
   }
 
+  const loadMoreTaskFeedback = async () => {
+    if (taskFeedbackLoadingMore || !taskFeedbackArchive.hasMore) return
+    const request = taskFeedbackArchiveGate.current.begin()
+    setTaskFeedbackLoadingMore(true)
+    try {
+      const result = await window.electronAPI.aiAssistant.getTaskReviewDecisionPage({
+        ...taskFeedbackOptions,
+        offset: taskFeedbackArchive.items.length,
+        limit: 40
+      })
+      if (!taskFeedbackArchiveGate.current.isCurrent(request)) return
+      setTaskFeedbackArchive(current => ({
+        ...result,
+        items: [...current.items, ...result.items.filter((item: any) =>
+          !current.items.some(known => known.evidence_fingerprint === item.evidence_fingerprint))],
+        loading: false
+      }))
+    } catch (error: any) {
+      if (taskFeedbackArchiveGate.current.isCurrent(request)) setMessage(error?.message || String(error))
+    } finally {
+      if (taskFeedbackArchiveGate.current.isCurrent(request)) setTaskFeedbackLoadingMore(false)
+    }
+  }
+
+  const openTaskFeedbackDossier = async (evidenceFingerprint: string) => {
+    const request = taskFeedbackDossierGate.current.begin()
+    setTaskFeedbackDossier({ evidence_fingerprint: evidenceFingerprint, loading: true })
+    try {
+      const dossier = await window.electronAPI.aiAssistant.getTaskReviewDecisionDossier(
+        evidenceFingerprint,
+        { historyOffset: 0, historyLimit: 50 }
+      )
+      if (taskFeedbackDossierGate.current.isCurrent(request)) setTaskFeedbackDossier(dossier)
+    } catch (error: any) {
+      if (taskFeedbackDossierGate.current.isCurrent(request)) {
+        setTaskFeedbackDossier({
+          evidence_fingerprint: evidenceFingerprint,
+          error: error?.message || String(error)
+        })
+      }
+    }
+  }
+
+  const loadMoreTaskFeedbackHistory = async () => {
+    if (!taskFeedbackDossier?.evidence_fingerprint || !taskFeedbackDossier.historyHasMore ||
+        taskFeedbackHistoryLoadingMore) return
+    const request = taskFeedbackDossierGate.current.begin()
+    setTaskFeedbackHistoryLoadingMore(true)
+    try {
+      const page = await window.electronAPI.aiAssistant.getTaskReviewDecisionDossier(
+        taskFeedbackDossier.evidence_fingerprint,
+        { historyOffset: taskFeedbackDossier.history?.length || 0, historyLimit: 50 }
+      )
+      if (!page || !taskFeedbackDossierGate.current.isCurrent(request)) return
+      setTaskFeedbackDossier((current: any) => ({
+        ...current,
+        ...page,
+        history: [
+          ...(current.history || []),
+          ...page.history.filter((item: any) =>
+            !(current.history || []).some((known: any) => known.id === item.id))
+        ]
+      }))
+    } catch (error: any) {
+      if (taskFeedbackDossierGate.current.isCurrent(request)) setMessage(error?.message || String(error))
+    } finally {
+      if (taskFeedbackDossierGate.current.isCurrent(request)) setTaskFeedbackHistoryLoadingMore(false)
+    }
+  }
+
   const saveTask = async () => {
     if (!editingTask?.id || !String(editingTask.title || '').trim()) return
     await window.electronAPI.aiAssistant.updateTask(editingTask.id, {
@@ -1047,6 +1165,10 @@ function AiAssistantPage() {
   const revertTaskReview = async (evidenceFingerprint: string) => {
     try {
       await window.electronAPI.aiAssistant.revertTaskReview(evidenceFingerprint)
+      if (taskFeedbackDossier?.evidence_fingerprint === evidenceFingerprint) {
+        taskFeedbackDossierGate.current.invalidate()
+        setTaskFeedbackDossier(null)
+      }
       await load()
     } catch (error: any) {
       setMessage(error?.message || String(error))
@@ -2156,7 +2278,8 @@ function AiAssistantPage() {
           </div> : <div className="assistant-empty">当聊天中识别到项目实体或待办归属项目后，这里会自动形成项目进度、风险、里程碑和决策视图。</div>}
         </section>
 
-        {(taskOwnershipReviews.total > 0 || taskReviewFeedback.mine || taskReviewFeedback.rejected) && (
+        {(taskOwnershipReviews.total > 0 || taskReviewFeedback.mine || taskReviewFeedback.rejected ||
+          taskReviewFeedback.archive?.total) && (
           <section className="assistant-panel assistant-review-section">
             <div className="assistant-section-heading">
               <div><span className="assistant-eyebrow">ASSIGNEE REVIEW</span><h3>待确认归属</h3></div>
@@ -2219,16 +2342,90 @@ function AiAssistantPage() {
               disabled={taskOwnershipLoadingMore}>
               {taskOwnershipLoadingMore ? '正在加载下一页…' : '加载更多待确认归属'}
             </button>}
-            {!!taskReviewFeedback.recent?.length && <details className="assistant-task-feedback-history">
-              <summary>查看最近归属反馈</summary>
-              {taskReviewFeedback.recent.map((item: any) => <div key={item.evidence_fingerprint}>
+            {!!taskReviewFeedback.archive?.total && <details className="assistant-task-feedback-history">
+              <summary>完整归属反馈档案 · {taskFeedbackArchive.total} 条匹配 / {taskReviewFeedback.archive.total} 条全部</summary>
+              <div className="assistant-task-filters">
+                <select value={taskFeedbackStatus}
+                  onChange={event => setTaskFeedbackStatus(event.target.value as any)}>
+                  <option value="all">全部状态</option>
+                  <option value="active">当前有效</option>
+                  <option value="revoked">已经撤销</option>
+                </select>
+                <select value={taskFeedbackDecision}
+                  onChange={event => setTaskFeedbackDecision(event.target.value as any)}>
+                  <option value="all">全部判断</option>
+                  <option value="mine">确认为我的</option>
+                  <option value="rejected">不是我的</option>
+                </select>
+                <input value={taskFeedbackQuery} onChange={event => setTaskFeedbackQuery(event.target.value)}
+                  placeholder="搜索任务标题或来源" />
+                <label>从<input type="date" value={taskFeedbackFrom}
+                  onChange={event => setTaskFeedbackFrom(event.target.value)} /></label>
+                <label>到<input type="date" value={taskFeedbackTo}
+                  onChange={event => setTaskFeedbackTo(event.target.value)} /></label>
+              </div>
+              <small>
+                当前有效 {taskFeedbackArchive.counts.active || 0} · 已撤销 {taskFeedbackArchive.counts.revoked || 0}。
+                目录不含任务快照或原文，点击单条后才从 SQLCipher 读取。
+              </small>
+              {taskFeedbackArchive.items.map((item: any) => <div key={item.evidence_fingerprint}>
                 <small>
                   {new Date(item.updated_at).toLocaleString('zh-CN')} · {!item.active ? '已撤销' : item.decision === 'mine' ? '确认为我的' : '不是我的'} · {item.title || '未命名事项'}
+                  {item.source ? ` · ${item.source}` : ''}
                   {item.active && item.suppression_count ? ` · 已拦截 ${item.suppression_count} 次重复抽取` : ''}
                 </small>
-                {item.active && item.canRevert && <button onClick={() => void revertTaskReview(item.evidence_fingerprint)}>撤销反馈</button>}
+                <button onClick={() => void openTaskFeedbackDossier(item.evidence_fingerprint)}>原文与审计</button>
+                {item.canRevert && <button onClick={() => void revertTaskReview(item.evidence_fingerprint)}>撤销反馈</button>}
               </div>)}
+              {taskFeedbackArchive.loading && <small>正在读取归属反馈档案…</small>}
+              {!taskFeedbackArchive.loading && !taskFeedbackArchive.items.length && <small>当前筛选下没有反馈记录。</small>}
+              {taskFeedbackArchive.hasMore && <button onClick={() => void loadMoreTaskFeedback()}
+                disabled={taskFeedbackLoadingMore}>
+                {taskFeedbackLoadingMore ? '正在加载…' : '加载更多反馈'}
+              </button>}
             </details>}
+            {taskFeedbackDossier && <section className="assistant-task-feedback-dossier">
+              <header>
+                <strong>{taskFeedbackDossier.title || '归属反馈详情'}</strong>
+                <button onClick={() => {
+                  taskFeedbackDossierGate.current.invalidate()
+                  setTaskFeedbackDossier(null)
+                }}>关闭</button>
+              </header>
+              {taskFeedbackDossier.loading && <small>正在按需读取原文和动作历史…</small>}
+              {taskFeedbackDossier.error && <small>{taskFeedbackDossier.error}</small>}
+              {!taskFeedbackDossier.loading && !taskFeedbackDossier.error && <>
+                <p>
+                  {taskFeedbackDossier.active
+                    ? taskFeedbackDossier.decision === 'mine' ? '当前判断：是我的待办' : '当前判断：不是我的待办'
+                    : '当前判断已经撤销'}
+                  {taskFeedbackDossier.source ? ` · 来源 ${taskFeedbackDossier.source}` : ''}
+                </p>
+                <div className="assistant-evidence-stack">
+                  <EvidenceRows evidence={taskFeedbackDossier.evidence || []}
+                    total={taskFeedbackDossier.evidenceTotal} roleLabels />
+                </div>
+                <div>
+                  <strong>动作历史 · {taskFeedbackDossier.history?.length || 0} / {taskFeedbackDossier.historyTotal || 0}</strong>
+                  {(taskFeedbackDossier.history || []).map((item: any) => <small key={item.id}>
+                    {new Date(item.created_at).toLocaleString('zh-CN')} · {
+                      item.action === 'mine' ? '确认为我的'
+                        : item.action === 'rejected' ? '不是我的'
+                          : '撤销反馈'
+                    }{item.snapshotAvailable ? ' · 保存了可恢复快照' : ''}
+                  </small>)}
+                  {taskFeedbackDossier.historyHasMore && <button
+                    onClick={() => void loadMoreTaskFeedbackHistory()}
+                    disabled={taskFeedbackHistoryLoadingMore}>
+                    {taskFeedbackHistoryLoadingMore ? '正在加载…' : '加载更早动作'}
+                  </button>}
+                </div>
+                {taskFeedbackDossier.canRevert && <button
+                  onClick={() => void revertTaskReview(taskFeedbackDossier.evidence_fingerprint)}>
+                  撤销这条反馈
+                </button>}
+              </>}
+            </section>}
           </section>
         )}
 

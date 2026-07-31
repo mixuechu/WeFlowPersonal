@@ -3045,6 +3045,7 @@ export class AiAssistantService {
       .digest('hex')
       .slice(0, 16)
     const assistantArchiveStats = personalMemoryStore.getAssistantArchiveStats()
+    const taskReviewArchiveStats = personalMemoryStore.getTaskReviewArchiveStats()
     return {
       briefing: latest ? { ...latest, tasks: undefined } : null,
       briefingStorage: this.briefingStorage,
@@ -3082,12 +3083,16 @@ export class AiAssistantService {
       taskReviewFeedback: {
         ...personalMemoryStore.getTaskReviewFeedbackStats(),
         reconciliation: this.taskReviewReconciliation,
-        recent: personalMemoryStore.listTaskReviewDecisions(20).map(item => ({
-          ...item,
-          canRevert: Boolean(item.active && (
-            item.can_restore_snapshot || this.state.tasks.some(task => task.id === item.task_id)
-          ))
-        }))
+        archive: {
+          total: taskReviewArchiveStats.total,
+          revision: crypto.createHash('sha256')
+            .update(JSON.stringify(taskReviewArchiveStats))
+            .digest('hex')
+            .slice(0, 16),
+          version: 'task-review-audit-v1',
+          directory: 'paginated_without_evidence',
+          dossier: 'on_demand'
+        }
       },
       projectInsights,
       projectPayloadPolicy: {
@@ -3210,6 +3215,44 @@ export class AiAssistantService {
       limit: Number(options?.limit || 40),
       offset: Number(options?.offset || 0)
     })
+  }
+
+  getTaskReviewDecisionPage(options: any = {}): any {
+    const page = personalMemoryStore.listTaskReviewDecisionPage({
+      status: ['active', 'revoked', 'all'].includes(options?.status) ? options.status : 'all',
+      decision: ['mine', 'rejected', 'all'].includes(options?.decision) ? options.decision : 'all',
+      query: String(options?.query || ''),
+      from: String(options?.from || ''),
+      to: String(options?.to || ''),
+      limit: Number(options?.limit || 40),
+      offset: Number(options?.offset || 0)
+    })
+    return {
+      ...page,
+      items: page.items.map(item => ({
+        ...item,
+        canRevert: Boolean(item.active && (
+          item.can_restore_snapshot || this.state.tasks.some(task => task.id === item.task_id)
+        ))
+      }))
+    }
+  }
+
+  getTaskReviewDecisionDossier(evidenceFingerprint: string, options: any = {}): any {
+    const dossier = personalMemoryStore.getTaskReviewDecisionDossier(
+      String(evidenceFingerprint || '').trim(),
+      {
+        historyOffset: Number(options?.historyOffset || 0),
+        historyLimit: Number(options?.historyLimit || 50)
+      }
+    )
+    if (!dossier) return null
+    return {
+      ...dossier,
+      canRevert: Boolean(dossier.active && (
+        dossier.can_restore_snapshot || this.state.tasks.some(task => task.id === dossier.task_id)
+      ))
+    }
   }
 
   getGraphReviewPage(options?: Partial<GraphReviewPageOptions>): any {

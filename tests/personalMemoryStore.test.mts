@@ -3543,6 +3543,118 @@ test('task ownership feedback persists evidence-scoped decisions and suppression
   })
 }))
 
+test('task review audit archive paginates decisions without exposing evidence or snapshots', () => withStore(store => {
+  for (let index = 0; index < 2_500; index += 1) {
+    const fingerprint = `audit-fingerprint-${String(index).padStart(4, '0')}`
+    store.recordTaskReviewDecision({
+      evidenceFingerprint: fingerprint,
+      taskId: `audit-task-${index}`,
+      decision: index % 2 === 0 ? 'mine' : 'rejected',
+      title: index === 1777 ? '唯一反馈审计关键词' : `反馈审计 ${index}`,
+      source: `审计来源群 ${index % 10}`,
+      evidence: [{
+        ...evidence(`audit-message-${index}`, `不应进入审计目录的长原文 ${index} ${'x'.repeat(500)}`)[0],
+        sessionId: `audit-session-${index % 10}`
+      }],
+      task: {
+        id: `audit-task-${index}`,
+        title: `包含敏感快照 ${index} ${'s'.repeat(500)}`,
+        status: 'todo',
+        classification: 'uncertain'
+      }
+    })
+    if (index % 5 === 0) store.revokeTaskReviewDecision(fingerprint)
+  }
+
+  const first = store.listTaskReviewDecisionPage({ limit: 100 })
+  const second = store.listTaskReviewDecisionPage({ offset: 100, limit: 100 })
+  assert.equal(first.total, 2_500)
+  assert.equal(first.counts.active, 2_000)
+  assert.equal(first.counts.revoked, 500)
+  assert.equal(first.counts.all, 2_500)
+  assert.equal(new Set([...first.items, ...second.items].map(item => item.evidence_fingerprint)).size, 200)
+  assert.equal(JSON.stringify(first.items).includes('不应进入审计目录的长原文'), false)
+  assert.equal(JSON.stringify(first.items).includes('包含敏感快照'), false)
+  assert.ok(first.items.every(item => !('evidence' in item) && !('task_json' in item)))
+  assert.equal(store.listTaskReviewDecisionPage({ status: 'active' }).total, 2_000)
+  assert.equal(store.listTaskReviewDecisionPage({ status: 'revoked' }).total, 500)
+  assert.equal(store.listTaskReviewDecisionPage({ decision: 'mine' }).total, 1_250)
+  assert.equal(store.listTaskReviewDecisionPage({ decision: 'rejected' }).total, 1_250)
+  assert.equal(store.listTaskReviewDecisionPage({ query: '唯一反馈审计关键词' }).total, 1)
+  assert.deepEqual(Object.keys(store.getTaskReviewArchiveStats()).sort(), [
+    'latestActive', 'latestFingerprint', 'latestUpdatedAt', 'total'
+  ])
+
+  const detailedFingerprint = 'audit-fingerprint-1777'
+  for (let index = 0; index < 60; index += 1) {
+    store.revokeTaskReviewDecision(detailedFingerprint)
+    store.recordTaskReviewDecision({
+      evidenceFingerprint: detailedFingerprint,
+      taskId: 'audit-task-1777',
+      decision: index % 2 === 0 ? 'mine' : 'rejected',
+      title: '唯一反馈审计关键词',
+      source: '审计来源群 7',
+      evidence: Array.from({ length: 30 }, (_, evidenceIndex) => ({
+        messageId: `audit-detail-message-${evidenceIndex}`,
+        sessionId: 'audit-detail-session',
+        timestamp: 1_700_000_000 + evidenceIndex,
+        sender: '审计发送者',
+        excerpt: `按需证据 ${evidenceIndex}`
+      })),
+      task: { id: 'audit-task-1777', title: '可恢复但不能泄露的任务快照' }
+    })
+  }
+  const dossierFirst = store.getTaskReviewDecisionDossier(detailedFingerprint, {
+    historyOffset: 0,
+    historyLimit: 50
+  })
+  const dossierSecond = store.getTaskReviewDecisionDossier(detailedFingerprint, {
+    historyOffset: 50,
+    historyLimit: 50
+  })
+  assert.equal(dossierFirst.evidence.length, 20)
+  assert.equal(dossierFirst.evidenceTotal, 30)
+  assert.equal(dossierFirst.history.length, 50)
+  assert.equal(dossierFirst.historyHasMore, true)
+  assert.equal(new Set([...dossierFirst.history, ...dossierSecond.history].map(item => item.id)).size, 100)
+  assert.equal(JSON.stringify(dossierFirst).includes('可恢复但不能泄露的任务快照'), false)
+  assert.ok(dossierFirst.history.every((item: any) => !('task_json' in item)))
+}))
+
+test('task review audit archive survives a SQLCipher process-style reopen', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'weflow-task-review-audit-restart-'))
+  const databasePath = join(directory, 'memory.sqlite')
+  const key = randomBytes(32)
+  const first = new PersonalMemoryStore()
+  const second = new PersonalMemoryStore()
+  try {
+    first.initialize(databasePath, key)
+    first.recordTaskReviewDecision({
+      evidenceFingerprint: 'audit-restart-fingerprint',
+      taskId: 'audit-restart-task',
+      decision: 'rejected',
+      title: '跨重启反馈审计',
+      source: '跨重启群',
+      evidence: evidence('audit-restart-message', '跨重启仍可按需核验'),
+      task: { id: 'audit-restart-task', title: '跨重启反馈审计' }
+    })
+    first.revokeTaskReviewDecision('audit-restart-fingerprint')
+    first.close()
+
+    second.initialize(databasePath, key)
+    const page = second.listTaskReviewDecisionPage({ query: '跨重启反馈审计' })
+    assert.equal(page.total, 1)
+    assert.equal(page.items[0]?.active, false)
+    const dossier = second.getTaskReviewDecisionDossier('audit-restart-fingerprint')
+    assert.equal(dossier.evidenceTotal, 1)
+    assert.deepEqual(dossier.history.map((item: any) => item.action), ['revoked', 'rejected'])
+  } finally {
+    first.close()
+    second.close()
+    rmSync(directory, { recursive: true, force: true })
+  }
+})
+
 test('message resources remain idempotent, searchable and traceable to original evidence', () => withStore(store => {
   const resource = {
     id: 'resource-link-1',

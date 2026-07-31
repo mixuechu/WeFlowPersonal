@@ -1697,6 +1697,13 @@ export interface ElectronAPI {
         hasMore: boolean
         counts: Record<string, number>
       }>
+      getTaskReviewDecisionPage: (options?: any) => Promise<{
+        items: any[]
+        total: number
+        hasMore: boolean
+        counts: { active: number; revoked: number; all: number }
+      }>
+      getTaskReviewDecisionDossier: (evidenceFingerprint: string, options?: any) => Promise<any>
       sync: () => Promise<any>
       cancelSync: () => Promise<any>
     getSettings: () => Promise<any>
