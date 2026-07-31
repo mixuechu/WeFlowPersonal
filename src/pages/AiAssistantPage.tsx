@@ -242,6 +242,18 @@ function AiAssistantPage() {
   const [memoryAnswer, setMemoryAnswer] = useState<any>(null)
   const [memoryConversationId, setMemoryConversationId] = useState<string | null>(null)
   const [memoryConversation, setMemoryConversation] = useState<any>(null)
+  const [assistantArchive, setAssistantArchive] = useState<{
+    items: any[]
+    total: number
+    hasMore: boolean
+    loading?: boolean
+  }>({ items: [], total: 0, hasMore: false })
+  const [assistantArchiveQuery, setAssistantArchiveQuery] = useState('')
+  const [assistantArchiveFrom, setAssistantArchiveFrom] = useState('')
+  const [assistantArchiveTo, setAssistantArchiveTo] = useState('')
+  const [assistantArchiveLoadingMore, setAssistantArchiveLoadingMore] = useState(false)
+  const [assistantMessagesLoadingMore, setAssistantMessagesLoadingMore] = useState(false)
+  const assistantArchiveGate = useRef(new LatestRequestGate())
   const [askingMemory, setAskingMemory] = useState(false)
   const [creatingMemoryTask, setCreatingMemoryTask] = useState(false)
   const [memoryEntityFilter, setMemoryEntityFilter] = useState('')
@@ -286,6 +298,13 @@ function AiAssistantPage() {
     limit: 40,
     offset: 0
   }), [taskArchiveStatus, taskArchivePriority, taskArchiveProject, taskArchiveQuery, taskArchiveFrom, taskArchiveTo])
+  const assistantArchiveOptions = useMemo(() => ({
+    query: assistantArchiveQuery || undefined,
+    from: assistantArchiveFrom ? new Date(`${assistantArchiveFrom}T00:00:00+08:00`).toISOString() : undefined,
+    to: assistantArchiveTo ? new Date(`${assistantArchiveTo}T23:59:59.999+08:00`).toISOString() : undefined,
+    offset: 0,
+    limit: 30
+  }), [assistantArchiveQuery, assistantArchiveFrom, assistantArchiveTo])
 
   const load = useCallback(async () => {
     const request = dashboardLoadGate.current.begin()
@@ -356,6 +375,25 @@ function AiAssistantPage() {
       if (taskArchiveGate.current.isCurrent(request)) taskArchiveGate.current.invalidate()
     }
   }, [taskArchiveOptions, dashboard?.taskRevision])
+
+  useEffect(() => {
+    const request = assistantArchiveGate.current.begin()
+    setAssistantArchiveLoadingMore(false)
+    setAssistantArchive(current => ({ ...current, items: [], loading: true }))
+    const timer = window.setTimeout(() => {
+      void window.electronAPI.aiAssistant.getAssistantConversations(assistantArchiveOptions).then(result => {
+        if (!assistantArchiveGate.current.isCurrent(request)) return
+        setAssistantArchive({ ...result, loading: false })
+      }).catch(() => {
+        if (!assistantArchiveGate.current.isCurrent(request)) return
+        setAssistantArchive({ items: [], total: 0, hasMore: false, loading: false })
+      })
+    }, assistantArchiveQuery ? 200 : 0)
+    return () => {
+      window.clearTimeout(timer)
+      if (assistantArchiveGate.current.isCurrent(request)) assistantArchiveGate.current.invalidate()
+    }
+  }, [assistantArchiveOptions, dashboard?.assistantArchive?.revision])
 
   useEffect(() => {
     const query = memoryQuery.trim()
@@ -584,7 +622,7 @@ function AiAssistantPage() {
   const resolvedReviewCount = reviewPage.counts.resolved
   const visibleReviews = reviewPage.items
   const groupedMemoryResults = useMemo(() => groupMemorySearchResults(memoryResults), [memoryResults])
-  const assistantConversations: any[] = dashboard?.assistantConversations || []
+  const assistantConversations: any[] = assistantArchive.items
   const identityDisambiguation = dashboard?.identityDisambiguation
   const mergeHistory = dashboard?.mergeHistory || []
   const memoryFeed = dashboard?.memoryFeed || { claims: [], events: [], resources: [] }
@@ -1232,7 +1270,7 @@ function AiAssistantPage() {
 
   const openMemoryConversation = useCallback(async (id: string) => {
     const request = memoryConversationGate.current.begin()
-    const conversation = await window.electronAPI.aiAssistant.getAssistantConversation(id)
+    const conversation = await window.electronAPI.aiAssistant.getAssistantConversation(id, { offset: 0, limit: 40 })
     if (!conversation || !memoryConversationGate.current.isCurrent(request)) return
     setMemoryConversationId(id)
     setMemoryConversation(conversation)
@@ -1252,6 +1290,59 @@ function AiAssistantPage() {
       setMemoryAnswer(null)
     }
   }, [])
+
+  const loadMoreAssistantConversations = async () => {
+    if (assistantArchiveLoadingMore || !assistantArchive.hasMore) return
+    const request = assistantArchiveGate.current.begin()
+    setAssistantArchiveLoadingMore(true)
+    try {
+      const result = await window.electronAPI.aiAssistant.getAssistantConversations({
+        ...assistantArchiveOptions,
+        offset: assistantArchive.items.length,
+        limit: 30
+      })
+      if (!assistantArchiveGate.current.isCurrent(request)) return
+      setAssistantArchive(current => ({
+        ...result,
+        items: [...current.items, ...result.items.filter((item: any) =>
+          !current.items.some((known: any) => known.id === item.id))],
+        loading: false
+      }))
+    } catch (error: any) {
+      if (assistantArchiveGate.current.isCurrent(request)) setMessage(error?.message || String(error))
+    } finally {
+      if (assistantArchiveGate.current.isCurrent(request)) setAssistantArchiveLoadingMore(false)
+    }
+  }
+
+  const loadOlderAssistantMessages = async () => {
+    if (!memoryConversationId || !memoryConversation?.hasOlder || assistantMessagesLoadingMore) return
+    const request = memoryConversationGate.current.begin()
+    setAssistantMessagesLoadingMore(true)
+    try {
+      const older = await window.electronAPI.aiAssistant.getAssistantConversation(memoryConversationId, {
+        offset: memoryConversation.messages?.length || 0,
+        limit: 40
+      })
+      if (!older || !memoryConversationGate.current.isCurrent(request)) return
+      setMemoryConversation((current: any) => {
+        if (!current || current.id !== older.id) return current
+        const known = new Set((current.messages || []).map((item: any) => item.id))
+        return {
+          ...current,
+          ...older,
+          messages: [
+            ...older.messages.filter((item: any) => !known.has(item.id)),
+            ...(current.messages || [])
+          ]
+        }
+      })
+    } catch (error: any) {
+      if (memoryConversationGate.current.isCurrent(request)) setMessage(error?.message || String(error))
+    } finally {
+      if (memoryConversationGate.current.isCurrent(request)) setAssistantMessagesLoadingMore(false)
+    }
+  }
 
   useEffect(() => {
     if (memoryConversationId !== null || !assistantConversations.length) return
@@ -2137,7 +2228,21 @@ function AiAssistantPage() {
           </div>
           <div className="assistant-conversation-layout">
             <aside className="assistant-conversation-list">
-              <strong>本机历史</strong>
+              <strong>本机历史 · {assistantArchive.total}</strong>
+              <input
+                value={assistantArchiveQuery}
+                onChange={event => setAssistantArchiveQuery(event.target.value)}
+                placeholder="搜索问题或回答"
+              />
+              <div className="assistant-conversation-date-filter">
+                <label>从<input type="date" value={assistantArchiveFrom}
+                  onChange={event => setAssistantArchiveFrom(event.target.value)} /></label>
+                <label>到<input type="date" value={assistantArchiveTo}
+                  onChange={event => setAssistantArchiveTo(event.target.value)} /></label>
+              </div>
+              {dashboard?.assistantArchive?.directory === 'paginated_on_demand' && <small>
+                会话和消息按需从 SQLCipher 读取，不进入首页轮询载荷。
+              </small>}
               {assistantConversations.map(conversation => <button
                 className={memoryConversationId === conversation.id ? 'active' : ''}
                 key={conversation.id}
@@ -2146,9 +2251,24 @@ function AiAssistantPage() {
                 <span>{Number(conversation.message_count || 0)} 条消息 · {new Date(conversation.updated_at).toLocaleString('zh-CN')}</span>
                 <small>{conversation.preview}</small>
               </button>)}
-              {!assistantConversations.length && <small>还没有本地问答记录。</small>}
+              {assistantArchive.loading && <small>正在读取本机问答档案…</small>}
+              {!assistantArchive.loading && !assistantConversations.length && <small>
+                {assistantArchiveQuery || assistantArchiveFrom || assistantArchiveTo
+                  ? '没有符合筛选条件的问答记录。'
+                  : '还没有本地问答记录。'}
+              </small>}
+              {assistantArchive.hasMore && <button onClick={() => void loadMoreAssistantConversations()}
+                disabled={assistantArchiveLoadingMore}>
+                {assistantArchiveLoadingMore ? '正在加载…' : '加载更早会话'}
+              </button>}
             </aside>
             <div className="assistant-conversation-thread">
+              {memoryConversation?.hasOlder && <button onClick={() => void loadOlderAssistantMessages()}
+                disabled={assistantMessagesLoadingMore}>
+                {assistantMessagesLoadingMore
+                  ? '正在读取更早消息…'
+                  : `加载更早消息（当前 ${memoryConversation.messages?.length || 0} / ${memoryConversation.total || 0}）`}
+              </button>}
               {memoryConversation?.messages?.map((item: any) => <article className={item.role} key={item.id}>
                 <span>{item.role === 'user' ? '你' : 'AI 助理'} · {new Date(item.created_at).toLocaleString('zh-CN')}</span>
                 <p>{item.content}</p>

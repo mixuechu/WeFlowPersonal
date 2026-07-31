@@ -666,7 +666,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
     correctEvent: (id: string, input: any) => ipcRenderer.invoke('ai-assistant:correctEvent', id, input),
     getMemoryEvent: (id: string) => ipcRenderer.invoke('ai-assistant:getMemoryEvent', id),
     askMemory: (question: string, conversationId?: string, options?: any) => ipcRenderer.invoke('ai-assistant:askMemory', question, conversationId, options),
-    getAssistantConversation: (id: string) => ipcRenderer.invoke('ai-assistant:getAssistantConversation', id),
+    getAssistantConversations: (options?: any) => ipcRenderer.invoke('ai-assistant:getAssistantConversations', options),
+    getAssistantConversation: (id: string, options?: any) =>
+      ipcRenderer.invoke('ai-assistant:getAssistantConversation', id, options),
     deleteAssistantConversation: (id: string) => ipcRenderer.invoke('ai-assistant:deleteAssistantConversation', id),
     getConversationSources: () => ipcRenderer.invoke('ai-assistant:getConversationSources'),
     getDataSources: () => ipcRenderer.invoke('ai-assistant:getDataSources'),

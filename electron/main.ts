@@ -4582,7 +4582,9 @@ function registerIpcHandlers() {
   ipcMain.handle('ai-assistant:correctEvent', (_, id: string, input: any) => aiAssistantService.correctEvent(id, input))
   ipcMain.handle('ai-assistant:getMemoryEvent', (_, id: string) => aiAssistantService.getMemoryEvent(id))
   ipcMain.handle('ai-assistant:askMemory', (_, question: string, conversationId?: string, options?: any) => aiAssistantService.askMemory(question, conversationId, options))
-  ipcMain.handle('ai-assistant:getAssistantConversation', (_, id: string) => aiAssistantService.getAssistantConversation(id))
+  ipcMain.handle('ai-assistant:getAssistantConversations', (_, options?: any) => aiAssistantService.getAssistantConversations(options))
+  ipcMain.handle('ai-assistant:getAssistantConversation', (_, id: string, options?: any) =>
+    aiAssistantService.getAssistantConversation(id, options))
   ipcMain.handle('ai-assistant:deleteAssistantConversation', (_, id: string) => aiAssistantService.deleteAssistantConversation(id))
   ipcMain.handle('ai-assistant:getConversationSources', () => aiAssistantService.getConversationSources())
   ipcMain.handle('ai-assistant:getDataSources', () => aiAssistantService.getDataSources())

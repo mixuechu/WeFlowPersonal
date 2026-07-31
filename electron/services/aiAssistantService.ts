@@ -3045,6 +3045,7 @@ export class AiAssistantService {
       }))
       .digest('hex')
       .slice(0, 16)
+    const assistantArchiveStats = personalMemoryStore.getAssistantArchiveStats()
     return {
       briefing: latest ? { ...latest, tasks: undefined } : null,
       briefingStorage: this.briefingStorage,
@@ -3138,8 +3139,21 @@ export class AiAssistantService {
       },
       resourceTrash: personalMemoryStore.listResourceTrash(),
       ingestionStatus: personalMemoryStore.getIngestionStatus(),
-      assistantHistory: personalMemoryStore.getRecentAssistantExchanges(),
-      assistantConversations: personalMemoryStore.listAssistantConversations(),
+      assistantArchive: {
+        total: assistantArchiveStats.total,
+        revision: crypto.createHash('sha256')
+          .update(JSON.stringify([
+            assistantArchiveStats.total,
+            assistantArchiveStats.latestId,
+            assistantArchiveStats.latestUpdatedAt,
+            assistantArchiveStats.latestMessageCount
+          ]))
+          .digest('hex')
+          .slice(0, 16),
+        version: 'assistant-archive-v1',
+        directory: 'paginated_on_demand',
+        messages: 'newest_first_paginated'
+      },
       qualityBaseline: evaluateTaskAssignmentPolicy(),
       weeklyBriefing: buildWeeklyBriefing(this.state.briefings, tasks),
       notificationDelivery: {
@@ -4547,8 +4561,21 @@ export class AiAssistantService {
     }
   }
 
-  getAssistantConversation(id: string): any {
-    return personalMemoryStore.getAssistantConversation(String(id || '').trim())
+  getAssistantConversations(options?: any): any {
+    return personalMemoryStore.listAssistantConversationsPage({
+      query: String(options?.query || ''),
+      from: String(options?.from || ''),
+      to: String(options?.to || ''),
+      offset: Number(options?.offset || 0),
+      limit: Number(options?.limit || 30)
+    })
+  }
+
+  getAssistantConversation(id: string, options?: any): any {
+    return personalMemoryStore.getAssistantConversation(String(id || '').trim(), {
+      offset: Number(options?.offset || 0),
+      limit: Number(options?.limit || 40)
+    })
   }
 
   deleteAssistantConversation(id: string): boolean {

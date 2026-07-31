@@ -336,6 +336,10 @@ export class PersonalMemoryStore {
         citations_json TEXT NOT NULL DEFAULT '[]',
         created_at TEXT NOT NULL
       ) STRICT;
+      CREATE INDEX IF NOT EXISTS idx_assistant_conversations_updated
+        ON assistant_conversations(updated_at DESC,id);
+      CREATE INDEX IF NOT EXISTS idx_assistant_messages_conversation_time
+        ON assistant_messages(conversation_id,created_at DESC,id DESC);
 
       CREATE TABLE IF NOT EXISTS ingestion_runs (
         id TEXT PRIMARY KEY,
@@ -3917,9 +3921,43 @@ export class PersonalMemoryStore {
     return id
   }
 
-  listAssistantConversations(limit = 30): any[] {
-    if (!this.db) return []
-    return this.db.prepare(`
+  listAssistantConversationsPage(options: {
+    query?: string
+    from?: string
+    to?: string
+    offset?: number
+    limit?: number
+  } = {}): { items: any[]; total: number; hasMore: boolean; offset: number; limit: number } {
+    const limit = Math.max(1, Math.min(100, Math.floor(Number(options.limit) || 30)))
+    const offset = Math.max(0, Math.min(1_000_000, Math.floor(Number(options.offset) || 0)))
+    if (!this.db) return { items: [], total: 0, hasMore: false, offset, limit }
+    const conditions: string[] = []
+    const parameters: Array<string | number> = []
+    const query = String(options.query || '').trim().toLocaleLowerCase('zh-CN')
+    if (query) {
+      conditions.push(`(
+        instr(lower(c.title),?)>0 OR EXISTS (
+          SELECT 1 FROM assistant_messages searched
+          WHERE searched.conversation_id=c.id AND instr(lower(searched.content),?)>0
+        )
+      )`)
+      parameters.push(query, query)
+    }
+    const from = options.from && Number.isFinite(Date.parse(options.from)) ? String(options.from) : ''
+    const to = options.to && Number.isFinite(Date.parse(options.to)) ? String(options.to) : ''
+    if (from) {
+      conditions.push('c.updated_at>=?')
+      parameters.push(from)
+    }
+    if (to) {
+      conditions.push('c.updated_at<=?')
+      parameters.push(to)
+    }
+    const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : ''
+    const total = Number((this.db.prepare(`
+      SELECT COUNT(*) AS count FROM assistant_conversations c ${where}
+    `).get(...parameters) as any)?.count || 0)
+    const items = this.db.prepare(`
       SELECT c.id,c.title,c.created_at,c.updated_at,COUNT(m.id) AS message_count,
         COALESCE((
           SELECT content FROM assistant_messages latest
@@ -3928,26 +3966,73 @@ export class PersonalMemoryStore {
         ),'') AS preview
       FROM assistant_conversations c
       LEFT JOIN assistant_messages m ON m.conversation_id=c.id
+      ${where}
       GROUP BY c.id
-      ORDER BY c.updated_at DESC,c.id DESC LIMIT ?
-    `).all(Math.max(1, Math.min(100, Number(limit) || 30))) as any[]
+      ORDER BY c.updated_at DESC,c.id DESC LIMIT ? OFFSET ?
+    `).all(...parameters, limit, offset) as any[]
+    return { items, total, hasMore: offset + items.length < total, offset, limit }
   }
 
-  getAssistantConversation(id: string, limit = 40): any {
+  listAssistantConversations(limit = 30): any[] {
+    return this.listAssistantConversationsPage({ limit }).items
+  }
+
+  getAssistantArchiveStats(): {
+    total: number
+    latestId: string
+    latestUpdatedAt: string
+    latestMessageCount: number
+  } {
+    if (!this.db) return { total: 0, latestId: '', latestUpdatedAt: '', latestMessageCount: 0 }
+    const total = Number((this.db.prepare(`
+      SELECT COUNT(*) AS count FROM assistant_conversations
+    `).get() as any)?.count || 0)
+    const latest = this.db.prepare(`
+      SELECT c.id,c.updated_at,COUNT(m.id) AS message_count
+      FROM assistant_conversations c
+      LEFT JOIN assistant_messages m ON m.conversation_id=c.id
+      GROUP BY c.id
+      ORDER BY c.updated_at DESC,c.id DESC LIMIT 1
+    `).get() as any
+    return {
+      total,
+      latestId: String(latest?.id || ''),
+      latestUpdatedAt: String(latest?.updated_at || ''),
+      latestMessageCount: Number(latest?.message_count || 0)
+    }
+  }
+
+  getAssistantConversation(id: string, options: number | {
+    offset?: number
+    limit?: number
+  } = 40): any {
     if (!this.db) return null
     const conversation = this.db.prepare(`
       SELECT id,title,created_at,updated_at FROM assistant_conversations WHERE id=?
     `).get(id) as any
     if (!conversation) return null
+    const limit = Math.max(1, Math.min(200, Math.floor(Number(
+      typeof options === 'number' ? options : options.limit
+    ) || 40)))
+    const offset = Math.max(0, Math.min(1_000_000, Math.floor(Number(
+      typeof options === 'number' ? 0 : options.offset
+    ) || 0)))
+    const total = Number((this.db.prepare(`
+      SELECT COUNT(*) AS count FROM assistant_messages WHERE conversation_id=?
+    `).get(id) as any)?.count || 0)
     const rows = this.db.prepare(`
       SELECT id,role,content,citations_json,created_at FROM (
         SELECT id,role,content,citations_json,created_at
         FROM assistant_messages WHERE conversation_id=?
-        ORDER BY created_at DESC,id DESC LIMIT ?
+        ORDER BY created_at DESC,id DESC LIMIT ? OFFSET ?
       ) ORDER BY created_at,id
-    `).all(id, Math.max(1, Math.min(200, Number(limit) || 40))) as any[]
+    `).all(id, limit, offset) as any[]
     return {
       ...conversation,
+      total,
+      offset,
+      limit,
+      hasOlder: offset + rows.length < total,
       messages: rows.map(row => {
         let citations: any[] = []
         try { citations = JSON.parse(String(row.citations_json || '[]')) } catch {}

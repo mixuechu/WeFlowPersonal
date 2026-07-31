@@ -2358,6 +2358,88 @@ test('assistant conversations persist ordered turns, citations and deletion acro
   assert.equal(store.listAssistantConversations().length, 0)
 }))
 
+test('assistant archive paginates years of conversations and complete long threads', () => withStore(store => {
+  const conversationIds: string[] = []
+  for (let index = 0; index < 600; index += 1) {
+    const id = store.saveAssistantExchange(
+      `历史问题 ${index}`,
+      index === 347 ? '包含唯一检索暗号 月光档案' : `历史回答 ${index}`,
+      []
+    )
+    conversationIds.push(id)
+    const year = 2020 + Math.floor(index / 100)
+    const timestamp = `${year}-${String((index % 12) + 1).padStart(2, '0')}-15T04:00:00.000Z`
+    ;(store as any).db.prepare(`
+      UPDATE assistant_conversations SET created_at=?,updated_at=? WHERE id=?
+    `).run(timestamp, timestamp, id)
+  }
+
+  const first = store.listAssistantConversationsPage({ limit: 40 })
+  const second = store.listAssistantConversationsPage({ limit: 40, offset: 40 })
+  const stats = store.getAssistantArchiveStats()
+  assert.deepEqual(Object.keys(stats).sort(), ['latestId', 'latestMessageCount', 'latestUpdatedAt', 'total'])
+  assert.equal(stats.total, 600)
+  assert.equal(first.total, 600)
+  assert.equal(first.items.length, 40)
+  assert.equal(first.hasMore, true)
+  assert.equal(new Set([...first.items, ...second.items].map(item => item.id)).size, 80)
+  assert.ok(Date.parse(first.items[0].updated_at) >= Date.parse(first.items[39].updated_at))
+
+  const query = store.listAssistantConversationsPage({ query: '月光档案', limit: 40 })
+  assert.equal(query.total, 1)
+  assert.equal(query.items[0].id, conversationIds[347])
+  const range = store.listAssistantConversationsPage({
+    from: '2023-01-01T00:00:00.000Z',
+    to: '2023-12-31T23:59:59.999Z',
+    limit: 100
+  })
+  assert.equal(range.total, 100)
+
+  const longConversation = store.saveAssistantExchange('长对话第 0 问', '长对话第 0 答', [])
+  for (let index = 1; index < 125; index += 1) {
+    store.saveAssistantExchange(`长对话第 ${index} 问`, `长对话第 ${index} 答`, [], longConversation)
+  }
+  const pages = Array.from({ length: 7 }, (_, index) =>
+    store.getAssistantConversation(longConversation, { offset: index * 40, limit: 40 }))
+  const messages = pages.flatMap(page => page.messages)
+  assert.equal(pages[0].total, 250)
+  assert.equal(pages[0].hasOlder, true)
+  assert.equal(pages[6].hasOlder, false)
+  assert.equal(messages.length, 250)
+  assert.equal(new Set(messages.map(message => message.id)).size, 250)
+  assert.deepEqual(pages[0].messages.slice(-2).map((message: any) => message.content), ['长对话第 124 问', '长对话第 124 答'])
+}))
+
+test('assistant archive and message pagination survive a SQLCipher process-style reopen', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'weflow-assistant-archive-reopen-'))
+  const databasePath = join(directory, 'memory.sqlite')
+  const key = randomBytes(32)
+  const first = new PersonalMemoryStore()
+  const second = new PersonalMemoryStore()
+  try {
+    first.initialize(databasePath, key)
+    const conversationId = first.saveAssistantExchange('重启前问题', '重启前回答', [])
+    for (let index = 1; index < 30; index += 1) {
+      first.saveAssistantExchange(`重启问题 ${index}`, `重启回答 ${index}`, [], conversationId)
+    }
+    first.close()
+
+    second.initialize(databasePath, key)
+    const archive = second.listAssistantConversationsPage({ query: '重启前问题', limit: 10 })
+    assert.equal(archive.total, 1)
+    assert.equal(archive.items[0].message_count, 60)
+    const latest = second.getAssistantConversation(conversationId, { offset: 0, limit: 20 })
+    const older = second.getAssistantConversation(conversationId, { offset: 20, limit: 40 })
+    assert.equal(latest.hasOlder, true)
+    assert.equal(older.hasOlder, false)
+    assert.equal(new Set([...latest.messages, ...older.messages].map((message: any) => message.id)).size, 60)
+  } finally {
+    first.close()
+    second.close()
+    rmSync(directory, { recursive: true, force: true })
+  }
+})
+
 test('human claim correction survives repeated extraction while new evidence is retained', () => withStore(store => {
   store.syncGraph({
     entities: [{ id: 'person-corrected', type: 'person', canonicalName: '纠正对象', aliases: [], accountIds: [] }],
