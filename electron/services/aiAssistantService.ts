@@ -4799,6 +4799,14 @@ export class AiAssistantService {
     }
   }
 
+  deleteMemorySearchFeedback(input?: any): any {
+    return {
+      ...personalMemoryStore.deleteMemorySearchFeedback(input || {}),
+      version: MEMORY_SEARCH_FEEDBACK_VERSION,
+      payloadPolicy: 'sqlcipher-feedback-chain-purge-v1'
+    }
+  }
+
   async searchMemoryPage(
     query: string,
     options: MemorySearchOptions = {},

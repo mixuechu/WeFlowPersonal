@@ -224,6 +224,92 @@ test('search feedback archive paginates all history with stable action and text 
   assert.deepEqual(exact.items[0].scope.documentTypes, ['entity'])
 }))
 
+test('search feedback purge previews full chains, requires confirmation and never revives older decisions', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'weflow-search-feedback-purge-'))
+  const databasePath = join(directory, 'memory.sqlite')
+  const key = randomBytes(32).toString('hex')
+  const store = new PersonalMemoryStore()
+  try {
+    store.initialize(databasePath, key)
+    store.syncGraph({
+      entities: [{
+        id: 'person-feedback-purge',
+        type: 'person',
+        canonicalName: '反馈清理人物',
+        trustStatus: 'confirmed'
+      }],
+      relations: [],
+      reviewQueue: []
+    } as any)
+    const target = buildMemorySearchFeedbackContext('敏感项目代号', { sourceIds: ['wechat'] })
+    const retained = buildMemorySearchFeedbackContext('保留查询', { sourceIds: ['calendar'] })
+    for (const action of ['helpful', 'not_relevant', 'cleared'] as const) {
+      store.recordMemorySearchFeedback({
+        queryFingerprint: target.queryFingerprint,
+        scopeFingerprint: target.scopeFingerprint,
+        queryText: target.query,
+        scopeJson: target.scopeJson,
+        documentId: 'entity:person-feedback-purge',
+        action
+      })
+    }
+    store.recordMemorySearchFeedback({
+      queryFingerprint: retained.queryFingerprint,
+      scopeFingerprint: retained.scopeFingerprint,
+      queryText: retained.query,
+      scopeJson: retained.scopeJson,
+      documentId: 'entity:person-feedback-purge',
+      action: 'helpful'
+    })
+    const targetHistory = store.getMemorySearchFeedbackArchive({ query: '敏感项目代号' })
+    assert.equal(targetHistory.total, 3)
+    const preview = store.deleteMemorySearchFeedback({ id: targetHistory.items[0].id })
+    assert.deepEqual(preview, {
+      matchingRows: 1,
+      affectedChains: 1,
+      rowsToDelete: 3,
+      removesCurrentDecisions: 0
+    })
+    assert.throws(() => store.deleteMemorySearchFeedback({
+      id: targetHistory.items[0].id,
+      preview: false,
+      confirmation: '永久删除'
+    }), /永久删除检索反馈/)
+    assert.throws(() => store.deleteMemorySearchFeedback({ preview: false }), /请选择/)
+    const deleted = store.deleteMemorySearchFeedback({
+      id: targetHistory.items[0].id,
+      preview: false,
+      confirmation: '永久删除检索反馈'
+    })
+    assert.equal(deleted.deletedRows, 3)
+    assert.deepEqual(store.listMemorySearchFeedback(target.queryFingerprint, target.scopeFingerprint), [])
+    assert.equal(store.getMemorySearchFeedbackArchive({ query: '敏感项目代号' }).total, 0)
+    assert.equal(store.listMemorySearchFeedback(retained.queryFingerprint, retained.scopeFingerprint)[0].action, 'helpful')
+    store.close()
+
+    const reopened = new PersonalMemoryStore()
+    try {
+      reopened.initialize(databasePath, key)
+      assert.equal(reopened.getMemorySearchFeedbackArchive({}).total, 1)
+      assert.equal(reopened.getMemorySearchFeedbackArchive({ query: '敏感项目代号' }).total, 0)
+      const allPreview = reopened.deleteMemorySearchFeedback({ all: true })
+      assert.equal(allPreview.rowsToDelete, 1)
+      const allDeleted = reopened.deleteMemorySearchFeedback({
+        all: true,
+        preview: false,
+        confirmation: '永久删除检索反馈'
+      })
+      assert.equal(allDeleted.deletedRows, 1)
+      assert.equal(reopened.getMemorySearchFeedbackArchive({}).total, 0)
+    } finally {
+      reopened.close()
+    }
+  } finally {
+    store.close()
+    rmSync(directory, { recursive: true, force: true })
+  }
+})
+
 test('derived briefings stay bounded without duplicating durable task evidence', () => {
   const briefings: Record<string, any> = {}
   for (let day = 1; day <= 365; day += 1) {

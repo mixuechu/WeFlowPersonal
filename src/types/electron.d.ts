@@ -1774,12 +1774,23 @@ export interface ElectronAPI {
         action: 'helpful' | 'not_relevant' | 'cleared'
       }) => Promise<any>
       getMemorySearchFeedbackArchive: (options?: {
-        action?: 'helpful' | 'not_relevant' | 'cleared'
+        id?: number
+        action?: 'helpful' | 'not_relevant' | 'cleared' | ''
         query?: string
         from?: string
         to?: string
         offset?: number
         limit?: number
+      }) => Promise<any>
+      deleteMemorySearchFeedback: (input?: {
+        id?: number
+        action?: 'helpful' | 'not_relevant' | 'cleared' | ''
+        query?: string
+        from?: string
+        to?: string
+        all?: boolean
+        confirmation?: string
+        preview?: boolean
       }) => Promise<any>
       getMemoryEvidencePage: (
         documentType: string,

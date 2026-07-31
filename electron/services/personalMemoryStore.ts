@@ -6247,19 +6247,20 @@ export class PersonalMemoryStore {
     `).all(queryFingerprint, scopeFingerprint, safeLimit) as any[]
   }
 
-  getMemorySearchFeedbackArchive(options: {
+  private buildMemorySearchFeedbackArchiveFilter(options: {
+    id?: number
     action?: string
     query?: string
     from?: string
     to?: string
-    offset?: number
-    limit?: number
-  } = {}): any {
-    if (!this.db) return { items: [], total: 0, hasMore: false, offset: 0, limit: 40, counts: {} }
-    const offset = Math.max(0, Number(options.offset) || 0)
-    const limit = Math.max(1, Math.min(100, Number(options.limit) || 40))
+  } = {}): { where: string; parameters: any[]; hasExplicitFilter: boolean } {
     const conditions: string[] = []
     const parameters: any[] = []
+    const id = Math.max(0, Math.floor(Number(options.id) || 0))
+    if (id) {
+      conditions.push('feedback.id=?')
+      parameters.push(id)
+    }
     const action = String(options.action || '').trim()
     if (new Set(['helpful', 'not_relevant', 'cleared']).has(action)) {
       conditions.push('feedback.action=?')
@@ -6292,7 +6293,26 @@ export class PersonalMemoryStore {
       conditions.push('feedback.created_at<=?')
       parameters.push(to)
     }
-    const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : ''
+    return {
+      where: conditions.length ? `WHERE ${conditions.join(' AND ')}` : '',
+      parameters,
+      hasExplicitFilter: Boolean(id || action || query || from || to)
+    }
+  }
+
+  getMemorySearchFeedbackArchive(options: {
+    id?: number
+    action?: string
+    query?: string
+    from?: string
+    to?: string
+    offset?: number
+    limit?: number
+  } = {}): any {
+    if (!this.db) return { items: [], total: 0, hasMore: false, offset: 0, limit: 40, counts: {} }
+    const offset = Math.max(0, Number(options.offset) || 0)
+    const limit = Math.max(1, Math.min(100, Number(options.limit) || 40))
+    const { where, parameters } = this.buildMemorySearchFeedbackArchiveFilter(options)
     const total = Number((this.db.prepare(`
       SELECT COUNT(*) AS count FROM memory_search_feedback feedback ${where}
     `).get(...parameters) as any)?.count || 0)
@@ -6334,6 +6354,85 @@ export class PersonalMemoryStore {
       limit,
       counts
     }
+  }
+
+  deleteMemorySearchFeedback(input: {
+    id?: number
+    action?: string
+    query?: string
+    from?: string
+    to?: string
+    all?: boolean
+    confirmation?: string
+    preview?: boolean
+  } = {}): any {
+    if (!this.db) throw new Error('个人记忆数据库尚未初始化')
+    const { where, parameters, hasExplicitFilter } = this.buildMemorySearchFeedbackArchiveFilter(input)
+    const deleteAll = input.all === true
+    if (!hasExplicitFilter && !deleteAll) throw new Error('请选择要清理的反馈范围')
+    const matching = Number((this.db.prepare(`
+      SELECT COUNT(*) AS count FROM memory_search_feedback feedback ${where}
+    `).get(...parameters) as any)?.count || 0)
+    const chains = this.db.prepare(`
+      SELECT DISTINCT feedback.query_fingerprint AS queryFingerprint,
+        feedback.scope_fingerprint AS scopeFingerprint,
+        feedback.document_id AS documentId
+      FROM memory_search_feedback feedback ${where}
+    `).all(...parameters) as Array<{
+      queryFingerprint: string
+      scopeFingerprint: string
+      documentId: string
+    }>
+    let rowsToDelete = 0
+    let removesCurrentDecisions = 0
+    if (chains.length) {
+      const countChain = this.db.prepare(`
+        SELECT COUNT(*) AS count FROM memory_search_feedback
+        WHERE query_fingerprint=? AND scope_fingerprint=? AND document_id=?
+      `)
+      const latestChain = this.db.prepare(`
+        SELECT action FROM memory_search_feedback
+        WHERE query_fingerprint=? AND scope_fingerprint=? AND document_id=?
+        ORDER BY id DESC LIMIT 1
+      `)
+      for (const chain of chains) {
+        rowsToDelete += Number((countChain.get(
+          chain.queryFingerprint,
+          chain.scopeFingerprint,
+          chain.documentId
+        ) as any)?.count || 0)
+        if (String((latestChain.get(
+          chain.queryFingerprint,
+          chain.scopeFingerprint,
+          chain.documentId
+        ) as any)?.action || '') !== 'cleared') removesCurrentDecisions += 1
+      }
+    }
+    const preview = {
+      matchingRows: matching,
+      affectedChains: chains.length,
+      rowsToDelete,
+      removesCurrentDecisions
+    }
+    if (input.preview !== false) return preview
+    if (String(input.confirmation || '') !== '永久删除检索反馈') throw new Error('请输入“永久删除检索反馈”确认')
+    if (!chains.length) return { ...preview, deletedRows: 0 }
+    const removeChain = this.db.prepare(`
+      DELETE FROM memory_search_feedback
+      WHERE query_fingerprint=? AND scope_fingerprint=? AND document_id=?
+    `)
+    const transaction = this.db.transaction(() => {
+      let deletedRows = 0
+      for (const chain of chains) {
+        deletedRows += Number(removeChain.run(
+          chain.queryFingerprint,
+          chain.scopeFingerprint,
+          chain.documentId
+        ).changes || 0)
+      }
+      return deletedRows
+    })
+    return { ...preview, deletedRows: transaction() }
   }
 
   searchText(query: string, limit = 20, allowedIds: Set<string> | null = null): any[] {

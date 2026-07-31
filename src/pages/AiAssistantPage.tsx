@@ -247,6 +247,9 @@ function AiAssistantPage() {
   const [memoryFeedbackArchiveRefreshKey, setMemoryFeedbackArchiveRefreshKey] = useState(0)
   const [memoryFeedbackArchiveLoadingMore, setMemoryFeedbackArchiveLoadingMore] = useState(false)
   const memoryFeedbackArchiveGate = useRef(new LatestRequestGate())
+  const [memoryFeedbackDeleteDialog, setMemoryFeedbackDeleteDialog] = useState<any>(null)
+  const [memoryFeedbackDeleteConfirmation, setMemoryFeedbackDeleteConfirmation] = useState('')
+  const memoryFeedbackDeleteGate = useRef(new LatestRequestGate())
   const [memoryEvidenceArchive, setMemoryEvidenceArchive] = useState<{
     documentType: string
     sourceId: string
@@ -2010,6 +2013,71 @@ function AiAssistantPage() {
     }
   }
 
+  const openMemoryFeedbackDeletion = async (id?: number) => {
+    const request = memoryFeedbackDeleteGate.current.begin()
+    const filters = id
+      ? { id }
+      : {
+          action: memoryFeedbackArchiveAction || undefined,
+          query: memoryFeedbackArchiveQuery.trim() || undefined,
+          from: memoryFeedbackArchiveFrom || undefined,
+          to: memoryFeedbackArchiveTo || undefined,
+          all: !memoryFeedbackArchiveAction && !memoryFeedbackArchiveQuery.trim() &&
+            !memoryFeedbackArchiveFrom && !memoryFeedbackArchiveTo
+        }
+    setMemoryFeedbackDeleteConfirmation('')
+    setMemoryFeedbackDeleteDialog({ status: 'loading', filters, single: Boolean(id) })
+    try {
+      const preview = await window.electronAPI.aiAssistant.deleteMemorySearchFeedback({
+        ...filters,
+        preview: true
+      })
+      if (!memoryFeedbackDeleteGate.current.isCurrent(request)) return
+      setMemoryFeedbackDeleteDialog({ status: 'ready', filters, preview, single: Boolean(id) })
+    } catch (error: any) {
+      if (!memoryFeedbackDeleteGate.current.isCurrent(request)) return
+      setMemoryFeedbackDeleteDialog({
+        status: 'error',
+        filters,
+        single: Boolean(id),
+        error: error?.message || String(error)
+      })
+    }
+  }
+
+  const closeMemoryFeedbackDeletion = () => {
+    if (memoryFeedbackDeleteDialog?.status === 'deleting') return
+    memoryFeedbackDeleteGate.current.invalidate()
+    setMemoryFeedbackDeleteDialog(null)
+    setMemoryFeedbackDeleteConfirmation('')
+  }
+
+  const confirmMemoryFeedbackDeletion = async () => {
+    if (!memoryFeedbackDeleteDialog || memoryFeedbackDeleteConfirmation !== '永久删除检索反馈') return
+    const request = memoryFeedbackDeleteGate.current.begin()
+    setMemoryFeedbackDeleteDialog((current: any) => ({ ...current, status: 'deleting' }))
+    try {
+      const result = await window.electronAPI.aiAssistant.deleteMemorySearchFeedback({
+        ...memoryFeedbackDeleteDialog.filters,
+        preview: false,
+        confirmation: memoryFeedbackDeleteConfirmation
+      })
+      if (!memoryFeedbackDeleteGate.current.isCurrent(request)) return
+      setMemoryFeedbackDeleteDialog(null)
+      setMemoryFeedbackDeleteConfirmation('')
+      setMemorySearchRefreshKey(value => value + 1)
+      setMemoryFeedbackArchiveRefreshKey(value => value + 1)
+      setMessage(`已永久删除 ${result.deletedRows || 0} 条检索反馈；${result.affectedChains || 0} 组排序偏好已清除。`)
+    } catch (error: any) {
+      if (!memoryFeedbackDeleteGate.current.isCurrent(request)) return
+      setMemoryFeedbackDeleteDialog((current: any) => ({
+        ...current,
+        status: 'error',
+        error: error?.message || String(error)
+      }))
+    }
+  }
+
   const openMemoryEvidenceArchive = async (documentType: string, sourceId: string, title: string) => {
     const request = memoryEvidenceArchiveGate.current.begin()
     setMemoryEvidenceLoadingMore(false)
@@ -3293,6 +3361,16 @@ function AiAssistantPage() {
                     ? `读取失败：${memoryFeedbackArchive.error || '未知错误'}`
                     : `已显示 ${memoryFeedbackArchive.items.length} / ${memoryFeedbackArchive.total} 条 · 有用 ${Number(memoryFeedbackArchive.counts?.helpful || 0)} · 无关 ${Number(memoryFeedbackArchive.counts?.not_relevant || 0)} · 撤销 ${Number(memoryFeedbackArchive.counts?.cleared || 0)}`}
               </div>
+              {memoryFeedbackArchive.status === 'ready' && memoryFeedbackArchive.total > 0 &&
+                <div className="assistant-search-feedback-archive-purge">
+                  <span>检索词和范围属于本机敏感历史，可按当前筛选永久清理。</span>
+                  <button className="danger" onClick={() => void openMemoryFeedbackDeletion()}>
+                    {memoryFeedbackArchiveAction || memoryFeedbackArchiveQuery.trim() ||
+                    memoryFeedbackArchiveFrom || memoryFeedbackArchiveTo
+                      ? '永久清理当前筛选'
+                      : '永久清理全部反馈'}
+                  </button>
+                </div>}
               <div className="assistant-search-feedback-archive-list">
                 {(memoryFeedbackArchive.items || []).map((item: any) => {
                   const scope = item.scope || {}
@@ -3329,6 +3407,9 @@ function AiAssistantPage() {
                           query: item.queryText,
                           options: scope
                         })}>重新设为{item.action === 'helpful' ? '有用' : '无关'}</button>}
+                      <button className="danger" onClick={() => void openMemoryFeedbackDeletion(item.id)}>
+                        永久删除这组反馈
+                      </button>
                     </div>
                   </article>
                 })}
@@ -4938,6 +5019,61 @@ function AiAssistantPage() {
             </div>
             <footer><button onClick={() => void window.electronAPI.aiAssistant.getMemoryDiagnostics().then(setMemoryDiagnostics)}>刷新</button>
               <button className="primary" onClick={() => setShowDiagnostics(false)}>完成</button></footer>
+          </div>
+        </div>
+      )}
+
+      {memoryFeedbackDeleteDialog && (
+        <div className="assistant-modal-backdrop" role="presentation">
+          <div className="assistant-modal assistant-delete-modal" role="dialog" aria-modal="true"
+            aria-labelledby="memory-feedback-delete-title">
+            <div className="assistant-modal-title"><div>
+              <h2 id="memory-feedback-delete-title">永久删除检索反馈</h2>
+              <p>删除的是本机相关性学习记录，不会删除事实、事件、关系、任务或原文。</p>
+            </div><button aria-label="关闭检索反馈删除确认"
+              disabled={memoryFeedbackDeleteDialog.status === 'deleting'}
+              onClick={closeMemoryFeedbackDeletion}><X size={16} /></button></div>
+            {memoryFeedbackDeleteDialog.status === 'loading' && <div className="assistant-delete-status">
+              <RefreshCw size={16} /><span><strong>正在核对清理范围…</strong>
+                <small>将整组删除相关历史，避免旧判断在删除最新动作后重新生效。</small></span>
+            </div>}
+            {memoryFeedbackDeleteDialog.status === 'error' && <div className="assistant-error">
+              <strong>无法清理检索反馈</strong><span>{memoryFeedbackDeleteDialog.error || '未知错误'}</span>
+            </div>}
+            {(memoryFeedbackDeleteDialog.status === 'ready' || memoryFeedbackDeleteDialog.status === 'deleting') && <>
+              <div className="assistant-delete-preview">
+                <strong>{memoryFeedbackDeleteDialog.single ? '这一组检索偏好' : '当前筛选命中的检索偏好'}</strong>
+                <p>
+                  当前筛选命中 {memoryFeedbackDeleteDialog.preview?.matchingRows || 0} 条动作；
+                  为防止更早的“有用/无关”判断意外复活，将完整清理
+                  {' '}{memoryFeedbackDeleteDialog.preview?.affectedChains || 0} 组偏好、
+                  共 {memoryFeedbackDeleteDialog.preview?.rowsToDelete || 0} 条历史；
+                  其中 {memoryFeedbackDeleteDialog.preview?.removesCurrentDecisions || 0} 组当前排序判断会失效。
+                </p>
+              </div>
+              <label><span>输入“永久删除检索反馈”确认</span><input autoFocus
+                value={memoryFeedbackDeleteConfirmation}
+                disabled={memoryFeedbackDeleteDialog.status === 'deleting'}
+                onChange={event => setMemoryFeedbackDeleteConfirmation(event.target.value)}
+                onKeyDown={event => {
+                  if (event.key === 'Enter' && memoryFeedbackDeleteConfirmation === '永久删除检索反馈') {
+                    void confirmMemoryFeedbackDeletion()
+                  }
+                }}
+                placeholder="永久删除检索反馈" /></label>
+            </>}
+            <div className="assistant-modal-actions">
+              <button disabled={memoryFeedbackDeleteDialog.status === 'deleting'}
+                onClick={closeMemoryFeedbackDeletion}>取消</button>
+              {(memoryFeedbackDeleteDialog.status === 'ready' || memoryFeedbackDeleteDialog.status === 'deleting') &&
+                <button className="danger"
+                  disabled={memoryFeedbackDeleteConfirmation !== '永久删除检索反馈' ||
+                    memoryFeedbackDeleteDialog.status === 'deleting' ||
+                    !memoryFeedbackDeleteDialog.preview?.rowsToDelete}
+                  onClick={() => void confirmMemoryFeedbackDeletion()}>
+                  {memoryFeedbackDeleteDialog.status === 'deleting' ? '正在清理…' : '确认永久删除'}
+                </button>}
+            </div>
           </div>
         </div>
       )}

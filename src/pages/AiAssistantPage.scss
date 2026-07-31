@@ -567,6 +567,8 @@
 .assistant-search-feedback-archive-filters { display: grid; grid-template-columns: minmax(180px,1.5fr) repeat(3,minmax(110px,.7fr)); gap: 7px; margin-top: 9px; }
 .assistant-search-feedback-archive-filters input, .assistant-search-feedback-archive-filters select { min-width: 0; padding: 6px 7px; border: 1px solid #d9dfda; border-radius: 7px; background: #fff; font-size: 8px; }
 .assistant-search-feedback-archive-status { margin-top: 8px; color: #647069; font-size: 8px; }
+.assistant-search-feedback-archive-purge { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-top: 8px; padding: 7px 8px; border: 1px solid #eadbd8; border-radius: 8px; background: #fff9f8; color: #80645e; font-size: 8px; }
+.assistant-search-feedback-archive-purge button { flex: 0 0 auto; padding: 4px 7px; border: 1px solid #e4c4bf; border-radius: 6px; background: #fff; font-size: 8px; cursor: pointer; }
 .assistant-search-feedback-archive-list { display: grid; gap: 7px; margin-top: 8px; }
 .assistant-search-feedback-archive-list article { padding: 8px 9px; border: 1px solid #e2e7e3; border-radius: 8px; background: #fff; }
 .assistant-search-feedback-archive-list article header { display: flex; justify-content: space-between; gap: 8px; color: #768078; font-size: 8px; }
@@ -574,6 +576,9 @@
 .assistant-search-feedback-archive-list article p, .assistant-search-feedback-archive-list article > small { display: block; margin: 4px 0 0; color: #6e7770; font-size: 8px; }
 .assistant-search-feedback-archive-list article div { margin-top: 6px; }
 .assistant-search-feedback-archive-list button { padding: 4px 7px; border: 1px solid #d4ddd6; border-radius: 6px; color: #496052; background: #f8faf8; font-size: 8px; cursor: pointer; }
+.assistant-search-feedback-archive-list button + button { margin-left: 5px; }
+.assistant-search-feedback-archive-list button.danger,
+.assistant-search-feedback-archive-purge button.danger { color: #a8483b; }
 .assistant-search-load-more { justify-self: center; margin: 4px auto 0; padding: 7px 14px; border: 1px solid #cfd8d1; border-radius: 8px; background: #fff; color: #456050; font-size: 9px; cursor: pointer; }
 .assistant-search-load-more:disabled { opacity: .55; cursor: default; }
 .assistant-search-result-group-heading { display: flex; align-items: center; justify-content: space-between; padding: 0 2px; color: #626b64; }
