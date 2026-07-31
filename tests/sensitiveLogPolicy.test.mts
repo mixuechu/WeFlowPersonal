@@ -1,10 +1,11 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import {
   applySensitiveLogPolicy,
+  appendSensitiveLogFile,
   enforceSensitiveLogFileLimit,
   getSensitiveLogDiagnostics,
   SENSITIVE_LOG_MAX_BYTES,
@@ -62,4 +63,23 @@ test('WCDB sensitive log gate only opens through an explicit setting or environm
   assert.equal(shouldWriteSensitiveLog(false, '0'), false)
   assert.equal(shouldWriteSensitiveLog(true, undefined), true)
   assert.equal(shouldWriteSensitiveLog(false, '1'), true)
+})
+
+test('all sensitive log writers share one lock and keep concurrent output bounded', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'weflow-sensitive-log-concurrency-test-'))
+  try {
+    const path = join(directory, 'logs', 'wcdb.log')
+    applySensitiveLogPolicy(directory, true)
+    const chunks = Array.from({ length: 80 }, (_, index) =>
+      appendSensitiveLogFile(path, `[writer-${index}]${'x'.repeat(32_000)}\n`))
+    const results = await Promise.all(chunks)
+    assert.ok(results.every(Boolean))
+    const content = readFileSync(path, 'utf8')
+    assert.ok(Buffer.byteLength(content) <= SENSITIVE_LOG_MAX_BYTES)
+    assert.match(content, /诊断日志已按本机敏感日志策略轮转/)
+    assert.equal((statSync(path).mode & 0o777).toString(8), '600')
+    assert.equal(existsSync(`${path}.privacy-lock`), false)
+  } finally {
+    rmSync(directory, { recursive: true, force: true })
+  }
 })

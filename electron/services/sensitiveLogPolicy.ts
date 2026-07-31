@@ -1,11 +1,15 @@
 import {
   chmodSync,
+  closeSync,
   existsSync,
   mkdirSync,
+  openSync,
   readFileSync,
   statSync,
+  unlinkSync,
   writeFileSync
 } from 'fs'
+import { appendFile } from 'fs/promises'
 import { dirname, join } from 'path'
 
 export const SENSITIVE_LOG_POLICY_VERSION = 'sensitive-local-log-v1'
@@ -84,6 +88,57 @@ export function enforceSensitiveLogFileLimit(path: string): number {
   } catch {
     return 0
   }
+}
+
+function removeStaleLock(lockPath: string): void {
+  try {
+    if (Date.now() - statSync(lockPath).mtimeMs > 30_000) unlinkSync(lockPath)
+  } catch {}
+}
+
+async function acquireLogLock(lockPath: string): Promise<number | null> {
+  for (let attempt = 0; attempt < 200; attempt += 1) {
+    try {
+      return openSync(lockPath, 'wx', 0o600)
+    } catch {
+      removeStaleLock(lockPath)
+      await new Promise(resolve => setTimeout(resolve, 10))
+    }
+  }
+  return null
+}
+
+const appendQueues = new Map<string, Promise<boolean>>()
+
+async function appendSensitiveLogFileLocked(path: string, content: string): Promise<boolean> {
+  if (!content) return true
+  mkdirSync(dirname(path), { recursive: true, mode: 0o700 })
+  const lockPath = `${path}.privacy-lock`
+  const lock = await acquireLogLock(lockPath)
+  if (lock === null) return false
+  try {
+    enforceSensitiveLogFileLimit(path)
+    await appendFile(path, content, { encoding: 'utf8', mode: 0o600 })
+    enforceSensitiveLogFileLimit(path)
+    chmodSync(path, 0o600)
+    return true
+  } finally {
+    try { closeSync(lock) } catch {}
+    try { unlinkSync(lockPath) } catch {}
+  }
+}
+
+export function appendSensitiveLogFile(path: string, content: string): Promise<boolean> {
+  const previous = appendQueues.get(path) || Promise.resolve(true)
+  const next = previous
+    .catch(() => false)
+    .then(() => appendSensitiveLogFileLocked(path, content))
+  appendQueues.set(path, next)
+  const release = () => {
+    if (appendQueues.get(path) === next) appendQueues.delete(path)
+  }
+  void next.then(release, release)
+  return next
 }
 
 export function applySensitiveLogPolicy(

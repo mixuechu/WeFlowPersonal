@@ -1,11 +1,10 @@
 import { join, dirname, basename } from 'path'
 import { existsSync, mkdirSync, readdirSync, statSync, readFileSync } from 'fs'
-import { appendFile } from 'fs/promises'
 import { tmpdir } from 'os'
 import * as fzstd from 'fzstd'
 import { expandHomePath } from '../utils/pathUtils'
 import { pinNativeLibraryForProcessLifetime } from './nativeLibraryLifetime'
-import { enforceSensitiveLogFileLimit, shouldWriteSensitiveLog } from './sensitiveLogPolicy'
+import { appendSensitiveLogFile, shouldWriteSensitiveLog } from './sensitiveLogPolicy'
 
 //数据服务初始化错误信息，用于帮助用户诊断问题
 let lastDllInitError: string | null = null
@@ -455,9 +454,8 @@ export class WcdbCore {
       try {
         const dir = dirname(filePath)
         if (!existsSync(dir)) mkdirSync(dir, { recursive: true })
-        enforceSensitiveLogFileLimit(filePath)
-        await appendFile(filePath, lines, { encoding: 'utf8' })
-        enforceSensitiveLogFileLimit(filePath)
+        const written = await appendSensitiveLogFile(filePath, lines)
+        if (!written) continue
         this.lastResolvedLogPath = filePath
         return
       } catch (e) {
