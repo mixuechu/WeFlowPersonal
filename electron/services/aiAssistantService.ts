@@ -148,6 +148,11 @@ import {
   TASK_HISTORY_LIMIT
 } from '../../shared/taskPayload'
 import { buildCursorStatusPayload } from '../../shared/cursorPayload'
+import {
+  BRIEFING_RETENTION_DAYS,
+  BRIEFING_STORAGE_VERSION,
+  compactBriefings
+} from '../../shared/briefingRetention'
 
 const ATTACHMENT_STRUCTURE_PARSER_VERSION = 'attachment-layout-v3'
 
@@ -349,6 +354,15 @@ export class AiAssistantService {
     confirmed: 0,
     restored: 0,
     lastRunAt: ''
+  }
+  private briefingStorage = {
+    version: BRIEFING_STORAGE_VERSION,
+    retentionDays: BRIEFING_RETENTION_DAYS,
+    retainedDays: 0,
+    removedDays: 0,
+    strippedTaskSnapshots: 0,
+    strippedTaskCount: 0,
+    lastCompactedAt: ''
   }
   private stateStorage: DurableJsonRecovery & {
     lastWriteAt: string
@@ -556,6 +570,7 @@ export class AiAssistantService {
           }
         }
       }
+      this.compactBriefingState()
       this.repairPlaceholderEntities()
       this.repairInvalidRelations()
       const confirmedEntityIds = new Set(this.state.graph.reviewQueue.flatMap(review =>
@@ -693,6 +708,7 @@ export class AiAssistantService {
   }
 
   private saveState(strictMemorySync = false): void {
+    this.compactBriefingState()
     writeEncryptedDurableJson(this.statePath, this.state, this.stateEncryptionKey)
     this.stateStorage.encrypted = true
     this.stateStorage.lastWriteAt = new Date().toISOString()
@@ -702,6 +718,18 @@ export class AiAssistantService {
     } catch (error) {
       console.error('[AI Assistant] 个人记忆数据库同步失败:', sanitizeDiagnosticText(error))
       if (strictMemorySync) throw error
+    }
+  }
+
+  private compactBriefingState(): void {
+    const result = compactBriefings(this.state.briefings, BRIEFING_RETENTION_DAYS)
+    this.state.briefings = result.briefings
+    this.briefingStorage.retainedDays = result.retainedDays
+    if (result.changed) {
+      this.briefingStorage.removedDays += result.removedDays
+      this.briefingStorage.strippedTaskSnapshots += result.strippedTaskSnapshots
+      this.briefingStorage.strippedTaskCount += result.strippedTaskCount
+      this.briefingStorage.lastCompactedAt = new Date().toISOString()
     }
   }
 
@@ -2643,7 +2671,6 @@ export class AiAssistantService {
             rejectedSummaryCount,
             rejectedHighlightCount
           },
-          tasks: [...tasks.values()].filter(task => task.classification === 'mine'),
           messageCount: fresh.length,
           failedSessions: collected.failed.length,
           generatedAt: createdAt
@@ -2985,6 +3012,7 @@ export class AiAssistantService {
       .slice(0, 16)
     return {
       briefing: latest ? { ...latest, tasks: undefined } : null,
+      briefingStorage: this.briefingStorage,
       tasks: taskPayload,
       taskReviewQueue: taskReviewPayload,
       taskPayloadPolicy: {

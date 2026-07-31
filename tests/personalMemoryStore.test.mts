@@ -64,6 +64,10 @@ import {
   TASK_HISTORY_LIMIT
 } from '../shared/taskPayload.ts'
 import { buildCursorStatusPayload, CURSOR_STATUS_PAYLOAD_VERSION } from '../shared/cursorPayload.ts'
+import {
+  BRIEFING_RETENTION_DAYS,
+  compactBriefings
+} from '../shared/briefingRetention.ts'
 import { buildTaskCalendar, extractTaskDueDate } from '../src/utils/taskCalendar.ts'
 import { filterGraphReviews, paginateGraphReviews } from '../src/utils/graphReviewFilters.ts'
 import { summarizeIngestionRuns } from '../electron/services/ingestionDiagnostics.ts'
@@ -96,6 +100,40 @@ const evidence = (messageId: string, excerpt: string) => [{
   excerpt,
   role: 'support'
 }]
+
+test('derived briefings stay bounded without duplicating durable task evidence', () => {
+  const briefings: Record<string, any> = {}
+  for (let day = 1; day <= 365; day += 1) {
+    const date = `2025-${String(Math.floor((day - 1) / 31) + 1).padStart(2, '0')}-${String(((day - 1) % 31) + 1).padStart(2, '0')}`
+    briefings[date] = {
+      date,
+      headline: `简报 ${day}`,
+      summary: `第 ${day} 天`,
+      messageCount: day,
+      tasks: Array.from({ length: 100 }, (_, index) => ({
+        id: `task-${day}-${index}`,
+        evidence: [{ excerpt: `不应留在简报中的长原文-${day}-${index}-${'x'.repeat(500)}` }]
+      }))
+    }
+  }
+
+  const originalBytes = Buffer.byteLength(JSON.stringify(briefings))
+  const compacted = compactBriefings(briefings)
+  const dates = Object.keys(compacted.briefings).sort().reverse()
+
+  assert.equal(dates.length, BRIEFING_RETENTION_DAYS)
+  assert.equal(compacted.removedDays, 365 - BRIEFING_RETENTION_DAYS)
+  assert.equal(compacted.strippedTaskSnapshots, 365)
+  assert.equal(compacted.strippedTaskCount, 36_500)
+  assert.equal(dates[0], '2025-12-24')
+  assert.ok(Object.values(compacted.briefings).every(item => !Object.prototype.hasOwnProperty.call(item, 'tasks')))
+  assert.ok(!JSON.stringify(compacted.briefings).includes('不应留在简报中的长原文'))
+  assert.ok(Buffer.byteLength(JSON.stringify(compacted.briefings)) < originalBytes / 100)
+  assert.equal(
+    buildWeeklyBriefing(compacted.briefings, [], new Date('2025-12-24T12:00:00+08:00')).daysWithUpdates,
+    7
+  )
+})
 
 test('entity merge direction must explicitly preserve one candidate', () => {
   const entities = [

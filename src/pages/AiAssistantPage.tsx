@@ -1515,6 +1515,7 @@ function AiAssistantPage() {
             {briefingPeriod === 'latest' ? <>
               <h2>{briefing?.headline || '等待第一次增量整理'}</h2>
               <p>{briefing?.summary || '服务会在启动时自动补齐，也会在每天设定时间整理新增消息。'}</p>
+              <small>派生简报只保留最近 {dashboard?.briefingStorage?.retentionDays || 90} 天；事实、事件、任务和原文证据长期保留，不受影响。</small>
               {briefing?.summary && <details className="assistant-query-plan">
                 <summary>{briefing.summaryVerified ? `查看摘要原文（${briefing.summaryEvidence?.length || 0}）` : '历史摘要 · 生成时尚未保存逐条引用'}</summary>
                 {briefing.summaryVerified
