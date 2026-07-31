@@ -1084,6 +1084,23 @@ export class PersonalMemoryStore {
           SELECT 1 FROM events item WHERE item.id=d.source_id
         ))
     `).all() as Array<{ id: string }>
+    const ghostDocumentIds = new Set(ghostDocuments.map(item => item.id))
+    const ftsMismatches = (this.db.prepare(`
+      SELECT d.id,d.title,d.search_text,
+        COUNT(f.rowid) AS payload_count,
+        SUM(CASE WHEN f.title=d.title AND f.search_text=d.search_text THEN 1 ELSE 0 END) AS exact_count
+      FROM search_documents d
+      LEFT JOIN search_fts f ON f.document_id=d.id
+      GROUP BY d.id
+      HAVING COUNT(f.rowid)<>1
+        OR SUM(CASE WHEN f.title=d.title AND f.search_text=d.search_text THEN 1 ELSE 0 END)<>1
+    `).all() as Array<{
+      id: string
+      title: string
+      search_text: string
+      payload_count: number
+      exact_count: number
+    }>).filter(item => !ghostDocumentIds.has(item.id))
     const orphanFts = Number((this.db.prepare(`
       SELECT COUNT(*) AS count FROM search_fts f
       WHERE NOT EXISTS(SELECT 1 FROM search_documents d WHERE d.id=f.document_id)
@@ -1128,6 +1145,14 @@ export class PersonalMemoryStore {
           SELECT 1 FROM search_documents d WHERE d.id=search_document_evidence.document_id
         );
       `)
+      const deleteFts = this.db!.prepare('DELETE FROM search_fts WHERE document_id=?')
+      const insertFts = this.db!.prepare(
+        'INSERT INTO search_fts(document_id,title,search_text) VALUES(?,?,?)'
+      )
+      for (const document of ftsMismatches) {
+        deleteFts.run(document.id)
+        insertFts.run(document.id, document.title, document.search_text)
+      }
       for (const claim of missingClaims) {
         this.upsertSearchDocument(
           `claim:${claim.id}`, 'claim', claim.id, claim.predicate, claim.search_text,
@@ -1175,7 +1200,7 @@ export class PersonalMemoryStore {
       const payloadRowsRemoved = orphanFts + orphanEvidence + ghostDocumentPayloadRows
       const removed = ghostDocuments.length + payloadRowsRemoved
       const audit = {
-        version: 1,
+        version: 2,
         checkedAt,
         ghostDocumentsRemovedThisStart: ghostDocuments.length,
         missingDocumentsRebuiltThisStart: {
@@ -1184,16 +1209,22 @@ export class PersonalMemoryStore {
           events: missingEvents.length
         },
         orphanPayloadRowsRemovedThisStart: payloadRowsRemoved,
+        ftsPayloadsRebuiltThisStart: ftsMismatches.length,
         ghostRowsRemovedTotal: Math.max(0, Number(previousAudit?.ghostRowsRemovedTotal || 0)) + removed,
         missingDocumentsRebuiltTotal: Math.max(
           0,
           Number(previousAudit?.missingDocumentsRebuiltTotal || 0)
         ) + rebuilt,
+        ftsPayloadsRebuiltTotal: Math.max(
+          0,
+          Number(previousAudit?.ftsPayloadsRebuiltTotal || 0)
+        ) + ftsMismatches.length,
         triggerRepairs: Math.max(0, Number(previousAudit?.triggerRepairs || 0))
           + (triggersHealthyBefore ? 0 : 1),
         triggersHealthy: true,
         currentGhostDocuments: 0,
-        currentMissingDocuments: 0
+        currentMissingDocuments: 0,
+        currentFtsPayloadMismatches: 0
       }
       this.db!.prepare(`
         INSERT INTO schema_meta(key,value,updated_at) VALUES('structured_search_index_integrity',?,?)
@@ -1367,12 +1398,15 @@ export class PersonalMemoryStore {
             events: Number(audit.missingDocumentsRebuiltThisStart?.events || 0)
           },
           orphanPayloadRowsRemovedThisStart: Number(audit.orphanPayloadRowsRemovedThisStart || 0),
+          ftsPayloadsRebuiltThisStart: Number(audit.ftsPayloadsRebuiltThisStart || 0),
           ghostRowsRemovedTotal: Number(audit.ghostRowsRemovedTotal || 0),
           missingDocumentsRebuiltTotal: Number(audit.missingDocumentsRebuiltTotal || 0),
+          ftsPayloadsRebuiltTotal: Number(audit.ftsPayloadsRebuiltTotal || 0),
           triggerRepairs: Number(audit.triggerRepairs || 0),
           triggersHealthy: audit.triggersHealthy === true,
           currentGhostDocuments: Number(audit.currentGhostDocuments || 0),
-          currentMissingDocuments: Number(audit.currentMissingDocuments || 0)
+          currentMissingDocuments: Number(audit.currentMissingDocuments || 0),
+          currentFtsPayloadMismatches: Number(audit.currentFtsPayloadMismatches || 0)
         }
       } catch {
         return {
@@ -1381,18 +1415,22 @@ export class PersonalMemoryStore {
           ghostDocumentsRemovedThisStart: 0,
           missingDocumentsRebuiltThisStart: { claims: 0, relations: 0, events: 0 },
           orphanPayloadRowsRemovedThisStart: 0,
+          ftsPayloadsRebuiltThisStart: 0,
           ghostRowsRemovedTotal: 0,
           missingDocumentsRebuiltTotal: 0,
+          ftsPayloadsRebuiltTotal: 0,
           triggerRepairs: 0,
           triggersHealthy: false,
           currentGhostDocuments: 0,
-          currentMissingDocuments: 0
+          currentMissingDocuments: 0,
+          currentFtsPayloadMismatches: 0
         }
       }
     })()
     const structuredSearchIndexHealthy = structuredSearchIndex.triggersHealthy
       && structuredSearchIndex.currentGhostDocuments === 0
       && structuredSearchIndex.currentMissingDocuments === 0
+      && structuredSearchIndex.currentFtsPayloadMismatches === 0
     return {
       healthy: integrity === 'ok'
         && structuredEvidenceMigration.constraintsHealthy

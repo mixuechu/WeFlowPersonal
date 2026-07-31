@@ -1587,6 +1587,12 @@ test('structured search index reconciliation removes ghosts and rebuilds missing
       INSERT INTO search_document_evidence(
         document_id,message_id,session_id,timestamp,sender,excerpt
       ) VALUES('orphan:evidence','orphan-message','orphan-session',1,'孤儿','孤儿证据载荷');
+      DELETE FROM search_fts
+        WHERE document_id IN('entity:search-person-a','entity:search-person-b');
+      INSERT INTO search_fts(document_id,title,search_text)
+        VALUES('entity:search-person-a','过期标题一','过期检索载荷一');
+      INSERT INTO search_fts(document_id,title,search_text)
+        VALUES('entity:search-person-a','过期标题二','过期检索载荷二');
     `)
     first.close()
 
@@ -1605,6 +1611,8 @@ test('structured search index reconciliation removes ghosts and rebuilds missing
       assert.equal(diagnostics.structuredSearchIndex.orphanPayloadRowsRemovedThisStart, 5)
       assert.equal(diagnostics.structuredSearchIndex.missingDocumentsRebuiltTotal, 2)
       assert.equal(diagnostics.structuredSearchIndex.ghostRowsRemovedTotal, 6)
+      assert.equal(diagnostics.structuredSearchIndex.ftsPayloadsRebuiltThisStart, 2)
+      assert.equal(diagnostics.structuredSearchIndex.ftsPayloadsRebuiltTotal, 2)
       assert.equal(diagnostics.structuredSearchIndex.triggerRepairs, 2)
       assert.equal(reopened.searchText('索引重建关键词').some((row: any) =>
         row.id === 'claim:search-missing-claim'), true)
@@ -1612,6 +1620,11 @@ test('structured search index reconciliation removes ghosts and rebuilds missing
         row.id === 'event:search-missing-event'), true)
       assert.equal(reopened.searchText('旧关系检索幽灵').some((row: any) =>
         row.id === 'relation:search-ghost-relation'), false)
+      assert.equal(reopened.searchText('检索甲').some((row: any) =>
+        row.id === 'entity:search-person-a'), true)
+      assert.equal(reopened.searchText('检索乙').some((row: any) =>
+        row.id === 'entity:search-person-b'), true)
+      assert.equal(reopened.searchText('过期检索载荷').length, 0)
       assert.equal(reopened.getDocumentEvidencePage('claim', 'search-missing-claim').total, 1)
       assert.equal(reopened.getDocumentEvidencePage('event', 'search-missing-event').total, 1)
 
