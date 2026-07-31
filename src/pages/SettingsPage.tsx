@@ -2560,7 +2560,7 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
 
       <div className="form-group">
         <label>调试日志</label>
-        <span className="form-hint">开启后写入 WCDB 调试日志，便于排查连接问题</span>
+        <span className="form-hint">仅在排查连接问题时临时开启；日志可能包含本机路径和微信标识。关闭后立即清空，开启时最多保留 2MB 的最近诊断。</span>
         <div className="log-toggle-line">
           <span className="log-status">{logEnabled ? '已开启' : '已关闭'}</span>
           <label className="switch" htmlFor="log-enabled-toggle">
@@ -5669,7 +5669,6 @@ JSON 输出格式：
 }
 
 export default SettingsPage
-
 
 
 

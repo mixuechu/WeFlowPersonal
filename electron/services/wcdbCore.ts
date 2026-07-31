@@ -5,6 +5,7 @@ import { tmpdir } from 'os'
 import * as fzstd from 'fzstd'
 import { expandHomePath } from '../utils/pathUtils'
 import { pinNativeLibraryForProcessLifetime } from './nativeLibraryLifetime'
+import { enforceSensitiveLogFileLimit, shouldWriteSensitiveLog } from './sensitiveLogPolicy'
 
 //数据服务初始化错误信息，用于帮助用户诊断问题
 let lastDllInitError: string | null = null
@@ -187,7 +188,7 @@ export class WcdbCore {
   setPaths(resourcesPath: string, userDataPath: string): void {
     this.resourcesPath = resourcesPath
     this.userDataPath = userDataPath
-    this.writeLog(`[bootstrap] setPaths resourcesPath=${resourcesPath} userDataPath=${userDataPath}`, true)
+    this.writeLog('[bootstrap] runtime paths configured')
   }
 
   getLastInitError(): string | null {
@@ -196,11 +197,14 @@ export class WcdbCore {
 
   setLogEnabled(enabled: boolean): void {
     this.logEnabled = enabled
-    this.writeLog(`[bootstrap] setLogEnabled=${enabled ? '1' : '0'} env.WCDB_LOG_ENABLED=${process.env.WCDB_LOG_ENABLED || ''}`, true)
+    this.writeLog(`[bootstrap] diagnostic logging enabled=${this.isLogEnabled() ? '1' : '0'}`)
     if (this.isLogEnabled() && this.initialized) {
       this.startLogPolling()
     } else {
       this.stopLogPolling()
+      if (this.logFlushTimer) clearTimeout(this.logFlushTimer)
+      this.logFlushTimer = null
+      this.pendingLogLines = []
     }
   }
 
@@ -414,12 +418,12 @@ export class WcdbCore {
 
   private isLogEnabled(): boolean {
     // 移除 Worker 线程的日志禁用逻辑，允许在 Worker 中记录日志
-    if (process.env.WCDB_LOG_ENABLED === '1') return true
-    return this.logEnabled
+    return shouldWriteSensitiveLog(this.logEnabled)
   }
 
-  private writeLog(message: string, force = false): void {
-    if (!force && !this.isLogEnabled()) return
+  private writeLog(message: string, _force = false): void {
+    // `force` 只表示调用方认为该条诊断重要，绝不能绕过用户的日志开关。
+    if (!this.isLogEnabled()) return
     const line = `[${new Date().toISOString()}] ${message}\n`
     this.pendingLogLines.push(line)
     while (this.pendingLogLines.length > this.maxPendingLogLines) {
@@ -451,7 +455,9 @@ export class WcdbCore {
       try {
         const dir = dirname(filePath)
         if (!existsSync(dir)) mkdirSync(dir, { recursive: true })
+        enforceSensitiveLogFileLimit(filePath)
         await appendFile(filePath, lines, { encoding: 'utf8' })
+        enforceSensitiveLogFileLimit(filePath)
         this.lastResolvedLogPath = filePath
         return
       } catch (e) {

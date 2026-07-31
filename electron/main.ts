@@ -40,6 +40,7 @@ import { backupService } from './services/backupService'
 import { imageDownloadService } from './services/imageDownloadService'
 import { aiAssistantService } from './services/aiAssistantService'
 import { initializeAppRunRecoveryService } from './services/appRunRecoveryService'
+import { applySensitiveLogPolicy } from './services/sensitiveLogPolicy'
 
 // 桌面产品名可独立定制，但始终沿用原 WeFlow 数据目录，避免升级后
 // 配置、解密信息和 AI 助理游标被 Electron 视为一套全新的应用数据。
@@ -2044,6 +2045,12 @@ function registerIpcHandlers() {
     if (key === 'updateChannel') {
       applyAutoUpdateChannel('settings')
     }
+    if (key === 'logEnabled') {
+      const enabled = value === true
+      if (enabled) applySensitiveLogPolicy(app.getPath('userData'), true)
+      await wcdbService.setLogEnabledAndWait(enabled)
+      if (!enabled) applySensitiveLogPolicy(app.getPath('userData'), false)
+    }
     void messagePushService.handleConfigChanged(key)
     void insightService.handleConfigChanged(key)
     void groupSummaryService.handleConfigChanged(key)
@@ -2276,7 +2283,10 @@ function registerIpcHandlers() {
   ipcMain.handle('log:read', async () => {
     try {
       const logPath = join(app.getPath('userData'), 'logs', 'wcdb.log')
-      const content = await readFile(logPath, 'utf8')
+      const contentBuffer = await readFile(logPath)
+      const content = contentBuffer
+        .subarray(Math.max(0, contentBuffer.length - 512 * 1024))
+        .toString('utf8')
       return { success: true, content }
     } catch (e) {
       return { success: false, error: String(e) }
@@ -2285,9 +2295,7 @@ function registerIpcHandlers() {
 
   ipcMain.handle('log:clear', async () => {
     try {
-      const logPath = join(app.getPath('userData'), 'logs', 'wcdb.log')
-      await mkdir(dirname(logPath), { recursive: true })
-      await writeFile(logPath, '', 'utf8')
+      applySensitiveLogPolicy(app.getPath('userData'), configService.get('logEnabled') === true, 'manual_clear')
       return { success: true }
     } catch (e) {
       return { success: false, error: String(e) }
@@ -4732,8 +4740,9 @@ app.whenReady().then(async () => {
   const fallbackResources = join(process.cwd(), 'resources')
   const resourcesPath = existsSync(candidateResources) ? candidateResources : fallbackResources
   const userDataPath = app.getPath('userData')
+  applySensitiveLogPolicy(userDataPath, configService.get('logEnabled') === true)
   wcdbService.setPaths(resourcesPath, userDataPath)
-  wcdbService.setLogEnabled(configService.get('logEnabled') === true)
+  await wcdbService.setLogEnabledAndWait(configService.get('logEnabled') === true)
   registerIpcHandlers()
   chatService.addDbMonitorListener((type, json) => {
     messagePushService.handleDbMonitorChange(type, json)

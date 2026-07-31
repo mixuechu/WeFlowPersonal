@@ -130,8 +130,12 @@ export class WcdbService {
    * 启用/禁用日志
    */
   setLogEnabled(enabled: boolean): void {
+    void this.setLogEnabledAndWait(enabled)
+  }
+
+  async setLogEnabledAndWait(enabled: boolean): Promise<void> {
     this.logEnabled = enabled
-    this.callWorker('setLogEnabled', { enabled }).catch(() => { })
+    await this.callWorker('setLogEnabled', { enabled })
   }
 
   /**

@@ -4443,9 +4443,17 @@ function AiAssistantPage() {
                 <span>任务与图谱状态：{memoryDiagnostics.stateStorage?.encrypted
                   ? `AES-256-GCM 已加密${memoryDiagnostics.stateStorage?.migratedPlaintext ? '（本次启动完成明文迁移）' : ''}`
                   : '未验证加密'}</span>
-                <span>数据接口：{memoryDiagnostics.privacy.httpBinding}</span><span>诊断日志：已脱敏</span>
+                <span>数据接口：{memoryDiagnostics.privacy.httpBinding}</span>
+                <span>敏感运行日志：{memoryDiagnostics.privacy.sensitiveLogRetention?.enabled
+                  ? `显式开启 · ${(Number(memoryDiagnostics.privacy.sensitiveLogRetention.currentBytes || 0) / 1024).toFixed(0)} KB / 最多 ${(Number(memoryDiagnostics.privacy.sensitiveLogRetention.maxBytes || 0) / 1024 / 1024).toFixed(0)} MB`
+                  : memoryDiagnostics.privacy.sensitiveLogRetention?.currentBytes === 0 ? '默认关闭 · 历史明细已清空' : '默认关闭 · 等待下次启动清理'}</span>
                 <span>模型外发脱敏：{memoryDiagnostics.privacy.sensitiveRedactionLevel === 'strict' ? '严格'
                   : memoryDiagnostics.privacy.sensitiveRedactionLevel === 'credentials' ? '仅凭证' : '标准'}</span></div>
+              {memoryDiagnostics.privacy.sensitiveLogRetention && <small>
+                本次启动清理 {(Number(memoryDiagnostics.privacy.sensitiveLogRetention.bytesRemovedThisStart || 0) / 1024).toFixed(1)} KB，
+                累计清理 {(Number(memoryDiagnostics.privacy.sensitiveLogRetention.bytesRemovedTotal || 0) / 1024).toFixed(1)} KB；
+                日志文件权限 {memoryDiagnostics.privacy.sensitiveLogRetention.mode || '尚未创建'}。只有在设置中显式开启诊断日志时才保留最近片段。
+              </small>}
             </div>}
             {memoryDiagnostics.appRecovery && <div className={`assistant-recovery-audit ${memoryDiagnostics.appRecovery.recoveredFromInterruption ? 'warning' : 'healthy'}`}>
               <header><RefreshCw size={15} /><span><b>应用运行与恢复</b>

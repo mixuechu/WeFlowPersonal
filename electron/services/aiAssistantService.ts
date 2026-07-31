@@ -71,6 +71,7 @@ import {
 import { buildProjectDirectory, buildProjectInsight } from './projectInsights'
 import { attachLocalImageOcr, attachLocalVoiceTranscript, recoverMessageSemantics } from './messageSemanticRecovery'
 import { sanitizeDiagnosticText } from './diagnosticRedaction'
+import { getSensitiveLogDiagnostics } from './sensitiveLogPolicy'
 import {
   buildExtractionContextAudit,
   EXTRACTION_MEMORY_CONTEXT_VERSION,
@@ -3633,6 +3634,10 @@ export class AiAssistantService {
         apiKeyStorage: 'macOS Safe Storage',
         httpBinding: '127.0.0.1',
         logsRedacted: true,
+        sensitiveLogRetention: getSensitiveLogDiagnostics(
+          app.getPath('userData'),
+          this.config.get('logEnabled') === true
+        ),
         sensitiveRedactionLevel: this.config.get('aiAssistantSensitiveRedactionLevel')
       },
       stateStorage: this.stateStorage,
