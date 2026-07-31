@@ -3428,7 +3428,7 @@ test('memory scope filters apply entity, session, date and document type togethe
     title: '服务对象',
     search_text: '邢爱妮 服务对象 Onyx Devs Lab',
     metadata: { subjectId: 'person-xing', objectId: 'org-onyx', status: 'confirmed' },
-    evidence: [{ session_id: 'session-onyx', timestamp: inRange }]
+    evidence: [{ source_id: 'wechat', session_id: 'session-onyx', timestamp: inRange }]
   }, {
     id: 'task-1',
     document_type: 'task',
@@ -3437,7 +3437,7 @@ test('memory scope filters apply entity, session, date and document type togethe
     search_text: '准备 Onyx 演示',
     metadata: {},
     updated_at: '2026-07-29T10:00:00+08:00',
-    evidence: [{ session_id: 'session-other', timestamp: inRange }]
+    evidence: [{ source_id: 'documents', session_id: 'session-other', timestamp: inRange }]
   }, {
     id: 'entity-with-index-time-only',
     document_type: 'entity',
@@ -3454,7 +3454,7 @@ test('memory scope filters apply entity, session, date and document type togethe
     title: '错误关系',
     search_text: 'Onyx 错误关系',
     metadata: { subjectId: 'person-xing', objectId: 'org-onyx', status: 'rejected' },
-    evidence: [{ session_id: 'session-onyx', timestamp: inRange }]
+    evidence: [{ source_id: 'wechat', session_id: 'session-onyx', timestamp: inRange }]
   }]
 
   assert.deepEqual(filterMemorySearchResults(items, {
@@ -3473,6 +3473,12 @@ test('memory scope filters apply entity, session, date and document type togethe
     sessionId: 'wxid-project-room',
     sessionName: 'session-other'
   }).map(item => item.id), ['task-1'])
+  assert.deepEqual(filterMemorySearchResults(items, {
+    sourceIds: ['documents']
+  }).map(item => item.id), ['task-1'])
+  assert.deepEqual(filterMemorySearchResults(items, {
+    sourceIds: ['calendar']
+  }, true).map(item => item.id), ['relation-1', 'task-1', 'entity-with-index-time-only'])
   assert.equal(filterMemorySearchResults(items, { from: '2026-07-29' }).length, 0)
 })
 
@@ -3486,7 +3492,7 @@ test('retrieval scope is applied before lexical and vector top-k ranking', () =>
     status: 'todo',
     classification: 'mine',
     sourceSessionId: 'session-global',
-    evidence: [{ messageId: `global-${index}`, timestamp, sender: '全局', excerpt: '共同关键词' }]
+    evidence: [{ sourceId: 'wechat', messageId: `global-${index}`, timestamp, sender: '全局', excerpt: '共同关键词' }]
   }))
   tasks.push({
     id: 'scoped-target',
@@ -3496,16 +3502,22 @@ test('retrieval scope is applied before lexical and vector top-k ranking', () =>
     status: 'todo',
     classification: 'mine',
     sourceSessionId: 'session-target',
-    evidence: [{ messageId: 'target-message', timestamp, sender: '目标', excerpt: '共同关键词 范围内证据' }]
+    evidence: [{ sourceId: 'documents', messageId: 'target-message', timestamp, sender: '目标', excerpt: '共同关键词 范围内证据' }]
   })
   store.syncTasks(tasks)
   const scope = store.listScopedSearchDocumentIds({
     sessionId: 'session-target',
+    sourceIds: ['documents'],
     from: '2026-07-30',
     to: '2026-07-30',
     documentTypes: ['task']
   })
   assert.deepEqual([...scope || []], ['task:scoped-target'])
+  assert.deepEqual([...(store.listScopedSearchDocumentIds({ sourceIds: ['wechat'] }) || [])].length, 350)
+  assert.deepEqual(
+    [...(store.listScopedSearchDocumentIds({ sourceIds: ['calendar'] }) || [])],
+    []
+  )
   assert.equal(store.searchText('共同关键词', 300).some(item => item.id === 'task:scoped-target'), false)
   assert.deepEqual(store.searchText('共同关键词', 40, scope).map(item => item.id), ['task:scoped-target'])
   assert.deepEqual(store.listSearchDocumentsInScope(scope!, 40).map(item => item.id), ['task:scoped-target'])
@@ -3552,7 +3564,7 @@ test('database retrieval scope covers entity links, relation type and evidence t
       objectId: 'scope-org',
       confidence: 0.9,
       status: 'confirmed',
-      evidence: [{ messageId: 'scope-relation-message', sessionId: 'scope-session', timestamp: 1_754_000_000, excerpt: '为范围组织提供服务' }]
+      evidence: [{ sourceId: 'wechat', messageId: 'scope-relation-message', sessionId: 'scope-session', timestamp: 1_754_000_000, excerpt: '为范围组织提供服务' }]
     }],
     reviewQueue: []
   })
@@ -3566,7 +3578,7 @@ test('database retrieval scope covers entity links, relation type and evidence t
     status: 'candidate',
     searchText: '范围人物参加范围会议',
     participants: [{ entityId: 'scope-person', role: 'participant' }],
-    evidence: [{ messageId: 'scope-event-message', sessionId: 'scope-session', timestamp: 1_754_040_000, excerpt: '参加范围会议' }]
+    evidence: [{ sourceId: 'calendar', messageId: 'scope-event-message', sessionId: 'scope-session', timestamp: 1_754_040_000, excerpt: '参加范围会议' }]
   }])
   const entityScope = store.listScopedSearchDocumentIds({
     entityId: 'scope-person',
@@ -3585,6 +3597,14 @@ test('database retrieval scope covers entity links, relation type and evidence t
     to: '2025-08-01'
   })
   assert.ok(dateScope?.has('event:scope-event'))
+  assert.deepEqual(
+    [...(store.listScopedSearchDocumentIds({ sourceIds: ['wechat'] }) || [])],
+    ['relation:scope-relation']
+  )
+  assert.deepEqual(
+    [...(store.listScopedSearchDocumentIds({ sourceIds: ['calendar'] }) || [])],
+    ['event:scope-event']
+  )
 }))
 
 test('memory query planner infers Shanghai time, entity and intent scopes', () => {
@@ -3608,6 +3628,13 @@ test('memory query planner infers Shanghai time, entity and intent scopes', () =
   const relationPlan = buildMemoryQueryPlan('Onyx 是我的客户吗？', entities, new Date('2026-07-30T02:00:00Z'))
   assert.deepEqual(relationPlan.inferredOptions.documentTypes, ['relation'])
   assert.deepEqual(relationPlan.inferredOptions.relationTypes, ['客户'])
+  const sourcePlan = buildMemoryQueryPlan(
+    '只看日历和邮件里最近三天的会议',
+    entities,
+    new Date('2026-07-30T02:00:00Z')
+  )
+  assert.deepEqual(sourcePlan.inferredOptions.sourceIds, ['calendar', 'mail'])
+  assert.ok(sourcePlan.explanation.some(item => item.includes('macOS 日历、macOS Mail')))
   const contextual = buildContextualMemoryQuestion('那他后来怎么说？', [
     { role: 'user', content: 'Onyx 的负责人是谁？' },
     { role: 'assistant', content: '根据证据，负责人是某人。' }

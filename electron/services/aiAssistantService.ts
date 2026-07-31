@@ -4490,7 +4490,8 @@ export class AiAssistantService {
       })
       return filterMemorySearchResults(
         [...merged.values()].sort((left, right) => Number(right.hybrid_score || 0) - Number(left.hybrid_score || 0)),
-        scopedOptions
+        scopedOptions,
+        allowedIds !== null
       ).slice(0, Math.max(1, Math.min(500, maxResults))).map(item => ({
         ...item,
         retrieval_scope_applied: allowedIds !== null,
@@ -4498,7 +4499,7 @@ export class AiAssistantService {
       }))
     } catch (error) {
       console.warn('[AI Assistant] 向量检索回退为全文检索:', error)
-      return filterMemorySearchResults(lexical, scopedOptions).slice(0, Math.max(1, Math.min(500, maxResults))).map(item => ({
+      return filterMemorySearchResults(lexical, scopedOptions, allowedIds !== null).slice(0, Math.max(1, Math.min(500, maxResults))).map(item => ({
         ...item,
         retrieval_scope_applied: allowedIds !== null,
         retrieval_scope_candidates: scopeCandidateCount
@@ -4544,7 +4545,8 @@ export class AiAssistantService {
               retrieval_scope_candidates: allowedIds!.size
             }
           }),
-          scopedOptions
+          scopedOptions,
+          true
         )
     const page = paginateMemoryResults(ranked, offset, limit, 500)
     return {
@@ -4654,7 +4656,8 @@ export class AiAssistantService {
       ...plan.inferredOptions,
       ...options,
       documentTypes: options.documentTypes?.length ? options.documentTypes : plan.inferredOptions.documentTypes,
-      relationTypes: options.relationTypes?.length ? options.relationTypes : plan.inferredOptions.relationTypes
+      relationTypes: options.relationTypes?.length ? options.relationTypes : plan.inferredOptions.relationTypes,
+      sourceIds: options.sourceIds?.length ? options.sourceIds : plan.inferredOptions.sourceIds
     }
     const plannedEntity = plannedOptions.entityId
       ? trustedEntities.find(entity => entity.id === plannedOptions.entityId)

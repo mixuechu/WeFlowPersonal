@@ -90,6 +90,15 @@ function inferDocumentTypes(query: string): string[] {
   return [...types]
 }
 
+function inferSourceIds(query: string): string[] {
+  const sources = new Set<string>()
+  if (/微信|聊天记录|群聊|私聊/.test(query)) sources.add('wechat')
+  if (/本机文档|文档里|文件里|PDF|Word|PPT|Excel/i.test(query)) sources.add('documents')
+  if (/日历|Calendar/i.test(query)) sources.add('calendar')
+  if (/邮件|邮箱|Mail/i.test(query)) sources.add('mail')
+  return [...sources]
+}
+
 export function buildMemoryQueryPlan(query: string, entities: PlannerEntity[], now = new Date()): MemoryQueryPlan {
   const normalized = String(query || '').trim()
   const matchedEntities = entities.filter(entity => {
@@ -99,11 +108,13 @@ export function buildMemoryQueryPlan(query: string, entities: PlannerEntity[], n
   }).map(entity => ({ id: entity.id, name: entity.canonicalName }))
   const dates = inferDateRange(normalized, now)
   const documentTypes = inferDocumentTypes(normalized)
+  const sourceIds = inferSourceIds(normalized)
   const relationTypes = ['服务对象', '客户', '同事', '朋友', '合作', '家人', '父亲', '母亲', '伴侣']
     .filter(predicate => normalized.includes(predicate))
   const inferredOptions: MemorySearchOptions = {
     ...dates,
     entityId: matchedEntities.length === 1 ? matchedEntities[0].id : undefined,
+    sourceIds: sourceIds.length ? sourceIds : undefined,
     documentTypes: documentTypes.length ? documentTypes : undefined,
     relationTypes: relationTypes.length ? relationTypes : undefined
   }
@@ -117,6 +128,15 @@ export function buildMemoryQueryPlan(query: string, entities: PlannerEntity[], n
   if (matchedEntities.length) explanation.push(`识别实体：${matchedEntities.map(item => item.name).join('、')}`)
   if (dates.from || dates.to) explanation.push(`时间：${dates.from || '不限'} 至 ${dates.to || '不限'}`)
   if (documentTypes.length) explanation.push(`记忆类型：${documentTypes.join('、')}`)
+  if (sourceIds.length) {
+    const labels: Record<string, string> = {
+      wechat: '微信',
+      documents: '本机文档',
+      calendar: 'macOS 日历',
+      mail: 'macOS Mail'
+    }
+    explanation.push(`数据来源：${sourceIds.map(source => labels[source] || source).join('、')}`)
+  }
   if (relationTypes.length) explanation.push(`关系类型：${relationTypes.join('、')}`)
   if (queries.length > 1) explanation.push(`并行召回 ${queries.length} 个检索表达`)
   return { queries, inferredOptions, matchedEntities, explanation }

@@ -409,6 +409,7 @@ function AiAssistantPage() {
   const [creatingMemoryTask, setCreatingMemoryTask] = useState(false)
   const [memoryEntityFilter, setMemoryEntityFilter] = useState('')
   const [memorySessionFilter, setMemorySessionFilter] = useState('')
+  const [memorySourceFilter, setMemorySourceFilter] = useState('')
   const [memoryTypeFilter, setMemoryTypeFilter] = useState('')
   const [memoryFrom, setMemoryFrom] = useState('')
   const [memoryTo, setMemoryTo] = useState('')
@@ -416,11 +417,12 @@ function AiAssistantPage() {
     entityId: memoryEntityFilter || undefined,
     sessionId: memorySessionFilter || undefined,
     sessionName: sources.find(source => source.sessionId === memorySessionFilter)?.displayName || undefined,
+    sourceIds: memorySourceFilter ? [memorySourceFilter] : undefined,
     documentTypes: memoryTypeFilter ? [memoryTypeFilter] : undefined,
     from: memoryFrom || undefined,
     to: memoryTo || undefined
-  }), [memoryEntityFilter, memorySessionFilter, memoryTypeFilter, memoryFrom, memoryTo, sources])
-  const hasMemoryScope = Boolean(memoryEntityFilter || memorySessionFilter || memoryTypeFilter || memoryFrom || memoryTo)
+  }), [memoryEntityFilter, memorySessionFilter, memorySourceFilter, memoryTypeFilter, memoryFrom, memoryTo, sources])
+  const hasMemoryScope = Boolean(memoryEntityFilter || memorySessionFilter || memorySourceFilter || memoryTypeFilter || memoryFrom || memoryTo)
   const eventTimelineOptions = useMemo(() => ({
     sourceId: eventSourceFilter || undefined,
     status: eventStatusFilter || undefined,
@@ -2915,6 +2917,14 @@ function AiAssistantPage() {
               <option value="">所有会话</option>
               {sources.filter(source => source.enabled).map(source => <option key={source.sessionId} value={source.sessionId}>{source.displayName}</option>)}
             </select>
+            <select value={memorySourceFilter} onChange={event => setMemorySourceFilter(event.target.value)}>
+              <option value="">所有数据来源</option>
+              <option value="wechat">微信</option>
+              <option value="documents">本机文档</option>
+              <option value="calendar">macOS 日历</option>
+              <option value="mail">macOS Mail</option>
+              <option value="legacy">历史来源未知</option>
+            </select>
             <select value={memoryTypeFilter} onChange={event => setMemoryTypeFilter(event.target.value)}>
               <option value="">所有记忆类型</option>
               <option value="entity">实体</option><option value="relation">关系</option><option value="claim">事实</option>
@@ -2922,10 +2932,10 @@ function AiAssistantPage() {
             </select>
             <label><span>从</span><input type="date" value={memoryFrom} onChange={event => setMemoryFrom(event.target.value)} /></label>
             <label><span>至</span><input type="date" value={memoryTo} onChange={event => setMemoryTo(event.target.value)} /></label>
-            {(memoryEntityFilter || memorySessionFilter || memoryTypeFilter || memoryFrom || memoryTo) &&
-              <button onClick={() => { setMemoryEntityFilter(''); setMemorySessionFilter(''); setMemoryTypeFilter(''); setMemoryFrom(''); setMemoryTo('') }}>清除范围</button>}
+            {(memoryEntityFilter || memorySessionFilter || memorySourceFilter || memoryTypeFilter || memoryFrom || memoryTo) &&
+              <button onClick={() => { setMemoryEntityFilter(''); setMemorySessionFilter(''); setMemorySourceFilter(''); setMemoryTypeFilter(''); setMemoryFrom(''); setMemoryTo('') }}>清除范围</button>}
           </div>
-          {(memoryEntityFilter || memorySessionFilter || memoryTypeFilter || memoryFrom || memoryTo) &&
+          {(memoryEntityFilter || memorySessionFilter || memorySourceFilter || memoryTypeFilter || memoryFrom || memoryTo) &&
             <small className="assistant-scope-note">当前范围在全文/向量召回之前生效，范围外内容不会参与排序或发送给模型。
               {memorySearchState.scopeCandidates !== null && memorySearchState.scopeCandidates !== undefined &&
                 ` · 当前候选 ${Number(memorySearchState.scopeCandidates || 0).toLocaleString()} 条`}

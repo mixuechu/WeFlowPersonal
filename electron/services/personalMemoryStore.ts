@@ -5712,7 +5712,8 @@ export class PersonalMemoryStore {
       options.from ||
       options.to ||
       options.documentTypes?.length ||
-      options.relationTypes?.length
+      options.relationTypes?.length ||
+      options.sourceIds?.length
     )
     if (!hasScope) return null
     const conditions: string[] = []
@@ -5721,6 +5722,22 @@ export class PersonalMemoryStore {
     if (documentTypes.length) {
       conditions.push(`d.document_type IN (${documentTypes.map(() => '?').join(',')})`)
       parameters.push(...documentTypes)
+    }
+    const sourceIds = [...new Set((options.sourceIds || [])
+      .map(value => String(value).trim().toLowerCase()).filter(Boolean))]
+    if (sourceIds.length) {
+      const placeholders = sourceIds.map(() => '?').join(',')
+      conditions.push(`(
+        EXISTS (SELECT 1 FROM search_document_evidence sde
+          WHERE sde.document_id=d.id AND LOWER(sde.source_id) IN (${placeholders}))
+        OR (d.document_type='claim' AND EXISTS (SELECT 1 FROM evidence e
+          WHERE e.claim_id=d.source_id AND LOWER(e.source_id) IN (${placeholders})))
+        OR (d.document_type='event' AND EXISTS (SELECT 1 FROM evidence e
+          WHERE e.event_id=d.source_id AND LOWER(e.source_id) IN (${placeholders})))
+        OR (d.document_type='relation' AND EXISTS (SELECT 1 FROM evidence e
+          WHERE e.relation_id=d.source_id AND LOWER(e.source_id) IN (${placeholders})))
+      )`)
+      parameters.push(...sourceIds, ...sourceIds, ...sourceIds, ...sourceIds)
     }
     const relationTypes = [...new Set((options.relationTypes || [])
       .map(value => String(value).trim().toLowerCase()).filter(Boolean))]

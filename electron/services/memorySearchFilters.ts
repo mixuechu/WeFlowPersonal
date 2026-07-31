@@ -7,6 +7,7 @@ export type MemorySearchOptions = {
   to?: string
   documentTypes?: string[]
   relationTypes?: string[]
+  sourceIds?: string[]
 }
 
 export function paginateMemoryResults(items: any[], offset = 0, limit = 40, cap = 500): {
@@ -63,8 +64,13 @@ function itemTimestamps(item: any): number[] {
   return values
 }
 
-export function filterMemorySearchResults(items: any[], options: MemorySearchOptions = {}): any[] {
+export function filterMemorySearchResults(
+  items: any[],
+  options: MemorySearchOptions = {},
+  databaseScopeApplied = false
+): any[] {
   const types = new Set((options.documentTypes || []).filter(Boolean))
+  const sources = new Set((options.sourceIds || []).map(value => value.trim().toLowerCase()).filter(Boolean))
   const relationTypes = new Set((options.relationTypes || []).map(value => value.trim().toLowerCase()).filter(Boolean))
   const entityTerms = (options.entityTerms || []).map(value => value.trim().toLowerCase()).filter(Boolean)
   const from = dateBoundary(options.from)
@@ -78,7 +84,12 @@ export function filterMemorySearchResults(items: any[], options: MemorySearchOpt
       const predicate = String(item.metadata?.predicate || item.title || '').trim().toLowerCase()
       if (![...relationTypes].some(type => predicate.includes(type) || type.includes(predicate))) return false
     }
-    if (options.sessionId) {
+    if (sources.size && !databaseScopeApplied) {
+      if (!(item.evidence || []).some((evidence: any) =>
+        sources.has(String(evidence.source_id || evidence.sourceId || 'legacy').trim().toLowerCase())
+      )) return false
+    }
+    if (options.sessionId && !databaseScopeApplied) {
       const acceptedSessions = new Set([options.sessionId, options.sessionName].filter(Boolean))
       if (!(item.evidence || []).some((evidence: any) => acceptedSessions.has(String(evidence.session_id || evidence.sessionId || '')))) return false
     }
@@ -94,7 +105,7 @@ export function filterMemorySearchResults(items: any[], options: MemorySearchOpt
       const haystack = `${item.title || ''} ${item.search_text || ''}`.toLowerCase()
       if (!entityIds.includes(options.entityId) && !entityTerms.some(term => haystack.includes(term))) return false
     }
-    if (from !== null || to !== null) {
+    if ((from !== null || to !== null) && !databaseScopeApplied) {
       const timestamps = itemTimestamps(item)
       if (!timestamps.some(timestamp => (from === null || timestamp >= from) && (to === null || timestamp <= to))) return false
     }
