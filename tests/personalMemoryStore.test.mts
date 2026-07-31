@@ -1065,6 +1065,7 @@ test('memory cards expose evidence totals but bound their latest evidence payloa
     messageId: `wechat:bounded-session:${index + 1}`,
     sessionId: 'bounded-session',
     timestamp: 1_700_000_000 + index,
+    sender: `证据发送者 ${index + 1}`,
     excerpt: `证据 ${index + 1}`,
     role: 'direct'
   }))
@@ -1106,6 +1107,7 @@ test('memory cards expose evidence totals but bound their latest evidence payloa
   const lastEvidencePage = store.getDocumentEvidencePage('claim', 'bounded-claim', { offset: 120, limit: 40 })
   assert.equal(firstEvidencePage.total, manyEvidence.length)
   assert.equal(firstEvidencePage.hasMore, true)
+  assert.equal(firstEvidencePage.items[0].sender, '证据发送者 125')
   assert.equal(secondEvidencePage.items.length, 40)
   assert.equal(lastEvidencePage.items.length, 5)
   assert.equal(lastEvidencePage.hasMore, false)
@@ -1150,6 +1152,169 @@ test('memory cards expose evidence totals but bound their latest evidence payloa
     manyEvidence.slice(0, 5).map(item => item.messageId).reverse()
   )
   assert.equal(genericLastPage.hasMore, false)
+
+  store.upsertClaims([{
+    id: 'bounded-claim',
+    subjectId: 'bounded-person',
+    predicate: '负责',
+    objectValue: '证据边界',
+    confidence: 0.9,
+    status: 'candidate',
+    sourceNature: 'self_statement',
+    searchText: '证据人物负责证据边界',
+    evidence: [{ ...manyEvidence[0], sender: '修正后的发送者' }]
+  }])
+  const enrichedPage = store.getDocumentEvidencePage('claim', 'bounded-claim', {
+    offset: 120,
+    limit: 40
+  })
+  assert.equal(enrichedPage.total, manyEvidence.length)
+  assert.equal(enrichedPage.items.at(-1).sender, '修正后的发送者')
+}))
+
+test('structured evidence migration deduplicates nullable legacy identities and preserves provenance', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'weflow-evidence-migration-test-'))
+  const databasePath = join(directory, 'memory.sqlite')
+  const first = new PersonalMemoryStore()
+  try {
+    first.initialize(databasePath)
+    first.syncGraph({
+      entities: [{ id: 'migration-person', type: 'person', canonicalName: '迁移人物', trustStatus: 'confirmed' }],
+      relations: [],
+      reviewQueue: []
+    })
+    first.upsertClaims([{
+      id: 'migration-claim',
+      subjectId: 'migration-person',
+      predicate: '负责',
+      objectValue: '迁移验证',
+      confidence: 0.9,
+      status: 'candidate',
+      sourceNature: 'self_statement',
+      searchText: '迁移人物负责迁移验证',
+      evidence: [{
+        messageId: 'migration-message',
+        sessionId: 'migration-session',
+        timestamp: 1_700_000_000,
+        sender: '',
+        excerpt: '短摘录',
+        role: 'support'
+      }]
+    }])
+    const database = (first as any).db
+    database.exec(`
+      DROP INDEX idx_evidence_claim_message;
+      DROP INDEX idx_evidence_relation_message;
+      DROP INDEX idx_evidence_event_message;
+      DELETE FROM schema_meta WHERE key='structured_evidence_identity_version';
+    `)
+    database.prepare(`
+      INSERT INTO evidence(
+        claim_id,message_id,session_id,timestamp,sender,excerpt,evidence_role
+      ) VALUES(?,?,?,?,?,?,?)
+    `).run(
+      'migration-claim', 'migration-message', 'migration-session', 1_700_000_000,
+      '', '这是迁移时应保留的更完整摘录', 'direct'
+    )
+    database.prepare(`
+      INSERT INTO search_document_evidence(
+        document_id,message_id,session_id,timestamp,sender,excerpt
+      ) VALUES(?,?,?,?,?,?)
+    `).run(
+      'resource:legacy-sender-source', 'migration-message', 'migration-session',
+      1_700_000_000, '迁移发送者', '可用于回填发送者的旧索引'
+    )
+    assert.equal(database.prepare(
+      'SELECT COUNT(*) AS count FROM evidence WHERE claim_id=?'
+    ).get('migration-claim').count, 2)
+    first.close()
+
+    const reopened = new PersonalMemoryStore()
+    try {
+      reopened.initialize(databasePath)
+      const page = reopened.getDocumentEvidencePage('claim', 'migration-claim')
+      assert.equal(page.total, 1)
+      assert.equal(page.items[0].sender, '迁移发送者')
+      assert.equal(page.items[0].excerpt, '这是迁移时应保留的更完整摘录')
+      assert.equal(page.items[0].evidence_role, 'direct')
+      const migrationAudit = JSON.parse(String(((reopened as any).db.prepare(`
+        SELECT value FROM schema_meta WHERE key='structured_evidence_identity_version'
+      `).get() as any).value))
+      assert.equal(migrationAudit.version, 1)
+      assert.equal(migrationAudit.evidenceBefore, 2)
+      assert.equal(migrationAudit.evidenceAfter, 1)
+      assert.equal(migrationAudit.duplicatesRemoved, 1)
+      assert.equal(migrationAudit.sendersRecovered, 1)
+      assert.deepEqual(reopened.getDiagnostics().structuredEvidenceMigration, migrationAudit)
+      assert.equal(Number(((reopened as any).db.prepare(`
+        SELECT COUNT(*) AS count FROM pragma_index_list('evidence')
+        WHERE name IN(
+          'idx_evidence_claim_message','idx_evidence_relation_message','idx_evidence_event_message'
+        ) AND "unique"=1
+      `).get() as any).count), 3)
+    } finally {
+      reopened.close()
+    }
+  } finally {
+    first.close()
+    rmSync(directory, { recursive: true, force: true })
+  }
+})
+
+test('relation and event evidence keep senders without duplicating repeated extraction', () => withStore(store => {
+  const relation = {
+    id: 'sender-relation',
+    subjectId: 'sender-person-a',
+    predicate: '协作',
+    objectId: 'sender-person-b',
+    confidence: 0.9,
+    status: 'candidate',
+    evidence: [{
+      messageId: 'sender-relation-message',
+      sessionId: 'sender-session',
+      timestamp: 1_700_000_100,
+      sender: '关系发送者',
+      excerpt: '我们一起完成这个项目'
+    }]
+  }
+  const graph = {
+    entities: [
+      { id: 'sender-person-a', type: 'person', canonicalName: '发送者甲', trustStatus: 'confirmed' },
+      { id: 'sender-person-b', type: 'person', canonicalName: '发送者乙', trustStatus: 'confirmed' }
+    ],
+    relations: [relation],
+    reviewQueue: []
+  }
+  store.syncGraph(graph)
+  store.syncGraph(graph)
+  const relationPage = store.getDocumentEvidencePage('relation', relation.id)
+  assert.equal(relationPage.total, 1)
+  assert.equal(relationPage.items[0].sender, '关系发送者')
+
+  const event = {
+    id: 'sender-event',
+    eventType: 'meeting',
+    title: '发送者测试会议',
+    description: '验证事件证据发送者',
+    startAt: '2026-07-31T10:00:00.000Z',
+    confidence: 0.9,
+    status: 'candidate',
+    sourceNature: 'other_statement',
+    searchText: '发送者测试会议',
+    participants: [{ entityId: 'sender-person-a', role: 'participant' }],
+    evidence: [{
+      messageId: 'sender-event-message',
+      sessionId: 'sender-session',
+      timestamp: 1_700_000_200,
+      sender: '事件发送者',
+      excerpt: '明天开一次测试会议'
+    }]
+  }
+  store.upsertEvents([event])
+  store.upsertEvents([{ ...event, evidence: [{ ...event.evidence[0], sender: '事件发送者新备注' }] }])
+  const eventPage = store.getDocumentEvidencePage('event', event.id)
+  assert.equal(eventPage.total, 1)
+  assert.equal(eventPage.items[0].sender, '事件发送者新备注')
 }))
 
 test('task search keeps original message evidence', () => withStore(store => {

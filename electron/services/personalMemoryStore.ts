@@ -135,6 +135,7 @@ export class PersonalMemoryStore {
         message_id TEXT NOT NULL,
         session_id TEXT NOT NULL,
         timestamp INTEGER NOT NULL,
+        sender TEXT NOT NULL DEFAULT '',
         excerpt TEXT NOT NULL,
         evidence_role TEXT NOT NULL DEFAULT 'support',
         UNIQUE(message_id, claim_id, relation_id, event_id)
@@ -582,6 +583,7 @@ export class PersonalMemoryStore {
     this.ensureColumn('claims', 'conflict_group', 'TEXT')
     this.ensureColumn('claims', 'polarity', `TEXT NOT NULL DEFAULT 'positive'`)
     this.ensureColumn('events', 'source_nature', `TEXT NOT NULL DEFAULT 'inference'`)
+    this.ensureColumn('evidence', 'sender', `TEXT NOT NULL DEFAULT ''`)
     this.ensureColumn('ingestion_batches', 'model', `TEXT NOT NULL DEFAULT ''`)
     this.ensureColumn('ingestion_batches', 'prompt_version', `TEXT NOT NULL DEFAULT ''`)
     this.ensureColumn('ingestion_batches', 'schema_version', `TEXT NOT NULL DEFAULT ''`)
@@ -607,6 +609,7 @@ export class PersonalMemoryStore {
     this.ensureColumn('task_directory', 'evidence_fingerprint', `TEXT NOT NULL DEFAULT ''`)
     this.ensureColumn('merge_history', 'source_name', `TEXT NOT NULL DEFAULT ''`)
     this.ensureColumn('merge_history', 'target_name', `TEXT NOT NULL DEFAULT ''`)
+    this.repairStructuredEvidenceIdentity()
     this.backfillMergeHistoryNames()
     this.db.exec(`CREATE INDEX IF NOT EXISTS idx_memory_corrections_item
       ON memory_corrections(item_kind,item_id,created_at DESC)`)
@@ -748,6 +751,137 @@ export class PersonalMemoryStore {
     if (!columns.some(item => item.name === column)) this.db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`)
   }
 
+  private repairStructuredEvidenceIdentity(): void {
+    if (!this.db) return
+    const migrationVersion = String((this.db.prepare(`
+      SELECT value FROM schema_meta WHERE key='structured_evidence_identity_version'
+    `).get() as any)?.value || '')
+    let migrationAudit: any = {}
+    try { migrationAudit = JSON.parse(migrationVersion) } catch {}
+    if (migrationVersion === '1' || Number(migrationAudit?.version || 0) >= 1) return
+    const before = this.db.prepare(`
+      SELECT COUNT(*) AS evidence_count,
+        SUM(CASE WHEN sender!='' THEN 1 ELSE 0 END) AS sender_count
+      FROM evidence
+    `).get() as any
+    this.db.exec(`
+      CREATE INDEX IF NOT EXISTS idx_search_document_evidence_message
+        ON search_document_evidence(session_id,message_id);
+      CREATE INDEX IF NOT EXISTS idx_evidence_claim_message_lookup
+        ON evidence(claim_id,message_id);
+      CREATE INDEX IF NOT EXISTS idx_evidence_relation_message_lookup
+        ON evidence(relation_id,message_id);
+      CREATE INDEX IF NOT EXISTS idx_evidence_event_message_lookup
+        ON evidence(event_id,message_id);
+    `)
+    const transaction = this.db.transaction(() => {
+      this.db!.exec(`
+        UPDATE evidence
+        SET sender=COALESCE((
+          SELECT indexed_evidence.sender
+          FROM search_document_evidence indexed_evidence
+          WHERE indexed_evidence.session_id=evidence.session_id
+            AND indexed_evidence.message_id=evidence.message_id
+            AND indexed_evidence.sender!=''
+          ORDER BY indexed_evidence.document_id
+          LIMIT 1
+        ),sender)
+        WHERE sender='';
+      `)
+      for (const foreignKey of ['claim_id', 'relation_id', 'event_id']) {
+        this.db!.exec(`
+          UPDATE evidence AS keeper
+          SET
+            sender=COALESCE(NULLIF((
+              SELECT duplicate.sender FROM evidence duplicate
+              WHERE duplicate.${foreignKey}=keeper.${foreignKey}
+                AND duplicate.message_id=keeper.message_id
+                AND duplicate.sender!=''
+              ORDER BY duplicate.id DESC LIMIT 1
+            ),''),keeper.sender),
+            excerpt=COALESCE(NULLIF((
+              SELECT duplicate.excerpt FROM evidence duplicate
+              WHERE duplicate.${foreignKey}=keeper.${foreignKey}
+                AND duplicate.message_id=keeper.message_id
+              ORDER BY length(duplicate.excerpt) DESC,duplicate.id DESC LIMIT 1
+            ),''),keeper.excerpt),
+            evidence_role=CASE
+              WHEN EXISTS(
+                SELECT 1 FROM evidence duplicate
+                WHERE duplicate.${foreignKey}=keeper.${foreignKey}
+                  AND duplicate.message_id=keeper.message_id
+                  AND duplicate.evidence_role='contradiction'
+              ) THEN 'contradiction'
+              WHEN EXISTS(
+                SELECT 1 FROM evidence duplicate
+                WHERE duplicate.${foreignKey}=keeper.${foreignKey}
+                  AND duplicate.message_id=keeper.message_id
+                  AND duplicate.evidence_role='direct'
+              ) THEN 'direct'
+              WHEN EXISTS(
+                SELECT 1 FROM evidence duplicate
+                WHERE duplicate.${foreignKey}=keeper.${foreignKey}
+                  AND duplicate.message_id=keeper.message_id
+                  AND duplicate.evidence_role='indirect'
+              ) THEN 'indirect'
+              ELSE keeper.evidence_role
+            END
+          WHERE keeper.${foreignKey} IS NOT NULL
+            AND keeper.id=(
+              SELECT MIN(first.id) FROM evidence first
+              WHERE first.${foreignKey}=keeper.${foreignKey}
+                AND first.message_id=keeper.message_id
+            );
+          DELETE FROM evidence
+          WHERE ${foreignKey} IS NOT NULL
+            AND id NOT IN(
+              SELECT MIN(id) FROM evidence
+              WHERE ${foreignKey} IS NOT NULL
+              GROUP BY ${foreignKey},message_id
+            );
+        `)
+      }
+      this.db!.exec(`
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_evidence_claim_message
+          ON evidence(claim_id,message_id) WHERE claim_id IS NOT NULL;
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_evidence_relation_message
+          ON evidence(relation_id,message_id) WHERE relation_id IS NOT NULL;
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_evidence_event_message
+          ON evidence(event_id,message_id) WHERE event_id IS NOT NULL;
+        DROP INDEX IF EXISTS idx_evidence_claim_message_lookup;
+        DROP INDEX IF EXISTS idx_evidence_relation_message_lookup;
+        DROP INDEX IF EXISTS idx_evidence_event_message_lookup;
+      `)
+      const after = this.db!.prepare(`
+        SELECT COUNT(*) AS evidence_count,
+          SUM(CASE WHEN sender!='' THEN 1 ELSE 0 END) AS sender_count
+        FROM evidence
+      `).get() as any
+      const migratedAt = new Date().toISOString()
+      const audit = {
+        version: 1,
+        migratedAt,
+        evidenceBefore: Number(before?.evidence_count || 0),
+        evidenceAfter: Number(after?.evidence_count || 0),
+        duplicatesRemoved: Math.max(
+          0,
+          Number(before?.evidence_count || 0) - Number(after?.evidence_count || 0)
+        ),
+        sendersBefore: Number(before?.sender_count || 0),
+        sendersAfter: Number(after?.sender_count || 0),
+        sendersRecovered: Math.max(
+          0,
+          Number(after?.sender_count || 0) - Number(before?.sender_count || 0)
+        )
+      }
+      this.db!.prepare(`
+        INSERT INTO schema_meta(key,value,updated_at) VALUES('structured_evidence_identity_version',?,?)
+        ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_at=excluded.updated_at
+      `).run(JSON.stringify(audit), migratedAt)
+    })
+    transaction()
+  }
+
   private backfillMergeHistoryNames(): void {
     if (!this.db) return
     const rows = this.db.prepare(`
@@ -822,6 +956,36 @@ export class PersonalMemoryStore {
     `).get() as any
     const backupDirectory = join(dirname(this.databasePath), 'personal-memory-backups')
     const backups = this.listBackups(backupDirectory)
+    const structuredEvidenceMigration = (() => {
+      const row = this.db!.prepare(`
+        SELECT value,updated_at FROM schema_meta
+        WHERE key='structured_evidence_identity_version'
+      `).get() as any
+      try {
+        const audit = JSON.parse(String(row?.value || '{}'))
+        return {
+          version: Number(audit.version || 0),
+          migratedAt: String(audit.migratedAt || row?.updated_at || ''),
+          evidenceBefore: Number(audit.evidenceBefore || 0),
+          evidenceAfter: Number(audit.evidenceAfter || 0),
+          duplicatesRemoved: Number(audit.duplicatesRemoved || 0),
+          sendersBefore: Number(audit.sendersBefore || 0),
+          sendersAfter: Number(audit.sendersAfter || 0),
+          sendersRecovered: Number(audit.sendersRecovered || 0)
+        }
+      } catch {
+        return {
+          version: String(row?.value || '') === '1' ? 1 : 0,
+          migratedAt: String(row?.updated_at || ''),
+          evidenceBefore: Number(counts.evidence || 0),
+          evidenceAfter: Number(counts.evidence || 0),
+          duplicatesRemoved: 0,
+          sendersBefore: 0,
+          sendersAfter: 0,
+          sendersRecovered: 0
+        }
+      }
+    })()
     return {
       healthy: integrity === 'ok',
       integrity,
@@ -834,6 +998,7 @@ export class PersonalMemoryStore {
       databasePath: this.databasePath,
       databaseBytes: statSync(this.databasePath).size,
       counts,
+      structuredEvidenceMigration,
       backups
     }
   }
@@ -1228,7 +1393,14 @@ export class PersonalMemoryStore {
         INSERT INTO relation_history(relation_id,subject_id,predicate,object_id,status,confidence,change_type,snapshot_json,created_at)
         VALUES(?,?,?,?,?,?,?,?,?)
       `)
-      const insertEvidence = this.db.prepare(`INSERT OR IGNORE INTO evidence(relation_id,message_id,session_id,timestamp,excerpt,evidence_role) VALUES(?,?,?,?,?,'direct')`)
+      const insertEvidence = this.db.prepare(`
+        INSERT OR IGNORE INTO evidence(relation_id,message_id,session_id,timestamp,sender,excerpt,evidence_role)
+        VALUES(?,?,?,?,?,?,'direct')
+      `)
+      const enrichEvidenceSender = this.db.prepare(`
+        UPDATE evidence SET sender=CASE WHEN ?!='' THEN ? ELSE sender END
+        WHERE relation_id=? AND message_id=?
+      `)
       for (const relation of allowedRelations) {
         const searchText = `${entityNames.get(relation.subjectId) || relation.subjectId} ${relation.predicate} ${entityNames.get(relation.objectId) || relation.objectId}`
         const stored = getStoredRelation.get(relation.id) as any
@@ -1251,7 +1423,14 @@ export class PersonalMemoryStore {
           )
         }
         upsertRelation.run(relation.id, relation.subjectId, relation.predicate, relation.objectId, Number(relation.confidence || 0), relation.status, searchText, relation.createdAt || now, relation.updatedAt || now)
-        for (const evidence of relation.evidence || []) insertEvidence.run(relation.id, evidence.messageId, evidence.sessionId, Number(evidence.timestamp || 0), evidence.excerpt || '')
+        for (const evidence of relation.evidence || []) {
+          const sender = String(evidence.sender || '')
+          insertEvidence.run(
+            relation.id, evidence.messageId, evidence.sessionId,
+            Number(evidence.timestamp || 0), sender, evidence.excerpt || ''
+          )
+          enrichEvidenceSender.run(sender, sender, relation.id, evidence.messageId)
+        }
         this.upsertSearchDocument(`relation:${relation.id}`, 'relation', relation.id, relation.predicate, searchText,
           { subjectId: relation.subjectId, objectId: relation.objectId, predicate: relation.predicate, status: relation.status }, now)
       }
@@ -1549,8 +1728,12 @@ export class PersonalMemoryStore {
         conflict_group=COALESCE(excluded.conflict_group,conflict_group)
     `)
     const evidence = this.db.prepare(`
-      INSERT OR IGNORE INTO evidence(claim_id,message_id,session_id,timestamp,excerpt,evidence_role)
-      VALUES(?,?,?,?,?,?)
+      INSERT OR IGNORE INTO evidence(claim_id,message_id,session_id,timestamp,sender,excerpt,evidence_role)
+      VALUES(?,?,?,?,?,?,?)
+    `)
+    const enrichEvidenceSender = this.db.prepare(`
+      UPDATE evidence SET sender=CASE WHEN ?!='' THEN ? ELSE sender END
+      WHERE claim_id=? AND message_id=?
     `)
     for (const claim of claims) {
       if (this.isMemoryItemSuppressed('claim', claim.id, this.memoryItemSemanticFingerprint('claim', claim))) continue
@@ -1563,7 +1746,9 @@ export class PersonalMemoryStore {
           const evidenceRole = item.role && item.role !== 'support'
             ? item.role
             : sourceNature === 'self_statement' ? 'direct' : 'indirect'
-          evidence.run(claim.id, item.messageId, item.sessionId, item.timestamp, item.excerpt, evidenceRole)
+          const sender = String(item.sender || '')
+          evidence.run(claim.id, item.messageId, item.sessionId, item.timestamp, sender, item.excerpt, evidenceRole)
+          enrichEvidenceSender.run(sender, sender, claim.id, item.messageId)
         }
         continue
       }
@@ -1608,18 +1793,26 @@ export class PersonalMemoryStore {
         const evidenceRole = item.role && item.role !== 'support'
           ? item.role
           : sourceNature === 'self_statement' || sourceNature === 'human_confirmation' ? 'direct' : 'indirect'
-        evidence.run(claim.id, item.messageId, item.sessionId, item.timestamp, item.excerpt, evidenceRole)
+        const sender = String(item.sender || '')
+        evidence.run(claim.id, item.messageId, item.sessionId, item.timestamp, sender, item.excerpt, evidenceRole)
+        enrichEvidenceSender.run(sender, sender, claim.id, item.messageId)
       }
       for (const prior of conflicting) {
         for (const item of claim.evidence || []) {
-          evidence.run(prior.id, item.messageId, item.sessionId, item.timestamp, item.excerpt, 'contradiction')
+          const sender = String(item.sender || '')
+          evidence.run(prior.id, item.messageId, item.sessionId, item.timestamp, sender, item.excerpt, 'contradiction')
+          enrichEvidenceSender.run(sender, sender, prior.id, item.messageId)
         }
         const priorEvidence = this.db.prepare(`
-          SELECT message_id,session_id,timestamp,excerpt FROM evidence
+          SELECT message_id,session_id,timestamp,sender,excerpt FROM evidence
           WHERE claim_id=? AND evidence_role!='contradiction'
         `).all(prior.id) as any[]
         for (const item of priorEvidence) {
-          evidence.run(claim.id, item.message_id, item.session_id, item.timestamp, item.excerpt, 'contradiction')
+          evidence.run(
+            claim.id, item.message_id, item.session_id, item.timestamp,
+            item.sender, item.excerpt, 'contradiction'
+          )
+          enrichEvidenceSender.run(item.sender, item.sender, claim.id, item.message_id)
         }
       }
       this.upsertSearchDocument(`claim:${claim.id}`, 'claim', claim.id, claim.predicate, claim.searchText,
@@ -1642,8 +1835,12 @@ export class PersonalMemoryStore {
     `)
     const participant = this.db.prepare('INSERT OR IGNORE INTO event_participants(event_id,entity_id,role) VALUES(?,?,?)')
     const evidence = this.db.prepare(`
-      INSERT OR IGNORE INTO evidence(event_id,message_id,session_id,timestamp,excerpt,evidence_role)
-      VALUES(?,?,?,?,?,?)
+      INSERT OR IGNORE INTO evidence(event_id,message_id,session_id,timestamp,sender,excerpt,evidence_role)
+      VALUES(?,?,?,?,?,?,?)
+    `)
+    const enrichEvidenceSender = this.db.prepare(`
+      UPDATE evidence SET sender=CASE WHEN ?!='' THEN ? ELSE sender END
+      WHERE event_id=? AND message_id=?
     `)
     for (const event of events) {
       const evidenceIds = (event.evidence || []).map((item: any) => item.messageId)
@@ -1662,8 +1859,14 @@ export class PersonalMemoryStore {
       `).get(event.id))
       if (manuallyCorrected) {
         for (const item of event.participants || []) participant.run(event.id, item.entityId, item.role || 'participant')
-        for (const item of event.evidence || []) evidence.run(event.id, item.messageId, item.sessionId, item.timestamp, item.excerpt,
-          item.role && item.role !== 'support' ? item.role : 'indirect')
+        for (const item of event.evidence || []) {
+          const sender = String(item.sender || '')
+          evidence.run(
+            event.id, item.messageId, item.sessionId, item.timestamp, sender, item.excerpt,
+            item.role && item.role !== 'support' ? item.role : 'indirect'
+          )
+          enrichEvidenceSender.run(sender, sender, event.id, item.messageId)
+        }
         if (event.status === 'cancelled') {
           this.db.prepare(`UPDATE events SET status='cancelled',updated_at=? WHERE id=?`).run(now, event.id)
           const document = this.db.prepare('SELECT metadata_json FROM search_documents WHERE id=?')
@@ -1682,8 +1885,14 @@ export class PersonalMemoryStore {
         event.location || null, event.confidence, event.status || 'candidate', event.sourceNature || 'inference',
         event.searchText, event.createdAt || now, now)
       for (const item of event.participants || []) participant.run(event.id, item.entityId, item.role || 'participant')
-      for (const item of event.evidence || []) evidence.run(event.id, item.messageId, item.sessionId, item.timestamp, item.excerpt,
-        item.role && item.role !== 'support' ? item.role : 'direct')
+      for (const item of event.evidence || []) {
+        const sender = String(item.sender || '')
+        evidence.run(
+          event.id, item.messageId, item.sessionId, item.timestamp, sender, item.excerpt,
+          item.role && item.role !== 'support' ? item.role : 'direct'
+        )
+        enrichEvidenceSender.run(sender, sender, event.id, item.messageId)
+      }
       this.upsertSearchDocument(`event:${event.id}`, 'event', event.id, event.title, event.searchText,
         { eventType: event.eventType, startAt: event.startAt, endAt: event.endAt, participantIds: (event.participants || []).map((item: any) => item.entityId), status: event.status }, now)
     }
@@ -1738,7 +1947,7 @@ export class PersonalMemoryStore {
         FROM event_participants ep JOIN entities e ON e.id=ep.entity_id WHERE ep.event_id=?
       `).all(event.id),
       evidence: this.db.prepare(`
-        SELECT message_id,session_id,timestamp,excerpt,evidence_role
+        SELECT message_id,session_id,timestamp,sender,excerpt,evidence_role
         FROM evidence WHERE event_id=? ORDER BY timestamp
       `).all(event.id)
     }
@@ -2427,7 +2636,7 @@ export class PersonalMemoryStore {
       FROM events ev ORDER BY COALESCE(start_at,updated_at) DESC LIMIT ?
     `).all(safeLimit) as any[]
     const evidenceStatement = this.db.prepare(`
-      SELECT message_id,session_id,timestamp,excerpt,evidence_role
+      SELECT message_id,session_id,timestamp,sender,excerpt,evidence_role
       FROM evidence WHERE claim_id=? OR event_id=?
       ORDER BY timestamp DESC,
         CASE WHEN evidence_role='contradiction' THEN 0 ELSE 1 END,
@@ -2500,7 +2709,7 @@ export class PersonalMemoryStore {
       ORDER BY COALESCE(ev.start_at,ev.updated_at) DESC LIMIT ?
     `).all(entityId, safeLimit) as any[]
     const evidenceStatement = this.db.prepare(`
-      SELECT message_id,session_id,timestamp,excerpt,evidence_role
+      SELECT message_id,session_id,timestamp,sender,excerpt,evidence_role
       FROM evidence WHERE claim_id=? OR event_id=?
       ORDER BY timestamp DESC,
         CASE WHEN evidence_role='contradiction' THEN 0 ELSE 1 END,
@@ -2665,7 +2874,7 @@ export class PersonalMemoryStore {
       LIMIT ? OFFSET ?
     `).all(...parameters, limit, offset) as any[]
     const evidenceStatement = this.db.prepare(`
-      SELECT message_id,session_id,timestamp,excerpt,evidence_role
+      SELECT message_id,session_id,timestamp,sender,excerpt,evidence_role
       FROM evidence WHERE event_id=?
       ORDER BY timestamp DESC,
         CASE WHEN evidence_role='contradiction' THEN 0 ELSE 1 END,
@@ -2761,7 +2970,7 @@ export class PersonalMemoryStore {
       LIMIT ? OFFSET ?
     `).all(...parameters, limit, offset) as any[]
     const evidenceStatement = this.db.prepare(`
-      SELECT message_id,session_id,timestamp,excerpt,evidence_role
+      SELECT message_id,session_id,timestamp,sender,excerpt,evidence_role
       FROM evidence WHERE claim_id=?
       ORDER BY timestamp DESC,
         CASE WHEN evidence_role='contradiction' THEN 0 ELSE 1 END,
@@ -4621,7 +4830,7 @@ export class PersonalMemoryStore {
     `).get(sourceId) as any)?.count || 0)
     if (!evidenceTotal) return { evidence: [], evidenceTotal: 0 }
     const evidence = (this.db.prepare(`
-      SELECT message_id,session_id,timestamp,excerpt,evidence_role
+      SELECT message_id,session_id,timestamp,sender,excerpt,evidence_role
       FROM evidence
       WHERE ${foreignKey}=?
       ORDER BY timestamp DESC,
@@ -4693,7 +4902,7 @@ export class PersonalMemoryStore {
     `).get(sourceId) as any)?.count || 0)
     const items = total
       ? this.db.prepare(`
-          SELECT message_id,session_id,timestamp,excerpt,evidence_role
+          SELECT message_id,session_id,timestamp,sender,excerpt,evidence_role
           FROM evidence
           WHERE ${foreignKey}=?
           ORDER BY timestamp DESC,

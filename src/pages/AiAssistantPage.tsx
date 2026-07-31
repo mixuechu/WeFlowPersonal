@@ -81,7 +81,7 @@ function EvidenceRows({
         : item.role === 'contradiction' ? '反证'
           : roleLabels ? '直接证据' : '证据'
       return <div className="assistant-evidence-row" key={`${item.sessionId}-${item.messageId}-${index}`}>
-        <small>{role} · {evidenceTime(item.timestamp)}：“{item.excerpt}”</small>
+        <small>{role} · {item.sender || '发送者未知'} · {evidenceTime(item.timestamp)}：“{item.excerpt}”</small>
         {item.sessionId && localMessageId && <button onClick={() =>
           void window.electronAPI.window.openChatHistoryWindow(item.sessionId, localMessageId)}>打开原消息</button>}
       </div>
@@ -2359,6 +2359,9 @@ function AiAssistantPage() {
                   {memoryDiagnostics.ocr ? ` · OCR ${memoryDiagnostics.ocr.chinese ? '中文可用' : '未就绪'}` : ''}
                   {memoryDiagnostics.imageSemantics ? ` · 图片视觉 ${memoryDiagnostics.imageSemantics.available ? '本地可用' : '未就绪'}` : ''}
                   {memoryDiagnostics.stateStorage ? ` · 状态文件${memoryDiagnostics.stateStorage.recovered ? '已从备份恢复' : '耐久写入正常'}` : ''}
+                  {memoryDiagnostics.structuredEvidenceMigration?.version
+                    ? ` · 证据去重 ${Number(memoryDiagnostics.structuredEvidenceMigration.duplicatesRemoved || 0).toLocaleString()} 条 / 恢复发送者 ${Number(memoryDiagnostics.structuredEvidenceMigration.sendersRecovered || 0).toLocaleString()} 条`
+                    : ''}
                 </small>
               </span>
             </div>
@@ -4234,6 +4237,27 @@ function AiAssistantPage() {
                 : '未配置费率'}</b></span>
               <span>运行结果 <b>{memoryDiagnostics.ingestionSummary?.completedRuns || 0} 完成 / {memoryDiagnostics.ingestionSummary?.partialRuns || 0} 部分 / {memoryDiagnostics.ingestionSummary?.failedRuns || 0} 失败</b></span>
             </div>
+            {memoryDiagnostics.structuredEvidenceMigration?.version && <div className="assistant-recovery-audit healthy">
+              <header><ShieldCheck size={15} /><span><b>结构化证据身份迁移</b>
+                <small>事实、事件和关系按“结构 ID＋原消息”建立唯一约束；发送者未知的旧记录只做可验证回填，不进行猜测。</small>
+              </span></header>
+              <div className="assistant-recovery-current">
+                <span>证据行 <b>
+                  {Number(memoryDiagnostics.structuredEvidenceMigration.evidenceBefore || 0).toLocaleString()}
+                  {' → '}
+                  {Number(memoryDiagnostics.structuredEvidenceMigration.evidenceAfter || 0).toLocaleString()}
+                </b></span>
+                <span>移除重复 <b>{Number(memoryDiagnostics.structuredEvidenceMigration.duplicatesRemoved || 0).toLocaleString()}</b></span>
+                <span>有发送者 <b>
+                  {Number(memoryDiagnostics.structuredEvidenceMigration.sendersBefore || 0).toLocaleString()}
+                  {' → '}
+                  {Number(memoryDiagnostics.structuredEvidenceMigration.sendersAfter || 0).toLocaleString()}
+                </b></span>
+                <span>迁移时间 <b>{memoryDiagnostics.structuredEvidenceMigration.migratedAt
+                  ? new Date(memoryDiagnostics.structuredEvidenceMigration.migratedAt).toLocaleString('zh-CN')
+                  : '未知'}</b></span>
+              </div>
+            </div>}
             {memoryDiagnostics.embeddings?.ann && <div className={`assistant-ann-audit ${memoryDiagnostics.embeddings.ann.active ? 'active' : 'exact'}`}>
               <div><Network size={15} /><span><b>本地语义检索 · {memoryDiagnostics.embeddings.ann.active ? 'ANN 多探针索引' : '精确向量扫描'}</b>
                 <small>{memoryDiagnostics.embeddings.ann.active
