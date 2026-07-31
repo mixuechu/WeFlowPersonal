@@ -57,6 +57,8 @@ export interface InsightRecordLog {
   responseFormatJson?: boolean
   responseFormatFallback?: boolean
   responseFormatFallbackReason?: string
+  privacyVersion?: string
+  sensitivePayloadRetained?: boolean
   targetMessage?: {
     localId: number
     createTime: number
@@ -182,6 +184,8 @@ export interface GroupSummaryLog {
   responseFormatFallback?: boolean
   responseFormatFallbackReason?: string
   parsedTopics?: GroupSummaryTopic[]
+  privacyVersion?: string
+  sensitivePayloadRetained?: boolean
 }
 
 export interface GroupSummaryRecordSummary {

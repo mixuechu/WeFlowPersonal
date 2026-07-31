@@ -3,6 +3,10 @@ import fs from 'fs'
 import path from 'path'
 import { createHash, randomUUID } from 'crypto'
 import { ConfigService } from './config'
+import {
+  modelTraceContainsSensitivePayload,
+  sanitizePersistedModelTrace
+} from '../../shared/modelTracePrivacy'
 
 export type InsightRecordTriggerReason = 'activity' | 'silence' | 'test' | 'manual' | 'message_analysis'
 export type InsightRecordSourceType = 'insight' | 'message_analysis'
@@ -54,6 +58,8 @@ export interface InsightRecordLog {
     readError?: string
   }
   parsedAnalysis?: MessageInsightAnalysis
+  privacyVersion?: string
+  sensitivePayloadRetained?: boolean
 }
 
 export interface InsightRecord {
@@ -139,6 +145,16 @@ class InsightRecordService {
       } else if (Array.isArray(parsed?.records)) {
         this.records = parsed.records.filter((item: unknown) => item && typeof item === 'object') as InsightRecord[]
       }
+      const needsPrivacyMigration = this.records.some(record =>
+        modelTraceContainsSensitivePayload(record.log) ||
+        record.log?.sensitivePayloadRetained !== false
+      )
+      this.records = this.records.map(record => ({
+        ...record,
+        log: sanitizePersistedModelTrace(record.log || {} as InsightRecordLog)
+      }))
+      fs.chmodSync(filePath, 0o600)
+      if (needsPrivacyMigration) this.persist()
     } catch {
       this.records = []
     }
@@ -147,7 +163,12 @@ class InsightRecordService {
   private persist(): void {
     try {
       const filePath = this.resolveFilePath()
-      fs.writeFileSync(filePath, JSON.stringify({ version: 1, records: this.records }, null, 2), 'utf-8')
+      fs.writeFileSync(
+        filePath,
+        JSON.stringify({ version: 2, records: this.records }, null, 2),
+        { encoding: 'utf-8', mode: 0o600 }
+      )
+      fs.chmodSync(filePath, 0o600)
     } catch {
       // Keep insight generation non-blocking even if local persistence fails.
     }
@@ -218,7 +239,7 @@ class InsightRecordService {
       insight: input.insight,
       read: false,
       messageInsight: input.messageInsight,
-      log: input.log
+      log: sanitizePersistedModelTrace(input.log)
     }
 
     this.records.push(record)
@@ -374,6 +395,10 @@ class InsightRecordService {
     })
     this.persist()
     return { success: true, removed }
+  }
+
+  migratePrivacy(): void {
+    this.ensureLoaded()
   }
 }
 

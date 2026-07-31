@@ -4741,6 +4741,8 @@ app.whenReady().then(async () => {
   const resourcesPath = existsSync(candidateResources) ? candidateResources : fallbackResources
   const userDataPath = app.getPath('userData')
   applySensitiveLogPolicy(userDataPath, configService.get('logEnabled') === true)
+  insightRecordService.migratePrivacy()
+  groupSummaryService.migrateRecordPrivacy()
   wcdbService.setPaths(resourcesPath, userDataPath)
   await wcdbService.setLogEnabledAndWait(configService.get('logEnabled') === true)
   registerIpcHandlers()

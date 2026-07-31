@@ -305,6 +305,10 @@ class GroupSummaryService {
     return groupSummaryRecordService.getRecord(id)
   }
 
+  migrateRecordPrivacy(): void {
+    groupSummaryRecordService.migratePrivacy()
+  }
+
   async triggerManual(params: {
     sessionId: string
     displayName?: string

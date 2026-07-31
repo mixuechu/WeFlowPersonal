@@ -3,6 +3,10 @@ import fs from 'fs'
 import path from 'path'
 import { createHash, randomUUID } from 'crypto'
 import { ConfigService } from './config'
+import {
+  modelTraceContainsSensitivePayload,
+  sanitizePersistedModelTrace
+} from '../../shared/modelTracePrivacy'
 
 export type GroupSummaryTriggerType = 'auto' | 'manual'
 
@@ -32,6 +36,8 @@ export interface GroupSummaryLog {
   responseFormatFallback?: boolean
   responseFormatFallbackReason?: string
   parsedTopics?: GroupSummaryTopic[]
+  privacyVersion?: string
+  sensitivePayloadRetained?: boolean
 }
 
 export interface GroupSummaryRecord {
@@ -115,7 +121,7 @@ class GroupSummaryRecordService {
   private resolveLogDir(): string {
     if (this.logDir) return this.logDir
     this.logDir = path.join(this.resolveUserDataPath(), 'weflow-group-summary-logs')
-    fs.mkdirSync(this.logDir, { recursive: true })
+    fs.mkdirSync(this.logDir, { recursive: true, mode: 0o700 })
     return this.logDir
   }
 
@@ -138,7 +144,13 @@ class GroupSummaryRecordService {
     try {
       const fileName = this.safeLogFileName(recordId)
       const logPath = path.join(this.resolveLogDir(), fileName)
-      fs.writeFileSync(logPath, JSON.stringify({ version: 1, rawOutput, log }, null, 2), 'utf-8')
+      const sanitized = sanitizePersistedModelTrace({ ...log, rawOutput })
+      fs.writeFileSync(
+        logPath,
+        JSON.stringify({ version: 2, rawOutput: '', log: sanitized }, null, 2),
+        { encoding: 'utf-8', mode: 0o600 }
+      )
+      fs.chmodSync(logPath, 0o600)
       return fileName
     } catch {
       return undefined
@@ -153,9 +165,18 @@ class GroupSummaryRecordService {
       const parsed = JSON.parse(fs.readFileSync(logPath, 'utf-8'))
       const log = parsed?.log
       if (!log || typeof log !== 'object') return null
+      const sanitized = sanitizePersistedModelTrace(log as GroupSummaryLog)
+      if (Number(parsed?.version || 0) < 2 || modelTraceContainsSensitivePayload(log)) {
+        fs.writeFileSync(
+          logPath,
+          JSON.stringify({ version: 2, rawOutput: '', log: sanitized }, null, 2),
+          { encoding: 'utf-8', mode: 0o600 }
+        )
+      }
+      fs.chmodSync(logPath, 0o600)
       return {
-        rawOutput: typeof parsed?.rawOutput === 'string' ? parsed.rawOutput : String(log.rawOutput || ''),
-        log: log as GroupSummaryLog
+        rawOutput: '',
+        log: sanitized as GroupSummaryLog
       }
     } catch {
       return null
@@ -167,7 +188,12 @@ class GroupSummaryRecordService {
     this.loaded = true
     const filePath = this.resolveFilePath()
     try {
-      if (!fs.existsSync(filePath)) return
+      if (!fs.existsSync(filePath)) {
+        this.sanitizeStoredLogFiles()
+        this.removeLegacyPlaintextBackups()
+        this.removeOrphanLogFiles()
+        return
+      }
       const raw = fs.readFileSync(filePath, 'utf-8')
       const parsed = JSON.parse(raw)
       const records = Array.isArray(parsed) ? parsed : parsed?.records
@@ -175,9 +201,6 @@ class GroupSummaryRecordService {
 
       const legacyRecords = records.filter((item) => item && typeof item === 'object') as LegacyGroupSummaryRecord[]
       const needsMigration = legacyRecords.some((record) => Boolean(record.log || record.rawOutput))
-      if (needsMigration) {
-        this.backupLegacyFile(filePath)
-      }
 
       this.records = legacyRecords.map((record) => {
         const id = String(record.id || randomUUID())
@@ -205,26 +228,62 @@ class GroupSummaryRecordService {
       if (needsMigration) {
         this.persist()
       }
+      this.sanitizeStoredLogFiles()
+      this.removeLegacyPlaintextBackups()
+      this.removeOrphanLogFiles()
+      fs.chmodSync(filePath, 0o600)
     } catch {
       this.records = []
     }
   }
 
-  private backupLegacyFile(filePath: string): void {
+  private removeLegacyPlaintextBackups(): void {
     try {
-      const backupPath = `${filePath}.legacy-${Date.now()}.bak`
-      if (!fs.existsSync(backupPath)) {
-        fs.copyFileSync(filePath, backupPath)
+      const userDataPath = this.resolveUserDataPath()
+      for (const name of fs.readdirSync(userDataPath)) {
+        if (/^weflow-group-summary-records\.json\.legacy-\d+\.bak$/.test(name)) {
+          fs.unlinkSync(path.join(userDataPath, name))
+        }
       }
     } catch {
-      // Backup failure should not block reading existing records.
+      // Privacy migration is best effort; the primary record remains readable.
+    }
+  }
+
+  private sanitizeStoredLogFiles(): void {
+    try {
+      const directory = this.resolveLogDir()
+      for (const name of fs.readdirSync(directory)) {
+        if (!/^[a-zA-Z0-9_-]+\.json$/.test(name)) continue
+        const logPath = path.join(directory, name)
+        try {
+          const parsed = JSON.parse(fs.readFileSync(logPath, 'utf8'))
+          const log = parsed?.log
+          if (!log || typeof log !== 'object') continue
+          const sanitized = sanitizePersistedModelTrace(log)
+          fs.writeFileSync(
+            logPath,
+            JSON.stringify({ version: 2, rawOutput: '', log: sanitized }, null, 2),
+            { encoding: 'utf8', mode: 0o600 }
+          )
+          fs.chmodSync(logPath, 0o600)
+        } catch {}
+      }
+      fs.chmodSync(directory, 0o700)
+    } catch {
+      // Summary listing should survive an unreadable diagnostics directory.
     }
   }
 
   private persist(): void {
     try {
       const filePath = this.resolveFilePath()
-      fs.writeFileSync(filePath, JSON.stringify({ version: 2, records: this.records }, null, 2), 'utf-8')
+      fs.writeFileSync(
+        filePath,
+        JSON.stringify({ version: 2, records: this.records }, null, 2),
+        { encoding: 'utf-8', mode: 0o600 }
+      )
+      fs.chmodSync(filePath, 0o600)
     } catch {
       // Summary generation should not fail because local record persistence failed.
     }
@@ -307,6 +366,7 @@ class GroupSummaryRecordService {
       .sort((a, b) => b.createdAt - a.createdAt)
     const keepIds = new Set(scopedRecords.slice(0, this.maxRecordsPerScope).map((item) => item.id))
     this.records = this.records.filter((item) => item.accountScope !== scope || keepIds.has(item.id))
+    this.removeOrphanLogFiles()
     this.persist()
     return this.toSummary(record)
   }
@@ -378,6 +438,21 @@ class GroupSummaryRecordService {
     this.records = []
     this.filePath = null
     this.logDir = null
+  }
+
+  migratePrivacy(): void {
+    this.ensureLoaded()
+  }
+
+  private removeOrphanLogFiles(): void {
+    try {
+      const referenced = new Set(this.records.map(record => record.logFile).filter(Boolean))
+      for (const name of fs.readdirSync(this.resolveLogDir())) {
+        if (/^[a-zA-Z0-9_-]+\.json$/.test(name) && !referenced.has(name)) {
+          fs.unlinkSync(path.join(this.resolveLogDir(), name))
+        }
+      }
+    } catch {}
   }
 }
 
