@@ -4535,6 +4535,21 @@ export class AiAssistantService {
     }
   }
 
+  getMemoryEvidencePage(documentType: string, sourceId: string, pagination?: any): any {
+    const normalizedType = String(documentType || '').trim()
+    const normalizedSourceId = String(sourceId || '').trim()
+    if (!new Set(['entity', 'relation', 'claim', 'event', 'task', 'resource']).has(normalizedType)) {
+      throw new Error('记忆类型无效')
+    }
+    if (!normalizedSourceId || normalizedSourceId.length > 512 || /[\u0000-\u001f]/.test(normalizedSourceId)) {
+      throw new Error('记忆标识无效')
+    }
+    return personalMemoryStore.getDocumentEvidencePage(normalizedType, normalizedSourceId, {
+      offset: Number(pagination?.offset || 0),
+      limit: Number(pagination?.limit || 40)
+    })
+  }
+
   async ensureVectorIndex(): Promise<any> {
     if (this.vectorIndexPromise) return this.vectorIndexPromise
     this.vectorIndexPromise = (async () => {

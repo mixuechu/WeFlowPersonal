@@ -1754,6 +1754,19 @@ export interface ElectronAPI {
         truncated: boolean
         scopeCandidates: number | null
       }>
+      getMemoryEvidencePage: (
+        documentType: string,
+        sourceId: string,
+        pagination?: { offset?: number; limit?: number }
+      ) => Promise<{
+        items: any[]
+        total: number
+        hasMore: boolean
+        offset: number
+        limit: number
+        documentType: string
+        sourceId: string
+      }>
       indexMemoryVectors: () => Promise<any>
       findGraphPath: (fromId: string, toId: string, maxDepth?: number) => Promise<any>
       findCommonNeighbors: (fromId: string, toId: string) => Promise<any>

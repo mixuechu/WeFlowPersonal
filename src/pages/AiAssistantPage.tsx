@@ -233,6 +233,18 @@ function AiAssistantPage() {
   }>({ status: 'idle', query: '' })
   const [memoryLoadingMore, setMemoryLoadingMore] = useState(false)
   const memorySearchGate = useRef(new LatestRequestGate())
+  const [memoryEvidenceArchive, setMemoryEvidenceArchive] = useState<{
+    documentType: string
+    sourceId: string
+    title: string
+    items: any[]
+    total: number
+    hasMore: boolean
+    status: 'loading' | 'ready' | 'error'
+    error?: string
+  } | null>(null)
+  const [memoryEvidenceLoadingMore, setMemoryEvidenceLoadingMore] = useState(false)
+  const memoryEvidenceArchiveGate = useRef(new LatestRequestGate())
   const memoryConversationGate = useRef(new LatestRequestGate())
   const [editingClaim, setEditingClaim] = useState<any>(null)
   const [editingEvent, setEditingEvent] = useState<any>(null)
@@ -1813,6 +1825,95 @@ function AiAssistantPage() {
     }
   }
 
+  const openMemoryEvidenceArchive = async (documentType: string, sourceId: string, title: string) => {
+    const request = memoryEvidenceArchiveGate.current.begin()
+    setMemoryEvidenceLoadingMore(false)
+    setMemoryEvidenceArchive({
+      documentType,
+      sourceId,
+      title,
+      items: [],
+      total: 0,
+      hasMore: false,
+      status: 'loading'
+    })
+    try {
+      const page = await window.electronAPI.aiAssistant.getMemoryEvidencePage(
+        documentType,
+        sourceId,
+        { offset: 0, limit: 40 }
+      )
+      if (!memoryEvidenceArchiveGate.current.isCurrent(request)) return
+      setMemoryEvidenceArchive({
+        documentType,
+        sourceId,
+        title,
+        items: page.items,
+        total: page.total,
+        hasMore: page.hasMore,
+        status: 'ready'
+      })
+    } catch (error: any) {
+      if (!memoryEvidenceArchiveGate.current.isCurrent(request)) return
+      setMemoryEvidenceArchive({
+        documentType,
+        sourceId,
+        title,
+        items: [],
+        total: 0,
+        hasMore: false,
+        status: 'error',
+        error: error?.message || String(error)
+      })
+    }
+  }
+
+  const closeMemoryEvidenceArchive = () => {
+    memoryEvidenceArchiveGate.current.invalidate()
+    setMemoryEvidenceLoadingMore(false)
+    setMemoryEvidenceArchive(null)
+  }
+
+  const loadMoreMemoryEvidence = async () => {
+    const archive = memoryEvidenceArchive
+    if (!archive || archive.status !== 'ready' || !archive.hasMore || memoryEvidenceLoadingMore) return
+    const request = memoryEvidenceArchiveGate.current.begin()
+    setMemoryEvidenceLoadingMore(true)
+    try {
+      const page = await window.electronAPI.aiAssistant.getMemoryEvidencePage(
+        archive.documentType,
+        archive.sourceId,
+        { offset: archive.items.length, limit: 40 }
+      )
+      if (!memoryEvidenceArchiveGate.current.isCurrent(request)) return
+      setMemoryEvidenceArchive(current => {
+        if (!current || current.documentType !== archive.documentType || current.sourceId !== archive.sourceId) return current
+        const seen = new Set(current.items.map(item =>
+          `${String(item.session_id || '')}\u0000${String(item.message_id || '')}`))
+        const additions = page.items.filter(item => {
+          const key = `${String(item.session_id || '')}\u0000${String(item.message_id || '')}`
+          if (seen.has(key)) return false
+          seen.add(key)
+          return true
+        })
+        return {
+          ...current,
+          items: [...current.items, ...additions],
+          total: page.total,
+          hasMore: page.hasMore
+        }
+      })
+    } catch (error: any) {
+      if (memoryEvidenceArchiveGate.current.isCurrent(request)) {
+        setMemoryEvidenceArchive(current => current
+          ? { ...current, status: 'error', error: error?.message || String(error) }
+          : current)
+      }
+    } finally {
+      if (memoryEvidenceArchiveGate.current.isCurrent(request)) setMemoryEvidenceLoadingMore(false)
+    }
+  }
+
   const openMemoryConversation = useCallback(async (id: string) => {
     const request = memoryConversationGate.current.begin()
     const conversation = await window.electronAPI.aiAssistant.getAssistantConversation(id, { offset: 0, limit: 40 })
@@ -2870,6 +2971,10 @@ function AiAssistantPage() {
                   })}
                     {evidenceTotal > evidence.length &&
                       <p className="assistant-evidence-limit-note">当前显示最近 {evidence.length} 条，共有 {evidenceTotal} 条去重原文证据；可结合来源、人物和时间范围继续检索。</p>}
+                    <button className="assistant-open-evidence-archive" onClick={() =>
+                      void openMemoryEvidenceArchive(result.document_type, result.source_id, result.title)}>
+                      查看完整证据档案
+                    </button>
                   </div>
                   : <p>该结果只能作为检索线索，不能单独支撑事实结论。</p>}
               </details>
@@ -2996,6 +3101,10 @@ function AiAssistantPage() {
                       void window.electronAPI.window.openChatHistoryWindow(evidence.sessionId, localMessageId)}>打开原消息</button>}
                   </small>
                 })}
+                {!!citation.evidence?.length && !!citation.sourceId && <button className="assistant-open-evidence-archive" onClick={() =>
+                  void openMemoryEvidenceArchive(citation.type, citation.sourceId, citation.title)}>
+                  查看完整证据档案
+                </button>}
                 {['relation', 'claim', 'event'].includes(citation.type) && <div className="assistant-citation-actions">
                   {citation.type === 'claim' && <button onClick={() => openClaimCorrection(citation)}>纠正事实</button>}
                   {citation.type === 'event' && <button onClick={() => void openEventCorrection(citation)}>纠正事件</button>}
@@ -3810,6 +3919,67 @@ function AiAssistantPage() {
           </div>
         </section>
       </div>
+
+      {memoryEvidenceArchive && (
+        <div className="assistant-modal-backdrop" role="presentation">
+          <div className="assistant-modal assistant-evidence-archive-modal" role="dialog" aria-modal="true"
+            aria-labelledby="memory-evidence-archive-title">
+            <div className="assistant-modal-title">
+              <div>
+                <span className="assistant-eyebrow">FULL EVIDENCE ARCHIVE</span>
+                <h2 id="memory-evidence-archive-title">{memoryEvidenceArchive.title}</h2>
+                <p>
+                  {MEMORY_TYPE_LABELS[memoryEvidenceArchive.documentType] || memoryEvidenceArchive.documentType}
+                  {' · '}按时间从新到旧读取 SQLCipher 中的完整去重证据历史。
+                </p>
+              </div>
+              <button aria-label="关闭完整证据档案" onClick={closeMemoryEvidenceArchive}><X size={18} /></button>
+            </div>
+            <div className="assistant-evidence-archive-status">
+              {memoryEvidenceArchive.status === 'loading'
+                ? '正在读取完整证据档案…'
+                : memoryEvidenceArchive.status === 'error'
+                  ? `读取失败：${memoryEvidenceArchive.error || '未知错误'}`
+                  : `已加载 ${memoryEvidenceArchive.items.length} / ${memoryEvidenceArchive.total} 条`}
+            </div>
+            <div className="assistant-evidence-archive-list">
+              {memoryEvidenceArchive.items.map((rawEvidence, index) => {
+                const evidence = normalizeMemoryEvidence(rawEvidence)
+                const localMessageId = evidenceLocalMessageId(evidence)
+                const role = evidence.role === 'indirect' ? '间接证据'
+                  : evidence.role === 'contradiction' ? '反证'
+                    : evidence.role === 'direct' ? '直接证据' : '原文'
+                return <article key={`${evidence.sessionId}-${evidence.messageId}-${index}`}>
+                  <header>
+                    <span>{role} · {evidence.sender || '来源未标注'} · {evidenceTime(evidence.timestamp)}</span>
+                    {evidence.sessionId && localMessageId && <button onClick={() =>
+                      void window.electronAPI.window.openChatHistoryWindow(evidence.sessionId, localMessageId)}>
+                      打开原消息
+                    </button>}
+                  </header>
+                  <p>“{evidence.excerpt || '原文摘录为空'}”</p>
+                </article>
+              })}
+              {memoryEvidenceArchive.status === 'ready' && !memoryEvidenceArchive.items.length &&
+                <div className="assistant-empty">该记忆当前没有可展示的原文证据。</div>}
+            </div>
+            <div className="assistant-modal-actions">
+              <button onClick={closeMemoryEvidenceArchive}>关闭</button>
+              {memoryEvidenceArchive.status === 'error' && <button className="primary" onClick={() =>
+                void openMemoryEvidenceArchive(
+                  memoryEvidenceArchive.documentType,
+                  memoryEvidenceArchive.sourceId,
+                  memoryEvidenceArchive.title
+                )}>重试</button>}
+              {memoryEvidenceArchive.status === 'ready' && memoryEvidenceArchive.hasMore &&
+                <button className="primary" disabled={memoryEvidenceLoadingMore}
+                  onClick={() => void loadMoreMemoryEvidence()}>
+                  {memoryEvidenceLoadingMore ? '正在加载…' : '加载更早证据'}
+                </button>}
+            </div>
+          </div>
+        </div>
+      )}
 
       {showEntityDossier && selectedEntity && (
         <div className="assistant-modal-backdrop">

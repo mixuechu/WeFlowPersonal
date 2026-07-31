@@ -1061,7 +1061,7 @@ test('memory cards expose evidence totals but bound their latest evidence payloa
     relations: [],
     reviewQueue: []
   })
-  const manyEvidence = Array.from({ length: 25 }, (_, index) => ({
+  const manyEvidence = Array.from({ length: 125 }, (_, index) => ({
     messageId: `wechat:bounded-session:${index + 1}`,
     sessionId: 'bounded-session',
     timestamp: 1_700_000_000 + index,
@@ -1081,33 +1081,75 @@ test('memory cards expose evidence totals but bound their latest evidence payloa
   }])
 
   const feedClaim = store.getMemoryFeed().claims.find(item => item.id === 'bounded-claim')
-  assert.equal(feedClaim.evidence_count, 25)
+  assert.equal(feedClaim.evidence_count, manyEvidence.length)
   assert.equal(feedClaim.evidence.length, 20)
-  assert.deepEqual(feedClaim.evidence.map((item: any) => item.message_id), manyEvidence.slice(5).map(item => item.messageId))
+  assert.deepEqual(feedClaim.evidence.map((item: any) => item.message_id), manyEvidence.slice(-20).map(item => item.messageId))
 
   const dossierClaim = store.getEntityMemory('bounded-person').claims[0]
-  assert.equal(dossierClaim.evidence_count, 25)
+  assert.equal(dossierClaim.evidence_count, manyEvidence.length)
   assert.equal(dossierClaim.evidence.length, 20)
-  assert.equal(dossierClaim.evidence.at(-1).message_id, 'wechat:bounded-session:25')
+  assert.equal(dossierClaim.evidence.at(-1).message_id, 'wechat:bounded-session:125')
 
   const searchPayload = store.getDocumentEvidencePayload('claim', 'bounded-claim')
-  assert.equal(searchPayload.evidenceTotal, 25)
+  assert.equal(searchPayload.evidenceTotal, manyEvidence.length)
   assert.equal(searchPayload.evidence.length, MEMORY_CARD_EVIDENCE_LIMIT)
   assert.deepEqual(
     searchPayload.evidence.map(item => item.message_id),
     manyEvidence.slice(-MEMORY_CARD_EVIDENCE_LIMIT).map(item => item.messageId)
   )
   assert.deepEqual(store.getDocumentEvidence('claim', 'bounded-claim'), searchPayload.evidence)
+  assert.equal(Number((store as any).db.prepare(
+    'SELECT COUNT(*) AS count FROM search_document_evidence WHERE document_id=?'
+  ).get('claim:bounded-claim').count), 0)
+  const firstEvidencePage = store.getDocumentEvidencePage('claim', 'bounded-claim', { limit: 40 })
+  const secondEvidencePage = store.getDocumentEvidencePage('claim', 'bounded-claim', { offset: 40, limit: 40 })
+  const lastEvidencePage = store.getDocumentEvidencePage('claim', 'bounded-claim', { offset: 120, limit: 40 })
+  assert.equal(firstEvidencePage.total, manyEvidence.length)
+  assert.equal(firstEvidencePage.hasMore, true)
+  assert.equal(secondEvidencePage.items.length, 40)
+  assert.equal(lastEvidencePage.items.length, 5)
+  assert.equal(lastEvidencePage.hasMore, false)
+  assert.deepEqual(
+    [...firstEvidencePage.items, ...secondEvidencePage.items, ...store.getDocumentEvidencePage(
+      'claim', 'bounded-claim', { offset: 80, limit: 40 }
+    ).items, ...lastEvidencePage.items].map(item => item.message_id),
+    manyEvidence.map(item => item.messageId).reverse()
+  )
 
-  ;(store as any).db.prepare(
-    'DELETE FROM search_document_evidence WHERE document_id=?'
-  ).run('claim:bounded-claim')
   const fallbackPayload = store.getDocumentEvidencePayload('claim', 'bounded-claim')
-  assert.equal(fallbackPayload.evidenceTotal, 25)
+  assert.equal(fallbackPayload.evidenceTotal, manyEvidence.length)
   assert.deepEqual(
     fallbackPayload.evidence.map(item => item.message_id),
     manyEvidence.slice(-MEMORY_CARD_EVIDENCE_LIMIT).map(item => item.messageId)
   )
+  const fallbackPage = store.getDocumentEvidencePage('claim', 'bounded-claim', { offset: 120, limit: 40 })
+  assert.equal(fallbackPage.total, manyEvidence.length)
+  assert.deepEqual(
+    fallbackPage.items.map(item => item.message_id),
+    manyEvidence.slice(0, 5).map(item => item.messageId).reverse()
+  )
+  assert.equal(fallbackPage.hasMore, false)
+
+  store.upsertResources([{
+    id: 'bounded-resource',
+    resourceType: 'link',
+    title: '通用证据索引',
+    content: '验证非结构化记忆的完整证据分页',
+    evidence: manyEvidence.map(item => ({ ...item, sender: '证据发送者' }))
+  }])
+  const genericFirstPage = store.getDocumentEvidencePage('resource', 'bounded-resource', { limit: 40 })
+  const genericLastPage = store.getDocumentEvidencePage('resource', 'bounded-resource', {
+    offset: 120,
+    limit: 40
+  })
+  assert.equal(genericFirstPage.total, manyEvidence.length)
+  assert.equal(genericFirstPage.items[0].message_id, manyEvidence.at(-1)?.messageId)
+  assert.equal(genericFirstPage.items[0].sender, '证据发送者')
+  assert.deepEqual(
+    genericLastPage.items.map(item => item.message_id),
+    manyEvidence.slice(0, 5).map(item => item.messageId).reverse()
+  )
+  assert.equal(genericLastPage.hasMore, false)
 }))
 
 test('task search keeps original message evidence', () => withStore(store => {

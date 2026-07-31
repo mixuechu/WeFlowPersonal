@@ -4636,6 +4636,80 @@ export class PersonalMemoryStore {
     return this.getDocumentEvidencePayload(documentType, sourceId).evidence
   }
 
+  getDocumentEvidencePage(
+    documentType: string,
+    sourceId: string,
+    options: { offset?: number; limit?: number } = {}
+  ): {
+    items: any[]
+    total: number
+    hasMore: boolean
+    offset: number
+    limit: number
+    documentType: string
+    sourceId: string
+  } {
+    const offset = Math.max(0, Math.min(1_000_000, Math.floor(Number(options.offset) || 0)))
+    const limit = Math.max(1, Math.min(100, Math.floor(Number(options.limit) || 40)))
+    const empty = {
+      items: [],
+      total: 0,
+      hasMore: false,
+      offset,
+      limit,
+      documentType,
+      sourceId
+    }
+    if (!this.db) return empty
+    const documentId = `${documentType}:${sourceId}`
+    const genericTotal = Number((this.db.prepare(`
+      SELECT COUNT(*) AS count FROM search_document_evidence WHERE document_id=?
+    `).get(documentId) as any)?.count || 0)
+    if (genericTotal) {
+      const items = this.db.prepare(`
+        SELECT message_id,session_id,timestamp,sender,excerpt
+        FROM search_document_evidence
+        WHERE document_id=?
+        ORDER BY timestamp DESC,message_id DESC
+        LIMIT ? OFFSET ?
+      `).all(documentId, limit, offset) as any[]
+      return {
+        ...empty,
+        items,
+        total: genericTotal,
+        hasMore: offset + items.length < genericTotal
+      }
+    }
+    const foreignKey = documentType === 'claim'
+      ? 'claim_id'
+      : documentType === 'event'
+        ? 'event_id'
+        : documentType === 'relation'
+          ? 'relation_id'
+          : ''
+    if (!foreignKey) return empty
+    const total = Number((this.db.prepare(`
+      SELECT COUNT(*) AS count FROM evidence WHERE ${foreignKey}=?
+    `).get(sourceId) as any)?.count || 0)
+    const items = total
+      ? this.db.prepare(`
+          SELECT message_id,session_id,timestamp,excerpt,evidence_role
+          FROM evidence
+          WHERE ${foreignKey}=?
+          ORDER BY timestamp DESC,
+            CASE WHEN evidence_role='contradiction' THEN 1 ELSE 0 END,
+            message_id DESC
+          LIMIT ? OFFSET ?
+        `).all(sourceId, limit, offset) as any[]
+      : []
+    return {
+      ...empty,
+      items,
+      total,
+      hasMore: offset + items.length < total
+    }
+  }
+
   saveAssistantExchange(question: string, answer: string, citations: any[], conversationId?: string): string {
     if (!this.db) return ''
     const existing = conversationId
