@@ -758,7 +758,51 @@ export class PersonalMemoryStore {
     `).get() as any)?.value || '')
     let migrationAudit: any = {}
     try { migrationAudit = JSON.parse(migrationVersion) } catch {}
-    if (migrationVersion === '1' || Number(migrationAudit?.version || 0) >= 1) return
+    const previousVersion = migrationVersion === '1'
+      ? 1
+      : Number(migrationAudit?.version || 0)
+    const expectedIndexes = [
+      { name: 'idx_evidence_claim_message', foreignKey: 'claim_id' },
+      { name: 'idx_evidence_relation_message', foreignKey: 'relation_id' },
+      { name: 'idx_evidence_event_message', foreignKey: 'event_id' }
+    ]
+    const constraintState = expectedIndexes.map(expected => {
+      const index = this.db!.prepare(`
+        SELECT name,"unique" AS is_unique,partial
+        FROM pragma_index_list('evidence') WHERE name=?
+      `).get(expected.name) as any
+      const columns = index
+        ? (this.db!.prepare(`PRAGMA index_info(${expected.name})`).all() as Array<{ name: string }>)
+          .map(item => item.name)
+        : []
+      const sql = String((this.db!.prepare(`
+        SELECT sql FROM sqlite_master WHERE type='index' AND name=?
+      `).get(expected.name) as any)?.sql || '').toLowerCase().replace(/\s+/g, ' ')
+      return Boolean(
+        Number(index?.is_unique || 0) === 1
+        && Number(index?.partial || 0) === 1
+        && columns.length === 2
+        && columns[0] === expected.foreignKey
+        && columns[1] === 'message_id'
+        && sql.includes(`where ${expected.foreignKey} is not null`)
+      )
+    })
+    const constraintsHealthyBefore = constraintState.every(Boolean)
+    if (previousVersion >= 2 && constraintsHealthyBefore) {
+      if (migrationAudit?.driftDetectedThisStart) {
+        const checkedAt = new Date().toISOString()
+        this.db.prepare(`
+          UPDATE schema_meta SET value=?,updated_at=?
+          WHERE key='structured_evidence_identity_version'
+        `).run(JSON.stringify({
+          ...migrationAudit,
+          constraintsHealthy: true,
+          driftDetectedThisStart: false
+        }), checkedAt)
+      }
+      return
+    }
+    const driftDetected = previousVersion >= 1 && !constraintsHealthyBefore
     const before = this.db.prepare(`
       SELECT COUNT(*) AS evidence_count,
         SUM(CASE WHEN sender!='' THEN 1 ELSE 0 END) AS sender_count
@@ -775,6 +819,9 @@ export class PersonalMemoryStore {
         ON evidence(event_id,message_id);
     `)
     const transaction = this.db.transaction(() => {
+      for (const expected of expectedIndexes) {
+        this.db!.exec(`DROP INDEX IF EXISTS ${expected.name}`)
+      }
       this.db!.exec(`
         UPDATE evidence
         SET sender=COALESCE((
@@ -858,21 +905,28 @@ export class PersonalMemoryStore {
         FROM evidence
       `).get() as any
       const migratedAt = new Date().toISOString()
+      const previousDuplicatesRemoved = Number(migrationAudit?.duplicatesRemoved || 0)
+      const previousSendersRecovered = Number(migrationAudit?.sendersRecovered || 0)
       const audit = {
-        version: 1,
+        version: 2,
         migratedAt,
         evidenceBefore: Number(before?.evidence_count || 0),
         evidenceAfter: Number(after?.evidence_count || 0),
-        duplicatesRemoved: Math.max(
+        duplicatesRemoved: previousDuplicatesRemoved + Math.max(
           0,
           Number(before?.evidence_count || 0) - Number(after?.evidence_count || 0)
         ),
         sendersBefore: Number(before?.sender_count || 0),
         sendersAfter: Number(after?.sender_count || 0),
-        sendersRecovered: Math.max(
+        sendersRecovered: previousSendersRecovered + Math.max(
           0,
           Number(after?.sender_count || 0) - Number(before?.sender_count || 0)
-        )
+        ),
+        repairRuns: Math.max(0, Number(migrationAudit?.repairRuns || (previousVersion >= 1 ? 1 : 0))) + 1,
+        constraintDriftRepairs: Math.max(0, Number(migrationAudit?.constraintDriftRepairs || 0))
+          + (driftDetected ? 1 : 0),
+        constraintsHealthy: true,
+        driftDetectedThisStart: driftDetected
       }
       this.db!.prepare(`
         INSERT INTO schema_meta(key,value,updated_at) VALUES('structured_evidence_identity_version',?,?)
@@ -971,7 +1025,11 @@ export class PersonalMemoryStore {
           duplicatesRemoved: Number(audit.duplicatesRemoved || 0),
           sendersBefore: Number(audit.sendersBefore || 0),
           sendersAfter: Number(audit.sendersAfter || 0),
-          sendersRecovered: Number(audit.sendersRecovered || 0)
+          sendersRecovered: Number(audit.sendersRecovered || 0),
+          repairRuns: Number(audit.repairRuns || 0),
+          constraintDriftRepairs: Number(audit.constraintDriftRepairs || 0),
+          constraintsHealthy: audit.constraintsHealthy !== false,
+          driftDetectedThisStart: Boolean(audit.driftDetectedThisStart)
         }
       } catch {
         return {
@@ -982,7 +1040,11 @@ export class PersonalMemoryStore {
           duplicatesRemoved: 0,
           sendersBefore: 0,
           sendersAfter: 0,
-          sendersRecovered: 0
+          sendersRecovered: 0,
+          repairRuns: 0,
+          constraintDriftRepairs: 0,
+          constraintsHealthy: String(row?.value || '') === '1',
+          driftDetectedThisStart: false
         }
       }
     })()

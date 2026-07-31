@@ -1240,7 +1240,7 @@ test('structured evidence migration deduplicates nullable legacy identities and 
       const migrationAudit = JSON.parse(String(((reopened as any).db.prepare(`
         SELECT value FROM schema_meta WHERE key='structured_evidence_identity_version'
       `).get() as any).value))
-      assert.equal(migrationAudit.version, 1)
+      assert.equal(migrationAudit.version, 2)
       assert.equal(migrationAudit.evidenceBefore, 2)
       assert.equal(migrationAudit.evidenceAfter, 1)
       assert.equal(migrationAudit.duplicatesRemoved, 1)
@@ -1252,6 +1252,92 @@ test('structured evidence migration deduplicates nullable legacy identities and 
           'idx_evidence_claim_message','idx_evidence_relation_message','idx_evidence_event_message'
         ) AND "unique"=1
       `).get() as any).count), 3)
+    } finally {
+      reopened.close()
+    }
+  } finally {
+    first.close()
+    rmSync(directory, { recursive: true, force: true })
+  }
+})
+
+test('structured evidence constraints self-heal after index drift without trusting migration metadata', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'weflow-evidence-drift-test-'))
+  const databasePath = join(directory, 'memory.sqlite')
+  const first = new PersonalMemoryStore()
+  try {
+    first.initialize(databasePath)
+    first.syncGraph({
+      entities: [{ id: 'drift-person', type: 'person', canonicalName: '漂移人物', trustStatus: 'confirmed' }],
+      relations: [],
+      reviewQueue: []
+    })
+    first.upsertClaims([{
+      id: 'drift-claim',
+      subjectId: 'drift-person',
+      predicate: '负责',
+      objectValue: '约束漂移验证',
+      confidence: 0.9,
+      status: 'candidate',
+      sourceNature: 'self_statement',
+      searchText: '漂移人物负责约束漂移验证',
+      evidence: [{
+        messageId: 'drift-message',
+        sessionId: 'drift-session',
+        timestamp: 1_700_000_000,
+        sender: '原发送者',
+        excerpt: '原始摘录',
+        role: 'support'
+      }]
+    }])
+    const database = (first as any).db
+    const auditBefore = JSON.parse(String(database.prepare(`
+      SELECT value FROM schema_meta WHERE key='structured_evidence_identity_version'
+    `).get().value))
+    assert.equal(auditBefore.version, 2)
+    database.exec('DROP INDEX idx_evidence_claim_message')
+    database.prepare(`
+      INSERT INTO evidence(
+        claim_id,message_id,session_id,timestamp,sender,excerpt,evidence_role
+      ) VALUES(?,?,?,?,?,?,?)
+    `).run(
+      'drift-claim', 'drift-message', 'drift-session', 1_700_000_000,
+      '恢复发送者', '索引漂移期间产生的更完整摘录', 'direct'
+    )
+    first.close()
+
+    const reopened = new PersonalMemoryStore()
+    try {
+      reopened.initialize(databasePath)
+      const page = reopened.getDocumentEvidencePage('claim', 'drift-claim')
+      assert.equal(page.total, 1)
+      assert.equal(page.items[0].sender, '恢复发送者')
+      assert.equal(page.items[0].excerpt, '索引漂移期间产生的更完整摘录')
+      assert.equal(page.items[0].evidence_role, 'direct')
+      const diagnostics = reopened.getDiagnostics().structuredEvidenceMigration
+      assert.equal(diagnostics.version, 2)
+      assert.equal(diagnostics.constraintsHealthy, true)
+      assert.equal(diagnostics.driftDetectedThisStart, true)
+      assert.equal(diagnostics.constraintDriftRepairs, 1)
+      assert.equal(diagnostics.repairRuns, auditBefore.repairRuns + 1)
+      assert.equal(diagnostics.duplicatesRemoved, auditBefore.duplicatesRemoved + 1)
+      assert.equal(Number(((reopened as any).db.prepare(`
+        SELECT COUNT(*) AS count FROM pragma_index_list('evidence')
+        WHERE name IN(
+          'idx_evidence_claim_message','idx_evidence_relation_message','idx_evidence_event_message'
+        ) AND "unique"=1 AND partial=1
+      `).get() as any).count), 3)
+      reopened.close()
+      const verifiedAgain = new PersonalMemoryStore()
+      try {
+        verifiedAgain.initialize(databasePath)
+        const verifiedDiagnostics = verifiedAgain.getDiagnostics().structuredEvidenceMigration
+        assert.equal(verifiedDiagnostics.driftDetectedThisStart, false)
+        assert.equal(verifiedDiagnostics.constraintDriftRepairs, 1)
+        assert.equal(verifiedDiagnostics.repairRuns, auditBefore.repairRuns + 1)
+      } finally {
+        verifiedAgain.close()
+      }
     } finally {
       reopened.close()
     }

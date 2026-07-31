@@ -2360,7 +2360,7 @@ function AiAssistantPage() {
                   {memoryDiagnostics.imageSemantics ? ` · 图片视觉 ${memoryDiagnostics.imageSemantics.available ? '本地可用' : '未就绪'}` : ''}
                   {memoryDiagnostics.stateStorage ? ` · 状态文件${memoryDiagnostics.stateStorage.recovered ? '已从备份恢复' : '耐久写入正常'}` : ''}
                   {memoryDiagnostics.structuredEvidenceMigration?.version
-                    ? ` · 证据去重 ${Number(memoryDiagnostics.structuredEvidenceMigration.duplicatesRemoved || 0).toLocaleString()} 条 / 恢复发送者 ${Number(memoryDiagnostics.structuredEvidenceMigration.sendersRecovered || 0).toLocaleString()} 条`
+                    ? ` · 证据去重 ${Number(memoryDiagnostics.structuredEvidenceMigration.duplicatesRemoved || 0).toLocaleString()} 条 / 恢复发送者 ${Number(memoryDiagnostics.structuredEvidenceMigration.sendersRecovered || 0).toLocaleString()} 条 / 约束${memoryDiagnostics.structuredEvidenceMigration.constraintsHealthy === false ? '异常' : '正常'}`
                     : ''}
                 </small>
               </span>
@@ -4253,6 +4253,8 @@ function AiAssistantPage() {
                   {' → '}
                   {Number(memoryDiagnostics.structuredEvidenceMigration.sendersAfter || 0).toLocaleString()}
                 </b></span>
+                <span>唯一约束 <b>{memoryDiagnostics.structuredEvidenceMigration.constraintsHealthy === false ? '异常' : '正常'}</b></span>
+                <span>启动自愈 <b>{Number(memoryDiagnostics.structuredEvidenceMigration.constraintDriftRepairs || 0).toLocaleString()}</b> 次</span>
                 <span>迁移时间 <b>{memoryDiagnostics.structuredEvidenceMigration.migratedAt
                   ? new Date(memoryDiagnostics.structuredEvidenceMigration.migratedAt).toLocaleString('zh-CN')
                   : '未知'}</b></span>
