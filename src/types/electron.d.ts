@@ -1758,6 +1758,13 @@ export interface ElectronAPI {
       findGraphPath: (fromId: string, toId: string, maxDepth?: number) => Promise<any>
       findCommonNeighbors: (fromId: string, toId: string) => Promise<any>
       getMemoryDiagnostics: () => Promise<any>
+      getIngestionRunPage: (options?: any) => Promise<{
+        items: any[]
+        total: number
+        hasMore: boolean
+        counts: { running: number; completed: number; partial: number; failed: number; all: number }
+      }>
+      getIngestionRunDossier: (runId: string, options?: any) => Promise<any>
       createMemoryBackup: () => Promise<any>
       restoreMemoryBackup: (path: string) => Promise<any>
       exportMemoryBundle: (path: string, passphrase: string) => Promise<any>

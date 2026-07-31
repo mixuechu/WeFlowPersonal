@@ -3190,6 +3190,155 @@ test('partial ingestion keeps completed checkpoints visible for safe resume', ()
   assert.equal(summary.estimatedCost, 0.0018)
 }))
 
+test('ingestion run archive paginates all years and loads bounded batch audits on demand', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'weflow-ingestion-run-archive-'))
+  const databasePath = join(directory, 'memory.sqlite')
+  const key = randomBytes(32)
+  const first = new PersonalMemoryStore()
+  try {
+    first.initialize(databasePath, key)
+    const database = (first as any).db
+    const insertRun = database.prepare(`
+      INSERT INTO ingestion_runs(
+        id,started_at,finished_at,message_count,entity_count,relation_count,event_count,
+        model,prompt_version,status,error
+      ) VALUES(?,?,?,?,?,?,?,?,?,?,?)
+    `)
+    const insertBatch = database.prepare(`
+      INSERT INTO ingestion_batches(
+        run_id,batch_index,message_count,status,attempts,error,started_at,finished_at,
+        model,prompt_version,schema_version,input_tokens,output_tokens,duration_ms,
+        redaction_summary_json,evidence_validation_json,extraction_context_json
+      ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+    `)
+    const statuses = ['completed', 'partial', 'failed', 'running']
+    let expectedMessages = 0
+    let expectedBatches = 0
+    let expectedFailedBatches = 0
+    database.transaction(() => {
+      for (let runIndex = 0; runIndex < 1_200; runIndex += 1) {
+        const startedAt = new Date(Date.UTC(2018, 0, 1 + runIndex)).toISOString()
+        const status = statuses[runIndex % statuses.length]
+        const messageCount = runIndex % 100
+        expectedMessages += messageCount
+        insertRun.run(
+          `archive-run-${String(runIndex).padStart(4, '0')}`,
+          startedAt,
+          status === 'running' ? null : startedAt,
+          messageCount,
+          runIndex % 9,
+          runIndex % 7,
+          runIndex % 5,
+          `deepseek-${runIndex % 3}`,
+          `prompt-${runIndex % 4}`,
+          status,
+          status === 'failed' ? `可检索错误 ${runIndex}` : null
+        )
+        const batchCount = runIndex === 1_199 ? 125 : 3
+        expectedBatches += batchCount
+        for (let batchIndex = 0; batchIndex < batchCount; batchIndex += 1) {
+          const batchFailed = batchIndex % 17 === 0
+          if (batchFailed) expectedFailedBatches += 1
+          insertBatch.run(
+            `archive-run-${String(runIndex).padStart(4, '0')}`,
+            batchIndex,
+            10,
+            batchFailed ? 'failed' : 'completed',
+            batchFailed ? 2 : 1,
+            batchFailed ? `批次错误 ${batchIndex}` : null,
+            startedAt,
+            startedAt,
+            `deepseek-${runIndex % 3}`,
+            `prompt-${runIndex % 4}`,
+            'schema-v1',
+            10,
+            5,
+            100,
+            JSON.stringify({ total: 1, marker: `redaction-${runIndex}-${batchIndex}` }),
+            JSON.stringify({ version: 'evidence-v1', accepted: { tasks: 1 } }),
+            JSON.stringify({
+              version: 'context-v1',
+              inputFingerprint: `${runIndex}-${batchIndex}`,
+              entities: [{ id: 'person', name: '有界上下文' }]
+            })
+          )
+        }
+      }
+    })()
+
+    const summary = first.getIngestionArchiveSummary()
+    assert.deepEqual(summary, {
+      runs: 1_200,
+      completedRuns: 300,
+      partialRuns: 300,
+      failedRuns: 300,
+      runningRuns: 300,
+      messages: expectedMessages,
+      inputTokens: expectedBatches * 10,
+      outputTokens: expectedBatches * 5,
+      durationMs: expectedBatches * 100,
+      failedBatches: expectedFailedBatches,
+      batches: expectedBatches,
+      latestRunId: summary.latestRunId,
+      latestActivityAt: summary.latestActivityAt
+    })
+    const firstPage = first.listIngestionRunPage({ limit: 40 })
+    const secondPage = first.listIngestionRunPage({ offset: 40, limit: 40 })
+    assert.equal(firstPage.total, 1_200)
+    assert.deepEqual(firstPage.counts, {
+      running: 300, completed: 300, partial: 300, failed: 300, all: 1_200
+    })
+    assert.equal(new Set([...firstPage.items, ...secondPage.items].map(item => item.id)).size, 80)
+    assert.equal(JSON.stringify(firstPage.items).includes('extraction_context_json'), false)
+    assert.equal(JSON.stringify(firstPage.items).includes('有界上下文'), false)
+    const failed = first.listIngestionRunPage({
+      status: 'failed',
+      query: '可检索错误 11',
+      limit: 100
+    })
+    assert.ok(failed.items.length > 0)
+    assert.equal(failed.items.every(item =>
+      item.status === 'failed' && String(item.error).includes('可检索错误 11')
+    ), true)
+
+    const dossierFirst = first.getIngestionRunDossier('archive-run-1199', {
+      batchOffset: 0,
+      batchLimit: 40
+    })
+    const dossierSecond = first.getIngestionRunDossier('archive-run-1199', {
+      batchOffset: 40,
+      batchLimit: 40
+    })
+    assert.equal(dossierFirst.batchTotal, 125)
+    assert.equal(dossierFirst.batchHasMore, true)
+    assert.equal(dossierFirst.batches.length, 40)
+    assert.equal(new Set([...dossierFirst.batches, ...dossierSecond.batches]
+      .map((batch: any) => batch.batch_index)).size, 80)
+    assert.equal(JSON.stringify(dossierFirst).includes('extraction_context_json'), false)
+    assert.equal(dossierFirst.batches[0].extractionContext.entities[0].name, '有界上下文')
+    first.close()
+
+    const reopened = new PersonalMemoryStore()
+    try {
+      reopened.initialize(databasePath, key)
+      const lastPage = reopened.listIngestionRunPage({ offset: 1_180, limit: 40 })
+      assert.equal(lastPage.items.length, 20)
+      assert.equal(lastPage.hasMore, false)
+      assert.equal(reopened.getIngestionArchiveSummary().runs, 1_200)
+      assert.equal(reopened.getIngestionRunDossier('archive-run-1199', {
+        batchOffset: 120,
+        batchLimit: 40
+      }).batches.length, 5)
+    } finally {
+      reopened.close()
+    }
+  } finally {
+    first.close()
+    key.fill(0)
+    rmSync(directory, { recursive: true, force: true })
+  }
+})
+
 test('prepared ingestion commits survive retries and become an auditable committed checkpoint', () => withStore(store => {
   const input = {
     commitId: 'batch-commit-test',

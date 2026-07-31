@@ -92,6 +92,66 @@ function EvidenceRows({
   </>
 }
 
+function IngestionBatchAudit({ batch, run }: { batch: any; run: any }) {
+  return <article className={batch.status}>
+    <div><b>批次 {Number(batch.batch_index) + 1}</b><span>{batch.status} · {batch.message_count} 条 · 尝试 {batch.attempts} 次</span></div>
+    <small>{batch.model || run.model} · {batch.prompt_version || run.prompt_version}{batch.schema_version ? ` / ${batch.schema_version}` : ''}</small>
+    <small>Token {Number(batch.input_tokens || 0).toLocaleString()} 入 / {Number(batch.output_tokens || 0).toLocaleString()} 出 · {(Number(batch.duration_ms || 0) / 1000).toFixed(1)} 秒</small>
+    {!!batch.sensitiveRedaction?.total && <small>
+      发送前脱敏 {batch.sensitiveRedaction.total} 处 · {Object.entries(batch.sensitiveRedaction.counts || {})
+        .map(([type, count]) => `${type} ${count}`).join('、')}
+    </small>}
+    {!!batch.structuredEvidence?.version && <small>
+      结构化证据门禁：
+      接受 {Object.values(batch.structuredEvidence.accepted || {}).reduce((sum: number, count: any) => sum + Number(count || 0), 0)} 项
+      {' · '}拒绝 {Object.values(batch.structuredEvidence.rejected || {}).reduce((sum: number, count: any) => sum + Number(count || 0), 0)} 项无效引用
+    </small>}
+    {!!batch.extractionContext?.version && <small>
+      可信长期上下文：
+      实体 {Number(batch.extractionContext.totals?.selectedEntities ?? batch.extractionContext.selectedEntities ?? 0)}
+      （直接命中 {Number(batch.extractionContext.totals?.directEntities ?? batch.extractionContext.directEntities ?? 0)}
+      {' / '}一跳扩展 {Number(batch.extractionContext.totals?.expandedEntities ?? batch.extractionContext.expandedEntities ?? 0)}）
+      {' · '}关系 {Number(batch.extractionContext.totals?.relations ?? batch.extractionContext.relations ?? 0)}
+      {' · '}事实 {Number(batch.extractionContext.totals?.claims ?? batch.extractionContext.claims ?? 0)} / {Number(batch.extractionContext.totals?.claimMatches ?? batch.extractionContext.claimMatches ?? 0)}
+      {' · '}事件 {Number(batch.extractionContext.totals?.events ?? batch.extractionContext.events ?? 0)} / {Number(batch.extractionContext.totals?.eventMatches ?? batch.extractionContext.eventMatches ?? 0)}
+    </small>}
+    {!!batch.extractionContext?.entities?.length && <details className="assistant-extraction-context-audit">
+      <summary>
+        查看模型当时使用的长期记忆清单
+        {batch.extractionContext.inputFingerprint
+          ? ` · 输入指纹 ${String(batch.extractionContext.inputFingerprint).slice(0, 12)}`
+          : ''}
+      </summary>
+      <p>
+        该清单只记录有界结构化记忆，不复制整段聊天。
+        本批核心消息 {Number(batch.extractionContext.messageScope?.core || 0)} 条，
+        重叠上下文 {Number(batch.extractionContext.messageScope?.context || 0)} 条。
+      </p>
+      <section>
+        <b>实体与命中原因</b>
+        {batch.extractionContext.entities.map((entity: any) =>
+          <small key={entity.id}>{entity.name || entity.id} · {entity.type || 'entity'} · {(entity.reasons || []).join('、') || '可信上下文'}</small>)}
+      </section>
+      {!!batch.extractionContext.relations?.length && <section>
+        <b>已确认关系</b>
+        {batch.extractionContext.relations.map((relation: any) =>
+          <small key={relation.id}>{relation.subject} — {relation.predicate} → {relation.object}</small>)}
+      </section>}
+      {!!batch.extractionContext.claims?.length && <section>
+        <b>已确认事实</b>
+        {batch.extractionContext.claims.map((claim: any) =>
+          <small key={claim.id}>{claim.subject} · {claim.predicate} · {claim.polarity === 'negative' ? '非 ' : ''}{claim.value || '结构化实体'}</small>)}
+      </section>}
+      {!!batch.extractionContext.events?.length && <section>
+        <b>已确认事件</b>
+        {batch.extractionContext.events.map((event: any) =>
+          <small key={event.id}>{event.title || event.type}{event.startAt ? ` · ${event.startAt}` : ''}</small>)}
+      </section>}
+    </details>}
+    {batch.error && <p>{batch.error}</p>}
+  </article>
+}
+
 function AiAssistantPage() {
   const [status, setStatus] = useState<any>(null)
   const [dashboard, setDashboard] = useState<any>(null)
@@ -292,6 +352,24 @@ function AiAssistantPage() {
   const mergeArchiveGate = useRef(new LatestRequestGate())
   const [memoryDiagnostics, setMemoryDiagnostics] = useState<any>(null)
   const [showDiagnostics, setShowDiagnostics] = useState(false)
+  const [ingestionArchive, setIngestionArchive] = useState<{
+    items: any[]
+    total: number
+    hasMore: boolean
+    counts: Record<string, number>
+    loading?: boolean
+  }>({ items: [], total: 0, hasMore: false, counts: {} })
+  const [ingestionArchiveStatus, setIngestionArchiveStatus] = useState<
+    'all' | 'running' | 'completed' | 'partial' | 'failed'
+  >('all')
+  const [ingestionArchiveQuery, setIngestionArchiveQuery] = useState('')
+  const [ingestionArchiveFrom, setIngestionArchiveFrom] = useState('')
+  const [ingestionArchiveTo, setIngestionArchiveTo] = useState('')
+  const [ingestionArchiveLoadingMore, setIngestionArchiveLoadingMore] = useState(false)
+  const [ingestionDossier, setIngestionDossier] = useState<any>(null)
+  const [ingestionBatchesLoadingMore, setIngestionBatchesLoadingMore] = useState(false)
+  const ingestionArchiveGate = useRef(new LatestRequestGate())
+  const ingestionDossierGate = useRef(new LatestRequestGate())
   const [backingUpMemory, setBackingUpMemory] = useState(false)
   const [restoringMemory, setRestoringMemory] = useState(false)
   const [migratingMemory, setMigratingMemory] = useState(false)
@@ -408,6 +486,16 @@ function AiAssistantPage() {
     offset: 0
   }), [
     mergeArchiveStatus, mergeArchiveQuery, mergeArchiveFrom, mergeArchiveTo
+  ])
+  const ingestionArchiveOptions = useMemo(() => ({
+    status: ingestionArchiveStatus,
+    query: ingestionArchiveQuery || undefined,
+    from: ingestionArchiveFrom ? new Date(`${ingestionArchiveFrom}T00:00:00+08:00`).toISOString() : undefined,
+    to: ingestionArchiveTo ? new Date(`${ingestionArchiveTo}T23:59:59.999+08:00`).toISOString() : undefined,
+    limit: 30,
+    offset: 0
+  }), [
+    ingestionArchiveStatus, ingestionArchiveQuery, ingestionArchiveFrom, ingestionArchiveTo
   ])
 
   const load = useCallback(async () => {
@@ -566,6 +654,33 @@ function AiAssistantPage() {
   }, [
     showDiagnostics, memoryDeletionOptions,
     dashboard?.memoryDeletionArchive?.revision
+  ])
+
+  useEffect(() => {
+    if (!showDiagnostics || !memoryDiagnostics) {
+      ingestionArchiveGate.current.invalidate()
+      return
+    }
+    const request = ingestionArchiveGate.current.begin()
+    setIngestionArchiveLoadingMore(false)
+    setIngestionArchive(current => ({ ...current, items: [], loading: true }))
+    setIngestionDossier(null)
+    const timer = window.setTimeout(() => {
+      void window.electronAPI.aiAssistant.getIngestionRunPage(ingestionArchiveOptions).then(page => {
+        if (!ingestionArchiveGate.current.isCurrent(request)) return
+        setIngestionArchive({ ...page, loading: false })
+      }).catch(() => {
+        if (!ingestionArchiveGate.current.isCurrent(request)) return
+        setIngestionArchive({ items: [], total: 0, hasMore: false, counts: {}, loading: false })
+      })
+    }, ingestionArchiveQuery ? 200 : 0)
+    return () => {
+      window.clearTimeout(timer)
+      if (ingestionArchiveGate.current.isCurrent(request)) ingestionArchiveGate.current.invalidate()
+    }
+  }, [
+    showDiagnostics, memoryDiagnostics?.ingestionArchive?.revision,
+    ingestionArchiveOptions
   ])
 
   useEffect(() => {
@@ -1046,6 +1161,82 @@ function AiAssistantPage() {
       if (memoryDeletionArchiveGate.current.isCurrent(request)) {
         setMemoryDeletionLoadingMore(false)
       }
+    }
+  }
+
+  const loadMoreIngestionRuns = async () => {
+    if (ingestionArchiveLoadingMore || !ingestionArchive.hasMore) return
+    const request = ingestionArchiveGate.current.begin()
+    setIngestionArchiveLoadingMore(true)
+    try {
+      const page = await window.electronAPI.aiAssistant.getIngestionRunPage({
+        ...ingestionArchiveOptions,
+        offset: ingestionArchive.items.length,
+        limit: 30
+      })
+      if (!ingestionArchiveGate.current.isCurrent(request)) return
+      setIngestionArchive(current => ({
+        ...page,
+        items: [
+          ...current.items,
+          ...page.items.filter((item: any) =>
+            !current.items.some((known: any) => known.id === item.id))
+        ],
+        loading: false
+      }))
+    } catch (error: any) {
+      if (ingestionArchiveGate.current.isCurrent(request)) setMessage(error?.message || String(error))
+    } finally {
+      if (ingestionArchiveGate.current.isCurrent(request)) setIngestionArchiveLoadingMore(false)
+    }
+  }
+
+  const openIngestionDossier = async (runId: string) => {
+    if (ingestionDossier?.id === runId) {
+      ingestionDossierGate.current.invalidate()
+      setIngestionDossier(null)
+      return
+    }
+    const request = ingestionDossierGate.current.begin()
+    setIngestionDossier({ id: runId, loading: true })
+    try {
+      const dossier = await window.electronAPI.aiAssistant.getIngestionRunDossier(
+        runId,
+        { batchOffset: 0, batchLimit: 40 }
+      )
+      if (ingestionDossierGate.current.isCurrent(request)) setIngestionDossier(dossier)
+    } catch (error: any) {
+      if (ingestionDossierGate.current.isCurrent(request)) {
+        setIngestionDossier({ id: runId, error: error?.message || String(error) })
+      }
+    }
+  }
+
+  const loadMoreIngestionBatches = async () => {
+    if (!ingestionDossier?.id || !ingestionDossier.batchHasMore ||
+      ingestionBatchesLoadingMore) return
+    const request = ingestionDossierGate.current.begin()
+    setIngestionBatchesLoadingMore(true)
+    try {
+      const page = await window.electronAPI.aiAssistant.getIngestionRunDossier(
+        ingestionDossier.id,
+        { batchOffset: ingestionDossier.batches?.length || 0, batchLimit: 40 }
+      )
+      if (!page || !ingestionDossierGate.current.isCurrent(request)) return
+      setIngestionDossier((current: any) => ({
+        ...current,
+        ...page,
+        batches: [
+          ...(current.batches || []),
+          ...page.batches.filter((batch: any) =>
+            !(current.batches || []).some((known: any) =>
+              known.batch_index === batch.batch_index))
+        ]
+      }))
+    } catch (error: any) {
+      if (ingestionDossierGate.current.isCurrent(request)) setMessage(error?.message || String(error))
+    } finally {
+      if (ingestionDossierGate.current.isCurrent(request)) setIngestionBatchesLoadingMore(false)
     }
   }
 
@@ -3848,7 +4039,7 @@ function AiAssistantPage() {
               <button aria-label="关闭诊断" onClick={() => setShowDiagnostics(false)}><X size={18} /></button>
             </header>
             <div className="assistant-dossier-metrics">
-              <span><b>{memoryDiagnostics.ingestionSummary?.runs || 0}</b><small>近期运行</small></span>
+              <span><b>{memoryDiagnostics.ingestionSummary?.runs || 0}</b><small>全部运行</small></span>
               <span><b>{memoryDiagnostics.ingestionSummary?.failedBatches || 0}</b><small>失败批次</small></span>
               <span><b>{Number(memoryDiagnostics.ingestionSummary?.inputTokens || 0).toLocaleString()}</b><small>输入 Token</small></span>
               <span><b>{Number(memoryDiagnostics.ingestionSummary?.outputTokens || 0).toLocaleString()}</b><small>输出 Token</small></span>
@@ -3977,77 +4168,74 @@ function AiAssistantPage() {
               </div>}
             </div>
             <div className="assistant-diagnostics-runs">
-              {(memoryDiagnostics.ingestionRuns || []).map((run: any) => <details key={run.id} open={run.status !== 'completed'}>
-                <summary><span><b>{new Date(run.started_at).toLocaleString('zh-CN')}</b><small>{run.model || '模型待记录'} · {run.prompt_version || '版本待记录'}</small></span>
-                  <span className={run.status}>{run.status} · {run.message_count} 条 · {(Number(run.usage?.duration_ms || 0) / 1000).toFixed(1)} 秒</span></summary>
+              <div className="assistant-task-filters">
+                <select value={ingestionArchiveStatus}
+                  onChange={event => setIngestionArchiveStatus(event.target.value as typeof ingestionArchiveStatus)}>
+                  <option value="all">所有运行结果</option>
+                  <option value="running">仍在运行</option>
+                  <option value="completed">已完成</option>
+                  <option value="partial">部分完成</option>
+                  <option value="failed">失败</option>
+                </select>
+                <input value={ingestionArchiveQuery}
+                  onChange={event => setIngestionArchiveQuery(event.target.value)}
+                  placeholder="搜索运行 ID、模型、Prompt 或错误" />
+                <label><span>开始从</span><input type="date" value={ingestionArchiveFrom}
+                  onChange={event => setIngestionArchiveFrom(event.target.value)} /></label>
+                <label><span>到</span><input type="date" value={ingestionArchiveTo}
+                  onChange={event => setIngestionArchiveTo(event.target.value)} /></label>
+                {(ingestionArchiveStatus !== 'all' || ingestionArchiveQuery ||
+                  ingestionArchiveFrom || ingestionArchiveTo) && <button onClick={() => {
+                  setIngestionArchiveStatus('all'); setIngestionArchiveQuery('')
+                  setIngestionArchiveFrom(''); setIngestionArchiveTo('')
+                }}>清除范围</button>}
+              </div>
+              <small className="assistant-evidence">
+                {ingestionArchive.total} 条匹配 · 全部 {ingestionArchive.counts.all || memoryDiagnostics.ingestionArchive?.total || 0} 次运行。
+                目录不携带批次上下文；点击后才按每页 40 批读取完整证据门禁、脱敏和可信上下文审计。
+              </small>
+              {ingestionArchive.items.map((run: any) => <article className="assistant-ingestion-run" key={run.id}>
+                <div>
+                  <b>{new Date(run.started_at).toLocaleString('zh-CN')}</b>
+                  <span className={run.status}>{run.status} · {run.message_count} 条 · {run.batch_count} 批
+                    {run.failed_batch_count ? ` · ${run.failed_batch_count} 批失败` : ''}
+                    {' · '}{(Number(run.duration_ms || 0) / 1000).toFixed(1)} 秒
+                  </span>
+                </div>
+                <small>{run.model || '模型待记录'} · {run.prompt_version || 'Prompt 版本待记录'} · Token {Number(run.input_tokens || 0).toLocaleString()} 入 / {Number(run.output_tokens || 0).toLocaleString()} 出</small>
                 {run.recovered_at && <p>
-                  本次运行在上次退出时尚未结束，已于 {new Date(run.recovered_at).toLocaleString('zh-CN')} 完成账本对账：
+                  上次退出时未结束，已于 {new Date(run.recovered_at).toLocaleString('zh-CN')} 对账：
                   保留 {Number(run.recovered_batch_count || 0)} 个成功批次，
-                  {Number(run.interrupted_batch_count || 0)} 个在途批次已转为等待 checkpoint 重试。
+                  {Number(run.interrupted_batch_count || 0)} 个在途批次等待 checkpoint 重试。
                 </p>}
                 {run.error && <p className="assistant-diagnostics-error">{run.error}</p>}
-                <div>
-                  {(run.batches || []).map((batch: any) => <article key={`${run.id}-${batch.batch_index}`} className={batch.status}>
-                    <div><b>批次 {Number(batch.batch_index) + 1}</b><span>{batch.status} · {batch.message_count} 条 · 尝试 {batch.attempts} 次</span></div>
-                    <small>{batch.model || run.model} · {batch.prompt_version || run.prompt_version}{batch.schema_version ? ` / ${batch.schema_version}` : ''}</small>
-                    <small>Token {Number(batch.input_tokens || 0).toLocaleString()} 入 / {Number(batch.output_tokens || 0).toLocaleString()} 出 · {(Number(batch.duration_ms || 0) / 1000).toFixed(1)} 秒</small>
-                    {!!batch.sensitiveRedaction?.total && <small>
-                      发送前脱敏 {batch.sensitiveRedaction.total} 处 · {Object.entries(batch.sensitiveRedaction.counts || {})
-                        .map(([type, count]) => `${type} ${count}`).join('、')}
-                    </small>}
-                    {!!batch.structuredEvidence?.version && <small>
-                      结构化证据门禁：
-                      接受 {Object.values(batch.structuredEvidence.accepted || {}).reduce((sum: number, count: any) => sum + Number(count || 0), 0)} 项
-                      {' · '}拒绝 {Object.values(batch.structuredEvidence.rejected || {}).reduce((sum: number, count: any) => sum + Number(count || 0), 0)} 项无效引用
-                    </small>}
-                    {!!batch.extractionContext?.version && <small>
-                      可信长期上下文：
-                      实体 {Number(batch.extractionContext.totals?.selectedEntities ?? batch.extractionContext.selectedEntities ?? 0)}
-                      （直接命中 {Number(batch.extractionContext.totals?.directEntities ?? batch.extractionContext.directEntities ?? 0)}
-                      {' / '}一跳扩展 {Number(batch.extractionContext.totals?.expandedEntities ?? batch.extractionContext.expandedEntities ?? 0)}）
-                      {' · '}关系 {Number(batch.extractionContext.totals?.relations ?? batch.extractionContext.relations ?? 0)}
-                      {' · '}事实 {Number(batch.extractionContext.totals?.claims ?? batch.extractionContext.claims ?? 0)} / {Number(batch.extractionContext.totals?.claimMatches ?? batch.extractionContext.claimMatches ?? 0)}
-                      {' · '}事件 {Number(batch.extractionContext.totals?.events ?? batch.extractionContext.events ?? 0)} / {Number(batch.extractionContext.totals?.eventMatches ?? batch.extractionContext.eventMatches ?? 0)}
-                    </small>}
-                    {!!batch.extractionContext?.entities?.length && <details className="assistant-extraction-context-audit">
-                      <summary>
-                        查看模型当时使用的长期记忆清单
-                        {batch.extractionContext.inputFingerprint
-                          ? ` · 输入指纹 ${String(batch.extractionContext.inputFingerprint).slice(0, 12)}`
-                          : ''}
-                      </summary>
-                      <p>
-                        该清单只记录有界结构化记忆，不复制整段聊天。
-                        本批核心消息 {Number(batch.extractionContext.messageScope?.core || 0)} 条，
-                        重叠上下文 {Number(batch.extractionContext.messageScope?.context || 0)} 条。
-                      </p>
-                      <section>
-                        <b>实体与命中原因</b>
-                        {batch.extractionContext.entities.map((entity: any) =>
-                          <small key={entity.id}>{entity.name || entity.id} · {entity.type || 'entity'} · {(entity.reasons || []).join('、') || '可信上下文'}</small>)}
-                      </section>
-                      {!!batch.extractionContext.relations?.length && <section>
-                        <b>已确认关系</b>
-                        {batch.extractionContext.relations.map((relation: any) =>
-                          <small key={relation.id}>{relation.subject} — {relation.predicate} → {relation.object}</small>)}
-                      </section>}
-                      {!!batch.extractionContext.claims?.length && <section>
-                        <b>已确认事实</b>
-                        {batch.extractionContext.claims.map((claim: any) =>
-                          <small key={claim.id}>{claim.subject} · {claim.predicate} · {claim.polarity === 'negative' ? '非 ' : ''}{claim.value || '结构化实体'}</small>)}
-                      </section>}
-                      {!!batch.extractionContext.events?.length && <section>
-                        <b>已确认事件</b>
-                        {batch.extractionContext.events.map((event: any) =>
-                          <small key={event.id}>{event.title || event.type}{event.startAt ? ` · ${event.startAt}` : ''}</small>)}
-                      </section>}
-                    </details>}
-                    {batch.error && <p>{batch.error}</p>}
-                  </article>)}
-                  {!run.batches?.length && <em>该次运行没有创建模型批次</em>}
-                </div>
-              </details>)}
-              {!memoryDiagnostics.ingestionRuns?.length && <div className="assistant-empty">尚无增量运行记录。</div>}
+                <button onClick={() => void openIngestionDossier(run.id)}>
+                  {ingestionDossier?.id === run.id ? '收起批次详情' : `查看批次详情（${run.batch_count}）`}
+                </button>
+                {ingestionDossier?.id === run.id && <div className="assistant-ingestion-dossier">
+                  {ingestionDossier.loading && <em>正在读取批次审计…</em>}
+                  {ingestionDossier.error && <p className="assistant-diagnostics-error">{ingestionDossier.error}</p>}
+                  {(ingestionDossier.batches || []).map((batch: any) =>
+                    <IngestionBatchAudit key={`${run.id}-${batch.batch_index}`} batch={batch} run={run} />)}
+                  {!ingestionDossier.loading && !ingestionDossier.error &&
+                    !ingestionDossier.batches?.length && <em>该次运行没有创建模型批次</em>}
+                  {ingestionDossier.batchHasMore && <button disabled={ingestionBatchesLoadingMore}
+                    onClick={() => void loadMoreIngestionBatches()}>
+                    {ingestionBatchesLoadingMore
+                      ? '正在加载…'
+                      : `加载更多批次（已显示 ${ingestionDossier.batches?.length || 0}/${ingestionDossier.batchTotal}）`}
+                  </button>}
+                </div>}
+              </article>)}
+              {!ingestionArchive.items.length && <div className="assistant-empty">
+                {ingestionArchive.loading ? '正在读取运行档案…' : '当前范围没有增量运行记录。'}
+              </div>}
+              {ingestionArchive.hasMore && <div className="assistant-review-page-status">
+                <small>已加载 {ingestionArchive.items.length} / {ingestionArchive.total} 次运行。</small>
+                <button disabled={ingestionArchiveLoadingMore} onClick={() => void loadMoreIngestionRuns()}>
+                  {ingestionArchiveLoadingMore ? '正在加载…' : '加载更多运行'}
+                </button>
+              </div>}
             </div>
             <footer><button onClick={() => void window.electronAPI.aiAssistant.getMemoryDiagnostics().then(setMemoryDiagnostics)}>刷新</button>
               <button className="primary" onClick={() => setShowDiagnostics(false)}>完成</button></footer>

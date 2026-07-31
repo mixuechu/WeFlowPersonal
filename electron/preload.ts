@@ -662,6 +662,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
     findGraphPath: (fromId: string, toId: string, maxDepth?: number) => ipcRenderer.invoke('ai-assistant:findGraphPath', fromId, toId, maxDepth),
     findCommonNeighbors: (fromId: string, toId: string) => ipcRenderer.invoke('ai-assistant:findCommonNeighbors', fromId, toId),
     getMemoryDiagnostics: () => ipcRenderer.invoke('ai-assistant:getMemoryDiagnostics'),
+    getIngestionRunPage: (options?: any) =>
+      ipcRenderer.invoke('ai-assistant:getIngestionRunPage', options),
+    getIngestionRunDossier: (runId: string, options?: any) =>
+      ipcRenderer.invoke('ai-assistant:getIngestionRunDossier', runId, options),
     createMemoryBackup: () => ipcRenderer.invoke('ai-assistant:createMemoryBackup'),
     restoreMemoryBackup: (path: string) => ipcRenderer.invoke('ai-assistant:restoreMemoryBackup', path),
     exportMemoryBundle: (path: string, passphrase: string) =>

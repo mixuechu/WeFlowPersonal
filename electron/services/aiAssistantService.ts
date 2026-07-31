@@ -69,7 +69,6 @@ import {
   MEMORY_CARD_EVIDENCE_LIMIT
 } from '../../shared/evidencePayload'
 import { buildProjectDirectory, buildProjectInsight } from './projectInsights'
-import { summarizeIngestionRuns } from './ingestionDiagnostics'
 import { attachLocalImageOcr, attachLocalVoiceTranscript, recoverMessageSemantics } from './messageSemanticRecovery'
 import { sanitizeDiagnosticText } from './diagnosticRedaction'
 import {
@@ -3461,18 +3460,41 @@ export class AiAssistantService {
   }
 
   async getMemoryDiagnostics(): Promise<any> {
-    const ingestionRuns = personalMemoryStore.listIngestionRuns(20)
+    const ingestionTotals = personalMemoryStore.getIngestionArchiveSummary()
+    const ingestionRates = {
+      inputPerMillion: Math.max(0, Number(this.config.get('aiAssistantInputCostPerMillion') || 0)),
+      outputPerMillion: Math.max(0, Number(this.config.get('aiAssistantOutputCostPerMillion') || 0))
+    }
     const databaseDiagnostics = personalMemoryStore.getDiagnostics()
     const ocr = await localOcrService.getStatus()
     const imageSemantics = localImageSemanticService.getStatus()
     const pdfOcr = await getPdfOcrStatus()
     return {
       ...databaseDiagnostics,
-      ingestionRuns,
-      ingestionSummary: summarizeIngestionRuns(ingestionRuns, {
-        inputPerMillion: Number(this.config.get('aiAssistantInputCostPerMillion') || 0),
-        outputPerMillion: Number(this.config.get('aiAssistantOutputCostPerMillion') || 0)
-      }),
+      ingestionSummary: {
+        ...ingestionTotals,
+        estimatedCost:
+          ingestionTotals.inputTokens / 1_000_000 * ingestionRates.inputPerMillion +
+          ingestionTotals.outputTokens / 1_000_000 * ingestionRates.outputPerMillion,
+        currency: 'CNY',
+        rates: ingestionRates,
+        costConfigured: ingestionRates.inputPerMillion > 0 || ingestionRates.outputPerMillion > 0
+      },
+      ingestionArchive: {
+        total: ingestionTotals.runs,
+        revision: crypto.createHash('sha256')
+          .update(JSON.stringify({
+            latestRunId: ingestionTotals.latestRunId,
+            latestActivityAt: ingestionTotals.latestActivityAt,
+            runs: ingestionTotals.runs,
+            batches: ingestionTotals.batches
+          }))
+          .digest('hex')
+          .slice(0, 16),
+        version: 'ingestion-run-archive-v1',
+        directory: 'paginated_without_batch_payload',
+        dossier: 'on_demand_paginated_batches'
+      },
       embeddings: {
         ...personalMemoryStore.getEmbeddingStats(localEmbeddingService.modelVersion),
         ...localEmbeddingService.getStatus(),
@@ -3497,6 +3519,29 @@ export class AiAssistantService {
       imageSemantics: { ...imageSemantics, enabled: Boolean(this.config.get('aiAssistantAnalyzeImages')) },
       pdfOcr: { ...pdfOcr, enabled: Boolean(this.config.get('aiAssistantOcrImages')) }
     }
+  }
+
+  getIngestionRunPage(options: any = {}): any {
+    return personalMemoryStore.listIngestionRunPage({
+      status: ['running', 'completed', 'partial', 'failed', 'all'].includes(options?.status)
+        ? options.status
+        : 'all',
+      query: String(options?.query || ''),
+      from: String(options?.from || ''),
+      to: String(options?.to || ''),
+      limit: Number(options?.limit || 40),
+      offset: Number(options?.offset || 0)
+    })
+  }
+
+  getIngestionRunDossier(runId: string, options: any = {}): any {
+    return personalMemoryStore.getIngestionRunDossier(
+      String(runId || '').trim(),
+      {
+        batchOffset: Number(options?.batchOffset || 0),
+        batchLimit: Number(options?.batchLimit || 40)
+      }
+    )
   }
 
   createMemoryBackup(): any {

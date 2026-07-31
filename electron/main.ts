@@ -4580,6 +4580,10 @@ function registerIpcHandlers() {
   ipcMain.handle('ai-assistant:findCommonNeighbors', (_, fromId: string, toId: string) =>
     aiAssistantService.findCommonNeighbors(fromId, toId))
   ipcMain.handle('ai-assistant:getMemoryDiagnostics', () => aiAssistantService.getMemoryDiagnostics())
+  ipcMain.handle('ai-assistant:getIngestionRunPage', (_, options?: any) =>
+    aiAssistantService.getIngestionRunPage(options))
+  ipcMain.handle('ai-assistant:getIngestionRunDossier', (_, runId: string, options?: any) =>
+    aiAssistantService.getIngestionRunDossier(runId, options))
   ipcMain.handle('ai-assistant:createMemoryBackup', () => aiAssistantService.createMemoryBackup())
   ipcMain.handle('ai-assistant:restoreMemoryBackup', (_, path: string) => aiAssistantService.restoreMemoryBackup(path))
   ipcMain.handle('ai-assistant:exportMemoryBundle', (_, path: string, passphrase: string) =>

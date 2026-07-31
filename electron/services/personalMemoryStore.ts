@@ -3940,6 +3940,197 @@ export class PersonalMemoryStore {
     })
   }
 
+  getIngestionArchiveSummary(): {
+    runs: number
+    completedRuns: number
+    partialRuns: number
+    failedRuns: number
+    runningRuns: number
+    messages: number
+    inputTokens: number
+    outputTokens: number
+    durationMs: number
+    failedBatches: number
+    batches: number
+    latestRunId: string
+    latestActivityAt: string
+  } {
+    const empty = {
+      runs: 0, completedRuns: 0, partialRuns: 0, failedRuns: 0, runningRuns: 0,
+      messages: 0, inputTokens: 0, outputTokens: 0, durationMs: 0,
+      failedBatches: 0, batches: 0, latestRunId: '', latestActivityAt: ''
+    }
+    if (!this.db) return empty
+    const runs = this.db.prepare(`
+      SELECT
+        COUNT(*) AS runs,
+        SUM(CASE WHEN status='completed' THEN 1 ELSE 0 END) AS completed_runs,
+        SUM(CASE WHEN status='partial' THEN 1 ELSE 0 END) AS partial_runs,
+        SUM(CASE WHEN status='failed' THEN 1 ELSE 0 END) AS failed_runs,
+        SUM(CASE WHEN status='running' THEN 1 ELSE 0 END) AS running_runs,
+        COALESCE(SUM(message_count),0) AS messages
+      FROM ingestion_runs
+    `).get() as any
+    const batches = this.db.prepare(`
+      SELECT
+        COUNT(*) AS batches,
+        SUM(CASE WHEN status='failed' THEN 1 ELSE 0 END) AS failed_batches,
+        COALESCE(SUM(input_tokens),0) AS input_tokens,
+        COALESCE(SUM(output_tokens),0) AS output_tokens,
+        COALESCE(SUM(duration_ms),0) AS duration_ms
+      FROM ingestion_batches
+    `).get() as any
+    const latest = this.db.prepare(`
+      SELECT id,COALESCE(finished_at,recovered_at,started_at) AS activity_at
+      FROM ingestion_runs
+      ORDER BY COALESCE(finished_at,recovered_at,started_at) DESC,id ASC LIMIT 1
+    `).get() as any
+    return {
+      runs: Number(runs?.runs || 0),
+      completedRuns: Number(runs?.completed_runs || 0),
+      partialRuns: Number(runs?.partial_runs || 0),
+      failedRuns: Number(runs?.failed_runs || 0),
+      runningRuns: Number(runs?.running_runs || 0),
+      messages: Number(runs?.messages || 0),
+      inputTokens: Number(batches?.input_tokens || 0),
+      outputTokens: Number(batches?.output_tokens || 0),
+      durationMs: Number(batches?.duration_ms || 0),
+      failedBatches: Number(batches?.failed_batches || 0),
+      batches: Number(batches?.batches || 0),
+      latestRunId: String(latest?.id || ''),
+      latestActivityAt: String(latest?.activity_at || '')
+    }
+  }
+
+  listIngestionRunPage(options: {
+    status?: 'running' | 'completed' | 'partial' | 'failed' | 'all'
+    query?: string
+    from?: string
+    to?: string
+    limit?: number
+    offset?: number
+  } = {}): {
+    items: any[]
+    total: number
+    hasMore: boolean
+    counts: { running: number; completed: number; partial: number; failed: number; all: number }
+  } {
+    const emptyCounts = { running: 0, completed: 0, partial: 0, failed: 0, all: 0 }
+    if (!this.db) return { items: [], total: 0, hasMore: false, counts: emptyCounts }
+    const conditions: string[] = []
+    const parameters: Array<string | number> = []
+    if (['running', 'completed', 'partial', 'failed'].includes(String(options.status || ''))) {
+      conditions.push('r.status=?')
+      parameters.push(String(options.status))
+    }
+    const query = String(options.query || '').trim().toLocaleLowerCase('zh-CN')
+    if (query) {
+      conditions.push(`instr(lower(
+        r.id || char(0) || r.model || char(0) || r.prompt_version || char(0) || COALESCE(r.error,'')
+      ),?)>0`)
+      parameters.push(query)
+    }
+    const from = options.from && Number.isFinite(Date.parse(options.from)) ? String(options.from) : ''
+    const to = options.to && Number.isFinite(Date.parse(options.to)) ? String(options.to) : ''
+    if (from) {
+      conditions.push('r.started_at>=?')
+      parameters.push(from)
+    }
+    if (to) {
+      conditions.push('r.started_at<=?')
+      parameters.push(to)
+    }
+    const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : ''
+    const total = Number((this.db.prepare(`
+      SELECT COUNT(*) AS count FROM ingestion_runs r ${where}
+    `).get(...parameters) as any)?.count || 0)
+    const limit = Math.max(1, Math.min(100, Math.floor(Number(options.limit) || 40)))
+    const offset = Math.max(0, Math.min(1_000_000, Math.floor(Number(options.offset) || 0)))
+    const items = this.db.prepare(`
+      SELECT r.*,
+        COUNT(b.batch_index) AS batch_count,
+        SUM(CASE WHEN b.status='failed' THEN 1 ELSE 0 END) AS failed_batch_count,
+        COALESCE(SUM(b.input_tokens),0) AS input_tokens,
+        COALESCE(SUM(b.output_tokens),0) AS output_tokens,
+        COALESCE(SUM(b.duration_ms),0) AS duration_ms
+      FROM ingestion_runs r
+      LEFT JOIN ingestion_batches b ON b.run_id=r.id
+      ${where}
+      GROUP BY r.id
+      ORDER BY r.started_at DESC,r.id ASC
+      LIMIT ? OFFSET ?
+    `).all(...parameters, limit, offset) as any[]
+    const counts = this.db.prepare(`
+      SELECT
+        SUM(CASE WHEN status='running' THEN 1 ELSE 0 END) AS running,
+        SUM(CASE WHEN status='completed' THEN 1 ELSE 0 END) AS completed,
+        SUM(CASE WHEN status='partial' THEN 1 ELSE 0 END) AS partial,
+        SUM(CASE WHEN status='failed' THEN 1 ELSE 0 END) AS failed,
+        COUNT(*) AS all_count
+      FROM ingestion_runs
+    `).get() as any
+    return {
+      items: items.map(item => ({
+        ...item,
+        batch_count: Number(item.batch_count || 0),
+        failed_batch_count: Number(item.failed_batch_count || 0),
+        input_tokens: Number(item.input_tokens || 0),
+        output_tokens: Number(item.output_tokens || 0),
+        duration_ms: Number(item.duration_ms || 0)
+      })),
+      total,
+      hasMore: offset + items.length < total,
+      counts: {
+        running: Number(counts?.running || 0),
+        completed: Number(counts?.completed || 0),
+        partial: Number(counts?.partial || 0),
+        failed: Number(counts?.failed || 0),
+        all: Number(counts?.all_count || 0)
+      }
+    }
+  }
+
+  getIngestionRunDossier(runId: string, options: {
+    batchOffset?: number
+    batchLimit?: number
+  } = {}): any | null {
+    if (!this.db || !String(runId || '').trim()) return null
+    const run = this.db.prepare('SELECT * FROM ingestion_runs WHERE id=?').get(runId) as any
+    if (!run) return null
+    const batchOffset = Math.max(0, Math.min(1_000_000, Math.floor(Number(options.batchOffset) || 0)))
+    const batchLimit = Math.max(1, Math.min(100, Math.floor(Number(options.batchLimit) || 40)))
+    const batchTotal = Number((this.db.prepare(`
+      SELECT COUNT(*) AS count FROM ingestion_batches WHERE run_id=?
+    `).get(runId) as any)?.count || 0)
+    const rows = this.db.prepare(`
+      SELECT * FROM ingestion_batches WHERE run_id=?
+      ORDER BY batch_index ASC LIMIT ? OFFSET ?
+    `).all(runId, batchLimit, batchOffset) as any[]
+    const batches = rows.map(batch => {
+      let sensitiveRedaction: any = {}
+      let structuredEvidence: any = {}
+      let extractionContext: any = {}
+      try { sensitiveRedaction = JSON.parse(String(batch.redaction_summary_json || '{}')) } catch {}
+      try { structuredEvidence = JSON.parse(String(batch.evidence_validation_json || '{}')) } catch {}
+      try { extractionContext = JSON.parse(String(batch.extraction_context_json || '{}')) } catch {}
+      const {
+        redaction_summary_json: _redactionJson,
+        evidence_validation_json: _evidenceJson,
+        extraction_context_json: _contextJson,
+        ...safeBatch
+      } = batch
+      return { ...safeBatch, sensitiveRedaction, structuredEvidence, extractionContext }
+    })
+    return {
+      ...run,
+      batches,
+      batchTotal,
+      batchOffset,
+      batchLimit,
+      batchHasMore: batchOffset + batches.length < batchTotal
+    }
+  }
+
   getMergeSnapshot(id: number): any | null {
     if (!this.db) return null
     const row = this.db.prepare('SELECT snapshot_json FROM merge_history WHERE id=? AND reverted_at IS NULL').get(id) as { snapshot_json: string } | undefined
