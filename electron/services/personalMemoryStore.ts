@@ -1070,6 +1070,17 @@ export class PersonalMemoryStore {
             DELETE FROM search_fts WHERE document_id=OLD.id;
             DELETE FROM search_document_evidence WHERE document_id=OLD.id;
           END`
+      },
+      {
+        name: 'trg_search_documents_ann_delete',
+        expected: [
+          'after delete on search_documents',
+          'delete from vector_ann_entries where document_id=old.id'
+        ],
+        sql: `CREATE TRIGGER trg_search_documents_ann_delete AFTER DELETE ON search_documents
+          BEGIN
+            DELETE FROM vector_ann_entries WHERE document_id=OLD.id;
+          END`
       }
     ]
     const triggersHealthyBefore = triggerDefinitions.every(trigger => {
@@ -1122,13 +1133,18 @@ export class PersonalMemoryStore {
       SELECT COUNT(*) AS count FROM search_document_evidence e
       WHERE NOT EXISTS(SELECT 1 FROM search_documents d WHERE d.id=e.document_id)
     `).get() as any)?.count || 0)
+    const orphanAnn = Number((this.db.prepare(`
+      SELECT COUNT(*) AS count FROM vector_ann_entries a
+      WHERE NOT EXISTS(SELECT 1 FROM search_documents d WHERE d.id=a.document_id)
+    `).get() as any)?.count || 0)
     const payloadCount = this.db.prepare(`
       SELECT
         (SELECT COUNT(*) FROM search_fts WHERE document_id=?) +
-        (SELECT COUNT(*) FROM search_document_evidence WHERE document_id=?) AS count
+        (SELECT COUNT(*) FROM search_document_evidence WHERE document_id=?) +
+        (SELECT COUNT(*) FROM vector_ann_entries WHERE document_id=?) AS count
     `)
     const ghostDocumentPayloadRows = ghostDocuments.reduce((total, document) =>
-      total + Number((payloadCount.get(document.id, document.id) as any)?.count || 0), 0)
+      total + Number((payloadCount.get(document.id, document.id, document.id) as any)?.count || 0), 0)
     const missingClaims = this.db.prepare(`
       SELECT * FROM claims c
       WHERE NOT EXISTS(
@@ -1325,6 +1341,10 @@ export class PersonalMemoryStore {
         WHERE NOT EXISTS(
           SELECT 1 FROM search_documents d WHERE d.id=search_document_evidence.document_id
         );
+        DELETE FROM vector_ann_entries
+        WHERE NOT EXISTS(
+          SELECT 1 FROM search_documents d WHERE d.id=vector_ann_entries.document_id
+        );
       `)
       const deleteFts = this.db!.prepare('DELETE FROM search_fts WHERE document_id=?')
       const insertFts = this.db!.prepare(
@@ -1416,10 +1436,10 @@ export class PersonalMemoryStore {
       }
       const rebuilt = missingClaims.length + missingRelations.length + missingEvents.length
         + missingResources.length
-      const payloadRowsRemoved = orphanFts + orphanEvidence + ghostDocumentPayloadRows
+      const payloadRowsRemoved = orphanFts + orphanEvidence + orphanAnn + ghostDocumentPayloadRows
       const removed = ghostDocuments.length + payloadRowsRemoved
       const audit = {
-        version: 5,
+        version: 6,
         checkedAt,
         ghostDocumentsRemovedThisStart: ghostDocuments.length,
         missingDocumentsRebuiltThisStart: {
@@ -1429,11 +1449,16 @@ export class PersonalMemoryStore {
           resources: missingResources.length
         },
         orphanPayloadRowsRemovedThisStart: payloadRowsRemoved,
+        orphanAnnRowsRemovedThisStart: orphanAnn,
         ftsPayloadsRebuiltThisStart: ftsMismatches.length,
         metadataDocumentsRepairedThisStart: metadataRepairs.length,
         structuredDocumentsRepairedThisStart: structuredDocumentRepairs.length,
         resourceDocumentsRepairedThisStart: resourceRepairs.length,
         ghostRowsRemovedTotal: Math.max(0, Number(previousAudit?.ghostRowsRemovedTotal || 0)) + removed,
+        orphanAnnRowsRemovedTotal: Math.max(
+          0,
+          Number(previousAudit?.orphanAnnRowsRemovedTotal || 0)
+        ) + orphanAnn,
         missingDocumentsRebuiltTotal: Math.max(
           0,
           Number(previousAudit?.missingDocumentsRebuiltTotal || 0)
@@ -1460,7 +1485,8 @@ export class PersonalMemoryStore {
         currentGhostDocuments: 0,
         currentMissingDocuments: 0,
         currentFtsPayloadMismatches: 0,
-        currentMetadataMismatches: 0
+        currentMetadataMismatches: 0,
+        currentAnnOrphans: 0
       }
       this.db!.prepare(`
         INSERT INTO schema_meta(key,value,updated_at) VALUES('structured_search_index_integrity',?,?)
@@ -1635,11 +1661,13 @@ export class PersonalMemoryStore {
             resources: Number(audit.missingDocumentsRebuiltThisStart?.resources || 0)
           },
           orphanPayloadRowsRemovedThisStart: Number(audit.orphanPayloadRowsRemovedThisStart || 0),
+          orphanAnnRowsRemovedThisStart: Number(audit.orphanAnnRowsRemovedThisStart || 0),
           ftsPayloadsRebuiltThisStart: Number(audit.ftsPayloadsRebuiltThisStart || 0),
           metadataDocumentsRepairedThisStart: Number(audit.metadataDocumentsRepairedThisStart || 0),
           structuredDocumentsRepairedThisStart: Number(audit.structuredDocumentsRepairedThisStart || 0),
           resourceDocumentsRepairedThisStart: Number(audit.resourceDocumentsRepairedThisStart || 0),
           ghostRowsRemovedTotal: Number(audit.ghostRowsRemovedTotal || 0),
+          orphanAnnRowsRemovedTotal: Number(audit.orphanAnnRowsRemovedTotal || 0),
           missingDocumentsRebuiltTotal: Number(audit.missingDocumentsRebuiltTotal || 0),
           ftsPayloadsRebuiltTotal: Number(audit.ftsPayloadsRebuiltTotal || 0),
           metadataDocumentsRepairedTotal: Number(audit.metadataDocumentsRepairedTotal || 0),
@@ -1650,7 +1678,8 @@ export class PersonalMemoryStore {
           currentGhostDocuments: Number(audit.currentGhostDocuments || 0),
           currentMissingDocuments: Number(audit.currentMissingDocuments || 0),
           currentFtsPayloadMismatches: Number(audit.currentFtsPayloadMismatches || 0),
-          currentMetadataMismatches: Number(audit.currentMetadataMismatches || 0)
+          currentMetadataMismatches: Number(audit.currentMetadataMismatches || 0),
+          currentAnnOrphans: Number(audit.currentAnnOrphans || 0)
         }
       } catch {
         return {
@@ -1659,11 +1688,13 @@ export class PersonalMemoryStore {
           ghostDocumentsRemovedThisStart: 0,
           missingDocumentsRebuiltThisStart: { claims: 0, relations: 0, events: 0, resources: 0 },
           orphanPayloadRowsRemovedThisStart: 0,
+          orphanAnnRowsRemovedThisStart: 0,
           ftsPayloadsRebuiltThisStart: 0,
           metadataDocumentsRepairedThisStart: 0,
           structuredDocumentsRepairedThisStart: 0,
           resourceDocumentsRepairedThisStart: 0,
           ghostRowsRemovedTotal: 0,
+          orphanAnnRowsRemovedTotal: 0,
           missingDocumentsRebuiltTotal: 0,
           ftsPayloadsRebuiltTotal: 0,
           metadataDocumentsRepairedTotal: 0,
@@ -1674,7 +1705,8 @@ export class PersonalMemoryStore {
           currentGhostDocuments: 0,
           currentMissingDocuments: 0,
           currentFtsPayloadMismatches: 0,
-          currentMetadataMismatches: 0
+          currentMetadataMismatches: 0,
+          currentAnnOrphans: 0
         }
       }
     })()
@@ -1683,6 +1715,7 @@ export class PersonalMemoryStore {
       && structuredSearchIndex.currentMissingDocuments === 0
       && structuredSearchIndex.currentFtsPayloadMismatches === 0
       && structuredSearchIndex.currentMetadataMismatches === 0
+      && structuredSearchIndex.currentAnnOrphans === 0
     const taskSearchIndex = (() => {
       const row = this.db!.prepare(`
         SELECT value,updated_at FROM schema_meta WHERE key='task_search_index_integrity'
@@ -6092,9 +6125,15 @@ export class PersonalMemoryStore {
     if (!this.db) return
     const hash = createHash('sha256').update(searchText).digest('hex')
     this.db.prepare(`
+      DELETE FROM search_documents
+      WHERE document_type=? AND source_id=? AND id<>?
+    `).run(type, sourceId, id)
+    this.db.prepare(`
       INSERT INTO search_documents(id,document_type,source_id,title,search_text,metadata_json,content_hash,updated_at)
       VALUES(?,?,?,?,?,?,?,?)
-      ON CONFLICT(id) DO UPDATE SET title=excluded.title,search_text=excluded.search_text,
+      ON CONFLICT(id) DO UPDATE SET
+        document_type=excluded.document_type,source_id=excluded.source_id,
+        title=excluded.title,search_text=excluded.search_text,
         metadata_json=excluded.metadata_json,
         embedding_model=CASE WHEN search_documents.content_hash=excluded.content_hash THEN search_documents.embedding_model ELSE NULL END,
         embedding_dimensions=CASE WHEN search_documents.content_hash=excluded.content_hash THEN search_documents.embedding_dimensions ELSE NULL END,

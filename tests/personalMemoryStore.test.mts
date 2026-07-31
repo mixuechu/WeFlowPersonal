@@ -1627,6 +1627,12 @@ test('structured search index reconciliation removes ghosts and rebuilds missing
       DROP TRIGGER trg_events_delete_search;
       DROP TRIGGER trg_memory_resources_delete_search;
       DROP TRIGGER trg_search_documents_delete_payload;
+      DROP TRIGGER trg_search_documents_ann_delete;
+      CREATE TRIGGER trg_search_documents_ann_delete
+      AFTER DELETE ON search_documents
+      BEGIN
+        SELECT 1;
+      END;
       DELETE FROM search_documents
         WHERE id IN(
           'claim:search-missing-claim',
@@ -1641,6 +1647,11 @@ test('structured search index reconciliation removes ghosts and rebuilds missing
       INSERT INTO search_document_evidence(
         document_id,message_id,session_id,timestamp,sender,excerpt
       ) VALUES('orphan:evidence','orphan-message','orphan-session',1,'孤儿','孤儿证据载荷');
+      INSERT INTO vector_ann_entries(
+        document_id,model,dimensions,table_id,signature,content_hash,updated_at
+      ) VALUES
+        ('orphan:ann','ann-test',2,0,1,'orphan-hash','2026-07-31T00:00:00.000Z'),
+        ('relation:search-ghost-relation','ann-test',2,0,2,'ghost-hash','2026-07-31T00:00:00.000Z');
       DELETE FROM search_fts
         WHERE document_id IN('entity:search-person-a','entity:search-person-b');
       INSERT INTO search_fts(document_id,title,search_text)
@@ -1681,9 +1692,11 @@ test('structured search index reconciliation removes ghosts and rebuilds missing
         events: 1,
         resources: 1
       })
-      assert.equal(diagnostics.structuredSearchIndex.orphanPayloadRowsRemovedThisStart, 6)
+      assert.equal(diagnostics.structuredSearchIndex.orphanPayloadRowsRemovedThisStart, 8)
+      assert.equal(diagnostics.structuredSearchIndex.orphanAnnRowsRemovedThisStart, 1)
+      assert.equal(diagnostics.structuredSearchIndex.orphanAnnRowsRemovedTotal, 1)
       assert.equal(diagnostics.structuredSearchIndex.missingDocumentsRebuiltTotal, 3)
-      assert.equal(diagnostics.structuredSearchIndex.ghostRowsRemovedTotal, 8)
+      assert.equal(diagnostics.structuredSearchIndex.ghostRowsRemovedTotal, 10)
       assert.equal(diagnostics.structuredSearchIndex.ftsPayloadsRebuiltThisStart, 2)
       assert.equal(diagnostics.structuredSearchIndex.ftsPayloadsRebuiltTotal, 2)
       assert.equal(diagnostics.structuredSearchIndex.metadataDocumentsRepairedThisStart, 1)
@@ -1735,6 +1748,14 @@ test('structured search index reconciliation removes ghosts and rebuilds missing
       assert.equal(reopened.getDocumentEvidencePage('claim', 'search-missing-claim').total, 1)
       assert.equal(reopened.getDocumentEvidencePage('event', 'search-missing-event').total, 1)
 
+      ;(reopened as any).db.prepare(`
+        INSERT INTO vector_ann_entries(
+          document_id,model,dimensions,table_id,signature,content_hash,updated_at
+        ) VALUES(?,?,?,?,?,?,?)
+      `).run(
+        'claim:search-missing-claim', 'ann-test', 2, 0, 3,
+        'protected-hash', '2026-07-31T00:00:00.000Z'
+      )
       ;(reopened as any).db.exec(`
         DELETE FROM claims WHERE id='search-missing-claim';
         DELETE FROM event_participants WHERE event_id='search-missing-event';
@@ -1755,6 +1776,13 @@ test('structured search index reconciliation removes ghosts and rebuilds missing
       assert.equal(Number((reopened as any).db.prepare(`
         SELECT COUNT(*) AS count FROM search_document_evidence
         WHERE document_id IN('claim:search-missing-claim','event:search-missing-event')
+      `).get().count), 0)
+      assert.equal(Number((reopened as any).db.prepare(`
+        SELECT COUNT(*) AS count FROM vector_ann_entries
+        WHERE document_id IN(
+          'claim:search-missing-claim','event:search-missing-event',
+          'orphan:ann','relation:search-ghost-relation'
+        )
       `).get().count), 0)
     } finally {
       reopened.close()
@@ -1898,6 +1926,35 @@ test('task directory and search payload roll back together when a derived write 
   assert.equal(store.searchText('事务后正文').length, 0)
   assert.equal(store.getDocumentEvidencePage('task', 'task-atomic-sync').total, 1)
   ;(store as any).db.exec('DROP TRIGGER fail_task_search_update')
+}))
+
+test('task sync repairs a canonical document with a drifted type and source id', () => withStore(store => {
+  const task = {
+    id: 'task-identity-repair',
+    title: '修复待办搜索身份',
+    detail: '文档类型和来源必须回到权威任务',
+    source: '身份测试群',
+    status: 'todo',
+    priority: 'medium',
+    classification: 'mine'
+  }
+  store.syncTasks([task])
+  ;(store as any).db.prepare(`
+    UPDATE search_documents SET document_type='entity',source_id='wrong-source'
+    WHERE id='task:task-identity-repair'
+  `).run()
+
+  store.syncTasks([task])
+
+  const repaired = (store as any).db.prepare(`
+    SELECT document_type,source_id FROM search_documents
+    WHERE id='task:task-identity-repair'
+  `).get()
+  assert.deepEqual(repaired, {
+    document_type: 'task',
+    source_id: 'task-identity-repair'
+  })
+  assert.equal(store.searchText('修复待办搜索身份')[0].source_id, 'task-identity-repair')
 }))
 
 test('Chinese substring search falls back when the exact FTS phrase misses', () => withStore(store => {
