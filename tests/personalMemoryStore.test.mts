@@ -182,6 +182,48 @@ test('search relevance feedback is append-only, query-scoped and reversible afte
   }
 })
 
+test('search feedback archive paginates all history with stable action and text filters', () => withStore(store => {
+  store.syncGraph({
+    entities: [{
+      id: 'person-feedback-archive',
+      type: 'person',
+      canonicalName: '反馈档案人物',
+      trustStatus: 'confirmed'
+    }],
+    relations: [],
+    reviewQueue: []
+  } as any)
+  for (let index = 0; index < 2_500; index += 1) {
+    const context = buildMemorySearchFeedbackContext(`历史查询 ${index}`, {
+      sourceIds: [index % 2 ? 'wechat' : 'calendar'],
+      documentTypes: ['entity']
+    })
+    store.recordMemorySearchFeedback({
+      queryFingerprint: context.queryFingerprint,
+      scopeFingerprint: context.scopeFingerprint,
+      queryText: context.query,
+      scopeJson: context.scopeJson,
+      documentId: 'entity:person-feedback-archive',
+      action: index % 3 === 0 ? 'helpful' : index % 3 === 1 ? 'not_relevant' : 'cleared'
+    })
+  }
+  const first = store.getMemorySearchFeedbackArchive({ offset: 0, limit: 40 })
+  const second = store.getMemorySearchFeedbackArchive({ offset: 40, limit: 40 })
+  assert.equal(first.total, 2_500)
+  assert.equal(first.items.length, 40)
+  assert.equal(first.hasMore, true)
+  assert.equal(new Set([...first.items, ...second.items].map((item: any) => item.id)).size, 80)
+  assert.ok(first.items.every((item: any, index: number) =>
+    index === 0 || first.items[index - 1].id > item.id))
+  assert.equal(first.counts.helpful + first.counts.not_relevant + first.counts.cleared, 2_500)
+  const helpful = store.getMemorySearchFeedbackArchive({ action: 'helpful', limit: 100 })
+  assert.ok(helpful.items.every((item: any) => item.action === 'helpful'))
+  const exact = store.getMemorySearchFeedbackArchive({ query: '历史查询 2499', limit: 10 })
+  assert.equal(exact.total, 1)
+  assert.equal(exact.items[0].queryText, '历史查询 2499')
+  assert.deepEqual(exact.items[0].scope.documentTypes, ['entity'])
+}))
+
 test('derived briefings stay bounded without duplicating durable task evidence', () => {
   const briefings: Record<string, any> = {}
   for (let day = 1; day <= 365; day += 1) {

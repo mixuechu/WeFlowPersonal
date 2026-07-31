@@ -561,6 +561,19 @@
 .assistant-search-feedback-actions button.active { border-color: #6f937d; color: #315d48; background: #eaf3ed; }
 .assistant-search-feedback-actions button:disabled, .assistant-search-feedback-list button:disabled { opacity: .55; cursor: default; }
 .assistant-search-feedback-actions small { color: #6c786f; font-size: 8px; }
+.assistant-search-feedback-archive { margin-top: 12px; padding: 10px 11px; border: 1px solid #dde4de; border-radius: 10px; background: rgba(248,250,248,.8); }
+.assistant-search-feedback-archive > summary { cursor: pointer; color: #43574b; font-size: 10px; font-weight: 600; }
+.assistant-search-feedback-archive > small { display: block; margin-top: 6px; color: #778079; font-size: 8px; }
+.assistant-search-feedback-archive-filters { display: grid; grid-template-columns: minmax(180px,1.5fr) repeat(3,minmax(110px,.7fr)); gap: 7px; margin-top: 9px; }
+.assistant-search-feedback-archive-filters input, .assistant-search-feedback-archive-filters select { min-width: 0; padding: 6px 7px; border: 1px solid #d9dfda; border-radius: 7px; background: #fff; font-size: 8px; }
+.assistant-search-feedback-archive-status { margin-top: 8px; color: #647069; font-size: 8px; }
+.assistant-search-feedback-archive-list { display: grid; gap: 7px; margin-top: 8px; }
+.assistant-search-feedback-archive-list article { padding: 8px 9px; border: 1px solid #e2e7e3; border-radius: 8px; background: #fff; }
+.assistant-search-feedback-archive-list article header { display: flex; justify-content: space-between; gap: 8px; color: #768078; font-size: 8px; }
+.assistant-search-feedback-archive-list article strong { display: block; margin-top: 4px; color: #36423a; font-size: 10px; }
+.assistant-search-feedback-archive-list article p, .assistant-search-feedback-archive-list article > small { display: block; margin: 4px 0 0; color: #6e7770; font-size: 8px; }
+.assistant-search-feedback-archive-list article div { margin-top: 6px; }
+.assistant-search-feedback-archive-list button { padding: 4px 7px; border: 1px solid #d4ddd6; border-radius: 6px; color: #496052; background: #f8faf8; font-size: 8px; cursor: pointer; }
 .assistant-search-load-more { justify-self: center; margin: 4px auto 0; padding: 7px 14px; border: 1px solid #cfd8d1; border-radius: 8px; background: #fff; color: #456050; font-size: 9px; cursor: pointer; }
 .assistant-search-load-more:disabled { opacity: .55; cursor: default; }
 .assistant-search-result-group-heading { display: flex; align-items: center; justify-content: space-between; padding: 0 2px; color: #626b64; }

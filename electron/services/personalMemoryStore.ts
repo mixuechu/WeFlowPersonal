@@ -6247,6 +6247,95 @@ export class PersonalMemoryStore {
     `).all(queryFingerprint, scopeFingerprint, safeLimit) as any[]
   }
 
+  getMemorySearchFeedbackArchive(options: {
+    action?: string
+    query?: string
+    from?: string
+    to?: string
+    offset?: number
+    limit?: number
+  } = {}): any {
+    if (!this.db) return { items: [], total: 0, hasMore: false, offset: 0, limit: 40, counts: {} }
+    const offset = Math.max(0, Number(options.offset) || 0)
+    const limit = Math.max(1, Math.min(100, Number(options.limit) || 40))
+    const conditions: string[] = []
+    const parameters: any[] = []
+    const action = String(options.action || '').trim()
+    if (new Set(['helpful', 'not_relevant', 'cleared']).has(action)) {
+      conditions.push('feedback.action=?')
+      parameters.push(action)
+    }
+    const query = String(options.query || '').trim().toLowerCase().slice(0, 300)
+    if (query) {
+      conditions.push(`(
+        LOWER(feedback.query_text) LIKE ?
+        OR LOWER(feedback.document_title) LIKE ?
+        OR LOWER(feedback.document_id) LIKE ?
+      )`)
+      parameters.push(`%${query}%`, `%${query}%`, `%${query}%`)
+    }
+    const normalizeBoundary = (value: string | undefined, endOfDay: boolean): string | null => {
+      const text = String(value || '').trim()
+      if (!text) return null
+      const date = new Date(/^\d{4}-\d{2}-\d{2}$/.test(text)
+        ? `${text}T${endOfDay ? '23:59:59.999' : '00:00:00.000'}+08:00`
+        : text)
+      return Number.isFinite(date.getTime()) ? date.toISOString() : null
+    }
+    const from = normalizeBoundary(options.from, false)
+    const to = normalizeBoundary(options.to, true)
+    if (from) {
+      conditions.push('feedback.created_at>=?')
+      parameters.push(from)
+    }
+    if (to) {
+      conditions.push('feedback.created_at<=?')
+      parameters.push(to)
+    }
+    const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : ''
+    const total = Number((this.db.prepare(`
+      SELECT COUNT(*) AS count FROM memory_search_feedback feedback ${where}
+    `).get(...parameters) as any)?.count || 0)
+    const items = this.db.prepare(`
+      SELECT feedback.id,feedback.query_text AS queryText,feedback.scope_json AS scopeJson,
+        feedback.document_id AS documentId,feedback.document_type AS documentType,
+        feedback.document_title AS documentTitle,feedback.action,
+        feedback.created_at AS createdAt,
+        CASE WHEN feedback.id=(
+          SELECT MAX(latest.id) FROM memory_search_feedback latest
+          WHERE latest.query_fingerprint=feedback.query_fingerprint
+            AND latest.scope_fingerprint=feedback.scope_fingerprint
+            AND latest.document_id=feedback.document_id
+        ) THEN 1 ELSE 0 END AS isCurrent,
+        (
+          SELECT latest.action FROM memory_search_feedback latest
+          WHERE latest.query_fingerprint=feedback.query_fingerprint
+            AND latest.scope_fingerprint=feedback.scope_fingerprint
+            AND latest.document_id=feedback.document_id
+          ORDER BY latest.id DESC LIMIT 1
+        ) AS currentAction
+      FROM memory_search_feedback feedback
+      ${where}
+      ORDER BY feedback.id DESC
+      LIMIT ? OFFSET ?
+    `).all(...parameters, limit, offset) as any[]
+    const counts = Object.fromEntries((this.db.prepare(`
+      SELECT action,COUNT(*) AS count FROM memory_search_feedback GROUP BY action
+    `).all() as Array<{ action: string; count: number }>).map(row => [row.action, Number(row.count || 0)]))
+    return {
+      items: items.map(item => ({
+        ...item,
+        isCurrent: Boolean(item.isCurrent),
+        scope: (() => { try { return JSON.parse(String(item.scopeJson || '{}')) } catch { return {} } })()
+      })),
+      total,
+      hasMore: offset + items.length < total,
+      offset,
+      limit,
+      counts
+    }
+  }
+
   searchText(query: string, limit = 20, allowedIds: Set<string> | null = null): any[] {
     if (!this.db || !query.trim()) return []
     if (allowedIds && !allowedIds.size) return []

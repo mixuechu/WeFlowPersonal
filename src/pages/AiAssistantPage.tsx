@@ -236,6 +236,17 @@ function AiAssistantPage() {
   const [memorySearchFeedbackSaving, setMemorySearchFeedbackSaving] = useState('')
   const [memorySearchRefreshKey, setMemorySearchRefreshKey] = useState(0)
   const memorySearchGate = useRef(new LatestRequestGate())
+  const [memoryFeedbackArchiveOpen, setMemoryFeedbackArchiveOpen] = useState(false)
+  const [memoryFeedbackArchive, setMemoryFeedbackArchive] = useState<any>({
+    items: [], total: 0, hasMore: false, counts: {}, status: 'idle'
+  })
+  const [memoryFeedbackArchiveQuery, setMemoryFeedbackArchiveQuery] = useState('')
+  const [memoryFeedbackArchiveAction, setMemoryFeedbackArchiveAction] = useState<'helpful' | 'not_relevant' | 'cleared' | ''>('')
+  const [memoryFeedbackArchiveFrom, setMemoryFeedbackArchiveFrom] = useState('')
+  const [memoryFeedbackArchiveTo, setMemoryFeedbackArchiveTo] = useState('')
+  const [memoryFeedbackArchiveRefreshKey, setMemoryFeedbackArchiveRefreshKey] = useState(0)
+  const [memoryFeedbackArchiveLoadingMore, setMemoryFeedbackArchiveLoadingMore] = useState(false)
+  const memoryFeedbackArchiveGate = useRef(new LatestRequestGate())
   const [memoryEvidenceArchive, setMemoryEvidenceArchive] = useState<{
     documentType: string
     sourceId: string
@@ -429,6 +440,19 @@ function AiAssistantPage() {
     to: memoryTo || undefined
   }), [memoryEntityFilter, memorySessionFilter, memorySourceFilter, memoryTypeFilter, memoryFrom, memoryTo, sources])
   const hasMemoryScope = Boolean(memoryEntityFilter || memorySessionFilter || memorySourceFilter || memoryTypeFilter || memoryFrom || memoryTo)
+  const memoryFeedbackArchiveOptions = useMemo(() => ({
+    action: memoryFeedbackArchiveAction || undefined,
+    query: memoryFeedbackArchiveQuery.trim() || undefined,
+    from: memoryFeedbackArchiveFrom || undefined,
+    to: memoryFeedbackArchiveTo || undefined,
+    offset: 0,
+    limit: 40
+  }), [
+    memoryFeedbackArchiveAction,
+    memoryFeedbackArchiveQuery,
+    memoryFeedbackArchiveFrom,
+    memoryFeedbackArchiveTo
+  ])
   const sensitiveCaches = memoryDiagnostics?.privacy?.sensitiveCaches
   const sensitiveCachesSecure = [
     'ocr',
@@ -752,6 +776,45 @@ function AiAssistantPage() {
       if (memorySearchGate.current.isCurrent(request)) memorySearchGate.current.invalidate()
     }
   }, [memoryQuery, memorySearchOptions, hasMemoryScope, memorySearchRefreshKey])
+
+  useEffect(() => {
+    if (!memoryFeedbackArchiveOpen) {
+      memoryFeedbackArchiveGate.current.invalidate()
+      return
+    }
+    const request = memoryFeedbackArchiveGate.current.begin()
+    setMemoryFeedbackArchiveLoadingMore(false)
+    setMemoryFeedbackArchive((current: any) => ({
+      ...current,
+      items: [],
+      total: 0,
+      hasMore: false,
+      status: 'loading',
+      error: undefined
+    }))
+    const timer = window.setTimeout(() => {
+      void window.electronAPI.aiAssistant.getMemorySearchFeedbackArchive(memoryFeedbackArchiveOptions)
+        .then(page => {
+          if (!memoryFeedbackArchiveGate.current.isCurrent(request)) return
+          setMemoryFeedbackArchive({ ...page, status: 'ready' })
+        })
+        .catch(error => {
+          if (!memoryFeedbackArchiveGate.current.isCurrent(request)) return
+          setMemoryFeedbackArchive({
+            items: [],
+            total: 0,
+            hasMore: false,
+            counts: {},
+            status: 'error',
+            error: error?.message || String(error)
+          })
+        })
+    }, memoryFeedbackArchiveQuery.trim() ? 200 : 0)
+    return () => {
+      window.clearTimeout(timer)
+      if (memoryFeedbackArchiveGate.current.isCurrent(request)) memoryFeedbackArchiveGate.current.invalidate()
+    }
+  }, [memoryFeedbackArchiveOpen, memoryFeedbackArchiveOptions, memoryFeedbackArchiveRefreshKey])
 
   useEffect(() => {
     const request = reviewPageGate.current.begin()
@@ -1890,29 +1953,60 @@ function AiAssistantPage() {
 
   const updateMemorySearchFeedback = async (
     documentId: string,
-    action: 'helpful' | 'not_relevant' | 'cleared'
+    action: 'helpful' | 'not_relevant' | 'cleared',
+    context?: { query?: string; options?: any }
   ) => {
-    const query = memoryQuery.trim()
+    const query = context?.query ?? memoryQuery.trim()
+    const options = context?.options ?? memorySearchOptions
     const saveKey = `${documentId}:${action}`
     setMemorySearchFeedbackSaving(saveKey)
     try {
       const result = await window.electronAPI.aiAssistant.updateMemorySearchFeedback({
         query,
-        options: memorySearchOptions,
+        options,
         documentId,
         action
       })
-      setMemorySearchFeedback(result.feedback || [])
+      if (!context) setMemorySearchFeedback(result.feedback || [])
       setMessage(action === 'helpful'
         ? '已记录为有用；只会提升同一查询和范围内的排序。'
         : action === 'not_relevant'
           ? '已记录为无关；不会全局删除或拒绝这条记忆。'
           : '已撤销这条检索反馈。')
       setMemorySearchRefreshKey(value => value + 1)
+      setMemoryFeedbackArchiveRefreshKey(value => value + 1)
     } catch (error: any) {
       setMessage(error?.message || String(error))
     } finally {
       setMemorySearchFeedbackSaving('')
+    }
+  }
+
+  const loadMoreMemoryFeedbackArchive = async () => {
+    if (memoryFeedbackArchiveLoadingMore || !memoryFeedbackArchive.hasMore) return
+    const request = memoryFeedbackArchiveGate.current.begin()
+    setMemoryFeedbackArchiveLoadingMore(true)
+    try {
+      const page = await window.electronAPI.aiAssistant.getMemorySearchFeedbackArchive({
+        ...memoryFeedbackArchiveOptions,
+        offset: memoryFeedbackArchive.items.length
+      })
+      if (!memoryFeedbackArchiveGate.current.isCurrent(request)) return
+      setMemoryFeedbackArchive((current: any) => ({
+        ...page,
+        items: [...current.items, ...page.items],
+        status: 'ready'
+      }))
+    } catch (error: any) {
+      if (memoryFeedbackArchiveGate.current.isCurrent(request)) {
+        setMemoryFeedbackArchive((current: any) => ({
+          ...current,
+          status: 'error',
+          error: error?.message || String(error)
+        }))
+      }
+    } finally {
+      if (memoryFeedbackArchiveGate.current.isCurrent(request)) setMemoryFeedbackArchiveLoadingMore(false)
     }
   }
 
@@ -3169,6 +3263,86 @@ function AiAssistantPage() {
                 {memoryLoadingMore ? '正在加载下一页…' : '加载更多结果'}
               </button>}
           </div>}
+          <details
+            className="assistant-search-feedback-archive"
+            open={memoryFeedbackArchiveOpen}
+            onToggle={event => setMemoryFeedbackArchiveOpen(event.currentTarget.open)}>
+            <summary>检索反馈历史档案</summary>
+            {memoryFeedbackArchiveOpen && <>
+              <small>这里保留每次设置、改判和撤销；目录按需从本机 SQLCipher 加载，不进入模型上下文。</small>
+              <div className="assistant-search-feedback-archive-filters">
+                <input
+                  value={memoryFeedbackArchiveQuery}
+                  onChange={event => setMemoryFeedbackArchiveQuery(event.target.value)}
+                  placeholder="搜索原查询、结果标题或记忆 ID"
+                />
+                <select value={memoryFeedbackArchiveAction} onChange={event =>
+                  setMemoryFeedbackArchiveAction(event.target.value as 'helpful' | 'not_relevant' | 'cleared' | '')}>
+                  <option value="">全部动作</option>
+                  <option value="helpful">设为有用</option>
+                  <option value="not_relevant">设为无关</option>
+                  <option value="cleared">撤销反馈</option>
+                </select>
+                <input type="date" value={memoryFeedbackArchiveFrom} onChange={event => setMemoryFeedbackArchiveFrom(event.target.value)} />
+                <input type="date" value={memoryFeedbackArchiveTo} onChange={event => setMemoryFeedbackArchiveTo(event.target.value)} />
+              </div>
+              <div className="assistant-search-feedback-archive-status">
+                {memoryFeedbackArchive.status === 'loading'
+                  ? '正在读取反馈档案…'
+                  : memoryFeedbackArchive.status === 'error'
+                    ? `读取失败：${memoryFeedbackArchive.error || '未知错误'}`
+                    : `已显示 ${memoryFeedbackArchive.items.length} / ${memoryFeedbackArchive.total} 条 · 有用 ${Number(memoryFeedbackArchive.counts?.helpful || 0)} · 无关 ${Number(memoryFeedbackArchive.counts?.not_relevant || 0)} · 撤销 ${Number(memoryFeedbackArchive.counts?.cleared || 0)}`}
+              </div>
+              <div className="assistant-search-feedback-archive-list">
+                {(memoryFeedbackArchive.items || []).map((item: any) => {
+                  const scope = item.scope || {}
+                  const scopeLabels = [
+                    scope.entityId ? `人物 ${scope.entityId}` : '',
+                    scope.sessionId ? `会话 ${scope.sessionId}` : '',
+                    (scope.sourceIds || []).length ? `来源 ${(scope.sourceIds || []).join('、')}` : '',
+                    (scope.documentTypes || []).length ? `类型 ${(scope.documentTypes || []).join('、')}` : '',
+                    scope.from || scope.to ? `时间 ${scope.from || '不限'} → ${scope.to || '不限'}` : ''
+                  ].filter(Boolean)
+                  const actionLabel = item.action === 'helpful' ? '设为有用'
+                    : item.action === 'not_relevant' ? '设为无关'
+                      : '撤销反馈'
+                  return <article key={item.id}>
+                    <header>
+                      <span>{actionLabel} · {new Date(item.createdAt).toLocaleString('zh-CN')}</span>
+                      <small>{item.isCurrent
+                        ? item.currentAction === 'cleared' ? '当前无有效反馈' : '当前有效'
+                        : `历史动作 · 当前${item.currentAction === 'helpful' ? '有用' : item.currentAction === 'not_relevant' ? '无关' : '已撤销'}`}</small>
+                    </header>
+                    <strong>{item.documentTitle || item.documentId}</strong>
+                    <p>查询：“{item.queryText || '范围浏览'}”</p>
+                    <small>{scopeLabels.length ? scopeLabels.join(' · ') : '全部范围'} · {item.documentType || '记忆'}</small>
+                    <div>
+                      {item.isCurrent && item.action !== 'cleared' && <button
+                        disabled={Boolean(memorySearchFeedbackSaving)}
+                        onClick={() => void updateMemorySearchFeedback(item.documentId, 'cleared', {
+                          query: item.queryText,
+                          options: scope
+                        })}>撤销当前反馈</button>}
+                      {!item.isCurrent && item.action !== 'cleared' && <button
+                        disabled={Boolean(memorySearchFeedbackSaving)}
+                        onClick={() => void updateMemorySearchFeedback(item.documentId, item.action, {
+                          query: item.queryText,
+                          options: scope
+                        })}>重新设为{item.action === 'helpful' ? '有用' : '无关'}</button>}
+                    </div>
+                  </article>
+                })}
+              </div>
+              {memoryFeedbackArchive.status === 'ready' && !memoryFeedbackArchive.items.length &&
+                <div className="assistant-empty">当前筛选下没有检索反馈。</div>}
+              {memoryFeedbackArchive.hasMore && <button
+                className="assistant-search-load-more"
+                disabled={memoryFeedbackArchiveLoadingMore}
+                onClick={() => void loadMoreMemoryFeedbackArchive()}>
+                {memoryFeedbackArchiveLoadingMore ? '正在加载…' : '加载更多反馈'}
+              </button>}
+            </>}
+          </details>
         </section>
 
         <section className="assistant-panel assistant-memory-chat">

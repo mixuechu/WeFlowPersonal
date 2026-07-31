@@ -4792,6 +4792,13 @@ export class AiAssistantService {
     }
   }
 
+  getMemorySearchFeedbackArchive(options?: any): any {
+    return {
+      ...personalMemoryStore.getMemorySearchFeedbackArchive(options || {}),
+      version: MEMORY_SEARCH_FEEDBACK_VERSION
+    }
+  }
+
   async searchMemoryPage(
     query: string,
     options: MemorySearchOptions = {},

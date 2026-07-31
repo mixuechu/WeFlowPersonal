@@ -1773,6 +1773,14 @@ export interface ElectronAPI {
         documentId: string
         action: 'helpful' | 'not_relevant' | 'cleared'
       }) => Promise<any>
+      getMemorySearchFeedbackArchive: (options?: {
+        action?: 'helpful' | 'not_relevant' | 'cleared'
+        query?: string
+        from?: string
+        to?: string
+        offset?: number
+        limit?: number
+      }) => Promise<any>
       getMemoryEvidencePage: (
         documentType: string,
         sourceId: string,

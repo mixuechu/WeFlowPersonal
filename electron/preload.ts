@@ -660,6 +660,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
       ipcRenderer.invoke('ai-assistant:searchMemoryPage', query, options, pagination),
     updateMemorySearchFeedback: (input: any) =>
       ipcRenderer.invoke('ai-assistant:updateMemorySearchFeedback', input),
+    getMemorySearchFeedbackArchive: (options?: any) =>
+      ipcRenderer.invoke('ai-assistant:getMemorySearchFeedbackArchive', options),
     getMemoryEvidencePage: (documentType: string, sourceId: string, pagination?: any) =>
       ipcRenderer.invoke('ai-assistant:getMemoryEvidencePage', documentType, sourceId, pagination),
     indexMemoryVectors: () => ipcRenderer.invoke('ai-assistant:indexMemoryVectors'),
