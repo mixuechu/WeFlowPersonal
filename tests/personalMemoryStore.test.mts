@@ -1570,6 +1570,22 @@ test('structured search index reconciliation removes ghosts and rebuilds missing
         sender: '检索发送者',
         excerpt: '可信元数据漂移'
       }]
+    }, {
+      id: 'search-stale-content-claim',
+      subjectId: 'search-person-a',
+      predicate: '记录',
+      objectValue: '权威正文恢复',
+      confidence: 0.85,
+      status: 'candidate',
+      sourceNature: 'self_statement',
+      searchText: '检索甲记录权威正文恢复',
+      evidence: [{
+        messageId: 'search-content-message',
+        sessionId: 'search-session',
+        timestamp: 1_700_002_004,
+        sender: '检索发送者',
+        excerpt: '权威正文恢复'
+      }]
     }])
     first.upsertEvents([{
       id: 'search-missing-event',
@@ -1613,9 +1629,12 @@ test('structured search index reconciliation removes ghosts and rebuilds missing
       DROP TRIGGER trg_search_documents_delete_payload;
       DELETE FROM search_documents
         WHERE id IN(
-          'claim:search-missing-claim','event:search-missing-event',
+          'claim:search-missing-claim',
           'resource:search-missing-resource'
         );
+      UPDATE search_documents
+        SET document_type='resource',source_id='wrong-event-source'
+        WHERE id='event:search-missing-event';
       DELETE FROM relations WHERE id='search-ghost-relation';
       INSERT INTO search_fts(document_id,title,search_text)
         VALUES('orphan:fts','孤儿全文','孤儿全文载荷');
@@ -1634,6 +1653,13 @@ test('structured search index reconciliation removes ghosts and rebuilds missing
         SET metadata_json='{"status":"confirmed","subjectId":"wrong-person","polarity":"negative"}'
         WHERE id='claim:search-stale-metadata-claim';
       UPDATE search_documents
+        SET title='漂移事实标题',search_text='漂移事实正文',
+          content_hash='wrong-content-hash',
+          embedding_model='drifted-model',embedding_dimensions=2,embedding_json='[0.6,0.8]'
+        WHERE id='claim:search-stale-content-claim';
+      UPDATE search_fts SET title='漂移事实标题',search_text='漂移事实正文'
+        WHERE document_id='claim:search-stale-content-claim';
+      UPDATE search_documents
         SET title='漂移资源标题',search_text='漂移资源正文',
           metadata_json='{"resourceType":"link","sourceId":"wrong"}'
         WHERE id='resource:search-stale-resource';
@@ -1648,7 +1674,7 @@ test('structured search index reconciliation removes ghosts and rebuilds missing
       const diagnostics = reopened.getDiagnostics()
       assert.equal(diagnostics.healthy, true)
       assert.equal(diagnostics.structuredSearchIndexHealthy, true)
-      assert.equal(diagnostics.structuredSearchIndex.ghostDocumentsRemovedThisStart, 1)
+      assert.equal(diagnostics.structuredSearchIndex.ghostDocumentsRemovedThisStart, 2)
       assert.deepEqual(diagnostics.structuredSearchIndex.missingDocumentsRebuiltThisStart, {
         claims: 1,
         relations: 0,
@@ -1657,11 +1683,13 @@ test('structured search index reconciliation removes ghosts and rebuilds missing
       })
       assert.equal(diagnostics.structuredSearchIndex.orphanPayloadRowsRemovedThisStart, 6)
       assert.equal(diagnostics.structuredSearchIndex.missingDocumentsRebuiltTotal, 3)
-      assert.equal(diagnostics.structuredSearchIndex.ghostRowsRemovedTotal, 7)
+      assert.equal(diagnostics.structuredSearchIndex.ghostRowsRemovedTotal, 8)
       assert.equal(diagnostics.structuredSearchIndex.ftsPayloadsRebuiltThisStart, 2)
       assert.equal(diagnostics.structuredSearchIndex.ftsPayloadsRebuiltTotal, 2)
       assert.equal(diagnostics.structuredSearchIndex.metadataDocumentsRepairedThisStart, 1)
       assert.equal(diagnostics.structuredSearchIndex.metadataDocumentsRepairedTotal, 1)
+      assert.equal(diagnostics.structuredSearchIndex.structuredDocumentsRepairedThisStart, 1)
+      assert.equal(diagnostics.structuredSearchIndex.structuredDocumentsRepairedTotal, 1)
       assert.equal(diagnostics.structuredSearchIndex.resourceDocumentsRepairedThisStart, 1)
       assert.equal(diagnostics.structuredSearchIndex.resourceDocumentsRepairedTotal, 1)
       assert.equal(diagnostics.structuredSearchIndex.triggerRepairs, 2)
@@ -1681,6 +1709,20 @@ test('structured search index reconciliation removes ghosts and rebuilds missing
       assert.equal(reopened.searchText('检索乙').some((row: any) =>
         row.id === 'entity:search-person-b'), true)
       assert.equal(reopened.searchText('过期检索载荷').length, 0)
+      assert.equal(reopened.searchText('权威正文恢复').some((row: any) =>
+        row.id === 'claim:search-stale-content-claim'), true)
+      assert.equal(reopened.searchText('漂移事实正文').length, 0)
+      const repairedContentDocument = (reopened as any).db.prepare(`
+        SELECT title,search_text,content_hash,embedding_model,embedding_dimensions,embedding_json
+        FROM search_documents WHERE id='claim:search-stale-content-claim'
+      `).get()
+      assert.equal(repairedContentDocument.title, '记录')
+      assert.equal(repairedContentDocument.search_text, '检索甲记录权威正文恢复')
+      assert.equal(repairedContentDocument.content_hash,
+        createHash('sha256').update('检索甲记录权威正文恢复').digest('hex'))
+      assert.equal(repairedContentDocument.embedding_model, null)
+      assert.equal(repairedContentDocument.embedding_dimensions, null)
+      assert.equal(repairedContentDocument.embedding_json, null)
       const [repairedMetadataDocument] = reopened.searchText('可信元数据漂移')
       const repairedMetadata = JSON.parse(repairedMetadataDocument.metadata_json)
       assert.equal(repairedMetadata.status, 'rejected')
