@@ -85,6 +85,10 @@ import {
   EXTRACTION_MEMORY_CONTEXT_VERSION,
   selectTrustedExtractionEntities
 } from '../electron/services/extractionMemoryContext.ts'
+import {
+  assessScheduledSyncResult,
+  planScheduledSyncState
+} from '../electron/services/scheduledSyncPolicy.ts'
 
 function withStore(run: (store: PersonalMemoryStore) => void): void {
   const directory = mkdtempSync(join(tmpdir(), 'weflow-memory-test-'))
@@ -3291,6 +3295,10 @@ test('renderer cursor status exposes counts but keeps durable keys and session m
       `private-backlog-${index}`, index % 2 ? index : 0
     ])),
     lastSuccessfulRunAt: '2026-07-31T00:00:00.000Z',
+    lastScheduledAttemptAt: '2026-07-31T00:02:00.000Z',
+    lastScheduledCompletedAt: '2026-07-30T12:00:00.000Z',
+    lastScheduledError: '日历连接器暂时失败',
+    scheduledRetryCount: 2,
     lastAttemptAt: '2026-07-31T00:01:00.000Z',
     lastError: null,
     pendingSessionRetryCount: 3,
@@ -3308,12 +3316,72 @@ test('renderer cursor status exposes counts but keeps durable keys and session m
   assert.equal(payload.privateStateCounts.recentMessageKeys, 20_000)
   assert.equal(payload.privateStateCounts.sessionCursors, 10_000)
   assert.equal(payload.privateStateCounts.continuationOffsets, 1_000)
+  assert.equal(payload.lastScheduledError, '日历连接器暂时失败')
+  assert.equal(payload.scheduledRetryCount, 2)
+  assert.equal(payload.nextScheduledRetryAt, '2026-07-31T00:17:00.000Z')
   assert.equal(payload.recentMessageIds, undefined)
   assert.equal(payload.sessionCursors, undefined)
   assert.equal(payload.sessionOffsets, undefined)
   assert.equal(serialized.includes('private-message-key'), false)
   assert.equal(serialized.includes('private-session'), false)
   assert.ok(Buffer.byteLength(serialized) < 2_000)
+})
+
+test('daily schedule is acknowledged only after every enabled source and backlog completes', () => {
+  assert.deepEqual(assessScheduledSyncResult({
+    success: true,
+    partial: false,
+    cancelled: false,
+    documentSourceError: null,
+    calendarSourceError: null,
+    mailSourceError: null
+  }), { complete: true, reason: '' })
+  assert.equal(assessScheduledSyncResult({
+    success: true,
+    partial: true,
+    message: '仍有一个高流量会话等待下一页'
+  }).complete, false)
+  assert.equal(assessScheduledSyncResult({
+    success: true,
+    partial: false,
+    calendarSourceError: 'EventKit 暂时不可用'
+  }).reason, 'EventKit 暂时不可用')
+  assert.equal(assessScheduledSyncResult({
+    success: false,
+    documentSourceError: '文档目录暂时不可访问'
+  }).reason, '文档目录暂时不可访问')
+  assert.equal(assessScheduledSyncResult({
+    success: true,
+    cancelled: true
+  }).complete, false)
+  assert.equal(assessScheduledSyncResult(null).complete, false)
+  const previous = {
+    lastScheduledRunDate: '2026-07-30',
+    lastScheduledCompletedAt: '2026-07-30T12:00:00.000Z',
+    scheduledRetryCount: 2
+  }
+  assert.deepEqual(planScheduledSyncState(
+    previous,
+    { complete: false, reason: '日历仍需重试' },
+    '2026-07-31',
+    '2026-07-31T12:00:00.000Z'
+  ), {
+    lastScheduledRunDate: '2026-07-30',
+    lastScheduledCompletedAt: '2026-07-30T12:00:00.000Z',
+    lastScheduledError: '日历仍需重试',
+    scheduledRetryCount: 3
+  })
+  assert.deepEqual(planScheduledSyncState(
+    previous,
+    { complete: true, reason: '' },
+    '2026-07-31',
+    '2026-07-31T12:15:00.000Z'
+  ), {
+    lastScheduledRunDate: '2026-07-31',
+    lastScheduledCompletedAt: '2026-07-31T12:15:00.000Z',
+    lastScheduledError: null,
+    scheduledRetryCount: 0
+  })
 })
 
 test('task calendar handles leap months, Shanghai today, overdue and unscheduled work', () => {

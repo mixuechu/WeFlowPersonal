@@ -1030,7 +1030,9 @@ function AiAssistantPage() {
       const result = await window.electronAPI.aiAssistant.sync()
       setMessage(result.cancelled
         ? result.message
-        : `补齐完成：${result.newMessageCount} 条新消息，${result.newTaskCount} 个新待办`)
+        : result.success === false || result.partial
+          ? `本轮已保存成功部分，但仍需重试：${result.message || result.documentSourceError || result.calendarSourceError || result.mailSourceError || '仍有来源或分页等待补齐'}`
+          : `补齐完成：${result.newMessageCount} 条新消息，${result.newTaskCount} 个新待办`)
       await load()
       setReviewRefreshKey(value => value + 1)
     } catch (error: any) {
@@ -2347,6 +2349,24 @@ function AiAssistantPage() {
                   : ''}
             </small>}
             {ingestionStatus.error && <small>{ingestionStatus.error}</small>}
+          </div>
+        )}
+        {status?.cursor?.lastScheduledError && (
+          <div className="assistant-ingestion-status partial">
+            <strong>今日定时整理尚未确认完成，将继续重试</strong>
+            <span>
+              已尝试 {Number(status.cursor.scheduledRetryCount || 0).toLocaleString()} 次
+              {status.cursor.lastScheduledAttemptAt
+                ? ` · 最近尝试 ${new Date(status.cursor.lastScheduledAttemptAt).toLocaleString('zh-CN', { hour12: false })}`
+                : ''}
+            </span>
+            <small>{status.cursor.lastScheduledError}</small>
+            <small>
+              当微信分页、模型批次或任一已启用连接器仍为部分完成/失败时，不会写入“今日已完成”；
+              {status.cursor.nextScheduledRetryAt
+                ? ` 最早于 ${new Date(status.cursor.nextScheduledRetryAt).toLocaleString('zh-CN', { hour12: false })} 自动重试。`
+                : ' 服务会在下一轮调度继续。'}
+            </small>
           </div>
         )}
         {memoryDiagnostics && (

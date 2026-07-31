@@ -155,6 +155,7 @@ import {
   GRAPH_REVIEW_STORAGE_VERSION,
   compactGraphReviewWorkset
 } from '../../shared/graphReviewStorage'
+import { assessScheduledSyncResult, planScheduledSyncState } from './scheduledSyncPolicy'
 
 const ATTACHMENT_STRUCTURE_PARSER_VERSION = 'attachment-layout-v3'
 
@@ -234,6 +235,10 @@ type AssistantState = {
     sessionOffsets: Record<string, number>
     lastSuccessfulRunAt: string | null
     lastScheduledRunDate: string | null
+    lastScheduledAttemptAt: string | null
+    lastScheduledCompletedAt: string | null
+    lastScheduledError: string | null
+    scheduledRetryCount: number
     lastReminderNotificationDate?: string | null
     lastAttemptAt: string | null
     lastError: string | null
@@ -263,6 +268,10 @@ const EMPTY_STATE: AssistantState = {
     sessionOffsets: {},
     lastSuccessfulRunAt: null,
     lastScheduledRunDate: null,
+    lastScheduledAttemptAt: null,
+    lastScheduledCompletedAt: null,
+    lastScheduledError: null,
+    scheduledRetryCount: 0,
     lastReminderNotificationDate: null,
     lastAttemptAt: null,
     lastError: null,
@@ -2482,10 +2491,16 @@ export class AiAssistantService {
     const calendarSync = await this.syncLocalCalendar()
     const documentSync = await this.syncLocalDocuments()
     const documentAnalysis = await this.processPendingDocumentAnalysis()
+    const auxiliaryErrors = [
+      documentSync.error,
+      calendarSync.error,
+      mailSync.error
+    ].map(value => String(value || '').trim()).filter(Boolean)
     const wechatSource = personalMemoryStore.listDataSources().find(source => source.id === 'wechat')
     if (wechatSource && !wechatSource.enabled) {
       return {
-        success: true,
+        success: auxiliaryErrors.length === 0,
+        partial: auxiliaryErrors.length > 0,
         cancelled: false,
         newMessageCount: 0,
         newTaskCount: 0,
@@ -2495,6 +2510,9 @@ export class AiAssistantService {
         indexedMailMessageCount: mailSync.indexed,
         analyzedDocumentCount: documentAnalysis.completed,
         newDocumentTaskCount: documentAnalysis.tasks,
+        documentSourceError: documentSync.error || null,
+        calendarSourceError: calendarSync.error || null,
+        mailSourceError: mailSync.error || null,
         message: documentSync.error || calendarSync.error || mailSync.error
           ? `微信数据源已暂停；其他数据源需要重试：${documentSync.error || calendarSync.error || mailSync.error}`
           : '微信数据源已暂停；增量游标保持不变'
@@ -2819,8 +2837,8 @@ export class AiAssistantService {
         throw new Error(this.state.cursor.lastError || '部分消息或会话等待重试')
       }
       return {
-        success: !operationalErrors.length,
-        partial: Boolean(runErrors.length),
+        success: !operationalErrors.length && !auxiliaryErrors.length,
+        partial: Boolean(runErrors.length || auxiliaryErrors.length),
         cancelled,
         newMessageCount: successfulMessageKeys.length,
         newTaskCount: mineTasks.length,
@@ -2835,7 +2853,7 @@ export class AiAssistantService {
         mailSourceError: mailSync.error || null,
         message: cancelled
           ? '已安全暂停，成功批次已保存；下次将从断点继续'
-          : backlogNotice
+          : backlogNotice || auxiliaryErrors[0] || ''
       }
     } catch (error: any) {
       this.state.cursor.lastError = sanitizeDiagnosticText(error)
@@ -4829,9 +4847,25 @@ export class AiAssistantService {
     if (time < schedule || this.state.cursor.lastScheduledRunDate === today) return
     if (Date.now() - this.lastSchedulerAttemptAt < 15 * 60_000) return
     this.lastSchedulerAttemptAt = Date.now()
+    this.state.cursor.lastScheduledAttemptAt = new Date().toISOString()
+    this.saveState()
     try {
-      await this.sync('daily')
-      this.state.cursor.lastScheduledRunDate = today
+      const result = await this.sync('daily')
+      const assessment = assessScheduledSyncResult(result)
+      const completedAt = new Date().toISOString()
+      Object.assign(this.state.cursor, planScheduledSyncState(
+        this.state.cursor,
+        {
+          ...assessment,
+          reason: assessment.complete ? '' : sanitizeDiagnosticText(assessment.reason)
+        },
+        today,
+        completedAt
+      ))
+      if (!assessment.complete) {
+        this.saveState()
+        return
+      }
       const reminders = applyReminderPreferences(
         buildTaskReminders(this.state.tasks.filter(task => task.classification === 'mine'), now),
         this.state.reminderPreferences,
@@ -4848,7 +4882,15 @@ export class AiAssistantService {
       }
       this.saveState()
       await this.flushNotificationOutbox(now)
-    } catch {}
+    } catch (error) {
+      Object.assign(this.state.cursor, planScheduledSyncState(
+        this.state.cursor,
+        { complete: false, reason: sanitizeDiagnosticText(error) },
+        today,
+        new Date().toISOString()
+      ))
+      this.saveState()
+    }
   }
 
   private isNotificationQuiet(now: Date): boolean {

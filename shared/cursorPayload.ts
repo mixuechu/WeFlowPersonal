@@ -8,10 +8,22 @@ export function buildCursorStatusPayload(cursor: any): any {
   const sessionOffsets = cursor?.sessionOffsets && typeof cursor.sessionOffsets === 'object'
     ? cursor.sessionOffsets
     : {}
+  const lastScheduledAttemptAt = cursor?.lastScheduledAttemptAt || null
+  const scheduledRetryCount = Number(cursor?.scheduledRetryCount || 0)
+  const retryTimestamp = lastScheduledAttemptAt && cursor?.lastScheduledError
+    ? Date.parse(lastScheduledAttemptAt) + 15 * 60_000
+    : NaN
   return {
     lastMessageTimestamp: Number(cursor?.lastMessageTimestamp || 0),
     lastSuccessfulRunAt: cursor?.lastSuccessfulRunAt || null,
     lastScheduledRunDate: cursor?.lastScheduledRunDate || null,
+    lastScheduledAttemptAt,
+    lastScheduledCompletedAt: cursor?.lastScheduledCompletedAt || null,
+    lastScheduledError: cursor?.lastScheduledError || null,
+    scheduledRetryCount,
+    nextScheduledRetryAt: Number.isFinite(retryTimestamp)
+      ? new Date(retryTimestamp).toISOString()
+      : null,
     lastReminderNotificationDate: cursor?.lastReminderNotificationDate || null,
     lastAttemptAt: cursor?.lastAttemptAt || null,
     lastError: cursor?.lastError || null,
