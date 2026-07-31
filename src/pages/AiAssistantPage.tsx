@@ -3215,8 +3215,10 @@ function AiAssistantPage() {
                   {!!claim.correction_count && ` · 人工纠正 ${claim.correction_count} 次${claim.corrected_at ? `（最近 ${new Date(claim.corrected_at).toLocaleString('zh-CN')}）` : ''}`}
                 </small>
                 {!!claim.review_count && <small>
-                  人工可信决定 {claim.review_count} 次 · 最近 {claim.reviewed_at ? new Date(claim.reviewed_at).toLocaleString('zh-CN') : '时间未知'}；
-                  后续重复抽取只追加原文，不会覆盖当前决定。
+                  可信状态记录 {claim.review_count} 次 · 最近 {claim.reviewed_at ? new Date(claim.reviewed_at).toLocaleString('zh-CN') : '时间未知'}；
+                  {Number(claim.protected_review_count || 0) > 0
+                    ? ` 其中 ${claim.protected_review_count} 次决定受重抽取保护，模型只能追加原文。`
+                    : ' 当前仅有系统临时调整，不会冻结后续模型更新。'}
                 </small>}
                 {!!claim.review_history?.length && <details className="assistant-evidence-details">
                   <summary>查看人工审阅历史（最近 {claim.review_history.length}/{claim.review_count} 次）</summary>
@@ -3225,6 +3227,8 @@ function AiAssistantPage() {
                       {review.previous_status === 'confirmed' ? '已确认' : review.previous_status === 'rejected' ? '不准确' : '待确认'}
                       {' → '}
                       {review.decision === 'confirmed' ? '已确认' : '不准确'}
+                      {' · '}{review.actor === 'system' ? '系统规则' : '本人操作'}
+                      {review.reason ? ` · ${review.reason}` : ''}
                       {' · '}{new Date(review.created_at).toLocaleString('zh-CN')}
                     </small>)}
                   </div>
@@ -3314,8 +3318,10 @@ function AiAssistantPage() {
                 <small>来源：{event.source_id === 'calendar' ? 'macOS 日历' : event.source_id === 'documents' ? '本机文档' : '微信'}</small>
                 {!!event.correction_count && <small>人工纠正 {event.correction_count} 次{event.corrected_at ? ` · 最近 ${new Date(event.corrected_at).toLocaleString('zh-CN')}` : ''}；后续自动抽取不会覆盖。</small>}
                 {!!event.review_count && <small>
-                  人工可信决定 {event.review_count} 次 · 最近 {event.reviewed_at ? new Date(event.reviewed_at).toLocaleString('zh-CN') : '时间未知'}；
-                  后续重复抽取只追加原文，不会覆盖当前决定。
+                  可信状态记录 {event.review_count} 次 · 最近 {event.reviewed_at ? new Date(event.reviewed_at).toLocaleString('zh-CN') : '时间未知'}；
+                  {Number(event.protected_review_count || 0) > 0
+                    ? ` 其中 ${event.protected_review_count} 次决定受重抽取保护，模型只能追加原文。`
+                    : ' 当前仅有系统临时调整，不会冻结后续模型更新。'}
                 </small>}
                 {!!event.review_history?.length && <details className="assistant-evidence-details">
                   <summary>查看人工审阅历史（最近 {event.review_history.length}/{event.review_count} 次）</summary>
@@ -3324,6 +3330,8 @@ function AiAssistantPage() {
                       {review.previous_status === 'confirmed' ? '已确认' : review.previous_status === 'rejected' ? '不准确' : '待确认'}
                       {' → '}
                       {review.decision === 'confirmed' ? '已确认' : '不准确'}
+                      {' · '}{review.actor === 'system' ? '系统规则' : '本人操作'}
+                      {review.reason ? ` · ${review.reason}` : ''}
                       {' · '}{new Date(review.created_at).toLocaleString('zh-CN')}
                     </small>)}
                   </div>

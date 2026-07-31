@@ -272,6 +272,8 @@ export class PersonalMemoryStore {
         previous_status TEXT NOT NULL,
         decision TEXT NOT NULL,
         actor TEXT NOT NULL DEFAULT 'user',
+        reason TEXT NOT NULL DEFAULT '',
+        protect_from_extraction INTEGER NOT NULL DEFAULT 1,
         created_at TEXT NOT NULL
       ) STRICT;
       CREATE TRIGGER IF NOT EXISTS trg_claims_delete_memory_reviews
@@ -650,6 +652,15 @@ export class PersonalMemoryStore {
     this.ensureColumn('task_review_decisions', 'reconciliation_count', 'INTEGER NOT NULL DEFAULT 0')
     this.ensureColumn('task_review_decisions', 'last_reconciled_at', 'TEXT')
     this.ensureColumn('task_review_decisions', 'revoked_at', 'TEXT')
+    this.ensureColumn('memory_review_decisions', 'reason', `TEXT NOT NULL DEFAULT ''`)
+    this.ensureColumn('memory_review_decisions', 'protect_from_extraction', 'INTEGER NOT NULL DEFAULT 1')
+    this.db.prepare(`
+      UPDATE memory_review_decisions
+      SET actor='system',
+        reason='实体尚未确认，系统临时降级为待确认',
+        protect_from_extraction=0
+      WHERE decision='candidate' AND reason=''
+    `).run()
     this.ensureColumn('task_directory', 'evidence_fingerprint', `TEXT NOT NULL DEFAULT ''`)
     this.ensureColumn('merge_history', 'source_name', `TEXT NOT NULL DEFAULT ''`)
     this.ensureColumn('merge_history', 'target_name', `TEXT NOT NULL DEFAULT ''`)
@@ -686,6 +697,7 @@ export class PersonalMemoryStore {
         AND NOT EXISTS(
           SELECT 1 FROM memory_review_decisions decision
           WHERE decision.item_kind='claim' AND decision.item_id=claims.id
+            AND decision.protect_from_extraction=1
         )
     `).run()
     this.db.prepare(`
@@ -3002,7 +3014,7 @@ export class PersonalMemoryStore {
       const sourceNature = claim.sourceNature || 'inference'
       const manuallyReviewed = Boolean(this.db.prepare(`
         SELECT 1 FROM memory_review_decisions
-        WHERE item_kind='claim' AND item_id=? LIMIT 1
+        WHERE item_kind='claim' AND item_id=? AND protect_from_extraction=1 LIMIT 1
       `).get(claim.id))
       const manuallyCorrected = Boolean(this.db.prepare(`
         SELECT 1 FROM memory_corrections WHERE item_kind='claim' AND item_id=? LIMIT 1
@@ -3147,7 +3159,7 @@ export class PersonalMemoryStore {
       if (this.isMemoryItemSuppressed('event', event.id, this.memoryItemSemanticFingerprint('event', event))) continue
       const manuallyReviewed = Boolean(this.db.prepare(`
         SELECT 1 FROM memory_review_decisions
-        WHERE item_kind='event' AND item_id=? LIMIT 1
+        WHERE item_kind='event' AND item_id=? AND protect_from_extraction=1 LIMIT 1
       `).get(event.id))
       const manuallyCorrected = Boolean(this.db.prepare(`
         SELECT 1 FROM memory_corrections WHERE item_kind='event' AND item_id=? LIMIT 1
@@ -3234,6 +3246,9 @@ export class PersonalMemoryStore {
           WHERE mc.item_kind='event' AND mc.item_id=ev.id) AS correction_count,
         (SELECT COUNT(*) FROM memory_review_decisions decision
           WHERE decision.item_kind='event' AND decision.item_id=ev.id) AS review_count,
+        (SELECT COUNT(*) FROM memory_review_decisions decision
+          WHERE decision.item_kind='event' AND decision.item_id=ev.id
+            AND decision.protect_from_extraction=1) AS protected_review_count,
         (SELECT decision.created_at FROM memory_review_decisions decision
           WHERE decision.item_kind='event' AND decision.item_id=ev.id
           ORDER BY decision.id DESC LIMIT 1) AS reviewed_at,
@@ -4022,6 +4037,9 @@ export class PersonalMemoryStore {
           WHERE mc.item_kind='claim' AND mc.item_id=c.id) AS correction_count,
         (SELECT COUNT(*) FROM memory_review_decisions decision
           WHERE decision.item_kind='claim' AND decision.item_id=c.id) AS review_count,
+        (SELECT COUNT(*) FROM memory_review_decisions decision
+          WHERE decision.item_kind='claim' AND decision.item_id=c.id
+            AND decision.protect_from_extraction=1) AS protected_review_count,
         (SELECT decision.created_at FROM memory_review_decisions decision
           WHERE decision.item_kind='claim' AND decision.item_id=c.id
           ORDER BY decision.id DESC LIMIT 1) AS reviewed_at,
@@ -4037,6 +4055,9 @@ export class PersonalMemoryStore {
           WHERE mc.item_kind='event' AND mc.item_id=ev.id) AS correction_count,
         (SELECT COUNT(*) FROM memory_review_decisions decision
           WHERE decision.item_kind='event' AND decision.item_id=ev.id) AS review_count,
+        (SELECT COUNT(*) FROM memory_review_decisions decision
+          WHERE decision.item_kind='event' AND decision.item_id=ev.id
+            AND decision.protect_from_extraction=1) AS protected_review_count,
         (SELECT decision.created_at FROM memory_review_decisions decision
           WHERE decision.item_kind='event' AND decision.item_id=ev.id
           ORDER BY decision.id DESC LIMIT 1) AS reviewed_at,
@@ -4269,6 +4290,9 @@ export class PersonalMemoryStore {
           WHERE mc.item_kind='event' AND mc.item_id=ev.id) AS correction_count,
         (SELECT COUNT(*) FROM memory_review_decisions decision
           WHERE decision.item_kind='event' AND decision.item_id=ev.id) AS review_count,
+        (SELECT COUNT(*) FROM memory_review_decisions decision
+          WHERE decision.item_kind='event' AND decision.item_id=ev.id
+            AND decision.protect_from_extraction=1) AS protected_review_count,
         (SELECT decision.created_at FROM memory_review_decisions decision
           WHERE decision.item_kind='event' AND decision.item_id=ev.id
           ORDER BY decision.id DESC LIMIT 1) AS reviewed_at,
@@ -4298,7 +4322,7 @@ export class PersonalMemoryStore {
       FROM event_participants ep JOIN entities e ON e.id=ep.entity_id WHERE ep.event_id=?
     `)
     const reviewStatement = this.db.prepare(`
-      SELECT previous_status,decision,actor,created_at
+      SELECT previous_status,decision,actor,reason,protect_from_extraction,created_at
       FROM memory_review_decisions
       WHERE item_kind='event' AND item_id=?
       ORDER BY id DESC LIMIT 20
@@ -4376,6 +4400,9 @@ export class PersonalMemoryStore {
           WHERE mc.item_kind='claim' AND mc.item_id=c.id) AS correction_count,
         (SELECT COUNT(*) FROM memory_review_decisions decision
           WHERE decision.item_kind='claim' AND decision.item_id=c.id) AS review_count,
+        (SELECT COUNT(*) FROM memory_review_decisions decision
+          WHERE decision.item_kind='claim' AND decision.item_id=c.id
+            AND decision.protect_from_extraction=1) AS protected_review_count,
         (SELECT decision.created_at FROM memory_review_decisions decision
           WHERE decision.item_kind='claim' AND decision.item_id=c.id
           ORDER BY decision.id DESC LIMIT 1) AS reviewed_at,
@@ -4402,7 +4429,7 @@ export class PersonalMemoryStore {
         message_id DESC LIMIT ?
     `)
     const reviewStatement = this.db.prepare(`
-      SELECT previous_status,decision,actor,created_at
+      SELECT previous_status,decision,actor,reason,protect_from_extraction,created_at
       FROM memory_review_decisions
       WHERE item_kind='claim' AND item_id=?
       ORDER BY id DESC LIMIT 20
@@ -4677,18 +4704,44 @@ export class PersonalMemoryStore {
     }
   }
 
-  updateMemoryItemStatus(kind: 'claim' | 'event', id: string, status: 'candidate' | 'confirmed' | 'rejected'): any {
+  updateMemoryItemStatus(
+    kind: 'claim' | 'event',
+    id: string,
+    status: 'candidate' | 'confirmed' | 'rejected',
+    options: {
+      actor?: 'user' | 'system'
+      reason?: string
+      protectFromExtraction?: boolean
+    } = {}
+  ): any {
     if (!this.db) return null
     const table = kind === 'claim' ? 'claims' : 'events'
     const now = new Date().toISOString()
+    const actor = options.actor || 'user'
+    const reason = String(options.reason || (
+      actor === 'user'
+        ? status === 'confirmed' ? '用户确认该记忆准确'
+          : status === 'rejected' ? '用户标记该记忆不准确'
+            : '用户将该记忆恢复为待确认'
+        : '系统规则调整可信状态'
+    )).slice(0, 300)
     return this.db.transaction(() => {
       const previous = this.db!.prepare(`SELECT status FROM ${table} WHERE id=?`).get(id) as any
       if (!previous) return null
       this.db!.prepare(`
         INSERT INTO memory_review_decisions(
-          item_kind,item_id,previous_status,decision,actor,created_at
-        ) VALUES(?,?,?,?,?,?)
-      `).run(kind, id, String(previous.status || 'candidate'), status, 'user', now)
+          item_kind,item_id,previous_status,decision,actor,reason,protect_from_extraction,created_at
+        ) VALUES(?,?,?,?,?,?,?,?)
+      `).run(
+        kind,
+        id,
+        String(previous.status || 'candidate'),
+        status,
+        actor,
+        reason,
+        options.protectFromExtraction === false ? 0 : 1,
+        now
+      )
       this.db!.prepare(`UPDATE ${table} SET status=?,updated_at=? WHERE id=?`).run(status, now, id)
       const documentId = `${kind}:${id}`
       const document = this.db!.prepare('SELECT metadata_json FROM search_documents WHERE id=?').get(documentId) as any

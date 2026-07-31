@@ -675,13 +675,21 @@ export class AiAssistantService {
       if (claim.status === 'confirmed' &&
           (!trustedIds.has(claim.subject_id) ||
            (claim.object_entity_id && !trustedIds.has(claim.object_entity_id)))) {
-        personalMemoryStore.updateMemoryItemStatus('claim', claim.id, 'candidate')
+        personalMemoryStore.updateMemoryItemStatus('claim', claim.id, 'candidate', {
+          actor: 'system',
+          reason: '事实涉及尚未确认的实体，自动降级为待确认',
+          protectFromExtraction: false
+        })
       }
     }
     for (const event of feed.events || []) {
       const participantIds = (event.participants || []).map((item: any) => item.entity_id).filter(Boolean)
       if (event.status === 'confirmed' && participantIds.some((id: string) => !trustedIds.has(id))) {
-        personalMemoryStore.updateMemoryItemStatus('event', event.id, 'candidate')
+        personalMemoryStore.updateMemoryItemStatus('event', event.id, 'candidate', {
+          actor: 'system',
+          reason: '事件参与者包含尚未确认的实体，自动降级为待确认',
+          protectFromExtraction: false
+        })
       }
     }
   }
@@ -4193,12 +4201,20 @@ export class AiAssistantService {
         const feed = personalMemoryStore.getMemoryFeed()
         for (const claim of feed.claims || []) {
           if (claim.subject_id === entity.id || claim.object_entity_id === entity.id) {
-            personalMemoryStore.updateMemoryItemStatus('claim', claim.id, 'rejected')
+            personalMemoryStore.updateMemoryItemStatus('claim', claim.id, 'rejected', {
+              actor: 'system',
+              reason: '关联实体已被用户拒绝，事实随之拒绝',
+              protectFromExtraction: true
+            })
           }
         }
         for (const event of feed.events || []) {
           if ((event.participants || []).some((participant: any) => participant.entity_id === entity.id)) {
-            personalMemoryStore.updateMemoryItemStatus('event', event.id, 'rejected')
+            personalMemoryStore.updateMemoryItemStatus('event', event.id, 'rejected', {
+              actor: 'system',
+              reason: '关联实体已被用户拒绝，事件随之拒绝',
+              protectFromExtraction: true
+            })
           }
         }
       }

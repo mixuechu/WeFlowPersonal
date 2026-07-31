@@ -4059,6 +4059,7 @@ test('human claim and event review decisions survive repeated extraction and rem
   assert.equal(reviewedClaim.review_count, 2)
   assert.equal(reviewedClaim.evidence_count, 3)
   const claimArchive = store.listClaimArchive({ status: 'confirmed' })
+  assert.equal(claimArchive.items[0].protected_review_count, 2)
   assert.equal(claimArchive.items[0].review_history.length, 2)
   assert.equal(claimArchive.items[0].review_history[0].previous_status, 'rejected')
   assert.equal(claimArchive.items[0].review_history[0].decision, 'confirmed')
@@ -4091,8 +4092,50 @@ test('human claim and event review decisions survive repeated extraction and rem
   assert.equal(reviewedEvent.review_count, 1)
   assert.equal(reviewedEvent.evidence_count, 2)
   const eventTimeline = store.listEventTimeline({ status: 'rejected' })
+  assert.equal(eventTimeline.items[0].protected_review_count, 1)
   assert.equal(eventTimeline.items[0].review_history.length, 1)
   assert.equal(eventTimeline.items[0].review_history[0].decision, 'rejected')
+
+  const systemPolicyClaim = {
+    ...claim,
+    id: 'claim-system-review-policy',
+    objectValue: '系统策略项目',
+    searchText: '系统策略原始正文',
+    evidence: evidence('system-policy-message-1', '系统策略原始证据')
+  }
+  store.upsertClaims([systemPolicyClaim])
+  store.updateMemoryItemStatus('claim', systemPolicyClaim.id, 'candidate', {
+    actor: 'system',
+    reason: '实体尚未确认，临时降级',
+    protectFromExtraction: false
+  })
+  store.upsertClaims([{
+    ...systemPolicyClaim,
+    searchText: '非保护系统决定允许后续模型刷新正文',
+    evidence: evidence('system-policy-message-2', '系统降级后的新证据')
+  }])
+  let systemReviewed = store.getMemoryFeed().claims.find(item => item.id === systemPolicyClaim.id)
+  assert.equal(systemReviewed.search_text, '非保护系统决定允许后续模型刷新正文')
+  store.updateMemoryItemStatus('claim', systemPolicyClaim.id, 'rejected', {
+    actor: 'system',
+    reason: '关联实体已被用户拒绝',
+    protectFromExtraction: true
+  })
+  store.upsertClaims([{
+    ...systemPolicyClaim,
+    searchText: '保护决定之后不得覆盖',
+    evidence: evidence('system-policy-message-3', '系统保护后的新证据')
+  }])
+  systemReviewed = store.getMemoryFeed().claims.find(item => item.id === systemPolicyClaim.id)
+  assert.equal(systemReviewed.status, 'rejected')
+  assert.equal(systemReviewed.search_text, '非保护系统决定允许后续模型刷新正文')
+  const systemReviewArchive = store.listClaimArchive({ status: 'rejected' })
+    .items.find(item => item.id === systemPolicyClaim.id)
+  assert.equal(systemReviewArchive.protected_review_count, 1)
+  assert.equal(systemReviewArchive.review_history[0].actor, 'system')
+  assert.equal(systemReviewArchive.review_history[0].reason, '关联实体已被用户拒绝')
+  assert.equal(systemReviewArchive.review_history[0].protect_from_extraction, 1)
+  assert.equal(systemReviewArchive.review_history[1].protect_from_extraction, 0)
 }))
 
 test('human memory review survives process restart and legacy startup normalization', () => {
@@ -4126,11 +4169,24 @@ test('human memory review survives process restart and legacy startup normalizat
     }
     first.upsertClaims([claim])
     first.updateMemoryItemStatus('claim', claim.id, 'confirmed')
+    ;(first as any).db.prepare(`
+      INSERT INTO memory_review_decisions(
+        item_kind,item_id,previous_status,decision,actor,reason,protect_from_extraction,created_at
+      ) VALUES('claim',?,'confirmed','candidate','user','',1,'2026-07-31T00:00:00.000Z')
+    `).run(claim.id)
     first.close()
     second.initialize(databasePath)
     let reviewed = second.getMemoryFeed().claims.find(item => item.id === claim.id)
     assert.equal(reviewed.status, 'confirmed')
-    assert.equal(reviewed.review_count, 1)
+    assert.equal(reviewed.review_count, 2)
+    const migratedSystemDecision = (second as any).db.prepare(`
+      SELECT actor,reason,protect_from_extraction
+      FROM memory_review_decisions
+      WHERE item_kind='claim' AND item_id=? AND decision='candidate'
+    `).get(claim.id)
+    assert.equal(migratedSystemDecision.actor, 'system')
+    assert.equal(migratedSystemDecision.protect_from_extraction, 0)
+    assert.match(migratedSystemDecision.reason, /系统临时降级/)
     second.upsertClaims([{
       ...claim,
       status: 'candidate',
