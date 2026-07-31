@@ -588,8 +588,8 @@ export class AiAssistantService {
         review.status === 'confirmed' && review.kind === 'entity_creation' && review.entityId
           ? [review.entityId]
           : []))
-      for (const merge of personalMemoryStore.listActiveMerges()) {
-        if (merge.target_entity_id) confirmedEntityIds.add(String(merge.target_entity_id))
+      for (const targetEntityId of personalMemoryStore.listActiveMergeTargetIds()) {
+        confirmedEntityIds.add(targetEntityId)
       }
       for (const entity of this.state.graph.entities) {
         if (confirmedEntityIds.has(entity.id)) entity.trustStatus = 'confirmed'
@@ -3047,6 +3047,7 @@ export class AiAssistantService {
     const assistantArchiveStats = personalMemoryStore.getAssistantArchiveStats()
     const taskReviewArchiveStats = personalMemoryStore.getTaskReviewArchiveStats()
     const memoryDeletionArchiveStats = personalMemoryStore.getMemoryDeletionAuditStats()
+    const mergeHistoryArchiveStats = personalMemoryStore.getMergeHistoryArchiveStats()
     return {
       briefing: latest ? { ...latest, tasks: undefined } : null,
       briefingStorage: this.briefingStorage,
@@ -3123,7 +3124,16 @@ export class AiAssistantService {
           this.state.graph.identityScan.lastFullScanAt
         )
       },
-      mergeHistory: personalMemoryStore.listActiveMerges(),
+      mergeHistoryArchive: {
+        ...mergeHistoryArchiveStats,
+        revision: crypto.createHash('sha256')
+          .update(JSON.stringify(mergeHistoryArchiveStats))
+          .digest('hex')
+          .slice(0, 16),
+        version: 'identity-merge-audit-v1',
+        directory: 'paginated_without_snapshot',
+        snapshot: 'main_process_only'
+      },
       memoryDeletionArchive: {
         total: memoryDeletionArchiveStats.total,
         revision: crypto.createHash('sha256')
@@ -3271,6 +3281,19 @@ export class AiAssistantService {
         : 'all',
       reason: ['manual_delete', 'not_important', 'all'].includes(options?.reason)
         ? options.reason
+        : 'all',
+      query: String(options?.query || ''),
+      from: String(options?.from || ''),
+      to: String(options?.to || ''),
+      limit: Number(options?.limit || 40),
+      offset: Number(options?.offset || 0)
+    })
+  }
+
+  getMergeHistoryPage(options: any = {}): any {
+    return personalMemoryStore.listMergeHistoryPage({
+      status: ['active', 'reverted', 'all'].includes(options?.status)
+        ? options.status
         : 'all',
       query: String(options?.query || ''),
       from: String(options?.from || ''),

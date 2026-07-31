@@ -4543,6 +4543,8 @@ function registerIpcHandlers() {
     aiAssistantService.getTaskReviewDecisionDossier(evidenceFingerprint, options))
   ipcMain.handle('ai-assistant:getMemoryDeletionAuditPage', (_, options?: any) =>
     aiAssistantService.getMemoryDeletionAuditPage(options))
+  ipcMain.handle('ai-assistant:getMergeHistoryPage', (_, options?: any) =>
+    aiAssistantService.getMergeHistoryPage(options))
   ipcMain.handle('ai-assistant:sync', () => aiAssistantService.sync())
   ipcMain.handle('ai-assistant:cancelSync', () => aiAssistantService.cancelSync())
   ipcMain.handle('ai-assistant:getSettings', () => aiAssistantService.getSettings())

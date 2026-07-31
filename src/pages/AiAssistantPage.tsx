@@ -274,6 +274,22 @@ function AiAssistantPage() {
   const [reviewLoadingMore, setReviewLoadingMore] = useState(false)
   const [reviewRefreshKey, setReviewRefreshKey] = useState(0)
   const reviewPageGate = useRef(new LatestRequestGate())
+  const [mergeArchive, setMergeArchive] = useState<{
+    items: any[]
+    total: number
+    hasMore: boolean
+    counts: { active: number; reverted: number; all: number }
+    loading?: boolean
+  }>({
+    items: [], total: 0, hasMore: false,
+    counts: { active: 0, reverted: 0, all: 0 }
+  })
+  const [mergeArchiveStatus, setMergeArchiveStatus] = useState<'all' | 'active' | 'reverted'>('all')
+  const [mergeArchiveQuery, setMergeArchiveQuery] = useState('')
+  const [mergeArchiveFrom, setMergeArchiveFrom] = useState('')
+  const [mergeArchiveTo, setMergeArchiveTo] = useState('')
+  const [mergeArchiveLoadingMore, setMergeArchiveLoadingMore] = useState(false)
+  const mergeArchiveGate = useRef(new LatestRequestGate())
   const [memoryDiagnostics, setMemoryDiagnostics] = useState<any>(null)
   const [showDiagnostics, setShowDiagnostics] = useState(false)
   const [backingUpMemory, setBackingUpMemory] = useState(false)
@@ -382,6 +398,16 @@ function AiAssistantPage() {
   }), [
     memoryDeletionKind, memoryDeletionReason, memoryDeletionQuery,
     memoryDeletionFrom, memoryDeletionTo
+  ])
+  const mergeArchiveOptions = useMemo(() => ({
+    status: mergeArchiveStatus,
+    query: mergeArchiveQuery || undefined,
+    from: mergeArchiveFrom ? new Date(`${mergeArchiveFrom}T00:00:00+08:00`).toISOString() : undefined,
+    to: mergeArchiveTo ? new Date(`${mergeArchiveTo}T23:59:59.999+08:00`).toISOString() : undefined,
+    limit: 40,
+    offset: 0
+  }), [
+    mergeArchiveStatus, mergeArchiveQuery, mergeArchiveFrom, mergeArchiveTo
   ])
 
   const load = useCallback(async () => {
@@ -610,6 +636,28 @@ function AiAssistantPage() {
   }, [reviewStatusFilter, reviewKindFilter, reviewQuery, reviewRefreshKey, dashboard?.graphReviewRevision])
 
   useEffect(() => {
+    const request = mergeArchiveGate.current.begin()
+    setMergeArchiveLoadingMore(false)
+    setMergeArchive(current => ({ ...current, items: [], loading: true }))
+    const timer = window.setTimeout(() => {
+      void window.electronAPI.aiAssistant.getMergeHistoryPage(mergeArchiveOptions).then(page => {
+        if (!mergeArchiveGate.current.isCurrent(request)) return
+        setMergeArchive({ ...page, loading: false })
+      }).catch(() => {
+        if (!mergeArchiveGate.current.isCurrent(request)) return
+        setMergeArchive({
+          items: [], total: 0, hasMore: false,
+          counts: { active: 0, reverted: 0, all: 0 }, loading: false
+        })
+      })
+    }, mergeArchiveQuery ? 200 : 0)
+    return () => {
+      window.clearTimeout(timer)
+      if (mergeArchiveGate.current.isCurrent(request)) mergeArchiveGate.current.invalidate()
+    }
+  }, [mergeArchiveOptions, dashboard?.mergeHistoryArchive?.revision])
+
+  useEffect(() => {
     const request = graphWorkspaceGate.current.begin()
     setGraphWorkspace((current: any) => ({
       ...current,
@@ -771,7 +819,6 @@ function AiAssistantPage() {
   const groupedMemoryResults = useMemo(() => groupMemorySearchResults(memoryResults), [memoryResults])
   const assistantConversations: any[] = assistantArchive.items
   const identityDisambiguation = dashboard?.identityDisambiguation
-  const mergeHistory = dashboard?.mergeHistory || []
   const memoryFeed = dashboard?.memoryFeed || { claims: [], events: [], resources: [] }
   const ingestionStatus = dashboard?.ingestionStatus
   const ingestionCounts = Object.fromEntries((ingestionStatus?.batches || []).map((item: any) => [item.status, Number(item.count || 0)]))
@@ -1261,9 +1308,40 @@ function AiAssistantPage() {
   }
 
   const revertMerge = async (id: number) => {
-    await window.electronAPI.aiAssistant.revertMerge(id)
-    await load()
-    setReviewRefreshKey(value => value + 1)
+    try {
+      await window.electronAPI.aiAssistant.revertMerge(id)
+      await load()
+      setReviewRefreshKey(value => value + 1)
+    } catch (error: any) {
+      setMessage(error?.message || String(error))
+    }
+  }
+
+  const loadMoreMergeHistory = async () => {
+    if (mergeArchiveLoadingMore || !mergeArchive.hasMore) return
+    const request = mergeArchiveGate.current.begin()
+    setMergeArchiveLoadingMore(true)
+    try {
+      const page = await window.electronAPI.aiAssistant.getMergeHistoryPage({
+        ...mergeArchiveOptions,
+        offset: mergeArchive.items.length,
+        limit: 40
+      })
+      if (!mergeArchiveGate.current.isCurrent(request)) return
+      setMergeArchive(current => ({
+        ...page,
+        items: [
+          ...current.items,
+          ...page.items.filter((item: any) =>
+            !current.items.some((known: any) => known.id === item.id))
+        ],
+        loading: false
+      }))
+    } catch (error: any) {
+      if (mergeArchiveGate.current.isCurrent(request)) setMessage(error?.message || String(error))
+    } finally {
+      if (mergeArchiveGate.current.isCurrent(request)) setMergeArchiveLoadingMore(false)
+    }
   }
 
   const loadMoreReviews = async () => {
@@ -3469,13 +3547,63 @@ function AiAssistantPage() {
                 {reviewLoadingMore ? '正在加载…' : '加载更多审阅记录'}
               </button>}
             </div>}
-            {mergeHistory.length > 0 && <>
-              <div className="assistant-section-heading"><div><span className="assistant-eyebrow">MERGE HISTORY</span><h3>最近身份合并</h3></div></div>
-              {mergeHistory.map((merge: any) => <article className="assistant-review-item" key={`merge-${merge.id}`}>
-                <div><strong>已合并身份</strong><p>{merge.source_name || merge.source_entity_id} → {merge.target_name || merge.target_entity_id}</p><small>被合并 → 保留 · {new Date(merge.created_at).toLocaleString('zh-CN')}</small></div>
-                <div><button onClick={() => void revertMerge(Number(merge.id))}>撤销合并</button></div>
-              </article>)}
-            </>}
+            {(dashboard?.mergeHistoryArchive?.total > 0 || mergeArchive.loading) && <div className="assistant-merge-archive">
+              <div className="assistant-section-heading">
+                <div><span className="assistant-eyebrow">MERGE HISTORY</span><h3>身份合并完整档案</h3></div>
+                <span className="assistant-count">
+                  {mergeArchive.counts.active} 有效 · {mergeArchive.counts.reverted} 已撤销
+                </span>
+              </div>
+              <small className="assistant-evidence">
+                全部合并由本机 SQLCipher 分页读取；撤销快照只在主进程按需使用，不会发送到界面。
+                启动恢复可信身份会读取全部 {dashboard?.mergeHistoryArchive?.active || 0} 个有效合并，不受当前页面数量限制。
+              </small>
+              <div className="assistant-task-filters">
+                <select value={mergeArchiveStatus}
+                  onChange={event => setMergeArchiveStatus(event.target.value as typeof mergeArchiveStatus)}>
+                  <option value="all">全部状态</option>
+                  <option value="active">仍然有效</option>
+                  <option value="reverted">已经撤销</option>
+                </select>
+                <input value={mergeArchiveQuery}
+                  onChange={event => setMergeArchiveQuery(event.target.value)}
+                  placeholder="搜索双方名称或实体 ID" />
+                <label><span>操作从</span><input type="date" value={mergeArchiveFrom}
+                  onChange={event => setMergeArchiveFrom(event.target.value)} /></label>
+                <label><span>到</span><input type="date" value={mergeArchiveTo}
+                  onChange={event => setMergeArchiveTo(event.target.value)} /></label>
+                {(mergeArchiveStatus !== 'all' || mergeArchiveQuery || mergeArchiveFrom || mergeArchiveTo) &&
+                  <button onClick={() => {
+                    setMergeArchiveStatus('all'); setMergeArchiveQuery('')
+                    setMergeArchiveFrom(''); setMergeArchiveTo('')
+                  }}>清除范围</button>}
+              </div>
+              {mergeArchive.items.map((merge: any) =>
+                <article className={`assistant-review-item ${merge.reverted_at ? 'resolved' : ''}`}
+                  key={`merge-${merge.id}`}>
+                  <div>
+                    <strong>{merge.reverted_at ? '已撤销身份合并' : '有效身份合并'}</strong>
+                    <p>{merge.source_name || merge.source_entity_id} → {merge.target_name || merge.target_entity_id}</p>
+                    <small>
+                      被合并 → 保留 · 合并于 {new Date(merge.created_at).toLocaleString('zh-CN')}
+                      {merge.reverted_at ? ` · 撤销于 ${new Date(merge.reverted_at).toLocaleString('zh-CN')}` : ''}
+                    </small>
+                  </div>
+                  {!merge.reverted_at && <div>
+                    <button onClick={() => void revertMerge(Number(merge.id))}>撤销合并</button>
+                  </div>}
+                </article>)}
+              {!mergeArchive.items.length && <div className="assistant-empty">
+                {mergeArchive.loading ? '正在读取完整身份合并档案…' : '当前范围没有身份合并记录。'}
+              </div>}
+              {mergeArchive.hasMore && <div className="assistant-review-page-status">
+                <small>已加载 {mergeArchive.items.length} / {mergeArchive.total} 条合并记录。</small>
+                <button type="button" disabled={mergeArchiveLoadingMore}
+                  onClick={() => void loadMoreMergeHistory()}>
+                  {mergeArchiveLoadingMore ? '正在加载…' : '加载更多合并记录'}
+                </button>
+              </div>}
+            </div>}
           </div>
         </section>
       </div>

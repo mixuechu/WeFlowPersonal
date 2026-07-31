@@ -580,6 +580,92 @@ test('relation correction merges into an existing semantic edge without losing e
   )
 })
 
+test('identity merge archive is fully pageable, private and restores every active target after reopen', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'weflow-merge-audit-archive-'))
+  const databasePath = join(directory, 'memory.sqlite')
+  const key = randomBytes(32)
+  const first = new PersonalMemoryStore()
+  try {
+    first.initialize(databasePath, key)
+    for (let index = 0; index < 2_500; index += 1) {
+      const mergeId = first.recordMerge(`source-${index}`, `target-${index}`, {
+        source: {
+          id: `source-${index}`,
+          canonicalName: `被合并人物 ${String(index).padStart(4, '0')}`,
+          privateEvidence: `不应离开主进程的合并快照 ${index} ${'x'.repeat(300)}`
+        },
+        target: {
+          id: `target-${index}`,
+          canonicalName: `保留人物 ${String(index).padStart(4, '0')}`
+        },
+        graph: { relations: [{ excerpt: '快照原文不得进入目录' }] }
+      })
+      if (index % 5 === 0) first.markMergeReverted(mergeId)
+    }
+    const database = (first as any).db
+    database.prepare(`
+      UPDATE merge_history SET source_name='',target_name=''
+      WHERE source_entity_id='source-2499'
+    `).run()
+
+    const firstPage = first.listMergeHistoryPage({ limit: 40 })
+    const secondPage = first.listMergeHistoryPage({ limit: 40, offset: 40 })
+    assert.equal(firstPage.total, 2_500)
+    assert.deepEqual(firstPage.counts, { active: 2_000, reverted: 500, all: 2_500 })
+    assert.equal(firstPage.items.length, 40)
+    assert.equal(secondPage.items.length, 40)
+    assert.equal(new Set([...firstPage.items, ...secondPage.items].map(item => item.id)).size, 80)
+    assert.equal(JSON.stringify(firstPage.items).includes('snapshot_json'), false)
+    assert.equal(JSON.stringify(firstPage.items).includes('不应离开主进程'), false)
+    assert.equal(JSON.stringify(firstPage.items).includes('快照原文'), false)
+    assert.equal(first.listActiveMergeTargetIds().length, 2_000)
+    assert.equal(first.listActiveMergeTargetIds().includes('target-2499'), true)
+
+    const scoped = first.listMergeHistoryPage({
+      status: 'active',
+      query: '保留人物 012',
+      limit: 100
+    })
+    assert.ok(scoped.items.length > 0)
+    assert.equal(scoped.items.every(item =>
+      !item.reverted_at && String(item.target_name).includes('保留人物 012')
+    ), true)
+    const reverted = first.listMergeHistoryPage({ status: 'reverted', limit: 100 })
+    assert.equal(reverted.items.every(item => item.reverted_at && item.canRevert === false), true)
+    assert.deepEqual(first.getMergeHistoryArchiveStats(), {
+      total: 2_500,
+      active: 2_000,
+      reverted: 500,
+      latestId: 2_500,
+      latestActivityAt: first.getMergeHistoryArchiveStats().latestActivityAt
+    })
+    first.close()
+
+    const reopened = new PersonalMemoryStore()
+    try {
+      reopened.initialize(databasePath, key)
+      const legacyNames = reopened.listMergeHistoryPage({
+        status: 'active',
+        query: '保留人物 2499',
+        limit: 10
+      })
+      assert.equal(legacyNames.items.length, 1)
+      assert.equal(legacyNames.items[0].source_name, '被合并人物 2499')
+      assert.equal(legacyNames.items[0].target_name, '保留人物 2499')
+      assert.equal(reopened.listActiveMergeTargetIds().length, 2_000)
+      const lastPage = reopened.listMergeHistoryPage({ offset: 2_480, limit: 40 })
+      assert.equal(lastPage.items.length, 20)
+      assert.equal(lastPage.hasMore, false)
+    } finally {
+      reopened.close()
+    }
+  } finally {
+    first.close()
+    key.fill(0)
+    rmSync(directory, { recursive: true, force: true })
+  }
+})
+
 test('identity candidates explain their source and preserve current negative decisions', () => {
   const left = { id: 'a', type: 'person', canonicalName: '同名用户', aliases: ['小同'], accountIds: ['wx-a'], identityVersion: 2 }
   const right = { id: 'b', type: 'person', canonicalName: '另一名称', aliases: ['小同'], accountIds: ['wx-b'], identityVersion: 4 }

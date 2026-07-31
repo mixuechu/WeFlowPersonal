@@ -715,6 +715,10 @@
 .assistant-task-feedback-dossier > p { margin: 0; color: #657168; font-size: 9px; }
 .assistant-task-feedback-dossier > div:last-of-type { display: grid; gap: 4px; }
 .assistant-task-feedback-dossier > div:last-of-type small { color: #7d887f; font-size: 8px; }
+.assistant-merge-archive { margin-top: 18px; padding-top: 18px; border-top: 1px solid #e3e1d9; }
+.assistant-merge-archive .assistant-section-heading { margin-bottom: 8px; }
+.assistant-merge-archive .assistant-task-filters { margin: 10px 0 4px; }
+.assistant-merge-archive .assistant-task-filters input:not([type="date"]) { min-width: 170px; flex: 1; }
 .assistant-identity-pair { margin: 9px 0; display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
 .assistant-identity-pair > button { padding: 9px; border: 1px solid #e3e1da; border-radius: 9px; display: grid; gap: 3px; text-align: left; color: inherit; background: #faf8f2; cursor: pointer; }
 .assistant-identity-pair > button:hover { border-color: #9eb4a4; }

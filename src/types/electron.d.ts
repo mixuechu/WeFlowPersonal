@@ -1717,6 +1717,12 @@ export interface ElectronAPI {
           not_important: number
         }
       }>
+      getMergeHistoryPage: (options?: any) => Promise<{
+        items: any[]
+        total: number
+        hasMore: boolean
+        counts: { active: number; reverted: number; all: number }
+      }>
       sync: () => Promise<any>
       cancelSync: () => Promise<any>
     getSettings: () => Promise<any>

@@ -627,6 +627,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
       ipcRenderer.invoke('ai-assistant:getTaskReviewDecisionDossier', evidenceFingerprint, options),
     getMemoryDeletionAuditPage: (options?: any) =>
       ipcRenderer.invoke('ai-assistant:getMemoryDeletionAuditPage', options),
+    getMergeHistoryPage: (options?: any) =>
+      ipcRenderer.invoke('ai-assistant:getMergeHistoryPage', options),
     sync: () => ipcRenderer.invoke('ai-assistant:sync'),
     cancelSync: () => ipcRenderer.invoke('ai-assistant:cancelSync'),
     getSettings: () => ipcRenderer.invoke('ai-assistant:getSettings'),

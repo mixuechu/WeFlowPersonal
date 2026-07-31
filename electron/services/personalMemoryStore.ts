@@ -217,10 +217,14 @@ export class PersonalMemoryStore {
         id INTEGER PRIMARY KEY,
         source_entity_id TEXT NOT NULL,
         target_entity_id TEXT NOT NULL,
+        source_name TEXT NOT NULL DEFAULT '',
+        target_name TEXT NOT NULL DEFAULT '',
         snapshot_json TEXT NOT NULL,
         created_at TEXT NOT NULL,
         reverted_at TEXT
       ) STRICT;
+      CREATE INDEX IF NOT EXISTS idx_merge_history_activity
+        ON merge_history(COALESCE(reverted_at,created_at) DESC,id DESC);
 
       CREATE TABLE IF NOT EXISTS identity_decisions (
         pair_key TEXT PRIMARY KEY,
@@ -601,6 +605,9 @@ export class PersonalMemoryStore {
     this.ensureColumn('task_review_decisions', 'last_reconciled_at', 'TEXT')
     this.ensureColumn('task_review_decisions', 'revoked_at', 'TEXT')
     this.ensureColumn('task_directory', 'evidence_fingerprint', `TEXT NOT NULL DEFAULT ''`)
+    this.ensureColumn('merge_history', 'source_name', `TEXT NOT NULL DEFAULT ''`)
+    this.ensureColumn('merge_history', 'target_name', `TEXT NOT NULL DEFAULT ''`)
+    this.backfillMergeHistoryNames()
     this.db.exec(`CREATE INDEX IF NOT EXISTS idx_memory_corrections_item
       ON memory_corrections(item_kind,item_id,created_at DESC)`)
     this.db.exec(`CREATE INDEX IF NOT EXISTS idx_memory_item_suppressions_semantic
@@ -739,6 +746,29 @@ export class PersonalMemoryStore {
     if (!this.db) return
     const columns = this.db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>
     if (!columns.some(item => item.name === column)) this.db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`)
+  }
+
+  private backfillMergeHistoryNames(): void {
+    if (!this.db) return
+    const rows = this.db.prepare(`
+      SELECT id,snapshot_json FROM merge_history
+      WHERE source_name='' OR target_name=''
+    `).all() as Array<{ id: number; snapshot_json: string }>
+    if (!rows.length) return
+    const update = this.db.prepare(`
+      UPDATE merge_history SET source_name=?,target_name=? WHERE id=?
+    `)
+    this.db.transaction(() => {
+      for (const row of rows) {
+        let snapshot: any = {}
+        try { snapshot = JSON.parse(String(row.snapshot_json || '{}')) } catch {}
+        update.run(
+          String(snapshot?.source?.canonicalName || '').slice(0, 500),
+          String(snapshot?.target?.canonicalName || '').slice(0, 500),
+          row.id
+        )
+      }
+    })()
   }
 
   private repairDuplicateEvents(): void {
@@ -1385,30 +1415,126 @@ export class PersonalMemoryStore {
 
   recordMerge(sourceId: string, targetId: string, snapshot: any): number {
     if (!this.db) return 0
-    const result = this.db.prepare('INSERT INTO merge_history(source_entity_id,target_entity_id,snapshot_json,created_at) VALUES(?,?,?,?)')
-      .run(sourceId, targetId, JSON.stringify(snapshot), new Date().toISOString())
+    const result = this.db.prepare(`
+      INSERT INTO merge_history(
+        source_entity_id,target_entity_id,source_name,target_name,snapshot_json,created_at
+      ) VALUES(?,?,?,?,?,?)
+    `).run(
+      sourceId,
+      targetId,
+      String(snapshot?.source?.canonicalName || '').slice(0, 500),
+      String(snapshot?.target?.canonicalName || '').slice(0, 500),
+      JSON.stringify(snapshot),
+      new Date().toISOString()
+    )
     return Number(result.lastInsertRowid)
   }
 
-  listActiveMerges(limit = 20): any[] {
+  listActiveMergeTargetIds(): string[] {
     if (!this.db) return []
-    const rows = this.db.prepare('SELECT id,source_entity_id,target_entity_id,snapshot_json,created_at FROM merge_history WHERE reverted_at IS NULL ORDER BY id DESC LIMIT ?').all(limit) as any[]
-    return rows.map(row => {
-      try {
-        const snapshot = JSON.parse(String(row.snapshot_json || '{}'))
-        return {
-          id: row.id,
-          source_entity_id: row.source_entity_id,
-          target_entity_id: row.target_entity_id,
-          source_name: snapshot.source?.canonicalName || '',
-          target_name: snapshot.target?.canonicalName || '',
-          created_at: row.created_at
-        }
-      } catch {
-        const { snapshot_json: _snapshotJson, ...safeRow } = row
-        return safeRow
+    return (this.db.prepare(`
+      SELECT DISTINCT target_entity_id FROM merge_history
+      WHERE reverted_at IS NULL ORDER BY target_entity_id
+    `).all() as Array<{ target_entity_id: string }>)
+      .map(row => String(row.target_entity_id || ''))
+      .filter(Boolean)
+  }
+
+  listMergeHistoryPage(options: {
+    status?: 'active' | 'reverted' | 'all'
+    query?: string
+    from?: string
+    to?: string
+    limit?: number
+    offset?: number
+  } = {}): {
+    items: any[]
+    total: number
+    hasMore: boolean
+    counts: { active: number; reverted: number; all: number }
+  } {
+    const emptyCounts = { active: 0, reverted: 0, all: 0 }
+    if (!this.db) return { items: [], total: 0, hasMore: false, counts: emptyCounts }
+    const conditions: string[] = []
+    const parameters: Array<string | number> = []
+    if (options.status === 'active') conditions.push('reverted_at IS NULL')
+    if (options.status === 'reverted') conditions.push('reverted_at IS NOT NULL')
+    const query = String(options.query || '').trim().toLocaleLowerCase('zh-CN')
+    if (query) {
+      conditions.push(`instr(lower(
+        source_name || char(0) || target_name || char(0) ||
+        source_entity_id || char(0) || target_entity_id
+      ),?)>0`)
+      parameters.push(query)
+    }
+    const from = options.from && Number.isFinite(Date.parse(options.from)) ? String(options.from) : ''
+    const to = options.to && Number.isFinite(Date.parse(options.to)) ? String(options.to) : ''
+    if (from) {
+      conditions.push('COALESCE(reverted_at,created_at)>=?')
+      parameters.push(from)
+    }
+    if (to) {
+      conditions.push('COALESCE(reverted_at,created_at)<=?')
+      parameters.push(to)
+    }
+    const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : ''
+    const total = Number((this.db.prepare(`
+      SELECT COUNT(*) AS count FROM merge_history ${where}
+    `).get(...parameters) as any)?.count || 0)
+    const limit = Math.max(1, Math.min(100, Math.floor(Number(options.limit) || 40)))
+    const offset = Math.max(0, Math.min(1_000_000, Math.floor(Number(options.offset) || 0)))
+    const rows = this.db.prepare(`
+      SELECT id,source_entity_id,target_entity_id,source_name,target_name,created_at,reverted_at
+      FROM merge_history
+      ${where}
+      ORDER BY COALESCE(reverted_at,created_at) DESC,id DESC
+      LIMIT ? OFFSET ?
+    `).all(...parameters, limit, offset) as any[]
+    const countsRow = this.db.prepare(`
+      SELECT
+        SUM(CASE WHEN reverted_at IS NULL THEN 1 ELSE 0 END) AS active,
+        SUM(CASE WHEN reverted_at IS NOT NULL THEN 1 ELSE 0 END) AS reverted,
+        COUNT(*) AS all_count
+      FROM merge_history
+    `).get() as any
+    return {
+      items: rows.map(row => ({ ...row, canRevert: !row.reverted_at })),
+      total,
+      hasMore: offset + rows.length < total,
+      counts: {
+        active: Number(countsRow?.active || 0),
+        reverted: Number(countsRow?.reverted || 0),
+        all: Number(countsRow?.all_count || 0)
       }
-    })
+    }
+  }
+
+  getMergeHistoryArchiveStats(): {
+    total: number
+    active: number
+    reverted: number
+    latestId: number
+    latestActivityAt: string
+  } {
+    if (!this.db) {
+      return { total: 0, active: 0, reverted: 0, latestId: 0, latestActivityAt: '' }
+    }
+    const row = this.db.prepare(`
+      SELECT
+        COUNT(*) AS total,
+        SUM(CASE WHEN reverted_at IS NULL THEN 1 ELSE 0 END) AS active,
+        SUM(CASE WHEN reverted_at IS NOT NULL THEN 1 ELSE 0 END) AS reverted,
+        COALESCE(MAX(id),0) AS latest_id,
+        COALESCE(MAX(COALESCE(reverted_at,created_at)),'') AS latest_activity_at
+      FROM merge_history
+    `).get() as any
+    return {
+      total: Number(row?.total || 0),
+      active: Number(row?.active || 0),
+      reverted: Number(row?.reverted || 0),
+      latestId: Number(row?.latest_id || 0),
+      latestActivityAt: String(row?.latest_activity_at || '')
+    }
   }
 
   upsertClaims(claims: any[]): void {
