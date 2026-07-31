@@ -3517,7 +3517,7 @@ export class AiAssistantService {
       sourceId: ['wechat', 'documents', 'calendar'].includes(options?.sourceId)
         ? options.sourceId
         : undefined,
-      status: ['candidate', 'confirmed', 'cancelled'].includes(options?.status)
+      status: ['candidate', 'confirmed', 'rejected', 'cancelled'].includes(options?.status)
         ? options.status
         : undefined,
       from: String(options?.from || ''),

@@ -4013,6 +4013,141 @@ test('human claim correction survives repeated extraction while new evidence is 
   assert.equal(JSON.parse(search.metadata_json).status, 'confirmed')
 }))
 
+test('human claim and event review decisions survive repeated extraction and remain auditable', () => withStore(store => {
+  store.syncGraph({
+    entities: [{ id: 'person-reviewed', type: 'person', canonicalName: '审阅对象', aliases: [], accountIds: [] }],
+    relations: [],
+    reviewQueue: []
+  })
+  const claim = {
+    id: 'claim-reviewed',
+    subjectId: 'person-reviewed',
+    predicate: '负责',
+    objectValue: '原始项目',
+    confidence: 0.72,
+    status: 'candidate',
+    sourceNature: 'other_statement',
+    searchText: '审阅对象负责原始项目',
+    evidence: evidence('reviewed-claim-message-1', '原始事实证据')
+  }
+  store.upsertClaims([claim])
+  store.updateMemoryItemStatus('claim', claim.id, 'rejected')
+  store.upsertClaims([{
+    ...claim,
+    objectValue: '模型重写项目',
+    status: 'candidate',
+    searchText: '模型试图重写已经拒绝的事实',
+    evidence: evidence('reviewed-claim-message-2', '重复抽取的新事实证据')
+  }])
+  let reviewedClaim = store.getMemoryFeed().claims.find(item => item.id === claim.id)
+  assert.equal(reviewedClaim.status, 'rejected')
+  assert.equal(reviewedClaim.object_value, '原始项目')
+  assert.equal(reviewedClaim.review_count, 1)
+  assert.equal(reviewedClaim.evidence_count, 2)
+  const rejectedSearchDocument = (store as any).db.prepare(
+    `SELECT metadata_json FROM search_documents WHERE id='claim:claim-reviewed'`
+  ).get()
+  assert.equal(JSON.parse(rejectedSearchDocument.metadata_json).status, 'rejected')
+  store.updateMemoryItemStatus('claim', claim.id, 'confirmed')
+  store.upsertClaims([{
+    ...claim,
+    status: 'candidate',
+    evidence: evidence('reviewed-claim-message-3', '恢复确认后的新证据')
+  }])
+  reviewedClaim = store.getMemoryFeed().claims.find(item => item.id === claim.id)
+  assert.equal(reviewedClaim.status, 'confirmed')
+  assert.equal(reviewedClaim.review_count, 2)
+  assert.equal(reviewedClaim.evidence_count, 3)
+  const claimArchive = store.listClaimArchive({ status: 'confirmed' })
+  assert.equal(claimArchive.items[0].review_history.length, 2)
+  assert.equal(claimArchive.items[0].review_history[0].previous_status, 'rejected')
+  assert.equal(claimArchive.items[0].review_history[0].decision, 'confirmed')
+
+  const event = {
+    id: 'event-reviewed',
+    eventType: 'meeting',
+    title: '原始审阅事件',
+    description: '原始说明',
+    confidence: 0.8,
+    status: 'candidate',
+    sourceNature: 'other_statement',
+    searchText: '原始审阅事件 原始说明',
+    participants: [{ entityId: 'person-reviewed', role: 'participant' }],
+    evidence: evidence('reviewed-event-message-1', '原始事件证据')
+  }
+  store.upsertEvents([event])
+  store.updateMemoryItemStatus('event', event.id, 'rejected')
+  store.upsertEvents([{
+    ...event,
+    title: '模型重写事件',
+    description: '模型重写说明',
+    status: 'candidate',
+    evidence: evidence('reviewed-event-message-2', '重复抽取的新事件证据')
+  }])
+  const reviewedEvent = store.getMemoryFeed().events.find(item => item.id === event.id)
+  assert.equal(reviewedEvent.status, 'rejected')
+  assert.equal(reviewedEvent.title, '原始审阅事件')
+  assert.equal(reviewedEvent.description, '原始说明')
+  assert.equal(reviewedEvent.review_count, 1)
+  assert.equal(reviewedEvent.evidence_count, 2)
+  const eventTimeline = store.listEventTimeline({ status: 'rejected' })
+  assert.equal(eventTimeline.items[0].review_history.length, 1)
+  assert.equal(eventTimeline.items[0].review_history[0].decision, 'rejected')
+}))
+
+test('human memory review survives process restart and legacy startup normalization', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'weflow-memory-review-restart-'))
+  const databasePath = join(directory, 'memory.sqlite')
+  const first = new PersonalMemoryStore()
+  const second = new PersonalMemoryStore()
+  try {
+    first.initialize(databasePath)
+    first.syncGraph({
+      entities: [{
+        id: 'person-review-restart',
+        type: 'person',
+        canonicalName: '重启审阅对象',
+        aliases: [],
+        accountIds: []
+      }],
+      relations: [],
+      reviewQueue: []
+    })
+    const claim = {
+      id: 'claim-review-restart',
+      subjectId: 'person-review-restart',
+      predicate: '参与',
+      objectValue: '重启保护项目',
+      confidence: 0.8,
+      status: 'candidate',
+      sourceNature: 'other_statement',
+      searchText: '重启审阅对象参与重启保护项目',
+      evidence: evidence('review-restart-message-1', '重启前证据')
+    }
+    first.upsertClaims([claim])
+    first.updateMemoryItemStatus('claim', claim.id, 'confirmed')
+    first.close()
+    second.initialize(databasePath)
+    let reviewed = second.getMemoryFeed().claims.find(item => item.id === claim.id)
+    assert.equal(reviewed.status, 'confirmed')
+    assert.equal(reviewed.review_count, 1)
+    second.upsertClaims([{
+      ...claim,
+      status: 'candidate',
+      objectValue: '重启后模型改写',
+      evidence: evidence('review-restart-message-2', '重启后重复抽取证据')
+    }])
+    reviewed = second.getMemoryFeed().claims.find(item => item.id === claim.id)
+    assert.equal(reviewed.status, 'confirmed')
+    assert.equal(reviewed.object_value, '重启保护项目')
+    assert.equal(reviewed.evidence_count, 2)
+  } finally {
+    first.close()
+    second.close()
+    rmSync(directory, { recursive: true, force: true })
+  }
+})
+
 test('human event correction is audited, searchable and protected from repeated extraction', () => withStore(store => {
   const extracted = {
     id: 'event-corrected',

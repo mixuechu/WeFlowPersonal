@@ -3214,6 +3214,21 @@ function AiAssistantPage() {
                 <small>原始载体：{claim.source_id === 'documents' ? '本机文档' : '微信'}
                   {!!claim.correction_count && ` · 人工纠正 ${claim.correction_count} 次${claim.corrected_at ? `（最近 ${new Date(claim.corrected_at).toLocaleString('zh-CN')}）` : ''}`}
                 </small>
+                {!!claim.review_count && <small>
+                  人工可信决定 {claim.review_count} 次 · 最近 {claim.reviewed_at ? new Date(claim.reviewed_at).toLocaleString('zh-CN') : '时间未知'}；
+                  后续重复抽取只追加原文，不会覆盖当前决定。
+                </small>}
+                {!!claim.review_history?.length && <details className="assistant-evidence-details">
+                  <summary>查看人工审阅历史（最近 {claim.review_history.length}/{claim.review_count} 次）</summary>
+                  <div className="assistant-evidence-stack">
+                    {claim.review_history.map((review: any, index: number) => <small key={`${review.created_at}-${index}`}>
+                      {review.previous_status === 'confirmed' ? '已确认' : review.previous_status === 'rejected' ? '不准确' : '待确认'}
+                      {' → '}
+                      {review.decision === 'confirmed' ? '已确认' : '不准确'}
+                      {' · '}{new Date(review.created_at).toLocaleString('zh-CN')}
+                    </small>)}
+                  </div>
+                </details>}
                 {!claimEntitiesTrusted(claim) && <small>涉及的实体尚未确认；请先在图谱候选区确认实体，之后才能确认或纠正此事实。</small>}
                 {claim.polarity === 'negative' && <small>该条是对“{claim.predicate}”的明确否定陈述，仍需结合反证人工确认。</small>}
                 {(claim.valid_from || claim.valid_to) && <small>有效期：{claim.valid_from || '未知'} — {claim.valid_to || '至今'}</small>}
@@ -3258,6 +3273,7 @@ function AiAssistantPage() {
                 <option value="">所有状态</option>
                 <option value="candidate">待确认</option>
                 <option value="confirmed">已确认</option>
+                <option value="rejected">不准确</option>
                 <option value="cancelled">已取消</option>
               </select>
               <label><span>从</span><input type="date" value={eventFrom} onChange={event => setEventFrom(event.target.value)} /></label>
@@ -3297,6 +3313,21 @@ function AiAssistantPage() {
                 </>}
                 <small>来源：{event.source_id === 'calendar' ? 'macOS 日历' : event.source_id === 'documents' ? '本机文档' : '微信'}</small>
                 {!!event.correction_count && <small>人工纠正 {event.correction_count} 次{event.corrected_at ? ` · 最近 ${new Date(event.corrected_at).toLocaleString('zh-CN')}` : ''}；后续自动抽取不会覆盖。</small>}
+                {!!event.review_count && <small>
+                  人工可信决定 {event.review_count} 次 · 最近 {event.reviewed_at ? new Date(event.reviewed_at).toLocaleString('zh-CN') : '时间未知'}；
+                  后续重复抽取只追加原文，不会覆盖当前决定。
+                </small>}
+                {!!event.review_history?.length && <details className="assistant-evidence-details">
+                  <summary>查看人工审阅历史（最近 {event.review_history.length}/{event.review_count} 次）</summary>
+                  <div className="assistant-evidence-stack">
+                    {event.review_history.map((review: any, index: number) => <small key={`${review.created_at}-${index}`}>
+                      {review.previous_status === 'confirmed' ? '已确认' : review.previous_status === 'rejected' ? '不准确' : '待确认'}
+                      {' → '}
+                      {review.decision === 'confirmed' ? '已确认' : '不准确'}
+                      {' · '}{new Date(review.created_at).toLocaleString('zh-CN')}
+                    </small>)}
+                  </div>
+                </details>}
                 {!!event.participants?.length && <small>参与者：{event.participants.map((item: any) => `${item.canonical_name}（${item.role}）`).join('、')}</small>}
                 {!eventEntitiesTrusted(event) && <small>存在尚未确认的参与实体；请先在图谱候选区确认实体，之后才能确认或纠正此事件。</small>}
                 <div className="assistant-evidence-stack">
@@ -3306,9 +3337,9 @@ function AiAssistantPage() {
                   {editingEvent?.id === event.id
                     ? <><button onClick={() => setEditingEvent(null)}>取消</button><button className="primary" onClick={() => void saveEventCorrection()}>保存并确认</button></>
                     : <button disabled={!eventEntitiesTrusted(event)} title={!eventEntitiesTrusted(event) ? '请先确认事件参与实体' : ''} onClick={() => beginEventCorrection(event)}>纠正</button>}
-                  <button onClick={() => void updateMemoryStatus('event', event.id, 'rejected')}>不准确</button>
+                  {event.status !== 'rejected' && <button onClick={() => void updateMemoryStatus('event', event.id, 'rejected')}>不准确</button>}
                   <button onClick={() => void ignoreMemoryItem('event', event)}>不重要</button>
-                  {event.status === 'candidate' && <button className="primary" disabled={!eventEntitiesTrusted(event)} title={!eventEntitiesTrusted(event) ? '请先确认事件参与实体' : ''} onClick={() => void updateMemoryStatus('event', event.id, 'confirmed')}>确认事件</button>}
+                  {event.status !== 'confirmed' && <button className="primary" disabled={!eventEntitiesTrusted(event)} title={!eventEntitiesTrusted(event) ? '请先确认事件参与实体' : ''} onClick={() => void updateMemoryStatus('event', event.id, 'confirmed')}>{event.status === 'rejected' ? '恢复并确认' : '确认事件'}</button>}
                   <button className="danger" onClick={() => void permanentlyDeleteMemoryItem('event', event)}>永久删除</button>
                 </div>
               </article>)}

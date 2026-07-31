@@ -265,6 +265,28 @@ export class PersonalMemoryStore {
         created_at TEXT NOT NULL
       ) STRICT;
 
+      CREATE TABLE IF NOT EXISTS memory_review_decisions (
+        id INTEGER PRIMARY KEY,
+        item_kind TEXT NOT NULL,
+        item_id TEXT NOT NULL,
+        previous_status TEXT NOT NULL,
+        decision TEXT NOT NULL,
+        actor TEXT NOT NULL DEFAULT 'user',
+        created_at TEXT NOT NULL
+      ) STRICT;
+      CREATE TRIGGER IF NOT EXISTS trg_claims_delete_memory_reviews
+      AFTER DELETE ON claims
+      BEGIN
+        DELETE FROM memory_review_decisions
+        WHERE item_kind='claim' AND item_id=OLD.id;
+      END;
+      CREATE TRIGGER IF NOT EXISTS trg_events_delete_memory_reviews
+      AFTER DELETE ON events
+      BEGIN
+        DELETE FROM memory_review_decisions
+        WHERE item_kind='event' AND item_id=OLD.id;
+      END;
+
       CREATE TABLE IF NOT EXISTS entity_corrections (
         id INTEGER PRIMARY KEY,
         entity_id TEXT NOT NULL,
@@ -654,9 +676,18 @@ export class PersonalMemoryStore {
     this.backfillMergeHistoryNames()
     this.db.exec(`CREATE INDEX IF NOT EXISTS idx_memory_corrections_item
       ON memory_corrections(item_kind,item_id,created_at DESC)`)
+    this.db.exec(`CREATE INDEX IF NOT EXISTS idx_memory_review_decisions_item
+      ON memory_review_decisions(item_kind,item_id,created_at DESC,id DESC)`)
     this.db.exec(`CREATE INDEX IF NOT EXISTS idx_memory_item_suppressions_semantic
       ON memory_item_suppressions(item_kind,semantic_fingerprint)`)
-    this.db.prepare(`UPDATE claims SET status='candidate' WHERE source_nature!='self_statement' AND status='confirmed'`).run()
+    this.db.prepare(`
+      UPDATE claims SET status='candidate'
+      WHERE source_nature!='self_statement' AND status='confirmed'
+        AND NOT EXISTS(
+          SELECT 1 FROM memory_review_decisions decision
+          WHERE decision.item_kind='claim' AND decision.item_id=claims.id
+        )
+    `).run()
     this.db.prepare(`
       UPDATE evidence SET evidence_role=CASE
         WHEN claim_id IS NOT NULL AND claim_id!='' AND EXISTS(
@@ -2969,10 +3000,14 @@ export class PersonalMemoryStore {
     for (const claim of claims) {
       if (this.isMemoryItemSuppressed('claim', claim.id, this.memoryItemSemanticFingerprint('claim', claim))) continue
       const sourceNature = claim.sourceNature || 'inference'
+      const manuallyReviewed = Boolean(this.db.prepare(`
+        SELECT 1 FROM memory_review_decisions
+        WHERE item_kind='claim' AND item_id=? LIMIT 1
+      `).get(claim.id))
       const manuallyCorrected = Boolean(this.db.prepare(`
         SELECT 1 FROM memory_corrections WHERE item_kind='claim' AND item_id=? LIMIT 1
       `).get(claim.id))
-      if (manuallyCorrected) {
+      if (manuallyCorrected || manuallyReviewed) {
         for (const item of claim.evidence || []) {
           const evidenceRole = item.role && item.role !== 'support'
             ? item.role
@@ -3110,10 +3145,14 @@ export class PersonalMemoryStore {
         if (reusable) event.id = reusable.id
       }
       if (this.isMemoryItemSuppressed('event', event.id, this.memoryItemSemanticFingerprint('event', event))) continue
+      const manuallyReviewed = Boolean(this.db.prepare(`
+        SELECT 1 FROM memory_review_decisions
+        WHERE item_kind='event' AND item_id=? LIMIT 1
+      `).get(event.id))
       const manuallyCorrected = Boolean(this.db.prepare(`
         SELECT 1 FROM memory_corrections WHERE item_kind='event' AND item_id=? LIMIT 1
       `).get(event.id))
-      if (manuallyCorrected) {
+      if (manuallyCorrected || manuallyReviewed) {
         for (const item of event.participants || []) participant.run(event.id, item.entityId, item.role || 'participant')
         for (const item of event.evidence || []) {
           const sender = String(item.sender || '')
@@ -3193,6 +3232,11 @@ export class PersonalMemoryStore {
       SELECT ev.*,
         (SELECT COUNT(*) FROM memory_corrections mc
           WHERE mc.item_kind='event' AND mc.item_id=ev.id) AS correction_count,
+        (SELECT COUNT(*) FROM memory_review_decisions decision
+          WHERE decision.item_kind='event' AND decision.item_id=ev.id) AS review_count,
+        (SELECT decision.created_at FROM memory_review_decisions decision
+          WHERE decision.item_kind='event' AND decision.item_id=ev.id
+          ORDER BY decision.id DESC LIMIT 1) AS reviewed_at,
         (SELECT COUNT(*) FROM evidence e WHERE e.event_id=ev.id) AS evidence_count,
         (SELECT mc.created_at FROM memory_corrections mc
           WHERE mc.item_kind='event' AND mc.item_id=ev.id
@@ -3976,6 +4020,11 @@ export class PersonalMemoryStore {
       SELECT c.*,s.canonical_name AS subject_name,o.canonical_name AS object_entity_name,
         (SELECT COUNT(*) FROM memory_corrections mc
           WHERE mc.item_kind='claim' AND mc.item_id=c.id) AS correction_count,
+        (SELECT COUNT(*) FROM memory_review_decisions decision
+          WHERE decision.item_kind='claim' AND decision.item_id=c.id) AS review_count,
+        (SELECT decision.created_at FROM memory_review_decisions decision
+          WHERE decision.item_kind='claim' AND decision.item_id=c.id
+          ORDER BY decision.id DESC LIMIT 1) AS reviewed_at,
         (SELECT COUNT(*) FROM evidence e WHERE e.claim_id=c.id) AS evidence_count
       FROM claims c
       LEFT JOIN entities s ON s.id=c.subject_id
@@ -3986,6 +4035,11 @@ export class PersonalMemoryStore {
       SELECT ev.*,
         (SELECT COUNT(*) FROM memory_corrections mc
           WHERE mc.item_kind='event' AND mc.item_id=ev.id) AS correction_count,
+        (SELECT COUNT(*) FROM memory_review_decisions decision
+          WHERE decision.item_kind='event' AND decision.item_id=ev.id) AS review_count,
+        (SELECT decision.created_at FROM memory_review_decisions decision
+          WHERE decision.item_kind='event' AND decision.item_id=ev.id
+          ORDER BY decision.id DESC LIMIT 1) AS reviewed_at,
         (SELECT COUNT(*) FROM evidence e WHERE e.event_id=ev.id) AS evidence_count
       FROM events ev ORDER BY COALESCE(start_at,updated_at) DESC LIMIT ?
     `).all(safeLimit) as any[]
@@ -4165,14 +4219,14 @@ export class PersonalMemoryStore {
 
   listEventTimeline(options: {
     sourceId?: 'wechat' | 'documents' | 'calendar'
-    status?: 'candidate' | 'confirmed' | 'cancelled'
+    status?: 'candidate' | 'confirmed' | 'rejected' | 'cancelled'
     from?: string
     to?: string
     limit?: number
     offset?: number
   } = {}): { items: any[]; total: number; hasMore: boolean } {
     if (!this.db) return { items: [], total: 0, hasMore: false }
-    const conditions = [`ev.status!='rejected'`]
+    const conditions = options.status ? [] : [`ev.status!='rejected'`]
     const parameters: Array<string | number> = []
     if (options.status) {
       conditions.push('ev.status=?')
@@ -4213,6 +4267,11 @@ export class PersonalMemoryStore {
       SELECT ev.*,
         (SELECT COUNT(*) FROM memory_corrections mc
           WHERE mc.item_kind='event' AND mc.item_id=ev.id) AS correction_count,
+        (SELECT COUNT(*) FROM memory_review_decisions decision
+          WHERE decision.item_kind='event' AND decision.item_id=ev.id) AS review_count,
+        (SELECT decision.created_at FROM memory_review_decisions decision
+          WHERE decision.item_kind='event' AND decision.item_id=ev.id
+          ORDER BY decision.id DESC LIMIT 1) AS reviewed_at,
         (SELECT COUNT(*) FROM evidence e WHERE e.event_id=ev.id) AS evidence_count,
         (SELECT mc.created_at FROM memory_corrections mc
           WHERE mc.item_kind='event' AND mc.item_id=ev.id
@@ -4238,11 +4297,18 @@ export class PersonalMemoryStore {
       SELECT ep.entity_id,ep.role,e.canonical_name
       FROM event_participants ep JOIN entities e ON e.id=ep.entity_id WHERE ep.event_id=?
     `)
+    const reviewStatement = this.db.prepare(`
+      SELECT previous_status,decision,actor,created_at
+      FROM memory_review_decisions
+      WHERE item_kind='event' AND item_id=?
+      ORDER BY id DESC LIMIT 20
+    `)
     return {
       items: rows.map(event => ({
         ...event,
         participants: participantStatement.all(event.id) as any[],
-        evidence: (evidenceStatement.all(event.id, MEMORY_CARD_EVIDENCE_LIMIT) as any[]).reverse()
+        evidence: (evidenceStatement.all(event.id, MEMORY_CARD_EVIDENCE_LIMIT) as any[]).reverse(),
+        review_history: reviewStatement.all(event.id) as any[]
       })),
       total,
       hasMore: offset + rows.length < total
@@ -4308,6 +4374,11 @@ export class PersonalMemoryStore {
       SELECT c.*,s.canonical_name AS subject_name,o.canonical_name AS object_entity_name,
         (SELECT COUNT(*) FROM memory_corrections mc
           WHERE mc.item_kind='claim' AND mc.item_id=c.id) AS correction_count,
+        (SELECT COUNT(*) FROM memory_review_decisions decision
+          WHERE decision.item_kind='claim' AND decision.item_id=c.id) AS review_count,
+        (SELECT decision.created_at FROM memory_review_decisions decision
+          WHERE decision.item_kind='claim' AND decision.item_id=c.id
+          ORDER BY decision.id DESC LIMIT 1) AS reviewed_at,
         (SELECT mc.created_at FROM memory_corrections mc
           WHERE mc.item_kind='claim' AND mc.item_id=c.id
           ORDER BY mc.id DESC LIMIT 1) AS corrected_at,
@@ -4330,10 +4401,17 @@ export class PersonalMemoryStore {
         CASE WHEN evidence_role='contradiction' THEN 0 ELSE 1 END,
         message_id DESC LIMIT ?
     `)
+    const reviewStatement = this.db.prepare(`
+      SELECT previous_status,decision,actor,created_at
+      FROM memory_review_decisions
+      WHERE item_kind='claim' AND item_id=?
+      ORDER BY id DESC LIMIT 20
+    `)
     return {
       items: rows.map(claim => ({
         ...claim,
-        evidence: (evidenceStatement.all(claim.id, MEMORY_CARD_EVIDENCE_LIMIT) as any[]).reverse()
+        evidence: (evidenceStatement.all(claim.id, MEMORY_CARD_EVIDENCE_LIMIT) as any[]).reverse(),
+        review_history: reviewStatement.all(claim.id) as any[]
       })),
       total,
       hasMore: offset + rows.length < total
@@ -4377,9 +4455,20 @@ export class PersonalMemoryStore {
       WHERE ${kind === 'claim' ? 'claim_id' : kind === 'event' ? 'event_id' : 'relation_id'}=?
     `).get(itemId) as any)?.count || 0)
     const related = kind === 'claim'
-      ? Number((this.db.prepare(`SELECT COUNT(*) AS count FROM memory_corrections WHERE item_kind='claim' AND item_id=?`).get(itemId) as any)?.count || 0)
+      ? Number((this.db.prepare(`
+          SELECT
+            (SELECT COUNT(*) FROM memory_corrections
+              WHERE item_kind='claim' AND item_id=?) +
+            (SELECT COUNT(*) FROM memory_review_decisions
+              WHERE item_kind='claim' AND item_id=?) AS count
+        `).get(itemId, itemId) as any)?.count || 0)
       : kind === 'event'
-        ? Number((this.db.prepare('SELECT COUNT(*) AS count FROM event_participants WHERE event_id=?').get(itemId) as any)?.count || 0)
+        ? Number((this.db.prepare(`
+            SELECT
+              (SELECT COUNT(*) FROM event_participants WHERE event_id=?) +
+              (SELECT COUNT(*) FROM memory_review_decisions
+                WHERE item_kind='event' AND item_id=?) AS count
+          `).get(itemId, itemId) as any)?.count || 0)
         : Number((this.db.prepare('SELECT COUNT(*) AS count FROM relation_history WHERE relation_id=?').get(itemId) as any)?.count || 0)
     const assistantMessages = Number((this.db.prepare(`
       SELECT COUNT(DISTINCT conversation_id) AS count FROM assistant_messages WHERE citations_json LIKE ?
@@ -4436,11 +4525,13 @@ export class PersonalMemoryStore {
       if (kind === 'claim') {
         this.db.prepare('DELETE FROM evidence WHERE claim_id=?').run(itemId)
         this.db.prepare(`DELETE FROM memory_corrections WHERE item_kind='claim' AND item_id=?`).run(itemId)
+        this.db.prepare(`DELETE FROM memory_review_decisions WHERE item_kind='claim' AND item_id=?`).run(itemId)
         this.db.prepare('DELETE FROM claims WHERE id=?').run(itemId)
       } else if (kind === 'event') {
         this.db.prepare('DELETE FROM evidence WHERE event_id=?').run(itemId)
         this.db.prepare('DELETE FROM event_participants WHERE event_id=?').run(itemId)
         this.db.prepare(`DELETE FROM memory_corrections WHERE item_kind='event' AND item_id=?`).run(itemId)
+        this.db.prepare(`DELETE FROM memory_review_decisions WHERE item_kind='event' AND item_id=?`).run(itemId)
         this.db.prepare('DELETE FROM events WHERE id=?').run(itemId)
       } else {
         this.db.prepare('DELETE FROM evidence WHERE relation_id=?').run(itemId)
@@ -4590,17 +4681,34 @@ export class PersonalMemoryStore {
     if (!this.db) return null
     const table = kind === 'claim' ? 'claims' : 'events'
     const now = new Date().toISOString()
-    this.db.prepare(`UPDATE ${table} SET status=?,updated_at=? WHERE id=?`).run(status, now, id)
-    const documentId = `${kind}:${id}`
-    const document = this.db.prepare('SELECT metadata_json FROM search_documents WHERE id=?').get(documentId) as any
-    if (document) {
-      let metadata: any = {}
-      try { metadata = JSON.parse(document.metadata_json || '{}') } catch {}
-      metadata.status = status
-      this.db.prepare('UPDATE search_documents SET metadata_json=?,updated_at=? WHERE id=?')
-        .run(JSON.stringify(metadata), now, documentId)
-    }
-    return this.db.prepare(`SELECT * FROM ${table} WHERE id=?`).get(id) || null
+    return this.db.transaction(() => {
+      const previous = this.db!.prepare(`SELECT status FROM ${table} WHERE id=?`).get(id) as any
+      if (!previous) return null
+      this.db!.prepare(`
+        INSERT INTO memory_review_decisions(
+          item_kind,item_id,previous_status,decision,actor,created_at
+        ) VALUES(?,?,?,?,?,?)
+      `).run(kind, id, String(previous.status || 'candidate'), status, 'user', now)
+      this.db!.prepare(`UPDATE ${table} SET status=?,updated_at=? WHERE id=?`).run(status, now, id)
+      const documentId = `${kind}:${id}`
+      const document = this.db!.prepare('SELECT metadata_json FROM search_documents WHERE id=?').get(documentId) as any
+      if (document) {
+        let metadata: any = {}
+        try { metadata = JSON.parse(document.metadata_json || '{}') } catch {}
+        metadata.status = status
+        this.db!.prepare('UPDATE search_documents SET metadata_json=?,updated_at=? WHERE id=?')
+          .run(JSON.stringify(metadata), now, documentId)
+      }
+      return this.db!.prepare(`
+        SELECT item.*,
+          (SELECT COUNT(*) FROM memory_review_decisions decision
+            WHERE decision.item_kind=? AND decision.item_id=item.id) AS review_count,
+          (SELECT decision.created_at FROM memory_review_decisions decision
+            WHERE decision.item_kind=? AND decision.item_id=item.id
+            ORDER BY decision.id DESC LIMIT 1) AS reviewed_at
+        FROM ${table} item WHERE item.id=?
+      `).get(kind, kind, id) || null
+    })()
   }
 
   recordTaskChanges(taskId: string, before: any, after: any, reason = 'manual_edit', evidence: any[] = []): void {
