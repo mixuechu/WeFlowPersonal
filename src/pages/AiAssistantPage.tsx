@@ -507,6 +507,13 @@ function AiAssistantPage() {
   const [askingMemory, setAskingMemory] = useState(false)
   const [creatingMemoryTask, setCreatingMemoryTask] = useState(false)
   const [memoryEntityFilter, setMemoryEntityFilter] = useState('')
+  const [memoryEntitySelection, setMemoryEntitySelection] = useState<any>(null)
+  const [memoryEntityQuery, setMemoryEntityQuery] = useState('')
+  const [memoryEntityOptions, setMemoryEntityOptions] = useState<any[]>([])
+  const [memoryEntityOptionTotal, setMemoryEntityOptionTotal] = useState(0)
+  const [memoryEntityPickerOpen, setMemoryEntityPickerOpen] = useState(false)
+  const [memoryEntityPickerLoading, setMemoryEntityPickerLoading] = useState(false)
+  const memoryEntityPickerGate = useRef(new LatestRequestGate())
   const [memorySessionFilter, setMemorySessionFilter] = useState('')
   const [memorySessionSelection, setMemorySessionSelection] = useState<any>(null)
   const [memorySessionQuery, setMemorySessionQuery] = useState('')
@@ -691,6 +698,33 @@ function AiAssistantPage() {
     const timer = window.setInterval(() => void load(), 15_000)
     return () => window.clearInterval(timer)
   }, [load])
+
+  useEffect(() => {
+    if (!memoryEntityPickerOpen) return
+    const request = memoryEntityPickerGate.current.begin()
+    const timer = window.setTimeout(() => {
+      setMemoryEntityPickerLoading(true)
+      void window.electronAPI.aiAssistant.getTrustedEntityDirectory({
+        query: memoryEntityQuery.trim() || undefined,
+        limit: 20,
+        offset: 0
+      }).then(result => {
+        if (!memoryEntityPickerGate.current.isCurrent(request)) return
+        setMemoryEntityOptions(result.items)
+        setMemoryEntityOptionTotal(result.total)
+      }).catch(error => {
+        if (!memoryEntityPickerGate.current.isCurrent(request)) return
+        setMemoryEntityOptions([])
+        setMemoryEntityOptionTotal(0)
+        setMessage(error?.message || String(error))
+      }).finally(() => {
+        if (memoryEntityPickerGate.current.isCurrent(request)) {
+          setMemoryEntityPickerLoading(false)
+        }
+      })
+    }, 220)
+    return () => window.clearTimeout(timer)
+  }, [memoryEntityPickerOpen, memoryEntityQuery])
 
   useEffect(() => {
     if (!memorySessionPickerOpen) return
@@ -4442,10 +4476,73 @@ function AiAssistantPage() {
             <input value={memoryQuery} onChange={event => setMemoryQuery(event.target.value)} placeholder="搜索人物、事实、事件、关系或项目" />
           </div>
           <div className="assistant-memory-scope">
-            <select value={memoryEntityFilter} onChange={event => setMemoryEntityFilter(event.target.value)}>
-              <option value="">所有人物与实体</option>
-              {trustedGraphEntities.map((entity: any) => <option key={entity.id} value={entity.id}>{entity.canonicalName} · {entity.type}</option>)}
-            </select>
+            <div className="assistant-memory-entity-picker"
+              onBlur={event => {
+                if (!event.currentTarget.contains(event.relatedTarget as Node | null)) {
+                  setMemoryEntityPickerOpen(false)
+                }
+              }}>
+              <div>
+                <input
+                  value={memoryEntityQuery}
+                  onFocus={() => setMemoryEntityPickerOpen(true)}
+                  onChange={event => {
+                    setMemoryEntityQuery(event.target.value)
+                    setMemoryEntitySelection(null)
+                    setMemoryEntityFilter('')
+                    setMemoryEntityPickerOpen(true)
+                  }}
+                  placeholder="搜索全部可信实体…"
+                  aria-label="搜索实体检索范围" />
+                {(memoryEntityQuery || memoryEntityFilter) && <button
+                  type="button"
+                  aria-label="清除实体范围"
+                  onClick={() => {
+                    setMemoryEntityQuery('')
+                    setMemoryEntitySelection(null)
+                    setMemoryEntityFilter('')
+                    setMemoryEntityPickerOpen(false)
+                  }}>×</button>}
+              </div>
+              {memoryEntitySelection && <small className="assistant-memory-entity-selected">
+                已选：{memoryEntitySelection.type} · {memoryEntitySelection.id}
+                {memoryEntitySelection.canonicalNameCollisionCount > 1
+                  ? ` · ${memoryEntitySelection.canonicalNameCollisionCount} 个同名实体，按 ID 精确检索`
+                  : ' · 已确认实体'}
+              </small>}
+              {memoryEntityPickerOpen && <div className="assistant-memory-entity-options">
+                {memoryEntityOptions.map((entity: any) => {
+                  const identityHint = [
+                    ...(entity.accountIds || []),
+                    ...(entity.externalIdentities || []).flatMap((identity: any) =>
+                      [identity.displayName, identity.accountId]),
+                    ...(entity.aliases || [])
+                  ].filter(Boolean).slice(0, 3).join(' · ')
+                  return <button
+                    type="button"
+                    key={entity.id}
+                    onClick={() => {
+                      setMemoryEntitySelection(entity)
+                      setMemoryEntityFilter(entity.id)
+                      setMemoryEntityQuery(entity.canonicalName)
+                      setMemoryEntityPickerOpen(false)
+                    }}>
+                    <strong>{entity.canonicalName}</strong>
+                    <small>{entity.type} · {entity.id}
+                      {entity.canonicalNameCollisionCount > 1
+                        ? ` · ${entity.canonicalNameCollisionCount} 个同名`
+                        : ''}
+                    </small>
+                    {identityHint && <small>{identityHint}</small>}
+                  </button>
+                })}
+                {!memoryEntityPickerLoading && !memoryEntityOptions.length && <span>没有匹配的已确认实体</span>}
+                {memoryEntityPickerLoading && <span>正在搜索全部可信实体…</span>}
+                {!memoryEntityPickerLoading && memoryEntityOptionTotal > memoryEntityOptions.length && <span>
+                  匹配 {memoryEntityOptionTotal} 个，继续输入名称、别名或账号缩小范围
+                </span>}
+              </div>}
+            </div>
             <div className="assistant-memory-session-picker"
               onBlur={event => {
                 if (!event.currentTarget.contains(event.relatedTarget as Node | null)) {
@@ -4524,6 +4621,9 @@ function AiAssistantPage() {
             {(memoryEntityFilter || memorySessionFilter || memorySourceFilter || memoryTypeFilter || memoryFrom || memoryTo) &&
               <button onClick={() => {
                 setMemoryEntityFilter('')
+                setMemoryEntitySelection(null)
+                setMemoryEntityQuery('')
+                setMemoryEntityPickerOpen(false)
                 setMemorySessionFilter('')
                 setMemorySessionSelection(null)
                 setMemorySessionQuery('')

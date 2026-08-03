@@ -1762,6 +1762,22 @@ export interface ElectronAPI {
         correctedAliasText?: string
         relationCorrection?: { subjectId?: string; predicate?: string; objectId?: string }
       }) => Promise<any>
+      getTrustedEntityDirectory: (options?: {
+        query?: string
+        type?: string
+        offset?: number
+        limit?: number
+        expectedRevision?: string
+      }) => Promise<{
+        items: any[]
+        total: number
+        hasMore: boolean
+        offset: number
+        limit: number
+        revision: string
+        stale: boolean
+        counts: Record<string, number>
+      }>
       previewRevertMerge: (id: number, expectedRevision?: string) => Promise<any>
       revertMerge: (
         id: number,

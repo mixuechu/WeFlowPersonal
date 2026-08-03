@@ -88,6 +88,10 @@ import {
 } from './entityTrustPolicy'
 import { planEntityMerge } from './entityMergeDirection'
 import {
+  buildTrustedEntityDirectory,
+  type TrustedEntityDirectoryOptions
+} from './trustedEntityDirectory.ts'
+import {
   assertEntityForgetConfirmation,
   buildEntityForgetPreviewToken
 } from './entityForgetPolicy'
@@ -3826,6 +3830,10 @@ export class AiAssistantService {
       },
       focus
     }
+  }
+
+  getTrustedEntityDirectory(options: TrustedEntityDirectoryOptions = {}): any {
+    return buildTrustedEntityDirectory(this.state.graph.entities, options)
   }
 
   getProjectWorkspace(projectId: string): any {
