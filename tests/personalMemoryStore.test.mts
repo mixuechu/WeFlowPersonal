@@ -227,6 +227,51 @@ test('source mutation finalize rolls every policy back and preserves prepared re
   })
 })
 
+test('prepared cross-store mutation queues expose every fresh commit beyond failed first page', () => {
+  withStore(store => {
+    for (let index = 0; index < 251; index += 1) {
+      const suffix = String(index).padStart(3, '0')
+      store.prepareTaskMutationCommit({
+        commitId: `task-recovery-${suffix}`,
+        beforeTokens: { task: `before-${suffix}` },
+        afterTokens: { task: `after-${suffix}` },
+        changes: []
+      })
+      store.prepareConversationSourceMutationCommit({
+        commitId: `source-recovery-${suffix}`,
+        beforeTokens: { source: `before-${suffix}` },
+        afterTokens: { source: `after-${suffix}` },
+        policies: [{
+          sessionId: `session-${suffix}`,
+          displayName: `Session ${suffix}`,
+          sessionType: 'private',
+          enabled: false
+        }]
+      })
+    }
+    for (let index = 0; index < 101; index += 1) {
+      const suffix = String(index).padStart(3, '0')
+      store.recordTaskMutationRecoveryFailure(`task-recovery-${suffix}`, 'injected failure')
+      store.recordConversationSourceMutationRecoveryFailure(
+        `source-recovery-${suffix}`,
+        'injected failure'
+      )
+    }
+
+    const taskPage = store.listPreparedTaskMutationCommits(100)
+    const sourcePage = store.listPreparedConversationSourceMutationCommits(100)
+    assert.equal(taskPage.length, 100)
+    assert.equal(sourcePage.length, 100)
+    assert.ok(taskPage.every(commit => commit.recoveryAttempts === 0))
+    assert.ok(taskPage.every(commit => commit.commitId >= 'task-recovery-101'))
+    assert.ok(sourcePage.every(commit => commit.commitId >= 'source-recovery-101'))
+    assert.equal(store.getTaskMutationCommitHealth().unattempted, 150)
+    assert.equal(store.getConversationSourceMutationCommitHealth().unattempted, 150)
+    assert.equal(store.listPreparedTaskMutationCommits(500).length, 251)
+    assert.equal(store.listPreparedConversationSourceMutationCommits(500).length, 251)
+  })
+})
+
 test('search relevance feedback is append-only, query-scoped and reversible after reopen', () => {
   const directory = mkdtempSync(join(tmpdir(), 'weflow-search-feedback-'))
   const databasePath = join(directory, 'memory.sqlite')

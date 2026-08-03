@@ -7356,7 +7356,7 @@ export class PersonalMemoryStore {
     )
   }
 
-  listPreparedTaskMutationCommits(): Array<{
+  listPreparedTaskMutationCommits(limit = 100): Array<{
     commitId: string
     beforeTokens: Record<string, string>
     afterTokens: Record<string, string>
@@ -7368,8 +7368,8 @@ export class PersonalMemoryStore {
     return (this.db.prepare(`
       SELECT * FROM task_mutation_commits
       WHERE status='prepared'
-      ORDER BY prepared_at,commit_id LIMIT 100
-    `).all() as any[]).map(row => {
+      ORDER BY recovery_attempts,prepared_at,commit_id LIMIT ?
+    `).all(Math.max(1, Math.min(500, Math.floor(limit || 100)))) as any[]).map(row => {
       let beforeTokens: Record<string, string> = {}
       let afterTokens: Record<string, string> = {}
       let changes: any[] = []
@@ -7448,17 +7448,19 @@ export class PersonalMemoryStore {
 
   getTaskMutationCommitHealth(): {
     prepared: number
+    unattempted: number
     committed: number
     abandoned: number
     recoveryFailures: number
     retainedPayloadBytes: number
   } {
     if (!this.db) return {
-      prepared: 0, committed: 0, abandoned: 0, recoveryFailures: 0, retainedPayloadBytes: 0
+      prepared: 0, unattempted: 0, committed: 0, abandoned: 0, recoveryFailures: 0, retainedPayloadBytes: 0
     }
     const row = this.db.prepare(`
       SELECT
         SUM(CASE WHEN status='prepared' THEN 1 ELSE 0 END) AS prepared,
+        SUM(CASE WHEN status='prepared' AND recovery_attempts=0 THEN 1 ELSE 0 END) AS unattempted,
         SUM(CASE WHEN status='committed' THEN 1 ELSE 0 END) AS committed,
         SUM(CASE WHEN status='abandoned' THEN 1 ELSE 0 END) AS abandoned,
         SUM(CASE WHEN recovery_attempts>0 THEN 1 ELSE 0 END) AS recovery_failures,
@@ -7471,6 +7473,7 @@ export class PersonalMemoryStore {
     `).get() as any
     return {
       prepared: Number(row?.prepared || 0),
+      unattempted: Number(row?.unattempted || 0),
       committed: Number(row?.committed || 0),
       abandoned: Number(row?.abandoned || 0),
       recoveryFailures: Number(row?.recovery_failures || 0),
@@ -11162,7 +11165,7 @@ export class PersonalMemoryStore {
     )
   }
 
-  listPreparedConversationSourceMutationCommits(): Array<{
+  listPreparedConversationSourceMutationCommits(limit = 100): Array<{
     commitId: string
     beforeTokens: Record<string, string>
     afterTokens: Record<string, string>
@@ -11173,8 +11176,8 @@ export class PersonalMemoryStore {
     return (this.db.prepare(`
       SELECT * FROM conversation_source_mutation_commits
       WHERE status='prepared'
-      ORDER BY prepared_at,commit_id LIMIT 100
-    `).all() as any[]).map(row => {
+      ORDER BY recovery_attempts,prepared_at,commit_id LIMIT ?
+    `).all(Math.max(1, Math.min(500, Math.floor(limit || 100)))) as any[]).map(row => {
       const failures: string[] = []
       let beforeTokens: Record<string, string> = {}
       let afterTokens: Record<string, string> = {}
@@ -11262,17 +11265,19 @@ export class PersonalMemoryStore {
 
   getConversationSourceMutationCommitHealth(): {
     prepared: number
+    unattempted: number
     committed: number
     abandoned: number
     recoveryFailures: number
     retainedPayloadBytes: number
   } {
     if (!this.db) return {
-      prepared: 0, committed: 0, abandoned: 0, recoveryFailures: 0, retainedPayloadBytes: 0
+      prepared: 0, unattempted: 0, committed: 0, abandoned: 0, recoveryFailures: 0, retainedPayloadBytes: 0
     }
     const row = this.db.prepare(`
       SELECT
         SUM(CASE WHEN status='prepared' THEN 1 ELSE 0 END) AS prepared,
+        SUM(CASE WHEN status='prepared' AND recovery_attempts=0 THEN 1 ELSE 0 END) AS unattempted,
         SUM(CASE WHEN status='committed' THEN 1 ELSE 0 END) AS committed,
         SUM(CASE WHEN status='abandoned' THEN 1 ELSE 0 END) AS abandoned,
         SUM(CASE WHEN recovery_attempts>0 THEN 1 ELSE 0 END) AS recovery_failures,
@@ -11285,6 +11290,7 @@ export class PersonalMemoryStore {
     `).get() as any
     return {
       prepared: Number(row?.prepared || 0),
+      unattempted: Number(row?.unattempted || 0),
       committed: Number(row?.committed || 0),
       abandoned: Number(row?.abandoned || 0),
       recoveryFailures: Number(row?.recovery_failures || 0),

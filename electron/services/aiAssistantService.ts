@@ -666,14 +666,18 @@ export class AiAssistantService {
     )
     this.migrateLegacyData()
     this.loadState()
-    this.recoverPreparedConversationSourceMutationCommits()
-    this.recoverPreparedTaskMutationCommits()
+    const sourceMutationRecovery = this.recoverPreparedConversationSourceMutationCommits()
+    const taskMutationRecovery = this.recoverPreparedTaskMutationCommits()
     personalMemoryStore.recordProcessedIngestionMessageKeys(
       this.state.cursor.recentMessageIds,
       'legacy-state-hot-cache-migration'
     )
     const initialRecovery = this.recoverPreparedIngestionBatchCommits()
-    if (initialRecovery.unattempted > 0) this.schedulePreparedIngestionRecoveryContinuation()
+    if (
+      initialRecovery.unattempted > 0 ||
+      sourceMutationRecovery.unattempted > 0 ||
+      taskMutationRecovery.unattempted > 0
+    ) this.schedulePreparedRecoveryContinuation()
     personalMemoryStore.reconcileInterruptedIngestionRuns({
       entityCount: this.state.graph.entities.length,
       relationCount: this.state.graph.relations.length
@@ -994,63 +998,88 @@ export class AiAssistantService {
     this.stateStorage.lastWriteAt = new Date().toISOString()
   }
 
-  private recoverPreparedTaskMutationCommits(): void {
-    for (const commit of personalMemoryStore.listPreparedTaskMutationCommits()) {
-      this.taskMutationRecovery.attempted += 1
-      try {
-        if (commit.parseError) throw new Error(commit.parseError)
-        const action = classifyTaskMutationRecovery(
-          this.state.tasks,
-          commit.beforeTokens,
-          commit.afterTokens
-        )
-        if (action === 'apply') {
-          personalMemoryStore.finalizeTaskMutationCommit(commit.commitId, this.state.tasks)
-          this.taskMutationRecovery.applied += 1
-        } else if (action === 'abandon') {
-          personalMemoryStore.abandonTaskMutationCommit(commit.commitId, 'state_not_committed')
-          this.taskMutationRecovery.abandoned += 1
-        } else {
-          this.taskMutationRecovery.conflicts += 1
-          throw new Error('任务状态同时不匹配变更前和变更后身份，已保留现场等待诊断')
+  private recoverPreparedTaskMutationCommits(): { attempted: number; unattempted: number } {
+    const startedAt = Date.now()
+    const seenCommitIds = new Set<string>()
+    let attempted = 0
+    do {
+      const batch = personalMemoryStore.listPreparedTaskMutationCommits(100)
+        .filter(commit => !seenCommitIds.has(commit.commitId))
+      if (!batch.length) break
+      for (const commit of batch) {
+        seenCommitIds.add(commit.commitId)
+        attempted += 1
+        this.taskMutationRecovery.attempted += 1
+        try {
+          if (commit.parseError) throw new Error(commit.parseError)
+          const action = classifyTaskMutationRecovery(
+            this.state.tasks,
+            commit.beforeTokens,
+            commit.afterTokens
+          )
+          if (action === 'apply') {
+            personalMemoryStore.finalizeTaskMutationCommit(commit.commitId, this.state.tasks)
+            this.taskMutationRecovery.applied += 1
+          } else if (action === 'abandon') {
+            personalMemoryStore.abandonTaskMutationCommit(commit.commitId, 'state_not_committed')
+            this.taskMutationRecovery.abandoned += 1
+          } else {
+            this.taskMutationRecovery.conflicts += 1
+            throw new Error('任务状态同时不匹配变更前和变更后身份，已保留现场等待诊断')
+          }
+          this.taskMutationRecovery.lastRecoveredAt = new Date().toISOString()
+        } catch (error) {
+          personalMemoryStore.recordTaskMutationRecoveryFailure(commit.commitId, error)
         }
-        this.taskMutationRecovery.lastRecoveredAt = new Date().toISOString()
-      } catch (error) {
-        personalMemoryStore.recordTaskMutationRecoveryFailure(commit.commitId, error)
       }
-    }
+    } while (Date.now() - startedAt < 1_500)
+    return { attempted, unattempted: personalMemoryStore.getTaskMutationCommitHealth().unattempted }
   }
 
-  private recoverPreparedConversationSourceMutationCommits(): void {
-    for (const commit of personalMemoryStore.listPreparedConversationSourceMutationCommits()) {
-      this.conversationSourceMutationRecovery.attempted += 1
-      try {
-        if (commit.parseError) throw new Error(commit.parseError)
-        const action = classifyConversationSourceMutationRecovery(
-          this.state.cursor,
-          commit.beforeTokens,
-          commit.afterTokens
-        )
-        if (action === 'apply') {
-          personalMemoryStore.finalizeConversationSourceMutationCommit(commit.commitId)
-          this.conversationSourceMutationRecovery.applied += 1
-        } else if (action === 'abandon') {
-          personalMemoryStore.abandonConversationSourceMutationCommit(
-            commit.commitId,
-            'state_not_committed'
+  private recoverPreparedConversationSourceMutationCommits(): { attempted: number; unattempted: number } {
+    const startedAt = Date.now()
+    const seenCommitIds = new Set<string>()
+    let attempted = 0
+    do {
+      const batch = personalMemoryStore.listPreparedConversationSourceMutationCommits(100)
+        .filter(commit => !seenCommitIds.has(commit.commitId))
+      if (!batch.length) break
+      for (const commit of batch) {
+        seenCommitIds.add(commit.commitId)
+        attempted += 1
+        this.conversationSourceMutationRecovery.attempted += 1
+        try {
+          if (commit.parseError) throw new Error(commit.parseError)
+          const action = classifyConversationSourceMutationRecovery(
+            this.state.cursor,
+            commit.beforeTokens,
+            commit.afterTokens
           )
-          this.conversationSourceMutationRecovery.abandoned += 1
-        } else {
-          this.conversationSourceMutationRecovery.conflicts += 1
-          throw new Error('来源游标同时不匹配变更前和变更后身份，已保留现场等待诊断')
+          if (action === 'apply') {
+            personalMemoryStore.finalizeConversationSourceMutationCommit(commit.commitId)
+            this.conversationSourceMutationRecovery.applied += 1
+          } else if (action === 'abandon') {
+            personalMemoryStore.abandonConversationSourceMutationCommit(
+              commit.commitId,
+              'state_not_committed'
+            )
+            this.conversationSourceMutationRecovery.abandoned += 1
+          } else {
+            this.conversationSourceMutationRecovery.conflicts += 1
+            throw new Error('来源游标同时不匹配变更前和变更后身份，已保留现场等待诊断')
+          }
+          this.conversationSourceMutationRecovery.lastRecoveredAt = new Date().toISOString()
+        } catch (error) {
+          personalMemoryStore.recordConversationSourceMutationRecoveryFailure(
+            commit.commitId,
+            error
+          )
         }
-        this.conversationSourceMutationRecovery.lastRecoveredAt = new Date().toISOString()
-      } catch (error) {
-        personalMemoryStore.recordConversationSourceMutationRecoveryFailure(
-          commit.commitId,
-          error
-        )
       }
+    } while (Date.now() - startedAt < 1_500)
+    return {
+      attempted,
+      unattempted: personalMemoryStore.getConversationSourceMutationCommitHealth().unattempted
     }
   }
 
@@ -1165,16 +1194,29 @@ export class AiAssistantService {
     }
   }
 
-  private schedulePreparedIngestionRecoveryContinuation(): void {
+  private schedulePreparedRecoveryContinuation(): void {
     if (this.preparedRecoveryContinuation) return
     this.preparedRecoveryContinuation = setTimeout(() => {
       this.preparedRecoveryContinuation = null
       if (this.activeSync) {
-        this.schedulePreparedIngestionRecoveryContinuation()
+        this.schedulePreparedRecoveryContinuation()
         return
       }
-      const result = this.recoverPreparedIngestionBatchCommits()
-      if (result.unattempted > 0) this.schedulePreparedIngestionRecoveryContinuation()
+      const ingestion = personalMemoryStore.getIngestionCommitHealth().unattempted > 0
+        ? this.recoverPreparedIngestionBatchCommits()
+        : { unattempted: 0 }
+      const taskMutation = personalMemoryStore.getTaskMutationCommitHealth().unattempted > 0
+        ? this.recoverPreparedTaskMutationCommits()
+        : { unattempted: 0 }
+      const sourceMutation =
+        personalMemoryStore.getConversationSourceMutationCommitHealth().unattempted > 0
+          ? this.recoverPreparedConversationSourceMutationCommits()
+          : { unattempted: 0 }
+      if (
+        ingestion.unattempted > 0 ||
+        taskMutation.unattempted > 0 ||
+        sourceMutation.unattempted > 0
+      ) this.schedulePreparedRecoveryContinuation()
     }, 1_000)
     this.preparedRecoveryContinuation.unref?.()
   }
@@ -4610,7 +4652,7 @@ export class AiAssistantService {
   retryPreparedIngestion(): any {
     if (this.activeSync) throw new Error('当前正在增量处理，请在本轮结束后重试恢复队列')
     const result = this.recoverPreparedIngestionBatchCommits()
-    if (result.unattempted > 0) this.schedulePreparedIngestionRecoveryContinuation()
+    if (result.unattempted > 0) this.schedulePreparedRecoveryContinuation()
     this.saveState()
     return result
   }
