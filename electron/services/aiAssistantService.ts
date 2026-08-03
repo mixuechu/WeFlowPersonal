@@ -112,6 +112,7 @@ import {
   buildModelMemoryContext,
   classifyDocumentTaskOwnership,
   finalizeGroundedMemoryAnswer,
+  getMemoryEvidenceEligibility,
   normalizeDataSourceClaimNature,
   runPersonalDataSourceBatch
 } from './personalDataSources'
@@ -3346,13 +3347,18 @@ export class AiAssistantService {
             assistantArchiveStats.total,
             assistantArchiveStats.latestId,
             assistantArchiveStats.latestUpdatedAt,
-            assistantArchiveStats.latestMessageCount
+            assistantArchiveStats.latestMessageCount,
+            assistantArchiveStats.citationStorage
           ]))
           .digest('hex')
           .slice(0, 16),
-        version: 'assistant-archive-v1',
+        version: 'assistant-archive-v2',
         directory: 'paginated_on_demand',
-        messages: 'newest_first_paginated'
+        messages: 'newest_first_paginated',
+        citationStorage: {
+          ...assistantArchiveStats.citationStorage,
+          policy: 'reference_only_authoritative_hydration'
+        }
       },
       qualityBaseline: evaluateTaskAssignmentPolicy(),
       weeklyBriefing: buildWeeklyBriefing(this.state.briefings, tasks),
@@ -5100,37 +5106,76 @@ export class AiAssistantService {
   private enrichAssistantCitationFeedback(conversation: any): any {
     if (!conversation?.messages?.length) return conversation
     const contextCache = new Map<string, Map<string, string>>()
+    const documentCache = new Map<string, any>()
     return {
       ...conversation,
       messages: conversation.messages.map((message: any) => ({
         ...message,
         citations: (message.citations || []).map((citation: any) => {
           const stored = citation?.feedbackContext
-          if (!stored || typeof stored !== 'object') return citation
-          const context = buildMemorySearchFeedbackContext(
-            String(stored.query || ''),
-            stored.options || {}
-          )
-          const cacheKey = `${context.queryFingerprint}:${context.scopeFingerprint}`
-          let decisions = contextCache.get(cacheKey)
-          if (!decisions) {
-            decisions = new Map(personalMemoryStore.listMemorySearchFeedback(
-              context.queryFingerprint,
-              context.scopeFingerprint,
-              500
-            ).map(entry => [String(entry.documentId || ''), String(entry.action || '')]))
-            contextCache.set(cacheKey, decisions)
+          const hasFeedbackContext = stored && typeof stored === 'object'
+          const context = hasFeedbackContext
+            ? buildMemorySearchFeedbackContext(String(stored.query || ''), stored.options || {})
+            : null
+          const feedbackOptions = context ? (() => {
+            try { return JSON.parse(context.scopeJson) } catch { return {} }
+          })() : {}
+          let relevanceFeedback = ''
+          if (context) {
+            const cacheKey = `${context.queryFingerprint}:${context.scopeFingerprint}`
+            let decisions = contextCache.get(cacheKey)
+            if (!decisions) {
+              decisions = new Map(personalMemoryStore.listMemorySearchFeedback(
+                context.queryFingerprint,
+                context.scopeFingerprint,
+                500
+              ).map(entry => [String(entry.documentId || ''), String(entry.action || '')]))
+              contextCache.set(cacheKey, decisions)
+            }
+            relevanceFeedback = decisions.get(String(citation.documentId || '')) || ''
           }
+          const documentKey = `${context?.scopeFingerprint || 'unscoped'}:${citation.documentId || ''}`
+          if (!documentCache.has(documentKey)) {
+            documentCache.set(documentKey, personalMemoryStore.getSearchDocumentById(
+              String(citation.documentId || ''),
+              feedbackOptions
+            ))
+          }
+          const document = documentCache.get(documentKey)
+          const canonicalFeedbackContext = context ? {
+            query: context.query,
+            options: feedbackOptions,
+            version: MEMORY_SEARCH_FEEDBACK_VERSION
+          } : undefined
+          if (!document) return {
+            ...citation,
+            content: '',
+            evidence: [],
+            citationUnavailable: true,
+            citationHydration: 'source_missing',
+            relevanceFeedback,
+            ...(canonicalFeedbackContext ? { feedbackContext: canonicalFeedbackContext } : {})
+          }
+          const eligibility = getMemoryEvidenceEligibility(document)
           return {
             ...citation,
-            feedbackContext: {
-              query: context.query,
-              options: (() => {
-                try { return JSON.parse(context.scopeJson) } catch { return {} }
-              })(),
-              version: MEMORY_SEARCH_FEEDBACK_VERSION
-            },
-            relevanceFeedback: decisions.get(String(citation.documentId || '')) || ''
+            answerTimeTitle: citation.title || '',
+            sourceId: document.source_id,
+            type: document.document_type,
+            title: document.title,
+            content: document.search_text,
+            status: eligibility.status,
+            trustLabel: eligibility.trustLabel,
+            evidence: document.evidence || [],
+            evidenceTotal: Math.max(
+              Array.isArray(document.evidence) ? document.evidence.length : 0,
+              Number(document.evidenceTotal || 0)
+            ),
+            canSupportFacts: eligibility.canSupportFacts,
+            citationUnavailable: false,
+            citationHydration: context ? 'authoritative_scoped' : 'authoritative_scope_unknown',
+            relevanceFeedback,
+            ...(canonicalFeedbackContext ? { feedbackContext: canonicalFeedbackContext } : {})
           }
         })
       }))

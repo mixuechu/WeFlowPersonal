@@ -728,6 +728,7 @@ export class PersonalMemoryStore {
       END
       WHERE evidence_role='support'
     `).run()
+    this.repairAssistantCitationStorage()
     this.repairDuplicateEvents()
     this.db.prepare(`
       INSERT INTO schema_meta(key, value, updated_at) VALUES('schema_version', '1', ?)
@@ -6905,6 +6906,129 @@ export class PersonalMemoryStore {
     }
   }
 
+  private compactAssistantCitations(citations: any[]): any[] {
+    const cleanList = (value: unknown, limit = 32) => [...new Set((Array.isArray(value) ? value : [])
+      .map(item => String(item || '').trim().toLowerCase().slice(0, 200))
+      .filter(Boolean))].sort().slice(0, limit)
+    return (Array.isArray(citations) ? citations : []).slice(0, 20).flatMap(citation => {
+      const documentId = String(citation?.documentId || '').trim().slice(0, 512)
+      if (!documentId || /[\u0000-\u001f]/.test(documentId)) return []
+      const storedContext = citation?.feedbackContext
+      const feedbackContext = storedContext && typeof storedContext === 'object'
+        ? {
+            query: String(storedContext.query || '').trim().replace(/\s+/g, ' ').toLowerCase().slice(0, 1000),
+            options: {
+              entityId: String(storedContext.options?.entityId || '').trim().slice(0, 512),
+              sessionId: String(storedContext.options?.sessionId || '').trim().slice(0, 512),
+              from: String(storedContext.options?.from || '').trim().slice(0, 64),
+              to: String(storedContext.options?.to || '').trim().slice(0, 64),
+              documentTypes: cleanList(storedContext.options?.documentTypes),
+              relationTypes: cleanList(storedContext.options?.relationTypes),
+              sourceIds: cleanList(storedContext.options?.sourceIds)
+            },
+            version: String(storedContext.version || '').slice(0, 80)
+          }
+        : undefined
+      return [{
+        documentId,
+        sourceId: String(citation?.sourceId || '').trim().slice(0, 512),
+        type: String(citation?.type || '').trim().slice(0, 80),
+        title: String(citation?.title || '').trim().slice(0, 500),
+        status: String(citation?.status || '').trim().slice(0, 80),
+        trustLabel: String(citation?.trustLabel || '').trim().slice(0, 120),
+        evidenceTotal: Math.max(0, Math.floor(Number(citation?.evidenceTotal) || 0)),
+        ...(feedbackContext ? { feedbackContext } : {}),
+        citationStorage: 'reference_only_v1'
+      }]
+    })
+  }
+
+  private repairAssistantCitationStorage(): void {
+    if (!this.db) return
+    const key = 'assistant_citation_storage_v1'
+    const existing = this.db.prepare('SELECT value FROM schema_meta WHERE key=?').get(key) as any
+    if (existing?.value) return
+    const rows = this.db.prepare(`
+      SELECT id,citations_json FROM assistant_messages WHERE citations_json!='[]'
+    `).all() as Array<{ id: string; citations_json: string }>
+    const update = this.db.prepare('UPDATE assistant_messages SET citations_json=? WHERE id=?')
+    let updatedMessages = 0
+    let citationsCompacted = 0
+    let malformedPayloadsCleared = 0
+    let bytesReclaimed = 0
+    const transaction = this.db.transaction(() => {
+      for (const row of rows) {
+        let parsed: any[] = []
+        try {
+          const value = JSON.parse(String(row.citations_json || '[]'))
+          if (Array.isArray(value)) parsed = value
+          else malformedPayloadsCleared += 1
+        } catch {
+          malformedPayloadsCleared += 1
+        }
+        const compacted = this.compactAssistantCitations(parsed)
+        const next = JSON.stringify(compacted)
+        const previous = String(row.citations_json || '[]')
+        if (next === previous) continue
+        update.run(next, row.id)
+        updatedMessages += 1
+        citationsCompacted += parsed.length
+        bytesReclaimed += Math.max(0, Buffer.byteLength(previous) - Buffer.byteLength(next))
+      }
+      const audit = {
+        version: 1,
+        scannedMessages: rows.length,
+        updatedMessages,
+        citationsCompacted,
+        malformedPayloadsCleared,
+        bytesReclaimed,
+        completedAt: new Date().toISOString()
+      }
+      this.db!.prepare(`
+        INSERT INTO schema_meta(key,value,updated_at) VALUES(?,?,?)
+      `).run(key, JSON.stringify(audit), audit.completedAt)
+    })
+    transaction()
+  }
+
+  getAssistantCitationStorageStats(): any {
+    if (!this.db) return {
+      version: 1, scannedMessages: 0, updatedMessages: 0, citationsCompacted: 0,
+      malformedPayloadsCleared: 0, bytesReclaimed: 0, storedBytes: 0
+    }
+    const row = this.db.prepare(`
+      SELECT value FROM schema_meta WHERE key='assistant_citation_storage_v1'
+    `).get() as any
+    let audit: any = {}
+    try { audit = JSON.parse(String(row?.value || '{}')) } catch {}
+    const storedBytes = Number((this.db.prepare(`
+      SELECT COALESCE(SUM(LENGTH(CAST(citations_json AS BLOB))),0) AS bytes FROM assistant_messages
+    `).get() as any)?.bytes || 0)
+    return {
+      version: 1,
+      scannedMessages: Math.max(0, Number(audit.scannedMessages || 0)),
+      updatedMessages: Math.max(0, Number(audit.updatedMessages || 0)),
+      citationsCompacted: Math.max(0, Number(audit.citationsCompacted || 0)),
+      malformedPayloadsCleared: Math.max(0, Number(audit.malformedPayloadsCleared || 0)),
+      bytesReclaimed: Math.max(0, Number(audit.bytesReclaimed || 0)),
+      completedAt: String(audit.completedAt || ''),
+      storedBytes
+    }
+  }
+
+  getSearchDocumentById(documentId: string, evidenceScope: any = {}): any | null {
+    if (!this.db) return null
+    const row = this.db.prepare(`
+      SELECT * FROM search_documents WHERE id=?
+    `).get(String(documentId || '').trim()) as any
+    if (!row) return null
+    return {
+      ...row,
+      metadata: (() => { try { return JSON.parse(String(row.metadata_json || '{}')) } catch { return {} } })(),
+      ...this.getDocumentEvidencePayload(row.document_type, row.source_id, evidenceScope)
+    }
+  }
+
   saveAssistantExchange(question: string, answer: string, citations: any[], conversationId?: string): string {
     if (!this.db) return ''
     const existing = conversationId
@@ -6924,7 +7048,14 @@ export class PersonalMemoryStore {
     const insert = this.db.prepare('INSERT INTO assistant_messages(id,conversation_id,role,content,citations_json,created_at) VALUES(?,?,?,?,?,?)')
     const messageNonce = Math.random().toString(16).slice(2)
     insert.run(`msg_${Date.now()}_${messageNonce}_q`, id, 'user', question, '[]', now)
-    insert.run(`msg_${Date.now()}_${messageNonce}_a`, id, 'assistant', answer, JSON.stringify(citations || []), answerAt)
+    insert.run(
+      `msg_${Date.now()}_${messageNonce}_a`,
+      id,
+      'assistant',
+      answer,
+      JSON.stringify(this.compactAssistantCitations(citations)),
+      answerAt
+    )
     return id
   }
 
@@ -6989,8 +7120,15 @@ export class PersonalMemoryStore {
     latestId: string
     latestUpdatedAt: string
     latestMessageCount: number
+    citationStorage: any
   } {
-    if (!this.db) return { total: 0, latestId: '', latestUpdatedAt: '', latestMessageCount: 0 }
+    if (!this.db) return {
+      total: 0,
+      latestId: '',
+      latestUpdatedAt: '',
+      latestMessageCount: 0,
+      citationStorage: this.getAssistantCitationStorageStats()
+    }
     const total = Number((this.db.prepare(`
       SELECT COUNT(*) AS count FROM assistant_conversations
     `).get() as any)?.count || 0)
@@ -7005,7 +7143,8 @@ export class PersonalMemoryStore {
       total,
       latestId: String(latest?.id || ''),
       latestUpdatedAt: String(latest?.updated_at || ''),
-      latestMessageCount: Number(latest?.message_count || 0)
+      latestMessageCount: Number(latest?.message_count || 0),
+      citationStorage: this.getAssistantCitationStorageStats()
     }
   }
 

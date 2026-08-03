@@ -3476,6 +3476,11 @@ function AiAssistantPage() {
               {dashboard?.assistantArchive?.directory === 'paginated_on_demand' && <small>
                 会话和消息按需从 SQLCipher 读取，不进入首页轮询载荷。
               </small>}
+              {dashboard?.assistantArchive?.citationStorage?.policy === 'reference_only_authoritative_hydration' && <small>
+                引用只保存记忆身份，原文打开历史时从权威记忆按需读取；
+                已净化 {Number(dashboard.assistantArchive.citationStorage.citationsCompacted || 0)} 条旧引用，
+                释放约 {(Number(dashboard.assistantArchive.citationStorage.bytesReclaimed || 0) / 1024).toFixed(1)} KB。
+              </small>}
               {assistantConversations.map(conversation => <button
                 className={memoryConversationId === conversation.id ? 'active' : ''}
                 key={conversation.id}
@@ -3554,6 +3559,17 @@ function AiAssistantPage() {
                   setMemoryTypeFilter(citation.type)
                 }}>定位到检索</button>
                 <strong>{citation.title}</strong><span>{citation.type} · {citation.trustLabel || (citation.status === 'confirmed' ? '已确认' : '原始资料')}</span><p>{citation.content}</p>
+                {citation.citationUnavailable && <small className="assistant-evidence-limit-note">
+                  引用指向的权威记忆已删除或不再存在；历史回答仍保留，但不会展示旧原文副本。
+                </small>}
+                {citation.citationHydration === 'authoritative_scope_unknown' && !citation.citationUnavailable &&
+                  <small className="assistant-evidence-limit-note">
+                    此旧回答未保存当轮检索范围；当前展示的是权威记忆中的最新证据，不冒充回答生成时的证据快照。
+                  </small>}
+                {citation.answerTimeTitle && citation.answerTimeTitle !== citation.title &&
+                  <small className="assistant-evidence-limit-note">
+                    回答生成时标题：“{citation.answerTimeTitle}”；当前权威标题已更新。
+                  </small>}
                 {Number(citation.evidenceTotal || 0) > (citation.evidence || []).length &&
                   <small className="assistant-evidence-limit-note">
                     本次回答核验了最近 {(citation.evidence || []).length} / 共 {Number(citation.evidenceTotal)} 条去重原文证据
@@ -3571,7 +3587,7 @@ function AiAssistantPage() {
                   void openMemoryEvidenceArchive(citation.type, citation.sourceId, citation.title)}>
                   查看完整证据档案
                 </button>}
-                {citation.feedbackContext ? <div className="assistant-citation-feedback">
+                {citation.feedbackContext && !citation.citationUnavailable && <div className="assistant-citation-feedback">
                   <small>这项判断只影响生成本回答时的同一问题和检索范围，不改变记忆真实性。</small>
                   <button
                     className={citation.relevanceFeedback === 'helpful' ? 'active' : ''}
@@ -3590,10 +3606,11 @@ function AiAssistantPage() {
                     onClick={() => void updateMemorySearchFeedback(citation.documentId, 'cleared', citation.feedbackContext)}>
                     撤销引用反馈
                   </button>}
-                </div> : <small className="assistant-evidence-limit-note">
+                </div>}
+                {!citation.feedbackContext && <small className="assistant-evidence-limit-note">
                   此历史回答生成于引用反馈功能上线前，未保存当轮检索范围。
                 </small>}
-                {['relation', 'claim', 'event'].includes(citation.type) && <div className="assistant-citation-actions">
+                {!citation.citationUnavailable && ['relation', 'claim', 'event'].includes(citation.type) && <div className="assistant-citation-actions">
                   {citation.type === 'claim' && <button onClick={() => openClaimCorrection(citation)}>纠正事实</button>}
                   {citation.type === 'event' && <button onClick={() => void openEventCorrection(citation)}>纠正事件</button>}
                   {citation.status !== 'confirmed' && <button className="primary" onClick={() => void reviewMemoryCitation(citation, 'confirmed')}>确认</button>}

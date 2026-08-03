@@ -4233,6 +4233,8 @@ test('assistant conversations persist ordered turns, citations and deletion acro
   const conversationId = store.saveAssistantExchange('第一问', '第一答', [{
     documentId: 'claim:one',
     title: '证据一',
+    content: '不应复制进问答历史的结构化正文',
+    evidence: [{ messageId: 'sensitive-message', excerpt: '不应复制的原文证据' }],
     feedbackContext: {
       query: '第一问',
       options: { sourceIds: ['wechat'], documentTypes: ['claim'] },
@@ -4263,11 +4265,100 @@ test('assistant conversations persist ordered turns, citations and deletion acro
   const complete = store.getAssistantConversation(conversationId, 10)
   assert.equal(complete.messages[1].citations[0].feedbackContext.query, '第一问')
   assert.deepEqual(complete.messages[1].citations[0].feedbackContext.options.sourceIds, ['wechat'])
+  assert.equal(complete.messages[1].citations[0].content, undefined)
+  assert.equal(complete.messages[1].citations[0].evidence, undefined)
+  assert.equal(JSON.stringify(complete.messages[1].citations).includes('不应复制'), false)
 
   assert.equal(store.deleteAssistantConversation(conversationId), true)
   assert.equal(store.getAssistantConversation(conversationId), null)
   assert.equal(store.listAssistantConversations().length, 0)
 }))
+
+test('legacy assistant citations are compacted at scale without losing reference or feedback identity', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'weflow-assistant-citation-compaction-'))
+  const databasePath = join(directory, 'memory.sqlite')
+  const key = randomBytes(32).toString('hex')
+  const first = new PersonalMemoryStore()
+  try {
+    first.initialize(databasePath, key)
+    const database = (first as any).db
+    const createdAt = new Date().toISOString()
+    database.prepare(`
+      INSERT INTO assistant_conversations(id,title,created_at,updated_at) VALUES(?,?,?,?)
+    `).run('legacy-citations', '旧引用迁移', createdAt, createdAt)
+    database.prepare(`DELETE FROM schema_meta WHERE key='assistant_citation_storage_v1'`).run()
+    const insert = database.prepare(`
+      INSERT INTO assistant_messages(id,conversation_id,role,content,citations_json,created_at)
+      VALUES(?,?,?,?,?,?)
+    `)
+    const transaction = database.transaction(() => {
+      for (let index = 0; index < 2_500; index += 1) {
+        insert.run(
+          `legacy-citation-${index}`,
+          'legacy-citations',
+          'assistant',
+          `历史回答 ${index}`,
+          JSON.stringify([{
+            documentId: `claim:legacy-${index}`,
+            sourceId: `legacy-${index}`,
+            type: 'claim',
+            title: `旧事实 ${index}`,
+            content: `重复结构化正文 敏感副本 ${index}`,
+            evidence: Array.from({ length: 20 }, (_, evidenceIndex) => ({
+              messageId: `message-${index}-${evidenceIndex}`,
+              excerpt: `不应长期复制的敏感原文 ${index}-${evidenceIndex}`
+            })),
+            feedbackContext: {
+              query: `历史问题 ${index}`,
+              options: { sourceIds: ['wechat'], documentTypes: ['claim'] },
+              version: 'memory-search-feedback-v2'
+            }
+          }]),
+          new Date(Date.now() + index).toISOString()
+        )
+      }
+      insert.run(
+        'legacy-citation-malformed',
+        'legacy-citations',
+        'assistant',
+        '损坏引用仍保留回答',
+        '{"evidence":"未知敏感载荷"',
+        new Date(Date.now() + 2_501).toISOString()
+      )
+    })
+    transaction()
+    first.close()
+
+    const reopened = new PersonalMemoryStore()
+    try {
+      reopened.initialize(databasePath, key)
+      const raw = (reopened as any).db.prepare(`
+        SELECT COUNT(*) AS count,
+          SUM(instr(citations_json,'不应长期复制的敏感原文')) AS leakedEvidence,
+          SUM(instr(citations_json,'重复结构化正文')) AS leakedContent
+        FROM assistant_messages WHERE conversation_id='legacy-citations'
+      `).get()
+      assert.equal(Number(raw.count), 2_501)
+      assert.equal(Number(raw.leakedEvidence), 0)
+      assert.equal(Number(raw.leakedContent), 0)
+      const stats = reopened.getAssistantCitationStorageStats()
+      assert.equal(stats.updatedMessages, 2_501)
+      assert.equal(stats.citationsCompacted, 2_500)
+      assert.equal(stats.malformedPayloadsCleared, 1)
+      assert.ok(stats.bytesReclaimed > 1_000_000)
+      const page = reopened.getAssistantConversation('legacy-citations', { offset: 1, limit: 1 })
+      assert.equal(page.messages[0].citations[0].documentId, 'claim:legacy-2499')
+      assert.equal(page.messages[0].citations[0].feedbackContext.query, '历史问题 2499')
+      assert.equal(page.messages[0].citations[0].evidence, undefined)
+      assert.equal(page.messages[0].citations[0].citationStorage, 'reference_only_v1')
+    } finally {
+      reopened.close()
+    }
+  } finally {
+    first.close()
+    rmSync(directory, { recursive: true, force: true })
+  }
+})
 
 test('assistant archive paginates years of conversations and complete long threads', () => withStore(store => {
   const conversationIds: string[] = []
@@ -4288,7 +4379,13 @@ test('assistant archive paginates years of conversations and complete long threa
   const first = store.listAssistantConversationsPage({ limit: 40 })
   const second = store.listAssistantConversationsPage({ limit: 40, offset: 40 })
   const stats = store.getAssistantArchiveStats()
-  assert.deepEqual(Object.keys(stats).sort(), ['latestId', 'latestMessageCount', 'latestUpdatedAt', 'total'])
+  assert.deepEqual(Object.keys(stats).sort(), ['citationStorage', 'latestId', 'latestMessageCount', 'latestUpdatedAt', 'total'])
+  assert.deepEqual(Object.keys(stats.citationStorage).sort(), [
+    'bytesReclaimed', 'citationsCompacted', 'completedAt', 'malformedPayloadsCleared',
+    'scannedMessages', 'storedBytes', 'updatedMessages', 'version'
+  ])
+  assert.equal(JSON.stringify(stats.citationStorage).includes('历史问题'), false)
+  assert.equal(JSON.stringify(stats.citationStorage).includes('历史回答'), false)
   assert.equal(stats.total, 600)
   assert.equal(first.total, 600)
   assert.equal(first.items.length, 40)
