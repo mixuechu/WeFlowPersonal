@@ -1245,7 +1245,14 @@ test('relationship history keeps creation and later review state instead of over
 }))
 
 test('event timeline filters cross-source evidence, status and time with stable pagination', () => withStore(store => {
-  const makeEvent = (id: string, sourceSession: string, startAt: string, status: string) => ({
+  const makeEvent = (
+    id: string,
+    sourceSession: string,
+    startAt: string,
+    status: string,
+    sourceId = sourceSession.includes('calendar') ? 'calendar'
+      : sourceSession.includes('documents') ? 'documents' : 'wechat'
+  ) => ({
     id,
     eventType: sourceSession.includes('calendar') ? 'calendar' : 'meeting',
     title: `事件 ${id}`,
@@ -1258,6 +1265,7 @@ test('event timeline filters cross-source evidence, status and time with stable 
     searchText: `事件 ${id}`,
     createdAt: startAt,
     evidence: [{
+      sourceId,
       messageId: `message-${id}`,
       sessionId: sourceSession,
       timestamp: Math.floor(Date.parse(startAt) / 1000),
@@ -1270,7 +1278,9 @@ test('event timeline filters cross-source evidence, status and time with stable 
     makeEvent('document-event', 'data-source:documents', '2026-07-29T10:00:00.000Z', 'candidate'),
     makeEvent('calendar-event', 'data-source:calendar:work', '2026-07-30T10:00:00.000Z', 'confirmed'),
     makeEvent('cancelled-event', 'data-source:calendar:work', '2026-07-31T10:00:00.000Z', 'cancelled'),
-    makeEvent('rejected-event', 'data-source:calendar:work', '2026-08-01T10:00:00.000Z', 'rejected')
+    makeEvent('rejected-event', 'data-source:calendar:work', '2026-08-01T10:00:00.000Z', 'rejected'),
+    makeEvent('mail-event', 'shared-session', '2026-07-26T10:00:00.000Z', 'candidate', 'mail'),
+    makeEvent('legacy-event', 'shared-session', '2026-07-25T10:00:00.000Z', 'candidate', 'legacy')
   ])
 
   const calendar = store.listEventTimeline({ sourceId: 'calendar', limit: 1 })
@@ -1301,8 +1311,11 @@ test('event timeline filters cross-source evidence, status and time with stable 
   assert.equal(store.listEventTimeline({ query: '不存在的事件关键词' }).total, 0)
   assert.equal(store.listEventTimeline({ sourceId: 'documents' }).items[0].id, 'document-event')
   assert.equal(store.listEventTimeline({ sourceId: 'wechat' }).items[0].id, 'wechat-event')
+  assert.equal(store.listEventTimeline({ sourceId: 'mail' }).items[0].id, 'mail-event')
+  assert.equal(store.listEventTimeline({ sourceId: 'legacy' }).items[0].id, 'legacy-event')
 
   const manyEvidence = Array.from({ length: 25 }, (_, index) => ({
+    sourceId: 'wechat',
     messageId: `wechat:timeline:${index + 1}`,
     sessionId: 'timeline-session',
     timestamp: 1_700_000_000 + index,
@@ -1498,6 +1511,7 @@ test('multi-year fact archive is fully pageable and filters before ranking', () 
       validTo: `${year + 1}-12-31`,
       searchText: `事实档案主人 履历字段 ${index}`,
       evidence: [{
+        sourceId: index % 2 === 0 ? 'documents' : 'wechat',
         messageId: `archive-message-${index}`,
         sessionId: index % 2 === 0 ? `data-source:documents:file-${index}` : 'wechat-session',
         timestamp: 1_700_000_000 + index,
@@ -1542,6 +1556,59 @@ test('multi-year fact archive is fully pageable and filters before ranking', () 
   assert.ok(overlapping.total > 0)
   assert.ok(overlapping.items.every(item =>
     String(item.valid_to) >= '2024-06-01' && String(item.valid_from) <= '2024-06-30'))
+}))
+
+test('fact archive filters canonical evidence sources and exposes every carrier', () => withStore(store => {
+  store.syncGraph({
+    entities: [{
+      id: 'source-owner',
+      type: 'person',
+      canonicalName: '来源测试',
+      trustStatus: 'confirmed',
+      aliases: [],
+      accountIds: []
+    }],
+    relations: [],
+    reviewQueue: []
+  } as any)
+  const claim = (id: string, sourceId: string) => ({
+    id,
+    subjectId: 'source-owner',
+    predicate: `来源-${id}`,
+    objectValue: sourceId,
+    confidence: 1,
+    status: 'candidate',
+    sourceNature: 'self_statement',
+    searchText: `来源测试 ${sourceId}`,
+    evidence: [{
+      sourceId,
+      messageId: 'shared-message',
+      sessionId: 'shared-session',
+      timestamp: 1_700_000_000,
+      excerpt: `${sourceId} 原文`
+    }]
+  })
+  store.upsertClaims([
+    claim('wechat-claim', 'wechat'),
+    claim('calendar-claim', 'calendar'),
+    claim('mail-claim', 'mail'),
+    claim('legacy-claim', 'legacy')
+  ])
+  store.upsertClaims([{
+    ...claim('mixed-claim', 'wechat'),
+    evidence: [
+      claim('unused', 'wechat').evidence[0],
+      { ...claim('unused', 'mail').evidence[0], messageId: 'mail-message' }
+    ]
+  }])
+
+  assert.deepEqual(store.listClaimArchive({ sourceId: 'calendar' }).items.map(item => item.id), ['calendar-claim'])
+  assert.deepEqual(store.listClaimArchive({ sourceId: 'legacy' }).items.map(item => item.id), ['legacy-claim'])
+  assert.deepEqual(new Set(store.listClaimArchive({ sourceId: 'mail' }).items.map(item => item.id)),
+    new Set(['mail-claim', 'mixed-claim']))
+  const mixed = store.listClaimArchive({ predicate: 'mixed-claim', limit: 20 }).items
+    .find(item => item.id === 'mixed-claim')
+  assert.deepEqual(new Set(String(mixed.source_ids).split(',')), new Set(['wechat', 'mail']))
 }))
 
 test('entity dossier memory is scoped before its bounded result limit', () => withStore(store => {

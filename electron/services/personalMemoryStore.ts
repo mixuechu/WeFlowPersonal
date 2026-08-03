@@ -20,6 +20,8 @@ type MemoryGraph = {
   reviewQueue: any[]
 }
 
+type MemoryEvidenceSource = 'wechat' | 'documents' | 'calendar' | 'mail' | 'legacy'
+
 function sanitizeMemoryDeletionImpact(value: unknown): {
   evidence: number
   related: number
@@ -6328,7 +6330,7 @@ export class PersonalMemoryStore {
 
   listEventTimeline(options: {
     entityId?: string
-    sourceId?: 'wechat' | 'documents' | 'calendar'
+    sourceId?: MemoryEvidenceSource
     status?: 'candidate' | 'confirmed' | 'rejected' | 'cancelled'
     query?: string
     from?: string
@@ -6376,21 +6378,12 @@ export class PersonalMemoryStore {
       conditions.push('COALESCE(ev.start_at,ev.created_at)<=?')
       parameters.push(validTo)
     }
-    if (options.sourceId === 'calendar') {
+    if (options.sourceId) {
       conditions.push(`EXISTS (
         SELECT 1 FROM evidence source_evidence
-        WHERE source_evidence.event_id=ev.id AND source_evidence.session_id LIKE 'data-source:calendar:%'
+        WHERE source_evidence.event_id=ev.id AND source_evidence.source_id=?
       )`)
-    } else if (options.sourceId === 'documents') {
-      conditions.push(`EXISTS (
-        SELECT 1 FROM evidence source_evidence
-        WHERE source_evidence.event_id=ev.id AND source_evidence.session_id LIKE 'data-source:documents%'
-      )`)
-    } else if (options.sourceId === 'wechat') {
-      conditions.push(`NOT EXISTS (
-        SELECT 1 FROM evidence source_evidence
-        WHERE source_evidence.event_id=ev.id AND source_evidence.session_id LIKE 'data-source:%'
-      )`)
+      parameters.push(options.sourceId)
     }
     const where = conditions.join(' AND ')
     const total = Number((this.db.prepare(`SELECT COUNT(*) AS count FROM events ev WHERE ${where}`)
@@ -6415,8 +6408,12 @@ export class PersonalMemoryStore {
         CASE
           WHEN EXISTS (SELECT 1 FROM evidence e WHERE e.event_id=ev.id AND e.source_id='calendar') THEN 'calendar'
           WHEN EXISTS (SELECT 1 FROM evidence e WHERE e.event_id=ev.id AND e.source_id='documents') THEN 'documents'
-          ELSE 'wechat'
-        END AS source_id
+          WHEN EXISTS (SELECT 1 FROM evidence e WHERE e.event_id=ev.id AND e.source_id='mail') THEN 'mail'
+          WHEN EXISTS (SELECT 1 FROM evidence e WHERE e.event_id=ev.id AND e.source_id='wechat') THEN 'wechat'
+          ELSE 'legacy'
+        END AS source_id,
+        (SELECT GROUP_CONCAT(DISTINCT e.source_id) FROM evidence e
+          WHERE e.event_id=ev.id) AS source_ids
       FROM events ev
       WHERE ${where}
       ORDER BY COALESCE(ev.start_at,ev.created_at) DESC,ev.id
@@ -6839,7 +6836,7 @@ export class PersonalMemoryStore {
 
   listClaimArchive(options: {
     entityId?: string
-    sourceId?: 'wechat' | 'documents'
+    sourceId?: MemoryEvidenceSource
     status?: 'candidate' | 'confirmed' | 'rejected'
     predicate?: string
     from?: string
@@ -6883,16 +6880,12 @@ export class PersonalMemoryStore {
       conditions.push(`COALESCE(c.valid_from,c.created_at)<=?`)
       parameters.push(validTo)
     }
-    if (options.sourceId === 'documents') {
+    if (options.sourceId) {
       conditions.push(`EXISTS (
         SELECT 1 FROM evidence source_evidence
-        WHERE source_evidence.claim_id=c.id AND source_evidence.session_id LIKE 'data-source:documents%'
+        WHERE source_evidence.claim_id=c.id AND source_evidence.source_id=?
       )`)
-    } else if (options.sourceId === 'wechat') {
-      conditions.push(`NOT EXISTS (
-        SELECT 1 FROM evidence source_evidence
-        WHERE source_evidence.claim_id=c.id AND source_evidence.session_id LIKE 'data-source:%'
-      )`)
+      parameters.push(options.sourceId)
     }
     const where = conditions.join(' AND ')
     const total = Number((this.db.prepare(`SELECT COUNT(*) AS count FROM claims c WHERE ${where}`)
@@ -6915,9 +6908,14 @@ export class PersonalMemoryStore {
           ORDER BY mc.id DESC LIMIT 1) AS corrected_at,
         (SELECT COUNT(*) FROM evidence e WHERE e.claim_id=c.id) AS evidence_count,
         CASE
+          WHEN EXISTS (SELECT 1 FROM evidence e WHERE e.claim_id=c.id AND e.source_id='calendar') THEN 'calendar'
           WHEN EXISTS (SELECT 1 FROM evidence e WHERE e.claim_id=c.id AND e.source_id='documents') THEN 'documents'
-          ELSE 'wechat'
-        END AS source_id
+          WHEN EXISTS (SELECT 1 FROM evidence e WHERE e.claim_id=c.id AND e.source_id='mail') THEN 'mail'
+          WHEN EXISTS (SELECT 1 FROM evidence e WHERE e.claim_id=c.id AND e.source_id='wechat') THEN 'wechat'
+          ELSE 'legacy'
+        END AS source_id,
+        (SELECT GROUP_CONCAT(DISTINCT e.source_id) FROM evidence e
+          WHERE e.claim_id=c.id) AS source_ids
       FROM claims c
       LEFT JOIN entities s ON s.id=c.subject_id
       LEFT JOIN entities o ON o.id=c.object_entity_id

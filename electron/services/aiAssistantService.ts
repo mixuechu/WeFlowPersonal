@@ -4437,7 +4437,7 @@ export class AiAssistantService {
   getEventTimeline(options: any = {}): any {
     const page = personalMemoryStore.listEventTimeline({
       entityId: String(options?.entityId || ''),
-      sourceId: ['wechat', 'documents', 'calendar'].includes(options?.sourceId)
+      sourceId: ['wechat', 'documents', 'calendar', 'mail', 'legacy'].includes(options?.sourceId)
         ? options.sourceId
         : undefined,
       status: ['candidate', 'confirmed', 'rejected', 'cancelled'].includes(options?.status)
@@ -4528,7 +4528,7 @@ export class AiAssistantService {
   getClaimArchive(options: any = {}): any {
     const page = personalMemoryStore.listClaimArchive({
       entityId: String(options?.entityId || ''),
-      sourceId: ['wechat', 'documents'].includes(options?.sourceId)
+      sourceId: ['wechat', 'documents', 'calendar', 'mail', 'legacy'].includes(options?.sourceId)
         ? options.sourceId
         : undefined,
       status: ['candidate', 'confirmed', 'rejected'].includes(options?.status)

@@ -99,6 +99,19 @@ function formatBytes(value: number): string {
   return `${(bytes / 1024 / 1024).toFixed(1)} MB`
 }
 
+function memorySourceLabels(item: { source_id?: string; source_ids?: string }): string {
+  const ids = [...new Set(String(item.source_ids || item.source_id || '')
+    .split(',').map(value => value.trim()).filter(Boolean))]
+  const labels: Record<string, string> = {
+    wechat: '微信',
+    documents: '本机文档',
+    calendar: 'macOS 日历',
+    mail: 'Mail',
+    legacy: '历史未知来源'
+  }
+  return ids.map(id => labels[id] || id).join('、') || '历史未知来源'
+}
+
 function EvidenceRows({
   evidence: rawEvidence,
   total,
@@ -439,7 +452,7 @@ function AiAssistantPage() {
     setEntityDossierRefreshKeys(current => ({ ...current, [kind]: current[kind] + 1 }))
   const [entityClaimQuery, setEntityClaimQuery] = useState('')
   const [entityClaimStatus, setEntityClaimStatus] = useState<'all' | 'candidate' | 'confirmed' | 'rejected'>('all')
-  const [entityClaimSource, setEntityClaimSource] = useState<'all' | 'wechat' | 'documents'>('all')
+  const [entityClaimSource, setEntityClaimSource] = useState<'all' | 'wechat' | 'documents' | 'calendar' | 'mail' | 'legacy'>('all')
   const [entityClaimFrom, setEntityClaimFrom] = useState('')
   const [entityClaimTo, setEntityClaimTo] = useState('')
   const [entityRelationQuery, setEntityRelationQuery] = useState('')
@@ -447,7 +460,7 @@ function AiAssistantPage() {
   const [entityRelationStatus, setEntityRelationStatus] = useState<'all' | 'candidate' | 'confirmed'>('all')
   const [entityEventQuery, setEntityEventQuery] = useState('')
   const [entityEventStatus, setEntityEventStatus] = useState<'all' | 'candidate' | 'confirmed' | 'rejected' | 'cancelled'>('all')
-  const [entityEventSource, setEntityEventSource] = useState<'all' | 'wechat' | 'documents' | 'calendar'>('all')
+  const [entityEventSource, setEntityEventSource] = useState<'all' | 'wechat' | 'documents' | 'calendar' | 'mail' | 'legacy'>('all')
   const [entityEventFrom, setEntityEventFrom] = useState('')
   const [entityEventTo, setEntityEventTo] = useState('')
   const entityClaimGate = useRef(new LatestRequestGate())
@@ -6719,6 +6732,9 @@ function AiAssistantPage() {
                 <option value="">所有来源</option>
                 <option value="wechat">微信</option>
                 <option value="documents">本机文档</option>
+                <option value="calendar">macOS 日历</option>
+                <option value="mail">Mail</option>
+                <option value="legacy">历史未知来源</option>
               </select>
               <select value={claimStatusFilter} onChange={event => setClaimStatusFilter(event.target.value)}>
                 <option value="">有效事实</option>
@@ -6751,7 +6767,7 @@ function AiAssistantPage() {
                   <input value={editingClaim.validTo} onChange={event => setEditingClaim({ ...editingClaim, validTo: event.target.value })} placeholder="失效时间（可选）" />
                 </div> : <p>{claim.polarity === 'negative' ? '否定：' : ''}{claim.object_entity_name || claim.object_value || '未记录值'}</p>}
                 <small>来源：{claim.source_nature === 'self_statement' ? '本人明确陈述' : claim.source_nature === 'other_statement' ? '他人陈述' : claim.source_nature === 'human_confirmation' ? '人工纠正确认' : '模型推断'} · {Math.round(Number(claim.confidence || 0) * 100)}% 可信{claim.conflict_group ? ' · 与其他事实冲突' : ''}</small>
-                <small>原始载体：{claim.source_id === 'documents' ? '本机文档' : '微信'}
+                <small>原始载体：{memorySourceLabels(claim)}
                   {!!claim.correction_count && ` · 人工纠正 ${claim.correction_count} 次${claim.corrected_at ? `（最近 ${new Date(claim.corrected_at).toLocaleString('zh-CN')}）` : ''}`}
                 </small>
                 {!!claim.review_count && <small>
@@ -6830,6 +6846,8 @@ function AiAssistantPage() {
                 <option value="wechat">微信</option>
                 <option value="documents">本机文档</option>
                 <option value="calendar">macOS 日历</option>
+                <option value="mail">Mail</option>
+                <option value="legacy">历史未知来源</option>
               </select>
               <select value={eventStatusFilter} onChange={event => setEventStatusFilter(event.target.value)}>
                 <option value="">所有状态</option>
@@ -6873,7 +6891,7 @@ function AiAssistantPage() {
                   {event.description && <p>{event.description}</p>}
                   <small>{event.start_at || '时间待确认'}{event.end_at ? ` — ${event.end_at}` : ''}{event.location ? ` · ${event.location}` : ''}</small>
                 </>}
-                <small>来源：{event.source_id === 'calendar' ? 'macOS 日历' : event.source_id === 'documents' ? '本机文档' : '微信'}</small>
+                <small>来源：{memorySourceLabels(event)}</small>
                 {!!event.correction_count && <small>人工纠正 {event.correction_count} 次{event.corrected_at ? ` · 最近 ${new Date(event.corrected_at).toLocaleString('zh-CN')}` : ''}；后续自动抽取不会覆盖。</small>}
                 {!!event.review_count && <small>
                   可信状态记录 {event.review_count} 次 · 最近 {event.reviewed_at ? new Date(event.reviewed_at).toLocaleString('zh-CN') : '时间未知'}；
@@ -7946,7 +7964,8 @@ function AiAssistantPage() {
                   </select>
                   <select value={entityClaimSource} onChange={event => setEntityClaimSource(event.target.value as any)}>
                     <option value="all">全部来源</option><option value="wechat">微信</option>
-                    <option value="documents">本机文档</option>
+                    <option value="documents">本机文档</option><option value="calendar">日历</option>
+                    <option value="mail">Mail</option><option value="legacy">历史未知来源</option>
                   </select>
                   <input aria-label="事实有效期从" title="事实有效期从" type="date"
                     value={entityClaimFrom} onChange={event => setEntityClaimFrom(event.target.value)} />
@@ -7960,7 +7979,7 @@ function AiAssistantPage() {
                 </em>}
                 {dossierClaims.map((claim: any) => <article key={claim.id}>
                   <div><b>{claim.polarity === 'negative' ? '并非 ' : ''}{claim.predicate}</b><span>{claim.object_entity_name || claim.object_value || '待确认'}</span></div>
-                  <small>{claim.status === 'confirmed' ? '已确认' : '待确认'} · {Math.round(Number(claim.confidence || 0) * 100)}% · {claim.source_nature === 'self_statement' ? '本人陈述' : claim.source_nature === 'other_statement' ? '他人陈述' : '模型推断'}</small>
+                  <small>{claim.status === 'confirmed' ? '已确认' : '待确认'} · {Math.round(Number(claim.confidence || 0) * 100)}% · {claim.source_nature === 'self_statement' ? '本人陈述' : claim.source_nature === 'other_statement' ? '他人陈述' : '模型推断'} · {memorySourceLabels(claim)}</small>
                   <div className="assistant-evidence-stack"><EvidenceRows evidence={claim.evidence}
                     total={claim.evidence_count} roleLabels onOpenArchive={() =>
                       void openMemoryEvidenceArchive(
@@ -8040,6 +8059,7 @@ function AiAssistantPage() {
                   <select value={entityEventSource} onChange={event => setEntityEventSource(event.target.value as any)}>
                     <option value="all">全部来源</option><option value="wechat">微信</option>
                     <option value="documents">本机文档</option><option value="calendar">日历</option>
+                    <option value="mail">Mail</option><option value="legacy">历史未知来源</option>
                   </select>
                   <input aria-label="事件时间从" title="事件时间从" type="date"
                     value={entityEventFrom} onChange={event => setEntityEventFrom(event.target.value)} />
@@ -8054,7 +8074,7 @@ function AiAssistantPage() {
                 {dossierEvents.map((event: any) => <article key={event.id}>
                   <div><b>{event.title}</b><span>{event.start_at || '时间待确认'}</span></div>
                   {event.description && <p>{event.description}</p>}
-                  <small>{event.event_type} · {event.status === 'confirmed' ? '已确认' : '待确认'} · {event.location || '地点未记录'}</small>
+                  <small>{event.event_type} · {event.status === 'confirmed' ? '已确认' : '待确认'} · {event.location || '地点未记录'} · {memorySourceLabels(event)}</small>
                   <div className="assistant-evidence-stack"><EvidenceRows evidence={event.evidence}
                     total={event.evidence_count} onOpenArchive={() =>
                       void openMemoryEvidenceArchive('event', event.id, event.title || '事件原文')} /></div>
