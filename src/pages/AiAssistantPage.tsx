@@ -506,7 +506,13 @@ function AiAssistantPage() {
   const [graphCommonNeighbors, setGraphCommonNeighbors] = useState<any>(null)
   const [mergeTargets, setMergeTargets] = useState<Record<string, string>>({})
   const [entityNameEdits, setEntityNameEdits] = useState<Record<string, string>>({})
-  const [relationEdits, setRelationEdits] = useState<Record<string, { subjectId: string; predicate: string; objectId: string }>>({})
+  const [relationEdits, setRelationEdits] = useState<Record<string, {
+    subjectId: string
+    predicate: string
+    objectId: string
+    subjectEntity?: any
+    objectEntity?: any
+  }>>({})
   const [profileEdits, setProfileEdits] = useState<Record<string, string>>({})
   const [reviewStatusFilter, setReviewStatusFilter] = useState<ReviewStatusFilter>('pending')
   const [reviewKindFilter, setReviewKindFilter] = useState('')
@@ -1401,16 +1407,8 @@ function AiAssistantPage() {
     setCalendarMonth(next)
     setSelectedCalendarDate(`${next}-01`)
   }
-  const graph = dashboard?.graph || { entities: [], relations: [], reviewQueue: [] }
-  const trustedGraphEntities = useMemo(() =>
-    graph.entities.filter((entity: any) => entity.trustStatus === 'confirmed'), [graph.entities])
-  const trustedGraphEntityIds = useMemo(() =>
-    new Set(trustedGraphEntities.map((entity: any) => entity.id)), [trustedGraphEntities])
-  const claimEntitiesTrusted = (claim: any) =>
-    Boolean(claim?.subject_id && trustedGraphEntityIds.has(claim.subject_id)) &&
-    (!claim?.object_entity_id || trustedGraphEntityIds.has(claim.object_entity_id))
-  const eventEntitiesTrusted = (event: any) =>
-    (event?.participants || []).every((participant: any) => trustedGraphEntityIds.has(participant.entity_id))
+  const claimEntitiesTrusted = (claim: any) => claim?.entities_trusted === true
+  const eventEntitiesTrusted = (event: any) => event?.entities_trusted === true
   const graphViewport = useMemo(() => ({
     ...(graphWorkspace.viewport || {}),
     levels: new Map<string, number>(Object.entries(graphWorkspace.viewport?.levels || {})
@@ -1426,7 +1424,8 @@ function AiAssistantPage() {
     return [entity.id, { x: 250 + Math.cos(angle) * ring, y: 170 + Math.sin(angle) * ring }]
   })), [graphEntities, graphViewport, selectedEntityId])
   const selectedEntity = graphWorkspace.focus?.entity ||
-    graph.entities.find((entity: any) => entity.id === selectedEntityId)
+    graphEntities.find((entity: any) => entity.id === selectedEntityId)
+  const selectedEntityNames: Record<string, string> = graphWorkspace.focus?.entityNames || {}
   const selectedEntityInsight = graphWorkspace.focus?.insight
   const relationPredicates: string[] = graphWorkspace.predicates || []
   const pendingReviewCount = reviewPage.counts.pending
@@ -5736,7 +5735,7 @@ function AiAssistantPage() {
               {graphViewport.truncated ? ` · 为保持流畅另有 ${graphViewport.truncated} 个相关节点未展开` : ''}
             </small>
             {dashboard?.graphPayloadPolicy?.entityProfiles === 'on_demand' && <small>
-              首页只加载轻量身份目录；实体摘要、原文证据、事实、事件和关系历史会在点击人物后按需读取。
+              首页不再周期加载全量身份目录；画布、选择器、审阅卡片和人物档案均按当前范围读取。
             </small>}
           </div>
           {identityDisambiguation && <div className="assistant-identity-status">
@@ -5871,10 +5870,9 @@ function AiAssistantPage() {
                     {selectedEntityRelations.slice(0, 6).map((relation: any) => {
                       const outgoing = relation.subjectId === selectedEntity.id
                       const neighborId = outgoing ? relation.objectId : relation.subjectId
-                      const neighbor = graph.entities.find((item: any) => item.id === neighborId)
                       return <button key={relation.id} onClick={() => setSelectedEntityId(neighborId)}>
                         <b>{outgoing ? relation.predicate : `被${relation.predicate}`}</b>
-                        <span>{neighbor?.canonicalName || neighborId}</span>
+                        <span>{selectedEntityNames[neighborId] || neighborId}</span>
                       </button>
                     })}
                     {!selectedEntityRelations.length && <em>尚无关系</em>}
@@ -5929,8 +5927,10 @@ function AiAssistantPage() {
                 const isPending = review.status === 'pending'
                 const relation = review.kind === 'relation' ? review.relation : null
                 const relationCorrectionAudit = review.kind === 'relation' ? review.relationCorrection : null
-                const subject = relation ? graph.entities.find((item: any) => item.id === relation.subjectId) : null
-                const object = relation ? graph.entities.find((item: any) => item.id === relation.objectId) : null
+                const reviewEntities: any[] = review.relatedEntities || []
+                const reviewEntity = (id: string) => reviewEntities.find(item => item.id === id)
+                const subject = relation ? reviewEntity(relation.subjectId) : null
+                const object = relation ? reviewEntity(relation.objectId) : null
                 const relationEdit = relation
                   ? relationEdits[review.id] || {
                       subjectId: relation.subjectId,
@@ -5939,10 +5939,14 @@ function AiAssistantPage() {
                     }
                   : null
                 const correctedRelationSubject = relationEdit
-                  ? graph.entities.find((item: any) => item.id === relationEdit.subjectId)
+                  ? relationEdit.subjectEntity?.id === relationEdit.subjectId
+                    ? relationEdit.subjectEntity
+                    : reviewEntity(relationEdit.subjectId)
                   : null
                 const correctedRelationObject = relationEdit
-                  ? graph.entities.find((item: any) => item.id === relationEdit.objectId)
+                  ? relationEdit.objectEntity?.id === relationEdit.objectId
+                    ? relationEdit.objectEntity
+                    : reviewEntity(relationEdit.objectId)
                   : null
                 const relationInvalidReason = !relationEdit
                   ? ''
@@ -5957,7 +5961,7 @@ function AiAssistantPage() {
                           : ''
                 const duplicateEntities = review.kind === 'possible_duplicate'
                   ? [review.leftEntityId, review.rightEntityId]
-                    .map((entityId: string) => graph.entities.find((item: any) => item.id === entityId))
+                    .map((entityId: string) => reviewEntity(entityId))
                   : []
                 const selectedMergeTargetId = mergeTargets[review.id] || ''
                 const selectedMergeTarget = duplicateEntities.find((entity: any) => entity?.id === selectedMergeTargetId)
@@ -5974,10 +5978,8 @@ function AiAssistantPage() {
                         ? '不能使用“我、你、用户、群友”等占位词作为规范名'
                         : ''
                 const sameNameEntities = review.kind === 'entity_creation' && correctedEntityName
-                  ? graph.entities.filter((entity: any) =>
-                    entity.id !== review.entityId &&
-                    entity.trustStatus !== 'rejected' &&
-                    String(entity.canonicalName || '').trim().toLocaleLowerCase('zh-CN') ===
+                  ? (review.sameNameEntities || []).filter((entity: any) =>
+                      String(entity.canonicalName || '').trim().toLocaleLowerCase('zh-CN') ===
                       correctedEntityName.toLocaleLowerCase('zh-CN'))
                   : []
                 const profileEditValue = review.kind === 'entity_summary'
@@ -6004,7 +6006,7 @@ function AiAssistantPage() {
                 return <><div><strong>{review.kind === 'possible_duplicate' ? `可能是同一个人：${review.title}` : review.title}</strong>
                 {review.kind === 'possible_duplicate' && isPending && <div className="assistant-identity-pair">
                   {[review.leftEntityId, review.rightEntityId].map((entityId: string) => {
-                    const entity = graph.entities.find((item: any) => item.id === entityId)
+                    const entity = reviewEntity(entityId)
                     const selected = selectedMergeTargetId === entityId
                     return <button type="button" disabled={!isPending} className={selected ? 'selected' : ''} key={entityId}
                       onClick={() => setMergeTargets(current => ({ ...current, [review.id]: entityId }))}>
@@ -6028,7 +6030,7 @@ function AiAssistantPage() {
                 </div>}
                 {relation && <div className="assistant-review-note">
                   <div><b>模型原始方向：</b>{relationCorrectionAudit
-                    ? `${graph.entities.find((entity: any) => entity.id === relationCorrectionAudit.before_subject_id)?.canonicalName || relationCorrectionAudit.before_subject_id} — ${relationCorrectionAudit.before_predicate} → ${graph.entities.find((entity: any) => entity.id === relationCorrectionAudit.before_object_id)?.canonicalName || relationCorrectionAudit.before_object_id}`
+                    ? `${reviewEntity(relationCorrectionAudit.before_subject_id)?.canonicalName || relationCorrectionAudit.before_subject_id} — ${relationCorrectionAudit.before_predicate} → ${reviewEntity(relationCorrectionAudit.before_object_id)?.canonicalName || relationCorrectionAudit.before_object_id}`
                     : relation.directionExplanation || (
                     relation.predicate === '服务对象'
                       ? `${object?.canonicalName || '宾语'}向${subject?.canonicalName || '主语'}提供服务；${subject?.canonicalName || '主语'}是${object?.canonicalName || '宾语'}的服务对象。`
@@ -6044,11 +6046,11 @@ function AiAssistantPage() {
                         disabled={!isPending}
                         onSelect={entity => setRelationEdits(current => ({
                           ...current,
-                          [review.id]: { ...relationEdit, subjectId: entity.id }
+                          [review.id]: { ...relationEdit, subjectId: entity.id, subjectEntity: entity }
                         }))}
                         onClear={() => setRelationEdits(current => ({
                           ...current,
-                          [review.id]: { ...relationEdit, subjectId: '' }
+                          [review.id]: { ...relationEdit, subjectId: '', subjectEntity: undefined }
                         }))}
                         onError={setMessage} />
                     </div>
@@ -6063,17 +6065,23 @@ function AiAssistantPage() {
                         disabled={!isPending}
                         onSelect={entity => setRelationEdits(current => ({
                           ...current,
-                          [review.id]: { ...relationEdit, objectId: entity.id }
+                          [review.id]: { ...relationEdit, objectId: entity.id, objectEntity: entity }
                         }))}
                         onClear={() => setRelationEdits(current => ({
                           ...current,
-                          [review.id]: { ...relationEdit, objectId: '' }
+                          [review.id]: { ...relationEdit, objectId: '', objectEntity: undefined }
                         }))}
                         onError={setMessage} />
                     </div>
                     <button type="button" disabled={!isPending} onClick={() => setRelationEdits(current => ({
                       ...current,
-                      [review.id]: { ...relationEdit, subjectId: relationEdit.objectId, objectId: relationEdit.subjectId }
+                      [review.id]: {
+                        ...relationEdit,
+                        subjectId: relationEdit.objectId,
+                        objectId: relationEdit.subjectId,
+                        subjectEntity: correctedRelationObject,
+                        objectEntity: correctedRelationSubject
+                      }
                     }))}>交换主语与宾语</button>
                   </div>}
                   {relationEdit && <div className={`assistant-relation-preview${relationInvalidReason ? ' invalid' : ''}`}>
@@ -6128,8 +6136,10 @@ function AiAssistantPage() {
                     {entityNameInvalidReason && <small className="error">{entityNameInvalidReason}</small>}
                   </label>}
                   {isPending && sameNameEntities.length > 0 && <div className="assistant-name-collision">
-                    <b>发现 {sameNameEntities.length} 个同名实体：</b>
+                    <b>发现 {Number(review.sameNameEntityTotal || sameNameEntities.length)} 个同名实体：</b>
                     <span>{sameNameEntities.map((entity: any) => entity.canonicalName).join('、')}</span>
+                    {Number(review.sameNameEntityTotal || 0) > sameNameEntities.length &&
+                      <small>当前仅显示前 {sameNameEntities.length} 个身份提示。</small>}
                     <small>本次确认仍会建立独立实体，不会因同名自动合并；人物会另行进入“可能是同一人”审阅。</small>
                   </div>}
                   {(review.evidence || []).map((evidence: any) =>
@@ -6153,7 +6163,11 @@ function AiAssistantPage() {
                           ? '确认后启用可信实体'
                       : '确认后写入关系'
                 }</small></div>
-              {isPending && <div className="assistant-review-actions"><button onClick={() => void decideReview(review.id, 'rejected')}>拒绝</button><button className="primary" disabled={(review.kind === 'possible_duplicate' && (!review.leftEntityId || !review.rightEntityId || !selectedMergeTargetId)) || Boolean(entityNameInvalidReason) || Boolean(relationInvalidReason) || Boolean(profileInvalidReason)} title={review.kind === 'possible_duplicate' && (!review.leftEntityId || !review.rightEntityId) ? '候选信息不完整，暂不能合并' : review.kind === 'possible_duplicate' && !selectedMergeTargetId ? '请先选择合并后保留的身份' : entityNameInvalidReason || relationInvalidReason || profileInvalidReason} onClick={() => void decideReview(review.id, 'confirmed', review.kind === 'possible_duplicate' ? { mergeTargetEntityId: selectedMergeTargetId } : review.kind === 'entity_creation' ? { correctedCanonicalName: entityNameEdits[review.id] ?? review.entityCanonicalName ?? '' } : review.kind === 'relation' && relationEdit ? { relationCorrection: relationEdit } : review.kind === 'entity_summary' ? { correctedSummaryText: profileEditValue } : review.kind === 'entity_alias' ? { correctedAliasText: profileEditValue } : undefined)}>{review.kind === 'relation' ? '确认修正后方向' : review.kind === 'possible_duplicate' ? '按此方向合并' : review.kind === 'entity_creation' ? '确认名称并启用' : review.kind === 'entity_summary' || review.kind === 'entity_alias' ? '确认人工最终值' : '确认'}</button></div>}</>
+              {isPending && <div className="assistant-review-actions"><button onClick={() => void decideReview(review.id, 'rejected')}>拒绝</button><button className="primary" disabled={(review.kind === 'possible_duplicate' && (!review.leftEntityId || !review.rightEntityId || !selectedMergeTargetId)) || Boolean(entityNameInvalidReason) || Boolean(relationInvalidReason) || Boolean(profileInvalidReason)} title={review.kind === 'possible_duplicate' && (!review.leftEntityId || !review.rightEntityId) ? '候选信息不完整，暂不能合并' : review.kind === 'possible_duplicate' && !selectedMergeTargetId ? '请先选择合并后保留的身份' : entityNameInvalidReason || relationInvalidReason || profileInvalidReason} onClick={() => void decideReview(review.id, 'confirmed', review.kind === 'possible_duplicate' ? { mergeTargetEntityId: selectedMergeTargetId } : review.kind === 'entity_creation' ? { correctedCanonicalName: entityNameEdits[review.id] ?? review.entityCanonicalName ?? '' } : review.kind === 'relation' && relationEdit ? { relationCorrection: {
+                subjectId: relationEdit.subjectId,
+                predicate: relationEdit.predicate,
+                objectId: relationEdit.objectId
+              } } : review.kind === 'entity_summary' ? { correctedSummaryText: profileEditValue } : review.kind === 'entity_alias' ? { correctedAliasText: profileEditValue } : undefined)}>{review.kind === 'relation' ? '确认修正后方向' : review.kind === 'possible_duplicate' ? '按此方向合并' : review.kind === 'entity_creation' ? '确认名称并启用' : review.kind === 'entity_summary' || review.kind === 'entity_alias' ? '确认人工最终值' : '确认'}</button></div>}</>
               })()}
             </article>)}
             {reviewPage.status === 'loading' && <div className="assistant-empty">正在读取符合条件的审阅记录…</div>}
@@ -6329,10 +6343,9 @@ function AiAssistantPage() {
                 {selectedEntityRelations.map((relation: any) => {
                   const outgoing = relation.subjectId === selectedEntity.id
                   const neighborId = outgoing ? relation.objectId : relation.subjectId
-                  const neighbor = graph.entities.find((item: any) => item.id === neighborId)
                   return <article key={relation.id}>
                     <button className="assistant-dossier-link" onClick={() => setSelectedEntityId(neighborId)}>
-                      <b>{outgoing ? relation.predicate : `被${relation.predicate}`}</b><span>{neighbor?.canonicalName || neighborId}</span>
+                      <b>{outgoing ? relation.predicate : `被${relation.predicate}`}</b><span>{selectedEntityNames[neighborId] || neighborId}</span>
                     </button>
                     <small>{relation.status === 'confirmed' ? '已确认' : '待确认'} · {Math.round(Number(relation.confidence || 0) * 100)}%</small>
                     <div className="assistant-evidence-stack"><EvidenceRows evidence={relation.evidence} total={relation.evidenceTotal} /></div>
@@ -6387,7 +6400,7 @@ function AiAssistantPage() {
               <section className="assistant-dossier-wide">
                 <h3>关系人工修正 <small>{selectedEntityRelationCorrections.length}</small></h3>
                 {selectedEntityRelationCorrections.map((item: any) => {
-                  const entityName = (id: string) => graph.entities.find((entity: any) => entity.id === id)?.canonicalName || id
+                  const entityName = (id: string) => selectedEntityNames[id] || id
                   return <article key={item.id} className="assistant-dossier-history-row">
                     <div><b>{entityName(item.before_subject_id)} — {item.before_predicate} → {entityName(item.before_object_id)}</b><span>修正为</span></div>
                     <div><b>{entityName(item.after_subject_id)} — {item.after_predicate} → {entityName(item.after_object_id)}</b></div>

@@ -2,12 +2,15 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import {
   buildGraphDashboardPayload,
+  buildGraphReviewEntityPayload,
+  claimEntitiesAreTrusted,
+  eventEntitiesAreTrusted,
   toGraphEntityDirectoryEntry,
   toGraphViewportEdge,
   toGraphViewportNode
 } from '../shared/graphPayload.ts'
 
-test('dashboard entity directory excludes summaries and unbounded evidence', () => {
+test('page-scoped entity hydration excludes summaries and unbounded evidence', () => {
   const entry = toGraphEntityDirectoryEntry({
     id: 'entity-1',
     type: 'person',
@@ -44,9 +47,21 @@ test('dashboard graph payload never serializes relations, reviews or graph state
     summary: 'private profile'
   }])
   assert.deepEqual(Object.keys(payload).sort(), ['entities', 'relations', 'reviewQueue'])
+  assert.deepEqual(payload.entities, [])
   assert.deepEqual(payload.relations, [])
   assert.deepEqual(payload.reviewQueue, [])
   assert.equal(JSON.stringify(payload).includes('private profile'), false)
+})
+
+test('dashboard graph payload stays constant when the authoritative graph has tens of thousands of entities', () => {
+  const entities = Array.from({ length: 50_000 }, (_, index) => ({
+    id: `entity-${index}`,
+    canonicalName: `Person ${index}`,
+    summary: 'private profile '.repeat(100)
+  }))
+  const payload = buildGraphDashboardPayload(entities)
+  assert.deepEqual(payload, { entities: [], relations: [], reviewQueue: [] })
+  assert.ok(Buffer.byteLength(JSON.stringify(payload)) < 100)
 })
 
 test('graph viewport nodes and edges contain drawing fields but no evidence payload', () => {
@@ -91,4 +106,58 @@ test('large entity directories stay bounded independently of evidence history', 
   const directory = Array.from({ length: 5_000 }, (_, index) =>
     toGraphEntityDirectoryEntry({ ...hugeEntity, id: `entity-${index}` }))
   assert.ok(Buffer.byteLength(JSON.stringify(directory)) < 5 * 1024 * 1024)
+})
+
+test('review pages hydrate only related entities and cap same-name hints', () => {
+  const entities = Array.from({ length: 50_000 }, (_, index) => ({
+    id: `entity-${index}`,
+    type: 'person',
+    canonicalName: index < 100 ? '王伟' : `Person ${index}`,
+    trustStatus: index === 8 ? 'rejected' : 'confirmed',
+    summary: 'private profile '.repeat(1_000),
+    evidenceMessageIds: Array.from({ length: 100 }, (_, evidenceIndex) => `m-${evidenceIndex}`)
+  }))
+  const payload = buildGraphReviewEntityPayload(
+    entities,
+    {
+      kind: 'entity_creation',
+      entityId: 'entity-0',
+      entityCanonicalName: '王伟',
+      leftEntityId: 'entity-1',
+      rightEntityId: 'entity-2'
+    },
+    { subjectId: 'entity-3', objectId: 'entity-4' },
+    {
+      before_subject_id: 'entity-5',
+      before_object_id: 'entity-6',
+      after_subject_id: 'entity-7',
+      after_object_id: 'entity-9'
+    }
+  )
+  assert.deepEqual(new Set(payload.relatedEntities.map(item => item.id)), new Set([
+    'entity-0', 'entity-1', 'entity-2', 'entity-3', 'entity-4',
+    'entity-5', 'entity-6', 'entity-7', 'entity-9'
+  ]))
+  assert.equal(payload.sameNameEntities.length, 20)
+  assert.equal(payload.sameNameEntityTotal, 98)
+  assert.equal(JSON.stringify(payload).includes('private profile'), false)
+  assert.equal(JSON.stringify(payload).includes('m-0'), false)
+})
+
+test('claim and event review actions use server-hydrated trusted entity flags', () => {
+  const trusted = new Set(['person-a', 'person-b'])
+  assert.equal(claimEntitiesAreTrusted({
+    subject_id: 'person-a',
+    object_entity_id: 'person-b'
+  }, trusted), true)
+  assert.equal(claimEntitiesAreTrusted({
+    subject_id: 'person-a',
+    object_entity_id: 'candidate'
+  }, trusted), false)
+  assert.equal(eventEntitiesAreTrusted({
+    participants: [{ entity_id: 'person-a' }, { entity_id: 'person-b' }]
+  }, trusted), true)
+  assert.equal(eventEntitiesAreTrusted({
+    participants: [{ entity_id: 'person-a' }, { entity_id: 'candidate' }]
+  }, trusted), false)
 })

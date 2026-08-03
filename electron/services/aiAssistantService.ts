@@ -216,6 +216,9 @@ import { type GraphReviewPageOptions } from '../../shared/graphReviewPagination'
 import { buildGraphViewport, type GraphViewportOptions } from '../../shared/graphViewport'
 import {
   buildGraphDashboardPayload,
+  buildGraphReviewEntityPayload,
+  claimEntitiesAreTrusted,
+  eventEntitiesAreTrusted,
   toGraphViewportEdge,
   toGraphViewportNode
 } from '../../shared/graphPayload'
@@ -3456,16 +3459,19 @@ export class AiAssistantService {
         dossier: 'on_demand'
       },
       projectRevision,
-      graph: buildGraphDashboardPayload(this.state.graph.entities),
+      graph: buildGraphDashboardPayload(),
       graphSummary: {
         entities: this.state.graph.entities.filter(entity => entity.trustStatus !== 'rejected').length,
         relations: this.state.graph.relations.filter(relation => relation.status !== 'rejected').length
       },
       graphPayloadPolicy: {
-        version: 'graph-directory-v1',
-        directoryEntities: this.state.graph.entities.length,
+        version: 'graph-on-demand-v2',
+        directoryEntities: 0,
+        authoritativeEntities: this.state.graph.entities.length,
+        entityDirectory: 'server_search_on_demand',
         entityProfiles: 'on_demand',
-        relationEvidence: 'on_demand'
+        relationEvidence: 'on_demand',
+        reviewEntities: 'page_scoped'
       },
       graphRevision,
       graphReviewRevision,
@@ -3731,14 +3737,22 @@ export class AiAssistantService {
     if (page.stale) return page
     const items = page.items.map(review => {
       const relationId = review.correctedRelationId || review.relationId || review.originalRelationId
+      const relation = relationId
+        ? this.state.graph.relations.find(item => item.id === relationId) || null
+        : null
+      const relationCorrection = review.kind === 'relation'
+        ? personalMemoryStore.getRelationCorrectionByReview(review.id)
+        : null
       return {
         ...review,
-        relation: relationId
-          ? this.state.graph.relations.find(relation => relation.id === relationId) || null
-          : null,
-        relationCorrection: review.kind === 'relation'
-          ? personalMemoryStore.getRelationCorrectionByReview(review.id)
-          : null
+        relation,
+        relationCorrection,
+        ...buildGraphReviewEntityPayload(
+          this.state.graph.entities,
+          review,
+          relation,
+          relationCorrection
+        )
       }
     })
     const completedRevision = personalMemoryStore.getGraphReviewRevision()
@@ -3793,20 +3807,38 @@ export class AiAssistantService {
         eventTotal: memory.eventTotal,
         tasks: this.state.tasks.filter(task => task.classification === 'mine')
       })
+      const visibleRelations = allRelations.slice(0, 200)
+      const relationHistory = personalMemoryStore.listRelationHistory(focusEntity.id, 300)
+      const entityCorrections = personalMemoryStore.listEntityCorrections(focusEntity.id, 300)
+      const relationCorrections = personalMemoryStore.listRelationCorrections(focusEntity.id, 300)
+      const entityProfileCorrections = personalMemoryStore.listEntityProfileCorrections(focusEntity.id, 300)
+      const namedEntityIds = new Set([
+        focusEntity.id,
+        ...visibleRelations.flatMap(relation => [relation.subjectId, relation.objectId]),
+        ...relationCorrections.flatMap((item: any) => [
+          item.before_subject_id,
+          item.before_object_id,
+          item.after_subject_id,
+          item.after_object_id
+        ])
+      ].map(value => String(value || '')).filter(Boolean))
       focus = {
         entity: focusEntity,
         insight: insights[focusEntity.id] || null,
         claims: memory.claims,
         events: memory.events,
-        relations: allRelations.slice(0, 200).map(relation => ({
+        relations: visibleRelations.map(relation => ({
           ...relation,
           ...boundedEvidencePayload(relation.evidence, GRAPH_QUERY_EVIDENCE_LIMIT)
         })),
         relationTotal: allRelations.length,
-        relationHistory: personalMemoryStore.listRelationHistory(focusEntity.id, 300),
-        entityCorrections: personalMemoryStore.listEntityCorrections(focusEntity.id, 300),
-        relationCorrections: personalMemoryStore.listRelationCorrections(focusEntity.id, 300),
-        entityProfileCorrections: personalMemoryStore.listEntityProfileCorrections(focusEntity.id, 300)
+        relationHistory,
+        entityCorrections,
+        relationCorrections,
+        entityProfileCorrections,
+        entityNames: Object.fromEntries(this.state.graph.entities
+          .filter(entity => namedEntityIds.has(entity.id))
+          .map(entity => [entity.id, entity.canonicalName]))
       }
     }
     return {
@@ -3867,7 +3899,7 @@ export class AiAssistantService {
   }
 
   getEventTimeline(options: any = {}): any {
-    return personalMemoryStore.listEventTimeline({
+    const page = personalMemoryStore.listEventTimeline({
       sourceId: ['wechat', 'documents', 'calendar'].includes(options?.sourceId)
         ? options.sourceId
         : undefined,
@@ -3880,10 +3912,19 @@ export class AiAssistantService {
       offset: Number(options?.offset || 0),
       revision: String(options?.revision || '')
     })
+    if (page.stale) return page
+    const trustedIds = new Set(this.state.graph.entities.filter(isTrustedEntity).map(entity => entity.id))
+    return {
+      ...page,
+      items: page.items.map((event: any) => ({
+        ...event,
+        entities_trusted: eventEntitiesAreTrusted(event, trustedIds)
+      }))
+    }
   }
 
   getClaimArchive(options: any = {}): any {
-    return personalMemoryStore.listClaimArchive({
+    const page = personalMemoryStore.listClaimArchive({
       entityId: String(options?.entityId || ''),
       sourceId: ['wechat', 'documents'].includes(options?.sourceId)
         ? options.sourceId
@@ -3898,6 +3939,15 @@ export class AiAssistantService {
       offset: Number(options?.offset || 0),
       revision: String(options?.revision || '')
     })
+    if (page.stale) return page
+    const trustedIds = new Set(this.state.graph.entities.filter(isTrustedEntity).map(entity => entity.id))
+    return {
+      ...page,
+      items: page.items.map((claim: any) => ({
+        ...claim,
+        entities_trusted: claimEntitiesAreTrusted(claim, trustedIds)
+      }))
+    }
   }
 
   async getMemoryDiagnostics(): Promise<any> {
