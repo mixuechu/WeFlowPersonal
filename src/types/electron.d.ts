@@ -1828,6 +1828,10 @@ export interface ElectronAPI {
       askMemory: (question: string, conversationId?: string, options?: any) => Promise<any>
       getAssistantConversations: (options?: any) => Promise<any>
       getAssistantAnswerReviews: (options?: any) => Promise<any>
+      reviewAssistantAnswer: (
+        messageId: string,
+        action: 'acknowledged' | 'reopened'
+      ) => Promise<any>
       getAssistantConversation: (id: string, options?: any) => Promise<any>
       deleteAssistantConversation: (id: string) => Promise<boolean>
       getConversationSources: () => Promise<any[]>

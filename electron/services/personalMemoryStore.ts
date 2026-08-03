@@ -423,6 +423,16 @@ export class PersonalMemoryStore {
       CREATE INDEX IF NOT EXISTS idx_assistant_answer_dependencies_document
         ON assistant_answer_dependencies(document_id);
 
+      CREATE TABLE IF NOT EXISTS assistant_answer_review_decisions (
+        id INTEGER PRIMARY KEY,
+        message_id TEXT NOT NULL REFERENCES assistant_messages(id) ON DELETE CASCADE,
+        state_key TEXT NOT NULL,
+        action TEXT NOT NULL CHECK(action IN ('acknowledged','reopened')),
+        created_at TEXT NOT NULL
+      ) STRICT;
+      CREATE INDEX IF NOT EXISTS idx_assistant_answer_review_decisions_message
+        ON assistant_answer_review_decisions(message_id,created_at DESC,id DESC);
+
       CREATE TABLE IF NOT EXISTS ingestion_runs (
         id TEXT PRIMARY KEY,
         started_at TEXT NOT NULL,
@@ -7507,9 +7517,11 @@ export class PersonalMemoryStore {
 
   listAssistantAnswerReviewsPage(options: {
     status?: 'attention' | 'invalid' | 'needs_review' | 'current' | 'all'
+    reviewState?: 'pending' | 'resolved' | 'all'
     query?: string
     from?: string
     to?: string
+    messageId?: string
     offset?: number
     limit?: number
   } = {}): {
@@ -7518,7 +7530,14 @@ export class PersonalMemoryStore {
     hasMore: boolean
     offset: number
     limit: number
-    counts: { attention: number; invalid: number; needs_review: number; current: number }
+    counts: {
+      attention: number
+      invalid: number
+      needs_review: number
+      current: number
+      pending: number
+      resolved: number
+    }
   } {
     const limit = Math.max(1, Math.min(100, Math.floor(Number(options.limit) || 30)))
     const offset = Math.max(0, Math.min(1_000_000, Math.floor(Number(options.offset) || 0)))
@@ -7528,7 +7547,9 @@ export class PersonalMemoryStore {
       hasMore: false,
       offset,
       limit,
-      counts: { attention: 0, invalid: 0, needs_review: 0, current: 0 }
+      counts: {
+        attention: 0, invalid: 0, needs_review: 0, current: 0, pending: 0, resolved: 0
+      }
     }
     if (!this.db) return empty
     const eligibility = `(
@@ -7554,7 +7575,8 @@ export class PersonalMemoryStore {
             AND d.content_hash!='' AND lower(d.content_hash)=lower(s.content_hash)
             THEN 1 ELSE 0 END) AS has_current,
           MAX(CASE WHEN ${eligibility}
-            AND d.content_hash='' THEN 1 ELSE 0 END) AS has_unknown
+            AND d.content_hash='' THEN 1 ELSE 0 END) AS has_unknown,
+          MAX(COALESCE(s.updated_at,'missing')) AS dependency_revision
         FROM assistant_answer_dependencies d
         LEFT JOIN search_documents s ON s.id=d.document_id
         GROUP BY d.conversation_id,d.message_id,d.statement_index
@@ -7564,7 +7586,13 @@ export class PersonalMemoryStore {
           COUNT(*) AS total_statements,
           SUM(CASE WHEN ss.has_current=1 THEN 1 ELSE 0 END) AS supported_statements,
           SUM(CASE WHEN ss.has_current=0 AND ss.has_unknown=1 THEN 1 ELSE 0 END) AS unknown_statements,
-          SUM(CASE WHEN ss.has_current=0 AND ss.has_unknown=0 THEN 1 ELSE 0 END) AS invalid_statements
+          SUM(CASE WHEN ss.has_current=0 AND ss.has_unknown=0 THEN 1 ELSE 0 END) AS invalid_statements,
+          printf('%d:%d:%d:%s',
+            SUM(CASE WHEN ss.has_current=0 AND ss.has_unknown=0 THEN 1 ELSE 0 END),
+            SUM(CASE WHEN ss.has_current=0 AND ss.has_unknown=1 THEN 1 ELSE 0 END),
+            SUM(CASE WHEN ss.has_current=1 THEN 1 ELSE 0 END),
+            MAX(ss.dependency_revision)
+          ) AS state_key
         FROM statement_state ss
         JOIN assistant_messages m ON m.id=ss.message_id AND m.role='assistant'
         GROUP BY ss.conversation_id,ss.message_id
@@ -7594,6 +7622,11 @@ export class PersonalMemoryStore {
       commonConditions.push('ar.created_at<=?')
       commonParameters.push(to)
     }
+    const messageId = String(options.messageId || '').trim()
+    if (messageId) {
+      commonConditions.push('ar.message_id=?')
+      commonParameters.push(messageId)
+    }
     const status = ['attention', 'invalid', 'needs_review', 'current', 'all']
       .includes(String(options.status || ''))
       ? String(options.status)
@@ -7607,13 +7640,33 @@ export class PersonalMemoryStore {
           : status === 'all'
             ? ''
             : '(ar.invalid_statements>0 OR ar.unknown_statements>0)'
-    const conditions = [...commonConditions, ...(statusCondition ? [statusCondition] : [])]
+    const reviewState = ['pending', 'resolved', 'all'].includes(String(options.reviewState || ''))
+      ? String(options.reviewState)
+      : 'pending'
+    const resolvedCondition = `(
+      COALESCE(decision.action='acknowledged' AND decision.state_key=ar.state_key,0)=1
+    )`
+    const reviewCondition = reviewState === 'resolved'
+      ? resolvedCondition
+      : reviewState === 'all'
+        ? ''
+        : `NOT ${resolvedCondition}`
+    const conditions = [
+      ...commonConditions,
+      ...(statusCondition ? [statusCondition] : []),
+      ...(reviewCondition ? [reviewCondition] : [])
+    ]
     const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : ''
     const commonWhere = commonConditions.length ? `WHERE ${commonConditions.join(' AND ')}` : ''
     const joins = `
       FROM answer_revalidation ar
       JOIN assistant_messages answer ON answer.id=ar.message_id
       JOIN assistant_conversations c ON c.id=ar.conversation_id
+      LEFT JOIN assistant_answer_review_decisions decision ON decision.id=(
+        SELECT latest.id FROM assistant_answer_review_decisions latest
+        WHERE latest.message_id=ar.message_id
+        ORDER BY latest.created_at DESC,latest.id DESC LIMIT 1
+      )
     `
     const total = Number((this.db.prepare(`
       ${revalidationCte}
@@ -7625,13 +7678,19 @@ export class PersonalMemoryStore {
         SUM(CASE WHEN ar.invalid_statements>0 OR ar.unknown_statements>0 THEN 1 ELSE 0 END) AS attention,
         SUM(CASE WHEN ar.invalid_statements>0 THEN 1 ELSE 0 END) AS invalid,
         SUM(CASE WHEN ar.invalid_statements=0 AND ar.unknown_statements>0 THEN 1 ELSE 0 END) AS needs_review,
-        SUM(CASE WHEN ar.invalid_statements=0 AND ar.unknown_statements=0 THEN 1 ELSE 0 END) AS current
+        SUM(CASE WHEN ar.invalid_statements=0 AND ar.unknown_statements=0 THEN 1 ELSE 0 END) AS current,
+        SUM(CASE WHEN (ar.invalid_statements>0 OR ar.unknown_statements>0)
+          AND NOT ${resolvedCondition} THEN 1 ELSE 0 END) AS pending,
+        SUM(CASE WHEN (ar.invalid_statements>0 OR ar.unknown_statements>0)
+          AND ${resolvedCondition} THEN 1 ELSE 0 END) AS resolved
       ${joins} ${commonWhere}
     `).get(...commonParameters) as any
     const items = this.db.prepare(`
       ${revalidationCte}
-      SELECT ar.message_id,ar.conversation_id,ar.created_at,
+      SELECT ar.message_id,ar.conversation_id,ar.created_at,ar.state_key,
         ar.total_statements,ar.supported_statements,ar.unknown_statements,ar.invalid_statements,
+        decision.action AS latest_review_action,decision.state_key AS reviewed_state_key,
+        decision.created_at AS reviewed_at,
         c.title AS conversation_title,
         substr(replace(replace(answer.content,char(10),' '),char(13),' '),1,180) AS answer_preview,
         COALESCE((
@@ -7645,14 +7704,22 @@ export class PersonalMemoryStore {
       ORDER BY ar.created_at DESC,ar.message_id DESC LIMIT ? OFFSET ?
     `).all(...commonParameters, limit, offset) as any[]
     return {
-      items: items.map(item => ({
-        ...item,
-        revalidation_status: Number(item.invalid_statements || 0) > 0
-          ? 'invalid'
-          : Number(item.unknown_statements || 0) > 0
-            ? 'needs_review'
-            : 'current'
-      })),
+      items: items.map(item => {
+        const { state_key: stateKey, reviewed_state_key: reviewedStateKey, ...publicItem } = item
+        return {
+          ...publicItem,
+          ...(messageId ? { state_key: stateKey } : {}),
+          review_state: item.latest_review_action === 'acknowledged'
+            && String(reviewedStateKey || '') === String(stateKey || '')
+            ? 'resolved'
+            : 'pending',
+          revalidation_status: Number(item.invalid_statements || 0) > 0
+            ? 'invalid'
+            : Number(item.unknown_statements || 0) > 0
+              ? 'needs_review'
+              : 'current'
+        }
+      }),
       total,
       hasMore: offset + items.length < total,
       offset,
@@ -7661,8 +7728,39 @@ export class PersonalMemoryStore {
         attention: Number(countsRow?.attention || 0),
         invalid: Number(countsRow?.invalid || 0),
         needs_review: Number(countsRow?.needs_review || 0),
-        current: Number(countsRow?.current || 0)
+        current: Number(countsRow?.current || 0),
+        pending: Number(countsRow?.pending || 0),
+        resolved: Number(countsRow?.resolved || 0)
       }
+    }
+  }
+
+  reviewAssistantAnswer(
+    messageId: string,
+    action: 'acknowledged' | 'reopened'
+  ): any {
+    if (!this.db) throw new Error('个人记忆数据库尚未初始化')
+    if (!['acknowledged', 'reopened'].includes(action)) throw new Error('无效的回答审阅动作')
+    const current = this.listAssistantAnswerReviewsPage({
+      status: 'all',
+      reviewState: 'all',
+      messageId: String(messageId || '').trim(),
+      limit: 1
+    }).items[0]
+    if (!current) throw new Error('找不到这条回答或它没有可核验的逐陈述依赖')
+    if (action === 'acknowledged' && current.revalidation_status === 'current') {
+      throw new Error('这条回答当前仍有效，不需要标记为已知晓')
+    }
+    const now = new Date().toISOString()
+    this.db.prepare(`
+      INSERT INTO assistant_answer_review_decisions(message_id,state_key,action,created_at)
+      VALUES(?,?,?,?)
+    `).run(current.message_id, current.state_key, action, now)
+    return {
+      messageId: current.message_id,
+      action,
+      stateKey: current.state_key,
+      createdAt: now
     }
   }
 

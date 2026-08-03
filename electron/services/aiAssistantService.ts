@@ -5146,12 +5146,20 @@ export class AiAssistantService {
   getAssistantAnswerReviews(options?: any): any {
     return personalMemoryStore.listAssistantAnswerReviewsPage({
       status: options?.status,
+      reviewState: options?.reviewState,
       query: String(options?.query || ''),
       from: String(options?.from || ''),
       to: String(options?.to || ''),
       offset: Number(options?.offset || 0),
       limit: Number(options?.limit || 30)
     })
+  }
+
+  reviewAssistantAnswer(messageId: string, action: 'acknowledged' | 'reopened'): any {
+    return personalMemoryStore.reviewAssistantAnswer(
+      String(messageId || '').trim(),
+      action
+    )
   }
 
   private enrichAssistantCitationFeedback(conversation: any): any {

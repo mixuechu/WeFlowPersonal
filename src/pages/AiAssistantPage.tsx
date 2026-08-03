@@ -432,10 +432,13 @@ function AiAssistantPage() {
     counts: { attention: 0, invalid: 0, needs_review: 0, current: 0 }
   })
   const [assistantAnswerReviewStatus, setAssistantAnswerReviewStatus] = useState('attention')
+  const [assistantAnswerReviewState, setAssistantAnswerReviewState] = useState('pending')
   const [assistantAnswerReviewQuery, setAssistantAnswerReviewQuery] = useState('')
   const [assistantAnswerReviewFrom, setAssistantAnswerReviewFrom] = useState('')
   const [assistantAnswerReviewTo, setAssistantAnswerReviewTo] = useState('')
   const [assistantAnswerReviewsLoadingMore, setAssistantAnswerReviewsLoadingMore] = useState(false)
+  const [assistantAnswerReviewSaving, setAssistantAnswerReviewSaving] = useState('')
+  const [assistantAnswerReviewRevision, setAssistantAnswerReviewRevision] = useState(0)
   const assistantAnswerReviewsGate = useRef(new LatestRequestGate())
   const [askingMemory, setAskingMemory] = useState(false)
   const [creatingMemoryTask, setCreatingMemoryTask] = useState(false)
@@ -519,6 +522,7 @@ function AiAssistantPage() {
   }), [assistantArchiveQuery, assistantArchiveFrom, assistantArchiveTo, assistantArchiveRevalidation])
   const assistantAnswerReviewOptions = useMemo(() => ({
     status: assistantAnswerReviewStatus,
+    reviewState: assistantAnswerReviewState,
     query: assistantAnswerReviewQuery || undefined,
     from: assistantAnswerReviewFrom
       ? new Date(`${assistantAnswerReviewFrom}T00:00:00+08:00`).toISOString()
@@ -530,6 +534,7 @@ function AiAssistantPage() {
     limit: 30
   }), [
     assistantAnswerReviewStatus,
+    assistantAnswerReviewState,
     assistantAnswerReviewQuery,
     assistantAnswerReviewFrom,
     assistantAnswerReviewTo
@@ -707,6 +712,7 @@ function AiAssistantPage() {
   }, [
     assistantAnswerReviewsOpen,
     assistantAnswerReviewOptions,
+    assistantAnswerReviewRevision,
     dashboard?.assistantArchive?.revision
   ])
 
@@ -2345,6 +2351,25 @@ function AiAssistantPage() {
     }
   }
 
+  const reviewAssistantAnswer = async (
+    messageId: string,
+    action: 'acknowledged' | 'reopened'
+  ) => {
+    if (assistantAnswerReviewSaving) return
+    setAssistantAnswerReviewSaving(messageId)
+    try {
+      await window.electronAPI.aiAssistant.reviewAssistantAnswer(messageId, action)
+      setMessage(action === 'acknowledged'
+        ? '已知晓这条历史回答的证据变化；它仍保留在已处理档案中。'
+        : '已将这条历史回答重新加入待处理队列。')
+      setAssistantAnswerReviewRevision(value => value + 1)
+    } catch (error: any) {
+      setMessage(error?.message || String(error))
+    } finally {
+      setAssistantAnswerReviewSaving('')
+    }
+  }
+
   const loadOlderAssistantMessages = async () => {
     if (!memoryConversationId || !memoryConversation?.hasOlder || assistantMessagesLoadingMore) return
     const request = memoryConversationGate.current.begin()
@@ -3572,6 +3597,12 @@ function AiAssistantPage() {
             </summary>
             {assistantAnswerReviewsOpen && <>
               <div className="assistant-answer-review-filters">
+                <select value={assistantAnswerReviewState}
+                  onChange={event => setAssistantAnswerReviewState(event.target.value)}>
+                  <option value="pending">待处理</option>
+                  <option value="resolved">已知晓</option>
+                  <option value="all">全部审阅状态</option>
+                </select>
                 <select value={assistantAnswerReviewStatus}
                   onChange={event => setAssistantAnswerReviewStatus(event.target.value)}>
                   <option value="attention">需要处理</option>
@@ -3589,7 +3620,9 @@ function AiAssistantPage() {
                   onChange={event => setAssistantAnswerReviewTo(event.target.value)} />
               </div>
               <small>
-                需要处理 {Number(assistantAnswerReviews.counts?.attention || 0)} ·
+                待处理 {Number(assistantAnswerReviews.counts?.pending || 0)} ·
+                已知晓 {Number(assistantAnswerReviews.counts?.resolved || 0)} ·
+                需要处理总计 {Number(assistantAnswerReviews.counts?.attention || 0)} ·
                 已失去支持 {Number(assistantAnswerReviews.counts?.invalid || 0)} ·
                 旧版待核验 {Number(assistantAnswerReviews.counts?.needs_review || 0)} ·
                 当前有效 {Number(assistantAnswerReviews.counts?.current || 0)}
@@ -3613,10 +3646,22 @@ function AiAssistantPage() {
                       ? ` · 指纹未知 ${Number(item.unknown_statements)}`
                       : ''}
                   </small>
-                  <button onClick={() => void openMemoryConversation(
-                    item.conversation_id,
-                    item.message_id
-                  )}>打开这一轮并核验</button>
+                  <div>
+                    <button onClick={() => void openMemoryConversation(
+                      item.conversation_id,
+                      item.message_id
+                    )}>打开这一轮并核验</button>
+                    {item.review_state === 'resolved'
+                      ? <button disabled={assistantAnswerReviewSaving === item.message_id}
+                        onClick={() => void reviewAssistantAnswer(item.message_id, 'reopened')}>
+                        重新加入待处理
+                      </button>
+                      : item.revalidation_status !== 'current' && <button
+                        disabled={assistantAnswerReviewSaving === item.message_id}
+                        onClick={() => void reviewAssistantAnswer(item.message_id, 'acknowledged')}>
+                        {assistantAnswerReviewSaving === item.message_id ? '保存中…' : '已知晓，仅保留历史'}
+                      </button>}
+                  </div>
                 </article>)}
               </div>
               {assistantAnswerReviews.loading && <div className="assistant-empty">正在读取逐回答核验档案…</div>}

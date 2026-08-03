@@ -4616,6 +4616,11 @@ function registerIpcHandlers() {
   ipcMain.handle('ai-assistant:getAssistantConversations', (_, options?: any) => aiAssistantService.getAssistantConversations(options))
   ipcMain.handle('ai-assistant:getAssistantAnswerReviews', (_, options?: any) =>
     aiAssistantService.getAssistantAnswerReviews(options))
+  ipcMain.handle('ai-assistant:reviewAssistantAnswer', (
+    _,
+    messageId: string,
+    action: 'acknowledged' | 'reopened'
+  ) => aiAssistantService.reviewAssistantAnswer(messageId, action))
   ipcMain.handle('ai-assistant:getAssistantConversation', (_, id: string, options?: any) =>
     aiAssistantService.getAssistantConversation(id, options))
   ipcMain.handle('ai-assistant:deleteAssistantConversation', (_, id: string) => aiAssistantService.deleteAssistantConversation(id))

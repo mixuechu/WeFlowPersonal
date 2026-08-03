@@ -621,7 +621,7 @@
 .assistant-answer-review-archive { margin: 0 0 10px; padding: 9px 10px; border: 1px solid #e0ddd4; border-radius: 10px; background: rgba(250,250,247,.72); }
 .assistant-answer-review-archive > summary { display: flex; align-items: center; justify-content: space-between; gap: 10px; color: #4f6457; cursor: pointer; font-size: 10px; font-weight: 700; }
 .assistant-answer-review-archive > summary small { color: #8b918b; font-size: 8px; font-weight: 400; }
-.assistant-answer-review-filters { display: grid; grid-template-columns: minmax(100px,.25fr) 1fr repeat(2,minmax(110px,.25fr)); gap: 6px; margin: 9px 0 6px; }
+.assistant-answer-review-filters { display: grid; grid-template-columns: repeat(2,minmax(100px,.22fr)) 1fr repeat(2,minmax(110px,.24fr)); gap: 6px; margin: 9px 0 6px; }
 .assistant-answer-review-filters input,.assistant-answer-review-filters select { min-width: 0; padding: 6px 7px; border: 1px solid #d8ddd7; border-radius: 7px; color: #566158; background: #fff; font-size: 8px; }
 .assistant-answer-review-list { display: grid; gap: 6px; max-height: 340px; margin-top: 7px; overflow: auto; }
 .assistant-answer-review-list article { display: grid; gap: 4px; padding: 9px; border: 1px solid #e4e1d9; border-radius: 8px; background: #fff; }
@@ -629,7 +629,9 @@
 .assistant-answer-review-list article > strong { color: #424c45; font-size: 10px; }
 .assistant-answer-review-list article > p { margin: 0; color: #737a73; font-size: 9px; line-height: 1.5; }
 .assistant-answer-review-list article > small { color: #8b918b; font-size: 8px; }
-.assistant-answer-review-list article > button { justify-self: start; padding: 5px 8px; border: 1px solid #cbd8cf; border-radius: 7px; color: #3f6654; background: #f5faf6; font-size: 8px; cursor: pointer; }
+.assistant-answer-review-list article > div { display: flex; flex-wrap: wrap; gap: 5px; }
+.assistant-answer-review-list article > div button { padding: 5px 8px; border: 1px solid #cbd8cf; border-radius: 7px; color: #3f6654; background: #f5faf6; font-size: 8px; cursor: pointer; }
+.assistant-answer-review-list article > div button:disabled { opacity: .55; cursor: default; }
 .assistant-conversation-layout { display: grid; grid-template-columns: minmax(170px, .34fr) 1fr; gap: 10px; margin-bottom: 10px; }
 .assistant-conversation-list { display: grid; align-content: start; gap: 5px; max-height: 300px; overflow: auto; padding: 8px; border: 1px solid #e3e2da; border-radius: 10px; background: rgba(250,250,247,.72); }
 .assistant-conversation-list > strong { padding: 2px 4px 5px; color: #69736b; font-size: 9px; }

@@ -4439,6 +4439,7 @@ test('legacy assistant citations are compacted at scale without losing reference
     })
     transaction()
     database.exec(`
+      DROP TABLE IF EXISTS assistant_answer_review_decisions;
       DROP TABLE IF EXISTS assistant_answer_dependencies;
       DELETE FROM schema_meta WHERE key='assistant_answer_dependencies_v1';
       DROP INDEX IF EXISTS idx_assistant_messages_conversation_time;
@@ -4666,7 +4667,9 @@ test('assistant archive filters statement dependencies without loading answer ev
     attention: 3,
     invalid: 2,
     needs_review: 1,
-    current: 2
+    current: 2,
+    pending: 3,
+    resolved: 0
   })
   assert.equal(answerReviews.items.find((item: any) => item.message_id === changedAnswerId)
     .revalidation_status, 'invalid')
@@ -4686,6 +4689,48 @@ test('assistant archive filters statement dependencies without loading answer ev
     status: 'needs_review',
     limit: 20
   }).items[0].question_preview, '旧版未知会话')
+  assert.throws(() => store.reviewAssistantAnswer(
+    store.listAssistantAnswerReviewsPage({ status: 'current', limit: 20 }).items[0].message_id,
+    'acknowledged'
+  ), /当前仍有效/)
+  store.reviewAssistantAnswer(changedAnswerId, 'acknowledged')
+  assert.equal(store.listAssistantAnswerReviewsPage({
+    status: 'attention',
+    reviewState: 'pending',
+    limit: 20
+  }).items.some((item: any) => item.message_id === changedAnswerId), false)
+  assert.equal(store.listAssistantAnswerReviewsPage({
+    status: 'attention',
+    reviewState: 'resolved',
+    limit: 20
+  }).items[0].message_id, changedAnswerId)
+  assert.deepEqual(store.listAssistantAnswerReviewsPage({
+    status: 'all',
+    reviewState: 'all',
+    limit: 20
+  }).counts, {
+    attention: 3,
+    invalid: 2,
+    needs_review: 1,
+    current: 2,
+    pending: 2,
+    resolved: 1
+  })
+  database.prepare(`
+    UPDATE search_documents SET content_hash=?,updated_at=? WHERE id=?
+  `).run('9'.repeat(64), '2030-01-01T00:00:00.000Z', 'resource:changed')
+  assert.equal(store.listAssistantAnswerReviewsPage({
+    status: 'attention',
+    reviewState: 'pending',
+    limit: 20
+  }).items.some((item: any) => item.message_id === changedAnswerId), true)
+  store.reviewAssistantAnswer(changedAnswerId, 'acknowledged')
+  store.reviewAssistantAnswer(changedAnswerId, 'reopened')
+  assert.equal(store.listAssistantAnswerReviewsPage({
+    status: 'attention',
+    reviewState: 'pending',
+    limit: 20
+  }).items.some((item: any) => item.message_id === changedAnswerId), true)
 
   database.prepare('UPDATE search_documents SET content_hash = ? WHERE id = ?')
     .run('e'.repeat(64), 'resource:current')
@@ -4698,7 +4743,9 @@ test('assistant archive filters statement dependencies without loading answer ev
     attention: 5,
     invalid: 4,
     needs_review: 1,
-    current: 0
+    current: 0,
+    pending: 5,
+    resolved: 0
   })
 
   assert.equal(store.deleteAssistantConversation(currentConversationId), true)
@@ -4707,6 +4754,13 @@ test('assistant archive filters statement dependencies without loading answer ev
   assert.equal(dependencyStatsAfterDelete.statements, 4)
   assert.equal(dependencyStatsAfterDelete.dependencies, 4)
   assert.equal(store.listAssistantAnswerReviewsPage({ status: 'all', limit: 20 }).total, 4)
+  assert.ok(Number(database.prepare(`
+    SELECT COUNT(*) AS count FROM assistant_answer_review_decisions WHERE message_id=?
+  `).get(changedAnswerId).count) >= 3)
+  assert.equal(store.deleteAssistantConversation(changedConversationId), true)
+  assert.equal(Number(database.prepare(`
+    SELECT COUNT(*) AS count FROM assistant_answer_review_decisions WHERE message_id=?
+  `).get(changedAnswerId).count), 0)
 }))
 
 test('assistant archive and message pagination survive a SQLCipher process-style reopen', () => {
