@@ -6496,6 +6496,84 @@ export class PersonalMemoryStore {
     }
   }
 
+  getEntityEvidenceStats(entityId: string): {
+    evidenceTotal: number
+    lastEvidenceAt: number | null
+    activeEvidenceTotal: number
+    lastActiveEvidenceAt: number | null
+  } {
+    if (!this.db || !String(entityId || '').trim()) {
+      return {
+        evidenceTotal: 0, lastEvidenceAt: null,
+        activeEvidenceTotal: 0, lastActiveEvidenceAt: null
+      }
+    }
+    const row = this.db.prepare(`
+      WITH RECURSIVE entity_scope(entity_id) AS (
+        SELECT ?
+        UNION
+        SELECT history.source_entity_id
+        FROM merge_history history
+        JOIN entity_scope scope ON history.target_entity_id=scope.entity_id
+        WHERE history.reverted_at IS NULL
+      ),
+      scoped AS (
+        SELECT ee.source_id,ee.session_id,ee.message_id,ee.timestamp,1 AS is_active
+        FROM entity_evidence ee
+        WHERE ee.entity_id IN (SELECT entity_id FROM entity_scope)
+        UNION ALL
+        SELECT e.source_id,e.session_id,e.message_id,e.timestamp,
+          CASE
+            WHEN e.claim_id IS NOT NULL AND EXISTS (
+              SELECT 1 FROM claims active_claim WHERE active_claim.id=e.claim_id
+                AND active_claim.status!='rejected'
+            ) THEN 1
+            WHEN e.relation_id IS NOT NULL AND EXISTS (
+              SELECT 1 FROM relations active_relation WHERE active_relation.id=e.relation_id
+                AND active_relation.status!='rejected'
+            ) THEN 1
+            WHEN e.event_id IS NOT NULL AND EXISTS (
+              SELECT 1 FROM events active_event WHERE active_event.id=e.event_id
+                AND active_event.status!='rejected'
+            ) THEN 1
+            ELSE 0
+          END AS is_active
+        FROM evidence e
+        WHERE
+          (e.claim_id IS NOT NULL AND EXISTS (
+            SELECT 1 FROM claims c WHERE c.id=e.claim_id
+              AND (c.subject_id=? OR c.object_entity_id=?)
+          ))
+          OR (e.relation_id IS NOT NULL AND EXISTS (
+            SELECT 1 FROM relations r WHERE r.id=e.relation_id
+              AND (r.subject_id=? OR r.object_id=?)
+          ))
+          OR (e.event_id IS NOT NULL AND EXISTS (
+            SELECT 1 FROM event_participants ep WHERE ep.event_id=e.event_id
+              AND ep.entity_id=?
+          ))
+      ),
+      grouped AS (
+        SELECT source_id,session_id,message_id,MAX(timestamp) AS timestamp,
+          MAX(is_active) AS is_active
+        FROM scoped
+        GROUP BY source_id,session_id,message_id
+      )
+      SELECT COUNT(*) AS evidence_total,MAX(timestamp) AS last_evidence_at,
+        SUM(is_active) AS active_evidence_total,
+        MAX(CASE WHEN is_active=1 THEN timestamp END) AS last_active_evidence_at
+      FROM grouped
+    `).get(entityId, entityId, entityId, entityId, entityId, entityId) as any
+    const lastEvidenceAt = Number(row?.last_evidence_at || 0)
+    const lastActiveEvidenceAt = Number(row?.last_active_evidence_at || 0)
+    return {
+      evidenceTotal: Number(row?.evidence_total || 0),
+      lastEvidenceAt: lastEvidenceAt > 0 ? lastEvidenceAt : null,
+      activeEvidenceTotal: Number(row?.active_evidence_total || 0),
+      lastActiveEvidenceAt: lastActiveEvidenceAt > 0 ? lastActiveEvidenceAt : null
+    }
+  }
+
   listEntityEvidencePage(options: {
     entityId: string
     sourceId?: 'wechat' | 'documents' | 'calendar' | 'mail' | 'legacy'

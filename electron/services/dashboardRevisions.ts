@@ -37,3 +37,11 @@ export function buildDashboardRevisions(source: DashboardRevisionSource): {
     assistantHistory: source.getAssistantHistoryRevision()
   }
 }
+
+export function buildGraphWorkspaceRevision(
+  source: DashboardRevisionSource,
+  focused: boolean
+): string {
+  const revisions = buildDashboardRevisions(source)
+  return focused ? revisions.project : revisions.graph
+}

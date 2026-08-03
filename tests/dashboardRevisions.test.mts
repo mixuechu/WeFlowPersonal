@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import {
   buildDashboardRevisions,
+  buildGraphWorkspaceRevision,
   type DashboardRevisionSource
 } from '../electron/services/dashboardRevisions.ts'
 
@@ -49,4 +50,31 @@ test('independent audit revisions invalidate only their matching dashboard archi
   assert.equal(after.graph, before.graph)
   assert.equal(after.task, before.task)
   assert.equal(after.project, before.project)
+})
+
+test('focused graph workspaces bind graph memory and task revisions while overview stays graph-only', () => {
+  const base = revisionSource()
+  const overview = buildGraphWorkspaceRevision(base, false)
+  const focused = buildGraphWorkspaceRevision(base, true)
+
+  assert.equal(
+    buildGraphWorkspaceRevision(revisionSource({ task: 'task-2' }), false),
+    overview
+  )
+  assert.equal(
+    buildGraphWorkspaceRevision(revisionSource({ memory: 'memory-2' }), false),
+    overview
+  )
+  assert.notEqual(
+    buildGraphWorkspaceRevision(revisionSource({ task: 'task-2' }), true),
+    focused
+  )
+  assert.notEqual(
+    buildGraphWorkspaceRevision(revisionSource({ memory: 'memory-2' }), true),
+    focused
+  )
+  assert.notEqual(
+    buildGraphWorkspaceRevision(revisionSource({ graph: 'graph-2' }), true),
+    focused
+  )
 })

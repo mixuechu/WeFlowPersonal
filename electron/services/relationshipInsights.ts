@@ -94,6 +94,10 @@ export function buildEntityInsights(input: {
   claims: any[]
   events: any[]
   tasks: any[]
+  authoritativeEvidence?: Record<string, {
+    evidenceTotal: number
+    lastEvidenceAt: number | null
+  }>
   now?: Date
 }): Record<string, EntityInsight> {
   const now = (input.now || new Date()).getTime()
@@ -119,10 +123,19 @@ export function buildEntityInsights(input: {
     const uniqueEvidence = new Map(evidence.map((item: any) =>
       [String(item.messageId || item.message_id || `${item.timestamp}:${item.excerpt}`), item]))
     const timestamps = [...uniqueEvidence.values()].map((item: any) => Number(item.timestamp || 0)).filter(value => value > 0)
-    const lastContactAt = timestamps.length ? Math.max(...timestamps) : null
+    const observedLastContactAt = timestamps.length ? Math.max(...timestamps) : null
+    const authoritativeEvidence = input.authoritativeEvidence?.[entity.id]
+    const lastContactCandidates = [
+      observedLastContactAt,
+      authoritativeEvidence?.lastEvidenceAt
+    ].map(value => Number(value || 0)).filter(value => value > 0)
+    const lastContactAt = lastContactCandidates.length ? Math.max(...lastContactCandidates) : null
+    const evidenceCount = authoritativeEvidence
+      ? Math.max(0, Number(authoritativeEvidence.evidenceTotal || 0))
+      : uniqueEvidence.size
     const daysSinceContact = lastContactAt ? Math.max(0, (now - lastContactAt * 1000) / 86_400_000) : Infinity
     const recencyScore = daysSinceContact <= 7 ? 40 : daysSinceContact <= 30 ? 28 : daysSinceContact <= 90 ? 15 : 0
-    const evidenceScore = Math.min(30, uniqueEvidence.size * 3)
+    const evidenceScore = Math.min(30, evidenceCount * 3)
     const relationScore = Math.min(20, relations.reduce((sum, relation) => sum + Number(relation.confidence || 0) * 10, 0))
     const taskScore = Math.min(10, tasks.length * 4)
     const strength = Math.round(Math.min(100, recencyScore + evidenceScore + relationScore + taskScore))
@@ -130,7 +143,7 @@ export function buildEntityInsights(input: {
       event.event_type === 'commitment' && event.status !== 'confirmed').length
     const explanation = [
       lastContactAt ? `最近证据：${Math.floor(daysSinceContact)} 天前` : '尚无带时间的互动证据',
-      `${uniqueEvidence.size} 条去重原文证据`,
+      `${evidenceCount} 条去重原文证据`,
       `${relations.length} 条已确认关系`,
       `${candidateRelations.length} 条关系待确认`,
       `${tasks.length} 项未完成关联任务`
@@ -140,7 +153,7 @@ export function buildEntityInsights(input: {
       strength,
       strengthLabel: strength >= 70 ? '强' : strength >= 35 ? '中' : '弱',
       lastContactAt,
-      evidenceCount: uniqueEvidence.size,
+      evidenceCount,
       relationCount: relations.length,
       pendingRelationCount: candidateRelations.length,
       openTaskCount: tasks.length,

@@ -149,7 +149,7 @@ import {
   paginateProjectRisks,
   paginateProjectTasks
 } from './projectInsights'
-import { buildDashboardRevisions } from './dashboardRevisions'
+import { buildDashboardRevisions, buildGraphWorkspaceRevision } from './dashboardRevisions'
 import { attachLocalImageOcr, attachLocalVoiceTranscript, recoverMessageSemantics } from './messageSemanticRecovery'
 import { sanitizeDiagnosticText } from './diagnosticRedaction'
 import { getSensitiveLogDiagnostics } from './sensitiveLogPolicy'
@@ -3969,7 +3969,8 @@ export class AiAssistantService {
   }
 
   getGraphWorkspace(options?: Partial<GraphViewportOptions>): any {
-    const graphRevision = personalMemoryStore.getGraphReviewRevision()
+    const focusEntityId = String(options?.focusEntityId || '').trim()
+    const graphRevision = buildGraphWorkspaceRevision(personalMemoryStore, Boolean(focusEntityId))
     const requestedRevision = String(options?.revision || '').trim()
     if (requestedRevision && requestedRevision !== graphRevision) {
       return {
@@ -3994,18 +3995,19 @@ export class AiAssistantService {
       relationStatus: ['candidate', 'confirmed'].includes(String(options?.relationStatus || ''))
         ? String(options?.relationStatus)
         : '',
-      focusEntityId: String(options?.focusEntityId || '').trim(),
+      focusEntityId,
       depth: Number(options?.depth || 1),
       maxNodes: Number(options?.maxNodes || 60)
     })
-    const focusEntity = options?.focusEntityId
+    const focusEntity = focusEntityId
       ? this.state.graph.entities.find(entity =>
-        entity.id === options.focusEntityId && entity.trustStatus !== 'rejected') || null
+        entity.id === focusEntityId && entity.trustStatus !== 'rejected') || null
       : null
     let focus: any = null
     if (focusEntity) {
       const mineTasks = this.state.tasks.filter(task => task.classification === 'mine')
       const memory = personalMemoryStore.getEntityMemory(focusEntity.id, 200)
+      const evidenceStats = personalMemoryStore.getEntityEvidenceStats(focusEntity.id)
       const allRelations = this.state.graph.relations
         .filter(relation => relation.status !== 'rejected' &&
           (relation.subjectId === focusEntity.id || relation.objectId === focusEntity.id))
@@ -4020,7 +4022,13 @@ export class AiAssistantService {
         claimTotal: memory.claimTotal,
         events: memory.events,
         eventTotal: memory.eventTotal,
-        tasks: mineTasks
+        tasks: mineTasks,
+        authoritativeEvidence: {
+          [focusEntity.id]: {
+            evidenceTotal: evidenceStats.activeEvidenceTotal,
+            lastEvidenceAt: evidenceStats.lastActiveEvidenceAt
+          }
+        }
       })
       const entityTaskRevision = this.getProjectDirectoryRevision()
       const relatedTasks = paginateEntityRelatedTasks(
@@ -4065,6 +4073,8 @@ export class AiAssistantService {
       focus = {
         entity: focusEntity,
         insight: insights[focusEntity.id] || null,
+        evidenceTotal: evidenceStats.evidenceTotal,
+        lastEvidenceAt: evidenceStats.lastEvidenceAt,
         claims: memory.claims,
         events: memory.events,
         relations: visibleRelations.map(relation => ({
@@ -4096,7 +4106,7 @@ export class AiAssistantService {
           .map(entity => [entity.id, entity.canonicalName]))
       }
     }
-    const completedRevision = personalMemoryStore.getGraphReviewRevision()
+    const completedRevision = buildGraphWorkspaceRevision(personalMemoryStore, Boolean(focusEntityId))
     if (completedRevision !== graphRevision) {
       return {
         viewport: {

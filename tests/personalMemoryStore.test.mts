@@ -3993,6 +3993,7 @@ test('project memory is scoped in SQL before limits and preserves authoritative 
   const entityEvidencePage = store.listEntityEvidencePage({
     entityId: 'project-memory-scope', limit: 40
   })
+  const entityEvidenceStats = store.getEntityEvidenceStats('project-memory-scope')
   const entityEvidencePage2 = store.listEntityEvidencePage({
     entityId: 'project-memory-scope',
     limit: 40,
@@ -4001,6 +4002,10 @@ test('project memory is scoped in SQL before limits and preserves authoritative 
   })
   assert.equal(entityEvidencePage.total, 750)
   assert.equal(entityEvidencePage.unfilteredTotal, 750)
+  assert.equal(entityEvidenceStats.evidenceTotal, 750)
+  assert.equal(entityEvidenceStats.lastEvidenceAt, 1_900_000_124)
+  assert.equal(entityEvidenceStats.activeEvidenceTotal, 750)
+  assert.equal(entityEvidenceStats.lastActiveEvidenceAt, 1_900_000_124)
   assert.equal(new Set([...entityEvidencePage.items, ...entityEvidencePage2.items]
     .map(item => `${item.source_id}:${item.session_id}:${item.message_id}`)).size, 80)
   assert.equal(store.listEntityEvidencePage({
@@ -4104,6 +4109,69 @@ test('direct entity evidence follows reversible identity merges without copying 
   assert.equal(store.listEntityEvidencePage({
     entityId: entities[0].id
   }).total, 1)
+}))
+
+test('entity evidence stats keep rejected audit evidence out of trusted relationship strength', () => withStore(store => {
+  store.syncGraph({
+    entities: [{
+      id: 'evidence-stats-person',
+      type: 'person',
+      canonicalName: '证据统计人物',
+      confidence: 1,
+      trustStatus: 'confirmed',
+      aliases: [],
+      accountIds: []
+    }],
+    relations: [],
+    reviewQueue: []
+  } as any)
+  store.upsertClaims([
+    {
+      id: 'evidence-stats-active',
+      subjectId: 'evidence-stats-person',
+      predicate: '负责',
+      objectValue: '可信事项',
+      confidence: 0.9,
+      status: 'confirmed',
+      sourceNature: 'self_statement',
+      searchText: '可信事项',
+      evidence: [{
+        messageId: 'active-message',
+        sessionId: 'active-session',
+        timestamp: 1_800_000_000,
+        excerpt: '有效证据'
+      }]
+    },
+    {
+      id: 'evidence-stats-rejected',
+      subjectId: 'evidence-stats-person',
+      predicate: '居住地',
+      objectValue: '已拒绝事项',
+      confidence: 0.9,
+      status: 'candidate',
+      sourceNature: 'other_statement',
+      searchText: '已拒绝事项',
+      evidence: [{
+        messageId: 'rejected-message',
+        sessionId: 'rejected-session',
+        timestamp: 1_900_000_000,
+        excerpt: '只保留作审计的拒绝证据'
+      }]
+    }
+  ])
+  store.updateMemoryItemStatus('claim', 'evidence-stats-rejected', 'rejected')
+  assert.equal(
+    (store as any).db.prepare(`SELECT status FROM claims WHERE id=?`)
+      .get('evidence-stats-rejected').status,
+    'rejected'
+  )
+
+  assert.deepEqual(store.getEntityEvidenceStats('evidence-stats-person'), {
+    evidenceTotal: 2,
+    lastEvidenceAt: 1_900_000_000,
+    activeEvidenceTotal: 1,
+    lastActiveEvidenceAt: 1_800_000_000
+  })
 }))
 
 test('task dashboard keeps structure but loads evidence and audit history on demand', () => {
@@ -8830,6 +8898,23 @@ test('entity insight strength is explainable and deduplicates shared evidence', 
   assert.equal(insight.strength, 62)
   assert.equal(insight.strengthLabel, '中')
   assert.ok(insight.explanation.some(item => item.includes('去重原文证据')))
+
+  const completeInsight = buildEntityInsights({
+    entities: [
+      { id: 'person-a', canonicalName: '张三', aliases: [], accountIds: [], trustStatus: 'confirmed' }
+    ],
+    relations: [],
+    claims: [],
+    events: [],
+    tasks: [],
+    authoritativeEvidence: {
+      'person-a': { evidenceTotal: 750, lastEvidenceAt: 1_775_000_250 }
+    },
+    now: new Date(1_775_000_300_000)
+  })['person-a']
+  assert.equal(completeInsight.evidenceCount, 750)
+  assert.equal(completeInsight.lastContactAt, 1_775_000_250)
+  assert.ok(completeInsight.explanation.includes('750 条去重原文证据'))
 })
 
 test('entity dossiers derive bounded related tasks from the authoritative task set', () => {

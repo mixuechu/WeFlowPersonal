@@ -1781,7 +1781,7 @@ function AiAssistantPage() {
     }
   }, [
     graphQuery, graphRelationType, graphRelationStatus, selectedEntityId, graphFocusDepth, graphNodeLimit,
-    dashboard?.graphRevision, dashboard?.taskRevision, graphWorkspaceRefreshKey
+    dashboard?.graphRevision, dashboard?.projectRevision, graphWorkspaceRefreshKey
   ])
 
   useEffect(() => {
@@ -7346,7 +7346,7 @@ function AiAssistantPage() {
                   <small>别名：{selectedEntity.aliases?.join('、') || '无'}</small>
                   <small>微信：{selectedEntity.accountIds?.join('、') || '未关联'}</small>
                   <small>邮箱：{selectedEntity.externalIdentities?.filter((identity: any) => identity.platform === 'email').map((identity: any) => identity.accountId).join('、') || '未关联'}</small>
-                  <small>证据消息：{selectedEntity.evidenceMessageIds?.length || 0} 条</small>
+                  <small>关联原文：{Number(graphWorkspace.focus?.evidenceTotal || 0)} 条</small>
                   <button className="assistant-open-dossier" onClick={() => setShowEntityDossier(true)}>打开完整档案</button>
                   <button className="assistant-forget-entity" onClick={() => void forgetSelectedEntity()} disabled={forgettingEntityId === selectedEntity.id}>
                     {forgettingEntityId === selectedEntity.id ? '正在彻底清理…' : '彻底遗忘此实体'}
