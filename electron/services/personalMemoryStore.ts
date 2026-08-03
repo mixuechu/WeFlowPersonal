@@ -9493,6 +9493,63 @@ export class PersonalMemoryStore {
     return { ...message, citations, groundingAudit }
   }
 
+  previewDeleteAssistantConversation(id: string): any {
+    if (!this.db) throw new Error('个人记忆数据库尚未初始化')
+    const conversationId = String(id || '').trim()
+    const conversation = this.db.prepare(`
+      SELECT id,title,created_at,updated_at
+      FROM assistant_conversations WHERE id=?
+    `).get(conversationId) as any
+    if (!conversation) throw new Error('问答会话不存在或已被删除')
+    const messages = this.db.prepare(`
+      SELECT id,conversation_id,role,content,citations_json,grounding_json,exchange_id,created_at
+      FROM assistant_messages WHERE conversation_id=?
+      ORDER BY created_at,id
+    `).all(conversationId) as any[]
+    const dependencies = this.db.prepare(`
+      SELECT message_id,conversation_id,statement_index,document_id,content_hash,created_at
+      FROM assistant_answer_dependencies WHERE conversation_id=?
+      ORDER BY message_id,statement_index,document_id
+    `).all(conversationId) as any[]
+    const reviews = this.db.prepare(`
+      SELECT r.id,r.message_id,r.state_key,r.action,r.created_at
+      FROM assistant_answer_review_decisions r
+      JOIN assistant_messages m ON m.id=r.message_id
+      WHERE m.conversation_id=?
+      ORDER BY r.id
+    `).all(conversationId) as any[]
+    const assistantMessages = messages.filter(row => row.role === 'assistant')
+    const citationCount = assistantMessages.reduce((total, row) => {
+      try {
+        const citations = JSON.parse(String(row.citations_json || '[]'))
+        return total + (Array.isArray(citations) ? citations.length : 0)
+      } catch {
+        return total
+      }
+    }, 0)
+    const identitySha256 = createHash('sha256').update(JSON.stringify({
+      conversation,
+      messages,
+      dependencies,
+      reviews
+    })).digest('hex')
+    return {
+      conversationId,
+      title: String(conversation.title || '未命名对话'),
+      createdAt: String(conversation.created_at || ''),
+      updatedAt: String(conversation.updated_at || ''),
+      counts: {
+        messages: messages.length,
+        userMessages: messages.length - assistantMessages.length,
+        assistantMessages: assistantMessages.length,
+        citations: citationCount,
+        dependencies: dependencies.length,
+        reviews: reviews.length
+      },
+      identitySha256
+    }
+  }
+
   deleteAssistantConversation(id: string): boolean {
     if (!this.db) return false
     return this.db.prepare('DELETE FROM assistant_conversations WHERE id=?').run(id).changes > 0

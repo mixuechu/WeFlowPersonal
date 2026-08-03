@@ -5228,6 +5228,80 @@ test('assistant exchange rolls back conversation and question when answer persis
   `).get().count), 0)
 }))
 
+test('assistant conversation deletion preview binds messages, dependencies and reviews', () => withStore(store => {
+  const saved = store.saveAssistantExchangeDetailed(
+    '删除范围问题',
+    '删除范围回答',
+    [{ documentId: 'claim:preview', title: '证据', type: 'claim' }],
+    undefined,
+    {
+      version: 'statement-citations-v1',
+      statementCitations: [['claim:preview']]
+    }
+  )
+  const database = (store as any).db
+  database.prepare(`
+    INSERT INTO assistant_answer_review_decisions(message_id,state_key,action,created_at)
+    VALUES(?,?,?,?)
+  `).run(saved.answerMessageId, 'review-state', 'acknowledged', new Date().toISOString())
+
+  const first = store.previewDeleteAssistantConversation(saved.conversationId)
+  assert.equal(first.counts.messages, 2)
+  assert.equal(first.counts.userMessages, 1)
+  assert.equal(first.counts.assistantMessages, 1)
+  assert.equal(first.counts.citations, 1)
+  assert.equal(first.counts.dependencies, 1)
+  assert.equal(first.counts.reviews, 1)
+  assert.match(first.identitySha256, /^[a-f0-9]{64}$/)
+
+  store.saveAssistantExchange('后台新增问题', '后台新增回答', [], saved.conversationId)
+  const afterMessage = store.previewDeleteAssistantConversation(saved.conversationId)
+  assert.notEqual(afterMessage.identitySha256, first.identitySha256)
+  assert.equal(afterMessage.counts.messages, 4)
+
+  database.prepare(`
+    INSERT INTO assistant_answer_review_decisions(message_id,state_key,action,created_at)
+    VALUES(?,?,?,?)
+  `).run(saved.answerMessageId, 'review-state-2', 'reopened', new Date().toISOString())
+  const afterReview = store.previewDeleteAssistantConversation(saved.conversationId)
+  assert.notEqual(afterReview.identitySha256, afterMessage.identitySha256)
+  assert.equal(afterReview.counts.reviews, 2)
+
+  assert.equal(store.deleteAssistantConversation(saved.conversationId), true)
+  assert.equal(store.getAssistantConversation(saved.conversationId), null)
+  assert.equal(Number(database.prepare(`
+    SELECT COUNT(*) AS count FROM assistant_answer_review_decisions
+  `).get().count), 0)
+}))
+
+test('assistant conversation deletion identity survives reopen and detects later turns', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'weflow-conversation-delete-preview-reopen-'))
+  const databasePath = join(directory, 'memory.sqlite')
+  const key = randomBytes(32)
+  const first = new PersonalMemoryStore()
+  const second = new PersonalMemoryStore()
+  try {
+    first.initialize(databasePath, key)
+    const conversationId = first.saveAssistantExchange('重启删除问题', '重启删除回答', [])
+    const beforeRestart = first.previewDeleteAssistantConversation(conversationId)
+    first.close()
+
+    second.initialize(databasePath, key)
+    const afterRestart = second.previewDeleteAssistantConversation(conversationId)
+    assert.equal(afterRestart.identitySha256, beforeRestart.identitySha256)
+    assert.deepEqual(afterRestart.counts, beforeRestart.counts)
+
+    second.saveAssistantExchange('重启后新增问题', '重启后新增回答', [], conversationId)
+    const afterNewTurn = second.previewDeleteAssistantConversation(conversationId)
+    assert.notEqual(afterNewTurn.identitySha256, beforeRestart.identitySha256)
+    assert.equal(afterNewTurn.counts.messages, 4)
+  } finally {
+    first.close()
+    second.close()
+    rmSync(directory, { recursive: true, force: true })
+  }
+})
+
 test('legacy adjacent question and answer receive one stable exchange identity after reopen', () => {
   const directory = mkdtempSync(join(tmpdir(), 'weflow-assistant-exchange-migration-'))
   const databasePath = join(directory, 'memory.sqlite')

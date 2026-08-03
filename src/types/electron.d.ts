@@ -1890,7 +1890,26 @@ export interface ElectronAPI {
       ) => Promise<any>
       getAssistantAnswerReviewDecisions: (messageId: string, options?: any) => Promise<any>
       getAssistantConversation: (id: string, options?: any) => Promise<any>
-      deleteAssistantConversation: (id: string) => Promise<boolean>
+      previewDeleteAssistantConversation: (id: string) => Promise<{
+        conversationId: string
+        title: string
+        createdAt: string
+        updatedAt: string
+        counts: {
+          messages: number
+          userMessages: number
+          assistantMessages: number
+          citations: number
+          dependencies: number
+          reviews: number
+        }
+        identitySha256: string
+        previewToken: string
+      }>
+      deleteAssistantConversation: (
+        id: string,
+        input?: { previewToken?: string; confirmation?: string }
+      ) => Promise<boolean>
       getConversationSources: () => Promise<any[]>
       getDataSources: () => Promise<any[]>
       getEventTimeline: (options?: any) => Promise<{

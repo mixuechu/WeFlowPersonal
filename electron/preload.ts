@@ -707,7 +707,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
       ipcRenderer.invoke('ai-assistant:getAssistantAnswerReviewDecisions', messageId, options),
     getAssistantConversation: (id: string, options?: any) =>
       ipcRenderer.invoke('ai-assistant:getAssistantConversation', id, options),
-    deleteAssistantConversation: (id: string) => ipcRenderer.invoke('ai-assistant:deleteAssistantConversation', id),
+    previewDeleteAssistantConversation: (id: string) =>
+      ipcRenderer.invoke('ai-assistant:previewDeleteAssistantConversation', id),
+    deleteAssistantConversation: (id: string, input?: any) =>
+      ipcRenderer.invoke('ai-assistant:deleteAssistantConversation', id, input),
     getConversationSources: () => ipcRenderer.invoke('ai-assistant:getConversationSources'),
     getDataSources: () => ipcRenderer.invoke('ai-assistant:getDataSources'),
     getEventTimeline: (options?: any) => ipcRenderer.invoke('ai-assistant:getEventTimeline', options),

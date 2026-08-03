@@ -4642,7 +4642,10 @@ function registerIpcHandlers() {
   ) => aiAssistantService.getAssistantAnswerReviewDecisions(messageId, options))
   ipcMain.handle('ai-assistant:getAssistantConversation', (_, id: string, options?: any) =>
     aiAssistantService.getAssistantConversation(id, options))
-  ipcMain.handle('ai-assistant:deleteAssistantConversation', (_, id: string) => aiAssistantService.deleteAssistantConversation(id))
+  ipcMain.handle('ai-assistant:previewDeleteAssistantConversation', (_, id: string) =>
+    aiAssistantService.previewDeleteAssistantConversation(id))
+  ipcMain.handle('ai-assistant:deleteAssistantConversation', (_, id: string, input?: any) =>
+    aiAssistantService.deleteAssistantConversation(id, input))
   ipcMain.handle('ai-assistant:getConversationSources', () => aiAssistantService.getConversationSources())
   ipcMain.handle('ai-assistant:getDataSources', () => aiAssistantService.getDataSources())
   ipcMain.handle('ai-assistant:getEventTimeline', (_, options?: any) => aiAssistantService.getEventTimeline(options))

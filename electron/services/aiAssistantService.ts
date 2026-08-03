@@ -85,6 +85,10 @@ import {
   buildStructuredMemoryDeletionPreviewToken,
   type StructuredMemoryDeletionReason
 } from './structuredMemoryDeletionPolicy'
+import {
+  assertAssistantConversationDeletionConfirmation,
+  buildAssistantConversationDeletionPreviewToken
+} from './assistantConversationDeletionPolicy'
 import { applyRelationConfirmation, planRelationConfirmation, type RelationCorrection } from './relationCorrectionPolicy'
 import {
   enqueueUniqueNotification,
@@ -5579,8 +5583,25 @@ export class AiAssistantService {
     return enriched
   }
 
-  deleteAssistantConversation(id: string): boolean {
-    return personalMemoryStore.deleteAssistantConversation(String(id || '').trim())
+  previewDeleteAssistantConversation(id: string): any {
+    const preview = personalMemoryStore.previewDeleteAssistantConversation(String(id || '').trim())
+    return {
+      ...preview,
+      previewToken: buildAssistantConversationDeletionPreviewToken({
+        conversationId: preview.conversationId,
+        identitySha256: preview.identitySha256
+      })
+    }
+  }
+
+  deleteAssistantConversation(id: string, input?: any): boolean {
+    const conversationId = String(id || '').trim()
+    const preview = personalMemoryStore.previewDeleteAssistantConversation(conversationId)
+    assertAssistantConversationDeletionConfirmation(input || {}, {
+      conversationId: preview.conversationId,
+      identitySha256: preview.identitySha256
+    })
+    return personalMemoryStore.deleteAssistantConversation(conversationId)
   }
 
   correctClaim(id: string, input: any): any {

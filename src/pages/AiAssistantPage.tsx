@@ -275,6 +275,9 @@ function AiAssistantPage() {
   const [memoryEvidenceLoadingMore, setMemoryEvidenceLoadingMore] = useState(false)
   const memoryEvidenceArchiveGate = useRef(new LatestRequestGate())
   const memoryConversationGate = useRef(new LatestRequestGate())
+  const [conversationDeletionDialog, setConversationDeletionDialog] = useState<any>(null)
+  const [conversationDeletionConfirmation, setConversationDeletionConfirmation] = useState('')
+  const conversationDeletionGate = useRef(new LatestRequestGate())
   const [editingClaim, setEditingClaim] = useState<any>(null)
   const [editingEvent, setEditingEvent] = useState<any>(null)
   const [memoryDeletionDialog, setMemoryDeletionDialog] = useState<any>(null)
@@ -3007,11 +3010,71 @@ function AiAssistantPage() {
     setMemoryQuestion('')
   }
 
-  const deleteMemoryConversation = async () => {
-    if (!memoryConversationId || !window.confirm('确定删除这段本地问答历史吗？该操作不会删除引用的原始记忆。')) return
-    await window.electronAPI.aiAssistant.deleteAssistantConversation(memoryConversationId)
-    startNewMemoryConversation()
-    await load()
+  const deleteMemoryConversation = async (targetConversationId?: string) => {
+    const conversationId = String(targetConversationId || memoryConversationId || '')
+    if (!conversationId) return
+    const request = conversationDeletionGate.current.begin()
+    setConversationDeletionConfirmation('')
+    setConversationDeletionDialog({
+      conversationId,
+      title: memoryConversation?.title || '',
+      status: 'loading'
+    })
+    try {
+      const preview = await window.electronAPI.aiAssistant.previewDeleteAssistantConversation(conversationId)
+      if (!conversationDeletionGate.current.isCurrent(request)) return
+      setConversationDeletionDialog({
+        conversationId,
+        title: preview.title,
+        preview,
+        status: 'ready'
+      })
+    } catch (error: any) {
+      if (!conversationDeletionGate.current.isCurrent(request)) return
+      setConversationDeletionDialog({
+        conversationId,
+        title: memoryConversation?.title || '',
+        status: 'error',
+        error: error?.message || String(error)
+      })
+    }
+  }
+
+  const closeConversationDeletionDialog = () => {
+    conversationDeletionGate.current.invalidate()
+    setConversationDeletionDialog(null)
+    setConversationDeletionConfirmation('')
+  }
+
+  const confirmConversationDeletion = async () => {
+    if (!conversationDeletionDialog?.preview ||
+      conversationDeletionDialog.status !== 'ready' ||
+      conversationDeletionConfirmation !== '删除对话') return
+    const request = conversationDeletionGate.current.begin()
+    const { conversationId, preview } = conversationDeletionDialog
+    setConversationDeletionDialog((current: any) => ({
+      ...current,
+      status: 'deleting',
+      error: undefined
+    }))
+    try {
+      await window.electronAPI.aiAssistant.deleteAssistantConversation(conversationId, {
+        previewToken: preview.previewToken,
+        confirmation: conversationDeletionConfirmation
+      })
+      if (!conversationDeletionGate.current.isCurrent(request)) return
+      closeConversationDeletionDialog()
+      if (memoryConversationId === conversationId) startNewMemoryConversation()
+      setMessage('已删除这段本地问答历史；引用的原始记忆没有被删除。')
+      await load()
+    } catch (error: any) {
+      if (!conversationDeletionGate.current.isCurrent(request)) return
+      setConversationDeletionDialog((current: any) => ({
+        ...current,
+        status: 'error',
+        error: error?.message || String(error)
+      }))
+    }
   }
 
   const createTaskFromMemory = async () => {
@@ -6280,6 +6343,70 @@ function AiAssistantPage() {
                     !memoryFeedbackDeleteDialog.preview?.rowsToDelete}
                   onClick={() => void confirmMemoryFeedbackDeletion()}>
                   {memoryFeedbackDeleteDialog.status === 'deleting' ? '正在清理…' : '确认永久删除'}
+                </button>}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {conversationDeletionDialog && (
+        <div className="assistant-modal-backdrop" role="presentation">
+          <div className="assistant-modal assistant-delete-modal" role="dialog" aria-modal="true"
+            aria-labelledby="conversation-delete-title">
+            <div className="assistant-modal-title"><div>
+              <h2 id="conversation-delete-title">删除本地问答历史</h2>
+              <p>只删除这段对话和随回答保存的引用记录，不会删除事实、事件、关系或原始资料。</p>
+            </div><button aria-label="关闭问答历史删除确认"
+              disabled={conversationDeletionDialog.status === 'deleting'}
+              onClick={closeConversationDeletionDialog}><X size={16} /></button></div>
+            {conversationDeletionDialog.status === 'loading' && <div className="assistant-delete-status">
+              <RefreshCw size={16} /><span><strong>正在核对对话范围…</strong>
+                <small>只读取本机加密记忆库，不会上传数据。</small></span>
+            </div>}
+            {conversationDeletionDialog.status === 'error' && <div className="assistant-error">
+              <strong>无法删除问答历史</strong>
+              <span>{conversationDeletionDialog.error || '未知错误'}</span>
+              {String(conversationDeletionDialog.error || '').includes('预览后发生了变化') &&
+                <button onClick={() => {
+                  const conversationId = conversationDeletionDialog.conversationId
+                  closeConversationDeletionDialog()
+                  void deleteMemoryConversation(conversationId)
+                }}>重新核对范围</button>}
+            </div>}
+            {(conversationDeletionDialog.status === 'ready' ||
+              conversationDeletionDialog.status === 'deleting') && <>
+              <div className="assistant-delete-preview">
+                <strong>{conversationDeletionDialog.preview.title || '未命名对话'}</strong>
+                <p>
+                  将删除 {conversationDeletionDialog.preview.counts.messages} 条消息
+                  （本人提问 {conversationDeletionDialog.preview.counts.userMessages} 条、
+                  AI 回答 {conversationDeletionDialog.preview.counts.assistantMessages} 条），
+                  清理 {conversationDeletionDialog.preview.counts.citations} 条展示引用、
+                  {conversationDeletionDialog.preview.counts.dependencies} 条逐句证据依赖
+                  和 {conversationDeletionDialog.preview.counts.reviews} 条回答审阅记录。
+                </p>
+              </div>
+              <label><span>输入“删除对话”确认</span><input autoFocus
+                value={conversationDeletionConfirmation}
+                disabled={conversationDeletionDialog.status === 'deleting'}
+                onChange={event => setConversationDeletionConfirmation(event.target.value)}
+                onKeyDown={event => {
+                  if (event.key === 'Enter' && conversationDeletionConfirmation === '删除对话') {
+                    void confirmConversationDeletion()
+                  }
+                }}
+                placeholder="删除对话" /></label>
+            </>}
+            <div className="assistant-modal-actions">
+              <button disabled={conversationDeletionDialog.status === 'deleting'}
+                onClick={closeConversationDeletionDialog}>取消</button>
+              {(conversationDeletionDialog.status === 'ready' ||
+                conversationDeletionDialog.status === 'deleting') &&
+                <button className="danger"
+                  disabled={conversationDeletionConfirmation !== '删除对话' ||
+                    conversationDeletionDialog.status === 'deleting'}
+                  onClick={() => void confirmConversationDeletion()}>
+                  {conversationDeletionDialog.status === 'deleting' ? '正在删除…' : '确认删除对话'}
                 </button>}
             </div>
           </div>
