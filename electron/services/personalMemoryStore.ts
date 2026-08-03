@@ -730,6 +730,7 @@ export class PersonalMemoryStore {
     this.repairStructuredEvidenceReferences()
     this.repairGenericSearchEvidenceIdentity()
     this.ensureMemorySearchRevisionTriggers()
+    this.ensureStructuredMemoryRevisionTriggers()
     this.repairStructuredSearchIndex()
     this.backfillMergeHistoryNames()
     this.db.exec(`CREATE INDEX IF NOT EXISTS idx_memory_corrections_item
@@ -952,6 +953,88 @@ export class PersonalMemoryStore {
       expectedTriggers,
       installedTriggers,
       healthy: installedTriggers === expectedTriggers
+    }
+  }
+
+  private structuredMemoryRevisionTriggerNames(): string[] {
+    const tables = [
+      'claims',
+      'events',
+      'evidence',
+      'event_participants',
+      'entities',
+      'memory_corrections',
+      'memory_review_decisions'
+    ]
+    return tables.flatMap(table => ['insert', 'update', 'delete']
+      .map(operation => `trg_structured_memory_revision_${table}_${operation}`))
+  }
+
+  private ensureStructuredMemoryRevisionTriggers(): void {
+    if (!this.db) return
+    const tables = [
+      'claims',
+      'events',
+      'evidence',
+      'event_participants',
+      'entities',
+      'memory_corrections',
+      'memory_review_decisions'
+    ]
+    this.db.prepare(`
+      INSERT INTO schema_meta(key,value,updated_at)
+      VALUES('structured_memory_revision','0',?)
+      ON CONFLICT(key) DO NOTHING
+    `).run(new Date().toISOString())
+    const statements: string[] = []
+    for (const table of tables) {
+      for (const operation of ['INSERT', 'UPDATE', 'DELETE']) {
+        const name = `trg_structured_memory_revision_${table}_${operation.toLowerCase()}`
+        statements.push(`DROP TRIGGER IF EXISTS ${name};`)
+        statements.push(`
+          CREATE TRIGGER ${name} AFTER ${operation} ON ${table}
+          BEGIN
+            UPDATE schema_meta
+            SET value=CAST(CAST(value AS INTEGER)+1 AS TEXT),
+              updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')
+            WHERE key='structured_memory_revision';
+          END;
+        `)
+      }
+    }
+    this.db.exec(statements.join('\n'))
+  }
+
+  getStructuredMemoryRevision(): string {
+    if (!this.db) return '0'
+    return String((this.db.prepare(`
+      SELECT value FROM schema_meta WHERE key='structured_memory_revision'
+    `).get() as any)?.value || '0')
+  }
+
+  getStructuredMemoryRevisionHealth(): any {
+    const expectedNames = this.structuredMemoryRevisionTriggerNames()
+    if (!this.db) {
+      return {
+        version: 'structured-memory-revision-v1',
+        revision: '0',
+        expectedTriggers: expectedNames.length,
+        installedTriggers: 0,
+        healthy: false
+      }
+    }
+    const rows = this.db.prepare(`
+      SELECT name FROM sqlite_master
+      WHERE type='trigger' AND name LIKE 'trg_structured_memory_revision_%'
+    `).all() as Array<{ name: string }>
+    const installedNames = new Set(rows.map(row => String(row.name)))
+    return {
+      version: 'structured-memory-revision-v1',
+      revision: this.getStructuredMemoryRevision(),
+      expectedTriggers: expectedNames.length,
+      installedTriggers: expectedNames.filter(name => installedNames.has(name)).length,
+      healthy: installedNames.size === expectedNames.length
+        && expectedNames.every(name => installedNames.has(name))
     }
   }
 
@@ -2394,6 +2477,7 @@ export class PersonalMemoryStore {
     const taskSearchIndexHealthy = taskSearchIndex.version === 0
       || taskSearchIndex.currentMismatches === 0
     const memorySearchRevision = this.getMemorySearchRevisionHealth()
+    const structuredMemoryRevision = this.getStructuredMemoryRevisionHealth()
     return {
       healthy: integrity === 'ok'
         && structuredEvidenceMigration.constraintsHealthy
@@ -2401,7 +2485,8 @@ export class PersonalMemoryStore {
         && genericSearchEvidenceIdentity.constraintsHealthy
         && structuredSearchIndexHealthy
         && taskSearchIndexHealthy
-        && memorySearchRevision.healthy,
+        && memorySearchRevision.healthy
+        && structuredMemoryRevision.healthy,
       integrity,
       foreignKeyViolations,
       referentialIntegrityHealthy,
@@ -2409,6 +2494,7 @@ export class PersonalMemoryStore {
       structuredSearchIndexHealthy,
       taskSearchIndexHealthy,
       memorySearchRevisionHealthy: memorySearchRevision.healthy,
+      structuredMemoryRevisionHealthy: structuredMemoryRevision.healthy,
       encryption: {
         enabled: Boolean(this.encryptionKey),
         cipher: this.encryptionKey ? String(this.db.pragma('cipher', { simple: true }) || '') : 'none',
@@ -2424,6 +2510,7 @@ export class PersonalMemoryStore {
       structuredSearchIndex,
       taskSearchIndex,
       memorySearchRevision,
+      structuredMemoryRevision,
       backups
     }
   }
@@ -4578,8 +4665,15 @@ export class PersonalMemoryStore {
     to?: string
     limit?: number
     offset?: number
-  } = {}): { items: any[]; total: number; hasMore: boolean } {
-    if (!this.db) return { items: [], total: 0, hasMore: false }
+    revision?: string
+  } = {}): { items: any[]; total: number; hasMore: boolean; revision: string; stale: boolean } {
+    if (!this.db) return { items: [], total: 0, hasMore: false, revision: '0', stale: false }
+    const revision = this.getStructuredMemoryRevision()
+    const offset = Math.max(0, Number(options.offset || 0))
+    const expectedRevision = String(options.revision || '').trim()
+    if (offset > 0 && expectedRevision && expectedRevision !== revision) {
+      return { items: [], total: 0, hasMore: false, revision, stale: true }
+    }
     const conditions = options.status ? [] : [`ev.status!='rejected'`]
     const parameters: Array<string | number> = []
     if (options.status) {
@@ -4616,7 +4710,6 @@ export class PersonalMemoryStore {
     const total = Number((this.db.prepare(`SELECT COUNT(*) AS count FROM events ev WHERE ${where}`)
       .get(...parameters) as any)?.count || 0)
     const limit = Math.max(1, Math.min(300, Number(options.limit || 100)))
-    const offset = Math.max(0, Number(options.offset || 0))
     const rows = this.db.prepare(`
       SELECT ev.*,
         (SELECT COUNT(*) FROM memory_corrections mc
@@ -4660,15 +4753,22 @@ export class PersonalMemoryStore {
       WHERE item_kind='event' AND item_id=?
       ORDER BY id DESC LIMIT 20
     `)
+    const items = rows.map(event => ({
+      ...event,
+      participants: participantStatement.all(event.id) as any[],
+      evidence: (evidenceStatement.all(event.id, MEMORY_CARD_EVIDENCE_LIMIT) as any[]).reverse(),
+      review_history: reviewStatement.all(event.id) as any[]
+    }))
+    const completedRevision = this.getStructuredMemoryRevision()
+    if (completedRevision !== revision) {
+      return { items: [], total: 0, hasMore: false, revision: completedRevision, stale: true }
+    }
     return {
-      items: rows.map(event => ({
-        ...event,
-        participants: participantStatement.all(event.id) as any[],
-        evidence: (evidenceStatement.all(event.id, MEMORY_CARD_EVIDENCE_LIMIT) as any[]).reverse(),
-        review_history: reviewStatement.all(event.id) as any[]
-      })),
+      items,
       total,
-      hasMore: offset + rows.length < total
+      hasMore: offset + rows.length < total,
+      revision,
+      stale: false
     }
   }
 
@@ -4681,8 +4781,15 @@ export class PersonalMemoryStore {
     to?: string
     limit?: number
     offset?: number
-  } = {}): { items: any[]; total: number; hasMore: boolean } {
-    if (!this.db) return { items: [], total: 0, hasMore: false }
+    revision?: string
+  } = {}): { items: any[]; total: number; hasMore: boolean; revision: string; stale: boolean } {
+    if (!this.db) return { items: [], total: 0, hasMore: false, revision: '0', stale: false }
+    const revision = this.getStructuredMemoryRevision()
+    const offset = Math.max(0, Math.min(1_000_000, Math.floor(Number(options.offset) || 0)))
+    const expectedRevision = String(options.revision || '').trim()
+    if (offset > 0 && expectedRevision && expectedRevision !== revision) {
+      return { items: [], total: 0, hasMore: false, revision, stale: true }
+    }
     const conditions: string[] = []
     const parameters: Array<string | number> = []
     if (options.status) {
@@ -4726,7 +4833,6 @@ export class PersonalMemoryStore {
     const total = Number((this.db.prepare(`SELECT COUNT(*) AS count FROM claims c WHERE ${where}`)
       .get(...parameters) as any)?.count || 0)
     const limit = Math.max(1, Math.min(100, Math.floor(Number(options.limit) || 40)))
-    const offset = Math.max(0, Math.min(1_000_000, Math.floor(Number(options.offset) || 0)))
     const rows = this.db.prepare(`
       SELECT c.*,s.canonical_name AS subject_name,o.canonical_name AS object_entity_name,
         (SELECT COUNT(*) FROM memory_corrections mc
@@ -4767,14 +4873,21 @@ export class PersonalMemoryStore {
       WHERE item_kind='claim' AND item_id=?
       ORDER BY id DESC LIMIT 20
     `)
+    const items = rows.map(claim => ({
+      ...claim,
+      evidence: (evidenceStatement.all(claim.id, MEMORY_CARD_EVIDENCE_LIMIT) as any[]).reverse(),
+      review_history: reviewStatement.all(claim.id) as any[]
+    }))
+    const completedRevision = this.getStructuredMemoryRevision()
+    if (completedRevision !== revision) {
+      return { items: [], total: 0, hasMore: false, revision: completedRevision, stale: true }
+    }
     return {
-      items: rows.map(claim => ({
-        ...claim,
-        evidence: (evidenceStatement.all(claim.id, MEMORY_CARD_EVIDENCE_LIMIT) as any[]).reverse(),
-        review_history: reviewStatement.all(claim.id) as any[]
-      })),
+      items,
       total,
-      hasMore: offset + rows.length < total
+      hasMore: offset + rows.length < total,
+      revision,
+      stale: false
     }
   }
 

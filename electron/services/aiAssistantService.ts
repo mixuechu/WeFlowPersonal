@@ -3647,7 +3647,8 @@ export class AiAssistantService {
       from: String(options?.from || ''),
       to: String(options?.to || ''),
       limit: Number(options?.limit || 100),
-      offset: Number(options?.offset || 0)
+      offset: Number(options?.offset || 0),
+      revision: String(options?.revision || '')
     })
   }
 
@@ -3664,7 +3665,8 @@ export class AiAssistantService {
       from: String(options?.from || ''),
       to: String(options?.to || ''),
       limit: Number(options?.limit || 40),
-      offset: Number(options?.offset || 0)
+      offset: Number(options?.offset || 0),
+      revision: String(options?.revision || '')
     })
   }
 

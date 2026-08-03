@@ -1850,8 +1850,12 @@ export interface ElectronAPI {
       deleteAssistantConversation: (id: string) => Promise<boolean>
       getConversationSources: () => Promise<any[]>
       getDataSources: () => Promise<any[]>
-      getEventTimeline: (options?: any) => Promise<{ items: any[]; total: number; hasMore: boolean }>
-      getClaimArchive: (options?: any) => Promise<{ items: any[]; total: number; hasMore: boolean }>
+      getEventTimeline: (options?: any) => Promise<{
+        items: any[]; total: number; hasMore: boolean; revision: string; stale: boolean
+      }>
+      getClaimArchive: (options?: any) => Promise<{
+        items: any[]; total: number; hasMore: boolean; revision: string; stale: boolean
+      }>
       getCalendarAuthorization: () => Promise<{ available: boolean; authorization: string }>
       requestCalendarAccess: () => Promise<{ available: boolean; authorization: string; granted: boolean }>
       listCalendars: () => Promise<Array<{ id: string; title: string; source: string; type: string }>>

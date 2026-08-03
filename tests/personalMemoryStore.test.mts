@@ -954,7 +954,18 @@ test('event timeline filters cross-source evidence, status and time with stable 
   assert.equal(calendar.items[0].id, 'cancelled-event')
   assert.equal(calendar.items[0].source_id, 'calendar')
   assert.equal(calendar.hasMore, true)
+  assert.equal(calendar.stale, false)
   assert.equal(calendar.items[0].evidence[0].session_id, 'data-source:calendar:work')
+  ;(store as any).db.prepare(`UPDATE events SET updated_at=? WHERE id=?`)
+    .run('2026-08-03T00:00:00.000Z', 'wechat-event')
+  const staleCalendarPage = store.listEventTimeline({
+    sourceId: 'calendar',
+    offset: 1,
+    limit: 1,
+    revision: calendar.revision
+  })
+  assert.equal(staleCalendarPage.stale, true)
+  assert.equal(staleCalendarPage.items.length, 0)
 
   const confirmed = store.listEventTimeline({
     status: 'confirmed',
@@ -1171,13 +1182,19 @@ test('multi-year fact archive is fully pageable and filters before ranking', () 
   store.upsertClaims(claims)
 
   const first = store.listClaimArchive({ limit: 100 })
-  const second = store.listClaimArchive({ offset: 100, limit: 100 })
+  const second = store.listClaimArchive({ offset: 100, limit: 100, revision: first.revision })
   assert.equal(first.total, 900)
   assert.equal(first.items.length, 100)
   assert.equal(second.items.length, 100)
+  assert.equal(second.stale, false)
   assert.equal(new Set([...first.items, ...second.items].map(item => item.id)).size, 200)
   assert.ok(first.items.every(item => item.status !== 'rejected'))
   assert.ok(first.items.every(item => item.evidence_count === 1 && item.evidence.length === 1))
+  ;(store as any).db.prepare(`UPDATE claims SET updated_at=? WHERE id=?`)
+    .run('2026-08-03T00:00:00.000Z', 'archive-claim-0001')
+  const staleSecond = store.listClaimArchive({ offset: 100, limit: 100, revision: first.revision })
+  assert.equal(staleSecond.stale, true)
+  assert.equal(staleSecond.items.length, 0)
   assert.equal(store.listClaimArchive({
     status: 'rejected',
     entityId: 'fact-owner',
@@ -4191,6 +4208,65 @@ test('memory search revision trigger health is visible and repaired on restart',
     reopened.initialize(databasePath)
     assert.equal(reopened.getMemorySearchRevisionHealth().installedTriggers, 18)
     assert.equal(reopened.getMemorySearchRevisionHealth().healthy, true)
+    reopened.close()
+  } finally {
+    rmSync(directory, { recursive: true, force: true })
+  }
+})
+
+test('structured memory revision covers review payloads and repairs its trigger set on restart', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'weflow-structured-revision-health-'))
+  const databasePath = join(directory, 'memory.sqlite')
+  try {
+    const first = new PersonalMemoryStore()
+    first.initialize(databasePath)
+    const initial = Number(first.getStructuredMemoryRevision())
+    first.syncGraph({
+      entities: [{
+        id: 'revision-person',
+        type: 'person',
+        canonicalName: '版本人物',
+        trustStatus: 'confirmed',
+        aliases: [],
+        accountIds: []
+      }],
+      relations: [],
+      reviewQueue: []
+    } as any)
+    first.upsertClaims([{
+      id: 'structured-revision-claim',
+      subjectId: 'revision-person',
+      predicate: '负责',
+      objectValue: '分页保护',
+      confidence: 0.8,
+      status: 'candidate',
+      sourceNature: 'other_statement',
+      searchText: '版本人物负责分页保护',
+      evidence: [{
+        sourceId: 'wechat',
+        sessionId: 'revision-session',
+        messageId: 'revision-message',
+        timestamp: 1_775_000_000,
+        excerpt: '负责分页保护'
+      }]
+    }])
+    assert.ok(Number(first.getStructuredMemoryRevision()) > initial)
+    assert.deepEqual(first.getStructuredMemoryRevisionHealth(), {
+      version: 'structured-memory-revision-v1',
+      revision: first.getStructuredMemoryRevision(),
+      expectedTriggers: 21,
+      installedTriggers: 21,
+      healthy: true
+    })
+    ;(first as any).db.exec('DROP TRIGGER trg_structured_memory_revision_claims_insert')
+    assert.equal(first.getStructuredMemoryRevisionHealth().installedTriggers, 20)
+    assert.equal(first.getStructuredMemoryRevisionHealth().healthy, false)
+    first.close()
+
+    const reopened = new PersonalMemoryStore()
+    reopened.initialize(databasePath)
+    assert.equal(reopened.getStructuredMemoryRevisionHealth().installedTriggers, 21)
+    assert.equal(reopened.getStructuredMemoryRevisionHealth().healthy, true)
     reopened.close()
   } finally {
     rmSync(directory, { recursive: true, force: true })

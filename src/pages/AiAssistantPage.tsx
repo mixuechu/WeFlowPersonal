@@ -194,12 +194,14 @@ function AiAssistantPage() {
   const [showDataSources, setShowDataSources] = useState(false)
   const [sources, setSources] = useState<any[]>([])
   const [dataSources, setDataSources] = useState<any[]>([])
-  const [eventTimeline, setEventTimeline] = useState<{ items: any[]; total: number; hasMore: boolean }>({
+  const [eventTimeline, setEventTimeline] = useState<{ items: any[]; total: number; hasMore: boolean; revision?: string; stale?: boolean }>({
     items: [], total: 0, hasMore: false
   })
-  const [claimArchive, setClaimArchive] = useState<{ items: any[]; total: number; hasMore: boolean; loading?: boolean }>({
+  const [claimArchive, setClaimArchive] = useState<{ items: any[]; total: number; hasMore: boolean; revision?: string; stale?: boolean; loading?: boolean }>({
     items: [], total: 0, hasMore: false
   })
+  const [claimArchiveRefreshKey, setClaimArchiveRefreshKey] = useState(0)
+  const [eventTimelineRefreshKey, setEventTimelineRefreshKey] = useState(0)
   const [claimLoadingMore, setClaimLoadingMore] = useState(false)
   const [eventLoadingMore, setEventLoadingMore] = useState(false)
   const [claimEntityFilter, setClaimEntityFilter] = useState('')
@@ -634,6 +636,12 @@ function AiAssistantPage() {
     setClaimArchive(current => ({ ...current, items: [], loading: true }))
     void window.electronAPI.aiAssistant.getClaimArchive(claimArchiveOptions).then(result => {
       if (!claimArchiveGate.current.isCurrent(request)) return
+      if (result.stale) {
+        window.setTimeout(() => {
+          if (claimArchiveGate.current.isCurrent(request)) setClaimArchiveRefreshKey(value => value + 1)
+        }, 250)
+        return
+      }
       setClaimArchive({ ...result, loading: false })
     }).catch(() => {
       if (!claimArchiveGate.current.isCurrent(request)) return
@@ -642,14 +650,21 @@ function AiAssistantPage() {
     return () => {
       if (claimArchiveGate.current.isCurrent(request)) claimArchiveGate.current.invalidate()
     }
-  }, [claimArchiveOptions, dashboard?.memoryRevision])
+  }, [claimArchiveOptions, dashboard?.memoryRevision, claimArchiveRefreshKey])
 
   useEffect(() => {
     const request = eventTimelineGate.current.begin()
     setEventLoadingMore(false)
     setEventTimeline(current => ({ ...current, items: [] }))
     void window.electronAPI.aiAssistant.getEventTimeline(eventTimelineOptions).then(result => {
-      if (eventTimelineGate.current.isCurrent(request)) setEventTimeline(result)
+      if (!eventTimelineGate.current.isCurrent(request)) return
+      if (result.stale) {
+        window.setTimeout(() => {
+          if (eventTimelineGate.current.isCurrent(request)) setEventTimelineRefreshKey(value => value + 1)
+        }, 250)
+        return
+      }
+      setEventTimeline(result)
     }).catch(() => {
       if (eventTimelineGate.current.isCurrent(request)) {
         setEventTimeline({ items: [], total: 0, hasMore: false })
@@ -658,7 +673,7 @@ function AiAssistantPage() {
     return () => {
       if (eventTimelineGate.current.isCurrent(request)) eventTimelineGate.current.invalidate()
     }
-  }, [eventTimelineOptions, dashboard?.memoryRevision])
+  }, [eventTimelineOptions, dashboard?.memoryRevision, eventTimelineRefreshKey])
 
   useEffect(() => {
     const request = taskArchiveGate.current.begin()
@@ -1141,9 +1156,15 @@ function AiAssistantPage() {
       const result = await window.electronAPI.aiAssistant.getClaimArchive({
         ...claimArchiveOptions,
         offset: visibleClaims.length,
-        limit: 100
+        limit: 100,
+        revision: claimArchive.revision
       })
       if (!claimArchiveGate.current.isCurrent(request)) return
+      if (result.stale) {
+        setMessage('事实档案在加载期间已有更新，已自动从第一页刷新')
+        setClaimArchiveRefreshKey(value => value + 1)
+        return
+      }
       setClaimArchive(current => ({
         ...result,
         items: [...current.items, ...result.items.filter((item: any) =>
@@ -1163,9 +1184,15 @@ function AiAssistantPage() {
       const result = await window.electronAPI.aiAssistant.getEventTimeline({
         ...eventTimelineOptions,
         offset: visibleEvents.length,
-        limit: 100
+        limit: 100,
+        revision: eventTimeline.revision
       })
       if (!eventTimelineGate.current.isCurrent(request)) return
+      if (result.stale) {
+        setMessage('事件时间线在加载期间已有更新，已自动从第一页刷新')
+        setEventTimelineRefreshKey(value => value + 1)
+        return
+      }
       setEventTimeline(current => ({
         ...result,
         items: [...current.items, ...result.items.filter((item: any) =>
@@ -5408,6 +5435,16 @@ function AiAssistantPage() {
                 <span>当前状态 <b>{memoryDiagnostics.memorySearchRevisionHealthy ? '保护正常' : '需要检查'}</b></span>
                 <span>当前 revision <b>{String(memoryDiagnostics.memorySearchRevision.revision || '0')}</b></span>
                 <span>变更触发器 <b>{Number(memoryDiagnostics.memorySearchRevision.installedTriggers || 0).toLocaleString()} / {Number(memoryDiagnostics.memorySearchRevision.expectedTriggers || 0).toLocaleString()}</b></span>
+              </div>
+            </div>}
+            {memoryDiagnostics.structuredMemoryRevision?.version && <div className={`assistant-recovery-audit ${memoryDiagnostics.structuredMemoryRevisionHealthy ? 'healthy' : 'unhealthy'}`}>
+              <header><ShieldCheck size={15} /><span><b>事实与事件审阅分页保护</b>
+                <small>事实、事件、原文证据、参与者、人物名称、纠正和人工决定共享单调 revision；后台抽取或人工修改发生在翻页期间时，旧页会被拒绝并自动刷新，避免档案漏项或重复。</small>
+              </span></header>
+              <div className="assistant-recovery-current">
+                <span>当前状态 <b>{memoryDiagnostics.structuredMemoryRevisionHealthy ? '保护正常' : '需要检查'}</b></span>
+                <span>当前 revision <b>{String(memoryDiagnostics.structuredMemoryRevision.revision || '0')}</b></span>
+                <span>变更触发器 <b>{Number(memoryDiagnostics.structuredMemoryRevision.installedTriggers || 0).toLocaleString()} / {Number(memoryDiagnostics.structuredMemoryRevision.expectedTriggers || 0).toLocaleString()}</b></span>
               </div>
             </div>}
             {memoryDiagnostics.taskSearchIndex?.version && <div className={`assistant-recovery-audit ${memoryDiagnostics.taskSearchIndexHealthy ? 'healthy' : 'unhealthy'}`}>
