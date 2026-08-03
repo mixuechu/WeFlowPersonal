@@ -732,6 +732,7 @@ export class PersonalMemoryStore {
     this.ensureMemorySearchRevisionTriggers()
     this.ensureStructuredMemoryRevisionTriggers()
     this.ensureGraphReviewRevisionTriggers()
+    this.ensureTaskArchiveRevisionTriggers()
     this.repairStructuredSearchIndex()
     this.backfillMergeHistoryNames()
     this.db.exec(`CREATE INDEX IF NOT EXISTS idx_memory_corrections_item
@@ -1098,6 +1099,72 @@ export class PersonalMemoryStore {
     return {
       version: 'graph-review-revision-v1',
       revision: this.getGraphReviewRevision(),
+      expectedTriggers: expectedNames.length,
+      installedTriggers: expectedNames.filter(name => installedNames.has(name)).length,
+      healthy: installedNames.size === expectedNames.length
+        && expectedNames.every(name => installedNames.has(name))
+    }
+  }
+
+  private taskArchiveRevisionTriggerNames(): string[] {
+    return ['task_directory', 'search_document_evidence', 'task_history']
+      .flatMap(table => ['insert', 'update', 'delete']
+        .map(operation => `trg_task_archive_revision_${table}_${operation}`))
+  }
+
+  private ensureTaskArchiveRevisionTriggers(): void {
+    if (!this.db) return
+    const tables = ['task_directory', 'search_document_evidence', 'task_history']
+    this.db.prepare(`
+      INSERT INTO schema_meta(key,value,updated_at)
+      VALUES('task_archive_revision','0',?)
+      ON CONFLICT(key) DO NOTHING
+    `).run(new Date().toISOString())
+    const statements: string[] = []
+    for (const table of tables) {
+      for (const operation of ['INSERT', 'UPDATE', 'DELETE']) {
+        const name = `trg_task_archive_revision_${table}_${operation.toLowerCase()}`
+        statements.push(`DROP TRIGGER IF EXISTS ${name};`)
+        statements.push(`
+          CREATE TRIGGER ${name} AFTER ${operation} ON ${table}
+          BEGIN
+            UPDATE schema_meta
+            SET value=CAST(CAST(value AS INTEGER)+1 AS TEXT),
+              updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')
+            WHERE key='task_archive_revision';
+          END;
+        `)
+      }
+    }
+    this.db.exec(statements.join('\n'))
+  }
+
+  getTaskArchiveRevision(): string {
+    if (!this.db) return '0'
+    return String((this.db.prepare(`
+      SELECT value FROM schema_meta WHERE key='task_archive_revision'
+    `).get() as any)?.value || '0')
+  }
+
+  getTaskArchiveRevisionHealth(): any {
+    const expectedNames = this.taskArchiveRevisionTriggerNames()
+    if (!this.db) {
+      return {
+        version: 'task-archive-revision-v1',
+        revision: '0',
+        expectedTriggers: expectedNames.length,
+        installedTriggers: 0,
+        healthy: false
+      }
+    }
+    const rows = this.db.prepare(`
+      SELECT name FROM sqlite_master
+      WHERE type='trigger' AND name LIKE 'trg_task_archive_revision_%'
+    `).all() as Array<{ name: string }>
+    const installedNames = new Set(rows.map(row => String(row.name)))
+    return {
+      version: 'task-archive-revision-v1',
+      revision: this.getTaskArchiveRevision(),
       expectedTriggers: expectedNames.length,
       installedTriggers: expectedNames.filter(name => installedNames.has(name)).length,
       healthy: installedNames.size === expectedNames.length
@@ -2546,6 +2613,7 @@ export class PersonalMemoryStore {
     const memorySearchRevision = this.getMemorySearchRevisionHealth()
     const structuredMemoryRevision = this.getStructuredMemoryRevisionHealth()
     const graphReviewRevision = this.getGraphReviewRevisionHealth()
+    const taskArchiveRevision = this.getTaskArchiveRevisionHealth()
     return {
       healthy: integrity === 'ok'
         && structuredEvidenceMigration.constraintsHealthy
@@ -2555,7 +2623,8 @@ export class PersonalMemoryStore {
         && taskSearchIndexHealthy
         && memorySearchRevision.healthy
         && structuredMemoryRevision.healthy
-        && graphReviewRevision.healthy,
+        && graphReviewRevision.healthy
+        && taskArchiveRevision.healthy,
       integrity,
       foreignKeyViolations,
       referentialIntegrityHealthy,
@@ -2565,6 +2634,7 @@ export class PersonalMemoryStore {
       memorySearchRevisionHealthy: memorySearchRevision.healthy,
       structuredMemoryRevisionHealthy: structuredMemoryRevision.healthy,
       graphReviewRevisionHealthy: graphReviewRevision.healthy,
+      taskArchiveRevisionHealthy: taskArchiveRevision.healthy,
       encryption: {
         enabled: Boolean(this.encryptionKey),
         cipher: this.encryptionKey ? String(this.db.pragma('cipher', { simple: true }) || '') : 'none',
@@ -2582,6 +2652,7 @@ export class PersonalMemoryStore {
       memorySearchRevision,
       structuredMemoryRevision,
       graphReviewRevision,
+      taskArchiveRevision,
       backups
     }
   }
@@ -4353,8 +4424,24 @@ export class PersonalMemoryStore {
     to?: string
     limit?: number
     offset?: number
-  } = {}): { items: any[]; total: number; hasMore: boolean; projects: string[] } {
-    if (!this.db) return { items: [], total: 0, hasMore: false, projects: [] }
+    revision?: string
+  } = {}): {
+    items: any[]
+    total: number
+    hasMore: boolean
+    projects: string[]
+    revision: string
+    stale: boolean
+  } {
+    if (!this.db) {
+      return { items: [], total: 0, hasMore: false, projects: [], revision: '0', stale: false }
+    }
+    const revision = this.getTaskArchiveRevision()
+    const offset = Math.max(0, Math.min(1_000_000, Math.floor(Number(options.offset) || 0)))
+    const expectedRevision = String(options.revision || '').trim()
+    if (offset > 0 && expectedRevision && expectedRevision !== revision) {
+      return { items: [], total: 0, hasMore: false, projects: [], revision, stale: true }
+    }
     const conditions = [`classification='mine'`]
     const parameters: Array<string | number> = []
     if (options.status === 'done' || options.status === 'cancelled') {
@@ -4392,7 +4479,6 @@ export class PersonalMemoryStore {
     const total = Number((this.db.prepare(`SELECT COUNT(*) AS count FROM task_directory WHERE ${where}`)
       .get(...parameters) as any)?.count || 0)
     const limit = Math.max(1, Math.min(100, Math.floor(Number(options.limit) || 40)))
-    const offset = Math.max(0, Math.min(1_000_000, Math.floor(Number(options.offset) || 0)))
     const rows = this.db.prepare(`
       SELECT td.*,
         (SELECT COUNT(*) FROM search_document_evidence sde
@@ -4408,28 +4494,38 @@ export class PersonalMemoryStore {
       WHERE classification='mine' AND status IN ('done','cancelled') AND project!=''
       ORDER BY project COLLATE NOCASE LIMIT 500
     `).all() as Array<{ project: string }>).map(row => row.project)
+    const items = rows.map(row => {
+      let payload: any = {}
+      try { payload = JSON.parse(String(row.payload_json || '{}')) } catch {}
+      return {
+        ...payload,
+        id: row.id,
+        title: row.title,
+        status: row.status,
+        priority: row.priority,
+        due: row.due,
+        project: row.project,
+        taskKind: row.task_kind,
+        createdAt: row.created_at,
+        updatedAt: row.updated_at,
+        evidenceTotal: Number(row.evidence_count || 0),
+        historyTotal: Number(row.history_count || 0)
+      }
+    })
+    const completedRevision = this.getTaskArchiveRevision()
+    if (completedRevision !== revision) {
+      return {
+        items: [], total: 0, hasMore: false, projects: [],
+        revision: completedRevision, stale: true
+      }
+    }
     return {
-      items: rows.map(row => {
-        let payload: any = {}
-        try { payload = JSON.parse(String(row.payload_json || '{}')) } catch {}
-        return {
-          ...payload,
-          id: row.id,
-          title: row.title,
-          status: row.status,
-          priority: row.priority,
-          due: row.due,
-          project: row.project,
-          taskKind: row.task_kind,
-          createdAt: row.created_at,
-          updatedAt: row.updated_at,
-          evidenceTotal: Number(row.evidence_count || 0),
-          historyTotal: Number(row.history_count || 0)
-        }
-      }),
+      items,
       total,
       hasMore: offset + rows.length < total,
-      projects
+      projects,
+      revision,
+      stale: false
     }
   }
 

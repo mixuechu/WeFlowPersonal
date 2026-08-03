@@ -3363,10 +3363,11 @@ test('closed task archive stays fully pageable without copying evidence into its
   )
 
   const first = store.listTaskArchive({ limit: 100 })
-  const second = store.listTaskArchive({ offset: 100, limit: 100 })
+  const second = store.listTaskArchive({ offset: 100, limit: 100, revision: first.revision })
   assert.equal(first.total, 400)
   assert.equal(first.items.length, 100)
   assert.equal(second.items.length, 100)
+  assert.equal(second.stale, false)
   assert.equal(new Set([...first.items, ...second.items].map(item => item.id)).size, 200)
   assert.ok(first.items.every(item => ['done', 'cancelled'].includes(item.status)))
   assert.ok(first.items.every(item => item.evidenceTotal === 1))
@@ -3391,6 +3392,9 @@ test('closed task archive stays fully pageable without copying evidence into its
       }
     : task)
   store.syncTasks(withNewEvidence)
+  const staleSecond = store.listTaskArchive({ offset: 100, limit: 100, revision: first.revision })
+  assert.equal(staleSecond.stale, true)
+  assert.equal(staleSecond.items.length, 0)
   assert.equal(
     store.listTaskArchive({ query: '特殊历史任务关键词' }).items[0]?.evidenceTotal,
     2
@@ -4332,6 +4336,59 @@ test('graph review revision covers queue and enriched graph state and self-heals
     assert.equal(reopened.getGraphReviewRevisionHealth().installedTriggers, 12)
     assert.equal(reopened.getGraphReviewRevisionHealth().healthy, true)
     assert.equal(reopened.listReviewLedgerPage({ status: 'pending' }).items[0]?.id, 'review-revision-candidate')
+    reopened.close()
+  } finally {
+    rmSync(directory, { recursive: true, force: true })
+  }
+})
+
+test('task archive revision covers directory evidence and history and self-heals on restart', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'weflow-task-archive-revision-'))
+  const databasePath = join(directory, 'memory.sqlite')
+  try {
+    const first = new PersonalMemoryStore()
+    first.initialize(databasePath)
+    const initial = Number(first.getTaskArchiveRevision())
+    const task = {
+      id: 'task-archive-revision',
+      title: '验证任务档案版本',
+      detail: '任务目录和证据共同推进版本',
+      priority: 'high',
+      confidence: 1,
+      classification: 'mine',
+      status: 'done',
+      createdAt: '2026-08-03T00:00:00.000Z',
+      updatedAt: '2026-08-03T01:00:00.000Z',
+      evidence: [{
+        sourceId: 'wechat',
+        sessionId: 'task-revision-session',
+        messageId: 'task-revision-message',
+        timestamp: 1_775_000_000,
+        excerpt: '完成任务档案版本验证'
+      }]
+    }
+    first.syncTasks([task])
+    const afterDirectoryAndEvidence = Number(first.getTaskArchiveRevision())
+    assert.ok(afterDirectoryAndEvidence > initial)
+    first.recordTaskChanges(task.id, { status: 'doing' }, { status: 'done' }, 'revision-test', task.evidence)
+    assert.ok(Number(first.getTaskArchiveRevision()) > afterDirectoryAndEvidence)
+    assert.deepEqual(first.getTaskArchiveRevisionHealth(), {
+      version: 'task-archive-revision-v1',
+      revision: first.getTaskArchiveRevision(),
+      expectedTriggers: 9,
+      installedTriggers: 9,
+      healthy: true
+    })
+    ;(first as any).db.exec('DROP TRIGGER trg_task_archive_revision_task_directory_insert')
+    assert.equal(first.getTaskArchiveRevisionHealth().installedTriggers, 8)
+    assert.equal(first.getTaskArchiveRevisionHealth().healthy, false)
+    first.close()
+
+    const reopened = new PersonalMemoryStore()
+    reopened.initialize(databasePath)
+    assert.equal(reopened.getTaskArchiveRevisionHealth().installedTriggers, 9)
+    assert.equal(reopened.getTaskArchiveRevisionHealth().healthy, true)
+    assert.equal(reopened.listTaskArchive().items[0]?.id, task.id)
     reopened.close()
   } finally {
     rmSync(directory, { recursive: true, force: true })

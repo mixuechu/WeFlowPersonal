@@ -302,6 +302,8 @@ function AiAssistantPage() {
     total: number
     hasMore: boolean
     projects: string[]
+    revision?: string
+    stale?: boolean
     loading?: boolean
   }>({ items: [], total: 0, hasMore: false, projects: [] })
   const [taskArchiveStatus, setTaskArchiveStatus] = useState<'all' | 'done' | 'cancelled'>('all')
@@ -311,6 +313,7 @@ function AiAssistantPage() {
   const [taskArchiveFrom, setTaskArchiveFrom] = useState('')
   const [taskArchiveTo, setTaskArchiveTo] = useState('')
   const [taskArchiveLoadingMore, setTaskArchiveLoadingMore] = useState(false)
+  const [taskArchiveRefreshKey, setTaskArchiveRefreshKey] = useState(0)
   const taskArchiveGate = useRef(new LatestRequestGate())
   const [taskOwnershipReviews, setTaskOwnershipReviews] = useState<{
     items: Task[]
@@ -683,6 +686,12 @@ function AiAssistantPage() {
     setTaskArchive(current => ({ ...current, items: [], loading: true }))
     void window.electronAPI.aiAssistant.getTaskArchive(taskArchiveOptions).then(result => {
       if (!taskArchiveGate.current.isCurrent(request)) return
+      if (result.stale) {
+        window.setTimeout(() => {
+          if (taskArchiveGate.current.isCurrent(request)) setTaskArchiveRefreshKey(value => value + 1)
+        }, 250)
+        return
+      }
       setTaskArchive({ ...result, loading: false })
     }).catch(() => {
       if (!taskArchiveGate.current.isCurrent(request)) return
@@ -691,7 +700,7 @@ function AiAssistantPage() {
     return () => {
       if (taskArchiveGate.current.isCurrent(request)) taskArchiveGate.current.invalidate()
     }
-  }, [taskArchiveOptions, dashboard?.taskRevision])
+  }, [taskArchiveOptions, dashboard?.taskRevision, taskArchiveRefreshKey])
 
   useEffect(() => {
     const request = assistantArchiveGate.current.begin()
@@ -1299,9 +1308,15 @@ function AiAssistantPage() {
       const result = await window.electronAPI.aiAssistant.getTaskArchive({
         ...taskArchiveOptions,
         offset: taskArchive.items.length,
-        limit: 40
+        limit: 40,
+        revision: taskArchive.revision
       })
       if (!taskArchiveGate.current.isCurrent(request)) return
+      if (result.stale) {
+        setMessage('历史任务在加载期间已有变化，已自动从第一页刷新')
+        setTaskArchiveRefreshKey(value => value + 1)
+        return
+      }
       setTaskArchive(current => ({
         ...result,
         items: [...current.items, ...result.items.filter((item: Task) =>
@@ -5469,6 +5484,16 @@ function AiAssistantPage() {
                 <span>当前状态 <b>{memoryDiagnostics.graphReviewRevisionHealthy ? '保护正常' : '需要检查'}</b></span>
                 <span>当前 revision <b>{String(memoryDiagnostics.graphReviewRevision.revision || '0')}</b></span>
                 <span>变更触发器 <b>{Number(memoryDiagnostics.graphReviewRevision.installedTriggers || 0).toLocaleString()} / {Number(memoryDiagnostics.graphReviewRevision.expectedTriggers || 0).toLocaleString()}</b></span>
+              </div>
+            </div>}
+            {memoryDiagnostics.taskArchiveRevision?.version && <div className={`assistant-recovery-audit ${memoryDiagnostics.taskArchiveRevisionHealthy ? 'healthy' : 'unhealthy'}`}>
+              <header><ShieldCheck size={15} /><span><b>历史任务分页一致性保护</b>
+                <small>任务目录、任务原文证据和修改历史共享数据库 revision；状态恢复、证据补齐或人工编辑发生在翻页期间时，旧页会被拒绝并自动刷新，避免历史行动重复、漏项或显示过期计数。</small>
+              </span></header>
+              <div className="assistant-recovery-current">
+                <span>当前状态 <b>{memoryDiagnostics.taskArchiveRevisionHealthy ? '保护正常' : '需要检查'}</b></span>
+                <span>当前 revision <b>{String(memoryDiagnostics.taskArchiveRevision.revision || '0')}</b></span>
+                <span>变更触发器 <b>{Number(memoryDiagnostics.taskArchiveRevision.installedTriggers || 0).toLocaleString()} / {Number(memoryDiagnostics.taskArchiveRevision.expectedTriggers || 0).toLocaleString()}</b></span>
               </div>
             </div>}
             {memoryDiagnostics.taskSearchIndex?.version && <div className={`assistant-recovery-audit ${memoryDiagnostics.taskSearchIndexHealthy ? 'healthy' : 'unhealthy'}`}>
