@@ -6036,7 +6036,8 @@ export class AiAssistantService {
     options: MemorySearchOptions = {},
     pagination: { offset?: number; limit?: number; revision?: string } = {}
   ): Promise<any> {
-    const offset = Math.max(0, Math.min(500, Number(pagination.offset) || 0))
+    const rawOffset = Number(pagination.offset)
+    const offset = Number.isFinite(rawOffset) ? Math.max(0, Math.floor(rawOffset)) : 0
     const limit = Math.max(1, Math.min(100, Number(pagination.limit) || 40))
     const text = String(query || '').trim()
     if (text) {
@@ -6089,28 +6090,50 @@ export class AiAssistantService {
         revision, stale: false
       }
     }
-    const ranked = text
-      ? await this.searchMemoryHybrid(text, scopedOptions, 500)
-      : this.applyStoredMemorySearchFeedback(text, scopedOptions, filterMemorySearchResults(
-          personalMemoryStore.listSearchDocumentsInScope(allowedIds!, 500).map((item: any) => {
-            const evidencePayload = personalMemoryStore.getDocumentEvidencePayload(
-              item.document_type,
-              item.source_id,
-              scopedOptions
-            )
-            return {
-              ...item,
-              metadata: (() => { try { return JSON.parse(item.metadata_json || '{}') } catch { return {} } })(),
-              ...evidencePayload,
-              match_source: '范围浏览',
-              retrieval_scope_applied: true,
-              retrieval_scope_candidates: allowedIds!.size
-            }
-          }),
-          scopedOptions,
-          true
-        ))
-    const page = paginateMemoryResults(ranked, offset, limit, 500)
+    let page: any
+    if (text) {
+      const ranked = await this.searchMemoryHybrid(text, scopedOptions, 500)
+      page = paginateMemoryResults(ranked, offset, limit, 500)
+    } else {
+      const browseContext = buildMemorySearchFeedbackContext(text, scopedOptions)
+      const browsePage = personalMemoryStore.listSearchDocumentsInScopePage(allowedIds!, {
+        offset,
+        limit,
+        queryFingerprint: browseContext.queryFingerprint,
+        scopeFingerprint: browseContext.scopeFingerprint
+      })
+      const results = browsePage.items.map((item: any) => {
+        const evidencePayload = personalMemoryStore.getDocumentEvidencePayload(
+          item.document_type,
+          item.source_id,
+          scopedOptions
+        )
+        return {
+          ...item,
+          metadata: (() => { try { return JSON.parse(item.metadata_json || '{}') } catch { return {} } })(),
+          ...evidencePayload,
+          match_source: '范围浏览',
+          retrieval_scope_applied: true,
+          retrieval_scope_candidates: allowedIds!.size
+        }
+      }).map(item => ({
+        ...item,
+        ranking_base_score: Number(item.browse_score || 0),
+        relevance_adjustment: item.relevance_feedback === 'helpful'
+          ? 0.02
+          : item.relevance_feedback === 'not_relevant' ? -0.04 : 0,
+        hybrid_score: Number(item.browse_score || 0),
+        match_source: '范围浏览'
+      }))
+      page = {
+        results,
+        offset: browsePage.offset,
+        limit: browsePage.limit,
+        total: browsePage.total,
+        hasMore: browsePage.hasMore,
+        truncated: false
+      }
+    }
     const feedback = this.memorySearchFeedbackContext(text, scopedOptions).entries
     const completedRevision = personalMemoryStore.getMemorySearchRevision()
     const completedEntitySelection = options.entityId
@@ -6142,7 +6165,7 @@ export class AiAssistantService {
     }
     return {
       ...page,
-      truncated: page.truncated || (!text && allowedIds!.size > 500),
+      truncated: page.truncated,
       scopeCandidates: allowedIds?.size ?? null,
       feedback,
       feedbackVersion: MEMORY_SEARCH_FEEDBACK_VERSION,

@@ -550,6 +550,7 @@ function AiAssistantPage() {
     truncated?: boolean
     scopeCandidates?: number | null
     revision?: string
+    nextOffset?: number
   }>({ status: 'idle', query: '' })
   const [memoryLoadingMore, setMemoryLoadingMore] = useState(false)
   const [memorySearchFeedback, setMemorySearchFeedback] = useState<any[]>([])
@@ -1539,7 +1540,8 @@ function AiAssistantPage() {
           hasMore: page.hasMore,
           truncated: page.truncated,
           scopeCandidates: page.scopeCandidates,
-          revision: page.revision
+          revision: page.revision,
+          nextOffset: Number(page.offset || 0) + page.results.length
         })
       }).catch(error => {
         if (!memorySearchGate.current.isCurrent(request)) return
@@ -3802,7 +3804,7 @@ function AiAssistantPage() {
         query,
         memorySearchOptions,
         {
-          offset: memoryResults.length,
+          offset: Number(memorySearchState.nextOffset ?? memoryResults.length),
           limit: 40,
           revision: memorySearchState.revision
         }
@@ -3832,7 +3834,8 @@ function AiAssistantPage() {
         hasMore: page.hasMore,
         truncated: page.truncated,
         scopeCandidates: page.scopeCandidates,
-        revision: page.revision
+        revision: page.revision,
+        nextOffset: Number(page.offset || 0) + page.results.length
       })
     } catch (error: any) {
       if (memorySearchGate.current.isCurrent(request)) {

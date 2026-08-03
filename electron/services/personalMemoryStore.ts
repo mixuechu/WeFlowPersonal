@@ -8594,6 +8594,82 @@ export class PersonalMemoryStore {
     `).all(Math.max(1, Math.min(500, Number(limit) || 500))) as any[]
   }
 
+  listSearchDocumentsInScopePage(
+    allowedIds: Set<string>,
+    options: {
+      offset?: number
+      limit?: number
+      queryFingerprint?: string
+      scopeFingerprint?: string
+    } = {}
+  ): { items: any[]; total: number; offset: number; limit: number; hasMore: boolean } {
+    const rawOffset = Number(options.offset)
+    const offset = Number.isFinite(rawOffset) ? Math.max(0, Math.floor(rawOffset)) : 0
+    const limit = Math.max(1, Math.min(100, Math.floor(Number(options.limit) || 40)))
+    if (!this.db || !allowedIds.size) return { items: [], total: 0, offset, limit, hasMore: false }
+    this.replaceActiveSearchScope(allowedIds)
+    const queryFingerprint = String(options.queryFingerprint || '').trim().toLowerCase()
+    const scopeFingerprint = String(options.scopeFingerprint || '').trim().toLowerCase()
+    const feedbackEnabled = /^[a-f0-9]{64}$/.test(queryFingerprint) &&
+      /^[a-f0-9]{64}$/.test(scopeFingerprint)
+    const feedbackParameters = feedbackEnabled
+      ? [queryFingerprint, scopeFingerprint]
+      : ['-', '-']
+    const total = Number((this.db.prepare(`
+      SELECT COUNT(*) AS count FROM search_documents d
+      JOIN active_memory_search_scope scope ON scope.id=d.id
+      WHERE NOT (
+        d.document_type IN ('claim','relation','event')
+        AND COALESCE(json_extract(d.metadata_json,'$.status'),'')='rejected'
+      )
+    `).get() as any)?.count || 0)
+    const items = this.db.prepare(`
+      WITH base AS (
+        SELECT d.*,
+          ROW_NUMBER() OVER (ORDER BY d.updated_at DESC,d.id)-1 AS browse_index
+        FROM search_documents d
+        JOIN active_memory_search_scope scope ON scope.id=d.id
+        WHERE NOT (
+          d.document_type IN ('claim','relation','event')
+          AND COALESCE(json_extract(d.metadata_json,'$.status'),'')='rejected'
+        )
+      ),
+      latest_feedback AS (
+        SELECT feedback.document_id,feedback.action
+        FROM memory_search_feedback feedback
+        JOIN (
+          SELECT document_id,MAX(id) AS id
+          FROM memory_search_feedback
+          WHERE query_fingerprint=? AND scope_fingerprint=?
+          GROUP BY document_id
+        ) latest ON latest.id=feedback.id
+      ),
+      ranked AS (
+        SELECT base.*,
+          CASE WHEN latest_feedback.action IN ('helpful','not_relevant')
+            THEN latest_feedback.action ELSE '' END AS relevance_feedback,
+          1.0/(40+base.browse_index) +
+            CASE latest_feedback.action
+              WHEN 'helpful' THEN 0.02
+              WHEN 'not_relevant' THEN -0.04
+              ELSE 0
+            END AS browse_score
+        FROM base
+        LEFT JOIN latest_feedback ON latest_feedback.document_id=base.id
+      )
+      SELECT * FROM ranked
+      ORDER BY browse_score DESC,id
+      LIMIT ? OFFSET ?
+    `).all(...feedbackParameters, limit, offset) as any[]
+    return {
+      items,
+      total,
+      offset,
+      limit,
+      hasMore: offset + items.length < total
+    }
+  }
+
   recordMemorySearchFeedback(input: {
     queryFingerprint: string
     scopeFingerprint: string

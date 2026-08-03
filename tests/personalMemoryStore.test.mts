@@ -5108,6 +5108,86 @@ test('memory result pages are stable, bounded and report remaining ranked candid
   }), true)
 })
 
+test('scoped memory browsing reaches every result beyond the ranked search window', () =>
+  withStore(store => {
+    const tasks = Array.from({ length: 1_205 }, (_, index) => ({
+      id: `range-browse-${index}`,
+      title: `范围浏览任务 ${index}`,
+      detail: '验证统一检索无关键词范围浏览可以超过五百条',
+      priority: 'low',
+      status: 'todo',
+      classification: 'mine',
+      updatedAt: new Date(Date.UTC(2026, 0, 1, 0, 0, index)).toISOString(),
+      sourceSessionId: `range-session-${index}`,
+      evidence: [{
+        sourceId: 'wechat',
+        messageId: `range-message-${index}`,
+        sessionId: `range-session-${index}`,
+        timestamp: 1_767_225_600 + index,
+        sender: '范围测试',
+        excerpt: `范围浏览证据 ${index}`
+      }]
+    }))
+    store.syncTasks(tasks)
+    const options = { sourceIds: ['wechat'], documentTypes: ['task'] }
+    const scope = store.listScopedSearchDocumentIds(options)
+    assert.equal(scope?.size, 1_205)
+    const context = buildMemorySearchFeedbackContext('', options)
+    const first = store.listSearchDocumentsInScopePage(scope!, {
+      offset: 0,
+      limit: 100,
+      queryFingerprint: context.queryFingerprint,
+      scopeFingerprint: context.scopeFingerprint
+    })
+    const beyondOldCap = store.listSearchDocumentsInScopePage(scope!, {
+      offset: 1_200,
+      limit: 100,
+      queryFingerprint: context.queryFingerprint,
+      scopeFingerprint: context.scopeFingerprint
+    })
+    assert.equal(first.total, 1_205)
+    assert.equal(first.items.length, 100)
+    assert.equal(first.hasMore, true)
+    assert.equal(beyondOldCap.items.length, 5)
+    assert.equal(beyondOldCap.hasMore, false)
+    assert.equal(new Set([
+      ...first.items.map(item => item.id),
+      ...beyondOldCap.items.map(item => item.id)
+    ]).size, 105)
+
+    store.recordMemorySearchFeedback({
+      queryFingerprint: context.queryFingerprint,
+      scopeFingerprint: context.scopeFingerprint,
+      queryText: context.query,
+      scopeJson: context.scopeJson,
+      documentId: 'task:range-browse-0',
+      action: 'helpful'
+    })
+    store.recordMemorySearchFeedback({
+      queryFingerprint: context.queryFingerprint,
+      scopeFingerprint: context.scopeFingerprint,
+      queryText: context.query,
+      scopeJson: context.scopeJson,
+      documentId: 'task:range-browse-1204',
+      action: 'not_relevant'
+    })
+    const feedbackFirst = store.listSearchDocumentsInScopePage(scope!, {
+      limit: 40,
+      queryFingerprint: context.queryFingerprint,
+      scopeFingerprint: context.scopeFingerprint
+    })
+    const feedbackLast = store.listSearchDocumentsInScopePage(scope!, {
+      offset: 1_200,
+      limit: 40,
+      queryFingerprint: context.queryFingerprint,
+      scopeFingerprint: context.scopeFingerprint
+    })
+    assert.equal(feedbackFirst.items[0].id, 'task:range-browse-0')
+    assert.equal(feedbackFirst.items[0].relevance_feedback, 'helpful')
+    assert.equal(feedbackLast.items.at(-1).id, 'task:range-browse-1204')
+    assert.equal(feedbackLast.items.at(-1).relevance_feedback, 'not_relevant')
+  }))
+
 test('memory search revision covers documents, evidence, vectors and relevance decisions', () =>
   withStore(store => {
     const revisions: number[] = [Number(store.getMemorySearchRevision())]
