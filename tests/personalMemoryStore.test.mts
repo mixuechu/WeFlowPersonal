@@ -9716,6 +9716,12 @@ test('background resource migrations deserialize only their bounded eligible row
     assert.equal(store.listPendingPdfOcrResources(10).length, 10)
     assert.equal(store.listPendingAttachmentStructureResources('layout-v-next', 10).length, 10)
     assert.equal(store.listPendingImageSemanticResources('vision-v-next', 10).length, 10)
+    assert.deepEqual(store.getAttachmentStructureMigrationStats('layout-v-next'), {
+      total: 15, completed: 0, pending: 15, deferred: 0
+    })
+    assert.deepEqual(store.getImageSemanticMigrationStats('vision-v-next'), {
+      total: 15, completed: 0, pending: 15, deferred: 0
+    })
   } finally {
     JSON.parse = originalParse
   }

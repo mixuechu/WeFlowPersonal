@@ -5181,46 +5181,72 @@ export class PersonalMemoryStore {
 
   getImageSemanticMigrationStats(modelVersion: string, now = new Date()): any {
     if (!this.db) return { total: 0, completed: 0, pending: 0, deferred: 0 }
-    const rows = this.db.prepare(`
-      SELECT r.metadata_json FROM memory_resources r
-      LEFT JOIN resource_suppressions s ON s.resource_id=r.id
-      WHERE r.resource_type='image' AND s.resource_id IS NULL
-    `).all() as any[]
-    let total = 0
-    let completed = 0
-    let deferred = 0
-    for (const row of rows) {
-      try {
-        const metadata = JSON.parse(row.metadata_json || '{}')
-        if (!metadata.mediaLocalPath) continue
-        total += 1
-        if (metadata.visualModelVersion === modelVersion) completed += 1
-        else if (Date.parse(String(metadata.visualMigrationNextAt || '')) > now.getTime()) deferred += 1
-      } catch {}
-    }
+    const row = this.db.prepare(`
+      WITH eligible AS (
+        SELECT
+          COALESCE(json_extract(r.metadata_json,'$.visualModelVersion'),'') AS model_version,
+          json_extract(r.metadata_json,'$.visualMigrationNextAt') AS next_at
+        FROM memory_resources r
+        LEFT JOIN resource_suppressions s ON s.resource_id=r.id
+        WHERE r.resource_type='image' AND s.resource_id IS NULL
+          AND json_valid(r.metadata_json)=1
+          AND COALESCE(json_extract(r.metadata_json,'$.mediaLocalPath'),'')<>''
+      )
+      SELECT
+        COUNT(*) AS total,
+        COALESCE(SUM(CASE WHEN model_version=? THEN 1 ELSE 0 END),0) AS completed,
+        COALESCE(SUM(CASE
+          WHEN model_version<>? AND julianday(next_at)>julianday(?) THEN 1
+          ELSE 0
+        END),0) AS deferred
+      FROM eligible
+    `).get(String(modelVersion || ''), String(modelVersion || ''), now.toISOString()) as any
+    const total = Number(row?.total || 0)
+    const completed = Number(row?.completed || 0)
+    const deferred = Number(row?.deferred || 0)
     return { total, completed, pending: Math.max(0, total - completed - deferred), deferred }
   }
 
   getAttachmentStructureMigrationStats(parserVersion: string, now = new Date()): any {
     if (!this.db) return { total: 0, completed: 0, pending: 0, deferred: 0 }
-    const rows = this.db.prepare(`
-      SELECT r.file_ext,r.metadata_json FROM memory_resources r
-      LEFT JOIN resource_suppressions s ON s.resource_id=r.id
-      WHERE r.resource_type='file' AND s.resource_id IS NULL
-    `).all() as any[]
-    let total = 0
-    let completed = 0
-    let deferred = 0
-    for (const row of rows) {
-      try {
-        const metadata = JSON.parse(row.metadata_json || '{}')
-        const extension = String(metadata.attachmentFormat || row.file_ext || '').toLowerCase()
-        if (!['.docx', '.pptx', '.xlsx', '.pdf'].includes(extension) || !metadata.attachmentLocalPath) continue
-        total += 1
-        if (metadata.attachmentStructureParserVersion === parserVersion && metadata.attachmentStructure) completed += 1
-        else if (Date.parse(String(metadata.attachmentStructureMigrationNextAt || '')) > now.getTime()) deferred += 1
-      } catch {}
-    }
+    const row = this.db.prepare(`
+      WITH eligible AS (
+        SELECT
+          COALESCE(json_extract(r.metadata_json,'$.attachmentStructureParserVersion'),'') AS parser_version,
+          json_type(r.metadata_json,'$.attachmentStructure') AS structure_type,
+          json_extract(r.metadata_json,'$.attachmentStructure') AS structure_value,
+          json_extract(r.metadata_json,'$.attachmentStructureMigrationNextAt') AS next_at
+        FROM memory_resources r
+        LEFT JOIN resource_suppressions s ON s.resource_id=r.id
+        WHERE r.resource_type='file' AND s.resource_id IS NULL
+          AND json_valid(r.metadata_json)=1
+          AND lower(COALESCE(
+            NULLIF(json_extract(r.metadata_json,'$.attachmentFormat'),''),
+            r.file_ext
+          )) IN ('.docx','.pptx','.xlsx','.pdf')
+          AND COALESCE(json_extract(r.metadata_json,'$.attachmentLocalPath'),'')<>''
+      ),
+      classified AS (
+        SELECT *,
+          CASE WHEN parser_version=? AND (
+            structure_type IN ('object','array','true')
+            OR (structure_type='text' AND COALESCE(structure_value,'')<>'')
+            OR (structure_type IN ('integer','real') AND COALESCE(structure_value,0)<>0)
+          ) THEN 1 ELSE 0 END AS is_completed
+        FROM eligible
+      )
+      SELECT
+        COUNT(*) AS total,
+        COALESCE(SUM(is_completed),0) AS completed,
+        COALESCE(SUM(CASE
+          WHEN is_completed=0 AND julianday(next_at)>julianday(?) THEN 1
+          ELSE 0
+        END),0) AS deferred
+      FROM classified
+    `).get(String(parserVersion || ''), now.toISOString()) as any
+    const total = Number(row?.total || 0)
+    const completed = Number(row?.completed || 0)
+    const deferred = Number(row?.deferred || 0)
     return { total, completed, pending: Math.max(0, total - completed - deferred), deferred }
   }
 
