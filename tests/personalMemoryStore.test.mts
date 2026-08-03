@@ -835,11 +835,14 @@ test('identity merge archive is fully pageable, private and restores every activ
     `).run()
 
     const firstPage = first.listMergeHistoryPage({ limit: 40 })
-    const secondPage = first.listMergeHistoryPage({ limit: 40, offset: 40 })
+    const secondPage = first.listMergeHistoryPage({
+      limit: 40, offset: 40, revision: firstPage.revision
+    })
     assert.equal(firstPage.total, 2_500)
     assert.deepEqual(firstPage.counts, { active: 2_000, reverted: 500, all: 2_500 })
     assert.equal(firstPage.items.length, 40)
     assert.equal(secondPage.items.length, 40)
+    assert.equal(secondPage.stale, false)
     assert.equal(new Set([...firstPage.items, ...secondPage.items].map(item => item.id)).size, 80)
     assert.equal(JSON.stringify(firstPage.items).includes('snapshot_json'), false)
     assert.equal(JSON.stringify(firstPage.items).includes('不应离开主进程'), false)
@@ -865,6 +868,12 @@ test('identity merge archive is fully pageable, private and restores every activ
       latestId: 2_500,
       latestActivityAt: first.getMergeHistoryArchiveStats().latestActivityAt
     })
+    database.prepare('UPDATE merge_history SET target_name=target_name WHERE id=2').run()
+    const stale = first.listMergeHistoryPage({
+      limit: 40, offset: 40, revision: firstPage.revision
+    })
+    assert.equal(stale.stale, true)
+    assert.deepEqual(stale.items, [])
     first.close()
 
     const reopened = new PersonalMemoryStore()
@@ -4460,6 +4469,58 @@ test('task ownership review revision covers queue decisions and action history a
       reopened.listTaskReviewDecisionPage().items[0]?.evidence_fingerprint,
       'task-ownership-review-revision-fingerprint'
     )
+    reopened.close()
+  } finally {
+    rmSync(directory, { recursive: true, force: true })
+  }
+})
+
+test('identity merge archive revision covers merge revert and deletion and self-heals on restart', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'weflow-identity-merge-archive-revision-'))
+  const databasePath = join(directory, 'memory.sqlite')
+  try {
+    const first = new PersonalMemoryStore()
+    first.initialize(databasePath)
+    const initial = Number(first.getIdentityMergeArchiveRevision())
+    const firstMergeId = first.recordMerge('merge-revision-source-1', 'merge-revision-target-1', {
+      source: { id: 'merge-revision-source-1', canonicalName: '合并版本来源一' },
+      target: { id: 'merge-revision-target-1', canonicalName: '合并版本保留一' },
+      relations: []
+    })
+    const afterInsert = Number(first.getIdentityMergeArchiveRevision())
+    assert.ok(afterInsert > initial)
+    first.markMergeReverted(firstMergeId)
+    const afterRevert = Number(first.getIdentityMergeArchiveRevision())
+    assert.ok(afterRevert > afterInsert)
+    const secondMergeId = first.recordMerge('merge-revision-source-2', 'merge-revision-target-2', {
+      source: { id: 'merge-revision-source-2', canonicalName: '合并版本来源二' },
+      target: { id: 'merge-revision-target-2', canonicalName: '合并版本保留二' },
+      relations: []
+    })
+    ;(first as any).db.prepare('DELETE FROM merge_history WHERE id=?').run(secondMergeId)
+    assert.ok(Number(first.getIdentityMergeArchiveRevision()) > afterRevert)
+    assert.deepEqual(first.getIdentityMergeArchiveRevisionHealth(), {
+      version: 'identity-merge-archive-revision-v1',
+      revision: first.getIdentityMergeArchiveRevision(),
+      expectedTriggers: 3,
+      installedTriggers: 3,
+      healthy: true
+    })
+    ;(first as any).db.exec(
+      'DROP TRIGGER trg_identity_merge_archive_revision_merge_history_update'
+    )
+    assert.equal(first.getIdentityMergeArchiveRevisionHealth().installedTriggers, 2)
+    assert.equal(first.getIdentityMergeArchiveRevisionHealth().healthy, false)
+    first.close()
+
+    const reopened = new PersonalMemoryStore()
+    reopened.initialize(databasePath)
+    assert.equal(reopened.getIdentityMergeArchiveRevisionHealth().installedTriggers, 3)
+    assert.equal(reopened.getIdentityMergeArchiveRevisionHealth().healthy, true)
+    const page = reopened.listMergeHistoryPage()
+    assert.equal(page.total, 1)
+    assert.equal(page.items[0]?.id, firstMergeId)
+    assert.equal(page.items[0]?.canRevert, false)
     reopened.close()
   } finally {
     rmSync(directory, { recursive: true, force: true })

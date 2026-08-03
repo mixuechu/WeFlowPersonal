@@ -1735,6 +1735,8 @@ export interface ElectronAPI {
         total: number
         hasMore: boolean
         counts: { active: number; reverted: number; all: number }
+        revision: string
+        stale: boolean
       }>
       sync: () => Promise<any>
       cancelSync: () => Promise<any>

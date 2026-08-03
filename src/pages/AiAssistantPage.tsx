@@ -391,6 +391,8 @@ function AiAssistantPage() {
     total: number
     hasMore: boolean
     counts: { active: number; reverted: number; all: number }
+    revision?: string
+    stale?: boolean
     loading?: boolean
   }>({
     items: [], total: 0, hasMore: false,
@@ -401,6 +403,7 @@ function AiAssistantPage() {
   const [mergeArchiveFrom, setMergeArchiveFrom] = useState('')
   const [mergeArchiveTo, setMergeArchiveTo] = useState('')
   const [mergeArchiveLoadingMore, setMergeArchiveLoadingMore] = useState(false)
+  const [mergeArchiveRefreshKey, setMergeArchiveRefreshKey] = useState(0)
   const mergeArchiveGate = useRef(new LatestRequestGate())
   const [memoryDiagnostics, setMemoryDiagnostics] = useState<any>(null)
   const [showDiagnostics, setShowDiagnostics] = useState(false)
@@ -1002,6 +1005,14 @@ function AiAssistantPage() {
     const timer = window.setTimeout(() => {
       void window.electronAPI.aiAssistant.getMergeHistoryPage(mergeArchiveOptions).then(page => {
         if (!mergeArchiveGate.current.isCurrent(request)) return
+        if (page.stale) {
+          window.setTimeout(() => {
+            if (mergeArchiveGate.current.isCurrent(request)) {
+              setMergeArchiveRefreshKey(value => value + 1)
+            }
+          }, 250)
+          return
+        }
         setMergeArchive({ ...page, loading: false })
       }).catch(() => {
         if (!mergeArchiveGate.current.isCurrent(request)) return
@@ -1015,7 +1026,7 @@ function AiAssistantPage() {
       window.clearTimeout(timer)
       if (mergeArchiveGate.current.isCurrent(request)) mergeArchiveGate.current.invalidate()
     }
-  }, [mergeArchiveOptions, dashboard?.mergeHistoryArchive?.revision])
+  }, [mergeArchiveOptions, dashboard?.mergeHistoryArchive?.revision, mergeArchiveRefreshKey])
 
   useEffect(() => {
     const request = graphWorkspaceGate.current.begin()
@@ -1885,9 +1896,15 @@ function AiAssistantPage() {
       const page = await window.electronAPI.aiAssistant.getMergeHistoryPage({
         ...mergeArchiveOptions,
         offset: mergeArchive.items.length,
-        limit: 40
+        limit: 40,
+        revision: mergeArchive.revision
       })
       if (!mergeArchiveGate.current.isCurrent(request)) return
+      if (page.stale) {
+        setMessage('身份合并档案已有变化，已自动从第一页刷新')
+        setMergeArchiveRefreshKey(value => value + 1)
+        return
+      }
       setMergeArchive(current => ({
         ...page,
         items: [
@@ -5536,6 +5553,16 @@ function AiAssistantPage() {
                 <span>当前状态 <b>{memoryDiagnostics.taskOwnershipReviewRevisionHealthy ? '保护正常' : '需要检查'}</b></span>
                 <span>当前 revision <b>{String(memoryDiagnostics.taskOwnershipReviewRevision.revision || '0')}</b></span>
                 <span>变更触发器 <b>{Number(memoryDiagnostics.taskOwnershipReviewRevision.installedTriggers || 0).toLocaleString()} / {Number(memoryDiagnostics.taskOwnershipReviewRevision.expectedTriggers || 0).toLocaleString()}</b></span>
+              </div>
+            </div>}
+            {memoryDiagnostics.identityMergeArchiveRevision?.version && <div className={`assistant-recovery-audit ${memoryDiagnostics.identityMergeArchiveRevisionHealthy ? 'healthy' : 'unhealthy'}`}>
+              <header><ShieldCheck size={15} /><span><b>身份合并档案分页一致性保护</b>
+                <small>每次身份合并、撤销或实体遗忘清理都会推进 SQLCipher revision；翻页期间档案发生变化时，旧页会被拒绝并自动刷新，避免显示已经失效的“可撤销”状态。</small>
+              </span></header>
+              <div className="assistant-recovery-current">
+                <span>当前状态 <b>{memoryDiagnostics.identityMergeArchiveRevisionHealthy ? '保护正常' : '需要检查'}</b></span>
+                <span>当前 revision <b>{String(memoryDiagnostics.identityMergeArchiveRevision.revision || '0')}</b></span>
+                <span>变更触发器 <b>{Number(memoryDiagnostics.identityMergeArchiveRevision.installedTriggers || 0).toLocaleString()} / {Number(memoryDiagnostics.identityMergeArchiveRevision.expectedTriggers || 0).toLocaleString()}</b></span>
               </div>
             </div>}
             {memoryDiagnostics.taskSearchIndex?.version && <div className={`assistant-recovery-audit ${memoryDiagnostics.taskSearchIndexHealthy ? 'healthy' : 'unhealthy'}`}>
