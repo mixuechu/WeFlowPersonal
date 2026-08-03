@@ -89,6 +89,7 @@ import {
 import { planEntityMerge } from './entityMergeDirection'
 import {
   buildTrustedEntityDirectory,
+  resolveTrustedEntityPairSelection,
   resolveTrustedEntitySelection,
   type TrustedEntityDirectoryOptions
 } from './trustedEntityDirectory.ts'
@@ -5710,8 +5711,17 @@ export class AiAssistantService {
     fromId: string,
     toId: string,
     maxDepth = 5,
-    allowedRelationIds: Set<string> | null = null
+    allowedRelationIds: Set<string> | null = null,
+    entityDirectoryRevision?: string
   ): any {
+    if (entityDirectoryRevision) {
+      const selection = resolveTrustedEntityPairSelection(this.state.graph.entities, {
+        fromId,
+        toId,
+        expectedRevision: entityDirectoryRevision
+      })
+      if (selection.stale) throw new Error('关系路径所选实体已经变化，请重新选择起点和终点')
+    }
     return findScopedGraphPath(
       fromId,
       toId,
@@ -5722,7 +5732,15 @@ export class AiAssistantService {
     )
   }
 
-  findCommonNeighbors(fromId: string, toId: string): any {
+  findCommonNeighbors(fromId: string, toId: string, entityDirectoryRevision?: string): any {
+    if (entityDirectoryRevision) {
+      const selection = resolveTrustedEntityPairSelection(this.state.graph.entities, {
+        fromId,
+        toId,
+        expectedRevision: entityDirectoryRevision
+      })
+      if (selection.stale) throw new Error('共同实体查询所选身份已经变化，请重新选择起点和终点')
+    }
     const entities = this.state.graph.entities.filter(isTrustedEntity)
     const entityIds = new Set(entities.map(entity => entity.id))
     return {

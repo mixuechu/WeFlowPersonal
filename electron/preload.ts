@@ -697,8 +697,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
     getMemoryEvidencePage: (documentType: string, sourceId: string, pagination?: any) =>
       ipcRenderer.invoke('ai-assistant:getMemoryEvidencePage', documentType, sourceId, pagination),
     indexMemoryVectors: () => ipcRenderer.invoke('ai-assistant:indexMemoryVectors'),
-    findGraphPath: (fromId: string, toId: string, maxDepth?: number) => ipcRenderer.invoke('ai-assistant:findGraphPath', fromId, toId, maxDepth),
-    findCommonNeighbors: (fromId: string, toId: string) => ipcRenderer.invoke('ai-assistant:findCommonNeighbors', fromId, toId),
+    findGraphPath: (fromId: string, toId: string, maxDepth?: number, entityDirectoryRevision?: string) =>
+      ipcRenderer.invoke('ai-assistant:findGraphPath', fromId, toId, maxDepth, entityDirectoryRevision),
+    findCommonNeighbors: (fromId: string, toId: string, entityDirectoryRevision?: string) =>
+      ipcRenderer.invoke('ai-assistant:findCommonNeighbors', fromId, toId, entityDirectoryRevision),
     getMemoryDiagnostics: () => ipcRenderer.invoke('ai-assistant:getMemoryDiagnostics'),
     getIngestionRunPage: (options?: any) =>
       ipcRenderer.invoke('ai-assistant:getIngestionRunPage', options),

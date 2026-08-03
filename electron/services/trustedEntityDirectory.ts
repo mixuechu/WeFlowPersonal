@@ -142,3 +142,30 @@ export function resolveTrustedEntitySelection(
   }
   return { entity, revision: directory.revision, stale: false, reason: 'ok' }
 }
+
+export function resolveTrustedEntityPairSelection(
+  entities: readonly any[],
+  input: { fromId?: string; toId?: string; expectedRevision?: string }
+): {
+  from: any | null
+  to: any | null
+  revision: string
+  stale: boolean
+  reason: 'ok' | 'missing_revision' | 'revision_changed' | 'entity_untrusted'
+} {
+  const directory = buildTrustedEntityDirectory(entities, { limit: 1 })
+  const expectedRevision = String(input.expectedRevision || '').trim()
+  if (!expectedRevision) {
+    return { from: null, to: null, revision: directory.revision, stale: true, reason: 'missing_revision' }
+  }
+  if (expectedRevision !== directory.revision) {
+    return { from: null, to: null, revision: directory.revision, stale: true, reason: 'revision_changed' }
+  }
+  const trusted = (Array.isArray(entities) ? entities : []).filter(isTrustedEntity)
+  const from = trusted.find(item => String(item?.id || '') === String(input.fromId || '').trim()) || null
+  const to = trusted.find(item => String(item?.id || '') === String(input.toId || '').trim()) || null
+  if (!from || !to) {
+    return { from: null, to: null, revision: directory.revision, stale: true, reason: 'entity_untrusted' }
+  }
+  return { from, to, revision: directory.revision, stale: false, reason: 'ok' }
+}

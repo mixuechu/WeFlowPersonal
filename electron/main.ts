@@ -4631,10 +4631,12 @@ function registerIpcHandlers() {
   ipcMain.handle('ai-assistant:getMemoryEvidencePage', (_, documentType: string, sourceId: string, pagination?: any) =>
     aiAssistantService.getMemoryEvidencePage(documentType, sourceId, pagination))
   ipcMain.handle('ai-assistant:indexMemoryVectors', () => aiAssistantService.ensureVectorIndex())
-  ipcMain.handle('ai-assistant:findGraphPath', (_, fromId: string, toId: string, maxDepth?: number) =>
-    aiAssistantService.findGraphPath(fromId, toId, maxDepth))
-  ipcMain.handle('ai-assistant:findCommonNeighbors', (_, fromId: string, toId: string) =>
-    aiAssistantService.findCommonNeighbors(fromId, toId))
+  ipcMain.handle('ai-assistant:findGraphPath', (
+    _, fromId: string, toId: string, maxDepth?: number, entityDirectoryRevision?: string
+  ) => aiAssistantService.findGraphPath(fromId, toId, maxDepth, null, entityDirectoryRevision))
+  ipcMain.handle('ai-assistant:findCommonNeighbors', (
+    _, fromId: string, toId: string, entityDirectoryRevision?: string
+  ) => aiAssistantService.findCommonNeighbors(fromId, toId, entityDirectoryRevision))
   ipcMain.handle('ai-assistant:getMemoryDiagnostics', () => aiAssistantService.getMemoryDiagnostics())
   ipcMain.handle('ai-assistant:getIngestionRunPage', (_, options?: any) =>
     aiAssistantService.getIngestionRunPage(options))

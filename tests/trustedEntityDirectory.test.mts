@@ -2,6 +2,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import {
   buildTrustedEntityDirectory,
+  resolveTrustedEntityPairSelection,
   resolveTrustedEntitySelection
 } from '../electron/services/trustedEntityDirectory.ts'
 
@@ -135,4 +136,32 @@ test('same-name entities remain bound to the selected stable id', () => {
   })
   assert.equal(selection.stale, false)
   assert.equal(selection.entity?.id, 'same-b')
+})
+
+test('graph path endpoints require two trusted ids from one visible directory revision', () => {
+  const entities = confirmedEntities.slice(0, 4)
+  const directory = buildTrustedEntityDirectory(entities)
+  const selected = resolveTrustedEntityPairSelection(entities, {
+    fromId: 'entity-1',
+    toId: 'entity-3',
+    expectedRevision: directory.revision
+  })
+  assert.equal(selected.stale, false)
+  assert.equal(selected.from?.id, 'entity-1')
+  assert.equal(selected.to?.id, 'entity-3')
+
+  const rejected = entities.map(entity => entity.id === 'entity-3'
+    ? { ...entity, trustStatus: 'rejected' }
+    : entity)
+  assert.equal(resolveTrustedEntityPairSelection(rejected, {
+    fromId: 'entity-1',
+    toId: 'entity-3',
+    expectedRevision: directory.revision
+  }).reason, 'revision_changed')
+  const currentRevision = buildTrustedEntityDirectory(rejected).revision
+  assert.equal(resolveTrustedEntityPairSelection(rejected, {
+    fromId: 'entity-1',
+    toId: 'entity-3',
+    expectedRevision: currentRevision
+  }).reason, 'entity_untrusted')
 })

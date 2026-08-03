@@ -1893,8 +1893,8 @@ export interface ElectronAPI {
         stale: boolean
       }>
       indexMemoryVectors: () => Promise<any>
-      findGraphPath: (fromId: string, toId: string, maxDepth?: number) => Promise<any>
-      findCommonNeighbors: (fromId: string, toId: string) => Promise<any>
+      findGraphPath: (fromId: string, toId: string, maxDepth?: number, entityDirectoryRevision?: string) => Promise<any>
+      findCommonNeighbors: (fromId: string, toId: string, entityDirectoryRevision?: string) => Promise<any>
       getMemoryDiagnostics: () => Promise<any>
       getIngestionRunPage: (options?: any) => Promise<{
         items: any[]

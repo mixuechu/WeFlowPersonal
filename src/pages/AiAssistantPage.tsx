@@ -161,6 +161,120 @@ function IngestionBatchAudit({ batch, run }: { batch: any; run: any }) {
   </article>
 }
 
+function TrustedEntityPicker({
+  value,
+  selected,
+  placeholder,
+  ariaLabel,
+  onSelect,
+  onClear,
+  onError
+}: {
+  value: string
+  selected?: any
+  placeholder: string
+  ariaLabel: string
+  onSelect: (entity: any) => void
+  onClear: () => void
+  onError?: (message: string) => void
+}) {
+  const [query, setQuery] = useState('')
+  const [options, setOptions] = useState<any[]>([])
+  const [total, setTotal] = useState(0)
+  const [revision, setRevision] = useState('')
+  const [open, setOpen] = useState(false)
+  const [loading, setLoading] = useState(false)
+  const requestGate = useRef(new LatestRequestGate())
+
+  useEffect(() => {
+    setQuery(value && selected ? String(selected.canonicalName || '') : '')
+  }, [value, selected])
+
+  useEffect(() => {
+    if (!open) return
+    const request = requestGate.current.begin()
+    const timer = window.setTimeout(() => {
+      setLoading(true)
+      void window.electronAPI.aiAssistant.getTrustedEntityDirectory({
+        query: query.trim() || undefined,
+        limit: 20,
+        offset: 0
+      }).then(result => {
+        if (!requestGate.current.isCurrent(request)) return
+        setOptions(result.items)
+        setTotal(result.total)
+        setRevision(result.revision)
+      }).catch(error => {
+        if (!requestGate.current.isCurrent(request)) return
+        setOptions([])
+        setTotal(0)
+        setRevision('')
+        onError?.(error?.message || String(error))
+      }).finally(() => {
+        if (requestGate.current.isCurrent(request)) setLoading(false)
+      })
+    }, 220)
+    return () => window.clearTimeout(timer)
+  }, [open, query, onError])
+
+  return <div className="assistant-memory-entity-picker"
+    onBlur={event => {
+      if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setOpen(false)
+    }}>
+    <div>
+      <input
+        value={query}
+        onFocus={() => setOpen(true)}
+        onChange={event => {
+          setQuery(event.target.value)
+          onClear()
+          setOpen(true)
+        }}
+        placeholder={placeholder}
+        aria-label={ariaLabel} />
+      {(query || value) && <button type="button" aria-label={`清除${ariaLabel}`} onClick={() => {
+        setQuery('')
+        onClear()
+        setOpen(false)
+      }}>×</button>}
+    </div>
+    {selected && <small className="assistant-memory-entity-selected">
+      已选：{selected.type} · {selected.id}
+      {selected.canonicalNameCollisionCount > 1
+        ? ` · ${selected.canonicalNameCollisionCount} 个同名实体，按 ID 精确选择`
+        : ' · 已确认实体'}
+    </small>}
+    {open && <div className="assistant-memory-entity-options">
+      {options.map(entity => {
+        const identityHint = [
+          ...(entity.accountIds || []),
+          ...(entity.externalIdentities || []).flatMap((identity: any) =>
+            [identity.displayName, identity.accountId]),
+          ...(entity.aliases || [])
+        ].filter(Boolean).slice(0, 3).join(' · ')
+        return <button type="button" key={entity.id} onClick={() => {
+          onSelect({ ...entity, directoryRevision: revision })
+          setQuery(entity.canonicalName)
+          setOpen(false)
+        }}>
+          <strong>{entity.canonicalName}</strong>
+          <small>{entity.type} · {entity.id}
+            {entity.canonicalNameCollisionCount > 1
+              ? ` · ${entity.canonicalNameCollisionCount} 个同名`
+              : ''}
+          </small>
+          {identityHint && <small>{identityHint}</small>}
+        </button>
+      })}
+      {!loading && !options.length && <span>没有匹配的已确认实体</span>}
+      {loading && <span>正在搜索全部可信实体…</span>}
+      {!loading && total > options.length && <span>
+        匹配 {total} 个，继续输入名称、别名或账号缩小范围
+      </span>}
+    </div>}
+  </div>
+}
+
 function AiAssistantPage() {
   const [status, setStatus] = useState<any>(null)
   const [dashboard, setDashboard] = useState<any>(null)
@@ -215,6 +329,7 @@ function AiAssistantPage() {
   const [claimLoadingMore, setClaimLoadingMore] = useState(false)
   const [eventLoadingMore, setEventLoadingMore] = useState(false)
   const [claimEntityFilter, setClaimEntityFilter] = useState('')
+  const [claimEntitySelection, setClaimEntitySelection] = useState<any>(null)
   const [claimSourceFilter, setClaimSourceFilter] = useState('')
   const [claimStatusFilter, setClaimStatusFilter] = useState('')
   const [claimPredicateFilter, setClaimPredicateFilter] = useState('')
@@ -380,6 +495,8 @@ function AiAssistantPage() {
   const [selectedCalendarDate, setSelectedCalendarDate] = useState(() => shanghaiToday())
   const [pathFromId, setPathFromId] = useState('')
   const [pathToId, setPathToId] = useState('')
+  const [pathFromSelection, setPathFromSelection] = useState<any>(null)
+  const [pathToSelection, setPathToSelection] = useState<any>(null)
   const [graphPath, setGraphPath] = useState<any>(null)
   const [graphCommonNeighbors, setGraphCommonNeighbors] = useState<any>(null)
   const [mergeTargets, setMergeTargets] = useState<Record<string, string>>({})
@@ -508,13 +625,6 @@ function AiAssistantPage() {
   const [creatingMemoryTask, setCreatingMemoryTask] = useState(false)
   const [memoryEntityFilter, setMemoryEntityFilter] = useState('')
   const [memoryEntitySelection, setMemoryEntitySelection] = useState<any>(null)
-  const [memoryEntityQuery, setMemoryEntityQuery] = useState('')
-  const [memoryEntityOptions, setMemoryEntityOptions] = useState<any[]>([])
-  const [memoryEntityOptionTotal, setMemoryEntityOptionTotal] = useState(0)
-  const [memoryEntityDirectoryRevision, setMemoryEntityDirectoryRevision] = useState('')
-  const [memoryEntityPickerOpen, setMemoryEntityPickerOpen] = useState(false)
-  const [memoryEntityPickerLoading, setMemoryEntityPickerLoading] = useState(false)
-  const memoryEntityPickerGate = useRef(new LatestRequestGate())
   const [memorySessionFilter, setMemorySessionFilter] = useState('')
   const [memorySessionSelection, setMemorySessionSelection] = useState<any>(null)
   const [memorySessionQuery, setMemorySessionQuery] = useState('')
@@ -700,35 +810,6 @@ function AiAssistantPage() {
     const timer = window.setInterval(() => void load(), 15_000)
     return () => window.clearInterval(timer)
   }, [load])
-
-  useEffect(() => {
-    if (!memoryEntityPickerOpen) return
-    const request = memoryEntityPickerGate.current.begin()
-    const timer = window.setTimeout(() => {
-      setMemoryEntityPickerLoading(true)
-      void window.electronAPI.aiAssistant.getTrustedEntityDirectory({
-        query: memoryEntityQuery.trim() || undefined,
-        limit: 20,
-        offset: 0
-      }).then(result => {
-        if (!memoryEntityPickerGate.current.isCurrent(request)) return
-        setMemoryEntityOptions(result.items)
-        setMemoryEntityOptionTotal(result.total)
-        setMemoryEntityDirectoryRevision(result.revision)
-      }).catch(error => {
-        if (!memoryEntityPickerGate.current.isCurrent(request)) return
-        setMemoryEntityOptions([])
-        setMemoryEntityOptionTotal(0)
-        setMemoryEntityDirectoryRevision('')
-        setMessage(error?.message || String(error))
-      }).finally(() => {
-        if (memoryEntityPickerGate.current.isCurrent(request)) {
-          setMemoryEntityPickerLoading(false)
-        }
-      })
-    }, 220)
-    return () => window.clearTimeout(timer)
-  }, [memoryEntityPickerOpen, memoryEntityQuery])
 
   useEffect(() => {
     if (!memorySessionPickerOpen) return
@@ -1037,7 +1118,6 @@ function AiAssistantPage() {
         if (page.entityScopeStale) {
           setMemoryEntitySelection(null)
           setMemoryEntityFilter('')
-          setMemoryEntityQuery('')
           setMemorySearchState({ status: 'idle', query: '' })
           setMessage('所选实体已经变化、合并或不再可信，请重新选择实体范围。')
           return
@@ -1925,12 +2005,32 @@ function AiAssistantPage() {
 
   const findGraphPath = async () => {
     if (!pathFromId || !pathToId) return
-    const [path, common] = await Promise.all([
-      window.electronAPI.aiAssistant.findGraphPath(pathFromId, pathToId, 6),
-      window.electronAPI.aiAssistant.findCommonNeighbors(pathFromId, pathToId)
-    ])
-    setGraphPath(path)
-    setGraphCommonNeighbors(common)
+    const fromRevision = String(pathFromSelection?.directoryRevision || '')
+    const toRevision = String(pathToSelection?.directoryRevision || '')
+    if (!fromRevision || fromRevision !== toRevision) {
+      setMessage('选择起点和终点期间可信实体目录发生了变化，请重新选择两端。')
+      setPathFromId('')
+      setPathToId('')
+      setPathFromSelection(null)
+      setPathToSelection(null)
+      return
+    }
+    try {
+      const [path, common] = await Promise.all([
+        window.electronAPI.aiAssistant.findGraphPath(pathFromId, pathToId, 6, fromRevision),
+        window.electronAPI.aiAssistant.findCommonNeighbors(pathFromId, pathToId, fromRevision)
+      ])
+      setGraphPath(path)
+      setGraphCommonNeighbors(common)
+    } catch (error: any) {
+      setMessage(error?.message || String(error))
+      setPathFromId('')
+      setPathToId('')
+      setPathFromSelection(null)
+      setPathToSelection(null)
+      setGraphPath(null)
+      setGraphCommonNeighbors(null)
+    }
   }
 
   const backupMemory = async () => {
@@ -2715,7 +2815,6 @@ function AiAssistantPage() {
         if (errorMessage.includes('所选实体')) {
           setMemoryEntitySelection(null)
           setMemoryEntityFilter('')
-          setMemoryEntityQuery('')
         }
         setMemoryAnswer({ answer: errorMessage, citations: [], uncertainty: '' })
       }
@@ -2737,8 +2836,6 @@ function AiAssistantPage() {
     }
     setMemoryEntitySelection({ ...entity, directoryRevision: result.revision })
     setMemoryEntityFilter(entity.id)
-    setMemoryEntityQuery(entity.canonicalName || fallbackName)
-    setMemoryEntityPickerOpen(false)
   }
 
   const loadMoreMemoryResults = async () => {
@@ -2760,7 +2857,6 @@ function AiAssistantPage() {
       if (page.entityScopeStale) {
         setMemoryEntitySelection(null)
         setMemoryEntityFilter('')
-        setMemoryEntityQuery('')
         setMessage('所选实体在翻页期间发生变化，已清除该范围，请重新选择。')
         return
       }
@@ -4518,73 +4614,20 @@ function AiAssistantPage() {
             <input value={memoryQuery} onChange={event => setMemoryQuery(event.target.value)} placeholder="搜索人物、事实、事件、关系或项目" />
           </div>
           <div className="assistant-memory-scope">
-            <div className="assistant-memory-entity-picker"
-              onBlur={event => {
-                if (!event.currentTarget.contains(event.relatedTarget as Node | null)) {
-                  setMemoryEntityPickerOpen(false)
-                }
-              }}>
-              <div>
-                <input
-                  value={memoryEntityQuery}
-                  onFocus={() => setMemoryEntityPickerOpen(true)}
-                  onChange={event => {
-                    setMemoryEntityQuery(event.target.value)
-                    setMemoryEntitySelection(null)
-                    setMemoryEntityFilter('')
-                    setMemoryEntityPickerOpen(true)
-                  }}
-                  placeholder="搜索全部可信实体…"
-                  aria-label="搜索实体检索范围" />
-                {(memoryEntityQuery || memoryEntityFilter) && <button
-                  type="button"
-                  aria-label="清除实体范围"
-                  onClick={() => {
-                    setMemoryEntityQuery('')
-                    setMemoryEntitySelection(null)
-                    setMemoryEntityFilter('')
-                    setMemoryEntityPickerOpen(false)
-                  }}>×</button>}
-              </div>
-              {memoryEntitySelection && <small className="assistant-memory-entity-selected">
-                已选：{memoryEntitySelection.type} · {memoryEntitySelection.id}
-                {memoryEntitySelection.canonicalNameCollisionCount > 1
-                  ? ` · ${memoryEntitySelection.canonicalNameCollisionCount} 个同名实体，按 ID 精确检索`
-                  : ' · 已确认实体'}
-              </small>}
-              {memoryEntityPickerOpen && <div className="assistant-memory-entity-options">
-                {memoryEntityOptions.map((entity: any) => {
-                  const identityHint = [
-                    ...(entity.accountIds || []),
-                    ...(entity.externalIdentities || []).flatMap((identity: any) =>
-                      [identity.displayName, identity.accountId]),
-                    ...(entity.aliases || [])
-                  ].filter(Boolean).slice(0, 3).join(' · ')
-                  return <button
-                    type="button"
-                    key={entity.id}
-                    onClick={() => {
-                      setMemoryEntitySelection({ ...entity, directoryRevision: memoryEntityDirectoryRevision })
-                      setMemoryEntityFilter(entity.id)
-                      setMemoryEntityQuery(entity.canonicalName)
-                      setMemoryEntityPickerOpen(false)
-                    }}>
-                    <strong>{entity.canonicalName}</strong>
-                    <small>{entity.type} · {entity.id}
-                      {entity.canonicalNameCollisionCount > 1
-                        ? ` · ${entity.canonicalNameCollisionCount} 个同名`
-                        : ''}
-                    </small>
-                    {identityHint && <small>{identityHint}</small>}
-                  </button>
-                })}
-                {!memoryEntityPickerLoading && !memoryEntityOptions.length && <span>没有匹配的已确认实体</span>}
-                {memoryEntityPickerLoading && <span>正在搜索全部可信实体…</span>}
-                {!memoryEntityPickerLoading && memoryEntityOptionTotal > memoryEntityOptions.length && <span>
-                  匹配 {memoryEntityOptionTotal} 个，继续输入名称、别名或账号缩小范围
-                </span>}
-              </div>}
-            </div>
+            <TrustedEntityPicker
+              value={memoryEntityFilter}
+              selected={memoryEntitySelection}
+              placeholder="搜索全部可信实体…"
+              ariaLabel="实体检索范围"
+              onSelect={entity => {
+                setMemoryEntitySelection(entity)
+                setMemoryEntityFilter(entity.id)
+              }}
+              onClear={() => {
+                setMemoryEntitySelection(null)
+                setMemoryEntityFilter('')
+              }}
+              onError={setMessage} />
             <div className="assistant-memory-session-picker"
               onBlur={event => {
                 if (!event.currentTarget.contains(event.relatedTarget as Node | null)) {
@@ -4664,8 +4707,6 @@ function AiAssistantPage() {
               <button onClick={() => {
                 setMemoryEntityFilter('')
                 setMemoryEntitySelection(null)
-                setMemoryEntityQuery('')
-                setMemoryEntityPickerOpen(false)
                 setMemorySessionFilter('')
                 setMemorySessionSelection(null)
                 setMemorySessionQuery('')
@@ -5273,11 +5314,20 @@ function AiAssistantPage() {
               <span className="assistant-count">{claimArchive.total} 条</span>
             </div>
             <div className="assistant-memory-scope assistant-event-scope">
-              <select value={claimEntityFilter} onChange={event => setClaimEntityFilter(event.target.value)}>
-                <option value="">所有人物与实体</option>
-                {trustedGraphEntities.map((entity: any) =>
-                  <option key={`claim-entity-${entity.id}`} value={entity.id}>{entity.canonicalName} · {entity.type}</option>)}
-              </select>
+              <TrustedEntityPicker
+                value={claimEntityFilter}
+                selected={claimEntitySelection}
+                placeholder="搜索人物或实体范围…"
+                ariaLabel="事实档案实体范围"
+                onSelect={entity => {
+                  setClaimEntitySelection(entity)
+                  setClaimEntityFilter(entity.id)
+                }}
+                onClear={() => {
+                  setClaimEntitySelection(null)
+                  setClaimEntityFilter('')
+                }}
+                onError={setMessage} />
               <select value={claimSourceFilter} onChange={event => setClaimSourceFilter(event.target.value)}>
                 <option value="">所有来源</option>
                 <option value="wechat">微信</option>
@@ -5295,7 +5345,7 @@ function AiAssistantPage() {
               <label><span>到</span><input type="date" value={claimTo} onChange={event => setClaimTo(event.target.value)} /></label>
               {(claimEntityFilter || claimSourceFilter || claimStatusFilter || claimPredicateFilter || claimFrom || claimTo) &&
                 <button onClick={() => {
-                  setClaimEntityFilter(''); setClaimSourceFilter(''); setClaimStatusFilter('')
+                  setClaimEntityFilter(''); setClaimEntitySelection(null); setClaimSourceFilter(''); setClaimStatusFilter('')
                   setClaimPredicateFilter(''); setClaimFrom(''); setClaimTo('')
                 }}>清除范围</button>}
             </div>
@@ -5691,15 +5741,43 @@ function AiAssistantPage() {
             <span><b>{identityDisambiguation.lastRunAt ? new Date(identityDisambiguation.lastRunAt).toLocaleString('zh-CN') : '尚未运行'}</b><small>最近消歧</small></span>
           </div>}
           <div className="assistant-path-finder">
-            <select value={pathFromId} onChange={event => { setPathFromId(event.target.value); setGraphPath(null); setGraphCommonNeighbors(null) }}>
-              <option value="">选择起点</option>
-              {trustedGraphEntities.map((entity: any) => <option key={`from-${entity.id}`} value={entity.id}>{entity.canonicalName} · {entity.type}</option>)}
-            </select>
+            <TrustedEntityPicker
+              value={pathFromId}
+              selected={pathFromSelection}
+              placeholder="搜索路径起点…"
+              ariaLabel="关系路径起点"
+              onSelect={entity => {
+                setPathFromSelection(entity)
+                setPathFromId(entity.id)
+                setGraphPath(null)
+                setGraphCommonNeighbors(null)
+              }}
+              onClear={() => {
+                setPathFromSelection(null)
+                setPathFromId('')
+                setGraphPath(null)
+                setGraphCommonNeighbors(null)
+              }}
+              onError={setMessage} />
             <span>→</span>
-            <select value={pathToId} onChange={event => { setPathToId(event.target.value); setGraphPath(null); setGraphCommonNeighbors(null) }}>
-              <option value="">选择终点</option>
-              {trustedGraphEntities.map((entity: any) => <option key={`to-${entity.id}`} value={entity.id}>{entity.canonicalName} · {entity.type}</option>)}
-            </select>
+            <TrustedEntityPicker
+              value={pathToId}
+              selected={pathToSelection}
+              placeholder="搜索路径终点…"
+              ariaLabel="关系路径终点"
+              onSelect={entity => {
+                setPathToSelection(entity)
+                setPathToId(entity.id)
+                setGraphPath(null)
+                setGraphCommonNeighbors(null)
+              }}
+              onClear={() => {
+                setPathToSelection(null)
+                setPathToId('')
+                setGraphPath(null)
+                setGraphCommonNeighbors(null)
+              }}
+              onError={setMessage} />
             <button onClick={() => void findGraphPath()} disabled={!pathFromId || !pathToId}>查找关系路径</button>
           </div>
           {graphPath && <div className={`assistant-path-result ${graphPath.found ? '' : 'missing'}`}>
