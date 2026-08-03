@@ -4233,6 +4233,7 @@ test('assistant conversations persist ordered turns, citations and deletion acro
   const conversationId = store.saveAssistantExchange('第一问', '第一答', [{
     documentId: 'claim:one',
     title: '证据一',
+    contentHash: 'a'.repeat(64),
     content: '不应复制进问答历史的结构化正文',
     evidence: [{ messageId: 'sensitive-message', excerpt: '不应复制的原文证据' }],
     feedbackContext: {
@@ -4276,6 +4277,7 @@ test('assistant conversations persist ordered turns, citations and deletion acro
   assert.deepEqual(complete.messages[1].citations[0].feedbackContext.options.sourceIds, ['wechat'])
   assert.equal(complete.messages[1].citations[0].content, undefined)
   assert.equal(complete.messages[1].citations[0].evidence, undefined)
+  assert.equal(complete.messages[1].citations[0].contentHash, 'a'.repeat(64))
   assert.equal(JSON.stringify(complete.messages[1].citations).includes('不应复制'), false)
   assert.deepEqual(complete.messages[1].groundingAudit, {
     version: 'statement-citations-v1',

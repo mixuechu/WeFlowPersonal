@@ -6936,6 +6936,9 @@ export class PersonalMemoryStore {
         sourceId: String(citation?.sourceId || '').trim().slice(0, 512),
         type: String(citation?.type || '').trim().slice(0, 80),
         title: String(citation?.title || '').trim().slice(0, 500),
+        contentHash: /^[a-f0-9]{64}$/i.test(String(citation?.contentHash || ''))
+          ? String(citation.contentHash).toLowerCase()
+          : '',
         status: String(citation?.status || '').trim().slice(0, 80),
         trustLabel: String(citation?.trustLabel || '').trim().slice(0, 120),
         evidenceTotal: Math.max(0, Math.floor(Number(citation?.evidenceTotal) || 0)),

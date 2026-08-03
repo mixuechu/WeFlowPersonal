@@ -1,3 +1,5 @@
+import { createHash } from 'node:crypto'
+
 export type PersonalDataSourceKind = 'chat' | 'email' | 'calendar' | 'document'
 export type PersonalDataSourceCapability =
   | 'incremental'
@@ -202,6 +204,9 @@ export function buildModelMemoryContext(
         type: item.document_type,
         title: item.title,
         content: item.search_text,
+        contentHash: /^[a-f0-9]{64}$/i.test(String(item.content_hash || ''))
+          ? String(item.content_hash).toLowerCase()
+          : createHash('sha256').update(String(item.search_text || '')).digest('hex'),
         status: eligibility.status,
         trustLabel: eligibility.trustLabel,
         evidencePolicy: eligibility.policyReason,
@@ -213,6 +218,92 @@ export function buildModelMemoryContext(
         canSupportFacts: eligibility.canSupportFacts
       }
     })
+}
+
+export function revalidateGroundedStatements(
+  groundingAudit: any,
+  citations: any[]
+): {
+  version: 'statement-revalidation-v1'
+  status: 'current' | 'needs_review' | 'invalid'
+  totalStatements: number
+  supportedStatements: number
+  unknownStatements: number
+  invalidStatements: number
+  statements: Array<{
+    citationIds: string[]
+    status: 'current' | 'unknown' | 'invalid'
+    currentCitationIds: string[]
+    changedCitationIds: string[]
+    unavailableCitationIds: string[]
+  }>
+} {
+  const statementCitations = (Array.isArray(groundingAudit?.statementCitations)
+    ? groundingAudit.statementCitations
+    : []).slice(0, 24)
+  const citationById = new Map((Array.isArray(citations) ? citations : [])
+    .map(citation => [String(citation?.documentId || ''), citation]))
+  const statements = statementCitations.map((rawIds: any) => {
+    const citationIds = [...new Set((Array.isArray(rawIds) ? rawIds : [])
+      .map(String).filter(Boolean))].slice(0, 20)
+    const currentCitationIds: string[] = []
+    const changedCitationIds: string[] = []
+    const unavailableCitationIds: string[] = []
+    let hasUnknown = false
+    for (const id of citationIds) {
+      const citation = citationById.get(id)
+      if (!citation || citation.citationUnavailable || citation.canSupportFacts === false) {
+        unavailableCitationIds.push(id)
+      } else if (citation.citationFreshness === 'changed') {
+        changedCitationIds.push(id)
+      } else if (citation.citationFreshness === 'unknown') {
+        hasUnknown = true
+      } else {
+        currentCitationIds.push(id)
+      }
+    }
+    const status = currentCitationIds.length
+      ? 'current'
+      : hasUnknown
+        ? 'unknown'
+        : 'invalid'
+    return { citationIds, status, currentCitationIds, changedCitationIds, unavailableCitationIds }
+  })
+  const supportedStatements = statements.filter(statement => statement.status === 'current').length
+  const unknownStatements = statements.filter(statement => statement.status === 'unknown').length
+  const invalidStatements = statements.filter(statement => statement.status === 'invalid').length
+  const status = statements.length && supportedStatements === statements.length
+    ? 'current'
+    : statements.length && invalidStatements === statements.length
+      ? 'invalid'
+      : 'needs_review'
+  return {
+    version: 'statement-revalidation-v1',
+    status,
+    totalStatements: statements.length,
+    supportedStatements,
+    unknownStatements,
+    invalidStatements,
+    statements
+  }
+}
+
+export function getMemoryCitationFreshness(input: {
+  answerTimeContentHash?: string
+  currentContentHash?: string
+  canSupportFacts?: boolean
+  unavailable?: boolean
+}): 'current' | 'changed' | 'unknown' | 'ineligible' | 'missing' {
+  if (input.unavailable) return 'missing'
+  if (input.canSupportFacts !== true) return 'ineligible'
+  const answerHash = /^[a-f0-9]{64}$/i.test(String(input.answerTimeContentHash || ''))
+    ? String(input.answerTimeContentHash).toLowerCase()
+    : ''
+  const currentHash = /^[a-f0-9]{64}$/i.test(String(input.currentContentHash || ''))
+    ? String(input.currentContentHash).toLowerCase()
+    : ''
+  if (!answerHash || !currentHash) return 'unknown'
+  return answerHash === currentHash ? 'current' : 'changed'
 }
 
 export function finalizeGroundedMemoryAnswer(

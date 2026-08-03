@@ -114,8 +114,10 @@ import {
   buildUntrustedMemoryQuestionEnvelope,
   classifyDocumentTaskOwnership,
   finalizeGroundedMemoryAnswer,
+  getMemoryCitationFreshness,
   getMemoryEvidenceEligibility,
   normalizeDataSourceClaimNature,
+  revalidateGroundedStatements,
   runPersonalDataSourceBatch
 } from './personalDataSources'
 import { LocalDocumentDataSource } from './localDocumentDataSource'
@@ -5070,6 +5072,7 @@ export class AiAssistantService {
       const result = resultById.get(String(citation.documentId || '')) as any
       return {
         ...citation,
+        citationFreshness: 'current',
         feedbackContext: {
           query: feedbackContext.query,
           options: feedbackOptions,
@@ -5093,6 +5096,7 @@ export class AiAssistantService {
       citations,
       groundedStatements: grounded.statements,
       groundingAudit: grounded.groundingAudit,
+      groundingRevalidation: revalidateGroundedStatements(grounded.groundingAudit, citations),
       sensitiveRedaction: outbound.summary,
       queryPlan: {
         ...plan,
@@ -5122,9 +5126,8 @@ export class AiAssistantService {
     const documentCache = new Map<string, any>()
     return {
       ...conversation,
-      messages: conversation.messages.map((message: any) => ({
-        ...message,
-        citations: (message.citations || []).map((citation: any) => {
+      messages: conversation.messages.map((message: any) => {
+        const citations = (message.citations || []).map((citation: any) => {
           const stored = citation?.feedbackContext
           const hasFeedbackContext = stored && typeof stored === 'object'
           const context = hasFeedbackContext
@@ -5166,13 +5169,27 @@ export class AiAssistantService {
             evidence: [],
             citationUnavailable: true,
             citationHydration: 'source_missing',
+            citationFreshness: 'missing',
             relevanceFeedback,
             ...(canonicalFeedbackContext ? { feedbackContext: canonicalFeedbackContext } : {})
           }
           const eligibility = getMemoryEvidenceEligibility(document)
+          const answerTimeContentHash = /^[a-f0-9]{64}$/i.test(String(citation.contentHash || ''))
+            ? String(citation.contentHash).toLowerCase()
+            : ''
+          const currentContentHash = /^[a-f0-9]{64}$/i.test(String(document.content_hash || ''))
+            ? String(document.content_hash).toLowerCase()
+            : ''
+          const citationFreshness = getMemoryCitationFreshness({
+            answerTimeContentHash,
+            currentContentHash,
+            canSupportFacts: eligibility.canSupportFacts
+          })
           return {
             ...citation,
             answerTimeTitle: citation.title || '',
+            answerTimeContentHash,
+            currentContentHash,
             sourceId: document.source_id,
             type: document.document_type,
             title: document.title,
@@ -5187,11 +5204,18 @@ export class AiAssistantService {
             canSupportFacts: eligibility.canSupportFacts,
             citationUnavailable: false,
             citationHydration: context ? 'authoritative_scoped' : 'authoritative_scope_unknown',
+            citationFreshness,
+            citationContentChanged: citationFreshness === 'changed',
             relevanceFeedback,
             ...(canonicalFeedbackContext ? { feedbackContext: canonicalFeedbackContext } : {})
           }
         })
-      }))
+        return {
+          ...message,
+          citations,
+          groundingRevalidation: revalidateGroundedStatements(message.groundingAudit, citations)
+        }
+      })
     }
   }
 

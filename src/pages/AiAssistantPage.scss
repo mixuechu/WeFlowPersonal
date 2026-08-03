@@ -645,6 +645,9 @@
 .assistant-memory-answer { margin-top: 12px; padding: 14px; border-radius: 12px; background: #f2f5f1; }
 .assistant-memory-answer > p { margin: 0; color: #354139; font-size: 13px; line-height: 1.65; white-space: pre-wrap; }
 .assistant-memory-answer > small { display: block; margin-top: 8px; color: #7b837c; }
+.assistant-memory-answer > .assistant-grounding-current { color: #2f7659; }
+.assistant-memory-answer > .assistant-grounding-warning { color: #9a681f; }
+.assistant-memory-answer > .assistant-grounding-invalid { color: #b0443d; font-weight: 650; }
 .assistant-grounded-statements { display: grid; gap: 6px; margin-top: 10px; }
 .assistant-grounded-statements article { padding: 8px 10px; border: 1px solid #dbe5dc; border-radius: 8px; background: rgba(255,255,255,.66); }
 .assistant-grounded-statements span { display: block; color: #354139; font-size: 11px; line-height: 1.55; }

@@ -3520,6 +3520,7 @@ function AiAssistantPage() {
                     answer: item.content,
                     citations: item.citations,
                     groundingAudit: item.groundingAudit,
+                    groundingRevalidation: item.groundingRevalidation,
                     groundedStatements: String(item.content || '').split(/\n{2,}/)
                       .map((text: string, statementIndex: number) => ({
                         text,
@@ -3533,6 +3534,11 @@ function AiAssistantPage() {
                   {Number(item.groundingAudit.rejectedStatements || 0)
                     ? `，拦截 ${Number(item.groundingAudit.rejectedStatements)} 条无合格引用陈述`
                     : ''}
+                </small>}
+                {item.role === 'assistant' && item.groundingRevalidation?.status !== 'current' && <small>
+                  {item.groundingRevalidation?.status === 'invalid'
+                    ? `历史结论已失去当前证据支持（${Number(item.groundingRevalidation.invalidStatements || 0)} 条）`
+                    : `历史结论需要重新核验（变化/未知 ${Number(item.groundingRevalidation.invalidStatements || 0) + Number(item.groundingRevalidation.unknownStatements || 0)} 条）`}
                 </small>}
               </article>)}
               {!memoryConversation && <div className="assistant-empty">新对话会在首次回答后加密保存；重启后可以从左侧继续。</div>}
@@ -3554,6 +3560,11 @@ function AiAssistantPage() {
               {memoryAnswer.groundedStatements.map((statement: any, statementIndex: number) => <article
                 key={`${statementIndex}-${statement.text}`}>
                 <span>{statement.text}</span>
+                {memoryAnswer.groundingRevalidation?.statements?.[statementIndex]?.status !== 'current' && <small>
+                  {memoryAnswer.groundingRevalidation?.statements?.[statementIndex]?.status === 'invalid'
+                    ? '⚠ 这条历史陈述引用的记忆已经变化、失效或被删除，请重新提问。'
+                    : '△ 这条旧陈述生成时尚未保存内容指纹，当前只能核验来源仍存在，不能证明内容未变化。'}
+                </small>}
                 <small>
                   依据：{(statement.citationIds || []).map((documentId: string) => {
                     const citationIndex = (memoryAnswer.citations || [])
@@ -3573,6 +3584,16 @@ function AiAssistantPage() {
                 : ' 没有发现无合格引用陈述。'}
               {' '}聊天、邮件和文档内容均按不可信数据隔离，不会被当作模型指令执行。
             </small>}
+            {memoryAnswer.groundingRevalidation?.status === 'current' && <small className="assistant-grounding-current">
+              当前重新核验：{Number(memoryAnswer.groundingRevalidation.supportedStatements || 0)} 条陈述的权威内容指纹和可信资格均未变化。
+            </small>}
+            {memoryAnswer.groundingRevalidation?.status === 'needs_review' && <small className="assistant-grounding-warning">
+              这段历史回答需要重新核验：{Number(memoryAnswer.groundingRevalidation.invalidStatements || 0)} 条已失去支持，
+              {Number(memoryAnswer.groundingRevalidation.unknownStatements || 0)} 条旧记录缺少回答时内容指纹。建议用原问题重新提问。
+            </small>}
+            {memoryAnswer.groundingRevalidation?.status === 'invalid' && <small className="assistant-grounding-invalid">
+              这段历史回答已没有当前有效证据支持，仅作为历史文本保留；请勿据此行动，建议重新提问。
+            </small>}
             {memoryAnswer.uncertainty && <small>不确定性：{memoryAnswer.uncertainty}</small>}
             {!!memoryAnswer.sensitiveRedaction?.total && <small>
               本次发送前已本地脱敏 {memoryAnswer.sensitiveRedaction.total} 处：
@@ -3583,7 +3604,15 @@ function AiAssistantPage() {
               <div>{memoryAnswer.queryPlan.explanation.map((item: string) => <span key={item}>{item}</span>)}</div>
             </details>}
             <div className="assistant-memory-answer-actions">
-              <button onClick={() => void createTaskFromMemory()} disabled={creatingMemoryTask || Boolean(memoryAnswer.createdTaskId)}>
+              {memoryAnswer.groundingRevalidation && memoryAnswer.groundingRevalidation.status !== 'current' &&
+                <button onClick={() => setMemoryQuestion(String(memoryAnswer.question || ''))}>
+                  <RefreshCw size={13} /> 用原问题重新提问
+                </button>}
+              <button onClick={() => void createTaskFromMemory()} disabled={
+                creatingMemoryTask ||
+                Boolean(memoryAnswer.createdTaskId) ||
+                (memoryAnswer.groundingRevalidation && memoryAnswer.groundingRevalidation.status !== 'current')
+              }>
                 <Check size={13} /> {memoryAnswer.createdTaskId ? '已生成待办' : creatingMemoryTask ? '正在生成…' : '生成待办'}
               </button>
             </div>
@@ -3605,6 +3634,12 @@ function AiAssistantPage() {
                   <small className="assistant-evidence-limit-note">
                     回答生成时标题：“{citation.answerTimeTitle}”；当前权威标题已更新。
                   </small>}
+                {citation.citationContentChanged && <small className="assistant-evidence-limit-note">
+                  回答生成后，这条权威记忆的结构化内容已经被纠正或更新；它不再自动支持旧回答中的原陈述。
+                </small>}
+                {citation.citationFreshness === 'ineligible' && <small className="assistant-evidence-limit-note">
+                  这条记忆当前已被拒绝、取消或缺少合格原文，不能继续支持历史事实结论。
+                </small>}
                 {Number(citation.evidenceTotal || 0) > (citation.evidence || []).length &&
                   <small className="assistant-evidence-limit-note">
                     本次回答核验了最近 {(citation.evidence || []).length} / 共 {Number(citation.evidenceTotal)} 条去重原文证据
