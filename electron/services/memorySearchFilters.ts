@@ -10,6 +10,17 @@ export type MemorySearchOptions = {
   sourceIds?: string[]
 }
 
+export function isMemorySearchPageRevisionStale(input: {
+  offset: number
+  expectedRevision?: string
+  startingRevision: string
+  completedRevision: string
+}): boolean {
+  const expected = String(input.expectedRevision || '').trim()
+  return input.startingRevision !== input.completedRevision ||
+    (input.offset > 0 && Boolean(expected) && expected !== input.startingRevision)
+}
+
 export function paginateMemoryResults(items: any[], offset = 0, limit = 40, cap = 500): {
   results: any[]
   offset: number

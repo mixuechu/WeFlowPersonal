@@ -14,7 +14,12 @@ import { structureOcrText } from './imageOcrStructuring'
 import { captureWebSnapshot } from './webSnapshotService'
 import { extractScannedPdfText, getPdfOcrStatus } from './pdfOcrService'
 import { exportService } from './export'
-import { filterMemorySearchResults, paginateMemoryResults, type MemorySearchOptions } from './memorySearchFilters'
+import {
+  filterMemorySearchResults,
+  isMemorySearchPageRevisionStale,
+  paginateMemoryResults,
+  type MemorySearchOptions
+} from './memorySearchFilters'
 import {
   applyMemorySearchFeedback,
   buildMemorySearchFeedbackContext,
@@ -4874,11 +4879,28 @@ export class AiAssistantService {
   async searchMemoryPage(
     query: string,
     options: MemorySearchOptions = {},
-    pagination: { offset?: number; limit?: number } = {}
+    pagination: { offset?: number; limit?: number; revision?: string } = {}
   ): Promise<any> {
     const offset = Math.max(0, Math.min(500, Number(pagination.offset) || 0))
     const limit = Math.max(1, Math.min(100, Number(pagination.limit) || 40))
     const text = String(query || '').trim()
+    if (text) {
+      try { await this.ensureVectorIndex() } catch {}
+    }
+    const revision = personalMemoryStore.getMemorySearchRevision()
+    const expectedRevision = String(pagination.revision || '').trim()
+    if (isMemorySearchPageRevisionStale({
+      offset,
+      expectedRevision,
+      startingRevision: revision,
+      completedRevision: revision
+    })) {
+      return {
+        results: [], offset, limit, total: 0, hasMore: false, truncated: false,
+        scopeCandidates: null, feedback: [], feedbackVersion: MEMORY_SEARCH_FEEDBACK_VERSION,
+        revision, stale: true
+      }
+    }
     const selectedEntity = options.entityId
       ? this.state.graph.entities.find(entity => entity.id === options.entityId && isTrustedEntity(entity))
       : null
@@ -4893,7 +4915,11 @@ export class AiAssistantService {
     } : options
     const allowedIds = personalMemoryStore.listScopedSearchDocumentIds(scopedOptions)
     if (!text && allowedIds === null) {
-      return { results: [], offset, limit, total: 0, hasMore: false, truncated: false, scopeCandidates: null }
+      return {
+        results: [], offset, limit, total: 0, hasMore: false, truncated: false,
+        scopeCandidates: null, feedback: [], feedbackVersion: MEMORY_SEARCH_FEEDBACK_VERSION,
+        revision, stale: false
+      }
     }
     const ranked = text
       ? await this.searchMemoryHybrid(text, scopedOptions, 500)
@@ -4918,12 +4944,27 @@ export class AiAssistantService {
         ))
     const page = paginateMemoryResults(ranked, offset, limit, 500)
     const feedback = this.memorySearchFeedbackContext(text, scopedOptions).entries
+    const completedRevision = personalMemoryStore.getMemorySearchRevision()
+    if (isMemorySearchPageRevisionStale({
+      offset,
+      expectedRevision,
+      startingRevision: revision,
+      completedRevision
+    })) {
+      return {
+        results: [], offset, limit, total: 0, hasMore: false, truncated: false,
+        scopeCandidates: null, feedback: [], feedbackVersion: MEMORY_SEARCH_FEEDBACK_VERSION,
+        revision: completedRevision, stale: true
+      }
+    }
     return {
       ...page,
       truncated: page.truncated || (!text && allowedIds!.size > 500),
       scopeCandidates: allowedIds?.size ?? null,
       feedback,
-      feedbackVersion: MEMORY_SEARCH_FEEDBACK_VERSION
+      feedbackVersion: MEMORY_SEARCH_FEEDBACK_VERSION,
+      revision,
+      stale: false
     }
   }
 

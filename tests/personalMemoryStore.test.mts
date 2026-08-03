@@ -6,7 +6,11 @@ import { tmpdir } from 'node:os'
 import { createHash, randomBytes } from 'node:crypto'
 import { PersonalMemoryStore } from '../electron/services/personalMemoryStore.ts'
 import { buildMemorySearchFeedbackContext } from '../electron/services/memorySearchFeedback.ts'
-import { filterMemorySearchResults, paginateMemoryResults } from '../electron/services/memorySearchFilters.ts'
+import {
+  filterMemorySearchResults,
+  isMemorySearchPageRevisionStale,
+  paginateMemoryResults
+} from '../electron/services/memorySearchFilters.ts'
 import { buildContextualMemoryQuestion, buildMemoryQueryPlan } from '../electron/services/memoryQueryPlanner.ts'
 import { applyReminderPreferences, buildTaskReminders, findMatchingTask } from '../electron/services/taskIntelligence.ts'
 import { buildEntityInsights } from '../electron/services/relationshipInsights.ts'
@@ -4107,6 +4111,90 @@ test('memory result pages are stable, bounded and report remaining ranked candid
   assert.equal(capped.total, 500)
   assert.equal(capped.truncated, true)
   assert.equal(capped.hasMore, false)
+  assert.equal(isMemorySearchPageRevisionStale({
+    offset: 40,
+    expectedRevision: '7',
+    startingRevision: '7',
+    completedRevision: '7'
+  }), false)
+  assert.equal(isMemorySearchPageRevisionStale({
+    offset: 40,
+    expectedRevision: '6',
+    startingRevision: '7',
+    completedRevision: '7'
+  }), true)
+  assert.equal(isMemorySearchPageRevisionStale({
+    offset: 0,
+    startingRevision: '7',
+    completedRevision: '8'
+  }), true)
+})
+
+test('memory search revision covers documents, evidence, vectors and relevance decisions', () =>
+  withStore(store => {
+    const revisions: number[] = [Number(store.getMemorySearchRevision())]
+    store.upsertResources([{
+      id: 'revision-resource',
+      resourceType: 'document',
+      title: '版本门禁资料',
+      content: '用于验证统一检索分页版本',
+      metadata: { sourceId: 'documents' },
+      createdAt: '2026-08-03T00:00:00.000Z',
+      updatedAt: '2026-08-03T00:00:00.000Z',
+      evidence: [{
+        sourceId: 'documents',
+        sessionId: 'data-source:documents:revision',
+        messageId: 'revision-message',
+        timestamp: 1_775_000_000,
+        sender: '文档',
+        excerpt: '统一检索分页版本'
+      }]
+    }])
+    revisions.push(Number(store.getMemorySearchRevision()))
+    store.saveEmbedding('resource:revision-resource', 'revision-model:2d', [1, 0])
+    revisions.push(Number(store.getMemorySearchRevision()))
+    const context = buildMemorySearchFeedbackContext('分页版本', { sourceIds: ['documents'] })
+    store.recordMemorySearchFeedback({
+      queryFingerprint: context.queryFingerprint,
+      scopeFingerprint: context.scopeFingerprint,
+      queryText: context.query,
+      scopeJson: context.scopeJson,
+      documentId: 'resource:revision-resource',
+      action: 'helpful'
+    })
+    revisions.push(Number(store.getMemorySearchRevision()))
+    const beforeRead = store.getMemorySearchRevision()
+    store.searchText('分页版本', 10)
+    assert.equal(store.getMemorySearchRevision(), beforeRead)
+    assert.ok(revisions.every((revision, index) => index === 0 || revision > revisions[index - 1]))
+  }))
+
+test('memory search revision trigger health is visible and repaired on restart', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'weflow-search-revision-health-'))
+  const databasePath = join(directory, 'memory.sqlite')
+  try {
+    const first = new PersonalMemoryStore()
+    first.initialize(databasePath)
+    assert.deepEqual(first.getMemorySearchRevisionHealth(), {
+      version: 'memory-search-revision-v1',
+      revision: first.getMemorySearchRevision(),
+      expectedTriggers: 18,
+      installedTriggers: 18,
+      healthy: true
+    })
+    ;(first as any).db.exec('DROP TRIGGER trg_memory_search_revision_search_documents_insert')
+    assert.equal(first.getMemorySearchRevisionHealth().installedTriggers, 17)
+    assert.equal(first.getMemorySearchRevisionHealth().healthy, false)
+    first.close()
+
+    const reopened = new PersonalMemoryStore()
+    reopened.initialize(databasePath)
+    assert.equal(reopened.getMemorySearchRevisionHealth().installedTriggers, 18)
+    assert.equal(reopened.getMemorySearchRevisionHealth().healthy, true)
+    reopened.close()
+  } finally {
+    rmSync(directory, { recursive: true, force: true })
+  }
 })
 
 test('database retrieval scope covers entity links, relation type and evidence time', () => withStore(store => {

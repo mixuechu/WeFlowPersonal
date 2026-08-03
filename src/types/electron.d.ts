@@ -1749,7 +1749,11 @@ export interface ElectronAPI {
       previewForgetEntity: (id: string) => Promise<any>
       forgetEntity: (id: string) => Promise<any>
       searchMemory: (query: string, options?: any) => Promise<any[]>
-      searchMemoryPage: (query: string, options?: any, pagination?: { offset?: number; limit?: number }) => Promise<{
+      searchMemoryPage: (query: string, options?: any, pagination?: {
+        offset?: number
+        limit?: number
+        revision?: string
+      }) => Promise<{
         results: any[]
         offset: number
         limit: number
@@ -1757,6 +1761,8 @@ export interface ElectronAPI {
         hasMore: boolean
         truncated: boolean
         scopeCandidates: number | null
+        revision: string
+        stale: boolean
         feedback: Array<{
           id: number
           documentId: string

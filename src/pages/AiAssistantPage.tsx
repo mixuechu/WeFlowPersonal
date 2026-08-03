@@ -237,6 +237,7 @@ function AiAssistantPage() {
     hasMore?: boolean
     truncated?: boolean
     scopeCandidates?: number | null
+    revision?: string
   }>({ status: 'idle', query: '' })
   const [memoryLoadingMore, setMemoryLoadingMore] = useState(false)
   const [memorySearchFeedback, setMemorySearchFeedback] = useState<any[]>([])
@@ -840,6 +841,15 @@ function AiAssistantPage() {
       setMemorySearchState({ status: 'searching', query })
       void window.electronAPI.aiAssistant.searchMemoryPage(query, memorySearchOptions, { offset: 0, limit: 40 }).then(page => {
         if (!memorySearchGate.current.isCurrent(request)) return
+        if (page.stale) {
+          setMemorySearchState({ status: 'waiting', query })
+          window.setTimeout(() => {
+            if (memorySearchGate.current.isCurrent(request)) {
+              setMemorySearchRefreshKey(value => value + 1)
+            }
+          }, 400)
+          return
+        }
         setMemoryResults(page.results)
         setMemorySearchFeedback(page.feedback || [])
         setMemorySearchState({
@@ -848,7 +858,8 @@ function AiAssistantPage() {
           total: page.total,
           hasMore: page.hasMore,
           truncated: page.truncated,
-          scopeCandidates: page.scopeCandidates
+          scopeCandidates: page.scopeCandidates,
+          revision: page.revision
         })
       }).catch(error => {
         if (!memorySearchGate.current.isCurrent(request)) return
@@ -2064,9 +2075,18 @@ function AiAssistantPage() {
       const page = await window.electronAPI.aiAssistant.searchMemoryPage(
         query,
         memorySearchOptions,
-        { offset: memoryResults.length, limit: 40 }
+        {
+          offset: memoryResults.length,
+          limit: 40,
+          revision: memorySearchState.revision
+        }
       )
       if (!memorySearchGate.current.isCurrent(request)) return
+      if (page.stale) {
+        setMessage('检索索引在翻页期间发生变化，已从第一页重新生成结果，避免遗漏或重复。')
+        setMemorySearchRefreshKey(value => value + 1)
+        return
+      }
       setMemoryResults(current => {
         const merged = new Map(current.map(item => [item.id, item]))
         for (const item of page.results) merged.set(item.id, item)
@@ -2079,7 +2099,8 @@ function AiAssistantPage() {
         total: page.total,
         hasMore: page.hasMore,
         truncated: page.truncated,
-        scopeCandidates: page.scopeCandidates
+        scopeCandidates: page.scopeCandidates,
+        revision: page.revision
       })
     } catch (error: any) {
       if (memorySearchGate.current.isCurrent(request)) {
@@ -5377,6 +5398,16 @@ function AiAssistantPage() {
                 <span>本次检查 <b>{memoryDiagnostics.structuredSearchIndex.checkedAt
                   ? new Date(memoryDiagnostics.structuredSearchIndex.checkedAt).toLocaleString('zh-CN')
                   : '未知'}</b></span>
+              </div>
+            </div>}
+            {memoryDiagnostics.memorySearchRevision?.version && <div className={`assistant-recovery-audit ${memoryDiagnostics.memorySearchRevisionHealthy ? 'healthy' : 'unhealthy'}`}>
+              <header><Search size={15} /><span><b>检索分页一致性保护</b>
+                <small>搜索文档、原文证据、相关性反馈和向量索引任一发生变化都会推进加密数据库 revision；翻页期间若版本变化，旧页会被拒绝并自动从第一页重新检索，避免混合新旧排序。</small>
+              </span></header>
+              <div className="assistant-recovery-current">
+                <span>当前状态 <b>{memoryDiagnostics.memorySearchRevisionHealthy ? '保护正常' : '需要检查'}</b></span>
+                <span>当前 revision <b>{String(memoryDiagnostics.memorySearchRevision.revision || '0')}</b></span>
+                <span>变更触发器 <b>{Number(memoryDiagnostics.memorySearchRevision.installedTriggers || 0).toLocaleString()} / {Number(memoryDiagnostics.memorySearchRevision.expectedTriggers || 0).toLocaleString()}</b></span>
               </div>
             </div>}
             {memoryDiagnostics.taskSearchIndex?.version && <div className={`assistant-recovery-audit ${memoryDiagnostics.taskSearchIndexHealthy ? 'healthy' : 'unhealthy'}`}>

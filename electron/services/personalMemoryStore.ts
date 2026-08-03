@@ -729,6 +729,7 @@ export class PersonalMemoryStore {
     this.repairStructuredEvidenceIdentity()
     this.repairStructuredEvidenceReferences()
     this.repairGenericSearchEvidenceIdentity()
+    this.ensureMemorySearchRevisionTriggers()
     this.repairStructuredSearchIndex()
     this.backfillMergeHistoryNames()
     this.db.exec(`CREATE INDEX IF NOT EXISTS idx_memory_corrections_item
@@ -887,6 +888,73 @@ export class PersonalMemoryStore {
     if (!columns.some(item => item.name === column)) this.db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`)
   }
 
+  private ensureMemorySearchRevisionTriggers(): void {
+    if (!this.db) return
+    const tables = [
+      'search_documents',
+      'search_document_evidence',
+      'evidence',
+      'memory_search_feedback',
+      'vector_ann_entries',
+      'vector_ann_state'
+    ]
+    const now = new Date().toISOString()
+    this.db.prepare(`
+      INSERT INTO schema_meta(key,value,updated_at)
+      VALUES('memory_search_revision','0',?)
+      ON CONFLICT(key) DO NOTHING
+    `).run(now)
+    const statements: string[] = []
+    for (const table of tables) {
+      for (const operation of ['INSERT', 'UPDATE', 'DELETE']) {
+        const name = `trg_memory_search_revision_${table}_${operation.toLowerCase()}`
+        statements.push(`DROP TRIGGER IF EXISTS ${name};`)
+        statements.push(`
+          CREATE TRIGGER ${name} AFTER ${operation} ON ${table}
+          BEGIN
+            UPDATE schema_meta
+            SET value=CAST(CAST(value AS INTEGER)+1 AS TEXT),
+              updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')
+            WHERE key='memory_search_revision';
+          END;
+        `)
+      }
+    }
+    this.db.exec(statements.join('\n'))
+  }
+
+  getMemorySearchRevision(): string {
+    if (!this.db) return '0'
+    return String((this.db.prepare(`
+      SELECT value FROM schema_meta WHERE key='memory_search_revision'
+    `).get() as any)?.value || '0')
+  }
+
+  getMemorySearchRevisionHealth(): any {
+    const expectedTriggers = 18
+    if (!this.db) {
+      return {
+        version: 'memory-search-revision-v1',
+        revision: '0',
+        expectedTriggers,
+        installedTriggers: 0,
+        healthy: false
+      }
+    }
+    const installedTriggers = Number((this.db.prepare(`
+      SELECT COUNT(*) AS count
+      FROM sqlite_master
+      WHERE type='trigger' AND name LIKE 'trg_memory_search_revision_%'
+    `).get() as any)?.count || 0)
+    return {
+      version: 'memory-search-revision-v1',
+      revision: this.getMemorySearchRevision(),
+      expectedTriggers,
+      installedTriggers,
+      healthy: installedTriggers === expectedTriggers
+    }
+  }
+
   private compactCommittedIngestionPayloads(): void {
     if (!this.db) return
     const previousRow = this.db.prepare(`
@@ -897,8 +965,9 @@ export class PersonalMemoryStore {
     const stale = this.db.prepare(`
       SELECT COUNT(*) AS rows,
         COALESCE(SUM(
-          length(digest_json)+length(messages_json)+length(checkpoint_keys_json)
-          +length(resource_id)+length(resource_content_hash)+length(completion_json)
+          length(CAST(digest_json AS BLOB))+length(CAST(messages_json AS BLOB))
+          +length(CAST(checkpoint_keys_json AS BLOB))+length(CAST(resource_id AS BLOB))
+          +length(CAST(resource_content_hash AS BLOB))+length(CAST(completion_json AS BLOB))
         ),0) AS bytes
       FROM ingestion_batch_commits
       WHERE status='committed' AND (
@@ -918,8 +987,9 @@ export class PersonalMemoryStore {
     }
     const retained = this.db.prepare(`
       SELECT COUNT(*) AS rows,COALESCE(SUM(
-        length(digest_json)+length(messages_json)+length(checkpoint_keys_json)
-        +length(resource_id)+length(resource_content_hash)+length(completion_json)
+        length(CAST(digest_json AS BLOB))+length(CAST(messages_json AS BLOB))
+        +length(CAST(checkpoint_keys_json AS BLOB))+length(CAST(resource_id AS BLOB))
+        +length(CAST(resource_content_hash AS BLOB))+length(CAST(completion_json AS BLOB))
       ),0) AS bytes
       FROM ingestion_batch_commits WHERE status='committed'
     `).get() as any
@@ -2323,19 +2393,22 @@ export class PersonalMemoryStore {
     })()
     const taskSearchIndexHealthy = taskSearchIndex.version === 0
       || taskSearchIndex.currentMismatches === 0
+    const memorySearchRevision = this.getMemorySearchRevisionHealth()
     return {
       healthy: integrity === 'ok'
         && structuredEvidenceMigration.constraintsHealthy
         && referentialIntegrityHealthy
         && genericSearchEvidenceIdentity.constraintsHealthy
         && structuredSearchIndexHealthy
-        && taskSearchIndexHealthy,
+        && taskSearchIndexHealthy
+        && memorySearchRevision.healthy,
       integrity,
       foreignKeyViolations,
       referentialIntegrityHealthy,
       genericSearchEvidenceIdentityHealthy: genericSearchEvidenceIdentity.constraintsHealthy,
       structuredSearchIndexHealthy,
       taskSearchIndexHealthy,
+      memorySearchRevisionHealthy: memorySearchRevision.healthy,
       encryption: {
         enabled: Boolean(this.encryptionKey),
         cipher: this.encryptionKey ? String(this.db.pragma('cipher', { simple: true }) || '') : 'none',
@@ -2350,6 +2423,7 @@ export class PersonalMemoryStore {
       genericSearchEvidenceIdentity,
       structuredSearchIndex,
       taskSearchIndex,
+      memorySearchRevision,
       backups
     }
   }
