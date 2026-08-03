@@ -458,6 +458,7 @@ function AiAssistantPage() {
   const [entityRelationQuery, setEntityRelationQuery] = useState('')
   const [entityRelationDirection, setEntityRelationDirection] = useState<'all' | 'outgoing' | 'incoming'>('all')
   const [entityRelationStatus, setEntityRelationStatus] = useState<'all' | 'candidate' | 'confirmed'>('all')
+  const [entityRelationSource, setEntityRelationSource] = useState<'all' | 'wechat' | 'documents' | 'calendar' | 'mail' | 'legacy'>('all')
   const [entityEventQuery, setEntityEventQuery] = useState('')
   const [entityEventStatus, setEntityEventStatus] = useState<'all' | 'candidate' | 'confirmed' | 'rejected' | 'cancelled'>('all')
   const [entityEventSource, setEntityEventSource] = useState<'all' | 'wechat' | 'documents' | 'calendar' | 'mail' | 'legacy'>('all')
@@ -1878,6 +1879,7 @@ function AiAssistantPage() {
         query: entityRelationQuery.trim() || undefined,
         direction: entityRelationDirection,
         status: entityRelationStatus,
+        sourceId: entityRelationSource === 'all' ? undefined : entityRelationSource,
         limit: 40,
         offset: 0
       }).then(relations => {
@@ -1911,7 +1913,7 @@ function AiAssistantPage() {
   }, [
     showEntityDossier, selectedEntityId, dashboard?.memoryRevision,
     dashboard?.graphReviewRevision, entityDossierRefreshKeys.relations,
-    entityRelationQuery, entityRelationDirection, entityRelationStatus
+    entityRelationQuery, entityRelationDirection, entityRelationStatus, entityRelationSource
   ])
 
   useEffect(() => {
@@ -2874,7 +2876,8 @@ function AiAssistantPage() {
               ...options,
               query: entityRelationQuery.trim() || undefined,
               direction: entityRelationDirection,
-              status: entityRelationStatus
+              status: entityRelationStatus,
+              sourceId: entityRelationSource === 'all' ? undefined : entityRelationSource
             })
           : await window.electronAPI.aiAssistant.getEventTimeline({
               ...options,
@@ -8013,6 +8016,12 @@ function AiAssistantPage() {
                     <option value="confirmed">已确认</option>
                     <option value="candidate">待确认</option>
                   </select>
+                  <select value={entityRelationSource}
+                    onChange={event => setEntityRelationSource(event.target.value as any)}>
+                    <option value="all">全部来源</option><option value="wechat">微信</option>
+                    <option value="documents">本机文档</option><option value="calendar">日历</option>
+                    <option value="mail">Mail</option><option value="legacy">历史未知来源</option>
+                  </select>
                 </div>
                 {entityDossierPages.relations?.status === 'loading' && <em>正在检索关系…</em>}
                 {entityDossierPages.relations?.status === 'error' && <em>
@@ -8027,7 +8036,7 @@ function AiAssistantPage() {
                     <button className="assistant-dossier-link" onClick={() => setSelectedEntityId(neighborId)}>
                       <b>{outgoing ? relation.predicate : `被${relation.predicate}`}</b><span>{neighborName || selectedEntityNames[neighborId] || neighborId}</span>
                     </button>
-                    <small>{relation.status === 'confirmed' ? '已确认' : '待确认'} · {Math.round(Number(relation.confidence || 0) * 100)}%</small>
+                    <small>{relation.status === 'confirmed' ? '已确认' : '待确认'} · {Math.round(Number(relation.confidence || 0) * 100)}% · {memorySourceLabels(relation)}</small>
                     <div className="assistant-evidence-stack"><EvidenceRows evidence={relation.evidence}
                       total={relation.evidenceTotal} onOpenArchive={() =>
                         void openMemoryEvidenceArchive(

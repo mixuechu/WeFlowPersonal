@@ -3976,7 +3976,10 @@ test('project memory is scoped in SQL before limits and preserves authoritative 
       status: 'confirmed',
       createdAt: new Date(1_550_000_000_000 + index * 1000).toISOString(),
       updatedAt: new Date(1_550_000_000_000 + index * 1000).toISOString(),
-      evidence: evidence(`project-scoped-relation-message-${index}`, `项目关系原文 ${index}`)
+      evidence: index === 0
+        ? [{ ...evidence(`project-scoped-relation-message-${index}`, `项目关系原文 ${index}`)[0],
+            sourceId: 'mail' }]
+        : evidence(`project-scoped-relation-message-${index}`, `项目关系原文 ${index}`)
     })),
     reviewQueue: []
   } as any, '', {
@@ -4102,6 +4105,12 @@ test('project memory is scoped in SQL before limits and preserves authoritative 
   assert.equal(store.listEntityRelationPage({
     entityId: 'project-memory-scope', status: 'candidate'
   }).total, 0)
+  assert.equal(store.listEntityRelationPage({
+    entityId: 'project-memory-scope', sourceId: 'mail'
+  }).total, 1)
+  assert.equal(store.listEntityRelationPage({
+    entityId: 'project-memory-scope', sourceId: 'legacy'
+  }).total, 124)
   const entityEvidencePage = store.listEntityEvidencePage({
     entityId: 'project-memory-scope', limit: 40
   })
@@ -4125,7 +4134,7 @@ test('project memory is scoped in SQL before limits and preserves authoritative 
   }).total, 125)
   assert.equal(store.listEntityEvidencePage({
     entityId: 'project-memory-scope', sourceId: 'legacy'
-  }).total, 625)
+  }).total, 624)
   assert.equal(store.listEntityEvidencePage({
     entityId: 'project-memory-scope', sourceId: 'wechat'
   }).total, 125)

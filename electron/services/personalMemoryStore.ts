@@ -6452,6 +6452,7 @@ export class PersonalMemoryStore {
     entityId: string
     direction?: 'all' | 'outgoing' | 'incoming'
     status?: 'all' | 'candidate' | 'confirmed'
+    sourceId?: MemoryEvidenceSource
     query?: string
     limit?: number
     offset?: number
@@ -6488,6 +6489,17 @@ export class PersonalMemoryStore {
       where.push('r.status=?')
       parameters.push(status)
     }
+    const sourceId = ['wechat', 'documents', 'calendar', 'mail', 'legacy']
+      .includes(String(options.sourceId || ''))
+      ? String(options.sourceId)
+      : ''
+    if (sourceId) {
+      where.push(`EXISTS (
+        SELECT 1 FROM evidence source_evidence
+        WHERE source_evidence.relation_id=r.id AND source_evidence.source_id=?
+      )`)
+      parameters.push(sourceId)
+    }
     if (query) {
       where.push(`(
         LOWER(r.predicate) LIKE ? OR
@@ -6509,7 +6521,9 @@ export class PersonalMemoryStore {
     const limit = Math.max(1, Math.min(100, Math.floor(Number(options.limit) || 40)))
     const rows = this.db.prepare(`
       SELECT r.*,subject.canonical_name AS subject_name,object.canonical_name AS object_name,
-        (SELECT COUNT(*) FROM evidence e WHERE e.relation_id=r.id) AS evidence_count
+        (SELECT COUNT(*) FROM evidence e WHERE e.relation_id=r.id) AS evidence_count,
+        (SELECT GROUP_CONCAT(DISTINCT e.source_id) FROM evidence e
+          WHERE e.relation_id=r.id) AS source_ids
       ${fromAndWhere}
       ORDER BY
         CASE WHEN r.status='confirmed' THEN 0 ELSE 1 END,
