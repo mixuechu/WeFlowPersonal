@@ -551,6 +551,34 @@
 .assistant-memory-scope label { display: grid; gap: 3px; }
 .assistant-memory-scope label span { color: #858a83; font-size: 8px; }
 .assistant-memory-scope button { width: auto; cursor: pointer; }
+.assistant-memory-session-picker { position: relative; min-width: 0; align-self: stretch; }
+.assistant-memory-session-picker > div:first-child { position: relative; }
+.assistant-memory-session-picker > div:first-child input { padding-right: 26px; }
+.assistant-memory-session-picker > div:first-child button {
+  position: absolute; top: 50%; right: 4px; width: 22px; padding: 2px; border: 0;
+  background: transparent; transform: translateY(-50%); font-size: 14px;
+}
+.assistant-memory-session-selected {
+  display: block; margin: 3px 2px 0; overflow: hidden; color: #787f77;
+  font-size: 8px; line-height: 1.35; text-overflow: ellipsis; white-space: nowrap;
+}
+.assistant-memory-session-options {
+  position: absolute; z-index: 30; top: calc(100% + 5px); left: 0; width: min(440px, 80vw);
+  max-height: 280px; overflow: auto; padding: 4px; border: 1px solid #deddd5;
+  border-radius: 9px; background: #fff; box-shadow: 0 12px 34px rgba(30, 40, 34, .16);
+}
+.assistant-memory-session-options button {
+  display: grid; width: 100%; padding: 8px 9px; border: 0; border-radius: 6px;
+  text-align: left; background: transparent;
+}
+.assistant-memory-session-options button:hover { background: #f3f5f1; }
+.assistant-memory-session-options strong {
+  overflow: hidden; color: #4f574f; font-size: 10px; text-overflow: ellipsis; white-space: nowrap;
+}
+.assistant-memory-session-options small {
+  overflow: hidden; color: #8a9088; font-size: 8px; text-overflow: ellipsis; white-space: nowrap;
+}
+.assistant-memory-session-options > span { display: block; padding: 9px; color: #858a83; font-size: 9px; }
 .assistant-scope-note { display: block; margin-top: 8px; color: #6e7d73; font-size: 9px; }
 .assistant-search-results { display: grid; gap: 13px; margin-top: 12px; }
 .assistant-search-result-group { display: grid; gap: 7px; }

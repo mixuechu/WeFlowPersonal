@@ -56,6 +56,27 @@ test('official accounts are excluded and duplicate session ids cannot inflate bu
   assert.equal(result.items[0].displayName, '新名称')
 })
 
+test('same display names are marked unsafe for legacy name fallback without merging ids', () => {
+  const result = buildConversationSourceDirectory([
+    { username: 'first@chatroom', displayName: '项目讨论', lastTimestamp: 9 },
+    { username: 'second@chatroom', displayName: ' 项目讨论 ', lastTimestamp: 8 },
+    { username: 'unique', displayName: '唯一联系人', lastTimestamp: 7 }
+  ], [], { query: '项目讨论' })
+  assert.equal(result.total, 2)
+  assert.deepEqual(result.items.map(item => item.sessionId), [
+    'first@chatroom',
+    'second@chatroom'
+  ])
+  assert.ok(result.items.every(item =>
+    item.displayNameCollisionCount === 2 && item.legacyNameFallbackSafe === false
+  ))
+  const unique = buildConversationSourceDirectory([
+    { username: 'unique', displayName: '唯一联系人', lastTimestamp: 7 }
+  ], []).items[0]
+  assert.equal(unique.displayNameCollisionCount, 1)
+  assert.equal(unique.legacyNameFallbackSafe, true)
+})
+
 test('pagination revision and item mutation token reject stale directory state', () => {
   const first = buildConversationSourceDirectory(sessions.slice(0, 4), [], { limit: 2 })
   const changed = buildConversationSourceDirectory(sessions.slice(0, 4), [{

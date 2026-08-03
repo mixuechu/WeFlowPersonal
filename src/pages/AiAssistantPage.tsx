@@ -4,6 +4,7 @@ import { buildTaskCalendar, shanghaiToday } from '../utils/taskCalendar'
 import type { ReviewStatusFilter } from '../utils/graphReviewFilters'
 import { evidenceLocalMessageId, groupMemorySearchResults, memoryEvidenceSourceLabel, MEMORY_TYPE_LABELS, normalizeMemoryEvidence, type MemoryEvidence } from '../utils/memorySearchPresentation'
 import { LatestRequestGate } from '../utils/latestRequestGate'
+import { buildMemorySessionScope } from '../utils/memorySessionScope'
 import './AiAssistantPage.scss'
 
 type Task = {
@@ -202,7 +203,6 @@ function AiAssistantPage() {
   const [sourceTypeFilter, setSourceTypeFilter] = useState<'all' | 'group' | 'private'>('all')
   const [sourceEnabledFilter, setSourceEnabledFilter] = useState<'all' | 'enabled' | 'disabled'>('all')
   const sourceDirectoryGate = useRef(new LatestRequestGate())
-  const [memoryConversationSources, setMemoryConversationSources] = useState<any[]>([])
   const [dataSources, setDataSources] = useState<any[]>([])
   const [eventTimeline, setEventTimeline] = useState<{ items: any[]; total: number; hasMore: boolean; revision?: string; stale?: boolean }>({
     items: [], total: 0, hasMore: false
@@ -508,19 +508,33 @@ function AiAssistantPage() {
   const [creatingMemoryTask, setCreatingMemoryTask] = useState(false)
   const [memoryEntityFilter, setMemoryEntityFilter] = useState('')
   const [memorySessionFilter, setMemorySessionFilter] = useState('')
+  const [memorySessionSelection, setMemorySessionSelection] = useState<any>(null)
+  const [memorySessionQuery, setMemorySessionQuery] = useState('')
+  const [memorySessionOptions, setMemorySessionOptions] = useState<any[]>([])
+  const [memorySessionOptionTotal, setMemorySessionOptionTotal] = useState(0)
+  const [memorySessionPickerOpen, setMemorySessionPickerOpen] = useState(false)
+  const [memorySessionPickerLoading, setMemorySessionPickerLoading] = useState(false)
+  const memorySessionPickerGate = useRef(new LatestRequestGate())
   const [memorySourceFilter, setMemorySourceFilter] = useState('')
   const [memoryTypeFilter, setMemoryTypeFilter] = useState('')
   const [memoryFrom, setMemoryFrom] = useState('')
   const [memoryTo, setMemoryTo] = useState('')
+  const selectedMemorySessionScope = useMemo(
+    () => buildMemorySessionScope(memorySessionSelection),
+    [memorySessionSelection]
+  )
   const memorySearchOptions = useMemo(() => ({
     entityId: memoryEntityFilter || undefined,
-    sessionId: memorySessionFilter || undefined,
-    sessionName: memoryConversationSources.find((source: any) => source.sessionId === memorySessionFilter)?.displayName || undefined,
+    sessionId: selectedMemorySessionScope.sessionId,
+    sessionName: selectedMemorySessionScope.sessionName,
     sourceIds: memorySourceFilter ? [memorySourceFilter] : undefined,
     documentTypes: memoryTypeFilter ? [memoryTypeFilter] : undefined,
     from: memoryFrom || undefined,
     to: memoryTo || undefined
-  }), [memoryEntityFilter, memorySessionFilter, memorySourceFilter, memoryTypeFilter, memoryFrom, memoryTo, memoryConversationSources])
+  }), [
+    memoryEntityFilter, memorySessionFilter, selectedMemorySessionScope,
+    memorySourceFilter, memoryTypeFilter, memoryFrom, memoryTo
+  ])
   const hasMemoryScope = Boolean(memoryEntityFilter || memorySessionFilter || memorySourceFilter || memoryTypeFilter || memoryFrom || memoryTo)
   const memoryFeedbackArchiveOptions = useMemo(() => ({
     action: memoryFeedbackArchiveAction || undefined,
@@ -673,12 +687,38 @@ function AiAssistantPage() {
   useEffect(() => {
     void load()
     void window.electronAPI.aiAssistant.getMemoryDiagnostics().then(setMemoryDiagnostics).catch(() => {})
-    void window.electronAPI.aiAssistant.getConversationSources({ limit: 100 })
-      .then(result => setMemoryConversationSources(result.items)).catch(() => {})
     void window.electronAPI.aiAssistant.getDataSources().then(setDataSources).catch(() => {})
     const timer = window.setInterval(() => void load(), 15_000)
     return () => window.clearInterval(timer)
   }, [load])
+
+  useEffect(() => {
+    if (!memorySessionPickerOpen) return
+    const request = memorySessionPickerGate.current.begin()
+    const timer = window.setTimeout(() => {
+      setMemorySessionPickerLoading(true)
+      void window.electronAPI.aiAssistant.getConversationSources({
+        query: memorySessionQuery.trim() || undefined,
+        enabled: 'all',
+        limit: 20,
+        offset: 0
+      }).then(result => {
+        if (!memorySessionPickerGate.current.isCurrent(request)) return
+        setMemorySessionOptions(result.items)
+        setMemorySessionOptionTotal(result.total)
+      }).catch(error => {
+        if (!memorySessionPickerGate.current.isCurrent(request)) return
+        setMemorySessionOptions([])
+        setMemorySessionOptionTotal(0)
+        setMessage(error?.message || String(error))
+      }).finally(() => {
+        if (memorySessionPickerGate.current.isCurrent(request)) {
+          setMemorySessionPickerLoading(false)
+        }
+      })
+    }, 220)
+    return () => window.clearTimeout(timer)
+  }, [memorySessionPickerOpen, memorySessionQuery])
 
   useEffect(() => {
     const request = claimArchiveGate.current.begin()
@@ -3502,8 +3542,6 @@ function AiAssistantPage() {
         enabled: !source.enabled,
         mutationToken: source.mutationToken
       })
-      setMemoryConversationSources(current => current.map(item =>
-        item.sessionId === source.sessionId ? { ...item, enabled: !source.enabled } : item))
       await loadConversationSources(0, false)
     } catch (error: any) {
       setMessage(error?.message || String(error))
@@ -3518,8 +3556,6 @@ function AiAssistantPage() {
         enabled,
         expectedRevision: sourceDirectory.revision
       })
-      setMemoryConversationSources(current => current.map(item =>
-        item.type === type ? { ...item, enabled } : item))
       setMessage(`已更新 ${result.updated} 个${type === 'group' ? '群聊' : '私聊'}来源。`)
       await loadConversationSources(0, false)
     } catch (error: any) {
@@ -4410,11 +4446,66 @@ function AiAssistantPage() {
               <option value="">所有人物与实体</option>
               {trustedGraphEntities.map((entity: any) => <option key={entity.id} value={entity.id}>{entity.canonicalName} · {entity.type}</option>)}
             </select>
-            <select value={memorySessionFilter} onChange={event => setMemorySessionFilter(event.target.value)}>
-              <option value="">所有会话</option>
-              {memoryConversationSources.filter((source: any) => source.enabled).map((source: any) =>
-                <option key={source.sessionId} value={source.sessionId}>{source.displayName}</option>)}
-            </select>
+            <div className="assistant-memory-session-picker"
+              onBlur={event => {
+                if (!event.currentTarget.contains(event.relatedTarget as Node | null)) {
+                  setMemorySessionPickerOpen(false)
+                }
+              }}>
+              <div>
+                <input
+                  value={memorySessionQuery}
+                  onFocus={() => setMemorySessionPickerOpen(true)}
+                  onChange={event => {
+                    setMemorySessionQuery(event.target.value)
+                    setMemorySessionSelection(null)
+                    setMemorySessionFilter('')
+                    setMemorySessionPickerOpen(true)
+                  }}
+                  placeholder="搜索全部会话…"
+                  aria-label="搜索会话检索范围" />
+                {(memorySessionQuery || memorySessionFilter) && <button
+                  type="button"
+                  aria-label="清除会话范围"
+                  onClick={() => {
+                    setMemorySessionQuery('')
+                    setMemorySessionSelection(null)
+                    setMemorySessionFilter('')
+                    setMemorySessionPickerOpen(false)
+                  }}>×</button>}
+              </div>
+              {memorySessionSelection && <small className="assistant-memory-session-selected">
+                已选：{memorySessionSelection.type === 'group' ? '群聊' : '私聊'} · {memorySessionSelection.sessionId}
+                {!memorySessionSelection.enabled ? ' · 当前已停止新分析' : ''}
+                {!memorySessionSelection.legacyNameFallbackSafe
+                  ? ` · 有 ${memorySessionSelection.displayNameCollisionCount} 个同名会话，仅按 ID 精确检索`
+                  : ''}
+              </small>}
+              {memorySessionPickerOpen && <div className="assistant-memory-session-options">
+                {memorySessionOptions.map((source: any) => <button
+                  type="button"
+                  key={source.sessionId}
+                  onClick={() => {
+                    setMemorySessionSelection(source)
+                    setMemorySessionFilter(source.sessionId)
+                    setMemorySessionQuery(source.displayName)
+                    setMemorySessionPickerOpen(false)
+                  }}>
+                  <strong>{source.displayName}</strong>
+                  <small>{source.type === 'group' ? '群聊' : '私聊'} · {source.sessionId}
+                    {!source.enabled ? ' · 已停止新分析' : ''}
+                    {source.displayNameCollisionCount > 1
+                      ? ` · ${source.displayNameCollisionCount} 个同名`
+                      : ''}
+                  </small>
+                </button>)}
+                {!memorySessionPickerLoading && !memorySessionOptions.length && <span>没有匹配会话</span>}
+                {memorySessionPickerLoading && <span>正在搜索全部会话…</span>}
+                {!memorySessionPickerLoading && memorySessionOptionTotal > memorySessionOptions.length && <span>
+                  匹配 {memorySessionOptionTotal} 个，继续输入名称或 ID 缩小范围
+                </span>}
+              </div>}
+            </div>
             <select value={memorySourceFilter} onChange={event => setMemorySourceFilter(event.target.value)}>
               <option value="">所有数据来源</option>
               <option value="wechat">微信</option>
@@ -4431,7 +4522,17 @@ function AiAssistantPage() {
             <label><span>从</span><input type="date" value={memoryFrom} onChange={event => setMemoryFrom(event.target.value)} /></label>
             <label><span>至</span><input type="date" value={memoryTo} onChange={event => setMemoryTo(event.target.value)} /></label>
             {(memoryEntityFilter || memorySessionFilter || memorySourceFilter || memoryTypeFilter || memoryFrom || memoryTo) &&
-              <button onClick={() => { setMemoryEntityFilter(''); setMemorySessionFilter(''); setMemorySourceFilter(''); setMemoryTypeFilter(''); setMemoryFrom(''); setMemoryTo('') }}>清除范围</button>}
+              <button onClick={() => {
+                setMemoryEntityFilter('')
+                setMemorySessionFilter('')
+                setMemorySessionSelection(null)
+                setMemorySessionQuery('')
+                setMemorySessionPickerOpen(false)
+                setMemorySourceFilter('')
+                setMemoryTypeFilter('')
+                setMemoryFrom('')
+                setMemoryTo('')
+              }}>清除范围</button>}
           </div>
           {(memoryEntityFilter || memorySessionFilter || memorySourceFilter || memoryTypeFilter || memoryFrom || memoryTo) &&
             <small className="assistant-scope-note">当前范围在全文/向量召回之前生效，范围外内容不会参与排序或发送给模型。

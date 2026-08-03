@@ -25,6 +25,8 @@ export interface ConversationSourceItem {
   lastTimestamp: number
   policyUpdatedAt: string
   mutationToken: string
+  displayNameCollisionCount: number
+  legacyNameFallbackSafe: boolean
 }
 
 export interface ConversationSourceDirectoryOptions {
@@ -46,7 +48,8 @@ export function isOfficialConversationId(sessionId: string): boolean {
 }
 
 export function buildConversationSourceMutationToken(
-  item: Omit<ConversationSourceItem, 'mutationToken'>
+  item: Pick<ConversationSourceItem,
+    'sessionId' | 'displayName' | 'type' | 'enabled' | 'lastTimestamp' | 'policyUpdatedAt'>
 ): string {
   return digest([
     'conversation-source-v1',
@@ -83,7 +86,7 @@ export function buildConversationSourceDirectory(
 } {
   const policyMap = new Map(policies.map(policy => [policy.sessionId, policy]))
   const seen = new Set<string>()
-  const all = sessions.flatMap(session => {
+  const normalized = sessions.flatMap(session => {
     const sessionId = String(session.username || '').trim()
     if (!sessionId || seen.has(sessionId) || isOfficialConversationId(sessionId)) return []
     seen.add(sessionId)
@@ -91,13 +94,26 @@ export function buildConversationSourceDirectory(
     const type: ConversationSourceType = sessionId.endsWith('@chatroom') ? 'group' : 'private'
     const base = {
       sessionId,
-      displayName: String(session.displayName || policy?.displayName || sessionId),
+      displayName: String(session.displayName || policy?.displayName || sessionId).trim() || sessionId,
       type,
       enabled: policy?.enabled !== false,
       lastTimestamp: Number(session.lastTimestamp || 0),
       policyUpdatedAt: String(policy?.updatedAt || '')
     }
     return [{ ...base, mutationToken: buildConversationSourceMutationToken(base) }]
+  })
+  const displayNameCounts = new Map<string, number>()
+  for (const item of normalized) {
+    const key = normalizeQuery(item.displayName)
+    displayNameCounts.set(key, (displayNameCounts.get(key) || 0) + 1)
+  }
+  const all: ConversationSourceItem[] = normalized.map(item => {
+    const displayNameCollisionCount = displayNameCounts.get(normalizeQuery(item.displayName)) || 1
+    return {
+      ...item,
+      displayNameCollisionCount,
+      legacyNameFallbackSafe: displayNameCollisionCount === 1
+    }
   }).sort((left, right) =>
     right.lastTimestamp - left.lastTimestamp ||
     left.sessionId.localeCompare(right.sessionId)
@@ -109,7 +125,8 @@ export function buildConversationSourceDirectory(
     item.type,
     item.enabled,
     item.lastTimestamp,
-    item.policyUpdatedAt
+    item.policyUpdatedAt,
+    item.displayNameCollisionCount
   ]))
   const query = normalizeQuery(options.query)
   const type = options.type === 'group' || options.type === 'private' ? options.type : 'all'
