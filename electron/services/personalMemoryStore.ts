@@ -1323,14 +1323,30 @@ export class PersonalMemoryStore {
   }
 
   private graphReviewRevisionTriggerNames(): string[] {
-    return ['review_queue', 'entities', 'relations', 'relation_corrections']
+    return [
+      'review_queue',
+      'entities',
+      'relations',
+      'relation_history',
+      'entity_corrections',
+      'relation_corrections',
+      'entity_profile_corrections'
+    ]
       .flatMap(table => ['insert', 'update', 'delete']
         .map(operation => `trg_graph_review_revision_${table}_${operation}`))
   }
 
   private ensureGraphReviewRevisionTriggers(): void {
     if (!this.db) return
-    const tables = ['review_queue', 'entities', 'relations', 'relation_corrections']
+    const tables = [
+      'review_queue',
+      'entities',
+      'relations',
+      'relation_history',
+      'entity_corrections',
+      'relation_corrections',
+      'entity_profile_corrections'
+    ]
     this.db.prepare(`
       INSERT INTO schema_meta(key,value,updated_at)
       VALUES('graph_review_revision','0',?)
@@ -4087,6 +4103,80 @@ export class PersonalMemoryStore {
           ORDER BY h.id DESC LIMIT ?
         `).all(limit)
     return rows as any[]
+  }
+
+  listEntityAuditPage(options: {
+    entityId: string
+    kind: 'relation_history' | 'name_correction' | 'relation_correction' | 'profile_correction'
+    limit?: number
+    offset?: number
+    revision?: string
+  }): { items: any[]; total: number; hasMore: boolean; revision: string; stale: boolean } {
+    if (!this.db) return { items: [], total: 0, hasMore: false, revision: '0', stale: false }
+    const revision = this.getGraphReviewRevision()
+    const entityId = String(options.entityId || '').trim()
+    if (!entityId) return { items: [], total: 0, hasMore: false, revision, stale: false }
+    const offset = Math.max(0, Math.min(1_000_000, Math.floor(Number(options.offset) || 0)))
+    if (offset > 0 && String(options.revision || '').trim() !== revision) {
+      return { items: [], total: 0, hasMore: false, revision, stale: true }
+    }
+    const limit = Math.max(1, Math.min(100, Math.floor(Number(options.limit) || 40)))
+    let countSql = ''
+    let rowsSql = ''
+    let parameters: Array<string | number> = []
+    if (options.kind === 'relation_history') {
+      countSql = `SELECT COUNT(*) AS count FROM relation_history
+        WHERE subject_id=? OR object_id=?`
+      rowsSql = `
+        SELECT h.*,subject.canonical_name AS subject_name,object.canonical_name AS object_name
+        FROM relation_history h
+        LEFT JOIN entities subject ON subject.id=h.subject_id
+        LEFT JOIN entities object ON object.id=h.object_id
+        WHERE h.subject_id=? OR h.object_id=?
+        ORDER BY h.id DESC LIMIT ? OFFSET ?`
+      parameters = [entityId, entityId]
+    } else if (options.kind === 'name_correction') {
+      countSql = 'SELECT COUNT(*) AS count FROM entity_corrections WHERE entity_id=?'
+      rowsSql = `SELECT * FROM entity_corrections
+        WHERE entity_id=? ORDER BY id DESC LIMIT ? OFFSET ?`
+      parameters = [entityId]
+    } else if (options.kind === 'relation_correction') {
+      countSql = `SELECT COUNT(*) AS count FROM relation_corrections
+        WHERE before_subject_id=? OR before_object_id=? OR after_subject_id=? OR after_object_id=?`
+      rowsSql = `
+        SELECT c.*,
+          before_subject.canonical_name AS before_subject_name,
+          before_object.canonical_name AS before_object_name,
+          after_subject.canonical_name AS after_subject_name,
+          after_object.canonical_name AS after_object_name
+        FROM relation_corrections c
+        LEFT JOIN entities before_subject ON before_subject.id=c.before_subject_id
+        LEFT JOIN entities before_object ON before_object.id=c.before_object_id
+        LEFT JOIN entities after_subject ON after_subject.id=c.after_subject_id
+        LEFT JOIN entities after_object ON after_object.id=c.after_object_id
+        WHERE c.before_subject_id=? OR c.before_object_id=? OR
+          c.after_subject_id=? OR c.after_object_id=?
+        ORDER BY c.id DESC LIMIT ? OFFSET ?`
+      parameters = [entityId, entityId, entityId, entityId]
+    } else {
+      countSql = 'SELECT COUNT(*) AS count FROM entity_profile_corrections WHERE entity_id=?'
+      rowsSql = `SELECT * FROM entity_profile_corrections
+        WHERE entity_id=? ORDER BY id DESC LIMIT ? OFFSET ?`
+      parameters = [entityId]
+    }
+    const total = Number((this.db.prepare(countSql).get(...parameters) as any)?.count || 0)
+    const items = this.db.prepare(rowsSql).all(...parameters, limit, offset) as any[]
+    const completedRevision = this.getGraphReviewRevision()
+    if (completedRevision !== revision) {
+      return { items: [], total: 0, hasMore: false, revision: completedRevision, stale: true }
+    }
+    return {
+      items,
+      total,
+      hasMore: offset + items.length < total,
+      revision,
+      stale: false
+    }
   }
 
   listReviewLedger(limit = 300): any[] {

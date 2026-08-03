@@ -902,6 +902,110 @@ test('relation corrections preserve before and after direction in audit history'
   })
 })
 
+test('entity audit sections paginate complete histories with one authoritative revision', () => withStore(store => {
+  const neighbors = Array.from({ length: 125 }, (_, index) => ({
+    id: `audit-neighbor-${index}`,
+    type: 'person',
+    canonicalName: `审计邻居 ${index}`,
+    trustStatus: 'confirmed'
+  }))
+  store.syncGraph({
+    entities: [{
+      id: 'audit-center',
+      type: 'person',
+      canonicalName: '审计中心人物',
+      trustStatus: 'confirmed'
+    }, ...neighbors],
+    relations: neighbors.map((neighbor, index) => ({
+      id: `audit-relation-${index}`,
+      subjectId: 'audit-center',
+      predicate: '协作',
+      objectId: neighbor.id,
+      confidence: 0.9,
+      status: 'confirmed',
+      createdAt: new Date(1_700_000_000_000 + index * 1000).toISOString(),
+      updatedAt: new Date(1_700_000_000_000 + index * 1000).toISOString(),
+      evidence: []
+    })),
+    reviewQueue: []
+  } as any)
+  for (let index = 0; index < 125; index += 1) {
+    store.recordEntityCorrection(
+      'audit-center',
+      `audit-name-review-${index}`,
+      `错误名称 ${index}`,
+      `审计中心人物 ${index}`
+    )
+    store.recordEntityProfileCorrection(
+      'audit-center',
+      `audit-profile-review-${index}`,
+      index % 2 ? 'alias' : 'summary',
+      `模型建议 ${index}`,
+      `人工最终值 ${index}`
+    )
+    store.recordRelationCorrection(
+      `audit-relation-review-${index}`,
+      {
+        id: `before-audit-${index}`,
+        subjectId: 'audit-center',
+        predicate: '错误关系',
+        objectId: neighbors[index].id
+      },
+      {
+        id: `after-audit-${index}`,
+        subjectId: neighbors[index].id,
+        predicate: '服务于',
+        objectId: 'audit-center'
+      }
+    )
+  }
+  const kinds = [
+    'relation_history',
+    'name_correction',
+    'relation_correction',
+    'profile_correction'
+  ] as const
+  const firstPages = kinds.map(kind => store.listEntityAuditPage({
+    entityId: 'audit-center', kind, limit: 40
+  }))
+  for (const [index, first] of firstPages.entries()) {
+    const second = store.listEntityAuditPage({
+      entityId: 'audit-center',
+      kind: kinds[index],
+      limit: 40,
+      offset: 40,
+      revision: first.revision
+    })
+    assert.equal(first.total, 125)
+    assert.equal(first.items.length, 40)
+    assert.equal(first.hasMore, true)
+    assert.equal(new Set([...first.items, ...second.items].map(item => item.id)).size, 80)
+  }
+  const relationCorrection = firstPages[2].items[0]
+  assert.match(String(relationCorrection.before_object_name), /审计邻居/)
+  assert.equal(relationCorrection.after_object_name, '审计中心人物')
+  assert.equal(store.listEntityAuditPage({
+    entityId: 'audit-center',
+    kind: 'profile_correction',
+    limit: 40,
+    offset: 40
+  }).stale, true)
+
+  store.recordEntityCorrection(
+    'audit-center',
+    'audit-concurrent-name-review',
+    '并发旧名',
+    '并发新名'
+  )
+  assert.equal(store.listEntityAuditPage({
+    entityId: 'audit-center',
+    kind: 'relation_history',
+    limit: 40,
+    offset: 40,
+    revision: firstPages[0].revision
+  }).stale, true)
+}))
+
 test('relation correction merges into an existing semantic edge without losing evidence', () => {
   const entities = [
     { id: 'a', canonicalName: '甲方', trustStatus: 'confirmed' },
@@ -5113,18 +5217,18 @@ test('graph review revision covers queue and enriched graph state and self-heals
     assert.deepEqual(first.getGraphReviewRevisionHealth(), {
       version: 'graph-review-revision-v1',
       revision: first.getGraphReviewRevision(),
-      expectedTriggers: 12,
-      installedTriggers: 12,
+      expectedTriggers: 21,
+      installedTriggers: 21,
       healthy: true
     })
     ;(first as any).db.exec('DROP TRIGGER trg_graph_review_revision_review_queue_insert')
-    assert.equal(first.getGraphReviewRevisionHealth().installedTriggers, 11)
+    assert.equal(first.getGraphReviewRevisionHealth().installedTriggers, 20)
     assert.equal(first.getGraphReviewRevisionHealth().healthy, false)
     first.close()
 
     const reopened = new PersonalMemoryStore()
     reopened.initialize(databasePath)
-    assert.equal(reopened.getGraphReviewRevisionHealth().installedTriggers, 12)
+    assert.equal(reopened.getGraphReviewRevisionHealth().installedTriggers, 21)
     assert.equal(reopened.getGraphReviewRevisionHealth().healthy, true)
     assert.equal(reopened.listReviewLedgerPage({ status: 'pending' }).items[0]?.id, 'review-revision-candidate')
     reopened.close()

@@ -4541,6 +4541,8 @@ function registerIpcHandlers() {
     aiAssistantService.getTrustedEntityDirectory(options))
   ipcMain.handle('ai-assistant:getEntityTaskPage', (_, entityId: string, options?: any) =>
     aiAssistantService.getEntityTaskPage(entityId, options))
+  ipcMain.handle('ai-assistant:getEntityAuditPage', (_, entityId: string, options?: any) =>
+    aiAssistantService.getEntityAuditPage(entityId, options))
   ipcMain.handle('ai-assistant:getProjectDirectory', (_, options?: any) =>
     aiAssistantService.getProjectDirectory(options))
   ipcMain.handle('ai-assistant:getProjectWorkspace', (_, projectId: string) =>

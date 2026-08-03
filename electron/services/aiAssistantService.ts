@@ -3874,10 +3874,22 @@ export class AiAssistantService {
         entityTaskRevision
       )
       const visibleRelations = allRelations.slice(0, 200)
-      const relationHistory = personalMemoryStore.listRelationHistory(focusEntity.id, 300)
-      const entityCorrections = personalMemoryStore.listEntityCorrections(focusEntity.id, 300)
-      const relationCorrections = personalMemoryStore.listRelationCorrections(focusEntity.id, 300)
-      const entityProfileCorrections = personalMemoryStore.listEntityProfileCorrections(focusEntity.id, 300)
+      const relationHistoryPage = personalMemoryStore.listEntityAuditPage({
+        entityId: focusEntity.id, kind: 'relation_history', limit: 40
+      })
+      const entityCorrectionsPage = personalMemoryStore.listEntityAuditPage({
+        entityId: focusEntity.id, kind: 'name_correction', limit: 40
+      })
+      const relationCorrectionsPage = personalMemoryStore.listEntityAuditPage({
+        entityId: focusEntity.id, kind: 'relation_correction', limit: 40
+      })
+      const entityProfileCorrectionsPage = personalMemoryStore.listEntityAuditPage({
+        entityId: focusEntity.id, kind: 'profile_correction', limit: 40
+      })
+      const relationHistory = relationHistoryPage.items
+      const entityCorrections = entityCorrectionsPage.items
+      const relationCorrections = relationCorrectionsPage.items
+      const entityProfileCorrections = entityProfileCorrectionsPage.items
       const namedEntityIds = new Set([
         focusEntity.id,
         ...visibleRelations.flatMap(relation => [relation.subjectId, relation.objectId]),
@@ -3888,6 +3900,12 @@ export class AiAssistantService {
           item.after_object_id
         ])
       ].map(value => String(value || '')).filter(Boolean))
+      const auditPageMeta = (page: any) => ({
+        total: Number(page.total || 0),
+        hasMore: Boolean(page.hasMore),
+        revision: String(page.revision || ''),
+        stale: Boolean(page.stale)
+      })
       focus = {
         entity: focusEntity,
         insight: insights[focusEntity.id] || null,
@@ -3902,6 +3920,12 @@ export class AiAssistantService {
         entityCorrections,
         relationCorrections,
         entityProfileCorrections,
+        auditPages: {
+          relationHistory: auditPageMeta(relationHistoryPage),
+          entityCorrections: auditPageMeta(entityCorrectionsPage),
+          relationCorrections: auditPageMeta(relationCorrectionsPage),
+          entityProfileCorrections: auditPageMeta(entityProfileCorrectionsPage)
+        },
         tasks: relatedTasks.items.map(task => ({
           ...task,
           ...boundedEvidencePayload(task.evidence, MEMORY_CARD_EVIDENCE_LIMIT),
@@ -3977,6 +4001,28 @@ export class AiAssistantService {
         mutationToken: buildTaskMutationToken(task)
       }))
     }
+  }
+
+  getEntityAuditPage(entityId: string, options: any = {}): any {
+    const id = String(entityId || '').trim()
+    const entity = this.state.graph.entities.find(candidate =>
+      candidate.id === id && candidate.trustStatus !== 'rejected')
+    if (!entity) throw new Error('人物或实体不存在')
+    const kinds = new Set([
+      'relation_history',
+      'name_correction',
+      'relation_correction',
+      'profile_correction'
+    ])
+    const kind = String(options?.kind || '')
+    if (!kinds.has(kind)) throw new Error('无效的人物审计类型')
+    return personalMemoryStore.listEntityAuditPage({
+      entityId: id,
+      kind: kind as any,
+      limit: Number(options?.limit || 40),
+      offset: Number(options?.offset || 0),
+      revision: String(options?.revision || '')
+    })
   }
 
   getProjectWorkspace(projectId: string): any {

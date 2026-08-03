@@ -313,6 +313,8 @@ function AiAssistantPage() {
   const entityDossierGate = useRef(new LatestRequestGate())
   const [entityTaskLoadingMore, setEntityTaskLoadingMore] = useState(false)
   const entityTaskGate = useRef(new LatestRequestGate())
+  const [entityAuditLoadingMore, setEntityAuditLoadingMore] = useState('')
+  const entityAuditGate = useRef(new LatestRequestGate())
   const [briefingPeriod, setBriefingPeriod] = useState<'latest' | 'week'>('latest')
   const [selectedProjectId, setSelectedProjectId] = useState('')
   const [projectDirectory, setProjectDirectory] = useState<any>({
@@ -1536,7 +1538,9 @@ function AiAssistantPage() {
   useEffect(() => {
     const request = graphWorkspaceGate.current.begin()
     entityTaskGate.current.invalidate()
+    entityAuditGate.current.invalidate()
     setEntityTaskLoadingMore(false)
+    setEntityAuditLoadingMore('')
     setGraphWorkspace((current: any) => ({
       ...current,
       viewport: { entities: [], relations: [], levels: {}, mode: selectedEntityId ? 'focus' : graphQuery.trim() ? 'search' : 'overview', totalAvailable: 0, truncated: 0 },
@@ -2479,6 +2483,58 @@ function AiAssistantPage() {
       if (entityTaskGate.current.isCurrent(request)) setMessage(error?.message || String(error))
     } finally {
       if (entityTaskGate.current.isCurrent(request)) setEntityTaskLoadingMore(false)
+    }
+  }
+
+  const loadMoreEntityAudit = async (
+    field: 'relationHistory' | 'entityCorrections' | 'relationCorrections' | 'entityProfileCorrections',
+    kind: 'relation_history' | 'name_correction' | 'relation_correction' | 'profile_correction'
+  ) => {
+    const focus = graphWorkspace.focus
+    const pageMeta = focus?.auditPages?.[field]
+    if (!selectedEntityId || entityAuditLoadingMore || !pageMeta?.hasMore) return
+    const request = entityAuditGate.current.begin()
+    setEntityAuditLoadingMore(field)
+    try {
+      const page = await window.electronAPI.aiAssistant.getEntityAuditPage(
+        selectedEntityId,
+        {
+          kind,
+          limit: 40,
+          offset: focus[field]?.length || 0,
+          revision: pageMeta.revision
+        }
+      )
+      if (!entityAuditGate.current.isCurrent(request)) return
+      if (page.stale) {
+        setMessage('人物变化历史在浏览期间已有更新，已重新载入最新人物档案。')
+        setGraphWorkspaceRefreshKey(value => value + 1)
+        return
+      }
+      setGraphWorkspace((current: any) => ({
+        ...current,
+        focus: {
+          ...current.focus,
+          [field]: [
+            ...(current.focus?.[field] || []),
+            ...page.items.filter((item: any) =>
+              !(current.focus?.[field] || []).some((known: any) => known.id === item.id))
+          ],
+          auditPages: {
+            ...(current.focus?.auditPages || {}),
+            [field]: {
+              total: page.total,
+              hasMore: page.hasMore,
+              revision: page.revision,
+              stale: false
+            }
+          }
+        }
+      }))
+    } catch (error: any) {
+      if (entityAuditGate.current.isCurrent(request)) setMessage(error?.message || String(error))
+    } finally {
+      if (entityAuditGate.current.isCurrent(request)) setEntityAuditLoadingMore('')
     }
   }
 
@@ -7224,42 +7280,70 @@ function AiAssistantPage() {
                 </button>}
               </section>
               <section className="assistant-dossier-wide">
-                <h3>关系变化历史 <small>{selectedEntityRelationHistory.length}</small></h3>
+                <h3>关系变化历史 <small>{graphWorkspace.focus?.auditPages?.relationHistory?.total ?? selectedEntityRelationHistory.length}</small></h3>
                 {selectedEntityRelationHistory.map((item: any) => <article key={item.id} className="assistant-dossier-history-row">
                   <div><b>{item.subject_name || item.subject_id} — {item.predicate} → {item.object_name || item.object_id}</b>
                     <span>{item.change_type === 'created' ? '首次发现' : item.change_type === 'status_changed' ? '可信状态变化' : '证据更新'}</span></div>
                   <small>{new Date(item.created_at).toLocaleString('zh-CN')} · {item.status} · {Math.round(Number(item.confidence || 0) * 100)}%</small>
                 </article>)}
                 {!selectedEntityRelationHistory.length && <em>尚无关系变化历史</em>}
+                {graphWorkspace.focus?.auditPages?.relationHistory?.hasMore && <button
+                  disabled={!!entityAuditLoadingMore}
+                  onClick={() => void loadMoreEntityAudit('relationHistory', 'relation_history')}>
+                  {entityAuditLoadingMore === 'relationHistory'
+                    ? '正在加载…'
+                    : `加载更多关系变化（已显示 ${selectedEntityRelationHistory.length} / ${graphWorkspace.focus.auditPages.relationHistory.total}）`}
+                </button>}
               </section>
               <section className="assistant-dossier-wide">
-                <h3>身份名称修正 <small>{selectedEntityCorrections.length}</small></h3>
+                <h3>身份名称修正 <small>{graphWorkspace.focus?.auditPages?.entityCorrections?.total ?? selectedEntityCorrections.length}</small></h3>
                 {selectedEntityCorrections.map((item: any) => <article key={item.id} className="assistant-dossier-history-row">
                   <div><b>{item.before_name} → {item.after_name}</b><span>人工确认实体时修正</span></div>
                   <small>{new Date(item.created_at).toLocaleString('zh-CN')} · 原错误名称未写入可信别名</small>
                 </article>)}
                 {!selectedEntityCorrections.length && <em>尚无名称修正记录</em>}
+                {graphWorkspace.focus?.auditPages?.entityCorrections?.hasMore && <button
+                  disabled={!!entityAuditLoadingMore}
+                  onClick={() => void loadMoreEntityAudit('entityCorrections', 'name_correction')}>
+                  {entityAuditLoadingMore === 'entityCorrections'
+                    ? '正在加载…'
+                    : `加载更多名称修正（已显示 ${selectedEntityCorrections.length} / ${graphWorkspace.focus.auditPages.entityCorrections.total}）`}
+                </button>}
               </section>
               <section className="assistant-dossier-wide">
-                <h3>关系人工修正 <small>{selectedEntityRelationCorrections.length}</small></h3>
+                <h3>关系人工修正 <small>{graphWorkspace.focus?.auditPages?.relationCorrections?.total ?? selectedEntityRelationCorrections.length}</small></h3>
                 {selectedEntityRelationCorrections.map((item: any) => {
-                  const entityName = (id: string) => selectedEntityNames[id] || id
+                  const entityName = (id: string, fallback = '') => fallback || selectedEntityNames[id] || id
                   return <article key={item.id} className="assistant-dossier-history-row">
-                    <div><b>{entityName(item.before_subject_id)} — {item.before_predicate} → {entityName(item.before_object_id)}</b><span>修正为</span></div>
-                    <div><b>{entityName(item.after_subject_id)} — {item.after_predicate} → {entityName(item.after_object_id)}</b></div>
+                    <div><b>{entityName(item.before_subject_id, item.before_subject_name)} — {item.before_predicate} → {entityName(item.before_object_id, item.before_object_name)}</b><span>修正为</span></div>
+                    <div><b>{entityName(item.after_subject_id, item.after_subject_name)} — {item.after_predicate} → {entityName(item.after_object_id, item.after_object_name)}</b></div>
                     <small>{new Date(item.created_at).toLocaleString('zh-CN')} · 原文证据已迁移至修正后关系</small>
                   </article>
                 })}
                 {!selectedEntityRelationCorrections.length && <em>尚无关系人工修正记录</em>}
+                {graphWorkspace.focus?.auditPages?.relationCorrections?.hasMore && <button
+                  disabled={!!entityAuditLoadingMore}
+                  onClick={() => void loadMoreEntityAudit('relationCorrections', 'relation_correction')}>
+                  {entityAuditLoadingMore === 'relationCorrections'
+                    ? '正在加载…'
+                    : `加载更多关系修正（已显示 ${selectedEntityRelationCorrections.length} / ${graphWorkspace.focus.auditPages.relationCorrections.total}）`}
+                </button>}
               </section>
               <section className="assistant-dossier-wide">
-                <h3>档案字段人工修正 <small>{selectedEntityProfileCorrections.length}</small></h3>
+                <h3>档案字段人工修正 <small>{graphWorkspace.focus?.auditPages?.entityProfileCorrections?.total ?? selectedEntityProfileCorrections.length}</small></h3>
                 {selectedEntityProfileCorrections.map((item: any) => <article key={item.id} className="assistant-dossier-history-row">
                   <div><b>{item.field === 'summary' ? '实体摘要' : '实体别名'}</b><span>模型建议：“{item.suggested_value}”</span></div>
                   <div><b>人工最终值</b><span>“{item.final_value}”</span></div>
                   <small>{new Date(item.created_at).toLocaleString('zh-CN')} · 原文证据仍绑定原候选</small>
                 </article>)}
                 {!selectedEntityProfileCorrections.length && <em>尚无摘要或别名修正记录</em>}
+                {graphWorkspace.focus?.auditPages?.entityProfileCorrections?.hasMore && <button
+                  disabled={!!entityAuditLoadingMore}
+                  onClick={() => void loadMoreEntityAudit('entityProfileCorrections', 'profile_correction')}>
+                  {entityAuditLoadingMore === 'entityProfileCorrections'
+                    ? '正在加载…'
+                    : `加载更多档案字段修正（已显示 ${selectedEntityProfileCorrections.length} / ${graphWorkspace.focus.auditPages.entityProfileCorrections.total}）`}
+                </button>}
               </section>
             </div>
             <footer>
