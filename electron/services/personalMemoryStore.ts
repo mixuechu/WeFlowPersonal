@@ -732,6 +732,7 @@ export class PersonalMemoryStore {
     this.ensureMemorySearchRevisionTriggers()
     this.ensureMemorySearchFeedbackArchiveRevisionTriggers()
     this.ensureMemoryDeletionAuditRevisionTriggers()
+    this.ensureMemoryEvidenceArchiveRevisionTriggers()
     this.ensureStructuredMemoryRevisionTriggers()
     this.ensureGraphReviewRevisionTriggers()
     this.ensureTaskArchiveRevisionTriggers()
@@ -1071,6 +1072,64 @@ export class PersonalMemoryStore {
     return {
       version: 'memory-deletion-audit-revision-v1',
       revision: this.getMemoryDeletionAuditRevision(),
+      expectedTriggers,
+      installedTriggers,
+      healthy: installedTriggers === expectedTriggers
+    }
+  }
+
+  private ensureMemoryEvidenceArchiveRevisionTriggers(): void {
+    if (!this.db) return
+    const now = new Date().toISOString()
+    this.db.prepare(`
+      INSERT INTO schema_meta(key,value,updated_at)
+      VALUES('memory_evidence_archive_revision','0',?)
+      ON CONFLICT(key) DO NOTHING
+    `).run(now)
+    const statements: string[] = []
+    for (const table of ['search_document_evidence', 'evidence']) {
+      for (const operation of ['INSERT', 'UPDATE', 'DELETE']) {
+        const name = `trg_memory_evidence_archive_revision_${table}_${operation.toLowerCase()}`
+        statements.push(`DROP TRIGGER IF EXISTS ${name};`)
+        statements.push(`
+          CREATE TRIGGER ${name} AFTER ${operation} ON ${table}
+          BEGIN
+            UPDATE schema_meta
+            SET value=CAST(CAST(value AS INTEGER)+1 AS TEXT),
+              updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')
+            WHERE key='memory_evidence_archive_revision';
+          END;
+        `)
+      }
+    }
+    this.db.exec(statements.join('\n'))
+  }
+
+  getMemoryEvidenceArchiveRevision(): string {
+    if (!this.db) return '0'
+    return String((this.db.prepare(`
+      SELECT value FROM schema_meta WHERE key='memory_evidence_archive_revision'
+    `).get() as any)?.value || '0')
+  }
+
+  getMemoryEvidenceArchiveRevisionHealth(): any {
+    const expectedTriggers = 6
+    if (!this.db) {
+      return {
+        version: 'memory-evidence-archive-revision-v1',
+        revision: '0',
+        expectedTriggers,
+        installedTriggers: 0,
+        healthy: false
+      }
+    }
+    const installedTriggers = Number((this.db.prepare(`
+      SELECT COUNT(*) AS count FROM sqlite_master
+      WHERE type='trigger' AND name LIKE 'trg_memory_evidence_archive_revision_%'
+    `).get() as any)?.count || 0)
+    return {
+      version: 'memory-evidence-archive-revision-v1',
+      revision: this.getMemoryEvidenceArchiveRevision(),
       expectedTriggers,
       installedTriggers,
       healthy: installedTriggers === expectedTriggers
@@ -3080,6 +3139,7 @@ export class PersonalMemoryStore {
     const memorySearchFeedbackArchiveRevision =
       this.getMemorySearchFeedbackArchiveRevisionHealth()
     const memoryDeletionAuditRevision = this.getMemoryDeletionAuditRevisionHealth()
+    const memoryEvidenceArchiveRevision = this.getMemoryEvidenceArchiveRevisionHealth()
     const structuredMemoryRevision = this.getStructuredMemoryRevisionHealth()
     const graphReviewRevision = this.getGraphReviewRevisionHealth()
     const taskArchiveRevision = this.getTaskArchiveRevisionHealth()
@@ -3098,6 +3158,7 @@ export class PersonalMemoryStore {
         && memorySearchRevision.healthy
         && memorySearchFeedbackArchiveRevision.healthy
         && memoryDeletionAuditRevision.healthy
+        && memoryEvidenceArchiveRevision.healthy
         && structuredMemoryRevision.healthy
         && graphReviewRevision.healthy
         && taskArchiveRevision.healthy
@@ -3116,6 +3177,7 @@ export class PersonalMemoryStore {
       memorySearchFeedbackArchiveRevisionHealthy:
         memorySearchFeedbackArchiveRevision.healthy,
       memoryDeletionAuditRevisionHealthy: memoryDeletionAuditRevision.healthy,
+      memoryEvidenceArchiveRevisionHealthy: memoryEvidenceArchiveRevision.healthy,
       structuredMemoryRevisionHealthy: structuredMemoryRevision.healthy,
       graphReviewRevisionHealthy: graphReviewRevision.healthy,
       taskArchiveRevisionHealthy: taskArchiveRevision.healthy,
@@ -3141,6 +3203,7 @@ export class PersonalMemoryStore {
       memorySearchRevision,
       memorySearchFeedbackArchiveRevision,
       memoryDeletionAuditRevision,
+      memoryEvidenceArchiveRevision,
       structuredMemoryRevision,
       graphReviewRevision,
       taskArchiveRevision,
@@ -8094,7 +8157,7 @@ export class PersonalMemoryStore {
   getDocumentEvidencePage(
     documentType: string,
     sourceId: string,
-    options: { offset?: number; limit?: number } = {}
+    options: { offset?: number; limit?: number; revision?: string } = {}
   ): {
     items: any[]
     total: number
@@ -8103,9 +8166,12 @@ export class PersonalMemoryStore {
     limit: number
     documentType: string
     sourceId: string
+    revision: string
+    stale: boolean
   } {
     const offset = Math.max(0, Math.min(1_000_000, Math.floor(Number(options.offset) || 0)))
     const limit = Math.max(1, Math.min(100, Math.floor(Number(options.limit) || 40)))
+    const revision = this.getMemoryEvidenceArchiveRevision()
     const empty = {
       items: [],
       total: 0,
@@ -8113,9 +8179,14 @@ export class PersonalMemoryStore {
       offset,
       limit,
       documentType,
-      sourceId
+      sourceId,
+      revision,
+      stale: false
     }
     if (!this.db) return empty
+    if (offset > 0 && String(options.revision || '') !== revision) {
+      return { ...empty, stale: true }
+    }
     const documentId = `${documentType}:${sourceId}`
     const genericTotal = Number((this.db.prepare(`
       SELECT COUNT(*) AS count FROM search_document_evidence WHERE document_id=?
@@ -8128,6 +8199,10 @@ export class PersonalMemoryStore {
         ORDER BY timestamp DESC,message_id DESC
         LIMIT ? OFFSET ?
       `).all(documentId, limit, offset) as any[]
+      const completedRevision = this.getMemoryEvidenceArchiveRevision()
+      if (completedRevision !== revision) {
+        return { ...empty, revision: completedRevision, stale: true }
+      }
       return {
         ...empty,
         items,
@@ -8157,6 +8232,10 @@ export class PersonalMemoryStore {
           LIMIT ? OFFSET ?
         `).all(sourceId, limit, offset) as any[]
       : []
+    const completedRevision = this.getMemoryEvidenceArchiveRevision()
+    if (completedRevision !== revision) {
+      return { ...empty, revision: completedRevision, stale: true }
+    }
     return {
       ...empty,
       items,

@@ -1397,8 +1397,12 @@ test('memory cards expose evidence totals but bound their latest evidence payloa
     'SELECT COUNT(*) AS count FROM search_document_evidence WHERE document_id=?'
   ).get('claim:bounded-claim').count), 0)
   const firstEvidencePage = store.getDocumentEvidencePage('claim', 'bounded-claim', { limit: 40 })
-  const secondEvidencePage = store.getDocumentEvidencePage('claim', 'bounded-claim', { offset: 40, limit: 40 })
-  const lastEvidencePage = store.getDocumentEvidencePage('claim', 'bounded-claim', { offset: 120, limit: 40 })
+  const secondEvidencePage = store.getDocumentEvidencePage('claim', 'bounded-claim', {
+    offset: 40, limit: 40, revision: firstEvidencePage.revision
+  })
+  const lastEvidencePage = store.getDocumentEvidencePage('claim', 'bounded-claim', {
+    offset: 120, limit: 40, revision: firstEvidencePage.revision
+  })
   assert.equal(firstEvidencePage.total, manyEvidence.length)
   assert.equal(firstEvidencePage.hasMore, true)
   assert.equal(firstEvidencePage.items[0].sender, '证据发送者 125')
@@ -1407,7 +1411,9 @@ test('memory cards expose evidence totals but bound their latest evidence payloa
   assert.equal(lastEvidencePage.hasMore, false)
   assert.deepEqual(
     [...firstEvidencePage.items, ...secondEvidencePage.items, ...store.getDocumentEvidencePage(
-      'claim', 'bounded-claim', { offset: 80, limit: 40 }
+      'claim', 'bounded-claim', {
+        offset: 80, limit: 40, revision: firstEvidencePage.revision
+      }
     ).items, ...lastEvidencePage.items].map(item => item.message_id),
     manyEvidence.map(item => item.messageId).reverse()
   )
@@ -1418,7 +1424,10 @@ test('memory cards expose evidence totals but bound their latest evidence payloa
     fallbackPayload.evidence.map(item => item.message_id),
     manyEvidence.slice(-MEMORY_CARD_EVIDENCE_LIMIT).map(item => item.messageId)
   )
-  const fallbackPage = store.getDocumentEvidencePage('claim', 'bounded-claim', { offset: 120, limit: 40 })
+  const fallbackFirstPage = store.getDocumentEvidencePage('claim', 'bounded-claim', { limit: 40 })
+  const fallbackPage = store.getDocumentEvidencePage('claim', 'bounded-claim', {
+    offset: 120, limit: 40, revision: fallbackFirstPage.revision
+  })
   assert.equal(fallbackPage.total, manyEvidence.length)
   assert.deepEqual(
     fallbackPage.items.map(item => item.message_id),
@@ -1436,7 +1445,8 @@ test('memory cards expose evidence totals but bound their latest evidence payloa
   const genericFirstPage = store.getDocumentEvidencePage('resource', 'bounded-resource', { limit: 40 })
   const genericLastPage = store.getDocumentEvidencePage('resource', 'bounded-resource', {
     offset: 120,
-    limit: 40
+    limit: 40,
+    revision: genericFirstPage.revision
   })
   assert.equal(genericFirstPage.total, manyEvidence.length)
   assert.equal(genericFirstPage.items[0].message_id, manyEvidence.at(-1)?.messageId)
@@ -1458,9 +1468,20 @@ test('memory cards expose evidence totals but bound their latest evidence payloa
     searchText: '证据人物负责证据边界',
     evidence: [{ ...manyEvidence[0], sender: '修正后的发送者' }]
   }])
+  const staleStructuredPage = store.getDocumentEvidencePage('claim', 'bounded-claim', {
+    offset: 120,
+    limit: 40,
+    revision: fallbackFirstPage.revision
+  })
+  assert.equal(staleStructuredPage.stale, true)
+  assert.deepEqual(staleStructuredPage.items, [])
+  const enrichedFirstPage = store.getDocumentEvidencePage('claim', 'bounded-claim', {
+    limit: 40
+  })
   const enrichedPage = store.getDocumentEvidencePage('claim', 'bounded-claim', {
     offset: 120,
-    limit: 40
+    limit: 40,
+    revision: enrichedFirstPage.revision
   })
   assert.equal(enrichedPage.total, manyEvidence.length)
   assert.equal(enrichedPage.items.at(-1).sender, '修正后的发送者')
@@ -4337,6 +4358,102 @@ test('search feedback archive revision advances and self-heals on restart', () =
     assert.equal(reopened.getMemorySearchFeedbackArchiveRevisionHealth().installedTriggers, 3)
     assert.equal(reopened.getMemorySearchFeedbackArchiveRevisionHealth().healthy, true)
     assert.equal(reopened.getMemorySearchFeedbackArchive({}).total, 1)
+    reopened.close()
+  } finally {
+    rmSync(directory, { recursive: true, force: true })
+  }
+})
+
+test('complete evidence archive revision covers both evidence stores and self-heals on restart', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'weflow-evidence-archive-revision-'))
+  const databasePath = join(directory, 'memory.sqlite')
+  try {
+    const first = new PersonalMemoryStore()
+    first.initialize(databasePath)
+    const database = (first as any).db
+    const now = '2026-08-03T00:00:00.000Z'
+    let previous = Number(first.getMemoryEvidenceArchiveRevision())
+    const expectAdvanced = () => {
+      const current = Number(first.getMemoryEvidenceArchiveRevision())
+      assert.ok(current > previous)
+      previous = current
+    }
+    database.prepare(`
+      INSERT INTO search_documents(
+        id,document_type,source_id,title,search_text,metadata_json,content_hash,updated_at
+      ) VALUES(?,?,?,?,?,?,?,?)
+    `).run(
+      'resource:evidence-revision',
+      'resource',
+      'evidence-revision',
+      '证据版本资料',
+      '证据版本正文',
+      '{}',
+      'a'.repeat(64),
+      now
+    )
+    assert.equal(Number(first.getMemoryEvidenceArchiveRevision()), previous)
+    database.prepare(`
+      INSERT INTO search_document_evidence(
+        document_id,source_id,message_id,session_id,timestamp,sender,excerpt
+      ) VALUES(?,?,?,?,?,?,?)
+    `).run(
+      'resource:evidence-revision',
+      'documents',
+      'generic-evidence-message',
+      'generic-evidence-session',
+      1_754_000_000,
+      '通用发送者',
+      '通用原文'
+    )
+    expectAdvanced()
+    database.prepare(`
+      UPDATE search_document_evidence SET sender=? WHERE document_id=?
+    `).run('修复后的发送者', 'resource:evidence-revision')
+    expectAdvanced()
+    database.prepare(`
+      INSERT INTO evidence(
+        claim_id,relation_id,event_id,source_id,message_id,session_id,
+        timestamp,sender,excerpt,evidence_role
+      ) VALUES(NULL,NULL,NULL,?,?,?,?,?,?,?)
+    `).run(
+      'wechat',
+      'structured-evidence-message',
+      'structured-evidence-session',
+      1_754_000_001,
+      '结构化发送者',
+      '结构化原文',
+      'support'
+    )
+    expectAdvanced()
+    database.prepare(`
+      UPDATE evidence SET evidence_role='contradiction' WHERE message_id=?
+    `).run('structured-evidence-message')
+    expectAdvanced()
+    database.prepare('DELETE FROM search_document_evidence WHERE document_id=?')
+      .run('resource:evidence-revision')
+    expectAdvanced()
+    database.prepare('DELETE FROM evidence WHERE message_id=?')
+      .run('structured-evidence-message')
+    expectAdvanced()
+    assert.deepEqual(first.getMemoryEvidenceArchiveRevisionHealth(), {
+      version: 'memory-evidence-archive-revision-v1',
+      revision: first.getMemoryEvidenceArchiveRevision(),
+      expectedTriggers: 6,
+      installedTriggers: 6,
+      healthy: true
+    })
+    database.exec(
+      'DROP TRIGGER trg_memory_evidence_archive_revision_evidence_update'
+    )
+    assert.equal(first.getMemoryEvidenceArchiveRevisionHealth().installedTriggers, 5)
+    assert.equal(first.getMemoryEvidenceArchiveRevisionHealth().healthy, false)
+    first.close()
+
+    const reopened = new PersonalMemoryStore()
+    reopened.initialize(databasePath)
+    assert.equal(reopened.getMemoryEvidenceArchiveRevisionHealth().installedTriggers, 6)
+    assert.equal(reopened.getMemoryEvidenceArchiveRevisionHealth().healthy, true)
     reopened.close()
   } finally {
     rmSync(directory, { recursive: true, force: true })

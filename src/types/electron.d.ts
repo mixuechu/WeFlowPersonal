@@ -1816,7 +1816,7 @@ export interface ElectronAPI {
       getMemoryEvidencePage: (
         documentType: string,
         sourceId: string,
-        pagination?: { offset?: number; limit?: number }
+        pagination?: { offset?: number; limit?: number; revision?: string }
       ) => Promise<{
         items: any[]
         total: number
@@ -1825,6 +1825,8 @@ export interface ElectronAPI {
         limit: number
         documentType: string
         sourceId: string
+        revision: string
+        stale: boolean
       }>
       indexMemoryVectors: () => Promise<any>
       findGraphPath: (fromId: string, toId: string, maxDepth?: number) => Promise<any>

@@ -5018,7 +5018,8 @@ export class AiAssistantService {
     }
     return personalMemoryStore.getDocumentEvidencePage(normalizedType, normalizedSourceId, {
       offset: Number(pagination?.offset || 0),
-      limit: Number(pagination?.limit || 40)
+      limit: Number(pagination?.limit || 40),
+      revision: String(pagination?.revision || '')
     })
   }
 

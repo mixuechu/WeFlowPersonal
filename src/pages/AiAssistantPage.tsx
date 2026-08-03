@@ -267,6 +267,8 @@ function AiAssistantPage() {
     items: any[]
     total: number
     hasMore: boolean
+    revision?: string
+    stale?: boolean
     status: 'loading' | 'ready' | 'error'
     error?: string
   } | null>(null)
@@ -2512,6 +2514,14 @@ function AiAssistantPage() {
         { offset: 0, limit: 40 }
       )
       if (!memoryEvidenceArchiveGate.current.isCurrent(request)) return
+      if (page.stale) {
+        window.setTimeout(() => {
+          if (memoryEvidenceArchiveGate.current.isCurrent(request)) {
+            void openMemoryEvidenceArchive(documentType, sourceId, title)
+          }
+        }, 250)
+        return
+      }
       setMemoryEvidenceArchive({
         documentType,
         sourceId,
@@ -2519,6 +2529,7 @@ function AiAssistantPage() {
         items: page.items,
         total: page.total,
         hasMore: page.hasMore,
+        revision: page.revision,
         status: 'ready'
       })
     } catch (error: any) {
@@ -2551,9 +2562,14 @@ function AiAssistantPage() {
       const page = await window.electronAPI.aiAssistant.getMemoryEvidencePage(
         archive.documentType,
         archive.sourceId,
-        { offset: archive.items.length, limit: 40 }
+        { offset: archive.items.length, limit: 40, revision: archive.revision }
       )
       if (!memoryEvidenceArchiveGate.current.isCurrent(request)) return
+      if (page.stale) {
+        setMessage('原文证据在翻页期间发生变化，已重新载入最新证据。')
+        void openMemoryEvidenceArchive(archive.documentType, archive.sourceId, archive.title)
+        return
+      }
       setMemoryEvidenceArchive(current => {
         if (!current || current.documentType !== archive.documentType || current.sourceId !== archive.sourceId) return current
         const seen = new Set(current.items.map(item =>
@@ -2568,7 +2584,8 @@ function AiAssistantPage() {
           ...current,
           items: [...current.items, ...additions],
           total: page.total,
-          hasMore: page.hasMore
+          hasMore: page.hasMore,
+          revision: page.revision
         }
       })
     } catch (error: any) {
@@ -5697,6 +5714,16 @@ function AiAssistantPage() {
                 <span>当前状态 <b>{memoryDiagnostics.memoryDeletionAuditRevisionHealthy ? '保护正常' : '需要检查'}</b></span>
                 <span>当前 revision <b>{String(memoryDiagnostics.memoryDeletionAuditRevision.revision || '0')}</b></span>
                 <span>变更触发器 <b>{Number(memoryDiagnostics.memoryDeletionAuditRevision.installedTriggers || 0).toLocaleString()} / {Number(memoryDiagnostics.memoryDeletionAuditRevision.expectedTriggers || 0).toLocaleString()}</b></span>
+              </div>
+            </div>}
+            {memoryDiagnostics.memoryEvidenceArchiveRevision?.version && <div className={`assistant-recovery-audit ${memoryDiagnostics.memoryEvidenceArchiveRevisionHealthy ? 'healthy' : 'unhealthy'}`}>
+              <header><ShieldCheck size={15} /><span><b>完整原文证据分页一致性保护</b>
+                <small>通用证据与事实、事件、关系的权威原文共享 SQLCipher revision；增量补证据、发送者修复、反证加入或记忆删除发生时，旧证据页会被拒绝并自动从最新第一页重载。</small>
+              </span></header>
+              <div className="assistant-recovery-current">
+                <span>当前状态 <b>{memoryDiagnostics.memoryEvidenceArchiveRevisionHealthy ? '保护正常' : '需要检查'}</b></span>
+                <span>当前 revision <b>{String(memoryDiagnostics.memoryEvidenceArchiveRevision.revision || '0')}</b></span>
+                <span>变更触发器 <b>{Number(memoryDiagnostics.memoryEvidenceArchiveRevision.installedTriggers || 0).toLocaleString()} / {Number(memoryDiagnostics.memoryEvidenceArchiveRevision.expectedTriggers || 0).toLocaleString()}</b></span>
               </div>
             </div>}
             {memoryDiagnostics.structuredMemoryRevision?.version && <div className={`assistant-recovery-audit ${memoryDiagnostics.structuredMemoryRevisionHealthy ? 'healthy' : 'unhealthy'}`}>
