@@ -5,6 +5,7 @@ export type GraphViewportOptions = {
   focusEntityId?: string
   depth?: number
   maxNodes?: number
+  revision?: string
 }
 
 function entityMatches(entity: any, query: string): boolean {
@@ -24,8 +25,12 @@ export function buildGraphViewport(entities: any[], relations: any[], options: G
   mode: 'overview' | 'search' | 'focus'
   totalAvailable: number
   truncated: number
+  totalRelationsAvailable: number
+  truncatedRelations: number
+  matchingSeeds: number
+  maxNodes: number
 } {
-  const maxNodes = Math.max(10, Math.min(200, Number(options.maxNodes) || 60))
+  const maxNodes = Math.max(10, Math.min(300, Number(options.maxNodes) || 60))
   const depth = Math.max(1, Math.min(3, Number(options.depth) || 1))
   const query = String(options.query || '').trim().toLowerCase()
   const availableEntities = (entities || []).filter(entity => entity.trustStatus !== 'rejected')
@@ -47,7 +52,7 @@ export function buildGraphViewport(entities: any[], relations: any[], options: G
 
   const focusId = options.focusEntityId && byId.has(options.focusEntityId) ? options.focusEntityId : ''
   const mode = focusId ? 'focus' : query ? 'search' : 'overview'
-  let seeds = focusId
+  const seeds = focusId
     ? [focusId]
     : query
       ? availableEntities.filter(entity => entityMatches(entity, query)).map(entity => entity.id)
@@ -55,11 +60,27 @@ export function buildGraphViewport(entities: any[], relations: any[], options: G
         Number(adjacency.get(right.id)?.length || 0) - Number(adjacency.get(left.id)?.length || 0) ||
         String(right.updatedAt || right.createdAt || '').localeCompare(String(left.updatedAt || left.createdAt || '')) ||
         String(left.canonicalName || '').localeCompare(String(right.canonicalName || ''))).map(entity => entity.id)
-  seeds = [...new Set(seeds)].slice(0, maxNodes)
+  const uniqueSeeds = [...new Set(seeds)]
+  const relevant = new Set<string>()
+  if (mode === 'overview') {
+    for (const entity of availableEntities) relevant.add(entity.id)
+  } else {
+    const relevantQueue = uniqueSeeds.map(id => ({ id, level: 0 }))
+    for (const id of uniqueSeeds) relevant.add(id)
+    while (relevantQueue.length) {
+      const current = relevantQueue.shift()!
+      if (current.level >= depth) continue
+      for (const edge of adjacency.get(current.id) || []) {
+        if (relevant.has(edge.id)) continue
+        relevant.add(edge.id)
+        relevantQueue.push({ id: edge.id, level: current.level + 1 })
+      }
+    }
+  }
   const selected = new Set<string>()
   const levels = new Map<string, number>()
   const queue: Array<{ id: string; level: number }> = []
-  for (const id of seeds) {
+  for (const id of uniqueSeeds) {
     if (selected.size >= maxNodes) break
     selected.add(id)
     levels.set(id, 0)
@@ -81,16 +102,18 @@ export function buildGraphViewport(entities: any[], relations: any[], options: G
   const viewportEntities = [...selected].map(id => byId.get(id)).filter(Boolean)
   const viewportRelations = availableRelations.filter(relation =>
     selected.has(relation.subjectId) && selected.has(relation.objectId))
-  const relevantTotal = mode === 'overview'
-    ? availableEntities.length
-    : new Set([...seeds, ...availableRelations.flatMap(relation =>
-      selected.has(relation.subjectId) || selected.has(relation.objectId) ? [relation.subjectId, relation.objectId] : [])]).size
+  const relevantRelations = availableRelations.filter(relation =>
+    relevant.has(relation.subjectId) && relevant.has(relation.objectId))
   return {
     entities: viewportEntities,
     relations: viewportRelations,
     levels,
     mode,
-    totalAvailable: relevantTotal,
-    truncated: Math.max(0, relevantTotal - viewportEntities.length)
+    totalAvailable: relevant.size,
+    truncated: Math.max(0, relevant.size - viewportEntities.length),
+    totalRelationsAvailable: relevantRelations.length,
+    truncatedRelations: Math.max(0, relevantRelations.length - viewportRelations.length),
+    matchingSeeds: mode === 'overview' ? 0 : uniqueSeeds.length,
+    maxNodes
   }
 }

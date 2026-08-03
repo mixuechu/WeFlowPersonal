@@ -291,12 +291,19 @@ function AiAssistantPage() {
   const [graphRelationType, setGraphRelationType] = useState('')
   const [graphRelationStatus, setGraphRelationStatus] = useState('')
   const [graphFocusDepth, setGraphFocusDepth] = useState(1)
+  const [graphNodeLimit, setGraphNodeLimit] = useState(60)
   const [selectedEntityId, setSelectedEntityId] = useState('')
   const [graphWorkspace, setGraphWorkspace] = useState<any>({
-    viewport: { entities: [], relations: [], levels: {}, mode: 'overview', totalAvailable: 0, truncated: 0 },
+    viewport: {
+      entities: [], relations: [], levels: {}, mode: 'overview',
+      totalAvailable: 0, truncated: 0, totalRelationsAvailable: 0,
+      truncatedRelations: 0, matchingSeeds: 0, maxNodes: 60
+    },
     summary: { entities: 0, relations: 0 },
     predicates: [],
     focus: null,
+    revision: '',
+    stale: false,
     status: 'idle'
   })
   const [graphWorkspaceRefreshKey, setGraphWorkspaceRefreshKey] = useState(0)
@@ -1543,7 +1550,12 @@ function AiAssistantPage() {
     setEntityAuditLoadingMore('')
     setGraphWorkspace((current: any) => ({
       ...current,
-      viewport: { entities: [], relations: [], levels: {}, mode: selectedEntityId ? 'focus' : graphQuery.trim() ? 'search' : 'overview', totalAvailable: 0, truncated: 0 },
+      viewport: {
+        entities: [], relations: [], levels: {},
+        mode: selectedEntityId ? 'focus' : graphQuery.trim() ? 'search' : 'overview',
+        totalAvailable: 0, truncated: 0, totalRelationsAvailable: 0,
+        truncatedRelations: 0, matchingSeeds: 0, maxNodes: graphNodeLimit
+      },
       focus: null,
       status: 'loading',
       error: undefined
@@ -1554,9 +1566,20 @@ function AiAssistantPage() {
         relationType: graphRelationType || undefined,
         relationStatus: graphRelationStatus || undefined,
         focusEntityId: selectedEntityId || undefined,
-        depth: graphFocusDepth
+        depth: graphFocusDepth,
+        maxNodes: graphNodeLimit,
+        revision: graphWorkspace.revision || undefined
       }).then(workspace => {
         if (!graphWorkspaceGate.current.isCurrent(request)) return
+        if (workspace.stale) {
+          setGraphWorkspace((current: any) => ({
+            ...current,
+            revision: workspace.revision,
+            status: 'loading'
+          }))
+          setGraphWorkspaceRefreshKey(value => value + 1)
+          return
+        }
         setGraphWorkspace({ ...workspace, status: 'ready' })
       }).catch(error => {
         if (!graphWorkspaceGate.current.isCurrent(request)) return
@@ -1572,7 +1595,7 @@ function AiAssistantPage() {
       if (graphWorkspaceGate.current.isCurrent(request)) graphWorkspaceGate.current.invalidate()
     }
   }, [
-    graphQuery, graphRelationType, graphRelationStatus, selectedEntityId, graphFocusDepth,
+    graphQuery, graphRelationType, graphRelationStatus, selectedEntityId, graphFocusDepth, graphNodeLimit,
     dashboard?.graphRevision, dashboard?.taskRevision, graphWorkspaceRefreshKey
   ])
 
@@ -6591,15 +6614,27 @@ function AiAssistantPage() {
             {(selectedEntityId || graphQuery) && <select value={graphFocusDepth} onChange={event => setGraphFocusDepth(Number(event.target.value))}>
               <option value={1}>展开 1 跳邻居</option><option value={2}>展开 2 跳邻居</option><option value={3}>展开 3 跳邻居</option>
             </select>}
+            <select value={graphNodeLimit} onChange={event => setGraphNodeLimit(Number(event.target.value))}
+              aria-label="图谱画布节点上限">
+              <option value={60}>画布上限 60 节点</option>
+              <option value={120}>画布上限 120 节点</option>
+              <option value={200}>画布上限 200 节点</option>
+              <option value={300}>画布上限 300 节点</option>
+            </select>
             {selectedEntityId && <button onClick={() => setSelectedEntityId('')}>退出人物聚焦</button>}
           </div>
           <div className="assistant-graph-viewport-note">
             <span>{graphViewport.mode === 'focus' ? `正聚焦 ${selectedEntity?.canonicalName || '选中实体'}`
               : graphViewport.mode === 'search' ? `搜索命中并展开 ${graphFocusDepth} 跳关系`
                 : '默认优先展示连接度最高的实体'}</span>
-            <small>当前画布 {graphEntities.length} 个节点 · {graphRelations.length} 条边
-              {graphViewport.truncated ? ` · 为保持流畅另有 ${graphViewport.truncated} 个相关节点未展开` : ''}
+            <small>当前画布 {graphEntities.length} / {Number(graphViewport.totalAvailable || 0)} 个相关节点
+              · {graphRelations.length} / {Number(graphViewport.totalRelationsAvailable || 0)} 条相关边
+              {graphViewport.truncated ? ` · 另有 ${graphViewport.truncated} 个节点未展开` : ''}
             </small>
+            {!!graphViewport.truncated && graphNodeLimit < 300 && <button
+              onClick={() => setGraphNodeLimit(current => current < 120 ? 120 : current < 200 ? 200 : 300)}>
+              展开更多节点
+            </button>}
             {dashboard?.graphPayloadPolicy?.entityProfiles === 'on_demand' && <small>
               首页不再周期加载全量身份目录；画布、选择器、审阅卡片和人物档案均按当前范围读取。
             </small>}
@@ -6692,13 +6727,22 @@ function AiAssistantPage() {
                 {graphRelations.map((relation: any) => {
                   const from = graphPositions.get(relation.subjectId) as any
                   const to = graphPositions.get(relation.objectId) as any
-                  return <g key={relation.id}><line x1={from.x} y1={from.y} x2={to.x} y2={to.y} className={relation.status === 'candidate' ? 'candidate' : ''} /><text x={(from.x + to.x) / 2} y={(from.y + to.y) / 2}>{relation.predicate}</text></g>
+                  return <g key={relation.id}>
+                    <title>{relation.predicate} · {relation.status === 'confirmed' ? '已确认' : '待确认'}</title>
+                    <line x1={from.x} y1={from.y} x2={to.x} y2={to.y} className={relation.status === 'candidate' ? 'candidate' : ''} />
+                    {graphRelations.length <= 120 &&
+                      <text x={(from.x + to.x) / 2} y={(from.y + to.y) / 2}>{relation.predicate}</text>}
+                  </g>
                 })}
                 {graphEntities.map((entity: any) => {
                   const point = graphPositions.get(entity.id) as any
                   return <g key={entity.id} className={`graph-node ${entity.trustStatus || 'legacy_unverified'} ${selectedEntityId === entity.id ? 'selected' : ''}`} onClick={() => setSelectedEntityId(entity.id)}>
-                    <circle cx={point.x} cy={point.y} r={entity.type === 'person' ? 18 : 14} />
-                    <text x={point.x} y={point.y + 32} textAnchor="middle">{entity.canonicalName.slice(0, 12)}</text>
+                    <title>{entity.canonicalName} · {entity.type}</title>
+                    <circle cx={point.x} cy={point.y}
+                      r={graphEntities.length > 120 ? (selectedEntityId === entity.id ? 12 : 7) : entity.type === 'person' ? 18 : 14} />
+                    {(graphEntities.length <= 120 || selectedEntityId === entity.id) &&
+                      <text x={point.x} y={point.y + (graphEntities.length > 120 ? 22 : 32)}
+                        textAnchor="middle">{entity.canonicalName.slice(0, 12)}</text>}
                   </g>
                 })}
               </svg>

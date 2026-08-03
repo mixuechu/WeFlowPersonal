@@ -3832,6 +3832,25 @@ export class AiAssistantService {
   }
 
   getGraphWorkspace(options?: Partial<GraphViewportOptions>): any {
+    const graphRevision = personalMemoryStore.getGraphReviewRevision()
+    const requestedRevision = String(options?.revision || '').trim()
+    if (requestedRevision && requestedRevision !== graphRevision) {
+      return {
+        viewport: {
+          entities: [], relations: [], levels: {}, mode: options?.focusEntityId
+            ? 'focus'
+            : options?.query ? 'search' : 'overview',
+          totalAvailable: 0, truncated: 0,
+          totalRelationsAvailable: 0, truncatedRelations: 0,
+          matchingSeeds: 0, maxNodes: Math.max(10, Math.min(300, Number(options?.maxNodes) || 60))
+        },
+        summary: { entities: 0, relations: 0 },
+        predicates: [],
+        focus: null,
+        revision: graphRevision,
+        stale: true
+      }
+    }
     const viewport = buildGraphViewport(this.state.graph.entities, this.state.graph.relations, {
       query: String(options?.query || '').trim(),
       relationType: String(options?.relationType || '').trim(),
@@ -3840,7 +3859,7 @@ export class AiAssistantService {
         : '',
       focusEntityId: String(options?.focusEntityId || '').trim(),
       depth: Number(options?.depth || 1),
-      maxNodes: 60
+      maxNodes: Number(options?.maxNodes || 60)
     })
     const focusEntity = options?.focusEntityId
       ? this.state.graph.entities.find(entity =>
@@ -3940,6 +3959,22 @@ export class AiAssistantService {
           .map(entity => [entity.id, entity.canonicalName]))
       }
     }
+    const completedRevision = personalMemoryStore.getGraphReviewRevision()
+    if (completedRevision !== graphRevision) {
+      return {
+        viewport: {
+          entities: [], relations: [], levels: {}, mode: viewport.mode,
+          totalAvailable: 0, truncated: 0,
+          totalRelationsAvailable: 0, truncatedRelations: 0,
+          matchingSeeds: 0, maxNodes: viewport.maxNodes
+        },
+        summary: { entities: 0, relations: 0 },
+        predicates: [],
+        focus: null,
+        revision: completedRevision,
+        stale: true
+      }
+    }
     return {
       viewport: {
         ...viewport,
@@ -3956,12 +3991,15 @@ export class AiAssistantService {
         .map(relation => relation.predicate)
         .filter(Boolean))].sort((left, right) => left.localeCompare(right, 'zh-CN')),
       payloadPolicy: {
-        version: 'graph-viewport-v1',
+        version: 'graph-viewport-v2',
         nodeFields: 'drawing_only',
         edgeFields: 'drawing_only',
-        focusProfile: focus ? 'loaded' : 'not_requested'
+        focusProfile: focus ? 'loaded' : 'not_requested',
+        expansion: 'revision_bound_60_120_200_300'
       },
-      focus
+      focus,
+      revision: graphRevision,
+      stale: false
     }
   }
 

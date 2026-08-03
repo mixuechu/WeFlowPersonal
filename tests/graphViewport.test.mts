@@ -36,6 +36,10 @@ test('graph viewport prioritizes connected entities instead of the last inserted
   assert.equal(viewport.entities.length, 20)
   assert.ok(viewport.entities.some(entity => entity.id === 'entity-1'))
   assert.equal(viewport.truncated, 60)
+  assert.equal(viewport.totalAvailable, 80)
+  assert.equal(viewport.totalRelationsAvailable, hubRelations.length)
+  assert.equal(viewport.truncatedRelations,
+    viewport.totalRelationsAvailable - viewport.relations.length)
 })
 
 test('graph viewport keeps search matches and expands bounded multi-hop context', () => {
@@ -49,6 +53,9 @@ test('graph viewport keeps search matches and expands bounded multi-hop context'
     'entity-68', 'entity-69', 'entity-70', 'entity-71', 'entity-72'
   ])
   assert.equal(viewport.relations.length, 4)
+  assert.equal(viewport.totalAvailable, 5)
+  assert.equal(viewport.totalRelationsAvailable, 4)
+  assert.equal(viewport.matchingSeeds, 1)
   assert.equal(viewport.levels.get('entity-70'), 0)
   assert.equal(viewport.levels.get('entity-68'), 2)
 })
@@ -105,4 +112,41 @@ test('graph viewport keeps multi-year graph payload bounded independently of tot
     relations: viewport.relations
   }))
   assert.ok(viewportBytes < fullBytes * 0.01)
+})
+
+test('graph viewport reports the complete bounded neighborhood before progressive expansion', () => {
+  const first = buildGraphViewport(entities, relations, {
+    focusEntityId: 'entity-40',
+    depth: 3,
+    maxNodes: 2
+  })
+  assert.equal(first.maxNodes, 10)
+  assert.equal(first.totalAvailable, 7)
+  assert.equal(first.totalRelationsAvailable, 6)
+  assert.equal(first.entities.length, 7)
+  assert.equal(first.truncated, 0)
+
+  const longChainEntities = Array.from({ length: 700 }, (_, index) => ({
+    id: `chain-${index}`,
+    canonicalName: `链路 ${index}`,
+    trustStatus: 'confirmed'
+  }))
+  const longChainRelations = Array.from({ length: 699 }, (_, index) => ({
+    id: `chain-relation-${index}`,
+    subjectId: `chain-${index}`,
+    objectId: `chain-${index + 1}`,
+    predicate: '连接',
+    status: 'confirmed',
+    confidence: 1
+  }))
+  const expanded = buildGraphViewport(longChainEntities, longChainRelations, {
+    query: '链路',
+    maxNodes: 999
+  })
+  assert.equal(expanded.maxNodes, 300)
+  assert.equal(expanded.totalAvailable, 700)
+  assert.equal(expanded.entities.length, 300)
+  assert.equal(expanded.truncated, 400)
+  assert.equal(expanded.totalRelationsAvailable, 699)
+  assert.equal(expanded.truncatedRelations, 400)
 })

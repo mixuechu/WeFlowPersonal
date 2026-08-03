@@ -1669,6 +1669,8 @@ export interface ElectronAPI {
         relationStatus?: string
         focusEntityId?: string
         depth?: number
+        maxNodes?: number
+        revision?: string
       }) => Promise<{
         viewport: {
           entities: any[]
@@ -1677,10 +1679,16 @@ export interface ElectronAPI {
           mode: 'overview' | 'search' | 'focus'
           totalAvailable: number
           truncated: number
+          totalRelationsAvailable: number
+          truncatedRelations: number
+          matchingSeeds: number
+          maxNodes: number
         }
         summary: { entities: number; relations: number }
         predicates: string[]
         focus: any | null
+        revision: string
+        stale: boolean
       }>
       getEntityTaskPage: (entityId: string, options?: any) => Promise<{
         items: any[]
