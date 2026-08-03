@@ -373,6 +373,21 @@ export class PersonalMemoryStore {
       CREATE INDEX IF NOT EXISTS idx_task_mutation_commits_status
         ON task_mutation_commits(status,prepared_at);
 
+      CREATE TABLE IF NOT EXISTS conversation_source_mutation_commits (
+        commit_id TEXT PRIMARY KEY,
+        status TEXT NOT NULL CHECK(status IN ('prepared','committed','abandoned')),
+        before_tokens_json TEXT NOT NULL DEFAULT '{}',
+        after_tokens_json TEXT NOT NULL DEFAULT '{}',
+        policies_json TEXT NOT NULL DEFAULT '[]',
+        prepared_at TEXT NOT NULL,
+        applied_at TEXT,
+        recovery_attempts INTEGER NOT NULL DEFAULT 0,
+        recovery_action TEXT NOT NULL DEFAULT '',
+        last_error TEXT
+      ) STRICT;
+      CREATE INDEX IF NOT EXISTS idx_conversation_source_mutation_commits_status
+        ON conversation_source_mutation_commits(status,prepared_at);
+
       CREATE TABLE IF NOT EXISTS task_review_decisions (
         evidence_fingerprint TEXT PRIMARY KEY,
         task_id TEXT NOT NULL,
@@ -9939,6 +9954,161 @@ export class PersonalMemoryStore {
         )
       }
     })()
+  }
+
+  prepareConversationSourceMutationCommit(input: {
+    commitId: string
+    beforeTokens: Record<string, string>
+    afterTokens: Record<string, string>
+    policies: Array<{
+      sessionId: string
+      displayName: string
+      sessionType: 'group' | 'private'
+      enabled: boolean
+    }>
+  }): void {
+    if (!this.db) throw new Error('个人记忆数据库尚未初始化')
+    this.db.prepare(`
+      INSERT INTO conversation_source_mutation_commits(
+        commit_id,status,before_tokens_json,after_tokens_json,policies_json,prepared_at
+      ) VALUES(?,'prepared',?,?,?,?)
+    `).run(
+      String(input.commitId || ''),
+      JSON.stringify(input.beforeTokens || {}),
+      JSON.stringify(input.afterTokens || {}),
+      JSON.stringify(input.policies || []),
+      new Date().toISOString()
+    )
+  }
+
+  listPreparedConversationSourceMutationCommits(): Array<{
+    commitId: string
+    beforeTokens: Record<string, string>
+    afterTokens: Record<string, string>
+    policies: any[]
+    parseError: string
+  }> {
+    if (!this.db) return []
+    return (this.db.prepare(`
+      SELECT * FROM conversation_source_mutation_commits
+      WHERE status='prepared'
+      ORDER BY prepared_at,commit_id LIMIT 100
+    `).all() as any[]).map(row => {
+      const failures: string[] = []
+      let beforeTokens: Record<string, string> = {}
+      let afterTokens: Record<string, string> = {}
+      let policies: any[] = []
+      try {
+        beforeTokens = JSON.parse(String(row.before_tokens_json || '{}'))
+        if (!beforeTokens || typeof beforeTokens !== 'object' || Array.isArray(beforeTokens)) throw new Error()
+      } catch { failures.push('变更前游标身份') }
+      try {
+        afterTokens = JSON.parse(String(row.after_tokens_json || '{}'))
+        if (!afterTokens || typeof afterTokens !== 'object' || Array.isArray(afterTokens)) throw new Error()
+      } catch { failures.push('变更后游标身份') }
+      try {
+        policies = JSON.parse(String(row.policies_json || '[]'))
+        if (!Array.isArray(policies)) throw new Error()
+      } catch { failures.push('来源策略') }
+      return {
+        commitId: String(row.commit_id || ''),
+        beforeTokens,
+        afterTokens,
+        policies,
+        parseError: failures.length ? `来源开关恢复载荷无法解析：${failures.join('、')}` : ''
+      }
+    })
+  }
+
+  finalizeConversationSourceMutationCommit(commitId: string): void {
+    if (!this.db) throw new Error('个人记忆数据库尚未初始化')
+    this.db.transaction(() => {
+      const row = this.db!.prepare(`
+        SELECT status,policies_json FROM conversation_source_mutation_commits WHERE commit_id=?
+      `).get(String(commitId || '')) as any
+      if (!row) throw new Error('找不到待提交的来源开关变更')
+      if (row.status === 'committed') return
+      if (row.status !== 'prepared') throw new Error('来源开关变更已被放弃')
+      const policies = JSON.parse(String(row.policies_json || '[]'))
+      if (!Array.isArray(policies) || !policies.length) throw new Error('来源开关恢复载荷无效')
+      const statement = this.db!.prepare(`
+        INSERT INTO conversation_policy(session_id,display_name,session_type,analysis_enabled,resume_policy,updated_at)
+        VALUES(?,?,?,?,?,?)
+        ON CONFLICT(session_id) DO UPDATE SET display_name=excluded.display_name,
+          session_type=excluded.session_type,analysis_enabled=excluded.analysis_enabled,
+          updated_at=excluded.updated_at
+      `)
+      const now = new Date().toISOString()
+      for (const policy of policies) {
+        const sessionId = String(policy?.sessionId || '').trim()
+        if (!sessionId) throw new Error('来源开关恢复载荷包含无效会话')
+        statement.run(
+          sessionId,
+          String(policy?.displayName || sessionId),
+          policy?.sessionType === 'group' ? 'group' : 'private',
+          policy?.enabled ? 1 : 0,
+          'from_now',
+          now
+        )
+      }
+      this.db!.prepare(`
+        UPDATE conversation_source_mutation_commits
+        SET status='committed',applied_at=?,recovery_action='applied',last_error=NULL,
+          before_tokens_json='{}',after_tokens_json='{}',policies_json='[]'
+        WHERE commit_id=?
+      `).run(now, commitId)
+    })()
+  }
+
+  abandonConversationSourceMutationCommit(commitId: string, recoveryAction = 'abandoned'): void {
+    if (!this.db) return
+    this.db.prepare(`
+      UPDATE conversation_source_mutation_commits
+      SET status='abandoned',applied_at=?,recovery_action=?,last_error=NULL,
+        before_tokens_json='{}',after_tokens_json='{}',policies_json='[]'
+      WHERE commit_id=? AND status='prepared'
+    `).run(new Date().toISOString(), String(recoveryAction || 'abandoned'), commitId)
+  }
+
+  recordConversationSourceMutationRecoveryFailure(commitId: string, error: unknown): void {
+    if (!this.db) return
+    this.db.prepare(`
+      UPDATE conversation_source_mutation_commits
+      SET recovery_attempts=recovery_attempts+1,last_error=?
+      WHERE commit_id=? AND status='prepared'
+    `).run(String(error instanceof Error ? error.message : error || '').slice(0, 1000), commitId)
+  }
+
+  getConversationSourceMutationCommitHealth(): {
+    prepared: number
+    committed: number
+    abandoned: number
+    recoveryFailures: number
+    retainedPayloadBytes: number
+  } {
+    if (!this.db) return {
+      prepared: 0, committed: 0, abandoned: 0, recoveryFailures: 0, retainedPayloadBytes: 0
+    }
+    const row = this.db.prepare(`
+      SELECT
+        SUM(CASE WHEN status='prepared' THEN 1 ELSE 0 END) AS prepared,
+        SUM(CASE WHEN status='committed' THEN 1 ELSE 0 END) AS committed,
+        SUM(CASE WHEN status='abandoned' THEN 1 ELSE 0 END) AS abandoned,
+        SUM(CASE WHEN recovery_attempts>0 THEN 1 ELSE 0 END) AS recovery_failures,
+        SUM(CASE WHEN status='prepared' THEN
+          LENGTH(CAST(before_tokens_json AS BLOB))
+          + LENGTH(CAST(after_tokens_json AS BLOB))
+          + LENGTH(CAST(policies_json AS BLOB))
+          ELSE 0 END) AS retained_payload_bytes
+      FROM conversation_source_mutation_commits
+    `).get() as any
+    return {
+      prepared: Number(row?.prepared || 0),
+      committed: Number(row?.committed || 0),
+      abandoned: Number(row?.abandoned || 0),
+      recoveryFailures: Number(row?.recovery_failures || 0),
+      retainedPayloadBytes: Number(row?.retained_payload_bytes || 0)
+    }
   }
 
   registerDataSources(catalog: readonly any[]): void {

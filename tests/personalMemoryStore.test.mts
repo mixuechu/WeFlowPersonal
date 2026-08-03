@@ -149,6 +149,66 @@ test('conversation policy batch is atomic when a later row fails', () => {
   })
 })
 
+test('prepared source mutation atomically commits policies and compacts recovery payload', () => {
+  withStore(store => {
+    store.prepareConversationSourceMutationCommit({
+      commitId: 'source-commit-success',
+      beforeTokens: { first: 'before-first', second: 'before-second' },
+      afterTokens: { first: 'after-first', second: 'after-second' },
+      policies: [
+        { sessionId: 'first', displayName: 'First', sessionType: 'private', enabled: false },
+        { sessionId: 'second@chatroom', displayName: 'Second', sessionType: 'group', enabled: true }
+      ]
+    })
+    assert.equal(store.getConversationSourceMutationCommitHealth().prepared, 1)
+    assert.deepEqual(store.getConversationPolicyRecords(), [])
+
+    store.finalizeConversationSourceMutationCommit('source-commit-success')
+    assert.deepEqual(store.getConversationPolicyRecords().map(item => [
+      item.sessionId, item.sessionType, item.enabled
+    ]).sort(), [
+      ['first', 'private', false],
+      ['second@chatroom', 'group', true]
+    ])
+    const health = store.getConversationSourceMutationCommitHealth()
+    assert.equal(health.prepared, 0)
+    assert.equal(health.committed, 1)
+    assert.equal(health.retainedPayloadBytes, 0)
+  })
+})
+
+test('source mutation finalize rolls every policy back and preserves prepared recovery on SQL failure', () => {
+  withStore(store => {
+    store.prepareConversationSourceMutationCommit({
+      commitId: 'source-commit-failure',
+      beforeTokens: { first: 'before-first', bad: 'before-bad' },
+      afterTokens: { first: 'after-first', bad: 'after-bad' },
+      policies: [
+        { sessionId: 'first', displayName: 'First', sessionType: 'private', enabled: false },
+        { sessionId: 'bad', displayName: 'Bad', sessionType: 'private', enabled: false }
+      ]
+    })
+    const database = (store as any).db
+    database.exec(`
+      CREATE TRIGGER reject_bad_source_commit
+      BEFORE INSERT ON conversation_policy
+      WHEN NEW.session_id = 'bad'
+      BEGIN
+        SELECT RAISE(ABORT, 'source commit failure');
+      END;
+    `)
+    assert.throws(
+      () => store.finalizeConversationSourceMutationCommit('source-commit-failure'),
+      /source commit failure/
+    )
+    assert.deepEqual(store.getConversationPolicyRecords(), [])
+    const prepared = store.listPreparedConversationSourceMutationCommits()
+    assert.equal(prepared.length, 1)
+    assert.equal(prepared[0].commitId, 'source-commit-failure')
+    assert.equal(prepared[0].policies.length, 2)
+  })
+})
+
 test('search relevance feedback is append-only, query-scoped and reversible after reopen', () => {
   const directory = mkdtempSync(join(tmpdir(), 'weflow-search-feedback-'))
   const databasePath = join(directory, 'memory.sqlite')

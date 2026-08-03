@@ -36,6 +36,11 @@ import {
   buildConversationSourceDirectory,
   type ConversationSourceDirectoryOptions
 } from './conversationSourceDirectory.ts'
+import {
+  buildConversationSourceCursorToken,
+  classifyConversationSourceMutationRecovery,
+  readConversationSourceCursorState
+} from './conversationSourceMutationPolicy.ts'
 import { buildContextualMemoryQuestion, buildMemoryQueryPlan } from './memoryQueryPlanner'
 import {
   applyTaskReviewFeedback,
@@ -483,6 +488,13 @@ export class AiAssistantService {
     conflicts: 0,
     lastRecoveredAt: ''
   }
+  private conversationSourceMutationRecovery = {
+    attempted: 0,
+    applied: 0,
+    abandoned: 0,
+    conflicts: 0,
+    lastRecoveredAt: ''
+  }
   private briefingStorage = {
     version: BRIEFING_STORAGE_VERSION,
     retentionDays: BRIEFING_RETENTION_DAYS,
@@ -601,6 +613,7 @@ export class AiAssistantService {
     )
     this.migrateLegacyData()
     this.loadState()
+    this.recoverPreparedConversationSourceMutationCommits()
     this.recoverPreparedTaskMutationCommits()
     personalMemoryStore.recordProcessedIngestionMessageKeys(
       this.state.cursor.recentMessageIds,
@@ -894,7 +907,7 @@ export class AiAssistantService {
     }
   }
 
-  private persistTaskMutationState(): void {
+  private persistCrossStoreMutationState(): void {
     writeEncryptedDurableJson(this.statePath, this.state, this.stateEncryptionKey)
     this.stateStorage.encrypted = true
     this.stateStorage.lastWriteAt = new Date().toISOString()
@@ -923,6 +936,39 @@ export class AiAssistantService {
         this.taskMutationRecovery.lastRecoveredAt = new Date().toISOString()
       } catch (error) {
         personalMemoryStore.recordTaskMutationRecoveryFailure(commit.commitId, error)
+      }
+    }
+  }
+
+  private recoverPreparedConversationSourceMutationCommits(): void {
+    for (const commit of personalMemoryStore.listPreparedConversationSourceMutationCommits()) {
+      this.conversationSourceMutationRecovery.attempted += 1
+      try {
+        if (commit.parseError) throw new Error(commit.parseError)
+        const action = classifyConversationSourceMutationRecovery(
+          this.state.cursor,
+          commit.beforeTokens,
+          commit.afterTokens
+        )
+        if (action === 'apply') {
+          personalMemoryStore.finalizeConversationSourceMutationCommit(commit.commitId)
+          this.conversationSourceMutationRecovery.applied += 1
+        } else if (action === 'abandon') {
+          personalMemoryStore.abandonConversationSourceMutationCommit(
+            commit.commitId,
+            'state_not_committed'
+          )
+          this.conversationSourceMutationRecovery.abandoned += 1
+        } else {
+          this.conversationSourceMutationRecovery.conflicts += 1
+          throw new Error('来源游标同时不匹配变更前和变更后身份，已保留现场等待诊断')
+        }
+        this.conversationSourceMutationRecovery.lastRecoveredAt = new Date().toISOString()
+      } catch (error) {
+        personalMemoryStore.recordConversationSourceMutationRecoveryFailure(
+          commit.commitId,
+          error
+        )
       }
     }
   }
@@ -3365,6 +3411,11 @@ export class AiAssistantService {
         startupRecovery: this.taskMutationRecovery,
         policy: 'prepared_state_then_atomic_sql_v1'
       },
+      conversationSourceMutationCommits: {
+        ...personalMemoryStore.getConversationSourceMutationCommitHealth(),
+        startupRecovery: this.conversationSourceMutationRecovery,
+        policy: 'prepared_state_then_atomic_sql_v1'
+      },
       taskRevision: crypto.createHash('sha256')
         .update(this.state.tasks.map(task => [
           task.id, task.updatedAt || task.createdAt || '', task.status,
@@ -3856,6 +3907,11 @@ export class AiAssistantService {
         startupRecovery: this.taskMutationRecovery,
         policy: 'prepared_state_then_atomic_sql_v1'
       },
+      conversationSourceMutationCommits: {
+        ...personalMemoryStore.getConversationSourceMutationCommitHealth(),
+        startupRecovery: this.conversationSourceMutationRecovery,
+        policy: 'prepared_state_then_atomic_sql_v1'
+      },
       ingestionSummary: {
         ...ingestionTotals,
         estimatedCost:
@@ -4311,6 +4367,60 @@ export class AiAssistantService {
     return this.buildConversationSourceDirectory(options)
   }
 
+  private commitConversationSourcePolicies(policies: Array<{
+    sessionId: string
+    displayName: string
+    sessionType: 'group' | 'private'
+    enabled: boolean
+  }>): void {
+    if (!policies.length) return
+    const previousCursor = structuredClone(this.state.cursor)
+    const now = Math.floor(Date.now() / 1000)
+    const beforeTokens = Object.fromEntries(policies.map(policy => [
+      policy.sessionId,
+      buildConversationSourceCursorToken(
+        policy.sessionId,
+        readConversationSourceCursorState(previousCursor, policy.sessionId)
+      )
+    ]))
+    const afterTokens = Object.fromEntries(policies.map(policy => [
+      policy.sessionId,
+      buildConversationSourceCursorToken(policy.sessionId, { cursor: now, offset: null })
+    ]))
+    const commitId = `conversation_source_mutation_${crypto.randomUUID()}`
+    personalMemoryStore.prepareConversationSourceMutationCommit({
+      commitId,
+      beforeTokens,
+      afterTokens,
+      policies
+    })
+    for (const policy of policies) {
+      this.state.cursor.sessionCursors[policy.sessionId] = now
+      delete this.state.cursor.sessionOffsets[policy.sessionId]
+    }
+    this.state.cursor.pendingSessionBacklogCount =
+      Object.keys(this.state.cursor.sessionOffsets).length
+    if (!this.state.cursor.pendingSessionBacklogCount) {
+      this.state.cursor.backlogRetry = { ...EMPTY_BACKLOG_RETRY_STATE }
+    }
+    try {
+      this.persistCrossStoreMutationState()
+      personalMemoryStore.finalizeConversationSourceMutationCommit(commitId)
+    } catch (error) {
+      this.state.cursor = previousCursor
+      try {
+        this.persistCrossStoreMutationState()
+        personalMemoryStore.abandonConversationSourceMutationCommit(commitId, 'runtime_rollback')
+      } catch (rollbackError) {
+        personalMemoryStore.recordConversationSourceMutationRecoveryFailure(
+          commitId,
+          rollbackError
+        )
+      }
+      throw error
+    }
+  }
+
   async setConversationSource(input: {
     sessionId: string
     enabled: boolean
@@ -4326,19 +4436,12 @@ export class AiAssistantService {
       (await this.buildConversationSourceDirectory({ query: sessionId, limit: 100 })).items
         .find((item: any) => item.sessionId === sessionId)
     assertConversationSourceMutation(source, input.mutationToken)
-    personalMemoryStore.setConversationPolicy(
-      source.sessionId,
-      source.displayName,
-      source.type,
-      Boolean(input.enabled)
-    )
-    this.state.cursor.sessionCursors[sessionId] = Math.floor(Date.now() / 1000)
-    delete this.state.cursor.sessionOffsets[sessionId]
-    this.state.cursor.pendingSessionBacklogCount = Object.keys(this.state.cursor.sessionOffsets).length
-    if (!this.state.cursor.pendingSessionBacklogCount) {
-      this.state.cursor.backlogRetry = { ...EMPTY_BACKLOG_RETRY_STATE }
-    }
-    this.saveState()
+    this.commitConversationSourcePolicies([{
+      sessionId: source.sessionId,
+      displayName: source.displayName,
+      sessionType: source.type,
+      enabled: Boolean(input.enabled)
+    }])
     return { success: true, sessionId, enabled: Boolean(input.enabled) }
   }
 
@@ -4377,22 +4480,12 @@ export class AiAssistantService {
         }
       ).items)
     }
-    personalMemoryStore.setConversationPoliciesBatch(matching.map(source => ({
+    this.commitConversationSourcePolicies(matching.map(source => ({
       sessionId: source.sessionId,
       displayName: source.displayName,
       sessionType: source.type,
       enabled: Boolean(input.enabled)
     })))
-    const now = Math.floor(Date.now() / 1000)
-    for (const source of matching) {
-      this.state.cursor.sessionCursors[source.sessionId] = now
-      delete this.state.cursor.sessionOffsets[source.sessionId]
-    }
-    this.state.cursor.pendingSessionBacklogCount = Object.keys(this.state.cursor.sessionOffsets).length
-    if (!this.state.cursor.pendingSessionBacklogCount) {
-      this.state.cursor.backlogRetry = { ...EMPTY_BACKLOG_RETRY_STATE }
-    }
-    this.saveState()
     return { success: true, updated: matching.length }
   }
 
@@ -4480,12 +4573,12 @@ export class AiAssistantService {
     })
     this.state.tasks = nextTasks
     try {
-      this.persistTaskMutationState()
+      this.persistCrossStoreMutationState()
       personalMemoryStore.finalizeTaskMutationCommit(commitId, nextTasks)
     } catch (error) {
       this.state.tasks = previousTasks
       try {
-        this.persistTaskMutationState()
+        this.persistCrossStoreMutationState()
         personalMemoryStore.abandonTaskMutationCommit(commitId, 'runtime_rollback')
       } catch (rollbackError) {
         personalMemoryStore.recordTaskMutationRecoveryFailure(commitId, rollbackError)

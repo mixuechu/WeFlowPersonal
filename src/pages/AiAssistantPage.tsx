@@ -6458,6 +6458,23 @@ function AiAssistantPage() {
                 至少一个本地识别缓存未通过加密、权限或可写性校验；认证失败时系统会保留现场并停止覆盖，请先备份后检查完整诊断。
               </small>}
             </div>}
+            {memoryDiagnostics.conversationSourceMutationCommits && <div className={`assistant-recovery-audit ${Number(memoryDiagnostics.conversationSourceMutationCommits.prepared || 0) ? 'warning' : 'healthy'}`}>
+              <header><RefreshCw size={15} /><span><b>来源开关跨存储提交</b>
+                <small>先准备 SQLCipher 恢复载荷，再原子写入加密游标状态，最后事务提交来源策略。</small></span></header>
+              <div>
+                <span>待恢复 <b>{Number(memoryDiagnostics.conversationSourceMutationCommits.prepared || 0)}</b></span>
+                <span>已提交 <b>{Number(memoryDiagnostics.conversationSourceMutationCommits.committed || 0)}</b></span>
+                <span>已放弃 <b>{Number(memoryDiagnostics.conversationSourceMutationCommits.abandoned || 0)}</b></span>
+                <span>恢复失败 <b>{Number(memoryDiagnostics.conversationSourceMutationCommits.recoveryFailures || 0)}</b></span>
+                <span>保留载荷 <b>{Number(memoryDiagnostics.conversationSourceMutationCommits.retainedPayloadBytes || 0).toLocaleString()} B</b></span>
+              </div>
+              {!!memoryDiagnostics.conversationSourceMutationCommits.startupRecovery?.attempted && <small>
+                本次启动核验 {Number(memoryDiagnostics.conversationSourceMutationCommits.startupRecovery.attempted)} 组：
+                完成 {Number(memoryDiagnostics.conversationSourceMutationCommits.startupRecovery.applied)}，
+                放弃 {Number(memoryDiagnostics.conversationSourceMutationCommits.startupRecovery.abandoned)}，
+                冲突 {Number(memoryDiagnostics.conversationSourceMutationCommits.startupRecovery.conflicts)}。
+              </small>}
+            </div>}
             {memoryDiagnostics.appRecovery && <div className={`assistant-recovery-audit ${memoryDiagnostics.appRecovery.recoveredFromInterruption ? 'warning' : 'healthy'}`}>
               <header><RefreshCw size={15} /><span><b>应用运行与恢复</b>
                 <small>{memoryDiagnostics.appRecovery.recoveryMessage}</small></span></header>
@@ -7208,6 +7225,17 @@ function AiAssistantPage() {
         <div className="assistant-modal-backdrop">
           <div className="assistant-modal assistant-source-modal">
             <div className="assistant-modal-title"><div><h2>信息来源</h2><p>关闭后消息不会发送给模型，也不会进入待办和知识图谱。</p></div><button onClick={() => setShowSources(false)}><X size={16} /></button></div>
+            {Number(dashboard?.conversationSourceMutationCommits?.prepared || 0) > 0 && <div className="assistant-error">
+              <strong>来源开关恢复现场仍待处理</strong>
+              <span>{Number(dashboard.conversationSourceMutationCommits.prepared)} 组变更的游标状态不明确；
+                SQLCipher 已保留恢复载荷，系统不会猜测覆盖。</span>
+            </div>}
+            {!!dashboard?.conversationSourceMutationCommits?.startupRecovery?.attempted && <small className="assistant-evidence">
+              本次启动核验 {Number(dashboard.conversationSourceMutationCommits.startupRecovery.attempted)} 组中断来源变更：
+              完成 {Number(dashboard.conversationSourceMutationCommits.startupRecovery.applied)}、
+              放弃 {Number(dashboard.conversationSourceMutationCommits.startupRecovery.abandoned)}、
+              冲突 {Number(dashboard.conversationSourceMutationCommits.startupRecovery.conflicts)}。
+            </small>}
             <div className="assistant-source-actions">
               <button onClick={() => void setSourceType('group', false)}>关闭全部群聊</button>
               <button onClick={() => void setSourceType('group', true)}>开启全部群聊</button>
