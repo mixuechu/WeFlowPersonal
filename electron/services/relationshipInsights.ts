@@ -52,6 +52,24 @@ export function listEntityRelatedTasks(
   tasks: any[],
   limit = 100
 ): { items: any[]; total: number; truncated: boolean } {
+  const page = paginateEntityRelatedTasks(entity, tasks, { limit }, 'legacy-list')
+  return {
+    items: page.items,
+    total: page.total,
+    truncated: page.hasMore
+  }
+}
+
+export function paginateEntityRelatedTasks(
+  entity: any,
+  tasks: any[],
+  options: { limit?: number; offset?: number; revision?: string } = {},
+  revision: string
+): { items: any[]; total: number; hasMore: boolean; revision: string; stale: boolean } {
+  const offset = Math.max(0, Math.min(1_000_000, Math.floor(Number(options.offset) || 0)))
+  if (offset > 0 && String(options.revision || '').trim() !== revision) {
+    return { items: [], total: 0, hasMore: false, revision, stale: true }
+  }
   const matches = tasks.filter(task => taskRelatesToEntity(task, entity))
     .sort((left, right) =>
       Number(['done', 'cancelled'].includes(left.status)) -
@@ -59,11 +77,14 @@ export function listEntityRelatedTasks(
       String(right.updatedAt || right.createdAt || '')
         .localeCompare(String(left.updatedAt || left.createdAt || '')) ||
       String(left.id || '').localeCompare(String(right.id || '')))
-  const safeLimit = Math.max(1, Math.min(200, Math.floor(Number(limit) || 100)))
+  const safeLimit = Math.max(1, Math.min(100, Math.floor(Number(options.limit) || 40)))
+  const items = matches.slice(offset, offset + safeLimit)
   return {
-    items: matches.slice(0, safeLimit),
+    items,
     total: matches.length,
-    truncated: matches.length > safeLimit
+    hasMore: offset + items.length < matches.length,
+    revision,
+    stale: false
   }
 }
 

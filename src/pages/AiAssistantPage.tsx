@@ -299,6 +299,7 @@ function AiAssistantPage() {
     focus: null,
     status: 'idle'
   })
+  const [graphWorkspaceRefreshKey, setGraphWorkspaceRefreshKey] = useState(0)
   const graphWorkspaceGate = useRef(new LatestRequestGate())
   const [showEntityDossier, setShowEntityDossier] = useState(false)
   const [entityDossierPages, setEntityDossierPages] = useState<any>({
@@ -310,6 +311,8 @@ function AiAssistantPage() {
   const [entityDossierLoadingMore, setEntityDossierLoadingMore] = useState('')
   const [entityDossierRefreshKey, setEntityDossierRefreshKey] = useState(0)
   const entityDossierGate = useRef(new LatestRequestGate())
+  const [entityTaskLoadingMore, setEntityTaskLoadingMore] = useState(false)
+  const entityTaskGate = useRef(new LatestRequestGate())
   const [briefingPeriod, setBriefingPeriod] = useState<'latest' | 'week'>('latest')
   const [selectedProjectId, setSelectedProjectId] = useState('')
   const [projectDirectory, setProjectDirectory] = useState<any>({
@@ -1532,6 +1535,8 @@ function AiAssistantPage() {
 
   useEffect(() => {
     const request = graphWorkspaceGate.current.begin()
+    entityTaskGate.current.invalidate()
+    setEntityTaskLoadingMore(false)
     setGraphWorkspace((current: any) => ({
       ...current,
       viewport: { entities: [], relations: [], levels: {}, mode: selectedEntityId ? 'focus' : graphQuery.trim() ? 'search' : 'overview', totalAvailable: 0, truncated: 0 },
@@ -1564,7 +1569,7 @@ function AiAssistantPage() {
     }
   }, [
     graphQuery, graphRelationType, graphRelationStatus, selectedEntityId, graphFocusDepth,
-    dashboard?.graphRevision, dashboard?.taskRevision
+    dashboard?.graphRevision, dashboard?.taskRevision, graphWorkspaceRefreshKey
   ])
 
   useEffect(() => {
@@ -2432,6 +2437,48 @@ function AiAssistantPage() {
       if (entityDossierGate.current.isCurrent(request)) setMessage(error?.message || String(error))
     } finally {
       if (entityDossierGate.current.isCurrent(request)) setEntityDossierLoadingMore('')
+    }
+  }
+
+  const loadMoreEntityTasks = async () => {
+    const focus = graphWorkspace.focus
+    if (!selectedEntityId || entityTaskLoadingMore || !focus?.taskHasMore) return
+    const request = entityTaskGate.current.begin()
+    setEntityTaskLoadingMore(true)
+    try {
+      const page = await window.electronAPI.aiAssistant.getEntityTaskPage(
+        selectedEntityId,
+        {
+          limit: 40,
+          offset: focus.tasks?.length || 0,
+          revision: focus.taskRevision
+        }
+      )
+      if (!entityTaskGate.current.isCurrent(request)) return
+      if (page.stale) {
+        setMessage('人物关联任务在浏览期间已有变化，已重新载入最新人物档案。')
+        setGraphWorkspaceRefreshKey(value => value + 1)
+        return
+      }
+      setGraphWorkspace((current: any) => ({
+        ...current,
+        focus: {
+          ...current.focus,
+          tasks: [
+            ...(current.focus?.tasks || []),
+            ...page.items.filter((item: any) =>
+              !(current.focus?.tasks || []).some((known: any) => known.id === item.id))
+          ],
+          taskTotal: page.total,
+          taskHasMore: page.hasMore,
+          tasksTruncated: page.hasMore,
+          taskRevision: page.revision
+        }
+      }))
+    } catch (error: any) {
+      if (entityTaskGate.current.isCurrent(request)) setMessage(error?.message || String(error))
+    } finally {
+      if (entityTaskGate.current.isCurrent(request)) setEntityTaskLoadingMore(false)
     }
   }
 
@@ -7168,10 +7215,13 @@ function AiAssistantPage() {
                   </button>}
                 </article>)}
                 {!selectedEntityTasks.length && <em>尚无关联事项</em>}
-                {graphWorkspace.focus?.tasksTruncated && <em>
-                  当前人物档案显示最近 {selectedEntityTasks.length} / {graphWorkspace.focus.taskTotal} 项，
-                  全部历史可在统一检索中按该人物继续查看。
-                </em>}
+                {graphWorkspace.focus?.taskHasMore && <button
+                  disabled={entityTaskLoadingMore}
+                  onClick={() => void loadMoreEntityTasks()}>
+                  {entityTaskLoadingMore
+                    ? '正在加载…'
+                    : `加载更多关联事项（已显示 ${selectedEntityTasks.length} / ${graphWorkspace.focus.taskTotal}）`}
+                </button>}
               </section>
               <section className="assistant-dossier-wide">
                 <h3>关系变化历史 <small>{selectedEntityRelationHistory.length}</small></h3>

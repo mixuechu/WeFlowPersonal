@@ -1682,6 +1682,13 @@ export interface ElectronAPI {
         predicates: string[]
         focus: any | null
       }>
+      getEntityTaskPage: (entityId: string, options?: any) => Promise<{
+        items: any[]
+        total: number
+        hasMore: boolean
+        revision: string
+        stale: boolean
+      }>
       getProjectWorkspace: (projectId: string) => Promise<{
         project: any
         payloadPolicy: { version: string; evidence: string; loadedOnDemand: boolean }

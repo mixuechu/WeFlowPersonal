@@ -60,7 +60,7 @@ import {
   type ReminderPreferences,
   type TaskReminder
 } from './taskIntelligence'
-import { buildEntityInsights, listEntityRelatedTasks } from './relationshipInsights'
+import { buildEntityInsights, paginateEntityRelatedTasks } from './relationshipInsights'
 import { classifyTaskAssignment, evaluateTaskAssignmentPolicy } from './taskAssignmentPolicy'
 import { buildWeeklyBriefing, isQuietTime } from './briefingIntelligence'
 import { groundBriefingDigest } from './briefingEvidencePolicy'
@@ -3866,7 +3866,13 @@ export class AiAssistantService {
         eventTotal: memory.eventTotal,
         tasks: mineTasks
       })
-      const relatedTasks = listEntityRelatedTasks(focusEntity, mineTasks, 100)
+      const entityTaskRevision = this.getProjectDirectoryRevision()
+      const relatedTasks = paginateEntityRelatedTasks(
+        focusEntity,
+        mineTasks,
+        { limit: 40 },
+        entityTaskRevision
+      )
       const visibleRelations = allRelations.slice(0, 200)
       const relationHistory = personalMemoryStore.listRelationHistory(focusEntity.id, 300)
       const entityCorrections = personalMemoryStore.listEntityCorrections(focusEntity.id, 300)
@@ -3902,7 +3908,9 @@ export class AiAssistantService {
           mutationToken: buildTaskMutationToken(task)
         })),
         taskTotal: relatedTasks.total,
-        tasksTruncated: relatedTasks.truncated,
+        tasksTruncated: relatedTasks.hasMore,
+        taskHasMore: relatedTasks.hasMore,
+        taskRevision: relatedTasks.revision,
         entityNames: Object.fromEntries(this.state.graph.entities
           .filter(entity => namedEntityIds.has(entity.id))
           .map(entity => [entity.id, entity.canonicalName]))
@@ -3935,6 +3943,40 @@ export class AiAssistantService {
 
   getTrustedEntityDirectory(options: TrustedEntityDirectoryOptions = {}): any {
     return buildTrustedEntityDirectory(this.state.graph.entities, options)
+  }
+
+  getEntityTaskPage(entityId: string, options: any = {}): any {
+    const id = String(entityId || '').trim()
+    const entity = this.state.graph.entities.find(candidate =>
+      candidate.id === id && candidate.trustStatus !== 'rejected')
+    if (!entity) throw new Error('人物或实体不存在')
+    const revision = this.getProjectDirectoryRevision()
+    const page = paginateEntityRelatedTasks(
+      entity,
+      this.state.tasks.filter(task => task.classification === 'mine'),
+      {
+        limit: Number(options?.limit || 40),
+        offset: Number(options?.offset || 0),
+        revision: String(options?.revision || '')
+      },
+      revision
+    )
+    if (page.stale) return page
+    const completedRevision = this.getProjectDirectoryRevision()
+    if (completedRevision !== revision) {
+      return {
+        items: [], total: 0, hasMore: false,
+        revision: completedRevision, stale: true
+      }
+    }
+    return {
+      ...page,
+      items: page.items.map(task => ({
+        ...task,
+        ...boundedEvidencePayload(task.evidence, MEMORY_CARD_EVIDENCE_LIMIT),
+        mutationToken: buildTaskMutationToken(task)
+      }))
+    }
   }
 
   getProjectWorkspace(projectId: string): any {

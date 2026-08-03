@@ -19,6 +19,7 @@ import { applyReminderPreferences, buildTaskReminders, findMatchingTask } from '
 import {
   buildEntityInsights,
   listEntityRelatedTasks,
+  paginateEntityRelatedTasks,
   taskRelatesToEntity
 } from '../electron/services/relationshipInsights.ts'
 import {
@@ -8143,7 +8144,7 @@ test('entity dossiers derive bounded related tasks from the authoritative task s
     detail: '',
     owner: index % 2 === 0 ? '我' : '邢爱妮',
     collaborators: [],
-    status: index % 7 === 0 ? 'done' : 'todo',
+    status: ['todo', 'doing', 'waiting', 'done', 'cancelled'][index % 5],
     updatedAt: new Date(1_700_000_000_000 + index * 1000).toISOString()
   }))
   tasks.push({
@@ -8162,6 +8163,28 @@ test('entity dossiers derive bounded related tasks from the authoritative task s
   assert.equal(result.items.some(item => item.id === 'unrelated-short-name'), false)
   assert.ok(result.items.every(task => taskRelatesToEntity(task, entity)))
   assert.ok(result.items.slice(0, 10).every(task => !['done', 'cancelled'].includes(task.status)))
+
+  const first = paginateEntityRelatedTasks(entity, tasks, { limit: 40 }, 'entity-task-revision-1')
+  const second = paginateEntityRelatedTasks(entity, tasks, {
+    limit: 40,
+    offset: 40,
+    revision: first.revision
+  }, 'entity-task-revision-1')
+  assert.equal(first.total, 260)
+  assert.equal(first.items.length, 40)
+  assert.equal(new Set([...first.items, ...second.items].map(task => task.id)).size, 80)
+  assert.ok(first.items.every(task => !['done', 'cancelled'].includes(task.status)))
+  assert.deepEqual(new Set(result.items.map(task => task.status)),
+    new Set(['todo', 'doing', 'waiting']))
+  assert.deepEqual(new Set(tasks.filter(task => taskRelatesToEntity(task, entity)).map(task => task.status)),
+    new Set(['todo', 'doing', 'waiting', 'done', 'cancelled']))
+  const stale = paginateEntityRelatedTasks(entity, tasks, {
+    limit: 40,
+    offset: 40,
+    revision: 'entity-task-revision-1'
+  }, 'entity-task-revision-2')
+  assert.equal(stale.stale, true)
+  assert.equal(stale.items.length, 0)
 
   const shortNameEntity = { canonicalName: '李', aliases: [], accountIds: [] }
   assert.equal(taskRelatesToEntity({ title: '李子采购', owner: '我' }, shortNameEntity), false)
