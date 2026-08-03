@@ -517,6 +517,14 @@ function AiAssistantPage() {
   const [projectEventSource, setProjectEventSource] = useState('')
   const [projectEventFrom, setProjectEventFrom] = useState('')
   const [projectEventTo, setProjectEventTo] = useState('')
+  const [projectEvidencePage, setProjectEvidencePage] = useState<any>({
+    items: [], total: 0, unfilteredTotal: 0, hasMore: false, revision: '', status: 'idle'
+  })
+  const [projectEvidenceQuery, setProjectEvidenceQuery] = useState('')
+  const [projectEvidenceSource, setProjectEvidenceSource] = useState('')
+  const [projectEvidenceLoadingMore, setProjectEvidenceLoadingMore] = useState(false)
+  const [projectEvidenceRefreshKey, setProjectEvidenceRefreshKey] = useState(0)
+  const projectEvidenceGate = useRef(new LatestRequestGate())
   const [selectedTaskId, setSelectedTaskId] = useState('')
   const [taskWorkspace, setTaskWorkspace] = useState<any>({ task: null, history: [], status: 'idle' })
   const [taskWorkspaceRefreshKey, setTaskWorkspaceRefreshKey] = useState(0)
@@ -2134,6 +2142,58 @@ function AiAssistantPage() {
   ])
 
   useEffect(() => {
+    const request = projectEvidenceGate.current.begin()
+    const projectEntityId = String(projectWorkspace.project?.entityId || '')
+    setProjectEvidenceLoadingMore(false)
+    if (projectWorkspace.status !== 'ready' || !projectEntityId) {
+      setProjectEvidencePage({
+        items: [], total: 0, unfilteredTotal: 0, hasMore: false, revision: '',
+        status: projectWorkspace.status === 'ready' ? 'derived' : 'idle'
+      })
+      return () => {
+        if (projectEvidenceGate.current.isCurrent(request)) projectEvidenceGate.current.invalidate()
+      }
+    }
+    setProjectEvidencePage((current: any) => ({
+      ...current, items: [], total: 0, hasMore: false, status: 'loading'
+    }))
+    const timer = window.setTimeout(() => {
+      void window.electronAPI.aiAssistant.getEntityEvidencePage({
+        entityId: projectEntityId,
+        query: projectEvidenceQuery.trim() || undefined,
+        sourceId: projectEvidenceSource || undefined,
+        limit: 40,
+        offset: 0
+      }).then(page => {
+        if (!projectEvidenceGate.current.isCurrent(request)) return
+        if (page.stale) {
+          window.setTimeout(() => {
+            if (projectEvidenceGate.current.isCurrent(request)) {
+              setProjectEvidenceRefreshKey(value => value + 1)
+            }
+          }, 250)
+          return
+        }
+        setProjectEvidencePage({ ...page, status: 'ready' })
+      }).catch(error => {
+        if (!projectEvidenceGate.current.isCurrent(request)) return
+        setProjectEvidencePage({
+          items: [], total: 0, unfilteredTotal: 0, hasMore: false, revision: '',
+          status: 'error', error: error?.message || String(error)
+        })
+      })
+    }, projectEvidenceQuery.trim() ? 180 : 0)
+    return () => {
+      window.clearTimeout(timer)
+      if (projectEvidenceGate.current.isCurrent(request)) projectEvidenceGate.current.invalidate()
+    }
+  }, [
+    projectWorkspace.status, projectWorkspace.project?.entityId,
+    dashboard?.memoryRevision, dashboard?.graphReviewRevision, projectEvidenceRefreshKey,
+    projectEvidenceQuery, projectEvidenceSource
+  ])
+
+  useEffect(() => {
     const request = taskWorkspaceGate.current.begin()
     if (!selectedTaskId) {
       setTaskWorkspace({ task: null, history: [], status: 'idle' })
@@ -3145,6 +3205,42 @@ function AiAssistantPage() {
       if (projectMemoryGate.current.isCurrent(request)) setMessage(error?.message || String(error))
     } finally {
       if (projectMemoryGate.current.isCurrent(request)) setProjectMemoryLoadingMore('')
+    }
+  }
+
+  const loadMoreProjectEvidence = async () => {
+    const projectEntityId = String(projectWorkspace.project?.entityId || '')
+    if (!projectEntityId || projectEvidenceLoadingMore || !projectEvidencePage.hasMore) return
+    const request = projectEvidenceGate.current.begin()
+    setProjectEvidenceLoadingMore(true)
+    try {
+      const page = await window.electronAPI.aiAssistant.getEntityEvidencePage({
+        entityId: projectEntityId,
+        query: projectEvidenceQuery.trim() || undefined,
+        sourceId: projectEvidenceSource || undefined,
+        limit: 40,
+        offset: projectEvidencePage.items.length,
+        revision: projectEvidencePage.revision
+      })
+      if (!projectEvidenceGate.current.isCurrent(request)) return
+      if (page.stale) {
+        setMessage('项目相关原文在浏览期间已有变化，已从最新第一页重新载入。')
+        setProjectEvidenceRefreshKey(value => value + 1)
+        return
+      }
+      setProjectEvidencePage((current: any) => ({
+        ...page,
+        status: 'ready',
+        items: [
+          ...current.items,
+          ...page.items.filter((item: any) => !current.items.some((known: any) =>
+            evidenceArchiveIdentity(known) === evidenceArchiveIdentity(item)))
+        ]
+      }))
+    } catch (error: any) {
+      if (projectEvidenceGate.current.isCurrent(request)) setMessage(error?.message || String(error))
+    } finally {
+      if (projectEvidenceGate.current.isCurrent(request)) setProjectEvidenceLoadingMore(false)
     }
   }
 
@@ -8339,7 +8435,11 @@ function AiAssistantPage() {
               <span><b>{selectedProject.riskTotal ?? selectedProject.risks.length}</b><small>可解释风险</small></span>
               <span><b>{Number(selectedProject.claimTotal || 0)}</b><small>项目事实</small></span>
               <span><b>{Number(selectedProject.eventTotal || 0)}</b><small>相关事件</small></span>
-              <span><b>{selectedProject.evidenceTotal ?? selectedProject.evidence.length}</b><small>去重证据</small></span>
+              <span><b>{selectedProject.entityId
+                ? projectEvidencePage.status === 'ready'
+                  ? Number(projectEvidencePage.unfilteredTotal || 0)
+                  : Number(selectedProject.evidenceTotal ?? selectedProject.evidence.length)
+                : selectedProject.evidenceTotal ?? selectedProject.evidence.length}</b><small>去重证据</small></span>
               <span><b>{selectedProject.pendingReview?.total || 0}</b><small>候选待确认</small></span>
             </div>
             {selectedProject.entityId && projectMemoryPages.status === 'loading' && <div className="assistant-query-plan">
@@ -8536,6 +8636,44 @@ function AiAssistantPage() {
                     : `加载更多事件（已显示 ${projectDossierEvents.length} / ${projectMemoryPages.events.total}）`}
                 </button>}
               </section>
+              {selectedProject.entityId && <section className="assistant-dossier-wide">
+                <h3>项目相关原文档案 <small>{Number(projectEvidencePage.total || 0)} / {Number(projectEvidencePage.unfilteredTotal || 0)}</small></h3>
+                <p>汇总项目首次出现、名称或身份锚点，以及事实、关系和事件中直接关联此项目的去重原文。</p>
+                <div className="assistant-inline-filters">
+                  <input value={projectEvidenceQuery}
+                    onChange={event => setProjectEvidenceQuery(event.target.value)}
+                    placeholder="搜索发送者、原文、会话 ID 或用途" />
+                  <select value={projectEvidenceSource}
+                    onChange={event => setProjectEvidenceSource(event.target.value)}>
+                    <option value="">全部来源</option>
+                    <option value="wechat">微信</option>
+                    <option value="documents">本机文档</option>
+                    <option value="calendar">日历</option>
+                    <option value="mail">Mail</option>
+                    <option value="legacy">历史未知来源</option>
+                  </select>
+                </div>
+                {projectEvidencePage.status === 'loading' && <em>正在读取项目相关原文…</em>}
+                {projectEvidencePage.status === 'error' && <div className="assistant-empty">
+                  项目相关原文读取失败：{projectEvidencePage.error}
+                  <button onClick={() => setProjectEvidenceRefreshKey(value => value + 1)}>重试</button>
+                </div>}
+                {projectEvidencePage.items.map((evidence: any) => <article
+                  key={evidenceArchiveIdentity(evidence)}>
+                  <small>用于：{(evidence.memoryKinds || []).map((kind: string) =>
+                    kind === 'identity' ? '项目识别' : kind === 'claim' ? '项目事实'
+                      : kind === 'relation' ? '项目关系' : '项目事件').join('、') || '结构化记忆'}</small>
+                  <div className="assistant-evidence-stack"><EvidenceRows evidence={[evidence]} /></div>
+                </article>)}
+                {projectEvidencePage.status === 'ready' && !projectEvidencePage.items.length &&
+                  <em>{projectEvidencePage.unfilteredTotal ? '当前筛选没有匹配原文' : '尚无项目相关结构化原文'}</em>}
+                {projectEvidencePage.hasMore && <button disabled={projectEvidenceLoadingMore}
+                  onClick={() => void loadMoreProjectEvidence()}>
+                  {projectEvidenceLoadingMore
+                    ? '正在加载…'
+                    : `加载更多原文（已显示 ${projectEvidencePage.items.length} / ${projectEvidencePage.total}）`}
+                </button>}
+              </section>}
               <section>
                 <h3>关键里程碑与决策 <small>{selectedProject.milestones.length + selectedProject.decisions.length}</small></h3>
                 {[...selectedProject.decisions, ...selectedProject.milestones].map((event: any) => <article key={event.id}>
