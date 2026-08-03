@@ -654,7 +654,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     reviewMemoryDocument: (kind: 'relation' | 'claim' | 'event', id: string, decision: 'confirmed' | 'rejected') =>
       ipcRenderer.invoke('ai-assistant:reviewMemoryDocument', kind, id, decision),
     previewForgetEntity: (id: string) => ipcRenderer.invoke('ai-assistant:previewForgetEntity', id),
-    forgetEntity: (id: string) => ipcRenderer.invoke('ai-assistant:forgetEntity', id),
+    forgetEntity: (id: string, input?: any) => ipcRenderer.invoke('ai-assistant:forgetEntity', id, input),
     searchMemory: (query: string, options?: any) => ipcRenderer.invoke('ai-assistant:searchMemory', query, options),
     searchMemoryPage: (query: string, options?: any, pagination?: any) =>
       ipcRenderer.invoke('ai-assistant:searchMemoryPage', query, options, pagination),

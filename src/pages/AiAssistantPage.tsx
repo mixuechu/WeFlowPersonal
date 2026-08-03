@@ -280,6 +280,9 @@ function AiAssistantPage() {
   const [memoryDeletionDialog, setMemoryDeletionDialog] = useState<any>(null)
   const [memoryDeletionConfirmation, setMemoryDeletionConfirmation] = useState('')
   const memoryDeletionGate = useRef(new LatestRequestGate())
+  const [entityForgetDialog, setEntityForgetDialog] = useState<any>(null)
+  const [entityForgetConfirmation, setEntityForgetConfirmation] = useState('')
+  const entityForgetGate = useRef(new LatestRequestGate())
   const [memoryDeletionArchive, setMemoryDeletionArchive] = useState<{
     items: any[]
     total: number
@@ -2948,29 +2951,70 @@ function AiAssistantPage() {
 
   const forgetSelectedEntity = async () => {
     if (!selectedEntity || forgettingEntityId) return
-    const preview = await window.electronAPI.aiAssistant.previewForgetEntity(selectedEntity.id)
-    if (!preview) return
-    const confirmed = window.confirm(
-      `彻底遗忘“${preview.canonicalName}”？\n\n` +
-      `将永久删除 ${preview.counts.claims} 条事实、${preview.counts.relations} 条关系、` +
-      `${preview.counts.events} 个事件、${preview.counts.tasks} 个关联任务，以及相关搜索向量、审计和问答记录。\n\n` +
-      '此操作不可撤销。建议先在上方创建个人记忆备份。'
-    )
-    if (!confirmed) return
-    const exactConfirmed = window.prompt(`请输入实体名称“${preview.canonicalName}”以确认彻底遗忘：`) === preview.canonicalName
-    if (!exactConfirmed) {
-      setMessage('名称不匹配，已取消彻底遗忘')
-      return
-    }
-    setForgettingEntityId(selectedEntity.id)
+    const entityId = selectedEntity.id
+    const request = entityForgetGate.current.begin()
+    setEntityForgetConfirmation('')
+    setEntityForgetDialog({
+      entityId,
+      canonicalName: selectedEntity.canonicalName,
+      status: 'loading'
+    })
     try {
-      const result = await window.electronAPI.aiAssistant.forgetEntity(selectedEntity.id)
+      const preview = await window.electronAPI.aiAssistant.previewForgetEntity(entityId)
+      if (!entityForgetGate.current.isCurrent(request)) return
+      if (!preview) {
+        setEntityForgetDialog({
+          entityId,
+          canonicalName: selectedEntity.canonicalName,
+          status: 'error',
+          error: '该人物不存在或已经被遗忘'
+        })
+        return
+      }
+      setEntityForgetDialog({ entityId, canonicalName: preview.canonicalName, preview, status: 'ready' })
+    } catch (error: any) {
+      if (entityForgetGate.current.isCurrent(request)) {
+        setEntityForgetDialog({
+          entityId,
+          canonicalName: selectedEntity.canonicalName,
+          status: 'error',
+          error: error?.message || String(error)
+        })
+      }
+    }
+  }
+
+  const closeEntityForgetDialog = () => {
+    if (entityForgetDialog?.status === 'deleting') return
+    entityForgetGate.current.invalidate()
+    setEntityForgetDialog(null)
+    setEntityForgetConfirmation('')
+  }
+
+  const confirmForgetSelectedEntity = async () => {
+    if (!entityForgetDialog?.preview || entityForgetDialog.status !== 'ready' ||
+      entityForgetConfirmation !== entityForgetDialog.preview.canonicalName) return
+    const { entityId, preview } = entityForgetDialog
+    setForgettingEntityId(entityId)
+    setEntityForgetDialog((current: any) => ({ ...current, status: 'deleting', error: undefined }))
+    try {
+      const result = await window.electronAPI.aiAssistant.forgetEntity(entityId, {
+        previewToken: preview.previewToken,
+        confirmation: entityForgetConfirmation
+      })
       setSelectedEntityId('')
       setMessage(`已彻底遗忘 ${result.canonicalName}：删除 ${result.removed.searchDocuments} 个记忆索引`)
+      entityForgetGate.current.invalidate()
+      setEntityForgetDialog(null)
+      setEntityForgetConfirmation('')
       await load()
       setMemoryDiagnostics(await window.electronAPI.aiAssistant.getMemoryDiagnostics())
     } catch (error: any) {
-      setMessage(error?.message || String(error))
+      setEntityForgetDialog((current: any) => ({
+        ...current,
+        status: 'error',
+        error: error?.message || String(error)
+      }))
     } finally {
       setForgettingEntityId('')
     }
@@ -6150,6 +6194,65 @@ function AiAssistantPage() {
                 <button className="danger" disabled={memoryDeletionConfirmation !== '永久删除' || memoryDeletionDialog.status === 'deleting'}
                   onClick={() => void confirmPermanentMemoryDeletion()}>
                   {memoryDeletionDialog.status === 'deleting' ? '正在清理…' : '确认永久删除'}
+                </button>}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {entityForgetDialog && (
+        <div className="assistant-modal-backdrop" role="presentation">
+          <div className="assistant-modal assistant-delete-modal" role="dialog" aria-modal="true"
+            aria-labelledby="entity-forget-title">
+            <div className="assistant-modal-title"><div>
+              <h2 id="entity-forget-title">彻底遗忘人物</h2>
+              <p>永久删除人物及其关联记忆，不可撤销。建议先创建个人记忆快照。</p>
+            </div><button aria-label="关闭彻底遗忘确认" disabled={entityForgetDialog.status === 'deleting'}
+              onClick={closeEntityForgetDialog}><X size={16} /></button></div>
+            {entityForgetDialog.status === 'loading' && <div className="assistant-delete-status">
+              <RefreshCw size={16} /><span><strong>正在核对人物关联范围…</strong>
+                <small>只读取本机加密记忆库，不会上传数据。</small></span>
+            </div>}
+            {entityForgetDialog.status === 'error' && <div className="assistant-error">
+              <strong>无法完成彻底遗忘</strong><span>{entityForgetDialog.error || '未知错误'}</span>
+              {String(entityForgetDialog.error || '').includes('预览后发生了变化') &&
+                <button onClick={() => {
+                  setEntityForgetDialog(null)
+                  setEntityForgetConfirmation('')
+                  void forgetSelectedEntity()
+                }}>重新核对范围</button>}
+            </div>}
+            {(entityForgetDialog.status === 'ready' || entityForgetDialog.status === 'deleting') && <>
+              <div className="assistant-delete-preview">
+                <strong>{entityForgetDialog.preview.canonicalName}</strong>
+                <p>
+                  将永久删除 {entityForgetDialog.preview.counts.claims} 条事实、
+                  {entityForgetDialog.preview.counts.relations} 条关系、
+                  {entityForgetDialog.preview.counts.events} 个事件、
+                  {entityForgetDialog.preview.counts.tasks} 个关联任务，以及相关全文、向量、审计和问答记录。
+                </p>
+              </div>
+              <label><span>输入人物名称“{entityForgetDialog.preview.canonicalName}”确认</span>
+                <input autoFocus value={entityForgetConfirmation}
+                  disabled={entityForgetDialog.status === 'deleting'}
+                  onChange={event => setEntityForgetConfirmation(event.target.value)}
+                  onKeyDown={event => {
+                    if (event.key === 'Enter' &&
+                      entityForgetConfirmation === entityForgetDialog.preview.canonicalName) {
+                      void confirmForgetSelectedEntity()
+                    }
+                  }}
+                  placeholder={entityForgetDialog.preview.canonicalName} /></label>
+            </>}
+            <div className="assistant-modal-actions">
+              <button disabled={entityForgetDialog.status === 'deleting'}
+                onClick={closeEntityForgetDialog}>取消</button>
+              {(entityForgetDialog.status === 'ready' || entityForgetDialog.status === 'deleting') &&
+                <button className="danger"
+                  disabled={entityForgetDialog.status === 'deleting' ||
+                    entityForgetConfirmation !== entityForgetDialog.preview.canonicalName}
+                  onClick={() => void confirmForgetSelectedEntity()}>
+                  {entityForgetDialog.status === 'deleting' ? '正在彻底遗忘…' : '确认彻底遗忘'}
                 </button>}
             </div>
           </div>

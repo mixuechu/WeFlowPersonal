@@ -7309,6 +7309,7 @@ test('forget entity transaction removes graph, memory, search, task audit and as
   assert.equal(store.getMemoryFeed().events.length, 0)
   assert.equal(store.listRelationHistory('person-forget').length, 0)
   assert.equal(store.listTaskHistory(['task-forget']).length, 0)
+  assert.equal(store.listTaskArchive({ query: '回复隐私测试人' }).total, 0)
   assert.equal(store.getTaskReviewDecision('evidence-forget'), null)
   assert.equal(store.listTaskReviewHistory('evidence-forget').length, 0)
   assert.equal(store.getRecentAssistantExchanges().length, 0)

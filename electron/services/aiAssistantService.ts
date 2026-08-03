@@ -67,6 +67,10 @@ import {
   type EntityTrustStatus
 } from './entityTrustPolicy'
 import { planEntityMerge } from './entityMergeDirection'
+import {
+  assertEntityForgetConfirmation,
+  buildEntityForgetPreviewToken
+} from './entityForgetPolicy'
 import { applyRelationConfirmation, planRelationConfirmation, type RelationCorrection } from './relationCorrectionPolicy'
 import {
   enqueueUniqueNotification,
@@ -4744,7 +4748,7 @@ export class AiAssistantService {
       task.assignmentEvidence,
       ...(task.evidence || []).map(item => item.excerpt)
     ].some(value => names.some(name => String(value || '').toLowerCase().includes(name)))).map(task => task.id)
-    return {
+    const preview = {
       ...databasePreview,
       taskIds,
       counts: {
@@ -4754,12 +4758,19 @@ export class AiAssistantService {
         tasks: taskIds.length
       }
     }
+    return {
+      ...preview,
+      previewToken: buildEntityForgetPreviewToken(preview)
+    }
   }
 
-  forgetEntity(id: string): any {
+  forgetEntity(id: string, input: { previewToken?: string; confirmation?: string } = {}): any {
     const preview = this.previewForgetEntity(id)
     if (!preview) throw new Error('实体不存在或已被遗忘')
+    assertEntityForgetConfirmation(preview, input)
     const taskIds = new Set(preview.taskIds)
+    const result = personalMemoryStore.forgetEntity(id, [...taskIds])
+    if (!result) throw new Error('人物资料删除失败，当前记忆未改变')
     this.state.tasks = this.state.tasks.filter(task => !taskIds.has(task.id))
     for (const briefing of Object.values(this.state.briefings)) {
       if (Array.isArray(briefing?.tasks)) briefing.tasks = briefing.tasks.filter((task: any) => !taskIds.has(task.id))
@@ -4770,7 +4781,6 @@ export class AiAssistantService {
     this.state.graph.relations = this.state.graph.relations.filter(relation => !relationIds.has(relation.id))
     this.state.graph.reviewQueue = this.state.graph.reviewQueue.filter(review =>
       review.leftEntityId !== id && review.rightEntityId !== id && (!review.relationId || !relationIds.has(review.relationId)))
-    const result = personalMemoryStore.forgetEntity(id, [...taskIds])
     this.saveState()
     return result
   }

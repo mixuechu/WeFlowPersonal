@@ -1760,7 +1760,7 @@ export interface ElectronAPI {
       purgeMemoryResourceTrash: (id: string) => Promise<any>
       reviewMemoryDocument: (kind: 'relation' | 'claim' | 'event', id: string, decision: 'confirmed' | 'rejected') => Promise<any>
       previewForgetEntity: (id: string) => Promise<any>
-      forgetEntity: (id: string) => Promise<any>
+      forgetEntity: (id: string, input?: { previewToken?: string; confirmation?: string }) => Promise<any>
       searchMemory: (query: string, options?: any) => Promise<any[]>
       searchMemoryPage: (query: string, options?: any, pagination?: {
         offset?: number

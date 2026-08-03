@@ -3342,6 +3342,7 @@ export class PersonalMemoryStore {
       deleteIds('task_history', 'task_id', taskIds)
       deleteIds('task_review_decisions', 'task_id', taskIds)
       deleteIds('task_review_history', 'task_id', taskIds)
+      deleteIds('task_directory', 'id', taskIds)
       this.db.prepare('DELETE FROM review_queue WHERE payload_json LIKE ?').run(`%${entityId}%`)
       this.db.prepare('DELETE FROM merge_history WHERE source_entity_id=? OR target_entity_id=?').run(entityId, entityId)
       this.db.prepare('DELETE FROM identity_decisions WHERE left_entity_id=? OR right_entity_id=?').run(entityId, entityId)
