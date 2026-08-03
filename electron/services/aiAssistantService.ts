@@ -147,6 +147,7 @@ import {
   countProjectDirectory,
   paginateProjectDirectory
 } from './projectInsights'
+import { buildDashboardRevisions } from './dashboardRevisions'
 import { attachLocalImageOcr, attachLocalVoiceTranscript, recoverMessageSemantics } from './messageSemanticRecovery'
 import { sanitizeDiagnosticText } from './diagnosticRedaction'
 import { getSensitiveLogDiagnostics } from './sensitiveLogPolicy'
@@ -3347,28 +3348,7 @@ export class AiAssistantService {
   }
 
   private getProjectDirectoryRevision(): string {
-    return crypto.createHash('sha256')
-      .update(JSON.stringify({
-        entities: this.state.graph.entities.map(entity => [
-          entity.id, entity.type, entity.canonicalName,
-          entity.type === 'project' ? entity.aliases || [] : [],
-          entity.type === 'project' ? entity.summary || '' : '',
-          entity.trustStatus, entity.updatedAt || entity.createdAt || ''
-        ]),
-        relations: this.state.graph.relations.map(relation => [
-          relation.id, relation.subjectId, relation.objectId, relation.status,
-          relation.updatedAt || relation.createdAt || ''
-        ]),
-        tasks: this.state.tasks.map(task => [
-          task.id, task.title, task.detail || '', task.project || '', task.status,
-          task.priority, task.taskKind || '', task.due || '', task.dependsOnIds || [],
-          task.updatedAt || '', (task.evidence || []).map(item =>
-            [item.sourceId || '', item.sessionId || '', item.messageId || '', item.timestamp || 0])
-        ]),
-        structuredMemoryRevision: personalMemoryStore.getStructuredMemoryRevision()
-      }))
-      .digest('hex')
-      .slice(0, 24)
+    return buildDashboardRevisions(personalMemoryStore).project
   }
 
   getProjectDirectory(options: any = {}): any {
@@ -3407,6 +3387,7 @@ export class AiAssistantService {
   }
 
   getDashboard(): any {
+    const revisions = buildDashboardRevisions(personalMemoryStore)
     const dates = Object.keys(this.state.briefings).sort().reverse()
     const latest = dates[0] ? this.state.briefings[dates[0]] : null
     const tasks = this.state.tasks.filter(task => task.classification === 'mine')
@@ -3422,22 +3403,9 @@ export class AiAssistantService {
       events: [],
       tasks
     })
-    const graphReviewRevision = crypto.createHash('sha256')
-      .update(this.state.graph.reviewQueue.map(review =>
-        `${review.id}\u0000${review.status}\u0000${review.createdAt || ''}\u0000${review.resolvedAt || ''}`
-      ).join('\u0001'))
-      .digest('hex')
-      .slice(0, 16)
-    const graphRevision = crypto.createHash('sha256')
-      .update([
-        ...this.state.graph.entities.map(entity =>
-          `${entity.id}\u0000${entity.trustStatus}\u0000${entity.updatedAt || entity.createdAt || ''}`),
-        ...this.state.graph.relations.map(relation =>
-          `${relation.id}\u0000${relation.status}\u0000${relation.updatedAt || relation.createdAt || ''}`)
-      ].join('\u0001'))
-      .digest('hex')
-      .slice(0, 16)
-    const projectRevision = this.getProjectDirectoryRevision()
+    const graphReviewRevision = revisions.graph
+    const graphRevision = graphReviewRevision
+    const projectRevision = revisions.project
     const assistantArchiveStats = personalMemoryStore.getAssistantArchiveStats()
     const taskReviewArchiveStats = personalMemoryStore.getTaskReviewArchiveStats()
     const memoryDeletionArchiveStats = personalMemoryStore.getMemoryDeletionAuditStats()
@@ -3458,10 +3426,7 @@ export class AiAssistantService {
       },
       taskOwnershipReviews: {
         total: taskOwnershipReviewStats.total,
-        revision: crypto.createHash('sha256')
-          .update(JSON.stringify(taskOwnershipReviewStats))
-          .digest('hex')
-          .slice(0, 16),
+        revision: revisions.taskOwnership,
         version: 'task-ownership-review-v1',
         directory: 'paginated_on_demand',
         dossier: 'on_demand'
@@ -3498,10 +3463,7 @@ export class AiAssistantService {
         reconciliation: this.taskReviewReconciliation,
         archive: {
           total: taskReviewArchiveStats.total,
-          revision: crypto.createHash('sha256')
-            .update(JSON.stringify(taskReviewArchiveStats))
-            .digest('hex')
-            .slice(0, 16),
+          revision: revisions.taskOwnership,
           version: 'task-review-audit-v1',
           directory: 'paginated_without_evidence',
           dossier: 'on_demand'
@@ -3547,20 +3509,14 @@ export class AiAssistantService {
       },
       mergeHistoryArchive: {
         ...mergeHistoryArchiveStats,
-        revision: crypto.createHash('sha256')
-          .update(JSON.stringify(mergeHistoryArchiveStats))
-          .digest('hex')
-          .slice(0, 16),
+        revision: revisions.identityMerge,
         version: 'identity-merge-audit-v1',
         directory: 'paginated_without_snapshot',
         snapshot: 'main_process_only'
       },
       memoryDeletionArchive: {
         total: memoryDeletionArchiveStats.total,
-        revision: crypto.createHash('sha256')
-          .update(JSON.stringify(memoryDeletionArchiveStats))
-          .digest('hex')
-          .slice(0, 16),
+        revision: revisions.memoryDeletion,
         version: 'memory-deletion-audit-v1',
         directory: 'paginated_without_content'
       },
@@ -3604,18 +3560,7 @@ export class AiAssistantService {
       ingestionStatus: personalMemoryStore.getIngestionStatus(),
       assistantArchive: {
         total: assistantArchiveStats.total,
-        revision: crypto.createHash('sha256')
-          .update(JSON.stringify([
-            assistantArchiveStats.total,
-            assistantArchiveStats.latestId,
-            assistantArchiveStats.latestUpdatedAt,
-            assistantArchiveStats.latestMessageCount,
-            assistantArchiveStats.citationStorage,
-            assistantArchiveStats.exchangeIntegrity,
-            assistantArchiveStats.answerDependencies
-          ]))
-          .digest('hex')
-          .slice(0, 16),
+        revision: revisions.assistantHistory,
         version: 'assistant-archive-v2',
         directory: 'paginated_on_demand',
         messages: 'newest_first_paginated',
