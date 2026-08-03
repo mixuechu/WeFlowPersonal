@@ -1,6 +1,9 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { buildTrustedEntityDirectory } from '../electron/services/trustedEntityDirectory.ts'
+import {
+  buildTrustedEntityDirectory,
+  resolveTrustedEntitySelection
+} from '../electron/services/trustedEntityDirectory.ts'
 
 const confirmedEntities = Array.from({ length: 5_005 }, (_, index) => ({
   id: `entity-${index}`,
@@ -73,4 +76,63 @@ test('entity directory rejects stale follow-up pages after identity changes', ()
   })
   assert.equal(changed.stale, true)
   assert.deepEqual(changed.items, [])
+})
+
+test('trusted entity selection requires the exact visible directory revision', () => {
+  const entities = confirmedEntities.slice(0, 3)
+  const directory = buildTrustedEntityDirectory(entities)
+  assert.equal(resolveTrustedEntitySelection(entities, {
+    entityId: 'entity-1',
+    expectedRevision: ''
+  }).reason, 'missing_revision')
+  const selected = resolveTrustedEntitySelection(entities, {
+    entityId: 'entity-1',
+    expectedRevision: directory.revision
+  })
+  assert.equal(selected.stale, false)
+  assert.equal(selected.entity?.id, 'entity-1')
+})
+
+test('identity changes invalidate an earlier trusted entity selection', () => {
+  const entities = confirmedEntities.slice(0, 3)
+  const directory = buildTrustedEntityDirectory(entities)
+  const changed = entities.map(entity => entity.id === 'entity-2'
+    ? { ...entity, aliases: [...entity.aliases, '新别名'], updatedAt: '2026-08-04T01:00:00.000Z' }
+    : entity)
+  const selection = resolveTrustedEntitySelection(changed, {
+    entityId: 'entity-1',
+    expectedRevision: directory.revision
+  })
+  assert.equal(selection.stale, true)
+  assert.equal(selection.reason, 'revision_changed')
+})
+
+test('rejected, merged-away and unknown entities cannot reuse a current directory revision', () => {
+  const rejected = [
+    confirmedEntities[0],
+    { ...confirmedEntities[1], trustStatus: 'rejected' }
+  ]
+  const directory = buildTrustedEntityDirectory(rejected)
+  for (const entityId of ['entity-1', 'merged-away', 'unknown']) {
+    const selection = resolveTrustedEntitySelection(rejected, {
+      entityId,
+      expectedRevision: directory.revision
+    })
+    assert.equal(selection.stale, true)
+    assert.equal(selection.reason, 'entity_untrusted')
+  }
+})
+
+test('same-name entities remain bound to the selected stable id', () => {
+  const entities = [
+    { ...confirmedEntities[0], id: 'same-a', canonicalName: '王伟' },
+    { ...confirmedEntities[1], id: 'same-b', canonicalName: '王伟' }
+  ]
+  const directory = buildTrustedEntityDirectory(entities)
+  const selection = resolveTrustedEntitySelection(entities, {
+    entityId: 'same-b',
+    expectedRevision: directory.revision
+  })
+  assert.equal(selection.stale, false)
+  assert.equal(selection.entity?.id, 'same-b')
 })

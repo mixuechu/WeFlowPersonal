@@ -1837,6 +1837,9 @@ export interface ElectronAPI {
         scopeCandidates: number | null
         revision: string
         stale: boolean
+        entityScopeStale?: boolean
+        entityDirectoryRevision?: string
+        entityScopeStaleReason?: 'missing_revision' | 'revision_changed' | 'entity_untrusted'
         feedback: Array<{
           id: number
           documentId: string

@@ -116,3 +116,29 @@ export function buildTrustedEntityDirectory(
     }, {} as Record<string, number>)
   }
 }
+
+export function resolveTrustedEntitySelection(
+  entities: readonly any[],
+  input: { entityId?: string; expectedRevision?: string }
+): {
+  entity: any | null
+  revision: string
+  stale: boolean
+  reason: 'ok' | 'missing_revision' | 'revision_changed' | 'entity_untrusted'
+} {
+  const directory = buildTrustedEntityDirectory(entities, { limit: 1 })
+  const entityId = String(input.entityId || '').trim()
+  const expectedRevision = String(input.expectedRevision || '').trim()
+  if (!expectedRevision) {
+    return { entity: null, revision: directory.revision, stale: true, reason: 'missing_revision' }
+  }
+  if (expectedRevision !== directory.revision) {
+    return { entity: null, revision: directory.revision, stale: true, reason: 'revision_changed' }
+  }
+  const entity = (Array.isArray(entities) ? entities : [])
+    .find(item => String(item?.id || '') === entityId && isTrustedEntity(item)) || null
+  if (!entity) {
+    return { entity: null, revision: directory.revision, stale: true, reason: 'entity_untrusted' }
+  }
+  return { entity, revision: directory.revision, stale: false, reason: 'ok' }
+}

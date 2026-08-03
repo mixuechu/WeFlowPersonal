@@ -1,5 +1,6 @@
 export type MemorySearchOptions = {
   entityId?: string
+  entitySelectionRevision?: string
   entityTerms?: string[]
   sessionId?: string
   sessionName?: string

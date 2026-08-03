@@ -4618,7 +4618,8 @@ function registerIpcHandlers() {
   ipcMain.handle('ai-assistant:previewForgetEntity', (_, id: string) => aiAssistantService.previewForgetEntity(id))
   ipcMain.handle('ai-assistant:forgetEntity', (_, id: string, input?: any) =>
     aiAssistantService.forgetEntity(id, input))
-  ipcMain.handle('ai-assistant:searchMemory', (_, query: string, options?: any) => aiAssistantService.searchMemoryHybrid(query, options))
+  ipcMain.handle('ai-assistant:searchMemory', (_, query: string, options?: any) =>
+    aiAssistantService.searchMemoryWithTrustedScope(query, options))
   ipcMain.handle('ai-assistant:searchMemoryPage', (_, query: string, options?: any, pagination?: any) =>
     aiAssistantService.searchMemoryPage(query, options, pagination))
   ipcMain.handle('ai-assistant:updateMemorySearchFeedback', (_, input: any) =>

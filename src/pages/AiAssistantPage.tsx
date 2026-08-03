@@ -511,6 +511,7 @@ function AiAssistantPage() {
   const [memoryEntityQuery, setMemoryEntityQuery] = useState('')
   const [memoryEntityOptions, setMemoryEntityOptions] = useState<any[]>([])
   const [memoryEntityOptionTotal, setMemoryEntityOptionTotal] = useState(0)
+  const [memoryEntityDirectoryRevision, setMemoryEntityDirectoryRevision] = useState('')
   const [memoryEntityPickerOpen, setMemoryEntityPickerOpen] = useState(false)
   const [memoryEntityPickerLoading, setMemoryEntityPickerLoading] = useState(false)
   const memoryEntityPickerGate = useRef(new LatestRequestGate())
@@ -532,6 +533,7 @@ function AiAssistantPage() {
   )
   const memorySearchOptions = useMemo(() => ({
     entityId: memoryEntityFilter || undefined,
+    entitySelectionRevision: memoryEntitySelection?.directoryRevision || undefined,
     sessionId: selectedMemorySessionScope.sessionId,
     sessionName: selectedMemorySessionScope.sessionName,
     sourceIds: memorySourceFilter ? [memorySourceFilter] : undefined,
@@ -539,7 +541,7 @@ function AiAssistantPage() {
     from: memoryFrom || undefined,
     to: memoryTo || undefined
   }), [
-    memoryEntityFilter, memorySessionFilter, selectedMemorySessionScope,
+    memoryEntityFilter, memoryEntitySelection, memorySessionFilter, selectedMemorySessionScope,
     memorySourceFilter, memoryTypeFilter, memoryFrom, memoryTo
   ])
   const hasMemoryScope = Boolean(memoryEntityFilter || memorySessionFilter || memorySourceFilter || memoryTypeFilter || memoryFrom || memoryTo)
@@ -712,10 +714,12 @@ function AiAssistantPage() {
         if (!memoryEntityPickerGate.current.isCurrent(request)) return
         setMemoryEntityOptions(result.items)
         setMemoryEntityOptionTotal(result.total)
+        setMemoryEntityDirectoryRevision(result.revision)
       }).catch(error => {
         if (!memoryEntityPickerGate.current.isCurrent(request)) return
         setMemoryEntityOptions([])
         setMemoryEntityOptionTotal(0)
+        setMemoryEntityDirectoryRevision('')
         setMessage(error?.message || String(error))
       }).finally(() => {
         if (memoryEntityPickerGate.current.isCurrent(request)) {
@@ -1030,6 +1034,14 @@ function AiAssistantPage() {
       setMemorySearchState({ status: 'searching', query })
       void window.electronAPI.aiAssistant.searchMemoryPage(query, memorySearchOptions, { offset: 0, limit: 40 }).then(page => {
         if (!memorySearchGate.current.isCurrent(request)) return
+        if (page.entityScopeStale) {
+          setMemoryEntitySelection(null)
+          setMemoryEntityFilter('')
+          setMemoryEntityQuery('')
+          setMemorySearchState({ status: 'idle', query: '' })
+          setMessage('所选实体已经变化、合并或不再可信，请重新选择实体范围。')
+          return
+        }
         if (page.stale) {
           setMemorySearchState({ status: 'waiting', query })
           window.setTimeout(() => {
@@ -2699,11 +2711,34 @@ function AiAssistantPage() {
       await load()
     } catch (error: any) {
       if (memoryConversationGate.current.isCurrent(request)) {
-        setMemoryAnswer({ answer: error?.message || String(error), citations: [], uncertainty: '' })
+        const errorMessage = error?.message || String(error)
+        if (errorMessage.includes('所选实体')) {
+          setMemoryEntitySelection(null)
+          setMemoryEntityFilter('')
+          setMemoryEntityQuery('')
+        }
+        setMemoryAnswer({ answer: errorMessage, citations: [], uncertainty: '' })
       }
     } finally {
       setAskingMemory(false)
     }
+  }
+
+  const selectMemoryEntityScope = async (entityId: string, fallbackName = '') => {
+    const result = await window.electronAPI.aiAssistant.getTrustedEntityDirectory({
+      query: entityId,
+      limit: 20,
+      offset: 0
+    })
+    const entity = result.items.find((item: any) => item.id === entityId)
+    if (!entity) {
+      setMessage('该实体已经变化、合并或不再可信，请重新选择。')
+      return
+    }
+    setMemoryEntitySelection({ ...entity, directoryRevision: result.revision })
+    setMemoryEntityFilter(entity.id)
+    setMemoryEntityQuery(entity.canonicalName || fallbackName)
+    setMemoryEntityPickerOpen(false)
   }
 
   const loadMoreMemoryResults = async () => {
@@ -2722,6 +2757,13 @@ function AiAssistantPage() {
         }
       )
       if (!memorySearchGate.current.isCurrent(request)) return
+      if (page.entityScopeStale) {
+        setMemoryEntitySelection(null)
+        setMemoryEntityFilter('')
+        setMemoryEntityQuery('')
+        setMessage('所选实体在翻页期间发生变化，已清除该范围，请重新选择。')
+        return
+      }
       if (page.stale) {
         setMessage('检索索引在翻页期间发生变化，已从第一页重新生成结果，避免遗漏或重复。')
         setMemorySearchRefreshKey(value => value + 1)
@@ -4522,7 +4564,7 @@ function AiAssistantPage() {
                     type="button"
                     key={entity.id}
                     onClick={() => {
-                      setMemoryEntitySelection(entity)
+                      setMemoryEntitySelection({ ...entity, directoryRevision: memoryEntityDirectoryRevision })
                       setMemoryEntityFilter(entity.id)
                       setMemoryEntityQuery(entity.canonicalName)
                       setMemoryEntityPickerOpen(false)
@@ -6360,7 +6402,10 @@ function AiAssistantPage() {
             </div>
             <footer>
               {selectedProject.entityId && <button onClick={() => {
-                setMemoryEntityFilter(selectedProject.entityId); setMemoryQuery(selectedProject.name); setSelectedProjectId('')
+                void selectMemoryEntityScope(selectedProject.entityId, selectedProject.name).then(() => {
+                  setMemoryQuery(selectedProject.name)
+                  setSelectedProjectId('')
+                })
               }}>在统一记忆中检索</button>}
               <button className="primary" onClick={() => setSelectedProjectId('')}>完成</button>
             </footer>

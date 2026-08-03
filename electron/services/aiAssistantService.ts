@@ -89,6 +89,7 @@ import {
 import { planEntityMerge } from './entityMergeDirection'
 import {
   buildTrustedEntityDirectory,
+  resolveTrustedEntitySelection,
   type TrustedEntityDirectoryOptions
 } from './trustedEntityDirectory.ts'
 import {
@@ -5469,6 +5470,19 @@ export class AiAssistantService {
     }
   }
 
+  async searchMemoryWithTrustedScope(query: string, options: MemorySearchOptions = {}): Promise<any[]> {
+    if (options.entityId) {
+      const selection = resolveTrustedEntitySelection(this.state.graph.entities, {
+        entityId: options.entityId,
+        expectedRevision: options.entitySelectionRevision
+      })
+      if (selection.stale) {
+        throw new Error('所选实体已经变化或不再可信，请重新选择实体范围')
+      }
+    }
+    return this.searchMemoryHybrid(query, options)
+  }
+
   private memorySearchFeedbackContext(query: string, options: MemorySearchOptions): {
     context: ReturnType<typeof buildMemorySearchFeedbackContext>
     entries: any[]
@@ -5561,9 +5575,22 @@ export class AiAssistantService {
         revision, stale: true
       }
     }
-    const selectedEntity = options.entityId
-      ? this.state.graph.entities.find(entity => entity.id === options.entityId && isTrustedEntity(entity))
+    const entitySelection = options.entityId
+      ? resolveTrustedEntitySelection(this.state.graph.entities, {
+          entityId: options.entityId,
+          expectedRevision: options.entitySelectionRevision
+        })
       : null
+    if (entitySelection?.stale) {
+      return {
+        results: [], offset, limit, total: 0, hasMore: false, truncated: false,
+        scopeCandidates: null, feedback: [], feedbackVersion: MEMORY_SEARCH_FEEDBACK_VERSION,
+        revision, stale: false, entityScopeStale: true,
+        entityDirectoryRevision: entitySelection.revision,
+        entityScopeStaleReason: entitySelection.reason
+      }
+    }
+    const selectedEntity = entitySelection?.entity || null
     const scopedOptions = selectedEntity ? {
       ...options,
       entityTerms: [
@@ -5605,6 +5632,21 @@ export class AiAssistantService {
     const page = paginateMemoryResults(ranked, offset, limit, 500)
     const feedback = this.memorySearchFeedbackContext(text, scopedOptions).entries
     const completedRevision = personalMemoryStore.getMemorySearchRevision()
+    const completedEntitySelection = options.entityId
+      ? resolveTrustedEntitySelection(this.state.graph.entities, {
+          entityId: options.entityId,
+          expectedRevision: options.entitySelectionRevision
+        })
+      : null
+    if (completedEntitySelection?.stale) {
+      return {
+        results: [], offset, limit, total: 0, hasMore: false, truncated: false,
+        scopeCandidates: null, feedback: [], feedbackVersion: MEMORY_SEARCH_FEEDBACK_VERSION,
+        revision: completedRevision, stale: false, entityScopeStale: true,
+        entityDirectoryRevision: completedEntitySelection.revision,
+        entityScopeStaleReason: completedEntitySelection.reason
+      }
+    }
     if (isMemorySearchPageRevisionStale({
       offset,
       expectedRevision,
@@ -5624,7 +5666,9 @@ export class AiAssistantService {
       feedback,
       feedbackVersion: MEMORY_SEARCH_FEEDBACK_VERSION,
       revision,
-      stale: false
+      stale: false,
+      entityScopeStale: false,
+      entityDirectoryRevision: entitySelection?.revision
     }
   }
 
@@ -5692,6 +5736,15 @@ export class AiAssistantService {
   async askMemory(question: string, conversationId?: string, options: MemorySearchOptions = {}): Promise<any> {
     const query = String(question || '').trim()
     if (!query) throw new Error('请输入问题')
+    const explicitEntitySelection = options.entityId
+      ? resolveTrustedEntitySelection(this.state.graph.entities, {
+          entityId: options.entityId,
+          expectedRevision: options.entitySelectionRevision
+        })
+      : null
+    if (explicitEntitySelection?.stale) {
+      throw new Error('所选实体已经变化或不再可信，请重新选择实体范围')
+    }
     const conversationHistory = conversationId
       ? (personalMemoryStore.getAssistantConversation(conversationId, 8)?.messages || [])
         .filter((message: any) => message.role === 'user' || message.role === 'assistant')
@@ -5790,16 +5843,23 @@ export class AiAssistantService {
     const context = buildModelMemoryContext(results, {
       mail: { allowModelAnalysis: Boolean(mailSource?.config?.allowModelAnalysis) }
     }, 20)
+    if (options.entityId && resolveTrustedEntitySelection(this.state.graph.entities, {
+      entityId: options.entityId,
+      expectedRevision: options.entitySelectionRevision
+    }).stale) {
+      throw new Error('所选实体在检索期间发生变化，请重新选择后再提问')
+    }
     const apiKey = String(this.config.get('aiAssistantApiKey') || '').trim()
     if (!apiKey) throw new Error('请先设置 DeepSeek API Key')
     const baseUrl = String(this.config.get('aiAssistantApiBaseUrl') || 'https://api.deepseek.com').replace(/\/$/, '')
     const model = String(this.config.get('aiAssistantApiModel') || 'deepseek-v4-flash')
     const redactionLevel = String(this.config.get('aiAssistantSensitiveRedactionLevel') || 'standard') as SensitiveRedactionLevel
+    const { entitySelectionRevision: _entitySelectionRevision, ...modelSearchOptions } = plannedOptions
     const outbound = redactSensitiveText(buildUntrustedMemoryQuestionEnvelope({
       question: query,
       conversationHistory,
       queryPlan: plan,
-      searchOptions: plannedOptions,
+      searchOptions: modelSearchOptions,
       context
     }), redactionLevel)
     const response = await fetch(`${baseUrl}/chat/completions`, {
