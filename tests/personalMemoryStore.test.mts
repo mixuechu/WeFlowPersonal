@@ -4230,7 +4230,7 @@ test('manual memory review updates searchable status metadata', () => withStore(
 }))
 
 test('assistant conversations persist ordered turns, citations and deletion across reloads', () => withStore(store => {
-  const conversationId = store.saveAssistantExchange('第一问', '第一答', [{
+  const firstSavedExchange = store.saveAssistantExchangeDetailed('第一问', '第一答', [{
     documentId: 'claim:one',
     title: '证据一',
     contentHash: 'a'.repeat(64),
@@ -4251,6 +4251,9 @@ test('assistant conversations persist ordered turns, citations and deletion acro
     statementCitations: [['claim:one']],
     leakedSensitiveField: '不能离开主进程'
   })
+  const conversationId = firstSavedExchange.conversationId
+  assert.match(firstSavedExchange.questionMessageId, /^msg_exchange_.+_q$/)
+  assert.match(firstSavedExchange.answerMessageId, /^msg_exchange_.+_a$/)
   store.saveAssistantExchange('第二问', '第二答', [{
     documentId: 'event:two',
     title: '证据二'
@@ -4289,6 +4292,12 @@ test('assistant conversations persist ordered turns, citations and deletion acro
     statementCitations: [['claim:one']]
   })
   assert.equal(JSON.stringify(complete.messages[1].groundingAudit).includes('不能离开主进程'), false)
+  const storedAnswer = store.getAssistantAnswerMessage(firstSavedExchange.answerMessageId)
+  assert.equal(storedAnswer.id, firstSavedExchange.answerMessageId)
+  assert.equal(storedAnswer.role, 'assistant')
+  assert.equal(storedAnswer.content, '第一答')
+  assert.deepEqual(storedAnswer.groundingAudit.statementCitations, [['claim:one']])
+  assert.equal(store.getAssistantAnswerMessage(firstSavedExchange.questionMessageId), null)
   assert.deepEqual(complete.messages[0].groundingAudit, {})
   for (let index = 0; index < complete.messages.length; index += 2) {
     assert.match(complete.messages[index].exchange_id, /^exchange_/)
@@ -4571,14 +4580,14 @@ test('assistant archive filters statement dependencies without loading answer ev
     insertDocument.run(id, 'resource', id.slice('resource:'.length), id, id, '{}', hash, now)
     insertEvidence.run(id, 'documents', `${id}:message`, 'data-source:documents:test', 1, '文档', '仅用于资格核验')
   }
-  const save = (question: string, documentId: string, contentHash: string) =>
+  const save = (question: string, documentId: string, contentHash: string, conversationId?: string) =>
     store.saveAssistantExchange(question, `${question}的回答`, [{
       documentId,
       sourceId: documentId.split(':')[1],
       type: 'resource',
       title: documentId,
       contentHash
-    }], undefined, {
+    }], conversationId, {
       version: 'statement-citations-v1',
       proposedStatements: 1,
       acceptedStatements: 1,
@@ -4588,7 +4597,11 @@ test('assistant archive filters statement dependencies without loading answer ev
       statementCitations: [[documentId]]
     })
   const currentConversationId = save('当前有效会话', 'resource:current', 'a'.repeat(64))
-  save('内容变化会话', 'resource:changed', 'a'.repeat(64))
+  const changedConversationId = save('内容变化会话', 'resource:changed', 'a'.repeat(64))
+  const changedAnswerId = String(database.prepare(`
+    SELECT id FROM assistant_messages WHERE conversation_id=? AND role='assistant'
+  `).get(changedConversationId)?.id || '')
+  save('后来仍有效的追问', 'resource:current', 'a'.repeat(64), changedConversationId)
   save('旧版未知会话', 'resource:unknown', '')
   save('来源删除会话', 'resource:missing', 'd'.repeat(64))
   store.saveAssistantExchange('没有事实陈述', '证据不足', [])
@@ -4600,6 +4613,16 @@ test('assistant archive filters statement dependencies without loading answer ev
   assert.equal(statuses.get('旧版未知会话'), 'needs_review')
   assert.equal(statuses.get('来源删除会话'), 'invalid')
   assert.equal(statuses.get('没有事实陈述'), 'not_applicable')
+  const changedDirectoryItem = all.items.find((item: any) => item.title === '内容变化会话')
+  assert.equal(changedDirectoryItem.revalidation_target_message_id, changedAnswerId)
+  const anchoredConversation = store.getAssistantConversation(changedConversationId, {
+    anchorMessageId: changedAnswerId,
+    limit: 40
+  })
+  assert.equal(anchoredConversation.anchorFound, true)
+  assert.equal(anchoredConversation.hasNewer, true)
+  assert.equal(anchoredConversation.offset, 2)
+  assert.equal(anchoredConversation.messages.at(-1).id, changedAnswerId)
   assert.deepEqual(
     store.listAssistantConversationsPage({ revalidationStatus: 'invalid', limit: 20 })
       .items.map((item: any) => item.title).sort(),
@@ -4615,9 +4638,9 @@ test('assistant archive filters statement dependencies without loading answer ev
     revalidationStatus: 'not_applicable', limit: 20
   }).items[0].title, '没有事实陈述')
   const dependencyStats = store.getAssistantAnswerDependencyStats()
-  assert.equal(dependencyStats.messages, 4)
-  assert.equal(dependencyStats.statements, 4)
-  assert.equal(dependencyStats.dependencies, 4)
+  assert.equal(dependencyStats.messages, 5)
+  assert.equal(dependencyStats.statements, 5)
+  assert.equal(dependencyStats.dependencies, 5)
   assert.equal(JSON.stringify(all.items).includes('仅用于资格核验'), false)
 
   database.prepare('UPDATE search_documents SET content_hash = ? WHERE id = ?')
@@ -4630,9 +4653,9 @@ test('assistant archive filters statement dependencies without loading answer ev
 
   assert.equal(store.deleteAssistantConversation(currentConversationId), true)
   const dependencyStatsAfterDelete = store.getAssistantAnswerDependencyStats()
-  assert.equal(dependencyStatsAfterDelete.messages, 3)
-  assert.equal(dependencyStatsAfterDelete.statements, 3)
-  assert.equal(dependencyStatsAfterDelete.dependencies, 3)
+  assert.equal(dependencyStatsAfterDelete.messages, 4)
+  assert.equal(dependencyStatsAfterDelete.statements, 4)
+  assert.equal(dependencyStatsAfterDelete.dependencies, 4)
 }))
 
 test('assistant archive and message pagination survive a SQLCipher process-style reopen', () => {

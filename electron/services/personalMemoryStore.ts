@@ -7284,7 +7284,23 @@ export class PersonalMemoryStore {
     conversationId?: string,
     groundingAudit: any = {}
   ): string {
-    if (!this.db) return ''
+    return this.saveAssistantExchangeDetailed(
+      question,
+      answer,
+      citations,
+      conversationId,
+      groundingAudit
+    ).conversationId
+  }
+
+  saveAssistantExchangeDetailed(
+    question: string,
+    answer: string,
+    citations: any[],
+    conversationId?: string,
+    groundingAudit: any = {}
+  ): { conversationId: string; questionMessageId: string; answerMessageId: string } {
+    if (!this.db) return { conversationId: '', questionMessageId: '', answerMessageId: '' }
     const existing = conversationId
       ? this.db.prepare('SELECT updated_at FROM assistant_conversations WHERE id=?').get(conversationId) as any
       : null
@@ -7342,7 +7358,7 @@ export class PersonalMemoryStore {
       })
     })
     save()
-    return id
+    return { conversationId: id, questionMessageId, answerMessageId }
   }
 
   listAssistantConversationsPage(options: {
@@ -7417,12 +7433,23 @@ export class PersonalMemoryStore {
         LEFT JOIN search_documents s ON s.id=d.document_id
         GROUP BY d.conversation_id,d.message_id,d.statement_index
       ),
+      answer_revalidation AS (
+        SELECT ss.conversation_id,ss.message_id,m.created_at,
+          COUNT(*) AS total_statements,
+          SUM(CASE WHEN ss.has_current=1 THEN 1 ELSE 0 END) AS supported_statements,
+          SUM(CASE WHEN ss.has_current=0 AND ss.has_unknown=1 THEN 1 ELSE 0 END) AS unknown_statements,
+          SUM(CASE WHEN ss.has_current=0 AND ss.has_unknown=0 THEN 1 ELSE 0 END) AS invalid_statements
+        FROM statement_state ss
+        JOIN assistant_messages m ON m.id=ss.message_id
+        GROUP BY ss.conversation_id,ss.message_id
+      ),
       conversation_revalidation AS (
-        SELECT conversation_id,COUNT(*) AS total_statements,
-          SUM(CASE WHEN has_current=1 THEN 1 ELSE 0 END) AS supported_statements,
-          SUM(CASE WHEN has_current=0 AND has_unknown=1 THEN 1 ELSE 0 END) AS unknown_statements,
-          SUM(CASE WHEN has_current=0 AND has_unknown=0 THEN 1 ELSE 0 END) AS invalid_statements
-        FROM statement_state GROUP BY conversation_id
+        SELECT conversation_id,
+          SUM(total_statements) AS total_statements,
+          SUM(supported_statements) AS supported_statements,
+          SUM(unknown_statements) AS unknown_statements,
+          SUM(invalid_statements) AS invalid_statements
+        FROM answer_revalidation GROUP BY conversation_id
       )
     `
     const total = Number((this.db.prepare(`
@@ -7438,6 +7465,12 @@ export class PersonalMemoryStore {
         COALESCE(cr.supported_statements,0) AS revalidation_supported_statements,
         COALESCE(cr.unknown_statements,0) AS revalidation_unknown_statements,
         COALESCE(cr.invalid_statements,0) AS revalidation_invalid_statements,
+        COALESCE((
+          SELECT affected.message_id FROM answer_revalidation affected
+          WHERE affected.conversation_id=c.id
+            AND (affected.invalid_statements>0 OR affected.unknown_statements>0)
+          ORDER BY (affected.invalid_statements>0) DESC,affected.created_at DESC,affected.message_id DESC LIMIT 1
+        ),'') AS revalidation_target_message_id,
         COALESCE((
           SELECT content FROM assistant_messages latest
           WHERE latest.conversation_id=c.id
@@ -7514,6 +7547,7 @@ export class PersonalMemoryStore {
   getAssistantConversation(id: string, options: number | {
     offset?: number
     limit?: number
+    anchorMessageId?: string
   } = 40): any {
     if (!this.db) return null
     const conversation = this.db.prepare(`
@@ -7523,9 +7557,23 @@ export class PersonalMemoryStore {
     const limit = Math.max(1, Math.min(200, Math.floor(Number(
       typeof options === 'number' ? options : options.limit
     ) || 40)))
-    const offset = Math.max(0, Math.min(1_000_000, Math.floor(Number(
+    let offset = Math.max(0, Math.min(1_000_000, Math.floor(Number(
       typeof options === 'number' ? 0 : options.offset
     ) || 0)))
+    const anchorMessageId = typeof options === 'number' ? '' : String(options.anchorMessageId || '').trim()
+    let anchorFound = false
+    if (anchorMessageId) {
+      const anchor = this.db.prepare(`
+        SELECT created_at,id FROM assistant_messages WHERE conversation_id=? AND id=?
+      `).get(id, anchorMessageId) as any
+      if (anchor) {
+        offset = Number((this.db.prepare(`
+          SELECT COUNT(*) AS count FROM assistant_messages
+          WHERE conversation_id=? AND (created_at>? OR (created_at=? AND id>?))
+        `).get(id, anchor.created_at, anchor.created_at, anchor.id) as any)?.count || 0)
+        anchorFound = true
+      }
+    }
     const total = Number((this.db.prepare(`
       SELECT COUNT(*) AS count FROM assistant_messages WHERE conversation_id=?
     `).get(id) as any)?.count || 0)
@@ -7541,6 +7589,9 @@ export class PersonalMemoryStore {
       total,
       offset,
       limit,
+      anchorMessageId: anchorFound ? anchorMessageId : '',
+      anchorFound,
+      hasNewer: offset > 0,
       hasOlder: offset + rows.length < total,
       messages: rows.map(row => {
         let citations: any[] = []
@@ -7551,6 +7602,25 @@ export class PersonalMemoryStore {
         return { ...message, citations, groundingAudit }
       })
     }
+  }
+
+  getAssistantAnswerMessage(id: string): any {
+    if (!this.db) return null
+    const row = this.db.prepare(`
+      SELECT id,conversation_id,role,content,citations_json,grounding_json,exchange_id,created_at
+      FROM assistant_messages WHERE id=? AND role='assistant'
+    `).get(String(id || '').trim()) as any
+    if (!row) return null
+    let citations: any[] = []
+    let groundingAudit: any = {}
+    try { citations = JSON.parse(String(row.citations_json || '[]')) } catch {}
+    try {
+      groundingAudit = this.compactAssistantGroundingAudit(
+        JSON.parse(String(row.grounding_json || '{}'))
+      )
+    } catch {}
+    const { citations_json: _citationsJson, grounding_json: _groundingJson, ...message } = row
+    return { ...message, citations, groundingAudit }
   }
 
   deleteAssistantConversation(id: string): boolean {

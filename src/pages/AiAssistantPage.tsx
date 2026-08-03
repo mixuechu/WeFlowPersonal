@@ -2197,9 +2197,13 @@ function AiAssistantPage() {
     }
   }
 
-  const openMemoryConversation = useCallback(async (id: string) => {
+  const openMemoryConversation = useCallback(async (id: string, anchorMessageId = '') => {
     const request = memoryConversationGate.current.begin()
-    const conversation = await window.electronAPI.aiAssistant.getAssistantConversation(id, { offset: 0, limit: 40 })
+    const conversation = await window.electronAPI.aiAssistant.getAssistantConversation(id, {
+      offset: 0,
+      limit: 40,
+      anchorMessageId
+    })
     if (!conversation || !memoryConversationGate.current.isCurrent(request)) return
     setMemoryConversationId(id)
     setMemoryConversation(conversation)
@@ -2210,9 +2214,17 @@ function AiAssistantPage() {
       const question = [...messages.slice(0, assistantIndex)].reverse().find((item: any) => item.role === 'user')
       setMemoryAnswer({
         conversationId: id,
+        assistantMessageId: assistant.id,
         question: question?.content || conversation.title,
         answer: assistant.content,
         citations: assistant.citations || [],
+        groundingAudit: assistant.groundingAudit,
+        groundingRevalidation: assistant.groundingRevalidation,
+        groundedStatements: String(assistant.content || '').split(/\n{2,}/)
+          .map((text: string, statementIndex: number) => ({
+            text,
+            citationIds: assistant.groundingAudit?.statementCitations?.[statementIndex] || []
+          })),
         uncertainty: ''
       })
     } else {
@@ -2300,7 +2312,7 @@ function AiAssistantPage() {
       const task = await window.electronAPI.aiAssistant.createTaskFromMemory({
         title: memoryAnswer.question || String(memoryAnswer.answer).split(/[。！？\n]/)[0],
         detail: memoryAnswer.answer,
-        citations: memoryAnswer.citations,
+        assistantMessageId: memoryAnswer.assistantMessageId,
         priority: 'medium'
       })
       setMemoryAnswer((current: any) => ({ ...current, createdTaskId: task.id }))
@@ -3505,7 +3517,10 @@ function AiAssistantPage() {
               {assistantConversations.map(conversation => <button
                 className={memoryConversationId === conversation.id ? 'active' : ''}
                 key={conversation.id}
-                onClick={() => void openMemoryConversation(conversation.id)}>
+                onClick={() => void openMemoryConversation(
+                  conversation.id,
+                  conversation.revalidation_target_message_id || ''
+                )}>
                 <b>{conversation.title}</b>
                 <span>{Number(conversation.message_count || 0)} 条消息 · {new Date(conversation.updated_at).toLocaleString('zh-CN')}</span>
                 <small>{conversation.revalidation_status === 'invalid'
@@ -3529,6 +3544,10 @@ function AiAssistantPage() {
               </button>}
             </aside>
             <div className="assistant-conversation-thread">
+              {memoryConversation?.anchorFound && memoryConversation?.hasNewer && <small>
+                已直接定位到需要核验的回答；这段会话还有 {Number(memoryConversation.offset || 0)} 条更新消息未显示。
+                <button onClick={() => void openMemoryConversation(memoryConversation.id)}>返回最新消息</button>
+              </small>}
               {memoryConversation?.hasOlder && <button onClick={() => void loadOlderAssistantMessages()}
                 disabled={assistantMessagesLoadingMore}>
                 {assistantMessagesLoadingMore
@@ -3544,6 +3563,7 @@ function AiAssistantPage() {
                   const question = [...messages.slice(0, index)].reverse().find((message: any) => message.role === 'user')
                   setMemoryAnswer({
                     conversationId: memoryConversation.id,
+                    assistantMessageId: item.id,
                     question: question?.content || memoryConversation.title,
                     answer: item.content,
                     citations: item.citations,

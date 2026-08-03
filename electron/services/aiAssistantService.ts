@@ -3404,7 +3404,6 @@ export class AiAssistantService {
       query: String(options?.query || ''),
       from: String(options?.from || ''),
       to: String(options?.to || ''),
-      revalidationStatus: options?.revalidationStatus,
       limit: Number(options?.limit || 40),
       offset: Number(options?.offset || 0)
     })
@@ -4090,7 +4089,21 @@ export class AiAssistantService {
   createTaskFromMemory(input: any): AssistantTask {
     const title = String(input?.title || '').trim().slice(0, 300)
     if (!title) throw new Error('待办标题不能为空')
-    const citations = Array.isArray(input?.citations) ? input.citations.slice(0, 20) : []
+    const storedAnswer = personalMemoryStore.getAssistantAnswerMessage(
+      String(input?.assistantMessageId || '')
+    )
+    if (!storedAnswer) throw new Error('找不到这段回答的本机加密记录，不能据此生成待办')
+    const authenticatedAnswer = this.enrichAssistantCitationFeedback({
+      messages: [storedAnswer]
+    })?.messages?.[0]
+    const citations = Array.isArray(authenticatedAnswer?.citations)
+      ? authenticatedAnswer.citations
+      : []
+    const revalidation = authenticatedAnswer?.groundingRevalidation
+      || revalidateGroundedStatements(storedAnswer.groundingAudit, citations)
+    if (revalidation.status !== 'current' || Number(revalidation.supportedStatements || 0) < 1) {
+      throw new Error('这段回答的权威证据已经变化、失效或无法证明仍与生成时一致，请用原问题重新提问后再生成待办')
+    }
     const evidence = citations.flatMap((citation: any) => Array.isArray(citation?.evidence)
       ? citation.evidence.map((item: any) => ({
         messageId: String(item.message_id || item.messageId || ''),
@@ -5089,7 +5102,7 @@ export class AiAssistantService {
         relevanceFeedback: String(result?.relevance_feedback || '')
       }
     })
-    const id = personalMemoryStore.saveAssistantExchange(
+    const savedExchange = personalMemoryStore.saveAssistantExchangeDetailed(
       query,
       answer,
       citations,
@@ -5097,7 +5110,8 @@ export class AiAssistantService {
       grounded.groundingAudit
     )
     return {
-      conversationId: id,
+      conversationId: savedExchange.conversationId,
+      assistantMessageId: savedExchange.answerMessageId,
       question: query,
       answer,
       uncertainty: String(parsed.uncertainty || ''),
@@ -5123,6 +5137,7 @@ export class AiAssistantService {
       query: String(options?.query || ''),
       from: String(options?.from || ''),
       to: String(options?.to || ''),
+      revalidationStatus: options?.revalidationStatus,
       offset: Number(options?.offset || 0),
       limit: Number(options?.limit || 30)
     })
@@ -5230,7 +5245,8 @@ export class AiAssistantService {
   getAssistantConversation(id: string, options?: any): any {
     return this.enrichAssistantCitationFeedback(personalMemoryStore.getAssistantConversation(String(id || '').trim(), {
       offset: Number(options?.offset || 0),
-      limit: Number(options?.limit || 40)
+      limit: Number(options?.limit || 40),
+      anchorMessageId: String(options?.anchorMessageId || '')
     }))
   }
 
