@@ -198,6 +198,7 @@ import {
 import { LocalDocumentDataSource } from './localDocumentDataSource'
 import { LocalCalendarDataSource, localCalendarService } from './localCalendarDataSource'
 import { LocalMailDataSource, localMailService } from './localMailDataSource'
+import { AsyncExpiringValue } from './asyncExpiringValue'
 import {
   mapCalendarParticipantIdentities,
   type ExternalIdentity
@@ -523,6 +524,10 @@ export class AiAssistantService {
   private activeSyncTrigger: 'manual' | 'startup' | 'daily' | 'backlog' | 'resume' | null = null
   private scheduler: ReturnType<typeof setInterval> | null = null
   private preparedRecoveryContinuation: ReturnType<typeof setTimeout> | null = null
+  private connectorAuthorizationCache = new AsyncExpiringValue<{
+    calendar: string
+    mail: string
+  }>(5 * 60_000)
   private lastSchedulerAttemptAt = 0
   private lastSchedulerTickAt = 0
   private vectorIndexPromise: Promise<any> | null = null
@@ -3385,23 +3390,40 @@ export class AiAssistantService {
     }
   }
 
+  private cacheConnectorAuthorization(kind: 'calendar' | 'mail', authorization: string): void {
+    const current = this.connectorAuthorizationCache.peek()
+    this.connectorAuthorizationCache.set({
+      calendar: 'unavailable',
+      mail: 'unavailable',
+      ...(current || {}),
+      [kind]: String(authorization || 'unknown')
+    })
+    if (!current) this.connectorAuthorizationCache.invalidate()
+  }
+
   async getDataSources(): Promise<any[]> {
     const analysis = personalMemoryStore.getDocumentAnalysisStats(DOCUMENT_ANALYSIS_VERSION)
-    let calendarAuthorization = 'unavailable'
-    let mailAuthorization = 'unavailable'
-    try {
-      calendarAuthorization = (await localCalendarService.getStatus()).authorization
-    } catch {}
-    try {
-      mailAuthorization = (await localMailService.getStatus()).authorization
-    } catch {}
+    const authorizations = await this.connectorAuthorizationCache.get(async () => {
+      const [calendar, mail] = await Promise.allSettled([
+        localCalendarService.getStatus(),
+        localMailService.getStatus()
+      ])
+      return {
+        calendar: calendar.status === 'fulfilled'
+          ? String(calendar.value.authorization || 'unknown')
+          : 'unavailable',
+        mail: mail.status === 'fulfilled'
+          ? String(mail.value.authorization || 'unknown')
+          : 'unavailable'
+      }
+    })
     return personalMemoryStore.listDataSources().map(source =>
       source.id === 'documents'
         ? { ...source, analysis }
         : source.id === 'calendar'
           ? {
               ...source,
-              authorization: calendarAuthorization,
+              authorization: authorizations.calendar,
               selectedCalendarCount: Array.isArray(source.config?.calendarIds)
                 ? source.config.calendarIds.length
                 : 0
@@ -3409,7 +3431,7 @@ export class AiAssistantService {
           : source.id === 'mail'
             ? {
                 ...source,
-                authorization: mailAuthorization,
+                authorization: authorizations.mail,
                 selectedMailboxCount: Array.isArray(source.config?.mailboxIds)
                   ? source.config.mailboxIds.length
                   : 0
@@ -3418,11 +3440,15 @@ export class AiAssistantService {
   }
 
   async getCalendarAuthorization(): Promise<any> {
-    return localCalendarService.getStatus()
+    const status = await localCalendarService.getStatus()
+    this.cacheConnectorAuthorization('calendar', status.authorization)
+    return status
   }
 
   async requestCalendarAccess(): Promise<any> {
-    return localCalendarService.requestAccess()
+    const result = await localCalendarService.requestAccess()
+    this.cacheConnectorAuthorization('calendar', result.authorization)
+    return result
   }
 
   async listCalendars(): Promise<any[]> {
@@ -3434,11 +3460,15 @@ export class AiAssistantService {
   }
 
   async getMailAuthorization(): Promise<any> {
-    return localMailService.getStatus()
+    const status = await localMailService.getStatus()
+    this.cacheConnectorAuthorization('mail', status.authorization)
+    return status
   }
 
   async requestMailAccess(): Promise<any> {
-    return localMailService.requestAccess()
+    const result = await localMailService.requestAccess()
+    this.cacheConnectorAuthorization('mail', result.authorization)
+    return result
   }
 
   async listMailboxes(): Promise<any[]> {
