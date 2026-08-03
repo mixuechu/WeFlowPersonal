@@ -60,7 +60,7 @@ import {
   type ReminderPreferences,
   type TaskReminder
 } from './taskIntelligence'
-import { buildEntityInsights } from './relationshipInsights'
+import { buildEntityInsights, listEntityRelatedTasks } from './relationshipInsights'
 import { classifyTaskAssignment, evaluateTaskAssignmentPolicy } from './taskAssignmentPolicy'
 import { buildWeeklyBriefing, isQuietTime } from './briefingIntelligence'
 import { groundBriefingDigest } from './briefingEvidencePolicy'
@@ -3828,6 +3828,7 @@ export class AiAssistantService {
       : null
     let focus: any = null
     if (focusEntity) {
+      const mineTasks = this.state.tasks.filter(task => task.classification === 'mine')
       const memory = personalMemoryStore.getEntityMemory(focusEntity.id, 200)
       const allRelations = this.state.graph.relations
         .filter(relation => relation.status !== 'rejected' &&
@@ -3843,8 +3844,9 @@ export class AiAssistantService {
         claimTotal: memory.claimTotal,
         events: memory.events,
         eventTotal: memory.eventTotal,
-        tasks: this.state.tasks.filter(task => task.classification === 'mine')
+        tasks: mineTasks
       })
+      const relatedTasks = listEntityRelatedTasks(focusEntity, mineTasks, 100)
       const visibleRelations = allRelations.slice(0, 200)
       const relationHistory = personalMemoryStore.listRelationHistory(focusEntity.id, 300)
       const entityCorrections = personalMemoryStore.listEntityCorrections(focusEntity.id, 300)
@@ -3874,6 +3876,13 @@ export class AiAssistantService {
         entityCorrections,
         relationCorrections,
         entityProfileCorrections,
+        tasks: relatedTasks.items.map(task => ({
+          ...task,
+          ...boundedEvidencePayload(task.evidence, MEMORY_CARD_EVIDENCE_LIMIT),
+          mutationToken: buildTaskMutationToken(task)
+        })),
+        taskTotal: relatedTasks.total,
+        tasksTruncated: relatedTasks.truncated,
         entityNames: Object.fromEntries(this.state.graph.entities
           .filter(entity => namedEntityIds.has(entity.id))
           .map(entity => [entity.id, entity.canonicalName]))

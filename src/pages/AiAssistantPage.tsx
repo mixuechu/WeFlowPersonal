@@ -1487,7 +1487,10 @@ function AiAssistantPage() {
       window.clearTimeout(timer)
       if (graphWorkspaceGate.current.isCurrent(request)) graphWorkspaceGate.current.invalidate()
     }
-  }, [graphQuery, graphRelationType, graphRelationStatus, selectedEntityId, graphFocusDepth, dashboard?.graphRevision])
+  }, [
+    graphQuery, graphRelationType, graphRelationStatus, selectedEntityId, graphFocusDepth,
+    dashboard?.graphRevision, dashboard?.taskRevision
+  ])
 
   useEffect(() => {
     const request = projectWorkspaceGate.current.begin()
@@ -1763,22 +1766,7 @@ function AiAssistantPage() {
   const selectedEntityCorrections = graphWorkspace.focus?.entityCorrections || []
   const selectedEntityRelationCorrections = graphWorkspace.focus?.relationCorrections || []
   const selectedEntityProfileCorrections = graphWorkspace.focus?.entityProfileCorrections || []
-  const selectedEntityTasks = selectedEntity
-    ? tasks.filter(task => {
-      const names = [
-        selectedEntity.canonicalName,
-        ...(selectedEntity.aliases || []),
-        ...(selectedEntity.accountIds || []),
-        ...(selectedEntity.externalIdentities || []).flatMap((identity: any) => [identity.accountId, identity.displayName])
-      ]
-        .map((value: string) => value.trim().toLowerCase()).filter(Boolean)
-      const haystack = [
-        task.title, task.detail, task.owner, task.project, ...(task.collaborators || []),
-        ...(task.evidence || []).map(item => `${item.sender} ${item.excerpt}`)
-      ].join(' ').toLowerCase()
-      return names.some((name: string) => haystack.includes(name))
-    })
-    : []
+  const selectedEntityTasks: Task[] = graphWorkspace.focus?.tasks || []
 
   const syncNow = async () => {
     setSyncing(true)
@@ -6767,7 +6755,7 @@ function AiAssistantPage() {
                 {Number(graphWorkspace.focus?.eventTotal || 0) > selectedEntityEvents.length && <em>当前档案先显示最近 {selectedEntityEvents.length} 条；可从事件时间线继续查看全部记录。</em>}
               </section>
               <section>
-                <h3>关联事项 <small>{selectedEntityTasks.length}</small></h3>
+                <h3>关联事项 <small>{Number(graphWorkspace.focus?.taskTotal ?? selectedEntityTasks.length)}</small></h3>
                 {selectedEntityTasks.map(task => <article key={task.id}>
                   <div>
                     <b>{task.title}</b><span>{task.status}</span>
@@ -6779,6 +6767,10 @@ function AiAssistantPage() {
                   </button>}
                 </article>)}
                 {!selectedEntityTasks.length && <em>尚无关联事项</em>}
+                {graphWorkspace.focus?.tasksTruncated && <em>
+                  当前人物档案显示最近 {selectedEntityTasks.length} / {graphWorkspace.focus.taskTotal} 项，
+                  全部历史可在统一检索中按该人物继续查看。
+                </em>}
               </section>
               <section className="assistant-dossier-wide">
                 <h3>关系变化历史 <small>{selectedEntityRelationHistory.length}</small></h3>

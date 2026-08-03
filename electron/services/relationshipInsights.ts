@@ -11,6 +11,62 @@ export type EntityInsight = {
   explanation: string[]
 }
 
+function normalizedIdentity(value: unknown): string {
+  return String(value || '').trim().toLocaleLowerCase('zh-CN').replace(/\s+/g, '')
+}
+
+function entityTaskNames(entity: any): string[] {
+  return [...new Set([
+    entity.canonicalName,
+    ...(entity.aliases || []),
+    ...(entity.accountIds || []),
+    ...(entity.externalIdentities || []).flatMap((identity: any) => [
+      identity.accountId,
+      identity.displayName
+    ])
+  ].map(normalizedIdentity).filter(Boolean))]
+}
+
+export function taskRelatesToEntity(task: any, entity: any): boolean {
+  const names = entityTaskNames(entity)
+  if (!names.length) return false
+  const exactFields = [
+    task.owner,
+    ...(task.collaborators || []),
+    ...((task.evidence || []).map((item: any) => item.sender))
+  ].map(normalizedIdentity).filter(Boolean)
+  if (exactFields.some(value => names.includes(value))) return true
+  const searchableNames = names.filter(name => name.length >= 2)
+  if (!searchableNames.length) return false
+  const text = normalizedIdentity([
+    task.title,
+    task.detail,
+    task.project,
+    ...(task.evidence || []).map((item: any) => item.excerpt)
+  ].join(' '))
+  return searchableNames.some(name => text.includes(name))
+}
+
+export function listEntityRelatedTasks(
+  entity: any,
+  tasks: any[],
+  limit = 100
+): { items: any[]; total: number; truncated: boolean } {
+  const matches = tasks.filter(task => taskRelatesToEntity(task, entity))
+    .sort((left, right) =>
+      Number(['done', 'cancelled'].includes(left.status)) -
+        Number(['done', 'cancelled'].includes(right.status)) ||
+      String(right.updatedAt || right.createdAt || '')
+        .localeCompare(String(left.updatedAt || left.createdAt || '')) ||
+      String(left.id || '').localeCompare(String(right.id || '')))
+  const safeLimit = Math.max(1, Math.min(200, Math.floor(Number(limit) || 100)))
+  return {
+    items: matches.slice(0, safeLimit),
+    total: matches.length,
+    truncated: matches.length > safeLimit
+  }
+}
+
 export function buildEntityInsights(input: {
   entities: any[]
   relations: any[]
@@ -23,8 +79,6 @@ export function buildEntityInsights(input: {
   const result: Record<string, EntityInsight> = {}
   const trustedIds = new Set(input.entities.filter(entity => entity.trustStatus === 'confirmed').map(entity => entity.id))
   for (const entity of input.entities.filter(entity => entity.trustStatus === 'confirmed')) {
-    const names = [entity.canonicalName, ...(entity.aliases || []), ...(entity.accountIds || [])]
-      .map((value: any) => String(value || '').trim().toLowerCase()).filter(Boolean)
     const relevantRelations = input.relations.filter(relation =>
       relation.status !== 'rejected' && trustedIds.has(relation.subjectId) && trustedIds.has(relation.objectId) &&
       (relation.subjectId === entity.id || relation.objectId === entity.id))
@@ -33,13 +87,8 @@ export function buildEntityInsights(input: {
     const claims = input.claims.filter(claim => claim.status !== 'rejected' && claim.subject_id === entity.id)
     const events = input.events.filter(event => event.status !== 'rejected' &&
       (event.participants || []).some((participant: any) => participant.entity_id === entity.id))
-    const tasks = input.tasks.filter(task => !['done', 'cancelled'].includes(task.status) && [
-      task.owner,
-      ...(task.collaborators || []),
-      task.project,
-      task.title,
-      task.detail
-    ].some(value => names.some(name => String(value || '').toLowerCase().includes(name))))
+    const tasks = input.tasks.filter(task =>
+      !['done', 'cancelled'].includes(task.status) && taskRelatesToEntity(task, entity))
     const evidence = [
       ...relevantRelations.flatMap(relation => relation.evidence || []),
       ...claims.flatMap(claim => claim.evidence || []),

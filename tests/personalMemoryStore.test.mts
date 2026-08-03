@@ -16,7 +16,11 @@ import {
 } from '../electron/services/memorySearchFilters.ts'
 import { buildContextualMemoryQuestion, buildMemoryQueryPlan } from '../electron/services/memoryQueryPlanner.ts'
 import { applyReminderPreferences, buildTaskReminders, findMatchingTask } from '../electron/services/taskIntelligence.ts'
-import { buildEntityInsights } from '../electron/services/relationshipInsights.ts'
+import {
+  buildEntityInsights,
+  listEntityRelatedTasks,
+  taskRelatesToEntity
+} from '../electron/services/relationshipInsights.ts'
 import {
   classifyTaskAssignment,
   evaluateTaskAssignmentPolicy,
@@ -7930,6 +7934,45 @@ test('entity insight strength is explainable and deduplicates shared evidence', 
   assert.equal(insight.strength, 62)
   assert.equal(insight.strengthLabel, '中')
   assert.ok(insight.explanation.some(item => item.includes('去重原文证据')))
+})
+
+test('entity dossiers derive bounded related tasks from the authoritative task set', () => {
+  const entity = {
+    id: 'person-related-tasks',
+    canonicalName: '邢爱妮',
+    aliases: ['爱妮'],
+    accountIds: ['wxid-xingaini'],
+    externalIdentities: [{ platform: 'email', accountId: 'aini@example.com', displayName: 'Aini Xing' }]
+  }
+  const tasks = Array.from({ length: 260 }, (_, index) => ({
+    id: `entity-task-${String(index).padStart(3, '0')}`,
+    title: index % 2 === 0 ? `与邢爱妮确认事项 ${index}` : `普通任务 ${index}`,
+    detail: '',
+    owner: index % 2 === 0 ? '我' : '邢爱妮',
+    collaborators: [],
+    status: index % 7 === 0 ? 'done' : 'todo',
+    updatedAt: new Date(1_700_000_000_000 + index * 1000).toISOString()
+  }))
+  tasks.push({
+    id: 'unrelated-short-name',
+    title: '刑事材料整理',
+    detail: '这个词只碰巧包含一个同音开头',
+    owner: '我',
+    collaborators: [],
+    status: 'todo',
+    updatedAt: '2026-08-04T00:00:00.000Z'
+  })
+  const result = listEntityRelatedTasks(entity, tasks, 100)
+  assert.equal(result.total, 260)
+  assert.equal(result.items.length, 100)
+  assert.equal(result.truncated, true)
+  assert.equal(result.items.some(item => item.id === 'unrelated-short-name'), false)
+  assert.ok(result.items.every(task => taskRelatesToEntity(task, entity)))
+  assert.ok(result.items.slice(0, 10).every(task => !['done', 'cancelled'].includes(task.status)))
+
+  const shortNameEntity = { canonicalName: '李', aliases: [], accountIds: [] }
+  assert.equal(taskRelatesToEntity({ title: '李子采购', owner: '我' }, shortNameEntity), false)
+  assert.equal(taskRelatesToEntity({ title: '普通任务', owner: '李' }, shortNameEntity), true)
 })
 
 test('anonymous task-assignment golden set meets the published quality baseline', () => {
