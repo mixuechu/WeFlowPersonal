@@ -96,6 +96,7 @@ import {
 } from './assistantConversationDeletionPolicy'
 import { assertGraphReviewMutationRevision } from './graphReviewMutationPolicy'
 import { assertTaskOwnershipMutationRevision } from './taskOwnershipMutationPolicy'
+import { assertStructuredMemoryMutationRevision } from './structuredMemoryMutationPolicy'
 import { applyRelationConfirmation, planRelationConfirmation, type RelationCorrection } from './relationCorrectionPolicy'
 import {
   enqueueUniqueNotification,
@@ -4801,7 +4802,16 @@ export class AiAssistantService {
     return { success: true }
   }
 
-  updateMemoryItemStatus(kind: 'claim' | 'event', id: string, status: 'confirmed' | 'rejected'): any {
+  updateMemoryItemStatus(
+    kind: 'claim' | 'event',
+    id: string,
+    status: 'confirmed' | 'rejected',
+    expectedRevision?: string
+  ): any {
+    assertStructuredMemoryMutationRevision(
+      expectedRevision,
+      personalMemoryStore.getStructuredMemoryRevision()
+    )
     if (status === 'confirmed') this.assertStructuredEntityTrust(kind, id)
     return personalMemoryStore.updateMemoryItemStatus(kind, id, status)
   }
@@ -4912,7 +4922,10 @@ export class AiAssistantService {
   }
 
   reviewMemoryDocument(kind: 'relation' | 'claim' | 'event', id: string, decision: 'confirmed' | 'rejected'): any {
-    if (kind === 'claim' || kind === 'event') return this.updateMemoryItemStatus(kind, id, decision)
+    if (kind === 'claim' || kind === 'event') {
+      if (decision === 'confirmed') this.assertStructuredEntityTrust(kind, id)
+      return personalMemoryStore.updateMemoryItemStatus(kind, id, decision)
+    }
     const relation = this.state.graph.relations.find(item => item.id === id)
     if (!relation) return null
     if (decision === 'confirmed') {
@@ -5668,18 +5681,32 @@ export class AiAssistantService {
     return personalMemoryStore.deleteAssistantConversation(conversationId)
   }
 
-  correctClaim(id: string, input: any): any {
+  correctClaim(id: string, input: any, expectedRevision?: string): any {
+    assertStructuredMemoryMutationRevision(
+      expectedRevision,
+      personalMemoryStore.getStructuredMemoryRevision()
+    )
     this.assertStructuredEntityTrust('claim', id)
     return personalMemoryStore.correctClaim(id, input)
   }
 
-  correctEvent(id: string, input: any): any {
+  correctEvent(id: string, input: any, expectedRevision?: string): any {
+    assertStructuredMemoryMutationRevision(
+      expectedRevision,
+      personalMemoryStore.getStructuredMemoryRevision()
+    )
     this.assertStructuredEntityTrust('event', id)
     return personalMemoryStore.correctEvent(id, input)
   }
 
   getMemoryEvent(id: string): any {
-    return personalMemoryStore.getEvent(id)
+    const revision = personalMemoryStore.getStructuredMemoryRevision()
+    const event = personalMemoryStore.getEvent(id)
+    const completedRevision = personalMemoryStore.getStructuredMemoryRevision()
+    if (completedRevision !== revision) {
+      throw new Error('事实与事件档案在读取期间发生了变化，请重新打开')
+    }
+    return event ? { ...event, structuredMemoryRevision: revision } : null
   }
 
   private async schedulerTick(): Promise<void> {

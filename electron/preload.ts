@@ -649,8 +649,12 @@ contextBridge.exposeInMainWorld('electronAPI', {
       relationCorrection?: { subjectId?: string; predicate?: string; objectId?: string }
     }) => ipcRenderer.invoke('ai-assistant:updateGraphReview', id, decision, options),
     revertMerge: (id: number) => ipcRenderer.invoke('ai-assistant:revertMerge', id),
-    updateMemoryItemStatus: (kind: 'claim' | 'event', id: string, status: 'confirmed' | 'rejected') =>
-      ipcRenderer.invoke('ai-assistant:updateMemoryItemStatus', kind, id, status),
+    updateMemoryItemStatus: (
+      kind: 'claim' | 'event',
+      id: string,
+      status: 'confirmed' | 'rejected',
+      expectedRevision?: string
+    ) => ipcRenderer.invoke('ai-assistant:updateMemoryItemStatus', kind, id, status, expectedRevision),
     previewDeleteMemoryItem: (
       kind: 'claim' | 'event' | 'relation',
       id: string,
@@ -705,8 +709,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
       ipcRenderer.invoke('ai-assistant:inspectMemoryBundle', path, passphrase),
     importMemoryBundle: (path: string, passphrase?: string, input?: any) =>
       ipcRenderer.invoke('ai-assistant:importMemoryBundle', path, passphrase, input),
-    correctClaim: (id: string, input: any) => ipcRenderer.invoke('ai-assistant:correctClaim', id, input),
-    correctEvent: (id: string, input: any) => ipcRenderer.invoke('ai-assistant:correctEvent', id, input),
+    correctClaim: (id: string, input: any, expectedRevision?: string) =>
+      ipcRenderer.invoke('ai-assistant:correctClaim', id, input, expectedRevision),
+    correctEvent: (id: string, input: any, expectedRevision?: string) =>
+      ipcRenderer.invoke('ai-assistant:correctEvent', id, input, expectedRevision),
     getMemoryEvent: (id: string) => ipcRenderer.invoke('ai-assistant:getMemoryEvent', id),
     askMemory: (question: string, conversationId?: string, options?: any) => ipcRenderer.invoke('ai-assistant:askMemory', question, conversationId, options),
     getAssistantConversations: (options?: any) => ipcRenderer.invoke('ai-assistant:getAssistantConversations', options),

@@ -7,6 +7,7 @@ import { createHash, randomBytes } from 'node:crypto'
 import { PersonalMemoryStore } from '../electron/services/personalMemoryStore.ts'
 import { assertGraphReviewMutationRevision } from '../electron/services/graphReviewMutationPolicy.ts'
 import { assertTaskOwnershipMutationRevision } from '../electron/services/taskOwnershipMutationPolicy.ts'
+import { assertStructuredMemoryMutationRevision } from '../electron/services/structuredMemoryMutationPolicy.ts'
 import { buildMemorySearchFeedbackContext } from '../electron/services/memorySearchFeedback.ts'
 import {
   filterMemorySearchResults,
@@ -4540,6 +4541,14 @@ test('structured memory revision covers review payloads and repairs its trigger 
       }]
     }])
     assert.ok(Number(first.getStructuredMemoryRevision()) > initial)
+    const visibleRevision = first.getStructuredMemoryRevision()
+    assert.doesNotThrow(() =>
+      assertStructuredMemoryMutationRevision(visibleRevision, first.getStructuredMemoryRevision()))
+    first.updateMemoryItemStatus('claim', 'structured-revision-claim', 'confirmed')
+    assert.throws(
+      () => assertStructuredMemoryMutationRevision(visibleRevision, first.getStructuredMemoryRevision()),
+      /事实与事件档案在展示后发生了变化/
+    )
     assert.deepEqual(first.getStructuredMemoryRevisionHealth(), {
       version: 'structured-memory-revision-v1',
       revision: first.getStructuredMemoryRevision(),

@@ -1762,7 +1762,12 @@ export interface ElectronAPI {
         relationCorrection?: { subjectId?: string; predicate?: string; objectId?: string }
       }) => Promise<any>
       revertMerge: (id: number) => Promise<any>
-      updateMemoryItemStatus: (kind: 'claim' | 'event', id: string, status: 'confirmed' | 'rejected') => Promise<any>
+      updateMemoryItemStatus: (
+        kind: 'claim' | 'event',
+        id: string,
+        status: 'confirmed' | 'rejected',
+        expectedRevision?: string
+      ) => Promise<any>
       previewDeleteMemoryItem: (
         kind: 'claim' | 'event' | 'relation',
         id: string,
@@ -1892,8 +1897,8 @@ export interface ElectronAPI {
         passphrase?: string,
         input?: { previewToken?: string; confirmation?: string }
       ) => Promise<any>
-      correctClaim: (id: string, input: any) => Promise<any>
-      correctEvent: (id: string, input: any) => Promise<any>
+      correctClaim: (id: string, input: any, expectedRevision?: string) => Promise<any>
+      correctEvent: (id: string, input: any, expectedRevision?: string) => Promise<any>
       getMemoryEvent: (id: string) => Promise<any>
       askMemory: (question: string, conversationId?: string, options?: any) => Promise<any>
       getAssistantConversations: (options?: any) => Promise<any>

@@ -4580,8 +4580,9 @@ function registerIpcHandlers() {
     }
   ) => aiAssistantService.updateGraphReview(id, decision, options))
   ipcMain.handle('ai-assistant:revertMerge', (_, id: number) => aiAssistantService.revertMerge(id))
-  ipcMain.handle('ai-assistant:updateMemoryItemStatus', (_, kind: 'claim' | 'event', id: string, status: 'confirmed' | 'rejected') =>
-    aiAssistantService.updateMemoryItemStatus(kind, id, status))
+  ipcMain.handle('ai-assistant:updateMemoryItemStatus', (
+    _, kind: 'claim' | 'event', id: string, status: 'confirmed' | 'rejected', expectedRevision?: string
+  ) => aiAssistantService.updateMemoryItemStatus(kind, id, status, expectedRevision))
   ipcMain.handle('ai-assistant:previewDeleteMemoryItem', (
     _, kind: 'claim' | 'event' | 'relation', id: string, reason?: any
   ) => aiAssistantService.previewDeleteMemoryItem(kind, id, reason))
@@ -4640,8 +4641,12 @@ function registerIpcHandlers() {
     aiAssistantService.inspectMemoryBundle(path, passphrase))
   ipcMain.handle('ai-assistant:importMemoryBundle', (_, path: string, passphrase?: string, input?: any) =>
     aiAssistantService.importMemoryBundle(path, passphrase, input))
-  ipcMain.handle('ai-assistant:correctClaim', (_, id: string, input: any) => aiAssistantService.correctClaim(id, input))
-  ipcMain.handle('ai-assistant:correctEvent', (_, id: string, input: any) => aiAssistantService.correctEvent(id, input))
+  ipcMain.handle('ai-assistant:correctClaim', (
+    _, id: string, input: any, expectedRevision?: string
+  ) => aiAssistantService.correctClaim(id, input, expectedRevision))
+  ipcMain.handle('ai-assistant:correctEvent', (
+    _, id: string, input: any, expectedRevision?: string
+  ) => aiAssistantService.correctEvent(id, input, expectedRevision))
   ipcMain.handle('ai-assistant:getMemoryEvent', (_, id: string) => aiAssistantService.getMemoryEvent(id))
   ipcMain.handle('ai-assistant:askMemory', (_, question: string, conversationId?: string, options?: any) => aiAssistantService.askMemory(question, conversationId, options))
   ipcMain.handle('ai-assistant:getAssistantConversations', (_, options?: any) => aiAssistantService.getAssistantConversations(options))

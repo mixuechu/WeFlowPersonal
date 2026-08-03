@@ -2164,8 +2164,29 @@ function AiAssistantPage() {
   }
 
   const updateMemoryStatus = async (kind: 'claim' | 'event', id: string, nextStatus: 'confirmed' | 'rejected') => {
-    await window.electronAPI.aiAssistant.updateMemoryItemStatus(kind, id, nextStatus)
-    await load()
+    const expectedRevision = kind === 'claim' ? claimArchive.revision : eventTimeline.revision
+    try {
+      await window.electronAPI.aiAssistant.updateMemoryItemStatus(
+        kind,
+        id,
+        nextStatus,
+        String(expectedRevision || '')
+      )
+      await load()
+      setClaimArchiveRefreshKey(value => value + 1)
+      setEventTimelineRefreshKey(value => value + 1)
+    } catch (error: any) {
+      const errorMessage = error?.message || String(error)
+      setMessage(errorMessage)
+      if (errorMessage.includes('事实与事件档案在展示后发生了变化')) {
+        claimArchiveGate.current.invalidate()
+        eventTimelineGate.current.invalidate()
+        setEditingClaim(null)
+        setEditingEvent(null)
+        setClaimArchiveRefreshKey(value => value + 1)
+        setEventTimelineRefreshKey(value => value + 1)
+      }
+    }
   }
 
   const permanentlyDeleteMemoryItem = async (
@@ -2420,13 +2441,28 @@ function AiAssistantPage() {
 
   const saveClaimCorrection = async () => {
     if (!editingClaim?.id || !String(editingClaim.value || '').trim()) return
-    await window.electronAPI.aiAssistant.correctClaim(editingClaim.id, {
-      value: editingClaim.value,
-      validFrom: editingClaim.validFrom,
-      validTo: editingClaim.validTo
-    })
-    setEditingClaim(null)
-    await load()
+    try {
+      await window.electronAPI.aiAssistant.correctClaim(editingClaim.id, {
+        value: editingClaim.value,
+        validFrom: editingClaim.validFrom,
+        validTo: editingClaim.validTo
+      }, String(editingClaim.expectedRevision || ''))
+      setEditingClaim(null)
+      setMessage('事实纠正已确认并写入版本审计；后续重抽取只会追加证据。')
+      await load()
+      setClaimArchiveRefreshKey(value => value + 1)
+      setEventTimelineRefreshKey(value => value + 1)
+    } catch (error: any) {
+      const errorMessage = error?.message || String(error)
+      setMessage(errorMessage)
+      if (errorMessage.includes('事实与事件档案在展示后发生了变化')) {
+        claimArchiveGate.current.invalidate()
+        eventTimelineGate.current.invalidate()
+        setEditingClaim(null)
+        setClaimArchiveRefreshKey(value => value + 1)
+        setEventTimelineRefreshKey(value => value + 1)
+      }
+    }
   }
 
   const beginEventCorrection = (event: any) => {
@@ -2437,7 +2473,8 @@ function AiAssistantPage() {
       description: event.description || '',
       startAt: isoToShanghaiInput(event.start_at),
       endAt: isoToShanghaiInput(event.end_at),
-      location: event.location || ''
+      location: event.location || '',
+      expectedRevision: String(event.structuredMemoryRevision || eventTimeline.revision || '')
     })
     window.setTimeout(() =>
       document.getElementById(`memory-event-${event.id}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' }), 0)
@@ -2453,12 +2490,22 @@ function AiAssistantPage() {
         startAt: shanghaiInputToIso(editingEvent.startAt),
         endAt: shanghaiInputToIso(editingEvent.endAt),
         location: editingEvent.location
-      })
+      }, String(editingEvent.expectedRevision || ''))
       setEditingEvent(null)
       setMessage('事件纠正已确认并写入版本审计；后续重抽取只会追加证据。')
       await load()
+      setClaimArchiveRefreshKey(value => value + 1)
+      setEventTimelineRefreshKey(value => value + 1)
     } catch (error: any) {
-      setMessage(error?.message || String(error))
+      const errorMessage = error?.message || String(error)
+      setMessage(errorMessage)
+      if (errorMessage.includes('事实与事件档案在展示后发生了变化')) {
+        claimArchiveGate.current.invalidate()
+        eventTimelineGate.current.invalidate()
+        setEditingEvent(null)
+        setClaimArchiveRefreshKey(value => value + 1)
+        setEventTimelineRefreshKey(value => value + 1)
+      }
     }
   }
 
@@ -3166,7 +3213,8 @@ function AiAssistantPage() {
       id: claim.id,
       value: claim.object_entity_name || claim.object_value || '',
       validFrom: claim.valid_from || '',
-      validTo: claim.valid_to || ''
+      validTo: claim.valid_to || '',
+      expectedRevision: String(claimArchive.revision || '')
     })
     window.setTimeout(() => document.getElementById(`memory-claim-${claim.id}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' }), 0)
   }
@@ -4830,7 +4878,13 @@ function AiAssistantPage() {
                 <div className="assistant-memory-actions">
                   {editingClaim?.id === claim.id
                     ? <><button onClick={() => setEditingClaim(null)}>取消</button><button className="primary" onClick={() => void saveClaimCorrection()}>保存纠正</button></>
-                    : <button disabled={!claimEntitiesTrusted(claim)} title={!claimEntitiesTrusted(claim) ? '请先确认事实涉及的实体' : ''} onClick={() => setEditingClaim({ id: claim.id, value: claim.object_entity_name || claim.object_value || '', validFrom: claim.valid_from || '', validTo: claim.valid_to || '' })}>纠正</button>}
+                    : <button disabled={!claimEntitiesTrusted(claim)} title={!claimEntitiesTrusted(claim) ? '请先确认事实涉及的实体' : ''} onClick={() => setEditingClaim({
+                      id: claim.id,
+                      value: claim.object_entity_name || claim.object_value || '',
+                      validFrom: claim.valid_from || '',
+                      validTo: claim.valid_to || '',
+                      expectedRevision: String(claimArchive.revision || '')
+                    })}>纠正</button>}
                   {claim.status !== 'rejected' &&
                     <button onClick={() => void updateMemoryStatus('claim', claim.id, 'rejected')}>不准确</button>}
                   <button onClick={() => void ignoreMemoryItem('claim', claim)}>不重要</button>
