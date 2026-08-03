@@ -6249,17 +6249,10 @@ export class PersonalMemoryStore {
       SELECT ep.entity_id,ep.role,e.canonical_name
       FROM event_participants ep JOIN entities e ON e.id=ep.entity_id WHERE ep.event_id=?
     `)
-    const reviewStatement = this.db.prepare(`
-      SELECT previous_status,decision,actor,reason,protect_from_extraction,created_at
-      FROM memory_review_decisions
-      WHERE item_kind='event' AND item_id=?
-      ORDER BY id DESC LIMIT 20
-    `)
     const items = rows.map(event => ({
       ...event,
       participants: participantStatement.all(event.id) as any[],
-      evidence: (evidenceStatement.all(event.id, MEMORY_CARD_EVIDENCE_LIMIT) as any[]).reverse(),
-      review_history: reviewStatement.all(event.id) as any[]
+      evidence: (evidenceStatement.all(event.id, MEMORY_CARD_EVIDENCE_LIMIT) as any[]).reverse()
     }))
     const completedRevision = this.getStructuredMemoryRevision()
     if (completedRevision !== revision) {
@@ -6319,6 +6312,104 @@ export class PersonalMemoryStore {
       evidenceTotal: Number(relation.evidence_count || 0)
     }))
     const completedRevision = currentRevision()
+    if (completedRevision !== revision) {
+      return { items: [], total: 0, hasMore: false, revision: completedRevision, stale: true }
+    }
+    return {
+      items,
+      total,
+      hasMore: offset + rows.length < total,
+      revision,
+      stale: false
+    }
+  }
+
+  listMemoryItemAuditPage(options: {
+    kind: 'claim' | 'event'
+    itemId: string
+    limit?: number
+    offset?: number
+    revision?: string
+  }): { items: any[]; total: number; hasMore: boolean; revision: string; stale: boolean } {
+    if (!this.db) return { items: [], total: 0, hasMore: false, revision: '0', stale: false }
+    const revision = this.getStructuredMemoryRevision()
+    const kind = options.kind === 'event' ? 'event' : 'claim'
+    const itemId = String(options.itemId || '').trim()
+    const table = kind === 'event' ? 'events' : 'claims'
+    if (!itemId || !this.db.prepare(`SELECT 1 FROM ${table} WHERE id=?`).get(itemId)) {
+      return { items: [], total: 0, hasMore: false, revision, stale: false }
+    }
+    const offset = Math.max(0, Math.min(1_000_000, Math.floor(Number(options.offset) || 0)))
+    const expectedRevision = String(options.revision || '').trim()
+    if (offset > 0 && expectedRevision !== revision) {
+      return { items: [], total: 0, hasMore: false, revision, stale: true }
+    }
+    const total = Number((this.db.prepare(`
+      SELECT
+        (SELECT COUNT(*) FROM memory_corrections WHERE item_kind=? AND item_id=?) +
+        (SELECT COUNT(*) FROM memory_review_decisions WHERE item_kind=? AND item_id=?) AS count
+    `).get(kind, itemId, kind, itemId) as any)?.count || 0)
+    const limit = Math.max(1, Math.min(100, Math.floor(Number(options.limit) || 40)))
+    const rows = this.db.prepare(`
+      SELECT * FROM (
+        SELECT 'correction' AS audit_kind,id AS audit_id,created_at,
+          before_json,after_json,
+          NULL AS previous_status,NULL AS decision,NULL AS actor,NULL AS reason,
+          NULL AS protect_from_extraction
+        FROM memory_corrections WHERE item_kind=? AND item_id=?
+        UNION ALL
+        SELECT 'review' AS audit_kind,id AS audit_id,created_at,
+          NULL AS before_json,NULL AS after_json,
+          previous_status,decision,actor,reason,protect_from_extraction
+        FROM memory_review_decisions WHERE item_kind=? AND item_id=?
+      )
+      ORDER BY created_at DESC,audit_kind ASC,audit_id DESC
+      LIMIT ? OFFSET ?
+    `).all(kind, itemId, kind, itemId, limit, offset) as any[]
+    const snapshot = (raw: unknown): any => {
+      let value: any = {}
+      try { value = JSON.parse(String(raw || '{}')) } catch {}
+      return kind === 'claim'
+        ? {
+            value: String(value.object_value || ''),
+            objectEntityId: String(value.object_entity_id || ''),
+            predicate: String(value.predicate || ''),
+            polarity: String(value.polarity || ''),
+            validFrom: String(value.valid_from || ''),
+            validTo: String(value.valid_to || ''),
+            status: String(value.status || ''),
+            sourceNature: String(value.source_nature || '')
+          }
+        : {
+            title: String(value.title || ''),
+            eventType: String(value.event_type || ''),
+            description: String(value.description || ''),
+            startAt: String(value.start_at || ''),
+            endAt: String(value.end_at || ''),
+            location: String(value.location || ''),
+            status: String(value.status || ''),
+            sourceNature: String(value.source_nature || '')
+          }
+    }
+    const items = rows.map(row => row.audit_kind === 'correction'
+      ? {
+          id: `correction:${row.audit_id}`,
+          auditKind: 'correction',
+          createdAt: row.created_at,
+          before: snapshot(row.before_json),
+          after: snapshot(row.after_json)
+        }
+      : {
+          id: `review:${row.audit_id}`,
+          auditKind: 'review',
+          createdAt: row.created_at,
+          previousStatus: row.previous_status,
+          decision: row.decision,
+          actor: row.actor,
+          reason: row.reason,
+          protectFromExtraction: Boolean(row.protect_from_extraction)
+        })
+    const completedRevision = this.getStructuredMemoryRevision()
     if (completedRevision !== revision) {
       return { items: [], total: 0, hasMore: false, revision: completedRevision, stale: true }
     }
@@ -6426,16 +6517,9 @@ export class PersonalMemoryStore {
         CASE WHEN evidence_role='contradiction' THEN 0 ELSE 1 END,
         message_id DESC LIMIT ?
     `)
-    const reviewStatement = this.db.prepare(`
-      SELECT previous_status,decision,actor,reason,protect_from_extraction,created_at
-      FROM memory_review_decisions
-      WHERE item_kind='claim' AND item_id=?
-      ORDER BY id DESC LIMIT 20
-    `)
     const items = rows.map(claim => ({
       ...claim,
-      evidence: (evidenceStatement.all(claim.id, MEMORY_CARD_EVIDENCE_LIMIT) as any[]).reverse(),
-      review_history: reviewStatement.all(claim.id) as any[]
+      evidence: (evidenceStatement.all(claim.id, MEMORY_CARD_EVIDENCE_LIMIT) as any[]).reverse()
     }))
     const completedRevision = this.getStructuredMemoryRevision()
     if (completedRevision !== revision) {

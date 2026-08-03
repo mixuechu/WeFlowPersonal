@@ -1704,6 +1704,17 @@ export interface ElectronAPI {
         revision: string
         stale: boolean
       }>
+      getMemoryItemAuditPage: (
+        kind: 'claim' | 'event',
+        itemId: string,
+        options?: { limit?: number; offset?: number; revision?: string }
+      ) => Promise<{
+        items: any[]
+        total: number
+        hasMore: boolean
+        revision: string
+        stale: boolean
+      }>
       getProjectWorkspace: (projectId: string) => Promise<{
         project: any
         payloadPolicy: { version: string; evidence: string; loadedOnDemand: boolean }

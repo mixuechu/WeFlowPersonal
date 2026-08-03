@@ -6833,9 +6833,13 @@ test('human claim and event review decisions survive repeated extraction and rem
   assert.equal(reviewedClaim.evidence_count, 3)
   const claimArchive = store.listClaimArchive({ status: 'confirmed' })
   assert.equal(claimArchive.items[0].protected_review_count, 2)
-  assert.equal(claimArchive.items[0].review_history.length, 2)
-  assert.equal(claimArchive.items[0].review_history[0].previous_status, 'rejected')
-  assert.equal(claimArchive.items[0].review_history[0].decision, 'confirmed')
+  assert.equal('review_history' in claimArchive.items[0], false)
+  const claimAudit = store.listMemoryItemAuditPage({
+    kind: 'claim', itemId: claim.id, limit: 40
+  })
+  assert.equal(claimAudit.total, 2)
+  assert.equal(claimAudit.items[0].previousStatus, 'rejected')
+  assert.equal(claimAudit.items[0].decision, 'confirmed')
 
   const event = {
     id: 'event-reviewed',
@@ -6866,8 +6870,12 @@ test('human claim and event review decisions survive repeated extraction and rem
   assert.equal(reviewedEvent.evidence_count, 2)
   const eventTimeline = store.listEventTimeline({ status: 'rejected' })
   assert.equal(eventTimeline.items[0].protected_review_count, 1)
-  assert.equal(eventTimeline.items[0].review_history.length, 1)
-  assert.equal(eventTimeline.items[0].review_history[0].decision, 'rejected')
+  assert.equal('review_history' in eventTimeline.items[0], false)
+  const eventAudit = store.listMemoryItemAuditPage({
+    kind: 'event', itemId: event.id, limit: 40
+  })
+  assert.equal(eventAudit.total, 1)
+  assert.equal(eventAudit.items[0].decision, 'rejected')
 
   const systemPolicyClaim = {
     ...claim,
@@ -6905,10 +6913,90 @@ test('human claim and event review decisions survive repeated extraction and rem
   const systemReviewArchive = store.listClaimArchive({ status: 'rejected' })
     .items.find(item => item.id === systemPolicyClaim.id)
   assert.equal(systemReviewArchive.protected_review_count, 1)
-  assert.equal(systemReviewArchive.review_history[0].actor, 'system')
-  assert.equal(systemReviewArchive.review_history[0].reason, '关联实体已被用户拒绝')
-  assert.equal(systemReviewArchive.review_history[0].protect_from_extraction, 1)
-  assert.equal(systemReviewArchive.review_history[1].protect_from_extraction, 0)
+  const systemAudit = store.listMemoryItemAuditPage({
+    kind: 'claim', itemId: systemPolicyClaim.id, limit: 40
+  })
+  assert.equal(systemAudit.items[0].actor, 'system')
+  assert.equal(systemAudit.items[0].reason, '关联实体已被用户拒绝')
+  assert.equal(systemAudit.items[0].protectFromExtraction, true)
+  assert.equal(systemAudit.items[1].protectFromExtraction, false)
+}))
+
+test('claim and event audit histories paginate all corrections and decisions with one revision', () => withStore(store => {
+  store.syncGraph({
+    entities: [{ id: 'audit-person', type: 'person', canonicalName: '审计人物', aliases: [], accountIds: [] }],
+    relations: [],
+    reviewQueue: []
+  })
+  const claim = {
+    id: 'claim-long-audit',
+    subjectId: 'audit-person',
+    predicate: '所在城市',
+    objectValue: '城市 0',
+    confidence: 0.8,
+    status: 'candidate',
+    sourceNature: 'other_statement',
+    searchText: '审计人物 所在城市',
+    evidence: evidence('claim-long-audit-message', '事实审计原文')
+  }
+  store.upsertClaims([claim])
+  for (let index = 0; index < 125; index += 1) {
+    store.updateMemoryItemStatus(
+      'claim',
+      claim.id,
+      index % 2 ? 'confirmed' : 'rejected',
+      { reason: `裁决 ${index}` }
+    )
+  }
+  for (let index = 1; index <= 5; index += 1) {
+    store.correctClaim(claim.id, { value: `城市 ${index}`, validFrom: `2026-0${index}-01` })
+  }
+  const first = store.listMemoryItemAuditPage({
+    kind: 'claim', itemId: claim.id, limit: 40
+  })
+  const second = store.listMemoryItemAuditPage({
+    kind: 'claim', itemId: claim.id, limit: 40, offset: 40, revision: first.revision
+  })
+  assert.equal(first.total, 130)
+  assert.equal(first.items.length, 40)
+  assert.equal(second.items.length, 40)
+  assert.equal(new Set([...first.items, ...second.items].map(item => item.id)).size, 80)
+  const corrections = [...first.items, ...second.items].filter(item => item.auditKind === 'correction')
+  assert.ok(corrections.length > 0)
+  assert.ok(corrections.every(item => item.before && item.after))
+
+  const event = {
+    id: 'event-audit-revision',
+    eventType: 'meeting',
+    title: '审计会议',
+    description: '初始说明',
+    confidence: 0.8,
+    status: 'candidate',
+    sourceNature: 'other_statement',
+    searchText: '审计会议',
+    participants: [{ entityId: 'audit-person', role: 'participant' }],
+    evidence: evidence('event-audit-revision-message', '事件审计原文')
+  }
+  store.upsertEvents([event])
+  store.correctEvent(event.id, {
+    title: '审计会议（已修正）',
+    eventType: 'meeting',
+    description: '人工修正说明',
+    startAt: '2026-08-04T09:00:00+08:00',
+    location: '上海'
+  })
+  const stale = store.listMemoryItemAuditPage({
+    kind: 'claim', itemId: claim.id, limit: 40, offset: 80, revision: first.revision
+  })
+  assert.equal(stale.stale, true)
+  const eventPage = store.listMemoryItemAuditPage({
+    kind: 'event', itemId: event.id, limit: 40
+  })
+  assert.equal(eventPage.total, 1)
+  assert.equal(eventPage.items[0].auditKind, 'correction')
+  assert.equal(eventPage.items[0].before.title, '审计会议')
+  assert.equal(eventPage.items[0].after.title, '审计会议（已修正）')
+  assert.equal(eventPage.items[0].after.location, '上海')
 }))
 
 test('human memory review survives process restart and legacy startup normalization', () => {

@@ -101,6 +101,58 @@ function EvidenceRows({
   </>
 }
 
+function memoryAuditStatusLabel(value: string): string {
+  return value === 'confirmed' ? '已确认'
+    : value === 'rejected' ? '不准确'
+      : value === 'cancelled' ? '已取消' : '待确认'
+}
+
+function memoryAuditSnapshotText(kind: 'claim' | 'event', value: any): string {
+  if (kind === 'claim') {
+    const object = value?.value || (value?.objectEntityId ? `实体 ${value.objectEntityId}` : '空值')
+    const validity = value?.validFrom || value?.validTo
+      ? ` · 有效期 ${value.validFrom || '未知'}—${value.validTo || '至今'}` : ''
+    return `${value?.predicate || '事实'}：${value?.polarity === 'negative' ? '否定 ' : ''}${object}` +
+      ` · ${memoryAuditStatusLabel(value?.status || '')}${validity}`
+  }
+  return `${value?.title || '未命名事件'} · ${value?.eventType || '事件'}` +
+    `${value?.startAt || value?.endAt ? ` · ${value.startAt || '未知'}—${value.endAt || '未结束'}` : ''}` +
+    `${value?.location ? ` · ${value.location}` : ''} · ${memoryAuditStatusLabel(value?.status || '')}`
+}
+
+function MemoryItemAuditRows({ kind, items }: { kind: 'claim' | 'event'; items: any[] }) {
+  return <div className="assistant-evidence-stack">
+    {items.map(item => item.auditKind === 'correction'
+      ? <small key={item.id}>
+          <b>本人纠正</b> · {new Date(item.createdAt).toLocaleString('zh-CN')}<br />
+          修正前：{memoryAuditSnapshotText(kind, item.before)}<br />
+          修正后：{memoryAuditSnapshotText(kind, item.after)}
+        </small>
+      : <small key={item.id}>
+          <b>{item.actor === 'system' ? '系统规则' : '本人操作'}</b> ·
+          {memoryAuditStatusLabel(item.previousStatus)} → {memoryAuditStatusLabel(item.decision)}
+          {' · '}{new Date(item.createdAt).toLocaleString('zh-CN')}
+          {item.reason ? ` · ${item.reason}` : ''}
+          {item.protectFromExtraction ? ' · 阻止模型覆盖' : ' · 不冻结模型更新'}
+        </small>)}
+  </div>
+}
+
+function setBoundedAuditCache(
+  current: Record<string, any>,
+  key: string,
+  value: any,
+  limit = 12
+): Record<string, any> {
+  const next = { ...current }
+  delete next[key]
+  next[key] = value
+  for (const expired of Object.keys(next).slice(0, Math.max(0, Object.keys(next).length - limit))) {
+    delete next[expired]
+  }
+  return next
+}
+
 function IngestionBatchAudit({ batch, run }: { batch: any; run: any }) {
   return <article className={batch.status}>
     <div><b>批次 {Number(batch.batch_index) + 1}</b><span>{batch.status} · {batch.message_count} 条 · 尝试 {batch.attempts} 次</span></div>
@@ -473,6 +525,9 @@ function AiAssistantPage() {
   const conversationDeletionGate = useRef(new LatestRequestGate())
   const [editingClaim, setEditingClaim] = useState<any>(null)
   const [editingEvent, setEditingEvent] = useState<any>(null)
+  const [memoryItemAudits, setMemoryItemAudits] = useState<Record<string, any>>({})
+  const [memoryItemAuditLoading, setMemoryItemAuditLoading] = useState('')
+  const memoryItemAuditRequests = useRef<Record<string, symbol>>({})
   const [memoryDeletionDialog, setMemoryDeletionDialog] = useState<any>(null)
   const [memoryDeletionConfirmation, setMemoryDeletionConfirmation] = useState('')
   const memoryDeletionGate = useRef(new LatestRequestGate())
@@ -1878,6 +1933,56 @@ function AiAssistantPage() {
       if (eventTimelineGate.current.isCurrent(request)) setEventLoadingMore(false)
     }
   }
+  const loadMemoryItemAudit = async (
+    kind: 'claim' | 'event',
+    itemId: string,
+    loadMore = false
+  ) => {
+    const key = `${kind}:${itemId}`
+    if (memoryItemAuditLoading === key) return
+    const current = memoryItemAudits[key]
+    if (loadMore && !current?.hasMore) return
+    const request = Symbol(key)
+    memoryItemAuditRequests.current[key] = request
+    setMemoryItemAuditLoading(key)
+    try {
+      const readPage = (offset: number, revision = '') =>
+        window.electronAPI.aiAssistant.getMemoryItemAuditPage(kind, itemId, {
+          limit: 40,
+          offset,
+          revision
+        })
+      let resetToLatest = false
+      let page = await readPage(loadMore ? current.items.length : 0, loadMore ? current.revision : '')
+      if (memoryItemAuditRequests.current[key] !== request) return
+      if (page.stale) {
+        resetToLatest = true
+        setMessage('这条记忆的审计历史在浏览期间已有变化，已从最新第一页重新载入。')
+        page = await readPage(0)
+        if (memoryItemAuditRequests.current[key] !== request) return
+      }
+      setMemoryItemAudits(existing => setBoundedAuditCache(existing, key, {
+          ...page,
+          items: loadMore && !resetToLatest
+            ? [...(existing[key]?.items || []), ...page.items.filter((item: any) =>
+                !(existing[key]?.items || []).some((known: any) => known.id === item.id))]
+            : page.items,
+          status: 'ready'
+        }))
+    } catch (error: any) {
+      if (memoryItemAuditRequests.current[key] !== request) return
+      setMemoryItemAudits(existing => setBoundedAuditCache(existing, key, {
+          ...(existing[key] || {}),
+          status: 'error',
+          error: error?.message || String(error)
+        }))
+    } finally {
+      if (memoryItemAuditRequests.current[key] === request) {
+        delete memoryItemAuditRequests.current[key]
+        setMemoryItemAuditLoading('')
+      }
+    }
+  }
   const loadMoreResources = async () => {
     if (resourceLoadingMore || !resourceArchive.hasMore) return
     const request = resourceArchiveGate.current.begin()
@@ -3227,6 +3332,7 @@ function AiAssistantPage() {
       await load()
       setClaimArchiveRefreshKey(value => value + 1)
       setEventTimelineRefreshKey(value => value + 1)
+      if (memoryItemAudits[`${kind}:${id}`]) void loadMemoryItemAudit(kind, id)
     } catch (error: any) {
       const errorMessage = error?.message || String(error)
       setMessage(errorMessage)
@@ -3496,6 +3602,7 @@ function AiAssistantPage() {
 
   const saveClaimCorrection = async () => {
     if (!editingClaim?.id || !String(editingClaim.value || '').trim()) return
+    const correctedClaimId = editingClaim.id
     try {
       await window.electronAPI.aiAssistant.correctClaim(editingClaim.id, {
         value: editingClaim.value,
@@ -3507,6 +3614,9 @@ function AiAssistantPage() {
       await load()
       setClaimArchiveRefreshKey(value => value + 1)
       setEventTimelineRefreshKey(value => value + 1)
+      if (memoryItemAudits[`claim:${correctedClaimId}`]) {
+        void loadMemoryItemAudit('claim', correctedClaimId)
+      }
     } catch (error: any) {
       const errorMessage = error?.message || String(error)
       setMessage(errorMessage)
@@ -3537,6 +3647,7 @@ function AiAssistantPage() {
 
   const saveEventCorrection = async () => {
     if (!editingEvent?.id || !String(editingEvent.title || '').trim()) return
+    const correctedEventId = editingEvent.id
     try {
       await window.electronAPI.aiAssistant.correctEvent(editingEvent.id, {
         title: editingEvent.title,
@@ -3551,6 +3662,9 @@ function AiAssistantPage() {
       await load()
       setClaimArchiveRefreshKey(value => value + 1)
       setEventTimelineRefreshKey(value => value + 1)
+      if (memoryItemAudits[`event:${correctedEventId}`]) {
+        void loadMemoryItemAudit('event', correctedEventId)
+      }
     } catch (error: any) {
       const errorMessage = error?.message || String(error)
       setMessage(errorMessage)
@@ -6208,19 +6322,28 @@ function AiAssistantPage() {
                     ? ` 其中 ${claim.protected_review_count} 次决定受重抽取保护，模型只能追加原文。`
                     : ' 当前仅有系统临时调整，不会冻结后续模型更新。'}
                 </small>}
-                {!!claim.review_history?.length && <details className="assistant-evidence-details">
-                  <summary>查看人工审阅历史（最近 {claim.review_history.length}/{claim.review_count} 次）</summary>
-                  <div className="assistant-evidence-stack">
-                    {claim.review_history.map((review: any, index: number) => <small key={`${review.created_at}-${index}`}>
-                      {review.previous_status === 'confirmed' ? '已确认' : review.previous_status === 'rejected' ? '不准确' : '待确认'}
-                      {' → '}
-                      {review.decision === 'confirmed' ? '已确认' : '不准确'}
-                      {' · '}{review.actor === 'system' ? '系统规则' : '本人操作'}
-                      {review.reason ? ` · ${review.reason}` : ''}
-                      {' · '}{new Date(review.created_at).toLocaleString('zh-CN')}
-                    </small>)}
-                  </div>
-                </details>}
+                {Number(claim.review_count || 0) + Number(claim.correction_count || 0) > 0 &&
+                  <details className="assistant-evidence-details" onToggle={event => {
+                    if (event.currentTarget.open && !memoryItemAudits[`claim:${claim.id}`]) {
+                      void loadMemoryItemAudit('claim', claim.id)
+                    }
+                  }}>
+                    <summary>
+                      查看完整可信审计（{Number(claim.review_count || 0) + Number(claim.correction_count || 0)} 条）
+                    </summary>
+                    {memoryItemAudits[`claim:${claim.id}`]?.status === 'error' &&
+                      <small>审计读取失败：{memoryItemAudits[`claim:${claim.id}`].error}</small>}
+                    {memoryItemAudits[`claim:${claim.id}`]?.items &&
+                      <MemoryItemAuditRows kind="claim" items={memoryItemAudits[`claim:${claim.id}`].items} />}
+                    {memoryItemAuditLoading === `claim:${claim.id}` &&
+                      <small>正在读取 SQLCipher 审计账本…</small>}
+                    {memoryItemAudits[`claim:${claim.id}`]?.hasMore && <button
+                      disabled={memoryItemAuditLoading === `claim:${claim.id}`}
+                      onClick={() => void loadMemoryItemAudit('claim', claim.id, true)}>
+                      加载更多（已显示 {memoryItemAudits[`claim:${claim.id}`].items.length} /
+                      {memoryItemAudits[`claim:${claim.id}`].total}）
+                    </button>}
+                  </details>}
                 {!claimEntitiesTrusted(claim) && <small>涉及的实体尚未确认；请先在图谱候选区确认实体，之后才能确认或纠正此事实。</small>}
                 {claim.polarity === 'negative' && <small>该条是对“{claim.predicate}”的明确否定陈述，仍需结合反证人工确认。</small>}
                 {(claim.valid_from || claim.valid_to) && <small>有效期：{claim.valid_from || '未知'} — {claim.valid_to || '至今'}</small>}
@@ -6317,19 +6440,28 @@ function AiAssistantPage() {
                     ? ` 其中 ${event.protected_review_count} 次决定受重抽取保护，模型只能追加原文。`
                     : ' 当前仅有系统临时调整，不会冻结后续模型更新。'}
                 </small>}
-                {!!event.review_history?.length && <details className="assistant-evidence-details">
-                  <summary>查看人工审阅历史（最近 {event.review_history.length}/{event.review_count} 次）</summary>
-                  <div className="assistant-evidence-stack">
-                    {event.review_history.map((review: any, index: number) => <small key={`${review.created_at}-${index}`}>
-                      {review.previous_status === 'confirmed' ? '已确认' : review.previous_status === 'rejected' ? '不准确' : '待确认'}
-                      {' → '}
-                      {review.decision === 'confirmed' ? '已确认' : '不准确'}
-                      {' · '}{review.actor === 'system' ? '系统规则' : '本人操作'}
-                      {review.reason ? ` · ${review.reason}` : ''}
-                      {' · '}{new Date(review.created_at).toLocaleString('zh-CN')}
-                    </small>)}
-                  </div>
-                </details>}
+                {Number(event.review_count || 0) + Number(event.correction_count || 0) > 0 &&
+                  <details className="assistant-evidence-details" onToggle={toggle => {
+                    if (toggle.currentTarget.open && !memoryItemAudits[`event:${event.id}`]) {
+                      void loadMemoryItemAudit('event', event.id)
+                    }
+                  }}>
+                    <summary>
+                      查看完整可信审计（{Number(event.review_count || 0) + Number(event.correction_count || 0)} 条）
+                    </summary>
+                    {memoryItemAudits[`event:${event.id}`]?.status === 'error' &&
+                      <small>审计读取失败：{memoryItemAudits[`event:${event.id}`].error}</small>}
+                    {memoryItemAudits[`event:${event.id}`]?.items &&
+                      <MemoryItemAuditRows kind="event" items={memoryItemAudits[`event:${event.id}`].items} />}
+                    {memoryItemAuditLoading === `event:${event.id}` &&
+                      <small>正在读取 SQLCipher 审计账本…</small>}
+                    {memoryItemAudits[`event:${event.id}`]?.hasMore && <button
+                      disabled={memoryItemAuditLoading === `event:${event.id}`}
+                      onClick={() => void loadMemoryItemAudit('event', event.id, true)}>
+                      加载更多（已显示 {memoryItemAudits[`event:${event.id}`].items.length} /
+                      {memoryItemAudits[`event:${event.id}`].total}）
+                    </button>}
+                  </details>}
                 {!!event.participants?.length && <small>参与者：{event.participants.map((item: any) => `${item.canonical_name}（${item.role}）`).join('、')}</small>}
                 {!eventEntitiesTrusted(event) && <small>存在尚未确认的参与实体；请先在图谱候选区确认实体，之后才能确认或纠正此事件。</small>}
                 <div className="assistant-evidence-stack">

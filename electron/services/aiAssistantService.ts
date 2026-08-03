@@ -4063,6 +4063,20 @@ export class AiAssistantService {
     })
   }
 
+  getMemoryItemAuditPage(kind: string, itemId: string, options: any = {}): any {
+    const normalizedKind = String(kind || '')
+    if (!['claim', 'event'].includes(normalizedKind)) throw new Error('无效的记忆类型')
+    const id = String(itemId || '').trim()
+    if (!id) throw new Error('记忆 ID 不能为空')
+    return personalMemoryStore.listMemoryItemAuditPage({
+      kind: normalizedKind as 'claim' | 'event',
+      itemId: id,
+      limit: Number(options?.limit || 40),
+      offset: Number(options?.offset || 0),
+      revision: String(options?.revision || '')
+    })
+  }
+
   getProjectWorkspace(projectId: string): any {
     const id = String(projectId || '').trim()
     if (!id) throw new Error('请选择项目')
