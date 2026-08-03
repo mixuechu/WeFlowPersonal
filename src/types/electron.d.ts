@@ -1764,7 +1764,13 @@ export interface ElectronAPI {
         items: any[]
         total: number
         hasMore: boolean
-        projects: string[]
+        revision: string
+        stale: boolean
+      }>
+      getTaskArchiveProjects: (options?: any) => Promise<{
+        items: Array<{ project: string; taskTotal: number; lastUpdatedAt: string }>
+        total: number
+        hasMore: boolean
         revision: string
         stale: boolean
       }>

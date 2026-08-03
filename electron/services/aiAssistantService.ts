@@ -3773,6 +3773,15 @@ export class AiAssistantService {
     }
   }
 
+  getTaskArchiveProjects(options: any = {}): any {
+    return personalMemoryStore.listTaskArchiveProjects({
+      query: String(options?.query || ''),
+      limit: Number(options?.limit || 40),
+      offset: Number(options?.offset || 0),
+      revision: String(options?.revision || '')
+    })
+  }
+
   getActiveTaskWorkset(options: any = {}): any {
     const page = personalMemoryStore.listActiveTaskWorkset({
       taskId: String(options?.taskId || ''),

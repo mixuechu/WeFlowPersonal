@@ -4562,6 +4562,8 @@ function registerIpcHandlers() {
     aiAssistantService.getActiveTaskWorkset(options))
   ipcMain.handle('ai-assistant:getTaskArchive', (_, options?: any) =>
     aiAssistantService.getTaskArchive(options))
+  ipcMain.handle('ai-assistant:getTaskArchiveProjects', (_, options?: any) =>
+    aiAssistantService.getTaskArchiveProjects(options))
   ipcMain.handle('ai-assistant:getTaskOwnershipReviews', (_, options?: any) =>
     aiAssistantService.getTaskOwnershipReviews(options))
   ipcMain.handle('ai-assistant:getTaskReviewDecisionPage', (_, options?: any) =>

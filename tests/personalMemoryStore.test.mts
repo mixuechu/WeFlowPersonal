@@ -4222,6 +4222,52 @@ test('closed task archive stays fully pageable without copying evidence into its
   assert.equal(store.listTaskArchive().total, 399)
 }))
 
+test('closed task project directory stays searchable and pageable beyond 500 projects', () => withStore(store => {
+  const tasks = Array.from({ length: 625 }, (_, index) => ({
+    id: `archive-project-task-${String(index).padStart(4, '0')}`,
+    title: `项目归档任务 ${index}`,
+    project: index === 611 ? '远古火星迁移计划' : `历史项目 ${String(index).padStart(4, '0')}`,
+    priority: 'medium',
+    confidence: 0.9,
+    classification: 'mine',
+    status: 'done',
+    createdAt: new Date(1_500_000_000_000 + index * 10_000).toISOString(),
+    updatedAt: new Date(1_700_000_000_000 + index * 10_000).toISOString(),
+    evidence: []
+  }))
+  store.syncTasks(tasks)
+
+  const first = store.listTaskArchiveProjects({ limit: 100 })
+  const sixth = store.listTaskArchiveProjects({
+    offset: 500,
+    limit: 100,
+    revision: first.revision
+  })
+  assert.equal(first.total, 625)
+  assert.equal(first.items.length, 100)
+  assert.equal(first.hasMore, true)
+  assert.equal(sixth.items.length, 100)
+  assert.equal(sixth.stale, false)
+  assert.equal(new Set([...first.items, ...sixth.items].map(item => item.project)).size, 200)
+
+  const searched = store.listTaskArchiveProjects({ query: '火星' })
+  assert.deepEqual(searched.items.map(item => item.project), ['远古火星迁移计划'])
+  assert.equal(searched.items[0]?.taskTotal, 1)
+  assert.equal(store.listTaskArchive({ project: '火星迁移' }).items[0]?.id, tasks[611].id)
+
+  store.syncTasks(tasks.map(task => task.id === tasks[0].id
+    ? { ...task, project: '后来新增的项目名称' }
+    : task))
+  const stale = store.listTaskArchiveProjects({
+    offset: 100,
+    limit: 100,
+    revision: first.revision
+  })
+  assert.equal(stale.stale, true)
+  assert.equal(stale.items.length, 0)
+  assert.equal(store.listTaskArchiveProjects({ query: '后来新增' }).total, 1)
+}))
+
 test('active task workset stays filtered, pageable, and revision safe at scale', () => withStore(store => {
   const tasks = Array.from({ length: 1_500 }, (_, index) => ({
     id: `active-task-${String(index).padStart(4, '0')}`,
@@ -8336,6 +8382,7 @@ test('prepared ingestion commits survive retries and become an auditable committ
   assert.deepEqual(store.listPreparedIngestionBatchCommits(), [])
   assert.deepEqual(store.getIngestionCommitHealth(), {
     prepared: 0,
+    unattempted: 0,
     preparedWechat: 0,
     preparedDocuments: 0,
     committed: 1,

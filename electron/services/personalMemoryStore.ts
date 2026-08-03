@@ -5555,18 +5555,17 @@ export class PersonalMemoryStore {
     items: any[]
     total: number
     hasMore: boolean
-    projects: string[]
     revision: string
     stale: boolean
   } {
     if (!this.db) {
-      return { items: [], total: 0, hasMore: false, projects: [], revision: '0', stale: false }
+      return { items: [], total: 0, hasMore: false, revision: '0', stale: false }
     }
     const revision = this.getTaskArchiveRevision()
     const offset = Math.max(0, Math.min(1_000_000, Math.floor(Number(options.offset) || 0)))
     const expectedRevision = String(options.revision || '').trim()
     if (offset > 0 && expectedRevision !== revision) {
-      return { items: [], total: 0, hasMore: false, projects: [], revision, stale: true }
+      return { items: [], total: 0, hasMore: false, revision, stale: true }
     }
     const conditions = [`classification='mine'`]
     const parameters: Array<string | number> = []
@@ -5583,8 +5582,8 @@ export class PersonalMemoryStore {
     }
     const project = String(options.project || '').trim()
     if (project) {
-      conditions.push('project=?')
-      parameters.push(project)
+      conditions.push('instr(lower(project),?)>0')
+      parameters.push(project.toLocaleLowerCase('zh-CN'))
     }
     const query = String(options.query || '').trim().toLocaleLowerCase('zh-CN')
     if (query) {
@@ -5615,11 +5614,6 @@ export class PersonalMemoryStore {
       ORDER BY updated_at DESC,id ASC
       LIMIT ? OFFSET ?
     `).all(...parameters, limit, offset) as any[]
-    const projects = (this.db.prepare(`
-      SELECT DISTINCT project FROM task_directory
-      WHERE classification='mine' AND status IN ('done','cancelled') AND project!=''
-      ORDER BY project COLLATE NOCASE LIMIT 500
-    `).all() as Array<{ project: string }>).map(row => row.project)
     const items = rows.map(row => {
       let payload: any = {}
       try { payload = JSON.parse(String(row.payload_json || '{}')) } catch {}
@@ -5641,7 +5635,7 @@ export class PersonalMemoryStore {
     const completedRevision = this.getTaskArchiveRevision()
     if (completedRevision !== revision) {
       return {
-        items: [], total: 0, hasMore: false, projects: [],
+        items: [], total: 0, hasMore: false,
         revision: completedRevision, stale: true
       }
     }
@@ -5649,7 +5643,77 @@ export class PersonalMemoryStore {
       items,
       total,
       hasMore: offset + rows.length < total,
-      projects,
+      revision,
+      stale: false
+    }
+  }
+
+  listTaskArchiveProjects(options: {
+    query?: string
+    limit?: number
+    offset?: number
+    revision?: string
+  } = {}): {
+    items: Array<{ project: string; taskTotal: number; lastUpdatedAt: string }>
+    total: number
+    hasMore: boolean
+    revision: string
+    stale: boolean
+  } {
+    if (!this.db) {
+      return { items: [], total: 0, hasMore: false, revision: '0', stale: false }
+    }
+    const revision = this.getTaskArchiveRevision()
+    const offset = Math.max(0, Math.min(1_000_000, Math.floor(Number(options.offset) || 0)))
+    const expectedRevision = String(options.revision || '').trim()
+    if (offset > 0 && expectedRevision !== revision) {
+      return { items: [], total: 0, hasMore: false, revision, stale: true }
+    }
+    const conditions = [
+      `classification='mine'`,
+      `status IN ('done','cancelled')`,
+      `project!=''`
+    ]
+    const parameters: Array<string | number> = []
+    const query = String(options.query || '').trim().toLocaleLowerCase('zh-CN')
+    if (query) {
+      conditions.push('instr(lower(project),?)>0')
+      parameters.push(query)
+    }
+    const where = conditions.join(' AND ')
+    const total = Number((this.db.prepare(`
+      SELECT COUNT(*) AS count FROM (
+        SELECT project FROM task_directory WHERE ${where} GROUP BY project COLLATE NOCASE
+      )
+    `).get(...parameters) as any)?.count || 0)
+    const limit = Math.max(1, Math.min(100, Math.floor(Number(options.limit) || 40)))
+    const rows = this.db.prepare(`
+      SELECT project,COUNT(*) AS task_count,MAX(updated_at) AS last_updated_at
+      FROM task_directory
+      WHERE ${where}
+      GROUP BY project COLLATE NOCASE
+      ORDER BY last_updated_at DESC,project COLLATE NOCASE ASC
+      LIMIT ? OFFSET ?
+    `).all(...parameters, limit, offset) as Array<{
+      project: string
+      task_count: number
+      last_updated_at: string
+    }>
+    const completedRevision = this.getTaskArchiveRevision()
+    if (completedRevision !== revision) {
+      return {
+        items: [], total: 0, hasMore: false,
+        revision: completedRevision, stale: true
+      }
+    }
+    return {
+      items: rows.map(row => ({
+        project: row.project,
+        taskTotal: Number(row.task_count || 0),
+        lastUpdatedAt: row.last_updated_at
+      })),
+      total,
+      hasMore: offset + rows.length < total,
       revision,
       stale: false
     }

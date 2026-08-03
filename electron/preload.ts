@@ -637,6 +637,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
       ipcRenderer.invoke('ai-assistant:getTaskDependencyCandidates', options),
     getActiveTaskWorkset: (options?: any) => ipcRenderer.invoke('ai-assistant:getActiveTaskWorkset', options),
     getTaskArchive: (options?: any) => ipcRenderer.invoke('ai-assistant:getTaskArchive', options),
+    getTaskArchiveProjects: (options?: any) =>
+      ipcRenderer.invoke('ai-assistant:getTaskArchiveProjects', options),
     getTaskOwnershipReviews: (options?: any) => ipcRenderer.invoke('ai-assistant:getTaskOwnershipReviews', options),
     getTaskReviewDecisionPage: (options?: any) => ipcRenderer.invoke('ai-assistant:getTaskReviewDecisionPage', options),
     getTaskReviewDecisionDossier: (evidenceFingerprint: string, options?: any) =>

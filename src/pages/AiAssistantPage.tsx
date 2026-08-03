@@ -664,11 +664,15 @@ function AiAssistantPage() {
     items: Task[]
     total: number
     hasMore: boolean
-    projects: string[]
     revision?: string
     stale?: boolean
     loading?: boolean
-  }>({ items: [], total: 0, hasMore: false, projects: [] })
+  }>({ items: [], total: 0, hasMore: false })
+  const [taskArchiveProjects, setTaskArchiveProjects] = useState<{
+    items: Array<{ project: string; taskTotal: number; lastUpdatedAt: string }>
+    total: number
+    loading?: boolean
+  }>({ items: [], total: 0 })
   const [taskArchiveStatus, setTaskArchiveStatus] = useState<'all' | 'done' | 'cancelled'>('all')
   const [taskArchivePriority, setTaskArchivePriority] = useState('')
   const [taskArchiveProject, setTaskArchiveProject] = useState('')
@@ -678,6 +682,7 @@ function AiAssistantPage() {
   const [taskArchiveLoadingMore, setTaskArchiveLoadingMore] = useState(false)
   const [taskArchiveRefreshKey, setTaskArchiveRefreshKey] = useState(0)
   const taskArchiveGate = useRef(new LatestRequestGate())
+  const taskArchiveProjectGate = useRef(new LatestRequestGate())
   const [taskOwnershipReviews, setTaskOwnershipReviews] = useState<{
     items: Task[]
     total: number
@@ -1310,12 +1315,39 @@ function AiAssistantPage() {
       setTaskArchive({ ...result, loading: false })
     }).catch(() => {
       if (!taskArchiveGate.current.isCurrent(request)) return
-      setTaskArchive({ items: [], total: 0, hasMore: false, projects: [], loading: false })
+      setTaskArchive({ items: [], total: 0, hasMore: false, loading: false })
     })
     return () => {
       if (taskArchiveGate.current.isCurrent(request)) taskArchiveGate.current.invalidate()
     }
   }, [taskArchiveOptions, dashboard?.taskRevision, taskArchiveRefreshKey])
+
+  useEffect(() => {
+    const request = taskArchiveProjectGate.current.begin()
+    const timer = window.setTimeout(() => {
+      setTaskArchiveProjects(current => ({ ...current, loading: true }))
+      void window.electronAPI.aiAssistant.getTaskArchiveProjects({
+        query: taskArchiveProject.trim() || undefined,
+        limit: 40,
+        offset: 0
+      }).then(result => {
+        if (!taskArchiveProjectGate.current.isCurrent(request)) return
+        if (result.stale) return
+        setTaskArchiveProjects({
+          items: result.items,
+          total: result.total,
+          loading: false
+        })
+      }).catch(() => {
+        if (!taskArchiveProjectGate.current.isCurrent(request)) return
+        setTaskArchiveProjects({ items: [], total: 0, loading: false })
+      })
+    }, taskArchiveProject.trim() ? 180 : 0)
+    return () => {
+      window.clearTimeout(timer)
+      if (taskArchiveProjectGate.current.isCurrent(request)) taskArchiveProjectGate.current.invalidate()
+    }
+  }, [taskArchiveProject, dashboard?.taskRevision, taskArchiveRefreshKey])
 
   useEffect(() => {
     const request = assistantArchiveGate.current.begin()
@@ -5538,10 +5570,14 @@ function AiAssistantPage() {
               <option value="">所有优先级</option>
               <option value="high">高优先级</option><option value="medium">中优先级</option><option value="low">低优先级</option>
             </select>
-            <select value={taskArchiveProject} onChange={event => setTaskArchiveProject(event.target.value)}>
-              <option value="">所有项目</option>
-              {taskArchive.projects.map(project => <option key={`task-archive-project-${project}`} value={project}>{project}</option>)}
-            </select>
+            <input value={taskArchiveProject} onChange={event => setTaskArchiveProject(event.target.value)}
+              list="task-archive-project-directory" placeholder="搜索项目（支持部分名称）" />
+            <datalist id="task-archive-project-directory">
+              {taskArchiveProjects.items.map(item =>
+                <option key={`task-archive-project-${item.project}`} value={item.project}>
+                  {item.taskTotal} 个已关闭任务
+                </option>)}
+            </datalist>
             <input value={taskArchiveQuery} onChange={event => setTaskArchiveQuery(event.target.value)}
               placeholder="搜索标题、负责人、协作者或说明" />
             <label><span>关闭/更新从</span><input type="date" value={taskArchiveFrom} onChange={event => setTaskArchiveFrom(event.target.value)} /></label>
@@ -5553,7 +5589,9 @@ function AiAssistantPage() {
               }}>清除范围</button>}
           </div>
           <small className="assistant-evidence">
-            历史任务从本机 SQLCipher 目录按需分页读取，不参与 15 秒首页轮询；恢复后会重新进入当前行动工作集。
+            历史任务从本机 SQLCipher 目录按需分页读取，不参与 15 秒首页轮询；项目目录可搜索全部
+            {taskArchiveProjects.total} 个匹配项目{taskArchiveProjects.loading ? '（检索中）' : ''}，不再截断前 500 个。
+            恢复后会重新进入当前行动工作集。
           </small>
           <div className="assistant-memory-list">
             {taskArchive.items.map(task => <article className="assistant-memory-item" key={`task-archive-${task.id}`}>
