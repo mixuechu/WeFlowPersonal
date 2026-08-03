@@ -1686,6 +1686,13 @@ export interface ElectronAPI {
         project: any
         payloadPolicy: { version: string; evidence: string; loadedOnDemand: boolean }
       }>
+      getProjectDirectory: (options?: any) => Promise<{
+        items: any[]
+        total: number
+        hasMore: boolean
+        revision: string
+        stale: boolean
+      }>
       getTaskWorkspace: (taskId: string) => Promise<{
         task: any
         history: any[]

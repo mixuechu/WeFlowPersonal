@@ -68,7 +68,13 @@ import {
   findCommonGraphNeighbors,
   findScopedGraphPath
 } from '../electron/services/graphCommonNeighbors.ts'
-import { buildProjectDirectory, buildProjectInsight, buildProjectInsights } from '../electron/services/projectInsights.ts'
+import {
+  buildProjectDirectory,
+  buildProjectInsight,
+  buildProjectInsights,
+  countProjectDirectory,
+  paginateProjectDirectory
+} from '../electron/services/projectInsights.ts'
 import { MEMORY_CARD_EVIDENCE_LIMIT, PROJECT_EVIDENCE_LIMIT } from '../shared/evidencePayload.ts'
 import {
   buildTaskDirectoryItem,
@@ -3447,6 +3453,61 @@ test('project dashboard is a light directory and dossiers are selected on demand
   assert.equal(dossier.tasks.length, 1)
   assert.equal(dossier.tasks[0].evidenceTotal, 100)
   assert.equal(buildProjectInsight(input, 'missing-project'), null)
+})
+
+test('project directory paginates thousands of projects with filters and revision safety', () => {
+  const entities = Array.from({ length: 2_500 }, (_, index) => ({
+    id: `paged-project-${String(index).padStart(4, '0')}`,
+    type: 'project',
+    canonicalName: index === 1777 ? '北辰特殊项目' : `分页项目 ${index}`,
+    aliases: index === 1777 ? ['Orion Initiative'] : [],
+    summary: index === 1777 ? '跨团队特殊摘要' : `项目摘要 ${index}`,
+    trustStatus: 'confirmed'
+  }))
+  const tasks = entities.map((entity, index) => ({
+    id: `paged-project-task-${index}`,
+    title: `推进 ${entity.canonicalName}`,
+    project: entity.canonicalName,
+    status: index % 4 === 0 ? 'done' : index % 2 === 0 ? 'doing' : 'todo',
+    priority: index % 5 === 0 ? 'high' : 'medium',
+    evidence: [{
+      messageId: `paged-project-evidence-${index}`,
+      excerpt: `不应进入项目目录 ${'原文'.repeat(100)}`
+    }]
+  }))
+  tasks.push({
+    id: 'derived-project-task',
+    title: '推进无实体项目',
+    project: '仅待办派生项目',
+    status: 'doing',
+    priority: 'medium',
+    evidence: []
+  } as any)
+  const input = { entities, relations: [], claims: [], events: [], tasks }
+  const directory = buildProjectDirectory(input)
+  assert.equal(countProjectDirectory(input), 2_501)
+  assert.equal(directory.length, 2_501)
+
+  const first = paginateProjectDirectory(directory, { limit: 100 }, 'project-revision-1')
+  const second = paginateProjectDirectory(directory, {
+    limit: 100, offset: 100, revision: first.revision
+  }, 'project-revision-1')
+  assert.equal(first.items.length, 100)
+  assert.equal(first.total, 2_501)
+  assert.equal(second.items.length, 100)
+  assert.equal(new Set([...first.items, ...second.items].map(item => item.id)).size, 200)
+  assert.equal(JSON.stringify(first.items).includes('不应进入项目目录'), false)
+  assert.equal(
+    paginateProjectDirectory(directory, { query: '特殊摘要' }, 'project-revision-1')
+      .items[0]?.id,
+    'paged-project-1777'
+  )
+  assert.ok(paginateProjectDirectory(directory, { phase: 'completed' }, 'project-revision-1').total > 0)
+  const stale = paginateProjectDirectory(directory, {
+    limit: 100, offset: 100, revision: 'project-revision-1'
+  }, 'project-revision-2')
+  assert.equal(stale.stale, true)
+  assert.equal(stale.items.length, 0)
 })
 
 test('project memory is scoped in SQL before limits and preserves authoritative candidate totals', () => withStore(store => {

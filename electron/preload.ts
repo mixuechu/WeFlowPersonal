@@ -620,6 +620,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     getGraphWorkspace: (options?: any) => ipcRenderer.invoke('ai-assistant:getGraphWorkspace', options),
     getTrustedEntityDirectory: (options?: any) =>
       ipcRenderer.invoke('ai-assistant:getTrustedEntityDirectory', options),
+    getProjectDirectory: (options?: any) => ipcRenderer.invoke('ai-assistant:getProjectDirectory', options),
     getProjectWorkspace: (projectId: string) => ipcRenderer.invoke('ai-assistant:getProjectWorkspace', projectId),
     getTaskWorkspace: (taskId: string) => ipcRenderer.invoke('ai-assistant:getTaskWorkspace', taskId),
     getActiveTaskWorkset: (options?: any) => ipcRenderer.invoke('ai-assistant:getActiveTaskWorkset', options),

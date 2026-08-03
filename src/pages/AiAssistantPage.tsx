@@ -303,6 +303,14 @@ function AiAssistantPage() {
   const [showEntityDossier, setShowEntityDossier] = useState(false)
   const [briefingPeriod, setBriefingPeriod] = useState<'latest' | 'week'>('latest')
   const [selectedProjectId, setSelectedProjectId] = useState('')
+  const [projectDirectory, setProjectDirectory] = useState<any>({
+    items: [], total: 0, hasMore: false, revision: '', loading: false
+  })
+  const [projectQuery, setProjectQuery] = useState('')
+  const [projectPhase, setProjectPhase] = useState('')
+  const [projectDirectoryLoadingMore, setProjectDirectoryLoadingMore] = useState(false)
+  const [projectDirectoryRefreshKey, setProjectDirectoryRefreshKey] = useState(0)
+  const projectDirectoryGate = useRef(new LatestRequestGate())
   const [projectWorkspace, setProjectWorkspace] = useState<any>({ project: null, status: 'idle' })
   const [projectWorkspaceRefreshKey, setProjectWorkspaceRefreshKey] = useState(0)
   const projectWorkspaceGate = useRef(new LatestRequestGate())
@@ -774,6 +782,12 @@ function AiAssistantPage() {
     limit: 100,
     offset: 0
   }), [taskStatusFilter, taskPriorityFilter, taskKindFilter, taskQuery])
+  const projectDirectoryOptions = useMemo(() => ({
+    query: projectQuery.trim() || undefined,
+    phase: projectPhase || undefined,
+    limit: 40,
+    offset: 0
+  }), [projectQuery, projectPhase])
   const assistantArchiveOptions = useMemo(() => ({
     query: assistantArchiveQuery || undefined,
     from: assistantArchiveFrom ? new Date(`${assistantArchiveFrom}T00:00:00+08:00`).toISOString() : undefined,
@@ -1008,6 +1022,31 @@ function AiAssistantPage() {
   }, [
     resourceTrashOpen, resourceTrashQuery, dashboard?.resourceArchive?.revision, resourceRefreshKey
   ])
+
+  useEffect(() => {
+    const request = projectDirectoryGate.current.begin()
+    setProjectDirectoryLoadingMore(false)
+    setProjectDirectory((current: any) => ({ ...current, items: [], loading: true }))
+    const timer = window.setTimeout(() => {
+      void window.electronAPI.aiAssistant.getProjectDirectory(projectDirectoryOptions).then(result => {
+        if (!projectDirectoryGate.current.isCurrent(request)) return
+        if (result.stale) {
+          setProjectDirectoryRefreshKey(value => value + 1)
+          return
+        }
+        setProjectDirectory({ ...result, loading: false })
+      }).catch(() => {
+        if (!projectDirectoryGate.current.isCurrent(request)) return
+        setProjectDirectory({
+          items: [], total: 0, hasMore: false, revision: '', loading: false
+        })
+      })
+    }, projectQuery.trim() ? 220 : 0)
+    return () => {
+      window.clearTimeout(timer)
+      if (projectDirectoryGate.current.isCurrent(request)) projectDirectoryGate.current.invalidate()
+    }
+  }, [projectDirectoryOptions, dashboard?.projectRevision, projectDirectoryRefreshKey])
 
   useEffect(() => {
     const request = taskWorksetGate.current.begin()
@@ -1511,7 +1550,7 @@ function AiAssistantPage() {
 
   const briefing = dashboard?.briefing
   const weeklyBriefing = dashboard?.weeklyBriefing
-  const projectInsights: any[] = dashboard?.projectInsights || []
+  const projectInsights: any[] = projectDirectory.items || []
   const selectedProject = projectWorkspace.status === 'ready' &&
     projectWorkspace.project?.id === selectedProjectId ? projectWorkspace.project : null
   const tasks: Task[] = taskWorkset.items
@@ -2246,6 +2285,30 @@ function AiAssistantPage() {
       }))
     } finally {
       setTaskWorksetLoadingMore(false)
+    }
+  }
+
+  const loadMoreProjects = async () => {
+    if (projectDirectoryLoadingMore || !projectDirectory.hasMore) return
+    setProjectDirectoryLoadingMore(true)
+    try {
+      const result = await window.electronAPI.aiAssistant.getProjectDirectory({
+        ...projectDirectoryOptions,
+        offset: projectDirectory.items.length,
+        revision: projectDirectory.revision
+      })
+      if (result.stale) {
+        setProjectDirectoryRefreshKey(value => value + 1)
+        return
+      }
+      setProjectDirectory((current: any) => ({
+        ...result,
+        loading: false,
+        items: [...current.items, ...result.items.filter((item: any) =>
+          !current.items.some((known: any) => known.id === item.id))]
+      }))
+    } finally {
+      setProjectDirectoryLoadingMore(false)
     }
   }
 
@@ -4698,11 +4761,24 @@ function AiAssistantPage() {
         <section className="assistant-panel assistant-project-portfolio">
           <div className="assistant-section-heading">
             <div><span className="assistant-eyebrow">PROJECT INTELLIGENCE</span><h3>项目驾驶舱</h3></div>
-            <span className="assistant-count">{projectInsights.length} 个项目</span>
+            <span className="assistant-count">{projectDirectory.total} 个匹配项目</span>
           </div>
-          {dashboard?.projectPayloadPolicy?.dossier === 'on_demand' && <small className="assistant-evidence">
-            首页只加载项目进度目录；任务、事件、候选与原文证据会在点击项目后按需读取。
+          <div className="assistant-task-filters">
+            <input value={projectQuery} onChange={event => setProjectQuery(event.target.value)}
+              placeholder="搜索项目名称或摘要" />
+            <select value={projectPhase} onChange={event => setProjectPhase(event.target.value)}>
+              <option value="">全部阶段</option>
+              <option value="active">推进中</option>
+              <option value="planned">已规划</option>
+              <option value="completed">已完成</option>
+              <option value="discovery">发现阶段</option>
+            </select>
+          </div>
+          {dashboard?.projectDirectory?.directory === 'paginated_on_demand' && <small className="assistant-evidence">
+            项目目录按搜索和阶段从本机服务分页读取（已加载 {projectInsights.length} / {projectDirectory.total}）；
+            任务、事件、候选与原文证据会在点击项目后按需读取。
           </small>}
+          {projectDirectory.loading && <div className="assistant-empty">正在读取项目目录…</div>}
           {projectInsights.length ? <div className="assistant-project-grid">
             {projectInsights.map(project => <button key={project.id} onClick={() => setSelectedProjectId(project.id)}>
               <div><strong>{project.name}</strong><span>{project.phase === 'completed' ? '已完成' : project.phase === 'active' ? '推进中' : project.phase === 'planned' ? '已规划' : '发现阶段'}</span></div>
@@ -4712,7 +4788,17 @@ function AiAssistantPage() {
                 {project.pendingReviewTotal ? ` · ${project.pendingReviewTotal} 条候选待确认` : ''}
               </small>
             </button>)}
-          </div> : <div className="assistant-empty">当聊天中识别到项目实体或待办归属项目后，这里会自动形成项目进度、风险、里程碑和决策视图。</div>}
+          </div> : !projectDirectory.loading && <div className="assistant-empty">
+            {projectQuery || projectPhase
+              ? '当前筛选没有项目。'
+              : '当聊天中识别到项目实体或待办归属项目后，这里会自动形成项目进度、风险、里程碑和决策视图。'}
+          </div>}
+          {projectDirectory.hasMore && <button disabled={projectDirectoryLoadingMore}
+            onClick={() => void loadMoreProjects()}>
+            {projectDirectoryLoadingMore
+              ? '正在加载…'
+              : `加载更多（已显示 ${projectInsights.length} / ${projectDirectory.total}）`}
+          </button>}
         </section>
 
         {(taskOwnershipReviews.total > 0 || taskReviewFeedback.mine || taskReviewFeedback.rejected ||

@@ -141,7 +141,12 @@ import {
   GRAPH_QUERY_EVIDENCE_LIMIT,
   MEMORY_CARD_EVIDENCE_LIMIT
 } from '../../shared/evidencePayload'
-import { buildProjectDirectory, buildProjectInsight } from './projectInsights'
+import {
+  buildProjectDirectory,
+  buildProjectInsight,
+  countProjectDirectory,
+  paginateProjectDirectory
+} from './projectInsights'
 import { attachLocalImageOcr, attachLocalVoiceTranscript, recoverMessageSemantics } from './messageSemanticRecovery'
 import { sanitizeDiagnosticText } from './diagnosticRedaction'
 import { getSensitiveLogDiagnostics } from './sensitiveLogPolicy'
@@ -3341,6 +3346,66 @@ export class AiAssistantService {
     return { success: true, message: '将在当前批次安全完成后暂停' }
   }
 
+  private getProjectDirectoryRevision(): string {
+    return crypto.createHash('sha256')
+      .update(JSON.stringify({
+        entities: this.state.graph.entities.map(entity => [
+          entity.id, entity.type, entity.canonicalName,
+          entity.type === 'project' ? entity.aliases || [] : [],
+          entity.type === 'project' ? entity.summary || '' : '',
+          entity.trustStatus, entity.updatedAt || entity.createdAt || ''
+        ]),
+        relations: this.state.graph.relations.map(relation => [
+          relation.id, relation.subjectId, relation.objectId, relation.status,
+          relation.updatedAt || relation.createdAt || ''
+        ]),
+        tasks: this.state.tasks.map(task => [
+          task.id, task.title, task.detail || '', task.project || '', task.status,
+          task.priority, task.taskKind || '', task.due || '', task.dependsOnIds || [],
+          task.updatedAt || '', (task.evidence || []).map(item =>
+            [item.sourceId || '', item.sessionId || '', item.messageId || '', item.timestamp || 0])
+        ]),
+        structuredMemoryRevision: personalMemoryStore.getStructuredMemoryRevision()
+      }))
+      .digest('hex')
+      .slice(0, 24)
+  }
+
+  getProjectDirectory(options: any = {}): any {
+    const revision = this.getProjectDirectoryRevision()
+    const directory = buildProjectDirectory({
+      entities: this.state.graph.entities,
+      relations: this.state.graph.relations,
+      claims: [],
+      events: [],
+      tasks: this.state.tasks.filter(task => task.classification === 'mine')
+    })
+    const page = paginateProjectDirectory(directory, options || {}, revision)
+    if (page.stale) return page
+    const reviewCounts = personalMemoryStore.getProjectReviewCounts(
+      page.items.map(project => project.entityId).filter(Boolean)
+    )
+    const items = page.items.map(project => ({
+      ...project,
+      pendingReviewTotal: Number(project.pendingReviewTotal || 0) +
+        Number(project.entityId ? reviewCounts[project.entityId]?.total || 0 : 0)
+    }))
+    const completedRevision = this.getProjectDirectoryRevision()
+    if (completedRevision !== revision) {
+      return {
+        items: [], total: 0, hasMore: false,
+        revision: completedRevision, stale: true
+      }
+    }
+    return {
+      items,
+      total: page.total,
+      hasMore: page.hasMore,
+      revision,
+      stale: false
+    }
+  }
+
   getDashboard(): any {
     const dates = Object.keys(this.state.briefings).sort().reverse()
     const latest = dates[0] ? this.state.briefings[dates[0]] : null
@@ -3350,23 +3415,12 @@ export class AiAssistantService {
     const allTaskReminders = buildTaskReminders(tasks)
     const reminderResult = applyReminderPreferences(allTaskReminders, this.state.reminderPreferences)
     const memoryStats = personalMemoryStore.getMemoryStats()
-    const rawProjectInsights = buildProjectDirectory({
+    const projectCount = countProjectDirectory({
       entities: this.state.graph.entities,
       relations: this.state.graph.relations,
       claims: [],
       events: [],
       tasks
-    })
-    const projectReviewCounts = personalMemoryStore.getProjectReviewCounts(
-      rawProjectInsights.map(project => project.entityId).filter(Boolean)
-    )
-    const projectInsights = rawProjectInsights.map(project => {
-      const memoryCounts = project.entityId ? projectReviewCounts[project.entityId] : null
-      return {
-        ...project,
-        pendingReviewTotal: Number(project.pendingReviewTotal || 0) +
-          Number(memoryCounts?.total || 0)
-      }
     })
     const graphReviewRevision = crypto.createHash('sha256')
       .update(this.state.graph.reviewQueue.map(review =>
@@ -3383,17 +3437,7 @@ export class AiAssistantService {
       ].join('\u0001'))
       .digest('hex')
       .slice(0, 16)
-    const projectRevision = crypto.createHash('sha256')
-      .update(JSON.stringify({
-        directory: projectInsights,
-        tasks: tasks.map(task => [
-          task.id, task.status, task.title, task.project, task.updatedAt || '',
-          (task.evidence || []).length
-        ]),
-        structuredMemoryRevision: personalMemoryStore.getStructuredMemoryRevision()
-      }))
-      .digest('hex')
-      .slice(0, 16)
+    const projectRevision = this.getProjectDirectoryRevision()
     const assistantArchiveStats = personalMemoryStore.getAssistantArchiveStats()
     const taskReviewArchiveStats = personalMemoryStore.getTaskReviewArchiveStats()
     const memoryDeletionArchiveStats = personalMemoryStore.getMemoryDeletionAuditStats()
@@ -3463,10 +3507,17 @@ export class AiAssistantService {
           dossier: 'on_demand'
         }
       },
-      projectInsights,
+      projectInsights: [],
+      projectDirectory: {
+        total: projectCount,
+        revision: projectRevision,
+        version: 'project-directory-v2',
+        directory: 'paginated_on_demand',
+        dossier: 'on_demand'
+      },
       projectPayloadPolicy: {
-        version: 'project-directory-v1',
-        directoryFields: 'summary_only',
+        version: 'project-directory-v2',
+        directoryFields: 'paginated_summary_only',
         dossier: 'on_demand'
       },
       projectRevision,

@@ -39,9 +39,17 @@ function buildProjectInsightsInternal(
   const today = now.toISOString().slice(0, 10)
   const trustedEntities = input.entities.filter(entity => entity.trustStatus === 'confirmed')
   const entityProjects = trustedEntities.filter(entity => entity.type === 'project')
-  const derivedNames = [...new Set(input.tasks.map(task => String(task.project || '').trim()).filter(Boolean))]
-    .filter(name => !entityProjects.some(entity => [entity.canonicalName, ...(entity.aliases || [])]
-      .some(value => normalize(value) === normalize(name))))
+  const entityProjectNames = new Set(entityProjects.flatMap(entity =>
+    [entity.canonicalName, ...(entity.aliases || [])].map(normalize).filter(Boolean)))
+  const derivedNameMap = new Map<string, string>()
+  for (const task of input.tasks) {
+    const displayName = String(task.project || '').trim()
+    const normalizedName = normalize(displayName)
+    if (normalizedName && !entityProjectNames.has(normalizedName) && !derivedNameMap.has(normalizedName)) {
+      derivedNameMap.set(normalizedName, displayName)
+    }
+  }
+  const derivedNames = [...derivedNameMap.values()]
   const projects = [
     ...entityProjects.map(entity => ({ entity, id: entity.id, name: entity.canonicalName, aliases: entity.aliases || [], inferred: false })),
     ...derivedNames.map(name => ({ entity: null, id: `derived:${normalize(name)}`, name, aliases: [], inferred: true }))
@@ -187,6 +195,48 @@ export function buildProjectInsights(input: ProjectInsightInput): any[] {
 
 export function buildProjectDirectory(input: ProjectInsightInput): any[] {
   return buildProjectInsightsInternal(input, { includeDetails: false })
+}
+
+export function countProjectDirectory(input: ProjectInsightInput): number {
+  const trustedProjects = input.entities.filter(entity =>
+    entity.trustStatus === 'confirmed' && entity.type === 'project')
+  const trustedNames = new Set(trustedProjects.flatMap(entity =>
+    [entity.canonicalName, ...(entity.aliases || [])].map(normalize).filter(Boolean)))
+  const derivedNames = new Set(input.tasks.map(task => String(task.project || '').trim()).filter(Boolean)
+    .map(normalize).filter(name => !trustedNames.has(name)))
+  return trustedProjects.length + derivedNames.size
+}
+
+export function paginateProjectDirectory(
+  directory: any[],
+  options: {
+    query?: string
+    phase?: string
+    limit?: number
+    offset?: number
+    revision?: string
+  },
+  revision: string
+): { items: any[]; total: number; hasMore: boolean; revision: string; stale: boolean } {
+  const offset = Math.max(0, Math.min(1_000_000, Math.floor(Number(options.offset) || 0)))
+  if (offset > 0 && String(options.revision || '') !== revision) {
+    return { items: [], total: 0, hasMore: false, revision, stale: true }
+  }
+  const query = String(options.query || '').trim().toLocaleLowerCase('zh-CN')
+  const phase = String(options.phase || '').trim()
+  const limit = Math.max(1, Math.min(100, Math.floor(Number(options.limit) || 40)))
+  const matches = directory.filter(project =>
+    (!query || `${project.name || ''}\u0000${project.summary || ''}`
+      .toLocaleLowerCase('zh-CN').includes(query)) &&
+    (!phase || project.phase === phase))
+  const items = matches.slice(offset, offset + limit)
+  return {
+    items,
+    total: matches.length,
+    hasMore: offset + items.length < matches.length,
+    revision,
+    stale: false
+  }
 }
 
 export function buildProjectInsight(input: ProjectInsightInput, projectId: string): any | null {
