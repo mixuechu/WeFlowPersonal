@@ -3520,22 +3520,37 @@ export class AiAssistantService {
       kind: String(options?.kind || '').trim(),
       query: String(options?.query || '').trim(),
       offset: options?.offset,
-      limit: options?.limit
+      limit: options?.limit,
+      revision: String(options?.revision || '')
     })
+    if (page.stale) return page
+    const items = page.items.map(review => {
+      const relationId = review.correctedRelationId || review.relationId || review.originalRelationId
+      return {
+        ...review,
+        relation: relationId
+          ? this.state.graph.relations.find(relation => relation.id === relationId) || null
+          : null,
+        relationCorrection: review.kind === 'relation'
+          ? personalMemoryStore.getRelationCorrectionByReview(review.id)
+          : null
+      }
+    })
+    const completedRevision = personalMemoryStore.getGraphReviewRevision()
+    if (completedRevision !== page.revision) {
+      return {
+        ...page,
+        items: [],
+        total: 0,
+        hasMore: false,
+        counts: { pending: 0, resolved: 0, all: 0 },
+        revision: completedRevision,
+        stale: true
+      }
+    }
     return {
       ...page,
-      items: page.items.map(review => {
-        const relationId = review.correctedRelationId || review.relationId || review.originalRelationId
-        return {
-          ...review,
-          relation: relationId
-            ? this.state.graph.relations.find(relation => relation.id === relationId) || null
-            : null,
-          relationCorrection: review.kind === 'relation'
-            ? personalMemoryStore.getRelationCorrectionByReview(review.id)
-            : null
-        }
-      })
+      items
     }
   }
 

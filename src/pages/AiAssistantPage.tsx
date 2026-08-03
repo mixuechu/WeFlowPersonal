@@ -361,6 +361,8 @@ function AiAssistantPage() {
     total: number
     hasMore: boolean
     counts: { pending: number; resolved: number; all: number }
+    revision?: string
+    stale?: boolean
     status: 'idle' | 'loading' | 'ready' | 'error'
     error?: string
   }>({
@@ -939,6 +941,12 @@ function AiAssistantPage() {
         limit: 40
       }).then(page => {
         if (!reviewPageGate.current.isCurrent(request)) return
+        if (page.stale) {
+          window.setTimeout(() => {
+            if (reviewPageGate.current.isCurrent(request)) setReviewRefreshKey(value => value + 1)
+          }, 250)
+          return
+        }
         setReviewPage({ ...page, status: 'ready' })
       }).catch(error => {
         if (!reviewPageGate.current.isCurrent(request)) return
@@ -1859,9 +1867,15 @@ function AiAssistantPage() {
         kind: reviewKindFilter || undefined,
         query: reviewQuery.trim() || undefined,
         offset: reviewPage.items.length,
-        limit: 40
+        limit: 40,
+        revision: reviewPage.revision
       })
       if (!reviewPageGate.current.isCurrent(request)) return
+      if (page.stale) {
+        setMessage('审阅队列在加载期间已有变化，已自动从第一页刷新')
+        setReviewRefreshKey(value => value + 1)
+        return
+      }
       setReviewPage(current => ({
         ...current,
         ...page,
@@ -5445,6 +5459,16 @@ function AiAssistantPage() {
                 <span>当前状态 <b>{memoryDiagnostics.structuredMemoryRevisionHealthy ? '保护正常' : '需要检查'}</b></span>
                 <span>当前 revision <b>{String(memoryDiagnostics.structuredMemoryRevision.revision || '0')}</b></span>
                 <span>变更触发器 <b>{Number(memoryDiagnostics.structuredMemoryRevision.installedTriggers || 0).toLocaleString()} / {Number(memoryDiagnostics.structuredMemoryRevision.expectedTriggers || 0).toLocaleString()}</b></span>
+              </div>
+            </div>}
+            {memoryDiagnostics.graphReviewRevision?.version && <div className={`assistant-recovery-audit ${memoryDiagnostics.graphReviewRevisionHealthy ? 'healthy' : 'unhealthy'}`}>
+              <header><ShieldCheck size={15} /><span><b>图谱审阅分页一致性保护</b>
+                <small>候选队列、实体、关系和关系纠正共享数据库 revision；后台新增候选、确认/拒绝、关系纠正或身份合并发生在翻页期间时，旧页会被拒绝并自动回到最新第一页。</small>
+              </span></header>
+              <div className="assistant-recovery-current">
+                <span>当前状态 <b>{memoryDiagnostics.graphReviewRevisionHealthy ? '保护正常' : '需要检查'}</b></span>
+                <span>当前 revision <b>{String(memoryDiagnostics.graphReviewRevision.revision || '0')}</b></span>
+                <span>变更触发器 <b>{Number(memoryDiagnostics.graphReviewRevision.installedTriggers || 0).toLocaleString()} / {Number(memoryDiagnostics.graphReviewRevision.expectedTriggers || 0).toLocaleString()}</b></span>
               </div>
             </div>}
             {memoryDiagnostics.taskSearchIndex?.version && <div className={`assistant-recovery-audit ${memoryDiagnostics.taskSearchIndexHealthy ? 'healthy' : 'unhealthy'}`}>

@@ -6,6 +6,7 @@ export type GraphReviewPageOptions = {
   query?: string
   offset?: number
   limit?: number
+  revision?: string
 }
 
 function reviewMatchesQuery(review: any, query: string): boolean {

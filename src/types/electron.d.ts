@@ -1652,6 +1652,7 @@ export interface ElectronAPI {
         query?: string
         offset?: number
         limit?: number
+        revision?: string
       }) => Promise<{
         items: any[]
         offset: number
@@ -1659,6 +1660,8 @@ export interface ElectronAPI {
         total: number
         hasMore: boolean
         counts: { pending: number; resolved: number; all: number }
+        revision: string
+        stale: boolean
       }>
       getGraphWorkspace: (options?: {
         query?: string

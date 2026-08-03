@@ -731,6 +731,7 @@ export class PersonalMemoryStore {
     this.repairGenericSearchEvidenceIdentity()
     this.ensureMemorySearchRevisionTriggers()
     this.ensureStructuredMemoryRevisionTriggers()
+    this.ensureGraphReviewRevisionTriggers()
     this.repairStructuredSearchIndex()
     this.backfillMergeHistoryNames()
     this.db.exec(`CREATE INDEX IF NOT EXISTS idx_memory_corrections_item
@@ -1031,6 +1032,72 @@ export class PersonalMemoryStore {
     return {
       version: 'structured-memory-revision-v1',
       revision: this.getStructuredMemoryRevision(),
+      expectedTriggers: expectedNames.length,
+      installedTriggers: expectedNames.filter(name => installedNames.has(name)).length,
+      healthy: installedNames.size === expectedNames.length
+        && expectedNames.every(name => installedNames.has(name))
+    }
+  }
+
+  private graphReviewRevisionTriggerNames(): string[] {
+    return ['review_queue', 'entities', 'relations', 'relation_corrections']
+      .flatMap(table => ['insert', 'update', 'delete']
+        .map(operation => `trg_graph_review_revision_${table}_${operation}`))
+  }
+
+  private ensureGraphReviewRevisionTriggers(): void {
+    if (!this.db) return
+    const tables = ['review_queue', 'entities', 'relations', 'relation_corrections']
+    this.db.prepare(`
+      INSERT INTO schema_meta(key,value,updated_at)
+      VALUES('graph_review_revision','0',?)
+      ON CONFLICT(key) DO NOTHING
+    `).run(new Date().toISOString())
+    const statements: string[] = []
+    for (const table of tables) {
+      for (const operation of ['INSERT', 'UPDATE', 'DELETE']) {
+        const name = `trg_graph_review_revision_${table}_${operation.toLowerCase()}`
+        statements.push(`DROP TRIGGER IF EXISTS ${name};`)
+        statements.push(`
+          CREATE TRIGGER ${name} AFTER ${operation} ON ${table}
+          BEGIN
+            UPDATE schema_meta
+            SET value=CAST(CAST(value AS INTEGER)+1 AS TEXT),
+              updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')
+            WHERE key='graph_review_revision';
+          END;
+        `)
+      }
+    }
+    this.db.exec(statements.join('\n'))
+  }
+
+  getGraphReviewRevision(): string {
+    if (!this.db) return '0'
+    return String((this.db.prepare(`
+      SELECT value FROM schema_meta WHERE key='graph_review_revision'
+    `).get() as any)?.value || '0')
+  }
+
+  getGraphReviewRevisionHealth(): any {
+    const expectedNames = this.graphReviewRevisionTriggerNames()
+    if (!this.db) {
+      return {
+        version: 'graph-review-revision-v1',
+        revision: '0',
+        expectedTriggers: expectedNames.length,
+        installedTriggers: 0,
+        healthy: false
+      }
+    }
+    const rows = this.db.prepare(`
+      SELECT name FROM sqlite_master
+      WHERE type='trigger' AND name LIKE 'trg_graph_review_revision_%'
+    `).all() as Array<{ name: string }>
+    const installedNames = new Set(rows.map(row => String(row.name)))
+    return {
+      version: 'graph-review-revision-v1',
+      revision: this.getGraphReviewRevision(),
       expectedTriggers: expectedNames.length,
       installedTriggers: expectedNames.filter(name => installedNames.has(name)).length,
       healthy: installedNames.size === expectedNames.length
@@ -2478,6 +2545,7 @@ export class PersonalMemoryStore {
       || taskSearchIndex.currentMismatches === 0
     const memorySearchRevision = this.getMemorySearchRevisionHealth()
     const structuredMemoryRevision = this.getStructuredMemoryRevisionHealth()
+    const graphReviewRevision = this.getGraphReviewRevisionHealth()
     return {
       healthy: integrity === 'ok'
         && structuredEvidenceMigration.constraintsHealthy
@@ -2486,7 +2554,8 @@ export class PersonalMemoryStore {
         && structuredSearchIndexHealthy
         && taskSearchIndexHealthy
         && memorySearchRevision.healthy
-        && structuredMemoryRevision.healthy,
+        && structuredMemoryRevision.healthy
+        && graphReviewRevision.healthy,
       integrity,
       foreignKeyViolations,
       referentialIntegrityHealthy,
@@ -2495,6 +2564,7 @@ export class PersonalMemoryStore {
       taskSearchIndexHealthy,
       memorySearchRevisionHealthy: memorySearchRevision.healthy,
       structuredMemoryRevisionHealthy: structuredMemoryRevision.healthy,
+      graphReviewRevisionHealthy: graphReviewRevision.healthy,
       encryption: {
         enabled: Boolean(this.encryptionKey),
         cipher: this.encryptionKey ? String(this.db.pragma('cipher', { simple: true }) || '') : 'none',
@@ -2511,6 +2581,7 @@ export class PersonalMemoryStore {
       taskSearchIndex,
       memorySearchRevision,
       structuredMemoryRevision,
+      graphReviewRevision,
       backups
     }
   }
@@ -3194,6 +3265,7 @@ export class PersonalMemoryStore {
     query?: string
     offset?: number
     limit?: number
+    revision?: string
   }): {
     items: any[]
     offset: number
@@ -3201,10 +3273,12 @@ export class PersonalMemoryStore {
     total: number
     hasMore: boolean
     counts: { pending: number; resolved: number; all: number }
+    revision: string
+    stale: boolean
   } {
     if (!this.db) return {
       items: [], offset: 0, limit: 40, total: 0, hasMore: false,
-      counts: { pending: 0, resolved: 0, all: 0 }
+      counts: { pending: 0, resolved: 0, all: 0 }, revision: '0', stale: false
     }
     const status = options?.status === 'resolved' || options?.status === 'all'
       ? options.status
@@ -3213,6 +3287,14 @@ export class PersonalMemoryStore {
     const query = String(options?.query || '').trim().toLocaleLowerCase('zh-CN')
     const offset = Math.max(0, Math.min(100_000, Math.floor(Number(options?.offset) || 0)))
     const limit = Math.max(1, Math.min(100, Math.floor(Number(options?.limit) || 40)))
+    const revision = this.getGraphReviewRevision()
+    const expectedRevision = String(options?.revision || '').trim()
+    if (offset > 0 && expectedRevision && expectedRevision !== revision) {
+      return {
+        items: [], offset, limit, total: 0, hasMore: false,
+        counts: { pending: 0, resolved: 0, all: 0 }, revision, stale: true
+      }
+    }
     const scopeSql = `
       FROM review_queue
       WHERE (?='' OR kind=?)
@@ -3253,13 +3335,24 @@ export class PersonalMemoryStore {
         resolvedAt: row.resolved_at || payload.resolvedAt
       }
     })
+    const completedRevision = this.getGraphReviewRevision()
+    if (completedRevision !== revision) {
+      return {
+        items: [], offset, limit, total: 0, hasMore: false,
+        counts: { pending: 0, resolved: 0, all: 0 },
+        revision: completedRevision,
+        stale: true
+      }
+    }
     return {
       items,
       offset,
       limit,
       total,
       hasMore: offset + items.length < total,
-      counts: { pending, resolved, all: pending + resolved }
+      counts: { pending, resolved, all: pending + resolved },
+      revision,
+      stale: false
     }
   }
 

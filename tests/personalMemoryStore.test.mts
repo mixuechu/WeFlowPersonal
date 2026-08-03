@@ -527,12 +527,18 @@ test('resolved graph reviews leave encrypted state but remain paginated in SQLCi
 
     store.syncGraph({ entities: [], relations: [], reviewQueue: compacted.pending } as any)
     const firstPage = store.listReviewLedgerPage({ status: 'resolved', offset: 0, limit: 40 })
-    const secondPage = store.listReviewLedgerPage({ status: 'resolved', offset: 40, limit: 40 })
+    const secondPage = store.listReviewLedgerPage({
+      status: 'resolved',
+      offset: 40,
+      limit: 40,
+      revision: firstPage.revision
+    })
     assert.equal(firstPage.total, 2_500)
     assert.equal(firstPage.counts.pending, 3)
     assert.equal(firstPage.counts.resolved, 2_500)
     assert.equal(firstPage.items.length, 40)
     assert.equal(secondPage.items.length, 40)
+    assert.equal(secondPage.stale, false)
     assert.equal(new Set([...firstPage.items, ...secondPage.items].map(item => item.id)).size, 80)
     assert.ok(firstPage.items.every(item => item.status !== 'pending'))
     assert.equal(store.listReviewLedgerPage({
@@ -551,6 +557,14 @@ test('resolved graph reviews leave encrypted state but remain paginated in SQLCi
       relations: [],
       reviewQueue: compacted.pending.slice(0, 2)
     } as any)
+    const stalePage = store.listReviewLedgerPage({
+      status: 'resolved',
+      offset: 40,
+      limit: 40,
+      revision: firstPage.revision
+    })
+    assert.equal(stalePage.stale, true)
+    assert.equal(stalePage.items.length, 0)
     assert.equal(store.listReviewLedgerPage({ status: 'pending' }).total, 2)
     assert.equal(store.listReviewLedgerPage({ status: 'resolved' }).total, 2_500)
   })
@@ -4267,6 +4281,57 @@ test('structured memory revision covers review payloads and repairs its trigger 
     reopened.initialize(databasePath)
     assert.equal(reopened.getStructuredMemoryRevisionHealth().installedTriggers, 21)
     assert.equal(reopened.getStructuredMemoryRevisionHealth().healthy, true)
+    reopened.close()
+  } finally {
+    rmSync(directory, { recursive: true, force: true })
+  }
+})
+
+test('graph review revision covers queue and enriched graph state and self-heals on restart', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'weflow-graph-review-revision-'))
+  const databasePath = join(directory, 'memory.sqlite')
+  try {
+    const first = new PersonalMemoryStore()
+    first.initialize(databasePath)
+    const initial = Number(first.getGraphReviewRevision())
+    first.syncGraph({
+      entities: [{
+        id: 'review-revision-person',
+        type: 'person',
+        canonicalName: '审阅版本人物',
+        trustStatus: 'candidate',
+        aliases: [],
+        accountIds: []
+      }],
+      relations: [],
+      reviewQueue: [{
+        id: 'review-revision-candidate',
+        kind: 'entity_creation',
+        title: '审阅版本候选',
+        detail: '等待确认',
+        confidence: 0.8,
+        status: 'pending',
+        createdAt: '2026-08-03T00:00:00.000Z'
+      }]
+    } as any)
+    assert.ok(Number(first.getGraphReviewRevision()) > initial)
+    assert.deepEqual(first.getGraphReviewRevisionHealth(), {
+      version: 'graph-review-revision-v1',
+      revision: first.getGraphReviewRevision(),
+      expectedTriggers: 12,
+      installedTriggers: 12,
+      healthy: true
+    })
+    ;(first as any).db.exec('DROP TRIGGER trg_graph_review_revision_review_queue_insert')
+    assert.equal(first.getGraphReviewRevisionHealth().installedTriggers, 11)
+    assert.equal(first.getGraphReviewRevisionHealth().healthy, false)
+    first.close()
+
+    const reopened = new PersonalMemoryStore()
+    reopened.initialize(databasePath)
+    assert.equal(reopened.getGraphReviewRevisionHealth().installedTriggers, 12)
+    assert.equal(reopened.getGraphReviewRevisionHealth().healthy, true)
+    assert.equal(reopened.listReviewLedgerPage({ status: 'pending' }).items[0]?.id, 'review-revision-candidate')
     reopened.close()
   } finally {
     rmSync(directory, { recursive: true, force: true })
