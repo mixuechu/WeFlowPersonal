@@ -4325,6 +4325,13 @@ export class AiAssistantService {
     }
     const page = personalMemoryStore.listEntityRelationPage({
       entityId,
+      direction: ['outgoing', 'incoming'].includes(String(options?.direction || ''))
+        ? options.direction
+        : 'all',
+      status: ['candidate', 'confirmed'].includes(String(options?.status || ''))
+        ? options.status
+        : 'all',
+      query: String(options?.query || ''),
       limit: Number(options?.limit || 40),
       offset: Number(options?.offset || 0),
       revision: String(options?.revision || '')

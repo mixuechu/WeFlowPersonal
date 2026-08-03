@@ -6269,6 +6269,9 @@ export class PersonalMemoryStore {
 
   listEntityRelationPage(options: {
     entityId: string
+    direction?: 'all' | 'outgoing' | 'incoming'
+    status?: 'all' | 'candidate' | 'confirmed'
+    query?: string
     limit?: number
     offset?: number
     revision?: string
@@ -6279,28 +6282,59 @@ export class PersonalMemoryStore {
     const revision = currentRevision()
     const entityId = String(options.entityId || '').trim()
     if (!entityId) return { items: [], total: 0, hasMore: false, revision, stale: false }
+    const direction = ['outgoing', 'incoming'].includes(String(options.direction || ''))
+      ? String(options.direction)
+      : 'all'
+    const status = ['candidate', 'confirmed'].includes(String(options.status || ''))
+      ? String(options.status)
+      : 'all'
+    const query = String(options.query || '').trim().toLowerCase()
     const offset = Math.max(0, Math.min(1_000_000, Math.floor(Number(options.offset) || 0)))
     const expectedRevision = String(options.revision || '').trim()
     if (offset > 0 && expectedRevision !== revision) {
       return { items: [], total: 0, hasMore: false, revision, stale: true }
     }
+    const where = [
+      `r.status!='rejected'`,
+      direction === 'outgoing'
+        ? 'r.subject_id=?'
+        : direction === 'incoming'
+          ? 'r.object_id=?'
+          : '(r.subject_id=? OR r.object_id=?)'
+    ]
+    const parameters: any[] = direction === 'all' ? [entityId, entityId] : [entityId]
+    if (status !== 'all') {
+      where.push('r.status=?')
+      parameters.push(status)
+    }
+    if (query) {
+      where.push(`(
+        LOWER(r.predicate) LIKE ? OR
+        LOWER(COALESCE(subject.canonical_name,'')) LIKE ? OR
+        LOWER(COALESCE(object.canonical_name,'')) LIKE ?
+      )`)
+      const pattern = `%${query}%`
+      parameters.push(pattern, pattern, pattern)
+    }
+    const fromAndWhere = `
+      FROM relations r
+      LEFT JOIN entities subject ON subject.id=r.subject_id
+      LEFT JOIN entities object ON object.id=r.object_id
+      WHERE ${where.join(' AND ')}
+    `
     const total = Number((this.db.prepare(`
-      SELECT COUNT(*) AS count FROM relations
-      WHERE status!='rejected' AND (subject_id=? OR object_id=?)
-    `).get(entityId, entityId) as any)?.count || 0)
+      SELECT COUNT(*) AS count ${fromAndWhere}
+    `).get(...parameters) as any)?.count || 0)
     const limit = Math.max(1, Math.min(100, Math.floor(Number(options.limit) || 40)))
     const rows = this.db.prepare(`
       SELECT r.*,subject.canonical_name AS subject_name,object.canonical_name AS object_name,
         (SELECT COUNT(*) FROM evidence e WHERE e.relation_id=r.id) AS evidence_count
-      FROM relations r
-      LEFT JOIN entities subject ON subject.id=r.subject_id
-      LEFT JOIN entities object ON object.id=r.object_id
-      WHERE r.status!='rejected' AND (r.subject_id=? OR r.object_id=?)
+      ${fromAndWhere}
       ORDER BY
         CASE WHEN r.status='confirmed' THEN 0 ELSE 1 END,
         r.confidence DESC,r.updated_at DESC,r.id ASC
       LIMIT ? OFFSET ?
-    `).all(entityId, entityId, limit, offset) as any[]
+    `).all(...parameters, limit, offset) as any[]
     const evidenceStatement = this.db.prepare(`
       SELECT source_id,message_id,session_id,timestamp,sender,excerpt,evidence_role
       FROM evidence WHERE relation_id=?

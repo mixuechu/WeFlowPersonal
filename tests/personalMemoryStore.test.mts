@@ -3947,6 +3947,25 @@ test('project memory is scoped in SQL before limits and preserves authoritative 
   assert.equal(relationPage.items.length, 40)
   assert.equal(new Set([...relationPage.items, ...relationPage2.items].map(item => item.id)).size, 80)
   assert.equal(relationPage.items[0].evidenceTotal, 1)
+  const outgoingRelations = store.listEntityRelationPage({
+    entityId: 'project-memory-scope', direction: 'outgoing', limit: 100
+  })
+  assert.equal(outgoingRelations.total, 125)
+  assert.ok(outgoingRelations.items.every(item => item.subject_id === 'project-memory-scope'))
+  assert.equal(store.listEntityRelationPage({
+    entityId: 'project-memory-scope', direction: 'incoming'
+  }).total, 0)
+  const namedRelation = relationPage.items[0]
+  assert.equal(store.listEntityRelationPage({
+    entityId: 'project-memory-scope',
+    query: String(namedRelation.object_name || '').slice(0, 8)
+  }).total > 0, true)
+  assert.equal(store.listEntityRelationPage({
+    entityId: 'project-memory-scope', status: 'confirmed'
+  }).total, 125)
+  assert.equal(store.listEntityRelationPage({
+    entityId: 'project-memory-scope', status: 'candidate'
+  }).total, 0)
   assert.equal(store.listEntityRelationPage({
     entityId: 'project-memory-scope', limit: 40, offset: 40
   }).stale, true)

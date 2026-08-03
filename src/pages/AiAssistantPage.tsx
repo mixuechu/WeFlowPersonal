@@ -434,6 +434,9 @@ function AiAssistantPage() {
   })
   const [entityDossierLoadingMore, setEntityDossierLoadingMore] = useState('')
   const [entityDossierRefreshKey, setEntityDossierRefreshKey] = useState(0)
+  const [entityRelationQuery, setEntityRelationQuery] = useState('')
+  const [entityRelationDirection, setEntityRelationDirection] = useState<'all' | 'outgoing' | 'incoming'>('all')
+  const [entityRelationStatus, setEntityRelationStatus] = useState<'all' | 'candidate' | 'confirmed'>('all')
   const entityDossierGate = useRef(new LatestRequestGate())
   const [entityTaskLoadingMore, setEntityTaskLoadingMore] = useState(false)
   const entityTaskGate = useRef(new LatestRequestGate())
@@ -1752,7 +1755,12 @@ function AiAssistantPage() {
         entityId: selectedEntityId, limit: 40, offset: 0
       }),
       window.electronAPI.aiAssistant.getEntityRelationPage({
-        entityId: selectedEntityId, limit: 40, offset: 0
+        entityId: selectedEntityId,
+        query: entityRelationQuery.trim() || undefined,
+        direction: entityRelationDirection,
+        status: entityRelationStatus,
+        limit: 40,
+        offset: 0
       }),
       window.electronAPI.aiAssistant.getEventTimeline({
         entityId: selectedEntityId, limit: 40, offset: 0
@@ -1771,7 +1779,8 @@ function AiAssistantPage() {
     }
   }, [
     showEntityDossier, selectedEntityId, dashboard?.memoryRevision,
-    dashboard?.graphReviewRevision, entityDossierRefreshKey
+    dashboard?.graphReviewRevision, entityDossierRefreshKey,
+    entityRelationQuery, entityRelationDirection, entityRelationStatus
   ])
 
   useEffect(() => {
@@ -2618,7 +2627,12 @@ function AiAssistantPage() {
       const page = kind === 'claims'
         ? await window.electronAPI.aiAssistant.getClaimArchive(options)
         : kind === 'relations'
-          ? await window.electronAPI.aiAssistant.getEntityRelationPage(options)
+          ? await window.electronAPI.aiAssistant.getEntityRelationPage({
+              ...options,
+              query: entityRelationQuery.trim() || undefined,
+              direction: entityRelationDirection,
+              status: entityRelationStatus
+            })
           : await window.electronAPI.aiAssistant.getEventTimeline(options)
       if (!entityDossierGate.current.isCurrent(request)) return
       if (page.stale) {
@@ -7069,7 +7083,11 @@ function AiAssistantPage() {
                         <b>{claim.predicate}</b><span>{claim.object_entity_name || claim.object_value || '待确认'}</span>
                       </button>)}
                     {!selectedEntityClaims.length && <em>尚无事实</em>}
-                    <strong>关系 · {selectedEntityRelations.length}</strong>
+                    <strong>关系 · {Number(graphWorkspace.focus?.relationTotal ?? selectedEntityRelations.length)}
+                      {Number(graphWorkspace.focus?.relationTotal || 0) > selectedEntityRelations.length
+                        ? `（预览 ${selectedEntityRelations.length}）`
+                        : ''}
+                    </strong>
                     {selectedEntityRelations.slice(0, 6).map((relation: any) => {
                       const outgoing = relation.subjectId === selectedEntity.id
                       const neighborId = outgoing ? relation.objectId : relation.subjectId
@@ -7663,6 +7681,23 @@ function AiAssistantPage() {
               </section>
               <section>
                 <h3>关系与证据 <small>{Number(entityDossierPages.relations?.total || 0)}</small></h3>
+                <div className="assistant-inline-filters">
+                  <input value={entityRelationQuery}
+                    onChange={event => setEntityRelationQuery(event.target.value)}
+                    placeholder="搜索关系类型或关联实体" />
+                  <select value={entityRelationDirection}
+                    onChange={event => setEntityRelationDirection(event.target.value as any)}>
+                    <option value="all">全部方向</option>
+                    <option value="outgoing">由我指向</option>
+                    <option value="incoming">指向我</option>
+                  </select>
+                  <select value={entityRelationStatus}
+                    onChange={event => setEntityRelationStatus(event.target.value as any)}>
+                    <option value="all">全部状态</option>
+                    <option value="confirmed">已确认</option>
+                    <option value="candidate">待确认</option>
+                  </select>
+                </div>
                 {dossierRelations.map((relation: any) => {
                   const outgoing = relation.subjectId === selectedEntity.id
                   const neighborId = outgoing ? relation.objectId : relation.subjectId

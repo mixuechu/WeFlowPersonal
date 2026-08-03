@@ -914,6 +914,8 @@
 .assistant-dossier-grid > section { padding: 14px; border: 1px solid #e4e5de; border-radius: 12px; display: grid; align-content: start; gap: 8px; background: rgba(255,255,255,.52); }
 .assistant-dossier-grid > section > h3 { margin: 0 0 3px; font-size: 13px; }
 .assistant-dossier-grid > section > h3 small { color: #859087; font-weight: 400; }
+.assistant-inline-filters { display: grid; grid-template-columns: minmax(130px, 1fr) auto auto; gap: 6px; }
+.assistant-inline-filters input, .assistant-inline-filters select { min-width: 0; padding: 7px 8px; border: 1px solid #dde1db; border-radius: 8px; color: #4f5951; background: #fff; font-size: 9px; }
 .assistant-dossier-grid > section > article { padding: 9px 10px; border: 1px solid #ecece6; border-radius: 9px; display: grid; gap: 5px; background: #fff; }
 .assistant-dossier-grid article > div, .assistant-dossier-link { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
 .assistant-dossier-grid article b { color: #3f4741; font-size: 10px; }
@@ -930,6 +932,7 @@
 .assistant-entity-dossier-modal > footer button.primary { border-color: #255f4b; color: #fff; background: #255f4b; }
 @media (max-width: 800px) {
   .assistant-dossier-identity, .assistant-dossier-metrics, .assistant-dossier-grid { grid-template-columns: 1fr; }
+  .assistant-inline-filters { grid-template-columns: 1fr; }
   .assistant-dossier-wide { grid-column: auto; }
 }
 @media (max-width: 900px) { .assistant-identity-status { grid-template-columns: 1fr; gap: 8px; } }
