@@ -2131,15 +2131,18 @@ function AiAssistantPage() {
     setMemoryDeletionDialog({
       kind,
       id,
+      reason: 'manual_delete',
       label: String(item.title || item.predicate || ''),
       status: 'loading'
     })
     try {
-      const preview = await window.electronAPI.aiAssistant.previewDeleteMemoryItem(kind, id)
+      const preview = await window.electronAPI.aiAssistant.previewDeleteMemoryItem(
+        kind, id, 'manual_delete'
+      )
       if (!memoryDeletionGate.current.isCurrent(request)) return
       if (!preview) {
         setMemoryDeletionDialog({
-          kind,
+          kind, reason: 'manual_delete',
           id,
           label: String(item.title || item.predicate || ''),
           status: 'error',
@@ -2147,11 +2150,13 @@ function AiAssistantPage() {
         })
         return
       }
-      setMemoryDeletionDialog({ kind, id, label: preview.label, preview, status: 'ready' })
+      setMemoryDeletionDialog({
+        kind, id, reason: 'manual_delete', label: preview.label, preview, status: 'ready'
+      })
     } catch (error: any) {
       if (!memoryDeletionGate.current.isCurrent(request)) return
       setMemoryDeletionDialog({
-        kind,
+        kind, reason: 'manual_delete',
         id,
         label: String(item.title || item.predicate || ''),
         status: 'error',
@@ -2167,14 +2172,28 @@ function AiAssistantPage() {
   }
 
   const confirmPermanentMemoryDeletion = async () => {
-    if (!memoryDeletionDialog || memoryDeletionDialog.status !== 'ready' ||
-        memoryDeletionConfirmation !== '永久删除') return
-    const { kind, id } = memoryDeletionDialog
+    if (!memoryDeletionDialog || memoryDeletionDialog.status !== 'ready') return
+    const expected = memoryDeletionDialog.reason === 'not_important'
+      ? '标记不重要' : '永久删除'
+    if (memoryDeletionConfirmation !== expected) return
+    const { kind, id, reason, preview } = memoryDeletionDialog
     setMemoryDeletionDialog((current: any) => ({ ...current, status: 'deleting', error: undefined }))
     try {
-      const result = await window.electronAPI.aiAssistant.deleteMemoryItem(kind, id)
+      const result = reason === 'not_important'
+        ? await window.electronAPI.aiAssistant.ignoreMemoryItem(kind, id, {
+            previewToken: preview.previewToken,
+            confirmation: memoryDeletionConfirmation
+          })
+        : await window.electronAPI.aiAssistant.deleteMemoryItem(kind, id, {
+            previewToken: preview.previewToken,
+            confirmation: memoryDeletionConfirmation
+          })
       const kindLabel = kind === 'claim' ? '事实' : kind === 'event' ? '事件' : '关系'
-      setMessage(`已永久删除${kindLabel}；抑制指纹 ${result.fingerprint} 已保存。`)
+      setMessage(reason === 'not_important'
+        ? `已标记为不重要并清理${kindLabel}；抑制指纹 ${result.fingerprint} 已保存。`
+        : `已永久删除${kindLabel}；抑制指纹 ${result.fingerprint} 已保存。`)
+      setEditingClaim((current: any) => current?.id === id ? null : current)
+      setEditingEvent((current: any) => current?.id === id ? null : current)
       if (memoryAnswer?.citations?.some((citation: any) => citation.documentId === `${kind}:${id}`)) setMemoryAnswer(null)
       closeMemoryDeletionDialog()
       await load()
@@ -2196,31 +2215,50 @@ function AiAssistantPage() {
     if (!id) return
     const kindLabel = kind === 'claim' ? '事实' : '事件'
     const label = String(item.predicate || item.title || kindLabel)
+    const request = memoryDeletionGate.current.begin()
+    setMemoryDeletionConfirmation('')
+    setMemoryDeletionDialog({
+      kind,
+      id,
+      reason: 'not_important',
+      label,
+      status: 'loading'
+    })
     try {
-      const preview = await window.electronAPI.aiAssistant.previewDeleteMemoryItem(kind, id)
+      const preview = await window.electronAPI.aiAssistant.previewDeleteMemoryItem(
+        kind, id, 'not_important'
+      )
+      if (!memoryDeletionGate.current.isCurrent(request)) return
       if (!preview) {
-        setMessage(`该${kindLabel}已不存在。`)
-        await load()
+        setMemoryDeletionDialog({
+          kind,
+          id,
+          reason: 'not_important',
+          label,
+          status: 'error',
+          error: `该${kindLabel}不存在或已经被清理。`
+        })
         return
       }
-      const confirmed = window.confirm(
-        `把这条${kindLabel}“${label}”标记为不重要？\n\n` +
-        `将释放 ${preview.counts.evidence || 0} 条原文证据、${preview.counts.searchDocuments || 0} 个检索索引` +
-        `${preview.counts.assistantMessages ? `，并移除 ${preview.counts.assistantMessages} 段引用过它的问答` : ''}。\n` +
-        '系统只保留很小的抑制指纹，今后重跑同一原文也不会再次生成。'
-      )
-      if (!confirmed) return
-      const result = await window.electronAPI.aiAssistant.ignoreMemoryItem(kind, id)
-      setEditingClaim((current: any) => current?.id === id ? null : current)
-      setEditingEvent((current: any) => current?.id === id ? null : current)
-      if (memoryAnswer?.citations?.some((citation: any) => citation.documentId === `${kind}:${id}`)) setMemoryAnswer(null)
-      setMessage(
-        `已忽略不重要${kindLabel}；清理 ${result.removed?.evidence || 0} 条证据、` +
-        `${result.removed?.searchDocuments || 0} 个索引，空间可供后续记忆复用。`
-      )
-      await load()
+      setMemoryDeletionDialog({
+        kind,
+        id,
+        reason: 'not_important',
+        label: preview.label,
+        preview,
+        status: 'ready'
+      })
     } catch (error: any) {
-      setMessage(error?.message || String(error))
+      if (memoryDeletionGate.current.isCurrent(request)) {
+        setMemoryDeletionDialog({
+          kind,
+          id,
+          reason: 'not_important',
+          label,
+          status: 'error',
+          error: error?.message || String(error)
+        })
+      }
     }
   }
 
@@ -6252,8 +6290,13 @@ function AiAssistantPage() {
         <div className="assistant-modal-backdrop" role="presentation">
           <div className="assistant-modal assistant-delete-modal" role="dialog" aria-modal="true" aria-labelledby="memory-delete-title">
             <div className="assistant-modal-title"><div>
-              <h2 id="memory-delete-title">永久删除{memoryDeletionDialog.kind === 'claim' ? '事实' : memoryDeletionDialog.kind === 'event' ? '事件' : '关系'}</h2>
-              <p>该操作不可撤销，但会保留不含正文的抑制指纹，防止相同原文再次生成。</p>
+              <h2 id="memory-delete-title">
+                {memoryDeletionDialog.reason === 'not_important' ? '标记不重要并清理' : '永久删除'}
+                {memoryDeletionDialog.kind === 'claim' ? '事实' : memoryDeletionDialog.kind === 'event' ? '事件' : '关系'}
+              </h2>
+              <p>{memoryDeletionDialog.reason === 'not_important'
+                ? '释放正文、原文与索引空间，只保留很小的抑制指纹；同一原文今后不会再次生成。'
+                : '该操作不可撤销，但会保留不含正文的抑制指纹，防止相同原文再次生成。'}</p>
             </div><button aria-label="关闭永久删除确认" disabled={memoryDeletionDialog.status === 'deleting'}
               onClick={closeMemoryDeletionDialog}><X size={16} /></button></div>
             {memoryDeletionDialog.status === 'loading' && <div className="assistant-delete-status">
@@ -6261,33 +6304,55 @@ function AiAssistantPage() {
             </div>}
             {memoryDeletionDialog.status === 'error' && <div className="assistant-error">
               <strong>无法完成永久删除</strong><span>{memoryDeletionDialog.error || '未知错误'}</span>
+              {String(memoryDeletionDialog.error || '').includes('预览后发生了变化') &&
+                <button onClick={() => {
+                  const item = {
+                    id: memoryDeletionDialog.id,
+                    title: memoryDeletionDialog.label
+                  }
+                  const reason = memoryDeletionDialog.reason
+                  setMemoryDeletionDialog(null)
+                  setMemoryDeletionConfirmation('')
+                  void (reason === 'not_important'
+                    ? ignoreMemoryItem(memoryDeletionDialog.kind, item)
+                    : permanentlyDeleteMemoryItem(memoryDeletionDialog.kind, item))
+                }}>重新核对范围</button>}
             </div>}
             {(memoryDeletionDialog.status === 'ready' || memoryDeletionDialog.status === 'deleting') && <>
               <div className="assistant-delete-preview">
                 <strong>{memoryDeletionDialog.preview?.label || memoryDeletionDialog.label || '未命名记忆'}</strong>
                 <p>
-                  将清理 {memoryDeletionDialog.preview?.counts?.evidence || 0} 条原文证据、
+                  将{memoryDeletionDialog.reason === 'not_important' ? '释放' : '清理'} {memoryDeletionDialog.preview?.counts?.evidence || 0} 条原文证据、
                   {memoryDeletionDialog.preview?.counts?.related || 0} 条关联记录、
                   {memoryDeletionDialog.preview?.counts?.searchDocuments || 0} 个全文/向量索引，
                   以及 {memoryDeletionDialog.preview?.counts?.assistantMessages || 0} 段引用过它的本地问答。
                 </p>
               </div>
-              <label><span>输入“永久删除”确认</span><input autoFocus value={memoryDeletionConfirmation}
+              <label><span>输入“{memoryDeletionDialog.reason === 'not_important'
+                ? '标记不重要' : '永久删除'}”确认</span><input autoFocus value={memoryDeletionConfirmation}
                 disabled={memoryDeletionDialog.status === 'deleting'}
                 onChange={event => setMemoryDeletionConfirmation(event.target.value)}
                 onKeyDown={event => {
-                  if (event.key === 'Enter' && memoryDeletionConfirmation === '永久删除') {
+                  const expected = memoryDeletionDialog.reason === 'not_important'
+                    ? '标记不重要' : '永久删除'
+                  if (event.key === 'Enter' && memoryDeletionConfirmation === expected) {
                     void confirmPermanentMemoryDeletion()
                   }
                 }}
-                placeholder="永久删除" /></label>
+                placeholder={memoryDeletionDialog.reason === 'not_important'
+                  ? '标记不重要' : '永久删除'} /></label>
             </>}
             <div className="assistant-modal-actions">
               <button disabled={memoryDeletionDialog.status === 'deleting'} onClick={closeMemoryDeletionDialog}>取消</button>
               {(memoryDeletionDialog.status === 'ready' || memoryDeletionDialog.status === 'deleting') &&
-                <button className="danger" disabled={memoryDeletionConfirmation !== '永久删除' || memoryDeletionDialog.status === 'deleting'}
+                <button className="danger" disabled={
+                  memoryDeletionConfirmation !== (memoryDeletionDialog.reason === 'not_important'
+                    ? '标记不重要' : '永久删除') ||
+                  memoryDeletionDialog.status === 'deleting'}
                   onClick={() => void confirmPermanentMemoryDeletion()}>
-                  {memoryDeletionDialog.status === 'deleting' ? '正在清理…' : '确认永久删除'}
+                  {memoryDeletionDialog.status === 'deleting' ? '正在清理…'
+                    : memoryDeletionDialog.reason === 'not_important'
+                      ? '确认标记不重要' : '确认永久删除'}
                 </button>}
             </div>
           </div>

@@ -1752,9 +1752,21 @@ export interface ElectronAPI {
       updateGraphReview: (id: string, decision: 'confirmed' | 'rejected', options?: { mergeTargetEntityId?: string; correctedCanonicalName?: string; correctedSummaryText?: string; correctedAliasText?: string; relationCorrection?: { subjectId?: string; predicate?: string; objectId?: string } }) => Promise<any>
       revertMerge: (id: number) => Promise<any>
       updateMemoryItemStatus: (kind: 'claim' | 'event', id: string, status: 'confirmed' | 'rejected') => Promise<any>
-      previewDeleteMemoryItem: (kind: 'claim' | 'event' | 'relation', id: string) => Promise<any>
-      deleteMemoryItem: (kind: 'claim' | 'event' | 'relation', id: string) => Promise<any>
-      ignoreMemoryItem: (kind: 'claim' | 'event', id: string) => Promise<any>
+      previewDeleteMemoryItem: (
+        kind: 'claim' | 'event' | 'relation',
+        id: string,
+        reason?: 'manual_delete' | 'not_important'
+      ) => Promise<any>
+      deleteMemoryItem: (
+        kind: 'claim' | 'event' | 'relation',
+        id: string,
+        input?: { previewToken?: string; confirmation?: string }
+      ) => Promise<any>
+      ignoreMemoryItem: (
+        kind: 'claim' | 'event',
+        id: string,
+        input?: { previewToken?: string; confirmation?: string }
+      ) => Promise<any>
       previewDeleteMemoryResource: (id: string) => Promise<any>
       deleteMemoryResource: (
         id: string,

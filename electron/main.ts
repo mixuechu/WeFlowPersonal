@@ -4566,12 +4566,15 @@ function registerIpcHandlers() {
   ipcMain.handle('ai-assistant:revertMerge', (_, id: number) => aiAssistantService.revertMerge(id))
   ipcMain.handle('ai-assistant:updateMemoryItemStatus', (_, kind: 'claim' | 'event', id: string, status: 'confirmed' | 'rejected') =>
     aiAssistantService.updateMemoryItemStatus(kind, id, status))
-  ipcMain.handle('ai-assistant:previewDeleteMemoryItem', (_, kind: 'claim' | 'event' | 'relation', id: string) =>
-    aiAssistantService.previewDeleteMemoryItem(kind, id))
-  ipcMain.handle('ai-assistant:deleteMemoryItem', (_, kind: 'claim' | 'event' | 'relation', id: string) =>
-    aiAssistantService.deleteMemoryItem(kind, id))
-  ipcMain.handle('ai-assistant:ignoreMemoryItem', (_, kind: 'claim' | 'event', id: string) =>
-    aiAssistantService.ignoreMemoryItem(kind, id))
+  ipcMain.handle('ai-assistant:previewDeleteMemoryItem', (
+    _, kind: 'claim' | 'event' | 'relation', id: string, reason?: any
+  ) => aiAssistantService.previewDeleteMemoryItem(kind, id, reason))
+  ipcMain.handle('ai-assistant:deleteMemoryItem', (
+    _, kind: 'claim' | 'event' | 'relation', id: string, input?: any
+  ) => aiAssistantService.deleteMemoryItem(kind, id, input))
+  ipcMain.handle('ai-assistant:ignoreMemoryItem', (
+    _, kind: 'claim' | 'event', id: string, input?: any
+  ) => aiAssistantService.ignoreMemoryItem(kind, id, input))
   ipcMain.handle('ai-assistant:previewDeleteMemoryResource', (_, id: string) =>
     aiAssistantService.previewDeleteMemoryResource(id))
   ipcMain.handle('ai-assistant:deleteMemoryResource', (_, id: string, input?: any) =>

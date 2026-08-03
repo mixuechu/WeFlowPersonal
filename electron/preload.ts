@@ -642,12 +642,15 @@ contextBridge.exposeInMainWorld('electronAPI', {
     revertMerge: (id: number) => ipcRenderer.invoke('ai-assistant:revertMerge', id),
     updateMemoryItemStatus: (kind: 'claim' | 'event', id: string, status: 'confirmed' | 'rejected') =>
       ipcRenderer.invoke('ai-assistant:updateMemoryItemStatus', kind, id, status),
-    previewDeleteMemoryItem: (kind: 'claim' | 'event' | 'relation', id: string) =>
-      ipcRenderer.invoke('ai-assistant:previewDeleteMemoryItem', kind, id),
-    deleteMemoryItem: (kind: 'claim' | 'event' | 'relation', id: string) =>
-      ipcRenderer.invoke('ai-assistant:deleteMemoryItem', kind, id),
-    ignoreMemoryItem: (kind: 'claim' | 'event', id: string) =>
-      ipcRenderer.invoke('ai-assistant:ignoreMemoryItem', kind, id),
+    previewDeleteMemoryItem: (
+      kind: 'claim' | 'event' | 'relation',
+      id: string,
+      reason?: 'manual_delete' | 'not_important'
+    ) => ipcRenderer.invoke('ai-assistant:previewDeleteMemoryItem', kind, id, reason),
+    deleteMemoryItem: (kind: 'claim' | 'event' | 'relation', id: string, input?: any) =>
+      ipcRenderer.invoke('ai-assistant:deleteMemoryItem', kind, id, input),
+    ignoreMemoryItem: (kind: 'claim' | 'event', id: string, input?: any) =>
+      ipcRenderer.invoke('ai-assistant:ignoreMemoryItem', kind, id, input),
     previewDeleteMemoryResource: (id: string) =>
       ipcRenderer.invoke('ai-assistant:previewDeleteMemoryResource', id),
     deleteMemoryResource: (id: string, input?: any) =>

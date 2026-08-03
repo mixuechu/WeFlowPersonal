@@ -80,6 +80,11 @@ import {
   assertResourceDeletionConfirmation,
   buildResourceDeletionPreviewToken
 } from './resourceDeletionPolicy'
+import {
+  assertStructuredMemoryDeletionConfirmation,
+  buildStructuredMemoryDeletionPreviewToken,
+  type StructuredMemoryDeletionReason
+} from './structuredMemoryDeletionPolicy'
 import { applyRelationConfirmation, planRelationConfirmation, type RelationCorrection } from './relationCorrectionPolicy'
 import {
   enqueueUniqueNotification,
@@ -4750,11 +4755,30 @@ export class AiAssistantService {
     }
   }
 
-  previewDeleteMemoryItem(kind: 'claim' | 'event' | 'relation', id: string): any {
-    return personalMemoryStore.previewDeleteMemoryItem(kind, id)
+  previewDeleteMemoryItem(
+    kind: 'claim' | 'event' | 'relation',
+    id: string,
+    reason: StructuredMemoryDeletionReason = 'manual_delete'
+  ): any {
+    const preview = personalMemoryStore.previewDeleteMemoryItem(kind, id)
+    if (!preview) return null
+    const normalizedReason: StructuredMemoryDeletionReason =
+      reason === 'not_important' ? 'not_important' : 'manual_delete'
+    const identity = { ...preview, reason: normalizedReason }
+    return {
+      ...identity,
+      previewToken: buildStructuredMemoryDeletionPreviewToken(identity)
+    }
   }
 
-  deleteMemoryItem(kind: 'claim' | 'event' | 'relation', id: string): any {
+  deleteMemoryItem(
+    kind: 'claim' | 'event' | 'relation',
+    id: string,
+    input: { previewToken?: string; confirmation?: string } = {}
+  ): any {
+    const preview = this.previewDeleteMemoryItem(kind, id, 'manual_delete')
+    if (!preview) throw new Error('该记忆不存在或已经删除')
+    assertStructuredMemoryDeletionConfirmation(preview, input)
     const result = personalMemoryStore.deleteMemoryItem(kind, id)
     if (kind === 'relation') {
       this.state.graph.relations = this.state.graph.relations.filter(relation => relation.id !== id)
@@ -4764,8 +4788,15 @@ export class AiAssistantService {
     return result
   }
 
-  ignoreMemoryItem(kind: 'claim' | 'event', id: string): any {
+  ignoreMemoryItem(
+    kind: 'claim' | 'event',
+    id: string,
+    input: { previewToken?: string; confirmation?: string } = {}
+  ): any {
     if (kind !== 'claim' && kind !== 'event') throw new Error('只有事实和事件可以标记为不重要')
+    const preview = this.previewDeleteMemoryItem(kind, id, 'not_important')
+    if (!preview) throw new Error('该记忆不存在或已经删除')
+    assertStructuredMemoryDeletionConfirmation(preview, input)
     return {
       ...personalMemoryStore.deleteMemoryItem(kind, id, 'not_important'),
       spaceReclaimedForReuse: true

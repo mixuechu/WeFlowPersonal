@@ -7800,6 +7800,15 @@ test('permanent structured-memory deletion is audited and suppresses identical r
   assert.deepEqual(store.previewDeleteMemoryItem('claim', claim.id)?.counts, {
     evidence: 1, related: 0, searchDocuments: 1, assistantMessages: 1
   })
+  const claimDeleteIdentity = store.previewDeleteMemoryItem('claim', claim.id).identitySha256
+  store.saveAssistantExchange('第二个敏感问题', '第二个敏感答案', [{
+    documentId: `claim:${claim.id}`, type: 'claim', sourceId: claim.id,
+    title: claim.predicate, content: claim.searchText, evidence: claim.evidence
+  }])
+  assert.notEqual(
+    store.previewDeleteMemoryItem('claim', claim.id).identitySha256,
+    claimDeleteIdentity
+  )
   assert.equal(store.deleteMemoryItem('claim', claim.id).suppressed, true)
   assert.equal(store.deleteMemoryItem('event', event.id, 'not_important').suppressed, true)
   assert.equal(store.deleteMemoryItem('relation', relation.id).suppressed, true)

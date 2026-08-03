@@ -5806,9 +5806,47 @@ export class PersonalMemoryStore {
       SELECT COUNT(DISTINCT conversation_id) AS count FROM assistant_messages WHERE citations_json LIKE ?
     `).get(`%${documentId}%`) as any)?.count || 0)
     const evidenceRows = this.db.prepare(`
-      SELECT message_id FROM evidence
+      SELECT * FROM evidence
       WHERE ${kind === 'claim' ? 'claim_id' : kind === 'event' ? 'event_id' : 'relation_id'}=?
+      ORDER BY id
     `).all(itemId) as Array<{ message_id: string }>
+    const relatedRows = kind === 'claim'
+      ? {
+          corrections: this.db.prepare(`
+            SELECT * FROM memory_corrections
+            WHERE item_kind='claim' AND item_id=? ORDER BY id
+          `).all(itemId),
+          reviews: this.db.prepare(`
+            SELECT * FROM memory_review_decisions
+            WHERE item_kind='claim' AND item_id=? ORDER BY id
+          `).all(itemId)
+        }
+      : kind === 'event'
+        ? {
+            participants: this.db.prepare(`
+              SELECT * FROM event_participants WHERE event_id=? ORDER BY entity_id,role
+            `).all(itemId),
+            corrections: this.db.prepare(`
+              SELECT * FROM memory_corrections
+              WHERE item_kind='event' AND item_id=? ORDER BY id
+            `).all(itemId),
+            reviews: this.db.prepare(`
+              SELECT * FROM memory_review_decisions
+              WHERE item_kind='event' AND item_id=? ORDER BY id
+            `).all(itemId)
+          }
+        : {
+            history: this.db.prepare(`
+              SELECT * FROM relation_history WHERE relation_id=? ORDER BY id
+            `).all(itemId)
+          }
+    const searchDocument = this.db.prepare(`
+      SELECT * FROM search_documents WHERE id=?
+    `).get(documentId) as any || null
+    const assistantRows = this.db.prepare(`
+      SELECT id,conversation_id,created_at FROM assistant_messages
+      WHERE citations_json LIKE ? ORDER BY id
+    `).all(`%${documentId}%`) as any[]
     const semanticFingerprint = this.memoryItemSemanticFingerprint(kind, {
       ...row,
       evidence: evidenceRows
@@ -5822,6 +5860,13 @@ export class PersonalMemoryStore {
       documentId,
       fingerprint: createHash('sha256').update(`${kind}:${itemId}`).digest('hex').slice(0, 20),
       semanticFingerprint,
+      identitySha256: createHash('sha256').update(JSON.stringify({
+        row,
+        evidenceRows,
+        relatedRows,
+        searchDocument,
+        assistantRows
+      })).digest('hex'),
       counts: {
         evidence,
         related,
