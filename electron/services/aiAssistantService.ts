@@ -3354,7 +3354,7 @@ export class AiAssistantService {
     const taskOwnershipReviewStats = personalMemoryStore.getTaskOwnershipReviewStats()
     const allTaskReminders = buildTaskReminders(tasks)
     const reminderResult = applyReminderPreferences(allTaskReminders, this.state.reminderPreferences)
-    const memoryFeed = personalMemoryStore.getMemoryFeed()
+    const memoryFeed = personalMemoryStore.getMemoryFeed(100, false)
     const memoryStats = personalMemoryStore.getMemoryStats()
     const projectInsights = buildProjectDirectory({
       entities: this.state.graph.entities,
@@ -3394,6 +3394,8 @@ export class AiAssistantService {
     const taskReviewArchiveStats = personalMemoryStore.getTaskReviewArchiveStats()
     const memoryDeletionArchiveStats = personalMemoryStore.getMemoryDeletionAuditStats()
     const mergeHistoryArchiveStats = personalMemoryStore.getMergeHistoryArchiveStats()
+    const resourceArchiveRevision = personalMemoryStore.getResourceArchiveRevision()
+    const resourceTrashStats = personalMemoryStore.listResourceTrashArchive({ limit: 1 })
     return {
       briefing: latest ? { ...latest, tasks: undefined } : null,
       briefingStorage: this.briefingStorage,
@@ -3520,15 +3522,25 @@ export class AiAssistantService {
       memoryFeed: {
         claims: [],
         events: [],
-        resources: memoryFeed.resources
+        resources: []
       },
       memoryFeedPayloadPolicy: {
-        version: 'memory-feed-directory-v2',
+        version: 'memory-feed-directory-v3',
         claims: 'paginated_on_demand',
         events: 'paginated_on_demand',
-        resources: 'bounded_preview'
+        resources: 'paginated_on_demand',
+        resourceDossier: 'single_item_on_demand'
       },
-      resourceTrash: personalMemoryStore.listResourceTrash(),
+      resourceArchive: {
+        total: memoryStats.resources,
+        trash: resourceTrashStats.total,
+        revision: resourceArchiveRevision,
+        version: 'resource-archive-v1',
+        directory: 'paginated_without_content',
+        dossier: 'single_item_on_demand',
+        trashDirectory: 'paginated_without_snapshot'
+      },
+      resourceTrash: [],
       ingestionStatus: personalMemoryStore.getIngestionStatus(),
       assistantArchive: {
         total: assistantArchiveStats.total,
@@ -5284,6 +5296,18 @@ export class AiAssistantService {
       ...preview,
       previewToken: buildResourceDeletionPreviewToken(preview)
     } : null
+  }
+
+  getResourceArchive(options?: any): any {
+    return personalMemoryStore.listResourceArchive(options || {})
+  }
+
+  getResourceDossier(id: string, expectedRevision: string): any {
+    return personalMemoryStore.getResourceDossier(id, expectedRevision)
+  }
+
+  getResourceTrashArchive(options?: any): any {
+    return personalMemoryStore.listResourceTrashArchive(options || {})
   }
 
   deleteMemoryResource(

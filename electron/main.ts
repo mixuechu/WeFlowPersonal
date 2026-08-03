@@ -4604,6 +4604,12 @@ function registerIpcHandlers() {
   ) => aiAssistantService.ignoreMemoryItem(kind, id, input))
   ipcMain.handle('ai-assistant:previewDeleteMemoryResource', (_, id: string) =>
     aiAssistantService.previewDeleteMemoryResource(id))
+  ipcMain.handle('ai-assistant:getResourceArchive', (_, options?: any) =>
+    aiAssistantService.getResourceArchive(options))
+  ipcMain.handle('ai-assistant:getResourceDossier', (_, id: string, expectedRevision: string) =>
+    aiAssistantService.getResourceDossier(id, expectedRevision))
+  ipcMain.handle('ai-assistant:getResourceTrashArchive', (_, options?: any) =>
+    aiAssistantService.getResourceTrashArchive(options))
   ipcMain.handle('ai-assistant:deleteMemoryResource', (_, id: string, input?: any) =>
     aiAssistantService.deleteMemoryResource(id, input))
   ipcMain.handle('ai-assistant:restoreMemoryResource', (_, id: string) => aiAssistantService.restoreMemoryResource(id))

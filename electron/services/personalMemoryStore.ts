@@ -771,6 +771,7 @@ export class PersonalMemoryStore {
     this.ensureIngestionArchiveRevisionTriggers()
     this.ensureIngestionRecoveryRevisionTriggers()
     this.ensureAssistantHistoryRevisionTriggers()
+    this.ensureResourceArchiveRevisionTriggers()
     this.repairStructuredSearchIndex()
     this.backfillMergeHistoryNames()
     this.db.exec(`CREATE INDEX IF NOT EXISTS idx_memory_corrections_item
@@ -1241,6 +1242,79 @@ export class PersonalMemoryStore {
     return {
       version: 'structured-memory-revision-v1',
       revision: this.getStructuredMemoryRevision(),
+      expectedTriggers: expectedNames.length,
+      installedTriggers: expectedNames.filter(name => installedNames.has(name)).length,
+      healthy: installedNames.size === expectedNames.length
+        && expectedNames.every(name => installedNames.has(name))
+    }
+  }
+
+  private resourceArchiveRevisionTriggerNames(): string[] {
+    return ['memory_resources', 'search_document_evidence', 'resource_trash']
+      .flatMap(table => ['insert', 'update', 'delete']
+        .map(operation => `trg_resource_archive_revision_${table}_${operation}`))
+  }
+
+  private ensureResourceArchiveRevisionTriggers(): void {
+    if (!this.db) return
+    this.db.prepare(`
+      INSERT INTO schema_meta(key,value,updated_at)
+      VALUES('resource_archive_revision','0',?)
+      ON CONFLICT(key) DO NOTHING
+    `).run(new Date().toISOString())
+    const statements: string[] = []
+    for (const table of ['memory_resources', 'search_document_evidence', 'resource_trash']) {
+      for (const operation of ['INSERT', 'UPDATE', 'DELETE']) {
+        const name = `trg_resource_archive_revision_${table}_${operation.toLowerCase()}`
+        const when = table !== 'search_document_evidence'
+          ? ''
+          : operation === 'INSERT'
+            ? `WHEN NEW.document_id LIKE 'resource:%'`
+            : operation === 'DELETE'
+              ? `WHEN OLD.document_id LIKE 'resource:%'`
+              : `WHEN OLD.document_id LIKE 'resource:%' OR NEW.document_id LIKE 'resource:%'`
+        statements.push(`DROP TRIGGER IF EXISTS ${name};`)
+        statements.push(`
+          CREATE TRIGGER ${name} AFTER ${operation} ON ${table}
+          ${when}
+          BEGIN
+            UPDATE schema_meta
+            SET value=CAST(CAST(value AS INTEGER)+1 AS TEXT),
+              updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')
+            WHERE key='resource_archive_revision';
+          END;
+        `)
+      }
+    }
+    this.db.exec(statements.join('\n'))
+  }
+
+  getResourceArchiveRevision(): string {
+    if (!this.db) return '0'
+    return String((this.db.prepare(`
+      SELECT value FROM schema_meta WHERE key='resource_archive_revision'
+    `).get() as any)?.value || '0')
+  }
+
+  getResourceArchiveRevisionHealth(): any {
+    const expectedNames = this.resourceArchiveRevisionTriggerNames()
+    if (!this.db) {
+      return {
+        version: 'resource-archive-revision-v1',
+        revision: '0',
+        expectedTriggers: expectedNames.length,
+        installedTriggers: 0,
+        healthy: false
+      }
+    }
+    const rows = this.db.prepare(`
+      SELECT name FROM sqlite_master
+      WHERE type='trigger' AND name LIKE 'trg_resource_archive_revision_%'
+    `).all() as Array<{ name: string }>
+    const installedNames = new Set(rows.map(row => String(row.name)))
+    return {
+      version: 'resource-archive-revision-v1',
+      revision: this.getResourceArchiveRevision(),
       expectedTriggers: expectedNames.length,
       installedTriggers: expectedNames.filter(name => installedNames.has(name)).length,
       healthy: installedNames.size === expectedNames.length
@@ -3178,6 +3252,7 @@ export class PersonalMemoryStore {
     const ingestionArchiveRevision = this.getIngestionArchiveRevisionHealth()
     const ingestionRecoveryRevision = this.getIngestionRecoveryRevisionHealth()
     const assistantHistoryRevision = this.getAssistantHistoryRevisionHealth()
+    const resourceArchiveRevision = this.getResourceArchiveRevisionHealth()
     return {
       healthy: integrity === 'ok'
         && structuredEvidenceMigration.constraintsHealthy
@@ -3196,7 +3271,8 @@ export class PersonalMemoryStore {
         && identityMergeArchiveRevision.healthy
         && ingestionArchiveRevision.healthy
         && ingestionRecoveryRevision.healthy
-        && assistantHistoryRevision.healthy,
+        && assistantHistoryRevision.healthy
+        && resourceArchiveRevision.healthy,
       integrity,
       foreignKeyViolations,
       referentialIntegrityHealthy,
@@ -3216,6 +3292,7 @@ export class PersonalMemoryStore {
       ingestionArchiveRevisionHealthy: ingestionArchiveRevision.healthy,
       ingestionRecoveryRevisionHealthy: ingestionRecoveryRevision.healthy,
       assistantHistoryRevisionHealthy: assistantHistoryRevision.healthy,
+      resourceArchiveRevisionHealthy: resourceArchiveRevision.healthy,
       encryption: {
         enabled: Boolean(this.encryptionKey),
         cipher: this.encryptionKey ? String(this.db.pragma('cipher', { simple: true }) || '') : 'none',
@@ -3242,6 +3319,7 @@ export class PersonalMemoryStore {
       ingestionArchiveRevision,
       ingestionRecoveryRevision,
       assistantHistoryRevision,
+      resourceArchiveRevision,
       backups
     }
   }
@@ -5444,7 +5522,166 @@ export class PersonalMemoryStore {
     }
   }
 
-  getMemoryFeed(limit = 100): { claims: any[]; events: any[]; resources: any[] } {
+  listResourceArchive(options: {
+    resourceType?: string
+    sourceId?: 'wechat' | 'documents' | 'calendar' | 'mail'
+    query?: string
+    from?: string
+    to?: string
+    limit?: number
+    offset?: number
+    revision?: string
+  } = {}): { items: any[]; total: number; hasMore: boolean; revision: string; stale: boolean } {
+    if (!this.db) return { items: [], total: 0, hasMore: false, revision: '0', stale: false }
+    const revision = this.getResourceArchiveRevision()
+    const offset = Math.max(0, Math.min(1_000_000, Math.floor(Number(options.offset) || 0)))
+    if (offset > 0 && String(options.revision || '') !== revision) {
+      return { items: [], total: 0, hasMore: false, revision, stale: true }
+    }
+    const conditions: string[] = []
+    const parameters: Array<string | number> = []
+    const resourceType = String(options.resourceType || '').trim()
+    if (resourceType) {
+      conditions.push('mr.resource_type=?')
+      parameters.push(resourceType)
+    }
+    const sourceId = String(options.sourceId || '').trim()
+    if (sourceId) {
+      conditions.push(`EXISTS (
+        SELECT 1 FROM search_document_evidence source_evidence
+        WHERE source_evidence.document_id='resource:' || mr.id
+          AND source_evidence.source_id=?
+      )`)
+      parameters.push(sourceId)
+    }
+    const query = String(options.query || '').trim().toLocaleLowerCase('zh-CN')
+    if (query) {
+      conditions.push(`instr(lower(
+        mr.title || char(0) || mr.file_name || char(0) || mr.url || char(0) || mr.content
+      ),?)>0`)
+      parameters.push(query)
+    }
+    const validFrom = options.from && Number.isFinite(Date.parse(options.from)) ? options.from : ''
+    const validTo = options.to && Number.isFinite(Date.parse(options.to)) ? options.to : ''
+    if (validFrom) {
+      conditions.push('mr.updated_at>=?')
+      parameters.push(validFrom)
+    }
+    if (validTo) {
+      conditions.push('mr.updated_at<=?')
+      parameters.push(validTo)
+    }
+    const where = conditions.length ? conditions.join(' AND ') : '1=1'
+    const total = Number((this.db.prepare(`
+      SELECT COUNT(*) AS count FROM memory_resources mr WHERE ${where}
+    `).get(...parameters) as any)?.count || 0)
+    const limit = Math.max(1, Math.min(100, Math.floor(Number(options.limit) || 40)))
+    const items = this.db.prepare(`
+      SELECT mr.id,mr.resource_type,mr.title,mr.url,mr.file_name,mr.file_ext,
+        mr.created_at,mr.updated_at,
+        length(mr.content) AS content_length,
+        (SELECT COUNT(*) FROM search_document_evidence sde
+          WHERE sde.document_id='resource:' || mr.id) AS evidence_count
+      FROM memory_resources mr
+      WHERE ${where}
+      ORDER BY mr.updated_at DESC,mr.id ASC
+      LIMIT ? OFFSET ?
+    `).all(...parameters, limit, offset) as any[]
+    const completedRevision = this.getResourceArchiveRevision()
+    if (completedRevision !== revision) {
+      return { items: [], total: 0, hasMore: false, revision: completedRevision, stale: true }
+    }
+    return {
+      items,
+      total,
+      hasMore: offset + items.length < total,
+      revision,
+      stale: false
+    }
+  }
+
+  getResourceDossier(id: string, expectedRevision = ''): any | null {
+    if (!this.db) return null
+    const revision = this.getResourceArchiveRevision()
+    if (String(expectedRevision || '') !== revision) {
+      return { stale: true, revision }
+    }
+    const resource = this.db.prepare(`
+      SELECT mr.*,
+        (SELECT COUNT(*) FROM search_document_evidence sde
+          WHERE sde.document_id='resource:' || mr.id) AS evidence_count
+      FROM memory_resources mr WHERE mr.id=?
+    `).get(String(id || '').trim()) as any
+    if (!resource) return null
+    const evidence = this.db.prepare(`
+      SELECT source_id,message_id,session_id,timestamp,sender,excerpt
+      FROM search_document_evidence WHERE document_id=?
+      ORDER BY timestamp DESC,message_id DESC LIMIT ?
+    `).all(`resource:${resource.id}`, MEMORY_CARD_EVIDENCE_LIMIT) as any[]
+    let metadata: any = {}
+    try { metadata = JSON.parse(resource.metadata_json || '{}') } catch {}
+    const completedRevision = this.getResourceArchiveRevision()
+    if (completedRevision !== revision) return { stale: true, revision: completedRevision }
+    return {
+      ...resource,
+      metadata,
+      evidence: evidence.reverse(),
+      revision,
+      stale: false
+    }
+  }
+
+  listResourceTrashArchive(options: {
+    query?: string
+    limit?: number
+    offset?: number
+    revision?: string
+  } = {}): { items: any[]; total: number; hasMore: boolean; revision: string; stale: boolean } {
+    if (!this.db) return { items: [], total: 0, hasMore: false, revision: '0', stale: false }
+    const revision = this.getResourceArchiveRevision()
+    const offset = Math.max(0, Math.min(1_000_000, Math.floor(Number(options.offset) || 0)))
+    if (offset > 0 && String(options.revision || '') !== revision) {
+      return { items: [], total: 0, hasMore: false, revision, stale: true }
+    }
+    const query = String(options.query || '').trim().toLocaleLowerCase('zh-CN')
+    const where = query
+      ? `WHERE instr(lower(resource_id || char(0) || reason || char(0) ||
+          CASE WHEN json_valid(snapshot_json)
+            THEN COALESCE(json_extract(snapshot_json,'$.resource.title'),'') ||
+              char(0) || COALESCE(json_extract(snapshot_json,'$.resource.file_name'),'')
+            ELSE '' END),?)>0`
+      : ''
+    const parameters = query ? [query] : []
+    const total = Number((this.db.prepare(`
+      SELECT COUNT(*) AS count FROM resource_trash ${where}
+    `).get(...parameters) as any)?.count || 0)
+    const limit = Math.max(1, Math.min(100, Math.floor(Number(options.limit) || 40)))
+    const items = this.db.prepare(`
+      SELECT resource_id AS id,reason,deleted_at,
+        CASE WHEN json_valid(snapshot_json)
+          THEN COALESCE(json_extract(snapshot_json,'$.resource.title'),'已删除资源')
+          ELSE '无法读取的旧资源快照' END AS title,
+        CASE WHEN json_valid(snapshot_json)
+          THEN COALESCE(json_extract(snapshot_json,'$.resource.resource_type'),'resource')
+          ELSE 'resource' END AS resource_type
+      FROM resource_trash ${where}
+      ORDER BY deleted_at DESC,resource_id ASC
+      LIMIT ? OFFSET ?
+    `).all(...parameters, limit, offset) as any[]
+    const completedRevision = this.getResourceArchiveRevision()
+    if (completedRevision !== revision) {
+      return { items: [], total: 0, hasMore: false, revision: completedRevision, stale: true }
+    }
+    return {
+      items,
+      total,
+      hasMore: offset + items.length < total,
+      revision,
+      stale: false
+    }
+  }
+
+  getMemoryFeed(limit = 100, includeResources = true): { claims: any[]; events: any[]; resources: any[] } {
     if (!this.db) return { claims: [], events: [], resources: [] }
     const safeLimit = Math.max(1, Math.min(500, Math.floor(Number(limit) || 100)))
     const claims = this.db.prepare(`
@@ -5491,12 +5728,12 @@ export class PersonalMemoryStore {
       SELECT ep.entity_id,ep.role,e.canonical_name
       FROM event_participants ep JOIN entities e ON e.id=ep.entity_id WHERE ep.event_id=?
     `)
-    const resources = this.db.prepare(`
+    const resources = includeResources ? this.db.prepare(`
       SELECT mr.*,
         (SELECT COUNT(*) FROM search_document_evidence sde
           WHERE sde.document_id='resource:' || mr.id) AS evidence_count
       FROM memory_resources mr ORDER BY updated_at DESC LIMIT ?
-    `).all(safeLimit) as any[]
+    `).all(safeLimit) as any[] : []
     const resourceEvidence = this.db.prepare(`
       SELECT source_id,message_id,session_id,timestamp,sender,excerpt
       FROM search_document_evidence WHERE document_id=?

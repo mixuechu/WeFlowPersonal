@@ -1805,6 +1805,23 @@ export interface ElectronAPI {
         input?: { previewToken?: string; confirmation?: string }
       ) => Promise<any>
       previewDeleteMemoryResource: (id: string) => Promise<any>
+      getResourceArchive: (options?: {
+        resourceType?: string
+        sourceId?: 'wechat' | 'documents' | 'calendar' | 'mail'
+        query?: string
+        from?: string
+        to?: string
+        limit?: number
+        offset?: number
+        revision?: string
+      }) => Promise<any>
+      getResourceDossier: (id: string, expectedRevision: string) => Promise<any>
+      getResourceTrashArchive: (options?: {
+        query?: string
+        limit?: number
+        offset?: number
+        revision?: string
+      }) => Promise<any>
       deleteMemoryResource: (
         id: string,
         input?: { previewToken?: string; confirmation?: string }

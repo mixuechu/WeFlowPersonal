@@ -5267,6 +5267,61 @@ test('assistant history revision covers authoritative history and self-heals on 
   }
 })
 
+test('resource archive revision covers content evidence and trash and self-heals on restart', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'weflow-resource-archive-revision-'))
+  const databasePath = join(directory, 'memory.sqlite')
+  try {
+    const first = new PersonalMemoryStore()
+    first.initialize(databasePath)
+    let previous = Number(first.getResourceArchiveRevision())
+    const expectAdvanced = () => {
+      const current = Number(first.getResourceArchiveRevision())
+      assert.ok(current > previous)
+      previous = current
+    }
+    first.upsertResources([{
+      id: 'resource-revision',
+      resourceType: 'file',
+      title: '资源版本保护',
+      content: '资源正文',
+      metadata: {},
+      evidence: [{
+        sourceId: 'wechat',
+        messageId: 'resource-revision-message',
+        sessionId: 'resource-revision-session',
+        timestamp: 1_754_000_001,
+        sender: '测试发送者',
+        excerpt: '资源版本原文'
+      }]
+    }])
+    expectAdvanced()
+    first.deleteResource('resource-revision')
+    expectAdvanced()
+    assert.deepEqual(first.getResourceArchiveRevisionHealth(), {
+      version: 'resource-archive-revision-v1',
+      revision: first.getResourceArchiveRevision(),
+      expectedTriggers: 9,
+      installedTriggers: 9,
+      healthy: true
+    })
+    ;(first as any).db.exec(
+      'DROP TRIGGER trg_resource_archive_revision_memory_resources_insert'
+    )
+    assert.equal(first.getResourceArchiveRevisionHealth().healthy, false)
+    first.close()
+
+    const reopened = new PersonalMemoryStore()
+    reopened.initialize(databasePath)
+    assert.equal(reopened.getResourceArchiveRevisionHealth().installedTriggers, 9)
+    assert.equal(reopened.getResourceArchiveRevisionHealth().healthy, true)
+    assert.equal(reopened.listResourceArchive().total, 0)
+    assert.equal(reopened.listResourceTrashArchive().total, 1)
+    reopened.close()
+  } finally {
+    rmSync(directory, { recursive: true, force: true })
+  }
+})
+
 test('database retrieval scope covers entity links, relation type and evidence time', () => withStore(store => {
   store.syncGraph({
     entities: [
@@ -8018,6 +8073,87 @@ test('message resources remain idempotent, searchable and traceable to original 
   assert.equal(store.restoreResource('resource-link-1').success, false)
   store.upsertResources([resource])
   assert.equal(store.getMemoryStats().resources, 0)
+}))
+
+test('resource archive pages stay bounded, revision-safe and hydrate only one dossier', () => withStore(store => {
+  const resources = Array.from({ length: 125 }, (_, index) => ({
+    id: `resource-archive-${String(index).padStart(3, '0')}`,
+    resourceType: index % 2 ? 'file' : 'link',
+    title: `资源档案 ${index}`,
+    url: index % 2 ? '' : `https://example.com/${index}`,
+    fileName: index % 2 ? `附件-${index}.pdf` : '',
+    fileExt: index % 2 ? '.pdf' : '',
+    content: `只应在单条档案出现的资源正文 ${index} ${'正文'.repeat(200)}`,
+    metadata: {
+      sourceId: index % 3 ? 'wechat' : 'documents',
+      sessionName: `会话 ${index}`,
+      attachmentStructure: { kind: 'document', headings: [`标题 ${index}`] }
+    },
+    createdAt: new Date(Date.UTC(2026, 6, 1, 0, index)).toISOString(),
+    updatedAt: new Date(Date.UTC(2026, 6, 1, 0, index)).toISOString(),
+    evidence: [{
+      sourceId: index % 3 ? 'wechat' : 'documents',
+      messageId: `resource-message-${index}`,
+      sessionId: `resource-session-${index}`,
+      timestamp: 1_775_000_000 + index,
+      sender: `发送者 ${index}`,
+      excerpt: `资源原文 ${index}`
+    }]
+  }))
+  store.upsertResources(resources)
+
+  const first = store.listResourceArchive({ limit: 40 })
+  assert.equal(first.total, 125)
+  assert.equal(first.items.length, 40)
+  assert.equal(first.hasMore, true)
+  assert.match(first.revision, /^\d+$/)
+  assert.equal('content' in first.items[0], false)
+  assert.equal('metadata_json' in first.items[0], false)
+  assert.equal('evidence' in first.items[0], false)
+  assert.ok(JSON.stringify(first.items).length < 20_000)
+
+  const second = store.listResourceArchive({
+    limit: 40,
+    offset: 40,
+    revision: first.revision
+  })
+  assert.equal(second.items.length, 40)
+  assert.equal(new Set([...first.items, ...second.items].map(item => item.id)).size, 80)
+
+  const filtered = store.listResourceArchive({
+    resourceType: 'link',
+    sourceId: 'documents',
+    query: '资源正文',
+    limit: 100
+  })
+  assert.ok(filtered.total > 0)
+  assert.ok(filtered.items.every(item => item.resource_type === 'link'))
+
+  const dossier = store.getResourceDossier(first.items[0].id, first.revision)
+  assert.equal(dossier.stale, false)
+  assert.match(dossier.content, /只应在单条档案出现的资源正文/)
+  assert.equal(dossier.metadata.attachmentStructure.kind, 'document')
+  assert.equal(dossier.evidence.length, 1)
+
+  store.upsertResources([{
+    ...resources[0],
+    title: '并发更新后的资源标题',
+    updatedAt: '2026-07-02T00:00:00.000Z'
+  }])
+  assert.equal(store.listResourceArchive({
+    limit: 40,
+    offset: 40,
+    revision: first.revision
+  }).stale, true)
+  assert.equal(store.getResourceDossier(first.items[1].id, first.revision).stale, true)
+
+  store.deleteResource(resources[0].id)
+  const trash = store.listResourceTrashArchive({ query: '并发更新', limit: 40 })
+  assert.equal(trash.total, 1)
+  assert.equal(trash.items[0].title, '并发更新后的资源标题')
+  assert.equal('snapshot_json' in trash.items[0], false)
+  assert.equal('content' in trash.items[0], false)
+  assert.equal(store.getResourceArchiveRevisionHealth().healthy, true)
 }))
 
 test('resource trash retention is opt-in and expires snapshots without lifting suppressions', () => withStore(store => {

@@ -344,9 +344,31 @@ function AiAssistantPage() {
   const [eventStatusFilter, setEventStatusFilter] = useState('')
   const [eventFrom, setEventFrom] = useState('')
   const [eventTo, setEventTo] = useState('')
+  const [resourceArchive, setResourceArchive] = useState<any>({
+    items: [], total: 0, hasMore: false, revision: '', status: 'idle'
+  })
+  const [resourceQuery, setResourceQuery] = useState('')
+  const [resourceTypeFilter, setResourceTypeFilter] = useState('')
+  const [resourceSourceFilter, setResourceSourceFilter] = useState<
+    '' | 'wechat' | 'documents' | 'calendar' | 'mail'
+  >('')
+  const [resourceFrom, setResourceFrom] = useState('')
+  const [resourceTo, setResourceTo] = useState('')
+  const [resourceRefreshKey, setResourceRefreshKey] = useState(0)
+  const [resourceLoadingMore, setResourceLoadingMore] = useState(false)
+  const [selectedResourceDossier, setSelectedResourceDossier] = useState<any>(null)
+  const [resourceTrashArchive, setResourceTrashArchive] = useState<any>({
+    items: [], total: 0, hasMore: false, revision: '', status: 'idle'
+  })
+  const [resourceTrashOpen, setResourceTrashOpen] = useState(false)
+  const [resourceTrashQuery, setResourceTrashQuery] = useState('')
+  const [resourceTrashLoadingMore, setResourceTrashLoadingMore] = useState(false)
   const dashboardLoadGate = useRef(new LatestRequestGate())
   const claimArchiveGate = useRef(new LatestRequestGate())
   const eventTimelineGate = useRef(new LatestRequestGate())
+  const resourceArchiveGate = useRef(new LatestRequestGate())
+  const resourceDossierGate = useRef(new LatestRequestGate())
+  const resourceTrashGate = useRef(new LatestRequestGate())
   const [calendarPicker, setCalendarPicker] = useState<{
     calendars: Array<{ id: string; title: string; source: string; type: string }>
     selectedIds: string[]
@@ -710,6 +732,17 @@ function AiAssistantPage() {
     limit: 100,
     offset: 0
   }), [claimEntityFilter, claimSourceFilter, claimStatusFilter, claimPredicateFilter, claimFrom, claimTo])
+  const resourceArchiveOptions = useMemo(() => ({
+    resourceType: resourceTypeFilter || undefined,
+    sourceId: resourceSourceFilter || undefined,
+    query: resourceQuery.trim() || undefined,
+    from: resourceFrom ? new Date(`${resourceFrom}T00:00:00+08:00`).toISOString() : undefined,
+    to: resourceTo ? new Date(`${resourceTo}T23:59:59.999+08:00`).toISOString() : undefined,
+    limit: 40,
+    offset: 0
+  }), [
+    resourceTypeFilter, resourceSourceFilter, resourceQuery, resourceFrom, resourceTo
+  ])
   const taskArchiveOptions = useMemo(() => ({
     status: taskArchiveStatus,
     priority: taskArchivePriority || undefined,
@@ -894,6 +927,66 @@ function AiAssistantPage() {
       if (eventTimelineGate.current.isCurrent(request)) eventTimelineGate.current.invalidate()
     }
   }, [eventTimelineOptions, dashboard?.memoryRevision, eventTimelineRefreshKey])
+
+  useEffect(() => {
+    const request = resourceArchiveGate.current.begin()
+    setResourceLoadingMore(false)
+    setSelectedResourceDossier(null)
+    setResourceArchive((current: any) => ({ ...current, items: [], status: 'loading' }))
+    const timer = window.setTimeout(() => {
+      void window.electronAPI.aiAssistant.getResourceArchive(resourceArchiveOptions).then(result => {
+        if (!resourceArchiveGate.current.isCurrent(request)) return
+        if (result.stale) {
+          setResourceRefreshKey(value => value + 1)
+          return
+        }
+        setResourceArchive({ ...result, status: 'ready' })
+      }).catch((error: any) => {
+        if (!resourceArchiveGate.current.isCurrent(request)) return
+        setResourceArchive({
+          items: [], total: 0, hasMore: false, revision: '', status: 'error',
+          error: error?.message || String(error)
+        })
+      })
+    }, resourceQuery.trim() ? 220 : 0)
+    return () => {
+      window.clearTimeout(timer)
+      if (resourceArchiveGate.current.isCurrent(request)) resourceArchiveGate.current.invalidate()
+    }
+  }, [resourceArchiveOptions, dashboard?.resourceArchive?.revision, resourceRefreshKey])
+
+  useEffect(() => {
+    if (!resourceTrashOpen) return
+    const request = resourceTrashGate.current.begin()
+    setResourceTrashLoadingMore(false)
+    setResourceTrashArchive((current: any) => ({ ...current, items: [], status: 'loading' }))
+    const timer = window.setTimeout(() => {
+      void window.electronAPI.aiAssistant.getResourceTrashArchive({
+        query: resourceTrashQuery.trim() || undefined,
+        limit: 40,
+        offset: 0
+      }).then(result => {
+        if (!resourceTrashGate.current.isCurrent(request)) return
+        if (result.stale) {
+          setResourceRefreshKey(value => value + 1)
+          return
+        }
+        setResourceTrashArchive({ ...result, status: 'ready' })
+      }).catch((error: any) => {
+        if (!resourceTrashGate.current.isCurrent(request)) return
+        setResourceTrashArchive({
+          items: [], total: 0, hasMore: false, revision: '', status: 'error',
+          error: error?.message || String(error)
+        })
+      })
+    }, resourceTrashQuery.trim() ? 220 : 0)
+    return () => {
+      window.clearTimeout(timer)
+      if (resourceTrashGate.current.isCurrent(request)) resourceTrashGate.current.invalidate()
+    }
+  }, [
+    resourceTrashOpen, resourceTrashQuery, dashboard?.resourceArchive?.revision, resourceRefreshKey
+  ])
 
   useEffect(() => {
     const request = taskArchiveGate.current.begin()
@@ -1434,12 +1527,11 @@ function AiAssistantPage() {
   const groupedMemoryResults = useMemo(() => groupMemorySearchResults(memoryResults), [memoryResults])
   const assistantConversations: any[] = assistantArchive.items
   const identityDisambiguation = dashboard?.identityDisambiguation
-  const memoryFeed = dashboard?.memoryFeed || { claims: [], events: [], resources: [] }
   const ingestionStatus = dashboard?.ingestionStatus
   const ingestionCounts = Object.fromEntries((ingestionStatus?.batches || []).map((item: any) => [item.status, Number(item.count || 0)]))
   const visibleClaims = claimArchive.items
   const visibleEvents = eventTimeline.items || []
-  const visibleResources = memoryFeed.resources || []
+  const visibleResources = resourceArchive.items || []
   const loadMoreClaims = async () => {
     if (claimLoadingMore || !claimArchive.hasMore) return
     const request = claimArchiveGate.current.begin()
@@ -1496,7 +1588,96 @@ function AiAssistantPage() {
       if (eventTimelineGate.current.isCurrent(request)) setEventLoadingMore(false)
     }
   }
-  const resourceTrash = dashboard?.resourceTrash || []
+  const loadMoreResources = async () => {
+    if (resourceLoadingMore || !resourceArchive.hasMore) return
+    const request = resourceArchiveGate.current.begin()
+    setResourceLoadingMore(true)
+    try {
+      const result = await window.electronAPI.aiAssistant.getResourceArchive({
+        ...resourceArchiveOptions,
+        offset: visibleResources.length,
+        revision: resourceArchive.revision
+      })
+      if (!resourceArchiveGate.current.isCurrent(request)) return
+      if (result.stale) {
+        setMessage('资源库在加载期间已有更新，已自动从第一页刷新')
+        setResourceRefreshKey(value => value + 1)
+        return
+      }
+      setResourceArchive((current: any) => ({
+        ...result,
+        status: 'ready',
+        items: [...current.items, ...result.items.filter((item: any) =>
+          !current.items.some((known: any) => known.id === item.id))]
+      }))
+    } catch (error: any) {
+      if (resourceArchiveGate.current.isCurrent(request)) setMessage(error?.message || String(error))
+    } finally {
+      if (resourceArchiveGate.current.isCurrent(request)) setResourceLoadingMore(false)
+    }
+  }
+  const openResourceDossier = async (resource: any) => {
+    if (selectedResourceDossier?.id === resource.id) {
+      resourceDossierGate.current.invalidate()
+      setSelectedResourceDossier(null)
+      return
+    }
+    const request = resourceDossierGate.current.begin()
+    setSelectedResourceDossier({ id: resource.id, status: 'loading' })
+    try {
+      const result = await window.electronAPI.aiAssistant.getResourceDossier(
+        resource.id,
+        resourceArchive.revision
+      )
+      if (!resourceDossierGate.current.isCurrent(request)) return
+      if (result?.stale) {
+        setMessage('资源内容在展示后已有变化，已刷新资源目录')
+        setSelectedResourceDossier(null)
+        setResourceRefreshKey(value => value + 1)
+        return
+      }
+      if (!result) {
+        setSelectedResourceDossier(null)
+        setResourceRefreshKey(value => value + 1)
+        return
+      }
+      setSelectedResourceDossier({ ...result, status: 'ready' })
+    } catch (error: any) {
+      if (resourceDossierGate.current.isCurrent(request)) {
+        setSelectedResourceDossier({ id: resource.id, status: 'error' })
+        setMessage(error?.message || String(error))
+      }
+    }
+  }
+  const loadMoreResourceTrash = async () => {
+    if (resourceTrashLoadingMore || !resourceTrashArchive.hasMore) return
+    const request = resourceTrashGate.current.begin()
+    setResourceTrashLoadingMore(true)
+    try {
+      const result = await window.electronAPI.aiAssistant.getResourceTrashArchive({
+        query: resourceTrashQuery.trim() || undefined,
+        limit: 40,
+        offset: resourceTrashArchive.items.length,
+        revision: resourceTrashArchive.revision
+      })
+      if (!resourceTrashGate.current.isCurrent(request)) return
+      if (result.stale) {
+        setResourceRefreshKey(value => value + 1)
+        return
+      }
+      setResourceTrashArchive((current: any) => ({
+        ...result,
+        status: 'ready',
+        items: [...current.items, ...result.items.filter((item: any) =>
+          !current.items.some((known: any) => known.id === item.id))]
+      }))
+    } catch (error: any) {
+      if (resourceTrashGate.current.isCurrent(request)) setMessage(error?.message || String(error))
+    } finally {
+      if (resourceTrashGate.current.isCurrent(request)) setResourceTrashLoadingMore(false)
+    }
+  }
+  const resourceTrash = resourceTrashArchive.items || []
   const selectedEntityClaims = graphWorkspace.focus?.claims || []
   const selectedEntityEvents = graphWorkspace.focus?.events || []
   const selectedEntityRelations = graphWorkspace.focus?.relations || []
@@ -2654,6 +2835,7 @@ function AiAssistantPage() {
       const result = await window.electronAPI.aiAssistant.restoreMemoryResource(resource.id)
       setMessage(result?.success ? `已恢复资源：${resource.title || '未命名资源'}` : '资源恢复失败')
       await load()
+      setResourceRefreshKey(value => value + 1)
     } catch (error: any) {
       setMessage(error?.message || String(error))
     }
@@ -2719,6 +2901,8 @@ function AiAssistantPage() {
       setResourceDeletionDialog(null)
       setResourceDeletionConfirmation('')
       await load()
+      setSelectedResourceDossier(null)
+      setResourceRefreshKey(value => value + 1)
     } catch (error: any) {
       setResourceDeletionDialog((current: any) => ({
         ...current,
@@ -5526,8 +5710,37 @@ function AiAssistantPage() {
           <section className="assistant-panel">
             <div className="assistant-section-heading">
               <div><span className="assistant-eyebrow">MESSAGE RESOURCES</span><h3><Paperclip size={16} /> 消息资源库</h3></div>
-              <span className="assistant-count">{visibleResources.length} 项</span>
+              <span className="assistant-count">{visibleResources.length} / {resourceArchive.total || 0} 项</span>
             </div>
+            <div className="assistant-memory-scope">
+              <input value={resourceQuery} onChange={event => setResourceQuery(event.target.value)}
+                placeholder="搜索标题、文件名、链接或正文" />
+              <select value={resourceTypeFilter} onChange={event => setResourceTypeFilter(event.target.value)}>
+                <option value="">全部类型</option>
+                <option value="link">链接</option><option value="file">文件</option>
+                <option value="chat-history">转发记录</option><option value="mini-program">小程序</option>
+                <option value="image">图片 OCR</option><option value="voice">语音转写</option>
+                <option value="document">本机文档</option>
+              </select>
+              <select value={resourceSourceFilter} onChange={event => setResourceSourceFilter(
+                event.target.value as '' | 'wechat' | 'documents' | 'calendar' | 'mail'
+              )}>
+                <option value="">全部来源</option><option value="wechat">微信</option>
+                <option value="documents">本机文档</option><option value="calendar">macOS 日历</option>
+                <option value="mail">Mail</option>
+              </select>
+              <label><span>从</span><input type="date" value={resourceFrom} onChange={event => setResourceFrom(event.target.value)} /></label>
+              <label><span>至</span><input type="date" value={resourceTo} onChange={event => setResourceTo(event.target.value)} /></label>
+              {(resourceQuery || resourceTypeFilter || resourceSourceFilter || resourceFrom || resourceTo) &&
+                <button onClick={() => {
+                  setResourceQuery(''); setResourceTypeFilter(''); setResourceSourceFilter('')
+                  setResourceFrom(''); setResourceTo('')
+                }}>清除范围</button>}
+            </div>
+            {dashboard?.memoryFeedPayloadPolicy?.resources === 'paginated_on_demand' &&
+              <small className="assistant-evidence">
+                首页不再周期传输资源正文、附件结构或原文；目录分页读取，单条详情仅在展开时从 SQLCipher 水合。
+              </small>}
             {!!dashboard?.attachmentStructureMigration?.total && <div className="assistant-query-plan">
               历史附件结构化：{dashboard.attachmentStructureMigration.completed || 0}
               {' / '}{dashboard.attachmentStructureMigration.total} 已完成
@@ -5541,7 +5754,12 @@ function AiAssistantPage() {
               {!!dashboard.imageSemanticMigration.deferred && ` · ${dashboard.imageSemanticMigration.deferred} 张正在退避等待`}
             </div>}
             <div className="assistant-memory-list">
-              {visibleResources.map((resource: any) => <article className="assistant-memory-item" key={resource.id}>
+              {visibleResources.map((directoryResource: any) => {
+                const resource = selectedResourceDossier?.id === directoryResource.id &&
+                  selectedResourceDossier.status === 'ready'
+                  ? selectedResourceDossier
+                  : directoryResource
+                return <article className="assistant-memory-item" key={resource.id}>
                 <div className="assistant-memory-item-head">
                   <strong>{resource.title}</strong>
                   <span>{resource.resource_type === 'link' ? '链接' : resource.resource_type === 'file' ? '文件' : resource.resource_type === 'chat-history' ? '转发记录' : resource.resource_type === 'mini-program' ? '小程序' : resource.resource_type === 'image' ? '图片 OCR' : resource.resource_type === 'voice' ? '语音转写' : resource.resource_type}</span>
@@ -5684,13 +5902,29 @@ function AiAssistantPage() {
                     <small key={`${evidence.message_id}-${evidence.timestamp}`}>原消息 · {new Date(evidence.timestamp * 1000).toLocaleString('zh-CN')}：“{evidence.excerpt}”</small>)}
                 </div>
                 <div className="assistant-memory-actions">
+                  <button onClick={() => void openResourceDossier(directoryResource)}>
+                    {selectedResourceDossier?.id === resource.id
+                      ? selectedResourceDossier.status === 'loading' ? '正在读取…' : '收起详情'
+                      : '查看详情'}
+                  </button>
                   <button onClick={() => void deleteMemoryResource(resource)}>从记忆删除</button>
                 </div>
-              </article>)}
-              {!visibleResources.length && <div className="assistant-empty">链接、文件、转发记录、小程序、图片 OCR 和语音转写会在增量整理时沉淀到这里。</div>}
+              </article>})}
+              {resourceArchive.status === 'loading' && <div className="assistant-empty">正在读取资源目录…</div>}
+              {resourceArchive.status === 'error' && <div className="assistant-empty">资源目录读取失败：{resourceArchive.error}</div>}
+              {resourceArchive.status === 'ready' && !visibleResources.length &&
+                <div className="assistant-empty">链接、文件、转发记录、小程序、图片 OCR 和语音转写会在增量整理时沉淀到这里。</div>}
             </div>
-            {!!resourceTrash.length && <details className="assistant-query-plan">
-              <summary>资源回收站（{resourceTrash.length}）</summary>
+            {resourceArchive.hasMore && <div className="assistant-timeline-more">
+              <button disabled={resourceLoadingMore} onClick={() => void loadMoreResources()}>
+                {resourceLoadingMore ? '正在加载…' : `加载更多（已显示 ${visibleResources.length}/${resourceArchive.total}）`}
+              </button>
+            </div>}
+            {!!Number(dashboard?.resourceArchive?.trash || 0) && <details className="assistant-query-plan"
+              open={resourceTrashOpen} onToggle={event => setResourceTrashOpen(event.currentTarget.open)}>
+              <summary>资源回收站（{dashboard.resourceArchive.trash}）</summary>
+              <input value={resourceTrashQuery} onChange={event => setResourceTrashQuery(event.target.value)}
+                placeholder="搜索已删除资源标题、文件名或 ID" />
               <div className="assistant-memory-list">
                 {resourceTrash.map((resource: any) => <article className="assistant-memory-item" key={resource.id}>
                   <div className="assistant-memory-item-head">
@@ -5703,7 +5937,15 @@ function AiAssistantPage() {
                     <button className="primary" onClick={() => void restoreMemoryResource(resource)}>恢复资源</button>
                   </div>
                 </article>)}
+                {resourceTrashArchive.status === 'loading' && <div className="assistant-empty">正在读取回收站目录…</div>}
+                {resourceTrashArchive.status === 'ready' && !resourceTrash.length &&
+                  <div className="assistant-empty">当前筛选没有已删除资源。</div>}
               </div>
+              {resourceTrashArchive.hasMore && <button disabled={resourceTrashLoadingMore}
+                onClick={() => void loadMoreResourceTrash()}>
+                {resourceTrashLoadingMore ? '正在加载…' :
+                  `加载更多（已显示 ${resourceTrash.length}/${resourceTrashArchive.total}）`}
+              </button>}
             </details>}
           </section>
         </div>
@@ -6682,6 +6924,16 @@ function AiAssistantPage() {
                 <span>当前状态 <b>{memoryDiagnostics.structuredMemoryRevisionHealthy ? '保护正常' : '需要检查'}</b></span>
                 <span>当前 revision <b>{String(memoryDiagnostics.structuredMemoryRevision.revision || '0')}</b></span>
                 <span>变更触发器 <b>{Number(memoryDiagnostics.structuredMemoryRevision.installedTriggers || 0).toLocaleString()} / {Number(memoryDiagnostics.structuredMemoryRevision.expectedTriggers || 0).toLocaleString()}</b></span>
+              </div>
+            </div>}
+            {memoryDiagnostics.resourceArchiveRevision?.version && <div className={`assistant-recovery-audit ${memoryDiagnostics.resourceArchiveRevisionHealthy ? 'healthy' : 'unhealthy'}`}>
+              <header><ShieldCheck size={15} /><span><b>资源库与回收站分页保护</b>
+                <small>资源正文、原文证据和回收站快照共享 SQLCipher revision；后台解析、补充原文、删除或恢复发生时，旧目录和已展开详情会被拒绝，不会拼接不同时态。</small>
+              </span></header>
+              <div className="assistant-recovery-current">
+                <span>当前状态 <b>{memoryDiagnostics.resourceArchiveRevisionHealthy ? '保护正常' : '需要检查'}</b></span>
+                <span>当前 revision <b>{String(memoryDiagnostics.resourceArchiveRevision.revision || '0')}</b></span>
+                <span>变更触发器 <b>{Number(memoryDiagnostics.resourceArchiveRevision.installedTriggers || 0).toLocaleString()} / {Number(memoryDiagnostics.resourceArchiveRevision.expectedTriggers || 0).toLocaleString()}</b></span>
               </div>
             </div>}
             {memoryDiagnostics.graphReviewRevision?.version && <div className={`assistant-recovery-audit ${memoryDiagnostics.graphReviewRevisionHealthy ? 'healthy' : 'unhealthy'}`}>
