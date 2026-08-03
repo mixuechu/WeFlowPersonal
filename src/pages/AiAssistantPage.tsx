@@ -283,6 +283,9 @@ function AiAssistantPage() {
   const [entityForgetDialog, setEntityForgetDialog] = useState<any>(null)
   const [entityForgetConfirmation, setEntityForgetConfirmation] = useState('')
   const entityForgetGate = useRef(new LatestRequestGate())
+  const [resourceDeletionDialog, setResourceDeletionDialog] = useState<any>(null)
+  const [resourceDeletionConfirmation, setResourceDeletionConfirmation] = useState('')
+  const resourceDeletionGate = useRef(new LatestRequestGate())
   const [memoryDeletionArchive, setMemoryDeletionArchive] = useState<{
     items: any[]
     total: number
@@ -2222,17 +2225,31 @@ function AiAssistantPage() {
   }
 
   const deleteMemoryResource = async (resource: any) => {
-    const confirmed = window.confirm(
-      `确定从个人记忆中删除“${resource.title || '未命名资源'}”吗？\n\n` +
-      '相关全文索引、向量和原消息证据引用会一并移除；以后重新整理同一条消息也不会自动恢复。'
-    )
-    if (!confirmed) return
+    const request = resourceDeletionGate.current.begin()
+    setResourceDeletionConfirmation('')
+    setResourceDeletionDialog({
+      action: 'delete',
+      resourceId: resource.id,
+      title: resource.title || '未命名资源',
+      status: 'loading'
+    })
     try {
-      await window.electronAPI.aiAssistant.deleteMemoryResource(resource.id)
-      setMessage(`已从个人记忆删除：${resource.title || '未命名资源'}`)
-      await load()
+      const preview = await window.electronAPI.aiAssistant.previewDeleteMemoryResource(resource.id)
+      if (!resourceDeletionGate.current.isCurrent(request)) return
+      setResourceDeletionDialog(preview
+        ? { action: 'delete', resourceId: resource.id, title: preview.title, preview, status: 'ready' }
+        : { action: 'delete', resourceId: resource.id, title: resource.title, status: 'error',
+          error: '该资源不存在或已经进入回收站' })
     } catch (error: any) {
-      setMessage(error?.message || String(error))
+      if (resourceDeletionGate.current.isCurrent(request)) {
+        setResourceDeletionDialog({
+          action: 'delete',
+          resourceId: resource.id,
+          title: resource.title,
+          status: 'error',
+          error: error?.message || String(error)
+        })
+      }
     }
   }
 
@@ -2247,17 +2264,71 @@ function AiAssistantPage() {
   }
 
   const purgeMemoryResourceTrash = async (resource: any) => {
-    const confirmed = window.confirm(
-      `永久删除“${resource.title || '未命名资源'}”的回收站快照？\n\n` +
-      '此操作无法撤销；原消息今后也不会重新生成该资源。'
-    )
-    if (!confirmed) return
+    const request = resourceDeletionGate.current.begin()
+    setResourceDeletionConfirmation('')
+    setResourceDeletionDialog({
+      action: 'purge',
+      resourceId: resource.id,
+      title: resource.title || '未命名资源',
+      status: 'loading'
+    })
     try {
-      await window.electronAPI.aiAssistant.purgeMemoryResourceTrash(resource.id)
-      setMessage(`已永久删除资源快照：${resource.title || '未命名资源'}`)
+      const preview = await window.electronAPI.aiAssistant.previewPurgeMemoryResourceTrash(resource.id)
+      if (!resourceDeletionGate.current.isCurrent(request)) return
+      setResourceDeletionDialog(preview
+        ? { action: 'purge', resourceId: resource.id, title: preview.title, preview, status: 'ready' }
+        : { action: 'purge', resourceId: resource.id, title: resource.title, status: 'error',
+          error: '该资源回收站快照不存在或已经清除' })
+    } catch (error: any) {
+      if (resourceDeletionGate.current.isCurrent(request)) {
+        setResourceDeletionDialog({
+          action: 'purge',
+          resourceId: resource.id,
+          title: resource.title,
+          status: 'error',
+          error: error?.message || String(error)
+        })
+      }
+    }
+  }
+
+  const closeResourceDeletionDialog = () => {
+    if (resourceDeletionDialog?.status === 'deleting') return
+    resourceDeletionGate.current.invalidate()
+    setResourceDeletionDialog(null)
+    setResourceDeletionConfirmation('')
+  }
+
+  const confirmResourceDeletion = async () => {
+    if (!resourceDeletionDialog?.preview || resourceDeletionDialog.status !== 'ready') return
+    const expected = resourceDeletionDialog.action === 'purge' ? '永久删除资源' : '移入回收站'
+    if (resourceDeletionConfirmation !== expected) return
+    const { action, resourceId, preview } = resourceDeletionDialog
+    setResourceDeletionDialog((current: any) => ({ ...current, status: 'deleting', error: undefined }))
+    try {
+      if (action === 'purge') {
+        await window.electronAPI.aiAssistant.purgeMemoryResourceTrash(resourceId, {
+          previewToken: preview.previewToken,
+          confirmation: resourceDeletionConfirmation
+        })
+        setMessage(`已永久删除资源快照：${preview.title}`)
+      } else {
+        await window.electronAPI.aiAssistant.deleteMemoryResource(resourceId, {
+          previewToken: preview.previewToken,
+          confirmation: resourceDeletionConfirmation
+        })
+        setMessage(`已从个人记忆删除并保留回收站快照：${preview.title}`)
+      }
+      resourceDeletionGate.current.invalidate()
+      setResourceDeletionDialog(null)
+      setResourceDeletionConfirmation('')
       await load()
     } catch (error: any) {
-      setMessage(error?.message || String(error))
+      setResourceDeletionDialog((current: any) => ({
+        ...current,
+        status: 'error',
+        error: error?.message || String(error)
+      }))
     }
   }
 
@@ -6276,6 +6347,83 @@ function AiAssistantPage() {
                     entityForgetConfirmation !== entityForgetDialog.preview.canonicalName}
                   onClick={() => void confirmForgetSelectedEntity()}>
                   {entityForgetDialog.status === 'deleting' ? '正在彻底遗忘…' : '确认彻底遗忘'}
+                </button>}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {resourceDeletionDialog && (
+        <div className="assistant-modal-backdrop" role="presentation">
+          <div className="assistant-modal assistant-delete-modal" role="dialog" aria-modal="true"
+            aria-labelledby="resource-delete-title">
+            <div className="assistant-modal-title"><div>
+              <h2 id="resource-delete-title">
+                {resourceDeletionDialog.action === 'purge' ? '永久删除资源快照' : '从个人记忆删除资源'}
+              </h2>
+              <p>{resourceDeletionDialog.action === 'purge'
+                ? '回收站快照删除后无法恢复；抑制记录仍会阻止原消息自动重建资源。'
+                : '资源正文、检索索引和原文引用将退出记忆；回收站快照可供手动恢复。'}</p>
+            </div><button aria-label="关闭资源删除确认"
+              disabled={resourceDeletionDialog.status === 'deleting'}
+              onClick={closeResourceDeletionDialog}><X size={16} /></button></div>
+            {resourceDeletionDialog.status === 'loading' && <div className="assistant-delete-status">
+              <RefreshCw size={16} /><span><strong>正在核对资源范围…</strong>
+                <small>只读取本机加密记忆库，不会上传数据。</small></span>
+            </div>}
+            {resourceDeletionDialog.status === 'error' && <div className="assistant-error">
+              <strong>无法处理资源</strong><span>{resourceDeletionDialog.error || '未知错误'}</span>
+              {String(resourceDeletionDialog.error || '').includes('预览后发生了变化') &&
+                <button onClick={() => {
+                  const resource = {
+                    id: resourceDeletionDialog.resourceId,
+                    title: resourceDeletionDialog.title
+                  }
+                  setResourceDeletionDialog(null)
+                  setResourceDeletionConfirmation('')
+                  void (resourceDeletionDialog.action === 'purge'
+                    ? purgeMemoryResourceTrash(resource)
+                    : deleteMemoryResource(resource))
+                }}>重新核对范围</button>}
+            </div>}
+            {(resourceDeletionDialog.status === 'ready' ||
+              resourceDeletionDialog.status === 'deleting') && <>
+              <div className="assistant-delete-preview">
+                <strong>{resourceDeletionDialog.preview.title}</strong>
+                <p>{resourceDeletionDialog.action === 'purge'
+                  ? `快照包含 ${resourceDeletionDialog.preview.counts.evidence} 条原文证据；永久清除后不能再从回收站恢复。`
+                  : `将移除 ${resourceDeletionDialog.preview.counts.evidence} 条原文证据和 ${resourceDeletionDialog.preview.counts.searchDocuments} 个全文/向量索引，并创建可恢复快照。`}
+                </p>
+              </div>
+              <label><span>输入“{resourceDeletionDialog.action === 'purge'
+                ? '永久删除资源' : '移入回收站'}”确认</span>
+                <input autoFocus value={resourceDeletionConfirmation}
+                  disabled={resourceDeletionDialog.status === 'deleting'}
+                  onChange={event => setResourceDeletionConfirmation(event.target.value)}
+                  onKeyDown={event => {
+                    const expected = resourceDeletionDialog.action === 'purge'
+                      ? '永久删除资源' : '移入回收站'
+                    if (event.key === 'Enter' && resourceDeletionConfirmation === expected) {
+                      void confirmResourceDeletion()
+                    }
+                  }}
+                  placeholder={resourceDeletionDialog.action === 'purge'
+                    ? '永久删除资源' : '移入回收站'} /></label>
+            </>}
+            <div className="assistant-modal-actions">
+              <button disabled={resourceDeletionDialog.status === 'deleting'}
+                onClick={closeResourceDeletionDialog}>取消</button>
+              {(resourceDeletionDialog.status === 'ready' ||
+                resourceDeletionDialog.status === 'deleting') &&
+                <button className="danger"
+                  disabled={resourceDeletionDialog.status === 'deleting' ||
+                    resourceDeletionConfirmation !== (resourceDeletionDialog.action === 'purge'
+                      ? '永久删除资源' : '移入回收站')}
+                  onClick={() => void confirmResourceDeletion()}>
+                  {resourceDeletionDialog.status === 'deleting'
+                    ? '正在处理…'
+                    : resourceDeletionDialog.action === 'purge'
+                      ? '确认永久删除' : '确认移入回收站'}
                 </button>}
             </div>
           </div>

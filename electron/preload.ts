@@ -648,9 +648,15 @@ contextBridge.exposeInMainWorld('electronAPI', {
       ipcRenderer.invoke('ai-assistant:deleteMemoryItem', kind, id),
     ignoreMemoryItem: (kind: 'claim' | 'event', id: string) =>
       ipcRenderer.invoke('ai-assistant:ignoreMemoryItem', kind, id),
-    deleteMemoryResource: (id: string) => ipcRenderer.invoke('ai-assistant:deleteMemoryResource', id),
+    previewDeleteMemoryResource: (id: string) =>
+      ipcRenderer.invoke('ai-assistant:previewDeleteMemoryResource', id),
+    deleteMemoryResource: (id: string, input?: any) =>
+      ipcRenderer.invoke('ai-assistant:deleteMemoryResource', id, input),
     restoreMemoryResource: (id: string) => ipcRenderer.invoke('ai-assistant:restoreMemoryResource', id),
-    purgeMemoryResourceTrash: (id: string) => ipcRenderer.invoke('ai-assistant:purgeMemoryResourceTrash', id),
+    previewPurgeMemoryResourceTrash: (id: string) =>
+      ipcRenderer.invoke('ai-assistant:previewPurgeMemoryResourceTrash', id),
+    purgeMemoryResourceTrash: (id: string, input?: any) =>
+      ipcRenderer.invoke('ai-assistant:purgeMemoryResourceTrash', id, input),
     reviewMemoryDocument: (kind: 'relation' | 'claim' | 'event', id: string, decision: 'confirmed' | 'rejected') =>
       ipcRenderer.invoke('ai-assistant:reviewMemoryDocument', kind, id, decision),
     previewForgetEntity: (id: string) => ipcRenderer.invoke('ai-assistant:previewForgetEntity', id),

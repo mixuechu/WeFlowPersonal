@@ -1755,9 +1755,17 @@ export interface ElectronAPI {
       previewDeleteMemoryItem: (kind: 'claim' | 'event' | 'relation', id: string) => Promise<any>
       deleteMemoryItem: (kind: 'claim' | 'event' | 'relation', id: string) => Promise<any>
       ignoreMemoryItem: (kind: 'claim' | 'event', id: string) => Promise<any>
-      deleteMemoryResource: (id: string) => Promise<any>
+      previewDeleteMemoryResource: (id: string) => Promise<any>
+      deleteMemoryResource: (
+        id: string,
+        input?: { previewToken?: string; confirmation?: string }
+      ) => Promise<any>
       restoreMemoryResource: (id: string) => Promise<any>
-      purgeMemoryResourceTrash: (id: string) => Promise<any>
+      previewPurgeMemoryResourceTrash: (id: string) => Promise<any>
+      purgeMemoryResourceTrash: (
+        id: string,
+        input?: { previewToken?: string; confirmation?: string }
+      ) => Promise<any>
       reviewMemoryDocument: (kind: 'relation' | 'claim' | 'event', id: string, decision: 'confirmed' | 'rejected') => Promise<any>
       previewForgetEntity: (id: string) => Promise<any>
       forgetEntity: (id: string, input?: { previewToken?: string; confirmation?: string }) => Promise<any>

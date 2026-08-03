@@ -76,6 +76,10 @@ import {
   buildMemoryImportPreviewToken,
   type MemoryImportPreviewIdentity
 } from './memoryImportPolicy'
+import {
+  assertResourceDeletionConfirmation,
+  buildResourceDeletionPreviewToken
+} from './resourceDeletionPolicy'
 import { applyRelationConfirmation, planRelationConfirmation, type RelationCorrection } from './relationCorrectionPolicy'
 import {
   enqueueUniqueNotification,
@@ -4768,7 +4772,21 @@ export class AiAssistantService {
     }
   }
 
-  deleteMemoryResource(id: string): any {
+  previewDeleteMemoryResource(id: string): any {
+    const preview = personalMemoryStore.previewDeleteResource(id)
+    return preview ? {
+      ...preview,
+      previewToken: buildResourceDeletionPreviewToken(preview)
+    } : null
+  }
+
+  deleteMemoryResource(
+    id: string,
+    input: { previewToken?: string; confirmation?: string } = {}
+  ): any {
+    const preview = this.previewDeleteMemoryResource(id)
+    if (!preview) throw new Error('该资源不存在或已进入回收站')
+    assertResourceDeletionConfirmation(preview, input)
     return personalMemoryStore.deleteResource(id)
   }
 
@@ -4776,7 +4794,21 @@ export class AiAssistantService {
     return personalMemoryStore.restoreResource(id)
   }
 
-  purgeMemoryResourceTrash(id: string): any {
+  previewPurgeMemoryResourceTrash(id: string): any {
+    const preview = personalMemoryStore.previewPurgeResourceTrash(id)
+    return preview ? {
+      ...preview,
+      previewToken: buildResourceDeletionPreviewToken(preview)
+    } : null
+  }
+
+  purgeMemoryResourceTrash(
+    id: string,
+    input: { previewToken?: string; confirmation?: string } = {}
+  ): any {
+    const preview = this.previewPurgeMemoryResourceTrash(id)
+    if (!preview) throw new Error('该资源回收站快照不存在或已经清除')
+    assertResourceDeletionConfirmation(preview, input)
     return personalMemoryStore.purgeResourceTrash(id)
   }
 

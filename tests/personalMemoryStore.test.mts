@@ -7539,6 +7539,14 @@ test('message resources remain idempotent, searchable and traceable to original 
   const results = store.searchText('报价有效期')
   assert.ok(results.some(item => item.id === 'resource:resource-link-1'))
   assert.equal(store.getDocumentEvidence('resource', 'resource-link-1')[0].sender, '老张')
+  const deletePreview = store.previewDeleteResource('resource-link-1')
+  assert.equal(deletePreview.counts.evidence, 1)
+  assert.match(deletePreview.identitySha256, /^[a-f0-9]{64}$/)
+  store.upsertResources([{ ...resource, content: `${resource.content} 已更新。` }])
+  assert.notEqual(
+    store.previewDeleteResource('resource-link-1').identitySha256,
+    deletePreview.identitySha256
+  )
   const deleted = store.deleteResource('resource-link-1')
   assert.equal(deleted.success, true)
   assert.equal(deleted.suppressed, true)
@@ -7554,7 +7562,12 @@ test('message resources remain idempotent, searchable and traceable to original 
   assert.equal(store.getDocumentEvidence('resource', 'resource-link-1')[0].message_id, 'message-resource-1')
   assert.deepEqual(store.listResourceTrash(), [])
   store.deleteResource('resource-link-1')
+  const purgePreview = store.previewPurgeResourceTrash('resource-link-1')
+  assert.equal(purgePreview.title, '项目验收说明')
+  assert.equal(purgePreview.counts.evidence, 1)
+  assert.match(purgePreview.identitySha256, /^[a-f0-9]{64}$/)
   assert.equal(store.purgeResourceTrash('resource-link-1').purged, 1)
+  assert.equal(store.previewPurgeResourceTrash('resource-link-1'), null)
   assert.equal(store.restoreResource('resource-link-1').success, false)
   store.upsertResources([resource])
   assert.equal(store.getMemoryStats().resources, 0)

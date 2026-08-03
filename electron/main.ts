@@ -4572,9 +4572,15 @@ function registerIpcHandlers() {
     aiAssistantService.deleteMemoryItem(kind, id))
   ipcMain.handle('ai-assistant:ignoreMemoryItem', (_, kind: 'claim' | 'event', id: string) =>
     aiAssistantService.ignoreMemoryItem(kind, id))
-  ipcMain.handle('ai-assistant:deleteMemoryResource', (_, id: string) => aiAssistantService.deleteMemoryResource(id))
+  ipcMain.handle('ai-assistant:previewDeleteMemoryResource', (_, id: string) =>
+    aiAssistantService.previewDeleteMemoryResource(id))
+  ipcMain.handle('ai-assistant:deleteMemoryResource', (_, id: string, input?: any) =>
+    aiAssistantService.deleteMemoryResource(id, input))
   ipcMain.handle('ai-assistant:restoreMemoryResource', (_, id: string) => aiAssistantService.restoreMemoryResource(id))
-  ipcMain.handle('ai-assistant:purgeMemoryResourceTrash', (_, id: string) => aiAssistantService.purgeMemoryResourceTrash(id))
+  ipcMain.handle('ai-assistant:previewPurgeMemoryResourceTrash', (_, id: string) =>
+    aiAssistantService.previewPurgeMemoryResourceTrash(id))
+  ipcMain.handle('ai-assistant:purgeMemoryResourceTrash', (_, id: string, input?: any) =>
+    aiAssistantService.purgeMemoryResourceTrash(id, input))
   ipcMain.handle('ai-assistant:reviewMemoryDocument', (_, kind: 'relation' | 'claim' | 'event', id: string, decision: 'confirmed' | 'rejected') =>
     aiAssistantService.reviewMemoryDocument(kind, id, decision))
   ipcMain.handle('ai-assistant:previewForgetEntity', (_, id: string) => aiAssistantService.previewForgetEntity(id))

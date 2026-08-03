@@ -4586,6 +4586,40 @@ export class PersonalMemoryStore {
     }
   }
 
+  previewDeleteResource(id: string): any | null {
+    if (!this.db) return null
+    const resourceId = String(id || '').trim()
+    if (!resourceId) return null
+    const resource = this.db.prepare('SELECT * FROM memory_resources WHERE id=?').get(resourceId) as any
+    if (!resource) return null
+    const documentId = `resource:${resourceId}`
+    const evidence = this.db.prepare(`
+      SELECT source_id,message_id,session_id,timestamp,sender,excerpt
+      FROM search_document_evidence
+      WHERE document_id=?
+      ORDER BY source_id,session_id,message_id
+    `).all(documentId) as any[]
+    const searchDocument = this.db.prepare(`
+      SELECT id,document_type,source_id,title,content_hash,updated_at
+      FROM search_documents WHERE id=?
+    `).get(documentId) as any || null
+    return {
+      action: 'delete',
+      resourceId,
+      title: String(resource.title || '未命名资源'),
+      resourceType: String(resource.resource_type || 'resource'),
+      counts: {
+        evidence: evidence.length,
+        searchDocuments: searchDocument ? 1 : 0
+      },
+      identitySha256: createHash('sha256').update(JSON.stringify({
+        resource,
+        evidence,
+        searchDocument
+      })).digest('hex')
+    }
+  }
+
   listResourceTrash(limit = 50): any[] {
     if (!this.db) return []
     return (this.db.prepare(`
@@ -4655,6 +4689,31 @@ export class PersonalMemoryStore {
     if (!resourceId) return { success: false, id: resourceId }
     const result = this.db.prepare('DELETE FROM resource_trash WHERE resource_id=?').run(resourceId)
     return { success: true, id: resourceId, purged: Number(result.changes || 0), suppressed: true }
+  }
+
+  previewPurgeResourceTrash(id: string): any | null {
+    if (!this.db) return null
+    const resourceId = String(id || '').trim()
+    if (!resourceId) return null
+    const trash = this.db.prepare(`
+      SELECT resource_id,snapshot_json,reason,deleted_at
+      FROM resource_trash WHERE resource_id=?
+    `).get(resourceId) as any
+    if (!trash) return null
+    let snapshot: any = {}
+    try { snapshot = JSON.parse(trash.snapshot_json || '{}') } catch {}
+    return {
+      action: 'purge',
+      resourceId,
+      title: String(snapshot.resource?.title || '未命名资源'),
+      resourceType: String(snapshot.resource?.resource_type || 'resource'),
+      deletedAt: String(trash.deleted_at || ''),
+      counts: {
+        evidence: Array.isArray(snapshot.evidence) ? snapshot.evidence.length : 0,
+        searchDocuments: 0
+      },
+      identitySha256: createHash('sha256').update(JSON.stringify(trash)).digest('hex')
+    }
   }
 
   purgeExpiredResourceTrash(retentionDays: number, now = new Date()): any {
