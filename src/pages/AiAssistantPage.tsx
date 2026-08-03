@@ -31,6 +31,32 @@ type Task = {
   evidence?: Array<{ messageId: string; timestamp: number; sender: string; excerpt: string }>
 }
 
+type MemoryEvidenceArchiveFilters = {
+  query: string
+  source: string
+  session: string
+  sender: string
+  role: 'direct' | 'indirect' | 'contradiction' | 'support' | 'original' | ''
+  from: string
+  to: string
+}
+
+const EMPTY_MEMORY_EVIDENCE_FILTERS: MemoryEvidenceArchiveFilters = {
+  query: '',
+  source: '',
+  session: '',
+  sender: '',
+  role: '',
+  from: '',
+  to: ''
+}
+
+function memoryEvidenceTimestamp(value: string, end = false): number {
+  const iso = shanghaiInputToIso(value)
+  const timestamp = iso ? Math.floor(Date.parse(iso) / 1000) : 0
+  return timestamp > 0 ? timestamp + (end ? 59 : 0) : 0
+}
+
 function taskHistoryValue(value: string): string {
   try {
     const parsed = JSON.parse(value)
@@ -550,12 +576,17 @@ function AiAssistantPage() {
     title: string
     items: any[]
     total: number
+    unfilteredTotal: number
     hasMore: boolean
+    filters: MemoryEvidenceArchiveFilters
     revision?: string
     stale?: boolean
     status: 'loading' | 'ready' | 'error'
     error?: string
   } | null>(null)
+  const [memoryEvidenceFilters, setMemoryEvidenceFilters] = useState<MemoryEvidenceArchiveFilters>(
+    EMPTY_MEMORY_EVIDENCE_FILTERS
+  )
   const [memoryEvidenceLoadingMore, setMemoryEvidenceLoadingMore] = useState(false)
   const memoryEvidenceArchiveGate = useRef(new LatestRequestGate())
   const memoryConversationGate = useRef(new LatestRequestGate())
@@ -3977,29 +4008,47 @@ function AiAssistantPage() {
     }
   }
 
-  const openMemoryEvidenceArchive = async (documentType: string, sourceId: string, title: string) => {
+  const openMemoryEvidenceArchive = async (
+    documentType: string,
+    sourceId: string,
+    title: string,
+    filters: MemoryEvidenceArchiveFilters = EMPTY_MEMORY_EVIDENCE_FILTERS
+  ) => {
     const request = memoryEvidenceArchiveGate.current.begin()
     setMemoryEvidenceLoadingMore(false)
+    setMemoryEvidenceFilters(filters)
     setMemoryEvidenceArchive({
       documentType,
       sourceId,
       title,
       items: [],
       total: 0,
+      unfilteredTotal: 0,
       hasMore: false,
+      filters,
       status: 'loading'
     })
     try {
       const page = await window.electronAPI.aiAssistant.getMemoryEvidencePage(
         documentType,
         sourceId,
-        { offset: 0, limit: 40 }
+        {
+          offset: 0,
+          limit: 40,
+          query: filters.query,
+          source: filters.source,
+          session: filters.session,
+          sender: filters.sender,
+          role: filters.role,
+          fromTimestamp: memoryEvidenceTimestamp(filters.from),
+          toTimestamp: memoryEvidenceTimestamp(filters.to, true)
+        }
       )
       if (!memoryEvidenceArchiveGate.current.isCurrent(request)) return
       if (page.stale) {
         window.setTimeout(() => {
           if (memoryEvidenceArchiveGate.current.isCurrent(request)) {
-            void openMemoryEvidenceArchive(documentType, sourceId, title)
+            void openMemoryEvidenceArchive(documentType, sourceId, title, filters)
           }
         }, 250)
         return
@@ -4010,7 +4059,9 @@ function AiAssistantPage() {
         title,
         items: page.items,
         total: page.total,
+        unfilteredTotal: page.unfilteredTotal,
         hasMore: page.hasMore,
+        filters,
         revision: page.revision,
         status: 'ready'
       })
@@ -4022,7 +4073,9 @@ function AiAssistantPage() {
         title,
         items: [],
         total: 0,
+        unfilteredTotal: 0,
         hasMore: false,
+        filters,
         status: 'error',
         error: error?.message || String(error)
       })
@@ -4044,12 +4097,28 @@ function AiAssistantPage() {
       const page = await window.electronAPI.aiAssistant.getMemoryEvidencePage(
         archive.documentType,
         archive.sourceId,
-        { offset: archive.items.length, limit: 40, revision: archive.revision }
+        {
+          offset: archive.items.length,
+          limit: 40,
+          revision: archive.revision,
+          query: archive.filters.query,
+          source: archive.filters.source,
+          session: archive.filters.session,
+          sender: archive.filters.sender,
+          role: archive.filters.role,
+          fromTimestamp: memoryEvidenceTimestamp(archive.filters.from),
+          toTimestamp: memoryEvidenceTimestamp(archive.filters.to, true)
+        }
       )
       if (!memoryEvidenceArchiveGate.current.isCurrent(request)) return
       if (page.stale) {
         setMessage('原文证据在翻页期间发生变化，已重新载入最新证据。')
-        void openMemoryEvidenceArchive(archive.documentType, archive.sourceId, archive.title)
+        void openMemoryEvidenceArchive(
+          archive.documentType,
+          archive.sourceId,
+          archive.title,
+          archive.filters
+        )
         return
       }
       setMemoryEvidenceArchive(current => {
@@ -7391,8 +7460,106 @@ function AiAssistantPage() {
                 ? '正在读取完整证据档案…'
                 : memoryEvidenceArchive.status === 'error'
                   ? `读取失败：${memoryEvidenceArchive.error || '未知错误'}`
-                  : `已加载 ${memoryEvidenceArchive.items.length} / ${memoryEvidenceArchive.total} 条`}
+                  : memoryEvidenceArchive.total === memoryEvidenceArchive.unfilteredTotal
+                    ? `已加载 ${memoryEvidenceArchive.items.length} / ${memoryEvidenceArchive.total} 条`
+                    : `已加载 ${memoryEvidenceArchive.items.length} / 匹配 ${memoryEvidenceArchive.total} 条（全部 ${memoryEvidenceArchive.unfilteredTotal} 条）`}
             </div>
+            <form className="assistant-evidence-archive-filters" onSubmit={event => {
+              event.preventDefault()
+              void openMemoryEvidenceArchive(
+                memoryEvidenceArchive.documentType,
+                memoryEvidenceArchive.sourceId,
+                memoryEvidenceArchive.title,
+                memoryEvidenceFilters
+              )
+            }}>
+              <label>
+                <span>原文关键词</span>
+                <input value={memoryEvidenceFilters.query} maxLength={500}
+                  placeholder="摘录、消息 ID、发送者或会话"
+                  onChange={event => setMemoryEvidenceFilters(current => ({
+                    ...current,
+                    query: event.target.value
+                  }))} />
+              </label>
+              <label>
+                <span>来源</span>
+                <select value={memoryEvidenceFilters.source}
+                  onChange={event => setMemoryEvidenceFilters(current => ({
+                    ...current,
+                    source: event.target.value
+                  }))}>
+                  <option value="">全部来源</option>
+                  <option value="wechat">微信</option>
+                  <option value="documents">本机文档</option>
+                  <option value="calendar">日历</option>
+                  <option value="mail">邮件</option>
+                  <option value="legacy">历史来源未知</option>
+                </select>
+              </label>
+              <label>
+                <span>证据性质</span>
+                <select value={memoryEvidenceFilters.role}
+                  onChange={event => setMemoryEvidenceFilters(current => ({
+                    ...current,
+                    role: event.target.value as MemoryEvidenceArchiveFilters['role']
+                  }))}>
+                  <option value="">全部性质</option>
+                  <option value="direct">直接证据</option>
+                  <option value="indirect">间接证据</option>
+                  <option value="contradiction">反证</option>
+                  <option value="support">历史支持证据</option>
+                  <option value="original">未分类原文</option>
+                </select>
+              </label>
+              <label>
+                <span>会话 ID</span>
+                <input value={memoryEvidenceFilters.session} maxLength={500}
+                  placeholder="支持片段匹配"
+                  onChange={event => setMemoryEvidenceFilters(current => ({
+                    ...current,
+                    session: event.target.value
+                  }))} />
+              </label>
+              <label>
+                <span>发送者</span>
+                <input value={memoryEvidenceFilters.sender} maxLength={200}
+                  placeholder="姓名或备注片段"
+                  onChange={event => setMemoryEvidenceFilters(current => ({
+                    ...current,
+                    sender: event.target.value
+                  }))} />
+              </label>
+              <label>
+                <span>开始时间（上海）</span>
+                <input type="datetime-local" value={memoryEvidenceFilters.from}
+                  onChange={event => setMemoryEvidenceFilters(current => ({
+                    ...current,
+                    from: event.target.value
+                  }))} />
+              </label>
+              <label>
+                <span>结束时间（上海）</span>
+                <input type="datetime-local" value={memoryEvidenceFilters.to}
+                  onChange={event => setMemoryEvidenceFilters(current => ({
+                    ...current,
+                    to: event.target.value
+                  }))} />
+              </label>
+              <div className="assistant-evidence-archive-filter-actions">
+                <button type="button" onClick={() => {
+                  setMemoryEvidenceFilters(EMPTY_MEMORY_EVIDENCE_FILTERS)
+                  void openMemoryEvidenceArchive(
+                    memoryEvidenceArchive.documentType,
+                    memoryEvidenceArchive.sourceId,
+                    memoryEvidenceArchive.title,
+                    EMPTY_MEMORY_EVIDENCE_FILTERS
+                  )
+                }}>清除筛选</button>
+                <button className="primary" type="submit"
+                  disabled={memoryEvidenceArchive.status === 'loading'}>应用筛选</button>
+              </div>
+            </form>
             <div className="assistant-evidence-archive-list">
               {memoryEvidenceArchive.items.map((rawEvidence, index) => {
                 const evidence = normalizeMemoryEvidence(rawEvidence)
@@ -7412,7 +7579,11 @@ function AiAssistantPage() {
                 </article>
               })}
               {memoryEvidenceArchive.status === 'ready' && !memoryEvidenceArchive.items.length &&
-                <div className="assistant-empty">该记忆当前没有可展示的原文证据。</div>}
+                <div className="assistant-empty">
+                  {memoryEvidenceArchive.unfilteredTotal
+                    ? '当前筛选没有匹配原文；可以清除条件查看完整证据。'
+                    : '该记忆当前没有可展示的原文证据。'}
+                </div>}
             </div>
             <div className="assistant-modal-actions">
               <button onClick={closeMemoryEvidenceArchive}>关闭</button>
@@ -7420,7 +7591,8 @@ function AiAssistantPage() {
                 void openMemoryEvidenceArchive(
                   memoryEvidenceArchive.documentType,
                   memoryEvidenceArchive.sourceId,
-                  memoryEvidenceArchive.title
+                  memoryEvidenceArchive.title,
+                  memoryEvidenceArchive.filters
                 )}>重试</button>}
               {memoryEvidenceArchive.status === 'ready' && memoryEvidenceArchive.hasMore &&
                 <button className="primary" disabled={memoryEvidenceLoadingMore}

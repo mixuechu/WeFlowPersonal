@@ -6165,7 +6165,14 @@ export class AiAssistantService {
     return personalMemoryStore.getDocumentEvidencePage(normalizedType, normalizedSourceId, {
       offset: Number(pagination?.offset || 0),
       limit: Number(pagination?.limit || 40),
-      revision: String(pagination?.revision || '')
+      revision: String(pagination?.revision || ''),
+      query: String(pagination?.query || '').trim().slice(0, 500),
+      source: String(pagination?.source || '').trim().toLowerCase().slice(0, 100),
+      session: String(pagination?.session || '').trim().slice(0, 500),
+      sender: String(pagination?.sender || '').trim().slice(0, 200),
+      role: String(pagination?.role || '').trim().toLowerCase().slice(0, 32),
+      fromTimestamp: Number(pagination?.fromTimestamp || 0),
+      toTimestamp: Number(pagination?.toTimestamp || 0)
     })
   }
 

@@ -1965,10 +1965,22 @@ export interface ElectronAPI {
       getMemoryEvidencePage: (
         documentType: string,
         sourceId: string,
-        pagination?: { offset?: number; limit?: number; revision?: string }
+        pagination?: {
+          offset?: number
+          limit?: number
+          revision?: string
+          query?: string
+          source?: string
+          session?: string
+          sender?: string
+          role?: 'direct' | 'indirect' | 'contradiction' | 'support' | 'original' | ''
+          fromTimestamp?: number
+          toTimestamp?: number
+        }
       ) => Promise<{
         items: any[]
         total: number
+        unfilteredTotal: number
         hasMore: boolean
         offset: number
         limit: number

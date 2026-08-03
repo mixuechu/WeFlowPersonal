@@ -656,13 +656,24 @@
 .assistant-citation-evidence { display: flex !important; align-items: flex-start; justify-content: space-between; gap: 8px; }
 .assistant-citation-evidence span { flex: 1; }
 .assistant-open-evidence-archive { margin-top: 8px; padding: 5px 8px; border: 1px solid #cfd9d1; border-radius: 7px; color: #3f6555; background: #f7faf8; font-size: 9px; cursor: pointer; }
-.assistant-evidence-archive-modal { width: min(760px, calc(100vw - 48px)); max-height: calc(100vh - 48px); grid-template-rows: auto auto minmax(0, 1fr) auto; }
+.assistant-evidence-archive-modal { width: min(900px, calc(100vw - 48px)); max-height: calc(100vh - 48px); grid-template-rows: auto auto auto minmax(0, 1fr) auto; }
 .assistant-evidence-archive-status { padding: 9px 11px; border-radius: 9px; color: #53645a; background: #eef4f0; font-size: 10px; }
+.assistant-evidence-archive-filters { display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); gap: 8px; padding: 10px; border: 1px solid #e2e8e3; border-radius: 10px; background: rgba(248,250,248,.82); }
+.assistant-evidence-archive-filters label { display: grid; gap: 4px; color: #69736c; font-size: 9px; }
+.assistant-evidence-archive-filters input,
+.assistant-evidence-archive-filters select { width: 100%; min-width: 0; padding: 7px 8px; border: 1px solid #d8dfda; border-radius: 7px; color: #354139; background: #fff; font: inherit; font-size: 10px; }
+.assistant-evidence-archive-filter-actions { display: flex; align-items: end; justify-content: flex-end; gap: 7px; }
 .assistant-evidence-archive-list { min-height: 120px; overflow: auto; display: grid; align-content: start; gap: 8px; }
 .assistant-evidence-archive-list article { padding: 10px 12px; border: 1px solid #e2e8e3; border-radius: 10px; background: rgba(255,255,255,.66); }
 .assistant-evidence-archive-list article header { display: flex; align-items: center; justify-content: space-between; gap: 10px; color: #747d76; font-size: 9px; }
 .assistant-evidence-archive-list article header button { flex: 0 0 auto; padding: 4px 7px; border: 1px solid #d4dcd6; border-radius: 6px; color: #496052; background: #fff; font-size: 8px; cursor: pointer; }
 .assistant-evidence-archive-list article p { margin: 7px 0 0; color: #404942; font-size: 11px; line-height: 1.55; white-space: pre-wrap; }
+@media (max-width: 760px) {
+  .assistant-evidence-archive-filters { grid-template-columns: 1fr 1fr; }
+}
+@media (max-width: 520px) {
+  .assistant-evidence-archive-filters { grid-template-columns: 1fr; }
+}
 .assistant-claim-editor { display: grid; grid-template-columns: 2fr 1fr 1fr; gap: 7px; margin: 9px 0; }
 .assistant-claim-editor input { min-width: 0; padding: 7px 9px; border: 1px solid #dcd9d0; border-radius: 8px; background: #fff; font-size: 10px; }
 .assistant-event-editor { display: grid; grid-template-columns: 1.5fr 1fr; gap: 7px; margin: 9px 0; }

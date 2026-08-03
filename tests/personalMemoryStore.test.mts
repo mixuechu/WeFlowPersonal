@@ -1701,6 +1701,91 @@ test('memory cards expose evidence totals but bound their latest evidence payloa
   assert.equal(enrichedPage.items.at(-1).sender, '修正后的发送者')
 }))
 
+test('complete evidence archives filter before paging across generic and structured stores', () => withStore(store => {
+  store.syncGraph({
+    entities: [{ id: 'filtered-person', type: 'person', canonicalName: '筛选人物', trustStatus: 'confirmed' }],
+    relations: [],
+    reviewQueue: []
+  })
+  store.upsertResources([{
+    id: 'filtered-resource',
+    resourceType: 'document',
+    title: '筛选资料',
+    content: '验证完整证据筛选',
+    evidence: [
+      {
+        sourceId: 'wechat', messageId: 'wechat:alpha:1', sessionId: 'alpha',
+        timestamp: 1_700_000_000, sender: '甲', excerpt: '普通微信证据'
+      },
+      {
+        sourceId: 'documents', messageId: 'document:design:2', sessionId: 'design-notes',
+        timestamp: 1_700_000_100, sender: '乙', excerpt: '关键架构决定'
+      },
+      {
+        sourceId: 'mail', messageId: 'mail:project:3', sessionId: 'project-mailbox',
+        timestamp: 1_700_000_200, sender: '丙', excerpt: '邮件确认事项'
+      }
+    ]
+  }])
+  const generic = store.getDocumentEvidencePage('resource', 'filtered-resource', {
+    source: 'documents',
+    session: 'design',
+    sender: '乙',
+    query: '架构',
+    fromTimestamp: 1_700_000_050,
+    toTimestamp: 1_700_000_150
+  })
+  assert.equal(generic.unfilteredTotal, 3)
+  assert.equal(generic.total, 1)
+  assert.equal(generic.items[0].message_id, 'document:design:2')
+  const impossibleGenericRole = store.getDocumentEvidencePage('resource', 'filtered-resource', {
+    role: 'direct'
+  })
+  assert.equal(impossibleGenericRole.unfilteredTotal, 3)
+  assert.equal(impossibleGenericRole.total, 0)
+  assert.equal(store.getDocumentEvidencePage('resource', 'filtered-resource', {
+    role: 'original'
+  }).total, 3)
+
+  store.upsertClaims([{
+    id: 'filtered-claim',
+    subjectId: 'filtered-person',
+    predicate: '负责',
+    objectValue: '筛选验证',
+    confidence: 0.9,
+    status: 'candidate',
+    sourceNature: 'self_statement',
+    searchText: '筛选人物负责筛选验证',
+    evidence: [
+      {
+        sourceId: 'wechat', messageId: 'wechat:claim:1', sessionId: 'claim-room',
+        timestamp: 1_700_001_000, sender: '甲', excerpt: '本人直接确认', role: 'direct'
+      },
+      {
+        sourceId: 'wechat', messageId: 'wechat:claim:2', sessionId: 'claim-room',
+        timestamp: 1_700_001_100, sender: '乙', excerpt: '转述相关信息', role: 'indirect'
+      },
+      {
+        sourceId: 'documents', messageId: 'document:claim:3', sessionId: 'claim-file',
+        timestamp: 1_700_001_200, sender: '审计员', excerpt: '材料明确否认', role: 'contradiction'
+      }
+    ]
+  }])
+  const contradiction = store.getDocumentEvidencePage('claim', 'filtered-claim', {
+    source: 'documents',
+    role: 'contradiction',
+    query: '否认',
+    sender: '审计',
+    session: 'file'
+  })
+  assert.equal(contradiction.unfilteredTotal, 3)
+  assert.equal(contradiction.total, 1)
+  assert.equal(contradiction.items[0].evidence_role, 'contradiction')
+  assert.equal(store.getDocumentEvidencePage('claim', 'filtered-claim', {
+    role: 'direct'
+  }).items[0].message_id, 'wechat:claim:1')
+}))
+
 test('structured evidence migration deduplicates nullable legacy identities and preserves provenance', () => {
   const directory = mkdtempSync(join(tmpdir(), 'weflow-evidence-migration-test-'))
   const databasePath = join(directory, 'memory.sqlite')

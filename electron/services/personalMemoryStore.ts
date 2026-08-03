@@ -9283,10 +9283,22 @@ export class PersonalMemoryStore {
   getDocumentEvidencePage(
     documentType: string,
     sourceId: string,
-    options: { offset?: number; limit?: number; revision?: string } = {}
+    options: {
+      offset?: number
+      limit?: number
+      revision?: string
+      query?: string
+      source?: string
+      session?: string
+      sender?: string
+      role?: string
+      fromTimestamp?: number
+      toTimestamp?: number
+    } = {}
   ): {
     items: any[]
     total: number
+    unfilteredTotal: number
     hasMore: boolean
     offset: number
     limit: number
@@ -9297,10 +9309,72 @@ export class PersonalMemoryStore {
   } {
     const offset = Math.max(0, Math.min(1_000_000, Math.floor(Number(options.offset) || 0)))
     const limit = Math.max(1, Math.min(100, Math.floor(Number(options.limit) || 40)))
+    const query = String(options.query || '').trim().slice(0, 500)
+    const source = String(options.source || '').trim().toLowerCase().slice(0, 100)
+    const session = String(options.session || '').trim().slice(0, 500)
+    const sender = String(options.sender || '').trim().slice(0, 200)
+    const role = new Set(['direct', 'indirect', 'contradiction', 'support', 'original'])
+      .has(String(options.role || '').trim().toLowerCase())
+      ? String(options.role || '').trim().toLowerCase()
+      : ''
+    const fromTimestamp = Number.isFinite(Number(options.fromTimestamp))
+      ? Math.max(0, Math.floor(Number(options.fromTimestamp)))
+      : 0
+    const toTimestamp = Number.isFinite(Number(options.toTimestamp))
+      ? Math.max(0, Math.floor(Number(options.toTimestamp)))
+      : 0
+    const evidenceFilter = (alias: string, roleColumn = ''): { sql: string; parameters: any[] } => {
+      const conditions: string[] = []
+      const parameters: any[] = []
+      if (source) {
+        conditions.push(`LOWER(COALESCE(${alias}.source_id,''))=?`)
+        parameters.push(source)
+      }
+      if (session) {
+        conditions.push(`INSTR(LOWER(COALESCE(${alias}.session_id,'')),LOWER(?))>0`)
+        parameters.push(session)
+      }
+      if (sender) {
+        conditions.push(`INSTR(LOWER(COALESCE(${alias}.sender,'')),LOWER(?))>0`)
+        parameters.push(sender)
+      }
+      if (query) {
+        conditions.push(`(
+          INSTR(LOWER(COALESCE(${alias}.excerpt,'')),LOWER(?))>0 OR
+          INSTR(LOWER(COALESCE(${alias}.sender,'')),LOWER(?))>0 OR
+          INSTR(LOWER(COALESCE(${alias}.session_id,'')),LOWER(?))>0 OR
+          INSTR(LOWER(COALESCE(${alias}.message_id,'')),LOWER(?))>0
+        )`)
+        parameters.push(query, query, query, query)
+      }
+      if (role) {
+        if (roleColumn) {
+          conditions.push(role === 'original'
+            ? `COALESCE(${alias}.${roleColumn},'')=''`
+            : `LOWER(COALESCE(${alias}.${roleColumn},''))=?`)
+          if (role !== 'original') parameters.push(role)
+        } else {
+          conditions.push(role === 'original' ? '1=1' : '1=0')
+        }
+      }
+      if (fromTimestamp) {
+        conditions.push(`${alias}.timestamp>=?`)
+        parameters.push(fromTimestamp)
+      }
+      if (toTimestamp) {
+        conditions.push(`${alias}.timestamp<=?`)
+        parameters.push(toTimestamp)
+      }
+      return {
+        sql: conditions.length ? ` AND ${conditions.join(' AND ')}` : '',
+        parameters
+      }
+    }
     const revision = this.getMemoryEvidenceArchiveRevision()
     const empty = {
       items: [],
       total: 0,
+      unfilteredTotal: 0,
       hasMore: false,
       offset,
       limit,
@@ -9314,17 +9388,22 @@ export class PersonalMemoryStore {
       return { ...empty, stale: true }
     }
     const documentId = `${documentType}:${sourceId}`
-    const genericTotal = Number((this.db.prepare(`
+    const genericUnfilteredTotal = Number((this.db.prepare(`
       SELECT COUNT(*) AS count FROM search_document_evidence WHERE document_id=?
     `).get(documentId) as any)?.count || 0)
-    if (genericTotal) {
+    if (genericUnfilteredTotal) {
+      const filter = evidenceFilter('sde')
+      const genericTotal = Number((this.db.prepare(`
+        SELECT COUNT(*) AS count FROM search_document_evidence sde
+        WHERE sde.document_id=?${filter.sql}
+      `).get(documentId, ...filter.parameters) as any)?.count || 0)
       const items = this.db.prepare(`
         SELECT source_id,message_id,session_id,timestamp,sender,excerpt
-        FROM search_document_evidence
-        WHERE document_id=?
-        ORDER BY timestamp DESC,message_id DESC
+        FROM search_document_evidence sde
+        WHERE sde.document_id=?${filter.sql}
+        ORDER BY sde.timestamp DESC,sde.source_id DESC,sde.session_id DESC,sde.message_id DESC
         LIMIT ? OFFSET ?
-      `).all(documentId, limit, offset) as any[]
+      `).all(documentId, ...filter.parameters, limit, offset) as any[]
       const completedRevision = this.getMemoryEvidenceArchiveRevision()
       if (completedRevision !== revision) {
         return { ...empty, revision: completedRevision, stale: true }
@@ -9333,6 +9412,7 @@ export class PersonalMemoryStore {
         ...empty,
         items,
         total: genericTotal,
+        unfilteredTotal: genericUnfilteredTotal,
         hasMore: offset + items.length < genericTotal
       }
     }
@@ -9344,19 +9424,23 @@ export class PersonalMemoryStore {
           ? 'relation_id'
           : ''
     if (!foreignKey) return empty
-    const total = Number((this.db.prepare(`
+    const unfilteredTotal = Number((this.db.prepare(`
       SELECT COUNT(*) AS count FROM evidence WHERE ${foreignKey}=?
     `).get(sourceId) as any)?.count || 0)
+    const filter = evidenceFilter('e', 'evidence_role')
+    const total = Number((this.db.prepare(`
+      SELECT COUNT(*) AS count FROM evidence e WHERE e.${foreignKey}=?${filter.sql}
+    `).get(sourceId, ...filter.parameters) as any)?.count || 0)
     const items = total
       ? this.db.prepare(`
           SELECT source_id,message_id,session_id,timestamp,sender,excerpt,evidence_role
-          FROM evidence
-          WHERE ${foreignKey}=?
-          ORDER BY timestamp DESC,
-            CASE WHEN evidence_role='contradiction' THEN 1 ELSE 0 END,
-            message_id DESC
+          FROM evidence e
+          WHERE e.${foreignKey}=?${filter.sql}
+          ORDER BY e.timestamp DESC,
+            CASE WHEN e.evidence_role='contradiction' THEN 1 ELSE 0 END,
+            e.source_id DESC,e.session_id DESC,e.message_id DESC
           LIMIT ? OFFSET ?
-        `).all(sourceId, limit, offset) as any[]
+        `).all(sourceId, ...filter.parameters, limit, offset) as any[]
       : []
     const completedRevision = this.getMemoryEvidenceArchiveRevision()
     if (completedRevision !== revision) {
@@ -9366,6 +9450,7 @@ export class PersonalMemoryStore {
       ...empty,
       items,
       total,
+      unfilteredTotal,
       hasMore: offset + items.length < total
     }
   }
