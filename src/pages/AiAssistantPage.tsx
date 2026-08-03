@@ -5044,7 +5044,10 @@ function AiAssistantPage() {
                 检测到 {Number(ingestionStatus.commitHealth.prepared)} 个已保存但尚未完成应用的批次，
                 其中微信 {Number(ingestionStatus.commitHealth.preparedWechat || 0)} 个、
                 文档 {Number(ingestionStatus.commitHealth.preparedDocuments || 0)} 个；
-                可立即重试或在下次启动从加密恢复日志续写，不会重新请求模型。
+                {Number(ingestionStatus.commitHealth.unattempted || 0) > 0
+                  ? ` ${Number(ingestionStatus.commitHealth.unattempted)} 个尚未尝试的批次会在本次运行后台分段继续，`
+                  : ' 所有保留批次都已经尝试过，'}
+                不会重新请求模型；失败项可立即重试。
               </small>
               <div className="assistant-ingestion-recovery-actions">
                 <button onClick={() => void toggleIngestionRecoveryQueue()}>

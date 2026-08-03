@@ -8202,6 +8202,7 @@ export class PersonalMemoryStore {
 
   getIngestionCommitHealth(): {
     prepared: number
+    unattempted: number
     preparedWechat: number
     preparedDocuments: number
     committed: number
@@ -8224,6 +8225,7 @@ export class PersonalMemoryStore {
     }
     if (!this.db) return {
       prepared: 0,
+      unattempted: 0,
       preparedWechat: 0,
       preparedDocuments: 0,
       committed: 0,
@@ -8234,6 +8236,7 @@ export class PersonalMemoryStore {
     const row = this.db.prepare(`
       SELECT
         SUM(CASE WHEN status='prepared' THEN 1 ELSE 0 END) AS prepared,
+        SUM(CASE WHEN status='prepared' AND recovery_attempts=0 THEN 1 ELSE 0 END) AS unattempted,
         SUM(CASE WHEN status='prepared' AND source_kind='wechat' THEN 1 ELSE 0 END) AS prepared_wechat,
         SUM(CASE WHEN status='prepared' AND source_kind='document' THEN 1 ELSE 0 END) AS prepared_documents,
         SUM(CASE WHEN status='committed' THEN 1 ELSE 0 END) AS committed,
@@ -8253,6 +8256,7 @@ export class PersonalMemoryStore {
     } catch {}
     return {
       prepared: Number(row?.prepared || 0),
+      unattempted: Number(row?.unattempted || 0),
       preparedWechat: Number(row?.prepared_wechat || 0),
       preparedDocuments: Number(row?.prepared_documents || 0),
       committed: Number(row?.committed || 0),

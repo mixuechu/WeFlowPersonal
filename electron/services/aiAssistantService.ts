@@ -522,6 +522,7 @@ export class AiAssistantService {
   private activeSync: Promise<any> | null = null
   private activeSyncTrigger: 'manual' | 'startup' | 'daily' | 'backlog' | 'resume' | null = null
   private scheduler: ReturnType<typeof setInterval> | null = null
+  private preparedRecoveryContinuation: ReturnType<typeof setTimeout> | null = null
   private lastSchedulerAttemptAt = 0
   private lastSchedulerTickAt = 0
   private vectorIndexPromise: Promise<any> | null = null
@@ -671,7 +672,8 @@ export class AiAssistantService {
       this.state.cursor.recentMessageIds,
       'legacy-state-hot-cache-migration'
     )
-    this.recoverPreparedIngestionBatchCommits()
+    const initialRecovery = this.recoverPreparedIngestionBatchCommits()
+    if (initialRecovery.unattempted > 0) this.schedulePreparedIngestionRecoveryContinuation()
     personalMemoryStore.reconcileInterruptedIngestionRuns({
       entityCount: this.state.graph.entities.length,
       relationCount: this.state.graph.relations.length
@@ -693,6 +695,8 @@ export class AiAssistantService {
   dispose(): void {
     if (this.scheduler) clearInterval(this.scheduler)
     this.scheduler = null
+    if (this.preparedRecoveryContinuation) clearTimeout(this.preparedRecoveryContinuation)
+    this.preparedRecoveryContinuation = null
     personalMemoryStore.close()
   }
 
@@ -1096,58 +1100,83 @@ export class AiAssistantService {
     recovered: number
     failed: number
     remaining: number
+    unattempted: number
   } {
+    const startedAt = Date.now()
+    const seenCommitIds = new Set<string>()
     let attempted = 0
     let recovered = 0
     let failed = 0
-    for (const commit of personalMemoryStore.listPreparedIngestionBatchCommits()) {
-      attempted += 1
-      const stateBeforeRecovery = structuredClone(this.state)
-      const pendingEntityEvidenceBeforeRecovery = [...this.pendingEntityEvidence]
-      try {
-        if (commit.parseError) throw new Error(commit.parseError)
-        const tempIds = this.mergeGraphDigest(commit.digest, commit.messages, commit.createdAt, commit.commitId)
-        this.persistClaimsAndEvents(commit.digest, tempIds, commit.messages, commit.createdAt)
-        if (commit.sourceKind === 'document') {
-          this.persistDocumentTasks(commit.digest, commit.messages, commit.createdAt)
-        } else {
-          this.mergeRecoveredWechatTasks(commit.digest, commit.messages, commit.createdAt)
-          this.state.cursor.recentMessageIds = [...new Set([
-            ...this.state.cursor.recentMessageIds,
-            ...commit.checkpointKeys
-          ])].slice(-20_000)
-        }
-        this.saveState(true)
-        personalMemoryStore.finalizeIngestionBatchCommit(commit.commitId, {
-          ...commit.digest.__meta,
-          promptVersion: EXTRACTION_PROMPT_VERSION,
-          schemaVersion: EXTRACTION_SCHEMA_VERSION
-        })
-        if (commit.sourceKind === 'document') {
-          personalMemoryStore.finishIngestionRun(commit.runId, {
-            status: 'completed',
-            messageCount: commit.messages.length,
-            entityCount: this.state.graph.entities.length,
-            relationCount: this.state.graph.relations.length
+    do {
+      const batch = personalMemoryStore.listPreparedIngestionBatchCommits(100)
+        .filter(commit => !seenCommitIds.has(commit.commitId))
+      if (!batch.length) break
+      for (const commit of batch) {
+        seenCommitIds.add(commit.commitId)
+        attempted += 1
+        const stateBeforeRecovery = structuredClone(this.state)
+        const pendingEntityEvidenceBeforeRecovery = [...this.pendingEntityEvidence]
+        try {
+          if (commit.parseError) throw new Error(commit.parseError)
+          const tempIds = this.mergeGraphDigest(commit.digest, commit.messages, commit.createdAt, commit.commitId)
+          this.persistClaimsAndEvents(commit.digest, tempIds, commit.messages, commit.createdAt)
+          if (commit.sourceKind === 'document') {
+            this.persistDocumentTasks(commit.digest, commit.messages, commit.createdAt)
+          } else {
+            this.mergeRecoveredWechatTasks(commit.digest, commit.messages, commit.createdAt)
+            this.state.cursor.recentMessageIds = [...new Set([
+              ...this.state.cursor.recentMessageIds,
+              ...commit.checkpointKeys
+            ])].slice(-20_000)
+          }
+          this.saveState(true)
+          personalMemoryStore.finalizeIngestionBatchCommit(commit.commitId, {
+            ...commit.digest.__meta,
+            promptVersion: EXTRACTION_PROMPT_VERSION,
+            schemaVersion: EXTRACTION_SCHEMA_VERSION
           })
+          if (commit.sourceKind === 'document') {
+            personalMemoryStore.finishIngestionRun(commit.runId, {
+              status: 'completed',
+              messageCount: commit.messages.length,
+              entityCount: this.state.graph.entities.length,
+              relationCount: this.state.graph.relations.length
+            })
+          }
+          recovered += 1
+        } catch (error) {
+          this.state = stateBeforeRecovery
+          this.pendingEntityEvidence = pendingEntityEvidenceBeforeRecovery
+          failed += 1
+          personalMemoryStore.recordIngestionBatchCommitRecoveryFailure(
+            commit.commitId,
+            sanitizeDiagnosticText(error)
+          )
         }
-        recovered += 1
-      } catch (error) {
-        this.state = stateBeforeRecovery
-        this.pendingEntityEvidence = pendingEntityEvidenceBeforeRecovery
-        failed += 1
-        personalMemoryStore.recordIngestionBatchCommitRecoveryFailure(
-          commit.commitId,
-          sanitizeDiagnosticText(error)
-        )
       }
-    }
+    } while (Date.now() - startedAt < 1_500)
+    const health = personalMemoryStore.getIngestionCommitHealth()
     return {
       attempted,
       recovered,
       failed,
-      remaining: personalMemoryStore.getIngestionCommitHealth().prepared
+      remaining: health.prepared,
+      unattempted: health.unattempted
     }
+  }
+
+  private schedulePreparedIngestionRecoveryContinuation(): void {
+    if (this.preparedRecoveryContinuation) return
+    this.preparedRecoveryContinuation = setTimeout(() => {
+      this.preparedRecoveryContinuation = null
+      if (this.activeSync) {
+        this.schedulePreparedIngestionRecoveryContinuation()
+        return
+      }
+      const result = this.recoverPreparedIngestionBatchCommits()
+      if (result.unattempted > 0) this.schedulePreparedIngestionRecoveryContinuation()
+    }, 1_000)
+    this.preparedRecoveryContinuation.unref?.()
   }
 
   private async ensureHttpApi(): Promise<{ port: number; token: string }> {
@@ -4561,6 +4590,7 @@ export class AiAssistantService {
   retryPreparedIngestion(): any {
     if (this.activeSync) throw new Error('当前正在增量处理，请在本轮结束后重试恢复队列')
     const result = this.recoverPreparedIngestionBatchCommits()
+    if (result.unattempted > 0) this.schedulePreparedIngestionRecoveryContinuation()
     this.saveState()
     return result
   }

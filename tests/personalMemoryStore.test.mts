@@ -8438,6 +8438,48 @@ test('prepared recovery directory isolates malformed payloads and paginates with
     assert.deepEqual(stale.items, [])
   }))
 
+test('prepared recovery batches drain beyond the first hundred and leave only attempted failures', () =>
+  withStore(store => {
+    for (let index = 0; index < 251; index += 1) {
+      store.prepareIngestionBatchCommit({
+        commitId: `startup-drain-${String(index).padStart(3, '0')}`,
+        runId: 'startup-drain-run',
+        batchIndex: index,
+        digest: {},
+        messages: [],
+        checkpointKeys: [],
+        createdAt: `2026-08-01T00:${String(index % 60).padStart(2, '0')}:00.000Z`
+      })
+    }
+    ;(store as any).db.prepare(`
+      UPDATE ingestion_batch_commits SET digest_json='{broken'
+      WHERE commit_id='startup-drain-250'
+    `).run()
+    assert.equal(store.getIngestionCommitHealth().unattempted, 251)
+    const seen = new Set<string>()
+    let passes = 0
+    while (true) {
+      const batch = store.listPreparedIngestionBatchCommits(100)
+        .filter(commit => !seen.has(commit.commitId))
+      if (!batch.length) break
+      passes += 1
+      for (const commit of batch) {
+        seen.add(commit.commitId)
+        if (commit.parseError) {
+          store.recordIngestionBatchCommitRecoveryFailure(commit.commitId, commit.parseError)
+        } else {
+          store.finalizeIngestionBatchCommit(commit.commitId, {})
+        }
+      }
+    }
+    const health = store.getIngestionCommitHealth()
+    assert.ok(passes >= 3)
+    assert.equal(seen.size, 251)
+    assert.equal(health.prepared, 1)
+    assert.equal(health.unattempted, 0)
+    assert.equal(health.recoveryFailures, 1)
+  }))
+
 test('committed ingestion payloads compact on commit and legacy restart without losing audit identity', () => {
   const directory = mkdtempSync(join(tmpdir(), 'weflow-committed-payload-compaction-'))
   const databasePath = join(directory, 'memory.sqlite')
