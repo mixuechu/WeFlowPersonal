@@ -417,6 +417,9 @@ function AiAssistantPage() {
   const [mergeArchiveLoadingMore, setMergeArchiveLoadingMore] = useState(false)
   const [mergeArchiveRefreshKey, setMergeArchiveRefreshKey] = useState(0)
   const mergeArchiveGate = useRef(new LatestRequestGate())
+  const [mergeRevertDialog, setMergeRevertDialog] = useState<any>(null)
+  const [mergeRevertConfirmation, setMergeRevertConfirmation] = useState('')
+  const mergeRevertGate = useRef(new LatestRequestGate())
   const [memoryDiagnostics, setMemoryDiagnostics] = useState<any>(null)
   const [showDiagnostics, setShowDiagnostics] = useState(false)
   const [ingestionArchive, setIngestionArchive] = useState<{
@@ -2086,12 +2089,67 @@ function AiAssistantPage() {
   }
 
   const revertMerge = async (id: number) => {
+    const request = mergeRevertGate.current.begin()
+    setMergeRevertConfirmation('')
+    setMergeRevertDialog({ mergeId: id, status: 'loading' })
     try {
-      await window.electronAPI.aiAssistant.revertMerge(id)
+      const preview = await window.electronAPI.aiAssistant.previewRevertMerge(
+        id,
+        String(mergeArchive.revision || '')
+      )
+      if (!mergeRevertGate.current.isCurrent(request)) return
+      setMergeRevertDialog(preview
+        ? { mergeId: id, preview, status: preview.safe ? 'ready' : 'blocked' }
+        : { mergeId: id, status: 'error', error: '该合并不存在或已经撤销' })
+    } catch (error: any) {
+      if (!mergeRevertGate.current.isCurrent(request)) return
+      const errorMessage = error?.message || String(error)
+      setMergeRevertDialog({ mergeId: id, status: 'error', error: errorMessage })
+      if (errorMessage.includes('身份合并档案在展示后发生了变化')) {
+        mergeArchiveGate.current.invalidate()
+        setMergeArchiveRefreshKey(value => value + 1)
+      }
+    }
+  }
+
+  const closeMergeRevertDialog = () => {
+    if (mergeRevertDialog?.status === 'reverting') return
+    mergeRevertGate.current.invalidate()
+    setMergeRevertDialog(null)
+    setMergeRevertConfirmation('')
+  }
+
+  const confirmRevertMerge = async () => {
+    if (mergeRevertDialog?.status !== 'ready' ||
+      mergeRevertConfirmation !== '撤销合并' ||
+      !mergeRevertDialog.preview?.previewToken) return
+    const request = mergeRevertGate.current.begin()
+    setMergeRevertDialog((current: any) => ({ ...current, status: 'reverting', error: undefined }))
+    try {
+      await window.electronAPI.aiAssistant.revertMerge(mergeRevertDialog.mergeId, {
+        previewToken: mergeRevertDialog.preview.previewToken,
+        confirmation: mergeRevertConfirmation
+      })
+      if (!mergeRevertGate.current.isCurrent(request)) return
+      mergeRevertGate.current.invalidate()
+      setMergeRevertDialog(null)
+      setMergeRevertConfirmation('')
+      setMessage('身份合并已安全撤销；合并前的两个身份和相关关系已恢复。')
       await load()
       setReviewRefreshKey(value => value + 1)
+      setMergeArchiveRefreshKey(value => value + 1)
     } catch (error: any) {
-      setMessage(error?.message || String(error))
+      if (!mergeRevertGate.current.isCurrent(request)) return
+      const errorMessage = error?.message || String(error)
+      setMergeRevertDialog((current: any) => ({
+        ...current,
+        status: 'error',
+        error: errorMessage
+      }))
+      if (errorMessage.includes('已经变化') || errorMessage.includes('确认已失效')) {
+        mergeArchiveGate.current.invalidate()
+        setMergeArchiveRefreshKey(value => value + 1)
+      }
     }
   }
 
@@ -6442,6 +6500,70 @@ function AiAssistantPage() {
                     !memoryFeedbackDeleteDialog.preview?.rowsToDelete}
                   onClick={() => void confirmMemoryFeedbackDeletion()}>
                   {memoryFeedbackDeleteDialog.status === 'deleting' ? '正在清理…' : '确认永久删除'}
+                </button>}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {mergeRevertDialog && (
+        <div className="assistant-modal-backdrop" role="presentation">
+          <div className="assistant-modal assistant-delete-modal" role="dialog" aria-modal="true"
+            aria-labelledby="merge-revert-title">
+            <div className="assistant-modal-title"><div>
+              <h2 id="merge-revert-title">撤销身份合并</h2>
+              <p>恢复合并前的两个身份、相关关系、事件参与者和审阅候选；不会覆盖无关图谱。</p>
+            </div><button aria-label="关闭身份合并撤销确认"
+              disabled={mergeRevertDialog.status === 'reverting'}
+              onClick={closeMergeRevertDialog}><X size={16} /></button></div>
+            {mergeRevertDialog.status === 'loading' && <div className="assistant-delete-status">
+              <RefreshCw size={16} /><span><strong>正在核对合并后的相关变化…</strong>
+                <small>如果相关身份、关系、事件或审阅已经继续变化，系统会保守拒绝撤销。</small></span>
+            </div>}
+            {(mergeRevertDialog.status === 'error' || mergeRevertDialog.status === 'blocked') &&
+              <div className="assistant-error">
+                <strong>{mergeRevertDialog.status === 'blocked'
+                  ? '当前不能安全自动撤销'
+                  : '身份合并撤销失败'}</strong>
+                <span>{mergeRevertDialog.error || mergeRevertDialog.preview?.reason || '未知错误'}</span>
+                {(String(mergeRevertDialog.error || '').includes('变化') ||
+                  String(mergeRevertDialog.error || '').includes('失效')) &&
+                  <button onClick={() => {
+                    const mergeId = mergeRevertDialog.mergeId
+                    closeMergeRevertDialog()
+                    void revertMerge(mergeId)
+                  }}>重新核对当前范围</button>}
+              </div>}
+            {(mergeRevertDialog.status === 'ready' || mergeRevertDialog.status === 'reverting') && <>
+              <div className="assistant-delete-preview">
+                <strong>{mergeRevertDialog.preview.sourceName} → {mergeRevertDialog.preview.targetName}</strong>
+                <p>
+                  将恢复被合并身份，并精确还原 {mergeRevertDialog.preview.counts.relations} 条相关关系、
+                  {mergeRevertDialog.preview.counts.eventParticipants} 条事件参与记录和
+                  {mergeRevertDialog.preview.counts.reviews} 条相关审阅候选。
+                  其他人物和关系保持当前状态。
+                </p>
+              </div>
+              <label><span>输入“撤销合并”确认</span>
+                <input autoFocus value={mergeRevertConfirmation}
+                  disabled={mergeRevertDialog.status === 'reverting'}
+                  onChange={event => setMergeRevertConfirmation(event.target.value)}
+                  onKeyDown={event => {
+                    if (event.key === 'Enter' && mergeRevertConfirmation === '撤销合并') {
+                      void confirmRevertMerge()
+                    }
+                  }}
+                  placeholder="撤销合并" /></label>
+            </>}
+            <div className="assistant-modal-actions">
+              <button disabled={mergeRevertDialog.status === 'reverting'}
+                onClick={closeMergeRevertDialog}>取消</button>
+              {(mergeRevertDialog.status === 'ready' || mergeRevertDialog.status === 'reverting') &&
+                <button className="danger"
+                  disabled={mergeRevertDialog.status === 'reverting' ||
+                    mergeRevertConfirmation !== '撤销合并'}
+                  onClick={() => void confirmRevertMerge()}>
+                  {mergeRevertDialog.status === 'reverting' ? '正在安全撤销…' : '确认撤销合并'}
                 </button>}
             </div>
           </div>

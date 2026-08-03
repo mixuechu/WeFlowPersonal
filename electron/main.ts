@@ -4579,7 +4579,12 @@ function registerIpcHandlers() {
       relationCorrection?: { subjectId?: string; predicate?: string; objectId?: string }
     }
   ) => aiAssistantService.updateGraphReview(id, decision, options))
-  ipcMain.handle('ai-assistant:revertMerge', (_, id: number) => aiAssistantService.revertMerge(id))
+  ipcMain.handle('ai-assistant:previewRevertMerge', (
+    _, id: number, expectedRevision?: string
+  ) => aiAssistantService.previewRevertMerge(id, expectedRevision))
+  ipcMain.handle('ai-assistant:revertMerge', (
+    _, id: number, input?: any
+  ) => aiAssistantService.revertMerge(id, input))
   ipcMain.handle('ai-assistant:updateMemoryItemStatus', (
     _, kind: 'claim' | 'event', id: string, status: 'confirmed' | 'rejected', expectedRevision?: string
   ) => aiAssistantService.updateMemoryItemStatus(kind, id, status, expectedRevision))

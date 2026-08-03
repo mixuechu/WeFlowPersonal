@@ -4780,6 +4780,24 @@ test('identity merge archive revision covers merge revert and deletion and self-
   try {
     const first = new PersonalMemoryStore()
     first.initialize(databasePath)
+    first.syncGraph({
+      entities: [],
+      relations: [],
+      reviewQueue: [{
+        id: 'merge-revert-review',
+        kind: 'possible_duplicate',
+        title: '撤销合并重启核验',
+        detail: '已确认合并',
+        confidence: 0.9,
+        status: 'confirmed',
+        mergeSourceEntityId: 'merge-revision-source-1',
+        mergeTargetEntityId: 'merge-revision-target-1'
+      }]
+    } as any)
+    assert.equal(
+      first.listGraphReviewsByIds(['merge-revert-review'])[0]?.mergeTargetEntityId,
+      'merge-revision-target-1'
+    )
     const initial = Number(first.getIdentityMergeArchiveRevision())
     const firstMergeId = first.recordMerge('merge-revision-source-1', 'merge-revision-target-1', {
       source: { id: 'merge-revision-source-1', canonicalName: '合并版本来源一' },
@@ -4814,6 +4832,10 @@ test('identity merge archive revision covers merge revert and deletion and self-
 
     const reopened = new PersonalMemoryStore()
     reopened.initialize(databasePath)
+    assert.equal(
+      reopened.listGraphReviewsByIds(['merge-revert-review'])[0]?.status,
+      'confirmed'
+    )
     assert.equal(reopened.getIdentityMergeArchiveRevisionHealth().installedTriggers, 3)
     assert.equal(reopened.getIdentityMergeArchiveRevisionHealth().healthy, true)
     const page = reopened.listMergeHistoryPage()
@@ -4824,6 +4846,101 @@ test('identity merge archive revision covers merge revert and deletion and self-
   } finally {
     rmSync(directory, { recursive: true, force: true })
   }
+})
+
+test('identity merge revert commits graph, decision and archive atomically', () => {
+  withStore(store => {
+    const mergedGraph = {
+      entities: [{
+        id: 'merge-atomic-target',
+        type: 'person',
+        canonicalName: '合并后身份',
+        aliases: ['原身份'],
+        accountIds: [],
+        externalIdentities: [],
+        evidenceMessageIds: [],
+        summary: '',
+        summaryStatus: 'empty',
+        confidence: 1,
+        identityVersion: 2,
+        trustStatus: 'confirmed'
+      }],
+      relations: [],
+      reviewQueue: []
+    }
+    store.syncGraph(mergedGraph as any, 'merge-atomic-before')
+    const snapshot = {
+      source: {
+        ...mergedGraph.entities[0],
+        id: 'merge-atomic-source',
+        canonicalName: '原身份',
+        aliases: [],
+        identityVersion: 1
+      },
+      target: {
+        ...mergedGraph.entities[0],
+        canonicalName: '保留身份',
+        aliases: [],
+        identityVersion: 1
+      },
+      relations: [],
+      sourceEventParticipants: [],
+      targetEventParticipants: [],
+      affectedReviews: []
+    }
+    const mergeId = store.recordMerge(
+      snapshot.source.id,
+      snapshot.target.id,
+      snapshot
+    )
+    store.recordIdentityDecision(
+      snapshot.source.id,
+      snapshot.target.id,
+      'merged',
+      1,
+      1,
+      '原子撤销测试'
+    )
+    const restoredGraph = {
+      entities: [snapshot.source, snapshot.target],
+      relations: [],
+      reviewQueue: []
+    }
+    assert.throws(() => store.syncGraph(restoredGraph as any, 'merge-atomic-invalid', {
+      identityMergeRevert: {
+        mergeId: mergeId + 999,
+        sourceId: snapshot.source.id,
+        targetId: snapshot.target.id,
+        sourceParticipants: [],
+        targetParticipants: []
+      }
+    }), /撤销档案已经变化/)
+    assert.deepEqual(
+      store.loadGraphSnapshot().entities.map(entity => entity.id),
+      ['merge-atomic-target']
+    )
+    assert.equal(store.getMergeSnapshot(mergeId)?.source?.id, snapshot.source.id)
+    assert.equal(
+      store.getIdentityDecision(snapshot.source.id, snapshot.target.id)?.decision,
+      'merged'
+    )
+
+    store.syncGraph(restoredGraph as any, 'merge-atomic-after', {
+      identityMergeRevert: {
+        mergeId,
+        sourceId: snapshot.source.id,
+        targetId: snapshot.target.id,
+        sourceParticipants: [],
+        targetParticipants: []
+      }
+    })
+    assert.deepEqual(
+      store.loadGraphSnapshot().entities.map(entity => entity.id).sort(),
+      ['merge-atomic-source', 'merge-atomic-target']
+    )
+    assert.equal(store.getMergeSnapshot(mergeId), null)
+    assert.equal(store.getIdentityDecision(snapshot.source.id, snapshot.target.id), null)
+  })
 })
 
 test('ingestion archive revision covers run and batch lifecycle and self-heals on restart', () => {

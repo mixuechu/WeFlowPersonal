@@ -648,7 +648,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
       correctedAliasText?: string
       relationCorrection?: { subjectId?: string; predicate?: string; objectId?: string }
     }) => ipcRenderer.invoke('ai-assistant:updateGraphReview', id, decision, options),
-    revertMerge: (id: number) => ipcRenderer.invoke('ai-assistant:revertMerge', id),
+    previewRevertMerge: (id: number, expectedRevision?: string) =>
+      ipcRenderer.invoke('ai-assistant:previewRevertMerge', id, expectedRevision),
+    revertMerge: (id: number, input?: any) => ipcRenderer.invoke('ai-assistant:revertMerge', id, input),
     updateMemoryItemStatus: (
       kind: 'claim' | 'event',
       id: string,

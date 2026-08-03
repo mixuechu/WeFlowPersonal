@@ -97,6 +97,12 @@ import {
 import { assertGraphReviewMutationRevision } from './graphReviewMutationPolicy'
 import { assertTaskOwnershipMutationRevision } from './taskOwnershipMutationPolicy'
 import { assertStructuredMemoryMutationRevision } from './structuredMemoryMutationPolicy'
+import {
+  assertIdentityMergeRevertConfirmation,
+  buildIdentityMergeRevertPreviewToken,
+  inspectIdentityMergeRevert,
+  restoreIdentityMergeGraph
+} from './identityMergeRevertPolicy'
 import { applyRelationConfirmation, planRelationConfirmation, type RelationCorrection } from './relationCorrectionPolicy'
 import {
   enqueueUniqueNotification,
@@ -4778,26 +4784,80 @@ export class AiAssistantService {
     return review
   }
 
-  revertMerge(id: number): any {
+  previewRevertMerge(id: number, expectedRevision?: string): any {
+    const archiveRevision = personalMemoryStore.getIdentityMergeArchiveRevision()
+    if (!String(expectedRevision || '').trim() || String(expectedRevision) !== archiveRevision) {
+      throw new Error('身份合并档案在展示后发生了变化，请刷新后重新核对')
+    }
     const snapshot = personalMemoryStore.getMergeSnapshot(id)
     if (!snapshot?.source || !snapshot?.target || !Array.isArray(snapshot.relations)) return null
-    this.state.graph.entities = this.state.graph.entities.filter(entity => entity.id !== snapshot.source.id && entity.id !== snapshot.target.id)
-    this.state.graph.entities.push(snapshot.source, snapshot.target)
-    this.state.graph.relations = snapshot.relations
-    if (Array.isArray(snapshot.affectedReviews)) {
-      const affectedIds = new Set(snapshot.affectedReviews.map((review: any) => review.id))
-      this.state.graph.reviewQueue = this.state.graph.reviewQueue
-        .filter(review => !affectedIds.has(review.id))
-        .concat(snapshot.affectedReviews)
+    const affectedReviewIds = (snapshot.affectedReviews || []).map((review: any) => String(review.id || ''))
+    const currentReviews = personalMemoryStore.listGraphReviewsByIds(affectedReviewIds)
+    const inspection = inspectIdentityMergeRevert({
+      snapshot,
+      currentGraph: { ...this.state.graph, reviewQueue: currentReviews },
+      currentSourceParticipants: personalMemoryStore.listEntityEventParticipants(snapshot.source.id),
+      currentTargetParticipants: personalMemoryStore.listEntityEventParticipants(snapshot.target.id),
+      currentIdentityDecision: personalMemoryStore.getIdentityDecision(snapshot.source.id, snapshot.target.id)
+    })
+    return {
+      mergeId: Number(id),
+      sourceName: String(snapshot.source.canonicalName || snapshot.source.id),
+      targetName: String(snapshot.target.canonicalName || snapshot.target.id),
+      archiveRevision,
+      safe: inspection.safe,
+      reason: inspection.reason,
+      counts: inspection.counts,
+      previewToken: inspection.safe ? buildIdentityMergeRevertPreviewToken({
+        mergeId: Number(id),
+        archiveRevision,
+        currentFingerprint: inspection.currentFingerprint
+      }) : ''
     }
-    personalMemoryStore.restoreMergedEventParticipants(
-      snapshot.source.id,
-      snapshot.target.id,
-      Array.isArray(snapshot.sourceEventParticipants) ? snapshot.sourceEventParticipants : [],
-      Array.isArray(snapshot.targetEventParticipants) ? snapshot.targetEventParticipants : []
-    )
-    this.checkpointGraphToSql()
-    personalMemoryStore.markMergeReverted(id)
+  }
+
+  revertMerge(
+    id: number,
+    input: { previewToken?: string; confirmation?: string } = {}
+  ): any {
+    const archiveRevision = personalMemoryStore.getIdentityMergeArchiveRevision()
+    const snapshot = personalMemoryStore.getMergeSnapshot(id)
+    if (!snapshot?.source || !snapshot?.target || !Array.isArray(snapshot.relations)) {
+      throw new Error('该身份合并不存在、已经撤销或缺少完整快照')
+    }
+    const inspection = inspectIdentityMergeRevert({
+      snapshot,
+      currentGraph: {
+        ...this.state.graph,
+        reviewQueue: personalMemoryStore.listGraphReviewsByIds(
+          (snapshot.affectedReviews || []).map((review: any) => String(review.id || ''))
+        )
+      },
+      currentSourceParticipants: personalMemoryStore.listEntityEventParticipants(snapshot.source.id),
+      currentTargetParticipants: personalMemoryStore.listEntityEventParticipants(snapshot.target.id),
+      currentIdentityDecision: personalMemoryStore.getIdentityDecision(snapshot.source.id, snapshot.target.id)
+    })
+    if (!inspection.safe) {
+      throw new Error(`合并后相关档案已经变化，不能安全自动撤销：${inspection.reason}`)
+    }
+    assertIdentityMergeRevertConfirmation({
+      mergeId: Number(id),
+      archiveRevision,
+      currentFingerprint: inspection.currentFingerprint
+    }, input)
+    const restoredGraph = restoreIdentityMergeGraph(snapshot, this.state.graph)
+    personalMemoryStore.syncGraph(restoredGraph, crypto.randomUUID(), {
+      identityMergeRevert: {
+        mergeId: Number(id),
+        sourceId: snapshot.source.id,
+        targetId: snapshot.target.id,
+        sourceParticipants: Array.isArray(snapshot.sourceEventParticipants)
+          ? snapshot.sourceEventParticipants : [],
+        targetParticipants: Array.isArray(snapshot.targetEventParticipants)
+          ? snapshot.targetEventParticipants : []
+      }
+    })
+    this.state.graph = restoredGraph
     this.saveState()
     return { success: true }
   }

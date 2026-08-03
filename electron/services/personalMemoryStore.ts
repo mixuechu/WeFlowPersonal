@@ -3728,7 +3728,19 @@ export class PersonalMemoryStore {
     }
   }
 
-  syncGraph(graph: MemoryGraph, commitId = ''): void {
+  syncGraph(
+    graph: MemoryGraph,
+    commitId = '',
+    options: {
+      identityMergeRevert?: {
+        mergeId: number
+        sourceId: string
+        targetId: string
+        sourceParticipants: Array<{ eventId: string; role: string }>
+        targetParticipants: Array<{ eventId: string; role: string }>
+      }
+    } = {}
+  ): void {
     if (!this.db) return
     const now = new Date().toISOString()
     this.db.exec('BEGIN IMMEDIATE')
@@ -3914,6 +3926,33 @@ export class PersonalMemoryStore {
           ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_at=excluded.updated_at
         `).run(commitId, now)
       }
+      const mergeRevert = options.identityMergeRevert
+      if (mergeRevert) {
+        const targetOriginal = new Set(
+          (mergeRevert.targetParticipants || []).map(item => `${item.eventId}\0${item.role}`)
+        )
+        const insertParticipant = this.db.prepare(
+          'INSERT OR IGNORE INTO event_participants(event_id,entity_id,role) VALUES(?,?,?)'
+        )
+        const removeParticipant = this.db.prepare(
+          'DELETE FROM event_participants WHERE event_id=? AND entity_id=? AND role=?'
+        )
+        for (const item of mergeRevert.sourceParticipants || []) {
+          insertParticipant.run(item.eventId, mergeRevert.sourceId, item.role)
+          if (!targetOriginal.has(`${item.eventId}\0${item.role}`)) {
+            removeParticipant.run(item.eventId, mergeRevert.targetId, item.role)
+          }
+        }
+        this.db.prepare('DELETE FROM identity_decisions WHERE pair_key=?')
+          .run(this.pairKey(mergeRevert.sourceId, mergeRevert.targetId))
+        const result = this.db.prepare(`
+          UPDATE merge_history SET reverted_at=?
+          WHERE id=? AND source_entity_id=? AND target_entity_id=? AND reverted_at IS NULL
+        `).run(now, mergeRevert.mergeId, mergeRevert.sourceId, mergeRevert.targetId)
+        if (Number(result.changes || 0) !== 1) {
+          throw new Error('身份合并撤销档案已经变化，请重新核对')
+        }
+      }
       this.db.exec('COMMIT')
     } catch (error) {
       this.db.exec('ROLLBACK')
@@ -4057,6 +4096,10 @@ export class PersonalMemoryStore {
 
   getIdentityDecision(leftId: string, rightId: string): any | null {
     return this.db?.prepare('SELECT * FROM identity_decisions WHERE pair_key=?').get(this.pairKey(leftId, rightId)) || null
+  }
+
+  deleteIdentityDecision(leftId: string, rightId: string): void {
+    this.db?.prepare('DELETE FROM identity_decisions WHERE pair_key=?').run(this.pairKey(leftId, rightId))
   }
 
   recordIdentityDecision(leftId: string, rightId: string, decision: 'merged' | 'different', leftVersion: number, rightVersion: number, reason = ''): void {
@@ -7527,6 +7570,32 @@ export class PersonalMemoryStore {
     if (!this.db) return null
     const row = this.db.prepare('SELECT snapshot_json FROM merge_history WHERE id=? AND reverted_at IS NULL').get(id) as { snapshot_json: string } | undefined
     return row ? JSON.parse(row.snapshot_json) : null
+  }
+
+  listGraphReviewsByIds(ids: string[]): any[] {
+    if (!this.db) return []
+    const normalized = [...new Set((ids || []).map(String).filter(Boolean))]
+    if (!normalized.length) return []
+    const rows: any[] = []
+    for (let offset = 0; offset < normalized.length; offset += 400) {
+      const chunk = normalized.slice(offset, offset + 400)
+      rows.push(...this.db.prepare(`
+        SELECT id,status,payload_json,resolved_at FROM review_queue
+        WHERE id IN (${chunk.map(() => '?').join(',')})
+      `).all(...chunk) as any[])
+    }
+    return rows.flatMap(row => {
+      try {
+        const payload = JSON.parse(String(row.payload_json || '{}'))
+        return payload?.id ? [{
+          ...payload,
+          status: String(row.status || payload.status || ''),
+          resolvedAt: row.resolved_at || payload.resolvedAt
+        }] : []
+      } catch {
+        return []
+      }
+    })
   }
 
   markMergeReverted(id: number): void {

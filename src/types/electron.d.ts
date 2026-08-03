@@ -1761,7 +1761,11 @@ export interface ElectronAPI {
         correctedAliasText?: string
         relationCorrection?: { subjectId?: string; predicate?: string; objectId?: string }
       }) => Promise<any>
-      revertMerge: (id: number) => Promise<any>
+      previewRevertMerge: (id: number, expectedRevision?: string) => Promise<any>
+      revertMerge: (
+        id: number,
+        input?: { previewToken?: string; confirmation?: string }
+      ) => Promise<any>
       updateMemoryItemStatus: (
         kind: 'claim' | 'event',
         id: string,
