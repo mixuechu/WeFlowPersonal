@@ -868,10 +868,20 @@ export class AiAssistantService {
       .slice(0, 32)}`
   }
 
-  private recoverPreparedIngestionBatchCommits(): void {
+  private recoverPreparedIngestionBatchCommits(): {
+    attempted: number
+    recovered: number
+    failed: number
+    remaining: number
+  } {
+    let attempted = 0
+    let recovered = 0
+    let failed = 0
     for (const commit of personalMemoryStore.listPreparedIngestionBatchCommits()) {
+      attempted += 1
       const stateBeforeRecovery = structuredClone(this.state)
       try {
+        if (commit.parseError) throw new Error(commit.parseError)
         const tempIds = this.mergeGraphDigest(commit.digest, commit.messages, commit.createdAt, commit.commitId)
         this.persistClaimsAndEvents(commit.digest, tempIds, commit.messages, commit.createdAt)
         if (commit.sourceKind === 'document') {
@@ -897,13 +907,21 @@ export class AiAssistantService {
             relationCount: this.state.graph.relations.length
           })
         }
+        recovered += 1
       } catch (error) {
         this.state = stateBeforeRecovery
+        failed += 1
         personalMemoryStore.recordIngestionBatchCommitRecoveryFailure(
           commit.commitId,
           sanitizeDiagnosticText(error)
         )
       }
+    }
+    return {
+      attempted,
+      recovered,
+      failed,
+      remaining: personalMemoryStore.getIngestionCommitHealth().prepared
     }
   }
 
@@ -3749,6 +3767,21 @@ export class AiAssistantService {
         batchLimit: Number(options?.batchLimit || 40)
       }
     )
+  }
+
+  getIngestionRecoveryPage(options: any = {}): any {
+    return personalMemoryStore.listIngestionRecoveryPage({
+      query: String(options?.query || ''),
+      offset: Number(options?.offset || 0),
+      limit: Number(options?.limit || 30)
+    })
+  }
+
+  retryPreparedIngestion(): any {
+    if (this.activeSync) throw new Error('当前正在增量处理，请在本轮结束后重试恢复队列')
+    const result = this.recoverPreparedIngestionBatchCommits()
+    this.saveState()
+    return result
   }
 
   createMemoryBackup(protectedPaths: string[] = []): any {

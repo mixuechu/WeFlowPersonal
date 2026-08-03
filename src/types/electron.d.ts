@@ -1816,6 +1816,13 @@ export interface ElectronAPI {
         counts: { running: number; completed: number; partial: number; failed: number; all: number }
       }>
       getIngestionRunDossier: (runId: string, options?: any) => Promise<any>
+      getIngestionRecoveryPage: (options?: any) => Promise<any>
+      retryPreparedIngestion: () => Promise<{
+        attempted: number
+        recovered: number
+        failed: number
+        remaining: number
+      }>
       createMemoryBackup: () => Promise<any>
       inspectMemoryBackup: (path: string) => Promise<any>
       restoreMemoryBackup: (path: string) => Promise<any>

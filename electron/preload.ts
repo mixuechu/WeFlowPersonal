@@ -674,6 +674,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
       ipcRenderer.invoke('ai-assistant:getIngestionRunPage', options),
     getIngestionRunDossier: (runId: string, options?: any) =>
       ipcRenderer.invoke('ai-assistant:getIngestionRunDossier', runId, options),
+    getIngestionRecoveryPage: (options?: any) =>
+      ipcRenderer.invoke('ai-assistant:getIngestionRecoveryPage', options),
+    retryPreparedIngestion: () => ipcRenderer.invoke('ai-assistant:retryPreparedIngestion'),
     createMemoryBackup: () => ipcRenderer.invoke('ai-assistant:createMemoryBackup'),
     inspectMemoryBackup: (path: string) => ipcRenderer.invoke('ai-assistant:inspectMemoryBackup', path),
     restoreMemoryBackup: (path: string) => ipcRenderer.invoke('ai-assistant:restoreMemoryBackup', path),

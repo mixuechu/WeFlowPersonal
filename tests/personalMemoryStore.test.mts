@@ -5865,6 +5865,58 @@ test('prepared ingestion commits survive retries and become an auditable committ
   assert.equal(status.messageLedger.total, 1)
 }))
 
+test('prepared recovery directory isolates malformed payloads and paginates without exposing them', () =>
+  withStore(store => {
+    const database = (store as any).db
+    for (let index = 0; index < 65; index += 1) {
+      store.prepareIngestionBatchCommit({
+        commitId: `recovery-commit-${String(index).padStart(3, '0')}`,
+        runId: `recovery-run-${Math.floor(index / 5)}`,
+        batchIndex: index,
+        digest: { tasks: [{ title: `敏感任务 ${index}` }] },
+        messages: [{ id: `message-${index}`, content: `敏感原文 ${index}` }],
+        checkpointKeys: [`wechat:session:message-${index}`],
+        createdAt: `2026-08-01T00:${String(index % 60).padStart(2, '0')}:00.000Z`
+      })
+    }
+    database.prepare(`
+      UPDATE ingestion_batch_commits
+      SET digest_json='{broken',messages_json='{}',checkpoint_keys_json='null',
+        completion_json='[]',recovery_attempts=2,last_error='上次恢复失败'
+      WHERE commit_id='recovery-commit-064'
+    `).run()
+
+    const prepared = store.listPreparedIngestionBatchCommits(100)
+    assert.equal(prepared.length, 65)
+    const malformed = prepared.find((item: any) => item.commitId === 'recovery-commit-064')
+    assert.match(malformed.parseError, /结构化结果/)
+    assert.match(malformed.parseError, /消息载荷/)
+    assert.match(malformed.parseError, /checkpoint/)
+    assert.match(malformed.parseError, /完成信息/)
+    assert.deepEqual(malformed.messages, [])
+    assert.deepEqual(malformed.checkpointKeys, [])
+
+    const firstPage = store.listIngestionRecoveryPage({ limit: 30 })
+    const middlePage = store.listIngestionRecoveryPage({ offset: 30, limit: 30 })
+    const lastPage = store.listIngestionRecoveryPage({ offset: 60, limit: 30 })
+    assert.equal(firstPage.total, 65)
+    assert.equal(firstPage.items.length, 30)
+    assert.equal(middlePage.items.length, 30)
+    assert.equal(lastPage.items.length, 5)
+    assert.equal(lastPage.hasMore, false)
+    assert.equal(new Set([
+      ...firstPage.items,
+      ...middlePage.items,
+      ...lastPage.items
+    ].map((item: any) => item.commit_id)).size, 65)
+    assert.equal(JSON.stringify(firstPage).includes('敏感任务'), false)
+    assert.equal(JSON.stringify(firstPage).includes('敏感原文'), false)
+    const filtered = store.listIngestionRecoveryPage({ query: '上次恢复失败' })
+    assert.equal(filtered.total, 1)
+    assert.equal(filtered.items[0].commit_id, 'recovery-commit-064')
+    assert.equal(prepared.at(-1).commitId, 'recovery-commit-064')
+  }))
+
 test('durable processed-message ledger exceeds the JSON hot-cache limit and queries in bounded chunks', () => withStore(store => {
   const keys = Array.from({ length: 20_050 }, (_, index) =>
     `wechat:session-${Math.floor(index / 100)}:message-${index}`)

@@ -397,6 +397,9 @@ function AiAssistantPage() {
   const [ingestionArchiveLoadingMore, setIngestionArchiveLoadingMore] = useState(false)
   const [ingestionDossier, setIngestionDossier] = useState<any>(null)
   const [ingestionBatchesLoadingMore, setIngestionBatchesLoadingMore] = useState(false)
+  const [ingestionRecoveryQueue, setIngestionRecoveryQueue] = useState<any>(null)
+  const [ingestionRecoveryLoadingMore, setIngestionRecoveryLoadingMore] = useState(false)
+  const [ingestionRecoveryRetrying, setIngestionRecoveryRetrying] = useState(false)
   const ingestionArchiveGate = useRef(new LatestRequestGate())
   const ingestionDossierGate = useRef(new LatestRequestGate())
   const [backingUpMemory, setBackingUpMemory] = useState(false)
@@ -1411,6 +1414,61 @@ function AiAssistantPage() {
       if (ingestionDossierGate.current.isCurrent(request)) setMessage(error?.message || String(error))
     } finally {
       if (ingestionDossierGate.current.isCurrent(request)) setIngestionBatchesLoadingMore(false)
+    }
+  }
+
+  const toggleIngestionRecoveryQueue = async () => {
+    if (ingestionRecoveryQueue) {
+      setIngestionRecoveryQueue(null)
+      return
+    }
+    setIngestionRecoveryQueue({ items: [], total: 0, hasMore: false, loading: true })
+    try {
+      const page = await window.electronAPI.aiAssistant
+        .getIngestionRecoveryPage({ limit: 30 })
+      setIngestionRecoveryQueue({ ...page, loading: false })
+    } catch (error: any) {
+      setIngestionRecoveryQueue({
+        items: [], total: 0, hasMore: false, loading: false,
+        error: error?.message || String(error)
+      })
+    }
+  }
+
+  const loadMoreIngestionRecoveryQueue = async () => {
+    if (!ingestionRecoveryQueue?.hasMore || ingestionRecoveryLoadingMore) return
+    setIngestionRecoveryLoadingMore(true)
+    try {
+      const page = await window.electronAPI.aiAssistant.getIngestionRecoveryPage({
+        offset: ingestionRecoveryQueue.items?.length || 0,
+        limit: 30
+      })
+      setIngestionRecoveryQueue((current: any) => ({
+        ...page,
+        items: [...(current?.items || []), ...(page.items || [])]
+      }))
+    } catch (error: any) {
+      setMessage(error?.message || String(error))
+    } finally {
+      setIngestionRecoveryLoadingMore(false)
+    }
+  }
+
+  const retryPreparedIngestion = async () => {
+    if (ingestionRecoveryRetrying) return
+    setIngestionRecoveryRetrying(true)
+    try {
+      const result = await window.electronAPI.aiAssistant.retryPreparedIngestion()
+      setMessage(`恢复重试完成：尝试 ${result.attempted} 批，成功 ${result.recovered} 批，` +
+        `失败 ${result.failed} 批，仍待处理 ${result.remaining} 批。`)
+      const page = await window.electronAPI.aiAssistant.getIngestionRecoveryPage({ limit: 30 })
+      setIngestionRecoveryQueue({ ...page, loading: false })
+      setMemoryDiagnostics(await window.electronAPI.aiAssistant.getMemoryDiagnostics())
+      await load()
+    } catch (error: any) {
+      setMessage(error?.message || String(error))
+    } finally {
+      setIngestionRecoveryRetrying(false)
     }
   }
 
@@ -2797,12 +2855,43 @@ function AiAssistantPage() {
               {' · '}分页续传 {Number(status.cursor.privateStateCounts?.continuationOffsets || 0).toLocaleString()} 个；
               界面只接收计数和运行状态。
             </small>}
-            {Number(ingestionStatus.commitHealth?.prepared || 0) > 0 && <small>
-              检测到 {Number(ingestionStatus.commitHealth.prepared)} 个已保存但尚未完成应用的批次，
-              其中微信 {Number(ingestionStatus.commitHealth.preparedWechat || 0)} 个、
-              文档 {Number(ingestionStatus.commitHealth.preparedDocuments || 0)} 个；
-              下次启动会从加密恢复日志自动续写，不会重新请求模型。
-            </small>}
+            {Number(ingestionStatus.commitHealth?.prepared || 0) > 0 && <>
+              <small>
+                检测到 {Number(ingestionStatus.commitHealth.prepared)} 个已保存但尚未完成应用的批次，
+                其中微信 {Number(ingestionStatus.commitHealth.preparedWechat || 0)} 个、
+                文档 {Number(ingestionStatus.commitHealth.preparedDocuments || 0)} 个；
+                可立即重试或在下次启动从加密恢复日志续写，不会重新请求模型。
+              </small>
+              <div className="assistant-ingestion-recovery-actions">
+                <button onClick={() => void toggleIngestionRecoveryQueue()}>
+                  {ingestionRecoveryQueue ? '收起恢复队列' : '查看恢复队列'}
+                </button>
+                <button className="primary" disabled={ingestionRecoveryRetrying || syncing || status?.syncing}
+                  onClick={() => void retryPreparedIngestion()}>
+                  {ingestionRecoveryRetrying ? '正在恢复…' : '立即重试恢复'}
+                </button>
+              </div>
+              {ingestionRecoveryQueue && <div className="assistant-ingestion-recovery-queue">
+                {ingestionRecoveryQueue.loading && <em>正在读取脱敏恢复目录…</em>}
+                {ingestionRecoveryQueue.error &&
+                  <p className="assistant-diagnostics-error">{ingestionRecoveryQueue.error}</p>}
+                {(ingestionRecoveryQueue.items || []).map((commit: any) => <article
+                  key={commit.commit_id}>
+                  <b>{commit.source_kind === 'document' ? '文档' : '微信'}批次 #{commit.batch_index}</b>
+                  <span>{new Date(commit.prepared_at).toLocaleString('zh-CN')} ·
+                    已尝试恢复 {Number(commit.recovery_attempts || 0)} 次</span>
+                  <small>运行 {commit.run_id} · 恢复 ID {commit.commit_id}</small>
+                  {commit.last_error && <p>{commit.last_error}</p>}
+                </article>)}
+                {!ingestionRecoveryQueue.loading && !ingestionRecoveryQueue.items?.length &&
+                  <em>恢复队列已经清空。</em>}
+                {ingestionRecoveryQueue.hasMore && <button
+                  disabled={ingestionRecoveryLoadingMore}
+                  onClick={() => void loadMoreIngestionRecoveryQueue()}>
+                  {ingestionRecoveryLoadingMore ? '正在加载…' : '加载更多恢复批次'}
+                </button>}
+              </div>}
+            </>}
             {Number(ingestionStatus.commitHealth?.recoveryFailures || 0) > 0 && <small>
               其中 {Number(ingestionStatus.commitHealth.recoveryFailures)} 个批次曾恢复失败，原始恢复载荷仍保留。
             </small>}

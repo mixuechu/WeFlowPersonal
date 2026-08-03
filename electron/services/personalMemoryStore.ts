@@ -5526,26 +5526,93 @@ export class PersonalMemoryStore {
     resourceId: string
     resourceContentHash: string
     completion: Record<string, any>
+    parseError: string
   }> {
     if (!this.db) return []
     const safeLimit = Math.max(1, Math.min(500, Number(limit) || 100))
     return (this.db.prepare(`
       SELECT * FROM ingestion_batch_commits
-      WHERE status='prepared' ORDER BY prepared_at,commit_id LIMIT ?
-    `).all(safeLimit) as any[]).map(row => ({
-      commitId: String(row.commit_id),
-      runId: String(row.run_id),
-      batchIndex: Number(row.batch_index),
-      digest: JSON.parse(String(row.digest_json || '{}')),
-      messages: JSON.parse(String(row.messages_json || '[]')),
-      checkpointKeys: JSON.parse(String(row.checkpoint_keys_json || '[]')),
-      createdAt: String(row.created_at),
-      recoveryAttempts: Number(row.recovery_attempts || 0),
-      sourceKind: row.source_kind === 'document' ? 'document' : 'wechat',
-      resourceId: String(row.resource_id || ''),
-      resourceContentHash: String(row.resource_content_hash || ''),
-      completion: JSON.parse(String(row.completion_json || '{}'))
-    }))
+      WHERE status='prepared'
+      ORDER BY recovery_attempts,prepared_at,commit_id LIMIT ?
+    `).all(safeLimit) as any[]).map(row => {
+      let digest: any = {}
+      let messages: any[] = []
+      let checkpointKeys: string[] = []
+      let completion: Record<string, any> = {}
+      const parseFailures: string[] = []
+      try {
+        const parsed = JSON.parse(String(row.digest_json || '{}'))
+        if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('not-object')
+        digest = parsed
+      } catch { parseFailures.push('结构化结果') }
+      try {
+        const parsed = JSON.parse(String(row.messages_json || '[]'))
+        if (!Array.isArray(parsed)) throw new Error('not-array')
+        messages = parsed
+      } catch { parseFailures.push('消息载荷') }
+      try {
+        const parsed = JSON.parse(String(row.checkpoint_keys_json || '[]'))
+        if (!Array.isArray(parsed)) throw new Error('not-array')
+        checkpointKeys = parsed.map(String)
+      } catch { parseFailures.push('checkpoint') }
+      try {
+        const parsed = JSON.parse(String(row.completion_json || '{}'))
+        if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('not-object')
+        completion = parsed
+      } catch { parseFailures.push('完成信息') }
+      return {
+        commitId: String(row.commit_id),
+        runId: String(row.run_id),
+        batchIndex: Number(row.batch_index),
+        digest,
+        messages,
+        checkpointKeys,
+        createdAt: String(row.created_at),
+        recoveryAttempts: Number(row.recovery_attempts || 0),
+        sourceKind: row.source_kind === 'document' ? 'document' as const : 'wechat' as const,
+        resourceId: String(row.resource_id || ''),
+        resourceContentHash: String(row.resource_content_hash || ''),
+        completion,
+        parseError: parseFailures.length
+          ? `恢复载荷无法解析：${parseFailures.join('、')}`
+          : ''
+      }
+    })
+  }
+
+  listIngestionRecoveryPage(options: {
+    query?: string
+    offset?: number
+    limit?: number
+  } = {}): { items: any[]; total: number; hasMore: boolean; offset: number; limit: number } {
+    const limit = Math.max(1, Math.min(100, Math.floor(Number(options.limit) || 30)))
+    const offset = Math.max(0, Math.min(1_000_000, Math.floor(Number(options.offset) || 0)))
+    const empty = { items: [], total: 0, hasMore: false, offset, limit }
+    if (!this.db) return empty
+    const query = String(options.query || '').trim().toLocaleLowerCase('zh-CN')
+    const where = query
+      ? `WHERE status='prepared' AND (
+          instr(lower(commit_id),?)>0 OR instr(lower(run_id),?)>0
+          OR instr(lower(COALESCE(last_error,'')),?)>0
+        )`
+      : `WHERE status='prepared'`
+    const parameters = query ? [query, query, query] : []
+    const total = Number((this.db.prepare(`
+      SELECT COUNT(*) AS count FROM ingestion_batch_commits ${where}
+    `).get(...parameters) as any)?.count || 0)
+    const items = this.db.prepare(`
+      SELECT commit_id,run_id,batch_index,source_kind,prepared_at,
+        recovery_attempts,last_error
+      FROM ingestion_batch_commits ${where}
+      ORDER BY recovery_attempts,prepared_at,commit_id LIMIT ? OFFSET ?
+    `).all(...parameters, limit, offset) as any[]
+    return {
+      items,
+      total,
+      hasMore: offset + items.length < total,
+      offset,
+      limit
+    }
   }
 
   markIngestionBatchCommitApplied(commitId: string): void {
