@@ -2035,20 +2035,53 @@ function AiAssistantPage() {
   }
 
   const decideTaskReview = async (id: string, decision: 'mine' | 'rejected') => {
-    await window.electronAPI.aiAssistant.updateTaskReview(id, decision)
-    await load()
+    try {
+      await window.electronAPI.aiAssistant.updateTaskReview(
+        id,
+        decision,
+        String(taskOwnershipReviews.revision || '')
+      )
+      await load()
+      setTaskOwnershipRefreshKey(value => value + 1)
+      setTaskFeedbackRefreshKey(value => value + 1)
+    } catch (error: any) {
+      const errorMessage = error?.message || String(error)
+      setMessage(errorMessage)
+      if (errorMessage.includes('待办归属记录在展示后发生了变化')) {
+        taskOwnershipGate.current.invalidate()
+        setTaskOwnershipRefreshKey(value => value + 1)
+        setTaskFeedbackRefreshKey(value => value + 1)
+      }
+    }
   }
 
   const revertTaskReview = async (evidenceFingerprint: string) => {
     try {
-      await window.electronAPI.aiAssistant.revertTaskReview(evidenceFingerprint)
+      const expectedRevision = taskFeedbackDossier?.evidence_fingerprint === evidenceFingerprint
+        ? taskFeedbackDossier.revision
+        : taskFeedbackArchive.revision
+      await window.electronAPI.aiAssistant.revertTaskReview(
+        evidenceFingerprint,
+        String(expectedRevision || '')
+      )
       if (taskFeedbackDossier?.evidence_fingerprint === evidenceFingerprint) {
         taskFeedbackDossierGate.current.invalidate()
         setTaskFeedbackDossier(null)
       }
       await load()
+      setTaskOwnershipRefreshKey(value => value + 1)
+      setTaskFeedbackRefreshKey(value => value + 1)
     } catch (error: any) {
-      setMessage(error?.message || String(error))
+      const errorMessage = error?.message || String(error)
+      setMessage(errorMessage)
+      if (errorMessage.includes('待办归属记录在展示后发生了变化')) {
+        taskOwnershipGate.current.invalidate()
+        taskFeedbackArchiveGate.current.invalidate()
+        taskFeedbackDossierGate.current.invalidate()
+        setTaskFeedbackDossier(null)
+        setTaskOwnershipRefreshKey(value => value + 1)
+        setTaskFeedbackRefreshKey(value => value + 1)
+      }
     }
   }
 

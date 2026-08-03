@@ -4559,8 +4559,12 @@ function registerIpcHandlers() {
   ipcMain.handle('ai-assistant:setSettings', (_, input: any) => aiAssistantService.setSettings(input))
   ipcMain.handle('ai-assistant:updateTask', (_, id: string, patch: any) => aiAssistantService.updateTask(id, patch))
   ipcMain.handle('ai-assistant:createTaskFromMemory', (_, input: any) => aiAssistantService.createTaskFromMemory(input))
-  ipcMain.handle('ai-assistant:updateTaskReview', (_, id: string, decision: 'mine' | 'rejected') => aiAssistantService.updateTaskReview(id, decision))
-  ipcMain.handle('ai-assistant:revertTaskReview', (_, evidenceFingerprint: string) => aiAssistantService.revertTaskReview(evidenceFingerprint))
+  ipcMain.handle('ai-assistant:updateTaskReview', (
+    _, id: string, decision: 'mine' | 'rejected', expectedRevision?: string
+  ) => aiAssistantService.updateTaskReview(id, decision, expectedRevision))
+  ipcMain.handle('ai-assistant:revertTaskReview', (
+    _, evidenceFingerprint: string, expectedRevision?: string
+  ) => aiAssistantService.revertTaskReview(evidenceFingerprint, expectedRevision))
   ipcMain.handle('ai-assistant:updateReminderPreference', (_, input: any) => aiAssistantService.updateReminderPreference(input))
   ipcMain.handle('ai-assistant:updateGraphReview', (
     _,

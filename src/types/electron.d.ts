@@ -1746,8 +1746,12 @@ export interface ElectronAPI {
     setSettings: (input: any) => Promise<any>
       updateTask: (id: string, patch: any) => Promise<any>
       createTaskFromMemory: (input: any) => Promise<any>
-      updateTaskReview: (id: string, decision: 'mine' | 'rejected') => Promise<any>
-      revertTaskReview: (evidenceFingerprint: string) => Promise<any>
+      updateTaskReview: (
+        id: string,
+        decision: 'mine' | 'rejected',
+        expectedRevision?: string
+      ) => Promise<any>
+      revertTaskReview: (evidenceFingerprint: string, expectedRevision?: string) => Promise<any>
       updateReminderPreference: (input: any) => Promise<any>
       updateGraphReview: (id: string, decision: 'confirmed' | 'rejected', options?: {
         expectedRevision?: string

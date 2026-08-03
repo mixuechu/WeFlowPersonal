@@ -95,6 +95,7 @@ import {
   buildAssistantConversationDeletionPreviewToken
 } from './assistantConversationDeletionPolicy'
 import { assertGraphReviewMutationRevision } from './graphReviewMutationPolicy'
+import { assertTaskOwnershipMutationRevision } from './taskOwnershipMutationPolicy'
 import { applyRelationConfirmation, planRelationConfirmation, type RelationCorrection } from './relationCorrectionPolicy'
 import {
   enqueueUniqueNotification,
@@ -4365,7 +4366,15 @@ export class AiAssistantService {
     return task
   }
 
-  updateTaskReview(id: string, decision: 'mine' | 'rejected'): AssistantTask | null {
+  updateTaskReview(
+    id: string,
+    decision: 'mine' | 'rejected',
+    expectedRevision?: string
+  ): AssistantTask | null {
+    assertTaskOwnershipMutationRevision(
+      expectedRevision,
+      personalMemoryStore.getTaskOwnershipReviewRevision()
+    )
     const index = this.state.tasks.findIndex(item => item.id === id && item.classification !== 'mine')
     if (index < 0) return null
     const task = this.state.tasks[index]
@@ -4401,7 +4410,11 @@ export class AiAssistantService {
     return task
   }
 
-  revertTaskReview(evidenceFingerprint: string): AssistantTask | null {
+  revertTaskReview(evidenceFingerprint: string, expectedRevision?: string): AssistantTask | null {
+    assertTaskOwnershipMutationRevision(
+      expectedRevision,
+      personalMemoryStore.getTaskOwnershipReviewRevision()
+    )
     const fingerprint = String(evidenceFingerprint || '').trim()
     const decision = personalMemoryStore.getTaskReviewDecision(fingerprint)
     if (!decision) return null

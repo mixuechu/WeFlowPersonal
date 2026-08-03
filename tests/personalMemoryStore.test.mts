@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os'
 import { createHash, randomBytes } from 'node:crypto'
 import { PersonalMemoryStore } from '../electron/services/personalMemoryStore.ts'
 import { assertGraphReviewMutationRevision } from '../electron/services/graphReviewMutationPolicy.ts'
+import { assertTaskOwnershipMutationRevision } from '../electron/services/taskOwnershipMutationPolicy.ts'
 import { buildMemorySearchFeedbackContext } from '../electron/services/memorySearchFeedback.ts'
 import {
   filterMemorySearchResults,
@@ -4698,6 +4699,30 @@ test('task ownership review revision covers queue decisions and action history a
     }])
     const afterQueue = Number(first.getTaskOwnershipReviewRevision())
     assert.ok(afterQueue > initial)
+    const visibleRevision = first.listTaskOwnershipReviews().revision
+    assert.doesNotThrow(() => assertTaskOwnershipMutationRevision(
+      visibleRevision,
+      first.getTaskOwnershipReviewRevision()
+    ))
+    first.syncTasks([{
+      id: 'task-ownership-review-revision',
+      title: '验证任务归属审阅版本',
+      detail: '后台补充了新的归属证据',
+      priority: 'high',
+      confidence: 0.8,
+      classification: 'uncertain',
+      status: 'todo',
+      createdAt: '2026-08-03T00:00:00.000Z',
+      updatedAt: '2026-08-03T01:30:00.000Z',
+      evidence: [
+        ...evidence('task-ownership-review-revision-message', '这件事可能需要你处理'),
+        ...evidence('task-ownership-review-revision-message-2', '补充的任务归属上下文')
+      ]
+    }])
+    assert.throws(() => assertTaskOwnershipMutationRevision(
+      visibleRevision,
+      first.getTaskOwnershipReviewRevision()
+    ), /刷新后重新确认/)
     first.recordTaskReviewDecision({
       evidenceFingerprint: 'task-ownership-review-revision-fingerprint',
       taskId: 'task-ownership-review-revision',
