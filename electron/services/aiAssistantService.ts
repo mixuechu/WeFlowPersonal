@@ -3645,6 +3645,7 @@ export class AiAssistantService {
 
   getActiveTaskWorkset(options: any = {}): any {
     const page = personalMemoryStore.listActiveTaskWorkset({
+      taskId: String(options?.taskId || ''),
       status: ['todo', 'doing', 'waiting'].includes(options?.status) ? options.status : 'all',
       priority: ['high', 'medium', 'low'].includes(options?.priority) ? options.priority : '',
       taskKind: ['action', 'delegated', 'waiting'].includes(options?.taskKind) ? options.taskKind : '',

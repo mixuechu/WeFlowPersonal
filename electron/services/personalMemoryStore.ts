@@ -5276,6 +5276,7 @@ export class PersonalMemoryStore {
   }
 
   listActiveTaskWorkset(options: {
+    taskId?: string
     status?: 'todo' | 'doing' | 'waiting' | 'all'
     priority?: string
     taskKind?: string
@@ -5301,6 +5302,11 @@ export class PersonalMemoryStore {
     }
     const conditions = [`classification='mine'`, `status IN ('todo','doing','waiting')`]
     const parameters: Array<string | number> = []
+    const taskId = String(options.taskId || '').trim()
+    if (taskId) {
+      conditions.push('id=?')
+      parameters.push(taskId)
+    }
     const status = String(options.status || '').trim()
     if (['todo', 'doing', 'waiting'].includes(status)) {
       conditions.push('status=?')

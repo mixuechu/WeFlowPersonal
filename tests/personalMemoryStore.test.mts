@@ -3764,6 +3764,15 @@ test('active task workset stays filtered, pageable, and revision safe at scale',
   assert.equal(store.listActiveTaskWorkset({ priority: 'high' }).total, 250)
   assert.equal(store.listActiveTaskWorkset({ taskKind: 'delegated' }).total, 250)
   assert.equal(store.listActiveTaskWorkset({ query: '主动工作集特殊关键词' }).items[0]?.id, 'active-task-0997')
+  const focused = store.listActiveTaskWorkset({
+    taskId: 'active-task-0997',
+    status: 'todo',
+    priority: 'high',
+    query: '完全不匹配的关键词'
+  })
+  assert.equal(focused.total, 0)
+  assert.equal(store.listActiveTaskWorkset({ taskId: 'active-task-0997' }).items[0]?.id, 'active-task-0997')
+  assert.equal(store.listActiveTaskWorkset({ taskId: 'missing-active-task' }).total, 0)
 
   store.syncTasks(tasks.map(task => task.id === 'active-task-0997'
     ? {
@@ -3791,6 +3800,7 @@ test('active task workset stays filtered, pageable, and revision safe at scale',
     ? { ...task, status: 'done', updatedAt: '2026-08-04T00:00:00.000Z' }
     : task))
   assert.equal(store.listActiveTaskWorkset({ query: '主动工作集特殊关键词' }).total, 0)
+  assert.equal(store.listActiveTaskWorkset({ taskId: 'active-task-0997' }).total, 0)
 }))
 
 test('task archive survives a SQLCipher process-style reopen', () => {

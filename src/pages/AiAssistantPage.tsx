@@ -476,6 +476,7 @@ function AiAssistantPage() {
   const [taskPriorityFilter, setTaskPriorityFilter] = useState<'all' | Task['priority']>('all')
   const [taskKindFilter, setTaskKindFilter] = useState<'all' | NonNullable<Task['taskKind']>>('all')
   const [taskQuery, setTaskQuery] = useState('')
+  const [focusedTaskId, setFocusedTaskId] = useState('')
   const [taskView, setTaskView] = useState<'list' | 'calendar'>('list')
   const [taskWorkset, setTaskWorkset] = useState<{
     items: Task[]
@@ -780,13 +781,14 @@ function AiAssistantPage() {
     offset: 0
   }), [taskArchiveStatus, taskArchivePriority, taskArchiveProject, taskArchiveQuery, taskArchiveFrom, taskArchiveTo])
   const taskWorksetOptions = useMemo(() => ({
-    status: taskStatusFilter === 'all' ? undefined : taskStatusFilter,
-    priority: taskPriorityFilter === 'all' ? undefined : taskPriorityFilter,
-    taskKind: taskKindFilter === 'all' ? undefined : taskKindFilter,
-    query: taskQuery.trim() || undefined,
+    taskId: focusedTaskId || undefined,
+    status: focusedTaskId || taskStatusFilter === 'all' ? undefined : taskStatusFilter,
+    priority: focusedTaskId || taskPriorityFilter === 'all' ? undefined : taskPriorityFilter,
+    taskKind: focusedTaskId || taskKindFilter === 'all' ? undefined : taskKindFilter,
+    query: focusedTaskId ? undefined : taskQuery.trim() || undefined,
     limit: 100,
     offset: 0
-  }), [taskStatusFilter, taskPriorityFilter, taskKindFilter, taskQuery])
+  }), [focusedTaskId, taskStatusFilter, taskPriorityFilter, taskKindFilter, taskQuery])
   const projectDirectoryOptions = useMemo(() => ({
     query: projectQuery.trim() || undefined,
     phase: projectPhase || undefined,
@@ -1112,6 +1114,16 @@ function AiAssistantPage() {
       if (taskWorksetGate.current.isCurrent(request)) taskWorksetGate.current.invalidate()
     }
   }, [taskWorksetOptions, dashboard?.taskRevision, taskWorksetRefreshKey])
+
+  useEffect(() => {
+    if (!focusedTaskId || taskWorkset.loading ||
+        !taskWorkset.items.some(task => task.id === focusedTaskId)) return
+    const timer = window.setTimeout(() => {
+      document.getElementById(`assistant-task-${focusedTaskId}`)
+        ?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+    }, 80)
+    return () => window.clearTimeout(timer)
+  }, [focusedTaskId, taskWorkset.loading, taskWorkset.revision, taskWorkset.items])
 
   useEffect(() => {
     const request = taskArchiveGate.current.begin()
@@ -4519,22 +4531,26 @@ function AiAssistantPage() {
               冲突 {Number(dashboard.taskMutationCommits.startupRecovery.conflicts)}。
             </small>}
             <div className="assistant-task-filters">
-              <select value={taskStatusFilter} onChange={event => setTaskStatusFilter(event.target.value as any)}>
+              <select disabled={!!focusedTaskId} value={taskStatusFilter} onChange={event => setTaskStatusFilter(event.target.value as any)}>
                 <option value="all">全部进行中状态</option><option value="todo">待处理</option><option value="doing">进行中</option><option value="waiting">等待中</option>
               </select>
-              <select value={taskPriorityFilter} onChange={event => setTaskPriorityFilter(event.target.value as any)}>
+              <select disabled={!!focusedTaskId} value={taskPriorityFilter} onChange={event => setTaskPriorityFilter(event.target.value as any)}>
                 <option value="all">全部优先级</option><option value="high">高优先级</option><option value="medium">中优先级</option><option value="low">低优先级</option>
               </select>
-              <select value={taskKindFilter} onChange={event => setTaskKindFilter(event.target.value as any)}>
+              <select disabled={!!focusedTaskId} value={taskKindFilter} onChange={event => setTaskKindFilter(event.target.value as any)}>
                 <option value="all">全部类型</option><option value="action">自己执行</option><option value="delegated">已委派</option><option value="waiting">等待他人</option>
               </select>
-              <input value={taskQuery} onChange={event => setTaskQuery(event.target.value)} placeholder="搜索进行中待办" />
+              <input disabled={!!focusedTaskId} value={taskQuery} onChange={event => setTaskQuery(event.target.value)} placeholder="搜索进行中待办" />
               <div className="assistant-task-view-toggle">
                 <button className={taskView === 'list' ? 'active' : ''} onClick={() => setTaskView('list')}>列表</button>
                 <button className={taskView === 'calendar' ? 'active' : ''} onClick={() => setTaskView('calendar')}><CalendarDays size={11} /> 月历</button>
               </div>
               <button disabled={!displayedTasks.length} onClick={() => void completeVisibleTasks()}>完成已加载筛选</button>
+              {focusedTaskId && <button onClick={() => setFocusedTaskId('')}>返回原筛选</button>}
             </div>
+            {focusedTaskId && <small className="assistant-evidence">
+              正在精确定位提醒对应的任务；此时暂不应用原来的状态、优先级、类型和关键词筛选。
+            </small>}
             {dashboard?.taskPayloadPolicy?.activeDirectory === 'paginated_on_demand' && <small className="assistant-evidence">
               进行中待办按当前筛选从 SQLCipher 分页读取（已加载 {tasks.length} / {taskWorkset.total}）；
               已完成和已取消任务进入下方档案。原文证据和修改历史仅在展开单条任务时读取。
@@ -4542,7 +4558,10 @@ function AiAssistantPage() {
             {(!!taskReminders.length || reminderPreferences?.mutedKinds?.length) && <div className="assistant-task-reminders">
               {taskReminders.slice(0, 8).map(reminder => <article key={reminder.id} className={reminder.severity}>
                 <button className="assistant-reminder-main"
-                  onClick={() => document.getElementById(`assistant-task-${reminder.taskId}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' })}>
+                  onClick={() => {
+                    setTaskView('list')
+                    setFocusedTaskId(reminder.taskId)
+                  }}>
                   <strong>{reminder.kind === 'overdue' ? '已逾期' : reminder.kind === 'due_soon' ? '即将到期' : reminder.kind === 'blocked' ? '存在依赖' : '等待过久'} · {reminder.title}</strong>
                   <span>{reminder.reason}</span>
                 </button>
