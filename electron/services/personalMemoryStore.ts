@@ -5275,6 +5275,111 @@ export class PersonalMemoryStore {
     }
   }
 
+  listActiveTaskWorkset(options: {
+    status?: 'todo' | 'doing' | 'waiting' | 'all'
+    priority?: string
+    taskKind?: string
+    query?: string
+    limit?: number
+    offset?: number
+    revision?: string
+  } = {}): {
+    items: any[]
+    total: number
+    hasMore: boolean
+    counts: Record<string, number>
+    revision: string
+    stale: boolean
+  } {
+    if (!this.db) {
+      return { items: [], total: 0, hasMore: false, counts: {}, revision: '0', stale: false }
+    }
+    const revision = this.getTaskArchiveRevision()
+    const offset = Math.max(0, Math.min(1_000_000, Math.floor(Number(options.offset) || 0)))
+    if (offset > 0 && String(options.revision || '') !== revision) {
+      return { items: [], total: 0, hasMore: false, counts: {}, revision, stale: true }
+    }
+    const conditions = [`classification='mine'`, `status IN ('todo','doing','waiting')`]
+    const parameters: Array<string | number> = []
+    const status = String(options.status || '').trim()
+    if (['todo', 'doing', 'waiting'].includes(status)) {
+      conditions.push('status=?')
+      parameters.push(status)
+    }
+    const priority = String(options.priority || '').trim()
+    if (priority) {
+      conditions.push('priority=?')
+      parameters.push(priority)
+    }
+    const taskKind = String(options.taskKind || '').trim()
+    if (taskKind) {
+      conditions.push('task_kind=?')
+      parameters.push(taskKind)
+    }
+    const query = String(options.query || '').trim().toLocaleLowerCase('zh-CN')
+    if (query) {
+      conditions.push(`instr(lower(title || char(0) || payload_json),?)>0`)
+      parameters.push(query)
+    }
+    const where = conditions.join(' AND ')
+    const total = Number((this.db.prepare(`
+      SELECT COUNT(*) AS count FROM task_directory WHERE ${where}
+    `).get(...parameters) as any)?.count || 0)
+    const limit = Math.max(1, Math.min(200, Math.floor(Number(options.limit) || 100)))
+    const rows = this.db.prepare(`
+      SELECT td.*,
+        (SELECT COUNT(*) FROM search_document_evidence sde
+          WHERE sde.document_id='task:' || td.id) AS evidence_count,
+        (SELECT COUNT(*) FROM task_history th WHERE th.task_id=td.id) AS history_count
+      FROM task_directory td
+      WHERE ${where}
+      ORDER BY
+        CASE priority WHEN 'high' THEN 0 WHEN 'medium' THEN 1 ELSE 2 END,
+        CASE WHEN due IS NULL OR due='' THEN 1 ELSE 0 END,due,
+        updated_at DESC,id ASC
+      LIMIT ? OFFSET ?
+    `).all(...parameters, limit, offset) as any[]
+    const counts = Object.fromEntries((this.db.prepare(`
+      SELECT status,COUNT(*) AS count FROM task_directory
+      WHERE classification='mine' AND status IN ('todo','doing','waiting')
+      GROUP BY status
+    `).all() as Array<{ status: string; count: number }>)
+      .map(row => [row.status, Number(row.count || 0)]))
+    const items = rows.map(row => {
+      let payload: any = {}
+      try { payload = JSON.parse(String(row.payload_json || '{}')) } catch {}
+      return {
+        ...payload,
+        id: row.id,
+        title: row.title,
+        status: row.status,
+        priority: row.priority,
+        due: row.due,
+        project: row.project,
+        taskKind: row.task_kind,
+        createdAt: row.created_at,
+        updatedAt: row.updated_at,
+        evidenceTotal: Number(row.evidence_count || 0),
+        historyTotal: Number(row.history_count || 0)
+      }
+    })
+    const completedRevision = this.getTaskArchiveRevision()
+    if (completedRevision !== revision) {
+      return {
+        items: [], total: 0, hasMore: false, counts: {},
+        revision: completedRevision, stale: true
+      }
+    }
+    return {
+      items,
+      total,
+      hasMore: offset + rows.length < total,
+      counts,
+      revision,
+      stale: false
+    }
+  }
+
   listTaskArchive(options: {
     status?: 'done' | 'cancelled' | 'all'
     priority?: string

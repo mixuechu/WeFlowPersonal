@@ -462,7 +462,20 @@ function AiAssistantPage() {
   const [taskStatusFilter, setTaskStatusFilter] = useState<'all' | Task['status']>('all')
   const [taskPriorityFilter, setTaskPriorityFilter] = useState<'all' | Task['priority']>('all')
   const [taskKindFilter, setTaskKindFilter] = useState<'all' | NonNullable<Task['taskKind']>>('all')
+  const [taskQuery, setTaskQuery] = useState('')
   const [taskView, setTaskView] = useState<'list' | 'calendar'>('list')
+  const [taskWorkset, setTaskWorkset] = useState<{
+    items: Task[]
+    total: number
+    hasMore: boolean
+    counts: Record<string, number>
+    revision?: string
+    stale?: boolean
+    loading?: boolean
+  }>({ items: [], total: 0, hasMore: false, counts: {} })
+  const [taskWorksetLoadingMore, setTaskWorksetLoadingMore] = useState(false)
+  const [taskWorksetRefreshKey, setTaskWorksetRefreshKey] = useState(0)
+  const taskWorksetGate = useRef(new LatestRequestGate())
   const [taskArchive, setTaskArchive] = useState<{
     items: Task[]
     total: number
@@ -753,6 +766,14 @@ function AiAssistantPage() {
     limit: 40,
     offset: 0
   }), [taskArchiveStatus, taskArchivePriority, taskArchiveProject, taskArchiveQuery, taskArchiveFrom, taskArchiveTo])
+  const taskWorksetOptions = useMemo(() => ({
+    status: taskStatusFilter === 'all' ? undefined : taskStatusFilter,
+    priority: taskPriorityFilter === 'all' ? undefined : taskPriorityFilter,
+    taskKind: taskKindFilter === 'all' ? undefined : taskKindFilter,
+    query: taskQuery.trim() || undefined,
+    limit: 100,
+    offset: 0
+  }), [taskStatusFilter, taskPriorityFilter, taskKindFilter, taskQuery])
   const assistantArchiveOptions = useMemo(() => ({
     query: assistantArchiveQuery || undefined,
     from: assistantArchiveFrom ? new Date(`${assistantArchiveFrom}T00:00:00+08:00`).toISOString() : undefined,
@@ -987,6 +1008,29 @@ function AiAssistantPage() {
   }, [
     resourceTrashOpen, resourceTrashQuery, dashboard?.resourceArchive?.revision, resourceRefreshKey
   ])
+
+  useEffect(() => {
+    const request = taskWorksetGate.current.begin()
+    setTaskWorksetLoadingMore(false)
+    setTaskWorkset(current => ({ ...current, items: [], loading: true }))
+    const timer = window.setTimeout(() => {
+      void window.electronAPI.aiAssistant.getActiveTaskWorkset(taskWorksetOptions).then(result => {
+        if (!taskWorksetGate.current.isCurrent(request)) return
+        if (result.stale) {
+          setTaskWorksetRefreshKey(value => value + 1)
+          return
+        }
+        setTaskWorkset({ ...result, loading: false })
+      }).catch(() => {
+        if (!taskWorksetGate.current.isCurrent(request)) return
+        setTaskWorkset({ items: [], total: 0, hasMore: false, counts: {}, loading: false })
+      })
+    }, taskQuery.trim() ? 220 : 0)
+    return () => {
+      window.clearTimeout(timer)
+      if (taskWorksetGate.current.isCurrent(request)) taskWorksetGate.current.invalidate()
+    }
+  }, [taskWorksetOptions, dashboard?.taskRevision, taskWorksetRefreshKey])
 
   useEffect(() => {
     const request = taskArchiveGate.current.begin()
@@ -1470,17 +1514,12 @@ function AiAssistantPage() {
   const projectInsights: any[] = dashboard?.projectInsights || []
   const selectedProject = projectWorkspace.status === 'ready' &&
     projectWorkspace.project?.id === selectedProjectId ? projectWorkspace.project : null
-  const tasks: Task[] = dashboard?.tasks || []
+  const tasks: Task[] = taskWorkset.items
   const taskReviewQueue: Task[] = taskOwnershipReviews.items
   const taskReminders: any[] = dashboard?.taskReminders || []
   const reminderPreferences = dashboard?.reminderPreferences
   const taskReviewFeedback = dashboard?.taskReviewFeedback || { mine: 0, rejected: 0, suppressed: 0, reconciled: 0, recent: [] }
-  const openTasks = useMemo(() => tasks.filter(task => !['done', 'cancelled'].includes(task.status)), [tasks])
-  const displayedTasks = useMemo(() => tasks.filter(task =>
-    (taskStatusFilter === 'all' || task.status === taskStatusFilter) &&
-    (taskPriorityFilter === 'all' || task.priority === taskPriorityFilter) &&
-    (taskKindFilter === 'all' || (task.taskKind || 'action') === taskKindFilter)
-  ), [tasks, taskStatusFilter, taskPriorityFilter, taskKindFilter])
+  const displayedTasks = tasks
   const taskCalendar = useMemo(() => buildTaskCalendar(displayedTasks, calendarMonth), [displayedTasks, calendarMonth])
   const selectedCalendarDay = taskCalendar.days.find(day => day.date === selectedCalendarDate)
   const updateReminderPreference = async (reminder: any, action: 'helpful' | 'snooze' | 'mute_kind' | 'restore_kind') => {
@@ -2185,6 +2224,28 @@ function AiAssistantPage() {
     } catch (error: any) {
       setMessage(error?.message || String(error))
       await load()
+    }
+  }
+
+  const loadMoreActiveTasks = async () => {
+    if (taskWorksetLoadingMore || !taskWorkset.hasMore) return
+    setTaskWorksetLoadingMore(true)
+    try {
+      const result = await window.electronAPI.aiAssistant.getActiveTaskWorkset({
+        ...taskWorksetOptions,
+        offset: taskWorkset.items.length,
+        revision: taskWorkset.revision
+      })
+      if (result.stale) {
+        setTaskWorksetRefreshKey(value => value + 1)
+        return
+      }
+      setTaskWorkset(current => ({
+        ...result,
+        items: [...current.items, ...result.items]
+      }))
+    } finally {
+      setTaskWorksetLoadingMore(false)
     }
   }
 
@@ -4349,7 +4410,7 @@ function AiAssistantPage() {
           <section className="assistant-panel">
             <div className="assistant-section-heading">
               <div><span className="assistant-eyebrow">ACTION ITEMS</span><h3>持续待办池</h3></div>
-              <span className="assistant-count">{openTasks.length} 项未完成</span>
+              <span className="assistant-count">{taskWorkset.total} 项符合当前范围</span>
             </div>
             {Number(dashboard?.taskMutationCommits?.prepared || 0) > 0 && <div className="assistant-error">
               <strong>任务写入恢复现场仍待处理</strong>
@@ -4374,14 +4435,16 @@ function AiAssistantPage() {
               <select value={taskKindFilter} onChange={event => setTaskKindFilter(event.target.value as any)}>
                 <option value="all">全部类型</option><option value="action">自己执行</option><option value="delegated">已委派</option><option value="waiting">等待他人</option>
               </select>
+              <input value={taskQuery} onChange={event => setTaskQuery(event.target.value)} placeholder="搜索进行中待办" />
               <div className="assistant-task-view-toggle">
                 <button className={taskView === 'list' ? 'active' : ''} onClick={() => setTaskView('list')}>列表</button>
                 <button className={taskView === 'calendar' ? 'active' : ''} onClick={() => setTaskView('calendar')}><CalendarDays size={11} /> 月历</button>
               </div>
-              <button disabled={!displayedTasks.some(task => !['done', 'cancelled'].includes(task.status))} onClick={() => void completeVisibleTasks()}>完成当前筛选</button>
+              <button disabled={!displayedTasks.length} onClick={() => void completeVisibleTasks()}>完成已加载筛选</button>
             </div>
-            {dashboard?.taskPayloadPolicy?.dossier === 'on_demand' && <small className="assistant-evidence">
-              首页只保留当前行动工作集；已完成和已取消任务进入下方 SQLCipher 档案。原文证据和修改历史仅在展开单条任务时读取。
+            {dashboard?.taskPayloadPolicy?.activeDirectory === 'paginated_on_demand' && <small className="assistant-evidence">
+              进行中待办按当前筛选从 SQLCipher 分页读取（已加载 {tasks.length} / {taskWorkset.total}）；
+              已完成和已取消任务进入下方档案。原文证据和修改历史仅在展开单条任务时读取。
             </small>}
             {(!!taskReminders.length || reminderPreferences?.mutedKinds?.length) && <div className="assistant-task-reminders">
               {taskReminders.slice(0, 8).map(reminder => <article key={reminder.id} className={reminder.severity}>
@@ -4402,6 +4465,8 @@ function AiAssistantPage() {
                   { id: '', taskId: '', kind }, 'restore_kind'
                 )}>恢复“{kind === 'overdue' ? '逾期' : kind === 'due_soon' ? '临期' : kind === 'blocked' ? '依赖阻塞' : '等待过久'}”提醒</button>)}</div>
               </details>}
+              {Number(reminderPreferences?.visibleTotal || 0) > Number(reminderPreferences?.payloadLimit || 32) &&
+                <small>提醒按紧迫度展示前 {reminderPreferences.payloadLimit} / {reminderPreferences.visibleTotal} 条。</small>}
             </div>}
             {taskView === 'calendar' && <div className="assistant-task-calendar">
               <header><button onClick={() => moveCalendarMonth(-1)}>‹</button><strong>{calendarMonth}</strong><button onClick={() => moveCalendarMonth(1)}>›</button></header>
@@ -4432,7 +4497,8 @@ function AiAssistantPage() {
               </div>
             </div>}
             {taskView === 'list' && <div className="assistant-task-list">
-              {displayedTasks.length === 0 && <div className="assistant-empty">{tasks.length ? '当前筛选没有待办' : '暂时没有识别到明确待办'}</div>}
+              {taskWorkset.loading && <div className="assistant-empty">正在读取当前行动工作集…</div>}
+              {!taskWorkset.loading && displayedTasks.length === 0 && <div className="assistant-empty">当前筛选没有待办</div>}
               {displayedTasks.map(task => (
                 <article id={`assistant-task-${task.id}`} className={`assistant-task ${task.status === 'done' ? 'done' : ''}`} key={task.id}>
                   <button className="assistant-check" onClick={() => void toggleTask(task)} aria-label={task.status === 'done' ? '恢复待办' : '完成待办'}>
@@ -4526,6 +4592,12 @@ function AiAssistantPage() {
                 </article>
               ))}
             </div>}
+            {taskWorkset.hasMore && <button disabled={taskWorksetLoadingMore} onClick={() => void loadMoreActiveTasks()}>
+              {taskWorksetLoadingMore ? '正在加载…' : `加载更多（已显示 ${tasks.length} / ${taskWorkset.total}）`}
+            </button>}
+            {taskView === 'calendar' && taskWorkset.hasMore && <small className="assistant-evidence">
+              月历当前仅覆盖已加载的 {tasks.length} 项；继续加载可扩展月历与依赖候选。
+            </small>}
           </section>
 
           <aside className="assistant-panel assistant-signals">

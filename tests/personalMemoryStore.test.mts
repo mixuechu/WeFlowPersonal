@@ -3660,6 +3660,74 @@ test('closed task archive stays fully pageable without copying evidence into its
   assert.equal(store.listTaskArchive().total, 399)
 }))
 
+test('active task workset stays filtered, pageable, and revision safe at scale', () => withStore(store => {
+  const tasks = Array.from({ length: 1_500 }, (_, index) => ({
+    id: `active-task-${String(index).padStart(4, '0')}`,
+    title: index === 997 ? '主动工作集特殊关键词' : `进行中任务 ${index}`,
+    detail: `工作集说明 ${index}`,
+    owner: '我',
+    project: `行动项目 ${index % 12}`,
+    taskKind: ['action', 'delegated', 'waiting'][index % 3],
+    priority: ['high', 'medium', 'low'][index % 3],
+    confidence: 0.91,
+    classification: index % 10 === 0 ? 'others' : 'mine',
+    status: ['todo', 'doing', 'waiting', 'done', 'cancelled'][index % 5],
+    createdAt: new Date(1_600_000_000_000 + index * 10_000).toISOString(),
+    updatedAt: new Date(1_700_000_000_000 + index * 10_000).toISOString(),
+    evidence: [{
+      messageId: `active-task-message-${index}`,
+      sessionId: 'active-task-session',
+      timestamp: 1_700_000_000 + index,
+      sender: '行动群',
+      excerpt: `不应进入进行中目录的原文 ${index} ${'y'.repeat(300)}`
+    }]
+  }))
+  store.syncTasks(tasks)
+
+  const first = store.listActiveTaskWorkset({ limit: 100 })
+  const second = store.listActiveTaskWorkset({ offset: 100, limit: 100, revision: first.revision })
+  assert.equal(first.total, 750)
+  assert.equal(first.items.length, 100)
+  assert.equal(second.items.length, 100)
+  assert.equal(second.stale, false)
+  assert.equal(new Set([...first.items, ...second.items].map(item => item.id)).size, 200)
+  assert.ok(first.items.every(item => ['todo', 'doing', 'waiting'].includes(item.status)))
+  assert.ok(first.items.every(item => item.classification === 'mine'))
+  assert.ok(first.items.every(item => item.evidenceTotal === 1))
+  assert.equal(JSON.stringify(first.items).includes('不应进入进行中目录的原文'), false)
+  assert.equal(store.listActiveTaskWorkset({ status: 'doing' }).total, 300)
+  assert.equal(store.listActiveTaskWorkset({ priority: 'high' }).total, 250)
+  assert.equal(store.listActiveTaskWorkset({ taskKind: 'delegated' }).total, 250)
+  assert.equal(store.listActiveTaskWorkset({ query: '主动工作集特殊关键词' }).items[0]?.id, 'active-task-0997')
+
+  store.syncTasks(tasks.map(task => task.id === 'active-task-0997'
+    ? {
+        ...task,
+        evidence: [...task.evidence, {
+          messageId: 'active-task-message-0997-followup',
+          sessionId: 'active-task-session',
+          timestamp: 1_800_000_000,
+          sender: '行动群',
+          excerpt: '新增证据应使旧后续页失效'
+        }]
+      }
+    : task))
+  const staleSecond = store.listActiveTaskWorkset({
+    offset: 100, limit: 100, revision: first.revision
+  })
+  assert.equal(staleSecond.stale, true)
+  assert.equal(staleSecond.items.length, 0)
+  assert.equal(
+    store.listActiveTaskWorkset({ query: '主动工作集特殊关键词' }).items[0]?.evidenceTotal,
+    2
+  )
+
+  store.syncTasks(tasks.map(task => task.id === 'active-task-0997'
+    ? { ...task, status: 'done', updatedAt: '2026-08-04T00:00:00.000Z' }
+    : task))
+  assert.equal(store.listActiveTaskWorkset({ query: '主动工作集特殊关键词' }).total, 0)
+}))
+
 test('task archive survives a SQLCipher process-style reopen', () => {
   const directory = mkdtempSync(join(tmpdir(), 'weflow-task-archive-restart-'))
   const databasePath = join(directory, 'memory.sqlite')

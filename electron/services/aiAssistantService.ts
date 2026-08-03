@@ -223,7 +223,6 @@ import {
   toGraphViewportNode
 } from '../../shared/graphPayload'
 import {
-  buildTaskDirectoryItem,
   buildTaskDossier,
   TASK_HISTORY_LIMIT
 } from '../../shared/taskPayload'
@@ -3346,11 +3345,7 @@ export class AiAssistantService {
     const dates = Object.keys(this.state.briefings).sort().reverse()
     const latest = dates[0] ? this.state.briefings[dates[0]] : null
     const tasks = this.state.tasks.filter(task => task.classification === 'mine')
-    const activeTasks = tasks.filter(task => !['done', 'cancelled'].includes(task.status))
-    const taskPayload = activeTasks.map(task => ({
-      ...buildTaskDirectoryItem(task),
-      mutationToken: buildTaskMutationToken(task)
-    }))
+    const taskWorksetStats = personalMemoryStore.listActiveTaskWorkset({ limit: 1 })
     const taskOwnershipReviewStats = personalMemoryStore.getTaskOwnershipReviewStats()
     const allTaskReminders = buildTaskReminders(tasks)
     const reminderResult = applyReminderPreferences(allTaskReminders, this.state.reminderPreferences)
@@ -3408,7 +3403,15 @@ export class AiAssistantService {
     return {
       briefing: latest ? { ...latest, tasks: undefined } : null,
       briefingStorage: this.briefingStorage,
-      tasks: taskPayload,
+      tasks: [],
+      taskWorkset: {
+        total: taskWorksetStats.total,
+        counts: taskWorksetStats.counts,
+        revision: taskWorksetStats.revision,
+        version: 'task-workset-v1',
+        directory: 'paginated_on_demand',
+        dossier: 'single_item_on_demand'
+      },
       taskOwnershipReviews: {
         total: taskOwnershipReviewStats.total,
         revision: crypto.createHash('sha256')
@@ -3420,8 +3423,9 @@ export class AiAssistantService {
         dossier: 'on_demand'
       },
       taskPayloadPolicy: {
-        version: 'task-active-workset-v2',
+        version: 'task-active-workset-v3',
         directoryEvidence: 'count_only',
+        activeDirectory: 'paginated_on_demand',
         dossier: 'on_demand',
         activeStatuses: ['todo', 'doing', 'waiting'],
         closedTasks: 'sqlcipher_archive'
@@ -3436,18 +3440,14 @@ export class AiAssistantService {
         startupRecovery: this.conversationSourceMutationRecovery,
         policy: 'prepared_state_then_atomic_sql_v1'
       },
-      taskRevision: crypto.createHash('sha256')
-        .update(this.state.tasks.map(task => [
-          task.id, task.updatedAt || task.createdAt || '', task.status,
-          task.classification, task.evidence?.length || 0
-        ].join('\u0000')).join('\u0001'))
-        .digest('hex')
-        .slice(0, 16),
-      taskReminders: reminderResult.visible,
+      taskRevision: taskWorksetStats.revision,
+      taskReminders: reminderResult.visible.slice(0, 32),
       reminderPreferences: {
         ...this.state.reminderPreferences,
         suppressed: reminderResult.suppressed,
-        total: allTaskReminders.length
+        total: allTaskReminders.length,
+        visibleTotal: reminderResult.visible.length,
+        payloadLimit: 32
       },
       taskReviewFeedback: {
         ...personalMemoryStore.getTaskReviewFeedbackStats(),
@@ -3616,6 +3616,27 @@ export class AiAssistantService {
       from: String(options?.from || ''),
       to: String(options?.to || ''),
       limit: Number(options?.limit || 40),
+      offset: Number(options?.offset || 0),
+      revision: String(options?.revision || '')
+    })
+    if (page.stale) return page
+    const tasks = new Map(this.state.tasks.map(task => [task.id, task]))
+    return {
+      ...page,
+      items: page.items.map((item: any) => {
+        const task = tasks.get(String(item.id || ''))
+        return task ? { ...item, mutationToken: buildTaskMutationToken(task) } : item
+      })
+    }
+  }
+
+  getActiveTaskWorkset(options: any = {}): any {
+    const page = personalMemoryStore.listActiveTaskWorkset({
+      status: ['todo', 'doing', 'waiting'].includes(options?.status) ? options.status : 'all',
+      priority: ['high', 'medium', 'low'].includes(options?.priority) ? options.priority : '',
+      taskKind: ['action', 'delegated', 'waiting'].includes(options?.taskKind) ? options.taskKind : '',
+      query: String(options?.query || ''),
+      limit: Number(options?.limit || 100),
       offset: Number(options?.offset || 0),
       revision: String(options?.revision || '')
     })
