@@ -731,6 +731,7 @@ export class PersonalMemoryStore {
     this.repairGenericSearchEvidenceIdentity()
     this.ensureMemorySearchRevisionTriggers()
     this.ensureMemorySearchFeedbackArchiveRevisionTriggers()
+    this.ensureMemoryDeletionAuditRevisionTriggers()
     this.ensureStructuredMemoryRevisionTriggers()
     this.ensureGraphReviewRevisionTriggers()
     this.ensureTaskArchiveRevisionTriggers()
@@ -1014,6 +1015,62 @@ export class PersonalMemoryStore {
     return {
       version: 'memory-search-feedback-archive-revision-v1',
       revision: this.getMemorySearchFeedbackArchiveRevision(),
+      expectedTriggers,
+      installedTriggers,
+      healthy: installedTriggers === expectedTriggers
+    }
+  }
+
+  private ensureMemoryDeletionAuditRevisionTriggers(): void {
+    if (!this.db) return
+    const now = new Date().toISOString()
+    this.db.prepare(`
+      INSERT INTO schema_meta(key,value,updated_at)
+      VALUES('memory_deletion_audit_revision','0',?)
+      ON CONFLICT(key) DO NOTHING
+    `).run(now)
+    const statements: string[] = []
+    for (const operation of ['INSERT', 'UPDATE', 'DELETE']) {
+      const name = `trg_memory_deletion_audit_revision_${operation.toLowerCase()}`
+      statements.push(`DROP TRIGGER IF EXISTS ${name};`)
+      statements.push(`
+        CREATE TRIGGER ${name} AFTER ${operation} ON memory_deletion_audit
+        BEGIN
+          UPDATE schema_meta
+          SET value=CAST(CAST(value AS INTEGER)+1 AS TEXT),
+            updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')
+          WHERE key='memory_deletion_audit_revision';
+        END;
+      `)
+    }
+    this.db.exec(statements.join('\n'))
+  }
+
+  getMemoryDeletionAuditRevision(): string {
+    if (!this.db) return '0'
+    return String((this.db.prepare(`
+      SELECT value FROM schema_meta WHERE key='memory_deletion_audit_revision'
+    `).get() as any)?.value || '0')
+  }
+
+  getMemoryDeletionAuditRevisionHealth(): any {
+    const expectedTriggers = 3
+    if (!this.db) {
+      return {
+        version: 'memory-deletion-audit-revision-v1',
+        revision: '0',
+        expectedTriggers,
+        installedTriggers: 0,
+        healthy: false
+      }
+    }
+    const installedTriggers = Number((this.db.prepare(`
+      SELECT COUNT(*) AS count FROM sqlite_master
+      WHERE type='trigger' AND name LIKE 'trg_memory_deletion_audit_revision_%'
+    `).get() as any)?.count || 0)
+    return {
+      version: 'memory-deletion-audit-revision-v1',
+      revision: this.getMemoryDeletionAuditRevision(),
       expectedTriggers,
       installedTriggers,
       healthy: installedTriggers === expectedTriggers
@@ -3022,6 +3079,7 @@ export class PersonalMemoryStore {
     const memorySearchRevision = this.getMemorySearchRevisionHealth()
     const memorySearchFeedbackArchiveRevision =
       this.getMemorySearchFeedbackArchiveRevisionHealth()
+    const memoryDeletionAuditRevision = this.getMemoryDeletionAuditRevisionHealth()
     const structuredMemoryRevision = this.getStructuredMemoryRevisionHealth()
     const graphReviewRevision = this.getGraphReviewRevisionHealth()
     const taskArchiveRevision = this.getTaskArchiveRevisionHealth()
@@ -3039,6 +3097,7 @@ export class PersonalMemoryStore {
         && taskSearchIndexHealthy
         && memorySearchRevision.healthy
         && memorySearchFeedbackArchiveRevision.healthy
+        && memoryDeletionAuditRevision.healthy
         && structuredMemoryRevision.healthy
         && graphReviewRevision.healthy
         && taskArchiveRevision.healthy
@@ -3056,6 +3115,7 @@ export class PersonalMemoryStore {
       memorySearchRevisionHealthy: memorySearchRevision.healthy,
       memorySearchFeedbackArchiveRevisionHealthy:
         memorySearchFeedbackArchiveRevision.healthy,
+      memoryDeletionAuditRevisionHealthy: memoryDeletionAuditRevision.healthy,
       structuredMemoryRevisionHealthy: structuredMemoryRevision.healthy,
       graphReviewRevisionHealthy: graphReviewRevision.healthy,
       taskArchiveRevisionHealthy: taskArchiveRevision.healthy,
@@ -3080,6 +3140,7 @@ export class PersonalMemoryStore {
       taskSearchIndex,
       memorySearchRevision,
       memorySearchFeedbackArchiveRevision,
+      memoryDeletionAuditRevision,
       structuredMemoryRevision,
       graphReviewRevision,
       taskArchiveRevision,
@@ -5724,6 +5785,7 @@ export class PersonalMemoryStore {
     to?: string
     limit?: number
     offset?: number
+    revision?: string
   } = {}): {
     items: any[]
     total: number
@@ -5736,11 +5798,27 @@ export class PersonalMemoryStore {
       manual_delete: number
       not_important: number
     }
+    revision: string
+    stale: boolean
   } {
     const emptyCounts = {
       all: 0, claim: 0, event: 0, relation: 0, manual_delete: 0, not_important: 0
     }
-    if (!this.db) return { items: [], total: 0, hasMore: false, counts: emptyCounts }
+    const limit = Math.max(1, Math.min(100, Math.floor(Number(options.limit) || 40)))
+    const offset = Math.max(0, Math.min(1_000_000, Math.floor(Number(options.offset) || 0)))
+    const revision = this.getMemoryDeletionAuditRevision()
+    if (!this.db) {
+      return {
+        items: [], total: 0, hasMore: false, counts: emptyCounts,
+        revision, stale: false
+      }
+    }
+    if (offset > 0 && String(options.revision || '') !== revision) {
+      return {
+        items: [], total: 0, hasMore: false, counts: emptyCounts,
+        revision, stale: true
+      }
+    }
     const conditions: string[] = []
     const parameters: Array<string | number> = []
     if (options.kind === 'claim' || options.kind === 'event' || options.kind === 'relation') {
@@ -5770,8 +5848,6 @@ export class PersonalMemoryStore {
     const total = Number((this.db.prepare(`
       SELECT COUNT(*) AS count FROM memory_deletion_audit ${where}
     `).get(...parameters) as any)?.count || 0)
-    const limit = Math.max(1, Math.min(100, Math.floor(Number(options.limit) || 40)))
-    const offset = Math.max(0, Math.min(1_000_000, Math.floor(Number(options.offset) || 0)))
     const rows = this.db.prepare(`
       SELECT id,item_kind,item_fingerprint,reason,impact_json,created_at
       FROM memory_deletion_audit
@@ -5789,6 +5865,13 @@ export class PersonalMemoryStore {
         SUM(CASE WHEN reason='not_important' THEN 1 ELSE 0 END) AS not_important_count
       FROM memory_deletion_audit
     `).get() as any
+    const completedRevision = this.getMemoryDeletionAuditRevision()
+    if (completedRevision !== revision) {
+      return {
+        items: [], total: 0, hasMore: false, counts: emptyCounts,
+        revision: completedRevision, stale: true
+      }
+    }
     return {
       items: rows.map(row => {
         const { impact_json: _impactJson, ...safeRow } = row
@@ -5803,7 +5886,9 @@ export class PersonalMemoryStore {
         relation: Number(countsRow?.relation_count || 0),
         manual_delete: Number(countsRow?.manual_delete_count || 0),
         not_important: Number(countsRow?.not_important_count || 0)
-      }
+      },
+      revision,
+      stale: false
     }
   }
 

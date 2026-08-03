@@ -1729,6 +1729,8 @@ export interface ElectronAPI {
           manual_delete: number
           not_important: number
         }
+        revision: string
+        stale: boolean
       }>
       getMergeHistoryPage: (options?: any) => Promise<{
         items: any[]

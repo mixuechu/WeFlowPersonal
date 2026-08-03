@@ -7658,6 +7658,7 @@ test('full deletion audit archive paginates safely and survives a SQLCipher reop
   try {
     first.initialize(databasePath, key)
     const database = (first as any).db
+    const initialRevision = Number(first.getMemoryDeletionAuditRevision())
     const insert = database.prepare(`
       INSERT INTO memory_deletion_audit(
         item_kind,item_fingerprint,reason,impact_json,created_at
@@ -7683,12 +7684,18 @@ test('full deletion audit archive paginates safely and survives a SQLCipher reop
       }
     })
     transaction()
+    assert.ok(Number(first.getMemoryDeletionAuditRevision()) > initialRevision)
 
     const firstPage = first.listMemoryDeletionAuditPage({ limit: 40 })
-    const secondPage = first.listMemoryDeletionAuditPage({ limit: 40, offset: 40 })
+    const secondPage = first.listMemoryDeletionAuditPage({
+      limit: 40,
+      offset: 40,
+      revision: firstPage.revision
+    })
     assert.equal(firstPage.total, 2_500)
     assert.equal(firstPage.items.length, 40)
     assert.equal(secondPage.items.length, 40)
+    assert.equal(secondPage.stale, false)
     assert.equal(new Set([...firstPage.items, ...secondPage.items].map(item => item.id)).size, 80)
     assert.deepEqual(firstPage.counts, {
       all: 2_500,
@@ -7720,12 +7727,37 @@ test('full deletion audit archive paginates safely and survives a SQLCipher reop
       latestId: 2_500,
       latestCreatedAt: new Date(Date.UTC(2020, 0, 1, 0, 2_499)).toISOString()
     })
+    database.prepare('UPDATE memory_deletion_audit SET reason=reason WHERE id=?').run(1)
+    const stalePage = first.listMemoryDeletionAuditPage({
+      limit: 40,
+      offset: 40,
+      revision: firstPage.revision
+    })
+    assert.equal(stalePage.stale, true)
+    assert.deepEqual(stalePage.items, [])
+    assert.deepEqual(first.getMemoryDeletionAuditRevisionHealth(), {
+      version: 'memory-deletion-audit-revision-v1',
+      revision: first.getMemoryDeletionAuditRevision(),
+      expectedTriggers: 3,
+      installedTriggers: 3,
+      healthy: true
+    })
+    database.exec('DROP TRIGGER trg_memory_deletion_audit_revision_insert')
+    assert.equal(first.getMemoryDeletionAuditRevisionHealth().installedTriggers, 2)
+    assert.equal(first.getMemoryDeletionAuditRevisionHealth().healthy, false)
     first.close()
 
     const reopened = new PersonalMemoryStore()
     try {
       reopened.initialize(databasePath, key)
-      const lastPage = reopened.listMemoryDeletionAuditPage({ offset: 2_480, limit: 40 })
+      assert.equal(reopened.getMemoryDeletionAuditRevisionHealth().installedTriggers, 3)
+      assert.equal(reopened.getMemoryDeletionAuditRevisionHealth().healthy, true)
+      const reopenedFirstPage = reopened.listMemoryDeletionAuditPage({ limit: 40 })
+      const lastPage = reopened.listMemoryDeletionAuditPage({
+        offset: 2_480,
+        limit: 40,
+        revision: reopenedFirstPage.revision
+      })
       assert.equal(lastPage.items.length, 20)
       assert.equal(lastPage.hasMore, false)
       assert.equal(reopened.getMemoryDeletionAuditStats().total, 2_500)

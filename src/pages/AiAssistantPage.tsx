@@ -293,6 +293,7 @@ function AiAssistantPage() {
   const [memoryDeletionFrom, setMemoryDeletionFrom] = useState('')
   const [memoryDeletionTo, setMemoryDeletionTo] = useState('')
   const [memoryDeletionLoadingMore, setMemoryDeletionLoadingMore] = useState(false)
+  const [memoryDeletionArchiveRefreshKey, setMemoryDeletionArchiveRefreshKey] = useState(0)
   const memoryDeletionArchiveGate = useRef(new LatestRequestGate())
   const [editingTask, setEditingTask] = useState<any>(null)
   const [taskStatusFilter, setTaskStatusFilter] = useState<'all' | Task['status']>('all')
@@ -853,6 +854,14 @@ function AiAssistantPage() {
     const timer = window.setTimeout(() => {
       void window.electronAPI.aiAssistant.getMemoryDeletionAuditPage(memoryDeletionOptions).then(result => {
         if (!memoryDeletionArchiveGate.current.isCurrent(request)) return
+        if (result.stale) {
+          window.setTimeout(() => {
+            if (memoryDeletionArchiveGate.current.isCurrent(request)) {
+              setMemoryDeletionArchiveRefreshKey(value => value + 1)
+            }
+          }, 250)
+          return
+        }
         setMemoryDeletionArchive({ ...result, loading: false })
       }).catch(() => {
         if (!memoryDeletionArchiveGate.current.isCurrent(request)) return
@@ -867,7 +876,7 @@ function AiAssistantPage() {
     }
   }, [
     showDiagnostics, memoryDeletionOptions,
-    dashboard?.memoryDeletionArchive?.revision
+    dashboard?.memoryDeletionArchive?.revision, memoryDeletionArchiveRefreshKey
   ])
 
   useEffect(() => {
@@ -1468,9 +1477,15 @@ function AiAssistantPage() {
       const result = await window.electronAPI.aiAssistant.getMemoryDeletionAuditPage({
         ...memoryDeletionOptions,
         offset: memoryDeletionArchive.items.length,
-        limit: 40
+        limit: 40,
+        revision: memoryDeletionArchive.revision
       })
       if (!memoryDeletionArchiveGate.current.isCurrent(request)) return
+      if (result.stale) {
+        setMessage('删除与不重要清理档案已有变化，已自动从第一页刷新')
+        setMemoryDeletionArchiveRefreshKey(value => value + 1)
+        return
+      }
       setMemoryDeletionArchive(current => ({
         ...result,
         items: [
@@ -5672,6 +5687,16 @@ function AiAssistantPage() {
                 <span>当前状态 <b>{memoryDiagnostics.memorySearchFeedbackArchiveRevisionHealthy ? '保护正常' : '需要检查'}</b></span>
                 <span>当前 revision <b>{String(memoryDiagnostics.memorySearchFeedbackArchiveRevision.revision || '0')}</b></span>
                 <span>变更触发器 <b>{Number(memoryDiagnostics.memorySearchFeedbackArchiveRevision.installedTriggers || 0).toLocaleString()} / {Number(memoryDiagnostics.memorySearchFeedbackArchiveRevision.expectedTriggers || 0).toLocaleString()}</b></span>
+              </div>
+            </div>}
+            {memoryDiagnostics.memoryDeletionAuditRevision?.version && <div className={`assistant-recovery-audit ${memoryDiagnostics.memoryDeletionAuditRevisionHealthy ? 'healthy' : 'unhealthy'}`}>
+              <header><ShieldCheck size={15} /><span><b>删除与不重要清理档案分页保护</b>
+                <small>每次永久删除、不重要清理或审计维护都会推进独立 SQLCipher revision；后台新增记录时旧分页会被拒绝并自动回到最新第一页，避免数据自主权账本漏项或重复。</small>
+              </span></header>
+              <div className="assistant-recovery-current">
+                <span>当前状态 <b>{memoryDiagnostics.memoryDeletionAuditRevisionHealthy ? '保护正常' : '需要检查'}</b></span>
+                <span>当前 revision <b>{String(memoryDiagnostics.memoryDeletionAuditRevision.revision || '0')}</b></span>
+                <span>变更触发器 <b>{Number(memoryDiagnostics.memoryDeletionAuditRevision.installedTriggers || 0).toLocaleString()} / {Number(memoryDiagnostics.memoryDeletionAuditRevision.expectedTriggers || 0).toLocaleString()}</b></span>
               </div>
             </div>}
             {memoryDiagnostics.structuredMemoryRevision?.version && <div className={`assistant-recovery-audit ${memoryDiagnostics.structuredMemoryRevisionHealthy ? 'healthy' : 'unhealthy'}`}>
