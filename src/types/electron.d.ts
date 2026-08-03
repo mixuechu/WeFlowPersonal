@@ -1853,7 +1853,11 @@ export interface ElectronAPI {
       restoreMemoryBackup: (path: string) => Promise<any>
       exportMemoryBundle: (path: string, passphrase: string) => Promise<any>
       inspectMemoryBundle: (path: string, passphrase?: string) => Promise<any>
-      importMemoryBundle: (path: string, passphrase?: string) => Promise<any>
+      importMemoryBundle: (
+        path: string,
+        passphrase?: string,
+        input?: { previewToken?: string; confirmation?: string }
+      ) => Promise<any>
       correctClaim: (id: string, input: any) => Promise<any>
       correctEvent: (id: string, input: any) => Promise<any>
       getMemoryEvent: (id: string) => Promise<any>

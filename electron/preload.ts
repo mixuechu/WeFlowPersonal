@@ -684,8 +684,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
       ipcRenderer.invoke('ai-assistant:exportMemoryBundle', path, passphrase),
     inspectMemoryBundle: (path: string, passphrase?: string) =>
       ipcRenderer.invoke('ai-assistant:inspectMemoryBundle', path, passphrase),
-    importMemoryBundle: (path: string, passphrase?: string) =>
-      ipcRenderer.invoke('ai-assistant:importMemoryBundle', path, passphrase),
+    importMemoryBundle: (path: string, passphrase?: string, input?: any) =>
+      ipcRenderer.invoke('ai-assistant:importMemoryBundle', path, passphrase, input),
     correctClaim: (id: string, input: any) => ipcRenderer.invoke('ai-assistant:correctClaim', id, input),
     correctEvent: (id: string, input: any) => ipcRenderer.invoke('ai-assistant:correctEvent', id, input),
     getMemoryEvent: (id: string) => ipcRenderer.invoke('ai-assistant:getMemoryEvent', id),

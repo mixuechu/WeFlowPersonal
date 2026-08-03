@@ -4612,8 +4612,8 @@ function registerIpcHandlers() {
     aiAssistantService.exportMemoryBundle(path, passphrase))
   ipcMain.handle('ai-assistant:inspectMemoryBundle', (_, path: string, passphrase?: string) =>
     aiAssistantService.inspectMemoryBundle(path, passphrase))
-  ipcMain.handle('ai-assistant:importMemoryBundle', (_, path: string, passphrase?: string) =>
-    aiAssistantService.importMemoryBundle(path, passphrase))
+  ipcMain.handle('ai-assistant:importMemoryBundle', (_, path: string, passphrase?: string, input?: any) =>
+    aiAssistantService.importMemoryBundle(path, passphrase, input))
   ipcMain.handle('ai-assistant:correctClaim', (_, id: string, input: any) => aiAssistantService.correctClaim(id, input))
   ipcMain.handle('ai-assistant:correctEvent', (_, id: string, input: any) => aiAssistantService.correctEvent(id, input))
   ipcMain.handle('ai-assistant:getMemoryEvent', (_, id: string) => aiAssistantService.getMemoryEvent(id))

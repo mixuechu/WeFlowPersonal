@@ -444,9 +444,10 @@ function AiAssistantPage() {
   const [memoryRestoreConfirmation, setMemoryRestoreConfirmation] = useState('')
   const memoryRestoreGate = useRef(new LatestRequestGate())
   const [migratingMemory, setMigratingMemory] = useState(false)
-  const [migrationDialog, setMigrationDialog] = useState<{ mode: 'export' | 'import'; bundlePath?: string } | null>(null)
+  const [migrationDialog, setMigrationDialog] = useState<any>(null)
   const [migrationPassphrase, setMigrationPassphrase] = useState('')
   const [migrationPassphraseConfirmation, setMigrationPassphraseConfirmation] = useState('')
+  const [migrationImportConfirmation, setMigrationImportConfirmation] = useState('')
   const [indexingVectors, setIndexingVectors] = useState(false)
   const [memoryQuestion, setMemoryQuestion] = useState('')
   const [memoryAnswer, setMemoryAnswer] = useState<any>(null)
@@ -1911,7 +1912,8 @@ function AiAssistantPage() {
     if (selected.canceled || !bundlePath) return
     setMigrationPassphrase('')
     setMigrationPassphraseConfirmation('')
-    setMigrationDialog({ mode: 'import', bundlePath })
+    setMigrationImportConfirmation('')
+    setMigrationDialog({ mode: 'import', bundlePath, status: 'unlock' })
   }
 
   const importMemoryBundle = async () => {
@@ -1919,24 +1921,45 @@ function AiAssistantPage() {
     if (!bundlePath || migratingMemory || restoringMemory) return
     setMigratingMemory(true)
     try {
-      const inspected = await window.electronAPI.aiAssistant.inspectMemoryBundle(bundlePath, migrationPassphrase)
-      const summary = inspected.stateSummary
-      if (!window.confirm(
-        `迁移包校验通过。\n创建时间：${new Date(inspected.manifest.createdAt).toLocaleString('zh-CN')}\n` +
-        `包含 ${summary.entities} 个实体、${summary.relations} 条关系、${summary.tasks} 项任务。\n\n` +
-        '确定导入并替换当前个人记忆吗？当前数据会先自动创建安全快照。'
-      )) return
-      await window.electronAPI.aiAssistant.importMemoryBundle(bundlePath, migrationPassphrase)
-      setMigrationDialog(null)
-      setMigrationPassphrase('')
-      setMessage('个人记忆迁移完成；导入前的安全快照已保留。')
-      setMemoryDiagnostics(await window.electronAPI.aiAssistant.getMemoryDiagnostics())
-      await load()
+      if (migrationDialog.status !== 'preview' || !migrationDialog.inspected?.previewToken) {
+        const inspected = await window.electronAPI.aiAssistant.inspectMemoryBundle(bundlePath, migrationPassphrase)
+        setMigrationImportConfirmation('')
+        setMigrationDialog((current: any) => ({
+          ...current,
+          status: 'preview',
+          inspected,
+          error: undefined
+        }))
+      } else {
+        if (migrationImportConfirmation !== '导入并替换') return
+        await window.electronAPI.aiAssistant.importMemoryBundle(bundlePath, migrationPassphrase, {
+          previewToken: migrationDialog.inspected.previewToken,
+          confirmation: migrationImportConfirmation
+        })
+        setMigrationDialog(null)
+        setMigrationPassphrase('')
+        setMigrationImportConfirmation('')
+        setMessage('个人记忆迁移完成；导入前的安全快照已保留。')
+        setMemoryDiagnostics(await window.electronAPI.aiAssistant.getMemoryDiagnostics())
+        await load()
+      }
     } catch (error: any) {
-      setMessage(error?.message || String(error))
+      setMigrationDialog((current: any) => ({
+        ...current,
+        status: 'error',
+        error: error?.message || String(error)
+      }))
     } finally {
       setMigratingMemory(false)
     }
+  }
+
+  const closeMigrationDialog = () => {
+    if (migratingMemory) return
+    setMigrationDialog(null)
+    setMigrationPassphrase('')
+    setMigrationPassphraseConfirmation('')
+    setMigrationImportConfirmation('')
   }
 
   const indexMemoryVectors = async () => {
@@ -6370,28 +6393,75 @@ function AiAssistantPage() {
 
       {migrationDialog && (
         <div className="assistant-modal-backdrop">
-          <div className="assistant-modal">
+          <div className="assistant-modal assistant-delete-modal">
             <div className="assistant-modal-title"><div>
-              <h2>{migrationDialog.mode === 'export' ? '创建便携迁移包' : '解锁便携迁移包'}</h2>
+              <h2>{migrationDialog.mode === 'export' ? '创建便携迁移包'
+                : migrationDialog.status === 'preview' ? '核对并导入个人记忆'
+                  : '解锁便携迁移包'}</h2>
               <p>{migrationDialog.mode === 'export'
                 ? '数据库、图谱、任务和增量游标会用迁移口令整体加密。口令不会保存，也无法找回。'
-                : '输入原设备导出时设置的口令。导入前会验证密文、文件哈希和数据库一致性，并创建本机安全快照。'}</p>
-            </div><button aria-label="关闭迁移向导" onClick={() => setMigrationDialog(null)}><X size={16} /></button></div>
-            <label><span>迁移口令</span><input type="password" autoFocus value={migrationPassphrase}
-              placeholder={migrationDialog.mode === 'export' ? '至少 12 个字符' : '旧版同机迁移包可留空'}
-              onChange={event => setMigrationPassphrase(event.target.value)} /></label>
+                : migrationDialog.status === 'preview'
+                  ? '这会替换当前全部个人记忆；执行前会再次验证同一迁移包和当前数据，并自动创建安全快照。'
+                  : '输入原设备导出时设置的口令。导入前会验证密文、文件哈希和数据库一致性。'}</p>
+            </div><button aria-label="关闭迁移向导" disabled={migratingMemory}
+              onClick={closeMigrationDialog}><X size={16} /></button></div>
+            {migrationDialog.status === 'error' && <div className="assistant-error">
+              <strong>无法导入个人记忆</strong><span>{migrationDialog.error || '未知错误'}</span>
+              <button onClick={() => {
+                setMigrationImportConfirmation('')
+                setMigrationDialog((current: any) => ({ ...current, status: 'unlock', error: undefined, inspected: undefined }))
+              }}>重新验证迁移包</button>
+            </div>}
+            {(migrationDialog.mode === 'export' || migrationDialog.status === 'unlock' || !migrationDialog.status) &&
+              <label><span>迁移口令</span><input type="password" autoFocus value={migrationPassphrase}
+                placeholder={migrationDialog.mode === 'export' ? '至少 12 个字符' : '旧版同机迁移包可留空'}
+                onChange={event => setMigrationPassphrase(event.target.value)} /></label>}
             {migrationDialog.mode === 'export' && <label><span>再次输入</span><input type="password"
               value={migrationPassphraseConfirmation}
               onChange={event => setMigrationPassphraseConfirmation(event.target.value)} /></label>}
-            <small className="assistant-settings-note">
-              采用 scrypt 派生密钥和 AES-256-GCM 认证加密；目标电脑导入后会自动换成自己的 macOS 钥匙串密钥。
-            </small>
+            {migrationDialog.status === 'preview' && migrationDialog.inspected && <>
+              <div className="assistant-delete-preview">
+                <strong>迁移包校验通过 · {migrationDialog.inspected.portable ? '口令便携包' : '旧版同机包'}</strong>
+                <p>
+                  创建于 {new Date(migrationDialog.inspected.manifest.createdAt).toLocaleString('zh-CN')}；
+                  将导入 {migrationDialog.inspected.stateSummary.entities} 个实体、
+                  {migrationDialog.inspected.stateSummary.relations} 条关系、
+                  {migrationDialog.inspected.stateSummary.tasks} 项任务。
+                </p>
+                <p>
+                  当前本机有 {migrationDialog.inspected.currentStateSummary.entities} 个实体、
+                  {migrationDialog.inspected.currentStateSummary.relations} 条关系、
+                  {migrationDialog.inspected.currentStateSummary.claims} 条事实、
+                  {migrationDialog.inspected.currentStateSummary.events} 个事件、
+                  {migrationDialog.inspected.currentStateSummary.tasks} 项任务；它们会被整体替换并先保存为安全快照。
+                </p>
+              </div>
+              <label><span>输入“导入并替换”确认</span><input autoFocus
+                value={migrationImportConfirmation}
+                disabled={migratingMemory}
+                onChange={event => setMigrationImportConfirmation(event.target.value)}
+                onKeyDown={event => {
+                  if (event.key === 'Enter' && migrationImportConfirmation === '导入并替换') {
+                    void importMemoryBundle()
+                  }
+                }}
+                placeholder="导入并替换" /></label>
+            </>}
+            {migrationDialog.status !== 'preview' && <small className="assistant-settings-note">
+                采用 scrypt 派生密钥和 AES-256-GCM 认证加密；目标电脑导入后会自动换成自己的 macOS 钥匙串密钥。
+              </small>}
             <div className="assistant-modal-actions">
-              <button onClick={() => setMigrationDialog(null)}>取消</button>
-              <button className="primary" disabled={migratingMemory}
+              <button disabled={migratingMemory} onClick={closeMigrationDialog}>取消</button>
+              {migrationDialog.status !== 'error' && <button
+                className={migrationDialog.status === 'preview' ? 'danger' : 'primary'}
+                disabled={migratingMemory || (migrationDialog.status === 'preview' &&
+                  migrationImportConfirmation !== '导入并替换')}
                 onClick={() => void (migrationDialog.mode === 'export' ? exportMemoryBundle() : importMemoryBundle())}>
-                {migratingMemory ? '正在验证…' : migrationDialog.mode === 'export' ? '选择位置并导出' : '验证并预览'}
-              </button>
+                {migratingMemory
+                  ? migrationDialog.status === 'preview' ? '正在创建安全点并导入…' : '正在验证…'
+                  : migrationDialog.mode === 'export' ? '选择位置并导出'
+                    : migrationDialog.status === 'preview' ? '确认导入并替换' : '验证并预览'}
+              </button>}
             </div>
           </div>
         </div>

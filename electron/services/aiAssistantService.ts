@@ -71,6 +71,11 @@ import {
   assertEntityForgetConfirmation,
   buildEntityForgetPreviewToken
 } from './entityForgetPolicy'
+import {
+  assertMemoryImportConfirmation,
+  buildMemoryImportPreviewToken,
+  type MemoryImportPreviewIdentity
+} from './memoryImportPolicy'
 import { applyRelationConfirmation, planRelationConfirmation, type RelationCorrection } from './relationCorrectionPolicy'
 import {
   enqueueUniqueNotification,
@@ -3942,13 +3947,18 @@ export class AiAssistantService {
   private async readMemoryBundle(bundlePath: string, passphrase?: string): Promise<{
     zip: JSZip
     portable: boolean
+    bundleSha256: string
   }> {
     const bundleBytes = readFileSync(bundlePath)
     const portable = isPortableMemoryBundle(bundleBytes)
     const zipBytes = portable
       ? decryptPortableMemoryBundle(bundleBytes, String(passphrase || ''))
       : bundleBytes
-    return { zip: await JSZip.loadAsync(zipBytes), portable }
+    return {
+      zip: await JSZip.loadAsync(zipBytes),
+      portable,
+      bundleSha256: crypto.createHash('sha256').update(bundleBytes).digest('hex')
+    }
   }
 
   async exportMemoryBundle(outputPath: string, passphrase: string): Promise<any> {
@@ -3990,8 +4000,45 @@ export class AiAssistantService {
     return { success: true, path: outputPath, bytes: payload.length, manifest }
   }
 
-  async inspectMemoryBundle(bundlePath: string, passphrase?: string): Promise<any> {
-    const { zip, portable } = await this.readMemoryBundle(bundlePath, passphrase)
+  private getCurrentMemoryImportSummary(): any {
+    const tasks = this.state.tasks || []
+    const entities = this.state.graph?.entities || []
+    const relations = this.state.graph?.relations || []
+    const diagnostics = personalMemoryStore.getDiagnostics()
+    const databaseCounts = diagnostics.counts || {}
+    const databaseRevisions = {
+      search: diagnostics.memorySearchRevision?.revision || '0',
+      structured: diagnostics.structuredMemoryRevision?.revision || '0',
+      graph: diagnostics.graphReviewRevision?.revision || '0',
+      tasks: diagnostics.taskArchiveRevision?.revision || '0',
+      ownership: diagnostics.taskOwnershipReviewRevision?.revision || '0',
+      assistant: diagnostics.assistantHistoryRevision?.revision || '0'
+    }
+    return {
+      version: this.state.version,
+      tasks: tasks.length,
+      entities: entities.length,
+      relations: relations.length,
+      claims: Number(databaseCounts.claims || 0),
+      events: Number(databaseCounts.events || 0),
+      evidence: Number(databaseCounts.evidence || 0),
+      lastSyncAt: this.state.lastSyncAt || null,
+      identitySha256: crypto.createHash('sha256').update(JSON.stringify({
+        lastSyncAt: this.state.lastSyncAt || null,
+        tasks: tasks.map(item => [item.id, item.updatedAt || item.createdAt || '']).sort(),
+        entities: entities.map(item => [item.id, item.updatedAt || '']).sort(),
+        relations: relations.map(item => [item.id, item.updatedAt || '']).sort(),
+        databaseCounts,
+        databaseRevisions
+      })).digest('hex')
+    }
+  }
+
+  private async inspectLoadedMemoryBundle(
+    zip: JSZip,
+    portable: boolean,
+    bundleSha256: string
+  ): Promise<any> {
     const manifestEntry = zip.file('manifest.json')
     const databaseEntry = zip.file('personal-memory.sqlite')
     const stateEntry = zip.file('ai-assistant-state.json')
@@ -4016,24 +4063,51 @@ export class AiAssistantService {
       throw new Error('便携迁移包缺少安全换钥信息')
     }
     const state = JSON.parse(stateBytes.toString('utf8'))
+    const currentStateSummary = this.getCurrentMemoryImportSummary()
+    const previewIdentity: MemoryImportPreviewIdentity = {
+      bundleSha256,
+      databaseSha256,
+      stateSha256,
+      currentStateSha256: currentStateSummary.identitySha256
+    }
     return {
       valid: true,
       portable,
       manifest,
+      bundleSha256,
       databaseBytes: databaseBytes.length,
+      previewToken: buildMemoryImportPreviewToken(previewIdentity),
+      currentStateSummary,
       stateSummary: {
         version: state.version,
         tasks: Array.isArray(state.tasks) ? state.tasks.length : 0,
         entities: Array.isArray(state.graph?.entities) ? state.graph.entities.length : 0,
         relations: Array.isArray(state.graph?.relations) ? state.graph.relations.length : 0,
+        claims: null,
+        events: null,
         lastSyncAt: state.lastSyncAt || null
       }
     }
   }
 
-  async importMemoryBundle(bundlePath: string, passphrase?: string): Promise<any> {
-    const inspected = await this.inspectMemoryBundle(bundlePath, passphrase)
-    const { zip } = await this.readMemoryBundle(bundlePath, passphrase)
+  async inspectMemoryBundle(bundlePath: string, passphrase?: string): Promise<any> {
+    const { zip, portable, bundleSha256 } = await this.readMemoryBundle(bundlePath, passphrase)
+    return this.inspectLoadedMemoryBundle(zip, portable, bundleSha256)
+  }
+
+  async importMemoryBundle(
+    bundlePath: string,
+    passphrase?: string,
+    input: { previewToken?: string; confirmation?: string } = {}
+  ): Promise<any> {
+    const { zip, portable, bundleSha256 } = await this.readMemoryBundle(bundlePath, passphrase)
+    const inspected = await this.inspectLoadedMemoryBundle(zip, portable, bundleSha256)
+    assertMemoryImportConfirmation({
+      bundleSha256: inspected.bundleSha256,
+      databaseSha256: inspected.manifest.databaseSha256,
+      stateSha256: inspected.manifest.stateSha256,
+      currentStateSha256: inspected.currentStateSummary.identitySha256
+    }, input)
     const databaseBytes = await zip.file('personal-memory.sqlite')!.async('uint8array')
     const stateText = await zip.file('ai-assistant-state.json')!.async('string')
     const sourceKey = inspected.portable
