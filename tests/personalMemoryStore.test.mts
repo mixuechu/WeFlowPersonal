@@ -4595,6 +4595,58 @@ test('ingestion archive revision covers run and batch lifecycle and self-heals o
   }
 })
 
+test('ingestion recovery revision covers prepare retry commit and self-heals on restart', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'weflow-ingestion-recovery-revision-'))
+  const databasePath = join(directory, 'memory.sqlite')
+  try {
+    const first = new PersonalMemoryStore()
+    first.initialize(databasePath)
+    const initial = Number(first.getIngestionRecoveryRevision())
+    first.prepareIngestionBatchCommit({
+      commitId: 'recovery-revision-commit',
+      runId: 'recovery-revision-run',
+      batchIndex: 0,
+      digest: { tasks: [] },
+      messages: [],
+      checkpointKeys: [],
+      createdAt: '2026-08-03T00:00:00.000Z'
+    })
+    const afterPrepare = Number(first.getIngestionRecoveryRevision())
+    assert.ok(afterPrepare > initial)
+    first.recordIngestionBatchCommitRecoveryFailure(
+      'recovery-revision-commit',
+      '模拟恢复失败'
+    )
+    const afterFailure = Number(first.getIngestionRecoveryRevision())
+    assert.ok(afterFailure > afterPrepare)
+    first.markIngestionBatchCommitApplied('recovery-revision-commit')
+    assert.ok(Number(first.getIngestionRecoveryRevision()) > afterFailure)
+    assert.deepEqual(first.getIngestionRecoveryRevisionHealth(), {
+      version: 'ingestion-recovery-revision-v1',
+      revision: first.getIngestionRecoveryRevision(),
+      expectedTriggers: 3,
+      installedTriggers: 3,
+      healthy: true
+    })
+    ;(first as any).db.exec(
+      'DROP TRIGGER trg_ingestion_recovery_revision_ingestion_batch_commits_update'
+    )
+    assert.equal(first.getIngestionRecoveryRevisionHealth().installedTriggers, 2)
+    assert.equal(first.getIngestionRecoveryRevisionHealth().healthy, false)
+    first.close()
+
+    const reopened = new PersonalMemoryStore()
+    reopened.initialize(databasePath)
+    assert.equal(reopened.getIngestionRecoveryRevisionHealth().installedTriggers, 3)
+    assert.equal(reopened.getIngestionRecoveryRevisionHealth().healthy, true)
+    assert.equal(reopened.listIngestionRecoveryPage().total, 0)
+    assert.equal(reopened.getIngestionCommitHealth().committed, 1)
+    reopened.close()
+  } finally {
+    rmSync(directory, { recursive: true, force: true })
+  }
+})
+
 test('database retrieval scope covers entity links, relation type and evidence time', () => withStore(store => {
   store.syncGraph({
     entities: [
@@ -6423,11 +6475,16 @@ test('prepared recovery directory isolates malformed payloads and paginates with
     assert.deepEqual(malformed.checkpointKeys, [])
 
     const firstPage = store.listIngestionRecoveryPage({ limit: 30 })
-    const middlePage = store.listIngestionRecoveryPage({ offset: 30, limit: 30 })
-    const lastPage = store.listIngestionRecoveryPage({ offset: 60, limit: 30 })
+    const middlePage = store.listIngestionRecoveryPage({
+      offset: 30, limit: 30, revision: firstPage.revision
+    })
+    const lastPage = store.listIngestionRecoveryPage({
+      offset: 60, limit: 30, revision: firstPage.revision
+    })
     assert.equal(firstPage.total, 65)
     assert.equal(firstPage.items.length, 30)
     assert.equal(middlePage.items.length, 30)
+    assert.equal(middlePage.stale, false)
     assert.equal(lastPage.items.length, 5)
     assert.equal(lastPage.hasMore, false)
     assert.equal(new Set([
@@ -6441,6 +6498,15 @@ test('prepared recovery directory isolates malformed payloads and paginates with
     assert.equal(filtered.total, 1)
     assert.equal(filtered.items[0].commit_id, 'recovery-commit-064')
     assert.equal(prepared.at(-1).commitId, 'recovery-commit-064')
+    store.recordIngestionBatchCommitRecoveryFailure(
+      'recovery-commit-000',
+      '并发恢复失败'
+    )
+    const stale = store.listIngestionRecoveryPage({
+      offset: 30, limit: 30, revision: firstPage.revision
+    })
+    assert.equal(stale.stale, true)
+    assert.deepEqual(stale.items, [])
   }))
 
 test('committed ingestion payloads compact on commit and legacy restart without losing audit identity', () => {

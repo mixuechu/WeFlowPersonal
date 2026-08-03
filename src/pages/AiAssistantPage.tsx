@@ -431,6 +431,7 @@ function AiAssistantPage() {
   const [ingestionRecoveryRetrying, setIngestionRecoveryRetrying] = useState(false)
   const ingestionArchiveGate = useRef(new LatestRequestGate())
   const ingestionDossierGate = useRef(new LatestRequestGate())
+  const ingestionRecoveryGate = useRef(new LatestRequestGate())
   const [backingUpMemory, setBackingUpMemory] = useState(false)
   const [restoringMemory, setRestoringMemory] = useState(false)
   const [memoryRestoreDialog, setMemoryRestoreDialog] = useState<any>(null)
@@ -1567,17 +1568,25 @@ function AiAssistantPage() {
     }
   }
 
-  const toggleIngestionRecoveryQueue = async () => {
-    if (ingestionRecoveryQueue) {
-      setIngestionRecoveryQueue(null)
-      return
-    }
+  const loadIngestionRecoveryQueue = async (): Promise<void> => {
+    const request = ingestionRecoveryGate.current.begin()
+    setIngestionRecoveryLoadingMore(false)
     setIngestionRecoveryQueue({ items: [], total: 0, hasMore: false, loading: true })
     try {
       const page = await window.electronAPI.aiAssistant
         .getIngestionRecoveryPage({ limit: 30 })
+      if (!ingestionRecoveryGate.current.isCurrent(request)) return
+      if (page.stale) {
+        window.setTimeout(() => {
+          if (ingestionRecoveryGate.current.isCurrent(request)) {
+            void loadIngestionRecoveryQueue()
+          }
+        }, 250)
+        return
+      }
       setIngestionRecoveryQueue({ ...page, loading: false })
     } catch (error: any) {
+      if (!ingestionRecoveryGate.current.isCurrent(request)) return
       setIngestionRecoveryQueue({
         items: [], total: 0, hasMore: false, loading: false,
         error: error?.message || String(error)
@@ -1585,22 +1594,43 @@ function AiAssistantPage() {
     }
   }
 
+  const toggleIngestionRecoveryQueue = async () => {
+    if (ingestionRecoveryQueue) {
+      ingestionRecoveryGate.current.invalidate()
+      setIngestionRecoveryQueue(null)
+      return
+    }
+    await loadIngestionRecoveryQueue()
+  }
+
   const loadMoreIngestionRecoveryQueue = async () => {
     if (!ingestionRecoveryQueue?.hasMore || ingestionRecoveryLoadingMore) return
+    const request = ingestionRecoveryGate.current.begin()
     setIngestionRecoveryLoadingMore(true)
     try {
       const page = await window.electronAPI.aiAssistant.getIngestionRecoveryPage({
         offset: ingestionRecoveryQueue.items?.length || 0,
-        limit: 30
+        limit: 30,
+        revision: ingestionRecoveryQueue.revision
       })
+      if (!ingestionRecoveryGate.current.isCurrent(request)) return
+      if (page.stale) {
+        setMessage('恢复队列已有变化，已自动从第一页刷新')
+        await loadIngestionRecoveryQueue()
+        return
+      }
       setIngestionRecoveryQueue((current: any) => ({
         ...page,
         items: [...(current?.items || []), ...(page.items || [])]
       }))
     } catch (error: any) {
-      setMessage(error?.message || String(error))
+      if (ingestionRecoveryGate.current.isCurrent(request)) {
+        setMessage(error?.message || String(error))
+      }
     } finally {
-      setIngestionRecoveryLoadingMore(false)
+      if (ingestionRecoveryGate.current.isCurrent(request)) {
+        setIngestionRecoveryLoadingMore(false)
+      }
     }
   }
 
@@ -1611,8 +1641,7 @@ function AiAssistantPage() {
       const result = await window.electronAPI.aiAssistant.retryPreparedIngestion()
       setMessage(`恢复重试完成：尝试 ${result.attempted} 批，成功 ${result.recovered} 批，` +
         `失败 ${result.failed} 批，仍待处理 ${result.remaining} 批。`)
-      const page = await window.electronAPI.aiAssistant.getIngestionRecoveryPage({ limit: 30 })
-      setIngestionRecoveryQueue({ ...page, loading: false })
+      await loadIngestionRecoveryQueue()
       setMemoryDiagnostics(await window.electronAPI.aiAssistant.getMemoryDiagnostics())
       await load()
     } catch (error: any) {
@@ -5612,6 +5641,16 @@ function AiAssistantPage() {
                 <span>当前状态 <b>{memoryDiagnostics.ingestionArchiveRevisionHealthy ? '保护正常' : '需要检查'}</b></span>
                 <span>当前 revision <b>{String(memoryDiagnostics.ingestionArchiveRevision.revision || '0')}</b></span>
                 <span>变更触发器 <b>{Number(memoryDiagnostics.ingestionArchiveRevision.installedTriggers || 0).toLocaleString()} / {Number(memoryDiagnostics.ingestionArchiveRevision.expectedTriggers || 0).toLocaleString()}</b></span>
+              </div>
+            </div>}
+            {memoryDiagnostics.ingestionRecoveryRevision?.version && <div className={`assistant-recovery-audit ${memoryDiagnostics.ingestionRecoveryRevisionHealthy ? 'healthy' : 'unhealthy'}`}>
+              <header><ShieldCheck size={15} /><span><b>断电恢复队列分页一致性保护</b>
+                <small>prepared 批次新增、恢复失败重排、成功提交或清理都会推进独立 SQLCipher revision；自动恢复和手动重试期间，旧分页会被拒绝并重新读取，避免重复或遗漏待恢复批次。</small>
+              </span></header>
+              <div className="assistant-recovery-current">
+                <span>当前状态 <b>{memoryDiagnostics.ingestionRecoveryRevisionHealthy ? '保护正常' : '需要检查'}</b></span>
+                <span>当前 revision <b>{String(memoryDiagnostics.ingestionRecoveryRevision.revision || '0')}</b></span>
+                <span>变更触发器 <b>{Number(memoryDiagnostics.ingestionRecoveryRevision.installedTriggers || 0).toLocaleString()} / {Number(memoryDiagnostics.ingestionRecoveryRevision.expectedTriggers || 0).toLocaleString()}</b></span>
               </div>
             </div>}
             {memoryDiagnostics.taskSearchIndex?.version && <div className={`assistant-recovery-audit ${memoryDiagnostics.taskSearchIndexHealthy ? 'healthy' : 'unhealthy'}`}>

@@ -736,6 +736,7 @@ export class PersonalMemoryStore {
     this.ensureTaskOwnershipReviewRevisionTriggers()
     this.ensureIdentityMergeArchiveRevisionTriggers()
     this.ensureIngestionArchiveRevisionTriggers()
+    this.ensureIngestionRecoveryRevisionTriggers()
     this.repairStructuredSearchIndex()
     this.backfillMergeHistoryNames()
     this.db.exec(`CREATE INDEX IF NOT EXISTS idx_memory_corrections_item
@@ -1372,6 +1373,68 @@ export class PersonalMemoryStore {
     return {
       version: 'ingestion-archive-revision-v1',
       revision: this.getIngestionArchiveRevision(),
+      expectedTriggers: expectedNames.length,
+      installedTriggers: expectedNames.filter(name => installedNames.has(name)).length,
+      healthy: installedNames.size === expectedNames.length
+        && expectedNames.every(name => installedNames.has(name))
+    }
+  }
+
+  private ingestionRecoveryRevisionTriggerNames(): string[] {
+    return ['insert', 'update', 'delete']
+      .map(operation => `trg_ingestion_recovery_revision_ingestion_batch_commits_${operation}`)
+  }
+
+  private ensureIngestionRecoveryRevisionTriggers(): void {
+    if (!this.db) return
+    this.db.prepare(`
+      INSERT INTO schema_meta(key,value,updated_at)
+      VALUES('ingestion_recovery_revision','0',?)
+      ON CONFLICT(key) DO NOTHING
+    `).run(new Date().toISOString())
+    const statements: string[] = []
+    for (const operation of ['INSERT', 'UPDATE', 'DELETE']) {
+      const name = `trg_ingestion_recovery_revision_ingestion_batch_commits_${operation.toLowerCase()}`
+      statements.push(`DROP TRIGGER IF EXISTS ${name};`)
+      statements.push(`
+        CREATE TRIGGER ${name} AFTER ${operation} ON ingestion_batch_commits
+        BEGIN
+          UPDATE schema_meta
+          SET value=CAST(CAST(value AS INTEGER)+1 AS TEXT),
+            updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')
+          WHERE key='ingestion_recovery_revision';
+        END;
+      `)
+    }
+    this.db.exec(statements.join('\n'))
+  }
+
+  getIngestionRecoveryRevision(): string {
+    if (!this.db) return '0'
+    return String((this.db.prepare(`
+      SELECT value FROM schema_meta WHERE key='ingestion_recovery_revision'
+    `).get() as any)?.value || '0')
+  }
+
+  getIngestionRecoveryRevisionHealth(): any {
+    const expectedNames = this.ingestionRecoveryRevisionTriggerNames()
+    if (!this.db) {
+      return {
+        version: 'ingestion-recovery-revision-v1',
+        revision: '0',
+        expectedTriggers: expectedNames.length,
+        installedTriggers: 0,
+        healthy: false
+      }
+    }
+    const rows = this.db.prepare(`
+      SELECT name FROM sqlite_master
+      WHERE type='trigger' AND name LIKE 'trg_ingestion_recovery_revision_%'
+    `).all() as Array<{ name: string }>
+    const installedNames = new Set(rows.map(row => String(row.name)))
+    return {
+      version: 'ingestion-recovery-revision-v1',
+      revision: this.getIngestionRecoveryRevision(),
       expectedTriggers: expectedNames.length,
       installedTriggers: expectedNames.filter(name => installedNames.has(name)).length,
       healthy: installedNames.size === expectedNames.length
@@ -2824,6 +2887,7 @@ export class PersonalMemoryStore {
     const taskOwnershipReviewRevision = this.getTaskOwnershipReviewRevisionHealth()
     const identityMergeArchiveRevision = this.getIdentityMergeArchiveRevisionHealth()
     const ingestionArchiveRevision = this.getIngestionArchiveRevisionHealth()
+    const ingestionRecoveryRevision = this.getIngestionRecoveryRevisionHealth()
     return {
       healthy: integrity === 'ok'
         && structuredEvidenceMigration.constraintsHealthy
@@ -2837,7 +2901,8 @@ export class PersonalMemoryStore {
         && taskArchiveRevision.healthy
         && taskOwnershipReviewRevision.healthy
         && identityMergeArchiveRevision.healthy
-        && ingestionArchiveRevision.healthy,
+        && ingestionArchiveRevision.healthy
+        && ingestionRecoveryRevision.healthy,
       integrity,
       foreignKeyViolations,
       referentialIntegrityHealthy,
@@ -2851,6 +2916,7 @@ export class PersonalMemoryStore {
       taskOwnershipReviewRevisionHealthy: taskOwnershipReviewRevision.healthy,
       identityMergeArchiveRevisionHealthy: identityMergeArchiveRevision.healthy,
       ingestionArchiveRevisionHealthy: ingestionArchiveRevision.healthy,
+      ingestionRecoveryRevisionHealthy: ingestionRecoveryRevision.healthy,
       encryption: {
         enabled: Boolean(this.encryptionKey),
         cipher: this.encryptionKey ? String(this.db.pragma('cipher', { simple: true }) || '') : 'none',
@@ -2872,6 +2938,7 @@ export class PersonalMemoryStore {
       taskOwnershipReviewRevision,
       identityMergeArchiveRevision,
       ingestionArchiveRevision,
+      ingestionRecoveryRevision,
       backups
     }
   }
@@ -6312,11 +6379,28 @@ export class PersonalMemoryStore {
     query?: string
     offset?: number
     limit?: number
-  } = {}): { items: any[]; total: number; hasMore: boolean; offset: number; limit: number } {
+    revision?: string
+  } = {}): {
+    items: any[]
+    total: number
+    hasMore: boolean
+    offset: number
+    limit: number
+    revision: string
+    stale: boolean
+  } {
     const limit = Math.max(1, Math.min(100, Math.floor(Number(options.limit) || 30)))
     const offset = Math.max(0, Math.min(1_000_000, Math.floor(Number(options.offset) || 0)))
-    const empty = { items: [], total: 0, hasMore: false, offset, limit }
+    const revision = this.getIngestionRecoveryRevision()
+    const empty = {
+      items: [], total: 0, hasMore: false, offset, limit,
+      revision, stale: false
+    }
     if (!this.db) return empty
+    const expectedRevision = String(options.revision || '').trim()
+    if (offset > 0 && expectedRevision && expectedRevision !== revision) {
+      return { ...empty, stale: true }
+    }
     const query = String(options.query || '').trim().toLocaleLowerCase('zh-CN')
     const where = query
       ? `WHERE status='prepared' AND (
@@ -6334,12 +6418,22 @@ export class PersonalMemoryStore {
       FROM ingestion_batch_commits ${where}
       ORDER BY recovery_attempts,prepared_at,commit_id LIMIT ? OFFSET ?
     `).all(...parameters, limit, offset) as any[]
+    const completedRevision = this.getIngestionRecoveryRevision()
+    if (completedRevision !== revision) {
+      return {
+        ...empty,
+        revision: completedRevision,
+        stale: true
+      }
+    }
     return {
       items,
       total,
       hasMore: offset + items.length < total,
       offset,
-      limit
+      limit,
+      revision,
+      stale: false
     }
   }
 

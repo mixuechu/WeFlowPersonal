@@ -3815,7 +3815,8 @@ export class AiAssistantService {
     return personalMemoryStore.listIngestionRecoveryPage({
       query: String(options?.query || ''),
       offset: Number(options?.offset || 0),
-      limit: Number(options?.limit || 30)
+      limit: Number(options?.limit || 30),
+      revision: String(options?.revision || '')
     })
   }
 
