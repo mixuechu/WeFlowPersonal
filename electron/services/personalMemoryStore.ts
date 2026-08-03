@@ -3919,7 +3919,7 @@ export class PersonalMemoryStore {
     const limit = Math.max(1, Math.min(100, Math.floor(Number(options?.limit) || 40)))
     const revision = this.getGraphReviewRevision()
     const expectedRevision = String(options?.revision || '').trim()
-    if (offset > 0 && expectedRevision && expectedRevision !== revision) {
+    if (offset > 0 && expectedRevision !== revision) {
       return {
         items: [], offset, limit, total: 0, hasMore: false,
         counts: { pending: 0, resolved: 0, all: 0 }, revision, stale: true
@@ -4061,7 +4061,7 @@ export class PersonalMemoryStore {
     const revision = this.getIdentityMergeArchiveRevision()
     const offset = Math.max(0, Math.min(1_000_000, Math.floor(Number(options.offset) || 0)))
     const expectedRevision = String(options.revision || '').trim()
-    if (offset > 0 && expectedRevision && expectedRevision !== revision) {
+    if (offset > 0 && expectedRevision !== revision) {
       return {
         items: [], total: 0, hasMore: false, counts: emptyCounts,
         revision, stale: true
@@ -5024,7 +5024,7 @@ export class PersonalMemoryStore {
     const revision = this.getTaskArchiveRevision()
     const offset = Math.max(0, Math.min(1_000_000, Math.floor(Number(options.offset) || 0)))
     const expectedRevision = String(options.revision || '').trim()
-    if (offset > 0 && expectedRevision && expectedRevision !== revision) {
+    if (offset > 0 && expectedRevision !== revision) {
       return { items: [], total: 0, hasMore: false, projects: [], revision, stale: true }
     }
     const conditions = [`classification='mine'`]
@@ -5137,7 +5137,7 @@ export class PersonalMemoryStore {
     const revision = this.getTaskOwnershipReviewRevision()
     const offset = Math.max(0, Math.min(1_000_000, Math.floor(Number(options.offset) || 0)))
     const expectedRevision = String(options.revision || '').trim()
-    if (offset > 0 && expectedRevision && expectedRevision !== revision) {
+    if (offset > 0 && expectedRevision !== revision) {
       return { items: [], total: 0, hasMore: false, counts: {}, revision, stale: true }
     }
     const conditions = [`classification!='mine'`]
@@ -5470,7 +5470,7 @@ export class PersonalMemoryStore {
     const revision = this.getStructuredMemoryRevision()
     const offset = Math.max(0, Number(options.offset || 0))
     const expectedRevision = String(options.revision || '').trim()
-    if (offset > 0 && expectedRevision && expectedRevision !== revision) {
+    if (offset > 0 && expectedRevision !== revision) {
       return { items: [], total: 0, hasMore: false, revision, stale: true }
     }
     const conditions = options.status ? [] : [`ev.status!='rejected'`]
@@ -5586,7 +5586,7 @@ export class PersonalMemoryStore {
     const revision = this.getStructuredMemoryRevision()
     const offset = Math.max(0, Math.min(1_000_000, Math.floor(Number(options.offset) || 0)))
     const expectedRevision = String(options.revision || '').trim()
-    if (offset > 0 && expectedRevision && expectedRevision !== revision) {
+    if (offset > 0 && expectedRevision !== revision) {
       return { items: [], total: 0, hasMore: false, revision, stale: true }
     }
     const conditions: string[] = []
@@ -6209,7 +6209,7 @@ export class PersonalMemoryStore {
     const revision = this.getTaskOwnershipReviewRevision()
     const offset = Math.max(0, Math.min(1_000_000, Math.floor(Number(options.offset) || 0)))
     const expectedRevision = String(options.revision || '').trim()
-    if (offset > 0 && expectedRevision && expectedRevision !== revision) {
+    if (offset > 0 && expectedRevision !== revision) {
       return {
         items: [], total: 0, hasMore: false,
         counts: { active: 0, revoked: 0, all: 0 }, revision, stale: true
@@ -6735,7 +6735,7 @@ export class PersonalMemoryStore {
     }
     if (!this.db) return empty
     const expectedRevision = String(options.revision || '').trim()
-    if (offset > 0 && expectedRevision && expectedRevision !== revision) {
+    if (offset > 0 && expectedRevision !== revision) {
       return { ...empty, stale: true }
     }
     const query = String(options.query || '').trim().toLocaleLowerCase('zh-CN')
@@ -7206,7 +7206,7 @@ export class PersonalMemoryStore {
     const revision = this.getIngestionArchiveRevision()
     const offset = Math.max(0, Math.min(1_000_000, Math.floor(Number(options.offset) || 0)))
     const expectedRevision = String(options.revision || '').trim()
-    if (offset > 0 && expectedRevision && expectedRevision !== revision) {
+    if (offset > 0 && expectedRevision !== revision) {
       return {
         items: [], total: 0, hasMore: false, counts: emptyCounts,
         revision, stale: true
@@ -7303,7 +7303,7 @@ export class PersonalMemoryStore {
     const revision = this.getIngestionArchiveRevision()
     const batchOffset = Math.max(0, Math.min(1_000_000, Math.floor(Number(options.batchOffset) || 0)))
     const expectedRevision = String(options.revision || '').trim()
-    if (batchOffset > 0 && expectedRevision && expectedRevision !== revision) {
+    if (batchOffset > 0 && expectedRevision !== revision) {
       return {
         id: runId, batches: [], batchTotal: 0, batchOffset,
         batchLimit: Math.max(1, Math.min(100, Math.floor(Number(options.batchLimit) || 40))),
@@ -8745,7 +8745,7 @@ export class PersonalMemoryStore {
     }
     if (!this.db) return empty
     const expectedRevision = String(options.revision || '').trim()
-    if (offset > 0 && expectedRevision && expectedRevision !== revision) {
+    if (offset > 0 && expectedRevision !== revision) {
       return { ...empty, stale: true }
     }
     const conditions: string[] = []
@@ -8932,7 +8932,7 @@ export class PersonalMemoryStore {
     if (!this.db) return empty
     const revision = this.getAssistantHistoryRevision()
     const expectedRevision = String(options.revision || '').trim()
-    if (offset > 0 && expectedRevision && expectedRevision !== revision) {
+    if (offset > 0 && expectedRevision !== revision) {
       return { ...empty, revision, stale: true }
     }
     const eligibility = `(
@@ -9213,7 +9213,7 @@ export class PersonalMemoryStore {
     }
     if (!this.db || !normalizedMessageId) return empty
     const expectedRevision = String(options.revision || '').trim()
-    if (offset > 0 && expectedRevision && expectedRevision !== revision) {
+    if (offset > 0 && expectedRevision !== revision) {
       return { ...empty, stale: true }
     }
     const total = Number((this.db.prepare(`
@@ -9305,7 +9305,7 @@ export class PersonalMemoryStore {
     const expectedRevision = typeof options === 'number'
       ? ''
       : String(options.revision || '').trim()
-    if (offset > 0 && expectedRevision && expectedRevision !== revision) {
+    if (offset > 0 && expectedRevision !== revision) {
       return {
         id, messages: [], total: 0, offset, limit,
         anchorMessageId: '', anchorFound: false,

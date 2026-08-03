@@ -930,7 +930,13 @@ test('identity merge archive is fully pageable, private and restores every activ
       assert.equal(legacyNames.items[0].source_name, '被合并人物 2499')
       assert.equal(legacyNames.items[0].target_name, '保留人物 2499')
       assert.equal(reopened.listActiveMergeTargetIds().length, 2_000)
-      const lastPage = reopened.listMergeHistoryPage({ offset: 2_480, limit: 40 })
+      const reopenedFirstPage = reopened.listMergeHistoryPage({ limit: 1 })
+      assert.equal(reopened.listMergeHistoryPage({ offset: 1, limit: 1 }).stale, true)
+      const lastPage = reopened.listMergeHistoryPage({
+        offset: 2_480,
+        limit: 40,
+        revision: reopenedFirstPage.revision
+      })
       assert.equal(lastPage.items.length, 20)
       assert.equal(lastPage.hasMore, false)
     } finally {
@@ -5355,7 +5361,16 @@ test('legacy assistant citations are compacted at scale without losing reference
       assert.equal(stats.citationsCompacted, 2_500)
       assert.equal(stats.malformedPayloadsCleared, 1)
       assert.ok(stats.bytesReclaimed > 1_000_000)
-      const page = reopened.getAssistantConversation('legacy-citations', { offset: 1, limit: 1 })
+      const firstPage = reopened.getAssistantConversation('legacy-citations', { limit: 1 })
+      assert.equal(reopened.getAssistantConversation(
+        'legacy-citations',
+        { offset: 1, limit: 1 }
+      ).stale, true)
+      const page = reopened.getAssistantConversation('legacy-citations', {
+        offset: 1,
+        limit: 1,
+        revision: firstPage.revision
+      })
       assert.equal(page.messages[0].citations[0].documentId, 'claim:legacy-2499')
       assert.equal(page.messages[0].citations[0].feedbackContext.query, '历史问题 2499')
       assert.equal(page.messages[0].citations[0].evidence, undefined)
@@ -5367,7 +5382,8 @@ test('legacy assistant citations are compacted at scale without losing reference
       const middleReviewPage = reopened.listAssistantAnswerReviewsPage({
         status: 'invalid',
         offset: 1_240,
-        limit: 40
+        limit: 40,
+        revision: firstReviewPage.revision
       })
       assert.equal(firstReviewPage.total, 2_500)
       assert.equal(firstReviewPage.counts.invalid, 2_500)
@@ -5772,7 +5788,15 @@ test('assistant archive and message pagination survive a SQLCipher process-style
     assert.equal(archive.total, 1)
     assert.equal(archive.items[0].message_count, 62)
     const latest = second.getAssistantConversation(conversationId, { offset: 0, limit: 20 })
-    const older = second.getAssistantConversation(conversationId, { offset: 20, limit: 42 })
+    assert.equal(second.getAssistantConversation(
+      conversationId,
+      { offset: 20, limit: 42 }
+    ).stale, true)
+    const older = second.getAssistantConversation(conversationId, {
+      offset: 20,
+      limit: 42,
+      revision: latest.revision
+    })
     assert.equal(latest.hasOlder, true)
     assert.equal(older.hasOlder, false)
     assert.equal(new Set([...latest.messages, ...older.messages].map((message: any) => message.id)).size, 62)
@@ -6717,13 +6741,24 @@ test('ingestion run archive paginates all years and loads bounded batch audits o
     const reopened = new PersonalMemoryStore()
     try {
       reopened.initialize(databasePath, key)
-      const lastPage = reopened.listIngestionRunPage({ offset: 1_180, limit: 40 })
+      const reopenedFirstPage = reopened.listIngestionRunPage({ limit: 1 })
+      assert.equal(reopened.listIngestionRunPage({ offset: 1, limit: 1 }).stale, true)
+      const lastPage = reopened.listIngestionRunPage({
+        offset: 1_180,
+        limit: 40,
+        revision: reopenedFirstPage.revision
+      })
       assert.equal(lastPage.items.length, 20)
       assert.equal(lastPage.hasMore, false)
       assert.equal(reopened.getIngestionArchiveSummary().runs, 1_200)
       assert.equal(reopened.getIngestionRunDossier('archive-run-1199', {
+        batchOffset: 1,
+        batchLimit: 1
+      }).stale, true)
+      assert.equal(reopened.getIngestionRunDossier('archive-run-1199', {
         batchOffset: 120,
-        batchLimit: 40
+        batchLimit: 40,
+        revision: reopenedFirstPage.revision
       }).batches.length, 5)
     } finally {
       reopened.close()
