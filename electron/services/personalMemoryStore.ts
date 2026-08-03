@@ -730,6 +730,7 @@ export class PersonalMemoryStore {
     this.repairStructuredEvidenceReferences()
     this.repairGenericSearchEvidenceIdentity()
     this.ensureMemorySearchRevisionTriggers()
+    this.ensureMemorySearchFeedbackArchiveRevisionTriggers()
     this.ensureStructuredMemoryRevisionTriggers()
     this.ensureGraphReviewRevisionTriggers()
     this.ensureTaskArchiveRevisionTriggers()
@@ -957,6 +958,62 @@ export class PersonalMemoryStore {
     return {
       version: 'memory-search-revision-v1',
       revision: this.getMemorySearchRevision(),
+      expectedTriggers,
+      installedTriggers,
+      healthy: installedTriggers === expectedTriggers
+    }
+  }
+
+  private ensureMemorySearchFeedbackArchiveRevisionTriggers(): void {
+    if (!this.db) return
+    const now = new Date().toISOString()
+    this.db.prepare(`
+      INSERT INTO schema_meta(key,value,updated_at)
+      VALUES('memory_search_feedback_archive_revision','0',?)
+      ON CONFLICT(key) DO NOTHING
+    `).run(now)
+    const statements: string[] = []
+    for (const operation of ['INSERT', 'UPDATE', 'DELETE']) {
+      const name = `trg_memory_search_feedback_archive_revision_${operation.toLowerCase()}`
+      statements.push(`DROP TRIGGER IF EXISTS ${name};`)
+      statements.push(`
+        CREATE TRIGGER ${name} AFTER ${operation} ON memory_search_feedback
+        BEGIN
+          UPDATE schema_meta
+          SET value=CAST(CAST(value AS INTEGER)+1 AS TEXT),
+            updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')
+          WHERE key='memory_search_feedback_archive_revision';
+        END;
+      `)
+    }
+    this.db.exec(statements.join('\n'))
+  }
+
+  getMemorySearchFeedbackArchiveRevision(): string {
+    if (!this.db) return '0'
+    return String((this.db.prepare(`
+      SELECT value FROM schema_meta WHERE key='memory_search_feedback_archive_revision'
+    `).get() as any)?.value || '0')
+  }
+
+  getMemorySearchFeedbackArchiveRevisionHealth(): any {
+    const expectedTriggers = 3
+    if (!this.db) {
+      return {
+        version: 'memory-search-feedback-archive-revision-v1',
+        revision: '0',
+        expectedTriggers,
+        installedTriggers: 0,
+        healthy: false
+      }
+    }
+    const installedTriggers = Number((this.db.prepare(`
+      SELECT COUNT(*) AS count FROM sqlite_master
+      WHERE type='trigger' AND name LIKE 'trg_memory_search_feedback_archive_revision_%'
+    `).get() as any)?.count || 0)
+    return {
+      version: 'memory-search-feedback-archive-revision-v1',
+      revision: this.getMemorySearchFeedbackArchiveRevision(),
       expectedTriggers,
       installedTriggers,
       healthy: installedTriggers === expectedTriggers
@@ -2963,6 +3020,8 @@ export class PersonalMemoryStore {
     const taskSearchIndexHealthy = taskSearchIndex.version === 0
       || taskSearchIndex.currentMismatches === 0
     const memorySearchRevision = this.getMemorySearchRevisionHealth()
+    const memorySearchFeedbackArchiveRevision =
+      this.getMemorySearchFeedbackArchiveRevisionHealth()
     const structuredMemoryRevision = this.getStructuredMemoryRevisionHealth()
     const graphReviewRevision = this.getGraphReviewRevisionHealth()
     const taskArchiveRevision = this.getTaskArchiveRevisionHealth()
@@ -2979,6 +3038,7 @@ export class PersonalMemoryStore {
         && structuredSearchIndexHealthy
         && taskSearchIndexHealthy
         && memorySearchRevision.healthy
+        && memorySearchFeedbackArchiveRevision.healthy
         && structuredMemoryRevision.healthy
         && graphReviewRevision.healthy
         && taskArchiveRevision.healthy
@@ -2994,6 +3054,8 @@ export class PersonalMemoryStore {
       structuredSearchIndexHealthy,
       taskSearchIndexHealthy,
       memorySearchRevisionHealthy: memorySearchRevision.healthy,
+      memorySearchFeedbackArchiveRevisionHealthy:
+        memorySearchFeedbackArchiveRevision.healthy,
       structuredMemoryRevisionHealthy: structuredMemoryRevision.healthy,
       graphReviewRevisionHealthy: graphReviewRevision.healthy,
       taskArchiveRevisionHealthy: taskArchiveRevision.healthy,
@@ -3017,6 +3079,7 @@ export class PersonalMemoryStore {
       structuredSearchIndex,
       taskSearchIndex,
       memorySearchRevision,
+      memorySearchFeedbackArchiveRevision,
       structuredMemoryRevision,
       graphReviewRevision,
       taskArchiveRevision,
@@ -7388,10 +7451,23 @@ export class PersonalMemoryStore {
     to?: string
     offset?: number
     limit?: number
+    revision?: string
   } = {}): any {
-    if (!this.db) return { items: [], total: 0, hasMore: false, offset: 0, limit: 40, counts: {} }
     const offset = Math.max(0, Number(options.offset) || 0)
     const limit = Math.max(1, Math.min(100, Number(options.limit) || 40))
+    const revision = this.getMemorySearchFeedbackArchiveRevision()
+    if (!this.db) {
+      return {
+        items: [], total: 0, hasMore: false, offset, limit, counts: {},
+        revision, stale: false
+      }
+    }
+    if (offset > 0 && String(options.revision || '') !== revision) {
+      return {
+        items: [], total: 0, hasMore: false, offset, limit, counts: {},
+        revision, stale: true
+      }
+    }
     const { where, parameters } = this.buildMemorySearchFeedbackArchiveFilter(options)
     const total = Number((this.db.prepare(`
       SELECT COUNT(*) AS count FROM memory_search_feedback feedback ${where}
@@ -7422,17 +7498,27 @@ export class PersonalMemoryStore {
     const counts = Object.fromEntries((this.db.prepare(`
       SELECT action,COUNT(*) AS count FROM memory_search_feedback GROUP BY action
     `).all() as Array<{ action: string; count: number }>).map(row => [row.action, Number(row.count || 0)]))
+    const publicItems = items.map(item => ({
+      ...item,
+      isCurrent: Boolean(item.isCurrent),
+      scope: (() => { try { return JSON.parse(String(item.scopeJson || '{}')) } catch { return {} } })()
+    }))
+    const completedRevision = this.getMemorySearchFeedbackArchiveRevision()
+    if (completedRevision !== revision) {
+      return {
+        items: [], total: 0, hasMore: false, offset, limit, counts: {},
+        revision: completedRevision, stale: true
+      }
+    }
     return {
-      items: items.map(item => ({
-        ...item,
-        isCurrent: Boolean(item.isCurrent),
-        scope: (() => { try { return JSON.parse(String(item.scopeJson || '{}')) } catch { return {} } })()
-      })),
+      items: publicItems,
       total,
       hasMore: offset + items.length < total,
       offset,
       limit,
-      counts
+      counts,
+      revision,
+      stale: false
     }
   }
 
@@ -7445,8 +7531,13 @@ export class PersonalMemoryStore {
     all?: boolean
     confirmation?: string
     preview?: boolean
+    revision?: string
   } = {}): any {
     if (!this.db) throw new Error('个人记忆数据库尚未初始化')
+    const revision = this.getMemorySearchFeedbackArchiveRevision()
+    if (input.preview === false && String(input.revision || '') !== revision) {
+      throw new Error('检索反馈已发生变化，请重新预览后再删除')
+    }
     const { where, parameters, hasExplicitFilter } = this.buildMemorySearchFeedbackArchiveFilter(input)
     const deleteAll = input.all === true
     if (!hasExplicitFilter && !deleteAll) throw new Error('请选择要清理的反馈范围')
@@ -7492,7 +7583,11 @@ export class PersonalMemoryStore {
       matchingRows: matching,
       affectedChains: chains.length,
       rowsToDelete,
-      removesCurrentDecisions
+      removesCurrentDecisions,
+      revision
+    }
+    if (this.getMemorySearchFeedbackArchiveRevision() !== revision) {
+      throw new Error('检索反馈已发生变化，请重新预览后再删除')
     }
     if (input.preview !== false) return preview
     if (String(input.confirmation || '') !== '永久删除检索反馈') throw new Error('请输入“永久删除检索反馈”确认')

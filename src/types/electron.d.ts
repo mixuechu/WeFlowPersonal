@@ -1798,6 +1798,7 @@ export interface ElectronAPI {
         to?: string
         offset?: number
         limit?: number
+        revision?: string
       }) => Promise<any>
       deleteMemorySearchFeedback: (input?: {
         id?: number
@@ -1808,6 +1809,7 @@ export interface ElectronAPI {
         all?: boolean
         confirmation?: string
         preview?: boolean
+        revision?: string
       }) => Promise<any>
       getMemoryEvidencePage: (
         documentType: string,

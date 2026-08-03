@@ -212,10 +212,13 @@ test('search feedback archive paginates all history with stable action and text 
     })
   }
   const first = store.getMemorySearchFeedbackArchive({ offset: 0, limit: 40 })
-  const second = store.getMemorySearchFeedbackArchive({ offset: 40, limit: 40 })
+  const second = store.getMemorySearchFeedbackArchive({
+    offset: 40, limit: 40, revision: first.revision
+  })
   assert.equal(first.total, 2_500)
   assert.equal(first.items.length, 40)
   assert.equal(first.hasMore, true)
+  assert.equal(second.stale, false)
   assert.equal(new Set([...first.items, ...second.items].map((item: any) => item.id)).size, 80)
   assert.ok(first.items.every((item: any, index: number) =>
     index === 0 || first.items[index - 1].id > item.id))
@@ -226,6 +229,20 @@ test('search feedback archive paginates all history with stable action and text 
   assert.equal(exact.total, 1)
   assert.equal(exact.items[0].queryText, '历史查询 2499')
   assert.deepEqual(exact.items[0].scope.documentTypes, ['entity'])
+  const addedContext = buildMemorySearchFeedbackContext('新反馈', {})
+  store.recordMemorySearchFeedback({
+    queryFingerprint: addedContext.queryFingerprint,
+    scopeFingerprint: addedContext.scopeFingerprint,
+    queryText: '新反馈',
+    scopeJson: addedContext.scopeJson,
+    documentId: 'entity:person-feedback-archive',
+    action: 'helpful'
+  })
+  const stale = store.getMemorySearchFeedbackArchive({
+    offset: 40, limit: 40, revision: first.revision
+  })
+  assert.equal(stale.stale, true)
+  assert.deepEqual(stale.items, [])
 }))
 
 test('search feedback purge previews full chains, requires confirmation and never revives older decisions', () => {
@@ -268,42 +285,67 @@ test('search feedback purge previews full chains, requires confirmation and neve
     const targetHistory = store.getMemorySearchFeedbackArchive({ query: '敏感项目代号' })
     assert.equal(targetHistory.total, 3)
     const preview = store.deleteMemorySearchFeedback({ id: targetHistory.items[0].id })
-    assert.deepEqual(preview, {
-      matchingRows: 1,
-      affectedChains: 1,
-      rowsToDelete: 3,
-      removesCurrentDecisions: 0
+    assert.equal(preview.matchingRows, 1)
+    assert.equal(preview.affectedChains, 1)
+    assert.equal(preview.rowsToDelete, 3)
+    assert.equal(preview.removesCurrentDecisions, 0)
+    assert.match(preview.revision, /^\d+$/)
+    assert.throws(() => store.deleteMemorySearchFeedback({
+      id: targetHistory.items[0].id,
+      preview: false,
+      revision: preview.revision,
+      confirmation: '永久删除'
+    }), /永久删除检索反馈/)
+    assert.throws(() => store.deleteMemorySearchFeedback({
+      preview: false,
+      revision: preview.revision
+    }), /请选择/)
+    store.recordMemorySearchFeedback({
+      queryFingerprint: retained.queryFingerprint,
+      scopeFingerprint: retained.scopeFingerprint,
+      queryText: retained.query,
+      scopeJson: retained.scopeJson,
+      documentId: 'entity:person-feedback-purge',
+      action: 'cleared'
     })
     assert.throws(() => store.deleteMemorySearchFeedback({
       id: targetHistory.items[0].id,
       preview: false,
-      confirmation: '永久删除'
-    }), /永久删除检索反馈/)
-    assert.throws(() => store.deleteMemorySearchFeedback({ preview: false }), /请选择/)
+      revision: preview.revision,
+      confirmation: '永久删除检索反馈'
+    }), /重新预览/)
+    const refreshedPreview = store.deleteMemorySearchFeedback({
+      id: targetHistory.items[0].id
+    })
     const deleted = store.deleteMemorySearchFeedback({
       id: targetHistory.items[0].id,
       preview: false,
+      revision: refreshedPreview.revision,
       confirmation: '永久删除检索反馈'
     })
     assert.equal(deleted.deletedRows, 3)
     assert.deepEqual(store.listMemorySearchFeedback(target.queryFingerprint, target.scopeFingerprint), [])
     assert.equal(store.getMemorySearchFeedbackArchive({ query: '敏感项目代号' }).total, 0)
-    assert.equal(store.listMemorySearchFeedback(retained.queryFingerprint, retained.scopeFingerprint)[0].action, 'helpful')
+    assert.deepEqual(
+      store.listMemorySearchFeedback(retained.queryFingerprint, retained.scopeFingerprint),
+      []
+    )
     store.close()
 
     const reopened = new PersonalMemoryStore()
     try {
       reopened.initialize(databasePath, key)
-      assert.equal(reopened.getMemorySearchFeedbackArchive({}).total, 1)
+      assert.equal(reopened.getMemorySearchFeedbackArchive({}).total, 2)
       assert.equal(reopened.getMemorySearchFeedbackArchive({ query: '敏感项目代号' }).total, 0)
       const allPreview = reopened.deleteMemorySearchFeedback({ all: true })
-      assert.equal(allPreview.rowsToDelete, 1)
+      assert.equal(allPreview.rowsToDelete, 2)
       const allDeleted = reopened.deleteMemorySearchFeedback({
         all: true,
         preview: false,
+        revision: allPreview.revision,
         confirmation: '永久删除检索反馈'
       })
-      assert.equal(allDeleted.deletedRows, 1)
+      assert.equal(allDeleted.deletedRows, 2)
       assert.equal(reopened.getMemorySearchFeedbackArchive({}).total, 0)
     } finally {
       reopened.close()
@@ -4243,6 +4285,58 @@ test('memory search revision trigger health is visible and repaired on restart',
     reopened.initialize(databasePath)
     assert.equal(reopened.getMemorySearchRevisionHealth().installedTriggers, 18)
     assert.equal(reopened.getMemorySearchRevisionHealth().healthy, true)
+    reopened.close()
+  } finally {
+    rmSync(directory, { recursive: true, force: true })
+  }
+})
+
+test('search feedback archive revision advances and self-heals on restart', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'weflow-search-feedback-archive-revision-'))
+  const databasePath = join(directory, 'memory.sqlite')
+  try {
+    const first = new PersonalMemoryStore()
+    first.initialize(databasePath)
+    first.syncGraph({
+      entities: [{
+        id: 'feedback-revision-person',
+        type: 'person',
+        canonicalName: '反馈版本人物',
+        trustStatus: 'confirmed'
+      }],
+      relations: [],
+      reviewQueue: []
+    } as any)
+    const initial = Number(first.getMemorySearchFeedbackArchiveRevision())
+    const context = buildMemorySearchFeedbackContext('反馈档案版本', {})
+    first.recordMemorySearchFeedback({
+      queryFingerprint: context.queryFingerprint,
+      scopeFingerprint: context.scopeFingerprint,
+      queryText: context.query,
+      scopeJson: context.scopeJson,
+      documentId: 'entity:feedback-revision-person',
+      action: 'helpful'
+    })
+    assert.ok(Number(first.getMemorySearchFeedbackArchiveRevision()) > initial)
+    assert.deepEqual(first.getMemorySearchFeedbackArchiveRevisionHealth(), {
+      version: 'memory-search-feedback-archive-revision-v1',
+      revision: first.getMemorySearchFeedbackArchiveRevision(),
+      expectedTriggers: 3,
+      installedTriggers: 3,
+      healthy: true
+    })
+    ;(first as any).db.exec(
+      'DROP TRIGGER trg_memory_search_feedback_archive_revision_update'
+    )
+    assert.equal(first.getMemorySearchFeedbackArchiveRevisionHealth().installedTriggers, 2)
+    assert.equal(first.getMemorySearchFeedbackArchiveRevisionHealth().healthy, false)
+    first.close()
+
+    const reopened = new PersonalMemoryStore()
+    reopened.initialize(databasePath)
+    assert.equal(reopened.getMemorySearchFeedbackArchiveRevisionHealth().installedTriggers, 3)
+    assert.equal(reopened.getMemorySearchFeedbackArchiveRevisionHealth().healthy, true)
+    assert.equal(reopened.getMemorySearchFeedbackArchive({}).total, 1)
     reopened.close()
   } finally {
     rmSync(directory, { recursive: true, force: true })

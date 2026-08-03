@@ -971,6 +971,14 @@ function AiAssistantPage() {
       void window.electronAPI.aiAssistant.getMemorySearchFeedbackArchive(memoryFeedbackArchiveOptions)
         .then(page => {
           if (!memoryFeedbackArchiveGate.current.isCurrent(request)) return
+          if (page.stale) {
+            window.setTimeout(() => {
+              if (memoryFeedbackArchiveGate.current.isCurrent(request)) {
+                setMemoryFeedbackArchiveRefreshKey(value => value + 1)
+              }
+            }, 250)
+            return
+          }
           setMemoryFeedbackArchive({ ...page, status: 'ready' })
         })
         .catch(error => {
@@ -2360,9 +2368,15 @@ function AiAssistantPage() {
     try {
       const page = await window.electronAPI.aiAssistant.getMemorySearchFeedbackArchive({
         ...memoryFeedbackArchiveOptions,
-        offset: memoryFeedbackArchive.items.length
+        offset: memoryFeedbackArchive.items.length,
+        revision: memoryFeedbackArchive.revision
       })
       if (!memoryFeedbackArchiveGate.current.isCurrent(request)) return
+      if (page.stale) {
+        setMessage('检索反馈档案在翻页期间发生变化，已重新载入最新内容。')
+        setMemoryFeedbackArchiveRefreshKey(value => value + 1)
+        return
+      }
       setMemoryFeedbackArchive((current: any) => ({
         ...page,
         items: [...current.items, ...page.items],
@@ -2428,6 +2442,7 @@ function AiAssistantPage() {
       const result = await window.electronAPI.aiAssistant.deleteMemorySearchFeedback({
         ...memoryFeedbackDeleteDialog.filters,
         preview: false,
+        revision: memoryFeedbackDeleteDialog.preview?.revision,
         confirmation: memoryFeedbackDeleteConfirmation
       })
       if (!memoryFeedbackDeleteGate.current.isCurrent(request)) return
@@ -2451,10 +2466,14 @@ function AiAssistantPage() {
       setMessage(`已永久删除 ${result.deletedRows || 0} 条检索反馈；${result.affectedChains || 0} 组排序偏好已清除。`)
     } catch (error: any) {
       if (!memoryFeedbackDeleteGate.current.isCurrent(request)) return
+      const errorMessage = error?.message || String(error)
+      if (errorMessage.includes('重新预览')) {
+        setMemoryFeedbackArchiveRefreshKey(value => value + 1)
+      }
       setMemoryFeedbackDeleteDialog((current: any) => ({
         ...current,
         status: 'error',
-        error: error?.message || String(error)
+        error: errorMessage
       }))
     }
   }
@@ -5643,6 +5662,16 @@ function AiAssistantPage() {
                 <span>当前状态 <b>{memoryDiagnostics.memorySearchRevisionHealthy ? '保护正常' : '需要检查'}</b></span>
                 <span>当前 revision <b>{String(memoryDiagnostics.memorySearchRevision.revision || '0')}</b></span>
                 <span>变更触发器 <b>{Number(memoryDiagnostics.memorySearchRevision.installedTriggers || 0).toLocaleString()} / {Number(memoryDiagnostics.memorySearchRevision.expectedTriggers || 0).toLocaleString()}</b></span>
+              </div>
+            </div>}
+            {memoryDiagnostics.memorySearchFeedbackArchiveRevision?.version && <div className={`assistant-recovery-audit ${memoryDiagnostics.memorySearchFeedbackArchiveRevisionHealthy ? 'healthy' : 'unhealthy'}`}>
+              <header><ShieldCheck size={15} /><span><b>检索反馈档案分页与删除保护</b>
+                <small>有用、无关、撤销和永久清理会推进独立 SQLCipher revision；旧分页会自动重载，删除确认若不再对应刚才预览的范围则必须重新预览，避免误删新增判断。</small>
+              </span></header>
+              <div className="assistant-recovery-current">
+                <span>当前状态 <b>{memoryDiagnostics.memorySearchFeedbackArchiveRevisionHealthy ? '保护正常' : '需要检查'}</b></span>
+                <span>当前 revision <b>{String(memoryDiagnostics.memorySearchFeedbackArchiveRevision.revision || '0')}</b></span>
+                <span>变更触发器 <b>{Number(memoryDiagnostics.memorySearchFeedbackArchiveRevision.installedTriggers || 0).toLocaleString()} / {Number(memoryDiagnostics.memorySearchFeedbackArchiveRevision.expectedTriggers || 0).toLocaleString()}</b></span>
               </div>
             </div>}
             {memoryDiagnostics.structuredMemoryRevision?.version && <div className={`assistant-recovery-audit ${memoryDiagnostics.structuredMemoryRevisionHealthy ? 'healthy' : 'unhealthy'}`}>
