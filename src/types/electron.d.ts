@@ -1798,7 +1798,11 @@ export interface ElectronAPI {
         id: string,
         input?: { previewToken?: string; confirmation?: string }
       ) => Promise<any>
-      reviewMemoryDocument: (kind: 'relation' | 'claim' | 'event', id: string, decision: 'confirmed' | 'rejected') => Promise<any>
+      reviewMemoryDocument: (
+        kind: 'relation' | 'claim' | 'event', id: string,
+        decision: 'confirmed' | 'rejected',
+        input?: { assistantMessageId?: string; documentId?: string; reviewToken?: string }
+      ) => Promise<any>
       previewForgetEntity: (id: string) => Promise<any>
       forgetEntity: (id: string, input?: { previewToken?: string; confirmation?: string }) => Promise<any>
       searchMemory: (query: string, options?: any) => Promise<any[]>

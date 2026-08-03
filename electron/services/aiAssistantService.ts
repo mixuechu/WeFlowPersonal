@@ -26,6 +26,11 @@ import {
   MEMORY_SEARCH_FEEDBACK_VERSION,
   type MemorySearchFeedbackAction
 } from './memorySearchFeedback.ts'
+import {
+  assertMemoryCitationReviewToken,
+  buildMemoryCitationReviewIdentity,
+  buildMemoryCitationReviewToken
+} from './memoryCitationReviewPolicy.ts'
 import { buildContextualMemoryQuestion, buildMemoryQueryPlan } from './memoryQueryPlanner'
 import {
   applyTaskReviewFeedback,
@@ -4981,7 +4986,39 @@ export class AiAssistantService {
     return personalMemoryStore.purgeResourceTrash(id)
   }
 
-  reviewMemoryDocument(kind: 'relation' | 'claim' | 'event', id: string, decision: 'confirmed' | 'rejected'): any {
+  reviewMemoryDocument(
+    kind: 'relation' | 'claim' | 'event',
+    id: string,
+    decision: 'confirmed' | 'rejected',
+    input: { assistantMessageId?: string; documentId?: string; reviewToken?: string } = {}
+  ): any {
+    const assistantMessageId = String(input.assistantMessageId || '').trim()
+    const documentId = String(input.documentId || '').trim()
+    const storedAnswer = personalMemoryStore.getAssistantAnswerMessage(assistantMessageId)
+    if (!storedAnswer) throw new Error('找不到这段回答的本机加密记录，请刷新后再审阅')
+    const storedCitation = (storedAnswer.citations || []).find((citation: any) =>
+      String(citation.documentId || '') === documentId)
+    if (!storedCitation) throw new Error('这条引用不属于指定回答，请刷新后再审阅')
+    const storedContext = storedCitation.feedbackContext
+    const context = storedContext && typeof storedContext === 'object'
+      ? buildMemorySearchFeedbackContext(String(storedContext.query || ''), storedContext.options || {})
+      : null
+    const feedbackOptions = context ? (() => {
+      try { return JSON.parse(context.scopeJson) } catch { return {} }
+    })() : {}
+    const document = personalMemoryStore.getSearchDocumentById(documentId, feedbackOptions)
+    if (!document) throw new Error('引用指向的权威记忆已不存在，不能继续审阅')
+    if (
+      String(document.document_type || '') !== kind ||
+      String(document.source_id || '') !== id ||
+      String(storedCitation.type || '') !== kind ||
+      String(storedCitation.sourceId || '') !== id
+    ) throw new Error('引用身份已经变化，请刷新回答后再审阅')
+    assertMemoryCitationReviewToken(buildMemoryCitationReviewIdentity({
+      assistantMessageId,
+      document,
+      scopeFingerprint: context?.scopeFingerprint || 'unscoped'
+    }), input.reviewToken)
     if (kind === 'claim' || kind === 'event') {
       if (decision === 'confirmed') this.assertStructuredEntityTrust(kind, id)
       return personalMemoryStore.updateMemoryItemStatus(kind, id, decision)
@@ -5527,16 +5564,23 @@ export class AiAssistantService {
       conversationId,
       grounded.groundingAudit
     )
+    const authenticatedAnswer = this.enrichAssistantCitationFeedback({
+      messages: [{
+        id: savedExchange.answerMessageId,
+        citations
+      }]
+    })?.messages?.[0]
+    const authenticatedCitations = authenticatedAnswer?.citations || citations
     return {
       conversationId: savedExchange.conversationId,
       assistantMessageId: savedExchange.answerMessageId,
       question: query,
       answer,
       uncertainty: String(parsed.uncertainty || ''),
-      citations,
+      citations: authenticatedCitations,
       groundedStatements: grounded.statements,
       groundingAudit: grounded.groundingAudit,
-      groundingRevalidation: revalidateGroundedStatements(grounded.groundingAudit, citations),
+      groundingRevalidation: revalidateGroundedStatements(grounded.groundingAudit, authenticatedCitations),
       sensitiveRedaction: outbound.summary,
       queryPlan: {
         ...plan,
@@ -5658,7 +5702,7 @@ export class AiAssistantService {
             currentContentHash,
             canSupportFacts: eligibility.canSupportFacts
           })
-          return {
+          const hydratedCitation = {
             ...citation,
             answerTimeTitle: citation.title || '',
             answerTimeContentHash,
@@ -5681,6 +5725,14 @@ export class AiAssistantService {
             citationContentChanged: citationFreshness === 'changed',
             relevanceFeedback,
             ...(canonicalFeedbackContext ? { feedbackContext: canonicalFeedbackContext } : {})
+          }
+          return {
+            ...hydratedCitation,
+            reviewToken: buildMemoryCitationReviewToken(buildMemoryCitationReviewIdentity({
+              assistantMessageId: String(message.id || ''),
+              document,
+              scopeFingerprint: context?.scopeFingerprint || 'unscoped'
+            }))
           }
         })
         return {

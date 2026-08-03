@@ -3249,14 +3249,52 @@ function AiAssistantPage() {
 
   const reviewMemoryCitation = async (citation: any, decision: 'confirmed' | 'rejected') => {
     if (!['relation', 'claim', 'event'].includes(citation.type) || !citation.sourceId) return
-    await window.electronAPI.aiAssistant.reviewMemoryDocument(citation.type, citation.sourceId, decision)
-    setMemoryAnswer((current: any) => ({
-      ...current,
-      citations: (current?.citations || []).map((item: any) =>
-        item.documentId === citation.documentId ? { ...item, status: decision } : item)
-    }))
-    setMessage(decision === 'confirmed' ? '已人工确认这条记忆' : '已标记为不准确')
-    await load()
+    try {
+      await window.electronAPI.aiAssistant.reviewMemoryDocument(citation.type, citation.sourceId, decision, {
+        assistantMessageId: memoryAnswer?.assistantMessageId,
+        documentId: citation.documentId,
+        reviewToken: citation.reviewToken
+      })
+      setMemoryAnswer((current: any) => ({
+        ...current,
+        citations: (current?.citations || []).map((item: any) =>
+          item.documentId === citation.documentId ? { ...item, status: decision } : item)
+      }))
+      const assistantMessageId = String(memoryAnswer?.assistantMessageId || '')
+      const conversationId = String(memoryAnswer?.conversationId || memoryConversationId || '')
+      if (assistantMessageId && conversationId) {
+        const refreshed = await window.electronAPI.aiAssistant.getAssistantConversation(conversationId, {
+          anchorMessageId: assistantMessageId
+        })
+        const answerMessage = refreshed?.messages?.find((item: any) => item.id === assistantMessageId)
+        if (answerMessage) {
+          setMemoryAnswer((current: any) => ({
+            ...current,
+            citations: answerMessage.citations || current?.citations || [],
+            groundingRevalidation: answerMessage.groundingRevalidation
+          }))
+        }
+      }
+      setMessage(decision === 'confirmed' ? '已人工确认这条记忆' : '已标记为不准确')
+      await load()
+    } catch (error: any) {
+      const assistantMessageId = String(memoryAnswer?.assistantMessageId || '')
+      const conversationId = String(memoryAnswer?.conversationId || memoryConversationId || '')
+      if (assistantMessageId && conversationId) {
+        const refreshed = await window.electronAPI.aiAssistant.getAssistantConversation(conversationId, {
+          anchorMessageId: assistantMessageId
+        }).catch(() => null)
+        const answerMessage = refreshed?.messages?.find((item: any) => item.id === assistantMessageId)
+        if (answerMessage) {
+          setMemoryAnswer((current: any) => ({
+            ...current,
+            citations: answerMessage.citations || current?.citations || [],
+            groundingRevalidation: answerMessage.groundingRevalidation
+          }))
+        }
+      }
+      setMessage(error?.message || String(error))
+    }
   }
 
   const openClaimCorrection = (citation: any) => {
