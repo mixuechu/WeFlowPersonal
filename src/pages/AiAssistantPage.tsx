@@ -505,6 +505,18 @@ function AiAssistantPage() {
   const [projectMemoryLoadingMore, setProjectMemoryLoadingMore] = useState('')
   const [projectMemoryRefreshKey, setProjectMemoryRefreshKey] = useState(0)
   const projectMemoryGate = useRef(new LatestRequestGate())
+  const [projectClaimQuery, setProjectClaimQuery] = useState('')
+  const [projectClaimStatus, setProjectClaimStatus] = useState('')
+  const [projectClaimSource, setProjectClaimSource] = useState('')
+  const [projectRelationQuery, setProjectRelationQuery] = useState('')
+  const [projectRelationDirection, setProjectRelationDirection] = useState<'all' | 'outgoing' | 'incoming'>('all')
+  const [projectRelationStatus, setProjectRelationStatus] = useState<'all' | 'candidate' | 'confirmed'>('all')
+  const [projectRelationSource, setProjectRelationSource] = useState('')
+  const [projectEventQuery, setProjectEventQuery] = useState('')
+  const [projectEventStatus, setProjectEventStatus] = useState('')
+  const [projectEventSource, setProjectEventSource] = useState('')
+  const [projectEventFrom, setProjectEventFrom] = useState('')
+  const [projectEventTo, setProjectEventTo] = useState('')
   const [selectedTaskId, setSelectedTaskId] = useState('')
   const [taskWorkspace, setTaskWorkspace] = useState<any>({ task: null, history: [], status: 'idle' })
   const [taskWorkspaceRefreshKey, setTaskWorkspaceRefreshKey] = useState(0)
@@ -2068,31 +2080,57 @@ function AiAssistantPage() {
       events: { items: [], total: 0, hasMore: false, revision: '' },
       status: 'loading'
     })
-    void Promise.all([
-      window.electronAPI.aiAssistant.getClaimArchive({
-        entityId: projectEntityId, limit: 40, offset: 0
-      }),
-      window.electronAPI.aiAssistant.getEntityRelationPage({
-        entityId: projectEntityId, direction: 'all', status: 'all', limit: 40, offset: 0
-      }),
-      window.electronAPI.aiAssistant.getEventTimeline({
-        entityId: projectEntityId, limit: 40, offset: 0
+    const timer = window.setTimeout(() => {
+      void Promise.all([
+        window.electronAPI.aiAssistant.getClaimArchive({
+          entityId: projectEntityId,
+          predicate: projectClaimQuery.trim() || undefined,
+          status: projectClaimStatus || undefined,
+          sourceId: projectClaimSource || undefined,
+          limit: 40,
+          offset: 0
+        }),
+        window.electronAPI.aiAssistant.getEntityRelationPage({
+          entityId: projectEntityId,
+          query: projectRelationQuery.trim() || undefined,
+          direction: projectRelationDirection,
+          status: projectRelationStatus,
+          sourceId: projectRelationSource || undefined,
+          limit: 40,
+          offset: 0
+        }),
+        window.electronAPI.aiAssistant.getEventTimeline({
+          entityId: projectEntityId,
+          query: projectEventQuery.trim() || undefined,
+          status: projectEventStatus || undefined,
+          sourceId: projectEventSource || undefined,
+          from: projectEventFrom
+            ? new Date(`${projectEventFrom}T00:00:00+08:00`).toISOString() : undefined,
+          to: projectEventTo
+            ? new Date(`${projectEventTo}T23:59:59.999+08:00`).toISOString() : undefined,
+          limit: 40,
+          offset: 0
+        })
+      ]).then(([claims, relations, events]) => {
+        if (!projectMemoryGate.current.isCurrent(request)) return
+        setProjectMemoryPages({ claims, relations, events, status: 'ready' })
+      }).catch(error => {
+        if (!projectMemoryGate.current.isCurrent(request)) return
+        setProjectMemoryPages((current: any) => ({
+          ...current, status: 'error', error: error?.message || String(error)
+        }))
       })
-    ]).then(([claims, relations, events]) => {
-      if (!projectMemoryGate.current.isCurrent(request)) return
-      setProjectMemoryPages({ claims, relations, events, status: 'ready' })
-    }).catch(error => {
-      if (!projectMemoryGate.current.isCurrent(request)) return
-      setProjectMemoryPages((current: any) => ({
-        ...current, status: 'error', error: error?.message || String(error)
-      }))
-    })
+    }, projectClaimQuery.trim() || projectRelationQuery.trim() || projectEventQuery.trim() ? 180 : 0)
     return () => {
+      window.clearTimeout(timer)
       if (projectMemoryGate.current.isCurrent(request)) projectMemoryGate.current.invalidate()
     }
   }, [
     projectWorkspace.status, projectWorkspace.project?.entityId,
-    dashboard?.memoryRevision, projectMemoryRefreshKey
+    dashboard?.memoryRevision, projectMemoryRefreshKey,
+    projectClaimQuery, projectClaimStatus, projectClaimSource,
+    projectRelationQuery, projectRelationDirection, projectRelationStatus, projectRelationSource,
+    projectEventQuery, projectEventStatus, projectEventSource, projectEventFrom, projectEventTo
   ])
 
   useEffect(() => {
@@ -3062,12 +3100,30 @@ function AiAssistantPage() {
         revision: currentPage.revision
       }
       const page = kind === 'claims'
-        ? await window.electronAPI.aiAssistant.getClaimArchive(options)
+        ? await window.electronAPI.aiAssistant.getClaimArchive({
+            ...options,
+            predicate: projectClaimQuery.trim() || undefined,
+            status: projectClaimStatus || undefined,
+            sourceId: projectClaimSource || undefined
+          })
         : kind === 'relations'
           ? await window.electronAPI.aiAssistant.getEntityRelationPage({
-              ...options, direction: 'all', status: 'all'
+              ...options,
+              query: projectRelationQuery.trim() || undefined,
+              direction: projectRelationDirection,
+              status: projectRelationStatus,
+              sourceId: projectRelationSource || undefined
             })
-          : await window.electronAPI.aiAssistant.getEventTimeline(options)
+          : await window.electronAPI.aiAssistant.getEventTimeline({
+              ...options,
+              query: projectEventQuery.trim() || undefined,
+              status: projectEventStatus || undefined,
+              sourceId: projectEventSource || undefined,
+              from: projectEventFrom
+                ? new Date(`${projectEventFrom}T00:00:00+08:00`).toISOString() : undefined,
+              to: projectEventTo
+                ? new Date(`${projectEventTo}T23:59:59.999+08:00`).toISOString() : undefined
+            })
       if (!projectMemoryGate.current.isCurrent(request)) return
       if (page.stale) {
         setMessage('项目事实、关系或事件在浏览期间已有更新，已从最新第一页重新载入。')
@@ -8342,12 +8398,26 @@ function AiAssistantPage() {
                 <h3>项目事实 <small>{selectedProject.entityId
                   ? Number(projectMemoryPages.claims?.total || 0)
                   : projectDossierClaims.length}</small></h3>
+                {selectedProject.entityId && <div className="assistant-inline-filters assistant-inline-filters-wide">
+                  <input value={projectClaimQuery} onChange={event => setProjectClaimQuery(event.target.value)}
+                    placeholder="搜索属性、值或对象" />
+                  <select value={projectClaimStatus} onChange={event => setProjectClaimStatus(event.target.value)}>
+                    <option value="">有效状态</option><option value="confirmed">已确认</option>
+                    <option value="candidate">待确认</option><option value="rejected">已拒绝</option>
+                  </select>
+                  <select value={projectClaimSource} onChange={event => setProjectClaimSource(event.target.value)}>
+                    <option value="">全部来源</option><option value="wechat">微信</option>
+                    <option value="documents">本机文档</option><option value="calendar">日历</option>
+                    <option value="mail">Mail</option><option value="legacy">历史未知来源</option>
+                  </select>
+                </div>}
                 {projectDossierClaims.map((claim: any) => <article key={claim.id}>
                   <div><b>{claim.polarity === 'negative' ? '并非 ' : ''}{claim.predicate}</b>
                     <span>{claim.object_entity_name || claim.object_value || '值待确认'}</span></div>
                   <small>{claim.status === 'confirmed' ? '已确认' : '待确认'} ·
                     {Math.round(Number(claim.confidence || 0) * 100)}% ·
-                    {claim.source_nature === 'self_statement' ? '本人陈述' : claim.source_nature === 'other_statement' ? '他人陈述' : '模型推断'}</small>
+                    {claim.source_nature === 'self_statement' ? '本人陈述' : claim.source_nature === 'other_statement' ? '他人陈述' : '模型推断'} ·
+                    {memorySourceLabels(claim)}</small>
                   <div className="assistant-evidence-stack"><EvidenceRows evidence={claim.evidence}
                     total={claim.evidence_count || claim.evidenceTotal} roleLabels
                     onOpenArchive={() => void openMemoryEvidenceArchive(
@@ -8367,6 +8437,27 @@ function AiAssistantPage() {
                 <h3>完整项目关系 <small>{selectedProject.entityId
                   ? Number(projectMemoryPages.relations?.total || 0)
                   : selectedProject.members.length}</small></h3>
+                {selectedProject.entityId && <div className="assistant-inline-filters assistant-inline-filters-wide">
+                  <input value={projectRelationQuery}
+                    onChange={event => setProjectRelationQuery(event.target.value)}
+                    placeholder="搜索关系类型或关联实体" />
+                  <select value={projectRelationDirection}
+                    onChange={event => setProjectRelationDirection(event.target.value as any)}>
+                    <option value="all">全部方向</option><option value="outgoing">项目指向外部</option>
+                    <option value="incoming">外部指向项目</option>
+                  </select>
+                  <select value={projectRelationStatus}
+                    onChange={event => setProjectRelationStatus(event.target.value as any)}>
+                    <option value="all">全部状态</option><option value="confirmed">已确认</option>
+                    <option value="candidate">待确认</option>
+                  </select>
+                  <select value={projectRelationSource}
+                    onChange={event => setProjectRelationSource(event.target.value)}>
+                    <option value="">全部来源</option><option value="wechat">微信</option>
+                    <option value="documents">本机文档</option><option value="calendar">日历</option>
+                    <option value="mail">Mail</option><option value="legacy">历史未知来源</option>
+                  </select>
+                </div>}
                 {(projectMemoryPages.relations?.items || []).map((relation: any) => {
                   const outgoing = relation.subjectId === selectedProject.entityId
                   const neighborId = outgoing ? relation.objectId : relation.subjectId
@@ -8406,12 +8497,30 @@ function AiAssistantPage() {
                 <h3>完整项目事件 <small>{selectedProject.entityId
                   ? Number(projectMemoryPages.events?.total || 0)
                   : projectDossierEvents.length}</small></h3>
+                {selectedProject.entityId && <div className="assistant-inline-filters assistant-inline-filters-wide">
+                  <input value={projectEventQuery} onChange={event => setProjectEventQuery(event.target.value)}
+                    placeholder="搜索标题、说明、类型或地点" />
+                  <select value={projectEventStatus} onChange={event => setProjectEventStatus(event.target.value)}>
+                    <option value="">有效状态</option><option value="confirmed">已确认</option>
+                    <option value="candidate">待确认</option><option value="cancelled">已取消</option>
+                    <option value="rejected">已拒绝</option>
+                  </select>
+                  <select value={projectEventSource} onChange={event => setProjectEventSource(event.target.value)}>
+                    <option value="">全部来源</option><option value="wechat">微信</option>
+                    <option value="documents">本机文档</option><option value="calendar">日历</option>
+                    <option value="mail">Mail</option><option value="legacy">历史未知来源</option>
+                  </select>
+                  <input aria-label="项目事件时间从" title="项目事件时间从" type="date"
+                    value={projectEventFrom} onChange={event => setProjectEventFrom(event.target.value)} />
+                  <input aria-label="项目事件时间到" title="项目事件时间到" type="date"
+                    value={projectEventTo} onChange={event => setProjectEventTo(event.target.value)} />
+                </div>}
                 {projectDossierEvents.map((event: any) => <article key={event.id}>
                   <div><b>{event.title}</b><span>{event.start_at || '时间待确认'}</span></div>
                   {event.description && <p>{event.description}</p>}
                   <small>{event.event_type || 'other'} ·
                     {event.status === 'confirmed' ? '已确认' : event.status === 'cancelled' ? '已取消' : '待确认'} ·
-                    {event.location || '地点未记录'}</small>
+                    {event.location || '地点未记录'} · {memorySourceLabels(event)}</small>
                   <div className="assistant-evidence-stack"><EvidenceRows evidence={event.evidence}
                     total={event.evidence_count || event.evidenceTotal}
                     onOpenArchive={() => void openMemoryEvidenceArchive(
