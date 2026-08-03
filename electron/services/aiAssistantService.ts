@@ -5162,6 +5162,16 @@ export class AiAssistantService {
     )
   }
 
+  getAssistantAnswerReviewDecisions(messageId: string, options?: any): any {
+    return personalMemoryStore.listAssistantAnswerReviewDecisionsPage(
+      String(messageId || '').trim(),
+      {
+        offset: Number(options?.offset || 0),
+        limit: Number(options?.limit || 20)
+      }
+    )
+  }
+
   private enrichAssistantCitationFeedback(conversation: any): any {
     if (!conversation?.messages?.length) return conversation
     const contextCache = new Map<string, Map<string, string>>()

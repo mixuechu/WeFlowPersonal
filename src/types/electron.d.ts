@@ -1832,6 +1832,7 @@ export interface ElectronAPI {
         messageId: string,
         action: 'acknowledged' | 'reopened'
       ) => Promise<any>
+      getAssistantAnswerReviewDecisions: (messageId: string, options?: any) => Promise<any>
       getAssistantConversation: (id: string, options?: any) => Promise<any>
       deleteAssistantConversation: (id: string) => Promise<boolean>
       getConversationSources: () => Promise<any[]>

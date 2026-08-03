@@ -4693,7 +4693,11 @@ test('assistant archive filters statement dependencies without loading answer ev
     store.listAssistantAnswerReviewsPage({ status: 'current', limit: 20 }).items[0].message_id,
     'acknowledged'
   ), /当前仍有效/)
-  store.reviewAssistantAnswer(changedAnswerId, 'acknowledged')
+  const firstReviewDecision = store.reviewAssistantAnswer(changedAnswerId, 'acknowledged')
+  assert.equal('stateKey' in firstReviewDecision, false)
+  assert.equal(JSON.stringify(store.listAssistantAnswerReviewsPage({
+    status: 'all', reviewState: 'all', limit: 20
+  }).items).includes('state_key'), false)
   assert.equal(store.listAssistantAnswerReviewsPage({
     status: 'attention',
     reviewState: 'pending',
@@ -4725,12 +4729,51 @@ test('assistant archive filters statement dependencies without loading answer ev
     limit: 20
   }).items.some((item: any) => item.message_id === changedAnswerId), true)
   store.reviewAssistantAnswer(changedAnswerId, 'acknowledged')
+  database.prepare(`
+    UPDATE search_documents SET content_hash=? WHERE id=?
+  `).run('8'.repeat(64), 'resource:changed')
+  assert.equal(store.listAssistantAnswerReviewsPage({
+    status: 'attention',
+    reviewState: 'pending',
+    limit: 20
+  }).items.some((item: any) => item.message_id === changedAnswerId), true)
+  store.reviewAssistantAnswer(changedAnswerId, 'acknowledged')
   store.reviewAssistantAnswer(changedAnswerId, 'reopened')
   assert.equal(store.listAssistantAnswerReviewsPage({
     status: 'attention',
     reviewState: 'pending',
     limit: 20
   }).items.some((item: any) => item.message_id === changedAnswerId), true)
+  for (let index = 0; index < 41; index += 1) {
+    store.reviewAssistantAnswer(changedAnswerId, index % 2 === 0 ? 'reopened' : 'acknowledged')
+  }
+  const firstDecisionPage = store.listAssistantAnswerReviewDecisionsPage(
+    changedAnswerId,
+    { limit: 20 }
+  )
+  const secondDecisionPage = store.listAssistantAnswerReviewDecisionsPage(
+    changedAnswerId,
+    { offset: 20, limit: 20 }
+  )
+  const lastDecisionPage = store.listAssistantAnswerReviewDecisionsPage(
+    changedAnswerId,
+    { offset: 40, limit: 20 }
+  )
+  assert.equal(firstDecisionPage.total, 45)
+  assert.equal(firstDecisionPage.items.length, 20)
+  assert.equal(secondDecisionPage.items.length, 20)
+  assert.equal(lastDecisionPage.items.length, 5)
+  assert.equal(lastDecisionPage.hasMore, false)
+  assert.equal(firstDecisionPage.items[0].is_latest, 1)
+  assert.equal(JSON.stringify(firstDecisionPage.items).includes('state_key'), false)
+  assert.equal(new Set([
+    ...firstDecisionPage.items,
+    ...secondDecisionPage.items,
+    ...lastDecisionPage.items
+  ].map((item: any) => item.id)).size, 45)
+  assert.equal(store.listAssistantAnswerReviewsPage({
+    status: 'all', reviewState: 'all', limit: 20
+  }).items.find((item: any) => item.message_id === changedAnswerId).review_decision_count, 45)
 
   database.prepare('UPDATE search_documents SET content_hash = ? WHERE id = ?')
     .run('e'.repeat(64), 'resource:current')
@@ -4807,6 +4850,14 @@ test('assistant archive and message pagination survive a SQLCipher process-style
       promptIsolationVersion: 'untrusted-memory-envelope-v1',
       statementCitations: [['resource:reopen-review']]
     })
+    const reviewAnswerId = String(firstDatabase.prepare(`
+      SELECT id FROM assistant_messages
+      WHERE conversation_id=? AND role='assistant' AND content='重启核验回答'
+    `).get(conversationId)?.id || '')
+    firstDatabase.prepare(`
+      UPDATE search_documents SET content_hash=? WHERE id='resource:reopen-review'
+    `).run('e'.repeat(64))
+    first.reviewAssistantAnswer(reviewAnswerId, 'acknowledged')
     first.close()
 
     second.initialize(databasePath, key)
@@ -4826,6 +4877,9 @@ test('assistant archive and message pagination survive a SQLCipher process-style
     assert.equal(answerReviews.total, 1)
     assert.equal(answerReviews.items[0].question_preview, '重启核验问题')
     assert.equal(answerReviews.items[0].revalidation_status, 'invalid')
+    const decisionArchive = second.listAssistantAnswerReviewDecisionsPage(reviewAnswerId)
+    assert.equal(decisionArchive.total, 1)
+    assert.equal(decisionArchive.items[0].action, 'acknowledged')
   } finally {
     first.close()
     second.close()

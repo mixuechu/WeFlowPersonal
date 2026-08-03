@@ -439,6 +439,8 @@ function AiAssistantPage() {
   const [assistantAnswerReviewsLoadingMore, setAssistantAnswerReviewsLoadingMore] = useState(false)
   const [assistantAnswerReviewSaving, setAssistantAnswerReviewSaving] = useState('')
   const [assistantAnswerReviewRevision, setAssistantAnswerReviewRevision] = useState(0)
+  const [assistantAnswerReviewHistories, setAssistantAnswerReviewHistories] =
+    useState<Record<string, any>>({})
   const assistantAnswerReviewsGate = useRef(new LatestRequestGate())
   const [askingMemory, setAskingMemory] = useState(false)
   const [creatingMemoryTask, setCreatingMemoryTask] = useState(false)
@@ -2359,6 +2361,11 @@ function AiAssistantPage() {
     setAssistantAnswerReviewSaving(messageId)
     try {
       await window.electronAPI.aiAssistant.reviewAssistantAnswer(messageId, action)
+      setAssistantAnswerReviewHistories(current => {
+        const next = { ...current }
+        delete next[messageId]
+        return next
+      })
       setMessage(action === 'acknowledged'
         ? '已知晓这条历史回答的证据变化；它仍保留在已处理档案中。'
         : '已将这条历史回答重新加入待处理队列。')
@@ -2367,6 +2374,69 @@ function AiAssistantPage() {
       setMessage(error?.message || String(error))
     } finally {
       setAssistantAnswerReviewSaving('')
+    }
+  }
+
+  const toggleAssistantAnswerReviewHistory = async (messageId: string) => {
+    if (assistantAnswerReviewHistories[messageId]) {
+      setAssistantAnswerReviewHistories(current => {
+        const next = { ...current }
+        delete next[messageId]
+        return next
+      })
+      return
+    }
+    setAssistantAnswerReviewHistories(current => ({
+      ...current,
+      [messageId]: { items: [], total: 0, hasMore: false, loading: true }
+    }))
+    try {
+      const page = await window.electronAPI.aiAssistant
+        .getAssistantAnswerReviewDecisions(messageId, { limit: 20 })
+      setAssistantAnswerReviewHistories(current => ({
+        ...current,
+        [messageId]: { ...page, loading: false }
+      }))
+    } catch (error) {
+      setAssistantAnswerReviewHistories(current => ({
+        ...current,
+        [messageId]: {
+          items: [], total: 0, hasMore: false, loading: false,
+          error: error instanceof Error ? error.message : String(error)
+        }
+      }))
+    }
+  }
+
+  const loadMoreAssistantAnswerReviewHistory = async (messageId: string) => {
+    const history = assistantAnswerReviewHistories[messageId]
+    if (!history || history.loading || !history.hasMore) return
+    setAssistantAnswerReviewHistories(current => ({
+      ...current,
+      [messageId]: { ...current[messageId], loading: true }
+    }))
+    try {
+      const page = await window.electronAPI.aiAssistant.getAssistantAnswerReviewDecisions(
+        messageId,
+        { offset: history.items.length, limit: 20 }
+      )
+      setAssistantAnswerReviewHistories(current => ({
+        ...current,
+        [messageId]: {
+          ...page,
+          items: [...(current[messageId]?.items || []), ...(page.items || [])],
+          loading: false
+        }
+      }))
+    } catch (error) {
+      setAssistantAnswerReviewHistories(current => ({
+        ...current,
+        [messageId]: {
+          ...current[messageId],
+          loading: false,
+          error: error instanceof Error ? error.message : String(error)
+        }
+      }))
     }
   }
 
@@ -3651,6 +3721,11 @@ function AiAssistantPage() {
                       item.conversation_id,
                       item.message_id
                     )}>打开这一轮并核验</button>
+                    {Number(item.review_decision_count || 0) > 0 && <button
+                      onClick={() => void toggleAssistantAnswerReviewHistory(item.message_id)}>
+                      {assistantAnswerReviewHistories[item.message_id] ? '收起处理记录' :
+                        `处理记录 ${Number(item.review_decision_count)}`}
+                    </button>}
                     {item.review_state === 'resolved'
                       ? <button disabled={assistantAnswerReviewSaving === item.message_id}
                         onClick={() => void reviewAssistantAnswer(item.message_id, 'reopened')}>
@@ -3662,6 +3737,25 @@ function AiAssistantPage() {
                         {assistantAnswerReviewSaving === item.message_id ? '保存中…' : '已知晓，仅保留历史'}
                       </button>}
                   </div>
+                  {assistantAnswerReviewHistories[item.message_id] && <section
+                    className="assistant-answer-review-history">
+                    {(assistantAnswerReviewHistories[item.message_id].items || []).map((decision: any) =>
+                      <div key={decision.id}>
+                        <span>{decision.action === 'acknowledged'
+                          ? '已知晓，仅保留历史' : '重新加入待处理'}</span>
+                        <time>{new Date(decision.created_at).toLocaleString('zh-CN')}</time>
+                        {decision.is_latest ? <em>最近动作</em> : null}
+                      </div>)}
+                    {assistantAnswerReviewHistories[item.message_id].error &&
+                      <small>{assistantAnswerReviewHistories[item.message_id].error}</small>}
+                    {assistantAnswerReviewHistories[item.message_id].loading &&
+                      <small>正在读取处理记录…</small>}
+                    {assistantAnswerReviewHistories[item.message_id].hasMore &&
+                      !assistantAnswerReviewHistories[item.message_id].loading && <button
+                        onClick={() => void loadMoreAssistantAnswerReviewHistory(item.message_id)}>
+                        加载更早记录
+                      </button>}
+                  </section>}
                 </article>)}
               </div>
               {assistantAnswerReviews.loading && <div className="assistant-empty">正在读取逐回答核验档案…</div>}

@@ -774,6 +774,8 @@ export class PersonalMemoryStore {
 
   private openDatabase(path: string, readonly: boolean): Database.Database {
     const db = new Database(path, { readonly, fileMustExist: readonly })
+    db.function('weflow_sha256', { deterministic: true }, (value: unknown) =>
+      createHash('sha256').update(String(value ?? '')).digest('hex'))
     if (this.encryptionKey) {
       db.pragma('cipher=sqlcipher')
       db.pragma('legacy=4')
@@ -7569,16 +7571,46 @@ export class PersonalMemoryStore {
       )
     )`
     const revalidationCte = `
-      WITH statement_state AS (
-        SELECT d.conversation_id,d.message_id,d.statement_index,
-          MAX(CASE WHEN ${eligibility}
+      WITH dependency_state AS (
+        SELECT d.conversation_id,d.message_id,d.statement_index,d.document_id,
+          CASE WHEN ${eligibility}
             AND d.content_hash!='' AND lower(d.content_hash)=lower(s.content_hash)
-            THEN 1 ELSE 0 END) AS has_current,
-          MAX(CASE WHEN ${eligibility}
-            AND d.content_hash='' THEN 1 ELSE 0 END) AS has_unknown,
-          MAX(COALESCE(s.updated_at,'missing')) AS dependency_revision
+            THEN 1 ELSE 0 END AS is_current,
+          CASE WHEN ${eligibility}
+            AND d.content_hash='' THEN 1 ELSE 0 END AS is_unknown,
+          printf('%s:%s:%s:%s:%s',
+            d.document_id,
+            CASE WHEN s.id IS NULL THEN 'missing'
+              WHEN ${eligibility} THEN 'eligible' ELSE 'ineligible' END,
+            lower(COALESCE(s.content_hash,'')),
+            lower(COALESCE(json_extract(s.metadata_json,'$.status'),'')),
+            CASE WHEN s.id IS NULL THEN ''
+              WHEN EXISTS(SELECT 1 FROM search_document_evidence sde WHERE sde.document_id=s.id)
+                OR EXISTS(
+                  SELECT 1 FROM evidence e WHERE
+                    (s.document_type='claim' AND e.claim_id=s.source_id)
+                    OR (s.document_type='relation' AND e.relation_id=s.source_id)
+                    OR (s.document_type='event' AND e.event_id=s.source_id)
+                )
+              THEN 'evidence' ELSE 'no-evidence' END
+          ) AS dependency_token
         FROM assistant_answer_dependencies d
         LEFT JOIN search_documents s ON s.id=d.document_id
+      ),
+      statement_state AS (
+        SELECT d.conversation_id,d.message_id,d.statement_index,
+          MAX(d.is_current) AS has_current,
+          MAX(d.is_unknown) AS has_unknown,
+          weflow_sha256((
+            SELECT group_concat(ordered.dependency_token,'|') FROM (
+              SELECT nested.dependency_token
+              FROM dependency_state nested
+              WHERE nested.message_id=d.message_id
+                AND nested.statement_index=d.statement_index
+              ORDER BY nested.document_id
+            ) ordered
+          )) AS statement_state_digest
+        FROM dependency_state d
         GROUP BY d.conversation_id,d.message_id,d.statement_index
       ),
       answer_revalidation AS (
@@ -7587,12 +7619,14 @@ export class PersonalMemoryStore {
           SUM(CASE WHEN ss.has_current=1 THEN 1 ELSE 0 END) AS supported_statements,
           SUM(CASE WHEN ss.has_current=0 AND ss.has_unknown=1 THEN 1 ELSE 0 END) AS unknown_statements,
           SUM(CASE WHEN ss.has_current=0 AND ss.has_unknown=0 THEN 1 ELSE 0 END) AS invalid_statements,
-          printf('%d:%d:%d:%s',
-            SUM(CASE WHEN ss.has_current=0 AND ss.has_unknown=0 THEN 1 ELSE 0 END),
-            SUM(CASE WHEN ss.has_current=0 AND ss.has_unknown=1 THEN 1 ELSE 0 END),
-            SUM(CASE WHEN ss.has_current=1 THEN 1 ELSE 0 END),
-            MAX(ss.dependency_revision)
-          ) AS state_key
+          weflow_sha256((
+            SELECT group_concat(ordered.statement_state_digest,'|') FROM (
+              SELECT nested.statement_state_digest
+              FROM statement_state nested
+              WHERE nested.message_id=ss.message_id
+              ORDER BY nested.statement_index
+            ) ordered
+          )) AS state_key
         FROM statement_state ss
         JOIN assistant_messages m ON m.id=ss.message_id AND m.role='assistant'
         GROUP BY ss.conversation_id,ss.message_id
@@ -7691,6 +7725,8 @@ export class PersonalMemoryStore {
         ar.total_statements,ar.supported_statements,ar.unknown_statements,ar.invalid_statements,
         decision.action AS latest_review_action,decision.state_key AS reviewed_state_key,
         decision.created_at AS reviewed_at,
+        (SELECT COUNT(*) FROM assistant_answer_review_decisions history
+          WHERE history.message_id=ar.message_id) AS review_decision_count,
         c.title AS conversation_title,
         substr(replace(replace(answer.content,char(10),' '),char(13),' '),1,180) AS answer_preview,
         COALESCE((
@@ -7759,8 +7795,39 @@ export class PersonalMemoryStore {
     return {
       messageId: current.message_id,
       action,
-      stateKey: current.state_key,
       createdAt: now
+    }
+  }
+
+  listAssistantAnswerReviewDecisionsPage(
+    messageId: string,
+    options: { offset?: number; limit?: number } = {}
+  ): { items: any[]; total: number; hasMore: boolean; offset: number; limit: number } {
+    const limit = Math.max(1, Math.min(100, Math.floor(Number(options.limit) || 20)))
+    const offset = Math.max(0, Math.min(1_000_000, Math.floor(Number(options.offset) || 0)))
+    const normalizedMessageId = String(messageId || '').trim()
+    const empty = { items: [], total: 0, hasMore: false, offset, limit }
+    if (!this.db || !normalizedMessageId) return empty
+    const total = Number((this.db.prepare(`
+      SELECT COUNT(*) AS count FROM assistant_answer_review_decisions WHERE message_id=?
+    `).get(normalizedMessageId) as any)?.count || 0)
+    const items = this.db.prepare(`
+      SELECT d.id,d.message_id,d.action,d.created_at,
+        CASE WHEN d.id=(
+          SELECT latest.id FROM assistant_answer_review_decisions latest
+          WHERE latest.message_id=d.message_id
+          ORDER BY latest.created_at DESC,latest.id DESC LIMIT 1
+        ) THEN 1 ELSE 0 END AS is_latest
+      FROM assistant_answer_review_decisions d
+      WHERE d.message_id=?
+      ORDER BY d.created_at DESC,d.id DESC LIMIT ? OFFSET ?
+    `).all(normalizedMessageId, limit, offset) as any[]
+    return {
+      items,
+      total,
+      hasMore: offset + items.length < total,
+      offset,
+      limit
     }
   }
 
