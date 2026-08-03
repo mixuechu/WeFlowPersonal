@@ -323,6 +323,14 @@ function AiAssistantPage() {
   const [projectWorkspace, setProjectWorkspace] = useState<any>({ project: null, status: 'idle' })
   const [projectWorkspaceRefreshKey, setProjectWorkspaceRefreshKey] = useState(0)
   const projectWorkspaceGate = useRef(new LatestRequestGate())
+  const [projectMemoryPages, setProjectMemoryPages] = useState<any>({
+    claims: { items: [], total: 0, hasMore: false, revision: '' },
+    events: { items: [], total: 0, hasMore: false, revision: '' },
+    status: 'idle'
+  })
+  const [projectMemoryLoadingMore, setProjectMemoryLoadingMore] = useState('')
+  const [projectMemoryRefreshKey, setProjectMemoryRefreshKey] = useState(0)
+  const projectMemoryGate = useRef(new LatestRequestGate())
   const [selectedTaskId, setSelectedTaskId] = useState('')
   const [taskWorkspace, setTaskWorkspace] = useState<any>({ task: null, history: [], status: 'idle' })
   const [taskWorkspaceRefreshKey, setTaskWorkspaceRefreshKey] = useState(0)
@@ -1629,6 +1637,50 @@ function AiAssistantPage() {
   }, [selectedProjectId, projectWorkspaceRefreshKey, dashboard?.projectRevision])
 
   useEffect(() => {
+    const request = projectMemoryGate.current.begin()
+    const projectEntityId = String(projectWorkspace.project?.entityId || '')
+    if (projectWorkspace.status !== 'ready' || !projectEntityId) {
+      setProjectMemoryLoadingMore('')
+      setProjectMemoryPages({
+        claims: { items: [], total: 0, hasMore: false, revision: '' },
+        events: { items: [], total: 0, hasMore: false, revision: '' },
+        status: projectWorkspace.status === 'ready' ? 'derived' : 'idle'
+      })
+      return () => {
+        if (projectMemoryGate.current.isCurrent(request)) projectMemoryGate.current.invalidate()
+      }
+    }
+    setProjectMemoryLoadingMore('')
+    setProjectMemoryPages({
+      claims: { items: [], total: 0, hasMore: false, revision: '' },
+      events: { items: [], total: 0, hasMore: false, revision: '' },
+      status: 'loading'
+    })
+    void Promise.all([
+      window.electronAPI.aiAssistant.getClaimArchive({
+        entityId: projectEntityId, limit: 40, offset: 0
+      }),
+      window.electronAPI.aiAssistant.getEventTimeline({
+        entityId: projectEntityId, limit: 40, offset: 0
+      })
+    ]).then(([claims, events]) => {
+      if (!projectMemoryGate.current.isCurrent(request)) return
+      setProjectMemoryPages({ claims, events, status: 'ready' })
+    }).catch(error => {
+      if (!projectMemoryGate.current.isCurrent(request)) return
+      setProjectMemoryPages((current: any) => ({
+        ...current, status: 'error', error: error?.message || String(error)
+      }))
+    })
+    return () => {
+      if (projectMemoryGate.current.isCurrent(request)) projectMemoryGate.current.invalidate()
+    }
+  }, [
+    projectWorkspace.status, projectWorkspace.project?.entityId,
+    dashboard?.memoryRevision, projectMemoryRefreshKey
+  ])
+
+  useEffect(() => {
     const request = taskWorkspaceGate.current.begin()
     if (!selectedTaskId) {
       setTaskWorkspace({ task: null, history: [], status: 'idle' })
@@ -1667,6 +1719,12 @@ function AiAssistantPage() {
   const projectInsights: any[] = projectDirectory.items || []
   const selectedProject = projectWorkspace.status === 'ready' &&
     projectWorkspace.project?.id === selectedProjectId ? projectWorkspace.project : null
+  const projectDossierClaims = selectedProject?.entityId
+    ? projectMemoryPages.claims?.items || []
+    : selectedProject?.claims || []
+  const projectDossierEvents = selectedProject?.entityId
+    ? projectMemoryPages.events?.items || []
+    : [...(selectedProject?.decisions || []), ...(selectedProject?.milestones || [])]
   const tasks: Task[] = taskWorkset.items
   const taskReviewQueue: Task[] = taskOwnershipReviews.items
   const taskReminders: any[] = dashboard?.taskReminders || []
@@ -2366,6 +2424,46 @@ function AiAssistantPage() {
       if (entityDossierGate.current.isCurrent(request)) setMessage(error?.message || String(error))
     } finally {
       if (entityDossierGate.current.isCurrent(request)) setEntityDossierLoadingMore('')
+    }
+  }
+
+  const loadMoreProjectMemorySection = async (kind: 'claims' | 'events') => {
+    const projectEntityId = String(projectWorkspace.project?.entityId || '')
+    const currentPage = projectMemoryPages[kind]
+    if (!projectEntityId || projectMemoryLoadingMore || !currentPage?.hasMore) return
+    const request = projectMemoryGate.current.begin()
+    setProjectMemoryLoadingMore(kind)
+    try {
+      const options = {
+        entityId: projectEntityId,
+        limit: 40,
+        offset: currentPage.items.length,
+        revision: currentPage.revision
+      }
+      const page = kind === 'claims'
+        ? await window.electronAPI.aiAssistant.getClaimArchive(options)
+        : await window.electronAPI.aiAssistant.getEventTimeline(options)
+      if (!projectMemoryGate.current.isCurrent(request)) return
+      if (page.stale) {
+        setMessage('项目事实或事件在浏览期间已有更新，已从最新第一页重新载入。')
+        setProjectMemoryRefreshKey(value => value + 1)
+        return
+      }
+      setProjectMemoryPages((current: any) => ({
+        ...current,
+        [kind]: {
+          ...page,
+          items: [
+            ...(current[kind]?.items || []),
+            ...page.items.filter((item: any) =>
+              !(current[kind]?.items || []).some((known: any) => known.id === item.id))
+          ]
+        }
+      }))
+    } catch (error: any) {
+      if (projectMemoryGate.current.isCurrent(request)) setMessage(error?.message || String(error))
+    } finally {
+      if (projectMemoryGate.current.isCurrent(request)) setProjectMemoryLoadingMore('')
     }
   }
 
@@ -7073,9 +7171,16 @@ function AiAssistantPage() {
               <span><b>{selectedProject.evidenceTotal ?? selectedProject.evidence.length}</b><small>去重证据</small></span>
               <span><b>{selectedProject.pendingReview?.total || 0}</b><small>候选待确认</small></span>
             </div>
-            {selectedProject.memoryTruncated && <div className="assistant-query-plan">
-              当前项目的事实或事件超过单次档案安全上限；这里展示按项目范围查询后的最近 200 条，
-              真实总数保留在上方。可点击“在统一记忆中检索”继续浏览完整历史。
+            {selectedProject.entityId && projectMemoryPages.status === 'loading' && <div className="assistant-query-plan">
+              正在从 SQLCipher 按项目实体读取完整事实和事件档案…
+            </div>}
+            {selectedProject.entityId && projectMemoryPages.status === 'error' && <div className="assistant-query-plan">
+              项目事实与事件读取失败：{projectMemoryPages.error}
+              <button onClick={() => setProjectMemoryRefreshKey(value => value + 1)}>重试</button>
+            </div>}
+            {!selectedProject.entityId && <div className="assistant-query-plan">
+              这是尚未形成可信项目实体的派生项目；当前仅展示由明确任务项目字段和保守名称规则聚合的内容，
+              不会用模糊名称跨项目分页，以免把同名项目混在一起。
             </div>}
             <div className="assistant-dossier-grid">
               <section>
@@ -7103,7 +7208,49 @@ function AiAssistantPage() {
                 {!selectedProject.tasks.length && <em>尚无归入项目的任务</em>}
               </section>
               <section>
-                <h3>里程碑与决策 <small>{selectedProject.milestones.length + selectedProject.decisions.length}</small></h3>
+                <h3>项目事实 <small>{selectedProject.entityId
+                  ? Number(projectMemoryPages.claims?.total || 0)
+                  : projectDossierClaims.length}</small></h3>
+                {projectDossierClaims.map((claim: any) => <article key={claim.id}>
+                  <div><b>{claim.polarity === 'negative' ? '并非 ' : ''}{claim.predicate}</b>
+                    <span>{claim.object_entity_name || claim.object_value || '值待确认'}</span></div>
+                  <small>{claim.status === 'confirmed' ? '已确认' : '待确认'} ·
+                    {Math.round(Number(claim.confidence || 0) * 100)}% ·
+                    {claim.source_nature === 'self_statement' ? '本人陈述' : claim.source_nature === 'other_statement' ? '他人陈述' : '模型推断'}</small>
+                  <div className="assistant-evidence-stack"><EvidenceRows evidence={claim.evidence} total={claim.evidence_count || claim.evidenceTotal} roleLabels /></div>
+                </article>)}
+                {projectMemoryPages.status !== 'loading' && !projectDossierClaims.length && <em>尚无项目事实</em>}
+                {selectedProject.entityId && projectMemoryPages.claims?.hasMore && <button
+                  disabled={!!projectMemoryLoadingMore}
+                  onClick={() => void loadMoreProjectMemorySection('claims')}>
+                  {projectMemoryLoadingMore === 'claims'
+                    ? '正在加载…'
+                    : `加载更多事实（已显示 ${projectDossierClaims.length} / ${projectMemoryPages.claims.total}）`}
+                </button>}
+              </section>
+              <section>
+                <h3>完整项目事件 <small>{selectedProject.entityId
+                  ? Number(projectMemoryPages.events?.total || 0)
+                  : projectDossierEvents.length}</small></h3>
+                {projectDossierEvents.map((event: any) => <article key={event.id}>
+                  <div><b>{event.title}</b><span>{event.start_at || '时间待确认'}</span></div>
+                  {event.description && <p>{event.description}</p>}
+                  <small>{event.event_type || 'other'} ·
+                    {event.status === 'confirmed' ? '已确认' : event.status === 'cancelled' ? '已取消' : '待确认'} ·
+                    {event.location || '地点未记录'}</small>
+                  <div className="assistant-evidence-stack"><EvidenceRows evidence={event.evidence} total={event.evidence_count || event.evidenceTotal} /></div>
+                </article>)}
+                {projectMemoryPages.status !== 'loading' && !projectDossierEvents.length && <em>尚无相关事件</em>}
+                {selectedProject.entityId && projectMemoryPages.events?.hasMore && <button
+                  disabled={!!projectMemoryLoadingMore}
+                  onClick={() => void loadMoreProjectMemorySection('events')}>
+                  {projectMemoryLoadingMore === 'events'
+                    ? '正在加载…'
+                    : `加载更多事件（已显示 ${projectDossierEvents.length} / ${projectMemoryPages.events.total}）`}
+                </button>}
+              </section>
+              <section>
+                <h3>关键里程碑与决策 <small>{selectedProject.milestones.length + selectedProject.decisions.length}</small></h3>
                 {[...selectedProject.decisions, ...selectedProject.milestones].map((event: any) => <article key={event.id}>
                   <div><b>{event.title}</b><span>{event.event_type}</span></div>
                   <small>{event.start_at || '时间待确认'} · {event.status === 'confirmed' ? '已确认' : '待确认'}</small>
