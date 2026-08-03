@@ -126,6 +126,29 @@ const evidence = (messageId: string, excerpt: string) => [{
   role: 'support'
 }]
 
+test('conversation policy batch is atomic when a later row fails', () => {
+  withStore(store => {
+    store.setConversationPolicy('existing', 'Existing', 'private', true)
+    const database = (store as any).db
+    database.exec(`
+      CREATE TRIGGER reject_bad_conversation_policy
+      BEFORE INSERT ON conversation_policy
+      WHEN NEW.session_id = 'bad'
+      BEGIN
+        SELECT RAISE(ABORT, 'rejected for test');
+      END;
+    `)
+    assert.throws(() => store.setConversationPoliciesBatch([
+      { sessionId: 'first', displayName: 'First', sessionType: 'private', enabled: false },
+      { sessionId: 'bad', displayName: 'Bad', sessionType: 'private', enabled: false }
+    ]), /rejected for test/)
+    assert.deepEqual(
+      store.getConversationPolicyRecords().map(item => item.sessionId),
+      ['existing']
+    )
+  })
+})
+
 test('search relevance feedback is append-only, query-scoped and reversible after reopen', () => {
   const directory = mkdtempSync(join(tmpdir(), 'weflow-search-feedback-'))
   const databasePath = join(directory, 'memory.sqlite')

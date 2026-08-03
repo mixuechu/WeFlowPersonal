@@ -193,7 +193,16 @@ function AiAssistantPage() {
   const [forgettingEntityId, setForgettingEntityId] = useState('')
   const [showSources, setShowSources] = useState(false)
   const [showDataSources, setShowDataSources] = useState(false)
-  const [sources, setSources] = useState<any[]>([])
+  const [sourceDirectory, setSourceDirectory] = useState<any>({
+    items: [], total: 0, hasMore: false, revision: '', counts: {
+      total: 0, enabled: 0, disabled: 0, group: 0, private: 0, groupEnabled: 0, privateEnabled: 0
+    }
+  })
+  const [sourceLoading, setSourceLoading] = useState(false)
+  const [sourceTypeFilter, setSourceTypeFilter] = useState<'all' | 'group' | 'private'>('all')
+  const [sourceEnabledFilter, setSourceEnabledFilter] = useState<'all' | 'enabled' | 'disabled'>('all')
+  const sourceDirectoryGate = useRef(new LatestRequestGate())
+  const [memoryConversationSources, setMemoryConversationSources] = useState<any[]>([])
   const [dataSources, setDataSources] = useState<any[]>([])
   const [eventTimeline, setEventTimeline] = useState<{ items: any[]; total: number; hasMore: boolean; revision?: string; stale?: boolean }>({
     items: [], total: 0, hasMore: false
@@ -506,12 +515,12 @@ function AiAssistantPage() {
   const memorySearchOptions = useMemo(() => ({
     entityId: memoryEntityFilter || undefined,
     sessionId: memorySessionFilter || undefined,
-    sessionName: sources.find(source => source.sessionId === memorySessionFilter)?.displayName || undefined,
+    sessionName: memoryConversationSources.find((source: any) => source.sessionId === memorySessionFilter)?.displayName || undefined,
     sourceIds: memorySourceFilter ? [memorySourceFilter] : undefined,
     documentTypes: memoryTypeFilter ? [memoryTypeFilter] : undefined,
     from: memoryFrom || undefined,
     to: memoryTo || undefined
-  }), [memoryEntityFilter, memorySessionFilter, memorySourceFilter, memoryTypeFilter, memoryFrom, memoryTo, sources])
+  }), [memoryEntityFilter, memorySessionFilter, memorySourceFilter, memoryTypeFilter, memoryFrom, memoryTo, memoryConversationSources])
   const hasMemoryScope = Boolean(memoryEntityFilter || memorySessionFilter || memorySourceFilter || memoryTypeFilter || memoryFrom || memoryTo)
   const memoryFeedbackArchiveOptions = useMemo(() => ({
     action: memoryFeedbackArchiveAction || undefined,
@@ -664,7 +673,8 @@ function AiAssistantPage() {
   useEffect(() => {
     void load()
     void window.electronAPI.aiAssistant.getMemoryDiagnostics().then(setMemoryDiagnostics).catch(() => {})
-    void window.electronAPI.aiAssistant.getConversationSources().then(setSources).catch(() => {})
+    void window.electronAPI.aiAssistant.getConversationSources({ limit: 100 })
+      .then(result => setMemoryConversationSources(result.items)).catch(() => {})
     void window.electronAPI.aiAssistant.getDataSources().then(setDataSources).catch(() => {})
     const timer = window.setInterval(() => void load(), 15_000)
     return () => window.clearInterval(timer)
@@ -3360,9 +3370,59 @@ function AiAssistantPage() {
   }
 
   const openSources = async () => {
-    setSources(await window.electronAPI.aiAssistant.getConversationSources())
+    setSourceQuery('')
+    setSourceTypeFilter('all')
+    setSourceEnabledFilter('all')
     setShowSources(true)
   }
+
+  const loadConversationSources = useCallback(async (offset = 0, append = false) => {
+    const request = sourceDirectoryGate.current.begin()
+    setSourceLoading(true)
+    try {
+      const result = await window.electronAPI.aiAssistant.getConversationSources({
+        query: sourceQuery || undefined,
+        type: sourceTypeFilter,
+        enabled: sourceEnabledFilter,
+        offset,
+        limit: 50,
+        expectedRevision: append ? sourceDirectory.revision : undefined
+      })
+      if (!sourceDirectoryGate.current.isCurrent(request)) return
+      if (result.stale) {
+        setMessage('会话目录在翻页时发生变化，已从第一页刷新。')
+        const refreshed = await window.electronAPI.aiAssistant.getConversationSources({
+          query: sourceQuery || undefined,
+          type: sourceTypeFilter,
+          enabled: sourceEnabledFilter,
+          offset: 0,
+          limit: 50
+        })
+        if (!sourceDirectoryGate.current.isCurrent(request)) return
+        setSourceDirectory(refreshed)
+      } else {
+        setSourceDirectory((current: any) => ({
+          ...result,
+          items: append ? [...current.items, ...result.items] : result.items
+        }))
+      }
+    } catch (error: any) {
+      if (sourceDirectoryGate.current.isCurrent(request)) setMessage(error?.message || String(error))
+    } finally {
+      if (sourceDirectoryGate.current.isCurrent(request)) setSourceLoading(false)
+    }
+  }, [
+    sourceDirectory.revision,
+    sourceEnabledFilter,
+    sourceQuery,
+    sourceTypeFilter
+  ])
+
+  useEffect(() => {
+    if (!showSources) return
+    const timer = window.setTimeout(() => void loadConversationSources(0, false), 250)
+    return () => window.clearTimeout(timer)
+  }, [showSources, sourceQuery, sourceTypeFilter, sourceEnabledFilter])
 
   const forgetSelectedEntity = async () => {
     if (!selectedEntity || forgettingEntityId) return
@@ -3436,13 +3496,36 @@ function AiAssistantPage() {
   }
 
   const toggleSource = async (source: any) => {
-    await window.electronAPI.aiAssistant.setConversationSource({ ...source, enabled: !source.enabled })
-    setSources(current => current.map(item => item.sessionId === source.sessionId ? { ...item, enabled: !item.enabled } : item))
+    try {
+      await window.electronAPI.aiAssistant.setConversationSource({
+        sessionId: source.sessionId,
+        enabled: !source.enabled,
+        mutationToken: source.mutationToken
+      })
+      setMemoryConversationSources(current => current.map(item =>
+        item.sessionId === source.sessionId ? { ...item, enabled: !source.enabled } : item))
+      await loadConversationSources(0, false)
+    } catch (error: any) {
+      setMessage(error?.message || String(error))
+      await loadConversationSources(0, false)
+    }
   }
 
   const setSourceType = async (type: 'group' | 'private', enabled: boolean) => {
-    await window.electronAPI.aiAssistant.setConversationSourcesBulk({ type, enabled, sources })
-    setSources(current => current.map(item => item.type === type ? { ...item, enabled } : item))
+    try {
+      const result = await window.electronAPI.aiAssistant.setConversationSourcesBulk({
+        type,
+        enabled,
+        expectedRevision: sourceDirectory.revision
+      })
+      setMemoryConversationSources(current => current.map(item =>
+        item.type === type ? { ...item, enabled } : item))
+      setMessage(`已更新 ${result.updated} 个${type === 'group' ? '群聊' : '私聊'}来源。`)
+      await loadConversationSources(0, false)
+    } catch (error: any) {
+      setMessage(error?.message || String(error))
+      await loadConversationSources(0, false)
+    }
   }
 
   const toggleDataSource = async (source: any) => {
@@ -4329,7 +4412,8 @@ function AiAssistantPage() {
             </select>
             <select value={memorySessionFilter} onChange={event => setMemorySessionFilter(event.target.value)}>
               <option value="">所有会话</option>
-              {sources.filter(source => source.enabled).map(source => <option key={source.sessionId} value={source.sessionId}>{source.displayName}</option>)}
+              {memoryConversationSources.filter((source: any) => source.enabled).map((source: any) =>
+                <option key={source.sessionId} value={source.sessionId}>{source.displayName}</option>)}
             </select>
             <select value={memorySourceFilter} onChange={event => setMemorySourceFilter(event.target.value)}>
               <option value="">所有数据来源</option>
@@ -7130,15 +7214,34 @@ function AiAssistantPage() {
               <button onClick={() => void setSourceType('private', true)}>开启全部私聊</button>
             </div>
             <input className="assistant-source-search" value={sourceQuery} onChange={event => setSourceQuery(event.target.value)} placeholder="搜索群聊或联系人" />
+            <div className="assistant-source-filters">
+              <select value={sourceTypeFilter} onChange={event => setSourceTypeFilter(event.target.value as any)}>
+                <option value="all">全部类型</option><option value="group">群聊</option><option value="private">私聊</option>
+              </select>
+              <select value={sourceEnabledFilter} onChange={event => setSourceEnabledFilter(event.target.value as any)}>
+                <option value="all">全部状态</option><option value="enabled">参与分析</option><option value="disabled">停止分析</option>
+              </select>
+              <span>群聊 {sourceDirectory.counts.groupEnabled}/{sourceDirectory.counts.group} · 私聊 {sourceDirectory.counts.privateEnabled}/{sourceDirectory.counts.private}</span>
+            </div>
             <div className="assistant-source-list">
-              {sources.filter(source => !sourceQuery.trim() || source.displayName.toLowerCase().includes(sourceQuery.trim().toLowerCase())).map(source => (
+              {sourceDirectory.items.map((source: any) => (
                 <label className="assistant-source-row" key={source.sessionId}>
                   <span><strong>{source.displayName}</strong><small>{source.type === 'group' ? '群聊' : '私聊'} · {source.enabled ? '参与分析' : '已停止分析'}</small></span>
-                  <input type="checkbox" checked={source.enabled} onChange={() => void toggleSource(source)} />
+                  <input type="checkbox" checked={source.enabled} disabled={sourceLoading} onChange={() => void toggleSource(source)} />
                 </label>
               ))}
+              {!sourceLoading && !sourceDirectory.items.length && <div className="assistant-source-empty">没有匹配的信息来源</div>}
+              {sourceDirectory.hasMore && <button
+                className="assistant-source-more"
+                disabled={sourceLoading}
+                onClick={() => void loadConversationSources(sourceDirectory.items.length, true)}>
+                {sourceLoading ? '加载中…' : '加载更多'}
+              </button>}
             </div>
-            <div className="assistant-source-footer"><span>{sources.filter(source => source.enabled).length} 个来源已开启</span><button className="primary" onClick={() => setShowSources(false)}>完成</button></div>
+            <div className="assistant-source-footer">
+              <span>显示 {sourceDirectory.items.length}/{sourceDirectory.total} · 全部 {sourceDirectory.counts.enabled} 个来源已开启</span>
+              <button className="primary" onClick={() => setShowSources(false)}>完成</button>
+            </div>
           </div>
         </div>
       )}

@@ -1938,7 +1938,24 @@ export interface ElectronAPI {
         id: string,
         input?: { previewToken?: string; confirmation?: string }
       ) => Promise<boolean>
-      getConversationSources: () => Promise<any[]>
+      getConversationSources: (options?: any) => Promise<{
+        items: any[]
+        total: number
+        hasMore: boolean
+        offset: number
+        limit: number
+        revision: string
+        stale: boolean
+        counts: {
+          total: number
+          enabled: number
+          disabled: number
+          group: number
+          private: number
+          groupEnabled: number
+          privateEnabled: number
+        }
+      }>
       getDataSources: () => Promise<any[]>
       getEventTimeline: (options?: any) => Promise<{
         items: any[]; total: number; hasMore: boolean; revision: string; stale: boolean

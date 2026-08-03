@@ -9888,14 +9888,57 @@ export class PersonalMemoryStore {
     return new Map(rows.map(row => [row.session_id, row.analysis_enabled === 1]))
   }
 
+  getConversationPolicyRecords(): Array<{
+    sessionId: string
+    displayName: string
+    sessionType: 'group' | 'private'
+    enabled: boolean
+    updatedAt: string
+  }> {
+    if (!this.db) return []
+    const rows = this.db.prepare(`
+      SELECT session_id,display_name,session_type,analysis_enabled,updated_at
+      FROM conversation_policy
+    `).all() as any[]
+    return rows.map(row => ({
+      sessionId: String(row.session_id),
+      displayName: String(row.display_name || row.session_id),
+      sessionType: row.session_type === 'group' ? 'group' : 'private',
+      enabled: row.analysis_enabled === 1,
+      updatedAt: String(row.updated_at || '')
+    }))
+  }
+
   setConversationPolicy(sessionId: string, displayName: string, sessionType: 'group' | 'private', enabled: boolean): void {
-    if (!this.db) return
-    this.db.prepare(`
+    this.setConversationPoliciesBatch([{ sessionId, displayName, sessionType, enabled }])
+  }
+
+  setConversationPoliciesBatch(records: Array<{
+    sessionId: string
+    displayName: string
+    sessionType: 'group' | 'private'
+    enabled: boolean
+  }>): void {
+    if (!this.db || !records.length) return
+    const statement = this.db.prepare(`
       INSERT INTO conversation_policy(session_id,display_name,session_type,analysis_enabled,resume_policy,updated_at)
       VALUES(?,?,?,?,?,?)
       ON CONFLICT(session_id) DO UPDATE SET display_name=excluded.display_name,session_type=excluded.session_type,
         analysis_enabled=excluded.analysis_enabled,updated_at=excluded.updated_at
-    `).run(sessionId, displayName, sessionType, enabled ? 1 : 0, 'from_now', new Date().toISOString())
+    `)
+    const now = new Date().toISOString()
+    this.db.transaction(() => {
+      for (const record of records) {
+        statement.run(
+          record.sessionId,
+          record.displayName,
+          record.sessionType,
+          record.enabled ? 1 : 0,
+          'from_now',
+          now
+        )
+      }
+    })()
   }
 
   registerDataSources(catalog: readonly any[]): void {

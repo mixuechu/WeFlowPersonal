@@ -881,6 +881,9 @@
 .assistant-source-actions { display: flex; gap: 7px; flex-wrap: wrap; }
 .assistant-source-actions button { padding: 7px 10px; border: 1px solid var(--border-color); border-radius: 8px; color: var(--text-secondary); background: transparent; }
 .assistant-source-search { width: 100%; padding: 10px 12px; border: 1px solid var(--border-color); border-radius: 9px; color: var(--text-primary); background: var(--bg-secondary); }
+.assistant-source-filters { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; color: var(--text-tertiary); font-size: 10px; }
+.assistant-source-filters select { padding: 7px 9px; border: 1px solid var(--border-color); border-radius: 8px; color: var(--text-primary); background: var(--bg-secondary); }
+.assistant-source-filters span { margin-left: auto; }
 .assistant-source-list { min-height: 180px; max-height: 440px; overflow: auto; border: 1px solid var(--border-color); border-radius: 12px; }
 .assistant-source-row { padding: 11px 13px; border-bottom: 1px solid var(--border-color); display: flex !important; grid-template-columns: 1fr auto !important; align-items: center; justify-content: space-between; gap: 14px; cursor: pointer; }
 .assistant-source-row:last-child { border-bottom: 0; }
@@ -888,6 +891,8 @@
 .assistant-source-row strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-primary); font-size: 12px; }
 .assistant-source-row small { color: var(--text-tertiary); font-size: 9px; }
 .assistant-source-row input { width: auto; flex: 0 0 auto; }
+.assistant-source-empty { padding: 32px 16px; text-align: center; color: var(--text-tertiary); font-size: 11px; }
+.assistant-source-more { width: 100%; padding: 10px; border: 0; border-top: 1px solid var(--border-color); color: var(--text-secondary); background: transparent; }
 .assistant-source-footer { display: flex; justify-content: space-between; align-items: center; color: var(--text-tertiary); font-size: 10px; }
 .assistant-source-footer button { padding: 9px 14px; border: 0; border-radius: 9px; color: #fff; background: #255f4b; }
 .assistant-calendar-picker { display: grid; gap: 10px; padding: 13px; border: 1px solid var(--border-color); border-radius: 12px; background: var(--bg-secondary); }

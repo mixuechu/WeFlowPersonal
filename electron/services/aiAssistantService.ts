@@ -31,6 +31,11 @@ import {
   buildMemoryCitationReviewIdentity,
   buildMemoryCitationReviewToken
 } from './memoryCitationReviewPolicy.ts'
+import {
+  assertConversationSourceMutation,
+  buildConversationSourceDirectory,
+  type ConversationSourceDirectoryOptions
+} from './conversationSourceDirectory.ts'
 import { buildContextualMemoryQuestion, buildMemoryQueryPlan } from './memoryQueryPlanner'
 import {
   applyTaskReviewFeedback,
@@ -4293,27 +4298,40 @@ export class AiAssistantService {
     }
   }
 
-  async getConversationSources(): Promise<any[]> {
-    const sessionPayload = await this.api('/api/v1/sessions', { limit: 500 })
-    const policies = personalMemoryStore.getConversationPolicies()
-    return (sessionPayload.sessions || []).filter((session: any) => !isOfficialAccountSession(session)).map((session: any) => ({
-      sessionId: String(session.username),
-      displayName: String(session.displayName || session.username),
-      type: String(session.username).endsWith('@chatroom') ? 'group' : 'private',
-      enabled: policies.get(session.username) !== false,
-      lastTimestamp: Number(session.lastTimestamp || 0)
-    })).sort((a: any, b: any) => b.lastTimestamp - a.lastTimestamp)
+  private async buildConversationSourceDirectory(options: ConversationSourceDirectoryOptions = {}): Promise<any> {
+    const sessionPayload = await this.api('/api/v1/sessions', { limit: 10_000 })
+    return buildConversationSourceDirectory(
+      (sessionPayload.sessions || []).filter((session: any) => !isOfficialAccountSession(session)),
+      personalMemoryStore.getConversationPolicyRecords(),
+      options
+    )
   }
 
-  setConversationSource(input: { sessionId: string; displayName?: string; type?: 'group' | 'private'; enabled: boolean }): any {
+  async getConversationSources(options: ConversationSourceDirectoryOptions = {}): Promise<any> {
+    return this.buildConversationSourceDirectory(options)
+  }
+
+  async setConversationSource(input: {
+    sessionId: string
+    enabled: boolean
+    mutationToken?: string
+  }): Promise<any> {
     const sessionId = String(input.sessionId || '').trim()
     if (!sessionId) throw new Error('缺少会话 ID')
     if (sessionId.toLowerCase().startsWith('gh_')) {
-      personalMemoryStore.setConversationPolicy(sessionId, String(input.displayName || sessionId), 'private', false)
       return { success: true, sessionId, enabled: false, excludedReason: 'official_account' }
     }
-    const type = input.type === 'group' || sessionId.endsWith('@chatroom') ? 'group' : 'private'
-    personalMemoryStore.setConversationPolicy(sessionId, String(input.displayName || sessionId), type, Boolean(input.enabled))
+    const directory = await this.buildConversationSourceDirectory({ limit: 100 })
+    const source = directory.items.find((item: any) => item.sessionId === sessionId) ||
+      (await this.buildConversationSourceDirectory({ query: sessionId, limit: 100 })).items
+        .find((item: any) => item.sessionId === sessionId)
+    assertConversationSourceMutation(source, input.mutationToken)
+    personalMemoryStore.setConversationPolicy(
+      source.sessionId,
+      source.displayName,
+      source.type,
+      Boolean(input.enabled)
+    )
     this.state.cursor.sessionCursors[sessionId] = Math.floor(Date.now() / 1000)
     delete this.state.cursor.sessionOffsets[sessionId]
     this.state.cursor.pendingSessionBacklogCount = Object.keys(this.state.cursor.sessionOffsets).length
@@ -4324,24 +4342,58 @@ export class AiAssistantService {
     return { success: true, sessionId, enabled: Boolean(input.enabled) }
   }
 
-  setConversationSourcesBulk(input: { type: 'group' | 'private'; enabled: boolean; sources: any[] }): any {
+  async setConversationSourcesBulk(input: {
+    type: 'group' | 'private'
+    enabled: boolean
+    query?: string
+    currentEnabled?: 'all' | 'enabled' | 'disabled'
+    expectedRevision?: string
+  }): Promise<any> {
+    if (input.type !== 'group' && input.type !== 'private') throw new Error('无效的会话类型')
+    const sessionPayload = await this.api('/api/v1/sessions', { limit: 10_000 })
+    const sessions = (sessionPayload.sessions || [])
+      .filter((session: any) => !isOfficialAccountSession(session))
+    const policies = personalMemoryStore.getConversationPolicyRecords()
+    const directory = buildConversationSourceDirectory(sessions, policies, {
+      type: input.type,
+      query: input.query,
+      enabled: input.currentEnabled,
+      limit: 100,
+      expectedRevision: input.expectedRevision
+    })
+    if (directory.stale) throw new Error('信息来源目录已经变化，请刷新后重试')
+    const matching: any[] = []
+    for (let offset = 0; offset < directory.total; offset += 100) {
+      matching.push(...buildConversationSourceDirectory(
+        sessions,
+        policies,
+        {
+          type: input.type,
+          query: input.query,
+          enabled: input.currentEnabled,
+          offset,
+          limit: 100,
+          expectedRevision: directory.revision
+        }
+      ).items)
+    }
+    personalMemoryStore.setConversationPoliciesBatch(matching.map(source => ({
+      sessionId: source.sessionId,
+      displayName: source.displayName,
+      sessionType: source.type,
+      enabled: Boolean(input.enabled)
+    })))
     const now = Math.floor(Date.now() / 1000)
-    let updated = 0
-    for (const source of input.sources || []) {
-      const sessionId = String(source.sessionId || '').trim()
-      const type = sessionId.endsWith('@chatroom') ? 'group' : 'private'
-      if (!sessionId || type !== input.type) continue
-      personalMemoryStore.setConversationPolicy(sessionId, String(source.displayName || sessionId), type, Boolean(input.enabled))
-      this.state.cursor.sessionCursors[sessionId] = now
-      delete this.state.cursor.sessionOffsets[sessionId]
-      updated += 1
+    for (const source of matching) {
+      this.state.cursor.sessionCursors[source.sessionId] = now
+      delete this.state.cursor.sessionOffsets[source.sessionId]
     }
     this.state.cursor.pendingSessionBacklogCount = Object.keys(this.state.cursor.sessionOffsets).length
     if (!this.state.cursor.pendingSessionBacklogCount) {
       this.state.cursor.backlogRetry = { ...EMPTY_BACKLOG_RETRY_STATE }
     }
     this.saveState()
-    return { success: true, updated }
+    return { success: true, updated: matching.length }
   }
 
   setSettings(input: any): any {
