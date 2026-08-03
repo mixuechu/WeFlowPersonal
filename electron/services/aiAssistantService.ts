@@ -5893,7 +5893,13 @@ export class AiAssistantService {
   }
 
   getResourceArchive(options?: any): any {
-    return personalMemoryStore.listResourceArchive(options || {})
+    const sourceId = ['wechat', 'documents', 'calendar', 'mail', 'legacy'].includes(
+      String(options?.sourceId || '')
+    ) ? options.sourceId : undefined
+    return personalMemoryStore.listResourceArchive({
+      ...(options || {}),
+      sourceId
+    })
   }
 
   getResourceDossier(id: string, expectedRevision: string): any {

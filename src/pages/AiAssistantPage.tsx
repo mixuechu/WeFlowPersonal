@@ -548,7 +548,7 @@ function AiAssistantPage() {
   const [resourceQuery, setResourceQuery] = useState('')
   const [resourceTypeFilter, setResourceTypeFilter] = useState('')
   const [resourceSourceFilter, setResourceSourceFilter] = useState<
-    '' | 'wechat' | 'documents' | 'calendar' | 'mail'
+    '' | 'wechat' | 'documents' | 'calendar' | 'mail' | 'legacy'
   >('')
   const [resourceFrom, setResourceFrom] = useState('')
   const [resourceTo, setResourceTo] = useState('')
@@ -6967,11 +6967,11 @@ function AiAssistantPage() {
                 <option value="document">本机文档</option>
               </select>
               <select value={resourceSourceFilter} onChange={event => setResourceSourceFilter(
-                event.target.value as '' | 'wechat' | 'documents' | 'calendar' | 'mail'
+                event.target.value as '' | 'wechat' | 'documents' | 'calendar' | 'mail' | 'legacy'
               )}>
                 <option value="">全部来源</option><option value="wechat">微信</option>
                 <option value="documents">本机文档</option><option value="calendar">macOS 日历</option>
-                <option value="mail">Mail</option>
+                <option value="mail">Mail</option><option value="legacy">历史未知来源</option>
               </select>
               <label><span>从</span><input type="date" value={resourceFrom} onChange={event => setResourceFrom(event.target.value)} /></label>
               <label><span>至</span><input type="date" value={resourceTo} onChange={event => setResourceTo(event.target.value)} /></label>
@@ -7008,6 +7008,7 @@ function AiAssistantPage() {
                   <strong>{resource.title}</strong>
                   <span>{resource.resource_type === 'link' ? '链接' : resource.resource_type === 'file' ? '文件' : resource.resource_type === 'chat-history' ? '转发记录' : resource.resource_type === 'mini-program' ? '小程序' : resource.resource_type === 'image' ? '图片 OCR' : resource.resource_type === 'voice' ? '语音转写' : resource.resource_type}</span>
                 </div>
+                <small>原始载体：{memorySourceLabels(resource)}</small>
                 {resource.content && <p>{resource.content}</p>}
                 {(resource.file_name || resource.url) && <small>{resource.file_name ? `${resource.file_name}${resource.file_ext ? ` · ${resource.file_ext}` : ''}` : resource.url}</small>}
                 {resource.resource_type === 'file' && <small>

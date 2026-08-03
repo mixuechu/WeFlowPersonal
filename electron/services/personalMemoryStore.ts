@@ -5902,7 +5902,7 @@ export class PersonalMemoryStore {
 
   listResourceArchive(options: {
     resourceType?: string
-    sourceId?: 'wechat' | 'documents' | 'calendar' | 'mail'
+    sourceId?: MemoryEvidenceSource
     query?: string
     from?: string
     to?: string
@@ -5959,7 +5959,10 @@ export class PersonalMemoryStore {
         mr.created_at,mr.updated_at,
         length(mr.content) AS content_length,
         (SELECT COUNT(*) FROM search_document_evidence sde
-          WHERE sde.document_id='resource:' || mr.id) AS evidence_count
+          WHERE sde.document_id='resource:' || mr.id) AS evidence_count,
+        (SELECT GROUP_CONCAT(DISTINCT sde.source_id)
+          FROM search_document_evidence sde
+          WHERE sde.document_id='resource:' || mr.id) AS source_ids
       FROM memory_resources mr
       WHERE ${where}
       ORDER BY mr.updated_at DESC,mr.id ASC

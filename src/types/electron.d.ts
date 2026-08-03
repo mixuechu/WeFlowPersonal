@@ -1881,7 +1881,7 @@ export interface ElectronAPI {
       previewDeleteMemoryResource: (id: string) => Promise<any>
       getResourceArchive: (options?: {
         resourceType?: string
-        sourceId?: 'wechat' | 'documents' | 'calendar' | 'mail'
+        sourceId?: 'wechat' | 'documents' | 'calendar' | 'mail' | 'legacy'
         query?: string
         from?: string
         to?: string

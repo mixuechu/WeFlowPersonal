@@ -9470,14 +9470,14 @@ test('resource archive pages stay bounded, revision-safe and hydrate only one do
     fileExt: index % 2 ? '.pdf' : '',
     content: `只应在单条档案出现的资源正文 ${index} ${'正文'.repeat(200)}`,
     metadata: {
-      sourceId: index % 3 ? 'wechat' : 'documents',
+      sourceId: index === 124 ? 'legacy' : index % 3 ? 'wechat' : 'documents',
       sessionName: `会话 ${index}`,
       attachmentStructure: { kind: 'document', headings: [`标题 ${index}`] }
     },
     createdAt: new Date(Date.UTC(2026, 6, 1, 0, index)).toISOString(),
     updatedAt: new Date(Date.UTC(2026, 6, 1, 0, index)).toISOString(),
     evidence: [{
-      sourceId: index % 3 ? 'wechat' : 'documents',
+      sourceId: index === 124 ? 'legacy' : index % 3 ? 'wechat' : 'documents',
       messageId: `resource-message-${index}`,
       sessionId: `resource-session-${index}`,
       timestamp: 1_775_000_000 + index,
@@ -9513,6 +9513,10 @@ test('resource archive pages stay bounded, revision-safe and hydrate only one do
   })
   assert.ok(filtered.total > 0)
   assert.ok(filtered.items.every(item => item.resource_type === 'link'))
+  const legacy = store.listResourceArchive({ sourceId: 'legacy', limit: 40 })
+  assert.equal(legacy.total, 1)
+  assert.equal(legacy.items[0].id, 'resource-archive-124')
+  assert.equal(legacy.items[0].source_ids, 'legacy')
 
   const dossier = store.getResourceDossier(first.items[0].id, first.revision)
   assert.equal(dossier.stale, false)
