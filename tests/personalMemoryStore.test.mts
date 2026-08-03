@@ -7412,15 +7412,25 @@ test('task review audit archive paginates decisions without exposing evidence or
   })
   const dossierSecond = store.getTaskReviewDecisionDossier(detailedFingerprint, {
     historyOffset: 50,
-    historyLimit: 50
+    historyLimit: 50,
+    revision: dossierFirst.revision
   })
   assert.equal(dossierFirst.evidence.length, 20)
   assert.equal(dossierFirst.evidenceTotal, 30)
   assert.equal(dossierFirst.history.length, 50)
   assert.equal(dossierFirst.historyHasMore, true)
+  assert.equal(dossierSecond.stale, false)
   assert.equal(new Set([...dossierFirst.history, ...dossierSecond.history].map(item => item.id)).size, 100)
   assert.equal(JSON.stringify(dossierFirst).includes('可恢复但不能泄露的任务快照'), false)
   assert.ok(dossierFirst.history.every((item: any) => !('task_json' in item)))
+  store.revokeTaskReviewDecision(detailedFingerprint)
+  const staleDossierPage = store.getTaskReviewDecisionDossier(detailedFingerprint, {
+    historyOffset: 50,
+    historyLimit: 50,
+    revision: dossierFirst.revision
+  })
+  assert.equal(staleDossierPage.stale, true)
+  assert.deepEqual(staleDossierPage.history, [])
 }))
 
 test('task review audit archive survives a SQLCipher process-style reopen', () => {
@@ -7449,6 +7459,8 @@ test('task review audit archive survives a SQLCipher process-style reopen', () =
     assert.equal(page.items[0]?.active, false)
     const dossier = second.getTaskReviewDecisionDossier('audit-restart-fingerprint')
     assert.equal(dossier.evidenceTotal, 1)
+    assert.equal(dossier.stale, false)
+    assert.match(dossier.revision, /^\d+$/)
     assert.deepEqual(dossier.history.map((item: any) => item.action), ['revoked', 'rejected'])
   } finally {
     first.close()

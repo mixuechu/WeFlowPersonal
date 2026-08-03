@@ -1703,7 +1703,16 @@ function AiAssistantPage() {
         evidenceFingerprint,
         { historyOffset: 0, historyLimit: 50 }
       )
-      if (taskFeedbackDossierGate.current.isCurrent(request)) setTaskFeedbackDossier(dossier)
+      if (!taskFeedbackDossierGate.current.isCurrent(request)) return
+      if (dossier?.stale) {
+        window.setTimeout(() => {
+          if (taskFeedbackDossierGate.current.isCurrent(request)) {
+            void openTaskFeedbackDossier(evidenceFingerprint)
+          }
+        }, 250)
+        return
+      }
+      setTaskFeedbackDossier(dossier)
     } catch (error: any) {
       if (taskFeedbackDossierGate.current.isCurrent(request)) {
         setTaskFeedbackDossier({
@@ -1722,9 +1731,18 @@ function AiAssistantPage() {
     try {
       const page = await window.electronAPI.aiAssistant.getTaskReviewDecisionDossier(
         taskFeedbackDossier.evidence_fingerprint,
-        { historyOffset: taskFeedbackDossier.history?.length || 0, historyLimit: 50 }
+        {
+          historyOffset: taskFeedbackDossier.history?.length || 0,
+          historyLimit: 50,
+          revision: taskFeedbackDossier.revision
+        }
       )
       if (!page || !taskFeedbackDossierGate.current.isCurrent(request)) return
+      if (page.stale) {
+        setMessage('任务归属动作历史已有变化，已重新载入最新详情。')
+        void openTaskFeedbackDossier(taskFeedbackDossier.evidence_fingerprint)
+        return
+      }
       setTaskFeedbackDossier((current: any) => ({
         ...current,
         ...page,
@@ -5758,7 +5776,7 @@ function AiAssistantPage() {
             </div>}
             {memoryDiagnostics.taskOwnershipReviewRevision?.version && <div className={`assistant-recovery-audit ${memoryDiagnostics.taskOwnershipReviewRevisionHealthy ? 'healthy' : 'unhealthy'}`}>
               <header><ShieldCheck size={15} /><span><b>任务归属审阅分页一致性保护</b>
-                <small>待确认任务、原文证据、任务历史、归属决定和撤销记录共享数据库 revision；确认、拒绝、撤销或后台重新抽取发生在翻页期间时，旧页会被拒绝并自动刷新。</small>
+                <small>待确认任务、原文证据、任务历史、归属决定和撤销记录共享数据库 revision；候选目录、完整决策档案及单条动作历史在确认、拒绝、撤销或后台重抽取后都会拒绝旧页并自动刷新。</small>
               </span></header>
               <div className="assistant-recovery-current">
                 <span>当前状态 <b>{memoryDiagnostics.taskOwnershipReviewRevisionHealthy ? '保护正常' : '需要检查'}</b></span>

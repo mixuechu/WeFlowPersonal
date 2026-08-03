@@ -3487,16 +3487,32 @@ export class AiAssistantService {
       String(evidenceFingerprint || '').trim(),
       {
         historyOffset: Number(options?.historyOffset || 0),
-        historyLimit: Number(options?.historyLimit || 50)
+        historyLimit: Number(options?.historyLimit || 50),
+        revision: String(options?.revision || '')
       }
     )
     if (!dossier) return null
-    return {
+    if (dossier.stale) return dossier
+    const result = {
       ...dossier,
       canRevert: Boolean(dossier.active && (
         dossier.can_restore_snapshot || this.state.tasks.some(task => task.id === dossier.task_id)
       ))
     }
+    const completedRevision = personalMemoryStore.getTaskOwnershipReviewRevision()
+    if (completedRevision !== dossier.revision) {
+      return {
+        ...dossier,
+        evidence: [],
+        evidenceTotal: 0,
+        history: [],
+        historyTotal: 0,
+        historyHasMore: false,
+        revision: completedRevision,
+        stale: true
+      }
+    }
+    return result
   }
 
   getMemoryDeletionAuditPage(options: any = {}): any {

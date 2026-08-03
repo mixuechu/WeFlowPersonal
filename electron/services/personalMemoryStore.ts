@@ -6294,8 +6294,32 @@ export class PersonalMemoryStore {
   getTaskReviewDecisionDossier(evidenceFingerprint: string, options: {
     historyOffset?: number
     historyLimit?: number
+    revision?: string
   } = {}): any {
     if (!this.db || !String(evidenceFingerprint || '').trim()) return null
+    const revision = this.getTaskOwnershipReviewRevision()
+    const historyOffset = Math.max(0, Math.min(
+      1_000_000,
+      Math.floor(Number(options.historyOffset) || 0)
+    ))
+    const historyLimit = Math.max(1, Math.min(
+      100,
+      Math.floor(Number(options.historyLimit) || 50)
+    ))
+    if (historyOffset > 0 && String(options.revision || '') !== revision) {
+      return {
+        evidence_fingerprint: String(evidenceFingerprint || '').trim(),
+        evidence: [],
+        evidenceTotal: 0,
+        history: [],
+        historyTotal: 0,
+        historyOffset,
+        historyLimit,
+        historyHasMore: false,
+        revision,
+        stale: true
+      }
+    }
     const row = this.db.prepare(`
       SELECT * FROM task_review_decisions WHERE evidence_fingerprint=?
     `).get(evidenceFingerprint) as any
@@ -6304,8 +6328,6 @@ export class PersonalMemoryStore {
     let task: any = {}
     try { evidence = JSON.parse(String(row.evidence_json || '[]')) } catch {}
     try { task = JSON.parse(String(row.task_json || '{}')) } catch {}
-    const historyOffset = Math.max(0, Math.min(1_000_000, Math.floor(Number(options.historyOffset) || 0)))
-    const historyLimit = Math.max(1, Math.min(100, Math.floor(Number(options.historyLimit) || 50)))
     const historyTotal = Number((this.db.prepare(`
       SELECT COUNT(*) AS count FROM task_review_history WHERE evidence_fingerprint=?
     `).get(evidenceFingerprint) as any)?.count || 0)
@@ -6316,26 +6338,44 @@ export class PersonalMemoryStore {
       LIMIT ? OFFSET ?
     `).all(evidenceFingerprint, historyLimit, historyOffset) as any[]
     const { task_json: _taskJson, evidence_json: _evidenceJson, ...safeRow } = row
+    const history = historyRows.map(item => {
+      let snapshot: any = {}
+      try { snapshot = JSON.parse(String(item.task_json || '{}')) } catch {}
+      return {
+        id: item.id,
+        action: item.action,
+        created_at: item.created_at,
+        snapshotAvailable: Boolean(snapshot?.id && snapshot?.title)
+      }
+    })
+    const completedRevision = this.getTaskOwnershipReviewRevision()
+    if (completedRevision !== revision) {
+      return {
+        evidence_fingerprint: String(evidenceFingerprint || '').trim(),
+        evidence: [],
+        evidenceTotal: 0,
+        history: [],
+        historyTotal: 0,
+        historyOffset,
+        historyLimit,
+        historyHasMore: false,
+        revision: completedRevision,
+        stale: true
+      }
+    }
     return {
       ...safeRow,
       active: !row.revoked_at,
       can_restore_snapshot: Boolean(task?.id && task?.title),
       evidence: evidence.slice(-20),
       evidenceTotal: evidence.length,
-      history: historyRows.map(item => {
-        let snapshot: any = {}
-        try { snapshot = JSON.parse(String(item.task_json || '{}')) } catch {}
-        return {
-          id: item.id,
-          action: item.action,
-          created_at: item.created_at,
-          snapshotAvailable: Boolean(snapshot?.id && snapshot?.title)
-        }
-      }),
+      history,
       historyTotal,
       historyOffset,
       historyLimit,
-      historyHasMore: historyOffset + historyRows.length < historyTotal
+      historyHasMore: historyOffset + historyRows.length < historyTotal,
+      revision,
+      stale: false
     }
   }
 
