@@ -7,10 +7,19 @@ export type BoundedEvidencePayload = {
   evidenceTotal: number
 }
 
+export function evidenceArchiveIdentity(item: any): string {
+  return [
+    String(item?.sourceId ?? item?.source_id ?? ''),
+    String(item?.sessionId ?? item?.session_id ?? ''),
+    String(item?.messageId ?? item?.message_id ?? '')
+  ].join('\u0000')
+}
+
 export function boundedEvidencePayload(evidence: unknown, limit: number): BoundedEvidencePayload {
   const safeLimit = Math.max(1, Math.min(100, Math.floor(Number(limit) || 1)))
   const rows = Array.isArray(evidence) ? evidence : []
   const normalized = rows.map(item => ({
+    sourceId: String(item?.sourceId || item?.source_id || ''),
     messageId: String(item?.messageId || item?.message_id || ''),
     sessionId: String(item?.sessionId || item?.session_id || ''),
     timestamp: Number(item?.timestamp || 0),
@@ -19,7 +28,10 @@ export function boundedEvidencePayload(evidence: unknown, limit: number): Bounde
     role: String(item?.role || item?.evidence_role || item?.evidenceRole || '')
   })).filter(item => item.messageId || item.excerpt)
   normalized.sort((left, right) =>
-    right.timestamp - left.timestamp || right.messageId.localeCompare(left.messageId))
+    right.timestamp - left.timestamp ||
+    right.sourceId.localeCompare(left.sourceId) ||
+    right.sessionId.localeCompare(left.sessionId) ||
+    right.messageId.localeCompare(left.messageId))
   return {
     evidence: normalized.slice(0, safeLimit).reverse(),
     evidenceTotal: normalized.length

@@ -5,6 +5,7 @@ import type { ReviewStatusFilter } from '../utils/graphReviewFilters'
 import { evidenceLocalMessageId, groupMemorySearchResults, memoryEvidenceSourceLabel, MEMORY_TYPE_LABELS, normalizeMemoryEvidence, type MemoryEvidence } from '../utils/memorySearchPresentation'
 import { LatestRequestGate } from '../utils/latestRequestGate'
 import { buildMemorySessionScope } from '../utils/memorySessionScope'
+import { evidenceArchiveIdentity } from '../../shared/evidencePayload'
 import './AiAssistantPage.scss'
 
 type Task = {
@@ -75,14 +76,23 @@ function formatBytes(value: number): string {
 function EvidenceRows({
   evidence: rawEvidence,
   total,
-  roleLabels = false
+  roleLabels = false,
+  onOpenArchive
 }: {
   evidence?: any[]
   total?: number
   roleLabels?: boolean
+  onOpenArchive?: () => void
 }) {
   const evidence = (rawEvidence || []).map(normalizeMemoryEvidence)
-  if (!evidence.length) return <small className="assistant-evidence-empty">尚无可展示的原文证据</small>
+  if (!evidence.length) return <>
+    <small className="assistant-evidence-empty">尚无已加载的原文证据</small>
+    {Number(total || 0) > 0 && onOpenArchive && <button
+      className="assistant-open-evidence-archive"
+      onClick={onOpenArchive}>
+      读取全部 {Number(total || 0)} 条原文
+    </button>}
+  </>
   return <>
     {evidence.map((item, index) => {
       const localMessageId = evidenceLocalMessageId(item)
@@ -96,8 +106,13 @@ function EvidenceRows({
       </div>
     })}
     {Number(total || 0) > evidence.length && <small className="assistant-evidence-limit">
-      当前显示最近 {evidence.length} / {total} 条；完整历史可在统一检索中查看。
+      当前显示最近 {evidence.length} / {total} 条。
     </small>}
+    {Number(total || 0) > evidence.length && onOpenArchive && <button
+      className="assistant-open-evidence-archive"
+      onClick={onOpenArchive}>
+      查看全部 {Number(total || 0)} 条原文
+    </button>}
   </>
 }
 
@@ -4039,10 +4054,9 @@ function AiAssistantPage() {
       }
       setMemoryEvidenceArchive(current => {
         if (!current || current.documentType !== archive.documentType || current.sourceId !== archive.sourceId) return current
-        const seen = new Set(current.items.map(item =>
-          `${String(item.session_id || '')}\u0000${String(item.message_id || '')}`))
+        const seen = new Set(current.items.map(evidenceArchiveIdentity))
         const additions = page.items.filter(item => {
-          const key = `${String(item.session_id || '')}\u0000${String(item.message_id || '')}`
+          const key = evidenceArchiveIdentity(item)
           if (seen.has(key)) return false
           seen.add(key)
           return true
@@ -5287,6 +5301,9 @@ function AiAssistantPage() {
                         <EvidenceRows
                           evidence={taskWorkspace.task.evidence}
                           total={taskWorkspace.task.evidenceTotal}
+                          onOpenArchive={() => void openMemoryEvidenceArchive(
+                            'task', taskWorkspace.task.id, taskWorkspace.task.title
+                          )}
                         />
                         {!!taskWorkspace.history?.length && <details open>
                           <summary>状态历史（{taskWorkspace.historyTotal || taskWorkspace.history.length}）</summary>
@@ -5387,7 +5404,10 @@ function AiAssistantPage() {
                 {taskWorkspace.status === 'loading' && <small>正在读取任务原文与审计历史…</small>}
                 {taskWorkspace.status === 'error' && <small className="assistant-error">{taskWorkspace.error || '读取失败'}</small>}
                 {taskWorkspace.status === 'ready' && taskWorkspace.task?.id === task.id && <>
-                  <EvidenceRows evidence={taskWorkspace.task.evidence} total={taskWorkspace.task.evidenceTotal} />
+                  <EvidenceRows evidence={taskWorkspace.task.evidence} total={taskWorkspace.task.evidenceTotal}
+                    onOpenArchive={() => void openMemoryEvidenceArchive(
+                      'task', taskWorkspace.task.id, taskWorkspace.task.title
+                    )} />
                   {!!taskWorkspace.history?.length && <details open>
                     <summary>修改历史（{taskWorkspace.historyTotal || taskWorkspace.history.length}）</summary>
                     <div className="assistant-task-history">
@@ -6397,7 +6417,10 @@ function AiAssistantPage() {
                 {claim.polarity === 'negative' && <small>该条是对“{claim.predicate}”的明确否定陈述，仍需结合反证人工确认。</small>}
                 {(claim.valid_from || claim.valid_to) && <small>有效期：{claim.valid_from || '未知'} — {claim.valid_to || '至今'}</small>}
                 <div className="assistant-evidence-stack">
-                  <EvidenceRows evidence={claim.evidence} total={claim.evidence_count} roleLabels />
+                  <EvidenceRows evidence={claim.evidence} total={claim.evidence_count} roleLabels
+                    onOpenArchive={() => void openMemoryEvidenceArchive(
+                      'claim', claim.id, `${claim.subject_name || '未知主体'} · ${claim.predicate}`
+                    )} />
                 </div>
                 <div className="assistant-memory-actions">
                   {editingClaim?.id === claim.id
@@ -6514,7 +6537,10 @@ function AiAssistantPage() {
                 {!!event.participants?.length && <small>参与者：{event.participants.map((item: any) => `${item.canonical_name}（${item.role}）`).join('、')}</small>}
                 {!eventEntitiesTrusted(event) && <small>存在尚未确认的参与实体；请先在图谱候选区确认实体，之后才能确认或纠正此事件。</small>}
                 <div className="assistant-evidence-stack">
-                  <EvidenceRows evidence={event.evidence} total={event.evidence_count} />
+                  <EvidenceRows evidence={event.evidence} total={event.evidence_count}
+                    onOpenArchive={() => void openMemoryEvidenceArchive(
+                      'event', event.id, event.title || '事件原文'
+                    )} />
                 </div>
                 <div className="assistant-memory-actions">
                   {editingEvent?.id === event.id
@@ -6876,7 +6902,11 @@ function AiAssistantPage() {
                 <summary>核验这条路径的原文证据</summary>
                 {graphPath.steps.map((step: any, index: number) => <section key={step.relationId}>
                   <strong>{graphPath.entities[index]?.canonicalName} {step.forward ? step.predicate : `被${step.predicate}`} {graphPath.entities[index + 1]?.canonicalName}</strong>
-                  <EvidenceRows evidence={step.evidence} total={step.evidenceTotal} />
+                  <EvidenceRows evidence={step.evidence} total={step.evidenceTotal}
+                    onOpenArchive={() => void openMemoryEvidenceArchive(
+                      'relation', step.relationId,
+                      `${graphPath.entities[index]?.canonicalName || '实体'} · ${step.predicate} · ${graphPath.entities[index + 1]?.canonicalName || '实体'}`
+                    )} />
                 </section>)}
               </details>}
             </> : <p>在 6 层关系内没有找到路径。候选关系被保留，已拒绝关系不会参与计算。</p>}
@@ -6889,12 +6919,22 @@ function AiAssistantPage() {
                 {item.leftEdges.map((edge: any) => <div className="assistant-common-edge" key={`left-${edge.relationId}`}>
                   {graphCommonNeighbors.from?.canonicalName} {edge.forward ? edge.predicate : `被${edge.predicate}`} {item.entity.canonicalName}
                   <small>{edge.status === 'confirmed' ? '已确认' : '待确认'} · {Math.round(Number(edge.confidence || 0) * 100)}%</small>
-                  <details><summary>原文证据 {edge.evidenceTotal || 0} 条</summary><EvidenceRows evidence={edge.evidence} total={edge.evidenceTotal} /></details>
+                  <details><summary>原文证据 {edge.evidenceTotal || 0} 条</summary><EvidenceRows
+                    evidence={edge.evidence} total={edge.evidenceTotal}
+                    onOpenArchive={() => void openMemoryEvidenceArchive(
+                      'relation', edge.relationId,
+                      `${graphCommonNeighbors.from?.canonicalName || '实体'} · ${edge.predicate} · ${item.entity.canonicalName}`
+                    )} /></details>
                 </div>)}
                 {item.rightEdges.map((edge: any) => <div className="assistant-common-edge" key={`right-${edge.relationId}`}>
                   {graphCommonNeighbors.to?.canonicalName} {edge.forward ? edge.predicate : `被${edge.predicate}`} {item.entity.canonicalName}
                   <small>{edge.status === 'confirmed' ? '已确认' : '待确认'} · {Math.round(Number(edge.confidence || 0) * 100)}%</small>
-                  <details><summary>原文证据 {edge.evidenceTotal || 0} 条</summary><EvidenceRows evidence={edge.evidence} total={edge.evidenceTotal} /></details>
+                  <details><summary>原文证据 {edge.evidenceTotal || 0} 条</summary><EvidenceRows
+                    evidence={edge.evidence} total={edge.evidenceTotal}
+                    onOpenArchive={() => void openMemoryEvidenceArchive(
+                      'relation', edge.relationId,
+                      `${graphCommonNeighbors.to?.canonicalName || '实体'} · ${edge.predicate} · ${item.entity.canonicalName}`
+                    )} /></details>
                 </div>)}
               </div>
             </article>)}
@@ -7431,7 +7471,11 @@ function AiAssistantPage() {
                 {dossierClaims.map((claim: any) => <article key={claim.id}>
                   <div><b>{claim.polarity === 'negative' ? '并非 ' : ''}{claim.predicate}</b><span>{claim.object_entity_name || claim.object_value || '待确认'}</span></div>
                   <small>{claim.status === 'confirmed' ? '已确认' : '待确认'} · {Math.round(Number(claim.confidence || 0) * 100)}% · {claim.source_nature === 'self_statement' ? '本人陈述' : claim.source_nature === 'other_statement' ? '他人陈述' : '模型推断'}</small>
-                  <div className="assistant-evidence-stack"><EvidenceRows evidence={claim.evidence} total={claim.evidence_count} roleLabels /></div>
+                  <div className="assistant-evidence-stack"><EvidenceRows evidence={claim.evidence}
+                    total={claim.evidence_count} roleLabels onOpenArchive={() =>
+                      void openMemoryEvidenceArchive(
+                        'claim', claim.id, `${selectedEntity?.canonicalName || '人物'} · ${claim.predicate}`
+                      )} /></div>
                 </article>)}
                 {entityDossierPages.status === 'ready' && !dossierClaims.length && <em>尚无结构化事实</em>}
                 {entityDossierPages.claims?.hasMore && <button
@@ -7453,7 +7497,12 @@ function AiAssistantPage() {
                       <b>{outgoing ? relation.predicate : `被${relation.predicate}`}</b><span>{neighborName || selectedEntityNames[neighborId] || neighborId}</span>
                     </button>
                     <small>{relation.status === 'confirmed' ? '已确认' : '待确认'} · {Math.round(Number(relation.confidence || 0) * 100)}%</small>
-                    <div className="assistant-evidence-stack"><EvidenceRows evidence={relation.evidence} total={relation.evidenceTotal} /></div>
+                    <div className="assistant-evidence-stack"><EvidenceRows evidence={relation.evidence}
+                      total={relation.evidenceTotal} onOpenArchive={() =>
+                        void openMemoryEvidenceArchive(
+                          'relation', relation.id,
+                          `${relation.subject_name || relation.subjectId} · ${relation.predicate} · ${relation.object_name || relation.objectId}`
+                        )} /></div>
                     <button className="assistant-dossier-task-action danger" onClick={() => void permanentlyDeleteMemoryItem('relation', relation)}>永久删除关系</button>
                   </article>
                 })}
@@ -7472,7 +7521,9 @@ function AiAssistantPage() {
                   <div><b>{event.title}</b><span>{event.start_at || '时间待确认'}</span></div>
                   {event.description && <p>{event.description}</p>}
                   <small>{event.event_type} · {event.status === 'confirmed' ? '已确认' : '待确认'} · {event.location || '地点未记录'}</small>
-                  <div className="assistant-evidence-stack"><EvidenceRows evidence={event.evidence} total={event.evidence_count} /></div>
+                  <div className="assistant-evidence-stack"><EvidenceRows evidence={event.evidence}
+                    total={event.evidence_count} onOpenArchive={() =>
+                      void openMemoryEvidenceArchive('event', event.id, event.title || '事件原文')} /></div>
                 </article>)}
                 {entityDossierPages.status === 'ready' && !dossierEvents.length && <em>尚无相关事件</em>}
                 {entityDossierPages.events?.hasMore && <button
@@ -7490,7 +7541,9 @@ function AiAssistantPage() {
                     <b>{task.title}</b><span>{task.status}</span>
                   </div>
                   <small>{task.taskKind || 'action'} · {task.owner || '负责人待确认'} · {task.due || '无截止时间'}</small>
-                  <div className="assistant-evidence-stack"><EvidenceRows evidence={task.evidence} total={(task as any).evidenceTotal} /></div>
+                  <div className="assistant-evidence-stack"><EvidenceRows evidence={task.evidence}
+                    total={(task as any).evidenceTotal} onOpenArchive={() =>
+                      void openMemoryEvidenceArchive('task', task.id, task.title)} /></div>
                   {!['cancelled'].includes(task.status) && <button className="assistant-dossier-task-action" onClick={() => void toggleTask(task)}>
                     {task.status === 'done' ? '恢复为待处理' : '标记完成'}
                   </button>}
@@ -7659,7 +7712,9 @@ function AiAssistantPage() {
                 {selectedProject.tasks.map((task: Task) => <article key={task.id}>
                   <div><b>{task.title}</b><span>{task.status}</span></div>
                   <small>{task.owner || '负责人待确认'} · {task.due || '无截止时间'} · {task.priority}</small>
-                  <div className="assistant-evidence-stack"><EvidenceRows evidence={(task.evidence || []).slice(-2)} total={(task as any).evidenceTotal} /></div>
+                  <div className="assistant-evidence-stack"><EvidenceRows
+                    evidence={(task.evidence || []).slice(-2)} total={(task as any).evidenceTotal}
+                    onOpenArchive={() => void openMemoryEvidenceArchive('task', task.id, task.title)} /></div>
                   {task.status !== 'cancelled' && <button className="assistant-dossier-task-action" onClick={() => void toggleTask(task)}>{task.status === 'done' ? '恢复待处理' : '标记完成'}</button>}
                 </article>)}
                 {!selectedProject.tasks.length && <em>尚无归入项目的任务</em>}
@@ -7681,7 +7736,11 @@ function AiAssistantPage() {
                   <small>{claim.status === 'confirmed' ? '已确认' : '待确认'} ·
                     {Math.round(Number(claim.confidence || 0) * 100)}% ·
                     {claim.source_nature === 'self_statement' ? '本人陈述' : claim.source_nature === 'other_statement' ? '他人陈述' : '模型推断'}</small>
-                  <div className="assistant-evidence-stack"><EvidenceRows evidence={claim.evidence} total={claim.evidence_count || claim.evidenceTotal} roleLabels /></div>
+                  <div className="assistant-evidence-stack"><EvidenceRows evidence={claim.evidence}
+                    total={claim.evidence_count || claim.evidenceTotal} roleLabels
+                    onOpenArchive={() => void openMemoryEvidenceArchive(
+                      'claim', claim.id, `${selectedProject.name || '项目'} · ${claim.predicate}`
+                    )} /></div>
                 </article>)}
                 {projectMemoryPages.status !== 'loading' && !projectDossierClaims.length && <em>尚无项目事实</em>}
                 {selectedProject.entityId && projectMemoryPages.claims?.hasMore && <button
@@ -7702,7 +7761,11 @@ function AiAssistantPage() {
                   <small>{event.event_type || 'other'} ·
                     {event.status === 'confirmed' ? '已确认' : event.status === 'cancelled' ? '已取消' : '待确认'} ·
                     {event.location || '地点未记录'}</small>
-                  <div className="assistant-evidence-stack"><EvidenceRows evidence={event.evidence} total={event.evidence_count || event.evidenceTotal} /></div>
+                  <div className="assistant-evidence-stack"><EvidenceRows evidence={event.evidence}
+                    total={event.evidence_count || event.evidenceTotal}
+                    onOpenArchive={() => void openMemoryEvidenceArchive(
+                      'event', event.id, event.title || '项目事件原文'
+                    )} /></div>
                 </article>)}
                 {projectMemoryPages.status !== 'loading' && !projectDossierEvents.length && <em>尚无相关事件</em>}
                 {selectedProject.entityId && projectMemoryPages.events?.hasMore && <button
@@ -7718,7 +7781,11 @@ function AiAssistantPage() {
                 {[...selectedProject.decisions, ...selectedProject.milestones].map((event: any) => <article key={event.id}>
                   <div><b>{event.title}</b><span>{event.event_type}</span></div>
                   <small>{event.start_at || '时间待确认'} · {event.status === 'confirmed' ? '已确认' : '待确认'}</small>
-                  <div className="assistant-evidence-stack"><EvidenceRows evidence={(event.evidence || []).slice(-2)} total={event.evidenceTotal} /></div>
+                  <div className="assistant-evidence-stack"><EvidenceRows
+                    evidence={(event.evidence || []).slice(-2)} total={event.evidenceTotal}
+                    onOpenArchive={() => void openMemoryEvidenceArchive(
+                      'event', event.id, event.title || '里程碑原文'
+                    )} /></div>
                 </article>)}
                 {!selectedProject.milestones.length && !selectedProject.decisions.length && <em>尚无里程碑或决策事件</em>}
               </section>
