@@ -4232,7 +4232,12 @@ test('manual memory review updates searchable status metadata', () => withStore(
 test('assistant conversations persist ordered turns, citations and deletion across reloads', () => withStore(store => {
   const conversationId = store.saveAssistantExchange('第一问', '第一答', [{
     documentId: 'claim:one',
-    title: '证据一'
+    title: '证据一',
+    feedbackContext: {
+      query: '第一问',
+      options: { sourceIds: ['wechat'], documentTypes: ['claim'] },
+      version: 'memory-search-feedback-v2'
+    }
   }])
   store.saveAssistantExchange('第二问', '第二答', [{
     documentId: 'event:two',
@@ -4255,6 +4260,9 @@ test('assistant conversations persist ordered turns, citations and deletion acro
     ['assistant', '第三答']
   ])
   assert.equal(conversation.messages[1].citations[0].documentId, 'event:two')
+  const complete = store.getAssistantConversation(conversationId, 10)
+  assert.equal(complete.messages[1].citations[0].feedbackContext.query, '第一问')
+  assert.deepEqual(complete.messages[1].citations[0].feedbackContext.options.sourceIds, ['wechat'])
 
   assert.equal(store.deleteAssistantConversation(conversationId), true)
   assert.equal(store.getAssistantConversation(conversationId), null)

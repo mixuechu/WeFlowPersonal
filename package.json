@@ -111,7 +111,8 @@
       "hardenedRuntime": false,
       "gatekeeperAssess": false,
       "signIgnore": [
-        ".*\\/Contents\\/Resources\\/resources\\/welive\\/macos\\/.*\\/welive$"
+        ".*\\/Contents\\/Resources\\/resources\\/welive\\/macos\\/.*\\/welive$",
+        ".*\\/Electron Framework\\.framework\\/.*\\/Resources\\/.*\\.(pak|dat|bin)$"
       ],
       "entitlements": "electron/entitlements.mac.plist",
       "entitlementsInherit": "electron/entitlements.mac.plist",

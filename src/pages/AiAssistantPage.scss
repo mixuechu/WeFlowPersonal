@@ -661,6 +661,10 @@
 .assistant-citation-actions { margin-top: 7px; display: flex; gap: 5px; }
 .assistant-citation-actions button { padding: 4px 7px; border: 1px solid #d4ddd5; border-radius: 6px; color: #587162; background: #fff; font-size: 8px; cursor: pointer; }
 .assistant-citation-actions button.primary { border-color: #2f6b55; color: #fff; background: #2f6b55; }
+.assistant-citation-feedback { margin-top: 8px; padding-top: 7px; border-top: 1px dashed #dce3dd; }
+.assistant-citation-feedback small { margin-bottom: 5px; }
+.assistant-citation-feedback button { margin: 0 5px 0 0; padding: 4px 7px; border: 1px solid #d4ddd5; border-radius: 6px; color: #587162; background: #fff; font-size: 8px; cursor: pointer; }
+.assistant-citation-feedback button.active { border-color: #5c806d; color: #fff; background: #5c806d; }
 @media (max-width: 980px) { .assistant-memory-feed { grid-template-columns: 1fr; } }
 @media (max-width: 760px) { .assistant-conversation-layout { grid-template-columns: 1fr; } }
 .assistant-graph-toolbar { margin-bottom: 12px; }

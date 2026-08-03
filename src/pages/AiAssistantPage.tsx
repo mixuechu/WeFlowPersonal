@@ -1971,6 +1971,22 @@ function AiAssistantPage() {
         action
       })
       if (!context) setMemorySearchFeedback(result.feedback || [])
+      if (context) {
+        const nextFeedback = action === 'cleared' ? '' : action
+        setMemoryAnswer((current: any) => current ? {
+          ...current,
+          citations: (current.citations || []).map((citation: any) =>
+            citation.documentId === documentId
+              ? { ...citation, relevanceFeedback: nextFeedback }
+              : citation)
+        } : current)
+        const targetConversationId = memoryConversationId
+        if (targetConversationId) {
+          const refreshed = await window.electronAPI.aiAssistant.getAssistantConversation(targetConversationId)
+          setMemoryConversation((current: any) =>
+            current?.id === targetConversationId ? refreshed : current)
+        }
+      }
       setMessage(action === 'helpful'
         ? '已记录为有用；只会提升同一查询和范围内的排序。'
         : action === 'not_relevant'
@@ -2067,6 +2083,18 @@ function AiAssistantPage() {
       setMemoryFeedbackDeleteConfirmation('')
       setMemorySearchRefreshKey(value => value + 1)
       setMemoryFeedbackArchiveRefreshKey(value => value + 1)
+      const targetConversationId = memoryConversationId
+      if (targetConversationId) {
+        const refreshed = await window.electronAPI.aiAssistant.getAssistantConversation(targetConversationId)
+        setMemoryConversation((current: any) =>
+          current?.id === targetConversationId ? refreshed : current)
+        setMemoryAnswer((current: any) => {
+          if (!current) return current
+          const matching = [...(refreshed?.messages || [])].reverse().find((message: any) =>
+            message.role === 'assistant' && message.content === current.answer)
+          return matching ? { ...current, citations: matching.citations || [] } : current
+        })
+      }
       setMessage(`已永久删除 ${result.deletedRows || 0} 条检索反馈；${result.affectedChains || 0} 组排序偏好已清除。`)
     } catch (error: any) {
       if (!memoryFeedbackDeleteGate.current.isCurrent(request)) return
@@ -3543,6 +3571,28 @@ function AiAssistantPage() {
                   void openMemoryEvidenceArchive(citation.type, citation.sourceId, citation.title)}>
                   查看完整证据档案
                 </button>}
+                {citation.feedbackContext ? <div className="assistant-citation-feedback">
+                  <small>这项判断只影响生成本回答时的同一问题和检索范围，不改变记忆真实性。</small>
+                  <button
+                    className={citation.relevanceFeedback === 'helpful' ? 'active' : ''}
+                    disabled={Boolean(memorySearchFeedbackSaving)}
+                    onClick={() => void updateMemorySearchFeedback(citation.documentId, 'helpful', citation.feedbackContext)}>
+                    {memorySearchFeedbackSaving === `${citation.documentId}:helpful` ? '记录中…' : '这条引用有帮助'}
+                  </button>
+                  <button
+                    className={citation.relevanceFeedback === 'not_relevant' ? 'active' : ''}
+                    disabled={Boolean(memorySearchFeedbackSaving)}
+                    onClick={() => void updateMemorySearchFeedback(citation.documentId, 'not_relevant', citation.feedbackContext)}>
+                    {memorySearchFeedbackSaving === `${citation.documentId}:not_relevant` ? '记录中…' : '这条引用不相关'}
+                  </button>
+                  {citation.relevanceFeedback && <button
+                    disabled={Boolean(memorySearchFeedbackSaving)}
+                    onClick={() => void updateMemorySearchFeedback(citation.documentId, 'cleared', citation.feedbackContext)}>
+                    撤销引用反馈
+                  </button>}
+                </div> : <small className="assistant-evidence-limit-note">
+                  此历史回答生成于引用反馈功能上线前，未保存当轮检索范围。
+                </small>}
                 {['relation', 'claim', 'event'].includes(citation.type) && <div className="assistant-citation-actions">
                   {citation.type === 'claim' && <button onClick={() => openClaimCorrection(citation)}>纠正事实</button>}
                   {citation.type === 'event' && <button onClick={() => void openEventCorrection(citation)}>纠正事件</button>}

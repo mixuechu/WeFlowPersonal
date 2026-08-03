@@ -1,7 +1,7 @@
 import crypto from 'node:crypto'
 import type { MemorySearchOptions } from './memorySearchFilters.ts'
 
-export const MEMORY_SEARCH_FEEDBACK_VERSION = 'memory-search-feedback-v1'
+export const MEMORY_SEARCH_FEEDBACK_VERSION = 'memory-search-feedback-v2'
 
 export type MemorySearchFeedbackAction = 'helpful' | 'not_relevant' | 'cleared'
 
@@ -47,9 +47,11 @@ export function applyMemorySearchFeedback(
 ): any[] {
   return items.map((item, index) => {
     const feedback = decisions.get(String(item.id || '')) || ''
-    const baseScore = Number.isFinite(Number(item.hybrid_score))
-      ? Number(item.hybrid_score)
-      : 1 / (40 + index)
+    const baseScore = Number.isFinite(Number(item.ranking_base_score))
+      ? Number(item.ranking_base_score)
+      : Number.isFinite(Number(item.hybrid_score))
+        ? Number(item.hybrid_score)
+        : 1 / (40 + index)
     const adjustment = feedback === 'helpful' ? 0.02 : feedback === 'not_relevant' ? -0.04 : 0
     return {
       ...item,

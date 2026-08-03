@@ -5004,15 +5004,22 @@ export class AiAssistantService {
     }
     let results = [...mergedResults.values()]
       .sort((left, right) => Number(right.hybrid_score || 0) - Number(left.hybrid_score || 0))
-      .slice(0, 40)
+    let usedFallbackTerms = false
     if (!results.length) {
+      usedFallbackTerms = true
       const terms = query.match(/[A-Za-z0-9@._-]{2,}|[\u4e00-\u9fff]{2,}/g) || []
       const merged = new Map<string, any>()
       for (const term of terms.slice(0, 6)) {
         for (const result of await this.searchMemoryHybrid(term, plannedOptions)) merged.set(result.id, result)
       }
-      results = [...merged.values()].slice(0, 30)
+      results = [...merged.values()]
     }
+    // Sub-query feedback is useful inside each retrieval branch, but the final answer
+    // must obey feedback bound to the user's actual contextual question and scope.
+    // applyMemorySearchFeedback is idempotent, so this removes any prior branch
+    // adjustment before applying the final context decision.
+    results = this.applyStoredMemorySearchFeedback(contextualQuestion.query, plannedOptions, results)
+      .slice(0, usedFallbackTerms ? 30 : 40)
     const mailSource = personalMemoryStore.listDataSources().find(source => source.id === 'mail')
     const context = buildModelMemoryContext(results, {
       mail: { allowModelAnalysis: Boolean(mailSource?.config?.allowModelAnalysis) }
@@ -5042,7 +5049,24 @@ export class AiAssistantService {
     if (!response.ok) throw new Error(payload?.error?.message || `DeepSeek 请求失败 (${response.status})`)
     const parsed = parseModelJson(payload?.choices?.[0]?.message?.content)
     const grounded = finalizeGroundedMemoryAnswer(parsed, context)
-    const { answer, citations } = grounded
+    const answer = grounded.answer
+    const feedbackContext = buildMemorySearchFeedbackContext(contextualQuestion.query, plannedOptions)
+    const feedbackOptions = (() => {
+      try { return JSON.parse(feedbackContext.scopeJson) } catch { return {} }
+    })()
+    const resultById = new Map(results.map(result => [String(result.id || ''), result]))
+    const citations = grounded.citations.map(citation => {
+      const result = resultById.get(String(citation.documentId || '')) as any
+      return {
+        ...citation,
+        feedbackContext: {
+          query: feedbackContext.query,
+          options: feedbackOptions,
+          version: MEMORY_SEARCH_FEEDBACK_VERSION
+        },
+        relevanceFeedback: String(result?.relevance_feedback || '')
+      }
+    })
     const id = personalMemoryStore.saveAssistantExchange(query, answer, citations, conversationId)
     return {
       conversationId: id,
@@ -5073,11 +5097,51 @@ export class AiAssistantService {
     })
   }
 
+  private enrichAssistantCitationFeedback(conversation: any): any {
+    if (!conversation?.messages?.length) return conversation
+    const contextCache = new Map<string, Map<string, string>>()
+    return {
+      ...conversation,
+      messages: conversation.messages.map((message: any) => ({
+        ...message,
+        citations: (message.citations || []).map((citation: any) => {
+          const stored = citation?.feedbackContext
+          if (!stored || typeof stored !== 'object') return citation
+          const context = buildMemorySearchFeedbackContext(
+            String(stored.query || ''),
+            stored.options || {}
+          )
+          const cacheKey = `${context.queryFingerprint}:${context.scopeFingerprint}`
+          let decisions = contextCache.get(cacheKey)
+          if (!decisions) {
+            decisions = new Map(personalMemoryStore.listMemorySearchFeedback(
+              context.queryFingerprint,
+              context.scopeFingerprint,
+              500
+            ).map(entry => [String(entry.documentId || ''), String(entry.action || '')]))
+            contextCache.set(cacheKey, decisions)
+          }
+          return {
+            ...citation,
+            feedbackContext: {
+              query: context.query,
+              options: (() => {
+                try { return JSON.parse(context.scopeJson) } catch { return {} }
+              })(),
+              version: MEMORY_SEARCH_FEEDBACK_VERSION
+            },
+            relevanceFeedback: decisions.get(String(citation.documentId || '')) || ''
+          }
+        })
+      }))
+    }
+  }
+
   getAssistantConversation(id: string, options?: any): any {
-    return personalMemoryStore.getAssistantConversation(String(id || '').trim(), {
+    return this.enrichAssistantCitationFeedback(personalMemoryStore.getAssistantConversation(String(id || '').trim(), {
       offset: Number(options?.offset || 0),
       limit: Number(options?.limit || 40)
-    })
+    }))
   }
 
   deleteAssistantConversation(id: string): boolean {

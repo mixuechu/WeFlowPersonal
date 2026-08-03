@@ -42,3 +42,20 @@ test('search feedback conservatively reranks without deleting any result', () =>
   assert.equal(reranked[0].relevance_adjustment, 0.02)
   assert.equal(reranked[2].relevance_adjustment, -0.04)
 })
+
+test('search feedback reranking is idempotent across sub-query and final RAG merge layers', () => {
+  const results = [
+    { id: 'first', hybrid_score: 0.05 },
+    { id: 'second', hybrid_score: 0.045 }
+  ]
+  const decisions = new Map<string, 'helpful' | 'not_relevant'>([
+    ['first', 'not_relevant'],
+    ['second', 'helpful']
+  ])
+  const once = applyMemorySearchFeedback(results, decisions)
+  const twice = applyMemorySearchFeedback(once, decisions)
+  assert.deepEqual(twice.map(item => item.id), once.map(item => item.id))
+  assert.deepEqual(twice.map(item => item.hybrid_score), once.map(item => item.hybrid_score))
+  assert.equal(twice.find(item => item.id === 'first')?.ranking_base_score, 0.05)
+  assert.equal(twice.find(item => item.id === 'second')?.ranking_base_score, 0.045)
+})
