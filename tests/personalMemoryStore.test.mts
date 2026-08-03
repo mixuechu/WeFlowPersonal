@@ -4161,6 +4161,7 @@ test('project memory is scoped in SQL before limits and preserves authoritative 
     candidateClaims: 260,
     candidateMilestones: 120,
     candidateDecisions: 120,
+    candidateRelations: 0,
     total: 500
   })
   assert.equal(counts['unrelated-memory-scope'].candidateClaims, 600)
@@ -4187,6 +4188,51 @@ test('project memory is scoped in SQL before limits and preserves authoritative 
     offset: 40,
     revision: entityEvidencePage.revision
   }).stale, true)
+}))
+
+test('project review counts include candidate relations from both directions', () => withStore(store => {
+  store.syncGraph({
+    entities: [
+      { id: 'review-project', type: 'project', canonicalName: '审阅项目', trustStatus: 'confirmed' },
+      { id: 'review-person-a', type: 'person', canonicalName: '成员甲', trustStatus: 'confirmed' },
+      { id: 'review-person-b', type: 'person', canonicalName: '成员乙', trustStatus: 'confirmed' }
+    ],
+    relations: [{
+      id: 'review-relation-outgoing',
+      subjectId: 'review-project',
+      predicate: '协调',
+      objectId: 'review-person-a',
+      confidence: 0.8,
+      status: 'candidate',
+      evidence: evidence('review-relation-outgoing-message', '项目协调成员甲')
+    }, {
+      id: 'review-relation-incoming',
+      subjectId: 'review-person-b',
+      predicate: '参与',
+      objectId: 'review-project',
+      confidence: 0.8,
+      status: 'candidate',
+      evidence: evidence('review-relation-incoming-message', '成员乙参与项目')
+    }],
+    reviewQueue: []
+  } as any)
+  const count = store.getProjectReviewCounts(['review-project'])['review-project']
+  assert.deepEqual(count, {
+    candidateClaims: 0,
+    candidateMilestones: 0,
+    candidateDecisions: 0,
+    candidateRelations: 2,
+    total: 2
+  })
+  const page = store.listEntityRelationPage({
+    entityId: 'review-project', status: 'candidate', limit: 1
+  })
+  assert.equal(page.total, 2)
+  assert.equal(page.hasMore, true)
+  assert.equal(store.listEntityRelationPage({
+    entityId: 'review-project', status: 'candidate',
+    limit: 1, offset: 1, revision: page.revision
+  }).items.length, 1)
 }))
 
 test('direct entity evidence follows reversible identity merges without copying plaintext', () => withStore(store => {

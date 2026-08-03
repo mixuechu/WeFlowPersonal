@@ -6212,6 +6212,7 @@ export class PersonalMemoryStore {
     candidateClaims: number
     candidateMilestones: number
     candidateDecisions: number
+    candidateRelations: number
     total: number
   }> {
     if (!this.db) return {}
@@ -6222,11 +6223,13 @@ export class PersonalMemoryStore {
       candidateClaims: number
       candidateMilestones: number
       candidateDecisions: number
+      candidateRelations: number
       total: number
     }> = Object.fromEntries(ids.map(id => [id, {
       candidateClaims: 0,
       candidateMilestones: 0,
       candidateDecisions: 0,
+      candidateRelations: 0,
       total: 0
     }]))
     for (let offset = 0; offset < ids.length; offset += 400) {
@@ -6258,9 +6261,24 @@ export class PersonalMemoryStore {
         item.candidateDecisions = Number(row.decisions || 0)
         item.candidateMilestones = Number(row.milestones || 0)
       }
+      const relations = this.db.prepare(`
+        SELECT entity_id,COUNT(*) AS count FROM (
+          SELECT subject_id AS entity_id FROM relations
+          WHERE status='candidate' AND subject_id IN (${placeholders})
+          UNION ALL
+          SELECT object_id AS entity_id FROM relations
+          WHERE status='candidate' AND object_id IN (${placeholders})
+        ) scoped_relations
+        GROUP BY entity_id
+      `).all(...batch, ...batch) as any[]
+      for (const row of relations) {
+        const item = result[String(row.entity_id)]
+        if (item) item.candidateRelations = Number(row.count || 0)
+      }
     }
     for (const item of Object.values(result)) {
-      item.total = item.candidateClaims + item.candidateMilestones + item.candidateDecisions
+      item.total = item.candidateClaims + item.candidateMilestones +
+        item.candidateDecisions + item.candidateRelations
     }
     return result
   }

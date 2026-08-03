@@ -3571,7 +3571,11 @@ export class AiAssistantService {
     const items = page.items.map(project => ({
       ...project,
       pendingReviewTotal: Number(project.pendingReviewTotal || 0) +
-        Number(project.entityId ? reviewCounts[project.entityId]?.total || 0 : 0)
+        Number(project.entityId
+          ? (reviewCounts[project.entityId]?.candidateClaims || 0) +
+            (reviewCounts[project.entityId]?.candidateMilestones || 0) +
+            (reviewCounts[project.entityId]?.candidateDecisions || 0)
+          : 0)
     }))
     const completedRevision = this.getProjectDirectoryRevision()
     if (completedRevision !== revision) {
@@ -4304,9 +4308,19 @@ export class AiAssistantService {
     const memoryFeed = projectEntity
       ? personalMemoryStore.getEntityMemory(id, 200, true)
       : personalMemoryStore.getMemoryFeed(500, false)
+    const boundedProjectRelations = projectEntity
+      ? this.state.graph.relations
+        .filter(relation => relation.subjectId === id || relation.objectId === id)
+        .sort((left, right) =>
+          Number(right.status === 'confirmed') - Number(left.status === 'confirmed') ||
+          Number(right.confidence || 0) - Number(left.confidence || 0) ||
+          String(right.updatedAt || '').localeCompare(String(left.updatedAt || '')) ||
+          String(left.id).localeCompare(String(right.id)))
+        .slice(0, 200)
+      : this.state.graph.relations
     const project = buildProjectInsight({
       entities: this.state.graph.entities,
-      relations: this.state.graph.relations,
+      relations: boundedProjectRelations,
       claims: memoryFeed.claims,
       events: memoryFeed.events,
       tasks: this.state.tasks.filter(task => task.classification === 'mine')
@@ -4317,7 +4331,8 @@ export class AiAssistantService {
       : null
     const loadedMemoryReviewCount = Number(project.pendingReview?.claims?.length || 0) +
       Number(project.pendingReview?.milestones?.length || 0) +
-      Number(project.pendingReview?.decisions?.length || 0)
+      Number(project.pendingReview?.decisions?.length || 0) +
+      Number(project.pendingReview?.relations?.length || 0)
     const authoritativeMemoryReviewCount = reviewCounts
       ? Number(reviewCounts.total || 0)
       : loadedMemoryReviewCount
@@ -4330,8 +4345,7 @@ export class AiAssistantService {
         ...project,
         pendingReview: {
           ...project.pendingReview,
-          total: Number(project.pendingReview?.relations?.length || 0) +
-            authoritativeMemoryReviewCount,
+          total: authoritativeMemoryReviewCount,
           loadedMemoryTotal: loadedMemoryReviewCount,
           authoritativeMemoryTotal: authoritativeMemoryReviewCount
         },
