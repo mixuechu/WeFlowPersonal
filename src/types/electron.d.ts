@@ -1831,6 +1831,8 @@ export interface ElectronAPI {
         total: number
         hasMore: boolean
         counts: { running: number; completed: number; partial: number; failed: number; all: number }
+        revision: string
+        stale: boolean
       }>
       getIngestionRunDossier: (runId: string, options?: any) => Promise<any>
       getIngestionRecoveryPage: (options?: any) => Promise<any>

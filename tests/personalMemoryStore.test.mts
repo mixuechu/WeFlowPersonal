@@ -4527,6 +4527,74 @@ test('identity merge archive revision covers merge revert and deletion and self-
   }
 })
 
+test('ingestion archive revision covers run and batch lifecycle and self-heals on restart', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'weflow-ingestion-archive-revision-'))
+  const databasePath = join(directory, 'memory.sqlite')
+  try {
+    const first = new PersonalMemoryStore()
+    first.initialize(databasePath)
+    const initial = Number(first.getIngestionArchiveRevision())
+    first.startIngestionRun('ingestion-revision-run', 'deepseek-test', 'prompt-test')
+    const afterRun = Number(first.getIngestionArchiveRevision())
+    assert.ok(afterRun > initial)
+    first.recordIngestionBatch(
+      'ingestion-revision-run',
+      0,
+      12,
+      'running',
+      '',
+      { model: 'deepseek-test', promptVersion: 'prompt-test', schemaVersion: 'schema-test' }
+    )
+    const afterBatch = Number(first.getIngestionArchiveRevision())
+    assert.ok(afterBatch > afterRun)
+    first.recordIngestionBatch(
+      'ingestion-revision-run',
+      0,
+      12,
+      'completed',
+      '',
+      {
+        model: 'deepseek-test',
+        promptVersion: 'prompt-test',
+        schemaVersion: 'schema-test',
+        inputTokens: 120,
+        outputTokens: 30,
+        durationMs: 500
+      }
+    )
+    first.finishIngestionRun('ingestion-revision-run', {
+      messageCount: 12,
+      entityCount: 2,
+      relationCount: 1,
+      status: 'completed'
+    })
+    assert.ok(Number(first.getIngestionArchiveRevision()) > afterBatch)
+    assert.deepEqual(first.getIngestionArchiveRevisionHealth(), {
+      version: 'ingestion-archive-revision-v1',
+      revision: first.getIngestionArchiveRevision(),
+      expectedTriggers: 6,
+      installedTriggers: 6,
+      healthy: true
+    })
+    ;(first as any).db.exec(
+      'DROP TRIGGER trg_ingestion_archive_revision_ingestion_batches_update'
+    )
+    assert.equal(first.getIngestionArchiveRevisionHealth().installedTriggers, 5)
+    assert.equal(first.getIngestionArchiveRevisionHealth().healthy, false)
+    first.close()
+
+    const reopened = new PersonalMemoryStore()
+    reopened.initialize(databasePath)
+    assert.equal(reopened.getIngestionArchiveRevisionHealth().installedTriggers, 6)
+    assert.equal(reopened.getIngestionArchiveRevisionHealth().healthy, true)
+    assert.equal(reopened.listIngestionRunPage().items[0]?.status, 'completed')
+    assert.equal(reopened.getIngestionRunDossier('ingestion-revision-run')?.batchTotal, 1)
+    reopened.close()
+  } finally {
+    rmSync(directory, { recursive: true, force: true })
+  }
+})
+
 test('database retrieval scope covers entity links, relation type and evidence time', () => withStore(store => {
   store.syncGraph({
     entities: [
@@ -6170,12 +6238,15 @@ test('ingestion run archive paginates all years and loads bounded batch audits o
       latestActivityAt: summary.latestActivityAt
     })
     const firstPage = first.listIngestionRunPage({ limit: 40 })
-    const secondPage = first.listIngestionRunPage({ offset: 40, limit: 40 })
+    const secondPage = first.listIngestionRunPage({
+      offset: 40, limit: 40, revision: firstPage.revision
+    })
     assert.equal(firstPage.total, 1_200)
     assert.deepEqual(firstPage.counts, {
       running: 300, completed: 300, partial: 300, failed: 300, all: 1_200
     })
     assert.equal(new Set([...firstPage.items, ...secondPage.items].map(item => item.id)).size, 80)
+    assert.equal(secondPage.stale, false)
     assert.equal(JSON.stringify(firstPage.items).includes('extraction_context_json'), false)
     assert.equal(JSON.stringify(firstPage.items).includes('有界上下文'), false)
     const failed = first.listIngestionRunPage({
@@ -6194,7 +6265,8 @@ test('ingestion run archive paginates all years and loads bounded batch audits o
     })
     const dossierSecond = first.getIngestionRunDossier('archive-run-1199', {
       batchOffset: 40,
-      batchLimit: 40
+      batchLimit: 40,
+      revision: dossierFirst.revision
     })
     assert.equal(dossierFirst.batchTotal, 125)
     assert.equal(dossierFirst.batchHasMore, true)
@@ -6203,6 +6275,22 @@ test('ingestion run archive paginates all years and loads bounded batch audits o
       .map((batch: any) => batch.batch_index)).size, 80)
     assert.equal(JSON.stringify(dossierFirst).includes('extraction_context_json'), false)
     assert.equal(dossierFirst.batches[0].extractionContext.entities[0].name, '有界上下文')
+    database.prepare(`
+      UPDATE ingestion_batches SET status=status
+      WHERE run_id='archive-run-1199' AND batch_index=0
+    `).run()
+    const stalePage = first.listIngestionRunPage({
+      offset: 40, limit: 40, revision: firstPage.revision
+    })
+    assert.equal(stalePage.stale, true)
+    assert.deepEqual(stalePage.items, [])
+    const staleDossier = first.getIngestionRunDossier('archive-run-1199', {
+      batchOffset: 40,
+      batchLimit: 40,
+      revision: dossierFirst.revision
+    })
+    assert.equal(staleDossier.stale, true)
+    assert.deepEqual(staleDossier.batches, [])
     first.close()
 
     const reopened = new PersonalMemoryStore()

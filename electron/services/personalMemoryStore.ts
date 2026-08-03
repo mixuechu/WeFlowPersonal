@@ -735,6 +735,7 @@ export class PersonalMemoryStore {
     this.ensureTaskArchiveRevisionTriggers()
     this.ensureTaskOwnershipReviewRevisionTriggers()
     this.ensureIdentityMergeArchiveRevisionTriggers()
+    this.ensureIngestionArchiveRevisionTriggers()
     this.repairStructuredSearchIndex()
     this.backfillMergeHistoryNames()
     this.db.exec(`CREATE INDEX IF NOT EXISTS idx_memory_corrections_item
@@ -1306,6 +1307,71 @@ export class PersonalMemoryStore {
     return {
       version: 'identity-merge-archive-revision-v1',
       revision: this.getIdentityMergeArchiveRevision(),
+      expectedTriggers: expectedNames.length,
+      installedTriggers: expectedNames.filter(name => installedNames.has(name)).length,
+      healthy: installedNames.size === expectedNames.length
+        && expectedNames.every(name => installedNames.has(name))
+    }
+  }
+
+  private ingestionArchiveRevisionTriggerNames(): string[] {
+    return ['ingestion_runs', 'ingestion_batches'].flatMap(table =>
+      ['insert', 'update', 'delete']
+        .map(operation => `trg_ingestion_archive_revision_${table}_${operation}`))
+  }
+
+  private ensureIngestionArchiveRevisionTriggers(): void {
+    if (!this.db) return
+    this.db.prepare(`
+      INSERT INTO schema_meta(key,value,updated_at)
+      VALUES('ingestion_archive_revision','0',?)
+      ON CONFLICT(key) DO NOTHING
+    `).run(new Date().toISOString())
+    const statements: string[] = []
+    for (const table of ['ingestion_runs', 'ingestion_batches']) {
+      for (const operation of ['INSERT', 'UPDATE', 'DELETE']) {
+        const name = `trg_ingestion_archive_revision_${table}_${operation.toLowerCase()}`
+        statements.push(`DROP TRIGGER IF EXISTS ${name};`)
+        statements.push(`
+          CREATE TRIGGER ${name} AFTER ${operation} ON ${table}
+          BEGIN
+            UPDATE schema_meta
+            SET value=CAST(CAST(value AS INTEGER)+1 AS TEXT),
+              updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')
+            WHERE key='ingestion_archive_revision';
+          END;
+        `)
+      }
+    }
+    this.db.exec(statements.join('\n'))
+  }
+
+  getIngestionArchiveRevision(): string {
+    if (!this.db) return '0'
+    return String((this.db.prepare(`
+      SELECT value FROM schema_meta WHERE key='ingestion_archive_revision'
+    `).get() as any)?.value || '0')
+  }
+
+  getIngestionArchiveRevisionHealth(): any {
+    const expectedNames = this.ingestionArchiveRevisionTriggerNames()
+    if (!this.db) {
+      return {
+        version: 'ingestion-archive-revision-v1',
+        revision: '0',
+        expectedTriggers: expectedNames.length,
+        installedTriggers: 0,
+        healthy: false
+      }
+    }
+    const rows = this.db.prepare(`
+      SELECT name FROM sqlite_master
+      WHERE type='trigger' AND name LIKE 'trg_ingestion_archive_revision_%'
+    `).all() as Array<{ name: string }>
+    const installedNames = new Set(rows.map(row => String(row.name)))
+    return {
+      version: 'ingestion-archive-revision-v1',
+      revision: this.getIngestionArchiveRevision(),
       expectedTriggers: expectedNames.length,
       installedTriggers: expectedNames.filter(name => installedNames.has(name)).length,
       healthy: installedNames.size === expectedNames.length
@@ -2757,6 +2823,7 @@ export class PersonalMemoryStore {
     const taskArchiveRevision = this.getTaskArchiveRevisionHealth()
     const taskOwnershipReviewRevision = this.getTaskOwnershipReviewRevisionHealth()
     const identityMergeArchiveRevision = this.getIdentityMergeArchiveRevisionHealth()
+    const ingestionArchiveRevision = this.getIngestionArchiveRevisionHealth()
     return {
       healthy: integrity === 'ok'
         && structuredEvidenceMigration.constraintsHealthy
@@ -2769,7 +2836,8 @@ export class PersonalMemoryStore {
         && graphReviewRevision.healthy
         && taskArchiveRevision.healthy
         && taskOwnershipReviewRevision.healthy
-        && identityMergeArchiveRevision.healthy,
+        && identityMergeArchiveRevision.healthy
+        && ingestionArchiveRevision.healthy,
       integrity,
       foreignKeyViolations,
       referentialIntegrityHealthy,
@@ -2782,6 +2850,7 @@ export class PersonalMemoryStore {
       taskArchiveRevisionHealthy: taskArchiveRevision.healthy,
       taskOwnershipReviewRevisionHealthy: taskOwnershipReviewRevision.healthy,
       identityMergeArchiveRevisionHealthy: identityMergeArchiveRevision.healthy,
+      ingestionArchiveRevisionHealthy: ingestionArchiveRevision.healthy,
       encryption: {
         enabled: Boolean(this.encryptionKey),
         cipher: this.encryptionKey ? String(this.db.pragma('cipher', { simple: true }) || '') : 'none',
@@ -2802,6 +2871,7 @@ export class PersonalMemoryStore {
       taskArchiveRevision,
       taskOwnershipReviewRevision,
       identityMergeArchiveRevision,
+      ingestionArchiveRevision,
       backups
     }
   }
@@ -6686,14 +6756,31 @@ export class PersonalMemoryStore {
     to?: string
     limit?: number
     offset?: number
+    revision?: string
   } = {}): {
     items: any[]
     total: number
     hasMore: boolean
     counts: { running: number; completed: number; partial: number; failed: number; all: number }
+    revision: string
+    stale: boolean
   } {
     const emptyCounts = { running: 0, completed: 0, partial: 0, failed: 0, all: 0 }
-    if (!this.db) return { items: [], total: 0, hasMore: false, counts: emptyCounts }
+    if (!this.db) {
+      return {
+        items: [], total: 0, hasMore: false, counts: emptyCounts,
+        revision: '0', stale: false
+      }
+    }
+    const revision = this.getIngestionArchiveRevision()
+    const offset = Math.max(0, Math.min(1_000_000, Math.floor(Number(options.offset) || 0)))
+    const expectedRevision = String(options.revision || '').trim()
+    if (offset > 0 && expectedRevision && expectedRevision !== revision) {
+      return {
+        items: [], total: 0, hasMore: false, counts: emptyCounts,
+        revision, stale: true
+      }
+    }
     const conditions: string[] = []
     const parameters: Array<string | number> = []
     if (['running', 'completed', 'partial', 'failed'].includes(String(options.status || ''))) {
@@ -6722,8 +6809,7 @@ export class PersonalMemoryStore {
       SELECT COUNT(*) AS count FROM ingestion_runs r ${where}
     `).get(...parameters) as any)?.count || 0)
     const limit = Math.max(1, Math.min(100, Math.floor(Number(options.limit) || 40)))
-    const offset = Math.max(0, Math.min(1_000_000, Math.floor(Number(options.offset) || 0)))
-    const items = this.db.prepare(`
+    const rows = this.db.prepare(`
       SELECT r.*,
         COUNT(b.batch_index) AS batch_count,
         SUM(CASE WHEN b.status='failed' THEN 1 ELSE 0 END) AS failed_batch_count,
@@ -6746,15 +6832,23 @@ export class PersonalMemoryStore {
         COUNT(*) AS all_count
       FROM ingestion_runs
     `).get() as any
+    const items = rows.map(item => ({
+      ...item,
+      batch_count: Number(item.batch_count || 0),
+      failed_batch_count: Number(item.failed_batch_count || 0),
+      input_tokens: Number(item.input_tokens || 0),
+      output_tokens: Number(item.output_tokens || 0),
+      duration_ms: Number(item.duration_ms || 0)
+    }))
+    const completedRevision = this.getIngestionArchiveRevision()
+    if (completedRevision !== revision) {
+      return {
+        items: [], total: 0, hasMore: false, counts: emptyCounts,
+        revision: completedRevision, stale: true
+      }
+    }
     return {
-      items: items.map(item => ({
-        ...item,
-        batch_count: Number(item.batch_count || 0),
-        failed_batch_count: Number(item.failed_batch_count || 0),
-        input_tokens: Number(item.input_tokens || 0),
-        output_tokens: Number(item.output_tokens || 0),
-        duration_ms: Number(item.duration_ms || 0)
-      })),
+      items,
       total,
       hasMore: offset + items.length < total,
       counts: {
@@ -6763,18 +6857,30 @@ export class PersonalMemoryStore {
         partial: Number(counts?.partial || 0),
         failed: Number(counts?.failed || 0),
         all: Number(counts?.all_count || 0)
-      }
+      },
+      revision,
+      stale: false
     }
   }
 
   getIngestionRunDossier(runId: string, options: {
     batchOffset?: number
     batchLimit?: number
+    revision?: string
   } = {}): any | null {
     if (!this.db || !String(runId || '').trim()) return null
+    const revision = this.getIngestionArchiveRevision()
+    const batchOffset = Math.max(0, Math.min(1_000_000, Math.floor(Number(options.batchOffset) || 0)))
+    const expectedRevision = String(options.revision || '').trim()
+    if (batchOffset > 0 && expectedRevision && expectedRevision !== revision) {
+      return {
+        id: runId, batches: [], batchTotal: 0, batchOffset,
+        batchLimit: Math.max(1, Math.min(100, Math.floor(Number(options.batchLimit) || 40))),
+        batchHasMore: false, revision, stale: true
+      }
+    }
     const run = this.db.prepare('SELECT * FROM ingestion_runs WHERE id=?').get(runId) as any
     if (!run) return null
-    const batchOffset = Math.max(0, Math.min(1_000_000, Math.floor(Number(options.batchOffset) || 0)))
     const batchLimit = Math.max(1, Math.min(100, Math.floor(Number(options.batchLimit) || 40)))
     const batchTotal = Number((this.db.prepare(`
       SELECT COUNT(*) AS count FROM ingestion_batches WHERE run_id=?
@@ -6798,13 +6904,22 @@ export class PersonalMemoryStore {
       } = batch
       return { ...safeBatch, sensitiveRedaction, structuredEvidence, extractionContext }
     })
+    const completedRevision = this.getIngestionArchiveRevision()
+    if (completedRevision !== revision) {
+      return {
+        id: runId, batches: [], batchTotal: 0, batchOffset, batchLimit,
+        batchHasMore: false, revision: completedRevision, stale: true
+      }
+    }
     return {
       ...run,
       batches,
       batchTotal,
       batchOffset,
       batchLimit,
-      batchHasMore: batchOffset + batches.length < batchTotal
+      batchHasMore: batchOffset + batches.length < batchTotal,
+      revision,
+      stale: false
     }
   }
 

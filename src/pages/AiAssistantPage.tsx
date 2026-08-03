@@ -412,6 +412,8 @@ function AiAssistantPage() {
     total: number
     hasMore: boolean
     counts: Record<string, number>
+    revision?: string
+    stale?: boolean
     loading?: boolean
   }>({ items: [], total: 0, hasMore: false, counts: {} })
   const [ingestionArchiveStatus, setIngestionArchiveStatus] = useState<
@@ -421,6 +423,7 @@ function AiAssistantPage() {
   const [ingestionArchiveFrom, setIngestionArchiveFrom] = useState('')
   const [ingestionArchiveTo, setIngestionArchiveTo] = useState('')
   const [ingestionArchiveLoadingMore, setIngestionArchiveLoadingMore] = useState(false)
+  const [ingestionArchiveRefreshKey, setIngestionArchiveRefreshKey] = useState(0)
   const [ingestionDossier, setIngestionDossier] = useState<any>(null)
   const [ingestionBatchesLoadingMore, setIngestionBatchesLoadingMore] = useState(false)
   const [ingestionRecoveryQueue, setIngestionRecoveryQueue] = useState<any>(null)
@@ -859,6 +862,14 @@ function AiAssistantPage() {
     const timer = window.setTimeout(() => {
       void window.electronAPI.aiAssistant.getIngestionRunPage(ingestionArchiveOptions).then(page => {
         if (!ingestionArchiveGate.current.isCurrent(request)) return
+        if (page.stale) {
+          window.setTimeout(() => {
+            if (ingestionArchiveGate.current.isCurrent(request)) {
+              setIngestionArchiveRefreshKey(value => value + 1)
+            }
+          }, 250)
+          return
+        }
         setIngestionArchive({ ...page, loading: false })
       }).catch(() => {
         if (!ingestionArchiveGate.current.isCurrent(request)) return
@@ -871,7 +882,7 @@ function AiAssistantPage() {
     }
   }, [
     showDiagnostics, memoryDiagnostics?.ingestionArchive?.revision,
-    ingestionArchiveOptions
+    ingestionArchiveOptions, ingestionArchiveRefreshKey
   ])
 
   useEffect(() => {
@@ -1460,9 +1471,15 @@ function AiAssistantPage() {
       const page = await window.electronAPI.aiAssistant.getIngestionRunPage({
         ...ingestionArchiveOptions,
         offset: ingestionArchive.items.length,
-        limit: 30
+        limit: 30,
+        revision: ingestionArchive.revision
       })
       if (!ingestionArchiveGate.current.isCurrent(request)) return
+      if (page.stale) {
+        setMessage('增量运行档案已有变化，已自动从第一页刷新')
+        setIngestionArchiveRefreshKey(value => value + 1)
+        return
+      }
       setIngestionArchive(current => ({
         ...page,
         items: [
@@ -1479,12 +1496,7 @@ function AiAssistantPage() {
     }
   }
 
-  const openIngestionDossier = async (runId: string) => {
-    if (ingestionDossier?.id === runId) {
-      ingestionDossierGate.current.invalidate()
-      setIngestionDossier(null)
-      return
-    }
+  const loadIngestionDossier = async (runId: string): Promise<void> => {
     const request = ingestionDossierGate.current.begin()
     setIngestionDossier({ id: runId, loading: true })
     try {
@@ -1492,12 +1504,30 @@ function AiAssistantPage() {
         runId,
         { batchOffset: 0, batchLimit: 40 }
       )
-      if (ingestionDossierGate.current.isCurrent(request)) setIngestionDossier(dossier)
+      if (!ingestionDossierGate.current.isCurrent(request)) return
+      if (dossier?.stale) {
+        window.setTimeout(() => {
+          if (ingestionDossierGate.current.isCurrent(request)) {
+            void loadIngestionDossier(runId)
+          }
+        }, 250)
+        return
+      }
+      setIngestionDossier(dossier)
     } catch (error: any) {
       if (ingestionDossierGate.current.isCurrent(request)) {
         setIngestionDossier({ id: runId, error: error?.message || String(error) })
       }
     }
+  }
+
+  const openIngestionDossier = async (runId: string) => {
+    if (ingestionDossier?.id === runId) {
+      ingestionDossierGate.current.invalidate()
+      setIngestionDossier(null)
+      return
+    }
+    await loadIngestionDossier(runId)
   }
 
   const loadMoreIngestionBatches = async () => {
@@ -1508,9 +1538,18 @@ function AiAssistantPage() {
     try {
       const page = await window.electronAPI.aiAssistant.getIngestionRunDossier(
         ingestionDossier.id,
-        { batchOffset: ingestionDossier.batches?.length || 0, batchLimit: 40 }
+        {
+          batchOffset: ingestionDossier.batches?.length || 0,
+          batchLimit: 40,
+          revision: ingestionDossier.revision
+        }
       )
       if (!page || !ingestionDossierGate.current.isCurrent(request)) return
+      if (page.stale) {
+        setMessage('该运行的批次明细已有变化，已自动重新载入')
+        void loadIngestionDossier(ingestionDossier.id)
+        return
+      }
       setIngestionDossier((current: any) => ({
         ...current,
         ...page,
@@ -5563,6 +5602,16 @@ function AiAssistantPage() {
                 <span>当前状态 <b>{memoryDiagnostics.identityMergeArchiveRevisionHealthy ? '保护正常' : '需要检查'}</b></span>
                 <span>当前 revision <b>{String(memoryDiagnostics.identityMergeArchiveRevision.revision || '0')}</b></span>
                 <span>变更触发器 <b>{Number(memoryDiagnostics.identityMergeArchiveRevision.installedTriggers || 0).toLocaleString()} / {Number(memoryDiagnostics.identityMergeArchiveRevision.expectedTriggers || 0).toLocaleString()}</b></span>
+              </div>
+            </div>}
+            {memoryDiagnostics.ingestionArchiveRevision?.version && <div className={`assistant-recovery-audit ${memoryDiagnostics.ingestionArchiveRevisionHealthy ? 'healthy' : 'unhealthy'}`}>
+              <header><ShieldCheck size={15} /><span><b>增量运行与批次分页一致性保护</b>
+                <small>运行状态和批次开始、完成、失败、恢复都会推进共享 SQLCipher revision；同步进行中查看全历史或批次明细时，旧分页会被拒绝并自动重新载入，避免混合不同处理时态。</small>
+              </span></header>
+              <div className="assistant-recovery-current">
+                <span>当前状态 <b>{memoryDiagnostics.ingestionArchiveRevisionHealthy ? '保护正常' : '需要检查'}</b></span>
+                <span>当前 revision <b>{String(memoryDiagnostics.ingestionArchiveRevision.revision || '0')}</b></span>
+                <span>变更触发器 <b>{Number(memoryDiagnostics.ingestionArchiveRevision.installedTriggers || 0).toLocaleString()} / {Number(memoryDiagnostics.ingestionArchiveRevision.expectedTriggers || 0).toLocaleString()}</b></span>
               </div>
             </div>}
             {memoryDiagnostics.taskSearchIndex?.version && <div className={`assistant-recovery-audit ${memoryDiagnostics.taskSearchIndexHealthy ? 'healthy' : 'unhealthy'}`}>
