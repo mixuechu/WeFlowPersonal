@@ -737,6 +737,7 @@ export class PersonalMemoryStore {
     this.ensureIdentityMergeArchiveRevisionTriggers()
     this.ensureIngestionArchiveRevisionTriggers()
     this.ensureIngestionRecoveryRevisionTriggers()
+    this.ensureAssistantHistoryRevisionTriggers()
     this.repairStructuredSearchIndex()
     this.backfillMergeHistoryNames()
     this.db.exec(`CREATE INDEX IF NOT EXISTS idx_memory_corrections_item
@@ -1435,6 +1436,87 @@ export class PersonalMemoryStore {
     return {
       version: 'ingestion-recovery-revision-v1',
       revision: this.getIngestionRecoveryRevision(),
+      expectedTriggers: expectedNames.length,
+      installedTriggers: expectedNames.filter(name => installedNames.has(name)).length,
+      healthy: installedNames.size === expectedNames.length
+        && expectedNames.every(name => installedNames.has(name))
+    }
+  }
+
+  private assistantHistoryRevisionTriggerNames(): string[] {
+    return [
+      'assistant_conversations',
+      'assistant_messages',
+      'assistant_answer_dependencies',
+      'assistant_answer_review_decisions',
+      'search_documents',
+      'search_document_evidence',
+      'evidence'
+    ].flatMap(table => ['insert', 'update', 'delete']
+      .map(operation => `trg_assistant_history_revision_${table}_${operation}`))
+  }
+
+  private ensureAssistantHistoryRevisionTriggers(): void {
+    if (!this.db) return
+    const tables = [
+      'assistant_conversations',
+      'assistant_messages',
+      'assistant_answer_dependencies',
+      'assistant_answer_review_decisions',
+      'search_documents',
+      'search_document_evidence',
+      'evidence'
+    ]
+    this.db.prepare(`
+      INSERT INTO schema_meta(key,value,updated_at)
+      VALUES('assistant_history_revision','0',?)
+      ON CONFLICT(key) DO NOTHING
+    `).run(new Date().toISOString())
+    const statements: string[] = []
+    for (const table of tables) {
+      for (const operation of ['INSERT', 'UPDATE', 'DELETE']) {
+        const name = `trg_assistant_history_revision_${table}_${operation.toLowerCase()}`
+        statements.push(`DROP TRIGGER IF EXISTS ${name};`)
+        statements.push(`
+          CREATE TRIGGER ${name} AFTER ${operation} ON ${table}
+          BEGIN
+            UPDATE schema_meta
+            SET value=CAST(CAST(value AS INTEGER)+1 AS TEXT),
+              updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')
+            WHERE key='assistant_history_revision';
+          END;
+        `)
+      }
+    }
+    this.db.exec(statements.join('\n'))
+  }
+
+  getAssistantHistoryRevision(): string {
+    if (!this.db) return '0'
+    return String((this.db.prepare(`
+      SELECT value FROM schema_meta WHERE key='assistant_history_revision'
+    `).get() as any)?.value || '0')
+  }
+
+  getAssistantHistoryRevisionHealth(): any {
+    const expectedNames = this.assistantHistoryRevisionTriggerNames()
+    if (!this.db) {
+      return {
+        version: 'assistant-history-revision-v1',
+        revision: '0',
+        expectedTriggers: expectedNames.length,
+        installedTriggers: 0,
+        healthy: false
+      }
+    }
+    const rows = this.db.prepare(`
+      SELECT name FROM sqlite_master
+      WHERE type='trigger' AND name LIKE 'trg_assistant_history_revision_%'
+    `).all() as Array<{ name: string }>
+    const installedNames = new Set(rows.map(row => String(row.name)))
+    return {
+      version: 'assistant-history-revision-v1',
+      revision: this.getAssistantHistoryRevision(),
       expectedTriggers: expectedNames.length,
       installedTriggers: expectedNames.filter(name => installedNames.has(name)).length,
       healthy: installedNames.size === expectedNames.length
@@ -2888,6 +2970,7 @@ export class PersonalMemoryStore {
     const identityMergeArchiveRevision = this.getIdentityMergeArchiveRevisionHealth()
     const ingestionArchiveRevision = this.getIngestionArchiveRevisionHealth()
     const ingestionRecoveryRevision = this.getIngestionRecoveryRevisionHealth()
+    const assistantHistoryRevision = this.getAssistantHistoryRevisionHealth()
     return {
       healthy: integrity === 'ok'
         && structuredEvidenceMigration.constraintsHealthy
@@ -2902,7 +2985,8 @@ export class PersonalMemoryStore {
         && taskOwnershipReviewRevision.healthy
         && identityMergeArchiveRevision.healthy
         && ingestionArchiveRevision.healthy
-        && ingestionRecoveryRevision.healthy,
+        && ingestionRecoveryRevision.healthy
+        && assistantHistoryRevision.healthy,
       integrity,
       foreignKeyViolations,
       referentialIntegrityHealthy,
@@ -2917,6 +3001,7 @@ export class PersonalMemoryStore {
       identityMergeArchiveRevisionHealthy: identityMergeArchiveRevision.healthy,
       ingestionArchiveRevisionHealthy: ingestionArchiveRevision.healthy,
       ingestionRecoveryRevisionHealthy: ingestionRecoveryRevision.healthy,
+      assistantHistoryRevisionHealthy: assistantHistoryRevision.healthy,
       encryption: {
         enabled: Boolean(this.encryptionKey),
         cipher: this.encryptionKey ? String(this.db.pragma('cipher', { simple: true }) || '') : 'none',
@@ -2939,6 +3024,7 @@ export class PersonalMemoryStore {
       identityMergeArchiveRevision,
       ingestionArchiveRevision,
       ingestionRecoveryRevision,
+      assistantHistoryRevision,
       backups
     }
   }
@@ -8341,10 +8427,28 @@ export class PersonalMemoryStore {
     revalidationStatus?: 'current' | 'needs_review' | 'invalid' | 'not_applicable'
     offset?: number
     limit?: number
-  } = {}): { items: any[]; total: number; hasMore: boolean; offset: number; limit: number } {
+    revision?: string
+  } = {}): {
+    items: any[]
+    total: number
+    hasMore: boolean
+    offset: number
+    limit: number
+    revision: string
+    stale: boolean
+  } {
     const limit = Math.max(1, Math.min(100, Math.floor(Number(options.limit) || 30)))
     const offset = Math.max(0, Math.min(1_000_000, Math.floor(Number(options.offset) || 0)))
-    if (!this.db) return { items: [], total: 0, hasMore: false, offset, limit }
+    const revision = this.getAssistantHistoryRevision()
+    const empty = {
+      items: [], total: 0, hasMore: false, offset, limit,
+      revision, stale: false
+    }
+    if (!this.db) return empty
+    const expectedRevision = String(options.revision || '').trim()
+    if (offset > 0 && expectedRevision && expectedRevision !== revision) {
+      return { ...empty, stale: true }
+    }
     const conditions: string[] = []
     const parameters: Array<string | number> = []
     const query = String(options.query || '').trim().toLocaleLowerCase('zh-CN')
@@ -8456,8 +8560,7 @@ export class PersonalMemoryStore {
       GROUP BY c.id,cr.conversation_id
       ORDER BY c.updated_at DESC,c.id DESC LIMIT ? OFFSET ?
     `).all(...parameters, limit, offset) as any[]
-    return {
-      items: items.map(item => ({
+    const publicItems = items.map(item => ({
         ...item,
         revalidation_status: Number(item.revalidation_invalid_statements || 0) > 0
           ? 'invalid'
@@ -8466,11 +8569,19 @@ export class PersonalMemoryStore {
             : Number(item.revalidation_total_statements || 0) > 0
               ? 'current'
               : 'not_applicable'
-      })),
+      }))
+    const completedRevision = this.getAssistantHistoryRevision()
+    if (completedRevision !== revision) {
+      return { ...empty, revision: completedRevision, stale: true }
+    }
+    return {
+      items: publicItems,
       total,
       hasMore: offset + items.length < total,
       offset,
-      limit
+      limit,
+      revision,
+      stale: false
     }
   }
 
@@ -8487,12 +8598,15 @@ export class PersonalMemoryStore {
     messageId?: string
     offset?: number
     limit?: number
+    revision?: string
   } = {}): {
     items: any[]
     total: number
     hasMore: boolean
     offset: number
     limit: number
+    revision: string
+    stale: boolean
     counts: {
       attention: number
       invalid: number
@@ -8512,9 +8626,16 @@ export class PersonalMemoryStore {
       limit,
       counts: {
         attention: 0, invalid: 0, needs_review: 0, current: 0, pending: 0, resolved: 0
-      }
+      },
+      revision: this.getAssistantHistoryRevision(),
+      stale: false
     }
     if (!this.db) return empty
+    const revision = this.getAssistantHistoryRevision()
+    const expectedRevision = String(options.revision || '').trim()
+    if (offset > 0 && expectedRevision && expectedRevision !== revision) {
+      return { ...empty, revision, stale: true }
+    }
     const eligibility = `(
       s.id IS NOT NULL
       AND (
@@ -8700,8 +8821,7 @@ export class PersonalMemoryStore {
       ${joins} ${where}
       ORDER BY ar.created_at DESC,ar.message_id DESC LIMIT ? OFFSET ?
     `).all(...commonParameters, limit, offset) as any[]
-    return {
-      items: items.map(item => {
+    const publicItems = items.map(item => {
         const { state_key: stateKey, reviewed_state_key: reviewedStateKey, ...publicItem } = item
         return {
           ...publicItem,
@@ -8716,7 +8836,17 @@ export class PersonalMemoryStore {
               ? 'needs_review'
               : 'current'
         }
-      }),
+      })
+    const completedRevision = this.getAssistantHistoryRevision()
+    if (completedRevision !== revision) {
+      return {
+        ...empty,
+        revision: completedRevision,
+        stale: true
+      }
+    }
+    return {
+      items: publicItems,
       total,
       hasMore: offset + items.length < total,
       offset,
@@ -8728,7 +8858,9 @@ export class PersonalMemoryStore {
         current: Number(countsRow?.current || 0),
         pending: Number(countsRow?.pending || 0),
         resolved: Number(countsRow?.resolved || 0)
-      }
+      },
+      revision,
+      stale: false
     }
   }
 
@@ -8762,13 +8894,29 @@ export class PersonalMemoryStore {
 
   listAssistantAnswerReviewDecisionsPage(
     messageId: string,
-    options: { offset?: number; limit?: number } = {}
-  ): { items: any[]; total: number; hasMore: boolean; offset: number; limit: number } {
+    options: { offset?: number; limit?: number; revision?: string } = {}
+  ): {
+    items: any[]
+    total: number
+    hasMore: boolean
+    offset: number
+    limit: number
+    revision: string
+    stale: boolean
+  } {
     const limit = Math.max(1, Math.min(100, Math.floor(Number(options.limit) || 20)))
     const offset = Math.max(0, Math.min(1_000_000, Math.floor(Number(options.offset) || 0)))
     const normalizedMessageId = String(messageId || '').trim()
-    const empty = { items: [], total: 0, hasMore: false, offset, limit }
+    const revision = this.getAssistantHistoryRevision()
+    const empty = {
+      items: [], total: 0, hasMore: false, offset, limit,
+      revision, stale: false
+    }
     if (!this.db || !normalizedMessageId) return empty
+    const expectedRevision = String(options.revision || '').trim()
+    if (offset > 0 && expectedRevision && expectedRevision !== revision) {
+      return { ...empty, stale: true }
+    }
     const total = Number((this.db.prepare(`
       SELECT COUNT(*) AS count FROM assistant_answer_review_decisions WHERE message_id=?
     `).get(normalizedMessageId) as any)?.count || 0)
@@ -8783,12 +8931,18 @@ export class PersonalMemoryStore {
       WHERE d.message_id=?
       ORDER BY d.created_at DESC,d.id DESC LIMIT ? OFFSET ?
     `).all(normalizedMessageId, limit, offset) as any[]
+    const completedRevision = this.getAssistantHistoryRevision()
+    if (completedRevision !== revision) {
+      return { ...empty, revision: completedRevision, stale: true }
+    }
     return {
       items,
       total,
       hasMore: offset + items.length < total,
       offset,
-      limit
+      limit,
+      revision,
+      stale: false
     }
   }
 
@@ -8835,8 +8989,10 @@ export class PersonalMemoryStore {
     offset?: number
     limit?: number
     anchorMessageId?: string
+    revision?: string
   } = 40): any {
     if (!this.db) return null
+    const revision = this.getAssistantHistoryRevision()
     const conversation = this.db.prepare(`
       SELECT id,title,created_at,updated_at FROM assistant_conversations WHERE id=?
     `).get(id) as any
@@ -8847,6 +9003,17 @@ export class PersonalMemoryStore {
     let offset = Math.max(0, Math.min(1_000_000, Math.floor(Number(
       typeof options === 'number' ? 0 : options.offset
     ) || 0)))
+    const expectedRevision = typeof options === 'number'
+      ? ''
+      : String(options.revision || '').trim()
+    if (offset > 0 && expectedRevision && expectedRevision !== revision) {
+      return {
+        id, messages: [], total: 0, offset, limit,
+        anchorMessageId: '', anchorFound: false,
+        hasNewer: false, hasOlder: false,
+        revision, stale: true
+      }
+    }
     const anchorMessageId = typeof options === 'number' ? '' : String(options.anchorMessageId || '').trim()
     let anchorFound = false
     if (anchorMessageId) {
@@ -8871,6 +9038,23 @@ export class PersonalMemoryStore {
         ORDER BY created_at DESC,id DESC LIMIT ? OFFSET ?
       ) ORDER BY created_at,id
     `).all(id, limit, offset) as any[]
+    const messages = rows.map(row => {
+      let citations: any[] = []
+      let groundingAudit: any = {}
+      try { citations = JSON.parse(String(row.citations_json || '[]')) } catch {}
+      try { groundingAudit = this.compactAssistantGroundingAudit(JSON.parse(String(row.grounding_json || '{}'))) } catch {}
+      const { citations_json: _citationsJson, grounding_json: _groundingJson, ...message } = row
+      return { ...message, citations, groundingAudit }
+    })
+    const completedRevision = this.getAssistantHistoryRevision()
+    if (completedRevision !== revision) {
+      return {
+        id, messages: [], total: 0, offset, limit,
+        anchorMessageId: '', anchorFound: false,
+        hasNewer: false, hasOlder: false,
+        revision: completedRevision, stale: true
+      }
+    }
     return {
       ...conversation,
       total,
@@ -8880,14 +9064,9 @@ export class PersonalMemoryStore {
       anchorFound,
       hasNewer: offset > 0,
       hasOlder: offset + rows.length < total,
-      messages: rows.map(row => {
-        let citations: any[] = []
-        let groundingAudit: any = {}
-        try { citations = JSON.parse(String(row.citations_json || '[]')) } catch {}
-        try { groundingAudit = this.compactAssistantGroundingAudit(JSON.parse(String(row.grounding_json || '{}'))) } catch {}
-        const { citations_json: _citationsJson, grounding_json: _groundingJson, ...message } = row
-        return { ...message, citations, groundingAudit }
-      })
+      messages,
+      revision,
+      stale: false
     }
   }
 

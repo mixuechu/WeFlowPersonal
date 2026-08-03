@@ -5251,7 +5251,8 @@ export class AiAssistantService {
       to: String(options?.to || ''),
       revalidationStatus: options?.revalidationStatus,
       offset: Number(options?.offset || 0),
-      limit: Number(options?.limit || 30)
+      limit: Number(options?.limit || 30),
+      revision: String(options?.revision || '')
     })
   }
 
@@ -5263,7 +5264,8 @@ export class AiAssistantService {
       from: String(options?.from || ''),
       to: String(options?.to || ''),
       offset: Number(options?.offset || 0),
-      limit: Number(options?.limit || 30)
+      limit: Number(options?.limit || 30),
+      revision: String(options?.revision || '')
     })
   }
 
@@ -5279,7 +5281,8 @@ export class AiAssistantService {
       String(messageId || '').trim(),
       {
         offset: Number(options?.offset || 0),
-        limit: Number(options?.limit || 20)
+        limit: Number(options?.limit || 20),
+        revision: String(options?.revision || '')
       }
     )
   }
@@ -5384,11 +5387,31 @@ export class AiAssistantService {
   }
 
   getAssistantConversation(id: string, options?: any): any {
-    return this.enrichAssistantCitationFeedback(personalMemoryStore.getAssistantConversation(String(id || '').trim(), {
+    const page = personalMemoryStore.getAssistantConversation(String(id || '').trim(), {
       offset: Number(options?.offset || 0),
       limit: Number(options?.limit || 40),
-      anchorMessageId: String(options?.anchorMessageId || '')
-    }))
+      anchorMessageId: String(options?.anchorMessageId || ''),
+      revision: String(options?.revision || '')
+    })
+    if (!page || page.stale) return page
+    const enriched = this.enrichAssistantCitationFeedback(page)
+    const completedRevision = personalMemoryStore.getAssistantHistoryRevision()
+    if (completedRevision !== page.revision) {
+      return {
+        id: page.id,
+        messages: [],
+        total: 0,
+        offset: page.offset,
+        limit: page.limit,
+        anchorMessageId: '',
+        anchorFound: false,
+        hasNewer: false,
+        hasOlder: false,
+        revision: completedRevision,
+        stale: true
+      }
+    }
+    return enriched
   }
 
   deleteAssistantConversation(id: string): boolean {

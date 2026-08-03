@@ -450,6 +450,8 @@ function AiAssistantPage() {
     items: any[]
     total: number
     hasMore: boolean
+    revision?: string
+    stale?: boolean
     loading?: boolean
   }>({ items: [], total: 0, hasMore: false })
   const [assistantArchiveQuery, setAssistantArchiveQuery] = useState('')
@@ -457,6 +459,7 @@ function AiAssistantPage() {
   const [assistantArchiveTo, setAssistantArchiveTo] = useState('')
   const [assistantArchiveRevalidation, setAssistantArchiveRevalidation] = useState('')
   const [assistantArchiveLoadingMore, setAssistantArchiveLoadingMore] = useState(false)
+  const [assistantArchiveRefreshKey, setAssistantArchiveRefreshKey] = useState(0)
   const [assistantMessagesLoadingMore, setAssistantMessagesLoadingMore] = useState(false)
   const assistantArchiveGate = useRef(new LatestRequestGate())
   const [assistantAnswerReviewsOpen, setAssistantAnswerReviewsOpen] = useState(false)
@@ -724,6 +727,14 @@ function AiAssistantPage() {
     const timer = window.setTimeout(() => {
       void window.electronAPI.aiAssistant.getAssistantConversations(assistantArchiveOptions).then(result => {
         if (!assistantArchiveGate.current.isCurrent(request)) return
+        if (result.stale) {
+          window.setTimeout(() => {
+            if (assistantArchiveGate.current.isCurrent(request)) {
+              setAssistantArchiveRefreshKey(value => value + 1)
+            }
+          }, 250)
+          return
+        }
         setAssistantArchive({ ...result, loading: false })
       }).catch(() => {
         if (!assistantArchiveGate.current.isCurrent(request)) return
@@ -734,7 +745,7 @@ function AiAssistantPage() {
       window.clearTimeout(timer)
       if (assistantArchiveGate.current.isCurrent(request)) assistantArchiveGate.current.invalidate()
     }
-  }, [assistantArchiveOptions, dashboard?.assistantArchive?.revision])
+  }, [assistantArchiveOptions, dashboard?.assistantArchive?.revision, assistantArchiveRefreshKey])
 
   useEffect(() => {
     if (!assistantAnswerReviewsOpen) {
@@ -748,6 +759,14 @@ function AiAssistantPage() {
       void window.electronAPI.aiAssistant.getAssistantAnswerReviews(assistantAnswerReviewOptions)
         .then(result => {
           if (!assistantAnswerReviewsGate.current.isCurrent(request)) return
+          if (result.stale) {
+            window.setTimeout(() => {
+              if (assistantAnswerReviewsGate.current.isCurrent(request)) {
+                setAssistantAnswerReviewRevision(value => value + 1)
+              }
+            }, 250)
+            return
+          }
           setAssistantAnswerReviews({ ...result, loading: false })
         }).catch(() => {
           if (!assistantAnswerReviewsGate.current.isCurrent(request)) return
@@ -2227,7 +2246,9 @@ function AiAssistantPage() {
       if (!memoryConversationGate.current.isCurrent(request)) return
       setMemoryAnswer({ ...answer, question })
       setMemoryConversationId(answer.conversationId)
-      setMemoryConversation(await window.electronAPI.aiAssistant.getAssistantConversation(answer.conversationId))
+      const conversation = await window.electronAPI.aiAssistant.getAssistantConversation(answer.conversationId)
+      if (conversation?.stale) void openMemoryConversation(answer.conversationId)
+      else setMemoryConversation(conversation)
       setMemoryQuestion('')
       await load()
     } catch (error: any) {
@@ -2313,7 +2334,8 @@ function AiAssistantPage() {
         const targetConversationId = memoryConversationId
         if (targetConversationId) {
           const refreshed = await window.electronAPI.aiAssistant.getAssistantConversation(targetConversationId)
-          setMemoryConversation((current: any) =>
+          if (refreshed?.stale) void openMemoryConversation(targetConversationId)
+          else setMemoryConversation((current: any) =>
             current?.id === targetConversationId ? refreshed : current)
         }
       }
@@ -2416,7 +2438,8 @@ function AiAssistantPage() {
       const targetConversationId = memoryConversationId
       if (targetConversationId) {
         const refreshed = await window.electronAPI.aiAssistant.getAssistantConversation(targetConversationId)
-        setMemoryConversation((current: any) =>
+        if (refreshed?.stale) void openMemoryConversation(targetConversationId)
+        else setMemoryConversation((current: any) =>
           current?.id === targetConversationId ? refreshed : current)
         setMemoryAnswer((current: any) => {
           if (!current) return current
@@ -2533,6 +2556,14 @@ function AiAssistantPage() {
       anchorMessageId
     })
     if (!conversation || !memoryConversationGate.current.isCurrent(request)) return
+    if (conversation.stale) {
+      window.setTimeout(() => {
+        if (memoryConversationGate.current.isCurrent(request)) {
+          void openMemoryConversation(id, anchorMessageId)
+        }
+      }, 250)
+      return
+    }
     setMemoryConversationId(id)
     setMemoryConversation(conversation)
     const messages = conversation.messages || []
@@ -2568,9 +2599,15 @@ function AiAssistantPage() {
       const result = await window.electronAPI.aiAssistant.getAssistantConversations({
         ...assistantArchiveOptions,
         offset: assistantArchive.items.length,
-        limit: 30
+        limit: 30,
+        revision: assistantArchive.revision
       })
       if (!assistantArchiveGate.current.isCurrent(request)) return
+      if (result.stale) {
+        setMessage('问答会话档案已有变化，已自动从第一页刷新')
+        setAssistantArchiveRefreshKey(value => value + 1)
+        return
+      }
       setAssistantArchive(current => ({
         ...result,
         items: [...current.items, ...result.items.filter((item: any) =>
@@ -2592,9 +2629,15 @@ function AiAssistantPage() {
       const result = await window.electronAPI.aiAssistant.getAssistantAnswerReviews({
         ...assistantAnswerReviewOptions,
         offset: assistantAnswerReviews.items.length,
-        limit: 30
+        limit: 30,
+        revision: assistantAnswerReviews.revision
       })
       if (!assistantAnswerReviewsGate.current.isCurrent(request)) return
+      if (result.stale) {
+        setMessage('逐回答核验档案已有变化，已自动从第一页刷新')
+        setAssistantAnswerReviewRevision(value => value + 1)
+        return
+      }
       setAssistantAnswerReviews((current: any) => ({
         ...result,
         items: [...current.items, ...result.items.filter((item: any) =>
@@ -2636,15 +2679,7 @@ function AiAssistantPage() {
     }
   }
 
-  const toggleAssistantAnswerReviewHistory = async (messageId: string) => {
-    if (assistantAnswerReviewHistories[messageId]) {
-      setAssistantAnswerReviewHistories(current => {
-        const next = { ...current }
-        delete next[messageId]
-        return next
-      })
-      return
-    }
+  const loadAssistantAnswerReviewHistory = async (messageId: string): Promise<void> => {
     setAssistantAnswerReviewHistories(current => ({
       ...current,
       [messageId]: { items: [], total: 0, hasMore: false, loading: true }
@@ -2652,6 +2687,10 @@ function AiAssistantPage() {
     try {
       const page = await window.electronAPI.aiAssistant
         .getAssistantAnswerReviewDecisions(messageId, { limit: 20 })
+      if (page.stale) {
+        window.setTimeout(() => void loadAssistantAnswerReviewHistory(messageId), 250)
+        return
+      }
       setAssistantAnswerReviewHistories(current => ({
         ...current,
         [messageId]: { ...page, loading: false }
@@ -2667,6 +2706,18 @@ function AiAssistantPage() {
     }
   }
 
+  const toggleAssistantAnswerReviewHistory = async (messageId: string) => {
+    if (assistantAnswerReviewHistories[messageId]) {
+      setAssistantAnswerReviewHistories(current => {
+        const next = { ...current }
+        delete next[messageId]
+        return next
+      })
+      return
+    }
+    await loadAssistantAnswerReviewHistory(messageId)
+  }
+
   const loadMoreAssistantAnswerReviewHistory = async (messageId: string) => {
     const history = assistantAnswerReviewHistories[messageId]
     if (!history || history.loading || !history.hasMore) return
@@ -2677,8 +2728,13 @@ function AiAssistantPage() {
     try {
       const page = await window.electronAPI.aiAssistant.getAssistantAnswerReviewDecisions(
         messageId,
-        { offset: history.items.length, limit: 20 }
+        { offset: history.items.length, limit: 20, revision: history.revision }
       )
+      if (page.stale) {
+        setMessage('这条回答的处理记录已有变化，已自动重新载入')
+        await loadAssistantAnswerReviewHistory(messageId)
+        return
+      }
       setAssistantAnswerReviewHistories(current => ({
         ...current,
         [messageId]: {
@@ -2706,9 +2762,15 @@ function AiAssistantPage() {
     try {
       const older = await window.electronAPI.aiAssistant.getAssistantConversation(memoryConversationId, {
         offset: memoryConversation.messages?.length || 0,
-        limit: 40
+        limit: 40,
+        revision: memoryConversation.revision
       })
       if (!older || !memoryConversationGate.current.isCurrent(request)) return
+      if (older.stale) {
+        setMessage('当前问答的消息或证据状态已有变化，已自动重新载入')
+        void openMemoryConversation(memoryConversationId)
+        return
+      }
       setMemoryConversation((current: any) => {
         if (!current || current.id !== older.id) return current
         const known = new Set((current.messages || []).map((item: any) => item.id))
@@ -5651,6 +5713,16 @@ function AiAssistantPage() {
                 <span>当前状态 <b>{memoryDiagnostics.ingestionRecoveryRevisionHealthy ? '保护正常' : '需要检查'}</b></span>
                 <span>当前 revision <b>{String(memoryDiagnostics.ingestionRecoveryRevision.revision || '0')}</b></span>
                 <span>变更触发器 <b>{Number(memoryDiagnostics.ingestionRecoveryRevision.installedTriggers || 0).toLocaleString()} / {Number(memoryDiagnostics.ingestionRecoveryRevision.expectedTriggers || 0).toLocaleString()}</b></span>
+              </div>
+            </div>}
+            {memoryDiagnostics.assistantHistoryRevision?.version && <div className={`assistant-recovery-audit ${memoryDiagnostics.assistantHistoryRevisionHealthy ? 'healthy' : 'unhealthy'}`}>
+              <header><ShieldCheck size={15} /><span><b>可信问答历史分页一致性保护</b>
+                <small>会话、消息、逐陈述依赖、人工核验决定及当前检索证据共享 SQLCipher revision；新问答或证据纠正、拒绝、删除发生时，旧会话页、消息页和核验页都会被拒绝并自动重载。</small>
+              </span></header>
+              <div className="assistant-recovery-current">
+                <span>当前状态 <b>{memoryDiagnostics.assistantHistoryRevisionHealthy ? '保护正常' : '需要检查'}</b></span>
+                <span>当前 revision <b>{String(memoryDiagnostics.assistantHistoryRevision.revision || '0')}</b></span>
+                <span>变更触发器 <b>{Number(memoryDiagnostics.assistantHistoryRevision.installedTriggers || 0).toLocaleString()} / {Number(memoryDiagnostics.assistantHistoryRevision.expectedTriggers || 0).toLocaleString()}</b></span>
               </div>
             </div>}
             {memoryDiagnostics.taskSearchIndex?.version && <div className={`assistant-recovery-audit ${memoryDiagnostics.taskSearchIndexHealthy ? 'healthy' : 'unhealthy'}`}>

@@ -4647,6 +4647,127 @@ test('ingestion recovery revision covers prepare retry commit and self-heals on 
   }
 })
 
+test('assistant history revision covers authoritative history and self-heals on restart', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'weflow-assistant-history-revision-'))
+  const databasePath = join(directory, 'memory.sqlite')
+  try {
+    const first = new PersonalMemoryStore()
+    first.initialize(databasePath)
+    const database = (first as any).db
+    const now = '2026-08-03T00:00:00.000Z'
+    let previous = Number(first.getAssistantHistoryRevision())
+    const expectAdvanced = () => {
+      const current = Number(first.getAssistantHistoryRevision())
+      assert.ok(current > previous)
+      previous = current
+    }
+
+    const conversationId = first.saveAssistantExchange(
+      '可信历史版本问题',
+      '可信历史版本回答',
+      []
+    )
+    expectAdvanced()
+    const answerId = database.prepare(`
+      SELECT id FROM assistant_messages
+      WHERE conversation_id=? AND role='assistant'
+      ORDER BY created_at DESC,id DESC LIMIT 1
+    `).pluck().get(conversationId)
+    database.prepare(`
+      INSERT INTO search_documents(
+        id,document_type,source_id,title,search_text,metadata_json,content_hash,updated_at
+      ) VALUES(?,?,?,?,?,?,?,?)
+    `).run(
+      'assistant-history-document',
+      'resource',
+      'assistant-history-source',
+      '可信来源',
+      '可信来源正文',
+      '{}',
+      'a'.repeat(64),
+      now
+    )
+    expectAdvanced()
+    database.prepare(`
+      INSERT INTO search_document_evidence(
+        document_id,source_id,message_id,session_id,timestamp,sender,excerpt
+      ) VALUES(?,?,?,?,?,?,?)
+    `).run(
+      'assistant-history-document',
+      'wechat',
+      'assistant-history-message',
+      'assistant-history-session',
+      1_754_000_000,
+      '测试发送者',
+      '可信来源原文'
+    )
+    expectAdvanced()
+    database.prepare(`
+      INSERT INTO assistant_answer_dependencies(
+        message_id,conversation_id,statement_index,document_id,content_hash,created_at
+      ) VALUES(?,?,?,?,?,?)
+    `).run(
+      answerId,
+      conversationId,
+      0,
+      'assistant-history-document',
+      'a'.repeat(64),
+      now
+    )
+    expectAdvanced()
+    database.prepare(`
+      INSERT INTO assistant_answer_review_decisions(
+        message_id,state_key,action,created_at
+      ) VALUES(?,?,?,?)
+    `).run(answerId, 'assistant-history-state', 'reopened', now)
+    expectAdvanced()
+    database.prepare(`
+      INSERT INTO evidence(
+        claim_id,relation_id,event_id,source_id,message_id,session_id,
+        timestamp,sender,excerpt,evidence_role
+      ) VALUES(NULL,NULL,NULL,?,?,?,?,?,?,?)
+    `).run(
+      'wechat',
+      'assistant-history-structured-message',
+      'assistant-history-session',
+      1_754_000_001,
+      '测试发送者',
+      '结构化可信原文',
+      'support'
+    )
+    expectAdvanced()
+    database.prepare(`
+      UPDATE assistant_conversations SET title=? WHERE id=?
+    `).run('可信历史版本问题（更新）', conversationId)
+    expectAdvanced()
+
+    assert.deepEqual(first.getAssistantHistoryRevisionHealth(), {
+      version: 'assistant-history-revision-v1',
+      revision: first.getAssistantHistoryRevision(),
+      expectedTriggers: 21,
+      installedTriggers: 21,
+      healthy: true
+    })
+    database.exec(
+      'DROP TRIGGER trg_assistant_history_revision_assistant_messages_insert'
+    )
+    assert.equal(first.getAssistantHistoryRevisionHealth().installedTriggers, 20)
+    assert.equal(first.getAssistantHistoryRevisionHealth().healthy, false)
+    first.close()
+
+    const reopened = new PersonalMemoryStore()
+    reopened.initialize(databasePath)
+    assert.equal(reopened.getAssistantHistoryRevisionHealth().installedTriggers, 21)
+    assert.equal(reopened.getAssistantHistoryRevisionHealth().healthy, true)
+    assert.equal(reopened.listAssistantConversationsPage({ limit: 20 }).total, 1)
+    assert.equal(reopened.getAssistantConversation(conversationId).messages.length, 2)
+    assert.equal(reopened.listAssistantAnswerReviewDecisionsPage(answerId).total, 1)
+    reopened.close()
+  } finally {
+    rmSync(directory, { recursive: true, force: true })
+  }
+})
+
 test('database retrieval scope covers entity links, relation type and evidence time', () => withStore(store => {
   store.syncGraph({
     entities: [
@@ -5072,7 +5193,9 @@ test('assistant archive paginates years of conversations and complete long threa
   }
 
   const first = store.listAssistantConversationsPage({ limit: 40 })
-  const second = store.listAssistantConversationsPage({ limit: 40, offset: 40 })
+  const second = store.listAssistantConversationsPage({
+    limit: 40, offset: 40, revision: first.revision
+  })
   const stats = store.getAssistantArchiveStats()
   assert.deepEqual(Object.keys(stats).sort(), [
     'answerDependencies', 'citationStorage', 'exchangeIntegrity',
@@ -5088,6 +5211,7 @@ test('assistant archive paginates years of conversations and complete long threa
   assert.equal(first.total, 600)
   assert.equal(first.items.length, 40)
   assert.equal(first.hasMore, true)
+  assert.equal(second.stale, false)
   assert.equal(new Set([...first.items, ...second.items].map(item => item.id)).size, 80)
   assert.ok(Date.parse(first.items[0].updated_at) >= Date.parse(first.items[39].updated_at))
 
@@ -5105,8 +5229,18 @@ test('assistant archive paginates years of conversations and complete long threa
   for (let index = 1; index < 125; index += 1) {
     store.saveAssistantExchange(`长对话第 ${index} 问`, `长对话第 ${index} 答`, [], longConversation)
   }
-  const pages = Array.from({ length: 7 }, (_, index) =>
-    store.getAssistantConversation(longConversation, { offset: index * 40, limit: 40 }))
+  const firstLongPage = store.getAssistantConversation(longConversation, {
+    offset: 0, limit: 40
+  })
+  const pages = [
+    firstLongPage,
+    ...Array.from({ length: 6 }, (_, index) =>
+      store.getAssistantConversation(longConversation, {
+        offset: (index + 1) * 40,
+        limit: 40,
+        revision: firstLongPage.revision
+      }))
+  ]
   const messages = pages.flatMap(page => page.messages)
   assert.equal(pages[0].total, 250)
   assert.equal(pages[0].hasOlder, true)
@@ -5114,6 +5248,17 @@ test('assistant archive paginates years of conversations and complete long threa
   assert.equal(messages.length, 250)
   assert.equal(new Set(messages.map(message => message.id)).size, 250)
   assert.deepEqual(pages[0].messages.slice(-2).map((message: any) => message.content), ['长对话第 124 问', '长对话第 124 答'])
+  ;(store as any).db.prepare(`
+    UPDATE assistant_conversations SET title=title WHERE id=?
+  `).run(longConversation)
+  assert.equal(store.listAssistantConversationsPage({
+    offset: 40, limit: 40, revision: first.revision
+  }).stale, true)
+  const staleMessages = store.getAssistantConversation(longConversation, {
+    offset: 40, limit: 40, revision: firstLongPage.revision
+  })
+  assert.equal(staleMessages.stale, true)
+  assert.deepEqual(staleMessages.messages, [])
 }))
 
 test('assistant archive filters statement dependencies without loading answer evidence', () => withStore(store => {
@@ -5215,9 +5360,16 @@ test('assistant archive filters statement dependencies without loading answer ev
     .question_preview, '内容变化会话')
   assert.equal(JSON.stringify(answerReviews.items).includes('仅用于资格核验'), false)
   const attentionPage = store.listAssistantAnswerReviewsPage({ status: 'attention', limit: 2 })
+  const attentionSecondPage = store.listAssistantAnswerReviewsPage({
+    status: 'attention',
+    offset: 2,
+    limit: 2,
+    revision: attentionPage.revision
+  })
   assert.equal(attentionPage.total, 3)
   assert.equal(attentionPage.items.length, 2)
   assert.equal(attentionPage.hasMore, true)
+  assert.equal(attentionSecondPage.stale, false)
   assert.equal(store.listAssistantAnswerReviewsPage({
     status: 'all',
     query: '后来仍有效',
@@ -5233,6 +5385,12 @@ test('assistant archive filters statement dependencies without loading answer ev
   ), /当前仍有效/)
   const firstReviewDecision = store.reviewAssistantAnswer(changedAnswerId, 'acknowledged')
   assert.equal('stateKey' in firstReviewDecision, false)
+  assert.equal(store.listAssistantAnswerReviewsPage({
+    status: 'attention',
+    offset: 2,
+    limit: 2,
+    revision: attentionPage.revision
+  }).stale, true)
   assert.equal(JSON.stringify(store.listAssistantAnswerReviewsPage({
     status: 'all', reviewState: 'all', limit: 20
   }).items).includes('state_key'), false)
@@ -5291,11 +5449,11 @@ test('assistant archive filters statement dependencies without loading answer ev
   )
   const secondDecisionPage = store.listAssistantAnswerReviewDecisionsPage(
     changedAnswerId,
-    { offset: 20, limit: 20 }
+    { offset: 20, limit: 20, revision: firstDecisionPage.revision }
   )
   const lastDecisionPage = store.listAssistantAnswerReviewDecisionsPage(
     changedAnswerId,
-    { offset: 40, limit: 20 }
+    { offset: 40, limit: 20, revision: firstDecisionPage.revision }
   )
   assert.equal(firstDecisionPage.total, 45)
   assert.equal(firstDecisionPage.items.length, 20)
