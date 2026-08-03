@@ -438,6 +438,14 @@ function AiAssistantPage() {
   const [entityRelationDirection, setEntityRelationDirection] = useState<'all' | 'outgoing' | 'incoming'>('all')
   const [entityRelationStatus, setEntityRelationStatus] = useState<'all' | 'candidate' | 'confirmed'>('all')
   const entityDossierGate = useRef(new LatestRequestGate())
+  const [entityEvidencePage, setEntityEvidencePage] = useState<any>({
+    items: [], total: 0, hasMore: false, revision: '', status: 'idle'
+  })
+  const [entityEvidenceQuery, setEntityEvidenceQuery] = useState('')
+  const [entityEvidenceSource, setEntityEvidenceSource] = useState('')
+  const [entityEvidenceLoadingMore, setEntityEvidenceLoadingMore] = useState(false)
+  const [entityEvidenceRefreshKey, setEntityEvidenceRefreshKey] = useState(0)
+  const entityEvidenceGate = useRef(new LatestRequestGate())
   const [entityTaskLoadingMore, setEntityTaskLoadingMore] = useState(false)
   const entityTaskGate = useRef(new LatestRequestGate())
   const [entityAuditLoadingMore, setEntityAuditLoadingMore] = useState('')
@@ -1784,6 +1792,47 @@ function AiAssistantPage() {
   ])
 
   useEffect(() => {
+    const request = entityEvidenceGate.current.begin()
+    setEntityEvidenceLoadingMore(false)
+    if (!showEntityDossier || !selectedEntityId) {
+      setEntityEvidencePage({
+        items: [], total: 0, hasMore: false, revision: '', status: 'idle'
+      })
+      return () => {
+        if (entityEvidenceGate.current.isCurrent(request)) entityEvidenceGate.current.invalidate()
+      }
+    }
+    setEntityEvidencePage((current: any) => ({
+      ...current, items: [], total: 0, hasMore: false, status: 'loading'
+    }))
+    const timer = window.setTimeout(() => {
+      void window.electronAPI.aiAssistant.getEntityEvidencePage({
+        entityId: selectedEntityId,
+        query: entityEvidenceQuery.trim() || undefined,
+        sourceId: entityEvidenceSource || undefined,
+        limit: 40,
+        offset: 0
+      }).then(page => {
+        if (!entityEvidenceGate.current.isCurrent(request)) return
+        setEntityEvidencePage({ ...page, status: 'ready' })
+      }).catch(error => {
+        if (!entityEvidenceGate.current.isCurrent(request)) return
+        setEntityEvidencePage({
+          items: [], total: 0, hasMore: false, revision: '',
+          status: 'error', error: error?.message || String(error)
+        })
+      })
+    }, entityEvidenceQuery ? 180 : 0)
+    return () => {
+      window.clearTimeout(timer)
+      if (entityEvidenceGate.current.isCurrent(request)) entityEvidenceGate.current.invalidate()
+    }
+  }, [
+    showEntityDossier, selectedEntityId, entityEvidenceQuery, entityEvidenceSource,
+    dashboard?.memoryRevision, dashboard?.graphReviewRevision, entityEvidenceRefreshKey
+  ])
+
+  useEffect(() => {
     const request = projectWorkspaceGate.current.begin()
     projectTaskGate.current.invalidate()
     projectRiskGate.current.invalidate()
@@ -2655,6 +2704,41 @@ function AiAssistantPage() {
       if (entityDossierGate.current.isCurrent(request)) setMessage(error?.message || String(error))
     } finally {
       if (entityDossierGate.current.isCurrent(request)) setEntityDossierLoadingMore('')
+    }
+  }
+
+  const loadMoreEntityEvidence = async () => {
+    if (!selectedEntityId || entityEvidenceLoadingMore || !entityEvidencePage.hasMore) return
+    const request = entityEvidenceGate.current.begin()
+    setEntityEvidenceLoadingMore(true)
+    try {
+      const page = await window.electronAPI.aiAssistant.getEntityEvidencePage({
+        entityId: selectedEntityId,
+        query: entityEvidenceQuery.trim() || undefined,
+        sourceId: entityEvidenceSource || undefined,
+        limit: 40,
+        offset: entityEvidencePage.items.length,
+        revision: entityEvidencePage.revision
+      })
+      if (!entityEvidenceGate.current.isCurrent(request)) return
+      if (page.stale) {
+        setMessage('人物相关原文在浏览期间已有变化，已从最新第一页重新载入。')
+        setEntityEvidenceRefreshKey(value => value + 1)
+        return
+      }
+      setEntityEvidencePage((current: any) => ({
+        ...page,
+        status: 'ready',
+        items: [
+          ...current.items,
+          ...page.items.filter((item: any) => !current.items.some((known: any) =>
+            evidenceArchiveIdentity(known) === evidenceArchiveIdentity(item)))
+        ]
+      }))
+    } catch (error: any) {
+      if (entityEvidenceGate.current.isCurrent(request)) setMessage(error?.message || String(error))
+    } finally {
+      if (entityEvidenceGate.current.isCurrent(request)) setEntityEvidenceLoadingMore(false)
     }
   }
 
@@ -7642,7 +7726,7 @@ function AiAssistantPage() {
               <span><small>别名</small><b>{selectedEntity.aliases?.join('、') || '暂无'}</b></span>
               <span><small>微信身份锚点</small><b>{selectedEntity.accountIds?.join('、') || '尚未关联'}</b></span>
               <span><small>邮箱身份锚点</small><b>{selectedEntity.externalIdentities?.filter((identity: any) => identity.platform === 'email').map((identity: any) => identity.accountId).join('、') || '尚未关联'}</b></span>
-              <span><small>原文证据</small><b>{selectedEntity.evidenceMessageIds?.length || 0} 条</b></span>
+              <span><small>关联原文档案</small><b>{Number(entityEvidencePage.unfilteredTotal || 0)} 条</b></span>
               <span><small>身份版本</small><b>v{selectedEntity.identityVersion || 1}</b></span>
             </div>
             {selectedEntityInsight && <div className="assistant-dossier-metrics">
@@ -7765,6 +7849,44 @@ function AiAssistantPage() {
                   {entityTaskLoadingMore
                     ? '正在加载…'
                     : `加载更多关联事项（已显示 ${selectedEntityTasks.length} / ${graphWorkspace.focus.taskTotal}）`}
+                </button>}
+              </section>
+              <section className="assistant-dossier-wide">
+                <h3>人物相关原文档案 <small>{Number(entityEvidencePage.total || 0)} / {Number(entityEvidencePage.unfilteredTotal || 0)}</small></h3>
+                <p>汇总人物首次出现、身份锚点，以及事实、关系和事件中与此实体直接关联的去重原文。</p>
+                <div className="assistant-inline-filters">
+                  <input value={entityEvidenceQuery}
+                    onChange={event => setEntityEvidenceQuery(event.target.value)}
+                    placeholder="搜索发送者、原文或会话 ID" />
+                  <select value={entityEvidenceSource}
+                    onChange={event => setEntityEvidenceSource(event.target.value)}>
+                    <option value="">全部来源</option>
+                    <option value="wechat">微信</option>
+                    <option value="documents">本机文档</option>
+                    <option value="calendar">日历</option>
+                    <option value="mail">邮件</option>
+                    <option value="legacy">历史来源未知</option>
+                  </select>
+                </div>
+                {entityEvidencePage.status === 'loading' && <em>正在读取相关原文…</em>}
+                {entityEvidencePage.status === 'error' && <div className="assistant-empty">
+                  相关原文读取失败：{entityEvidencePage.error}
+                  <button onClick={() => setEntityEvidenceRefreshKey(value => value + 1)}>重试</button>
+                </div>}
+                {entityEvidencePage.items.map((evidence: any) => <article
+                  key={evidenceArchiveIdentity(evidence)}>
+                  <small>用于：{(evidence.memoryKinds || []).map((kind: string) =>
+                    kind === 'identity' ? '身份识别' : kind === 'claim' ? '事实'
+                      : kind === 'relation' ? '关系' : '事件').join('、') || '结构化记忆'}</small>
+                  <div className="assistant-evidence-stack"><EvidenceRows evidence={[evidence]} /></div>
+                </article>)}
+                {entityEvidencePage.status === 'ready' && !entityEvidencePage.items.length &&
+                  <em>{entityEvidencePage.unfilteredTotal ? '当前筛选没有匹配原文' : '尚无相关结构化原文'}</em>}
+                {entityEvidencePage.hasMore && <button disabled={entityEvidenceLoadingMore}
+                  onClick={() => void loadMoreEntityEvidence()}>
+                  {entityEvidenceLoadingMore
+                    ? '正在加载…'
+                    : `加载更多原文（已显示 ${entityEvidencePage.items.length} / ${entityEvidencePage.total}）`}
                 </button>}
               </section>
               <section className="assistant-dossier-wide">

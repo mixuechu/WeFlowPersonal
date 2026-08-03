@@ -505,6 +505,16 @@ function isOfficialAccountSession(session: any): boolean {
 }
 
 export class AiAssistantService {
+  private pendingEntityEvidence: Array<{
+    entityId: string
+    sourceId: string
+    messageId: string
+    sessionId: string
+    timestamp: number
+    sender: string
+    excerpt: string
+    evidenceKind: string
+  }> = []
   private config = ConfigService.getInstance()
   private state: AssistantState = structuredClone(EMPTY_STATE)
   private statePath = ''
@@ -952,7 +962,10 @@ export class AiAssistantService {
     let graphSynced = false
     const graphCommitId = crypto.randomUUID()
     try {
-      personalMemoryStore.syncGraph(this.state.graph, graphCommitId)
+      personalMemoryStore.syncGraph(this.state.graph, graphCommitId, {
+        entityEvidence: this.pendingEntityEvidence
+      })
+      this.pendingEntityEvidence = []
       this.state.graph.lastSqlCommitId = graphCommitId
       graphSynced = true
     } catch (error) {
@@ -1038,7 +1051,10 @@ export class AiAssistantService {
   }
 
   private checkpointGraphToSql(): void {
-    personalMemoryStore.syncGraph(this.state.graph, crypto.randomUUID())
+    personalMemoryStore.syncGraph(this.state.graph, crypto.randomUUID(), {
+      entityEvidence: this.pendingEntityEvidence
+    })
+    this.pendingEntityEvidence = []
   }
 
   private compactBriefingState(): void {
@@ -1087,6 +1103,7 @@ export class AiAssistantService {
     for (const commit of personalMemoryStore.listPreparedIngestionBatchCommits()) {
       attempted += 1
       const stateBeforeRecovery = structuredClone(this.state)
+      const pendingEntityEvidenceBeforeRecovery = [...this.pendingEntityEvidence]
       try {
         if (commit.parseError) throw new Error(commit.parseError)
         const tempIds = this.mergeGraphDigest(commit.digest, commit.messages, commit.createdAt, commit.commitId)
@@ -1117,6 +1134,7 @@ export class AiAssistantService {
         recovered += 1
       } catch (error) {
         this.state = stateBeforeRecovery
+        this.pendingEntityEvidence = pendingEntityEvidenceBeforeRecovery
         failed += 1
         personalMemoryStore.recordIngestionBatchCommitRecoveryFailure(
           commit.commitId,
@@ -1831,6 +1849,18 @@ export class AiAssistantService {
         : `ent_${crypto.randomUUID()}`)
       tempIds.set(String(item.tempId || id), id)
       const evidenceIds = [...new Set((Array.isArray(item.evidenceKeys) ? item.evidenceKeys : []).map(String))]
+      for (const message of Array.isArray(item.__evidenceMessages) ? item.__evidenceMessages : []) {
+        this.pendingEntityEvidence.push({
+          entityId: id,
+          sourceId: String(message.sourceId || 'wechat'),
+          messageId: structuredEvidenceKey(message),
+          sessionId: String(message.sessionId || ''),
+          timestamp: Number(message.timestamp || 0),
+          sender: String(message.senderName || message.senderId || ''),
+          excerpt: redact(String(message.content || '')).slice(0, 300),
+          evidenceKind: accountIds.length ? 'identity_anchor' : 'entity_mention'
+        })
+      }
       if (existing) {
         const before = JSON.stringify([existing.canonicalName, existing.aliases, existing.accountIds, existing.summary])
         existing.aliases = [...new Set([...existing.aliases, ...aliases])]
@@ -4346,6 +4376,32 @@ export class AiAssistantService {
         updatedAt: relation.updated_at
       }))
     }
+  }
+
+  getEntityEvidencePage(options: any = {}): any {
+    const entityId = String(options?.entityId || '').trim()
+    const entity = this.state.graph.entities.find(candidate =>
+      candidate.id === entityId && candidate.trustStatus !== 'rejected')
+    if (!entity) {
+      return {
+        items: [],
+        total: 0,
+        unfilteredTotal: 0,
+        hasMore: false,
+        revision: `${personalMemoryStore.getGraphReviewRevision()}:${personalMemoryStore.getStructuredMemoryRevision()}`,
+        stale: false
+      }
+    }
+    return personalMemoryStore.listEntityEvidencePage({
+      entityId,
+      sourceId: ['wechat', 'documents', 'calendar', 'mail', 'legacy'].includes(String(options?.sourceId || ''))
+        ? options.sourceId
+        : undefined,
+      query: String(options?.query || ''),
+      limit: Number(options?.limit || 40),
+      offset: Number(options?.offset || 0),
+      revision: String(options?.revision || '')
+    })
   }
 
   getClaimArchive(options: any = {}): any {

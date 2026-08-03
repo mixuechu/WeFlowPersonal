@@ -3865,7 +3865,25 @@ test('project memory is scoped in SQL before limits and preserves authoritative 
       evidence: evidence(`project-scoped-relation-message-${index}`, `项目关系原文 ${index}`)
     })),
     reviewQueue: []
-  } as any)
+  } as any, '', {
+    entityEvidence: Array.from({ length: 125 }, (_, index) => ({
+      entityId: 'project-memory-scope',
+      sourceId: 'wechat',
+      messageId: `wechat:identity-session:identity-message-${index}`,
+      sessionId: 'identity-session',
+      timestamp: 1_900_000_000 + index,
+      sender: `身份发送者 ${index}`,
+      excerpt: `项目身份直接原文 ${index}`,
+      evidenceKind: index % 2 ? 'entity_mention' : 'identity_anchor'
+    }))
+  })
+  const recoveredProjectEntity = store.loadGraphSnapshot().entities.find(
+    entity => entity.id === 'project-memory-scope'
+  )
+  assert.equal(recoveredProjectEntity?.evidenceMessageIds.length, 250)
+  assert.ok(recoveredProjectEntity?.evidenceMessageIds.includes(
+    'wechat:identity-session:identity-message-124'
+  ))
   const claims = Array.from({ length: 260 }, (_, index) => ({
     id: `project-scoped-claim-${index}`,
     subjectId: 'project-memory-scope',
@@ -3966,6 +3984,39 @@ test('project memory is scoped in SQL before limits and preserves authoritative 
   assert.equal(store.listEntityRelationPage({
     entityId: 'project-memory-scope', status: 'candidate'
   }).total, 0)
+  const entityEvidencePage = store.listEntityEvidencePage({
+    entityId: 'project-memory-scope', limit: 40
+  })
+  const entityEvidencePage2 = store.listEntityEvidencePage({
+    entityId: 'project-memory-scope',
+    limit: 40,
+    offset: 40,
+    revision: entityEvidencePage.revision
+  })
+  assert.equal(entityEvidencePage.total, 750)
+  assert.equal(entityEvidencePage.unfilteredTotal, 750)
+  assert.equal(new Set([...entityEvidencePage.items, ...entityEvidencePage2.items]
+    .map(item => `${item.source_id}:${item.session_id}:${item.message_id}`)).size, 80)
+  assert.equal(store.listEntityEvidencePage({
+    entityId: 'project-memory-scope', query: '项目关系原文'
+  }).total, 125)
+  assert.equal(store.listEntityEvidencePage({
+    entityId: 'project-memory-scope', sourceId: 'legacy'
+  }).total, 625)
+  assert.equal(store.listEntityEvidencePage({
+    entityId: 'project-memory-scope', sourceId: 'wechat'
+  }).total, 125)
+  const directIdentityEvidence = store.listEntityEvidencePage({
+    entityId: 'project-memory-scope', query: '项目身份直接原文', limit: 100
+  })
+  assert.equal(directIdentityEvidence.total, 125)
+  assert.ok(directIdentityEvidence.items.every(item => item.memoryKinds.includes('identity')))
+  assert.equal(store.listEntityEvidencePage({
+    entityId: 'unrelated-memory-scope', query: '项目关系原文'
+  }).total, 0)
+  assert.equal(store.listEntityEvidencePage({
+    entityId: 'project-memory-scope', limit: 40, offset: 40
+  }).stale, true)
   assert.equal(store.listEntityRelationPage({
     entityId: 'project-memory-scope', limit: 40, offset: 40
   }).stale, true)
@@ -3998,6 +4049,55 @@ test('project memory is scoped in SQL before limits and preserves authoritative 
     offset: 40,
     revision: relationPage.revision
   }).stale, true)
+  assert.equal(store.listEntityEvidencePage({
+    entityId: 'project-memory-scope',
+    limit: 40,
+    offset: 40,
+    revision: entityEvidencePage.revision
+  }).stale, true)
+}))
+
+test('direct entity evidence follows reversible identity merges without copying plaintext', () => withStore(store => {
+  const entities = ['source-identity-evidence', 'target-identity-evidence'].map((id, index) => ({
+    id,
+    type: 'person',
+    canonicalName: index ? '保留身份' : '被合并身份',
+    summary: '',
+    confidence: 1,
+    trustStatus: 'confirmed',
+    aliases: [],
+    accountIds: []
+  }))
+  store.syncGraph({ entities, relations: [], reviewQueue: [] } as any, '', {
+    entityEvidence: entities.map((entity, index) => ({
+      entityId: entity.id,
+      sourceId: 'wechat',
+      messageId: `wechat:merge-evidence:message-${index}`,
+      sessionId: 'merge-evidence',
+      timestamp: 1_900_100_000 + index,
+      sender: entity.canonicalName,
+      excerpt: `身份直接原文 ${index}`,
+      evidenceKind: 'identity_anchor'
+    }))
+  })
+  const mergeId = store.recordMerge(entities[0].id, entities[1].id, {
+    source: entities[0],
+    target: entities[1],
+    relations: []
+  })
+  assert.equal(store.listEntityEvidencePage({
+    entityId: entities[1].id
+  }).total, 2)
+  assert.equal(store.loadGraphSnapshot().entities.find(
+    entity => entity.id === entities[1].id
+  )?.evidenceMessageIds.length, 2)
+  store.markMergeReverted(mergeId)
+  assert.equal(store.listEntityEvidencePage({
+    entityId: entities[1].id
+  }).total, 1)
+  assert.equal(store.listEntityEvidencePage({
+    entityId: entities[0].id
+  }).total, 1)
 }))
 
 test('task dashboard keeps structure but loads evidence and audit history on demand', () => {
@@ -5470,18 +5570,18 @@ test('structured memory revision covers review payloads and repairs its trigger 
     assert.deepEqual(first.getStructuredMemoryRevisionHealth(), {
       version: 'structured-memory-revision-v1',
       revision: first.getStructuredMemoryRevision(),
-      expectedTriggers: 21,
-      installedTriggers: 21,
+      expectedTriggers: 24,
+      installedTriggers: 24,
       healthy: true
     })
     ;(first as any).db.exec('DROP TRIGGER trg_structured_memory_revision_claims_insert')
-    assert.equal(first.getStructuredMemoryRevisionHealth().installedTriggers, 20)
+    assert.equal(first.getStructuredMemoryRevisionHealth().installedTriggers, 23)
     assert.equal(first.getStructuredMemoryRevisionHealth().healthy, false)
     first.close()
 
     const reopened = new PersonalMemoryStore()
     reopened.initialize(databasePath)
-    assert.equal(reopened.getStructuredMemoryRevisionHealth().installedTriggers, 21)
+    assert.equal(reopened.getStructuredMemoryRevisionHealth().installedTriggers, 24)
     assert.equal(reopened.getStructuredMemoryRevisionHealth().healthy, true)
     reopened.close()
   } finally {

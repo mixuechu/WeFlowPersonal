@@ -125,6 +125,21 @@ export class PersonalMemoryStore {
         UNIQUE(platform, account_id)
       ) STRICT;
 
+      CREATE TABLE IF NOT EXISTS entity_evidence (
+        id INTEGER PRIMARY KEY,
+        entity_id TEXT NOT NULL REFERENCES entities(id) ON DELETE CASCADE,
+        source_id TEXT NOT NULL DEFAULT 'legacy',
+        message_id TEXT NOT NULL,
+        session_id TEXT NOT NULL,
+        timestamp INTEGER NOT NULL,
+        sender TEXT NOT NULL DEFAULT '',
+        excerpt TEXT NOT NULL,
+        evidence_kind TEXT NOT NULL DEFAULT 'identity',
+        UNIQUE(entity_id, source_id, session_id, message_id)
+      ) STRICT;
+      CREATE INDEX IF NOT EXISTS idx_entity_evidence_entity_time
+        ON entity_evidence(entity_id, timestamp DESC);
+
       CREATE TABLE IF NOT EXISTS claims (
         id TEXT PRIMARY KEY,
         subject_id TEXT REFERENCES entities(id) ON DELETE CASCADE,
@@ -1174,6 +1189,7 @@ export class PersonalMemoryStore {
       'evidence',
       'event_participants',
       'entities',
+      'entity_evidence',
       'memory_corrections',
       'memory_review_decisions'
     ]
@@ -1189,6 +1205,7 @@ export class PersonalMemoryStore {
       'evidence',
       'event_participants',
       'entities',
+      'entity_evidence',
       'memory_corrections',
       'memory_review_decisions'
     ]
@@ -3764,15 +3781,29 @@ export class PersonalMemoryStore {
       FROM identities WHERE entity_id=? ORDER BY platform,account_id
     `)
     const entityEvidence = this.db.prepare(`
-      SELECT DISTINCT evidence.message_id
-      FROM evidence
-      LEFT JOIN relations ON relations.id=evidence.relation_id
-      LEFT JOIN claims ON claims.id=evidence.claim_id
-      LEFT JOIN event_participants ON event_participants.event_id=evidence.event_id
-      WHERE relations.subject_id=? OR relations.object_id=?
-        OR claims.subject_id=? OR claims.object_entity_id=?
-        OR event_participants.entity_id=?
-      ORDER BY evidence.timestamp DESC,evidence.message_id
+      WITH RECURSIVE entity_scope(entity_id) AS (
+        SELECT ?
+        UNION
+        SELECT history.source_entity_id
+        FROM merge_history history
+        JOIN entity_scope scope ON history.target_entity_id=scope.entity_id
+        WHERE history.reverted_at IS NULL
+      )
+      SELECT message_id FROM (
+        SELECT ee.message_id,ee.timestamp
+        FROM entity_evidence ee WHERE ee.entity_id IN (SELECT entity_id FROM entity_scope)
+        UNION
+        SELECT evidence.message_id,evidence.timestamp
+        FROM evidence
+        LEFT JOIN relations ON relations.id=evidence.relation_id
+        LEFT JOIN claims ON claims.id=evidence.claim_id
+        LEFT JOIN event_participants ON event_participants.event_id=evidence.event_id
+        WHERE relations.subject_id=? OR relations.object_id=?
+          OR claims.subject_id=? OR claims.object_entity_id=?
+          OR event_participants.entity_id=?
+      )
+      GROUP BY message_id
+      ORDER BY MAX(timestamp) DESC,message_id
       LIMIT 500
     `)
     const evidence = this.db.prepare(`
@@ -3811,7 +3842,7 @@ export class PersonalMemoryStore {
           trustStatus: row.trust_status,
           confidence: Number(row.confidence || 0),
           evidenceMessageIds: (entityEvidence.all(
-            row.id, row.id, row.id, row.id, row.id
+            row.id, row.id, row.id, row.id, row.id, row.id
           ) as Array<{ message_id: string }>).map(item => item.message_id),
           createdAt: row.created_at,
           updatedAt: row.updated_at,
@@ -3856,6 +3887,16 @@ export class PersonalMemoryStore {
     graph: MemoryGraph,
     commitId = '',
     options: {
+      entityEvidence?: Array<{
+        entityId: string
+        sourceId: string
+        messageId: string
+        sessionId: string
+        timestamp: number
+        sender: string
+        excerpt: string
+        evidenceKind?: string
+      }>
       identityMergeRevert?: {
         mergeId: number
         sourceId: string
@@ -3963,6 +4004,30 @@ export class PersonalMemoryStore {
           this.db.prepare('DELETE FROM search_fts WHERE document_id=?').run(`entity:${entity.id}`)
           this.db.prepare('DELETE FROM search_documents WHERE id=?').run(`entity:${entity.id}`)
         }
+      }
+      const upsertEntityEvidence = this.db.prepare(`
+        INSERT INTO entity_evidence(
+          entity_id,source_id,message_id,session_id,timestamp,sender,excerpt,evidence_kind
+        ) VALUES(?,?,?,?,?,?,?,?)
+        ON CONFLICT(entity_id,source_id,session_id,message_id) DO UPDATE SET
+          timestamp=MAX(entity_evidence.timestamp,excluded.timestamp),
+          sender=CASE WHEN excluded.sender!='' THEN excluded.sender ELSE entity_evidence.sender END,
+          excerpt=CASE WHEN LENGTH(excluded.excerpt)>LENGTH(entity_evidence.excerpt)
+            THEN excluded.excerpt ELSE entity_evidence.excerpt END,
+          evidence_kind=excluded.evidence_kind
+      `)
+      for (const item of options.entityEvidence || []) {
+        if (!activeEntityIds.has(String(item.entityId || ''))) continue
+        const sourceId = String(item.sourceId || 'legacy').trim() || 'legacy'
+        const messageId = String(item.messageId || '').trim()
+        const sessionId = String(item.sessionId || '').trim()
+        if (!messageId || !sessionId) continue
+        upsertEntityEvidence.run(
+          item.entityId, sourceId, messageId, sessionId,
+          Number(item.timestamp || 0), String(item.sender || ''),
+          String(item.excerpt || '').slice(0, 1000),
+          String(item.evidenceKind || 'identity').slice(0, 40)
+        )
       }
       const entityNames = new Map(graph.entities.map(entity => [entity.id, entity.canonicalName]))
       const upsertRelation = this.db.prepare(`
@@ -6352,6 +6417,125 @@ export class PersonalMemoryStore {
     return {
       items,
       total,
+      hasMore: offset + rows.length < total,
+      revision,
+      stale: false
+    }
+  }
+
+  listEntityEvidencePage(options: {
+    entityId: string
+    sourceId?: 'wechat' | 'documents' | 'calendar' | 'mail' | 'legacy'
+    query?: string
+    limit?: number
+    offset?: number
+    revision?: string
+  }): { items: any[]; total: number; unfilteredTotal: number; hasMore: boolean; revision: string; stale: boolean } {
+    if (!this.db) return { items: [], total: 0, unfilteredTotal: 0, hasMore: false, revision: '0', stale: false }
+    const currentRevision = () =>
+      `${this.getGraphReviewRevision()}:${this.getStructuredMemoryRevision()}`
+    const revision = currentRevision()
+    const entityId = String(options.entityId || '').trim()
+    if (!entityId) return { items: [], total: 0, unfilteredTotal: 0, hasMore: false, revision, stale: false }
+    const offset = Math.max(0, Math.min(1_000_000, Math.floor(Number(options.offset) || 0)))
+    const expectedRevision = String(options.revision || '').trim()
+    if (offset > 0 && expectedRevision !== revision) {
+      return { items: [], total: 0, unfilteredTotal: 0, hasMore: false, revision, stale: true }
+    }
+    const sourceId = ['wechat', 'documents', 'calendar', 'mail', 'legacy']
+      .includes(String(options.sourceId || ''))
+      ? String(options.sourceId)
+      : ''
+    const query = String(options.query || '').trim().toLowerCase()
+    const filters: string[] = []
+    const filterParameters: any[] = []
+    if (sourceId) {
+      filters.push('source_id=?')
+      filterParameters.push(sourceId)
+    }
+    if (query) {
+      filters.push(`(
+        LOWER(sender) LIKE ? OR LOWER(excerpt) LIKE ? OR
+        LOWER(session_id) LIKE ? OR LOWER(memory_kinds) LIKE ?
+      )`)
+      const pattern = `%${query}%`
+      filterParameters.push(pattern, pattern, pattern, pattern)
+    }
+    const filteredWhere = filters.length ? `WHERE ${filters.join(' AND ')}` : ''
+    const cte = `
+      WITH RECURSIVE entity_scope(entity_id) AS (
+        SELECT ?
+        UNION
+        SELECT history.source_entity_id
+        FROM merge_history history
+        JOIN entity_scope scope ON history.target_entity_id=scope.entity_id
+        WHERE history.reverted_at IS NULL
+      ),
+      scoped AS (
+        SELECT ee.source_id,ee.message_id,ee.session_id,ee.timestamp,ee.sender,ee.excerpt,
+          'identity' AS memory_kind
+        FROM entity_evidence ee
+        WHERE ee.entity_id IN (SELECT entity_id FROM entity_scope)
+        UNION ALL
+        SELECT e.source_id,e.message_id,e.session_id,e.timestamp,e.sender,e.excerpt,
+          CASE
+            WHEN e.claim_id IS NOT NULL THEN 'claim'
+            WHEN e.relation_id IS NOT NULL THEN 'relation'
+            ELSE 'event'
+          END AS memory_kind
+        FROM evidence e
+        WHERE
+          (e.claim_id IS NOT NULL AND EXISTS (
+            SELECT 1 FROM claims c WHERE c.id=e.claim_id
+              AND (c.subject_id=? OR c.object_entity_id=?)
+          ))
+          OR (e.relation_id IS NOT NULL AND EXISTS (
+            SELECT 1 FROM relations r WHERE r.id=e.relation_id
+              AND (r.subject_id=? OR r.object_id=?)
+          ))
+          OR (e.event_id IS NOT NULL AND EXISTS (
+            SELECT 1 FROM event_participants ep WHERE ep.event_id=e.event_id
+              AND ep.entity_id=?
+          ))
+      ),
+      grouped AS (
+        SELECT source_id,session_id,message_id,MAX(timestamp) AS timestamp,
+          MAX(sender) AS sender,MAX(excerpt) AS excerpt,
+          GROUP_CONCAT(DISTINCT memory_kind) AS memory_kinds
+        FROM scoped
+        GROUP BY source_id,session_id,message_id
+      )
+    `
+    const entityParameters = [entityId, entityId, entityId, entityId, entityId, entityId]
+    const unfilteredTotal = Number((this.db.prepare(`
+      ${cte}
+      SELECT COUNT(*) AS count FROM grouped
+    `).get(...entityParameters) as any)?.count || 0)
+    const total = Number((this.db.prepare(`
+      ${cte}
+      SELECT COUNT(*) AS count FROM grouped ${filteredWhere}
+    `).get(...entityParameters, ...filterParameters) as any)?.count || 0)
+    const limit = Math.max(1, Math.min(100, Math.floor(Number(options.limit) || 40)))
+    const rows = this.db.prepare(`
+      ${cte}
+      SELECT * FROM grouped ${filteredWhere}
+      ORDER BY timestamp DESC,source_id ASC,session_id ASC,message_id DESC
+      LIMIT ? OFFSET ?
+    `).all(...entityParameters, ...filterParameters, limit, offset) as any[]
+    const completedRevision = currentRevision()
+    if (completedRevision !== revision) {
+      return {
+        items: [], total: 0, unfilteredTotal: 0,
+        hasMore: false, revision: completedRevision, stale: true
+      }
+    }
+    return {
+      items: rows.map(row => ({
+        ...row,
+        memoryKinds: String(row.memory_kinds || '').split(',').filter(Boolean)
+      })),
+      total,
+      unfilteredTotal,
       hasMore: offset + rows.length < total,
       revision,
       stale: false
