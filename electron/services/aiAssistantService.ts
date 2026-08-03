@@ -232,6 +232,7 @@ import {
   buildTaskDossier,
   TASK_HISTORY_LIMIT
 } from '../../shared/taskPayload'
+import { buildTaskDependencyCandidates } from '../../shared/taskDependencyCandidates'
 import { buildCursorStatusPayload } from '../../shared/cursorPayload'
 import {
   BRIEFING_RETENTION_DAYS,
@@ -3597,6 +3598,22 @@ export class AiAssistantService {
       ...dossier,
       task: { ...dossier.task, mutationToken: buildTaskMutationToken(task) }
     }
+  }
+
+  getTaskDependencyCandidates(options: any = {}): any {
+    const revision = personalMemoryStore.getTaskArchiveRevision()
+    const result = buildTaskDependencyCandidates(this.state.tasks, {
+      query: String(options?.query || ''),
+      selectedIds: Array.isArray(options?.selectedIds) ? options.selectedIds.map(String) : [],
+      excludeId: String(options?.excludeId || ''),
+      limit: Number(options?.limit || 20),
+      revision: String(options?.revision || '')
+    }, revision)
+    if (result.stale) return result
+    const completedRevision = personalMemoryStore.getTaskArchiveRevision()
+    return completedRevision === revision
+      ? result
+      : { items: [], total: 0, revision: completedRevision, stale: true }
   }
 
   getTaskArchive(options: any = {}): any {

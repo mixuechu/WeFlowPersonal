@@ -467,6 +467,11 @@ function AiAssistantPage() {
   const [memoryDeletionArchiveRefreshKey, setMemoryDeletionArchiveRefreshKey] = useState(0)
   const memoryDeletionArchiveGate = useRef(new LatestRequestGate())
   const [editingTask, setEditingTask] = useState<any>(null)
+  const [taskDependencyQuery, setTaskDependencyQuery] = useState('')
+  const [taskDependencyCandidates, setTaskDependencyCandidates] = useState<any>({
+    items: [], total: 0, revision: '', loading: false
+  })
+  const taskDependencyGate = useRef(new LatestRequestGate())
   const [taskStatusFilter, setTaskStatusFilter] = useState<'all' | Task['status']>('all')
   const [taskPriorityFilter, setTaskPriorityFilter] = useState<'all' | Task['priority']>('all')
   const [taskKindFilter, setTaskKindFilter] = useState<'all' | NonNullable<Task['taskKind']>>('all')
@@ -1022,6 +1027,43 @@ function AiAssistantPage() {
   }, [
     resourceTrashOpen, resourceTrashQuery, dashboard?.resourceArchive?.revision, resourceRefreshKey
   ])
+
+  useEffect(() => {
+    if (!editingTask?.id) {
+      setTaskDependencyCandidates({ items: [], total: 0, revision: '', loading: false })
+      return
+    }
+    const request = taskDependencyGate.current.begin()
+    setTaskDependencyCandidates((current: any) => ({ ...current, loading: true }))
+    const timer = window.setTimeout(() => {
+      void window.electronAPI.aiAssistant.getTaskDependencyCandidates({
+        query: taskDependencyQuery.trim() || undefined,
+        selectedIds: editingTask.dependsOnIds || [],
+        excludeId: editingTask.id,
+        limit: 20
+      }).then(result => {
+        if (!taskDependencyGate.current.isCurrent(request)) return
+        if (result.stale) return
+        setTaskDependencyCandidates({ ...result, loading: false })
+      }).catch(() => {
+        if (!taskDependencyGate.current.isCurrent(request)) return
+        setTaskDependencyCandidates({ items: [], total: 0, revision: '', loading: false })
+      })
+    }, taskDependencyQuery.trim() ? 180 : 0)
+    return () => {
+      window.clearTimeout(timer)
+      if (taskDependencyGate.current.isCurrent(request)) taskDependencyGate.current.invalidate()
+    }
+  }, [
+    editingTask?.id,
+    (editingTask?.dependsOnIds || []).join('\u0000'),
+    taskDependencyQuery,
+    dashboard?.taskRevision
+  ])
+
+  useEffect(() => {
+    setTaskDependencyQuery('')
+  }, [editingTask?.id])
 
   useEffect(() => {
     const request = projectDirectoryGate.current.begin()
@@ -4574,12 +4616,36 @@ function AiAssistantPage() {
                           <option value="todo">待处理</option><option value="doing">进行中</option><option value="waiting">等待中</option><option value="done">已完成</option><option value="cancelled">已取消</option>
                         </select>
                       </div>
-                      <label className="assistant-task-dependencies"><span>依赖其他待办</span><select multiple value={editingTask.dependsOnIds || []} onChange={event => setEditingTask({
-                        ...editingTask,
-                        dependsOnIds: [...event.currentTarget.selectedOptions].map(option => option.value)
-                      })}>
-                        {tasks.filter(item => item.id !== task.id).map(item => <option key={item.id} value={item.id}>{item.title}</option>)}
-                      </select></label>
+                      <div className="assistant-task-dependencies">
+                        <span>依赖其他待办</span>
+                        <input value={taskDependencyQuery}
+                          onChange={event => setTaskDependencyQuery(event.target.value)}
+                          placeholder="搜索全部任务标题、项目或负责人" />
+                        <div className="assistant-task-dependency-options">
+                          {taskDependencyCandidates.items.map((candidate: any) => {
+                            const checked = (editingTask.dependsOnIds || []).includes(candidate.id)
+                            return <label key={candidate.id}>
+                              <input type="checkbox" checked={checked} onChange={() => setEditingTask({
+                                ...editingTask,
+                                dependsOnIds: checked
+                                  ? (editingTask.dependsOnIds || []).filter((id: string) => id !== candidate.id)
+                                  : [...(editingTask.dependsOnIds || []), candidate.id]
+                              })} />
+                              <span><b>{candidate.title}</b><small>
+                                {candidate.status} · {candidate.priority}
+                                {candidate.project ? ` · ${candidate.project}` : ''}
+                              </small></span>
+                            </label>
+                          })}
+                          {taskDependencyCandidates.loading && <small>正在搜索全部任务…</small>}
+                          {!taskDependencyCandidates.loading && !taskDependencyCandidates.items.length &&
+                            <small>没有匹配的可依赖任务。</small>}
+                        </div>
+                        <small>
+                          已选择 {(editingTask.dependsOnIds || []).length} 项；
+                          当前搜索匹配 {taskDependencyCandidates.total || 0} 项，优先显示前 20 项。
+                        </small>
+                      </div>
                       <div className="assistant-task-editor-actions"><button onClick={() => setEditingTask(null)}>取消</button><button className="primary" onClick={() => void saveTask()}>保存</button></div>
                     </div> : <>
                       <strong>{task.title}</strong>

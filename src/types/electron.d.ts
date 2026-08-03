@@ -1699,6 +1699,12 @@ export interface ElectronAPI {
         historyTotal: number
         payloadPolicy: { version: string; evidenceLimit: number; historyLimit: number; loadedOnDemand: boolean }
       } | null>
+      getTaskDependencyCandidates: (options?: any) => Promise<{
+        items: any[]
+        total: number
+        revision: string
+        stale: boolean
+      }>
       getActiveTaskWorkset: (options?: any) => Promise<{
         items: any[]
         total: number

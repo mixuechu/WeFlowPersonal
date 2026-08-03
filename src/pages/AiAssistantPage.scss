@@ -337,7 +337,12 @@
 .assistant-task-editor textarea { min-height: 58px; resize: vertical; }
 .assistant-task-editor > div:not(.assistant-task-editor-actions) { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 7px; }
 .assistant-task-dependencies { display: grid; gap: 4px; color: #727970; font-size: 9px; }
-.assistant-task-dependencies select { min-height: 70px; }
+.assistant-task-dependency-options { display: grid; gap: 4px; max-height: 150px; overflow: auto; padding: 6px; border: 1px solid #e3e6df; border-radius: 8px; background: #fafbf8; }
+.assistant-task-dependency-options > label { display: flex; align-items: flex-start; gap: 6px; color: #30352f; cursor: pointer; }
+.assistant-task-dependency-options > label > input { width: auto; margin-top: 2px; }
+.assistant-task-dependency-options > label > span { display: grid; gap: 1px; }
+.assistant-task-dependency-options b { font-size: 10px; font-weight: 600; }
+.assistant-task-dependency-options small { color: #7d847a; }
 .assistant-task-editor-actions { display: flex; justify-content: flex-end; gap: 7px; }
 .assistant-task-editor-actions button.primary { border-color: #255f4b; color: #fff; background: #255f4b; }
 .priority { width: 8px; height: 8px; margin-top: 6px; border-radius: 50%; }
