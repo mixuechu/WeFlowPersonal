@@ -145,7 +145,8 @@ import {
   buildProjectDirectory,
   buildProjectInsight,
   countProjectDirectory,
-  paginateProjectDirectory
+  paginateProjectDirectory,
+  paginateProjectTasks
 } from './projectInsights'
 import { buildDashboardRevisions } from './dashboardRevisions'
 import { attachLocalImageOcr, attachLocalVoiceTranscript, recoverMessageSemantics } from './messageSemanticRecovery'
@@ -3960,6 +3961,8 @@ export class AiAssistantService {
     const authoritativeMemoryReviewCount = reviewCounts
       ? Number(reviewCounts.total || 0)
       : loadedMemoryReviewCount
+    const taskRevision = this.getProjectDirectoryRevision()
+    const taskPage = paginateProjectTasks(project, { limit: 40 }, taskRevision)
     return {
       project: {
         ...project,
@@ -3982,10 +3985,13 @@ export class AiAssistantService {
           Number((memoryFeed as any).claimTotal || 0) > memoryFeed.claims.length ||
           Number((memoryFeed as any).eventTotal || 0) > memoryFeed.events.length
         ),
-        tasks: (project.tasks || []).map((item: any) => {
+        tasks: taskPage.items.map((item: any) => {
           const task = this.state.tasks.find(candidate => candidate.id === item.id)
           return task ? { ...item, mutationToken: buildTaskMutationToken(task) } : item
-        })
+        }),
+        taskTotal: taskPage.total,
+        taskHasMore: taskPage.hasMore,
+        taskRevision: taskPage.revision
       },
       payloadPolicy: {
         version: 'project-dossier-v2',
@@ -3993,8 +3999,43 @@ export class AiAssistantService {
         memoryScope: projectEntity ? 'sql_entity_first' : 'derived_name_fallback',
         claimLimit: projectEntity ? 200 : 500,
         eventLimit: projectEntity ? 200 : 500,
-        loadedOnDemand: true
+        loadedOnDemand: true,
+        taskDirectory: 'paginated_40'
       }
+    }
+  }
+
+  getProjectTaskPage(projectId: string, options: any = {}): any {
+    const id = String(projectId || '').trim()
+    if (!id) throw new Error('请选择项目')
+    const revision = this.getProjectDirectoryRevision()
+    const project = buildProjectInsight({
+      entities: this.state.graph.entities,
+      relations: [],
+      claims: [],
+      events: [],
+      tasks: this.state.tasks.filter(task => task.classification === 'mine')
+    }, id)
+    if (!project) throw new Error('项目不存在或已经不在当前目录中')
+    const page = paginateProjectTasks(project, {
+      limit: Number(options?.limit || 40),
+      offset: Number(options?.offset || 0),
+      revision: String(options?.revision || '')
+    }, revision)
+    if (page.stale) return page
+    const completedRevision = this.getProjectDirectoryRevision()
+    if (completedRevision !== revision) {
+      return {
+        items: [], total: 0, hasMore: false,
+        revision: completedRevision, stale: true
+      }
+    }
+    return {
+      ...page,
+      items: page.items.map((item: any) => {
+        const task = this.state.tasks.find(candidate => candidate.id === item.id)
+        return task ? { ...item, mutationToken: buildTaskMutationToken(task) } : item
+      })
     }
   }
 

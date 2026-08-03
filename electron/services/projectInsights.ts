@@ -245,3 +245,24 @@ export function buildProjectInsight(input: ProjectInsightInput, projectId: strin
     projectId: String(projectId || '').trim()
   })[0] || null
 }
+
+export function paginateProjectTasks(
+  project: any,
+  options: { limit?: number; offset?: number; revision?: string } = {},
+  revision: string
+): { items: any[]; total: number; hasMore: boolean; revision: string; stale: boolean } {
+  const offset = Math.max(0, Math.min(1_000_000, Math.floor(Number(options.offset) || 0)))
+  if (offset > 0 && String(options.revision || '').trim() !== revision) {
+    return { items: [], total: 0, hasMore: false, revision, stale: true }
+  }
+  const tasks = Array.isArray(project?.tasks) ? project.tasks : []
+  const limit = Math.max(1, Math.min(100, Math.floor(Number(options.limit) || 40)))
+  const items = tasks.slice(offset, offset + limit)
+  return {
+    items,
+    total: tasks.length,
+    hasMore: offset + items.length < tasks.length,
+    revision,
+    stale: false
+  }
+}

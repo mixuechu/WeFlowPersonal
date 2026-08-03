@@ -323,6 +323,8 @@ function AiAssistantPage() {
   const [projectWorkspace, setProjectWorkspace] = useState<any>({ project: null, status: 'idle' })
   const [projectWorkspaceRefreshKey, setProjectWorkspaceRefreshKey] = useState(0)
   const projectWorkspaceGate = useRef(new LatestRequestGate())
+  const [projectTaskLoadingMore, setProjectTaskLoadingMore] = useState(false)
+  const projectTaskGate = useRef(new LatestRequestGate())
   const [projectMemoryPages, setProjectMemoryPages] = useState<any>({
     claims: { items: [], total: 0, hasMore: false, revision: '' },
     events: { items: [], total: 0, hasMore: false, revision: '' },
@@ -1613,6 +1615,8 @@ function AiAssistantPage() {
 
   useEffect(() => {
     const request = projectWorkspaceGate.current.begin()
+    projectTaskGate.current.invalidate()
+    setProjectTaskLoadingMore(false)
     if (!selectedProjectId) {
       setProjectWorkspace({ project: null, status: 'idle' })
       return () => {
@@ -2464,6 +2468,47 @@ function AiAssistantPage() {
       if (projectMemoryGate.current.isCurrent(request)) setMessage(error?.message || String(error))
     } finally {
       if (projectMemoryGate.current.isCurrent(request)) setProjectMemoryLoadingMore('')
+    }
+  }
+
+  const loadMoreProjectTasks = async () => {
+    const project = projectWorkspace.project
+    if (!selectedProjectId || projectTaskLoadingMore || !project?.taskHasMore) return
+    const request = projectTaskGate.current.begin()
+    setProjectTaskLoadingMore(true)
+    try {
+      const page = await window.electronAPI.aiAssistant.getProjectTaskPage(
+        selectedProjectId,
+        {
+          limit: 40,
+          offset: project.tasks?.length || 0,
+          revision: project.taskRevision
+        }
+      )
+      if (!projectTaskGate.current.isCurrent(request)) return
+      if (page.stale) {
+        setMessage('项目任务在浏览期间已有更新，已重新载入最新项目档案。')
+        setProjectWorkspaceRefreshKey(value => value + 1)
+        return
+      }
+      setProjectWorkspace((current: any) => ({
+        ...current,
+        project: {
+          ...current.project,
+          tasks: [
+            ...(current.project?.tasks || []),
+            ...page.items.filter((item: any) =>
+              !(current.project?.tasks || []).some((known: any) => known.id === item.id))
+          ],
+          taskTotal: page.total,
+          taskHasMore: page.hasMore,
+          taskRevision: page.revision
+        }
+      }))
+    } catch (error: any) {
+      if (projectTaskGate.current.isCurrent(request)) setMessage(error?.message || String(error))
+    } finally {
+      if (projectTaskGate.current.isCurrent(request)) setProjectTaskLoadingMore(false)
     }
   }
 
@@ -7206,6 +7251,13 @@ function AiAssistantPage() {
                   {task.status !== 'cancelled' && <button className="assistant-dossier-task-action" onClick={() => void toggleTask(task)}>{task.status === 'done' ? '恢复待处理' : '标记完成'}</button>}
                 </article>)}
                 {!selectedProject.tasks.length && <em>尚无归入项目的任务</em>}
+                {selectedProject.taskHasMore && <button
+                  disabled={projectTaskLoadingMore}
+                  onClick={() => void loadMoreProjectTasks()}>
+                  {projectTaskLoadingMore
+                    ? '正在加载…'
+                    : `加载更多任务（已显示 ${selectedProject.tasks.length} / ${selectedProject.taskTotal}）`}
+                </button>}
               </section>
               <section>
                 <h3>项目事实 <small>{selectedProject.entityId

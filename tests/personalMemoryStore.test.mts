@@ -77,7 +77,8 @@ import {
   buildProjectInsight,
   buildProjectInsights,
   countProjectDirectory,
-  paginateProjectDirectory
+  paginateProjectDirectory,
+  paginateProjectTasks
 } from '../electron/services/projectInsights.ts'
 import { MEMORY_CARD_EVIDENCE_LIMIT, PROJECT_EVIDENCE_LIMIT } from '../shared/evidencePayload.ts'
 import {
@@ -3510,6 +3511,64 @@ test('project directory paginates thousands of projects with filters and revisio
   const stale = paginateProjectDirectory(directory, {
     limit: 100, offset: 100, revision: 'project-revision-1'
   }, 'project-revision-2')
+  assert.equal(stale.stale, true)
+  assert.equal(stale.items.length, 0)
+})
+
+test('project task pages preserve exact project assignment, all statuses, and revision safety', () => {
+  const tasks = [
+    ...Array.from({ length: 1_000 }, (_, index) => ({
+      id: `long-project-task-${String(index).padStart(4, '0')}`,
+      title: `长期项目任务 ${index}`,
+      project: '项目 4',
+      status: ['todo', 'doing', 'waiting', 'done', 'cancelled'][index % 5],
+      priority: ['high', 'medium', 'low'][index % 3],
+      updatedAt: new Date(1_700_000_000_000 + index * 1000).toISOString(),
+      evidence: [{
+        messageId: `long-project-message-${index}`,
+        sessionId: 'long-project',
+        timestamp: index,
+        excerpt: `长期项目任务原文 ${index}`
+      }]
+    })),
+    ...Array.from({ length: 100 }, (_, index) => ({
+      id: `similar-project-task-${index}`,
+      title: `相似项目任务 ${index}`,
+      project: '项目 42',
+      status: 'todo',
+      priority: 'medium'
+    }))
+  ]
+  const project = buildProjectInsight({
+    entities: [{
+      id: 'long-project',
+      type: 'project',
+      canonicalName: '项目 4',
+      aliases: [],
+      trustStatus: 'confirmed'
+    }],
+    relations: [],
+    claims: [],
+    events: [],
+    tasks
+  }, 'long-project')
+  assert.equal(project.taskTotal, 1_000)
+  assert.equal(project.tasks.some((task: any) => task.project === '项目 42'), false)
+
+  const first = paginateProjectTasks(project, { limit: 40 }, 'project-task-revision-1')
+  const second = paginateProjectTasks(project, {
+    limit: 40, offset: 40, revision: first.revision
+  }, 'project-task-revision-1')
+  assert.equal(first.items.length, 40)
+  assert.equal(first.total, 1_000)
+  assert.equal(first.hasMore, true)
+  assert.equal(new Set([...first.items, ...second.items].map((task: any) => task.id)).size, 80)
+  assert.deepEqual(new Set(first.items.map((task: any) => task.status)),
+    new Set(['todo', 'doing', 'waiting', 'done', 'cancelled']))
+  assert.equal(first.items[0].evidenceTotal, 1)
+  const stale = paginateProjectTasks(project, {
+    limit: 40, offset: 40, revision: 'project-task-revision-1'
+  }, 'project-task-revision-2')
   assert.equal(stale.stale, true)
   assert.equal(stale.items.length, 0)
 })
