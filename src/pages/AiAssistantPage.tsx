@@ -1855,7 +1855,10 @@ function AiAssistantPage() {
     setRestoringMemory(true)
     setMemoryRestoreDialog((current: any) => current ? { ...current, status: 'restoring', error: '' } : current)
     try {
-      await window.electronAPI.aiAssistant.restoreMemoryBackup(path)
+      await window.electronAPI.aiAssistant.restoreMemoryBackup(path, {
+        previewToken: memoryRestoreDialog.preview.previewToken,
+        confirmation: memoryRestoreConfirmation
+      })
       setMessage('个人记忆已恢复；恢复前的安全快照已保留。')
       setMemoryRestoreDialog(null)
       setMemoryRestoreConfirmation('')
@@ -6651,6 +6654,16 @@ function AiAssistantPage() {
                   {Number(memoryRestoreDialog.preview.counts?.claims || 0).toLocaleString()} 条事实、
                   {Number(memoryRestoreDialog.preview.counts?.events || 0).toLocaleString()} 个事件、
                   {Number(memoryRestoreDialog.preview.counts?.pendingReviews || 0).toLocaleString()} 个待审候选。
+                </p>
+                <p>
+                  当前记忆库将被整体替换：现有
+                  {' '}{Number(memoryRestoreDialog.preview.currentStateSummary?.tasks || 0).toLocaleString()} 条任务、
+                  {Number(memoryRestoreDialog.preview.currentStateSummary?.entities || 0).toLocaleString()} 个实体、
+                  {Number(memoryRestoreDialog.preview.currentStateSummary?.relations || 0).toLocaleString()} 条关系、
+                  {Number(memoryRestoreDialog.preview.currentStateSummary?.claims || 0).toLocaleString()} 条事实、
+                  {Number(memoryRestoreDialog.preview.currentStateSummary?.events || 0).toLocaleString()} 个事件和
+                  {Number(memoryRestoreDialog.preview.currentStateSummary?.evidence || 0).toLocaleString()} 条证据。
+                  确认后如果任一侧继续变化，本次操作会被拒绝并要求重新核对。
                 </p>
                 <p>
                   最近完整同步：

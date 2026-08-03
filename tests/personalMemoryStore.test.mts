@@ -3924,6 +3924,41 @@ test('verified memory backup is created only from a healthy database', () => wit
   assert.ok(store.restoreBackup(imported.path).success)
 }))
 
+test('full current-database identity is stable per run and changes with durable content', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'weflow-current-database-identity-'))
+  const databasePath = join(directory, 'memory.sqlite')
+  const key = randomBytes(32)
+  const first = new PersonalMemoryStore()
+  const second = new PersonalMemoryStore()
+  try {
+    first.initialize(databasePath, key)
+    const emptyIdentity = first.getCurrentDatabaseSha256()
+    assert.match(emptyIdentity, /^[a-f0-9]{64}$/)
+    assert.equal(first.getCurrentDatabaseSha256(), emptyIdentity)
+    first.syncTasks([{
+      id: 'identity-drift-task',
+      title: '完整身份必须感知这条任务',
+      priority: 'medium',
+      status: 'todo',
+      classification: 'mine'
+    }])
+    const changedIdentity = first.getCurrentDatabaseSha256()
+    assert.notEqual(changedIdentity, emptyIdentity)
+    assert.equal(first.getCurrentDatabaseSha256(), changedIdentity)
+    first.close()
+
+    second.initialize(databasePath, key)
+    const reopenedIdentity = second.getCurrentDatabaseSha256()
+    assert.match(reopenedIdentity, /^[a-f0-9]{64}$/)
+    assert.equal(second.getCurrentDatabaseSha256(), reopenedIdentity)
+    assert.equal(second.searchText('完整身份必须感知这条任务').length, 1)
+  } finally {
+    first.close()
+    second.close()
+    rmSync(directory, { recursive: true, force: true })
+  }
+})
+
 test('restoring an old snapshot protects it from safety-backup retention and reuses one rollback point', () => withStore(store => {
   store.syncTasks([{
     id: 'task-before-protected-backup',

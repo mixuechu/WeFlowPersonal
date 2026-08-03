@@ -3415,6 +3415,70 @@ export class PersonalMemoryStore {
     }
   }
 
+  getCurrentDatabaseSha256(): string {
+    if (!this.db || !this.databasePath) throw new Error('个人记忆数据库尚未初始化')
+    const hash = createHash('sha256')
+    const updateValue = (value: unknown) => {
+      if (value === null) {
+        hash.update('null;')
+      } else if (Buffer.isBuffer(value)) {
+        hash.update(`blob:${value.length}:`)
+        hash.update(value)
+        hash.update(';')
+      } else {
+        const text = typeof value === 'bigint'
+          ? value.toString()
+          : typeof value === 'number'
+            ? Number.isFinite(value) ? String(value) : `nonfinite:${value}`
+            : String(value)
+        hash.update(`${typeof value}:${Buffer.byteLength(text)}:${text};`)
+      }
+    }
+    const schema = this.db.prepare(`
+      SELECT type,name,tbl_name,sql
+      FROM sqlite_schema
+      ORDER BY type,name,tbl_name,COALESCE(sql,'')
+    `).all() as any[]
+    hash.update('schema-v1;')
+    for (const row of schema) {
+      updateValue(row.type)
+      updateValue(row.name)
+      updateValue(row.tbl_name)
+      updateValue(row.sql)
+    }
+    const tables = schema
+      .filter(row => row.type === 'table')
+      .map(row => String(row.name || ''))
+      .filter(Boolean)
+      .sort()
+    hash.update('rows-v1;')
+    for (const table of tables) {
+      const escapedTable = `"${table.replace(/"/g, '""')}"`
+      const columns = this.db.prepare(`PRAGMA table_xinfo(${escapedTable})`).all() as any[]
+      const readableColumns = columns
+        .filter(column => Number(column.hidden || 0) === 0)
+        .map(column => String(column.name || ''))
+      if (!readableColumns.length) continue
+      const primaryKey = columns
+        .filter(column => Number(column.pk || 0) > 0)
+        .sort((left, right) => Number(left.pk) - Number(right.pk))
+        .map(column => `"${String(column.name || '').replace(/"/g, '""')}"`)
+      const orderBy = primaryKey.length ? primaryKey.join(',') : 'rowid'
+      hash.update(`table:${Buffer.byteLength(table)}:${table};`)
+      let rows: IterableIterator<any>
+      try {
+        rows = this.db.prepare(`SELECT * FROM ${escapedTable} ORDER BY ${orderBy}`).iterate()
+      } catch {
+        rows = this.db.prepare(`SELECT * FROM ${escapedTable}`).iterate()
+      }
+      for (const row of rows) {
+        hash.update('row;')
+        for (const column of readableColumns) updateValue(row[column])
+      }
+    }
+    return hash.digest('hex')
+  }
+
   inspectBackup(backupPath: string): any {
     if (!this.db || !this.databasePath) throw new Error('个人记忆数据库尚未初始化')
     const backupDirectory = join(dirname(this.databasePath), 'personal-memory-backups')

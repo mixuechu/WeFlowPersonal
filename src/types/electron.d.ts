@@ -1870,7 +1870,10 @@ export interface ElectronAPI {
       }>
       createMemoryBackup: () => Promise<any>
       inspectMemoryBackup: (path: string) => Promise<any>
-      restoreMemoryBackup: (path: string) => Promise<any>
+      restoreMemoryBackup: (
+        path: string,
+        input?: { previewToken?: string; confirmation?: string }
+      ) => Promise<any>
       exportMemoryBundle: (path: string, passphrase: string) => Promise<any>
       inspectMemoryBundle: (path: string, passphrase?: string) => Promise<any>
       importMemoryBundle: (

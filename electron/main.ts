@@ -4616,7 +4616,8 @@ function registerIpcHandlers() {
     aiAssistantService.retryPreparedIngestion())
   ipcMain.handle('ai-assistant:createMemoryBackup', () => aiAssistantService.createMemoryBackup())
   ipcMain.handle('ai-assistant:inspectMemoryBackup', (_, path: string) => aiAssistantService.inspectMemoryBackup(path))
-  ipcMain.handle('ai-assistant:restoreMemoryBackup', (_, path: string) => aiAssistantService.restoreMemoryBackup(path))
+  ipcMain.handle('ai-assistant:restoreMemoryBackup', (_, path: string, input?: any) =>
+    aiAssistantService.restoreMemoryBackup(path, input))
   ipcMain.handle('ai-assistant:exportMemoryBundle', (_, path: string, passphrase: string) =>
     aiAssistantService.exportMemoryBundle(path, passphrase))
   ipcMain.handle('ai-assistant:inspectMemoryBundle', (_, path: string, passphrase?: string) =>

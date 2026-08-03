@@ -77,6 +77,11 @@ import {
   type MemoryImportPreviewIdentity
 } from './memoryImportPolicy'
 import {
+  assertMemoryBackupRestoreConfirmation,
+  buildMemoryBackupRestorePreviewToken,
+  type MemoryBackupRestoreIdentity
+} from './memoryBackupRestorePolicy'
+import {
   assertResourceDeletionConfirmation,
   buildResourceDeletionPreviewToken
 } from './resourceDeletionPolicy'
@@ -3879,7 +3884,11 @@ export class AiAssistantService {
     return { ...result, stateBackupPath }
   }
 
-  inspectMemoryBackup(path: string): any {
+  private inspectMemoryBackupForRestore(path: string): {
+    preview: any
+    identity: MemoryBackupRestoreIdentity
+    restoredState: any
+  } {
     const database = personalMemoryStore.inspectBackup(path)
     const stateBackupPath = `${database.path}.state.json`
     if (!existsSync(stateBackupPath)) throw new Error('该快照缺少 AI 助理状态文件，无法完整恢复')
@@ -3890,7 +3899,18 @@ export class AiAssistantService {
     )
     if (restored.recovery.source === 'empty') throw new Error('快照中的 AI 状态损坏或密钥不匹配')
     const state = restored.value || {}
-    return {
+    const currentStateSummary = this.getCurrentMemoryImportSummary()
+    const identity: MemoryBackupRestoreIdentity = {
+      backupPath: database.path,
+      backupDatabaseSha256: crypto.createHash('sha256')
+        .update(readFileSync(database.path)).digest('hex'),
+      backupStateSha256: crypto.createHash('sha256')
+        .update(readFileSync(stateBackupPath)).digest('hex'),
+      currentDatabaseSha256: personalMemoryStore.getCurrentDatabaseSha256(),
+      currentStateSha256: crypto.createHash('sha256')
+        .update(readFileSync(this.statePath)).digest('hex')
+    }
+    const preview = {
       path: database.path,
       name: database.name,
       bytes: database.bytes,
@@ -3916,20 +3936,39 @@ export class AiAssistantService {
         pendingSessionRetryCount: Number(state.cursor?.pendingSessionRetryCount || 0),
         pendingSessionBacklogCount: Number(state.cursor?.pendingSessionBacklogCount || 0)
       },
-      stateRecoverySource: restored.recovery.source
+      stateRecoverySource: restored.recovery.source,
+      currentStateSummary,
+      previewToken: buildMemoryBackupRestorePreviewToken(identity)
     }
+    return { preview, identity, restoredState: state }
   }
 
-  restoreMemoryBackup(path: string): any {
+  inspectMemoryBackup(path: string): any {
+    return this.inspectMemoryBackupForRestore(path).preview
+  }
+
+  restoreMemoryBackup(
+    path: string,
+    input: { previewToken?: string; confirmation?: string } = {}
+  ): any {
+    const inspected = this.inspectMemoryBackupForRestore(path)
+    assertMemoryBackupRestoreConfirmation(inspected.identity, input)
+    return this.applyMemoryBackup(inspected.preview.path, inspected.restoredState)
+  }
+
+  private applyMemoryBackup(path: string, knownRestoredState?: any): any {
     const stateBackupPath = `${path}.state.json`
     if (!existsSync(stateBackupPath)) throw new Error('该快照缺少 AI 助理状态文件，无法完整恢复')
-    const restored = readEncryptedDurableJson<any>(
-      stateBackupPath,
-      structuredClone(EMPTY_STATE),
-      this.stateEncryptionKey
-    )
-    if (restored.recovery.source === 'empty') throw new Error('快照中的 AI 状态损坏或密钥不匹配')
-    const restoredState = restored.value
+    let restoredState = knownRestoredState
+    if (!restoredState) {
+      const restored = readEncryptedDurableJson<any>(
+        stateBackupPath,
+        structuredClone(EMPTY_STATE),
+        this.stateEncryptionKey
+      )
+      if (restored.recovery.source === 'empty') throw new Error('快照中的 AI 状态损坏或密钥不匹配')
+      restoredState = restored.value
+    }
     const safety = this.createMemoryBackup([path])
     try {
       const result = personalMemoryStore.restoreBackup(path, safety.path)
@@ -4133,7 +4172,7 @@ export class AiAssistantService {
         sourceKey,
         encodeEncryptedDurableJson(JSON.parse(stateText), this.stateEncryptionKey)
       )
-      return { ...this.restoreMemoryBackup(imported.path), importedFrom: bundlePath }
+      return { ...this.applyMemoryBackup(imported.path), importedFrom: bundlePath }
     } finally {
       if (sourceKey) sourceKey.fill(0)
     }
