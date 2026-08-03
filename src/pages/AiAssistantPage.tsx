@@ -168,7 +168,8 @@ function TrustedEntityPicker({
   ariaLabel,
   onSelect,
   onClear,
-  onError
+  onError,
+  disabled = false
 }: {
   value: string
   selected?: any
@@ -177,6 +178,7 @@ function TrustedEntityPicker({
   onSelect: (entity: any) => void
   onClear: () => void
   onError?: (message: string) => void
+  disabled?: boolean
 }) {
   const [query, setQuery] = useState('')
   const [options, setOptions] = useState<any[]>([])
@@ -223,8 +225,9 @@ function TrustedEntityPicker({
     }}>
     <div>
       <input
+        disabled={disabled}
         value={query}
-        onFocus={() => setOpen(true)}
+        onFocus={() => { if (!disabled) setOpen(true) }}
         onChange={event => {
           setQuery(event.target.value)
           onClear()
@@ -232,7 +235,7 @@ function TrustedEntityPicker({
         }}
         placeholder={placeholder}
         aria-label={ariaLabel} />
-      {(query || value) && <button type="button" aria-label={`清除${ariaLabel}`} onClick={() => {
+      {!disabled && (query || value) && <button type="button" aria-label={`清除${ariaLabel}`} onClick={() => {
         setQuery('')
         onClear()
         setOpen(false)
@@ -242,9 +245,11 @@ function TrustedEntityPicker({
       已选：{selected.type} · {selected.id}
       {selected.canonicalNameCollisionCount > 1
         ? ` · ${selected.canonicalNameCollisionCount} 个同名实体，按 ID 精确选择`
-        : ' · 已确认实体'}
+        : selected.trustStatus && selected.trustStatus !== 'confirmed'
+          ? ' · 此端实体尚未确认，请先完成实体审阅'
+          : ' · 已确认实体'}
     </small>}
-    {open && <div className="assistant-memory-entity-options">
+    {open && !disabled && <div className="assistant-memory-entity-options">
       {options.map(entity => {
         const identityHint = [
           ...(entity.accountIds || []),
@@ -6030,16 +6035,42 @@ function AiAssistantPage() {
                       : `从“${subject?.canonicalName || '主语'}”指向“${object?.canonicalName || '宾语'}”：${subject?.canonicalName || '主语'} ${relation.predicate} ${object?.canonicalName || '宾语'}。`
                   )}</div>
                   {relationEdit && <div className="assistant-relation-correction">
-                    <label><span>主语</span><select disabled={!isPending} value={relationEdit.subjectId} onChange={event =>
-                      setRelationEdits(current => ({ ...current, [review.id]: { ...relationEdit, subjectId: event.target.value } }))}>
-                      {trustedGraphEntities.map((entity: any) => <option key={`relation-subject-${entity.id}`} value={entity.id}>{entity.canonicalName} · {entity.type}</option>)}
-                    </select></label>
+                    <div className="assistant-relation-entity-field"><span>主语</span>
+                      <TrustedEntityPicker
+                        value={relationEdit.subjectId}
+                        selected={correctedRelationSubject}
+                        placeholder="搜索确认实体作为主语…"
+                        ariaLabel="关系主语"
+                        disabled={!isPending}
+                        onSelect={entity => setRelationEdits(current => ({
+                          ...current,
+                          [review.id]: { ...relationEdit, subjectId: entity.id }
+                        }))}
+                        onClear={() => setRelationEdits(current => ({
+                          ...current,
+                          [review.id]: { ...relationEdit, subjectId: '' }
+                        }))}
+                        onError={setMessage} />
+                    </div>
                     <label><span>有向谓词</span><input disabled={!isPending} value={relationEdit.predicate} maxLength={100} onChange={event =>
                       setRelationEdits(current => ({ ...current, [review.id]: { ...relationEdit, predicate: event.target.value } }))} /></label>
-                    <label><span>宾语</span><select disabled={!isPending} value={relationEdit.objectId} onChange={event =>
-                      setRelationEdits(current => ({ ...current, [review.id]: { ...relationEdit, objectId: event.target.value } }))}>
-                      {trustedGraphEntities.map((entity: any) => <option key={`relation-object-${entity.id}`} value={entity.id}>{entity.canonicalName} · {entity.type}</option>)}
-                    </select></label>
+                    <div className="assistant-relation-entity-field"><span>宾语</span>
+                      <TrustedEntityPicker
+                        value={relationEdit.objectId}
+                        selected={correctedRelationObject}
+                        placeholder="搜索确认实体作为宾语…"
+                        ariaLabel="关系宾语"
+                        disabled={!isPending}
+                        onSelect={entity => setRelationEdits(current => ({
+                          ...current,
+                          [review.id]: { ...relationEdit, objectId: entity.id }
+                        }))}
+                        onClear={() => setRelationEdits(current => ({
+                          ...current,
+                          [review.id]: { ...relationEdit, objectId: '' }
+                        }))}
+                        onError={setMessage} />
+                    </div>
                     <button type="button" disabled={!isPending} onClick={() => setRelationEdits(current => ({
                       ...current,
                       [review.id]: { ...relationEdit, subjectId: relationEdit.objectId, objectId: relationEdit.subjectId }
