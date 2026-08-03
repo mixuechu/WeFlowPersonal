@@ -1705,12 +1705,16 @@ export interface ElectronAPI {
         total: number
         hasMore: boolean
         counts: Record<string, number>
+        revision: string
+        stale: boolean
       }>
       getTaskReviewDecisionPage: (options?: any) => Promise<{
         items: any[]
         total: number
         hasMore: boolean
         counts: { active: number; revoked: number; all: number }
+        revision: string
+        stale: boolean
       }>
       getTaskReviewDecisionDossier: (evidenceFingerprint: string, options?: any) => Promise<any>
       getMemoryDeletionAuditPage: (options?: any) => Promise<{

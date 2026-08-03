@@ -283,6 +283,8 @@ function AiAssistantPage() {
     total: number
     hasMore: boolean
     counts: Record<string, number>
+    revision?: string
+    stale?: boolean
     loading?: boolean
   }>({ items: [], total: 0, hasMore: false, counts: {} })
   const [memoryDeletionKind, setMemoryDeletionKind] = useState<'all' | 'claim' | 'event' | 'relation'>('all')
@@ -320,6 +322,8 @@ function AiAssistantPage() {
     total: number
     hasMore: boolean
     counts: Record<string, number>
+    revision?: string
+    stale?: boolean
     loading?: boolean
   }>({ items: [], total: 0, hasMore: false, counts: {} })
   const [taskOwnershipClassification, setTaskOwnershipClassification] = useState('')
@@ -328,12 +332,15 @@ function AiAssistantPage() {
   const [taskOwnershipFrom, setTaskOwnershipFrom] = useState('')
   const [taskOwnershipTo, setTaskOwnershipTo] = useState('')
   const [taskOwnershipLoadingMore, setTaskOwnershipLoadingMore] = useState(false)
+  const [taskOwnershipRefreshKey, setTaskOwnershipRefreshKey] = useState(0)
   const taskOwnershipGate = useRef(new LatestRequestGate())
   const [taskFeedbackArchive, setTaskFeedbackArchive] = useState<{
     items: any[]
     total: number
     hasMore: boolean
     counts: { active: number; revoked: number; all: number }
+    revision?: string
+    stale?: boolean
     loading?: boolean
   }>({ items: [], total: 0, hasMore: false, counts: { active: 0, revoked: 0, all: 0 } })
   const [taskFeedbackStatus, setTaskFeedbackStatus] = useState<'all' | 'active' | 'revoked'>('all')
@@ -342,6 +349,7 @@ function AiAssistantPage() {
   const [taskFeedbackFrom, setTaskFeedbackFrom] = useState('')
   const [taskFeedbackTo, setTaskFeedbackTo] = useState('')
   const [taskFeedbackLoadingMore, setTaskFeedbackLoadingMore] = useState(false)
+  const [taskFeedbackRefreshKey, setTaskFeedbackRefreshKey] = useState(0)
   const [taskFeedbackDossier, setTaskFeedbackDossier] = useState<any>(null)
   const [taskFeedbackHistoryLoadingMore, setTaskFeedbackHistoryLoadingMore] = useState(false)
   const taskFeedbackArchiveGate = useRef(new LatestRequestGate())
@@ -762,6 +770,12 @@ function AiAssistantPage() {
     const timer = window.setTimeout(() => {
       void window.electronAPI.aiAssistant.getTaskOwnershipReviews(taskOwnershipOptions).then(result => {
         if (!taskOwnershipGate.current.isCurrent(request)) return
+        if (result.stale) {
+          window.setTimeout(() => {
+            if (taskOwnershipGate.current.isCurrent(request)) setTaskOwnershipRefreshKey(value => value + 1)
+          }, 250)
+          return
+        }
         setTaskOwnershipReviews({ ...result, loading: false })
       }).catch(() => {
         if (!taskOwnershipGate.current.isCurrent(request)) return
@@ -772,7 +786,7 @@ function AiAssistantPage() {
       window.clearTimeout(timer)
       if (taskOwnershipGate.current.isCurrent(request)) taskOwnershipGate.current.invalidate()
     }
-  }, [taskOwnershipOptions, dashboard?.taskOwnershipReviews?.revision])
+  }, [taskOwnershipOptions, dashboard?.taskOwnershipReviews?.revision, taskOwnershipRefreshKey])
 
   useEffect(() => {
     const request = taskFeedbackArchiveGate.current.begin()
@@ -781,6 +795,12 @@ function AiAssistantPage() {
     const timer = window.setTimeout(() => {
       void window.electronAPI.aiAssistant.getTaskReviewDecisionPage(taskFeedbackOptions).then(result => {
         if (!taskFeedbackArchiveGate.current.isCurrent(request)) return
+        if (result.stale) {
+          window.setTimeout(() => {
+            if (taskFeedbackArchiveGate.current.isCurrent(request)) setTaskFeedbackRefreshKey(value => value + 1)
+          }, 250)
+          return
+        }
         setTaskFeedbackArchive({ ...result, loading: false })
       }).catch(() => {
         if (!taskFeedbackArchiveGate.current.isCurrent(request)) return
@@ -794,7 +814,7 @@ function AiAssistantPage() {
       window.clearTimeout(timer)
       if (taskFeedbackArchiveGate.current.isCurrent(request)) taskFeedbackArchiveGate.current.invalidate()
     }
-  }, [taskFeedbackOptions, dashboard?.taskReviewFeedback?.archive?.revision])
+  }, [taskFeedbackOptions, dashboard?.taskReviewFeedback?.archive?.revision, taskFeedbackRefreshKey])
 
   useEffect(() => {
     if (!showDiagnostics) {
@@ -1338,9 +1358,15 @@ function AiAssistantPage() {
       const result = await window.electronAPI.aiAssistant.getTaskOwnershipReviews({
         ...taskOwnershipOptions,
         offset: taskOwnershipReviews.items.length,
-        limit: 40
+        limit: 40,
+        revision: taskOwnershipReviews.revision
       })
       if (!taskOwnershipGate.current.isCurrent(request)) return
+      if (result.stale) {
+        setMessage('任务归属待确认列表已有变化，已自动从第一页刷新')
+        setTaskOwnershipRefreshKey(value => value + 1)
+        return
+      }
       setTaskOwnershipReviews(current => ({
         ...result,
         items: [...current.items, ...result.items.filter((item: Task) =>
@@ -1362,9 +1388,15 @@ function AiAssistantPage() {
       const result = await window.electronAPI.aiAssistant.getTaskReviewDecisionPage({
         ...taskFeedbackOptions,
         offset: taskFeedbackArchive.items.length,
-        limit: 40
+        limit: 40,
+        revision: taskFeedbackArchive.revision
       })
       if (!taskFeedbackArchiveGate.current.isCurrent(request)) return
+      if (result.stale) {
+        setMessage('任务归属决策档案已有变化，已自动从第一页刷新')
+        setTaskFeedbackRefreshKey(value => value + 1)
+        return
+      }
       setTaskFeedbackArchive(current => ({
         ...result,
         items: [...current.items, ...result.items.filter((item: any) =>
@@ -5494,6 +5526,16 @@ function AiAssistantPage() {
                 <span>当前状态 <b>{memoryDiagnostics.taskArchiveRevisionHealthy ? '保护正常' : '需要检查'}</b></span>
                 <span>当前 revision <b>{String(memoryDiagnostics.taskArchiveRevision.revision || '0')}</b></span>
                 <span>变更触发器 <b>{Number(memoryDiagnostics.taskArchiveRevision.installedTriggers || 0).toLocaleString()} / {Number(memoryDiagnostics.taskArchiveRevision.expectedTriggers || 0).toLocaleString()}</b></span>
+              </div>
+            </div>}
+            {memoryDiagnostics.taskOwnershipReviewRevision?.version && <div className={`assistant-recovery-audit ${memoryDiagnostics.taskOwnershipReviewRevisionHealthy ? 'healthy' : 'unhealthy'}`}>
+              <header><ShieldCheck size={15} /><span><b>任务归属审阅分页一致性保护</b>
+                <small>待确认任务、原文证据、任务历史、归属决定和撤销记录共享数据库 revision；确认、拒绝、撤销或后台重新抽取发生在翻页期间时，旧页会被拒绝并自动刷新。</small>
+              </span></header>
+              <div className="assistant-recovery-current">
+                <span>当前状态 <b>{memoryDiagnostics.taskOwnershipReviewRevisionHealthy ? '保护正常' : '需要检查'}</b></span>
+                <span>当前 revision <b>{String(memoryDiagnostics.taskOwnershipReviewRevision.revision || '0')}</b></span>
+                <span>变更触发器 <b>{Number(memoryDiagnostics.taskOwnershipReviewRevision.installedTriggers || 0).toLocaleString()} / {Number(memoryDiagnostics.taskOwnershipReviewRevision.expectedTriggers || 0).toLocaleString()}</b></span>
               </div>
             </div>}
             {memoryDiagnostics.taskSearchIndex?.version && <div className={`assistant-recovery-audit ${memoryDiagnostics.taskSearchIndexHealthy ? 'healthy' : 'unhealthy'}`}>

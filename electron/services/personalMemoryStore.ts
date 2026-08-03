@@ -733,6 +733,7 @@ export class PersonalMemoryStore {
     this.ensureStructuredMemoryRevisionTriggers()
     this.ensureGraphReviewRevisionTriggers()
     this.ensureTaskArchiveRevisionTriggers()
+    this.ensureTaskOwnershipReviewRevisionTriggers()
     this.repairStructuredSearchIndex()
     this.backfillMergeHistoryNames()
     this.db.exec(`CREATE INDEX IF NOT EXISTS idx_memory_corrections_item
@@ -1165,6 +1166,83 @@ export class PersonalMemoryStore {
     return {
       version: 'task-archive-revision-v1',
       revision: this.getTaskArchiveRevision(),
+      expectedTriggers: expectedNames.length,
+      installedTriggers: expectedNames.filter(name => installedNames.has(name)).length,
+      healthy: installedNames.size === expectedNames.length
+        && expectedNames.every(name => installedNames.has(name))
+    }
+  }
+
+  private taskOwnershipReviewRevisionTriggerNames(): string[] {
+    return [
+      'task_directory',
+      'search_document_evidence',
+      'task_history',
+      'task_review_decisions',
+      'task_review_history'
+    ].flatMap(table => ['insert', 'update', 'delete']
+      .map(operation => `trg_task_ownership_review_revision_${table}_${operation}`))
+  }
+
+  private ensureTaskOwnershipReviewRevisionTriggers(): void {
+    if (!this.db) return
+    const tables = [
+      'task_directory',
+      'search_document_evidence',
+      'task_history',
+      'task_review_decisions',
+      'task_review_history'
+    ]
+    this.db.prepare(`
+      INSERT INTO schema_meta(key,value,updated_at)
+      VALUES('task_ownership_review_revision','0',?)
+      ON CONFLICT(key) DO NOTHING
+    `).run(new Date().toISOString())
+    const statements: string[] = []
+    for (const table of tables) {
+      for (const operation of ['INSERT', 'UPDATE', 'DELETE']) {
+        const name = `trg_task_ownership_review_revision_${table}_${operation.toLowerCase()}`
+        statements.push(`DROP TRIGGER IF EXISTS ${name};`)
+        statements.push(`
+          CREATE TRIGGER ${name} AFTER ${operation} ON ${table}
+          BEGIN
+            UPDATE schema_meta
+            SET value=CAST(CAST(value AS INTEGER)+1 AS TEXT),
+              updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')
+            WHERE key='task_ownership_review_revision';
+          END;
+        `)
+      }
+    }
+    this.db.exec(statements.join('\n'))
+  }
+
+  getTaskOwnershipReviewRevision(): string {
+    if (!this.db) return '0'
+    return String((this.db.prepare(`
+      SELECT value FROM schema_meta WHERE key='task_ownership_review_revision'
+    `).get() as any)?.value || '0')
+  }
+
+  getTaskOwnershipReviewRevisionHealth(): any {
+    const expectedNames = this.taskOwnershipReviewRevisionTriggerNames()
+    if (!this.db) {
+      return {
+        version: 'task-ownership-review-revision-v1',
+        revision: '0',
+        expectedTriggers: expectedNames.length,
+        installedTriggers: 0,
+        healthy: false
+      }
+    }
+    const rows = this.db.prepare(`
+      SELECT name FROM sqlite_master
+      WHERE type='trigger' AND name LIKE 'trg_task_ownership_review_revision_%'
+    `).all() as Array<{ name: string }>
+    const installedNames = new Set(rows.map(row => String(row.name)))
+    return {
+      version: 'task-ownership-review-revision-v1',
+      revision: this.getTaskOwnershipReviewRevision(),
       expectedTriggers: expectedNames.length,
       installedTriggers: expectedNames.filter(name => installedNames.has(name)).length,
       healthy: installedNames.size === expectedNames.length
@@ -2614,6 +2692,7 @@ export class PersonalMemoryStore {
     const structuredMemoryRevision = this.getStructuredMemoryRevisionHealth()
     const graphReviewRevision = this.getGraphReviewRevisionHealth()
     const taskArchiveRevision = this.getTaskArchiveRevisionHealth()
+    const taskOwnershipReviewRevision = this.getTaskOwnershipReviewRevisionHealth()
     return {
       healthy: integrity === 'ok'
         && structuredEvidenceMigration.constraintsHealthy
@@ -2624,7 +2703,8 @@ export class PersonalMemoryStore {
         && memorySearchRevision.healthy
         && structuredMemoryRevision.healthy
         && graphReviewRevision.healthy
-        && taskArchiveRevision.healthy,
+        && taskArchiveRevision.healthy
+        && taskOwnershipReviewRevision.healthy,
       integrity,
       foreignKeyViolations,
       referentialIntegrityHealthy,
@@ -2635,6 +2715,7 @@ export class PersonalMemoryStore {
       structuredMemoryRevisionHealthy: structuredMemoryRevision.healthy,
       graphReviewRevisionHealthy: graphReviewRevision.healthy,
       taskArchiveRevisionHealthy: taskArchiveRevision.healthy,
+      taskOwnershipReviewRevisionHealthy: taskOwnershipReviewRevision.healthy,
       encryption: {
         enabled: Boolean(this.encryptionKey),
         cipher: this.encryptionKey ? String(this.db.pragma('cipher', { simple: true }) || '') : 'none',
@@ -2653,6 +2734,7 @@ export class PersonalMemoryStore {
       structuredMemoryRevision,
       graphReviewRevision,
       taskArchiveRevision,
+      taskOwnershipReviewRevision,
       backups
     }
   }
@@ -3483,6 +3565,7 @@ export class PersonalMemoryStore {
     to?: string
     limit?: number
     offset?: number
+    revision?: string
   } = {}): {
     items: any[]
     total: number
@@ -4537,8 +4620,24 @@ export class PersonalMemoryStore {
     to?: string
     limit?: number
     offset?: number
-  } = {}): { items: any[]; total: number; hasMore: boolean; counts: Record<string, number> } {
-    if (!this.db) return { items: [], total: 0, hasMore: false, counts: {} }
+    revision?: string
+  } = {}): {
+    items: any[]
+    total: number
+    hasMore: boolean
+    counts: Record<string, number>
+    revision: string
+    stale: boolean
+  } {
+    if (!this.db) {
+      return { items: [], total: 0, hasMore: false, counts: {}, revision: '0', stale: false }
+    }
+    const revision = this.getTaskOwnershipReviewRevision()
+    const offset = Math.max(0, Math.min(1_000_000, Math.floor(Number(options.offset) || 0)))
+    const expectedRevision = String(options.revision || '').trim()
+    if (offset > 0 && expectedRevision && expectedRevision !== revision) {
+      return { items: [], total: 0, hasMore: false, counts: {}, revision, stale: true }
+    }
     const conditions = [`classification!='mine'`]
     const parameters: Array<string | number> = []
     const classification = String(options.classification || '').trim()
@@ -4571,7 +4670,6 @@ export class PersonalMemoryStore {
       SELECT COUNT(*) AS count FROM task_directory WHERE ${where}
     `).get(...parameters) as any)?.count || 0)
     const limit = Math.max(1, Math.min(100, Math.floor(Number(options.limit) || 40)))
-    const offset = Math.max(0, Math.min(1_000_000, Math.floor(Number(options.offset) || 0)))
     const rows = this.db.prepare(`
       SELECT td.*,
         (SELECT COUNT(*) FROM search_document_evidence sde
@@ -4588,29 +4686,39 @@ export class PersonalMemoryStore {
       GROUP BY classification
     `).all() as Array<{ classification: string; count: number }>)
       .map(row => [row.classification, Number(row.count || 0)]))
+    const items = rows.map(row => {
+      let payload: any = {}
+      try { payload = JSON.parse(String(row.payload_json || '{}')) } catch {}
+      return {
+        ...payload,
+        id: row.id,
+        title: row.title,
+        status: row.status,
+        classification: row.classification,
+        priority: row.priority,
+        due: row.due,
+        project: row.project,
+        taskKind: row.task_kind,
+        createdAt: row.created_at,
+        updatedAt: row.updated_at,
+        evidenceTotal: Number(row.evidence_count || 0),
+        historyTotal: Number(row.history_count || 0)
+      }
+    })
+    const completedRevision = this.getTaskOwnershipReviewRevision()
+    if (completedRevision !== revision) {
+      return {
+        items: [], total: 0, hasMore: false, counts: {},
+        revision: completedRevision, stale: true
+      }
+    }
     return {
-      items: rows.map(row => {
-        let payload: any = {}
-        try { payload = JSON.parse(String(row.payload_json || '{}')) } catch {}
-        return {
-          ...payload,
-          id: row.id,
-          title: row.title,
-          status: row.status,
-          classification: row.classification,
-          priority: row.priority,
-          due: row.due,
-          project: row.project,
-          taskKind: row.task_kind,
-          createdAt: row.created_at,
-          updatedAt: row.updated_at,
-          evidenceTotal: Number(row.evidence_count || 0),
-          historyTotal: Number(row.history_count || 0)
-        }
-      }),
+      items,
       total,
       hasMore: offset + rows.length < total,
-      counts
+      counts,
+      revision,
+      stale: false
     }
   }
 
@@ -5563,9 +5671,23 @@ export class PersonalMemoryStore {
     total: number
     hasMore: boolean
     counts: { active: number; revoked: number; all: number }
+    revision: string
+    stale: boolean
   } {
     if (!this.db) {
-      return { items: [], total: 0, hasMore: false, counts: { active: 0, revoked: 0, all: 0 } }
+      return {
+        items: [], total: 0, hasMore: false,
+        counts: { active: 0, revoked: 0, all: 0 }, revision: '0', stale: false
+      }
+    }
+    const revision = this.getTaskOwnershipReviewRevision()
+    const offset = Math.max(0, Math.min(1_000_000, Math.floor(Number(options.offset) || 0)))
+    const expectedRevision = String(options.revision || '').trim()
+    if (offset > 0 && expectedRevision && expectedRevision !== revision) {
+      return {
+        items: [], total: 0, hasMore: false,
+        counts: { active: 0, revoked: 0, all: 0 }, revision, stale: true
+      }
     }
     const conditions: string[] = []
     const parameters: Array<string | number> = []
@@ -5595,7 +5717,6 @@ export class PersonalMemoryStore {
       SELECT COUNT(*) AS count FROM task_review_decisions ${where}
     `).get(...parameters) as any)?.count || 0)
     const limit = Math.max(1, Math.min(100, Math.floor(Number(options.limit) || 40)))
-    const offset = Math.max(0, Math.min(1_000_000, Math.floor(Number(options.offset) || 0)))
     const rows = this.db.prepare(`
       SELECT evidence_fingerprint,task_id,decision,title,source,suppression_count,
         reconciliation_count,last_suppressed_at,last_reconciled_at,revoked_at,
@@ -5612,24 +5733,35 @@ export class PersonalMemoryStore {
         COUNT(*) AS all_count
       FROM task_review_decisions
     `).get() as any
+    const items = rows.map(row => {
+      let task: any = {}
+      try { task = JSON.parse(String(row.task_json || '{}')) } catch {}
+      const { task_json: _taskJson, ...safeRow } = row
+      return {
+        ...safeRow,
+        active: !row.revoked_at,
+        can_restore_snapshot: Boolean(task?.id && task?.title)
+      }
+    })
+    const completedRevision = this.getTaskOwnershipReviewRevision()
+    if (completedRevision !== revision) {
+      return {
+        items: [], total: 0, hasMore: false,
+        counts: { active: 0, revoked: 0, all: 0 },
+        revision: completedRevision, stale: true
+      }
+    }
     return {
-      items: rows.map(row => {
-        let task: any = {}
-        try { task = JSON.parse(String(row.task_json || '{}')) } catch {}
-        const { task_json: _taskJson, ...safeRow } = row
-        return {
-          ...safeRow,
-          active: !row.revoked_at,
-          can_restore_snapshot: Boolean(task?.id && task?.title)
-        }
-      }),
+      items,
       total,
       hasMore: offset + rows.length < total,
       counts: {
         active: Number(countsRow?.active || 0),
         revoked: Number(countsRow?.revoked || 0),
         all: Number(countsRow?.all_count || 0)
-      }
+      },
+      revision,
+      stale: false
     }
   }
 

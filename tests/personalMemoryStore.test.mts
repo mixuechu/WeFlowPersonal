@@ -3466,10 +3466,13 @@ test('task ownership reviews stay pageable and leave evidence in on-demand dossi
   store.syncTasks(tasks)
 
   const first = store.listTaskOwnershipReviews({ limit: 100 })
-  const second = store.listTaskOwnershipReviews({ offset: 100, limit: 100 })
+  const second = store.listTaskOwnershipReviews({
+    offset: 100, limit: 100, revision: first.revision
+  })
   assert.equal(first.total, 1_000)
   assert.equal(first.items.length, 100)
   assert.equal(new Set([...first.items, ...second.items].map(item => item.id)).size, 200)
+  assert.equal(second.stale, false)
   assert.deepEqual(first.counts, { others: 500, uncertain: 500 })
   assert.ok(first.items.every(item => item.classification !== 'mine' && item.evidenceTotal === 1))
   assert.equal(JSON.stringify(first.items).includes('只能按需读取的归属原文'), false)
@@ -3486,6 +3489,11 @@ test('task ownership reviews stay pageable and leave evidence in on-demand dossi
   store.syncTasks(tasks.map(task => task.id === 'ownership-task-0997'
     ? { ...task, classification: 'mine', updatedAt: '2026-07-31T00:00:00.000Z' }
     : task))
+  const stale = store.listTaskOwnershipReviews({
+    offset: 100, limit: 100, revision: first.revision
+  })
+  assert.equal(stale.stale, true)
+  assert.deepEqual(stale.items, [])
   assert.equal(store.listTaskOwnershipReviews({ query: '唯一归属候选关键词' }).total, 0)
   assert.equal(store.getTaskOwnershipReviewStats().total, 999)
 }))
@@ -4389,6 +4397,69 @@ test('task archive revision covers directory evidence and history and self-heals
     assert.equal(reopened.getTaskArchiveRevisionHealth().installedTriggers, 9)
     assert.equal(reopened.getTaskArchiveRevisionHealth().healthy, true)
     assert.equal(reopened.listTaskArchive().items[0]?.id, task.id)
+    reopened.close()
+  } finally {
+    rmSync(directory, { recursive: true, force: true })
+  }
+})
+
+test('task ownership review revision covers queue decisions and action history and self-heals on restart', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'weflow-task-ownership-review-revision-'))
+  const databasePath = join(directory, 'memory.sqlite')
+  try {
+    const first = new PersonalMemoryStore()
+    first.initialize(databasePath)
+    const initial = Number(first.getTaskOwnershipReviewRevision())
+    first.syncTasks([{
+      id: 'task-ownership-review-revision',
+      title: '验证任务归属审阅版本',
+      detail: '待确认队列、决定和撤销记录共同推进版本',
+      priority: 'high',
+      confidence: 0.7,
+      classification: 'uncertain',
+      status: 'todo',
+      createdAt: '2026-08-03T00:00:00.000Z',
+      updatedAt: '2026-08-03T01:00:00.000Z',
+      evidence: evidence('task-ownership-review-revision-message', '这件事可能需要你处理')
+    }])
+    const afterQueue = Number(first.getTaskOwnershipReviewRevision())
+    assert.ok(afterQueue > initial)
+    first.recordTaskReviewDecision({
+      evidenceFingerprint: 'task-ownership-review-revision-fingerprint',
+      taskId: 'task-ownership-review-revision',
+      decision: 'mine',
+      title: '验证任务归属审阅版本',
+      source: '版本验证群',
+      evidence: evidence('task-ownership-review-revision-message', '这件事可能需要你处理'),
+      task: { id: 'task-ownership-review-revision', title: '验证任务归属审阅版本' }
+    })
+    const afterDecision = Number(first.getTaskOwnershipReviewRevision())
+    assert.ok(afterDecision > afterQueue)
+    first.revokeTaskReviewDecision('task-ownership-review-revision-fingerprint')
+    assert.ok(Number(first.getTaskOwnershipReviewRevision()) > afterDecision)
+    assert.deepEqual(first.getTaskOwnershipReviewRevisionHealth(), {
+      version: 'task-ownership-review-revision-v1',
+      revision: first.getTaskOwnershipReviewRevision(),
+      expectedTriggers: 15,
+      installedTriggers: 15,
+      healthy: true
+    })
+    ;(first as any).db.exec(
+      'DROP TRIGGER trg_task_ownership_review_revision_task_review_decisions_insert'
+    )
+    assert.equal(first.getTaskOwnershipReviewRevisionHealth().installedTriggers, 14)
+    assert.equal(first.getTaskOwnershipReviewRevisionHealth().healthy, false)
+    first.close()
+
+    const reopened = new PersonalMemoryStore()
+    reopened.initialize(databasePath)
+    assert.equal(reopened.getTaskOwnershipReviewRevisionHealth().installedTriggers, 15)
+    assert.equal(reopened.getTaskOwnershipReviewRevisionHealth().healthy, true)
+    assert.equal(reopened.listTaskOwnershipReviews().items[0]?.id, 'task-ownership-review-revision')
+    assert.equal(
+      reopened.listTaskReviewDecisionPage().items[0]?.evidence_fingerprint,
+      'task-ownership-review-revision-fingerprint'
+    )
     reopened.close()
   } finally {
     rmSync(directory, { recursive: true, force: true })
@@ -6705,12 +6776,15 @@ test('task review audit archive paginates decisions without exposing evidence or
   }
 
   const first = store.listTaskReviewDecisionPage({ limit: 100 })
-  const second = store.listTaskReviewDecisionPage({ offset: 100, limit: 100 })
+  const second = store.listTaskReviewDecisionPage({
+    offset: 100, limit: 100, revision: first.revision
+  })
   assert.equal(first.total, 2_500)
   assert.equal(first.counts.active, 2_000)
   assert.equal(first.counts.revoked, 500)
   assert.equal(first.counts.all, 2_500)
   assert.equal(new Set([...first.items, ...second.items].map(item => item.evidence_fingerprint)).size, 200)
+  assert.equal(second.stale, false)
   assert.equal(JSON.stringify(first.items).includes('不应进入审计目录的长原文'), false)
   assert.equal(JSON.stringify(first.items).includes('包含敏感快照'), false)
   assert.ok(first.items.every(item => !('evidence' in item) && !('task_json' in item)))
@@ -6722,6 +6796,12 @@ test('task review audit archive paginates decisions without exposing evidence or
   assert.deepEqual(Object.keys(store.getTaskReviewArchiveStats()).sort(), [
     'latestActive', 'latestFingerprint', 'latestUpdatedAt', 'total'
   ])
+  store.revokeTaskReviewDecision('audit-fingerprint-0001')
+  const stale = store.listTaskReviewDecisionPage({
+    offset: 100, limit: 100, revision: first.revision
+  })
+  assert.equal(stale.stale, true)
+  assert.deepEqual(stale.items, [])
 
   const detailedFingerprint = 'audit-fingerprint-1777'
   for (let index = 0; index < 60; index += 1) {

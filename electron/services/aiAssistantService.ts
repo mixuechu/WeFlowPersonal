@@ -3441,7 +3441,8 @@ export class AiAssistantService {
       from: String(options?.from || ''),
       to: String(options?.to || ''),
       limit: Number(options?.limit || 40),
-      offset: Number(options?.offset || 0)
+      offset: Number(options?.offset || 0),
+      revision: String(options?.revision || '')
     })
   }
 
@@ -3453,16 +3454,31 @@ export class AiAssistantService {
       from: String(options?.from || ''),
       to: String(options?.to || ''),
       limit: Number(options?.limit || 40),
-      offset: Number(options?.offset || 0)
+      offset: Number(options?.offset || 0),
+      revision: String(options?.revision || '')
     })
+    if (page.stale) return page
+    const items = page.items.map(item => ({
+      ...item,
+      canRevert: Boolean(item.active && (
+        item.can_restore_snapshot || this.state.tasks.some(task => task.id === item.task_id)
+      ))
+    }))
+    const completedRevision = personalMemoryStore.getTaskOwnershipReviewRevision()
+    if (completedRevision !== page.revision) {
+      return {
+        ...page,
+        items: [],
+        total: 0,
+        hasMore: false,
+        counts: { active: 0, revoked: 0, all: 0 },
+        revision: completedRevision,
+        stale: true
+      }
+    }
     return {
       ...page,
-      items: page.items.map(item => ({
-        ...item,
-        canRevert: Boolean(item.active && (
-          item.can_restore_snapshot || this.state.tasks.some(task => task.id === item.task_id)
-        ))
-      }))
+      items
     }
   }
 
