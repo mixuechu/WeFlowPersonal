@@ -3352,7 +3352,8 @@ export class AiAssistantService {
             assistantArchiveStats.latestId,
             assistantArchiveStats.latestUpdatedAt,
             assistantArchiveStats.latestMessageCount,
-            assistantArchiveStats.citationStorage
+            assistantArchiveStats.citationStorage,
+            assistantArchiveStats.exchangeIntegrity
           ]))
           .digest('hex')
           .slice(0, 16),
@@ -3362,7 +3363,8 @@ export class AiAssistantService {
         citationStorage: {
           ...assistantArchiveStats.citationStorage,
           policy: 'reference_only_authoritative_hydration'
-        }
+        },
+        exchangeIntegrity: assistantArchiveStats.exchangeIntegrity
       },
       qualityBaseline: evaluateTaskAssignmentPolicy(),
       weeklyBriefing: buildWeeklyBriefing(this.state.briefings, tasks),

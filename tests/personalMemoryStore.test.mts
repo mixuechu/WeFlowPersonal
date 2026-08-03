@@ -4290,11 +4290,91 @@ test('assistant conversations persist ordered turns, citations and deletion acro
   })
   assert.equal(JSON.stringify(complete.messages[1].groundingAudit).includes('不能离开主进程'), false)
   assert.deepEqual(complete.messages[0].groundingAudit, {})
+  for (let index = 0; index < complete.messages.length; index += 2) {
+    assert.match(complete.messages[index].exchange_id, /^exchange_/)
+    assert.equal(complete.messages[index].exchange_id, complete.messages[index + 1].exchange_id)
+  }
+  assert.equal(store.getAssistantExchangeIntegrityStats().pairedExchanges, 3)
+  assert.equal(store.getAssistantExchangeIntegrityStats().unmatchedMessages, 0)
+  const firstExchange = complete.messages[0].exchange_id
+  assert.throws(() => (store as any).db.prepare(`
+    INSERT INTO assistant_messages(
+      id,conversation_id,role,content,citations_json,grounding_json,exchange_id,created_at
+    ) VALUES(?,?,?,?,?,?,?,?)
+  `).run(
+    'duplicate-assistant-role',
+    conversationId,
+    'user',
+    '重复角色',
+    '[]',
+    '{}',
+    firstExchange,
+    new Date().toISOString()
+  ), /UNIQUE constraint failed/)
 
   assert.equal(store.deleteAssistantConversation(conversationId), true)
   assert.equal(store.getAssistantConversation(conversationId), null)
   assert.equal(store.listAssistantConversations().length, 0)
 }))
+
+test('assistant exchange rolls back conversation and question when answer persistence fails', () => withStore(store => {
+  const database = (store as any).db
+  database.exec(`
+    CREATE TRIGGER fail_assistant_answer_insert
+    BEFORE INSERT ON assistant_messages
+    WHEN NEW.role='assistant'
+    BEGIN
+      SELECT RAISE(ABORT,'simulated answer write failure');
+    END;
+  `)
+  assert.throws(() => store.saveAssistantExchange(
+    '不能留下半个回合的问题',
+    '这个回答会在写入时失败',
+    []
+  ), /simulated answer write failure/)
+  database.exec(`DROP TRIGGER fail_assistant_answer_insert`)
+  assert.equal(Number(database.prepare(`
+    SELECT COUNT(*) AS count FROM assistant_conversations
+    WHERE title='不能留下半个回合的问题'
+  `).get().count), 0)
+  assert.equal(Number(database.prepare(`
+    SELECT COUNT(*) AS count FROM assistant_messages
+    WHERE content LIKE '%半个回合%'
+  `).get().count), 0)
+}))
+
+test('legacy adjacent question and answer receive one stable exchange identity after reopen', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'weflow-assistant-exchange-migration-'))
+  const databasePath = join(directory, 'memory.sqlite')
+  const key = randomBytes(32).toString('hex')
+  const first = new PersonalMemoryStore()
+  try {
+    first.initialize(databasePath, key)
+    const conversationId = first.saveAssistantExchange('旧问题', '旧回答', [])
+    ;(first as any).db.prepare(`
+      UPDATE assistant_messages SET exchange_id='' WHERE conversation_id=?
+    `).run(conversationId)
+    first.close()
+
+    const reopened = new PersonalMemoryStore()
+    try {
+      reopened.initialize(databasePath, key)
+      const messages = reopened.getAssistantConversation(conversationId, 10).messages
+      assert.equal(messages.length, 2)
+      assert.match(messages[0].exchange_id, /^legacy_[a-f0-9]{32}$/)
+      assert.equal(messages[0].exchange_id, messages[1].exchange_id)
+      const stats = reopened.getAssistantExchangeIntegrityStats()
+      assert.equal(stats.pairedThisRun, 1)
+      assert.equal(stats.pairedExchanges, 1)
+      assert.equal(stats.unmatchedMessages, 0)
+    } finally {
+      reopened.close()
+    }
+  } finally {
+    first.close()
+    rmSync(directory, { recursive: true, force: true })
+  }
+})
 
 test('legacy assistant citations are compacted at scale without losing reference or feedback identity', () => {
   const directory = mkdtempSync(join(tmpdir(), 'weflow-assistant-citation-compaction-'))
@@ -4381,6 +4461,8 @@ test('legacy assistant citations are compacted at scale without losing reference
       assert.equal(Number(raw.leakedContent), 0)
       const columns = (reopened as any).db.prepare(`PRAGMA table_info(assistant_messages)`).all()
       assert.ok(columns.some((column: any) => column.name === 'grounding_json'))
+      assert.ok(columns.some((column: any) => column.name === 'exchange_id'))
+      assert.equal(reopened.getAssistantExchangeIntegrityStats().unmatchedMessages, 2_501)
       const stats = reopened.getAssistantCitationStorageStats()
       assert.equal(stats.updatedMessages, 2_501)
       assert.equal(stats.citationsCompacted, 2_500)
@@ -4419,7 +4501,9 @@ test('assistant archive paginates years of conversations and complete long threa
   const first = store.listAssistantConversationsPage({ limit: 40 })
   const second = store.listAssistantConversationsPage({ limit: 40, offset: 40 })
   const stats = store.getAssistantArchiveStats()
-  assert.deepEqual(Object.keys(stats).sort(), ['citationStorage', 'latestId', 'latestMessageCount', 'latestUpdatedAt', 'total'])
+  assert.deepEqual(Object.keys(stats).sort(), [
+    'citationStorage', 'exchangeIntegrity', 'latestId', 'latestMessageCount', 'latestUpdatedAt', 'total'
+  ])
   assert.deepEqual(Object.keys(stats.citationStorage).sort(), [
     'bytesReclaimed', 'citationsCompacted', 'completedAt', 'malformedPayloadsCleared',
     'scannedMessages', 'storedBytes', 'updatedMessages', 'version'

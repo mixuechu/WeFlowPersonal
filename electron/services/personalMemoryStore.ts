@@ -401,6 +401,7 @@ export class PersonalMemoryStore {
         content TEXT NOT NULL,
         citations_json TEXT NOT NULL DEFAULT '[]',
         grounding_json TEXT NOT NULL DEFAULT '{}',
+        exchange_id TEXT NOT NULL DEFAULT '',
         created_at TEXT NOT NULL
       ) STRICT;
       CREATE INDEX IF NOT EXISTS idx_assistant_conversations_updated
@@ -674,6 +675,7 @@ export class PersonalMemoryStore {
     this.ensureColumn('memory_review_decisions', 'reason', `TEXT NOT NULL DEFAULT ''`)
     this.ensureColumn('memory_review_decisions', 'protect_from_extraction', 'INTEGER NOT NULL DEFAULT 1')
     this.ensureColumn('assistant_messages', 'grounding_json', `TEXT NOT NULL DEFAULT '{}'`)
+    this.ensureColumn('assistant_messages', 'exchange_id', `TEXT NOT NULL DEFAULT ''`)
     this.db.prepare(`
       UPDATE memory_review_decisions
       SET actor='system',
@@ -731,6 +733,7 @@ export class PersonalMemoryStore {
       WHERE evidence_role='support'
     `).run()
     this.repairAssistantCitationStorage()
+    this.repairAssistantExchangeIntegrity()
     this.repairDuplicateEvents()
     this.db.prepare(`
       INSERT INTO schema_meta(key, value, updated_at) VALUES('schema_version', '1', ?)
@@ -7021,6 +7024,95 @@ export class PersonalMemoryStore {
     }
   }
 
+  private repairAssistantExchangeIntegrity(): void {
+    if (!this.db) return
+    const rows = this.db.prepare(`
+      SELECT id,conversation_id,role,created_at
+      FROM assistant_messages
+      WHERE exchange_id=''
+      ORDER BY conversation_id,created_at,id
+    `).all() as Array<{ id: string; conversation_id: string; role: string; created_at: string }>
+    const update = this.db.prepare(`UPDATE assistant_messages SET exchange_id=? WHERE id=? AND exchange_id=''`)
+    let pairedThisRun = 0
+    const transaction = this.db.transaction(() => {
+      let pendingUser: typeof rows[number] | null = null
+      let activeConversation = ''
+      for (const row of rows) {
+        if (row.conversation_id !== activeConversation) {
+          activeConversation = row.conversation_id
+          pendingUser = null
+        }
+        if (row.role === 'user') {
+          pendingUser = row
+          continue
+        }
+        if (row.role !== 'assistant' || !pendingUser) continue
+        const exchangeId = `legacy_${createHash('sha256')
+          .update(`${row.conversation_id}\0${pendingUser.id}\0${row.id}`)
+          .digest('hex')
+          .slice(0, 32)}`
+        update.run(exchangeId, pendingUser.id)
+        update.run(exchangeId, row.id)
+        pairedThisRun += 1
+        pendingUser = null
+      }
+      this.db!.exec(`
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_assistant_messages_exchange_role
+        ON assistant_messages(conversation_id,exchange_id,role)
+        WHERE exchange_id!='';
+      `)
+      const pairedExchanges = Number((this.db!.prepare(`
+        SELECT COUNT(*) AS count FROM assistant_messages
+        WHERE role='assistant' AND exchange_id!=''
+      `).get() as any)?.count || 0)
+      const unmatchedMessages = Number((this.db!.prepare(`
+        SELECT COUNT(*) AS count FROM assistant_messages WHERE exchange_id=''
+      `).get() as any)?.count || 0)
+      const completedAt = new Date().toISOString()
+      this.db!.prepare(`
+        INSERT INTO schema_meta(key,value,updated_at) VALUES('assistant_exchange_integrity_v1',?,?)
+        ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_at=excluded.updated_at
+      `).run(JSON.stringify({
+        version: 1,
+        policy: 'atomic_exchange_v1',
+        scannedLegacyMessages: rows.length,
+        pairedThisRun,
+        pairedExchanges,
+        unmatchedMessages,
+        completedAt
+      }), completedAt)
+    })
+    transaction()
+  }
+
+  getAssistantExchangeIntegrityStats(): any {
+    if (!this.db) return {
+      version: 1, policy: 'atomic_exchange_v1', pairedExchanges: 0,
+      unmatchedMessages: 0, pairedThisRun: 0, scannedLegacyMessages: 0, completedAt: ''
+    }
+    const row = this.db.prepare(`
+      SELECT value FROM schema_meta WHERE key='assistant_exchange_integrity_v1'
+    `).get() as any
+    let audit: any = {}
+    try { audit = JSON.parse(String(row?.value || '{}')) } catch {}
+    const pairedExchanges = Number((this.db.prepare(`
+      SELECT COUNT(*) AS count FROM assistant_messages
+      WHERE role='assistant' AND exchange_id!=''
+    `).get() as any)?.count || 0)
+    const unmatchedMessages = Number((this.db.prepare(`
+      SELECT COUNT(*) AS count FROM assistant_messages WHERE exchange_id=''
+    `).get() as any)?.count || 0)
+    return {
+      version: 1,
+      policy: 'atomic_exchange_v1',
+      pairedExchanges: Math.max(0, pairedExchanges),
+      unmatchedMessages: Math.max(0, unmatchedMessages),
+      pairedThisRun: Math.max(0, Number(audit.pairedThisRun || 0)),
+      scannedLegacyMessages: Math.max(0, Number(audit.scannedLegacyMessages || 0)),
+      completedAt: String(audit.completedAt || '')
+    }
+  }
+
   getSearchDocumentById(documentId: string, evidenceScope: any = {}): any | null {
     if (!this.db) return null
     const row = this.db.prepare(`
@@ -7074,26 +7166,30 @@ export class PersonalMemoryStore {
     const now = new Date(questionMs).toISOString()
     const answerAt = new Date(questionMs + 1).toISOString()
     const id = conversationId || `chat_${questionMs}_${Math.random().toString(16).slice(2)}`
-    this.db.prepare(`
-      INSERT INTO assistant_conversations(id,title,created_at,updated_at) VALUES(?,?,?,?)
-      ON CONFLICT(id) DO UPDATE SET updated_at=excluded.updated_at
-    `).run(id, question.slice(0, 80), now, answerAt)
+    const exchangeId = `exchange_${questionMs}_${Math.random().toString(16).slice(2)}`
     const insert = this.db.prepare(`
       INSERT INTO assistant_messages(
-        id,conversation_id,role,content,citations_json,grounding_json,created_at
-      ) VALUES(?,?,?,?,?,?,?)
+        id,conversation_id,role,content,citations_json,grounding_json,exchange_id,created_at
+      ) VALUES(?,?,?,?,?,?,?,?)
     `)
-    const messageNonce = Math.random().toString(16).slice(2)
-    insert.run(`msg_${Date.now()}_${messageNonce}_q`, id, 'user', question, '[]', '{}', now)
-    insert.run(
-      `msg_${Date.now()}_${messageNonce}_a`,
-      id,
-      'assistant',
-      answer,
-      JSON.stringify(this.compactAssistantCitations(citations)),
-      JSON.stringify(this.compactAssistantGroundingAudit(groundingAudit)),
-      answerAt
-    )
+    const save = this.db.transaction(() => {
+      this.db!.prepare(`
+        INSERT INTO assistant_conversations(id,title,created_at,updated_at) VALUES(?,?,?,?)
+        ON CONFLICT(id) DO UPDATE SET updated_at=excluded.updated_at
+      `).run(id, question.slice(0, 80), now, answerAt)
+      insert.run(`msg_${exchangeId}_q`, id, 'user', question, '[]', '{}', exchangeId, now)
+      insert.run(
+        `msg_${exchangeId}_a`,
+        id,
+        'assistant',
+        answer,
+        JSON.stringify(this.compactAssistantCitations(citations)),
+        JSON.stringify(this.compactAssistantGroundingAudit(groundingAudit)),
+        exchangeId,
+        answerAt
+      )
+    })
+    save()
     return id
   }
 
@@ -7159,13 +7255,15 @@ export class PersonalMemoryStore {
     latestUpdatedAt: string
     latestMessageCount: number
     citationStorage: any
+    exchangeIntegrity: any
   } {
     if (!this.db) return {
       total: 0,
       latestId: '',
       latestUpdatedAt: '',
       latestMessageCount: 0,
-      citationStorage: this.getAssistantCitationStorageStats()
+      citationStorage: this.getAssistantCitationStorageStats(),
+      exchangeIntegrity: this.getAssistantExchangeIntegrityStats()
     }
     const total = Number((this.db.prepare(`
       SELECT COUNT(*) AS count FROM assistant_conversations
@@ -7182,7 +7280,8 @@ export class PersonalMemoryStore {
       latestId: String(latest?.id || ''),
       latestUpdatedAt: String(latest?.updated_at || ''),
       latestMessageCount: Number(latest?.message_count || 0),
-      citationStorage: this.getAssistantCitationStorageStats()
+      citationStorage: this.getAssistantCitationStorageStats(),
+      exchangeIntegrity: this.getAssistantExchangeIntegrityStats()
     }
   }
 
@@ -7205,8 +7304,8 @@ export class PersonalMemoryStore {
       SELECT COUNT(*) AS count FROM assistant_messages WHERE conversation_id=?
     `).get(id) as any)?.count || 0)
     const rows = this.db.prepare(`
-      SELECT id,role,content,citations_json,grounding_json,created_at FROM (
-        SELECT id,role,content,citations_json,grounding_json,created_at
+      SELECT id,role,content,citations_json,grounding_json,exchange_id,created_at FROM (
+        SELECT id,role,content,citations_json,grounding_json,exchange_id,created_at
         FROM assistant_messages WHERE conversation_id=?
         ORDER BY created_at DESC,id DESC LIMIT ? OFFSET ?
       ) ORDER BY created_at,id
