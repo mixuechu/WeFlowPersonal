@@ -325,6 +325,8 @@ function AiAssistantPage() {
   const projectWorkspaceGate = useRef(new LatestRequestGate())
   const [projectTaskLoadingMore, setProjectTaskLoadingMore] = useState(false)
   const projectTaskGate = useRef(new LatestRequestGate())
+  const [projectRiskLoadingMore, setProjectRiskLoadingMore] = useState(false)
+  const projectRiskGate = useRef(new LatestRequestGate())
   const [projectMemoryPages, setProjectMemoryPages] = useState<any>({
     claims: { items: [], total: 0, hasMore: false, revision: '' },
     events: { items: [], total: 0, hasMore: false, revision: '' },
@@ -1616,7 +1618,9 @@ function AiAssistantPage() {
   useEffect(() => {
     const request = projectWorkspaceGate.current.begin()
     projectTaskGate.current.invalidate()
+    projectRiskGate.current.invalidate()
     setProjectTaskLoadingMore(false)
+    setProjectRiskLoadingMore(false)
     if (!selectedProjectId) {
       setProjectWorkspace({ project: null, status: 'idle' })
       return () => {
@@ -2509,6 +2513,48 @@ function AiAssistantPage() {
       if (projectTaskGate.current.isCurrent(request)) setMessage(error?.message || String(error))
     } finally {
       if (projectTaskGate.current.isCurrent(request)) setProjectTaskLoadingMore(false)
+    }
+  }
+
+  const loadMoreProjectRisks = async () => {
+    const project = projectWorkspace.project
+    if (!selectedProjectId || projectRiskLoadingMore || !project?.riskHasMore) return
+    const request = projectRiskGate.current.begin()
+    setProjectRiskLoadingMore(true)
+    try {
+      const page = await window.electronAPI.aiAssistant.getProjectRiskPage(
+        selectedProjectId,
+        {
+          limit: 40,
+          offset: project.risks?.length || 0,
+          revision: project.riskRevision
+        }
+      )
+      if (!projectRiskGate.current.isCurrent(request)) return
+      if (page.stale) {
+        setMessage('项目风险在浏览期间已有变化，已重新载入最新项目档案。')
+        setProjectWorkspaceRefreshKey(value => value + 1)
+        return
+      }
+      setProjectWorkspace((current: any) => ({
+        ...current,
+        project: {
+          ...current.project,
+          risks: [
+            ...(current.project?.risks || []),
+            ...page.items.filter((item: any) =>
+              !(current.project?.risks || []).some((known: any) =>
+                `${known.taskId}:${known.kind}` === `${item.taskId}:${item.kind}`))
+          ],
+          riskTotal: page.total,
+          riskHasMore: page.hasMore,
+          riskRevision: page.revision
+        }
+      }))
+    } catch (error: any) {
+      if (projectRiskGate.current.isCurrent(request)) setMessage(error?.message || String(error))
+    } finally {
+      if (projectRiskGate.current.isCurrent(request)) setProjectRiskLoadingMore(false)
     }
   }
 
@@ -7210,7 +7256,7 @@ function AiAssistantPage() {
             <div className="assistant-dossier-metrics">
               <span><b>{selectedProject.progress}%</b><small>任务完成度</small></span>
               <span><b>{selectedProject.activeTaskCount}</b><small>进行中任务</small></span>
-              <span><b>{selectedProject.risks.length}</b><small>可解释风险</small></span>
+              <span><b>{selectedProject.riskTotal ?? selectedProject.risks.length}</b><small>可解释风险</small></span>
               <span><b>{Number(selectedProject.claimTotal || 0)}</b><small>项目事实</small></span>
               <span><b>{Number(selectedProject.eventTotal || 0)}</b><small>相关事件</small></span>
               <span><b>{selectedProject.evidenceTotal ?? selectedProject.evidence.length}</b><small>去重证据</small></span>
@@ -7236,11 +7282,18 @@ function AiAssistantPage() {
                 {!selectedProject.members.length && <em>尚未从项目关系中确认参与者</em>}
               </section>
               <section>
-                <h3>风险与阻塞 <small>{selectedProject.risks.length}</small></h3>
+                <h3>风险与阻塞 <small>{selectedProject.riskTotal ?? selectedProject.risks.length}</small></h3>
                 {selectedProject.risks.map((risk: any, index: number) => <article key={`${risk.taskId}-${risk.kind}-${index}`} className={`assistant-project-risk ${risk.severity}`}>
                   <div><b>{risk.title}</b><span>{risk.kind}</span></div><small>{risk.detail}</small>
                 </article>)}
                 {!selectedProject.risks.length && <em>当前没有确定性规则识别出的风险</em>}
+                {selectedProject.riskHasMore && <button
+                  disabled={projectRiskLoadingMore}
+                  onClick={() => void loadMoreProjectRisks()}>
+                  {projectRiskLoadingMore
+                    ? '正在加载…'
+                    : `加载更多风险（已显示 ${selectedProject.risks.length} / ${selectedProject.riskTotal}）`}
+                </button>}
               </section>
               <section>
                 <h3>项目任务 <small>{selectedProject.taskTotal ?? selectedProject.tasks.length}</small></h3>

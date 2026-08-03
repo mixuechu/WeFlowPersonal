@@ -624,6 +624,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
     getProjectWorkspace: (projectId: string) => ipcRenderer.invoke('ai-assistant:getProjectWorkspace', projectId),
     getProjectTaskPage: (projectId: string, options?: any) =>
       ipcRenderer.invoke('ai-assistant:getProjectTaskPage', projectId, options),
+    getProjectRiskPage: (projectId: string, options?: any) =>
+      ipcRenderer.invoke('ai-assistant:getProjectRiskPage', projectId, options),
     getTaskWorkspace: (taskId: string) => ipcRenderer.invoke('ai-assistant:getTaskWorkspace', taskId),
     getTaskDependencyCandidates: (options?: any) =>
       ipcRenderer.invoke('ai-assistant:getTaskDependencyCandidates', options),

@@ -78,6 +78,7 @@ import {
   buildProjectInsights,
   countProjectDirectory,
   paginateProjectDirectory,
+  paginateProjectRisks,
   paginateProjectTasks
 } from '../electron/services/projectInsights.ts'
 import { MEMORY_CARD_EVIDENCE_LIMIT, PROJECT_EVIDENCE_LIMIT } from '../shared/evidencePayload.ts'
@@ -3571,6 +3572,60 @@ test('project task pages preserve exact project assignment, all statuses, and re
   }, 'project-task-revision-2')
   assert.equal(stale.stale, true)
   assert.equal(stale.items.length, 0)
+})
+
+test('project risk pages are severity ordered, date aware in Shanghai, and revision safe', () => {
+  const project = buildProjectInsight({
+    entities: [{
+      id: 'risk-project',
+      type: 'project',
+      canonicalName: '风险项目',
+      aliases: [],
+      trustStatus: 'confirmed'
+    }],
+    relations: [],
+    claims: [],
+    events: [],
+    tasks: [
+      ...Array.from({ length: 500 }, (_, index) => ({
+        id: `risk-task-${String(index).padStart(4, '0')}`,
+        title: `风险任务 ${index}`,
+        project: '风险项目',
+        status: 'waiting',
+        taskKind: 'waiting',
+        priority: 'high',
+        due: '2026-07-30',
+        dependsOnIds: ['external-project-blocker']
+      })),
+      {
+        id: 'external-project-blocker',
+        title: '其他项目仍未完成的前置任务',
+        project: '其他项目',
+        status: 'todo',
+        priority: 'medium'
+      }
+    ],
+    now: new Date('2026-07-30T16:30:00.000Z')
+  }, 'risk-project')
+  assert.equal(project.risks.length, 1_500)
+  assert.ok(project.risks.some((risk: any) => risk.kind === 'overdue'))
+
+  const first = paginateProjectRisks(project, { limit: 40 }, 'risk-revision:day=2026-07-31')
+  const second = paginateProjectRisks(project, {
+    limit: 40, offset: 40, revision: first.revision
+  }, 'risk-revision:day=2026-07-31')
+  assert.equal(first.total, 1_500)
+  assert.equal(first.items.length, 40)
+  assert.ok(first.items.every((risk: any) => risk.severity === 'high'))
+  assert.equal(new Set([...first.items, ...second.items]
+    .map((risk: any) => `${risk.taskId}:${risk.kind}`)).size, 80)
+  const staleAtMidnight = paginateProjectRisks(project, {
+    limit: 40,
+    offset: 40,
+    revision: 'risk-revision:day=2026-07-31'
+  }, 'risk-revision:day=2026-08-01')
+  assert.equal(staleAtMidnight.stale, true)
+  assert.equal(staleAtMidnight.items.length, 0)
 })
 
 test('project memory is scoped in SQL before limits and preserves authoritative candidate totals', () => withStore(store => {

@@ -1693,6 +1693,13 @@ export interface ElectronAPI {
         revision: string
         stale: boolean
       }>
+      getProjectRiskPage: (projectId: string, options?: any) => Promise<{
+        items: any[]
+        total: number
+        hasMore: boolean
+        revision: string
+        stale: boolean
+      }>
       getProjectDirectory: (options?: any) => Promise<{
         items: any[]
         total: number

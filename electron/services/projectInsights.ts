@@ -9,6 +9,15 @@ function normalize(value: unknown): string {
   return String(value || '').trim().toLocaleLowerCase('zh-CN').replace(/\s+/g, '')
 }
 
+function shanghaiDate(value: Date): string {
+  return new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Shanghai',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit'
+  }).format(value)
+}
+
 function taskBelongsToProject(task: any, names: string[]): boolean {
   const project = normalize(task.project)
   if (project) return names.some(name => project === name)
@@ -36,7 +45,7 @@ function buildProjectInsightsInternal(
   options: { includeDetails: boolean; projectId?: string }
 ): any[] {
   const now = input.now || new Date()
-  const today = now.toISOString().slice(0, 10)
+  const today = shanghaiDate(now)
   const trustedEntities = input.entities.filter(entity => entity.trustStatus === 'confirmed')
   const entityProjects = trustedEntities.filter(entity => entity.type === 'project')
   const entityProjectNames = new Set(entityProjects.flatMap(entity =>
@@ -262,6 +271,33 @@ export function paginateProjectTasks(
     items,
     total: tasks.length,
     hasMore: offset + items.length < tasks.length,
+    revision,
+    stale: false
+  }
+}
+
+export function paginateProjectRisks(
+  project: any,
+  options: { limit?: number; offset?: number; revision?: string } = {},
+  revision: string
+): { items: any[]; total: number; hasMore: boolean; revision: string; stale: boolean } {
+  const offset = Math.max(0, Math.min(1_000_000, Math.floor(Number(options.offset) || 0)))
+  if (offset > 0 && String(options.revision || '').trim() !== revision) {
+    return { items: [], total: 0, hasMore: false, revision, stale: true }
+  }
+  const severityOrder: Record<string, number> = { high: 0, medium: 1, low: 2 }
+  const risks = [...(Array.isArray(project?.risks) ? project.risks : [])].sort((left, right) =>
+    Number(severityOrder[String(left.severity)] ?? 9) -
+      Number(severityOrder[String(right.severity)] ?? 9) ||
+    String(left.kind || '').localeCompare(String(right.kind || ''), 'zh-CN') ||
+    String(left.title || '').localeCompare(String(right.title || ''), 'zh-CN') ||
+    String(left.taskId || '').localeCompare(String(right.taskId || '')))
+  const limit = Math.max(1, Math.min(100, Math.floor(Number(options.limit) || 40)))
+  const items = risks.slice(offset, offset + limit)
+  return {
+    items,
+    total: risks.length,
+    hasMore: offset + items.length < risks.length,
     revision,
     stale: false
   }

@@ -146,6 +146,7 @@ import {
   buildProjectInsight,
   countProjectDirectory,
   paginateProjectDirectory,
+  paginateProjectRisks,
   paginateProjectTasks
 } from './projectInsights'
 import { buildDashboardRevisions } from './dashboardRevisions'
@@ -3963,6 +3964,8 @@ export class AiAssistantService {
       : loadedMemoryReviewCount
     const taskRevision = this.getProjectDirectoryRevision()
     const taskPage = paginateProjectTasks(project, { limit: 40 }, taskRevision)
+    const riskRevision = `${taskRevision}:day=${shanghaiDate()}`
+    const riskPage = paginateProjectRisks(project, { limit: 40 }, riskRevision)
     return {
       project: {
         ...project,
@@ -3991,7 +3994,11 @@ export class AiAssistantService {
         }),
         taskTotal: taskPage.total,
         taskHasMore: taskPage.hasMore,
-        taskRevision: taskPage.revision
+        taskRevision: taskPage.revision,
+        risks: riskPage.items,
+        riskTotal: riskPage.total,
+        riskHasMore: riskPage.hasMore,
+        riskRevision: riskPage.revision
       },
       payloadPolicy: {
         version: 'project-dossier-v2',
@@ -4037,6 +4044,35 @@ export class AiAssistantService {
         return task ? { ...item, mutationToken: buildTaskMutationToken(task) } : item
       })
     }
+  }
+
+  getProjectRiskPage(projectId: string, options: any = {}): any {
+    const id = String(projectId || '').trim()
+    if (!id) throw new Error('请选择项目')
+    const projectRevision = this.getProjectDirectoryRevision()
+    const revision = `${projectRevision}:day=${shanghaiDate()}`
+    const project = buildProjectInsight({
+      entities: this.state.graph.entities,
+      relations: [],
+      claims: [],
+      events: [],
+      tasks: this.state.tasks.filter(task => task.classification === 'mine')
+    }, id)
+    if (!project) throw new Error('项目不存在或已经不在当前目录中')
+    const page = paginateProjectRisks(project, {
+      limit: Number(options?.limit || 40),
+      offset: Number(options?.offset || 0),
+      revision: String(options?.revision || '')
+    }, revision)
+    if (page.stale) return page
+    const completedRevision = `${this.getProjectDirectoryRevision()}:day=${shanghaiDate()}`
+    if (completedRevision !== revision) {
+      return {
+        items: [], total: 0, hasMore: false,
+        revision: completedRevision, stale: true
+      }
+    }
+    return page
   }
 
   getEventTimeline(options: any = {}): any {
