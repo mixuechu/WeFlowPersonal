@@ -358,6 +358,21 @@ export class PersonalMemoryStore {
       CREATE INDEX IF NOT EXISTS idx_task_directory_project
         ON task_directory(project,updated_at);
 
+      CREATE TABLE IF NOT EXISTS task_mutation_commits (
+        commit_id TEXT PRIMARY KEY,
+        status TEXT NOT NULL CHECK(status IN ('prepared','committed','abandoned')),
+        before_tokens_json TEXT NOT NULL DEFAULT '{}',
+        after_tokens_json TEXT NOT NULL DEFAULT '{}',
+        changes_json TEXT NOT NULL DEFAULT '[]',
+        prepared_at TEXT NOT NULL,
+        applied_at TEXT,
+        recovery_attempts INTEGER NOT NULL DEFAULT 0,
+        recovery_action TEXT NOT NULL DEFAULT '',
+        last_error TEXT
+      ) STRICT;
+      CREATE INDEX IF NOT EXISTS idx_task_mutation_commits_status
+        ON task_mutation_commits(status,prepared_at);
+
       CREATE TABLE IF NOT EXISTS task_review_decisions (
         evidence_fingerprint TEXT PRIMARY KEY,
         task_id TEXT NOT NULL,
@@ -4985,10 +5000,10 @@ export class PersonalMemoryStore {
     return { id: resourceId, content, metadata, updatedAt: now }
   }
 
-  syncTasks(tasks: any[]): void {
+  syncTasks(tasks: any[], withinTransaction = false): void {
     if (!this.db) return
     const now = new Date().toISOString()
-    this.db.exec('BEGIN IMMEDIATE')
+    if (!withinTransaction) this.db.exec('BEGIN IMMEDIATE')
     try {
       let repairedDerivedDocuments = 0
       let repairedMissingDocuments = 0
@@ -5160,9 +5175,9 @@ export class PersonalMemoryStore {
           + repairedEvidenceSets,
         currentMismatches: 0
       }), now)
-      this.db.exec('COMMIT')
+      if (!withinTransaction) this.db.exec('COMMIT')
     } catch (error) {
-      this.db.exec('ROLLBACK')
+      if (!withinTransaction) this.db.exec('ROLLBACK')
       throw error
     }
   }
@@ -6282,6 +6297,154 @@ export class PersonalMemoryStore {
         }
       }
     })()
+  }
+
+  prepareTaskMutationCommit(input: {
+    commitId: string
+    beforeTokens: Record<string, string>
+    afterTokens: Record<string, string>
+    changes: Array<{
+      taskId: string
+      before: any
+      after: any
+      reason?: string
+      evidence?: any[]
+    }>
+  }): void {
+    if (!this.db) throw new Error('个人记忆数据库尚未初始化')
+    this.db.prepare(`
+      INSERT INTO task_mutation_commits(
+        commit_id,status,before_tokens_json,after_tokens_json,changes_json,prepared_at
+      ) VALUES(?,'prepared',?,?,?,?)
+    `).run(
+      String(input.commitId || ''),
+      JSON.stringify(input.beforeTokens || {}),
+      JSON.stringify(input.afterTokens || {}),
+      JSON.stringify(input.changes || []),
+      new Date().toISOString()
+    )
+  }
+
+  listPreparedTaskMutationCommits(): Array<{
+    commitId: string
+    beforeTokens: Record<string, string>
+    afterTokens: Record<string, string>
+    changes: any[]
+    recoveryAttempts: number
+    parseError: string
+  }> {
+    if (!this.db) return []
+    return (this.db.prepare(`
+      SELECT * FROM task_mutation_commits
+      WHERE status='prepared'
+      ORDER BY prepared_at,commit_id LIMIT 100
+    `).all() as any[]).map(row => {
+      let beforeTokens: Record<string, string> = {}
+      let afterTokens: Record<string, string> = {}
+      let changes: any[] = []
+      const failures: string[] = []
+      try {
+        const parsed = JSON.parse(String(row.before_tokens_json || '{}'))
+        if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error()
+        beforeTokens = parsed
+      } catch { failures.push('变更前身份') }
+      try {
+        const parsed = JSON.parse(String(row.after_tokens_json || '{}'))
+        if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error()
+        afterTokens = parsed
+      } catch { failures.push('变更后身份') }
+      try {
+        const parsed = JSON.parse(String(row.changes_json || '[]'))
+        if (!Array.isArray(parsed)) throw new Error()
+        changes = parsed
+      } catch { failures.push('变更载荷') }
+      return {
+        commitId: String(row.commit_id || ''),
+        beforeTokens,
+        afterTokens,
+        changes,
+        recoveryAttempts: Number(row.recovery_attempts || 0),
+        parseError: failures.length ? `任务恢复载荷无法解析：${failures.join('、')}` : ''
+      }
+    })
+  }
+
+  finalizeTaskMutationCommit(commitId: string, tasks: any[]): void {
+    if (!this.db) throw new Error('个人记忆数据库尚未初始化')
+    this.db.transaction(() => {
+      const row = this.db!.prepare(`
+        SELECT status,changes_json FROM task_mutation_commits WHERE commit_id=?
+      `).get(String(commitId || '')) as any
+      if (!row) throw new Error('找不到待提交的任务变更')
+      if (row.status === 'committed') return
+      if (row.status !== 'prepared') throw new Error('任务变更已被放弃')
+      let changes: any[] = []
+      try {
+        changes = JSON.parse(String(row.changes_json || '[]'))
+        if (!Array.isArray(changes)) throw new Error()
+      } catch {
+        throw new Error('任务恢复载荷无法解析')
+      }
+      this.recordTaskChangeSets(changes)
+      this.syncTasks(tasks, true)
+      this.db!.prepare(`
+        UPDATE task_mutation_commits
+        SET status='committed',applied_at=?,recovery_action='applied',last_error=NULL,
+          before_tokens_json='{}',after_tokens_json='{}',changes_json='[]'
+        WHERE commit_id=?
+      `).run(new Date().toISOString(), commitId)
+    })()
+  }
+
+  abandonTaskMutationCommit(commitId: string, recoveryAction = 'abandoned'): void {
+    if (!this.db) return
+    this.db.prepare(`
+      UPDATE task_mutation_commits
+      SET status='abandoned',applied_at=?,recovery_action=?,last_error=NULL,
+        before_tokens_json='{}',after_tokens_json='{}',changes_json='[]'
+      WHERE commit_id=? AND status='prepared'
+    `).run(new Date().toISOString(), String(recoveryAction || 'abandoned'), commitId)
+  }
+
+  recordTaskMutationRecoveryFailure(commitId: string, error: unknown): void {
+    if (!this.db) return
+    this.db.prepare(`
+      UPDATE task_mutation_commits
+      SET recovery_attempts=recovery_attempts+1,last_error=?
+      WHERE commit_id=? AND status='prepared'
+    `).run(String(error instanceof Error ? error.message : error || '').slice(0, 1000), commitId)
+  }
+
+  getTaskMutationCommitHealth(): {
+    prepared: number
+    committed: number
+    abandoned: number
+    recoveryFailures: number
+    retainedPayloadBytes: number
+  } {
+    if (!this.db) return {
+      prepared: 0, committed: 0, abandoned: 0, recoveryFailures: 0, retainedPayloadBytes: 0
+    }
+    const row = this.db.prepare(`
+      SELECT
+        SUM(CASE WHEN status='prepared' THEN 1 ELSE 0 END) AS prepared,
+        SUM(CASE WHEN status='committed' THEN 1 ELSE 0 END) AS committed,
+        SUM(CASE WHEN status='abandoned' THEN 1 ELSE 0 END) AS abandoned,
+        SUM(CASE WHEN recovery_attempts>0 THEN 1 ELSE 0 END) AS recovery_failures,
+        SUM(CASE WHEN status='prepared' THEN
+          LENGTH(CAST(before_tokens_json AS BLOB))
+          + LENGTH(CAST(after_tokens_json AS BLOB))
+          + LENGTH(CAST(changes_json AS BLOB))
+          ELSE 0 END) AS retained_payload_bytes
+      FROM task_mutation_commits
+    `).get() as any
+    return {
+      prepared: Number(row?.prepared || 0),
+      committed: Number(row?.committed || 0),
+      abandoned: Number(row?.abandoned || 0),
+      recoveryFailures: Number(row?.recovery_failures || 0),
+      retainedPayloadBytes: Number(row?.retained_payload_bytes || 0)
+    }
   }
 
   listTaskHistory(taskIds: string[], limit = 200): any[] {

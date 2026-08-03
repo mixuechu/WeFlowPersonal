@@ -3872,6 +3872,19 @@ function AiAssistantPage() {
               <div><span className="assistant-eyebrow">ACTION ITEMS</span><h3>持续待办池</h3></div>
               <span className="assistant-count">{openTasks.length} 项未完成</span>
             </div>
+            {Number(dashboard?.taskMutationCommits?.prepared || 0) > 0 && <div className="assistant-error">
+              <strong>任务写入恢复现场仍待处理</strong>
+              <span>
+                {Number(dashboard.taskMutationCommits.prepared)} 组任务变更尚未确定性收敛；
+                系统已保留 SQLCipher 恢复载荷，不会猜测覆盖当前任务。
+              </span>
+            </div>}
+            {!!dashboard?.taskMutationCommits?.startupRecovery?.attempted && <small className="assistant-evidence">
+              本次启动核验 {Number(dashboard.taskMutationCommits.startupRecovery.attempted)} 组中断任务变更：
+              完成 {Number(dashboard.taskMutationCommits.startupRecovery.applied)}、
+              放弃 {Number(dashboard.taskMutationCommits.startupRecovery.abandoned)}、
+              冲突 {Number(dashboard.taskMutationCommits.startupRecovery.conflicts)}。
+            </small>}
             <div className="assistant-task-filters">
               <select value={taskStatusFilter} onChange={event => setTaskStatusFilter(event.target.value as any)}>
                 <option value="all">全部进行中状态</option><option value="todo">待处理</option><option value="doing">进行中</option><option value="waiting">等待中</option>

@@ -39,7 +39,8 @@ import {
 } from './taskReviewFeedback'
 import {
   assertTaskMutationBatch,
-  buildTaskMutationToken
+  buildTaskMutationToken,
+  classifyTaskMutationRecovery
 } from './taskMutationPolicy.ts'
 import {
   applyReminderPreferences,
@@ -470,6 +471,13 @@ export class AiAssistantService {
     restored: 0,
     lastRunAt: ''
   }
+  private taskMutationRecovery = {
+    attempted: 0,
+    applied: 0,
+    abandoned: 0,
+    conflicts: 0,
+    lastRecoveredAt: ''
+  }
   private briefingStorage = {
     version: BRIEFING_STORAGE_VERSION,
     retentionDays: BRIEFING_RETENTION_DAYS,
@@ -588,6 +596,7 @@ export class AiAssistantService {
     )
     this.migrateLegacyData()
     this.loadState()
+    this.recoverPreparedTaskMutationCommits()
     personalMemoryStore.recordProcessedIngestionMessageKeys(
       this.state.cursor.recentMessageIds,
       'legacy-state-hot-cache-migration'
@@ -877,6 +886,39 @@ export class AiAssistantService {
     } catch (error) {
       console.error('[AI Assistant] 个人记忆任务同步失败:', sanitizeDiagnosticText(error))
       if (strictMemorySync) throw error
+    }
+  }
+
+  private persistTaskMutationState(): void {
+    writeEncryptedDurableJson(this.statePath, this.state, this.stateEncryptionKey)
+    this.stateStorage.encrypted = true
+    this.stateStorage.lastWriteAt = new Date().toISOString()
+  }
+
+  private recoverPreparedTaskMutationCommits(): void {
+    for (const commit of personalMemoryStore.listPreparedTaskMutationCommits()) {
+      this.taskMutationRecovery.attempted += 1
+      try {
+        if (commit.parseError) throw new Error(commit.parseError)
+        const action = classifyTaskMutationRecovery(
+          this.state.tasks,
+          commit.beforeTokens,
+          commit.afterTokens
+        )
+        if (action === 'apply') {
+          personalMemoryStore.finalizeTaskMutationCommit(commit.commitId, this.state.tasks)
+          this.taskMutationRecovery.applied += 1
+        } else if (action === 'abandon') {
+          personalMemoryStore.abandonTaskMutationCommit(commit.commitId, 'state_not_committed')
+          this.taskMutationRecovery.abandoned += 1
+        } else {
+          this.taskMutationRecovery.conflicts += 1
+          throw new Error('任务状态同时不匹配变更前和变更后身份，已保留现场等待诊断')
+        }
+        this.taskMutationRecovery.lastRecoveredAt = new Date().toISOString()
+      } catch (error) {
+        personalMemoryStore.recordTaskMutationRecoveryFailure(commit.commitId, error)
+      }
     }
   }
 
@@ -3313,6 +3355,11 @@ export class AiAssistantService {
         activeStatuses: ['todo', 'doing', 'waiting'],
         closedTasks: 'sqlcipher_archive'
       },
+      taskMutationCommits: {
+        ...personalMemoryStore.getTaskMutationCommitHealth(),
+        startupRecovery: this.taskMutationRecovery,
+        policy: 'prepared_state_then_atomic_sql_v1'
+      },
       taskRevision: crypto.createHash('sha256')
         .update(this.state.tasks.map(task => [
           task.id, task.updatedAt || task.createdAt || '', task.status,
@@ -3799,6 +3846,11 @@ export class AiAssistantService {
     const pdfOcr = await getPdfOcrStatus()
     return {
       ...databaseDiagnostics,
+      taskMutationCommits: {
+        ...personalMemoryStore.getTaskMutationCommitHealth(),
+        startupRecovery: this.taskMutationRecovery,
+        policy: 'prepared_state_then_atomic_sql_v1'
+      },
       ingestionSummary: {
         ...ingestionTotals,
         estimatedCost:
@@ -4358,10 +4410,36 @@ export class AiAssistantService {
       const after = this.applyTaskPatch(before, update.patch || {}, now)
       return { taskId: before.id, before, after, reason: String(update.patch?.reason || 'manual_edit'), evidence: after.evidence || [] }
     })
-    personalMemoryStore.recordTaskChangeSets(changes)
     const replacements = new Map(changes.map(change => [change.taskId, change.after]))
-    this.state.tasks = this.state.tasks.map(task => replacements.get(task.id) || task)
-    this.saveState(true)
+    const previousTasks = this.state.tasks
+    const nextTasks = previousTasks.map(task => replacements.get(task.id) || task)
+    const commitId = `task_mutation_${crypto.randomUUID()}`
+    personalMemoryStore.prepareTaskMutationCommit({
+      commitId,
+      beforeTokens: Object.fromEntries(changes.map(change => [
+        change.taskId,
+        buildTaskMutationToken(change.before)
+      ])),
+      afterTokens: Object.fromEntries(changes.map(change => [
+        change.taskId,
+        buildTaskMutationToken(change.after)
+      ])),
+      changes
+    })
+    this.state.tasks = nextTasks
+    try {
+      this.persistTaskMutationState()
+      personalMemoryStore.finalizeTaskMutationCommit(commitId, nextTasks)
+    } catch (error) {
+      this.state.tasks = previousTasks
+      try {
+        this.persistTaskMutationState()
+        personalMemoryStore.abandonTaskMutationCommit(commitId, 'runtime_rollback')
+      } catch (rollbackError) {
+        personalMemoryStore.recordTaskMutationRecoveryFailure(commitId, rollbackError)
+      }
+      throw error
+    }
     return changes.map(change => ({
       ...change.after,
       mutationToken: buildTaskMutationToken(change.after)

@@ -3,7 +3,8 @@ import test from 'node:test'
 import {
   assertTaskMutationBatch,
   assertTaskMutationToken,
-  buildTaskMutationToken
+  buildTaskMutationToken,
+  classifyTaskMutationRecovery
 } from '../electron/services/taskMutationPolicy.ts'
 
 const task = {
@@ -57,4 +58,16 @@ test('batch validation rejects every update before a stale member can be applied
     { id: task.id, mutationToken: buildTaskMutationToken(task) },
     { id: task.id, mutationToken: buildTaskMutationToken(task) }
   ]), /重复项目/)
+})
+
+test('prepared task recovery applies, abandons or preserves only exact states', () => {
+  const after = { ...task, status: 'done', updatedAt: '2026-08-04T00:01:00.000Z' }
+  const beforeTokens = { [task.id]: buildTaskMutationToken(task) }
+  const afterTokens = { [task.id]: buildTaskMutationToken(after) }
+  assert.equal(classifyTaskMutationRecovery([after], beforeTokens, afterTokens), 'apply')
+  assert.equal(classifyTaskMutationRecovery([task], beforeTokens, afterTokens), 'abandon')
+  assert.equal(classifyTaskMutationRecovery([
+    { ...task, status: 'doing', updatedAt: '2026-08-04T00:00:30.000Z' }
+  ], beforeTokens, afterTokens), 'conflict')
+  assert.equal(classifyTaskMutationRecovery([], {}, {}), 'conflict')
 })

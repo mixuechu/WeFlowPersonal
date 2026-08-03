@@ -6792,6 +6792,68 @@ test('batch task history is atomic when any member fails', () => withStore(store
   `).get().count), 0)
 }))
 
+test('prepared task mutation commits directory and history atomically then compacts recovery payload', () => withStore(store => {
+  const base = (id: string) => ({
+    id,
+    title: id,
+    detail: '',
+    owner: '我',
+    priority: 'medium',
+    confidence: 1,
+    classification: 'mine',
+    status: 'todo',
+    createdAt: '2026-08-04T00:00:00.000Z',
+    updatedAt: '2026-08-04T00:00:00.000Z',
+    evidence: []
+  })
+  const before = [base('prepared-task-a'), base('prepared-task-b')]
+  const after = before.map(task => ({
+    ...task,
+    status: 'done',
+    updatedAt: '2026-08-04T00:01:00.000Z'
+  }))
+  store.syncTasks(before)
+  store.prepareTaskMutationCommit({
+    commitId: 'prepared-task-commit',
+    beforeTokens: { 'prepared-task-a': 'before-a', 'prepared-task-b': 'before-b' },
+    afterTokens: { 'prepared-task-a': 'after-a', 'prepared-task-b': 'after-b' },
+    changes: before.map((task, index) => ({
+      taskId: task.id,
+      before: task,
+      after: after[index],
+      reason: 'bulk_complete_visible',
+      evidence: []
+    }))
+  })
+  const database = (store as any).db
+  database.exec(`
+    CREATE TEMP TRIGGER fail_prepared_task_history
+    BEFORE INSERT ON task_history
+    WHEN NEW.task_id='prepared-task-b'
+    BEGIN
+      SELECT RAISE(ABORT,'injected prepared task failure');
+    END
+  `)
+  assert.throws(() => store.finalizeTaskMutationCommit('prepared-task-commit', after),
+    /injected prepared task failure/)
+  assert.equal(store.getTaskMutationCommitHealth().prepared, 1)
+  assert.equal(store.countTaskHistory('prepared-task-a'), 0)
+  assert.equal(store.listTaskArchive({ status: 'all' }).total, 0)
+  assert.equal(database.prepare(`SELECT status FROM task_directory WHERE id='prepared-task-a'`).get().status, 'todo')
+
+  database.exec('DROP TRIGGER fail_prepared_task_history')
+  store.finalizeTaskMutationCommit('prepared-task-commit', after)
+  const health = store.getTaskMutationCommitHealth()
+  assert.deepEqual(
+    { prepared: health.prepared, committed: health.committed, retainedPayloadBytes: health.retainedPayloadBytes },
+    { prepared: 0, committed: 1, retainedPayloadBytes: 0 }
+  )
+  assert.equal(store.countTaskHistory('prepared-task-a'), 1)
+  assert.equal(store.countTaskHistory('prepared-task-b'), 1)
+  assert.equal(store.listTaskArchive({ status: 'all' }).total, 2)
+  assert.equal(database.prepare(`SELECT status FROM task_directory WHERE id='prepared-task-a'`).get().status, 'done')
+}))
+
 test('partial ingestion keeps completed checkpoints visible for safe resume', () => withStore(store => {
   store.startIngestionRun('run-resume', 'deepseek-test', 'prompt-test')
   store.recordIngestionBatch('run-resume', 0, 100, 'running')

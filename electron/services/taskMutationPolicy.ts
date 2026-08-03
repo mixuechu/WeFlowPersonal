@@ -53,3 +53,17 @@ export const assertTaskMutationBatch = (
     assertTaskMutationToken(task, update.mutationToken)
   }
 }
+
+export const classifyTaskMutationRecovery = (
+  currentTasks: any[],
+  beforeTokens: Record<string, string>,
+  afterTokens: Record<string, string>
+): 'apply' | 'abandon' | 'conflict' => {
+  const current = new Map((Array.isArray(currentTasks) ? currentTasks : [])
+    .map(task => [String(task?.id || ''), buildTaskMutationToken(task)]))
+  const ids = [...new Set([...Object.keys(beforeTokens || {}), ...Object.keys(afterTokens || {})])]
+  if (!ids.length) return 'conflict'
+  if (ids.every(id => current.get(id) === String(afterTokens?.[id] || ''))) return 'apply'
+  if (ids.every(id => current.get(id) === String(beforeTokens?.[id] || ''))) return 'abandon'
+  return 'conflict'
+}
