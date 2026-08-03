@@ -4562,7 +4562,19 @@ function registerIpcHandlers() {
   ipcMain.handle('ai-assistant:updateTaskReview', (_, id: string, decision: 'mine' | 'rejected') => aiAssistantService.updateTaskReview(id, decision))
   ipcMain.handle('ai-assistant:revertTaskReview', (_, evidenceFingerprint: string) => aiAssistantService.revertTaskReview(evidenceFingerprint))
   ipcMain.handle('ai-assistant:updateReminderPreference', (_, input: any) => aiAssistantService.updateReminderPreference(input))
-  ipcMain.handle('ai-assistant:updateGraphReview', (_, id: string, decision: 'confirmed' | 'rejected', options?: { mergeTargetEntityId?: string; correctedCanonicalName?: string; correctedSummaryText?: string; correctedAliasText?: string; relationCorrection?: { subjectId?: string; predicate?: string; objectId?: string } }) => aiAssistantService.updateGraphReview(id, decision, options))
+  ipcMain.handle('ai-assistant:updateGraphReview', (
+    _,
+    id: string,
+    decision: 'confirmed' | 'rejected',
+    options?: {
+      expectedRevision?: string
+      mergeTargetEntityId?: string
+      correctedCanonicalName?: string
+      correctedSummaryText?: string
+      correctedAliasText?: string
+      relationCorrection?: { subjectId?: string; predicate?: string; objectId?: string }
+    }
+  ) => aiAssistantService.updateGraphReview(id, decision, options))
   ipcMain.handle('ai-assistant:revertMerge', (_, id: number) => aiAssistantService.revertMerge(id))
   ipcMain.handle('ai-assistant:updateMemoryItemStatus', (_, kind: 'claim' | 'event', id: string, status: 'confirmed' | 'rejected') =>
     aiAssistantService.updateMemoryItemStatus(kind, id, status))

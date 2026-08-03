@@ -94,6 +94,7 @@ import {
   assertAssistantConversationDeletionConfirmation,
   buildAssistantConversationDeletionPreviewToken
 } from './assistantConversationDeletionPolicy'
+import { assertGraphReviewMutationRevision } from './graphReviewMutationPolicy'
 import { applyRelationConfirmation, planRelationConfirmation, type RelationCorrection } from './relationCorrectionPolicy'
 import {
   enqueueUniqueNotification,
@@ -4466,8 +4467,19 @@ export class AiAssistantService {
   updateGraphReview(
     id: string,
     decision: 'confirmed' | 'rejected',
-    options?: { mergeTargetEntityId?: string; correctedCanonicalName?: string; correctedSummaryText?: string; correctedAliasText?: string; relationCorrection?: RelationCorrection }
+    options?: {
+      expectedRevision?: string
+      mergeTargetEntityId?: string
+      correctedCanonicalName?: string
+      correctedSummaryText?: string
+      correctedAliasText?: string
+      relationCorrection?: RelationCorrection
+    }
   ): any {
+    assertGraphReviewMutationRevision(
+      options?.expectedRevision,
+      personalMemoryStore.getGraphReviewRevision()
+    )
     const review = this.state.graph.reviewQueue.find(item => item.id === id)
     if (!review || review.status !== 'pending') return null
     const resolutionNow = new Date().toISOString()

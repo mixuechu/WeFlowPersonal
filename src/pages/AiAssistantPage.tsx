@@ -1989,6 +1989,7 @@ function AiAssistantPage() {
     id: string,
     decision: 'confirmed' | 'rejected',
     options?: {
+      expectedRevision?: string
       mergeTargetEntityId?: string
       correctedCanonicalName?: string
       correctedSummaryText?: string
@@ -1997,7 +1998,10 @@ function AiAssistantPage() {
     }
   ) => {
     try {
-      await window.electronAPI.aiAssistant.updateGraphReview(id, decision, options)
+      await window.electronAPI.aiAssistant.updateGraphReview(id, decision, {
+        ...options,
+        expectedRevision: String(reviewPage.revision || '')
+      })
       setMergeTargets(current => {
         const next = { ...current }
         delete next[id]
@@ -2021,7 +2025,12 @@ function AiAssistantPage() {
       await load()
       setReviewRefreshKey(value => value + 1)
     } catch (error: any) {
-      setMessage(error?.message || String(error))
+      const errorMessage = error?.message || String(error)
+      setMessage(errorMessage)
+      if (errorMessage.includes('审阅队列在展示后发生了变化')) {
+        reviewPageGate.current.invalidate()
+        setReviewRefreshKey(value => value + 1)
+      }
     }
   }
 

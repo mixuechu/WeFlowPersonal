@@ -5,6 +5,7 @@ import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { createHash, randomBytes } from 'node:crypto'
 import { PersonalMemoryStore } from '../electron/services/personalMemoryStore.ts'
+import { assertGraphReviewMutationRevision } from '../electron/services/graphReviewMutationPolicy.ts'
 import { buildMemorySearchFeedbackContext } from '../electron/services/memorySearchFeedback.ts'
 import {
   filterMemorySearchResults,
@@ -4567,7 +4568,7 @@ test('graph review revision covers queue and enriched graph state and self-heals
     const first = new PersonalMemoryStore()
     first.initialize(databasePath)
     const initial = Number(first.getGraphReviewRevision())
-    first.syncGraph({
+    const graph = {
       entities: [{
         id: 'review-revision-person',
         type: 'person',
@@ -4586,8 +4587,20 @@ test('graph review revision covers queue and enriched graph state and self-heals
         status: 'pending',
         createdAt: '2026-08-03T00:00:00.000Z'
       }]
-    } as any)
+    } as any
+    first.syncGraph(graph)
     assert.ok(Number(first.getGraphReviewRevision()) > initial)
+    const visibleRevision = first.listReviewLedgerPage({ status: 'pending' }).revision
+    assert.doesNotThrow(() => assertGraphReviewMutationRevision(
+      visibleRevision,
+      first.getGraphReviewRevision()
+    ))
+    graph.reviewQueue[0].detail = '后台补充了新的候选原文'
+    first.syncGraph(graph)
+    assert.throws(() => assertGraphReviewMutationRevision(
+      visibleRevision,
+      first.getGraphReviewRevision()
+    ), /刷新后重新确认/)
     assert.deepEqual(first.getGraphReviewRevisionHealth(), {
       version: 'graph-review-revision-v1',
       revision: first.getGraphReviewRevision(),
