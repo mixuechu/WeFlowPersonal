@@ -400,6 +400,7 @@ export class PersonalMemoryStore {
         role TEXT NOT NULL,
         content TEXT NOT NULL,
         citations_json TEXT NOT NULL DEFAULT '[]',
+        grounding_json TEXT NOT NULL DEFAULT '{}',
         created_at TEXT NOT NULL
       ) STRICT;
       CREATE INDEX IF NOT EXISTS idx_assistant_conversations_updated
@@ -672,6 +673,7 @@ export class PersonalMemoryStore {
     this.ensureColumn('task_review_decisions', 'revoked_at', 'TEXT')
     this.ensureColumn('memory_review_decisions', 'reason', `TEXT NOT NULL DEFAULT ''`)
     this.ensureColumn('memory_review_decisions', 'protect_from_extraction', 'INTEGER NOT NULL DEFAULT 1')
+    this.ensureColumn('assistant_messages', 'grounding_json', `TEXT NOT NULL DEFAULT '{}'`)
     this.db.prepare(`
       UPDATE memory_review_decisions
       SET actor='system',
@@ -7029,7 +7031,35 @@ export class PersonalMemoryStore {
     }
   }
 
-  saveAssistantExchange(question: string, answer: string, citations: any[], conversationId?: string): string {
+  private compactAssistantGroundingAudit(value: any): any {
+    if (!value || typeof value !== 'object') return {}
+    const count = (key: string) => Math.max(0, Math.min(10_000, Math.floor(Number(value[key]) || 0)))
+    const version = String(value.version || '').slice(0, 80)
+    const promptIsolationVersion = String(value.promptIsolationVersion || '').slice(0, 80)
+    if (!version && !promptIsolationVersion) return {}
+    const statementCitations = (Array.isArray(value.statementCitations) ? value.statementCitations : [])
+      .slice(0, 24)
+      .map((citationIds: any) => [...new Set((Array.isArray(citationIds) ? citationIds : [])
+        .map(item => String(item || '').trim().slice(0, 512))
+        .filter(Boolean))].slice(0, 20))
+    return {
+      version,
+      proposedStatements: count('proposedStatements'),
+      acceptedStatements: count('acceptedStatements'),
+      rejectedStatements: count('rejectedStatements'),
+      acceptedCitationIds: count('acceptedCitationIds'),
+      promptIsolationVersion,
+      statementCitations
+    }
+  }
+
+  saveAssistantExchange(
+    question: string,
+    answer: string,
+    citations: any[],
+    conversationId?: string,
+    groundingAudit: any = {}
+  ): string {
     if (!this.db) return ''
     const existing = conversationId
       ? this.db.prepare('SELECT updated_at FROM assistant_conversations WHERE id=?').get(conversationId) as any
@@ -7045,15 +7075,20 @@ export class PersonalMemoryStore {
       INSERT INTO assistant_conversations(id,title,created_at,updated_at) VALUES(?,?,?,?)
       ON CONFLICT(id) DO UPDATE SET updated_at=excluded.updated_at
     `).run(id, question.slice(0, 80), now, answerAt)
-    const insert = this.db.prepare('INSERT INTO assistant_messages(id,conversation_id,role,content,citations_json,created_at) VALUES(?,?,?,?,?,?)')
+    const insert = this.db.prepare(`
+      INSERT INTO assistant_messages(
+        id,conversation_id,role,content,citations_json,grounding_json,created_at
+      ) VALUES(?,?,?,?,?,?,?)
+    `)
     const messageNonce = Math.random().toString(16).slice(2)
-    insert.run(`msg_${Date.now()}_${messageNonce}_q`, id, 'user', question, '[]', now)
+    insert.run(`msg_${Date.now()}_${messageNonce}_q`, id, 'user', question, '[]', '{}', now)
     insert.run(
       `msg_${Date.now()}_${messageNonce}_a`,
       id,
       'assistant',
       answer,
       JSON.stringify(this.compactAssistantCitations(citations)),
+      JSON.stringify(this.compactAssistantGroundingAudit(groundingAudit)),
       answerAt
     )
     return id
@@ -7167,8 +7202,8 @@ export class PersonalMemoryStore {
       SELECT COUNT(*) AS count FROM assistant_messages WHERE conversation_id=?
     `).get(id) as any)?.count || 0)
     const rows = this.db.prepare(`
-      SELECT id,role,content,citations_json,created_at FROM (
-        SELECT id,role,content,citations_json,created_at
+      SELECT id,role,content,citations_json,grounding_json,created_at FROM (
+        SELECT id,role,content,citations_json,grounding_json,created_at
         FROM assistant_messages WHERE conversation_id=?
         ORDER BY created_at DESC,id DESC LIMIT ? OFFSET ?
       ) ORDER BY created_at,id
@@ -7181,8 +7216,11 @@ export class PersonalMemoryStore {
       hasOlder: offset + rows.length < total,
       messages: rows.map(row => {
         let citations: any[] = []
+        let groundingAudit: any = {}
         try { citations = JSON.parse(String(row.citations_json || '[]')) } catch {}
-        return { ...row, citations }
+        try { groundingAudit = this.compactAssistantGroundingAudit(JSON.parse(String(row.grounding_json || '{}'))) } catch {}
+        const { citations_json: _citationsJson, grounding_json: _groundingJson, ...message } = row
+        return { ...message, citations, groundingAudit }
       })
     }
   }

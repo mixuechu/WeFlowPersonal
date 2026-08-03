@@ -4240,7 +4240,16 @@ test('assistant conversations persist ordered turns, citations and deletion acro
       options: { sourceIds: ['wechat'], documentTypes: ['claim'] },
       version: 'memory-search-feedback-v2'
     }
-  }])
+  }], undefined, {
+    version: 'statement-citations-v1',
+    proposedStatements: 2,
+    acceptedStatements: 1,
+    rejectedStatements: 1,
+    acceptedCitationIds: 1,
+    promptIsolationVersion: 'untrusted-memory-envelope-v1',
+    statementCitations: [['claim:one']],
+    leakedSensitiveField: '不能离开主进程'
+  })
   store.saveAssistantExchange('第二问', '第二答', [{
     documentId: 'event:two',
     title: '证据二'
@@ -4268,6 +4277,17 @@ test('assistant conversations persist ordered turns, citations and deletion acro
   assert.equal(complete.messages[1].citations[0].content, undefined)
   assert.equal(complete.messages[1].citations[0].evidence, undefined)
   assert.equal(JSON.stringify(complete.messages[1].citations).includes('不应复制'), false)
+  assert.deepEqual(complete.messages[1].groundingAudit, {
+    version: 'statement-citations-v1',
+    proposedStatements: 2,
+    acceptedStatements: 1,
+    rejectedStatements: 1,
+    acceptedCitationIds: 1,
+    promptIsolationVersion: 'untrusted-memory-envelope-v1',
+    statementCitations: [['claim:one']]
+  })
+  assert.equal(JSON.stringify(complete.messages[1].groundingAudit).includes('不能离开主进程'), false)
+  assert.deepEqual(complete.messages[0].groundingAudit, {})
 
   assert.equal(store.deleteAssistantConversation(conversationId), true)
   assert.equal(store.getAssistantConversation(conversationId), null)
@@ -4327,6 +4347,22 @@ test('legacy assistant citations are compacted at scale without losing reference
       )
     })
     transaction()
+    database.exec(`
+      DROP INDEX IF EXISTS idx_assistant_messages_conversation_time;
+      ALTER TABLE assistant_messages RENAME TO assistant_messages_before_grounding;
+      CREATE TABLE assistant_messages (
+        id TEXT PRIMARY KEY,
+        conversation_id TEXT NOT NULL REFERENCES assistant_conversations(id) ON DELETE CASCADE,
+        role TEXT NOT NULL,
+        content TEXT NOT NULL,
+        citations_json TEXT NOT NULL DEFAULT '[]',
+        created_at TEXT NOT NULL
+      ) STRICT;
+      INSERT INTO assistant_messages(id,conversation_id,role,content,citations_json,created_at)
+        SELECT id,conversation_id,role,content,citations_json,created_at
+        FROM assistant_messages_before_grounding;
+      DROP TABLE assistant_messages_before_grounding;
+    `)
     first.close()
 
     const reopened = new PersonalMemoryStore()
@@ -4341,6 +4377,8 @@ test('legacy assistant citations are compacted at scale without losing reference
       assert.equal(Number(raw.count), 2_501)
       assert.equal(Number(raw.leakedEvidence), 0)
       assert.equal(Number(raw.leakedContent), 0)
+      const columns = (reopened as any).db.prepare(`PRAGMA table_info(assistant_messages)`).all()
+      assert.ok(columns.some((column: any) => column.name === 'grounding_json'))
       const stats = reopened.getAssistantCitationStorageStats()
       assert.equal(stats.updatedMessages, 2_501)
       assert.equal(stats.citationsCompacted, 2_500)

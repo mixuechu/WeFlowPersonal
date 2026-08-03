@@ -109,7 +109,9 @@ import {
 } from './encryptedDurableJsonState'
 import {
   PERSONAL_DATA_SOURCE_CATALOG,
+  MEMORY_RAG_SYSTEM_PROMPT,
   buildModelMemoryContext,
+  buildUntrustedMemoryQuestionEnvelope,
   classifyDocumentTaskOwnership,
   finalizeGroundedMemoryAnswer,
   getMemoryEvidenceEligibility,
@@ -5035,17 +5037,20 @@ export class AiAssistantService {
     const baseUrl = String(this.config.get('aiAssistantApiBaseUrl') || 'https://api.deepseek.com').replace(/\/$/, '')
     const model = String(this.config.get('aiAssistantApiModel') || 'deepseek-v4-flash')
     const redactionLevel = String(this.config.get('aiAssistantSensitiveRedactionLevel') || 'standard') as SensitiveRedactionLevel
-    const outbound = redactSensitiveText(
-      `当前问题：${query}\n历史对话（只用于理解指代和追问，不是事实证据）：${JSON.stringify(conversationHistory)}\n查询规划：${JSON.stringify(plan)}\n最终检索范围：${JSON.stringify(plannedOptions)}\n本地检索结果：${JSON.stringify(context)}`,
-      redactionLevel
-    )
+    const outbound = redactSensitiveText(buildUntrustedMemoryQuestionEnvelope({
+      question: query,
+      conversationHistory,
+      queryPlan: plan,
+      searchOptions: plannedOptions,
+      context
+    }), redactionLevel)
     const response = await fetch(`${baseUrl}/chat/completions`, {
       method: 'POST',
       headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
       body: JSON.stringify({
         model, temperature: 0.1, max_tokens: 1800, response_format: { type: 'json_object' },
         messages: [
-          { role: 'system', content: '你是本地个人记忆问答助手。历史对话只能帮助理解代词、指代和追问，绝不是事实证据，不得引用或复述其中未经本次检索重新支持的结论。只能依据本次提供的检索结果回答；证据不足必须明确说不知道。只有 canSupportFacts=true 且包含原始 evidence 的文档可以支持事实结论。status=candidate 是待人工确认的模型候选，只能说明“存在待确认候选”，绝不能当作事实；status=cancelled 仅表示历史记录已取消，绝不能据此声称事件当前有效或已经发生；已拒绝记录不会提供给你。没有原始 evidence 的实体摘要只能作为检索线索。每个事实结论必须引用能够支持它的 documentId；不得引用 canSupportFacts=false 的文档。只输出 JSON：{"answer":"回答","citationIds":["documentId"],"uncertainty":"不确定性说明"}。' },
+          { role: 'system', content: MEMORY_RAG_SYSTEM_PROMPT },
           { role: 'user', content: outbound.text }
         ]
       }),
@@ -5073,13 +5078,21 @@ export class AiAssistantService {
         relevanceFeedback: String(result?.relevance_feedback || '')
       }
     })
-    const id = personalMemoryStore.saveAssistantExchange(query, answer, citations, conversationId)
+    const id = personalMemoryStore.saveAssistantExchange(
+      query,
+      answer,
+      citations,
+      conversationId,
+      grounded.groundingAudit
+    )
     return {
       conversationId: id,
       question: query,
       answer,
       uncertainty: String(parsed.uncertainty || ''),
       citations,
+      groundedStatements: grounded.statements,
+      groundingAudit: grounded.groundingAudit,
       sensitiveRedaction: outbound.summary,
       queryPlan: {
         ...plan,

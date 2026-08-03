@@ -3519,9 +3519,21 @@ function AiAssistantPage() {
                     question: question?.content || memoryConversation.title,
                     answer: item.content,
                     citations: item.citations,
+                    groundingAudit: item.groundingAudit,
+                    groundedStatements: String(item.content || '').split(/\n{2,}/)
+                      .map((text: string, statementIndex: number) => ({
+                        text,
+                        citationIds: item.groundingAudit?.statementCitations?.[statementIndex] || []
+                      })),
                     uncertainty: ''
                   })
                 }}>查看 {item.citations.length} 条引用</button>}
+                {item.role === 'assistant' && item.groundingAudit?.version === 'statement-citations-v1' && <small>
+                  逐条证据门禁：接受 {Number(item.groundingAudit.acceptedStatements || 0)} 条
+                  {Number(item.groundingAudit.rejectedStatements || 0)
+                    ? `，拦截 ${Number(item.groundingAudit.rejectedStatements)} 条无合格引用陈述`
+                    : ''}
+                </small>}
               </article>)}
               {!memoryConversation && <div className="assistant-empty">新对话会在首次回答后加密保存；重启后可以从左侧继续。</div>}
             </div>
@@ -3538,6 +3550,29 @@ function AiAssistantPage() {
           </div>
           {memoryAnswer && <div className="assistant-memory-answer">
             <p>{memoryAnswer.answer}</p>
+            {!!memoryAnswer.groundedStatements?.length && <div className="assistant-grounded-statements">
+              {memoryAnswer.groundedStatements.map((statement: any, statementIndex: number) => <article
+                key={`${statementIndex}-${statement.text}`}>
+                <span>{statement.text}</span>
+                <small>
+                  依据：{(statement.citationIds || []).map((documentId: string) => {
+                    const citationIndex = (memoryAnswer.citations || [])
+                      .findIndex((citation: any) => citation.documentId === documentId)
+                    const citation = (memoryAnswer.citations || [])[citationIndex]
+                    return citation
+                      ? `[${citationIndex + 1}] ${citation.title}`
+                      : documentId
+                  }).join(' · ') || '无合格引用'}
+                </small>
+              </article>)}
+            </div>}
+            {memoryAnswer.groundingAudit?.version === 'statement-citations-v1' && <small>
+              可信回答门禁：{Number(memoryAnswer.groundingAudit.acceptedStatements || 0)} 条陈述逐条通过原文引用核验；
+              {Number(memoryAnswer.groundingAudit.rejectedStatements || 0)
+                ? ` 已拦截 ${Number(memoryAnswer.groundingAudit.rejectedStatements)} 条无合格引用陈述。`
+                : ' 没有发现无合格引用陈述。'}
+              {' '}聊天、邮件和文档内容均按不可信数据隔离，不会被当作模型指令执行。
+            </small>}
             {memoryAnswer.uncertainty && <small>不确定性：{memoryAnswer.uncertainty}</small>}
             {!!memoryAnswer.sensitiveRedaction?.total && <small>
               本次发送前已本地脱敏 {memoryAnswer.sensitiveRedaction.total} 处：
