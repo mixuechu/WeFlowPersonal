@@ -4557,7 +4557,10 @@ function registerIpcHandlers() {
   ipcMain.handle('ai-assistant:cancelSync', () => aiAssistantService.cancelSync())
   ipcMain.handle('ai-assistant:getSettings', () => aiAssistantService.getSettings())
   ipcMain.handle('ai-assistant:setSettings', (_, input: any) => aiAssistantService.setSettings(input))
-  ipcMain.handle('ai-assistant:updateTask', (_, id: string, patch: any) => aiAssistantService.updateTask(id, patch))
+  ipcMain.handle('ai-assistant:updateTask', (
+    _, id: string, patch: any, mutationToken?: string
+  ) => aiAssistantService.updateTask(id, patch, mutationToken))
+  ipcMain.handle('ai-assistant:updateTasks', (_, updates: any[]) => aiAssistantService.updateTasks(updates))
   ipcMain.handle('ai-assistant:createTaskFromMemory', (_, input: any) => aiAssistantService.createTaskFromMemory(input))
   ipcMain.handle('ai-assistant:updateTaskReview', (
     _, id: string, decision: 'mine' | 'rejected', expectedRevision?: string

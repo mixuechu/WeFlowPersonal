@@ -38,6 +38,10 @@ import {
   taskEvidenceFingerprint
 } from './taskReviewFeedback'
 import {
+  assertTaskMutationBatch,
+  buildTaskMutationToken
+} from './taskMutationPolicy.ts'
+import {
   applyReminderPreferences,
   buildTaskReminders,
   findMatchingTask,
@@ -3241,7 +3245,10 @@ export class AiAssistantService {
     const latest = dates[0] ? this.state.briefings[dates[0]] : null
     const tasks = this.state.tasks.filter(task => task.classification === 'mine')
     const activeTasks = tasks.filter(task => !['done', 'cancelled'].includes(task.status))
-    const taskPayload = activeTasks.map(buildTaskDirectoryItem)
+    const taskPayload = activeTasks.map(task => ({
+      ...buildTaskDirectoryItem(task),
+      mutationToken: buildTaskMutationToken(task)
+    }))
     const taskOwnershipReviewStats = personalMemoryStore.getTaskOwnershipReviewStats()
     const allTaskReminders = buildTaskReminders(tasks)
     const reminderResult = applyReminderPreferences(allTaskReminders, this.state.reminderPreferences)
@@ -3453,11 +3460,15 @@ export class AiAssistantService {
     const task = this.state.tasks.find(item => item.id === String(taskId || ''))
     if (!task) return null
     const history = personalMemoryStore.listTaskHistory([task.id], TASK_HISTORY_LIMIT)
-    return buildTaskDossier(task, history, personalMemoryStore.countTaskHistory(task.id))
+    const dossier = buildTaskDossier(task, history, personalMemoryStore.countTaskHistory(task.id))
+    return {
+      ...dossier,
+      task: { ...dossier.task, mutationToken: buildTaskMutationToken(task) }
+    }
   }
 
   getTaskArchive(options: any = {}): any {
-    return personalMemoryStore.listTaskArchive({
+    const page = personalMemoryStore.listTaskArchive({
       status: options?.status === 'done' || options?.status === 'cancelled'
         ? options.status
         : 'all',
@@ -3472,6 +3483,15 @@ export class AiAssistantService {
       offset: Number(options?.offset || 0),
       revision: String(options?.revision || '')
     })
+    if (page.stale) return page
+    const tasks = new Map(this.state.tasks.map(task => [task.id, task]))
+    return {
+      ...page,
+      items: page.items.map((item: any) => {
+        const task = tasks.get(String(item.id || ''))
+        return task ? { ...item, mutationToken: buildTaskMutationToken(task) } : item
+      })
+    }
   }
 
   getTaskOwnershipReviews(options: any = {}): any {
@@ -3718,7 +3738,13 @@ export class AiAssistantService {
     }, id)
     if (!project) throw new Error('项目不存在或已经不在当前可信视图中')
     return {
-      project,
+      project: {
+        ...project,
+        tasks: (project.tasks || []).map((item: any) => {
+          const task = this.state.tasks.find(candidate => candidate.id === item.id)
+          return task ? { ...item, mutationToken: buildTaskMutationToken(task) } : item
+        })
+      },
       payloadPolicy: {
         version: 'project-dossier-v1',
         evidence: 'bounded',
@@ -4299,28 +4325,51 @@ export class AiAssistantService {
     return this.getSettings()
   }
 
-  updateTask(id: string, patch: any): AssistantTask | null {
-    const task = this.state.tasks.find(item => item.id === id)
-    if (!task) return null
-    const before = structuredClone(task)
-    if (['todo', 'doing', 'waiting', 'done', 'cancelled'].includes(patch.status)) task.status = patch.status
-    if (typeof patch.title === 'string' && patch.title.trim()) task.title = patch.title.trim().slice(0, 300)
-    if (typeof patch.detail === 'string') task.detail = patch.detail.trim().slice(0, 2000)
-    if (typeof patch.owner === 'string') task.owner = patch.owner.trim().slice(0, 100) || '我'
-    if (Array.isArray(patch.collaborators)) task.collaborators = patch.collaborators
+  private applyTaskPatch(task: AssistantTask, patch: any, updatedAt: string): AssistantTask {
+    const next = structuredClone(task)
+    if (['todo', 'doing', 'waiting', 'done', 'cancelled'].includes(patch.status)) next.status = patch.status
+    if (typeof patch.title === 'string' && patch.title.trim()) next.title = patch.title.trim().slice(0, 300)
+    if (typeof patch.detail === 'string') next.detail = patch.detail.trim().slice(0, 2000)
+    if (typeof patch.owner === 'string') next.owner = patch.owner.trim().slice(0, 100) || '我'
+    if (Array.isArray(patch.collaborators)) next.collaborators = patch.collaborators
       .map((value: any) => String(value || '').trim().slice(0, 80)).filter(Boolean).slice(0, 20)
-    if (typeof patch.project === 'string') task.project = patch.project.trim().slice(0, 160)
+    if (typeof patch.project === 'string') next.project = patch.project.trim().slice(0, 160)
     if (Array.isArray(patch.dependsOnIds)) {
       const knownIds = new Set(this.state.tasks.map(item => item.id))
-      task.dependsOnIds = [...new Set(patch.dependsOnIds.map(String).filter((value: string) => value !== id && knownIds.has(value)))].slice(0, 30)
+      next.dependsOnIds = [...new Set(patch.dependsOnIds.map(String)
+        .filter((value: string) => value !== task.id && knownIds.has(value)))].slice(0, 30)
     }
-    if (['action', 'delegated', 'waiting'].includes(patch.taskKind)) task.taskKind = patch.taskKind
-    if (typeof patch.due === 'string') task.due = patch.due.trim().slice(0, 100)
-    if (['high', 'medium', 'low'].includes(patch.priority)) task.priority = patch.priority
-    task.updatedAt = new Date().toISOString()
-    personalMemoryStore.recordTaskChanges(id, before, task, String(patch.reason || 'manual_edit'), task.evidence || [])
-    this.saveState()
-    return task
+    if (['action', 'delegated', 'waiting'].includes(patch.taskKind)) next.taskKind = patch.taskKind
+    if (typeof patch.due === 'string') next.due = patch.due.trim().slice(0, 100)
+    if (['high', 'medium', 'low'].includes(patch.priority)) next.priority = patch.priority
+    next.updatedAt = updatedAt
+    return next
+  }
+
+  updateTasks(updates: Array<{ id?: string; patch?: any; mutationToken?: string }>): AssistantTask[] {
+    if (Array.isArray(updates) && updates.length > 500) throw new Error('单次最多批量更新 500 条待办')
+    const normalized = Array.isArray(updates) ? updates : []
+    if (!normalized.length) return []
+    const byId = new Map(this.state.tasks.map(task => [task.id, task]))
+    assertTaskMutationBatch(this.state.tasks, normalized)
+    const now = new Date().toISOString()
+    const changes = normalized.map(update => {
+      const before = structuredClone(byId.get(String(update.id))!)
+      const after = this.applyTaskPatch(before, update.patch || {}, now)
+      return { taskId: before.id, before, after, reason: String(update.patch?.reason || 'manual_edit'), evidence: after.evidence || [] }
+    })
+    personalMemoryStore.recordTaskChangeSets(changes)
+    const replacements = new Map(changes.map(change => [change.taskId, change.after]))
+    this.state.tasks = this.state.tasks.map(task => replacements.get(task.id) || task)
+    this.saveState(true)
+    return changes.map(change => ({
+      ...change.after,
+      mutationToken: buildTaskMutationToken(change.after)
+    }))
+  }
+
+  updateTask(id: string, patch: any, mutationToken?: string): AssistantTask | null {
+    return this.updateTasks([{ id, patch, mutationToken }])[0] || null
   }
 
   createTaskFromMemory(input: any): AssistantTask {

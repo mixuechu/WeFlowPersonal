@@ -633,7 +633,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
     cancelSync: () => ipcRenderer.invoke('ai-assistant:cancelSync'),
     getSettings: () => ipcRenderer.invoke('ai-assistant:getSettings'),
     setSettings: (input: any) => ipcRenderer.invoke('ai-assistant:setSettings', input),
-    updateTask: (id: string, patch: any) => ipcRenderer.invoke('ai-assistant:updateTask', id, patch),
+    updateTask: (id: string, patch: any, mutationToken?: string) =>
+      ipcRenderer.invoke('ai-assistant:updateTask', id, patch, mutationToken),
+    updateTasks: (updates: any[]) => ipcRenderer.invoke('ai-assistant:updateTasks', updates),
     createTaskFromMemory: (input: any) => ipcRenderer.invoke('ai-assistant:createTaskFromMemory', input),
     updateTaskReview: (id: string, decision: 'mine' | 'rejected', expectedRevision?: string) =>
       ipcRenderer.invoke('ai-assistant:updateTaskReview', id, decision, expectedRevision),

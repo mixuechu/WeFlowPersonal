@@ -6763,6 +6763,35 @@ test('task status changes are persisted as an auditable history', () => withStor
   assert.ok(history.every(item => JSON.parse(item.evidence_json)[0].messageId === 'message-history'))
 }))
 
+test('batch task history is atomic when any member fails', () => withStore(store => {
+  const database = (store as any).db
+  database.exec(`
+    CREATE TEMP TRIGGER fail_second_task_history
+    BEFORE INSERT ON task_history
+    WHEN NEW.task_id='task-b'
+    BEGIN
+      SELECT RAISE(ABORT,'injected batch task history failure');
+    END
+  `)
+  assert.throws(() => store.recordTaskChangeSets([
+    {
+      taskId: 'task-a',
+      before: { status: 'todo' },
+      after: { status: 'done' },
+      reason: 'bulk_complete_visible'
+    },
+    {
+      taskId: 'task-b',
+      before: { status: 'todo' },
+      after: { status: 'done' },
+      reason: 'bulk_complete_visible'
+    }
+  ]), /injected batch task history failure/)
+  assert.equal(Number(database.prepare(`
+    SELECT COUNT(*) AS count FROM task_history WHERE task_id IN ('task-a','task-b')
+  `).get().count), 0)
+}))
+
 test('partial ingestion keeps completed checkpoints visible for safe resume', () => withStore(store => {
   store.startIngestionRun('run-resume', 'deepseek-test', 'prompt-test')
   store.recordIngestionBatch('run-resume', 0, 100, 'running')

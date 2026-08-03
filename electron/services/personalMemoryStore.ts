@@ -6247,18 +6247,41 @@ export class PersonalMemoryStore {
 
   recordTaskChanges(taskId: string, before: any, after: any, reason = 'manual_edit', evidence: any[] = []): void {
     if (!this.db) return
+    this.recordTaskChangeSets([{ taskId, before, after, reason, evidence }])
+  }
+
+  recordTaskChangeSets(changes: Array<{
+    taskId: string
+    before: any
+    after: any
+    reason?: string
+    evidence?: any[]
+  }>): void {
+    if (!this.db || !changes.length) return
     const fields = ['status', 'title', 'detail', 'owner', 'collaborators', 'project', 'dependsOnIds', 'taskKind', 'due', 'priority']
     const insert = this.db.prepare(`
       INSERT INTO task_history(task_id,field,before_value,after_value,reason,evidence_json,created_at)
       VALUES(?,?,?,?,?,?,?)
     `)
     const now = new Date().toISOString()
-    for (const field of fields) {
-      const left = JSON.stringify(before?.[field] ?? '')
-      const right = JSON.stringify(after?.[field] ?? '')
-      if (left === right) continue
-      insert.run(taskId, field, left, right, reason, JSON.stringify(evidence || []), now)
-    }
+    this.db.transaction(() => {
+      for (const change of changes) {
+        for (const field of fields) {
+          const left = JSON.stringify(change.before?.[field] ?? '')
+          const right = JSON.stringify(change.after?.[field] ?? '')
+          if (left === right) continue
+          insert.run(
+            change.taskId,
+            field,
+            left,
+            right,
+            String(change.reason || 'manual_edit'),
+            JSON.stringify(change.evidence || []),
+            now
+          )
+        }
+      }
+    })()
   }
 
   listTaskHistory(taskIds: string[], limit = 200): any[] {

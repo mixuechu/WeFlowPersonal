@@ -25,6 +25,7 @@ type Task = {
   ownershipPolicyReason?: string
   createdAt?: string
   updatedAt?: string
+  mutationToken?: string
   evidence?: Array<{ messageId: string; timestamp: number; sender: string; excerpt: string }>
 }
 
@@ -1378,19 +1379,33 @@ function AiAssistantPage() {
   }
 
   const toggleTask = async (task: Task) => {
-    await window.electronAPI.aiAssistant.updateTask(task.id, {
-      status: task.status === 'done' ? 'todo' : 'done'
-    })
-    await load()
-    if (selectedProjectId) setProjectWorkspaceRefreshKey(value => value + 1)
+    try {
+      await window.electronAPI.aiAssistant.updateTask(task.id, {
+        status: task.status === 'done' ? 'todo' : 'done'
+      }, task.mutationToken)
+      await load()
+      if (selectedProjectId) setProjectWorkspaceRefreshKey(value => value + 1)
+    } catch (error: any) {
+      setMessage(error?.message || String(error))
+      await load()
+      setTaskWorkspaceRefreshKey(value => value + 1)
+      if (selectedProjectId) setProjectWorkspaceRefreshKey(value => value + 1)
+    }
   }
 
   const restoreArchivedTask = async (task: Task) => {
-    await window.electronAPI.aiAssistant.updateTask(task.id, { status: 'todo' })
-    setSelectedTaskId('')
-    await load()
-    if (task.project && selectedProjectId === task.project) {
-      setProjectWorkspaceRefreshKey(value => value + 1)
+    try {
+      await window.electronAPI.aiAssistant.updateTask(task.id, { status: 'todo' }, task.mutationToken)
+      setSelectedTaskId('')
+      await load()
+      if (task.project && selectedProjectId === task.project) {
+        setProjectWorkspaceRefreshKey(value => value + 1)
+      }
+    } catch (error: any) {
+      setMessage(error?.message || String(error))
+      setTaskArchiveRefreshKey(value => value + 1)
+      setTaskWorkspaceRefreshKey(value => value + 1)
+      await load()
     }
   }
 
@@ -1774,26 +1789,42 @@ function AiAssistantPage() {
 
   const saveTask = async () => {
     if (!editingTask?.id || !String(editingTask.title || '').trim()) return
-    await window.electronAPI.aiAssistant.updateTask(editingTask.id, {
-      title: editingTask.title,
-      detail: editingTask.detail,
-      owner: editingTask.owner,
-      collaborators: String(editingTask.collaboratorsText || '').split(/[,，、\n]/).map(value => value.trim()).filter(Boolean),
-      project: editingTask.project,
-      dependsOnIds: editingTask.dependsOnIds,
-      taskKind: editingTask.taskKind,
-      due: editingTask.due,
-      priority: editingTask.priority,
-      status: editingTask.status
-    })
-    setEditingTask(null)
-    await load()
+    try {
+      await window.electronAPI.aiAssistant.updateTask(editingTask.id, {
+        title: editingTask.title,
+        detail: editingTask.detail,
+        owner: editingTask.owner,
+        collaborators: String(editingTask.collaboratorsText || '').split(/[,，、\n]/).map(value => value.trim()).filter(Boolean),
+        project: editingTask.project,
+        dependsOnIds: editingTask.dependsOnIds,
+        taskKind: editingTask.taskKind,
+        due: editingTask.due,
+        priority: editingTask.priority,
+        status: editingTask.status
+      }, editingTask.mutationToken)
+      setEditingTask(null)
+      await load()
+    } catch (error: any) {
+      setEditingTask(null)
+      setMessage(error?.message || String(error))
+      await load()
+      setTaskWorkspaceRefreshKey(value => value + 1)
+    }
   }
 
   const completeVisibleTasks = async () => {
     const targets = displayedTasks.filter(task => !['done', 'cancelled'].includes(task.status))
-    await Promise.all(targets.map(task => window.electronAPI.aiAssistant.updateTask(task.id, { status: 'done' })))
-    await load()
+    try {
+      await window.electronAPI.aiAssistant.updateTasks(targets.map(task => ({
+        id: task.id,
+        patch: { status: 'done', reason: 'bulk_complete_visible' },
+        mutationToken: task.mutationToken
+      })))
+      await load()
+    } catch (error: any) {
+      setMessage(error?.message || String(error))
+      await load()
+    }
   }
 
   const findGraphPath = async () => {
