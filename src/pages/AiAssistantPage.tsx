@@ -427,17 +427,32 @@ function AiAssistantPage() {
   const graphWorkspaceGate = useRef(new LatestRequestGate())
   const [showEntityDossier, setShowEntityDossier] = useState(false)
   const [entityDossierPages, setEntityDossierPages] = useState<any>({
-    claims: { items: [], total: 0, hasMore: false, revision: '' },
-    relations: { items: [], total: 0, hasMore: false, revision: '' },
-    events: { items: [], total: 0, hasMore: false, revision: '' },
-    status: 'idle'
+    claims: { items: [], total: 0, hasMore: false, revision: '', status: 'idle' },
+    relations: { items: [], total: 0, hasMore: false, revision: '', status: 'idle' },
+    events: { items: [], total: 0, hasMore: false, revision: '', status: 'idle' }
   })
-  const [entityDossierLoadingMore, setEntityDossierLoadingMore] = useState('')
-  const [entityDossierRefreshKey, setEntityDossierRefreshKey] = useState(0)
+  const [entityDossierLoadingMore, setEntityDossierLoadingMore] = useState<Record<string, boolean>>({})
+  const [entityDossierRefreshKeys, setEntityDossierRefreshKeys] = useState({
+    claims: 0, relations: 0, events: 0
+  })
+  const refreshEntityDossierSection = (kind: 'claims' | 'relations' | 'events') =>
+    setEntityDossierRefreshKeys(current => ({ ...current, [kind]: current[kind] + 1 }))
+  const [entityClaimQuery, setEntityClaimQuery] = useState('')
+  const [entityClaimStatus, setEntityClaimStatus] = useState<'all' | 'candidate' | 'confirmed' | 'rejected'>('all')
+  const [entityClaimSource, setEntityClaimSource] = useState<'all' | 'wechat' | 'documents'>('all')
+  const [entityClaimFrom, setEntityClaimFrom] = useState('')
+  const [entityClaimTo, setEntityClaimTo] = useState('')
   const [entityRelationQuery, setEntityRelationQuery] = useState('')
   const [entityRelationDirection, setEntityRelationDirection] = useState<'all' | 'outgoing' | 'incoming'>('all')
   const [entityRelationStatus, setEntityRelationStatus] = useState<'all' | 'candidate' | 'confirmed'>('all')
-  const entityDossierGate = useRef(new LatestRequestGate())
+  const [entityEventQuery, setEntityEventQuery] = useState('')
+  const [entityEventStatus, setEntityEventStatus] = useState<'all' | 'candidate' | 'confirmed' | 'rejected' | 'cancelled'>('all')
+  const [entityEventSource, setEntityEventSource] = useState<'all' | 'wechat' | 'documents' | 'calendar'>('all')
+  const [entityEventFrom, setEntityEventFrom] = useState('')
+  const [entityEventTo, setEntityEventTo] = useState('')
+  const entityClaimGate = useRef(new LatestRequestGate())
+  const entityRelationGate = useRef(new LatestRequestGate())
+  const entityEventGate = useRef(new LatestRequestGate())
   const [entityEvidencePage, setEntityEvidencePage] = useState<any>({
     items: [], total: 0, hasMore: false, revision: '', status: 'idle'
   })
@@ -1770,57 +1785,179 @@ function AiAssistantPage() {
   ])
 
   useEffect(() => {
-    const request = entityDossierGate.current.begin()
+    const request = entityClaimGate.current.begin()
+    setEntityDossierLoadingMore(current => ({ ...current, claims: false }))
     if (!showEntityDossier || !selectedEntityId) {
-      setEntityDossierLoadingMore('')
-      setEntityDossierPages({
-        claims: { items: [], total: 0, hasMore: false, revision: '' },
-        relations: { items: [], total: 0, hasMore: false, revision: '' },
-        events: { items: [], total: 0, hasMore: false, revision: '' },
-        status: 'idle'
-      })
+      setEntityDossierPages((current: any) => ({
+        ...current,
+        claims: { items: [], total: 0, hasMore: false, revision: '', status: 'idle' }
+      }))
       return () => {
-        if (entityDossierGate.current.isCurrent(request)) entityDossierGate.current.invalidate()
+        if (entityClaimGate.current.isCurrent(request)) entityClaimGate.current.invalidate()
       }
     }
-    setEntityDossierLoadingMore('')
-    setEntityDossierPages({
-      claims: { items: [], total: 0, hasMore: false, revision: '' },
-      relations: { items: [], total: 0, hasMore: false, revision: '' },
-      events: { items: [], total: 0, hasMore: false, revision: '' },
-      status: 'loading'
-    })
-    void Promise.all([
-      window.electronAPI.aiAssistant.getClaimArchive({
-        entityId: selectedEntityId, limit: 40, offset: 0
-      }),
-      window.electronAPI.aiAssistant.getEntityRelationPage({
+    setEntityDossierPages((current: any) => ({
+      ...current,
+      claims: { items: [], total: 0, hasMore: false, revision: '', status: 'loading' }
+    }))
+    const timer = window.setTimeout(() => {
+      void window.electronAPI.aiAssistant.getClaimArchive({
+        entityId: selectedEntityId,
+        predicate: entityClaimQuery.trim() || undefined,
+        status: entityClaimStatus === 'all' ? undefined : entityClaimStatus,
+        sourceId: entityClaimSource === 'all' ? undefined : entityClaimSource,
+        from: entityClaimFrom ? new Date(`${entityClaimFrom}T00:00:00+08:00`).toISOString() : undefined,
+        to: entityClaimTo ? new Date(`${entityClaimTo}T23:59:59.999+08:00`).toISOString() : undefined,
+        limit: 40,
+        offset: 0
+      }).then(claims => {
+        if (!entityClaimGate.current.isCurrent(request)) return
+        if (claims.stale) {
+          window.setTimeout(() => {
+            if (entityClaimGate.current.isCurrent(request)) {
+              refreshEntityDossierSection('claims')
+            }
+          }, 250)
+          return
+        }
+        setEntityDossierPages((current: any) => ({
+          ...current, claims: { ...claims, status: 'ready' }
+        }))
+      }).catch(error => {
+        if (!entityClaimGate.current.isCurrent(request)) return
+        setEntityDossierPages((current: any) => ({
+          ...current,
+          claims: {
+            items: [], total: 0, hasMore: false, revision: '',
+            status: 'error', error: error?.message || String(error)
+          }
+        }))
+      })
+    }, entityClaimQuery.trim() ? 180 : 0)
+    return () => {
+      window.clearTimeout(timer)
+      if (entityClaimGate.current.isCurrent(request)) entityClaimGate.current.invalidate()
+    }
+  }, [
+    showEntityDossier, selectedEntityId, dashboard?.memoryRevision, entityDossierRefreshKeys.claims,
+    entityClaimQuery, entityClaimStatus, entityClaimSource, entityClaimFrom, entityClaimTo
+  ])
+
+  useEffect(() => {
+    const request = entityRelationGate.current.begin()
+    setEntityDossierLoadingMore(current => ({ ...current, relations: false }))
+    if (!showEntityDossier || !selectedEntityId) {
+      setEntityDossierPages((current: any) => ({
+        ...current,
+        relations: { items: [], total: 0, hasMore: false, revision: '', status: 'idle' }
+      }))
+      return () => {
+        if (entityRelationGate.current.isCurrent(request)) entityRelationGate.current.invalidate()
+      }
+    }
+    setEntityDossierPages((current: any) => ({
+      ...current,
+      relations: { items: [], total: 0, hasMore: false, revision: '', status: 'loading' }
+    }))
+    const timer = window.setTimeout(() => {
+      void window.electronAPI.aiAssistant.getEntityRelationPage({
         entityId: selectedEntityId,
         query: entityRelationQuery.trim() || undefined,
         direction: entityRelationDirection,
         status: entityRelationStatus,
         limit: 40,
         offset: 0
-      }),
-      window.electronAPI.aiAssistant.getEventTimeline({
-        entityId: selectedEntityId, limit: 40, offset: 0
+      }).then(relations => {
+        if (!entityRelationGate.current.isCurrent(request)) return
+        if (relations.stale) {
+          window.setTimeout(() => {
+            if (entityRelationGate.current.isCurrent(request)) {
+              refreshEntityDossierSection('relations')
+            }
+          }, 250)
+          return
+        }
+        setEntityDossierPages((current: any) => ({
+          ...current, relations: { ...relations, status: 'ready' }
+        }))
+      }).catch(error => {
+        if (!entityRelationGate.current.isCurrent(request)) return
+        setEntityDossierPages((current: any) => ({
+          ...current,
+          relations: {
+            items: [], total: 0, hasMore: false, revision: '',
+            status: 'error', error: error?.message || String(error)
+          }
+        }))
       })
-    ]).then(([claims, relations, events]) => {
-      if (!entityDossierGate.current.isCurrent(request)) return
-      setEntityDossierPages({ claims, relations, events, status: 'ready' })
-    }).catch(error => {
-      if (!entityDossierGate.current.isCurrent(request)) return
-      setEntityDossierPages((current: any) => ({
-        ...current, status: 'error', error: error?.message || String(error)
-      }))
-    })
+    }, entityRelationQuery.trim() ? 180 : 0)
     return () => {
-      if (entityDossierGate.current.isCurrent(request)) entityDossierGate.current.invalidate()
+      window.clearTimeout(timer)
+      if (entityRelationGate.current.isCurrent(request)) entityRelationGate.current.invalidate()
     }
   }, [
     showEntityDossier, selectedEntityId, dashboard?.memoryRevision,
-    dashboard?.graphReviewRevision, entityDossierRefreshKey,
+    dashboard?.graphReviewRevision, entityDossierRefreshKeys.relations,
     entityRelationQuery, entityRelationDirection, entityRelationStatus
+  ])
+
+  useEffect(() => {
+    const request = entityEventGate.current.begin()
+    setEntityDossierLoadingMore(current => ({ ...current, events: false }))
+    if (!showEntityDossier || !selectedEntityId) {
+      setEntityDossierPages((current: any) => ({
+        ...current,
+        events: { items: [], total: 0, hasMore: false, revision: '', status: 'idle' }
+      }))
+      return () => {
+        if (entityEventGate.current.isCurrent(request)) entityEventGate.current.invalidate()
+      }
+    }
+    setEntityDossierPages((current: any) => ({
+      ...current,
+      events: { items: [], total: 0, hasMore: false, revision: '', status: 'loading' }
+    }))
+    const timer = window.setTimeout(() => {
+      void window.electronAPI.aiAssistant.getEventTimeline({
+        entityId: selectedEntityId,
+        query: entityEventQuery.trim() || undefined,
+        status: entityEventStatus === 'all' ? undefined : entityEventStatus,
+        sourceId: entityEventSource === 'all' ? undefined : entityEventSource,
+        from: entityEventFrom ? new Date(`${entityEventFrom}T00:00:00+08:00`).toISOString() : undefined,
+        to: entityEventTo ? new Date(`${entityEventTo}T23:59:59.999+08:00`).toISOString() : undefined,
+        limit: 40,
+        offset: 0
+      }).then(events => {
+        if (!entityEventGate.current.isCurrent(request)) return
+        if (events.stale) {
+          window.setTimeout(() => {
+            if (entityEventGate.current.isCurrent(request)) {
+              refreshEntityDossierSection('events')
+            }
+          }, 250)
+          return
+        }
+        setEntityDossierPages((current: any) => ({
+          ...current, events: { ...events, status: 'ready' }
+        }))
+      }).catch(error => {
+        if (!entityEventGate.current.isCurrent(request)) return
+        setEntityDossierPages((current: any) => ({
+          ...current,
+          events: {
+            items: [], total: 0, hasMore: false, revision: '',
+            status: 'error', error: error?.message || String(error)
+          }
+        }))
+      })
+    }, entityEventQuery.trim() ? 180 : 0)
+    return () => {
+      window.clearTimeout(timer)
+      if (entityEventGate.current.isCurrent(request)) entityEventGate.current.invalidate()
+    }
+  }, [
+    showEntityDossier, selectedEntityId, dashboard?.memoryRevision, entityDossierRefreshKeys.events,
+    entityEventQuery, entityEventStatus, entityEventSource, entityEventFrom, entityEventTo
   ])
 
   useEffect(() => {
@@ -2695,9 +2832,14 @@ function AiAssistantPage() {
 
   const loadMoreEntityDossierSection = async (kind: 'claims' | 'relations' | 'events') => {
     const currentPage = entityDossierPages[kind]
-    if (!selectedEntityId || entityDossierLoadingMore || !currentPage?.hasMore) return
-    const request = entityDossierGate.current.begin()
-    setEntityDossierLoadingMore(kind)
+    if (!selectedEntityId || entityDossierLoadingMore[kind] || !currentPage?.hasMore) return
+    const gate = kind === 'claims'
+      ? entityClaimGate.current
+      : kind === 'relations'
+        ? entityRelationGate.current
+        : entityEventGate.current
+    const request = gate.begin()
+    setEntityDossierLoadingMore(current => ({ ...current, [kind]: true }))
     try {
       const options = {
         entityId: selectedEntityId,
@@ -2706,7 +2848,14 @@ function AiAssistantPage() {
         revision: currentPage.revision
       }
       const page = kind === 'claims'
-        ? await window.electronAPI.aiAssistant.getClaimArchive(options)
+        ? await window.electronAPI.aiAssistant.getClaimArchive({
+            ...options,
+            predicate: entityClaimQuery.trim() || undefined,
+            status: entityClaimStatus === 'all' ? undefined : entityClaimStatus,
+            sourceId: entityClaimSource === 'all' ? undefined : entityClaimSource,
+            from: entityClaimFrom ? new Date(`${entityClaimFrom}T00:00:00+08:00`).toISOString() : undefined,
+            to: entityClaimTo ? new Date(`${entityClaimTo}T23:59:59.999+08:00`).toISOString() : undefined
+          })
         : kind === 'relations'
           ? await window.electronAPI.aiAssistant.getEntityRelationPage({
               ...options,
@@ -2714,11 +2863,18 @@ function AiAssistantPage() {
               direction: entityRelationDirection,
               status: entityRelationStatus
             })
-          : await window.electronAPI.aiAssistant.getEventTimeline(options)
-      if (!entityDossierGate.current.isCurrent(request)) return
+          : await window.electronAPI.aiAssistant.getEventTimeline({
+              ...options,
+              query: entityEventQuery.trim() || undefined,
+              status: entityEventStatus === 'all' ? undefined : entityEventStatus,
+              sourceId: entityEventSource === 'all' ? undefined : entityEventSource,
+              from: entityEventFrom ? new Date(`${entityEventFrom}T00:00:00+08:00`).toISOString() : undefined,
+              to: entityEventTo ? new Date(`${entityEventTo}T23:59:59.999+08:00`).toISOString() : undefined
+            })
+      if (!gate.isCurrent(request)) return
       if (page.stale) {
         setMessage('人物档案在浏览期间已有更新，已从最新第一页重新载入。')
-        setEntityDossierRefreshKey(value => value + 1)
+        refreshEntityDossierSection(kind)
         return
       }
       setEntityDossierPages((current: any) => ({
@@ -2733,9 +2889,11 @@ function AiAssistantPage() {
         }
       }))
     } catch (error: any) {
-      if (entityDossierGate.current.isCurrent(request)) setMessage(error?.message || String(error))
+      if (gate.isCurrent(request)) setMessage(error?.message || String(error))
     } finally {
-      if (entityDossierGate.current.isCurrent(request)) setEntityDossierLoadingMore('')
+      if (gate.isCurrent(request)) {
+        setEntityDossierLoadingMore(current => ({ ...current, [kind]: false }))
+      }
     }
   }
 
@@ -7776,16 +7934,30 @@ function AiAssistantPage() {
               <span><b>{selectedEntityTasks.filter(task => !['done', 'cancelled'].includes(task.status)).length}</b><small>进行中事项</small></span>
               <span><b>{selectedEntityInsight.pendingCommitmentCount}</b><small>待确认承诺</small></span>
             </div>}
-            {entityDossierPages.status === 'loading' && <div className="assistant-empty">
-              正在从 SQLCipher 读取人物的事实、关系和事件档案…
-            </div>}
-            {entityDossierPages.status === 'error' && <div className="assistant-empty">
-              人物档案读取失败：{entityDossierPages.error}
-              <button onClick={() => setEntityDossierRefreshKey(value => value + 1)}>重试</button>
-            </div>}
             <div className="assistant-dossier-grid">
               <section>
                 <h3>结构化事实 <small>{Number(entityDossierPages.claims?.total || 0)}</small></h3>
+                <div className="assistant-inline-filters assistant-inline-filters-wide">
+                  <input value={entityClaimQuery} onChange={event => setEntityClaimQuery(event.target.value)}
+                    placeholder="搜索属性、值或对象" />
+                  <select value={entityClaimStatus} onChange={event => setEntityClaimStatus(event.target.value as any)}>
+                    <option value="all">有效状态</option><option value="confirmed">已确认</option>
+                    <option value="candidate">待确认</option><option value="rejected">已拒绝</option>
+                  </select>
+                  <select value={entityClaimSource} onChange={event => setEntityClaimSource(event.target.value as any)}>
+                    <option value="all">全部来源</option><option value="wechat">微信</option>
+                    <option value="documents">本机文档</option>
+                  </select>
+                  <input aria-label="事实有效期从" title="事实有效期从" type="date"
+                    value={entityClaimFrom} onChange={event => setEntityClaimFrom(event.target.value)} />
+                  <input aria-label="事实有效期到" title="事实有效期到" type="date"
+                    value={entityClaimTo} onChange={event => setEntityClaimTo(event.target.value)} />
+                </div>
+                {entityDossierPages.claims?.status === 'loading' && <em>正在检索事实…</em>}
+                {entityDossierPages.claims?.status === 'error' && <em>
+                  事实读取失败：{entityDossierPages.claims.error}
+                  <button onClick={() => refreshEntityDossierSection('claims')}>重试</button>
+                </em>}
                 {dossierClaims.map((claim: any) => <article key={claim.id}>
                   <div><b>{claim.polarity === 'negative' ? '并非 ' : ''}{claim.predicate}</b><span>{claim.object_entity_name || claim.object_value || '待确认'}</span></div>
                   <small>{claim.status === 'confirmed' ? '已确认' : '待确认'} · {Math.round(Number(claim.confidence || 0) * 100)}% · {claim.source_nature === 'self_statement' ? '本人陈述' : claim.source_nature === 'other_statement' ? '他人陈述' : '模型推断'}</small>
@@ -7795,11 +7967,11 @@ function AiAssistantPage() {
                         'claim', claim.id, `${selectedEntity?.canonicalName || '人物'} · ${claim.predicate}`
                       )} /></div>
                 </article>)}
-                {entityDossierPages.status === 'ready' && !dossierClaims.length && <em>尚无结构化事实</em>}
+                {entityDossierPages.claims?.status === 'ready' && !dossierClaims.length && <em>当前范围内没有结构化事实</em>}
                 {entityDossierPages.claims?.hasMore && <button
-                  disabled={!!entityDossierLoadingMore}
+                  disabled={!!entityDossierLoadingMore.claims}
                   onClick={() => void loadMoreEntityDossierSection('claims')}>
-                  {entityDossierLoadingMore === 'claims'
+                  {entityDossierLoadingMore.claims
                     ? '正在加载…'
                     : `加载更多事实（已显示 ${dossierClaims.length} / ${entityDossierPages.claims.total}）`}
                 </button>}
@@ -7823,6 +7995,11 @@ function AiAssistantPage() {
                     <option value="candidate">待确认</option>
                   </select>
                 </div>
+                {entityDossierPages.relations?.status === 'loading' && <em>正在检索关系…</em>}
+                {entityDossierPages.relations?.status === 'error' && <em>
+                  关系读取失败：{entityDossierPages.relations.error}
+                  <button onClick={() => refreshEntityDossierSection('relations')}>重试</button>
+                </em>}
                 {dossierRelations.map((relation: any) => {
                   const outgoing = relation.subjectId === selectedEntity.id
                   const neighborId = outgoing ? relation.objectId : relation.subjectId
@@ -7841,17 +8018,39 @@ function AiAssistantPage() {
                     <button className="assistant-dossier-task-action danger" onClick={() => void permanentlyDeleteMemoryItem('relation', relation)}>永久删除关系</button>
                   </article>
                 })}
-                {entityDossierPages.status === 'ready' && !dossierRelations.length && <em>尚无关系</em>}
+                {entityDossierPages.relations?.status === 'ready' && !dossierRelations.length && <em>当前范围内没有关系</em>}
                 {entityDossierPages.relations?.hasMore && <button
-                  disabled={!!entityDossierLoadingMore}
+                  disabled={!!entityDossierLoadingMore.relations}
                   onClick={() => void loadMoreEntityDossierSection('relations')}>
-                  {entityDossierLoadingMore === 'relations'
+                  {entityDossierLoadingMore.relations
                     ? '正在加载…'
                     : `加载更多关系（已显示 ${dossierRelations.length} / ${entityDossierPages.relations.total}）`}
                 </button>}
               </section>
               <section>
                 <h3>事件时间线 <small>{Number(entityDossierPages.events?.total || 0)}</small></h3>
+                <div className="assistant-inline-filters assistant-inline-filters-wide">
+                  <input value={entityEventQuery} onChange={event => setEntityEventQuery(event.target.value)}
+                    placeholder="搜索标题、说明、类型或地点" />
+                  <select value={entityEventStatus} onChange={event => setEntityEventStatus(event.target.value as any)}>
+                    <option value="all">有效状态</option><option value="confirmed">已确认</option>
+                    <option value="candidate">待确认</option><option value="cancelled">已取消</option>
+                    <option value="rejected">已拒绝</option>
+                  </select>
+                  <select value={entityEventSource} onChange={event => setEntityEventSource(event.target.value as any)}>
+                    <option value="all">全部来源</option><option value="wechat">微信</option>
+                    <option value="documents">本机文档</option><option value="calendar">日历</option>
+                  </select>
+                  <input aria-label="事件时间从" title="事件时间从" type="date"
+                    value={entityEventFrom} onChange={event => setEntityEventFrom(event.target.value)} />
+                  <input aria-label="事件时间到" title="事件时间到" type="date"
+                    value={entityEventTo} onChange={event => setEntityEventTo(event.target.value)} />
+                </div>
+                {entityDossierPages.events?.status === 'loading' && <em>正在检索事件…</em>}
+                {entityDossierPages.events?.status === 'error' && <em>
+                  事件读取失败：{entityDossierPages.events.error}
+                  <button onClick={() => refreshEntityDossierSection('events')}>重试</button>
+                </em>}
                 {dossierEvents.map((event: any) => <article key={event.id}>
                   <div><b>{event.title}</b><span>{event.start_at || '时间待确认'}</span></div>
                   {event.description && <p>{event.description}</p>}
@@ -7860,11 +8059,11 @@ function AiAssistantPage() {
                     total={event.evidence_count} onOpenArchive={() =>
                       void openMemoryEvidenceArchive('event', event.id, event.title || '事件原文')} /></div>
                 </article>)}
-                {entityDossierPages.status === 'ready' && !dossierEvents.length && <em>尚无相关事件</em>}
+                {entityDossierPages.events?.status === 'ready' && !dossierEvents.length && <em>当前范围内没有相关事件</em>}
                 {entityDossierPages.events?.hasMore && <button
-                  disabled={!!entityDossierLoadingMore}
+                  disabled={!!entityDossierLoadingMore.events}
                   onClick={() => void loadMoreEntityDossierSection('events')}>
-                  {entityDossierLoadingMore === 'events'
+                  {entityDossierLoadingMore.events
                     ? '正在加载…'
                     : `加载更多事件（已显示 ${dossierEvents.length} / ${entityDossierPages.events.total}）`}
                 </button>}

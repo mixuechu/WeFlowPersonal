@@ -6284,6 +6284,7 @@ export class PersonalMemoryStore {
     entityId?: string
     sourceId?: 'wechat' | 'documents' | 'calendar'
     status?: 'candidate' | 'confirmed' | 'rejected' | 'cancelled'
+    query?: string
     from?: string
     to?: string
     limit?: number
@@ -6310,6 +6311,14 @@ export class PersonalMemoryStore {
         WHERE entity_scope.event_id=ev.id AND entity_scope.entity_id=?
       )`)
       parameters.push(entityId)
+    }
+    const query = String(options.query || '').trim().toLocaleLowerCase('zh-CN')
+    if (query) {
+      conditions.push(`instr(lower(
+        COALESCE(ev.title,'') || char(0) || COALESCE(ev.description,'') || char(0) ||
+        COALESCE(ev.event_type,'') || char(0) || COALESCE(ev.location,'')
+      ),?)>0`)
+      parameters.push(query)
     }
     const validFrom = options.from && Number.isFinite(Date.parse(options.from)) ? options.from : ''
     const validTo = options.to && Number.isFinite(Date.parse(options.to)) ? options.to : ''

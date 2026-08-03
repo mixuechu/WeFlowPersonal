@@ -1248,10 +1248,12 @@ test('event timeline filters cross-source evidence, status and time with stable 
 
   const confirmed = store.listEventTimeline({
     status: 'confirmed',
+    query: 'calendar-event',
     from: '2026-07-30T00:00:00.000Z',
     to: '2026-07-30T23:59:59.999Z'
   })
   assert.deepEqual(confirmed.items.map(item => item.id), ['calendar-event'])
+  assert.equal(store.listEventTimeline({ query: '不存在的事件关键词' }).total, 0)
   assert.equal(store.listEventTimeline({ sourceId: 'documents' }).items[0].id, 'document-event')
   assert.equal(store.listEventTimeline({ sourceId: 'wechat' }).items[0].id, 'wechat-event')
 
@@ -3912,7 +3914,7 @@ test('project memory is scoped in SQL before limits and preserves authoritative 
   store.upsertEvents(Array.from({ length: 240 }, (_, index) => ({
     id: `project-scoped-event-${index}`,
     eventType: index % 2 ? 'decision' : 'meeting',
-    title: `项目事件 ${index}`,
+    title: index === 217 ? '远期火星发布会' : `项目事件 ${index}`,
     description: `长期项目事件 ${index}`,
     startAt: new Date(1_600_000_000_000 + index * 1000).toISOString(),
     endAt: '',
@@ -3953,6 +3955,10 @@ test('project memory is scoped in SQL before limits and preserves authoritative 
   })
   assert.equal(eventPage.total, 240)
   assert.equal(new Set([...eventPage.items, ...eventPage2.items].map(item => item.id)).size, 80)
+  assert.equal(store.listEventTimeline({
+    entityId: 'project-memory-scope',
+    query: '火星发布'
+  }).items[0]?.id, 'project-scoped-event-217')
   assert.equal(store.listEventTimeline({ entityId: 'unrelated-memory-scope' }).total, 0)
 
   const relationPage = store.listEntityRelationPage({

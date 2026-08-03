@@ -916,6 +916,7 @@
 .assistant-dossier-grid > section > h3 small { color: #859087; font-weight: 400; }
 .assistant-inline-filters { display: grid; grid-template-columns: minmax(130px, 1fr) auto auto; gap: 6px; }
 .assistant-inline-filters input, .assistant-inline-filters select { min-width: 0; padding: 7px 8px; border: 1px solid #dde1db; border-radius: 8px; color: #4f5951; background: #fff; font-size: 9px; }
+.assistant-inline-filters-wide { grid-template-columns: minmax(150px, 1.5fr) repeat(4, minmax(92px, auto)); }
 .assistant-dossier-grid > section > article { padding: 9px 10px; border: 1px solid #ecece6; border-radius: 9px; display: grid; gap: 5px; background: #fff; }
 .assistant-dossier-grid article > div, .assistant-dossier-link { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
 .assistant-dossier-grid article b { color: #3f4741; font-size: 10px; }

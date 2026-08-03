@@ -4361,6 +4361,7 @@ export class AiAssistantService {
       status: ['candidate', 'confirmed', 'rejected', 'cancelled'].includes(options?.status)
         ? options.status
         : undefined,
+      query: String(options?.query || ''),
       from: String(options?.from || ''),
       to: String(options?.to || ''),
       limit: Number(options?.limit || 100),
