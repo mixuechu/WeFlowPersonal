@@ -63,6 +63,13 @@ function evidenceTime(timestamp: number): string {
   return new Date(milliseconds).toLocaleString('zh-CN')
 }
 
+function formatBytes(value: number): string {
+  const bytes = Math.max(0, Number(value) || 0)
+  if (bytes < 1024) return `${bytes.toFixed(0)} B`
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
+  return `${(bytes / 1024 / 1024).toFixed(1)} MB`
+}
+
 function EvidenceRows({
   evidence: rawEvidence,
   total,
@@ -2847,6 +2854,16 @@ function AiAssistantPage() {
             {ingestionStatus.messageLedger && <small>
               持久消息去重账本 {Number(ingestionStatus.messageLedger.total || 0).toLocaleString()} 条
               {' · '}不受 20,000 条热缓存上限影响
+            </small>}
+            {ingestionStatus.commitHealth?.payloadCompaction && <small>
+              已提交恢复日志只保留运行、批次、来源和时间审计；
+              已净化 {Number(ingestionStatus.commitHealth.payloadCompaction.compactedRows || 0)
+                .toLocaleString()} 条旧载荷，
+              释放约 {formatBytes(Number(
+                ingestionStatus.commitHealth.payloadCompaction.releasedBytes || 0
+              ))}，当前重复敏感载荷 {formatBytes(Number(
+                ingestionStatus.commitHealth.payloadCompaction.retainedBytes || 0
+              ))}。
             </small>}
             {status?.cursor?.payloadPolicy?.durableKeys === 'main_process_only' && <small>
               增量断点仅保留在加密主进程：

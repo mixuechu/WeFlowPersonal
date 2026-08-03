@@ -759,6 +759,7 @@ export class PersonalMemoryStore {
     this.repairAssistantCitationStorage()
     this.repairAssistantExchangeIntegrity()
     this.repairAssistantAnswerDependencies()
+    this.compactCommittedIngestionPayloads()
     this.repairDuplicateEvents()
     this.db.prepare(`
       INSERT INTO schema_meta(key, value, updated_at) VALUES('schema_version', '1', ?)
@@ -884,6 +885,63 @@ export class PersonalMemoryStore {
     if (!this.db) return
     const columns = this.db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>
     if (!columns.some(item => item.name === column)) this.db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`)
+  }
+
+  private compactCommittedIngestionPayloads(): void {
+    if (!this.db) return
+    const previousRow = this.db.prepare(`
+      SELECT value FROM schema_meta WHERE key='committed_ingestion_payload_compaction'
+    `).get() as any
+    let previous: any = {}
+    try { previous = JSON.parse(String(previousRow?.value || '{}')) } catch {}
+    const stale = this.db.prepare(`
+      SELECT COUNT(*) AS rows,
+        COALESCE(SUM(
+          length(digest_json)+length(messages_json)+length(checkpoint_keys_json)
+          +length(resource_id)+length(resource_content_hash)+length(completion_json)
+        ),0) AS bytes
+      FROM ingestion_batch_commits
+      WHERE status='committed' AND (
+        digest_json!='{}' OR messages_json!='[]' OR checkpoint_keys_json!='[]'
+        OR resource_id!='' OR resource_content_hash!='' OR completion_json!='{}'
+      )
+    `).get() as any
+    const rows = Number(stale?.rows || 0)
+    const beforeBytes = Number(stale?.bytes || 0)
+    if (rows > 0) {
+      this.db.prepare(`
+        UPDATE ingestion_batch_commits
+        SET digest_json='{}',messages_json='[]',checkpoint_keys_json='[]',
+          resource_id='',resource_content_hash='',completion_json='{}'
+        WHERE status='committed'
+      `).run()
+    }
+    const retained = this.db.prepare(`
+      SELECT COUNT(*) AS rows,COALESCE(SUM(
+        length(digest_json)+length(messages_json)+length(checkpoint_keys_json)
+        +length(resource_id)+length(resource_content_hash)+length(completion_json)
+      ),0) AS bytes
+      FROM ingestion_batch_commits WHERE status='committed'
+    `).get() as any
+    const retainedBytes = Math.max(
+      0,
+      Number(retained?.bytes || 0) - Number(retained?.rows || 0) * 8
+    )
+    const released = Math.max(0, beforeBytes - rows * 8)
+    const audit = {
+      version: 1,
+      compactedRows: Number(previous?.compactedRows || 0) + rows,
+      releasedBytes: Number(previous?.releasedBytes || 0) + released,
+      retainedBytes,
+      lastCompactedAt: rows > 0
+        ? new Date().toISOString()
+        : String(previous?.lastCompactedAt || '')
+    }
+    this.db.prepare(`
+      INSERT INTO schema_meta(key,value,updated_at)
+      VALUES('committed_ingestion_payload_compaction',?,?)
+      ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_at=excluded.updated_at
+    `).run(JSON.stringify(audit), new Date().toISOString())
   }
 
   private repairStructuredEvidenceIdentity(): void {
@@ -5620,7 +5678,8 @@ export class PersonalMemoryStore {
     this.db.prepare(`
       UPDATE ingestion_batch_commits
       SET status='committed',applied_at=?,last_error=NULL,
-        digest_json='{}',messages_json='[]'
+        digest_json='{}',messages_json='[]',checkpoint_keys_json='[]',
+        resource_id='',resource_content_hash='',completion_json='{}'
       WHERE commit_id=?
     `).run(new Date().toISOString(), commitId)
   }
@@ -5769,14 +5828,29 @@ export class PersonalMemoryStore {
     committed: number
     recoveryFailures: number
     oldestPreparedAt: string | null
+    payloadCompaction: {
+      version: number
+      compactedRows: number
+      releasedBytes: number
+      retainedBytes: number
+      lastCompactedAt: string
+    }
   } {
+    const emptyCompaction = {
+      version: 1,
+      compactedRows: 0,
+      releasedBytes: 0,
+      retainedBytes: 0,
+      lastCompactedAt: ''
+    }
     if (!this.db) return {
       prepared: 0,
       preparedWechat: 0,
       preparedDocuments: 0,
       committed: 0,
       recoveryFailures: 0,
-      oldestPreparedAt: null
+      oldestPreparedAt: null,
+      payloadCompaction: emptyCompaction
     }
     const row = this.db.prepare(`
       SELECT
@@ -5788,13 +5862,24 @@ export class PersonalMemoryStore {
         MIN(CASE WHEN status='prepared' THEN prepared_at END) AS oldest_prepared_at
       FROM ingestion_batch_commits
     `).get() as any
+    let payloadCompaction = emptyCompaction
+    try {
+      payloadCompaction = {
+        ...emptyCompaction,
+        ...JSON.parse(String((this.db.prepare(`
+          SELECT value FROM schema_meta
+          WHERE key='committed_ingestion_payload_compaction'
+        `).get() as any)?.value || '{}'))
+      }
+    } catch {}
     return {
       prepared: Number(row?.prepared || 0),
       preparedWechat: Number(row?.prepared_wechat || 0),
       preparedDocuments: Number(row?.prepared_documents || 0),
       committed: Number(row?.committed || 0),
       recoveryFailures: Number(row?.recovery_failures || 0),
-      oldestPreparedAt: row?.oldest_prepared_at ? String(row.oldest_prepared_at) : null
+      oldestPreparedAt: row?.oldest_prepared_at ? String(row.oldest_prepared_at) : null,
+      payloadCompaction
     }
   }
 

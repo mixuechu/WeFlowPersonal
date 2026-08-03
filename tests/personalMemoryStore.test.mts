@@ -5853,7 +5853,14 @@ test('prepared ingestion commits survive retries and become an auditable committ
     preparedDocuments: 0,
     committed: 1,
     recoveryFailures: 0,
-    oldestPreparedAt: null
+    oldestPreparedAt: null,
+    payloadCompaction: {
+      version: 1,
+      compactedRows: 0,
+      releasedBytes: 0,
+      retainedBytes: 0,
+      lastCompactedAt: ''
+    }
   })
   const status = store.getIngestionStatus()
   assert.equal(status.batches.find((row: any) => row.status === 'completed')?.count, 1)
@@ -5863,6 +5870,19 @@ test('prepared ingestion commits survive retries and become an auditable committ
     input.checkpointKeys
   )
   assert.equal(status.messageLedger.total, 1)
+  const committedPayload = (store as any).db.prepare(`
+    SELECT digest_json,messages_json,checkpoint_keys_json,resource_id,
+      resource_content_hash,completion_json
+    FROM ingestion_batch_commits WHERE commit_id=?
+  `).get(input.commitId)
+  assert.deepEqual(committedPayload, {
+    digest_json: '{}',
+    messages_json: '[]',
+    checkpoint_keys_json: '[]',
+    resource_id: '',
+    resource_content_hash: '',
+    completion_json: '{}'
+  })
 }))
 
 test('prepared recovery directory isolates malformed payloads and paginates without exposing them', () =>
@@ -5916,6 +5936,82 @@ test('prepared recovery directory isolates malformed payloads and paginates with
     assert.equal(filtered.items[0].commit_id, 'recovery-commit-064')
     assert.equal(prepared.at(-1).commitId, 'recovery-commit-064')
   }))
+
+test('committed ingestion payloads compact on commit and legacy restart without losing audit identity', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'weflow-committed-payload-compaction-'))
+  const databasePath = join(directory, 'memory.sqlite')
+  const first = new PersonalMemoryStore()
+  const second = new PersonalMemoryStore()
+  const third = new PersonalMemoryStore()
+  try {
+    first.initialize(databasePath)
+    first.startIngestionRun('compaction-run', 'deepseek-test', 'prompt-test')
+    first.recordIngestionBatch('compaction-run', 0, 1, 'running')
+    first.prepareIngestionBatchCommit({
+      commitId: 'compaction-commit',
+      runId: 'compaction-run',
+      batchIndex: 0,
+      digest: { tasks: [{ title: '不应长期复制的任务' }] },
+      messages: [{ id: 'private-message', content: '不应长期复制的原文' }],
+      checkpointKeys: ['wechat:private-session:private-message'],
+      createdAt: '2026-08-03T00:00:00.000Z',
+      sourceKind: 'document',
+      resourceId: 'private-resource',
+      resourceContentHash: 'private-content-hash',
+      completion: { privateCompletion: true }
+    })
+    first.finalizeIngestionBatchCommit('compaction-commit')
+    const database = (first as any).db
+    database.prepare(`
+      UPDATE ingestion_batch_commits SET
+        digest_json=?,messages_json=?,checkpoint_keys_json=?,
+        resource_id=?,resource_content_hash=?,completion_json=?
+      WHERE commit_id='compaction-commit'
+    `).run(
+      '{"tasks":[{"title":"旧版敏感任务"}]}',
+      '[{"content":"旧版敏感原文"}]',
+      '["wechat:old-private-session:old-private-message"]',
+      'old-private-resource',
+      'old-private-content-hash',
+      '{"oldPrivateCompletion":true}'
+    )
+    first.close()
+
+    second.initialize(databasePath)
+    const compacted = (second as any).db.prepare(`
+      SELECT commit_id,run_id,batch_index,status,digest_json,messages_json,
+        checkpoint_keys_json,resource_id,resource_content_hash,completion_json
+      FROM ingestion_batch_commits WHERE commit_id='compaction-commit'
+    `).get()
+    assert.deepEqual(compacted, {
+      commit_id: 'compaction-commit',
+      run_id: 'compaction-run',
+      batch_index: 0,
+      status: 'committed',
+      digest_json: '{}',
+      messages_json: '[]',
+      checkpoint_keys_json: '[]',
+      resource_id: '',
+      resource_content_hash: '',
+      completion_json: '{}'
+    })
+    const firstAudit = second.getIngestionCommitHealth().payloadCompaction
+    assert.equal(firstAudit.compactedRows, 1)
+    assert.ok(firstAudit.releasedBytes > 100)
+    assert.equal(firstAudit.retainedBytes, 0)
+    assert.match(firstAudit.lastCompactedAt, /^20/)
+    second.close()
+
+    third.initialize(databasePath)
+    const secondAudit = third.getIngestionCommitHealth().payloadCompaction
+    assert.deepEqual(secondAudit, firstAudit)
+  } finally {
+    first.close()
+    second.close()
+    third.close()
+    rmSync(directory, { recursive: true, force: true })
+  }
+})
 
 test('durable processed-message ledger exceeds the JSON hot-cache limit and queries in bounded chunks', () => withStore(store => {
   const keys = Array.from({ length: 20_050 }, (_, index) =>
