@@ -1,5 +1,5 @@
 import './preload-env'
-import { app, BrowserWindow, ipcMain, nativeTheme, session, Tray, Menu, nativeImage } from 'electron'
+import { app, BrowserWindow, ipcMain, nativeTheme, session, Tray, Menu, nativeImage, powerMonitor } from 'electron'
 import { Worker } from 'worker_threads'
 import { randomUUID } from 'crypto'
 import { join, dirname } from 'path'
@@ -4978,6 +4978,11 @@ app.whenReady().then(async () => {
 
   await httpService.autoStart()
   await aiAssistantService.initialize()
+  powerMonitor.on('suspend', () => aiAssistantService.handleSystemSuspend())
+  powerMonitor.on('resume', () => {
+    void aiAssistantService.handleSystemResume().catch(error =>
+      console.warn('[AI Assistant] 唤醒补齐检查失败:', error))
+  })
   appRunRecoveryService.markServicesReady()
 
   app.on('activate', () => {

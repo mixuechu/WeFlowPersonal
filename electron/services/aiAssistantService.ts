@@ -251,9 +251,11 @@ import {
   shouldRecoverGraphFromSql
 } from '../../shared/graphCommitRecovery'
 import {
+  assessSchedulerWake,
   assessScheduledSyncResult,
   planScheduledSyncState,
   scheduledSyncTargetTimestamp,
+  shouldRunResumeCatchup,
   shouldReconcileScheduledSync
 } from './scheduledSyncPolicy'
 import {
@@ -345,6 +347,14 @@ type AssistantState = {
     scheduledRetryCount: number
     nextScheduledRetryAt: string | null
     pendingScheduledRunDate: string | null
+    lastSystemSuspendAt: string | null
+    lastSystemResumeAt: string | null
+    systemResumeCount: number
+    lastSchedulerWakeAt: string | null
+    lastSchedulerWakeReason: string | null
+    lastSchedulerGapMs: number
+    lastResumeCatchupAt: string | null
+    lastResumeCatchupResult: string | null
     lastAutomaticBackupDate: string | null
     lastAutomaticBackupAt: string | null
     lastAutomaticBackupAttemptAt: string | null
@@ -385,6 +395,14 @@ const EMPTY_STATE: AssistantState = {
     scheduledRetryCount: 0,
     nextScheduledRetryAt: null,
     pendingScheduledRunDate: null,
+    lastSystemSuspendAt: null,
+    lastSystemResumeAt: null,
+    systemResumeCount: 0,
+    lastSchedulerWakeAt: null,
+    lastSchedulerWakeReason: null,
+    lastSchedulerGapMs: 0,
+    lastResumeCatchupAt: null,
+    lastResumeCatchupResult: null,
     lastAutomaticBackupDate: null,
     lastAutomaticBackupAt: null,
     lastAutomaticBackupAttemptAt: null,
@@ -489,6 +507,7 @@ export class AiAssistantService {
   private activeSyncTrigger: 'manual' | 'startup' | 'daily' | 'backlog' | null = null
   private scheduler: ReturnType<typeof setInterval> | null = null
   private lastSchedulerAttemptAt = 0
+  private lastSchedulerTickAt = 0
   private vectorIndexPromise: Promise<any> | null = null
   private cancelRequested = false
   private taskReviewReconciliation = {
@@ -644,6 +663,7 @@ export class AiAssistantService {
     this.reconcileTaskReviewFeedbackOnStartup()
     this.removeSuppressedRelationsFromState()
     this.saveState()
+    this.lastSchedulerTickAt = Date.now()
     this.scheduler = setInterval(() => void this.schedulerTick(), 60_000)
     this.scheduler.unref()
     if (this.config.get('aiAssistantEnabled')) {
@@ -658,6 +678,23 @@ export class AiAssistantService {
     if (this.scheduler) clearInterval(this.scheduler)
     this.scheduler = null
     personalMemoryStore.close()
+  }
+
+  handleSystemSuspend(observedAt = new Date()): void {
+    this.state.cursor.lastSystemSuspendAt = observedAt.toISOString()
+    this.saveState()
+  }
+
+  async handleSystemResume(observedAt = new Date()): Promise<string> {
+    this.state.cursor.lastSystemResumeAt = observedAt.toISOString()
+    this.state.cursor.systemResumeCount =
+      Math.max(0, Number(this.state.cursor.systemResumeCount || 0)) + 1
+    this.saveState()
+    const result = await this.schedulerTick('system_resume', observedAt)
+    this.state.cursor.lastResumeCatchupAt = new Date().toISOString()
+    this.state.cursor.lastResumeCatchupResult = result
+    this.saveState()
+    return result
   }
 
   private migrateLegacyData(): void {
@@ -6590,11 +6627,28 @@ export class AiAssistantService {
     return event ? { ...event, structuredMemoryRevision: revision } : null
   }
 
-  private async schedulerTick(): Promise<void> {
-    if (!this.config.get('aiAssistantEnabled')) return
-    const now = new Date()
+  private async schedulerTick(
+    source: 'timer' | 'system_resume' = 'timer',
+    observedNow?: Date
+  ): Promise<string> {
+    const now = observedNow || new Date()
+    const nowMs = now.getTime()
+    const wake = assessSchedulerWake(
+      this.lastSchedulerTickAt,
+      nowMs,
+      source === 'system_resume'
+    )
+    this.lastSchedulerTickAt = nowMs
+    if (wake.reason !== 'regular') {
+      this.state.cursor.lastSchedulerWakeAt = now.toISOString()
+      this.state.cursor.lastSchedulerWakeReason = wake.reason
+      this.state.cursor.lastSchedulerGapMs = wake.elapsedMs
+      if (wake.resetAttemptThrottle) this.lastSchedulerAttemptAt = 0
+      this.saveState()
+    }
+    if (!this.config.get('aiAssistantEnabled')) return 'assistant_disabled'
     if (!this.activeSync) await this.flushNotificationOutbox(now)
-    if (this.activeSync) return
+    if (this.activeSync) return 'sync_already_running'
     const wechatSource = personalMemoryStore.listDataSources().find(source => source.id === 'wechat')
     if (isBacklogRetryDue({
       state: this.state.cursor.backlogRetry,
@@ -6602,26 +6656,46 @@ export class AiAssistantService {
       sourceEnabled: Boolean(wechatSource?.enabled),
       now
     })) {
-      if (Date.now() - this.lastSchedulerAttemptAt < 60_000) return
-      this.lastSchedulerAttemptAt = Date.now()
+      if (nowMs - this.lastSchedulerAttemptAt < 60_000) return 'backlog_throttled'
+      this.lastSchedulerAttemptAt = nowMs
       try {
         await this.sync('backlog')
       } catch {}
-      return
+      return 'backlog_catchup_attempted'
     }
     const time = new Intl.DateTimeFormat('en-GB', { timeZone: 'Asia/Shanghai', hour: '2-digit', minute: '2-digit', hour12: false }).format(now)
-    const today = shanghaiDate()
+    const today = shanghaiDate(nowMs)
     const schedule = String(this.config.get('aiAssistantScheduleTime') || '20:00')
-    if (time < schedule || this.state.cursor.lastScheduledRunDate === today) return
+    const dailyDue = time >= schedule && this.state.cursor.lastScheduledRunDate !== today
+    if (!dailyDue) {
+      if (source === 'system_resume' && shouldRunResumeCatchup(
+        wake.elapsedMs,
+        this.state.cursor.lastAttemptAt,
+        nowMs
+      )) {
+        try {
+          const result = await this.sync('startup')
+          return result?.success === true && !result?.partial && !result?.cancelled
+            ? 'resume_incremental_completed'
+            : 'resume_incremental_partial'
+        } catch {
+          return 'resume_incremental_failed'
+        }
+      }
+      if (source === 'system_resume' && wake.elapsedMs >= 5 * 60_000) {
+        return 'resume_incremental_throttled'
+      }
+      return time < schedule ? 'before_daily_schedule' : 'daily_already_complete'
+    }
     const nextScheduledRetryAt = Date.parse(String(this.state.cursor.nextScheduledRetryAt || ''))
     if (
       this.state.cursor.lastScheduledError
       && Number.isFinite(nextScheduledRetryAt)
-      && nextScheduledRetryAt > Date.now()
-    ) return
-    if (Date.now() - this.lastSchedulerAttemptAt < 15 * 60_000) return
-    this.lastSchedulerAttemptAt = Date.now()
-    this.state.cursor.lastScheduledAttemptAt = new Date().toISOString()
+      && nextScheduledRetryAt > nowMs
+    ) return 'scheduled_retry_cooling_down'
+    if (nowMs - this.lastSchedulerAttemptAt < 15 * 60_000) return 'daily_throttled'
+    this.lastSchedulerAttemptAt = nowMs
+    this.state.cursor.lastScheduledAttemptAt = now.toISOString()
     this.saveState()
     try {
       const result = await this.sync('daily')
@@ -6638,7 +6712,7 @@ export class AiAssistantService {
       ))
       if (!assessment.complete) {
         this.saveState()
-        return
+        return 'daily_partial_saved'
       }
       const reminders = applyReminderPreferences(
         buildTaskReminders(this.state.tasks.filter(task => task.classification === 'mine'), now),
@@ -6656,6 +6730,7 @@ export class AiAssistantService {
       }
       this.saveState()
       await this.flushNotificationOutbox(now)
+      return 'daily_completed'
     } catch (error) {
       Object.assign(this.state.cursor, planScheduledSyncState(
         this.state.cursor,
@@ -6664,6 +6739,7 @@ export class AiAssistantService {
         new Date().toISOString()
       ))
       this.saveState()
+      return 'daily_failed_saved'
     }
   }
 

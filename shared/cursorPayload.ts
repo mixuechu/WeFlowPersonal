@@ -1,4 +1,4 @@
-export const CURSOR_STATUS_PAYLOAD_VERSION = 'cursor-status-v1'
+export const CURSOR_STATUS_PAYLOAD_VERSION = 'cursor-status-v2'
 
 export function buildCursorStatusPayload(cursor: any): any {
   const recentMessageIds = Array.isArray(cursor?.recentMessageIds) ? cursor.recentMessageIds : []
@@ -25,6 +25,16 @@ export function buildCursorStatusPayload(cursor: any): any {
     nextScheduledRetryAt: persistedRetryAt || (Number.isFinite(legacyRetryTimestamp)
       ? new Date(legacyRetryTimestamp).toISOString()
       : null),
+    systemWake: {
+      lastSuspendAt: cursor?.lastSystemSuspendAt || null,
+      lastResumeAt: cursor?.lastSystemResumeAt || null,
+      resumeCount: Number(cursor?.systemResumeCount || 0),
+      lastWakeAt: cursor?.lastSchedulerWakeAt || null,
+      lastWakeReason: cursor?.lastSchedulerWakeReason || null,
+      lastGapMs: Number(cursor?.lastSchedulerGapMs || 0),
+      lastCatchupAt: cursor?.lastResumeCatchupAt || null,
+      lastCatchupResult: cursor?.lastResumeCatchupResult || null
+    },
     lastReminderNotificationDate: cursor?.lastReminderNotificationDate || null,
     lastAttemptAt: cursor?.lastAttemptAt || null,
     lastError: cursor?.lastError || null,

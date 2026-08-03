@@ -107,6 +107,26 @@ function memoryAuditStatusLabel(value: string): string {
       : value === 'cancelled' ? '已取消' : '待确认'
 }
 
+function schedulerCatchupResultLabel(value: string): string {
+  return ({
+    assistant_disabled: 'AI 助理当时处于关闭状态，未自动补齐',
+    sync_already_running: '已有增量整理正在运行，无需重复启动',
+    backlog_throttled: '积压补齐仍在一分钟防重复窗口内',
+    backlog_catchup_attempted: '已立即继续高流量积压补齐',
+    before_daily_schedule: '尚未到每日整理时间，保留正常计划',
+    daily_already_complete: '当天完整整理已经完成',
+    scheduled_retry_cooling_down: '失败来源仍在持久退避期，未绕过冷却',
+    daily_throttled: '每日整理仍在防重复窗口内',
+    daily_partial_saved: '已保存成功部分，剩余内容继续按 checkpoint 重试',
+    daily_completed: '已完成当天全部来源的补齐',
+    daily_failed_saved: '本次失败已保存，后续按退避时间重试',
+    resume_incremental_completed: '已按上次时间戳完成唤醒后的普通增量补齐',
+    resume_incremental_partial: '已保存唤醒补齐的成功部分，剩余内容继续续跑',
+    resume_incremental_failed: '唤醒增量补齐失败，原 checkpoint 未前移',
+    resume_incremental_throttled: '距上次同步尝试不足 15 分钟，已避免重复请求'
+  } as Record<string, string>)[value] || value || '尚无结果'
+}
+
 function memoryAuditSnapshotText(kind: 'claim' | 'event', value: any): string {
   if (kind === 'claim') {
     const object = value?.value || (value?.objectEntityId ? `实体 ${value.objectEntityId}` : '空值')
@@ -4908,6 +4928,21 @@ function AiAssistantPage() {
                 : ' 服务会在下一轮调度继续。'}
               {' '}连续失败会按 15、30、60 分钟逐级退避，最长 6 小时；手动或启动补齐完整成功后会立即结清。
             </small>
+          </div>
+        )}
+        {status?.cursor?.systemWake?.lastResumeAt && (
+          <div className="assistant-ingestion-status completed">
+            <strong>电脑唤醒后的增量补齐已检查</strong>
+            <span>
+              最近唤醒 {new Date(status.cursor.systemWake.lastResumeAt).toLocaleString('zh-CN', { hour12: false })}
+              {' · '}累计 {Number(status.cursor.systemWake.resumeCount || 0).toLocaleString()} 次
+            </span>
+            <small>{schedulerCatchupResultLabel(status.cursor.systemWake.lastCatchupResult)}</small>
+            {Number(status.cursor.systemWake.lastGapMs || 0) > 150_000 && <small>
+              本次检测到定时器中断约
+              {Math.round(Number(status.cursor.systemWake.lastGapMs) / 60_000).toLocaleString()} 分钟；
+              唤醒检查仍复用原有 checkpoint、去重账本和失败退避，不会从“当天”或最新消息重新开始。
+            </small>}
           </div>
         )}
         {memoryDiagnostics && (

@@ -5,6 +5,69 @@ export type ScheduledSyncAssessment = {
 
 const SCHEDULED_RETRY_BASE_MS = 15 * 60_000
 const SCHEDULED_RETRY_MAX_MS = 6 * 60 * 60_000
+const SCHEDULER_GAP_THRESHOLD_MS = 150_000
+const CLOCK_BACKWARD_THRESHOLD_MS = 30_000
+const RESUME_CATCHUP_MINIMUM_GAP_MS = 5 * 60_000
+const RESUME_CATCHUP_THROTTLE_MS = 15 * 60_000
+
+export type SchedulerWakeAssessment = {
+  reason: 'regular' | 'system_resume' | 'timer_gap' | 'clock_backward'
+  elapsedMs: number
+  shouldRunImmediately: boolean
+  resetAttemptThrottle: boolean
+}
+
+export function assessSchedulerWake(
+  previousTickAt: number,
+  observedAt: number,
+  explicitResume = false
+): SchedulerWakeAssessment {
+  const previous = Number(previousTickAt || 0)
+  const current = Number(observedAt || 0)
+  const elapsedMs = previous > 0 && Number.isFinite(current) ? current - previous : 0
+  if (previous > 0 && elapsedMs < -CLOCK_BACKWARD_THRESHOLD_MS) {
+    return {
+      reason: 'clock_backward',
+      elapsedMs,
+      shouldRunImmediately: true,
+      resetAttemptThrottle: true
+    }
+  }
+  if (explicitResume) {
+    return {
+      reason: 'system_resume',
+      elapsedMs,
+      shouldRunImmediately: true,
+      resetAttemptThrottle: false
+    }
+  }
+  if (previous > 0 && elapsedMs > SCHEDULER_GAP_THRESHOLD_MS) {
+    return {
+      reason: 'timer_gap',
+      elapsedMs,
+      shouldRunImmediately: true,
+      resetAttemptThrottle: false
+    }
+  }
+  return {
+    reason: 'regular',
+    elapsedMs,
+    shouldRunImmediately: false,
+    resetAttemptThrottle: false
+  }
+}
+
+export function shouldRunResumeCatchup(
+  elapsedMs: number,
+  lastSyncAttemptAt: unknown,
+  observedAt: number
+): boolean {
+  if (!Number.isFinite(elapsedMs) || elapsedMs < RESUME_CATCHUP_MINIMUM_GAP_MS) return false
+  const previousAttempt = Date.parse(String(lastSyncAttemptAt || ''))
+  if (!Number.isFinite(previousAttempt)) return true
+  if (observedAt < previousAttempt - CLOCK_BACKWARD_THRESHOLD_MS) return true
+  return observedAt - previousAttempt >= RESUME_CATCHUP_THROTTLE_MS
+}
 
 export function scheduledSyncRetryDelayMs(retryCount: number): number {
   const exponent = Math.max(0, Math.floor(Number(retryCount || 1)) - 1)

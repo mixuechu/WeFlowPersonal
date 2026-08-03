@@ -112,10 +112,12 @@ import {
   selectTrustedExtractionEntities
 } from '../electron/services/extractionMemoryContext.ts'
 import {
+  assessSchedulerWake,
   assessScheduledSyncResult,
   planScheduledSyncState,
   scheduledSyncRetryDelayMs,
   scheduledSyncTargetTimestamp,
+  shouldRunResumeCatchup,
   shouldReconcileScheduledSync
 } from '../electron/services/scheduledSyncPolicy.ts'
 
@@ -4231,6 +4233,14 @@ test('renderer cursor status exposes counts but keeps durable keys and session m
     lastScheduledError: '日历连接器暂时失败',
     scheduledRetryCount: 2,
     nextScheduledRetryAt: '2026-07-31T00:32:00.000Z',
+    lastSystemSuspendAt: '2026-07-31T02:00:00.000Z',
+    lastSystemResumeAt: '2026-07-31T08:00:00.000Z',
+    systemResumeCount: 4,
+    lastSchedulerWakeAt: '2026-07-31T08:00:00.000Z',
+    lastSchedulerWakeReason: 'system_resume',
+    lastSchedulerGapMs: 21_600_000,
+    lastResumeCatchupAt: '2026-07-31T08:00:01.000Z',
+    lastResumeCatchupResult: 'backlog_catchup_attempted',
     lastAttemptAt: '2026-07-31T00:01:00.000Z',
     lastError: null,
     pendingSessionRetryCount: 3,
@@ -4251,6 +4261,16 @@ test('renderer cursor status exposes counts but keeps durable keys and session m
   assert.equal(payload.lastScheduledError, '日历连接器暂时失败')
   assert.equal(payload.scheduledRetryCount, 2)
   assert.equal(payload.nextScheduledRetryAt, '2026-07-31T00:32:00.000Z')
+  assert.deepEqual(payload.systemWake, {
+    lastSuspendAt: '2026-07-31T02:00:00.000Z',
+    lastResumeAt: '2026-07-31T08:00:00.000Z',
+    resumeCount: 4,
+    lastWakeAt: '2026-07-31T08:00:00.000Z',
+    lastWakeReason: 'system_resume',
+    lastGapMs: 21_600_000,
+    lastCatchupAt: '2026-07-31T08:00:01.000Z',
+    lastCatchupResult: 'backlog_catchup_attempted'
+  })
   assert.equal(payload.recentMessageIds, undefined)
   assert.equal(payload.sessionCursors, undefined)
   assert.equal(payload.sessionOffsets, undefined)
@@ -4260,6 +4280,59 @@ test('renderer cursor status exposes counts but keeps durable keys and session m
 })
 
 test('daily schedule is acknowledged only after every enabled source and backlog completes', () => {
+  assert.deepEqual(
+    assessSchedulerWake(
+      Date.parse('2026-07-31T01:00:00.000Z'),
+      Date.parse('2026-07-31T07:00:00.000Z'),
+      true
+    ),
+    {
+      reason: 'system_resume',
+      elapsedMs: 6 * 60 * 60_000,
+      shouldRunImmediately: true,
+      resetAttemptThrottle: false
+    }
+  )
+  assert.deepEqual(
+    assessSchedulerWake(
+      Date.parse('2026-07-31T07:00:00.000Z'),
+      Date.parse('2026-07-31T06:50:00.000Z')
+    ),
+    {
+      reason: 'clock_backward',
+      elapsedMs: -10 * 60_000,
+      shouldRunImmediately: true,
+      resetAttemptThrottle: true
+    }
+  )
+  assert.equal(assessSchedulerWake(
+    Date.parse('2026-07-31T07:00:00.000Z'),
+    Date.parse('2026-07-31T07:01:00.000Z')
+  ).reason, 'regular')
+  assert.equal(assessSchedulerWake(
+    Date.parse('2026-07-31T07:00:00.000Z'),
+    Date.parse('2026-07-31T07:04:00.000Z')
+  ).reason, 'timer_gap')
+  assert.equal(shouldRunResumeCatchup(
+    4 * 60_000,
+    '2026-07-31T06:00:00.000Z',
+    Date.parse('2026-07-31T08:00:00.000Z')
+  ), false)
+  assert.equal(shouldRunResumeCatchup(
+    6 * 60 * 60_000,
+    '2026-07-31T07:50:00.000Z',
+    Date.parse('2026-07-31T08:00:00.000Z')
+  ), false)
+  assert.equal(shouldRunResumeCatchup(
+    6 * 60 * 60_000,
+    '2026-07-31T07:30:00.000Z',
+    Date.parse('2026-07-31T08:00:00.000Z')
+  ), true)
+  assert.equal(shouldRunResumeCatchup(
+    6 * 60 * 60_000,
+    null,
+    Date.parse('2026-07-31T08:00:00.000Z')
+  ), true)
   assert.deepEqual(assessScheduledSyncResult({
     success: true,
     partial: false,
