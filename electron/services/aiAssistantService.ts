@@ -4000,6 +4000,7 @@ export class AiAssistantService {
 
   getEventTimeline(options: any = {}): any {
     const page = personalMemoryStore.listEventTimeline({
+      entityId: String(options?.entityId || ''),
       sourceId: ['wechat', 'documents', 'calendar'].includes(options?.sourceId)
         ? options.sourceId
         : undefined,
@@ -4019,6 +4020,37 @@ export class AiAssistantService {
       items: page.items.map((event: any) => ({
         ...event,
         entities_trusted: eventEntitiesAreTrusted(event, trustedIds)
+      }))
+    }
+  }
+
+  getEntityRelationPage(options: any = {}): any {
+    const entityId = String(options?.entityId || '').trim()
+    const entity = this.state.graph.entities.find(candidate =>
+      candidate.id === entityId && candidate.trustStatus !== 'rejected')
+    if (!entity) {
+      return {
+        items: [],
+        total: 0,
+        hasMore: false,
+        revision: `${personalMemoryStore.getGraphReviewRevision()}:${personalMemoryStore.getStructuredMemoryRevision()}`,
+        stale: false
+      }
+    }
+    const page = personalMemoryStore.listEntityRelationPage({
+      entityId,
+      limit: Number(options?.limit || 40),
+      offset: Number(options?.offset || 0),
+      revision: String(options?.revision || '')
+    })
+    return {
+      ...page,
+      items: page.items.map((relation: any) => ({
+        ...relation,
+        subjectId: relation.subject_id,
+        objectId: relation.object_id,
+        createdAt: relation.created_at,
+        updatedAt: relation.updated_at
       }))
     }
   }

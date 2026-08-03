@@ -2017,6 +2017,9 @@ export interface ElectronAPI {
       getEventTimeline: (options?: any) => Promise<{
         items: any[]; total: number; hasMore: boolean; revision: string; stale: boolean
       }>
+      getEntityRelationPage: (options?: any) => Promise<{
+        items: any[]; total: number; hasMore: boolean; revision: string; stale: boolean
+      }>
       getClaimArchive: (options?: any) => Promise<{
         items: any[]; total: number; hasMore: boolean; revision: string; stale: boolean
       }>

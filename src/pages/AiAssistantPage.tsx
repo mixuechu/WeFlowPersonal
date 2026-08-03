@@ -301,6 +301,15 @@ function AiAssistantPage() {
   })
   const graphWorkspaceGate = useRef(new LatestRequestGate())
   const [showEntityDossier, setShowEntityDossier] = useState(false)
+  const [entityDossierPages, setEntityDossierPages] = useState<any>({
+    claims: { items: [], total: 0, hasMore: false, revision: '' },
+    relations: { items: [], total: 0, hasMore: false, revision: '' },
+    events: { items: [], total: 0, hasMore: false, revision: '' },
+    status: 'idle'
+  })
+  const [entityDossierLoadingMore, setEntityDossierLoadingMore] = useState('')
+  const [entityDossierRefreshKey, setEntityDossierRefreshKey] = useState(0)
+  const entityDossierGate = useRef(new LatestRequestGate())
   const [briefingPeriod, setBriefingPeriod] = useState<'latest' | 'week'>('latest')
   const [selectedProjectId, setSelectedProjectId] = useState('')
   const [projectDirectory, setProjectDirectory] = useState<any>({
@@ -1547,6 +1556,54 @@ function AiAssistantPage() {
   ])
 
   useEffect(() => {
+    const request = entityDossierGate.current.begin()
+    if (!showEntityDossier || !selectedEntityId) {
+      setEntityDossierLoadingMore('')
+      setEntityDossierPages({
+        claims: { items: [], total: 0, hasMore: false, revision: '' },
+        relations: { items: [], total: 0, hasMore: false, revision: '' },
+        events: { items: [], total: 0, hasMore: false, revision: '' },
+        status: 'idle'
+      })
+      return () => {
+        if (entityDossierGate.current.isCurrent(request)) entityDossierGate.current.invalidate()
+      }
+    }
+    setEntityDossierLoadingMore('')
+    setEntityDossierPages({
+      claims: { items: [], total: 0, hasMore: false, revision: '' },
+      relations: { items: [], total: 0, hasMore: false, revision: '' },
+      events: { items: [], total: 0, hasMore: false, revision: '' },
+      status: 'loading'
+    })
+    void Promise.all([
+      window.electronAPI.aiAssistant.getClaimArchive({
+        entityId: selectedEntityId, limit: 40, offset: 0
+      }),
+      window.electronAPI.aiAssistant.getEntityRelationPage({
+        entityId: selectedEntityId, limit: 40, offset: 0
+      }),
+      window.electronAPI.aiAssistant.getEventTimeline({
+        entityId: selectedEntityId, limit: 40, offset: 0
+      })
+    ]).then(([claims, relations, events]) => {
+      if (!entityDossierGate.current.isCurrent(request)) return
+      setEntityDossierPages({ claims, relations, events, status: 'ready' })
+    }).catch(error => {
+      if (!entityDossierGate.current.isCurrent(request)) return
+      setEntityDossierPages((current: any) => ({
+        ...current, status: 'error', error: error?.message || String(error)
+      }))
+    })
+    return () => {
+      if (entityDossierGate.current.isCurrent(request)) entityDossierGate.current.invalidate()
+    }
+  }, [
+    showEntityDossier, selectedEntityId, dashboard?.memoryRevision,
+    dashboard?.graphReviewRevision, entityDossierRefreshKey
+  ])
+
+  useEffect(() => {
     const request = projectWorkspaceGate.current.begin()
     if (!selectedProjectId) {
       setProjectWorkspace({ project: null, status: 'idle' })
@@ -1816,6 +1873,9 @@ function AiAssistantPage() {
   const selectedEntityClaims = graphWorkspace.focus?.claims || []
   const selectedEntityEvents = graphWorkspace.focus?.events || []
   const selectedEntityRelations = graphWorkspace.focus?.relations || []
+  const dossierClaims = entityDossierPages.claims?.items || []
+  const dossierRelations = entityDossierPages.relations?.items || []
+  const dossierEvents = entityDossierPages.events?.items || []
   const selectedEntityRelationHistory = graphWorkspace.focus?.relationHistory || []
   const selectedEntityCorrections = graphWorkspace.focus?.entityCorrections || []
   const selectedEntityRelationCorrections = graphWorkspace.focus?.relationCorrections || []
@@ -2265,6 +2325,47 @@ function AiAssistantPage() {
       if (taskFeedbackDossierGate.current.isCurrent(request)) setMessage(error?.message || String(error))
     } finally {
       if (taskFeedbackDossierGate.current.isCurrent(request)) setTaskFeedbackHistoryLoadingMore(false)
+    }
+  }
+
+  const loadMoreEntityDossierSection = async (kind: 'claims' | 'relations' | 'events') => {
+    const currentPage = entityDossierPages[kind]
+    if (!selectedEntityId || entityDossierLoadingMore || !currentPage?.hasMore) return
+    const request = entityDossierGate.current.begin()
+    setEntityDossierLoadingMore(kind)
+    try {
+      const options = {
+        entityId: selectedEntityId,
+        limit: 40,
+        offset: currentPage.items.length,
+        revision: currentPage.revision
+      }
+      const page = kind === 'claims'
+        ? await window.electronAPI.aiAssistant.getClaimArchive(options)
+        : kind === 'relations'
+          ? await window.electronAPI.aiAssistant.getEntityRelationPage(options)
+          : await window.electronAPI.aiAssistant.getEventTimeline(options)
+      if (!entityDossierGate.current.isCurrent(request)) return
+      if (page.stale) {
+        setMessage('人物档案在浏览期间已有更新，已从最新第一页重新载入。')
+        setEntityDossierRefreshKey(value => value + 1)
+        return
+      }
+      setEntityDossierPages((current: any) => ({
+        ...current,
+        [kind]: {
+          ...page,
+          items: [
+            ...(current[kind]?.items || []),
+            ...page.items.filter((item: any) =>
+              !(current[kind]?.items || []).some((known: any) => known.id === item.id))
+          ]
+        }
+      }))
+    } catch (error: any) {
+      if (entityDossierGate.current.isCurrent(request)) setMessage(error?.message || String(error))
+    } finally {
+      if (entityDossierGate.current.isCurrent(request)) setEntityDossierLoadingMore('')
     }
   }
 
@@ -6800,44 +6901,70 @@ function AiAssistantPage() {
               <span><b>{selectedEntityTasks.filter(task => !['done', 'cancelled'].includes(task.status)).length}</b><small>进行中事项</small></span>
               <span><b>{selectedEntityInsight.pendingCommitmentCount}</b><small>待确认承诺</small></span>
             </div>}
+            {entityDossierPages.status === 'loading' && <div className="assistant-empty">
+              正在从 SQLCipher 读取人物的事实、关系和事件档案…
+            </div>}
+            {entityDossierPages.status === 'error' && <div className="assistant-empty">
+              人物档案读取失败：{entityDossierPages.error}
+              <button onClick={() => setEntityDossierRefreshKey(value => value + 1)}>重试</button>
+            </div>}
             <div className="assistant-dossier-grid">
               <section>
-                <h3>结构化事实 <small>{Number(graphWorkspace.focus?.claimTotal ?? selectedEntityClaims.length)}</small></h3>
-                {selectedEntityClaims.map((claim: any) => <article key={claim.id}>
+                <h3>结构化事实 <small>{Number(entityDossierPages.claims?.total || 0)}</small></h3>
+                {dossierClaims.map((claim: any) => <article key={claim.id}>
                   <div><b>{claim.polarity === 'negative' ? '并非 ' : ''}{claim.predicate}</b><span>{claim.object_entity_name || claim.object_value || '待确认'}</span></div>
                   <small>{claim.status === 'confirmed' ? '已确认' : '待确认'} · {Math.round(Number(claim.confidence || 0) * 100)}% · {claim.source_nature === 'self_statement' ? '本人陈述' : claim.source_nature === 'other_statement' ? '他人陈述' : '模型推断'}</small>
                   <div className="assistant-evidence-stack"><EvidenceRows evidence={claim.evidence} total={claim.evidence_count} roleLabels /></div>
                 </article>)}
-                {!selectedEntityClaims.length && <em>尚无结构化事实</em>}
-                {Number(graphWorkspace.focus?.claimTotal || 0) > selectedEntityClaims.length && <em>当前档案先显示最近 {selectedEntityClaims.length} 条；可从统一记忆继续检索全部事实。</em>}
+                {entityDossierPages.status === 'ready' && !dossierClaims.length && <em>尚无结构化事实</em>}
+                {entityDossierPages.claims?.hasMore && <button
+                  disabled={!!entityDossierLoadingMore}
+                  onClick={() => void loadMoreEntityDossierSection('claims')}>
+                  {entityDossierLoadingMore === 'claims'
+                    ? '正在加载…'
+                    : `加载更多事实（已显示 ${dossierClaims.length} / ${entityDossierPages.claims.total}）`}
+                </button>}
               </section>
               <section>
-                <h3>关系与证据 <small>{Number(graphWorkspace.focus?.relationTotal ?? selectedEntityRelations.length)}</small></h3>
-                {selectedEntityRelations.map((relation: any) => {
+                <h3>关系与证据 <small>{Number(entityDossierPages.relations?.total || 0)}</small></h3>
+                {dossierRelations.map((relation: any) => {
                   const outgoing = relation.subjectId === selectedEntity.id
                   const neighborId = outgoing ? relation.objectId : relation.subjectId
+                  const neighborName = outgoing ? relation.object_name : relation.subject_name
                   return <article key={relation.id}>
                     <button className="assistant-dossier-link" onClick={() => setSelectedEntityId(neighborId)}>
-                      <b>{outgoing ? relation.predicate : `被${relation.predicate}`}</b><span>{selectedEntityNames[neighborId] || neighborId}</span>
+                      <b>{outgoing ? relation.predicate : `被${relation.predicate}`}</b><span>{neighborName || selectedEntityNames[neighborId] || neighborId}</span>
                     </button>
                     <small>{relation.status === 'confirmed' ? '已确认' : '待确认'} · {Math.round(Number(relation.confidence || 0) * 100)}%</small>
                     <div className="assistant-evidence-stack"><EvidenceRows evidence={relation.evidence} total={relation.evidenceTotal} /></div>
                     <button className="assistant-dossier-task-action danger" onClick={() => void permanentlyDeleteMemoryItem('relation', relation)}>永久删除关系</button>
                   </article>
                 })}
-                {!selectedEntityRelations.length && <em>尚无关系</em>}
-                {Number(graphWorkspace.focus?.relationTotal || 0) > selectedEntityRelations.length && <em>当前档案先显示强度最高的 {selectedEntityRelations.length} 条关系。</em>}
+                {entityDossierPages.status === 'ready' && !dossierRelations.length && <em>尚无关系</em>}
+                {entityDossierPages.relations?.hasMore && <button
+                  disabled={!!entityDossierLoadingMore}
+                  onClick={() => void loadMoreEntityDossierSection('relations')}>
+                  {entityDossierLoadingMore === 'relations'
+                    ? '正在加载…'
+                    : `加载更多关系（已显示 ${dossierRelations.length} / ${entityDossierPages.relations.total}）`}
+                </button>}
               </section>
               <section>
-                <h3>事件时间线 <small>{Number(graphWorkspace.focus?.eventTotal ?? selectedEntityEvents.length)}</small></h3>
-                {selectedEntityEvents.map((event: any) => <article key={event.id}>
+                <h3>事件时间线 <small>{Number(entityDossierPages.events?.total || 0)}</small></h3>
+                {dossierEvents.map((event: any) => <article key={event.id}>
                   <div><b>{event.title}</b><span>{event.start_at || '时间待确认'}</span></div>
                   {event.description && <p>{event.description}</p>}
                   <small>{event.event_type} · {event.status === 'confirmed' ? '已确认' : '待确认'} · {event.location || '地点未记录'}</small>
                   <div className="assistant-evidence-stack"><EvidenceRows evidence={event.evidence} total={event.evidence_count} /></div>
                 </article>)}
-                {!selectedEntityEvents.length && <em>尚无相关事件</em>}
-                {Number(graphWorkspace.focus?.eventTotal || 0) > selectedEntityEvents.length && <em>当前档案先显示最近 {selectedEntityEvents.length} 条；可从事件时间线继续查看全部记录。</em>}
+                {entityDossierPages.status === 'ready' && !dossierEvents.length && <em>尚无相关事件</em>}
+                {entityDossierPages.events?.hasMore && <button
+                  disabled={!!entityDossierLoadingMore}
+                  onClick={() => void loadMoreEntityDossierSection('events')}>
+                  {entityDossierLoadingMore === 'events'
+                    ? '正在加载…'
+                    : `加载更多事件（已显示 ${dossierEvents.length} / ${entityDossierPages.events.total}）`}
+                </button>}
               </section>
               <section>
                 <h3>关联事项 <small>{Number(graphWorkspace.focus?.taskTotal ?? selectedEntityTasks.length)}</small></h3>

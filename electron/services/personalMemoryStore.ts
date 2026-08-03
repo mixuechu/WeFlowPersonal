@@ -6062,6 +6062,7 @@ export class PersonalMemoryStore {
   }
 
   listEventTimeline(options: {
+    entityId?: string
     sourceId?: 'wechat' | 'documents' | 'calendar'
     status?: 'candidate' | 'confirmed' | 'rejected' | 'cancelled'
     from?: string
@@ -6082,6 +6083,14 @@ export class PersonalMemoryStore {
     if (options.status) {
       conditions.push('ev.status=?')
       parameters.push(options.status)
+    }
+    const entityId = String(options.entityId || '').trim()
+    if (entityId) {
+      conditions.push(`EXISTS (
+        SELECT 1 FROM event_participants entity_scope
+        WHERE entity_scope.event_id=ev.id AND entity_scope.entity_id=?
+      )`)
+      parameters.push(entityId)
     }
     const validFrom = options.from && Number.isFinite(Date.parse(options.from)) ? options.from : ''
     const validTo = options.to && Number.isFinite(Date.parse(options.to)) ? options.to : ''
@@ -6163,6 +6172,63 @@ export class PersonalMemoryStore {
       review_history: reviewStatement.all(event.id) as any[]
     }))
     const completedRevision = this.getStructuredMemoryRevision()
+    if (completedRevision !== revision) {
+      return { items: [], total: 0, hasMore: false, revision: completedRevision, stale: true }
+    }
+    return {
+      items,
+      total,
+      hasMore: offset + rows.length < total,
+      revision,
+      stale: false
+    }
+  }
+
+  listEntityRelationPage(options: {
+    entityId: string
+    limit?: number
+    offset?: number
+    revision?: string
+  }): { items: any[]; total: number; hasMore: boolean; revision: string; stale: boolean } {
+    if (!this.db) return { items: [], total: 0, hasMore: false, revision: '0', stale: false }
+    const currentRevision = () =>
+      `${this.getGraphReviewRevision()}:${this.getStructuredMemoryRevision()}`
+    const revision = currentRevision()
+    const entityId = String(options.entityId || '').trim()
+    if (!entityId) return { items: [], total: 0, hasMore: false, revision, stale: false }
+    const offset = Math.max(0, Math.min(1_000_000, Math.floor(Number(options.offset) || 0)))
+    const expectedRevision = String(options.revision || '').trim()
+    if (offset > 0 && expectedRevision !== revision) {
+      return { items: [], total: 0, hasMore: false, revision, stale: true }
+    }
+    const total = Number((this.db.prepare(`
+      SELECT COUNT(*) AS count FROM relations
+      WHERE status!='rejected' AND (subject_id=? OR object_id=?)
+    `).get(entityId, entityId) as any)?.count || 0)
+    const limit = Math.max(1, Math.min(100, Math.floor(Number(options.limit) || 40)))
+    const rows = this.db.prepare(`
+      SELECT r.*,subject.canonical_name AS subject_name,object.canonical_name AS object_name,
+        (SELECT COUNT(*) FROM evidence e WHERE e.relation_id=r.id) AS evidence_count
+      FROM relations r
+      LEFT JOIN entities subject ON subject.id=r.subject_id
+      LEFT JOIN entities object ON object.id=r.object_id
+      WHERE r.status!='rejected' AND (r.subject_id=? OR r.object_id=?)
+      ORDER BY
+        CASE WHEN r.status='confirmed' THEN 0 ELSE 1 END,
+        r.confidence DESC,r.updated_at DESC,r.id ASC
+      LIMIT ? OFFSET ?
+    `).all(entityId, entityId, limit, offset) as any[]
+    const evidenceStatement = this.db.prepare(`
+      SELECT source_id,message_id,session_id,timestamp,sender,excerpt,evidence_role
+      FROM evidence WHERE relation_id=?
+      ORDER BY timestamp DESC,message_id DESC LIMIT ?
+    `)
+    const items = rows.map(relation => ({
+      ...relation,
+      evidence: (evidenceStatement.all(relation.id, MEMORY_CARD_EVIDENCE_LIMIT) as any[]).reverse(),
+      evidenceTotal: Number(relation.evidence_count || 0)
+    }))
+    const completedRevision = currentRevision()
     if (completedRevision !== revision) {
       return { items: [], total: 0, hasMore: false, revision: completedRevision, stale: true }
     }

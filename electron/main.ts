@@ -4699,6 +4699,8 @@ function registerIpcHandlers() {
     aiAssistantService.getConversationSources(options))
   ipcMain.handle('ai-assistant:getDataSources', () => aiAssistantService.getDataSources())
   ipcMain.handle('ai-assistant:getEventTimeline', (_, options?: any) => aiAssistantService.getEventTimeline(options))
+  ipcMain.handle('ai-assistant:getEntityRelationPage', (_, options?: any) =>
+    aiAssistantService.getEntityRelationPage(options))
   ipcMain.handle('ai-assistant:getClaimArchive', (_, options?: any) => aiAssistantService.getClaimArchive(options))
   ipcMain.handle('ai-assistant:getCalendarAuthorization', () => aiAssistantService.getCalendarAuthorization())
   ipcMain.handle('ai-assistant:requestCalendarAccess', () => aiAssistantService.requestCalendarAccess())

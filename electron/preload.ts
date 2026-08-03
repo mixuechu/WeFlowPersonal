@@ -750,6 +750,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
     getConversationSources: (options?: any) => ipcRenderer.invoke('ai-assistant:getConversationSources', options),
     getDataSources: () => ipcRenderer.invoke('ai-assistant:getDataSources'),
     getEventTimeline: (options?: any) => ipcRenderer.invoke('ai-assistant:getEventTimeline', options),
+    getEntityRelationPage: (options?: any) =>
+      ipcRenderer.invoke('ai-assistant:getEntityRelationPage', options),
     getClaimArchive: (options?: any) => ipcRenderer.invoke('ai-assistant:getClaimArchive', options),
     getCalendarAuthorization: () => ipcRenderer.invoke('ai-assistant:getCalendarAuthorization'),
     requestCalendarAccess: () => ipcRenderer.invoke('ai-assistant:requestCalendarAccess'),

@@ -3534,8 +3534,27 @@ test('project memory is scoped in SQL before limits and preserves authoritative 
       trustStatus: 'confirmed',
       aliases: [],
       accountIds: []
-    }],
-    relations: [],
+    }, ...Array.from({ length: 125 }, (_, index) => ({
+      id: `project-relation-neighbor-${index}`,
+      type: 'person',
+      canonicalName: `项目关系人物 ${index}`,
+      summary: '',
+      confidence: 1,
+      trustStatus: 'confirmed',
+      aliases: [],
+      accountIds: []
+    }))],
+    relations: Array.from({ length: 125 }, (_, index) => ({
+      id: `project-scoped-relation-${index}`,
+      subjectId: 'project-memory-scope',
+      predicate: index % 2 ? '协作' : '负责',
+      objectId: `project-relation-neighbor-${index}`,
+      confidence: 0.9 - index / 10_000,
+      status: 'confirmed',
+      createdAt: new Date(1_550_000_000_000 + index * 1000).toISOString(),
+      updatedAt: new Date(1_550_000_000_000 + index * 1000).toISOString(),
+      evidence: evidence(`project-scoped-relation-message-${index}`, `项目关系原文 ${index}`)
+    })),
     reviewQueue: []
   } as any)
   const claims = Array.from({ length: 260 }, (_, index) => ({
@@ -3590,6 +3609,39 @@ test('project memory is scoped in SQL before limits and preserves authoritative 
     item.participants.some((participant: any) => participant.entity_id === 'project-memory-scope')))
   assert.equal(JSON.stringify(memory).includes('无关事实原文'), false)
 
+  const claimPage = store.listClaimArchive({
+    entityId: 'project-memory-scope', limit: 40
+  })
+  const claimPage2 = store.listClaimArchive({
+    entityId: 'project-memory-scope', limit: 40, offset: 40, revision: claimPage.revision
+  })
+  assert.equal(claimPage.total, 260)
+  assert.equal(new Set([...claimPage.items, ...claimPage2.items].map(item => item.id)).size, 80)
+
+  const eventPage = store.listEventTimeline({
+    entityId: 'project-memory-scope', limit: 40
+  })
+  const eventPage2 = store.listEventTimeline({
+    entityId: 'project-memory-scope', limit: 40, offset: 40, revision: eventPage.revision
+  })
+  assert.equal(eventPage.total, 240)
+  assert.equal(new Set([...eventPage.items, ...eventPage2.items].map(item => item.id)).size, 80)
+  assert.equal(store.listEventTimeline({ entityId: 'unrelated-memory-scope' }).total, 0)
+
+  const relationPage = store.listEntityRelationPage({
+    entityId: 'project-memory-scope', limit: 40
+  })
+  const relationPage2 = store.listEntityRelationPage({
+    entityId: 'project-memory-scope', limit: 40, offset: 40, revision: relationPage.revision
+  })
+  assert.equal(relationPage.total, 125)
+  assert.equal(relationPage.items.length, 40)
+  assert.equal(new Set([...relationPage.items, ...relationPage2.items].map(item => item.id)).size, 80)
+  assert.equal(relationPage.items[0].evidenceTotal, 1)
+  assert.equal(store.listEntityRelationPage({
+    entityId: 'project-memory-scope', limit: 40, offset: 40
+  }).stale, true)
+
   const counts = store.getProjectReviewCounts([
     'project-memory-scope',
     'unrelated-memory-scope'
@@ -3601,6 +3653,23 @@ test('project memory is scoped in SQL before limits and preserves authoritative 
     total: 500
   })
   assert.equal(counts['unrelated-memory-scope'].candidateClaims, 600)
+  store.upsertClaims([{
+    id: 'relation-page-concurrent-evidence-change',
+    subjectId: 'unrelated-memory-scope',
+    predicate: '并发补证据',
+    objectValue: '触发结构化记忆版本',
+    confidence: 0.9,
+    status: 'candidate',
+    sourceNature: 'inference',
+    searchText: '并发补证据触发结构化记忆版本',
+    evidence: evidence('relation-page-concurrent-message', '并发补证据')
+  }])
+  assert.equal(store.listEntityRelationPage({
+    entityId: 'project-memory-scope',
+    limit: 40,
+    offset: 40,
+    revision: relationPage.revision
+  }).stale, true)
 }))
 
 test('task dashboard keeps structure but loads evidence and audit history on demand', () => {
