@@ -472,6 +472,7 @@ function AiAssistantPage() {
   })
   const [entityEvidenceQuery, setEntityEvidenceQuery] = useState('')
   const [entityEvidenceSource, setEntityEvidenceSource] = useState('')
+  const [entityEvidenceKind, setEntityEvidenceKind] = useState('')
   const [entityEvidenceLoadingMore, setEntityEvidenceLoadingMore] = useState(false)
   const [entityEvidenceRefreshKey, setEntityEvidenceRefreshKey] = useState(0)
   const entityEvidenceGate = useRef(new LatestRequestGate())
@@ -522,6 +523,7 @@ function AiAssistantPage() {
   })
   const [projectEvidenceQuery, setProjectEvidenceQuery] = useState('')
   const [projectEvidenceSource, setProjectEvidenceSource] = useState('')
+  const [projectEvidenceKind, setProjectEvidenceKind] = useState('')
   const [projectEvidenceLoadingMore, setProjectEvidenceLoadingMore] = useState(false)
   const [projectEvidenceRefreshKey, setProjectEvidenceRefreshKey] = useState(0)
   const projectEvidenceGate = useRef(new LatestRequestGate())
@@ -2015,10 +2017,19 @@ function AiAssistantPage() {
         entityId: selectedEntityId,
         query: entityEvidenceQuery.trim() || undefined,
         sourceId: entityEvidenceSource || undefined,
+        memoryKind: entityEvidenceKind || undefined,
         limit: 40,
         offset: 0
       }).then(page => {
         if (!entityEvidenceGate.current.isCurrent(request)) return
+        if (page.stale) {
+          window.setTimeout(() => {
+            if (entityEvidenceGate.current.isCurrent(request)) {
+              setEntityEvidenceRefreshKey(value => value + 1)
+            }
+          }, 250)
+          return
+        }
         setEntityEvidencePage({ ...page, status: 'ready' })
       }).catch(error => {
         if (!entityEvidenceGate.current.isCurrent(request)) return
@@ -2033,7 +2044,7 @@ function AiAssistantPage() {
       if (entityEvidenceGate.current.isCurrent(request)) entityEvidenceGate.current.invalidate()
     }
   }, [
-    showEntityDossier, selectedEntityId, entityEvidenceQuery, entityEvidenceSource,
+    showEntityDossier, selectedEntityId, entityEvidenceQuery, entityEvidenceSource, entityEvidenceKind,
     dashboard?.memoryRevision, dashboard?.graphReviewRevision, entityEvidenceRefreshKey
   ])
 
@@ -2162,6 +2173,7 @@ function AiAssistantPage() {
         entityId: projectEntityId,
         query: projectEvidenceQuery.trim() || undefined,
         sourceId: projectEvidenceSource || undefined,
+        memoryKind: projectEvidenceKind || undefined,
         limit: 40,
         offset: 0
       }).then(page => {
@@ -2190,7 +2202,7 @@ function AiAssistantPage() {
   }, [
     projectWorkspace.status, projectWorkspace.project?.entityId,
     dashboard?.memoryRevision, dashboard?.graphReviewRevision, projectEvidenceRefreshKey,
-    projectEvidenceQuery, projectEvidenceSource
+    projectEvidenceQuery, projectEvidenceSource, projectEvidenceKind
   ])
 
   useEffect(() => {
@@ -3026,6 +3038,7 @@ function AiAssistantPage() {
         entityId: selectedEntityId,
         query: entityEvidenceQuery.trim() || undefined,
         sourceId: entityEvidenceSource || undefined,
+        memoryKind: entityEvidenceKind || undefined,
         limit: 40,
         offset: entityEvidencePage.items.length,
         revision: entityEvidencePage.revision
@@ -3218,6 +3231,7 @@ function AiAssistantPage() {
         entityId: projectEntityId,
         query: projectEvidenceQuery.trim() || undefined,
         sourceId: projectEvidenceSource || undefined,
+        memoryKind: projectEvidenceKind || undefined,
         limit: 40,
         offset: projectEvidencePage.items.length,
         revision: projectEvidencePage.revision
@@ -8299,6 +8313,14 @@ function AiAssistantPage() {
                     <option value="mail">邮件</option>
                     <option value="legacy">历史来源未知</option>
                   </select>
+                  <select value={entityEvidenceKind}
+                    onChange={event => setEntityEvidenceKind(event.target.value)}>
+                    <option value="">全部用途</option>
+                    <option value="identity">身份识别</option>
+                    <option value="claim">事实</option>
+                    <option value="relation">关系</option>
+                    <option value="event">事件</option>
+                  </select>
                 </div>
                 {entityEvidencePage.status === 'loading' && <em>正在读取相关原文…</em>}
                 {entityEvidencePage.status === 'error' && <div className="assistant-empty">
@@ -8642,7 +8664,7 @@ function AiAssistantPage() {
                 <div className="assistant-inline-filters">
                   <input value={projectEvidenceQuery}
                     onChange={event => setProjectEvidenceQuery(event.target.value)}
-                    placeholder="搜索发送者、原文、会话 ID 或用途" />
+                    placeholder="搜索发送者、原文或会话 ID" />
                   <select value={projectEvidenceSource}
                     onChange={event => setProjectEvidenceSource(event.target.value)}>
                     <option value="">全部来源</option>
@@ -8651,6 +8673,14 @@ function AiAssistantPage() {
                     <option value="calendar">日历</option>
                     <option value="mail">Mail</option>
                     <option value="legacy">历史未知来源</option>
+                  </select>
+                  <select value={projectEvidenceKind}
+                    onChange={event => setProjectEvidenceKind(event.target.value)}>
+                    <option value="">全部用途</option>
+                    <option value="identity">项目识别</option>
+                    <option value="claim">项目事实</option>
+                    <option value="relation">项目关系</option>
+                    <option value="event">项目事件</option>
                   </select>
                 </div>
                 {projectEvidencePage.status === 'loading' && <em>正在读取项目相关原文…</em>}

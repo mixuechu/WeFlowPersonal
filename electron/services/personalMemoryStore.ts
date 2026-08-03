@@ -6655,6 +6655,7 @@ export class PersonalMemoryStore {
   listEntityEvidencePage(options: {
     entityId: string
     sourceId?: 'wechat' | 'documents' | 'calendar' | 'mail' | 'legacy'
+    memoryKind?: 'identity' | 'claim' | 'relation' | 'event'
     query?: string
     limit?: number
     offset?: number
@@ -6681,6 +6682,14 @@ export class PersonalMemoryStore {
     if (sourceId) {
       filters.push('source_id=?')
       filterParameters.push(sourceId)
+    }
+    const memoryKind = ['identity', 'claim', 'relation', 'event']
+      .includes(String(options.memoryKind || ''))
+      ? String(options.memoryKind)
+      : ''
+    if (memoryKind) {
+      filters.push(`INSTR(',' || memory_kinds || ',', ?) > 0`)
+      filterParameters.push(`,${memoryKind},`)
     }
     if (query) {
       filters.push(`(

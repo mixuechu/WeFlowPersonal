@@ -4535,6 +4535,9 @@ export class AiAssistantService {
       sourceId: ['wechat', 'documents', 'calendar', 'mail', 'legacy'].includes(String(options?.sourceId || ''))
         ? options.sourceId
         : undefined,
+      memoryKind: ['identity', 'claim', 'relation', 'event'].includes(String(options?.memoryKind || ''))
+        ? options.memoryKind
+        : undefined,
       query: String(options?.query || ''),
       limit: Number(options?.limit || 40),
       offset: Number(options?.offset || 0),
