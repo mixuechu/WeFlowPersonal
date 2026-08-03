@@ -422,6 +422,7 @@ function AiAssistantPage() {
   const [assistantArchiveQuery, setAssistantArchiveQuery] = useState('')
   const [assistantArchiveFrom, setAssistantArchiveFrom] = useState('')
   const [assistantArchiveTo, setAssistantArchiveTo] = useState('')
+  const [assistantArchiveRevalidation, setAssistantArchiveRevalidation] = useState('')
   const [assistantArchiveLoadingMore, setAssistantArchiveLoadingMore] = useState(false)
   const [assistantMessagesLoadingMore, setAssistantMessagesLoadingMore] = useState(false)
   const assistantArchiveGate = useRef(new LatestRequestGate())
@@ -501,9 +502,10 @@ function AiAssistantPage() {
     query: assistantArchiveQuery || undefined,
     from: assistantArchiveFrom ? new Date(`${assistantArchiveFrom}T00:00:00+08:00`).toISOString() : undefined,
     to: assistantArchiveTo ? new Date(`${assistantArchiveTo}T23:59:59.999+08:00`).toISOString() : undefined,
+    revalidationStatus: assistantArchiveRevalidation || undefined,
     offset: 0,
     limit: 30
-  }), [assistantArchiveQuery, assistantArchiveFrom, assistantArchiveTo])
+  }), [assistantArchiveQuery, assistantArchiveFrom, assistantArchiveTo, assistantArchiveRevalidation])
   const taskOwnershipOptions = useMemo(() => ({
     classification: taskOwnershipClassification || undefined,
     priority: taskOwnershipPriority || undefined,
@@ -3467,6 +3469,14 @@ function AiAssistantPage() {
                 onChange={event => setAssistantArchiveQuery(event.target.value)}
                 placeholder="搜索问题或回答"
               />
+              <select value={assistantArchiveRevalidation}
+                onChange={event => setAssistantArchiveRevalidation(event.target.value)}>
+                <option value="">全部核验状态</option>
+                <option value="invalid">已失去证据支持</option>
+                <option value="needs_review">需要重新核验</option>
+                <option value="current">当前证据有效</option>
+                <option value="not_applicable">无事实陈述/旧版无依赖</option>
+              </select>
               <div className="assistant-conversation-date-filter">
                 <label>从<input type="date" value={assistantArchiveFrom}
                   onChange={event => setAssistantArchiveFrom(event.target.value)} /></label>
@@ -3487,17 +3497,29 @@ function AiAssistantPage() {
                 {!!Number(dashboard.assistantArchive.exchangeIntegrity.unmatchedMessages || 0) &&
                   ` 检测到 ${Number(dashboard.assistantArchive.exchangeIntegrity.unmatchedMessages).toLocaleString()} 条旧版未配对消息，仅保留为历史，不会冒充完整回合。`}
               </small>}
+              {dashboard?.assistantArchive?.answerDependencies?.policy === 'statement_dependency_index_v1' && <small>
+                已建立 {Number(dashboard.assistantArchive.answerDependencies.statements || 0).toLocaleString()} 条陈述、
+                {Number(dashboard.assistantArchive.answerDependencies.dependencies || 0).toLocaleString()} 项轻量引用依赖；
+                目录核验不加载回答正文或原文。
+              </small>}
               {assistantConversations.map(conversation => <button
                 className={memoryConversationId === conversation.id ? 'active' : ''}
                 key={conversation.id}
                 onClick={() => void openMemoryConversation(conversation.id)}>
                 <b>{conversation.title}</b>
                 <span>{Number(conversation.message_count || 0)} 条消息 · {new Date(conversation.updated_at).toLocaleString('zh-CN')}</span>
+                <small>{conversation.revalidation_status === 'invalid'
+                  ? `⚠ 已失去支持 · ${Number(conversation.revalidation_invalid_statements || 0)} 条陈述`
+                  : conversation.revalidation_status === 'needs_review'
+                    ? `△ 需要复核 · ${Number(conversation.revalidation_unknown_statements || 0)} 条旧陈述`
+                    : conversation.revalidation_status === 'current'
+                      ? `✓ 当前有效 · ${Number(conversation.revalidation_supported_statements || 0)} 条陈述`
+                      : '无事实陈述或旧版未建立依赖'}</small>
                 <small>{conversation.preview}</small>
               </button>)}
               {assistantArchive.loading && <small>正在读取本机问答档案…</small>}
               {!assistantArchive.loading && !assistantConversations.length && <small>
-                {assistantArchiveQuery || assistantArchiveFrom || assistantArchiveTo
+                {assistantArchiveQuery || assistantArchiveFrom || assistantArchiveTo || assistantArchiveRevalidation
                   ? '没有符合筛选条件的问答记录。'
                   : '还没有本地问答记录。'}
               </small>}

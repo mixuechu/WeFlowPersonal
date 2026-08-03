@@ -409,6 +409,20 @@ export class PersonalMemoryStore {
       CREATE INDEX IF NOT EXISTS idx_assistant_messages_conversation_time
         ON assistant_messages(conversation_id,created_at DESC,id DESC);
 
+      CREATE TABLE IF NOT EXISTS assistant_answer_dependencies (
+        message_id TEXT NOT NULL REFERENCES assistant_messages(id) ON DELETE CASCADE,
+        conversation_id TEXT NOT NULL REFERENCES assistant_conversations(id) ON DELETE CASCADE,
+        statement_index INTEGER NOT NULL,
+        document_id TEXT NOT NULL,
+        content_hash TEXT NOT NULL DEFAULT '',
+        created_at TEXT NOT NULL,
+        PRIMARY KEY(message_id,statement_index,document_id)
+      ) STRICT;
+      CREATE INDEX IF NOT EXISTS idx_assistant_answer_dependencies_conversation
+        ON assistant_answer_dependencies(conversation_id,message_id,statement_index);
+      CREATE INDEX IF NOT EXISTS idx_assistant_answer_dependencies_document
+        ON assistant_answer_dependencies(document_id);
+
       CREATE TABLE IF NOT EXISTS ingestion_runs (
         id TEXT PRIMARY KEY,
         started_at TEXT NOT NULL,
@@ -734,6 +748,7 @@ export class PersonalMemoryStore {
     `).run()
     this.repairAssistantCitationStorage()
     this.repairAssistantExchangeIntegrity()
+    this.repairAssistantAnswerDependencies()
     this.repairDuplicateEvents()
     this.db.prepare(`
       INSERT INTO schema_meta(key, value, updated_at) VALUES('schema_version', '1', ?)
@@ -7113,6 +7128,120 @@ export class PersonalMemoryStore {
     }
   }
 
+  private repairAssistantAnswerDependencies(): void {
+    if (!this.db) return
+    const key = 'assistant_answer_dependencies_v1'
+    const existing = this.db.prepare('SELECT value FROM schema_meta WHERE key=?').get(key) as any
+    if (existing?.value) return
+    const rows = this.db.prepare(`
+      SELECT id,conversation_id,citations_json,grounding_json,created_at
+      FROM assistant_messages WHERE role='assistant'
+      ORDER BY created_at,id
+    `).all() as Array<{
+      id: string
+      conversation_id: string
+      citations_json: string
+      grounding_json: string
+      created_at: string
+    }>
+    const insert = this.db.prepare(`
+      INSERT OR IGNORE INTO assistant_answer_dependencies(
+        message_id,conversation_id,statement_index,document_id,content_hash,created_at
+      ) VALUES(?,?,?,?,?,?)
+    `)
+    let indexedMessages = 0
+    let indexedStatements = 0
+    let indexedDependencies = 0
+    let malformedMessages = 0
+    const transaction = this.db.transaction(() => {
+      for (const row of rows) {
+        let citations: any[] = []
+        let grounding: any = {}
+        try {
+          const parsed = JSON.parse(String(row.citations_json || '[]'))
+          if (Array.isArray(parsed)) citations = parsed
+          else malformedMessages += 1
+        } catch {
+          malformedMessages += 1
+        }
+        try { grounding = JSON.parse(String(row.grounding_json || '{}')) } catch {}
+        const citationById = new Map(citations.map(citation => [
+          String(citation?.documentId || ''),
+          citation
+        ]))
+        const mappedStatements = Array.isArray(grounding?.statementCitations)
+          ? grounding.statementCitations.slice(0, 24)
+          : []
+        const statements = mappedStatements.length
+          ? mappedStatements
+          : citations.length
+            ? [citations.map(citation => citation?.documentId)]
+            : []
+        if (statements.length) indexedMessages += 1
+        statements.forEach((rawIds: any, statementIndex: number) => {
+          const documentIds = [...new Set((Array.isArray(rawIds) ? rawIds : [])
+            .map(value => String(value || '').trim().slice(0, 512))
+            .filter(Boolean))].slice(0, 20)
+          if (documentIds.length) indexedStatements += 1
+          for (const documentId of documentIds) {
+            const citation = citationById.get(documentId)
+            const contentHash = /^[a-f0-9]{64}$/i.test(String(citation?.contentHash || ''))
+              ? String(citation.contentHash).toLowerCase()
+              : ''
+            indexedDependencies += insert.run(
+              row.id,
+              row.conversation_id,
+              statementIndex,
+              documentId,
+              contentHash,
+              row.created_at
+            ).changes
+          }
+        })
+      }
+      const completedAt = new Date().toISOString()
+      this.db!.prepare(`
+        INSERT INTO schema_meta(key,value,updated_at) VALUES(?,?,?)
+      `).run(key, JSON.stringify({
+        version: 1,
+        scannedMessages: rows.length,
+        indexedMessages,
+        indexedStatements,
+        indexedDependencies,
+        malformedMessages,
+        completedAt
+      }), completedAt)
+    })
+    transaction()
+  }
+
+  getAssistantAnswerDependencyStats(): any {
+    if (!this.db) return {
+      version: 1, messages: 0, statements: 0, dependencies: 0,
+      malformedMessages: 0, indexedDependencies: 0, completedAt: ''
+    }
+    const counts = this.db.prepare(`
+      SELECT COUNT(*) AS dependencies,
+        COUNT(DISTINCT message_id) AS messages,
+        COUNT(DISTINCT message_id || char(0) || statement_index) AS statements
+      FROM assistant_answer_dependencies
+    `).get() as any
+    const row = this.db.prepare(`
+      SELECT value FROM schema_meta WHERE key='assistant_answer_dependencies_v1'
+    `).get() as any
+    let audit: any = {}
+    try { audit = JSON.parse(String(row?.value || '{}')) } catch {}
+    return {
+      version: 1,
+      messages: Math.max(0, Number(counts?.messages || 0)),
+      statements: Math.max(0, Number(counts?.statements || 0)),
+      dependencies: Math.max(0, Number(counts?.dependencies || 0)),
+      malformedMessages: Math.max(0, Number(audit.malformedMessages || 0)),
+      indexedDependencies: Math.max(0, Number(audit.indexedDependencies || 0)),
+      completedAt: String(audit.completedAt || '')
+    }
+  }
+
   getSearchDocumentById(documentId: string, evidenceScope: any = {}): any | null {
     if (!this.db) return null
     const row = this.db.prepare(`
@@ -7167,6 +7296,10 @@ export class PersonalMemoryStore {
     const answerAt = new Date(questionMs + 1).toISOString()
     const id = conversationId || `chat_${questionMs}_${Math.random().toString(16).slice(2)}`
     const exchangeId = `exchange_${questionMs}_${Math.random().toString(16).slice(2)}`
+    const questionMessageId = `msg_${exchangeId}_q`
+    const answerMessageId = `msg_${exchangeId}_a`
+    const compactedCitations = this.compactAssistantCitations(citations)
+    const compactedGrounding = this.compactAssistantGroundingAudit(groundingAudit)
     const insert = this.db.prepare(`
       INSERT INTO assistant_messages(
         id,conversation_id,role,content,citations_json,grounding_json,exchange_id,created_at
@@ -7177,17 +7310,36 @@ export class PersonalMemoryStore {
         INSERT INTO assistant_conversations(id,title,created_at,updated_at) VALUES(?,?,?,?)
         ON CONFLICT(id) DO UPDATE SET updated_at=excluded.updated_at
       `).run(id, question.slice(0, 80), now, answerAt)
-      insert.run(`msg_${exchangeId}_q`, id, 'user', question, '[]', '{}', exchangeId, now)
+      insert.run(questionMessageId, id, 'user', question, '[]', '{}', exchangeId, now)
       insert.run(
-        `msg_${exchangeId}_a`,
+        answerMessageId,
         id,
         'assistant',
         answer,
-        JSON.stringify(this.compactAssistantCitations(citations)),
-        JSON.stringify(this.compactAssistantGroundingAudit(groundingAudit)),
+        JSON.stringify(compactedCitations),
+        JSON.stringify(compactedGrounding),
         exchangeId,
         answerAt
       )
+      const citationById = new Map(compactedCitations.map(citation => [citation.documentId, citation]))
+      const dependencyInsert = this.db!.prepare(`
+        INSERT INTO assistant_answer_dependencies(
+          message_id,conversation_id,statement_index,document_id,content_hash,created_at
+        ) VALUES(?,?,?,?,?,?)
+      `)
+      ;(compactedGrounding.statementCitations || []).forEach((documentIds: string[], statementIndex: number) => {
+        for (const documentId of documentIds) {
+          const citation = citationById.get(documentId)
+          dependencyInsert.run(
+            answerMessageId,
+            id,
+            statementIndex,
+            documentId,
+            String(citation?.contentHash || ''),
+            answerAt
+          )
+        }
+      })
     })
     save()
     return id
@@ -7197,6 +7349,7 @@ export class PersonalMemoryStore {
     query?: string
     from?: string
     to?: string
+    revalidationStatus?: 'current' | 'needs_review' | 'invalid' | 'not_applicable'
     offset?: number
     limit?: number
   } = {}): { items: any[]; total: number; hasMore: boolean; offset: number; limit: number } {
@@ -7225,12 +7378,66 @@ export class PersonalMemoryStore {
       conditions.push('c.updated_at<=?')
       parameters.push(to)
     }
+    const revalidationStatus = String(options.revalidationStatus || '')
+    if (revalidationStatus === 'current') {
+      conditions.push(`cr.total_statements>0 AND cr.invalid_statements=0 AND cr.unknown_statements=0`)
+    } else if (revalidationStatus === 'needs_review') {
+      conditions.push(`cr.unknown_statements>0 AND cr.invalid_statements=0`)
+    } else if (revalidationStatus === 'invalid') {
+      conditions.push(`cr.invalid_statements>0`)
+    } else if (revalidationStatus === 'not_applicable') {
+      conditions.push(`cr.conversation_id IS NULL`)
+    }
     const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : ''
+    const eligibility = `(
+      s.id IS NOT NULL
+      AND (
+        s.document_type NOT IN ('claim','relation','event')
+        OR COALESCE(json_extract(s.metadata_json,'$.status'),'')='confirmed'
+      )
+      AND (
+        EXISTS(SELECT 1 FROM search_document_evidence sde WHERE sde.document_id=s.id)
+        OR EXISTS(
+          SELECT 1 FROM evidence e WHERE
+            (s.document_type='claim' AND e.claim_id=s.source_id)
+            OR (s.document_type='relation' AND e.relation_id=s.source_id)
+            OR (s.document_type='event' AND e.event_id=s.source_id)
+        )
+      )
+    )`
+    const revalidationCte = `
+      WITH statement_state AS (
+        SELECT d.conversation_id,d.message_id,d.statement_index,
+          MAX(CASE WHEN ${eligibility}
+            AND d.content_hash!='' AND lower(d.content_hash)=lower(s.content_hash)
+            THEN 1 ELSE 0 END) AS has_current,
+          MAX(CASE WHEN ${eligibility}
+            AND d.content_hash='' THEN 1 ELSE 0 END) AS has_unknown
+        FROM assistant_answer_dependencies d
+        LEFT JOIN search_documents s ON s.id=d.document_id
+        GROUP BY d.conversation_id,d.message_id,d.statement_index
+      ),
+      conversation_revalidation AS (
+        SELECT conversation_id,COUNT(*) AS total_statements,
+          SUM(CASE WHEN has_current=1 THEN 1 ELSE 0 END) AS supported_statements,
+          SUM(CASE WHEN has_current=0 AND has_unknown=1 THEN 1 ELSE 0 END) AS unknown_statements,
+          SUM(CASE WHEN has_current=0 AND has_unknown=0 THEN 1 ELSE 0 END) AS invalid_statements
+        FROM statement_state GROUP BY conversation_id
+      )
+    `
     const total = Number((this.db.prepare(`
-      SELECT COUNT(*) AS count FROM assistant_conversations c ${where}
+      ${revalidationCte}
+      SELECT COUNT(*) AS count FROM assistant_conversations c
+      LEFT JOIN conversation_revalidation cr ON cr.conversation_id=c.id
+      ${where}
     `).get(...parameters) as any)?.count || 0)
     const items = this.db.prepare(`
+      ${revalidationCte}
       SELECT c.id,c.title,c.created_at,c.updated_at,COUNT(m.id) AS message_count,
+        COALESCE(cr.total_statements,0) AS revalidation_total_statements,
+        COALESCE(cr.supported_statements,0) AS revalidation_supported_statements,
+        COALESCE(cr.unknown_statements,0) AS revalidation_unknown_statements,
+        COALESCE(cr.invalid_statements,0) AS revalidation_invalid_statements,
         COALESCE((
           SELECT content FROM assistant_messages latest
           WHERE latest.conversation_id=c.id
@@ -7238,11 +7445,27 @@ export class PersonalMemoryStore {
         ),'') AS preview
       FROM assistant_conversations c
       LEFT JOIN assistant_messages m ON m.conversation_id=c.id
+      LEFT JOIN conversation_revalidation cr ON cr.conversation_id=c.id
       ${where}
-      GROUP BY c.id
+      GROUP BY c.id,cr.conversation_id
       ORDER BY c.updated_at DESC,c.id DESC LIMIT ? OFFSET ?
     `).all(...parameters, limit, offset) as any[]
-    return { items, total, hasMore: offset + items.length < total, offset, limit }
+    return {
+      items: items.map(item => ({
+        ...item,
+        revalidation_status: Number(item.revalidation_invalid_statements || 0) > 0
+          ? 'invalid'
+          : Number(item.revalidation_unknown_statements || 0) > 0
+            ? 'needs_review'
+            : Number(item.revalidation_total_statements || 0) > 0
+              ? 'current'
+              : 'not_applicable'
+      })),
+      total,
+      hasMore: offset + items.length < total,
+      offset,
+      limit
+    }
   }
 
   listAssistantConversations(limit = 30): any[] {
@@ -7256,6 +7479,7 @@ export class PersonalMemoryStore {
     latestMessageCount: number
     citationStorage: any
     exchangeIntegrity: any
+    answerDependencies: any
   } {
     if (!this.db) return {
       total: 0,
@@ -7263,7 +7487,8 @@ export class PersonalMemoryStore {
       latestUpdatedAt: '',
       latestMessageCount: 0,
       citationStorage: this.getAssistantCitationStorageStats(),
-      exchangeIntegrity: this.getAssistantExchangeIntegrityStats()
+      exchangeIntegrity: this.getAssistantExchangeIntegrityStats(),
+      answerDependencies: this.getAssistantAnswerDependencyStats()
     }
     const total = Number((this.db.prepare(`
       SELECT COUNT(*) AS count FROM assistant_conversations
@@ -7281,7 +7506,8 @@ export class PersonalMemoryStore {
       latestUpdatedAt: String(latest?.updated_at || ''),
       latestMessageCount: Number(latest?.message_count || 0),
       citationStorage: this.getAssistantCitationStorageStats(),
-      exchangeIntegrity: this.getAssistantExchangeIntegrityStats()
+      exchangeIntegrity: this.getAssistantExchangeIntegrityStats(),
+      answerDependencies: this.getAssistantAnswerDependencyStats()
     }
   }
 

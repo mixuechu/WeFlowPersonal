@@ -3353,7 +3353,8 @@ export class AiAssistantService {
             assistantArchiveStats.latestUpdatedAt,
             assistantArchiveStats.latestMessageCount,
             assistantArchiveStats.citationStorage,
-            assistantArchiveStats.exchangeIntegrity
+            assistantArchiveStats.exchangeIntegrity,
+            assistantArchiveStats.answerDependencies
           ]))
           .digest('hex')
           .slice(0, 16),
@@ -3364,7 +3365,11 @@ export class AiAssistantService {
           ...assistantArchiveStats.citationStorage,
           policy: 'reference_only_authoritative_hydration'
         },
-        exchangeIntegrity: assistantArchiveStats.exchangeIntegrity
+        exchangeIntegrity: assistantArchiveStats.exchangeIntegrity,
+        answerDependencies: {
+          ...assistantArchiveStats.answerDependencies,
+          policy: 'statement_dependency_index_v1'
+        }
       },
       qualityBaseline: evaluateTaskAssignmentPolicy(),
       weeklyBriefing: buildWeeklyBriefing(this.state.briefings, tasks),
@@ -3399,6 +3404,7 @@ export class AiAssistantService {
       query: String(options?.query || ''),
       from: String(options?.from || ''),
       to: String(options?.to || ''),
+      revalidationStatus: options?.revalidationStatus,
       limit: Number(options?.limit || 40),
       offset: Number(options?.offset || 0)
     })
