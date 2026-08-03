@@ -9652,6 +9652,76 @@ test('historical image semantics resume by model version and invalidate stale ve
   assert.equal(store.getEmbeddingStats('test-vector').pending, 1)
 }))
 
+test('background resource migrations deserialize only their bounded eligible rows', () => withStore(store => {
+  const database = (store as any).db
+  const insert = database.prepare(`
+    INSERT INTO memory_resources(
+      id,resource_type,title,url,file_name,file_ext,content,metadata_json,created_at,updated_at
+    ) VALUES(?,?,?,?,?,?,?,?,?,?)
+  `)
+  database.transaction(() => {
+    for (let index = 0; index < 600; index += 1) {
+      const suffix = String(index).padStart(4, '0')
+      insert.run(
+        `irrelevant-${suffix}`, 'file', `Irrelevant ${suffix}`, '', '', '.txt', '',
+        JSON.stringify({ migrationProbe: true }),
+        `2026-01-01T00:${String(index % 60).padStart(2, '0')}:00.000Z`,
+        `2026-01-01T00:${String(index % 60).padStart(2, '0')}:00.000Z`
+      )
+    }
+    for (let index = 0; index < 15; index += 1) {
+      const suffix = String(index).padStart(2, '0')
+      insert.run(
+        `pending-pdf-${suffix}`, 'file', `PDF ${suffix}`, '', '', '.pdf', '',
+        JSON.stringify({
+          migrationProbe: true,
+          attachmentFormat: '.pdf-ocr',
+          attachmentLocalPath: `/tmp/pending-${suffix}.pdf`,
+          attachmentPdfOcrTruncated: true,
+          attachmentPdfOcrNextPage: 2
+        }),
+        `2026-02-01T00:00:${suffix}.000Z`, `2026-02-01T00:00:${suffix}.000Z`
+      )
+      insert.run(
+        `pending-layout-${suffix}`, 'file', `Layout ${suffix}`, '', '', '.docx', '',
+        JSON.stringify({
+          migrationProbe: true,
+          attachmentFormat: '.docx',
+          attachmentLocalPath: `/tmp/pending-${suffix}.docx`
+        }),
+        `2026-03-01T00:00:${suffix}.000Z`, `2026-03-01T00:00:${suffix}.000Z`
+      )
+      insert.run(
+        `pending-image-${suffix}`, 'image', `Image ${suffix}`, '', '', '.png', '',
+        JSON.stringify({
+          migrationProbe: true,
+          mediaLocalPath: `/tmp/pending-${suffix}.png`
+        }),
+        `2026-04-01T00:00:${suffix}.000Z`, `2026-04-01T00:00:${suffix}.000Z`
+      )
+    }
+    insert.run(
+      'malformed-migration-metadata', 'image', 'Malformed', '', '', '.png', '',
+      '{not-json', '2025-01-01T00:00:00.000Z', '2025-01-01T00:00:00.000Z'
+    )
+  })()
+
+  const originalParse = JSON.parse
+  let migrationMetadataParses = 0
+  JSON.parse = ((value: string, ...args: any[]) => {
+    if (String(value).includes('"migrationProbe":true')) migrationMetadataParses += 1
+    return originalParse(value, ...args)
+  }) as typeof JSON.parse
+  try {
+    assert.equal(store.listPendingPdfOcrResources(10).length, 10)
+    assert.equal(store.listPendingAttachmentStructureResources('layout-v-next', 10).length, 10)
+    assert.equal(store.listPendingImageSemanticResources('vision-v-next', 10).length, 10)
+  } finally {
+    JSON.parse = originalParse
+  }
+  assert.equal(migrationMetadataParses, 30)
+}))
+
 test('permanent structured-memory deletion is audited and suppresses identical re-extraction', () => withStore(store => {
   const entities = [
     { id: 'person-delete', type: 'person', canonicalName: '待删除人物', aliases: [], accountIds: [] },

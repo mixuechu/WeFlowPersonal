@@ -5097,66 +5097,86 @@ export class PersonalMemoryStore {
 
   listPendingPdfOcrResources(limit = 1): any[] {
     if (!this.db) return []
+    const boundedLimit = Math.max(1, Math.min(10, Math.floor(Number(limit) || 1)))
     const rows = this.db.prepare(`
       SELECT r.* FROM memory_resources r
       LEFT JOIN resource_suppressions s ON s.resource_id=r.id
       WHERE r.resource_type='file' AND s.resource_id IS NULL
+        AND json_valid(r.metadata_json)=1
+        AND json_extract(r.metadata_json,'$.attachmentPdfOcrTruncated')=1
+        AND COALESCE(json_extract(r.metadata_json,'$.attachmentLocalPath'),'')<>''
+        AND CAST(COALESCE(json_extract(r.metadata_json,'$.attachmentPdfOcrNextPage'),0) AS INTEGER)>=2
       ORDER BY r.updated_at ASC
-    `).all() as any[]
+      LIMIT ?
+    `).all(boundedLimit) as any[]
     return rows.flatMap(row => {
       try {
-        const metadata = JSON.parse(row.metadata_json || '{}')
-        if (!metadata.attachmentPdfOcrTruncated || !metadata.attachmentLocalPath ||
-          Number(metadata.attachmentPdfOcrNextPage || 0) < 2) return []
-        return [{ ...row, metadata }]
+        return [{ ...row, metadata: JSON.parse(row.metadata_json || '{}') }]
       } catch {
         return []
       }
-    }).slice(0, Math.max(1, Math.min(10, limit)))
+    })
   }
 
   listPendingAttachmentStructureResources(parserVersion: string, limit = 1, now = new Date()): any[] {
     if (!this.db) return []
+    const boundedLimit = Math.max(1, Math.min(10, Math.floor(Number(limit) || 1)))
+    const nowIso = now.toISOString()
     const rows = this.db.prepare(`
       SELECT r.* FROM memory_resources r
       LEFT JOIN resource_suppressions s ON s.resource_id=r.id
       WHERE r.resource_type='file' AND s.resource_id IS NULL
+        AND json_valid(r.metadata_json)=1
+        AND lower(COALESCE(
+          NULLIF(json_extract(r.metadata_json,'$.attachmentFormat'),''),
+          r.file_ext
+        )) IN ('.docx','.pptx','.xlsx','.pdf')
+        AND COALESCE(json_extract(r.metadata_json,'$.attachmentLocalPath'),'')<>''
+        AND NOT (
+          COALESCE(json_extract(r.metadata_json,'$.attachmentStructureParserVersion'),'')=?
+          AND json_type(r.metadata_json,'$.attachmentStructure') IS NOT NULL
+        )
+        AND (
+          julianday(json_extract(r.metadata_json,'$.attachmentStructureMigrationNextAt')) IS NULL
+          OR julianday(json_extract(r.metadata_json,'$.attachmentStructureMigrationNextAt'))<=julianday(?)
+        )
       ORDER BY r.updated_at ASC
-    `).all() as any[]
+      LIMIT ?
+    `).all(String(parserVersion || ''), nowIso, boundedLimit) as any[]
     return rows.flatMap(row => {
       try {
-        const metadata = JSON.parse(row.metadata_json || '{}')
-        const extension = String(metadata.attachmentFormat || row.file_ext || '').toLowerCase()
-        if (!['.docx', '.pptx', '.xlsx', '.pdf'].includes(extension) || !metadata.attachmentLocalPath) return []
-        if (metadata.attachmentStructureParserVersion === parserVersion && metadata.attachmentStructure) return []
-        const nextAt = Date.parse(String(metadata.attachmentStructureMigrationNextAt || ''))
-        if (Number.isFinite(nextAt) && nextAt > now.getTime()) return []
-        return [{ ...row, metadata }]
+        return [{ ...row, metadata: JSON.parse(row.metadata_json || '{}') }]
       } catch {
         return []
       }
-    }).slice(0, Math.max(1, Math.min(10, limit)))
+    })
   }
 
   listPendingImageSemanticResources(modelVersion: string, limit = 1, now = new Date()): any[] {
     if (!this.db) return []
+    const boundedLimit = Math.max(1, Math.min(10, Math.floor(Number(limit) || 1)))
+    const nowIso = now.toISOString()
     const rows = this.db.prepare(`
       SELECT r.* FROM memory_resources r
       LEFT JOIN resource_suppressions s ON s.resource_id=r.id
       WHERE r.resource_type='image' AND s.resource_id IS NULL
+        AND json_valid(r.metadata_json)=1
+        AND COALESCE(json_extract(r.metadata_json,'$.mediaLocalPath'),'')<>''
+        AND COALESCE(json_extract(r.metadata_json,'$.visualModelVersion'),'')<>?
+        AND (
+          julianday(json_extract(r.metadata_json,'$.visualMigrationNextAt')) IS NULL
+          OR julianday(json_extract(r.metadata_json,'$.visualMigrationNextAt'))<=julianday(?)
+        )
       ORDER BY r.updated_at ASC
-    `).all() as any[]
+      LIMIT ?
+    `).all(String(modelVersion || ''), nowIso, boundedLimit) as any[]
     return rows.flatMap(row => {
       try {
-        const metadata = JSON.parse(row.metadata_json || '{}')
-        if (!metadata.mediaLocalPath || metadata.visualModelVersion === modelVersion) return []
-        const nextAt = Date.parse(String(metadata.visualMigrationNextAt || ''))
-        if (Number.isFinite(nextAt) && nextAt > now.getTime()) return []
-        return [{ ...row, metadata }]
+        return [{ ...row, metadata: JSON.parse(row.metadata_json || '{}') }]
       } catch {
         return []
       }
-    }).slice(0, Math.max(1, Math.min(10, limit)))
+    })
   }
 
   getImageSemanticMigrationStats(modelVersion: string, now = new Date()): any {
