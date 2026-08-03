@@ -426,6 +426,17 @@ function AiAssistantPage() {
   const [assistantArchiveLoadingMore, setAssistantArchiveLoadingMore] = useState(false)
   const [assistantMessagesLoadingMore, setAssistantMessagesLoadingMore] = useState(false)
   const assistantArchiveGate = useRef(new LatestRequestGate())
+  const [assistantAnswerReviewsOpen, setAssistantAnswerReviewsOpen] = useState(false)
+  const [assistantAnswerReviews, setAssistantAnswerReviews] = useState<any>({
+    items: [], total: 0, hasMore: false,
+    counts: { attention: 0, invalid: 0, needs_review: 0, current: 0 }
+  })
+  const [assistantAnswerReviewStatus, setAssistantAnswerReviewStatus] = useState('attention')
+  const [assistantAnswerReviewQuery, setAssistantAnswerReviewQuery] = useState('')
+  const [assistantAnswerReviewFrom, setAssistantAnswerReviewFrom] = useState('')
+  const [assistantAnswerReviewTo, setAssistantAnswerReviewTo] = useState('')
+  const [assistantAnswerReviewsLoadingMore, setAssistantAnswerReviewsLoadingMore] = useState(false)
+  const assistantAnswerReviewsGate = useRef(new LatestRequestGate())
   const [askingMemory, setAskingMemory] = useState(false)
   const [creatingMemoryTask, setCreatingMemoryTask] = useState(false)
   const [memoryEntityFilter, setMemoryEntityFilter] = useState('')
@@ -506,6 +517,23 @@ function AiAssistantPage() {
     offset: 0,
     limit: 30
   }), [assistantArchiveQuery, assistantArchiveFrom, assistantArchiveTo, assistantArchiveRevalidation])
+  const assistantAnswerReviewOptions = useMemo(() => ({
+    status: assistantAnswerReviewStatus,
+    query: assistantAnswerReviewQuery || undefined,
+    from: assistantAnswerReviewFrom
+      ? new Date(`${assistantAnswerReviewFrom}T00:00:00+08:00`).toISOString()
+      : undefined,
+    to: assistantAnswerReviewTo
+      ? new Date(`${assistantAnswerReviewTo}T23:59:59.999+08:00`).toISOString()
+      : undefined,
+    offset: 0,
+    limit: 30
+  }), [
+    assistantAnswerReviewStatus,
+    assistantAnswerReviewQuery,
+    assistantAnswerReviewFrom,
+    assistantAnswerReviewTo
+  ])
   const taskOwnershipOptions = useMemo(() => ({
     classification: taskOwnershipClassification || undefined,
     priority: taskOwnershipPriority || undefined,
@@ -648,6 +676,39 @@ function AiAssistantPage() {
       if (assistantArchiveGate.current.isCurrent(request)) assistantArchiveGate.current.invalidate()
     }
   }, [assistantArchiveOptions, dashboard?.assistantArchive?.revision])
+
+  useEffect(() => {
+    if (!assistantAnswerReviewsOpen) {
+      assistantAnswerReviewsGate.current.invalidate()
+      return
+    }
+    const request = assistantAnswerReviewsGate.current.begin()
+    setAssistantAnswerReviewsLoadingMore(false)
+    setAssistantAnswerReviews((current: any) => ({ ...current, items: [], loading: true }))
+    const timer = window.setTimeout(() => {
+      void window.electronAPI.aiAssistant.getAssistantAnswerReviews(assistantAnswerReviewOptions)
+        .then(result => {
+          if (!assistantAnswerReviewsGate.current.isCurrent(request)) return
+          setAssistantAnswerReviews({ ...result, loading: false })
+        }).catch(() => {
+          if (!assistantAnswerReviewsGate.current.isCurrent(request)) return
+          setAssistantAnswerReviews({
+            items: [], total: 0, hasMore: false, loading: false,
+            counts: { attention: 0, invalid: 0, needs_review: 0, current: 0 }
+          })
+        })
+    }, assistantAnswerReviewQuery ? 200 : 0)
+    return () => {
+      window.clearTimeout(timer)
+      if (assistantAnswerReviewsGate.current.isCurrent(request)) {
+        assistantAnswerReviewsGate.current.invalidate()
+      }
+    }
+  }, [
+    assistantAnswerReviewsOpen,
+    assistantAnswerReviewOptions,
+    dashboard?.assistantArchive?.revision
+  ])
 
   useEffect(() => {
     const request = taskOwnershipGate.current.begin()
@@ -2256,6 +2317,34 @@ function AiAssistantPage() {
     }
   }
 
+  const loadMoreAssistantAnswerReviews = async () => {
+    if (assistantAnswerReviewsLoadingMore || !assistantAnswerReviews.hasMore) return
+    const request = assistantAnswerReviewsGate.current.begin()
+    setAssistantAnswerReviewsLoadingMore(true)
+    try {
+      const result = await window.electronAPI.aiAssistant.getAssistantAnswerReviews({
+        ...assistantAnswerReviewOptions,
+        offset: assistantAnswerReviews.items.length,
+        limit: 30
+      })
+      if (!assistantAnswerReviewsGate.current.isCurrent(request)) return
+      setAssistantAnswerReviews((current: any) => ({
+        ...result,
+        items: [...current.items, ...result.items.filter((item: any) =>
+          !current.items.some((known: any) => known.message_id === item.message_id))],
+        loading: false
+      }))
+    } catch (error: any) {
+      if (assistantAnswerReviewsGate.current.isCurrent(request)) {
+        setMessage(error?.message || String(error))
+      }
+    } finally {
+      if (assistantAnswerReviewsGate.current.isCurrent(request)) {
+        setAssistantAnswerReviewsLoadingMore(false)
+      }
+    }
+  }
+
   const loadOlderAssistantMessages = async () => {
     if (!memoryConversationId || !memoryConversation?.hasOlder || assistantMessagesLoadingMore) return
     const request = memoryConversationGate.current.begin()
@@ -3473,6 +3562,74 @@ function AiAssistantPage() {
             <div><span className="assistant-eyebrow">EVIDENCE Q&A</span><h3><Bot size={16} /> 向个人记忆提问</h3></div>
             <button onClick={startNewMemoryConversation}>新对话</button>
           </div>
+          <details className="assistant-answer-review-archive"
+            open={assistantAnswerReviewsOpen}
+            onToggle={event => setAssistantAnswerReviewsOpen(event.currentTarget.open)}>
+            <summary>
+              历史回答核验队列
+              {Number(dashboard?.assistantArchive?.answerDependencies?.messages || 0) > 0 &&
+                <small>逐回答检查，不遗漏同一会话里的多条变化</small>}
+            </summary>
+            {assistantAnswerReviewsOpen && <>
+              <div className="assistant-answer-review-filters">
+                <select value={assistantAnswerReviewStatus}
+                  onChange={event => setAssistantAnswerReviewStatus(event.target.value)}>
+                  <option value="attention">需要处理</option>
+                  <option value="invalid">已失去支持</option>
+                  <option value="needs_review">旧版待核验</option>
+                  <option value="current">当前有效</option>
+                  <option value="all">全部有依赖回答</option>
+                </select>
+                <input value={assistantAnswerReviewQuery}
+                  onChange={event => setAssistantAnswerReviewQuery(event.target.value)}
+                  placeholder="搜索问题、回答或会话标题" />
+                <input type="date" value={assistantAnswerReviewFrom}
+                  onChange={event => setAssistantAnswerReviewFrom(event.target.value)} />
+                <input type="date" value={assistantAnswerReviewTo}
+                  onChange={event => setAssistantAnswerReviewTo(event.target.value)} />
+              </div>
+              <small>
+                需要处理 {Number(assistantAnswerReviews.counts?.attention || 0)} ·
+                已失去支持 {Number(assistantAnswerReviews.counts?.invalid || 0)} ·
+                旧版待核验 {Number(assistantAnswerReviews.counts?.needs_review || 0)} ·
+                当前有效 {Number(assistantAnswerReviews.counts?.current || 0)}
+              </small>
+              <div className="assistant-answer-review-list">
+                {(assistantAnswerReviews.items || []).map((item: any) => <article key={item.message_id}>
+                  <header>
+                    <b>{item.revalidation_status === 'invalid' ? '⚠ 已失去支持'
+                      : item.revalidation_status === 'needs_review' ? '△ 需要重新核验' : '✓ 当前有效'}</b>
+                    <span>{new Date(item.created_at).toLocaleString('zh-CN')}</span>
+                  </header>
+                  <strong>{item.question_preview || item.conversation_title}</strong>
+                  <p>{item.answer_preview}</p>
+                  <small>
+                    {item.conversation_title} · 支持 {Number(item.supported_statements || 0)} /
+                    共 {Number(item.total_statements || 0)} 条陈述
+                    {Number(item.invalid_statements || 0)
+                      ? ` · 失效 ${Number(item.invalid_statements)}`
+                      : ''}
+                    {Number(item.unknown_statements || 0)
+                      ? ` · 指纹未知 ${Number(item.unknown_statements)}`
+                      : ''}
+                  </small>
+                  <button onClick={() => void openMemoryConversation(
+                    item.conversation_id,
+                    item.message_id
+                  )}>打开这一轮并核验</button>
+                </article>)}
+              </div>
+              {assistantAnswerReviews.loading && <div className="assistant-empty">正在读取逐回答核验档案…</div>}
+              {!assistantAnswerReviews.loading && !assistantAnswerReviews.items?.length &&
+                <div className="assistant-empty">当前筛选下没有回答。</div>}
+              {assistantAnswerReviews.hasMore && <button
+                className="assistant-search-load-more"
+                disabled={assistantAnswerReviewsLoadingMore}
+                onClick={() => void loadMoreAssistantAnswerReviews()}>
+                {assistantAnswerReviewsLoadingMore ? '正在加载…' : '加载更多回答'}
+              </button>}
+            </>}
+          </details>
           <div className="assistant-conversation-layout">
             <aside className="assistant-conversation-list">
               <strong>本机历史 · {assistantArchive.total}</strong>

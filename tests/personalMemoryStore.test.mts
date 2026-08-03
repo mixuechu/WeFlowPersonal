@@ -4489,6 +4489,24 @@ test('legacy assistant citations are compacted at scale without losing reference
       assert.equal(page.messages[0].citations[0].feedbackContext.query, '历史问题 2499')
       assert.equal(page.messages[0].citations[0].evidence, undefined)
       assert.equal(page.messages[0].citations[0].citationStorage, 'reference_only_v1')
+      const firstReviewPage = reopened.listAssistantAnswerReviewsPage({
+        status: 'invalid',
+        limit: 40
+      })
+      const middleReviewPage = reopened.listAssistantAnswerReviewsPage({
+        status: 'invalid',
+        offset: 1_240,
+        limit: 40
+      })
+      assert.equal(firstReviewPage.total, 2_500)
+      assert.equal(firstReviewPage.counts.invalid, 2_500)
+      assert.equal(firstReviewPage.items.length, 40)
+      assert.equal(middleReviewPage.items.length, 40)
+      assert.equal(new Set([
+        ...firstReviewPage.items,
+        ...middleReviewPage.items
+      ].map((item: any) => item.message_id)).size, 80)
+      assert.equal(JSON.stringify(firstReviewPage.items).includes('不应长期复制的敏感原文'), false)
     } finally {
       reopened.close()
     }
@@ -4642,6 +4660,32 @@ test('assistant archive filters statement dependencies without loading answer ev
   assert.equal(dependencyStats.statements, 5)
   assert.equal(dependencyStats.dependencies, 5)
   assert.equal(JSON.stringify(all.items).includes('仅用于资格核验'), false)
+  const answerReviews = store.listAssistantAnswerReviewsPage({ status: 'all', limit: 20 })
+  assert.equal(answerReviews.total, 5)
+  assert.deepEqual(answerReviews.counts, {
+    attention: 3,
+    invalid: 2,
+    needs_review: 1,
+    current: 2
+  })
+  assert.equal(answerReviews.items.find((item: any) => item.message_id === changedAnswerId)
+    .revalidation_status, 'invalid')
+  assert.equal(answerReviews.items.find((item: any) => item.message_id === changedAnswerId)
+    .question_preview, '内容变化会话')
+  assert.equal(JSON.stringify(answerReviews.items).includes('仅用于资格核验'), false)
+  const attentionPage = store.listAssistantAnswerReviewsPage({ status: 'attention', limit: 2 })
+  assert.equal(attentionPage.total, 3)
+  assert.equal(attentionPage.items.length, 2)
+  assert.equal(attentionPage.hasMore, true)
+  assert.equal(store.listAssistantAnswerReviewsPage({
+    status: 'all',
+    query: '后来仍有效',
+    limit: 20
+  }).items[0].revalidation_status, 'current')
+  assert.equal(store.listAssistantAnswerReviewsPage({
+    status: 'needs_review',
+    limit: 20
+  }).items[0].question_preview, '旧版未知会话')
 
   database.prepare('UPDATE search_documents SET content_hash = ? WHERE id = ?')
     .run('e'.repeat(64), 'resource:current')
@@ -4650,12 +4694,19 @@ test('assistant archive filters statement dependencies without loading answer ev
       .items.some((item: any) => item.title === '当前有效会话'),
     true
   )
+  assert.deepEqual(store.listAssistantAnswerReviewsPage({ status: 'all', limit: 20 }).counts, {
+    attention: 5,
+    invalid: 4,
+    needs_review: 1,
+    current: 0
+  })
 
   assert.equal(store.deleteAssistantConversation(currentConversationId), true)
   const dependencyStatsAfterDelete = store.getAssistantAnswerDependencyStats()
   assert.equal(dependencyStatsAfterDelete.messages, 4)
   assert.equal(dependencyStatsAfterDelete.statements, 4)
   assert.equal(dependencyStatsAfterDelete.dependencies, 4)
+  assert.equal(store.listAssistantAnswerReviewsPage({ status: 'all', limit: 20 }).total, 4)
 }))
 
 test('assistant archive and message pagination survive a SQLCipher process-style reopen', () => {
@@ -4670,17 +4721,57 @@ test('assistant archive and message pagination survive a SQLCipher process-style
     for (let index = 1; index < 30; index += 1) {
       first.saveAssistantExchange(`重启问题 ${index}`, `重启回答 ${index}`, [], conversationId)
     }
+    const firstDatabase = (first as any).db
+    firstDatabase.prepare(`
+      INSERT INTO search_documents(
+        id,document_type,source_id,title,search_text,metadata_json,content_hash,updated_at
+      ) VALUES(?,?,?,?,?,?,?,?)
+    `).run(
+      'resource:reopen-review', 'resource', 'reopen-review', '重启核验证据',
+      '重启后仍应可核验', '{}', 'f'.repeat(64), new Date().toISOString()
+    )
+    firstDatabase.prepare(`
+      INSERT INTO search_document_evidence(
+        document_id,source_id,message_id,session_id,timestamp,sender,excerpt
+      ) VALUES(?,?,?,?,?,?,?)
+    `).run(
+      'resource:reopen-review', 'documents', 'reopen-review-message',
+      'data-source:documents:reopen', 1, '文档', '重启核验原文'
+    )
+    first.saveAssistantExchange('重启核验问题', '重启核验回答', [{
+      documentId: 'resource:reopen-review',
+      sourceId: 'reopen-review',
+      type: 'resource',
+      title: '重启核验证据',
+      contentHash: 'f'.repeat(64)
+    }], conversationId, {
+      version: 'statement-citations-v1',
+      proposedStatements: 1,
+      acceptedStatements: 1,
+      rejectedStatements: 0,
+      acceptedCitationIds: 1,
+      promptIsolationVersion: 'untrusted-memory-envelope-v1',
+      statementCitations: [['resource:reopen-review']]
+    })
     first.close()
 
     second.initialize(databasePath, key)
     const archive = second.listAssistantConversationsPage({ query: '重启前问题', limit: 10 })
     assert.equal(archive.total, 1)
-    assert.equal(archive.items[0].message_count, 60)
+    assert.equal(archive.items[0].message_count, 62)
     const latest = second.getAssistantConversation(conversationId, { offset: 0, limit: 20 })
-    const older = second.getAssistantConversation(conversationId, { offset: 20, limit: 40 })
+    const older = second.getAssistantConversation(conversationId, { offset: 20, limit: 42 })
     assert.equal(latest.hasOlder, true)
     assert.equal(older.hasOlder, false)
-    assert.equal(new Set([...latest.messages, ...older.messages].map((message: any) => message.id)).size, 60)
+    assert.equal(new Set([...latest.messages, ...older.messages].map((message: any) => message.id)).size, 62)
+    const answerReviews = second.listAssistantAnswerReviewsPage({
+      status: 'invalid',
+      query: '重启核验问题',
+      limit: 10
+    })
+    assert.equal(answerReviews.total, 1)
+    assert.equal(answerReviews.items[0].question_preview, '重启核验问题')
+    assert.equal(answerReviews.items[0].revalidation_status, 'invalid')
   } finally {
     first.close()
     second.close()

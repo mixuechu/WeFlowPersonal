@@ -5143,6 +5143,17 @@ export class AiAssistantService {
     })
   }
 
+  getAssistantAnswerReviews(options?: any): any {
+    return personalMemoryStore.listAssistantAnswerReviewsPage({
+      status: options?.status,
+      query: String(options?.query || ''),
+      from: String(options?.from || ''),
+      to: String(options?.to || ''),
+      offset: Number(options?.offset || 0),
+      limit: Number(options?.limit || 30)
+    })
+  }
+
   private enrichAssistantCitationFeedback(conversation: any): any {
     if (!conversation?.messages?.length) return conversation
     const contextCache = new Map<string, Map<string, string>>()

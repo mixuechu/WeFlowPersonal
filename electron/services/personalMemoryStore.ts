@@ -7505,6 +7505,167 @@ export class PersonalMemoryStore {
     return this.listAssistantConversationsPage({ limit }).items
   }
 
+  listAssistantAnswerReviewsPage(options: {
+    status?: 'attention' | 'invalid' | 'needs_review' | 'current' | 'all'
+    query?: string
+    from?: string
+    to?: string
+    offset?: number
+    limit?: number
+  } = {}): {
+    items: any[]
+    total: number
+    hasMore: boolean
+    offset: number
+    limit: number
+    counts: { attention: number; invalid: number; needs_review: number; current: number }
+  } {
+    const limit = Math.max(1, Math.min(100, Math.floor(Number(options.limit) || 30)))
+    const offset = Math.max(0, Math.min(1_000_000, Math.floor(Number(options.offset) || 0)))
+    const empty = {
+      items: [],
+      total: 0,
+      hasMore: false,
+      offset,
+      limit,
+      counts: { attention: 0, invalid: 0, needs_review: 0, current: 0 }
+    }
+    if (!this.db) return empty
+    const eligibility = `(
+      s.id IS NOT NULL
+      AND (
+        s.document_type NOT IN ('claim','relation','event')
+        OR COALESCE(json_extract(s.metadata_json,'$.status'),'')='confirmed'
+      )
+      AND (
+        EXISTS(SELECT 1 FROM search_document_evidence sde WHERE sde.document_id=s.id)
+        OR EXISTS(
+          SELECT 1 FROM evidence e WHERE
+            (s.document_type='claim' AND e.claim_id=s.source_id)
+            OR (s.document_type='relation' AND e.relation_id=s.source_id)
+            OR (s.document_type='event' AND e.event_id=s.source_id)
+        )
+      )
+    )`
+    const revalidationCte = `
+      WITH statement_state AS (
+        SELECT d.conversation_id,d.message_id,d.statement_index,
+          MAX(CASE WHEN ${eligibility}
+            AND d.content_hash!='' AND lower(d.content_hash)=lower(s.content_hash)
+            THEN 1 ELSE 0 END) AS has_current,
+          MAX(CASE WHEN ${eligibility}
+            AND d.content_hash='' THEN 1 ELSE 0 END) AS has_unknown
+        FROM assistant_answer_dependencies d
+        LEFT JOIN search_documents s ON s.id=d.document_id
+        GROUP BY d.conversation_id,d.message_id,d.statement_index
+      ),
+      answer_revalidation AS (
+        SELECT ss.conversation_id,ss.message_id,m.exchange_id,m.created_at,
+          COUNT(*) AS total_statements,
+          SUM(CASE WHEN ss.has_current=1 THEN 1 ELSE 0 END) AS supported_statements,
+          SUM(CASE WHEN ss.has_current=0 AND ss.has_unknown=1 THEN 1 ELSE 0 END) AS unknown_statements,
+          SUM(CASE WHEN ss.has_current=0 AND ss.has_unknown=0 THEN 1 ELSE 0 END) AS invalid_statements
+        FROM statement_state ss
+        JOIN assistant_messages m ON m.id=ss.message_id AND m.role='assistant'
+        GROUP BY ss.conversation_id,ss.message_id
+      )
+    `
+    const commonConditions: string[] = []
+    const commonParameters: Array<string | number> = []
+    const query = String(options.query || '').trim().toLocaleLowerCase('zh-CN')
+    if (query) {
+      commonConditions.push(`(
+        instr(lower(answer.content),?)>0 OR instr(lower(c.title),?)>0 OR EXISTS(
+          SELECT 1 FROM assistant_messages question
+          WHERE question.conversation_id=ar.conversation_id
+            AND question.exchange_id=ar.exchange_id AND question.role='user'
+            AND instr(lower(question.content),?)>0
+        )
+      )`)
+      commonParameters.push(query, query, query)
+    }
+    const from = options.from && Number.isFinite(Date.parse(options.from)) ? String(options.from) : ''
+    const to = options.to && Number.isFinite(Date.parse(options.to)) ? String(options.to) : ''
+    if (from) {
+      commonConditions.push('ar.created_at>=?')
+      commonParameters.push(from)
+    }
+    if (to) {
+      commonConditions.push('ar.created_at<=?')
+      commonParameters.push(to)
+    }
+    const status = ['attention', 'invalid', 'needs_review', 'current', 'all']
+      .includes(String(options.status || ''))
+      ? String(options.status)
+      : 'attention'
+    const statusCondition = status === 'invalid'
+      ? 'ar.invalid_statements>0'
+      : status === 'needs_review'
+        ? 'ar.invalid_statements=0 AND ar.unknown_statements>0'
+        : status === 'current'
+          ? 'ar.invalid_statements=0 AND ar.unknown_statements=0'
+          : status === 'all'
+            ? ''
+            : '(ar.invalid_statements>0 OR ar.unknown_statements>0)'
+    const conditions = [...commonConditions, ...(statusCondition ? [statusCondition] : [])]
+    const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : ''
+    const commonWhere = commonConditions.length ? `WHERE ${commonConditions.join(' AND ')}` : ''
+    const joins = `
+      FROM answer_revalidation ar
+      JOIN assistant_messages answer ON answer.id=ar.message_id
+      JOIN assistant_conversations c ON c.id=ar.conversation_id
+    `
+    const total = Number((this.db.prepare(`
+      ${revalidationCte}
+      SELECT COUNT(*) AS count ${joins} ${where}
+    `).get(...commonParameters) as any)?.count || 0)
+    const countsRow = this.db.prepare(`
+      ${revalidationCte}
+      SELECT
+        SUM(CASE WHEN ar.invalid_statements>0 OR ar.unknown_statements>0 THEN 1 ELSE 0 END) AS attention,
+        SUM(CASE WHEN ar.invalid_statements>0 THEN 1 ELSE 0 END) AS invalid,
+        SUM(CASE WHEN ar.invalid_statements=0 AND ar.unknown_statements>0 THEN 1 ELSE 0 END) AS needs_review,
+        SUM(CASE WHEN ar.invalid_statements=0 AND ar.unknown_statements=0 THEN 1 ELSE 0 END) AS current
+      ${joins} ${commonWhere}
+    `).get(...commonParameters) as any
+    const items = this.db.prepare(`
+      ${revalidationCte}
+      SELECT ar.message_id,ar.conversation_id,ar.created_at,
+        ar.total_statements,ar.supported_statements,ar.unknown_statements,ar.invalid_statements,
+        c.title AS conversation_title,
+        substr(replace(replace(answer.content,char(10),' '),char(13),' '),1,180) AS answer_preview,
+        COALESCE((
+          SELECT substr(replace(replace(question.content,char(10),' '),char(13),' '),1,180)
+          FROM assistant_messages question
+          WHERE question.conversation_id=ar.conversation_id
+            AND question.exchange_id=ar.exchange_id AND question.role='user'
+          ORDER BY question.created_at,question.id LIMIT 1
+        ),c.title) AS question_preview
+      ${joins} ${where}
+      ORDER BY ar.created_at DESC,ar.message_id DESC LIMIT ? OFFSET ?
+    `).all(...commonParameters, limit, offset) as any[]
+    return {
+      items: items.map(item => ({
+        ...item,
+        revalidation_status: Number(item.invalid_statements || 0) > 0
+          ? 'invalid'
+          : Number(item.unknown_statements || 0) > 0
+            ? 'needs_review'
+            : 'current'
+      })),
+      total,
+      hasMore: offset + items.length < total,
+      offset,
+      limit,
+      counts: {
+        attention: Number(countsRow?.attention || 0),
+        invalid: Number(countsRow?.invalid || 0),
+        needs_review: Number(countsRow?.needs_review || 0),
+        current: Number(countsRow?.current || 0)
+      }
+    }
+  }
+
   getAssistantArchiveStats(): {
     total: number
     latestId: string
