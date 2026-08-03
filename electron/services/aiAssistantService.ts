@@ -3354,14 +3354,24 @@ export class AiAssistantService {
     const taskOwnershipReviewStats = personalMemoryStore.getTaskOwnershipReviewStats()
     const allTaskReminders = buildTaskReminders(tasks)
     const reminderResult = applyReminderPreferences(allTaskReminders, this.state.reminderPreferences)
-    const memoryFeed = personalMemoryStore.getMemoryFeed(100, false)
     const memoryStats = personalMemoryStore.getMemoryStats()
-    const projectInsights = buildProjectDirectory({
+    const rawProjectInsights = buildProjectDirectory({
       entities: this.state.graph.entities,
       relations: this.state.graph.relations,
-      claims: memoryFeed.claims,
-      events: memoryFeed.events,
+      claims: [],
+      events: [],
       tasks
+    })
+    const projectReviewCounts = personalMemoryStore.getProjectReviewCounts(
+      rawProjectInsights.map(project => project.entityId).filter(Boolean)
+    )
+    const projectInsights = rawProjectInsights.map(project => {
+      const memoryCounts = project.entityId ? projectReviewCounts[project.entityId] : null
+      return {
+        ...project,
+        pendingReviewTotal: Number(project.pendingReviewTotal || 0) +
+          Number(memoryCounts?.total || 0)
+      }
     })
     const graphReviewRevision = crypto.createHash('sha256')
       .update(this.state.graph.reviewQueue.map(review =>
@@ -3385,8 +3395,7 @@ export class AiAssistantService {
           task.id, task.status, task.title, task.project, task.updatedAt || '',
           (task.evidence || []).length
         ]),
-        claims: memoryFeed.claims.map((claim: any) => [claim.id, claim.updated_at, claim.evidence_count]),
-        events: memoryFeed.events.map((event: any) => [event.id, event.updated_at, event.evidence_count])
+        structuredMemoryRevision: personalMemoryStore.getStructuredMemoryRevision()
       }))
       .digest('hex')
       .slice(0, 16)
@@ -3885,7 +3894,11 @@ export class AiAssistantService {
   getProjectWorkspace(projectId: string): any {
     const id = String(projectId || '').trim()
     if (!id) throw new Error('请选择项目')
-    const memoryFeed = personalMemoryStore.getMemoryFeed(500)
+    const projectEntity = this.state.graph.entities.find(entity =>
+      entity.id === id && entity.type === 'project' && isTrustedEntity(entity))
+    const memoryFeed = projectEntity
+      ? personalMemoryStore.getEntityMemory(id, 200, true)
+      : personalMemoryStore.getMemoryFeed(500, false)
     const project = buildProjectInsight({
       entities: this.state.graph.entities,
       relations: this.state.graph.relations,
@@ -3894,17 +3907,48 @@ export class AiAssistantService {
       tasks: this.state.tasks.filter(task => task.classification === 'mine')
     }, id)
     if (!project) throw new Error('项目不存在或已经不在当前可信视图中')
+    const reviewCounts = projectEntity
+      ? personalMemoryStore.getProjectReviewCounts([id])[id]
+      : null
+    const loadedMemoryReviewCount = Number(project.pendingReview?.claims?.length || 0) +
+      Number(project.pendingReview?.milestones?.length || 0) +
+      Number(project.pendingReview?.decisions?.length || 0)
+    const authoritativeMemoryReviewCount = reviewCounts
+      ? Number(reviewCounts.total || 0)
+      : loadedMemoryReviewCount
     return {
       project: {
         ...project,
+        pendingReview: {
+          ...project.pendingReview,
+          total: Number(project.pendingReview?.relations?.length || 0) +
+            authoritativeMemoryReviewCount,
+          loadedMemoryTotal: loadedMemoryReviewCount,
+          authoritativeMemoryTotal: authoritativeMemoryReviewCount
+        },
+        claimTotal: projectEntity
+          ? Number((memoryFeed as any).claimTotal || 0)
+          : Number(project.claims?.length || 0),
+        eventTotal: projectEntity
+          ? Number((memoryFeed as any).eventTotal || 0)
+          : Number((project.milestones?.length || 0) + (project.decisions?.length || 0) +
+            (project.pendingReview?.milestones?.length || 0) +
+            (project.pendingReview?.decisions?.length || 0)),
+        memoryTruncated: projectEntity && (
+          Number((memoryFeed as any).claimTotal || 0) > memoryFeed.claims.length ||
+          Number((memoryFeed as any).eventTotal || 0) > memoryFeed.events.length
+        ),
         tasks: (project.tasks || []).map((item: any) => {
           const task = this.state.tasks.find(candidate => candidate.id === item.id)
           return task ? { ...item, mutationToken: buildTaskMutationToken(task) } : item
         })
       },
       payloadPolicy: {
-        version: 'project-dossier-v1',
+        version: 'project-dossier-v2',
         evidence: 'bounded',
+        memoryScope: projectEntity ? 'sql_entity_first' : 'derived_name_fallback',
+        claimLimit: projectEntity ? 200 : 500,
+        eventLimit: projectEntity ? 200 : 500,
         loadedOnDemand: true
       }
     }

@@ -5758,7 +5758,7 @@ export class PersonalMemoryStore {
     }
   }
 
-  getEntityMemory(entityId: string, limit = 200): {
+  getEntityMemory(entityId: string, limit = 200, subjectOnly = false): {
     claims: any[]
     events: any[]
     claimTotal: number
@@ -5768,6 +5768,8 @@ export class PersonalMemoryStore {
       return { claims: [], events: [], claimTotal: 0, eventTotal: 0 }
     }
     const safeLimit = Math.max(1, Math.min(500, Math.floor(Number(limit) || 200)))
+    const claimScope = subjectOnly ? 'c.subject_id=?' : '(c.subject_id=? OR c.object_entity_id=?)'
+    const claimParameters = subjectOnly ? [entityId] : [entityId, entityId]
     const claims = this.db.prepare(`
       SELECT c.*,s.canonical_name AS subject_name,o.canonical_name AS object_entity_name,
         (SELECT COUNT(*) FROM memory_corrections mc
@@ -5776,9 +5778,9 @@ export class PersonalMemoryStore {
       FROM claims c
       LEFT JOIN entities s ON s.id=c.subject_id
       LEFT JOIN entities o ON o.id=c.object_entity_id
-      WHERE c.status!='rejected' AND (c.subject_id=? OR c.object_entity_id=?)
+      WHERE c.status!='rejected' AND ${claimScope}
       ORDER BY c.updated_at DESC LIMIT ?
-    `).all(entityId, entityId, safeLimit) as any[]
+    `).all(...claimParameters, safeLimit) as any[]
     const events = this.db.prepare(`
       SELECT ev.*,
         (SELECT COUNT(*) FROM memory_corrections mc
@@ -5802,9 +5804,9 @@ export class PersonalMemoryStore {
       FROM event_participants ep JOIN entities e ON e.id=ep.entity_id WHERE ep.event_id=?
     `)
     const claimTotal = Number((this.db.prepare(
-      `SELECT COUNT(*) AS count FROM claims
-       WHERE status!='rejected' AND (subject_id=? OR object_entity_id=?)`
-    ).get(entityId, entityId) as any)?.count || 0)
+      `SELECT COUNT(*) AS count FROM claims c
+       WHERE c.status!='rejected' AND ${claimScope}`
+    ).get(...claimParameters) as any)?.count || 0)
     const eventTotal = Number((this.db.prepare(`
       SELECT COUNT(DISTINCT ep.event_id) AS count
       FROM event_participants ep JOIN events ev ON ev.id=ep.event_id
@@ -5823,6 +5825,63 @@ export class PersonalMemoryStore {
       claimTotal,
       eventTotal
     }
+  }
+
+  getProjectReviewCounts(entityIds: string[]): Record<string, {
+    candidateClaims: number
+    candidateMilestones: number
+    candidateDecisions: number
+    total: number
+  }> {
+    if (!this.db) return {}
+    const ids = [...new Set((entityIds || []).map(String).map(id => id.trim()).filter(Boolean))]
+      .slice(0, 10_000)
+    if (!ids.length) return {}
+    const result: Record<string, {
+      candidateClaims: number
+      candidateMilestones: number
+      candidateDecisions: number
+      total: number
+    }> = Object.fromEntries(ids.map(id => [id, {
+      candidateClaims: 0,
+      candidateMilestones: 0,
+      candidateDecisions: 0,
+      total: 0
+    }]))
+    for (let offset = 0; offset < ids.length; offset += 400) {
+      const batch = ids.slice(offset, offset + 400)
+      const placeholders = batch.map(() => '?').join(',')
+      const claims = this.db.prepare(`
+        SELECT subject_id AS entity_id,COUNT(*) AS count
+        FROM claims
+        WHERE status='candidate' AND subject_id IN (${placeholders})
+        GROUP BY subject_id
+      `).all(...batch) as any[]
+      for (const row of claims) {
+        const item = result[String(row.entity_id)]
+        if (item) item.candidateClaims = Number(row.count || 0)
+      }
+      const events = this.db.prepare(`
+        SELECT ep.entity_id,
+          SUM(CASE WHEN ev.event_type='decision' THEN 1 ELSE 0 END) AS decisions,
+          SUM(CASE WHEN ev.event_type IN ('delivery','meeting','organization_change')
+            THEN 1 ELSE 0 END) AS milestones
+        FROM event_participants ep
+        JOIN events ev ON ev.id=ep.event_id
+        WHERE ev.status='candidate' AND ep.entity_id IN (${placeholders})
+        GROUP BY ep.entity_id
+      `).all(...batch) as any[]
+      for (const row of events) {
+        const item = result[String(row.entity_id)]
+        if (!item) continue
+        item.candidateDecisions = Number(row.decisions || 0)
+        item.candidateMilestones = Number(row.milestones || 0)
+      }
+    }
+    for (const item of Object.values(result)) {
+      item.total = item.candidateClaims + item.candidateMilestones + item.candidateDecisions
+    }
+    return result
   }
 
   getTrustedExtractionMemory(

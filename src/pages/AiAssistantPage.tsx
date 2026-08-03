@@ -6706,9 +6706,15 @@ function AiAssistantPage() {
               <span><b>{selectedProject.progress}%</b><small>任务完成度</small></span>
               <span><b>{selectedProject.activeTaskCount}</b><small>进行中任务</small></span>
               <span><b>{selectedProject.risks.length}</b><small>可解释风险</small></span>
+              <span><b>{Number(selectedProject.claimTotal || 0)}</b><small>项目事实</small></span>
+              <span><b>{Number(selectedProject.eventTotal || 0)}</b><small>相关事件</small></span>
               <span><b>{selectedProject.evidenceTotal ?? selectedProject.evidence.length}</b><small>去重证据</small></span>
               <span><b>{selectedProject.pendingReview?.total || 0}</b><small>候选待确认</small></span>
             </div>
+            {selectedProject.memoryTruncated && <div className="assistant-query-plan">
+              当前项目的事实或事件超过单次档案安全上限；这里展示按项目范围查询后的最近 200 条，
+              真实总数保留在上方。可点击“在统一记忆中检索”继续浏览完整历史。
+            </div>}
             <div className="assistant-dossier-grid">
               <section>
                 <h3>参与者 <small>{selectedProject.members.length}</small></h3>
@@ -6746,6 +6752,13 @@ function AiAssistantPage() {
               {!!selectedProject.pendingReview?.total && <section>
                 <h3>候选线索 <small>{selectedProject.pendingReview.total}</small></h3>
                 <small className="assistant-evidence">以下内容尚未确认，不参与成员、里程碑、决策或项目事实的确定性统计。</small>
+                {Number(selectedProject.pendingReview.authoritativeMemoryTotal || 0) >
+                  Number(selectedProject.pendingReview.loadedMemoryTotal || 0) &&
+                  <small className="assistant-evidence">
+                    当前展示最近 {selectedProject.pendingReview.loadedMemoryTotal} /
+                    {selectedProject.pendingReview.authoritativeMemoryTotal} 条项目事实与事件候选；
+                    完整候选可在事实档案和事件时间线继续筛选。
+                  </small>}
                 {selectedProject.pendingReview.relations.map((relation: any) => <article key={relation.id}>
                   <strong>待确认关系 · {relation.predicate}</strong>
                   <small>{Math.round(Number(relation.confidence || 0) * 100)}% 可信</small>

@@ -3449,6 +3449,95 @@ test('project dashboard is a light directory and dossiers are selected on demand
   assert.equal(buildProjectInsight(input, 'missing-project'), null)
 })
 
+test('project memory is scoped in SQL before limits and preserves authoritative candidate totals', () => withStore(store => {
+  store.syncGraph({
+    entities: [{
+      id: 'project-memory-scope',
+      type: 'project',
+      canonicalName: '长期项目',
+      summary: '',
+      confidence: 1,
+      trustStatus: 'confirmed',
+      aliases: [],
+      accountIds: []
+    }, {
+      id: 'unrelated-memory-scope',
+      type: 'project',
+      canonicalName: '无关项目',
+      summary: '',
+      confidence: 1,
+      trustStatus: 'confirmed',
+      aliases: [],
+      accountIds: []
+    }],
+    relations: [],
+    reviewQueue: []
+  } as any)
+  const claims = Array.from({ length: 260 }, (_, index) => ({
+    id: `project-scoped-claim-${index}`,
+    subjectId: 'project-memory-scope',
+    predicate: `项目事实 ${index}`,
+    objectValue: `值 ${index}`,
+    confidence: 0.9,
+    status: 'candidate',
+    sourceNature: 'inference',
+    searchText: `长期项目 项目事实 ${index}`,
+    createdAt: new Date(1_500_000_000_000 + index * 1000).toISOString(),
+    evidence: evidence(`project-scoped-claim-message-${index}`, `项目事实原文 ${index}`)
+  }))
+  const unrelatedClaims = Array.from({ length: 600 }, (_, index) => ({
+    id: `unrelated-scoped-claim-${index}`,
+    subjectId: 'unrelated-memory-scope',
+    predicate: `无关事实 ${index}`,
+    objectValue: `无关值 ${index}`,
+    confidence: 0.9,
+    status: 'candidate',
+    sourceNature: 'inference',
+    searchText: `无关项目 无关事实 ${index}`,
+    createdAt: new Date(1_800_000_000_000 + index * 1000).toISOString(),
+    evidence: evidence(`unrelated-scoped-claim-message-${index}`, `无关事实原文 ${index}`)
+  }))
+  store.upsertClaims([...claims, ...unrelatedClaims])
+  store.upsertEvents(Array.from({ length: 240 }, (_, index) => ({
+    id: `project-scoped-event-${index}`,
+    eventType: index % 2 ? 'decision' : 'meeting',
+    title: `项目事件 ${index}`,
+    description: `长期项目事件 ${index}`,
+    startAt: new Date(1_600_000_000_000 + index * 1000).toISOString(),
+    endAt: '',
+    location: '',
+    confidence: 0.9,
+    status: 'candidate',
+    sourceNature: 'inference',
+    searchText: `长期项目 项目事件 ${index}`,
+    createdAt: new Date(1_600_000_000_000 + index * 1000).toISOString(),
+    participants: [{ entityId: 'project-memory-scope', role: 'project' }],
+    evidence: evidence(`project-scoped-event-message-${index}`, `项目事件原文 ${index}`)
+  })))
+
+  const memory = store.getEntityMemory('project-memory-scope', 200, true)
+  assert.equal(memory.claimTotal, 260)
+  assert.equal(memory.claims.length, 200)
+  assert.ok(memory.claims.every(item => item.subject_id === 'project-memory-scope'))
+  assert.equal(memory.eventTotal, 240)
+  assert.equal(memory.events.length, 200)
+  assert.ok(memory.events.every(item =>
+    item.participants.some((participant: any) => participant.entity_id === 'project-memory-scope')))
+  assert.equal(JSON.stringify(memory).includes('无关事实原文'), false)
+
+  const counts = store.getProjectReviewCounts([
+    'project-memory-scope',
+    'unrelated-memory-scope'
+  ])
+  assert.deepEqual(counts['project-memory-scope'], {
+    candidateClaims: 260,
+    candidateMilestones: 120,
+    candidateDecisions: 120,
+    total: 500
+  })
+  assert.equal(counts['unrelated-memory-scope'].candidateClaims, 600)
+}))
+
 test('task dashboard keeps structure but loads evidence and audit history on demand', () => {
   const longEvidence = Array.from({ length: 250 }, (_, index) => ({
     messageId: `wechat:task-scale:${index}`,
