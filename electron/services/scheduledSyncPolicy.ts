@@ -3,6 +3,22 @@ export type ScheduledSyncAssessment = {
   reason: string
 }
 
+export type ResumeCatchupRetryState = {
+  pendingSince: string | null
+  lastAttemptAt: string | null
+  nextAttemptAt: string | null
+  failureCount: number
+  lastError: string | null
+}
+
+export const EMPTY_RESUME_CATCHUP_RETRY_STATE: ResumeCatchupRetryState = {
+  pendingSince: null,
+  lastAttemptAt: null,
+  nextAttemptAt: null,
+  failureCount: 0,
+  lastError: null
+}
+
 const SCHEDULED_RETRY_BASE_MS = 15 * 60_000
 const SCHEDULED_RETRY_MAX_MS = 6 * 60 * 60_000
 const SCHEDULER_GAP_THRESHOLD_MS = 150_000
@@ -67,6 +83,39 @@ export function shouldRunResumeCatchup(
   if (!Number.isFinite(previousAttempt)) return true
   if (observedAt < previousAttempt - CLOCK_BACKWARD_THRESHOLD_MS) return true
   return observedAt - previousAttempt >= RESUME_CATCHUP_THROTTLE_MS
+}
+
+export function planResumeCatchupRetry(
+  previous: Partial<ResumeCatchupRetryState> | null | undefined,
+  assessment: ScheduledSyncAssessment,
+  observedAt: string
+): ResumeCatchupRetryState {
+  if (assessment.complete) return { ...EMPTY_RESUME_CATCHUP_RETRY_STATE }
+  const failureCount = Math.max(0, Number(previous?.failureCount || 0)) + 1
+  const observedMs = Date.parse(observedAt)
+  return {
+    pendingSince: previous?.pendingSince || observedAt,
+    lastAttemptAt: observedAt,
+    nextAttemptAt: new Date(
+      (Number.isFinite(observedMs) ? observedMs : Date.now()) +
+      scheduledSyncRetryDelayMs(failureCount)
+    ).toISOString(),
+    failureCount,
+    lastError: String(assessment.reason || '唤醒后的增量补齐未完整成功')
+  }
+}
+
+export function isResumeCatchupRetryDue(
+  state: Partial<ResumeCatchupRetryState> | null | undefined,
+  observedAt: number
+): boolean {
+  if (!state?.pendingSince) return false
+  const lastAttempt = Date.parse(String(state.lastAttemptAt || ''))
+  if (Number.isFinite(lastAttempt) && observedAt < lastAttempt - CLOCK_BACKWARD_THRESHOLD_MS) {
+    return true
+  }
+  const nextAttempt = Date.parse(String(state.nextAttemptAt || ''))
+  return !Number.isFinite(nextAttempt) || nextAttempt <= observedAt
 }
 
 export function scheduledSyncRetryDelayMs(retryCount: number): number {

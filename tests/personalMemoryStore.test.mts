@@ -112,8 +112,11 @@ import {
   selectTrustedExtractionEntities
 } from '../electron/services/extractionMemoryContext.ts'
 import {
+  EMPTY_RESUME_CATCHUP_RETRY_STATE,
   assessSchedulerWake,
   assessScheduledSyncResult,
+  isResumeCatchupRetryDue,
+  planResumeCatchupRetry,
   planScheduledSyncState,
   scheduledSyncRetryDelayMs,
   scheduledSyncTargetTimestamp,
@@ -4241,6 +4244,13 @@ test('renderer cursor status exposes counts but keeps durable keys and session m
     lastSchedulerGapMs: 21_600_000,
     lastResumeCatchupAt: '2026-07-31T08:00:01.000Z',
     lastResumeCatchupResult: 'backlog_catchup_attempted',
+    resumeCatchupRetry: {
+      pendingSince: '2026-07-31T08:00:01.000Z',
+      lastAttemptAt: '2026-07-31T08:00:01.000Z',
+      nextAttemptAt: '2026-07-31T08:15:01.000Z',
+      failureCount: 1,
+      lastError: '电脑刚唤醒，网络尚未连接'
+    },
     lastAttemptAt: '2026-07-31T00:01:00.000Z',
     lastError: null,
     pendingSessionRetryCount: 3,
@@ -4269,7 +4279,14 @@ test('renderer cursor status exposes counts but keeps durable keys and session m
     lastWakeReason: 'system_resume',
     lastGapMs: 21_600_000,
     lastCatchupAt: '2026-07-31T08:00:01.000Z',
-    lastCatchupResult: 'backlog_catchup_attempted'
+    lastCatchupResult: 'backlog_catchup_attempted',
+    retry: {
+      pendingSince: '2026-07-31T08:00:01.000Z',
+      lastAttemptAt: '2026-07-31T08:00:01.000Z',
+      nextAttemptAt: '2026-07-31T08:15:01.000Z',
+      failureCount: 1,
+      lastError: '电脑刚唤醒，网络尚未连接'
+    }
   })
   assert.equal(payload.recentMessageIds, undefined)
   assert.equal(payload.sessionCursors, undefined)
@@ -4328,6 +4345,47 @@ test('daily schedule is acknowledged only after every enabled source and backlog
     '2026-07-31T07:30:00.000Z',
     Date.parse('2026-07-31T08:00:00.000Z')
   ), true)
+  const resumeFailedOnce = planResumeCatchupRetry(
+    EMPTY_RESUME_CATCHUP_RETRY_STATE,
+    { complete: false, reason: '网络未连接' },
+    '2026-07-31T08:00:00.000Z'
+  )
+  assert.deepEqual(resumeFailedOnce, {
+    pendingSince: '2026-07-31T08:00:00.000Z',
+    lastAttemptAt: '2026-07-31T08:00:00.000Z',
+    nextAttemptAt: '2026-07-31T08:15:00.000Z',
+    failureCount: 1,
+    lastError: '网络未连接'
+  })
+  const resumeFailedTwice = planResumeCatchupRetry(
+    resumeFailedOnce,
+    { complete: false, reason: 'DeepSeek 仍不可达' },
+    '2026-07-31T08:15:00.000Z'
+  )
+  assert.equal(resumeFailedTwice.pendingSince, resumeFailedOnce.pendingSince)
+  assert.equal(resumeFailedTwice.failureCount, 2)
+  assert.equal(resumeFailedTwice.nextAttemptAt, '2026-07-31T08:45:00.000Z')
+  assert.equal(isResumeCatchupRetryDue(
+    resumeFailedTwice,
+    Date.parse('2026-07-31T08:44:59.999Z')
+  ), false)
+  assert.equal(isResumeCatchupRetryDue(
+    resumeFailedTwice,
+    Date.parse('2026-07-31T08:45:00.000Z')
+  ), true)
+  assert.equal(isResumeCatchupRetryDue(
+    {
+      ...resumeFailedTwice,
+      lastAttemptAt: '2026-07-31T08:15:00.000Z',
+      nextAttemptAt: '2026-07-31T08:45:00.000Z'
+    },
+    Date.parse('2026-07-31T07:00:00.000Z')
+  ), true)
+  assert.deepEqual(planResumeCatchupRetry(
+    resumeFailedTwice,
+    { complete: true, reason: '' },
+    '2026-07-31T08:45:00.000Z'
+  ), EMPTY_RESUME_CATCHUP_RETRY_STATE)
   assert.equal(shouldRunResumeCatchup(
     6 * 60 * 60_000,
     null,

@@ -251,12 +251,16 @@ import {
   shouldRecoverGraphFromSql
 } from '../../shared/graphCommitRecovery'
 import {
+  EMPTY_RESUME_CATCHUP_RETRY_STATE,
   assessSchedulerWake,
   assessScheduledSyncResult,
+  isResumeCatchupRetryDue,
   planScheduledSyncState,
+  planResumeCatchupRetry,
   scheduledSyncTargetTimestamp,
   shouldRunResumeCatchup,
-  shouldReconcileScheduledSync
+  shouldReconcileScheduledSync,
+  type ResumeCatchupRetryState
 } from './scheduledSyncPolicy'
 import {
   AUTOMATIC_MEMORY_BACKUP_POLICY_VERSION,
@@ -355,6 +359,7 @@ type AssistantState = {
     lastSchedulerGapMs: number
     lastResumeCatchupAt: string | null
     lastResumeCatchupResult: string | null
+    resumeCatchupRetry: ResumeCatchupRetryState
     lastAutomaticBackupDate: string | null
     lastAutomaticBackupAt: string | null
     lastAutomaticBackupAttemptAt: string | null
@@ -403,6 +408,7 @@ const EMPTY_STATE: AssistantState = {
     lastSchedulerGapMs: 0,
     lastResumeCatchupAt: null,
     lastResumeCatchupResult: null,
+    resumeCatchupRetry: { ...EMPTY_RESUME_CATCHUP_RETRY_STATE },
     lastAutomaticBackupDate: null,
     lastAutomaticBackupAt: null,
     lastAutomaticBackupAttemptAt: null,
@@ -504,7 +510,7 @@ export class AiAssistantService {
   private statePath = ''
   private stateEncryptionKey = ''
   private activeSync: Promise<any> | null = null
-  private activeSyncTrigger: 'manual' | 'startup' | 'daily' | 'backlog' | null = null
+  private activeSyncTrigger: 'manual' | 'startup' | 'daily' | 'backlog' | 'resume' | null = null
   private scheduler: ReturnType<typeof setInterval> | null = null
   private lastSchedulerAttemptAt = 0
   private lastSchedulerTickAt = 0
@@ -751,6 +757,10 @@ export class AiAssistantService {
         cursor: {
           ...structuredClone(EMPTY_STATE.cursor),
           ...(loaded.cursor || {}),
+          resumeCatchupRetry: {
+            ...EMPTY_RESUME_CATCHUP_RETRY_STATE,
+            ...(loaded.cursor?.resumeCatchupRetry || {})
+          },
           backlogRetry: {
             ...EMPTY_BACKLOG_RETRY_STATE,
             ...(loaded.cursor?.backlogRetry || {})
@@ -2759,7 +2769,7 @@ export class AiAssistantService {
     return { completed, failed, tasks }
   }
 
-  async sync(trigger: 'manual' | 'startup' | 'daily' | 'backlog' = 'manual'): Promise<any> {
+  async sync(trigger: 'manual' | 'startup' | 'daily' | 'backlog' | 'resume' = 'manual'): Promise<any> {
     if (this.activeSync) return this.activeSync
     this.cancelRequested = false
     if (trigger !== 'backlog' && this.state.cursor.backlogRetry.paused) {
@@ -2789,6 +2799,19 @@ export class AiAssistantService {
         ))
         this.saveState()
       }
+      if (trigger === 'resume' || this.state.cursor.resumeCatchupRetry.pendingSince) {
+        const observedAt = new Date().toISOString()
+        const assessment = assessScheduledSyncResult(result)
+        this.state.cursor.resumeCatchupRetry = planResumeCatchupRetry(
+          this.state.cursor.resumeCatchupRetry,
+          {
+            ...assessment,
+            reason: assessment.complete ? '' : sanitizeDiagnosticText(assessment.reason)
+          },
+          observedAt
+        )
+        this.saveState()
+      }
       this.maybeCreateAutomaticMemoryBackup(result)
       return result
     } catch (error) {
@@ -2802,6 +2825,15 @@ export class AiAssistantService {
           scheduledDate,
           observedAt
         ))
+        this.saveState()
+      }
+      if (trigger === 'resume' || this.state.cursor.resumeCatchupRetry.pendingSince) {
+        const observedAt = new Date().toISOString()
+        this.state.cursor.resumeCatchupRetry = planResumeCatchupRetry(
+          this.state.cursor.resumeCatchupRetry,
+          { complete: false, reason: sanitizeDiagnosticText(error) },
+          observedAt
+        )
         this.saveState()
       }
       throw error
@@ -6643,12 +6675,36 @@ export class AiAssistantService {
       this.state.cursor.lastSchedulerWakeAt = now.toISOString()
       this.state.cursor.lastSchedulerWakeReason = wake.reason
       this.state.cursor.lastSchedulerGapMs = wake.elapsedMs
-      if (wake.resetAttemptThrottle) this.lastSchedulerAttemptAt = 0
+      if (wake.resetAttemptThrottle) {
+        this.lastSchedulerAttemptAt = 0
+        if (this.state.cursor.lastScheduledError) {
+          this.state.cursor.nextScheduledRetryAt = now.toISOString()
+        }
+        if (this.state.cursor.resumeCatchupRetry.pendingSince) {
+          this.state.cursor.resumeCatchupRetry.nextAttemptAt = now.toISOString()
+        }
+        if (this.state.cursor.pendingSessionBacklogCount > 0 &&
+            this.state.cursor.backlogRetry.nextAttemptAt) {
+          this.state.cursor.backlogRetry.nextAttemptAt = now.toISOString()
+        }
+      }
       this.saveState()
     }
     if (!this.config.get('aiAssistantEnabled')) return 'assistant_disabled'
     if (!this.activeSync) await this.flushNotificationOutbox(now)
     if (this.activeSync) return 'sync_already_running'
+    if (isResumeCatchupRetryDue(this.state.cursor.resumeCatchupRetry, nowMs)) {
+      if (nowMs - this.lastSchedulerAttemptAt < 60_000) return 'resume_retry_throttled'
+      this.lastSchedulerAttemptAt = nowMs
+      try {
+        const result = await this.sync('resume')
+        return result?.success === true && !result?.partial && !result?.cancelled
+          ? 'resume_retry_completed'
+          : 'resume_retry_partial'
+      } catch {
+        return 'resume_retry_failed'
+      }
+    }
     const wechatSource = personalMemoryStore.listDataSources().find(source => source.id === 'wechat')
     if (isBacklogRetryDue({
       state: this.state.cursor.backlogRetry,
@@ -6674,7 +6730,7 @@ export class AiAssistantService {
         nowMs
       )) {
         try {
-          const result = await this.sync('startup')
+          const result = await this.sync('resume')
           return result?.success === true && !result?.partial && !result?.cancelled
             ? 'resume_incremental_completed'
             : 'resume_incremental_partial'

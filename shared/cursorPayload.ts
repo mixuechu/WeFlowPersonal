@@ -33,7 +33,14 @@ export function buildCursorStatusPayload(cursor: any): any {
       lastWakeReason: cursor?.lastSchedulerWakeReason || null,
       lastGapMs: Number(cursor?.lastSchedulerGapMs || 0),
       lastCatchupAt: cursor?.lastResumeCatchupAt || null,
-      lastCatchupResult: cursor?.lastResumeCatchupResult || null
+      lastCatchupResult: cursor?.lastResumeCatchupResult || null,
+      retry: {
+        pendingSince: cursor?.resumeCatchupRetry?.pendingSince || null,
+        lastAttemptAt: cursor?.resumeCatchupRetry?.lastAttemptAt || null,
+        nextAttemptAt: cursor?.resumeCatchupRetry?.nextAttemptAt || null,
+        failureCount: Number(cursor?.resumeCatchupRetry?.failureCount || 0),
+        lastError: cursor?.resumeCatchupRetry?.lastError || null
+      }
     },
     lastReminderNotificationDate: cursor?.lastReminderNotificationDate || null,
     lastAttemptAt: cursor?.lastAttemptAt || null,

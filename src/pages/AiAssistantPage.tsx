@@ -123,7 +123,11 @@ function schedulerCatchupResultLabel(value: string): string {
     resume_incremental_completed: '已按上次时间戳完成唤醒后的普通增量补齐',
     resume_incremental_partial: '已保存唤醒补齐的成功部分，剩余内容继续续跑',
     resume_incremental_failed: '唤醒增量补齐失败，原 checkpoint 未前移',
-    resume_incremental_throttled: '距上次同步尝试不足 15 分钟，已避免重复请求'
+    resume_incremental_throttled: '距上次同步尝试不足 15 分钟，已避免重复请求',
+    resume_retry_throttled: '唤醒补齐重试仍在一分钟防重复窗口内',
+    resume_retry_completed: '网络恢复后已自动完成唤醒补齐',
+    resume_retry_partial: '网络恢复重试已保存成功部分，仍将继续',
+    resume_retry_failed: '网络仍不可用或来源失败，已推进持久退避'
   } as Record<string, string>)[value] || value || '尚无结果'
 }
 
@@ -4938,6 +4942,16 @@ function AiAssistantPage() {
               {' · '}累计 {Number(status.cursor.systemWake.resumeCount || 0).toLocaleString()} 次
             </span>
             <small>{schedulerCatchupResultLabel(status.cursor.systemWake.lastCatchupResult)}</small>
+            {status.cursor.systemWake.retry?.pendingSince && <small>
+              唤醒补齐仍待完成：已失败
+              {' '}{Number(status.cursor.systemWake.retry.failureCount || 0).toLocaleString()} 次
+              {status.cursor.systemWake.retry.nextAttemptAt
+                ? ` · 最早于 ${new Date(status.cursor.systemWake.retry.nextAttemptAt)
+                    .toLocaleString('zh-CN', { hour12: false })} 自动重试`
+                : ' · 下一次调度自动重试'}
+              {status.cursor.systemWake.retry.lastError
+                ? ` · ${status.cursor.systemWake.retry.lastError}` : ''}
+            </small>}
             {Number(status.cursor.systemWake.lastGapMs || 0) > 150_000 && <small>
               本次检测到定时器中断约
               {Math.round(Number(status.cursor.systemWake.lastGapMs) / 60_000).toLocaleString()} 分钟；
