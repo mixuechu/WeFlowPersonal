@@ -1890,6 +1890,7 @@ export interface ElectronAPI {
         revision?: string
       }) => Promise<any>
       getResourceDossier: (id: string, expectedRevision: string) => Promise<any>
+      getCurrentResourceDossier: (id: string) => Promise<any>
       getResourceTrashArchive: (options?: {
         query?: string
         limit?: number

@@ -6685,6 +6685,10 @@ export class PersonalMemoryStore {
     }
   }
 
+  getCurrentResourceDossier(id: string): any | null {
+    return this.getResourceDossier(id, this.getResourceArchiveRevision())
+  }
+
   listResourceTrashArchive(options: {
     query?: string
     limit?: number

@@ -10718,6 +10718,10 @@ test('resource archive pages stay bounded, revision-safe and hydrate only one do
   assert.match(dossier.content, /只应在单条档案出现的资源正文/)
   assert.equal(dossier.metadata.attachmentStructure.kind, 'document')
   assert.equal(dossier.evidence.length, 1)
+  const directDossier = store.getCurrentResourceDossier(first.items[1].id)
+  assert.equal(directDossier.stale, false)
+  assert.equal(directDossier.id, first.items[1].id)
+  assert.match(directDossier.content, /只应在单条档案出现的资源正文/)
 
   store.upsertResources([{
     ...resources[0],

@@ -557,6 +557,7 @@ function AiAssistantPage() {
   const [projectEvidenceRefreshKey, setProjectEvidenceRefreshKey] = useState(0)
   const projectEvidenceGate = useRef(new LatestRequestGate())
   const [selectedTaskId, setSelectedTaskId] = useState('')
+  const [taskDossierModalOpen, setTaskDossierModalOpen] = useState(false)
   const [taskWorkspace, setTaskWorkspace] = useState<any>({ task: null, history: [], status: 'idle' })
   const [taskWorkspaceRefreshKey, setTaskWorkspaceRefreshKey] = useState(0)
   const taskWorkspaceGate = useRef(new LatestRequestGate())
@@ -2515,6 +2516,37 @@ function AiAssistantPage() {
         setSelectedResourceDossier({ id: resource.id, status: 'error' })
         setMessage(error?.message || String(error))
       }
+    }
+  }
+  const openSearchResourceDossier = async (resourceId: string) => {
+    const id = String(resourceId || '').trim()
+    if (!id) return
+    const request = resourceDossierGate.current.begin()
+    setSelectedResourceDossier({ id, origin: 'search', status: 'loading' })
+    try {
+      const result = await window.electronAPI.aiAssistant.getCurrentResourceDossier(id)
+      if (!resourceDossierGate.current.isCurrent(request)) return
+      if (result?.stale) {
+        setSelectedResourceDossier(null)
+        setMessage('资源在读取期间发生变化，请从检索结果重新打开。')
+        setMemorySearchRefreshKey(value => value + 1)
+        return
+      }
+      if (!result) {
+        setSelectedResourceDossier(null)
+        setMessage('该资源已经删除或不再可用。')
+        setMemorySearchRefreshKey(value => value + 1)
+        return
+      }
+      setSelectedResourceDossier({ ...result, origin: 'search', status: 'ready' })
+    } catch (error: any) {
+      if (!resourceDossierGate.current.isCurrent(request)) return
+      setSelectedResourceDossier({
+        id,
+        origin: 'search',
+        status: 'error',
+        error: error?.message || String(error)
+      })
     }
   }
   const loadMoreResourceTrash = async () => {
@@ -6431,6 +6463,19 @@ function AiAssistantPage() {
                   }}>打开完整实体档案</button>}
                 <small>按稳定实体 ID 打开，不使用名称猜测或合并同名对象。</small>
               </div>}
+              {result.document_type === 'task' && result.source_id && <div className="assistant-search-authority-actions">
+                <button className="primary" onClick={() => {
+                  setSelectedTaskId(String(result.source_id))
+                  setTaskDossierModalOpen(true)
+                }}>打开完整待办档案</button>
+                <small>读取当前权威待办状态、完整原文入口和修改历史，不依赖当前列表是否已加载。</small>
+              </div>}
+              {result.document_type === 'resource' && result.source_id && <div className="assistant-search-authority-actions">
+                <button className="primary" onClick={() =>
+                  void openSearchResourceDossier(String(result.source_id))
+                }>打开完整资源档案</button>
+                <small>按稳定资源 ID 读取当前 SQLCipher 记录，并在同一次请求中复核资源 revision。</small>
+              </div>}
               {matchedEvidence && <div className="assistant-search-matched-evidence">
                 <header>
                   <span>本次实际命中的身份原文</span>
@@ -8040,6 +8085,157 @@ function AiAssistantPage() {
           </div>
         </section>
       </div>
+
+      {taskDossierModalOpen && (
+        <div className="assistant-modal-backdrop" role="presentation">
+          <div className="assistant-modal assistant-evidence-archive-modal" role="dialog" aria-modal="true"
+            aria-labelledby="task-authority-dossier-title">
+            <div className="assistant-modal-title">
+              <div>
+                <span className="assistant-eyebrow">AUTHORITATIVE TASK DOSSIER</span>
+                <h2 id="task-authority-dossier-title">
+                  {taskWorkspace.task?.title || '待办权威档案'}
+                </h2>
+                <p>按稳定任务 ID 从当前权威状态读取；检索摘要仅用于找到它，不作为详情来源。</p>
+              </div>
+              <button aria-label="关闭待办权威档案" onClick={() => {
+                setTaskDossierModalOpen(false)
+                setSelectedTaskId('')
+              }}><X size={18} /></button>
+            </div>
+            <div className="assistant-modal-body">
+              {taskWorkspace.status === 'loading' && <div className="assistant-empty">正在读取待办状态、原文和历史…</div>}
+              {taskWorkspace.status === 'error' && <div className="assistant-error">
+                {taskWorkspace.error || '待办档案读取失败'}
+                <button onClick={() => setTaskWorkspaceRefreshKey(value => value + 1)}>重试</button>
+              </div>}
+              {taskWorkspace.status === 'ready' && taskWorkspace.task && <>
+                <div className="assistant-memory-item">
+                  <div className="assistant-memory-item-head">
+                    <strong>{taskWorkspace.task.title}</strong>
+                    <span className={taskWorkspace.task.status}>
+                      {taskWorkspace.task.status === 'done' ? '已完成'
+                        : taskWorkspace.task.status === 'cancelled' ? '已取消' : '待处理'}
+                    </span>
+                  </div>
+                  {taskWorkspace.task.detail && <p>{taskWorkspace.task.detail}</p>}
+                  <div className="assistant-tags">
+                    <span>{taskWorkspace.task.taskKind === 'delegated' ? '已委派'
+                      : taskWorkspace.task.taskKind === 'waiting' ? '等待他人' : '自己执行'}</span>
+                    {taskWorkspace.task.owner && <span>负责人 {taskWorkspace.task.owner}</span>}
+                    {!!taskWorkspace.task.collaborators?.length &&
+                      <span>协作 {taskWorkspace.task.collaborators.join('、')}</span>}
+                    {taskWorkspace.task.project && <span>项目 {taskWorkspace.task.project}</span>}
+                    {taskWorkspace.task.due && <span>截止 {taskWorkspace.task.due}</span>}
+                    <span>{taskWorkspace.task.priority === 'high' ? '高'
+                      : taskWorkspace.task.priority === 'low' ? '低' : '中'}优先级</span>
+                  </div>
+                  {taskWorkspace.task.assignmentEvidence &&
+                    <small className="assistant-evidence">归属依据：{taskWorkspace.task.assignmentEvidence}</small>}
+                </div>
+                <EvidenceRows
+                  evidence={taskWorkspace.task.evidence}
+                  total={taskWorkspace.task.evidenceTotal}
+                  onOpenArchive={() => {
+                    const task = taskWorkspace.task
+                    setTaskDossierModalOpen(false)
+                    setSelectedTaskId('')
+                    void openMemoryEvidenceArchive('task', task.id, task.title)
+                  }}
+                />
+                <details open>
+                  <summary>修改历史（{taskWorkspace.historyTotal || taskWorkspace.history?.length || 0}）</summary>
+                  <div className="assistant-task-history">
+                    {(taskWorkspace.history || []).map((item: any) => <small key={`search-task-history-${item.id}`}>
+                      {new Date(item.created_at).toLocaleString('zh-CN')} · {item.field}：
+                      {taskHistoryValue(item.before_value)} → {taskHistoryValue(item.after_value)}
+                    </small>)}
+                    {!taskWorkspace.history?.length && <small>这条待办还没有修改记录。</small>}
+                  </div>
+                </details>
+              </>}
+            </div>
+            <div className="assistant-modal-actions">
+              <button onClick={() => {
+                setTaskDossierModalOpen(false)
+                setSelectedTaskId('')
+              }}>关闭</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {selectedResourceDossier?.origin === 'search' && (
+        <div className="assistant-modal-backdrop" role="presentation">
+          <div className="assistant-modal assistant-evidence-archive-modal" role="dialog" aria-modal="true"
+            aria-labelledby="resource-authority-dossier-title">
+            <div className="assistant-modal-title">
+              <div>
+                <span className="assistant-eyebrow">AUTHORITATIVE RESOURCE DOSSIER</span>
+                <h2 id="resource-authority-dossier-title">
+                  {selectedResourceDossier.title || '资源权威档案'}
+                </h2>
+                <p>按稳定资源 ID 从 SQLCipher 单项读取，并在返回前复核当前资源 revision。</p>
+              </div>
+              <button aria-label="关闭资源权威档案" onClick={() => {
+                resourceDossierGate.current.invalidate()
+                setSelectedResourceDossier(null)
+              }}><X size={18} /></button>
+            </div>
+            <div className="assistant-modal-body">
+              {selectedResourceDossier.status === 'loading' &&
+                <div className="assistant-empty">正在读取资源正文、结构和原始证据…</div>}
+              {selectedResourceDossier.status === 'error' && <div className="assistant-error">
+                {selectedResourceDossier.error || '资源档案读取失败'}
+                <button onClick={() => void openSearchResourceDossier(selectedResourceDossier.id)}>重试</button>
+              </div>}
+              {selectedResourceDossier.status === 'ready' && <>
+                <div className="assistant-memory-item">
+                  <div className="assistant-memory-item-head">
+                    <strong>{selectedResourceDossier.title}</strong>
+                    <span>{selectedResourceDossier.resource_type || '资源'}</span>
+                  </div>
+                  <small>原始载体：{memorySourceLabels(selectedResourceDossier)}</small>
+                  {selectedResourceDossier.file_name && <small>
+                    文件：{selectedResourceDossier.file_name}
+                    {selectedResourceDossier.file_ext ? ` · ${selectedResourceDossier.file_ext}` : ''}
+                  </small>}
+                  {selectedResourceDossier.url && <small>链接：{selectedResourceDossier.url}</small>}
+                  {selectedResourceDossier.content && <p>{selectedResourceDossier.content}</p>}
+                  <small>
+                    创建于 {selectedResourceDossier.created_at
+                      ? new Date(selectedResourceDossier.created_at).toLocaleString('zh-CN') : '时间未知'}
+                    {' · '}更新于 {selectedResourceDossier.updated_at
+                      ? new Date(selectedResourceDossier.updated_at).toLocaleString('zh-CN') : '时间未知'}
+                  </small>
+                </div>
+                <EvidenceRows
+                  evidence={selectedResourceDossier.evidence || []}
+                  total={Number(selectedResourceDossier.evidence_count || 0)}
+                  onOpenArchive={() => {
+                    const resource = selectedResourceDossier
+                    resourceDossierGate.current.invalidate()
+                    setSelectedResourceDossier(null)
+                    void openMemoryEvidenceArchive(
+                      'resource', resource.id, resource.title || '资源原文'
+                    )
+                  }}
+                />
+                {!!Object.keys(selectedResourceDossier.metadata || {}).length && <details>
+                  <summary>查看完整结构化元数据</summary>
+                  <pre>{JSON.stringify(selectedResourceDossier.metadata, null, 2)}</pre>
+                </details>}
+              </>}
+            </div>
+            <div className="assistant-modal-actions">
+              <button onClick={() => {
+                resourceDossierGate.current.invalidate()
+                setSelectedResourceDossier(null)
+              }}>关闭</button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {memoryEvidenceArchive && (
         <div className="assistant-modal-backdrop" role="presentation">

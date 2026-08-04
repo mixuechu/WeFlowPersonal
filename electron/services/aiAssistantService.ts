@@ -6113,6 +6113,10 @@ export class AiAssistantService {
     return personalMemoryStore.getResourceDossier(id, expectedRevision)
   }
 
+  getCurrentResourceDossier(id: string): any {
+    return personalMemoryStore.getCurrentResourceDossier(id)
+  }
+
   getResourceTrashArchive(options?: any): any {
     return personalMemoryStore.listResourceTrashArchive(options || {})
   }
