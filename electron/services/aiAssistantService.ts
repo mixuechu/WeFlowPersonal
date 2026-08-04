@@ -1343,6 +1343,24 @@ export class AiAssistantService {
     )
   }
 
+  private async listAllWechatContacts(): Promise<any[]> {
+    return collectStableCursorPages(
+      async cursor => {
+        const payload = await this.api('/api/v1/contacts', {
+          limit: 10_000,
+          cursor: cursor || undefined
+        })
+        return {
+          items: Array.isArray(payload.contacts) ? payload.contacts : [],
+          total: Number(payload.total ?? payload.count ?? 0),
+          hasMore: payload.hasMore === true,
+          nextCursor: String(payload.nextCursor || '')
+        }
+      },
+      contact => String(contact?.username || '')
+    )
+  }
+
   private async collectMessages(start: number, end: number): Promise<{
     messages: any[]
     failed: string[]
@@ -1350,8 +1368,8 @@ export class AiAssistantService {
     continuationOffsets: Record<string, number>
   }> {
     const sessionsFromApi = await this.listAllWechatSessions()
-    const contactsPayload = await this.api('/api/v1/contacts', { limit: 10_000 }).catch(() => ({ contacts: [] }))
-    const contactsById = new Map((contactsPayload.contacts || []).map((contact: any) => [String(contact.username), contact]))
+    const contacts = await this.listAllWechatContacts().catch(() => [])
+    const contactsById = new Map(contacts.map((contact: any) => [String(contact.username), contact]))
     const policies = personalMemoryStore.getConversationPolicies()
     const allSessions = includeContinuationSessions(
       sessionsFromApi,

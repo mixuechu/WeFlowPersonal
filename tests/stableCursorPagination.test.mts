@@ -28,6 +28,31 @@ test('stable cursor pagination reaches every session beyond ten thousand', async
   assert.equal(collected.at(-1)?.username, 'session-020504')
 })
 
+test('the same cursor contract preserves contact identity fields beyond ten thousand', async () => {
+  const contacts = Array.from({ length: 10_025 }, (_, index) => ({
+    username: `wxid_${String(index).padStart(6, '0')}`,
+    remark: `备注 ${index}`,
+    nickname: `昵称 ${index}`,
+    alias: `alias_${index}`
+  }))
+  const collected = await collectStableCursorPages(
+    async cursor => paginateByStableStringCursor(contacts, {
+      key: contact => contact.username,
+      cursor,
+      limit: 10_000
+    }),
+    contact => contact.username
+  )
+  const tail = collected.find(contact => contact.username === 'wxid_010024')
+  assert.equal(collected.length, 10_025)
+  assert.deepEqual(tail, {
+    username: 'wxid_010024',
+    remark: '备注 10024',
+    nickname: '昵称 10024',
+    alias: 'alias_10024'
+  })
+})
+
 test('cursor collection rejects empty, repeated and backwards continuations', async () => {
   for (const nextCursor of ['', 'same', 'before']) {
     await assert.rejects(

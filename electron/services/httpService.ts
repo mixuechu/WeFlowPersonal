@@ -1273,11 +1273,12 @@ class HttpService {
 
   /**
    * 处理联系人查询
-   * GET /api/v1/contacts?keyword=xxx&limit=100
+   * GET /api/v1/contacts?keyword=xxx&limit=100&cursor=wxid
    */
   private async handleContacts(url: URL, res: http.ServerResponse): Promise<void> {
     const keyword = (url.searchParams.get('keyword') || '').trim()
     const limit = this.parseIntParam(url.searchParams.get('limit'), 100, 1, 10000)
+    const cursor = (url.searchParams.get('cursor') || '').trim()
 
     try {
       const contacts = await chatService.getContacts()
@@ -1297,11 +1298,19 @@ class HttpService {
         )
       }
 
-      const limited = filteredContacts.slice(0, limit)
+      const page = paginateByStableStringCursor(filteredContacts, {
+        key: contact => String(contact.username || ''),
+        cursor,
+        limit
+      })
+      const limited = page.items
 
       this.sendJson(res, {
         success: true,
         count: limited.length,
+        total: page.total,
+        hasMore: page.hasMore,
+        nextCursor: page.nextCursor,
         contacts: limited
       })
     } catch (error) {
