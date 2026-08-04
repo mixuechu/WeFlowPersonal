@@ -10,6 +10,7 @@ import {
   buildUntrustedMemoryQuestionEnvelope,
   filterModelEligibleMemoryResults,
   finalizeGroundedMemoryAnswer,
+  groundedAnswerRequiresRetry,
   getMemoryEvidenceEligibility,
   getMemoryCitationFreshness,
   memoryEvidenceSampleHash,
@@ -336,6 +337,20 @@ test('grounded statements become stale when cited authority changes or disappear
   ])
   assert.equal(invalid.status, 'invalid')
   assert.equal(invalid.invalidStatements, 2)
+  assert.equal(groundedAnswerRequiresRetry({
+    acceptedStatements: 4
+  }, current), true)
+  assert.equal(groundedAnswerRequiresRetry({
+    acceptedStatements: 2
+  }, revalidateGroundedStatements({
+    statementCitations: [['claim:stable'], ['claim:backup']]
+  }, [
+    { documentId: 'claim:stable', canSupportFacts: true, citationFreshness: 'current' },
+    { documentId: 'claim:backup', canSupportFacts: true, citationFreshness: 'current' }
+  ])), false)
+  assert.equal(groundedAnswerRequiresRetry({
+    acceptedStatements: 0
+  }, invalid), false)
 })
 
 test('mail connector keeps independent mailbox cursors and retries failed consumption', async () => {

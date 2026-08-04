@@ -333,6 +333,19 @@ export function revalidateGroundedStatements(
   }
 }
 
+export function groundedAnswerRequiresRetry(
+  groundingAudit: any,
+  revalidation: ReturnType<typeof revalidateGroundedStatements>
+): boolean {
+  const acceptedStatements = Math.max(
+    0,
+    Math.floor(Number(groundingAudit?.acceptedStatements) || 0)
+  )
+  if (!acceptedStatements) return false
+  return revalidation.status !== 'current'
+    || revalidation.supportedStatements < acceptedStatements
+}
+
 export function getMemoryCitationFreshness(input: {
   answerTimeContentHash?: string
   currentContentHash?: string

@@ -9774,6 +9774,37 @@ test('assistant exchange rolls back conversation and question when answer persis
   `).get().count), 0)
 }))
 
+test('assistant exchange rejects a stale search revision before persisting either message', () => withStore(store => {
+  const database = (store as any).db
+  const expectedSearchRevision = store.getMemorySearchRevision()
+  store.syncTasks([{
+    id: 'answer-commit-race-task',
+    title: '回答提交竞态',
+    detail: '在引用重核验后发生变化',
+    priority: 'medium',
+    status: 'todo',
+    classification: 'mine'
+  }])
+  assert.notEqual(store.getMemorySearchRevision(), expectedSearchRevision)
+  assert.throws(() => store.saveAssistantExchangeDetailed(
+    '不能保存过期问题',
+    '不能保存过期回答',
+    [],
+    undefined,
+    {},
+    '',
+    { expectedSearchRevision }
+  ), /引用证据在回答提交前发生了变化/)
+  assert.equal(Number(database.prepare(`
+    SELECT COUNT(*) AS count FROM assistant_conversations
+    WHERE title='不能保存过期问题'
+  `).get().count), 0)
+  assert.equal(Number(database.prepare(`
+    SELECT COUNT(*) AS count FROM assistant_messages
+    WHERE content LIKE '%不能保存过期%'
+  `).get().count), 0)
+}))
+
 test('assistant conversation deletion preview binds messages, dependencies and reviews', () => withStore(store => {
   const saved = store.saveAssistantExchangeDetailed(
     '删除范围问题',

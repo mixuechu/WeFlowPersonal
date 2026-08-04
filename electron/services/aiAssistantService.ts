@@ -254,6 +254,7 @@ import {
   buildUntrustedMemoryQuestionEnvelope,
   classifyDocumentTaskOwnership,
   finalizeGroundedMemoryAnswer,
+  groundedAnswerRequiresRetry,
   getMemoryCitationFreshness,
   getMemoryEvidenceEligibility,
   normalizeDataSourceClaimNature,
@@ -7755,21 +7756,36 @@ export class AiAssistantService {
       }
     })
     const uncertainty = String(parsed.uncertainty || '').trim().slice(0, 3000)
+    const answerCommitSearchRevision = personalMemoryStore.getMemorySearchRevision()
+    const authenticatedDraft = this.enrichAssistantCitationFeedback({
+      messages: [{
+        id: '',
+        citations,
+        groundingAudit: grounded.groundingAudit
+      }]
+    })?.messages?.[0]
+    const authenticatedDraftCitations = authenticatedDraft?.citations || citations
+    const draftRevalidation = authenticatedDraft?.groundingRevalidation
+      || revalidateGroundedStatements(grounded.groundingAudit, authenticatedDraftCitations)
+    if (groundedAnswerRequiresRetry(grounded.groundingAudit, draftRevalidation)) {
+      throw new Error('引用证据在回答生成期间发生了变化，本次回答未保存；请重新提问以使用最新记忆')
+    }
     const savedExchange = personalMemoryStore.saveAssistantExchangeDetailed(
       query,
       answer,
-      citations,
+      authenticatedDraftCitations,
       conversationId,
       grounded.groundingAudit,
-      uncertainty
+      uncertainty,
+      { expectedSearchRevision: answerCommitSearchRevision }
     )
     const authenticatedAnswer = this.enrichAssistantCitationFeedback({
       messages: [{
         id: savedExchange.answerMessageId,
-        citations
+        citations: authenticatedDraftCitations
       }]
     })?.messages?.[0]
-    const authenticatedCitations = authenticatedAnswer?.citations || citations
+    const authenticatedCitations = authenticatedAnswer?.citations || authenticatedDraftCitations
     return {
       conversationId: savedExchange.conversationId,
       assistantMessageId: savedExchange.answerMessageId,

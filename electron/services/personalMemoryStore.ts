@@ -13936,7 +13936,8 @@ export class PersonalMemoryStore {
     citations: any[],
     conversationId?: string,
     groundingAudit: any = {},
-    uncertainty = ''
+    uncertainty = '',
+    options: { expectedSearchRevision?: string } = {}
   ): { conversationId: string; questionMessageId: string; answerMessageId: string } {
     if (!this.db) return { conversationId: '', questionMessageId: '', answerMessageId: '' }
     const existing = conversationId
@@ -13961,6 +13962,10 @@ export class PersonalMemoryStore {
       ) VALUES(?,?,?,?,?,?,?,?,?)
     `)
     const save = this.db.transaction(() => {
+      const expectedSearchRevision = String(options.expectedSearchRevision || '').trim()
+      if (expectedSearchRevision && this.getMemorySearchRevision() !== expectedSearchRevision) {
+        throw new Error('引用证据在回答提交前发生了变化，本次回答未保存；请重新提问')
+      }
       this.db!.prepare(`
         INSERT INTO assistant_conversations(id,title,created_at,updated_at) VALUES(?,?,?,?)
         ON CONFLICT(id) DO UPDATE SET updated_at=excluded.updated_at
