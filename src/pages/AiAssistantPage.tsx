@@ -8202,10 +8202,10 @@ function AiAssistantPage() {
                 <span className="assistant-eyebrow">{selectedEntity.type.toUpperCase()} DOSSIER</span>
                 <h2>{selectedEntity.canonicalName}</h2>
                 <small>{selectedEntity.trustStatus === 'confirmed' ? '已确认实体' : selectedEntity.trustStatus === 'candidate' ? '待确认实体，不参与可信检索' : selectedEntity.trustStatus === 'legacy_unverified' ? '历史未验证实体，不参与可信检索' : '已拒绝实体'}</small>
-                <p>{selectedEntity.summary || '等待更多可靠证据补充人物摘要。'}</p>
+                <p>{selectedEntity.summary || `等待更多可靠证据补充${selectedEntity.type === 'project' ? '项目' : '实体'}摘要。`}</p>
                 <small>{selectedEntity.summaryStatus === 'confirmed' ? '已确认摘要' : selectedEntity.summaryStatus === 'legacy_unverified' ? '历史未验证摘要，不参与可信检索' : '尚无已确认摘要'}</small>
               </div>
-              <button aria-label="关闭人物档案" onClick={() => setShowEntityDossier(false)}><X size={18} /></button>
+              <button aria-label="关闭实体档案" onClick={() => setShowEntityDossier(false)}><X size={18} /></button>
             </header>
             <div className="assistant-dossier-identity">
               <span><small>别名</small><b>{selectedEntity.aliases?.join('、') || '暂无'}</b></span>
@@ -8878,6 +8878,11 @@ function AiAssistantPage() {
               </section>
             </div>
             <footer>
+              {selectedProject.entityId && <button onClick={() => {
+                setSelectedEntityId(selectedProject.entityId)
+                setSelectedProjectId('')
+                setShowEntityDossier(true)
+              }}>查看项目实体与审计历史</button>}
               {selectedProject.entityId && <button onClick={() => {
                 void selectMemoryEntityScope(selectedProject.entityId, selectedProject.name).then(() => {
                   setMemoryQuery(selectedProject.name)
