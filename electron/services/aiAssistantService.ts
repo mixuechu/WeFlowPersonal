@@ -169,6 +169,7 @@ import {
   getTaskStateStorageStats
 } from '../../shared/taskStateStorage.ts'
 import { applyRelationConfirmation, planRelationConfirmation, type RelationCorrection } from './relationCorrectionPolicy'
+import { assessAutomaticSearchMaintenance } from './automaticSearchMaintenancePolicy.ts'
 import {
   deliverNotificationBatch,
   enqueueUniqueNotification,
@@ -414,6 +415,9 @@ type AssistantState = {
     lastAutomaticBackupAt: string | null
     lastAutomaticBackupAttemptAt: string | null
     lastAutomaticBackupError: string | null
+    lastAutomaticSearchMaintenanceAt: string | null
+    lastAutomaticSearchMaintenanceAttemptAt: string | null
+    lastAutomaticSearchMaintenanceError: string | null
     lastReminderNotificationDate?: string | null
     lastAttemptAt: string | null
     lastError: string | null
@@ -468,6 +472,9 @@ const EMPTY_STATE: AssistantState = {
     lastAutomaticBackupAt: null,
     lastAutomaticBackupAttemptAt: null,
     lastAutomaticBackupError: null,
+    lastAutomaticSearchMaintenanceAt: null,
+    lastAutomaticSearchMaintenanceAttemptAt: null,
+    lastAutomaticSearchMaintenanceError: null,
     lastReminderNotificationDate: null,
     lastAttemptAt: null,
     lastError: null,
@@ -4940,6 +4947,14 @@ export class AiAssistantService {
       outputPerMillion: Math.max(0, Number(this.config.get('aiAssistantOutputCostPerMillion') || 0))
     }
     const databaseDiagnostics = personalMemoryStore.getDiagnostics()
+    const searchMaintenanceCheckpoint = personalMemoryStore.getSearchMaintenanceCheckpoint()
+    const searchMaintenanceSchedule = assessAutomaticSearchMaintenance({
+      nowMs: Date.now(),
+      ...searchMaintenanceCheckpoint,
+      lastAttemptAt: this.state.cursor.lastAutomaticSearchMaintenanceAttemptAt,
+      lastError: this.state.cursor.lastAutomaticSearchMaintenanceError,
+      idle: !this.activeSync && !this.vectorIndexPromise && !this.memorySearchRepairPromise
+    })
     const ocr = await localOcrService.getStatus()
     const imageSemantics = localImageSemanticService.getStatus()
     const pdfOcr = await getPdfOcrStatus()
@@ -5058,6 +5073,19 @@ export class AiAssistantService {
         lastError: this.state.cursor.lastAutomaticBackupError,
         retryAfterMinutes: 60
       },
+      automaticSearchMaintenance: {
+        version: 'automatic-search-maintenance-v1',
+        cadence: 'weekly_when_idle',
+        checkedAt: searchMaintenanceCheckpoint.checkedAt,
+        lastAuditHealthy: searchMaintenanceCheckpoint.lastAuditHealthy,
+        lastCompletedAt: this.state.cursor.lastAutomaticSearchMaintenanceAt,
+        lastAttemptAt: this.state.cursor.lastAutomaticSearchMaintenanceAttemptAt,
+        lastError: this.state.cursor.lastAutomaticSearchMaintenanceError,
+        due: searchMaintenanceSchedule.due,
+        reason: searchMaintenanceSchedule.reason,
+        nextAt: searchMaintenanceSchedule.nextAt,
+        retryAfterHours: 6
+      },
       stateStorage: this.stateStorage,
       appRecovery: getAppRunRecoveryDiagnostics(),
       ocr: { ...ocr, enabled: Boolean(this.config.get('aiAssistantOcrImages')) },
@@ -5073,6 +5101,10 @@ export class AiAssistantService {
     this.memorySearchRepairPromise = (async () => {
       const result = personalMemoryStore.repairRuntimeSearchDerivedState(this.state.tasks)
       const embeddings = await this.ensureVectorIndex()
+      if (this.state.cursor.lastAutomaticSearchMaintenanceError) {
+        this.state.cursor.lastAutomaticSearchMaintenanceError = null
+        this.persistCrossStoreMutationState()
+      }
       return {
         ...result,
         embeddings,
@@ -7869,6 +7901,28 @@ export class AiAssistantService {
       }
       if (source === 'system_resume' && wake.elapsedMs >= 5 * 60_000) {
         return 'resume_incremental_throttled'
+      }
+      const maintenance = assessAutomaticSearchMaintenance({
+        nowMs,
+        ...personalMemoryStore.getSearchMaintenanceCheckpoint(),
+        lastAttemptAt: this.state.cursor.lastAutomaticSearchMaintenanceAttemptAt,
+        lastError: this.state.cursor.lastAutomaticSearchMaintenanceError,
+        idle: !this.activeSync && !this.vectorIndexPromise && !this.memorySearchRepairPromise
+      })
+      if (maintenance.due) {
+        this.state.cursor.lastAutomaticSearchMaintenanceAttemptAt = now.toISOString()
+        this.saveState()
+        try {
+          await this.repairMemorySearchIndexes()
+          this.state.cursor.lastAutomaticSearchMaintenanceAt = new Date().toISOString()
+          this.state.cursor.lastAutomaticSearchMaintenanceError = null
+          this.saveState()
+          return 'search_maintenance_completed'
+        } catch (error) {
+          this.state.cursor.lastAutomaticSearchMaintenanceError = sanitizeDiagnosticText(error)
+          this.saveState()
+          return 'search_maintenance_failed'
+        }
       }
       return time < schedule ? 'before_daily_schedule' : 'daily_already_complete'
     }

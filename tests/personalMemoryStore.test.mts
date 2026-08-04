@@ -3743,6 +3743,8 @@ test('runtime search repair restores derived indexes without reopening the datab
   assert.equal(result.diagnostics.memorySearchRevisionHealthy, true)
   assert.equal(result.diagnostics.structuredSearchIndexHealthy, true)
   assert.equal(result.diagnostics.taskSearchIndexHealthy, true)
+  assert.equal(store.getSearchMaintenanceCheckpoint().lastAuditHealthy, true)
+  assert.ok(Date.parse(store.getSearchMaintenanceCheckpoint().checkedAt) > 0)
 }))
 
 test('Chinese substring search falls back when the exact FTS phrase misses', () => withStore(store => {

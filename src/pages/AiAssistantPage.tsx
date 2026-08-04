@@ -10508,6 +10508,22 @@ function AiAssistantPage() {
                   : '未知'}</b></span>
               </div>
               <small>这里只核验并重建可再生的全文、范围、分页和向量派生索引，不会修改事实、事件、关系、待办或证据原文，也不会调用云端模型。</small>
+              {memoryDiagnostics.automaticSearchMaintenance && <small>
+                系统会在空闲期每 7 天自动核验；最近自动完成{' '}
+                {memoryDiagnostics.automaticSearchMaintenance.lastCompletedAt
+                  ? new Date(memoryDiagnostics.automaticSearchMaintenance.lastCompletedAt)
+                    .toLocaleString('zh-CN')
+                  : '尚未单独执行（启动核验同样有效）'}
+                {memoryDiagnostics.automaticSearchMaintenance.nextAt
+                  ? `，下次最早 ${new Date(memoryDiagnostics.automaticSearchMaintenance.nextAt)
+                    .toLocaleString('zh-CN')}`
+                  : ''}。
+              </small>}
+              {memoryDiagnostics.automaticSearchMaintenance?.lastError &&
+                <small className="assistant-diagnostics-error">
+                  自动核验上次未完成：{memoryDiagnostics.automaticSearchMaintenance.lastError}；
+                  将在 6 小时退避后重试。
+                </small>}
               <button disabled={repairingMemorySearchIndexes || memoryDiagnostics.syncing ||
                 memoryDiagnostics.embeddings?.indexing}
                 onClick={async () => {

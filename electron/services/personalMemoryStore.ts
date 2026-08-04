@@ -4221,6 +4221,31 @@ export class PersonalMemoryStore {
     }
   }
 
+  getSearchMaintenanceCheckpoint(): {
+    checkedAt: string
+    lastAuditHealthy: boolean
+  } {
+    if (!this.db) return { checkedAt: '', lastAuditHealthy: false }
+    const row = this.db.prepare(`
+      SELECT value,updated_at FROM schema_meta
+      WHERE key='structured_search_index_integrity'
+    `).get() as any
+    try {
+      const audit = JSON.parse(String(row?.value || '{}'))
+      return {
+        checkedAt: String(audit.checkedAt || row?.updated_at || ''),
+        lastAuditHealthy: audit.triggersHealthy === true
+          && Number(audit.currentGhostDocuments || 0) === 0
+          && Number(audit.currentMissingDocuments || 0) === 0
+          && Number(audit.currentFtsPayloadMismatches || 0) === 0
+          && Number(audit.currentMetadataMismatches || 0) === 0
+          && Number(audit.currentAnnOrphans || 0) === 0
+      }
+    } catch {
+      return { checkedAt: String(row?.updated_at || ''), lastAuditHealthy: false }
+    }
+  }
+
   previewForgetEntity(entityId: string): any {
     if (!this.db) return null
     const entity = this.db.prepare('SELECT id,canonical_name FROM entities WHERE id=? AND deleted_at IS NULL').get(entityId) as any
