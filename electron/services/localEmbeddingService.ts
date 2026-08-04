@@ -68,22 +68,39 @@ export async function verifyModelCacheManifest(input: {
   }
 }
 
+export type ModelCacheIntegrityHealth = {
+  state: 'not_checked' | 'verified' | 'incomplete' | 'repaired'
+  checkedAt: string
+  checked: number
+  missing: number
+  removed: number
+  lastRepairAt: string
+}
+
+export function recordModelCacheIntegrity(
+  previous: ModelCacheIntegrityHealth,
+  result: Awaited<ReturnType<typeof verifyModelCacheManifest>>,
+  checkedAt: string
+): ModelCacheIntegrityHealth {
+  return {
+    ...result,
+    checkedAt,
+    removed: Math.max(0, Number(previous.removed || 0)) + Math.max(0, Number(result.removed || 0)),
+    lastRepairAt: result.removed > 0 ? checkedAt : String(previous.lastRepairAt || '')
+  }
+}
+
 export class LocalEmbeddingService {
   private cacheDirectory = ''
   private extractorPromise: Promise<any> | null = null
   private lastError = ''
-  private integrity: {
-    state: 'not_checked' | 'verified' | 'incomplete' | 'repaired'
-    checkedAt: string
-    checked: number
-    missing: number
-    removed: number
-  } = {
+  private integrity: ModelCacheIntegrityHealth = {
     state: 'not_checked',
     checkedAt: '',
     checked: 0,
     missing: LOCAL_EMBEDDING_MANIFEST.length,
-    removed: 0
+    removed: 0,
+    lastRepairAt: ''
   }
 
   initialize(userDataPath: string): void {
@@ -128,7 +145,11 @@ export class LocalEmbeddingService {
         revision: LOCAL_EMBEDDING_REVISION,
         manifest: LOCAL_EMBEDDING_MANIFEST
       }).then(result => {
-        this.integrity = { ...result, checkedAt: new Date().toISOString() }
+        this.integrity = recordModelCacheIntegrity(
+          this.integrity,
+          result,
+          new Date().toISOString()
+        )
         return import('@huggingface/transformers')
       }).then(async ({ env, pipeline }) => {
         env.cacheDir = this.cacheDirectory
@@ -144,7 +165,11 @@ export class LocalEmbeddingService {
           revision: LOCAL_EMBEDDING_REVISION,
           manifest: LOCAL_EMBEDDING_MANIFEST
         })
-        this.integrity = { ...result, checkedAt: new Date().toISOString() }
+        this.integrity = recordModelCacheIntegrity(
+          this.integrity,
+          result,
+          new Date().toISOString()
+        )
         if (result.state !== 'verified') {
           throw new Error('固定版本本地向量模型缓存未能通过 SHA-256 完整性校验')
         }

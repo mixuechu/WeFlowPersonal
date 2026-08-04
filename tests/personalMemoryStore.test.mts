@@ -10,6 +10,7 @@ import {
   LOCAL_EMBEDDING_MANIFEST,
   LOCAL_EMBEDDING_REVISION,
   LocalEmbeddingService,
+  recordModelCacheIntegrity,
   verifyModelCacheManifest
 } from '../electron/services/localEmbeddingService.ts'
 import {
@@ -7262,6 +7263,34 @@ test('local embedding manifest covers every runtime-critical pinned artifact', (
     'onnx/model_quantized.onnx_data'
   ])
   LOCAL_EMBEDDING_MANIFEST.forEach(entry => assert.match(entry.sha256, /^[a-f0-9]{64}$/))
+})
+
+test('successful post-download verification preserves the repair that triggered it', () => {
+  const initial = {
+    state: 'not_checked' as const,
+    checkedAt: '',
+    checked: 0,
+    missing: 5,
+    removed: 0,
+    lastRepairAt: ''
+  }
+  const repaired = recordModelCacheIntegrity(initial, {
+    state: 'repaired',
+    checked: 4,
+    missing: 1,
+    removed: 1
+  }, '2026-08-05T04:00:00.000Z')
+  const verified = recordModelCacheIntegrity(repaired, {
+    state: 'verified',
+    checked: 5,
+    missing: 0,
+    removed: 0
+  }, '2026-08-05T04:00:05.000Z')
+  assert.equal(verified.state, 'verified')
+  assert.equal(verified.missing, 0)
+  assert.equal(verified.removed, 1)
+  assert.equal(verified.lastRepairAt, '2026-08-05T04:00:00.000Z')
+  assert.equal(verified.checkedAt, '2026-08-05T04:00:05.000Z')
 })
 
 test('cosine similarity is scale safe and rejects unusable vectors', () => {

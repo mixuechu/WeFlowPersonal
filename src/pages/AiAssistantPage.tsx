@@ -11046,6 +11046,9 @@ function AiAssistantPage() {
               {Number(memoryDiagnostics.embeddings.integrity?.removed || 0) > 0 && <small className="assistant-diagnostics-error">
                 本次模型缓存核验隔离了 {Number(memoryDiagnostics.embeddings.integrity.removed).toLocaleString()} 个损坏文件；
                 后台只会从固定提交重新下载这些派生文件，不会修改个人记忆。
+                {memoryDiagnostics.embeddings.integrity.lastRepairAt
+                  ? ` · 最近修复 ${new Date(memoryDiagnostics.embeddings.integrity.lastRepairAt).toLocaleString('zh-CN')}`
+                  : ''}
               </small>}
               {!memoryDiagnostics.embeddings.background?.lastError
                 && memoryDiagnostics.embeddings.background?.lastSuccessAt && <small>
