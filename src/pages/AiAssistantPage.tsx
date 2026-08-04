@@ -9015,7 +9015,8 @@ function AiAssistantPage() {
               <div className="assistant-recovery-current">
                 <span>当前状态 <b>{memoryDiagnostics.memorySearchFeedbackArchiveRevisionHealthy ? '保护正常' : '需要检查'}</b></span>
                 <span>当前 revision <b>{String(memoryDiagnostics.memorySearchFeedbackArchiveRevision.revision || '0')}</b></span>
-                <span>变更触发器 <b>{Number(memoryDiagnostics.memorySearchFeedbackArchiveRevision.installedTriggers || 0).toLocaleString()} / {Number(memoryDiagnostics.memorySearchFeedbackArchiveRevision.expectedTriggers || 0).toLocaleString()}</b></span>
+                <span>精确有效触发器 <b>{Number(memoryDiagnostics.memorySearchFeedbackArchiveRevision.validTriggers || 0).toLocaleString()} / {Number(memoryDiagnostics.memorySearchFeedbackArchiveRevision.expectedTriggers || 0).toLocaleString()}</b></span>
+                <span>本次/累计自愈 <b>{Number(memoryDiagnostics.memorySearchFeedbackArchiveRevision.repairedTriggersThisStart || 0)} / {Number(memoryDiagnostics.memorySearchFeedbackArchiveRevision.repairsTotal || 0)}</b></span>
               </div>
             </div>}
             {memoryDiagnostics.memoryDeletionAuditRevision?.version && <div className={`assistant-recovery-audit ${memoryDiagnostics.memoryDeletionAuditRevisionHealthy ? 'healthy' : 'unhealthy'}`}>
@@ -9025,7 +9026,8 @@ function AiAssistantPage() {
               <div className="assistant-recovery-current">
                 <span>当前状态 <b>{memoryDiagnostics.memoryDeletionAuditRevisionHealthy ? '保护正常' : '需要检查'}</b></span>
                 <span>当前 revision <b>{String(memoryDiagnostics.memoryDeletionAuditRevision.revision || '0')}</b></span>
-                <span>变更触发器 <b>{Number(memoryDiagnostics.memoryDeletionAuditRevision.installedTriggers || 0).toLocaleString()} / {Number(memoryDiagnostics.memoryDeletionAuditRevision.expectedTriggers || 0).toLocaleString()}</b></span>
+                <span>精确有效触发器 <b>{Number(memoryDiagnostics.memoryDeletionAuditRevision.validTriggers || 0).toLocaleString()} / {Number(memoryDiagnostics.memoryDeletionAuditRevision.expectedTriggers || 0).toLocaleString()}</b></span>
+                <span>本次/累计自愈 <b>{Number(memoryDiagnostics.memoryDeletionAuditRevision.repairedTriggersThisStart || 0)} / {Number(memoryDiagnostics.memoryDeletionAuditRevision.repairsTotal || 0)}</b></span>
               </div>
             </div>}
             {memoryDiagnostics.memoryEvidenceArchiveRevision?.version && <div className={`assistant-recovery-audit ${memoryDiagnostics.memoryEvidenceArchiveRevisionHealthy ? 'healthy' : 'unhealthy'}`}>
@@ -9035,7 +9037,8 @@ function AiAssistantPage() {
               <div className="assistant-recovery-current">
                 <span>当前状态 <b>{memoryDiagnostics.memoryEvidenceArchiveRevisionHealthy ? '保护正常' : '需要检查'}</b></span>
                 <span>当前 revision <b>{String(memoryDiagnostics.memoryEvidenceArchiveRevision.revision || '0')}</b></span>
-                <span>变更触发器 <b>{Number(memoryDiagnostics.memoryEvidenceArchiveRevision.installedTriggers || 0).toLocaleString()} / {Number(memoryDiagnostics.memoryEvidenceArchiveRevision.expectedTriggers || 0).toLocaleString()}</b></span>
+                <span>精确有效触发器 <b>{Number(memoryDiagnostics.memoryEvidenceArchiveRevision.validTriggers || 0).toLocaleString()} / {Number(memoryDiagnostics.memoryEvidenceArchiveRevision.expectedTriggers || 0).toLocaleString()}</b></span>
+                <span>本次/累计自愈 <b>{Number(memoryDiagnostics.memoryEvidenceArchiveRevision.repairedTriggersThisStart || 0)} / {Number(memoryDiagnostics.memoryEvidenceArchiveRevision.repairsTotal || 0)}</b></span>
               </div>
             </div>}
             {memoryDiagnostics.structuredMemoryRevision?.version && <div className={`assistant-recovery-audit ${memoryDiagnostics.structuredMemoryRevisionHealthy ? 'healthy' : 'unhealthy'}`}>
@@ -9054,12 +9057,13 @@ function AiAssistantPage() {
             </div>}
             {memoryDiagnostics.resourceArchiveRevision?.version && <div className={`assistant-recovery-audit ${memoryDiagnostics.resourceArchiveRevisionHealthy ? 'healthy' : 'unhealthy'}`}>
               <header><ShieldCheck size={15} /><span><b>资源库与回收站分页保护</b>
-                <small>资源正文、原文证据和回收站快照共享 SQLCipher revision；后台解析、补充原文、删除或恢复发生时，旧目录和已展开详情会被拒绝，不会拼接不同时态。</small>
+                <small>资源正文、原文证据和回收站快照共享 SQLCipher revision；精确审计包含证据触发器的 resource 专属 WHEN 条件，避免普通任务证据错误刷新资源档案。</small>
               </span></header>
               <div className="assistant-recovery-current">
                 <span>当前状态 <b>{memoryDiagnostics.resourceArchiveRevisionHealthy ? '保护正常' : '需要检查'}</b></span>
                 <span>当前 revision <b>{String(memoryDiagnostics.resourceArchiveRevision.revision || '0')}</b></span>
-                <span>变更触发器 <b>{Number(memoryDiagnostics.resourceArchiveRevision.installedTriggers || 0).toLocaleString()} / {Number(memoryDiagnostics.resourceArchiveRevision.expectedTriggers || 0).toLocaleString()}</b></span>
+                <span>精确有效触发器 <b>{Number(memoryDiagnostics.resourceArchiveRevision.validTriggers || 0).toLocaleString()} / {Number(memoryDiagnostics.resourceArchiveRevision.expectedTriggers || 0).toLocaleString()}</b></span>
+                <span>本次/累计自愈 <b>{Number(memoryDiagnostics.resourceArchiveRevision.repairedTriggersThisStart || 0)} / {Number(memoryDiagnostics.resourceArchiveRevision.repairsTotal || 0)}</b></span>
               </div>
             </div>}
             {memoryDiagnostics.graphReviewRevision?.version && <div className={`assistant-recovery-audit ${memoryDiagnostics.graphReviewRevisionHealthy ? 'healthy' : 'unhealthy'}`}>
@@ -9083,7 +9087,8 @@ function AiAssistantPage() {
               <div className="assistant-recovery-current">
                 <span>当前状态 <b>{memoryDiagnostics.taskArchiveRevisionHealthy ? '保护正常' : '需要检查'}</b></span>
                 <span>当前 revision <b>{String(memoryDiagnostics.taskArchiveRevision.revision || '0')}</b></span>
-                <span>变更触发器 <b>{Number(memoryDiagnostics.taskArchiveRevision.installedTriggers || 0).toLocaleString()} / {Number(memoryDiagnostics.taskArchiveRevision.expectedTriggers || 0).toLocaleString()}</b></span>
+                <span>精确有效触发器 <b>{Number(memoryDiagnostics.taskArchiveRevision.validTriggers || 0).toLocaleString()} / {Number(memoryDiagnostics.taskArchiveRevision.expectedTriggers || 0).toLocaleString()}</b></span>
+                <span>本次/累计自愈 <b>{Number(memoryDiagnostics.taskArchiveRevision.repairedTriggersThisStart || 0)} / {Number(memoryDiagnostics.taskArchiveRevision.repairsTotal || 0)}</b></span>
               </div>
             </div>}
             {memoryDiagnostics.taskOwnershipReviewRevision?.version && <div className={`assistant-recovery-audit ${memoryDiagnostics.taskOwnershipReviewRevisionHealthy ? 'healthy' : 'unhealthy'}`}>
@@ -9107,7 +9112,8 @@ function AiAssistantPage() {
               <div className="assistant-recovery-current">
                 <span>当前状态 <b>{memoryDiagnostics.identityMergeArchiveRevisionHealthy ? '保护正常' : '需要检查'}</b></span>
                 <span>当前 revision <b>{String(memoryDiagnostics.identityMergeArchiveRevision.revision || '0')}</b></span>
-                <span>变更触发器 <b>{Number(memoryDiagnostics.identityMergeArchiveRevision.installedTriggers || 0).toLocaleString()} / {Number(memoryDiagnostics.identityMergeArchiveRevision.expectedTriggers || 0).toLocaleString()}</b></span>
+                <span>精确有效触发器 <b>{Number(memoryDiagnostics.identityMergeArchiveRevision.validTriggers || 0).toLocaleString()} / {Number(memoryDiagnostics.identityMergeArchiveRevision.expectedTriggers || 0).toLocaleString()}</b></span>
+                <span>本次/累计自愈 <b>{Number(memoryDiagnostics.identityMergeArchiveRevision.repairedTriggersThisStart || 0)} / {Number(memoryDiagnostics.identityMergeArchiveRevision.repairsTotal || 0)}</b></span>
               </div>
             </div>}
             {memoryDiagnostics.ingestionArchiveRevision?.version && <div className={`assistant-recovery-audit ${memoryDiagnostics.ingestionArchiveRevisionHealthy ? 'healthy' : 'unhealthy'}`}>
@@ -9117,17 +9123,19 @@ function AiAssistantPage() {
               <div className="assistant-recovery-current">
                 <span>当前状态 <b>{memoryDiagnostics.ingestionArchiveRevisionHealthy ? '保护正常' : '需要检查'}</b></span>
                 <span>当前 revision <b>{String(memoryDiagnostics.ingestionArchiveRevision.revision || '0')}</b></span>
-                <span>变更触发器 <b>{Number(memoryDiagnostics.ingestionArchiveRevision.installedTriggers || 0).toLocaleString()} / {Number(memoryDiagnostics.ingestionArchiveRevision.expectedTriggers || 0).toLocaleString()}</b></span>
+                <span>精确有效触发器 <b>{Number(memoryDiagnostics.ingestionArchiveRevision.validTriggers || 0).toLocaleString()} / {Number(memoryDiagnostics.ingestionArchiveRevision.expectedTriggers || 0).toLocaleString()}</b></span>
+                <span>本次/累计自愈 <b>{Number(memoryDiagnostics.ingestionArchiveRevision.repairedTriggersThisStart || 0)} / {Number(memoryDiagnostics.ingestionArchiveRevision.repairsTotal || 0)}</b></span>
               </div>
             </div>}
             {memoryDiagnostics.ingestionRecoveryRevision?.version && <div className={`assistant-recovery-audit ${memoryDiagnostics.ingestionRecoveryRevisionHealthy ? 'healthy' : 'unhealthy'}`}>
               <header><ShieldCheck size={15} /><span><b>断电恢复队列分页一致性保护</b>
-                <small>prepared 批次新增、恢复失败重排、成功提交或清理都会推进独立 SQLCipher revision；自动恢复和手动重试期间，旧分页会被拒绝并重新读取，避免重复或遗漏待恢复批次。</small>
+                <small>prepared 批次新增、恢复失败重排、成功提交或清理都会推进独立 SQLCipher revision；完整触发器定义受启动审计，避免同名失效定义让恢复队列翻页保护静默失效。</small>
               </span></header>
               <div className="assistant-recovery-current">
                 <span>当前状态 <b>{memoryDiagnostics.ingestionRecoveryRevisionHealthy ? '保护正常' : '需要检查'}</b></span>
                 <span>当前 revision <b>{String(memoryDiagnostics.ingestionRecoveryRevision.revision || '0')}</b></span>
-                <span>变更触发器 <b>{Number(memoryDiagnostics.ingestionRecoveryRevision.installedTriggers || 0).toLocaleString()} / {Number(memoryDiagnostics.ingestionRecoveryRevision.expectedTriggers || 0).toLocaleString()}</b></span>
+                <span>精确有效触发器 <b>{Number(memoryDiagnostics.ingestionRecoveryRevision.validTriggers || 0).toLocaleString()} / {Number(memoryDiagnostics.ingestionRecoveryRevision.expectedTriggers || 0).toLocaleString()}</b></span>
+                <span>本次/累计自愈 <b>{Number(memoryDiagnostics.ingestionRecoveryRevision.repairedTriggersThisStart || 0)} / {Number(memoryDiagnostics.ingestionRecoveryRevision.repairsTotal || 0)}</b></span>
               </div>
             </div>}
             {memoryDiagnostics.assistantHistoryRevision?.version && <div className={`assistant-recovery-audit ${memoryDiagnostics.assistantHistoryRevisionHealthy ? 'healthy' : 'unhealthy'}`}>

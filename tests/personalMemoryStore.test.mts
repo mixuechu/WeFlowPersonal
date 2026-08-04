@@ -6239,13 +6239,11 @@ test('search feedback archive revision advances and self-heals on restart', () =
       action: 'helpful'
     })
     assert.ok(Number(first.getMemorySearchFeedbackArchiveRevision()) > initial)
-    assert.deepEqual(first.getMemorySearchFeedbackArchiveRevisionHealth(), {
-      version: 'memory-search-feedback-archive-revision-v1',
-      revision: first.getMemorySearchFeedbackArchiveRevision(),
-      expectedTriggers: 3,
-      installedTriggers: 3,
-      healthy: true
-    })
+    const feedbackRevisionHealth = first.getMemorySearchFeedbackArchiveRevisionHealth()
+    assert.equal(feedbackRevisionHealth.version, 'memory-search-feedback-archive-revision-v2')
+    assert.equal(feedbackRevisionHealth.expectedTriggers, 3)
+    assert.equal(feedbackRevisionHealth.validTriggers, 3)
+    assert.equal(feedbackRevisionHealth.healthy, true)
     ;(first as any).db.exec(
       'DROP TRIGGER trg_memory_search_feedback_archive_revision_update'
     )
@@ -6336,13 +6334,11 @@ test('complete evidence archive revision covers both evidence stores and self-he
     database.prepare('DELETE FROM evidence WHERE message_id=?')
       .run('structured-evidence-message')
     expectAdvanced()
-    assert.deepEqual(first.getMemoryEvidenceArchiveRevisionHealth(), {
-      version: 'memory-evidence-archive-revision-v1',
-      revision: first.getMemoryEvidenceArchiveRevision(),
-      expectedTriggers: 6,
-      installedTriggers: 6,
-      healthy: true
-    })
+    const evidenceRevisionHealth = first.getMemoryEvidenceArchiveRevisionHealth()
+    assert.equal(evidenceRevisionHealth.version, 'memory-evidence-archive-revision-v2')
+    assert.equal(evidenceRevisionHealth.expectedTriggers, 6)
+    assert.equal(evidenceRevisionHealth.validTriggers, 6)
+    assert.equal(evidenceRevisionHealth.healthy, true)
     database.exec(
       'DROP TRIGGER trg_memory_evidence_archive_revision_evidence_update'
     )
@@ -6554,13 +6550,11 @@ test('task archive revision covers directory evidence and history and self-heals
     assert.ok(afterDirectoryAndEvidence > initial)
     first.recordTaskChanges(task.id, { status: 'doing' }, { status: 'done' }, 'revision-test', task.evidence)
     assert.ok(Number(first.getTaskArchiveRevision()) > afterDirectoryAndEvidence)
-    assert.deepEqual(first.getTaskArchiveRevisionHealth(), {
-      version: 'task-archive-revision-v1',
-      revision: first.getTaskArchiveRevision(),
-      expectedTriggers: 9,
-      installedTriggers: 9,
-      healthy: true
-    })
+    const taskArchiveRevisionHealth = first.getTaskArchiveRevisionHealth()
+    assert.equal(taskArchiveRevisionHealth.version, 'task-archive-revision-v2')
+    assert.equal(taskArchiveRevisionHealth.expectedTriggers, 9)
+    assert.equal(taskArchiveRevisionHealth.validTriggers, 9)
+    assert.equal(taskArchiveRevisionHealth.healthy, true)
     ;(first as any).db.exec('DROP TRIGGER trg_task_archive_revision_task_directory_insert')
     assert.equal(first.getTaskArchiveRevisionHealth().installedTriggers, 8)
     assert.equal(first.getTaskArchiveRevisionHealth().healthy, false)
@@ -6710,13 +6704,11 @@ test('identity merge archive revision covers merge revert and deletion and self-
     })
     ;(first as any).db.prepare('DELETE FROM merge_history WHERE id=?').run(secondMergeId)
     assert.ok(Number(first.getIdentityMergeArchiveRevision()) > afterRevert)
-    assert.deepEqual(first.getIdentityMergeArchiveRevisionHealth(), {
-      version: 'identity-merge-archive-revision-v1',
-      revision: first.getIdentityMergeArchiveRevision(),
-      expectedTriggers: 3,
-      installedTriggers: 3,
-      healthy: true
-    })
+    const identityRevisionHealth = first.getIdentityMergeArchiveRevisionHealth()
+    assert.equal(identityRevisionHealth.version, 'identity-merge-archive-revision-v2')
+    assert.equal(identityRevisionHealth.expectedTriggers, 3)
+    assert.equal(identityRevisionHealth.validTriggers, 3)
+    assert.equal(identityRevisionHealth.healthy, true)
     ;(first as any).db.exec(
       'DROP TRIGGER trg_identity_merge_archive_revision_merge_history_update'
     )
@@ -6879,13 +6871,11 @@ test('ingestion archive revision covers run and batch lifecycle and self-heals o
       status: 'completed'
     })
     assert.ok(Number(first.getIngestionArchiveRevision()) > afterBatch)
-    assert.deepEqual(first.getIngestionArchiveRevisionHealth(), {
-      version: 'ingestion-archive-revision-v1',
-      revision: first.getIngestionArchiveRevision(),
-      expectedTriggers: 6,
-      installedTriggers: 6,
-      healthy: true
-    })
+    const ingestionArchiveRevisionHealth = first.getIngestionArchiveRevisionHealth()
+    assert.equal(ingestionArchiveRevisionHealth.version, 'ingestion-archive-revision-v2')
+    assert.equal(ingestionArchiveRevisionHealth.expectedTriggers, 6)
+    assert.equal(ingestionArchiveRevisionHealth.validTriggers, 6)
+    assert.equal(ingestionArchiveRevisionHealth.healthy, true)
     ;(first as any).db.exec(
       'DROP TRIGGER trg_ingestion_archive_revision_ingestion_batches_update'
     )
@@ -6931,13 +6921,11 @@ test('ingestion recovery revision covers prepare retry commit and self-heals on 
     assert.ok(afterFailure > afterPrepare)
     first.markIngestionBatchCommitApplied('recovery-revision-commit')
     assert.ok(Number(first.getIngestionRecoveryRevision()) > afterFailure)
-    assert.deepEqual(first.getIngestionRecoveryRevisionHealth(), {
-      version: 'ingestion-recovery-revision-v1',
-      revision: first.getIngestionRecoveryRevision(),
-      expectedTriggers: 3,
-      installedTriggers: 3,
-      healthy: true
-    })
+    const ingestionRecoveryRevisionHealth = first.getIngestionRecoveryRevisionHealth()
+    assert.equal(ingestionRecoveryRevisionHealth.version, 'ingestion-recovery-revision-v2')
+    assert.equal(ingestionRecoveryRevisionHealth.expectedTriggers, 3)
+    assert.equal(ingestionRecoveryRevisionHealth.validTriggers, 3)
+    assert.equal(ingestionRecoveryRevisionHealth.healthy, true)
     ;(first as any).db.exec(
       'DROP TRIGGER trg_ingestion_recovery_revision_ingestion_batch_commits_update'
     )
@@ -7112,25 +7100,73 @@ test('resource archive revision covers content evidence and trash and self-heals
     expectAdvanced()
     first.deleteResource('resource-revision')
     expectAdvanced()
-    assert.deepEqual(first.getResourceArchiveRevisionHealth(), {
-      version: 'resource-archive-revision-v1',
-      revision: first.getResourceArchiveRevision(),
-      expectedTriggers: 9,
-      installedTriggers: 9,
-      healthy: true
-    })
-    ;(first as any).db.exec(
-      'DROP TRIGGER trg_resource_archive_revision_memory_resources_insert'
-    )
-    assert.equal(first.getResourceArchiveRevisionHealth().healthy, false)
+    const resourceArchiveRevisionHealth = first.getResourceArchiveRevisionHealth()
+    assert.equal(resourceArchiveRevisionHealth.version, 'resource-archive-revision-v2')
+    assert.equal(resourceArchiveRevisionHealth.expectedTriggers, 9)
+    assert.equal(resourceArchiveRevisionHealth.validTriggers, 9)
+    assert.equal(resourceArchiveRevisionHealth.healthy, true)
+    ;(first as any).db.exec(`
+      DROP TRIGGER trg_resource_archive_revision_search_document_evidence_insert;
+      CREATE TRIGGER trg_resource_archive_revision_search_document_evidence_insert
+      AFTER INSERT ON search_document_evidence
+      BEGIN
+        UPDATE schema_meta
+        SET value=CAST(CAST(value AS INTEGER)+1 AS TEXT),
+          updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')
+        WHERE key='resource_archive_revision';
+      END;
+    `)
+    const conditionDrift = first.getResourceArchiveRevisionHealth()
+    assert.equal(conditionDrift.installedTriggers, 9)
+    assert.equal(conditionDrift.validTriggers, 8)
+    assert.equal(conditionDrift.healthy, false)
     first.close()
 
     const reopened = new PersonalMemoryStore()
     reopened.initialize(databasePath)
-    assert.equal(reopened.getResourceArchiveRevisionHealth().installedTriggers, 9)
-    assert.equal(reopened.getResourceArchiveRevisionHealth().healthy, true)
+    const repairedHealth = reopened.getResourceArchiveRevisionHealth()
+    assert.equal(repairedHealth.validTriggers, 9)
+    assert.equal(repairedHealth.repairedTriggersThisStart, 1)
+    assert.equal(repairedHealth.healthy, true)
     assert.equal(reopened.listResourceArchive().total, 0)
     assert.equal(reopened.listResourceTrashArchive().total, 1)
+    const beforeTaskEvidence = reopened.getResourceArchiveRevision()
+    reopened.syncTasks([{
+      id: 'resource-revision-filter-proof-task',
+      title: '非资源证据不能推进资源 revision',
+      detail: '',
+      priority: 'medium',
+      confidence: 1,
+      classification: 'mine',
+      status: 'todo',
+      createdAt: '2026-08-04T00:00:00.000Z',
+      updatedAt: '2026-08-04T00:00:00.000Z',
+      evidence: [{
+        sourceId: 'wechat',
+        sessionId: 'resource-filter-proof-session',
+        messageId: 'resource-filter-proof-task-message',
+        timestamp: 1_775_000_010,
+        excerpt: '这是任务证据'
+      }]
+    }])
+    assert.equal(reopened.getResourceArchiveRevision(), beforeTaskEvidence)
+    reopened.upsertResources([{
+      id: 'resource-revision-filter-proof',
+      resourceType: 'document',
+      title: '资源条件修复证明',
+      content: '资源写入必须推进 revision',
+      metadata: {},
+      createdAt: '2026-08-04T00:00:00.000Z',
+      updatedAt: '2026-08-04T00:00:00.000Z',
+      evidence: [{
+        sourceId: 'wechat',
+        sessionId: 'resource-filter-proof-session',
+        messageId: 'resource-filter-proof-resource-message',
+        timestamp: 1_775_000_011,
+        excerpt: '这是资源证据'
+      }]
+    }])
+    assert.ok(Number(reopened.getResourceArchiveRevision()) > Number(beforeTaskEvidence))
     reopened.close()
   } finally {
     rmSync(directory, { recursive: true, force: true })
@@ -10665,13 +10701,11 @@ test('full deletion audit archive paginates safely and survives a SQLCipher reop
     })
     assert.equal(stalePage.stale, true)
     assert.deepEqual(stalePage.items, [])
-    assert.deepEqual(first.getMemoryDeletionAuditRevisionHealth(), {
-      version: 'memory-deletion-audit-revision-v1',
-      revision: first.getMemoryDeletionAuditRevision(),
-      expectedTriggers: 3,
-      installedTriggers: 3,
-      healthy: true
-    })
+    const deletionAuditRevisionHealth = first.getMemoryDeletionAuditRevisionHealth()
+    assert.equal(deletionAuditRevisionHealth.version, 'memory-deletion-audit-revision-v2')
+    assert.equal(deletionAuditRevisionHealth.expectedTriggers, 3)
+    assert.equal(deletionAuditRevisionHealth.validTriggers, 3)
+    assert.equal(deletionAuditRevisionHealth.healthy, true)
     database.exec('DROP TRIGGER trg_memory_deletion_audit_revision_insert')
     assert.equal(first.getMemoryDeletionAuditRevisionHealth().installedTriggers, 2)
     assert.equal(first.getMemoryDeletionAuditRevisionHealth().healthy, false)
