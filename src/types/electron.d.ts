@@ -1959,6 +1959,7 @@ export interface ElectronAPI {
         offset?: number
         limit?: number
         revision?: string
+        mode?: 'hybrid' | 'lexical_archive'
       }) => Promise<{
         results: any[]
         offset: number
@@ -1966,6 +1967,8 @@ export interface ElectronAPI {
         total: number
         hasMore: boolean
         truncated: boolean
+        searchMode?: 'hybrid' | 'lexical_archive' | 'scope_browse'
+        lexicalSearchMode?: 'fts' | 'substring_fallback'
         scopeCandidates: number | null
         revision: string
         stale: boolean

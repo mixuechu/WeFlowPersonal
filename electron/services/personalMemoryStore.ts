@@ -10440,6 +10440,81 @@ export class PersonalMemoryStore {
     }
   }
 
+  listSearchDocumentsByKeywordPage(
+    query: string,
+    allowedIds: Set<string> | null,
+    options: { offset?: number; limit?: number } = {}
+  ): {
+    items: any[]
+    total: number
+    offset: number
+    limit: number
+    hasMore: boolean
+    searchMode: 'fts' | 'substring_fallback'
+  } {
+    const rawOffset = Number(options.offset)
+    const offset = Number.isFinite(rawOffset) ? Math.max(0, Math.floor(rawOffset)) : 0
+    const limit = Math.max(1, Math.min(100, Math.floor(Number(options.limit) || 40)))
+    const normalized = String(query || '').trim().replace(/["']/g, ' ')
+    if (!this.db || !normalized || (allowedIds && !allowedIds.size)) {
+      return { items: [], total: 0, offset, limit, hasMore: false, searchMode: 'fts' }
+    }
+    if (allowedIds) this.replaceActiveSearchScope(allowedIds)
+    const scopeJoin = allowedIds
+      ? 'JOIN active_memory_search_scope scope ON scope.id=d.id'
+      : ''
+    const trustedCondition = `NOT (
+      d.document_type IN ('claim','relation','event')
+      AND COALESCE(json_extract(d.metadata_json,'$.status'),'')='rejected'
+    )`
+    const ftsQuery = `"${normalized.replace(/"/g, '""')}"`
+    try {
+      const total = Number((this.db.prepare(`
+        SELECT COUNT(*) AS count
+        FROM search_fts JOIN search_documents d ON d.id=search_fts.document_id
+        ${scopeJoin}
+        WHERE search_fts MATCH ? AND ${trustedCondition}
+      `).get(ftsQuery) as any)?.count || 0)
+      if (total > 0) {
+        const items = this.db.prepare(`
+          SELECT d.*,bm25(search_fts) AS lexical_rank
+          FROM search_fts JOIN search_documents d ON d.id=search_fts.document_id
+          ${scopeJoin}
+          WHERE search_fts MATCH ? AND ${trustedCondition}
+          ORDER BY lexical_rank,d.id
+          LIMIT ? OFFSET ?
+        `).all(ftsQuery, limit, offset) as any[]
+        return {
+          items,
+          total,
+          offset,
+          limit,
+          hasMore: offset + items.length < total,
+          searchMode: 'fts'
+        }
+      }
+    } catch {}
+    const pattern = `%${normalized}%`
+    const total = Number((this.db.prepare(`
+      SELECT COUNT(*) AS count FROM search_documents d ${scopeJoin}
+      WHERE (d.title LIKE ? OR d.search_text LIKE ?) AND ${trustedCondition}
+    `).get(pattern, pattern) as any)?.count || 0)
+    const items = this.db.prepare(`
+      SELECT d.*,0 AS lexical_rank FROM search_documents d ${scopeJoin}
+      WHERE (d.title LIKE ? OR d.search_text LIKE ?) AND ${trustedCondition}
+      ORDER BY d.updated_at DESC,d.id
+      LIMIT ? OFFSET ?
+    `).all(pattern, pattern, limit, offset) as any[]
+    return {
+      items,
+      total,
+      offset,
+      limit,
+      hasMore: offset + items.length < total,
+      searchMode: 'substring_fallback'
+    }
+  }
+
   recordMemorySearchFeedback(input: {
     queryFingerprint: string
     scopeFingerprint: string

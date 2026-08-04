@@ -6629,6 +6629,11 @@ test('memory result pages are stable, bounded and report remaining ranked candid
     completedRevision: '7'
   }), true)
   assert.equal(isMemorySearchPageRevisionStale({
+    offset: 40,
+    startingRevision: '7',
+    completedRevision: '7'
+  }), true)
+  assert.equal(isMemorySearchPageRevisionStale({
     offset: 0,
     startingRevision: '7',
     completedRevision: '8'
@@ -6713,6 +6718,57 @@ test('scoped memory browsing reaches every result beyond the ranked search windo
     assert.equal(feedbackFirst.items[0].relevance_feedback, 'helpful')
     assert.equal(feedbackLast.items.at(-1).id, 'task:range-browse-1204')
     assert.equal(feedbackLast.items.at(-1).relevance_feedback, 'not_relevant')
+  }))
+
+test('complete keyword archive pages every exact indexed match beyond five hundred', () =>
+  withStore(store => {
+    const tasks = Array.from({ length: 1_205 }, (_, index) => ({
+      id: `keyword-archive-${index}`,
+      title: `完整关键词盲区 ${index}`,
+      detail: '用于验证本机全文档案不会停在混合排序池上限',
+      priority: 'low',
+      status: 'todo',
+      classification: 'mine',
+      updatedAt: new Date(1_700_000_000_000 + index * 1000).toISOString(),
+      sourceSessionId: `keyword-session-${index}`,
+      evidence: [{
+        sourceId: 'wechat',
+        messageId: `keyword-message-${index}`,
+        sessionId: `keyword-session-${index}`,
+        timestamp: 1_700_000_000 + index,
+        sender: '关键词测试',
+        excerpt: `完整关键词原文 ${index}`
+      }]
+    }))
+    store.syncTasks(tasks)
+    const scope = store.listScopedSearchDocumentIds({
+      sourceIds: ['wechat'],
+      documentTypes: ['task']
+    })
+    assert.equal(scope?.size, 1_205)
+    const first = store.listSearchDocumentsByKeywordPage('完整关键词盲区', scope, {
+      offset: 0,
+      limit: 100
+    })
+    const middle = store.listSearchDocumentsByKeywordPage('完整关键词盲区', scope, {
+      offset: 500,
+      limit: 100
+    })
+    const last = store.listSearchDocumentsByKeywordPage('完整关键词盲区', scope, {
+      offset: 1_200,
+      limit: 100
+    })
+    assert.equal(first.searchMode, 'fts')
+    assert.equal(first.total, 1_205)
+    assert.equal(first.items.length, 100)
+    assert.equal(middle.items.length, 100)
+    assert.equal(last.items.length, 5)
+    assert.equal(last.hasMore, false)
+    assert.equal(new Set([
+      ...first.items.map(item => item.id),
+      ...middle.items.map(item => item.id),
+      ...last.items.map(item => item.id)
+    ]).size, 205)
   }))
 
 test('memory search revision covers documents, evidence, vectors and relevance decisions', () =>

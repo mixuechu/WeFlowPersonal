@@ -19,7 +19,7 @@ export function isMemorySearchPageRevisionStale(input: {
 }): boolean {
   const expected = String(input.expectedRevision || '').trim()
   return input.startingRevision !== input.completedRevision ||
-    (input.offset > 0 && Boolean(expected) && expected !== input.startingRevision)
+    (input.offset > 0 && expected !== input.startingRevision)
 }
 
 export function paginateMemoryResults(items: any[], offset = 0, limit = 40, cap = 500): {

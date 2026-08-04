@@ -650,6 +650,7 @@ function AiAssistantPage() {
   const [mailConnecting, setMailConnecting] = useState(false)
   const [sourceQuery, setSourceQuery] = useState('')
   const [memoryQuery, setMemoryQuery] = useState('')
+  const [memorySearchMode, setMemorySearchMode] = useState<'hybrid' | 'lexical_archive'>('hybrid')
   const [memoryResults, setMemoryResults] = useState<any[]>([])
   const [memorySearchState, setMemorySearchState] = useState<{
     status: 'idle' | 'waiting' | 'searching' | 'ready' | 'error'
@@ -661,6 +662,8 @@ function AiAssistantPage() {
     scopeCandidates?: number | null
     revision?: string
     nextOffset?: number
+    searchMode?: 'hybrid' | 'lexical_archive' | 'scope_browse'
+    lexicalSearchMode?: 'fts' | 'substring_fallback'
   }>({ status: 'idle', query: '' })
   const [memoryLoadingMore, setMemoryLoadingMore] = useState(false)
   const [memorySearchFeedback, setMemorySearchFeedback] = useState<any[]>([])
@@ -1675,7 +1678,11 @@ function AiAssistantPage() {
     const timer = window.setTimeout(() => {
       if (!memorySearchGate.current.isCurrent(request)) return
       setMemorySearchState({ status: 'searching', query })
-      void window.electronAPI.aiAssistant.searchMemoryPage(query, memorySearchOptions, { offset: 0, limit: 40 }).then(page => {
+      void window.electronAPI.aiAssistant.searchMemoryPage(query, memorySearchOptions, {
+        offset: 0,
+        limit: 40,
+        mode: query ? memorySearchMode : 'hybrid'
+      }).then(page => {
         if (!memorySearchGate.current.isCurrent(request)) return
         if (page.entityScopeStale) {
           setMemoryEntitySelection(null)
@@ -1703,6 +1710,8 @@ function AiAssistantPage() {
           truncated: page.truncated,
           scopeCandidates: page.scopeCandidates,
           revision: page.revision,
+          searchMode: page.searchMode,
+          lexicalSearchMode: page.lexicalSearchMode,
           nextOffset: Number(page.offset || 0) + page.results.length
         })
       }).catch(error => {
@@ -1714,7 +1723,7 @@ function AiAssistantPage() {
       window.clearTimeout(timer)
       if (memorySearchGate.current.isCurrent(request)) memorySearchGate.current.invalidate()
     }
-  }, [memoryQuery, memorySearchOptions, hasMemoryScope, memorySearchRefreshKey])
+  }, [memoryQuery, memorySearchMode, memorySearchOptions, hasMemoryScope, memorySearchRefreshKey])
 
   useEffect(() => {
     if (!memoryFeedbackArchiveOpen) {
@@ -4652,7 +4661,8 @@ function AiAssistantPage() {
         {
           offset: Number(memorySearchState.nextOffset ?? memoryResults.length),
           limit: 40,
-          revision: memorySearchState.revision
+          revision: memorySearchState.revision,
+          mode: query ? memorySearchMode : 'hybrid'
         }
       )
       if (!memorySearchGate.current.isCurrent(request)) return
@@ -4681,6 +4691,8 @@ function AiAssistantPage() {
         truncated: page.truncated,
         scopeCandidates: page.scopeCandidates,
         revision: page.revision,
+        searchMode: page.searchMode,
+        lexicalSearchMode: page.lexicalSearchMode,
         nextOffset: Number(page.offset || 0) + page.results.length
       })
     } catch (error: any) {
@@ -6592,6 +6604,13 @@ function AiAssistantPage() {
           </div>
           <div className="assistant-graph-toolbar">
             <input value={memoryQuery} onChange={event => setMemoryQuery(event.target.value)} placeholder="搜索人物、事实、事件、关系或项目" />
+            <label>
+              <input type="checkbox"
+                checked={memorySearchMode === 'lexical_archive'}
+                disabled={!memoryQuery.trim()}
+                onChange={event => setMemorySearchMode(event.target.checked ? 'lexical_archive' : 'hybrid')} />
+              完整关键词档案
+            </label>
           </div>
           <div className="assistant-memory-scope">
             <TrustedEntityPicker
@@ -6708,7 +6727,9 @@ function AiAssistantPage() {
             {memorySearchState.status === 'ready' &&
               <div className="assistant-search-status ready">
                 {memorySearchState.query ? `“${memorySearchState.query}”` : '当前范围'} · 已显示 {memoryResults.length} / {Number(memorySearchState.total || 0)} 条
-                {memorySearchState.truncated ? ' · 排序池已达 500 条上限' : ''}
+                {memorySearchState.searchMode === 'lexical_archive'
+                  ? ` · ${memorySearchState.lexicalSearchMode === 'substring_fallback' ? '子串回退' : '本机全文'}完整分页，不使用语义扩展`
+                  : memorySearchState.truncated ? ' · 混合相关性排序池已达 500 条上限，可切换“完整关键词档案”继续查阅' : ''}
               </div>}
             {memorySearchState.status === 'error' &&
               <div className="assistant-search-status error">“{memorySearchState.query}”检索失败：{memorySearchState.error}</div>}

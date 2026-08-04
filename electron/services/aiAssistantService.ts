@@ -6657,13 +6657,19 @@ export class AiAssistantService {
   async searchMemoryPage(
     query: string,
     options: MemorySearchOptions = {},
-    pagination: { offset?: number; limit?: number; revision?: string } = {}
+    pagination: {
+      offset?: number
+      limit?: number
+      revision?: string
+      mode?: 'hybrid' | 'lexical_archive'
+    } = {}
   ): Promise<any> {
     const rawOffset = Number(pagination.offset)
     const offset = Number.isFinite(rawOffset) ? Math.max(0, Math.floor(rawOffset)) : 0
     const limit = Math.max(1, Math.min(100, Number(pagination.limit) || 40))
     const text = String(query || '').trim()
-    if (text) {
+    const searchMode = pagination.mode === 'lexical_archive' ? 'lexical_archive' : 'hybrid'
+    if (text && searchMode === 'hybrid') {
       try { await this.ensureVectorIndex() } catch {}
     }
     const revision = personalMemoryStore.getMemorySearchRevision()
@@ -6714,9 +6720,40 @@ export class AiAssistantService {
       }
     }
     let page: any
-    if (text) {
+    if (text && searchMode === 'lexical_archive') {
+      const lexicalPage = personalMemoryStore.listSearchDocumentsByKeywordPage(
+        text,
+        allowedIds,
+        { offset, limit }
+      )
+      const results = lexicalPage.items.map((item: any) => ({
+        ...item,
+        metadata: (() => { try { return JSON.parse(item.metadata_json || '{}') } catch { return {} } })(),
+        ...personalMemoryStore.getDocumentEvidencePayload(
+          item.document_type,
+          item.source_id,
+          scopedOptions
+        ),
+        match_source: lexicalPage.searchMode === 'fts' ? '完整全文档案' : '完整子串档案',
+        retrieval_scope_applied: allowedIds !== null,
+        retrieval_scope_candidates: allowedIds?.size ?? null
+      }))
+      page = {
+        results,
+        offset: lexicalPage.offset,
+        limit: lexicalPage.limit,
+        total: lexicalPage.total,
+        hasMore: lexicalPage.hasMore,
+        truncated: false,
+        searchMode,
+        lexicalSearchMode: lexicalPage.searchMode
+      }
+    } else if (text) {
       const ranked = await this.searchMemoryHybrid(text, scopedOptions, 500)
-      page = paginateMemoryResults(ranked, offset, limit, 500)
+      page = {
+        ...paginateMemoryResults(ranked, offset, limit, 500),
+        searchMode
+      }
     } else {
       const browseContext = buildMemorySearchFeedbackContext(text, scopedOptions)
       const browsePage = personalMemoryStore.listSearchDocumentsInScopePage(allowedIds!, {
@@ -6754,7 +6791,8 @@ export class AiAssistantService {
         limit: browsePage.limit,
         total: browsePage.total,
         hasMore: browsePage.hasMore,
-        truncated: false
+        truncated: false,
+        searchMode: 'scope_browse'
       }
     }
     const feedback = this.memorySearchFeedbackContext(text, scopedOptions).entries
