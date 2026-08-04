@@ -731,6 +731,7 @@ export class AiAssistantService {
     localImageSemanticService.initialize(join(app.getPath('userData'), 'ai-image-semantic-cache.json'), stateKey)
     chatService.initializeTranscriptCacheEncryption(stateKey)
     personalMemoryStore.initialize(databasePath, databaseKey)
+    this.vectorIndexContinuationHealth = personalMemoryStore.getVectorIndexContinuationHealth()
     personalMemoryStore.registerDataSources(PERSONAL_DATA_SOURCE_CATALOG)
     personalMemoryStore.setDataSourceAvailability(
       'calendar',
@@ -7418,6 +7419,7 @@ export class AiAssistantService {
           this.vectorIndexContinuationHealth,
           { type: 'succeeded', at: new Date().toISOString(), indexed: Number(result.indexed || 0) }
         )
+        this.persistVectorIndexContinuationHealth()
         if (Number(result.pending || 0) > 0) this.scheduleVectorIndexContinuation()
       }).catch(error => {
         console.warn('[AI Assistant] 本地向量索引暂未完成:', error)
@@ -7425,10 +7427,19 @@ export class AiAssistantService {
           this.vectorIndexContinuationHealth,
           { type: 'failed', at: new Date().toISOString(), error: sanitizeDiagnosticText(error) }
         )
+        this.persistVectorIndexContinuationHealth()
         this.scheduleVectorIndexContinuation(60_000)
       })
     }, Math.max(0, delayMs))
     this.vectorIndexContinuation.unref()
+  }
+
+  private persistVectorIndexContinuationHealth(): void {
+    try {
+      personalMemoryStore.saveVectorIndexContinuationHealth(this.vectorIndexContinuationHealth)
+    } catch (error) {
+      console.warn('[AI Assistant] 无法持久化向量续建诊断:', sanitizeDiagnosticText(error))
+    }
   }
 
   private async warmVectorIndexForSearch(): Promise<void> {

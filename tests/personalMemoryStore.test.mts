@@ -7285,6 +7285,53 @@ test('vector continuation health exposes scheduling, progress, retry and recover
   }).scheduled, false)
 })
 
+test('vector continuation health persists in SQLCipher without reviving an old timer', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'weflow-vector-health-'))
+  const databasePath = join(directory, 'memory.sqlite')
+  const key = randomBytes(32)
+  const first = new PersonalMemoryStore()
+  const reopened = new PersonalMemoryStore()
+  try {
+    first.initialize(databasePath, key)
+    first.saveVectorIndexContinuationHealth({
+      scheduled: true,
+      runCount: 7,
+      indexedCount: 336,
+      lastScheduledAt: '2026-08-05T02:00:00.000Z',
+      lastAttemptAt: '2026-08-05T02:00:01.000Z',
+      lastSuccessAt: '2026-08-05T02:00:05.000Z',
+      lastErrorAt: '2026-08-05T01:59:00.000Z',
+      lastError: ''
+    })
+    first.close()
+
+    reopened.initialize(databasePath, key)
+    assert.deepEqual(reopened.getVectorIndexContinuationHealth(), {
+      scheduled: false,
+      runCount: 7,
+      indexedCount: 336,
+      lastScheduledAt: '2026-08-05T02:00:00.000Z',
+      lastAttemptAt: '2026-08-05T02:00:01.000Z',
+      lastSuccessAt: '2026-08-05T02:00:05.000Z',
+      lastErrorAt: '2026-08-05T01:59:00.000Z',
+      lastError: ''
+    })
+    ;(reopened as any).db.prepare(`
+      UPDATE schema_meta SET value='not-json'
+      WHERE key='vector_index_continuation_health_v1'
+    `).run()
+    const recovered = reopened.getVectorIndexContinuationHealth()
+    assert.equal(recovered.scheduled, false)
+    assert.equal(recovered.runCount, 0)
+    assert.equal(recovered.indexedCount, 0)
+    assert.equal(recovered.lastError, '')
+  } finally {
+    first.close()
+    reopened.close()
+    rmSync(directory, { recursive: true, force: true })
+  }
+})
+
 test('semantic ranking uses cosine similarity so vector magnitude cannot dominate relevance', () => withStore(store => {
   const model = 'test-cosine-ranking:2d'
   store.syncTasks([

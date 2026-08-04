@@ -13,7 +13,11 @@ import {
   listMultiProbeSignatures
 } from './localAnnIndex.ts'
 import type { MemorySearchOptions } from './memorySearchFilters.ts'
-import { safeCosineSimilarity, validateEmbeddingBatch } from './vectorIndexingPolicy.ts'
+import {
+  safeCosineSimilarity,
+  validateEmbeddingBatch,
+  type VectorIndexContinuationHealth
+} from './vectorIndexingPolicy.ts'
 import { MEMORY_CARD_EVIDENCE_LIMIT } from '../../shared/evidencePayload.ts'
 import { GRAPH_RELATION_EVIDENCE_HOT_LIMIT } from './graphEvidenceHotset.ts'
 import {
@@ -12510,6 +12514,59 @@ export class PersonalMemoryStore {
         AND embedding_dimensions<>?
     `).run(model, expectedDimensions)
     return Math.max(0, Number(result.changes || 0))
+  }
+
+  getVectorIndexContinuationHealth(): VectorIndexContinuationHealth {
+    const empty: VectorIndexContinuationHealth = {
+      scheduled: false,
+      runCount: 0,
+      indexedCount: 0,
+      lastScheduledAt: '',
+      lastAttemptAt: '',
+      lastSuccessAt: '',
+      lastErrorAt: '',
+      lastError: ''
+    }
+    if (!this.db) return empty
+    const row = this.db.prepare(`
+      SELECT value FROM schema_meta WHERE key='vector_index_continuation_health_v1'
+    `).get() as any
+    try {
+      const stored = JSON.parse(String(row?.value || '{}'))
+      const safeCount = (value: unknown): number => {
+        const numeric = Number(value || 0)
+        return Number.isFinite(numeric) ? Math.max(0, Math.floor(numeric)) : 0
+      }
+      return {
+        scheduled: false,
+        runCount: safeCount(stored.runCount),
+        indexedCount: safeCount(stored.indexedCount),
+        lastScheduledAt: String(stored.lastScheduledAt || '').slice(0, 64),
+        lastAttemptAt: String(stored.lastAttemptAt || '').slice(0, 64),
+        lastSuccessAt: String(stored.lastSuccessAt || '').slice(0, 64),
+        lastErrorAt: String(stored.lastErrorAt || '').slice(0, 64),
+        lastError: String(stored.lastError || '').slice(0, 500)
+      }
+    } catch {
+      return empty
+    }
+  }
+
+  saveVectorIndexContinuationHealth(health: VectorIndexContinuationHealth): void {
+    if (!this.db) return
+    const now = new Date().toISOString()
+    const value = {
+      ...health,
+      scheduled: false,
+      runCount: Math.max(0, Math.floor(Number(health.runCount || 0))),
+      indexedCount: Math.max(0, Math.floor(Number(health.indexedCount || 0))),
+      lastError: String(health.lastError || '').slice(0, 500)
+    }
+    this.db.prepare(`
+      INSERT INTO schema_meta(key,value,updated_at)
+      VALUES('vector_index_continuation_health_v1',?,?)
+      ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_at=excluded.updated_at
+    `).run(JSON.stringify(value), now)
   }
 
   getEmbeddingStats(model: string): any {
