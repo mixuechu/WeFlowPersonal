@@ -2087,7 +2087,8 @@ export interface ElectronAPI {
       getAssistantAnswerReviews: (options?: any) => Promise<any>
       reviewAssistantAnswer: (
         messageId: string,
-        action: 'acknowledged' | 'reopened'
+        action: 'acknowledged' | 'reopened',
+        expectedMutationToken: string
       ) => Promise<any>
       getAssistantAnswerReviewDecisions: (messageId: string, options?: any) => Promise<any>
       getAssistantConversation: (id: string, options?: any) => Promise<any>

@@ -4711,8 +4711,9 @@ function registerIpcHandlers() {
   ipcMain.handle('ai-assistant:reviewAssistantAnswer', (
     _,
     messageId: string,
-    action: 'acknowledged' | 'reopened'
-  ) => aiAssistantService.reviewAssistantAnswer(messageId, action))
+    action: 'acknowledged' | 'reopened',
+    expectedMutationToken: string
+  ) => aiAssistantService.reviewAssistantAnswer(messageId, action, expectedMutationToken))
   ipcMain.handle('ai-assistant:getAssistantAnswerReviewDecisions', (
     _,
     messageId: string,

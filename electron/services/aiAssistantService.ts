@@ -7172,10 +7172,15 @@ export class AiAssistantService {
     })
   }
 
-  reviewAssistantAnswer(messageId: string, action: 'acknowledged' | 'reopened'): any {
+  reviewAssistantAnswer(
+    messageId: string,
+    action: 'acknowledged' | 'reopened',
+    expectedMutationToken: string
+  ): any {
     return personalMemoryStore.reviewAssistantAnswer(
       String(messageId || '').trim(),
-      action
+      action,
+      String(expectedMutationToken || '').trim()
     )
   }
 

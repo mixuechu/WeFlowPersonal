@@ -983,11 +983,13 @@ function AiAssistantPage() {
   const [assistantAnswerReviewFrom, setAssistantAnswerReviewFrom] = useState('')
   const [assistantAnswerReviewTo, setAssistantAnswerReviewTo] = useState('')
   const [assistantAnswerReviewsLoadingMore, setAssistantAnswerReviewsLoadingMore] = useState(false)
-  const [assistantAnswerReviewSaving, setAssistantAnswerReviewSaving] = useState('')
+  const [assistantAnswerReviewSaving, setAssistantAnswerReviewSaving] =
+    useState<Record<string, boolean>>({})
   const [assistantAnswerReviewRevision, setAssistantAnswerReviewRevision] = useState(0)
   const [assistantAnswerReviewHistories, setAssistantAnswerReviewHistories] =
     useState<Record<string, any>>({})
   const assistantAnswerReviewsGate = useRef(new LatestRequestGate())
+  const assistantAnswerReviewMutationGates = useRef(new KeyedLatestRequestGates())
   const assistantAnswerReviewHistoryGates = useRef(new Map<string, LatestRequestGate>())
   const [askingMemory, setAskingMemory] = useState(false)
   const [creatingMemoryTask, setCreatingMemoryTask] = useState(false)
@@ -5244,12 +5246,20 @@ function AiAssistantPage() {
 
   const reviewAssistantAnswer = async (
     messageId: string,
-    action: 'acknowledged' | 'reopened'
+    action: 'acknowledged' | 'reopened',
+    mutationToken: string
   ) => {
-    if (assistantAnswerReviewSaving) return
-    setAssistantAnswerReviewSaving(messageId)
+    if (assistantAnswerReviewSaving[messageId]) return
+    const request = assistantAnswerReviewMutationGates.current.begin(messageId)
+    setAssistantAnswerReviewSaving(current =>
+      setKeyedLoadingState(current, messageId, true))
     try {
-      await window.electronAPI.aiAssistant.reviewAssistantAnswer(messageId, action)
+      await window.electronAPI.aiAssistant.reviewAssistantAnswer(
+        messageId,
+        action,
+        mutationToken
+      )
+      if (!assistantAnswerReviewMutationGates.current.isCurrent(messageId, request)) return
       assistantAnswerReviewHistoryGates.current.get(messageId)?.invalidate()
       assistantAnswerReviewHistoryGates.current.delete(messageId)
       setAssistantAnswerReviewHistories(current => {
@@ -5262,9 +5272,17 @@ function AiAssistantPage() {
         : '已将这条历史回答重新加入待处理队列。')
       setAssistantAnswerReviewRevision(value => value + 1)
     } catch (error: any) {
-      setMessage(error?.message || String(error))
+      if (assistantAnswerReviewMutationGates.current.isCurrent(messageId, request)) {
+        setMessage(error?.message || String(error))
+        if (String(error?.message || error).includes('展示后发生了变化')) {
+          setAssistantAnswerReviewRevision(value => value + 1)
+        }
+      }
     } finally {
-      setAssistantAnswerReviewSaving('')
+      if (assistantAnswerReviewMutationGates.current.isCurrent(messageId, request)) {
+        setAssistantAnswerReviewSaving(current =>
+          setKeyedLoadingState(current, messageId, false))
+      }
     }
   }
 
@@ -7213,14 +7231,22 @@ function AiAssistantPage() {
                         `处理记录 ${Number(item.review_decision_count)}`}
                     </button>}
                     {item.review_state === 'resolved'
-                      ? <button disabled={assistantAnswerReviewSaving === item.message_id}
-                        onClick={() => void reviewAssistantAnswer(item.message_id, 'reopened')}>
-                        重新加入待处理
+                      ? <button disabled={!!assistantAnswerReviewSaving[item.message_id]}
+                        onClick={() => void reviewAssistantAnswer(
+                          item.message_id,
+                          'reopened',
+                          item.mutation_token
+                        )}>
+                        {assistantAnswerReviewSaving[item.message_id] ? '保存中…' : '重新加入待处理'}
                       </button>
                       : item.revalidation_status !== 'current' && <button
-                        disabled={assistantAnswerReviewSaving === item.message_id}
-                        onClick={() => void reviewAssistantAnswer(item.message_id, 'acknowledged')}>
-                        {assistantAnswerReviewSaving === item.message_id ? '保存中…' : '已知晓，仅保留历史'}
+                        disabled={!!assistantAnswerReviewSaving[item.message_id]}
+                        onClick={() => void reviewAssistantAnswer(
+                          item.message_id,
+                          'acknowledged',
+                          item.mutation_token
+                        )}>
+                        {assistantAnswerReviewSaving[item.message_id] ? '保存中…' : '已知晓，仅保留历史'}
                       </button>}
                   </div>
                   {assistantAnswerReviewHistories[item.message_id] && <section

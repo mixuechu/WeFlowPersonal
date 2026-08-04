@@ -8682,6 +8682,18 @@ test('assistant archive filters statement dependencies without loading answer ev
   const changedAnswerId = String(database.prepare(`
     SELECT id FROM assistant_messages WHERE conversation_id=? AND role='assistant'
   `).get(changedConversationId)?.id || '')
+  const reviewAnswer = (
+    messageId: string,
+    action: 'acknowledged' | 'reopened'
+  ) => {
+    const item = store.listAssistantAnswerReviewsPage({
+      status: 'all',
+      reviewState: 'all',
+      messageId,
+      limit: 1
+    }).items[0]
+    return store.reviewAssistantAnswer(messageId, action, item?.mutation_token || '')
+  }
   save('后来仍有效的追问', 'resource:current', 'a'.repeat(64), changedConversationId)
   save('旧版未知会话', 'resource:unknown', '')
   save('来源删除会话', 'resource:missing', 'd'.repeat(64))
@@ -8737,7 +8749,12 @@ test('assistant archive filters statement dependencies without loading answer ev
     .revalidation_status, 'invalid')
   assert.equal(answerReviews.items.find((item: any) => item.message_id === changedAnswerId)
     .question_preview, '内容变化会话')
+  assert.match(
+    answerReviews.items.find((item: any) => item.message_id === changedAnswerId).mutation_token,
+    /^[a-f0-9]{64}$/
+  )
   assert.equal(JSON.stringify(answerReviews.items).includes('仅用于资格核验'), false)
+  assert.equal(JSON.stringify(answerReviews.items).includes('state_key'), false)
   const attentionPage = store.listAssistantAnswerReviewsPage({ status: 'attention', limit: 2 })
   const attentionSecondPage = store.listAssistantAnswerReviewsPage({
     status: 'attention',
@@ -8758,12 +8775,27 @@ test('assistant archive filters statement dependencies without loading answer ev
     status: 'needs_review',
     limit: 20
   }).items[0].question_preview, '旧版未知会话')
-  assert.throws(() => store.reviewAssistantAnswer(
+  assert.throws(() => reviewAnswer(
     store.listAssistantAnswerReviewsPage({ status: 'current', limit: 20 }).items[0].message_id,
     'acknowledged'
   ), /当前仍有效/)
-  const firstReviewDecision = store.reviewAssistantAnswer(changedAnswerId, 'acknowledged')
+  const visibleChangedAnswer = store.listAssistantAnswerReviewsPage({
+    status: 'all',
+    reviewState: 'all',
+    messageId: changedAnswerId,
+    limit: 1
+  }).items[0]
+  const firstReviewDecision = store.reviewAssistantAnswer(
+    changedAnswerId,
+    'acknowledged',
+    visibleChangedAnswer.mutation_token
+  )
   assert.equal('stateKey' in firstReviewDecision, false)
+  assert.throws(() => store.reviewAssistantAnswer(
+    changedAnswerId,
+    'reopened',
+    visibleChangedAnswer.mutation_token
+  ), /展示后发生了变化/)
   assert.equal(store.listAssistantAnswerReviewsPage({
     status: 'attention',
     offset: 2,
@@ -8803,7 +8835,7 @@ test('assistant archive filters statement dependencies without loading answer ev
     reviewState: 'pending',
     limit: 20
   }).items.some((item: any) => item.message_id === changedAnswerId), true)
-  store.reviewAssistantAnswer(changedAnswerId, 'acknowledged')
+  reviewAnswer(changedAnswerId, 'acknowledged')
   database.prepare(`
     UPDATE search_documents SET content_hash=? WHERE id=?
   `).run('8'.repeat(64), 'resource:changed')
@@ -8812,15 +8844,15 @@ test('assistant archive filters statement dependencies without loading answer ev
     reviewState: 'pending',
     limit: 20
   }).items.some((item: any) => item.message_id === changedAnswerId), true)
-  store.reviewAssistantAnswer(changedAnswerId, 'acknowledged')
-  store.reviewAssistantAnswer(changedAnswerId, 'reopened')
+  reviewAnswer(changedAnswerId, 'acknowledged')
+  reviewAnswer(changedAnswerId, 'reopened')
   assert.equal(store.listAssistantAnswerReviewsPage({
     status: 'attention',
     reviewState: 'pending',
     limit: 20
   }).items.some((item: any) => item.message_id === changedAnswerId), true)
   for (let index = 0; index < 41; index += 1) {
-    store.reviewAssistantAnswer(changedAnswerId, index % 2 === 0 ? 'reopened' : 'acknowledged')
+    reviewAnswer(changedAnswerId, index % 2 === 0 ? 'reopened' : 'acknowledged')
   }
   const firstDecisionPage = store.listAssistantAnswerReviewDecisionsPage(
     changedAnswerId,
@@ -8932,7 +8964,17 @@ test('assistant archive and message pagination survive a SQLCipher process-style
     firstDatabase.prepare(`
       UPDATE search_documents SET content_hash=? WHERE id='resource:reopen-review'
     `).run('e'.repeat(64))
-    first.reviewAssistantAnswer(reviewAnswerId, 'acknowledged')
+    const visibleReview = first.listAssistantAnswerReviewsPage({
+      status: 'all',
+      reviewState: 'all',
+      messageId: reviewAnswerId,
+      limit: 1
+    }).items[0]
+    first.reviewAssistantAnswer(
+      reviewAnswerId,
+      'acknowledged',
+      visibleReview.mutation_token
+    )
     first.close()
 
     second.initialize(databasePath, key)

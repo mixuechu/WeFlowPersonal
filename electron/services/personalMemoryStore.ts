@@ -28,6 +28,21 @@ type MemoryGraph = {
 
 type MemoryEvidenceSource = 'wechat' | 'documents' | 'calendar' | 'mail' | 'legacy'
 
+function assistantAnswerReviewMutationToken(input: {
+  messageId: unknown
+  stateKey: unknown
+  reviewState: unknown
+  latestDecisionId: unknown
+}): string {
+  return createHash('sha256').update(JSON.stringify({
+    version: 'assistant-answer-review-mutation-v1',
+    messageId: String(input.messageId || ''),
+    stateKey: String(input.stateKey || ''),
+    reviewState: String(input.reviewState || ''),
+    latestDecisionId: Number(input.latestDecisionId || 0)
+  })).digest('hex')
+}
+
 function sanitizeMemoryDeletionImpact(value: unknown): {
   evidence: number
   related: number
@@ -12553,7 +12568,7 @@ export class PersonalMemoryStore {
       SELECT ar.message_id,ar.conversation_id,ar.created_at,ar.state_key,
         ar.total_statements,ar.supported_statements,ar.unknown_statements,ar.invalid_statements,
         decision.action AS latest_review_action,decision.state_key AS reviewed_state_key,
-        decision.created_at AS reviewed_at,
+        decision.created_at AS reviewed_at,decision.id AS latest_review_decision_id,
         (SELECT COUNT(*) FROM assistant_answer_review_decisions history
           WHERE history.message_id=ar.message_id) AS review_decision_count,
         c.title AS conversation_title,
@@ -12569,14 +12584,26 @@ export class PersonalMemoryStore {
       ORDER BY ar.created_at DESC,ar.message_id DESC LIMIT ? OFFSET ?
     `).all(...commonParameters, limit, offset) as any[]
     const publicItems = items.map(item => {
-        const { state_key: stateKey, reviewed_state_key: reviewedStateKey, ...publicItem } = item
+        const {
+          state_key: stateKey,
+          reviewed_state_key: reviewedStateKey,
+          latest_review_decision_id: latestDecisionId,
+          ...publicItem
+        } = item
+        const reviewState = item.latest_review_action === 'acknowledged'
+          && String(reviewedStateKey || '') === String(stateKey || '')
+          ? 'resolved'
+          : 'pending'
         return {
           ...publicItem,
           ...(messageId ? { state_key: stateKey } : {}),
-          review_state: item.latest_review_action === 'acknowledged'
-            && String(reviewedStateKey || '') === String(stateKey || '')
-            ? 'resolved'
-            : 'pending',
+          review_state: reviewState,
+          mutation_token: assistantAnswerReviewMutationToken({
+            messageId: item.message_id,
+            stateKey,
+            reviewState,
+            latestDecisionId
+          }),
           revalidation_status: Number(item.invalid_statements || 0) > 0
             ? 'invalid'
             : Number(item.unknown_statements || 0) > 0
@@ -12613,7 +12640,8 @@ export class PersonalMemoryStore {
 
   reviewAssistantAnswer(
     messageId: string,
-    action: 'acknowledged' | 'reopened'
+    action: 'acknowledged' | 'reopened',
+    expectedMutationToken: string
   ): any {
     if (!this.db) throw new Error('个人记忆数据库尚未初始化')
     if (!['acknowledged', 'reopened'].includes(action)) throw new Error('无效的回答审阅动作')
@@ -12624,6 +12652,9 @@ export class PersonalMemoryStore {
       limit: 1
     }).items[0]
     if (!current) throw new Error('找不到这条回答或它没有可核验的逐陈述依赖')
+    if (!expectedMutationToken || expectedMutationToken !== current.mutation_token) {
+      throw new Error('这条回答的证据或处理状态在展示后发生了变化，请刷新后重新核对')
+    }
     if (action === 'acknowledged' && current.revalidation_status === 'current') {
       throw new Error('这条回答当前仍有效，不需要标记为已知晓')
     }
