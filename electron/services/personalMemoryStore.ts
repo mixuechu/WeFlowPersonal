@@ -676,6 +676,14 @@ export class PersonalMemoryStore {
       CREATE INDEX IF NOT EXISTS idx_assistant_answer_dependencies_document
         ON assistant_answer_dependencies(document_id);
 
+      CREATE TABLE IF NOT EXISTS structured_evidence_revisions (
+        document_type TEXT NOT NULL CHECK(document_type IN ('claim','relation','event')),
+        source_id TEXT NOT NULL,
+        revision INTEGER NOT NULL DEFAULT 1,
+        updated_at TEXT NOT NULL,
+        PRIMARY KEY(document_type,source_id)
+      ) STRICT;
+
       CREATE TABLE IF NOT EXISTS assistant_answer_review_decisions (
         id INTEGER PRIMARY KEY,
         message_id TEXT NOT NULL REFERENCES assistant_messages(id) ON DELETE CASCADE,
@@ -984,6 +992,7 @@ export class PersonalMemoryStore {
     this.ensureColumn('assistant_answer_dependencies', 'evidence_sample_hash', `TEXT NOT NULL DEFAULT ''`)
     this.ensureColumn('assistant_answer_dependencies', 'evidence_supporting_count', 'INTEGER NOT NULL DEFAULT 0')
     this.ensureColumn('assistant_answer_dependencies', 'evidence_contradiction_count', 'INTEGER NOT NULL DEFAULT 0')
+    this.ensureColumn('assistant_answer_dependencies', 'evidence_authority_revision', 'INTEGER NOT NULL DEFAULT 0')
     this.db.prepare(`
       UPDATE memory_review_decisions
       SET actor='system',
@@ -1034,6 +1043,7 @@ export class PersonalMemoryStore {
     this.ensureIngestionRecoveryRevisionTriggers()
     this.ensureCrossStoreRecoveryRevisionTriggers()
     this.ensureAssistantHistoryRevisionTriggers()
+    this.ensureStructuredEvidenceRevisionLedger()
     this.ensureResourceArchiveRevisionTriggers()
     this.repairStructuredSearchIndex()
     this.backfillMergeHistoryNames()
@@ -2201,7 +2211,8 @@ export class PersonalMemoryStore {
       'assistant_answer_review_decisions',
       'search_documents',
       'search_document_evidence',
-      'evidence'
+      'evidence',
+      'structured_evidence_revisions'
     ]
   }
 
@@ -2210,7 +2221,7 @@ export class PersonalMemoryStore {
       prefix: 'assistant_history_revision',
       revisionKey: 'assistant_history_revision',
       tables: this.assistantHistoryRevisionTables(),
-      version: 'assistant-history-revision-v2'
+      version: 'assistant-history-revision-v3'
     })
   }
 
@@ -2226,9 +2237,143 @@ export class PersonalMemoryStore {
       prefix: 'assistant_history_revision',
       revisionKey: 'assistant_history_revision',
       tables: this.assistantHistoryRevisionTables(),
-      version: 'assistant-history-revision-v2',
+      version: 'assistant-history-revision-v3',
       revision: this.getAssistantHistoryRevision()
     })
+  }
+
+  private ensureStructuredEvidenceRevisionLedger(): void {
+    if (!this.db) return
+    const now = new Date().toISOString()
+    const transaction = this.db.transaction(() => {
+      this.db!.prepare(`
+        INSERT OR IGNORE INTO structured_evidence_revisions(
+          document_type,source_id,revision,updated_at
+        )
+        SELECT 'claim',claim_id,1,? FROM evidence
+        WHERE claim_id IS NOT NULL AND claim_id!='' GROUP BY claim_id
+      `).run(now)
+      this.db!.prepare(`
+        INSERT OR IGNORE INTO structured_evidence_revisions(
+          document_type,source_id,revision,updated_at
+        )
+        SELECT 'relation',relation_id,1,? FROM evidence
+        WHERE relation_id IS NOT NULL AND relation_id!='' GROUP BY relation_id
+      `).run(now)
+      this.db!.prepare(`
+        INSERT OR IGNORE INTO structured_evidence_revisions(
+          document_type,source_id,revision,updated_at
+        )
+        SELECT 'event',event_id,1,? FROM evidence
+        WHERE event_id IS NOT NULL AND event_id!='' GROUP BY event_id
+      `).run(now)
+      this.db!.exec(`
+        DROP TRIGGER IF EXISTS structured_evidence_revision_insert;
+        DROP TRIGGER IF EXISTS structured_evidence_revision_update;
+        DROP TRIGGER IF EXISTS structured_evidence_revision_delete;
+
+        CREATE TRIGGER structured_evidence_revision_insert
+        AFTER INSERT ON evidence BEGIN
+          INSERT INTO structured_evidence_revisions(document_type,source_id,revision,updated_at)
+          SELECT 'claim',NEW.claim_id,1,strftime('%Y-%m-%dT%H:%M:%fZ','now')
+          WHERE NEW.claim_id IS NOT NULL AND NEW.claim_id!=''
+          ON CONFLICT(document_type,source_id) DO UPDATE SET
+            revision=structured_evidence_revisions.revision+1,
+            updated_at=excluded.updated_at;
+          INSERT INTO structured_evidence_revisions(document_type,source_id,revision,updated_at)
+          SELECT 'relation',NEW.relation_id,1,strftime('%Y-%m-%dT%H:%M:%fZ','now')
+          WHERE NEW.relation_id IS NOT NULL AND NEW.relation_id!=''
+          ON CONFLICT(document_type,source_id) DO UPDATE SET
+            revision=structured_evidence_revisions.revision+1,
+            updated_at=excluded.updated_at;
+          INSERT INTO structured_evidence_revisions(document_type,source_id,revision,updated_at)
+          SELECT 'event',NEW.event_id,1,strftime('%Y-%m-%dT%H:%M:%fZ','now')
+          WHERE NEW.event_id IS NOT NULL AND NEW.event_id!=''
+          ON CONFLICT(document_type,source_id) DO UPDATE SET
+            revision=structured_evidence_revisions.revision+1,
+            updated_at=excluded.updated_at;
+        END;
+
+        CREATE TRIGGER structured_evidence_revision_update
+        AFTER UPDATE ON evidence BEGIN
+          INSERT INTO structured_evidence_revisions(document_type,source_id,revision,updated_at)
+          SELECT 'claim',OLD.claim_id,1,strftime('%Y-%m-%dT%H:%M:%fZ','now')
+          WHERE OLD.claim_id IS NOT NULL AND OLD.claim_id!=''
+          ON CONFLICT(document_type,source_id) DO UPDATE SET
+            revision=structured_evidence_revisions.revision+1,
+            updated_at=excluded.updated_at;
+          INSERT INTO structured_evidence_revisions(document_type,source_id,revision,updated_at)
+          SELECT 'relation',OLD.relation_id,1,strftime('%Y-%m-%dT%H:%M:%fZ','now')
+          WHERE OLD.relation_id IS NOT NULL AND OLD.relation_id!=''
+          ON CONFLICT(document_type,source_id) DO UPDATE SET
+            revision=structured_evidence_revisions.revision+1,
+            updated_at=excluded.updated_at;
+          INSERT INTO structured_evidence_revisions(document_type,source_id,revision,updated_at)
+          SELECT 'event',OLD.event_id,1,strftime('%Y-%m-%dT%H:%M:%fZ','now')
+          WHERE OLD.event_id IS NOT NULL AND OLD.event_id!=''
+          ON CONFLICT(document_type,source_id) DO UPDATE SET
+            revision=structured_evidence_revisions.revision+1,
+            updated_at=excluded.updated_at;
+          INSERT INTO structured_evidence_revisions(document_type,source_id,revision,updated_at)
+          SELECT 'claim',NEW.claim_id,1,strftime('%Y-%m-%dT%H:%M:%fZ','now')
+          WHERE NEW.claim_id IS NOT NULL AND NEW.claim_id!=''
+          ON CONFLICT(document_type,source_id) DO UPDATE SET
+            revision=structured_evidence_revisions.revision+1,
+            updated_at=excluded.updated_at;
+          INSERT INTO structured_evidence_revisions(document_type,source_id,revision,updated_at)
+          SELECT 'relation',NEW.relation_id,1,strftime('%Y-%m-%dT%H:%M:%fZ','now')
+          WHERE NEW.relation_id IS NOT NULL AND NEW.relation_id!=''
+          ON CONFLICT(document_type,source_id) DO UPDATE SET
+            revision=structured_evidence_revisions.revision+1,
+            updated_at=excluded.updated_at;
+          INSERT INTO structured_evidence_revisions(document_type,source_id,revision,updated_at)
+          SELECT 'event',NEW.event_id,1,strftime('%Y-%m-%dT%H:%M:%fZ','now')
+          WHERE NEW.event_id IS NOT NULL AND NEW.event_id!=''
+          ON CONFLICT(document_type,source_id) DO UPDATE SET
+            revision=structured_evidence_revisions.revision+1,
+            updated_at=excluded.updated_at;
+        END;
+
+        CREATE TRIGGER structured_evidence_revision_delete
+        AFTER DELETE ON evidence BEGIN
+          INSERT INTO structured_evidence_revisions(document_type,source_id,revision,updated_at)
+          SELECT 'claim',OLD.claim_id,1,strftime('%Y-%m-%dT%H:%M:%fZ','now')
+          WHERE OLD.claim_id IS NOT NULL AND OLD.claim_id!=''
+          ON CONFLICT(document_type,source_id) DO UPDATE SET
+            revision=structured_evidence_revisions.revision+1,
+            updated_at=excluded.updated_at;
+          INSERT INTO structured_evidence_revisions(document_type,source_id,revision,updated_at)
+          SELECT 'relation',OLD.relation_id,1,strftime('%Y-%m-%dT%H:%M:%fZ','now')
+          WHERE OLD.relation_id IS NOT NULL AND OLD.relation_id!=''
+          ON CONFLICT(document_type,source_id) DO UPDATE SET
+            revision=structured_evidence_revisions.revision+1,
+            updated_at=excluded.updated_at;
+          INSERT INTO structured_evidence_revisions(document_type,source_id,revision,updated_at)
+          SELECT 'event',OLD.event_id,1,strftime('%Y-%m-%dT%H:%M:%fZ','now')
+          WHERE OLD.event_id IS NOT NULL AND OLD.event_id!=''
+          ON CONFLICT(document_type,source_id) DO UPDATE SET
+            revision=structured_evidence_revisions.revision+1,
+            updated_at=excluded.updated_at;
+        END;
+      `)
+    })
+    transaction()
+  }
+
+  getStructuredEvidenceRevisionHealth(): any {
+    if (!this.db) return { rows: 0, triggers: 0 }
+    const rows = Number((this.db.prepare(`
+      SELECT COUNT(*) AS count FROM structured_evidence_revisions
+    `).get() as any)?.count || 0)
+    const triggers = Number((this.db.prepare(`
+      SELECT COUNT(*) AS count FROM sqlite_master
+      WHERE type='trigger' AND name IN (
+        'structured_evidence_revision_insert',
+        'structured_evidence_revision_update',
+        'structured_evidence_revision_delete'
+      )
+    `).get() as any)?.count || 0)
+    return { rows, triggers, healthy: triggers === 3 }
   }
 
   private compactCommittedIngestionPayloads(): void {
@@ -12066,6 +12211,7 @@ export class PersonalMemoryStore {
     evidenceTotal: number
     evidenceTimeScopeMode?: 'none' | 'document_time' | 'evidence_time'
     evidenceRoleCounts?: { supporting: number; contradiction: number }
+    evidenceAuthorityRevision?: number
     evidenceSelection?: {
       version: 'role-balanced-v1'
       supportingDisplayed: number
@@ -12211,6 +12357,15 @@ export class PersonalMemoryStore {
           : ''
     if (!foreignKey) return { evidence: [], evidenceTotal: 0, ...timeScope }
     const structuredScope = evidenceScope('e')
+    const evidenceScopeRestricted = Boolean(
+      sourceIds.length || sessions.length || restrictEvidenceByDate
+    )
+    const evidenceAuthorityRevision = evidenceScopeRestricted
+      ? 0
+      : Math.max(0, Number((this.db.prepare(`
+          SELECT revision FROM structured_evidence_revisions
+          WHERE document_type=? AND source_id=?
+        `).get(documentType, sourceId) as any)?.revision || 0))
     const roleCounts = this.db.prepare(`
       SELECT
         SUM(CASE WHEN e.evidence_role='contradiction' THEN 0 ELSE 1 END) AS supporting,
@@ -12223,7 +12378,12 @@ export class PersonalMemoryStore {
       contradiction: Number(roleCounts?.contradiction || 0)
     }
     const evidenceTotal = evidenceRoleCounts.supporting + evidenceRoleCounts.contradiction
-    if (!evidenceTotal) return { evidence: [], evidenceTotal: 0, ...timeScope }
+    if (!evidenceTotal) return {
+      evidence: [],
+      evidenceTotal: 0,
+      evidenceAuthorityRevision,
+      ...timeScope
+    }
     const contradictionLimit = Math.min(5, MEMORY_CARD_EVIDENCE_LIMIT)
     const contradictionCandidates = this.db.prepare(`
       SELECT source_id,message_id,session_id,timestamp,sender,excerpt,evidence_role
@@ -12261,6 +12421,7 @@ export class PersonalMemoryStore {
     return {
       evidence,
       evidenceTotal,
+      evidenceAuthorityRevision,
       evidenceRoleCounts,
       evidenceSelection: {
         version: 'role-balanced-v1',
@@ -12540,6 +12701,10 @@ export class PersonalMemoryStore {
           supporting: Math.max(0, Math.floor(Number(citation?.evidenceRoleCounts?.supporting) || 0)),
           contradiction: Math.max(0, Math.floor(Number(citation?.evidenceRoleCounts?.contradiction) || 0))
         },
+        evidenceAuthorityRevision: Math.max(
+          0,
+          Math.floor(Number(citation?.evidenceAuthorityRevision) || 0)
+        ),
         ...(feedbackContext ? { feedbackContext } : {}),
         citationStorage: 'reference_only_v1'
       }]
@@ -12710,7 +12875,7 @@ export class PersonalMemoryStore {
 
   private repairAssistantAnswerDependencies(): void {
     if (!this.db) return
-    const key = 'assistant_answer_dependencies_v2'
+    const key = 'assistant_answer_dependencies_v3'
     const existing = this.db.prepare('SELECT value FROM schema_meta WHERE key=?').get(key) as any
     const missingDependencies = Boolean((this.db.prepare(`
       SELECT 1 FROM assistant_messages message
@@ -12736,13 +12901,15 @@ export class PersonalMemoryStore {
     const insert = this.db.prepare(`
       INSERT INTO assistant_answer_dependencies(
         message_id,conversation_id,statement_index,document_id,content_hash,
-        evidence_sample_hash,evidence_supporting_count,evidence_contradiction_count,created_at
-      ) VALUES(?,?,?,?,?,?,?,?,?)
+        evidence_sample_hash,evidence_supporting_count,evidence_contradiction_count,
+        evidence_authority_revision,created_at
+      ) VALUES(?,?,?,?,?,?,?,?,?,?)
       ON CONFLICT(message_id,statement_index,document_id) DO UPDATE SET
         content_hash=excluded.content_hash,
         evidence_sample_hash=excluded.evidence_sample_hash,
         evidence_supporting_count=excluded.evidence_supporting_count,
-        evidence_contradiction_count=excluded.evidence_contradiction_count
+        evidence_contradiction_count=excluded.evidence_contradiction_count,
+        evidence_authority_revision=excluded.evidence_authority_revision
     `)
     let indexedMessages = 0
     let indexedStatements = 0
@@ -12803,6 +12970,7 @@ export class PersonalMemoryStore {
               evidenceSampleHash,
               evidenceSupportingCount,
               evidenceContradictionCount,
+              Math.max(0, Math.floor(Number(citation?.evidenceAuthorityRevision) || 0)),
               row.created_at
             ).changes
           }
@@ -12813,7 +12981,7 @@ export class PersonalMemoryStore {
         INSERT INTO schema_meta(key,value,updated_at) VALUES(?,?,?)
         ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_at=excluded.updated_at
       `).run(key, JSON.stringify({
-        version: 2,
+        version: 3,
         scannedMessages: rows.length,
         indexedMessages,
         indexedStatements,
@@ -12827,7 +12995,7 @@ export class PersonalMemoryStore {
 
   getAssistantAnswerDependencyStats(): any {
     if (!this.db) return {
-      version: 2, messages: 0, statements: 0, dependencies: 0,
+      version: 3, messages: 0, statements: 0, dependencies: 0,
       malformedMessages: 0, indexedDependencies: 0, completedAt: ''
     }
     const counts = this.db.prepare(`
@@ -12837,12 +13005,12 @@ export class PersonalMemoryStore {
       FROM assistant_answer_dependencies
     `).get() as any
     const row = this.db.prepare(`
-      SELECT value FROM schema_meta WHERE key='assistant_answer_dependencies_v2'
+      SELECT value FROM schema_meta WHERE key='assistant_answer_dependencies_v3'
     `).get() as any
     let audit: any = {}
     try { audit = JSON.parse(String(row?.value || '{}')) } catch {}
     return {
-      version: 2,
+      version: 3,
       messages: Math.max(0, Number(counts?.messages || 0)),
       statements: Math.max(0, Number(counts?.statements || 0)),
       dependencies: Math.max(0, Number(counts?.dependencies || 0)),
@@ -12956,8 +13124,9 @@ export class PersonalMemoryStore {
       const dependencyInsert = this.db!.prepare(`
         INSERT INTO assistant_answer_dependencies(
           message_id,conversation_id,statement_index,document_id,content_hash,
-          evidence_sample_hash,evidence_supporting_count,evidence_contradiction_count,created_at
-        ) VALUES(?,?,?,?,?,?,?,?,?)
+          evidence_sample_hash,evidence_supporting_count,evidence_contradiction_count,
+          evidence_authority_revision,created_at
+        ) VALUES(?,?,?,?,?,?,?,?,?,?)
       `)
       ;(compactedGrounding.statementCitations || []).forEach((documentIds: string[], statementIndex: number) => {
         for (const documentId of documentIds) {
@@ -12971,6 +13140,7 @@ export class PersonalMemoryStore {
             String(citation?.evidenceSampleHash || ''),
             Math.max(0, Math.floor(Number(citation?.evidenceRoleCounts?.supporting) || 0)),
             Math.max(0, Math.floor(Number(citation?.evidenceRoleCounts?.contradiction) || 0)),
+            Math.max(0, Math.floor(Number(citation?.evidenceAuthorityRevision) || 0)),
             answerAt
           )
         }
@@ -13066,6 +13236,9 @@ export class PersonalMemoryStore {
         d.evidence_supporting_count=${currentSupportingCount}
         AND d.evidence_contradiction_count=${currentContradictionCount}
       ))`
+    const evidenceAuthorityCurrent = `(d.evidence_authority_revision=0
+      OR s.document_type NOT IN ('claim','relation','event')
+      OR d.evidence_authority_revision=COALESCE(ser.revision,0))`
     const revalidationCte = `
       WITH structured_evidence_counts AS (
         SELECT 'claim' AS document_type,claim_id AS source_id,
@@ -13088,6 +13261,7 @@ export class PersonalMemoryStore {
           CASE WHEN ${eligibility}
             AND d.content_hash!='' AND lower(d.content_hash)=lower(s.content_hash)
             AND ${evidenceCountsCurrent}
+            AND ${evidenceAuthorityCurrent}
             THEN 1 ELSE 0 END AS is_current,
           CASE WHEN ${eligibility} AND d.content_hash='' THEN 1 ELSE 0 END AS is_unknown,
           CASE WHEN s.id IS NULL THEN 1 ELSE 0 END AS is_missing,
@@ -13097,10 +13271,16 @@ export class PersonalMemoryStore {
           CASE WHEN ${eligibility} AND d.content_hash!=''
             AND lower(d.content_hash)=lower(s.content_hash)
             AND NOT ${evidenceCountsCurrent} THEN 1 ELSE 0 END AS is_evidence_counts_changed
+          ,CASE WHEN ${eligibility} AND d.content_hash!=''
+            AND lower(d.content_hash)=lower(s.content_hash)
+            AND ${evidenceCountsCurrent}
+            AND NOT ${evidenceAuthorityCurrent} THEN 1 ELSE 0 END AS is_evidence_authority_changed
         FROM assistant_answer_dependencies d
         LEFT JOIN search_documents s ON s.id=d.document_id
         LEFT JOIN structured_evidence_counts sec
           ON sec.document_type=s.document_type AND sec.source_id=s.source_id
+        LEFT JOIN structured_evidence_revisions ser
+          ON ser.document_type=s.document_type AND ser.source_id=s.source_id
       ),
       statement_state AS (
         SELECT conversation_id,message_id,statement_index,
@@ -13109,7 +13289,8 @@ export class PersonalMemoryStore {
           MAX(is_missing) AS has_missing,
           MAX(is_ineligible) AS has_ineligible,
           MAX(is_content_changed) AS has_content_changed,
-          MAX(is_evidence_counts_changed) AS has_evidence_counts_changed
+          MAX(is_evidence_counts_changed) AS has_evidence_counts_changed,
+          MAX(is_evidence_authority_changed) AS has_evidence_authority_changed
         FROM dependency_state
         GROUP BY conversation_id,message_id,statement_index
       ),
@@ -13128,7 +13309,11 @@ export class PersonalMemoryStore {
             THEN 1 ELSE 0 END) AS content_changed_statements,
           SUM(CASE WHEN ss.has_current=0 AND ss.has_unknown=0
             AND ss.has_missing=0 AND ss.has_ineligible=0 AND ss.has_content_changed=0
-            AND ss.has_evidence_counts_changed=1 THEN 1 ELSE 0 END) AS evidence_counts_changed_statements
+            AND ss.has_evidence_counts_changed=1 THEN 1 ELSE 0 END) AS evidence_counts_changed_statements,
+          SUM(CASE WHEN ss.has_current=0 AND ss.has_unknown=0
+            AND ss.has_missing=0 AND ss.has_ineligible=0 AND ss.has_content_changed=0
+            AND ss.has_evidence_counts_changed=0 AND ss.has_evidence_authority_changed=1
+            THEN 1 ELSE 0 END) AS evidence_changed_statements
         FROM statement_state ss
         JOIN assistant_messages m ON m.id=ss.message_id
         GROUP BY ss.conversation_id,ss.message_id
@@ -13142,7 +13327,8 @@ export class PersonalMemoryStore {
           SUM(missing_statements) AS missing_statements,
           SUM(ineligible_statements) AS ineligible_statements,
           SUM(content_changed_statements) AS content_changed_statements,
-          SUM(evidence_counts_changed_statements) AS evidence_counts_changed_statements
+          SUM(evidence_counts_changed_statements) AS evidence_counts_changed_statements,
+          SUM(evidence_changed_statements) AS evidence_changed_statements
         FROM answer_revalidation GROUP BY conversation_id
       )
     `
@@ -13164,6 +13350,7 @@ export class PersonalMemoryStore {
         COALESCE(cr.content_changed_statements,0) AS revalidation_content_changed_statements,
         COALESCE(cr.evidence_counts_changed_statements,0)
           AS revalidation_evidence_counts_changed_statements,
+        COALESCE(cr.evidence_changed_statements,0) AS revalidation_evidence_changed_statements,
         COALESCE((
           SELECT affected.message_id FROM answer_revalidation affected
           WHERE affected.conversation_id=c.id
@@ -13214,7 +13401,7 @@ export class PersonalMemoryStore {
   listAssistantAnswerReviewsPage(options: {
     status?: 'attention' | 'invalid' | 'needs_review' | 'current' | 'all'
     reviewState?: 'pending' | 'resolved' | 'all'
-    invalidReason?: 'missing' | 'ineligible' | 'content_changed' | 'evidence_counts_changed' | 'other'
+    invalidReason?: 'missing' | 'ineligible' | 'content_changed' | 'evidence_counts_changed' | 'evidence_changed' | 'other'
     query?: string
     from?: string
     to?: string
@@ -13283,6 +13470,9 @@ export class PersonalMemoryStore {
         d.evidence_supporting_count=${currentSupportingCount}
         AND d.evidence_contradiction_count=${currentContradictionCount}
       ))`
+    const evidenceAuthorityCurrent = `(d.evidence_authority_revision=0
+      OR s.document_type NOT IN ('claim','relation','event')
+      OR d.evidence_authority_revision=COALESCE(ser.revision,0))`
     const revalidationCte = `
       WITH structured_evidence_counts AS (
         SELECT 'claim' AS document_type,claim_id AS source_id,
@@ -13305,6 +13495,7 @@ export class PersonalMemoryStore {
           CASE WHEN ${eligibility}
             AND d.content_hash!='' AND lower(d.content_hash)=lower(s.content_hash)
             AND ${evidenceCountsCurrent}
+            AND ${evidenceAuthorityCurrent}
             THEN 1 ELSE 0 END AS is_current,
           CASE WHEN ${eligibility}
             AND d.content_hash='' THEN 1 ELSE 0 END AS is_unknown,
@@ -13315,6 +13506,10 @@ export class PersonalMemoryStore {
           CASE WHEN ${eligibility} AND d.content_hash!=''
             AND lower(d.content_hash)=lower(s.content_hash)
             AND NOT ${evidenceCountsCurrent} THEN 1 ELSE 0 END AS is_evidence_counts_changed,
+          CASE WHEN ${eligibility} AND d.content_hash!=''
+            AND lower(d.content_hash)=lower(s.content_hash)
+            AND ${evidenceCountsCurrent}
+            AND NOT ${evidenceAuthorityCurrent} THEN 1 ELSE 0 END AS is_evidence_authority_changed,
           printf('%s:%s:%s:%s:%s:%s',
             d.document_id,
             CASE WHEN s.id IS NULL THEN 'missing'
@@ -13323,7 +13518,10 @@ export class PersonalMemoryStore {
             lower(COALESCE(json_extract(s.metadata_json,'$.status'),'')),
             CASE WHEN d.evidence_sample_hash='' THEN 'legacy-counts'
               WHEN s.document_type IN ('claim','relation','event')
-              THEN printf('%d:%d',${currentSupportingCount},${currentContradictionCount})
+              THEN printf('%d:%d:%d',
+                ${currentSupportingCount},
+                ${currentContradictionCount},
+                COALESCE(ser.revision,0))
               ELSE 'not-structured' END,
             CASE WHEN s.id IS NULL THEN ''
               WHEN EXISTS(SELECT 1 FROM search_document_evidence sde WHERE sde.document_id=s.id)
@@ -13339,6 +13537,8 @@ export class PersonalMemoryStore {
         LEFT JOIN search_documents s ON s.id=d.document_id
         LEFT JOIN structured_evidence_counts sec
           ON sec.document_type=s.document_type AND sec.source_id=s.source_id
+        LEFT JOIN structured_evidence_revisions ser
+          ON ser.document_type=s.document_type AND ser.source_id=s.source_id
       ),
       statement_state AS (
         SELECT d.conversation_id,d.message_id,d.statement_index,
@@ -13348,6 +13548,7 @@ export class PersonalMemoryStore {
           MAX(d.is_ineligible) AS has_ineligible,
           MAX(d.is_content_changed) AS has_content_changed,
           MAX(d.is_evidence_counts_changed) AS has_evidence_counts_changed,
+          MAX(d.is_evidence_authority_changed) AS has_evidence_authority_changed,
           weflow_sha256((
             SELECT group_concat(ordered.dependency_token,'|') FROM (
               SELECT nested.dependency_token
@@ -13376,6 +13577,10 @@ export class PersonalMemoryStore {
           SUM(CASE WHEN ss.has_current=0 AND ss.has_unknown=0
             AND ss.has_missing=0 AND ss.has_ineligible=0 AND ss.has_content_changed=0
             AND ss.has_evidence_counts_changed=1 THEN 1 ELSE 0 END) AS evidence_counts_changed_statements,
+          SUM(CASE WHEN ss.has_current=0 AND ss.has_unknown=0
+            AND ss.has_missing=0 AND ss.has_ineligible=0 AND ss.has_content_changed=0
+            AND ss.has_evidence_counts_changed=0 AND ss.has_evidence_authority_changed=1
+            THEN 1 ELSE 0 END) AS evidence_changed_statements,
           weflow_sha256((
             SELECT group_concat(ordered.statement_state_digest,'|') FROM (
               SELECT nested.statement_state_digest
@@ -13436,6 +13641,7 @@ export class PersonalMemoryStore {
       'ineligible',
       'content_changed',
       'evidence_counts_changed',
+      'evidence_changed',
       'other'
     ].includes(String(options.invalidReason || ''))
       ? String(options.invalidReason)
@@ -13448,10 +13654,13 @@ export class PersonalMemoryStore {
           ? 'ar.content_changed_statements>0'
           : invalidReason === 'evidence_counts_changed'
             ? 'ar.evidence_counts_changed_statements>0'
+            : invalidReason === 'evidence_changed'
+              ? 'ar.evidence_changed_statements>0'
             : invalidReason === 'other'
               ? `(ar.invalid_statements>(
                 ar.missing_statements+ar.ineligible_statements+
-                ar.content_changed_statements+ar.evidence_counts_changed_statements
+                ar.content_changed_statements+ar.evidence_counts_changed_statements+
+                ar.evidence_changed_statements
               ))`
               : ''
     const reviewState = ['pending', 'resolved', 'all'].includes(String(options.reviewState || ''))
@@ -13505,7 +13714,7 @@ export class PersonalMemoryStore {
       SELECT ar.message_id,ar.conversation_id,ar.created_at,ar.state_key,
         ar.total_statements,ar.supported_statements,ar.unknown_statements,ar.invalid_statements,
         ar.missing_statements,ar.ineligible_statements,ar.content_changed_statements,
-        ar.evidence_counts_changed_statements,
+        ar.evidence_counts_changed_statements,ar.evidence_changed_statements,
         decision.action AS latest_review_action,decision.state_key AS reviewed_state_key,
         decision.created_at AS reviewed_at,decision.id AS latest_review_decision_id,
         (SELECT COUNT(*) FROM assistant_answer_review_decisions history
@@ -13671,6 +13880,7 @@ export class PersonalMemoryStore {
     citationStorage: any
     exchangeIntegrity: any
     answerDependencies: any
+    evidenceRevisions: any
   } {
     if (!this.db) return {
       total: 0,
@@ -13679,7 +13889,8 @@ export class PersonalMemoryStore {
       latestMessageCount: 0,
       citationStorage: this.getAssistantCitationStorageStats(),
       exchangeIntegrity: this.getAssistantExchangeIntegrityStats(),
-      answerDependencies: this.getAssistantAnswerDependencyStats()
+      answerDependencies: this.getAssistantAnswerDependencyStats(),
+      evidenceRevisions: this.getStructuredEvidenceRevisionHealth()
     }
     const total = Number((this.db.prepare(`
       SELECT COUNT(*) AS count FROM assistant_conversations
@@ -13698,7 +13909,8 @@ export class PersonalMemoryStore {
       latestMessageCount: Number(latest?.message_count || 0),
       citationStorage: this.getAssistantCitationStorageStats(),
       exchangeIntegrity: this.getAssistantExchangeIntegrityStats(),
-      answerDependencies: this.getAssistantAnswerDependencyStats()
+      answerDependencies: this.getAssistantAnswerDependencyStats(),
+      evidenceRevisions: this.getStructuredEvidenceRevisionHealth()
     }
   }
 

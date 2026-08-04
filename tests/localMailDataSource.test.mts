@@ -268,6 +268,24 @@ test('grounded statements become stale when cited authority changes or disappear
   assert.equal(getMemoryCitationFreshness({
     answerTimeContentHash: 'a'.repeat(64),
     currentContentHash: 'a'.repeat(64),
+    answerTimeEvidenceSampleHash: 'b'.repeat(64),
+    currentEvidenceSampleHash: 'b'.repeat(64),
+    answerTimeEvidenceRoleCounts: { supporting: 20, contradiction: 1 },
+    currentEvidenceRoleCounts: { supporting: 20, contradiction: 1 },
+    answerTimeEvidenceAuthorityRevision: 8,
+    currentEvidenceAuthorityRevision: 9,
+    canSupportFacts: true
+  }), 'changed')
+  assert.equal(getMemoryCitationFreshness({
+    answerTimeContentHash: 'a'.repeat(64),
+    currentContentHash: 'a'.repeat(64),
+    answerTimeEvidenceAuthorityRevision: 0,
+    currentEvidenceAuthorityRevision: 9,
+    canSupportFacts: true
+  }), 'current')
+  assert.equal(getMemoryCitationFreshness({
+    answerTimeContentHash: 'a'.repeat(64),
+    currentContentHash: 'a'.repeat(64),
     answerTimeEvidenceRoleCounts: { supporting: 0, contradiction: 0 },
     currentEvidenceRoleCounts: { supporting: 20, contradiction: 1 },
     canSupportFacts: true

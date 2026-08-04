@@ -236,6 +236,10 @@ export function buildModelMemoryContext(
         evidenceRoleCounts: item.evidenceRoleCounts || undefined,
         evidenceSelection: item.evidenceSelection || undefined,
         evidenceSampleHash: memoryEvidenceSampleHash(item.evidence),
+        evidenceAuthorityRevision: Math.max(
+          0,
+          Math.floor(Number(item.evidenceAuthorityRevision) || 0)
+        ),
         canSupportFacts: eligibility.canSupportFacts
       }
     })
@@ -335,6 +339,8 @@ export function getMemoryCitationFreshness(input: {
   currentEvidenceSampleHash?: string
   answerTimeEvidenceRoleCounts?: { supporting?: number; contradiction?: number }
   currentEvidenceRoleCounts?: { supporting?: number; contradiction?: number }
+  answerTimeEvidenceAuthorityRevision?: number
+  currentEvidenceAuthorityRevision?: number
   canSupportFacts?: boolean
   unavailable?: boolean
 }): 'current' | 'changed' | 'unknown' | 'ineligible' | 'missing' {
@@ -372,6 +378,18 @@ export function getMemoryCitationFreshness(input: {
       || answerCounts.contradiction !== currentCounts.contradiction) {
       return 'changed'
     }
+  }
+  const answerAuthorityRevision = Math.max(
+    0,
+    Math.floor(Number(input.answerTimeEvidenceAuthorityRevision) || 0)
+  )
+  const currentAuthorityRevision = Math.max(
+    0,
+    Math.floor(Number(input.currentEvidenceAuthorityRevision) || 0)
+  )
+  if (answerAuthorityRevision > 0 && currentAuthorityRevision > 0
+    && answerAuthorityRevision !== currentAuthorityRevision) {
+    return 'changed'
   }
   return 'current'
 }

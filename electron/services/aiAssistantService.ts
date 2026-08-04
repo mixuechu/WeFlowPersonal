@@ -4014,8 +4014,9 @@ export class AiAssistantService {
         exchangeIntegrity: assistantArchiveStats.exchangeIntegrity,
         answerDependencies: {
           ...assistantArchiveStats.answerDependencies,
-          policy: 'statement_dependency_index_v1'
-        }
+          policy: 'statement_dependency_index_v2'
+        },
+        evidenceRevisions: assistantArchiveStats.evidenceRevisions
       },
       qualityBaseline: evaluateTaskAssignmentPolicy(),
       weeklyBriefing: buildWeeklyBriefing(this.state.briefings, tasks),
@@ -7728,6 +7729,12 @@ export class AiAssistantService {
             currentEvidenceSampleHash: memoryEvidenceSampleHash(document.evidence || []),
             answerTimeEvidenceRoleCounts,
             currentEvidenceRoleCounts,
+            answerTimeEvidenceAuthorityRevision: Number(
+              citation.evidenceAuthorityRevision || 0
+            ),
+            currentEvidenceAuthorityRevision: Number(
+              document.evidenceAuthorityRevision || 0
+            ),
             canSupportFacts: eligibility.canSupportFacts
           })
           const citationEvidenceRoleCountsChanged = Boolean(
@@ -7740,11 +7747,20 @@ export class AiAssistantService {
             String(citation.evidenceSampleHash || '')
           ) ? String(citation.evidenceSampleHash).toLowerCase() : ''
           const currentEvidenceSampleHash = memoryEvidenceSampleHash(document.evidence || [])
+          const answerTimeEvidenceAuthorityRevision = Math.max(
+            0,
+            Math.floor(Number(citation.evidenceAuthorityRevision) || 0)
+          )
+          const currentEvidenceAuthorityRevision = Math.max(
+            0,
+            Math.floor(Number(document.evidenceAuthorityRevision) || 0)
+          )
           const hydratedCitation = {
             ...citation,
             answerTimeTitle: citation.title || '',
             answerTimeContentHash,
             answerTimeEvidenceRoleCounts,
+            answerTimeEvidenceAuthorityRevision,
             currentContentHash,
             sourceId: document.source_id,
             type: document.document_type,
@@ -7760,6 +7776,7 @@ export class AiAssistantService {
             evidenceRoleCounts: document.evidenceRoleCounts || undefined,
             evidenceSelection: document.evidenceSelection || undefined,
             evidenceSampleHash: currentEvidenceSampleHash,
+            evidenceAuthorityRevision: currentEvidenceAuthorityRevision,
             canSupportFacts: eligibility.canSupportFacts,
             citationUnavailable: false,
             citationHydration: context ? 'authoritative_scoped' : 'authoritative_scope_unknown',
@@ -7773,6 +7790,11 @@ export class AiAssistantService {
               && answerTimeEvidenceSampleHash !== currentEvidenceSampleHash
             ),
             citationEvidenceRoleCountsChanged,
+            citationEvidenceAuthorityChanged: Boolean(
+              answerTimeEvidenceAuthorityRevision
+              && currentEvidenceAuthorityRevision
+              && answerTimeEvidenceAuthorityRevision !== currentEvidenceAuthorityRevision
+            ),
             relevanceFeedback,
             ...(canonicalFeedbackContext ? { feedbackContext: canonicalFeedbackContext } : {})
           }

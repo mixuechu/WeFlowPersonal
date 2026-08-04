@@ -209,14 +209,18 @@ function assistantRevalidationReasonSummary(item: any): string {
     item?.evidence_counts_changed_statements
       ?? item?.revalidation_evidence_counts_changed_statements
   ) || 0)
+  const evidenceChanged = Math.max(0, Number(
+    item?.evidence_changed_statements ?? item?.revalidation_evidence_changed_statements
+  ) || 0)
   if (missing) reasons.push(`来源已删除 ${missing}`)
   if (ineligible) reasons.push(`可信资格失效 ${ineligible}`)
   if (contentChanged) reasons.push(`结构化内容变化 ${contentChanged}`)
   if (evidenceCountsChanged) reasons.push(`支持/反证构成变化 ${evidenceCountsChanged}`)
+  if (evidenceChanged) reasons.push(`权威原文集合变化 ${evidenceChanged}`)
   const invalid = Math.max(0, Number(
     item?.invalid_statements ?? item?.revalidation_invalid_statements
   ) || 0)
-  const classified = missing + ineligible + contentChanged + evidenceCountsChanged
+  const classified = missing + ineligible + contentChanged + evidenceCountsChanged + evidenceChanged
   if (invalid > classified) reasons.push(`其他失效 ${invalid - classified}`)
   return reasons.join(' · ')
 }
@@ -7787,6 +7791,7 @@ function AiAssistantPage() {
                   <option value="ineligible">可信资格失效</option>
                   <option value="content_changed">结构化内容变化</option>
                   <option value="evidence_counts_changed">支持/反证构成变化</option>
+                  <option value="evidence_changed">权威原文集合变化</option>
                   <option value="other">其他失效</option>
                 </select>
                 <input value={assistantAnswerReviewQuery}
@@ -7926,10 +7931,13 @@ function AiAssistantPage() {
                 {!!Number(dashboard.assistantArchive.exchangeIntegrity.unmatchedMessages || 0) &&
                   ` 检测到 ${Number(dashboard.assistantArchive.exchangeIntegrity.unmatchedMessages).toLocaleString()} 条旧版未配对消息，仅保留为历史，不会冒充完整回合。`}
               </small>}
-              {dashboard?.assistantArchive?.answerDependencies?.policy === 'statement_dependency_index_v1' && <small>
+              {String(dashboard?.assistantArchive?.answerDependencies?.policy || '').startsWith('statement_dependency_index_') && <small>
                 已建立 {Number(dashboard.assistantArchive.answerDependencies.statements || 0).toLocaleString()} 条陈述、
                 {Number(dashboard.assistantArchive.answerDependencies.dependencies || 0).toLocaleString()} 项轻量引用依赖；
                 目录核验不加载回答正文或原文。
+                {dashboard?.assistantArchive?.evidenceRevisions &&
+                  ` 权威证据修订账本 ${Number(dashboard.assistantArchive.evidenceRevisions.rows || 0).toLocaleString()} 项，` +
+                  `${dashboard.assistantArchive.evidenceRevisions.healthy ? '3 个触发器正常' : '触发器需要修复'}。`}
               </small>}
               {assistantConversations.map(conversation => <button
                 className={memoryConversationId === conversation.id ? 'active' : ''}
@@ -8115,6 +8123,12 @@ function AiAssistantPage() {
                 {citation.citationEvidenceSampleChanged && <small className="assistant-evidence-limit-note">
                   回答生成后，模型所依据的有界证据样本已经变化；旧陈述需要按当前原文重新核验。
                 </small>}
+                {citation.citationEvidenceAuthorityChanged &&
+                  !citation.citationEvidenceSampleChanged &&
+                  !citation.citationEvidenceRoleCountsChanged &&
+                  <small className="assistant-evidence-limit-note">
+                    回答生成后，权威原文集合发生过增删或修正；即使当前样本和支持/反证数量看起来相同，旧陈述仍需重新核验。
+                  </small>}
                 {citation.citationEvidenceRoleCountsChanged && <small className="assistant-evidence-limit-note">
                   回答生成后，完整证据构成已经变化：
                   当时有 {Number(citation.answerTimeEvidenceRoleCounts?.supporting || 0)} 条非反证原文、

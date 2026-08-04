@@ -8120,9 +8120,9 @@ test('assistant history revision covers authoritative history and self-heals on 
     expectAdvanced()
 
     const initialHealth = first.getAssistantHistoryRevisionHealth()
-    assert.equal(initialHealth.version, 'assistant-history-revision-v2')
-    assert.equal(initialHealth.expectedTriggers, 21)
-    assert.equal(initialHealth.validTriggers, 21)
+    assert.equal(initialHealth.version, 'assistant-history-revision-v3')
+    assert.equal(initialHealth.expectedTriggers, 24)
+    assert.equal(initialHealth.validTriggers, 24)
     assert.equal(initialHealth.healthy, true)
     database.exec(`
       DROP TRIGGER trg_assistant_history_revision_assistant_messages_insert;
@@ -8130,15 +8130,15 @@ test('assistant history revision covers authoritative history and self-heals on 
       AFTER INSERT ON assistant_messages BEGIN SELECT 1; END;
     `)
     const driftedHealth = first.getAssistantHistoryRevisionHealth()
-    assert.equal(driftedHealth.installedTriggers, 21)
-    assert.equal(driftedHealth.validTriggers, 20)
+    assert.equal(driftedHealth.installedTriggers, 24)
+    assert.equal(driftedHealth.validTriggers, 23)
     assert.equal(driftedHealth.healthy, false)
     first.close()
 
     const reopened = new PersonalMemoryStore()
     reopened.initialize(databasePath)
     const repairedHealth = reopened.getAssistantHistoryRevisionHealth()
-    assert.equal(repairedHealth.validTriggers, 21)
+    assert.equal(repairedHealth.validTriggers, 24)
     assert.equal(repairedHealth.repairedTriggersThisStart, 1)
     assert.equal(repairedHealth.healthy, true)
     assert.equal(reopened.listAssistantConversationsPage({ limit: 20 }).total, 1)
@@ -8553,7 +8553,8 @@ test('assistant uncertainty and evidence sample identity survive a SQLCipher reo
         title: '冲突事实',
         contentHash: 'a'.repeat(64),
         evidenceSampleHash: 'b'.repeat(64),
-        evidenceRoleCounts: { supporting: 7, contradiction: 2 }
+        evidenceRoleCounts: { supporting: 7, contradiction: 2 },
+        evidenceAuthorityRevision: 42
       }],
       undefined,
       {
@@ -8569,11 +8570,12 @@ test('assistant uncertainty and evidence sample identity survive a SQLCipher reo
     )
     ;(first as any).db.prepare(`
       UPDATE assistant_answer_dependencies
-      SET evidence_sample_hash='',evidence_supporting_count=0,evidence_contradiction_count=0
+      SET evidence_sample_hash='',evidence_supporting_count=0,evidence_contradiction_count=0,
+        evidence_authority_revision=0
       WHERE message_id=?
     `).run(saved.answerMessageId)
     ;(first as any).db.prepare(`
-      DELETE FROM schema_meta WHERE key='assistant_answer_dependencies_v2'
+      DELETE FROM schema_meta WHERE key='assistant_answer_dependencies_v3'
     `).run()
     first.close()
 
@@ -8587,15 +8589,18 @@ test('assistant uncertainty and evidence sample identity survive a SQLCipher reo
       supporting: 7,
       contradiction: 2
     })
+    assert.equal(answer.citations[0].evidenceAuthorityRevision, 42)
     assert.deepEqual((reopened as any).db.prepare(`
       SELECT evidence_sample_hash,evidence_supporting_count,evidence_contradiction_count
+        ,evidence_authority_revision
       FROM assistant_answer_dependencies WHERE message_id=?
     `).get(saved.answerMessageId), {
       evidence_sample_hash: 'b'.repeat(64),
       evidence_supporting_count: 7,
-      evidence_contradiction_count: 2
+      evidence_contradiction_count: 2,
+      evidence_authority_revision: 42
     })
-    assert.equal(reopened.getAssistantAnswerDependencyStats().version, 2)
+    assert.equal(reopened.getAssistantAnswerDependencyStats().version, 3)
   } finally {
     first.close()
     reopened.close()
@@ -8900,7 +8905,7 @@ test('assistant archive paginates years of conversations and complete long threa
   })
   const stats = store.getAssistantArchiveStats()
   assert.deepEqual(Object.keys(stats).sort(), [
-    'answerDependencies', 'citationStorage', 'exchangeIntegrity',
+    'answerDependencies', 'citationStorage', 'evidenceRevisions', 'exchangeIntegrity',
     'latestId', 'latestMessageCount', 'latestUpdatedAt', 'total'
   ])
   assert.deepEqual(Object.keys(stats.citationStorage).sort(), [
@@ -9316,6 +9321,15 @@ test('assistant archive invalidates answers when structured evidence counts chan
   const document = database.prepare(`
     SELECT content_hash FROM search_documents WHERE id='claim:claim-answer-counts'
   `).get()
+  const initialAuthorityRevision = store.getSearchDocumentById(
+    'claim:claim-answer-counts'
+  ).evidenceAuthorityRevision
+  assert.ok(initialAuthorityRevision > 0)
+  assert.equal(store.getDocumentEvidencePayload(
+    'claim',
+    'claim-answer-counts',
+    { sessionId: 'answer-counts-session' }
+  ).evidenceAuthorityRevision, 0)
   const saved = store.saveAssistantExchangeDetailed(
     '谁负责证据计数项目？',
     '证据计数测试对象负责。',
@@ -9326,7 +9340,8 @@ test('assistant archive invalidates answers when structured evidence counts chan
       title: '负责证据计数项目',
       contentHash: document.content_hash,
       evidenceSampleHash: 'a'.repeat(64),
-      evidenceRoleCounts: { supporting: 1, contradiction: 0 }
+      evidenceRoleCounts: { supporting: 1, contradiction: 0 },
+      evidenceAuthorityRevision: initialAuthorityRevision
     }],
     undefined,
     {
@@ -9347,12 +9362,14 @@ test('assistant archive invalidates answers when structured evidence counts chan
     limit: 10
   }).total, 1)
   assert.deepEqual(database.prepare(`
-    SELECT evidence_sample_hash,evidence_supporting_count,evidence_contradiction_count
+    SELECT evidence_sample_hash,evidence_supporting_count,evidence_contradiction_count,
+      evidence_authority_revision
     FROM assistant_answer_dependencies WHERE message_id=?
   `).get(saved.answerMessageId), {
     evidence_sample_hash: 'a'.repeat(64),
     evidence_supporting_count: 1,
-    evidence_contradiction_count: 0
+    evidence_contradiction_count: 0,
+    evidence_authority_revision: initialAuthorityRevision
   })
 
   database.prepare(`
@@ -9369,6 +9386,10 @@ test('assistant archive invalidates answers when structured evidence counts chan
     '补充一条没有改变结构化摘要的支持原文',
     'direct'
   )
+  const insertedAuthorityRevision = store.getSearchDocumentById(
+    'claim:claim-answer-counts'
+  ).evidenceAuthorityRevision
+  assert.ok(insertedAuthorityRevision > initialAuthorityRevision)
   const countChangedDirectory = store.listAssistantConversationsPage({
     revalidationStatus: 'invalid',
     limit: 20
@@ -9402,7 +9423,8 @@ test('assistant archive invalidates answers when structured evidence counts chan
       title: '负责证据计数项目',
       contentHash: document.content_hash,
       evidenceSampleHash: 'b'.repeat(64),
-      evidenceRoleCounts: { supporting: 2, contradiction: 0 }
+      evidenceRoleCounts: { supporting: 2, contradiction: 0 },
+      evidenceAuthorityRevision: insertedAuthorityRevision
     }],
     undefined,
     {
@@ -9424,6 +9446,10 @@ test('assistant archive invalidates answers when structured evidence counts chan
     UPDATE evidence SET evidence_role='contradiction'
     WHERE claim_id='claim-answer-counts' AND message_id='answer-counts-2'
   `).run()
+  const roleChangedAuthorityRevision = store.getSearchDocumentById(
+    'claim:claim-answer-counts'
+  ).evidenceAuthorityRevision
+  assert.ok(roleChangedAuthorityRevision > insertedAuthorityRevision)
   const roleChangedReview = store.listAssistantAnswerReviewsPage({
     status: 'invalid',
     messageId: roleSensitive.answerMessageId,
@@ -9431,12 +9457,134 @@ test('assistant archive invalidates answers when structured evidence counts chan
   })
   assert.equal(roleChangedReview.total, 1)
   assert.equal(roleChangedReview.items[0].evidence_counts_changed_statements, 1)
+  const sameCountSensitive = store.saveAssistantExchangeDetailed(
+    '原文内容本身后来改过吗？',
+    '当前原文集合尚未发生进一步修正。',
+    [{
+      documentId: 'claim:claim-answer-counts',
+      sourceId: 'claim-answer-counts',
+      type: 'claim',
+      title: '负责证据计数项目',
+      contentHash: document.content_hash,
+      evidenceSampleHash: 'c'.repeat(64),
+      evidenceRoleCounts: { supporting: 1, contradiction: 1 },
+      evidenceAuthorityRevision: roleChangedAuthorityRevision
+    }],
+    undefined,
+    {
+      version: 'statement-citations-v1',
+      proposedStatements: 1,
+      acceptedStatements: 1,
+      rejectedStatements: 0,
+      acceptedCitationIds: 1,
+      promptIsolationVersion: 'untrusted-memory-envelope-v1',
+      statementCitations: [['claim:claim-answer-counts']]
+    }
+  )
+  assert.equal(store.listAssistantAnswerReviewsPage({
+    status: 'current',
+    messageId: sameCountSensitive.answerMessageId,
+    limit: 10
+  }).total, 1)
+  database.prepare(`
+    UPDATE evidence SET excerpt='修正后的反证原文，数量与角色都不变'
+    WHERE claim_id='claim-answer-counts' AND message_id='answer-counts-2'
+  `).run()
+  const excerptChangedAuthorityRevision = store.getSearchDocumentById(
+    'claim:claim-answer-counts'
+  ).evidenceAuthorityRevision
+  assert.ok(excerptChangedAuthorityRevision > roleChangedAuthorityRevision)
+  const sameCountReview = store.listAssistantAnswerReviewsPage({
+    status: 'invalid',
+    reviewState: 'all',
+    invalidReason: 'evidence_changed',
+    messageId: sameCountSensitive.answerMessageId,
+    limit: 10
+  })
+  assert.equal(sameCountReview.total, 1)
+  assert.equal(sameCountReview.items[0].evidence_changed_statements, 1)
+  assert.equal(sameCountReview.items[0].evidence_counts_changed_statements, 0)
+  database.prepare(`
+    DELETE FROM evidence
+    WHERE claim_id='claim-answer-counts' AND message_id='answer-counts-2'
+  `).run()
+  assert.ok(store.getSearchDocumentById(
+    'claim:claim-answer-counts'
+  ).evidenceAuthorityRevision > excerptChangedAuthorityRevision)
   assert.equal(store.listAssistantConversationsPage({
     offset: 1,
     limit: 20,
     revision: initialDirectory.revision
   }).stale, true)
 }))
+
+test('structured evidence revision triggers self-heal across a SQLCipher reopen', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'weflow-evidence-revision-ledger-'))
+  const databasePath = join(directory, 'memory.sqlite')
+  const first = new PersonalMemoryStore()
+  const reopened = new PersonalMemoryStore()
+  try {
+    first.initialize(databasePath)
+    first.syncGraph({
+      entities: [{
+        id: 'person-revision-ledger',
+        type: 'person',
+        canonicalName: '修订账本测试对象',
+        aliases: [],
+        accountIds: ['wxid-revision-ledger'],
+        trustStatus: 'confirmed'
+      }],
+      relations: [],
+      reviewQueue: []
+    })
+    first.upsertClaims([{
+      id: 'claim-revision-ledger',
+      subjectId: 'person-revision-ledger',
+      predicate: '状态',
+      objectValue: '初始',
+      confidence: 0.9,
+      status: 'confirmed',
+      sourceNature: 'self_statement',
+      searchText: '修订账本测试对象状态初始',
+      evidence: [{
+        sourceId: 'wechat',
+        messageId: 'revision-ledger-message',
+        sessionId: 'revision-ledger-session',
+        timestamp: 1,
+        sender: '修订账本测试对象',
+        excerpt: '初始原文',
+        evidenceRole: 'direct'
+      }]
+    }])
+    const initialRevision = first.getSearchDocumentById(
+      'claim:claim-revision-ledger'
+    ).evidenceAuthorityRevision
+    assert.ok(initialRevision > 0)
+    assert.deepEqual(first.getStructuredEvidenceRevisionHealth(), {
+      rows: 1,
+      triggers: 3,
+      healthy: true
+    })
+    ;(first as any).db.exec('DROP TRIGGER structured_evidence_revision_update')
+    assert.equal(first.getStructuredEvidenceRevisionHealth().healthy, false)
+    first.close()
+
+    reopened.initialize(databasePath)
+    assert.equal(reopened.getStructuredEvidenceRevisionHealth().healthy, true)
+    ;(reopened as any).db.prepare(`
+      UPDATE evidence SET excerpt='重启后修正的原文'
+      WHERE claim_id='claim-revision-ledger' AND message_id='revision-ledger-message'
+    `).run()
+    const repairedRevision = reopened.getSearchDocumentById(
+      'claim:claim-revision-ledger'
+    ).evidenceAuthorityRevision
+    assert.ok(repairedRevision > initialRevision)
+  } finally {
+    first.close()
+    reopened.close()
+    rmSync(directory, { recursive: true, force: true })
+  }
+})
 
 test('assistant archive does not report a failed citation when the same statement has current backup', () => withStore(store => {
   const database = (store as any).db
