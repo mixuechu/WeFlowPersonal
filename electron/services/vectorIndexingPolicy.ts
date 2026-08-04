@@ -14,8 +14,33 @@ export function validateEmbeddingBatch(
     if (vector.some(value => typeof value !== 'number' || !Number.isFinite(value))) {
       return { valid: false, dimensions, reason: 'non_finite_value' }
     }
+    const squaredNorm = vector.reduce((sum, value) => sum + value * value, 0)
+    if (!Number.isFinite(squaredNorm) || squaredNorm <= 1e-24) {
+      return { valid: false, dimensions, reason: 'invalid_norm' }
+    }
   }
   return { valid: true, dimensions, reason: '' }
+}
+
+export function safeCosineSimilarity(left: unknown, right: unknown): number | null {
+  if (!Array.isArray(left) || !Array.isArray(right) || !left.length || left.length !== right.length) return null
+  let dot = 0
+  let leftSquaredNorm = 0
+  let rightSquaredNorm = 0
+  for (let index = 0; index < left.length; index += 1) {
+    const leftValue = left[index]
+    const rightValue = right[index]
+    if (typeof leftValue !== 'number' || !Number.isFinite(leftValue)
+      || typeof rightValue !== 'number' || !Number.isFinite(rightValue)) return null
+    dot += leftValue * rightValue
+    leftSquaredNorm += leftValue * leftValue
+    rightSquaredNorm += rightValue * rightValue
+  }
+  if (!Number.isFinite(dot) || !Number.isFinite(leftSquaredNorm) || !Number.isFinite(rightSquaredNorm)
+    || leftSquaredNorm <= 1e-24 || rightSquaredNorm <= 1e-24) return null
+  const score = dot / Math.sqrt(leftSquaredNorm * rightSquaredNorm)
+  if (!Number.isFinite(score)) return null
+  return Math.max(-1, Math.min(1, score))
 }
 
 export type VectorQueryHealth = {

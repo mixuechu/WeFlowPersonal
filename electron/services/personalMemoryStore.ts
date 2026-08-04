@@ -13,6 +13,7 @@ import {
   listMultiProbeSignatures
 } from './localAnnIndex.ts'
 import type { MemorySearchOptions } from './memorySearchFilters.ts'
+import { safeCosineSimilarity, validateEmbeddingBatch } from './vectorIndexingPolicy.ts'
 import { MEMORY_CARD_EVIDENCE_LIMIT } from '../../shared/evidencePayload.ts'
 import { GRAPH_RELATION_EVIDENCE_HOT_LIMIT } from './graphEvidenceHotset.ts'
 import {
@@ -12466,6 +12467,10 @@ export class PersonalMemoryStore {
           SELECT 1 FROM json_each(CASE WHEN json_valid(embedding_json)=1 THEN embedding_json ELSE '[]' END)
           WHERE json_each.type NOT IN ('integer','real')
         )
+        OR NOT EXISTS(
+          SELECT 1 FROM json_each(CASE WHEN json_valid(embedding_json)=1 THEN embedding_json ELSE '[]' END)
+          WHERE ABS(json_each.value)>1e-12
+        )
       ORDER BY updated_at DESC LIMIT ?
     `).all(model, Math.max(1, Math.min(1000, limit))) as any[]
   }
@@ -12477,8 +12482,7 @@ export class PersonalMemoryStore {
     expectedContentHash = ''
   ): boolean {
     const normalized = Array.isArray(vector) ? [...vector] : []
-    if (!this.db || !normalized.length
-      || normalized.some(value => typeof value !== 'number' || !Number.isFinite(value))) {
+    if (!this.db || !validateEmbeddingBatch([normalized], 1).valid) {
       return false
     }
     const result = expectedContentHash
@@ -12524,6 +12528,10 @@ export class PersonalMemoryStore {
             SELECT 1 FROM json_each(CASE WHEN json_valid(embedding_json)=1 THEN embedding_json ELSE '[]' END)
             WHERE json_each.type NOT IN ('integer','real')
           )
+          AND EXISTS(
+            SELECT 1 FROM json_each(CASE WHEN json_valid(embedding_json)=1 THEN embedding_json ELSE '[]' END)
+            WHERE ABS(json_each.value)>1e-12
+          )
           THEN 1 ELSE 0 END),0) AS indexed,
         COALESCE(SUM(CASE WHEN embedding_model=? AND embedding_json IS NOT NULL
           AND (embedding_dimensions<=0
@@ -12533,6 +12541,10 @@ export class PersonalMemoryStore {
             OR EXISTS(
               SELECT 1 FROM json_each(CASE WHEN json_valid(embedding_json)=1 THEN embedding_json ELSE '[]' END)
               WHERE json_each.type NOT IN ('integer','real')
+            )
+            OR NOT EXISTS(
+              SELECT 1 FROM json_each(CASE WHEN json_valid(embedding_json)=1 THEN embedding_json ELSE '[]' END)
+              WHERE ABS(json_each.value)>1e-12
             ))
           THEN 1 ELSE 0 END),0) AS invalid
       FROM search_documents
@@ -12561,6 +12573,10 @@ export class PersonalMemoryStore {
           SELECT 1 FROM json_each(CASE WHEN json_valid(embedding_json)=1 THEN embedding_json ELSE '[]' END)
           WHERE json_each.type NOT IN ('integer','real')
         )
+        AND EXISTS(
+          SELECT 1 FROM json_each(CASE WHEN json_valid(embedding_json)=1 THEN embedding_json ELSE '[]' END)
+          WHERE ABS(json_each.value)>1e-12
+        )
         AND (? IS NULL OR embedding_dimensions=?)
     `).get(model, dimensions ?? null, dimensions ?? null) as { count: number }
     const state = this.db.prepare(`
@@ -12584,6 +12600,10 @@ export class PersonalMemoryStore {
           AND NOT EXISTS(
             SELECT 1 FROM json_each(CASE WHEN json_valid(d.embedding_json)=1 THEN d.embedding_json ELSE '[]' END)
             WHERE json_each.type NOT IN ('integer','real')
+          )
+          AND EXISTS(
+            SELECT 1 FROM json_each(CASE WHEN json_valid(d.embedding_json)=1 THEN d.embedding_json ELSE '[]' END)
+            WHERE ABS(json_each.value)>1e-12
           )
         WHERE e.model=? AND e.dimensions=?
         GROUP BY e.document_id
@@ -12639,6 +12659,10 @@ export class PersonalMemoryStore {
           SELECT 1 FROM json_each(CASE WHEN json_valid(embedding_json)=1 THEN embedding_json ELSE '[]' END)
           WHERE json_each.type NOT IN ('integer','real')
         )
+        AND EXISTS(
+          SELECT 1 FROM json_each(CASE WHEN json_valid(embedding_json)=1 THEN embedding_json ELSE '[]' END)
+          WHERE ABS(json_each.value)>1e-12
+        )
       GROUP BY embedding_dimensions ORDER BY count DESC
     `).all(model) as Array<{ dimensions: number; count: number }>
     const group = groups[0]
@@ -12667,6 +12691,10 @@ export class PersonalMemoryStore {
         AND NOT EXISTS(
           SELECT 1 FROM json_each(CASE WHEN json_valid(embedding_json)=1 THEN embedding_json ELSE '[]' END)
           WHERE json_each.type NOT IN ('integer','real')
+        )
+        AND EXISTS(
+          SELECT 1 FROM json_each(CASE WHEN json_valid(embedding_json)=1 THEN embedding_json ELSE '[]' END)
+          WHERE ABS(json_each.value)>1e-12
         )
       ORDER BY id
     `).all(model, dimensions) as Array<{ id: string; content_hash: string; embedding_json: string }>
@@ -12723,6 +12751,10 @@ export class PersonalMemoryStore {
           SELECT 1 FROM json_each(CASE WHEN json_valid(d.embedding_json)=1 THEN d.embedding_json ELSE '[]' END)
           WHERE json_each.type NOT IN ('integer','real')
         )
+        AND EXISTS(
+          SELECT 1 FROM json_each(CASE WHEN json_valid(d.embedding_json)=1 THEN d.embedding_json ELSE '[]' END)
+          WHERE ABS(json_each.value)>1e-12
+        )
     `).all(model, vector.length) as any[]
     return this.rankVectorRows(rows, vector, limit, 'exact')
   }
@@ -12731,10 +12763,9 @@ export class PersonalMemoryStore {
     return rows.map(row => {
       let candidate: number[] = []
       try { candidate = JSON.parse(row.embedding_json) } catch {}
-      let score = 0
-      for (let index = 0; index < vector.length && index < candidate.length; index += 1) score += vector[index] * candidate[index]
-      return { ...row, semantic_score: score, semantic_search_mode: mode }
-    }).sort((left, right) => right.semantic_score - left.semantic_score)
+      const score = safeCosineSimilarity(vector, candidate)
+      return score === null ? null : { ...row, semantic_score: score, semantic_search_mode: mode }
+    }).filter(Boolean).sort((left: any, right: any) => right.semantic_score - left.semantic_score)
       .slice(0, Math.max(1, Math.min(500, limit)))
   }
 
@@ -12748,7 +12779,7 @@ export class PersonalMemoryStore {
       allowedIds?: Set<string> | null
     } = {}
   ): any[] {
-    if (!this.db || !vector.length) return []
+    if (!this.db || !validateEmbeddingBatch([vector], 1).valid) return []
     const allowedIds = options.allowedIds ?? null
     if (allowedIds && !allowedIds.size) return []
     if (allowedIds) this.replaceActiveSearchScope(allowedIds)
@@ -12807,7 +12838,7 @@ export class PersonalMemoryStore {
     const vectors = rows.flatMap(row => {
       try {
         const vector = JSON.parse(row.embedding_json)
-        return Array.isArray(vector) && vector.length ? [{ id: row.source_id, vector: vector.map(Number) }] : []
+        return validateEmbeddingBatch([vector], 1).valid ? [{ id: row.source_id, vector }] : []
       } catch {
         return []
       }
@@ -12815,11 +12846,8 @@ export class PersonalMemoryStore {
     const pairs: Array<{ leftId: string; rightId: string; score: number }> = []
     for (let leftIndex = 0; leftIndex < vectors.length; leftIndex += 1) {
       for (let rightIndex = leftIndex + 1; rightIndex < vectors.length; rightIndex += 1) {
-        let score = 0
-        const dimensions = Math.min(vectors[leftIndex].vector.length, vectors[rightIndex].vector.length)
-        for (let index = 0; index < dimensions; index += 1) {
-          score += vectors[leftIndex].vector[index] * vectors[rightIndex].vector[index]
-        }
+        const score = safeCosineSimilarity(vectors[leftIndex].vector, vectors[rightIndex].vector)
+        if (score === null) continue
         if (score >= minimumScore) pairs.push({
           leftId: vectors[leftIndex].id,
           rightId: vectors[rightIndex].id,

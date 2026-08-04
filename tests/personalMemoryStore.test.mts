@@ -7,6 +7,7 @@ import { createHash, randomBytes } from 'node:crypto'
 import { PersonalMemoryStore } from '../electron/services/personalMemoryStore.ts'
 import {
   recordVectorQueryOutcome,
+  safeCosineSimilarity,
   validateEmbeddingBatch
 } from '../electron/services/vectorIndexingPolicy.ts'
 import {
@@ -1710,6 +1711,7 @@ test('identity disambiguation recalls multi-account candidates from graph and lo
     { id: 'person-a', type: 'person', canonicalName: '开发者甲' },
     { id: 'person-b', type: 'person', canonicalName: '产品经理乙' },
     { id: 'person-c', type: 'person', canonicalName: '无关人物' },
+    { id: 'person-d', type: 'person', canonicalName: '异常幅值人物' },
     { id: 'org-1', type: 'organization', canonicalName: '组织一' },
     { id: 'project-1', type: 'project', canonicalName: '项目一' }
   ]
@@ -1728,6 +1730,7 @@ test('identity disambiguation recalls multi-account candidates from graph and lo
   store.saveEmbedding('entity:person-a', 'identity-test', [1, 0])
   store.saveEmbedding('entity:person-b', 'identity-test', [0.9, Math.sqrt(0.19)])
   store.saveEmbedding('entity:person-c', 'identity-test', [0, 1])
+  store.saveEmbedding('entity:person-d', 'identity-test', [100, -100])
   const vectorPairs = store.listSimilarEntityPairs('identity-test', 0.88)
   assert.deepEqual(vectorPairs.map(pair => [pair.leftId, pair.rightId]), [['person-a', 'person-b']])
   assert.ok(vectorPairs[0].score >= 0.9)
@@ -7158,11 +7161,70 @@ test('embedding batches reject count, dimension and non-finite output before wri
   })
   assert.equal(validateEmbeddingBatch([[1, 0]], 2).reason, 'count_mismatch')
   assert.equal(validateEmbeddingBatch([[]], 1).reason, 'empty_vector')
+  assert.equal(validateEmbeddingBatch([[0, 0]], 1).reason, 'invalid_norm')
+  assert.equal(validateEmbeddingBatch([[Number.MAX_VALUE, Number.MAX_VALUE]], 1).reason, 'invalid_norm')
   assert.equal(validateEmbeddingBatch([[1, 0], [1]], 2).reason, 'dimension_mismatch')
   assert.equal(validateEmbeddingBatch([[1, Number.NaN]], 1).reason, 'non_finite_value')
   assert.equal(validateEmbeddingBatch([[1, Number.POSITIVE_INFINITY]], 1).reason,
     'non_finite_value')
 })
+
+test('cosine similarity is scale safe and rejects unusable vectors', () => {
+  assert.equal(safeCosineSimilarity([1, 0], [1_000_000, 0]), 1)
+  assert.equal(safeCosineSimilarity([1, 0], [0, 5]), 0)
+  assert.equal(safeCosineSimilarity([1, 0], [-7, 0]), -1)
+  assert.equal(safeCosineSimilarity([1, 0], [0, 0]), null)
+  assert.equal(safeCosineSimilarity([1, 0], [1]), null)
+  assert.equal(safeCosineSimilarity([1, 0], [Number.NaN, 0]), null)
+})
+
+test('semantic ranking uses cosine similarity so vector magnitude cannot dominate relevance', () => withStore(store => {
+  const model = 'test-cosine-ranking:2d'
+  store.syncTasks([
+    {
+      id: 'cosine-aligned',
+      title: '方向一致',
+      priority: 'medium',
+      status: 'todo',
+      classification: 'mine'
+    },
+    {
+      id: 'cosine-inflated',
+      title: '幅值很大但方向较差',
+      priority: 'medium',
+      status: 'todo',
+      classification: 'mine'
+    }
+  ])
+  assert.equal(store.saveEmbedding('task:cosine-aligned', model, [1, 0]), true)
+  assert.equal(store.saveEmbedding('task:cosine-inflated', model, [8, 6]), true)
+  const results = store.searchVector([1, 0], model, 10)
+  assert.deepEqual(results.map(item => item.id), ['task:cosine-aligned', 'task:cosine-inflated'])
+  assert.equal(results[0].semantic_score, 1)
+  assert.ok(Math.abs(results[1].semantic_score - 0.8) < 1e-12)
+  assert.equal(store.saveEmbedding('task:cosine-inflated', model, [0, 0]), false)
+}))
+
+test('legacy zero vectors become invalid pending work and never enter semantic results', () => withStore(store => {
+  const model = 'test-zero-vector:2d'
+  store.syncTasks([{
+    id: 'zero-vector',
+    title: '零向量损坏',
+    priority: 'medium',
+    status: 'todo',
+    classification: 'mine'
+  }])
+  assert.equal(store.saveEmbedding('task:zero-vector', model, [1, 0]), true)
+  ;(store as any).db.prepare(`
+    UPDATE search_documents SET embedding_json='[0,0]' WHERE id='task:zero-vector'
+  `).run()
+  const stats = store.getEmbeddingStats(model)
+  assert.equal(stats.indexed, 0)
+  assert.equal(stats.pending, 1)
+  assert.equal(stats.invalid, 1)
+  assert.deepEqual(store.searchVector([1, 0], model), [])
+  assert.deepEqual(store.listEmbeddingCandidates(model).map(item => item.id), ['task:zero-vector'])
+}))
 
 test('vector query fallback remains visible and a later success clears only current error', () => {
   const initial = {
