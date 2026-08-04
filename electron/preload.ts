@@ -617,6 +617,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
     status: () => ipcRenderer.invoke('ai-assistant:status'),
     dashboard: () => ipcRenderer.invoke('ai-assistant:dashboard'),
     getGraphReviewPage: (options?: any) => ipcRenderer.invoke('ai-assistant:getGraphReviewPage', options),
+    getGraphReviewEvidencePage: (reviewId: string, options?: any) =>
+      ipcRenderer.invoke('ai-assistant:getGraphReviewEvidencePage', reviewId, options),
     getGraphWorkspace: (options?: any) => ipcRenderer.invoke('ai-assistant:getGraphWorkspace', options),
     getTrustedEntityDirectory: (options?: any) =>
       ipcRenderer.invoke('ai-assistant:getTrustedEntityDirectory', options),

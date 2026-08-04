@@ -1030,6 +1030,88 @@ test('review ledger pagination keeps stable boundaries and scoped counts', () =>
   )
 })
 
+test('graph review directory bounds evidence while the complete archive stays pageable after reopen', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'weflow-review-evidence-page-test-'))
+  const databasePath = join(directory, 'memory.sqlite')
+  const evidenceRows = Array.from({ length: 125 }, (_, index) => ({
+    sourceId: index % 2 === 0 ? 'wechat' : 'mail',
+    sessionId: `review-session-${index % 5}`,
+    messageId: `review-message-${index}`,
+    timestamp: 1_700_100_000 + index,
+    sender: `发送者 ${index}`,
+    excerpt: `审阅原文 ${index}`
+  }))
+  const graph = {
+    entities: [],
+    relations: [],
+    reviewQueue: [{
+      id: 'large-review-evidence',
+      kind: 'entity_creation',
+      title: '大量原文候选',
+      detail: '验证目录有界和完整档案',
+      confidence: 0.8,
+      status: 'pending',
+      createdAt: '2026-08-04T16:00:00.000Z',
+      entityId: 'large-review-entity',
+      entityCanonicalName: '大量原文实体',
+      entityType: 'person',
+      evidence: evidenceRows
+    }]
+  }
+  const first = new PersonalMemoryStore()
+  const reopened = new PersonalMemoryStore()
+  try {
+    first.initialize(databasePath)
+    first.syncGraph(graph)
+    const directoryPage = first.listReviewLedgerPage({ status: 'pending', limit: 40 })
+    assert.equal(directoryPage.items[0].evidenceTotal, 125)
+    assert.equal(directoryPage.items[0].evidence.length, 3)
+    assert.deepEqual(
+      directoryPage.items[0].evidence.map((item: any) => item.messageId),
+      ['review-message-122', 'review-message-123', 'review-message-124']
+    )
+    assert.equal(JSON.stringify(directoryPage.items[0]).includes('审阅原文 0'), false)
+    first.close()
+
+    reopened.initialize(databasePath)
+    const revision = reopened.getGraphReviewRevision()
+    assert.equal(reopened.listGraphReviewEvidencePage({
+      reviewId: 'large-review-evidence', offset: 0, limit: 40, revision: ''
+    }).stale, true)
+    const page1 = reopened.listGraphReviewEvidencePage({
+      reviewId: 'large-review-evidence', offset: 0, limit: 40, revision
+    })
+    const page2 = reopened.listGraphReviewEvidencePage({
+      reviewId: 'large-review-evidence', offset: 40, limit: 40, revision
+    })
+    const page3 = reopened.listGraphReviewEvidencePage({
+      reviewId: 'large-review-evidence', offset: 80, limit: 100, revision
+    })
+    assert.equal(page1.total, 125)
+    assert.equal(page1.items.length, 40)
+    assert.equal(page2.items.length, 40)
+    assert.equal(page3.items.length, 45)
+    assert.equal(page3.hasMore, false)
+    assert.equal(new Set([...page1.items, ...page2.items, ...page3.items]
+      .map((item: any) => `${item.sourceId}:${item.sessionId}:${item.messageId}`)).size, 125)
+    assert.equal(page1.items[0].messageId, 'review-message-124')
+    assert.equal(page3.items.at(-1).messageId, 'review-message-0')
+
+    ;(reopened as any).db.prepare(`
+      UPDATE review_queue SET detail=detail || ' 已变化' WHERE id='large-review-evidence'
+    `).run()
+    const stale = reopened.listGraphReviewEvidencePage({
+      reviewId: 'large-review-evidence', offset: 40, limit: 40, revision
+    })
+    assert.equal(stale.stale, true)
+    assert.equal(stale.items.length, 0)
+  } finally {
+    first.close()
+    reopened.close()
+    rmSync(directory, { recursive: true, force: true })
+  }
+})
+
 test('relation confirmation can atomically correct direction and predicate', () => {
   const entities = [
     { id: 'a', canonicalName: '甲方', trustStatus: 'confirmed' },

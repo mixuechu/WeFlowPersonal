@@ -910,6 +910,8 @@ function AiAssistantPage() {
   const [reviewLoadingMore, setReviewLoadingMore] = useState(false)
   const [reviewRefreshKey, setReviewRefreshKey] = useState(0)
   const reviewPageGate = useRef(new LatestRequestGate())
+  const [reviewEvidencePages, setReviewEvidencePages] = useState<Record<string, any>>({})
+  const reviewEvidenceGates = useRef(new KeyedLatestRequestGates())
   const [mergeArchive, setMergeArchive] = useState<{
     items: any[]
     total: number
@@ -1961,6 +1963,8 @@ function AiAssistantPage() {
 
   useEffect(() => {
     const request = reviewPageGate.current.begin()
+    reviewEvidenceGates.current.invalidateAll()
+    setReviewEvidencePages({})
     setReviewLoadingMore(false)
     setReviewPage(current => ({ ...current, items: [], total: 0, hasMore: false, status: 'loading', error: undefined }))
     const timer = window.setTimeout(() => {
@@ -4681,6 +4685,54 @@ function AiAssistantPage() {
       }
     } finally {
       if (reviewPageGate.current.isCurrent(request)) setReviewLoadingMore(false)
+    }
+  }
+
+  const loadReviewEvidence = async (reviewId: string, loadMore = false) => {
+    const current = reviewEvidencePages[reviewId]
+    if (current?.loading || (loadMore && !current?.hasMore)) return
+    const request = reviewEvidenceGates.current.begin(reviewId)
+    setReviewEvidencePages(pages => ({
+      ...pages,
+      [reviewId]: {
+        ...(loadMore ? pages[reviewId] : { items: [] }),
+        loading: true,
+        error: ''
+      }
+    }))
+    try {
+      const page = await window.electronAPI.aiAssistant.getGraphReviewEvidencePage(reviewId, {
+        offset: loadMore ? Number(current?.items?.length || 0) : 0,
+        limit: 40,
+        revision: reviewPage.revision
+      })
+      if (!reviewEvidenceGates.current.isCurrent(reviewId, request)) return
+      if (page.stale) {
+        setMessage('审阅原文或候选状态已有变化，已自动刷新审阅队列')
+        setReviewRefreshKey(value => value + 1)
+        return
+      }
+      setReviewEvidencePages(pages => ({
+        ...pages,
+        [reviewId]: {
+          ...page,
+          items: loadMore
+            ? [...(pages[reviewId]?.items || []), ...page.items]
+            : page.items,
+          loading: false,
+          error: ''
+        }
+      }))
+    } catch (error: any) {
+      if (!reviewEvidenceGates.current.isCurrent(reviewId, request)) return
+      setReviewEvidencePages(pages => ({
+        ...pages,
+        [reviewId]: {
+          ...(pages[reviewId] || { items: [] }),
+          loading: false,
+          error: error?.message || String(error)
+        }
+      }))
     }
   }
 
@@ -8815,6 +8867,7 @@ function AiAssistantPage() {
                 const isPending = review.status === 'pending'
                 const relation = review.kind === 'relation' ? review.relation : null
                 const relationCorrectionAudit = review.kind === 'relation' ? review.relationCorrection : null
+                const reviewEvidencePage = reviewEvidencePages[review.id]
                 const reviewEntities: any[] = review.relatedEntities || []
                 const reviewEntity = (id: string) => reviewEntities.find(item => item.id === id)
                 const subject = relation ? reviewEntity(relation.subjectId) : null
@@ -9051,6 +9104,43 @@ function AiAssistantPage() {
                           ? '确认后启用可信实体'
                       : '确认后写入关系'
                 }</small></div>
+              {Number(review.evidenceTotal || 0) > 0 && <div className="assistant-review-note">
+                <div><b>候选原文：</b>
+                  <span>目录仅预览最近 {Math.min(
+                    Number(review.evidence?.length || 0),
+                    Number(review.evidenceTotal || 0)
+                  )} / {Number(review.evidenceTotal || 0)} 条；完整原文按需从本机 SQLCipher 读取。</span>
+                </div>
+                <button type="button" disabled={reviewEvidencePage?.loading}
+                  onClick={() => {
+                    if (reviewEvidencePage) {
+                      reviewEvidenceGates.current.invalidate(review.id)
+                      setReviewEvidencePages(pages => {
+                        const next = { ...pages }
+                        delete next[review.id]
+                        return next
+                      })
+                    } else void loadReviewEvidence(review.id)
+                  }}>
+                  {reviewEvidencePage?.loading
+                    ? '正在读取完整原文…'
+                    : reviewEvidencePage ? '收起完整原文' : `查看全部 ${Number(review.evidenceTotal || 0)} 条原文`}
+                </button>
+                {reviewEvidencePage?.error && <small className="error">
+                  {reviewEvidencePage.error}
+                </small>}
+                {reviewEvidencePage && <div className="assistant-evidence-stack">
+                  <EvidenceRows evidence={reviewEvidencePage.items || []}
+                    total={reviewEvidencePage.total} />
+                  {reviewEvidencePage.hasMore && <button type="button"
+                    disabled={reviewEvidencePage.loading}
+                    onClick={() => void loadReviewEvidence(review.id, true)}>
+                    {reviewEvidencePage.loading
+                      ? '正在加载…'
+                      : `加载更多（已显示 ${reviewEvidencePage.items.length} / ${reviewEvidencePage.total}）`}
+                  </button>}
+                </div>}
+              </div>}
               {isPending && <div className="assistant-review-actions"><button onClick={() => void decideReview(review.id, 'rejected')}>拒绝</button><button className="primary" disabled={(review.kind === 'possible_duplicate' && (!review.leftEntityId || !review.rightEntityId || !selectedMergeTargetId)) || Boolean(entityNameInvalidReason) || Boolean(relationInvalidReason) || Boolean(profileInvalidReason)} title={review.kind === 'possible_duplicate' && (!review.leftEntityId || !review.rightEntityId) ? '候选信息不完整，暂不能合并' : review.kind === 'possible_duplicate' && !selectedMergeTargetId ? '请先选择合并后保留的身份' : entityNameInvalidReason || relationInvalidReason || profileInvalidReason} onClick={() => void decideReview(review.id, 'confirmed', review.kind === 'possible_duplicate' ? { mergeTargetEntityId: selectedMergeTargetId } : review.kind === 'entity_creation' ? { correctedCanonicalName: entityNameEdits[review.id] ?? review.entityCanonicalName ?? '' } : review.kind === 'relation' && relationEdit ? { relationCorrection: {
                 subjectId: relationEdit.subjectId,
                 predicate: relationEdit.predicate,

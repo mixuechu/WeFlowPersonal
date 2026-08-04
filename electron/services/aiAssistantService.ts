@@ -4370,6 +4370,19 @@ export class AiAssistantService {
     }
   }
 
+  getGraphReviewEvidencePage(reviewId: string, options?: any): any {
+    const normalizedId = String(reviewId || '').trim()
+    if (!normalizedId || normalizedId.length > 512 || /[\u0000-\u001f]/.test(normalizedId)) {
+      throw new Error('审阅记录标识无效')
+    }
+    return personalMemoryStore.listGraphReviewEvidencePage({
+      reviewId: normalizedId,
+      offset: Number(options?.offset || 0),
+      limit: Number(options?.limit || 40),
+      revision: String(options?.revision || '')
+    })
+  }
+
   getGraphWorkspace(options?: Partial<GraphViewportOptions>): any {
     const focusEntityId = String(options?.focusEntityId || '').trim()
     const graphRevision = buildGraphWorkspaceRevision(personalMemoryStore, Boolean(focusEntityId))

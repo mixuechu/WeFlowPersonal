@@ -4535,6 +4535,8 @@ function registerIpcHandlers() {
   ipcMain.handle('ai-assistant:dashboard', () => aiAssistantService.getDashboard())
   ipcMain.handle('ai-assistant:getGraphReviewPage', (_, options?: any) =>
     aiAssistantService.getGraphReviewPage(options))
+  ipcMain.handle('ai-assistant:getGraphReviewEvidencePage', (_, reviewId: string, options?: any) =>
+    aiAssistantService.getGraphReviewEvidencePage(reviewId, options))
   ipcMain.handle('ai-assistant:getGraphWorkspace', (_, options?: any) =>
     aiAssistantService.getGraphWorkspace(options))
   ipcMain.handle('ai-assistant:getTrustedEntityDirectory', (_, options?: any) =>

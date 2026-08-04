@@ -1663,6 +1663,19 @@ export interface ElectronAPI {
         revision: string
         stale: boolean
       }>
+      getGraphReviewEvidencePage: (reviewId: string, options?: {
+        offset?: number
+        limit?: number
+        revision?: string
+      }) => Promise<{
+        items: any[]
+        total: number
+        offset: number
+        limit: number
+        hasMore: boolean
+        revision: string
+        stale: boolean
+      }>
       getGraphWorkspace: (options?: {
         query?: string
         relationType?: string

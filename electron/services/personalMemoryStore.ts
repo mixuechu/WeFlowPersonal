@@ -5357,8 +5357,11 @@ export class PersonalMemoryStore {
     const items = rows.map(row => {
       let payload: any = {}
       try { payload = JSON.parse(String(row.payload_json || '{}')) } catch {}
+      const fullEvidence = Array.isArray(payload.evidence) ? payload.evidence : []
       return {
         ...payload,
+        evidence: fullEvidence.slice(-3),
+        evidenceTotal: fullEvidence.length,
         id: row.id,
         kind: row.kind,
         title: row.title,
@@ -5387,6 +5390,62 @@ export class PersonalMemoryStore {
       counts: { pending, resolved, all: pending + resolved },
       revision,
       stale: false
+    }
+  }
+
+  listGraphReviewEvidencePage(options: {
+    reviewId: string
+    offset?: number
+    limit?: number
+    revision?: string
+  }): {
+    items: any[]
+    total: number
+    offset: number
+    limit: number
+    hasMore: boolean
+    revision: string
+    stale: boolean
+  } {
+    const revision = this.getGraphReviewRevision()
+    const offset = Math.max(0, Math.min(1_000_000, Math.floor(Number(options.offset) || 0)))
+    const limit = Math.max(1, Math.min(100, Math.floor(Number(options.limit) || 40)))
+    const empty = { items: [], total: 0, offset, limit, hasMore: false, revision, stale: false }
+    if (!this.db || !String(options.reviewId || '').trim()) return empty
+    if (String(options.revision || '').trim() !== revision) return { ...empty, stale: true }
+    const row = this.db.prepare(`
+      SELECT payload_json FROM review_queue WHERE id=?
+    `).get(String(options.reviewId).trim()) as any
+    if (!row) return { ...empty, stale: true }
+    let payload: any = {}
+    try { payload = JSON.parse(String(row.payload_json || '{}')) } catch {}
+    const seen = new Set<string>()
+    const evidence = (Array.isArray(payload.evidence) ? payload.evidence : [])
+      .filter((item: any) => {
+        const key = [
+          evidenceSourceId(item),
+          String(item?.sessionId || ''),
+          String(item?.messageId || ''),
+          String(item?.timestamp || ''),
+          String(item?.excerpt || '')
+        ].join('\0')
+        if (seen.has(key)) return false
+        seen.add(key)
+        return Boolean(String(item?.messageId || '').trim() || String(item?.excerpt || '').trim())
+      })
+      .sort((left: any, right: any) =>
+        Number(right?.timestamp || 0) - Number(left?.timestamp || 0)
+        || String(right?.messageId || '').localeCompare(String(left?.messageId || '')))
+    const completedRevision = this.getGraphReviewRevision()
+    if (completedRevision !== revision) {
+      return { ...empty, revision: completedRevision, stale: true }
+    }
+    const items = evidence.slice(offset, offset + limit)
+    return {
+      ...empty,
+      items,
+      total: evidence.length,
+      hasMore: offset + items.length < evidence.length
     }
   }
 
