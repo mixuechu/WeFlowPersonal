@@ -115,6 +115,7 @@ import {
 import { buildTaskCalendar, extractTaskDueDate } from '../src/utils/taskCalendar.ts'
 import { buildEntitySidebarPresentation } from '../src/utils/entitySidebarPresentation.ts'
 import { setKeyedLoadingState } from '../src/utils/keyedLoadingState.ts'
+import { KeyedLatestRequestGates } from '../src/utils/keyedLatestRequestGates.ts'
 import { filterGraphReviews, paginateGraphReviews } from '../src/utils/graphReviewFilters.ts'
 import { summarizeIngestionRuns } from '../electron/services/ingestionDiagnostics.ts'
 import { attachLocalImageOcr, attachLocalVoiceTranscript, recoverMessageSemantics } from '../electron/services/messageSemanticRecovery.ts'
@@ -2095,6 +2096,25 @@ test('keyed loading state lets one memory audit finish without unlocking another
   assert.deepEqual(betaStillLoading, { 'event:beta': true })
   assert.equal(setKeyedLoadingState(betaStillLoading, 'event:beta', true), betaStillLoading)
   assert.deepEqual(setKeyedLoadingState(betaStillLoading, 'event:beta', false), {})
+})
+
+test('keyed request gates let independent dossier sections page concurrently', () => {
+  const gates = new KeyedLatestRequestGates()
+  const relationHistory = gates.begin('relationHistory')
+  const nameCorrections = gates.begin('entityCorrections')
+  assert.equal(gates.isCurrent('relationHistory', relationHistory), true)
+  assert.equal(gates.isCurrent('entityCorrections', nameCorrections), true)
+
+  const newerRelationHistory = gates.begin('relationHistory')
+  assert.equal(gates.isCurrent('relationHistory', relationHistory), false)
+  assert.equal(gates.isCurrent('relationHistory', newerRelationHistory), true)
+  assert.equal(gates.isCurrent('entityCorrections', nameCorrections), true)
+
+  gates.invalidate('relationHistory')
+  assert.equal(gates.isCurrent('relationHistory', newerRelationHistory), false)
+  assert.equal(gates.isCurrent('entityCorrections', nameCorrections), true)
+  gates.invalidateAll()
+  assert.equal(gates.isCurrent('entityCorrections', nameCorrections), false)
 })
 
 test('memory cards expose evidence totals but bound their latest evidence payload', () => withStore(store => {

@@ -15,6 +15,7 @@ import { buildResourceStructurePresentation } from '../utils/resourceStructurePr
 import { buildMemoryBackupDirectory } from '../utils/memoryBackupPresentation'
 import { buildEntitySidebarPresentation } from '../utils/entitySidebarPresentation'
 import { setKeyedLoadingState } from '../utils/keyedLoadingState'
+import { KeyedLatestRequestGates } from '../utils/keyedLatestRequestGates'
 import { evidenceArchiveIdentity } from '../../shared/evidencePayload'
 import './AiAssistantPage.scss'
 
@@ -513,8 +514,9 @@ function AiAssistantPage() {
   const entityEvidenceGate = useRef(new LatestRequestGate())
   const [entityTaskLoadingMore, setEntityTaskLoadingMore] = useState(false)
   const entityTaskGate = useRef(new LatestRequestGate())
-  const [entityAuditLoadingMore, setEntityAuditLoadingMore] = useState('')
-  const entityAuditGate = useRef(new LatestRequestGate())
+  const [entityAuditLoadingMore, setEntityAuditLoadingMore] =
+    useState<Record<string, boolean>>({})
+  const entityAuditGates = useRef(new KeyedLatestRequestGates())
   const [briefingPeriod, setBriefingPeriod] = useState<'latest' | 'week'>('latest')
   const [selectedProjectId, setSelectedProjectId] = useState('')
   const [projectDirectory, setProjectDirectory] = useState<any>({
@@ -1907,9 +1909,9 @@ function AiAssistantPage() {
   useEffect(() => {
     const request = graphWorkspaceGate.current.begin()
     entityTaskGate.current.invalidate()
-    entityAuditGate.current.invalidate()
+    entityAuditGates.current.invalidateAll()
     setEntityTaskLoadingMore(false)
-    setEntityAuditLoadingMore('')
+    setEntityAuditLoadingMore({})
     setGraphWorkspace((current: any) => ({
       ...current,
       viewport: {
@@ -3481,9 +3483,9 @@ function AiAssistantPage() {
   ) => {
     const focus = graphWorkspace.focus
     const pageMeta = focus?.auditPages?.[field]
-    if (!selectedEntityId || entityAuditLoadingMore || !pageMeta?.hasMore) return
-    const request = entityAuditGate.current.begin()
-    setEntityAuditLoadingMore(field)
+    if (!selectedEntityId || entityAuditLoadingMore[field] || !pageMeta?.hasMore) return
+    const request = entityAuditGates.current.begin(field)
+    setEntityAuditLoadingMore(current => setKeyedLoadingState(current, field, true))
     try {
       const page = await window.electronAPI.aiAssistant.getEntityAuditPage(
         selectedEntityId,
@@ -3494,7 +3496,7 @@ function AiAssistantPage() {
           revision: pageMeta.revision
         }
       )
-      if (!entityAuditGate.current.isCurrent(request)) return
+      if (!entityAuditGates.current.isCurrent(field, request)) return
       if (page.stale) {
         setMessage('人物变化历史在浏览期间已有更新，已重新载入最新人物档案。')
         setGraphWorkspaceRefreshKey(value => value + 1)
@@ -3521,9 +3523,13 @@ function AiAssistantPage() {
         }
       }))
     } catch (error: any) {
-      if (entityAuditGate.current.isCurrent(request)) setMessage(error?.message || String(error))
+      if (entityAuditGates.current.isCurrent(field, request)) {
+        setMessage(error?.message || String(error))
+      }
     } finally {
-      if (entityAuditGate.current.isCurrent(request)) setEntityAuditLoadingMore('')
+      if (entityAuditGates.current.isCurrent(field, request)) {
+        setEntityAuditLoadingMore(current => setKeyedLoadingState(current, field, false))
+      }
     }
   }
 
@@ -9318,9 +9324,9 @@ function AiAssistantPage() {
                 </article>)}
                 {!selectedEntityRelationHistory.length && <em>尚无关系变化历史</em>}
                 {graphWorkspace.focus?.auditPages?.relationHistory?.hasMore && <button
-                  disabled={!!entityAuditLoadingMore}
+                  disabled={!!entityAuditLoadingMore.relationHistory}
                   onClick={() => void loadMoreEntityAudit('relationHistory', 'relation_history')}>
-                  {entityAuditLoadingMore === 'relationHistory'
+                  {entityAuditLoadingMore.relationHistory
                     ? '正在加载…'
                     : `加载更多关系变化（已显示 ${selectedEntityRelationHistory.length} / ${graphWorkspace.focus.auditPages.relationHistory.total}）`}
                 </button>}
@@ -9333,9 +9339,9 @@ function AiAssistantPage() {
                 </article>)}
                 {!selectedEntityCorrections.length && <em>尚无名称修正记录</em>}
                 {graphWorkspace.focus?.auditPages?.entityCorrections?.hasMore && <button
-                  disabled={!!entityAuditLoadingMore}
+                  disabled={!!entityAuditLoadingMore.entityCorrections}
                   onClick={() => void loadMoreEntityAudit('entityCorrections', 'name_correction')}>
-                  {entityAuditLoadingMore === 'entityCorrections'
+                  {entityAuditLoadingMore.entityCorrections
                     ? '正在加载…'
                     : `加载更多名称修正（已显示 ${selectedEntityCorrections.length} / ${graphWorkspace.focus.auditPages.entityCorrections.total}）`}
                 </button>}
@@ -9352,9 +9358,9 @@ function AiAssistantPage() {
                 })}
                 {!selectedEntityRelationCorrections.length && <em>尚无关系人工修正记录</em>}
                 {graphWorkspace.focus?.auditPages?.relationCorrections?.hasMore && <button
-                  disabled={!!entityAuditLoadingMore}
+                  disabled={!!entityAuditLoadingMore.relationCorrections}
                   onClick={() => void loadMoreEntityAudit('relationCorrections', 'relation_correction')}>
-                  {entityAuditLoadingMore === 'relationCorrections'
+                  {entityAuditLoadingMore.relationCorrections
                     ? '正在加载…'
                     : `加载更多关系修正（已显示 ${selectedEntityRelationCorrections.length} / ${graphWorkspace.focus.auditPages.relationCorrections.total}）`}
                 </button>}
@@ -9368,9 +9374,9 @@ function AiAssistantPage() {
                 </article>)}
                 {!selectedEntityProfileCorrections.length && <em>尚无摘要或别名修正记录</em>}
                 {graphWorkspace.focus?.auditPages?.entityProfileCorrections?.hasMore && <button
-                  disabled={!!entityAuditLoadingMore}
+                  disabled={!!entityAuditLoadingMore.entityProfileCorrections}
                   onClick={() => void loadMoreEntityAudit('entityProfileCorrections', 'profile_correction')}>
-                  {entityAuditLoadingMore === 'entityProfileCorrections'
+                  {entityAuditLoadingMore.entityProfileCorrections
                     ? '正在加载…'
                     : `加载更多档案字段修正（已显示 ${selectedEntityProfileCorrections.length} / ${graphWorkspace.focus.auditPages.entityProfileCorrections.total}）`}
                 </button>}
