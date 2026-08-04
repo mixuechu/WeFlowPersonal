@@ -24,6 +24,7 @@ import {
   type VectorQueryHealth
 } from './vectorIndexingPolicy'
 import {
+  describeBackgroundWriteState,
   getBackgroundWriteConflict,
   getVectorIndexWriteConflict,
   preparedRecoveryConflictMessage,
@@ -5067,6 +5068,12 @@ export class AiAssistantService {
     )
     return {
       ...databaseDiagnostics,
+      backgroundWrites: describeBackgroundWriteState({
+        syncing: Boolean(this.activeSync),
+        syncPhase: this.activeSyncPhase,
+        vectorIndexing: Boolean(this.vectorIndexPromise),
+        searchRepairing: Boolean(this.memorySearchRepairPromise)
+      }),
       identityMergeSnapshotStorage: personalMemoryStore.getIdentityMergeSnapshotStorageStats(),
       taskStateStorage: {
         ...getTaskStateStorageStats(this.state.tasks),

@@ -6691,10 +6691,17 @@ function AiAssistantPage() {
                       !== Number(memoryDiagnostics.embeddings?.ann?.eligibleChunks || 0)))) &&
                 <button
                   onClick={() => void indexMemoryVectors()}
-                  disabled={indexingVectors || Boolean(memoryDiagnostics.searchRepairing)}
-                  title={memoryDiagnostics.searchRepairing
-                    ? '检索索引正在核验修复，完成后才能改写语义索引'
-                    : undefined}>
+                  disabled={indexingVectors || Boolean(status?.syncing) ||
+                    Boolean(status?.vectorIndexing) || Boolean(status?.searchRepairing)}
+                  title={status?.syncing
+                    ? status?.syncPhase === 'waiting_for_vector'
+                      ? '增量处理正在等待当前语义索引批次结束'
+                      : '增量处理期间不能改写语义索引'
+                    : status?.searchRepairing
+                      ? '检索索引正在核验修复，完成后才能改写语义索引'
+                      : status?.vectorIndexing
+                        ? '已有语义索引任务正在运行'
+                        : undefined}>
                   {indexingVectors
                     ? '正在修复语义索引…'
                     : Number(memoryDiagnostics.embeddings?.pending || 0) > 0
@@ -10857,8 +10864,17 @@ function AiAssistantPage() {
                   自动核验上次未完成：{memoryDiagnostics.automaticSearchMaintenance.lastError}；
                   将在 6 小时退避后重试。
                 </small>}
-              <button disabled={repairingMemorySearchIndexes || memoryDiagnostics.syncing ||
-                memoryDiagnostics.embeddings?.indexing}
+              <button disabled={repairingMemorySearchIndexes || Boolean(status?.syncing) ||
+                Boolean(status?.vectorIndexing) || Boolean(status?.searchRepairing)}
+                title={status?.syncing
+                  ? status?.syncPhase === 'waiting_for_vector'
+                    ? '增量处理正在等待当前语义索引批次结束'
+                    : '增量处理完成后才能核验检索索引'
+                  : status?.vectorIndexing
+                    ? '语义索引任务完成后才能核验检索索引'
+                    : status?.searchRepairing
+                      ? '已有检索核验任务正在运行'
+                      : undefined}
                 onClick={async () => {
                   setRepairingMemorySearchIndexes(true)
                   setMemorySearchRepairResult(null)

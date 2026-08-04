@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import {
+  describeBackgroundWriteState,
   getBackgroundWriteConflict,
   getVectorIndexWriteConflict,
   preparedRecoveryConflictMessage,
@@ -8,6 +9,43 @@ import {
   shouldDeferPreparedRecovery,
   vectorIndexConflictMessage
 } from '../electron/services/backgroundWriteCoordination.ts'
+
+test('background writer diagnostics expose the authoritative owner and waiting phase', () => {
+  assert.deepEqual(describeBackgroundWriteState({
+    syncing: false,
+    vectorIndexing: false,
+    searchRepairing: false
+  }), {
+    active: false,
+    conflict: null,
+    syncing: false,
+    syncPhase: null,
+    vectorIndexing: false,
+    searchRepairing: false,
+    message: null
+  })
+
+  assert.deepEqual(describeBackgroundWriteState({
+    syncing: true,
+    syncPhase: 'waiting_for_vector',
+    vectorIndexing: true,
+    searchRepairing: false
+  }), {
+    active: true,
+    conflict: 'incremental_sync',
+    syncing: true,
+    syncPhase: 'waiting_for_vector',
+    vectorIndexing: true,
+    searchRepairing: false,
+    message: '增量处理正在等待当前语义索引批次结束'
+  })
+
+  assert.equal(describeBackgroundWriteState({
+    syncing: false,
+    vectorIndexing: true,
+    searchRepairing: true
+  }).message, '正在核验并修复检索索引')
+})
 
 test('incremental sync waits for an already-running vector batch', async () => {
   let releaseBarrier!: () => void

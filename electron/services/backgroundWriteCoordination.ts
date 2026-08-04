@@ -1,6 +1,43 @@
 export type IncrementalSyncPhase = 'waiting_for_vector' | 'running'
 export type BackgroundWriteConflict = 'incremental_sync' | 'vector_index' | 'search_repair'
 
+export type BackgroundWriteState = {
+  active: boolean
+  conflict: BackgroundWriteConflict | null
+  syncing: boolean
+  syncPhase: IncrementalSyncPhase | null
+  vectorIndexing: boolean
+  searchRepairing: boolean
+  message: string | null
+}
+
+export function describeBackgroundWriteState(input: {
+  syncing: boolean
+  syncPhase?: IncrementalSyncPhase | null
+  vectorIndexing: boolean
+  searchRepairing: boolean
+}): BackgroundWriteState {
+  const conflict = getBackgroundWriteConflict(input)
+  const message = conflict === 'incremental_sync'
+    ? input.syncPhase === 'waiting_for_vector'
+      ? '增量处理正在等待当前语义索引批次结束'
+      : '正在执行增量处理'
+    : conflict === 'search_repair'
+      ? '正在核验并修复检索索引'
+      : conflict === 'vector_index'
+        ? '正在构建本地语义索引'
+        : null
+  return {
+    active: conflict !== null,
+    conflict,
+    syncing: input.syncing,
+    syncPhase: input.syncing ? input.syncPhase || 'running' : null,
+    vectorIndexing: input.vectorIndexing,
+    searchRepairing: input.searchRepairing,
+    message
+  }
+}
+
 export function getVectorIndexWriteConflict(input: {
   syncing: boolean
   searchRepairing: boolean
