@@ -10739,7 +10739,7 @@ function AiAssistantPage() {
                   ? new Date(memoryDiagnostics.structuredSearchIndex.checkedAt).toLocaleString('zh-CN')
                   : '未知'}</b></span>
               </div>
-              <small>这里只核验并重建可再生的全文、范围、分页和向量派生索引，不会修改事实、事件、关系、待办或证据原文，也不会调用云端模型。</small>
+              <small>这里只核验并重建可再生的全文、范围、分页、向量索引和回答证据修订账本，不会修改事实、事件、关系、待办或证据原文，也不会调用云端模型。</small>
               {memoryDiagnostics.automaticSearchMaintenance && <small>
                 系统会在空闲期每 7 天自动核验；最近自动完成{' '}
                 {memoryDiagnostics.automaticSearchMaintenance.lastCompletedAt
@@ -10786,6 +10786,8 @@ function AiAssistantPage() {
                   Number(memorySearchRepairResult.repaired.structuredDocuments || 0)}，
                 ANN 孤儿 {Number(memorySearchRepairResult.repaired.annOrphans || 0)}，
                 待办派生文档 {Number(memorySearchRepairResult.repaired.taskDocuments || 0)}；
+                结构化证据触发器 {Number(memorySearchRepairResult.repaired.structuredEvidenceTriggers || 0)}，
+                通用证据触发器 {Number(memorySearchRepairResult.repaired.generalEvidenceTriggers || 0)}；
                 当前{memorySearchRepairResult.healthy ? '一致' : '仍需检查'}。
               </small>}
             </div>}

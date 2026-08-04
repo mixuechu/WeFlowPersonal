@@ -4567,6 +4567,8 @@ export class PersonalMemoryStore {
     const crossStoreRecoveryRevision = this.getCrossStoreRecoveryRevisionHealth()
     const assistantHistoryRevision = this.getAssistantHistoryRevisionHealth()
     const resourceArchiveRevision = this.getResourceArchiveRevisionHealth()
+    const structuredEvidenceRevision = this.getStructuredEvidenceRevisionHealth()
+    const generalEvidenceRevision = this.getGeneralEvidenceRevisionHealth()
     return {
       healthy: integrity === 'ok'
         && structuredEvidenceMigration.constraintsHealthy
@@ -4589,7 +4591,9 @@ export class PersonalMemoryStore {
         && ingestionRecoveryRevision.healthy
         && crossStoreRecoveryRevision.healthy
         && assistantHistoryRevision.healthy
-        && resourceArchiveRevision.healthy,
+        && resourceArchiveRevision.healthy
+        && structuredEvidenceRevision.healthy
+        && generalEvidenceRevision.healthy,
       integrity,
       foreignKeyViolations,
       referentialIntegrityHealthy,
@@ -4613,6 +4617,8 @@ export class PersonalMemoryStore {
       crossStoreRecoveryRevisionHealthy: crossStoreRecoveryRevision.healthy,
       assistantHistoryRevisionHealthy: assistantHistoryRevision.healthy,
       resourceArchiveRevisionHealthy: resourceArchiveRevision.healthy,
+      structuredEvidenceRevisionHealthy: structuredEvidenceRevision.healthy,
+      generalEvidenceRevisionHealthy: generalEvidenceRevision.healthy,
       encryption: {
         enabled: Boolean(this.encryptionKey),
         cipher: this.encryptionKey ? String(this.db.pragma('cipher', { simple: true }) || '') : 'none',
@@ -4643,6 +4649,8 @@ export class PersonalMemoryStore {
       crossStoreRecoveryRevision,
       assistantHistoryRevision,
       resourceArchiveRevision,
+      structuredEvidenceRevision,
+      generalEvidenceRevision,
       backups
     }
   }
@@ -4655,6 +4663,8 @@ export class PersonalMemoryStore {
     this.ensureEvidenceScopeIndexes()
     this.ensureEntityEvidenceFtsIndex()
     this.ensureMemorySearchRevisionTriggers()
+    this.ensureStructuredEvidenceRevisionLedger()
+    this.ensureGeneralEvidenceRevisionLedger()
     this.repairStructuredSearchIndex()
     this.syncTasks(Array.isArray(tasks) ? tasks : [])
     const after = this.getDiagnostics()
@@ -4670,6 +4680,8 @@ export class PersonalMemoryStore {
         && after.entityEvidenceFtsHealthy
         && after.evidenceScopeIndexesHealthy
         && after.memorySearchRevisionHealthy
+        && after.structuredEvidenceRevisionHealthy
+        && after.generalEvidenceRevisionHealthy
       ),
       repaired: {
         ghostDocuments: Math.max(0, Number(afterIndex.ghostRowsRemovedTotal || 0)
@@ -4685,7 +4697,11 @@ export class PersonalMemoryStore {
         annOrphans: Math.max(0, Number(afterIndex.orphanAnnRowsRemovedTotal || 0)
           - Number(beforeIndex.orphanAnnRowsRemovedTotal || 0)),
         taskDocuments: Math.max(0, Number(afterTasks.repairedDerivedDocumentsTotal || 0)
-          - Number(beforeTasks.repairedDerivedDocumentsTotal || 0))
+          - Number(beforeTasks.repairedDerivedDocumentsTotal || 0)),
+        structuredEvidenceTriggers: Math.max(0,
+          Number(after.structuredEvidenceRevision?.repairedTriggersThisStart || 0)),
+        generalEvidenceTriggers: Math.max(0,
+          Number(after.generalEvidenceRevision?.repairedTriggersThisStart || 0))
       },
       diagnostics: after
     }

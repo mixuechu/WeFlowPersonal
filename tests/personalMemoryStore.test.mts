@@ -6652,6 +6652,39 @@ test('verified memory backup is created only from a healthy database', () => wit
   assert.ok(store.restoreBackup(imported.path).success)
 }))
 
+test('verified backup rejects evidence revision drift and online repair restores both ledgers', () => withStore(store => {
+  const database = (store as any).db
+  const before = store.getDiagnostics()
+  assert.equal(before.healthy, true)
+  assert.equal(before.structuredEvidenceRevisionHealthy, true)
+  assert.equal(before.generalEvidenceRevisionHealthy, true)
+
+  database.exec(`
+    DROP TRIGGER structured_evidence_revision_update;
+    CREATE TRIGGER structured_evidence_revision_update
+    AFTER UPDATE ON evidence BEGIN SELECT 1; END;
+    DROP TRIGGER general_evidence_revision_search_delete;
+  `)
+
+  const drifted = store.getDiagnostics()
+  assert.equal(drifted.healthy, false)
+  assert.equal(drifted.structuredEvidenceRevisionHealthy, false)
+  assert.equal(drifted.generalEvidenceRevisionHealthy, false)
+  assert.throws(
+    () => store.createBackup(),
+    /数据库一致性检查失败/
+  )
+
+  const repaired = store.repairRuntimeSearchDerivedState([])
+  assert.equal(repaired.healthy, true)
+  assert.equal(repaired.repaired.structuredEvidenceTriggers, 1)
+  assert.equal(repaired.repaired.generalEvidenceTriggers, 1)
+  assert.equal(repaired.diagnostics.healthy, true)
+  assert.equal(repaired.diagnostics.structuredEvidenceRevisionHealthy, true)
+  assert.equal(repaired.diagnostics.generalEvidenceRevisionHealthy, true)
+  assert.equal(store.createBackup().success, true)
+}))
+
 test('full current-database identity is stable per run and changes with durable content', () => {
   const directory = mkdtempSync(join(tmpdir(), 'weflow-current-database-identity-'))
   const databasePath = join(directory, 'memory.sqlite')
