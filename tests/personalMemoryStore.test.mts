@@ -114,6 +114,7 @@ import {
 } from '../shared/graphCommitRecovery.ts'
 import { buildTaskCalendar, extractTaskDueDate } from '../src/utils/taskCalendar.ts'
 import { buildEntitySidebarPresentation } from '../src/utils/entitySidebarPresentation.ts'
+import { setKeyedLoadingState } from '../src/utils/keyedLoadingState.ts'
 import { filterGraphReviews, paginateGraphReviews } from '../src/utils/graphReviewFilters.ts'
 import { summarizeIngestionRuns } from '../electron/services/ingestionDiagnostics.ts'
 import { attachLocalImageOcr, attachLocalVoiceTranscript, recoverMessageSemantics } from '../electron/services/messageSemanticRecovery.ts'
@@ -2081,6 +2082,19 @@ test('entity graph sidebar distinguishes authoritative totals from bounded previ
   assert.equal(legacy.claims.total, 1)
   assert.equal(legacy.claims.truncated, false)
   assert.equal(legacy.events.preview, 1)
+})
+
+test('keyed loading state lets one memory audit finish without unlocking another', () => {
+  const both = setKeyedLoadingState(
+    setKeyedLoadingState({}, 'claim:alpha', true),
+    'event:beta',
+    true
+  )
+  assert.deepEqual(both, { 'claim:alpha': true, 'event:beta': true })
+  const betaStillLoading = setKeyedLoadingState(both, 'claim:alpha', false)
+  assert.deepEqual(betaStillLoading, { 'event:beta': true })
+  assert.equal(setKeyedLoadingState(betaStillLoading, 'event:beta', true), betaStillLoading)
+  assert.deepEqual(setKeyedLoadingState(betaStillLoading, 'event:beta', false), {})
 })
 
 test('memory cards expose evidence totals but bound their latest evidence payload', () => withStore(store => {

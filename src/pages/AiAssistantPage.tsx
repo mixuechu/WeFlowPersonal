@@ -14,6 +14,7 @@ import { buildMemorySessionScope } from '../utils/memorySessionScope'
 import { buildResourceStructurePresentation } from '../utils/resourceStructurePresentation'
 import { buildMemoryBackupDirectory } from '../utils/memoryBackupPresentation'
 import { buildEntitySidebarPresentation } from '../utils/entitySidebarPresentation'
+import { setKeyedLoadingState } from '../utils/keyedLoadingState'
 import { evidenceArchiveIdentity } from '../../shared/evidencePayload'
 import './AiAssistantPage.scss'
 
@@ -711,7 +712,8 @@ function AiAssistantPage() {
   const [editingClaim, setEditingClaim] = useState<any>(null)
   const [editingEvent, setEditingEvent] = useState<any>(null)
   const [memoryItemAudits, setMemoryItemAudits] = useState<Record<string, any>>({})
-  const [memoryItemAuditLoading, setMemoryItemAuditLoading] = useState('')
+  const [memoryItemAuditLoading, setMemoryItemAuditLoading] =
+    useState<Record<string, boolean>>({})
   const memoryItemAuditRequests = useRef<Record<string, symbol>>({})
   const [memoryDeletionDialog, setMemoryDeletionDialog] = useState<any>(null)
   const [memoryDeletionConfirmation, setMemoryDeletionConfirmation] = useState('')
@@ -2554,12 +2556,12 @@ function AiAssistantPage() {
     loadMore = false
   ) => {
     const key = `${kind}:${itemId}`
-    if (memoryItemAuditLoading === key) return
+    if (memoryItemAuditLoading[key]) return
     const current = memoryItemAudits[key]
     if (loadMore && !current?.hasMore) return
     const request = Symbol(key)
     memoryItemAuditRequests.current[key] = request
-    setMemoryItemAuditLoading(key)
+    setMemoryItemAuditLoading(existing => setKeyedLoadingState(existing, key, true))
     try {
       const readPage = (offset: number, revision = '') =>
         window.electronAPI.aiAssistant.getMemoryItemAuditPage(kind, itemId, {
@@ -2594,7 +2596,7 @@ function AiAssistantPage() {
     } finally {
       if (memoryItemAuditRequests.current[key] === request) {
         delete memoryItemAuditRequests.current[key]
-        setMemoryItemAuditLoading('')
+        setMemoryItemAuditLoading(existing => setKeyedLoadingState(existing, key, false))
       }
     }
   }
@@ -7547,10 +7549,10 @@ function AiAssistantPage() {
                       <small>审计读取失败：{memoryItemAudits[`claim:${claim.id}`].error}</small>}
                     {memoryItemAudits[`claim:${claim.id}`]?.items &&
                       <MemoryItemAuditRows kind="claim" items={memoryItemAudits[`claim:${claim.id}`].items} />}
-                    {memoryItemAuditLoading === `claim:${claim.id}` &&
+                    {memoryItemAuditLoading[`claim:${claim.id}`] &&
                       <small>正在读取 SQLCipher 审计账本…</small>}
                     {memoryItemAudits[`claim:${claim.id}`]?.hasMore && <button
-                      disabled={memoryItemAuditLoading === `claim:${claim.id}`}
+                      disabled={!!memoryItemAuditLoading[`claim:${claim.id}`]}
                       onClick={() => void loadMemoryItemAudit('claim', claim.id, true)}>
                       加载更多（已显示 {memoryItemAudits[`claim:${claim.id}`].items.length} /
                       {memoryItemAudits[`claim:${claim.id}`].total}）
@@ -7670,10 +7672,10 @@ function AiAssistantPage() {
                       <small>审计读取失败：{memoryItemAudits[`event:${event.id}`].error}</small>}
                     {memoryItemAudits[`event:${event.id}`]?.items &&
                       <MemoryItemAuditRows kind="event" items={memoryItemAudits[`event:${event.id}`].items} />}
-                    {memoryItemAuditLoading === `event:${event.id}` &&
+                    {memoryItemAuditLoading[`event:${event.id}`] &&
                       <small>正在读取 SQLCipher 审计账本…</small>}
                     {memoryItemAudits[`event:${event.id}`]?.hasMore && <button
-                      disabled={memoryItemAuditLoading === `event:${event.id}`}
+                      disabled={!!memoryItemAuditLoading[`event:${event.id}`]}
                       onClick={() => void loadMemoryItemAudit('event', event.id, true)}>
                       加载更多（已显示 {memoryItemAudits[`event:${event.id}`].items.length} /
                       {memoryItemAudits[`event:${event.id}`].total}）
@@ -8815,16 +8817,16 @@ function AiAssistantPage() {
                     <summary>
                       可信审计（{Number(item.review_count || 0) + Number(item.correction_count || 0)} 条）
                     </summary>
-                    {memoryItemAuditLoading === `${kind}:${item.id}` &&
+                    {memoryItemAuditLoading[`${kind}:${item.id}`] &&
                       <small>正在读取 SQLCipher 审计账本…</small>}
                     {audit?.status === 'error' && <small className="assistant-error">
                       审计读取失败：{audit.error}
                     </small>}
                     {!!audit?.items?.length && <MemoryItemAuditRows kind={kind} items={audit.items} />}
-                    {!memoryItemAuditLoading && !audit?.items?.length &&
+                    {!memoryItemAuditLoading[`${kind}:${item.id}`] && !audit?.items?.length &&
                       <small>这条记忆尚无人工纠正或可信状态变更。</small>}
                     {audit?.hasMore && <button
-                      disabled={memoryItemAuditLoading === `${kind}:${item.id}`}
+                      disabled={!!memoryItemAuditLoading[`${kind}:${item.id}`]}
                       onClick={() => void loadMemoryItemAudit(kind, item.id, true)}>
                       加载更多（已显示 {audit.items.length} / {audit.total}）
                     </button>}
