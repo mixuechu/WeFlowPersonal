@@ -1055,7 +1055,11 @@ function AiAssistantPage() {
   const [assistantAnswerReviewsOpen, setAssistantAnswerReviewsOpen] = useState(false)
   const [assistantAnswerReviews, setAssistantAnswerReviews] = useState<any>({
     items: [], total: 0, hasMore: false,
-    counts: { attention: 0, invalid: 0, needs_review: 0, current: 0 }
+    counts: { attention: 0, invalid: 0, needs_review: 0, current: 0 },
+    reasonCounts: {
+      missing: 0, ineligible: 0, contentChanged: 0,
+      evidenceCountsChanged: 0, evidenceChanged: 0, other: 0
+    }
   })
   const [assistantAnswerReviewStatus, setAssistantAnswerReviewStatus] = useState('attention')
   const [assistantAnswerReviewState, setAssistantAnswerReviewState] = useState('pending')
@@ -1704,7 +1708,11 @@ function AiAssistantPage() {
           if (!assistantAnswerReviewsGate.current.isCurrent(request)) return
           setAssistantAnswerReviews({
             items: [], total: 0, hasMore: false, loading: false,
-            counts: { attention: 0, invalid: 0, needs_review: 0, current: 0 }
+            counts: { attention: 0, invalid: 0, needs_review: 0, current: 0 },
+            reasonCounts: {
+              missing: 0, ineligible: 0, contentChanged: 0,
+              evidenceCountsChanged: 0, evidenceChanged: 0, other: 0
+            }
           })
         })
     }, assistantAnswerReviewQuery ? 200 : 0)
@@ -7787,12 +7795,24 @@ function AiAssistantPage() {
                     }
                   }}>
                   <option value="">全部失效原因</option>
-                  <option value="missing">来源已删除</option>
-                  <option value="ineligible">可信资格失效</option>
-                  <option value="content_changed">结构化内容变化</option>
-                  <option value="evidence_counts_changed">支持/反证构成变化</option>
-                  <option value="evidence_changed">权威原文集合变化</option>
-                  <option value="other">其他失效</option>
+                  <option value="missing">
+                    来源已删除（{Number(assistantAnswerReviews.reasonCounts?.missing || 0)}）
+                  </option>
+                  <option value="ineligible">
+                    可信资格失效（{Number(assistantAnswerReviews.reasonCounts?.ineligible || 0)}）
+                  </option>
+                  <option value="content_changed">
+                    结构化内容变化（{Number(assistantAnswerReviews.reasonCounts?.contentChanged || 0)}）
+                  </option>
+                  <option value="evidence_counts_changed">
+                    支持/反证构成变化（{Number(assistantAnswerReviews.reasonCounts?.evidenceCountsChanged || 0)}）
+                  </option>
+                  <option value="evidence_changed">
+                    权威原文集合变化（{Number(assistantAnswerReviews.reasonCounts?.evidenceChanged || 0)}）
+                  </option>
+                  <option value="other">
+                    其他失效（{Number(assistantAnswerReviews.reasonCounts?.other || 0)}）
+                  </option>
                 </select>
                 <input value={assistantAnswerReviewQuery}
                   onChange={event => setAssistantAnswerReviewQuery(event.target.value)}

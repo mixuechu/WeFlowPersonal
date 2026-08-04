@@ -13425,6 +13425,14 @@ export class PersonalMemoryStore {
       pending: number
       resolved: number
     }
+    reasonCounts: {
+      missing: number
+      ineligible: number
+      contentChanged: number
+      evidenceCountsChanged: number
+      evidenceChanged: number
+      other: number
+    }
   } {
     const limit = Math.max(1, Math.min(100, Math.floor(Number(options.limit) || 30)))
     const offset = Math.max(0, Math.min(1_000_000, Math.floor(Number(options.offset) || 0)))
@@ -13436,6 +13444,14 @@ export class PersonalMemoryStore {
       limit,
       counts: {
         attention: 0, invalid: 0, needs_review: 0, current: 0, pending: 0, resolved: 0
+      },
+      reasonCounts: {
+        missing: 0,
+        ineligible: 0,
+        contentChanged: 0,
+        evidenceCountsChanged: 0,
+        evidenceChanged: 0,
+        other: 0
       },
       revision: this.getAssistantHistoryRevision(),
       stale: false
@@ -13674,6 +13690,7 @@ export class PersonalMemoryStore {
       : reviewState === 'all'
         ? ''
         : `NOT ${resolvedCondition}`
+    const reasonFacetReviewCondition = reviewCondition || '1'
     const conditions = [
       ...commonConditions,
       ...(statusCondition ? [statusCondition] : []),
@@ -13706,7 +13723,21 @@ export class PersonalMemoryStore {
         SUM(CASE WHEN (ar.invalid_statements>0 OR ar.unknown_statements>0)
           AND NOT ${resolvedCondition} THEN 1 ELSE 0 END) AS pending,
         SUM(CASE WHEN (ar.invalid_statements>0 OR ar.unknown_statements>0)
-          AND ${resolvedCondition} THEN 1 ELSE 0 END) AS resolved
+          AND ${resolvedCondition} THEN 1 ELSE 0 END) AS resolved,
+        SUM(CASE WHEN ar.missing_statements>0
+          AND (${reasonFacetReviewCondition}) THEN 1 ELSE 0 END) AS reason_missing,
+        SUM(CASE WHEN ar.ineligible_statements>0
+          AND (${reasonFacetReviewCondition}) THEN 1 ELSE 0 END) AS reason_ineligible,
+        SUM(CASE WHEN ar.content_changed_statements>0
+          AND (${reasonFacetReviewCondition}) THEN 1 ELSE 0 END) AS reason_content_changed,
+        SUM(CASE WHEN ar.evidence_counts_changed_statements>0
+          AND (${reasonFacetReviewCondition}) THEN 1 ELSE 0 END) AS reason_evidence_counts_changed,
+        SUM(CASE WHEN ar.evidence_changed_statements>0
+          AND (${reasonFacetReviewCondition}) THEN 1 ELSE 0 END) AS reason_evidence_changed,
+        SUM(CASE WHEN ar.invalid_statements>(
+          ar.missing_statements+ar.ineligible_statements+ar.content_changed_statements+
+          ar.evidence_counts_changed_statements+ar.evidence_changed_statements
+        ) AND (${reasonFacetReviewCondition}) THEN 1 ELSE 0 END) AS reason_other
       ${joins} ${commonWhere}
     `).get(...commonParameters) as any
     const items = this.db.prepare(`
@@ -13780,6 +13811,14 @@ export class PersonalMemoryStore {
         current: Number(countsRow?.current || 0),
         pending: Number(countsRow?.pending || 0),
         resolved: Number(countsRow?.resolved || 0)
+      },
+      reasonCounts: {
+        missing: Number(countsRow?.reason_missing || 0),
+        ineligible: Number(countsRow?.reason_ineligible || 0),
+        contentChanged: Number(countsRow?.reason_content_changed || 0),
+        evidenceCountsChanged: Number(countsRow?.reason_evidence_counts_changed || 0),
+        evidenceChanged: Number(countsRow?.reason_evidence_changed || 0),
+        other: Number(countsRow?.reason_other || 0)
       },
       revision,
       stale: false

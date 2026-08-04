@@ -9078,6 +9078,14 @@ test('assistant archive filters statement dependencies without loading answer ev
     pending: 3,
     resolved: 0
   })
+  assert.deepEqual(answerReviews.reasonCounts, {
+    missing: 1,
+    ineligible: 0,
+    contentChanged: 1,
+    evidenceCountsChanged: 0,
+    evidenceChanged: 0,
+    other: 0
+  })
   assert.equal(answerReviews.items.find((item: any) => item.message_id === changedAnswerId)
     .revalidation_status, 'invalid')
   assert.equal(answerReviews.items.find((item: any) => item.message_id === changedAnswerId)
@@ -9169,6 +9177,16 @@ test('assistant archive filters statement dependencies without loading answer ev
     reviewState: 'resolved',
     limit: 20
   }).items[0].message_id, changedAnswerId)
+  assert.equal(store.listAssistantAnswerReviewsPage({
+    status: 'attention',
+    reviewState: 'resolved',
+    limit: 20
+  }).reasonCounts.contentChanged, 1)
+  assert.equal(store.listAssistantAnswerReviewsPage({
+    status: 'attention',
+    reviewState: 'pending',
+    limit: 20
+  }).reasonCounts.contentChanged, 0)
   assert.deepEqual(store.listAssistantAnswerReviewsPage({
     status: 'all',
     reviewState: 'all',
@@ -9736,6 +9754,14 @@ test('assistant invalid-reason filters run before stable pagination', () => with
     revision: first.revision
   })
   assert.equal(first.total, 75)
+  assert.deepEqual(first.reasonCounts, {
+    missing: 75,
+    ineligible: 0,
+    contentChanged: 15,
+    evidenceCountsChanged: 0,
+    evidenceChanged: 0,
+    other: 0
+  })
   assert.equal(first.items.length, 30)
   assert.equal(second.items.length, 30)
   assert.equal(last.items.length, 15)
