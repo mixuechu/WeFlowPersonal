@@ -13895,6 +13895,7 @@ export class PersonalMemoryStore {
     const count = (key: string) => Math.max(0, Math.min(10_000, Math.floor(Number(value[key]) || 0)))
     const version = String(value.version || '').slice(0, 80)
     const promptIsolationVersion = String(value.promptIsolationVersion || '').slice(0, 80)
+    const uncertaintyPolicyVersion = String(value.uncertaintyPolicyVersion || '').slice(0, 80)
     if (!version && !promptIsolationVersion) return {}
     const statementCitations = (Array.isArray(value.statementCitations) ? value.statementCitations : [])
       .slice(0, 24)
@@ -13910,6 +13911,9 @@ export class PersonalMemoryStore {
       removedConflictCitationIds: count('removedConflictCitationIds'),
       rejectedConflictStatements: count('rejectedConflictStatements'),
       promptIsolationVersion,
+      ...(uncertaintyPolicyVersion === 'derived-from-citations-v1'
+        ? { uncertaintyPolicyVersion }
+        : {}),
       statementCitations
     }
   }

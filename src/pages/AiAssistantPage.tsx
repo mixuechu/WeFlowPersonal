@@ -8064,7 +8064,10 @@ function AiAssistantPage() {
                   })
                 }}>查看 {item.citations.length} 条引用</button>}
                 {item.role === 'assistant' && item.uncertainty && <small>
-                  不确定性：{item.uncertainty}
+                  {item.groundingAudit?.uncertaintyPolicyVersion === 'derived-from-citations-v1'
+                    ? '系统根据引用派生的不确定性：'
+                    : '历史模型不确定性（不会进入后续上下文）：'}
+                  {item.uncertainty}
                 </small>}
                 {item.role === 'assistant' && item.groundingAudit?.version === 'statement-citations-v1' && <small>
                   逐条证据门禁：接受 {Number(item.groundingAudit.acceptedStatements || 0)} 条
@@ -8137,7 +8140,12 @@ function AiAssistantPage() {
             {memoryAnswer.groundingRevalidation?.status === 'invalid' && <small className="assistant-grounding-invalid">
               这段历史回答已没有当前有效证据支持，仅作为历史文本保留；请勿据此行动，建议重新提问。
             </small>}
-            {memoryAnswer.uncertainty && <small>不确定性：{memoryAnswer.uncertainty}</small>}
+            {memoryAnswer.uncertainty && <small>
+              {memoryAnswer.groundingAudit?.uncertaintyPolicyVersion === 'derived-from-citations-v1'
+                ? '系统根据引用派生的不确定性：'
+                : '历史模型不确定性：'}
+              {memoryAnswer.uncertainty}
+            </small>}
             {!!memoryAnswer.sensitiveRedaction?.total && <small>
               本次发送前已本地脱敏 {memoryAnswer.sensitiveRedaction.total} 处：
               {Object.entries(memoryAnswer.sensitiveRedaction.counts || {}).map(([type, count]) => `${type} ${count}`).join('、')}

@@ -7808,7 +7808,7 @@ export class AiAssistantService {
         relevanceFeedback: String(result?.relevance_feedback || '')
       }
     })
-    const uncertainty = String(parsed.uncertainty || '').trim().slice(0, 3000)
+    const uncertainty = grounded.uncertainty
     const answerCommitSearchRevision = personalMemoryStore.getMemorySearchRevision()
     const authenticatedDraft = this.enrichAssistantCitationFeedback({
       messages: [{

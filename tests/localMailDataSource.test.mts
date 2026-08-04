@@ -202,6 +202,7 @@ test('memory evidence eligibility keeps review status separate from factual supp
     acceptedCitationIds: 1,
     removedConflictCitationIds: 0,
     rejectedConflictStatements: 0,
+    uncertaintyPolicyVersion: 'derived-from-citations-v1',
     promptIsolationVersion: 'untrusted-memory-envelope-v1',
     statementCitations: [['confirmed']]
   })
@@ -247,8 +248,16 @@ test('memory evidence eligibility keeps review status separate from factual supp
   assert.deepEqual(disclosedConflict.citationIds, ['conflicted'])
   assert.equal(disclosedConflict.statements.length, 1)
   assert.equal(disclosedConflict.answer, '现有记录存在冲突。 这件事仍待核实。')
+  assert.match(disclosedConflict.uncertainty, /1 个引用包含反证/)
   assert.equal(disclosedConflict.groundingAudit.removedConflictCitationIds, 0)
   assert.equal(disclosedConflict.groundingAudit.rejectedConflictStatements, 0)
+
+  const ignoredFreeUncertainty = finalizeGroundedMemoryAnswer({
+    statements: [{ text: '这是有依据的回答。', citationIds: ['confirmed'] }],
+    uncertainty: '未经引用的新事实：用户已经离职。'
+  }, context)
+  assert.equal(ignoredFreeUncertainty.uncertainty, '')
+  assert.equal(ignoredFreeUncertainty.answer.includes('离职'), false)
 
   const legacyWholeAnswer = finalizeGroundedMemoryAnswer({
     answer: '旧版整段回答即使带合法顶层引用，也不能绕过逐条门禁。',
@@ -409,7 +418,8 @@ test('multi-turn memory context excludes stale and unaudited assistant answers',
       uncertainty: '但一条较早记录与此冲突，仍待核实。',
       groundingAudit: {
         version: 'statement-citations-v1',
-        acceptedStatements: 1
+        acceptedStatements: 1,
+        uncertaintyPolicyVersion: 'derived-from-citations-v1'
       },
       groundingRevalidation: {
         status: 'current',
@@ -435,7 +445,8 @@ test('multi-turn memory context excludes stale and unaudited assistant answers',
       uncertainty: '第二条存在新的反证。',
       groundingAudit: {
         version: 'statement-citations-v1',
-        acceptedStatements: 2
+        acceptedStatements: 2,
+        uncertaintyPolicyVersion: 'derived-from-citations-v1'
       },
       groundingRevalidation: {
         status: 'needs_review',
