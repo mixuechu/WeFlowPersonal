@@ -352,12 +352,16 @@ export function filterTrustedConversationHistory(messages: any[]): {
   excludedAssistant: number
   excludedLegacyAssistant: number
   excludedStaleAssistant: number
+  includedPartialAssistant: number
+  excludedStaleStatements: number
 } {
   const audit = {
     includedAssistant: 0,
     excludedAssistant: 0,
     excludedLegacyAssistant: 0,
-    excludedStaleAssistant: 0
+    excludedStaleAssistant: 0,
+    includedPartialAssistant: 0,
+    excludedStaleStatements: 0
   }
   const history = (Array.isArray(messages) ? messages : []).flatMap(message => {
     const role = message?.role === 'user'
@@ -381,21 +385,40 @@ export function filterTrustedConversationHistory(messages: any[]): {
       0,
       Math.floor(Number(groundingAudit.acceptedStatements) || 0)
     )
+    let trustedAssistantContent = content
     if (acceptedStatements > 0) {
       const revalidation = message?.groundingRevalidation
       if (!revalidation
         || revalidation.status !== 'current'
         || Math.max(0, Number(revalidation.supportedStatements || 0)) < acceptedStatements) {
-        audit.excludedAssistant += 1
-        audit.excludedStaleAssistant += 1
-        return []
+        const statementStates = Array.isArray(revalidation?.statements)
+          ? revalidation.statements.slice(0, 24)
+          : []
+        const statementTexts = content.split(/\n{2,}/).map(value => value.trim()).filter(Boolean)
+        const currentIndexes = statementStates.flatMap((statement: any, index: number) =>
+          statement?.status === 'current' ? [index] : [])
+        const supportedStatements = Math.max(
+          0,
+          Math.floor(Number(revalidation?.supportedStatements) || 0)
+        )
+        const mappingIsExact = statementTexts.length === acceptedStatements
+          && statementStates.length === acceptedStatements
+          && currentIndexes.length === supportedStatements
+        if (!mappingIsExact || !currentIndexes.length) {
+          audit.excludedAssistant += 1
+          audit.excludedStaleAssistant += 1
+          return []
+        }
+        trustedAssistantContent = currentIndexes.map(index => statementTexts[index]).join('\n\n')
+        audit.includedPartialAssistant += 1
+        audit.excludedStaleStatements += Math.max(0, acceptedStatements - currentIndexes.length)
       }
     }
     audit.includedAssistant += 1
     const uncertainty = String(message?.uncertainty || '').trim().replace(/\s+/g, ' ').slice(0, 500)
     const trustedContent = uncertainty
-      ? `${content.slice(0, 2450)}\n[该回答当时保存的不确定性：${uncertainty}]`.slice(0, 3000)
-      : content
+      ? `${trustedAssistantContent.slice(0, 2450)}\n[该回答当时保存的不确定性：${uncertainty}]`.slice(0, 3000)
+      : trustedAssistantContent
     return [{ role, content: trustedContent }]
   })
   return { history, ...audit }

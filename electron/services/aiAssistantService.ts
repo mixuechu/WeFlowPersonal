@@ -7660,6 +7660,11 @@ export class AiAssistantService {
         `已隔离 ${conversationHistoryAudit.excludedAssistant} 条过期或未验证的历史助手回答`
       )
     }
+    if (conversationHistoryAudit.includedPartialAssistant) {
+      plan.explanation.unshift(
+        `已从 ${conversationHistoryAudit.includedPartialAssistant} 条部分失效回答中保留仍有权威支持的陈述，并隔离 ${conversationHistoryAudit.excludedStaleStatements} 条失效陈述`
+      )
+    }
     const plannedOptions: MemorySearchOptions = {
       ...plan.inferredOptions,
       ...options,
@@ -7851,7 +7856,9 @@ export class AiAssistantService {
           includedAssistant: conversationHistoryAudit.includedAssistant,
           excludedAssistant: conversationHistoryAudit.excludedAssistant,
           excludedLegacyAssistant: conversationHistoryAudit.excludedLegacyAssistant,
-          excludedStaleAssistant: conversationHistoryAudit.excludedStaleAssistant
+          excludedStaleAssistant: conversationHistoryAudit.excludedStaleAssistant,
+          includedPartialAssistant: conversationHistoryAudit.includedPartialAssistant,
+          excludedStaleStatements: conversationHistoryAudit.excludedStaleStatements
         },
         appliedOptions: plannedOptions,
         graphPath: plannedGraphPath ? {

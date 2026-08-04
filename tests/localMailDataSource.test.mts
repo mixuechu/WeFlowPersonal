@@ -431,6 +431,33 @@ test('multi-turn memory context excludes stale and unaudited assistant answers',
     },
     {
       role: 'assistant',
+      content: '第一条仍然有效。\n\n第二条已经失效。',
+      uncertainty: '第二条存在新的反证。',
+      groundingAudit: {
+        version: 'statement-citations-v1',
+        acceptedStatements: 2
+      },
+      groundingRevalidation: {
+        status: 'needs_review',
+        supportedStatements: 1,
+        statements: [{ status: 'current' }, { status: 'invalid' }]
+      }
+    },
+    {
+      role: 'assistant',
+      content: '无法和两个审计声明一一对应。',
+      groundingAudit: {
+        version: 'statement-citations-v1',
+        acceptedStatements: 2
+      },
+      groundingRevalidation: {
+        status: 'needs_review',
+        supportedStatements: 1,
+        statements: [{ status: 'current' }, { status: 'invalid' }]
+      }
+    },
+    {
+      role: 'assistant',
       content: '当前证据不足。',
       groundingAudit: {
         version: 'statement-citations-v1',
@@ -449,12 +476,18 @@ test('multi-turn memory context excludes stale and unaudited assistant answers',
       role: 'assistant',
       content: '项目按计划推进。\n[该回答当时保存的不确定性：但一条较早记录与此冲突，仍待核实。]'
     },
+    {
+      role: 'assistant',
+      content: '第一条仍然有效。\n[该回答当时保存的不确定性：第二条存在新的反证。]'
+    },
     { role: 'assistant', content: '当前证据不足。' }
   ])
-  assert.equal(result.includedAssistant, 2)
-  assert.equal(result.excludedAssistant, 2)
+  assert.equal(result.includedAssistant, 3)
+  assert.equal(result.excludedAssistant, 3)
   assert.equal(result.excludedLegacyAssistant, 1)
-  assert.equal(result.excludedStaleAssistant, 1)
+  assert.equal(result.excludedStaleAssistant, 2)
+  assert.equal(result.includedPartialAssistant, 1)
+  assert.equal(result.excludedStaleStatements, 1)
 })
 
 test('mail connector keeps independent mailbox cursors and retries failed consumption', async () => {
