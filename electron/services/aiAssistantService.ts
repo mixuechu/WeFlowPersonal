@@ -165,6 +165,12 @@ import {
 } from './ingestionCursorPolicy'
 import { buildOverlappingAnalysisBatches } from './analysisBatching'
 import {
+  EXTRACTION_OUTPUT_LIMITS,
+  accumulateExtractionAttemptMeta,
+  inspectExtractionCoverage,
+  splitSaturatedAnalysisBatch
+} from './extractionCoveragePolicy'
+import {
   EMPTY_BACKLOG_RETRY_STATE,
   isBacklogRetryDue,
   planBacklogRetry,
@@ -424,7 +430,7 @@ const EMPTY_STATE: AssistantState = {
   graph: { entities: [], relations: [], lastSqlCommitId: null, reviewQueue: [], identityScan: { lastFullScanAt: null, lastRunAt: null, lastMode: null, lastCandidateCount: 0 } }
 }
 
-const EXTRACTION_PROMPT_VERSION = 'personal-os-prompt-v7'
+const EXTRACTION_PROMPT_VERSION = 'personal-os-prompt-v8'
 const EXTRACTION_SCHEMA_VERSION = 'personal-memory-schema-v6'
 const DOCUMENT_ANALYSIS_VERSION = `${EXTRACTION_PROMPT_VERSION}/${EXTRACTION_SCHEMA_VERSION}/document-v1`
 
@@ -441,7 +447,7 @@ const SYSTEM_PROMPT = `你是一个谨慎的中文私人助理兼个人记忆图
 知识图谱规则：提取人物、组织、群和项目，以及有明确消息证据的关系。不要因名字相同就合并人物；一个人可以有多个账号和别名。身份不确定时创建候选，不做硬合并。每个实体、关系和合并建议都必须带 evidenceKeys。
 事实记忆规则：必须检查 core 消息中是否包含可长期复用的事实，例如身份、职业、组织、技能、偏好、所在地、项目属性、联系方式和状态变化；有则写入 claims。本人明确陈述标记 self_statement，他人陈述标记 other_statement，仅从上下文推断标记 inference。事实必须带直接 evidenceKeys；短暂寒暄和纯情绪不作为事实。明确否定或更正（例如“我不是某公司员工”“我已经不住上海”）也必须抽取，predicate 保持肯定式标准属性名，polarity 标为 negative；不要把“不任职于”另造为一个无法比较的新 predicate。
 事件记忆规则：必须检查 core 消息中是否发生或计划会议、承诺、交付、旅行、付款、组织变化、决定等有时间意义的事件；有则写入 events。事件必须带 evidenceKeys，参与实体必须引用本次 entities 的 tempId。没有合格内容时数组为空，claims 和 events 两个字段仍必须返回。
-输出预算：每批最多 30 个实体、30 条关系、20 条高价值 claims、15 个 events 和 20 个 tasks；优先保留与用户本人、重要人物、项目和行动有关且证据最强的内容，禁止为了凑数量记录琐碎事实。
+输出预算：每批最多 ${EXTRACTION_OUTPUT_LIMITS.entities} 个实体、${EXTRACTION_OUTPUT_LIMITS.relations} 条关系、${EXTRACTION_OUTPUT_LIMITS.claims} 条高价值 claims、${EXTRACTION_OUTPUT_LIMITS.events} 个 events 和 ${EXTRACTION_OUTPUT_LIMITS.tasks} 个 tasks；优先保留与用户本人、重要人物、项目和行动有关且证据最强的内容，禁止为了凑数量记录琐碎事实。系统会在任一数组达到上限时自动把 core 证据细分重跑，因此不要用低价值条目占满数组。
 “用户”“我”“本人”“对方”“群友”“某人”“未知”等只是角色占位词，绝对不能作为实体名称。用户本人必须使用身份档案里的真实姓名；身份档案没有姓名时，不创建用户本人的人物实体。
 只根据消息证据，不臆测；title 用动词开头；不确定日期时 due 为空；source 使用会话显示名。
 统一证据键规则：所有 evidenceKeys、sourceEvidenceKeys、summaryEvidenceKeys 都必须逐字复制输入消息的 evidenceKey，且只能引用 analysisScope=core 的消息。context 消息可以帮助理解，但绝不能成为任何输出的证据。无法引用真实 core 证据时不要输出该条结构。summary 必须列出 summaryEvidenceKeys；highlights 中每一项必须是 {"text":"重点","sourceEvidenceKeys":["证据键"]}。
@@ -3054,26 +3060,59 @@ export class AiAssistantService {
         collected.messages,
         forcedContextKeys
       )
-      for (let batchIndex = 0; batchIndex < batches.length; batchIndex += 1) {
+      const batchQueue = batches.map(batch => ({
+        batch,
+        splitDepth: 0,
+        wasAdaptivelySplit: false,
+        probeMeta: accumulateExtractionAttemptMeta()
+      }))
+      let batchIndex = 0
+      while (batchQueue.length) {
         if (this.cancelRequested) {
           cancelled = true
           batchErrors.push('用户已安全暂停，未开始的批次将在下次继续')
           break
         }
-        const batch = batches[batchIndex]
+        const work = batchQueue.shift()!
+        const batch = work.batch
         const batchStartedAt = Date.now()
-        personalMemoryStore.recordIngestionBatch(runId, batchIndex, batch.length, 'running', '', {
-          model: String(this.config.get('aiAssistantApiModel') || ''),
-          promptVersion: EXTRACTION_PROMPT_VERSION,
-          schemaVersion: EXTRACTION_SCHEMA_VERSION
-        })
         try {
           const rawDigest = await this.callAi(batch)
+          const coverage = inspectExtractionCoverage(rawDigest)
+          const splitBatches = coverage.saturated && work.splitDepth < 2
+            ? splitSaturatedAnalysisBatch(batch, { messageKey, minimumCoreSize: 25 })
+            : []
+          if (splitBatches.length > 1) {
+            const probeMeta = accumulateExtractionAttemptMeta(work.probeMeta, rawDigest.__meta)
+            batchQueue.unshift(...splitBatches.map((splitBatch, index) => ({
+              batch: splitBatch,
+              splitDepth: work.splitDepth + 1,
+              wasAdaptivelySplit: true,
+              probeMeta: index === 0 ? probeMeta : accumulateExtractionAttemptMeta()
+            })))
+            continue
+          }
+          personalMemoryStore.recordIngestionBatch(runId, batchIndex, batch.length, 'running', '', {
+            model: String(this.config.get('aiAssistantApiModel') || ''),
+            promptVersion: EXTRACTION_PROMPT_VERSION,
+            schemaVersion: EXTRACTION_SCHEMA_VERSION
+          })
           const evidenceValidation = validateStructuredDigestEvidence(rawDigest, batch)
+          const aggregateMeta = accumulateExtractionAttemptMeta(work.probeMeta, rawDigest.__meta)
           const digest = {
             ...evidenceValidation.digest,
             __meta: {
               ...rawDigest.__meta,
+              inputTokens: aggregateMeta.inputTokens,
+              outputTokens: aggregateMeta.outputTokens,
+              durationMs: aggregateMeta.durationMs,
+              extractionAttempts: aggregateMeta.attempts,
+              extractionCoverage: inspectExtractionCoverage(rawDigest, {
+                adaptivelySplit: work.wasAdaptivelySplit,
+                splitDepth: work.splitDepth,
+                attempts: aggregateMeta.attempts,
+                unresolved: coverage.saturated
+              }),
               structuredEvidence: {
                 version: 'structured-evidence-v1',
                 accepted: evidenceValidation.accepted,
@@ -3109,6 +3148,7 @@ export class AiAssistantService {
             batchErrors.push('用户已安全暂停，剩余批次将在下次继续')
             break
           }
+          batchIndex += 1
         } catch (error: any) {
           const message = sanitizeDiagnosticText(error)
           batchErrors.push(message)
@@ -3118,6 +3158,7 @@ export class AiAssistantService {
             schemaVersion: EXTRACTION_SCHEMA_VERSION,
             durationMs: Date.now() - batchStartedAt
           })
+          batchIndex += 1
         }
       }
       const tasks = new Map<string, AssistantTask>()

@@ -247,6 +247,16 @@ function IngestionBatchAudit({ batch, run }: { batch: any; run: any }) {
     <div><b>批次 {Number(batch.batch_index) + 1}</b><span>{batch.status} · {batch.message_count} 条 · 尝试 {batch.attempts} 次</span></div>
     <small>{batch.model || run.model} · {batch.prompt_version || run.prompt_version}{batch.schema_version ? ` / ${batch.schema_version}` : ''}</small>
     <small>Token {Number(batch.input_tokens || 0).toLocaleString()} 入 / {Number(batch.output_tokens || 0).toLocaleString()} 出 · {(Number(batch.duration_ms || 0) / 1000).toFixed(1)} 秒</small>
+    {!!batch.extractionCoverage?.version && <small className={batch.extractionCoverage.unresolved ? 'assistant-diagnostics-error' : ''}>
+      抽取覆盖：
+      {batch.extractionCoverage.adaptivelySplit
+        ? `检测到容量触顶，已自动细分 ${Number(batch.extractionCoverage.splitDepth || 0)} 层`
+        : '本批无需细分'}
+      {' · '}模型调用 {Number(batch.extractionCoverage.attempts || 1)} 次
+      {batch.extractionCoverage.unresolved
+        ? ` · 仍触及 ${batch.extractionCoverage.saturatedKinds?.join('、') || '输出'} 上限，请关注`
+        : ' · 未发现未处理的容量风险'}
+    </small>}
     {!!batch.sensitiveRedaction?.total && <small>
       发送前脱敏 {batch.sensitiveRedaction.total} 处 · {Object.entries(batch.sensitiveRedaction.counts || {})
         .map(([type, count]) => `${type} ${count}`).join('、')}

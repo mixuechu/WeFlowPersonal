@@ -9105,8 +9105,8 @@ test('ingestion run archive paginates all years and loads bounded batch audits o
       INSERT INTO ingestion_batches(
         run_id,batch_index,message_count,status,attempts,error,started_at,finished_at,
         model,prompt_version,schema_version,input_tokens,output_tokens,duration_ms,
-        redaction_summary_json,evidence_validation_json,extraction_context_json
-      ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+        redaction_summary_json,evidence_validation_json,extraction_context_json,extraction_coverage_json
+      ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
     `)
     const statuses = ['completed', 'partial', 'failed', 'running']
     let expectedMessages = 0
@@ -9157,6 +9157,13 @@ test('ingestion run archive paginates all years and loads bounded batch audits o
               version: 'context-v1',
               inputFingerprint: `${runIndex}-${batchIndex}`,
               entities: [{ id: 'person', name: '有界上下文' }]
+            }),
+            JSON.stringify({
+              version: 'extraction-coverage-v1',
+              adaptivelySplit: batchIndex === 0,
+              splitDepth: batchIndex === 0 ? 1 : 0,
+              attempts: batchIndex === 0 ? 2 : 1,
+              unresolved: false
             })
           )
         }
@@ -9216,7 +9223,9 @@ test('ingestion run archive paginates all years and loads bounded batch audits o
     assert.equal(new Set([...dossierFirst.batches, ...dossierSecond.batches]
       .map((batch: any) => batch.batch_index)).size, 80)
     assert.equal(JSON.stringify(dossierFirst).includes('extraction_context_json'), false)
+    assert.equal(JSON.stringify(dossierFirst).includes('extraction_coverage_json'), false)
     assert.equal(dossierFirst.batches[0].extractionContext.entities[0].name, '有界上下文')
+    assert.equal(dossierFirst.batches[0].extractionCoverage.attempts, 2)
     database.prepare(`
       UPDATE ingestion_batches SET status=status
       WHERE run_id='archive-run-1199' AND batch_index=0

@@ -730,6 +730,7 @@ export class PersonalMemoryStore {
     this.ensureColumn('ingestion_batches', 'redaction_summary_json', `TEXT NOT NULL DEFAULT '{}'`)
     this.ensureColumn('ingestion_batches', 'evidence_validation_json', `TEXT NOT NULL DEFAULT '{}'`)
     this.ensureColumn('ingestion_batches', 'extraction_context_json', `TEXT NOT NULL DEFAULT '{}'`)
+    this.ensureColumn('ingestion_batches', 'extraction_coverage_json', `TEXT NOT NULL DEFAULT '{}'`)
     this.ensureColumn('ingestion_runs', 'recovered_at', 'TEXT')
     this.ensureColumn('ingestion_runs', 'recovered_batch_count', 'INTEGER NOT NULL DEFAULT 0')
     this.ensureColumn('ingestion_runs', 'interrupted_batch_count', 'INTEGER NOT NULL DEFAULT 0')
@@ -8272,6 +8273,7 @@ export class PersonalMemoryStore {
       sensitiveRedaction?: any
       structuredEvidence?: any
       extractionContext?: any
+      extractionCoverage?: any
     } = {}
   ): void {
     if (!this.db) return
@@ -8279,8 +8281,8 @@ export class PersonalMemoryStore {
     this.db.prepare(`
       INSERT INTO ingestion_batches(run_id,batch_index,message_count,status,error,started_at,finished_at,
         model,prompt_version,schema_version,input_tokens,output_tokens,duration_ms,redaction_summary_json,
-        evidence_validation_json,extraction_context_json)
-      VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+        evidence_validation_json,extraction_context_json,extraction_coverage_json)
+      VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
       ON CONFLICT(run_id,batch_index) DO UPDATE SET status=excluded.status,error=excluded.error,
         attempts=CASE WHEN excluded.status='running' THEN ingestion_batches.attempts+1 ELSE ingestion_batches.attempts END,
         finished_at=excluded.finished_at,
@@ -8292,13 +8294,15 @@ export class PersonalMemoryStore {
         duration_ms=CASE WHEN excluded.duration_ms>0 THEN excluded.duration_ms ELSE ingestion_batches.duration_ms END,
         redaction_summary_json=CASE WHEN excluded.redaction_summary_json!='{}' THEN excluded.redaction_summary_json ELSE ingestion_batches.redaction_summary_json END,
         evidence_validation_json=CASE WHEN excluded.evidence_validation_json!='{}' THEN excluded.evidence_validation_json ELSE ingestion_batches.evidence_validation_json END,
-        extraction_context_json=CASE WHEN excluded.extraction_context_json!='{}' THEN excluded.extraction_context_json ELSE ingestion_batches.extraction_context_json END
+        extraction_context_json=CASE WHEN excluded.extraction_context_json!='{}' THEN excluded.extraction_context_json ELSE ingestion_batches.extraction_context_json END,
+        extraction_coverage_json=CASE WHEN excluded.extraction_coverage_json!='{}' THEN excluded.extraction_coverage_json ELSE ingestion_batches.extraction_coverage_json END
     `).run(
       runId, batchIndex, messageCount, status, error || null, now, status === 'running' ? null : now,
       String(metrics.model || ''), String(metrics.promptVersion || ''), String(metrics.schemaVersion || ''),
       Math.max(0, Number(metrics.inputTokens || 0)), Math.max(0, Number(metrics.outputTokens || 0)),
       Math.max(0, Number(metrics.durationMs || 0)), JSON.stringify(metrics.sensitiveRedaction || {}),
-      JSON.stringify(metrics.structuredEvidence || {}), JSON.stringify(metrics.extractionContext || {})
+      JSON.stringify(metrics.structuredEvidence || {}), JSON.stringify(metrics.extractionContext || {}),
+      JSON.stringify(metrics.extractionCoverage || {})
     )
   }
 
@@ -8567,6 +8571,7 @@ export class PersonalMemoryStore {
       sensitiveRedaction?: any
       structuredEvidence?: any
       extractionContext?: any
+      extractionCoverage?: any
     } = {}
   ): { resourceCheckpointApplied: boolean } {
     if (!this.db) return { resourceCheckpointApplied: false }
@@ -8821,10 +8826,19 @@ export class PersonalMemoryStore {
           let sensitiveRedaction: any = {}
           let structuredEvidence: any = {}
           let extractionContext: any = {}
+          let extractionCoverage: any = {}
           try { sensitiveRedaction = JSON.parse(batch.redaction_summary_json || '{}') } catch {}
           try { structuredEvidence = JSON.parse(batch.evidence_validation_json || '{}') } catch {}
           try { extractionContext = JSON.parse(batch.extraction_context_json || '{}') } catch {}
-          return { ...batch, sensitiveRedaction, structuredEvidence, extractionContext }
+          try { extractionCoverage = JSON.parse(batch.extraction_coverage_json || '{}') } catch {}
+          const {
+            redaction_summary_json: _redactionJson,
+            evidence_validation_json: _evidenceJson,
+            extraction_context_json: _contextJson,
+            extraction_coverage_json: _coverageJson,
+            ...safeBatch
+          } = batch
+          return { ...safeBatch, sensitiveRedaction, structuredEvidence, extractionContext, extractionCoverage }
         }),
         usage
       }
@@ -9037,16 +9051,19 @@ export class PersonalMemoryStore {
       let sensitiveRedaction: any = {}
       let structuredEvidence: any = {}
       let extractionContext: any = {}
+      let extractionCoverage: any = {}
       try { sensitiveRedaction = JSON.parse(String(batch.redaction_summary_json || '{}')) } catch {}
       try { structuredEvidence = JSON.parse(String(batch.evidence_validation_json || '{}')) } catch {}
       try { extractionContext = JSON.parse(String(batch.extraction_context_json || '{}')) } catch {}
+      try { extractionCoverage = JSON.parse(String(batch.extraction_coverage_json || '{}')) } catch {}
       const {
         redaction_summary_json: _redactionJson,
         evidence_validation_json: _evidenceJson,
         extraction_context_json: _contextJson,
+        extraction_coverage_json: _coverageJson,
         ...safeBatch
       } = batch
-      return { ...safeBatch, sensitiveRedaction, structuredEvidence, extractionContext }
+      return { ...safeBatch, sensitiveRedaction, structuredEvidence, extractionContext, extractionCoverage }
     })
     const completedRevision = this.getIngestionArchiveRevision()
     if (completedRevision !== revision) {
