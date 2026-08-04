@@ -451,6 +451,7 @@ function AiAssistantPage() {
   const [dashboard, setDashboard] = useState<any>(null)
   const [settings, setSettings] = useState<any>(null)
   const [showSettings, setShowSettings] = useState(false)
+  const [settingsSaving, setSettingsSaving] = useState(false)
   const [syncing, setSyncing] = useState(false)
   const [message, setMessage] = useState('')
   const [graphQuery, setGraphQuery] = useState('')
@@ -2957,10 +2958,22 @@ function AiAssistantPage() {
   }
 
   const saveSettings = async () => {
-    await window.electronAPI.aiAssistant.setSettings(settings)
-    setShowSettings(false)
-    await load()
-    setMemoryDiagnostics(await window.electronAPI.aiAssistant.getMemoryDiagnostics())
+    if (settingsSaving) return
+    setSettingsSaving(true)
+    try {
+      await window.electronAPI.aiAssistant.setSettings(settings)
+      setShowSettings(false)
+      await load()
+      setMemoryDiagnostics(await window.electronAPI.aiAssistant.getMemoryDiagnostics())
+    } catch (error: any) {
+      const errorMessage = error?.message || String(error)
+      setMessage(errorMessage)
+      if (errorMessage.includes('AI 助理设置在展示后发生了变化')) {
+        setSettings(await window.electronAPI.aiAssistant.getSettings())
+      }
+    } finally {
+      setSettingsSaving(false)
+    }
   }
 
   const toggleTask = async (task: Task) => {
@@ -11013,7 +11026,7 @@ function AiAssistantPage() {
       {showSettings && settings && (
         <div className="assistant-modal-backdrop">
           <div className="assistant-modal">
-            <div className="assistant-modal-title"><div><h2>AI 助理设置</h2><p>敏感 Key 由 Electron safeStorage 加密保存。</p></div><button onClick={() => setShowSettings(false)}><X size={16} /></button></div>
+            <div className="assistant-modal-title"><div><h2>AI 助理设置</h2><p>敏感 Key 由 Electron safeStorage 加密保存。</p></div><button disabled={settingsSaving} onClick={() => setShowSettings(false)}><X size={16} /></button></div>
             <label><span>DeepSeek API Key</span><input type="password" placeholder={settings.configured ? '已安全保存；留空表示不修改' : 'sk-...'} onChange={event => setSettings({ ...settings, apiKey: event.target.value })} /></label>
             <label><span>API 地址</span><input value={settings.baseUrl} onChange={event => setSettings({ ...settings, baseUrl: event.target.value })} /></label>
             <label><span>模型</span><input value={settings.model} onChange={event => setSettings({ ...settings, model: event.target.value })} /></label>
@@ -11046,7 +11059,7 @@ function AiAssistantPage() {
             </select></label>
             <small className="assistant-settings-note">到期只清除回收站快照；删除抑制仍保留，原消息不会让资源复活。</small>
             <label className="assistant-toggle"><input type="checkbox" checked={settings.enabled} onChange={event => setSettings({ ...settings, enabled: event.target.checked })} /><span>启用启动补齐与每日自动整理</span></label>
-            <div className="assistant-modal-actions"><button onClick={() => setShowSettings(false)}>取消</button><button className="primary" onClick={saveSettings}>保存设置</button></div>
+            <div className="assistant-modal-actions"><button disabled={settingsSaving} onClick={() => setShowSettings(false)}>取消</button><button className="primary" disabled={settingsSaving} onClick={saveSettings}>{settingsSaving ? '正在保存…' : '保存设置'}</button></div>
           </div>
         </div>
       )}

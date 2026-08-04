@@ -122,6 +122,11 @@ import {
   assertAssistantConversationDeletionConfirmation,
   buildAssistantConversationDeletionPreviewToken
 } from './assistantConversationDeletionPolicy'
+import {
+  assertAssistantSettingsMutationToken,
+  buildAssistantSettingsMutationToken,
+  type AssistantSettingsMutationIdentity
+} from './assistantSettingsMutationPolicy'
 import { assertGraphReviewMutationRevision } from './graphReviewMutationPolicy'
 import { assertTaskOwnershipMutationRevision } from './taskOwnershipMutationPolicy'
 import { assertStructuredMemoryMutationRevision } from './structuredMemoryMutationPolicy'
@@ -5374,8 +5379,9 @@ export class AiAssistantService {
   }
 
   getSettings(): any {
-    return {
-      configured: Boolean(this.config.get('aiAssistantApiKey')),
+    const apiKeySecret = String(this.config.get('aiAssistantApiKey') || '')
+    const settings = {
+      configured: Boolean(apiKeySecret),
       baseUrl: this.config.get('aiAssistantApiBaseUrl'),
       model: this.config.get('aiAssistantApiModel'),
       scheduleTime: this.config.get('aiAssistantScheduleTime'),
@@ -5393,6 +5399,13 @@ export class AiAssistantService {
       indexWebLinks: this.config.get('aiAssistantIndexWebLinks'),
       resourceTrashRetentionDays: this.config.get('aiAssistantResourceTrashRetentionDays'),
       sensitiveRedactionLevel: this.config.get('aiAssistantSensitiveRedactionLevel')
+    }
+    return {
+      ...settings,
+      mutationToken: buildAssistantSettingsMutationToken({
+        ...settings,
+        apiKeySecret
+      } as AssistantSettingsMutationIdentity)
     }
   }
 
@@ -5531,6 +5544,12 @@ export class AiAssistantService {
   }
 
   setSettings(input: any): any {
+    const currentSettings = this.getSettings()
+    const { mutationToken: _currentMutationToken, ...currentVisibleSettings } = currentSettings
+    assertAssistantSettingsMutationToken({
+      ...currentVisibleSettings,
+      apiKeySecret: String(this.config.get('aiAssistantApiKey') || '')
+    } as AssistantSettingsMutationIdentity, input?.mutationToken)
     if (typeof input.apiKey === 'string' && input.apiKey.trim()) this.config.set('aiAssistantApiKey', input.apiKey.trim())
     if (typeof input.baseUrl === 'string' && input.baseUrl.trim()) this.config.set('aiAssistantApiBaseUrl', input.baseUrl.trim())
     if (typeof input.model === 'string' && input.model.trim()) this.config.set('aiAssistantApiModel', input.model.trim())
