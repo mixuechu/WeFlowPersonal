@@ -2964,10 +2964,11 @@ function AiAssistantPage() {
     setSettingsSaving(true)
     setSettingsError('')
     try {
-      await window.electronAPI.aiAssistant.setSettings(settings)
+      const result = await window.electronAPI.aiAssistant.setSettings(settings)
       setShowSettings(false)
       await load()
       setMemoryDiagnostics(await window.electronAPI.aiAssistant.getMemoryDiagnostics())
+      setMessage(result?.maintenanceWarning || 'AI 助理设置已完整保存')
     } catch (error: any) {
       const errorMessage = error?.message || String(error)
       setMessage(errorMessage)

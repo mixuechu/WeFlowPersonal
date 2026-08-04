@@ -128,6 +128,10 @@ import {
   normalizeAssistantSettingsInput,
   type AssistantSettingsMutationIdentity
 } from './assistantSettingsMutationPolicy'
+import {
+  isPlaceholderPersonEntity,
+  quarantinePlaceholderPersonEntities
+} from './placeholderEntityPolicy'
 import { assertGraphReviewMutationRevision } from './graphReviewMutationPolicy'
 import { assertTaskOwnershipMutationRevision } from './taskOwnershipMutationPolicy'
 import { assertStructuredMemoryMutationRevision } from './structuredMemoryMutationPolicy'
@@ -871,7 +875,7 @@ export class AiAssistantService {
         this.state.graph.relations,
         personalMemoryStore.getRelationEvidenceCounts()
       )
-      this.repairPlaceholderEntities()
+      this.quarantinePlaceholderEntities()
       this.repairInvalidRelations()
       const confirmedEntityIds = new Set(this.state.graph.reviewQueue.flatMap(review =>
         review.status === 'confirmed' && review.kind === 'entity_creation' && review.entityId
@@ -881,7 +885,9 @@ export class AiAssistantService {
         confirmedEntityIds.add(targetEntityId)
       }
       for (const entity of this.state.graph.entities) {
-        if (confirmedEntityIds.has(entity.id)) entity.trustStatus = 'confirmed'
+        if (confirmedEntityIds.has(entity.id) && !isPlaceholderPersonEntity(entity)) {
+          entity.trustStatus = 'confirmed'
+        }
       }
       this.enforceEntityTrustOnDerivedMemory()
       this.ensureLegacyEntityReviews()
@@ -956,7 +962,8 @@ export class AiAssistantService {
     for (const entity of this.state.graph.entities) {
       if (entity.trustStatus !== 'legacy_unverified') continue
       if (this.state.graph.reviewQueue.some(review =>
-        review.kind === 'entity_creation' && review.entityId === entity.id)) continue
+        review.kind === 'entity_creation' && review.entityId === entity.id &&
+        review.status === 'pending')) continue
       const evidence = [
         ...this.state.graph.relations
           .filter(relation => relation.subjectId === entity.id || relation.objectId === entity.id)
@@ -974,33 +981,21 @@ export class AiAssistantService {
         evidence,
         createdAt: entity.createdAt || new Date().toISOString()
       })
-      if (review) this.state.graph.reviewQueue.push(review)
+      if (review) {
+        if (this.state.graph.reviewQueue.some(existing => existing.id === review.id)) {
+          review.id = `${review.id}_v${Math.max(1, Number(entity.identityVersion || 1))}`
+        }
+        this.state.graph.reviewQueue.push(review)
+      }
     }
   }
 
-  private repairPlaceholderEntities(): void {
-    const reserved = new Set(['用户', '我', '本人', '自己', '对方', '群友', '某人', '未知', '未知用户', 'unknown', 'user'])
-    const ownerName = String(this.config.get('aiAssistantOwnerName') || '').trim()
-    const removed = new Set<string>()
-    for (const entity of this.state.graph.entities) {
-      if (entity.type !== 'person' || !reserved.has(entity.canonicalName.trim().toLowerCase())) continue
-      const aliases = entity.aliases.map(alias => alias.trim())
-      const inferredOwnerName = ownerName && aliases.includes(ownerName)
-        ? ownerName
-        : (entity.accountIds.length > 0 && aliases.length === 1 && !reserved.has(aliases[0].toLowerCase()) ? aliases[0] : '')
-      if (inferredOwnerName) {
-        entity.canonicalName = inferredOwnerName
-        entity.aliases = aliases.filter(alias => alias !== inferredOwnerName && !reserved.has(alias.toLowerCase()))
-        entity.summary = entity.summary.replace(/用户自称/g, `${inferredOwnerName}自称`).replace(/^用户/g, inferredOwnerName)
-        entity.updatedAt = new Date().toISOString()
-      } else {
-        removed.add(entity.id)
-      }
-    }
-    if (removed.size) {
-      this.state.graph.entities = this.state.graph.entities.filter(entity => !removed.has(entity.id))
-      this.state.graph.relations = this.state.graph.relations.filter(relation => !removed.has(relation.subjectId) && !removed.has(relation.objectId))
-    }
+  private quarantinePlaceholderEntities(): void {
+    const result = quarantinePlaceholderPersonEntities(
+      this.state.graph.entities,
+      new Date().toISOString()
+    )
+    this.state.graph.entities = result.entities
   }
 
   private repairInvalidRelations(): void {
@@ -5553,12 +5548,15 @@ export class AiAssistantService {
     } as AssistantSettingsMutationIdentity, input?.mutationToken)
     const patch = normalizeAssistantSettingsInput(input)
     this.config.setMany(patch)
+    let maintenanceWarning = ''
     if (patch.aiAssistantResourceTrashRetentionDays !== undefined) {
-      personalMemoryStore.purgeExpiredResourceTrash(patch.aiAssistantResourceTrashRetentionDays)
+      try {
+        personalMemoryStore.purgeExpiredResourceTrash(patch.aiAssistantResourceTrashRetentionDays)
+      } catch (error) {
+        maintenanceWarning = `设置已保存；回收站到期维护暂未完成，将在下次启动重试：${sanitizeDiagnosticText(error)}`
+      }
     }
-    this.repairPlaceholderEntities()
-    this.saveState()
-    return this.getSettings()
+    return { ...this.getSettings(), maintenanceWarning }
   }
 
   private applyTaskPatch(task: AssistantTask, patch: any, updatedAt: string): AssistantTask {
