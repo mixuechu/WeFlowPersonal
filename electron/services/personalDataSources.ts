@@ -235,9 +235,29 @@ export function buildModelMemoryContext(
         ),
         evidenceRoleCounts: item.evidenceRoleCounts || undefined,
         evidenceSelection: item.evidenceSelection || undefined,
+        evidenceSampleHash: memoryEvidenceSampleHash(item.evidence),
         canSupportFacts: eligibility.canSupportFacts
       }
     })
+}
+
+export function memoryEvidenceSampleHash(evidence: any[]): string {
+  const normalized = (Array.isArray(evidence) ? evidence : []).map(item => ({
+    sourceId: String(item?.source_id || item?.sourceId || '').trim().toLowerCase(),
+    sessionId: String(item?.session_id || item?.sessionId || '').trim(),
+    messageId: String(item?.message_id || item?.messageId || '').trim(),
+    timestamp: Number(item?.timestamp || 0),
+    role: String(item?.evidence_role || item?.evidenceRole || item?.role || 'support')
+      .trim().toLowerCase(),
+    excerptHash: createHash('sha256').update(String(item?.excerpt || '')).digest('hex')
+  })).sort((left, right) =>
+    left.sourceId.localeCompare(right.sourceId)
+    || left.sessionId.localeCompare(right.sessionId)
+    || left.messageId.localeCompare(right.messageId)
+    || left.timestamp - right.timestamp
+    || left.role.localeCompare(right.role)
+    || left.excerptHash.localeCompare(right.excerptHash))
+  return createHash('sha256').update(JSON.stringify(normalized)).digest('hex')
 }
 
 export function revalidateGroundedStatements(
@@ -311,6 +331,8 @@ export function revalidateGroundedStatements(
 export function getMemoryCitationFreshness(input: {
   answerTimeContentHash?: string
   currentContentHash?: string
+  answerTimeEvidenceSampleHash?: string
+  currentEvidenceSampleHash?: string
   canSupportFacts?: boolean
   unavailable?: boolean
 }): 'current' | 'changed' | 'unknown' | 'ineligible' | 'missing' {
@@ -323,7 +345,17 @@ export function getMemoryCitationFreshness(input: {
     ? String(input.currentContentHash).toLowerCase()
     : ''
   if (!answerHash || !currentHash) return 'unknown'
-  return answerHash === currentHash ? 'current' : 'changed'
+  if (answerHash !== currentHash) return 'changed'
+  const answerEvidenceHash = /^[a-f0-9]{64}$/i.test(
+    String(input.answerTimeEvidenceSampleHash || '')
+  ) ? String(input.answerTimeEvidenceSampleHash).toLowerCase() : ''
+  const currentEvidenceHash = /^[a-f0-9]{64}$/i.test(
+    String(input.currentEvidenceSampleHash || '')
+  ) ? String(input.currentEvidenceSampleHash).toLowerCase() : ''
+  if (answerEvidenceHash && currentEvidenceHash && answerEvidenceHash !== currentEvidenceHash) {
+    return 'changed'
+  }
+  return 'current'
 }
 
 export function finalizeGroundedMemoryAnswer(

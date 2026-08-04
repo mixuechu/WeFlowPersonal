@@ -8434,6 +8434,8 @@ test('assistant conversations persist ordered turns, citations and deletion acro
     documentId: 'claim:one',
     title: '证据一',
     contentHash: 'a'.repeat(64),
+    evidenceSampleHash: 'b'.repeat(64),
+    evidenceRoleCounts: { supporting: 4, contradiction: 1 },
     content: '不应复制进问答历史的结构化正文',
     evidence: [{ messageId: 'sensitive-message', excerpt: '不应复制的原文证据' }],
     feedbackContext: {
@@ -8450,7 +8452,7 @@ test('assistant conversations persist ordered turns, citations and deletion acro
     promptIsolationVersion: 'untrusted-memory-envelope-v1',
     statementCitations: [['claim:one']],
     leakedSensitiveField: '不能离开主进程'
-  })
+  }, '存在一条较早反证，结论需要保留条件')
   const conversationId = firstSavedExchange.conversationId
   assert.match(firstSavedExchange.questionMessageId, /^msg_exchange_.+_q$/)
   assert.match(firstSavedExchange.answerMessageId, /^msg_exchange_.+_a$/)
@@ -8481,6 +8483,15 @@ test('assistant conversations persist ordered turns, citations and deletion acro
   assert.equal(complete.messages[1].citations[0].content, undefined)
   assert.equal(complete.messages[1].citations[0].evidence, undefined)
   assert.equal(complete.messages[1].citations[0].contentHash, 'a'.repeat(64))
+  assert.equal(complete.messages[1].citations[0].evidenceSampleHash, 'b'.repeat(64))
+  assert.deepEqual(complete.messages[1].citations[0].evidenceRoleCounts, {
+    supporting: 4,
+    contradiction: 1
+  })
+  assert.equal(
+    complete.messages[1].uncertainty,
+    '存在一条较早反证，结论需要保留条件'
+  )
   assert.equal(JSON.stringify(complete.messages[1].citations).includes('不应复制'), false)
   assert.deepEqual(complete.messages[1].groundingAudit, {
     version: 'statement-citations-v1',
@@ -8496,6 +8507,7 @@ test('assistant conversations persist ordered turns, citations and deletion acro
   assert.equal(storedAnswer.id, firstSavedExchange.answerMessageId)
   assert.equal(storedAnswer.role, 'assistant')
   assert.equal(storedAnswer.content, '第一答')
+  assert.equal(storedAnswer.uncertainty, '存在一条较早反证，结论需要保留条件')
   assert.deepEqual(storedAnswer.groundingAudit.statementCitations, [['claim:one']])
   assert.equal(store.getAssistantAnswerMessage(firstSavedExchange.questionMessageId), null)
   assert.deepEqual(complete.messages[0].groundingAudit, {})
@@ -8525,6 +8537,54 @@ test('assistant conversations persist ordered turns, citations and deletion acro
   assert.equal(store.getAssistantConversation(conversationId), null)
   assert.equal(store.listAssistantConversations().length, 0)
 }))
+
+test('assistant uncertainty and evidence sample identity survive a SQLCipher reopen', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'weflow-answer-uncertainty-test-'))
+  const databasePath = join(directory, 'memory.sqlite')
+  const first = new PersonalMemoryStore()
+  const reopened = new PersonalMemoryStore()
+  try {
+    first.initialize(databasePath)
+    const saved = first.saveAssistantExchangeDetailed(
+      '这个结论确定吗？',
+      '现有证据支持，但存在冲突。',
+      [{
+        documentId: 'claim:uncertain',
+        title: '冲突事实',
+        contentHash: 'a'.repeat(64),
+        evidenceSampleHash: 'b'.repeat(64),
+        evidenceRoleCounts: { supporting: 7, contradiction: 2 }
+      }],
+      undefined,
+      {
+        version: 'statement-citations-v1',
+        proposedStatements: 1,
+        acceptedStatements: 1,
+        rejectedStatements: 0,
+        acceptedCitationIds: 1,
+        promptIsolationVersion: 'untrusted-memory-envelope-v1',
+        statementCitations: [['claim:uncertain']]
+      },
+      '两条反证尚未完成人工裁决。'
+    )
+    first.close()
+
+    reopened.initialize(databasePath)
+    const conversation = reopened.getAssistantConversation(saved.conversationId, 10)
+    const answer = conversation.messages.find((item: any) => item.role === 'assistant')
+    assert.equal(answer.uncertainty, '两条反证尚未完成人工裁决。')
+    assert.equal('uncertainty_text' in answer, false)
+    assert.equal(answer.citations[0].evidenceSampleHash, 'b'.repeat(64))
+    assert.deepEqual(answer.citations[0].evidenceRoleCounts, {
+      supporting: 7,
+      contradiction: 2
+    })
+  } finally {
+    first.close()
+    reopened.close()
+    rmSync(directory, { recursive: true, force: true })
+  }
+})
 
 test('assistant exchange rolls back conversation and question when answer persistence fails', () => withStore(store => {
   const database = (store as any).db

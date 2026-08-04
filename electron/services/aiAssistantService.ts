@@ -243,6 +243,7 @@ import {
   getMemoryEvidenceEligibility,
   normalizeDataSourceClaimNature,
   revalidateGroundedStatements,
+  memoryEvidenceSampleHash,
   runPersonalDataSourceBatch
 } from './personalDataSources'
 import { LocalDocumentDataSource } from './localDocumentDataSource'
@@ -7564,12 +7565,14 @@ export class AiAssistantService {
         relevanceFeedback: String(result?.relevance_feedback || '')
       }
     })
+    const uncertainty = String(parsed.uncertainty || '').trim().slice(0, 3000)
     const savedExchange = personalMemoryStore.saveAssistantExchangeDetailed(
       query,
       answer,
       citations,
       conversationId,
-      grounded.groundingAudit
+      grounded.groundingAudit,
+      uncertainty
     )
     const authenticatedAnswer = this.enrichAssistantCitationFeedback({
       messages: [{
@@ -7583,7 +7586,7 @@ export class AiAssistantService {
       assistantMessageId: savedExchange.answerMessageId,
       question: query,
       answer,
-      uncertainty: String(parsed.uncertainty || ''),
+      uncertainty,
       citations: authenticatedCitations,
       groundedStatements: grounded.statements,
       groundingAudit: grounded.groundingAudit,
@@ -7712,6 +7715,8 @@ export class AiAssistantService {
           const citationFreshness = getMemoryCitationFreshness({
             answerTimeContentHash,
             currentContentHash,
+            answerTimeEvidenceSampleHash: String(citation.evidenceSampleHash || ''),
+            currentEvidenceSampleHash: memoryEvidenceSampleHash(document.evidence || []),
             canSupportFacts: eligibility.canSupportFacts
           })
           const hydratedCitation = {
@@ -7732,6 +7737,7 @@ export class AiAssistantService {
             ),
             evidenceRoleCounts: document.evidenceRoleCounts || undefined,
             evidenceSelection: document.evidenceSelection || undefined,
+            evidenceSampleHash: memoryEvidenceSampleHash(document.evidence || []),
             canSupportFacts: eligibility.canSupportFacts,
             citationUnavailable: false,
             citationHydration: context ? 'authoritative_scoped' : 'authoritative_scope_unknown',

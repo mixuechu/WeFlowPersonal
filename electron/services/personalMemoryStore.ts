@@ -977,6 +977,7 @@ export class PersonalMemoryStore {
     this.ensureColumn('memory_review_decisions', 'protect_from_extraction', 'INTEGER NOT NULL DEFAULT 1')
     this.ensureColumn('assistant_messages', 'grounding_json', `TEXT NOT NULL DEFAULT '{}'`)
     this.ensureColumn('assistant_messages', 'exchange_id', `TEXT NOT NULL DEFAULT ''`)
+    this.ensureColumn('assistant_messages', 'uncertainty_text', `TEXT NOT NULL DEFAULT ''`)
     this.db.prepare(`
       UPDATE memory_review_decisions
       SET actor='system',
@@ -12526,6 +12527,13 @@ export class PersonalMemoryStore {
         status: String(citation?.status || '').trim().slice(0, 80),
         trustLabel: String(citation?.trustLabel || '').trim().slice(0, 120),
         evidenceTotal: Math.max(0, Math.floor(Number(citation?.evidenceTotal) || 0)),
+        evidenceSampleHash: /^[a-f0-9]{64}$/i.test(String(citation?.evidenceSampleHash || ''))
+          ? String(citation.evidenceSampleHash).toLowerCase()
+          : '',
+        evidenceRoleCounts: {
+          supporting: Math.max(0, Math.floor(Number(citation?.evidenceRoleCounts?.supporting) || 0)),
+          contradiction: Math.max(0, Math.floor(Number(citation?.evidenceRoleCounts?.contradiction) || 0))
+        },
         ...(feedbackContext ? { feedbackContext } : {}),
         citationStorage: 'reference_only_v1'
       }]
@@ -12848,14 +12856,16 @@ export class PersonalMemoryStore {
     answer: string,
     citations: any[],
     conversationId?: string,
-    groundingAudit: any = {}
+    groundingAudit: any = {},
+    uncertainty = ''
   ): string {
     return this.saveAssistantExchangeDetailed(
       question,
       answer,
       citations,
       conversationId,
-      groundingAudit
+      groundingAudit,
+      uncertainty
     ).conversationId
   }
 
@@ -12864,7 +12874,8 @@ export class PersonalMemoryStore {
     answer: string,
     citations: any[],
     conversationId?: string,
-    groundingAudit: any = {}
+    groundingAudit: any = {},
+    uncertainty = ''
   ): { conversationId: string; questionMessageId: string; answerMessageId: string } {
     if (!this.db) return { conversationId: '', questionMessageId: '', answerMessageId: '' }
     const existing = conversationId
@@ -12884,15 +12895,16 @@ export class PersonalMemoryStore {
     const compactedGrounding = this.compactAssistantGroundingAudit(groundingAudit)
     const insert = this.db.prepare(`
       INSERT INTO assistant_messages(
-        id,conversation_id,role,content,citations_json,grounding_json,exchange_id,created_at
-      ) VALUES(?,?,?,?,?,?,?,?)
+        id,conversation_id,role,content,citations_json,grounding_json,
+        exchange_id,uncertainty_text,created_at
+      ) VALUES(?,?,?,?,?,?,?,?,?)
     `)
     const save = this.db.transaction(() => {
       this.db!.prepare(`
         INSERT INTO assistant_conversations(id,title,created_at,updated_at) VALUES(?,?,?,?)
         ON CONFLICT(id) DO UPDATE SET updated_at=excluded.updated_at
       `).run(id, question.slice(0, 80), now, answerAt)
-      insert.run(questionMessageId, id, 'user', question, '[]', '{}', exchangeId, now)
+      insert.run(questionMessageId, id, 'user', question, '[]', '{}', exchangeId, '', now)
       insert.run(
         answerMessageId,
         id,
@@ -12901,6 +12913,7 @@ export class PersonalMemoryStore {
         JSON.stringify(compactedCitations),
         JSON.stringify(compactedGrounding),
         exchangeId,
+        String(uncertainty || '').trim().slice(0, 3000),
         answerAt
       )
       const citationById = new Map(compactedCitations.map(citation => [citation.documentId, citation]))
@@ -13555,8 +13568,10 @@ export class PersonalMemoryStore {
       SELECT COUNT(*) AS count FROM assistant_messages WHERE conversation_id=?
     `).get(id) as any)?.count || 0)
     const rows = this.db.prepare(`
-      SELECT id,role,content,citations_json,grounding_json,exchange_id,created_at FROM (
-        SELECT id,role,content,citations_json,grounding_json,exchange_id,created_at
+      SELECT id,role,content,citations_json,grounding_json,exchange_id,
+        uncertainty_text,created_at FROM (
+        SELECT id,role,content,citations_json,grounding_json,exchange_id,
+          uncertainty_text,created_at
         FROM assistant_messages WHERE conversation_id=?
         ORDER BY created_at DESC,id DESC LIMIT ? OFFSET ?
       ) ORDER BY created_at,id
@@ -13566,8 +13581,18 @@ export class PersonalMemoryStore {
       let groundingAudit: any = {}
       try { citations = JSON.parse(String(row.citations_json || '[]')) } catch {}
       try { groundingAudit = this.compactAssistantGroundingAudit(JSON.parse(String(row.grounding_json || '{}'))) } catch {}
-      const { citations_json: _citationsJson, grounding_json: _groundingJson, ...message } = row
-      return { ...message, citations, groundingAudit }
+      const {
+        citations_json: _citationsJson,
+        grounding_json: _groundingJson,
+        uncertainty_text: _uncertaintyText,
+        ...message
+      } = row
+      return {
+        ...message,
+        uncertainty: String(row.uncertainty_text || ''),
+        citations,
+        groundingAudit
+      }
     })
     const completedRevision = this.getAssistantHistoryRevision()
     if (completedRevision !== revision) {
@@ -13596,7 +13621,8 @@ export class PersonalMemoryStore {
   getAssistantAnswerMessage(id: string): any {
     if (!this.db) return null
     const row = this.db.prepare(`
-      SELECT id,conversation_id,role,content,citations_json,grounding_json,exchange_id,created_at
+      SELECT id,conversation_id,role,content,citations_json,grounding_json,
+        exchange_id,uncertainty_text,created_at
       FROM assistant_messages WHERE id=? AND role='assistant'
     `).get(String(id || '').trim()) as any
     if (!row) return null
@@ -13608,8 +13634,18 @@ export class PersonalMemoryStore {
         JSON.parse(String(row.grounding_json || '{}'))
       )
     } catch {}
-    const { citations_json: _citationsJson, grounding_json: _groundingJson, ...message } = row
-    return { ...message, citations, groundingAudit }
+    const {
+      citations_json: _citationsJson,
+      grounding_json: _groundingJson,
+      uncertainty_text: _uncertaintyText,
+      ...message
+    } = row
+    return {
+      ...message,
+      uncertainty: String(row.uncertainty_text || ''),
+      citations,
+      groundingAudit
+    }
   }
 
   previewDeleteAssistantConversation(id: string): any {
@@ -13621,7 +13657,8 @@ export class PersonalMemoryStore {
     `).get(conversationId) as any
     if (!conversation) throw new Error('问答会话不存在或已被删除')
     const messages = this.db.prepare(`
-      SELECT id,conversation_id,role,content,citations_json,grounding_json,exchange_id,created_at
+      SELECT id,conversation_id,role,content,citations_json,grounding_json,
+        exchange_id,uncertainty_text,created_at
       FROM assistant_messages WHERE conversation_id=?
       ORDER BY created_at,id
     `).all(conversationId) as any[]

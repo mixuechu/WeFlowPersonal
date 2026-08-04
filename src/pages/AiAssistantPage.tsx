@@ -7936,9 +7936,12 @@ function AiAssistantPage() {
                         text,
                         citationIds: item.groundingAudit?.statementCitations?.[statementIndex] || []
                       })),
-                    uncertainty: ''
+                    uncertainty: String(item.uncertainty || '')
                   })
                 }}>查看 {item.citations.length} 条引用</button>}
+                {item.role === 'assistant' && item.uncertainty && <small>
+                  不确定性：{item.uncertainty}
+                </small>}
                 {item.role === 'assistant' && item.groundingAudit?.version === 'statement-citations-v1' && <small>
                   逐条证据门禁：接受 {Number(item.groundingAudit.acceptedStatements || 0)} 条
                   {Number(item.groundingAudit.rejectedStatements || 0)

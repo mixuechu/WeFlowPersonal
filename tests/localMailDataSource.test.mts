@@ -12,6 +12,7 @@ import {
   finalizeGroundedMemoryAnswer,
   getMemoryEvidenceEligibility,
   getMemoryCitationFreshness,
+  memoryEvidenceSampleHash,
   MEMORY_RAG_SYSTEM_PROMPT,
   revalidateGroundedStatements,
   runPersonalDataSourceBatch
@@ -155,6 +156,21 @@ test('memory evidence eligibility keeps review status separate from factual supp
     contradiction: 1
   })
   assert.match(MEMORY_RAG_SYSTEM_PROMPT, /反证.*不能.*正向支持/)
+  const evidenceSample = [
+    { sourceId: 'wechat', sessionId: 's1', messageId: 'm1', timestamp: 1, excerpt: '原文', role: 'direct' },
+    { sourceId: 'mail', sessionId: 's2', messageId: 'm2', timestamp: 2, excerpt: '反证', role: 'contradiction' }
+  ]
+  assert.equal(
+    memoryEvidenceSampleHash(evidenceSample),
+    memoryEvidenceSampleHash([...evidenceSample].reverse())
+  )
+  assert.notEqual(
+    memoryEvidenceSampleHash(evidenceSample),
+    memoryEvidenceSampleHash([
+      evidenceSample[0],
+      { ...evidenceSample[1], role: 'direct' }
+    ])
+  )
   const rejectedHallucination = finalizeGroundedMemoryAnswer({
     statements: [{
       text: '候选内容一定是真的。',
@@ -224,6 +240,13 @@ test('grounded statements become stale when cited authority changes or disappear
     currentContentHash: 'a'.repeat(64),
     canSupportFacts: true
   }), 'current')
+  assert.equal(getMemoryCitationFreshness({
+    answerTimeContentHash: 'a'.repeat(64),
+    currentContentHash: 'a'.repeat(64),
+    answerTimeEvidenceSampleHash: 'b'.repeat(64),
+    currentEvidenceSampleHash: 'c'.repeat(64),
+    canSupportFacts: true
+  }), 'changed')
   assert.equal(getMemoryCitationFreshness({
     answerTimeContentHash: 'a'.repeat(64),
     currentContentHash: 'b'.repeat(64),
