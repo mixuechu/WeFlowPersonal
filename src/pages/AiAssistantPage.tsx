@@ -11014,6 +11014,13 @@ function AiAssistantPage() {
                 <span>查询降级 <b>{Number(memoryDiagnostics.embeddings.query?.fallbackCount || 0).toLocaleString()}</b> 次</span>
                 <span>维度漂移修复 <b>{Number(memoryDiagnostics.embeddings.query?.dimensionRepairCount || 0).toLocaleString()}</b> 条</span>
                 <span>模型提交 <b>{String(memoryDiagnostics.embeddings.revision || '').slice(0, 12) || '未知'}</b></span>
+                <span>模型缓存 <b>{memoryDiagnostics.embeddings.integrity?.state === 'verified'
+                  ? 'SHA-256 正常'
+                  : memoryDiagnostics.embeddings.integrity?.state === 'repaired'
+                    ? '已隔离损坏文件'
+                    : memoryDiagnostics.embeddings.integrity?.state === 'incomplete'
+                      ? '等待完整下载'
+                      : '尚未核验'}</b></span>
                 <span>版本 <b>{memoryDiagnostics.embeddings.ann.version || 'lsh-v1'}</b></span>
                 <span>最近构建 <b>{memoryDiagnostics.embeddings.ann.lastBuiltAt
                   ? new Date(memoryDiagnostics.embeddings.ann.lastBuiltAt).toLocaleString('zh-CN') : '尚未需要'}</b></span>
@@ -11035,6 +11042,10 @@ function AiAssistantPage() {
                 {memoryDiagnostics.embeddings.background.nextRetryAt
                   ? ` · 最早重试 ${new Date(memoryDiagnostics.embeddings.background.nextRetryAt).toLocaleString('zh-CN')}`
                   : memoryDiagnostics.embeddings.background.scheduled ? ' · 已安排重试' : ''}
+              </small>}
+              {Number(memoryDiagnostics.embeddings.integrity?.removed || 0) > 0 && <small className="assistant-diagnostics-error">
+                本次模型缓存核验隔离了 {Number(memoryDiagnostics.embeddings.integrity.removed).toLocaleString()} 个损坏文件；
+                后台只会从固定提交重新下载这些派生文件，不会修改个人记忆。
               </small>}
               {!memoryDiagnostics.embeddings.background?.lastError
                 && memoryDiagnostics.embeddings.background?.lastSuccessAt && <small>

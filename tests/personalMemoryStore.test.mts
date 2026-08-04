@@ -1,14 +1,16 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { createHash, randomBytes } from 'node:crypto'
 import { PersonalMemoryStore } from '../electron/services/personalMemoryStore.ts'
 import {
   LOCAL_EMBEDDING_MODEL,
+  LOCAL_EMBEDDING_MANIFEST,
   LOCAL_EMBEDDING_REVISION,
-  LocalEmbeddingService
+  LocalEmbeddingService,
+  verifyModelCacheManifest
 } from '../electron/services/localEmbeddingService.ts'
 import {
   recordVectorIndexContinuation,
@@ -7216,6 +7218,50 @@ test('local embedding identity pins an immutable model revision', () => {
   } finally {
     rmSync(directory, { recursive: true, force: true })
   }
+})
+
+test('local embedding cache verification removes only corrupted derived files', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'weflow-model-integrity-'))
+  const model = 'fixture/model'
+  const revision = 'a'.repeat(40)
+  const modelDirectory = join(directory, 'fixture', 'model', revision)
+  const filePath = join(modelDirectory, 'weights.bin')
+  try {
+    mkdirSync(modelDirectory, { recursive: true })
+    writeFileSync(filePath, 'trusted-bytes')
+    const trustedHash = createHash('sha256').update('trusted-bytes').digest('hex')
+    const verified = await verifyModelCacheManifest({
+      cacheDirectory: directory,
+      model,
+      revision,
+      manifest: [{ path: 'weights.bin', sha256: trustedHash }]
+    })
+    assert.deepEqual(verified, { state: 'verified', checked: 1, missing: 0, removed: 0 })
+    assert.equal(existsSync(filePath), true)
+
+    writeFileSync(filePath, 'tampered-bytes')
+    const repaired = await verifyModelCacheManifest({
+      cacheDirectory: directory,
+      model,
+      revision,
+      manifest: [{ path: 'weights.bin', sha256: trustedHash }]
+    })
+    assert.deepEqual(repaired, { state: 'repaired', checked: 0, missing: 1, removed: 1 })
+    assert.equal(existsSync(filePath), false)
+  } finally {
+    rmSync(directory, { recursive: true, force: true })
+  }
+})
+
+test('local embedding manifest covers every runtime-critical pinned artifact', () => {
+  assert.deepEqual(LOCAL_EMBEDDING_MANIFEST.map(entry => entry.path), [
+    'config.json',
+    'tokenizer.json',
+    'tokenizer_config.json',
+    'onnx/model_quantized.onnx',
+    'onnx/model_quantized.onnx_data'
+  ])
+  LOCAL_EMBEDDING_MANIFEST.forEach(entry => assert.match(entry.sha256, /^[a-f0-9]{64}$/))
 })
 
 test('cosine similarity is scale safe and rejects unusable vectors', () => {
