@@ -6685,6 +6685,94 @@ test('verified backup rejects evidence revision drift and online repair restores
   assert.equal(store.createBackup().success, true)
 }))
 
+test('verified backup rejects live task search drift and runtime repair restores authority', () => withStore(store => {
+  const task = {
+    id: 'task-live-backup-gate',
+    title: '核验待办实时备份门禁',
+    detail: '不能只相信上一次保存的健康摘要',
+    source: '可靠性测试',
+    sourceSessionId: 'task-live-backup-session',
+    status: 'todo',
+    priority: 'high',
+    classification: 'mine',
+    evidence: [{
+      messageId: 'task-live-backup-message',
+      sessionId: 'task-live-backup-session',
+      timestamp: 1_700_006_000,
+      sender: '测试发送者',
+      excerpt: '请核验待办实时备份门禁'
+    }]
+  }
+  store.syncTasks([task])
+  const database = (store as any).db
+  database.exec(`
+    UPDATE search_documents
+    SET search_text='共同漂移后的错误正文',
+      content_hash='共同漂移后的错误哈希'
+    WHERE id='task:task-live-backup-gate';
+    UPDATE search_fts
+    SET search_text='共同漂移后的错误正文'
+    WHERE document_id='task:task-live-backup-gate';
+    DELETE FROM schema_meta WHERE key='task_search_index_integrity';
+  `)
+
+  const drifted = store.getDiagnostics()
+  assert.equal(drifted.taskSearchIndexHealthy, false)
+  assert.equal(drifted.healthy, false)
+  assert.equal(drifted.taskSearchIndex.version, 0)
+  assert.equal(drifted.taskSearchIndex.currentPayloadMismatches, 1)
+  assert.throws(() => store.createBackup(), /数据库一致性检查失败/)
+
+  const repaired = store.repairRuntimeSearchDerivedState([task])
+  assert.equal(repaired.healthy, true)
+  assert.equal(repaired.repaired.taskDocuments, 1)
+  assert.equal(repaired.diagnostics.taskSearchIndexHealthy, true)
+  assert.equal(repaired.diagnostics.taskSearchIndex.currentMismatches, 0)
+  assert.equal(store.searchText('不能只相信上一次保存的健康摘要')[0]?.source_id,
+    'task-live-backup-gate')
+  assert.equal(store.createBackup().success, true)
+}))
+
+test('task search drift remains unhealthy across restart until authoritative repair', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'weflow-task-search-restart-'))
+  const databasePath = join(directory, 'memory.sqlite')
+  const key = randomBytes(32)
+  const task = {
+    id: 'task-search-restart-drift',
+    title: '跨重启核验待办检索',
+    detail: '重开数据库不能遗忘派生索引漂移',
+    source: '可靠性测试',
+    status: 'todo',
+    priority: 'medium',
+    classification: 'mine'
+  }
+  const first = new PersonalMemoryStore()
+  const reopened = new PersonalMemoryStore()
+  try {
+    first.initialize(databasePath, key)
+    first.syncTasks([task])
+    ;(first as any).db.exec(`
+      DELETE FROM search_documents WHERE id='task:task-search-restart-drift';
+      DELETE FROM schema_meta WHERE key='task_search_index_integrity';
+    `)
+    first.close()
+
+    reopened.initialize(databasePath, key)
+    const drifted = reopened.getDiagnostics()
+    assert.equal(drifted.taskSearchIndexHealthy, false)
+    assert.equal(drifted.taskSearchIndex.currentMissingDocuments, 1)
+    assert.throws(() => reopened.createBackup(), /数据库一致性检查失败/)
+    const repaired = reopened.repairRuntimeSearchDerivedState([task])
+    assert.equal(repaired.healthy, true)
+    assert.equal(repaired.repaired.taskDocuments, 1)
+    assert.equal(reopened.searchText('重开数据库不能遗忘派生索引漂移').length, 1)
+  } finally {
+    first.close()
+    reopened.close()
+    rmSync(directory, { recursive: true, force: true })
+  }
+})
+
 test('full current-database identity is stable per run and changes with durable content', () => {
   const directory = mkdtempSync(join(tmpdir(), 'weflow-current-database-identity-'))
   const databasePath = join(directory, 'memory.sqlite')

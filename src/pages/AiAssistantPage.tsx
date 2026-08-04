@@ -10982,6 +10982,9 @@ function AiAssistantPage() {
                 <span>权威待办 <b>{Number(memoryDiagnostics.taskSearchIndex.authoritativeTasks || 0).toLocaleString()}</b></span>
                 <span>累计修复派生文档 <b>{Number(memoryDiagnostics.taskSearchIndex.repairedDerivedDocumentsTotal || 0).toLocaleString()}</b></span>
                 <span>其中缺失文档 <b>{Number(memoryDiagnostics.taskSearchIndex.repairedMissingDocumentsTotal || 0).toLocaleString()}</b></span>
+                <span>实时缺失/幽灵 <b>{Number(memoryDiagnostics.taskSearchIndex.currentMissingDocuments || 0).toLocaleString()} / {Number(memoryDiagnostics.taskSearchIndex.currentGhostDocuments || 0).toLocaleString()}</b></span>
+                <span>实时正文/身份漂移 <b>{Number(memoryDiagnostics.taskSearchIndex.currentPayloadMismatches || 0).toLocaleString()}</b></span>
+                <span>实时证据集合漂移 <b>{Number(memoryDiagnostics.taskSearchIndex.currentEvidenceSetMismatches || 0).toLocaleString()}</b></span>
                 <span>证据集合修复 <b>{Number(memoryDiagnostics.taskSearchIndex.repairedEvidenceSetsTotal || 0).toLocaleString()}</b></span>
                 <span>最近核对 <b>{memoryDiagnostics.taskSearchIndex.checkedAt
                   ? new Date(memoryDiagnostics.taskSearchIndex.checkedAt).toLocaleString('zh-CN')

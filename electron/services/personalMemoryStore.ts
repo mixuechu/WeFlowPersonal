@@ -4548,8 +4548,11 @@ export class PersonalMemoryStore {
         }
       }
     })()
-    const taskSearchIndexHealthy = taskSearchIndex.version === 0
-      || taskSearchIndex.currentMismatches === 0
+    const liveTaskSearchIndex = this.getTaskSearchIndexLiveHealth()
+    Object.assign(taskSearchIndex, liveTaskSearchIndex)
+    const taskSearchIndexHealthy = (taskSearchIndex.version === 1
+      || liveTaskSearchIndex.authoritativeTasks === 0)
+      && liveTaskSearchIndex.currentMismatches === 0
     const memorySearchRevision = this.getMemorySearchRevisionHealth()
     const entityEvidenceFts = this.getEntityEvidenceFtsHealth()
     const evidenceScopeIndexes = this.getEvidenceScopeIndexHealth()
@@ -4704,6 +4707,111 @@ export class PersonalMemoryStore {
           Number(after.generalEvidenceRevision?.repairedTriggersThisStart || 0))
       },
       diagnostics: after
+    }
+  }
+
+  private getTaskSearchIndexLiveHealth(): {
+    liveCheckedAt: string
+    authoritativeTasks: number
+    currentMismatches: number
+    currentMissingDocuments: number
+    currentGhostDocuments: number
+    currentPayloadMismatches: number
+    currentEvidenceSetMismatches: number
+  } {
+    if (!this.db) {
+      return {
+        liveCheckedAt: '',
+        authoritativeTasks: 0,
+        currentMismatches: 1,
+        currentMissingDocuments: 0,
+        currentGhostDocuments: 0,
+        currentPayloadMismatches: 0,
+        currentEvidenceSetMismatches: 0
+      }
+    }
+    const tasks = this.db.prepare(`
+      SELECT id,title,payload_json,evidence_fingerprint FROM task_directory
+    `).all() as Array<{
+      id: string
+      title: string
+      payload_json: string
+      evidence_fingerprint: string
+    }>
+    const documents = this.db.prepare(`
+      SELECT d.id,d.document_type,d.source_id,d.title,d.search_text,d.metadata_json,
+        d.content_hash,
+        (SELECT COUNT(*) FROM search_document_evidence e
+          WHERE e.document_id=d.id) AS evidence_count
+      FROM search_documents d
+      WHERE d.document_type='task' OR d.id LIKE 'task:%'
+    `).all() as any[]
+    const documentMap = new Map(documents.map(document => [String(document.id), document]))
+    const authoritativeIds = new Set(tasks.map(task => `task:${task.id}`))
+    let missingDocuments = 0
+    let ghostDocuments = 0
+    let payloadMismatches = 0
+    let evidenceSetMismatches = 0
+    for (const taskRow of tasks) {
+      const document = documentMap.get(`task:${taskRow.id}`)
+      if (!document) {
+        missingDocuments += 1
+        continue
+      }
+      let task: any
+      let metadata: any
+      try { task = JSON.parse(String(taskRow.payload_json || '{}')) } catch { task = null }
+      try { metadata = JSON.parse(String(document.metadata_json || '{}')) } catch { metadata = null }
+      if (!task || !metadata) {
+        payloadMismatches += 1
+        continue
+      }
+      const expectedSearchText = [
+        task.title, task.detail, task.owner, ...(Array.isArray(task.collaborators)
+          ? task.collaborators : []), task.project, task.source, task.assignmentEvidence
+      ].filter(Boolean).join('；')
+      const expectedHash = createHash('sha256').update(expectedSearchText).digest('hex')
+      const expectedMetadata = {
+        status: task.status,
+        priority: task.priority,
+        due: task.due,
+        classification: task.classification,
+        sourceSessionId: task.sourceSessionId,
+        owner: task.owner,
+        collaborators: Array.isArray(task.collaborators) ? task.collaborators : [],
+        project: task.project || '',
+        dependsOnIds: Array.isArray(task.dependsOnIds) ? task.dependsOnIds : [],
+        taskKind: task.taskKind || 'action',
+        ownershipPolicyReason: task.ownershipPolicyReason || '',
+        evidenceFingerprint: String(taskRow.evidence_fingerprint || ''),
+        evidenceCount: Number(document.evidence_count || 0)
+      }
+      if (String(taskRow.title || '') !== String(task.title || '')
+        || document.document_type !== 'task'
+        || String(document.source_id) !== String(taskRow.id)
+        || String(document.title) !== String(task.title || taskRow.title || '')
+        || String(document.search_text) !== expectedSearchText
+        || String(document.content_hash) !== expectedHash
+        || JSON.stringify(metadata) !== JSON.stringify(expectedMetadata)) {
+        payloadMismatches += 1
+      }
+      if (Number(metadata.evidenceCount ?? -1) !== Number(document.evidence_count || 0)
+        || String(metadata.evidenceFingerprint || '') !== String(taskRow.evidence_fingerprint || '')) {
+        evidenceSetMismatches += 1
+      }
+    }
+    for (const document of documents) {
+      if (!authoritativeIds.has(String(document.id))) ghostDocuments += 1
+    }
+    return {
+      liveCheckedAt: new Date().toISOString(),
+      authoritativeTasks: tasks.length,
+      currentMismatches:
+        missingDocuments + ghostDocuments + payloadMismatches + evidenceSetMismatches,
+      currentMissingDocuments: missingDocuments,
+      currentGhostDocuments: ghostDocuments,
+      currentPayloadMismatches: payloadMismatches,
+      currentEvidenceSetMismatches: evidenceSetMismatches
     }
   }
 
