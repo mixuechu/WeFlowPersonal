@@ -586,6 +586,7 @@ export class AiAssistantService {
   private lastSchedulerAttemptAt = 0
   private lastSchedulerTickAt = 0
   private vectorIndexPromise: Promise<any> | null = null
+  private memorySearchRepairPromise: Promise<any> | null = null
   private cancelRequested = false
   private taskReviewReconciliation = {
     checked: 0,
@@ -3037,6 +3038,9 @@ export class AiAssistantService {
 
   async sync(trigger: 'manual' | 'startup' | 'daily' | 'backlog' | 'resume' = 'manual'): Promise<any> {
     if (this.activeSync) return this.activeSync
+    if (this.memorySearchRepairPromise) {
+      throw new Error('当前正在核验检索索引，请在完成后再开始增量处理')
+    }
     this.cancelRequested = false
     if (trigger !== 'backlog' && this.state.cursor.backlogRetry.paused) {
       this.state.cursor.backlogRetry = {
@@ -5060,6 +5064,22 @@ export class AiAssistantService {
       imageSemantics: { ...imageSemantics, enabled: Boolean(this.config.get('aiAssistantAnalyzeImages')) },
       pdfOcr: { ...pdfOcr, enabled: Boolean(this.config.get('aiAssistantOcrImages')) }
     }
+  }
+
+  async repairMemorySearchIndexes(): Promise<any> {
+    if (this.memorySearchRepairPromise) return this.memorySearchRepairPromise
+    if (this.activeSync) throw new Error('当前正在增量处理，请在本轮结束后再核验检索索引')
+    if (this.vectorIndexPromise) throw new Error('当前正在构建本地向量索引，请完成后再核验')
+    this.memorySearchRepairPromise = (async () => {
+      const result = personalMemoryStore.repairRuntimeSearchDerivedState(this.state.tasks)
+      const embeddings = await this.ensureVectorIndex()
+      return {
+        ...result,
+        embeddings,
+        diagnostics: await this.getMemoryDiagnostics()
+      }
+    })().finally(() => { this.memorySearchRepairPromise = null })
+    return this.memorySearchRepairPromise
   }
 
   getIngestionRunPage(options: any = {}): any {

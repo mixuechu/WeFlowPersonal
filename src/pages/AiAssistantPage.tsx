@@ -933,6 +933,8 @@ function AiAssistantPage() {
   const [mergeRevertConfirmation, setMergeRevertConfirmation] = useState('')
   const mergeRevertGate = useRef(new LatestRequestGate())
   const [memoryDiagnostics, setMemoryDiagnostics] = useState<any>(null)
+  const [repairingMemorySearchIndexes, setRepairingMemorySearchIndexes] = useState(false)
+  const [memorySearchRepairResult, setMemorySearchRepairResult] = useState<any>(null)
   const [showDiagnostics, setShowDiagnostics] = useState(false)
   const [ingestionArchive, setIngestionArchive] = useState<{
     items: any[]
@@ -10505,6 +10507,39 @@ function AiAssistantPage() {
                   ? new Date(memoryDiagnostics.structuredSearchIndex.checkedAt).toLocaleString('zh-CN')
                   : '未知'}</b></span>
               </div>
+              <small>这里只核验并重建可再生的全文、范围、分页和向量派生索引，不会修改事实、事件、关系、待办或证据原文，也不会调用云端模型。</small>
+              <button disabled={repairingMemorySearchIndexes || memoryDiagnostics.syncing ||
+                memoryDiagnostics.embeddings?.indexing}
+                onClick={async () => {
+                  setRepairingMemorySearchIndexes(true)
+                  setMemorySearchRepairResult(null)
+                  try {
+                    const result = await window.electronAPI.aiAssistant.repairMemorySearchIndexes()
+                    setMemoryDiagnostics(result.diagnostics)
+                    setMemorySearchRepairResult(result)
+                  } catch (error) {
+                    setMemorySearchRepairResult({
+                      error: error instanceof Error ? error.message : String(error)
+                    })
+                  } finally {
+                    setRepairingMemorySearchIndexes(false)
+                  }
+                }}>
+                {repairingMemorySearchIndexes ? '正在核验并修复…' : '立即核验并修复检索索引'}
+              </button>
+              {memorySearchRepairResult?.error && <small className="assistant-diagnostics-error">
+                {memorySearchRepairResult.error}
+              </small>}
+              {memorySearchRepairResult?.repaired && <small>
+                本次完成：缺失文档 {Number(memorySearchRepairResult.repaired.missingDocuments || 0)}，
+                幽灵文档 {Number(memorySearchRepairResult.repaired.ghostDocuments || 0)}，
+                FTS {Number(memorySearchRepairResult.repaired.ftsPayloads || 0)}，
+                元数据/正文 {Number(memorySearchRepairResult.repaired.metadataDocuments || 0) +
+                  Number(memorySearchRepairResult.repaired.structuredDocuments || 0)}，
+                ANN 孤儿 {Number(memorySearchRepairResult.repaired.annOrphans || 0)}，
+                待办派生文档 {Number(memorySearchRepairResult.repaired.taskDocuments || 0)}；
+                当前{memorySearchRepairResult.healthy ? '一致' : '仍需检查'}。
+              </small>}
             </div>}
             {memoryDiagnostics.memorySearchRevision?.version && <div className={`assistant-recovery-audit ${memoryDiagnostics.memorySearchRevisionHealthy ? 'healthy' : 'unhealthy'}`}>
               <header><Search size={15} /><span><b>检索分页一致性保护</b>

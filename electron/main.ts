@@ -4685,6 +4685,8 @@ function registerIpcHandlers() {
     _, fromId: string, toId: string, entityDirectoryRevision?: string
   ) => aiAssistantService.findCommonNeighbors(fromId, toId, entityDirectoryRevision))
   ipcMain.handle('ai-assistant:getMemoryDiagnostics', () => aiAssistantService.getMemoryDiagnostics())
+  ipcMain.handle('ai-assistant:repairMemorySearchIndexes', () =>
+    aiAssistantService.repairMemorySearchIndexes())
   ipcMain.handle('ai-assistant:getIngestionRunPage', (_, options?: any) =>
     aiAssistantService.getIngestionRunPage(options))
   ipcMain.handle('ai-assistant:getIngestionRunDossier', (_, runId: string, options?: any) =>

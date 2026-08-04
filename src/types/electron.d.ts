@@ -2057,6 +2057,7 @@ export interface ElectronAPI {
       findGraphPath: (fromId: string, toId: string, maxDepth?: number, entityDirectoryRevision?: string) => Promise<any>
       findCommonNeighbors: (fromId: string, toId: string, entityDirectoryRevision?: string) => Promise<any>
       getMemoryDiagnostics: () => Promise<any>
+      repairMemorySearchIndexes: () => Promise<any>
       getIngestionRunPage: (options?: any) => Promise<{
         items: any[]
         total: number

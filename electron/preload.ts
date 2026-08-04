@@ -745,6 +745,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     findCommonNeighbors: (fromId: string, toId: string, entityDirectoryRevision?: string) =>
       ipcRenderer.invoke('ai-assistant:findCommonNeighbors', fromId, toId, entityDirectoryRevision),
     getMemoryDiagnostics: () => ipcRenderer.invoke('ai-assistant:getMemoryDiagnostics'),
+    repairMemorySearchIndexes: () => ipcRenderer.invoke('ai-assistant:repairMemorySearchIndexes'),
     getIngestionRunPage: (options?: any) =>
       ipcRenderer.invoke('ai-assistant:getIngestionRunPage', options),
     getIngestionRunDossier: (runId: string, options?: any) =>

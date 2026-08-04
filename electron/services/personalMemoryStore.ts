@@ -4177,6 +4177,50 @@ export class PersonalMemoryStore {
     }
   }
 
+  repairRuntimeSearchDerivedState(tasks: any[]): any {
+    if (!this.db) throw new Error('个人记忆数据库尚未初始化')
+    const before = this.getDiagnostics()
+    // These tables and triggers are derived from authoritative memory, evidence, and task rows.
+    // Rebuilding them never changes the underlying facts, relations, events, resources, or tasks.
+    this.ensureEvidenceScopeIndexes()
+    this.ensureEntityEvidenceFtsIndex()
+    this.ensureMemorySearchRevisionTriggers()
+    this.repairStructuredSearchIndex()
+    this.syncTasks(Array.isArray(tasks) ? tasks : [])
+    const after = this.getDiagnostics()
+    const beforeIndex = before.structuredSearchIndex || {}
+    const afterIndex = after.structuredSearchIndex || {}
+    const beforeTasks = before.taskSearchIndex || {}
+    const afterTasks = after.taskSearchIndex || {}
+    return {
+      checkedAt: new Date().toISOString(),
+      healthy: Boolean(
+        after.structuredSearchIndexHealthy
+        && after.taskSearchIndexHealthy
+        && after.entityEvidenceFtsHealthy
+        && after.evidenceScopeIndexesHealthy
+        && after.memorySearchRevisionHealthy
+      ),
+      repaired: {
+        ghostDocuments: Math.max(0, Number(afterIndex.ghostRowsRemovedTotal || 0)
+          - Number(beforeIndex.ghostRowsRemovedTotal || 0)),
+        missingDocuments: Math.max(0, Number(afterIndex.missingDocumentsRebuiltTotal || 0)
+          - Number(beforeIndex.missingDocumentsRebuiltTotal || 0)),
+        ftsPayloads: Math.max(0, Number(afterIndex.ftsPayloadsRebuiltTotal || 0)
+          - Number(beforeIndex.ftsPayloadsRebuiltTotal || 0)),
+        metadataDocuments: Math.max(0, Number(afterIndex.metadataDocumentsRepairedTotal || 0)
+          - Number(beforeIndex.metadataDocumentsRepairedTotal || 0)),
+        structuredDocuments: Math.max(0, Number(afterIndex.structuredDocumentsRepairedTotal || 0)
+          - Number(beforeIndex.structuredDocumentsRepairedTotal || 0)),
+        annOrphans: Math.max(0, Number(afterIndex.orphanAnnRowsRemovedTotal || 0)
+          - Number(beforeIndex.orphanAnnRowsRemovedTotal || 0)),
+        taskDocuments: Math.max(0, Number(afterTasks.repairedDerivedDocumentsTotal || 0)
+          - Number(beforeTasks.repairedDerivedDocumentsTotal || 0))
+      },
+      diagnostics: after
+    }
+  }
+
   previewForgetEntity(entityId: string): any {
     if (!this.db) return null
     const entity = this.db.prepare('SELECT id,canonical_name FROM entities WHERE id=? AND deleted_at IS NULL').get(entityId) as any

@@ -3663,6 +3663,88 @@ test('task sync repairs a canonical document with a drifted type and source id',
   assert.equal(store.searchText('修复待办搜索身份')[0].source_id, 'task-identity-repair')
 }))
 
+test('runtime search repair restores derived indexes without reopening the database', () => withStore(store => {
+  store.syncGraph({
+    entities: [{
+      id: 'runtime-repair-person',
+      type: 'person',
+      canonicalName: '在线修复测试人',
+      trustStatus: 'confirmed'
+    }],
+    relations: [],
+    reviewQueue: []
+  })
+  const task = {
+    id: 'runtime-repair-task',
+    title: '在线修复待办关键词',
+    detail: '应用无需重启即可恢复检索',
+    source: '运行时测试',
+    status: 'todo',
+    priority: 'medium',
+    classification: 'mine'
+  }
+  store.upsertClaims([{
+    id: 'runtime-repair-claim',
+    subjectId: 'runtime-repair-person',
+    predicate: '记录',
+    objectValue: '在线修复事实关键词',
+    confidence: 0.9,
+    status: 'candidate',
+    sourceNature: 'self_statement',
+    searchText: '在线修复事实关键词',
+    evidence: [{
+      messageId: 'runtime-repair-message',
+      sessionId: 'runtime-repair-session',
+      timestamp: 1_700_003_000,
+      sender: '测试发送者',
+      excerpt: '在线修复事实关键词'
+    }]
+  }])
+  store.syncTasks([task])
+  const database = (store as any).db
+  database.pragma('foreign_keys = OFF')
+  database.exec(`
+    DROP TRIGGER trg_memory_search_revision_search_documents_insert;
+    DELETE FROM search_documents WHERE id='claim:runtime-repair-claim';
+    UPDATE search_documents
+      SET document_type='entity',source_id='wrong-task-source'
+      WHERE id='task:runtime-repair-task';
+    DELETE FROM search_fts WHERE document_id='task:runtime-repair-task';
+    INSERT INTO search_documents(
+      id,document_type,source_id,title,search_text,metadata_json,content_hash,updated_at
+    ) VALUES(
+      'claim:runtime-repair-ghost','claim','runtime-repair-ghost',
+      '幽灵结果','幽灵结果','{}','ghost-hash','2026-08-04T00:00:00.000Z'
+    );
+    INSERT INTO vector_ann_entries(
+      document_id,model,dimensions,table_id,signature,content_hash,updated_at
+    ) VALUES(
+      'runtime-repair-ann-orphan','ann-test',2,0,1,'orphan-hash',
+      '2026-08-04T00:00:00.000Z'
+    );
+  `)
+  database.pragma('foreign_keys = ON')
+
+  assert.equal(Number(database.prepare(`
+    SELECT COUNT(*) AS count FROM search_documents WHERE id='claim:runtime-repair-claim'
+  `).get().count), 0)
+  const result = store.repairRuntimeSearchDerivedState([task])
+
+  assert.equal(result.healthy, true)
+  assert.equal(result.repaired.missingDocuments, 1)
+  assert.ok(result.repaired.ghostDocuments >= 1)
+  assert.equal(result.repaired.annOrphans, 1)
+  assert.equal(result.repaired.taskDocuments, 1)
+  assert.equal(store.searchText('在线修复事实关键词')[0]?.source_id, 'runtime-repair-claim')
+  assert.equal(store.searchText('在线修复待办关键词')[0]?.source_id, 'runtime-repair-task')
+  assert.equal(Number(database.prepare(`
+    SELECT COUNT(*) AS count FROM search_documents WHERE id='claim:runtime-repair-ghost'
+  `).get().count), 0)
+  assert.equal(result.diagnostics.memorySearchRevisionHealthy, true)
+  assert.equal(result.diagnostics.structuredSearchIndexHealthy, true)
+  assert.equal(result.diagnostics.taskSearchIndexHealthy, true)
+}))
+
 test('Chinese substring search falls back when the exact FTS phrase misses', () => withStore(store => {
   store.syncTasks([{
     id: 'task-2',
