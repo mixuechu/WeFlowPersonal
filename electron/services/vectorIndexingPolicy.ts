@@ -85,11 +85,33 @@ export type VectorIndexContinuationHealth = {
   scheduled: boolean
   runCount: number
   indexedCount: number
+  failureStreak: number
+  nextRetryAt: string
   lastScheduledAt: string
   lastAttemptAt: string
   lastSuccessAt: string
   lastErrorAt: string
   lastError: string
+}
+
+export const VECTOR_INDEX_RETRY_BASE_MS = 60_000
+export const VECTOR_INDEX_RETRY_MAX_MS = 6 * 60 * 60_000
+
+export function vectorIndexRetryDelayMs(failureStreak: unknown): number {
+  const streak = Math.max(1, Math.floor(Number(failureStreak || 1)))
+  return Math.min(VECTOR_INDEX_RETRY_MAX_MS, VECTOR_INDEX_RETRY_BASE_MS * 2 ** Math.min(20, streak - 1))
+}
+
+export function vectorIndexScheduleDelayMs(
+  health: Pick<VectorIndexContinuationHealth, 'nextRetryAt'>,
+  requestedDelayMs: unknown,
+  nowMs = Date.now()
+): number {
+  const requested = Math.max(0, Math.floor(Number(requestedDelayMs || 0)))
+  const retryAt = Date.parse(String(health.nextRetryAt || ''))
+  return Number.isFinite(retryAt)
+    ? Math.max(requested, retryAt - nowMs, 0)
+    : requested
 }
 
 export function recordVectorIndexContinuation(
@@ -107,6 +129,7 @@ export function recordVectorIndexContinuation(
       ...current,
       scheduled: false,
       runCount: Math.max(0, Number(current.runCount || 0)) + 1,
+      nextRetryAt: '',
       lastAttemptAt: event.at
     }
   }
@@ -117,13 +140,21 @@ export function recordVectorIndexContinuation(
       scheduled: false,
       indexedCount: Math.max(0, Number(current.indexedCount || 0))
         + Math.max(0, Math.floor(Number(event.indexed || 0))),
+      failureStreak: 0,
+      nextRetryAt: '',
       lastSuccessAt: event.at,
       lastError: ''
     }
   }
+  const failureStreak = Math.max(0, Math.floor(Number(current.failureStreak || 0))) + 1
+  const failedAt = Date.parse(event.at)
   return {
     ...current,
     scheduled: false,
+    failureStreak,
+    nextRetryAt: Number.isFinite(failedAt)
+      ? new Date(failedAt + vectorIndexRetryDelayMs(failureStreak)).toISOString()
+      : '',
     lastErrorAt: event.at,
     lastError: String(event.error || 'unknown_vector_index_error').slice(0, 500)
   }

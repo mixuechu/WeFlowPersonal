@@ -12522,6 +12522,8 @@ export class PersonalMemoryStore {
       scheduled: false,
       runCount: 0,
       indexedCount: 0,
+      failureStreak: 0,
+      nextRetryAt: '',
       lastScheduledAt: '',
       lastAttemptAt: '',
       lastSuccessAt: '',
@@ -12542,6 +12544,8 @@ export class PersonalMemoryStore {
         scheduled: false,
         runCount: safeCount(stored.runCount),
         indexedCount: safeCount(stored.indexedCount),
+        failureStreak: safeCount(stored.failureStreak),
+        nextRetryAt: String(stored.nextRetryAt || '').slice(0, 64),
         lastScheduledAt: String(stored.lastScheduledAt || '').slice(0, 64),
         lastAttemptAt: String(stored.lastAttemptAt || '').slice(0, 64),
         lastSuccessAt: String(stored.lastSuccessAt || '').slice(0, 64),
@@ -12561,6 +12565,8 @@ export class PersonalMemoryStore {
       scheduled: false,
       runCount: Math.max(0, Math.floor(Number(health.runCount || 0))),
       indexedCount: Math.max(0, Math.floor(Number(health.indexedCount || 0))),
+      failureStreak: Math.max(0, Math.floor(Number(health.failureStreak || 0))),
+      nextRetryAt: String(health.nextRetryAt || '').slice(0, 64),
       lastError: String(health.lastError || '').slice(0, 500)
     }
     this.db.prepare(`

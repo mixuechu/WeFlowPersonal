@@ -14,6 +14,7 @@ import {
   recordVectorIndexContinuation,
   runVectorIndexPass,
   shouldPersistVectorQueryOutcome,
+  vectorIndexScheduleDelayMs,
   validateEmbeddingBatch,
   type VectorIndexContinuationHealth,
   type VectorQueryHealth
@@ -609,6 +610,8 @@ export class AiAssistantService {
     scheduled: false,
     runCount: 0,
     indexedCount: 0,
+    failureStreak: 0,
+    nextRetryAt: '',
     lastScheduledAt: '',
     lastAttemptAt: '',
     lastSuccessAt: '',
@@ -7436,9 +7439,9 @@ export class AiAssistantService {
           { type: 'failed', at: new Date().toISOString(), error: sanitizeDiagnosticText(error) }
         )
         this.persistVectorIndexContinuationHealth()
-        this.scheduleVectorIndexContinuation(60_000)
+        this.scheduleVectorIndexContinuation()
       })
-    }, Math.max(0, delayMs))
+    }, vectorIndexScheduleDelayMs(this.vectorIndexContinuationHealth, delayMs))
     this.vectorIndexContinuation.unref()
   }
 

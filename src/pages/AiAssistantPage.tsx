@@ -11010,6 +11010,7 @@ function AiAssistantPage() {
                   ? '运行中'
                   : memoryDiagnostics.embeddings.background?.scheduled ? '已排队' : '空闲'}</b></span>
                 <span>后台累计 <b>{Number(memoryDiagnostics.embeddings.background?.indexedCount || 0).toLocaleString()}</b> 条 / {Number(memoryDiagnostics.embeddings.background?.runCount || 0).toLocaleString()} 轮</span>
+                <span>连续失败 <b>{Number(memoryDiagnostics.embeddings.background?.failureStreak || 0).toLocaleString()}</b> 次</span>
                 <span>查询降级 <b>{Number(memoryDiagnostics.embeddings.query?.fallbackCount || 0).toLocaleString()}</b> 次</span>
                 <span>维度漂移修复 <b>{Number(memoryDiagnostics.embeddings.query?.dimensionRepairCount || 0).toLocaleString()}</b> 条</span>
                 <span>版本 <b>{memoryDiagnostics.embeddings.ann.version || 'lsh-v1'}</b></span>
@@ -11030,13 +11031,15 @@ function AiAssistantPage() {
                 {memoryDiagnostics.embeddings.background.lastErrorAt
                   ? ` · ${new Date(memoryDiagnostics.embeddings.background.lastErrorAt).toLocaleString('zh-CN')}`
                   : ''}
-                {memoryDiagnostics.embeddings.background.scheduled ? ' · 已安排重试' : ''}
+                {memoryDiagnostics.embeddings.background.nextRetryAt
+                  ? ` · 最早重试 ${new Date(memoryDiagnostics.embeddings.background.nextRetryAt).toLocaleString('zh-CN')}`
+                  : memoryDiagnostics.embeddings.background.scheduled ? ' · 已安排重试' : ''}
               </small>}
               {!memoryDiagnostics.embeddings.background?.lastError
                 && memoryDiagnostics.embeddings.background?.lastSuccessAt && <small>
                   最近一次后台续建：{new Date(memoryDiagnostics.embeddings.background.lastSuccessAt).toLocaleString('zh-CN')}
                 </small>}
-              <small>索引可由加密库中的有效向量完全重建；JSON 损坏、维度错误或非数字向量会重新进入补建队列，版本、覆盖率或候选量不满足要求时自动回退精确扫描。</small>
+              <small>索引可由加密库中的有效向量完全重建；离线或模型暂不可用时按 1 分钟至 6 小时跨重启退避，成功后自动恢复；JSON 损坏、维度错误或非数字向量会重新进入补建队列。</small>
             </div>}
             {memoryDiagnostics.privacy && <div className={`assistant-privacy-audit ${memoryDiagnostics.privacy.secure && memoryDiagnostics.privacy.stateMode === '600' && memoryDiagnostics.stateStorage?.encrypted && sensitiveCachesSecure ? 'secure' : 'warning'}`}>
               <div><ShieldCheck size={15} /><span><b>本机隐私与权限审计</b>

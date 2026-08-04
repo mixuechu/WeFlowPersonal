@@ -11,7 +11,9 @@ import {
   runVectorIndexPass,
   safeCosineSimilarity,
   shouldPersistVectorQueryOutcome,
-  validateEmbeddingBatch
+  validateEmbeddingBatch,
+  vectorIndexRetryDelayMs,
+  vectorIndexScheduleDelayMs
 } from '../electron/services/vectorIndexingPolicy.ts'
 import {
   GRAPH_RELATION_EVIDENCE_HOT_LIMIT,
@@ -7241,6 +7243,8 @@ test('vector continuation health exposes scheduling, progress, retry and recover
     scheduled: false,
     runCount: 0,
     indexedCount: 0,
+    failureStreak: 0,
+    nextRetryAt: '',
     lastScheduledAt: '',
     lastAttemptAt: '',
     lastSuccessAt: '',
@@ -7265,6 +7269,8 @@ test('vector continuation health exposes scheduling, progress, retry and recover
   })
   assert.equal(failed.lastError, 'model temporarily unavailable')
   assert.equal(failed.lastErrorAt, '2026-08-05T02:00:02.000Z')
+  assert.equal(failed.failureStreak, 1)
+  assert.equal(failed.nextRetryAt, '2026-08-05T02:01:02.000Z')
   const retry = recordVectorIndexContinuation(failed, {
     type: 'scheduled',
     at: '2026-08-05T02:01:02.000Z'
@@ -7278,6 +7284,8 @@ test('vector continuation health exposes scheduling, progress, retry and recover
   })
   assert.equal(recovered.scheduled, false)
   assert.equal(recovered.indexedCount, 48)
+  assert.equal(recovered.failureStreak, 0)
+  assert.equal(recovered.nextRetryAt, '')
   assert.equal(recovered.lastSuccessAt, '2026-08-05T02:01:05.000Z')
   assert.equal(recovered.lastError, '')
   assert.equal(recordVectorIndexContinuation(recovered, {
@@ -7298,6 +7306,8 @@ test('vector continuation health persists in SQLCipher without reviving an old t
       scheduled: true,
       runCount: 7,
       indexedCount: 336,
+      failureStreak: 3,
+      nextRetryAt: '2026-08-05T02:04:00.000Z',
       lastScheduledAt: '2026-08-05T02:00:00.000Z',
       lastAttemptAt: '2026-08-05T02:00:01.000Z',
       lastSuccessAt: '2026-08-05T02:00:05.000Z',
@@ -7311,6 +7321,8 @@ test('vector continuation health persists in SQLCipher without reviving an old t
       scheduled: false,
       runCount: 7,
       indexedCount: 336,
+      failureStreak: 3,
+      nextRetryAt: '2026-08-05T02:04:00.000Z',
       lastScheduledAt: '2026-08-05T02:00:00.000Z',
       lastAttemptAt: '2026-08-05T02:00:01.000Z',
       lastSuccessAt: '2026-08-05T02:00:05.000Z',
@@ -7325,12 +7337,31 @@ test('vector continuation health persists in SQLCipher without reviving an old t
     assert.equal(recovered.scheduled, false)
     assert.equal(recovered.runCount, 0)
     assert.equal(recovered.indexedCount, 0)
+    assert.equal(recovered.failureStreak, 0)
+    assert.equal(recovered.nextRetryAt, '')
     assert.equal(recovered.lastError, '')
   } finally {
     first.close()
     reopened.close()
     rmSync(directory, { recursive: true, force: true })
   }
+})
+
+test('vector continuation retry backs off across restart and caps at six hours', () => {
+  assert.equal(vectorIndexRetryDelayMs(1), 60_000)
+  assert.equal(vectorIndexRetryDelayMs(2), 120_000)
+  assert.equal(vectorIndexRetryDelayMs(4), 480_000)
+  assert.equal(vectorIndexRetryDelayMs(99), 6 * 60 * 60_000)
+  assert.equal(vectorIndexScheduleDelayMs(
+    { nextRetryAt: '2026-08-05T03:00:00.000Z' },
+    12_000,
+    Date.parse('2026-08-05T02:00:00.000Z')
+  ), 60 * 60_000)
+  assert.equal(vectorIndexScheduleDelayMs(
+    { nextRetryAt: '2026-08-05T01:00:00.000Z' },
+    12_000,
+    Date.parse('2026-08-05T02:00:00.000Z')
+  ), 12_000)
 })
 
 test('semantic ranking uses cosine similarity so vector magnitude cannot dominate relevance', () => withStore(store => {
