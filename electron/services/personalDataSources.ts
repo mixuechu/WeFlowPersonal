@@ -392,7 +392,11 @@ export function filterTrustedConversationHistory(messages: any[]): {
       }
     }
     audit.includedAssistant += 1
-    return [{ role, content }]
+    const uncertainty = String(message?.uncertainty || '').trim().replace(/\s+/g, ' ').slice(0, 500)
+    const trustedContent = uncertainty
+      ? `${content.slice(0, 2450)}\n[该回答当时保存的不确定性：${uncertainty}]`.slice(0, 3000)
+      : content
+    return [{ role, content: trustedContent }]
   })
   return { history, ...audit }
 }
@@ -492,7 +496,7 @@ export function finalizeGroundedMemoryAnswer(
   let removedConflictCitationIds = 0
   let rejectedConflictStatements = 0
   const accepted = proposed.flatMap((statement: any) => {
-    const text = String(statement?.text || '').trim().slice(0, 1500)
+    const text = String(statement?.text || '').trim().replace(/\s+/g, ' ').slice(0, 1500)
     const eligibleCitationIds = [...new Set((Array.isArray(statement?.citationIds) ? statement.citationIds : [])
       .map(String)
       .filter((id: string) => allowed.has(id)))]

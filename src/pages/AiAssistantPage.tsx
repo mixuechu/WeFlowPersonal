@@ -8085,7 +8085,7 @@ function AiAssistantPage() {
             </div>
           </div>
           {memoryConversationId && <div className="assistant-conversation-controls">
-            <small>后续追问会核验最近 8 条对话：用户问题用于理解指代，只有当前仍有权威证据支持的助手回答才会进入上下文；旧版未验证或证据已变化的回答会被隔离，所有新结论仍须重新引用本次检索原文。</small>
+            <small>后续追问会核验最近 8 条对话：用户问题用于理解指代，只有当前仍有权威证据支持的助手回答才会进入上下文，并连同当时保存的反证与不确定性一起传递；旧版未验证或证据已变化的回答会被隔离，所有新结论仍须重新引用本次检索原文。</small>
             <button className="danger" onClick={() => void deleteMemoryConversation()}>删除这段历史</button>
           </div>}
           <div className="assistant-memory-question">

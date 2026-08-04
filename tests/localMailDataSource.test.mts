@@ -238,10 +238,15 @@ test('memory evidence eligibility keeps review status separate from factual supp
   assert.equal(mixedConflict.groundingAudit.rejectedConflictStatements, 0)
 
   const disclosedConflict = finalizeGroundedMemoryAnswer({
-    statements: [{ text: '现有记录存在冲突，这件事仍待核实。', citationIds: ['conflicted'] }],
+    statements: [{
+      text: '现有记录存在冲突。\n\n这件事仍待核实。',
+      citationIds: ['conflicted']
+    }],
     uncertainty: '一条原文构成反证。'
   }, conflictedContext)
   assert.deepEqual(disclosedConflict.citationIds, ['conflicted'])
+  assert.equal(disclosedConflict.statements.length, 1)
+  assert.equal(disclosedConflict.answer, '现有记录存在冲突。 这件事仍待核实。')
   assert.equal(disclosedConflict.groundingAudit.removedConflictCitationIds, 0)
   assert.equal(disclosedConflict.groundingAudit.rejectedConflictStatements, 0)
 
@@ -401,6 +406,7 @@ test('multi-turn memory context excludes stale and unaudited assistant answers',
     {
       role: 'assistant',
       content: '项目按计划推进。',
+      uncertainty: '但一条较早记录与此冲突，仍待核实。',
       groundingAudit: {
         version: 'statement-citations-v1',
         acceptedStatements: 1
@@ -439,7 +445,10 @@ test('multi-turn memory context excludes stale and unaudited assistant answers',
   ])
   assert.deepEqual(result.history, [
     { role: 'user', content: 'Onyx 项目目前怎么样？' },
-    { role: 'assistant', content: '项目按计划推进。' },
+    {
+      role: 'assistant',
+      content: '项目按计划推进。\n[该回答当时保存的不确定性：但一条较早记录与此冲突，仍待核实。]'
+    },
     { role: 'assistant', content: '当前证据不足。' }
   ])
   assert.equal(result.includedAssistant, 2)
