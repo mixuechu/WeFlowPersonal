@@ -13,7 +13,8 @@ import {
   shouldPersistVectorQueryOutcome,
   validateEmbeddingBatch,
   vectorIndexRetryDelayMs,
-  vectorIndexScheduleDelayMs
+  vectorIndexScheduleDelayMs,
+  withVectorQueryDeadline
 } from '../electron/services/vectorIndexingPolicy.ts'
 import {
   GRAPH_RELATION_EVIDENCE_HOT_LIMIT,
@@ -7172,6 +7173,18 @@ test('embedding batches reject count, dimension and non-finite output before wri
   assert.equal(validateEmbeddingBatch([[1, Number.NaN]], 1).reason, 'non_finite_value')
   assert.equal(validateEmbeddingBatch([[1, Number.POSITIVE_INFINITY]], 1).reason,
     'non_finite_value')
+})
+
+test('semantic query deadline returns promptly without cancelling background model loading', async () => {
+  let finishLoading: ((value: number[]) => void) | null = null
+  const loading = new Promise<number[]>(resolve => { finishLoading = resolve })
+  await assert.rejects(
+    () => withVectorQueryDeadline(loading, 10),
+    /立即回退全文检索/
+  )
+  finishLoading!([1, 2, 3])
+  assert.deepEqual(await loading, [1, 2, 3])
+  assert.equal(await withVectorQueryDeadline(Promise.resolve('ready'), 100), 'ready')
 })
 
 test('cosine similarity is scale safe and rejects unusable vectors', () => {

@@ -43,6 +43,29 @@ export function safeCosineSimilarity(left: unknown, right: unknown): number | nu
   return Math.max(-1, Math.min(1, score))
 }
 
+export const VECTOR_QUERY_DEADLINE_MS = 5_000
+
+export async function withVectorQueryDeadline<T>(
+  operation: Promise<T>,
+  timeoutMs = VECTOR_QUERY_DEADLINE_MS
+): Promise<T> {
+  const boundedTimeout = Math.max(1, Math.floor(Number(timeoutMs) || VECTOR_QUERY_DEADLINE_MS))
+  let timer: ReturnType<typeof setTimeout> | null = null
+  try {
+    return await Promise.race([
+      operation,
+      new Promise<T>((_, reject) => {
+        timer = setTimeout(() => {
+          reject(new Error(`本地语义查询超过 ${boundedTimeout}ms，已立即回退全文检索`))
+        }, boundedTimeout)
+        timer.unref?.()
+      })
+    ])
+  } finally {
+    if (timer) clearTimeout(timer)
+  }
+}
+
 export async function runVectorIndexPass<T extends { id: string; content_hash?: string }>(input: {
   maxBatches?: number
   batchSize: number

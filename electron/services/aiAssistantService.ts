@@ -16,6 +16,7 @@ import {
   shouldPersistVectorQueryOutcome,
   vectorIndexScheduleDelayMs,
   validateEmbeddingBatch,
+  withVectorQueryDeadline,
   type VectorIndexContinuationHealth,
   type VectorQueryHealth
 } from './vectorIndexingPolicy'
@@ -7049,7 +7050,9 @@ export class AiAssistantService {
     const lexical = this.searchMemory(query, candidateLimit, allowedIds, scopedOptions)
     let dimensionRepairs = 0
     try {
-      const [queryVector] = await localEmbeddingService.embed([String(query || '')])
+      const [queryVector] = await withVectorQueryDeadline(
+        localEmbeddingService.embed([String(query || '')])
+      )
       const queryValidation = validateEmbeddingBatch([queryVector], 1)
       if (!queryValidation.valid) {
         throw new Error(`本地查询向量无效：${queryValidation.reason}`)
