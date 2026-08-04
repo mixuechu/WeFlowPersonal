@@ -221,12 +221,30 @@ export function buildModelMemoryContext(
     .slice(0, Math.max(0, limit))
     .map(item => {
       const eligibility = getMemoryEvidenceEligibility(item)
+      const authoritativeContent = String(item.search_text || '')
+      const semanticMatchExcerpt = String(item.semantic_match_excerpt || '').trim().slice(0, 1_200)
+      const boundedLead = authoritativeContent.slice(0, semanticMatchExcerpt ? 1_500 : 4_000)
+      const modelContent = semanticMatchExcerpt
+        ? [
+            '[本次语义检索实际命中的文档片段]',
+            semanticMatchExcerpt,
+            ...(boundedLead && !semanticMatchExcerpt.includes(boundedLead)
+              ? ['[文档开头的有界上下文]', boundedLead]
+              : [])
+          ].join('\n')
+        : boundedLead
       return {
         documentId: item.id,
         sourceId: item.source_id,
         type: item.document_type,
         title: item.title,
-        content: item.search_text,
+        content: modelContent,
+        authoritativeContentLength: authoritativeContent.length,
+        contentTruncated: modelContent.length < authoritativeContent.length,
+        semanticMatchExcerpt: semanticMatchExcerpt || undefined,
+        semanticMatchChunkIndex: Number.isInteger(Number(item.semantic_match_chunk_index))
+          ? Number(item.semantic_match_chunk_index)
+          : undefined,
         contentHash: /^[a-f0-9]{64}$/i.test(String(item.content_hash || ''))
           ? String(item.content_hash).toLowerCase()
           : createHash('sha256').update(String(item.search_text || '')).digest('hex'),

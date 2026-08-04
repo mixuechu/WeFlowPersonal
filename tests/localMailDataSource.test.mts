@@ -138,6 +138,21 @@ test('memory evidence eligibility keeps review status separate from factual supp
   const context = buildModelMemoryContext(results)
   assert.equal(context.find(result => result.documentId === 'confirmed')?.evidenceTotal, 7)
   assert.match(context.find(result => result.documentId === 'confirmed')?.contentHash || '', /^[a-f0-9]{64}$/)
+  const longTailContext = buildModelMemoryContext([{
+    ...item('message'),
+    id: 'long-tail-document',
+    title: '长文',
+    search_text: `${'开头背景。'.repeat(2_000)}末尾关键结论`,
+    semantic_match_excerpt: '末尾关键结论',
+    semantic_match_chunk_index: 23
+  }])[0]
+  assert.match(longTailContext.content, /本次语义检索实际命中的文档片段/)
+  assert.match(longTailContext.content, /末尾关键结论/)
+  assert.equal(longTailContext.semanticMatchChunkIndex, 23)
+  assert.equal(longTailContext.authoritativeContentLength,
+    `${'开头背景。'.repeat(2_000)}末尾关键结论`.length)
+  assert.equal(longTailContext.contentTruncated, true)
+  assert.ok(longTailContext.content.length < 3_000)
   const contradictionOnly = {
     id: 'contradiction-only',
     document_type: 'claim',

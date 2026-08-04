@@ -5,7 +5,7 @@ import { join } from 'node:path'
 export const LOCAL_EMBEDDING_MODEL = 'onnx-community/bge-small-zh-v1.5-ONNX'
 export const LOCAL_EMBEDDING_REVISION = '9507db33464b5da99a532ac26b2a251767cbc62b'
 const MODEL_VERSION =
-  `${LOCAL_EMBEDDING_MODEL}@${LOCAL_EMBEDDING_REVISION}:q8:overlap-multivector:v2`
+  `${LOCAL_EMBEDDING_MODEL}@${LOCAL_EMBEDDING_REVISION}:q8:overlap-multivector-offsets:v3`
 export const LOCAL_EMBEDDING_CHUNK_SIZE = 480
 export const LOCAL_EMBEDDING_CHUNK_OVERLAP = 80
 export const LOCAL_EMBEDDING_MAX_CHUNKS = 256
@@ -30,17 +30,30 @@ function preferredChunkEnd(text: string, start: number, hardEnd: number): number
   return hardEnd
 }
 
-export function buildEmbeddingChunks(input: string): string[] {
+export type EmbeddingChunk = {
+  text: string
+  startOffset: number
+  endOffset: number
+}
+
+export function buildEmbeddingChunkDetails(input: string): EmbeddingChunk[] {
   const text = String(input || '').replace(/\r\n?/g, '\n').trim()
   if (!text) return []
-  if (text.length <= LOCAL_EMBEDDING_CHUNK_SIZE) return [text]
-  const chunks: string[] = []
+  if (text.length <= LOCAL_EMBEDDING_CHUNK_SIZE) {
+    return [{ text, startOffset: 0, endOffset: text.length }]
+  }
+  const chunks: EmbeddingChunk[] = []
   let start = 0
   while (start < text.length && chunks.length < LOCAL_EMBEDDING_MAX_CHUNKS) {
     const hardEnd = Math.min(text.length, start + LOCAL_EMBEDDING_CHUNK_SIZE)
     const end = preferredChunkEnd(text, start, hardEnd)
-    const chunk = text.slice(start, end).trim()
-    if (chunk) chunks.push(chunk)
+    const raw = text.slice(start, end)
+    const leading = raw.length - raw.trimStart().length
+    const trailing = raw.length - raw.trimEnd().length
+    const chunkStart = start + leading
+    const chunkEnd = end - trailing
+    const chunk = text.slice(chunkStart, chunkEnd)
+    if (chunk) chunks.push({ text: chunk, startOffset: chunkStart, endOffset: chunkEnd })
     if (end >= text.length) break
     const nextStart = Math.max(start + 1, end - LOCAL_EMBEDDING_CHUNK_OVERLAP)
     start = nextStart
@@ -48,9 +61,20 @@ export function buildEmbeddingChunks(input: string): string[] {
   if (start < text.length && chunks.length === LOCAL_EMBEDDING_MAX_CHUNKS) {
     const tailStart = Math.max(0, text.length - LOCAL_EMBEDDING_CHUNK_SIZE)
     const tail = text.slice(tailStart).trim()
-    if (tail && chunks[chunks.length - 1] !== tail) chunks[chunks.length - 1] = tail
+    if (tail && chunks[chunks.length - 1]?.text !== tail) {
+      const adjustedStart = text.length - text.slice(tailStart).trimStart().length
+      chunks[chunks.length - 1] = {
+        text: tail,
+        startOffset: adjustedStart,
+        endOffset: adjustedStart + tail.length
+      }
+    }
   }
   return chunks
+}
+
+export function buildEmbeddingChunks(input: string): string[] {
+  return buildEmbeddingChunkDetails(input).map(chunk => chunk.text)
 }
 
 export function meanNormalizedEmbeddings(vectors: number[][]): number[] {
@@ -171,7 +195,7 @@ export class LocalEmbeddingService {
       revision: LOCAL_EMBEDDING_REVISION,
       modelVersion: MODEL_VERSION,
       chunking: {
-        strategy: 'overlap_multivector_v2',
+        strategy: 'overlap_multivector_offsets_v3',
         chunkSize: LOCAL_EMBEDDING_CHUNK_SIZE,
         overlap: LOCAL_EMBEDDING_CHUNK_OVERLAP,
         maxChunks: LOCAL_EMBEDDING_MAX_CHUNKS,
@@ -201,10 +225,15 @@ export class LocalEmbeddingService {
 
   async embedDocumentDetails(texts: string[]): Promise<Array<{
     vector: number[]
-    chunks: Array<{ vector: number[]; chunkHash: string }>
+    chunks: Array<{
+      vector: number[]
+      chunkHash: string
+      startOffset: number
+      endOffset: number
+    }>
   }>> {
-    const chunkSets = texts.map(buildEmbeddingChunks)
-    const flattened = chunkSets.flat()
+    const chunkSets = texts.map(buildEmbeddingChunkDetails)
+    const flattened = chunkSets.flatMap(chunks => chunks.map(chunk => chunk.text))
     if (!flattened.length) return texts.map(() => ({ vector: [], chunks: [] }))
     const embedded: number[][] = []
     for (let offset = 0; offset < flattened.length; offset += LOCAL_EMBEDDING_INFERENCE_BATCH_SIZE) {
@@ -220,7 +249,9 @@ export class LocalEmbeddingService {
         vector: meanNormalizedEmbeddings(vectors),
         chunks: chunks.map((chunk, index) => ({
           vector: vectors[index],
-          chunkHash: createHash('sha256').update(chunk).digest('hex')
+          chunkHash: createHash('sha256').update(chunk.text).digest('hex'),
+          startOffset: chunk.startOffset,
+          endOffset: chunk.endOffset
         }))
       }
     })

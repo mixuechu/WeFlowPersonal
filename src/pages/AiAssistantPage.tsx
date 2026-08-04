@@ -7581,6 +7581,19 @@ function AiAssistantPage() {
                   检索预览为角色平衡样本，反证不会被较新的支持原文挤掉，也不能单独支撑结论。
                 </small>}
               <strong>{result.title}</strong><p>{result.search_text}</p>
+              {result.search_text_truncated && <small className="assistant-evidence-limit-note">
+                当前卡片展示前 {String(result.search_text || '').length.toLocaleString()} /
+                共 {Number(result.search_text_length || 0).toLocaleString()} 字；
+                权威全文请从对应人物、项目、待办、结构化记忆或资源档案打开。
+              </small>}
+              {result.semantic_match_excerpt && <div className="assistant-semantic-match">
+                <small>本次语义实际命中的文档片段
+                  {Number.isInteger(Number(result.semantic_match_chunk_index))
+                    ? ` · 第 ${Number(result.semantic_match_chunk_index) + 1} 块`
+                    : ''}
+                </small>
+                <p>“{result.semantic_match_excerpt}”</p>
+              </div>}
               {result.document_type === 'entity' && result.source_id && <div className="assistant-search-authority-actions">
                 {result.metadata?.entityType === 'project'
                   ? <button className="primary" onClick={() => setSelectedProjectId(String(result.source_id))}>

@@ -9,6 +9,7 @@ import { httpService } from './httpService'
 import { showSystemNotification } from './systemNotificationService'
 import { personalMemoryStore } from './personalMemoryStore'
 import { localEmbeddingService } from './localEmbeddingService'
+import { presentMemorySearchResults } from './memorySearchResultPolicy'
 import {
   recordVectorQueryOutcome,
   recordVectorIndexContinuation,
@@ -7150,6 +7151,8 @@ export class AiAssistantService {
           ...(existing || item),
           semantic_score: item.semantic_score,
           semantic_search_mode: item.semantic_search_mode,
+          semantic_match_excerpt: item.semantic_match_excerpt,
+          semantic_match_chunk_index: item.semantic_match_chunk_index,
           hybrid_score: Number(existing?.hybrid_score || 0) + semanticContribution,
           match_source: existing ? '全文 + 语义' : '语义',
           metadata: existing?.metadata || (() => { try { return JSON.parse(item.metadata_json || '{}') } catch { return {} } })(),
@@ -7443,8 +7446,10 @@ export class AiAssistantService {
         revision: completedRevision, stale: true
       }
     }
+    const presentedResults = presentMemorySearchResults(page.results)
     return {
       ...page,
+      results: presentedResults,
       truncated: page.truncated,
       scopeCandidates: allowedIds?.size ?? null,
       feedback,
@@ -7556,7 +7561,12 @@ export class AiAssistantService {
       return current
     }
     this.vectorIndexPromise = (async () => {
-      const pendingEmbeddingChunks = new Map<string, Array<{ vector: number[]; chunkHash: string }>>()
+      const pendingEmbeddingChunks = new Map<string, Array<{
+        vector: number[]
+        chunkHash: string
+        startOffset: number
+        endOffset: number
+      }>>()
       const pass = await runVectorIndexPass({
         maxBatches: options.maxBatches,
         batchSize: 4,
@@ -7779,6 +7789,12 @@ export class AiAssistantService {
     const context = buildModelMemoryContext(results, {
       mail: { allowModelAnalysis: Boolean(mailSource?.config?.allowModelAnalysis) }
     }, 20)
+    const semanticChunkHits = context.filter(item => item.semanticMatchExcerpt).length
+    if (semanticChunkHits) {
+      plan.explanation.push(
+        `长文语义命中：${semanticChunkHits} 份资料优先发送实际命中片段，完整正文继续留在本机`
+      )
+    }
     if (options.entityId && resolveTrustedEntitySelection(this.state.graph.entities, {
       entityId: options.entityId,
       expectedRevision: options.entitySelectionRevision

@@ -705,6 +705,9 @@
 .assistant-search-results .assistant-memory-time-scope { display: block; margin-top: 5px; color: #766746; font-size: 8px; line-height: 1.4; }
 .assistant-search-results article strong { display: block; margin-top: 3px; color: #303731; font-size: 12px; }
 .assistant-search-results article p { margin: 5px 0 0; color: #687068; font-size: 10px; line-height: 1.45; }
+.assistant-semantic-match { margin-top: 8px; padding: 8px 9px; border-left: 3px solid #789886; border-radius: 6px; background: #f2f6f2; }
+.assistant-semantic-match small { color: #577061; font-size: 8px; font-weight: 650; }
+.assistant-semantic-match p { color: #4f5c53 !important; white-space: pre-wrap; }
 .assistant-search-matched-evidence { margin-top: 8px; padding: 8px 9px; border: 1px solid #d9e5dc; border-radius: 8px; background: #f3f8f4; }
 .assistant-search-matched-evidence header { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
 .assistant-search-matched-evidence header span { color: #35614b !important; font-size: 8px !important; font-weight: 700; }

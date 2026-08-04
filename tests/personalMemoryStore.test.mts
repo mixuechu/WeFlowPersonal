@@ -14,6 +14,7 @@ import {
   LOCAL_EMBEDDING_MAX_CHUNKS,
   LOCAL_EMBEDDING_REVISION,
   LocalEmbeddingService,
+  buildEmbeddingChunkDetails,
   buildEmbeddingChunks,
   meanNormalizedEmbeddings,
   recordModelCacheIntegrity,
@@ -7173,10 +7174,12 @@ test('multi-vector long documents rank by their best semantic chunk without dupl
   const generic = candidates.find(item => item.id === 'resource:generic-semantic-resource')
   assert.ok(long)
   assert.ok(generic)
-  const longChunks = buildEmbeddingChunks(`${long.title}\n${long.search_text}`)
+  const longChunks = buildEmbeddingChunkDetails(`${long.title}\n${long.search_text}`)
   const chunkVectors = longChunks.map((chunk, index) => ({
     vector: index === longChunks.length - 1 ? [0, 1] : [1, 0],
-    chunkHash: createHash('sha256').update(chunk).digest('hex')
+    chunkHash: createHash('sha256').update(chunk.text).digest('hex'),
+    startOffset: chunk.startOffset,
+    endOffset: chunk.endOffset
   }))
   assert.equal(store.saveEmbeddingBatch([{
     id: long.id,
@@ -7191,14 +7194,25 @@ test('multi-vector long documents rank by their best semantic chunk without dupl
     expectedContentHash: generic.content_hash,
     chunks: [{
       vector: [0.7, 0.7],
-      chunkHash: createHash('sha256').update('generic').digest('hex')
+      chunkHash: '',
+      startOffset: 0,
+      endOffset: `${generic.title}\n${generic.search_text}`.trim().length
     }]
   }]), 2)
   const results = store.searchVector([0, 1], model, 10)
   assert.equal(results[0].id, long.id)
   assert.equal(results.filter(item => item.id === long.id).length, 1)
   assert.equal(results[0].chunk_index, longChunks.length - 1)
+  assert.match(results[0].semantic_match_excerpt, /远端唯一主题/)
+  assert.equal('embedding_json' in results[0], false)
+  assert.equal('embedding_model' in results[0], false)
   assert.equal(store.listEmbeddingCandidates(model, 10).length, 0)
+  ;(store as any).db.prepare(`
+    UPDATE search_document_embedding_chunks SET end_offset=999999
+    WHERE document_id=?
+  `).run(generic.id)
+  assert.equal(store.listEmbeddingCandidates(model, 10)
+    .some(item => item.id === generic.id), true)
 
   store.upsertResources([{
     id: 'long-semantic-resource',
