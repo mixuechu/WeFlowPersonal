@@ -1055,6 +1055,7 @@ function AiAssistantPage() {
   })
   const [assistantAnswerReviewStatus, setAssistantAnswerReviewStatus] = useState('attention')
   const [assistantAnswerReviewState, setAssistantAnswerReviewState] = useState('pending')
+  const [assistantAnswerReviewReason, setAssistantAnswerReviewReason] = useState('')
   const [assistantAnswerReviewQuery, setAssistantAnswerReviewQuery] = useState('')
   const [assistantAnswerReviewFrom, setAssistantAnswerReviewFrom] = useState('')
   const [assistantAnswerReviewTo, setAssistantAnswerReviewTo] = useState('')
@@ -1204,6 +1205,7 @@ function AiAssistantPage() {
   const assistantAnswerReviewOptions = useMemo(() => ({
     status: assistantAnswerReviewStatus,
     reviewState: assistantAnswerReviewState,
+    invalidReason: assistantAnswerReviewReason || undefined,
     query: assistantAnswerReviewQuery || undefined,
     from: assistantAnswerReviewFrom
       ? new Date(`${assistantAnswerReviewFrom}T00:00:00+08:00`).toISOString()
@@ -1216,6 +1218,7 @@ function AiAssistantPage() {
   }), [
     assistantAnswerReviewStatus,
     assistantAnswerReviewState,
+    assistantAnswerReviewReason,
     assistantAnswerReviewQuery,
     assistantAnswerReviewFrom,
     assistantAnswerReviewTo
@@ -7758,12 +7761,33 @@ function AiAssistantPage() {
                   <option value="all">全部审阅状态</option>
                 </select>
                 <select value={assistantAnswerReviewStatus}
-                  onChange={event => setAssistantAnswerReviewStatus(event.target.value)}>
+                  onChange={event => {
+                    const value = event.target.value
+                    setAssistantAnswerReviewStatus(value)
+                    if (['current', 'needs_review'].includes(value)) {
+                      setAssistantAnswerReviewReason('')
+                    }
+                  }}>
                   <option value="attention">需要处理</option>
                   <option value="invalid">已失去支持</option>
                   <option value="needs_review">旧版待核验</option>
                   <option value="current">当前有效</option>
                   <option value="all">全部有依赖回答</option>
+                </select>
+                <select value={assistantAnswerReviewReason}
+                  onChange={event => {
+                    const value = event.target.value
+                    setAssistantAnswerReviewReason(value)
+                    if (value && ['current', 'needs_review'].includes(assistantAnswerReviewStatus)) {
+                      setAssistantAnswerReviewStatus('invalid')
+                    }
+                  }}>
+                  <option value="">全部失效原因</option>
+                  <option value="missing">来源已删除</option>
+                  <option value="ineligible">可信资格失效</option>
+                  <option value="content_changed">结构化内容变化</option>
+                  <option value="evidence_counts_changed">支持/反证构成变化</option>
+                  <option value="other">其他失效</option>
                 </select>
                 <input value={assistantAnswerReviewQuery}
                   onChange={event => setAssistantAnswerReviewQuery(event.target.value)}

@@ -13214,6 +13214,7 @@ export class PersonalMemoryStore {
   listAssistantAnswerReviewsPage(options: {
     status?: 'attention' | 'invalid' | 'needs_review' | 'current' | 'all'
     reviewState?: 'pending' | 'resolved' | 'all'
+    invalidReason?: 'missing' | 'ineligible' | 'content_changed' | 'evidence_counts_changed' | 'other'
     query?: string
     from?: string
     to?: string
@@ -13430,6 +13431,29 @@ export class PersonalMemoryStore {
           : status === 'all'
             ? ''
             : '(ar.invalid_statements>0 OR ar.unknown_statements>0)'
+    const invalidReason = [
+      'missing',
+      'ineligible',
+      'content_changed',
+      'evidence_counts_changed',
+      'other'
+    ].includes(String(options.invalidReason || ''))
+      ? String(options.invalidReason)
+      : ''
+    const invalidReasonCondition = invalidReason === 'missing'
+      ? 'ar.missing_statements>0'
+      : invalidReason === 'ineligible'
+        ? 'ar.ineligible_statements>0'
+        : invalidReason === 'content_changed'
+          ? 'ar.content_changed_statements>0'
+          : invalidReason === 'evidence_counts_changed'
+            ? 'ar.evidence_counts_changed_statements>0'
+            : invalidReason === 'other'
+              ? `(ar.invalid_statements>(
+                ar.missing_statements+ar.ineligible_statements+
+                ar.content_changed_statements+ar.evidence_counts_changed_statements
+              ))`
+              : ''
     const reviewState = ['pending', 'resolved', 'all'].includes(String(options.reviewState || ''))
       ? String(options.reviewState)
       : 'pending'
@@ -13444,6 +13468,7 @@ export class PersonalMemoryStore {
     const conditions = [
       ...commonConditions,
       ...(statusCondition ? [statusCondition] : []),
+      ...(invalidReasonCondition ? [invalidReasonCondition] : []),
       ...(reviewCondition ? [reviewCondition] : [])
     ]
     const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : ''

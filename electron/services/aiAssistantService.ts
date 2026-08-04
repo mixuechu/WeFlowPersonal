@@ -7620,6 +7620,7 @@ export class AiAssistantService {
     return personalMemoryStore.listAssistantAnswerReviewsPage({
       status: options?.status,
       reviewState: options?.reviewState,
+      invalidReason: options?.invalidReason,
       query: String(options?.query || ''),
       from: String(options?.from || ''),
       to: String(options?.to || ''),

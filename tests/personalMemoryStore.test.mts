@@ -9085,6 +9085,25 @@ test('assistant archive filters statement dependencies without loading answer ev
   )
   assert.equal(JSON.stringify(answerReviews.items).includes('仅用于资格核验'), false)
   assert.equal(JSON.stringify(answerReviews.items).includes('state_key'), false)
+  assert.deepEqual(store.listAssistantAnswerReviewsPage({
+    status: 'all',
+    reviewState: 'all',
+    invalidReason: 'content_changed',
+    limit: 20
+  }).items.map((item: any) => item.question_preview), ['内容变化会话'])
+  assert.deepEqual(store.listAssistantAnswerReviewsPage({
+    status: 'all',
+    reviewState: 'all',
+    invalidReason: 'missing',
+    limit: 20
+  }).items.map((item: any) => item.question_preview), ['来源删除会话'])
+  assert.equal(store.listAssistantAnswerReviewsPage({
+    status: 'all',
+    reviewState: 'all',
+    invalidReason: 'content_changed',
+    query: '不存在的组合关键词',
+    limit: 20
+  }).total, 0)
   const attentionPage = store.listAssistantAnswerReviewsPage({ status: 'attention', limit: 2 })
   const attentionSecondPage = store.listAssistantAnswerReviewsPage({
     status: 'attention',
@@ -9238,6 +9257,13 @@ test('assistant archive filters statement dependencies without loading answer ev
   }).items[0]
   assert.equal(ineligibleAnswer.ineligible_statements, 1)
   assert.equal(ineligibleAnswer.content_changed_statements, 0)
+  assert.equal(store.listAssistantAnswerReviewsPage({
+    status: 'invalid',
+    reviewState: 'all',
+    invalidReason: 'ineligible',
+    query: '当前有效会话',
+    limit: 20
+  }).items[0].message_id, ineligibleAnswer.message_id)
 
   assert.equal(store.deleteAssistantConversation(currentConversationId), true)
   const dependencyStatsAfterDelete = store.getAssistantAnswerDependencyStats()
@@ -9359,6 +9385,13 @@ test('assistant archive invalidates answers when structured evidence counts chan
   assert.equal(attention.items[0].revalidation_status, 'invalid')
   assert.equal(attention.items[0].evidence_counts_changed_statements, 1)
   assert.equal(attention.items[0].content_changed_statements, 0)
+  assert.equal(store.listAssistantAnswerReviewsPage({
+    status: 'invalid',
+    reviewState: 'all',
+    invalidReason: 'evidence_counts_changed',
+    messageId: saved.answerMessageId,
+    limit: 10
+  }).total, 1)
   const roleSensitive = store.saveAssistantExchangeDetailed(
     '当前两条都是支持证据吗？',
     '当前两条均为非反证原文。',
@@ -9477,6 +9510,98 @@ test('assistant archive does not report a failed citation when the same statemen
   }).items[0]
   assert.equal(review.missing_statements, 0)
   assert.equal(review.invalid_statements, 0)
+}))
+
+test('assistant invalid-reason filters run before stable pagination', () => withStore(store => {
+  const save = (question: string, documentId: string, contentHash: string) =>
+    store.saveAssistantExchange(question, `${question}回答`, [{
+      documentId,
+      sourceId: documentId.split(':')[1],
+      type: 'resource',
+      title: documentId,
+      contentHash
+    }], undefined, {
+      version: 'statement-citations-v1',
+      proposedStatements: 1,
+      acceptedStatements: 1,
+      rejectedStatements: 0,
+      acceptedCitationIds: 1,
+      promptIsolationVersion: 'untrusted-memory-envelope-v1',
+      statementCitations: [[documentId]]
+    })
+  for (let index = 0; index < 75; index += 1) {
+    save(`较早的删除来源 ${index}`, `resource:missing-${index}`, 'a'.repeat(64))
+  }
+  const database = (store as any).db
+  const now = new Date().toISOString()
+  database.prepare(`
+    INSERT INTO search_documents(
+      id,document_type,source_id,title,search_text,metadata_json,content_hash,updated_at
+    ) VALUES(?,?,?,?,?,?,?,?)
+  `).run(
+    'resource:later-content-change',
+    'resource',
+    'later-content-change',
+    '较新的正文变化来源',
+    '当前正文',
+    '{}',
+    'b'.repeat(64),
+    now
+  )
+  database.prepare(`
+    INSERT INTO search_document_evidence(
+      document_id,source_id,message_id,session_id,timestamp,sender,excerpt
+    ) VALUES(?,?,?,?,?,?,?)
+  `).run(
+    'resource:later-content-change',
+    'documents',
+    'later-content-change-message',
+    'data-source:documents:reason-pagination',
+    1,
+    '文档',
+    '当前原文'
+  )
+  for (let index = 0; index < 15; index += 1) {
+    save(`较新的正文变化 ${index}`, 'resource:later-content-change', 'a'.repeat(64))
+  }
+
+  const first = store.listAssistantAnswerReviewsPage({
+    status: 'invalid',
+    reviewState: 'all',
+    invalidReason: 'missing',
+    limit: 30
+  })
+  const second = store.listAssistantAnswerReviewsPage({
+    status: 'invalid',
+    reviewState: 'all',
+    invalidReason: 'missing',
+    offset: 30,
+    limit: 30,
+    revision: first.revision
+  })
+  const last = store.listAssistantAnswerReviewsPage({
+    status: 'invalid',
+    reviewState: 'all',
+    invalidReason: 'missing',
+    offset: 60,
+    limit: 30,
+    revision: first.revision
+  })
+  assert.equal(first.total, 75)
+  assert.equal(first.items.length, 30)
+  assert.equal(second.items.length, 30)
+  assert.equal(last.items.length, 15)
+  assert.equal(last.hasMore, false)
+  assert.equal(new Set([...first.items, ...second.items, ...last.items]
+    .map((item: any) => item.message_id)).size, 75)
+  assert.equal([...first.items, ...second.items, ...last.items]
+    .every((item: any) => item.missing_statements === 1), true)
+  assert.equal(store.listAssistantAnswerReviewsPage({
+    status: 'invalid',
+    reviewState: 'all',
+    invalidReason: 'content_changed',
+    limit: 30
+  }).total, 15)
 }))
 
 test('assistant archive and message pagination survive a SQLCipher process-style reopen', () => {
