@@ -76,7 +76,11 @@ import {
   planRelationConfirmation,
   relationSemanticId
 } from '../electron/services/relationCorrectionPolicy.ts'
-import { enqueueUniqueNotification, markNotificationAttempt } from '../electron/services/notificationOutbox.ts'
+import {
+  deliverNotificationBatch,
+  enqueueUniqueNotification,
+  markNotificationAttempt
+} from '../electron/services/notificationOutbox.ts'
 import {
   GRAPH_QUERY_EVIDENCE_LIMIT,
   findCommonGraphNeighbors,
@@ -3985,6 +3989,38 @@ test('notification outbox persists unique work until a successful delivery', () 
   assert.equal(outbox.pending.length, 0)
   assert.deepEqual(outbox.sentKeys, [notification.key])
   assert.equal(enqueueUniqueNotification(outbox, notification), false)
+})
+
+test('notification delivery does not let one failed head item starve later work', async () => {
+  const outbox = { pending: [], sentKeys: [] } as any
+  for (let index = 0; index < 8; index += 1) {
+    enqueueUniqueNotification(outbox, {
+      key: `notification-${index}`,
+      title: `通知 ${index}`,
+      content: `内容 ${index}`,
+      createdAt: `2026-08-04T00:00:0${index}.000Z`
+    })
+  }
+  const persisted: string[][] = []
+  const result = await deliverNotificationBatch(outbox, async notification => {
+    if (notification.key === 'notification-0') throw new Error('temporary failure')
+  }, {
+    limit: 5,
+    normalizeError: () => '脱敏失败',
+    onAttempt: () => persisted.push(outbox.pending.map((item: any) => item.key))
+  })
+  assert.deepEqual(result, { attempted: 5, sent: 4, failed: 1 })
+  assert.deepEqual(outbox.pending.map((item: any) => item.key), [
+    'notification-0', 'notification-5', 'notification-6', 'notification-7'
+  ])
+  assert.equal(outbox.pending[0].attempts, 1)
+  assert.equal(outbox.pending[0].lastError, '脱敏失败')
+  assert.deepEqual(outbox.sentKeys, [
+    'notification-1', 'notification-2', 'notification-3', 'notification-4'
+  ])
+  assert.equal(persisted.length, 5)
+  assert.deepEqual(persisted[0], Array.from({ length: 8 }, (_, index) => `notification-${index}`))
+  assert.deepEqual(persisted[4], ['notification-0', 'notification-5', 'notification-6', 'notification-7'])
 })
 
 test('common-neighbor graph query keeps relation direction, status and evidence', () => {

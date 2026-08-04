@@ -140,8 +140,8 @@ import {
 } from '../../shared/taskStateStorage.ts'
 import { applyRelationConfirmation, planRelationConfirmation, type RelationCorrection } from './relationCorrectionPolicy'
 import {
+  deliverNotificationBatch,
   enqueueUniqueNotification,
-  markNotificationAttempt,
   type NotificationOutbox
 } from './notificationOutbox'
 import { findCommonGraphNeighbors, findScopedGraphPath } from './graphCommonNeighbors'
@@ -541,6 +541,7 @@ export class AiAssistantService {
   private activeSync: Promise<any> | null = null
   private activeSyncTrigger: 'manual' | 'startup' | 'daily' | 'backlog' | 'resume' | null = null
   private scheduler: ReturnType<typeof setInterval> | null = null
+  private notificationFlushPromise: Promise<void> | null = null
   private preparedRecoveryContinuation: ReturnType<typeof setTimeout> | null = null
   private connectorAuthorizationCache = new AsyncExpiringValue<{
     calendar: string
@@ -7455,24 +7456,26 @@ export class AiAssistantService {
 
   private async flushNotificationOutbox(now: Date): Promise<void> {
     if (this.isNotificationQuiet(now) || !this.state.notifications.pending.length) return
-    for (const notification of [...this.state.notifications.pending].slice(0, 5)) {
-      try {
+    if (this.notificationFlushPromise) return this.notificationFlushPromise
+    this.notificationFlushPromise = (async () => {
+      await deliverNotificationBatch(this.state.notifications, async notification => {
         await showSystemNotification({
           title: notification.title,
           content: notification.content,
           channel: 'ai-assistant',
           targetRoute: '/ai-assistant'
         })
-        markNotificationAttempt(this.state.notifications, notification.key, { success: true })
-      } catch (error: any) {
-        markNotificationAttempt(this.state.notifications, notification.key, {
-          success: false,
-          error: sanitizeDiagnosticText(error)
-        })
-        break
-      }
+      }, {
+        limit: 5,
+        normalizeError: sanitizeDiagnosticText,
+        onAttempt: () => this.saveState()
+      })
+    })()
+    try {
+      await this.notificationFlushPromise
+    } finally {
+      this.notificationFlushPromise = null
     }
-    this.saveState()
   }
 }
 
