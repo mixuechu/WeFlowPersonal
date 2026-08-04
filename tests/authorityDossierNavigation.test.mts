@@ -2,7 +2,8 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import {
   authorityReturnLabel,
-  buildAuthorityReturnTarget
+  buildAuthorityReturnTarget,
+  buildProjectReturnTarget
 } from '../src/utils/authorityDossierNavigation.ts'
 
 test('authority dossier return targets retain only stable identity and revision', () => {
@@ -29,6 +30,11 @@ test('authority dossier return targets retain only stable identity and revision'
     searchRevision: '10'
   }), '返回事件档案')
   assert.equal(authorityReturnLabel(null), '完成')
+  assert.deepEqual(buildProjectReturnTarget('project-stable-id'), {
+    kind: 'project',
+    sourceId: 'project-stable-id'
+  })
+  assert.equal(authorityReturnLabel(buildProjectReturnTarget('project-stable-id')), '返回项目驾驶舱')
 })
 
 test('authority dossier return targets reject loading, invalid types and missing revisions', () => {
@@ -50,4 +56,5 @@ test('authority dossier return targets reject loading, invalid types and missing
     sourceId: 'event-1',
     revision: ''
   }), null)
+  assert.equal(buildProjectReturnTarget('  '), null)
 })

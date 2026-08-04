@@ -6,6 +6,7 @@ import { evidenceLocalMessageId, groupMemorySearchResults, memoryEvidenceSourceL
 import {
   authorityReturnLabel,
   buildAuthorityReturnTarget,
+  buildProjectReturnTarget,
   type AuthorityReturnTarget
 } from '../utils/authorityDossierNavigation'
 import { LatestRequestGate } from '../utils/latestRequestGate'
@@ -2619,13 +2620,25 @@ function AiAssistantPage() {
     const target = authorityReturnTarget
     setShowEntityDossier(false)
     setAuthorityReturnTarget(null)
-    if (returnToParent && target) {
+    if (!returnToParent || !target) return
+    if (target.kind === 'project') {
+      setSelectedProjectId(target.sourceId)
+    } else {
       void openStructuredMemoryDossier(
         target.kind,
         target.sourceId,
         target.searchRevision
       )
     }
+  }
+  const openEntityFromProjectDossier = (entityId: string) => {
+    const id = String(entityId || '').trim()
+    const returnTarget = buildProjectReturnTarget(selectedProjectId)
+    if (!id || !returnTarget) return
+    setAuthorityReturnTarget(returnTarget)
+    setSelectedProjectId('')
+    setSelectedEntityId(id)
+    setShowEntityDossier(true)
   }
   const loadMoreRelationDossierAudit = async (kind: 'history' | 'correction') => {
     const dossier = structuredMemoryDossier
@@ -9123,9 +9136,11 @@ function AiAssistantPage() {
             <div className="assistant-dossier-grid">
               <section>
                 <h3>参与者 <small>{selectedProject.members.length}</small></h3>
-                {selectedProject.members.map((member: any) => <button className="assistant-project-member" key={member.id} onClick={() => {
-                  setSelectedEntityId(member.id); setSelectedProjectId(''); setShowEntityDossier(true)
-                }}>{member.name}</button>)}
+                {selectedProject.members.map((member: any) =>
+                  <button className="assistant-project-member" key={member.id}
+                    onClick={() => openEntityFromProjectDossier(member.id)}>
+                    {member.name}
+                  </button>)}
                 {!selectedProject.members.length && <em>尚未从项目关系中确认参与者</em>}
               </section>
               <section>
@@ -9230,11 +9245,8 @@ function AiAssistantPage() {
                   const neighborId = outgoing ? relation.objectId : relation.subjectId
                   const neighborName = outgoing ? relation.object_name : relation.subject_name
                   return <article key={relation.id}>
-                    <button className="assistant-dossier-link" onClick={() => {
-                      setSelectedEntityId(neighborId)
-                      setSelectedProjectId('')
-                      setShowEntityDossier(true)
-                    }}>
+                    <button className="assistant-dossier-link"
+                      onClick={() => openEntityFromProjectDossier(neighborId)}>
                       <b>{outgoing ? relation.predicate : `被${relation.predicate}`}</b>
                       <span>{neighborName || neighborId}</span>
                     </button>
@@ -9413,11 +9425,10 @@ function AiAssistantPage() {
               </section>
             </div>
             <footer>
-              {selectedProject.entityId && <button onClick={() => {
-                setSelectedEntityId(selectedProject.entityId)
-                setSelectedProjectId('')
-                setShowEntityDossier(true)
-              }}>查看项目实体与审计历史</button>}
+              {selectedProject.entityId && <button
+                onClick={() => openEntityFromProjectDossier(selectedProject.entityId)}>
+                查看项目实体与审计历史
+              </button>}
               {selectedProject.entityId && <button onClick={() => {
                 void selectMemoryEntityScope(selectedProject.entityId, selectedProject.name).then(() => {
                   setMemoryQuery(selectedProject.name)
