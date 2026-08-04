@@ -8179,9 +8179,12 @@ test('local ANN keeps clustered semantic recall while reducing the exact candida
   const exact = store.searchVector(query, model, 10, { minimumDocuments: 1_000 })
   const approximate = store.searchVector(query, model, 10, {
     minimumDocuments: 100,
-    minimumCandidates: 30
+    minimumCandidates: 30,
+    maximumCandidates: 64
   })
   assert.equal(approximate[0].semantic_search_mode, 'ann')
+  assert.ok(approximate.every(item =>
+    item.semantic_candidate_count <= 64 && item.semantic_candidate_budget === 64))
   const exactIds = new Set(exact.map(item => item.id))
   const overlap = approximate.filter(item => exactIds.has(item.id)).length
   assert.ok(overlap >= 8, `expected ANN recall@10 >= 0.8, received ${overlap / 10}`)

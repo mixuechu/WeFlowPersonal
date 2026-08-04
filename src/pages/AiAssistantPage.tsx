@@ -7582,7 +7582,11 @@ function AiAssistantPage() {
                 {result.match_source ? ` · ${result.match_source}匹配` : ''}
                 {result.match_reason === 'pinyin_entity' ? ' · 拼音命中' : result.match_reason === 'fuzzy_entity' ? ' · 名称近似召回' : result.match_reason === 'entity_alias_or_account' ? ' · 别名/微信 ID 命中' : result.match_reason === 'entity_evidence' ? ' · 身份原文命中' : ''}
                 {result.semantic_score ? ` · ${Math.round(result.semantic_score * 100)}%` : ''}
-                {result.semantic_search_mode === 'ann' ? ' · ANN 召回' : result.semantic_search_mode === 'exact' ? ' · 精确向量召回' : ''}
+                {result.semantic_search_mode === 'ann'
+                  ? ` · ANN 召回${Number(result.semantic_candidate_budget || 0) > 0
+                    ? `（候选 ${Number(result.semantic_candidate_count || 0).toLocaleString()} / ${Number(result.semantic_candidate_budget).toLocaleString()}）`
+                    : ''}`
+                  : result.semantic_search_mode === 'exact' ? ' · 精确向量召回' : ''}
               </span>
               <small className={`assistant-memory-trust ${resultStatus || 'source'}`}>{statusLabel}{resultStatus === 'candidate' ? ' · 不能作为已确认事实回答' : resultStatus === 'cancelled' ? ' · 仅作历史记录' : ''}</small>
               {result.evidenceTimeScopeMode === 'document_time' &&

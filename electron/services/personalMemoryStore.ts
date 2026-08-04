@@ -13393,6 +13393,7 @@ export class PersonalMemoryStore {
     options: {
       minimumDocuments?: number
       minimumCandidates?: number
+      maximumCandidates?: number
       allowedIds?: Set<string> | null
     } = {}
   ): any[] {
@@ -13409,28 +13410,45 @@ export class PersonalMemoryStore {
       stats.eligible >= minimumDocuments
     if (!canUseAnn) return this.searchVectorExact(vector, model, limit, allowedIds)
     const signatures = computeAnnSignatures(vector, model, stats.tables, stats.bits)
-    const candidateIds = new Set<string>()
-    const lookup = this.db.prepare(`
-      SELECT document_id FROM vector_ann_entries
-      WHERE model=? AND dimensions=? AND table_id=? AND signature IN (${Array.from({ length: stats.bits + 1 }, () => '?').join(',')})
-    `)
-    const chunkLookup = this.db.prepare(`
-      SELECT document_id FROM vector_ann_chunk_entries
-      WHERE model=? AND dimensions=? AND table_id=? AND signature IN (${Array.from({ length: stats.bits + 1 }, () => '?').join(',')})
-    `)
-    signatures.forEach((signature, table) => {
-      const probes = listMultiProbeSignatures(signature, stats.bits)
-      for (const row of lookup.all(model, vector.length, table, ...probes) as Array<{ document_id: string }>) {
-        if (!allowedIds || allowedIds.has(row.document_id)) candidateIds.add(row.document_id)
-      }
-      for (const row of chunkLookup.all(model, vector.length, table, ...probes) as Array<{ document_id: string }>) {
-        if (!allowedIds || allowedIds.has(row.document_id)) candidateIds.add(row.document_id)
-      }
-    })
     const minimumCandidates = Math.max(
       limit,
-      Number(options.minimumCandidates || Math.max(64, Math.min(256, limit * 2)))
+      Math.min(4_096, Number(options.minimumCandidates || Math.max(64, Math.min(256, limit * 2))))
     )
+    const maximumCandidates = Math.max(
+      minimumCandidates,
+      Math.min(4_096, Number(options.maximumCandidates || Math.max(256, limit * 32)))
+    )
+    const probeRows = signatures.flatMap((signature, table) =>
+      listMultiProbeSignatures(signature, stats.bits).map(probe => [table, probe] as const))
+    const probeValuesSql = probeRows.map(() => '(?,?)').join(',')
+    const scopeJoin = allowedIds
+      ? 'JOIN active_memory_search_scope scope ON scope.id=matches.document_id'
+      : ''
+    const candidateRows = this.db.prepare(`
+      WITH probes(table_id,signature) AS (VALUES ${probeValuesSql}),
+      matches AS (
+        SELECT entry.document_id,entry.table_id
+        FROM vector_ann_entries entry
+        JOIN probes ON probes.table_id=entry.table_id AND probes.signature=entry.signature
+        WHERE entry.model=? AND entry.dimensions=?
+        UNION
+        SELECT entry.document_id,entry.table_id
+        FROM vector_ann_chunk_entries entry
+        JOIN probes ON probes.table_id=entry.table_id AND probes.signature=entry.signature
+        WHERE entry.model=? AND entry.dimensions=?
+      )
+      SELECT matches.document_id,COUNT(*) AS collision_count
+      FROM matches ${scopeJoin}
+      GROUP BY matches.document_id
+      ORDER BY collision_count DESC,matches.document_id ASC
+      LIMIT ?
+    `).all(
+      ...probeRows.flat(),
+      model, vector.length,
+      model, vector.length,
+      maximumCandidates
+    ) as Array<{ document_id: string; collision_count: number }>
+    const candidateIds = new Set(candidateRows.map(row => row.document_id))
     const scopedEligible = allowedIds
       ? Number((this.db.prepare(`
           SELECT COUNT(*) AS count FROM search_documents d
@@ -13455,7 +13473,11 @@ export class PersonalMemoryStore {
           AND embedding.model=? AND embedding.dimensions=?
       `).all(...chunk, model, vector.length) as any[])
     }
-    return this.rankVectorRows(rows, vector, limit, 'ann')
+    return this.rankVectorRows(rows, vector, limit, 'ann').map(row => ({
+      ...row,
+      semantic_candidate_count: candidateIds.size,
+      semantic_candidate_budget: maximumCandidates
+    }))
   }
 
   listSimilarEntityPairs(model: string, minimumScore = 0.88, limit = 200): Array<{ leftId: string; rightId: string; score: number }> {
