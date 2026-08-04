@@ -11,6 +11,7 @@ import { personalMemoryStore } from './personalMemoryStore'
 import { localEmbeddingService } from './localEmbeddingService'
 import {
   recordVectorQueryOutcome,
+  runVectorIndexPass,
   validateEmbeddingBatch,
   type VectorQueryHealth
 } from './vectorIndexingPolicy'
@@ -599,6 +600,8 @@ export class AiAssistantService {
   private lastSchedulerAttemptAt = 0
   private lastSchedulerTickAt = 0
   private vectorIndexPromise: Promise<any> | null = null
+  private vectorIndexContinuation: ReturnType<typeof setTimeout> | null = null
+  private disposed = false
   private vectorQueryHealth: VectorQueryHealth = {
     fallbackCount: 0,
     dimensionRepairCount: 0,
@@ -671,6 +674,7 @@ export class AiAssistantService {
   }
 
   async initialize(): Promise<void> {
+    this.disposed = false
     this.statePath = join(app.getPath('userData'), 'ai-assistant-state.json')
     localEmbeddingService.initialize(app.getPath('userData'))
     if (!this.config.isSafeStorageEncryptionAvailable()) {
@@ -774,15 +778,17 @@ export class AiAssistantService {
       setTimeout(() => void this.sync('startup').catch(() => undefined), 5_000)
     }
     setTimeout(() => void this.flushNotificationOutbox(new Date()), 8_000)
-    setTimeout(() => void this.ensureVectorIndex().catch(error =>
-      console.warn('[AI Assistant] 本地向量索引暂未完成:', error)), 12_000)
+    this.scheduleVectorIndexContinuation(12_000)
   }
 
   dispose(): void {
+    this.disposed = true
     if (this.scheduler) clearInterval(this.scheduler)
     this.scheduler = null
     if (this.preparedRecoveryContinuation) clearTimeout(this.preparedRecoveryContinuation)
     this.preparedRecoveryContinuation = null
+    if (this.vectorIndexContinuation) clearTimeout(this.vectorIndexContinuation)
+    this.vectorIndexContinuation = null
     personalMemoryStore.close()
   }
 
@@ -3132,6 +3138,7 @@ export class AiAssistantService {
       this.activeSync = null
       this.activeSyncTrigger = null
       this.cancelRequested = false
+      this.scheduleVectorIndexContinuation()
     }
   }
 
@@ -7028,10 +7035,7 @@ export class AiAssistantService {
         localEmbeddingService.modelVersion,
         queryValidation.dimensions
       )
-      await this.ensureVectorIndex()
-      if (personalMemoryStore.getEmbeddingStats(localEmbeddingService.modelVersion).pending > 0) {
-        await this.ensureVectorIndex()
-      }
+      await this.warmVectorIndexForSearch()
       const semantic = personalMemoryStore.searchVector(queryVector, localEmbeddingService.modelVersion, candidateLimit, {
         allowedIds
       })
@@ -7187,9 +7191,6 @@ export class AiAssistantService {
     const limit = Math.max(1, Math.min(100, Number(pagination.limit) || 40))
     const text = String(query || '').trim()
     const searchMode = pagination.mode === 'lexical_archive' ? 'lexical_archive' : 'hybrid'
-    if (text && searchMode === 'hybrid') {
-      try { await this.ensureVectorIndex() } catch {}
-    }
     const revision = personalMemoryStore.getMemorySearchRevision()
     const expectedRevision = String(pagination.revision || '').trim()
     if (isMemorySearchPageRevisionStale({
@@ -7378,34 +7379,70 @@ export class AiAssistantService {
     })
   }
 
-  async ensureVectorIndex(): Promise<any> {
-    if (this.vectorIndexPromise) return this.vectorIndexPromise
-    this.vectorIndexPromise = (async () => {
-      let indexed = 0
-      while (true) {
-        const documents = personalMemoryStore.listEmbeddingCandidates(localEmbeddingService.modelVersion, 24)
-        if (!documents.length) break
-        const vectors = await localEmbeddingService.embed(documents.map((item: any) => `${item.title}\n${item.search_text}`))
-        const validation = validateEmbeddingBatch(vectors, documents.length)
-        if (!validation.valid) {
-          throw new Error('本地向量模型返回了数量、维度或数值异常的批次，已停止补建且未写入该批')
-        }
-        let committed = 0
-        documents.forEach((item: any, index: number) => {
-          if (personalMemoryStore.saveEmbedding(
-            item.id,
-            localEmbeddingService.modelVersion,
-            vectors[index],
-            String(item.content_hash || '')
-          )) committed += 1
-        })
-        if (committed === 0) {
-          throw new Error('向量补建期间文档持续变化，本批没有可安全提交的结果，稍后将重新尝试')
-        }
-        indexed += committed
+  private scheduleVectorIndexContinuation(delayMs = 1_000): void {
+    if (this.disposed || this.vectorIndexContinuation) return
+    this.vectorIndexContinuation = setTimeout(() => {
+      this.vectorIndexContinuation = null
+      if (this.disposed) return
+      if (this.activeSync || this.memorySearchRepairPromise) {
+        this.scheduleVectorIndexContinuation(5_000)
+        return
       }
-      const ann = personalMemoryStore.ensureApproximateVectorIndex(localEmbeddingService.modelVersion)
-      return { indexed, ...personalMemoryStore.getEmbeddingStats(localEmbeddingService.modelVersion), ann }
+      void this.ensureVectorIndex({ maxBatches: 2 }).then(result => {
+        if (Number(result.pending || 0) > 0) this.scheduleVectorIndexContinuation()
+      }).catch(error => {
+        console.warn('[AI Assistant] 本地向量索引暂未完成:', error)
+        this.scheduleVectorIndexContinuation(60_000)
+      })
+    }, Math.max(0, delayMs))
+    this.vectorIndexContinuation.unref()
+  }
+
+  private async warmVectorIndexForSearch(): Promise<void> {
+    if (!this.vectorIndexPromise) {
+      try { await this.ensureVectorIndex({ maxBatches: 1 }) } catch {}
+    }
+    if (personalMemoryStore.getEmbeddingStats(localEmbeddingService.modelVersion).pending > 0) {
+      this.scheduleVectorIndexContinuation()
+    }
+  }
+
+  async ensureVectorIndex(options: { maxBatches?: number } = {}): Promise<any> {
+    if (options.maxBatches === undefined && this.activeSync) {
+      throw new Error('当前正在增量处理，请在本轮结束后再完整补齐语义索引')
+    }
+    if (this.vectorIndexPromise) {
+      const current = await this.vectorIndexPromise
+      if (options.maxBatches === undefined && Number(current.pending || 0) > 0) {
+        const continuation = await this.ensureVectorIndex(options)
+        return {
+          ...continuation,
+          indexed: Number(current.indexed || 0) + Number(continuation.indexed || 0),
+          batches: Number(current.batches || 0) + Number(continuation.batches || 0)
+        }
+      }
+      return current
+    }
+    this.vectorIndexPromise = (async () => {
+      const pass = await runVectorIndexPass({
+        maxBatches: options.maxBatches,
+        batchSize: 24,
+        listCandidates: limit =>
+          personalMemoryStore.listEmbeddingCandidates(localEmbeddingService.modelVersion, limit),
+        embed: documents =>
+          localEmbeddingService.embed(documents.map((item: any) => `${item.title}\n${item.search_text}`)),
+        commit: (item: any, vector) => personalMemoryStore.saveEmbedding(
+          item.id,
+          localEmbeddingService.modelVersion,
+          vector,
+          String(item.content_hash || '')
+        )
+      })
+      const stats = personalMemoryStore.getEmbeddingStats(localEmbeddingService.modelVersion)
+      const ann = pass.drained
+        ? personalMemoryStore.ensureApproximateVectorIndex(localEmbeddingService.modelVersion)
+        : stats.ann
+      return { indexed: pass.indexed, batches: pass.batches, drained: pass.drained, ...stats, ann }
     })().finally(() => { this.vectorIndexPromise = null })
     return this.vectorIndexPromise
   }

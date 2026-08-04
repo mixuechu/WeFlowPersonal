@@ -7,6 +7,7 @@ import { createHash, randomBytes } from 'node:crypto'
 import { PersonalMemoryStore } from '../electron/services/personalMemoryStore.ts'
 import {
   recordVectorQueryOutcome,
+  runVectorIndexPass,
   safeCosineSimilarity,
   validateEmbeddingBatch
 } from '../electron/services/vectorIndexingPolicy.ts'
@@ -7176,6 +7177,61 @@ test('cosine similarity is scale safe and rejects unusable vectors', () => {
   assert.equal(safeCosineSimilarity([1, 0], [0, 0]), null)
   assert.equal(safeCosineSimilarity([1, 0], [1]), null)
   assert.equal(safeCosineSimilarity([1, 0], [Number.NaN, 0]), null)
+})
+
+test('bounded vector indexing stops after its foreground budget and resumes without duplicates', async () => {
+  const pending = Array.from({ length: 5 }, (_, index) => ({
+    id: `bounded-vector-${index}`,
+    content_hash: `hash-${index}`
+  }))
+  const committed: string[] = []
+  const run = (maxBatches?: number) => runVectorIndexPass({
+    maxBatches,
+    batchSize: 2,
+    listCandidates: limit => pending.slice(0, limit),
+    embed: async documents => documents.map((_, index) => index % 2 ? [0, 1] : [1, 0]),
+    commit: document => {
+      const index = pending.findIndex(item => item.id === document.id)
+      if (index < 0) return false
+      pending.splice(index, 1)
+      committed.push(document.id)
+      return true
+    }
+  })
+  assert.deepEqual(await run(2), { indexed: 4, batches: 2, drained: false })
+  assert.equal(pending.length, 1)
+  assert.deepEqual(await run(), { indexed: 1, batches: 1, drained: true })
+  assert.equal(new Set(committed).size, 5)
+})
+
+test('bounded vector indexing rejects a malformed batch before any partial commit', async () => {
+  let commits = 0
+  await assert.rejects(() => runVectorIndexPass({
+    maxBatches: 1,
+    batchSize: 2,
+    listCandidates: () => [{ id: 'one' }, { id: 'two' }],
+    embed: async () => [[1, 0]],
+    commit: () => {
+      commits += 1
+      return true
+    }
+  }), /异常的批次/)
+  assert.equal(commits, 0)
+})
+
+test('bounded vector indexing exits on zero progress instead of spinning forever', async () => {
+  let listCalls = 0
+  await assert.rejects(() => runVectorIndexPass({
+    maxBatches: 3,
+    batchSize: 1,
+    listCandidates: () => {
+      listCalls += 1
+      return [{ id: 'changing-document', content_hash: `version-${listCalls}` }]
+    },
+    embed: async () => [[1, 0]],
+    commit: () => false
+  }), /没有可安全提交/)
+  assert.equal(listCalls, 1)
 })
 
 test('semantic ranking uses cosine similarity so vector magnitude cannot dominate relevance', () => withStore(store => {
