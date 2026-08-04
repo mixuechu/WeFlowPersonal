@@ -6420,6 +6420,17 @@ function AiAssistantPage() {
               {result.evidenceTimeScopeMode === 'evidence_time' &&
                 <small className="assistant-memory-time-scope">展示与问答仅使用当前时间范围内的原文。</small>}
               <strong>{result.title}</strong><p>{result.search_text}</p>
+              {result.document_type === 'entity' && result.source_id && <div className="assistant-search-authority-actions">
+                {result.metadata?.entityType === 'project'
+                  ? <button className="primary" onClick={() => setSelectedProjectId(String(result.source_id))}>
+                    打开项目驾驶舱
+                  </button>
+                  : <button className="primary" onClick={() => {
+                    setSelectedEntityId(String(result.source_id))
+                    setShowEntityDossier(true)
+                  }}>打开完整实体档案</button>}
+                <small>按稳定实体 ID 打开，不使用名称猜测或合并同名对象。</small>
+              </div>}
               {matchedEvidence && <div className="assistant-search-matched-evidence">
                 <header>
                   <span>本次实际命中的身份原文</span>
