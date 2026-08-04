@@ -11,6 +11,7 @@ import {
 } from '../utils/authorityDossierNavigation'
 import { LatestRequestGate } from '../utils/latestRequestGate'
 import { buildMemorySessionScope } from '../utils/memorySessionScope'
+import { buildResourceStructurePresentation } from '../utils/resourceStructurePresentation'
 import { evidenceArchiveIdentity } from '../../shared/evidencePayload'
 import './AiAssistantPage.scss'
 
@@ -7574,6 +7575,7 @@ function AiAssistantPage() {
                   selectedResourceDossier.status === 'ready'
                   ? selectedResourceDossier
                   : directoryResource
+                const structureView = buildResourceStructurePresentation(resource.metadata)
                 return <article className="assistant-memory-item" key={resource.id}>
                 <div className="assistant-memory-item-head">
                   <strong>{resource.title}</strong>
@@ -7607,17 +7609,17 @@ function AiAssistantPage() {
                     · {resource.metadata.attachmentStructure.chartCount || 0} 个图表
                     {resource.metadata.attachmentStructure.truncated ? ' · 已按本地安全预算截断' : ''}
                   </small>
-                  {(resource.metadata.attachmentStructure.sheets || []).slice(0, 8).map((sheet: any) =>
+                  {structureView.sheets.map((sheet: any) =>
                     <small key={sheet.name}>
                       {sheet.name}：{sheet.indexedRows || 0} 行 · {sheet.columnCount || 0} 列
-                      {!!sheet.headers?.length && ` · 字段 ${sheet.headers.slice(0, 8).join('、')}`}
+                      {!!sheet.headers?.length && ` · 字段 ${sheet.headers.join('、')}`}
                       {!!sheet.chartCount && ` · ${sheet.chartCount} 个图表`}
                       {sheet.truncated ? ' · 部分索引' : ''}
                     </small>)}
-                  {(resource.metadata.attachmentStructure.sheets || []).flatMap((sheet: any) => sheet.charts || []).slice(0, 8)
-                    .map((chart: any) => <small key={`sheet-chart-${chart.index}`}>
+                  {structureView.sheetCharts.map((chart: any) =>
+                    <small key={`sheet-chart-${chart.parentName}-${chart.index}`}>
                       图表 {chart.index}{chart.title ? `《${chart.title}》` : ''}：{chart.seriesCount || 0} 个系列 · {chart.pointCount || 0} 个数据点
-                      {!!chart.series?.length && ` · ${chart.series.slice(0, 4).map((series: any) => series.name).join('、')}`}
+                      {!!chart.series?.length && ` · ${chart.series.map((series: any) => series.name).join('、')}`}
                     </small>)}
                 </div>}
                 {resource.metadata?.attachmentStructure?.kind === 'document' && <div className="assistant-evidence-stack">
@@ -7629,19 +7631,19 @@ function AiAssistantPage() {
                     · {resource.metadata.attachmentStructure.chartCount || 0} 个图表
                     {resource.metadata.attachmentStructure.truncated ? ' · 已按本地安全预算截断' : ''}
                   </small>
-                  {!!resource.metadata.attachmentStructure.headings?.length && <small>
-                    标题大纲：{resource.metadata.attachmentStructure.headings.slice(0, 10)
+                  {!!structureView.headings.length && <small>
+                    标题大纲：{structureView.headings
                       .map((heading: any) => `${'·'.repeat(Math.max(1, Number(heading.level || 1)))} ${heading.text}`).join('　')}
                   </small>}
-                  {(resource.metadata.attachmentStructure.tables || []).slice(0, 5).map((table: any) =>
+                  {structureView.tables.map((table: any) =>
                     <small key={table.index}>
                       {table.layout === 'key-value' ? '字段表' : '表格'} {table.index}：{table.rowCount || 0} 行 · {table.columnCount || 0} 列
-                      {!!table.headers?.length && ` · 字段 ${table.headers.slice(0, 8).join('、')}`}
+                      {!!table.headers?.length && ` · 字段 ${table.headers.join('、')}`}
                     </small>)}
-                  {(resource.metadata.attachmentStructure.charts || []).slice(0, 8).map((chart: any) =>
+                  {structureView.documentCharts.map((chart: any) =>
                     <small key={`doc-chart-${chart.index}`}>
                       图表 {chart.index}{chart.title ? `《${chart.title}》` : ''}：{chart.seriesCount || 0} 个系列 · {chart.pointCount || 0} 个数据点
-                      {!!chart.series?.length && ` · ${chart.series.slice(0, 4).map((series: any) => series.name).join('、')}`}
+                      {!!chart.series?.length && ` · ${chart.series.map((series: any) => series.name).join('、')}`}
                     </small>)}
                 </div>}
                 {resource.metadata?.attachmentStructure?.kind === 'presentation' && <div className="assistant-evidence-stack">
@@ -7654,15 +7656,14 @@ function AiAssistantPage() {
                     · {resource.metadata.attachmentStructure.chartCount || 0} 个图表
                     {resource.metadata.attachmentStructure.truncated ? ' · 已按本地安全预算截断' : ''}
                   </small>
-                  {(resource.metadata.attachmentStructure.slides || []).filter((slide: any) => slide.title).slice(0, 10)
-                    .map((slide: any) => <small key={slide.number}>
+                  {structureView.titledSlides.map((slide: any) => <small key={slide.number}>
                       第 {slide.number} 页{slide.titleSource === 'layout-inference' ? '推断标题' : '标题'}：{slide.title}
                       {slide.titleSource === 'layout-inference' ? ` · ${Math.round(Number(slide.titleConfidence || 0) * 100)}% 可信` : ''}
                     </small>)}
-                  {(resource.metadata.attachmentStructure.slides || []).flatMap((slide: any) => slide.charts || []).slice(0, 8)
-                    .map((chart: any) => <small key={`slide-chart-${chart.index}`}>
+                  {structureView.slideCharts.map((chart: any) =>
+                    <small key={`slide-chart-${chart.parentNumber}-${chart.index}`}>
                       图表 {chart.index}{chart.title ? `《${chart.title}》` : ''}：{chart.seriesCount || 0} 个系列 · {chart.pointCount || 0} 个数据点
-                      {!!chart.series?.length && ` · ${chart.series.slice(0, 4).map((series: any) => series.name).join('、')}`}
+                      {!!chart.series?.length && ` · ${chart.series.map((series: any) => series.name).join('、')}`}
                     </small>)}
                 </div>}
                 {resource.metadata?.attachmentStructure?.kind === 'pdf' && <div className="assistant-evidence-stack">
@@ -7674,7 +7675,7 @@ function AiAssistantPage() {
                     · {resource.metadata.attachmentStructure.multiColumnPageCount || 0} 页检测为多栏
                     {resource.metadata.attachmentStructure.truncated ? ' · 已按本地安全预算截断' : ''}
                   </small>
-                  {(resource.metadata.attachmentStructure.pages || []).slice(0, 12).map((page: any) =>
+                  {structureView.pages.map((page: any) =>
                     <small key={page.number}>
                       第 {page.number} 页：{page.columnCount === 2 ? '双栏，按左栏→右栏读取' : '单栏，从上到下读取'}
                       {' · '}{page.blockCount || 0} 个区块
@@ -7688,8 +7689,8 @@ function AiAssistantPage() {
                         : resource.metadata.ocrStructure.kind === 'form' ? '表单/字段'
                           : '普通文档'} · {Math.round(Number(resource.metadata.ocrStructure.confidence || 0) * 100)}% 可信
                   </small>
-                  {!!resource.metadata.ocrStructure.keyValues?.length && <small>
-                    关键字段：{resource.metadata.ocrStructure.keyValues.slice(0, 8).map((item: any) => `${item.key}＝${item.value}`).join('；')}
+                  {!!structureView.keyValues.length && <small>
+                    关键字段：{structureView.keyValues.map((item: any) => `${item.key}＝${item.value}`).join('；')}
                   </small>}
                   {!!resource.metadata.ocrStructure.dates?.length && <small>日期：{resource.metadata.ocrStructure.dates.join('、')}</small>}
                   {!!resource.metadata.ocrStructure.amounts?.length && <small>金额：{resource.metadata.ocrStructure.amounts.join('、')}</small>}
@@ -7697,8 +7698,8 @@ function AiAssistantPage() {
                 </div>}
                 {resource.resource_type === 'image' && resource.metadata?.visualSource && <div className="assistant-evidence-stack">
                   <small>图片视觉：Apple Vision 本地候选 · 未经人工确认，不单独作为事实证据</small>
-                  {!!resource.metadata.visualLabels?.length && <small>
-                    可能包含：{resource.metadata.visualLabels.slice(0, 8).map((label: any) =>
+                  {!!structureView.visualLabels.length && <small>
+                    可能包含：{structureView.visualLabels.map((label: any) =>
                       `${label.displayName || label.identifier} ${Math.round(Number(label.confidence || 0) * 100)}%`).join('；')}
                   </small>}
                 </div>}
