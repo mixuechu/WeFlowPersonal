@@ -6612,7 +6612,7 @@ export class PersonalMemoryStore {
             ) THEN 1
             WHEN e.event_id IS NOT NULL AND EXISTS (
               SELECT 1 FROM events active_event WHERE active_event.id=e.event_id
-                AND active_event.status!='rejected'
+                AND active_event.status NOT IN ('rejected','cancelled')
             ) THEN 1
             ELSE 0
           END AS is_active
@@ -6656,6 +6656,7 @@ export class PersonalMemoryStore {
     entityId: string
     sourceId?: 'wechat' | 'documents' | 'calendar' | 'mail' | 'legacy'
     memoryKind?: 'identity' | 'claim' | 'relation' | 'event'
+    evidenceState?: 'current' | 'historical'
     query?: string
     from?: string
     to?: string
@@ -6693,6 +6694,11 @@ export class PersonalMemoryStore {
       filters.push(`INSTR(',' || memory_kinds || ',', ?) > 0`)
       filterParameters.push(`,${memoryKind},`)
     }
+    const evidenceState = ['current', 'historical'].includes(String(options.evidenceState || ''))
+      ? String(options.evidenceState)
+      : ''
+    if (evidenceState === 'current') filters.push('is_current=1')
+    if (evidenceState === 'historical') filters.push('is_current=0')
     const validFrom = options.from && Number.isFinite(Date.parse(options.from))
       ? Math.floor(Date.parse(options.from) / 1000)
       : 0
@@ -6731,7 +6737,7 @@ export class PersonalMemoryStore {
       ),
       scoped AS (
         SELECT ee.source_id,ee.message_id,ee.session_id,ee.timestamp,ee.sender,ee.excerpt,
-          'identity' AS memory_kind
+          'identity' AS memory_kind,'original' AS evidence_role,1 AS is_current
         FROM entity_evidence ee
         WHERE ee.entity_id IN (SELECT entity_id FROM entity_scope)
         UNION ALL
@@ -6740,7 +6746,23 @@ export class PersonalMemoryStore {
             WHEN e.claim_id IS NOT NULL THEN 'claim'
             WHEN e.relation_id IS NOT NULL THEN 'relation'
             ELSE 'event'
-          END AS memory_kind
+          END AS memory_kind,
+          COALESCE(NULLIF(e.evidence_role,''),'direct') AS evidence_role,
+          CASE
+            WHEN e.claim_id IS NOT NULL AND EXISTS (
+              SELECT 1 FROM claims active_claim WHERE active_claim.id=e.claim_id
+                AND active_claim.status!='rejected'
+            ) THEN 1
+            WHEN e.relation_id IS NOT NULL AND EXISTS (
+              SELECT 1 FROM relations active_relation WHERE active_relation.id=e.relation_id
+                AND active_relation.status!='rejected'
+            ) THEN 1
+            WHEN e.event_id IS NOT NULL AND EXISTS (
+              SELECT 1 FROM events active_event WHERE active_event.id=e.event_id
+                AND active_event.status NOT IN ('rejected','cancelled')
+            ) THEN 1
+            ELSE 0
+          END AS is_current
         FROM evidence e
         WHERE
           (e.claim_id IS NOT NULL AND EXISTS (
@@ -6759,7 +6781,10 @@ export class PersonalMemoryStore {
       grouped AS (
         SELECT source_id,session_id,message_id,MAX(timestamp) AS timestamp,
           MAX(sender) AS sender,MAX(excerpt) AS excerpt,
-          GROUP_CONCAT(DISTINCT memory_kind) AS memory_kinds
+          GROUP_CONCAT(DISTINCT memory_kind) AS memory_kinds,
+          GROUP_CONCAT(DISTINCT evidence_role) AS evidence_roles,
+          MAX(is_current) AS is_current,
+          MAX(CASE WHEN is_current=0 THEN 1 ELSE 0 END) AS has_historical
         FROM scoped
         GROUP BY source_id,session_id,message_id
       )
@@ -6790,7 +6815,10 @@ export class PersonalMemoryStore {
     return {
       items: rows.map(row => ({
         ...row,
-        memoryKinds: String(row.memory_kinds || '').split(',').filter(Boolean)
+        memoryKinds: String(row.memory_kinds || '').split(',').filter(Boolean),
+        evidenceRoles: String(row.evidence_roles || '').split(',').filter(Boolean),
+        isCurrent: Boolean(row.is_current),
+        hasHistorical: Boolean(row.has_historical)
       })),
       total,
       unfilteredTotal,

@@ -4277,6 +4277,138 @@ test('project review counts include candidate relations from both directions', (
   }).items.length, 1)
 }))
 
+test('entity evidence separates current memory links from historical audit and preserves roles', () => withStore(store => {
+  store.syncGraph({
+    entities: [{
+      id: 'evidence-state-project',
+      type: 'project',
+      canonicalName: '证据状态项目',
+      trustStatus: 'confirmed',
+      aliases: [],
+      accountIds: []
+    }],
+    relations: [],
+    reviewQueue: []
+  } as any, '', {
+    entityEvidence: [{
+      entityId: 'evidence-state-project',
+      sourceId: 'wechat',
+      messageId: 'wechat:evidence-state-session:identity-current',
+      sessionId: 'evidence-state-session',
+      timestamp: 1_910_000_000,
+      sender: '项目发起人',
+      excerpt: '这是项目身份原文',
+      evidenceKind: 'identity_anchor'
+    }]
+  })
+  const claims = [{
+    id: 'evidence-state-current-claim',
+    subjectId: 'evidence-state-project',
+    predicate: '当前事实',
+    objectValue: '仍然有效',
+    confidence: 0.9,
+    status: 'confirmed',
+    sourceNature: 'self_statement',
+    searchText: '当前事实仍然有效',
+    evidence: [{
+      sourceId: 'documents',
+      messageId: 'current-claim-message',
+      sessionId: 'current-claim-session',
+      timestamp: 1_910_000_100,
+      sender: '当前发送者',
+      excerpt: '当前直接证据',
+      role: 'direct'
+    }]
+  }, {
+    id: 'evidence-state-rejected-claim',
+    subjectId: 'evidence-state-project',
+    predicate: '错误事实',
+    objectValue: '已经拒绝',
+    confidence: 0.7,
+    status: 'rejected',
+    sourceNature: 'other_statement',
+    searchText: '错误事实已经拒绝',
+    evidence: [{
+      sourceId: 'mail',
+      messageId: 'rejected-claim-message',
+      sessionId: 'rejected-claim-session',
+      timestamp: 1_910_000_200,
+      sender: '历史发送者',
+      excerpt: '仅保留为反证审计',
+      role: 'contradiction'
+    }]
+  }] as any[]
+  store.upsertClaims(claims)
+  store.upsertEvents([{
+    id: 'evidence-state-cancelled-event',
+    eventType: 'meeting',
+    title: '已取消事件',
+    description: '仅保留历史',
+    startAt: new Date(1_910_000_300 * 1000).toISOString(),
+    confidence: 0.8,
+    status: 'cancelled',
+    sourceNature: 'self_statement',
+    searchText: '已取消事件仅保留历史',
+    participants: [{ entityId: 'evidence-state-project', role: 'project' }],
+    evidence: [{
+      sourceId: 'calendar',
+      messageId: 'cancelled-event-message',
+      sessionId: 'cancelled-event-session',
+      timestamp: 1_910_000_300,
+      sender: '日历',
+      excerpt: '会议已经取消',
+      role: 'indirect'
+    }]
+  }] as any)
+
+  const all = store.listEntityEvidencePage({ entityId: 'evidence-state-project' })
+  const current = store.listEntityEvidencePage({
+    entityId: 'evidence-state-project', evidenceState: 'current'
+  })
+  const historical = store.listEntityEvidencePage({
+    entityId: 'evidence-state-project', evidenceState: 'historical', limit: 1
+  })
+  assert.equal(all.total, 4)
+  assert.equal(current.total, 2)
+  assert.equal(historical.total, 2)
+  assert.equal(store.getEntityEvidenceStats('evidence-state-project').activeEvidenceTotal, 2)
+  assert.ok(current.items.every(item => item.isCurrent))
+  assert.ok(historical.items.every(item => !item.isCurrent))
+  assert.equal(store.listEntityEvidencePage({
+    entityId: 'evidence-state-project',
+    evidenceState: 'historical',
+    memoryKind: 'claim',
+    sourceId: 'mail'
+  }).items[0].evidenceRoles.includes('contradiction'), true)
+  assert.equal(store.listEntityEvidencePage({
+    entityId: 'evidence-state-project',
+    evidenceState: 'historical',
+    memoryKind: 'event'
+  }).items[0].evidenceRoles.includes('indirect'), true)
+  assert.equal(store.listEntityEvidencePage({
+    entityId: 'evidence-state-project',
+    evidenceState: 'historical',
+    limit: 1,
+    offset: 1,
+    revision: historical.revision
+  }).items.length, 1)
+  store.upsertClaims([{ ...claims[0], status: 'rejected' }] as any)
+  assert.equal(store.listEntityEvidencePage({
+    entityId: 'evidence-state-project',
+    evidenceState: 'historical',
+    limit: 1,
+    offset: 1,
+    revision: historical.revision
+  }).stale, true)
+  assert.equal(store.listEntityEvidencePage({
+    entityId: 'evidence-state-project', evidenceState: 'current'
+  }).total, 1)
+  assert.equal(store.listEntityEvidencePage({
+    entityId: 'evidence-state-project', evidenceState: 'historical'
+  }).total, 3)
+  assert.equal(store.getEntityEvidenceStats('evidence-state-project').activeEvidenceTotal, 1)
+}))
+
 test('direct entity evidence follows reversible identity merges without copying plaintext', () => withStore(store => {
   const entities = ['source-identity-evidence', 'target-identity-evidence'].map((id, index) => ({
     id,

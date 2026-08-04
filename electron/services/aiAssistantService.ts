@@ -4538,6 +4538,9 @@ export class AiAssistantService {
       memoryKind: ['identity', 'claim', 'relation', 'event'].includes(String(options?.memoryKind || ''))
         ? options.memoryKind
         : undefined,
+      evidenceState: ['current', 'historical'].includes(String(options?.evidenceState || ''))
+        ? options.evidenceState
+        : undefined,
       query: String(options?.query || ''),
       from: String(options?.from || ''),
       to: String(options?.to || ''),
