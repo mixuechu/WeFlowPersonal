@@ -113,6 +113,7 @@ import {
   shouldRecoverGraphFromSql
 } from '../shared/graphCommitRecovery.ts'
 import { buildTaskCalendar, extractTaskDueDate } from '../src/utils/taskCalendar.ts'
+import { buildEntitySidebarPresentation } from '../src/utils/entitySidebarPresentation.ts'
 import { filterGraphReviews, paginateGraphReviews } from '../src/utils/graphReviewFilters.ts'
 import { summarizeIngestionRuns } from '../electron/services/ingestionDiagnostics.ts'
 import { attachLocalImageOcr, attachLocalVoiceTranscript, recoverMessageSemantics } from '../electron/services/messageSemanticRecovery.ts'
@@ -2052,6 +2053,35 @@ test('entity dossier memory is scoped before its bounded result limit', () => wi
   assert.equal(dossier.claims[0].evidence[0].message_id, 'dossier-claim-message')
   assert.equal(dossier.events[0].participants[0].entity_id, 'dossier-person')
 }))
+
+test('entity graph sidebar distinguishes authoritative totals from bounded previews', () => {
+  const presentation = buildEntitySidebarPresentation({
+    claimTotal: 260,
+    claims: Array.from({ length: 200 }, (_, index) => ({ id: `claim-${index}` })),
+    relationTotal: 320,
+    relations: Array.from({ length: 200 }, (_, index) => ({ id: `relation-${index}` })),
+    eventTotal: 240,
+    events: Array.from({ length: 200 }, (_, index) => ({ id: `event-${index}` })),
+    relationHistoryTotal: 125,
+    relationHistory: Array.from({ length: 40 }, (_, index) => ({ id: `history-${index}` }))
+  })
+  assert.deepEqual(presentation, {
+    claims: { total: 260, preview: 6, truncated: true },
+    relations: { total: 320, preview: 6, truncated: true },
+    events: { total: 240, preview: 5, truncated: true },
+    relationHistory: { total: 125, preview: 8, truncated: true }
+  })
+
+  const legacy = buildEntitySidebarPresentation({
+    claims: [{ id: 'claim' }],
+    relations: [],
+    events: [{ id: 'event' }],
+    relationHistory: []
+  })
+  assert.equal(legacy.claims.total, 1)
+  assert.equal(legacy.claims.truncated, false)
+  assert.equal(legacy.events.preview, 1)
+})
 
 test('memory cards expose evidence totals but bound their latest evidence payload', () => withStore(store => {
   store.syncGraph({

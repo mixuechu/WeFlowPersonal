@@ -13,6 +13,7 @@ import { LatestRequestGate } from '../utils/latestRequestGate'
 import { buildMemorySessionScope } from '../utils/memorySessionScope'
 import { buildResourceStructurePresentation } from '../utils/resourceStructurePresentation'
 import { buildMemoryBackupDirectory } from '../utils/memoryBackupPresentation'
+import { buildEntitySidebarPresentation } from '../utils/entitySidebarPresentation'
 import { evidenceArchiveIdentity } from '../../shared/evidencePayload'
 import './AiAssistantPage.scss'
 
@@ -2862,6 +2863,16 @@ function AiAssistantPage() {
   const selectedEntityRelationCorrections = graphWorkspace.focus?.relationCorrections || []
   const selectedEntityProfileCorrections = graphWorkspace.focus?.entityProfileCorrections || []
   const selectedEntityTasks: Task[] = graphWorkspace.focus?.tasks || []
+  const entitySidebar = buildEntitySidebarPresentation({
+    claimTotal: graphWorkspace.focus?.claimTotal,
+    claims: selectedEntityClaims,
+    relationTotal: graphWorkspace.focus?.relationTotal,
+    relations: selectedEntityRelations,
+    eventTotal: graphWorkspace.focus?.eventTotal,
+    events: selectedEntityEvents,
+    relationHistoryTotal: graphWorkspace.focus?.auditPages?.relationHistory?.total,
+    relationHistory: selectedEntityRelationHistory
+  })
 
   const syncNow = async () => {
     setSyncing(true)
@@ -8088,7 +8099,11 @@ function AiAssistantPage() {
                   <small>微信：{selectedEntity.accountIds?.join('、') || '未关联'}</small>
                   <small>邮箱：{selectedEntity.externalIdentities?.filter((identity: any) => identity.platform === 'email').map((identity: any) => identity.accountId).join('、') || '未关联'}</small>
                   <small>关联原文：{Number(graphWorkspace.focus?.evidenceTotal || 0)} 条</small>
-                  <button className="assistant-open-dossier" onClick={() => setShowEntityDossier(true)}>打开完整档案</button>
+                  <button className="assistant-open-dossier" onClick={() => setShowEntityDossier(true)}>
+                    打开完整档案（事实 {entitySidebar.claims.total}
+                    · 关系 {entitySidebar.relations.total}
+                    · 事件 {entitySidebar.events.total}）
+                  </button>
                   <button className="assistant-forget-entity" onClick={() => void forgetSelectedEntity()} disabled={forgettingEntityId === selectedEntity.id}>
                     {forgettingEntityId === selectedEntity.id ? '正在彻底清理…' : '彻底遗忘此实体'}
                   </button>
@@ -8101,15 +8116,20 @@ function AiAssistantPage() {
                     <details><summary>强度计算依据</summary>{selectedEntityInsight.explanation.map((item: string) => <small key={item}>{item}</small>)}</details>
                   </div>}
                   <div className="assistant-entity-dossier">
-                    <strong>结构化事实 · {selectedEntityClaims.length}</strong>
+                    <strong>
+                      结构化事实 · {entitySidebar.claims.total}
+                      {entitySidebar.claims.truncated
+                        ? `（侧栏预览 ${entitySidebar.claims.preview}）`
+                        : ''}
+                    </strong>
                     {selectedEntityClaims.slice(0, 6).map((claim: any) =>
                       <button key={claim.id} onClick={() => setMemoryQuery(`${selectedEntity.canonicalName} ${claim.predicate}`)}>
                         <b>{claim.predicate}</b><span>{claim.object_entity_name || claim.object_value || '待确认'}</span>
                       </button>)}
                     {!selectedEntityClaims.length && <em>尚无事实</em>}
-                    <strong>关系 · {Number(graphWorkspace.focus?.relationTotal ?? selectedEntityRelations.length)}
-                      {Number(graphWorkspace.focus?.relationTotal || 0) > selectedEntityRelations.length
-                        ? `（预览 ${selectedEntityRelations.length}）`
+                    <strong>关系 · {entitySidebar.relations.total}
+                      {entitySidebar.relations.truncated
+                        ? `（侧栏预览 ${entitySidebar.relations.preview}）`
                         : ''}
                     </strong>
                     {selectedEntityRelations.slice(0, 6).map((relation: any) => {
@@ -8121,7 +8141,12 @@ function AiAssistantPage() {
                       </button>
                     })}
                     {!selectedEntityRelations.length && <em>尚无关系</em>}
-                    <strong>关系变化 · {selectedEntityRelationHistory.length}</strong>
+                    <strong>
+                      关系变化 · {entitySidebar.relationHistory.total}
+                      {entitySidebar.relationHistory.truncated
+                        ? `（侧栏预览 ${entitySidebar.relationHistory.preview}）`
+                        : ''}
+                    </strong>
                     {selectedEntityRelationHistory.slice(0, 8).map((item: any) =>
                       <div className="assistant-relation-history" key={item.id}>
                         <b>{item.subject_name || item.subject_id} — {item.predicate} → {item.object_name || item.object_id}</b>
@@ -8129,7 +8154,12 @@ function AiAssistantPage() {
                         <small>{new Date(item.created_at).toLocaleString('zh-CN')} · {Math.round(Number(item.confidence || 0) * 100)}%</small>
                       </div>)}
                     {!selectedEntityRelationHistory.length && <em>尚无关系变化记录</em>}
-                    <strong>相关事件 · {selectedEntityEvents.length}</strong>
+                    <strong>
+                      相关事件 · {entitySidebar.events.total}
+                      {entitySidebar.events.truncated
+                        ? `（侧栏预览 ${entitySidebar.events.preview}）`
+                        : ''}
+                    </strong>
                     {selectedEntityEvents.slice(0, 5).map((event: any) =>
                       <button key={event.id} onClick={() => setMemoryQuery(event.title)}>
                         <b>{event.start_at || '时间待确认'}</b><span>{event.title}</span>

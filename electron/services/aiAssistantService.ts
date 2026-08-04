@@ -4407,7 +4407,9 @@ export class AiAssistantService {
         evidenceTotal: evidenceStats.evidenceTotal,
         lastEvidenceAt: evidenceStats.lastEvidenceAt,
         claims: memory.claims,
+        claimTotal: memory.claimTotal,
         events: memory.events,
+        eventTotal: memory.eventTotal,
         relations: visibleRelations.map(relation => ({
           ...relation,
           ...boundedEvidencePayload(
