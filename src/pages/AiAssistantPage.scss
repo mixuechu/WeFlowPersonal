@@ -644,6 +644,12 @@
 .assistant-search-results .assistant-memory-trust.cancelled { color: #7a6060; background: #eee8e8; }
 .assistant-search-results article strong { display: block; margin-top: 3px; color: #303731; font-size: 12px; }
 .assistant-search-results article p { margin: 5px 0 0; color: #687068; font-size: 10px; line-height: 1.45; }
+.assistant-search-matched-evidence { margin-top: 8px; padding: 8px 9px; border: 1px solid #d9e5dc; border-radius: 8px; background: #f3f8f4; }
+.assistant-search-matched-evidence header { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+.assistant-search-matched-evidence header span { color: #35614b !important; font-size: 8px !important; font-weight: 700; }
+.assistant-search-matched-evidence header small { color: #77827a; font-size: 8px; text-align: right; }
+.assistant-search-matched-evidence p { color: #35483d !important; }
+.assistant-search-matched-evidence button { margin-top: 6px; border: 0; padding: 0; color: #397257; background: transparent; font-size: 8px; cursor: pointer; }
 .assistant-search-evidence { margin-top: 9px; border-top: 1px solid #ece9e1; padding-top: 7px; }
 .assistant-search-evidence summary { cursor: pointer; color: #59665e; font-size: 9px; }
 .assistant-search-evidence > p { color: #8a8176; }

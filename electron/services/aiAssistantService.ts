@@ -6088,15 +6088,43 @@ export class AiAssistantService {
     allowedIds: Set<string> | null = null,
     evidenceScope: MemorySearchOptions = {}
   ): any[] {
-    return personalMemoryStore.searchText(String(query || ''), limit, allowedIds).map((item: any) => {
+    return personalMemoryStore.searchText(
+      String(query || ''),
+      limit,
+      allowedIds,
+      evidenceScope
+    ).map((item: any) => {
       const evidencePayload = personalMemoryStore.getDocumentEvidencePayload(
         item.document_type,
         item.source_id,
         evidenceScope
       )
+      const matchedEvidence = item.match_reason === 'entity_evidence'
+        ? {
+            source_id: item.matched_evidence_source_id,
+            message_id: item.matched_evidence_message_id,
+            session_id: item.matched_evidence_session_id,
+            timestamp: item.matched_evidence_timestamp,
+            sender: item.matched_evidence_sender,
+            excerpt: item.matched_evidence_excerpt,
+            evidence_role: 'original',
+            evidence_kind: item.matched_evidence_kind
+          }
+        : null
+      const {
+        matched_evidence_source_id: _matchedSource,
+        matched_evidence_message_id: _matchedMessage,
+        matched_evidence_session_id: _matchedSession,
+        matched_evidence_timestamp: _matchedTimestamp,
+        matched_evidence_sender: _matchedSender,
+        matched_evidence_excerpt: _matchedExcerpt,
+        matched_evidence_kind: _matchedKind,
+        ...document
+      } = item
       return {
-        ...item,
+        ...document,
         metadata: (() => { try { return JSON.parse(item.metadata_json || '{}') } catch { return {} } })(),
+        matchedEvidence,
         ...evidencePayload
       }
     })

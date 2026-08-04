@@ -6385,6 +6385,9 @@ function AiAssistantPage() {
                     : '原始资料'
               const evidence: MemoryEvidence[] = (result.evidence || []).map(normalizeMemoryEvidence)
               const evidenceTotal = Math.max(evidence.length, Number(result.evidenceTotal || 0))
+              const matchedEvidence = result.matchedEvidence
+                ? normalizeMemoryEvidence(result.matchedEvidence)
+                : null
               return <article key={result.id}>
               <span>{MEMORY_TYPE_LABELS[result.document_type] || result.document_type}
                 {result.match_source ? ` · ${result.match_source}匹配` : ''}
@@ -6394,6 +6397,23 @@ function AiAssistantPage() {
               </span>
               <small className={`assistant-memory-trust ${resultStatus || 'source'}`}>{statusLabel}{resultStatus === 'candidate' ? ' · 不能作为已确认事实回答' : resultStatus === 'cancelled' ? ' · 仅作历史记录' : ''}</small>
               <strong>{result.title}</strong><p>{result.search_text}</p>
+              {matchedEvidence && <div className="assistant-search-matched-evidence">
+                <header>
+                  <span>本次实际命中的身份原文</span>
+                  <small>{memoryEvidenceSourceLabel(matchedEvidence)}
+                    {' · '}{matchedEvidence.sender || '发送者未知'}
+                    {matchedEvidence.timestamp
+                      ? ` · ${new Date(matchedEvidence.timestamp * 1000).toLocaleString('zh-CN')}`
+                      : ''}
+                  </small>
+                </header>
+                <p>“{matchedEvidence.excerpt || '原文摘录为空'}”</p>
+                {matchedEvidence.sessionId && evidenceLocalMessageId(matchedEvidence) && <button onClick={() =>
+                  void window.electronAPI.window.openChatHistoryWindow(
+                    matchedEvidence.sessionId,
+                    evidenceLocalMessageId(matchedEvidence)!
+                  )}>打开命中原消息</button>}
+              </div>}
               <div className="assistant-search-feedback-actions">
                 <button
                   className={result.relevance_feedback === 'helpful' ? 'active' : ''}

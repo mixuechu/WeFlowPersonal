@@ -4491,6 +4491,9 @@ test('direct entity evidence is keyword searchable, scope aware and hydrated as 
     .find(item => item.id === 'entity:searchable-evidence-entity')
   assert.equal(result?.match_reason, 'entity_evidence')
   assert.equal(result?.entity_evidence_search_mode, 'fts_trigram')
+  assert.equal(result?.matched_evidence_source_id, 'mail')
+  assert.equal(result?.matched_evidence_message_id, 'mail:new-identity')
+  assert.equal(result?.matched_evidence_excerpt, '邮件再次确认火星暗号身份')
   assert.equal(store.searchText('火星', 10)
     .find(item => item.id === 'entity:searchable-evidence-entity')?.entity_evidence_search_mode,
   'scan_fallback')
@@ -4519,6 +4522,19 @@ test('direct entity evidence is keyword searchable, scope aware and hydrated as 
     from: new Date(1_920_000_050 * 1000).toISOString()
   })
   assert.equal(mailScope?.has('entity:searchable-evidence-entity'), true)
+  assert.equal(store.searchText('首次提到', 10, mailScope, {
+    sourceIds: ['mail']
+  }).some(item => item.id === 'entity:searchable-evidence-entity'), false)
+  assert.equal(store.searchText('再次确认', 10, mailScope, {
+    sourceIds: ['mail'],
+    sessionId: 'data-source:mail:searchable',
+    from: new Date(1_920_000_050 * 1000).toISOString()
+  }).find(item => item.id === 'entity:searchable-evidence-entity')
+    ?.matched_evidence_source_id, 'mail')
+  assert.equal(store.searchText('首次提到', 10, mailScope, {
+    sourceIds: ['wechat'],
+    from: new Date(1_920_000_050 * 1000).toISOString()
+  }).some(item => item.id === 'entity:searchable-evidence-entity'), false)
   assert.equal(store.listScopedSearchDocumentIds({
     sourceIds: ['documents']
   })?.has('entity:searchable-evidence-entity'), false)
@@ -4644,6 +4660,10 @@ test('direct entity evidence follows reversible identity merges without copying 
   assert.equal(store.listEntityEvidencePage({
     entityId: entities[1].id
   }).total, 2)
+  const mergedEvidenceMatch = store.searchText('身份直接原文 0', 10)
+    .find(item => item.id === `entity:${entities[1].id}`)
+  assert.equal(mergedEvidenceMatch?.matched_evidence_message_id,
+    'wechat:merge-evidence:message-0')
   assert.equal(store.loadGraphSnapshot().entities.find(
     entity => entity.id === entities[1].id
   )?.evidenceMessageIds.length, 2)

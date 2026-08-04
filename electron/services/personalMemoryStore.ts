@@ -9599,7 +9599,12 @@ export class PersonalMemoryStore {
     return { ...preview, deletedRows: transaction() }
   }
 
-  searchText(query: string, limit = 20, allowedIds: Set<string> | null = null): any[] {
+  searchText(
+    query: string,
+    limit = 20,
+    allowedIds: Set<string> | null = null,
+    evidenceScope: Pick<MemorySearchOptions, 'sourceIds' | 'sessionId' | 'sessionName' | 'from' | 'to'> = {}
+  ): any[] {
     if (!this.db || !query.trim()) return []
     if (allowedIds && !allowedIds.size) return []
     const safeLimit = Math.max(1, Math.min(500, limit))
@@ -9623,6 +9628,46 @@ export class PersonalMemoryStore {
       `).all(`%${normalized}%`, `%${normalized}%`, safeLimit) as any[]
     }
     const evidencePattern = `%${normalized.toLowerCase()}%`
+    const evidenceScopeConditions: string[] = []
+    const evidenceScopeParameters: Array<string | number> = []
+    const scopedSources = [...new Set((evidenceScope.sourceIds || [])
+      .map(value => String(value).trim().toLowerCase()).filter(Boolean))]
+    if (scopedSources.length) {
+      evidenceScopeConditions.push(
+        `LOWER(ee.source_id) IN (${scopedSources.map(() => '?').join(',')})`
+      )
+      evidenceScopeParameters.push(...scopedSources)
+    }
+    const scopedSessions = [...new Set([evidenceScope.sessionId, evidenceScope.sessionName]
+      .map(value => String(value || '').trim()).filter(Boolean))]
+    if (scopedSessions.length) {
+      evidenceScopeConditions.push(
+        `ee.session_id IN (${scopedSessions.map(() => '?').join(',')})`
+      )
+      evidenceScopeParameters.push(...scopedSessions)
+    }
+    const scopeBoundary = (value: string | undefined, endOfDay: boolean): number | null => {
+      const text = String(value || '').trim()
+      if (!text) return null
+      const normalizedBoundary = /^\d{4}-\d{2}-\d{2}$/.test(text)
+        ? `${text}T${endOfDay ? '23:59:59.999' : '00:00:00.000'}+08:00`
+        : text
+      const milliseconds = Date.parse(normalizedBoundary)
+      return Number.isFinite(milliseconds) ? Math.floor(milliseconds / 1000) : null
+    }
+    const evidenceFrom = scopeBoundary(evidenceScope.from, false)
+    const evidenceTo = scopeBoundary(evidenceScope.to, true)
+    if (evidenceFrom !== null) {
+      evidenceScopeConditions.push('ee.timestamp>=?')
+      evidenceScopeParameters.push(evidenceFrom)
+    }
+    if (evidenceTo !== null) {
+      evidenceScopeConditions.push('ee.timestamp<=?')
+      evidenceScopeParameters.push(evidenceTo)
+    }
+    const evidenceScopeSql = evidenceScopeConditions.length
+      ? ` AND ${evidenceScopeConditions.join(' AND ')}`
+      : ''
     const runEvidenceSearch = (useFts: boolean): any[] => this.db!.prepare(`
       WITH RECURSIVE entity_scope(root_id,entity_id) AS (
         SELECT e.id,e.id FROM entities e
@@ -9632,23 +9677,43 @@ export class PersonalMemoryStore {
         FROM entity_scope scope
         JOIN merge_history history ON history.target_entity_id=scope.entity_id
         WHERE history.reverted_at IS NULL
+      ),
+      matching_evidence AS (
+        SELECT es.root_id,ee.id,ee.source_id,ee.message_id,ee.session_id,
+          ee.timestamp,ee.sender,ee.excerpt,ee.evidence_kind,
+          ROW_NUMBER() OVER(
+            PARTITION BY es.root_id
+            ORDER BY ee.timestamp DESC,ee.id DESC
+          ) AS match_rank
+        FROM entity_scope es
+        JOIN entity_evidence ee ON ee.entity_id=es.entity_id
+        ${useFts ? 'JOIN entity_evidence_fts efts ON efts.rowid=ee.id' : ''}
+        WHERE ${useFts ? 'entity_evidence_fts MATCH ?' : `(
+          LOWER(ee.excerpt) LIKE ? OR LOWER(ee.sender) LIKE ?
+          OR LOWER(ee.session_id) LIKE ? OR LOWER(ee.message_id) LIKE ?
+        )`}${evidenceScopeSql}
       )
       SELECT d.*,25 AS rank,'entity_evidence' AS match_reason,
-        MAX(ee.timestamp) AS evidence_match_at
+        matched.timestamp AS evidence_match_at,
+        matched.source_id AS matched_evidence_source_id,
+        matched.message_id AS matched_evidence_message_id,
+        matched.session_id AS matched_evidence_session_id,
+        matched.timestamp AS matched_evidence_timestamp,
+        substr(matched.sender,1,500) AS matched_evidence_sender,
+        substr(matched.excerpt,1,2000) AS matched_evidence_excerpt,
+        matched.evidence_kind AS matched_evidence_kind
       FROM search_documents d ${scopeJoin}
-      JOIN entity_scope scope ON scope.root_id=d.source_id
-      JOIN entity_evidence ee ON ee.entity_id=scope.entity_id
-      ${useFts ? 'JOIN entity_evidence_fts efts ON efts.rowid=ee.id' : ''}
-      WHERE d.document_type='entity' AND ${useFts ? 'entity_evidence_fts MATCH ?' : `(
-        LOWER(ee.excerpt) LIKE ? OR LOWER(ee.sender) LIKE ?
-        OR LOWER(ee.session_id) LIKE ? OR LOWER(ee.message_id) LIKE ?
-      )`}
-      GROUP BY d.id
+      JOIN matching_evidence matched
+        ON matched.root_id=d.source_id AND matched.match_rank=1
+      WHERE d.document_type='entity'
       ORDER BY evidence_match_at DESC,d.id
       LIMIT ?
     `).all(...(useFts
-      ? [`"${normalized.replace(/"/g, '""')}"`, safeLimit]
-      : [evidencePattern, evidencePattern, evidencePattern, evidencePattern, safeLimit]
+      ? [`"${normalized.replace(/"/g, '""')}"`, ...evidenceScopeParameters, safeLimit]
+      : [
+          evidencePattern, evidencePattern, evidencePattern, evidencePattern,
+          ...evidenceScopeParameters, safeLimit
+        ]
     )).map((item: any) => ({
       ...item,
       entity_evidence_search_mode: useFts ? 'fts_trigram' : 'scan_fallback'
