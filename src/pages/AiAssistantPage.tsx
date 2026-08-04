@@ -12,6 +12,7 @@ import {
 import { LatestRequestGate } from '../utils/latestRequestGate'
 import { buildMemorySessionScope } from '../utils/memorySessionScope'
 import { buildResourceStructurePresentation } from '../utils/resourceStructurePresentation'
+import { buildMemoryBackupDirectory } from '../utils/memoryBackupPresentation'
 import { evidenceArchiveIdentity } from '../../shared/evidencePayload'
 import './AiAssistantPage.scss'
 
@@ -1009,6 +1010,7 @@ function AiAssistantPage() {
     memoryFeedbackArchiveTo
   ])
   const sensitiveCaches = memoryDiagnostics?.privacy?.sensitiveCaches
+  const memoryBackupDirectory = buildMemoryBackupDirectory(memoryDiagnostics?.backups)
   const sensitiveCachesSecure = [
     'ocr',
     'imageSemantics',
@@ -5946,10 +5948,10 @@ function AiAssistantPage() {
               {memoryDiagnostics.embeddings?.pending > 0 && <button onClick={() => void indexMemoryVectors()} disabled={indexingVectors}>
                 {indexingVectors ? '正在本地生成向量…' : '补齐语义索引'}
               </button>}
-              {!!memoryDiagnostics.backups?.length && <details>
-                <summary>恢复历史快照</summary>
+              {!!memoryBackupDirectory.length && <details>
+                <summary>恢复历史快照（{memoryBackupDirectory.length} 份）</summary>
                 <div>
-                  {memoryDiagnostics.backups.slice(0, 5).map((backup: any) => <button key={backup.path}
+                  {memoryBackupDirectory.map((backup: any) => <button key={backup.path}
                     disabled={restoringMemory || !backup.hasState}
                     title={backup.hasState ? '恢复数据库、图谱、任务和增量游标' : '旧快照缺少完整状态文件'}
                     onClick={() => void openMemoryRestoreDialog(backup)}>
