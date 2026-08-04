@@ -27,6 +27,7 @@ type MemoryGraph = {
 }
 
 type MemoryEvidenceSource = 'wechat' | 'documents' | 'calendar' | 'mail' | 'legacy'
+const TASK_EVIDENCE_FINGERPRINT_VERSION = 2
 
 function assistantAnswerReviewMutationToken(input: {
   messageId: unknown
@@ -75,6 +76,30 @@ function evidenceSourceId(
   const messageId = String(evidence?.message_id ?? evidence?.messageId ?? '').trim()
   const embeddedSource = messageId.match(/^(wechat|documents|calendar|mail):/)?.[1]
   return embeddedSource || 'legacy'
+}
+
+function canonicalTaskEvidenceRows(rows: any[][]): any[][] {
+  const unique = new Map<string, any[]>()
+  for (const row of rows) {
+    const normalized = [
+      String(row?.[0] || ''),
+      String(row?.[1] || ''),
+      String(row?.[2] || ''),
+      Number(row?.[3] || 0),
+      String(row?.[4] || ''),
+      String(row?.[5] || '').slice(0, 2000)
+    ]
+    const identity = JSON.stringify(normalized.slice(0, 3))
+    if (!unique.has(identity)) unique.set(identity, normalized)
+  }
+  return [...unique.values()]
+    .sort((left, right) => JSON.stringify(left).localeCompare(JSON.stringify(right)))
+}
+
+function taskEvidenceContentFingerprint(rows: any[][]): string {
+  return createHash('sha256')
+    .update(JSON.stringify(canonicalTaskEvidenceRows(rows)))
+    .digest('hex')
 }
 
 function compactTaskReviewSnapshot(value: unknown): any {
@@ -4718,6 +4743,8 @@ export class PersonalMemoryStore {
     currentGhostDocuments: number
     currentPayloadMismatches: number
     currentEvidenceSetMismatches: number
+    evidenceFingerprintVersion: number
+    currentLegacyFingerprintDocuments: number
   } {
     if (!this.db) {
       return {
@@ -4727,7 +4754,9 @@ export class PersonalMemoryStore {
         currentMissingDocuments: 0,
         currentGhostDocuments: 0,
         currentPayloadMismatches: 0,
-        currentEvidenceSetMismatches: 0
+        currentEvidenceSetMismatches: 0,
+        evidenceFingerprintVersion: TASK_EVIDENCE_FINGERPRINT_VERSION,
+        currentLegacyFingerprintDocuments: 0
       }
     }
     const tasks = this.db.prepare(`
@@ -4752,6 +4781,7 @@ export class PersonalMemoryStore {
     let ghostDocuments = 0
     let payloadMismatches = 0
     let evidenceSetMismatches = 0
+    let legacyFingerprintDocuments = 0
     for (const taskRow of tasks) {
       const document = documentMap.get(`task:${taskRow.id}`)
       if (!document) {
@@ -4771,6 +4801,13 @@ export class PersonalMemoryStore {
           ? task.collaborators : []), task.project, task.source, task.assignmentEvidence
       ].filter(Boolean).join('；')
       const expectedHash = createHash('sha256').update(expectedSearchText).digest('hex')
+      const actualEvidenceRows = this.db.prepare(`
+        SELECT source_id,message_id,session_id,timestamp,sender,excerpt
+        FROM search_document_evidence WHERE document_id=?
+      `).all(`task:${taskRow.id}`).map((row: any) => [
+        row.source_id, row.message_id, row.session_id, row.timestamp, row.sender, row.excerpt
+      ])
+      const actualEvidenceFingerprint = taskEvidenceContentFingerprint(actualEvidenceRows)
       const expectedMetadata = {
         status: task.status,
         priority: task.priority,
@@ -4784,7 +4821,12 @@ export class PersonalMemoryStore {
         taskKind: task.taskKind || 'action',
         ownershipPolicyReason: task.ownershipPolicyReason || '',
         evidenceFingerprint: String(taskRow.evidence_fingerprint || ''),
+        evidenceFingerprintVersion: TASK_EVIDENCE_FINGERPRINT_VERSION,
         evidenceCount: Number(document.evidence_count || 0)
+      }
+      if (Number(metadata.evidenceFingerprintVersion || 0)
+        !== TASK_EVIDENCE_FINGERPRINT_VERSION) {
+        legacyFingerprintDocuments += 1
       }
       if (String(taskRow.title || '') !== String(task.title || '')
         || document.document_type !== 'task'
@@ -4796,7 +4838,9 @@ export class PersonalMemoryStore {
         payloadMismatches += 1
       }
       if (Number(metadata.evidenceCount ?? -1) !== Number(document.evidence_count || 0)
-        || String(metadata.evidenceFingerprint || '') !== String(taskRow.evidence_fingerprint || '')) {
+        || Number(metadata.evidenceFingerprintVersion || 0) !== TASK_EVIDENCE_FINGERPRINT_VERSION
+        || String(metadata.evidenceFingerprint || '') !== actualEvidenceFingerprint
+        || String(taskRow.evidence_fingerprint || '') !== actualEvidenceFingerprint) {
         evidenceSetMismatches += 1
       }
     }
@@ -4811,7 +4855,9 @@ export class PersonalMemoryStore {
       currentMissingDocuments: missingDocuments,
       currentGhostDocuments: ghostDocuments,
       currentPayloadMismatches: payloadMismatches,
-      currentEvidenceSetMismatches: evidenceSetMismatches
+      currentEvidenceSetMismatches: evidenceSetMismatches,
+      evidenceFingerprintVersion: TASK_EVIDENCE_FINGERPRINT_VERSION,
+      currentLegacyFingerprintDocuments: legacyFingerprintDocuments
     }
   }
 
@@ -7212,6 +7258,10 @@ export class PersonalMemoryStore {
       const sourceSessionId = String(task.sourceSessionId || task.source || '')
       const storedTask = storedTaskMap.get(String(task.id))
       const preserveStoredEvidence = !Array.isArray(task.evidence) && Boolean(storedTask)
+      const documentId = `task:${task.id}`
+      const storedSearchDocument = storedSearchDocumentMap.get(documentId)
+      let storedSearchMetadata: any = null
+      try { storedSearchMetadata = JSON.parse(storedSearchDocument?.metadata_json || '') } catch {}
       const normalizedEvidence = (Array.isArray(task.evidence) ? task.evidence : []).flatMap((item: any) => {
         const messageId = String(item.messageId || '')
         if (!messageId) return []
@@ -7224,21 +7274,26 @@ export class PersonalMemoryStore {
           String(item.excerpt || '').slice(0, 2000)
         ]]
       })
+      const storedEvidenceRows = this.db.prepare(`
+        SELECT source_id,message_id,session_id,timestamp,sender,excerpt
+        FROM search_document_evidence WHERE document_id=?
+      `).all(documentId).map((row: any) => [
+        row.source_id, row.message_id, row.session_id, row.timestamp, row.sender, row.excerpt
+      ])
+      const storedEvidenceFingerprint = taskEvidenceContentFingerprint(storedEvidenceRows)
       const evidenceFingerprint = preserveStoredEvidence
-        ? String(storedTask?.evidence_fingerprint || '')
-        : createHash('sha256').update(JSON.stringify(normalizedEvidence)).digest('hex')
-      const documentId = `task:${task.id}`
+        ? (Number(storedSearchMetadata?.evidenceFingerprintVersion || 0)
+            === TASK_EVIDENCE_FINGERPRINT_VERSION
+          ? String(storedTask?.evidence_fingerprint || '')
+          : storedEvidenceFingerprint)
+        : taskEvidenceContentFingerprint(normalizedEvidence)
       const searchText = [
         task.title, task.detail, task.owner, ...(task.collaborators || []), task.project,
         task.source, task.assignmentEvidence
       ].filter(Boolean).join('；')
-      const storedSearchDocument = storedSearchDocumentMap.get(documentId)
-      let storedSearchMetadata: any = null
-      try { storedSearchMetadata = JSON.parse(storedSearchDocument?.metadata_json || '') } catch {}
       const evidenceCount = preserveStoredEvidence
-        ? Number(storedSearchMetadata?.evidenceCount ?? storedSearchDocument?.evidence_count ?? 0)
-        : new Set(normalizedEvidence.map((item: any[]) =>
-          `${item[0]}\0${item[1]}\0${item[2]}`)).size
+        ? canonicalTaskEvidenceRows(storedEvidenceRows).length
+        : canonicalTaskEvidenceRows(normalizedEvidence).length
       const searchMetadata = {
         status: task.status,
         priority: task.priority,
@@ -7252,6 +7307,7 @@ export class PersonalMemoryStore {
         taskKind: task.taskKind || 'action',
         ownershipPolicyReason: task.ownershipPolicyReason || '',
         evidenceFingerprint,
+        evidenceFingerprintVersion: TASK_EVIDENCE_FINGERPRINT_VERSION,
         evidenceCount
       }
       const expectedContentHash = createHash('sha256').update(searchText).digest('hex')
@@ -7261,6 +7317,7 @@ export class PersonalMemoryStore {
         && storedSearchDocument.search_text === searchText
         && storedSearchDocument.content_hash === expectedContentHash
         && JSON.stringify(storedSearchMetadata) === JSON.stringify(searchMetadata)
+        && storedEvidenceFingerprint === evidenceFingerprint
         && Number(storedSearchDocument.evidence_count || 0) === searchMetadata.evidenceCount
       const unchangedAuthoritativeTask = storedTask?.payload_json === payloadJson
         && storedTask.evidence_fingerprint === evidenceFingerprint

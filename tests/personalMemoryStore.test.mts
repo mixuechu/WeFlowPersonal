@@ -3435,6 +3435,7 @@ test('task search keeps original message evidence', () => withStore(store => {
       'legacy', 'message-task-1', '项目群', 1_700_000_001, '客户甲',
       '麻烦你确认一下几点更新'
     ]])).digest('hex'),
+    evidenceFingerprintVersion: 2,
     evidenceCount: 1
   })
   assert.deepEqual(store.getDocumentEvidence('task', 'task-1').map(item => ({ ...item })), [{
@@ -6732,6 +6733,135 @@ test('verified backup rejects live task search drift and runtime repair restores
     'task-live-backup-gate')
   assert.equal(store.createBackup().success, true)
 }))
+
+test('task evidence fingerprint detects equal-count content replacement and repairs it', () => withStore(store => {
+  const task = {
+    id: 'task-evidence-content-drift',
+    title: '核验待办证据内容',
+    detail: '证据数量相同也必须核验实际内容',
+    source: '可靠性测试',
+    sourceSessionId: 'task-evidence-content-session',
+    status: 'todo',
+    priority: 'high',
+    classification: 'mine',
+    evidence: [{
+      sourceId: 'wechat',
+      messageId: 'task-evidence-content-message',
+      sessionId: 'task-evidence-content-session',
+      timestamp: 1_700_006_100,
+      sender: '原发送者',
+      excerpt: '这是原始待办证据'
+    }]
+  }
+  store.syncTasks([task])
+  const database = (store as any).db
+  database.exec(`
+    UPDATE search_document_evidence
+    SET sender='被替换的发送者',excerpt='数量不变但内容已经被替换'
+    WHERE document_id='task:task-evidence-content-drift';
+  `)
+
+  const drifted = store.getDiagnostics()
+  assert.equal(drifted.taskSearchIndex.currentEvidenceSetMismatches, 1)
+  assert.equal(drifted.taskSearchIndexHealthy, false)
+  assert.throws(() => store.createBackup(), /数据库一致性检查失败/)
+
+  const repaired = store.repairRuntimeSearchDerivedState([task])
+  assert.equal(repaired.healthy, true)
+  assert.equal(repaired.repaired.taskDocuments, 1)
+  assert.deepEqual(
+    store.getDocumentEvidence('task', 'task-evidence-content-drift')
+      .map(item => [item.sender, item.excerpt]),
+    [['原发送者', '这是原始待办证据']]
+  )
+  assert.equal(repaired.diagnostics.taskSearchIndex.currentEvidenceSetMismatches, 0)
+}))
+
+test('task evidence fingerprint v2 is stable across input ordering', () => withStore(store => {
+  const evidenceRows = [{
+    sourceId: 'wechat',
+    messageId: 'task-order-message-b',
+    sessionId: 'task-order-session',
+    timestamp: 1_700_006_201,
+    sender: '发送者乙',
+    excerpt: '第二条证据'
+  }, {
+    sourceId: 'wechat',
+    messageId: 'task-order-message-a',
+    sessionId: 'task-order-session',
+    timestamp: 1_700_006_200,
+    sender: '发送者甲',
+    excerpt: '第一条证据'
+  }]
+  const task = {
+    id: 'task-evidence-order-stable',
+    title: '稳定待办证据顺序',
+    source: '可靠性测试',
+    status: 'todo',
+    priority: 'medium',
+    classification: 'mine'
+  }
+  store.syncTasks([{ ...task, evidence: evidenceRows }])
+  const database = (store as any).db
+  const first = database.prepare(`
+    SELECT evidence_fingerprint FROM task_directory
+    WHERE id='task-evidence-order-stable'
+  `).get().evidence_fingerprint
+  store.syncTasks([{ ...task, evidence: [...evidenceRows].reverse() }])
+  const second = database.prepare(`
+    SELECT evidence_fingerprint FROM task_directory
+    WHERE id='task-evidence-order-stable'
+  `).get().evidence_fingerprint
+  assert.equal(second, first)
+  assert.equal(store.getDiagnostics().taskSearchIndexHealthy, true)
+}))
+
+test('task evidence content drift remains blocked across restart', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'weflow-task-evidence-restart-'))
+  const databasePath = join(directory, 'memory.sqlite')
+  const key = randomBytes(32)
+  const task = {
+    id: 'task-evidence-restart-drift',
+    title: '跨重启核验待办证据',
+    source: '可靠性测试',
+    status: 'todo',
+    priority: 'medium',
+    classification: 'mine',
+    evidence: [{
+      sourceId: 'wechat',
+      messageId: 'task-evidence-restart-message',
+      sessionId: 'task-evidence-restart-session',
+      timestamp: 1_700_006_300,
+      sender: '原发送者',
+      excerpt: '跨重启仍需保留的原文'
+    }]
+  }
+  const first = new PersonalMemoryStore()
+  const reopened = new PersonalMemoryStore()
+  try {
+    first.initialize(databasePath, key)
+    first.syncTasks([task])
+    ;(first as any).db.exec(`
+      UPDATE search_document_evidence SET excerpt='重启前被替换的错误原文'
+      WHERE document_id='task:task-evidence-restart-drift';
+    `)
+    first.close()
+
+    reopened.initialize(databasePath, key)
+    const drifted = reopened.getDiagnostics()
+    assert.equal(drifted.taskSearchIndexHealthy, false)
+    assert.equal(drifted.taskSearchIndex.currentEvidenceSetMismatches, 1)
+    assert.throws(() => reopened.createBackup(), /数据库一致性检查失败/)
+    const repaired = reopened.repairRuntimeSearchDerivedState([task])
+    assert.equal(repaired.healthy, true)
+    assert.equal(reopened.getDocumentEvidence('task', 'task-evidence-restart-drift')[0]?.excerpt,
+      '跨重启仍需保留的原文')
+  } finally {
+    first.close()
+    reopened.close()
+    rmSync(directory, { recursive: true, force: true })
+  }
+})
 
 test('task search drift remains unhealthy across restart until authoritative repair', () => {
   const directory = mkdtempSync(join(tmpdir(), 'weflow-task-search-restart-'))
