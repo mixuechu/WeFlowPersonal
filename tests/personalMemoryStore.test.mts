@@ -9581,8 +9581,15 @@ test('prepared ingestion commits survive retries and become an auditable committ
     commitId: 'batch-commit-test',
     runId: 'run-commit-test',
     batchIndex: 2,
-    digest: { tasks: [{ title: '确认合同' }], __meta: { model: 'deepseek-test' } },
-    messages: [{ id: 'message-1', sessionId: 'session-1', content: '请确认合同' }],
+    digest: {
+      tasks: [{ title: '确认合同', detail: `重复结构化结果 ${'x'.repeat(8_000)}` }],
+      __meta: { model: 'deepseek-test' }
+    },
+    messages: [{
+      id: 'message-1',
+      sessionId: 'session-1',
+      content: `请确认合同 ${'重复消息窗口'.repeat(1_000)}`
+    }],
     checkpointKeys: ['wechat:session-1:message-1'],
     createdAt: '2026-07-30T10:00:00.000Z'
   }
@@ -9607,6 +9614,23 @@ test('prepared ingestion commits survive retries and become an auditable committ
   store.recordIngestionBatchCommitRecoveryFailure(input.commitId, 'simulated power loss')
   assert.equal(store.getIngestionCommitHealth().recoveryFailures, 1)
   assert.equal(store.listPreparedIngestionBatchCommits()[0].recoveryAttempts, 1)
+  assert.deepEqual(store.listPreparedIngestionBatchCommits()[0].digest, input.digest)
+  assert.deepEqual(store.listPreparedIngestionBatchCommits()[0].messages, input.messages)
+  const coldPayload = (store as any).db.prepare(`
+    SELECT digest_json,messages_json,checkpoint_keys_json,completion_json,payload_codec,
+      LENGTH(payload_blob) AS retained_bytes,payload_original_bytes
+    FROM ingestion_batch_commits WHERE commit_id=?
+  `).get(input.commitId)
+  assert.deepEqual([
+    coldPayload.digest_json,
+    coldPayload.messages_json,
+    coldPayload.checkpoint_keys_json,
+    coldPayload.completion_json
+  ], ['{}', '[]', '[]', '{}'])
+  assert.equal(coldPayload.payload_codec, 'gzip-json-v1')
+  assert.ok(coldPayload.retained_bytes < coldPayload.payload_original_bytes / 5)
+  assert.equal(store.getIngestionCommitHealth().failedPayloadStorage.compressedRows, 1)
+  assert.ok(store.getIngestionCommitHealth().failedPayloadStorage.reclaimedBytes > 10_000)
 
   store.finalizeIngestionBatchCommit(input.commitId, {
     model: 'deepseek-test',
@@ -9629,6 +9653,13 @@ test('prepared ingestion commits survive retries and become an auditable committ
       releasedBytes: 0,
       retainedBytes: 0,
       lastCompactedAt: ''
+    },
+    failedPayloadStorage: {
+      version: 'ingestion-failed-payload-gzip-v1',
+      compressedRows: 0,
+      retainedBytes: 0,
+      originalBytes: 0,
+      reclaimedBytes: 0
     }
   })
   const status = store.getIngestionStatus()
@@ -9719,6 +9750,56 @@ test('prepared recovery directory isolates malformed payloads and paginates with
     assert.equal(stale.stale, true)
     assert.deepEqual(stale.items, [])
   }))
+
+test('legacy failed ingestion payload enters cold storage and replays after SQLCipher reopen', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'weflow-ingestion-cold-payload-'))
+  const databasePath = join(directory, 'memory.sqlite')
+  const key = randomBytes(32)
+  const first = new PersonalMemoryStore()
+  const second = new PersonalMemoryStore()
+  try {
+    first.initialize(databasePath, key)
+    first.prepareIngestionBatchCommit({
+      commitId: 'legacy-ingestion-cold',
+      runId: 'legacy-ingestion-run',
+      batchIndex: 7,
+      digest: { claims: [{ value: '旧结构化结果'.repeat(1_000) }] },
+      messages: [{ id: 'legacy-message', content: '旧消息窗口'.repeat(2_000) }],
+      checkpointKeys: ['wechat:legacy-session:legacy-message'],
+      createdAt: '2026-08-01T00:00:00.000Z',
+      completion: { summary: '旧完成信息'.repeat(1_000) }
+    })
+    ;(first as any).db.prepare(`
+      UPDATE ingestion_batch_commits SET recovery_attempts=2
+      WHERE commit_id='legacy-ingestion-cold'
+    `).run()
+    first.close()
+
+    second.initialize(databasePath, key)
+    const recovered = second.listPreparedIngestionBatchCommits()[0]
+    assert.equal(recovered.digest.claims[0].value, '旧结构化结果'.repeat(1_000))
+    assert.equal(recovered.messages[0].content, '旧消息窗口'.repeat(2_000))
+    assert.equal(recovered.completion.summary, '旧完成信息'.repeat(1_000))
+    const health = second.getIngestionCommitHealth().failedPayloadStorage
+    assert.equal(health.compressedRows, 1)
+    assert.ok(health.reclaimedBytes > 10_000)
+    const physical = (second as any).db.prepare(`
+      SELECT digest_json,messages_json,checkpoint_keys_json,completion_json,payload_codec
+      FROM ingestion_batch_commits WHERE commit_id='legacy-ingestion-cold'
+    `).get()
+    assert.deepEqual(physical, {
+      digest_json: '{}',
+      messages_json: '[]',
+      checkpoint_keys_json: '[]',
+      completion_json: '{}',
+      payload_codec: 'gzip-json-v1'
+    })
+  } finally {
+    first.close()
+    second.close()
+    rmSync(directory, { recursive: true, force: true })
+  }
+})
 
 test('prepared recovery batches drain beyond the first hundred and leave only attempted failures', () =>
   withStore(store => {

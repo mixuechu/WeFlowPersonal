@@ -5469,6 +5469,15 @@ function AiAssistantPage() {
                 ingestionStatus.commitHealth.payloadCompaction.retainedBytes || 0
               ))}。
             </small>}
+            {!!Number(ingestionStatus.commitHealth?.failedPayloadStorage?.compressedRows || 0) && <small>
+              {Number(ingestionStatus.commitHealth.failedPayloadStorage.compressedRows).toLocaleString()}
+              {' '}个已失败但仍可重放的批次已转入 SQLCipher 无损冷存储，
+              当前占用 {formatBytes(Number(
+                ingestionStatus.commitHealth.failedPayloadStorage.retainedBytes || 0
+              ))}，相对原始载荷节省约 {formatBytes(Number(
+                ingestionStatus.commitHealth.failedPayloadStorage.reclaimedBytes || 0
+              ))}；重试时会透明恢复完整模型结果与消息窗口。
+            </small>}
             {status?.cursor?.payloadPolicy?.durableKeys === 'main_process_only' && <small>
               增量断点仅保留在加密主进程：
               热缓存键 {Number(status.cursor.privateStateCounts?.recentMessageKeys || 0).toLocaleString()} 条
@@ -5517,7 +5526,7 @@ function AiAssistantPage() {
               </div>}
             </>}
             {Number(ingestionStatus.commitHealth?.recoveryFailures || 0) > 0 && <small>
-              其中 {Number(ingestionStatus.commitHealth.recoveryFailures)} 个批次曾恢复失败，原始恢复载荷仍保留。
+              其中 {Number(ingestionStatus.commitHealth.recoveryFailures)} 个批次曾恢复失败，完整恢复载荷仍以加密冷存储保留。
             </small>}
             {ingestionStatus.recovered_at && <small>
               检测到上次运行被退出打断：已保留 {Number(ingestionStatus.recovered_batch_count || 0)} 个成功批次，

@@ -615,7 +615,10 @@ export class PersonalMemoryStore {
         source_kind TEXT NOT NULL DEFAULT 'wechat',
         resource_id TEXT NOT NULL DEFAULT '',
         resource_content_hash TEXT NOT NULL DEFAULT '',
-        completion_json TEXT NOT NULL DEFAULT '{}'
+        completion_json TEXT NOT NULL DEFAULT '{}',
+        payload_blob BLOB,
+        payload_codec TEXT NOT NULL DEFAULT '',
+        payload_original_bytes INTEGER NOT NULL DEFAULT 0
       ) STRICT;
       CREATE INDEX IF NOT EXISTS idx_ingestion_batch_commits_pending
         ON ingestion_batch_commits(status,prepared_at);
@@ -824,6 +827,9 @@ export class PersonalMemoryStore {
     this.ensureColumn('ingestion_batch_commits', 'resource_id', `TEXT NOT NULL DEFAULT ''`)
     this.ensureColumn('ingestion_batch_commits', 'resource_content_hash', `TEXT NOT NULL DEFAULT ''`)
     this.ensureColumn('ingestion_batch_commits', 'completion_json', `TEXT NOT NULL DEFAULT '{}'`)
+    this.ensureColumn('ingestion_batch_commits', 'payload_blob', 'BLOB')
+    this.ensureColumn('ingestion_batch_commits', 'payload_codec', `TEXT NOT NULL DEFAULT ''`)
+    this.ensureColumn('ingestion_batch_commits', 'payload_original_bytes', 'INTEGER NOT NULL DEFAULT 0')
     this.ensureColumn('memory_item_suppressions', 'semantic_fingerprint', `TEXT NOT NULL DEFAULT ''`)
     this.ensureColumn('data_source_connectors', 'config_json', `TEXT NOT NULL DEFAULT '{}'`)
     this.ensureColumn('task_review_decisions', 'task_json', `TEXT NOT NULL DEFAULT '{}'`)
@@ -2071,11 +2077,13 @@ export class PersonalMemoryStore {
           length(CAST(digest_json AS BLOB))+length(CAST(messages_json AS BLOB))
           +length(CAST(checkpoint_keys_json AS BLOB))+length(CAST(resource_id AS BLOB))
           +length(CAST(resource_content_hash AS BLOB))+length(CAST(completion_json AS BLOB))
+          +COALESCE(length(payload_blob),0)
         ),0) AS bytes
       FROM ingestion_batch_commits
       WHERE status='committed' AND (
         digest_json!='{}' OR messages_json!='[]' OR checkpoint_keys_json!='[]'
         OR resource_id!='' OR resource_content_hash!='' OR completion_json!='{}'
+        OR payload_blob IS NOT NULL OR payload_codec!='' OR payload_original_bytes!=0
       )
     `).get() as any
     const rows = Number(stale?.rows || 0)
@@ -2084,7 +2092,8 @@ export class PersonalMemoryStore {
       this.db.prepare(`
         UPDATE ingestion_batch_commits
         SET digest_json='{}',messages_json='[]',checkpoint_keys_json='[]',
-          resource_id='',resource_content_hash='',completion_json='{}'
+          resource_id='',resource_content_hash='',completion_json='{}',
+          payload_blob=NULL,payload_codec='',payload_original_bytes=0
         WHERE status='committed'
       `).run()
     }
@@ -2093,6 +2102,7 @@ export class PersonalMemoryStore {
         length(CAST(digest_json AS BLOB))+length(CAST(messages_json AS BLOB))
         +length(CAST(checkpoint_keys_json AS BLOB))+length(CAST(resource_id AS BLOB))
         +length(CAST(resource_content_hash AS BLOB))+length(CAST(completion_json AS BLOB))
+        +COALESCE(length(payload_blob),0)
       ),0) AS bytes
       FROM ingestion_batch_commits WHERE status='committed'
     `).get() as any
@@ -3315,7 +3325,12 @@ export class PersonalMemoryStore {
       FROM conversation_source_mutation_commits
       WHERE status='prepared' AND recovery_attempts>0 AND payload_codec=''
     `).all() as any[]
-    if (!taskRows.length && !sourceRows.length) return
+    const ingestionRows = this.db.prepare(`
+      SELECT commit_id,digest_json,messages_json,checkpoint_keys_json,completion_json
+      FROM ingestion_batch_commits
+      WHERE status='prepared' AND recovery_attempts>0 AND payload_codec=''
+    `).all() as any[]
+    if (!taskRows.length && !sourceRows.length && !ingestionRows.length) return
     this.db.transaction(() => {
       const updateTask = this.db!.prepare(`
         UPDATE task_mutation_commits
@@ -3327,6 +3342,12 @@ export class PersonalMemoryStore {
         UPDATE conversation_source_mutation_commits
         SET before_tokens_json='{}',after_tokens_json='{}',policies_json='[]',
           payload_blob=?,payload_codec=?,payload_original_bytes=?
+        WHERE commit_id=? AND status='prepared' AND payload_codec=''
+      `)
+      const updateIngestion = this.db!.prepare(`
+        UPDATE ingestion_batch_commits
+        SET digest_json='{}',messages_json='[]',checkpoint_keys_json='[]',
+          completion_json='{}',payload_blob=?,payload_codec=?,payload_original_bytes=?
         WHERE commit_id=? AND status='prepared' AND payload_codec=''
       `)
       for (const row of taskRows) {
@@ -3346,6 +3367,17 @@ export class PersonalMemoryStore {
           policies_json: String(row.policies_json || '[]')
         })
         updateSource.run(
+          compressed.blob, RECOVERY_PAYLOAD_CODEC, compressed.originalBytes, row.commit_id
+        )
+      }
+      for (const row of ingestionRows) {
+        const compressed = compressRecoveryPayload({
+          digest_json: String(row.digest_json || '{}'),
+          messages_json: String(row.messages_json || '[]'),
+          checkpoint_keys_json: String(row.checkpoint_keys_json || '[]'),
+          completion_json: String(row.completion_json || '{}')
+        })
+        updateIngestion.run(
           compressed.blob, RECOVERY_PAYLOAD_CODEC, compressed.originalBytes, row.commit_id
         )
       }
@@ -3390,6 +3422,28 @@ export class PersonalMemoryStore {
       UPDATE conversation_source_mutation_commits
       SET before_tokens_json='{}',after_tokens_json='{}',policies_json='[]',
         payload_blob=?,payload_codec=?,payload_original_bytes=?
+      WHERE commit_id=? AND status='prepared' AND payload_codec=''
+    `).run(compressed.blob, RECOVERY_PAYLOAD_CODEC, compressed.originalBytes, commitId)
+  }
+
+  private compactIngestionBatchPayload(commitId: string): void {
+    if (!this.db) return
+    const row = this.db.prepare(`
+      SELECT commit_id,digest_json,messages_json,checkpoint_keys_json,completion_json
+      FROM ingestion_batch_commits
+      WHERE commit_id=? AND status='prepared' AND payload_codec=''
+    `).get(commitId) as any
+    if (!row) return
+    const compressed = compressRecoveryPayload({
+      digest_json: String(row.digest_json || '{}'),
+      messages_json: String(row.messages_json || '[]'),
+      checkpoint_keys_json: String(row.checkpoint_keys_json || '[]'),
+      completion_json: String(row.completion_json || '{}')
+    })
+    this.db.prepare(`
+      UPDATE ingestion_batch_commits
+      SET digest_json='{}',messages_json='[]',checkpoint_keys_json='[]',
+        completion_json='{}',payload_blob=?,payload_codec=?,payload_original_bytes=?
       WHERE commit_id=? AND status='prepared' AND payload_codec=''
     `).run(compressed.blob, RECOVERY_PAYLOAD_CODEC, compressed.originalBytes, commitId)
   }
@@ -8969,6 +9023,12 @@ export class PersonalMemoryStore {
           THEN ingestion_batch_commits.resource_content_hash ELSE excluded.resource_content_hash END,
         completion_json=CASE WHEN ingestion_batch_commits.status='committed'
           THEN ingestion_batch_commits.completion_json ELSE excluded.completion_json END,
+        payload_blob=CASE WHEN ingestion_batch_commits.status='committed'
+          THEN ingestion_batch_commits.payload_blob ELSE NULL END,
+        payload_codec=CASE WHEN ingestion_batch_commits.status='committed'
+          THEN ingestion_batch_commits.payload_codec ELSE '' END,
+        payload_original_bytes=CASE WHEN ingestion_batch_commits.status='committed'
+          THEN ingestion_batch_commits.payload_original_bytes ELSE 0 END,
         last_error=NULL
     `).run(
       input.commitId,
@@ -9013,23 +9073,29 @@ export class PersonalMemoryStore {
       let checkpointKeys: string[] = []
       let completion: Record<string, any> = {}
       const parseFailures: string[] = []
+      let payload: Record<string, string> = {}
       try {
-        const parsed = JSON.parse(String(row.digest_json || '{}'))
+        payload = readRecoveryPayload(row, [
+          'digest_json', 'messages_json', 'checkpoint_keys_json', 'completion_json'
+        ])
+      } catch { parseFailures.push('压缩载荷') }
+      try {
+        const parsed = JSON.parse(String(payload.digest_json || '{}'))
         if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('not-object')
         digest = parsed
       } catch { parseFailures.push('结构化结果') }
       try {
-        const parsed = JSON.parse(String(row.messages_json || '[]'))
+        const parsed = JSON.parse(String(payload.messages_json || '[]'))
         if (!Array.isArray(parsed)) throw new Error('not-array')
         messages = parsed
       } catch { parseFailures.push('消息载荷') }
       try {
-        const parsed = JSON.parse(String(row.checkpoint_keys_json || '[]'))
+        const parsed = JSON.parse(String(payload.checkpoint_keys_json || '[]'))
         if (!Array.isArray(parsed)) throw new Error('not-array')
         checkpointKeys = parsed.map(String)
       } catch { parseFailures.push('checkpoint') }
       try {
-        const parsed = JSON.parse(String(row.completion_json || '{}'))
+        const parsed = JSON.parse(String(payload.completion_json || '{}'))
         if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('not-object')
         completion = parsed
       } catch { parseFailures.push('完成信息') }
@@ -9121,7 +9187,8 @@ export class PersonalMemoryStore {
       UPDATE ingestion_batch_commits
       SET status='committed',applied_at=?,last_error=NULL,
         digest_json='{}',messages_json='[]',checkpoint_keys_json='[]',
-        resource_id='',resource_content_hash='',completion_json='{}'
+        resource_id='',resource_content_hash='',completion_json='{}',
+        payload_blob=NULL,payload_codec='',payload_original_bytes=0
       WHERE commit_id=?
     `).run(new Date().toISOString(), commitId)
   }
@@ -9206,17 +9273,19 @@ export class PersonalMemoryStore {
     let resourceCheckpointApplied = false
     const transaction = this.db.transaction(() => {
       const row = this.db!.prepare(`
-        SELECT run_id,batch_index,messages_json,checkpoint_keys_json,status,source_kind,resource_id,
-          resource_content_hash,completion_json
+        SELECT *
         FROM ingestion_batch_commits WHERE commit_id=?
       `).get(commitId) as any
       if (!row) throw new Error(`找不到待提交的记忆批次：${commitId}`)
       if (row.status === 'committed') return
+      const payload = readRecoveryPayload(row, [
+        'digest_json', 'messages_json', 'checkpoint_keys_json', 'completion_json'
+      ])
       let messageCount = 0
       let checkpointKeys: string[] = []
-      try { messageCount = JSON.parse(String(row.messages_json || '[]')).length } catch {}
+      try { messageCount = JSON.parse(String(payload.messages_json || '[]')).length } catch {}
       try {
-        checkpointKeys = JSON.parse(String(row.checkpoint_keys_json || '[]'))
+        checkpointKeys = JSON.parse(String(payload.checkpoint_keys_json || '[]'))
       } catch {}
       if (row.source_kind === 'document' && row.resource_id) {
         const resource = this.db!.prepare(`
@@ -9225,7 +9294,7 @@ export class PersonalMemoryStore {
         let metadata: any = {}
         let completion: any = {}
         try { metadata = JSON.parse(String(resource?.metadata_json || '{}')) } catch {}
-        try { completion = JSON.parse(String(row.completion_json || '{}')) } catch {}
+        try { completion = JSON.parse(String(payload.completion_json || '{}')) } catch {}
         if (resource && String(metadata.contentHash || '') === String(row.resource_content_hash || '')) {
           this.replaceResourceContent(String(row.resource_id), String(resource.content || ''), completion)
           resourceCheckpointApplied = true
@@ -9257,11 +9326,14 @@ export class PersonalMemoryStore {
 
   recordIngestionBatchCommitRecoveryFailure(commitId: string, error: string): void {
     if (!this.db) return
-    this.db.prepare(`
-      UPDATE ingestion_batch_commits
-      SET recovery_attempts=recovery_attempts+1,last_error=?
-      WHERE commit_id=? AND status='prepared'
-    `).run(String(error || '').slice(0, 1000), commitId)
+    this.db.transaction(() => {
+      this.compactIngestionBatchPayload(commitId)
+      this.db!.prepare(`
+        UPDATE ingestion_batch_commits
+        SET recovery_attempts=recovery_attempts+1,last_error=?
+        WHERE commit_id=? AND status='prepared'
+      `).run(String(error || '').slice(0, 1000), commitId)
+    })()
   }
 
   getIngestionCommitHealth(): {
@@ -9279,6 +9351,13 @@ export class PersonalMemoryStore {
       retainedBytes: number
       lastCompactedAt: string
     }
+    failedPayloadStorage: {
+      version: string
+      compressedRows: number
+      retainedBytes: number
+      originalBytes: number
+      reclaimedBytes: number
+    }
   } {
     const emptyCompaction = {
       version: 1,
@@ -9286,6 +9365,13 @@ export class PersonalMemoryStore {
       releasedBytes: 0,
       retainedBytes: 0,
       lastCompactedAt: ''
+    }
+    const emptyFailedStorage = {
+      version: 'ingestion-failed-payload-gzip-v1',
+      compressedRows: 0,
+      retainedBytes: 0,
+      originalBytes: 0,
+      reclaimedBytes: 0
     }
     if (!this.db) return {
       prepared: 0,
@@ -9295,7 +9381,8 @@ export class PersonalMemoryStore {
       committed: 0,
       recoveryFailures: 0,
       oldestPreparedAt: null,
-      payloadCompaction: emptyCompaction
+      payloadCompaction: emptyCompaction,
+      failedPayloadStorage: emptyFailedStorage
     }
     const row = this.db.prepare(`
       SELECT
@@ -9305,6 +9392,12 @@ export class PersonalMemoryStore {
         SUM(CASE WHEN status='prepared' AND source_kind='document' THEN 1 ELSE 0 END) AS prepared_documents,
         SUM(CASE WHEN status='committed' THEN 1 ELSE 0 END) AS committed,
         SUM(CASE WHEN status='prepared' AND recovery_attempts>0 THEN 1 ELSE 0 END) AS recovery_failures,
+        SUM(CASE WHEN status='prepared' AND payload_codec!='' THEN 1 ELSE 0 END)
+          AS compressed_rows,
+        SUM(CASE WHEN status='prepared' THEN COALESCE(LENGTH(payload_blob),0) ELSE 0 END)
+          AS compressed_bytes,
+        SUM(CASE WHEN status='prepared' THEN payload_original_bytes ELSE 0 END)
+          AS original_bytes,
         MIN(CASE WHEN status='prepared' THEN prepared_at END) AS oldest_prepared_at
       FROM ingestion_batch_commits
     `).get() as any
@@ -9326,7 +9419,17 @@ export class PersonalMemoryStore {
       committed: Number(row?.committed || 0),
       recoveryFailures: Number(row?.recovery_failures || 0),
       oldestPreparedAt: row?.oldest_prepared_at ? String(row.oldest_prepared_at) : null,
-      payloadCompaction
+      payloadCompaction,
+      failedPayloadStorage: {
+        version: 'ingestion-failed-payload-gzip-v1',
+        compressedRows: Number(row?.compressed_rows || 0),
+        retainedBytes: Number(row?.compressed_bytes || 0),
+        originalBytes: Number(row?.original_bytes || 0),
+        reclaimedBytes: Math.max(
+          0,
+          Number(row?.original_bytes || 0) - Number(row?.compressed_bytes || 0)
+        )
+      }
     }
   }
 
