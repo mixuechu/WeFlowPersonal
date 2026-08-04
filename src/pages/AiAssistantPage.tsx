@@ -526,6 +526,8 @@ function AiAssistantPage() {
   const projectWorkspaceGate = useRef(new LatestRequestGate())
   const [projectTaskLoadingMore, setProjectTaskLoadingMore] = useState(false)
   const projectTaskGate = useRef(new LatestRequestGate())
+  const [projectMemberLoadingMore, setProjectMemberLoadingMore] = useState(false)
+  const projectMemberGate = useRef(new LatestRequestGate())
   const [projectRiskLoadingMore, setProjectRiskLoadingMore] = useState(false)
   const projectRiskGate = useRef(new LatestRequestGate())
   const [projectMemoryPages, setProjectMemoryPages] = useState<any>({
@@ -2099,8 +2101,10 @@ function AiAssistantPage() {
   useEffect(() => {
     const request = projectWorkspaceGate.current.begin()
     projectTaskGate.current.invalidate()
+    projectMemberGate.current.invalidate()
     projectRiskGate.current.invalidate()
     setProjectTaskLoadingMore(false)
+    setProjectMemberLoadingMore(false)
     setProjectRiskLoadingMore(false)
     if (!selectedProjectId) {
       setProjectWorkspace({ project: null, status: 'idle' })
@@ -3487,6 +3491,47 @@ function AiAssistantPage() {
       if (projectEvidenceGate.current.isCurrent(request)) setMessage(error?.message || String(error))
     } finally {
       if (projectEvidenceGate.current.isCurrent(request)) setProjectEvidenceLoadingMore(false)
+    }
+  }
+
+  const loadMoreProjectMembers = async () => {
+    const project = projectWorkspace.project
+    if (!selectedProjectId || projectMemberLoadingMore || !project?.memberHasMore) return
+    const request = projectMemberGate.current.begin()
+    setProjectMemberLoadingMore(true)
+    try {
+      const page = await window.electronAPI.aiAssistant.getProjectMemberPage(
+        selectedProjectId,
+        {
+          limit: 40,
+          offset: project.members?.length || 0,
+          revision: project.memberRevision
+        }
+      )
+      if (!projectMemberGate.current.isCurrent(request)) return
+      if (page.stale) {
+        setMessage('项目成员在浏览期间已有变化，已重新载入最新项目档案。')
+        setProjectWorkspaceRefreshKey(value => value + 1)
+        return
+      }
+      setProjectWorkspace((current: any) => ({
+        ...current,
+        project: {
+          ...current.project,
+          members: [
+            ...(current.project?.members || []),
+            ...page.items.filter((item: any) =>
+              !(current.project?.members || []).some((known: any) => known.id === item.id))
+          ],
+          memberTotal: page.total,
+          memberHasMore: page.hasMore,
+          memberRevision: page.revision
+        }
+      }))
+    } catch (error: any) {
+      if (projectMemberGate.current.isCurrent(request)) setMessage(error?.message || String(error))
+    } finally {
+      if (projectMemberGate.current.isCurrent(request)) setProjectMemberLoadingMore(false)
     }
   }
 
@@ -9135,13 +9180,20 @@ function AiAssistantPage() {
             </div>}
             <div className="assistant-dossier-grid">
               <section>
-                <h3>参与者 <small>{selectedProject.members.length}</small></h3>
+                <h3>参与者 <small>{selectedProject.memberTotal ?? selectedProject.members.length}</small></h3>
                 {selectedProject.members.map((member: any) =>
                   <button className="assistant-project-member" key={member.id}
                     onClick={() => openEntityFromProjectDossier(member.id)}>
                     {member.name}
                   </button>)}
                 {!selectedProject.members.length && <em>尚未从项目关系中确认参与者</em>}
+                {selectedProject.memberHasMore && <button
+                  disabled={projectMemberLoadingMore}
+                  onClick={() => void loadMoreProjectMembers()}>
+                  {projectMemberLoadingMore
+                    ? '正在加载…'
+                    : `加载更多参与者（已显示 ${selectedProject.members.length} / ${selectedProject.memberTotal}）`}
+                </button>}
               </section>
               <section>
                 <h3>风险与阻塞 <small>{selectedProject.riskTotal ?? selectedProject.risks.length}</small></h3>

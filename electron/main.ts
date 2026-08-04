@@ -4550,6 +4550,8 @@ function registerIpcHandlers() {
     aiAssistantService.getProjectDirectory(options))
   ipcMain.handle('ai-assistant:getProjectWorkspace', (_, projectId: string) =>
     aiAssistantService.getProjectWorkspace(projectId))
+  ipcMain.handle('ai-assistant:getProjectMemberPage', (_, projectId: string, options?: any) =>
+    aiAssistantService.getProjectMemberPage(projectId, options))
   ipcMain.handle('ai-assistant:getProjectTaskPage', (_, projectId: string, options?: any) =>
     aiAssistantService.getProjectTaskPage(projectId, options))
   ipcMain.handle('ai-assistant:getProjectRiskPage', (_, projectId: string, options?: any) =>

@@ -4452,6 +4452,15 @@ export class AiAssistantService {
     const taskPage = paginateProjectTasks(project, { limit: 40 }, taskRevision)
     const riskRevision = `${taskRevision}:day=${shanghaiDate()}`
     const riskPage = paginateProjectRisks(project, { limit: 40 }, riskRevision)
+    const memberPage = projectEntity
+      ? personalMemoryStore.listProjectMemberPage({ projectId: id, limit: 40 })
+      : {
+          items: project.members || [],
+          total: Number(project.members?.length || 0),
+          hasMore: false,
+          revision: '',
+          stale: false
+        }
     return {
       project: {
         ...project,
@@ -4483,7 +4492,11 @@ export class AiAssistantService {
         risks: riskPage.items,
         riskTotal: riskPage.total,
         riskHasMore: riskPage.hasMore,
-        riskRevision: riskPage.revision
+        riskRevision: riskPage.revision,
+        members: memberPage.items,
+        memberTotal: memberPage.total,
+        memberHasMore: memberPage.hasMore,
+        memberRevision: memberPage.revision
       },
       payloadPolicy: {
         version: 'project-dossier-v2',
@@ -4495,6 +4508,20 @@ export class AiAssistantService {
         taskDirectory: 'paginated_40'
       }
     }
+  }
+
+  getProjectMemberPage(projectId: string, options: any = {}): any {
+    const id = String(projectId || '').trim()
+    if (!id) throw new Error('请选择项目')
+    const projectEntity = this.state.graph.entities.find(entity =>
+      entity.id === id && entity.type === 'project' && isTrustedEntity(entity))
+    if (!projectEntity) throw new Error('项目不存在或已经不在当前可信视图中')
+    return personalMemoryStore.listProjectMemberPage({
+      projectId: id,
+      limit: Number(options?.limit || 40),
+      offset: Number(options?.offset || 0),
+      revision: String(options?.revision || '')
+    })
   }
 
   getProjectTaskPage(projectId: string, options: any = {}): any {

@@ -4138,6 +4138,116 @@ test('project intelligence aggregates members, progress, risks, decisions and ev
   assert.equal(project.pendingReview.total, 1)
 })
 
+test('project member directory pages every confirmed person once and rejects stale continuation', () => {
+  withStore(store => {
+    const people = Array.from({ length: 105 }, (_, index) => ({
+      id: `project-member-${String(index).padStart(3, '0')}`,
+      type: 'person',
+      canonicalName: `成员 ${String(index).padStart(3, '0')}`,
+      trustStatus: 'confirmed'
+    }))
+    const project = {
+      id: 'project-member-directory',
+      type: 'project',
+      canonicalName: '完整成员目录',
+      trustStatus: 'confirmed'
+    }
+    const relations = people.flatMap((person, index) => [{
+      id: `project-member-relation-${index}`,
+      subjectId: index % 2 ? project.id : person.id,
+      objectId: index % 2 ? person.id : project.id,
+      predicate: index % 2 ? '成员包括' : '参与',
+      status: 'confirmed',
+      confidence: 1
+    }, ...(index === 0 ? [{
+      id: 'project-member-duplicate-semantic-edge',
+      subjectId: person.id,
+      objectId: project.id,
+      predicate: '负责',
+      status: 'confirmed',
+      confidence: 1
+    }] : [])])
+    store.syncGraph({
+      entities: [
+        project,
+        ...people,
+        {
+          id: 'project-member-candidate',
+          type: 'person',
+          canonicalName: '候选成员',
+          trustStatus: 'candidate'
+        },
+        {
+          id: 'project-member-organization',
+          type: 'organization',
+          canonicalName: '协作组织',
+          trustStatus: 'confirmed'
+        }
+      ],
+      relations: [
+        ...relations,
+        {
+          id: 'project-member-candidate-relation',
+          subjectId: 'project-member-candidate',
+          objectId: project.id,
+          predicate: '参与',
+          status: 'confirmed',
+          confidence: 1
+        },
+        {
+          id: 'project-member-organization-relation',
+          subjectId: 'project-member-organization',
+          objectId: project.id,
+          predicate: '协作',
+          status: 'confirmed',
+          confidence: 1
+        }
+      ],
+      reviewQueue: []
+    } as any)
+
+    const first = store.listProjectMemberPage({
+      projectId: project.id,
+      limit: 40
+    })
+    const second = store.listProjectMemberPage({
+      projectId: project.id,
+      limit: 40,
+      offset: first.items.length,
+      revision: first.revision
+    })
+    const third = store.listProjectMemberPage({
+      projectId: project.id,
+      limit: 40,
+      offset: first.items.length + second.items.length,
+      revision: first.revision
+    })
+    const ids = [...first.items, ...second.items, ...third.items].map(item => item.id)
+    assert.equal(first.total, 105)
+    assert.equal(first.hasMore, true)
+    assert.equal(second.hasMore, true)
+    assert.equal(third.hasMore, false)
+    assert.equal(ids.length, 105)
+    assert.equal(new Set(ids).size, 105)
+    assert.equal(ids.includes('project-member-candidate'), false)
+    assert.equal(ids.includes('project-member-organization'), false)
+
+    store.syncGraph({
+      entities: [project, ...people],
+      relations,
+      reviewQueue: []
+    } as any)
+    const stale = store.listProjectMemberPage({
+      projectId: project.id,
+      limit: 40,
+      offset: 40,
+      revision: first.revision
+    })
+    assert.equal(stale.stale, true)
+    assert.deepEqual(stale.items, [])
+  })
+})
+
 test('project dossiers bound task and aggregate evidence without hiding totals', () => {
   const relationEvidence = Array.from({ length: PROJECT_EVIDENCE_LIMIT + 10 }, (_, index) => ({
     messageId: `wechat:project:${index + 1}`,

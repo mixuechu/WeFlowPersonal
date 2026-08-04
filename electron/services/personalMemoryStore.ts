@@ -7477,6 +7477,59 @@ export class PersonalMemoryStore {
     }
   }
 
+  listProjectMemberPage(options: {
+    projectId: string
+    limit?: number
+    offset?: number
+    revision?: string
+  }): { items: any[]; total: number; hasMore: boolean; revision: string; stale: boolean } {
+    if (!this.db) return { items: [], total: 0, hasMore: false, revision: '0', stale: false }
+    const currentRevision = () =>
+      `${this.getGraphReviewRevision()}:${this.getStructuredMemoryRevision()}`
+    const revision = currentRevision()
+    const projectId = String(options.projectId || '').trim()
+    if (!projectId) return { items: [], total: 0, hasMore: false, revision, stale: false }
+    const offset = Math.max(0, Math.min(1_000_000, Math.floor(Number(options.offset) || 0)))
+    const expectedRevision = String(options.revision || '').trim()
+    if (offset > 0 && expectedRevision !== revision) {
+      return { items: [], total: 0, hasMore: false, revision, stale: true }
+    }
+    const memberRows = `
+      FROM (
+        SELECT CASE WHEN r.subject_id=? THEN r.object_id ELSE r.subject_id END AS member_id
+        FROM relations r
+        WHERE r.status='confirmed' AND (r.subject_id=? OR r.object_id=?)
+        GROUP BY member_id
+      ) member_relation
+      JOIN entities member ON member.id=member_relation.member_id
+      WHERE member.deleted_at IS NULL
+        AND member.trust_status='confirmed'
+        AND member.type='person'
+    `
+    const parameters = [projectId, projectId, projectId]
+    const total = Number((this.db.prepare(`
+      SELECT COUNT(*) AS count ${memberRows}
+    `).get(...parameters) as any)?.count || 0)
+    const limit = Math.max(1, Math.min(100, Math.floor(Number(options.limit) || 40)))
+    const rows = this.db.prepare(`
+      SELECT member.id,member.canonical_name AS name
+      ${memberRows}
+      ORDER BY LOWER(member.canonical_name),member.id
+      LIMIT ? OFFSET ?
+    `).all(...parameters, limit, offset) as any[]
+    const completedRevision = currentRevision()
+    if (completedRevision !== revision) {
+      return { items: [], total: 0, hasMore: false, revision: completedRevision, stale: true }
+    }
+    return {
+      items: rows,
+      total,
+      hasMore: offset + rows.length < total,
+      revision,
+      stale: false
+    }
+  }
+
   getEntityEvidenceStats(entityId: string): {
     evidenceTotal: number
     lastEvidenceAt: number | null

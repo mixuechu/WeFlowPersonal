@@ -628,6 +628,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
       ipcRenderer.invoke('ai-assistant:getMemoryItemAuditPage', kind, itemId, options),
     getProjectDirectory: (options?: any) => ipcRenderer.invoke('ai-assistant:getProjectDirectory', options),
     getProjectWorkspace: (projectId: string) => ipcRenderer.invoke('ai-assistant:getProjectWorkspace', projectId),
+    getProjectMemberPage: (projectId: string, options?: any) =>
+      ipcRenderer.invoke('ai-assistant:getProjectMemberPage', projectId, options),
     getProjectTaskPage: (projectId: string, options?: any) =>
       ipcRenderer.invoke('ai-assistant:getProjectTaskPage', projectId, options),
     getProjectRiskPage: (projectId: string, options?: any) =>
