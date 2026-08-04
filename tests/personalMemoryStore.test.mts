@@ -8079,6 +8079,7 @@ test('chunk ANN recalls a long-document tail without scanning every long documen
   assert.equal(built.indexed, 40)
   assert.equal(built.indexedChunks, 41)
   assert.equal(built.chunkCoverage, 1)
+  assert.equal(built.coverageValidation, 'write_guarded')
   const results = store.searchVector(normalize(tailVector), model, 1, {
     minimumDocuments: 20,
     minimumCandidates: 1
@@ -8093,11 +8094,22 @@ test('chunk ANN recalls a long-document tail without scanning every long documen
   `).run('resource:chunk-ann-long-resource')
   const incomplete = store.getApproximateVectorIndexStats(model, 8)
   assert.equal(incomplete.active, false)
+  assert.equal(incomplete.status, 'dirty')
+  assert.equal(incomplete.coverageValidation, 'full_audit')
   assert.ok(incomplete.chunkCoverage < 1)
   assert.equal(store.searchVector(normalize(tailVector), model, 1, {
     minimumDocuments: 20,
     minimumCandidates: 1
   })[0]?.semantic_search_mode, 'exact')
+  const rebuilt = store.ensureApproximateVectorIndex(model, { minimumDocuments: 20 })
+  assert.equal(rebuilt.rebuilt, true)
+  assert.equal(rebuilt.coverageValidation, 'write_guarded')
+  assert.equal(rebuilt.chunkCoverage, 1)
+  ;(store as any).db.prepare(`
+    UPDATE search_document_embedding_chunks SET vector_json=vector_json
+    WHERE document_id=? AND chunk_index=1
+  `).run('resource:chunk-ann-long-resource')
+  assert.equal(store.getApproximateVectorIndexStats(model, 8).status, 'dirty')
 }))
 
 test('ANN signatures and one-bit probes are deterministic and bounded', () => {

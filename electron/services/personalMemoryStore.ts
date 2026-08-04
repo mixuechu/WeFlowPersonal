@@ -919,6 +919,76 @@ export class PersonalMemoryStore {
         PRIMARY KEY(model,dimensions)
       ) STRICT;
 
+      DROP TRIGGER IF EXISTS trg_vector_ann_entries_dirty_insert;
+      DROP TRIGGER IF EXISTS trg_vector_ann_entries_dirty_update;
+      DROP TRIGGER IF EXISTS trg_vector_ann_entries_dirty_delete;
+      DROP TRIGGER IF EXISTS trg_vector_ann_chunks_dirty_insert;
+      DROP TRIGGER IF EXISTS trg_vector_ann_chunks_dirty_update;
+      DROP TRIGGER IF EXISTS trg_vector_ann_chunks_dirty_delete;
+      DROP TRIGGER IF EXISTS trg_embedding_chunks_ann_dirty_insert;
+      DROP TRIGGER IF EXISTS trg_embedding_chunks_ann_dirty_update;
+      DROP TRIGGER IF EXISTS trg_embedding_chunks_ann_dirty_delete;
+      CREATE TRIGGER trg_vector_ann_entries_dirty_insert
+      AFTER INSERT ON vector_ann_entries
+      BEGIN
+        UPDATE vector_ann_state SET status='dirty',updated_at=NEW.updated_at
+        WHERE model=NEW.model AND dimensions=NEW.dimensions;
+      END;
+      CREATE TRIGGER trg_vector_ann_entries_dirty_update
+      AFTER UPDATE ON vector_ann_entries
+      BEGIN
+        UPDATE vector_ann_state SET status='dirty',updated_at=NEW.updated_at
+        WHERE (model=OLD.model AND dimensions=OLD.dimensions)
+          OR (model=NEW.model AND dimensions=NEW.dimensions);
+      END;
+      CREATE TRIGGER trg_vector_ann_entries_dirty_delete
+      AFTER DELETE ON vector_ann_entries
+      BEGIN
+        UPDATE vector_ann_state SET status='dirty',updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')
+        WHERE model=OLD.model AND dimensions=OLD.dimensions;
+      END;
+      CREATE TRIGGER trg_vector_ann_chunks_dirty_insert
+      AFTER INSERT ON vector_ann_chunk_entries
+      BEGIN
+        UPDATE vector_ann_state SET status='dirty',updated_at=NEW.updated_at
+        WHERE model=NEW.model AND dimensions=NEW.dimensions;
+      END;
+      CREATE TRIGGER trg_vector_ann_chunks_dirty_update
+      AFTER UPDATE ON vector_ann_chunk_entries
+      BEGIN
+        UPDATE vector_ann_state SET status='dirty',updated_at=NEW.updated_at
+        WHERE (model=OLD.model AND dimensions=OLD.dimensions)
+          OR (model=NEW.model AND dimensions=NEW.dimensions);
+      END;
+      CREATE TRIGGER trg_vector_ann_chunks_dirty_delete
+      AFTER DELETE ON vector_ann_chunk_entries
+      BEGIN
+        UPDATE vector_ann_state SET status='dirty',updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')
+        WHERE model=OLD.model AND dimensions=OLD.dimensions;
+      END;
+      CREATE TRIGGER trg_embedding_chunks_ann_dirty_insert
+      AFTER INSERT ON search_document_embedding_chunks
+      BEGIN
+        UPDATE vector_ann_state
+        SET status='dirty',updated_at=NEW.updated_at
+        WHERE model=NEW.model AND dimensions=NEW.dimensions;
+      END;
+      CREATE TRIGGER trg_embedding_chunks_ann_dirty_update
+      AFTER UPDATE ON search_document_embedding_chunks
+      BEGIN
+        UPDATE vector_ann_state
+        SET status='dirty',updated_at=NEW.updated_at
+        WHERE (model=OLD.model AND dimensions=OLD.dimensions)
+          OR (model=NEW.model AND dimensions=NEW.dimensions);
+      END;
+      CREATE TRIGGER trg_embedding_chunks_ann_dirty_delete
+      AFTER DELETE ON search_document_embedding_chunks
+      BEGIN
+        UPDATE vector_ann_state
+        SET status='dirty',updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')
+        WHERE model=OLD.model AND dimensions=OLD.dimensions;
+      END;
+
       DROP TRIGGER IF EXISTS trg_search_documents_ann_content_update;
       CREATE TRIGGER trg_search_documents_ann_content_update
       AFTER UPDATE OF content_hash,embedding_model,embedding_dimensions,embedding_json ON search_documents
@@ -12957,7 +13027,24 @@ export class PersonalMemoryStore {
       mode: 'exact', active: false, indexed: 0, eligible: 0, coverage: 0,
       indexedChunks: 0, eligibleChunks: 0, chunkCoverage: 0
     }
-    const eligible = this.db.prepare(`
+    const state = this.db.prepare(`
+      SELECT * FROM vector_ann_state WHERE model=?
+        AND (? IS NULL OR dimensions=?)
+      ORDER BY indexed_count DESC LIMIT 1
+    `).get(model, dimensions ?? null, dimensions ?? null) as any
+    const canUseGuardedCounts = Boolean(
+      state &&
+      state.status === 'ready' &&
+      state.index_version === LOCAL_ANN_INDEX_VERSION
+    )
+    const eligible = canUseGuardedCounts
+      ? this.db.prepare(`
+          SELECT COUNT(*) AS count FROM search_documents
+          WHERE embedding_model=? AND embedding_json IS NOT NULL
+            AND embedding_dimensions>0
+            AND (? IS NULL OR embedding_dimensions=?)
+        `).get(model, dimensions ?? null, dimensions ?? null) as { count: number }
+      : this.db.prepare(`
       SELECT COUNT(*) AS count FROM search_documents
       WHERE embedding_model=? AND embedding_json IS NOT NULL
         AND embedding_dimensions>0
@@ -12974,13 +13061,17 @@ export class PersonalMemoryStore {
         )
         AND (? IS NULL OR embedding_dimensions=?)
     `).get(model, dimensions ?? null, dimensions ?? null) as { count: number }
-    const state = this.db.prepare(`
-      SELECT * FROM vector_ann_state WHERE model=?
-        AND (? IS NULL OR dimensions=?)
-      ORDER BY indexed_count DESC LIMIT 1
-    `).get(model, dimensions ?? null, dimensions ?? null) as any
     const eligibleCount = Number(eligible?.count || 0)
-    const eligibleChunks = Number((this.db.prepare(`
+    const eligibleChunkQuery = canUseGuardedCounts
+      ? this.db.prepare(`
+          SELECT COUNT(*) AS count FROM search_document_embedding_chunks chunk
+          JOIN search_documents d ON d.id=chunk.document_id
+            AND d.content_hash=chunk.content_hash
+            AND d.embedding_model=chunk.model
+            AND d.embedding_dimensions=chunk.dimensions
+          WHERE chunk.model=? AND (? IS NULL OR chunk.dimensions=?)
+        `)
+      : this.db.prepare(`
       SELECT COUNT(*) AS count FROM search_document_embedding_chunks chunk
       JOIN search_documents d ON d.id=chunk.document_id
         AND d.content_hash=chunk.content_hash
@@ -12998,8 +13089,19 @@ export class PersonalMemoryStore {
           SELECT 1 FROM json_each(CASE WHEN json_valid(chunk.vector_json)=1 THEN chunk.vector_json ELSE '[]' END)
           WHERE ABS(json_each.value)>1e-12
         )
-    `).get(model, dimensions ?? null, dimensions ?? null) as any)?.count || 0)
-    const actual = state ? this.db.prepare(`
+    `)
+    const eligibleChunkRow = eligibleChunkQuery.get(
+      model, dimensions ?? null, dimensions ?? null
+    ) as any
+    const eligibleChunks = Number(eligibleChunkRow?.count || 0)
+    const stateCountsMatch = Boolean(
+      state &&
+      state.status === 'ready' &&
+      state.index_version === LOCAL_ANN_INDEX_VERSION &&
+      Number(state.indexed_count) === eligibleCount &&
+      Number(state.indexed_chunk_count) === eligibleChunks
+    )
+    const actual = state && !stateCountsMatch ? this.db.prepare(`
       SELECT COUNT(*) AS count FROM (
         SELECT e.document_id FROM vector_ann_entries e
         JOIN search_documents d ON d.id=e.document_id
@@ -13024,8 +13126,12 @@ export class PersonalMemoryStore {
         HAVING COUNT(DISTINCT e.table_id)=?
       )
     `).get(model, Number(state.dimensions), Number(state.table_count)) as { count: number } : { count: 0 }
-    const indexedCount = Number(actual?.count || 0)
-    const indexedChunks = state ? Number((this.db.prepare(`
+    const indexedCount = stateCountsMatch
+      ? Number(state.indexed_count)
+      : Number(actual?.count || 0)
+    const indexedChunks = stateCountsMatch
+      ? Number(state.indexed_chunk_count)
+      : state ? Number((this.db.prepare(`
       SELECT COUNT(*) AS count FROM (
         SELECT entry.document_id,entry.chunk_index
         FROM vector_ann_chunk_entries entry
@@ -13066,6 +13172,7 @@ export class PersonalMemoryStore {
       indexedChunks,
       eligibleChunks,
       chunkCoverage: eligibleChunks ? Math.min(1, indexedChunks / eligibleChunks) : 0,
+      coverageValidation: stateCountsMatch ? 'write_guarded' : 'full_audit',
       minimumDocuments: LOCAL_ANN_DEFAULT_MINIMUM_DOCUMENTS,
       lastBuiltAt: state?.last_built_at || null
     }
