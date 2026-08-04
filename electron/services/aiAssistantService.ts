@@ -52,6 +52,11 @@ import {
   taskIdFromAssistantAnswer
 } from './taskCitationEvidencePolicy'
 import {
+  assertTaskFromMemoryPreview,
+  buildTaskFromMemoryPreviewToken,
+  type TaskFromMemoryPreviewIdentity
+} from './taskFromMemoryPreviewPolicy'
+import {
   assertTaskMutationBatch,
   buildTaskMutationToken,
   classifyTaskMutationRecovery,
@@ -5667,10 +5672,17 @@ export class AiAssistantService {
     return this.updateTasks([{ id, patch, mutationToken }])[0] || null
   }
 
-  createTaskFromMemory(input: any): AssistantTask {
-    const title = String(input?.title || '').trim().slice(0, 300)
-    if (!title) throw new Error('待办标题不能为空')
-    const assistantMessageId = String(input?.assistantMessageId || '').trim()
+  private inspectTaskFromMemory(assistantMessageIdInput: unknown): {
+    assistantMessageId: string
+    answer: any
+    citations: any[]
+    evidence: ReturnType<typeof buildTaskEvidenceFromCitations>
+    revalidation: any
+    taskId: string
+    existingTask: AssistantTask | null
+    previewIdentity: TaskFromMemoryPreviewIdentity
+  } {
+    const assistantMessageId = String(assistantMessageIdInput || '').trim()
     const storedAnswer = personalMemoryStore.getAssistantAnswerMessage(
       assistantMessageId
     )
@@ -5687,10 +5699,73 @@ export class AiAssistantService {
       throw new Error('这段回答的权威证据已经变化、失效或无法证明仍与生成时一致，请用原问题重新提问后再生成待办')
     }
     const evidence = buildTaskEvidenceFromCitations(citations)
+    if (!evidence.length) throw new Error('这段回答没有可写入待办的权威原文证据')
+    const taskId = taskIdFromAssistantAnswer(assistantMessageId)
+    const existingTask = this.state.tasks.find(item => item.id === taskId) || null
+    const digest = (value: unknown): string => crypto.createHash('sha256')
+      .update(JSON.stringify(value))
+      .digest('hex')
+    return {
+      assistantMessageId,
+      answer: storedAnswer,
+      citations,
+      evidence,
+      revalidation,
+      taskId,
+      existingTask,
+      previewIdentity: {
+        assistantMessageId,
+        answerContentSha256: digest(String(storedAnswer.content || '')),
+        groundingSha256: digest({
+          audit: storedAnswer.groundingAudit || {},
+          revalidation
+        }),
+        evidenceSha256: digest(evidence),
+        taskId,
+        currentTaskToken: existingTask
+          ? buildTaskMutationToken(existingTask)
+          : TASK_ABSENT_MUTATION_TOKEN
+      }
+    }
+  }
+
+  previewTaskFromMemory(input: any): any {
+    const inspection = this.inspectTaskFromMemory(input?.assistantMessageId)
+    const sourceCounts = inspection.evidence.reduce((counts: Record<string, number>, item) => {
+      counts[item.sourceId] = Number(counts[item.sourceId] || 0) + 1
+      return counts
+    }, Object.create(null) as Record<string, number>)
+    return {
+      assistantMessageId: inspection.assistantMessageId,
+      taskId: inspection.taskId,
+      title: String(input?.title || '').trim().slice(0, 300),
+      detail: String(input?.detail || inspection.answer.content || '').trim().slice(0, 2000),
+      priority: ['high', 'medium', 'low'].includes(input?.priority) ? input.priority : 'medium',
+      evidenceTotal: inspection.evidence.length,
+      sourceCounts,
+      evidence: inspection.evidence.slice(0, 12),
+      supportedStatements: Number(inspection.revalidation.supportedStatements || 0),
+      alreadyCreated: Boolean(inspection.existingTask),
+      existingTask: inspection.existingTask
+        ? {
+          id: inspection.existingTask.id,
+          title: inspection.existingTask.title,
+          status: inspection.existingTask.status,
+          updatedAt: inspection.existingTask.updatedAt
+        }
+        : null,
+      previewToken: buildTaskFromMemoryPreviewToken(inspection.previewIdentity)
+    }
+  }
+
+  createTaskFromMemory(input: any): AssistantTask {
+    const title = String(input?.title || '').trim().slice(0, 300)
+    if (!title) throw new Error('待办标题不能为空')
+    const inspection = this.inspectTaskFromMemory(input?.assistantMessageId)
+    assertTaskFromMemoryPreview(inspection.previewIdentity, input?.previewToken)
+    const { assistantMessageId, citations, evidence, taskId, existingTask } = inspection
     const firstEvidence = evidence[0]
     const now = new Date().toISOString()
-    const taskId = taskIdFromAssistantAnswer(assistantMessageId)
-    const existingTask = this.state.tasks.find(item => item.id === taskId)
     if (existingTask) {
       return { ...existingTask, mutationToken: buildTaskMutationToken(existingTask) }
     }

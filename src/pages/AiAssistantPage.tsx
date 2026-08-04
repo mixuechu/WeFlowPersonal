@@ -1011,6 +1011,8 @@ function AiAssistantPage() {
   const assistantAnswerReviewHistoryGates = useRef(new Map<string, LatestRequestGate>())
   const [askingMemory, setAskingMemory] = useState(false)
   const [creatingMemoryTask, setCreatingMemoryTask] = useState(false)
+  const [memoryTaskPreviewDialog, setMemoryTaskPreviewDialog] = useState<any>(null)
+  const memoryTaskPreviewGate = useRef(new LatestRequestGate())
   const [memoryEntityFilter, setMemoryEntityFilter] = useState('')
   const [memoryEntitySelection, setMemoryEntitySelection] = useState<any>(null)
   const [memorySessionFilter, setMemorySessionFilter] = useState('')
@@ -5574,21 +5576,61 @@ function AiAssistantPage() {
 
   const createTaskFromMemory = async () => {
     if (!memoryAnswer?.answer || creatingMemoryTask) return
-    setCreatingMemoryTask(true)
+    const request = memoryTaskPreviewGate.current.begin()
+    setMemoryTaskPreviewDialog({ status: 'loading' })
     try {
-      const task = await window.electronAPI.aiAssistant.createTaskFromMemory({
+      const preview = await window.electronAPI.aiAssistant.previewTaskFromMemory({
         title: memoryAnswer.question || String(memoryAnswer.answer).split(/[。！？\n]/)[0],
         detail: memoryAnswer.answer,
         assistantMessageId: memoryAnswer.assistantMessageId,
         priority: 'medium'
       })
+      if (!memoryTaskPreviewGate.current.isCurrent(request)) return
+      setMemoryTaskPreviewDialog({ status: 'ready', ...preview })
+    } catch (error: any) {
+      if (!memoryTaskPreviewGate.current.isCurrent(request)) return
+      setMemoryTaskPreviewDialog({
+        status: 'error',
+        error: error?.message || String(error)
+      })
+    }
+  }
+
+  const closeMemoryTaskPreview = () => {
+    if (creatingMemoryTask) return
+    memoryTaskPreviewGate.current.invalidate()
+    setMemoryTaskPreviewDialog(null)
+  }
+
+  const confirmCreateTaskFromMemory = async () => {
+    if (memoryTaskPreviewDialog?.status !== 'ready' ||
+      !memoryTaskPreviewDialog.previewToken ||
+      !String(memoryTaskPreviewDialog.title || '').trim() ||
+      creatingMemoryTask) return
+    const request = memoryTaskPreviewGate.current.begin()
+    setCreatingMemoryTask(true)
+    try {
+      const task = await window.electronAPI.aiAssistant.createTaskFromMemory({
+        title: memoryTaskPreviewDialog.title,
+        detail: memoryTaskPreviewDialog.detail,
+        assistantMessageId: memoryTaskPreviewDialog.assistantMessageId,
+        priority: memoryTaskPreviewDialog.priority,
+        previewToken: memoryTaskPreviewDialog.previewToken
+      })
+      if (!memoryTaskPreviewGate.current.isCurrent(request)) return
       setMemoryAnswer((current: any) => ({ ...current, createdTaskId: task.id }))
+      setMemoryTaskPreviewDialog(null)
       setMessage(`已生成待办：${task.title}`)
       await load()
     } catch (error: any) {
-      setMessage(error?.message || String(error))
+      if (!memoryTaskPreviewGate.current.isCurrent(request)) return
+      setMemoryTaskPreviewDialog((current: any) => ({
+        ...current,
+        status: 'error',
+        error: error?.message || String(error)
+      }))
     } finally {
-      setCreatingMemoryTask(false)
+      if (memoryTaskPreviewGate.current.isCurrent(request)) setCreatingMemoryTask(false)
     }
   }
 
@@ -10561,6 +10603,93 @@ function AiAssistantPage() {
             </div>
             <footer><button onClick={() => void window.electronAPI.aiAssistant.getMemoryDiagnostics().then(setMemoryDiagnostics)}>刷新</button>
               <button className="primary" onClick={() => setShowDiagnostics(false)}>完成</button></footer>
+          </div>
+        </div>
+      )}
+
+      {memoryTaskPreviewDialog && (
+        <div className="assistant-modal-backdrop" role="presentation">
+          <div className="assistant-modal assistant-memory-task-modal" role="dialog" aria-modal="true"
+            aria-labelledby="memory-task-preview-title">
+            <div className="assistant-modal-title"><div>
+              <h2 id="memory-task-preview-title">核对问答生成的待办</h2>
+              <p>编辑任务内容，并确认实际写入的权威原文范围。</p>
+            </div><button aria-label="关闭待办预览" disabled={creatingMemoryTask}
+              onClick={closeMemoryTaskPreview}><X size={16} /></button></div>
+            {memoryTaskPreviewDialog.status === 'loading' && <div className="assistant-delete-status">
+              <RefreshCw size={16} /><span><strong>正在重新核验回答与证据…</strong>
+                <small>预览令牌会绑定当前回答、证据和已有待办状态。</small></span>
+            </div>}
+            {memoryTaskPreviewDialog.status === 'error' && <div className="assistant-error">
+              <strong>当前预览不能继续</strong>
+              <span>{memoryTaskPreviewDialog.error || '回答或权威证据已经变化。'}</span>
+            </div>}
+            {memoryTaskPreviewDialog.status === 'ready' && <>
+              {memoryTaskPreviewDialog.alreadyCreated ? <div className="assistant-delete-preview">
+                <strong>这段回答已经生成过待办</strong>
+                <p>“{memoryTaskPreviewDialog.existingTask?.title || '未命名待办'}”
+                  · {memoryTaskPreviewDialog.existingTask?.status || 'todo'}。
+                  同一条回答保持一个稳定待办，不会重复创建。</p>
+              </div> : <>
+                <label><span>待办标题</span><input autoFocus maxLength={300}
+                  value={memoryTaskPreviewDialog.title || ''}
+                  disabled={creatingMemoryTask}
+                  onChange={event => setMemoryTaskPreviewDialog((current: any) => ({
+                    ...current, title: event.target.value
+                  }))} /></label>
+                <label><span>详情</span><textarea maxLength={2000}
+                  value={memoryTaskPreviewDialog.detail || ''}
+                  disabled={creatingMemoryTask}
+                  onChange={event => setMemoryTaskPreviewDialog((current: any) => ({
+                    ...current, detail: event.target.value
+                  }))} /></label>
+                <label><span>优先级</span><select value={memoryTaskPreviewDialog.priority || 'medium'}
+                  disabled={creatingMemoryTask}
+                  onChange={event => setMemoryTaskPreviewDialog((current: any) => ({
+                    ...current, priority: event.target.value
+                  }))}>
+                  <option value="high">高</option>
+                  <option value="medium">中</option>
+                  <option value="low">低</option>
+                </select></label>
+              </>}
+              <div className="assistant-memory-task-evidence">
+                <strong>
+                  {memoryTaskPreviewDialog.supportedStatements || 0} 条可信陈述 ·
+                  {' '}{memoryTaskPreviewDialog.evidenceTotal || 0} 条去重原文
+                </strong>
+                <small>{Object.entries(memoryTaskPreviewDialog.sourceCounts || {})
+                  .map(([sourceId, count]) =>
+                    `${memorySourceLabels({ source_id: sourceId })} ${count}`)
+                  .join(' · ') || '没有来源统计'}</small>
+                <div>{(memoryTaskPreviewDialog.evidence || []).map((item: any) =>
+                  <article key={`${item.sourceId}:${item.sessionId}:${item.messageId}`}>
+                    <span>{memorySourceLabels({ source_id: item.sourceId })} ·
+                      {' '}{item.sender || '发送者未知'} · {evidenceTime(item.timestamp)}</span>
+                    <p>{item.excerpt || '原文摘录为空'}</p>
+                    <small>会话 {item.sessionId || '未知'} · 消息 {item.messageId}</small>
+                  </article>)}</div>
+                {Number(memoryTaskPreviewDialog.evidenceTotal || 0) >
+                  (memoryTaskPreviewDialog.evidence || []).length && <small>
+                  预览显示前 {(memoryTaskPreviewDialog.evidence || []).length} 条；
+                  全部 {memoryTaskPreviewDialog.evidenceTotal} 条仍会写入任务证据档案。
+                </small>}
+              </div>
+            </>}
+            <div className="assistant-modal-actions">
+              <button disabled={creatingMemoryTask} onClick={closeMemoryTaskPreview}>
+                {memoryTaskPreviewDialog.alreadyCreated ? '完成' : '取消'}
+              </button>
+              {memoryTaskPreviewDialog.status === 'error' &&
+                <button className="primary" disabled={creatingMemoryTask}
+                  onClick={() => void createTaskFromMemory()}>重新预览</button>}
+              {memoryTaskPreviewDialog.status === 'ready' && !memoryTaskPreviewDialog.alreadyCreated &&
+                <button className="primary"
+                  disabled={creatingMemoryTask || !String(memoryTaskPreviewDialog.title || '').trim()}
+                  onClick={() => void confirmCreateTaskFromMemory()}>
+                  {creatingMemoryTask ? '正在安全写入…' : '确认生成待办'}
+                </button>}
+            </div>
           </div>
         </div>
       )}

@@ -363,6 +363,7 @@
 .assistant-modal-title button { border: 0; color: var(--text-secondary); background: transparent; }
 .assistant-modal label { display: grid; gap: 6px; color: var(--text-secondary); font-size: 11px; }
 .assistant-modal input { width: 100%; padding: 10px 12px; border: 1px solid var(--border-color); border-radius: 9px; color: var(--text-primary); background: var(--bg-secondary); outline: none; }
+.assistant-modal select { width: 100%; padding: 10px 12px; border: 1px solid var(--border-color); border-radius: 9px; color: var(--text-primary); background: var(--bg-secondary); outline: none; }
 .assistant-modal textarea { width: 100%; min-height: 86px; resize: vertical; padding: 10px 12px; border: 1px solid var(--border-color); border-radius: 9px; color: var(--text-primary); background: var(--bg-secondary); outline: none; font: inherit; }
 .assistant-modal .assistant-toggle { display: flex; grid-template-columns: auto 1fr; align-items: center; }
 .assistant-modal .assistant-toggle input { width: auto; }
@@ -379,6 +380,14 @@
 .assistant-delete-preview { padding: 14px; border: 1px solid #ead0cb; border-radius: 11px; background: #fff8f6; }
 .assistant-delete-preview strong { color: #7f332b; }
 .assistant-delete-preview p { margin: 7px 0 0; color: var(--text-secondary); font-size: 11px; line-height: 1.65; }
+.assistant-memory-task-modal { width: min(680px, calc(100vw - 48px)); max-height: calc(100vh - 48px); overflow: auto; }
+.assistant-memory-task-evidence { min-height: 0; padding: 13px; border: 1px solid #d9e4dc; border-radius: 11px; background: #f7faf8; }
+.assistant-memory-task-evidence > strong { display: block; color: #315c4e; font-size: 12px; }
+.assistant-memory-task-evidence > small { display: block; margin-top: 4px; color: var(--text-tertiary); font-size: 9px; }
+.assistant-memory-task-evidence > div { max-height: 250px; margin-top: 10px; overflow: auto; display: grid; gap: 7px; }
+.assistant-memory-task-evidence article { padding: 9px 10px; border-radius: 8px; background: var(--bg-primary); }
+.assistant-memory-task-evidence article span, .assistant-memory-task-evidence article small { color: var(--text-tertiary); font-size: 9px; }
+.assistant-memory-task-evidence article p { margin: 4px 0; color: var(--text-secondary); font-size: 10px; line-height: 1.5; white-space: pre-wrap; overflow-wrap: anywhere; }
 .assistant-evidence { display: block; margin-top: 7px; color: #777b74; font-size: 10px; }
 .assistant-memory { margin-top: 22px; }
 .assistant-memory h3 { display: flex; align-items: center; gap: 7px; }

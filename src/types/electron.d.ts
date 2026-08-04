@@ -1852,6 +1852,7 @@ export interface ElectronAPI {
     setSettings: (input: any) => Promise<any>
       updateTask: (id: string, patch: any, mutationToken?: string) => Promise<any>
       updateTasks: (updates: Array<{ id: string; patch: any; mutationToken?: string }>) => Promise<any[]>
+      previewTaskFromMemory: (input: any) => Promise<any>
       createTaskFromMemory: (input: any) => Promise<any>
       updateTaskReview: (
         id: string,
