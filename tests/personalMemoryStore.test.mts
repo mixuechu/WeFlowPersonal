@@ -8575,7 +8575,7 @@ test('assistant uncertainty and evidence sample identity survive a SQLCipher reo
       WHERE message_id=?
     `).run(saved.answerMessageId)
     ;(first as any).db.prepare(`
-      DELETE FROM schema_meta WHERE key='assistant_answer_dependencies_v3'
+      DELETE FROM schema_meta WHERE key='assistant_answer_dependencies_v4'
     `).run()
     first.close()
 
@@ -8600,7 +8600,7 @@ test('assistant uncertainty and evidence sample identity survive a SQLCipher reo
       evidence_contradiction_count: 2,
       evidence_authority_revision: 42
     })
-    assert.equal(reopened.getAssistantAnswerDependencyStats().version, 3)
+    assert.equal(reopened.getAssistantAnswerDependencyStats().version, 4)
   } finally {
     first.close()
     reopened.close()
@@ -9343,11 +9343,13 @@ test('assistant archive invalidates answers when structured evidence counts chan
     'claim:claim-answer-counts'
   ).evidenceAuthorityRevision
   assert.ok(initialAuthorityRevision > 0)
-  assert.equal(store.getDocumentEvidencePayload(
+  const scopedEvidencePayload = store.getDocumentEvidencePayload(
     'claim',
     'claim-answer-counts',
     { sessionId: 'answer-counts-session' }
-  ).evidenceAuthorityRevision, 0)
+  )
+  assert.equal(scopedEvidencePayload.evidenceAuthorityRevision, initialAuthorityRevision)
+  assert.equal(scopedEvidencePayload.evidenceScopeRestricted, true)
   const saved = store.saveAssistantExchangeDetailed(
     '谁负责证据计数项目？',
     '证据计数测试对象负责。',
@@ -9800,6 +9802,147 @@ test('general evidence revisions invalidate answers and self-heal exact trigger 
       'general_evidence_revision_search_update',
       'general_evidence_revision_unexpected'
     ])
+  } finally {
+    first.close()
+    reopened.close()
+    rmSync(directory, { recursive: true, force: true })
+  }
+})
+
+test('scoped answer dependencies stay current until their authority revision changes', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'weflow-scoped-answer-dependency-'))
+  const databasePath = join(directory, 'memory.sqlite')
+  const first = new PersonalMemoryStore()
+  const reopened = new PersonalMemoryStore()
+  try {
+    first.initialize(databasePath)
+    first.syncGraph({
+      entities: [{
+        id: 'person-scoped-answer',
+        type: 'person',
+        canonicalName: '范围回答对象',
+        aliases: [],
+        accountIds: ['wxid-scoped-answer'],
+        trustStatus: 'confirmed'
+      }],
+      relations: [],
+      reviewQueue: []
+    })
+    first.upsertClaims([{
+      id: 'claim-scoped-answer',
+      subjectId: 'person-scoped-answer',
+      predicate: '状态',
+      objectValue: '进行中',
+      confidence: 0.9,
+      status: 'confirmed',
+      sourceNature: 'self_statement',
+      searchText: '范围回答对象状态进行中',
+      evidence: [{
+        sourceId: 'wechat',
+        messageId: 'scoped-answer-message-a',
+        sessionId: 'scoped-answer-session-a',
+        timestamp: 1,
+        sender: '范围回答对象',
+        excerpt: '会话 A 的范围内原文',
+        evidenceRole: 'direct'
+      }, {
+        sourceId: 'wechat',
+        messageId: 'scoped-answer-message-b',
+        sessionId: 'scoped-answer-session-b',
+        timestamp: 2,
+        sender: '范围回答对象',
+        excerpt: '会话 B 的范围外原文',
+        evidenceRole: 'direct'
+      }]
+    }])
+    const scopedDocument = first.getSearchDocumentById(
+      'claim:claim-scoped-answer',
+      { sessionId: 'scoped-answer-session-a' }
+    )
+    assert.equal(scopedDocument.evidenceTotal, 1)
+    assert.equal(scopedDocument.evidenceScopeRestricted, true)
+    assert.ok(scopedDocument.evidenceAuthorityRevision > 0)
+    const saved = first.saveAssistantExchangeDetailed(
+      '只看会话 A，现在是什么状态？',
+      '会话 A 的证据显示正在进行。',
+      [{
+        documentId: 'claim:claim-scoped-answer',
+        sourceId: 'claim-scoped-answer',
+        type: 'claim',
+        title: '范围回答对象状态',
+        contentHash: scopedDocument.content_hash,
+        evidenceSampleHash: 'a'.repeat(64),
+        evidenceRoleCounts: scopedDocument.evidenceRoleCounts,
+        evidenceAuthorityRevision: scopedDocument.evidenceAuthorityRevision,
+        evidenceScopeRestricted: true,
+        feedbackContext: {
+          query: '只看会话 A，现在是什么状态？',
+          options: {
+            sessionId: 'scoped-answer-session-a',
+            documentTypes: ['claim']
+          },
+          version: 'memory-search-feedback-v2'
+        }
+      }],
+      undefined,
+      {
+        version: 'statement-citations-v1',
+        proposedStatements: 1,
+        acceptedStatements: 1,
+        rejectedStatements: 0,
+        acceptedCitationIds: 1,
+        statementCitations: [['claim:claim-scoped-answer']]
+      }
+    )
+    const dependency = (first as any).db.prepare(`
+      SELECT evidence_scope_restricted,evidence_authority_revision,
+        evidence_supporting_count
+      FROM assistant_answer_dependencies WHERE message_id=?
+    `).get(saved.answerMessageId)
+    assert.equal(dependency.evidence_scope_restricted, 1)
+    assert.equal(dependency.evidence_supporting_count, 1)
+    assert.equal(first.listAssistantAnswerReviewsPage({
+      status: 'current',
+      reviewState: 'all',
+      messageId: saved.answerMessageId,
+      limit: 10
+    }).total, 1)
+
+    ;(first as any).db.prepare(`
+      UPDATE evidence SET excerpt='会话 B 修正，但会话 A 原文未变'
+      WHERE claim_id='claim-scoped-answer'
+        AND session_id='scoped-answer-session-b'
+    `).run()
+    const review = first.listAssistantAnswerReviewsPage({
+      status: 'needs_review',
+      reviewState: 'all',
+      messageId: saved.answerMessageId,
+      limit: 10
+    })
+    assert.equal(review.total, 1)
+    assert.equal(review.items[0].invalid_statements, 0)
+    assert.equal(review.items[0].unknown_statements, 1)
+    assert.equal(review.items[0].scoped_evidence_review_statements, 1)
+    assert.equal(first.listAssistantAnswerReviewsPage({
+      status: 'invalid',
+      reviewState: 'all',
+      messageId: saved.answerMessageId,
+      limit: 10
+    }).total, 0)
+    first.close()
+
+    reopened.initialize(databasePath)
+    const persisted = reopened.listAssistantAnswerReviewsPage({
+      status: 'needs_review',
+      reviewState: 'all',
+      messageId: saved.answerMessageId,
+      limit: 10
+    })
+    assert.equal(persisted.total, 1)
+    assert.equal(persisted.items[0].scoped_evidence_review_statements, 1)
+    const answer = reopened.getAssistantConversation(saved.conversationId, 10)
+      .messages.find((item: any) => item.id === saved.answerMessageId)
+    assert.equal(answer.citations[0].evidenceScopeRestricted, true)
   } finally {
     first.close()
     reopened.close()

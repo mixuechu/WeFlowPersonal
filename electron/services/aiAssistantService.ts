@@ -4014,7 +4014,7 @@ export class AiAssistantService {
         exchangeIntegrity: assistantArchiveStats.exchangeIntegrity,
         answerDependencies: {
           ...assistantArchiveStats.answerDependencies,
-          policy: 'statement_dependency_index_v3'
+          policy: 'statement_dependency_index_v4'
         },
         evidenceRevisions: assistantArchiveStats.evidenceRevisions,
         generalEvidenceRevisions: assistantArchiveStats.generalEvidenceRevisions
@@ -7736,6 +7736,7 @@ export class AiAssistantService {
             currentEvidenceAuthorityRevision: Number(
               document.evidenceAuthorityRevision || 0
             ),
+            evidenceScopeRestricted: Boolean(citation.evidenceScopeRestricted),
             canSupportFacts: eligibility.canSupportFacts
           })
           const citationEvidenceRoleCountsChanged = Boolean(
@@ -7762,6 +7763,7 @@ export class AiAssistantService {
             answerTimeContentHash,
             answerTimeEvidenceRoleCounts,
             answerTimeEvidenceAuthorityRevision,
+            evidenceScopeRestricted: Boolean(citation.evidenceScopeRestricted),
             currentContentHash,
             sourceId: document.source_id,
             type: document.document_type,

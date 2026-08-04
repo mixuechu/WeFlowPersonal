@@ -668,6 +668,7 @@ export class PersonalMemoryStore {
         evidence_sample_hash TEXT NOT NULL DEFAULT '',
         evidence_supporting_count INTEGER NOT NULL DEFAULT 0,
         evidence_contradiction_count INTEGER NOT NULL DEFAULT 0,
+        evidence_scope_restricted INTEGER NOT NULL DEFAULT 0,
         created_at TEXT NOT NULL,
         PRIMARY KEY(message_id,statement_index,document_id)
       ) STRICT;
@@ -999,6 +1000,7 @@ export class PersonalMemoryStore {
     this.ensureColumn('assistant_answer_dependencies', 'evidence_supporting_count', 'INTEGER NOT NULL DEFAULT 0')
     this.ensureColumn('assistant_answer_dependencies', 'evidence_contradiction_count', 'INTEGER NOT NULL DEFAULT 0')
     this.ensureColumn('assistant_answer_dependencies', 'evidence_authority_revision', 'INTEGER NOT NULL DEFAULT 0')
+    this.ensureColumn('assistant_answer_dependencies', 'evidence_scope_restricted', 'INTEGER NOT NULL DEFAULT 0')
     this.db.prepare(`
       UPDATE memory_review_decisions
       SET actor='system',
@@ -12528,6 +12530,7 @@ export class PersonalMemoryStore {
     evidenceTimeScopeMode?: 'none' | 'document_time' | 'evidence_time'
     evidenceRoleCounts?: { supporting: number; contradiction: number }
     evidenceAuthorityRevision?: number
+    evidenceScopeRestricted?: boolean
     evidenceSelection?: {
       version: 'role-balanced-v1'
       supportingDisplayed: number
@@ -12635,9 +12638,7 @@ export class PersonalMemoryStore {
           WHERE history.reverted_at IS NULL
         )
       `
-      const evidenceAuthorityRevision = evidenceScopeRestricted
-        ? 0
-        : Math.max(0, Number((this.db.prepare(`
+      const evidenceAuthorityRevision = Math.max(0, Number((this.db.prepare(`
             ${entityScopeCte}
             SELECT COALESCE(SUM(revision),0) AS revision
             FROM general_evidence_revisions
@@ -12651,7 +12652,8 @@ export class PersonalMemoryStore {
         WHERE ee.entity_id IN (SELECT entity_id FROM entity_scope)${directScope.sql}
       `).get(sourceId, ...directScope.parameters) as any)?.count || 0)
       if (!evidenceTotal) return {
-        evidence: [], evidenceTotal: 0, evidenceAuthorityRevision, ...timeScope
+        evidence: [], evidenceTotal: 0, evidenceAuthorityRevision,
+        evidenceScopeRestricted, ...timeScope
       }
       const evidence = (this.db.prepare(`
         ${entityScopeCte}
@@ -12662,7 +12664,10 @@ export class PersonalMemoryStore {
         ORDER BY ee.timestamp DESC,ee.source_id DESC,ee.session_id DESC,ee.message_id DESC
         LIMIT ?
       `).all(sourceId, ...directScope.parameters, MEMORY_CARD_EVIDENCE_LIMIT) as any[]).reverse()
-      return { evidence, evidenceTotal, evidenceAuthorityRevision, ...timeScope }
+      return {
+        evidence, evidenceTotal, evidenceAuthorityRevision,
+        evidenceScopeRestricted, ...timeScope
+      }
     }
     const genericScope = evidenceScope('sde')
     const genericTotal = Number((this.db.prepare(`
@@ -12670,8 +12675,7 @@ export class PersonalMemoryStore {
       WHERE sde.document_id=?${genericScope.sql}
     `).get(documentId, ...genericScope.parameters) as any)?.count || 0)
     if (genericTotal) {
-      const evidenceAuthorityRevision = evidenceScopeRestricted
-        ? 0 : Math.max(0, Number((this.db.prepare(`
+      const evidenceAuthorityRevision = Math.max(0, Number((this.db.prepare(`
         SELECT revision FROM general_evidence_revisions WHERE document_id=?
       `).get(documentId) as any)?.revision || 0))
       const evidence = (this.db.prepare(`
@@ -12685,6 +12689,7 @@ export class PersonalMemoryStore {
         evidence,
         evidenceTotal: genericTotal,
         evidenceAuthorityRevision,
+        evidenceScopeRestricted,
         ...timeScope
       }
     }
@@ -12697,9 +12702,7 @@ export class PersonalMemoryStore {
           : ''
     if (!foreignKey) return { evidence: [], evidenceTotal: 0, ...timeScope }
     const structuredScope = evidenceScope('e')
-    const evidenceAuthorityRevision = evidenceScopeRestricted
-      ? 0
-      : Math.max(0, Number((this.db.prepare(`
+    const evidenceAuthorityRevision = Math.max(0, Number((this.db.prepare(`
           SELECT revision FROM structured_evidence_revisions
           WHERE document_type=? AND source_id=?
         `).get(documentType, sourceId) as any)?.revision || 0))
@@ -12719,6 +12722,7 @@ export class PersonalMemoryStore {
       evidence: [],
       evidenceTotal: 0,
       evidenceAuthorityRevision,
+      evidenceScopeRestricted,
       ...timeScope
     }
     const contradictionLimit = Math.min(5, MEMORY_CARD_EVIDENCE_LIMIT)
@@ -12759,6 +12763,7 @@ export class PersonalMemoryStore {
       evidence,
       evidenceTotal,
       evidenceAuthorityRevision,
+      evidenceScopeRestricted,
       evidenceRoleCounts,
       evidenceSelection: {
         version: 'role-balanced-v1',
@@ -13042,6 +13047,7 @@ export class PersonalMemoryStore {
           0,
           Math.floor(Number(citation?.evidenceAuthorityRevision) || 0)
         ),
+        evidenceScopeRestricted: Boolean(citation?.evidenceScopeRestricted),
         ...(feedbackContext ? { feedbackContext } : {}),
         citationStorage: 'reference_only_v1'
       }]
@@ -13212,7 +13218,7 @@ export class PersonalMemoryStore {
 
   private repairAssistantAnswerDependencies(): void {
     if (!this.db) return
-    const key = 'assistant_answer_dependencies_v3'
+    const key = 'assistant_answer_dependencies_v4'
     const existing = this.db.prepare('SELECT value FROM schema_meta WHERE key=?').get(key) as any
     const missingDependencies = Boolean((this.db.prepare(`
       SELECT 1 FROM assistant_messages message
@@ -13239,14 +13245,15 @@ export class PersonalMemoryStore {
       INSERT INTO assistant_answer_dependencies(
         message_id,conversation_id,statement_index,document_id,content_hash,
         evidence_sample_hash,evidence_supporting_count,evidence_contradiction_count,
-        evidence_authority_revision,created_at
-      ) VALUES(?,?,?,?,?,?,?,?,?,?)
+        evidence_authority_revision,evidence_scope_restricted,created_at
+      ) VALUES(?,?,?,?,?,?,?,?,?,?,?)
       ON CONFLICT(message_id,statement_index,document_id) DO UPDATE SET
         content_hash=excluded.content_hash,
         evidence_sample_hash=excluded.evidence_sample_hash,
         evidence_supporting_count=excluded.evidence_supporting_count,
         evidence_contradiction_count=excluded.evidence_contradiction_count,
-        evidence_authority_revision=excluded.evidence_authority_revision
+        evidence_authority_revision=excluded.evidence_authority_revision,
+        evidence_scope_restricted=excluded.evidence_scope_restricted
     `)
     let indexedMessages = 0
     let indexedStatements = 0
@@ -13308,6 +13315,7 @@ export class PersonalMemoryStore {
               evidenceSupportingCount,
               evidenceContradictionCount,
               Math.max(0, Math.floor(Number(citation?.evidenceAuthorityRevision) || 0)),
+              citation?.evidenceScopeRestricted ? 1 : 0,
               row.created_at
             ).changes
           }
@@ -13318,7 +13326,7 @@ export class PersonalMemoryStore {
         INSERT INTO schema_meta(key,value,updated_at) VALUES(?,?,?)
         ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_at=excluded.updated_at
       `).run(key, JSON.stringify({
-        version: 3,
+        version: 4,
         scannedMessages: rows.length,
         indexedMessages,
         indexedStatements,
@@ -13332,7 +13340,7 @@ export class PersonalMemoryStore {
 
   getAssistantAnswerDependencyStats(): any {
     if (!this.db) return {
-      version: 3, messages: 0, statements: 0, dependencies: 0,
+      version: 4, messages: 0, statements: 0, dependencies: 0,
       malformedMessages: 0, indexedDependencies: 0, completedAt: ''
     }
     const counts = this.db.prepare(`
@@ -13342,12 +13350,12 @@ export class PersonalMemoryStore {
       FROM assistant_answer_dependencies
     `).get() as any
     const row = this.db.prepare(`
-      SELECT value FROM schema_meta WHERE key='assistant_answer_dependencies_v3'
+      SELECT value FROM schema_meta WHERE key='assistant_answer_dependencies_v4'
     `).get() as any
     let audit: any = {}
     try { audit = JSON.parse(String(row?.value || '{}')) } catch {}
     return {
-      version: 3,
+      version: 4,
       messages: Math.max(0, Number(counts?.messages || 0)),
       statements: Math.max(0, Number(counts?.statements || 0)),
       dependencies: Math.max(0, Number(counts?.dependencies || 0)),
@@ -13462,8 +13470,8 @@ export class PersonalMemoryStore {
         INSERT INTO assistant_answer_dependencies(
           message_id,conversation_id,statement_index,document_id,content_hash,
           evidence_sample_hash,evidence_supporting_count,evidence_contradiction_count,
-          evidence_authority_revision,created_at
-        ) VALUES(?,?,?,?,?,?,?,?,?,?)
+          evidence_authority_revision,evidence_scope_restricted,created_at
+        ) VALUES(?,?,?,?,?,?,?,?,?,?,?)
       `)
       ;(compactedGrounding.statementCitations || []).forEach((documentIds: string[], statementIndex: number) => {
         for (const documentId of documentIds) {
@@ -13478,6 +13486,7 @@ export class PersonalMemoryStore {
             Math.max(0, Math.floor(Number(citation?.evidenceRoleCounts?.supporting) || 0)),
             Math.max(0, Math.floor(Number(citation?.evidenceRoleCounts?.contradiction) || 0)),
             Math.max(0, Math.floor(Number(citation?.evidenceAuthorityRevision) || 0)),
+            citation?.evidenceScopeRestricted ? 1 : 0,
             answerAt
           )
         }
@@ -13567,7 +13576,8 @@ export class PersonalMemoryStore {
     )`
     const currentSupportingCount = `COALESCE(sec.supporting,0)`
     const currentContradictionCount = `COALESCE(sec.contradiction,0)`
-    const evidenceCountsCurrent = `(d.evidence_sample_hash=''
+    const evidenceCountsCurrent = `(d.evidence_scope_restricted=1
+      OR d.evidence_sample_hash=''
       OR s.document_type NOT IN ('claim','relation','event')
       OR (
         d.evidence_supporting_count=${currentSupportingCount}
@@ -13606,7 +13616,15 @@ export class PersonalMemoryStore {
             AND ${evidenceCountsCurrent}
             AND ${evidenceAuthorityCurrent}
             THEN 1 ELSE 0 END AS is_current,
-          CASE WHEN ${eligibility} AND d.content_hash='' THEN 1 ELSE 0 END AS is_unknown,
+          CASE WHEN ${eligibility} AND (
+            d.content_hash=''
+            OR (
+              d.evidence_scope_restricted=1
+              AND d.content_hash!=''
+              AND lower(d.content_hash)=lower(s.content_hash)
+              AND NOT ${evidenceAuthorityCurrent}
+            )
+          ) THEN 1 ELSE 0 END AS is_unknown,
           CASE WHEN s.id IS NULL THEN 1 ELSE 0 END AS is_missing,
           CASE WHEN s.id IS NOT NULL AND NOT ${eligibility} THEN 1 ELSE 0 END AS is_ineligible,
           CASE WHEN ${eligibility} AND d.content_hash!=''
@@ -13617,7 +13635,12 @@ export class PersonalMemoryStore {
           ,CASE WHEN ${eligibility} AND d.content_hash!=''
             AND lower(d.content_hash)=lower(s.content_hash)
             AND ${evidenceCountsCurrent}
-            AND NOT ${evidenceAuthorityCurrent} THEN 1 ELSE 0 END AS is_evidence_authority_changed
+            AND d.evidence_scope_restricted=0
+            AND NOT ${evidenceAuthorityCurrent} THEN 1 ELSE 0 END AS is_evidence_authority_changed,
+          CASE WHEN ${eligibility} AND d.evidence_scope_restricted=1
+            AND d.content_hash!='' AND lower(d.content_hash)=lower(s.content_hash)
+            AND NOT ${evidenceAuthorityCurrent}
+            THEN 1 ELSE 0 END AS is_scoped_evidence_changed
         FROM assistant_answer_dependencies d
         LEFT JOIN search_documents s ON s.id=d.document_id
         LEFT JOIN structured_evidence_counts sec
@@ -13634,7 +13657,8 @@ export class PersonalMemoryStore {
           MAX(is_ineligible) AS has_ineligible,
           MAX(is_content_changed) AS has_content_changed,
           MAX(is_evidence_counts_changed) AS has_evidence_counts_changed,
-          MAX(is_evidence_authority_changed) AS has_evidence_authority_changed
+          MAX(is_evidence_authority_changed) AS has_evidence_authority_changed,
+          MAX(is_scoped_evidence_changed) AS has_scoped_evidence_changed
         FROM dependency_state
         GROUP BY conversation_id,message_id,statement_index
       ),
@@ -13643,6 +13667,9 @@ export class PersonalMemoryStore {
           COUNT(*) AS total_statements,
           SUM(CASE WHEN ss.has_current=1 THEN 1 ELSE 0 END) AS supported_statements,
           SUM(CASE WHEN ss.has_current=0 AND ss.has_unknown=1 THEN 1 ELSE 0 END) AS unknown_statements,
+          SUM(CASE WHEN ss.has_current=0 AND ss.has_unknown=1
+            AND ss.has_scoped_evidence_changed=1
+            THEN 1 ELSE 0 END) AS scoped_evidence_review_statements,
           SUM(CASE WHEN ss.has_current=0 AND ss.has_unknown=0 THEN 1 ELSE 0 END) AS invalid_statements,
           SUM(CASE WHEN ss.has_current=0 AND ss.has_unknown=0
             AND ss.has_missing=1 THEN 1 ELSE 0 END) AS missing_statements,
@@ -13667,6 +13694,7 @@ export class PersonalMemoryStore {
           SUM(total_statements) AS total_statements,
           SUM(supported_statements) AS supported_statements,
           SUM(unknown_statements) AS unknown_statements,
+          SUM(scoped_evidence_review_statements) AS scoped_evidence_review_statements,
           SUM(invalid_statements) AS invalid_statements,
           SUM(missing_statements) AS missing_statements,
           SUM(ineligible_statements) AS ineligible_statements,
@@ -13688,6 +13716,8 @@ export class PersonalMemoryStore {
         COALESCE(cr.total_statements,0) AS revalidation_total_statements,
         COALESCE(cr.supported_statements,0) AS revalidation_supported_statements,
         COALESCE(cr.unknown_statements,0) AS revalidation_unknown_statements,
+        COALESCE(cr.scoped_evidence_review_statements,0)
+          AS revalidation_scoped_evidence_review_statements,
         COALESCE(cr.invalid_statements,0) AS revalidation_invalid_statements,
         COALESCE(cr.missing_statements,0) AS revalidation_missing_statements,
         COALESCE(cr.ineligible_statements,0) AS revalidation_ineligible_statements,
@@ -13824,7 +13854,8 @@ export class PersonalMemoryStore {
     )`
     const currentSupportingCount = `COALESCE(sec.supporting,0)`
     const currentContradictionCount = `COALESCE(sec.contradiction,0)`
-    const evidenceCountsCurrent = `(d.evidence_sample_hash=''
+    const evidenceCountsCurrent = `(d.evidence_scope_restricted=1
+      OR d.evidence_sample_hash=''
       OR s.document_type NOT IN ('claim','relation','event')
       OR (
         d.evidence_supporting_count=${currentSupportingCount}
@@ -13863,8 +13894,15 @@ export class PersonalMemoryStore {
             AND ${evidenceCountsCurrent}
             AND ${evidenceAuthorityCurrent}
             THEN 1 ELSE 0 END AS is_current,
-          CASE WHEN ${eligibility}
-            AND d.content_hash='' THEN 1 ELSE 0 END AS is_unknown,
+          CASE WHEN ${eligibility} AND (
+            d.content_hash=''
+            OR (
+              d.evidence_scope_restricted=1
+              AND d.content_hash!=''
+              AND lower(d.content_hash)=lower(s.content_hash)
+              AND NOT ${evidenceAuthorityCurrent}
+            )
+          ) THEN 1 ELSE 0 END AS is_unknown,
           CASE WHEN s.id IS NULL THEN 1 ELSE 0 END AS is_missing,
           CASE WHEN s.id IS NOT NULL AND NOT ${eligibility} THEN 1 ELSE 0 END AS is_ineligible,
           CASE WHEN ${eligibility} AND d.content_hash!=''
@@ -13875,7 +13913,12 @@ export class PersonalMemoryStore {
           CASE WHEN ${eligibility} AND d.content_hash!=''
             AND lower(d.content_hash)=lower(s.content_hash)
             AND ${evidenceCountsCurrent}
+            AND d.evidence_scope_restricted=0
             AND NOT ${evidenceAuthorityCurrent} THEN 1 ELSE 0 END AS is_evidence_authority_changed,
+          CASE WHEN ${eligibility} AND d.evidence_scope_restricted=1
+            AND d.content_hash!='' AND lower(d.content_hash)=lower(s.content_hash)
+            AND NOT ${evidenceAuthorityCurrent}
+            THEN 1 ELSE 0 END AS is_scoped_evidence_changed,
           printf('%s:%s:%s:%s:%s:%s',
             d.document_id,
             CASE WHEN s.id IS NULL THEN 'missing'
@@ -13916,6 +13959,7 @@ export class PersonalMemoryStore {
           MAX(d.is_content_changed) AS has_content_changed,
           MAX(d.is_evidence_counts_changed) AS has_evidence_counts_changed,
           MAX(d.is_evidence_authority_changed) AS has_evidence_authority_changed,
+          MAX(d.is_scoped_evidence_changed) AS has_scoped_evidence_changed,
           weflow_sha256((
             SELECT group_concat(ordered.dependency_token,'|') FROM (
               SELECT nested.dependency_token
@@ -13933,6 +13977,9 @@ export class PersonalMemoryStore {
           COUNT(*) AS total_statements,
           SUM(CASE WHEN ss.has_current=1 THEN 1 ELSE 0 END) AS supported_statements,
           SUM(CASE WHEN ss.has_current=0 AND ss.has_unknown=1 THEN 1 ELSE 0 END) AS unknown_statements,
+          SUM(CASE WHEN ss.has_current=0 AND ss.has_unknown=1
+            AND ss.has_scoped_evidence_changed=1
+            THEN 1 ELSE 0 END) AS scoped_evidence_review_statements,
           SUM(CASE WHEN ss.has_current=0 AND ss.has_unknown=0 THEN 1 ELSE 0 END) AS invalid_statements,
           SUM(CASE WHEN ss.has_current=0 AND ss.has_unknown=0
             AND ss.has_missing=1 THEN 1 ELSE 0 END) AS missing_statements,
@@ -14095,6 +14142,7 @@ export class PersonalMemoryStore {
       ${revalidationCte}
       SELECT ar.message_id,ar.conversation_id,ar.created_at,ar.state_key,
         ar.total_statements,ar.supported_statements,ar.unknown_statements,ar.invalid_statements,
+        ar.scoped_evidence_review_statements,
         ar.missing_statements,ar.ineligible_statements,ar.content_changed_statements,
         ar.evidence_counts_changed_statements,ar.evidence_changed_statements,
         decision.action AS latest_review_action,decision.state_key AS reviewed_state_key,

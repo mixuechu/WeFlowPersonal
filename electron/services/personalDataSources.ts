@@ -240,6 +240,7 @@ export function buildModelMemoryContext(
           0,
           Math.floor(Number(item.evidenceAuthorityRevision) || 0)
         ),
+        evidenceScopeRestricted: Boolean(item.evidenceScopeRestricted),
         canSupportFacts: eligibility.canSupportFacts
       }
     })
@@ -341,6 +342,7 @@ export function getMemoryCitationFreshness(input: {
   currentEvidenceRoleCounts?: { supporting?: number; contradiction?: number }
   answerTimeEvidenceAuthorityRevision?: number
   currentEvidenceAuthorityRevision?: number
+  evidenceScopeRestricted?: boolean
   canSupportFacts?: boolean
   unavailable?: boolean
 }): 'current' | 'changed' | 'unknown' | 'ineligible' | 'missing' {
@@ -389,7 +391,7 @@ export function getMemoryCitationFreshness(input: {
   )
   if (answerAuthorityRevision > 0 && currentAuthorityRevision > 0
     && answerAuthorityRevision !== currentAuthorityRevision) {
-    return 'changed'
+    return input.evidenceScopeRestricted ? 'unknown' : 'changed'
   }
   return 'current'
 }

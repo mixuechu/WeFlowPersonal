@@ -212,11 +212,16 @@ function assistantRevalidationReasonSummary(item: any): string {
   const evidenceChanged = Math.max(0, Number(
     item?.evidence_changed_statements ?? item?.revalidation_evidence_changed_statements
   ) || 0)
+  const scopedEvidenceReview = Math.max(0, Number(
+    item?.scoped_evidence_review_statements
+      ?? item?.revalidation_scoped_evidence_review_statements
+  ) || 0)
   if (missing) reasons.push(`来源已删除 ${missing}`)
   if (ineligible) reasons.push(`可信资格失效 ${ineligible}`)
   if (contentChanged) reasons.push(`结构化内容变化 ${contentChanged}`)
   if (evidenceCountsChanged) reasons.push(`支持/反证构成变化 ${evidenceCountsChanged}`)
   if (evidenceChanged) reasons.push(`权威原文集合变化 ${evidenceChanged}`)
+  if (scopedEvidenceReview) reasons.push(`限定范围内证据需重新核验 ${scopedEvidenceReview}`)
   const invalid = Math.max(0, Number(
     item?.invalid_statements ?? item?.revalidation_invalid_statements
   ) || 0)
@@ -7827,7 +7832,7 @@ function AiAssistantPage() {
                 已知晓 {Number(assistantAnswerReviews.counts?.resolved || 0)} ·
                 需要处理总计 {Number(assistantAnswerReviews.counts?.attention || 0)} ·
                 已失去支持 {Number(assistantAnswerReviews.counts?.invalid || 0)} ·
-                旧版待核验 {Number(assistantAnswerReviews.counts?.needs_review || 0)} ·
+                待重新核验 {Number(assistantAnswerReviews.counts?.needs_review || 0)} ·
                 当前有效 {Number(assistantAnswerReviews.counts?.current || 0)}
               </small>
               <div className="assistant-answer-review-list">
@@ -7846,7 +7851,9 @@ function AiAssistantPage() {
                       ? ` · 失效 ${Number(item.invalid_statements)}`
                       : ''}
                     {Number(item.unknown_statements || 0)
-                      ? ` · 指纹未知 ${Number(item.unknown_statements)}`
+                      ? Number(item.scoped_evidence_review_statements || 0)
+                        ? ` · 范围证据待核验 ${Number(item.scoped_evidence_review_statements)}`
+                        : ` · 指纹未知 ${Number(item.unknown_statements)}`
                       : ''}
                   </small>
                   {!!assistantRevalidationReasonSummary(item) && <small
@@ -7989,7 +7996,7 @@ function AiAssistantPage() {
                 <small>{conversation.revalidation_status === 'invalid'
                   ? `⚠ 已失去支持 · ${Number(conversation.revalidation_invalid_statements || 0)} 条陈述`
                   : conversation.revalidation_status === 'needs_review'
-                    ? `△ 需要复核 · ${Number(conversation.revalidation_unknown_statements || 0)} 条旧陈述`
+                    ? `△ 需要复核 · ${Number(conversation.revalidation_unknown_statements || 0)} 条陈述`
                     : conversation.revalidation_status === 'current'
                       ? `✓ 当前有效 · ${Number(conversation.revalidation_supported_statements || 0)} 条陈述`
                       : '无事实陈述或旧版未建立依赖'}</small>
@@ -8080,7 +8087,7 @@ function AiAssistantPage() {
                 {memoryAnswer.groundingRevalidation?.statements?.[statementIndex]?.status !== 'current' && <small>
                   {memoryAnswer.groundingRevalidation?.statements?.[statementIndex]?.status === 'invalid'
                     ? '⚠ 这条历史陈述引用的记忆已经变化、失效或被删除，请重新提问。'
-                    : '△ 这条旧陈述生成时尚未保存内容指纹，当前只能核验来源仍存在，不能证明内容未变化。'}
+                    : '△ 这条陈述缺少旧版指纹，或其限定范围的权威证据版本已变化，需要按原范围重新核验。'}
                 </small>}
                 <small>
                   依据：{(statement.citationIds || []).map((documentId: string) => {
@@ -8106,7 +8113,7 @@ function AiAssistantPage() {
             </small>}
             {memoryAnswer.groundingRevalidation?.status === 'needs_review' && <small className="assistant-grounding-warning">
               这段历史回答需要重新核验：{Number(memoryAnswer.groundingRevalidation.invalidStatements || 0)} 条已失去支持，
-              {Number(memoryAnswer.groundingRevalidation.unknownStatements || 0)} 条旧记录缺少回答时内容指纹。建议用原问题重新提问。
+              {Number(memoryAnswer.groundingRevalidation.unknownStatements || 0)} 条缺少旧版指纹或限定范围证据版本已变化。建议用原问题重新提问。
             </small>}
             {memoryAnswer.groundingRevalidation?.status === 'invalid' && <small className="assistant-grounding-invalid">
               这段历史回答已没有当前有效证据支持，仅作为历史文本保留；请勿据此行动，建议重新提问。
