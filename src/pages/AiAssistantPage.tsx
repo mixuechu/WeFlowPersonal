@@ -6388,7 +6388,7 @@ function AiAssistantPage() {
               return <article key={result.id}>
               <span>{MEMORY_TYPE_LABELS[result.document_type] || result.document_type}
                 {result.match_source ? ` · ${result.match_source}匹配` : ''}
-                {result.match_reason === 'pinyin_entity' ? ' · 拼音命中' : result.match_reason === 'fuzzy_entity' ? ' · 名称近似召回' : result.match_reason === 'entity_alias_or_account' ? ' · 别名/微信 ID 命中' : ''}
+                {result.match_reason === 'pinyin_entity' ? ' · 拼音命中' : result.match_reason === 'fuzzy_entity' ? ' · 名称近似召回' : result.match_reason === 'entity_alias_or_account' ? ' · 别名/微信 ID 命中' : result.match_reason === 'entity_evidence' ? ' · 身份原文命中' : ''}
                 {result.semantic_score ? ` · ${Math.round(result.semantic_score * 100)}%` : ''}
                 {result.semantic_search_mode === 'ann' ? ' · ANN 召回' : result.semantic_search_mode === 'exact' ? ' · 精确向量召回' : ''}
               </span>

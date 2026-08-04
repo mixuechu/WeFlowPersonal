@@ -4452,6 +4452,98 @@ test('entity evidence separates current memory links from historical audit and p
   assert.equal(store.getEntityEvidenceStats('evidence-state-project').activeEvidenceTotal, 1)
 }))
 
+test('direct entity evidence is keyword searchable, scope aware and hydrated as original evidence', () => withStore(store => {
+  const graph = {
+    entities: [{
+      id: 'searchable-evidence-entity',
+      type: 'project',
+      canonicalName: '直接证据检索项目',
+      trustStatus: 'confirmed',
+      aliases: [],
+      accountIds: []
+    }],
+    relations: [],
+    reviewQueue: []
+  }
+  store.syncGraph(graph as any, '', {
+    entityEvidence: [{
+      entityId: 'searchable-evidence-entity',
+      sourceId: 'wechat',
+      messageId: 'wechat:searchable-entity-session:old-identity',
+      sessionId: 'searchable-entity-session',
+      timestamp: 1_920_000_000,
+      sender: '旧发送者',
+      excerpt: '首次提到火星暗号项目',
+      evidenceKind: 'entity_mention'
+    }, {
+      entityId: 'searchable-evidence-entity',
+      sourceId: 'mail',
+      messageId: 'mail:new-identity',
+      sessionId: 'data-source:mail:searchable',
+      timestamp: 1_920_000_100,
+      sender: '邮件发起人',
+      excerpt: '邮件再次确认火星暗号身份',
+      evidenceKind: 'identity_anchor'
+    }]
+  })
+
+  const result = store.searchText('火星暗号', 10)
+    .find(item => item.id === 'entity:searchable-evidence-entity')
+  assert.equal(result?.match_reason, 'entity_evidence')
+  const payload = store.getDocumentEvidencePayload('entity', 'searchable-evidence-entity')
+  assert.equal(payload.evidenceTotal, 2)
+  assert.ok(payload.evidence.every(item => item.evidence_role === 'original'))
+  const hydratedDocument = store.getSearchDocumentById('entity:searchable-evidence-entity')
+  assert.equal(hydratedDocument.evidenceTotal, 2)
+  assert.equal(hydratedDocument.evidence.length, 2)
+  const firstPage = store.getDocumentEvidencePage('entity', 'searchable-evidence-entity', {
+    limit: 1,
+    source: 'mail',
+    query: '再次确认'
+  })
+  assert.equal(firstPage.total, 1)
+  assert.equal(firstPage.unfilteredTotal, 2)
+  assert.equal(firstPage.items[0].source_id, 'mail')
+  assert.equal(firstPage.items[0].evidence_role, 'original')
+  assert.equal(store.getDocumentEvidencePage('entity', 'searchable-evidence-entity', {
+    role: 'contradiction'
+  }).total, 0)
+
+  const mailScope = store.listScopedSearchDocumentIds({
+    sourceIds: ['mail'],
+    sessionId: 'data-source:mail:searchable',
+    from: new Date(1_920_000_050 * 1000).toISOString()
+  })
+  assert.equal(mailScope?.has('entity:searchable-evidence-entity'), true)
+  assert.equal(store.listScopedSearchDocumentIds({
+    sourceIds: ['documents']
+  })?.has('entity:searchable-evidence-entity'), false)
+  const beforeRevision = Number(store.getMemorySearchRevision())
+  const archive = store.getDocumentEvidencePage('entity', 'searchable-evidence-entity', {
+    limit: 1
+  })
+  store.syncGraph(graph as any, '', {
+    entityEvidence: [{
+      entityId: 'searchable-evidence-entity',
+      sourceId: 'calendar',
+      messageId: 'calendar:newer-identity',
+      sessionId: 'data-source:calendar:searchable',
+      timestamp: 1_920_000_200,
+      sender: '日历',
+      excerpt: '日历补充新的身份线索',
+      evidenceKind: 'entity_mention'
+    }]
+  })
+  assert.ok(Number(store.getMemorySearchRevision()) > beforeRevision)
+  assert.equal(store.getDocumentEvidencePage('entity', 'searchable-evidence-entity', {
+    limit: 1,
+    offset: 1,
+    revision: archive.revision
+  }).stale, true)
+  assert.ok(store.searchText('新的身份线索', 10)
+    .some(item => item.id === 'entity:searchable-evidence-entity'))
+}))
+
 test('direct entity evidence follows reversible identity merges without copying plaintext', () => withStore(store => {
   const entities = ['source-identity-evidence', 'target-identity-evidence'].map((id, index) => ({
     id,
@@ -5857,20 +5949,20 @@ test('memory search revision trigger health is visible and repaired on restart',
     const first = new PersonalMemoryStore()
     first.initialize(databasePath)
     assert.deepEqual(first.getMemorySearchRevisionHealth(), {
-      version: 'memory-search-revision-v1',
+      version: 'memory-search-revision-v2',
       revision: first.getMemorySearchRevision(),
-      expectedTriggers: 18,
-      installedTriggers: 18,
+      expectedTriggers: 21,
+      installedTriggers: 21,
       healthy: true
     })
     ;(first as any).db.exec('DROP TRIGGER trg_memory_search_revision_search_documents_insert')
-    assert.equal(first.getMemorySearchRevisionHealth().installedTriggers, 17)
+    assert.equal(first.getMemorySearchRevisionHealth().installedTriggers, 20)
     assert.equal(first.getMemorySearchRevisionHealth().healthy, false)
     first.close()
 
     const reopened = new PersonalMemoryStore()
     reopened.initialize(databasePath)
-    assert.equal(reopened.getMemorySearchRevisionHealth().installedTriggers, 18)
+    assert.equal(reopened.getMemorySearchRevisionHealth().installedTriggers, 21)
     assert.equal(reopened.getMemorySearchRevisionHealth().healthy, true)
     reopened.close()
   } finally {

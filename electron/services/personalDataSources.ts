@@ -144,6 +144,17 @@ export function getMemoryEvidenceEligibility(item: any): MemoryEvidenceEligibili
     : 'not_applicable') as MemoryEvidenceEligibility['status']
   const hasEvidence = Array.isArray(item?.evidence) && item.evidence.length > 0
 
+  if (type === 'entity') {
+    return {
+      status: 'not_applicable',
+      visibility: 'normal',
+      canSupportFacts: false,
+      trustLabel: hasEvidence ? '身份线索' : '检索线索',
+      policyReason: hasEvidence
+        ? '实体原文仅用于身份定位和消歧，不能替代事实、关系或事件结论'
+        : '实体名称与摘要仅用于定位，缺少可支持事实结论的结构化证据'
+    }
+  }
   if (status === 'rejected') {
     return {
       status,

@@ -952,6 +952,7 @@ export class PersonalMemoryStore {
     const tables = [
       'search_documents',
       'search_document_evidence',
+      'entity_evidence',
       'evidence',
       'memory_search_feedback',
       'vector_ann_entries',
@@ -990,10 +991,10 @@ export class PersonalMemoryStore {
   }
 
   getMemorySearchRevisionHealth(): any {
-    const expectedTriggers = 18
+    const expectedTriggers = 21
     if (!this.db) {
       return {
-        version: 'memory-search-revision-v1',
+        version: 'memory-search-revision-v2',
         revision: '0',
         expectedTriggers,
         installedTriggers: 0,
@@ -1006,7 +1007,7 @@ export class PersonalMemoryStore {
       WHERE type='trigger' AND name LIKE 'trg_memory_search_revision_%'
     `).get() as any)?.count || 0)
     return {
-      version: 'memory-search-revision-v1',
+      version: 'memory-search-revision-v2',
       revision: this.getMemorySearchRevision(),
       expectedTriggers,
       installedTriggers,
@@ -8986,6 +8987,19 @@ export class PersonalMemoryStore {
     if (!hasScope) return null
     const conditions: string[] = []
     const parameters: Array<string | number> = []
+    const entityEvidenceExists = (predicate: string) => `(d.document_type='entity' AND EXISTS (
+      WITH RECURSIVE entity_scope(entity_id) AS (
+        SELECT d.source_id
+        UNION
+        SELECT history.source_entity_id
+        FROM merge_history history
+        JOIN entity_scope scope ON history.target_entity_id=scope.entity_id
+        WHERE history.reverted_at IS NULL
+      )
+      SELECT 1 FROM entity_scope scope
+      JOIN entity_evidence ee ON ee.entity_id=scope.entity_id
+      WHERE ${predicate}
+    ))`
     const documentTypes = [...new Set((options.documentTypes || []).map(String).filter(Boolean))]
     if (documentTypes.length) {
       conditions.push(`d.document_type IN (${documentTypes.map(() => '?').join(',')})`)
@@ -9004,8 +9018,9 @@ export class PersonalMemoryStore {
           WHERE e.event_id=d.source_id AND LOWER(e.source_id) IN (${placeholders})))
         OR (d.document_type='relation' AND EXISTS (SELECT 1 FROM evidence e
           WHERE e.relation_id=d.source_id AND LOWER(e.source_id) IN (${placeholders})))
+        OR ${entityEvidenceExists(`LOWER(ee.source_id) IN (${placeholders})`)}
       )`)
-      parameters.push(...sourceIds, ...sourceIds, ...sourceIds, ...sourceIds)
+      parameters.push(...sourceIds, ...sourceIds, ...sourceIds, ...sourceIds, ...sourceIds)
     }
     const relationTypes = [...new Set((options.relationTypes || [])
       .map(value => String(value).trim().toLowerCase()).filter(Boolean))]
@@ -9029,8 +9044,9 @@ export class PersonalMemoryStore {
           WHERE e.event_id=d.source_id AND e.session_id IN (${placeholders})))
         OR (d.document_type='relation' AND EXISTS (SELECT 1 FROM evidence e
           WHERE e.relation_id=d.source_id AND e.session_id IN (${placeholders})))
+        OR ${entityEvidenceExists(`ee.session_id IN (${placeholders})`)}
       )`)
-      parameters.push(...sessions, ...sessions, ...sessions, ...sessions)
+      parameters.push(...sessions, ...sessions, ...sessions, ...sessions, ...sessions)
     }
     if (options.entityId) {
       const terms = [...new Set((options.entityTerms || []).map(value => String(value).trim().toLowerCase()).filter(Boolean))]
@@ -9079,11 +9095,12 @@ export class PersonalMemoryStore {
           WHERE e.event_id=d.source_id AND ${range('e.timestamp')}))
         OR (d.document_type='relation' AND EXISTS (SELECT 1 FROM evidence e
           WHERE e.relation_id=d.source_id AND ${range('e.timestamp')}))
+        OR ${entityEvidenceExists(range('ee.timestamp'))}
         OR ${metadataExpressions.map(key =>
           `(json_extract(d.metadata_json,'$.${key}') IS NOT NULL AND ${range(`CAST(strftime('%s',json_extract(d.metadata_json,'$.${key}')) AS INTEGER)`)})`
         ).join(' OR ')}
       )`)
-      for (let index = 0; index < 4 + metadataExpressions.length; index += 1) addRangeParameters()
+      for (let index = 0; index < 5 + metadataExpressions.length; index += 1) addRangeParameters()
     }
     if (!conditions.length) return null
     return new Set((this.db.prepare(`
@@ -9505,8 +9522,38 @@ export class PersonalMemoryStore {
         WHERE d.title LIKE ? OR d.search_text LIKE ? ORDER BY d.updated_at DESC LIMIT ?
       `).all(`%${normalized}%`, `%${normalized}%`, safeLimit) as any[]
     }
-    if (exactMatches.length >= safeLimit) return exactMatches
+    const evidencePattern = `%${normalized.toLowerCase()}%`
+    const evidenceMatches = this.db.prepare(`
+      WITH RECURSIVE entity_scope(root_id,entity_id) AS (
+        SELECT e.id,e.id FROM entities e
+        WHERE e.deleted_at IS NULL AND e.trust_status='confirmed'
+        UNION
+        SELECT scope.root_id,history.source_entity_id
+        FROM entity_scope scope
+        JOIN merge_history history ON history.target_entity_id=scope.entity_id
+        WHERE history.reverted_at IS NULL
+      )
+      SELECT d.*,25 AS rank,'entity_evidence' AS match_reason,
+        MAX(ee.timestamp) AS evidence_match_at
+      FROM search_documents d ${scopeJoin}
+      JOIN entity_scope scope ON scope.root_id=d.source_id
+      JOIN entity_evidence ee ON ee.entity_id=scope.entity_id
+      WHERE d.document_type='entity' AND (
+        LOWER(ee.excerpt) LIKE ? OR LOWER(ee.sender) LIKE ?
+        OR LOWER(ee.session_id) LIKE ? OR LOWER(ee.message_id) LIKE ?
+      )
+      GROUP BY d.id
+      ORDER BY evidence_match_at DESC,d.id
+      LIMIT ?
+    `).all(
+      evidencePattern, evidencePattern, evidencePattern, evidencePattern, safeLimit
+    ) as any[]
     const knownIds = new Set(exactMatches.map(item => item.id))
+    const uniqueEvidenceMatches = evidenceMatches.filter(item => {
+      if (knownIds.has(item.id)) return false
+      knownIds.add(item.id)
+      return true
+    })
     const fuzzyMatches = (this.db.prepare(`
       SELECT d.*,0 AS rank FROM search_documents d ${scopeJoin} WHERE d.document_type='entity'
     `).all() as any[]).flatMap(item => {
@@ -9523,7 +9570,7 @@ export class PersonalMemoryStore {
           : fuzzyScore === 0 ? 'entity_alias_or_account' : 'fuzzy_entity'
       }]
     }).sort((left, right) => left.rank - right.rank)
-    return [...exactMatches, ...fuzzyMatches].slice(0, safeLimit)
+    return [...exactMatches, ...uniqueEvidenceMatches, ...fuzzyMatches].slice(0, safeLimit)
   }
 
   listEmbeddingCandidates(model: string, limit = 100): any[] {
@@ -9833,6 +9880,35 @@ export class PersonalMemoryStore {
       }
     }
     const documentId = `${documentType}:${sourceId}`
+    if (documentType === 'entity') {
+      const directScope = evidenceScope('ee')
+      const entityScopeCte = `
+        WITH RECURSIVE entity_scope(entity_id) AS (
+          SELECT ?
+          UNION
+          SELECT history.source_entity_id
+          FROM merge_history history
+          JOIN entity_scope scope ON history.target_entity_id=scope.entity_id
+          WHERE history.reverted_at IS NULL
+        )
+      `
+      const evidenceTotal = Number((this.db.prepare(`
+        ${entityScopeCte}
+        SELECT COUNT(*) AS count FROM entity_evidence ee
+        WHERE ee.entity_id IN (SELECT entity_id FROM entity_scope)${directScope.sql}
+      `).get(sourceId, ...directScope.parameters) as any)?.count || 0)
+      if (!evidenceTotal) return { evidence: [], evidenceTotal: 0 }
+      const evidence = (this.db.prepare(`
+        ${entityScopeCte}
+        SELECT ee.source_id,ee.message_id,ee.session_id,ee.timestamp,ee.sender,ee.excerpt,
+          'original' AS evidence_role
+        FROM entity_evidence ee
+        WHERE ee.entity_id IN (SELECT entity_id FROM entity_scope)${directScope.sql}
+        ORDER BY ee.timestamp DESC,ee.source_id DESC,ee.session_id DESC,ee.message_id DESC
+        LIMIT ?
+      `).all(sourceId, ...directScope.parameters, MEMORY_CARD_EVIDENCE_LIMIT) as any[]).reverse()
+      return { evidence, evidenceTotal }
+    }
     const genericScope = evidenceScope('sde')
     const genericTotal = Number((this.db.prepare(`
       SELECT COUNT(*) AS count FROM search_document_evidence sde
@@ -9968,7 +10044,10 @@ export class PersonalMemoryStore {
         parameters
       }
     }
-    const revision = this.getMemoryEvidenceArchiveRevision()
+    const currentRevision = () => documentType === 'entity'
+      ? `${this.getGraphReviewRevision()}:${this.getMemoryEvidenceArchiveRevision()}`
+      : this.getMemoryEvidenceArchiveRevision()
+    const revision = currentRevision()
     const empty = {
       items: [],
       total: 0,
@@ -9986,6 +10065,51 @@ export class PersonalMemoryStore {
       return { ...empty, stale: true }
     }
     const documentId = `${documentType}:${sourceId}`
+    if (documentType === 'entity') {
+      const entityScopeCte = `
+        WITH RECURSIVE entity_scope(entity_id) AS (
+          SELECT ?
+          UNION
+          SELECT history.source_entity_id
+          FROM merge_history history
+          JOIN entity_scope scope ON history.target_entity_id=scope.entity_id
+          WHERE history.reverted_at IS NULL
+        )
+      `
+      const unfilteredTotal = Number((this.db.prepare(`
+        ${entityScopeCte}
+        SELECT COUNT(*) AS count FROM entity_evidence ee
+        WHERE ee.entity_id IN (SELECT entity_id FROM entity_scope)
+      `).get(sourceId) as any)?.count || 0)
+      const filter = evidenceFilter('ee')
+      const total = Number((this.db.prepare(`
+        ${entityScopeCte}
+        SELECT COUNT(*) AS count FROM entity_evidence ee
+        WHERE ee.entity_id IN (SELECT entity_id FROM entity_scope)${filter.sql}
+      `).get(sourceId, ...filter.parameters) as any)?.count || 0)
+      const items = total
+        ? this.db.prepare(`
+            ${entityScopeCte}
+            SELECT ee.source_id,ee.message_id,ee.session_id,ee.timestamp,ee.sender,ee.excerpt,
+              'original' AS evidence_role
+            FROM entity_evidence ee
+            WHERE ee.entity_id IN (SELECT entity_id FROM entity_scope)${filter.sql}
+            ORDER BY ee.timestamp DESC,ee.source_id DESC,ee.session_id DESC,ee.message_id DESC
+            LIMIT ? OFFSET ?
+          `).all(sourceId, ...filter.parameters, limit, offset) as any[]
+        : []
+      const completedRevision = currentRevision()
+      if (completedRevision !== revision) {
+        return { ...empty, revision: completedRevision, stale: true }
+      }
+      return {
+        ...empty,
+        items,
+        total,
+        unfilteredTotal,
+        hasMore: offset + items.length < total
+      }
+    }
     const genericUnfilteredTotal = Number((this.db.prepare(`
       SELECT COUNT(*) AS count FROM search_document_evidence WHERE document_id=?
     `).get(documentId) as any)?.count || 0)

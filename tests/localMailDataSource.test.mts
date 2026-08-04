@@ -102,6 +102,8 @@ test('memory evidence eligibility keeps review status separate from factual supp
   assert.equal(getMemoryEvidenceEligibility(item('confirmed', undefined)).status, 'not_applicable')
   assert.equal(getMemoryEvidenceEligibility(item('message', undefined)).canSupportFacts, true)
   assert.equal(getMemoryEvidenceEligibility(item('claim', 'confirmed', false)).canSupportFacts, false)
+  assert.equal(getMemoryEvidenceEligibility(item('entity', undefined)).canSupportFacts, false)
+  assert.equal(getMemoryEvidenceEligibility(item('entity', undefined)).trustLabel, '身份线索')
 
   const results = [
     { id: 'candidate', ...item('claim', 'candidate') },
