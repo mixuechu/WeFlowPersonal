@@ -132,6 +132,10 @@ import {
   isPlaceholderPersonEntity,
   quarantinePlaceholderPersonEntities
 } from './placeholderEntityPolicy'
+import {
+  quarantineInvalidRelationTypes,
+  relationTypeViolation
+} from './relationTypePolicy'
 import { assertGraphReviewMutationRevision } from './graphReviewMutationPolicy'
 import { assertTaskOwnershipMutationRevision } from './taskOwnershipMutationPolicy'
 import { assertStructuredMemoryMutationRevision } from './structuredMemoryMutationPolicy'
@@ -876,7 +880,7 @@ export class AiAssistantService {
         personalMemoryStore.getRelationEvidenceCounts()
       )
       this.quarantinePlaceholderEntities()
-      this.repairInvalidRelations()
+      this.quarantineInvalidRelations()
       const confirmedEntityIds = new Set(this.state.graph.reviewQueue.flatMap(review =>
         review.status === 'confirmed' && review.kind === 'entity_creation' && review.entityId
           ? [review.entityId]
@@ -998,16 +1002,41 @@ export class AiAssistantService {
     this.state.graph.entities = result.entities
   }
 
-  private repairInvalidRelations(): void {
-    const entityTypes = new Map(this.state.graph.entities.map(entity => [entity.id, entity.type]))
-    const personOnlyPredicates = /伴侣|配偶|夫妻|父亲|母亲|兄弟|姐妹|朋友|同学/
-    const removed = new Set(this.state.graph.relations.filter(relation =>
-      personOnlyPredicates.test(relation.predicate) &&
-      (entityTypes.get(relation.subjectId) !== 'person' || entityTypes.get(relation.objectId) !== 'person')
-    ).map(relation => relation.id))
-    if (!removed.size) return
-    this.state.graph.relations = this.state.graph.relations.filter(relation => !removed.has(relation.id))
-    this.state.graph.reviewQueue = this.state.graph.reviewQueue.filter(review => !review.relationId || !removed.has(review.relationId))
+  private quarantineInvalidRelations(): void {
+    const now = new Date().toISOString()
+    const result = quarantineInvalidRelationTypes(
+      this.state.graph.relations,
+      this.state.graph.entities,
+      now
+    )
+    this.state.graph.relations = result.relations
+    for (const relationId of result.invalidRelationIds) {
+      const relation = this.state.graph.relations.find(item => item.id === relationId)
+      if (!relation || relation.status === 'rejected') continue
+      if (this.state.graph.reviewQueue.some(review =>
+        review.kind === 'relation' && review.relationId === relationId &&
+        review.status === 'pending')) continue
+      const subject = this.state.graph.entities.find(entity =>
+        entity.id === relation.subjectId)?.canonicalName || '未知实体'
+      const object = this.state.graph.entities.find(entity =>
+        entity.id === relation.objectId)?.canonicalName || '未知实体'
+      const violation = relationTypeViolation(relation, this.state.graph.entities)
+      let reviewId = `review_rel_type_${relationId}`
+      let suffix = 2
+      while (this.state.graph.reviewQueue.some(review => review.id === reviewId)) {
+        reviewId = `review_rel_type_${relationId}_${suffix++}`
+      }
+      this.state.graph.reviewQueue.push({
+        id: reviewId,
+        kind: 'relation',
+        title: `${subject} — ${relation.predicate} → ${object}`,
+        detail: `${violation || '关系端点类型需要重新核对'}。原关系和证据均已保留；请修改谓词或重新选择主语、宾语后确认，也可以拒绝。`,
+        confidence: relation.confidence,
+        status: 'pending',
+        createdAt: now,
+        relationId
+      })
+    }
   }
 
   private saveState(strictMemorySync = false): void {

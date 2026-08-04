@@ -1,4 +1,5 @@
 import crypto from 'crypto'
+import { relationTypeViolation } from './relationTypePolicy.ts'
 
 export type RelationCorrection = {
   subjectId?: string
@@ -42,6 +43,11 @@ export function planRelationConfirmation(input: {
   if (subject?.trustStatus !== 'confirmed' || object?.trustStatus !== 'confirmed') {
     throw new Error('请先确认关系两端的实体，再确认关系')
   }
+  const typeViolation = relationTypeViolation(
+    { subjectId, predicate, objectId },
+    entities
+  )
+  if (typeViolation) throw new Error(`${typeViolation}；请修改谓词或重新选择关系两端`)
   const id = relationSemanticId(subjectId, predicate, objectId)
   const before = {
     id: String(relation.id),
