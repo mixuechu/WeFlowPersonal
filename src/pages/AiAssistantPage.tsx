@@ -43,7 +43,14 @@ type Task = {
   createdAt?: string
   updatedAt?: string
   mutationToken?: string
-  evidence?: Array<{ messageId: string; timestamp: number; sender: string; excerpt: string }>
+  evidence?: Array<{
+    sourceId?: string
+    sessionId?: string
+    messageId: string
+    timestamp: number
+    sender: string
+    excerpt: string
+  }>
 }
 
 type MemoryEvidenceArchiveFilters = {

@@ -4,7 +4,8 @@ import {
   assertTaskMutationBatch,
   assertTaskMutationToken,
   buildTaskMutationToken,
-  classifyTaskMutationRecovery
+  classifyTaskMutationRecovery,
+  TASK_ABSENT_MUTATION_TOKEN
 } from '../electron/services/taskMutationPolicy.ts'
 
 const task = {
@@ -70,4 +71,14 @@ test('prepared task recovery applies, abandons or preserves only exact states', 
     { ...task, status: 'doing', updatedAt: '2026-08-04T00:00:30.000Z' }
   ], beforeTokens, afterTokens), 'conflict')
   assert.equal(classifyTaskMutationRecovery([], {}, {}), 'conflict')
+})
+
+test('prepared task creation distinguishes absent and committed task state', () => {
+  const beforeTokens = { [task.id]: TASK_ABSENT_MUTATION_TOKEN }
+  const afterTokens = { [task.id]: buildTaskMutationToken(task) }
+  assert.equal(classifyTaskMutationRecovery([task], beforeTokens, afterTokens), 'apply')
+  assert.equal(classifyTaskMutationRecovery([], beforeTokens, afterTokens), 'abandon')
+  assert.equal(classifyTaskMutationRecovery([
+    { ...task, title: '冲突版本' }
+  ], beforeTokens, afterTokens), 'conflict')
 })

@@ -48,9 +48,14 @@ import {
   taskEvidenceFingerprint
 } from './taskReviewFeedback'
 import {
+  buildTaskEvidenceFromCitations,
+  taskIdFromAssistantAnswer
+} from './taskCitationEvidencePolicy'
+import {
   assertTaskMutationBatch,
   buildTaskMutationToken,
-  classifyTaskMutationRecovery
+  classifyTaskMutationRecovery,
+  TASK_ABSENT_MUTATION_TOKEN
 } from './taskMutationPolicy.ts'
 import {
   applyReminderPreferences,
@@ -331,6 +336,7 @@ type AssistantTask = {
     sender: string
     excerpt: string
   }>
+  mutationToken?: string
 }
 
 type GraphEntity = {
@@ -5664,8 +5670,9 @@ export class AiAssistantService {
   createTaskFromMemory(input: any): AssistantTask {
     const title = String(input?.title || '').trim().slice(0, 300)
     if (!title) throw new Error('待办标题不能为空')
+    const assistantMessageId = String(input?.assistantMessageId || '').trim()
     const storedAnswer = personalMemoryStore.getAssistantAnswerMessage(
-      String(input?.assistantMessageId || '')
+      assistantMessageId
     )
     if (!storedAnswer) throw new Error('找不到这段回答的本机加密记录，不能据此生成待办')
     const authenticatedAnswer = this.enrichAssistantCitationFeedback({
@@ -5679,18 +5686,16 @@ export class AiAssistantService {
     if (revalidation.status !== 'current' || Number(revalidation.supportedStatements || 0) < 1) {
       throw new Error('这段回答的权威证据已经变化、失效或无法证明仍与生成时一致，请用原问题重新提问后再生成待办')
     }
-    const evidence = citations.flatMap((citation: any) => Array.isArray(citation?.evidence)
-      ? citation.evidence.map((item: any) => ({
-        messageId: String(item.message_id || item.messageId || ''),
-        timestamp: Number(item.timestamp || 0),
-        sender: String(item.sender || ''),
-        excerpt: String(item.excerpt || '').slice(0, 2000)
-      })).filter((item: any) => item.messageId)
-      : []).slice(0, 30)
-    const firstEvidence = citations.flatMap((citation: any) => citation?.evidence || [])[0]
+    const evidence = buildTaskEvidenceFromCitations(citations)
+    const firstEvidence = evidence[0]
     const now = new Date().toISOString()
+    const taskId = taskIdFromAssistantAnswer(assistantMessageId)
+    const existingTask = this.state.tasks.find(item => item.id === taskId)
+    if (existingTask) {
+      return { ...existingTask, mutationToken: buildTaskMutationToken(existingTask) }
+    }
     const task: AssistantTask = {
-      id: `task_${crypto.randomUUID()}`,
+      id: taskId,
       title,
       detail: String(input?.detail || '').trim().slice(0, 2000),
       owner: '我',
@@ -5701,7 +5706,7 @@ export class AiAssistantService {
       due: '',
       priority: ['high', 'medium', 'low'].includes(input?.priority) ? input.priority : 'medium',
       source: '个人记忆问答',
-      sourceSessionId: String(firstEvidence?.session_id || firstEvidence?.sessionId || ''),
+      sourceSessionId: String(firstEvidence?.sessionId || ''),
       confidence: citations.length ? 0.9 : 0.6,
       status: 'todo',
       classification: 'mine',
@@ -5710,10 +5715,36 @@ export class AiAssistantService {
       createdAt: now,
       updatedAt: now
     }
-    this.state.tasks.unshift(task)
-    personalMemoryStore.recordTaskChanges(task.id, {}, task, 'created_from_memory', evidence)
-    this.saveState()
-    return task
+    const previousTasks = this.state.tasks
+    const nextTasks = [task, ...previousTasks]
+    const commitId = `task_mutation_${crypto.randomUUID()}`
+    personalMemoryStore.prepareTaskMutationCommit({
+      commitId,
+      beforeTokens: { [task.id]: TASK_ABSENT_MUTATION_TOKEN },
+      afterTokens: { [task.id]: buildTaskMutationToken(task) },
+      changes: [{
+        taskId: task.id,
+        before: {},
+        after: task,
+        reason: 'created_from_memory',
+        evidence
+      }]
+    })
+    this.state.tasks = nextTasks
+    try {
+      this.persistCrossStoreMutationState()
+      personalMemoryStore.finalizeTaskMutationCommit(commitId, nextTasks)
+    } catch (error) {
+      this.state.tasks = previousTasks
+      try {
+        this.persistCrossStoreMutationState()
+        personalMemoryStore.abandonTaskMutationCommit(commitId, 'runtime_rollback')
+      } catch (rollbackError) {
+        personalMemoryStore.recordTaskMutationRecoveryFailure(commitId, rollbackError)
+      }
+      throw error
+    }
+    return { ...task, mutationToken: buildTaskMutationToken(task) }
   }
 
   updateTaskReview(

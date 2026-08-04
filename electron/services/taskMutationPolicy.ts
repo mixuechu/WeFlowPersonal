@@ -1,5 +1,9 @@
 import { createHash } from 'crypto'
 
+export const TASK_ABSENT_MUTATION_TOKEN = createHash('sha256')
+  .update('weflow-task-absent-v1')
+  .digest('hex')
+
 const canonicalEvidence = (task: any): string[] => (Array.isArray(task?.evidence) ? task.evidence : [])
   .map((item: any) => [
     String(item?.sourceId || '').trim(),
@@ -63,7 +67,8 @@ export const classifyTaskMutationRecovery = (
     .map(task => [String(task?.id || ''), buildTaskMutationToken(task)]))
   const ids = [...new Set([...Object.keys(beforeTokens || {}), ...Object.keys(afterTokens || {})])]
   if (!ids.length) return 'conflict'
-  if (ids.every(id => current.get(id) === String(afterTokens?.[id] || ''))) return 'apply'
-  if (ids.every(id => current.get(id) === String(beforeTokens?.[id] || ''))) return 'abandon'
+  const currentToken = (id: string): string => current.get(id) || TASK_ABSENT_MUTATION_TOKEN
+  if (ids.every(id => currentToken(id) === String(afterTokens?.[id] || ''))) return 'apply'
+  if (ids.every(id => currentToken(id) === String(beforeTokens?.[id] || ''))) return 'abandon'
   return 'conflict'
 }
