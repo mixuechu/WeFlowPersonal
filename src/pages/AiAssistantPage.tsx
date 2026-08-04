@@ -6429,7 +6429,11 @@ function AiAssistantPage() {
         </div>
         <div className="ai-assistant-service-meta">
           <span className={`service-dot ${status?.cursor?.lastError ? '' : 'online'}`} />
-          <span>{syncing || status?.syncing ? '正在补齐消息' : status?.cursor?.lastError ? '等待自动重试' : '增量服务正常'}</span>
+          <span>{syncing || status?.syncing
+            ? status?.syncPhase === 'waiting_for_vector'
+              ? '等待本地索引批次结束'
+              : '正在补齐消息'
+            : status?.cursor?.lastError ? '等待自动重试' : '增量服务正常'}</span>
           <span className="service-divider" />
           <ShieldCheck size={13} /><span>Key 已加密存储</span>
           <button type="button" onClick={() => setShowDataSources(true)} aria-label="数据源连接器" title="管理数据源连接器"><Network size={14} /></button>
@@ -6452,7 +6456,9 @@ function AiAssistantPage() {
           <div className="assistant-sync-actions">
             <button className="assistant-sync-button" onClick={syncNow} disabled={syncing || status?.syncing || !status?.configured}>
               <RefreshCw size={15} className={syncing ? 'spin' : ''} />
-              {syncing ? '正在理解消息…' : status?.cursor?.lastError ? '继续补齐' : '立即补齐'}
+              {syncing || status?.syncing
+                ? status?.syncPhase === 'waiting_for_vector' ? '正在等待本地索引…' : '正在理解消息…'
+                : status?.cursor?.lastError ? '继续补齐' : '立即补齐'}
             </button>
             {(syncing || status?.syncing) && <button className="assistant-cancel-sync" onClick={() => void cancelSync()} disabled={status?.cancelling}>
               {status?.cancelling ? '正在安全暂停…' : '当前批次后暂停'}

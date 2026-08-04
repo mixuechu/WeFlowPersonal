@@ -21,6 +21,11 @@ import {
   type VectorIndexContinuationHealth,
   type VectorQueryHealth
 } from './vectorIndexingPolicy'
+import {
+  type IncrementalSyncPhase,
+  runAfterVectorBarrier,
+  shouldDeferPreparedRecovery
+} from './backgroundWriteCoordination'
 import { extractAttachmentText } from './attachmentTextExtractor'
 import { structureOcrText } from './imageOcrStructuring'
 import { captureWebSnapshot } from './webSnapshotService'
@@ -601,6 +606,7 @@ export class AiAssistantService {
   private stateEncryptionKey = ''
   private activeSync: Promise<any> | null = null
   private activeSyncTrigger: 'manual' | 'startup' | 'daily' | 'backlog' | 'resume' | null = null
+  private activeSyncPhase: IncrementalSyncPhase | null = null
   private scheduler: ReturnType<typeof setInterval> | null = null
   private notificationFlushPromise: Promise<void> | null = null
   private preparedRecoveryContinuation: ReturnType<typeof setTimeout> | null = null
@@ -1379,7 +1385,11 @@ export class AiAssistantService {
     if (this.preparedRecoveryContinuation) return
     this.preparedRecoveryContinuation = setTimeout(() => {
       this.preparedRecoveryContinuation = null
-      if (this.activeSync) {
+      if (shouldDeferPreparedRecovery({
+        syncing: Boolean(this.activeSync),
+        vectorIndexing: Boolean(this.vectorIndexPromise),
+        searchRepairing: Boolean(this.memorySearchRepairPromise)
+      })) {
         this.schedulePreparedRecoveryContinuation()
         return
       }
@@ -3106,7 +3116,18 @@ export class AiAssistantService {
       this.saveState()
     }
     this.activeSyncTrigger = trigger
-    this.activeSync = this.runSync()
+    const vectorBarrier = this.vectorIndexPromise
+    this.activeSync = runAfterVectorBarrier({
+      barrier: vectorBarrier,
+      setPhase: phase => {
+        this.activeSyncPhase = phase
+      },
+      onBarrierError: error => {
+        this.vectorIndexContinuationHealth.lastErrorAt = new Date().toISOString()
+        this.vectorIndexContinuationHealth.lastError = sanitizeDiagnosticText(error)
+      },
+      run: () => this.runSync()
+    })
     try {
       const result = await this.activeSync
       if (shouldReconcileScheduledSync(trigger, this.state.cursor)) {
@@ -3166,6 +3187,7 @@ export class AiAssistantService {
     } finally {
       this.activeSync = null
       this.activeSyncTrigger = null
+      this.activeSyncPhase = null
       this.cancelRequested = false
       this.scheduleVectorIndexContinuation()
     }
@@ -3638,6 +3660,7 @@ export class AiAssistantService {
       configured: Boolean(this.config.get('aiAssistantApiKey')),
       syncing: Boolean(this.activeSync),
       syncTrigger: this.activeSyncTrigger,
+      syncPhase: this.activeSyncPhase,
       cancelling: this.cancelRequested,
       scheduleTime: this.config.get('aiAssistantScheduleTime'),
       model: this.config.get('aiAssistantApiModel'),
