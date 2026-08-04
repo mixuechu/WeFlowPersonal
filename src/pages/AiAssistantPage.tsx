@@ -596,6 +596,8 @@ function AiAssistantPage() {
   const [sourceEnabledFilter, setSourceEnabledFilter] = useState<'all' | 'enabled' | 'disabled'>('all')
   const sourceDirectoryGate = useRef(new LatestRequestGate())
   const [dataSources, setDataSources] = useState<any[]>([])
+  const [dataSourceToggling, setDataSourceToggling] = useState<Record<string, boolean>>({})
+  const dataSourceToggleGates = useRef(new KeyedLatestRequestGates())
   const [eventTimeline, setEventTimeline] = useState<{ items: any[]; total: number; hasMore: boolean; revision?: string; stale?: boolean }>({
     items: [], total: 0, hasMore: false
   })
@@ -5800,13 +5802,30 @@ function AiAssistantPage() {
   }
 
   const toggleDataSource = async (source: any) => {
+    if (dataSourceToggling[source.id]) return
+    const request = dataSourceToggleGates.current.begin(source.id)
+    setDataSourceToggling(current => setKeyedLoadingState(current, source.id, true))
     try {
-      const updated = await window.electronAPI.aiAssistant.setDataSourceEnabled(source.id, !source.enabled)
+      const updated = await window.electronAPI.aiAssistant.setDataSourceEnabled(
+        source.id,
+        !source.enabled,
+        source.mutationToken
+      )
+      if (!dataSourceToggleGates.current.isCurrent(source.id, request)) return
       setDataSources(current => current.map(item => item.id === source.id ? updated : item))
       setStatus(await window.electronAPI.aiAssistant.status())
       setMessage(`${source.displayName}数据源已${updated.enabled ? '开启' : '暂停'}。`)
     } catch (error: any) {
-      setMessage(error?.message || String(error))
+      if (!dataSourceToggleGates.current.isCurrent(source.id, request)) return
+      const errorMessage = error?.message || String(error)
+      setMessage(errorMessage)
+      if (errorMessage.includes('数据源状态在展示后发生了变化')) {
+        setDataSources(await window.electronAPI.aiAssistant.getDataSources())
+      }
+    } finally {
+      if (dataSourceToggleGates.current.isCurrent(source.id, request)) {
+        setDataSourceToggling(current => setKeyedLoadingState(current, source.id, false))
+      }
     }
   }
 
@@ -11201,7 +11220,7 @@ function AiAssistantPage() {
                     </button>}
                   </span>
                   <input type="checkbox" checked={Boolean(source.enabled)}
-                    disabled={!source.available ||
+                    disabled={!!dataSourceToggling[source.id] || !source.available ||
                       (source.id === 'calendar' && !source.selectedCalendarCount) ||
                       (source.id === 'mail' && !source.selectedMailboxCount)}
                     title={!source.available
@@ -11210,7 +11229,9 @@ function AiAssistantPage() {
                         ? '请先授权并选择日历'
                         : source.id === 'mail' && !source.selectedMailboxCount
                           ? '请先授权并选择邮箱'
-                          : '开启或暂停该数据源'}
+                          : dataSourceToggling[source.id]
+                            ? '正在保存数据源状态'
+                            : '开启或暂停该数据源'}
                     onChange={() => void toggleDataSource(source)} />
                 </label>
               ))}

@@ -2162,7 +2162,11 @@ export interface ElectronAPI {
         path: string[]
         displayName: string
       }>>
-      setDataSourceEnabled: (sourceId: string, enabled: boolean) => Promise<any>
+      setDataSourceEnabled: (
+        sourceId: string,
+        enabled: boolean,
+        expectedMutationToken: string
+      ) => Promise<any>
       configureDataSource: (sourceId: string, input: any) => Promise<any>
       setConversationSource: (input: any) => Promise<any>
       setConversationSourcesBulk: (input: any) => Promise<any>

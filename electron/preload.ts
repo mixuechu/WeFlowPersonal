@@ -800,8 +800,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
     getMailAuthorization: () => ipcRenderer.invoke('ai-assistant:getMailAuthorization'),
     requestMailAccess: () => ipcRenderer.invoke('ai-assistant:requestMailAccess'),
     listMailboxes: () => ipcRenderer.invoke('ai-assistant:listMailboxes'),
-    setDataSourceEnabled: (sourceId: string, enabled: boolean) =>
-      ipcRenderer.invoke('ai-assistant:setDataSourceEnabled', sourceId, enabled),
+    setDataSourceEnabled: (sourceId: string, enabled: boolean, expectedMutationToken: string) =>
+      ipcRenderer.invoke('ai-assistant:setDataSourceEnabled', sourceId, enabled, expectedMutationToken),
     configureDataSource: (sourceId: string, input: any) =>
       ipcRenderer.invoke('ai-assistant:configureDataSource', sourceId, input),
     setConversationSource: (input: any) => ipcRenderer.invoke('ai-assistant:setConversationSource', input),

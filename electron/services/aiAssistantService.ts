@@ -3628,7 +3628,7 @@ export class AiAssistantService {
     return localMailService.listMailboxes()
   }
 
-  setDataSourceEnabled(sourceId: string, enabled: boolean): any {
+  setDataSourceEnabled(sourceId: string, enabled: boolean, expectedMutationToken: string): any {
     if (sourceId === 'calendar' && enabled) {
       const source = personalMemoryStore.listDataSources().find(item => item.id === 'calendar')
       if (!Array.isArray(source?.config?.calendarIds) || !source.config.calendarIds.length) {
@@ -3641,7 +3641,11 @@ export class AiAssistantService {
         throw new Error('请先授权并至少选择一个 Mail 邮箱')
       }
     }
-    const result = personalMemoryStore.setDataSourceEnabled(String(sourceId || ''), Boolean(enabled))
+    const result = personalMemoryStore.setDataSourceEnabled(
+      String(sourceId || ''),
+      Boolean(enabled),
+      String(expectedMutationToken || '')
+    )
     if (sourceId === 'wechat' && !enabled && this.activeSync) {
       this.cancelRequested = true
     }

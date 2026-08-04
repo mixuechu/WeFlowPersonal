@@ -12124,10 +12124,19 @@ test('data source registry persists enablement, capability and independent run h
       available: false, localOnly: false, capabilities: ['incremental', 'events']
     }
   ])
-  assert.equal(store.listDataSources().find(item => item.id === 'wechat')?.enabled, true)
-  assert.throws(() => store.setDataSourceEnabled('calendar', true), /尚未安装/)
+  const initialSources = store.listDataSources()
+  const initialWechat = initialSources.find(item => item.id === 'wechat')
+  const initialCalendar = initialSources.find(item => item.id === 'calendar')
+  assert.equal(initialWechat?.enabled, true)
+  assert.match(initialWechat?.mutationToken, /^[a-f0-9]{64}$/)
+  assert.throws(() => store.setDataSourceEnabled(
+    'calendar', true, initialCalendar?.mutationToken
+  ), /尚未安装/)
 
-  store.setDataSourceEnabled('wechat', false)
+  store.setDataSourceEnabled('wechat', false, initialWechat?.mutationToken)
+  assert.throws(() => store.setDataSourceEnabled(
+    'wechat', true, initialWechat?.mutationToken
+  ), /数据源状态在展示后发生了变化/)
   store.updateDataSourceRun('wechat', {
     status: 'healthy',
     checkpoint: 'cursor-42',
@@ -12139,6 +12148,7 @@ test('data source registry persists enablement, capability and independent run h
   assert.equal(source.checkpoint, 'cursor-42')
   assert.equal(source.status, 'healthy')
   assert.deepEqual(source.capabilities, ['incremental', 'original-evidence'])
+  assert.notEqual(source.mutationToken, initialWechat?.mutationToken)
 
   store.updateDataSourceRun('wechat', { status: 'running', attemptedAt: '2026-07-30T00:01:00.000Z' })
   store.registerDataSources([

@@ -13228,7 +13228,14 @@ export class PersonalMemoryStore {
 
   listDataSources(): any[] {
     if (!this.db) return []
-    const rows = this.db.prepare('SELECT * FROM data_source_connectors ORDER BY available DESC,source_id').all() as any[]
+    const rows = this.db.prepare(`
+      SELECT *,
+        weflow_sha256(source_id || char(0) || enabled || char(0) || available || char(0) ||
+          config_json || char(0) || checkpoint || char(0) || status || char(0) ||
+          COALESCE(last_attempt_at,'') || char(0) || COALESCE(last_success_at,'') || char(0) ||
+          COALESCE(last_error,'') || char(0) || updated_at) AS mutation_token
+      FROM data_source_connectors ORDER BY available DESC,source_id
+    `).all() as any[]
     return rows.map(row => ({
       id: row.source_id,
       kind: row.source_kind,
@@ -13244,14 +13251,25 @@ export class PersonalMemoryStore {
       lastAttemptAt: row.last_attempt_at,
       lastSuccessAt: row.last_success_at,
       lastError: row.last_error,
-      updatedAt: row.updated_at
+      updatedAt: row.updated_at,
+      mutationToken: row.mutation_token
     }))
   }
 
-  setDataSourceEnabled(sourceId: string, enabled: boolean): any {
+  setDataSourceEnabled(sourceId: string, enabled: boolean, expectedMutationToken: string): any {
     if (!this.db) throw new Error('个人记忆数据库尚未初始化')
-    const source = this.db.prepare('SELECT available FROM data_source_connectors WHERE source_id=?').get(sourceId) as any
+    const source = this.db.prepare(`
+      SELECT available,
+        weflow_sha256(source_id || char(0) || enabled || char(0) || available || char(0) ||
+          config_json || char(0) || checkpoint || char(0) || status || char(0) ||
+          COALESCE(last_attempt_at,'') || char(0) || COALESCE(last_success_at,'') || char(0) ||
+          COALESCE(last_error,'') || char(0) || updated_at) AS mutation_token
+      FROM data_source_connectors WHERE source_id=?
+    `).get(sourceId) as any
     if (!source) throw new Error('未知数据源')
+    if (!expectedMutationToken || expectedMutationToken !== source.mutation_token) {
+      throw new Error('数据源状态在展示后发生了变化，请刷新后重新操作')
+    }
     if (enabled && source.available !== 1) throw new Error('该数据源连接器尚未安装')
     this.db.prepare('UPDATE data_source_connectors SET enabled=?,updated_at=? WHERE source_id=?')
       .run(enabled ? 1 : 0, new Date().toISOString(), sourceId)
