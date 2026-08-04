@@ -479,11 +479,10 @@ export class ConfigService {
     return raw
   }
 
-  set<K extends keyof ConfigSchema>(key: K, value: ConfigSchema[K]): void {
-    if (this.cacheMapStore && isCacheMapKey(key as string)) {
-      this.cacheMapStore.set(key as string, value)
-      return
-    }
+  private encodeStoredValue<K extends keyof ConfigSchema>(
+    key: K,
+    value: ConfigSchema[K]
+  ): ConfigSchema[K] {
     let toStore = value
     const inLockMode = this.isLockMode() && this.unlockPassword
 
@@ -519,7 +518,30 @@ export class ConfigService {
       }
     }
 
-    this.store.set(key, toStore)
+    return toStore
+  }
+
+  set<K extends keyof ConfigSchema>(key: K, value: ConfigSchema[K]): void {
+    if (this.cacheMapStore && isCacheMapKey(key as string)) {
+      this.cacheMapStore.set(key as string, value)
+      return
+    }
+    this.store.set(key, this.encodeStoredValue(key, value))
+  }
+
+  setMany(values: Partial<ConfigSchema>): void {
+    const entries = Object.entries(values) as Array<
+      [keyof ConfigSchema, ConfigSchema[keyof ConfigSchema]]
+    >
+    if (!entries.length) return
+    if (entries.some(([key]) => isCacheMapKey(String(key)))) {
+      throw new Error('批量配置提交不支持旁路缓存字段')
+    }
+    const next = { ...(this.store.store as ConfigSchema) }
+    for (const [key, value] of entries) {
+      ;(next as any)[key] = this.encodeStoredValue(key, value as any)
+    }
+    ;(this.store as any).store = next
   }
 
   // === 加密/解密工具 ===

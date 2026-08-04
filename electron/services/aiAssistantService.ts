@@ -5550,32 +5550,36 @@ export class AiAssistantService {
       ...currentVisibleSettings,
       apiKeySecret: String(this.config.get('aiAssistantApiKey') || '')
     } as AssistantSettingsMutationIdentity, input?.mutationToken)
-    if (typeof input.apiKey === 'string' && input.apiKey.trim()) this.config.set('aiAssistantApiKey', input.apiKey.trim())
-    if (typeof input.baseUrl === 'string' && input.baseUrl.trim()) this.config.set('aiAssistantApiBaseUrl', input.baseUrl.trim())
-    if (typeof input.model === 'string' && input.model.trim()) this.config.set('aiAssistantApiModel', input.model.trim())
-    if (/^\d{2}:\d{2}$/.test(input.scheduleTime || '')) this.config.set('aiAssistantScheduleTime', input.scheduleTime)
-    if (/^\d{2}:\d{2}$/.test(input.quietStart || '')) this.config.set('aiAssistantQuietStart', input.quietStart)
-    if (/^\d{2}:\d{2}$/.test(input.quietEnd || '')) this.config.set('aiAssistantQuietEnd', input.quietEnd)
+    const patch: any = {}
+    if (typeof input.apiKey === 'string' && input.apiKey.trim()) patch.aiAssistantApiKey = input.apiKey.trim()
+    if (typeof input.baseUrl === 'string' && input.baseUrl.trim()) patch.aiAssistantApiBaseUrl = input.baseUrl.trim()
+    if (typeof input.model === 'string' && input.model.trim()) patch.aiAssistantApiModel = input.model.trim()
+    if (/^\d{2}:\d{2}$/.test(input.scheduleTime || '')) patch.aiAssistantScheduleTime = input.scheduleTime
+    if (/^\d{2}:\d{2}$/.test(input.quietStart || '')) patch.aiAssistantQuietStart = input.quietStart
+    if (/^\d{2}:\d{2}$/.test(input.quietEnd || '')) patch.aiAssistantQuietEnd = input.quietEnd
     if (Number.isFinite(Number(input.inputCostPerMillion)) && Number(input.inputCostPerMillion) >= 0) {
-      this.config.set('aiAssistantInputCostPerMillion', Number(input.inputCostPerMillion))
+      patch.aiAssistantInputCostPerMillion = Number(input.inputCostPerMillion)
     }
     if (Number.isFinite(Number(input.outputCostPerMillion)) && Number(input.outputCostPerMillion) >= 0) {
-      this.config.set('aiAssistantOutputCostPerMillion', Number(input.outputCostPerMillion))
+      patch.aiAssistantOutputCostPerMillion = Number(input.outputCostPerMillion)
     }
-    if (typeof input.enabled === 'boolean') this.config.set('aiAssistantEnabled', input.enabled)
-    if (typeof input.ownerName === 'string') this.config.set('aiAssistantOwnerName', input.ownerName.trim())
-    if (typeof input.ownerAliases === 'string') this.config.set('aiAssistantOwnerAliases', input.ownerAliases.trim())
-    if (typeof input.ownerBackground === 'string') this.config.set('aiAssistantOwnerBackground', input.ownerBackground.trim())
-    if (typeof input.transcribeVoice === 'boolean') this.config.set('autoTranscribeVoice', input.transcribeVoice)
-    if (typeof input.ocrImages === 'boolean') this.config.set('aiAssistantOcrImages', input.ocrImages)
-    if (typeof input.analyzeImages === 'boolean') this.config.set('aiAssistantAnalyzeImages', input.analyzeImages)
-    if (typeof input.indexWebLinks === 'boolean') this.config.set('aiAssistantIndexWebLinks', input.indexWebLinks)
+    if (typeof input.enabled === 'boolean') patch.aiAssistantEnabled = input.enabled
+    if (typeof input.ownerName === 'string') patch.aiAssistantOwnerName = input.ownerName.trim()
+    if (typeof input.ownerAliases === 'string') patch.aiAssistantOwnerAliases = input.ownerAliases.trim()
+    if (typeof input.ownerBackground === 'string') patch.aiAssistantOwnerBackground = input.ownerBackground.trim()
+    if (typeof input.transcribeVoice === 'boolean') patch.autoTranscribeVoice = input.transcribeVoice
+    if (typeof input.ocrImages === 'boolean') patch.aiAssistantOcrImages = input.ocrImages
+    if (typeof input.analyzeImages === 'boolean') patch.aiAssistantAnalyzeImages = input.analyzeImages
+    if (typeof input.indexWebLinks === 'boolean') patch.aiAssistantIndexWebLinks = input.indexWebLinks
     if ([0, 7, 30, 90].includes(Number(input.resourceTrashRetentionDays))) {
-      this.config.set('aiAssistantResourceTrashRetentionDays', Number(input.resourceTrashRetentionDays))
-      personalMemoryStore.purgeExpiredResourceTrash(Number(input.resourceTrashRetentionDays))
+      patch.aiAssistantResourceTrashRetentionDays = Number(input.resourceTrashRetentionDays)
     }
     if (['credentials', 'standard', 'strict'].includes(String(input.sensitiveRedactionLevel))) {
-      this.config.set('aiAssistantSensitiveRedactionLevel', input.sensitiveRedactionLevel)
+      patch.aiAssistantSensitiveRedactionLevel = input.sensitiveRedactionLevel
+    }
+    this.config.setMany(patch)
+    if (patch.aiAssistantResourceTrashRetentionDays !== undefined) {
+      personalMemoryStore.purgeExpiredResourceTrash(patch.aiAssistantResourceTrashRetentionDays)
     }
     this.repairPlaceholderEntities()
     this.saveState()
