@@ -5,6 +5,10 @@ import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { createHash, randomBytes } from 'node:crypto'
 import { PersonalMemoryStore } from '../electron/services/personalMemoryStore.ts'
+import {
+  GRAPH_RELATION_EVIDENCE_HOT_LIMIT,
+  compactRelationEvidenceHotset
+} from '../electron/services/graphEvidenceHotset.ts'
 import { assertGraphReviewMutationRevision } from '../electron/services/graphReviewMutationPolicy.ts'
 import { assertTaskOwnershipMutationRevision } from '../electron/services/taskOwnershipMutationPolicy.ts'
 import { assertStructuredMemoryMutationRevision } from '../electron/services/structuredMemoryMutationPolicy.ts'
@@ -1834,6 +1838,72 @@ test('memory cards expose evidence totals but bound their latest evidence payloa
   assert.equal(enrichedPage.total, manyEvidence.length)
   assert.equal(enrichedPage.items.at(-1).sender, '修正后的发送者')
 }))
+
+test('relation graph snapshots keep a bounded hotset while SQLCipher retains every evidence row', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'weflow-relation-evidence-hotset-'))
+  const databasePath = join(directory, 'memory.sqlite')
+  const key = randomBytes(32)
+  const allEvidence = Array.from(
+    { length: GRAPH_RELATION_EVIDENCE_HOT_LIMIT * 4 + 17 },
+    (_, index) => ({
+      sourceId: 'wechat',
+      messageId: `relation-evidence-${index}`,
+      sessionId: 'long-relation',
+      timestamp: 1_700_000_000 + index,
+      sender: '长期联系人',
+      excerpt: `长期关系原文 ${index}`
+    })
+  )
+  const graph = {
+    entities: [{
+      id: 'hotset-person',
+      type: 'person',
+      canonicalName: '长期联系人',
+      trustStatus: 'confirmed'
+    }, {
+      id: 'hotset-project',
+      type: 'project',
+      canonicalName: '长期项目',
+      trustStatus: 'confirmed'
+    }],
+    relations: [{
+      id: 'hotset-relation',
+      subjectId: 'hotset-person',
+      predicate: '参与',
+      objectId: 'hotset-project',
+      confidence: 0.9,
+      status: 'confirmed',
+      evidence: allEvidence
+    }],
+    reviewQueue: []
+  }
+  const first = new PersonalMemoryStore()
+  try {
+    first.initialize(databasePath, key)
+    first.syncGraph(graph as any, 'hotset-first')
+    const snapshot = first.loadGraphSnapshot()
+    assert.equal(snapshot.relations[0].evidence.length, GRAPH_RELATION_EVIDENCE_HOT_LIMIT)
+    assert.equal(snapshot.relations[0].evidenceTotal, allEvidence.length)
+    assert.equal(snapshot.relations[0].evidence[0].messageId,
+      `relation-evidence-${allEvidence.length - GRAPH_RELATION_EVIDENCE_HOT_LIMIT}`)
+    assert.equal(first.getRelationEvidence(['hotset-relation']).get('hotset-relation')?.length, allEvidence.length)
+    compactRelationEvidenceHotset(graph.relations[0], allEvidence.length)
+    first.syncGraph(graph as any, 'hotset-second')
+    assert.equal(first.getRelationEvidenceCounts().get('hotset-relation'), allEvidence.length)
+  } finally {
+    first.close()
+  }
+  const reopened = new PersonalMemoryStore()
+  try {
+    reopened.initialize(databasePath, key)
+    const snapshot = reopened.loadGraphSnapshot()
+    assert.equal(snapshot.relations[0].evidence.length, GRAPH_RELATION_EVIDENCE_HOT_LIMIT)
+    assert.equal(snapshot.relations[0].evidenceTotal, allEvidence.length)
+  } finally {
+    reopened.close()
+    rmSync(directory, { recursive: true, force: true })
+  }
+})
 
 test('complete evidence archives filter before paging across generic and structured stores', () => withStore(store => {
   store.syncGraph({

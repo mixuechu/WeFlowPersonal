@@ -83,6 +83,7 @@ export function applyRelationConfirmation(input: {
       ...(target.evidence || []),
       ...(source.evidence || []).filter((item: any) => !knownEvidence.has(item.messageId))
     ]
+    target.evidenceTotal = target.evidence.length
     target.confidence = Math.max(Number(target.confidence || 0), Number(source.confidence || 0))
     target.status = 'confirmed'
     target.directionExplanation = input.plan.after.directionExplanation
@@ -98,6 +99,10 @@ export function applyRelationConfirmation(input: {
   source.predicate = input.plan.after.predicate
   source.objectId = input.plan.after.objectId
   source.directionExplanation = input.plan.after.directionExplanation
+  source.evidenceTotal = Math.max(
+    Number(source.evidenceTotal || 0),
+    Number(source.evidence?.length || 0)
+  )
   source.status = 'confirmed'
   source.updatedAt = input.now
   return { relations: input.relations, confirmedRelation: source, mergedIntoExisting: false }

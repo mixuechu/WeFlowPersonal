@@ -171,6 +171,10 @@ import {
   splitSaturatedAnalysisBatch
 } from './extractionCoveragePolicy'
 import {
+  compactGraphRelationEvidence,
+  compactRelationEvidenceHotset
+} from './graphEvidenceHotset'
+import {
   EMPTY_BACKLOG_RETRY_STATE,
   isBacklogRetryDue,
   planBacklogRetry,
@@ -333,6 +337,7 @@ type GraphRelation = {
   confidence: number
   directionExplanation?: string
   evidence: Array<{ messageId: string; sessionId: string; timestamp: number; excerpt: string }>
+  evidenceTotal?: number
   status: 'candidate' | 'confirmed' | 'rejected'
   createdAt: string
   updatedAt: string
@@ -832,6 +837,10 @@ export class AiAssistantService {
         this.graphReviewStorage.recoveredPendingReviews = snapshot.reviewQueue.length
       }
       this.compactBriefingState()
+      compactGraphRelationEvidence(
+        this.state.graph.relations,
+        personalMemoryStore.getRelationEvidenceCounts()
+      )
       this.repairPlaceholderEntities()
       this.repairInvalidRelations()
       const confirmedEntityIds = new Set(this.state.graph.reviewQueue.flatMap(review =>
@@ -1099,6 +1108,20 @@ export class AiAssistantService {
       entityEvidence: this.pendingEntityEvidence
     })
     this.pendingEntityEvidence = []
+    compactGraphRelationEvidence(
+      this.state.graph.relations,
+      personalMemoryStore.getRelationEvidenceCounts()
+    )
+  }
+
+  private hydrateRelationEvidence(relationIds: string[]): void {
+    const evidence = personalMemoryStore.getRelationEvidence(relationIds)
+    for (const relation of this.state.graph.relations) {
+      const rows = evidence.get(relation.id)
+      if (!rows) continue
+      relation.evidence = rows
+      relation.evidenceTotal = rows.length
+    }
   }
 
   private compactBriefingState(): void {
@@ -2065,12 +2088,14 @@ export class AiAssistantService {
         existing.evidence.push(...evidence.filter(item => !known.has(item.messageId)))
         existing.confidence = Math.max(existing.confidence, Number(item.confidence || 0))
         existing.updatedAt = now
+        compactRelationEvidenceHotset(existing)
       } else {
         const relation: GraphRelation = {
           id, subjectId, predicate, objectId,
           confidence: Math.max(0, Math.min(1, Number(item.confidence || 0.6))),
           directionExplanation: String(item.directionExplanation || '').slice(0, 240),
           evidence,
+          evidenceTotal: evidence.length,
           status: 'candidate',
           createdAt: now,
           updatedAt: now
@@ -3737,12 +3762,12 @@ export class AiAssistantService {
         relations: this.state.graph.relations.filter(relation => relation.status !== 'rejected').length
       },
       graphPayloadPolicy: {
-        version: 'graph-on-demand-v2',
+        version: 'graph-on-demand-v3',
         directoryEntities: 0,
         authoritativeEntities: this.state.graph.entities.length,
         entityDirectory: 'server_search_on_demand',
         entityProfiles: 'on_demand',
-        relationEvidence: 'on_demand',
+        relationEvidence: 'sqlcipher_authoritative_hotset_100',
         reviewEntities: 'page_scoped'
       },
       graphRevision,
@@ -4196,7 +4221,11 @@ export class AiAssistantService {
         events: memory.events,
         relations: visibleRelations.map(relation => ({
           ...relation,
-          ...boundedEvidencePayload(relation.evidence, GRAPH_QUERY_EVIDENCE_LIMIT)
+          ...boundedEvidencePayload(
+            relation.evidence,
+            GRAPH_QUERY_EVIDENCE_LIMIT,
+            relation.evidenceTotal
+          )
         })),
         relationTotal: allRelations.length,
         relationHistory,
@@ -4632,8 +4661,27 @@ export class AiAssistantService {
     const ocr = await localOcrService.getStatus()
     const imageSemantics = localImageSemanticService.getStatus()
     const pdfOcr = await getPdfOcrStatus()
+    const relationEvidenceCounts = personalMemoryStore.getRelationEvidenceCounts()
+    const relationHotRows = this.state.graph.relations.reduce(
+      (total, relation) => total + Number(relation.evidence?.length || 0),
+      0
+    )
+    const relationEvidenceRows = [...relationEvidenceCounts.values()]
+      .reduce((total, count) => total + Number(count || 0), 0)
     return {
       ...databaseDiagnostics,
+      graphRelationEvidenceHotset: {
+        version: 'graph-relation-evidence-hotset-v1',
+        hotLimitPerRelation: 100,
+        relations: this.state.graph.relations.length,
+        authoritativeEvidenceRows: relationEvidenceRows,
+        inMemoryEvidenceRows: relationHotRows,
+        deferredEvidenceRows: Math.max(0, relationEvidenceRows - relationHotRows),
+        relationsWithDeferredEvidence: this.state.graph.relations.filter(relation =>
+          Number(relationEvidenceCounts.get(relation.id) || relation.evidenceTotal || 0) >
+          Number(relation.evidence?.length || 0)).length,
+        mutationHydration: 'affected_relations_on_demand'
+      },
       taskMutationCommits: {
         ...personalMemoryStore.getTaskMutationCommitHealth(),
         startupRecovery: this.taskMutationRecovery,
@@ -5530,6 +5578,9 @@ export class AiAssistantService {
           correction: options?.relationCorrection
         })
       : null
+    if (relationPlan?.changed) {
+      this.hydrateRelationEvidence([relationPlan.before.id, relationPlan.after.id])
+    }
     const profileEntity = (review.kind === 'entity_summary' || review.kind === 'entity_alias') && review.entityId
       ? this.state.graph.entities.find(item => item.id === review.entityId)
       : null
@@ -5704,6 +5755,11 @@ export class AiAssistantService {
     if (review.kind === 'possible_duplicate' && decision === 'confirmed' && mergePlan) {
       const { source, target } = mergePlan
       {
+        this.hydrateRelationEvidence(this.state.graph.relations
+          .filter(item =>
+            item.subjectId === source.id || item.objectId === source.id ||
+            item.subjectId === target.id || item.objectId === target.id)
+          .map(item => item.id))
         const affectedReviews = this.state.graph.reviewQueue
           .filter(pending =>
             pending.id === review.id ||
@@ -5755,9 +5811,17 @@ export class AiAssistantService {
           if (existingRelation) {
             const knownEvidence = new Set(existingRelation.evidence.map(item => item.messageId))
             existingRelation.evidence.push(...relation.evidence.filter(item => !knownEvidence.has(item.messageId)))
+            existingRelation.evidenceTotal = existingRelation.evidence.length
             existingRelation.confidence = Math.max(existingRelation.confidence, relation.confidence)
           } else {
-            normalizedRelations.set(relationId, { ...relation, id: relationId })
+            normalizedRelations.set(relationId, {
+              ...relation,
+              id: relationId,
+              evidenceTotal: Math.max(
+                Number(relation.evidenceTotal || 0),
+                relation.evidence.length
+              )
+            })
           }
         }
         this.state.graph.relations = [...normalizedRelations.values()]

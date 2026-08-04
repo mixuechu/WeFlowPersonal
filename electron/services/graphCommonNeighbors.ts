@@ -44,7 +44,11 @@ export function findScopedGraphPath(
         forward: edge.forward,
         status: edge.relation.status,
         confidence: edge.relation.confidence,
-        ...boundedEvidencePayload(edge.relation.evidence, GRAPH_QUERY_EVIDENCE_LIMIT)
+        ...boundedEvidencePayload(
+          edge.relation.evidence,
+          GRAPH_QUERY_EVIDENCE_LIMIT,
+          edge.relation.evidenceTotal
+        )
       }]
       if (edge.nextId === toId) {
         const pathIds = [fromId, ...steps.map(step => step.toId)]
@@ -91,7 +95,11 @@ export function findCommonGraphNeighbors(
         forward: edge.forward,
         status: edge.relation.status,
         confidence: edge.relation.confidence,
-        ...boundedEvidencePayload(edge.relation.evidence, GRAPH_QUERY_EVIDENCE_LIMIT)
+        ...boundedEvidencePayload(
+          edge.relation.evidence,
+          GRAPH_QUERY_EVIDENCE_LIMIT,
+          edge.relation.evidenceTotal
+        )
       })),
       rightEdges: rightEdges.map(edge => ({
         relationId: edge.relation.id,
@@ -99,7 +107,11 @@ export function findCommonGraphNeighbors(
         forward: edge.forward,
         status: edge.relation.status,
         confidence: edge.relation.confidence,
-        ...boundedEvidencePayload(edge.relation.evidence, GRAPH_QUERY_EVIDENCE_LIMIT)
+        ...boundedEvidencePayload(
+          edge.relation.evidence,
+          GRAPH_QUERY_EVIDENCE_LIMIT,
+          edge.relation.evidenceTotal
+        )
       }))
     }]
   }).sort((left, right) => right.score - left.score)

@@ -36,17 +36,6 @@ function entityIdentity(entity: any): any {
   }
 }
 
-function evidenceIdentity(item: any): string {
-  return [
-    String(item?.sourceId || ''),
-    String(item?.sessionId || ''),
-    String(item?.messageId || ''),
-    String(item?.sender || ''),
-    String(item?.excerpt || ''),
-    Number(item?.timestamp || 0)
-  ].join('\0')
-}
-
 function relationIdentity(relation: any): any {
   return {
     id: String(relation?.id || ''),
@@ -55,7 +44,10 @@ function relationIdentity(relation: any): any {
     objectId: String(relation?.objectId || ''),
     status: String(relation?.status || ''),
     confidence: Number(relation?.confidence || 0),
-    evidence: uniqueSorted((relation?.evidence || []).map(evidenceIdentity))
+    evidenceTotal: Math.max(
+      Number(relation?.evidenceTotal || 0),
+      Number(relation?.evidence?.length || 0)
+    )
   }
 }
 
@@ -115,9 +107,17 @@ export function buildExpectedMergedRelations(
       const knownMessageIds = new Set((existing.evidence || []).map((item: any) => String(item.messageId || '')))
       existing.evidence.push(...(relation.evidence || []).filter((item: any) =>
         !knownMessageIds.has(String(item.messageId || ''))))
+      existing.evidenceTotal = existing.evidence.length
       existing.confidence = Math.max(Number(existing.confidence || 0), Number(relation.confidence || 0))
     } else {
-      normalized.set(id, { ...relation, id })
+      normalized.set(id, {
+        ...relation,
+        id,
+        evidenceTotal: Math.max(
+          Number(relation.evidenceTotal || 0),
+          Number(relation.evidence?.length || 0)
+        )
+      })
     }
   }
   return [...normalized.values()]

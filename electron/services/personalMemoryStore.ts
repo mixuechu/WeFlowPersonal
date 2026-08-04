@@ -13,6 +13,7 @@ import {
 } from './localAnnIndex.ts'
 import type { MemorySearchOptions } from './memorySearchFilters.ts'
 import { MEMORY_CARD_EVIDENCE_LIMIT } from '../../shared/evidencePayload.ts'
+import { GRAPH_RELATION_EVIDENCE_HOT_LIMIT } from './graphEvidenceHotset.ts'
 
 type MemoryGraph = {
   entities: any[]
@@ -3941,9 +3942,15 @@ export class PersonalMemoryStore {
       LIMIT 500
     `)
     const evidence = this.db.prepare(`
-      SELECT source_id,message_id,session_id,timestamp,sender,excerpt
-      FROM evidence WHERE relation_id=?
-      ORDER BY timestamp,message_id
+      SELECT source_id,message_id,session_id,timestamp,sender,excerpt,evidence_total
+      FROM (
+        SELECT source_id,message_id,session_id,timestamp,sender,excerpt,
+          COUNT(*) OVER() AS evidence_total
+        FROM evidence WHERE relation_id=?
+        ORDER BY timestamp DESC,source_id DESC,session_id DESC,message_id DESC
+        LIMIT ?
+      )
+      ORDER BY timestamp,source_id,session_id,message_id
     `)
     const relationRows = this.db.prepare(`
       SELECT * FROM relations ORDER BY id
@@ -3984,28 +3991,32 @@ export class PersonalMemoryStore {
           lastDisambiguatedAt: row.last_disambiguated_at || null
         }
       }),
-      relations: relationRows.map(row => ({
-        id: row.id,
-        subjectId: row.subject_id,
-        predicate: row.predicate,
-        objectId: row.object_id,
-        confidence: Number(row.confidence || 0),
-        directionExplanation: '',
-        status: row.status,
-        validFrom: row.valid_from || undefined,
-        validTo: row.valid_to || undefined,
-        searchText: row.search_text,
-        evidence: (evidence.all(row.id) as any[]).map(item => ({
-          sourceId: item.source_id,
-          messageId: item.message_id,
-          sessionId: item.session_id,
-          timestamp: Number(item.timestamp || 0),
-          sender: item.sender,
-          excerpt: item.excerpt
-        })),
-        createdAt: row.created_at,
-        updatedAt: row.updated_at
-      })),
+      relations: relationRows.map(row => {
+        const hotEvidence = evidence.all(row.id, GRAPH_RELATION_EVIDENCE_HOT_LIMIT) as any[]
+        return {
+          id: row.id,
+          subjectId: row.subject_id,
+          predicate: row.predicate,
+          objectId: row.object_id,
+          confidence: Number(row.confidence || 0),
+          directionExplanation: '',
+          status: row.status,
+          validFrom: row.valid_from || undefined,
+          validTo: row.valid_to || undefined,
+          searchText: row.search_text,
+          evidence: hotEvidence.map(item => ({
+            sourceId: item.source_id,
+            messageId: item.message_id,
+            sessionId: item.session_id,
+            timestamp: Number(item.timestamp || 0),
+            sender: item.sender,
+            excerpt: item.excerpt
+          })),
+          evidenceTotal: Number(hotEvidence[0]?.evidence_total || 0),
+          createdAt: row.created_at,
+          updatedAt: row.updated_at
+        }
+      }),
       reviewQueue: reviewRows.flatMap(row => {
         try {
           const review = JSON.parse(String(row.payload_json || '{}'))
@@ -4015,6 +4026,43 @@ export class PersonalMemoryStore {
         }
       })
     }
+  }
+
+  getRelationEvidenceCounts(): Map<string, number> {
+    if (!this.db) return new Map()
+    return new Map((this.db.prepare(`
+      SELECT relation_id,COUNT(*) AS count
+      FROM evidence WHERE relation_id IS NOT NULL
+      GROUP BY relation_id
+    `).all() as Array<{ relation_id: string; count: number }>)
+      .map(row => [String(row.relation_id), Number(row.count || 0)]))
+  }
+
+  getRelationEvidence(relationIds: string[]): Map<string, any[]> {
+    if (!this.db) return new Map()
+    const ids = [...new Set((relationIds || []).map(String).filter(Boolean))]
+    const result = new Map<string, any[]>(ids.map(id => [id, []]))
+    for (let offset = 0; offset < ids.length; offset += 200) {
+      const batch = ids.slice(offset, offset + 200)
+      const placeholders = batch.map(() => '?').join(',')
+      const rows = this.db.prepare(`
+        SELECT relation_id,source_id,message_id,session_id,timestamp,sender,excerpt
+        FROM evidence
+        WHERE relation_id IN (${placeholders})
+        ORDER BY relation_id,timestamp,source_id,session_id,message_id
+      `).all(...batch) as any[]
+      for (const row of rows) {
+        result.get(String(row.relation_id))?.push({
+          sourceId: row.source_id,
+          messageId: row.message_id,
+          sessionId: row.session_id,
+          timestamp: Number(row.timestamp || 0),
+          sender: row.sender,
+          excerpt: row.excerpt
+        })
+      }
+    }
+    return result
   }
 
   syncGraph(
@@ -4193,7 +4241,10 @@ export class PersonalMemoryStore {
           objectId: relation.objectId,
           confidence: Number(relation.confidence || 0),
           status: relation.status,
-          evidenceCount: (relation.evidence || []).length
+          evidenceCount: Math.max(
+            Number(relation.evidenceTotal || 0),
+            Number(relation.evidence?.length || 0)
+          )
         }
         const changed = !stored || stored.subject_id !== relation.subjectId || stored.predicate !== relation.predicate ||
           stored.object_id !== relation.objectId || stored.status !== relation.status ||

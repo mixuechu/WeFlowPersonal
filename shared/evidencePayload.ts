@@ -15,7 +15,11 @@ export function evidenceArchiveIdentity(item: any): string {
   ].join('\u0000')
 }
 
-export function boundedEvidencePayload(evidence: unknown, limit: number): BoundedEvidencePayload {
+export function boundedEvidencePayload(
+  evidence: unknown,
+  limit: number,
+  authoritativeTotal?: number
+): BoundedEvidencePayload {
   const safeLimit = Math.max(1, Math.min(100, Math.floor(Number(limit) || 1)))
   const rows = Array.isArray(evidence) ? evidence : []
   const normalized = rows.map(item => ({
@@ -34,6 +38,6 @@ export function boundedEvidencePayload(evidence: unknown, limit: number): Bounde
     right.messageId.localeCompare(left.messageId))
   return {
     evidence: normalized.slice(0, safeLimit).reverse(),
-    evidenceTotal: normalized.length
+    evidenceTotal: Math.max(normalized.length, Math.max(0, Number(authoritativeTotal || 0)))
   }
 }

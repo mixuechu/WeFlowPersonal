@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { BookOpen, Bot, CalendarDays, Check, Clock3, Filter, Network, Paperclip, RefreshCw, Search, Settings2, ShieldCheck, Sparkles, X } from 'lucide-react'
+import { BookOpen, Bot, CalendarDays, Check, Clock3, Database, Filter, Network, Paperclip, RefreshCw, Search, Settings2, ShieldCheck, Sparkles, X } from 'lucide-react'
 import { buildTaskCalendar, shanghaiToday } from '../utils/taskCalendar'
 import type { ReviewStatusFilter } from '../utils/graphReviewFilters'
 import { evidenceLocalMessageId, groupMemorySearchResults, memoryEvidenceSourceLabel, MEMORY_TYPE_LABELS, normalizeMemoryEvidence, type MemoryEvidence } from '../utils/memorySearchPresentation'
@@ -8885,7 +8885,7 @@ function AiAssistantPage() {
         <div className="assistant-modal-backdrop">
           <div className="assistant-diagnostics-modal">
             <header><div><span className="assistant-eyebrow">SYSTEM DIAGNOSTICS</span><h2>个人记忆运行诊断</h2>
-              <p>最近 20 次增量运行、每个模型批次、失败原因、Token、耗时和成本估算。</p></div>
+              <p>全部增量运行可分页审阅，并汇总每个模型批次、失败原因、Token、耗时和成本估算。</p></div>
               <button aria-label="关闭诊断" onClick={() => setShowDiagnostics(false)}><X size={18} /></button>
             </header>
             <div className="assistant-dossier-metrics">
@@ -8902,6 +8902,18 @@ function AiAssistantPage() {
                 : '未配置费率'}</b></span>
               <span>运行结果 <b>{memoryDiagnostics.ingestionSummary?.completedRuns || 0} 完成 / {memoryDiagnostics.ingestionSummary?.partialRuns || 0} 部分 / {memoryDiagnostics.ingestionSummary?.failedRuns || 0} 失败</b></span>
             </div>
+            {memoryDiagnostics.graphRelationEvidenceHotset?.version && <div className="assistant-recovery-audit healthy">
+              <header><Database size={15} /><span><b>图谱关系原文分层</b>
+                <small>SQLCipher 保存完整关系原文；常驻内存只保留每条关系最新热窗口，纠正、合并和撤销前按需补全受影响关系。</small>
+              </span></header>
+              <div className="assistant-recovery-current">
+                <span>权威原文 <b>{Number(memoryDiagnostics.graphRelationEvidenceHotset.authoritativeEvidenceRows || 0).toLocaleString()}</b></span>
+                <span>内存热窗口 <b>{Number(memoryDiagnostics.graphRelationEvidenceHotset.inMemoryEvidenceRows || 0).toLocaleString()}</b></span>
+                <span>按需加载 <b>{Number(memoryDiagnostics.graphRelationEvidenceHotset.deferredEvidenceRows || 0).toLocaleString()}</b></span>
+                <span>已分层关系 <b>{Number(memoryDiagnostics.graphRelationEvidenceHotset.relationsWithDeferredEvidence || 0).toLocaleString()}</b></span>
+                <span>单关系上限 <b>{Number(memoryDiagnostics.graphRelationEvidenceHotset.hotLimitPerRelation || 100)}</b></span>
+              </div>
+            </div>}
             {memoryDiagnostics.structuredEvidenceMigration?.version && <div className="assistant-recovery-audit healthy">
               <header><ShieldCheck size={15} /><span><b>结构化证据身份迁移</b>
                 <small>事实、事件和关系按“结构 ID＋来源＋会话＋原消息”建立唯一约束；旧记录的来源与发送者只做可验证回填，不进行猜测。</small>

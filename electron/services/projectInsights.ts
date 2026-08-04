@@ -172,7 +172,11 @@ function buildProjectInsightsInternal(
       pendingReview: {
         relations: candidateRelations.map(relation => ({
           ...relation,
-          ...boundedEvidencePayload(relation.evidence, GRAPH_QUERY_EVIDENCE_LIMIT)
+          ...boundedEvidencePayload(
+            relation.evidence,
+            GRAPH_QUERY_EVIDENCE_LIMIT,
+            relation.evidenceTotal
+          )
         })),
         claims: candidateClaims.map(claim => ({
           ...claim,
