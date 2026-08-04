@@ -1,6 +1,23 @@
 export type IncrementalSyncPhase = 'waiting_for_vector' | 'running'
 export type BackgroundWriteConflict = 'incremental_sync' | 'vector_index' | 'search_repair'
 
+export function getVectorIndexWriteConflict(input: {
+  syncing: boolean
+  searchRepairing: boolean
+}): Exclude<BackgroundWriteConflict, 'vector_index'> | null {
+  if (input.syncing) return 'incremental_sync'
+  if (input.searchRepairing) return 'search_repair'
+  return null
+}
+
+export function vectorIndexConflictMessage(
+  conflict: Exclude<BackgroundWriteConflict, 'vector_index'>
+): string {
+  return conflict === 'incremental_sync'
+    ? '当前正在增量处理，请在本轮结束后再补齐或重建语义索引'
+    : '当前正在核验并修复检索索引，请完成后再补齐或重建语义索引'
+}
+
 export function getBackgroundWriteConflict(input: {
   syncing: boolean
   vectorIndexing: boolean

@@ -25,10 +25,12 @@ import {
 } from './vectorIndexingPolicy'
 import {
   getBackgroundWriteConflict,
+  getVectorIndexWriteConflict,
   preparedRecoveryConflictMessage,
   type IncrementalSyncPhase,
   runAfterVectorBarrier,
-  shouldDeferPreparedRecovery
+  shouldDeferPreparedRecovery,
+  vectorIndexConflictMessage
 } from './backgroundWriteCoordination'
 import { extractAttachmentText } from './attachmentTextExtractor'
 import { structureOcrText } from './imageOcrStructuring'
@@ -5196,7 +5198,7 @@ export class AiAssistantService {
     if (this.vectorIndexPromise) throw new Error('当前正在构建本地向量索引，请完成后再核验')
     this.memorySearchRepairPromise = (async () => {
       const result = personalMemoryStore.repairRuntimeSearchDerivedState(this.state.tasks)
-      const embeddings = await this.ensureVectorIndex()
+      const embeddings = await this.ensureVectorIndex({ allowDuringSearchRepair: true })
       if (this.state.cursor.lastAutomaticSearchMaintenanceError) {
         this.state.cursor.lastAutomaticSearchMaintenanceError = null
         this.persistCrossStoreMutationState()
@@ -7549,9 +7551,16 @@ export class AiAssistantService {
     )
   }
 
-  async ensureVectorIndex(options: { maxBatches?: number } = {}): Promise<any> {
-    if (options.maxBatches === undefined && this.activeSync) {
-      throw new Error('当前正在增量处理，请在本轮结束后再完整补齐语义索引')
+  async ensureVectorIndex(options: {
+    maxBatches?: number
+    allowDuringSearchRepair?: boolean
+  } = {}): Promise<any> {
+    if (options.maxBatches === undefined) {
+      const conflict = getVectorIndexWriteConflict({
+        syncing: Boolean(this.activeSync),
+        searchRepairing: Boolean(this.memorySearchRepairPromise) && !options.allowDuringSearchRepair
+      })
+      if (conflict) throw new Error(vectorIndexConflictMessage(conflict))
     }
     if (this.vectorIndexPromise) {
       const current = await this.vectorIndexPromise

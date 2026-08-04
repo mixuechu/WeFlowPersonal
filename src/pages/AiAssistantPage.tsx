@@ -6689,7 +6689,12 @@ function AiAssistantPage() {
                       !== Number(memoryDiagnostics.embeddings?.ann?.eligible || 0)
                     || Number(memoryDiagnostics.embeddings?.ann?.indexedChunks || 0)
                       !== Number(memoryDiagnostics.embeddings?.ann?.eligibleChunks || 0)))) &&
-                <button onClick={() => void indexMemoryVectors()} disabled={indexingVectors}>
+                <button
+                  onClick={() => void indexMemoryVectors()}
+                  disabled={indexingVectors || Boolean(memoryDiagnostics.searchRepairing)}
+                  title={memoryDiagnostics.searchRepairing
+                    ? '检索索引正在核验修复，完成后才能改写语义索引'
+                    : undefined}>
                   {indexingVectors
                     ? '正在修复语义索引…'
                     : Number(memoryDiagnostics.embeddings?.pending || 0) > 0

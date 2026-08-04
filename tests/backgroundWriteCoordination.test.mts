@@ -2,9 +2,11 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import {
   getBackgroundWriteConflict,
+  getVectorIndexWriteConflict,
   preparedRecoveryConflictMessage,
   runAfterVectorBarrier,
-  shouldDeferPreparedRecovery
+  shouldDeferPreparedRecovery,
+  vectorIndexConflictMessage
 } from '../electron/services/backgroundWriteCoordination.ts'
 
 test('incremental sync waits for an already-running vector batch', async () => {
@@ -81,4 +83,21 @@ test('manual recovery reports the exact writer that owns the gate', () => {
     preparedRecoveryConflictMessage('vector_index', '写入恢复队列'),
     /本地向量索引.*写入恢复队列/
   )
+})
+
+test('manual vector indexing rejects both authoritative writers with a specific reason', () => {
+  assert.equal(getVectorIndexWriteConflict({
+    syncing: false,
+    searchRepairing: false
+  }), null)
+  assert.equal(getVectorIndexWriteConflict({
+    syncing: true,
+    searchRepairing: true
+  }), 'incremental_sync')
+  assert.equal(getVectorIndexWriteConflict({
+    syncing: false,
+    searchRepairing: true
+  }), 'search_repair')
+  assert.match(vectorIndexConflictMessage('incremental_sync'), /增量处理.*语义索引/)
+  assert.match(vectorIndexConflictMessage('search_repair'), /核验并修复检索索引.*语义索引/)
 })
