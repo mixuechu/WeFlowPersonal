@@ -7556,24 +7556,39 @@ export class AiAssistantService {
       return current
     }
     this.vectorIndexPromise = (async () => {
+      const pendingEmbeddingChunks = new Map<string, Array<{ vector: number[]; chunkHash: string }>>()
       const pass = await runVectorIndexPass({
         maxBatches: options.maxBatches,
-        batchSize: 24,
+        batchSize: 4,
         listCandidates: limit =>
           personalMemoryStore.listEmbeddingCandidates(localEmbeddingService.modelVersion, limit),
-        embed: documents =>
-          localEmbeddingService.embed(documents.map((item: any) => `${item.title}\n${item.search_text}`)),
+        embed: async documents => {
+          const details = await localEmbeddingService.embedDocumentDetails(
+            documents.map((item: any) => `${item.title}\n${item.search_text}`)
+          )
+          documents.forEach((document: any, index: number) => {
+            pendingEmbeddingChunks.set(
+              `${document.id}\u0000${String(document.content_hash || '')}`,
+              details[index]?.chunks || []
+            )
+          })
+          return details.map(item => item.vector)
+        },
         commit: (item: any, vector) => personalMemoryStore.saveEmbedding(
           item.id,
           localEmbeddingService.modelVersion,
           vector,
-          String(item.content_hash || '')
+          String(item.content_hash || ''),
+          pendingEmbeddingChunks.get(`${item.id}\u0000${String(item.content_hash || '')}`) || []
         ),
         commitBatch: items => personalMemoryStore.saveEmbeddingBatch(items.map(({ document, vector }) => ({
           id: document.id,
           model: localEmbeddingService.modelVersion,
           vector,
-          expectedContentHash: String(document.content_hash || '')
+          expectedContentHash: String(document.content_hash || ''),
+          chunks: pendingEmbeddingChunks.get(
+            `${document.id}\u0000${String(document.content_hash || '')}`
+          ) || []
         })))
       })
       const stats = personalMemoryStore.getEmbeddingStats(localEmbeddingService.modelVersion)

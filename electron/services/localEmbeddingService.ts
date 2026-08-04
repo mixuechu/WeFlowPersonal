@@ -5,7 +5,11 @@ import { join } from 'node:path'
 export const LOCAL_EMBEDDING_MODEL = 'onnx-community/bge-small-zh-v1.5-ONNX'
 export const LOCAL_EMBEDDING_REVISION = '9507db33464b5da99a532ac26b2a251767cbc62b'
 const MODEL_VERSION =
-  `${LOCAL_EMBEDDING_MODEL}@${LOCAL_EMBEDDING_REVISION}:q8:mean-normalized:v1`
+  `${LOCAL_EMBEDDING_MODEL}@${LOCAL_EMBEDDING_REVISION}:q8:overlap-multivector:v2`
+export const LOCAL_EMBEDDING_CHUNK_SIZE = 480
+export const LOCAL_EMBEDDING_CHUNK_OVERLAP = 80
+export const LOCAL_EMBEDDING_MAX_CHUNKS = 256
+export const LOCAL_EMBEDDING_INFERENCE_BATCH_SIZE = 24
 export const LOCAL_EMBEDDING_MANIFEST = [
   { path: 'config.json', sha256: '34fa1ea6278c257de3cc8ce7e9bdc48647b802145a9da0fc32e95db620efd04f' },
   { path: 'tokenizer.json', sha256: '3d09c84ebd10306706a79a8276b3ab736a40d8ec03251c7639f4e52c3a1a4f8e' },
@@ -13,6 +17,55 @@ export const LOCAL_EMBEDDING_MANIFEST = [
   { path: 'onnx/model_quantized.onnx', sha256: '99a6e522710c00220c89f8c52e0cc5aa09d4cbb1c34c0e932eab3a9dfdc65df3' },
   { path: 'onnx/model_quantized.onnx_data', sha256: '952623481ca8beea884e3d3c9ecaf8a3c7bf1d0c21de29e970cd31af9d37a90b' }
 ] as const
+
+function preferredChunkEnd(text: string, start: number, hardEnd: number): number {
+  if (hardEnd >= text.length) return text.length
+  const minimum = start + Math.floor(LOCAL_EMBEDDING_CHUNK_SIZE * 0.9)
+  const window = text.slice(minimum, hardEnd)
+  const boundaries = ['\n\n', '\n', '。', '！', '？', '；']
+  for (const boundary of boundaries) {
+    const index = window.lastIndexOf(boundary)
+    if (index >= 0) return minimum + index + boundary.length
+  }
+  return hardEnd
+}
+
+export function buildEmbeddingChunks(input: string): string[] {
+  const text = String(input || '').replace(/\r\n?/g, '\n').trim()
+  if (!text) return []
+  if (text.length <= LOCAL_EMBEDDING_CHUNK_SIZE) return [text]
+  const chunks: string[] = []
+  let start = 0
+  while (start < text.length && chunks.length < LOCAL_EMBEDDING_MAX_CHUNKS) {
+    const hardEnd = Math.min(text.length, start + LOCAL_EMBEDDING_CHUNK_SIZE)
+    const end = preferredChunkEnd(text, start, hardEnd)
+    const chunk = text.slice(start, end).trim()
+    if (chunk) chunks.push(chunk)
+    if (end >= text.length) break
+    const nextStart = Math.max(start + 1, end - LOCAL_EMBEDDING_CHUNK_OVERLAP)
+    start = nextStart
+  }
+  if (start < text.length && chunks.length === LOCAL_EMBEDDING_MAX_CHUNKS) {
+    const tailStart = Math.max(0, text.length - LOCAL_EMBEDDING_CHUNK_SIZE)
+    const tail = text.slice(tailStart).trim()
+    if (tail && chunks[chunks.length - 1] !== tail) chunks[chunks.length - 1] = tail
+  }
+  return chunks
+}
+
+export function meanNormalizedEmbeddings(vectors: number[][]): number[] {
+  if (!vectors.length) return []
+  const dimensions = vectors[0]?.length || 0
+  if (!dimensions || vectors.some(vector => vector.length !== dimensions
+    || vector.some(value => !Number.isFinite(value)))) return []
+  const mean = Array.from({ length: dimensions }, () => 0)
+  for (const vector of vectors) {
+    for (let index = 0; index < dimensions; index += 1) mean[index] += vector[index]
+  }
+  const norm = Math.sqrt(mean.reduce((sum, value) => sum + value * value, 0))
+  if (!Number.isFinite(norm) || norm <= 1e-12) return []
+  return mean.map(value => value / norm)
+}
 
 async function sha256File(path: string): Promise<string> {
   const hash = createHash('sha256')
@@ -117,6 +170,13 @@ export class LocalEmbeddingService {
       model: LOCAL_EMBEDDING_MODEL,
       revision: LOCAL_EMBEDDING_REVISION,
       modelVersion: MODEL_VERSION,
+      chunking: {
+        strategy: 'overlap_multivector_v2',
+        chunkSize: LOCAL_EMBEDDING_CHUNK_SIZE,
+        overlap: LOCAL_EMBEDDING_CHUNK_OVERLAP,
+        maxChunks: LOCAL_EMBEDDING_MAX_CHUNKS,
+        inferenceBatchSize: LOCAL_EMBEDDING_INFERENCE_BATCH_SIZE
+      },
       cacheDirectory: this.cacheDirectory,
       loaded: Boolean(this.extractorPromise) && !this.lastError,
       lastError: this.lastError,
@@ -133,6 +193,37 @@ export class LocalEmbeddingService {
     if (!dimensions) throw new Error('本地向量模型返回了无效维度')
     const values = Array.from(tensor.data as Float32Array, Number)
     return clean.map((_, index) => values.slice(index * dimensions, (index + 1) * dimensions))
+  }
+
+  async embedDocuments(texts: string[]): Promise<number[][]> {
+    return (await this.embedDocumentDetails(texts)).map(item => item.vector)
+  }
+
+  async embedDocumentDetails(texts: string[]): Promise<Array<{
+    vector: number[]
+    chunks: Array<{ vector: number[]; chunkHash: string }>
+  }>> {
+    const chunkSets = texts.map(buildEmbeddingChunks)
+    const flattened = chunkSets.flat()
+    if (!flattened.length) return texts.map(() => ({ vector: [], chunks: [] }))
+    const embedded: number[][] = []
+    for (let offset = 0; offset < flattened.length; offset += LOCAL_EMBEDDING_INFERENCE_BATCH_SIZE) {
+      embedded.push(...await this.embed(
+        flattened.slice(offset, offset + LOCAL_EMBEDDING_INFERENCE_BATCH_SIZE)
+      ))
+    }
+    let offset = 0
+    return chunkSets.map(chunks => {
+      const vectors = embedded.slice(offset, offset + chunks.length)
+      offset += chunks.length
+      return {
+        vector: meanNormalizedEmbeddings(vectors),
+        chunks: chunks.map((chunk, index) => ({
+          vector: vectors[index],
+          chunkHash: createHash('sha256').update(chunk).digest('hex')
+        }))
+      }
+    })
   }
 
   private async getExtractor(): Promise<any> {

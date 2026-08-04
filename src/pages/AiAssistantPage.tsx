@@ -11066,6 +11066,7 @@ function AiAssistantPage() {
                 <span>覆盖 <b>{Math.round(Number(memoryDiagnostics.embeddings.ann.coverage || 0) * 100)}%</b></span>
                 <span>索引 <b>{Number(memoryDiagnostics.embeddings.ann.indexed || 0).toLocaleString()} / {Number(memoryDiagnostics.embeddings.ann.eligible || 0).toLocaleString()}</b></span>
                 <span>待补建 <b>{Number(memoryDiagnostics.embeddings.pending || 0).toLocaleString()}</b> / 损坏 {Number(memoryDiagnostics.embeddings.invalid || 0).toLocaleString()}</span>
+                <span>向量块 <b>{Number(memoryDiagnostics.embeddings.chunks || 0).toLocaleString()}</b> · 长文档 {Number(memoryDiagnostics.embeddings.longDocuments || 0).toLocaleString()}</span>
                 <span>索引执行 <b>{memoryDiagnostics.embeddings.indexing
                   ? '运行中'
                   : memoryDiagnostics.embeddings.background?.scheduled ? '已排队' : '空闲'}</b></span>
@@ -11073,6 +11074,13 @@ function AiAssistantPage() {
                 <span>连续失败 <b>{Number(memoryDiagnostics.embeddings.background?.failureStreak || 0).toLocaleString()}</b> 次</span>
                 <span>查询降级 <b>{Number(memoryDiagnostics.embeddings.query?.fallbackCount || 0).toLocaleString()}</b> 次</span>
                 <span>维度漂移修复 <b>{Number(memoryDiagnostics.embeddings.query?.dimensionRepairCount || 0).toLocaleString()}</b> 条</span>
+                {memoryDiagnostics.embeddings.chunking?.strategy && <span>
+                  长文向量 <b>逐块最高相似度</b> ·
+                  {Number(memoryDiagnostics.embeddings.chunking.chunkSize || 0).toLocaleString()} 字/块 ·
+                  {Number(memoryDiagnostics.embeddings.chunking.overlap || 0).toLocaleString()} 字重叠 ·
+                  最多 {Number(memoryDiagnostics.embeddings.chunking.maxChunks || 0).toLocaleString()} 块 ·
+                  {Number(memoryDiagnostics.embeddings.chunking.inferenceBatchSize || 0).toLocaleString()} 块/推理批
+                </span>}
                 <span>模型提交 <b>{String(memoryDiagnostics.embeddings.revision || '').slice(0, 12) || '未知'}</b></span>
                 <span>模型缓存 <b>{memoryDiagnostics.embeddings.integrity?.state === 'verified'
                   ? 'SHA-256 正常'

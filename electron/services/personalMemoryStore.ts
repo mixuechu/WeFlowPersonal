@@ -837,10 +837,25 @@ export class PersonalMemoryStore {
         embedding_model TEXT,
         embedding_dimensions INTEGER,
         embedding_json TEXT,
+        embedding_chunk_count INTEGER NOT NULL DEFAULT 0,
         content_hash TEXT NOT NULL,
         updated_at TEXT NOT NULL,
         UNIQUE(document_type, source_id)
       ) STRICT;
+
+      CREATE TABLE IF NOT EXISTS search_document_embedding_chunks (
+        document_id TEXT NOT NULL REFERENCES search_documents(id) ON DELETE CASCADE,
+        chunk_index INTEGER NOT NULL,
+        model TEXT NOT NULL,
+        dimensions INTEGER NOT NULL,
+        vector_json TEXT NOT NULL,
+        content_hash TEXT NOT NULL,
+        chunk_hash TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        PRIMARY KEY(document_id,model,chunk_index)
+      ) STRICT;
+      CREATE INDEX IF NOT EXISTS idx_search_document_embedding_chunks_model
+        ON search_document_embedding_chunks(model,dimensions,document_id);
 
       CREATE TABLE IF NOT EXISTS memory_search_feedback (
         id INTEGER PRIMARY KEY,
@@ -895,11 +910,13 @@ export class PersonalMemoryStore {
         OR OLD.embedding_json IS NOT NEW.embedding_json
       BEGIN
         DELETE FROM vector_ann_entries WHERE document_id=OLD.id;
+        DELETE FROM search_document_embedding_chunks WHERE document_id=OLD.id;
       END;
       CREATE TRIGGER IF NOT EXISTS trg_search_documents_ann_delete
       AFTER DELETE ON search_documents
       BEGIN
         DELETE FROM vector_ann_entries WHERE document_id=OLD.id;
+        DELETE FROM search_document_embedding_chunks WHERE document_id=OLD.id;
       END;
 
       CREATE TABLE IF NOT EXISTS memory_resources (
@@ -970,6 +987,7 @@ export class PersonalMemoryStore {
       ) STRICT;
     `)
     this.ensureColumn('entities', 'identity_version', 'INTEGER NOT NULL DEFAULT 1')
+    this.ensureColumn('search_documents', 'embedding_chunk_count', 'INTEGER NOT NULL DEFAULT 0')
     this.ensureColumn('entities', 'last_disambiguated_at', 'TEXT')
     this.ensureColumn('entities', 'trust_status', `TEXT NOT NULL DEFAULT 'legacy_unknown'`)
     this.ensureColumn('entities', 'summary_status', `TEXT NOT NULL DEFAULT 'empty'`)
@@ -12489,30 +12507,62 @@ export class PersonalMemoryStore {
           SELECT 1 FROM json_each(CASE WHEN json_valid(embedding_json)=1 THEN embedding_json ELSE '[]' END)
           WHERE ABS(json_each.value)>1e-12
         )
+        OR embedding_chunk_count<=0
+        OR embedding_chunk_count<>(SELECT COUNT(*) FROM search_document_embedding_chunks chunk
+          WHERE chunk.document_id=search_documents.id
+            AND chunk.model=?
+            AND chunk.content_hash=search_documents.content_hash)
+        OR EXISTS(SELECT 1 FROM search_document_embedding_chunks chunk
+          WHERE chunk.document_id=search_documents.id
+            AND (chunk.model<>?
+              OR chunk.content_hash<>search_documents.content_hash
+              OR chunk.dimensions<>embedding_dimensions
+              OR json_valid(chunk.vector_json)<>1
+              OR json_type(CASE WHEN json_valid(chunk.vector_json)=1 THEN chunk.vector_json ELSE '[]' END)<>'array'
+              OR json_array_length(CASE WHEN json_valid(chunk.vector_json)=1 THEN chunk.vector_json ELSE '[]' END)<>chunk.dimensions
+              OR EXISTS(SELECT 1 FROM json_each(CASE WHEN json_valid(chunk.vector_json)=1 THEN chunk.vector_json ELSE '[]' END)
+                WHERE json_each.type NOT IN ('integer','real'))
+              OR NOT EXISTS(SELECT 1 FROM json_each(CASE WHEN json_valid(chunk.vector_json)=1 THEN chunk.vector_json ELSE '[]' END)
+                WHERE ABS(json_each.value)>1e-12)))
       ORDER BY updated_at DESC LIMIT ?
-    `).all(model, Math.max(1, Math.min(1000, limit))) as any[]
+    `).all(model, model, model, Math.max(1, Math.min(1000, limit))) as any[]
   }
 
   saveEmbedding(
     id: string,
     model: string,
     vector: number[],
-    expectedContentHash = ''
+    expectedContentHash = '',
+    chunks: Array<{ vector: number[]; chunkHash: string }> = []
   ): boolean {
     const normalized = Array.isArray(vector) ? [...vector] : []
     if (!this.db || !validateEmbeddingBatch([normalized], 1).valid) {
       return false
     }
-    const result = expectedContentHash
-      ? this.db.prepare(`
-        UPDATE search_documents SET embedding_model=?,embedding_dimensions=?,embedding_json=?
-        WHERE id=? AND content_hash=?
-      `).run(model, normalized.length, JSON.stringify(normalized), id, expectedContentHash)
-      : this.db.prepare(`
-        UPDATE search_documents SET embedding_model=?,embedding_dimensions=?,embedding_json=?
-        WHERE id=?
-      `).run(model, normalized.length, JSON.stringify(normalized), id)
-    return Number(result.changes || 0) === 1
+    const authoritativeContentHash = expectedContentHash || String((this.db.prepare(`
+      SELECT content_hash FROM search_documents WHERE id=?
+    `).get(id) as any)?.content_hash || '')
+    if (!authoritativeContentHash) return false
+    const normalizedChunks = chunks.length ? chunks : [{
+      vector: normalized,
+      chunkHash: authoritativeContentHash
+    }]
+    if (!validateEmbeddingBatch(normalizedChunks.map(item => item.vector), normalizedChunks.length).valid
+      || normalizedChunks.some(item => !item.chunkHash)) return false
+    return this.db.transaction(() => {
+      const result = expectedContentHash
+        ? this.db!.prepare(`
+          UPDATE search_documents SET embedding_model=?,embedding_dimensions=?,embedding_json=?,embedding_chunk_count=?
+          WHERE id=? AND content_hash=?
+        `).run(model, normalized.length, JSON.stringify(normalized), normalizedChunks.length, id, expectedContentHash)
+        : this.db!.prepare(`
+          UPDATE search_documents SET embedding_model=?,embedding_dimensions=?,embedding_json=?,embedding_chunk_count=?
+          WHERE id=?
+        `).run(model, normalized.length, JSON.stringify(normalized), normalizedChunks.length, id)
+      if (Number(result.changes || 0) !== 1) return false
+      this.replaceEmbeddingChunks(id, model, authoritativeContentHash, normalizedChunks)
+      return true
+    })()
   }
 
   saveEmbeddingBatch(items: Array<{
@@ -12520,27 +12570,42 @@ export class PersonalMemoryStore {
     model: string
     vector: number[]
     expectedContentHash?: string
+    chunks?: Array<{ vector: number[]; chunkHash: string }>
   }>): number {
     if (!this.db || !Array.isArray(items) || !items.length) return 0
     const normalized = items.map(item => ({
       id: String(item.id || ''),
       model: String(item.model || ''),
       vector: Array.isArray(item.vector) ? [...item.vector] : [],
-      expectedContentHash: String(item.expectedContentHash || '')
+      expectedContentHash: String(item.expectedContentHash || ''),
+      chunks: Array.isArray(item.chunks) && item.chunks.length
+        ? item.chunks.map(chunk => ({
+            vector: Array.isArray(chunk.vector) ? [...chunk.vector] : [],
+            chunkHash: String(chunk.chunkHash || '')
+          }))
+        : [{
+            vector: Array.isArray(item.vector) ? [...item.vector] : [],
+            chunkHash: String(item.expectedContentHash || '')
+          }]
     }))
     const validation = validateEmbeddingBatch(
       normalized.map(item => item.vector),
       normalized.length
     )
+    const chunksValid = normalized.every(item =>
+      item.chunks.every(chunk => chunk.chunkHash)
+      && validateEmbeddingBatch(item.chunks.map(chunk => chunk.vector), item.chunks.length).valid
+      && item.chunks.every(chunk => chunk.vector.length === item.vector.length))
     const identities = new Set(normalized.map(item => `${item.id}\u0000${item.expectedContentHash}`))
     if (normalized.some(item =>
       !item.id || !item.model || !item.expectedContentHash)
       || !validation.valid
+      || !chunksValid
       || identities.size !== normalized.length) {
       throw new Error('向量批次包含无效身份、内容版本或向量，未写入任何结果')
     }
     const update = this.db.prepare(`
-      UPDATE search_documents SET embedding_model=?,embedding_dimensions=?,embedding_json=?
+      UPDATE search_documents SET embedding_model=?,embedding_dimensions=?,embedding_json=?,embedding_chunk_count=?
       WHERE id=? AND content_hash=?
     `)
     return this.db.transaction(() => normalized.reduce((count, item) => {
@@ -12548,11 +12613,42 @@ export class PersonalMemoryStore {
         item.model,
         item.vector.length,
         JSON.stringify(item.vector),
+        item.chunks.length,
         item.id,
         item.expectedContentHash
       )
-      return count + (Number(result.changes || 0) === 1 ? 1 : 0)
+      if (Number(result.changes || 0) !== 1) return count
+      this.replaceEmbeddingChunks(
+        item.id, item.model, item.expectedContentHash, item.chunks
+      )
+      return count + 1
     }, 0))()
+  }
+
+  private replaceEmbeddingChunks(
+    documentId: string,
+    model: string,
+    contentHash: string,
+    chunks: Array<{ vector: number[]; chunkHash: string }>
+  ): void {
+    if (!this.db) return
+    this.db.prepare('DELETE FROM search_document_embedding_chunks WHERE document_id=?').run(documentId)
+    const insert = this.db.prepare(`
+      INSERT INTO search_document_embedding_chunks(
+        document_id,chunk_index,model,dimensions,vector_json,content_hash,chunk_hash,updated_at
+      ) VALUES(?,?,?,?,?,?,?,?)
+    `)
+    const now = new Date().toISOString()
+    chunks.forEach((chunk, index) => insert.run(
+      documentId,
+      index,
+      model,
+      chunk.vector.length,
+      JSON.stringify(chunk.vector),
+      contentHash,
+      chunk.chunkHash,
+      now
+    ))
   }
 
   invalidateEmbeddingDimensionMismatches(model: string, expectedDimensions: number): number {
@@ -12561,7 +12657,8 @@ export class PersonalMemoryStore {
       UPDATE search_documents SET
         embedding_model=NULL,
         embedding_dimensions=NULL,
-        embedding_json=NULL
+        embedding_json=NULL,
+        embedding_chunk_count=0
       WHERE embedding_model=?
         AND embedding_json IS NOT NULL
         AND embedding_dimensions IS NOT NULL
@@ -12703,6 +12800,21 @@ export class PersonalMemoryStore {
             SELECT 1 FROM json_each(CASE WHEN json_valid(embedding_json)=1 THEN embedding_json ELSE '[]' END)
             WHERE ABS(json_each.value)>1e-12
           )
+          AND embedding_chunk_count>0
+          AND embedding_chunk_count=(SELECT COUNT(*) FROM search_document_embedding_chunks chunk
+            WHERE chunk.document_id=search_documents.id
+              AND chunk.model=?
+              AND chunk.content_hash=search_documents.content_hash)
+          AND NOT EXISTS(SELECT 1 FROM search_document_embedding_chunks chunk
+            WHERE chunk.document_id=search_documents.id
+              AND (chunk.dimensions<>embedding_dimensions
+                OR json_valid(chunk.vector_json)<>1
+                OR json_type(CASE WHEN json_valid(chunk.vector_json)=1 THEN chunk.vector_json ELSE '[]' END)<>'array'
+                OR json_array_length(CASE WHEN json_valid(chunk.vector_json)=1 THEN chunk.vector_json ELSE '[]' END)<>chunk.dimensions
+                OR EXISTS(SELECT 1 FROM json_each(CASE WHEN json_valid(chunk.vector_json)=1 THEN chunk.vector_json ELSE '[]' END)
+                  WHERE json_each.type NOT IN ('integer','real'))
+                OR NOT EXISTS(SELECT 1 FROM json_each(CASE WHEN json_valid(chunk.vector_json)=1 THEN chunk.vector_json ELSE '[]' END)
+                  WHERE ABS(json_each.value)>1e-12)))
           THEN 1 ELSE 0 END),0) AS indexed,
         COALESCE(SUM(CASE WHEN embedding_model=? AND embedding_json IS NOT NULL
           AND (embedding_dimensions<=0
@@ -12717,15 +12829,25 @@ export class PersonalMemoryStore {
               SELECT 1 FROM json_each(CASE WHEN json_valid(embedding_json)=1 THEN embedding_json ELSE '[]' END)
               WHERE ABS(json_each.value)>1e-12
             ))
-          THEN 1 ELSE 0 END),0) AS invalid
+          THEN 1 ELSE 0 END),0) AS invalid,
+        (SELECT COUNT(*) FROM search_document_embedding_chunks WHERE model=?) AS chunk_count,
+        (SELECT COUNT(*) FROM search_documents WHERE embedding_model=? AND embedding_chunk_count>1) AS long_document_count
       FROM search_documents
-    `).get(model, model) as { total: number; indexed: number; invalid: number }
+    `).get(model, model, model, model, model) as {
+      total: number
+      indexed: number
+      invalid: number
+      chunk_count: number
+      long_document_count: number
+    }
     const indexed = Number(row.indexed || 0)
     return {
       total: Number(row.total || 0),
       indexed,
       pending: Number(row.total || 0) - indexed,
       invalid: Number(row.invalid || 0),
+      chunks: Number(row.chunk_count || 0),
+      longDocuments: Number(row.long_document_count || 0),
       model,
       ann: this.getApproximateVectorIndexStats(model)
     }
@@ -12913,17 +13035,19 @@ export class PersonalMemoryStore {
     if (allowedIds) this.replaceActiveSearchScope(allowedIds)
     const scopeJoin = allowedIds ? 'JOIN active_memory_search_scope scope ON scope.id=d.id' : ''
     const rows = this.db.prepare(`
-      SELECT d.* FROM search_documents d ${scopeJoin}
-      WHERE d.embedding_model=? AND d.embedding_dimensions=? AND d.embedding_json IS NOT NULL
-        AND json_valid(d.embedding_json)=1
-        AND json_type(CASE WHEN json_valid(d.embedding_json)=1 THEN d.embedding_json ELSE '[]' END)='array'
-        AND json_array_length(CASE WHEN json_valid(d.embedding_json)=1 THEN d.embedding_json ELSE '[]' END)=d.embedding_dimensions
+      SELECT d.*,chunk.vector_json AS embedding_json,chunk.chunk_index
+      FROM search_documents d ${scopeJoin}
+      JOIN search_document_embedding_chunks chunk ON chunk.document_id=d.id
+        AND chunk.model=d.embedding_model AND chunk.content_hash=d.content_hash
+      WHERE chunk.model=? AND chunk.dimensions=? AND json_valid(chunk.vector_json)=1
+        AND json_type(CASE WHEN json_valid(chunk.vector_json)=1 THEN chunk.vector_json ELSE '[]' END)='array'
+        AND json_array_length(CASE WHEN json_valid(chunk.vector_json)=1 THEN chunk.vector_json ELSE '[]' END)=chunk.dimensions
         AND NOT EXISTS(
-          SELECT 1 FROM json_each(CASE WHEN json_valid(d.embedding_json)=1 THEN d.embedding_json ELSE '[]' END)
+          SELECT 1 FROM json_each(CASE WHEN json_valid(chunk.vector_json)=1 THEN chunk.vector_json ELSE '[]' END)
           WHERE json_each.type NOT IN ('integer','real')
         )
         AND EXISTS(
-          SELECT 1 FROM json_each(CASE WHEN json_valid(d.embedding_json)=1 THEN d.embedding_json ELSE '[]' END)
+          SELECT 1 FROM json_each(CASE WHEN json_valid(chunk.vector_json)=1 THEN chunk.vector_json ELSE '[]' END)
           WHERE ABS(json_each.value)>1e-12
         )
     `).all(model, vector.length) as any[]
@@ -12931,13 +13055,37 @@ export class PersonalMemoryStore {
   }
 
   private rankVectorRows(rows: any[], vector: number[], limit: number, mode: 'exact' | 'ann'): any[] {
-    return rows.map(row => {
+    const ranked = rows.map(row => {
       let candidate: number[] = []
       try { candidate = JSON.parse(row.embedding_json) } catch {}
       const score = safeCosineSimilarity(vector, candidate)
       return score === null ? null : { ...row, semantic_score: score, semantic_search_mode: mode }
     }).filter(Boolean).sort((left: any, right: any) => right.semantic_score - left.semantic_score)
-      .slice(0, Math.max(1, Math.min(500, limit)))
+    const seen = new Set<string>()
+    return ranked.filter((row: any) => {
+      if (seen.has(row.id)) return false
+      seen.add(row.id)
+      return true
+    }).slice(0, Math.max(1, Math.min(500, limit)))
+  }
+
+  private searchVectorLongChunks(
+    vector: number[],
+    model: string,
+    limit: number,
+    allowedIds: Set<string> | null
+  ): any[] {
+    if (!this.db) return []
+    if (allowedIds) this.replaceActiveSearchScope(allowedIds)
+    const scopeJoin = allowedIds ? 'JOIN active_memory_search_scope scope ON scope.id=d.id' : ''
+    const rows = this.db.prepare(`
+      SELECT d.*,chunk.vector_json AS embedding_json,chunk.chunk_index
+      FROM search_documents d ${scopeJoin}
+      JOIN search_document_embedding_chunks chunk ON chunk.document_id=d.id
+        AND chunk.model=? AND chunk.content_hash=d.content_hash
+      WHERE d.embedding_chunk_count>1 AND chunk.dimensions=?
+    `).all(model, vector.length) as any[]
+    return this.rankVectorRows(rows, vector, limit, 'ann')
   }
 
   searchVector(
@@ -12997,7 +13145,14 @@ export class PersonalMemoryStore {
           AND d.embedding_model=? AND d.embedding_dimensions=? AND d.embedding_json IS NOT NULL
       `).all(...chunk, model, vector.length) as any[])
     }
-    return this.rankVectorRows(rows, vector, limit, 'ann')
+    const aggregateCandidates = this.rankVectorRows(rows, vector, limit, 'ann')
+    const longDocumentCandidates = this.searchVectorLongChunks(
+      vector, model, limit, allowedIds
+    )
+    return [...aggregateCandidates, ...longDocumentCandidates]
+      .sort((left, right) => Number(right.semantic_score) - Number(left.semantic_score))
+      .filter((row, index, all) => all.findIndex(candidate => candidate.id === row.id) === index)
+      .slice(0, Math.max(1, Math.min(500, limit)))
   }
 
   listSimilarEntityPairs(model: string, minimumScore = 0.88, limit = 200): Array<{ leftId: string; rightId: string; score: number }> {

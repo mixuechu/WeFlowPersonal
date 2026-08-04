@@ -8,8 +8,14 @@ import { PersonalMemoryStore } from '../electron/services/personalMemoryStore.ts
 import {
   LOCAL_EMBEDDING_MODEL,
   LOCAL_EMBEDDING_MANIFEST,
+  LOCAL_EMBEDDING_CHUNK_OVERLAP,
+  LOCAL_EMBEDDING_CHUNK_SIZE,
+  LOCAL_EMBEDDING_INFERENCE_BATCH_SIZE,
+  LOCAL_EMBEDDING_MAX_CHUNKS,
   LOCAL_EMBEDDING_REVISION,
   LocalEmbeddingService,
+  buildEmbeddingChunks,
+  meanNormalizedEmbeddings,
   recordModelCacheIntegrity,
   verifyModelCacheManifest
 } from '../electron/services/localEmbeddingService.ts'
@@ -7145,6 +7151,67 @@ test('vector metadata is retained for unchanged content and invalidated after ed
   assert.equal(store.getEmbeddingStats(model).pending, 1)
 }))
 
+test('multi-vector long documents rank by their best semantic chunk without duplicating results', () => withStore(store => {
+  const model = 'test-multi-vector:2d'
+  store.upsertResources([{
+    id: 'long-semantic-resource',
+    resourceType: 'document',
+    title: '长文档',
+    content: `${'常规背景内容。'.repeat(900)}\n远端唯一主题`,
+    createdAt: '2026-08-05T00:00:00.000Z',
+    updatedAt: '2026-08-05T00:00:00.000Z'
+  }, {
+    id: 'generic-semantic-resource',
+    resourceType: 'document',
+    title: '普通文档',
+    content: '一般相关内容',
+    createdAt: '2026-08-05T00:00:00.000Z',
+    updatedAt: '2026-08-05T00:00:00.000Z'
+  }])
+  const candidates = store.listEmbeddingCandidates(model, 10)
+  const long = candidates.find(item => item.id === 'resource:long-semantic-resource')
+  const generic = candidates.find(item => item.id === 'resource:generic-semantic-resource')
+  assert.ok(long)
+  assert.ok(generic)
+  const longChunks = buildEmbeddingChunks(`${long.title}\n${long.search_text}`)
+  const chunkVectors = longChunks.map((chunk, index) => ({
+    vector: index === longChunks.length - 1 ? [0, 1] : [1, 0],
+    chunkHash: createHash('sha256').update(chunk).digest('hex')
+  }))
+  assert.equal(store.saveEmbeddingBatch([{
+    id: long.id,
+    model,
+    vector: meanNormalizedEmbeddings(chunkVectors.map(item => item.vector)),
+    expectedContentHash: long.content_hash,
+    chunks: chunkVectors
+  }, {
+    id: generic.id,
+    model,
+    vector: [0.7, 0.7],
+    expectedContentHash: generic.content_hash,
+    chunks: [{
+      vector: [0.7, 0.7],
+      chunkHash: createHash('sha256').update('generic').digest('hex')
+    }]
+  }]), 2)
+  const results = store.searchVector([0, 1], model, 10)
+  assert.equal(results[0].id, long.id)
+  assert.equal(results.filter(item => item.id === long.id).length, 1)
+  assert.equal(results[0].chunk_index, longChunks.length - 1)
+  assert.equal(store.listEmbeddingCandidates(model, 10).length, 0)
+
+  store.upsertResources([{
+    id: 'long-semantic-resource',
+    resourceType: 'document',
+    title: '长文档',
+    content: '正文已经变化',
+    createdAt: '2026-08-05T00:00:00.000Z',
+    updatedAt: '2026-08-05T01:00:00.000Z'
+  }])
+  assert.equal(store.listEmbeddingCandidates(model, 10)
+    .some(item => item.id === long.id), true)
+}))
+
 test('malformed vectors remain pending and recover safely across restart', () => {
   const directory = mkdtempSync(join(tmpdir(), 'weflow-invalid-vector-'))
   const databasePath = join(directory, 'memory.sqlite')
@@ -7254,6 +7321,52 @@ test('local embedding identity pins an immutable model revision', () => {
   } finally {
     rmSync(directory, { recursive: true, force: true })
   }
+})
+
+test('long document embedding chunks cover the complete 80k document with overlap', () => {
+  const sections = Array.from({ length: 81 }, (_, index) =>
+    `段落-${String(index).padStart(3, '0')}-开始 ${String.fromCharCode(0x4e00 + index).repeat(970)} 段落-${String(index).padStart(3, '0')}-结束`)
+  const text = sections.join('\n\n')
+  const chunks = buildEmbeddingChunks(text)
+  assert.ok(chunks.length > 1)
+  assert.ok(chunks.length <= LOCAL_EMBEDDING_MAX_CHUNKS)
+  assert.ok(chunks.every(chunk => chunk.length <= LOCAL_EMBEDDING_CHUNK_SIZE))
+  for (let index = 0; index < sections.length; index += 1) {
+    assert.equal(chunks.some(chunk => chunk.includes(`段落-${String(index).padStart(3, '0')}-开始`)), true)
+  }
+  assert.ok(chunks.slice(0, -1).every((chunk, index) => {
+    const overlapProbe = chunk.slice(-Math.min(LOCAL_EMBEDDING_CHUNK_OVERLAP / 2, chunk.length))
+    return chunks[index + 1].includes(overlapProbe)
+  }))
+})
+
+test('chunk embedding aggregation returns one normalized vector per document', () => {
+  assert.deepEqual(meanNormalizedEmbeddings([[1, 0], [0, 1]]).map(value => Number(value.toFixed(6))),
+    [0.707107, 0.707107])
+  assert.deepEqual(meanNormalizedEmbeddings([[1, 0], [-1, 0]]), [])
+  assert.deepEqual(meanNormalizedEmbeddings([[1, 0], [1]]), [])
+})
+
+test('document embedding includes semantic content from the far end of a long document', async () => {
+  const service = new LocalEmbeddingService()
+  const observed: string[] = []
+  const inferenceBatchSizes: number[] = []
+  ;(service as any).embed = async (chunks: string[]) => {
+    inferenceBatchSizes.push(chunks.length)
+    observed.push(...chunks)
+    return chunks.map(chunk => chunk.includes('远端唯一语义标记')
+      ? [0, 1]
+      : [1, 0])
+  }
+  const [vector] = await service.embedDocuments([
+    `${'前部普通内容。'.repeat(1_500)}\n远端唯一语义标记`
+  ])
+  assert.ok(observed.length > 1)
+  assert.ok(inferenceBatchSizes.length > 1)
+  assert.ok(inferenceBatchSizes.every(size => size <= LOCAL_EMBEDDING_INFERENCE_BATCH_SIZE))
+  assert.equal(observed.some(chunk => chunk.includes('远端唯一语义标记')), true)
+  assert.ok(vector[1] > 0)
+  assert.ok(Math.abs(Math.sqrt(vector[0] ** 2 + vector[1] ** 2) - 1) < 1e-12)
 })
 
 test('local embedding cache verification removes only corrupted derived files', async () => {
