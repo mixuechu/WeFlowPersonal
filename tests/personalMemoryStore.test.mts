@@ -5,6 +5,7 @@ import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { createHash, randomBytes } from 'node:crypto'
 import { PersonalMemoryStore } from '../electron/services/personalMemoryStore.ts'
+import { validateEmbeddingBatch } from '../electron/services/vectorIndexingPolicy.ts'
 import {
   GRAPH_RELATION_EVIDENCE_HOT_LIMIT,
   compactRelationEvidenceHotset
@@ -7145,6 +7146,48 @@ test('malformed vectors remain pending and recover safely across restart', () =>
     rmSync(directory, { recursive: true, force: true })
   }
 })
+
+test('embedding batches reject count, dimension and non-finite output before writes', () => {
+  assert.deepEqual(validateEmbeddingBatch([[1, 0], [0, 1]], 2), {
+    valid: true,
+    dimensions: 2,
+    reason: ''
+  })
+  assert.equal(validateEmbeddingBatch([[1, 0]], 2).reason, 'count_mismatch')
+  assert.equal(validateEmbeddingBatch([[]], 1).reason, 'empty_vector')
+  assert.equal(validateEmbeddingBatch([[1, 0], [1]], 2).reason, 'dimension_mismatch')
+  assert.equal(validateEmbeddingBatch([[1, Number.NaN]], 1).reason, 'non_finite_value')
+  assert.equal(validateEmbeddingBatch([[1, Number.POSITIVE_INFINITY]], 1).reason,
+    'non_finite_value')
+})
+
+test('embedding commit is bound to the exact document content hash', () => withStore(store => {
+  const model = 'test-content-bound-vector:2d'
+  const task = {
+    id: 'content-bound-vector-task',
+    title: '向量提交绑定正文',
+    detail: '生成向量时的旧正文',
+    priority: 'medium',
+    status: 'todo',
+    classification: 'mine'
+  }
+  store.syncTasks([task])
+  const [candidate] = store.listEmbeddingCandidates(model)
+  assert.match(candidate.content_hash, /^[a-f0-9]{64}$/)
+  store.syncTasks([{ ...task, detail: '向量生成期间更新后的新正文' }])
+
+  assert.equal(store.saveEmbedding(
+    candidate.id, model, [1, 0], candidate.content_hash
+  ), false)
+  assert.equal(store.getEmbeddingStats(model).indexed, 0)
+  const [current] = store.listEmbeddingCandidates(model)
+  assert.notEqual(current.content_hash, candidate.content_hash)
+  assert.equal(store.saveEmbedding(
+    current.id, model, [1, 0], current.content_hash
+  ), true)
+  assert.equal(store.getEmbeddingStats(model).indexed, 1)
+  assert.equal(store.searchVector([1, 0], model)[0]?.search_text.includes('新正文'), true)
+}))
 
 test('local ANN index is deterministic, persistent, invalidated safely and falls back to exact search', () => {
   const directory = mkdtempSync(join(tmpdir(), 'weflow-ann-test-'))

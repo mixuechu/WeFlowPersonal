@@ -12470,12 +12470,27 @@ export class PersonalMemoryStore {
     `).all(model, Math.max(1, Math.min(1000, limit))) as any[]
   }
 
-  saveEmbedding(id: string, model: string, vector: number[]): void {
-    const normalized = Array.isArray(vector) ? vector.map(Number) : []
-    if (!this.db || !normalized.length || normalized.some(value => !Number.isFinite(value))) return
-    this.db.prepare(`
-      UPDATE search_documents SET embedding_model=?,embedding_dimensions=?,embedding_json=? WHERE id=?
-    `).run(model, normalized.length, JSON.stringify(normalized), id)
+  saveEmbedding(
+    id: string,
+    model: string,
+    vector: number[],
+    expectedContentHash = ''
+  ): boolean {
+    const normalized = Array.isArray(vector) ? [...vector] : []
+    if (!this.db || !normalized.length
+      || normalized.some(value => typeof value !== 'number' || !Number.isFinite(value))) {
+      return false
+    }
+    const result = expectedContentHash
+      ? this.db.prepare(`
+        UPDATE search_documents SET embedding_model=?,embedding_dimensions=?,embedding_json=?
+        WHERE id=? AND content_hash=?
+      `).run(model, normalized.length, JSON.stringify(normalized), id, expectedContentHash)
+      : this.db.prepare(`
+        UPDATE search_documents SET embedding_model=?,embedding_dimensions=?,embedding_json=?
+        WHERE id=?
+      `).run(model, normalized.length, JSON.stringify(normalized), id)
+    return Number(result.changes || 0) === 1
   }
 
   getEmbeddingStats(model: string): any {

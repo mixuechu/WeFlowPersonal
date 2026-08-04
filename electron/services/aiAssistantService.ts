@@ -9,6 +9,7 @@ import { httpService } from './httpService'
 import { showSystemNotification } from './systemNotificationService'
 import { personalMemoryStore } from './personalMemoryStore'
 import { localEmbeddingService } from './localEmbeddingService'
+import { validateEmbeddingBatch } from './vectorIndexingPolicy'
 import { extractAttachmentText } from './attachmentTextExtractor'
 import { structureOcrText } from './imageOcrStructuring'
 import { captureWebSnapshot } from './webSnapshotService'
@@ -7349,9 +7350,23 @@ export class AiAssistantService {
         const documents = personalMemoryStore.listEmbeddingCandidates(localEmbeddingService.modelVersion, 24)
         if (!documents.length) break
         const vectors = await localEmbeddingService.embed(documents.map((item: any) => `${item.title}\n${item.search_text}`))
-        documents.forEach((item: any, index: number) =>
-          personalMemoryStore.saveEmbedding(item.id, localEmbeddingService.modelVersion, vectors[index]))
-        indexed += documents.length
+        const validation = validateEmbeddingBatch(vectors, documents.length)
+        if (!validation.valid) {
+          throw new Error('本地向量模型返回了数量、维度或数值异常的批次，已停止补建且未写入该批')
+        }
+        let committed = 0
+        documents.forEach((item: any, index: number) => {
+          if (personalMemoryStore.saveEmbedding(
+            item.id,
+            localEmbeddingService.modelVersion,
+            vectors[index],
+            String(item.content_hash || '')
+          )) committed += 1
+        })
+        if (committed === 0) {
+          throw new Error('向量补建期间文档持续变化，本批没有可安全提交的结果，稍后将重新尝试')
+        }
+        indexed += committed
       }
       const ann = personalMemoryStore.ensureApproximateVectorIndex(localEmbeddingService.modelVersion)
       return { indexed, ...personalMemoryStore.getEmbeddingStats(localEmbeddingService.modelVersion), ann }
