@@ -194,6 +194,33 @@ function memoryAuditStatusLabel(value: string): string {
       : value === 'cancelled' ? '已取消' : '待确认'
 }
 
+function assistantRevalidationReasonSummary(item: any): string {
+  const reasons: string[] = []
+  const missing = Math.max(0, Number(
+    item?.missing_statements ?? item?.revalidation_missing_statements
+  ) || 0)
+  const ineligible = Math.max(0, Number(
+    item?.ineligible_statements ?? item?.revalidation_ineligible_statements
+  ) || 0)
+  const contentChanged = Math.max(0, Number(
+    item?.content_changed_statements ?? item?.revalidation_content_changed_statements
+  ) || 0)
+  const evidenceCountsChanged = Math.max(0, Number(
+    item?.evidence_counts_changed_statements
+      ?? item?.revalidation_evidence_counts_changed_statements
+  ) || 0)
+  if (missing) reasons.push(`来源已删除 ${missing}`)
+  if (ineligible) reasons.push(`可信资格失效 ${ineligible}`)
+  if (contentChanged) reasons.push(`结构化内容变化 ${contentChanged}`)
+  if (evidenceCountsChanged) reasons.push(`支持/反证构成变化 ${evidenceCountsChanged}`)
+  const invalid = Math.max(0, Number(
+    item?.invalid_statements ?? item?.revalidation_invalid_statements
+  ) || 0)
+  const classified = missing + ineligible + contentChanged + evidenceCountsChanged
+  if (invalid > classified) reasons.push(`其他失效 ${invalid - classified}`)
+  return reasons.join(' · ')
+}
+
 function schedulerCatchupResultLabel(value: string): string {
   return ({
     assistant_disabled: 'AI 助理当时处于关闭状态，未自动补齐',
@@ -7773,6 +7800,10 @@ function AiAssistantPage() {
                       ? ` · 指纹未知 ${Number(item.unknown_statements)}`
                       : ''}
                   </small>
+                  {!!assistantRevalidationReasonSummary(item) && <small
+                    className="assistant-evidence-limit-note">
+                    原因：{assistantRevalidationReasonSummary(item)}
+                  </small>}
                   <div>
                     <button onClick={() => void openMemoryConversation(
                       item.conversation_id,
@@ -7892,6 +7923,9 @@ function AiAssistantPage() {
                     : conversation.revalidation_status === 'current'
                       ? `✓ 当前有效 · ${Number(conversation.revalidation_supported_statements || 0)} 条陈述`
                       : '无事实陈述或旧版未建立依赖'}</small>
+                {!!assistantRevalidationReasonSummary(conversation) && <small>
+                  原因：{assistantRevalidationReasonSummary(conversation)}
+                </small>}
                 <small>{conversation.preview}</small>
               </button>)}
               {assistantArchive.loading && <small>正在读取本机问答档案…</small>}

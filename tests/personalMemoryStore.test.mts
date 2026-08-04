@@ -9031,6 +9031,11 @@ test('assistant archive filters statement dependencies without loading answer ev
   assert.equal(statuses.get('没有事实陈述'), 'not_applicable')
   const changedDirectoryItem = all.items.find((item: any) => item.title === '内容变化会话')
   assert.equal(changedDirectoryItem.revalidation_target_message_id, changedAnswerId)
+  assert.equal(changedDirectoryItem.revalidation_content_changed_statements, 1)
+  assert.equal(changedDirectoryItem.revalidation_missing_statements, 0)
+  const missingDirectoryItem = all.items.find((item: any) => item.title === '来源删除会话')
+  assert.equal(missingDirectoryItem.revalidation_missing_statements, 1)
+  assert.equal(missingDirectoryItem.revalidation_content_changed_statements, 0)
   const anchoredConversation = store.getAssistantConversation(changedConversationId, {
     anchorMessageId: changedAnswerId,
     limit: 40
@@ -9070,6 +9075,8 @@ test('assistant archive filters statement dependencies without loading answer ev
   })
   assert.equal(answerReviews.items.find((item: any) => item.message_id === changedAnswerId)
     .revalidation_status, 'invalid')
+  assert.equal(answerReviews.items.find((item: any) => item.message_id === changedAnswerId)
+    .content_changed_statements, 1)
   assert.equal(answerReviews.items.find((item: any) => item.message_id === changedAnswerId)
     .question_preview, '内容变化会话')
   assert.match(
@@ -9220,6 +9227,17 @@ test('assistant archive filters statement dependencies without loading answer ev
     pending: 5,
     resolved: 0
   })
+  database.prepare(`
+    DELETE FROM search_document_evidence WHERE document_id='resource:current'
+  `).run()
+  const ineligibleAnswer = store.listAssistantAnswerReviewsPage({
+    status: 'invalid',
+    reviewState: 'all',
+    query: '当前有效会话',
+    limit: 20
+  }).items[0]
+  assert.equal(ineligibleAnswer.ineligible_statements, 1)
+  assert.equal(ineligibleAnswer.content_changed_statements, 0)
 
   assert.equal(store.deleteAssistantConversation(currentConversationId), true)
   const dependencyStatsAfterDelete = store.getAssistantAnswerDependencyStats()
@@ -9325,10 +9343,13 @@ test('assistant archive invalidates answers when structured evidence counts chan
     '补充一条没有改变结构化摘要的支持原文',
     'direct'
   )
-  assert.equal(store.listAssistantConversationsPage({
+  const countChangedDirectory = store.listAssistantConversationsPage({
     revalidationStatus: 'invalid',
     limit: 20
-  }).items[0].id, saved.conversationId)
+  }).items[0]
+  assert.equal(countChangedDirectory.id, saved.conversationId)
+  assert.equal(countChangedDirectory.revalidation_evidence_counts_changed_statements, 1)
+  assert.equal(countChangedDirectory.revalidation_content_changed_statements, 0)
   const attention = store.listAssistantAnswerReviewsPage({
     status: 'invalid',
     messageId: saved.answerMessageId,
@@ -9336,6 +9357,8 @@ test('assistant archive invalidates answers when structured evidence counts chan
   })
   assert.equal(attention.total, 1)
   assert.equal(attention.items[0].revalidation_status, 'invalid')
+  assert.equal(attention.items[0].evidence_counts_changed_statements, 1)
+  assert.equal(attention.items[0].content_changed_statements, 0)
   const roleSensitive = store.saveAssistantExchangeDetailed(
     '当前两条都是支持证据吗？',
     '当前两条均为非反证原文。',
@@ -9368,16 +9391,92 @@ test('assistant archive invalidates answers when structured evidence counts chan
     UPDATE evidence SET evidence_role='contradiction'
     WHERE claim_id='claim-answer-counts' AND message_id='answer-counts-2'
   `).run()
-  assert.equal(store.listAssistantAnswerReviewsPage({
+  const roleChangedReview = store.listAssistantAnswerReviewsPage({
     status: 'invalid',
     messageId: roleSensitive.answerMessageId,
     limit: 10
-  }).total, 1)
+  })
+  assert.equal(roleChangedReview.total, 1)
+  assert.equal(roleChangedReview.items[0].evidence_counts_changed_statements, 1)
   assert.equal(store.listAssistantConversationsPage({
     offset: 1,
     limit: 20,
     revision: initialDirectory.revision
   }).stale, true)
+}))
+
+test('assistant archive does not report a failed citation when the same statement has current backup', () => withStore(store => {
+  const database = (store as any).db
+  const now = new Date().toISOString()
+  database.prepare(`
+    INSERT INTO search_documents(
+      id,document_type,source_id,title,search_text,metadata_json,content_hash,updated_at
+    ) VALUES(?,?,?,?,?,?,?,?)
+  `).run(
+    'resource:backup-current',
+    'resource',
+    'backup-current',
+    '仍然有效的备用来源',
+    '同一陈述仍有一项当前证据',
+    '{}',
+    'c'.repeat(64),
+    now
+  )
+  database.prepare(`
+    INSERT INTO search_document_evidence(
+      document_id,source_id,message_id,session_id,timestamp,sender,excerpt
+    ) VALUES(?,?,?,?,?,?,?)
+  `).run(
+    'resource:backup-current',
+    'documents',
+    'backup-current-message',
+    'data-source:documents:backup',
+    1,
+    '文档',
+    '当前备用原文'
+  )
+  const saved = store.saveAssistantExchangeDetailed(
+    '有一项引用删除后，这个陈述还成立吗？',
+    '仍有另一项当前证据支持。',
+    [{
+      documentId: 'resource:removed-primary',
+      sourceId: 'removed-primary',
+      type: 'resource',
+      title: '已删除的主来源',
+      contentHash: 'a'.repeat(64)
+    }, {
+      documentId: 'resource:backup-current',
+      sourceId: 'backup-current',
+      type: 'resource',
+      title: '仍然有效的备用来源',
+      contentHash: 'c'.repeat(64)
+    }],
+    undefined,
+    {
+      version: 'statement-citations-v1',
+      proposedStatements: 1,
+      acceptedStatements: 1,
+      rejectedStatements: 0,
+      acceptedCitationIds: 2,
+      promptIsolationVersion: 'untrusted-memory-envelope-v1',
+      statementCitations: [[
+        'resource:removed-primary',
+        'resource:backup-current'
+      ]]
+    }
+  )
+  const directory = store.listAssistantConversationsPage({ limit: 10 }).items[0]
+  assert.equal(directory.id, saved.conversationId)
+  assert.equal(directory.revalidation_status, 'current')
+  assert.equal(directory.revalidation_missing_statements, 0)
+  assert.equal(directory.revalidation_invalid_statements, 0)
+  const review = store.listAssistantAnswerReviewsPage({
+    status: 'current',
+    messageId: saved.answerMessageId,
+    limit: 10
+  }).items[0]
+  assert.equal(review.missing_statements, 0)
+  assert.equal(review.invalid_statements, 0)
 }))
 
 test('assistant archive and message pagination survive a SQLCipher process-style reopen', () => {

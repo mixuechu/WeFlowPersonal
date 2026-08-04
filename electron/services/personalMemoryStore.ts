@@ -13089,7 +13089,14 @@ export class PersonalMemoryStore {
             AND d.content_hash!='' AND lower(d.content_hash)=lower(s.content_hash)
             AND ${evidenceCountsCurrent}
             THEN 1 ELSE 0 END AS is_current,
-          CASE WHEN ${eligibility} AND d.content_hash='' THEN 1 ELSE 0 END AS is_unknown
+          CASE WHEN ${eligibility} AND d.content_hash='' THEN 1 ELSE 0 END AS is_unknown,
+          CASE WHEN s.id IS NULL THEN 1 ELSE 0 END AS is_missing,
+          CASE WHEN s.id IS NOT NULL AND NOT ${eligibility} THEN 1 ELSE 0 END AS is_ineligible,
+          CASE WHEN ${eligibility} AND d.content_hash!=''
+            AND lower(d.content_hash)!=lower(s.content_hash) THEN 1 ELSE 0 END AS is_content_changed,
+          CASE WHEN ${eligibility} AND d.content_hash!=''
+            AND lower(d.content_hash)=lower(s.content_hash)
+            AND NOT ${evidenceCountsCurrent} THEN 1 ELSE 0 END AS is_evidence_counts_changed
         FROM assistant_answer_dependencies d
         LEFT JOIN search_documents s ON s.id=d.document_id
         LEFT JOIN structured_evidence_counts sec
@@ -13098,7 +13105,11 @@ export class PersonalMemoryStore {
       statement_state AS (
         SELECT conversation_id,message_id,statement_index,
           MAX(is_current) AS has_current,
-          MAX(is_unknown) AS has_unknown
+          MAX(is_unknown) AS has_unknown,
+          MAX(is_missing) AS has_missing,
+          MAX(is_ineligible) AS has_ineligible,
+          MAX(is_content_changed) AS has_content_changed,
+          MAX(is_evidence_counts_changed) AS has_evidence_counts_changed
         FROM dependency_state
         GROUP BY conversation_id,message_id,statement_index
       ),
@@ -13107,7 +13118,17 @@ export class PersonalMemoryStore {
           COUNT(*) AS total_statements,
           SUM(CASE WHEN ss.has_current=1 THEN 1 ELSE 0 END) AS supported_statements,
           SUM(CASE WHEN ss.has_current=0 AND ss.has_unknown=1 THEN 1 ELSE 0 END) AS unknown_statements,
-          SUM(CASE WHEN ss.has_current=0 AND ss.has_unknown=0 THEN 1 ELSE 0 END) AS invalid_statements
+          SUM(CASE WHEN ss.has_current=0 AND ss.has_unknown=0 THEN 1 ELSE 0 END) AS invalid_statements,
+          SUM(CASE WHEN ss.has_current=0 AND ss.has_unknown=0
+            AND ss.has_missing=1 THEN 1 ELSE 0 END) AS missing_statements,
+          SUM(CASE WHEN ss.has_current=0 AND ss.has_unknown=0
+            AND ss.has_missing=0 AND ss.has_ineligible=1 THEN 1 ELSE 0 END) AS ineligible_statements,
+          SUM(CASE WHEN ss.has_current=0 AND ss.has_unknown=0
+            AND ss.has_missing=0 AND ss.has_ineligible=0 AND ss.has_content_changed=1
+            THEN 1 ELSE 0 END) AS content_changed_statements,
+          SUM(CASE WHEN ss.has_current=0 AND ss.has_unknown=0
+            AND ss.has_missing=0 AND ss.has_ineligible=0 AND ss.has_content_changed=0
+            AND ss.has_evidence_counts_changed=1 THEN 1 ELSE 0 END) AS evidence_counts_changed_statements
         FROM statement_state ss
         JOIN assistant_messages m ON m.id=ss.message_id
         GROUP BY ss.conversation_id,ss.message_id
@@ -13117,7 +13138,11 @@ export class PersonalMemoryStore {
           SUM(total_statements) AS total_statements,
           SUM(supported_statements) AS supported_statements,
           SUM(unknown_statements) AS unknown_statements,
-          SUM(invalid_statements) AS invalid_statements
+          SUM(invalid_statements) AS invalid_statements,
+          SUM(missing_statements) AS missing_statements,
+          SUM(ineligible_statements) AS ineligible_statements,
+          SUM(content_changed_statements) AS content_changed_statements,
+          SUM(evidence_counts_changed_statements) AS evidence_counts_changed_statements
         FROM answer_revalidation GROUP BY conversation_id
       )
     `
@@ -13134,6 +13159,11 @@ export class PersonalMemoryStore {
         COALESCE(cr.supported_statements,0) AS revalidation_supported_statements,
         COALESCE(cr.unknown_statements,0) AS revalidation_unknown_statements,
         COALESCE(cr.invalid_statements,0) AS revalidation_invalid_statements,
+        COALESCE(cr.missing_statements,0) AS revalidation_missing_statements,
+        COALESCE(cr.ineligible_statements,0) AS revalidation_ineligible_statements,
+        COALESCE(cr.content_changed_statements,0) AS revalidation_content_changed_statements,
+        COALESCE(cr.evidence_counts_changed_statements,0)
+          AS revalidation_evidence_counts_changed_statements,
         COALESCE((
           SELECT affected.message_id FROM answer_revalidation affected
           WHERE affected.conversation_id=c.id
@@ -13277,6 +13307,13 @@ export class PersonalMemoryStore {
             THEN 1 ELSE 0 END AS is_current,
           CASE WHEN ${eligibility}
             AND d.content_hash='' THEN 1 ELSE 0 END AS is_unknown,
+          CASE WHEN s.id IS NULL THEN 1 ELSE 0 END AS is_missing,
+          CASE WHEN s.id IS NOT NULL AND NOT ${eligibility} THEN 1 ELSE 0 END AS is_ineligible,
+          CASE WHEN ${eligibility} AND d.content_hash!=''
+            AND lower(d.content_hash)!=lower(s.content_hash) THEN 1 ELSE 0 END AS is_content_changed,
+          CASE WHEN ${eligibility} AND d.content_hash!=''
+            AND lower(d.content_hash)=lower(s.content_hash)
+            AND NOT ${evidenceCountsCurrent} THEN 1 ELSE 0 END AS is_evidence_counts_changed,
           printf('%s:%s:%s:%s:%s:%s',
             d.document_id,
             CASE WHEN s.id IS NULL THEN 'missing'
@@ -13306,6 +13343,10 @@ export class PersonalMemoryStore {
         SELECT d.conversation_id,d.message_id,d.statement_index,
           MAX(d.is_current) AS has_current,
           MAX(d.is_unknown) AS has_unknown,
+          MAX(d.is_missing) AS has_missing,
+          MAX(d.is_ineligible) AS has_ineligible,
+          MAX(d.is_content_changed) AS has_content_changed,
+          MAX(d.is_evidence_counts_changed) AS has_evidence_counts_changed,
           weflow_sha256((
             SELECT group_concat(ordered.dependency_token,'|') FROM (
               SELECT nested.dependency_token
@@ -13324,6 +13365,16 @@ export class PersonalMemoryStore {
           SUM(CASE WHEN ss.has_current=1 THEN 1 ELSE 0 END) AS supported_statements,
           SUM(CASE WHEN ss.has_current=0 AND ss.has_unknown=1 THEN 1 ELSE 0 END) AS unknown_statements,
           SUM(CASE WHEN ss.has_current=0 AND ss.has_unknown=0 THEN 1 ELSE 0 END) AS invalid_statements,
+          SUM(CASE WHEN ss.has_current=0 AND ss.has_unknown=0
+            AND ss.has_missing=1 THEN 1 ELSE 0 END) AS missing_statements,
+          SUM(CASE WHEN ss.has_current=0 AND ss.has_unknown=0
+            AND ss.has_missing=0 AND ss.has_ineligible=1 THEN 1 ELSE 0 END) AS ineligible_statements,
+          SUM(CASE WHEN ss.has_current=0 AND ss.has_unknown=0
+            AND ss.has_missing=0 AND ss.has_ineligible=0 AND ss.has_content_changed=1
+            THEN 1 ELSE 0 END) AS content_changed_statements,
+          SUM(CASE WHEN ss.has_current=0 AND ss.has_unknown=0
+            AND ss.has_missing=0 AND ss.has_ineligible=0 AND ss.has_content_changed=0
+            AND ss.has_evidence_counts_changed=1 THEN 1 ELSE 0 END) AS evidence_counts_changed_statements,
           weflow_sha256((
             SELECT group_concat(ordered.statement_state_digest,'|') FROM (
               SELECT nested.statement_state_digest
@@ -13428,6 +13479,8 @@ export class PersonalMemoryStore {
       ${revalidationCte}
       SELECT ar.message_id,ar.conversation_id,ar.created_at,ar.state_key,
         ar.total_statements,ar.supported_statements,ar.unknown_statements,ar.invalid_statements,
+        ar.missing_statements,ar.ineligible_statements,ar.content_changed_statements,
+        ar.evidence_counts_changed_statements,
         decision.action AS latest_review_action,decision.state_key AS reviewed_state_key,
         decision.created_at AS reviewed_at,decision.id AS latest_review_decision_id,
         (SELECT COUNT(*) FROM assistant_answer_review_decisions history
