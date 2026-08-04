@@ -643,6 +643,9 @@ function AiAssistantPage() {
   const [resourceTrashOpen, setResourceTrashOpen] = useState(false)
   const [resourceTrashQuery, setResourceTrashQuery] = useState('')
   const [resourceTrashLoadingMore, setResourceTrashLoadingMore] = useState(false)
+  const [resourceTrashRestoring, setResourceTrashRestoring] =
+    useState<Record<string, boolean>>({})
+  const resourceTrashRestoreGates = useRef(new KeyedLatestRequestGates())
   const dashboardLoadGate = useRef(new LatestRequestGate())
   const claimArchiveGate = useRef(new LatestRequestGate())
   const eventTimelineGate = useRef(new LatestRequestGate())
@@ -4551,13 +4554,33 @@ function AiAssistantPage() {
   }
 
   const restoreMemoryResource = async (resource: any) => {
+    if (resourceTrashRestoring[resource.id]) return
+    const request = resourceTrashRestoreGates.current.begin(resource.id)
+    setResourceTrashRestoring(current =>
+      setKeyedLoadingState(current, resource.id, true))
     try {
-      const result = await window.electronAPI.aiAssistant.restoreMemoryResource(resource.id)
+      const result = await window.electronAPI.aiAssistant.restoreMemoryResource(
+        resource.id,
+        resource.mutation_token
+      )
+      if (!resourceTrashRestoreGates.current.isCurrent(resource.id, request)) return
       setMessage(result?.success ? `已恢复资源：${resource.title || '未命名资源'}` : '资源恢复失败')
       await load()
       setResourceRefreshKey(value => value + 1)
     } catch (error: any) {
-      setMessage(error?.message || String(error))
+      if (resourceTrashRestoreGates.current.isCurrent(resource.id, request)) {
+        const errorMessage = error?.message || String(error)
+        setMessage(errorMessage)
+        if (errorMessage.includes('快照在展示后发生了变化')) {
+          resourceTrashGate.current.invalidate()
+          setResourceRefreshKey(value => value + 1)
+        }
+      }
+    } finally {
+      if (resourceTrashRestoreGates.current.isCurrent(resource.id, request)) {
+        setResourceTrashRestoring(current =>
+          setKeyedLoadingState(current, resource.id, false))
+      }
     }
   }
 
@@ -8023,7 +8046,11 @@ function AiAssistantPage() {
                   <small>删除于 {new Date(resource.deletedAt).toLocaleString('zh-CN')}</small>
                   <div className="assistant-memory-actions">
                     <button onClick={() => void purgeMemoryResourceTrash(resource)}>永久删除</button>
-                    <button className="primary" onClick={() => void restoreMemoryResource(resource)}>恢复资源</button>
+                    <button className="primary"
+                      disabled={!!resourceTrashRestoring[resource.id]}
+                      onClick={() => void restoreMemoryResource(resource)}>
+                      {resourceTrashRestoring[resource.id] ? '正在恢复…' : '恢复资源'}
+                    </button>
                   </div>
                 </article>)}
                 {resourceTrashArchive.status === 'loading' && <div className="assistant-empty">正在读取回收站目录…</div>}

@@ -11382,7 +11382,24 @@ test('message resources remain idempotent, searchable and traceable to original 
   store.upsertResources([resource])
   assert.equal(store.getMemoryStats().resources, 0)
   assert.equal(store.listResourceTrash()[0].title, '项目验收说明')
-  assert.equal(store.restoreResource('resource-link-1').success, true)
+  const visibleTrash = store.listResourceTrashArchive({ limit: 40 }).items[0]
+  assert.match(visibleTrash.mutation_token, /^[a-f0-9]{64}$/)
+  assert.equal(visibleTrash.resourceType, 'link')
+  assert.match(visibleTrash.deletedAt, /^20/)
+  assert.equal('snapshot_json' in visibleTrash, false)
+  ;(store as any).db.prepare(`
+    UPDATE resource_trash SET reason='后台更新的删除原因' WHERE resource_id=?
+  `).run('resource-link-1')
+  assert.throws(() => store.restoreResource(
+    'resource-link-1',
+    visibleTrash.mutation_token
+  ), /快照在展示后发生了变化/)
+  const currentTrash = store.listResourceTrashArchive({ limit: 40 }).items[0]
+  assert.notEqual(currentTrash.mutation_token, visibleTrash.mutation_token)
+  assert.equal(store.restoreResource(
+    'resource-link-1',
+    currentTrash.mutation_token
+  ).success, true)
   assert.equal(store.getMemoryStats().resources, 1)
   assert.ok(store.searchText('报价有效期').some(item => item.id === 'resource:resource-link-1'))
   assert.equal(store.getDocumentEvidence('resource', 'resource-link-1')[0].message_id, 'message-resource-1')
@@ -11394,7 +11411,7 @@ test('message resources remain idempotent, searchable and traceable to original 
   assert.match(purgePreview.identitySha256, /^[a-f0-9]{64}$/)
   assert.equal(store.purgeResourceTrash('resource-link-1').purged, 1)
   assert.equal(store.previewPurgeResourceTrash('resource-link-1'), null)
-  assert.equal(store.restoreResource('resource-link-1').success, false)
+  assert.equal(store.restoreResource('resource-link-1', '').success, false)
   store.upsertResources([resource])
   assert.equal(store.getMemoryStats().resources, 0)
 }))
@@ -11503,7 +11520,7 @@ test('resource trash retention is opt-in and expires snapshots without lifting s
   assert.equal(store.listResourceTrash().length, 1)
   const future = new Date(Date.now() + 8 * 86_400_000)
   assert.equal(store.purgeExpiredResourceTrash(7, future).purged, 1)
-  assert.equal(store.restoreResource(resource.id).success, false)
+  assert.equal(store.restoreResource(resource.id, '').success, false)
   store.upsertResources([resource])
   assert.equal(store.getMemoryStats().resources, 0)
 }))

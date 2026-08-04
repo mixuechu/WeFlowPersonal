@@ -6345,8 +6345,11 @@ export class AiAssistantService {
     return personalMemoryStore.deleteResource(id)
   }
 
-  restoreMemoryResource(id: string): any {
-    return personalMemoryStore.restoreResource(id)
+  restoreMemoryResource(id: string, expectedMutationToken: string): any {
+    return personalMemoryStore.restoreResource(
+      id,
+      String(expectedMutationToken || '').trim()
+    )
   }
 
   previewPurgeMemoryResourceTrash(id: string): any {

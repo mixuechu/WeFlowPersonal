@@ -1948,7 +1948,7 @@ export interface ElectronAPI {
         id: string,
         input?: { previewToken?: string; confirmation?: string }
       ) => Promise<any>
-      restoreMemoryResource: (id: string) => Promise<any>
+      restoreMemoryResource: (id: string, expectedMutationToken: string) => Promise<any>
       previewPurgeMemoryResourceTrash: (id: string) => Promise<any>
       purgeMemoryResourceTrash: (
         id: string,

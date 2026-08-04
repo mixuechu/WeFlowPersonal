@@ -5877,11 +5877,19 @@ export class PersonalMemoryStore {
     })
   }
 
-  restoreResource(id: string): any {
+  restoreResource(id: string, expectedMutationToken: string): any {
     if (!this.db) return { success: false, id }
     const resourceId = String(id || '').trim()
-    const trash = this.db.prepare('SELECT snapshot_json FROM resource_trash WHERE resource_id=?').get(resourceId) as any
+    const trash = this.db.prepare(`
+      SELECT snapshot_json,
+        weflow_sha256(resource_id || char(0) || snapshot_json || char(0) ||
+          reason || char(0) || deleted_at) AS mutation_token
+      FROM resource_trash WHERE resource_id=?
+    `).get(resourceId) as any
     if (!trash) return { success: false, id: resourceId, error: 'not_found' }
+    if (!expectedMutationToken || expectedMutationToken !== trash.mutation_token) {
+      throw new Error('资源回收站快照在展示后发生了变化，请刷新后重新核对')
+    }
     const snapshot = JSON.parse(trash.snapshot_json || '{}')
     const row = snapshot.resource
     if (!row) return { success: false, id: resourceId, error: 'invalid_snapshot' }
@@ -7058,13 +7066,15 @@ export class PersonalMemoryStore {
     `).get(...parameters) as any)?.count || 0)
     const limit = Math.max(1, Math.min(100, Math.floor(Number(options.limit) || 40)))
     const items = this.db.prepare(`
-      SELECT resource_id AS id,reason,deleted_at,
+      SELECT resource_id AS id,reason,deleted_at AS deletedAt,
+        weflow_sha256(resource_id || char(0) || snapshot_json || char(0) ||
+          reason || char(0) || deleted_at) AS mutation_token,
         CASE WHEN json_valid(snapshot_json)
           THEN COALESCE(json_extract(snapshot_json,'$.resource.title'),'已删除资源')
           ELSE '无法读取的旧资源快照' END AS title,
         CASE WHEN json_valid(snapshot_json)
           THEN COALESCE(json_extract(snapshot_json,'$.resource.resource_type'),'resource')
-          ELSE 'resource' END AS resource_type
+          ELSE 'resource' END AS resourceType
       FROM resource_trash ${where}
       ORDER BY deleted_at DESC,resource_id ASC
       LIMIT ? OFFSET ?

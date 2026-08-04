@@ -4647,7 +4647,11 @@ function registerIpcHandlers() {
     aiAssistantService.getResourceTrashArchive(options))
   ipcMain.handle('ai-assistant:deleteMemoryResource', (_, id: string, input?: any) =>
     aiAssistantService.deleteMemoryResource(id, input))
-  ipcMain.handle('ai-assistant:restoreMemoryResource', (_, id: string) => aiAssistantService.restoreMemoryResource(id))
+  ipcMain.handle('ai-assistant:restoreMemoryResource', (
+    _,
+    id: string,
+    expectedMutationToken: string
+  ) => aiAssistantService.restoreMemoryResource(id, expectedMutationToken))
   ipcMain.handle('ai-assistant:previewPurgeMemoryResourceTrash', (_, id: string) =>
     aiAssistantService.previewPurgeMemoryResourceTrash(id))
   ipcMain.handle('ai-assistant:purgeMemoryResourceTrash', (_, id: string, input?: any) =>

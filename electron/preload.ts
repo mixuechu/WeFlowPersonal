@@ -714,7 +714,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
       ipcRenderer.invoke('ai-assistant:getResourceTrashArchive', options),
     deleteMemoryResource: (id: string, input?: any) =>
       ipcRenderer.invoke('ai-assistant:deleteMemoryResource', id, input),
-    restoreMemoryResource: (id: string) => ipcRenderer.invoke('ai-assistant:restoreMemoryResource', id),
+    restoreMemoryResource: (id: string, expectedMutationToken: string) =>
+      ipcRenderer.invoke('ai-assistant:restoreMemoryResource', id, expectedMutationToken),
     previewPurgeMemoryResourceTrash: (id: string) =>
       ipcRenderer.invoke('ai-assistant:previewPurgeMemoryResourceTrash', id),
     purgeMemoryResourceTrash: (id: string, input?: any) =>
