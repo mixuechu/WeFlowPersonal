@@ -23,6 +23,7 @@ import {
 import {
   recordVectorIndexContinuation,
   recordVectorQueryOutcome,
+  approximateVectorIndexNeedsRecovery,
   requestVectorIndexWarmup,
   runVectorIndexPass,
   safeCosineSimilarity,
@@ -7314,10 +7315,36 @@ test('semantic query deadline returns promptly without cancelling background mod
 
 test('semantic search warmup schedules pending work without awaiting an index batch', () => {
   let scheduled = 0
-  assert.equal(requestVectorIndexWarmup(0, () => { scheduled += 1 }), false)
+  assert.equal(requestVectorIndexWarmup(0, false, () => { scheduled += 1 }), false)
   assert.equal(scheduled, 0)
-  assert.equal(requestVectorIndexWarmup(24, () => { scheduled += 1 }), true)
+  assert.equal(requestVectorIndexWarmup(24, false, () => { scheduled += 1 }), true)
   assert.equal(scheduled, 1)
+  assert.equal(requestVectorIndexWarmup(0, true, () => { scheduled += 1 }), true)
+  assert.equal(scheduled, 2)
+  assert.equal(approximateVectorIndexNeedsRecovery({
+    status: 'dirty',
+    eligible: 2_100,
+    indexed: 2_099,
+    eligibleChunks: 2_400,
+    indexedChunks: 2_399,
+    minimumDocuments: 2_000
+  }), true)
+  assert.equal(approximateVectorIndexNeedsRecovery({
+    status: 'dirty',
+    eligible: 100,
+    indexed: 99,
+    eligibleChunks: 120,
+    indexedChunks: 119,
+    minimumDocuments: 2_000
+  }), false)
+  assert.equal(approximateVectorIndexNeedsRecovery({
+    status: 'ready',
+    eligible: 2_100,
+    indexed: 2_100,
+    eligibleChunks: 2_400,
+    indexedChunks: 2_400,
+    minimumDocuments: 2_000
+  }), false)
 })
 
 test('local embedding identity pins an immutable model revision', () => {

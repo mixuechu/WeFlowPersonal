@@ -14,6 +14,7 @@ import {
   recordVectorQueryOutcome,
   recordVectorIndexContinuation,
   requestVectorIndexWarmup,
+  approximateVectorIndexNeedsRecovery,
   runVectorIndexPass,
   shouldPersistVectorQueryOutcome,
   vectorIndexScheduleDelayMs,
@@ -7507,7 +7508,9 @@ export class AiAssistantService {
           { type: 'succeeded', at: new Date().toISOString(), indexed: Number(result.indexed || 0) }
         )
         this.persistVectorIndexContinuationHealth()
-        if (Number(result.pending || 0) > 0) this.scheduleVectorIndexContinuation()
+        if (Number(result.pending || 0) > 0 || approximateVectorIndexNeedsRecovery(result.ann)) {
+          this.scheduleVectorIndexContinuation()
+        }
       }).catch(error => {
         console.warn('[AI Assistant] 本地向量索引暂未完成:', error)
         this.vectorIndexContinuationHealth = recordVectorIndexContinuation(
@@ -7538,8 +7541,10 @@ export class AiAssistantService {
   }
 
   private warmVectorIndexForSearch(): void {
+    const embeddings = personalMemoryStore.getEmbeddingStats(localEmbeddingService.modelVersion)
     requestVectorIndexWarmup(
-      personalMemoryStore.getEmbeddingStats(localEmbeddingService.modelVersion).pending,
+      embeddings.pending,
+      approximateVectorIndexNeedsRecovery(embeddings.ann),
       () => this.scheduleVectorIndexContinuation()
     )
   }

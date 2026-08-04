@@ -68,12 +68,22 @@ export async function withVectorQueryDeadline<T>(
 
 export function requestVectorIndexWarmup(
   pendingCount: unknown,
+  annRecoveryRequired: unknown,
   schedule: () => void
 ): boolean {
   const pending = Math.max(0, Math.floor(Number(pendingCount || 0)))
-  if (!pending) return false
+  if (!pending && !annRecoveryRequired) return false
   schedule()
   return true
+}
+
+export function approximateVectorIndexNeedsRecovery(stats: any): boolean {
+  const eligible = Math.max(0, Math.floor(Number(stats?.eligible || 0)))
+  const minimumDocuments = Math.max(1, Math.floor(Number(stats?.minimumDocuments || 2_000)))
+  if (eligible < minimumDocuments) return false
+  return stats?.status !== 'ready'
+    || Number(stats?.indexed || 0) !== eligible
+    || Number(stats?.indexedChunks || 0) !== Number(stats?.eligibleChunks || 0)
 }
 
 export async function runVectorIndexPass<T extends { id: string; content_hash?: string }>(input: {

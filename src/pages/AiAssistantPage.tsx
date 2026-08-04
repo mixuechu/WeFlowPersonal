@@ -4493,7 +4493,10 @@ function AiAssistantPage() {
     setIndexingVectors(true)
     try {
       const result = await window.electronAPI.aiAssistant.indexMemoryVectors()
-      setMessage(`本地语义索引完成：${result.indexed} 条新增，累计 ${result.total - result.pending}/${result.total} 条。`)
+      setMessage(
+        `本地语义索引完成：${result.indexed} 条新增，累计 ${result.total - result.pending}/${result.total} 条`
+        + `${result.ann?.rebuilt ? '；ANN 文档与分块索引已重建。' : '。'}`
+      )
       setMemoryDiagnostics(await window.electronAPI.aiAssistant.getMemoryDiagnostics())
     } catch (error: any) {
       setMessage(error?.message || String(error))
@@ -6678,9 +6681,21 @@ function AiAssistantPage() {
                 {migratingMemory ? '正在处理迁移包…' : '导出到其他电脑'}
               </button>
               <button onClick={() => void openImportMemoryBundle()} disabled={migratingMemory || restoringMemory}>导入迁移包</button>
-              {memoryDiagnostics.embeddings?.pending > 0 && <button onClick={() => void indexMemoryVectors()} disabled={indexingVectors}>
-                {indexingVectors ? '正在本地生成向量…' : '补齐语义索引'}
-              </button>}
+              {(Number(memoryDiagnostics.embeddings?.pending || 0) > 0
+                || (Number(memoryDiagnostics.embeddings?.ann?.eligible || 0)
+                    >= Number(memoryDiagnostics.embeddings?.ann?.minimumDocuments || 2_000)
+                  && (memoryDiagnostics.embeddings?.ann?.status !== 'ready'
+                    || Number(memoryDiagnostics.embeddings?.ann?.indexed || 0)
+                      !== Number(memoryDiagnostics.embeddings?.ann?.eligible || 0)
+                    || Number(memoryDiagnostics.embeddings?.ann?.indexedChunks || 0)
+                      !== Number(memoryDiagnostics.embeddings?.ann?.eligibleChunks || 0)))) &&
+                <button onClick={() => void indexMemoryVectors()} disabled={indexingVectors}>
+                  {indexingVectors
+                    ? '正在修复语义索引…'
+                    : Number(memoryDiagnostics.embeddings?.pending || 0) > 0
+                      ? '补齐语义索引'
+                      : '重建 ANN 索引'}
+                </button>}
               {!!memoryBackupDirectory.length && <details>
                 <summary>恢复历史快照（{memoryBackupDirectory.length} 份）</summary>
                 <div>
