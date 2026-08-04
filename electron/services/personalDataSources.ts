@@ -346,6 +346,26 @@ export function groundedAnswerRequiresRetry(
     || revalidation.supportedStatements < acceptedStatements
 }
 
+export function deriveGroundedUncertainty(citationIds: unknown[], citations: any[]): string {
+  const retainedIds = new Set((Array.isArray(citationIds) ? citationIds : [])
+    .map(value => String(value || '').trim())
+    .filter(Boolean))
+  if (!retainedIds.size) return ''
+  const conflicted = new Set((Array.isArray(citations) ? citations : []).flatMap(citation => {
+    const documentId = String(citation?.documentId || '').trim()
+    if (!retainedIds.has(documentId)) return []
+    const hasContradiction = Math.max(
+      0,
+      Math.floor(Number(citation?.evidenceRoleCounts?.contradiction) || 0)
+    ) > 0 || citation?.evidence?.some((row: any) =>
+      String(row?.evidence_role || row?.evidenceRole || row?.role || '') === 'contradiction')
+    return hasContradiction ? [documentId] : []
+  }))
+  return conflicted.size
+    ? `已采用的 ${conflicted.size} 个引用包含反证；回答仅保留明确披露冲突的条件陈述，请结合原文核验。`
+    : ''
+}
+
 export function filterTrustedConversationHistory(messages: any[]): {
   history: Array<{ role: 'user' | 'assistant'; content: string }>
   includedAssistant: number
@@ -386,6 +406,7 @@ export function filterTrustedConversationHistory(messages: any[]): {
       Math.floor(Number(groundingAudit.acceptedStatements) || 0)
     )
     let trustedAssistantContent = content
+    let retainedStatementIndexes = Array.from({ length: acceptedStatements }, (_, index) => index)
     if (acceptedStatements > 0) {
       const revalidation = message?.groundingRevalidation
       if (!revalidation
@@ -393,6 +414,9 @@ export function filterTrustedConversationHistory(messages: any[]): {
         || Math.max(0, Number(revalidation.supportedStatements || 0)) < acceptedStatements) {
         const statementStates = Array.isArray(revalidation?.statements)
           ? revalidation.statements.slice(0, 24)
+          : []
+        const statementCitations = Array.isArray(groundingAudit?.statementCitations)
+          ? groundingAudit.statementCitations.slice(0, 24)
           : []
         const statementTexts = content.split(/\n{2,}/).map(value => value.trim()).filter(Boolean)
         const currentIndexes = statementStates.flatMap((statement: any, index: number) =>
@@ -403,6 +427,7 @@ export function filterTrustedConversationHistory(messages: any[]): {
         )
         const mappingIsExact = statementTexts.length === acceptedStatements
           && statementStates.length === acceptedStatements
+          && statementCitations.length === acceptedStatements
           && currentIndexes.length === supportedStatements
         if (!mappingIsExact || !currentIndexes.length) {
           audit.excludedAssistant += 1
@@ -410,13 +435,19 @@ export function filterTrustedConversationHistory(messages: any[]): {
           return []
         }
         trustedAssistantContent = currentIndexes.map(index => statementTexts[index]).join('\n\n')
+        retainedStatementIndexes = currentIndexes
         audit.includedPartialAssistant += 1
         audit.excludedStaleStatements += Math.max(0, acceptedStatements - currentIndexes.length)
       }
     }
     audit.includedAssistant += 1
+    const statementCitations = Array.isArray(groundingAudit?.statementCitations)
+      ? groundingAudit.statementCitations
+      : []
+    const retainedCitationIds = retainedStatementIndexes.flatMap(index =>
+      Array.isArray(statementCitations[index]) ? statementCitations[index] : [])
     const uncertainty = String(groundingAudit?.uncertaintyPolicyVersion || '') === 'derived-from-citations-v1'
-      ? String(message?.uncertainty || '').trim().replace(/\s+/g, ' ').slice(0, 500)
+      ? deriveGroundedUncertainty(retainedCitationIds, message?.citations || [])
       : ''
     const trustedContent = uncertainty
       ? `${trustedAssistantContent.slice(0, 2450)}\n[该回答当时保存的不确定性：${uncertainty}]`.slice(0, 3000)
@@ -521,7 +552,6 @@ export function finalizeGroundedMemoryAnswer(
     )
   let removedConflictCitationIds = 0
   let rejectedConflictStatements = 0
-  const acceptedConflictedCitationIds = new Set<string>()
   const accepted = proposed.flatMap((statement: any) => {
     const text = String(statement?.text || '').trim().replace(/\s+/g, ' ').slice(0, 1500)
     const eligibleCitationIds = [...new Set((Array.isArray(statement?.citationIds) ? statement.citationIds : [])
@@ -536,10 +566,7 @@ export function finalizeGroundedMemoryAnswer(
       ) > 0 || item?.evidence?.some((row: any) =>
         String(row?.evidence_role || row?.evidenceRole || row?.role || '') === 'contradiction')
       if (!hasContradiction) return true
-      if (disclosesConflict) {
-        acceptedConflictedCitationIds.add(id)
-        return true
-      }
+      if (disclosesConflict) return true
       removedConflictCitationIds += 1
       return false
     })
@@ -551,9 +578,7 @@ export function finalizeGroundedMemoryAnswer(
   const citationIds = [...new Set(accepted.flatMap(statement => statement.citationIds))]
   const citations = (context || []).filter(item => citationIds.includes(String(item.documentId)))
   const answer = accepted.map(statement => statement.text).join('\n\n')
-  const uncertainty = acceptedConflictedCitationIds.size
-    ? `已采用的 ${acceptedConflictedCitationIds.size} 个引用包含反证；回答仅保留明确披露冲突的条件陈述，请结合原文核验。`
-    : ''
+  const uncertainty = deriveGroundedUncertainty(citationIds, citations)
   return {
     answer: (accepted.length
       ? answer

@@ -419,8 +419,13 @@ test('multi-turn memory context excludes stale and unaudited assistant answers',
       groundingAudit: {
         version: 'statement-citations-v1',
         acceptedStatements: 1,
-        uncertaintyPolicyVersion: 'derived-from-citations-v1'
+        uncertaintyPolicyVersion: 'derived-from-citations-v1',
+        statementCitations: [['claim:plan']]
       },
+      citations: [{
+        documentId: 'claim:plan',
+        evidenceRoleCounts: { supporting: 2, contradiction: 1 }
+      }],
       groundingRevalidation: {
         status: 'current',
         supportedStatements: 1
@@ -446,8 +451,16 @@ test('multi-turn memory context excludes stale and unaudited assistant answers',
       groundingAudit: {
         version: 'statement-citations-v1',
         acceptedStatements: 2,
-        uncertaintyPolicyVersion: 'derived-from-citations-v1'
+        uncertaintyPolicyVersion: 'derived-from-citations-v1',
+        statementCitations: [['claim:current'], ['claim:stale-conflict']]
       },
+      citations: [{
+        documentId: 'claim:current',
+        evidenceRoleCounts: { supporting: 1, contradiction: 0 }
+      }, {
+        documentId: 'claim:stale-conflict',
+        evidenceRoleCounts: { supporting: 1, contradiction: 1 }
+      }],
       groundingRevalidation: {
         status: 'needs_review',
         supportedStatements: 1,
@@ -459,7 +472,8 @@ test('multi-turn memory context excludes stale and unaudited assistant answers',
       content: '无法和两个审计声明一一对应。',
       groundingAudit: {
         version: 'statement-citations-v1',
-        acceptedStatements: 2
+        acceptedStatements: 2,
+        statementCitations: [['claim:current'], ['claim:invalid']]
       },
       groundingRevalidation: {
         status: 'needs_review',
@@ -485,11 +499,11 @@ test('multi-turn memory context excludes stale and unaudited assistant answers',
     { role: 'user', content: 'Onyx 项目目前怎么样？' },
     {
       role: 'assistant',
-      content: '项目按计划推进。\n[该回答当时保存的不确定性：但一条较早记录与此冲突，仍待核实。]'
+      content: '项目按计划推进。\n[该回答当时保存的不确定性：已采用的 1 个引用包含反证；回答仅保留明确披露冲突的条件陈述，请结合原文核验。]'
     },
     {
       role: 'assistant',
-      content: '第一条仍然有效。\n[该回答当时保存的不确定性：第二条存在新的反证。]'
+      content: '第一条仍然有效。'
     },
     { role: 'assistant', content: '当前证据不足。' }
   ])
