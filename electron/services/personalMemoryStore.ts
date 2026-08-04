@@ -2244,8 +2244,46 @@ export class PersonalMemoryStore {
 
   private ensureStructuredEvidenceRevisionLedger(): void {
     if (!this.db) return
+    const manifestKey = 'structured_evidence_revision_trigger_manifest_v1'
+    const expectedTriggerNames = [
+      'structured_evidence_revision_delete',
+      'structured_evidence_revision_insert',
+      'structured_evidence_revision_update'
+    ]
+    const normalizeSql = (value: unknown) => String(value || '')
+      .trim()
+      .replace(/;+\s*$/, '')
+    const previousManifestRow = this.db.prepare(`
+      SELECT value FROM schema_meta WHERE key=?
+    `).get(manifestKey) as any
+    let previousManifest: any = {}
+    try { previousManifest = JSON.parse(String(previousManifestRow?.value || '{}')) } catch {}
+    const beforeRows = this.db.prepare(`
+      SELECT name,sql FROM sqlite_master
+      WHERE type='trigger' AND name LIKE 'structured_evidence_revision_%'
+      ORDER BY name
+    `).all() as Array<{ name: string; sql: string }>
+    const beforeByName = new Map(beforeRows.map(row => [row.name, row.sql]))
+    const previousDefinitions = previousManifest?.definitions
+      && typeof previousManifest.definitions === 'object'
+      ? previousManifest.definitions as Record<string, string>
+      : {}
+    const unhealthyBefore = Object.entries(previousDefinitions).flatMap(([name, expectedHash]) => {
+      const sql = beforeByName.get(name)
+      return !sql || createHash('sha256').update(normalizeSql(sql)).digest('hex') !== expectedHash
+        ? [name]
+        : []
+    })
+    const unexpectedBefore = beforeRows
+      .map(row => row.name)
+      .filter(name => !expectedTriggerNames.includes(name))
     const now = new Date().toISOString()
     const transaction = this.db.transaction(() => {
+      for (const name of unexpectedBefore) {
+        if (/^structured_evidence_revision_[a-z0-9_]+$/.test(name)) {
+          this.db!.exec(`DROP TRIGGER IF EXISTS "${name}"`)
+        }
+      }
       this.db!.prepare(`
         INSERT OR IGNORE INTO structured_evidence_revisions(
           document_type,source_id,revision,updated_at
@@ -2356,24 +2394,103 @@ export class PersonalMemoryStore {
             updated_at=excluded.updated_at;
         END;
       `)
+      const installed = this.db!.prepare(`
+        SELECT name,sql FROM sqlite_master
+        WHERE type='trigger' AND name LIKE 'structured_evidence_revision_%'
+        ORDER BY name
+      `).all() as Array<{ name: string; sql: string }>
+      const definitions = Object.fromEntries(installed.map(row => [
+        row.name,
+        createHash('sha256').update(normalizeSql(row.sql)).digest('hex')
+      ]))
+      const completedAt = new Date().toISOString()
+      this.db!.prepare(`
+        INSERT INTO schema_meta(key,value,updated_at) VALUES(?,?,?)
+        ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_at=excluded.updated_at
+      `).run(manifestKey, JSON.stringify({
+        version: 1,
+        definitions,
+        repairedThisStart: Boolean(
+          Object.keys(previousDefinitions).length
+          && (unhealthyBefore.length || unexpectedBefore.length)
+        ),
+        repairedTriggersThisStart: unhealthyBefore.length + unexpectedBefore.length,
+        repairedTriggerNames: [...new Set([...unhealthyBefore, ...unexpectedBefore])].sort(),
+        completedAt
+      }), completedAt)
     })
     transaction()
   }
 
   getStructuredEvidenceRevisionHealth(): any {
-    if (!this.db) return { rows: 0, triggers: 0 }
+    if (!this.db) return {
+      version: 1,
+      rows: 0,
+      triggers: 0,
+      expectedTriggers: 3,
+      validTriggers: 0,
+      healthy: false,
+      unhealthyTriggers: [],
+      unexpectedTriggers: [],
+      repairedThisStart: false,
+      repairedTriggersThisStart: 0,
+      repairedTriggerNames: []
+    }
     const rows = Number((this.db.prepare(`
       SELECT COUNT(*) AS count FROM structured_evidence_revisions
     `).get() as any)?.count || 0)
-    const triggers = Number((this.db.prepare(`
-      SELECT COUNT(*) AS count FROM sqlite_master
-      WHERE type='trigger' AND name IN (
-        'structured_evidence_revision_insert',
-        'structured_evidence_revision_update',
-        'structured_evidence_revision_delete'
-      )
-    `).get() as any)?.count || 0)
-    return { rows, triggers, healthy: triggers === 3 }
+    const normalizeSql = (value: unknown) => String(value || '')
+      .trim()
+      .replace(/;+\s*$/, '')
+    let manifest: any = {}
+    try {
+      manifest = JSON.parse(String((this.db.prepare(`
+        SELECT value FROM schema_meta
+        WHERE key='structured_evidence_revision_trigger_manifest_v1'
+      `).get() as any)?.value || '{}'))
+    } catch {}
+    const definitions = manifest?.definitions && typeof manifest.definitions === 'object'
+      ? manifest.definitions as Record<string, string>
+      : {}
+    const installed = this.db.prepare(`
+      SELECT name,sql FROM sqlite_master
+      WHERE type='trigger' AND name LIKE 'structured_evidence_revision_%'
+      ORDER BY name
+    `).all() as Array<{ name: string; sql: string }>
+    const installedByName = new Map(installed.map(row => [row.name, row.sql]))
+    const unhealthyTriggers = Object.entries(definitions).flatMap(([name, expectedHash]) => {
+      const sql = installedByName.get(name)
+      return !sql || createHash('sha256').update(normalizeSql(sql)).digest('hex') !== expectedHash
+        ? [name]
+        : []
+    })
+    const unexpectedTriggers = installed.map(row => row.name)
+      .filter(name => !(name in definitions))
+    const expectedTriggers = Object.keys(definitions).length || 3
+    const validTriggers = Math.max(0, expectedTriggers - unhealthyTriggers.length)
+    return {
+      version: 1,
+      rows,
+      triggers: installed.length,
+      expectedTriggers,
+      validTriggers,
+      healthy: Boolean(
+        Object.keys(definitions).length
+        && validTriggers === expectedTriggers
+        && !unexpectedTriggers.length
+      ),
+      unhealthyTriggers,
+      unexpectedTriggers,
+      repairedThisStart: Boolean(manifest.repairedThisStart),
+      repairedTriggersThisStart: Math.max(
+        0,
+        Number(manifest.repairedTriggersThisStart || 0)
+      ),
+      repairedTriggerNames: Array.isArray(manifest.repairedTriggerNames)
+        ? manifest.repairedTriggerNames.map(String)
+        : [],
+      completedAt: String(manifest.completedAt || '')
+    }
   }
 
   private compactCommittedIngestionPayloads(): void {

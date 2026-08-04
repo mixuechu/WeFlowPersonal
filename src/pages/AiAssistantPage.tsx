@@ -7957,7 +7957,14 @@ function AiAssistantPage() {
                 目录核验不加载回答正文或原文。
                 {dashboard?.assistantArchive?.evidenceRevisions &&
                   ` 权威证据修订账本 ${Number(dashboard.assistantArchive.evidenceRevisions.rows || 0).toLocaleString()} 项，` +
-                  `${dashboard.assistantArchive.evidenceRevisions.healthy ? '3 个触发器正常' : '触发器需要修复'}。`}
+                  `${Number(dashboard.assistantArchive.evidenceRevisions.validTriggers || 0)}/` +
+                  `${Number(dashboard.assistantArchive.evidenceRevisions.expectedTriggers || 3)} 个触发器定义有效` +
+                  `${dashboard.assistantArchive.evidenceRevisions.healthy ? '' :
+                    `，发现 ${Number(dashboard.assistantArchive.evidenceRevisions.unhealthyTriggers?.length || 0) +
+                    Number(dashboard.assistantArchive.evidenceRevisions.unexpectedTriggers?.length || 0)} 个定义异常`}` +
+                  `${dashboard.assistantArchive.evidenceRevisions.repairedThisStart
+                    ? `；本次启动已修复 ${Number(dashboard.assistantArchive.evidenceRevisions.repairedTriggersThisStart || 0)} 个`
+                    : ''}。`}
               </small>}
               {assistantConversations.map(conversation => <button
                 className={memoryConversationId === conversation.id ? 'active' : ''}

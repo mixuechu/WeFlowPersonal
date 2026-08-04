@@ -9578,17 +9578,53 @@ test('structured evidence revision triggers self-heal across a SQLCipher reopen'
       'claim:claim-revision-ledger'
     ).evidenceAuthorityRevision
     assert.ok(initialRevision > 0)
-    assert.deepEqual(first.getStructuredEvidenceRevisionHealth(), {
-      rows: 1,
-      triggers: 3,
-      healthy: true
-    })
-    ;(first as any).db.exec('DROP TRIGGER structured_evidence_revision_update')
-    assert.equal(first.getStructuredEvidenceRevisionHealth().healthy, false)
+    const initialHealth = first.getStructuredEvidenceRevisionHealth()
+    assert.equal(initialHealth.version, 1)
+    assert.equal(initialHealth.rows, 1)
+    assert.equal(initialHealth.triggers, 3)
+    assert.equal(initialHealth.expectedTriggers, 3)
+    assert.equal(initialHealth.validTriggers, 3)
+    assert.equal(initialHealth.healthy, true)
+    assert.deepEqual(initialHealth.unhealthyTriggers, [])
+    assert.deepEqual(initialHealth.unexpectedTriggers, [])
+    assert.equal(initialHealth.repairedThisStart, false)
+    ;(first as any).db.exec(`
+      DROP TRIGGER structured_evidence_revision_update;
+      CREATE TRIGGER structured_evidence_revision_update
+      AFTER UPDATE ON evidence BEGIN SELECT 1; END;
+      DROP TRIGGER structured_evidence_revision_delete;
+      CREATE TRIGGER structured_evidence_revision_unexpected
+      AFTER INSERT ON evidence BEGIN SELECT 1; END;
+    `)
+    const driftedHealth = first.getStructuredEvidenceRevisionHealth()
+    assert.equal(driftedHealth.triggers, 3)
+    assert.equal(driftedHealth.expectedTriggers, 3)
+    assert.equal(driftedHealth.validTriggers, 1)
+    assert.equal(driftedHealth.healthy, false)
+    assert.deepEqual(driftedHealth.unhealthyTriggers, [
+      'structured_evidence_revision_delete',
+      'structured_evidence_revision_update'
+    ])
+    assert.deepEqual(driftedHealth.unexpectedTriggers, [
+      'structured_evidence_revision_unexpected'
+    ])
     first.close()
 
     reopened.initialize(databasePath)
-    assert.equal(reopened.getStructuredEvidenceRevisionHealth().healthy, true)
+    const repairedHealth = reopened.getStructuredEvidenceRevisionHealth()
+    assert.equal(repairedHealth.triggers, 3)
+    assert.equal(repairedHealth.expectedTriggers, 3)
+    assert.equal(repairedHealth.validTriggers, 3)
+    assert.equal(repairedHealth.healthy, true)
+    assert.deepEqual(repairedHealth.unhealthyTriggers, [])
+    assert.deepEqual(repairedHealth.unexpectedTriggers, [])
+    assert.equal(repairedHealth.repairedThisStart, true)
+    assert.equal(repairedHealth.repairedTriggersThisStart, 3)
+    assert.deepEqual(repairedHealth.repairedTriggerNames, [
+      'structured_evidence_revision_delete',
+      'structured_evidence_revision_unexpected',
+      'structured_evidence_revision_update'
+    ])
     ;(reopened as any).db.prepare(`
       UPDATE evidence SET excerpt='重启后修正的原文'
       WHERE claim_id='claim-revision-ledger' AND message_id='revision-ledger-message'
