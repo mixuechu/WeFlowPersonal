@@ -3,6 +3,11 @@ import { BookOpen, Bot, CalendarDays, Check, Clock3, Database, Filter, Network, 
 import { buildTaskCalendar, shanghaiToday } from '../utils/taskCalendar'
 import type { ReviewStatusFilter } from '../utils/graphReviewFilters'
 import { evidenceLocalMessageId, groupMemorySearchResults, memoryEvidenceSourceLabel, MEMORY_TYPE_LABELS, normalizeMemoryEvidence, type MemoryEvidence } from '../utils/memorySearchPresentation'
+import {
+  authorityReturnLabel,
+  buildAuthorityReturnTarget,
+  type AuthorityReturnTarget
+} from '../utils/authorityDossierNavigation'
 import { LatestRequestGate } from '../utils/latestRequestGate'
 import { buildMemorySessionScope } from '../utils/memorySessionScope'
 import { evidenceArchiveIdentity } from '../../shared/evidencePayload'
@@ -610,6 +615,8 @@ function AiAssistantPage() {
   const [selectedResourceDossier, setSelectedResourceDossier] = useState<any>(null)
   const [structuredMemoryDossier, setStructuredMemoryDossier] = useState<any>(null)
   const [relationDossierAuditLoading, setRelationDossierAuditLoading] = useState('')
+  const [authorityReturnTarget, setAuthorityReturnTarget] =
+    useState<AuthorityReturnTarget | null>(null)
   const structuredMemoryDossierGate = useRef(new LatestRequestGate())
   const [resourceTrashArchive, setResourceTrashArchive] = useState<any>({
     items: [], total: 0, hasMore: false, revision: '', status: 'idle'
@@ -2554,10 +2561,11 @@ function AiAssistantPage() {
   }
   const openStructuredMemoryDossier = async (
     kind: 'claim' | 'event' | 'relation',
-    sourceId: string
+    sourceId: string,
+    expectedSearchRevision = ''
   ) => {
     const id = String(sourceId || '').trim()
-    const revision = String(memorySearchState.revision || '').trim()
+    const revision = String(expectedSearchRevision || memorySearchState.revision || '').trim()
     if (!id || !revision) {
       setMessage('检索结果缺少当前 revision，已自动刷新，请稍后重新打开。')
       setMemorySearchRefreshKey(value => value + 1)
@@ -2595,6 +2603,28 @@ function AiAssistantPage() {
         status: 'error',
         error: error?.message || String(error)
       })
+    }
+  }
+  const openEntityFromStructuredDossier = (entityId: string) => {
+    const id = String(entityId || '').trim()
+    const returnTarget = buildAuthorityReturnTarget(structuredMemoryDossier)
+    if (!id || !returnTarget) return
+    setAuthorityReturnTarget(returnTarget)
+    structuredMemoryDossierGate.current.invalidate()
+    setStructuredMemoryDossier(null)
+    setSelectedEntityId(id)
+    setShowEntityDossier(true)
+  }
+  const closeEntityDossier = (returnToParent = true) => {
+    const target = authorityReturnTarget
+    setShowEntityDossier(false)
+    setAuthorityReturnTarget(null)
+    if (returnToParent && target) {
+      void openStructuredMemoryDossier(
+        target.kind,
+        target.sourceId,
+        target.searchRevision
+      )
     }
   }
   const loadMoreRelationDossierAudit = async (kind: 'history' | 'correction') => {
@@ -8426,42 +8456,28 @@ function AiAssistantPage() {
                     </small>}
                     {kind === 'event' && <div className="assistant-tags">
                       {(item.participants || []).map((participant: any) =>
-                        <button key={`${participant.entity_id}:${participant.role}`} onClick={() => {
-                          setSelectedEntityId(String(participant.entity_id))
-                          setShowEntityDossier(true)
-                          structuredMemoryDossierGate.current.invalidate()
-                          setStructuredMemoryDossier(null)
-                        }}>
+                        <button key={`${participant.entity_id}:${participant.role}`}
+                          onClick={() => openEntityFromStructuredDossier(participant.entity_id)}>
                           {participant.canonical_name || participant.entity_id} · {participant.role || '参与者'}
                         </button>)}
                     </div>}
                     {kind === 'claim' && <div className="assistant-tags">
-                      {item.subject_id && <button onClick={() => {
-                        setSelectedEntityId(String(item.subject_id))
-                        setShowEntityDossier(true)
-                        structuredMemoryDossierGate.current.invalidate()
-                        setStructuredMemoryDossier(null)
-                      }}>打开主体：{item.subject_name || item.subject_id}</button>}
-                      {item.object_entity_id && <button onClick={() => {
-                        setSelectedEntityId(String(item.object_entity_id))
-                        setShowEntityDossier(true)
-                        structuredMemoryDossierGate.current.invalidate()
-                        setStructuredMemoryDossier(null)
-                      }}>打开对象：{item.object_entity_name || item.object_entity_id}</button>}
+                      {item.subject_id && <button
+                        onClick={() => openEntityFromStructuredDossier(item.subject_id)}>
+                        打开主体：{item.subject_name || item.subject_id}
+                      </button>}
+                      {item.object_entity_id && <button
+                        onClick={() => openEntityFromStructuredDossier(item.object_entity_id)}>
+                        打开对象：{item.object_entity_name || item.object_entity_id}
+                      </button>}
                     </div>}
                     {kind === 'relation' && <div className="assistant-tags">
-                      <button onClick={() => {
-                        setSelectedEntityId(String(item.subject_id))
-                        setShowEntityDossier(true)
-                        structuredMemoryDossierGate.current.invalidate()
-                        setStructuredMemoryDossier(null)
-                      }}>打开主语：{item.subject_name || item.subject_id}</button>
-                      <button onClick={() => {
-                        setSelectedEntityId(String(item.object_id))
-                        setShowEntityDossier(true)
-                        structuredMemoryDossierGate.current.invalidate()
-                        setStructuredMemoryDossier(null)
-                      }}>打开宾语：{item.object_name || item.object_id}</button>
+                      <button onClick={() => openEntityFromStructuredDossier(item.subject_id)}>
+                        打开主语：{item.subject_name || item.subject_id}
+                      </button>
+                      <button onClick={() => openEntityFromStructuredDossier(item.object_id)}>
+                        打开宾语：{item.object_name || item.object_id}
+                      </button>
                     </div>}
                   </article>
                   <EvidenceRows
@@ -8718,7 +8734,11 @@ function AiAssistantPage() {
                 <p>{selectedEntity.summary || `等待更多可靠证据补充${selectedEntity.type === 'project' ? '项目' : '实体'}摘要。`}</p>
                 <small>{selectedEntity.summaryStatus === 'confirmed' ? '已确认摘要' : selectedEntity.summaryStatus === 'legacy_unverified' ? '历史未验证摘要，不参与可信检索' : '尚无已确认摘要'}</small>
               </div>
-              <button aria-label="关闭实体档案" onClick={() => setShowEntityDossier(false)}><X size={18} /></button>
+              <button
+                aria-label={authorityReturnTarget ? '返回上一级权威档案' : '关闭实体档案'}
+                onClick={() => closeEntityDossier()}>
+                <X size={18} />
+              </button>
             </header>
             <div className="assistant-dossier-identity">
               <span><small>别名</small><b>{selectedEntity.aliases?.join('、') || '暂无'}</b></span>
@@ -9037,9 +9057,11 @@ function AiAssistantPage() {
               <button onClick={() => {
                 setMemoryEntityFilter(selectedEntity.id)
                 setMemoryQuery(selectedEntity.canonicalName)
-                setShowEntityDossier(false)
+                closeEntityDossier(false)
               }}>在统一记忆中检索此实体</button>
-              <button className="primary" onClick={() => setShowEntityDossier(false)}>完成</button>
+              <button className="primary" onClick={() => closeEntityDossier()}>
+                {authorityReturnLabel(authorityReturnTarget)}
+              </button>
             </footer>
           </div>
         </div>
