@@ -5,7 +5,10 @@ import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { createHash, randomBytes } from 'node:crypto'
 import { PersonalMemoryStore } from '../electron/services/personalMemoryStore.ts'
-import { validateEmbeddingBatch } from '../electron/services/vectorIndexingPolicy.ts'
+import {
+  recordVectorQueryOutcome,
+  validateEmbeddingBatch
+} from '../electron/services/vectorIndexingPolicy.ts'
 import {
   GRAPH_RELATION_EVIDENCE_HOT_LIMIT,
   compactRelationEvidenceHotset
@@ -7159,6 +7162,34 @@ test('embedding batches reject count, dimension and non-finite output before wri
   assert.equal(validateEmbeddingBatch([[1, Number.NaN]], 1).reason, 'non_finite_value')
   assert.equal(validateEmbeddingBatch([[1, Number.POSITIVE_INFINITY]], 1).reason,
     'non_finite_value')
+})
+
+test('vector query fallback remains visible and a later success clears only current error', () => {
+  const initial = {
+    fallbackCount: 0,
+    lastFallbackAt: '',
+    lastSuccessAt: '',
+    lastError: ''
+  }
+  const failed = recordVectorQueryOutcome(initial, {
+    success: false,
+    at: '2026-08-05T01:00:00.000Z',
+    error: '本地查询向量无效：non_finite_value'
+  })
+  assert.deepEqual(failed, {
+    fallbackCount: 1,
+    lastFallbackAt: '2026-08-05T01:00:00.000Z',
+    lastSuccessAt: '',
+    lastError: '本地查询向量无效：non_finite_value'
+  })
+  const recovered = recordVectorQueryOutcome(failed, {
+    success: true,
+    at: '2026-08-05T01:05:00.000Z'
+  })
+  assert.equal(recovered.fallbackCount, 1)
+  assert.equal(recovered.lastFallbackAt, failed.lastFallbackAt)
+  assert.equal(recovered.lastSuccessAt, '2026-08-05T01:05:00.000Z')
+  assert.equal(recovered.lastError, '')
 })
 
 test('embedding commit is bound to the exact document content hash', () => withStore(store => {

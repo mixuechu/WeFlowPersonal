@@ -17,3 +17,28 @@ export function validateEmbeddingBatch(
   }
   return { valid: true, dimensions, reason: '' }
 }
+
+export type VectorQueryHealth = {
+  fallbackCount: number
+  lastFallbackAt: string
+  lastSuccessAt: string
+  lastError: string
+}
+
+export function recordVectorQueryOutcome(
+  current: VectorQueryHealth,
+  outcome: { success: boolean; at: string; error?: string }
+): VectorQueryHealth {
+  return outcome.success
+    ? {
+        ...current,
+        lastSuccessAt: outcome.at,
+        lastError: ''
+      }
+    : {
+        ...current,
+        fallbackCount: Math.max(0, Number(current.fallbackCount || 0)) + 1,
+        lastFallbackAt: outcome.at,
+        lastError: String(outcome.error || 'unknown_vector_query_error').slice(0, 500)
+      }
+}

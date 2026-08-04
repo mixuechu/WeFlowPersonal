@@ -9,7 +9,11 @@ import { httpService } from './httpService'
 import { showSystemNotification } from './systemNotificationService'
 import { personalMemoryStore } from './personalMemoryStore'
 import { localEmbeddingService } from './localEmbeddingService'
-import { validateEmbeddingBatch } from './vectorIndexingPolicy'
+import {
+  recordVectorQueryOutcome,
+  validateEmbeddingBatch,
+  type VectorQueryHealth
+} from './vectorIndexingPolicy'
 import { extractAttachmentText } from './attachmentTextExtractor'
 import { structureOcrText } from './imageOcrStructuring'
 import { captureWebSnapshot } from './webSnapshotService'
@@ -595,6 +599,12 @@ export class AiAssistantService {
   private lastSchedulerAttemptAt = 0
   private lastSchedulerTickAt = 0
   private vectorIndexPromise: Promise<any> | null = null
+  private vectorQueryHealth: VectorQueryHealth = {
+    fallbackCount: 0,
+    lastFallbackAt: '',
+    lastSuccessAt: '',
+    lastError: ''
+  }
   private memorySearchRepairPromise: Promise<any> | null = null
   private cancelRequested = false
   private taskReviewReconciliation = {
@@ -5054,7 +5064,8 @@ export class AiAssistantService {
       embeddings: {
         ...personalMemoryStore.getEmbeddingStats(localEmbeddingService.modelVersion),
         ...localEmbeddingService.getStatus(),
-        indexing: Boolean(this.vectorIndexPromise)
+        indexing: Boolean(this.vectorIndexPromise),
+        query: { ...this.vectorQueryHealth }
       },
       privacy: {
         ...personalMemoryStore.getFilePermissionAudit(),
@@ -7007,6 +7018,10 @@ export class AiAssistantService {
     try {
       await this.ensureVectorIndex()
       const [queryVector] = await localEmbeddingService.embed([String(query || '')])
+      const queryValidation = validateEmbeddingBatch([queryVector], 1)
+      if (!queryValidation.valid) {
+        throw new Error(`本地查询向量无效：${queryValidation.reason}`)
+      }
       const semantic = personalMemoryStore.searchVector(queryVector, localEmbeddingService.modelVersion, candidateLimit, {
         allowedIds
       })
@@ -7038,6 +7053,10 @@ export class AiAssistantService {
         scopedOptions,
         allowedIds !== null
       )
+      this.vectorQueryHealth = recordVectorQueryOutcome(this.vectorQueryHealth, {
+        success: true,
+        at: new Date().toISOString()
+      })
       return this.applyStoredMemorySearchFeedback(query, scopedOptions, filtered)
         .slice(0, Math.max(1, Math.min(500, maxResults))).map(item => ({
         ...item,
@@ -7046,6 +7065,11 @@ export class AiAssistantService {
       }))
     } catch (error) {
       console.warn('[AI Assistant] 向量检索回退为全文检索:', error)
+      this.vectorQueryHealth = recordVectorQueryOutcome(this.vectorQueryHealth, {
+        success: false,
+        at: new Date().toISOString(),
+        error: sanitizeDiagnosticText(error)
+      })
       const filtered = filterMemorySearchResults(lexical, scopedOptions, allowedIds !== null)
       return this.applyStoredMemorySearchFeedback(query, scopedOptions, filtered)
         .slice(0, Math.max(1, Math.min(500, maxResults))).map(item => ({
