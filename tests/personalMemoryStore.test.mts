@@ -6153,28 +6153,59 @@ test('memory search revision covers documents, evidence, vectors and relevance d
     assert.ok(revisions.every((revision, index) => index === 0 || revision > revisions[index - 1]))
   }))
 
-test('memory search revision trigger health is visible and repaired on restart', () => {
+test('memory search revision trigger definitions are audited live and repaired selectively on restart', () => {
   const directory = mkdtempSync(join(tmpdir(), 'weflow-search-revision-health-'))
   const databasePath = join(directory, 'memory.sqlite')
   try {
     const first = new PersonalMemoryStore()
     first.initialize(databasePath)
-    assert.deepEqual(first.getMemorySearchRevisionHealth(), {
-      version: 'memory-search-revision-v2',
-      revision: first.getMemorySearchRevision(),
-      expectedTriggers: 21,
-      installedTriggers: 21,
-      healthy: true
-    })
-    ;(first as any).db.exec('DROP TRIGGER trg_memory_search_revision_search_documents_insert')
-    assert.equal(first.getMemorySearchRevisionHealth().installedTriggers, 20)
-    assert.equal(first.getMemorySearchRevisionHealth().healthy, false)
+    const initialHealth = first.getMemorySearchRevisionHealth()
+    assert.equal(initialHealth.version, 'memory-search-revision-v3')
+    assert.equal(initialHealth.revision, first.getMemorySearchRevision())
+    assert.equal(initialHealth.expectedTriggers, 21)
+    assert.equal(initialHealth.installedTriggers, 21)
+    assert.equal(initialHealth.validTriggers, 21)
+    assert.equal(initialHealth.healthy, true)
+    ;(first as any).db.exec(`
+      DROP TRIGGER trg_memory_search_revision_search_documents_insert;
+      CREATE TRIGGER trg_memory_search_revision_search_documents_insert
+      AFTER INSERT ON search_documents BEGIN SELECT 1; END;
+      CREATE TRIGGER trg_memory_search_revision_unexpected
+      AFTER INSERT ON search_documents BEGIN SELECT 1; END;
+    `)
+    const driftedHealth = first.getMemorySearchRevisionHealth()
+    assert.equal(driftedHealth.installedTriggers, 21)
+    assert.equal(driftedHealth.validTriggers, 20)
+    assert.deepEqual(driftedHealth.unhealthyTriggers, [
+      'trg_memory_search_revision_search_documents_insert'
+    ])
+    assert.deepEqual(driftedHealth.unexpectedTriggers, [
+      'trg_memory_search_revision_unexpected'
+    ])
+    assert.equal(driftedHealth.healthy, false)
     first.close()
 
     const reopened = new PersonalMemoryStore()
     reopened.initialize(databasePath)
-    assert.equal(reopened.getMemorySearchRevisionHealth().installedTriggers, 21)
-    assert.equal(reopened.getMemorySearchRevisionHealth().healthy, true)
+    const repairedHealth = reopened.getMemorySearchRevisionHealth()
+    assert.equal(repairedHealth.installedTriggers, 21)
+    assert.equal(repairedHealth.validTriggers, 21)
+    assert.equal(repairedHealth.repairedThisStart, true)
+    assert.equal(repairedHealth.repairedTriggersThisStart, 2)
+    assert.deepEqual(repairedHealth.unhealthyTriggers, [])
+    assert.deepEqual(repairedHealth.unexpectedTriggers, [])
+    assert.equal(repairedHealth.healthy, true)
+    const beforeInsert = Number(reopened.getMemorySearchRevision())
+    reopened.upsertResources([{
+      id: 'revision-definition-proof',
+      resourceType: 'document',
+      title: '定义恢复证明',
+      content: '重启自愈后插入必须继续推进检索 revision',
+      metadata: { sourceId: 'documents' },
+      createdAt: '2026-08-04T00:00:00.000Z',
+      updatedAt: '2026-08-04T00:00:00.000Z'
+    }])
+    assert.ok(Number(reopened.getMemorySearchRevision()) > beforeInsert)
     reopened.close()
   } finally {
     rmSync(directory, { recursive: true, force: true })

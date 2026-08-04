@@ -1175,8 +1175,11 @@ export class PersonalMemoryStore {
     }
   }
 
-  private ensureMemorySearchRevisionTriggers(): void {
-    if (!this.db) return
+  private memorySearchRevisionTriggerDefinitions(): Array<{
+    name: string
+    table: string
+    operation: 'INSERT' | 'UPDATE' | 'DELETE'
+  }> {
     const tables = [
       'search_documents',
       'search_document_evidence',
@@ -1186,29 +1189,123 @@ export class PersonalMemoryStore {
       'vector_ann_entries',
       'vector_ann_state'
     ]
+    return tables.flatMap(table =>
+      (['INSERT', 'UPDATE', 'DELETE'] as const).map(operation => ({
+        name: `trg_memory_search_revision_${table}_${operation.toLowerCase()}`,
+        table,
+        operation
+      })))
+  }
+
+  private memorySearchRevisionTriggerSql(definition: {
+    name: string
+    table: string
+    operation: 'INSERT' | 'UPDATE' | 'DELETE'
+  }): string {
+    return `
+      CREATE TRIGGER ${definition.name} AFTER ${definition.operation} ON ${definition.table}
+      BEGIN
+        UPDATE schema_meta
+        SET value=CAST(CAST(value AS INTEGER)+1 AS TEXT),
+          updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')
+        WHERE key='memory_search_revision';
+      END;
+    `
+  }
+
+  private inspectMemorySearchRevisionTriggers(): {
+    expectedTriggers: number
+    installedTriggers: number
+    validTriggers: number
+    healthy: boolean
+    unhealthyTriggers: string[]
+    unexpectedTriggers: string[]
+  } {
+    const definitions = this.memorySearchRevisionTriggerDefinitions()
+    if (!this.db) {
+      return {
+        expectedTriggers: definitions.length,
+        installedTriggers: 0,
+        validTriggers: 0,
+        healthy: false,
+        unhealthyTriggers: definitions.map(item => item.name),
+        unexpectedTriggers: []
+      }
+    }
+    const normalizeSql = (value: unknown) => String(value || '')
+      .toLowerCase()
+      .replace(/;/g, '')
+      .replace(/\s+/g, ' ')
+      .trim()
+    const rows = this.db.prepare(`
+      SELECT name,sql FROM sqlite_master
+      WHERE type='trigger' AND name LIKE 'trg_memory_search_revision_%'
+    `).all() as Array<{ name: string; sql: string }>
+    const byName = new Map(rows.map(row => [row.name, row.sql]))
+    const expectedNames = new Set(definitions.map(item => item.name))
+    const unhealthyTriggers = definitions
+      .filter(definition =>
+        normalizeSql(byName.get(definition.name)) !==
+        normalizeSql(this.memorySearchRevisionTriggerSql(definition)))
+      .map(definition => definition.name)
+    const unexpectedTriggers = rows
+      .map(row => row.name)
+      .filter(name => !expectedNames.has(name))
+      .sort()
+    return {
+      expectedTriggers: definitions.length,
+      installedTriggers: definitions.filter(item => byName.has(item.name)).length,
+      validTriggers: definitions.length - unhealthyTriggers.length,
+      healthy: unhealthyTriggers.length === 0 && unexpectedTriggers.length === 0,
+      unhealthyTriggers,
+      unexpectedTriggers
+    }
+  }
+
+  private ensureMemorySearchRevisionTriggers(): void {
+    if (!this.db) return
     const now = new Date().toISOString()
     this.db.prepare(`
       INSERT INTO schema_meta(key,value,updated_at)
       VALUES('memory_search_revision','0',?)
       ON CONFLICT(key) DO NOTHING
     `).run(now)
-    const statements: string[] = []
-    for (const table of tables) {
-      for (const operation of ['INSERT', 'UPDATE', 'DELETE']) {
-        const name = `trg_memory_search_revision_${table}_${operation.toLowerCase()}`
-        statements.push(`DROP TRIGGER IF EXISTS ${name};`)
-        statements.push(`
-          CREATE TRIGGER ${name} AFTER ${operation} ON ${table}
-          BEGIN
-            UPDATE schema_meta
-            SET value=CAST(CAST(value AS INTEGER)+1 AS TEXT),
-              updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')
-            WHERE key='memory_search_revision';
-          END;
-        `)
-      }
+    const before = this.inspectMemorySearchRevisionTriggers()
+    const previousRow = this.db.prepare(`
+      SELECT value FROM schema_meta WHERE key='memory_search_revision_integrity'
+    `).get() as any
+    let previous: any = {}
+    try { previous = JSON.parse(String(previousRow?.value || '{}')) } catch {}
+    const definitions = this.memorySearchRevisionTriggerDefinitions()
+    const definitionByName = new Map(definitions.map(item => [item.name, item]))
+    const quoteIdentifier = (value: string) => `"${value.replace(/"/g, '""')}"`
+    if (!before.healthy) {
+      this.db.transaction(() => {
+        for (const name of [...before.unhealthyTriggers, ...before.unexpectedTriggers]) {
+          this.db!.exec(`DROP TRIGGER IF EXISTS ${quoteIdentifier(name)}`)
+          const definition = definitionByName.get(name)
+          if (definition) this.db!.exec(this.memorySearchRevisionTriggerSql(definition))
+        }
+      })()
     }
-    this.db.exec(statements.join('\n'))
+    const after = this.inspectMemorySearchRevisionTriggers()
+    const checkedAt = new Date().toISOString()
+    const repairedTriggersThisStart =
+      before.unhealthyTriggers.length + before.unexpectedTriggers.length
+    const audit = {
+      version: 'memory-search-revision-v3',
+      checkedAt,
+      repairedThisStart: repairedTriggersThisStart > 0,
+      repairedTriggersThisStart,
+      repairsTotal: Number(previous.repairsTotal || 0) +
+        (repairedTriggersThisStart > 0 ? 1 : 0),
+      ...after
+    }
+    this.db.prepare(`
+      INSERT INTO schema_meta(key,value,updated_at)
+      VALUES('memory_search_revision_integrity',?,?)
+      ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_at=excluded.updated_at
+    `).run(JSON.stringify(audit), checkedAt)
   }
 
   getMemorySearchRevision(): string {
@@ -1219,27 +1316,32 @@ export class PersonalMemoryStore {
   }
 
   getMemorySearchRevisionHealth(): any {
-    const expectedTriggers = 21
+    const live = this.inspectMemorySearchRevisionTriggers()
     if (!this.db) {
       return {
-        version: 'memory-search-revision-v2',
+        version: 'memory-search-revision-v3',
         revision: '0',
-        expectedTriggers,
-        installedTriggers: 0,
-        healthy: false
+        checkedAt: '',
+        repairedThisStart: false,
+        repairedTriggersThisStart: 0,
+        repairsTotal: 0,
+        ...live
       }
     }
-    const installedTriggers = Number((this.db.prepare(`
-      SELECT COUNT(*) AS count
-      FROM sqlite_master
-      WHERE type='trigger' AND name LIKE 'trg_memory_search_revision_%'
-    `).get() as any)?.count || 0)
+    const row = this.db.prepare(`
+      SELECT value,updated_at FROM schema_meta
+      WHERE key='memory_search_revision_integrity'
+    `).get() as any
+    let audit: any = {}
+    try { audit = JSON.parse(String(row?.value || '{}')) } catch {}
     return {
-      version: 'memory-search-revision-v2',
+      version: 'memory-search-revision-v3',
       revision: this.getMemorySearchRevision(),
-      expectedTriggers,
-      installedTriggers,
-      healthy: installedTriggers === expectedTriggers
+      checkedAt: String(audit.checkedAt || row?.updated_at || ''),
+      repairedThisStart: Boolean(audit.repairedThisStart),
+      repairedTriggersThisStart: Number(audit.repairedTriggersThisStart || 0),
+      repairsTotal: Number(audit.repairsTotal || 0),
+      ...live
     }
   }
 

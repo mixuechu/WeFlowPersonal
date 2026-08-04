@@ -8972,12 +8972,18 @@ function AiAssistantPage() {
             </div>}
             {memoryDiagnostics.memorySearchRevision?.version && <div className={`assistant-recovery-audit ${memoryDiagnostics.memorySearchRevisionHealthy ? 'healthy' : 'unhealthy'}`}>
               <header><Search size={15} /><span><b>检索分页一致性保护</b>
-                <small>搜索文档、原文证据、相关性反馈和向量索引任一发生变化都会推进加密数据库 revision；翻页期间若版本变化，旧页会被拒绝并自动从第一页重新检索，避免混合新旧排序。</small>
+                <small>搜索文档、原文证据、相关性反馈和向量索引任一发生变化都会推进加密数据库 revision；逐项核验每个触发器监听的表、操作和计数动作，定义漂移会在启动时按项自愈。</small>
               </span></header>
               <div className="assistant-recovery-current">
                 <span>当前状态 <b>{memoryDiagnostics.memorySearchRevisionHealthy ? '保护正常' : '需要检查'}</b></span>
                 <span>当前 revision <b>{String(memoryDiagnostics.memorySearchRevision.revision || '0')}</b></span>
-                <span>变更触发器 <b>{Number(memoryDiagnostics.memorySearchRevision.installedTriggers || 0).toLocaleString()} / {Number(memoryDiagnostics.memorySearchRevision.expectedTriggers || 0).toLocaleString()}</b></span>
+                <span>精确有效触发器 <b>{Number(memoryDiagnostics.memorySearchRevision.validTriggers || 0).toLocaleString()} / {Number(memoryDiagnostics.memorySearchRevision.expectedTriggers || 0).toLocaleString()}</b></span>
+                <span>本次修复 <b>{Number(memoryDiagnostics.memorySearchRevision.repairedTriggersThisStart || 0).toLocaleString()}</b> 项</span>
+                <span>累计自愈 <b>{Number(memoryDiagnostics.memorySearchRevision.repairsTotal || 0).toLocaleString()}</b> 次</span>
+                {Number(memoryDiagnostics.memorySearchRevision.unhealthyTriggers?.length || 0) > 0 &&
+                  <span>定义漂移 <b>{memoryDiagnostics.memorySearchRevision.unhealthyTriggers.join('、')}</b></span>}
+                {Number(memoryDiagnostics.memorySearchRevision.unexpectedTriggers?.length || 0) > 0 &&
+                  <span>未知触发器 <b>{memoryDiagnostics.memorySearchRevision.unexpectedTriggers.join('、')}</b></span>}
               </div>
             </div>}
             {memoryDiagnostics.entityEvidenceFts?.version && <div className={`assistant-recovery-audit ${memoryDiagnostics.entityEvidenceFtsHealthy ? 'healthy' : 'unhealthy'}`}>
