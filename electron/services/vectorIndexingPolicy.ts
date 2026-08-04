@@ -81,6 +81,54 @@ export async function runVectorIndexPass<T extends { id: string; content_hash?: 
   }
 }
 
+export type VectorIndexContinuationHealth = {
+  scheduled: boolean
+  runCount: number
+  indexedCount: number
+  lastScheduledAt: string
+  lastAttemptAt: string
+  lastSuccessAt: string
+  lastErrorAt: string
+  lastError: string
+}
+
+export function recordVectorIndexContinuation(
+  current: VectorIndexContinuationHealth,
+  event:
+    | { type: 'scheduled' | 'started' | 'cancelled'; at: string }
+    | { type: 'succeeded'; at: string; indexed?: number }
+    | { type: 'failed'; at: string; error?: string }
+): VectorIndexContinuationHealth {
+  if (event.type === 'scheduled') {
+    return { ...current, scheduled: true, lastScheduledAt: event.at }
+  }
+  if (event.type === 'started') {
+    return {
+      ...current,
+      scheduled: false,
+      runCount: Math.max(0, Number(current.runCount || 0)) + 1,
+      lastAttemptAt: event.at
+    }
+  }
+  if (event.type === 'cancelled') return { ...current, scheduled: false }
+  if (event.type === 'succeeded') {
+    return {
+      ...current,
+      scheduled: false,
+      indexedCount: Math.max(0, Number(current.indexedCount || 0))
+        + Math.max(0, Math.floor(Number(event.indexed || 0))),
+      lastSuccessAt: event.at,
+      lastError: ''
+    }
+  }
+  return {
+    ...current,
+    scheduled: false,
+    lastErrorAt: event.at,
+    lastError: String(event.error || 'unknown_vector_index_error').slice(0, 500)
+  }
+}
+
 export type VectorQueryHealth = {
   fallbackCount: number
   dimensionRepairCount: number

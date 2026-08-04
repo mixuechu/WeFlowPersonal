@@ -11006,6 +11006,10 @@ function AiAssistantPage() {
                 <span>覆盖 <b>{Math.round(Number(memoryDiagnostics.embeddings.ann.coverage || 0) * 100)}%</b></span>
                 <span>索引 <b>{Number(memoryDiagnostics.embeddings.ann.indexed || 0).toLocaleString()} / {Number(memoryDiagnostics.embeddings.ann.eligible || 0).toLocaleString()}</b></span>
                 <span>待补建 <b>{Number(memoryDiagnostics.embeddings.pending || 0).toLocaleString()}</b> / 损坏 {Number(memoryDiagnostics.embeddings.invalid || 0).toLocaleString()}</span>
+                <span>索引执行 <b>{memoryDiagnostics.embeddings.indexing
+                  ? '运行中'
+                  : memoryDiagnostics.embeddings.background?.scheduled ? '已排队' : '空闲'}</b></span>
+                <span>后台累计 <b>{Number(memoryDiagnostics.embeddings.background?.indexedCount || 0).toLocaleString()}</b> 条 / {Number(memoryDiagnostics.embeddings.background?.runCount || 0).toLocaleString()} 轮</span>
                 <span>查询降级 <b>{Number(memoryDiagnostics.embeddings.query?.fallbackCount || 0).toLocaleString()}</b> 次</span>
                 <span>维度漂移修复 <b>{Number(memoryDiagnostics.embeddings.query?.dimensionRepairCount || 0).toLocaleString()}</b> 条</span>
                 <span>版本 <b>{memoryDiagnostics.embeddings.ann.version || 'lsh-v1'}</b></span>
@@ -11021,6 +11025,17 @@ function AiAssistantPage() {
               {memoryDiagnostics.embeddings.query?.lastDimensionRepairAt && <small>
                 最近一次维度漂移修复：{new Date(memoryDiagnostics.embeddings.query.lastDimensionRepairAt).toLocaleString('zh-CN')}
               </small>}
+              {memoryDiagnostics.embeddings.background?.lastError && <small className="assistant-diagnostics-error">
+                最近一次后台续建失败：{memoryDiagnostics.embeddings.background.lastError}
+                {memoryDiagnostics.embeddings.background.lastErrorAt
+                  ? ` · ${new Date(memoryDiagnostics.embeddings.background.lastErrorAt).toLocaleString('zh-CN')}`
+                  : ''}
+                {memoryDiagnostics.embeddings.background.scheduled ? ' · 已安排重试' : ''}
+              </small>}
+              {!memoryDiagnostics.embeddings.background?.lastError
+                && memoryDiagnostics.embeddings.background?.lastSuccessAt && <small>
+                  最近一次后台续建：{new Date(memoryDiagnostics.embeddings.background.lastSuccessAt).toLocaleString('zh-CN')}
+                </small>}
               <small>索引可由加密库中的有效向量完全重建；JSON 损坏、维度错误或非数字向量会重新进入补建队列，版本、覆盖率或候选量不满足要求时自动回退精确扫描。</small>
             </div>}
             {memoryDiagnostics.privacy && <div className={`assistant-privacy-audit ${memoryDiagnostics.privacy.secure && memoryDiagnostics.privacy.stateMode === '600' && memoryDiagnostics.stateStorage?.encrypted && sensitiveCachesSecure ? 'secure' : 'warning'}`}>

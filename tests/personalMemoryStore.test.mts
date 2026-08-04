@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os'
 import { createHash, randomBytes } from 'node:crypto'
 import { PersonalMemoryStore } from '../electron/services/personalMemoryStore.ts'
 import {
+  recordVectorIndexContinuation,
   recordVectorQueryOutcome,
   runVectorIndexPass,
   safeCosineSimilarity,
@@ -7232,6 +7233,56 @@ test('bounded vector indexing exits on zero progress instead of spinning forever
     commit: () => false
   }), /没有可安全提交/)
   assert.equal(listCalls, 1)
+})
+
+test('vector continuation health exposes scheduling, progress, retry and recovery', () => {
+  const initial = {
+    scheduled: false,
+    runCount: 0,
+    indexedCount: 0,
+    lastScheduledAt: '',
+    lastAttemptAt: '',
+    lastSuccessAt: '',
+    lastErrorAt: '',
+    lastError: ''
+  }
+  const scheduled = recordVectorIndexContinuation(initial, {
+    type: 'scheduled',
+    at: '2026-08-05T02:00:00.000Z'
+  })
+  assert.equal(scheduled.scheduled, true)
+  const started = recordVectorIndexContinuation(scheduled, {
+    type: 'started',
+    at: '2026-08-05T02:00:01.000Z'
+  })
+  assert.equal(started.scheduled, false)
+  assert.equal(started.runCount, 1)
+  const failed = recordVectorIndexContinuation(started, {
+    type: 'failed',
+    at: '2026-08-05T02:00:02.000Z',
+    error: 'model temporarily unavailable'
+  })
+  assert.equal(failed.lastError, 'model temporarily unavailable')
+  assert.equal(failed.lastErrorAt, '2026-08-05T02:00:02.000Z')
+  const retry = recordVectorIndexContinuation(failed, {
+    type: 'scheduled',
+    at: '2026-08-05T02:01:02.000Z'
+  })
+  assert.equal(retry.scheduled, true)
+  assert.equal(retry.lastError, failed.lastError)
+  const recovered = recordVectorIndexContinuation(retry, {
+    type: 'succeeded',
+    at: '2026-08-05T02:01:05.000Z',
+    indexed: 48
+  })
+  assert.equal(recovered.scheduled, false)
+  assert.equal(recovered.indexedCount, 48)
+  assert.equal(recovered.lastSuccessAt, '2026-08-05T02:01:05.000Z')
+  assert.equal(recovered.lastError, '')
+  assert.equal(recordVectorIndexContinuation(recovered, {
+    type: 'cancelled',
+    at: '2026-08-05T02:02:00.000Z'
+  }).scheduled, false)
 })
 
 test('semantic ranking uses cosine similarity so vector magnitude cannot dominate relevance', () => withStore(store => {

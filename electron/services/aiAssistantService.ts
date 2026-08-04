@@ -11,8 +11,10 @@ import { personalMemoryStore } from './personalMemoryStore'
 import { localEmbeddingService } from './localEmbeddingService'
 import {
   recordVectorQueryOutcome,
+  recordVectorIndexContinuation,
   runVectorIndexPass,
   validateEmbeddingBatch,
+  type VectorIndexContinuationHealth,
   type VectorQueryHealth
 } from './vectorIndexingPolicy'
 import { extractAttachmentText } from './attachmentTextExtractor'
@@ -602,6 +604,16 @@ export class AiAssistantService {
   private vectorIndexPromise: Promise<any> | null = null
   private vectorIndexContinuation: ReturnType<typeof setTimeout> | null = null
   private disposed = false
+  private vectorIndexContinuationHealth: VectorIndexContinuationHealth = {
+    scheduled: false,
+    runCount: 0,
+    indexedCount: 0,
+    lastScheduledAt: '',
+    lastAttemptAt: '',
+    lastSuccessAt: '',
+    lastErrorAt: '',
+    lastError: ''
+  }
   private vectorQueryHealth: VectorQueryHealth = {
     fallbackCount: 0,
     dimensionRepairCount: 0,
@@ -789,6 +801,10 @@ export class AiAssistantService {
     this.preparedRecoveryContinuation = null
     if (this.vectorIndexContinuation) clearTimeout(this.vectorIndexContinuation)
     this.vectorIndexContinuation = null
+    this.vectorIndexContinuationHealth = recordVectorIndexContinuation(
+      this.vectorIndexContinuationHealth,
+      { type: 'cancelled', at: new Date().toISOString() }
+    )
     personalMemoryStore.close()
   }
 
@@ -5074,6 +5090,7 @@ export class AiAssistantService {
         ...personalMemoryStore.getEmbeddingStats(localEmbeddingService.modelVersion),
         ...localEmbeddingService.getStatus(),
         indexing: Boolean(this.vectorIndexPromise),
+        background: { ...this.vectorIndexContinuationHealth },
         query: { ...this.vectorQueryHealth }
       },
       privacy: {
@@ -7381,6 +7398,10 @@ export class AiAssistantService {
 
   private scheduleVectorIndexContinuation(delayMs = 1_000): void {
     if (this.disposed || this.vectorIndexContinuation) return
+    this.vectorIndexContinuationHealth = recordVectorIndexContinuation(
+      this.vectorIndexContinuationHealth,
+      { type: 'scheduled', at: new Date().toISOString() }
+    )
     this.vectorIndexContinuation = setTimeout(() => {
       this.vectorIndexContinuation = null
       if (this.disposed) return
@@ -7388,10 +7409,22 @@ export class AiAssistantService {
         this.scheduleVectorIndexContinuation(5_000)
         return
       }
+      this.vectorIndexContinuationHealth = recordVectorIndexContinuation(
+        this.vectorIndexContinuationHealth,
+        { type: 'started', at: new Date().toISOString() }
+      )
       void this.ensureVectorIndex({ maxBatches: 2 }).then(result => {
+        this.vectorIndexContinuationHealth = recordVectorIndexContinuation(
+          this.vectorIndexContinuationHealth,
+          { type: 'succeeded', at: new Date().toISOString(), indexed: Number(result.indexed || 0) }
+        )
         if (Number(result.pending || 0) > 0) this.scheduleVectorIndexContinuation()
       }).catch(error => {
         console.warn('[AI Assistant] 本地向量索引暂未完成:', error)
+        this.vectorIndexContinuationHealth = recordVectorIndexContinuation(
+          this.vectorIndexContinuationHealth,
+          { type: 'failed', at: new Date().toISOString(), error: sanitizeDiagnosticText(error) }
+        )
         this.scheduleVectorIndexContinuation(60_000)
       })
     }, Math.max(0, delayMs))
