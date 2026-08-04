@@ -9602,21 +9602,33 @@ test('assistant conversations persist ordered turns, citations and deletion acro
     documentId: 'event:two',
     title: '证据二'
   }], conversationId)
-  store.saveAssistantExchange('第三问', '第三答', [], conversationId)
+  store.saveAssistantExchange(
+    '第三问',
+    '没有足够的已确认原始证据回答。检索到的待确认候选或线索不会被当作事实。',
+    [],
+    conversationId,
+    {
+      version: 'statement-citations-v1',
+      acceptedStatements: 0,
+      insufficientEvidencePolicyVersion: 'deterministic-insufficient-evidence-v1',
+      promptIsolationVersion: 'untrusted-memory-envelope-v1',
+      statementCitations: []
+    }
+  )
 
   const summaries = store.listAssistantConversations()
   assert.equal(summaries.length, 1)
   assert.equal(summaries[0].id, conversationId)
   assert.equal(summaries[0].title, '第一问')
   assert.equal(summaries[0].message_count, 6)
-  assert.equal(summaries[0].preview, '第三答')
+  assert.match(summaries[0].preview, /没有足够的已确认原始证据/)
 
   const conversation = store.getAssistantConversation(conversationId, 4)
   assert.deepEqual(conversation.messages.map((message: any) => [message.role, message.content]), [
     ['user', '第二问'],
     ['assistant', '第二答'],
     ['user', '第三问'],
-    ['assistant', '第三答']
+    ['assistant', '没有足够的已确认原始证据回答。检索到的待确认候选或线索不会被当作事实。']
   ])
   assert.equal(conversation.messages[1].citations[0].documentId, 'event:two')
   const complete = store.getAssistantConversation(conversationId, 10)
@@ -9647,6 +9659,10 @@ test('assistant conversations persist ordered turns, citations and deletion acro
     statementCitations: [['claim:one']]
   })
   assert.equal(JSON.stringify(complete.messages[1].groundingAudit).includes('不能离开主进程'), false)
+  assert.equal(
+    complete.messages[5].groundingAudit.insufficientEvidencePolicyVersion,
+    'deterministic-insufficient-evidence-v1'
+  )
   const storedAnswer = store.getAssistantAnswerMessage(firstSavedExchange.answerMessageId)
   assert.equal(storedAnswer.id, firstSavedExchange.answerMessageId)
   assert.equal(storedAnswer.role, 'assistant')

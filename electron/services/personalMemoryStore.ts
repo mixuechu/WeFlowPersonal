@@ -13896,6 +13896,9 @@ export class PersonalMemoryStore {
     const version = String(value.version || '').slice(0, 80)
     const promptIsolationVersion = String(value.promptIsolationVersion || '').slice(0, 80)
     const uncertaintyPolicyVersion = String(value.uncertaintyPolicyVersion || '').slice(0, 80)
+    const insufficientEvidencePolicyVersion = String(
+      value.insufficientEvidencePolicyVersion || ''
+    ).slice(0, 80)
     if (!version && !promptIsolationVersion) return {}
     const statementCitations = (Array.isArray(value.statementCitations) ? value.statementCitations : [])
       .slice(0, 24)
@@ -13913,6 +13916,9 @@ export class PersonalMemoryStore {
       promptIsolationVersion,
       ...(uncertaintyPolicyVersion === 'derived-from-citations-v1'
         ? { uncertaintyPolicyVersion }
+        : {}),
+      ...(insufficientEvidencePolicyVersion === 'deterministic-insufficient-evidence-v1'
+        ? { insufficientEvidencePolicyVersion }
         : {}),
       statementCitations
     }

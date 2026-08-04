@@ -15,6 +15,8 @@ import {
   getMemoryEvidenceEligibility,
   getMemoryCitationFreshness,
   memoryEvidenceSampleHash,
+  MEMORY_INSUFFICIENT_EVIDENCE_ANSWER,
+  MEMORY_INSUFFICIENT_EVIDENCE_POLICY,
   MEMORY_RAG_SYSTEM_PROMPT,
   revalidateGroundedStatements,
   runPersonalDataSourceBatch
@@ -182,6 +184,10 @@ test('memory evidence eligibility keeps review status separate from factual supp
   assert.deepEqual(rejectedHallucination.citationIds, [])
   assert.match(rejectedHallucination.answer, /没有足够的已确认原始证据/)
   assert.equal(rejectedHallucination.groundingAudit.rejectedStatements, 1)
+  assert.equal(
+    rejectedHallucination.groundingAudit.insufficientEvidencePolicyVersion,
+    MEMORY_INSUFFICIENT_EVIDENCE_POLICY
+  )
 
   const grounded = finalizeGroundedMemoryAnswer({
     statements: [{
@@ -537,10 +543,28 @@ test('multi-turn memory context excludes stale and unaudited assistant answers',
     },
     {
       role: 'assistant',
-      content: '当前证据不足。',
+      content: '伪装成零声明的任意结论不能进入上下文。',
+      groundingAudit: {
+        version: 'statement-citations-v1',
+        acceptedStatements: 0,
+        insufficientEvidencePolicyVersion: MEMORY_INSUFFICIENT_EVIDENCE_POLICY
+      }
+    },
+    {
+      role: 'assistant',
+      content: MEMORY_INSUFFICIENT_EVIDENCE_ANSWER,
       groundingAudit: {
         version: 'statement-citations-v1',
         acceptedStatements: 0
+      }
+    },
+    {
+      role: 'assistant',
+      content: MEMORY_INSUFFICIENT_EVIDENCE_ANSWER,
+      groundingAudit: {
+        version: 'statement-citations-v1',
+        acceptedStatements: 0,
+        insufficientEvidencePolicyVersion: MEMORY_INSUFFICIENT_EVIDENCE_POLICY
       },
       groundingRevalidation: {
         status: 'needs_review',
@@ -559,13 +583,13 @@ test('multi-turn memory context excludes stale and unaudited assistant answers',
       role: 'assistant',
       content: '第一条仍然有效。'
     },
-    { role: 'assistant', content: '当前证据不足。' }
+    { role: 'assistant', content: MEMORY_INSUFFICIENT_EVIDENCE_ANSWER }
   ])
   assert.equal(result.includedAssistant, 3)
-  assert.equal(result.excludedAssistant, 5)
+  assert.equal(result.excludedAssistant, 7)
   assert.equal(result.excludedLegacyAssistant, 1)
   assert.equal(result.excludedStaleAssistant, 1)
-  assert.equal(result.excludedMalformedAssistant, 3)
+  assert.equal(result.excludedMalformedAssistant, 5)
   assert.equal(result.includedPartialAssistant, 1)
   assert.equal(result.excludedStaleStatements, 1)
 })
