@@ -372,6 +372,7 @@ export function filterTrustedConversationHistory(messages: any[]): {
   excludedAssistant: number
   excludedLegacyAssistant: number
   excludedStaleAssistant: number
+  excludedMalformedAssistant: number
   includedPartialAssistant: number
   excludedStaleStatements: number
 } {
@@ -380,6 +381,7 @@ export function filterTrustedConversationHistory(messages: any[]): {
     excludedAssistant: 0,
     excludedLegacyAssistant: 0,
     excludedStaleAssistant: 0,
+    excludedMalformedAssistant: 0,
     includedPartialAssistant: 0,
     excludedStaleStatements: 0
   }
@@ -409,27 +411,49 @@ export function filterTrustedConversationHistory(messages: any[]): {
     let retainedStatementIndexes = Array.from({ length: acceptedStatements }, (_, index) => index)
     if (acceptedStatements > 0) {
       const revalidation = message?.groundingRevalidation
-      if (!revalidation
-        || revalidation.status !== 'current'
-        || Math.max(0, Number(revalidation.supportedStatements || 0)) < acceptedStatements) {
-        const statementStates = Array.isArray(revalidation?.statements)
-          ? revalidation.statements.slice(0, 24)
-          : []
-        const statementCitations = Array.isArray(groundingAudit?.statementCitations)
-          ? groundingAudit.statementCitations.slice(0, 24)
-          : []
-        const statementTexts = content.split(/\n{2,}/).map(value => value.trim()).filter(Boolean)
-        const currentIndexes = statementStates.flatMap((statement: any, index: number) =>
-          statement?.status === 'current' ? [index] : [])
-        const supportedStatements = Math.max(
-          0,
-          Math.floor(Number(revalidation?.supportedStatements) || 0)
-        )
-        const mappingIsExact = statementTexts.length === acceptedStatements
-          && statementStates.length === acceptedStatements
-          && statementCitations.length === acceptedStatements
-          && currentIndexes.length === supportedStatements
-        if (!mappingIsExact || !currentIndexes.length) {
+      const statementStates = Array.isArray(revalidation?.statements)
+        ? revalidation.statements.slice(0, 24)
+        : []
+      const statementCitations = Array.isArray(groundingAudit?.statementCitations)
+        ? groundingAudit.statementCitations.slice(0, 24)
+        : []
+      const statementTexts = content.split(/\n{2,}/).map(value => value.trim()).filter(Boolean)
+      const currentIndexes = statementStates.flatMap((statement: any, index: number) =>
+        statement?.status === 'current' ? [index] : [])
+      const unknownStatements = statementStates.filter((statement: any) =>
+        statement?.status === 'unknown').length
+      const invalidStatements = statementStates.filter((statement: any) =>
+        statement?.status === 'invalid').length
+      const supportedStatements = Math.max(
+        0,
+        Math.floor(Number(revalidation?.supportedStatements) || 0)
+      )
+      const expectedStatus = supportedStatements === acceptedStatements
+        ? 'current'
+        : invalidStatements === acceptedStatements
+          ? 'invalid'
+          : 'needs_review'
+      const mappingIsExact = revalidation?.version === 'statement-revalidation-v1'
+        && statementTexts.length === acceptedStatements
+        && statementStates.length === acceptedStatements
+        && statementCitations.length === acceptedStatements
+        && statementCitations.every((ids: unknown) =>
+          Array.isArray(ids) && ids.some(id => String(id || '').trim()))
+        && Math.max(0, Math.floor(Number(revalidation?.totalStatements) || 0)) === acceptedStatements
+        && currentIndexes.length === supportedStatements
+        && Math.max(0, Math.floor(Number(revalidation?.unknownStatements) || 0)) === unknownStatements
+        && Math.max(0, Math.floor(Number(revalidation?.invalidStatements) || 0)) === invalidStatements
+        && supportedStatements + unknownStatements + invalidStatements === acceptedStatements
+        && revalidation?.status === expectedStatus
+      if (!mappingIsExact) {
+        audit.excludedAssistant += 1
+        audit.excludedMalformedAssistant += 1
+        return []
+      }
+      const fullyCurrent = revalidation.status === 'current'
+        && supportedStatements === acceptedStatements
+      if (!fullyCurrent) {
+        if (!currentIndexes.length) {
           audit.excludedAssistant += 1
           audit.excludedStaleAssistant += 1
           return []

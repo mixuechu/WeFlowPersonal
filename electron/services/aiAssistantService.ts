@@ -7660,6 +7660,11 @@ export class AiAssistantService {
         `已隔离 ${conversationHistoryAudit.excludedAssistant} 条过期或未验证的历史助手回答`
       )
     }
+    if (conversationHistoryAudit.excludedMalformedAssistant) {
+      plan.explanation.unshift(
+        `其中 ${conversationHistoryAudit.excludedMalformedAssistant} 条回答的逐句证据映射不完整，已禁止进入追问上下文`
+      )
+    }
     if (conversationHistoryAudit.includedPartialAssistant) {
       plan.explanation.unshift(
         `已从 ${conversationHistoryAudit.includedPartialAssistant} 条部分失效回答中保留仍有权威支持的陈述，并隔离 ${conversationHistoryAudit.excludedStaleStatements} 条失效陈述`
@@ -7857,6 +7862,7 @@ export class AiAssistantService {
           excludedAssistant: conversationHistoryAudit.excludedAssistant,
           excludedLegacyAssistant: conversationHistoryAudit.excludedLegacyAssistant,
           excludedStaleAssistant: conversationHistoryAudit.excludedStaleAssistant,
+          excludedMalformedAssistant: conversationHistoryAudit.excludedMalformedAssistant,
           includedPartialAssistant: conversationHistoryAudit.includedPartialAssistant,
           excludedStaleStatements: conversationHistoryAudit.excludedStaleStatements
         },

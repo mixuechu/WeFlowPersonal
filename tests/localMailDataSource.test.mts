@@ -427,8 +427,13 @@ test('multi-turn memory context excludes stale and unaudited assistant answers',
         evidenceRoleCounts: { supporting: 2, contradiction: 1 }
       }],
       groundingRevalidation: {
+        version: 'statement-revalidation-v1',
         status: 'current',
-        supportedStatements: 1
+        totalStatements: 1,
+        supportedStatements: 1,
+        unknownStatements: 0,
+        invalidStatements: 0,
+        statements: [{ status: 'current' }]
       }
     },
     { role: 'assistant', content: '旧版没有可信审计的结论。', groundingAudit: {} },
@@ -437,11 +442,17 @@ test('multi-turn memory context excludes stale and unaudited assistant answers',
       content: '后来已经延期。',
       groundingAudit: {
         version: 'statement-citations-v1',
-        acceptedStatements: 1
+        acceptedStatements: 1,
+        statementCitations: [['claim:invalid']]
       },
       groundingRevalidation: {
+        version: 'statement-revalidation-v1',
         status: 'invalid',
-        supportedStatements: 0
+        totalStatements: 1,
+        supportedStatements: 0,
+        unknownStatements: 0,
+        invalidStatements: 1,
+        statements: [{ status: 'invalid' }]
       }
     },
     {
@@ -462,8 +473,12 @@ test('multi-turn memory context excludes stale and unaudited assistant answers',
         evidenceRoleCounts: { supporting: 1, contradiction: 1 }
       }],
       groundingRevalidation: {
+        version: 'statement-revalidation-v1',
         status: 'needs_review',
+        totalStatements: 2,
         supportedStatements: 1,
+        unknownStatements: 0,
+        invalidStatements: 1,
         statements: [{ status: 'current' }, { status: 'invalid' }]
       }
     },
@@ -476,9 +491,48 @@ test('multi-turn memory context excludes stale and unaudited assistant answers',
         statementCitations: [['claim:current'], ['claim:invalid']]
       },
       groundingRevalidation: {
+        version: 'statement-revalidation-v1',
         status: 'needs_review',
+        totalStatements: 2,
         supportedStatements: 1,
+        unknownStatements: 0,
+        invalidStatements: 1,
         statements: [{ status: 'current' }, { status: 'invalid' }]
+      }
+    },
+    {
+      role: 'assistant',
+      content: '汇总状态声称有效，但缺少逐声明复核映射。',
+      groundingAudit: {
+        version: 'statement-citations-v1',
+        acceptedStatements: 1,
+        statementCitations: [['claim:current']]
+      },
+      groundingRevalidation: {
+        version: 'statement-revalidation-v1',
+        status: 'current',
+        totalStatements: 1,
+        supportedStatements: 1,
+        unknownStatements: 0,
+        invalidStatements: 0
+      }
+    },
+    {
+      role: 'assistant',
+      content: '逐声明引用是空的，不能进入上下文。',
+      groundingAudit: {
+        version: 'statement-citations-v1',
+        acceptedStatements: 1,
+        statementCitations: [[]]
+      },
+      groundingRevalidation: {
+        version: 'statement-revalidation-v1',
+        status: 'current',
+        totalStatements: 1,
+        supportedStatements: 1,
+        unknownStatements: 0,
+        invalidStatements: 0,
+        statements: [{ status: 'current' }]
       }
     },
     {
@@ -508,9 +562,10 @@ test('multi-turn memory context excludes stale and unaudited assistant answers',
     { role: 'assistant', content: '当前证据不足。' }
   ])
   assert.equal(result.includedAssistant, 3)
-  assert.equal(result.excludedAssistant, 3)
+  assert.equal(result.excludedAssistant, 5)
   assert.equal(result.excludedLegacyAssistant, 1)
-  assert.equal(result.excludedStaleAssistant, 2)
+  assert.equal(result.excludedStaleAssistant, 1)
+  assert.equal(result.excludedMalformedAssistant, 3)
   assert.equal(result.includedPartialAssistant, 1)
   assert.equal(result.excludedStaleStatements, 1)
 })
