@@ -206,8 +206,8 @@ test('source mutation finalize rolls every policy back and preserves prepared re
       beforeTokens: { first: 'before-first', bad: 'before-bad' },
       afterTokens: { first: 'after-first', bad: 'after-bad' },
       policies: [
-        { sessionId: 'first', displayName: 'First', sessionType: 'private', enabled: false },
-        { sessionId: 'bad', displayName: 'Bad', sessionType: 'private', enabled: false }
+        { sessionId: 'first', displayName: `First ${'重复来源载荷'.repeat(500)}`, sessionType: 'private', enabled: false },
+        { sessionId: 'bad', displayName: `Bad ${'重复来源载荷'.repeat(500)}`, sessionType: 'private', enabled: false }
       ]
     })
     const database = (store as any).db
@@ -223,11 +223,32 @@ test('source mutation finalize rolls every policy back and preserves prepared re
       () => store.finalizeConversationSourceMutationCommit('source-commit-failure'),
       /source commit failure/
     )
+    store.recordConversationSourceMutationRecoveryFailure(
+      'source-commit-failure',
+      'source commit failure'
+    )
     assert.deepEqual(store.getConversationPolicyRecords(), [])
     const prepared = store.listPreparedConversationSourceMutationCommits()
     assert.equal(prepared.length, 1)
     assert.equal(prepared[0].commitId, 'source-commit-failure')
     assert.equal(prepared[0].policies.length, 2)
+    assert.match(prepared[0].policies[0].displayName, /重复来源载荷/)
+    const physical = database.prepare(`
+      SELECT before_tokens_json,after_tokens_json,policies_json,payload_codec,
+        LENGTH(payload_blob) AS stored_bytes,payload_original_bytes
+      FROM conversation_source_mutation_commits WHERE commit_id='source-commit-failure'
+    `).get()
+    assert.deepEqual([
+      physical.before_tokens_json, physical.after_tokens_json, physical.policies_json
+    ], ['{}', '{}', '[]'])
+    assert.equal(physical.payload_codec, 'gzip-json-v1')
+    assert.ok(physical.stored_bytes < physical.payload_original_bytes / 5)
+    const health = store.getConversationSourceMutationCommitHealth()
+    assert.equal(health.compressedPayloads, 1)
+    assert.ok(health.reclaimedPayloadBytes > 1_000)
+    database.exec('DROP TRIGGER reject_bad_source_commit')
+    store.finalizeConversationSourceMutationCommit('source-commit-failure')
+    assert.equal(store.getConversationSourceMutationCommitHealth().retainedPayloadBytes, 0)
   })
 })
 
@@ -274,6 +295,71 @@ test('prepared cross-store mutation queues expose every fresh commit beyond fail
     assert.equal(store.listPreparedTaskMutationCommits(500).length, 251)
     assert.equal(store.listPreparedConversationSourceMutationCommits(500).length, 251)
   })
+})
+
+test('legacy failed cross-store payloads enter compressed cold storage after SQLCipher reopen', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'weflow-cross-store-cold-payload-'))
+  const databasePath = join(directory, 'memory.sqlite')
+  const key = randomBytes(32)
+  const first = new PersonalMemoryStore()
+  const second = new PersonalMemoryStore()
+  try {
+    first.initialize(databasePath, key)
+    first.prepareTaskMutationCommit({
+      commitId: 'legacy-cold-task',
+      beforeTokens: { task: 'before' },
+      afterTokens: { task: 'after' },
+      changes: [{
+        taskId: 'legacy-cold-task',
+        before: { id: 'legacy-cold-task', detail: '旧任务载荷'.repeat(1_000) },
+        after: { id: 'legacy-cold-task', detail: '新任务载荷'.repeat(1_000) },
+        evidence: evidence('legacy-cold-message', '旧恢复原文'.repeat(1_000))
+      }]
+    })
+    first.prepareConversationSourceMutationCommit({
+      commitId: 'legacy-cold-source',
+      beforeTokens: { source: 'before' },
+      afterTokens: { source: 'after' },
+      policies: [{
+        sessionId: 'legacy-cold-session',
+        displayName: '旧来源名称'.repeat(1_000),
+        sessionType: 'private',
+        enabled: false
+      }]
+    })
+    ;(first as any).db.exec(`
+      UPDATE task_mutation_commits SET recovery_attempts=1
+        WHERE commit_id='legacy-cold-task';
+      UPDATE conversation_source_mutation_commits SET recovery_attempts=1
+        WHERE commit_id='legacy-cold-source';
+    `)
+    first.close()
+
+    second.initialize(databasePath, key)
+    const task = second.listPreparedTaskMutationCommits()[0]
+    const source = second.listPreparedConversationSourceMutationCommits()[0]
+    assert.equal(task.changes[0].before.detail, '旧任务载荷'.repeat(1_000))
+    assert.equal(source.policies[0].displayName, '旧来源名称'.repeat(1_000))
+    assert.equal(second.getTaskMutationCommitHealth().compressedPayloads, 1)
+    assert.equal(second.getConversationSourceMutationCommitHealth().compressedPayloads, 1)
+    assert.ok(second.getTaskMutationCommitHealth().reclaimedPayloadBytes > 10_000)
+    assert.ok(second.getConversationSourceMutationCommitHealth().reclaimedPayloadBytes > 1_000)
+    const physical = (second as any).db.prepare(`
+      SELECT
+        (SELECT payload_codec FROM task_mutation_commits
+          WHERE commit_id='legacy-cold-task') AS task_codec,
+        (SELECT payload_codec FROM conversation_source_mutation_commits
+          WHERE commit_id='legacy-cold-source') AS source_codec
+    `).get()
+    assert.deepEqual(physical, {
+      task_codec: 'gzip-json-v1',
+      source_codec: 'gzip-json-v1'
+    })
+  } finally {
+    first.close()
+    second.close()
+    rmSync(directory, { recursive: true, force: true })
+  }
 })
 
 test('search relevance feedback is append-only, query-scoped and reversible after reopen', () => {
@@ -9135,7 +9221,7 @@ test('prepared task mutation commits directory and history atomically then compa
     status: 'todo',
     createdAt: '2026-08-04T00:00:00.000Z',
     updatedAt: '2026-08-04T00:00:00.000Z',
-    evidence: []
+    evidence: evidence(`message-${id}`, `重复任务恢复原文 ${'x'.repeat(5_000)}`)
   })
   const before = [base('prepared-task-a'), base('prepared-task-b')]
   const after = before.map(task => ({
@@ -9167,10 +9253,26 @@ test('prepared task mutation commits directory and history atomically then compa
   `)
   assert.throws(() => store.finalizeTaskMutationCommit('prepared-task-commit', after),
     /injected prepared task failure/)
+  store.recordTaskMutationRecoveryFailure(
+    'prepared-task-commit',
+    'injected prepared task failure'
+  )
   assert.equal(store.getTaskMutationCommitHealth().prepared, 1)
   assert.equal(store.countTaskHistory('prepared-task-a'), 0)
   assert.equal(store.listTaskArchive({ status: 'all' }).total, 0)
   assert.equal(database.prepare(`SELECT status FROM task_directory WHERE id='prepared-task-a'`).get().status, 'todo')
+  const compressed = database.prepare(`
+    SELECT before_tokens_json,after_tokens_json,changes_json,payload_codec,
+      LENGTH(payload_blob) AS stored_bytes,payload_original_bytes
+    FROM task_mutation_commits WHERE commit_id='prepared-task-commit'
+  `).get()
+  assert.deepEqual([
+    compressed.before_tokens_json, compressed.after_tokens_json, compressed.changes_json
+  ], ['{}', '{}', '[]'])
+  assert.equal(compressed.payload_codec, 'gzip-json-v1')
+  assert.ok(compressed.stored_bytes < compressed.payload_original_bytes / 5)
+  assert.equal(store.listPreparedTaskMutationCommits()[0].changes.length, 2)
+  assert.equal(store.getTaskMutationCommitHealth().compressedPayloads, 1)
 
   database.exec('DROP TRIGGER fail_prepared_task_history')
   store.finalizeTaskMutationCommit('prepared-task-commit', after)

@@ -1,5 +1,6 @@
 import Database from 'better-sqlite3-multiple-ciphers'
 import { createHash } from 'node:crypto'
+import { gzipSync, gunzipSync } from 'node:zlib'
 import { chmodSync, copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, statSync, unlinkSync, writeFileSync } from 'fs'
 import { dirname, join, resolve } from 'path'
 import { fuzzyEntityScore, pinyinEntityScore } from './fuzzyEntitySearch.ts'
@@ -100,6 +101,30 @@ function hydrateTaskReviewSnapshot(taskJson: unknown, evidenceJson: unknown): an
     sourceMessageIds: [...new Set(evidence.map(item =>
       String(item?.messageId ?? item?.message_id ?? '').trim()).filter(Boolean))]
   }
+}
+
+const RECOVERY_PAYLOAD_CODEC = 'gzip-json-v1'
+
+function compressRecoveryPayload(payload: Record<string, string>): {
+  blob: Buffer
+  originalBytes: number
+} {
+  const serialized = JSON.stringify(payload)
+  return {
+    blob: gzipSync(Buffer.from(serialized), { level: 9 }),
+    originalBytes: Buffer.byteLength(serialized)
+  }
+}
+
+function readRecoveryPayload(row: any, keys: string[]): Record<string, string> {
+  if (String(row?.payload_codec || '') !== RECOVERY_PAYLOAD_CODEC || !row?.payload_blob) {
+    return Object.fromEntries(keys.map(key => [key, String(row?.[key] ?? '')]))
+  }
+  const parsed = JSON.parse(gunzipSync(Buffer.from(row.payload_blob)).toString('utf8'))
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw new Error('压缩恢复载荷不是对象')
+  }
+  return Object.fromEntries(keys.map(key => [key, String(parsed[key] ?? '')]))
 }
 
 export class PersonalMemoryStore {
@@ -440,7 +465,10 @@ export class PersonalMemoryStore {
         applied_at TEXT,
         recovery_attempts INTEGER NOT NULL DEFAULT 0,
         recovery_action TEXT NOT NULL DEFAULT '',
-        last_error TEXT
+        last_error TEXT,
+        payload_blob BLOB,
+        payload_codec TEXT NOT NULL DEFAULT '',
+        payload_original_bytes INTEGER NOT NULL DEFAULT 0
       ) STRICT;
       CREATE INDEX IF NOT EXISTS idx_task_mutation_commits_status
         ON task_mutation_commits(status,prepared_at);
@@ -455,7 +483,10 @@ export class PersonalMemoryStore {
         applied_at TEXT,
         recovery_attempts INTEGER NOT NULL DEFAULT 0,
         recovery_action TEXT NOT NULL DEFAULT '',
-        last_error TEXT
+        last_error TEXT,
+        payload_blob BLOB,
+        payload_codec TEXT NOT NULL DEFAULT '',
+        payload_original_bytes INTEGER NOT NULL DEFAULT 0
       ) STRICT;
       CREATE INDEX IF NOT EXISTS idx_conversation_source_mutation_commits_status
         ON conversation_source_mutation_commits(status,prepared_at);
@@ -799,6 +830,12 @@ export class PersonalMemoryStore {
     this.ensureColumn('task_review_decisions', 'reconciliation_count', 'INTEGER NOT NULL DEFAULT 0')
     this.ensureColumn('task_review_decisions', 'last_reconciled_at', 'TEXT')
     this.ensureColumn('task_review_decisions', 'revoked_at', 'TEXT')
+    this.ensureColumn('task_mutation_commits', 'payload_blob', 'BLOB')
+    this.ensureColumn('task_mutation_commits', 'payload_codec', `TEXT NOT NULL DEFAULT ''`)
+    this.ensureColumn('task_mutation_commits', 'payload_original_bytes', 'INTEGER NOT NULL DEFAULT 0')
+    this.ensureColumn('conversation_source_mutation_commits', 'payload_blob', 'BLOB')
+    this.ensureColumn('conversation_source_mutation_commits', 'payload_codec', `TEXT NOT NULL DEFAULT ''`)
+    this.ensureColumn('conversation_source_mutation_commits', 'payload_original_bytes', 'INTEGER NOT NULL DEFAULT 0')
     this.ensureColumn('memory_review_decisions', 'reason', `TEXT NOT NULL DEFAULT ''`)
     this.ensureColumn('memory_review_decisions', 'protect_from_extraction', 'INTEGER NOT NULL DEFAULT 1')
     this.ensureColumn('assistant_messages', 'grounding_json', `TEXT NOT NULL DEFAULT '{}'`)
@@ -843,6 +880,7 @@ export class PersonalMemoryStore {
     this.ensureGraphReviewRevisionTriggers()
     this.normalizeTaskHistoryEvidence()
     this.compactTaskReviewSnapshots()
+    this.compactFailedCrossStoreMutationPayloads()
     this.ensureTaskArchiveRevisionTriggers()
     this.ensureTaskOwnershipReviewRevisionTriggers()
     this.ensureIdentityMergeArchiveRevisionTriggers()
@@ -3263,6 +3301,97 @@ export class PersonalMemoryStore {
         invalidRows
       }), now)
     })()
+  }
+
+  private compactFailedCrossStoreMutationPayloads(): void {
+    if (!this.db) return
+    const taskRows = this.db.prepare(`
+      SELECT commit_id,before_tokens_json,after_tokens_json,changes_json
+      FROM task_mutation_commits
+      WHERE status='prepared' AND recovery_attempts>0 AND payload_codec=''
+    `).all() as any[]
+    const sourceRows = this.db.prepare(`
+      SELECT commit_id,before_tokens_json,after_tokens_json,policies_json
+      FROM conversation_source_mutation_commits
+      WHERE status='prepared' AND recovery_attempts>0 AND payload_codec=''
+    `).all() as any[]
+    if (!taskRows.length && !sourceRows.length) return
+    this.db.transaction(() => {
+      const updateTask = this.db!.prepare(`
+        UPDATE task_mutation_commits
+        SET before_tokens_json='{}',after_tokens_json='{}',changes_json='[]',
+          payload_blob=?,payload_codec=?,payload_original_bytes=?
+        WHERE commit_id=? AND status='prepared' AND payload_codec=''
+      `)
+      const updateSource = this.db!.prepare(`
+        UPDATE conversation_source_mutation_commits
+        SET before_tokens_json='{}',after_tokens_json='{}',policies_json='[]',
+          payload_blob=?,payload_codec=?,payload_original_bytes=?
+        WHERE commit_id=? AND status='prepared' AND payload_codec=''
+      `)
+      for (const row of taskRows) {
+        const compressed = compressRecoveryPayload({
+          before_tokens_json: String(row.before_tokens_json || '{}'),
+          after_tokens_json: String(row.after_tokens_json || '{}'),
+          changes_json: String(row.changes_json || '[]')
+        })
+        updateTask.run(
+          compressed.blob, RECOVERY_PAYLOAD_CODEC, compressed.originalBytes, row.commit_id
+        )
+      }
+      for (const row of sourceRows) {
+        const compressed = compressRecoveryPayload({
+          before_tokens_json: String(row.before_tokens_json || '{}'),
+          after_tokens_json: String(row.after_tokens_json || '{}'),
+          policies_json: String(row.policies_json || '[]')
+        })
+        updateSource.run(
+          compressed.blob, RECOVERY_PAYLOAD_CODEC, compressed.originalBytes, row.commit_id
+        )
+      }
+    })()
+  }
+
+  private compactTaskMutationPayload(commitId: string): void {
+    if (!this.db) return
+    const row = this.db.prepare(`
+      SELECT commit_id,before_tokens_json,after_tokens_json,changes_json
+      FROM task_mutation_commits
+      WHERE commit_id=? AND status='prepared' AND payload_codec=''
+    `).get(commitId) as any
+    if (!row) return
+    const compressed = compressRecoveryPayload({
+      before_tokens_json: String(row.before_tokens_json || '{}'),
+      after_tokens_json: String(row.after_tokens_json || '{}'),
+      changes_json: String(row.changes_json || '[]')
+    })
+    this.db.prepare(`
+      UPDATE task_mutation_commits
+      SET before_tokens_json='{}',after_tokens_json='{}',changes_json='[]',
+        payload_blob=?,payload_codec=?,payload_original_bytes=?
+      WHERE commit_id=? AND status='prepared' AND payload_codec=''
+    `).run(compressed.blob, RECOVERY_PAYLOAD_CODEC, compressed.originalBytes, commitId)
+  }
+
+  private compactConversationSourceMutationPayload(commitId: string): void {
+    if (!this.db) return
+    const row = this.db.prepare(`
+      SELECT commit_id,before_tokens_json,after_tokens_json,policies_json
+      FROM conversation_source_mutation_commits
+      WHERE commit_id=? AND status='prepared' AND payload_codec=''
+    `).get(commitId) as any
+    if (!row) return
+    const compressed = compressRecoveryPayload({
+      before_tokens_json: String(row.before_tokens_json || '{}'),
+      after_tokens_json: String(row.after_tokens_json || '{}'),
+      policies_json: String(row.policies_json || '[]')
+    })
+    this.db.prepare(`
+      UPDATE conversation_source_mutation_commits
+      SET before_tokens_json='{}',after_tokens_json='{}',policies_json='[]',
+        payload_blob=?,payload_codec=?,payload_original_bytes=?
+      WHERE commit_id=? AND status='prepared' AND payload_codec=''
+    `).run(compressed.blob, RECOVERY_PAYLOAD_CODEC, compressed.originalBytes, commitId)
   }
 
   private compactIdentityMergeSnapshots(): void {
@@ -8030,18 +8159,24 @@ export class PersonalMemoryStore {
       let afterTokens: Record<string, string> = {}
       let changes: any[] = []
       const failures: string[] = []
+      let payload: Record<string, string> = {}
       try {
-        const parsed = JSON.parse(String(row.before_tokens_json || '{}'))
+        payload = readRecoveryPayload(row, [
+          'before_tokens_json', 'after_tokens_json', 'changes_json'
+        ])
+      } catch { failures.push('压缩载荷') }
+      try {
+        const parsed = JSON.parse(String(payload.before_tokens_json || '{}'))
         if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error()
         beforeTokens = parsed
       } catch { failures.push('变更前身份') }
       try {
-        const parsed = JSON.parse(String(row.after_tokens_json || '{}'))
+        const parsed = JSON.parse(String(payload.after_tokens_json || '{}'))
         if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error()
         afterTokens = parsed
       } catch { failures.push('变更后身份') }
       try {
-        const parsed = JSON.parse(String(row.changes_json || '[]'))
+        const parsed = JSON.parse(String(payload.changes_json || '[]'))
         if (!Array.isArray(parsed)) throw new Error()
         changes = parsed
       } catch { failures.push('变更载荷') }
@@ -8060,14 +8195,17 @@ export class PersonalMemoryStore {
     if (!this.db) throw new Error('个人记忆数据库尚未初始化')
     this.db.transaction(() => {
       const row = this.db!.prepare(`
-        SELECT status,changes_json FROM task_mutation_commits WHERE commit_id=?
+        SELECT * FROM task_mutation_commits WHERE commit_id=?
       `).get(String(commitId || '')) as any
       if (!row) throw new Error('找不到待提交的任务变更')
       if (row.status === 'committed') return
       if (row.status !== 'prepared') throw new Error('任务变更已被放弃')
       let changes: any[] = []
       try {
-        changes = JSON.parse(String(row.changes_json || '[]'))
+        const payload = readRecoveryPayload(row, [
+          'before_tokens_json', 'after_tokens_json', 'changes_json'
+        ])
+        changes = JSON.parse(String(payload.changes_json || '[]'))
         if (!Array.isArray(changes)) throw new Error()
       } catch {
         throw new Error('任务恢复载荷无法解析')
@@ -8077,7 +8215,8 @@ export class PersonalMemoryStore {
       this.db!.prepare(`
         UPDATE task_mutation_commits
         SET status='committed',applied_at=?,recovery_action='applied',last_error=NULL,
-          before_tokens_json='{}',after_tokens_json='{}',changes_json='[]'
+          before_tokens_json='{}',after_tokens_json='{}',changes_json='[]',
+          payload_blob=NULL,payload_codec='',payload_original_bytes=0
         WHERE commit_id=?
       `).run(new Date().toISOString(), commitId)
     })()
@@ -8088,18 +8227,22 @@ export class PersonalMemoryStore {
     this.db.prepare(`
       UPDATE task_mutation_commits
       SET status='abandoned',applied_at=?,recovery_action=?,last_error=NULL,
-        before_tokens_json='{}',after_tokens_json='{}',changes_json='[]'
+        before_tokens_json='{}',after_tokens_json='{}',changes_json='[]',
+        payload_blob=NULL,payload_codec='',payload_original_bytes=0
       WHERE commit_id=? AND status='prepared'
     `).run(new Date().toISOString(), String(recoveryAction || 'abandoned'), commitId)
   }
 
   recordTaskMutationRecoveryFailure(commitId: string, error: unknown): void {
     if (!this.db) return
-    this.db.prepare(`
-      UPDATE task_mutation_commits
-      SET recovery_attempts=recovery_attempts+1,last_error=?
-      WHERE commit_id=? AND status='prepared'
-    `).run(String(error instanceof Error ? error.message : error || '').slice(0, 1000), commitId)
+    this.db.transaction(() => {
+      this.compactTaskMutationPayload(commitId)
+      this.db!.prepare(`
+        UPDATE task_mutation_commits
+        SET recovery_attempts=recovery_attempts+1,last_error=?
+        WHERE commit_id=? AND status='prepared'
+      `).run(String(error instanceof Error ? error.message : error || '').slice(0, 1000), commitId)
+    })()
   }
 
   getTaskMutationCommitHealth(): {
@@ -8109,9 +8252,14 @@ export class PersonalMemoryStore {
     abandoned: number
     recoveryFailures: number
     retainedPayloadBytes: number
+    compressedPayloads: number
+    originalPayloadBytes: number
+    reclaimedPayloadBytes: number
   } {
     if (!this.db) return {
-      prepared: 0, unattempted: 0, committed: 0, abandoned: 0, recoveryFailures: 0, retainedPayloadBytes: 0
+      prepared: 0, unattempted: 0, committed: 0, abandoned: 0, recoveryFailures: 0,
+      retainedPayloadBytes: 0, compressedPayloads: 0, originalPayloadBytes: 0,
+      reclaimedPayloadBytes: 0
     }
     const row = this.db.prepare(`
       SELECT
@@ -8120,10 +8268,15 @@ export class PersonalMemoryStore {
         SUM(CASE WHEN status='committed' THEN 1 ELSE 0 END) AS committed,
         SUM(CASE WHEN status='abandoned' THEN 1 ELSE 0 END) AS abandoned,
         SUM(CASE WHEN recovery_attempts>0 THEN 1 ELSE 0 END) AS recovery_failures,
+        SUM(CASE WHEN status='prepared' AND payload_codec!='' THEN 1 ELSE 0 END)
+          AS compressed_payloads,
+        SUM(CASE WHEN status='prepared' THEN payload_original_bytes ELSE 0 END)
+          AS original_payload_bytes,
         SUM(CASE WHEN status='prepared' THEN
           LENGTH(CAST(before_tokens_json AS BLOB))
           + LENGTH(CAST(after_tokens_json AS BLOB))
           + LENGTH(CAST(changes_json AS BLOB))
+          + COALESCE(LENGTH(payload_blob),0)
           ELSE 0 END) AS retained_payload_bytes
       FROM task_mutation_commits
     `).get() as any
@@ -8133,7 +8286,13 @@ export class PersonalMemoryStore {
       committed: Number(row?.committed || 0),
       abandoned: Number(row?.abandoned || 0),
       recoveryFailures: Number(row?.recovery_failures || 0),
-      retainedPayloadBytes: Number(row?.retained_payload_bytes || 0)
+      retainedPayloadBytes: Number(row?.retained_payload_bytes || 0),
+      compressedPayloads: Number(row?.compressed_payloads || 0),
+      originalPayloadBytes: Number(row?.original_payload_bytes || 0),
+      reclaimedPayloadBytes: Math.max(
+        0,
+        Number(row?.original_payload_bytes || 0) - Number(row?.retained_payload_bytes || 0)
+      )
     }
   }
 
@@ -12241,16 +12400,22 @@ export class PersonalMemoryStore {
       let beforeTokens: Record<string, string> = {}
       let afterTokens: Record<string, string> = {}
       let policies: any[] = []
+      let payload: Record<string, string> = {}
       try {
-        beforeTokens = JSON.parse(String(row.before_tokens_json || '{}'))
+        payload = readRecoveryPayload(row, [
+          'before_tokens_json', 'after_tokens_json', 'policies_json'
+        ])
+      } catch { failures.push('压缩载荷') }
+      try {
+        beforeTokens = JSON.parse(String(payload.before_tokens_json || '{}'))
         if (!beforeTokens || typeof beforeTokens !== 'object' || Array.isArray(beforeTokens)) throw new Error()
       } catch { failures.push('变更前游标身份') }
       try {
-        afterTokens = JSON.parse(String(row.after_tokens_json || '{}'))
+        afterTokens = JSON.parse(String(payload.after_tokens_json || '{}'))
         if (!afterTokens || typeof afterTokens !== 'object' || Array.isArray(afterTokens)) throw new Error()
       } catch { failures.push('变更后游标身份') }
       try {
-        policies = JSON.parse(String(row.policies_json || '[]'))
+        policies = JSON.parse(String(payload.policies_json || '[]'))
         if (!Array.isArray(policies)) throw new Error()
       } catch { failures.push('来源策略') }
       return {
@@ -12267,12 +12432,15 @@ export class PersonalMemoryStore {
     if (!this.db) throw new Error('个人记忆数据库尚未初始化')
     this.db.transaction(() => {
       const row = this.db!.prepare(`
-        SELECT status,policies_json FROM conversation_source_mutation_commits WHERE commit_id=?
+        SELECT * FROM conversation_source_mutation_commits WHERE commit_id=?
       `).get(String(commitId || '')) as any
       if (!row) throw new Error('找不到待提交的来源开关变更')
       if (row.status === 'committed') return
       if (row.status !== 'prepared') throw new Error('来源开关变更已被放弃')
-      const policies = JSON.parse(String(row.policies_json || '[]'))
+      const payload = readRecoveryPayload(row, [
+        'before_tokens_json', 'after_tokens_json', 'policies_json'
+      ])
+      const policies = JSON.parse(String(payload.policies_json || '[]'))
       if (!Array.isArray(policies) || !policies.length) throw new Error('来源开关恢复载荷无效')
       const statement = this.db!.prepare(`
         INSERT INTO conversation_policy(session_id,display_name,session_type,analysis_enabled,resume_policy,updated_at)
@@ -12297,7 +12465,8 @@ export class PersonalMemoryStore {
       this.db!.prepare(`
         UPDATE conversation_source_mutation_commits
         SET status='committed',applied_at=?,recovery_action='applied',last_error=NULL,
-          before_tokens_json='{}',after_tokens_json='{}',policies_json='[]'
+          before_tokens_json='{}',after_tokens_json='{}',policies_json='[]',
+          payload_blob=NULL,payload_codec='',payload_original_bytes=0
         WHERE commit_id=?
       `).run(now, commitId)
     })()
@@ -12308,18 +12477,22 @@ export class PersonalMemoryStore {
     this.db.prepare(`
       UPDATE conversation_source_mutation_commits
       SET status='abandoned',applied_at=?,recovery_action=?,last_error=NULL,
-        before_tokens_json='{}',after_tokens_json='{}',policies_json='[]'
+        before_tokens_json='{}',after_tokens_json='{}',policies_json='[]',
+        payload_blob=NULL,payload_codec='',payload_original_bytes=0
       WHERE commit_id=? AND status='prepared'
     `).run(new Date().toISOString(), String(recoveryAction || 'abandoned'), commitId)
   }
 
   recordConversationSourceMutationRecoveryFailure(commitId: string, error: unknown): void {
     if (!this.db) return
-    this.db.prepare(`
-      UPDATE conversation_source_mutation_commits
-      SET recovery_attempts=recovery_attempts+1,last_error=?
-      WHERE commit_id=? AND status='prepared'
-    `).run(String(error instanceof Error ? error.message : error || '').slice(0, 1000), commitId)
+    this.db.transaction(() => {
+      this.compactConversationSourceMutationPayload(commitId)
+      this.db!.prepare(`
+        UPDATE conversation_source_mutation_commits
+        SET recovery_attempts=recovery_attempts+1,last_error=?
+        WHERE commit_id=? AND status='prepared'
+      `).run(String(error instanceof Error ? error.message : error || '').slice(0, 1000), commitId)
+    })()
   }
 
   getConversationSourceMutationCommitHealth(): {
@@ -12329,9 +12502,14 @@ export class PersonalMemoryStore {
     abandoned: number
     recoveryFailures: number
     retainedPayloadBytes: number
+    compressedPayloads: number
+    originalPayloadBytes: number
+    reclaimedPayloadBytes: number
   } {
     if (!this.db) return {
-      prepared: 0, unattempted: 0, committed: 0, abandoned: 0, recoveryFailures: 0, retainedPayloadBytes: 0
+      prepared: 0, unattempted: 0, committed: 0, abandoned: 0, recoveryFailures: 0,
+      retainedPayloadBytes: 0, compressedPayloads: 0, originalPayloadBytes: 0,
+      reclaimedPayloadBytes: 0
     }
     const row = this.db.prepare(`
       SELECT
@@ -12340,10 +12518,15 @@ export class PersonalMemoryStore {
         SUM(CASE WHEN status='committed' THEN 1 ELSE 0 END) AS committed,
         SUM(CASE WHEN status='abandoned' THEN 1 ELSE 0 END) AS abandoned,
         SUM(CASE WHEN recovery_attempts>0 THEN 1 ELSE 0 END) AS recovery_failures,
+        SUM(CASE WHEN status='prepared' AND payload_codec!='' THEN 1 ELSE 0 END)
+          AS compressed_payloads,
+        SUM(CASE WHEN status='prepared' THEN payload_original_bytes ELSE 0 END)
+          AS original_payload_bytes,
         SUM(CASE WHEN status='prepared' THEN
           LENGTH(CAST(before_tokens_json AS BLOB))
           + LENGTH(CAST(after_tokens_json AS BLOB))
           + LENGTH(CAST(policies_json AS BLOB))
+          + COALESCE(LENGTH(payload_blob),0)
           ELSE 0 END) AS retained_payload_bytes
       FROM conversation_source_mutation_commits
     `).get() as any
@@ -12353,7 +12536,13 @@ export class PersonalMemoryStore {
       committed: Number(row?.committed || 0),
       abandoned: Number(row?.abandoned || 0),
       recoveryFailures: Number(row?.recovery_failures || 0),
-      retainedPayloadBytes: Number(row?.retained_payload_bytes || 0)
+      retainedPayloadBytes: Number(row?.retained_payload_bytes || 0),
+      compressedPayloads: Number(row?.compressed_payloads || 0),
+      originalPayloadBytes: Number(row?.original_payload_bytes || 0),
+      reclaimedPayloadBytes: Math.max(
+        0,
+        Number(row?.original_payload_bytes || 0) - Number(row?.retained_payload_bytes || 0)
+      )
     }
   }
 

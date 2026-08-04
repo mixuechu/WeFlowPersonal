@@ -3754,12 +3754,12 @@ export class AiAssistantService {
       taskMutationCommits: {
         ...personalMemoryStore.getTaskMutationCommitHealth(),
         startupRecovery: this.taskMutationRecovery,
-        policy: 'prepared_state_then_atomic_sql_v1'
+        policy: 'prepared_state_then_atomic_sql_with_compressed_failure_payload_v2'
       },
       conversationSourceMutationCommits: {
         ...personalMemoryStore.getConversationSourceMutationCommitHealth(),
         startupRecovery: this.conversationSourceMutationRecovery,
-        policy: 'prepared_state_then_atomic_sql_v1'
+        policy: 'prepared_state_then_atomic_sql_with_compressed_failure_payload_v2'
       },
       taskRevision: taskWorksetStats.revision,
       taskReminders: reminderResult.visible.slice(0, 32),
@@ -4748,12 +4748,12 @@ export class AiAssistantService {
       taskMutationCommits: {
         ...personalMemoryStore.getTaskMutationCommitHealth(),
         startupRecovery: this.taskMutationRecovery,
-        policy: 'prepared_state_then_atomic_sql_v1'
+        policy: 'prepared_state_then_atomic_sql_with_compressed_failure_payload_v2'
       },
       conversationSourceMutationCommits: {
         ...personalMemoryStore.getConversationSourceMutationCommitHealth(),
         startupRecovery: this.conversationSourceMutationRecovery,
-        policy: 'prepared_state_then_atomic_sql_v1'
+        policy: 'prepared_state_then_atomic_sql_with_compressed_failure_payload_v2'
       },
       ingestionSummary: {
         ...ingestionTotals,
