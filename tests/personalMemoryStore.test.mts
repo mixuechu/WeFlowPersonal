@@ -8120,9 +8120,9 @@ test('assistant history revision covers authoritative history and self-heals on 
     expectAdvanced()
 
     const initialHealth = first.getAssistantHistoryRevisionHealth()
-    assert.equal(initialHealth.version, 'assistant-history-revision-v3')
-    assert.equal(initialHealth.expectedTriggers, 24)
-    assert.equal(initialHealth.validTriggers, 24)
+    assert.equal(initialHealth.version, 'assistant-history-revision-v4')
+    assert.equal(initialHealth.expectedTriggers, 30)
+    assert.equal(initialHealth.validTriggers, 30)
     assert.equal(initialHealth.healthy, true)
     database.exec(`
       DROP TRIGGER trg_assistant_history_revision_assistant_messages_insert;
@@ -8130,15 +8130,15 @@ test('assistant history revision covers authoritative history and self-heals on 
       AFTER INSERT ON assistant_messages BEGIN SELECT 1; END;
     `)
     const driftedHealth = first.getAssistantHistoryRevisionHealth()
-    assert.equal(driftedHealth.installedTriggers, 24)
-    assert.equal(driftedHealth.validTriggers, 23)
+    assert.equal(driftedHealth.installedTriggers, 30)
+    assert.equal(driftedHealth.validTriggers, 29)
     assert.equal(driftedHealth.healthy, false)
     first.close()
 
     const reopened = new PersonalMemoryStore()
     reopened.initialize(databasePath)
     const repairedHealth = reopened.getAssistantHistoryRevisionHealth()
-    assert.equal(repairedHealth.validTriggers, 24)
+    assert.equal(repairedHealth.validTriggers, 30)
     assert.equal(repairedHealth.repairedTriggersThisStart, 1)
     assert.equal(repairedHealth.healthy, true)
     assert.equal(reopened.listAssistantConversationsPage({ limit: 20 }).total, 1)
@@ -8906,7 +8906,7 @@ test('assistant archive paginates years of conversations and complete long threa
   const stats = store.getAssistantArchiveStats()
   assert.deepEqual(Object.keys(stats).sort(), [
     'answerDependencies', 'citationStorage', 'evidenceRevisions', 'exchangeIntegrity',
-    'latestId', 'latestMessageCount', 'latestUpdatedAt', 'total'
+    'generalEvidenceRevisions', 'latestId', 'latestMessageCount', 'latestUpdatedAt', 'total'
   ])
   assert.deepEqual(Object.keys(stats.citationStorage).sort(), [
     'bytesReclaimed', 'citationsCompacted', 'completedAt', 'malformedPayloadsCleared',
@@ -9633,6 +9633,173 @@ test('structured evidence revision triggers self-heal across a SQLCipher reopen'
       'claim:claim-revision-ledger'
     ).evidenceAuthorityRevision
     assert.ok(repairedRevision > initialRevision)
+  } finally {
+    first.close()
+    reopened.close()
+    rmSync(directory, { recursive: true, force: true })
+  }
+})
+
+test('general evidence revisions invalidate answers and self-heal exact trigger drift', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'weflow-general-evidence-revision-'))
+  const databasePath = join(directory, 'memory.sqlite')
+  const first = new PersonalMemoryStore()
+  const reopened = new PersonalMemoryStore()
+  try {
+    first.initialize(databasePath)
+    const database = (first as any).db
+    const now = new Date().toISOString()
+    database.prepare(`
+      INSERT INTO search_documents(
+        id,document_type,source_id,title,search_text,metadata_json,content_hash,updated_at
+      ) VALUES(?,?,?,?,?,?,?,?)
+    `).run(
+      'resource:general-revision',
+      'resource',
+      'general-revision',
+      '通用证据修订',
+      '通用证据修订正文',
+      '{}',
+      'd'.repeat(64),
+      now
+    )
+    database.prepare(`
+      INSERT INTO search_document_evidence(
+        document_id,source_id,message_id,session_id,timestamp,sender,excerpt
+      ) VALUES(?,?,?,?,?,?,?)
+    `).run(
+      'resource:general-revision',
+      'documents',
+      'general-revision-message',
+      'data-source:documents:general-revision',
+      1,
+      '文档',
+      '第一版通用原文'
+    )
+    const resourceRevision = first.getSearchDocumentById(
+      'resource:general-revision'
+    ).evidenceAuthorityRevision
+    assert.ok(resourceRevision > 0)
+    const saved = first.saveAssistantExchangeDetailed(
+      '通用证据现在是什么？',
+      '当前由第一版通用原文支持。',
+      [{
+        documentId: 'resource:general-revision',
+        sourceId: 'general-revision',
+        type: 'resource',
+        title: '通用证据修订',
+        contentHash: 'd'.repeat(64),
+        evidenceAuthorityRevision: resourceRevision
+      }],
+      undefined,
+      {
+        version: 'statement-citations-v1',
+        proposedStatements: 1,
+        acceptedStatements: 1,
+        rejectedStatements: 0,
+        acceptedCitationIds: 1,
+        statementCitations: [['resource:general-revision']]
+      }
+    )
+    assert.equal(first.listAssistantAnswerReviewsPage({
+      status: 'current',
+      reviewState: 'all',
+      messageId: saved.answerMessageId,
+      limit: 10
+    }).total, 1)
+    database.prepare(`
+      UPDATE search_document_evidence SET excerpt='第二版通用原文'
+      WHERE document_id='resource:general-revision'
+        AND message_id='general-revision-message'
+    `).run()
+    assert.ok(first.getSearchDocumentById(
+      'resource:general-revision'
+    ).evidenceAuthorityRevision > resourceRevision)
+    const invalid = first.listAssistantAnswerReviewsPage({
+      status: 'invalid',
+      reviewState: 'all',
+      invalidReason: 'evidence_changed',
+      messageId: saved.answerMessageId,
+      limit: 10
+    })
+    assert.equal(invalid.total, 1)
+    assert.equal(invalid.items[0].evidence_changed_statements, 1)
+
+    first.syncGraph({
+      entities: [{
+        id: 'person-general-revision',
+        type: 'person',
+        canonicalName: '身份原文修订对象',
+        aliases: [],
+        accountIds: ['wxid-general-revision'],
+        trustStatus: 'confirmed'
+      }],
+      relations: [],
+      reviewQueue: []
+    })
+    database.prepare(`
+      INSERT INTO entity_evidence(
+        entity_id,source_id,message_id,session_id,timestamp,sender,excerpt,evidence_kind
+      ) VALUES(?,?,?,?,?,?,?,?)
+    `).run(
+      'person-general-revision',
+      'wechat',
+      'entity-general-revision-message',
+      'entity-general-revision-session',
+      2,
+      '身份原文修订对象',
+      '第一版身份原文',
+      'identity'
+    )
+    const entityRevision = first.getSearchDocumentById(
+      'entity:person-general-revision'
+    ).evidenceAuthorityRevision
+    assert.ok(entityRevision > 0)
+    database.prepare(`
+      UPDATE entity_evidence SET excerpt='第二版身份原文'
+      WHERE entity_id='person-general-revision'
+    `).run()
+    assert.ok(first.getSearchDocumentById(
+      'entity:person-general-revision'
+    ).evidenceAuthorityRevision > entityRevision)
+
+    const initialHealth = first.getGeneralEvidenceRevisionHealth()
+    assert.equal(initialHealth.rows, 2)
+    assert.equal(initialHealth.triggers, 6)
+    assert.equal(initialHealth.validTriggers, 6)
+    assert.equal(initialHealth.healthy, true)
+    database.exec(`
+      DROP TRIGGER general_evidence_revision_search_update;
+      CREATE TRIGGER general_evidence_revision_search_update
+      AFTER UPDATE ON search_document_evidence BEGIN SELECT 1; END;
+      DROP TRIGGER general_evidence_revision_entity_delete;
+      CREATE TRIGGER general_evidence_revision_unexpected
+      AFTER INSERT ON entity_evidence BEGIN SELECT 1; END;
+    `)
+    const driftedHealth = first.getGeneralEvidenceRevisionHealth()
+    assert.equal(driftedHealth.healthy, false)
+    assert.equal(driftedHealth.validTriggers, 4)
+    assert.deepEqual(driftedHealth.unhealthyTriggers, [
+      'general_evidence_revision_entity_delete',
+      'general_evidence_revision_search_update'
+    ])
+    assert.deepEqual(driftedHealth.unexpectedTriggers, [
+      'general_evidence_revision_unexpected'
+    ])
+    first.close()
+
+    reopened.initialize(databasePath)
+    const repairedHealth = reopened.getGeneralEvidenceRevisionHealth()
+    assert.equal(repairedHealth.triggers, 6)
+    assert.equal(repairedHealth.validTriggers, 6)
+    assert.equal(repairedHealth.healthy, true)
+    assert.equal(repairedHealth.repairedThisStart, true)
+    assert.equal(repairedHealth.repairedTriggersThisStart, 3)
+    assert.deepEqual(repairedHealth.repairedTriggerNames, [
+      'general_evidence_revision_entity_delete',
+      'general_evidence_revision_search_update',
+      'general_evidence_revision_unexpected'
+    ])
   } finally {
     first.close()
     reopened.close()

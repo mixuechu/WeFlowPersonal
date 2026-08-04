@@ -4014,9 +4014,10 @@ export class AiAssistantService {
         exchangeIntegrity: assistantArchiveStats.exchangeIntegrity,
         answerDependencies: {
           ...assistantArchiveStats.answerDependencies,
-          policy: 'statement_dependency_index_v2'
+          policy: 'statement_dependency_index_v3'
         },
-        evidenceRevisions: assistantArchiveStats.evidenceRevisions
+        evidenceRevisions: assistantArchiveStats.evidenceRevisions,
+        generalEvidenceRevisions: assistantArchiveStats.generalEvidenceRevisions
       },
       qualityBaseline: evaluateTaskAssignmentPolicy(),
       weeklyBriefing: buildWeeklyBriefing(this.state.briefings, tasks),

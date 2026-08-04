@@ -7965,6 +7965,17 @@ function AiAssistantPage() {
                   `${dashboard.assistantArchive.evidenceRevisions.repairedThisStart
                     ? `；本次启动已修复 ${Number(dashboard.assistantArchive.evidenceRevisions.repairedTriggersThisStart || 0)} 个`
                     : ''}。`}
+                {dashboard?.assistantArchive?.generalEvidenceRevisions &&
+                  ` 待办、资源与身份原文修订账本 ` +
+                  `${Number(dashboard.assistantArchive.generalEvidenceRevisions.rows || 0).toLocaleString()} 项，` +
+                  `${Number(dashboard.assistantArchive.generalEvidenceRevisions.validTriggers || 0)}/` +
+                  `${Number(dashboard.assistantArchive.generalEvidenceRevisions.expectedTriggers || 6)} 个触发器定义有效` +
+                  `${dashboard.assistantArchive.generalEvidenceRevisions.healthy ? '' :
+                    `，发现 ${Number(dashboard.assistantArchive.generalEvidenceRevisions.unhealthyTriggers?.length || 0) +
+                    Number(dashboard.assistantArchive.generalEvidenceRevisions.unexpectedTriggers?.length || 0)} 个定义异常`}` +
+                  `${dashboard.assistantArchive.generalEvidenceRevisions.repairedThisStart
+                    ? `；本次启动已修复 ${Number(dashboard.assistantArchive.generalEvidenceRevisions.repairedTriggersThisStart || 0)} 个`
+                    : ''}。`}
               </small>}
               {assistantConversations.map(conversation => <button
                 className={memoryConversationId === conversation.id ? 'active' : ''}

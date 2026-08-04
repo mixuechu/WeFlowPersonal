@@ -684,6 +684,12 @@ export class PersonalMemoryStore {
         PRIMARY KEY(document_type,source_id)
       ) STRICT;
 
+      CREATE TABLE IF NOT EXISTS general_evidence_revisions (
+        document_id TEXT PRIMARY KEY,
+        revision INTEGER NOT NULL DEFAULT 1,
+        updated_at TEXT NOT NULL
+      ) STRICT;
+
       CREATE TABLE IF NOT EXISTS assistant_answer_review_decisions (
         id INTEGER PRIMARY KEY,
         message_id TEXT NOT NULL REFERENCES assistant_messages(id) ON DELETE CASCADE,
@@ -1044,6 +1050,7 @@ export class PersonalMemoryStore {
     this.ensureCrossStoreRecoveryRevisionTriggers()
     this.ensureAssistantHistoryRevisionTriggers()
     this.ensureStructuredEvidenceRevisionLedger()
+    this.ensureGeneralEvidenceRevisionLedger()
     this.ensureResourceArchiveRevisionTriggers()
     this.repairStructuredSearchIndex()
     this.backfillMergeHistoryNames()
@@ -2211,8 +2218,10 @@ export class PersonalMemoryStore {
       'assistant_answer_review_decisions',
       'search_documents',
       'search_document_evidence',
+      'entity_evidence',
       'evidence',
-      'structured_evidence_revisions'
+      'structured_evidence_revisions',
+      'general_evidence_revisions'
     ]
   }
 
@@ -2221,7 +2230,7 @@ export class PersonalMemoryStore {
       prefix: 'assistant_history_revision',
       revisionKey: 'assistant_history_revision',
       tables: this.assistantHistoryRevisionTables(),
-      version: 'assistant-history-revision-v3'
+      version: 'assistant-history-revision-v4'
     })
   }
 
@@ -2237,7 +2246,7 @@ export class PersonalMemoryStore {
       prefix: 'assistant_history_revision',
       revisionKey: 'assistant_history_revision',
       tables: this.assistantHistoryRevisionTables(),
-      version: 'assistant-history-revision-v3',
+      version: 'assistant-history-revision-v4',
       revision: this.getAssistantHistoryRevision()
     })
   }
@@ -2485,6 +2494,196 @@ export class PersonalMemoryStore {
       repairedTriggersThisStart: Math.max(
         0,
         Number(manifest.repairedTriggersThisStart || 0)
+      ),
+      repairedTriggerNames: Array.isArray(manifest.repairedTriggerNames)
+        ? manifest.repairedTriggerNames.map(String)
+        : [],
+      completedAt: String(manifest.completedAt || '')
+    }
+  }
+
+  private ensureGeneralEvidenceRevisionLedger(): void {
+    if (!this.db) return
+    const manifestKey = 'general_evidence_revision_trigger_manifest_v1'
+    const expectedTriggerNames = [
+      'general_evidence_revision_entity_delete',
+      'general_evidence_revision_entity_insert',
+      'general_evidence_revision_entity_update',
+      'general_evidence_revision_search_delete',
+      'general_evidence_revision_search_insert',
+      'general_evidence_revision_search_update'
+    ]
+    const fingerprint = (value: unknown) => createHash('sha256')
+      .update(String(value || '').trim().replace(/;+\s*$/, ''))
+      .digest('hex')
+    let previousManifest: any = {}
+    try {
+      previousManifest = JSON.parse(String((this.db.prepare(`
+        SELECT value FROM schema_meta WHERE key=?
+      `).get(manifestKey) as any)?.value || '{}'))
+    } catch {}
+    const previousDefinitions = previousManifest?.definitions
+      && typeof previousManifest.definitions === 'object'
+      ? previousManifest.definitions as Record<string, string>
+      : {}
+    const beforeRows = this.db.prepare(`
+      SELECT name,sql FROM sqlite_master
+      WHERE type='trigger' AND name LIKE 'general_evidence_revision_%'
+      ORDER BY name
+    `).all() as Array<{ name: string; sql: string }>
+    const beforeByName = new Map(beforeRows.map(row => [row.name, row.sql]))
+    const unhealthyBefore = Object.entries(previousDefinitions).flatMap(([name, hash]) => {
+      const sql = beforeByName.get(name)
+      return !sql || fingerprint(sql) !== hash ? [name] : []
+    })
+    const unexpectedBefore = beforeRows.map(row => row.name)
+      .filter(name => !expectedTriggerNames.includes(name))
+    const now = new Date().toISOString()
+    this.db.transaction(() => {
+      for (const name of unexpectedBefore) {
+        if (/^general_evidence_revision_[a-z0-9_]+$/.test(name)) {
+          this.db!.exec(`DROP TRIGGER IF EXISTS "${name}"`)
+        }
+      }
+      this.db!.prepare(`
+        INSERT OR IGNORE INTO general_evidence_revisions(document_id,revision,updated_at)
+        SELECT document_id,1,? FROM search_document_evidence GROUP BY document_id
+      `).run(now)
+      this.db!.prepare(`
+        INSERT OR IGNORE INTO general_evidence_revisions(document_id,revision,updated_at)
+        SELECT 'entity:' || entity_id,1,? FROM entity_evidence GROUP BY entity_id
+      `).run(now)
+      this.db!.exec(`
+        DROP TRIGGER IF EXISTS general_evidence_revision_search_insert;
+        DROP TRIGGER IF EXISTS general_evidence_revision_search_update;
+        DROP TRIGGER IF EXISTS general_evidence_revision_search_delete;
+        DROP TRIGGER IF EXISTS general_evidence_revision_entity_insert;
+        DROP TRIGGER IF EXISTS general_evidence_revision_entity_update;
+        DROP TRIGGER IF EXISTS general_evidence_revision_entity_delete;
+
+        CREATE TRIGGER general_evidence_revision_search_insert
+        AFTER INSERT ON search_document_evidence BEGIN
+          INSERT INTO general_evidence_revisions(document_id,revision,updated_at)
+          VALUES(NEW.document_id,1,strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+          ON CONFLICT(document_id) DO UPDATE SET
+            revision=general_evidence_revisions.revision+1,updated_at=excluded.updated_at;
+        END;
+        CREATE TRIGGER general_evidence_revision_search_update
+        AFTER UPDATE ON search_document_evidence BEGIN
+          INSERT INTO general_evidence_revisions(document_id,revision,updated_at)
+          VALUES(OLD.document_id,1,strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+          ON CONFLICT(document_id) DO UPDATE SET
+            revision=general_evidence_revisions.revision+1,updated_at=excluded.updated_at;
+          INSERT INTO general_evidence_revisions(document_id,revision,updated_at)
+          VALUES(NEW.document_id,1,strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+          ON CONFLICT(document_id) DO UPDATE SET
+            revision=general_evidence_revisions.revision+1,updated_at=excluded.updated_at;
+        END;
+        CREATE TRIGGER general_evidence_revision_search_delete
+        AFTER DELETE ON search_document_evidence BEGIN
+          INSERT INTO general_evidence_revisions(document_id,revision,updated_at)
+          VALUES(OLD.document_id,1,strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+          ON CONFLICT(document_id) DO UPDATE SET
+            revision=general_evidence_revisions.revision+1,updated_at=excluded.updated_at;
+        END;
+        CREATE TRIGGER general_evidence_revision_entity_insert
+        AFTER INSERT ON entity_evidence BEGIN
+          INSERT INTO general_evidence_revisions(document_id,revision,updated_at)
+          VALUES('entity:' || NEW.entity_id,1,strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+          ON CONFLICT(document_id) DO UPDATE SET
+            revision=general_evidence_revisions.revision+1,updated_at=excluded.updated_at;
+        END;
+        CREATE TRIGGER general_evidence_revision_entity_update
+        AFTER UPDATE ON entity_evidence BEGIN
+          INSERT INTO general_evidence_revisions(document_id,revision,updated_at)
+          VALUES('entity:' || OLD.entity_id,1,strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+          ON CONFLICT(document_id) DO UPDATE SET
+            revision=general_evidence_revisions.revision+1,updated_at=excluded.updated_at;
+          INSERT INTO general_evidence_revisions(document_id,revision,updated_at)
+          VALUES('entity:' || NEW.entity_id,1,strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+          ON CONFLICT(document_id) DO UPDATE SET
+            revision=general_evidence_revisions.revision+1,updated_at=excluded.updated_at;
+        END;
+        CREATE TRIGGER general_evidence_revision_entity_delete
+        AFTER DELETE ON entity_evidence BEGIN
+          INSERT INTO general_evidence_revisions(document_id,revision,updated_at)
+          VALUES('entity:' || OLD.entity_id,1,strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+          ON CONFLICT(document_id) DO UPDATE SET
+            revision=general_evidence_revisions.revision+1,updated_at=excluded.updated_at;
+        END;
+      `)
+      const installed = this.db!.prepare(`
+        SELECT name,sql FROM sqlite_master
+        WHERE type='trigger' AND name LIKE 'general_evidence_revision_%'
+        ORDER BY name
+      `).all() as Array<{ name: string; sql: string }>
+      const definitions = Object.fromEntries(installed.map(row => [
+        row.name, fingerprint(row.sql)
+      ]))
+      const completedAt = new Date().toISOString()
+      this.db!.prepare(`
+        INSERT INTO schema_meta(key,value,updated_at) VALUES(?,?,?)
+        ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_at=excluded.updated_at
+      `).run(manifestKey, JSON.stringify({
+        version: 1,
+        definitions,
+        repairedThisStart: Boolean(Object.keys(previousDefinitions).length
+          && (unhealthyBefore.length || unexpectedBefore.length)),
+        repairedTriggersThisStart: unhealthyBefore.length + unexpectedBefore.length,
+        repairedTriggerNames: [...new Set([...unhealthyBefore, ...unexpectedBefore])].sort(),
+        completedAt
+      }), completedAt)
+    })()
+  }
+
+  getGeneralEvidenceRevisionHealth(): any {
+    if (!this.db) return {
+      version: 1, rows: 0, triggers: 0, expectedTriggers: 6, validTriggers: 0,
+      healthy: false, unhealthyTriggers: [], unexpectedTriggers: []
+    }
+    let manifest: any = {}
+    try {
+      manifest = JSON.parse(String((this.db.prepare(`
+        SELECT value FROM schema_meta
+        WHERE key='general_evidence_revision_trigger_manifest_v1'
+      `).get() as any)?.value || '{}'))
+    } catch {}
+    const definitions = manifest?.definitions && typeof manifest.definitions === 'object'
+      ? manifest.definitions as Record<string, string>
+      : {}
+    const installed = this.db.prepare(`
+      SELECT name,sql FROM sqlite_master
+      WHERE type='trigger' AND name LIKE 'general_evidence_revision_%'
+      ORDER BY name
+    `).all() as Array<{ name: string; sql: string }>
+    const installedByName = new Map(installed.map(row => [row.name, row.sql]))
+    const fingerprint = (value: unknown) => createHash('sha256')
+      .update(String(value || '').trim().replace(/;+\s*$/, ''))
+      .digest('hex')
+    const unhealthyTriggers = Object.entries(definitions).flatMap(([name, hash]) => {
+      const sql = installedByName.get(name)
+      return !sql || fingerprint(sql) !== hash ? [name] : []
+    })
+    const unexpectedTriggers = installed.map(row => row.name)
+      .filter(name => !(name in definitions))
+    const expectedTriggers = Object.keys(definitions).length || 6
+    const validTriggers = Math.max(0, expectedTriggers - unhealthyTriggers.length)
+    const rows = Number((this.db.prepare(`
+      SELECT COUNT(*) AS count FROM general_evidence_revisions
+    `).get() as any)?.count || 0)
+    return {
+      version: 1,
+      rows,
+      triggers: installed.length,
+      expectedTriggers,
+      validTriggers,
+      healthy: Boolean(Object.keys(definitions).length
+        && validTriggers === expectedTriggers && !unexpectedTriggers.length),
+      unhealthyTriggers,
+      unexpectedTriggers,
+      repairedThisStart: Boolean(manifest.repairedThisStart),
+      repairedTriggersThisStart: Math.max(
+        0, Number(manifest.repairedTriggersThisStart || 0)
       ),
       repairedTriggerNames: Array.isArray(manifest.repairedTriggerNames)
         ? manifest.repairedTriggerNames.map(String)
@@ -12395,6 +12594,9 @@ export class PersonalMemoryStore {
             ? 'document_time'
             : 'evidence_time'
         }
+    const evidenceScopeRestricted = Boolean(
+      sourceIds.length || sessions.length || restrictEvidenceByDate
+    )
     const evidenceScope = (
       alias: string
     ): { sql: string; parameters: Array<string | number> } => {
@@ -12433,12 +12635,24 @@ export class PersonalMemoryStore {
           WHERE history.reverted_at IS NULL
         )
       `
+      const evidenceAuthorityRevision = evidenceScopeRestricted
+        ? 0
+        : Math.max(0, Number((this.db.prepare(`
+            ${entityScopeCte}
+            SELECT COALESCE(SUM(revision),0) AS revision
+            FROM general_evidence_revisions
+            WHERE document_id IN (
+              SELECT 'entity:' || entity_id FROM entity_scope
+            )
+          `).get(sourceId) as any)?.revision || 0))
       const evidenceTotal = Number((this.db.prepare(`
         ${entityScopeCte}
         SELECT COUNT(*) AS count FROM entity_evidence ee
         WHERE ee.entity_id IN (SELECT entity_id FROM entity_scope)${directScope.sql}
       `).get(sourceId, ...directScope.parameters) as any)?.count || 0)
-      if (!evidenceTotal) return { evidence: [], evidenceTotal: 0, ...timeScope }
+      if (!evidenceTotal) return {
+        evidence: [], evidenceTotal: 0, evidenceAuthorityRevision, ...timeScope
+      }
       const evidence = (this.db.prepare(`
         ${entityScopeCte}
         SELECT ee.source_id,ee.message_id,ee.session_id,ee.timestamp,ee.sender,ee.excerpt,
@@ -12448,7 +12662,7 @@ export class PersonalMemoryStore {
         ORDER BY ee.timestamp DESC,ee.source_id DESC,ee.session_id DESC,ee.message_id DESC
         LIMIT ?
       `).all(sourceId, ...directScope.parameters, MEMORY_CARD_EVIDENCE_LIMIT) as any[]).reverse()
-      return { evidence, evidenceTotal, ...timeScope }
+      return { evidence, evidenceTotal, evidenceAuthorityRevision, ...timeScope }
     }
     const genericScope = evidenceScope('sde')
     const genericTotal = Number((this.db.prepare(`
@@ -12456,6 +12670,10 @@ export class PersonalMemoryStore {
       WHERE sde.document_id=?${genericScope.sql}
     `).get(documentId, ...genericScope.parameters) as any)?.count || 0)
     if (genericTotal) {
+      const evidenceAuthorityRevision = evidenceScopeRestricted
+        ? 0 : Math.max(0, Number((this.db.prepare(`
+        SELECT revision FROM general_evidence_revisions WHERE document_id=?
+      `).get(documentId) as any)?.revision || 0))
       const evidence = (this.db.prepare(`
         SELECT sde.source_id,sde.message_id,sde.session_id,sde.timestamp,sde.sender,sde.excerpt
         FROM search_document_evidence sde
@@ -12463,7 +12681,12 @@ export class PersonalMemoryStore {
         ORDER BY sde.timestamp DESC,sde.message_id DESC
         LIMIT ?
       `).all(documentId, ...genericScope.parameters, MEMORY_CARD_EVIDENCE_LIMIT) as any[]).reverse()
-      return { evidence, evidenceTotal: genericTotal, ...timeScope }
+      return {
+        evidence,
+        evidenceTotal: genericTotal,
+        evidenceAuthorityRevision,
+        ...timeScope
+      }
     }
     const foreignKey = documentType === 'claim'
       ? 'claim_id'
@@ -12474,9 +12697,6 @@ export class PersonalMemoryStore {
           : ''
     if (!foreignKey) return { evidence: [], evidenceTotal: 0, ...timeScope }
     const structuredScope = evidenceScope('e')
-    const evidenceScopeRestricted = Boolean(
-      sourceIds.length || sessions.length || restrictEvidenceByDate
-    )
     const evidenceAuthorityRevision = evidenceScopeRestricted
       ? 0
       : Math.max(0, Number((this.db.prepare(`
@@ -13354,8 +13574,14 @@ export class PersonalMemoryStore {
         AND d.evidence_contradiction_count=${currentContradictionCount}
       ))`
     const evidenceAuthorityCurrent = `(d.evidence_authority_revision=0
-      OR s.document_type NOT IN ('claim','relation','event')
-      OR d.evidence_authority_revision=COALESCE(ser.revision,0))`
+      OR (
+        s.document_type IN ('claim','relation','event')
+        AND d.evidence_authority_revision=COALESCE(ser.revision,0)
+      )
+      OR (
+        s.document_type NOT IN ('claim','relation','event')
+        AND d.evidence_authority_revision=COALESCE(ger.revision,0)
+      ))`
     const revalidationCte = `
       WITH structured_evidence_counts AS (
         SELECT 'claim' AS document_type,claim_id AS source_id,
@@ -13398,6 +13624,7 @@ export class PersonalMemoryStore {
           ON sec.document_type=s.document_type AND sec.source_id=s.source_id
         LEFT JOIN structured_evidence_revisions ser
           ON ser.document_type=s.document_type AND ser.source_id=s.source_id
+        LEFT JOIN general_evidence_revisions ger ON ger.document_id=s.id
       ),
       statement_state AS (
         SELECT conversation_id,message_id,statement_index,
@@ -13604,8 +13831,14 @@ export class PersonalMemoryStore {
         AND d.evidence_contradiction_count=${currentContradictionCount}
       ))`
     const evidenceAuthorityCurrent = `(d.evidence_authority_revision=0
-      OR s.document_type NOT IN ('claim','relation','event')
-      OR d.evidence_authority_revision=COALESCE(ser.revision,0))`
+      OR (
+        s.document_type IN ('claim','relation','event')
+        AND d.evidence_authority_revision=COALESCE(ser.revision,0)
+      )
+      OR (
+        s.document_type NOT IN ('claim','relation','event')
+        AND d.evidence_authority_revision=COALESCE(ger.revision,0)
+      ))`
     const revalidationCte = `
       WITH structured_evidence_counts AS (
         SELECT 'claim' AS document_type,claim_id AS source_id,
@@ -13655,7 +13888,7 @@ export class PersonalMemoryStore {
                 ${currentSupportingCount},
                 ${currentContradictionCount},
                 COALESCE(ser.revision,0))
-              ELSE 'not-structured' END,
+              ELSE printf('general:%d',COALESCE(ger.revision,0)) END,
             CASE WHEN s.id IS NULL THEN ''
               WHEN EXISTS(SELECT 1 FROM search_document_evidence sde WHERE sde.document_id=s.id)
                 OR EXISTS(
@@ -13672,6 +13905,7 @@ export class PersonalMemoryStore {
           ON sec.document_type=s.document_type AND sec.source_id=s.source_id
         LEFT JOIN structured_evidence_revisions ser
           ON ser.document_type=s.document_type AND ser.source_id=s.source_id
+        LEFT JOIN general_evidence_revisions ger ON ger.document_id=s.id
       ),
       statement_state AS (
         SELECT d.conversation_id,d.message_id,d.statement_index,
@@ -14037,6 +14271,7 @@ export class PersonalMemoryStore {
     exchangeIntegrity: any
     answerDependencies: any
     evidenceRevisions: any
+    generalEvidenceRevisions: any
   } {
     if (!this.db) return {
       total: 0,
@@ -14046,7 +14281,8 @@ export class PersonalMemoryStore {
       citationStorage: this.getAssistantCitationStorageStats(),
       exchangeIntegrity: this.getAssistantExchangeIntegrityStats(),
       answerDependencies: this.getAssistantAnswerDependencyStats(),
-      evidenceRevisions: this.getStructuredEvidenceRevisionHealth()
+      evidenceRevisions: this.getStructuredEvidenceRevisionHealth(),
+      generalEvidenceRevisions: this.getGeneralEvidenceRevisionHealth()
     }
     const total = Number((this.db.prepare(`
       SELECT COUNT(*) AS count FROM assistant_conversations
@@ -14066,7 +14302,8 @@ export class PersonalMemoryStore {
       citationStorage: this.getAssistantCitationStorageStats(),
       exchangeIntegrity: this.getAssistantExchangeIntegrityStats(),
       answerDependencies: this.getAssistantAnswerDependencyStats(),
-      evidenceRevisions: this.getStructuredEvidenceRevisionHealth()
+      evidenceRevisions: this.getStructuredEvidenceRevisionHealth(),
+      generalEvidenceRevisions: this.getGeneralEvidenceRevisionHealth()
     }
   }
 
