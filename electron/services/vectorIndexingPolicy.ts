@@ -82,6 +82,7 @@ export async function runVectorIndexPass<T extends { id: string; content_hash?: 
   listCandidates: (limit: number) => T[]
   embed: (documents: T[]) => Promise<unknown>
   commit: (document: T, vector: number[]) => boolean
+  commitBatch?: (items: Array<{ document: T; vector: number[] }>) => number
 }): Promise<{ indexed: number; batches: number; drained: boolean }> {
   const maxBatches = Number.isFinite(input.maxBatches)
     ? Math.max(1, Math.floor(Number(input.maxBatches)))
@@ -97,10 +98,16 @@ export async function runVectorIndexPass<T extends { id: string; content_hash?: 
     if (!validation.valid) {
       throw new Error('本地向量模型返回了数量、维度、数值或范数异常的批次，已停止补建且未写入该批')
     }
-    let committed = 0
-    documents.forEach((document, index) => {
-      if (input.commit(document, (vectors as number[][])[index])) committed += 1
-    })
+    const batch = documents.map((document, index) => ({
+      document,
+      vector: (vectors as number[][])[index]
+    }))
+    const committed = input.commitBatch
+      ? Math.max(0, Math.floor(Number(input.commitBatch(batch)) || 0))
+      : batch.reduce((count, item) => count + (input.commit(item.document, item.vector) ? 1 : 0), 0)
+    if (committed > documents.length) {
+      throw new Error('向量补建批次提交数量异常，已停止补建')
+    }
     if (committed === 0) {
       throw new Error('向量补建期间文档持续变化，本批没有可安全提交的结果，稍后将重新尝试')
     }

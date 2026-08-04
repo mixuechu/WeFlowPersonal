@@ -7345,6 +7345,35 @@ test('bounded vector indexing rejects a malformed batch before any partial commi
   assert.equal(commits, 0)
 })
 
+test('bounded vector indexing delegates a validated model batch to one atomic commit', async () => {
+  let individualCommits = 0
+  let batchCommits = 0
+  const result = await runVectorIndexPass({
+    maxBatches: 1,
+    batchSize: 2,
+    listCandidates: () => [
+      { id: 'atomic-vector-one', content_hash: 'hash-one' },
+      { id: 'atomic-vector-two', content_hash: 'hash-two' }
+    ],
+    embed: async () => [[1, 0], [0, 1]],
+    commit: () => {
+      individualCommits += 1
+      return true
+    },
+    commitBatch: items => {
+      batchCommits += 1
+      assert.deepEqual(items.map(item => item.document.id), [
+        'atomic-vector-one',
+        'atomic-vector-two'
+      ])
+      return items.length
+    }
+  })
+  assert.deepEqual(result, { indexed: 2, batches: 1, drained: false })
+  assert.equal(batchCommits, 1)
+  assert.equal(individualCommits, 0)
+})
+
 test('bounded vector indexing exits on zero progress instead of spinning forever', async () => {
   let listCalls = 0
   await assert.rejects(() => runVectorIndexPass({
@@ -7709,6 +7738,70 @@ test('embedding commit is bound to the exact document content hash', () => withS
   ), true)
   assert.equal(store.getEmbeddingStats(model).indexed, 1)
   assert.equal(store.searchVector([1, 0], model)[0]?.search_text.includes('新正文'), true)
+}))
+
+test('embedding model batches roll every vector back when a later SQL write fails', () => withStore(store => {
+  const model = 'test-atomic-vector-batch:2d'
+  const tasks = ['one', 'two'].map(suffix => ({
+    id: `atomic-vector-task-${suffix}`,
+    title: `原子向量 ${suffix}`,
+    detail: `批次正文 ${suffix}`,
+    priority: 'medium',
+    status: 'todo',
+    classification: 'mine'
+  }))
+  store.syncTasks(tasks)
+  const candidates = store.listEmbeddingCandidates(model, 10)
+    .filter(item => String(item.id).startsWith('task:atomic-vector-task-'))
+    .sort((left, right) => String(left.id).localeCompare(String(right.id)))
+  assert.equal(candidates.length, 2)
+  ;(store as any).db.exec(`
+    CREATE TEMP TRIGGER fail_second_atomic_vector
+    BEFORE UPDATE ON search_documents
+    WHEN NEW.id='task:atomic-vector-task-two'
+    BEGIN
+      SELECT RAISE(ABORT, 'injected vector batch failure');
+    END;
+  `)
+  assert.throws(() => store.saveEmbeddingBatch(candidates.map((item, index) => ({
+    id: item.id,
+    model,
+    vector: index ? [0, 1] : [1, 0],
+    expectedContentHash: item.content_hash
+  }))), /injected vector batch failure/)
+  assert.equal(store.getEmbeddingStats(model).indexed, 0)
+  assert.equal(store.getEmbeddingStats(model).pending, 2)
+  ;(store as any).db.exec('DROP TRIGGER fail_second_atomic_vector')
+}))
+
+test('embedding model batches commit current documents and leave stale versions pending', () => withStore(store => {
+  const model = 'test-partial-stale-vector-batch:2d'
+  const tasks = ['current', 'stale'].map(suffix => ({
+    id: `versioned-vector-task-${suffix}`,
+    title: `版本向量 ${suffix}`,
+    detail: `原始正文 ${suffix}`,
+    priority: 'medium',
+    status: 'todo',
+    classification: 'mine'
+  }))
+  store.syncTasks(tasks)
+  const candidates = store.listEmbeddingCandidates(model, 10)
+    .filter(item => String(item.id).startsWith('task:versioned-vector-task-'))
+  const stale = candidates.find(item => item.id.endsWith('-stale'))
+  assert.ok(stale)
+  store.syncTasks(tasks.map(task => task.id.endsWith('-stale')
+    ? { ...task, detail: '生成向量期间已经变化' }
+    : task))
+
+  assert.equal(store.saveEmbeddingBatch(candidates.map((item, index) => ({
+    id: item.id,
+    model,
+    vector: index ? [0, 1] : [1, 0],
+    expectedContentHash: item.content_hash
+  }))), 1)
+  assert.equal(store.getEmbeddingStats(model).indexed, 1)
+  assert.equal(store.getEmbeddingStats(model).pending, 1)
+  assert.equal(store.listEmbeddingCandidates(model).some(item => item.id === stale.id), true)
 }))
 
 test('local ANN index is deterministic, persistent, invalidated safely and falls back to exact search', () => {

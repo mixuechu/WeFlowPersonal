@@ -7529,7 +7529,13 @@ export class AiAssistantService {
           localEmbeddingService.modelVersion,
           vector,
           String(item.content_hash || '')
-        )
+        ),
+        commitBatch: items => personalMemoryStore.saveEmbeddingBatch(items.map(({ document, vector }) => ({
+          id: document.id,
+          model: localEmbeddingService.modelVersion,
+          vector,
+          expectedContentHash: String(document.content_hash || '')
+        })))
       })
       const stats = personalMemoryStore.getEmbeddingStats(localEmbeddingService.modelVersion)
       const ann = pass.drained

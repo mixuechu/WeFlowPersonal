@@ -12515,6 +12515,46 @@ export class PersonalMemoryStore {
     return Number(result.changes || 0) === 1
   }
 
+  saveEmbeddingBatch(items: Array<{
+    id: string
+    model: string
+    vector: number[]
+    expectedContentHash?: string
+  }>): number {
+    if (!this.db || !Array.isArray(items) || !items.length) return 0
+    const normalized = items.map(item => ({
+      id: String(item.id || ''),
+      model: String(item.model || ''),
+      vector: Array.isArray(item.vector) ? [...item.vector] : [],
+      expectedContentHash: String(item.expectedContentHash || '')
+    }))
+    const validation = validateEmbeddingBatch(
+      normalized.map(item => item.vector),
+      normalized.length
+    )
+    const identities = new Set(normalized.map(item => `${item.id}\u0000${item.expectedContentHash}`))
+    if (normalized.some(item =>
+      !item.id || !item.model || !item.expectedContentHash)
+      || !validation.valid
+      || identities.size !== normalized.length) {
+      throw new Error('向量批次包含无效身份、内容版本或向量，未写入任何结果')
+    }
+    const update = this.db.prepare(`
+      UPDATE search_documents SET embedding_model=?,embedding_dimensions=?,embedding_json=?
+      WHERE id=? AND content_hash=?
+    `)
+    return this.db.transaction(() => normalized.reduce((count, item) => {
+      const result = update.run(
+        item.model,
+        item.vector.length,
+        JSON.stringify(item.vector),
+        item.id,
+        item.expectedContentHash
+      )
+      return count + (Number(result.changes || 0) === 1 ? 1 : 0)
+    }, 0))()
+  }
+
   invalidateEmbeddingDimensionMismatches(model: string, expectedDimensions: number): number {
     if (!this.db || !model || !Number.isInteger(expectedDimensions) || expectedDimensions <= 0) return 0
     const result = this.db.prepare(`
