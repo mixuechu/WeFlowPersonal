@@ -657,12 +657,14 @@ function AiAssistantPage() {
   const [calendarPicker, setCalendarPicker] = useState<{
     calendars: Array<{ id: string; title: string; source: string; type: string }>
     selectedIds: string[]
+    expectedMutationToken: string
   } | null>(null)
   const [calendarConnecting, setCalendarConnecting] = useState(false)
   const [mailPicker, setMailPicker] = useState<{
     mailboxes: Array<{ id: string; accountId: string; accountName: string; path: string[]; displayName: string }>
     selectedIds: string[]
     allowModelAnalysis: boolean
+    expectedMutationToken: string
   } | null>(null)
   const [mailConnecting, setMailConnecting] = useState(false)
   const [sourceQuery, setSourceQuery] = useState('')
@@ -5830,6 +5832,12 @@ function AiAssistantPage() {
   }
 
   const configureDocumentSource = async () => {
+    const source = dataSources.find(item => item.id === 'documents')
+    if (!source?.mutationToken) {
+      setMessage('文档数据源状态尚未加载完成，请刷新后重试。')
+      return
+    }
+    const expectedMutationToken = source.mutationToken
     const selected = await window.electronAPI.dialog.openFile({
       title: '选择要持续索引的本机文档目录',
       properties: ['openDirectory', 'createDirectory']
@@ -5837,11 +5845,18 @@ function AiAssistantPage() {
     const folderPath = selected.filePaths?.[0]
     if (selected.canceled || !folderPath) return
     try {
-      const updated = await window.electronAPI.aiAssistant.configureDataSource('documents', { folderPath })
+      const updated = await window.electronAPI.aiAssistant.configureDataSource('documents', {
+        folderPath,
+        expectedMutationToken
+      })
       setDataSources(current => current.map(item => item.id === 'documents' ? updated : item))
       setMessage('本机文档目录已连接；下次立即补齐或自动整理时开始增量索引。')
     } catch (error: any) {
-      setMessage(error?.message || String(error))
+      const errorMessage = error?.message || String(error)
+      setMessage(errorMessage)
+      if (errorMessage.includes('数据源配置在展示后发生了变化')) {
+        setDataSources(await window.electronAPI.aiAssistant.getDataSources())
+      }
     }
   }
 
@@ -5867,7 +5882,8 @@ function AiAssistantPage() {
         : []
       setCalendarPicker({
         calendars,
-        selectedIds: configuredIds.filter((id: string) => calendars.some(calendar => calendar.id === id))
+        selectedIds: configuredIds.filter((id: string) => calendars.some(calendar => calendar.id === id)),
+        expectedMutationToken: String(source.mutationToken || '')
       })
       setDataSources(await window.electronAPI.aiAssistant.getDataSources())
     } catch (error: any) {
@@ -5885,13 +5901,19 @@ function AiAssistantPage() {
     setCalendarConnecting(true)
     try {
       await window.electronAPI.aiAssistant.configureDataSource('calendar', {
-        calendarIds: calendarPicker.selectedIds
+        calendarIds: calendarPicker.selectedIds,
+        expectedMutationToken: calendarPicker.expectedMutationToken
       })
       setDataSources(await window.electronAPI.aiAssistant.getDataSources())
       setCalendarPicker(null)
       setMessage('所选日历已连接；只会在本机增量索引事件，不会自动生成待办。')
     } catch (error: any) {
-      setMessage(error?.message || String(error))
+      const errorMessage = error?.message || String(error)
+      setMessage(errorMessage)
+      if (errorMessage.includes('数据源配置在展示后发生了变化')) {
+        setCalendarPicker(null)
+        setDataSources(await window.electronAPI.aiAssistant.getDataSources())
+      }
     } finally {
       setCalendarConnecting(false)
     }
@@ -5918,7 +5940,8 @@ function AiAssistantPage() {
       setMailPicker({
         mailboxes,
         selectedIds: configuredIds.filter((id: string) => mailboxes.some(mailbox => mailbox.id === id)),
-        allowModelAnalysis: Boolean(source.config?.allowModelAnalysis)
+        allowModelAnalysis: Boolean(source.config?.allowModelAnalysis),
+        expectedMutationToken: String(source.mutationToken || '')
       })
       setDataSources(await window.electronAPI.aiAssistant.getDataSources())
     } catch (error: any) {
@@ -5937,13 +5960,19 @@ function AiAssistantPage() {
     try {
       await window.electronAPI.aiAssistant.configureDataSource('mail', {
         mailboxIds: mailPicker.selectedIds,
-        allowModelAnalysis: mailPicker.allowModelAnalysis
+        allowModelAnalysis: mailPicker.allowModelAnalysis,
+        expectedMutationToken: mailPicker.expectedMutationToken
       })
       setDataSources(await window.electronAPI.aiAssistant.getDataSources())
       setMailPicker(null)
       setMessage('所选 Mail 邮箱已连接；邮件正文只进入本机检索，不会默认发送给模型或生成待办。')
     } catch (error: any) {
-      setMessage(error?.message || String(error))
+      const errorMessage = error?.message || String(error)
+      setMessage(errorMessage)
+      if (errorMessage.includes('数据源配置在展示后发生了变化')) {
+        setMailPicker(null)
+        setDataSources(await window.electronAPI.aiAssistant.getDataSources())
+      }
     } finally {
       setMailConnecting(false)
     }

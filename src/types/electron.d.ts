@@ -2167,7 +2167,13 @@ export interface ElectronAPI {
         enabled: boolean,
         expectedMutationToken: string
       ) => Promise<any>
-      configureDataSource: (sourceId: string, input: any) => Promise<any>
+      configureDataSource: (sourceId: string, input: {
+        folderPath?: string
+        calendarIds?: string[]
+        mailboxIds?: string[]
+        allowModelAnalysis?: boolean
+        expectedMutationToken: string
+      }) => Promise<any>
       setConversationSource: (input: any) => Promise<any>
       setConversationSourcesBulk: (input: any) => Promise<any>
   }

@@ -3658,7 +3658,8 @@ export class AiAssistantService {
       return personalMemoryStore.configureDataSource(
         'documents',
         { folderPath: connector.root },
-        true
+        true,
+        String(input?.expectedMutationToken || '')
       )
     }
     if (sourceId === 'calendar') {
@@ -3674,7 +3675,12 @@ export class AiAssistantService {
           .filter(id => availableIds.has(id))
       )]
       if (!calendarIds.length) throw new Error('请至少选择一个日历')
-      return personalMemoryStore.configureDataSource('calendar', { calendarIds }, true)
+      return personalMemoryStore.configureDataSource(
+        'calendar',
+        { calendarIds },
+        true,
+        String(input?.expectedMutationToken || '')
+      )
     }
     if (sourceId === 'mail') {
       const status = await localMailService.getStatus()
@@ -3692,7 +3698,7 @@ export class AiAssistantService {
       return personalMemoryStore.configureDataSource('mail', {
         mailboxIds,
         allowModelAnalysis: Boolean(input?.allowModelAnalysis)
-      }, true)
+      }, true, String(input?.expectedMutationToken || ''))
     }
     throw new Error('该数据源暂不支持本机配置')
   }

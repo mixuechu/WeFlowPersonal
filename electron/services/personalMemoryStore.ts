@@ -13276,10 +13276,25 @@ export class PersonalMemoryStore {
     return this.listDataSources().find(item => item.id === sourceId)
   }
 
-  configureDataSource(sourceId: string, config: Record<string, unknown>, available: boolean): any {
+  configureDataSource(
+    sourceId: string,
+    config: Record<string, unknown>,
+    available: boolean,
+    expectedMutationToken?: string
+  ): any {
     if (!this.db) throw new Error('个人记忆数据库尚未初始化')
-    const source = this.db.prepare('SELECT 1 FROM data_source_connectors WHERE source_id=?').get(sourceId)
+    const source = this.db.prepare(`
+      SELECT weflow_sha256(source_id || char(0) || enabled || char(0) || available || char(0) ||
+        config_json || char(0) || checkpoint || char(0) || status || char(0) ||
+        COALESCE(last_attempt_at,'') || char(0) || COALESCE(last_success_at,'') || char(0) ||
+        COALESCE(last_error,'') || char(0) || updated_at) AS mutation_token
+      FROM data_source_connectors WHERE source_id=?
+    `).get(sourceId) as any
     if (!source) throw new Error('未知数据源')
+    if (expectedMutationToken !== undefined &&
+        (!expectedMutationToken || expectedMutationToken !== source.mutation_token)) {
+      throw new Error('数据源配置在展示后发生了变化，请刷新后重新选择')
+    }
     this.db.prepare(`
       UPDATE data_source_connectors
       SET config_json=?,available=?,enabled=?,checkpoint='',status='idle',

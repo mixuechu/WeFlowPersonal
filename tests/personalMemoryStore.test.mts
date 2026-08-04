@@ -12166,11 +12166,22 @@ test('data source registry persists enablement, capability and independent run h
   assert.equal(availabilityRefreshed.status, 'error')
   assert.match(availabilityRefreshed.lastError, /原 checkpoint 重试/)
 
-  const configured = store.configureDataSource('calendar', { calendarIds: ['work'] }, true)
+  const configured = store.configureDataSource(
+    'calendar',
+    { calendarIds: ['work'] },
+    true,
+    initialCalendar?.mutationToken
+  )
   assert.equal(configured.available, true)
   assert.equal(configured.enabled, true)
   assert.deepEqual(configured.config, { calendarIds: ['work'] })
   assert.equal(configured.checkpoint, '')
+  assert.throws(() => store.configureDataSource(
+    'calendar',
+    { calendarIds: ['private'] },
+    true,
+    initialCalendar?.mutationToken
+  ), /数据源配置在展示后发生了变化/)
 }))
 
 test('document structured analysis has an independent content-version checkpoint and retry window', () => withStore(store => {
