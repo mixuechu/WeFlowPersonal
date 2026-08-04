@@ -627,10 +627,12 @@ function AiAssistantPage() {
   const [resourceLoadingMore, setResourceLoadingMore] = useState(false)
   const [selectedResourceDossier, setSelectedResourceDossier] = useState<any>(null)
   const [structuredMemoryDossier, setStructuredMemoryDossier] = useState<any>(null)
-  const [relationDossierAuditLoading, setRelationDossierAuditLoading] = useState('')
+  const [relationDossierAuditLoading, setRelationDossierAuditLoading] =
+    useState<Record<string, boolean>>({})
   const [authorityReturnTarget, setAuthorityReturnTarget] =
     useState<AuthorityReturnTarget | null>(null)
   const structuredMemoryDossierGate = useRef(new LatestRequestGate())
+  const relationDossierAuditGates = useRef(new KeyedLatestRequestGates())
   const [resourceTrashArchive, setResourceTrashArchive] = useState<any>({
     items: [], total: 0, hasMore: false, revision: '', status: 'idle'
   })
@@ -2710,7 +2712,8 @@ function AiAssistantPage() {
       return
     }
     const request = structuredMemoryDossierGate.current.begin()
-    setRelationDossierAuditLoading('')
+    relationDossierAuditGates.current.invalidateAll()
+    setRelationDossierAuditLoading({})
     setStructuredMemoryDossier({ kind, sourceId: id, status: 'loading' })
     try {
       const result = await window.electronAPI.aiAssistant.getStructuredMemoryDossier(
@@ -2749,6 +2752,8 @@ function AiAssistantPage() {
     if (!id || !returnTarget) return
     setAuthorityReturnTarget(returnTarget)
     structuredMemoryDossierGate.current.invalidate()
+    relationDossierAuditGates.current.invalidateAll()
+    setRelationDossierAuditLoading({})
     setStructuredMemoryDossier(null)
     setSelectedEntityId(id)
     setShowEntityDossier(true)
@@ -2784,9 +2789,9 @@ function AiAssistantPage() {
       : null
     const field = kind === 'history' ? 'historyPage' : 'correctionPage'
     const page = relation?.[field]
-    if (!relation || !page?.hasMore || relationDossierAuditLoading) return
-    const request = structuredMemoryDossierGate.current.begin()
-    setRelationDossierAuditLoading(kind)
+    if (!relation || !page?.hasMore || relationDossierAuditLoading[kind]) return
+    const request = relationDossierAuditGates.current.begin(kind)
+    setRelationDossierAuditLoading(current => setKeyedLoadingState(current, kind, true))
     try {
       const result = await window.electronAPI.aiAssistant.getRelationDossierAuditPage(
         relation.id,
@@ -2798,8 +2803,10 @@ function AiAssistantPage() {
           revision: page.revision
         }
       )
-      if (!structuredMemoryDossierGate.current.isCurrent(request)) return
+      if (!relationDossierAuditGates.current.isCurrent(kind, request)) return
       if (result?.stale) {
+        relationDossierAuditGates.current.invalidateAll()
+        setRelationDossierAuditLoading({})
         setStructuredMemoryDossier(null)
         setMessage('关系或审计历史在分页期间已有变化，请从检索结果重新打开。')
         setMemorySearchRefreshKey(value => value + 1)
@@ -2822,12 +2829,12 @@ function AiAssistantPage() {
           }
         : current)
     } catch (error: any) {
-      if (structuredMemoryDossierGate.current.isCurrent(request)) {
+      if (relationDossierAuditGates.current.isCurrent(kind, request)) {
         setMessage(error?.message || String(error))
       }
     } finally {
-      if (structuredMemoryDossierGate.current.isCurrent(request)) {
-        setRelationDossierAuditLoading('')
+      if (relationDossierAuditGates.current.isCurrent(kind, request)) {
+        setRelationDossierAuditLoading(current => setKeyedLoadingState(current, kind, false))
       }
     }
   }
@@ -8730,6 +8737,8 @@ function AiAssistantPage() {
               </div>
               <button aria-label="关闭结构化记忆权威档案" onClick={() => {
                 structuredMemoryDossierGate.current.invalidate()
+                relationDossierAuditGates.current.invalidateAll()
+                setRelationDossierAuditLoading({})
                 setStructuredMemoryDossier(null)
               }}><X size={18} /></button>
             </div>
@@ -8822,6 +8831,8 @@ function AiAssistantPage() {
                     roleLabels
                     onOpenArchive={() => {
                       structuredMemoryDossierGate.current.invalidate()
+                      relationDossierAuditGates.current.invalidateAll()
+                      setRelationDossierAuditLoading({})
                       setStructuredMemoryDossier(null)
                       void openMemoryEvidenceArchive(kind, item.id, title)
                     }}
@@ -8859,9 +8870,9 @@ function AiAssistantPage() {
                         {correction.after_predicate} → {correction.after_object_name || correction.after_object_id}
                       </small>)}
                       {item.correctionPage?.hasMore && <button
-                        disabled={Boolean(relationDossierAuditLoading)}
+                        disabled={Boolean(relationDossierAuditLoading.correction)}
                         onClick={() => void loadMoreRelationDossierAudit('correction')}>
-                        {relationDossierAuditLoading === 'correction'
+                        {relationDossierAuditLoading.correction
                           ? '正在加载人工纠正…'
                           : `加载更多人工纠正（已显示 ${item.correctionPage.items.length} / ${item.correctionPage.total}）`}
                       </button>}
@@ -8872,9 +8883,9 @@ function AiAssistantPage() {
                         {history.object_name || history.object_id} · {history.status}
                       </small>)}
                       {item.historyPage?.hasMore && <button
-                        disabled={Boolean(relationDossierAuditLoading)}
+                        disabled={Boolean(relationDossierAuditLoading.history)}
                         onClick={() => void loadMoreRelationDossierAudit('history')}>
-                        {relationDossierAuditLoading === 'history'
+                        {relationDossierAuditLoading.history
                           ? '正在加载关系变化…'
                           : `加载更多关系变化（已显示 ${item.historyPage.items.length} / ${item.historyPage.total}）`}
                       </button>}
@@ -8888,6 +8899,8 @@ function AiAssistantPage() {
             <div className="assistant-modal-actions">
               <button onClick={() => {
                 structuredMemoryDossierGate.current.invalidate()
+                relationDossierAuditGates.current.invalidateAll()
+                setRelationDossierAuditLoading({})
                 setStructuredMemoryDossier(null)
               }}>关闭</button>
             </div>

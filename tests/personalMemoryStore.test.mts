@@ -2117,6 +2117,28 @@ test('keyed request gates let independent dossier sections page concurrently', (
   assert.equal(gates.isCurrent('entityCorrections', nameCorrections), false)
 })
 
+test('relation dossier history and correction continuations stay independent until the dossier closes', () => {
+  const gates = new KeyedLatestRequestGates()
+  let loading: Record<string, boolean> = {}
+  const history = gates.begin('history')
+  loading = setKeyedLoadingState(loading, 'history', true)
+  const correction = gates.begin('correction')
+  loading = setKeyedLoadingState(loading, 'correction', true)
+
+  const refreshedHistory = gates.begin('history')
+  assert.equal(gates.isCurrent('history', history), false)
+  assert.equal(gates.isCurrent('history', refreshedHistory), true)
+  assert.equal(gates.isCurrent('correction', correction), true)
+
+  loading = setKeyedLoadingState(loading, 'history', false)
+  assert.deepEqual(loading, { correction: true })
+  gates.invalidateAll()
+  loading = {}
+  assert.equal(gates.isCurrent('history', refreshedHistory), false)
+  assert.equal(gates.isCurrent('correction', correction), false)
+  assert.deepEqual(loading, {})
+})
+
 test('memory cards expose evidence totals but bound their latest evidence payload', () => withStore(store => {
   store.syncGraph({
     entities: [{ id: 'bounded-person', type: 'person', canonicalName: '证据人物', trustStatus: 'confirmed' }],
