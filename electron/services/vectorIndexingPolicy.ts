@@ -66,6 +66,16 @@ export async function withVectorQueryDeadline<T>(
   }
 }
 
+export function requestVectorIndexWarmup(
+  pendingCount: unknown,
+  schedule: () => void
+): boolean {
+  const pending = Math.max(0, Math.floor(Number(pendingCount || 0)))
+  if (!pending) return false
+  schedule()
+  return true
+}
+
 export async function runVectorIndexPass<T extends { id: string; content_hash?: string }>(input: {
   maxBatches?: number
   batchSize: number

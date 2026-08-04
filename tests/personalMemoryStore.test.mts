@@ -13,6 +13,7 @@ import {
 import {
   recordVectorIndexContinuation,
   recordVectorQueryOutcome,
+  requestVectorIndexWarmup,
   runVectorIndexPass,
   safeCosineSimilarity,
   shouldPersistVectorQueryOutcome,
@@ -7190,6 +7191,14 @@ test('semantic query deadline returns promptly without cancelling background mod
   finishLoading!([1, 2, 3])
   assert.deepEqual(await loading, [1, 2, 3])
   assert.equal(await withVectorQueryDeadline(Promise.resolve('ready'), 100), 'ready')
+})
+
+test('semantic search warmup schedules pending work without awaiting an index batch', () => {
+  let scheduled = 0
+  assert.equal(requestVectorIndexWarmup(0, () => { scheduled += 1 }), false)
+  assert.equal(scheduled, 0)
+  assert.equal(requestVectorIndexWarmup(24, () => { scheduled += 1 }), true)
+  assert.equal(scheduled, 1)
 })
 
 test('local embedding identity pins an immutable model revision', () => {

@@ -12,6 +12,7 @@ import { localEmbeddingService } from './localEmbeddingService'
 import {
   recordVectorQueryOutcome,
   recordVectorIndexContinuation,
+  requestVectorIndexWarmup,
   runVectorIndexPass,
   shouldPersistVectorQueryOutcome,
   vectorIndexScheduleDelayMs,
@@ -7061,7 +7062,7 @@ export class AiAssistantService {
         localEmbeddingService.modelVersion,
         queryValidation.dimensions
       )
-      await this.warmVectorIndexForSearch()
+      this.warmVectorIndexForSearch()
       const semantic = personalMemoryStore.searchVector(queryVector, localEmbeddingService.modelVersion, candidateLimit, {
         allowedIds
       })
@@ -7464,13 +7465,11 @@ export class AiAssistantService {
     }
   }
 
-  private async warmVectorIndexForSearch(): Promise<void> {
-    if (!this.vectorIndexPromise) {
-      try { await this.ensureVectorIndex({ maxBatches: 1 }) } catch {}
-    }
-    if (personalMemoryStore.getEmbeddingStats(localEmbeddingService.modelVersion).pending > 0) {
-      this.scheduleVectorIndexContinuation()
-    }
+  private warmVectorIndexForSearch(): void {
+    requestVectorIndexWarmup(
+      personalMemoryStore.getEmbeddingStats(localEmbeddingService.modelVersion).pending,
+      () => this.scheduleVectorIndexContinuation()
+    )
   }
 
   async ensureVectorIndex(options: { maxBatches?: number } = {}): Promise<any> {
