@@ -8914,6 +8914,19 @@ function AiAssistantPage() {
                 <span>单关系上限 <b>{Number(memoryDiagnostics.graphRelationEvidenceHotset.hotLimitPerRelation || 100)}</b></span>
               </div>
             </div>}
+            {memoryDiagnostics.identityMergeSnapshotStorage?.version && <div className="assistant-recovery-audit healthy">
+              <header><Database size={15} /><span><b>身份合并可逆快照</b>
+                <small>每次合并只加密保存双方档案及受影响的关系、事件参与和审阅记录，不再复制整张关系图。</small>
+              </span></header>
+              <div className="assistant-recovery-current">
+                <span>快照 <b>{Number(memoryDiagnostics.identityMergeSnapshotStorage.rows || 0).toLocaleString()}</b> 份</span>
+                <span>当前占用 <b>{(Number(memoryDiagnostics.identityMergeSnapshotStorage.bytes || 0) / 1024).toFixed(1)} KB</b></span>
+                <span>旧快照压缩 <b>{Number(memoryDiagnostics.identityMergeSnapshotStorage.migration?.rowsCompacted || 0).toLocaleString()}</b> 份</span>
+                <span>移除无关关系 <b>{Number(memoryDiagnostics.identityMergeSnapshotStorage.migration?.relationsRemoved || 0).toLocaleString()}</b> 条</span>
+                <span>回收空间 <b>{(Number(memoryDiagnostics.identityMergeSnapshotStorage.migration?.bytesReclaimed || 0) / 1024).toFixed(1)} KB</b></span>
+                <span>异常旧快照 <b>{Number(memoryDiagnostics.identityMergeSnapshotStorage.migration?.invalidRows || 0).toLocaleString()}</b></span>
+              </div>
+            </div>}
             {memoryDiagnostics.structuredEvidenceMigration?.version && <div className="assistant-recovery-audit healthy">
               <header><ShieldCheck size={15} /><span><b>结构化证据身份迁移</b>
                 <small>事实、事件和关系按“结构 ID＋来源＋会话＋原消息”建立唯一约束；旧记录的来源与发送者只做可验证回填，不进行猜测。</small>

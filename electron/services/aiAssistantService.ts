@@ -3683,6 +3683,7 @@ export class AiAssistantService {
     const taskReviewArchiveStats = personalMemoryStore.getTaskReviewArchiveStats()
     const memoryDeletionArchiveStats = personalMemoryStore.getMemoryDeletionAuditStats()
     const mergeHistoryArchiveStats = personalMemoryStore.getMergeHistoryArchiveStats()
+    const identityMergeSnapshotStorage = personalMemoryStore.getIdentityMergeSnapshotStorageStats()
     const resourceArchiveRevision = personalMemoryStore.getResourceArchiveRevision()
     const resourceTrashStats = personalMemoryStore.listResourceTrashArchive({ limit: 1 })
     return {
@@ -3782,6 +3783,7 @@ export class AiAssistantService {
       },
       mergeHistoryArchive: {
         ...mergeHistoryArchiveStats,
+        snapshotStorage: identityMergeSnapshotStorage,
         revision: revisions.identityMerge,
         version: 'identity-merge-audit-v1',
         directory: 'paginated_without_snapshot',
@@ -4670,6 +4672,7 @@ export class AiAssistantService {
       .reduce((total, count) => total + Number(count || 0), 0)
     return {
       ...databaseDiagnostics,
+      identityMergeSnapshotStorage: personalMemoryStore.getIdentityMergeSnapshotStorageStats(),
       graphRelationEvidenceHotset: {
         version: 'graph-relation-evidence-hotset-v1',
         hotLimitPerRelation: 100,
@@ -5774,7 +5777,9 @@ export class AiAssistantService {
         personalMemoryStore.recordMerge(source.id, target.id, {
           source: structuredClone(source),
           target: structuredClone(target),
-          relations: structuredClone(this.state.graph.relations),
+          relations: structuredClone(this.state.graph.relations.filter(item =>
+            item.subjectId === source.id || item.objectId === source.id ||
+            item.subjectId === target.id || item.objectId === target.id)),
           sourceEventParticipants,
           targetEventParticipants,
           affectedReviews

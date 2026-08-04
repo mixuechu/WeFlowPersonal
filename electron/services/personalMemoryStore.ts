@@ -14,6 +14,10 @@ import {
 import type { MemorySearchOptions } from './memorySearchFilters.ts'
 import { MEMORY_CARD_EVIDENCE_LIMIT } from '../../shared/evidencePayload.ts'
 import { GRAPH_RELATION_EVIDENCE_HOT_LIMIT } from './graphEvidenceHotset.ts'
+import {
+  IDENTITY_MERGE_SNAPSHOT_VERSION,
+  compactIdentityMergeSnapshot
+} from './identityMergeSnapshot.ts'
 
 type MemoryGraph = {
   entities: any[]
@@ -795,6 +799,7 @@ export class PersonalMemoryStore {
     this.ensureResourceArchiveRevisionTriggers()
     this.repairStructuredSearchIndex()
     this.backfillMergeHistoryNames()
+    this.compactIdentityMergeSnapshots()
     this.db.exec(`CREATE INDEX IF NOT EXISTS idx_memory_corrections_item
       ON memory_corrections(item_kind,item_id,created_at DESC)`)
     this.db.exec(`CREATE INDEX IF NOT EXISTS idx_memory_review_decisions_item
@@ -3093,6 +3098,60 @@ export class PersonalMemoryStore {
     })()
   }
 
+  private compactIdentityMergeSnapshots(): void {
+    if (!this.db) return
+    const migrationKey = 'identity_merge_snapshot_storage_v2'
+    const previous = this.db.prepare('SELECT value FROM schema_meta WHERE key=?').get(migrationKey) as any
+    if (previous?.value) return
+    const rows = this.db.prepare('SELECT id,snapshot_json FROM merge_history').all() as Array<{
+      id: number
+      snapshot_json: string
+    }>
+    const update = this.db.prepare('UPDATE merge_history SET snapshot_json=? WHERE id=?')
+    const audit = {
+      version: IDENTITY_MERGE_SNAPSHOT_VERSION,
+      policy: 'affected_entities_relations_reviews_events',
+      checkedAt: new Date().toISOString(),
+      rowsScanned: rows.length,
+      rowsCompacted: 0,
+      invalidRows: 0,
+      relationsRemoved: 0,
+      bytesBefore: 0,
+      bytesAfter: 0,
+      bytesReclaimed: 0
+    }
+    this.db.transaction(() => {
+      for (const row of rows) {
+        const originalJson = String(row.snapshot_json || '{}')
+        audit.bytesBefore += Buffer.byteLength(originalJson)
+        let parsed: any
+        try { parsed = JSON.parse(originalJson) } catch {
+          audit.invalidRows += 1
+          audit.bytesAfter += Buffer.byteLength(originalJson)
+          continue
+        }
+        const compacted = compactIdentityMergeSnapshot(parsed)
+        if (!compacted.valid) {
+          audit.invalidRows += 1
+          audit.bytesAfter += Buffer.byteLength(originalJson)
+          continue
+        }
+        const compactedJson = JSON.stringify(compacted.snapshot)
+        audit.bytesAfter += Buffer.byteLength(compactedJson)
+        audit.relationsRemoved += compacted.originalRelations - compacted.retainedRelations
+        if (compacted.changed) {
+          update.run(compactedJson, row.id)
+          audit.rowsCompacted += 1
+        }
+      }
+      audit.bytesReclaimed = Math.max(0, audit.bytesBefore - audit.bytesAfter)
+      this.db!.prepare(`
+        INSERT INTO schema_meta(key,value,updated_at) VALUES(?,?,?)
+        ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_at=excluded.updated_at
+      `).run(migrationKey, JSON.stringify(audit), audit.checkedAt)
+    })()
+  }
+
   private repairDuplicateEvents(): void {
     if (!this.db) return
     const rows = this.db.prepare(`
@@ -4566,6 +4625,10 @@ export class PersonalMemoryStore {
 
   recordMerge(sourceId: string, targetId: string, snapshot: any): number {
     if (!this.db) return 0
+    const compacted = compactIdentityMergeSnapshot(snapshot)
+    if (!compacted.valid || snapshot?.source?.id !== sourceId || snapshot?.target?.id !== targetId) {
+      throw new Error('身份合并缺少有效的受影响范围快照')
+    }
     const result = this.db.prepare(`
       INSERT INTO merge_history(
         source_entity_id,target_entity_id,source_name,target_name,snapshot_json,created_at
@@ -4575,7 +4638,7 @@ export class PersonalMemoryStore {
       targetId,
       String(snapshot?.source?.canonicalName || '').slice(0, 500),
       String(snapshot?.target?.canonicalName || '').slice(0, 500),
-      JSON.stringify(snapshot),
+      JSON.stringify(compacted.snapshot),
       new Date().toISOString()
     )
     return Number(result.lastInsertRowid)
@@ -4711,6 +4774,32 @@ export class PersonalMemoryStore {
       reverted: Number(row?.reverted || 0),
       latestId: Number(row?.latest_id || 0),
       latestActivityAt: String(row?.latest_activity_at || '')
+    }
+  }
+
+  getIdentityMergeSnapshotStorageStats(): any {
+    if (!this.db) return {
+      version: IDENTITY_MERGE_SNAPSHOT_VERSION,
+      policy: 'affected_entities_relations_reviews_events',
+      rows: 0,
+      bytes: 0
+    }
+    const current = this.db.prepare(`
+      SELECT COUNT(*) AS rows,
+        COALESCE(SUM(LENGTH(CAST(snapshot_json AS BLOB))),0) AS bytes
+      FROM merge_history
+    `).get() as any
+    const meta = this.db.prepare(`
+      SELECT value FROM schema_meta WHERE key='identity_merge_snapshot_storage_v2'
+    `).get() as any
+    let migration: any = {}
+    try { migration = JSON.parse(String(meta?.value || '{}')) } catch {}
+    return {
+      version: IDENTITY_MERGE_SNAPSHOT_VERSION,
+      policy: 'affected_entities_relations_reviews_events',
+      rows: Number(current?.rows || 0),
+      bytes: Number(current?.bytes || 0),
+      migration
     }
   }
 

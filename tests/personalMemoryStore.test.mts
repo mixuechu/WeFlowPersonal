@@ -1123,6 +1123,7 @@ test('identity merge archive is fully pageable, private and restores every activ
           id: `target-${index}`,
           canonicalName: `保留人物 ${String(index).padStart(4, '0')}`
         },
+        relations: [],
         graph: { relations: [{ excerpt: '快照原文不得进入目录' }] }
       })
       if (index % 5 === 0) first.markMergeReverted(mergeId)
@@ -1202,6 +1203,72 @@ test('identity merge archive is fully pageable, private and restores every activ
   } finally {
     first.close()
     key.fill(0)
+    rmSync(directory, { recursive: true, force: true })
+  }
+})
+
+test('identity merge snapshots are scoped on write and legacy full-graph snapshots compact on reopen', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'weflow-merge-snapshot-scope-'))
+  const databasePath = join(directory, 'memory.sqlite')
+  const key = randomBytes(32)
+  const first = new PersonalMemoryStore()
+  try {
+    first.initialize(databasePath, key)
+    const source = { id: 'source', canonicalName: '甲' }
+    const target = { id: 'target', canonicalName: '乙' }
+    const affected = { id: 'affected', subjectId: 'source', predicate: '认识', objectId: 'person-1' }
+    const unrelated = Array.from({ length: 5_000 }, (_, index) => ({
+      id: `unrelated-${index}`,
+      subjectId: `left-${index}`,
+      predicate: '无关',
+      objectId: `right-${index}`,
+      evidence: [{ messageId: `m-${index}`, excerpt: '大图关系不应留在快照' }]
+    }))
+    const scopedId = first.recordMerge('source', 'target', {
+      source, target, relations: [affected, ...unrelated],
+      sourceEventParticipants: [], targetEventParticipants: [], affectedReviews: []
+    })
+    const database = (first as any).db
+    const scoped = JSON.parse(String(database.prepare(
+      'SELECT snapshot_json FROM merge_history WHERE id=?'
+    ).pluck().get(scopedId)))
+    assert.equal(scoped.version, 'identity-merge-snapshot-v2')
+    assert.deepEqual(scoped.relations.map((item: any) => item.id), ['affected'])
+
+    const legacyJson = JSON.stringify({
+      source: { id: 'legacy-source', canonicalName: '旧甲' },
+      target: { id: 'legacy-target', canonicalName: '旧乙' },
+      relations: [
+        { id: 'legacy-affected', subjectId: 'legacy-target', predicate: '认识', objectId: 'person-2' },
+        ...unrelated
+      ],
+      sourceEventParticipants: [], targetEventParticipants: [], affectedReviews: [],
+      fullGraph: { private: 'legacy-extra-copy' }
+    })
+    database.prepare(`
+      INSERT INTO merge_history(source_entity_id,target_entity_id,source_name,target_name,snapshot_json,created_at)
+      VALUES('legacy-source','legacy-target','旧甲','旧乙',?,?)
+    `).run(legacyJson, new Date().toISOString())
+    database.prepare("DELETE FROM schema_meta WHERE key='identity_merge_snapshot_storage_v2'").run()
+    first.close()
+
+    const reopened = new PersonalMemoryStore()
+    reopened.initialize(databasePath, key)
+    const reopenedDatabase = (reopened as any).db
+    const legacy = JSON.parse(String(reopenedDatabase.prepare(`
+      SELECT snapshot_json FROM merge_history WHERE source_entity_id='legacy-source'
+    `).pluck().get()))
+    assert.equal(legacy.version, 'identity-merge-snapshot-v2')
+    assert.deepEqual(legacy.relations.map((item: any) => item.id), ['legacy-affected'])
+    assert.equal('fullGraph' in legacy, false)
+    const stats = reopened.getIdentityMergeSnapshotStorageStats()
+    assert.equal(stats.rows, 2)
+    assert.ok(stats.migration.rowsCompacted >= 1)
+    assert.ok(stats.migration.relationsRemoved >= 5_000)
+    assert.ok(stats.migration.bytesReclaimed > 100_000)
+    reopened.close()
+  } finally {
+    try { first.close() } catch {}
     rmSync(directory, { recursive: true, force: true })
   }
 })

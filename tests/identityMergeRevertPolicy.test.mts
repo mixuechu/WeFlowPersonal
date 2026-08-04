@@ -8,6 +8,10 @@ import {
   inspectIdentityMergeRevert,
   restoreIdentityMergeGraph
 } from '../electron/services/identityMergeRevertPolicy.ts'
+import {
+  IDENTITY_MERGE_SNAPSHOT_VERSION,
+  compactIdentityMergeSnapshot
+} from '../electron/services/identityMergeSnapshot.ts'
 
 function fixture() {
   const source = {
@@ -151,4 +155,37 @@ test('identity merge restore preserves unrelated graph changes', () => {
   assert.ok(restored.relations.some(relation => relation.id === 'old-source-edge'))
   assert.ok(restored.reviewQueue.some(review => review.id === 'unrelated-review'))
   assert.equal(restored.reviewQueue.find(review => review.id === 'merge-review')?.status, 'pending')
+})
+
+test('identity merge snapshot keeps only affected reversible state at graph scale', () => {
+  const input = fixture()
+  input.snapshot.relations.push(...Array.from({ length: 10_000 }, (_, index) => ({
+    id: `unrelated-${index}`,
+    subjectId: `unrelated-left-${index}`,
+    predicate: '无关',
+    objectId: `unrelated-right-${index}`,
+    evidence: [{ messageId: `irrelevant-${index}`, excerpt: '不应复制到身份合并快照' }]
+  })))
+  input.snapshot.unexpectedFullGraphCopy = { entities: Array(10_000).fill('private') }
+  const compacted = compactIdentityMergeSnapshot(input.snapshot)
+  assert.equal(compacted.valid, true)
+  assert.equal(compacted.snapshot.version, IDENTITY_MERGE_SNAPSHOT_VERSION)
+  assert.equal(compacted.originalRelations, 10_002)
+  assert.equal(compacted.retainedRelations, 1)
+  assert.equal('unexpectedFullGraphCopy' in compacted.snapshot, false)
+  assert.deepEqual(compacted.snapshot.sourceEventParticipants, input.snapshot.sourceEventParticipants)
+  assert.deepEqual(compacted.snapshot.affectedReviews, input.snapshot.affectedReviews)
+
+  const inspection = inspectIdentityMergeRevert({
+    snapshot: compacted.snapshot,
+    currentGraph: input.currentGraph,
+    currentSourceParticipants: input.sourceParticipants,
+    currentTargetParticipants: input.targetParticipants,
+    currentIdentityDecision: input.identityDecision
+  })
+  assert.equal(inspection.safe, true)
+  const restored = restoreIdentityMergeGraph(compacted.snapshot, input.currentGraph)
+  assert.ok(restored.relations.some(relation => relation.id === 'old-source-edge'))
+  assert.ok(restored.relations.some(relation =>
+    relation.subjectId === 'other' && relation.objectId === 'fourth'))
 })
