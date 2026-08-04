@@ -371,6 +371,31 @@ export function deriveGroundedUncertainty(citationIds: unknown[], citations: any
     : ''
 }
 
+export function selectWholeStatementsWithinBudget(
+  statements: string[],
+  indexes: number[],
+  maxCharacters: number
+): { content: string; indexes: number[]; dropped: number } {
+  const budget = Math.max(1, Math.floor(Number(maxCharacters) || 0))
+  const selected: string[] = []
+  const selectedIndexes: number[] = []
+  for (const index of indexes) {
+    const statement = String(statements[index] || '').trim()
+    if (!statement) continue
+    const nextLength = selected.reduce((total, value) => total + value.length, 0)
+      + (selected.length ? 2 : 0)
+      + statement.length
+    if (nextLength > budget) continue
+    selected.push(statement)
+    selectedIndexes.push(index)
+  }
+  return {
+    content: selected.join('\n\n'),
+    indexes: selectedIndexes,
+    dropped: Math.max(0, indexes.length - selectedIndexes.length)
+  }
+}
+
 export function filterTrustedConversationHistory(messages: any[]): {
   history: Array<{ role: 'user' | 'assistant'; content: string }>
   includedAssistant: number
@@ -380,6 +405,8 @@ export function filterTrustedConversationHistory(messages: any[]): {
   excludedMalformedAssistant: number
   includedPartialAssistant: number
   excludedStaleStatements: number
+  includedBoundedAssistant: number
+  excludedBudgetStatements: number
 } {
   const audit = {
     includedAssistant: 0,
@@ -388,15 +415,23 @@ export function filterTrustedConversationHistory(messages: any[]): {
     excludedStaleAssistant: 0,
     excludedMalformedAssistant: 0,
     includedPartialAssistant: 0,
-    excludedStaleStatements: 0
+    excludedStaleStatements: 0,
+    includedBoundedAssistant: 0,
+    excludedBudgetStatements: 0
   }
   const history = (Array.isArray(messages) ? messages : []).flatMap(message => {
     const role = message?.role === 'user'
       ? 'user'
       : message?.role === 'assistant' ? 'assistant' : ''
-    const content = String(message?.content || '').trim().slice(0, 3000)
-    if (!role || !content) return []
-    if (role === 'user') return [{ role, content }]
+    const unboundedContent = String(message?.content || '').trim()
+    if (!role || !unboundedContent) return []
+    if (role === 'user') return [{ role, content: unboundedContent.slice(0, 3000) }]
+    if (unboundedContent.length > 40_000) {
+      audit.excludedAssistant += 1
+      audit.excludedMalformedAssistant += 1
+      return []
+    }
+    const content = unboundedContent
     const groundingAudit = message?.groundingAudit
     const hasGroundingAudit = Boolean(
       groundingAudit
@@ -478,6 +513,22 @@ export function filterTrustedConversationHistory(messages: any[]): {
         audit.includedPartialAssistant += 1
         audit.excludedStaleStatements += Math.max(0, acceptedStatements - currentIndexes.length)
       }
+      const bounded = selectWholeStatementsWithinBudget(
+        statementTexts,
+        retainedStatementIndexes,
+        2400
+      )
+      if (!bounded.indexes.length) {
+        audit.excludedAssistant += 1
+        audit.excludedMalformedAssistant += 1
+        return []
+      }
+      if (bounded.dropped) {
+        audit.includedBoundedAssistant += 1
+        audit.excludedBudgetStatements += bounded.dropped
+      }
+      trustedAssistantContent = bounded.content
+      retainedStatementIndexes = bounded.indexes
     }
     audit.includedAssistant += 1
     const statementCitations = Array.isArray(groundingAudit?.statementCitations)
@@ -489,7 +540,7 @@ export function filterTrustedConversationHistory(messages: any[]): {
       ? deriveGroundedUncertainty(retainedCitationIds, message?.citations || [])
       : ''
     const trustedContent = uncertainty
-      ? `${trustedAssistantContent.slice(0, 2450)}\n[该回答当时保存的不确定性：${uncertainty}]`.slice(0, 3000)
+      ? `${trustedAssistantContent}\n[该回答当时保存的不确定性：${uncertainty}]`
       : trustedAssistantContent
     return [{ role, content: trustedContent }]
   })
@@ -576,6 +627,8 @@ export function finalizeGroundedMemoryAnswer(
     acceptedCitationIds: number
     removedConflictCitationIds: number
     rejectedConflictStatements: number
+    rejectedOversizedStatements: number
+    rejectedAnswerBudgetStatements: number
     uncertaintyPolicyVersion: 'derived-from-citations-v1'
     insufficientEvidencePolicyVersion?: 'deterministic-insufficient-evidence-v1'
     promptIsolationVersion: 'untrusted-memory-envelope-v1'
@@ -592,8 +645,13 @@ export function finalizeGroundedMemoryAnswer(
     )
   let removedConflictCitationIds = 0
   let rejectedConflictStatements = 0
+  let rejectedOversizedStatements = 0
   const accepted = proposed.flatMap((statement: any) => {
-    const text = String(statement?.text || '').trim().replace(/\s+/g, ' ').slice(0, 1500)
+    const text = String(statement?.text || '').trim().replace(/\s+/g, ' ')
+    if (text.length > 1500) {
+      rejectedOversizedStatements += 1
+      return []
+    }
     const eligibleCitationIds = [...new Set((Array.isArray(statement?.citationIds) ? statement.citationIds : [])
       .map(String)
       .filter((id: string) => allowed.has(id)))]
@@ -615,30 +673,38 @@ export function finalizeGroundedMemoryAnswer(
     }
     return text && citationIds.length ? [{ text, citationIds }] : []
   })
-  const citationIds = [...new Set(accepted.flatMap(statement => statement.citationIds))]
+  const boundedAccepted = selectWholeStatementsWithinBudget(
+    accepted.map(statement => statement.text),
+    accepted.map((_, index) => index),
+    6000
+  )
+  const committedStatements = boundedAccepted.indexes.map(index => accepted[index])
+  const citationIds = [...new Set(committedStatements.flatMap(statement => statement.citationIds))]
   const citations = (context || []).filter(item => citationIds.includes(String(item.documentId)))
-  const answer = accepted.map(statement => statement.text).join('\n\n')
+  const answer = boundedAccepted.content
   const uncertainty = deriveGroundedUncertainty(citationIds, citations)
   return {
-    answer: (accepted.length ? answer : MEMORY_INSUFFICIENT_EVIDENCE_ANSWER).slice(0, 6000),
+    answer: committedStatements.length ? answer : MEMORY_INSUFFICIENT_EVIDENCE_ANSWER,
     uncertainty,
     citationIds,
     citations,
-    statements: accepted,
+    statements: committedStatements,
     groundingAudit: {
       version: 'statement-citations-v1',
       proposedStatements: proposed.length,
-      acceptedStatements: accepted.length,
-      rejectedStatements: Math.max(0, proposed.length - accepted.length),
+      acceptedStatements: committedStatements.length,
+      rejectedStatements: Math.max(0, proposed.length - committedStatements.length),
       acceptedCitationIds: citationIds.length,
       removedConflictCitationIds,
       rejectedConflictStatements,
+      rejectedOversizedStatements,
+      rejectedAnswerBudgetStatements: boundedAccepted.dropped,
       uncertaintyPolicyVersion: 'derived-from-citations-v1',
-      ...(!accepted.length
+      ...(!committedStatements.length
         ? { insufficientEvidencePolicyVersion: MEMORY_INSUFFICIENT_EVIDENCE_POLICY }
         : {}),
       promptIsolationVersion: 'untrusted-memory-envelope-v1',
-      statementCitations: accepted.map(statement => statement.citationIds)
+      statementCitations: committedStatements.map(statement => statement.citationIds)
     }
   }
 }

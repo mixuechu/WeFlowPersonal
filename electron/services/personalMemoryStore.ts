@@ -13913,6 +13913,8 @@ export class PersonalMemoryStore {
       acceptedCitationIds: count('acceptedCitationIds'),
       removedConflictCitationIds: count('removedConflictCitationIds'),
       rejectedConflictStatements: count('rejectedConflictStatements'),
+      rejectedOversizedStatements: count('rejectedOversizedStatements'),
+      rejectedAnswerBudgetStatements: count('rejectedAnswerBudgetStatements'),
       promptIsolationVersion,
       ...(uncertaintyPolicyVersion === 'derived-from-citations-v1'
         ? { uncertaintyPolicyVersion }

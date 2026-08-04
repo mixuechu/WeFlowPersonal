@@ -208,6 +208,8 @@ test('memory evidence eligibility keeps review status separate from factual supp
     acceptedCitationIds: 1,
     removedConflictCitationIds: 0,
     rejectedConflictStatements: 0,
+    rejectedOversizedStatements: 0,
+    rejectedAnswerBudgetStatements: 0,
     uncertaintyPolicyVersion: 'derived-from-citations-v1',
     promptIsolationVersion: 'untrusted-memory-envelope-v1',
     statementCitations: [['confirmed']]
@@ -272,6 +274,29 @@ test('memory evidence eligibility keeps review status separate from factual supp
   assert.deepEqual(legacyWholeAnswer.citationIds, [])
   assert.equal(legacyWholeAnswer.groundingAudit.proposedStatements, 0)
   assert.match(legacyWholeAnswer.answer, /没有足够的已确认原始证据/)
+
+  const oversized = finalizeGroundedMemoryAnswer({
+    statements: [{
+      text: `${'可核验内容'.repeat(300)}尚未确认`,
+      citationIds: ['confirmed']
+    }]
+  }, context)
+  assert.equal(oversized.groundingAudit.rejectedOversizedStatements, 1)
+  assert.equal(oversized.groundingAudit.acceptedStatements, 0)
+  assert.equal(oversized.answer.includes('可核验内容'), false)
+
+  const maximumStatement = (marker: string) =>
+    `${marker}${'甲'.repeat(1500 - marker.length)}`
+  const answerBudget = finalizeGroundedMemoryAnswer({
+    statements: ['第一条', '第二条', '第三条', '第四条'].map(marker => ({
+      text: maximumStatement(marker),
+      citationIds: ['confirmed']
+    }))
+  }, context)
+  assert.equal(answerBudget.groundingAudit.acceptedStatements, 3)
+  assert.equal(answerBudget.groundingAudit.rejectedAnswerBudgetStatements, 1)
+  assert.equal(answerBudget.answer.includes('第四条'), false)
+  assert.equal(answerBudget.answer.endsWith('甲'), true)
 })
 
 test('memory question envelope marks retrieved prompt injection as untrusted data', () => {
@@ -592,6 +617,42 @@ test('multi-turn memory context excludes stale and unaudited assistant answers',
   assert.equal(result.excludedMalformedAssistant, 5)
   assert.equal(result.includedPartialAssistant, 1)
   assert.equal(result.excludedStaleStatements, 1)
+})
+
+test('multi-turn history keeps statement boundaries when applying its context budget', () => {
+  const first = `第一条仍然有效，${'甲'.repeat(1489)}`
+  const second = `第二条存在冲突且尚未确认，${'乙'.repeat(1185)}`
+  const result = filterTrustedConversationHistory([{
+    role: 'assistant',
+    content: `${first}\n\n${second}`,
+    groundingAudit: {
+      version: 'statement-citations-v1',
+      acceptedStatements: 2,
+      uncertaintyPolicyVersion: 'derived-from-citations-v1',
+      statementCitations: [['claim:first'], ['claim:second']]
+    },
+    citations: [{
+      documentId: 'claim:first',
+      evidenceRoleCounts: { supporting: 1, contradiction: 0 }
+    }, {
+      documentId: 'claim:second',
+      evidenceRoleCounts: { supporting: 1, contradiction: 1 }
+    }],
+    groundingRevalidation: {
+      version: 'statement-revalidation-v1',
+      status: 'current',
+      totalStatements: 2,
+      supportedStatements: 2,
+      unknownStatements: 0,
+      invalidStatements: 0,
+      statements: [{ status: 'current' }, { status: 'current' }]
+    }
+  }])
+  assert.deepEqual(result.history, [{ role: 'assistant', content: first }])
+  assert.equal(result.includedBoundedAssistant, 1)
+  assert.equal(result.excludedBudgetStatements, 1)
+  assert.equal(result.history[0].content.includes('第二条'), false)
+  assert.equal(result.history[0].content.includes('不确定性'), false)
 })
 
 test('mail connector keeps independent mailbox cursors and retries failed consumption', async () => {

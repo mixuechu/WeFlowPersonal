@@ -8072,10 +8072,16 @@ function AiAssistantPage() {
                 {item.role === 'assistant' && item.groundingAudit?.version === 'statement-citations-v1' && <small>
                   逐条证据门禁：接受 {Number(item.groundingAudit.acceptedStatements || 0)} 条
                   {Number(item.groundingAudit.rejectedStatements || 0)
-                    ? `，拦截 ${Number(item.groundingAudit.rejectedStatements)} 条无合格引用陈述`
+                    ? `，共 ${Number(item.groundingAudit.rejectedStatements)} 条未进入最终回答`
                     : ''}
                   {Number(item.groundingAudit.removedConflictCitationIds || 0)
                     ? `；隔离 ${Number(item.groundingAudit.removedConflictCitationIds)} 个未披露反证的引用`
+                    : ''}
+                  {Number(item.groundingAudit.rejectedOversizedStatements || 0)
+                    ? `；拒绝 ${Number(item.groundingAudit.rejectedOversizedStatements)} 条超过单声明安全预算的输出`
+                    : ''}
+                  {Number(item.groundingAudit.rejectedAnswerBudgetStatements || 0)
+                    ? `；整条省略 ${Number(item.groundingAudit.rejectedAnswerBudgetStatements)} 条超过回答总预算的声明`
                     : ''}
                 </small>}
                 {item.role === 'assistant' && item.groundingRevalidation?.status !== 'current' && <small>
@@ -8123,10 +8129,16 @@ function AiAssistantPage() {
             {memoryAnswer.groundingAudit?.version === 'statement-citations-v1' && <small>
               可信回答门禁：{Number(memoryAnswer.groundingAudit.acceptedStatements || 0)} 条陈述逐条通过原文引用核验；
               {Number(memoryAnswer.groundingAudit.rejectedStatements || 0)
-                ? ` 已拦截 ${Number(memoryAnswer.groundingAudit.rejectedStatements)} 条无合格引用陈述。`
-                : ' 没有发现无合格引用陈述。'}
+                ? ` 共 ${Number(memoryAnswer.groundingAudit.rejectedStatements)} 条未进入最终回答。`
+                : ' 没有声明被拦截或省略。'}
               {Number(memoryAnswer.groundingAudit.removedConflictCitationIds || 0)
                 ? ` 另隔离 ${Number(memoryAnswer.groundingAudit.removedConflictCitationIds)} 个未明确披露反证的引用，其中 ${Number(memoryAnswer.groundingAudit.rejectedConflictStatements || 0)} 条陈述因此被拒绝。`
+                : ''}
+              {Number(memoryAnswer.groundingAudit.rejectedOversizedStatements || 0)
+                ? ` 拒绝 ${Number(memoryAnswer.groundingAudit.rejectedOversizedStatements)} 条超过单声明安全预算的输出，避免截断限定语。`
+                : ''}
+              {Number(memoryAnswer.groundingAudit.rejectedAnswerBudgetStatements || 0)
+                ? ` 另有 ${Number(memoryAnswer.groundingAudit.rejectedAnswerBudgetStatements)} 条声明因回答总预算被整条省略。`
                 : ''}
               {' '}聊天、邮件和文档内容均按不可信数据隔离，不会被当作模型指令执行。
             </small>}

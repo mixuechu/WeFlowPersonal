@@ -7670,6 +7670,11 @@ export class AiAssistantService {
         `已从 ${conversationHistoryAudit.includedPartialAssistant} 条部分失效回答中保留仍有权威支持的陈述，并隔离 ${conversationHistoryAudit.excludedStaleStatements} 条失效陈述`
       )
     }
+    if (conversationHistoryAudit.includedBoundedAssistant) {
+      plan.explanation.unshift(
+        `历史上下文按完整陈述执行长度预算：${conversationHistoryAudit.includedBoundedAssistant} 条回答共省略 ${conversationHistoryAudit.excludedBudgetStatements} 条超出本轮预算的完整陈述，未截断任何半句话`
+      )
+    }
     const plannedOptions: MemorySearchOptions = {
       ...plan.inferredOptions,
       ...options,
@@ -7864,7 +7869,9 @@ export class AiAssistantService {
           excludedStaleAssistant: conversationHistoryAudit.excludedStaleAssistant,
           excludedMalformedAssistant: conversationHistoryAudit.excludedMalformedAssistant,
           includedPartialAssistant: conversationHistoryAudit.includedPartialAssistant,
-          excludedStaleStatements: conversationHistoryAudit.excludedStaleStatements
+          excludedStaleStatements: conversationHistoryAudit.excludedStaleStatements,
+          includedBoundedAssistant: conversationHistoryAudit.includedBoundedAssistant,
+          excludedBudgetStatements: conversationHistoryAudit.excludedBudgetStatements
         },
         appliedOptions: plannedOptions,
         graphPath: plannedGraphPath ? {
