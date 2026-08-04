@@ -3663,13 +3663,20 @@ export class AiAssistantService {
   }
 
   getStatus(): any {
-    return {
-      configured: Boolean(this.config.get('aiAssistantApiKey')),
+    const backgroundWrites = describeBackgroundWriteState({
       syncing: Boolean(this.activeSync),
-      syncTrigger: this.activeSyncTrigger,
       syncPhase: this.activeSyncPhase,
       vectorIndexing: Boolean(this.vectorIndexPromise),
-      searchRepairing: Boolean(this.memorySearchRepairPromise),
+      searchRepairing: Boolean(this.memorySearchRepairPromise)
+    })
+    return {
+      configured: Boolean(this.config.get('aiAssistantApiKey')),
+      syncing: backgroundWrites.syncing,
+      syncTrigger: this.activeSyncTrigger,
+      syncPhase: backgroundWrites.syncPhase,
+      vectorIndexing: backgroundWrites.vectorIndexing,
+      searchRepairing: backgroundWrites.searchRepairing,
+      backgroundWrites,
       cancelling: this.cancelRequested,
       scheduleTime: this.config.get('aiAssistantScheduleTime'),
       model: this.config.get('aiAssistantApiModel'),

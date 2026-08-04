@@ -6651,6 +6651,7 @@ function AiAssistantPage() {
                     ? ` · 自动快照 ${new Date(memoryDiagnostics.automaticBackup.lastBackupAt).toLocaleString('zh-CN', { hour12: false })}`
                     : ' · 自动快照等待首次完整同步'}
                   {memoryDiagnostics.embeddings ? ` · 语义索引 ${memoryDiagnostics.embeddings.indexed}/${memoryDiagnostics.embeddings.total}（${memoryDiagnostics.embeddings.ann?.active ? 'ANN' : '精确'}）` : ''}
+                  {status?.backgroundWrites?.active ? ` · 后台写入：${status.backgroundWrites.message}` : ''}
                   {memoryDiagnostics.ocr ? ` · OCR ${memoryDiagnostics.ocr.chinese ? '中文可用' : '未就绪'}` : ''}
                   {memoryDiagnostics.imageSemantics ? ` · 图片视觉 ${memoryDiagnostics.imageSemantics.available ? '本地可用' : '未就绪'}` : ''}
                   {memoryDiagnostics.stateStorage ? ` · 状态文件${memoryDiagnostics.stateStorage.recovered ? '已从备份恢复' : '耐久写入正常'}` : ''}
@@ -6691,17 +6692,8 @@ function AiAssistantPage() {
                       !== Number(memoryDiagnostics.embeddings?.ann?.eligibleChunks || 0)))) &&
                 <button
                   onClick={() => void indexMemoryVectors()}
-                  disabled={indexingVectors || Boolean(status?.syncing) ||
-                    Boolean(status?.vectorIndexing) || Boolean(status?.searchRepairing)}
-                  title={status?.syncing
-                    ? status?.syncPhase === 'waiting_for_vector'
-                      ? '增量处理正在等待当前语义索引批次结束'
-                      : '增量处理期间不能改写语义索引'
-                    : status?.searchRepairing
-                      ? '检索索引正在核验修复，完成后才能改写语义索引'
-                      : status?.vectorIndexing
-                        ? '已有语义索引任务正在运行'
-                        : undefined}>
+                  disabled={indexingVectors || Boolean(status?.backgroundWrites?.active)}
+                  title={status?.backgroundWrites?.message || undefined}>
                   {indexingVectors
                     ? '正在修复语义索引…'
                     : Number(memoryDiagnostics.embeddings?.pending || 0) > 0
@@ -10693,6 +10685,29 @@ function AiAssistantPage() {
               <p>全部增量运行可分页审阅，并汇总每个模型批次、失败原因、Token、耗时和成本估算。</p></div>
               <button aria-label="关闭诊断" onClick={() => setShowDiagnostics(false)}><X size={18} /></button>
             </header>
+            {memoryDiagnostics.backgroundWrites && <div className={`assistant-recovery-audit ${
+              status?.backgroundWrites?.active ? 'warning' : 'healthy'
+            }`}>
+              <header><RefreshCw size={15} /><span><b>后台权威写入协调</b>
+                <small>增量处理、语义索引和检索修复共用同一写入占用契约；界面操作与服务端门禁采用相同优先级。</small>
+              </span></header>
+              <div className="assistant-recovery-current">
+                <span>当前状态 <b>{status?.backgroundWrites?.message || '空闲'}</b></span>
+                <span>权威写入者 <b>{status?.backgroundWrites?.conflict === 'incremental_sync'
+                  ? '增量处理'
+                  : status?.backgroundWrites?.conflict === 'search_repair'
+                    ? '检索修复'
+                    : status?.backgroundWrites?.conflict === 'vector_index'
+                      ? '语义索引'
+                      : '无'}</b></span>
+                <span>同步阶段 <b>{status?.backgroundWrites?.syncPhase === 'waiting_for_vector'
+                  ? '等待当前向量批次'
+                  : status?.backgroundWrites?.syncPhase === 'running'
+                    ? '正在写入'
+                    : '未运行'}</b></span>
+                <span>诊断快照 <b>{memoryDiagnostics.backgroundWrites.message || '空闲'}</b></span>
+              </div>
+            </div>}
             <div className="assistant-dossier-metrics">
               <span><b>{memoryDiagnostics.ingestionSummary?.runs || 0}</b><small>全部运行</small></span>
               <span><b>{memoryDiagnostics.ingestionSummary?.failedBatches || 0}</b><small>失败批次</small></span>
@@ -10864,17 +10879,9 @@ function AiAssistantPage() {
                   自动核验上次未完成：{memoryDiagnostics.automaticSearchMaintenance.lastError}；
                   将在 6 小时退避后重试。
                 </small>}
-              <button disabled={repairingMemorySearchIndexes || Boolean(status?.syncing) ||
-                Boolean(status?.vectorIndexing) || Boolean(status?.searchRepairing)}
-                title={status?.syncing
-                  ? status?.syncPhase === 'waiting_for_vector'
-                    ? '增量处理正在等待当前语义索引批次结束'
-                    : '增量处理完成后才能核验检索索引'
-                  : status?.vectorIndexing
-                    ? '语义索引任务完成后才能核验检索索引'
-                    : status?.searchRepairing
-                      ? '已有检索核验任务正在运行'
-                      : undefined}
+              <button disabled={repairingMemorySearchIndexes ||
+                Boolean(status?.backgroundWrites?.active)}
+                title={status?.backgroundWrites?.message || undefined}
                 onClick={async () => {
                   setRepairingMemorySearchIndexes(true)
                   setMemorySearchRepairResult(null)
