@@ -252,6 +252,7 @@ import {
 import { buildTaskDossier } from '../../shared/taskPayload'
 import { buildTaskDependencyCandidates } from '../../shared/taskDependencyCandidates'
 import { buildCursorStatusPayload } from '../../shared/cursorPayload'
+import { collectStableCursorPages } from '../../shared/stableCursorPagination'
 import {
   BRIEFING_RETENTION_DAYS,
   BRIEFING_STORAGE_VERSION,
@@ -1324,18 +1325,36 @@ export class AiAssistantService {
     throw lastError
   }
 
+  private async listAllWechatSessions(): Promise<any[]> {
+    return collectStableCursorPages(
+      async cursor => {
+        const payload = await this.api('/api/v1/sessions', {
+          limit: 10_000,
+          cursor: cursor || undefined
+        })
+        return {
+          items: Array.isArray(payload.sessions) ? payload.sessions : [],
+          total: Number(payload.total ?? payload.count ?? 0),
+          hasMore: payload.hasMore === true,
+          nextCursor: String(payload.nextCursor || '')
+        }
+      },
+      session => String(session?.username || '')
+    )
+  }
+
   private async collectMessages(start: number, end: number): Promise<{
     messages: any[]
     failed: string[]
     successful: string[]
     continuationOffsets: Record<string, number>
   }> {
-    const sessionPayload = await this.api('/api/v1/sessions', { limit: 10_000 })
+    const sessionsFromApi = await this.listAllWechatSessions()
     const contactsPayload = await this.api('/api/v1/contacts', { limit: 10_000 }).catch(() => ({ contacts: [] }))
     const contactsById = new Map((contactsPayload.contacts || []).map((contact: any) => [String(contact.username), contact]))
     const policies = personalMemoryStore.getConversationPolicies()
     const allSessions = includeContinuationSessions(
-      sessionPayload.sessions || [],
+      sessionsFromApi,
       this.state.cursor.sessionOffsets,
       end
     )
@@ -5261,9 +5280,9 @@ export class AiAssistantService {
   }
 
   private async buildConversationSourceDirectory(options: ConversationSourceDirectoryOptions = {}): Promise<any> {
-    const sessionPayload = await this.api('/api/v1/sessions', { limit: 10_000 })
+    const sessions = await this.listAllWechatSessions()
     return buildConversationSourceDirectory(
-      (sessionPayload.sessions || []).filter((session: any) => !isOfficialAccountSession(session)),
+      sessions.filter((session: any) => !isOfficialAccountSession(session)),
       personalMemoryStore.getConversationPolicyRecords(),
       options
     )
@@ -5359,8 +5378,7 @@ export class AiAssistantService {
     expectedRevision?: string
   }): Promise<any> {
     if (input.type !== 'group' && input.type !== 'private') throw new Error('无效的会话类型')
-    const sessionPayload = await this.api('/api/v1/sessions', { limit: 10_000 })
-    const sessions = (sessionPayload.sessions || [])
+    const sessions = (await this.listAllWechatSessions())
       .filter((session: any) => !isOfficialAccountSession(session))
     const policies = personalMemoryStore.getConversationPolicyRecords()
     const directory = buildConversationSourceDirectory(sessions, policies, {

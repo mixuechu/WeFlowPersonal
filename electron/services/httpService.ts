@@ -17,6 +17,7 @@ import { snsService } from './snsService'
 import * as os from 'os'
 import { ApiMessageMapperPool } from './apiMessageMapperPool'
 import { mapRowsToMessagesLite } from './apiMessageMapping'
+import { paginateByStableStringCursor } from '../../shared/stableCursorPagination'
 
 // ChatLab 格式定义
 interface ChatLabHeader {
@@ -1154,11 +1155,12 @@ class HttpService {
 
   /**
    * 处理会话列表查询
-   * GET /api/v1/sessions?keyword=xxx&limit=100
+   * GET /api/v1/sessions?keyword=xxx&limit=100&cursor=wxid
    */
   private async handleSessions(url: URL, res: http.ServerResponse): Promise<void> {
     const keyword = (url.searchParams.get('keyword') || '').trim()
     const limit = this.parseIntParam(url.searchParams.get('limit'), 100, 1, 10000)
+    const cursor = (url.searchParams.get('cursor') || '').trim()
     const format = (url.searchParams.get('format') || '').trim().toLowerCase()
 
     try {
@@ -1177,7 +1179,12 @@ class HttpService {
         )
       }
 
-      const limitedSessions = filteredSessions.slice(0, limit)
+      const page = paginateByStableStringCursor(filteredSessions, {
+        key: session => String(session.username || ''),
+        cursor,
+        limit
+      })
+      const limitedSessions = page.items
 
       if (format === 'chatlab') {
         this.sendJson(res, {
@@ -1188,7 +1195,10 @@ class HttpService {
             type: this.getApiSessionType(s.username),
             messageCount: s.messageCountHint || undefined,
             lastMessageAt: s.lastTimestamp
-          }))
+          })),
+          total: page.total,
+          hasMore: page.hasMore,
+          nextCursor: page.nextCursor
         })
         return
       }
@@ -1196,6 +1206,9 @@ class HttpService {
       this.sendJson(res, {
         success: true,
         count: limitedSessions.length,
+        total: page.total,
+        hasMore: page.hasMore,
+        nextCursor: page.nextCursor,
         sessions: limitedSessions.map(s => ({
           username: s.username,
           displayName: s.displayName,
