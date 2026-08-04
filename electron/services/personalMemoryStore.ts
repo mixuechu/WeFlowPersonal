@@ -776,6 +776,7 @@ export class PersonalMemoryStore {
     this.repairStructuredEvidenceIdentity()
     this.repairStructuredEvidenceReferences()
     this.repairGenericSearchEvidenceIdentity()
+    this.ensureEntityEvidenceFtsIndex()
     this.ensureMemorySearchRevisionTriggers()
     this.ensureMemorySearchFeedbackArchiveRevisionTriggers()
     this.ensureMemoryDeletionAuditRevisionTriggers()
@@ -945,6 +946,101 @@ export class PersonalMemoryStore {
     if (!this.db) return
     const columns = this.db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>
     if (!columns.some(item => item.name === column)) this.db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`)
+  }
+
+  private ensureEntityEvidenceFtsIndex(): void {
+    if (!this.db) return
+    const auditRow = this.db.prepare(`
+      SELECT value FROM schema_meta WHERE key='entity_evidence_fts_integrity'
+    `).get() as any
+    let previous: any = {}
+    try { previous = JSON.parse(String(auditRow?.value || '{}')) } catch {}
+    const expectedTriggers = 3
+    const tableSql = String((this.db.prepare(`
+      SELECT sql FROM sqlite_master WHERE type='table' AND name='entity_evidence_fts'
+    `).get() as any)?.sql || '')
+    const tableHealthy = /using\s+fts5/i.test(tableSql) && /trigram/i.test(tableSql)
+    if (!tableHealthy && tableSql) this.db.exec('DROP TABLE entity_evidence_fts')
+    this.db.exec(`
+      CREATE VIRTUAL TABLE IF NOT EXISTS entity_evidence_fts USING fts5(
+        evidence_id UNINDEXED,
+        excerpt,
+        sender,
+        session_id,
+        message_id,
+        tokenize='trigram'
+      )
+    `)
+    const triggerRows = this.db.prepare(`
+      SELECT name,sql FROM sqlite_master
+      WHERE type='trigger' AND name LIKE 'trg_entity_evidence_fts_%'
+    `).all() as Array<{ name: string; sql: string }>
+    const missingOrChanged = Number((this.db.prepare(`
+      SELECT COUNT(*) AS count FROM entity_evidence ee
+      LEFT JOIN entity_evidence_fts f ON f.rowid=ee.id
+      WHERE f.rowid IS NULL OR f.evidence_id!=CAST(ee.id AS TEXT)
+        OR f.excerpt!=ee.excerpt OR f.sender!=ee.sender
+        OR f.session_id!=ee.session_id OR f.message_id!=ee.message_id
+    `).get() as any)?.count || 0)
+    const orphanRows = Number((this.db.prepare(`
+      SELECT COUNT(*) AS count FROM entity_evidence_fts f
+      LEFT JOIN entity_evidence ee ON ee.id=f.rowid WHERE ee.id IS NULL
+    `).get() as any)?.count || 0)
+    const triggersHealthy = triggerRows.length === expectedTriggers
+      && triggerRows.every(row => /entity_evidence_fts/i.test(row.sql || ''))
+    const repairRequired = !tableHealthy || !triggersHealthy || missingOrChanged > 0 || orphanRows > 0
+    if (repairRequired) {
+      this.db.exec(`
+        DROP TRIGGER IF EXISTS trg_entity_evidence_fts_insert;
+        DROP TRIGGER IF EXISTS trg_entity_evidence_fts_update;
+        DROP TRIGGER IF EXISTS trg_entity_evidence_fts_delete;
+        DELETE FROM entity_evidence_fts;
+        INSERT INTO entity_evidence_fts(rowid,evidence_id,excerpt,sender,session_id,message_id)
+        SELECT id,CAST(id AS TEXT),excerpt,sender,session_id,message_id FROM entity_evidence;
+      `)
+    }
+    this.db.exec(`
+      CREATE TRIGGER IF NOT EXISTS trg_entity_evidence_fts_insert AFTER INSERT ON entity_evidence BEGIN
+        INSERT INTO entity_evidence_fts(rowid,evidence_id,excerpt,sender,session_id,message_id)
+        VALUES(NEW.id,CAST(NEW.id AS TEXT),NEW.excerpt,NEW.sender,NEW.session_id,NEW.message_id);
+      END;
+      CREATE TRIGGER IF NOT EXISTS trg_entity_evidence_fts_update AFTER UPDATE ON entity_evidence BEGIN
+        DELETE FROM entity_evidence_fts WHERE rowid=OLD.id;
+        INSERT INTO entity_evidence_fts(rowid,evidence_id,excerpt,sender,session_id,message_id)
+        VALUES(NEW.id,CAST(NEW.id AS TEXT),NEW.excerpt,NEW.sender,NEW.session_id,NEW.message_id);
+      END;
+      CREATE TRIGGER IF NOT EXISTS trg_entity_evidence_fts_delete AFTER DELETE ON entity_evidence BEGIN
+        DELETE FROM entity_evidence_fts WHERE rowid=OLD.id;
+      END;
+    `)
+    const indexedRows = Number((this.db.prepare(`SELECT COUNT(*) AS count FROM entity_evidence_fts`).get() as any)?.count || 0)
+    const sourceRows = Number((this.db.prepare(`SELECT COUNT(*) AS count FROM entity_evidence`).get() as any)?.count || 0)
+    const checkedAt = new Date().toISOString()
+    const audit = {
+      version: 1,
+      checkedAt,
+      tokenizer: 'trigram',
+      sourceRows,
+      indexedRows,
+      expectedTriggers,
+      installedTriggers: expectedTriggers,
+      repairedThisStart: repairRequired,
+      rowsRebuiltThisStart: repairRequired ? sourceRows : 0,
+      repairsTotal: Number(previous.repairsTotal || 0) + (repairRequired ? 1 : 0),
+      healthy: sourceRows === indexedRows
+    }
+    this.db.prepare(`
+      INSERT INTO schema_meta(key,value,updated_at) VALUES('entity_evidence_fts_integrity',?,?)
+      ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_at=excluded.updated_at
+    `).run(JSON.stringify(audit), checkedAt)
+  }
+
+  getEntityEvidenceFtsHealth(): any {
+    if (!this.db) return { version: 1, healthy: false, expectedTriggers: 3, installedTriggers: 0 }
+    const row = this.db.prepare(`SELECT value,updated_at FROM schema_meta WHERE key='entity_evidence_fts_integrity'`).get() as any
+    try { return JSON.parse(String(row?.value || '{}')) } catch {
+      return { version: 1, checkedAt: String(row?.updated_at || ''), healthy: false, expectedTriggers: 3, installedTriggers: 0 }
+    }
   }
 
   private ensureMemorySearchRevisionTriggers(): void {
@@ -3276,6 +3372,7 @@ export class PersonalMemoryStore {
     const taskSearchIndexHealthy = taskSearchIndex.version === 0
       || taskSearchIndex.currentMismatches === 0
     const memorySearchRevision = this.getMemorySearchRevisionHealth()
+    const entityEvidenceFts = this.getEntityEvidenceFtsHealth()
     const memorySearchFeedbackArchiveRevision =
       this.getMemorySearchFeedbackArchiveRevisionHealth()
     const memoryDeletionAuditRevision = this.getMemoryDeletionAuditRevisionHealth()
@@ -3296,6 +3393,7 @@ export class PersonalMemoryStore {
         && genericSearchEvidenceIdentity.constraintsHealthy
         && structuredSearchIndexHealthy
         && taskSearchIndexHealthy
+        && entityEvidenceFts.healthy
         && memorySearchRevision.healthy
         && memorySearchFeedbackArchiveRevision.healthy
         && memoryDeletionAuditRevision.healthy
@@ -3315,6 +3413,7 @@ export class PersonalMemoryStore {
       genericSearchEvidenceIdentityHealthy: genericSearchEvidenceIdentity.constraintsHealthy,
       structuredSearchIndexHealthy,
       taskSearchIndexHealthy,
+      entityEvidenceFtsHealthy: entityEvidenceFts.healthy,
       memorySearchRevisionHealthy: memorySearchRevision.healthy,
       memorySearchFeedbackArchiveRevisionHealthy:
         memorySearchFeedbackArchiveRevision.healthy,
@@ -3343,6 +3442,7 @@ export class PersonalMemoryStore {
       genericSearchEvidenceIdentity,
       structuredSearchIndex,
       taskSearchIndex,
+      entityEvidenceFts,
       memorySearchRevision,
       memorySearchFeedbackArchiveRevision,
       memoryDeletionAuditRevision,
@@ -9523,7 +9623,7 @@ export class PersonalMemoryStore {
       `).all(`%${normalized}%`, `%${normalized}%`, safeLimit) as any[]
     }
     const evidencePattern = `%${normalized.toLowerCase()}%`
-    const evidenceMatches = this.db.prepare(`
+    const runEvidenceSearch = (useFts: boolean): any[] => this.db!.prepare(`
       WITH RECURSIVE entity_scope(root_id,entity_id) AS (
         SELECT e.id,e.id FROM entities e
         WHERE e.deleted_at IS NULL AND e.trust_status='confirmed'
@@ -9538,16 +9638,28 @@ export class PersonalMemoryStore {
       FROM search_documents d ${scopeJoin}
       JOIN entity_scope scope ON scope.root_id=d.source_id
       JOIN entity_evidence ee ON ee.entity_id=scope.entity_id
-      WHERE d.document_type='entity' AND (
+      ${useFts ? 'JOIN entity_evidence_fts efts ON efts.rowid=ee.id' : ''}
+      WHERE d.document_type='entity' AND ${useFts ? 'entity_evidence_fts MATCH ?' : `(
         LOWER(ee.excerpt) LIKE ? OR LOWER(ee.sender) LIKE ?
         OR LOWER(ee.session_id) LIKE ? OR LOWER(ee.message_id) LIKE ?
-      )
+      )`}
       GROUP BY d.id
       ORDER BY evidence_match_at DESC,d.id
       LIMIT ?
-    `).all(
-      evidencePattern, evidencePattern, evidencePattern, evidencePattern, safeLimit
-    ) as any[]
+    `).all(...(useFts
+      ? [`"${normalized.replace(/"/g, '""')}"`, safeLimit]
+      : [evidencePattern, evidencePattern, evidencePattern, evidencePattern, safeLimit]
+    )).map((item: any) => ({
+      ...item,
+      entity_evidence_search_mode: useFts ? 'fts_trigram' : 'scan_fallback'
+    })) as any[]
+    let evidenceMatches: any[] = []
+    const canUseTrigram = Array.from(normalized).length >= 3
+    let ftsFailed = false
+    if (canUseTrigram) {
+      try { evidenceMatches = runEvidenceSearch(true) } catch { ftsFailed = true }
+    }
+    if (!canUseTrigram || ftsFailed) evidenceMatches = runEvidenceSearch(false)
     const knownIds = new Set(exactMatches.map(item => item.id))
     const uniqueEvidenceMatches = evidenceMatches.filter(item => {
       if (knownIds.has(item.id)) return false

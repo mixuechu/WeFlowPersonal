@@ -4490,6 +4490,10 @@ test('direct entity evidence is keyword searchable, scope aware and hydrated as 
   const result = store.searchText('火星暗号', 10)
     .find(item => item.id === 'entity:searchable-evidence-entity')
   assert.equal(result?.match_reason, 'entity_evidence')
+  assert.equal(result?.entity_evidence_search_mode, 'fts_trigram')
+  assert.equal(store.searchText('火星', 10)
+    .find(item => item.id === 'entity:searchable-evidence-entity')?.entity_evidence_search_mode,
+  'scan_fallback')
   const payload = store.getDocumentEvidencePayload('entity', 'searchable-evidence-entity')
   assert.equal(payload.evidenceTotal, 2)
   assert.ok(payload.evidence.every(item => item.evidence_role === 'original'))
@@ -4543,6 +4547,71 @@ test('direct entity evidence is keyword searchable, scope aware and hydrated as 
   assert.ok(store.searchText('新的身份线索', 10)
     .some(item => item.id === 'entity:searchable-evidence-entity'))
 }))
+
+test('entity evidence trigram index repairs trigger and row drift on restart', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'weflow-entity-evidence-fts-'))
+  const databasePath = join(directory, 'memory.sqlite')
+  const first = new PersonalMemoryStore()
+  try {
+    first.initialize(databasePath)
+    first.syncGraph({
+      entities: [{
+        id: 'fts-repair-person', type: 'person', canonicalName: '索引修复人物',
+        confidence: 1, trustStatus: 'confirmed', aliases: [], accountIds: []
+      }], relations: [], reviewQueue: []
+    } as any, '', {
+      entityEvidence: [{
+        entityId: 'fts-repair-person', sourceId: 'wechat', messageId: 'fts-repair-message',
+        sessionId: 'fts-repair-session', timestamp: 1_930_000_000, sender: '测试发送者',
+        excerpt: '启动后应恢复银河罗盘线索', evidenceKind: 'identity_anchor'
+      }]
+    })
+    const database = (first as any).db
+    const insertEvidence = database.prepare(`
+      INSERT INTO entity_evidence(entity_id,source_id,message_id,session_id,timestamp,sender,excerpt,evidence_kind)
+      VALUES('fts-repair-person','wechat',?,?,?,'批量发送者',?,'entity_mention')
+    `)
+    database.transaction(() => {
+      for (let index = 0; index < 3_000; index += 1) {
+        insertEvidence.run(
+          `fts-scale-${index}`,
+          'fts-scale-session',
+          1_930_000_100 + index,
+          index === 2_999 ? '规模检索终点包含海王星钥匙' : `规模检索普通线索 ${index}`
+        )
+      }
+    })()
+    assert.equal(first.searchText('海王星钥匙', 10)[0]?.entity_evidence_search_mode, 'fts_trigram')
+    database.prepare(`UPDATE entity_evidence SET excerpt='更新后可检索土星坐标线索' WHERE message_id='fts-repair-message'`).run()
+    assert.ok(first.searchText('土星坐标', 10).some((item: any) => item.id === 'entity:fts-repair-person'))
+    assert.equal(first.searchText('银河罗盘', 10).length, 0)
+    database.exec(`
+      DROP TRIGGER trg_entity_evidence_fts_insert;
+      UPDATE entity_evidence_fts SET excerpt='漂移索引内容'
+      WHERE rowid=(SELECT id FROM entity_evidence WHERE message_id='fts-repair-message');
+    `)
+    first.close()
+
+    const reopened = new PersonalMemoryStore()
+    try {
+      reopened.initialize(databasePath)
+      const diagnostics = reopened.getDiagnostics()
+      assert.equal(diagnostics.entityEvidenceFtsHealthy, true)
+      assert.equal(diagnostics.entityEvidenceFts.repairedThisStart, true)
+      assert.equal(diagnostics.entityEvidenceFts.installedTriggers, 3)
+      assert.ok(reopened.searchText('土星坐标', 10)
+        .some(item => item.id === 'entity:fts-repair-person'))
+      assert.ok(reopened.searchText('海王星钥匙', 10)
+        .some(item => item.id === 'entity:fts-repair-person'))
+      assert.equal(reopened.searchText('漂移索引内容', 10).length, 0)
+    } finally {
+      reopened.close()
+    }
+  } finally {
+    first.close()
+    rmSync(directory, { recursive: true, force: true })
+  }
+})
 
 test('direct entity evidence follows reversible identity merges without copying plaintext', () => withStore(store => {
   const entities = ['source-identity-evidence', 'target-identity-evidence'].map((id, index) => ({

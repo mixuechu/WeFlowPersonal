@@ -8956,6 +8956,17 @@ function AiAssistantPage() {
                 <span>变更触发器 <b>{Number(memoryDiagnostics.memorySearchRevision.installedTriggers || 0).toLocaleString()} / {Number(memoryDiagnostics.memorySearchRevision.expectedTriggers || 0).toLocaleString()}</b></span>
               </div>
             </div>}
+            {memoryDiagnostics.entityEvidenceFts?.version && <div className={`assistant-recovery-audit ${memoryDiagnostics.entityEvidenceFtsHealthy ? 'healthy' : 'unhealthy'}`}>
+              <header><Search size={15} /><span><b>身份原文全文索引</b>
+                <small>用本机 trigram 索引检索身份线索；短词自动回退精确扫描。启动时会核对原表、索引内容和同步触发器，漂移后自动重建。</small>
+              </span></header>
+              <div className="assistant-recovery-current">
+                <span>当前状态 <b>{memoryDiagnostics.entityEvidenceFtsHealthy ? '一致' : '需要检查'}</b></span>
+                <span>索引记录 <b>{Number(memoryDiagnostics.entityEvidenceFts.indexedRows || 0).toLocaleString()} / {Number(memoryDiagnostics.entityEvidenceFts.sourceRows || 0).toLocaleString()}</b></span>
+                <span>同步触发器 <b>{Number(memoryDiagnostics.entityEvidenceFts.installedTriggers || 0)} / {Number(memoryDiagnostics.entityEvidenceFts.expectedTriggers || 0)}</b></span>
+                <span>累计自愈 <b>{Number(memoryDiagnostics.entityEvidenceFts.repairsTotal || 0).toLocaleString()}</b> 次</span>
+              </div>
+            </div>}
             {memoryDiagnostics.memorySearchFeedbackArchiveRevision?.version && <div className={`assistant-recovery-audit ${memoryDiagnostics.memorySearchFeedbackArchiveRevisionHealthy ? 'healthy' : 'unhealthy'}`}>
               <header><ShieldCheck size={15} /><span><b>检索反馈档案分页与删除保护</b>
                 <small>有用、无关、撤销和永久清理会推进独立 SQLCipher revision；旧分页会自动重载，删除确认若不再对应刚才预览的范围则必须重新预览，避免误删新增判断。</small>
