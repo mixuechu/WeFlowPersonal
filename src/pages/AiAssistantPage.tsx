@@ -10734,9 +10734,13 @@ function AiAssistantPage() {
                 <span>累计修复可信元数据 <b>{Number(memoryDiagnostics.structuredSearchIndex.metadataDocumentsRepairedTotal || 0).toLocaleString()}</b></span>
                 <span>累计修复资源文档 <b>{Number(memoryDiagnostics.structuredSearchIndex.resourceDocumentsRepairedTotal || 0).toLocaleString()}</b></span>
                 <span>累计修复实体文档 <b>{Number(memoryDiagnostics.structuredSearchIndex.entityDocumentsRepairedTotal || 0).toLocaleString()}</b></span>
+                <span>实时缺失/幽灵 <b>{Number(memoryDiagnostics.structuredSearchIndex.currentMissingDocuments || 0).toLocaleString()} / {Number(memoryDiagnostics.structuredSearchIndex.currentGhostDocuments || 0).toLocaleString()}</b></span>
+                <span>实时正文/元数据漂移 <b>{Number(memoryDiagnostics.structuredSearchIndex.currentMetadataMismatches || 0).toLocaleString()}</b></span>
+                <span>实时 FTS/孤儿载荷 <b>{Number(memoryDiagnostics.structuredSearchIndex.currentFtsPayloadMismatches || 0).toLocaleString()} / {Number(memoryDiagnostics.structuredSearchIndex.currentOrphanPayloadRows || 0).toLocaleString()}</b></span>
+                <span>实时 ANN 孤儿 <b>{Number(memoryDiagnostics.structuredSearchIndex.currentAnnOrphans || 0).toLocaleString()}</b></span>
                 <span>删除保护修复 <b>{Number(memoryDiagnostics.structuredSearchIndex.triggerRepairs || 0).toLocaleString()}</b> 次</span>
-                <span>本次检查 <b>{memoryDiagnostics.structuredSearchIndex.checkedAt
-                  ? new Date(memoryDiagnostics.structuredSearchIndex.checkedAt).toLocaleString('zh-CN')
+                <span>实时检查 <b>{memoryDiagnostics.structuredSearchIndex.liveCheckedAt
+                  ? new Date(memoryDiagnostics.structuredSearchIndex.liveCheckedAt).toLocaleString('zh-CN')
                   : '未知'}</b></span>
               </div>
               <small>这里只核验并重建可再生的全文、范围、分页、向量索引和回答证据修订账本，不会修改事实、事件、关系、待办或证据原文，也不会调用云端模型。</small>

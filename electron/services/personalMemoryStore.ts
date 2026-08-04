@@ -3260,7 +3260,7 @@ export class PersonalMemoryStore {
     })()
   }
 
-  private repairStructuredSearchIndex(): void {
+  private repairStructuredSearchIndex(options: { dryRun?: boolean } = {}): any {
     if (!this.db) return
     const auditRow = this.db.prepare(`
       SELECT value FROM schema_meta WHERE key='structured_search_index_integrity'
@@ -3556,7 +3556,8 @@ export class PersonalMemoryStore {
     }
     for (const row of this.db.prepare(`
       SELECT d.id AS document_id,d.title AS document_title,
-        d.search_text AS document_search_text,d.metadata_json AS document_metadata_json,r.*
+        d.search_text AS document_search_text,d.metadata_json AS document_metadata_json,
+        d.content_hash AS document_content_hash,r.*
       FROM search_documents d
       JOIN memory_resources r ON r.id=d.source_id WHERE d.document_type='resource'
     `).all() as any[]) {
@@ -3575,8 +3576,10 @@ export class PersonalMemoryStore {
         url: row.url || '',
         fileName: row.file_name || ''
       }
+      const expectedHash = createHash('sha256').update(searchText).digest('hex')
       if (row.document_title !== title
           || row.document_search_text !== searchText
+          || row.document_content_hash !== expectedHash
           || JSON.stringify(currentMetadata) !== JSON.stringify(expectedMetadata)) {
         resourceRepairs.push({
           id: String(row.document_id),
@@ -3646,6 +3649,22 @@ export class PersonalMemoryStore {
           ...expected,
           updatedAt: String(row.updated_at || checkedAt)
         })
+      }
+    }
+    const missingDocumentCount = missingClaims.length + missingRelations.length
+      + missingEvents.length + missingResources.length + missingEntities.length
+    const authoritativeMismatchCount = metadataRepairs.length
+      + structuredDocumentRepairs.length + resourceRepairs.length + entityRepairs.length
+    if (options.dryRun) {
+      return {
+        liveCheckedAt: checkedAt,
+        triggersHealthy: triggersHealthyBefore,
+        currentGhostDocuments: ghostDocuments.length,
+        currentMissingDocuments: missingDocumentCount,
+        currentFtsPayloadMismatches: ftsMismatches.length,
+        currentMetadataMismatches: authoritativeMismatchCount,
+        currentAnnOrphans: orphanAnn,
+        currentOrphanPayloadRows: orphanFts + orphanEvidence
       }
     }
     this.db.transaction(() => {
@@ -4534,12 +4553,15 @@ export class PersonalMemoryStore {
         }
       }
     })()
+    const liveStructuredSearchIndex = this.repairStructuredSearchIndex({ dryRun: true })
+    Object.assign(structuredSearchIndex, liveStructuredSearchIndex)
     const structuredSearchIndexHealthy = structuredSearchIndex.triggersHealthy
       && structuredSearchIndex.currentGhostDocuments === 0
       && structuredSearchIndex.currentMissingDocuments === 0
       && structuredSearchIndex.currentFtsPayloadMismatches === 0
       && structuredSearchIndex.currentMetadataMismatches === 0
       && structuredSearchIndex.currentAnnOrphans === 0
+      && Number(structuredSearchIndex.currentOrphanPayloadRows || 0) === 0
     const taskSearchIndex = (() => {
       const row = this.db!.prepare(`
         SELECT value,updated_at FROM schema_meta WHERE key='task_search_index_integrity'

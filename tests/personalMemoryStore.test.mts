@@ -3811,6 +3811,13 @@ test('runtime search repair restores derived indexes without reopening the datab
   assert.equal(Number(database.prepare(`
     SELECT COUNT(*) AS count FROM search_documents WHERE id='claim:runtime-repair-claim'
   `).get().count), 0)
+  const drifted = store.getDiagnostics()
+  assert.equal(drifted.healthy, false)
+  assert.equal(drifted.structuredSearchIndexHealthy, false)
+  assert.ok(drifted.structuredSearchIndex.currentMissingDocuments >= 1)
+  assert.ok(drifted.structuredSearchIndex.currentGhostDocuments >= 1)
+  assert.ok(drifted.structuredSearchIndex.currentAnnOrphans >= 1)
+  assert.throws(() => store.createBackup(), /数据库一致性检查失败/)
   const result = store.repairRuntimeSearchDerivedState([task])
 
   assert.equal(result.healthy, true)
@@ -3828,6 +3835,38 @@ test('runtime search repair restores derived indexes without reopening the datab
   assert.equal(result.diagnostics.taskSearchIndexHealthy, true)
   assert.equal(store.getSearchMaintenanceCheckpoint().lastAuditHealthy, true)
   assert.ok(Date.parse(store.getSearchMaintenanceCheckpoint().checkedAt) > 0)
+}))
+
+test('live structured search audit rejects resource hash drift before trusted backup', () => withStore(store => {
+  store.upsertResources([{
+    id: 'live-resource-hash-drift',
+    resourceType: 'document',
+    title: '运行期资源校验',
+    content: '资源正文没有变化但内容哈希被改写',
+    fileName: '运行期资源.txt',
+    metadata: { sourceId: 'documents' }
+  }])
+  const database = (store as any).db
+  database.prepare(`
+    UPDATE search_documents SET content_hash='plausible-but-wrong-hash'
+    WHERE id='resource:live-resource-hash-drift'
+  `).run()
+
+  const drifted = store.getDiagnostics()
+  assert.equal(drifted.structuredSearchIndexHealthy, false)
+  assert.equal(drifted.structuredSearchIndex.currentMetadataMismatches, 1)
+  assert.throws(() => store.createBackup(), /数据库一致性检查失败/)
+
+  const repaired = store.repairRuntimeSearchDerivedState([])
+  assert.equal(repaired.healthy, true)
+  assert.equal(repaired.diagnostics.structuredSearchIndex.currentMetadataMismatches, 0)
+  const document = database.prepare(`
+    SELECT search_text,content_hash FROM search_documents
+    WHERE id='resource:live-resource-hash-drift'
+  `).get()
+  assert.equal(document.content_hash,
+    createHash('sha256').update(document.search_text).digest('hex'))
+  assert.equal(store.createBackup().success, true)
 }))
 
 test('Chinese substring search falls back when the exact FTS phrase misses', () => withStore(store => {
