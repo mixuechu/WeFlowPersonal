@@ -108,5 +108,44 @@ export function buildTaskReminders(tasks: any[], now = new Date()): TaskReminder
       })
     }
   }
-  return reminders.sort((left, right) => (left.severity === right.severity ? 0 : left.severity === 'high' ? -1 : 1))
+  return reminders.sort((left, right) => {
+    const severity = left.severity === right.severity ? 0 : left.severity === 'high' ? -1 : 1
+    return severity || left.id.localeCompare(right.id)
+  })
+}
+
+export function paginateTaskReminders(
+  reminders: TaskReminder[],
+  options: {
+    offset?: number
+    limit?: number
+    revision: string
+    expectedRevision?: string
+  }
+): {
+  items: TaskReminder[]
+  offset: number
+  limit: number
+  total: number
+  hasMore: boolean
+  revision: string
+  stale: boolean
+} {
+  const offset = Math.max(0, Math.floor(Number(options.offset) || 0))
+  const limit = Math.max(1, Math.min(100, Math.floor(Number(options.limit) || 8)))
+  const revision = String(options.revision || '0')
+  const expectedRevision = String(options.expectedRevision || '')
+  if (offset > 0 && expectedRevision !== revision) {
+    return { items: [], offset, limit, total: reminders.length, hasMore: false, revision, stale: true }
+  }
+  const items = reminders.slice(offset, offset + limit)
+  return {
+    items,
+    offset,
+    limit,
+    total: reminders.length,
+    hasMore: offset + items.length < reminders.length,
+    revision,
+    stale: false
+  }
 }

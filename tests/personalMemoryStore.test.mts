@@ -19,7 +19,12 @@ import {
   paginateMemoryResults
 } from '../electron/services/memorySearchFilters.ts'
 import { buildContextualMemoryQuestion, buildMemoryQueryPlan } from '../electron/services/memoryQueryPlanner.ts'
-import { applyReminderPreferences, buildTaskReminders, findMatchingTask } from '../electron/services/taskIntelligence.ts'
+import {
+  applyReminderPreferences,
+  buildTaskReminders,
+  findMatchingTask,
+  paginateTaskReminders
+} from '../electron/services/taskIntelligence.ts'
 import {
   buildEntityInsights,
   listEntityRelatedTasks,
@@ -9141,6 +9146,38 @@ test('reminder preferences mute kinds and temporarily snooze individual reminder
   }, new Date('2026-07-30T00:00:00.000Z'))
   assert.deepEqual(result.visible.map(item => item.id), ['overdue:a'])
   assert.equal(result.suppressed, 2)
+})
+
+test('task reminder directory pages every reminder and rejects mixed revisions', () => {
+  const reminders = Array.from({ length: 125 }, (_, index) => ({
+    id: `overdue:task-${String(index).padStart(3, '0')}`,
+    taskId: `task-${index}`,
+    kind: 'overdue' as const,
+    severity: 'high' as const,
+    title: `提醒 ${index}`,
+    reason: `第 ${index} 条提醒`
+  }))
+  const first = paginateTaskReminders(reminders, {
+    offset: 0, limit: 40, revision: 'revision-a'
+  })
+  const second = paginateTaskReminders(reminders, {
+    offset: 40, limit: 40, revision: 'revision-a', expectedRevision: first.revision
+  })
+  const last = paginateTaskReminders(reminders, {
+    offset: 80, limit: 100, revision: 'revision-a', expectedRevision: first.revision
+  })
+  assert.equal(first.total, 125)
+  assert.equal(first.hasMore, true)
+  assert.equal(second.items[0]?.id, 'overdue:task-040')
+  assert.equal(last.items.length, 45)
+  assert.equal(last.hasMore, false)
+  assert.equal(new Set([...first.items, ...second.items, ...last.items].map(item => item.id)).size, 125)
+
+  const stale = paginateTaskReminders(reminders.slice(1), {
+    offset: 40, limit: 40, revision: 'revision-b', expectedRevision: first.revision
+  })
+  assert.equal(stale.stale, true)
+  assert.equal(stale.items.length, 0)
 })
 
 test('message semantic recovery preserves quoted authorship and card media types', () => {

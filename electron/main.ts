@@ -4560,6 +4560,8 @@ function registerIpcHandlers() {
     aiAssistantService.getTaskWorkspace(taskId))
   ipcMain.handle('ai-assistant:getTaskHistoryPage', (_, taskId: string, options?: any) =>
     aiAssistantService.getTaskHistoryPage(taskId, options))
+  ipcMain.handle('ai-assistant:getTaskReminderPage', (_, options?: any) =>
+    aiAssistantService.getTaskReminderPage(options))
   ipcMain.handle('ai-assistant:getTaskDependencyCandidates', (_, options?: any) =>
     aiAssistantService.getTaskDependencyCandidates(options))
   ipcMain.handle('ai-assistant:getActiveTaskWorkset', (_, options?: any) =>

@@ -1762,6 +1762,15 @@ export interface ElectronAPI {
         revision: string
         stale: boolean
       }>
+      getTaskReminderPage: (options?: any) => Promise<{
+        items: any[]
+        offset: number
+        limit: number
+        total: number
+        hasMore: boolean
+        revision: string
+        stale: boolean
+      }>
       getTaskDependencyCandidates: (options?: any) => Promise<{
         items: any[]
         total: number

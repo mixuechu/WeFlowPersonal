@@ -637,6 +637,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
     getTaskWorkspace: (taskId: string) => ipcRenderer.invoke('ai-assistant:getTaskWorkspace', taskId),
     getTaskHistoryPage: (taskId: string, options?: any) =>
       ipcRenderer.invoke('ai-assistant:getTaskHistoryPage', taskId, options),
+    getTaskReminderPage: (options?: any) =>
+      ipcRenderer.invoke('ai-assistant:getTaskReminderPage', options),
     getTaskDependencyCandidates: (options?: any) =>
       ipcRenderer.invoke('ai-assistant:getTaskDependencyCandidates', options),
     getActiveTaskWorkset: (options?: any) => ipcRenderer.invoke('ai-assistant:getActiveTaskWorkset', options),

@@ -57,6 +57,7 @@ import {
   buildTaskReminders,
   findMatchingTask,
   normalizeReminderPreferences,
+  paginateTaskReminders,
   type ReminderPreferences,
   type TaskReminder
 } from './taskIntelligence'
@@ -3740,6 +3741,14 @@ export class AiAssistantService {
     const taskOwnershipReviewStats = personalMemoryStore.getTaskOwnershipReviewStats()
     const allTaskReminders = buildTaskReminders(tasks)
     const reminderResult = applyReminderPreferences(allTaskReminders, this.state.reminderPreferences)
+    const taskReminderRevision = this.buildTaskReminderRevision(
+      reminderResult.visible,
+      taskWorksetStats.revision
+    )
+    const taskReminderPage = paginateTaskReminders(reminderResult.visible, {
+      revision: taskReminderRevision,
+      limit: 8
+    })
     const memoryStats = personalMemoryStore.getMemoryStats()
     const projectCount = countProjectDirectory({
       entities: this.state.graph.entities,
@@ -3796,13 +3805,21 @@ export class AiAssistantService {
         policy: 'prepared_state_then_atomic_sql_with_compressed_failure_payload_v2'
       },
       taskRevision: taskWorksetStats.revision,
-      taskReminders: reminderResult.visible.slice(0, 32),
+      taskReminders: taskReminderPage.items,
+      taskReminderDirectory: {
+        total: taskReminderPage.total,
+        revision: taskReminderPage.revision,
+        hasMore: taskReminderPage.hasMore,
+        version: 'task-reminder-directory-v1',
+        directory: 'revision_paginated',
+        pageLimit: taskReminderPage.limit
+      },
       reminderPreferences: {
         ...this.state.reminderPreferences,
         suppressed: reminderResult.suppressed,
         total: allTaskReminders.length,
         visibleTotal: reminderResult.visible.length,
-        payloadLimit: 32
+        payloadLimit: taskReminderPage.limit
       },
       taskReviewFeedback: {
         ...personalMemoryStore.getTaskReviewFeedbackStats(),
@@ -3957,6 +3974,36 @@ export class AiAssistantService {
         historyPageLimit: 40
       }
     }
+  }
+
+  private buildTaskReminderRevision(reminders: TaskReminder[], taskRevision: string): string {
+    const preferenceIdentity = normalizeReminderPreferences(this.state.reminderPreferences)
+    return crypto.createHash('sha256').update(JSON.stringify({
+      taskRevision,
+      reminders: reminders.map(reminder => [
+        reminder.id, reminder.taskId, reminder.kind, reminder.severity, reminder.title, reminder.reason
+      ]),
+      mutedKinds: preferenceIdentity.mutedKinds,
+      snoozedUntil: preferenceIdentity.snoozedUntil
+    })).digest('hex')
+  }
+
+  getTaskReminderPage(options: any = {}): any {
+    const tasks = this.state.tasks.filter(task => task.classification === 'mine')
+    const reminders = applyReminderPreferences(
+      buildTaskReminders(tasks),
+      this.state.reminderPreferences
+    ).visible
+    const revision = this.buildTaskReminderRevision(
+      reminders,
+      personalMemoryStore.getTaskArchiveRevision()
+    )
+    return paginateTaskReminders(reminders, {
+      offset: Number(options?.offset || 0),
+      limit: Number(options?.limit || 8),
+      revision,
+      expectedRevision: String(options?.revision || '')
+    })
   }
 
   getTaskHistoryPage(taskId: string, options: any = {}): any {

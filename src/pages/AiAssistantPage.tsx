@@ -758,6 +758,13 @@ function AiAssistantPage() {
   const [taskWorksetLoadingMore, setTaskWorksetLoadingMore] = useState(false)
   const [taskWorksetRefreshKey, setTaskWorksetRefreshKey] = useState(0)
   const taskWorksetGate = useRef(new LatestRequestGate())
+  const [taskReminderPage, setTaskReminderPage] = useState<{
+    items: any[]
+    total: number
+    hasMore: boolean
+    revision: string
+  }>({ items: [], total: 0, hasMore: false, revision: '' })
+  const [taskReminderLoadingMore, setTaskReminderLoadingMore] = useState(false)
   const [taskArchive, setTaskArchive] = useState<{
     items: Task[]
     total: number
@@ -1387,6 +1394,18 @@ function AiAssistantPage() {
       if (taskWorksetGate.current.isCurrent(request)) taskWorksetGate.current.invalidate()
     }
   }, [taskWorksetOptions, dashboard?.taskRevision, taskWorksetRefreshKey])
+
+  useEffect(() => {
+    const directory = dashboard?.taskReminderDirectory
+    if (!directory) return
+    setTaskReminderLoadingMore(false)
+    setTaskReminderPage({
+      items: dashboard?.taskReminders || [],
+      total: Number(directory.total || 0),
+      hasMore: Boolean(directory.hasMore),
+      revision: String(directory.revision || '')
+    })
+  }, [dashboard?.taskReminderDirectory?.revision])
 
   useEffect(() => {
     if (!focusedTaskId || taskWorkset.loading ||
@@ -2316,7 +2335,7 @@ function AiAssistantPage() {
     : [...(selectedProject?.decisions || []), ...(selectedProject?.milestones || [])]
   const tasks: Task[] = taskWorkset.items
   const taskReviewQueue: Task[] = taskOwnershipReviews.items
-  const taskReminders: any[] = dashboard?.taskReminders || []
+  const taskReminders: any[] = taskReminderPage.items
   const reminderPreferences = dashboard?.reminderPreferences
   const taskReviewFeedback = dashboard?.taskReviewFeedback || { mine: 0, rejected: 0, suppressed: 0, reconciled: 0, recent: [] }
   const displayedTasks = tasks
@@ -2331,6 +2350,32 @@ function AiAssistantPage() {
     })
     setMessage(action === 'helpful' ? '已记录：这条提醒有用。' : action === 'snooze' ? '已推迟 24 小时。' : '提醒偏好已更新。')
     await load()
+  }
+  const loadMoreTaskReminders = async () => {
+    if (taskReminderLoadingMore || !taskReminderPage.hasMore) return
+    setTaskReminderLoadingMore(true)
+    try {
+      const result = await window.electronAPI.aiAssistant.getTaskReminderPage({
+        offset: taskReminderPage.items.length,
+        limit: 40,
+        revision: taskReminderPage.revision
+      })
+      if (result.stale) {
+        setMessage('任务或提醒偏好已经变化，已重新加载最新提醒。')
+        await load()
+        return
+      }
+      setTaskReminderPage(current => ({
+        items: [...current.items, ...result.items],
+        total: result.total,
+        hasMore: result.hasMore,
+        revision: result.revision
+      }))
+    } catch (error: any) {
+      setMessage(error?.message || '加载更多提醒失败')
+    } finally {
+      setTaskReminderLoadingMore(false)
+    }
   }
   const moveCalendarMonth = (offset: number) => {
     const [year, month] = calendarMonth.split('-').map(Number)
@@ -6032,7 +6077,7 @@ function AiAssistantPage() {
               已完成和已取消任务进入下方档案。原文证据和修改历史仅在展开单条任务时读取。
             </small>}
             {(!!taskReminders.length || reminderPreferences?.mutedKinds?.length) && <div className="assistant-task-reminders">
-              {taskReminders.slice(0, 8).map(reminder => <article key={reminder.id} className={reminder.severity}>
+              {taskReminders.map(reminder => <article key={reminder.id} className={reminder.severity}>
                 <button className="assistant-reminder-main"
                   onClick={() => {
                     setTaskView('list')
@@ -6053,8 +6098,13 @@ function AiAssistantPage() {
                   { id: '', taskId: '', kind }, 'restore_kind'
                 )}>恢复“{kind === 'overdue' ? '逾期' : kind === 'due_soon' ? '临期' : kind === 'blocked' ? '依赖阻塞' : '等待过久'}”提醒</button>)}</div>
               </details>}
-              {Number(reminderPreferences?.visibleTotal || 0) > Number(reminderPreferences?.payloadLimit || 32) &&
-                <small>提醒按紧迫度展示前 {reminderPreferences.payloadLimit} / {reminderPreferences.visibleTotal} 条。</small>}
+              {taskReminderPage.hasMore && <button
+                onClick={() => void loadMoreTaskReminders()}
+                disabled={taskReminderLoadingMore}>
+                {taskReminderLoadingMore
+                  ? '正在加载提醒…'
+                  : `加载更多提醒（已显示 ${taskReminders.length} / ${taskReminderPage.total}）`}
+              </button>}
             </div>}
             {taskView === 'calendar' && <div className="assistant-task-calendar">
               <header><button onClick={() => moveCalendarMonth(-1)}>‹</button><strong>{calendarMonth}</strong><button onClick={() => moveCalendarMonth(1)}>›</button></header>
