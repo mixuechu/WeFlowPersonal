@@ -1859,7 +1859,13 @@ export interface ElectronAPI {
         expectedRevision?: string
       ) => Promise<any>
       revertTaskReview: (evidenceFingerprint: string, expectedRevision?: string) => Promise<any>
-      updateReminderPreference: (input: any) => Promise<any>
+      updateReminderPreference: (input: {
+        reminderId?: string
+        taskId?: string
+        kind: 'overdue' | 'due_soon' | 'waiting_stale' | 'blocked'
+        action: 'helpful' | 'snooze' | 'mute_kind' | 'restore_kind'
+        expectedRevision: string
+      }) => Promise<any>
       updateGraphReview: (id: string, decision: 'confirmed' | 'rejected', options?: {
         expectedRevision?: string
         mergeTargetEntityId?: string

@@ -795,6 +795,8 @@ function AiAssistantPage() {
     revision: string
   }>({ items: [], total: 0, hasMore: false, revision: '' })
   const [taskReminderLoadingMore, setTaskReminderLoadingMore] = useState(false)
+  const [taskReminderSaving, setTaskReminderSaving] = useState<Record<string, boolean>>({})
+  const taskReminderMutationGates = useRef(new KeyedLatestRequestGates())
   const [taskArchive, setTaskArchive] = useState<{
     items: Task[]
     total: number
@@ -2438,14 +2440,34 @@ function AiAssistantPage() {
   )
   const selectedCalendarDay = taskCalendar.days.find(day => day.date === selectedCalendarDate)
   const updateReminderPreference = async (reminder: any, action: 'helpful' | 'snooze' | 'mute_kind' | 'restore_kind') => {
-    await window.electronAPI.aiAssistant.updateReminderPreference({
-      reminderId: reminder.id,
-      taskId: reminder.taskId,
-      kind: reminder.kind,
-      action
-    })
-    setMessage(action === 'helpful' ? '已记录：这条提醒有用。' : action === 'snooze' ? '已推迟 24 小时。' : '提醒偏好已更新。')
-    await load()
+    const key = action === 'restore_kind' ? `restore:${reminder.kind}` : reminder.id
+    if (taskReminderSaving[key]) return
+    const request = taskReminderMutationGates.current.begin(key)
+    setTaskReminderSaving(current => setKeyedLoadingState(current, key, true))
+    try {
+      await window.electronAPI.aiAssistant.updateReminderPreference({
+        reminderId: reminder.id,
+        taskId: reminder.taskId,
+        kind: reminder.kind,
+        action,
+        expectedRevision: taskReminderPage.revision
+      })
+      if (!taskReminderMutationGates.current.isCurrent(key, request)) return
+      setMessage(action === 'helpful' ? '已记录：这条提醒有用。' : action === 'snooze' ? '已推迟 24 小时。' : '提醒偏好已更新。')
+      await load()
+    } catch (error: any) {
+      if (!taskReminderMutationGates.current.isCurrent(key, request)) return
+      const errorMessage = error?.message || String(error)
+      setMessage(errorMessage)
+      if (errorMessage.includes('提醒列表在展示后发生了变化') ||
+          errorMessage.includes('这条提醒已变化或不再需要处理')) {
+        await load()
+      }
+    } finally {
+      if (taskReminderMutationGates.current.isCurrent(key, request)) {
+        setTaskReminderSaving(current => setKeyedLoadingState(current, key, false))
+      }
+    }
   }
   const loadMoreTaskReminders = async () => {
     if (taskReminderLoadingMore || !taskReminderPage.hasMore) return
@@ -6302,16 +6324,17 @@ function AiAssistantPage() {
                   <span>{reminder.reason}</span>
                 </button>
                 <div className="assistant-reminder-feedback">
-                  <button onClick={() => void updateReminderPreference(reminder, 'helpful')}>有用</button>
-                  <button onClick={() => void updateReminderPreference(reminder, 'snooze')}>24 小时后</button>
-                  <button onClick={() => void updateReminderPreference(reminder, 'mute_kind')}>关闭此类</button>
+                  <button disabled={!!taskReminderSaving[reminder.id]} onClick={() => void updateReminderPreference(reminder, 'helpful')}>有用</button>
+                  <button disabled={!!taskReminderSaving[reminder.id]} onClick={() => void updateReminderPreference(reminder, 'snooze')}>24 小时后</button>
+                  <button disabled={!!taskReminderSaving[reminder.id]} onClick={() => void updateReminderPreference(reminder, 'mute_kind')}>关闭此类</button>
                 </div>
               </article>)}
               {!!reminderPreferences?.mutedKinds?.length && <details className="assistant-muted-reminders">
                 <summary>已关闭 {reminderPreferences.mutedKinds.length} 类提醒 · 共隐藏 {reminderPreferences.suppressed || 0} 条</summary>
-                <div>{reminderPreferences.mutedKinds.map((kind: string) => <button key={kind} onClick={() => void updateReminderPreference(
+                <div>{reminderPreferences.mutedKinds.map((kind: string) => <button key={kind}
+                  disabled={!!taskReminderSaving[`restore:${kind}`]} onClick={() => void updateReminderPreference(
                   { id: '', taskId: '', kind }, 'restore_kind'
-                )}>恢复“{kind === 'overdue' ? '逾期' : kind === 'due_soon' ? '临期' : kind === 'blocked' ? '依赖阻塞' : '等待过久'}”提醒</button>)}</div>
+                )}>{taskReminderSaving[`restore:${kind}`] ? '正在恢复…' : `恢复“${kind === 'overdue' ? '逾期' : kind === 'due_soon' ? '临期' : kind === 'blocked' ? '依赖阻塞' : '等待过久'}”提醒`}</button>)}</div>
               </details>}
               {taskReminderPage.hasMore && <button
                 onClick={() => void loadMoreTaskReminders()}

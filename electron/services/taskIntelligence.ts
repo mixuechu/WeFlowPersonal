@@ -47,6 +47,30 @@ export function applyReminderPreferences(
   return { visible, suppressed: reminders.length - visible.length }
 }
 
+export function assertReminderPreferenceMutation(
+  reminders: TaskReminder[],
+  input: {
+    reminderId?: string
+    taskId?: string
+    kind?: TaskReminder['kind']
+    action?: ReminderPreferences['history'][number]['action']
+    expectedRevision?: string
+  },
+  currentRevision: string
+): void {
+  if (!input.expectedRevision || input.expectedRevision !== currentRevision) {
+    throw new Error('提醒列表在展示后发生了变化，请刷新后重新操作')
+  }
+  if (input.action === 'restore_kind') return
+  const reminder = reminders.find(item =>
+    item.id === String(input.reminderId || '') &&
+    item.taskId === String(input.taskId || '') &&
+    item.kind === input.kind)
+  if (!reminder) {
+    throw new Error('这条提醒已变化或不再需要处理，请刷新后重新操作')
+  }
+}
+
 function normalizedTitle(value: unknown): string {
   return String(value || '').toLowerCase().replace(/[\s，。！？、,.!?:：；;（）()[\]【】]/g, '')
 }

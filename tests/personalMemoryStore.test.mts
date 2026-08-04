@@ -21,6 +21,7 @@ import {
 import { buildContextualMemoryQuestion, buildMemoryQueryPlan } from '../electron/services/memoryQueryPlanner.ts'
 import {
   applyReminderPreferences,
+  assertReminderPreferenceMutation,
   buildTaskReminders,
   findMatchingTask,
   paginateTaskReminders
@@ -9506,6 +9507,48 @@ test('task reminder directory pages every reminder and rejects mixed revisions',
   })
   assert.equal(stale.stale, true)
   assert.equal(stale.items.length, 0)
+})
+
+test('reminder feedback is bound to the visible revision and exact reminder identity', () => {
+  const reminders = [{
+    id: 'overdue:task-a',
+    taskId: 'task-a',
+    kind: 'overdue' as const,
+    severity: 'high' as const,
+    title: '处理合同',
+    reason: '已逾期'
+  }]
+  assert.doesNotThrow(() => assertReminderPreferenceMutation(reminders, {
+    reminderId: 'overdue:task-a',
+    taskId: 'task-a',
+    kind: 'overdue',
+    action: 'snooze',
+    expectedRevision: 'revision-current'
+  }, 'revision-current'))
+  assert.throws(() => assertReminderPreferenceMutation(reminders, {
+    reminderId: 'overdue:task-a',
+    taskId: 'task-a',
+    kind: 'overdue',
+    action: 'helpful',
+    expectedRevision: 'revision-old'
+  }, 'revision-current'), /提醒列表在展示后发生了变化/)
+  assert.throws(() => assertReminderPreferenceMutation(reminders, {
+    reminderId: 'overdue:task-a',
+    taskId: 'task-other',
+    kind: 'overdue',
+    action: 'mute_kind',
+    expectedRevision: 'revision-current'
+  }, 'revision-current'), /这条提醒已变化或不再需要处理/)
+  assert.doesNotThrow(() => assertReminderPreferenceMutation([], {
+    kind: 'overdue',
+    action: 'restore_kind',
+    expectedRevision: 'revision-current'
+  }, 'revision-current'))
+  assert.throws(() => assertReminderPreferenceMutation([], {
+    kind: 'overdue',
+    action: 'restore_kind',
+    expectedRevision: ''
+  }, 'revision-current'), /提醒列表在展示后发生了变化/)
 })
 
 test('message semantic recovery preserves quoted authorship and card media types', () => {

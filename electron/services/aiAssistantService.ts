@@ -54,6 +54,7 @@ import {
 } from './taskMutationPolicy.ts'
 import {
   applyReminderPreferences,
+  assertReminderPreferenceMutation,
   buildTaskReminders,
   findMatchingTask,
   normalizeReminderPreferences,
@@ -3998,7 +3999,10 @@ export class AiAssistantService {
         reminder.id, reminder.taskId, reminder.kind, reminder.severity, reminder.title, reminder.reason
       ]),
       mutedKinds: preferenceIdentity.mutedKinds,
-      snoozedUntil: preferenceIdentity.snoozedUntil
+      snoozedUntil: preferenceIdentity.snoozedUntil,
+      history: preferenceIdentity.history.map(item => [
+        item.reminderId, item.taskId, item.kind, item.action, item.createdAt
+      ])
     })).digest('hex')
   }
 
@@ -5761,11 +5765,21 @@ export class AiAssistantService {
     taskId?: string
     kind: TaskReminder['kind']
     action: 'helpful' | 'snooze' | 'mute_kind' | 'restore_kind'
+    expectedRevision?: string
   }): ReminderPreferences {
     const allowedKinds = new Set<TaskReminder['kind']>(['overdue', 'due_soon', 'waiting_stale', 'blocked'])
     const allowedActions = new Set(['helpful', 'snooze', 'mute_kind', 'restore_kind'])
     if (!allowedKinds.has(input?.kind) || !allowedActions.has(input?.action)) throw new Error('无效的提醒反馈')
     const preferences = normalizeReminderPreferences(this.state.reminderPreferences)
+    const visibleReminders = applyReminderPreferences(
+      buildTaskReminders(this.state.tasks.filter(task => task.classification === 'mine')),
+      preferences
+    ).visible
+    const currentRevision = this.buildTaskReminderRevision(
+      visibleReminders,
+      personalMemoryStore.getTaskArchiveRevision()
+    )
+    assertReminderPreferenceMutation(visibleReminders, input, currentRevision)
     const now = new Date()
     if (input.action === 'snooze') {
       if (!input.reminderId) throw new Error('缺少提醒 ID')
