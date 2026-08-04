@@ -61,6 +61,47 @@ function evidenceSourceId(
   return embeddedSource || 'legacy'
 }
 
+function compactTaskReviewSnapshot(value: unknown): any {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return {}
+  const {
+    evidence: _evidence,
+    sourceMessageIds: _sourceMessageIds,
+    source_message_ids: _sourceMessageIdsLegacy,
+    ...snapshot
+  } = value as Record<string, unknown>
+  return snapshot
+}
+
+function parseJsonObject(value: unknown): any {
+  try {
+    const parsed = JSON.parse(String(value || '{}'))
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {}
+  } catch {
+    return {}
+  }
+}
+
+function parseJsonArray(value: unknown): any[] {
+  try {
+    const parsed = JSON.parse(String(value || '[]'))
+    return Array.isArray(parsed) ? parsed : []
+  } catch {
+    return []
+  }
+}
+
+function hydrateTaskReviewSnapshot(taskJson: unknown, evidenceJson: unknown): any {
+  const task = parseJsonObject(taskJson)
+  const evidence = parseJsonArray(evidenceJson)
+  if (!task.id && !task.title) return task
+  return {
+    ...task,
+    evidence,
+    sourceMessageIds: [...new Set(evidence.map(item =>
+      String(item?.messageId ?? item?.message_id ?? '').trim()).filter(Boolean))]
+  }
+}
+
 export class PersonalMemoryStore {
   private db: Database.Database | null = null
   private databasePath = ''
@@ -801,6 +842,7 @@ export class PersonalMemoryStore {
     this.ensureStructuredMemoryRevisionTriggers()
     this.ensureGraphReviewRevisionTriggers()
     this.normalizeTaskHistoryEvidence()
+    this.compactTaskReviewSnapshots()
     this.ensureTaskArchiveRevisionTriggers()
     this.ensureTaskOwnershipReviewRevisionTriggers()
     this.ensureIdentityMergeArchiveRevisionTriggers()
@@ -3164,6 +3206,62 @@ export class PersonalMemoryStore {
         INSERT INTO schema_meta(key,value,updated_at) VALUES(?,?,?)
         ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_at=excluded.updated_at
       `).run(migrationKey, JSON.stringify(audit), audit.migratedAt)
+    })()
+  }
+
+  private compactTaskReviewSnapshots(): void {
+    if (!this.db) return
+    const metaKey = 'task_review_snapshot_storage_v2'
+    const existing = this.db.prepare('SELECT value FROM schema_meta WHERE key=?').get(metaKey) as any
+    if (existing) return
+    const rows = [
+      ...(this.db.prepare(`
+        SELECT 'decision' AS kind,evidence_fingerprint AS row_key,task_json
+        FROM task_review_decisions WHERE task_json!='{}'
+      `).all() as any[]),
+      ...(this.db.prepare(`
+        SELECT 'history' AS kind,CAST(id AS TEXT) AS row_key,task_json
+        FROM task_review_history WHERE task_json!='{}'
+      `).all() as any[])
+    ]
+    let rowsCompacted = 0
+    let bytesReclaimed = 0
+    let invalidRows = 0
+    const now = new Date().toISOString()
+    this.db.transaction(() => {
+      const updateDecision = this.db!.prepare(`
+        UPDATE task_review_decisions SET task_json=? WHERE evidence_fingerprint=?
+      `)
+      const updateHistory = this.db!.prepare(`
+        UPDATE task_review_history SET task_json=? WHERE id=CAST(? AS INTEGER)
+      `)
+      for (const row of rows) {
+        const before = String(row.task_json || '{}')
+        let parsed: any
+        try {
+          parsed = JSON.parse(before)
+          if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error()
+        } catch {
+          invalidRows += 1
+          continue
+        }
+        const after = JSON.stringify(compactTaskReviewSnapshot(parsed))
+        if (after === before) continue
+        if (row.kind === 'decision') updateDecision.run(after, row.row_key)
+        else updateHistory.run(after, row.row_key)
+        rowsCompacted += 1
+        bytesReclaimed += Math.max(0, Buffer.byteLength(before) - Buffer.byteLength(after))
+      }
+      this.db!.prepare(`
+        INSERT INTO schema_meta(key,value,updated_at) VALUES(?,?,?)
+      `).run(metaKey, JSON.stringify({
+        version: 2,
+        migratedAt: now,
+        rowsScanned: rows.length,
+        rowsCompacted,
+        bytesReclaimed,
+        invalidRows
+      }), now)
     })()
   }
 
@@ -8086,6 +8184,55 @@ export class PersonalMemoryStore {
     }
   }
 
+  getTaskReviewSnapshotStorageStats(): any {
+    if (!this.db) return {
+      version: 'task-review-snapshot-v2',
+      decisions: 0,
+      historyRows: 0,
+      evidenceBytes: 0,
+      snapshotBytes: 0,
+      embeddedEvidenceRows: 0,
+      migration: {}
+    }
+    const current = this.db.prepare(`
+      SELECT
+        (SELECT COUNT(*) FROM task_review_decisions) AS decisions,
+        (SELECT COUNT(*) FROM task_review_history) AS history_rows,
+        (SELECT COALESCE(SUM(LENGTH(CAST(evidence_json AS BLOB))),0)
+          FROM task_review_decisions) AS evidence_bytes,
+        (SELECT COALESCE(SUM(LENGTH(CAST(task_json AS BLOB))),0)
+          FROM task_review_decisions)
+          + (SELECT COALESCE(SUM(LENGTH(CAST(task_json AS BLOB))),0)
+            FROM task_review_history) AS snapshot_bytes,
+        (SELECT COUNT(*) FROM task_review_decisions WHERE CASE WHEN json_valid(task_json)
+          THEN json_type(task_json,'$.evidence') IS NOT NULL
+            OR json_type(task_json,'$.sourceMessageIds') IS NOT NULL
+            OR json_type(task_json,'$.source_message_ids') IS NOT NULL
+          ELSE 0 END)
+          + (SELECT COUNT(*) FROM task_review_history WHERE CASE WHEN json_valid(task_json)
+            THEN json_type(task_json,'$.evidence') IS NOT NULL
+              OR json_type(task_json,'$.sourceMessageIds') IS NOT NULL
+              OR json_type(task_json,'$.source_message_ids') IS NOT NULL
+            ELSE 0 END)
+          AS embedded_evidence_rows
+    `).get() as any
+    const meta = this.db.prepare(`
+      SELECT value FROM schema_meta WHERE key='task_review_snapshot_storage_v2'
+    `).get() as any
+    let migration: any = {}
+    try { migration = JSON.parse(String(meta?.value || '{}')) } catch {}
+    return {
+      version: 'task-review-snapshot-v2',
+      policy: 'one_authoritative_evidence_copy_per_decision',
+      decisions: Number(current?.decisions || 0),
+      historyRows: Number(current?.history_rows || 0),
+      evidenceBytes: Number(current?.evidence_bytes || 0),
+      snapshotBytes: Number(current?.snapshot_bytes || 0),
+      embeddedEvidenceRows: Number(current?.embedded_evidence_rows || 0),
+      migration
+    }
+  }
+
   countTaskHistory(taskId: string): number {
     if (!this.db || !taskId) return 0
     const row = this.db.prepare('SELECT COUNT(*) AS count FROM task_history WHERE task_id=?').get(taskId) as any
@@ -8103,7 +8250,7 @@ export class PersonalMemoryStore {
   }): any {
     if (!this.db) return null
     const now = new Date().toISOString()
-    const taskJson = JSON.stringify(input.task || {})
+    const taskJson = JSON.stringify(compactTaskReviewSnapshot(input.task))
     const transaction = this.db.transaction(() => {
       this.db!.prepare(`
         INSERT INTO task_review_decisions(
@@ -8127,9 +8274,14 @@ export class PersonalMemoryStore {
 
   getTaskReviewDecision(evidenceFingerprint: string): any {
     if (!this.db) return null
-    return this.db.prepare(`
+    const row = this.db.prepare(`
       SELECT * FROM task_review_decisions WHERE evidence_fingerprint=? AND revoked_at IS NULL
-    `).get(evidenceFingerprint) || null
+    `).get(evidenceFingerprint) as any
+    if (!row) return null
+    return {
+      ...row,
+      task_json: JSON.stringify(hydrateTaskReviewSnapshot(row.task_json, row.evidence_json))
+    }
   }
 
   listActiveTaskReviewDecisions(): any[] {
@@ -8138,7 +8290,7 @@ export class PersonalMemoryStore {
       SELECT * FROM task_review_decisions WHERE revoked_at IS NULL ORDER BY updated_at,evidence_fingerprint
     `).all() as any[]).map(row => {
       let task: any = {}
-      try { task = JSON.parse(String(row.task_json || '{}')) } catch {}
+      task = hydrateTaskReviewSnapshot(row.task_json, row.evidence_json)
       return { ...row, task }
     })
   }
@@ -8171,7 +8323,7 @@ export class PersonalMemoryStore {
     })
     transaction()
     let task: any = {}
-    try { task = JSON.parse(String(row.task_json || '{}')) } catch {}
+    task = hydrateTaskReviewSnapshot(row.task_json, row.evidence_json)
     return { ...row, task, revoked_at: now, updated_at: now }
   }
 
@@ -8200,7 +8352,7 @@ export class PersonalMemoryStore {
       let evidence: any[] = []
       let task: any = {}
       try { evidence = JSON.parse(String(row.evidence_json || '[]')) } catch {}
-      try { task = JSON.parse(String(row.task_json || '{}')) } catch {}
+      task = hydrateTaskReviewSnapshot(row.task_json, row.evidence_json)
       const { task_json: _taskJson, evidence_json: _evidenceJson, ...safeRow } = row
       return {
         ...safeRow,
@@ -8273,7 +8425,7 @@ export class PersonalMemoryStore {
     const rows = this.db.prepare(`
       SELECT evidence_fingerprint,task_id,decision,title,source,suppression_count,
         reconciliation_count,last_suppressed_at,last_reconciled_at,revoked_at,
-        created_at,updated_at,task_json
+        created_at,updated_at,task_json,evidence_json
       FROM task_review_decisions
       ${where}
       ORDER BY updated_at DESC,evidence_fingerprint ASC
@@ -8288,8 +8440,8 @@ export class PersonalMemoryStore {
     `).get() as any
     const items = rows.map(row => {
       let task: any = {}
-      try { task = JSON.parse(String(row.task_json || '{}')) } catch {}
-      const { task_json: _taskJson, ...safeRow } = row
+      task = hydrateTaskReviewSnapshot(row.task_json, row.evidence_json)
+      const { task_json: _taskJson, evidence_json: _evidenceJson, ...safeRow } = row
       return {
         ...safeRow,
         active: !row.revoked_at,
@@ -8353,8 +8505,8 @@ export class PersonalMemoryStore {
     if (!row) return null
     let evidence: any[] = []
     let task: any = {}
-    try { evidence = JSON.parse(String(row.evidence_json || '[]')) } catch {}
-    try { task = JSON.parse(String(row.task_json || '{}')) } catch {}
+    evidence = parseJsonArray(row.evidence_json)
+    task = hydrateTaskReviewSnapshot(row.task_json, row.evidence_json)
     const historyTotal = Number((this.db.prepare(`
       SELECT COUNT(*) AS count FROM task_review_history WHERE evidence_fingerprint=?
     `).get(evidenceFingerprint) as any)?.count || 0)

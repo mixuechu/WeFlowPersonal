@@ -4720,7 +4720,8 @@ export class AiAssistantService {
       taskStateStorage: {
         ...getTaskStateStorageStats(this.state.tasks),
         ...personalMemoryStore.getTaskEvidenceStorageStats(),
-        historyEvidence: personalMemoryStore.getTaskHistoryEvidenceStorageStats()
+        historyEvidence: personalMemoryStore.getTaskHistoryEvidenceStorageStats(),
+        reviewSnapshots: personalMemoryStore.getTaskReviewSnapshotStorageStats()
       },
       graphEntityEvidenceHotset: {
         version: 'graph-entity-evidence-hotset-v1',

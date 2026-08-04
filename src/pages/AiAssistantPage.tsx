@@ -8938,6 +8938,10 @@ function AiAssistantPage() {
                 <span>审计字段历史 <b>{Number(memoryDiagnostics.taskStateStorage.historyEvidence?.historyRows || 0).toLocaleString()}</b></span>
                 <span>审计证据集 <b>{Number(memoryDiagnostics.taskStateStorage.historyEvidence?.changeSets || 0).toLocaleString()}</b></span>
                 <span>旧重复回收 <b>{(Number(memoryDiagnostics.taskStateStorage.historyEvidence?.migration?.bytesReclaimed || 0) / 1024).toFixed(1)} KB</b></span>
+                <span>归属判断 <b>{Number(memoryDiagnostics.taskStateStorage.reviewSnapshots?.decisions || 0).toLocaleString()}</b></span>
+                <span>归属动作历史 <b>{Number(memoryDiagnostics.taskStateStorage.reviewSnapshots?.historyRows || 0).toLocaleString()}</b></span>
+                <span>快照内重复原文 <b>{Number(memoryDiagnostics.taskStateStorage.reviewSnapshots?.embeddedEvidenceRows || 0).toLocaleString()}</b></span>
+                <span>归属旧副本回收 <b>{(Number(memoryDiagnostics.taskStateStorage.reviewSnapshots?.migration?.bytesReclaimed || 0) / 1024).toFixed(1)} KB</b></span>
               </div>
             </div>}
             {memoryDiagnostics.identityMergeSnapshotStorage?.version && <div className="assistant-recovery-audit healthy">

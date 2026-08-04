@@ -10154,7 +10154,9 @@ test('task ownership feedback persists evidence-scoped decisions and suppression
       id: 'task-review-1',
       title: '查一下几点更新',
       status: 'todo',
-      classification: 'uncertain'
+      classification: 'uncertain',
+      evidence: evidence('message-task-review-1', '不应复制进任务快照的原文'),
+      sourceMessageIds: ['message-task-review-1']
     }
   })
   assert.equal(recorded.decision, 'rejected')
@@ -10165,6 +10167,22 @@ test('task ownership feedback persists evidence-scoped decisions and suppression
 
   const decision = store.getTaskReviewDecision('evidence-task-1')
   assert.equal(decision.suppression_count, 2)
+  const hydratedSnapshot = JSON.parse(decision.task_json)
+  assert.equal(hydratedSnapshot.evidence[0].messageId, 'message-task-review-1')
+  assert.deepEqual(hydratedSnapshot.sourceMessageIds, ['message-task-review-1'])
+  const physicalDecision = (store as any).db.prepare(`
+    SELECT task_json,evidence_json FROM task_review_decisions WHERE evidence_fingerprint=?
+  `).get('evidence-task-1')
+  assert.equal(JSON.parse(physicalDecision.task_json).evidence, undefined)
+  assert.equal(JSON.parse(physicalDecision.task_json).sourceMessageIds, undefined)
+  assert.equal(JSON.parse(physicalDecision.evidence_json)[0].messageId, 'message-task-review-1')
+  const physicalHistory = (store as any).db.prepare(`
+    SELECT task_json FROM task_review_history WHERE evidence_fingerprint=?
+  `).all('evidence-task-1')
+  assert.ok(physicalHistory.every((row: any) =>
+    JSON.parse(row.task_json).evidence === undefined
+      && JSON.parse(row.task_json).sourceMessageIds === undefined))
+  assert.equal(store.getTaskReviewSnapshotStorageStats().embeddedEvidenceRows, 0)
   const recent = store.listTaskReviewDecisions()
   assert.equal(recent.length, 1)
   assert.equal(recent[0].evidence[0].messageId, 'message-task-review-1')
@@ -10183,6 +10201,7 @@ test('task ownership feedback persists evidence-scoped decisions and suppression
 
   const reverted = store.revokeTaskReviewDecision('evidence-task-1')
   assert.equal(reverted.task.id, 'task-review-1')
+  assert.equal(reverted.task.evidence[0].messageId, 'message-task-review-1')
   assert.equal(store.getTaskReviewDecision('evidence-task-1'), null)
   assert.equal(store.listTaskReviewDecisions()[0].active, false)
   assert.deepEqual(
@@ -10323,6 +10342,61 @@ test('task review audit archive survives a SQLCipher process-style reopen', () =
     assert.equal(dossier.stale, false)
     assert.match(dossier.revision, /^\d+$/)
     assert.deepEqual(dossier.history.map((item: any) => item.action), ['revoked', 'rejected'])
+  } finally {
+    first.close()
+    second.close()
+    rmSync(directory, { recursive: true, force: true })
+  }
+})
+
+test('legacy task review snapshots compact embedded evidence and remain reversibly hydrated', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'weflow-task-review-snapshot-migration-'))
+  const databasePath = join(directory, 'memory.sqlite')
+  const key = randomBytes(32)
+  const first = new PersonalMemoryStore()
+  const second = new PersonalMemoryStore()
+  try {
+    first.initialize(databasePath, key)
+    first.recordTaskReviewDecision({
+      evidenceFingerprint: 'legacy-review-fingerprint',
+      taskId: 'legacy-review-task',
+      decision: 'rejected',
+      title: '旧归属判断',
+      source: '旧项目群',
+      evidence: evidence('legacy-review-message', `唯一权威原文 ${'x'.repeat(2_000)}`),
+      task: { id: 'legacy-review-task', title: '旧归属判断', classification: 'uncertain' }
+    })
+    const legacyTaskJson = JSON.stringify({
+      id: 'legacy-review-task',
+      title: '旧归属判断',
+      classification: 'uncertain',
+      evidence: evidence('legacy-review-message', `重复原文 ${'x'.repeat(2_000)}`),
+      sourceMessageIds: ['legacy-review-message']
+    })
+    ;(first as any).db.prepare(`
+      UPDATE task_review_decisions SET task_json=? WHERE evidence_fingerprint=?
+    `).run(legacyTaskJson, 'legacy-review-fingerprint')
+    ;(first as any).db.prepare(`
+      UPDATE task_review_history SET task_json=? WHERE evidence_fingerprint=?
+    `).run(legacyTaskJson, 'legacy-review-fingerprint')
+    ;(first as any).db.prepare(`
+      DELETE FROM schema_meta WHERE key='task_review_snapshot_storage_v2'
+    `).run()
+    first.close()
+
+    second.initialize(databasePath, key)
+    const stats = second.getTaskReviewSnapshotStorageStats()
+    assert.equal(stats.embeddedEvidenceRows, 0)
+    assert.equal(stats.migration.rowsCompacted, 2)
+    assert.ok(stats.migration.bytesReclaimed > 3_000)
+    const physical = (second as any).db.prepare(`
+      SELECT task_json FROM task_review_decisions WHERE evidence_fingerprint=?
+    `).get('legacy-review-fingerprint')
+    assert.equal(JSON.parse(physical.task_json).evidence, undefined)
+    const restored = second.revokeTaskReviewDecision('legacy-review-fingerprint')
+    assert.equal(restored.task.id, 'legacy-review-task')
+    assert.equal(restored.task.evidence[0].messageId, 'legacy-review-message')
+    assert.deepEqual(restored.task.sourceMessageIds, ['legacy-review-message'])
   } finally {
     first.close()
     second.close()
