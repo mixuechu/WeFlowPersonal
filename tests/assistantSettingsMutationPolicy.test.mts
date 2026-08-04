@@ -3,6 +3,7 @@ import assert from 'node:assert/strict'
 import {
   assertAssistantSettingsMutationToken,
   buildAssistantSettingsMutationToken,
+  normalizeAssistantSettingsInput,
   type AssistantSettingsMutationIdentity
 } from '../electron/services/assistantSettingsMutationPolicy.ts'
 
@@ -56,4 +57,33 @@ test('assistant settings token detects secret changes without exposing the secre
     token
   ), /AI 助理设置在展示后发生了变化/)
   assert.throws(() => assertAssistantSettingsMutationToken(current, ''), /发生了变化/)
+})
+
+test('assistant settings input is normalized as one complete valid patch', () => {
+  const patch = normalizeAssistantSettingsInput({
+    ...settings(),
+    apiKey: '  sk-new-secret  ',
+    baseUrl: '  http://127.0.0.1:9000/v1  ',
+    ownerName: '  用户  ',
+    resourceTrashRetentionDays: 90
+  })
+  assert.equal(patch.aiAssistantApiKey, 'sk-new-secret')
+  assert.equal(patch.aiAssistantApiBaseUrl, 'http://127.0.0.1:9000/v1')
+  assert.equal(patch.aiAssistantOwnerName, '用户')
+  assert.equal(patch.aiAssistantResourceTrashRetentionDays, 90)
+})
+
+test('assistant settings reject malformed input before a patch exists', () => {
+  assert.throws(() => normalizeAssistantSettingsInput({
+    ...settings(), scheduleTime: '29:99'
+  }), /有效时间/)
+  assert.throws(() => normalizeAssistantSettingsInput({
+    ...settings(), baseUrl: 'file:\/\/\/tmp\/model'
+  }), /http 或 https/)
+  assert.throws(() => normalizeAssistantSettingsInput({
+    ...settings(), outputCostPerMillion: Number.NaN
+  }), /有效数字/)
+  assert.throws(() => normalizeAssistantSettingsInput({
+    ...settings(), ocrImages: 'false'
+  }), /图片文字识别开关/)
 })

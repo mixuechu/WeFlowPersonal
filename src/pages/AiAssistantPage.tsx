@@ -452,6 +452,7 @@ function AiAssistantPage() {
   const [settings, setSettings] = useState<any>(null)
   const [showSettings, setShowSettings] = useState(false)
   const [settingsSaving, setSettingsSaving] = useState(false)
+  const [settingsError, setSettingsError] = useState('')
   const [syncing, setSyncing] = useState(false)
   const [message, setMessage] = useState('')
   const [graphQuery, setGraphQuery] = useState('')
@@ -2953,6 +2954,7 @@ function AiAssistantPage() {
   }
 
   const openSettings = async () => {
+    setSettingsError('')
     setSettings(await window.electronAPI.aiAssistant.getSettings())
     setShowSettings(true)
   }
@@ -2960,6 +2962,7 @@ function AiAssistantPage() {
   const saveSettings = async () => {
     if (settingsSaving) return
     setSettingsSaving(true)
+    setSettingsError('')
     try {
       await window.electronAPI.aiAssistant.setSettings(settings)
       setShowSettings(false)
@@ -2968,6 +2971,7 @@ function AiAssistantPage() {
     } catch (error: any) {
       const errorMessage = error?.message || String(error)
       setMessage(errorMessage)
+      setSettingsError(errorMessage)
       if (errorMessage.includes('AI 助理设置在展示后发生了变化')) {
         setSettings(await window.electronAPI.aiAssistant.getSettings())
       }
@@ -11027,6 +11031,10 @@ function AiAssistantPage() {
         <div className="assistant-modal-backdrop">
           <div className="assistant-modal">
             <div className="assistant-modal-title"><div><h2>AI 助理设置</h2><p>敏感 Key 由 Electron safeStorage 加密保存。</p></div><button disabled={settingsSaving} onClick={() => setShowSettings(false)}><X size={16} /></button></div>
+            {settingsError && <div className="assistant-error" role="alert">
+              <strong>设置没有保存</strong><span>{settingsError}</span>
+              <small>请修正后再次保存；本次没有写入任何部分设置。</small>
+            </div>}
             <label><span>DeepSeek API Key</span><input type="password" placeholder={settings.configured ? '已安全保存；留空表示不修改' : 'sk-...'} onChange={event => setSettings({ ...settings, apiKey: event.target.value })} /></label>
             <label><span>API 地址</span><input value={settings.baseUrl} onChange={event => setSettings({ ...settings, baseUrl: event.target.value })} /></label>
             <label><span>模型</span><input value={settings.model} onChange={event => setSettings({ ...settings, model: event.target.value })} /></label>

@@ -125,6 +125,7 @@ import {
 import {
   assertAssistantSettingsMutationToken,
   buildAssistantSettingsMutationToken,
+  normalizeAssistantSettingsInput,
   type AssistantSettingsMutationIdentity
 } from './assistantSettingsMutationPolicy'
 import { assertGraphReviewMutationRevision } from './graphReviewMutationPolicy'
@@ -5550,33 +5551,7 @@ export class AiAssistantService {
       ...currentVisibleSettings,
       apiKeySecret: String(this.config.get('aiAssistantApiKey') || '')
     } as AssistantSettingsMutationIdentity, input?.mutationToken)
-    const patch: any = {}
-    if (typeof input.apiKey === 'string' && input.apiKey.trim()) patch.aiAssistantApiKey = input.apiKey.trim()
-    if (typeof input.baseUrl === 'string' && input.baseUrl.trim()) patch.aiAssistantApiBaseUrl = input.baseUrl.trim()
-    if (typeof input.model === 'string' && input.model.trim()) patch.aiAssistantApiModel = input.model.trim()
-    if (/^\d{2}:\d{2}$/.test(input.scheduleTime || '')) patch.aiAssistantScheduleTime = input.scheduleTime
-    if (/^\d{2}:\d{2}$/.test(input.quietStart || '')) patch.aiAssistantQuietStart = input.quietStart
-    if (/^\d{2}:\d{2}$/.test(input.quietEnd || '')) patch.aiAssistantQuietEnd = input.quietEnd
-    if (Number.isFinite(Number(input.inputCostPerMillion)) && Number(input.inputCostPerMillion) >= 0) {
-      patch.aiAssistantInputCostPerMillion = Number(input.inputCostPerMillion)
-    }
-    if (Number.isFinite(Number(input.outputCostPerMillion)) && Number(input.outputCostPerMillion) >= 0) {
-      patch.aiAssistantOutputCostPerMillion = Number(input.outputCostPerMillion)
-    }
-    if (typeof input.enabled === 'boolean') patch.aiAssistantEnabled = input.enabled
-    if (typeof input.ownerName === 'string') patch.aiAssistantOwnerName = input.ownerName.trim()
-    if (typeof input.ownerAliases === 'string') patch.aiAssistantOwnerAliases = input.ownerAliases.trim()
-    if (typeof input.ownerBackground === 'string') patch.aiAssistantOwnerBackground = input.ownerBackground.trim()
-    if (typeof input.transcribeVoice === 'boolean') patch.autoTranscribeVoice = input.transcribeVoice
-    if (typeof input.ocrImages === 'boolean') patch.aiAssistantOcrImages = input.ocrImages
-    if (typeof input.analyzeImages === 'boolean') patch.aiAssistantAnalyzeImages = input.analyzeImages
-    if (typeof input.indexWebLinks === 'boolean') patch.aiAssistantIndexWebLinks = input.indexWebLinks
-    if ([0, 7, 30, 90].includes(Number(input.resourceTrashRetentionDays))) {
-      patch.aiAssistantResourceTrashRetentionDays = Number(input.resourceTrashRetentionDays)
-    }
-    if (['credentials', 'standard', 'strict'].includes(String(input.sensitiveRedactionLevel))) {
-      patch.aiAssistantSensitiveRedactionLevel = input.sensitiveRedactionLevel
-    }
+    const patch = normalizeAssistantSettingsInput(input)
     this.config.setMany(patch)
     if (patch.aiAssistantResourceTrashRetentionDays !== undefined) {
       personalMemoryStore.purgeExpiredResourceTrash(patch.aiAssistantResourceTrashRetentionDays)

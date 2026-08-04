@@ -9,6 +9,8 @@ test('config batch commit persists all assistant settings in one store replaceme
   process.env.WEFLOW_WORKER = '1'
   process.env.WEFLOW_CONFIG_CWD = directory
   const { ConfigService } = await import('../electron/services/config.ts')
+  const { normalizeAssistantSettingsInput } =
+    await import('../electron/services/assistantSettingsMutationPolicy.ts')
   const config = new ConfigService()
   config.setMany({
     aiAssistantEnabled: false,
@@ -28,6 +30,30 @@ test('config batch commit persists all assistant settings in one store replaceme
     aiAssistantOwnerName: '不应保存',
     someCacheMap: { unsafe: true }
   } as any), /不支持旁路缓存字段/)
+  assert.equal(config.get('aiAssistantOwnerName'), before)
+  assert.throws(() => {
+    const malformed = normalizeAssistantSettingsInput({
+      configured: true,
+      baseUrl: 'https://api.deepseek.com',
+      model: 'deepseek-chat',
+      scheduleTime: '27:75',
+      quietStart: '22:00',
+      quietEnd: '08:00',
+      inputCostPerMillion: 1,
+      outputCostPerMillion: 2,
+      enabled: true,
+      ownerName: '不应保存',
+      ownerAliases: '',
+      ownerBackground: '',
+      transcribeVoice: false,
+      ocrImages: false,
+      analyzeImages: true,
+      indexWebLinks: false,
+      resourceTrashRetentionDays: 30,
+      sensitiveRedactionLevel: 'standard'
+    })
+    config.setMany(malformed)
+  }, /有效时间/)
   assert.equal(config.get('aiAssistantOwnerName'), before)
   rmSync(directory, { recursive: true, force: true })
 })
