@@ -12493,6 +12493,21 @@ export class PersonalMemoryStore {
     return Number(result.changes || 0) === 1
   }
 
+  invalidateEmbeddingDimensionMismatches(model: string, expectedDimensions: number): number {
+    if (!this.db || !model || !Number.isInteger(expectedDimensions) || expectedDimensions <= 0) return 0
+    const result = this.db.prepare(`
+      UPDATE search_documents SET
+        embedding_model=NULL,
+        embedding_dimensions=NULL,
+        embedding_json=NULL
+      WHERE embedding_model=?
+        AND embedding_json IS NOT NULL
+        AND embedding_dimensions IS NOT NULL
+        AND embedding_dimensions<>?
+    `).run(model, expectedDimensions)
+    return Math.max(0, Number(result.changes || 0))
+  }
+
   getEmbeddingStats(model: string): any {
     if (!this.db) return {
       total: 0, indexed: 0, pending: 0, model,

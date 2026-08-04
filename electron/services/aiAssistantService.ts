@@ -601,6 +601,8 @@ export class AiAssistantService {
   private vectorIndexPromise: Promise<any> | null = null
   private vectorQueryHealth: VectorQueryHealth = {
     fallbackCount: 0,
+    dimensionRepairCount: 0,
+    lastDimensionRepairAt: '',
     lastFallbackAt: '',
     lastSuccessAt: '',
     lastError: ''
@@ -7015,12 +7017,20 @@ export class AiAssistantService {
     const scopeCandidateCount = allowedIds?.size ?? null
     const candidateLimit = Math.max(300, Math.min(500, Number(maxResults) || 40))
     const lexical = this.searchMemory(query, candidateLimit, allowedIds, scopedOptions)
+    let dimensionRepairs = 0
     try {
-      await this.ensureVectorIndex()
       const [queryVector] = await localEmbeddingService.embed([String(query || '')])
       const queryValidation = validateEmbeddingBatch([queryVector], 1)
       if (!queryValidation.valid) {
         throw new Error(`本地查询向量无效：${queryValidation.reason}`)
+      }
+      dimensionRepairs = personalMemoryStore.invalidateEmbeddingDimensionMismatches(
+        localEmbeddingService.modelVersion,
+        queryValidation.dimensions
+      )
+      await this.ensureVectorIndex()
+      if (personalMemoryStore.getEmbeddingStats(localEmbeddingService.modelVersion).pending > 0) {
+        await this.ensureVectorIndex()
       }
       const semantic = personalMemoryStore.searchVector(queryVector, localEmbeddingService.modelVersion, candidateLimit, {
         allowedIds
@@ -7055,7 +7065,8 @@ export class AiAssistantService {
       )
       this.vectorQueryHealth = recordVectorQueryOutcome(this.vectorQueryHealth, {
         success: true,
-        at: new Date().toISOString()
+        at: new Date().toISOString(),
+        dimensionRepairs
       })
       return this.applyStoredMemorySearchFeedback(query, scopedOptions, filtered)
         .slice(0, Math.max(1, Math.min(500, maxResults))).map(item => ({
@@ -7068,7 +7079,8 @@ export class AiAssistantService {
       this.vectorQueryHealth = recordVectorQueryOutcome(this.vectorQueryHealth, {
         success: false,
         at: new Date().toISOString(),
-        error: sanitizeDiagnosticText(error)
+        error: sanitizeDiagnosticText(error),
+        dimensionRepairs
       })
       const filtered = filterMemorySearchResults(lexical, scopedOptions, allowedIds !== null)
       return this.applyStoredMemorySearchFeedback(query, scopedOptions, filtered)

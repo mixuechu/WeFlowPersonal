@@ -7167,6 +7167,8 @@ test('embedding batches reject count, dimension and non-finite output before wri
 test('vector query fallback remains visible and a later success clears only current error', () => {
   const initial = {
     fallbackCount: 0,
+    dimensionRepairCount: 0,
+    lastDimensionRepairAt: '',
     lastFallbackAt: '',
     lastSuccessAt: '',
     lastError: ''
@@ -7178,6 +7180,8 @@ test('vector query fallback remains visible and a later success clears only curr
   })
   assert.deepEqual(failed, {
     fallbackCount: 1,
+    dimensionRepairCount: 0,
+    lastDimensionRepairAt: '',
     lastFallbackAt: '2026-08-05T01:00:00.000Z',
     lastSuccessAt: '',
     lastError: '本地查询向量无效：non_finite_value'
@@ -7190,6 +7194,57 @@ test('vector query fallback remains visible and a later success clears only curr
   assert.equal(recovered.lastFallbackAt, failed.lastFallbackAt)
   assert.equal(recovered.lastSuccessAt, '2026-08-05T01:05:00.000Z')
   assert.equal(recovered.lastError, '')
+})
+
+test('query dimension invalidation makes mismatched vectors pending without touching the current dimension', () => withStore(store => {
+  const model = 'test-query-dimension-binding'
+  store.syncTasks([
+    {
+      id: 'dimension-current',
+      title: '当前维度',
+      detail: '当前维度向量',
+      priority: 'medium',
+      status: 'todo',
+      classification: 'mine'
+    },
+    {
+      id: 'dimension-stale',
+      title: '漂移维度',
+      detail: '漂移维度向量',
+      priority: 'medium',
+      status: 'todo',
+      classification: 'mine'
+    }
+  ])
+  assert.equal(store.saveEmbedding('task:dimension-current', model, [1, 0]), true)
+  assert.equal(store.saveEmbedding('task:dimension-stale', model, [1, 0, 0]), true)
+
+  assert.equal(store.invalidateEmbeddingDimensionMismatches(model, 2), 1)
+  assert.deepEqual(store.searchVector([1, 0], model, 10).map(item => item.id), ['task:dimension-current'])
+  const candidates = store.listEmbeddingCandidates(model, 10).map(item => item.id)
+  assert.equal(candidates.includes('task:dimension-stale'), true)
+  assert.equal(candidates.includes('task:dimension-current'), false)
+  assert.equal(store.invalidateEmbeddingDimensionMismatches(model, 2), 0)
+}))
+
+test('vector query diagnostics count dimension repairs without turning them into failures', () => {
+  const repaired = recordVectorQueryOutcome({
+    fallbackCount: 2,
+    dimensionRepairCount: 3,
+    lastDimensionRepairAt: '2026-08-05T00:30:00.000Z',
+    lastFallbackAt: '2026-08-05T00:45:00.000Z',
+    lastSuccessAt: '',
+    lastError: 'old error'
+  }, {
+    success: true,
+    at: '2026-08-05T01:00:00.000Z',
+    dimensionRepairs: 4
+  })
+  assert.equal(repaired.fallbackCount, 2)
+  assert.equal(repaired.dimensionRepairCount, 7)
+  assert.equal(repaired.lastDimensionRepairAt, '2026-08-05T01:00:00.000Z')
+  assert.equal(repaired.lastSuccessAt, '2026-08-05T01:00:00.000Z')
+  assert.equal(repaired.lastError, '')
 })
 
 test('embedding commit is bound to the exact document content hash', () => withStore(store => {

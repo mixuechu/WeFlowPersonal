@@ -20,6 +20,8 @@ export function validateEmbeddingBatch(
 
 export type VectorQueryHealth = {
   fallbackCount: number
+  dimensionRepairCount: number
+  lastDimensionRepairAt: string
   lastFallbackAt: string
   lastSuccessAt: string
   lastError: string
@@ -27,16 +29,28 @@ export type VectorQueryHealth = {
 
 export function recordVectorQueryOutcome(
   current: VectorQueryHealth,
-  outcome: { success: boolean; at: string; error?: string }
+  outcome: { success: boolean; at: string; error?: string; dimensionRepairs?: number }
 ): VectorQueryHealth {
+  const dimensionRepairs = Math.max(0, Math.floor(Number(outcome.dimensionRepairs || 0)))
+  const repaired = dimensionRepairs
+    ? {
+        dimensionRepairCount: Math.max(0, Number(current.dimensionRepairCount || 0)) + dimensionRepairs,
+        lastDimensionRepairAt: outcome.at
+      }
+    : {
+        dimensionRepairCount: Math.max(0, Number(current.dimensionRepairCount || 0)),
+        lastDimensionRepairAt: String(current.lastDimensionRepairAt || '')
+      }
   return outcome.success
     ? {
         ...current,
+        ...repaired,
         lastSuccessAt: outcome.at,
         lastError: ''
       }
     : {
         ...current,
+        ...repaired,
         fallbackCount: Math.max(0, Number(current.fallbackCount || 0)) + 1,
         lastFallbackAt: outcome.at,
         lastError: String(outcome.error || 'unknown_vector_query_error').slice(0, 500)
