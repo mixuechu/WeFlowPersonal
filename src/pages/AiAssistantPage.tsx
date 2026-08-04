@@ -8054,6 +8054,16 @@ function AiAssistantPage() {
                 {citation.citationContentChanged && <small className="assistant-evidence-limit-note">
                   回答生成后，这条权威记忆的结构化内容已经被纠正或更新；它不再自动支持旧回答中的原陈述。
                 </small>}
+                {citation.citationEvidenceSampleChanged && <small className="assistant-evidence-limit-note">
+                  回答生成后，模型所依据的有界证据样本已经变化；旧陈述需要按当前原文重新核验。
+                </small>}
+                {citation.citationEvidenceRoleCountsChanged && <small className="assistant-evidence-limit-note">
+                  回答生成后，完整证据构成已经变化：
+                  当时有 {Number(citation.answerTimeEvidenceRoleCounts?.supporting || 0)} 条非反证原文、
+                  {Number(citation.answerTimeEvidenceRoleCounts?.contradiction || 0)} 条反证；现在有{' '}
+                  {Number(citation.evidenceRoleCounts?.supporting || 0)} 条非反证原文、
+                  {Number(citation.evidenceRoleCounts?.contradiction || 0)} 条反证。即使当前展示的有界样本未变，也需要重新核验旧结论。
+                </small>}
                 {citation.citationFreshness === 'ineligible' && <small className="assistant-evidence-limit-note">
                   这条记忆当前已被拒绝、取消或缺少合格原文，不能继续支持历史事实结论。
                 </small>}

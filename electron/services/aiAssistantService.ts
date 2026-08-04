@@ -7712,17 +7712,38 @@ export class AiAssistantService {
           const currentContentHash = /^[a-f0-9]{64}$/i.test(String(document.content_hash || ''))
             ? String(document.content_hash).toLowerCase()
             : ''
+          const answerTimeEvidenceRoleCounts = citation.evidenceRoleCounts
+            && typeof citation.evidenceRoleCounts === 'object'
+            ? {
+                supporting: Math.max(0, Math.floor(Number(citation.evidenceRoleCounts.supporting) || 0)),
+                contradiction: Math.max(0, Math.floor(Number(citation.evidenceRoleCounts.contradiction) || 0))
+              }
+            : undefined
+          const currentEvidenceRoleCounts = document.evidenceRoleCounts || undefined
           const citationFreshness = getMemoryCitationFreshness({
             answerTimeContentHash,
             currentContentHash,
             answerTimeEvidenceSampleHash: String(citation.evidenceSampleHash || ''),
             currentEvidenceSampleHash: memoryEvidenceSampleHash(document.evidence || []),
+            answerTimeEvidenceRoleCounts,
+            currentEvidenceRoleCounts,
             canSupportFacts: eligibility.canSupportFacts
           })
+          const citationEvidenceRoleCountsChanged = Boolean(
+            answerTimeEvidenceRoleCounts
+            && currentEvidenceRoleCounts
+            && (answerTimeEvidenceRoleCounts.supporting !== Number(currentEvidenceRoleCounts.supporting || 0)
+              || answerTimeEvidenceRoleCounts.contradiction !== Number(currentEvidenceRoleCounts.contradiction || 0))
+          )
+          const answerTimeEvidenceSampleHash = /^[a-f0-9]{64}$/i.test(
+            String(citation.evidenceSampleHash || '')
+          ) ? String(citation.evidenceSampleHash).toLowerCase() : ''
+          const currentEvidenceSampleHash = memoryEvidenceSampleHash(document.evidence || [])
           const hydratedCitation = {
             ...citation,
             answerTimeTitle: citation.title || '',
             answerTimeContentHash,
+            answerTimeEvidenceRoleCounts,
             currentContentHash,
             sourceId: document.source_id,
             type: document.document_type,
@@ -7737,12 +7758,20 @@ export class AiAssistantService {
             ),
             evidenceRoleCounts: document.evidenceRoleCounts || undefined,
             evidenceSelection: document.evidenceSelection || undefined,
-            evidenceSampleHash: memoryEvidenceSampleHash(document.evidence || []),
+            evidenceSampleHash: currentEvidenceSampleHash,
             canSupportFacts: eligibility.canSupportFacts,
             citationUnavailable: false,
             citationHydration: context ? 'authoritative_scoped' : 'authoritative_scope_unknown',
             citationFreshness,
-            citationContentChanged: citationFreshness === 'changed',
+            citationContentChanged: Boolean(
+              answerTimeContentHash && currentContentHash && answerTimeContentHash !== currentContentHash
+            ),
+            citationEvidenceSampleChanged: Boolean(
+              answerTimeEvidenceSampleHash
+              && currentEvidenceSampleHash
+              && answerTimeEvidenceSampleHash !== currentEvidenceSampleHash
+            ),
+            citationEvidenceRoleCountsChanged,
             relevanceFeedback,
             ...(canonicalFeedbackContext ? { feedbackContext: canonicalFeedbackContext } : {})
           }

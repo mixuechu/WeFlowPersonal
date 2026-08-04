@@ -333,6 +333,8 @@ export function getMemoryCitationFreshness(input: {
   currentContentHash?: string
   answerTimeEvidenceSampleHash?: string
   currentEvidenceSampleHash?: string
+  answerTimeEvidenceRoleCounts?: { supporting?: number; contradiction?: number }
+  currentEvidenceRoleCounts?: { supporting?: number; contradiction?: number }
   canSupportFacts?: boolean
   unavailable?: boolean
 }): 'current' | 'changed' | 'unknown' | 'ineligible' | 'missing' {
@@ -354,6 +356,22 @@ export function getMemoryCitationFreshness(input: {
   ) ? String(input.currentEvidenceSampleHash).toLowerCase() : ''
   if (answerEvidenceHash && currentEvidenceHash && answerEvidenceHash !== currentEvidenceHash) {
     return 'changed'
+  }
+  if (answerEvidenceHash && currentEvidenceHash
+    && input.answerTimeEvidenceRoleCounts && input.currentEvidenceRoleCounts) {
+    const normalizeCount = (value: unknown) => Math.max(0, Math.floor(Number(value) || 0))
+    const answerCounts = {
+      supporting: normalizeCount(input.answerTimeEvidenceRoleCounts.supporting),
+      contradiction: normalizeCount(input.answerTimeEvidenceRoleCounts.contradiction)
+    }
+    const currentCounts = {
+      supporting: normalizeCount(input.currentEvidenceRoleCounts.supporting),
+      contradiction: normalizeCount(input.currentEvidenceRoleCounts.contradiction)
+    }
+    if (answerCounts.supporting !== currentCounts.supporting
+      || answerCounts.contradiction !== currentCounts.contradiction) {
+      return 'changed'
+    }
   }
   return 'current'
 }
