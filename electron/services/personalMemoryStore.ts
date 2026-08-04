@@ -5437,6 +5437,148 @@ export class PersonalMemoryStore {
     }
   }
 
+  getStructuredMemoryDossier(
+    kind: 'claim' | 'event' | 'relation',
+    id: string,
+    expectedSearchRevision = ''
+  ): any | null {
+    if (!this.db) return null
+    const sourceId = String(id || '').trim()
+    const expectedRevision = String(expectedSearchRevision || '').trim()
+    const revision = this.getMemorySearchRevision()
+    const stale = () => ({
+      kind,
+      sourceId,
+      revision,
+      stale: true
+    })
+    if (!expectedRevision || expectedRevision !== revision) return stale()
+    const document = this.db.prepare(`
+      SELECT id,document_type,source_id,title,search_text,metadata_json,updated_at
+      FROM search_documents
+      WHERE id=? AND document_type=? AND source_id=?
+    `).get(`${kind}:${sourceId}`, kind, sourceId) as any
+    if (!document) return null
+    let item: any = null
+    if (kind === 'claim') {
+      item = this.db.prepare(`
+        SELECT c.*,subject.canonical_name AS subject_name,
+          object.canonical_name AS object_entity_name,
+          (SELECT COUNT(*) FROM memory_corrections correction
+            WHERE correction.item_kind='claim' AND correction.item_id=c.id) AS correction_count,
+          (SELECT COUNT(*) FROM memory_review_decisions decision
+            WHERE decision.item_kind='claim' AND decision.item_id=c.id) AS review_count,
+          (SELECT COUNT(*) FROM memory_review_decisions decision
+            WHERE decision.item_kind='claim' AND decision.item_id=c.id
+              AND decision.protect_from_extraction=1) AS protected_review_count,
+          (SELECT COUNT(*) FROM evidence e WHERE e.claim_id=c.id) AS evidence_count
+        FROM claims c
+        LEFT JOIN entities subject ON subject.id=c.subject_id
+        LEFT JOIN entities object ON object.id=c.object_entity_id
+        WHERE c.id=?
+      `).get(sourceId)
+    } else if (kind === 'event') {
+      item = this.db.prepare(`
+        SELECT ev.*,
+          (SELECT COUNT(*) FROM memory_corrections correction
+            WHERE correction.item_kind='event' AND correction.item_id=ev.id) AS correction_count,
+          (SELECT COUNT(*) FROM memory_review_decisions decision
+            WHERE decision.item_kind='event' AND decision.item_id=ev.id) AS review_count,
+          (SELECT COUNT(*) FROM memory_review_decisions decision
+            WHERE decision.item_kind='event' AND decision.item_id=ev.id
+              AND decision.protect_from_extraction=1) AS protected_review_count,
+          (SELECT COUNT(*) FROM event_participants participant
+            WHERE participant.event_id=ev.id) AS participant_count,
+          (SELECT COUNT(*) FROM evidence e WHERE e.event_id=ev.id) AS evidence_count
+        FROM events ev WHERE ev.id=?
+      `).get(sourceId)
+      if (item) {
+        item = {
+          ...item,
+          participants: this.db.prepare(`
+            SELECT participant.entity_id,participant.role,entity.canonical_name
+            FROM event_participants participant
+            JOIN entities entity ON entity.id=participant.entity_id
+            WHERE participant.event_id=?
+            ORDER BY participant.role,entity.canonical_name,participant.entity_id
+            LIMIT 200
+          `).all(sourceId)
+        }
+      }
+    } else {
+      item = this.db.prepare(`
+        SELECT relation.*,subject.canonical_name AS subject_name,
+          object.canonical_name AS object_name,
+          (SELECT COUNT(*) FROM relation_history history
+            WHERE history.relation_id=relation.id) AS history_count,
+          (SELECT COUNT(*) FROM evidence e WHERE e.relation_id=relation.id) AS evidence_count
+        FROM relations relation
+        JOIN entities subject ON subject.id=relation.subject_id
+        JOIN entities object ON object.id=relation.object_id
+        WHERE relation.id=?
+      `).get(sourceId)
+      if (item) {
+        item = {
+          ...item,
+          history: this.db.prepare(`
+            SELECT history.*,subject.canonical_name AS subject_name,
+              object.canonical_name AS object_name
+            FROM relation_history history
+            LEFT JOIN entities subject ON subject.id=history.subject_id
+            LEFT JOIN entities object ON object.id=history.object_id
+            WHERE history.relation_id=?
+            ORDER BY history.id DESC LIMIT 40
+          `).all(sourceId),
+          corrections: this.db.prepare(`
+            SELECT correction.*,
+              before_subject.canonical_name AS before_subject_name,
+              before_object.canonical_name AS before_object_name,
+              after_subject.canonical_name AS after_subject_name,
+              after_object.canonical_name AS after_object_name
+            FROM relation_corrections correction
+            LEFT JOIN entities before_subject ON before_subject.id=correction.before_subject_id
+            LEFT JOIN entities before_object ON before_object.id=correction.before_object_id
+            LEFT JOIN entities after_subject ON after_subject.id=correction.after_subject_id
+            LEFT JOIN entities after_object ON after_object.id=correction.after_object_id
+            WHERE correction.before_relation_id=? OR correction.after_relation_id=?
+            ORDER BY correction.id DESC LIMIT 40
+          `).all(sourceId, sourceId)
+        }
+      }
+    }
+    if (!item) return null
+    const evidence = this.getDocumentEvidencePayload(kind, sourceId)
+    const completedRevision = this.getMemorySearchRevision()
+    if (completedRevision !== revision) {
+      return {
+        kind,
+        sourceId,
+        revision: completedRevision,
+        stale: true
+      }
+    }
+    let metadata: any = {}
+    try { metadata = JSON.parse(String(document.metadata_json || '{}')) } catch {}
+    return {
+      kind,
+      sourceId,
+      revision,
+      stale: false,
+      document: {
+        id: document.id,
+        title: document.title,
+        searchText: document.search_text,
+        metadata,
+        updatedAt: document.updated_at
+      },
+      item: {
+        ...item,
+        evidence: evidence.evidence,
+        evidence_count: evidence.evidenceTotal
+      }
+    }
+  }
+
   mergeEntityEventParticipants(sourceId: string, targetId: string): void {
     if (!this.db || !sourceId || !targetId || sourceId === targetId) return
     const transaction = this.db.transaction(() => {

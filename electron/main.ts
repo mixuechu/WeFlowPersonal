@@ -4629,6 +4629,9 @@ function registerIpcHandlers() {
     aiAssistantService.getResourceDossier(id, expectedRevision))
   ipcMain.handle('ai-assistant:getCurrentResourceDossier', (_, id: string) =>
     aiAssistantService.getCurrentResourceDossier(id))
+  ipcMain.handle('ai-assistant:getStructuredMemoryDossier',
+    (_, kind: string, id: string, expectedSearchRevision: string) =>
+      aiAssistantService.getStructuredMemoryDossier(kind, id, expectedSearchRevision))
   ipcMain.handle('ai-assistant:getResourceTrashArchive', (_, options?: any) =>
     aiAssistantService.getResourceTrashArchive(options))
   ipcMain.handle('ai-assistant:deleteMemoryResource', (_, id: string, input?: any) =>

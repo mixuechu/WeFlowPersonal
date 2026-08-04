@@ -608,6 +608,8 @@ function AiAssistantPage() {
   const [resourceRefreshKey, setResourceRefreshKey] = useState(0)
   const [resourceLoadingMore, setResourceLoadingMore] = useState(false)
   const [selectedResourceDossier, setSelectedResourceDossier] = useState<any>(null)
+  const [structuredMemoryDossier, setStructuredMemoryDossier] = useState<any>(null)
+  const structuredMemoryDossierGate = useRef(new LatestRequestGate())
   const [resourceTrashArchive, setResourceTrashArchive] = useState<any>({
     items: [], total: 0, hasMore: false, revision: '', status: 'idle'
   })
@@ -2544,6 +2546,50 @@ function AiAssistantPage() {
       setSelectedResourceDossier({
         id,
         origin: 'search',
+        status: 'error',
+        error: error?.message || String(error)
+      })
+    }
+  }
+  const openStructuredMemoryDossier = async (
+    kind: 'claim' | 'event' | 'relation',
+    sourceId: string
+  ) => {
+    const id = String(sourceId || '').trim()
+    const revision = String(memorySearchState.revision || '').trim()
+    if (!id || !revision) {
+      setMessage('检索结果缺少当前 revision，已自动刷新，请稍后重新打开。')
+      setMemorySearchRefreshKey(value => value + 1)
+      return
+    }
+    const request = structuredMemoryDossierGate.current.begin()
+    setStructuredMemoryDossier({ kind, sourceId: id, status: 'loading' })
+    try {
+      const result = await window.electronAPI.aiAssistant.getStructuredMemoryDossier(
+        kind,
+        id,
+        revision
+      )
+      if (!structuredMemoryDossierGate.current.isCurrent(request)) return
+      if (result?.stale) {
+        setStructuredMemoryDossier(null)
+        setMessage('这条检索结果在打开前已有变化，已刷新检索结果。')
+        setMemorySearchRefreshKey(value => value + 1)
+        return
+      }
+      if (!result) {
+        setStructuredMemoryDossier(null)
+        setMessage('这条结构化记忆已经删除或不再存在。')
+        setMemorySearchRefreshKey(value => value + 1)
+        return
+      }
+      setStructuredMemoryDossier({ ...result, status: 'ready' })
+      if (kind !== 'relation') void loadMemoryItemAudit(kind, id)
+    } catch (error: any) {
+      if (!structuredMemoryDossierGate.current.isCurrent(request)) return
+      setStructuredMemoryDossier({
+        kind,
+        sourceId: id,
         status: 'error',
         error: error?.message || String(error)
       })
@@ -6476,6 +6522,14 @@ function AiAssistantPage() {
                 }>打开完整资源档案</button>
                 <small>按稳定资源 ID 读取当前 SQLCipher 记录，并在同一次请求中复核资源 revision。</small>
               </div>}
+              {['claim', 'event', 'relation'].includes(result.document_type) &&
+                result.source_id && <div className="assistant-search-authority-actions">
+                  <button className="primary" onClick={() => void openStructuredMemoryDossier(
+                    result.document_type as 'claim' | 'event' | 'relation',
+                    String(result.source_id)
+                  )}>打开权威结构化档案</button>
+                  <small>绑定当前检索 revision 与稳定类型/ID；打开后重新读取当前值、参与实体、审计和原文。</small>
+                </div>}
               {matchedEvidence && <div className="assistant-search-matched-evidence">
                 <header>
                   <span>本次实际命中的身份原文</span>
@@ -8231,6 +8285,189 @@ function AiAssistantPage() {
               <button onClick={() => {
                 resourceDossierGate.current.invalidate()
                 setSelectedResourceDossier(null)
+              }}>关闭</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {structuredMemoryDossier && (
+        <div className="assistant-modal-backdrop" role="presentation">
+          <div className="assistant-modal assistant-evidence-archive-modal" role="dialog" aria-modal="true"
+            aria-labelledby="structured-memory-dossier-title">
+            <div className="assistant-modal-title">
+              <div>
+                <span className="assistant-eyebrow">AUTHORITATIVE STRUCTURED MEMORY</span>
+                <h2 id="structured-memory-dossier-title">
+                  {structuredMemoryDossier.document?.title || (
+                    structuredMemoryDossier.kind === 'claim' ? '事实权威档案'
+                      : structuredMemoryDossier.kind === 'event' ? '事件权威档案' : '关系权威档案'
+                  )}
+                </h2>
+                <p>检索 revision、结构化类型和稳定 ID 已共同校验；下方内容重新读取自当前 SQLCipher 权威记录。</p>
+              </div>
+              <button aria-label="关闭结构化记忆权威档案" onClick={() => {
+                structuredMemoryDossierGate.current.invalidate()
+                setStructuredMemoryDossier(null)
+              }}><X size={18} /></button>
+            </div>
+            <div className="assistant-modal-body">
+              {structuredMemoryDossier.status === 'loading' &&
+                <div className="assistant-empty">正在校验检索 revision 并读取权威记录…</div>}
+              {structuredMemoryDossier.status === 'error' && <div className="assistant-error">
+                {structuredMemoryDossier.error || '结构化记忆档案读取失败'}
+                <button onClick={() => void openStructuredMemoryDossier(
+                  structuredMemoryDossier.kind,
+                  structuredMemoryDossier.sourceId
+                )}>重试</button>
+              </div>}
+              {structuredMemoryDossier.status === 'ready' && (() => {
+                const item = structuredMemoryDossier.item || {}
+                const kind = structuredMemoryDossier.kind as 'claim' | 'event' | 'relation'
+                const audit = memoryItemAudits[`${kind}:${item.id}`]
+                const statusLabel = item.status === 'confirmed' ? '已确认'
+                  : item.status === 'rejected' ? '不准确'
+                    : item.status === 'cancelled' ? '已取消' : '待确认'
+                const title = kind === 'claim'
+                  ? `${item.subject_name || '未知主体'} · ${item.predicate || ''}`
+                  : kind === 'relation'
+                    ? `${item.subject_name || '未知主体'} — ${item.predicate || ''} → ${item.object_name || '未知对象'}`
+                    : item.title
+                return <>
+                  <article className="assistant-memory-item">
+                    <div className="assistant-memory-item-head">
+                      <strong>{title}</strong>
+                      <span className={item.status}>{statusLabel}</span>
+                    </div>
+                    {kind === 'claim' && <p>
+                      {item.polarity === 'negative' ? '否定：' : ''}
+                      {item.object_entity_name || item.object_value || '未记录值'}
+                    </p>}
+                    {kind === 'event' && <>
+                      {item.description && <p>{item.description}</p>}
+                      <small>
+                        {item.start_at || '时间待确认'}{item.end_at ? ` — ${item.end_at}` : ''}
+                        {item.location ? ` · ${item.location}` : ''}
+                      </small>
+                    </>}
+                    {kind === 'relation' && <p>
+                      方向：{item.subject_name || item.subject_id} — {item.predicate} → {item.object_name || item.object_id}
+                    </p>}
+                    <small>
+                      稳定 ID：{item.id} · {Math.round(Number(item.confidence || 0) * 100)}% 可信
+                      {item.created_at ? ` · 创建 ${new Date(item.created_at).toLocaleString('zh-CN')}` : ''}
+                      {item.updated_at ? ` · 更新 ${new Date(item.updated_at).toLocaleString('zh-CN')}` : ''}
+                    </small>
+                    {kind === 'claim' && (item.valid_from || item.valid_to) && <small>
+                      有效期：{item.valid_from || '未知'} — {item.valid_to || '至今'}
+                    </small>}
+                    {kind === 'relation' && (item.valid_from || item.valid_to) && <small>
+                      关系有效期：{item.valid_from || '未知'} — {item.valid_to || '至今'}
+                    </small>}
+                    {kind === 'relation' && <small>
+                      关系状态历史：{Number(item.history_count || 0)} 条
+                      {item.corrections?.length ? ` · 人工方向/谓词纠正 ${item.corrections.length} 条` : ''}
+                    </small>}
+                    {kind === 'event' && <div className="assistant-tags">
+                      {(item.participants || []).map((participant: any) =>
+                        <button key={`${participant.entity_id}:${participant.role}`} onClick={() => {
+                          setSelectedEntityId(String(participant.entity_id))
+                          setShowEntityDossier(true)
+                          structuredMemoryDossierGate.current.invalidate()
+                          setStructuredMemoryDossier(null)
+                        }}>
+                          {participant.canonical_name || participant.entity_id} · {participant.role || '参与者'}
+                        </button>)}
+                    </div>}
+                    {kind === 'claim' && <div className="assistant-tags">
+                      {item.subject_id && <button onClick={() => {
+                        setSelectedEntityId(String(item.subject_id))
+                        setShowEntityDossier(true)
+                        structuredMemoryDossierGate.current.invalidate()
+                        setStructuredMemoryDossier(null)
+                      }}>打开主体：{item.subject_name || item.subject_id}</button>}
+                      {item.object_entity_id && <button onClick={() => {
+                        setSelectedEntityId(String(item.object_entity_id))
+                        setShowEntityDossier(true)
+                        structuredMemoryDossierGate.current.invalidate()
+                        setStructuredMemoryDossier(null)
+                      }}>打开对象：{item.object_entity_name || item.object_entity_id}</button>}
+                    </div>}
+                    {kind === 'relation' && <div className="assistant-tags">
+                      <button onClick={() => {
+                        setSelectedEntityId(String(item.subject_id))
+                        setShowEntityDossier(true)
+                        structuredMemoryDossierGate.current.invalidate()
+                        setStructuredMemoryDossier(null)
+                      }}>打开主语：{item.subject_name || item.subject_id}</button>
+                      <button onClick={() => {
+                        setSelectedEntityId(String(item.object_id))
+                        setShowEntityDossier(true)
+                        structuredMemoryDossierGate.current.invalidate()
+                        setStructuredMemoryDossier(null)
+                      }}>打开宾语：{item.object_name || item.object_id}</button>
+                    </div>}
+                  </article>
+                  <EvidenceRows
+                    evidence={item.evidence || []}
+                    total={Number(item.evidence_count || 0)}
+                    roleLabels
+                    onOpenArchive={() => {
+                      structuredMemoryDossierGate.current.invalidate()
+                      setStructuredMemoryDossier(null)
+                      void openMemoryEvidenceArchive(kind, item.id, title)
+                    }}
+                  />
+                  {kind !== 'relation' && <details open>
+                    <summary>
+                      可信审计（{Number(item.review_count || 0) + Number(item.correction_count || 0)} 条）
+                    </summary>
+                    {memoryItemAuditLoading === `${kind}:${item.id}` &&
+                      <small>正在读取 SQLCipher 审计账本…</small>}
+                    {audit?.status === 'error' && <small className="assistant-error">
+                      审计读取失败：{audit.error}
+                    </small>}
+                    {!!audit?.items?.length && <MemoryItemAuditRows kind={kind} items={audit.items} />}
+                    {!memoryItemAuditLoading && !audit?.items?.length &&
+                      <small>这条记忆尚无人工纠正或可信状态变更。</small>}
+                    {audit?.hasMore && <button
+                      disabled={memoryItemAuditLoading === `${kind}:${item.id}`}
+                      onClick={() => void loadMemoryItemAudit(kind, item.id, true)}>
+                      加载更多（已显示 {audit.items.length} / {audit.total}）
+                    </button>}
+                  </details>}
+                  {kind === 'relation' && <details open>
+                    <summary>
+                      关系变化与人工纠正（{Number(item.history_count || 0) + Number(item.corrections?.length || 0)} 条）
+                    </summary>
+                    <div className="assistant-task-history">
+                      {(item.corrections || []).map((correction: any) => <small key={`relation-correction-${correction.id}`}>
+                        {new Date(correction.created_at).toLocaleString('zh-CN')} · 人工纠正：
+                        {correction.before_subject_name || correction.before_subject_id} —
+                        {correction.before_predicate} → {correction.before_object_name || correction.before_object_id}
+                        {' → '}
+                        {correction.after_subject_name || correction.after_subject_id} —
+                        {correction.after_predicate} → {correction.after_object_name || correction.after_object_id}
+                      </small>)}
+                      {(item.history || []).map((history: any) => <small key={`relation-history-${history.id}`}>
+                        {new Date(history.created_at).toLocaleString('zh-CN')} ·
+                        {history.change_type || '状态变化'}：
+                        {history.subject_name || history.subject_id} — {history.predicate} →
+                        {history.object_name || history.object_id} · {history.status}
+                      </small>)}
+                      {!item.history?.length && !item.corrections?.length &&
+                        <small>这条关系尚无额外变化或人工纠正记录。</small>}
+                      {Number(item.history_count || 0) > Number(item.history?.length || 0) &&
+                        <small>当前显示最近 {item.history.length} / {item.history_count} 条关系变化。</small>}
+                    </div>
+                  </details>}
+                </>
+              })()}
+            </div>
+            <div className="assistant-modal-actions">
+              <button onClick={() => {
+                structuredMemoryDossierGate.current.invalidate()
+                setStructuredMemoryDossier(null)
               }}>关闭</button>
             </div>
           </div>

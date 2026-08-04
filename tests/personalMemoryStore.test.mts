@@ -1639,6 +1639,114 @@ test('conflicting current claims coexist as review candidates', () => withStore(
   assert.deepEqual(new Set(claims.map(claim => claim.evidence[0].evidence_role)), new Set(['direct', 'indirect']))
 }))
 
+test('structured search dossiers bind the exact type, id and current search revision', () => withStore(store => {
+  store.syncGraph({
+    entities: [{
+      id: 'dossier-person',
+      type: 'person',
+      canonicalName: '档案人物',
+      trustStatus: 'confirmed'
+    }, {
+      id: 'dossier-project',
+      type: 'project',
+      canonicalName: '档案项目',
+      trustStatus: 'confirmed'
+    }],
+    relations: [{
+      id: 'dossier-relation',
+      subjectId: 'dossier-person',
+      predicate: '负责',
+      objectId: 'dossier-project',
+      confidence: 0.91,
+      status: 'confirmed',
+      evidence: [{
+        sourceId: 'wechat',
+        messageId: 'dossier-relation-message',
+        sessionId: 'dossier-session',
+        timestamp: 1_780_000_001,
+        sender: '档案人物',
+        excerpt: '我负责档案项目'
+      }]
+    }],
+    reviewQueue: []
+  } as any)
+  store.upsertClaims([{
+    id: 'dossier-claim',
+    subjectId: 'dossier-person',
+    predicate: '所在城市',
+    objectValue: '上海',
+    confidence: 0.93,
+    status: 'confirmed',
+    sourceNature: 'self_statement',
+    searchText: '档案人物 所在城市 上海',
+    evidence: [{
+      sourceId: 'wechat',
+      messageId: 'dossier-claim-message',
+      sessionId: 'dossier-session',
+      timestamp: 1_780_000_002,
+      sender: '档案人物',
+      excerpt: '我在上海'
+    }]
+  }])
+  store.upsertEvents([{
+    id: 'dossier-event',
+    eventType: 'meeting',
+    title: '档案会议',
+    description: '讨论档案项目',
+    startAt: '2026-08-04T10:00:00.000Z',
+    endAt: '',
+    location: '上海',
+    confidence: 0.88,
+    status: 'candidate',
+    searchText: '档案会议 讨论档案项目',
+    participants: [{ entityId: 'dossier-person', role: '主持人' }],
+    evidence: [{
+      sourceId: 'wechat',
+      messageId: 'dossier-event-message',
+      sessionId: 'dossier-session',
+      timestamp: 1_780_000_003,
+      sender: '档案人物',
+      excerpt: '明天开档案会议'
+    }]
+  }])
+
+  const revision = store.getMemorySearchRevision()
+  const claim = store.getStructuredMemoryDossier('claim', 'dossier-claim', revision)
+  const event = store.getStructuredMemoryDossier('event', 'dossier-event', revision)
+  const relation = store.getStructuredMemoryDossier('relation', 'dossier-relation', revision)
+  assert.equal(claim.stale, false)
+  assert.equal(claim.item.subject_name, '档案人物')
+  assert.equal(claim.item.object_value, '上海')
+  assert.equal(claim.item.evidence[0].message_id, 'dossier-claim-message')
+  assert.equal(event.item.participants[0].entity_id, 'dossier-person')
+  assert.equal(event.item.evidence_count, 1)
+  assert.equal(relation.item.subject_name, '档案人物')
+  assert.equal(relation.item.object_name, '档案项目')
+  assert.equal(relation.item.evidence[0].message_id, 'dossier-relation-message')
+  assert.equal(store.getStructuredMemoryDossier('event', 'dossier-claim', revision), null)
+  assert.equal(store.getStructuredMemoryDossier('claim', 'dossier-claim', '' as any).stale, true)
+
+  store.upsertClaims([{
+    id: 'dossier-claim',
+    subjectId: 'dossier-person',
+    predicate: '所在城市',
+    objectValue: '北京',
+    confidence: 0.95,
+    status: 'confirmed',
+    sourceNature: 'self_statement',
+    searchText: '档案人物 所在城市 北京',
+    evidence: [{
+      sourceId: 'wechat',
+      messageId: 'dossier-claim-message-new',
+      sessionId: 'dossier-session',
+      timestamp: 1_780_000_004,
+      sender: '档案人物',
+      excerpt: '我现在在北京'
+    }]
+  }])
+  assert.equal(store.getStructuredMemoryDossier('claim', 'dossier-claim', revision).stale, true)
+}))
+
 test('multi-year fact archive is fully pageable and filters before ranking', () => withStore(store => {
   store.syncGraph({
     entities: [{

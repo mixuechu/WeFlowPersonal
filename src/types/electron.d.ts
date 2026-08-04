@@ -1891,6 +1891,11 @@ export interface ElectronAPI {
       }) => Promise<any>
       getResourceDossier: (id: string, expectedRevision: string) => Promise<any>
       getCurrentResourceDossier: (id: string) => Promise<any>
+      getStructuredMemoryDossier: (
+        kind: 'claim' | 'event' | 'relation',
+        id: string,
+        expectedSearchRevision: string
+      ) => Promise<any>
       getResourceTrashArchive: (options?: {
         query?: string
         limit?: number
