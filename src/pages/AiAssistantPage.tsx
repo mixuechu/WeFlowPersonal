@@ -542,9 +542,11 @@ function AiAssistantPage() {
     events: { items: [], total: 0, hasMore: false, revision: '' },
     status: 'idle'
   })
-  const [projectMemoryLoadingMore, setProjectMemoryLoadingMore] = useState('')
+  const [projectMemoryLoadingMore, setProjectMemoryLoadingMore] =
+    useState<Record<string, boolean>>({})
   const [projectMemoryRefreshKey, setProjectMemoryRefreshKey] = useState(0)
   const projectMemoryGate = useRef(new LatestRequestGate())
+  const projectMemoryPageGates = useRef(new KeyedLatestRequestGates())
   const [projectClaimQuery, setProjectClaimQuery] = useState('')
   const [projectClaimStatus, setProjectClaimStatus] = useState('')
   const [projectClaimSource, setProjectClaimSource] = useState('')
@@ -2230,9 +2232,10 @@ function AiAssistantPage() {
 
   useEffect(() => {
     const request = projectMemoryGate.current.begin()
+    projectMemoryPageGates.current.invalidateAll()
     const projectEntityId = String(projectWorkspace.project?.entityId || '')
     if (projectWorkspace.status !== 'ready' || !projectEntityId) {
-      setProjectMemoryLoadingMore('')
+      setProjectMemoryLoadingMore({})
       setProjectMemoryPages({
         claims: { items: [], total: 0, hasMore: false, revision: '' },
         relations: { items: [], total: 0, hasMore: false, revision: '' },
@@ -2243,7 +2246,7 @@ function AiAssistantPage() {
         if (projectMemoryGate.current.isCurrent(request)) projectMemoryGate.current.invalidate()
       }
     }
-    setProjectMemoryLoadingMore('')
+    setProjectMemoryLoadingMore({})
     setProjectMemoryPages({
       claims: { items: [], total: 0, hasMore: false, revision: '' },
       relations: { items: [], total: 0, hasMore: false, revision: '' },
@@ -3536,9 +3539,9 @@ function AiAssistantPage() {
   const loadMoreProjectMemorySection = async (kind: 'claims' | 'relations' | 'events') => {
     const projectEntityId = String(projectWorkspace.project?.entityId || '')
     const currentPage = projectMemoryPages[kind]
-    if (!projectEntityId || projectMemoryLoadingMore || !currentPage?.hasMore) return
-    const request = projectMemoryGate.current.begin()
-    setProjectMemoryLoadingMore(kind)
+    if (!projectEntityId || projectMemoryLoadingMore[kind] || !currentPage?.hasMore) return
+    const request = projectMemoryPageGates.current.begin(kind)
+    setProjectMemoryLoadingMore(current => setKeyedLoadingState(current, kind, true))
     try {
       const options = {
         entityId: projectEntityId,
@@ -3571,7 +3574,7 @@ function AiAssistantPage() {
               to: projectEventTo
                 ? new Date(`${projectEventTo}T23:59:59.999+08:00`).toISOString() : undefined
             })
-      if (!projectMemoryGate.current.isCurrent(request)) return
+      if (!projectMemoryPageGates.current.isCurrent(kind, request)) return
       if (page.stale) {
         setMessage('项目事实、关系或事件在浏览期间已有更新，已从最新第一页重新载入。')
         setProjectMemoryRefreshKey(value => value + 1)
@@ -3589,9 +3592,13 @@ function AiAssistantPage() {
         }
       }))
     } catch (error: any) {
-      if (projectMemoryGate.current.isCurrent(request)) setMessage(error?.message || String(error))
+      if (projectMemoryPageGates.current.isCurrent(kind, request)) {
+        setMessage(error?.message || String(error))
+      }
     } finally {
-      if (projectMemoryGate.current.isCurrent(request)) setProjectMemoryLoadingMore('')
+      if (projectMemoryPageGates.current.isCurrent(kind, request)) {
+        setProjectMemoryLoadingMore(current => setKeyedLoadingState(current, kind, false))
+      }
     }
   }
 
@@ -9531,9 +9538,9 @@ function AiAssistantPage() {
                 </article>)}
                 {projectMemoryPages.status !== 'loading' && !projectDossierClaims.length && <em>尚无项目事实</em>}
                 {selectedProject.entityId && projectMemoryPages.claims?.hasMore && <button
-                  disabled={!!projectMemoryLoadingMore}
+                  disabled={!!projectMemoryLoadingMore.claims}
                   onClick={() => void loadMoreProjectMemorySection('claims')}>
-                  {projectMemoryLoadingMore === 'claims'
+                  {projectMemoryLoadingMore.claims
                     ? '正在加载…'
                     : `加载更多事实（已显示 ${projectDossierClaims.length} / ${projectMemoryPages.claims.total}）`}
                 </button>}
@@ -9588,9 +9595,9 @@ function AiAssistantPage() {
                   !(projectMemoryPages.relations?.items || []).length &&
                   <em>尚无项目关系</em>}
                 {selectedProject.entityId && projectMemoryPages.relations?.hasMore && <button
-                  disabled={!!projectMemoryLoadingMore}
+                  disabled={!!projectMemoryLoadingMore.relations}
                   onClick={() => void loadMoreProjectMemorySection('relations')}>
-                  {projectMemoryLoadingMore === 'relations'
+                  {projectMemoryLoadingMore.relations
                     ? '正在加载…'
                     : `加载更多关系（已显示 ${projectMemoryPages.relations.items.length} / ${projectMemoryPages.relations.total}）`}
                 </button>}
@@ -9631,9 +9638,9 @@ function AiAssistantPage() {
                 </article>)}
                 {projectMemoryPages.status !== 'loading' && !projectDossierEvents.length && <em>尚无相关事件</em>}
                 {selectedProject.entityId && projectMemoryPages.events?.hasMore && <button
-                  disabled={!!projectMemoryLoadingMore}
+                  disabled={!!projectMemoryLoadingMore.events}
                   onClick={() => void loadMoreProjectMemorySection('events')}>
-                  {projectMemoryLoadingMore === 'events'
+                  {projectMemoryLoadingMore.events
                     ? '正在加载…'
                     : `加载更多事件（已显示 ${projectDossierEvents.length} / ${projectMemoryPages.events.total}）`}
                 </button>}
