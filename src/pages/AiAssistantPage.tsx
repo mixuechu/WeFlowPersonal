@@ -473,6 +473,8 @@ function AiAssistantPage() {
   const [entityEvidenceQuery, setEntityEvidenceQuery] = useState('')
   const [entityEvidenceSource, setEntityEvidenceSource] = useState('')
   const [entityEvidenceKind, setEntityEvidenceKind] = useState('')
+  const [entityEvidenceFrom, setEntityEvidenceFrom] = useState('')
+  const [entityEvidenceTo, setEntityEvidenceTo] = useState('')
   const [entityEvidenceLoadingMore, setEntityEvidenceLoadingMore] = useState(false)
   const [entityEvidenceRefreshKey, setEntityEvidenceRefreshKey] = useState(0)
   const entityEvidenceGate = useRef(new LatestRequestGate())
@@ -524,6 +526,8 @@ function AiAssistantPage() {
   const [projectEvidenceQuery, setProjectEvidenceQuery] = useState('')
   const [projectEvidenceSource, setProjectEvidenceSource] = useState('')
   const [projectEvidenceKind, setProjectEvidenceKind] = useState('')
+  const [projectEvidenceFrom, setProjectEvidenceFrom] = useState('')
+  const [projectEvidenceTo, setProjectEvidenceTo] = useState('')
   const [projectEvidenceLoadingMore, setProjectEvidenceLoadingMore] = useState(false)
   const [projectEvidenceRefreshKey, setProjectEvidenceRefreshKey] = useState(0)
   const projectEvidenceGate = useRef(new LatestRequestGate())
@@ -2018,6 +2022,10 @@ function AiAssistantPage() {
         query: entityEvidenceQuery.trim() || undefined,
         sourceId: entityEvidenceSource || undefined,
         memoryKind: entityEvidenceKind || undefined,
+        from: entityEvidenceFrom
+          ? new Date(`${entityEvidenceFrom}T00:00:00+08:00`).toISOString() : undefined,
+        to: entityEvidenceTo
+          ? new Date(`${entityEvidenceTo}T23:59:59.999+08:00`).toISOString() : undefined,
         limit: 40,
         offset: 0
       }).then(page => {
@@ -2045,6 +2053,7 @@ function AiAssistantPage() {
     }
   }, [
     showEntityDossier, selectedEntityId, entityEvidenceQuery, entityEvidenceSource, entityEvidenceKind,
+    entityEvidenceFrom, entityEvidenceTo,
     dashboard?.memoryRevision, dashboard?.graphReviewRevision, entityEvidenceRefreshKey
   ])
 
@@ -2174,6 +2183,10 @@ function AiAssistantPage() {
         query: projectEvidenceQuery.trim() || undefined,
         sourceId: projectEvidenceSource || undefined,
         memoryKind: projectEvidenceKind || undefined,
+        from: projectEvidenceFrom
+          ? new Date(`${projectEvidenceFrom}T00:00:00+08:00`).toISOString() : undefined,
+        to: projectEvidenceTo
+          ? new Date(`${projectEvidenceTo}T23:59:59.999+08:00`).toISOString() : undefined,
         limit: 40,
         offset: 0
       }).then(page => {
@@ -2202,7 +2215,8 @@ function AiAssistantPage() {
   }, [
     projectWorkspace.status, projectWorkspace.project?.entityId,
     dashboard?.memoryRevision, dashboard?.graphReviewRevision, projectEvidenceRefreshKey,
-    projectEvidenceQuery, projectEvidenceSource, projectEvidenceKind
+    projectEvidenceQuery, projectEvidenceSource, projectEvidenceKind,
+    projectEvidenceFrom, projectEvidenceTo
   ])
 
   useEffect(() => {
@@ -3039,6 +3053,10 @@ function AiAssistantPage() {
         query: entityEvidenceQuery.trim() || undefined,
         sourceId: entityEvidenceSource || undefined,
         memoryKind: entityEvidenceKind || undefined,
+        from: entityEvidenceFrom
+          ? new Date(`${entityEvidenceFrom}T00:00:00+08:00`).toISOString() : undefined,
+        to: entityEvidenceTo
+          ? new Date(`${entityEvidenceTo}T23:59:59.999+08:00`).toISOString() : undefined,
         limit: 40,
         offset: entityEvidencePage.items.length,
         revision: entityEvidencePage.revision
@@ -3232,6 +3250,10 @@ function AiAssistantPage() {
         query: projectEvidenceQuery.trim() || undefined,
         sourceId: projectEvidenceSource || undefined,
         memoryKind: projectEvidenceKind || undefined,
+        from: projectEvidenceFrom
+          ? new Date(`${projectEvidenceFrom}T00:00:00+08:00`).toISOString() : undefined,
+        to: projectEvidenceTo
+          ? new Date(`${projectEvidenceTo}T23:59:59.999+08:00`).toISOString() : undefined,
         limit: 40,
         offset: projectEvidencePage.items.length,
         revision: projectEvidencePage.revision
@@ -8321,6 +8343,10 @@ function AiAssistantPage() {
                     <option value="relation">关系</option>
                     <option value="event">事件</option>
                   </select>
+                  <input aria-label="人物原文时间从" title="人物原文时间从" type="date"
+                    value={entityEvidenceFrom} onChange={event => setEntityEvidenceFrom(event.target.value)} />
+                  <input aria-label="人物原文时间到" title="人物原文时间到" type="date"
+                    value={entityEvidenceTo} onChange={event => setEntityEvidenceTo(event.target.value)} />
                 </div>
                 {entityEvidencePage.status === 'loading' && <em>正在读取相关原文…</em>}
                 {entityEvidencePage.status === 'error' && <div className="assistant-empty">
@@ -8682,6 +8708,10 @@ function AiAssistantPage() {
                     <option value="relation">项目关系</option>
                     <option value="event">项目事件</option>
                   </select>
+                  <input aria-label="项目原文时间从" title="项目原文时间从" type="date"
+                    value={projectEvidenceFrom} onChange={event => setProjectEvidenceFrom(event.target.value)} />
+                  <input aria-label="项目原文时间到" title="项目原文时间到" type="date"
+                    value={projectEvidenceTo} onChange={event => setProjectEvidenceTo(event.target.value)} />
                 </div>
                 {projectEvidencePage.status === 'loading' && <em>正在读取项目相关原文…</em>}
                 {projectEvidencePage.status === 'error' && <div className="assistant-empty">

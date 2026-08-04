@@ -6657,6 +6657,8 @@ export class PersonalMemoryStore {
     sourceId?: 'wechat' | 'documents' | 'calendar' | 'mail' | 'legacy'
     memoryKind?: 'identity' | 'claim' | 'relation' | 'event'
     query?: string
+    from?: string
+    to?: string
     limit?: number
     offset?: number
     revision?: string
@@ -6690,6 +6692,24 @@ export class PersonalMemoryStore {
     if (memoryKind) {
       filters.push(`INSTR(',' || memory_kinds || ',', ?) > 0`)
       filterParameters.push(`,${memoryKind},`)
+    }
+    const validFrom = options.from && Number.isFinite(Date.parse(options.from))
+      ? Math.floor(Date.parse(options.from) / 1000)
+      : 0
+    const validTo = options.to && Number.isFinite(Date.parse(options.to))
+      ? Math.floor(Date.parse(options.to) / 1000)
+      : 0
+    const normalizedTimestamp = `(CASE
+      WHEN timestamp>10000000000 THEN CAST(timestamp/1000 AS INTEGER)
+      ELSE timestamp
+    END)`
+    if (validFrom) {
+      filters.push(`${normalizedTimestamp}>=?`)
+      filterParameters.push(validFrom)
+    }
+    if (validTo) {
+      filters.push(`${normalizedTimestamp}<=?`)
+      filterParameters.push(validTo)
     }
     if (query) {
       filters.push(`(

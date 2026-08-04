@@ -4161,6 +4161,30 @@ test('project memory is scoped in SQL before limits and preserves authoritative 
   assert.equal(store.listEntityEvidencePage({
     entityId: 'project-memory-scope', memoryKind: 'relation', sourceId: 'wechat'
   }).total, 0)
+  const recentIdentityEvidence = store.listEntityEvidencePage({
+    entityId: 'project-memory-scope',
+    memoryKind: 'identity',
+    from: new Date(1_900_000_100 * 1000).toISOString(),
+    to: new Date(1_900_000_124 * 1000).toISOString(),
+    limit: 10
+  })
+  assert.equal(recentIdentityEvidence.total, 25)
+  assert.equal(recentIdentityEvidence.items.length, 10)
+  assert.equal(store.listEntityEvidencePage({
+    entityId: 'project-memory-scope',
+    memoryKind: 'identity',
+    from: new Date(1_900_000_100 * 1000).toISOString(),
+    to: new Date(1_900_000_124 * 1000).toISOString(),
+    limit: 10,
+    offset: 10,
+    revision: recentIdentityEvidence.revision
+  }).items.length, 10)
+  assert.equal(store.listEntityEvidencePage({
+    entityId: 'project-memory-scope',
+    memoryKind: 'identity',
+    sourceId: 'wechat',
+    from: new Date(1_900_000_120 * 1000).toISOString()
+  }).total, 5)
   assert.equal(store.listEntityEvidencePage({
     entityId: 'unrelated-memory-scope', query: '项目关系原文'
   }).total, 0)

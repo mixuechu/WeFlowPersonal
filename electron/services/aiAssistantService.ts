@@ -4539,6 +4539,8 @@ export class AiAssistantService {
         ? options.memoryKind
         : undefined,
       query: String(options?.query || ''),
+      from: String(options?.from || ''),
+      to: String(options?.to || ''),
       limit: Number(options?.limit || 40),
       offset: Number(options?.offset || 0),
       revision: String(options?.revision || '')
