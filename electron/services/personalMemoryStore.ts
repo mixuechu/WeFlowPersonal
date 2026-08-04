@@ -5521,7 +5521,9 @@ export class PersonalMemoryStore {
   ): void {
     if (!this.db) return
     const now = new Date().toISOString()
-    this.db.exec('BEGIN IMMEDIATE')
+    const withinTransaction = this.db.inTransaction
+    if (withinTransaction) this.db.exec('SAVEPOINT weflow_sync_graph')
+    else this.db.exec('BEGIN IMMEDIATE')
     try {
       const activeEntityIds = new Set(graph.entities.map(entity => entity.id))
       const storedEntityIds = this.db.prepare('SELECT id FROM entities WHERE deleted_at IS NULL').all() as Array<{ id: string }>
@@ -5758,11 +5760,22 @@ export class PersonalMemoryStore {
           throw new Error('身份合并撤销档案已经变化，请重新核对')
         }
       }
-      this.db.exec('COMMIT')
+      if (withinTransaction) this.db.exec('RELEASE SAVEPOINT weflow_sync_graph')
+      else this.db.exec('COMMIT')
     } catch (error) {
-      this.db.exec('ROLLBACK')
+      if (withinTransaction) {
+        this.db.exec('ROLLBACK TO SAVEPOINT weflow_sync_graph')
+        this.db.exec('RELEASE SAVEPOINT weflow_sync_graph')
+      } else {
+        this.db.exec('ROLLBACK')
+      }
       throw error
     }
+  }
+
+  runInTransaction<T>(operation: () => T): T {
+    if (!this.db) throw new Error('个人记忆数据库尚未初始化')
+    return this.db.transaction(operation)()
   }
 
   listRelationHistory(entityId = '', limit = 200): any[] {

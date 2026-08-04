@@ -163,7 +163,10 @@ import {
   quarantineInvalidRelationTypes,
   relationTypeViolation
 } from './relationTypePolicy'
-import { assertGraphReviewMutationRevision } from './graphReviewMutationPolicy'
+import {
+  assertGraphReviewMutationRevision,
+  runReversibleGraphMutation
+} from './graphReviewMutationPolicy'
 import { assertTaskOwnershipMutationRevision } from './taskOwnershipMutationPolicy'
 import { assertStructuredMemoryMutationRevision } from './structuredMemoryMutationPolicy'
 import {
@@ -6300,6 +6303,31 @@ export class AiAssistantService {
       relationCorrection?: RelationCorrection
     }
   ): any {
+    const snapshot = structuredClone(this.state.graph)
+    return runReversibleGraphMutation({
+      snapshot,
+      transact: apply => personalMemoryStore.runInTransaction(apply),
+      apply: () => this.applyGraphReview(id, decision, options),
+      restore: graph => { this.state.graph = graph },
+      persistRestored: () => this.persistCrossStoreMutationState(),
+      onRollbackError: error => {
+        console.error('[AI Assistant] 图谱审阅回滚状态写入失败:', sanitizeDiagnosticText(error))
+      }
+    })
+  }
+
+  private applyGraphReview(
+    id: string,
+    decision: 'confirmed' | 'rejected',
+    options?: {
+      expectedRevision?: string
+      mergeTargetEntityId?: string
+      correctedCanonicalName?: string
+      correctedSummaryText?: string
+      correctedAliasText?: string
+      relationCorrection?: RelationCorrection
+    }
+  ): any {
     assertGraphReviewMutationRevision(
       options?.expectedRevision,
       personalMemoryStore.getGraphReviewRevision()
@@ -6605,7 +6633,7 @@ export class AiAssistantService {
       review.resolutionReason = review.resolutionReason ||
         (review.status === 'confirmed' ? '用户确认候选' : '用户拒绝候选')
     }
-    this.saveState()
+    this.saveState(true)
     return review
   }
 

@@ -29,7 +29,10 @@ import {
   GRAPH_RELATION_EVIDENCE_HOT_LIMIT,
   compactRelationEvidenceHotset
 } from '../electron/services/graphEvidenceHotset.ts'
-import { assertGraphReviewMutationRevision } from '../electron/services/graphReviewMutationPolicy.ts'
+import {
+  assertGraphReviewMutationRevision,
+  runReversibleGraphMutation
+} from '../electron/services/graphReviewMutationPolicy.ts'
 import { assertTaskOwnershipMutationRevision } from '../electron/services/taskOwnershipMutationPolicy.ts'
 import { assertStructuredMemoryMutationRevision } from '../electron/services/structuredMemoryMutationPolicy.ts'
 import { buildMemorySearchFeedbackContext } from '../electron/services/memorySearchFeedback.ts'
@@ -8444,6 +8447,92 @@ test('structured memory revision covers review payloads and repairs its trigger 
     rmSync(directory, { recursive: true, force: true })
   }
 })
+
+test('reversible graph mutation restores memory and persists the restored snapshot on failure', () => {
+  let graph = { status: 'candidate', revision: 1 }
+  let persisted: any = null
+  assert.throws(() => runReversibleGraphMutation({
+    snapshot: structuredClone(graph),
+    transact: apply => apply(),
+    apply: () => {
+      graph.status = 'confirmed'
+      graph.revision = 2
+      throw new Error('injected graph commit failure')
+    },
+    restore: snapshot => { graph = snapshot },
+    persistRestored: () => { persisted = structuredClone(graph) }
+  }), /injected graph commit failure/)
+  assert.deepEqual(graph, { status: 'candidate', revision: 1 })
+  assert.deepEqual(persisted, graph)
+})
+
+test('nested graph sync rolls review and correction side effects back together', () => withStore(store => {
+  const entities = [
+    {
+      id: 'atomic-review-left',
+      type: 'person',
+      canonicalName: '原子审阅甲',
+      summary: '',
+      confidence: 1,
+      trustStatus: 'confirmed',
+      aliases: [],
+      accountIds: []
+    },
+    {
+      id: 'atomic-review-right',
+      type: 'person',
+      canonicalName: '原子审阅乙',
+      summary: '',
+      confidence: 1,
+      trustStatus: 'confirmed',
+      aliases: [],
+      accountIds: []
+    }
+  ]
+  const relation = {
+    id: 'atomic-review-relation',
+    subjectId: 'atomic-review-left',
+    predicate: '认识',
+    objectId: 'atomic-review-right',
+    confidence: 0.8,
+    status: 'candidate',
+    evidence: [],
+    createdAt: '2026-08-05T04:00:00.000Z',
+    updatedAt: '2026-08-05T04:00:00.000Z'
+  }
+  const review = {
+    id: 'atomic-review-entry',
+    kind: 'relation',
+    title: '原子审阅甲 — 认识 → 原子审阅乙',
+    detail: '等待确认',
+    confidence: 0.8,
+    status: 'pending',
+    relationId: relation.id,
+    createdAt: '2026-08-05T04:00:00.000Z'
+  }
+  store.syncGraph({ entities, relations: [relation], reviewQueue: [review] } as any)
+  assert.throws(() => store.runInTransaction(() => {
+    store.recordRelationCorrection(review.id, relation as any, {
+      ...relation,
+      predicate: '同事',
+      status: 'confirmed'
+    } as any)
+    store.syncGraph({
+      entities,
+      relations: [{ ...relation, predicate: '同事', status: 'confirmed' }],
+      reviewQueue: [{ ...review, status: 'confirmed', resolvedAt: '2026-08-05T04:01:00.000Z' }]
+    } as any)
+    throw new Error('injected outer transaction failure')
+  }), /injected outer transaction failure/)
+
+  const snapshot = store.loadGraphSnapshot()
+  assert.equal(snapshot.relations[0].predicate, '认识')
+  assert.equal(snapshot.relations[0].status, 'candidate')
+  assert.equal(snapshot.reviewQueue[0].status, 'pending')
+  assert.equal(Number((store as any).db.prepare(
+    `SELECT COUNT(*) AS count FROM relation_corrections WHERE review_id=?`
+  ).get(review.id).count), 0)
+}))
 
 test('graph review revision covers queue and enriched graph state and self-heals on restart', () => {
   const directory = mkdtempSync(join(tmpdir(), 'weflow-graph-review-revision-'))
