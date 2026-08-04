@@ -16,6 +16,10 @@ import { buildMemoryBackupDirectory } from '../utils/memoryBackupPresentation'
 import { buildEntitySidebarPresentation } from '../utils/entitySidebarPresentation'
 import { setKeyedLoadingState } from '../utils/keyedLoadingState'
 import { KeyedLatestRequestGates } from '../utils/keyedLatestRequestGates'
+import {
+  memoryFeedbackOperationKey,
+  setKeyedActionState
+} from '../utils/memoryFeedbackOperation'
 import { evidenceArchiveIdentity } from '../../shared/evidencePayload'
 import './AiAssistantPage.scss'
 
@@ -675,7 +679,9 @@ function AiAssistantPage() {
   }>({ status: 'idle', query: '' })
   const [memoryLoadingMore, setMemoryLoadingMore] = useState(false)
   const [memorySearchFeedback, setMemorySearchFeedback] = useState<any[]>([])
-  const [memorySearchFeedbackSaving, setMemorySearchFeedbackSaving] = useState('')
+  const [memorySearchFeedbackSaving, setMemorySearchFeedbackSaving] =
+    useState<Record<string, 'helpful' | 'not_relevant' | 'cleared'>>({})
+  const memorySearchFeedbackGates = useRef(new KeyedLatestRequestGates())
   const [memorySearchRefreshKey, setMemorySearchRefreshKey] = useState(0)
   const memorySearchGate = useRef(new LatestRequestGate())
   const [memoryFeedbackArchiveOpen, setMemoryFeedbackArchiveOpen] = useState(false)
@@ -4801,6 +4807,15 @@ function AiAssistantPage() {
     }
   }
 
+  const memoryFeedbackSavingAction = (
+    documentId: string,
+    context?: { query?: string; options?: any }
+  ) => memorySearchFeedbackSaving[memoryFeedbackOperationKey(
+    documentId,
+    context?.query ?? memoryQuery.trim(),
+    context?.options ?? memorySearchOptions
+  )]
+
   const updateMemorySearchFeedback = async (
     documentId: string,
     action: 'helpful' | 'not_relevant' | 'cleared',
@@ -4808,22 +4823,30 @@ function AiAssistantPage() {
   ) => {
     const query = context?.query ?? memoryQuery.trim()
     const options = context?.options ?? memorySearchOptions
-    const saveKey = `${documentId}:${action}`
-    setMemorySearchFeedbackSaving(saveKey)
+    const operationKey = memoryFeedbackOperationKey(documentId, query, options)
+    if (memorySearchFeedbackSaving[operationKey]) return
+    const request = memorySearchFeedbackGates.current.begin(operationKey)
+    setMemorySearchFeedbackSaving(current =>
+      setKeyedActionState(current, operationKey, action))
     try {
-      const result = await window.electronAPI.aiAssistant.updateMemorySearchFeedback({
+      await window.electronAPI.aiAssistant.updateMemorySearchFeedback({
         query,
         options,
         documentId,
         action
       })
-      if (!context) setMemorySearchFeedback(result.feedback || [])
+      if (!memorySearchFeedbackGates.current.isCurrent(operationKey, request)) return
       if (context) {
         const nextFeedback = action === 'cleared' ? '' : action
         setMemoryAnswer((current: any) => current ? {
           ...current,
           citations: (current.citations || []).map((citation: any) =>
-            citation.documentId === documentId
+            citation.documentId === documentId &&
+            memoryFeedbackOperationKey(
+              citation.documentId,
+              citation.feedbackContext?.query,
+              citation.feedbackContext?.options
+            ) === operationKey
               ? { ...citation, relevanceFeedback: nextFeedback }
               : citation)
         } : current)
@@ -4843,9 +4866,14 @@ function AiAssistantPage() {
       setMemorySearchRefreshKey(value => value + 1)
       setMemoryFeedbackArchiveRefreshKey(value => value + 1)
     } catch (error: any) {
-      setMessage(error?.message || String(error))
+      if (memorySearchFeedbackGates.current.isCurrent(operationKey, request)) {
+        setMessage(error?.message || String(error))
+      }
     } finally {
-      setMemorySearchFeedbackSaving('')
+      if (memorySearchFeedbackGates.current.isCurrent(operationKey, request)) {
+        setMemorySearchFeedbackSaving(current =>
+          setKeyedActionState(current, operationKey))
+      }
     }
   }
 
@@ -6863,9 +6891,9 @@ function AiAssistantPage() {
                   <span>{feedback.action === 'helpful' ? '有用' : '无关'} · {feedback.documentTitle || feedback.documentId}</span>
                   <small>{feedback.documentType || '记忆'} · {new Date(feedback.createdAt).toLocaleString('zh-CN')}</small>
                   <button
-                    disabled={Boolean(memorySearchFeedbackSaving)}
+                    disabled={Boolean(memoryFeedbackSavingAction(feedback.documentId))}
                     onClick={() => void updateMemorySearchFeedback(feedback.documentId, 'cleared')}>
-                    {memorySearchFeedbackSaving === `${feedback.documentId}:cleared` ? '正在撤销…' : '撤销'}
+                    {memoryFeedbackSavingAction(feedback.documentId) === 'cleared' ? '正在撤销…' : '撤销'}
                   </button>
                 </div>)}
               </div>
@@ -6887,6 +6915,7 @@ function AiAssistantPage() {
               const matchedEvidence = result.matchedEvidence
                 ? normalizeMemoryEvidence(result.matchedEvidence)
                 : null
+              const feedbackSavingAction = memoryFeedbackSavingAction(result.id)
               return <article key={result.id}>
               <span>{MEMORY_TYPE_LABELS[result.document_type] || result.document_type}
                 {result.match_source ? ` · ${result.match_source}匹配` : ''}
@@ -6952,18 +6981,18 @@ function AiAssistantPage() {
               <div className="assistant-search-feedback-actions">
                 <button
                   className={result.relevance_feedback === 'helpful' ? 'active' : ''}
-                  disabled={Boolean(memorySearchFeedbackSaving)}
+                  disabled={Boolean(feedbackSavingAction)}
                   onClick={() => void updateMemorySearchFeedback(result.id, 'helpful')}>
-                  {memorySearchFeedbackSaving === `${result.id}:helpful` ? '记录中…' : '有用'}
+                  {feedbackSavingAction === 'helpful' ? '记录中…' : '有用'}
                 </button>
                 <button
                   className={result.relevance_feedback === 'not_relevant' ? 'active' : ''}
-                  disabled={Boolean(memorySearchFeedbackSaving)}
+                  disabled={Boolean(feedbackSavingAction)}
                   onClick={() => void updateMemorySearchFeedback(result.id, 'not_relevant')}>
-                  {memorySearchFeedbackSaving === `${result.id}:not_relevant` ? '记录中…' : '与本次检索无关'}
+                  {feedbackSavingAction === 'not_relevant' ? '记录中…' : '与本次检索无关'}
                 </button>
                 {result.relevance_feedback && <button
-                  disabled={Boolean(memorySearchFeedbackSaving)}
+                  disabled={Boolean(feedbackSavingAction)}
                   onClick={() => void updateMemorySearchFeedback(result.id, 'cleared')}>撤销反馈</button>}
                 {result.relevance_feedback && <small>
                   已按你的反馈{result.relevance_feedback === 'helpful' ? '保守提升' : '保守降低'}本查询排序
@@ -7060,6 +7089,9 @@ function AiAssistantPage() {
                   const actionLabel = item.action === 'helpful' ? '设为有用'
                     : item.action === 'not_relevant' ? '设为无关'
                       : '撤销反馈'
+                  const feedbackContext = { query: item.queryText, options: scope }
+                  const feedbackSavingAction =
+                    memoryFeedbackSavingAction(item.documentId, feedbackContext)
                   return <article key={item.id}>
                     <header>
                       <span>{actionLabel} · {new Date(item.createdAt).toLocaleString('zh-CN')}</span>
@@ -7072,17 +7104,21 @@ function AiAssistantPage() {
                     <small>{scopeLabels.length ? scopeLabels.join(' · ') : '全部范围'} · {item.documentType || '记忆'}</small>
                     <div>
                       {item.isCurrent && item.action !== 'cleared' && <button
-                        disabled={Boolean(memorySearchFeedbackSaving)}
-                        onClick={() => void updateMemorySearchFeedback(item.documentId, 'cleared', {
-                          query: item.queryText,
-                          options: scope
-                        })}>撤销当前反馈</button>}
+                        disabled={Boolean(feedbackSavingAction)}
+                        onClick={() => void updateMemorySearchFeedback(
+                          item.documentId,
+                          'cleared',
+                          feedbackContext
+                        )}>{feedbackSavingAction === 'cleared' ? '正在撤销…' : '撤销当前反馈'}</button>}
                       {!item.isCurrent && item.action !== 'cleared' && <button
-                        disabled={Boolean(memorySearchFeedbackSaving)}
-                        onClick={() => void updateMemorySearchFeedback(item.documentId, item.action, {
-                          query: item.queryText,
-                          options: scope
-                        })}>重新设为{item.action === 'helpful' ? '有用' : '无关'}</button>}
+                        disabled={Boolean(feedbackSavingAction)}
+                        onClick={() => void updateMemorySearchFeedback(
+                          item.documentId,
+                          item.action,
+                          feedbackContext
+                        )}>{feedbackSavingAction === item.action
+                          ? '正在记录…'
+                          : `重新设为${item.action === 'helpful' ? '有用' : '无关'}`}</button>}
                       <button className="danger" onClick={() => void openMemoryFeedbackDeletion(item.id)}>
                         永久删除这组反馈
                       </button>
@@ -7412,7 +7448,11 @@ function AiAssistantPage() {
               </button>
             </div>
             {!!memoryAnswer.citations?.length && <div className="assistant-citations">
-              {memoryAnswer.citations.map((citation: any) => <article key={citation.documentId}>
+              {memoryAnswer.citations.map((citation: any) => {
+                const feedbackSavingAction = citation.feedbackContext
+                  ? memoryFeedbackSavingAction(citation.documentId, citation.feedbackContext)
+                  : undefined
+                return <article key={citation.documentId}>
                 <button className="assistant-citation-locate" onClick={() => {
                   setMemoryQuery(citation.title)
                   setMemoryTypeFilter(citation.type)
@@ -7456,20 +7496,20 @@ function AiAssistantPage() {
                   <small>这项判断只影响生成本回答时的同一问题和检索范围，不改变记忆真实性。</small>
                   <button
                     className={citation.relevanceFeedback === 'helpful' ? 'active' : ''}
-                    disabled={Boolean(memorySearchFeedbackSaving)}
+                    disabled={Boolean(feedbackSavingAction)}
                     onClick={() => void updateMemorySearchFeedback(citation.documentId, 'helpful', citation.feedbackContext)}>
-                    {memorySearchFeedbackSaving === `${citation.documentId}:helpful` ? '记录中…' : '这条引用有帮助'}
+                    {feedbackSavingAction === 'helpful' ? '记录中…' : '这条引用有帮助'}
                   </button>
                   <button
                     className={citation.relevanceFeedback === 'not_relevant' ? 'active' : ''}
-                    disabled={Boolean(memorySearchFeedbackSaving)}
+                    disabled={Boolean(feedbackSavingAction)}
                     onClick={() => void updateMemorySearchFeedback(citation.documentId, 'not_relevant', citation.feedbackContext)}>
-                    {memorySearchFeedbackSaving === `${citation.documentId}:not_relevant` ? '记录中…' : '这条引用不相关'}
+                    {feedbackSavingAction === 'not_relevant' ? '记录中…' : '这条引用不相关'}
                   </button>
                   {citation.relevanceFeedback && <button
-                    disabled={Boolean(memorySearchFeedbackSaving)}
+                    disabled={Boolean(feedbackSavingAction)}
                     onClick={() => void updateMemorySearchFeedback(citation.documentId, 'cleared', citation.feedbackContext)}>
-                    撤销引用反馈
+                    {feedbackSavingAction === 'cleared' ? '正在撤销…' : '撤销引用反馈'}
                   </button>}
                 </div>}
                 {!citation.feedbackContext && <small className="assistant-evidence-limit-note">
@@ -7482,7 +7522,8 @@ function AiAssistantPage() {
                   {citation.status !== 'rejected' && <button onClick={() => void reviewMemoryCitation(citation, 'rejected')}>不准确</button>}
                   <button className="danger" onClick={() => void permanentlyDeleteMemoryItem(citation.type, citation)}>永久删除</button>
                 </div>}
-              </article>)}
+              </article>
+              })}
             </div>}
           </div>}
         </section>

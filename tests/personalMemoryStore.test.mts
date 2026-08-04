@@ -116,6 +116,10 @@ import { buildTaskCalendar, extractTaskDueDate } from '../src/utils/taskCalendar
 import { buildEntitySidebarPresentation } from '../src/utils/entitySidebarPresentation.ts'
 import { setKeyedLoadingState } from '../src/utils/keyedLoadingState.ts'
 import { KeyedLatestRequestGates } from '../src/utils/keyedLatestRequestGates.ts'
+import {
+  memoryFeedbackOperationKey,
+  setKeyedActionState
+} from '../src/utils/memoryFeedbackOperation.ts'
 import { filterGraphReviews, paginateGraphReviews } from '../src/utils/graphReviewFilters.ts'
 import { summarizeIngestionRuns } from '../electron/services/ingestionDiagnostics.ts'
 import { attachLocalImageOcr, attachLocalVoiceTranscript, recoverMessageSemantics } from '../electron/services/messageSemanticRecovery.ts'
@@ -2137,6 +2141,42 @@ test('relation dossier history and correction continuations stay independent unt
   assert.equal(gates.isCurrent('history', refreshedHistory), false)
   assert.equal(gates.isCurrent('correction', correction), false)
   assert.deepEqual(loading, {})
+})
+
+test('feedback operation keys isolate documents and scopes while normalizing equivalent input', () => {
+  const first = memoryFeedbackOperationKey('claim:one', '  项目   进度 ', {
+    entityId: 'entity:1',
+    documentTypes: ['EVENT', 'claim', 'claim'],
+    sourceIds: ['wechat', 'MAIL']
+  })
+  const equivalent = memoryFeedbackOperationKey('claim:one', '项目 进度', {
+    entityId: 'entity:1',
+    documentTypes: ['claim', 'event'],
+    sourceIds: ['mail', 'WECHAT']
+  })
+  assert.equal(first, equivalent)
+  assert.notEqual(first, memoryFeedbackOperationKey('claim:two', '项目 进度', {
+    entityId: 'entity:1',
+    documentTypes: ['claim', 'event'],
+    sourceIds: ['mail', 'wechat']
+  }))
+  assert.notEqual(first, memoryFeedbackOperationKey('claim:one', '项目 进度', {
+    entityId: 'entity:2',
+    documentTypes: ['claim', 'event'],
+    sourceIds: ['mail', 'wechat']
+  }))
+})
+
+test('keyed feedback actions let independent cards save without unlocking each other', () => {
+  let actions: Record<string, 'helpful' | 'not_relevant' | 'cleared'> = {}
+  actions = setKeyedActionState(actions, 'scope-a:document-a', 'helpful')
+  actions = setKeyedActionState(actions, 'scope-a:document-b', 'not_relevant')
+  assert.deepEqual(actions, {
+    'scope-a:document-a': 'helpful',
+    'scope-a:document-b': 'not_relevant'
+  })
+  actions = setKeyedActionState(actions, 'scope-a:document-a')
+  assert.deepEqual(actions, { 'scope-a:document-b': 'not_relevant' })
 })
 
 test('memory cards expose evidence totals but bound their latest evidence payload', () => withStore(store => {
