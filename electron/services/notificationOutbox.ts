@@ -10,6 +10,9 @@ export type AssistantNotification = {
 export type NotificationOutbox = {
   pending: AssistantNotification[]
   sentKeys: string[]
+  discardedPendingCount?: number
+  lastDiscardedPendingAt?: string
+  prunedSentKeyCount?: number
 }
 
 export function enqueueUniqueNotification(
@@ -19,7 +22,12 @@ export function enqueueUniqueNotification(
   if (!notification.key || outbox.sentKeys.includes(notification.key) ||
       outbox.pending.some(item => item.key === notification.key)) return false
   outbox.pending.push({ ...notification, attempts: 0 })
-  outbox.pending = outbox.pending.slice(-100)
+  if (outbox.pending.length > 100) {
+    const discarded = outbox.pending.length - 100
+    outbox.pending = outbox.pending.slice(-100)
+    outbox.discardedPendingCount = Math.max(0, Number(outbox.discardedPendingCount) || 0) + discarded
+    outbox.lastDiscardedPendingAt = new Date().toISOString()
+  }
   return true
 }
 
@@ -32,7 +40,12 @@ export function markNotificationAttempt(
   if (!item) return
   if (result.success) {
     outbox.pending = outbox.pending.filter(notification => notification.key !== key)
-    outbox.sentKeys = [...new Set([...outbox.sentKeys, key])].slice(-500)
+    const sentKeys = [...new Set([...outbox.sentKeys, key])]
+    if (sentKeys.length > 500) {
+      outbox.prunedSentKeyCount = Math.max(0, Number(outbox.prunedSentKeyCount) || 0) +
+        (sentKeys.length - 500)
+    }
+    outbox.sentKeys = sentKeys.slice(-500)
     return
   }
   item.attempts = Math.max(0, Number(item.attempts) || 0) + 1

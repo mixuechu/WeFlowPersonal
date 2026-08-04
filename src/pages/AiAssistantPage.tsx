@@ -5989,7 +5989,9 @@ function AiAssistantPage() {
           </span></div>
           <span>{dashboard.qualityBaseline.failures?.length ? `${dashboard.qualityBaseline.failures.length} 个样本未通过` : '全部通过'}</span>
         </section>}
-        {dashboard?.notificationDelivery && <section className={`assistant-notification-delivery ${dashboard.notificationDelivery.lastError ? 'warning' : ''}`}>
+        {dashboard?.notificationDelivery && <section className={`assistant-notification-delivery ${
+          dashboard.notificationDelivery.lastError || dashboard.notificationDelivery.discardedPendingCount ? 'warning' : ''
+        }`}>
           <div><Clock3 size={14} /><span><strong>通知投递 · {dashboard.notificationDelivery.quiet ? '静默中' : '可发送'}</strong>
             <small>静默 {dashboard.notificationDelivery.quietStart}–{dashboard.notificationDelivery.quietEnd} · 已成功去重投递 {dashboard.notificationDelivery.sent} 条</small>
           </span></div>
@@ -5997,6 +5999,13 @@ function AiAssistantPage() {
             ? `${dashboard.notificationDelivery.pending} 条等待静默结束或下次启动`
             : '没有待发通知'}</span>
           {dashboard.notificationDelivery.lastError && <small>{dashboard.notificationDelivery.lastError}</small>}
+          {Number(dashboard.notificationDelivery.discardedPendingCount || 0) > 0 && <small>
+            待发队列最多保留最新 {dashboard.notificationDelivery.pendingLimit || 100} 条；
+            历史累计淘汰 {Number(dashboard.notificationDelivery.discardedPendingCount).toLocaleString()} 条较旧通知
+            {dashboard.notificationDelivery.lastDiscardedPendingAt
+              ? `，最近一次 ${new Date(dashboard.notificationDelivery.lastDiscardedPendingAt).toLocaleString('zh-CN')}`
+              : ''}。任务和记忆本体未删除。
+          </small>}
         </section>}
 
         <section className="assistant-briefing-card">

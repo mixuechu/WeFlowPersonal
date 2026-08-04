@@ -404,7 +404,12 @@ const EMPTY_STATE: AssistantState = {
   briefings: {},
   tasks: [],
   lastSyncAt: null,
-  notifications: { pending: [], sentKeys: [] },
+  notifications: {
+    pending: [],
+    sentKeys: [],
+    discardedPendingCount: 0,
+    prunedSentKeyCount: 0
+  },
   reminderPreferences: { mutedKinds: [], snoozedUntil: {}, history: [] },
   cursor: {
     lastMessageTimestamp: 0,
@@ -814,7 +819,10 @@ export class AiAssistantService {
         },
         notifications: {
           pending: Array.isArray(loaded.notifications?.pending) ? loaded.notifications.pending : [],
-          sentKeys: Array.isArray(loaded.notifications?.sentKeys) ? loaded.notifications.sentKeys : []
+          sentKeys: Array.isArray(loaded.notifications?.sentKeys) ? loaded.notifications.sentKeys : [],
+          discardedPendingCount: Math.max(0, Number(loaded.notifications?.discardedPendingCount) || 0),
+          lastDiscardedPendingAt: String(loaded.notifications?.lastDiscardedPendingAt || '') || undefined,
+          prunedSentKeyCount: Math.max(0, Number(loaded.notifications?.prunedSentKeyCount) || 0)
         },
         reminderPreferences: normalizeReminderPreferences(loaded.reminderPreferences),
         tasks: Array.isArray(loaded.tasks)
@@ -3945,6 +3953,11 @@ export class AiAssistantService {
       notificationDelivery: {
         pending: this.state.notifications.pending.length,
         sent: this.state.notifications.sentKeys.length,
+        discardedPendingCount: Number(this.state.notifications.discardedPendingCount || 0),
+        lastDiscardedPendingAt: this.state.notifications.lastDiscardedPendingAt || null,
+        prunedSentKeyCount: Number(this.state.notifications.prunedSentKeyCount || 0),
+        pendingLimit: 100,
+        sentKeyLimit: 500,
         quiet: this.isNotificationQuiet(new Date()),
         quietStart: this.config.get('aiAssistantQuietStart'),
         quietEnd: this.config.get('aiAssistantQuietEnd'),

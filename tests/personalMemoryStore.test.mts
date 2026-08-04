@@ -4023,6 +4023,23 @@ test('notification delivery does not let one failed head item starve later work'
   assert.deepEqual(persisted[4], ['notification-0', 'notification-5', 'notification-6', 'notification-7'])
 })
 
+test('notification queue capacity keeps the newest work and audits every discarded item', () => {
+  const outbox = { pending: [], sentKeys: [] } as any
+  for (let index = 0; index < 105; index += 1) {
+    assert.equal(enqueueUniqueNotification(outbox, {
+      key: `capacity-${index}`,
+      title: `通知 ${index}`,
+      content: `内容 ${index}`,
+      createdAt: new Date(1_700_000_000_000 + index).toISOString()
+    }), true)
+  }
+  assert.equal(outbox.pending.length, 100)
+  assert.equal(outbox.pending[0].key, 'capacity-5')
+  assert.equal(outbox.pending[99].key, 'capacity-104')
+  assert.equal(outbox.discardedPendingCount, 5)
+  assert.ok(Number.isFinite(Date.parse(outbox.lastDiscardedPendingAt)))
+})
+
 test('common-neighbor graph query keeps relation direction, status and evidence', () => {
   const entities = [
     { id: 'left', canonicalName: '人物甲' },
