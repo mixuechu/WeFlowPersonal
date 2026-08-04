@@ -8,6 +8,7 @@ import {
 import {
   buildModelMemoryContext,
   buildUntrustedMemoryQuestionEnvelope,
+  filterTrustedConversationHistory,
   filterModelEligibleMemoryResults,
   finalizeGroundedMemoryAnswer,
   groundedAnswerRequiresRetry,
@@ -351,6 +352,59 @@ test('grounded statements become stale when cited authority changes or disappear
   assert.equal(groundedAnswerRequiresRetry({
     acceptedStatements: 0
   }, invalid), false)
+})
+
+test('multi-turn memory context excludes stale and unaudited assistant answers', () => {
+  const result = filterTrustedConversationHistory([
+    { role: 'user', content: 'Onyx 项目目前怎么样？' },
+    {
+      role: 'assistant',
+      content: '项目按计划推进。',
+      groundingAudit: {
+        version: 'statement-citations-v1',
+        acceptedStatements: 1
+      },
+      groundingRevalidation: {
+        status: 'current',
+        supportedStatements: 1
+      }
+    },
+    { role: 'assistant', content: '旧版没有可信审计的结论。', groundingAudit: {} },
+    {
+      role: 'assistant',
+      content: '后来已经延期。',
+      groundingAudit: {
+        version: 'statement-citations-v1',
+        acceptedStatements: 1
+      },
+      groundingRevalidation: {
+        status: 'invalid',
+        supportedStatements: 0
+      }
+    },
+    {
+      role: 'assistant',
+      content: '当前证据不足。',
+      groundingAudit: {
+        version: 'statement-citations-v1',
+        acceptedStatements: 0
+      },
+      groundingRevalidation: {
+        status: 'needs_review',
+        supportedStatements: 0
+      }
+    },
+    { role: 'tool', content: '不能进入对话上下文' }
+  ])
+  assert.deepEqual(result.history, [
+    { role: 'user', content: 'Onyx 项目目前怎么样？' },
+    { role: 'assistant', content: '项目按计划推进。' },
+    { role: 'assistant', content: '当前证据不足。' }
+  ])
+  assert.equal(result.includedAssistant, 2)
+  assert.equal(result.excludedAssistant, 2)
+  assert.equal(result.excludedLegacyAssistant, 1)
+  assert.equal(result.excludedStaleAssistant, 1)
 })
 
 test('mail connector keeps independent mailbox cursors and retries failed consumption', async () => {

@@ -253,6 +253,7 @@ import {
   buildModelMemoryContext,
   buildUntrustedMemoryQuestionEnvelope,
   classifyDocumentTaskOwnership,
+  filterTrustedConversationHistory,
   finalizeGroundedMemoryAnswer,
   groundedAnswerRequiresRetry,
   getMemoryCitationFreshness,
@@ -7603,15 +7604,25 @@ export class AiAssistantService {
     if (explicitEntitySelection?.stale) {
       throw new Error('所选实体已经变化或不再可信，请重新选择实体范围')
     }
-    const conversationHistory = conversationId
-      ? (personalMemoryStore.getAssistantConversation(conversationId, 8)?.messages || [])
-        .filter((message: any) => message.role === 'user' || message.role === 'assistant')
-        .map((message: any) => ({ role: message.role, content: String(message.content || '').slice(0, 3000) }))
-      : []
+    const storedConversation = conversationId
+      ? personalMemoryStore.getAssistantConversation(conversationId, 8)
+      : null
+    const enrichedConversation = storedConversation
+      ? this.enrichAssistantCitationFeedback(storedConversation)
+      : null
+    const conversationHistoryAudit = filterTrustedConversationHistory(
+      enrichedConversation?.messages || []
+    )
+    const conversationHistory = conversationHistoryAudit.history
     const contextualQuestion = buildContextualMemoryQuestion(query, conversationHistory)
     const trustedEntities = this.state.graph.entities.filter(isTrustedEntity)
     const plan = buildMemoryQueryPlan(contextualQuestion.query, trustedEntities)
     if (contextualQuestion.usedHistory) plan.explanation.unshift('结合上一轮问题解析本次指代')
+    if (conversationHistoryAudit.excludedAssistant) {
+      plan.explanation.unshift(
+        `已隔离 ${conversationHistoryAudit.excludedAssistant} 条过期或未验证的历史助手回答`
+      )
+    }
     const plannedOptions: MemorySearchOptions = {
       ...plan.inferredOptions,
       ...options,
@@ -7799,6 +7810,12 @@ export class AiAssistantService {
       sensitiveRedaction: outbound.summary,
       queryPlan: {
         ...plan,
+        conversationHistoryAudit: {
+          includedAssistant: conversationHistoryAudit.includedAssistant,
+          excludedAssistant: conversationHistoryAudit.excludedAssistant,
+          excludedLegacyAssistant: conversationHistoryAudit.excludedLegacyAssistant,
+          excludedStaleAssistant: conversationHistoryAudit.excludedStaleAssistant
+        },
         appliedOptions: plannedOptions,
         graphPath: plannedGraphPath ? {
           found: plannedGraphPath.found,

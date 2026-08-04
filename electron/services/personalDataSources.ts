@@ -346,6 +346,57 @@ export function groundedAnswerRequiresRetry(
     || revalidation.supportedStatements < acceptedStatements
 }
 
+export function filterTrustedConversationHistory(messages: any[]): {
+  history: Array<{ role: 'user' | 'assistant'; content: string }>
+  includedAssistant: number
+  excludedAssistant: number
+  excludedLegacyAssistant: number
+  excludedStaleAssistant: number
+} {
+  const audit = {
+    includedAssistant: 0,
+    excludedAssistant: 0,
+    excludedLegacyAssistant: 0,
+    excludedStaleAssistant: 0
+  }
+  const history = (Array.isArray(messages) ? messages : []).flatMap(message => {
+    const role = message?.role === 'user'
+      ? 'user'
+      : message?.role === 'assistant' ? 'assistant' : ''
+    const content = String(message?.content || '').trim().slice(0, 3000)
+    if (!role || !content) return []
+    if (role === 'user') return [{ role, content }]
+    const groundingAudit = message?.groundingAudit
+    const hasGroundingAudit = Boolean(
+      groundingAudit
+      && typeof groundingAudit === 'object'
+      && String(groundingAudit.version || '').trim() === 'statement-citations-v1'
+    )
+    if (!hasGroundingAudit) {
+      audit.excludedAssistant += 1
+      audit.excludedLegacyAssistant += 1
+      return []
+    }
+    const acceptedStatements = Math.max(
+      0,
+      Math.floor(Number(groundingAudit.acceptedStatements) || 0)
+    )
+    if (acceptedStatements > 0) {
+      const revalidation = message?.groundingRevalidation
+      if (!revalidation
+        || revalidation.status !== 'current'
+        || Math.max(0, Number(revalidation.supportedStatements || 0)) < acceptedStatements) {
+        audit.excludedAssistant += 1
+        audit.excludedStaleAssistant += 1
+        return []
+      }
+    }
+    audit.includedAssistant += 1
+    return [{ role, content }]
+  })
+  return { history, ...audit }
+}
+
 export function getMemoryCitationFreshness(input: {
   answerTimeContentHash?: string
   currentContentHash?: string
