@@ -3346,6 +3346,10 @@ export class PersonalMemoryStore {
         OR ((d.document_type='resource' OR d.id LIKE 'resource:%') AND NOT EXISTS(
           SELECT 1 FROM memory_resources item
           WHERE d.id='resource:' || item.id AND d.source_id=item.id AND d.document_type='resource'
+            AND NOT EXISTS(
+              SELECT 1 FROM resource_suppressions suppressed
+              WHERE suppressed.resource_id=item.id
+            )
         ))
         OR ((d.document_type='entity' OR d.id LIKE 'entity:%') AND NOT EXISTS(
           SELECT 1 FROM entities item
@@ -3560,6 +3564,10 @@ export class PersonalMemoryStore {
         d.content_hash AS document_content_hash,r.*
       FROM search_documents d
       JOIN memory_resources r ON r.id=d.source_id WHERE d.document_type='resource'
+        AND NOT EXISTS(
+          SELECT 1 FROM resource_suppressions suppressed
+          WHERE suppressed.resource_id=r.id
+        )
     `).all() as any[]) {
       let metadata: any = {}
       let currentMetadata: any = null
@@ -6547,7 +6555,12 @@ export class PersonalMemoryStore {
     `).get() as { count: number; revision: string }
     const claims = stats('claims')
     const events = stats('events')
-    const resources = stats('memory_resources')
+    const resources = this.db.prepare(`
+      SELECT COUNT(*) AS count,COALESCE(MAX(resource.updated_at),'') AS revision
+      FROM memory_resources resource
+      LEFT JOIN resource_suppressions suppressed ON suppressed.resource_id=resource.id
+      WHERE suppressed.resource_id IS NULL
+    `).get() as { count: number; revision: string }
     return {
       claims: Number(claims.count),
       events: Number(events.count),

@@ -3869,6 +3869,54 @@ test('live structured search audit rejects resource hash drift before trusted ba
   assert.equal(store.createBackup().success, true)
 }))
 
+test('suppressed resource search residue is blocked and removed across restart', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'weflow-suppressed-resource-search-'))
+  const databasePath = join(directory, 'memory.sqlite')
+  const key = randomBytes(32)
+  const resource = {
+    id: 'suppressed-resource-residue',
+    resourceType: 'document',
+    title: '不应继续检索的回收站资源',
+    content: '回收站资源残留搜索正文',
+    fileName: '回收站资源.txt',
+    metadata: { sourceId: 'documents' }
+  }
+  const first = new PersonalMemoryStore()
+  const reopened = new PersonalMemoryStore()
+  try {
+    first.initialize(databasePath, key)
+    first.upsertResources([resource])
+    ;(first as any).db.prepare(`
+      INSERT INTO resource_suppressions(resource_id,reason,created_at)
+      VALUES(?,?,?)
+    `).run(resource.id, 'interrupted_delete', '2026-08-05T00:00:00.000Z')
+    const drifted = first.getDiagnostics()
+    assert.equal(drifted.structuredSearchIndexHealthy, false)
+    assert.equal(drifted.structuredSearchIndex.currentGhostDocuments, 1)
+    assert.throws(() => first.createBackup(), /数据库一致性检查失败/)
+    first.close()
+
+    reopened.initialize(databasePath, key)
+    const repaired = reopened.getDiagnostics()
+    assert.equal(repaired.healthy, true)
+    assert.equal(repaired.structuredSearchIndexHealthy, true)
+    assert.equal(repaired.structuredSearchIndex.ghostDocumentsRemovedThisStart, 1)
+    assert.equal(reopened.searchText('回收站资源残留搜索正文').length, 0)
+    assert.equal(reopened.getMemoryStats().resources, 0)
+
+    ;(reopened as any).db.prepare(
+      'DELETE FROM resource_suppressions WHERE resource_id=?'
+    ).run(resource.id)
+    reopened.upsertResources([resource])
+    assert.equal(reopened.searchText('回收站资源残留搜索正文')[0]?.source_id,
+      resource.id)
+  } finally {
+    first.close()
+    reopened.close()
+    rmSync(directory, { recursive: true, force: true })
+  }
+})
+
 test('Chinese substring search falls back when the exact FTS phrase misses', () => withStore(store => {
   store.syncTasks([{
     id: 'task-2',

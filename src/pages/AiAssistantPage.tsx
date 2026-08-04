@@ -10722,7 +10722,7 @@ function AiAssistantPage() {
             </div>}
             {memoryDiagnostics.structuredSearchIndex?.version && <div className={`assistant-recovery-audit ${memoryDiagnostics.structuredSearchIndexHealthy ? 'healthy' : 'unhealthy'}`}>
               <header><Search size={15} /><span><b>记忆本体与检索索引对账</b>
-                <small>事实、关系、事件和资源与全文/向量文档双向核对：删除幽灵结果，重建存在但搜不到的记忆；原文仍从保留证据角色的权威表读取。</small>
+                <small>事实、关系、事件和资源与全文/向量文档双向核对：删除不存在、已回收或不再可信的幽灵结果，重建存在但搜不到的记忆；原文仍从保留证据角色的权威表读取。</small>
               </span></header>
               <div className="assistant-recovery-current">
                 <span>当前状态 <b>{memoryDiagnostics.structuredSearchIndexHealthy ? '一致' : '需要检查'}</b></span>
