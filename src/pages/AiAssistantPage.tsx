@@ -11013,6 +11013,7 @@ function AiAssistantPage() {
                 <span>连续失败 <b>{Number(memoryDiagnostics.embeddings.background?.failureStreak || 0).toLocaleString()}</b> 次</span>
                 <span>查询降级 <b>{Number(memoryDiagnostics.embeddings.query?.fallbackCount || 0).toLocaleString()}</b> 次</span>
                 <span>维度漂移修复 <b>{Number(memoryDiagnostics.embeddings.query?.dimensionRepairCount || 0).toLocaleString()}</b> 条</span>
+                <span>模型提交 <b>{String(memoryDiagnostics.embeddings.revision || '').slice(0, 12) || '未知'}</b></span>
                 <span>版本 <b>{memoryDiagnostics.embeddings.ann.version || 'lsh-v1'}</b></span>
                 <span>最近构建 <b>{memoryDiagnostics.embeddings.ann.lastBuiltAt
                   ? new Date(memoryDiagnostics.embeddings.ann.lastBuiltAt).toLocaleString('zh-CN') : '尚未需要'}</b></span>

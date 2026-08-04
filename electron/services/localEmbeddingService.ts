@@ -1,8 +1,10 @@
 import { mkdirSync } from 'node:fs'
 import { join } from 'node:path'
 
-const MODEL = 'onnx-community/bge-small-zh-v1.5-ONNX'
-const MODEL_VERSION = `${MODEL}:q8:mean-normalized:v1`
+export const LOCAL_EMBEDDING_MODEL = 'onnx-community/bge-small-zh-v1.5-ONNX'
+export const LOCAL_EMBEDDING_REVISION = '9507db33464b5da99a532ac26b2a251767cbc62b'
+const MODEL_VERSION =
+  `${LOCAL_EMBEDDING_MODEL}@${LOCAL_EMBEDDING_REVISION}:q8:mean-normalized:v1`
 
 export class LocalEmbeddingService {
   private cacheDirectory = ''
@@ -10,7 +12,7 @@ export class LocalEmbeddingService {
   private lastError = ''
 
   initialize(userDataPath: string): void {
-    this.cacheDirectory = join(userDataPath, 'models')
+    this.cacheDirectory = join(userDataPath, 'models', 'revisions', LOCAL_EMBEDDING_REVISION)
     mkdirSync(this.cacheDirectory, { recursive: true })
   }
 
@@ -20,7 +22,8 @@ export class LocalEmbeddingService {
 
   getStatus(): any {
     return {
-      model: MODEL,
+      model: LOCAL_EMBEDDING_MODEL,
+      revision: LOCAL_EMBEDDING_REVISION,
       modelVersion: MODEL_VERSION,
       cacheDirectory: this.cacheDirectory,
       loaded: Boolean(this.extractorPromise) && !this.lastError,
@@ -47,7 +50,10 @@ export class LocalEmbeddingService {
         env.cacheDir = this.cacheDirectory
         env.allowLocalModels = true
         env.allowRemoteModels = true
-        return pipeline('feature-extraction', MODEL, { dtype: 'q8' })
+        return pipeline('feature-extraction', LOCAL_EMBEDDING_MODEL, {
+          dtype: 'q8',
+          revision: LOCAL_EMBEDDING_REVISION
+        })
       }).catch(error => {
         this.lastError = error instanceof Error ? error.message : String(error)
         this.extractorPromise = null

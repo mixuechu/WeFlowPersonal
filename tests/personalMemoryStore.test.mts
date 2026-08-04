@@ -6,6 +6,11 @@ import { tmpdir } from 'node:os'
 import { createHash, randomBytes } from 'node:crypto'
 import { PersonalMemoryStore } from '../electron/services/personalMemoryStore.ts'
 import {
+  LOCAL_EMBEDDING_MODEL,
+  LOCAL_EMBEDDING_REVISION,
+  LocalEmbeddingService
+} from '../electron/services/localEmbeddingService.ts'
+import {
   recordVectorIndexContinuation,
   recordVectorQueryOutcome,
   runVectorIndexPass,
@@ -7185,6 +7190,23 @@ test('semantic query deadline returns promptly without cancelling background mod
   finishLoading!([1, 2, 3])
   assert.deepEqual(await loading, [1, 2, 3])
   assert.equal(await withVectorQueryDeadline(Promise.resolve('ready'), 100), 'ready')
+})
+
+test('local embedding identity pins an immutable model revision', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'weflow-model-identity-'))
+  try {
+    const service = new LocalEmbeddingService()
+    service.initialize(directory)
+    const status = service.getStatus()
+    assert.equal(status.model, LOCAL_EMBEDDING_MODEL)
+    assert.equal(status.revision, LOCAL_EMBEDDING_REVISION)
+    assert.match(status.cacheDirectory, new RegExp(`/revisions/${LOCAL_EMBEDDING_REVISION}$`))
+    assert.match(service.modelVersion, new RegExp(`@${LOCAL_EMBEDDING_REVISION}:`))
+    assert.notEqual(LOCAL_EMBEDDING_REVISION, 'main')
+    assert.match(LOCAL_EMBEDDING_REVISION, /^[a-f0-9]{40}$/)
+  } finally {
+    rmSync(directory, { recursive: true, force: true })
+  }
 })
 
 test('cosine similarity is scale safe and rejects unusable vectors', () => {
