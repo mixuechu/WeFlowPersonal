@@ -483,7 +483,8 @@ export class PersonalMemoryStore {
         last_error TEXT,
         payload_blob BLOB,
         payload_codec TEXT NOT NULL DEFAULT '',
-        payload_original_bytes INTEGER NOT NULL DEFAULT 0
+        payload_original_bytes INTEGER NOT NULL DEFAULT 0,
+        affected_count INTEGER NOT NULL DEFAULT 0
       ) STRICT;
       CREATE INDEX IF NOT EXISTS idx_task_mutation_commits_status
         ON task_mutation_commits(status,prepared_at);
@@ -501,7 +502,8 @@ export class PersonalMemoryStore {
         last_error TEXT,
         payload_blob BLOB,
         payload_codec TEXT NOT NULL DEFAULT '',
-        payload_original_bytes INTEGER NOT NULL DEFAULT 0
+        payload_original_bytes INTEGER NOT NULL DEFAULT 0,
+        affected_count INTEGER NOT NULL DEFAULT 0
       ) STRICT;
       CREATE INDEX IF NOT EXISTS idx_conversation_source_mutation_commits_status
         ON conversation_source_mutation_commits(status,prepared_at);
@@ -854,9 +856,11 @@ export class PersonalMemoryStore {
     this.ensureColumn('task_mutation_commits', 'payload_blob', 'BLOB')
     this.ensureColumn('task_mutation_commits', 'payload_codec', `TEXT NOT NULL DEFAULT ''`)
     this.ensureColumn('task_mutation_commits', 'payload_original_bytes', 'INTEGER NOT NULL DEFAULT 0')
+    this.ensureColumn('task_mutation_commits', 'affected_count', 'INTEGER NOT NULL DEFAULT 0')
     this.ensureColumn('conversation_source_mutation_commits', 'payload_blob', 'BLOB')
     this.ensureColumn('conversation_source_mutation_commits', 'payload_codec', `TEXT NOT NULL DEFAULT ''`)
     this.ensureColumn('conversation_source_mutation_commits', 'payload_original_bytes', 'INTEGER NOT NULL DEFAULT 0')
+    this.ensureColumn('conversation_source_mutation_commits', 'affected_count', 'INTEGER NOT NULL DEFAULT 0')
     this.ensureColumn('memory_review_decisions', 'reason', `TEXT NOT NULL DEFAULT ''`)
     this.ensureColumn('memory_review_decisions', 'protect_from_extraction', 'INTEGER NOT NULL DEFAULT 1')
     this.ensureColumn('assistant_messages', 'grounding_json', `TEXT NOT NULL DEFAULT '{}'`)
@@ -901,12 +905,14 @@ export class PersonalMemoryStore {
     this.ensureGraphReviewRevisionTriggers()
     this.normalizeTaskHistoryEvidence()
     this.compactTaskReviewSnapshots()
+    this.backfillCrossStoreMutationAffectedCounts()
     this.compactFailedCrossStoreMutationPayloads()
     this.ensureTaskArchiveRevisionTriggers()
     this.ensureTaskOwnershipReviewRevisionTriggers()
     this.ensureIdentityMergeArchiveRevisionTriggers()
     this.ensureIngestionArchiveRevisionTriggers()
     this.ensureIngestionRecoveryRevisionTriggers()
+    this.ensureCrossStoreRecoveryRevisionTriggers()
     this.ensureAssistantHistoryRevisionTriggers()
     this.ensureResourceArchiveRevisionTriggers()
     this.repairStructuredSearchIndex()
@@ -2038,6 +2044,32 @@ export class PersonalMemoryStore {
       tables: ['ingestion_batch_commits'],
       version: 'ingestion-recovery-revision-v2',
       revision: this.getIngestionRecoveryRevision()
+    })
+  }
+
+  private ensureCrossStoreRecoveryRevisionTriggers(): void {
+    this.ensureRevisionTriggerSet({
+      prefix: 'cross_store_recovery_revision',
+      revisionKey: 'cross_store_recovery_revision',
+      tables: ['task_mutation_commits', 'conversation_source_mutation_commits'],
+      version: 'cross-store-recovery-revision-v1'
+    })
+  }
+
+  getCrossStoreRecoveryRevision(): string {
+    if (!this.db) return '0'
+    return String((this.db.prepare(`
+      SELECT value FROM schema_meta WHERE key='cross_store_recovery_revision'
+    `).get() as any)?.value || '0')
+  }
+
+  getCrossStoreRecoveryRevisionHealth(): any {
+    return this.getRevisionTriggerSetHealth({
+      prefix: 'cross_store_recovery_revision',
+      revisionKey: 'cross_store_recovery_revision',
+      tables: ['task_mutation_commits', 'conversation_source_mutation_commits'],
+      version: 'cross-store-recovery-revision-v1',
+      revision: this.getCrossStoreRecoveryRevision()
     })
   }
 
@@ -3399,6 +3431,47 @@ export class PersonalMemoryStore {
     })()
   }
 
+  private backfillCrossStoreMutationAffectedCounts(): void {
+    if (!this.db) return
+    const taskRows = this.db.prepare(`
+      SELECT * FROM task_mutation_commits
+      WHERE status='prepared' AND affected_count=0
+    `).all() as any[]
+    const sourceRows = this.db.prepare(`
+      SELECT * FROM conversation_source_mutation_commits
+      WHERE status='prepared' AND affected_count=0
+    `).all() as any[]
+    if (!taskRows.length && !sourceRows.length) return
+    const updateTask = this.db.prepare(`
+      UPDATE task_mutation_commits SET affected_count=?
+      WHERE commit_id=? AND status='prepared' AND affected_count=0
+    `)
+    const updateSource = this.db.prepare(`
+      UPDATE conversation_source_mutation_commits SET affected_count=?
+      WHERE commit_id=? AND status='prepared' AND affected_count=0
+    `)
+    this.db.transaction(() => {
+      for (const row of taskRows) {
+        try {
+          const payload = readRecoveryPayload(row, ['changes_json'])
+          const changes = JSON.parse(String(payload.changes_json || '[]'))
+          const count = new Set((Array.isArray(changes) ? changes : [])
+            .map(change => String(change?.taskId || '')).filter(Boolean)).size
+          if (count > 0) updateTask.run(count, row.commit_id)
+        } catch {}
+      }
+      for (const row of sourceRows) {
+        try {
+          const payload = readRecoveryPayload(row, ['policies_json'])
+          const policies = JSON.parse(String(payload.policies_json || '[]'))
+          const count = new Set((Array.isArray(policies) ? policies : [])
+            .map(policy => String(policy?.sessionId || '')).filter(Boolean)).size
+          if (count > 0) updateSource.run(count, row.commit_id)
+        } catch {}
+      }
+    })()
+  }
+
   private compactTaskMutationPayload(commitId: string): void {
     if (!this.db) return
     const row = this.db.prepare(`
@@ -3837,6 +3910,7 @@ export class PersonalMemoryStore {
     const identityMergeArchiveRevision = this.getIdentityMergeArchiveRevisionHealth()
     const ingestionArchiveRevision = this.getIngestionArchiveRevisionHealth()
     const ingestionRecoveryRevision = this.getIngestionRecoveryRevisionHealth()
+    const crossStoreRecoveryRevision = this.getCrossStoreRecoveryRevisionHealth()
     const assistantHistoryRevision = this.getAssistantHistoryRevisionHealth()
     const resourceArchiveRevision = this.getResourceArchiveRevisionHealth()
     return {
@@ -3859,6 +3933,7 @@ export class PersonalMemoryStore {
         && identityMergeArchiveRevision.healthy
         && ingestionArchiveRevision.healthy
         && ingestionRecoveryRevision.healthy
+        && crossStoreRecoveryRevision.healthy
         && assistantHistoryRevision.healthy
         && resourceArchiveRevision.healthy,
       integrity,
@@ -3881,6 +3956,7 @@ export class PersonalMemoryStore {
       identityMergeArchiveRevisionHealthy: identityMergeArchiveRevision.healthy,
       ingestionArchiveRevisionHealthy: ingestionArchiveRevision.healthy,
       ingestionRecoveryRevisionHealthy: ingestionRecoveryRevision.healthy,
+      crossStoreRecoveryRevisionHealthy: crossStoreRecoveryRevision.healthy,
       assistantHistoryRevisionHealthy: assistantHistoryRevision.healthy,
       resourceArchiveRevisionHealthy: resourceArchiveRevision.healthy,
       encryption: {
@@ -3910,6 +3986,7 @@ export class PersonalMemoryStore {
       identityMergeArchiveRevision,
       ingestionArchiveRevision,
       ingestionRecoveryRevision,
+      crossStoreRecoveryRevision,
       assistantHistoryRevision,
       resourceArchiveRevision,
       backups
@@ -8594,14 +8671,16 @@ export class PersonalMemoryStore {
     if (!this.db) throw new Error('个人记忆数据库尚未初始化')
     this.db.prepare(`
       INSERT INTO task_mutation_commits(
-        commit_id,status,before_tokens_json,after_tokens_json,changes_json,prepared_at
-      ) VALUES(?,'prepared',?,?,?,?)
+        commit_id,status,before_tokens_json,after_tokens_json,changes_json,prepared_at,
+        affected_count
+      ) VALUES(?,'prepared',?,?,?,?,?)
     `).run(
       String(input.commitId || ''),
       JSON.stringify(input.beforeTokens || {}),
       JSON.stringify(input.afterTokens || {}),
       JSON.stringify(input.changes || []),
-      new Date().toISOString()
+      new Date().toISOString(),
+      new Set((input.changes || []).map(change => String(change.taskId || '')).filter(Boolean)).size
     )
   }
 
@@ -8757,6 +8836,84 @@ export class PersonalMemoryStore {
         0,
         Number(row?.original_payload_bytes || 0) - Number(row?.retained_payload_bytes || 0)
       )
+    }
+  }
+
+  listCrossStoreRecoveryPage(options: {
+    kind?: 'all' | 'task' | 'source'
+    query?: string
+    offset?: number
+    limit?: number
+    revision?: string
+  } = {}): {
+    items: any[]
+    total: number
+    hasMore: boolean
+    offset: number
+    limit: number
+    revision: string
+    stale: boolean
+  } {
+    const limit = Math.max(1, Math.min(100, Math.floor(Number(options.limit) || 30)))
+    const offset = Math.max(0, Math.min(1_000_000, Math.floor(Number(options.offset) || 0)))
+    const revision = this.getCrossStoreRecoveryRevision()
+    const empty = {
+      items: [], total: 0, hasMore: false, offset, limit,
+      revision, stale: false
+    }
+    if (!this.db) return empty
+    if (offset > 0 && String(options.revision || '').trim() !== revision) {
+      return { ...empty, stale: true }
+    }
+    const conditions: string[] = []
+    const parameters: string[] = []
+    if (options.kind === 'task' || options.kind === 'source') {
+      conditions.push('kind=?')
+      parameters.push(options.kind)
+    }
+    const query = String(options.query || '').trim().toLocaleLowerCase('zh-CN')
+    if (query) {
+      conditions.push(`(
+        instr(lower(commit_id),?)>0 OR instr(lower(COALESCE(last_error,'')),?)>0
+      )`)
+      parameters.push(query, query)
+    }
+    const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : ''
+    const cte = `
+      WITH recovery AS (
+        SELECT 'task' AS kind,commit_id,prepared_at,recovery_attempts,last_error,
+          affected_count,payload_codec,payload_original_bytes
+        FROM task_mutation_commits WHERE status='prepared'
+        UNION ALL
+        SELECT 'source' AS kind,commit_id,prepared_at,recovery_attempts,last_error,
+          affected_count,payload_codec,payload_original_bytes
+        FROM conversation_source_mutation_commits WHERE status='prepared'
+      )
+    `
+    const total = Number((this.db.prepare(`
+      ${cte}
+      SELECT COUNT(*) AS count FROM recovery ${where}
+    `).get(...parameters) as any)?.count || 0)
+    const items = this.db.prepare(`
+      ${cte}
+      SELECT kind,commit_id,prepared_at,recovery_attempts,last_error,
+        affected_count,payload_codec,payload_original_bytes
+      FROM recovery ${where}
+      ORDER BY recovery_attempts,prepared_at,kind,commit_id
+      LIMIT ? OFFSET ?
+    `).all(...parameters, limit, offset) as any[]
+    const completedRevision = this.getCrossStoreRecoveryRevision()
+    if (completedRevision !== revision) {
+      return { ...empty, revision: completedRevision, stale: true }
+    }
+    return {
+      items,
+      total,
+      hasMore: offset + items.length < total,
+      offset,
+      limit,
+      revision,
+      stale: false
     }
   }
 
@@ -13020,14 +13177,16 @@ export class PersonalMemoryStore {
     if (!this.db) throw new Error('个人记忆数据库尚未初始化')
     this.db.prepare(`
       INSERT INTO conversation_source_mutation_commits(
-        commit_id,status,before_tokens_json,after_tokens_json,policies_json,prepared_at
-      ) VALUES(?,'prepared',?,?,?,?)
+        commit_id,status,before_tokens_json,after_tokens_json,policies_json,prepared_at,
+        affected_count
+      ) VALUES(?,'prepared',?,?,?,?,?)
     `).run(
       String(input.commitId || ''),
       JSON.stringify(input.beforeTokens || {}),
       JSON.stringify(input.afterTokens || {}),
       JSON.stringify(input.policies || []),
-      new Date().toISOString()
+      new Date().toISOString(),
+      new Set((input.policies || []).map(policy => String(policy.sessionId || '')).filter(Boolean)).size
     )
   }
 

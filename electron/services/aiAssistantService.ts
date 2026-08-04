@@ -5099,6 +5099,59 @@ export class AiAssistantService {
     return result
   }
 
+  getCrossStoreRecoveryPage(options: any = {}): any {
+    const page = personalMemoryStore.listCrossStoreRecoveryPage({
+      kind: ['task', 'source'].includes(options?.kind) ? options.kind : 'all',
+      query: String(options?.query || ''),
+      offset: Number(options?.offset || 0),
+      limit: Number(options?.limit || 30),
+      revision: String(options?.revision || '')
+    })
+    return {
+      ...page,
+      items: page.items.map((item: any) => ({
+        kind: item.kind,
+        commitId: String(item.commit_id || ''),
+        preparedAt: String(item.prepared_at || ''),
+        recoveryAttempts: Number(item.recovery_attempts || 0),
+        lastError: item.last_error ? sanitizeDiagnosticText(item.last_error) : '',
+        affectedCount: Number(item.affected_count || 0),
+        coldStored: String(item.payload_codec || '') === 'gzip-json-v1',
+        originalPayloadBytes: Number(item.payload_original_bytes || 0)
+      }))
+    }
+  }
+
+  retryCrossStoreRecovery(): any {
+    if (this.activeSync) throw new Error('当前正在增量处理，请在本轮结束后重试写入恢复队列')
+    const beforeTask = { ...this.taskMutationRecovery }
+    const beforeSource = { ...this.conversationSourceMutationRecovery }
+    const task = this.recoverPreparedTaskMutationCommits()
+    const source = this.recoverPreparedConversationSourceMutationCommits()
+    if (task.unattempted > 0 || source.unattempted > 0) {
+      this.schedulePreparedRecoveryContinuation()
+    }
+    const taskHealth = personalMemoryStore.getTaskMutationCommitHealth()
+    const sourceHealth = personalMemoryStore.getConversationSourceMutationCommitHealth()
+    return {
+      attempted:
+        (this.taskMutationRecovery.attempted - beforeTask.attempted) +
+        (this.conversationSourceMutationRecovery.attempted - beforeSource.attempted),
+      applied:
+        (this.taskMutationRecovery.applied - beforeTask.applied) +
+        (this.conversationSourceMutationRecovery.applied - beforeSource.applied),
+      abandoned:
+        (this.taskMutationRecovery.abandoned - beforeTask.abandoned) +
+        (this.conversationSourceMutationRecovery.abandoned - beforeSource.abandoned),
+      conflicts:
+        (this.taskMutationRecovery.conflicts - beforeTask.conflicts) +
+        (this.conversationSourceMutationRecovery.conflicts - beforeSource.conflicts),
+      remaining: taskHealth.prepared + sourceHealth.prepared,
+      taskRemaining: taskHealth.prepared,
+      sourceRemaining: sourceHealth.prepared
+    }
+  }
+
   createMemoryBackup(protectedPaths: string[] = []): any {
     const durable = readEncryptedDurableJson<any>(
       this.statePath,

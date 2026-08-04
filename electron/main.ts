@@ -4693,6 +4693,10 @@ function registerIpcHandlers() {
     aiAssistantService.getIngestionRecoveryPage(options))
   ipcMain.handle('ai-assistant:retryPreparedIngestion', () =>
     aiAssistantService.retryPreparedIngestion())
+  ipcMain.handle('ai-assistant:getCrossStoreRecoveryPage', (_, options?: any) =>
+    aiAssistantService.getCrossStoreRecoveryPage(options))
+  ipcMain.handle('ai-assistant:retryCrossStoreRecovery', () =>
+    aiAssistantService.retryCrossStoreRecovery())
   ipcMain.handle('ai-assistant:createMemoryBackup', () => aiAssistantService.createMemoryBackup())
   ipcMain.handle('ai-assistant:inspectMemoryBackup', (_, path: string) => aiAssistantService.inspectMemoryBackup(path))
   ipcMain.handle('ai-assistant:restoreMemoryBackup', (_, path: string, input?: any) =>

@@ -7780,6 +7780,50 @@ test('ingestion recovery revision covers prepare retry commit and self-heals on 
   }
 })
 
+test('cross-store recovery revision covers both queues and self-heals on restart', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'weflow-cross-store-recovery-revision-'))
+  const databasePath = join(directory, 'memory.sqlite')
+  try {
+    const first = new PersonalMemoryStore()
+    first.initialize(databasePath)
+    const initial = Number(first.getCrossStoreRecoveryRevision())
+    first.prepareTaskMutationCommit({
+      commitId: 'cross-revision-task',
+      beforeTokens: { task: 'before' },
+      afterTokens: { task: 'after' },
+      changes: []
+    })
+    const afterTask = Number(first.getCrossStoreRecoveryRevision())
+    assert.ok(afterTask > initial)
+    first.prepareConversationSourceMutationCommit({
+      commitId: 'cross-revision-source',
+      beforeTokens: { source: 'before' },
+      afterTokens: { source: 'after' },
+      policies: []
+    })
+    assert.ok(Number(first.getCrossStoreRecoveryRevision()) > afterTask)
+    const health = first.getCrossStoreRecoveryRevisionHealth()
+    assert.equal(health.version, 'cross-store-recovery-revision-v1')
+    assert.equal(health.expectedTriggers, 6)
+    assert.equal(health.validTriggers, 6)
+    assert.equal(health.healthy, true)
+    ;(first as any).db.exec(
+      'DROP TRIGGER trg_cross_store_recovery_revision_task_mutation_commits_update'
+    )
+    assert.equal(first.getCrossStoreRecoveryRevisionHealth().healthy, false)
+    first.close()
+
+    const reopened = new PersonalMemoryStore()
+    reopened.initialize(databasePath)
+    assert.equal(reopened.getCrossStoreRecoveryRevisionHealth().installedTriggers, 6)
+    assert.equal(reopened.getCrossStoreRecoveryRevisionHealth().healthy, true)
+    assert.equal(reopened.listCrossStoreRecoveryPage().total, 2)
+    reopened.close()
+  } finally {
+    rmSync(directory, { recursive: true, force: true })
+  }
+})
+
 test('assistant history revision covers authoritative history and self-heals on restart', () => {
   const directory = mkdtempSync(join(tmpdir(), 'weflow-assistant-history-revision-'))
   const databasePath = join(directory, 'memory.sqlite')
@@ -10072,6 +10116,57 @@ test('prepared task mutation commits directory and history atomically then compa
   assert.equal(store.countTaskHistory('prepared-task-b'), 1)
   assert.equal(store.listTaskArchive({ status: 'all' }).total, 2)
   assert.equal(database.prepare(`SELECT status FROM task_directory WHERE id='prepared-task-a'`).get().status, 'done')
+}))
+
+test('cross-store recovery directory pages task and source failures without exposing payloads', () => withStore(store => {
+  store.prepareTaskMutationCommit({
+    commitId: 'cross-store-task',
+    beforeTokens: { 'task-a': 'before' },
+    afterTokens: { 'task-a': 'after' },
+    changes: [{
+      taskId: 'task-a',
+      before: { id: 'task-a', status: 'todo' },
+      after: { id: 'task-a', status: 'done' },
+      evidence: evidence('task-message', '不应进入恢复目录的任务原文')
+    }]
+  })
+  store.prepareConversationSourceMutationCommit({
+    commitId: 'cross-store-source',
+    beforeTokens: { 'session-a': 'before' },
+    afterTokens: { 'session-a': 'after' },
+    policies: [{
+      sessionId: 'session-a',
+      displayName: '不应进入恢复目录的会话名称',
+      sessionType: 'private',
+      enabled: false
+    }]
+  })
+  const first = store.listCrossStoreRecoveryPage({ limit: 1 })
+  assert.equal(first.total, 2)
+  assert.equal(first.items.length, 1)
+  assert.equal(first.hasMore, true)
+  assert.equal(first.items[0].affected_count, 1)
+  assert.equal(JSON.stringify(first.items).includes('不应进入恢复目录'), false)
+  const second = store.listCrossStoreRecoveryPage({
+    offset: 1,
+    limit: 1,
+    revision: first.revision
+  })
+  assert.equal(second.stale, false)
+  assert.equal(second.items.length, 1)
+  assert.notEqual(second.items[0].kind, first.items[0].kind)
+
+  store.recordTaskMutationRecoveryFailure('cross-store-task', 'injected visible failure')
+  const stale = store.listCrossStoreRecoveryPage({
+    offset: 1,
+    limit: 1,
+    revision: first.revision
+  })
+  assert.equal(stale.stale, true)
+  const refreshed = store.listCrossStoreRecoveryPage({ query: 'visible failure' })
+  assert.equal(refreshed.total, 1)
+  assert.equal(refreshed.items[0].kind, 'task')
+  assert.equal(refreshed.items[0].payload_codec, 'gzip-json-v1')
 }))
 
 test('partial ingestion keeps completed checkpoints visible for safe resume', () => withStore(store => {

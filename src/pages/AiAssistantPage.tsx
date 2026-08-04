@@ -956,9 +956,13 @@ function AiAssistantPage() {
   const [ingestionRecoveryQueue, setIngestionRecoveryQueue] = useState<any>(null)
   const [ingestionRecoveryLoadingMore, setIngestionRecoveryLoadingMore] = useState(false)
   const [ingestionRecoveryRetrying, setIngestionRecoveryRetrying] = useState(false)
+  const [crossStoreRecoveryQueue, setCrossStoreRecoveryQueue] = useState<any>(null)
+  const [crossStoreRecoveryLoadingMore, setCrossStoreRecoveryLoadingMore] = useState(false)
+  const [crossStoreRecoveryRetrying, setCrossStoreRecoveryRetrying] = useState(false)
   const ingestionArchiveGate = useRef(new LatestRequestGate())
   const ingestionDossierGate = useRef(new LatestRequestGate())
   const ingestionRecoveryGate = useRef(new LatestRequestGate())
+  const crossStoreRecoveryGate = useRef(new LatestRequestGate())
   const [backingUpMemory, setBackingUpMemory] = useState(false)
   const [restoringMemory, setRestoringMemory] = useState(false)
   const [memoryRestoreDialog, setMemoryRestoreDialog] = useState<any>(null)
@@ -3332,6 +3336,89 @@ function AiAssistantPage() {
       setMessage(error?.message || String(error))
     } finally {
       setIngestionRecoveryRetrying(false)
+    }
+  }
+
+  const loadCrossStoreRecoveryQueue = async (): Promise<void> => {
+    const request = crossStoreRecoveryGate.current.begin()
+    setCrossStoreRecoveryLoadingMore(false)
+    setCrossStoreRecoveryQueue({ items: [], total: 0, hasMore: false, loading: true })
+    try {
+      const page = await window.electronAPI.aiAssistant
+        .getCrossStoreRecoveryPage({ limit: 30 })
+      if (!crossStoreRecoveryGate.current.isCurrent(request)) return
+      if (page.stale) {
+        window.setTimeout(() => {
+          if (crossStoreRecoveryGate.current.isCurrent(request)) {
+            void loadCrossStoreRecoveryQueue()
+          }
+        }, 250)
+        return
+      }
+      setCrossStoreRecoveryQueue({ ...page, loading: false })
+    } catch (error: any) {
+      if (!crossStoreRecoveryGate.current.isCurrent(request)) return
+      setCrossStoreRecoveryQueue({
+        items: [], total: 0, hasMore: false, loading: false,
+        error: error?.message || String(error)
+      })
+    }
+  }
+
+  const toggleCrossStoreRecoveryQueue = async () => {
+    if (crossStoreRecoveryQueue) {
+      crossStoreRecoveryGate.current.invalidate()
+      setCrossStoreRecoveryQueue(null)
+      return
+    }
+    await loadCrossStoreRecoveryQueue()
+  }
+
+  const loadMoreCrossStoreRecoveryQueue = async () => {
+    if (!crossStoreRecoveryQueue?.hasMore || crossStoreRecoveryLoadingMore) return
+    const request = crossStoreRecoveryGate.current.begin()
+    setCrossStoreRecoveryLoadingMore(true)
+    try {
+      const page = await window.electronAPI.aiAssistant.getCrossStoreRecoveryPage({
+        offset: crossStoreRecoveryQueue.items?.length || 0,
+        limit: 30,
+        revision: crossStoreRecoveryQueue.revision
+      })
+      if (!crossStoreRecoveryGate.current.isCurrent(request)) return
+      if (page.stale) {
+        setMessage('写入恢复队列已有变化，已自动从第一页刷新')
+        await loadCrossStoreRecoveryQueue()
+        return
+      }
+      setCrossStoreRecoveryQueue((current: any) => ({
+        ...page,
+        items: [...(current?.items || []), ...(page.items || [])]
+      }))
+    } catch (error: any) {
+      if (crossStoreRecoveryGate.current.isCurrent(request)) {
+        setMessage(error?.message || String(error))
+      }
+    } finally {
+      if (crossStoreRecoveryGate.current.isCurrent(request)) {
+        setCrossStoreRecoveryLoadingMore(false)
+      }
+    }
+  }
+
+  const retryCrossStoreRecovery = async () => {
+    if (crossStoreRecoveryRetrying) return
+    setCrossStoreRecoveryRetrying(true)
+    try {
+      const result = await window.electronAPI.aiAssistant.retryCrossStoreRecovery()
+      setMessage(`写入恢复重试完成：核验 ${result.attempted} 组，完成 ${result.applied} 组，` +
+        `安全放弃 ${result.abandoned} 组，冲突 ${result.conflicts} 组，仍保留 ${result.remaining} 组。`)
+      await loadCrossStoreRecoveryQueue()
+      setMemoryDiagnostics(await window.electronAPI.aiAssistant.getMemoryDiagnostics())
+      await load()
+    } catch (error: any) {
+      setMessage(error?.message || String(error))
+    } finally {
+      setCrossStoreRecoveryRetrying(false)
     }
   }
 
@@ -6400,6 +6487,43 @@ function AiAssistantPage() {
               放弃 {Number(dashboard.taskMutationCommits.startupRecovery.abandoned)}、
               冲突 {Number(dashboard.taskMutationCommits.startupRecovery.conflicts)}。
             </small>}
+            {(Number(dashboard?.taskMutationCommits?.prepared || 0) +
+              Number(dashboard?.conversationSourceMutationCommits?.prepared || 0)) > 0 && <>
+              <div className="assistant-ingestion-recovery-actions">
+                <button onClick={() => void toggleCrossStoreRecoveryQueue()}>
+                  {crossStoreRecoveryQueue ? '收起写入恢复队列' : '查看写入恢复队列'}
+                </button>
+                <button className="primary"
+                  disabled={crossStoreRecoveryRetrying || syncing || status?.syncing}
+                  onClick={() => void retryCrossStoreRecovery()}>
+                  {crossStoreRecoveryRetrying ? '正在核验…' : '立即重试安全恢复'}
+                </button>
+              </div>
+              {crossStoreRecoveryQueue && <div className="assistant-ingestion-recovery-queue">
+                {crossStoreRecoveryQueue.loading && <em>正在读取脱敏恢复目录…</em>}
+                {crossStoreRecoveryQueue.error &&
+                  <p className="assistant-diagnostics-error">{crossStoreRecoveryQueue.error}</p>}
+                {(crossStoreRecoveryQueue.items || []).map((commit: any) => <article
+                  key={`${commit.kind}:${commit.commitId}`}>
+                  <b>{commit.kind === 'task' ? '任务写入' : '信息来源策略'}</b>
+                  <span>{commit.preparedAt
+                    ? new Date(commit.preparedAt).toLocaleString('zh-CN')
+                    : '准备时间未知'} · 已尝试 {commit.recoveryAttempts} 次</span>
+                  <small>影响 {commit.affectedCount || '未知'} 项 · 恢复 ID {commit.commitId}
+                    {commit.coldStored
+                      ? ` · 加密冷存储 ${formatBytes(commit.originalPayloadBytes)}`
+                      : ' · 热恢复载荷'}</small>
+                  {commit.lastError && <p>{commit.lastError}</p>}
+                </article>)}
+                {!crossStoreRecoveryQueue.loading && !crossStoreRecoveryQueue.items?.length &&
+                  <em>写入恢复队列已经清空。</em>}
+                {crossStoreRecoveryQueue.hasMore && <button
+                  disabled={crossStoreRecoveryLoadingMore}
+                  onClick={() => void loadMoreCrossStoreRecoveryQueue()}>
+                  {crossStoreRecoveryLoadingMore ? '正在加载…' : '加载更多恢复现场'}
+                </button>}
+              </div>}
+            </>}
             <div className="assistant-task-filters">
               <select disabled={!!focusedTaskId} value={taskStatusFilter} onChange={event => setTaskStatusFilter(event.target.value as any)}>
                 <option value="all">全部进行中状态</option><option value="todo">待处理</option><option value="doing">进行中</option><option value="waiting">等待中</option>

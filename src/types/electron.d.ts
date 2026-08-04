@@ -2073,6 +2073,8 @@ export interface ElectronAPI {
         failed: number
         remaining: number
       }>
+      getCrossStoreRecoveryPage: (options?: any) => Promise<any>
+      retryCrossStoreRecovery: () => Promise<any>
       createMemoryBackup: () => Promise<any>
       inspectMemoryBackup: (path: string) => Promise<any>
       restoreMemoryBackup: (
