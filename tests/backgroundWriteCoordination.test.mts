@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import {
+  getBackgroundWriteConflict,
+  preparedRecoveryConflictMessage,
   runAfterVectorBarrier,
   shouldDeferPreparedRecovery
 } from '../electron/services/backgroundWriteCoordination.ts'
@@ -58,4 +60,25 @@ test('prepared recovery defers for every background writer', () => {
   assert.equal(shouldDeferPreparedRecovery({
     syncing: false, vectorIndexing: false, searchRepairing: true
   }), true)
+})
+
+test('manual recovery reports the exact writer that owns the gate', () => {
+  assert.equal(getBackgroundWriteConflict({
+    syncing: false, vectorIndexing: false, searchRepairing: false
+  }), null)
+  assert.equal(getBackgroundWriteConflict({
+    syncing: true, vectorIndexing: true, searchRepairing: true
+  }), 'incremental_sync')
+  assert.equal(getBackgroundWriteConflict({
+    syncing: false, vectorIndexing: true, searchRepairing: true
+  }), 'search_repair')
+  assert.equal(getBackgroundWriteConflict({
+    syncing: false, vectorIndexing: true, searchRepairing: false
+  }), 'vector_index')
+  assert.match(preparedRecoveryConflictMessage('incremental_sync'), /增量处理/)
+  assert.match(preparedRecoveryConflictMessage('search_repair'), /检索索引/)
+  assert.match(
+    preparedRecoveryConflictMessage('vector_index', '写入恢复队列'),
+    /本地向量索引.*写入恢复队列/
+  )
 })

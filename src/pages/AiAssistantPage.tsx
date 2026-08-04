@@ -6534,7 +6534,11 @@ function AiAssistantPage() {
                 <button onClick={() => void toggleIngestionRecoveryQueue()}>
                   {ingestionRecoveryQueue ? '收起恢复队列' : '查看恢复队列'}
                 </button>
-                <button className="primary" disabled={ingestionRecoveryRetrying || syncing || status?.syncing}
+                <button className="primary"
+                  disabled={ingestionRecoveryRetrying || syncing || status?.syncing || status?.vectorIndexing || status?.searchRepairing}
+                  title={status?.searchRepairing
+                    ? '正在核验检索索引，完成后即可恢复'
+                    : status?.vectorIndexing ? '正在构建本地向量索引，当前批次结束后即可恢复' : ''}
                   onClick={() => void retryPreparedIngestion()}>
                   {ingestionRecoveryRetrying ? '正在恢复…' : '立即重试恢复'}
                 </button>
@@ -6798,7 +6802,10 @@ function AiAssistantPage() {
                   {crossStoreRecoveryQueue ? '收起写入恢复队列' : '查看写入恢复队列'}
                 </button>
                 <button className="primary"
-                  disabled={crossStoreRecoveryRetrying || syncing || status?.syncing}
+                  disabled={crossStoreRecoveryRetrying || syncing || status?.syncing || status?.vectorIndexing || status?.searchRepairing}
+                  title={status?.searchRepairing
+                    ? '正在核验检索索引，完成后即可恢复'
+                    : status?.vectorIndexing ? '正在构建本地向量索引，当前批次结束后即可恢复' : ''}
                   onClick={() => void retryCrossStoreRecovery()}>
                   {crossStoreRecoveryRetrying ? '正在核验…' : '立即重试安全恢复'}
                 </button>

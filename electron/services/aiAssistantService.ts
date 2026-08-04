@@ -22,6 +22,8 @@ import {
   type VectorQueryHealth
 } from './vectorIndexingPolicy'
 import {
+  getBackgroundWriteConflict,
+  preparedRecoveryConflictMessage,
   type IncrementalSyncPhase,
   runAfterVectorBarrier,
   shouldDeferPreparedRecovery
@@ -3661,6 +3663,8 @@ export class AiAssistantService {
       syncing: Boolean(this.activeSync),
       syncTrigger: this.activeSyncTrigger,
       syncPhase: this.activeSyncPhase,
+      vectorIndexing: Boolean(this.vectorIndexPromise),
+      searchRepairing: Boolean(this.memorySearchRepairPromise),
       cancelling: this.cancelRequested,
       scheduleTime: this.config.get('aiAssistantScheduleTime'),
       model: this.config.get('aiAssistantApiModel'),
@@ -5239,7 +5243,12 @@ export class AiAssistantService {
   }
 
   retryPreparedIngestion(): any {
-    if (this.activeSync) throw new Error('当前正在增量处理，请在本轮结束后重试恢复队列')
+    const conflict = getBackgroundWriteConflict({
+      syncing: Boolean(this.activeSync),
+      vectorIndexing: Boolean(this.vectorIndexPromise),
+      searchRepairing: Boolean(this.memorySearchRepairPromise)
+    })
+    if (conflict) throw new Error(preparedRecoveryConflictMessage(conflict))
     const result = this.recoverPreparedIngestionBatchCommits()
     if (result.unattempted > 0) this.schedulePreparedRecoveryContinuation()
     this.saveState()
@@ -5307,7 +5316,12 @@ export class AiAssistantService {
   }
 
   retryCrossStoreRecovery(): any {
-    if (this.activeSync) throw new Error('当前正在增量处理，请在本轮结束后重试写入恢复队列')
+    const conflict = getBackgroundWriteConflict({
+      syncing: Boolean(this.activeSync),
+      vectorIndexing: Boolean(this.vectorIndexPromise),
+      searchRepairing: Boolean(this.memorySearchRepairPromise)
+    })
+    if (conflict) throw new Error(preparedRecoveryConflictMessage(conflict, '写入恢复队列'))
     const beforeTask = { ...this.taskMutationRecovery }
     const beforeSource = { ...this.conversationSourceMutationRecovery }
     const task = this.recoverPreparedTaskMutationCommits()
