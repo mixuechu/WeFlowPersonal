@@ -10,6 +10,7 @@ import {
   recordVectorQueryOutcome,
   runVectorIndexPass,
   safeCosineSimilarity,
+  shouldPersistVectorQueryOutcome,
   validateEmbeddingBatch
 } from '../electron/services/vectorIndexingPolicy.ts'
 import {
@@ -7410,6 +7411,72 @@ test('vector query fallback remains visible and a later success clears only curr
   assert.equal(recovered.lastFallbackAt, failed.lastFallbackAt)
   assert.equal(recovered.lastSuccessAt, '2026-08-05T01:05:00.000Z')
   assert.equal(recovered.lastError, '')
+})
+
+test('vector query health writes only failures, repairs and the first recovery success', () => {
+  const healthy = {
+    fallbackCount: 3,
+    dimensionRepairCount: 2,
+    lastDimensionRepairAt: '2026-08-05T01:00:00.000Z',
+    lastFallbackAt: '2026-08-05T01:05:00.000Z',
+    lastSuccessAt: '2026-08-05T01:10:00.000Z',
+    lastError: ''
+  }
+  assert.equal(shouldPersistVectorQueryOutcome(healthy, { success: true }), false)
+  assert.equal(shouldPersistVectorQueryOutcome(healthy, {
+    success: true,
+    dimensionRepairs: 1
+  }), true)
+  assert.equal(shouldPersistVectorQueryOutcome(healthy, { success: false }), true)
+  assert.equal(shouldPersistVectorQueryOutcome({
+    ...healthy,
+    lastError: 'temporary failure'
+  }, { success: true }), true)
+})
+
+test('vector query health survives a SQLCipher reopen and malformed history is isolated', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'weflow-vector-query-health-'))
+  const databasePath = join(directory, 'memory.sqlite')
+  const key = randomBytes(32)
+  const first = new PersonalMemoryStore()
+  const reopened = new PersonalMemoryStore()
+  try {
+    first.initialize(databasePath, key)
+    first.saveVectorQueryHealth({
+      fallbackCount: 4,
+      dimensionRepairCount: 9,
+      lastDimensionRepairAt: '2026-08-05T01:00:00.000Z',
+      lastFallbackAt: '2026-08-05T01:02:00.000Z',
+      lastSuccessAt: '2026-08-05T01:03:00.000Z',
+      lastError: 'temporary local model failure'
+    })
+    first.close()
+
+    reopened.initialize(databasePath, key)
+    assert.deepEqual(reopened.getVectorQueryHealth(), {
+      fallbackCount: 4,
+      dimensionRepairCount: 9,
+      lastDimensionRepairAt: '2026-08-05T01:00:00.000Z',
+      lastFallbackAt: '2026-08-05T01:02:00.000Z',
+      lastSuccessAt: '2026-08-05T01:03:00.000Z',
+      lastError: 'temporary local model failure'
+    })
+    ;(reopened as any).db.prepare(`
+      UPDATE schema_meta SET value='[' WHERE key='vector_query_health_v1'
+    `).run()
+    assert.deepEqual(reopened.getVectorQueryHealth(), {
+      fallbackCount: 0,
+      dimensionRepairCount: 0,
+      lastDimensionRepairAt: '',
+      lastFallbackAt: '',
+      lastSuccessAt: '',
+      lastError: ''
+    })
+  } finally {
+    first.close()
+    reopened.close()
+    rmSync(directory, { recursive: true, force: true })
+  }
 })
 
 test('query dimension invalidation makes mismatched vectors pending without touching the current dimension', () => withStore(store => {

@@ -167,3 +167,12 @@ export function recordVectorQueryOutcome(
         lastError: String(outcome.error || 'unknown_vector_query_error').slice(0, 500)
       }
 }
+
+export function shouldPersistVectorQueryOutcome(
+  previous: VectorQueryHealth,
+  outcome: { success: boolean; dimensionRepairs?: number }
+): boolean {
+  return !outcome.success
+    || Math.max(0, Math.floor(Number(outcome.dimensionRepairs || 0))) > 0
+    || Boolean(previous.lastError)
+}

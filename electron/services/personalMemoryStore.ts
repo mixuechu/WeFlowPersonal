@@ -16,7 +16,8 @@ import type { MemorySearchOptions } from './memorySearchFilters.ts'
 import {
   safeCosineSimilarity,
   validateEmbeddingBatch,
-  type VectorIndexContinuationHealth
+  type VectorIndexContinuationHealth,
+  type VectorQueryHealth
 } from './vectorIndexingPolicy.ts'
 import { MEMORY_CARD_EVIDENCE_LIMIT } from '../../shared/evidencePayload.ts'
 import { GRAPH_RELATION_EVIDENCE_HOT_LIMIT } from './graphEvidenceHotset.ts'
@@ -12565,6 +12566,60 @@ export class PersonalMemoryStore {
     this.db.prepare(`
       INSERT INTO schema_meta(key,value,updated_at)
       VALUES('vector_index_continuation_health_v1',?,?)
+      ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_at=excluded.updated_at
+    `).run(JSON.stringify(value), now)
+  }
+
+  getVectorQueryHealth(): VectorQueryHealth {
+    const empty: VectorQueryHealth = {
+      fallbackCount: 0,
+      dimensionRepairCount: 0,
+      lastDimensionRepairAt: '',
+      lastFallbackAt: '',
+      lastSuccessAt: '',
+      lastError: ''
+    }
+    if (!this.db) return empty
+    const row = this.db.prepare(`
+      SELECT value FROM schema_meta WHERE key='vector_query_health_v1'
+    `).get() as any
+    try {
+      const stored = JSON.parse(String(row?.value || '{}'))
+      const safeCount = (value: unknown): number => {
+        const numeric = Number(value || 0)
+        return Number.isFinite(numeric) ? Math.max(0, Math.floor(numeric)) : 0
+      }
+      return {
+        fallbackCount: safeCount(stored.fallbackCount),
+        dimensionRepairCount: safeCount(stored.dimensionRepairCount),
+        lastDimensionRepairAt: String(stored.lastDimensionRepairAt || '').slice(0, 64),
+        lastFallbackAt: String(stored.lastFallbackAt || '').slice(0, 64),
+        lastSuccessAt: String(stored.lastSuccessAt || '').slice(0, 64),
+        lastError: String(stored.lastError || '').slice(0, 500)
+      }
+    } catch {
+      return empty
+    }
+  }
+
+  saveVectorQueryHealth(health: VectorQueryHealth): void {
+    if (!this.db) return
+    const now = new Date().toISOString()
+    const safeCount = (value: unknown): number => {
+      const numeric = Number(value || 0)
+      return Number.isFinite(numeric) ? Math.max(0, Math.floor(numeric)) : 0
+    }
+    const value: VectorQueryHealth = {
+      fallbackCount: safeCount(health.fallbackCount),
+      dimensionRepairCount: safeCount(health.dimensionRepairCount),
+      lastDimensionRepairAt: String(health.lastDimensionRepairAt || '').slice(0, 64),
+      lastFallbackAt: String(health.lastFallbackAt || '').slice(0, 64),
+      lastSuccessAt: String(health.lastSuccessAt || '').slice(0, 64),
+      lastError: String(health.lastError || '').slice(0, 500)
+    }
+    this.db.prepare(`
+      INSERT INTO schema_meta(key,value,updated_at)
+      VALUES('vector_query_health_v1',?,?)
       ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_at=excluded.updated_at
     `).run(JSON.stringify(value), now)
   }

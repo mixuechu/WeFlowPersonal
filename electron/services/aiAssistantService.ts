@@ -13,6 +13,7 @@ import {
   recordVectorQueryOutcome,
   recordVectorIndexContinuation,
   runVectorIndexPass,
+  shouldPersistVectorQueryOutcome,
   validateEmbeddingBatch,
   type VectorIndexContinuationHealth,
   type VectorQueryHealth
@@ -732,6 +733,7 @@ export class AiAssistantService {
     chatService.initializeTranscriptCacheEncryption(stateKey)
     personalMemoryStore.initialize(databasePath, databaseKey)
     this.vectorIndexContinuationHealth = personalMemoryStore.getVectorIndexContinuationHealth()
+    this.vectorQueryHealth = personalMemoryStore.getVectorQueryHealth()
     personalMemoryStore.registerDataSources(PERSONAL_DATA_SOURCE_CATALOG)
     personalMemoryStore.setDataSourceAvailability(
       'calendar',
@@ -7085,11 +7087,16 @@ export class AiAssistantService {
         scopedOptions,
         allowedIds !== null
       )
-      this.vectorQueryHealth = recordVectorQueryOutcome(this.vectorQueryHealth, {
+      const previousQueryHealth = this.vectorQueryHealth
+      this.vectorQueryHealth = recordVectorQueryOutcome(previousQueryHealth, {
         success: true,
         at: new Date().toISOString(),
         dimensionRepairs
       })
+      if (shouldPersistVectorQueryOutcome(previousQueryHealth, {
+        success: true,
+        dimensionRepairs
+      })) this.persistVectorQueryHealth()
       return this.applyStoredMemorySearchFeedback(query, scopedOptions, filtered)
         .slice(0, Math.max(1, Math.min(500, maxResults))).map(item => ({
         ...item,
@@ -7104,6 +7111,7 @@ export class AiAssistantService {
         error: sanitizeDiagnosticText(error),
         dimensionRepairs
       })
+      this.persistVectorQueryHealth()
       const filtered = filterMemorySearchResults(lexical, scopedOptions, allowedIds !== null)
       return this.applyStoredMemorySearchFeedback(query, scopedOptions, filtered)
         .slice(0, Math.max(1, Math.min(500, maxResults))).map(item => ({
@@ -7439,6 +7447,14 @@ export class AiAssistantService {
       personalMemoryStore.saveVectorIndexContinuationHealth(this.vectorIndexContinuationHealth)
     } catch (error) {
       console.warn('[AI Assistant] 无法持久化向量续建诊断:', sanitizeDiagnosticText(error))
+    }
+  }
+
+  private persistVectorQueryHealth(): void {
+    try {
+      personalMemoryStore.saveVectorQueryHealth(this.vectorQueryHealth)
+    } catch (error) {
+      console.warn('[AI Assistant] 无法持久化向量查询诊断:', sanitizeDiagnosticText(error))
     }
   }
 
