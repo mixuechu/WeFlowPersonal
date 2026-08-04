@@ -4318,6 +4318,14 @@ test('entity evidence separates current memory links from historical audit and p
       sender: '当前发送者',
       excerpt: '当前直接证据',
       role: 'direct'
+    }, {
+      sourceId: 'wechat',
+      messageId: 'current-contradiction-message',
+      sessionId: 'current-contradiction-session',
+      timestamp: 1_910_000_150,
+      sender: '反证发送者',
+      excerpt: '当前事实仍有反证',
+      role: 'contradiction'
     }]
   }, {
     id: 'evidence-state-rejected-claim',
@@ -4335,6 +4343,24 @@ test('entity evidence separates current memory links from historical audit and p
       timestamp: 1_910_000_200,
       sender: '历史发送者',
       excerpt: '仅保留为反证审计',
+      role: 'contradiction'
+    }]
+  }, {
+    id: 'evidence-state-shared-historical-claim',
+    subjectId: 'evidence-state-project',
+    predicate: '历史共享事实',
+    objectValue: '与当前事实共用原文身份',
+    confidence: 0.6,
+    status: 'rejected',
+    sourceNature: 'other_statement',
+    searchText: '历史共享事实与当前事实共用原文身份',
+    evidence: [{
+      sourceId: 'documents',
+      messageId: 'current-claim-message',
+      sessionId: 'current-claim-session',
+      timestamp: 1_910_000_100,
+      sender: '当前发送者',
+      excerpt: '同一原文也曾关联已拒绝历史',
       role: 'contradiction'
     }]
   }] as any[]
@@ -4368,8 +4394,8 @@ test('entity evidence separates current memory links from historical audit and p
   const historical = store.listEntityEvidencePage({
     entityId: 'evidence-state-project', evidenceState: 'historical', limit: 1
   })
-  assert.equal(all.total, 4)
-  assert.equal(current.total, 2)
+  assert.equal(all.total, 5)
+  assert.equal(current.total, 3)
   assert.equal(historical.total, 2)
   assert.equal(store.getEntityEvidenceStats('evidence-state-project').activeEvidenceTotal, 2)
   assert.ok(current.items.every(item => item.isCurrent))
@@ -4385,6 +4411,23 @@ test('entity evidence separates current memory links from historical audit and p
     evidenceState: 'historical',
     memoryKind: 'event'
   }).items[0].evidenceRoles.includes('indirect'), true)
+  const currentContradictions = store.listEntityEvidencePage({
+    entityId: 'evidence-state-project',
+    evidenceState: 'current',
+    evidenceRole: 'contradiction'
+  })
+  assert.equal(currentContradictions.total, 2)
+  const sharedEvidence = currentContradictions.items.find(
+    item => item.message_id === 'current-claim-message'
+  )
+  assert.equal(sharedEvidence.hasHistorical, true)
+  assert.deepEqual(new Set(sharedEvidence.evidenceRoles), new Set(['direct', 'contradiction']))
+  assert.equal(store.listEntityEvidencePage({
+    entityId: 'evidence-state-project',
+    evidenceState: 'current',
+    evidenceRole: 'direct',
+    sourceId: 'documents'
+  }).total, 1)
   assert.equal(store.listEntityEvidencePage({
     entityId: 'evidence-state-project',
     evidenceState: 'historical',
@@ -4405,7 +4448,7 @@ test('entity evidence separates current memory links from historical audit and p
   }).total, 1)
   assert.equal(store.listEntityEvidencePage({
     entityId: 'evidence-state-project', evidenceState: 'historical'
-  }).total, 3)
+  }).total, 4)
   assert.equal(store.getEntityEvidenceStats('evidence-state-project').activeEvidenceTotal, 1)
 }))
 

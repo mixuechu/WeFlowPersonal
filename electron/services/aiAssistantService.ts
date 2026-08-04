@@ -4541,6 +4541,10 @@ export class AiAssistantService {
       evidenceState: ['current', 'historical'].includes(String(options?.evidenceState || ''))
         ? options.evidenceState
         : undefined,
+      evidenceRole: ['original', 'direct', 'indirect', 'contradiction', 'support']
+        .includes(String(options?.evidenceRole || ''))
+        ? options.evidenceRole
+        : undefined,
       query: String(options?.query || ''),
       from: String(options?.from || ''),
       to: String(options?.to || ''),

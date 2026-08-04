@@ -485,6 +485,7 @@ function AiAssistantPage() {
   const [entityEvidenceSource, setEntityEvidenceSource] = useState('')
   const [entityEvidenceKind, setEntityEvidenceKind] = useState('')
   const [entityEvidenceState, setEntityEvidenceState] = useState('')
+  const [entityEvidenceRole, setEntityEvidenceRole] = useState('')
   const [entityEvidenceFrom, setEntityEvidenceFrom] = useState('')
   const [entityEvidenceTo, setEntityEvidenceTo] = useState('')
   const [entityEvidenceLoadingMore, setEntityEvidenceLoadingMore] = useState(false)
@@ -539,6 +540,7 @@ function AiAssistantPage() {
   const [projectEvidenceSource, setProjectEvidenceSource] = useState('')
   const [projectEvidenceKind, setProjectEvidenceKind] = useState('')
   const [projectEvidenceState, setProjectEvidenceState] = useState('')
+  const [projectEvidenceRole, setProjectEvidenceRole] = useState('')
   const [projectEvidenceFrom, setProjectEvidenceFrom] = useState('')
   const [projectEvidenceTo, setProjectEvidenceTo] = useState('')
   const [projectEvidenceLoadingMore, setProjectEvidenceLoadingMore] = useState(false)
@@ -2036,6 +2038,7 @@ function AiAssistantPage() {
         sourceId: entityEvidenceSource || undefined,
         memoryKind: entityEvidenceKind || undefined,
         evidenceState: entityEvidenceState || undefined,
+        evidenceRole: entityEvidenceRole || undefined,
         from: entityEvidenceFrom
           ? new Date(`${entityEvidenceFrom}T00:00:00+08:00`).toISOString() : undefined,
         to: entityEvidenceTo
@@ -2067,7 +2070,7 @@ function AiAssistantPage() {
     }
   }, [
     showEntityDossier, selectedEntityId, entityEvidenceQuery, entityEvidenceSource, entityEvidenceKind,
-    entityEvidenceState, entityEvidenceFrom, entityEvidenceTo,
+    entityEvidenceState, entityEvidenceRole, entityEvidenceFrom, entityEvidenceTo,
     dashboard?.memoryRevision, dashboard?.graphReviewRevision, entityEvidenceRefreshKey
   ])
 
@@ -2198,6 +2201,7 @@ function AiAssistantPage() {
         sourceId: projectEvidenceSource || undefined,
         memoryKind: projectEvidenceKind || undefined,
         evidenceState: projectEvidenceState || undefined,
+        evidenceRole: projectEvidenceRole || undefined,
         from: projectEvidenceFrom
           ? new Date(`${projectEvidenceFrom}T00:00:00+08:00`).toISOString() : undefined,
         to: projectEvidenceTo
@@ -2231,7 +2235,7 @@ function AiAssistantPage() {
     projectWorkspace.status, projectWorkspace.project?.entityId,
     dashboard?.memoryRevision, dashboard?.graphReviewRevision, projectEvidenceRefreshKey,
     projectEvidenceQuery, projectEvidenceSource, projectEvidenceKind,
-    projectEvidenceState, projectEvidenceFrom, projectEvidenceTo
+    projectEvidenceState, projectEvidenceRole, projectEvidenceFrom, projectEvidenceTo
   ])
 
   useEffect(() => {
@@ -3069,6 +3073,7 @@ function AiAssistantPage() {
         sourceId: entityEvidenceSource || undefined,
         memoryKind: entityEvidenceKind || undefined,
         evidenceState: entityEvidenceState || undefined,
+        evidenceRole: entityEvidenceRole || undefined,
         from: entityEvidenceFrom
           ? new Date(`${entityEvidenceFrom}T00:00:00+08:00`).toISOString() : undefined,
         to: entityEvidenceTo
@@ -3267,6 +3272,7 @@ function AiAssistantPage() {
         sourceId: projectEvidenceSource || undefined,
         memoryKind: projectEvidenceKind || undefined,
         evidenceState: projectEvidenceState || undefined,
+        evidenceRole: projectEvidenceRole || undefined,
         from: projectEvidenceFrom
           ? new Date(`${projectEvidenceFrom}T00:00:00+08:00`).toISOString() : undefined,
         to: projectEvidenceTo
@@ -8366,6 +8372,15 @@ function AiAssistantPage() {
                     <option value="current">当前记忆关联</option>
                     <option value="historical">仅历史审计</option>
                   </select>
+                  <select value={entityEvidenceRole}
+                    onChange={event => setEntityEvidenceRole(event.target.value)}>
+                    <option value="">全部证据角色</option>
+                    <option value="original">身份原文</option>
+                    <option value="direct">直接证据</option>
+                    <option value="indirect">间接证据</option>
+                    <option value="contradiction">反证</option>
+                    <option value="support">历史支持</option>
+                  </select>
                   <input aria-label="人物原文时间从" title="人物原文时间从" type="date"
                     value={entityEvidenceFrom} onChange={event => setEntityEvidenceFrom(event.target.value)} />
                   <input aria-label="人物原文时间到" title="人物原文时间到" type="date"
@@ -8739,6 +8754,15 @@ function AiAssistantPage() {
                     <option value="">全部关联状态</option>
                     <option value="current">当前记忆关联</option>
                     <option value="historical">仅历史审计</option>
+                  </select>
+                  <select value={projectEvidenceRole}
+                    onChange={event => setProjectEvidenceRole(event.target.value)}>
+                    <option value="">全部证据角色</option>
+                    <option value="original">项目识别原文</option>
+                    <option value="direct">直接证据</option>
+                    <option value="indirect">间接证据</option>
+                    <option value="contradiction">反证</option>
+                    <option value="support">历史支持</option>
                   </select>
                   <input aria-label="项目原文时间从" title="项目原文时间从" type="date"
                     value={projectEvidenceFrom} onChange={event => setProjectEvidenceFrom(event.target.value)} />

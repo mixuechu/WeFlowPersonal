@@ -6602,6 +6602,7 @@ export class PersonalMemoryStore {
         UNION ALL
         SELECT e.source_id,e.session_id,e.message_id,e.timestamp,
           CASE
+            WHEN e.evidence_role='contradiction' THEN 0
             WHEN e.claim_id IS NOT NULL AND EXISTS (
               SELECT 1 FROM claims active_claim WHERE active_claim.id=e.claim_id
                 AND active_claim.status!='rejected'
@@ -6657,6 +6658,7 @@ export class PersonalMemoryStore {
     sourceId?: 'wechat' | 'documents' | 'calendar' | 'mail' | 'legacy'
     memoryKind?: 'identity' | 'claim' | 'relation' | 'event'
     evidenceState?: 'current' | 'historical'
+    evidenceRole?: 'original' | 'direct' | 'indirect' | 'contradiction' | 'support'
     query?: string
     from?: string
     to?: string
@@ -6699,6 +6701,14 @@ export class PersonalMemoryStore {
       : ''
     if (evidenceState === 'current') filters.push('is_current=1')
     if (evidenceState === 'historical') filters.push('is_current=0')
+    const evidenceRole = ['original', 'direct', 'indirect', 'contradiction', 'support']
+      .includes(String(options.evidenceRole || ''))
+      ? String(options.evidenceRole)
+      : ''
+    if (evidenceRole) {
+      filters.push(`INSTR(',' || evidence_roles || ',', ?) > 0`)
+      filterParameters.push(`,${evidenceRole},`)
+    }
     const validFrom = options.from && Number.isFinite(Date.parse(options.from))
       ? Math.floor(Date.parse(options.from) / 1000)
       : 0
