@@ -7493,6 +7493,12 @@ function AiAssistantPage() {
                 <small className="assistant-memory-time-scope">按记忆的发生、有效或截止时间命中；支撑原文可能早于当前时间范围。</small>}
               {result.evidenceTimeScopeMode === 'evidence_time' &&
                 <small className="assistant-memory-time-scope">展示与问答仅使用当前时间范围内的原文。</small>}
+              {Number(result.evidenceRoleCounts?.contradiction || 0) > 0 &&
+                <small className="assistant-evidence-limit-note">
+                  ⚠ 当前权威证据中有 {Number(result.evidenceRoleCounts.contradiction)} 条反证、
+                  {Number(result.evidenceRoleCounts.supporting || 0)} 条非反证原文；
+                  检索预览为角色平衡样本，反证不会被较新的支持原文挤掉，也不能单独支撑结论。
+                </small>}
               <strong>{result.title}</strong><p>{result.search_text}</p>
               {result.document_type === 'entity' && result.source_id && <div className="assistant-search-authority-actions">
                 {result.metadata?.entityType === 'project'
@@ -8048,6 +8054,12 @@ function AiAssistantPage() {
                 {citation.citationFreshness === 'ineligible' && <small className="assistant-evidence-limit-note">
                   这条记忆当前已被拒绝、取消或缺少合格原文，不能继续支持历史事实结论。
                 </small>}
+                {Number(citation.evidenceRoleCounts?.contradiction || 0) > 0 &&
+                  <small className="assistant-evidence-limit-note">
+                    ⚠ 当前证据包含 {Number(citation.evidenceRoleCounts.contradiction)} 条反证和{' '}
+                    {Number(citation.evidenceRoleCounts.supporting || 0)} 条非反证原文；
+                    回答生成与当前核验都不能把反证当作正向支持。
+                  </small>}
                 {Number(citation.evidenceTotal || 0) > (citation.evidence || []).length &&
                   <small className="assistant-evidence-limit-note">
                     本次回答核验了最近 {(citation.evidence || []).length} / 共 {Number(citation.evidenceTotal)} 条去重原文证据

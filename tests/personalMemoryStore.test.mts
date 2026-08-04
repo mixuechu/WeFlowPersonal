@@ -9675,6 +9675,77 @@ test('negative claims preserve polarity and attach contradiction evidence both w
   assert.equal(JSON.parse(negativeSearch.metadata_json).polarity, 'negative')
 }))
 
+test('memory card evidence reserves room for older contradictions and reports complete role counts', () => withStore(store => {
+  store.syncGraph({
+    entities: [{
+      id: 'role-balanced-person',
+      type: 'person',
+      canonicalName: '证据平衡测试人',
+      trustStatus: 'confirmed'
+    }],
+    relations: [],
+    reviewQueue: []
+  })
+  store.upsertClaims([{
+    id: 'role-balanced-claim',
+    subjectId: 'role-balanced-person',
+    predicate: '负责',
+    objectValue: '证据平衡项目',
+    confidence: 0.95,
+    status: 'confirmed',
+    sourceNature: 'self_statement',
+    searchText: '证据平衡测试人负责证据平衡项目',
+    evidence: Array.from({ length: 30 }, (_, index) => ({
+      sourceId: index % 2 ? 'mail' : 'wechat',
+      messageId: `role-balanced-message-${index}`,
+      sessionId: `role-balanced-session-${index % 3}`,
+      timestamp: 1_700_200_000 + index,
+      sender: `发送者 ${index}`,
+      excerpt: `正向原文 ${index}`,
+      role: 'direct'
+    }))
+  }])
+  const database = (store as any).db
+  database.prepare(`
+    UPDATE evidence SET evidence_role='contradiction',excerpt='较早但必须保留的反证'
+    WHERE claim_id='role-balanced-claim' AND message_id='role-balanced-message-0'
+  `).run()
+
+  const payload = store.getDocumentEvidencePayload('claim', 'role-balanced-claim')
+  assert.equal(payload.evidenceTotal, 30)
+  assert.deepEqual(payload.evidenceRoleCounts, { supporting: 29, contradiction: 1 })
+  assert.deepEqual(payload.evidenceSelection, {
+    version: 'role-balanced-v1',
+    supportingDisplayed: 19,
+    contradictionDisplayed: 1,
+    truncated: true
+  })
+  assert.equal(payload.evidence.length, 20)
+  assert.equal(payload.evidence.some((item: any) =>
+    item.message_id === 'role-balanced-message-0'
+    && item.evidence_role === 'contradiction'), true)
+  assert.equal(payload.evidence.some((item: any) =>
+    item.message_id === 'role-balanced-message-10'), false)
+  assert.equal(payload.evidence.some((item: any) =>
+    item.message_id === 'role-balanced-message-29'), true)
+
+  database.prepare(`
+    UPDATE evidence SET evidence_role='contradiction'
+    WHERE claim_id='role-balanced-claim'
+  `).run()
+  const contradictionOnly = store.getDocumentEvidencePayload(
+    'claim',
+    'role-balanced-claim'
+  )
+  assert.deepEqual(contradictionOnly.evidenceRoleCounts, {
+    supporting: 0,
+    contradiction: 30
+  })
+  assert.equal(contradictionOnly.evidence.length, 20)
+  assert.equal(contradictionOnly.evidence.every((item: any) =>
+    item.evidence_role === 'contradiction'), true)
+}))
+
 test('task intelligence deduplicates by evidence and explains actionable reminders', () => {
   const existing = [{
     id: 'task-existing',

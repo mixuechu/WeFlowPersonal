@@ -133,6 +133,28 @@ test('memory evidence eligibility keeps review status separate from factual supp
   const context = buildModelMemoryContext(results)
   assert.equal(context.find(result => result.documentId === 'confirmed')?.evidenceTotal, 7)
   assert.match(context.find(result => result.documentId === 'confirmed')?.contentHash || '', /^[a-f0-9]{64}$/)
+  const contradictionOnly = {
+    id: 'contradiction-only',
+    document_type: 'claim',
+    metadata: { status: 'confirmed' },
+    evidence: [{ messageId: 'contra-1', evidence_role: 'contradiction' }],
+    evidenceTotal: 1,
+    evidenceRoleCounts: { supporting: 0, contradiction: 1 },
+    evidenceSelection: {
+      version: 'role-balanced-v1',
+      supportingDisplayed: 0,
+      contradictionDisplayed: 1,
+      truncated: false
+    }
+  }
+  assert.equal(getMemoryEvidenceEligibility(contradictionOnly).canSupportFacts, false)
+  const contradictionContext = buildModelMemoryContext([contradictionOnly])[0]
+  assert.equal(contradictionContext.canSupportFacts, false)
+  assert.deepEqual(contradictionContext.evidenceRoleCounts, {
+    supporting: 0,
+    contradiction: 1
+  })
+  assert.match(MEMORY_RAG_SYSTEM_PROMPT, /反证.*不能.*正向支持/)
   const rejectedHallucination = finalizeGroundedMemoryAnswer({
     statements: [{
       text: '候选内容一定是真的。',

@@ -12058,6 +12058,13 @@ export class PersonalMemoryStore {
     evidence: any[]
     evidenceTotal: number
     evidenceTimeScopeMode?: 'none' | 'document_time' | 'evidence_time'
+    evidenceRoleCounts?: { supporting: number; contradiction: number }
+    evidenceSelection?: {
+      version: 'role-balanced-v1'
+      supportingDisplayed: number
+      contradictionDisplayed: number
+      truncated: boolean
+    }
   } {
     if (!this.db) return { evidence: [], evidenceTotal: 0 }
     const sourceIds = [...new Set((scope.sourceIds || [])
@@ -12197,21 +12204,65 @@ export class PersonalMemoryStore {
           : ''
     if (!foreignKey) return { evidence: [], evidenceTotal: 0, ...timeScope }
     const structuredScope = evidenceScope('e')
-    const evidenceTotal = Number((this.db.prepare(`
-      SELECT COUNT(*) AS count FROM evidence e
-      WHERE e.${foreignKey}=?${structuredScope.sql}
-    `).get(sourceId, ...structuredScope.parameters) as any)?.count || 0)
-    if (!evidenceTotal) return { evidence: [], evidenceTotal: 0, ...timeScope }
-    const evidence = (this.db.prepare(`
-      SELECT source_id,message_id,session_id,timestamp,sender,excerpt,evidence_role
+    const roleCounts = this.db.prepare(`
+      SELECT
+        SUM(CASE WHEN e.evidence_role='contradiction' THEN 0 ELSE 1 END) AS supporting,
+        SUM(CASE WHEN e.evidence_role='contradiction' THEN 1 ELSE 0 END) AS contradiction
       FROM evidence e
       WHERE e.${foreignKey}=?${structuredScope.sql}
-      ORDER BY e.timestamp DESC,
-        CASE WHEN e.evidence_role='contradiction' THEN 0 ELSE 1 END,
-        e.message_id DESC
+    `).get(sourceId, ...structuredScope.parameters) as any
+    const evidenceRoleCounts = {
+      supporting: Number(roleCounts?.supporting || 0),
+      contradiction: Number(roleCounts?.contradiction || 0)
+    }
+    const evidenceTotal = evidenceRoleCounts.supporting + evidenceRoleCounts.contradiction
+    if (!evidenceTotal) return { evidence: [], evidenceTotal: 0, ...timeScope }
+    const contradictionLimit = Math.min(5, MEMORY_CARD_EVIDENCE_LIMIT)
+    const contradictionCandidates = this.db.prepare(`
+      SELECT source_id,message_id,session_id,timestamp,sender,excerpt,evidence_role
+      FROM evidence e
+      WHERE e.${foreignKey}=? AND e.evidence_role='contradiction'${structuredScope.sql}
+      ORDER BY e.timestamp DESC,e.source_id DESC,e.session_id DESC,e.message_id DESC
       LIMIT ?
-    `).all(sourceId, ...structuredScope.parameters, MEMORY_CARD_EVIDENCE_LIMIT) as any[]).reverse()
-    return { evidence, evidenceTotal, ...timeScope }
+    `).all(sourceId, ...structuredScope.parameters, MEMORY_CARD_EVIDENCE_LIMIT) as any[]
+    const reservedContradictions = contradictionCandidates.slice(0, contradictionLimit)
+    const supportingLimit = Math.max(
+      0,
+      MEMORY_CARD_EVIDENCE_LIMIT - reservedContradictions.length
+    )
+    const supporting = supportingLimit
+      ? this.db.prepare(`
+          SELECT source_id,message_id,session_id,timestamp,sender,excerpt,evidence_role
+          FROM evidence e
+          WHERE e.${foreignKey}=? AND e.evidence_role!='contradiction'${structuredScope.sql}
+          ORDER BY e.timestamp DESC,e.source_id DESC,e.session_id DESC,e.message_id DESC
+          LIMIT ?
+        `).all(sourceId, ...structuredScope.parameters, supportingLimit) as any[]
+      : []
+    const contradictions = contradictionCandidates.slice(
+      0,
+      Math.max(
+        reservedContradictions.length,
+        MEMORY_CARD_EVIDENCE_LIMIT - supporting.length
+      )
+    )
+    const evidence = [...contradictions, ...supporting].sort((left: any, right: any) =>
+      Number(left.timestamp || 0) - Number(right.timestamp || 0)
+      || String(left.source_id || '').localeCompare(String(right.source_id || ''))
+      || String(left.session_id || '').localeCompare(String(right.session_id || ''))
+      || String(left.message_id || '').localeCompare(String(right.message_id || '')))
+    return {
+      evidence,
+      evidenceTotal,
+      evidenceRoleCounts,
+      evidenceSelection: {
+        version: 'role-balanced-v1',
+        supportingDisplayed: supporting.length,
+        contradictionDisplayed: contradictions.length,
+        truncated: evidence.length < evidenceTotal
+      },
+      ...timeScope
+    }
   }
 
   getDocumentEvidence(documentType: string, sourceId: string): any[] {

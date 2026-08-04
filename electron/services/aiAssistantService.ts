@@ -7730,6 +7730,8 @@ export class AiAssistantService {
               Array.isArray(document.evidence) ? document.evidence.length : 0,
               Number(document.evidenceTotal || 0)
             ),
+            evidenceRoleCounts: document.evidenceRoleCounts || undefined,
+            evidenceSelection: document.evidenceSelection || undefined,
             canSupportFacts: eligibility.canSupportFacts,
             citationUnavailable: false,
             citationHydration: context ? 'authoritative_scoped' : 'authoritative_scope_unknown',
