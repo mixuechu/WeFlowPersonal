@@ -8030,6 +8030,76 @@ test('local ANN index is deterministic, persistent, invalidated safely and falls
   }
 })
 
+test('chunk ANN recalls a long-document tail without scanning every long document', () => withStore(store => {
+  const model = 'test-ann-chunks:8d'
+  const distractor = [0, 1, 0.04, 0.03, 0.02, 0.01, 0.005, 0.002]
+  const tailVector = [1, 0, 0.04, 0.03, 0.02, 0.01, 0.005, 0.002]
+  const normalize = (vector: number[]) => {
+    const norm = Math.sqrt(vector.reduce((sum, value) => sum + value * value, 0))
+    return vector.map(value => value / norm)
+  }
+  store.syncTasks(Array.from({ length: 39 }, (_, index) => ({
+    id: `chunk-ann-distractor-${index}`,
+    title: `分块索引干扰项 ${index}`,
+    detail: '与长文档尾部语义无关',
+    priority: 'medium',
+    status: 'todo',
+    classification: 'mine'
+  })))
+  for (let index = 0; index < 39; index += 1) {
+    store.saveEmbedding(`task:chunk-ann-distractor-${index}`, model, normalize(distractor))
+  }
+  const title = '完整长文档'
+  const lead = '普通背景内容。'.repeat(80)
+  const tail = '尾部唯一语义：火星港口交付校验。'
+  store.upsertResources([{
+    id: 'chunk-ann-long-resource',
+    resourceType: 'document',
+    title,
+    content: `${lead}${tail}`,
+    metadata: { sourceId: 'documents' },
+    createdAt: '2026-08-05T00:00:00.000Z',
+    updatedAt: '2026-08-05T00:00:00.000Z'
+  }])
+  const [candidate] = store.listEmbeddingCandidates(model)
+    .filter(item => item.id === 'resource:chunk-ann-long-resource')
+  const authoritative = `${candidate.title}\n${candidate.search_text}`.replace(/\r\n?/g, '\n').trim()
+  const tailStart = authoritative.indexOf(tail)
+  assert.equal(store.saveEmbedding(
+    candidate.id,
+    model,
+    normalize(distractor),
+    candidate.content_hash,
+    [
+      { vector: normalize(distractor), chunkHash: '', startOffset: 0, endOffset: tailStart },
+      { vector: normalize(tailVector), chunkHash: '', startOffset: tailStart, endOffset: authoritative.length }
+    ]
+  ), true)
+  const built = store.ensureApproximateVectorIndex(model, { minimumDocuments: 20 })
+  assert.equal(built.indexed, 40)
+  assert.equal(built.indexedChunks, 41)
+  assert.equal(built.chunkCoverage, 1)
+  const results = store.searchVector(normalize(tailVector), model, 1, {
+    minimumDocuments: 20,
+    minimumCandidates: 1
+  })
+  assert.equal(results[0]?.id, 'resource:chunk-ann-long-resource')
+  assert.equal(results[0]?.semantic_search_mode, 'ann')
+  assert.equal(results[0]?.semantic_match_excerpt, tail)
+
+  ;(store as any).db.prepare(`
+    DELETE FROM vector_ann_chunk_entries
+    WHERE document_id=? AND chunk_index=1 AND table_id=0
+  `).run('resource:chunk-ann-long-resource')
+  const incomplete = store.getApproximateVectorIndexStats(model, 8)
+  assert.equal(incomplete.active, false)
+  assert.ok(incomplete.chunkCoverage < 1)
+  assert.equal(store.searchVector(normalize(tailVector), model, 1, {
+    minimumDocuments: 20,
+    minimumCandidates: 1
+  })[0]?.semantic_search_mode, 'exact')
+}))
+
 test('ANN signatures and one-bit probes are deterministic and bounded', () => {
   const vector = [0.5, -0.5, 0.25, 0.125]
   const first = computeAnnSignatures(vector, 'ann-signature-test', 4, 8)
@@ -8411,9 +8481,9 @@ test('memory search revision trigger definitions are audited live and repaired s
     const initialHealth = first.getMemorySearchRevisionHealth()
     assert.equal(initialHealth.version, 'memory-search-revision-v3')
     assert.equal(initialHealth.revision, first.getMemorySearchRevision())
-    assert.equal(initialHealth.expectedTriggers, 21)
-    assert.equal(initialHealth.installedTriggers, 21)
-    assert.equal(initialHealth.validTriggers, 21)
+    assert.equal(initialHealth.expectedTriggers, 24)
+    assert.equal(initialHealth.installedTriggers, 24)
+    assert.equal(initialHealth.validTriggers, 24)
     assert.equal(initialHealth.healthy, true)
     ;(first as any).db.exec(`
       DROP TRIGGER trg_memory_search_revision_search_documents_insert;
@@ -8423,8 +8493,8 @@ test('memory search revision trigger definitions are audited live and repaired s
       AFTER INSERT ON search_documents BEGIN SELECT 1; END;
     `)
     const driftedHealth = first.getMemorySearchRevisionHealth()
-    assert.equal(driftedHealth.installedTriggers, 21)
-    assert.equal(driftedHealth.validTriggers, 20)
+    assert.equal(driftedHealth.installedTriggers, 24)
+    assert.equal(driftedHealth.validTriggers, 23)
     assert.deepEqual(driftedHealth.unhealthyTriggers, [
       'trg_memory_search_revision_search_documents_insert'
     ])
@@ -8437,8 +8507,8 @@ test('memory search revision trigger definitions are audited live and repaired s
     const reopened = new PersonalMemoryStore()
     reopened.initialize(databasePath)
     const repairedHealth = reopened.getMemorySearchRevisionHealth()
-    assert.equal(repairedHealth.installedTriggers, 21)
-    assert.equal(repairedHealth.validTriggers, 21)
+    assert.equal(repairedHealth.installedTriggers, 24)
+    assert.equal(repairedHealth.validTriggers, 24)
     assert.equal(repairedHealth.repairedThisStart, true)
     assert.equal(repairedHealth.repairedTriggersThisStart, 2)
     assert.deepEqual(repairedHealth.unhealthyTriggers, [])

@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto'
 
-export const LOCAL_ANN_INDEX_VERSION = 'lsh-v1'
+export const LOCAL_ANN_INDEX_VERSION = 'lsh-multivector-v2'
 export const LOCAL_ANN_DEFAULT_TABLES = 6
 export const LOCAL_ANN_DEFAULT_BITS = 8
 export const LOCAL_ANN_DEFAULT_MINIMUM_DOCUMENTS = 2_000

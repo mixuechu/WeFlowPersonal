@@ -890,6 +890,21 @@ export class PersonalMemoryStore {
       CREATE INDEX IF NOT EXISTS idx_vector_ann_bucket
         ON vector_ann_entries(model,dimensions,table_id,signature);
 
+      CREATE TABLE IF NOT EXISTS vector_ann_chunk_entries (
+        document_id TEXT NOT NULL,
+        chunk_index INTEGER NOT NULL,
+        model TEXT NOT NULL,
+        dimensions INTEGER NOT NULL,
+        table_id INTEGER NOT NULL,
+        signature INTEGER NOT NULL,
+        chunk_hash TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        PRIMARY KEY(document_id,model,chunk_index,table_id),
+        FOREIGN KEY(document_id) REFERENCES search_documents(id) ON DELETE CASCADE
+      ) STRICT;
+      CREATE INDEX IF NOT EXISTS idx_vector_ann_chunk_bucket
+        ON vector_ann_chunk_entries(model,dimensions,table_id,signature);
+
       CREATE TABLE IF NOT EXISTS vector_ann_state (
         model TEXT NOT NULL,
         dimensions INTEGER NOT NULL,
@@ -897,6 +912,7 @@ export class PersonalMemoryStore {
         table_count INTEGER NOT NULL,
         bit_count INTEGER NOT NULL,
         indexed_count INTEGER NOT NULL DEFAULT 0,
+        indexed_chunk_count INTEGER NOT NULL DEFAULT 0,
         status TEXT NOT NULL DEFAULT 'ready',
         last_built_at TEXT,
         updated_at TEXT NOT NULL,
@@ -912,12 +928,14 @@ export class PersonalMemoryStore {
         OR OLD.embedding_json IS NOT NEW.embedding_json
       BEGIN
         DELETE FROM vector_ann_entries WHERE document_id=OLD.id;
+        DELETE FROM vector_ann_chunk_entries WHERE document_id=OLD.id;
         DELETE FROM search_document_embedding_chunks WHERE document_id=OLD.id;
       END;
       CREATE TRIGGER IF NOT EXISTS trg_search_documents_ann_delete
       AFTER DELETE ON search_documents
       BEGIN
         DELETE FROM vector_ann_entries WHERE document_id=OLD.id;
+        DELETE FROM vector_ann_chunk_entries WHERE document_id=OLD.id;
         DELETE FROM search_document_embedding_chunks WHERE document_id=OLD.id;
       END;
 
@@ -992,6 +1010,7 @@ export class PersonalMemoryStore {
     this.ensureColumn('search_documents', 'embedding_chunk_count', 'INTEGER NOT NULL DEFAULT 0')
     this.ensureColumn('search_document_embedding_chunks', 'start_offset', 'INTEGER NOT NULL DEFAULT 0')
     this.ensureColumn('search_document_embedding_chunks', 'end_offset', 'INTEGER NOT NULL DEFAULT 0')
+    this.ensureColumn('vector_ann_state', 'indexed_chunk_count', 'INTEGER NOT NULL DEFAULT 0')
     this.ensureColumn('entities', 'last_disambiguated_at', 'TEXT')
     this.ensureColumn('entities', 'trust_status', `TEXT NOT NULL DEFAULT 'legacy_unknown'`)
     this.ensureColumn('entities', 'summary_status', `TEXT NOT NULL DEFAULT 'empty'`)
@@ -1504,6 +1523,7 @@ export class PersonalMemoryStore {
       'evidence',
       'memory_search_feedback',
       'vector_ann_entries',
+      'vector_ann_chunk_entries',
       'vector_ann_state'
     ]
     return tables.flatMap(table =>
@@ -3343,11 +3363,13 @@ export class PersonalMemoryStore {
         name: 'trg_search_documents_ann_delete',
         expected: [
           'after delete on search_documents',
-          'delete from vector_ann_entries where document_id=old.id'
+          'delete from vector_ann_entries where document_id=old.id',
+          'delete from vector_ann_chunk_entries where document_id=old.id'
         ],
         sql: `CREATE TRIGGER trg_search_documents_ann_delete AFTER DELETE ON search_documents
           BEGIN
             DELETE FROM vector_ann_entries WHERE document_id=OLD.id;
+            DELETE FROM vector_ann_chunk_entries WHERE document_id=OLD.id;
           END`
       }
     ]
@@ -3412,17 +3434,23 @@ export class PersonalMemoryStore {
       WHERE NOT EXISTS(SELECT 1 FROM search_documents d WHERE d.id=e.document_id)
     `).get() as any)?.count || 0)
     const orphanAnn = Number((this.db.prepare(`
-      SELECT COUNT(*) AS count FROM vector_ann_entries a
-      WHERE NOT EXISTS(SELECT 1 FROM search_documents d WHERE d.id=a.document_id)
+      SELECT
+        (SELECT COUNT(*) FROM vector_ann_entries a
+          WHERE NOT EXISTS(SELECT 1 FROM search_documents d WHERE d.id=a.document_id)) +
+        (SELECT COUNT(*) FROM vector_ann_chunk_entries a
+          WHERE NOT EXISTS(SELECT 1 FROM search_documents d WHERE d.id=a.document_id)) AS count
     `).get() as any)?.count || 0)
     const payloadCount = this.db.prepare(`
       SELECT
         (SELECT COUNT(*) FROM search_fts WHERE document_id=?) +
         (SELECT COUNT(*) FROM search_document_evidence WHERE document_id=?) +
-        (SELECT COUNT(*) FROM vector_ann_entries WHERE document_id=?) AS count
+        (SELECT COUNT(*) FROM vector_ann_entries WHERE document_id=?) +
+        (SELECT COUNT(*) FROM vector_ann_chunk_entries WHERE document_id=?) AS count
     `)
     const ghostDocumentPayloadRows = ghostDocuments.reduce((total, document) =>
-      total + Number((payloadCount.get(document.id, document.id, document.id) as any)?.count || 0), 0)
+      total + Number((payloadCount.get(
+        document.id, document.id, document.id, document.id
+      ) as any)?.count || 0), 0)
     const missingClaims = this.db.prepare(`
       SELECT * FROM claims c
       WHERE NOT EXISTS(
@@ -3721,6 +3749,10 @@ export class PersonalMemoryStore {
         DELETE FROM vector_ann_entries
         WHERE NOT EXISTS(
           SELECT 1 FROM search_documents d WHERE d.id=vector_ann_entries.document_id
+        );
+        DELETE FROM vector_ann_chunk_entries
+        WHERE NOT EXISTS(
+          SELECT 1 FROM search_documents d WHERE d.id=vector_ann_chunk_entries.document_id
         );
       `)
       const deleteFts = this.db!.prepare('DELETE FROM search_fts WHERE document_id=?')
@@ -12669,6 +12701,7 @@ export class PersonalMemoryStore {
     const authoritativeText = `${String(document?.title || '')}\n${String(document?.search_text || '')}`
       .replace(/\r\n?/g, '\n').trim()
     if (!authoritativeText) throw new Error('向量块缺少当前权威正文')
+    this.db.prepare('DELETE FROM vector_ann_chunk_entries WHERE document_id=?').run(documentId)
     this.db.prepare('DELETE FROM search_document_embedding_chunks WHERE document_id=?').run(documentId)
     const insert = this.db.prepare(`
       INSERT INTO search_document_embedding_chunks(
@@ -12920,7 +12953,10 @@ export class PersonalMemoryStore {
   }
 
   getApproximateVectorIndexStats(model: string, dimensions?: number): any {
-    if (!this.db) return { mode: 'exact', active: false, indexed: 0, eligible: 0, coverage: 0 }
+    if (!this.db) return {
+      mode: 'exact', active: false, indexed: 0, eligible: 0, coverage: 0,
+      indexedChunks: 0, eligibleChunks: 0, chunkCoverage: 0
+    }
     const eligible = this.db.prepare(`
       SELECT COUNT(*) AS count FROM search_documents
       WHERE embedding_model=? AND embedding_json IS NOT NULL
@@ -12944,6 +12980,25 @@ export class PersonalMemoryStore {
       ORDER BY indexed_count DESC LIMIT 1
     `).get(model, dimensions ?? null, dimensions ?? null) as any
     const eligibleCount = Number(eligible?.count || 0)
+    const eligibleChunks = Number((this.db.prepare(`
+      SELECT COUNT(*) AS count FROM search_document_embedding_chunks chunk
+      JOIN search_documents d ON d.id=chunk.document_id
+        AND d.content_hash=chunk.content_hash
+        AND d.embedding_model=chunk.model
+        AND d.embedding_dimensions=chunk.dimensions
+      WHERE chunk.model=? AND (? IS NULL OR chunk.dimensions=?)
+        AND json_valid(chunk.vector_json)=1
+        AND json_type(CASE WHEN json_valid(chunk.vector_json)=1 THEN chunk.vector_json ELSE '[]' END)='array'
+        AND json_array_length(CASE WHEN json_valid(chunk.vector_json)=1 THEN chunk.vector_json ELSE '[]' END)=chunk.dimensions
+        AND NOT EXISTS(
+          SELECT 1 FROM json_each(CASE WHEN json_valid(chunk.vector_json)=1 THEN chunk.vector_json ELSE '[]' END)
+          WHERE json_each.type NOT IN ('integer','real')
+        )
+        AND EXISTS(
+          SELECT 1 FROM json_each(CASE WHEN json_valid(chunk.vector_json)=1 THEN chunk.vector_json ELSE '[]' END)
+          WHERE ABS(json_each.value)>1e-12
+        )
+    `).get(model, dimensions ?? null, dimensions ?? null) as any)?.count || 0)
     const actual = state ? this.db.prepare(`
       SELECT COUNT(*) AS count FROM (
         SELECT e.document_id FROM vector_ann_entries e
@@ -12970,11 +13025,31 @@ export class PersonalMemoryStore {
       )
     `).get(model, Number(state.dimensions), Number(state.table_count)) as { count: number } : { count: 0 }
     const indexedCount = Number(actual?.count || 0)
+    const indexedChunks = state ? Number((this.db.prepare(`
+      SELECT COUNT(*) AS count FROM (
+        SELECT entry.document_id,entry.chunk_index
+        FROM vector_ann_chunk_entries entry
+        JOIN search_document_embedding_chunks chunk
+          ON chunk.document_id=entry.document_id
+          AND chunk.model=entry.model
+          AND chunk.chunk_index=entry.chunk_index
+          AND chunk.dimensions=entry.dimensions
+          AND chunk.chunk_hash=entry.chunk_hash
+        JOIN search_documents d ON d.id=chunk.document_id
+          AND d.content_hash=chunk.content_hash
+          AND d.embedding_model=chunk.model
+          AND d.embedding_dimensions=chunk.dimensions
+        WHERE entry.model=? AND entry.dimensions=?
+        GROUP BY entry.document_id,entry.chunk_index
+        HAVING COUNT(DISTINCT entry.table_id)=?
+      )
+    `).get(model, Number(state.dimensions), Number(state.table_count)) as any)?.count || 0) : 0
     const active = Boolean(
       state &&
       state.status === 'ready' &&
       state.index_version === LOCAL_ANN_INDEX_VERSION &&
       indexedCount === eligibleCount &&
+      indexedChunks === eligibleChunks &&
       eligibleCount >= LOCAL_ANN_DEFAULT_MINIMUM_DOCUMENTS
     )
     return {
@@ -12988,6 +13063,9 @@ export class PersonalMemoryStore {
       indexed: indexedCount,
       eligible: eligibleCount,
       coverage: eligibleCount ? Math.min(1, indexedCount / eligibleCount) : 0,
+      indexedChunks,
+      eligibleChunks,
+      chunkCoverage: eligibleChunks ? Math.min(1, indexedChunks / eligibleChunks) : 0,
       minimumDocuments: LOCAL_ANN_DEFAULT_MINIMUM_DOCUMENTS,
       lastBuiltAt: state?.last_built_at || null
     }
@@ -13038,7 +13116,8 @@ export class PersonalMemoryStore {
       existing?.index_version === LOCAL_ANN_INDEX_VERSION &&
       Number(existing.table_count) === tables &&
       Number(existing.bit_count) === bits &&
-      currentStats.indexed === Number(group.count)) {
+      currentStats.indexed === Number(group.count) &&
+      currentStats.indexedChunks === currentStats.eligibleChunks) {
       return { rebuilt: false, ...currentStats }
     }
     const documents = this.db.prepare(`
@@ -13057,9 +13136,27 @@ export class PersonalMemoryStore {
         )
       ORDER BY id
     `).all(model, dimensions) as Array<{ id: string; content_hash: string; embedding_json: string }>
+    const chunks = this.db.prepare(`
+      SELECT chunk.document_id,chunk.chunk_index,chunk.vector_json,chunk.chunk_hash
+      FROM search_document_embedding_chunks chunk
+      JOIN search_documents d ON d.id=chunk.document_id
+        AND d.content_hash=chunk.content_hash
+        AND d.embedding_model=chunk.model
+        AND d.embedding_dimensions=chunk.dimensions
+      WHERE chunk.model=? AND chunk.dimensions=?
+        AND json_valid(chunk.vector_json)=1
+        AND json_array_length(chunk.vector_json)=chunk.dimensions
+      ORDER BY chunk.document_id,chunk.chunk_index
+    `).all(model, dimensions) as Array<{
+      document_id: string
+      chunk_index: number
+      vector_json: string
+      chunk_hash: string
+    }>
     const now = new Date().toISOString()
     const replace = this.db.transaction(() => {
       this.db!.prepare('DELETE FROM vector_ann_entries WHERE model=? AND dimensions=?').run(model, dimensions)
+      this.db!.prepare('DELETE FROM vector_ann_chunk_entries WHERE model=? AND dimensions=?').run(model, dimensions)
       const insert = this.db!.prepare(`
         INSERT INTO vector_ann_entries(
           document_id,model,dimensions,table_id,signature,content_hash,updated_at
@@ -13072,19 +13169,39 @@ export class PersonalMemoryStore {
         computeAnnSignatures(vector, model, tables, bits).forEach((signature, table) =>
           insert.run(document.id, model, dimensions, table, signature, document.content_hash, now))
       }
+      const insertChunk = this.db!.prepare(`
+        INSERT INTO vector_ann_chunk_entries(
+          document_id,chunk_index,model,dimensions,table_id,signature,chunk_hash,updated_at
+        ) VALUES(?,?,?,?,?,?,?,?)
+      `)
+      for (const chunk of chunks) {
+        let vector: number[] = []
+        try { vector = JSON.parse(chunk.vector_json).map(Number) } catch {}
+        if (!validateEmbeddingBatch([vector], 1).valid || vector.length !== dimensions) continue
+        computeAnnSignatures(vector, model, tables, bits).forEach((signature, table) =>
+          insertChunk.run(
+            chunk.document_id, chunk.chunk_index, model, dimensions, table,
+            signature, chunk.chunk_hash, now
+          ))
+      }
       this.db!.prepare(`
         INSERT INTO vector_ann_state(
-          model,dimensions,index_version,table_count,bit_count,indexed_count,status,last_built_at,updated_at
-        ) VALUES(?,?,?,?,?,?,'ready',?,?)
+          model,dimensions,index_version,table_count,bit_count,indexed_count,indexed_chunk_count,
+          status,last_built_at,updated_at
+        ) VALUES(?,?,?,?,?,?,?,'ready',?,?)
         ON CONFLICT(model,dimensions) DO UPDATE SET
           index_version=excluded.index_version,
           table_count=excluded.table_count,
           bit_count=excluded.bit_count,
           indexed_count=excluded.indexed_count,
+          indexed_chunk_count=excluded.indexed_chunk_count,
           status='ready',
           last_built_at=excluded.last_built_at,
           updated_at=excluded.updated_at
-      `).run(model, dimensions, LOCAL_ANN_INDEX_VERSION, tables, bits, documents.length, now, now)
+      `).run(
+        model, dimensions, LOCAL_ANN_INDEX_VERSION, tables, bits,
+        documents.length, chunks.length, now, now
+      )
     })
     replace()
     return { rebuilt: true, ...this.getApproximateVectorIndexStats(model, dimensions) }
@@ -13162,26 +13279,6 @@ export class PersonalMemoryStore {
     }).slice(0, Math.max(1, Math.min(500, limit)))
   }
 
-  private searchVectorLongChunks(
-    vector: number[],
-    model: string,
-    limit: number,
-    allowedIds: Set<string> | null
-  ): any[] {
-    if (!this.db) return []
-    if (allowedIds) this.replaceActiveSearchScope(allowedIds)
-    const scopeJoin = allowedIds ? 'JOIN active_memory_search_scope scope ON scope.id=d.id' : ''
-    const rows = this.db.prepare(`
-      SELECT d.*,chunk.vector_json AS embedding_json,chunk.chunk_index,
-        chunk.start_offset,chunk.end_offset
-      FROM search_documents d ${scopeJoin}
-      JOIN search_document_embedding_chunks chunk ON chunk.document_id=d.id
-        AND chunk.model=? AND chunk.content_hash=d.content_hash
-      WHERE d.embedding_chunk_count>1 AND chunk.dimensions=?
-    `).all(model, vector.length) as any[]
-    return this.rankVectorRows(rows, vector, limit, 'ann')
-  }
-
   searchVector(
     vector: number[],
     model: string,
@@ -13201,6 +13298,7 @@ export class PersonalMemoryStore {
     const canUseAnn = stats.status === 'ready' &&
       stats.version === LOCAL_ANN_INDEX_VERSION &&
       stats.indexed === stats.eligible &&
+      stats.indexedChunks === stats.eligibleChunks &&
       stats.eligible >= minimumDocuments
     if (!canUseAnn) return this.searchVectorExact(vector, model, limit, allowedIds)
     const signatures = computeAnnSignatures(vector, model, stats.tables, stats.bits)
@@ -13209,9 +13307,16 @@ export class PersonalMemoryStore {
       SELECT document_id FROM vector_ann_entries
       WHERE model=? AND dimensions=? AND table_id=? AND signature IN (${Array.from({ length: stats.bits + 1 }, () => '?').join(',')})
     `)
+    const chunkLookup = this.db.prepare(`
+      SELECT document_id FROM vector_ann_chunk_entries
+      WHERE model=? AND dimensions=? AND table_id=? AND signature IN (${Array.from({ length: stats.bits + 1 }, () => '?').join(',')})
+    `)
     signatures.forEach((signature, table) => {
       const probes = listMultiProbeSignatures(signature, stats.bits)
       for (const row of lookup.all(model, vector.length, table, ...probes) as Array<{ document_id: string }>) {
+        if (!allowedIds || allowedIds.has(row.document_id)) candidateIds.add(row.document_id)
+      }
+      for (const row of chunkLookup.all(model, vector.length, table, ...probes) as Array<{ document_id: string }>) {
         if (!allowedIds || allowedIds.has(row.document_id)) candidateIds.add(row.document_id)
       }
     })
@@ -13243,14 +13348,7 @@ export class PersonalMemoryStore {
           AND embedding.model=? AND embedding.dimensions=?
       `).all(...chunk, model, vector.length) as any[])
     }
-    const aggregateCandidates = this.rankVectorRows(rows, vector, limit, 'ann')
-    const longDocumentCandidates = this.searchVectorLongChunks(
-      vector, model, limit, allowedIds
-    )
-    return [...aggregateCandidates, ...longDocumentCandidates]
-      .sort((left, right) => Number(right.semantic_score) - Number(left.semantic_score))
-      .filter((row, index, all) => all.findIndex(candidate => candidate.id === row.id) === index)
-      .slice(0, Math.max(1, Math.min(500, limit)))
+    return this.rankVectorRows(rows, vector, limit, 'ann')
   }
 
   listSimilarEntityPairs(model: string, minimumScore = 0.88, limit = 200): Array<{ leftId: string; rightId: string; score: number }> {

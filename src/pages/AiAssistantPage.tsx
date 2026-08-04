@@ -11078,6 +11078,8 @@ function AiAssistantPage() {
               <div>
                 <span>覆盖 <b>{Math.round(Number(memoryDiagnostics.embeddings.ann.coverage || 0) * 100)}%</b></span>
                 <span>索引 <b>{Number(memoryDiagnostics.embeddings.ann.indexed || 0).toLocaleString()} / {Number(memoryDiagnostics.embeddings.ann.eligible || 0).toLocaleString()}</b></span>
+                <span>块覆盖 <b>{Math.round(Number(memoryDiagnostics.embeddings.ann.chunkCoverage || 0) * 100)}%</b></span>
+                <span>块索引 <b>{Number(memoryDiagnostics.embeddings.ann.indexedChunks || 0).toLocaleString()} / {Number(memoryDiagnostics.embeddings.ann.eligibleChunks || 0).toLocaleString()}</b></span>
                 <span>待补建 <b>{Number(memoryDiagnostics.embeddings.pending || 0).toLocaleString()}</b> / 损坏 {Number(memoryDiagnostics.embeddings.invalid || 0).toLocaleString()}</span>
                 <span>向量块 <b>{Number(memoryDiagnostics.embeddings.chunks || 0).toLocaleString()}</b> · 长文档 {Number(memoryDiagnostics.embeddings.longDocuments || 0).toLocaleString()}</span>
                 <span>索引执行 <b>{memoryDiagnostics.embeddings.indexing
