@@ -959,12 +959,32 @@ function AiAssistantPage() {
   const [crossStoreRecoveryQueue, setCrossStoreRecoveryQueue] = useState<any>(null)
   const [crossStoreRecoveryLoadingMore, setCrossStoreRecoveryLoadingMore] = useState(false)
   const [crossStoreRecoveryRetrying, setCrossStoreRecoveryRetrying] = useState(false)
+  const [crossStoreRecoveryArchive, setCrossStoreRecoveryArchive] = useState<any>({
+    items: [], total: 0, hasMore: false, counts: {}
+  })
+  const [crossStoreRecoveryArchiveKind, setCrossStoreRecoveryArchiveKind] = useState<
+    'all' | 'task' | 'source'
+  >('all')
+  const [crossStoreRecoveryArchiveStatus, setCrossStoreRecoveryArchiveStatus] = useState<
+    'all' | 'prepared' | 'committed' | 'abandoned'
+  >('all')
+  const [crossStoreRecoveryArchiveAction, setCrossStoreRecoveryArchiveAction] = useState<
+    'all' | 'applied' | 'automatic_abandon' | 'user_kept_current_state'
+  >('all')
+  const [crossStoreRecoveryArchiveQuery, setCrossStoreRecoveryArchiveQuery] = useState('')
+  const [crossStoreRecoveryArchiveFrom, setCrossStoreRecoveryArchiveFrom] = useState('')
+  const [crossStoreRecoveryArchiveTo, setCrossStoreRecoveryArchiveTo] = useState('')
+  const [crossStoreRecoveryArchiveLoadingMore, setCrossStoreRecoveryArchiveLoadingMore] =
+    useState(false)
+  const [crossStoreRecoveryArchiveRefreshKey, setCrossStoreRecoveryArchiveRefreshKey] =
+    useState(0)
   const [crossStoreAbandonDialog, setCrossStoreAbandonDialog] = useState<any>(null)
   const [crossStoreAbandonConfirmation, setCrossStoreAbandonConfirmation] = useState('')
   const ingestionArchiveGate = useRef(new LatestRequestGate())
   const ingestionDossierGate = useRef(new LatestRequestGate())
   const ingestionRecoveryGate = useRef(new LatestRequestGate())
   const crossStoreRecoveryGate = useRef(new LatestRequestGate())
+  const crossStoreRecoveryArchiveGate = useRef(new LatestRequestGate())
   const crossStoreAbandonGate = useRef(new LatestRequestGate())
   const [backingUpMemory, setBackingUpMemory] = useState(false)
   const [restoringMemory, setRestoringMemory] = useState(false)
@@ -1221,6 +1241,24 @@ function AiAssistantPage() {
     offset: 0
   }), [
     ingestionArchiveStatus, ingestionArchiveQuery, ingestionArchiveFrom, ingestionArchiveTo
+  ])
+  const crossStoreRecoveryArchiveOptions = useMemo(() => ({
+    kind: crossStoreRecoveryArchiveKind,
+    status: crossStoreRecoveryArchiveStatus,
+    action: crossStoreRecoveryArchiveAction,
+    query: crossStoreRecoveryArchiveQuery || undefined,
+    from: crossStoreRecoveryArchiveFrom
+      ? new Date(`${crossStoreRecoveryArchiveFrom}T00:00:00+08:00`).toISOString()
+      : undefined,
+    to: crossStoreRecoveryArchiveTo
+      ? new Date(`${crossStoreRecoveryArchiveTo}T23:59:59.999+08:00`).toISOString()
+      : undefined,
+    limit: 40,
+    offset: 0
+  }), [
+    crossStoreRecoveryArchiveKind, crossStoreRecoveryArchiveStatus,
+    crossStoreRecoveryArchiveAction, crossStoreRecoveryArchiveQuery,
+    crossStoreRecoveryArchiveFrom, crossStoreRecoveryArchiveTo
   ])
 
   const load = useCallback(async () => {
@@ -1767,6 +1805,48 @@ function AiAssistantPage() {
   }, [
     showDiagnostics, memoryDiagnostics?.ingestionArchive?.revision,
     ingestionArchiveOptions, ingestionArchiveRefreshKey
+  ])
+
+  useEffect(() => {
+    if (!showDiagnostics || !memoryDiagnostics) {
+      crossStoreRecoveryArchiveGate.current.invalidate()
+      return
+    }
+    const request = crossStoreRecoveryArchiveGate.current.begin()
+    setCrossStoreRecoveryArchiveLoadingMore(false)
+    setCrossStoreRecoveryArchive((current: any) => ({
+      ...current, items: [], loading: true
+    }))
+    const timer = window.setTimeout(() => {
+      void window.electronAPI.aiAssistant
+        .getCrossStoreRecoveryArchivePage(crossStoreRecoveryArchiveOptions)
+        .then(page => {
+          if (!crossStoreRecoveryArchiveGate.current.isCurrent(request)) return
+          if (page.stale) {
+            window.setTimeout(() => {
+              if (crossStoreRecoveryArchiveGate.current.isCurrent(request)) {
+                setCrossStoreRecoveryArchiveRefreshKey(value => value + 1)
+              }
+            }, 250)
+            return
+          }
+          setCrossStoreRecoveryArchive({ ...page, loading: false })
+        }).catch(() => {
+          if (!crossStoreRecoveryArchiveGate.current.isCurrent(request)) return
+          setCrossStoreRecoveryArchive({
+            items: [], total: 0, hasMore: false, counts: {}, loading: false
+          })
+        })
+    }, crossStoreRecoveryArchiveQuery ? 200 : 0)
+    return () => {
+      window.clearTimeout(timer)
+      if (crossStoreRecoveryArchiveGate.current.isCurrent(request)) {
+        crossStoreRecoveryArchiveGate.current.invalidate()
+      }
+    }
+  }, [
+    showDiagnostics, memoryDiagnostics?.crossStoreRecoveryRevision?.revision,
+    crossStoreRecoveryArchiveOptions, crossStoreRecoveryArchiveRefreshKey
   ])
 
   useEffect(() => {
@@ -3404,6 +3484,44 @@ function AiAssistantPage() {
     } finally {
       if (crossStoreRecoveryGate.current.isCurrent(request)) {
         setCrossStoreRecoveryLoadingMore(false)
+      }
+    }
+  }
+
+  const loadMoreCrossStoreRecoveryArchive = async () => {
+    if (crossStoreRecoveryArchiveLoadingMore || !crossStoreRecoveryArchive.hasMore) return
+    const request = crossStoreRecoveryArchiveGate.current.begin()
+    setCrossStoreRecoveryArchiveLoadingMore(true)
+    try {
+      const page = await window.electronAPI.aiAssistant.getCrossStoreRecoveryArchivePage({
+        ...crossStoreRecoveryArchiveOptions,
+        offset: crossStoreRecoveryArchive.items?.length || 0,
+        limit: 40,
+        revision: crossStoreRecoveryArchive.revision
+      })
+      if (!crossStoreRecoveryArchiveGate.current.isCurrent(request)) return
+      if (page.stale) {
+        setMessage('跨存储写入处理档案已有变化，已自动从第一页刷新')
+        setCrossStoreRecoveryArchiveRefreshKey(value => value + 1)
+        return
+      }
+      setCrossStoreRecoveryArchive((current: any) => ({
+        ...page,
+        items: [
+          ...(current?.items || []),
+          ...(page.items || []).filter((item: any) =>
+            !(current?.items || []).some((known: any) =>
+              known.kind === item.kind && known.commitId === item.commitId))
+        ],
+        loading: false
+      }))
+    } catch (error: any) {
+      if (crossStoreRecoveryArchiveGate.current.isCurrent(request)) {
+        setMessage(error?.message || String(error))
+      }
+    } finally {
+      if (crossStoreRecoveryArchiveGate.current.isCurrent(request)) {
+        setCrossStoreRecoveryArchiveLoadingMore(false)
       }
     }
   }
@@ -10645,6 +10763,120 @@ function AiAssistantPage() {
                 冲突 {Number(memoryDiagnostics.conversationSourceMutationCommits.startupRecovery.conflicts)}。
               </small>}
             </div>}
+            <div className="assistant-deletion-audit assistant-cross-store-archive">
+              <header>
+                <ShieldCheck size={15} />
+                <span>
+                  <b>跨存储写入处理档案</b>
+                  <small>
+                    {Number(crossStoreRecoveryArchive.total || 0)} 条匹配 · 全部{' '}
+                    {Number(crossStoreRecoveryArchive.counts?.all || 0)} 条。
+                    只展示提交身份、影响数量和处理结论，不读取任务、会话或恢复载荷正文。
+                  </small>
+                </span>
+              </header>
+              <div className="assistant-task-filters">
+                <select value={crossStoreRecoveryArchiveKind}
+                  onChange={event => setCrossStoreRecoveryArchiveKind(
+                    event.target.value as typeof crossStoreRecoveryArchiveKind
+                  )}>
+                  <option value="all">所有写入类型</option>
+                  <option value="task">任务变更</option>
+                  <option value="source">信息来源策略</option>
+                </select>
+                <select value={crossStoreRecoveryArchiveStatus}
+                  onChange={event => setCrossStoreRecoveryArchiveStatus(
+                    event.target.value as typeof crossStoreRecoveryArchiveStatus
+                  )}>
+                  <option value="all">所有处理状态</option>
+                  <option value="prepared">仍待恢复</option>
+                  <option value="committed">已经提交</option>
+                  <option value="abandoned">已经放弃</option>
+                </select>
+                <select value={crossStoreRecoveryArchiveAction}
+                  onChange={event => setCrossStoreRecoveryArchiveAction(
+                    event.target.value as typeof crossStoreRecoveryArchiveAction
+                  )}>
+                  <option value="all">所有处理方式</option>
+                  <option value="applied">应用中断写入</option>
+                  <option value="automatic_abandon">系统安全放弃或回滚</option>
+                  <option value="user_kept_current_state">本人保留当前状态</option>
+                </select>
+                <input value={crossStoreRecoveryArchiveQuery}
+                  onChange={event => setCrossStoreRecoveryArchiveQuery(event.target.value)}
+                  placeholder="搜索恢复 ID、处理方式或脱敏错误" />
+                <label><span>处理从</span><input type="date"
+                  value={crossStoreRecoveryArchiveFrom}
+                  onChange={event => setCrossStoreRecoveryArchiveFrom(event.target.value)} /></label>
+                <label><span>到</span><input type="date"
+                  value={crossStoreRecoveryArchiveTo}
+                  onChange={event => setCrossStoreRecoveryArchiveTo(event.target.value)} /></label>
+                {(crossStoreRecoveryArchiveKind !== 'all' ||
+                  crossStoreRecoveryArchiveStatus !== 'all' ||
+                  crossStoreRecoveryArchiveAction !== 'all' ||
+                  crossStoreRecoveryArchiveQuery || crossStoreRecoveryArchiveFrom ||
+                  crossStoreRecoveryArchiveTo) && <button onClick={() => {
+                  setCrossStoreRecoveryArchiveKind('all')
+                  setCrossStoreRecoveryArchiveStatus('all')
+                  setCrossStoreRecoveryArchiveAction('all')
+                  setCrossStoreRecoveryArchiveQuery('')
+                  setCrossStoreRecoveryArchiveFrom('')
+                  setCrossStoreRecoveryArchiveTo('')
+                }}>清除范围</button>}
+              </div>
+              <div className="assistant-recovery-current">
+                <span>待恢复 <b>{Number(crossStoreRecoveryArchive.counts?.prepared || 0)}</b></span>
+                <span>已提交 <b>{Number(crossStoreRecoveryArchive.counts?.committed || 0)}</b></span>
+                <span>已放弃 <b>{Number(crossStoreRecoveryArchive.counts?.abandoned || 0)}</b></span>
+                <span>本人保留当前状态 <b>
+                  {Number(crossStoreRecoveryArchive.counts?.userKeptCurrentState || 0)}
+                </b></span>
+              </div>
+              {(crossStoreRecoveryArchive.items || []).map((entry: any) => {
+                const action = entry.recoveryAction === 'user_kept_current_state'
+                  ? '本人确认保留当前状态'
+                  : entry.recoveryAction === 'state_not_committed'
+                    ? '状态仍为写入前，已自动放弃'
+                    : entry.recoveryAction === 'runtime_rollback'
+                      ? '运行期失败，已安全回滚'
+                  : entry.status === 'committed'
+                    ? '中断写入已安全应用'
+                    : entry.status === 'abandoned'
+                      ? '中断写入已安全放弃或回滚'
+                      : '等待确定性核验'
+                return <article key={`${entry.kind}:${entry.commitId}`}>
+                  <span>
+                    <b>{entry.kind === 'task' ? '任务变更' : '信息来源策略'} · {action}</b>
+                    <small>
+                      {entry.appliedAt
+                        ? new Date(entry.appliedAt).toLocaleString('zh-CN')
+                        : entry.preparedAt
+                          ? new Date(entry.preparedAt).toLocaleString('zh-CN')
+                          : '时间未知'}
+                      {' · '}影响 {Number(entry.affectedCount || 0)} 项
+                      {' · '}自动尝试 {Number(entry.recoveryAttempts || 0)} 次
+                    </small>
+                  </span>
+                  <span className="assistant-recovery-commit-id">{entry.commitId}</span>
+                  {entry.lastError && <p className="assistant-diagnostics-error">
+                    最近脱敏错误：{entry.lastError}
+                  </p>}
+                </article>
+              })}
+              {!crossStoreRecoveryArchive.items?.length && <div className="assistant-empty">
+                {crossStoreRecoveryArchive.loading
+                  ? '正在读取跨存储写入处理档案…'
+                  : '当前范围没有跨存储写入记录。'}
+              </div>}
+              {crossStoreRecoveryArchive.hasMore && <div className="assistant-timeline-more">
+                <button disabled={crossStoreRecoveryArchiveLoadingMore}
+                  onClick={() => void loadMoreCrossStoreRecoveryArchive()}>
+                  {crossStoreRecoveryArchiveLoadingMore
+                    ? '正在加载…'
+                    : `加载更多（已显示 ${crossStoreRecoveryArchive.items.length}/${crossStoreRecoveryArchive.total}）`}
+                </button>
+              </div>}
+            </div>
             {memoryDiagnostics.appRecovery && <div className={`assistant-recovery-audit ${memoryDiagnostics.appRecovery.recoveredFromInterruption ? 'warning' : 'healthy'}`}>
               <header><RefreshCw size={15} /><span><b>应用运行与恢复</b>
                 <small>{memoryDiagnostics.appRecovery.recoveryMessage}</small></span></header>

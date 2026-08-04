@@ -5127,6 +5127,40 @@ export class AiAssistantService {
     }
   }
 
+  getCrossStoreRecoveryArchivePage(options: any = {}): any {
+    const page = personalMemoryStore.listCrossStoreRecoveryArchivePage({
+      kind: ['task', 'source'].includes(options?.kind) ? options.kind : 'all',
+      status: ['prepared', 'committed', 'abandoned'].includes(options?.status)
+        ? options.status
+        : 'all',
+      action: [
+        'applied', 'automatic_abandon', 'user_kept_current_state'
+      ].includes(options?.action)
+        ? options.action
+        : 'all',
+      query: String(options?.query || ''),
+      from: String(options?.from || ''),
+      to: String(options?.to || ''),
+      offset: Number(options?.offset || 0),
+      limit: Number(options?.limit || 40),
+      revision: String(options?.revision || '')
+    })
+    return {
+      ...page,
+      items: page.items.map((item: any) => ({
+        kind: item.kind,
+        commitId: String(item.commit_id || ''),
+        status: String(item.status || ''),
+        preparedAt: String(item.prepared_at || ''),
+        appliedAt: String(item.applied_at || ''),
+        recoveryAttempts: Number(item.recovery_attempts || 0),
+        recoveryAction: String(item.recovery_action || ''),
+        lastError: item.last_error ? sanitizeDiagnosticText(item.last_error) : '',
+        affectedCount: Number(item.affected_count || 0)
+      }))
+    }
+  }
+
   retryCrossStoreRecovery(): any {
     if (this.activeSync) throw new Error('当前正在增量处理，请在本轮结束后重试写入恢复队列')
     const beforeTask = { ...this.taskMutationRecovery }

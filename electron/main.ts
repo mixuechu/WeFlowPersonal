@@ -4695,6 +4695,8 @@ function registerIpcHandlers() {
     aiAssistantService.retryPreparedIngestion())
   ipcMain.handle('ai-assistant:getCrossStoreRecoveryPage', (_, options?: any) =>
     aiAssistantService.getCrossStoreRecoveryPage(options))
+  ipcMain.handle('ai-assistant:getCrossStoreRecoveryArchivePage', (_, options?: any) =>
+    aiAssistantService.getCrossStoreRecoveryArchivePage(options))
   ipcMain.handle('ai-assistant:retryCrossStoreRecovery', () =>
     aiAssistantService.retryCrossStoreRecovery())
   ipcMain.handle('ai-assistant:previewAbandonCrossStoreRecovery', (

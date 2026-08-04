@@ -10193,6 +10193,62 @@ test('cross-store recovery directory pages task and source failures without expo
     changes_json: '[]',
     payload_blob: null
   })
+  store.finalizeConversationSourceMutationCommit('cross-store-source')
+  const archive = store.listCrossStoreRecoveryArchivePage({ limit: 1 })
+  assert.equal(archive.total, 2)
+  assert.equal(archive.items.length, 1)
+  assert.equal(archive.hasMore, true)
+  assert.deepEqual({
+    all: archive.counts.all,
+    prepared: archive.counts.prepared,
+    committed: archive.counts.committed,
+    abandoned: archive.counts.abandoned,
+    task: archive.counts.task,
+    source: archive.counts.source,
+    userKeptCurrentState: archive.counts.userKeptCurrentState
+  }, {
+    all: 2,
+    prepared: 0,
+    committed: 1,
+    abandoned: 1,
+    task: 1,
+    source: 1,
+    userKeptCurrentState: 1
+  })
+  assert.equal(JSON.stringify(archive.items).includes('不应进入恢复目录'), false)
+  const archiveSecond = store.listCrossStoreRecoveryArchivePage({
+    offset: 1,
+    limit: 1,
+    revision: archive.revision
+  })
+  assert.equal(archiveSecond.stale, false)
+  assert.equal(archiveSecond.items.length, 1)
+  const kept = store.listCrossStoreRecoveryArchivePage({
+    action: 'user_kept_current_state'
+  })
+  assert.equal(kept.total, 1)
+  assert.equal(kept.items[0].kind, 'task')
+  assert.equal(kept.items[0].recovery_action, 'user_kept_current_state')
+  const appliedSource = store.listCrossStoreRecoveryArchivePage({
+    kind: 'source',
+    status: 'committed',
+    action: 'applied',
+    from: '2000-01-01T00:00:00.000Z',
+    to: '2100-01-01T00:00:00.000Z'
+  })
+  assert.equal(appliedSource.total, 1)
+  assert.equal(appliedSource.items[0].commit_id, 'cross-store-source')
+  store.prepareTaskMutationCommit({
+    commitId: 'cross-store-new',
+    beforeTokens: {},
+    afterTokens: {},
+    changes: []
+  })
+  assert.equal(store.listCrossStoreRecoveryArchivePage({
+    offset: 1,
+    limit: 1,
+    revision: archive.revision
+  }).stale, true)
 }))
 
 test('partial ingestion keeps completed checkpoints visible for safe resume', () => withStore(store => {

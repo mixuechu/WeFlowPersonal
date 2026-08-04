@@ -8917,6 +8917,138 @@ export class PersonalMemoryStore {
     }
   }
 
+  listCrossStoreRecoveryArchivePage(options: {
+    kind?: 'all' | 'task' | 'source'
+    status?: 'all' | 'prepared' | 'committed' | 'abandoned'
+    action?: 'all' | 'applied' | 'automatic_abandon' | 'user_kept_current_state'
+    query?: string
+    from?: string
+    to?: string
+    offset?: number
+    limit?: number
+    revision?: string
+  } = {}): {
+    items: any[]
+    total: number
+    hasMore: boolean
+    offset: number
+    limit: number
+    counts: Record<string, number>
+    revision: string
+    stale: boolean
+  } {
+    const limit = Math.max(1, Math.min(100, Math.floor(Number(options.limit) || 40)))
+    const offset = Math.max(0, Math.min(1_000_000, Math.floor(Number(options.offset) || 0)))
+    const revision = this.getCrossStoreRecoveryRevision()
+    const empty = {
+      items: [], total: 0, hasMore: false, offset, limit,
+      counts: {
+        all: 0, prepared: 0, committed: 0, abandoned: 0,
+        task: 0, source: 0, userKeptCurrentState: 0
+      },
+      revision,
+      stale: false
+    }
+    if (!this.db) return empty
+    if (offset > 0 && String(options.revision || '').trim() !== revision) {
+      return { ...empty, stale: true }
+    }
+    const conditions: string[] = []
+    const parameters: string[] = []
+    if (options.kind === 'task' || options.kind === 'source') {
+      conditions.push('kind=?')
+      parameters.push(options.kind)
+    }
+    if (['prepared', 'committed', 'abandoned'].includes(String(options.status || ''))) {
+      conditions.push('status=?')
+      parameters.push(String(options.status))
+    }
+    if (options.action === 'applied') {
+      conditions.push(`status='committed' AND recovery_action='applied'`)
+    } else if (options.action === 'automatic_abandon') {
+      conditions.push(`status='abandoned' AND recovery_action!='user_kept_current_state'`)
+    } else if (options.action === 'user_kept_current_state') {
+      conditions.push(`status='abandoned' AND recovery_action='user_kept_current_state'`)
+    }
+    const query = String(options.query || '').trim().toLocaleLowerCase('zh-CN')
+    if (query) {
+      conditions.push(`(
+        instr(lower(commit_id),?)>0 OR instr(lower(COALESCE(last_error,'')),?)>0
+        OR instr(lower(COALESCE(recovery_action,'')),?)>0
+      )`)
+      parameters.push(query, query, query)
+    }
+    const from = String(options.from || '').trim()
+    if (from) {
+      conditions.push('COALESCE(applied_at,prepared_at)>=?')
+      parameters.push(from)
+    }
+    const to = String(options.to || '').trim()
+    if (to) {
+      conditions.push('COALESCE(applied_at,prepared_at)<=?')
+      parameters.push(to)
+    }
+    const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : ''
+    const cte = `
+      WITH recovery AS (
+        SELECT 'task' AS kind,commit_id,status,prepared_at,applied_at,recovery_attempts,
+          recovery_action,last_error,affected_count
+        FROM task_mutation_commits
+        UNION ALL
+        SELECT 'source' AS kind,commit_id,status,prepared_at,applied_at,recovery_attempts,
+          recovery_action,last_error,affected_count
+        FROM conversation_source_mutation_commits
+      )
+    `
+    const countRow = this.db.prepare(`
+      ${cte}
+      SELECT
+        COUNT(*) AS all_count,
+        SUM(CASE WHEN status='prepared' THEN 1 ELSE 0 END) AS prepared_count,
+        SUM(CASE WHEN status='committed' THEN 1 ELSE 0 END) AS committed_count,
+        SUM(CASE WHEN status='abandoned' THEN 1 ELSE 0 END) AS abandoned_count,
+        SUM(CASE WHEN kind='task' THEN 1 ELSE 0 END) AS task_count,
+        SUM(CASE WHEN kind='source' THEN 1 ELSE 0 END) AS source_count,
+        SUM(CASE WHEN recovery_action='user_kept_current_state' THEN 1 ELSE 0 END)
+          AS user_kept_current_state_count
+      FROM recovery
+    `).get() as any
+    const total = Number((this.db.prepare(`
+      ${cte}
+      SELECT COUNT(*) AS count FROM recovery ${where}
+    `).get(...parameters) as any)?.count || 0)
+    const items = this.db.prepare(`
+      ${cte}
+      SELECT kind,commit_id,status,prepared_at,applied_at,recovery_attempts,
+        recovery_action,last_error,affected_count
+      FROM recovery ${where}
+      ORDER BY COALESCE(applied_at,prepared_at) DESC,kind,commit_id
+      LIMIT ? OFFSET ?
+    `).all(...parameters, limit, offset) as any[]
+    const completedRevision = this.getCrossStoreRecoveryRevision()
+    if (completedRevision !== revision) {
+      return { ...empty, revision: completedRevision, stale: true }
+    }
+    return {
+      items,
+      total,
+      hasMore: offset + items.length < total,
+      offset,
+      limit,
+      counts: {
+        all: Number(countRow?.all_count || 0),
+        prepared: Number(countRow?.prepared_count || 0),
+        committed: Number(countRow?.committed_count || 0),
+        abandoned: Number(countRow?.abandoned_count || 0),
+        task: Number(countRow?.task_count || 0),
+        source: Number(countRow?.source_count || 0),
+        userKeptCurrentState: Number(countRow?.user_kept_current_state_count || 0)
+      },
+      revision,
+      stale: false
+    }
+  }
+
   getPreparedCrossStoreRecoveryCommit(
     kind: 'task' | 'source',
     commitIdInput: string

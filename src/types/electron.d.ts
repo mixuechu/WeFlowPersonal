@@ -2074,6 +2074,7 @@ export interface ElectronAPI {
         remaining: number
       }>
       getCrossStoreRecoveryPage: (options?: any) => Promise<any>
+      getCrossStoreRecoveryArchivePage: (options?: any) => Promise<any>
       retryCrossStoreRecovery: () => Promise<any>
       previewAbandonCrossStoreRecovery: (
         kind: 'task' | 'source', commitId: string

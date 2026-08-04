@@ -393,6 +393,13 @@
 .assistant-cross-store-conflict-items article strong { color: var(--text-primary); font-size: 11px; }
 .assistant-cross-store-conflict-items article span { color: var(--text-secondary); font-size: 10px; }
 .assistant-cross-store-conflict-items article small { color: var(--text-tertiary); font-size: 9px; }
+.assistant-cross-store-archive .assistant-recovery-commit-id {
+  max-width: 28rem;
+  overflow-wrap: anywhere;
+  color: var(--text-tertiary);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 9px;
+}
 .assistant-evidence { display: block; margin-top: 7px; color: #777b74; font-size: 10px; }
 .assistant-memory { margin-top: 22px; }
 .assistant-memory h3 { display: flex; align-items: center; gap: 7px; }

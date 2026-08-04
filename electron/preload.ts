@@ -754,6 +754,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
     retryPreparedIngestion: () => ipcRenderer.invoke('ai-assistant:retryPreparedIngestion'),
     getCrossStoreRecoveryPage: (options?: any) =>
       ipcRenderer.invoke('ai-assistant:getCrossStoreRecoveryPage', options),
+    getCrossStoreRecoveryArchivePage: (options?: any) =>
+      ipcRenderer.invoke('ai-assistant:getCrossStoreRecoveryArchivePage', options),
     retryCrossStoreRecovery: () => ipcRenderer.invoke('ai-assistant:retryCrossStoreRecovery'),
     previewAbandonCrossStoreRecovery: (kind: 'task' | 'source', commitId: string) =>
       ipcRenderer.invoke('ai-assistant:previewAbandonCrossStoreRecovery', kind, commitId),
