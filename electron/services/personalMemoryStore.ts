@@ -665,6 +665,9 @@ export class PersonalMemoryStore {
         statement_index INTEGER NOT NULL,
         document_id TEXT NOT NULL,
         content_hash TEXT NOT NULL DEFAULT '',
+        evidence_sample_hash TEXT NOT NULL DEFAULT '',
+        evidence_supporting_count INTEGER NOT NULL DEFAULT 0,
+        evidence_contradiction_count INTEGER NOT NULL DEFAULT 0,
         created_at TEXT NOT NULL,
         PRIMARY KEY(message_id,statement_index,document_id)
       ) STRICT;
@@ -978,6 +981,9 @@ export class PersonalMemoryStore {
     this.ensureColumn('assistant_messages', 'grounding_json', `TEXT NOT NULL DEFAULT '{}'`)
     this.ensureColumn('assistant_messages', 'exchange_id', `TEXT NOT NULL DEFAULT ''`)
     this.ensureColumn('assistant_messages', 'uncertainty_text', `TEXT NOT NULL DEFAULT ''`)
+    this.ensureColumn('assistant_answer_dependencies', 'evidence_sample_hash', `TEXT NOT NULL DEFAULT ''`)
+    this.ensureColumn('assistant_answer_dependencies', 'evidence_supporting_count', 'INTEGER NOT NULL DEFAULT 0')
+    this.ensureColumn('assistant_answer_dependencies', 'evidence_contradiction_count', 'INTEGER NOT NULL DEFAULT 0')
     this.db.prepare(`
       UPDATE memory_review_decisions
       SET actor='system',
@@ -12704,9 +12710,18 @@ export class PersonalMemoryStore {
 
   private repairAssistantAnswerDependencies(): void {
     if (!this.db) return
-    const key = 'assistant_answer_dependencies_v1'
+    const key = 'assistant_answer_dependencies_v2'
     const existing = this.db.prepare('SELECT value FROM schema_meta WHERE key=?').get(key) as any
-    if (existing?.value) return
+    const missingDependencies = Boolean((this.db.prepare(`
+      SELECT 1 FROM assistant_messages message
+      WHERE message.role='assistant' AND message.citations_json!='[]'
+        AND NOT EXISTS(
+          SELECT 1 FROM assistant_answer_dependencies dependency
+          WHERE dependency.message_id=message.id
+        )
+      LIMIT 1
+    `).get() as any))
+    if (existing?.value && !missingDependencies) return
     const rows = this.db.prepare(`
       SELECT id,conversation_id,citations_json,grounding_json,created_at
       FROM assistant_messages WHERE role='assistant'
@@ -12719,9 +12734,15 @@ export class PersonalMemoryStore {
       created_at: string
     }>
     const insert = this.db.prepare(`
-      INSERT OR IGNORE INTO assistant_answer_dependencies(
-        message_id,conversation_id,statement_index,document_id,content_hash,created_at
-      ) VALUES(?,?,?,?,?,?)
+      INSERT INTO assistant_answer_dependencies(
+        message_id,conversation_id,statement_index,document_id,content_hash,
+        evidence_sample_hash,evidence_supporting_count,evidence_contradiction_count,created_at
+      ) VALUES(?,?,?,?,?,?,?,?,?)
+      ON CONFLICT(message_id,statement_index,document_id) DO UPDATE SET
+        content_hash=excluded.content_hash,
+        evidence_sample_hash=excluded.evidence_sample_hash,
+        evidence_supporting_count=excluded.evidence_supporting_count,
+        evidence_contradiction_count=excluded.evidence_contradiction_count
     `)
     let indexedMessages = 0
     let indexedStatements = 0
@@ -12762,12 +12783,26 @@ export class PersonalMemoryStore {
             const contentHash = /^[a-f0-9]{64}$/i.test(String(citation?.contentHash || ''))
               ? String(citation.contentHash).toLowerCase()
               : ''
+            const evidenceSampleHash = /^[a-f0-9]{64}$/i.test(
+              String(citation?.evidenceSampleHash || '')
+            ) ? String(citation.evidenceSampleHash).toLowerCase() : ''
+            const evidenceSupportingCount = Math.max(
+              0,
+              Math.floor(Number(citation?.evidenceRoleCounts?.supporting) || 0)
+            )
+            const evidenceContradictionCount = Math.max(
+              0,
+              Math.floor(Number(citation?.evidenceRoleCounts?.contradiction) || 0)
+            )
             indexedDependencies += insert.run(
               row.id,
               row.conversation_id,
               statementIndex,
               documentId,
               contentHash,
+              evidenceSampleHash,
+              evidenceSupportingCount,
+              evidenceContradictionCount,
               row.created_at
             ).changes
           }
@@ -12776,8 +12811,9 @@ export class PersonalMemoryStore {
       const completedAt = new Date().toISOString()
       this.db!.prepare(`
         INSERT INTO schema_meta(key,value,updated_at) VALUES(?,?,?)
+        ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_at=excluded.updated_at
       `).run(key, JSON.stringify({
-        version: 1,
+        version: 2,
         scannedMessages: rows.length,
         indexedMessages,
         indexedStatements,
@@ -12791,7 +12827,7 @@ export class PersonalMemoryStore {
 
   getAssistantAnswerDependencyStats(): any {
     if (!this.db) return {
-      version: 1, messages: 0, statements: 0, dependencies: 0,
+      version: 2, messages: 0, statements: 0, dependencies: 0,
       malformedMessages: 0, indexedDependencies: 0, completedAt: ''
     }
     const counts = this.db.prepare(`
@@ -12801,12 +12837,12 @@ export class PersonalMemoryStore {
       FROM assistant_answer_dependencies
     `).get() as any
     const row = this.db.prepare(`
-      SELECT value FROM schema_meta WHERE key='assistant_answer_dependencies_v1'
+      SELECT value FROM schema_meta WHERE key='assistant_answer_dependencies_v2'
     `).get() as any
     let audit: any = {}
     try { audit = JSON.parse(String(row?.value || '{}')) } catch {}
     return {
-      version: 1,
+      version: 2,
       messages: Math.max(0, Number(counts?.messages || 0)),
       statements: Math.max(0, Number(counts?.statements || 0)),
       dependencies: Math.max(0, Number(counts?.dependencies || 0)),
@@ -12919,8 +12955,9 @@ export class PersonalMemoryStore {
       const citationById = new Map(compactedCitations.map(citation => [citation.documentId, citation]))
       const dependencyInsert = this.db!.prepare(`
         INSERT INTO assistant_answer_dependencies(
-          message_id,conversation_id,statement_index,document_id,content_hash,created_at
-        ) VALUES(?,?,?,?,?,?)
+          message_id,conversation_id,statement_index,document_id,content_hash,
+          evidence_sample_hash,evidence_supporting_count,evidence_contradiction_count,created_at
+        ) VALUES(?,?,?,?,?,?,?,?,?)
       `)
       ;(compactedGrounding.statementCitations || []).forEach((documentIds: string[], statementIndex: number) => {
         for (const documentId of documentIds) {
@@ -12931,6 +12968,9 @@ export class PersonalMemoryStore {
             statementIndex,
             documentId,
             String(citation?.contentHash || ''),
+            String(citation?.evidenceSampleHash || ''),
+            Math.max(0, Math.floor(Number(citation?.evidenceRoleCounts?.supporting) || 0)),
+            Math.max(0, Math.floor(Number(citation?.evidenceRoleCounts?.contradiction) || 0)),
             answerAt
           )
         }
@@ -13018,17 +13058,49 @@ export class PersonalMemoryStore {
         )
       )
     )`
+    const currentSupportingCount = `COALESCE(sec.supporting,0)`
+    const currentContradictionCount = `COALESCE(sec.contradiction,0)`
+    const evidenceCountsCurrent = `(d.evidence_sample_hash=''
+      OR s.document_type NOT IN ('claim','relation','event')
+      OR (
+        d.evidence_supporting_count=${currentSupportingCount}
+        AND d.evidence_contradiction_count=${currentContradictionCount}
+      ))`
     const revalidationCte = `
-      WITH statement_state AS (
+      WITH structured_evidence_counts AS (
+        SELECT 'claim' AS document_type,claim_id AS source_id,
+          SUM(CASE WHEN evidence_role='contradiction' THEN 0 ELSE 1 END) AS supporting,
+          SUM(CASE WHEN evidence_role='contradiction' THEN 1 ELSE 0 END) AS contradiction
+        FROM evidence WHERE claim_id IS NOT NULL AND claim_id!='' GROUP BY claim_id
+        UNION ALL
+        SELECT 'relation',relation_id,
+          SUM(CASE WHEN evidence_role='contradiction' THEN 0 ELSE 1 END),
+          SUM(CASE WHEN evidence_role='contradiction' THEN 1 ELSE 0 END)
+        FROM evidence WHERE relation_id IS NOT NULL AND relation_id!='' GROUP BY relation_id
+        UNION ALL
+        SELECT 'event',event_id,
+          SUM(CASE WHEN evidence_role='contradiction' THEN 0 ELSE 1 END),
+          SUM(CASE WHEN evidence_role='contradiction' THEN 1 ELSE 0 END)
+        FROM evidence WHERE event_id IS NOT NULL AND event_id!='' GROUP BY event_id
+      ),
+      dependency_state AS (
         SELECT d.conversation_id,d.message_id,d.statement_index,
-          MAX(CASE WHEN ${eligibility}
+          CASE WHEN ${eligibility}
             AND d.content_hash!='' AND lower(d.content_hash)=lower(s.content_hash)
-            THEN 1 ELSE 0 END) AS has_current,
-          MAX(CASE WHEN ${eligibility}
-            AND d.content_hash='' THEN 1 ELSE 0 END) AS has_unknown
+            AND ${evidenceCountsCurrent}
+            THEN 1 ELSE 0 END AS is_current,
+          CASE WHEN ${eligibility} AND d.content_hash='' THEN 1 ELSE 0 END AS is_unknown
         FROM assistant_answer_dependencies d
         LEFT JOIN search_documents s ON s.id=d.document_id
-        GROUP BY d.conversation_id,d.message_id,d.statement_index
+        LEFT JOIN structured_evidence_counts sec
+          ON sec.document_type=s.document_type AND sec.source_id=s.source_id
+      ),
+      statement_state AS (
+        SELECT conversation_id,message_id,statement_index,
+          MAX(is_current) AS has_current,
+          MAX(is_unknown) AS has_unknown
+        FROM dependency_state
+        GROUP BY conversation_id,message_id,statement_index
       ),
       answer_revalidation AS (
         SELECT ss.conversation_id,ss.message_id,m.created_at,
@@ -13172,20 +13244,49 @@ export class PersonalMemoryStore {
         )
       )
     )`
+    const currentSupportingCount = `COALESCE(sec.supporting,0)`
+    const currentContradictionCount = `COALESCE(sec.contradiction,0)`
+    const evidenceCountsCurrent = `(d.evidence_sample_hash=''
+      OR s.document_type NOT IN ('claim','relation','event')
+      OR (
+        d.evidence_supporting_count=${currentSupportingCount}
+        AND d.evidence_contradiction_count=${currentContradictionCount}
+      ))`
     const revalidationCte = `
-      WITH dependency_state AS (
+      WITH structured_evidence_counts AS (
+        SELECT 'claim' AS document_type,claim_id AS source_id,
+          SUM(CASE WHEN evidence_role='contradiction' THEN 0 ELSE 1 END) AS supporting,
+          SUM(CASE WHEN evidence_role='contradiction' THEN 1 ELSE 0 END) AS contradiction
+        FROM evidence WHERE claim_id IS NOT NULL AND claim_id!='' GROUP BY claim_id
+        UNION ALL
+        SELECT 'relation',relation_id,
+          SUM(CASE WHEN evidence_role='contradiction' THEN 0 ELSE 1 END),
+          SUM(CASE WHEN evidence_role='contradiction' THEN 1 ELSE 0 END)
+        FROM evidence WHERE relation_id IS NOT NULL AND relation_id!='' GROUP BY relation_id
+        UNION ALL
+        SELECT 'event',event_id,
+          SUM(CASE WHEN evidence_role='contradiction' THEN 0 ELSE 1 END),
+          SUM(CASE WHEN evidence_role='contradiction' THEN 1 ELSE 0 END)
+        FROM evidence WHERE event_id IS NOT NULL AND event_id!='' GROUP BY event_id
+      ),
+      dependency_state AS (
         SELECT d.conversation_id,d.message_id,d.statement_index,d.document_id,
           CASE WHEN ${eligibility}
             AND d.content_hash!='' AND lower(d.content_hash)=lower(s.content_hash)
+            AND ${evidenceCountsCurrent}
             THEN 1 ELSE 0 END AS is_current,
           CASE WHEN ${eligibility}
             AND d.content_hash='' THEN 1 ELSE 0 END AS is_unknown,
-          printf('%s:%s:%s:%s:%s',
+          printf('%s:%s:%s:%s:%s:%s',
             d.document_id,
             CASE WHEN s.id IS NULL THEN 'missing'
               WHEN ${eligibility} THEN 'eligible' ELSE 'ineligible' END,
             lower(COALESCE(s.content_hash,'')),
             lower(COALESCE(json_extract(s.metadata_json,'$.status'),'')),
+            CASE WHEN d.evidence_sample_hash='' THEN 'legacy-counts'
+              WHEN s.document_type IN ('claim','relation','event')
+              THEN printf('%d:%d',${currentSupportingCount},${currentContradictionCount})
+              ELSE 'not-structured' END,
             CASE WHEN s.id IS NULL THEN ''
               WHEN EXISTS(SELECT 1 FROM search_document_evidence sde WHERE sde.document_id=s.id)
                 OR EXISTS(
@@ -13198,6 +13299,8 @@ export class PersonalMemoryStore {
           ) AS dependency_token
         FROM assistant_answer_dependencies d
         LEFT JOIN search_documents s ON s.id=d.document_id
+        LEFT JOIN structured_evidence_counts sec
+          ON sec.document_type=s.document_type AND sec.source_id=s.source_id
       ),
       statement_state AS (
         SELECT d.conversation_id,d.message_id,d.statement_index,

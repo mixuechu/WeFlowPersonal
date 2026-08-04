@@ -8567,6 +8567,14 @@ test('assistant uncertainty and evidence sample identity survive a SQLCipher reo
       },
       '两条反证尚未完成人工裁决。'
     )
+    ;(first as any).db.prepare(`
+      UPDATE assistant_answer_dependencies
+      SET evidence_sample_hash='',evidence_supporting_count=0,evidence_contradiction_count=0
+      WHERE message_id=?
+    `).run(saved.answerMessageId)
+    ;(first as any).db.prepare(`
+      DELETE FROM schema_meta WHERE key='assistant_answer_dependencies_v2'
+    `).run()
     first.close()
 
     reopened.initialize(databasePath)
@@ -8579,6 +8587,15 @@ test('assistant uncertainty and evidence sample identity survive a SQLCipher reo
       supporting: 7,
       contradiction: 2
     })
+    assert.deepEqual((reopened as any).db.prepare(`
+      SELECT evidence_sample_hash,evidence_supporting_count,evidence_contradiction_count
+      FROM assistant_answer_dependencies WHERE message_id=?
+    `).get(saved.answerMessageId), {
+      evidence_sample_hash: 'b'.repeat(64),
+      evidence_supporting_count: 7,
+      evidence_contradiction_count: 2
+    })
+    assert.equal(reopened.getAssistantAnswerDependencyStats().version, 2)
   } finally {
     first.close()
     reopened.close()
@@ -9217,6 +9234,150 @@ test('assistant archive filters statement dependencies without loading answer ev
   assert.equal(Number(database.prepare(`
     SELECT COUNT(*) AS count FROM assistant_answer_review_decisions WHERE message_id=?
   `).get(changedAnswerId).count), 0)
+}))
+
+test('assistant archive invalidates answers when structured evidence counts change outside hydration', () => withStore(store => {
+  store.syncGraph({
+    entities: [{
+      id: 'person-answer-counts',
+      type: 'person',
+      canonicalName: '证据计数测试对象',
+      aliases: [],
+      accountIds: ['wxid-answer-counts'],
+      trustStatus: 'confirmed'
+    }],
+    relations: [],
+    reviewQueue: []
+  })
+  store.upsertClaims([{
+    id: 'claim-answer-counts',
+    subjectId: 'person-answer-counts',
+    predicate: '负责',
+    objectValue: '证据计数项目',
+    confidence: 0.9,
+    status: 'confirmed',
+    sourceNature: 'self_statement',
+    searchText: '证据计数测试对象负责证据计数项目',
+    evidence: [{
+      sourceId: 'wechat',
+      messageId: 'answer-counts-1',
+      sessionId: 'answer-counts-session',
+      timestamp: 1,
+      sender: '证据计数测试对象',
+      excerpt: '我负责证据计数项目',
+      evidenceRole: 'direct'
+    }]
+  }])
+  const database = (store as any).db
+  const document = database.prepare(`
+    SELECT content_hash FROM search_documents WHERE id='claim:claim-answer-counts'
+  `).get()
+  const saved = store.saveAssistantExchangeDetailed(
+    '谁负责证据计数项目？',
+    '证据计数测试对象负责。',
+    [{
+      documentId: 'claim:claim-answer-counts',
+      sourceId: 'claim-answer-counts',
+      type: 'claim',
+      title: '负责证据计数项目',
+      contentHash: document.content_hash,
+      evidenceSampleHash: 'a'.repeat(64),
+      evidenceRoleCounts: { supporting: 1, contradiction: 0 }
+    }],
+    undefined,
+    {
+      version: 'statement-citations-v1',
+      proposedStatements: 1,
+      acceptedStatements: 1,
+      rejectedStatements: 0,
+      acceptedCitationIds: 1,
+      promptIsolationVersion: 'untrusted-memory-envelope-v1',
+      statementCitations: [['claim:claim-answer-counts']]
+    }
+  )
+  const initialDirectory = store.listAssistantConversationsPage({ limit: 20 })
+  assert.equal(initialDirectory.items[0].revalidation_status, 'current')
+  assert.equal(store.listAssistantAnswerReviewsPage({
+    status: 'current',
+    messageId: saved.answerMessageId,
+    limit: 10
+  }).total, 1)
+  assert.deepEqual(database.prepare(`
+    SELECT evidence_sample_hash,evidence_supporting_count,evidence_contradiction_count
+    FROM assistant_answer_dependencies WHERE message_id=?
+  `).get(saved.answerMessageId), {
+    evidence_sample_hash: 'a'.repeat(64),
+    evidence_supporting_count: 1,
+    evidence_contradiction_count: 0
+  })
+
+  database.prepare(`
+    INSERT INTO evidence(
+      claim_id,source_id,message_id,session_id,timestamp,sender,excerpt,evidence_role
+    ) VALUES(?,?,?,?,?,?,?,?)
+  `).run(
+    'claim-answer-counts',
+    'wechat',
+    'answer-counts-2',
+    'answer-counts-session',
+    2,
+    '证据计数测试对象',
+    '补充一条没有改变结构化摘要的支持原文',
+    'direct'
+  )
+  assert.equal(store.listAssistantConversationsPage({
+    revalidationStatus: 'invalid',
+    limit: 20
+  }).items[0].id, saved.conversationId)
+  const attention = store.listAssistantAnswerReviewsPage({
+    status: 'invalid',
+    messageId: saved.answerMessageId,
+    limit: 10
+  })
+  assert.equal(attention.total, 1)
+  assert.equal(attention.items[0].revalidation_status, 'invalid')
+  const roleSensitive = store.saveAssistantExchangeDetailed(
+    '当前两条都是支持证据吗？',
+    '当前两条均为非反证原文。',
+    [{
+      documentId: 'claim:claim-answer-counts',
+      sourceId: 'claim-answer-counts',
+      type: 'claim',
+      title: '负责证据计数项目',
+      contentHash: document.content_hash,
+      evidenceSampleHash: 'b'.repeat(64),
+      evidenceRoleCounts: { supporting: 2, contradiction: 0 }
+    }],
+    undefined,
+    {
+      version: 'statement-citations-v1',
+      proposedStatements: 1,
+      acceptedStatements: 1,
+      rejectedStatements: 0,
+      acceptedCitationIds: 1,
+      promptIsolationVersion: 'untrusted-memory-envelope-v1',
+      statementCitations: [['claim:claim-answer-counts']]
+    }
+  )
+  assert.equal(store.listAssistantAnswerReviewsPage({
+    status: 'current',
+    messageId: roleSensitive.answerMessageId,
+    limit: 10
+  }).total, 1)
+  database.prepare(`
+    UPDATE evidence SET evidence_role='contradiction'
+    WHERE claim_id='claim-answer-counts' AND message_id='answer-counts-2'
+  `).run()
+  assert.equal(store.listAssistantAnswerReviewsPage({
+    status: 'invalid',
+    messageId: roleSensitive.answerMessageId,
+    limit: 10
+  }).total, 1)
+  assert.equal(store.listAssistantConversationsPage({
+    offset: 1,
+    limit: 20,
+    revision: initialDirectory.revision
+  }).stale, true)
 }))
 
 test('assistant archive and message pagination survive a SQLCipher process-style reopen', () => {
