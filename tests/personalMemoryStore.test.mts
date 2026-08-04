@@ -6405,22 +6405,50 @@ test('structured memory revision covers review payloads and repairs its trigger 
       () => assertStructuredMemoryMutationRevision(visibleRevision, first.getStructuredMemoryRevision()),
       /事实与事件档案在展示后发生了变化/
     )
-    assert.deepEqual(first.getStructuredMemoryRevisionHealth(), {
-      version: 'structured-memory-revision-v1',
-      revision: first.getStructuredMemoryRevision(),
-      expectedTriggers: 24,
-      installedTriggers: 24,
-      healthy: true
-    })
-    ;(first as any).db.exec('DROP TRIGGER trg_structured_memory_revision_claims_insert')
-    assert.equal(first.getStructuredMemoryRevisionHealth().installedTriggers, 23)
-    assert.equal(first.getStructuredMemoryRevisionHealth().healthy, false)
+    const initialHealth = first.getStructuredMemoryRevisionHealth()
+    assert.equal(initialHealth.version, 'structured-memory-revision-v2')
+    assert.equal(initialHealth.expectedTriggers, 24)
+    assert.equal(initialHealth.validTriggers, 24)
+    assert.equal(initialHealth.healthy, true)
+    ;(first as any).db.exec(`
+      DROP TRIGGER trg_structured_memory_revision_claims_insert;
+      CREATE TRIGGER trg_structured_memory_revision_claims_insert
+      AFTER INSERT ON claims BEGIN SELECT 1; END;
+    `)
+    const driftedHealth = first.getStructuredMemoryRevisionHealth()
+    assert.equal(driftedHealth.installedTriggers, 24)
+    assert.equal(driftedHealth.validTriggers, 23)
+    assert.equal(driftedHealth.healthy, false)
     first.close()
 
     const reopened = new PersonalMemoryStore()
     reopened.initialize(databasePath)
-    assert.equal(reopened.getStructuredMemoryRevisionHealth().installedTriggers, 24)
-    assert.equal(reopened.getStructuredMemoryRevisionHealth().healthy, true)
+    const repairedHealth = reopened.getStructuredMemoryRevisionHealth()
+    assert.equal(repairedHealth.validTriggers, 24)
+    assert.equal(repairedHealth.repairedTriggersThisStart, 1)
+    assert.equal(repairedHealth.healthy, true)
+    assert.equal(reopened.getGraphReviewRevisionHealth().repairedThisStart, false)
+    assert.equal(reopened.getTaskOwnershipReviewRevisionHealth().repairedThisStart, false)
+    assert.equal(reopened.getAssistantHistoryRevisionHealth().repairedThisStart, false)
+    const beforeProofInsert = Number(reopened.getStructuredMemoryRevision())
+    reopened.upsertClaims([{
+      id: 'structured-revision-repair-proof',
+      subjectId: 'revision-person',
+      predicate: '验证',
+      objectValue: '触发器修复后继续推进',
+      confidence: 0.9,
+      status: 'candidate',
+      sourceNature: 'other_statement',
+      searchText: '触发器修复后继续推进',
+      evidence: [{
+        sourceId: 'wechat',
+        sessionId: 'revision-session',
+        messageId: 'revision-repair-proof-message',
+        timestamp: 1_775_000_001,
+        excerpt: '触发器修复后继续推进'
+      }]
+    }])
+    assert.ok(Number(reopened.getStructuredMemoryRevision()) > beforeProofInsert)
     reopened.close()
   } finally {
     rmSync(directory, { recursive: true, force: true })
@@ -6467,22 +6495,28 @@ test('graph review revision covers queue and enriched graph state and self-heals
       visibleRevision,
       first.getGraphReviewRevision()
     ), /刷新后重新确认/)
-    assert.deepEqual(first.getGraphReviewRevisionHealth(), {
-      version: 'graph-review-revision-v1',
-      revision: first.getGraphReviewRevision(),
-      expectedTriggers: 21,
-      installedTriggers: 21,
-      healthy: true
-    })
-    ;(first as any).db.exec('DROP TRIGGER trg_graph_review_revision_review_queue_insert')
-    assert.equal(first.getGraphReviewRevisionHealth().installedTriggers, 20)
-    assert.equal(first.getGraphReviewRevisionHealth().healthy, false)
+    const initialHealth = first.getGraphReviewRevisionHealth()
+    assert.equal(initialHealth.version, 'graph-review-revision-v2')
+    assert.equal(initialHealth.expectedTriggers, 21)
+    assert.equal(initialHealth.validTriggers, 21)
+    assert.equal(initialHealth.healthy, true)
+    ;(first as any).db.exec(`
+      DROP TRIGGER trg_graph_review_revision_review_queue_insert;
+      CREATE TRIGGER trg_graph_review_revision_review_queue_insert
+      AFTER INSERT ON review_queue BEGIN SELECT 1; END;
+    `)
+    const driftedHealth = first.getGraphReviewRevisionHealth()
+    assert.equal(driftedHealth.installedTriggers, 21)
+    assert.equal(driftedHealth.validTriggers, 20)
+    assert.equal(driftedHealth.healthy, false)
     first.close()
 
     const reopened = new PersonalMemoryStore()
     reopened.initialize(databasePath)
-    assert.equal(reopened.getGraphReviewRevisionHealth().installedTriggers, 21)
-    assert.equal(reopened.getGraphReviewRevisionHealth().healthy, true)
+    const repairedHealth = reopened.getGraphReviewRevisionHealth()
+    assert.equal(repairedHealth.validTriggers, 21)
+    assert.equal(repairedHealth.repairedTriggersThisStart, 1)
+    assert.equal(repairedHealth.healthy, true)
     assert.equal(reopened.listReviewLedgerPage({ status: 'pending' }).items[0]?.id, 'review-revision-candidate')
     reopened.close()
   } finally {
@@ -6601,24 +6635,28 @@ test('task ownership review revision covers queue decisions and action history a
     assert.ok(afterDecision > afterQueue)
     first.revokeTaskReviewDecision('task-ownership-review-revision-fingerprint')
     assert.ok(Number(first.getTaskOwnershipReviewRevision()) > afterDecision)
-    assert.deepEqual(first.getTaskOwnershipReviewRevisionHealth(), {
-      version: 'task-ownership-review-revision-v1',
-      revision: first.getTaskOwnershipReviewRevision(),
-      expectedTriggers: 15,
-      installedTriggers: 15,
-      healthy: true
-    })
-    ;(first as any).db.exec(
-      'DROP TRIGGER trg_task_ownership_review_revision_task_review_decisions_insert'
-    )
-    assert.equal(first.getTaskOwnershipReviewRevisionHealth().installedTriggers, 14)
-    assert.equal(first.getTaskOwnershipReviewRevisionHealth().healthy, false)
+    const initialHealth = first.getTaskOwnershipReviewRevisionHealth()
+    assert.equal(initialHealth.version, 'task-ownership-review-revision-v2')
+    assert.equal(initialHealth.expectedTriggers, 15)
+    assert.equal(initialHealth.validTriggers, 15)
+    assert.equal(initialHealth.healthy, true)
+    ;(first as any).db.exec(`
+      DROP TRIGGER trg_task_ownership_review_revision_task_review_decisions_insert;
+      CREATE TRIGGER trg_task_ownership_review_revision_task_review_decisions_insert
+      AFTER INSERT ON task_review_decisions BEGIN SELECT 1; END;
+    `)
+    const driftedHealth = first.getTaskOwnershipReviewRevisionHealth()
+    assert.equal(driftedHealth.installedTriggers, 15)
+    assert.equal(driftedHealth.validTriggers, 14)
+    assert.equal(driftedHealth.healthy, false)
     first.close()
 
     const reopened = new PersonalMemoryStore()
     reopened.initialize(databasePath)
-    assert.equal(reopened.getTaskOwnershipReviewRevisionHealth().installedTriggers, 15)
-    assert.equal(reopened.getTaskOwnershipReviewRevisionHealth().healthy, true)
+    const repairedHealth = reopened.getTaskOwnershipReviewRevisionHealth()
+    assert.equal(repairedHealth.validTriggers, 15)
+    assert.equal(repairedHealth.repairedTriggersThisStart, 1)
+    assert.equal(repairedHealth.healthy, true)
     assert.equal(reopened.listTaskOwnershipReviews().items[0]?.id, 'task-ownership-review-revision')
     assert.equal(
       reopened.listTaskReviewDecisionPage().items[0]?.evidence_fingerprint,
@@ -7013,24 +7051,28 @@ test('assistant history revision covers authoritative history and self-heals on 
     `).run('可信历史版本问题（更新）', conversationId)
     expectAdvanced()
 
-    assert.deepEqual(first.getAssistantHistoryRevisionHealth(), {
-      version: 'assistant-history-revision-v1',
-      revision: first.getAssistantHistoryRevision(),
-      expectedTriggers: 21,
-      installedTriggers: 21,
-      healthy: true
-    })
-    database.exec(
-      'DROP TRIGGER trg_assistant_history_revision_assistant_messages_insert'
-    )
-    assert.equal(first.getAssistantHistoryRevisionHealth().installedTriggers, 20)
-    assert.equal(first.getAssistantHistoryRevisionHealth().healthy, false)
+    const initialHealth = first.getAssistantHistoryRevisionHealth()
+    assert.equal(initialHealth.version, 'assistant-history-revision-v2')
+    assert.equal(initialHealth.expectedTriggers, 21)
+    assert.equal(initialHealth.validTriggers, 21)
+    assert.equal(initialHealth.healthy, true)
+    database.exec(`
+      DROP TRIGGER trg_assistant_history_revision_assistant_messages_insert;
+      CREATE TRIGGER trg_assistant_history_revision_assistant_messages_insert
+      AFTER INSERT ON assistant_messages BEGIN SELECT 1; END;
+    `)
+    const driftedHealth = first.getAssistantHistoryRevisionHealth()
+    assert.equal(driftedHealth.installedTriggers, 21)
+    assert.equal(driftedHealth.validTriggers, 20)
+    assert.equal(driftedHealth.healthy, false)
     first.close()
 
     const reopened = new PersonalMemoryStore()
     reopened.initialize(databasePath)
-    assert.equal(reopened.getAssistantHistoryRevisionHealth().installedTriggers, 21)
-    assert.equal(reopened.getAssistantHistoryRevisionHealth().healthy, true)
+    const repairedHealth = reopened.getAssistantHistoryRevisionHealth()
+    assert.equal(repairedHealth.validTriggers, 21)
+    assert.equal(repairedHealth.repairedTriggersThisStart, 1)
+    assert.equal(repairedHealth.healthy, true)
     assert.equal(reopened.listAssistantConversationsPage({ limit: 20 }).total, 1)
     assert.equal(reopened.getAssistantConversation(conversationId).messages.length, 2)
     assert.equal(reopened.listAssistantAnswerReviewDecisionsPage(answerId).total, 1)

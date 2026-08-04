@@ -9040,12 +9040,16 @@ function AiAssistantPage() {
             </div>}
             {memoryDiagnostics.structuredMemoryRevision?.version && <div className={`assistant-recovery-audit ${memoryDiagnostics.structuredMemoryRevisionHealthy ? 'healthy' : 'unhealthy'}`}>
               <header><ShieldCheck size={15} /><span><b>事实与事件审阅分页保护</b>
-                <small>事实、事件、原文证据、参与者、人物名称、纠正和人工决定共享单调 revision；后台抽取或人工修改发生在翻页期间时，旧页会被拒绝并自动刷新，避免档案漏项或重复。</small>
+                <small>事实、事件、原文证据、参与者、人物名称、纠正和人工决定共享单调 revision；每个触发器的完整定义均受启动审计和按项事务自愈。</small>
               </span></header>
               <div className="assistant-recovery-current">
                 <span>当前状态 <b>{memoryDiagnostics.structuredMemoryRevisionHealthy ? '保护正常' : '需要检查'}</b></span>
                 <span>当前 revision <b>{String(memoryDiagnostics.structuredMemoryRevision.revision || '0')}</b></span>
-                <span>变更触发器 <b>{Number(memoryDiagnostics.structuredMemoryRevision.installedTriggers || 0).toLocaleString()} / {Number(memoryDiagnostics.structuredMemoryRevision.expectedTriggers || 0).toLocaleString()}</b></span>
+                <span>精确有效触发器 <b>{Number(memoryDiagnostics.structuredMemoryRevision.validTriggers || 0).toLocaleString()} / {Number(memoryDiagnostics.structuredMemoryRevision.expectedTriggers || 0).toLocaleString()}</b></span>
+                <span>本次修复 <b>{Number(memoryDiagnostics.structuredMemoryRevision.repairedTriggersThisStart || 0).toLocaleString()}</b> 项</span>
+                <span>累计自愈 <b>{Number(memoryDiagnostics.structuredMemoryRevision.repairsTotal || 0).toLocaleString()}</b> 次</span>
+                {Number(memoryDiagnostics.structuredMemoryRevision.unhealthyTriggers?.length || 0) > 0 &&
+                  <span>定义漂移 <b>{memoryDiagnostics.structuredMemoryRevision.unhealthyTriggers.join('、')}</b></span>}
               </div>
             </div>}
             {memoryDiagnostics.resourceArchiveRevision?.version && <div className={`assistant-recovery-audit ${memoryDiagnostics.resourceArchiveRevisionHealthy ? 'healthy' : 'unhealthy'}`}>
@@ -9060,12 +9064,16 @@ function AiAssistantPage() {
             </div>}
             {memoryDiagnostics.graphReviewRevision?.version && <div className={`assistant-recovery-audit ${memoryDiagnostics.graphReviewRevisionHealthy ? 'healthy' : 'unhealthy'}`}>
               <header><ShieldCheck size={15} /><span><b>图谱审阅分页一致性保护</b>
-                <small>候选队列、实体、关系和关系纠正共享数据库 revision；后台新增候选、确认/拒绝、关系纠正或身份合并发生在翻页期间时，旧页会被拒绝并自动回到最新第一页。</small>
+                <small>候选队列、实体、关系和关系纠正共享数据库 revision；触发器即使名称仍在但定义被替换，也会被诊断发现并在启动时按项修复。</small>
               </span></header>
               <div className="assistant-recovery-current">
                 <span>当前状态 <b>{memoryDiagnostics.graphReviewRevisionHealthy ? '保护正常' : '需要检查'}</b></span>
                 <span>当前 revision <b>{String(memoryDiagnostics.graphReviewRevision.revision || '0')}</b></span>
-                <span>变更触发器 <b>{Number(memoryDiagnostics.graphReviewRevision.installedTriggers || 0).toLocaleString()} / {Number(memoryDiagnostics.graphReviewRevision.expectedTriggers || 0).toLocaleString()}</b></span>
+                <span>精确有效触发器 <b>{Number(memoryDiagnostics.graphReviewRevision.validTriggers || 0).toLocaleString()} / {Number(memoryDiagnostics.graphReviewRevision.expectedTriggers || 0).toLocaleString()}</b></span>
+                <span>本次修复 <b>{Number(memoryDiagnostics.graphReviewRevision.repairedTriggersThisStart || 0).toLocaleString()}</b> 项</span>
+                <span>累计自愈 <b>{Number(memoryDiagnostics.graphReviewRevision.repairsTotal || 0).toLocaleString()}</b> 次</span>
+                {Number(memoryDiagnostics.graphReviewRevision.unhealthyTriggers?.length || 0) > 0 &&
+                  <span>定义漂移 <b>{memoryDiagnostics.graphReviewRevision.unhealthyTriggers.join('、')}</b></span>}
               </div>
             </div>}
             {memoryDiagnostics.taskArchiveRevision?.version && <div className={`assistant-recovery-audit ${memoryDiagnostics.taskArchiveRevisionHealthy ? 'healthy' : 'unhealthy'}`}>
@@ -9080,12 +9088,16 @@ function AiAssistantPage() {
             </div>}
             {memoryDiagnostics.taskOwnershipReviewRevision?.version && <div className={`assistant-recovery-audit ${memoryDiagnostics.taskOwnershipReviewRevisionHealthy ? 'healthy' : 'unhealthy'}`}>
               <header><ShieldCheck size={15} /><span><b>任务归属审阅分页一致性保护</b>
-                <small>待确认任务、原文证据、任务历史、归属决定和撤销记录共享数据库 revision；候选目录、完整决策档案及单条动作历史在确认、拒绝、撤销或后台重抽取后都会拒绝旧页并自动刷新。</small>
+                <small>待确认任务、原文证据、任务历史、归属决定和撤销记录共享数据库 revision；完整触发器定义受审计，防止过期卡片保护在名称看似正常时失效。</small>
               </span></header>
               <div className="assistant-recovery-current">
                 <span>当前状态 <b>{memoryDiagnostics.taskOwnershipReviewRevisionHealthy ? '保护正常' : '需要检查'}</b></span>
                 <span>当前 revision <b>{String(memoryDiagnostics.taskOwnershipReviewRevision.revision || '0')}</b></span>
-                <span>变更触发器 <b>{Number(memoryDiagnostics.taskOwnershipReviewRevision.installedTriggers || 0).toLocaleString()} / {Number(memoryDiagnostics.taskOwnershipReviewRevision.expectedTriggers || 0).toLocaleString()}</b></span>
+                <span>精确有效触发器 <b>{Number(memoryDiagnostics.taskOwnershipReviewRevision.validTriggers || 0).toLocaleString()} / {Number(memoryDiagnostics.taskOwnershipReviewRevision.expectedTriggers || 0).toLocaleString()}</b></span>
+                <span>本次修复 <b>{Number(memoryDiagnostics.taskOwnershipReviewRevision.repairedTriggersThisStart || 0).toLocaleString()}</b> 项</span>
+                <span>累计自愈 <b>{Number(memoryDiagnostics.taskOwnershipReviewRevision.repairsTotal || 0).toLocaleString()}</b> 次</span>
+                {Number(memoryDiagnostics.taskOwnershipReviewRevision.unhealthyTriggers?.length || 0) > 0 &&
+                  <span>定义漂移 <b>{memoryDiagnostics.taskOwnershipReviewRevision.unhealthyTriggers.join('、')}</b></span>}
               </div>
             </div>}
             {memoryDiagnostics.identityMergeArchiveRevision?.version && <div className={`assistant-recovery-audit ${memoryDiagnostics.identityMergeArchiveRevisionHealthy ? 'healthy' : 'unhealthy'}`}>
@@ -9120,12 +9132,16 @@ function AiAssistantPage() {
             </div>}
             {memoryDiagnostics.assistantHistoryRevision?.version && <div className={`assistant-recovery-audit ${memoryDiagnostics.assistantHistoryRevisionHealthy ? 'healthy' : 'unhealthy'}`}>
               <header><ShieldCheck size={15} /><span><b>可信问答历史分页一致性保护</b>
-                <small>会话、消息、逐陈述依赖、人工核验决定及当前检索证据共享 SQLCipher revision；新问答或证据纠正、拒绝、删除发生时，旧会话页、消息页和核验页都会被拒绝并自动重载。</small>
+                <small>会话、消息、逐陈述依赖、人工核验决定及当前检索证据共享 SQLCipher revision；逐项定义审计确保同名错误触发器不能伪装成正常保护。</small>
               </span></header>
               <div className="assistant-recovery-current">
                 <span>当前状态 <b>{memoryDiagnostics.assistantHistoryRevisionHealthy ? '保护正常' : '需要检查'}</b></span>
                 <span>当前 revision <b>{String(memoryDiagnostics.assistantHistoryRevision.revision || '0')}</b></span>
-                <span>变更触发器 <b>{Number(memoryDiagnostics.assistantHistoryRevision.installedTriggers || 0).toLocaleString()} / {Number(memoryDiagnostics.assistantHistoryRevision.expectedTriggers || 0).toLocaleString()}</b></span>
+                <span>精确有效触发器 <b>{Number(memoryDiagnostics.assistantHistoryRevision.validTriggers || 0).toLocaleString()} / {Number(memoryDiagnostics.assistantHistoryRevision.expectedTriggers || 0).toLocaleString()}</b></span>
+                <span>本次修复 <b>{Number(memoryDiagnostics.assistantHistoryRevision.repairedTriggersThisStart || 0).toLocaleString()}</b> 项</span>
+                <span>累计自愈 <b>{Number(memoryDiagnostics.assistantHistoryRevision.repairsTotal || 0).toLocaleString()}</b> 次</span>
+                {Number(memoryDiagnostics.assistantHistoryRevision.unhealthyTriggers?.length || 0) > 0 &&
+                  <span>定义漂移 <b>{memoryDiagnostics.assistantHistoryRevision.unhealthyTriggers.join('、')}</b></span>}
               </div>
             </div>}
             {memoryDiagnostics.taskSearchIndex?.version && <div className={`assistant-recovery-audit ${memoryDiagnostics.taskSearchIndexHealthy ? 'healthy' : 'unhealthy'}`}>

@@ -1515,8 +1515,181 @@ export class PersonalMemoryStore {
     }
   }
 
-  private structuredMemoryRevisionTriggerNames(): string[] {
-    const tables = [
+  private revisionTriggerDefinitions(prefix: string, tables: string[]): Array<{
+    name: string
+    table: string
+    operation: 'INSERT' | 'UPDATE' | 'DELETE'
+  }> {
+    return tables.flatMap(table =>
+      (['INSERT', 'UPDATE', 'DELETE'] as const).map(operation => ({
+        name: `trg_${prefix}_${table}_${operation.toLowerCase()}`,
+        table,
+        operation
+      })))
+  }
+
+  private revisionTriggerSql(definition: {
+    name: string
+    table: string
+    operation: 'INSERT' | 'UPDATE' | 'DELETE'
+  }, revisionKey: string): string {
+    return `
+      CREATE TRIGGER ${definition.name} AFTER ${definition.operation} ON ${definition.table}
+      BEGIN
+        UPDATE schema_meta
+        SET value=CAST(CAST(value AS INTEGER)+1 AS TEXT),
+          updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')
+        WHERE key='${revisionKey}';
+      END;
+    `
+  }
+
+  private inspectRevisionTriggerSet(prefix: string, revisionKey: string, tables: string[]): {
+    expectedTriggers: number
+    installedTriggers: number
+    validTriggers: number
+    healthy: boolean
+    unhealthyTriggers: string[]
+    unexpectedTriggers: string[]
+  } {
+    const definitions = this.revisionTriggerDefinitions(prefix, tables)
+    if (!this.db) {
+      return {
+        expectedTriggers: definitions.length,
+        installedTriggers: 0,
+        validTriggers: 0,
+        healthy: false,
+        unhealthyTriggers: definitions.map(item => item.name),
+        unexpectedTriggers: []
+      }
+    }
+    const normalizeSql = (value: unknown) => String(value || '')
+      .toLowerCase()
+      .replace(/;/g, '')
+      .replace(/\s+/g, ' ')
+      .trim()
+    const rows = this.db.prepare(`
+      SELECT name,sql FROM sqlite_master
+      WHERE type='trigger' AND name LIKE ?
+    `).all(`trg_${prefix}_%`) as Array<{ name: string; sql: string }>
+    const byName = new Map(rows.map(row => [row.name, row.sql]))
+    const expectedNames = new Set(definitions.map(item => item.name))
+    const unhealthyTriggers = definitions
+      .filter(definition =>
+        normalizeSql(byName.get(definition.name)) !==
+        normalizeSql(this.revisionTriggerSql(definition, revisionKey)))
+      .map(definition => definition.name)
+    const unexpectedTriggers = rows
+      .map(row => row.name)
+      .filter(name => !expectedNames.has(name))
+      .sort()
+    return {
+      expectedTriggers: definitions.length,
+      installedTriggers: definitions.filter(item => byName.has(item.name)).length,
+      validTriggers: definitions.length - unhealthyTriggers.length,
+      healthy: unhealthyTriggers.length === 0 && unexpectedTriggers.length === 0,
+      unhealthyTriggers,
+      unexpectedTriggers
+    }
+  }
+
+  private ensureRevisionTriggerSet(input: {
+    prefix: string
+    revisionKey: string
+    tables: string[]
+    version: string
+  }): void {
+    if (!this.db) return
+    const now = new Date().toISOString()
+    this.db.prepare(`
+      INSERT INTO schema_meta(key,value,updated_at)
+      VALUES(?, '0', ?)
+      ON CONFLICT(key) DO NOTHING
+    `).run(input.revisionKey, now)
+    const before = this.inspectRevisionTriggerSet(
+      input.prefix, input.revisionKey, input.tables
+    )
+    const integrityKey = `${input.revisionKey}_integrity`
+    const previousRow = this.db.prepare(`
+      SELECT value FROM schema_meta WHERE key=?
+    `).get(integrityKey) as any
+    let previous: any = {}
+    try { previous = JSON.parse(String(previousRow?.value || '{}')) } catch {}
+    const definitions = this.revisionTriggerDefinitions(input.prefix, input.tables)
+    const definitionByName = new Map(definitions.map(item => [item.name, item]))
+    const quoteIdentifier = (value: string) => `"${value.replace(/"/g, '""')}"`
+    if (!before.healthy) {
+      this.db.transaction(() => {
+        for (const name of [...before.unhealthyTriggers, ...before.unexpectedTriggers]) {
+          this.db!.exec(`DROP TRIGGER IF EXISTS ${quoteIdentifier(name)}`)
+          const definition = definitionByName.get(name)
+          if (definition) {
+            this.db!.exec(this.revisionTriggerSql(definition, input.revisionKey))
+          }
+        }
+      })()
+    }
+    const after = this.inspectRevisionTriggerSet(
+      input.prefix, input.revisionKey, input.tables
+    )
+    const checkedAt = new Date().toISOString()
+    const repairedTriggersThisStart =
+      before.unhealthyTriggers.length + before.unexpectedTriggers.length
+    const audit = {
+      version: input.version,
+      checkedAt,
+      repairedThisStart: repairedTriggersThisStart > 0,
+      repairedTriggersThisStart,
+      repairsTotal: Number(previous.repairsTotal || 0) +
+        (repairedTriggersThisStart > 0 ? 1 : 0),
+      ...after
+    }
+    this.db.prepare(`
+      INSERT INTO schema_meta(key,value,updated_at)
+      VALUES(?,?,?)
+      ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_at=excluded.updated_at
+    `).run(integrityKey, JSON.stringify(audit), checkedAt)
+  }
+
+  private getRevisionTriggerSetHealth(input: {
+    prefix: string
+    revisionKey: string
+    tables: string[]
+    version: string
+    revision: string
+  }): any {
+    const live = this.inspectRevisionTriggerSet(
+      input.prefix, input.revisionKey, input.tables
+    )
+    if (!this.db) {
+      return {
+        version: input.version,
+        revision: '0',
+        checkedAt: '',
+        repairedThisStart: false,
+        repairedTriggersThisStart: 0,
+        repairsTotal: 0,
+        ...live
+      }
+    }
+    const row = this.db.prepare(`
+      SELECT value,updated_at FROM schema_meta WHERE key=?
+    `).get(`${input.revisionKey}_integrity`) as any
+    let audit: any = {}
+    try { audit = JSON.parse(String(row?.value || '{}')) } catch {}
+    return {
+      version: input.version,
+      revision: input.revision,
+      checkedAt: String(audit.checkedAt || row?.updated_at || ''),
+      repairedThisStart: Boolean(audit.repairedThisStart),
+      repairedTriggersThisStart: Number(audit.repairedTriggersThisStart || 0),
+      repairsTotal: Number(audit.repairsTotal || 0),
+      ...live
+    }
+  }
+
+  private structuredMemoryRevisionTables(): string[] {
+    return [
       'claims',
       'events',
       'evidence',
@@ -1526,44 +1699,15 @@ export class PersonalMemoryStore {
       'memory_corrections',
       'memory_review_decisions'
     ]
-    return tables.flatMap(table => ['insert', 'update', 'delete']
-      .map(operation => `trg_structured_memory_revision_${table}_${operation}`))
   }
 
   private ensureStructuredMemoryRevisionTriggers(): void {
-    if (!this.db) return
-    const tables = [
-      'claims',
-      'events',
-      'evidence',
-      'event_participants',
-      'entities',
-      'entity_evidence',
-      'memory_corrections',
-      'memory_review_decisions'
-    ]
-    this.db.prepare(`
-      INSERT INTO schema_meta(key,value,updated_at)
-      VALUES('structured_memory_revision','0',?)
-      ON CONFLICT(key) DO NOTHING
-    `).run(new Date().toISOString())
-    const statements: string[] = []
-    for (const table of tables) {
-      for (const operation of ['INSERT', 'UPDATE', 'DELETE']) {
-        const name = `trg_structured_memory_revision_${table}_${operation.toLowerCase()}`
-        statements.push(`DROP TRIGGER IF EXISTS ${name};`)
-        statements.push(`
-          CREATE TRIGGER ${name} AFTER ${operation} ON ${table}
-          BEGIN
-            UPDATE schema_meta
-            SET value=CAST(CAST(value AS INTEGER)+1 AS TEXT),
-              updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')
-            WHERE key='structured_memory_revision';
-          END;
-        `)
-      }
-    }
-    this.db.exec(statements.join('\n'))
+    this.ensureRevisionTriggerSet({
+      prefix: 'structured_memory_revision',
+      revisionKey: 'structured_memory_revision',
+      tables: this.structuredMemoryRevisionTables(),
+      version: 'structured-memory-revision-v2'
+    })
   }
 
   getStructuredMemoryRevision(): string {
@@ -1574,29 +1718,13 @@ export class PersonalMemoryStore {
   }
 
   getStructuredMemoryRevisionHealth(): any {
-    const expectedNames = this.structuredMemoryRevisionTriggerNames()
-    if (!this.db) {
-      return {
-        version: 'structured-memory-revision-v1',
-        revision: '0',
-        expectedTriggers: expectedNames.length,
-        installedTriggers: 0,
-        healthy: false
-      }
-    }
-    const rows = this.db.prepare(`
-      SELECT name FROM sqlite_master
-      WHERE type='trigger' AND name LIKE 'trg_structured_memory_revision_%'
-    `).all() as Array<{ name: string }>
-    const installedNames = new Set(rows.map(row => String(row.name)))
-    return {
-      version: 'structured-memory-revision-v1',
-      revision: this.getStructuredMemoryRevision(),
-      expectedTriggers: expectedNames.length,
-      installedTriggers: expectedNames.filter(name => installedNames.has(name)).length,
-      healthy: installedNames.size === expectedNames.length
-        && expectedNames.every(name => installedNames.has(name))
-    }
+    return this.getRevisionTriggerSetHealth({
+      prefix: 'structured_memory_revision',
+      revisionKey: 'structured_memory_revision',
+      tables: this.structuredMemoryRevisionTables(),
+      version: 'structured-memory-revision-v2',
+      revision: this.getStructuredMemoryRevision()
+    })
   }
 
   private resourceArchiveRevisionTriggerNames(): string[] {
@@ -1672,7 +1800,7 @@ export class PersonalMemoryStore {
     }
   }
 
-  private graphReviewRevisionTriggerNames(): string[] {
+  private graphReviewRevisionTables(): string[] {
     return [
       'review_queue',
       'entities',
@@ -1682,43 +1810,15 @@ export class PersonalMemoryStore {
       'relation_corrections',
       'entity_profile_corrections'
     ]
-      .flatMap(table => ['insert', 'update', 'delete']
-        .map(operation => `trg_graph_review_revision_${table}_${operation}`))
   }
 
   private ensureGraphReviewRevisionTriggers(): void {
-    if (!this.db) return
-    const tables = [
-      'review_queue',
-      'entities',
-      'relations',
-      'relation_history',
-      'entity_corrections',
-      'relation_corrections',
-      'entity_profile_corrections'
-    ]
-    this.db.prepare(`
-      INSERT INTO schema_meta(key,value,updated_at)
-      VALUES('graph_review_revision','0',?)
-      ON CONFLICT(key) DO NOTHING
-    `).run(new Date().toISOString())
-    const statements: string[] = []
-    for (const table of tables) {
-      for (const operation of ['INSERT', 'UPDATE', 'DELETE']) {
-        const name = `trg_graph_review_revision_${table}_${operation.toLowerCase()}`
-        statements.push(`DROP TRIGGER IF EXISTS ${name};`)
-        statements.push(`
-          CREATE TRIGGER ${name} AFTER ${operation} ON ${table}
-          BEGIN
-            UPDATE schema_meta
-            SET value=CAST(CAST(value AS INTEGER)+1 AS TEXT),
-              updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')
-            WHERE key='graph_review_revision';
-          END;
-        `)
-      }
-    }
-    this.db.exec(statements.join('\n'))
+    this.ensureRevisionTriggerSet({
+      prefix: 'graph_review_revision',
+      revisionKey: 'graph_review_revision',
+      tables: this.graphReviewRevisionTables(),
+      version: 'graph-review-revision-v2'
+    })
   }
 
   getGraphReviewRevision(): string {
@@ -1729,29 +1829,13 @@ export class PersonalMemoryStore {
   }
 
   getGraphReviewRevisionHealth(): any {
-    const expectedNames = this.graphReviewRevisionTriggerNames()
-    if (!this.db) {
-      return {
-        version: 'graph-review-revision-v1',
-        revision: '0',
-        expectedTriggers: expectedNames.length,
-        installedTriggers: 0,
-        healthy: false
-      }
-    }
-    const rows = this.db.prepare(`
-      SELECT name FROM sqlite_master
-      WHERE type='trigger' AND name LIKE 'trg_graph_review_revision_%'
-    `).all() as Array<{ name: string }>
-    const installedNames = new Set(rows.map(row => String(row.name)))
-    return {
-      version: 'graph-review-revision-v1',
-      revision: this.getGraphReviewRevision(),
-      expectedTriggers: expectedNames.length,
-      installedTriggers: expectedNames.filter(name => installedNames.has(name)).length,
-      healthy: installedNames.size === expectedNames.length
-        && expectedNames.every(name => installedNames.has(name))
-    }
+    return this.getRevisionTriggerSetHealth({
+      prefix: 'graph_review_revision',
+      revisionKey: 'graph_review_revision',
+      tables: this.graphReviewRevisionTables(),
+      version: 'graph-review-revision-v2',
+      revision: this.getGraphReviewRevision()
+    })
   }
 
   private taskArchiveRevisionTriggerNames(): string[] {
@@ -1820,48 +1904,23 @@ export class PersonalMemoryStore {
     }
   }
 
-  private taskOwnershipReviewRevisionTriggerNames(): string[] {
+  private taskOwnershipReviewRevisionTables(): string[] {
     return [
       'task_directory',
       'search_document_evidence',
       'task_history',
       'task_review_decisions',
       'task_review_history'
-    ].flatMap(table => ['insert', 'update', 'delete']
-      .map(operation => `trg_task_ownership_review_revision_${table}_${operation}`))
+    ]
   }
 
   private ensureTaskOwnershipReviewRevisionTriggers(): void {
-    if (!this.db) return
-    const tables = [
-      'task_directory',
-      'search_document_evidence',
-      'task_history',
-      'task_review_decisions',
-      'task_review_history'
-    ]
-    this.db.prepare(`
-      INSERT INTO schema_meta(key,value,updated_at)
-      VALUES('task_ownership_review_revision','0',?)
-      ON CONFLICT(key) DO NOTHING
-    `).run(new Date().toISOString())
-    const statements: string[] = []
-    for (const table of tables) {
-      for (const operation of ['INSERT', 'UPDATE', 'DELETE']) {
-        const name = `trg_task_ownership_review_revision_${table}_${operation.toLowerCase()}`
-        statements.push(`DROP TRIGGER IF EXISTS ${name};`)
-        statements.push(`
-          CREATE TRIGGER ${name} AFTER ${operation} ON ${table}
-          BEGIN
-            UPDATE schema_meta
-            SET value=CAST(CAST(value AS INTEGER)+1 AS TEXT),
-              updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')
-            WHERE key='task_ownership_review_revision';
-          END;
-        `)
-      }
-    }
-    this.db.exec(statements.join('\n'))
+    this.ensureRevisionTriggerSet({
+      prefix: 'task_ownership_review_revision',
+      revisionKey: 'task_ownership_review_revision',
+      tables: this.taskOwnershipReviewRevisionTables(),
+      version: 'task-ownership-review-revision-v2'
+    })
   }
 
   getTaskOwnershipReviewRevision(): string {
@@ -1872,29 +1931,13 @@ export class PersonalMemoryStore {
   }
 
   getTaskOwnershipReviewRevisionHealth(): any {
-    const expectedNames = this.taskOwnershipReviewRevisionTriggerNames()
-    if (!this.db) {
-      return {
-        version: 'task-ownership-review-revision-v1',
-        revision: '0',
-        expectedTriggers: expectedNames.length,
-        installedTriggers: 0,
-        healthy: false
-      }
-    }
-    const rows = this.db.prepare(`
-      SELECT name FROM sqlite_master
-      WHERE type='trigger' AND name LIKE 'trg_task_ownership_review_revision_%'
-    `).all() as Array<{ name: string }>
-    const installedNames = new Set(rows.map(row => String(row.name)))
-    return {
-      version: 'task-ownership-review-revision-v1',
-      revision: this.getTaskOwnershipReviewRevision(),
-      expectedTriggers: expectedNames.length,
-      installedTriggers: expectedNames.filter(name => installedNames.has(name)).length,
-      healthy: installedNames.size === expectedNames.length
-        && expectedNames.every(name => installedNames.has(name))
-    }
+    return this.getRevisionTriggerSetHealth({
+      prefix: 'task_ownership_review_revision',
+      revisionKey: 'task_ownership_review_revision',
+      tables: this.taskOwnershipReviewRevisionTables(),
+      version: 'task-ownership-review-revision-v2',
+      revision: this.getTaskOwnershipReviewRevision()
+    })
   }
 
   private identityMergeArchiveRevisionTriggerNames(): string[] {
@@ -2086,7 +2129,7 @@ export class PersonalMemoryStore {
     }
   }
 
-  private assistantHistoryRevisionTriggerNames(): string[] {
+  private assistantHistoryRevisionTables(): string[] {
     return [
       'assistant_conversations',
       'assistant_messages',
@@ -2095,43 +2138,16 @@ export class PersonalMemoryStore {
       'search_documents',
       'search_document_evidence',
       'evidence'
-    ].flatMap(table => ['insert', 'update', 'delete']
-      .map(operation => `trg_assistant_history_revision_${table}_${operation}`))
+    ]
   }
 
   private ensureAssistantHistoryRevisionTriggers(): void {
-    if (!this.db) return
-    const tables = [
-      'assistant_conversations',
-      'assistant_messages',
-      'assistant_answer_dependencies',
-      'assistant_answer_review_decisions',
-      'search_documents',
-      'search_document_evidence',
-      'evidence'
-    ]
-    this.db.prepare(`
-      INSERT INTO schema_meta(key,value,updated_at)
-      VALUES('assistant_history_revision','0',?)
-      ON CONFLICT(key) DO NOTHING
-    `).run(new Date().toISOString())
-    const statements: string[] = []
-    for (const table of tables) {
-      for (const operation of ['INSERT', 'UPDATE', 'DELETE']) {
-        const name = `trg_assistant_history_revision_${table}_${operation.toLowerCase()}`
-        statements.push(`DROP TRIGGER IF EXISTS ${name};`)
-        statements.push(`
-          CREATE TRIGGER ${name} AFTER ${operation} ON ${table}
-          BEGIN
-            UPDATE schema_meta
-            SET value=CAST(CAST(value AS INTEGER)+1 AS TEXT),
-              updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')
-            WHERE key='assistant_history_revision';
-          END;
-        `)
-      }
-    }
-    this.db.exec(statements.join('\n'))
+    this.ensureRevisionTriggerSet({
+      prefix: 'assistant_history_revision',
+      revisionKey: 'assistant_history_revision',
+      tables: this.assistantHistoryRevisionTables(),
+      version: 'assistant-history-revision-v2'
+    })
   }
 
   getAssistantHistoryRevision(): string {
@@ -2142,29 +2158,13 @@ export class PersonalMemoryStore {
   }
 
   getAssistantHistoryRevisionHealth(): any {
-    const expectedNames = this.assistantHistoryRevisionTriggerNames()
-    if (!this.db) {
-      return {
-        version: 'assistant-history-revision-v1',
-        revision: '0',
-        expectedTriggers: expectedNames.length,
-        installedTriggers: 0,
-        healthy: false
-      }
-    }
-    const rows = this.db.prepare(`
-      SELECT name FROM sqlite_master
-      WHERE type='trigger' AND name LIKE 'trg_assistant_history_revision_%'
-    `).all() as Array<{ name: string }>
-    const installedNames = new Set(rows.map(row => String(row.name)))
-    return {
-      version: 'assistant-history-revision-v1',
-      revision: this.getAssistantHistoryRevision(),
-      expectedTriggers: expectedNames.length,
-      installedTriggers: expectedNames.filter(name => installedNames.has(name)).length,
-      healthy: installedNames.size === expectedNames.length
-        && expectedNames.every(name => installedNames.has(name))
-    }
+    return this.getRevisionTriggerSetHealth({
+      prefix: 'assistant_history_revision',
+      revisionKey: 'assistant_history_revision',
+      tables: this.assistantHistoryRevisionTables(),
+      version: 'assistant-history-revision-v2',
+      revision: this.getAssistantHistoryRevision()
+    })
   }
 
   private compactCommittedIngestionPayloads(): void {
