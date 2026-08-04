@@ -4558,6 +4558,8 @@ function registerIpcHandlers() {
     aiAssistantService.getProjectRiskPage(projectId, options))
   ipcMain.handle('ai-assistant:getTaskWorkspace', (_, taskId: string) =>
     aiAssistantService.getTaskWorkspace(taskId))
+  ipcMain.handle('ai-assistant:getTaskHistoryPage', (_, taskId: string, options?: any) =>
+    aiAssistantService.getTaskHistoryPage(taskId, options))
   ipcMain.handle('ai-assistant:getTaskDependencyCandidates', (_, options?: any) =>
     aiAssistantService.getTaskDependencyCandidates(options))
   ipcMain.handle('ai-assistant:getActiveTaskWorkset', (_, options?: any) =>

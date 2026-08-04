@@ -8650,6 +8650,50 @@ export class PersonalMemoryStore {
     `).all(...ids, Math.max(1, Math.min(1000, limit))) as any[]
   }
 
+  listTaskHistoryPage(options: {
+    taskId: string
+    limit?: number
+    offset?: number
+    revision?: string
+  }): { items: any[]; total: number; hasMore: boolean; revision: string; stale: boolean } {
+    if (!this.db) return { items: [], total: 0, hasMore: false, revision: '0', stale: false }
+    const revision = this.getTaskArchiveRevision()
+    const taskId = String(options.taskId || '').trim()
+    if (!taskId) return { items: [], total: 0, hasMore: false, revision, stale: false }
+    const offset = Math.max(0, Math.min(1_000_000, Math.floor(Number(options.offset) || 0)))
+    const expectedRevision = String(options.revision || '').trim()
+    if (offset > 0 && expectedRevision !== revision) {
+      return { items: [], total: 0, hasMore: false, revision, stale: true }
+    }
+    const total = Number((this.db.prepare(`
+      SELECT COUNT(*) AS count FROM task_history WHERE task_id=?
+    `).get(taskId) as any)?.count || 0)
+    const limit = Math.max(1, Math.min(100, Math.floor(Number(options.limit) || 40)))
+    const items = this.db.prepare(`
+      SELECT history.id,history.task_id,history.field,history.before_value,
+        history.after_value,history.reason,
+        COALESCE(change_set.evidence_json,history.evidence_json,'[]') AS evidence_json,
+        history.created_at,history.change_set_id
+      FROM task_history history
+      LEFT JOIN task_history_evidence change_set
+        ON change_set.change_set_id=history.change_set_id
+      WHERE history.task_id=?
+      ORDER BY history.created_at DESC,history.id DESC
+      LIMIT ? OFFSET ?
+    `).all(taskId, limit, offset) as any[]
+    const completedRevision = this.getTaskArchiveRevision()
+    if (completedRevision !== revision) {
+      return { items: [], total: 0, hasMore: false, revision: completedRevision, stale: true }
+    }
+    return {
+      items,
+      total,
+      hasMore: offset + items.length < total,
+      revision,
+      stale: false
+    }
+  }
+
   getTaskHistoryEvidenceStorageStats(): any {
     if (!this.db) return {
       version: 'task-history-evidence-v2',

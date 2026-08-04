@@ -9452,6 +9452,65 @@ test('task status changes are persisted as an auditable history', () => withStor
   })
 }))
 
+test('task history pages every audit row and rejects a stale continuation', () => withStore(store => {
+  for (let index = 0; index < 125; index += 1) {
+    store.recordTaskChanges(
+      'task-history-pages',
+      { status: index % 2 ? 'todo' : 'doing' },
+      { status: index % 2 ? 'doing' : 'todo' },
+      `page-test-${index}`,
+      []
+    )
+  }
+  const first = store.listTaskHistoryPage({
+    taskId: 'task-history-pages',
+    limit: 40
+  })
+  const second = store.listTaskHistoryPage({
+    taskId: 'task-history-pages',
+    limit: 40,
+    offset: first.items.length,
+    revision: first.revision
+  })
+  const third = store.listTaskHistoryPage({
+    taskId: 'task-history-pages',
+    limit: 40,
+    offset: first.items.length + second.items.length,
+    revision: first.revision
+  })
+  const fourth = store.listTaskHistoryPage({
+    taskId: 'task-history-pages',
+    limit: 40,
+    offset: first.items.length + second.items.length + third.items.length,
+    revision: first.revision
+  })
+  const ids = [...first.items, ...second.items, ...third.items, ...fourth.items]
+    .map(item => item.id)
+  assert.equal(first.total, 125)
+  assert.equal(first.hasMore, true)
+  assert.equal(fourth.items.length, 5)
+  assert.equal(fourth.hasMore, false)
+  assert.equal(ids.length, 125)
+  assert.equal(new Set(ids).size, 125)
+
+  store.recordTaskChanges(
+    'task-history-pages',
+    { priority: 'medium' },
+    { priority: 'high' },
+    'concurrent-edit',
+    []
+  )
+  const stale = store.listTaskHistoryPage({
+    taskId: 'task-history-pages',
+    limit: 40,
+    offset: 40,
+    revision: first.revision
+  })
+  assert.equal(stale.stale, true)
+  assert.deepEqual(stale.items, [])
+  assert.equal(stale.total, 0)
+}))
+
 test('legacy task history evidence copies compact once and remain visible on every field row', () => {
   const directory = mkdtempSync(join(tmpdir(), 'weflow-task-history-evidence-'))
   const databasePath = join(directory, 'memory.sqlite')

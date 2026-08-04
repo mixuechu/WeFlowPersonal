@@ -249,10 +249,7 @@ import {
   toGraphViewportEdge,
   toGraphViewportNode
 } from '../../shared/graphPayload'
-import {
-  buildTaskDossier,
-  TASK_HISTORY_LIMIT
-} from '../../shared/taskPayload'
+import { buildTaskDossier } from '../../shared/taskPayload'
 import { buildTaskDependencyCandidates } from '../../shared/taskDependencyCandidates'
 import { buildCursorStatusPayload } from '../../shared/cursorPayload'
 import {
@@ -3906,12 +3903,42 @@ export class AiAssistantService {
     this.hydrateTaskEvidenceFromSql([String(taskId || '')])
     const task = this.state.tasks.find(item => item.id === String(taskId || ''))
     if (!task) return null
-    const history = personalMemoryStore.listTaskHistory([task.id], TASK_HISTORY_LIMIT)
-    const dossier = buildTaskDossier(task, history, personalMemoryStore.countTaskHistory(task.id))
+    const historyPage = personalMemoryStore.listTaskHistoryPage({
+      taskId: task.id,
+      limit: 40
+    })
+    const dossier = buildTaskDossier(task, historyPage.items, historyPage.total)
     return {
       ...dossier,
-      task: { ...dossier.task, mutationToken: buildTaskMutationToken(task) }
+      task: { ...dossier.task, mutationToken: buildTaskMutationToken(task) },
+      historyHasMore: historyPage.hasMore,
+      historyRevision: historyPage.revision,
+      payloadPolicy: {
+        ...dossier.payloadPolicy,
+        version: 'task-dossier-v2',
+        history: 'revision_paginated',
+        historyPageLimit: 40
+      }
     }
+  }
+
+  getTaskHistoryPage(taskId: string, options: any = {}): any {
+    const id = String(taskId || '').trim()
+    if (!this.state.tasks.some(task => task.id === id)) {
+      return {
+        items: [],
+        total: 0,
+        hasMore: false,
+        revision: personalMemoryStore.getTaskArchiveRevision(),
+        stale: false
+      }
+    }
+    return personalMemoryStore.listTaskHistoryPage({
+      taskId: id,
+      limit: Number(options?.limit || 40),
+      offset: Number(options?.offset || 0),
+      revision: String(options?.revision || '')
+    })
   }
 
   getTaskDependencyCandidates(options: any = {}): any {

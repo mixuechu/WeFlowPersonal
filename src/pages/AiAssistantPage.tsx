@@ -569,6 +569,8 @@ function AiAssistantPage() {
   const [taskWorkspace, setTaskWorkspace] = useState<any>({ task: null, history: [], status: 'idle' })
   const [taskWorkspaceRefreshKey, setTaskWorkspaceRefreshKey] = useState(0)
   const taskWorkspaceGate = useRef(new LatestRequestGate())
+  const [taskHistoryLoadingMore, setTaskHistoryLoadingMore] = useState(false)
+  const taskHistoryGate = useRef(new LatestRequestGate())
   const [forgettingEntityId, setForgettingEntityId] = useState('')
   const [showSources, setShowSources] = useState(false)
   const [showDataSources, setShowDataSources] = useState(false)
@@ -2266,6 +2268,8 @@ function AiAssistantPage() {
 
   useEffect(() => {
     const request = taskWorkspaceGate.current.begin()
+    taskHistoryGate.current.invalidate()
+    setTaskHistoryLoadingMore(false)
     if (!selectedTaskId) {
       setTaskWorkspace({ task: null, history: [], status: 'idle' })
       return () => {
@@ -3615,6 +3619,43 @@ function AiAssistantPage() {
       if (projectRiskGate.current.isCurrent(request)) setMessage(error?.message || String(error))
     } finally {
       if (projectRiskGate.current.isCurrent(request)) setProjectRiskLoadingMore(false)
+    }
+  }
+
+  const loadMoreTaskHistory = async () => {
+    if (!selectedTaskId || taskHistoryLoadingMore || !taskWorkspace.historyHasMore) return
+    const request = taskHistoryGate.current.begin()
+    setTaskHistoryLoadingMore(true)
+    try {
+      const page = await window.electronAPI.aiAssistant.getTaskHistoryPage(
+        selectedTaskId,
+        {
+          limit: 40,
+          offset: taskWorkspace.history?.length || 0,
+          revision: taskWorkspace.historyRevision
+        }
+      )
+      if (!taskHistoryGate.current.isCurrent(request)) return
+      if (page.stale) {
+        setMessage('待办修改历史在浏览期间已有变化，已从最新第一页重新载入。')
+        setTaskWorkspaceRefreshKey(value => value + 1)
+        return
+      }
+      setTaskWorkspace((current: any) => ({
+        ...current,
+        history: [
+          ...(current.history || []),
+          ...page.items.filter((item: any) =>
+            !(current.history || []).some((known: any) => known.id === item.id))
+        ],
+        historyTotal: page.total,
+        historyHasMore: page.hasMore,
+        historyRevision: page.revision
+      }))
+    } catch (error: any) {
+      if (taskHistoryGate.current.isCurrent(request)) setMessage(error?.message || String(error))
+    } finally {
+      if (taskHistoryGate.current.isCurrent(request)) setTaskHistoryLoadingMore(false)
     }
   }
 
@@ -6152,8 +6193,13 @@ function AiAssistantPage() {
                             {taskWorkspace.history.map((item: any) => <small key={item.id}>
                               {new Date(item.created_at).toLocaleString('zh-CN')} · {item.field}：{taskHistoryValue(item.before_value)} → {taskHistoryValue(item.after_value)}
                             </small>)}
-                            {Number(taskWorkspace.historyTotal || 0) > taskWorkspace.history.length &&
-                              <small>当前显示最近 {taskWorkspace.history.length} / {taskWorkspace.historyTotal} 条。</small>}
+                            {taskWorkspace.historyHasMore && <button
+                              disabled={taskHistoryLoadingMore}
+                              onClick={() => void loadMoreTaskHistory()}>
+                              {taskHistoryLoadingMore
+                                ? '正在加载…'
+                                : `加载更多历史（已显示 ${taskWorkspace.history.length} / ${taskWorkspace.historyTotal}）`}
+                            </button>}
                           </div>
                         </details>}
                         {!taskWorkspace.task.evidence?.length && !taskWorkspace.history?.length &&
@@ -6261,6 +6307,13 @@ function AiAssistantPage() {
                       {taskWorkspace.history.map((item: any) => <small key={`archive-history-${item.id}`}>
                         {new Date(item.created_at).toLocaleString('zh-CN')} · {item.field}：{taskHistoryValue(item.before_value)} → {taskHistoryValue(item.after_value)}
                       </small>)}
+                      {taskWorkspace.historyHasMore && <button
+                        disabled={taskHistoryLoadingMore}
+                        onClick={() => void loadMoreTaskHistory()}>
+                        {taskHistoryLoadingMore
+                          ? '正在加载…'
+                          : `加载更多历史（已显示 ${taskWorkspace.history.length} / ${taskWorkspace.historyTotal}）`}
+                      </button>}
                     </div>
                   </details>}
                 </>}
@@ -8349,6 +8402,13 @@ function AiAssistantPage() {
                       {taskHistoryValue(item.before_value)} → {taskHistoryValue(item.after_value)}
                     </small>)}
                     {!taskWorkspace.history?.length && <small>这条待办还没有修改记录。</small>}
+                    {taskWorkspace.historyHasMore && <button
+                      disabled={taskHistoryLoadingMore}
+                      onClick={() => void loadMoreTaskHistory()}>
+                      {taskHistoryLoadingMore
+                        ? '正在加载…'
+                        : `加载更多历史（已显示 ${taskWorkspace.history.length} / ${taskWorkspace.historyTotal}）`}
+                    </button>}
                   </div>
                 </details>
               </>}
