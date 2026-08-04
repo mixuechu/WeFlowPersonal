@@ -23,7 +23,10 @@ function inferEvidenceSourceId(input: any): string {
   const dataSource = sessionId.match(/^data-source:([^:]+)/)?.[1]
   if (dataSource) return dataSource
   const messageId = String(input?.message_id ?? input?.messageId ?? '').trim()
-  return messageId.match(/^(wechat|documents|calendar|mail):/)?.[1] || 'legacy'
+  const evidenceKey = String(input?.evidence_key ?? input?.evidenceKey ?? '').trim()
+  return messageId.match(/^(wechat|documents|calendar|mail):/)?.[1]
+    || evidenceKey.match(/^([^:]+):/)?.[1]
+    || 'legacy'
 }
 
 export function memoryEvidenceSourceLabel(input: any): string {

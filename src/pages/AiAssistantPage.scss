@@ -254,7 +254,46 @@
   .assistant-eyebrow { color: #acd1bf; }
   h2 { margin: 11px 0; font-family: Georgia, "Noto Serif SC", serif; font-size: 30px; font-weight: 400; }
   p { margin: 0; color: #d4e4dc; font-size: 13px; line-height: 1.8; }
+  > small { display: block; margin-top: 8px; color: #a9c9ba; font-size: 9px; }
 }
+
+.assistant-weekly-summary-list { display: grid; gap: 6px; }
+.assistant-weekly-summary-list details {
+  padding: 8px 10px;
+  border: 1px solid rgba(221, 240, 231, .16);
+  border-radius: 9px;
+  background: rgba(255, 255, 255, .05);
+}
+.assistant-weekly-summary-list summary {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 9px;
+  cursor: pointer;
+}
+.assistant-weekly-summary-list summary time { color: #acd1bf; font-size: 9px; }
+.assistant-weekly-summary-list summary strong {
+  overflow: hidden;
+  color: #f1f7f3;
+  font-size: 11px;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.assistant-weekly-summary-list summary em {
+  padding: 2px 6px;
+  border-radius: 999px;
+  font-size: 8px;
+  font-style: normal;
+}
+.assistant-weekly-summary-list summary em.verified { color: #d8eee3; background: rgba(117, 181, 148, .22); }
+.assistant-weekly-summary-list summary em.legacy { color: #f3dfb4; background: rgba(198, 158, 78, .22); }
+.assistant-weekly-summary-list details > p { margin-top: 8px; padding-top: 7px; border-top: 1px solid rgba(221, 240, 231, .12); }
+.assistant-weekly-summary-list details > small { display: block; margin-top: 7px; color: #b8cfc4; font-size: 9px; }
+.assistant-weekly-summary-evidence { margin-top: 7px; display: grid; gap: 4px; }
+.assistant-weekly-summary-evidence .assistant-evidence-row { border-color: rgba(221, 240, 231, .12); background: rgba(255, 255, 255, .04); }
+.assistant-weekly-summary-evidence .assistant-evidence-row small { color: #c8ddd3; }
+.assistant-weekly-summary-evidence .assistant-evidence-row button { color: #d8eee3; border-color: rgba(221, 240, 231, .22); background: transparent; }
 
 .assistant-stat {
   min-width: 140px;

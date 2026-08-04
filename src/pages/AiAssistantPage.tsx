@@ -6761,10 +6761,31 @@ function AiAssistantPage() {
               </details>}
             </> : <>
               <h2>{weeklyBriefing?.daysWithUpdates || 0} 天有新增信息，{weeklyBriefing?.activeTaskCount || 0} 项仍在推进</h2>
-              <p>{(weeklyBriefing?.summaries || []).map((item: any) => {
-                const text = item.summary || item.headline
-                return text && item.summary && !item.verified ? `【历史未验证摘要】${text}` : text
-              }).filter(Boolean).slice(0, 3).join(' ') || '本周尚无可汇总的新增信息。'}</p>
+              {(weeklyBriefing?.summaries || []).length ? <div className="assistant-weekly-summary-list">
+                {(weeklyBriefing.summaries || []).map((item: any) => <details key={item.date}>
+                  <summary>
+                    <time>{item.date}</time>
+                    <strong title={item.headline || item.summary}>{item.headline || item.summary}</strong>
+                    <em className={item.verified ? 'verified' : 'legacy'}>
+                      {item.verified ? `已核验 · ${item.evidence?.length || 0} 条原文` : '历史未验证'}
+                    </em>
+                  </summary>
+                  {(item.summary || item.headline) && <p>{item.summary || item.headline}</p>}
+                  {!!item.evidence?.length && <div className="assistant-weekly-summary-evidence">
+                    <EvidenceRows evidence={item.evidence} total={item.evidence.length} />
+                  </div>}
+                  {item.verified && !item.evidence?.length
+                    ? <small>该日摘要被标记为已核验，但当前没有可展示原文；不会据此形成新的可信结论。</small>
+                    : !item.verified
+                      ? <small>该日摘要生成于逐条引用策略启用前；已有原文仅供人工核对，摘要本身不参与可信问答。</small>
+                      : null}
+                </details>)}
+              </div> : <p>本周尚无可汇总的新增信息。</p>}
+              <small>
+                完整展示 {weeklyBriefing?.summaryCount || 0} 天摘要 ·
+                {weeklyBriefing?.verifiedSummaryCount || 0} 天已核验 ·
+                {weeklyBriefing?.summaryEvidenceCount || 0} 条摘要原文
+              </small>
             </>}
           </div>
           <div className="assistant-stat">

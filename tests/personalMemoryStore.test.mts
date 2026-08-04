@@ -4039,6 +4039,37 @@ test('weekly briefing aggregates Shanghai dates and quiet hours cross midnight',
   assert.equal(briefing.summaries[0].verified, false)
 })
 
+test('weekly briefing exposes every daily summary in newest-first order', () => {
+  const briefings = Object.fromEntries(Array.from({ length: 8 }, (_, index) => {
+    const day = String(30 - index).padStart(2, '0')
+    return [`2026-07-${day}`, {
+      messageCount: index + 1,
+      headline: `第 ${index + 1} 天`,
+      summary: `第 ${index + 1} 天完整摘要`,
+      summaryVerified: index % 2 === 0,
+      summaryEvidence: index % 2 === 0 ? [{
+        evidenceKey: `wechat:session:${index}`,
+        excerpt: `原文 ${index}`
+      }] : []
+    }]
+  }))
+  const weekly = buildWeeklyBriefing(
+    briefings,
+    [],
+    new Date('2026-07-30T12:00:00+08:00')
+  )
+  assert.equal(weekly.daysWithUpdates, 7)
+  assert.equal(weekly.summaryCount, 7)
+  assert.equal(weekly.summaries.length, 7)
+  assert.deepEqual(
+    weekly.summaries.map((item: any) => item.date),
+    ['2026-07-30', '2026-07-29', '2026-07-28', '2026-07-27', '2026-07-26', '2026-07-25', '2026-07-24']
+  )
+  assert.equal(weekly.verifiedSummaryCount, 4)
+  assert.equal(weekly.summaryEvidenceCount, 4)
+  assert.equal(weekly.summaries.some((item: any) => item.date === '2026-07-23'), false)
+})
+
 test('briefing prose requires exact core-message evidence keys', () => {
   const batch = [{
     sourceId: 'wechat',
@@ -4074,6 +4105,7 @@ test('briefing prose requires exact core-message evidence keys', () => {
   }, batch)
   assert.equal(grounded.summary, '周五演示已经确认。')
   assert.deepEqual(grounded.summaryEvidence.map(item => item.messageId), ['message-core'])
+  assert.deepEqual(grounded.summaryEvidence.map(item => item.sourceId), ['wechat'])
   assert.deepEqual(grounded.highlights.map(item => item.text), ['客户确认周五演示'])
   assert.equal(grounded.rejectedHighlightCount, 2)
   assert.match(grounded.highlights[0].evidence[0].excerpt, /周五演示/)

@@ -55,4 +55,9 @@ test('memory evidence presentation preserves provenance and opens only valid loc
     message_id: 'opaque-message',
     session_id: 'old-session'
   })), '历史来源未标注')
+  assert.equal(memoryEvidenceSourceLabel(normalizeMemoryEvidence({
+    message_id: 'opaque-message',
+    session_id: 'old-session',
+    evidenceKey: 'wechat:old-session:opaque-message'
+  })), '微信')
 })

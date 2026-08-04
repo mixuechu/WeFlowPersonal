@@ -1,5 +1,6 @@
 export type GroundedBriefingEvidence = {
   evidenceKey: string
+  sourceId: string
   messageId: string
   sessionId: string
   sessionName: string
@@ -26,6 +27,7 @@ function evidenceFor(keys: unknown, messages: Map<string, any>): GroundedBriefin
     if (!message) return []
     return [{
       evidenceKey: key,
+      sourceId: String(message.sourceId || 'wechat'),
       messageId: String(message.id || ''),
       sessionId: String(message.sessionId || ''),
       sessionName: String(message.sessionName || ''),

@@ -22,6 +22,14 @@ export function buildWeeklyBriefing(
   const highlights = [...new Set(entries.flatMap(([, briefing]) =>
     Array.isArray(briefing?.highlights) ? briefing.highlights.map(String) : []))].slice(0, 12)
   const activeTasks = tasks.filter(task => !['done', 'cancelled'].includes(task.status))
+  const summaries = entries.map(([date, briefing]) => ({
+    date,
+    summary: String(briefing?.summary || ''),
+    headline: String(briefing?.headline || ''),
+    verified: briefing?.summaryVerified === true,
+    evidence: Array.isArray(briefing?.summaryEvidence) ? briefing.summaryEvidence : []
+  }))
+    .filter(item => item.summary || item.headline)
   return {
     start,
     end,
@@ -31,13 +39,9 @@ export function buildWeeklyBriefing(
     activeTaskCount: activeTasks.length,
     waitingTaskCount: activeTasks.filter(task => task.status === 'waiting' || task.taskKind === 'waiting').length,
     highPriorityTaskCount: activeTasks.filter(task => task.priority === 'high').length,
-    summaries: entries.map(([date, briefing]) => ({
-      date,
-      summary: String(briefing?.summary || ''),
-      headline: String(briefing?.headline || ''),
-      verified: briefing?.summaryVerified === true,
-      evidence: Array.isArray(briefing?.summaryEvidence) ? briefing.summaryEvidence : []
-    }))
-      .filter(item => item.summary || item.headline)
+    summaryCount: summaries.length,
+    verifiedSummaryCount: summaries.filter(item => item.verified).length,
+    summaryEvidenceCount: summaries.reduce((total, item) => total + item.evidence.length, 0),
+    summaries
   }
 }
