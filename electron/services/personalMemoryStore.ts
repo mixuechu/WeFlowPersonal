@@ -12458,15 +12458,24 @@ export class PersonalMemoryStore {
     return this.db.prepare(`
       SELECT id,title,search_text,content_hash FROM search_documents
       WHERE embedding_json IS NULL OR embedding_model IS NULL OR embedding_model!=?
+        OR embedding_dimensions<=0
+        OR json_valid(embedding_json)<>1
+        OR json_type(CASE WHEN json_valid(embedding_json)=1 THEN embedding_json ELSE '[]' END)<>'array'
+        OR json_array_length(CASE WHEN json_valid(embedding_json)=1 THEN embedding_json ELSE '[]' END)<>embedding_dimensions
+        OR EXISTS(
+          SELECT 1 FROM json_each(CASE WHEN json_valid(embedding_json)=1 THEN embedding_json ELSE '[]' END)
+          WHERE json_each.type NOT IN ('integer','real')
+        )
       ORDER BY updated_at DESC LIMIT ?
     `).all(model, Math.max(1, Math.min(1000, limit))) as any[]
   }
 
   saveEmbedding(id: string, model: string, vector: number[]): void {
-    if (!this.db || !vector.length) return
+    const normalized = Array.isArray(vector) ? vector.map(Number) : []
+    if (!this.db || !normalized.length || normalized.some(value => !Number.isFinite(value))) return
     this.db.prepare(`
       UPDATE search_documents SET embedding_model=?,embedding_dimensions=?,embedding_json=? WHERE id=?
-    `).run(model, vector.length, JSON.stringify(vector), id)
+    `).run(model, normalized.length, JSON.stringify(normalized), id)
   }
 
   getEmbeddingStats(model: string): any {
@@ -12476,14 +12485,34 @@ export class PersonalMemoryStore {
     }
     const row = this.db.prepare(`
       SELECT COUNT(*) AS total,
-        SUM(CASE WHEN embedding_model=? AND embedding_json IS NOT NULL THEN 1 ELSE 0 END) AS indexed
+        COALESCE(SUM(CASE WHEN embedding_model=? AND embedding_json IS NOT NULL
+          AND embedding_dimensions>0
+          AND json_valid(embedding_json)=1
+          AND json_type(CASE WHEN json_valid(embedding_json)=1 THEN embedding_json ELSE '[]' END)='array'
+          AND json_array_length(CASE WHEN json_valid(embedding_json)=1 THEN embedding_json ELSE '[]' END)=embedding_dimensions
+          AND NOT EXISTS(
+            SELECT 1 FROM json_each(CASE WHEN json_valid(embedding_json)=1 THEN embedding_json ELSE '[]' END)
+            WHERE json_each.type NOT IN ('integer','real')
+          )
+          THEN 1 ELSE 0 END),0) AS indexed,
+        COALESCE(SUM(CASE WHEN embedding_model=? AND embedding_json IS NOT NULL
+          AND (embedding_dimensions<=0
+            OR json_valid(embedding_json)<>1
+            OR json_type(CASE WHEN json_valid(embedding_json)=1 THEN embedding_json ELSE '[]' END)<>'array'
+            OR json_array_length(CASE WHEN json_valid(embedding_json)=1 THEN embedding_json ELSE '[]' END)<>embedding_dimensions
+            OR EXISTS(
+              SELECT 1 FROM json_each(CASE WHEN json_valid(embedding_json)=1 THEN embedding_json ELSE '[]' END)
+              WHERE json_each.type NOT IN ('integer','real')
+            ))
+          THEN 1 ELSE 0 END),0) AS invalid
       FROM search_documents
-    `).get(model) as { total: number; indexed: number }
+    `).get(model, model) as { total: number; indexed: number; invalid: number }
     const indexed = Number(row.indexed || 0)
     return {
       total: Number(row.total || 0),
       indexed,
       pending: Number(row.total || 0) - indexed,
+      invalid: Number(row.invalid || 0),
       model,
       ann: this.getApproximateVectorIndexStats(model)
     }
@@ -12494,6 +12523,14 @@ export class PersonalMemoryStore {
     const eligible = this.db.prepare(`
       SELECT COUNT(*) AS count FROM search_documents
       WHERE embedding_model=? AND embedding_json IS NOT NULL
+        AND embedding_dimensions>0
+        AND json_valid(embedding_json)=1
+        AND json_type(CASE WHEN json_valid(embedding_json)=1 THEN embedding_json ELSE '[]' END)='array'
+        AND json_array_length(CASE WHEN json_valid(embedding_json)=1 THEN embedding_json ELSE '[]' END)=embedding_dimensions
+        AND NOT EXISTS(
+          SELECT 1 FROM json_each(CASE WHEN json_valid(embedding_json)=1 THEN embedding_json ELSE '[]' END)
+          WHERE json_each.type NOT IN ('integer','real')
+        )
         AND (? IS NULL OR embedding_dimensions=?)
     `).get(model, dimensions ?? null, dimensions ?? null) as { count: number }
     const state = this.db.prepare(`
@@ -12510,6 +12547,14 @@ export class PersonalMemoryStore {
           AND d.embedding_model=e.model
           AND d.embedding_dimensions=e.dimensions
           AND d.embedding_json IS NOT NULL
+          AND d.embedding_dimensions>0
+          AND json_valid(d.embedding_json)=1
+          AND json_type(CASE WHEN json_valid(d.embedding_json)=1 THEN d.embedding_json ELSE '[]' END)='array'
+          AND json_array_length(CASE WHEN json_valid(d.embedding_json)=1 THEN d.embedding_json ELSE '[]' END)=d.embedding_dimensions
+          AND NOT EXISTS(
+            SELECT 1 FROM json_each(CASE WHEN json_valid(d.embedding_json)=1 THEN d.embedding_json ELSE '[]' END)
+            WHERE json_each.type NOT IN ('integer','real')
+          )
         WHERE e.model=? AND e.dimensions=?
         GROUP BY e.document_id
         HAVING COUNT(DISTINCT e.table_id)=?
@@ -12556,6 +12601,14 @@ export class PersonalMemoryStore {
       SELECT embedding_dimensions AS dimensions,COUNT(*) AS count
       FROM search_documents
       WHERE embedding_model=? AND embedding_json IS NOT NULL
+        AND embedding_dimensions>0
+        AND json_valid(embedding_json)=1
+        AND json_type(CASE WHEN json_valid(embedding_json)=1 THEN embedding_json ELSE '[]' END)='array'
+        AND json_array_length(CASE WHEN json_valid(embedding_json)=1 THEN embedding_json ELSE '[]' END)=embedding_dimensions
+        AND NOT EXISTS(
+          SELECT 1 FROM json_each(CASE WHEN json_valid(embedding_json)=1 THEN embedding_json ELSE '[]' END)
+          WHERE json_each.type NOT IN ('integer','real')
+        )
       GROUP BY embedding_dimensions ORDER BY count DESC
     `).all(model) as Array<{ dimensions: number; count: number }>
     const group = groups[0]
@@ -12578,6 +12631,13 @@ export class PersonalMemoryStore {
     const documents = this.db.prepare(`
       SELECT id,content_hash,embedding_json FROM search_documents
       WHERE embedding_model=? AND embedding_dimensions=? AND embedding_json IS NOT NULL
+        AND json_valid(embedding_json)=1
+        AND json_type(CASE WHEN json_valid(embedding_json)=1 THEN embedding_json ELSE '[]' END)='array'
+        AND json_array_length(CASE WHEN json_valid(embedding_json)=1 THEN embedding_json ELSE '[]' END)=embedding_dimensions
+        AND NOT EXISTS(
+          SELECT 1 FROM json_each(CASE WHEN json_valid(embedding_json)=1 THEN embedding_json ELSE '[]' END)
+          WHERE json_each.type NOT IN ('integer','real')
+        )
       ORDER BY id
     `).all(model, dimensions) as Array<{ id: string; content_hash: string; embedding_json: string }>
     const now = new Date().toISOString()
@@ -12626,6 +12686,13 @@ export class PersonalMemoryStore {
     const rows = this.db.prepare(`
       SELECT d.* FROM search_documents d ${scopeJoin}
       WHERE d.embedding_model=? AND d.embedding_dimensions=? AND d.embedding_json IS NOT NULL
+        AND json_valid(d.embedding_json)=1
+        AND json_type(CASE WHEN json_valid(d.embedding_json)=1 THEN d.embedding_json ELSE '[]' END)='array'
+        AND json_array_length(CASE WHEN json_valid(d.embedding_json)=1 THEN d.embedding_json ELSE '[]' END)=d.embedding_dimensions
+        AND NOT EXISTS(
+          SELECT 1 FROM json_each(CASE WHEN json_valid(d.embedding_json)=1 THEN d.embedding_json ELSE '[]' END)
+          WHERE json_each.type NOT IN ('integer','real')
+        )
     `).all(model, vector.length) as any[]
     return this.rankVectorRows(rows, vector, limit, 'exact')
   }

@@ -11005,11 +11005,12 @@ function AiAssistantPage() {
               <div>
                 <span>覆盖 <b>{Math.round(Number(memoryDiagnostics.embeddings.ann.coverage || 0) * 100)}%</b></span>
                 <span>索引 <b>{Number(memoryDiagnostics.embeddings.ann.indexed || 0).toLocaleString()} / {Number(memoryDiagnostics.embeddings.ann.eligible || 0).toLocaleString()}</b></span>
+                <span>待补建 <b>{Number(memoryDiagnostics.embeddings.pending || 0).toLocaleString()}</b> / 损坏 {Number(memoryDiagnostics.embeddings.invalid || 0).toLocaleString()}</span>
                 <span>版本 <b>{memoryDiagnostics.embeddings.ann.version || 'lsh-v1'}</b></span>
                 <span>最近构建 <b>{memoryDiagnostics.embeddings.ann.lastBuiltAt
                   ? new Date(memoryDiagnostics.embeddings.ann.lastBuiltAt).toLocaleString('zh-CN') : '尚未需要'}</b></span>
               </div>
-              <small>索引可由加密库中的原始向量完全重建；版本、覆盖率或候选量不满足要求时自动回退精确扫描。</small>
+              <small>索引可由加密库中的有效向量完全重建；JSON 损坏、维度错误或非数字向量会重新进入补建队列，版本、覆盖率或候选量不满足要求时自动回退精确扫描。</small>
             </div>}
             {memoryDiagnostics.privacy && <div className={`assistant-privacy-audit ${memoryDiagnostics.privacy.secure && memoryDiagnostics.privacy.stateMode === '600' && memoryDiagnostics.stateStorage?.encrypted && sensitiveCachesSecure ? 'secure' : 'warning'}`}>
               <div><ShieldCheck size={15} /><span><b>本机隐私与权限审计</b>

@@ -7088,6 +7088,64 @@ test('vector metadata is retained for unchanged content and invalidated after ed
   assert.equal(store.getEmbeddingStats(model).pending, 1)
 }))
 
+test('malformed vectors remain pending and recover safely across restart', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'weflow-invalid-vector-'))
+  const databasePath = join(directory, 'memory.sqlite')
+  const key = randomBytes(32)
+  const model = 'test-invalid-vector:2d'
+  const tasks = Array.from({ length: 3 }, (_, index) => ({
+    id: `invalid-vector-task-${index}`,
+    title: `损坏向量测试 ${index}`,
+    priority: 'medium',
+    status: 'todo',
+    classification: 'mine'
+  }))
+  const first = new PersonalMemoryStore()
+  const reopened = new PersonalMemoryStore()
+  try {
+    first.initialize(databasePath, key)
+    first.syncTasks(tasks)
+    tasks.forEach(task => first.saveEmbedding(`task:${task.id}`, model, [1, 0]))
+    const database = (first as any).db
+    database.exec(`
+      UPDATE search_documents SET embedding_json='not-json'
+      WHERE id='task:invalid-vector-task-0';
+      UPDATE search_documents SET embedding_json='[1]'
+      WHERE id='task:invalid-vector-task-1';
+      UPDATE search_documents SET embedding_json='[1,null]'
+      WHERE id='task:invalid-vector-task-2';
+    `)
+    const invalid = first.getEmbeddingStats(model)
+    assert.equal(invalid.total, 3)
+    assert.equal(invalid.indexed, 0)
+    assert.equal(invalid.pending, 3)
+    assert.equal(invalid.invalid, 3)
+    assert.equal(first.listEmbeddingCandidates(model).length, 3)
+    assert.deepEqual(first.searchVector([1, 0], model), [])
+    assert.equal(first.ensureApproximateVectorIndex(model, {
+      minimumDocuments: 1
+    }).rebuilt, false)
+    first.close()
+
+    reopened.initialize(databasePath, key)
+    assert.equal(reopened.getEmbeddingStats(model).invalid, 3)
+    assert.equal(reopened.listEmbeddingCandidates(model).length, 3)
+    assert.equal(reopened.getEmbeddingStats('next-model:2d').invalid, 0)
+    reopened.saveEmbedding('task:invalid-vector-task-0', model, [1, 0])
+    reopened.saveEmbedding('task:invalid-vector-task-0', model, [Number.NaN, 0])
+    const repaired = reopened.getEmbeddingStats(model)
+    assert.equal(repaired.indexed, 1)
+    assert.equal(repaired.pending, 2)
+    assert.equal(repaired.invalid, 2)
+    assert.equal(reopened.searchVector([1, 0], model)[0]?.source_id,
+      'invalid-vector-task-0')
+  } finally {
+    first.close()
+    reopened.close()
+    rmSync(directory, { recursive: true, force: true })
+  }
+})
+
 test('local ANN index is deterministic, persistent, invalidated safely and falls back to exact search', () => {
   const directory = mkdtempSync(join(tmpdir(), 'weflow-ann-test-'))
   const databasePath = join(directory, 'memory.sqlite')
