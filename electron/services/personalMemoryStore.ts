@@ -9107,21 +9107,10 @@ export class PersonalMemoryStore {
     }
     const sourceIds = [...new Set((options.sourceIds || [])
       .map(value => String(value).trim().toLowerCase()).filter(Boolean))]
-    if (sourceIds.length) {
-      const placeholders = sourceIds.map(() => '?').join(',')
-      conditions.push(`(
-        EXISTS (SELECT 1 FROM search_document_evidence sde
-          WHERE sde.document_id=d.id AND LOWER(sde.source_id) IN (${placeholders}))
-        OR (d.document_type='claim' AND EXISTS (SELECT 1 FROM evidence e
-          WHERE e.claim_id=d.source_id AND LOWER(e.source_id) IN (${placeholders})))
-        OR (d.document_type='event' AND EXISTS (SELECT 1 FROM evidence e
-          WHERE e.event_id=d.source_id AND LOWER(e.source_id) IN (${placeholders})))
-        OR (d.document_type='relation' AND EXISTS (SELECT 1 FROM evidence e
-          WHERE e.relation_id=d.source_id AND LOWER(e.source_id) IN (${placeholders})))
-        OR ${entityEvidenceExists(`LOWER(ee.source_id) IN (${placeholders})`)}
-      )`)
-      parameters.push(...sourceIds, ...sourceIds, ...sourceIds, ...sourceIds, ...sourceIds)
-    }
+    const sessions = options.sessionId
+      ? [...new Set([options.sessionId, options.sessionName]
+          .map(value => String(value || '')).filter(Boolean))]
+      : []
     const relationTypes = [...new Set((options.relationTypes || [])
       .map(value => String(value).trim().toLowerCase()).filter(Boolean))]
     if (relationTypes.length) {
@@ -9131,22 +9120,6 @@ export class PersonalMemoryStore {
         )
       )`)
       for (const relationType of relationTypes) parameters.push(`%${relationType}%`, `%${relationType}%`)
-    }
-    if (options.sessionId) {
-      const sessions = [...new Set([options.sessionId, options.sessionName].map(value => String(value || '')).filter(Boolean))]
-      const placeholders = sessions.map(() => '?').join(',')
-      conditions.push(`(
-        EXISTS (SELECT 1 FROM search_document_evidence sde
-          WHERE sde.document_id=d.id AND sde.session_id IN (${placeholders}))
-        OR (d.document_type='claim' AND EXISTS (SELECT 1 FROM evidence e
-          WHERE e.claim_id=d.source_id AND e.session_id IN (${placeholders})))
-        OR (d.document_type='event' AND EXISTS (SELECT 1 FROM evidence e
-          WHERE e.event_id=d.source_id AND e.session_id IN (${placeholders})))
-        OR (d.document_type='relation' AND EXISTS (SELECT 1 FROM evidence e
-          WHERE e.relation_id=d.source_id AND e.session_id IN (${placeholders})))
-        OR ${entityEvidenceExists(`ee.session_id IN (${placeholders})`)}
-      )`)
-      parameters.push(...sessions, ...sessions, ...sessions, ...sessions, ...sessions)
     }
     if (options.entityId) {
       const terms = [...new Set((options.entityTerms || []).map(value => String(value).trim().toLowerCase()).filter(Boolean))]
@@ -9176,31 +9149,84 @@ export class PersonalMemoryStore {
     }
     const from = parseBoundary(options.from, false)
     const to = parseBoundary(options.to, true)
-    if (from !== null || to !== null) {
-      const range = (expression: string) => [
-        from === null ? '1=1' : `${expression}>=?`,
-        to === null ? '1=1' : `${expression}<=?`
-      ].join(' AND ')
-      const addRangeParameters = () => {
-        if (from !== null) parameters.push(from)
-        if (to !== null) parameters.push(to)
+    const hasEvidenceScope = sourceIds.length > 0 || sessions.length > 0
+    const hasDateScope = from !== null || to !== null
+    if (hasEvidenceScope || hasDateScope) {
+      const evidencePredicate = (alias: string, includeDate: boolean): string => {
+        const clauses: string[] = []
+        if (sourceIds.length) {
+          clauses.push(`LOWER(${alias}.source_id) IN (${sourceIds.map(() => '?').join(',')})`)
+          parameters.push(...sourceIds)
+        }
+        if (sessions.length) {
+          clauses.push(`${alias}.session_id IN (${sessions.map(() => '?').join(',')})`)
+          parameters.push(...sessions)
+        }
+        if (includeDate && from !== null) {
+          clauses.push(`${alias}.timestamp>=?`)
+          parameters.push(from)
+        }
+        if (includeDate && to !== null) {
+          clauses.push(`${alias}.timestamp<=?`)
+          parameters.push(to)
+        }
+        return clauses.length ? clauses.join(' AND ') : '1=1'
       }
-      const metadataExpressions = ['startAt', 'endAt', 'validFrom', 'validTo', 'due']
-      conditions.push(`(
+      const evidenceExists = (includeDate: boolean): string => `(
         EXISTS (SELECT 1 FROM search_document_evidence sde
-          WHERE sde.document_id=d.id AND ${range('sde.timestamp')})
+          WHERE sde.document_id=d.id AND ${evidencePredicate('sde', includeDate)})
         OR (d.document_type='claim' AND EXISTS (SELECT 1 FROM evidence e
-          WHERE e.claim_id=d.source_id AND ${range('e.timestamp')}))
+          WHERE e.claim_id=d.source_id AND ${evidencePredicate('e', includeDate)}))
         OR (d.document_type='event' AND EXISTS (SELECT 1 FROM evidence e
-          WHERE e.event_id=d.source_id AND ${range('e.timestamp')}))
+          WHERE e.event_id=d.source_id AND ${evidencePredicate('e', includeDate)}))
         OR (d.document_type='relation' AND EXISTS (SELECT 1 FROM evidence e
-          WHERE e.relation_id=d.source_id AND ${range('e.timestamp')}))
-        OR ${entityEvidenceExists(range('ee.timestamp'))}
-        OR ${metadataExpressions.map(key =>
-          `(json_extract(d.metadata_json,'$.${key}') IS NOT NULL AND ${range(`CAST(strftime('%s',json_extract(d.metadata_json,'$.${key}')) AS INTEGER)`)})`
-        ).join(' OR ')}
-      )`)
-      for (let index = 0; index < 5 + metadataExpressions.length; index += 1) addRangeParameters()
+          WHERE e.relation_id=d.source_id AND ${evidencePredicate('e', includeDate)}))
+        OR ${entityEvidenceExists(evidencePredicate('ee', includeDate))}
+      )`
+      const rangeExpression = (expression: string): string => {
+        const clauses: string[] = []
+        if (from !== null) {
+          clauses.push(`${expression}>=?`)
+          parameters.push(from)
+        }
+        if (to !== null) {
+          clauses.push(`${expression}<=?`)
+          parameters.push(to)
+        }
+        return clauses.length ? `(${clauses.join(' AND ')})` : '(1=1)'
+      }
+      const intervalExpression = (startKey: string, endKey: string): string => {
+        const start = `CAST(strftime('%s',json_extract(d.metadata_json,'$.${startKey}')) AS INTEGER)`
+        const end = `CAST(strftime('%s',json_extract(d.metadata_json,'$.${endKey}')) AS INTEGER)`
+        const clauses = [
+          `(json_extract(d.metadata_json,'$.${startKey}') IS NOT NULL OR json_extract(d.metadata_json,'$.${endKey}') IS NOT NULL)`
+        ]
+        if (to !== null) {
+          clauses.push(`COALESCE(${start},${end})<=?`)
+          parameters.push(to)
+        }
+        if (from !== null) {
+          clauses.push(`COALESCE(${end},${start})>=?`)
+          parameters.push(from)
+        }
+        return `(${clauses.join(' AND ')})`
+      }
+      const metadataDateMatches = () => `(
+        ${intervalExpression('startAt', 'endAt')}
+        OR ${intervalExpression('validFrom', 'validTo')}
+        OR (json_extract(d.metadata_json,'$.due') IS NOT NULL AND
+          ${rangeExpression(`CAST(strftime('%s',json_extract(d.metadata_json,'$.due')) AS INTEGER)`)})
+      )`
+      if (hasDateScope) {
+        const timedEvidence = evidenceExists(true)
+        const metadataMatch = metadataDateMatches()
+        const metadataWithScopedEvidence = hasEvidenceScope
+          ? `(${metadataMatch} AND ${evidenceExists(false)})`
+          : metadataMatch
+        conditions.push(`(${timedEvidence} OR ${metadataWithScopedEvidence})`)
+      } else {
+        conditions.push(evidenceExists(false))
+      }
     }
     if (!conditions.length) return null
     return new Set((this.db.prepare(`
@@ -10033,16 +10059,79 @@ export class PersonalMemoryStore {
   getDocumentEvidencePayload(
     documentType: string,
     sourceId: string,
-    scope: Pick<MemorySearchOptions, 'sourceIds' | 'sessionId' | 'sessionName'> = {}
-  ): { evidence: any[]; evidenceTotal: number } {
+    scope: Pick<
+      MemorySearchOptions,
+      'sourceIds' | 'sessionId' | 'sessionName' | 'from' | 'to'
+    > = {}
+  ): {
+    evidence: any[]
+    evidenceTotal: number
+    evidenceTimeScopeMode?: 'none' | 'document_time' | 'evidence_time'
+  } {
     if (!this.db) return { evidence: [], evidenceTotal: 0 }
     const sourceIds = [...new Set((scope.sourceIds || [])
       .map(value => String(value).trim().toLowerCase()).filter(Boolean))]
     const sessions = [...new Set([scope.sessionId, scope.sessionName]
       .map(value => String(value || '').trim()).filter(Boolean))]
-    const evidenceScope = (alias: string): { sql: string; parameters: string[] } => {
+    const dateBoundary = (value: string | undefined, endOfDay: boolean): number | null => {
+      const text = String(value || '').trim()
+      if (!text) return null
+      const normalized = /^\d{4}-\d{2}-\d{2}$/.test(text)
+        ? `${text}T${endOfDay ? '23:59:59.999' : '00:00:00.000'}+08:00`
+        : text
+      const milliseconds = Date.parse(normalized)
+      return Number.isFinite(milliseconds) ? Math.floor(milliseconds / 1000) : null
+    }
+    const from = dateBoundary(scope.from, false)
+    const to = dateBoundary(scope.to, true)
+    const documentId = `${documentType}:${sourceId}`
+    let metadata: any = {}
+    try {
+      const metadataRow = this.db.prepare(`
+        SELECT metadata_json FROM search_documents WHERE id=?
+      `).get(documentId) as any
+      metadata = JSON.parse(String(metadataRow?.metadata_json || '{}'))
+    } catch {}
+    const metadataTimestamp = (value: unknown): number | null => {
+      const milliseconds = Date.parse(String(value || ''))
+      return Number.isFinite(milliseconds) ? Math.floor(milliseconds / 1000) : null
+    }
+    const pointInRange = (value: unknown): boolean => {
+      const timestamp = metadataTimestamp(value)
+      return timestamp !== null &&
+        (from === null || timestamp >= from) &&
+        (to === null || timestamp <= to)
+    }
+    const intervalOverlaps = (startValue: unknown, endValue: unknown): boolean => {
+      const start = metadataTimestamp(startValue)
+      const end = metadataTimestamp(endValue)
+      if (start === null && end === null) return false
+      const effectiveStart = start ?? end!
+      const effectiveEnd = end ?? start!
+      return (to === null || effectiveStart <= to) &&
+        (from === null || effectiveEnd >= from)
+    }
+    const documentTimeMatches = (from !== null || to !== null) && (
+      intervalOverlaps(metadata.startAt, metadata.endAt) ||
+      intervalOverlaps(metadata.validFrom, metadata.validTo) ||
+      pointInRange(metadata.due)
+    )
+    const restrictEvidenceByDate =
+      (from !== null || to !== null) && !documentTimeMatches
+    const timeScope: {
+      evidenceTimeScopeMode?: 'document_time' | 'evidence_time'
+    } = from === null && to === null
+      ? {}
+      : {
+          evidenceTimeScopeMode: documentTimeMatches
+            ? 'document_time'
+            : 'evidence_time'
+        }
+    const evidenceScope = (
+      alias: string
+    ): { sql: string; parameters: Array<string | number> } => {
       const conditions: string[] = []
-      const parameters: string[] = []
+      const parameters: Array<string | number> = []
       if (sourceIds.length) {
         conditions.push(`LOWER(${alias}.source_id) IN (${sourceIds.map(() => '?').join(',')})`)
         parameters.push(...sourceIds)
@@ -10051,12 +10140,19 @@ export class PersonalMemoryStore {
         conditions.push(`${alias}.session_id IN (${sessions.map(() => '?').join(',')})`)
         parameters.push(...sessions)
       }
+      if (restrictEvidenceByDate && from !== null) {
+        conditions.push(`${alias}.timestamp>=?`)
+        parameters.push(from)
+      }
+      if (restrictEvidenceByDate && to !== null) {
+        conditions.push(`${alias}.timestamp<=?`)
+        parameters.push(to)
+      }
       return {
         sql: conditions.length ? ` AND ${conditions.join(' AND ')}` : '',
         parameters
       }
     }
-    const documentId = `${documentType}:${sourceId}`
     if (documentType === 'entity') {
       const directScope = evidenceScope('ee')
       const entityScopeCte = `
@@ -10074,7 +10170,7 @@ export class PersonalMemoryStore {
         SELECT COUNT(*) AS count FROM entity_evidence ee
         WHERE ee.entity_id IN (SELECT entity_id FROM entity_scope)${directScope.sql}
       `).get(sourceId, ...directScope.parameters) as any)?.count || 0)
-      if (!evidenceTotal) return { evidence: [], evidenceTotal: 0 }
+      if (!evidenceTotal) return { evidence: [], evidenceTotal: 0, ...timeScope }
       const evidence = (this.db.prepare(`
         ${entityScopeCte}
         SELECT ee.source_id,ee.message_id,ee.session_id,ee.timestamp,ee.sender,ee.excerpt,
@@ -10084,7 +10180,7 @@ export class PersonalMemoryStore {
         ORDER BY ee.timestamp DESC,ee.source_id DESC,ee.session_id DESC,ee.message_id DESC
         LIMIT ?
       `).all(sourceId, ...directScope.parameters, MEMORY_CARD_EVIDENCE_LIMIT) as any[]).reverse()
-      return { evidence, evidenceTotal }
+      return { evidence, evidenceTotal, ...timeScope }
     }
     const genericScope = evidenceScope('sde')
     const genericTotal = Number((this.db.prepare(`
@@ -10099,7 +10195,7 @@ export class PersonalMemoryStore {
         ORDER BY sde.timestamp DESC,sde.message_id DESC
         LIMIT ?
       `).all(documentId, ...genericScope.parameters, MEMORY_CARD_EVIDENCE_LIMIT) as any[]).reverse()
-      return { evidence, evidenceTotal: genericTotal }
+      return { evidence, evidenceTotal: genericTotal, ...timeScope }
     }
     const foreignKey = documentType === 'claim'
       ? 'claim_id'
@@ -10108,13 +10204,13 @@ export class PersonalMemoryStore {
         : documentType === 'relation'
           ? 'relation_id'
           : ''
-    if (!foreignKey) return { evidence: [], evidenceTotal: 0 }
+    if (!foreignKey) return { evidence: [], evidenceTotal: 0, ...timeScope }
     const structuredScope = evidenceScope('e')
     const evidenceTotal = Number((this.db.prepare(`
       SELECT COUNT(*) AS count FROM evidence e
       WHERE e.${foreignKey}=?${structuredScope.sql}
     `).get(sourceId, ...structuredScope.parameters) as any)?.count || 0)
-    if (!evidenceTotal) return { evidence: [], evidenceTotal: 0 }
+    if (!evidenceTotal) return { evidence: [], evidenceTotal: 0, ...timeScope }
     const evidence = (this.db.prepare(`
       SELECT source_id,message_id,session_id,timestamp,sender,excerpt,evidence_role
       FROM evidence e
@@ -10124,7 +10220,7 @@ export class PersonalMemoryStore {
         e.message_id DESC
       LIMIT ?
     `).all(sourceId, ...structuredScope.parameters, MEMORY_CARD_EVIDENCE_LIMIT) as any[]).reverse()
-    return { evidence, evidenceTotal }
+    return { evidence, evidenceTotal, ...timeScope }
   }
 
   getDocumentEvidence(documentType: string, sourceId: string): any[] {

@@ -1721,6 +1721,17 @@ test('memory cards expose evidence totals but bound their latest evidence payloa
     manyEvidence.slice(-MEMORY_CARD_EVIDENCE_LIMIT).map(item => item.messageId)
   )
   assert.deepEqual(store.getDocumentEvidence('claim', 'bounded-claim'), searchPayload.evidence)
+  const boundedFrom = new Date(1_700_000_110 * 1000).toISOString()
+  const boundedTo = new Date(1_700_000_115 * 1000).toISOString()
+  const scopedStructuredPayload = store.getDocumentEvidencePayload('claim', 'bounded-claim', {
+    from: boundedFrom,
+    to: boundedTo
+  })
+  assert.equal(scopedStructuredPayload.evidenceTotal, 6)
+  assert.deepEqual(
+    scopedStructuredPayload.evidence.map(item => item.message_id),
+    manyEvidence.slice(110, 116).map(item => item.messageId)
+  )
   assert.equal(Number((store as any).db.prepare(
     'SELECT COUNT(*) AS count FROM search_document_evidence WHERE document_id=?'
   ).get('claim:bounded-claim').count), 0)
@@ -1770,6 +1781,15 @@ test('memory cards expose evidence totals but bound their latest evidence payloa
     content: '验证非结构化记忆的完整证据分页',
     evidence: manyEvidence.map(item => ({ ...item, sender: '证据发送者' }))
   }])
+  const scopedGenericPayload = store.getDocumentEvidencePayload('resource', 'bounded-resource', {
+    from: boundedFrom,
+    to: boundedTo
+  })
+  assert.equal(scopedGenericPayload.evidenceTotal, 6)
+  assert.deepEqual(
+    scopedGenericPayload.evidence.map(item => item.message_id),
+    manyEvidence.slice(110, 116).map(item => item.messageId)
+  )
   const genericFirstPage = store.getDocumentEvidencePage('resource', 'bounded-resource', { limit: 40 })
   const genericLastPage = store.getDocumentEvidencePage('resource', 'bounded-resource', {
     offset: 120,
@@ -4500,6 +4520,16 @@ test('direct entity evidence is keyword searchable, scope aware and hydrated as 
   const payload = store.getDocumentEvidencePayload('entity', 'searchable-evidence-entity')
   assert.equal(payload.evidenceTotal, 2)
   assert.ok(payload.evidence.every(item => item.evidence_role === 'original'))
+  const datedEntityPayload = store.getDocumentEvidencePayload(
+    'entity',
+    'searchable-evidence-entity',
+    {
+      from: new Date(1_920_000_050 * 1000).toISOString(),
+      to: new Date(1_920_000_150 * 1000).toISOString()
+    }
+  )
+  assert.equal(datedEntityPayload.evidenceTotal, 1)
+  assert.equal(datedEntityPayload.evidence[0].message_id, 'mail:new-identity')
   const hydratedDocument = store.getSearchDocumentById('entity:searchable-evidence-entity')
   assert.equal(hydratedDocument.evidenceTotal, 2)
   assert.equal(hydratedDocument.evidence.length, 2)
@@ -6964,12 +6994,32 @@ test('database retrieval scope covers entity links, relation type and evidence t
     eventType: 'meeting',
     title: '范围会议',
     description: '',
-    startAt: '2025-08-01T10:00:00.000Z',
+    startAt: '2025-07-01T10:00:00.000Z',
+    endAt: '2025-09-01T10:00:00.000Z',
     confidence: 0.8,
     status: 'candidate',
     searchText: '范围人物参加范围会议',
     participants: [{ entityId: 'scope-person', role: 'participant' }],
-    evidence: [{ sourceId: 'calendar', messageId: 'scope-event-message', sessionId: 'scope-session', timestamp: 1_754_040_000, excerpt: '参加范围会议' }]
+    evidence: [{ sourceId: 'calendar', messageId: 'scope-event-message', sessionId: 'scope-session', timestamp: 1_735_689_600, excerpt: '提前安排范围会议' }]
+  }])
+  store.upsertResources([{
+    id: 'scope-combination-resource',
+    resourceType: 'document',
+    title: '组合范围资料',
+    content: '验证组合范围必须由同一条证据满足',
+    evidence: [{
+      sourceId: 'mail',
+      messageId: 'scope-mail-old',
+      sessionId: 'mail-session',
+      timestamp: 1_735_689_600,
+      excerpt: '旧邮件证据'
+    }, {
+      sourceId: 'wechat',
+      messageId: 'scope-wechat-new',
+      sessionId: 'wechat-session',
+      timestamp: 1_785_556_800,
+      excerpt: '新微信证据'
+    }]
   }])
   const entityScope = store.listScopedSearchDocumentIds({
     entityId: 'scope-person',
@@ -6988,10 +7038,46 @@ test('database retrieval scope covers entity links, relation type and evidence t
     to: '2025-08-01'
   })
   assert.ok(dateScope?.has('event:scope-event'))
-  assert.deepEqual(
-    [...(store.listScopedSearchDocumentIds({ sourceIds: ['wechat'] }) || [])],
-    ['relation:scope-relation']
-  )
+  assert.ok(store.listScopedSearchDocumentIds({
+    sourceIds: ['calendar'],
+    sessionId: 'scope-session',
+    from: '2025-08-01',
+    to: '2025-08-01'
+  })?.has('event:scope-event'))
+  assert.equal(store.listScopedSearchDocumentIds({
+    sourceIds: ['calendar'],
+    sessionId: 'other-session',
+    from: '2025-08-01',
+    to: '2025-08-01'
+  })?.has('event:scope-event'), false)
+  assert.equal(store.listScopedSearchDocumentIds({
+    sourceIds: ['mail'],
+    sessionId: 'wechat-session',
+    from: '2026-08-01',
+    to: '2026-08-01'
+  })?.has('resource:scope-combination-resource'), false)
+  assert.ok(store.listScopedSearchDocumentIds({
+    sourceIds: ['wechat'],
+    sessionId: 'wechat-session',
+    from: '2026-08-01',
+    to: '2026-08-01'
+  })?.has('resource:scope-combination-resource'))
+  const eventTimePayload = store.getDocumentEvidencePayload('event', 'scope-event', {
+    from: '2025-08-01',
+    to: '2025-08-01'
+  })
+  assert.equal(eventTimePayload.evidenceTimeScopeMode, 'document_time')
+  assert.equal(eventTimePayload.evidenceTotal, 1)
+  assert.equal(eventTimePayload.evidence[0].message_id, 'scope-event-message')
+  const evidenceTimePayload = store.getDocumentEvidencePayload('relation', 'scope-relation', {
+    from: '2026-08-01',
+    to: '2026-08-01'
+  })
+  assert.equal(evidenceTimePayload.evidenceTimeScopeMode, 'evidence_time')
+  assert.equal(evidenceTimePayload.evidenceTotal, 0)
+  assert.deepEqual(new Set(
+    store.listScopedSearchDocumentIds({ sourceIds: ['wechat'] }) || []
+  ), new Set(['relation:scope-relation', 'resource:scope-combination-resource']))
   assert.deepEqual(
     [...(store.listScopedSearchDocumentIds({ sourceIds: ['calendar'] }) || [])],
     ['event:scope-event']

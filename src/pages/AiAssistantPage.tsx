@@ -6396,6 +6396,10 @@ function AiAssistantPage() {
                 {result.semantic_search_mode === 'ann' ? ' · ANN 召回' : result.semantic_search_mode === 'exact' ? ' · 精确向量召回' : ''}
               </span>
               <small className={`assistant-memory-trust ${resultStatus || 'source'}`}>{statusLabel}{resultStatus === 'candidate' ? ' · 不能作为已确认事实回答' : resultStatus === 'cancelled' ? ' · 仅作历史记录' : ''}</small>
+              {result.evidenceTimeScopeMode === 'document_time' &&
+                <small className="assistant-memory-time-scope">按记忆的发生、有效或截止时间命中；支撑原文可能早于当前时间范围。</small>}
+              {result.evidenceTimeScopeMode === 'evidence_time' &&
+                <small className="assistant-memory-time-scope">展示与问答仅使用当前时间范围内的原文。</small>}
               <strong>{result.title}</strong><p>{result.search_text}</p>
               {matchedEvidence && <div className="assistant-search-matched-evidence">
                 <header>
