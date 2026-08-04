@@ -1,3 +1,5 @@
+import { compactEntityEvidenceMessageIds } from './entityEvidenceHotset.ts'
+
 export const GRAPH_COMMIT_RECOVERY_VERSION = 'graph-sql-authority-v1'
 
 export function shouldRecoverGraphFromSql(
@@ -25,10 +27,10 @@ export function recoverGraphStateFromSql(
     entities: (Array.isArray(snapshot?.entities) ? snapshot.entities : []).map((entity: any) => ({
       ...previousEntities.get(entity.id),
       ...entity,
-      evidenceMessageIds: [...new Set([
+      evidenceMessageIds: compactEntityEvidenceMessageIds([
         ...(entity.evidenceMessageIds || []),
         ...((previousEntities.get(entity.id) as any)?.evidenceMessageIds || [])
-      ])]
+      ])
     })),
     relations: (Array.isArray(snapshot?.relations) ? snapshot.relations : []).map((relation: any) => ({
       ...previousRelations.get(relation.id),

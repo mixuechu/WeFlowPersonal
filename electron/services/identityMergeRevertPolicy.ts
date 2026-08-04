@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto'
+import { compactEntityEvidenceMessageIds } from '../../shared/entityEvidenceHotset.ts'
 
 function stableHash(value: unknown): string {
   const normalize = (input: any): any => {
@@ -74,10 +75,10 @@ export function buildExpectedMergedTarget(source: any, target: any): any {
     ])].filter(alias => alias && alias !== target?.canonicalName),
     accountIds: [...new Set([...(target?.accountIds || []), ...(source?.accountIds || [])])],
     externalIdentities: [...identities.values()],
-    evidenceMessageIds: [...new Set([
+    evidenceMessageIds: compactEntityEvidenceMessageIds([
       ...(target?.evidenceMessageIds || []),
       ...(source?.evidenceMessageIds || [])
-    ])],
+    ]),
     summary,
     summaryStatus: summary === source?.summary ? source?.summaryStatus : target?.summaryStatus,
     confidence: Math.max(Number(target?.confidence || 0), Number(source?.confidence || 0)),

@@ -8914,6 +8914,17 @@ function AiAssistantPage() {
                 <span>单关系上限 <b>{Number(memoryDiagnostics.graphRelationEvidenceHotset.hotLimitPerRelation || 100)}</b></span>
               </div>
             </div>}
+            {memoryDiagnostics.graphEntityEvidenceHotset?.version && <div className="assistant-recovery-audit healthy">
+              <header><Database size={15} /><span><b>图谱身份原文热窗口</b>
+                <small>人物与项目的完整原文仍由 SQLCipher 按需检索；常驻图谱只保留最近消息身份，新增、合并与断电恢复共用同一硬上限。</small>
+              </span></header>
+              <div className="assistant-recovery-current">
+                <span>图谱实体 <b>{Number(memoryDiagnostics.graphEntityEvidenceHotset.entities || 0).toLocaleString()}</b></span>
+                <span>内存消息键 <b>{Number(memoryDiagnostics.graphEntityEvidenceHotset.inMemoryMessageIds || 0).toLocaleString()}</b></span>
+                <span>达到窗口上限 <b>{Number(memoryDiagnostics.graphEntityEvidenceHotset.entitiesAtLimit || 0).toLocaleString()}</b></span>
+                <span>单实体上限 <b>{Number(memoryDiagnostics.graphEntityEvidenceHotset.hotLimitPerEntity || 500)}</b></span>
+              </div>
+            </div>}
             {memoryDiagnostics.identityMergeSnapshotStorage?.version && <div className="assistant-recovery-audit healthy">
               <header><Database size={15} /><span><b>身份合并可逆快照</b>
                 <small>每次合并只加密保存双方档案及受影响的关系、事件参与和审阅记录，不再复制整张关系图。</small>

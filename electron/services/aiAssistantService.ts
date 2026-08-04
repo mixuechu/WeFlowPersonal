@@ -129,6 +129,10 @@ import {
   inspectIdentityMergeRevert,
   restoreIdentityMergeGraph
 } from './identityMergeRevertPolicy'
+import {
+  ENTITY_EVIDENCE_MESSAGE_HOT_LIMIT,
+  compactEntityEvidenceMessageIds
+} from '../../shared/entityEvidenceHotset.ts'
 import { applyRelationConfirmation, planRelationConfirmation, type RelationCorrection } from './relationCorrectionPolicy'
 import {
   enqueueUniqueNotification,
@@ -814,6 +818,9 @@ export class AiAssistantService {
             externalIdentities: Array.isArray(entity.externalIdentities) ? entity.externalIdentities : [],
             summaryStatus: entity.summaryStatus || (entity.summary ? 'legacy_unverified' : 'empty'),
             trustStatus: inferLegacyEntityTrustStatus(entity),
+            evidenceMessageIds: compactEntityEvidenceMessageIds(
+              Array.isArray(entity.evidenceMessageIds) ? entity.evidenceMessageIds : []
+            ),
             identityVersion: Number(entity.identityVersion || 1),
             lastDisambiguatedAt: entity.lastDisambiguatedAt || null
           })) : [],
@@ -1983,7 +1990,10 @@ export class AiAssistantService {
           }
         }
         existing.confidence = Math.max(existing.confidence, Number(item.confidence || 0))
-        existing.evidenceMessageIds = [...new Set([...existing.evidenceMessageIds, ...evidenceIds])].slice(-500)
+        existing.evidenceMessageIds = compactEntityEvidenceMessageIds([
+          ...existing.evidenceMessageIds,
+          ...evidenceIds
+        ])
         existing.updatedAt = now
         if (before !== JSON.stringify([existing.canonicalName, existing.aliases, existing.accountIds, existing.summary])) existing.identityVersion += 1
         const summaryCandidate = buildEntitySummaryCandidate({
@@ -2025,7 +2035,7 @@ export class AiAssistantService {
           summaryStatus: 'empty',
           trustStatus: accountIds.length ? 'confirmed' : 'candidate',
           confidence: Math.max(0, Math.min(1, Number(item.confidence || 0.6))),
-          evidenceMessageIds: evidenceIds,
+          evidenceMessageIds: compactEntityEvidenceMessageIds(evidenceIds),
           createdAt: now,
           updatedAt: now,
           identityVersion: 1,
@@ -3768,6 +3778,7 @@ export class AiAssistantService {
         authoritativeEntities: this.state.graph.entities.length,
         entityDirectory: 'server_search_on_demand',
         entityProfiles: 'on_demand',
+        entityEvidenceMessageIds: 'sqlcipher_authoritative_hotset_500',
         relationEvidence: 'sqlcipher_authoritative_hotset_100',
         reviewEntities: 'page_scoped'
       },
@@ -4670,9 +4681,23 @@ export class AiAssistantService {
     )
     const relationEvidenceRows = [...relationEvidenceCounts.values()]
       .reduce((total, count) => total + Number(count || 0), 0)
+    const entityEvidenceMessageRows = this.state.graph.entities.reduce(
+      (total, entity) => total + Number(entity.evidenceMessageIds?.length || 0),
+      0
+    )
     return {
       ...databaseDiagnostics,
       identityMergeSnapshotStorage: personalMemoryStore.getIdentityMergeSnapshotStorageStats(),
+      graphEntityEvidenceHotset: {
+        version: 'graph-entity-evidence-hotset-v1',
+        hotLimitPerEntity: ENTITY_EVIDENCE_MESSAGE_HOT_LIMIT,
+        entities: this.state.graph.entities.length,
+        inMemoryMessageIds: entityEvidenceMessageRows,
+        entitiesAtLimit: this.state.graph.entities.filter(entity =>
+          Number(entity.evidenceMessageIds?.length || 0) >= ENTITY_EVIDENCE_MESSAGE_HOT_LIMIT).length,
+        authoritativeEvidence: 'sqlcipher_on_demand',
+        mergeAndRecoveryBounded: true
+      },
       graphRelationEvidenceHotset: {
         version: 'graph-relation-evidence-hotset-v1',
         hotLimitPerRelation: 100,
@@ -5793,7 +5818,10 @@ export class AiAssistantService {
             .map(identity => [`${identity.platform}:${identity.accountId.toLowerCase()}`, identity])
         )
         target.externalIdentities = [...identities.values()]
-        target.evidenceMessageIds = [...new Set([...target.evidenceMessageIds, ...source.evidenceMessageIds])]
+        target.evidenceMessageIds = compactEntityEvidenceMessageIds([
+          ...target.evidenceMessageIds,
+          ...source.evidenceMessageIds
+        ])
         target.summary = target.summary || source.summary
         target.summaryStatus = target.summary === source.summary
           ? source.summaryStatus

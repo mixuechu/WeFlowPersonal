@@ -189,3 +189,25 @@ test('identity merge snapshot keeps only affected reversible state at graph scal
   assert.ok(restored.relations.some(relation =>
     relation.subjectId === 'other' && relation.objectId === 'fourth'))
 })
+
+test('identity merge and revert inspection share one bounded entity evidence window', () => {
+  const input = fixture()
+  input.snapshot.target.evidenceMessageIds = Array.from(
+    { length: 500 }, (_, index) => `target-message-${index}`)
+  input.snapshot.source.evidenceMessageIds = Array.from(
+    { length: 500 }, (_, index) => `source-message-${index}`)
+  input.currentGraph.entities[0] = buildExpectedMergedTarget(
+    input.snapshot.source,
+    input.snapshot.target
+  )
+  assert.equal(input.currentGraph.entities[0].evidenceMessageIds.length, 500)
+  assert.equal(input.currentGraph.entities[0].evidenceMessageIds[0], 'source-message-0')
+  const inspection = inspectIdentityMergeRevert({
+    snapshot: input.snapshot,
+    currentGraph: input.currentGraph,
+    currentSourceParticipants: input.sourceParticipants,
+    currentTargetParticipants: input.targetParticipants,
+    currentIdentityDecision: input.identityDecision
+  })
+  assert.equal(inspection.safe, true)
+})

@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto'
 import type { PersonalDataSourceItem } from './personalDataSources.ts'
+import { compactEntityEvidenceMessageIds } from '../../shared/entityEvidenceHotset.ts'
 
 export type ExternalIdentity = {
   platform: string
@@ -122,7 +123,10 @@ export function mapCalendarParticipantIdentities(
         const identity = entity.externalIdentities!.find(value =>
           value.platform === 'email' && normalizeEmailIdentity(value.accountId) === email)
         if (identity && displayName && identity.displayName !== displayName) identity.displayName = displayName
-        entity.evidenceMessageIds = [...new Set([...entity.evidenceMessageIds, evidenceId])].slice(-500)
+        entity.evidenceMessageIds = compactEntityEvidenceMessageIds([
+          ...entity.evidenceMessageIds,
+          evidenceId
+        ])
         const identityChanged = identityBefore !== JSON.stringify([entity.aliases, entity.externalIdentities])
         const evidenceChanged = evidenceBefore !== JSON.stringify(entity.evidenceMessageIds)
         if (identityChanged || evidenceChanged) {
