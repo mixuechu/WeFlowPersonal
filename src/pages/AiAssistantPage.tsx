@@ -974,6 +974,7 @@ function AiAssistantPage() {
   const [assistantAnswerReviewHistories, setAssistantAnswerReviewHistories] =
     useState<Record<string, any>>({})
   const assistantAnswerReviewsGate = useRef(new LatestRequestGate())
+  const assistantAnswerReviewHistoryGates = useRef(new Map<string, LatestRequestGate>())
   const [askingMemory, setAskingMemory] = useState(false)
   const [creatingMemoryTask, setCreatingMemoryTask] = useState(false)
   const [memoryEntityFilter, setMemoryEntityFilter] = useState('')
@@ -5199,6 +5200,8 @@ function AiAssistantPage() {
     setAssistantAnswerReviewSaving(messageId)
     try {
       await window.electronAPI.aiAssistant.reviewAssistantAnswer(messageId, action)
+      assistantAnswerReviewHistoryGates.current.get(messageId)?.invalidate()
+      assistantAnswerReviewHistoryGates.current.delete(messageId)
       setAssistantAnswerReviewHistories(current => {
         const next = { ...current }
         delete next[messageId]
@@ -5215,7 +5218,18 @@ function AiAssistantPage() {
     }
   }
 
+  const assistantAnswerReviewHistoryGate = (messageId: string): LatestRequestGate => {
+    let gate = assistantAnswerReviewHistoryGates.current.get(messageId)
+    if (!gate) {
+      gate = new LatestRequestGate()
+      assistantAnswerReviewHistoryGates.current.set(messageId, gate)
+    }
+    return gate
+  }
+
   const loadAssistantAnswerReviewHistory = async (messageId: string): Promise<void> => {
+    const gate = assistantAnswerReviewHistoryGate(messageId)
+    const request = gate.begin()
     setAssistantAnswerReviewHistories(current => ({
       ...current,
       [messageId]: { items: [], total: 0, hasMore: false, loading: true }
@@ -5223,8 +5237,11 @@ function AiAssistantPage() {
     try {
       const page = await window.electronAPI.aiAssistant
         .getAssistantAnswerReviewDecisions(messageId, { limit: 20 })
+      if (!gate.isCurrent(request)) return
       if (page.stale) {
-        window.setTimeout(() => void loadAssistantAnswerReviewHistory(messageId), 250)
+        window.setTimeout(() => {
+          if (gate.isCurrent(request)) void loadAssistantAnswerReviewHistory(messageId)
+        }, 250)
         return
       }
       setAssistantAnswerReviewHistories(current => ({
@@ -5232,6 +5249,7 @@ function AiAssistantPage() {
         [messageId]: { ...page, loading: false }
       }))
     } catch (error) {
+      if (!gate.isCurrent(request)) return
       setAssistantAnswerReviewHistories(current => ({
         ...current,
         [messageId]: {
@@ -5244,6 +5262,8 @@ function AiAssistantPage() {
 
   const toggleAssistantAnswerReviewHistory = async (messageId: string) => {
     if (assistantAnswerReviewHistories[messageId]) {
+      assistantAnswerReviewHistoryGate(messageId).invalidate()
+      assistantAnswerReviewHistoryGates.current.delete(messageId)
       setAssistantAnswerReviewHistories(current => {
         const next = { ...current }
         delete next[messageId]
@@ -5257,6 +5277,8 @@ function AiAssistantPage() {
   const loadMoreAssistantAnswerReviewHistory = async (messageId: string) => {
     const history = assistantAnswerReviewHistories[messageId]
     if (!history || history.loading || !history.hasMore) return
+    const gate = assistantAnswerReviewHistoryGate(messageId)
+    const request = gate.begin()
     setAssistantAnswerReviewHistories(current => ({
       ...current,
       [messageId]: { ...current[messageId], loading: true }
@@ -5266,6 +5288,7 @@ function AiAssistantPage() {
         messageId,
         { offset: history.items.length, limit: 20, revision: history.revision }
       )
+      if (!gate.isCurrent(request)) return
       if (page.stale) {
         setMessage('这条回答的处理记录已有变化，已自动重新载入')
         await loadAssistantAnswerReviewHistory(messageId)
@@ -5280,6 +5303,7 @@ function AiAssistantPage() {
         }
       }))
     } catch (error) {
+      if (!gate.isCurrent(request)) return
       setAssistantAnswerReviewHistories(current => ({
         ...current,
         [messageId]: {
@@ -7157,7 +7181,8 @@ function AiAssistantPage() {
                     {assistantAnswerReviewHistories[item.message_id].hasMore &&
                       !assistantAnswerReviewHistories[item.message_id].loading && <button
                         onClick={() => void loadMoreAssistantAnswerReviewHistory(item.message_id)}>
-                        加载更早记录
+                        加载更早记录（已显示 {assistantAnswerReviewHistories[item.message_id].items.length}
+                        / {assistantAnswerReviewHistories[item.message_id].total}）
                       </button>}
                   </section>}
                 </article>)}
