@@ -4113,6 +4113,28 @@ export class AiAssistantService {
     }
   }
 
+  getTaskCalendarPage(options: any = {}): any {
+    const page = personalMemoryStore.listTaskCalendarPage({
+      month: String(options?.month || ''),
+      status: ['todo', 'doing', 'waiting'].includes(options?.status) ? options.status : 'all',
+      priority: ['high', 'medium', 'low'].includes(options?.priority) ? options.priority : '',
+      taskKind: ['action', 'delegated', 'waiting'].includes(options?.taskKind) ? options.taskKind : '',
+      query: String(options?.query || ''),
+      limit: Number(options?.limit || 200),
+      offset: Number(options?.offset || 0),
+      revision: String(options?.revision || '')
+    })
+    if (page.stale) return page
+    const tasks = new Map(this.state.tasks.map(task => [task.id, task]))
+    return {
+      ...page,
+      items: page.items.map((item: any) => {
+        const task = tasks.get(String(item.id || ''))
+        return task ? { ...item, mutationToken: buildTaskMutationToken(task) } : item
+      })
+    }
+  }
+
   getTaskOwnershipReviews(options: any = {}): any {
     return personalMemoryStore.listTaskOwnershipReviews({
       classification: String(options?.classification || ''),

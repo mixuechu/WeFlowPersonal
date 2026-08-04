@@ -1785,6 +1785,13 @@ export interface ElectronAPI {
         revision: string
         stale: boolean
       }>
+      getTaskCalendarPage: (options?: any) => Promise<{
+        items: any[]
+        total: number
+        hasMore: boolean
+        revision: string
+        stale: boolean
+      }>
       getTaskArchive: (options?: any) => Promise<{
         items: any[]
         total: number

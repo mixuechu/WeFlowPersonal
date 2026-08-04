@@ -5708,6 +5708,57 @@ test('active task workset stays filtered, pageable, and revision safe at scale',
   assert.equal(store.listActiveTaskWorkset({ taskId: 'active-task-0997' }).total, 0)
 }))
 
+test('task calendar pages every matching task in a month without depending on workset loading', () => withStore(store => {
+  const tasks = Array.from({ length: 505 }, (_, index) => ({
+    id: `calendar-task-${String(index).padStart(4, '0')}`,
+    title: index === 404 ? '月历独立检索关键词' : `月历任务 ${index}`,
+    detail: `月历任务详情 ${index}`,
+    owner: '我',
+    taskKind: ['action', 'delegated', 'waiting'][index % 3],
+    priority: ['high', 'medium', 'low'][index % 3],
+    confidence: 0.93,
+    classification: index === 503 ? 'others' : 'mine',
+    status: index === 502 ? 'done' : ['todo', 'doing', 'waiting'][index % 3],
+    due: index === 501 ? '2026-09-01' : `2026-08-${String((index % 28) + 1).padStart(2, '0')}`,
+    createdAt: new Date(1_700_000_000_000 + index * 10_000).toISOString(),
+    updatedAt: new Date(1_800_000_000_000 + index * 10_000).toISOString(),
+    evidence: []
+  }))
+  store.syncTasks(tasks)
+
+  const first = store.listTaskCalendarPage({ month: '2026-08', limit: 200 })
+  const second = store.listTaskCalendarPage({
+    month: '2026-08', offset: 200, limit: 200, revision: first.revision
+  })
+  const third = store.listTaskCalendarPage({
+    month: '2026-08', offset: 400, limit: 200, revision: first.revision
+  })
+  assert.equal(first.total, 502)
+  assert.equal(first.items.length, 200)
+  assert.equal(second.items.length, 200)
+  assert.equal(third.items.length, 102)
+  assert.equal(third.hasMore, false)
+  assert.equal(new Set([...first.items, ...second.items, ...third.items].map(item => item.id)).size, 502)
+  assert.equal(store.listTaskCalendarPage({ month: '2026-09' }).total, 1)
+  assert.equal(store.listTaskCalendarPage({ month: '2026-08', priority: 'high' }).total, 168)
+  assert.equal(store.listTaskCalendarPage({ month: '2026-08', taskKind: 'delegated' }).total, 167)
+  assert.equal(
+    store.listTaskCalendarPage({ month: '2026-08', query: '月历独立检索关键词' }).items[0]?.id,
+    'calendar-task-0404'
+  )
+  assert.equal(store.listTaskCalendarPage({ month: 'not-a-month' }).total, 0)
+
+  store.syncTasks(tasks.map(task => task.id === 'calendar-task-0404'
+    ? { ...task, due: '2026-09-02', updatedAt: '2026-08-04T10:00:00.000Z' }
+    : task))
+  const stale = store.listTaskCalendarPage({
+    month: '2026-08', offset: 200, limit: 200, revision: first.revision
+  })
+  assert.equal(stale.stale, true)
+  assert.equal(stale.items.length, 0)
+  assert.equal(store.listTaskCalendarPage({ month: '2026-08' }).total, 501)
+}))
+
 test('task archive survives a SQLCipher process-style reopen', () => {
   const directory = mkdtempSync(join(tmpdir(), 'weflow-task-archive-restart-'))
   const databasePath = join(directory, 'memory.sqlite')

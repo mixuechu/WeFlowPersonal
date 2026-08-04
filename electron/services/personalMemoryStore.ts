@@ -6488,6 +6488,108 @@ export class PersonalMemoryStore {
     }
   }
 
+  listTaskCalendarPage(options: {
+    month?: string
+    status?: 'todo' | 'doing' | 'waiting' | 'all'
+    priority?: string
+    taskKind?: string
+    query?: string
+    limit?: number
+    offset?: number
+    revision?: string
+  } = {}): {
+    items: any[]
+    total: number
+    hasMore: boolean
+    revision: string
+    stale: boolean
+  } {
+    if (!this.db) {
+      return { items: [], total: 0, hasMore: false, revision: '0', stale: false }
+    }
+    const revision = this.getTaskArchiveRevision()
+    const offset = Math.max(0, Math.min(1_000_000, Math.floor(Number(options.offset) || 0)))
+    if (offset > 0 && String(options.revision || '') !== revision) {
+      return { items: [], total: 0, hasMore: false, revision, stale: true }
+    }
+    const month = /^\d{4}-(0[1-9]|1[0-2])$/.test(String(options.month || ''))
+      ? String(options.month)
+      : ''
+    if (!month) {
+      return { items: [], total: 0, hasMore: false, revision, stale: false }
+    }
+    const conditions = [
+      `classification='mine'`,
+      `status IN ('todo','doing','waiting')`,
+      `substr(due,1,7)=?`
+    ]
+    const parameters: Array<string | number> = [month]
+    const status = String(options.status || '').trim()
+    if (['todo', 'doing', 'waiting'].includes(status)) {
+      conditions.push('status=?')
+      parameters.push(status)
+    }
+    const priority = String(options.priority || '').trim()
+    if (priority) {
+      conditions.push('priority=?')
+      parameters.push(priority)
+    }
+    const taskKind = String(options.taskKind || '').trim()
+    if (taskKind) {
+      conditions.push('task_kind=?')
+      parameters.push(taskKind)
+    }
+    const query = String(options.query || '').trim().toLocaleLowerCase('zh-CN')
+    if (query) {
+      conditions.push(`instr(lower(title || char(0) || payload_json),?)>0`)
+      parameters.push(query)
+    }
+    const where = conditions.join(' AND ')
+    const total = Number((this.db.prepare(`
+      SELECT COUNT(*) AS count FROM task_directory WHERE ${where}
+    `).get(...parameters) as any)?.count || 0)
+    const limit = Math.max(1, Math.min(200, Math.floor(Number(options.limit) || 200)))
+    const rows = this.db.prepare(`
+      SELECT id,status,priority,due,project,task_kind,title,payload_json,created_at,updated_at
+      FROM task_directory
+      WHERE ${where}
+      ORDER BY due,
+        CASE priority WHEN 'high' THEN 0 WHEN 'medium' THEN 1 ELSE 2 END,
+        updated_at DESC,id ASC
+      LIMIT ? OFFSET ?
+    `).all(...parameters, limit, offset) as any[]
+    const items = rows.map(row => {
+      let payload: any = {}
+      try { payload = JSON.parse(String(row.payload_json || '{}')) } catch {}
+      return {
+        ...payload,
+        id: row.id,
+        title: row.title,
+        status: row.status,
+        priority: row.priority,
+        due: row.due,
+        project: row.project,
+        taskKind: row.task_kind,
+        createdAt: row.created_at,
+        updatedAt: row.updated_at
+      }
+    })
+    const completedRevision = this.getTaskArchiveRevision()
+    if (completedRevision !== revision) {
+      return {
+        items: [], total: 0, hasMore: false,
+        revision: completedRevision, stale: true
+      }
+    }
+    return {
+      items,
+      total,
+      hasMore: offset + rows.length < total,
+      revision,
+      stale: false
+    }
+  }
+
   listTaskArchive(options: {
     status?: 'done' | 'cancelled' | 'all'
     priority?: string

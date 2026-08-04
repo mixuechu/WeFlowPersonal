@@ -762,6 +762,14 @@ function AiAssistantPage() {
   const [taskWorksetLoadingMore, setTaskWorksetLoadingMore] = useState(false)
   const [taskWorksetRefreshKey, setTaskWorksetRefreshKey] = useState(0)
   const taskWorksetGate = useRef(new LatestRequestGate())
+  const [taskCalendarPage, setTaskCalendarPage] = useState<{
+    items: Task[]
+    total: number
+    revision: string
+    loading: boolean
+  }>({ items: [], total: 0, revision: '', loading: false })
+  const [taskCalendarRefreshKey, setTaskCalendarRefreshKey] = useState(0)
+  const taskCalendarGate = useRef(new LatestRequestGate())
   const [taskReminderPage, setTaskReminderPage] = useState<{
     items: any[]
     total: number
@@ -1074,6 +1082,15 @@ function AiAssistantPage() {
     limit: 100,
     offset: 0
   }), [focusedTaskId, taskStatusFilter, taskPriorityFilter, taskKindFilter, taskQuery])
+  const taskCalendarOptions = useMemo(() => ({
+    month: calendarMonth,
+    status: taskStatusFilter === 'all' ? undefined : taskStatusFilter,
+    priority: taskPriorityFilter === 'all' ? undefined : taskPriorityFilter,
+    taskKind: taskKindFilter === 'all' ? undefined : taskKindFilter,
+    query: taskQuery.trim() || undefined,
+    limit: 200,
+    offset: 0
+  }), [calendarMonth, taskStatusFilter, taskPriorityFilter, taskKindFilter, taskQuery])
   const projectDirectoryOptions = useMemo(() => ({
     query: projectQuery.trim() || undefined,
     phase: projectPhase || undefined,
@@ -1399,6 +1416,49 @@ function AiAssistantPage() {
       if (taskWorksetGate.current.isCurrent(request)) taskWorksetGate.current.invalidate()
     }
   }, [taskWorksetOptions, dashboard?.taskRevision, taskWorksetRefreshKey])
+
+  useEffect(() => {
+    if (taskView !== 'calendar' || focusedTaskId) {
+      taskCalendarGate.current.invalidate()
+      return
+    }
+    const request = taskCalendarGate.current.begin()
+    setTaskCalendarPage({ items: [], total: 0, revision: '', loading: true })
+    const timer = window.setTimeout(() => {
+      void (async () => {
+        let items: Task[] = []
+        let revision = ''
+        let total = 0
+        while (taskCalendarGate.current.isCurrent(request)) {
+          const result = await window.electronAPI.aiAssistant.getTaskCalendarPage({
+            ...taskCalendarOptions,
+            offset: items.length,
+            revision
+          })
+          if (!taskCalendarGate.current.isCurrent(request)) return
+          if (result.stale) {
+            setTaskCalendarRefreshKey(value => value + 1)
+            return
+          }
+          if (!revision) revision = result.revision
+          items = [...items, ...result.items]
+          total = result.total
+          setTaskCalendarPage({ items, total, revision, loading: result.hasMore })
+          if (!result.hasMore) return
+        }
+      })().catch(() => {
+        if (!taskCalendarGate.current.isCurrent(request)) return
+        setTaskCalendarPage({ items: [], total: 0, revision: '', loading: false })
+      })
+    }, taskQuery.trim() ? 220 : 0)
+    return () => {
+      window.clearTimeout(timer)
+      if (taskCalendarGate.current.isCurrent(request)) taskCalendarGate.current.invalidate()
+    }
+  }, [
+    taskView, focusedTaskId, taskCalendarOptions, dashboard?.taskRevision,
+    taskCalendarRefreshKey
+  ])
 
   useEffect(() => {
     const directory = dashboard?.taskReminderDirectory
@@ -2350,7 +2410,10 @@ function AiAssistantPage() {
   const reminderPreferences = dashboard?.reminderPreferences
   const taskReviewFeedback = dashboard?.taskReviewFeedback || { mine: 0, rejected: 0, suppressed: 0, reconciled: 0, recent: [] }
   const displayedTasks = tasks
-  const taskCalendar = useMemo(() => buildTaskCalendar(displayedTasks, calendarMonth), [displayedTasks, calendarMonth])
+  const taskCalendar = useMemo(
+    () => buildTaskCalendar(taskCalendarPage.items, calendarMonth),
+    [taskCalendarPage.items, calendarMonth]
+  )
   const selectedCalendarDay = taskCalendar.days.find(day => day.date === selectedCalendarDate)
   const updateReminderPreference = async (reminder: any, action: 'helpful' | 'snooze' | 'mute_kind' | 'restore_kind') => {
     await window.electronAPI.aiAssistant.updateReminderPreference({
@@ -6087,7 +6150,10 @@ function AiAssistantPage() {
               <input disabled={!!focusedTaskId} value={taskQuery} onChange={event => setTaskQuery(event.target.value)} placeholder="搜索进行中待办" />
               <div className="assistant-task-view-toggle">
                 <button className={taskView === 'list' ? 'active' : ''} onClick={() => setTaskView('list')}>列表</button>
-                <button className={taskView === 'calendar' ? 'active' : ''} onClick={() => setTaskView('calendar')}><CalendarDays size={11} /> 月历</button>
+                <button className={taskView === 'calendar' ? 'active' : ''} onClick={() => {
+                  setFocusedTaskId('')
+                  setTaskView('calendar')
+                }}><CalendarDays size={11} /> 月历</button>
               </div>
               <button disabled={!displayedTasks.length} onClick={() => void completeVisibleTasks()}>完成已加载筛选</button>
               {focusedTaskId && <button onClick={() => setFocusedTaskId('')}>返回原筛选</button>}
@@ -6131,6 +6197,11 @@ function AiAssistantPage() {
             </div>}
             {taskView === 'calendar' && <div className="assistant-task-calendar">
               <header><button onClick={() => moveCalendarMonth(-1)}>‹</button><strong>{calendarMonth}</strong><button onClick={() => moveCalendarMonth(1)}>›</button></header>
+              <small className="assistant-evidence">
+                {taskCalendarPage.loading
+                  ? `正在从 SQLCipher 收齐本月任务（${taskCalendarPage.items.length} / ${taskCalendarPage.total || '…'}）`
+                  : `本月 ${taskCalendarPage.total} 项符合当前筛选，已完整加载`}
+              </small>
               <div className="assistant-calendar-weekdays">{['一', '二', '三', '四', '五', '六', '日'].map(day => <span key={day}>{day}</span>)}</div>
               <div className="assistant-calendar-grid">
                 {taskCalendar.days.map(day => <button key={day.date} className={`${day.inMonth ? '' : 'outside'} ${day.isToday ? 'today' : ''} ${selectedCalendarDate === day.date ? 'selected' : ''}`}
@@ -6150,11 +6221,8 @@ function AiAssistantPage() {
                   })
                   setTaskView('list')
                 }}><b>{task.title}</b><span>{task.status} · {task.priority}</span></button>)}
-                {!(selectedCalendarDay?.tasks.length) && <em>当天没有当前筛选范围内的任务</em>}
-                {!!taskCalendar.overdue.length && <details><summary>逾期未完成 · {taskCalendar.overdue.length}</summary>
-                  {taskCalendar.overdue.map(task => <small key={task.id}>{task.due} · {task.title}</small>)}</details>}
-                {!!taskCalendar.unscheduled.length && <details><summary>未排期 · {taskCalendar.unscheduled.length}</summary>
-                  {taskCalendar.unscheduled.map(task => <small key={task.id}>{task.title}</small>)}</details>}
+                {!taskCalendarPage.loading && !(selectedCalendarDay?.tasks.length) &&
+                  <em>当天没有当前筛选范围内的任务</em>}
               </div>
             </div>}
             {taskView === 'list' && <div className="assistant-task-list">
@@ -6288,9 +6356,6 @@ function AiAssistantPage() {
             {taskWorkset.hasMore && <button disabled={taskWorksetLoadingMore} onClick={() => void loadMoreActiveTasks()}>
               {taskWorksetLoadingMore ? '正在加载…' : `加载更多（已显示 ${tasks.length} / ${taskWorkset.total}）`}
             </button>}
-            {taskView === 'calendar' && taskWorkset.hasMore && <small className="assistant-evidence">
-              月历当前仅覆盖已加载的 {tasks.length} 项；继续加载可扩展月历与依赖候选。
-            </small>}
           </section>
 
           <aside className="assistant-panel assistant-signals">
