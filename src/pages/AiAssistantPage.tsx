@@ -8925,6 +8925,18 @@ function AiAssistantPage() {
                 <span>单实体上限 <b>{Number(memoryDiagnostics.graphEntityEvidenceHotset.hotLimitPerEntity || 500)}</b></span>
               </div>
             </div>}
+            {memoryDiagnostics.taskStateStorage?.version && <div className="assistant-recovery-audit healthy">
+              <header><Database size={15} /><span><b>历史任务原文分层</b>
+                <small>进行中的任务保留本机热数据；完成和取消任务的结构仍可用于依赖计算，但原文只留在 SQLCipher 权威档案，不再重复写入加密状态文件。</small>
+              </span></header>
+              <div className="assistant-recovery-current">
+                <span>活跃任务 <b>{Number(memoryDiagnostics.taskStateStorage.activeTasks || 0).toLocaleString()}</b></span>
+                <span>关闭任务 <b>{Number(memoryDiagnostics.taskStateStorage.closedTasks || 0).toLocaleString()}</b></span>
+                <span>权威原文 <b>{Number(memoryDiagnostics.taskStateStorage.authoritativeTaskEvidenceRows || 0).toLocaleString()}</b></span>
+                <span>关闭任务原文 <b>{Number(memoryDiagnostics.taskStateStorage.closedTaskEvidenceRows || 0).toLocaleString()}</b></span>
+                <span>本次写入省略 <b>{Number(memoryDiagnostics.taskStateStorage.closedEvidenceRowsOmittedOnWrite || 0).toLocaleString()}</b></span>
+              </div>
+            </div>}
             {memoryDiagnostics.identityMergeSnapshotStorage?.version && <div className="assistant-recovery-audit healthy">
               <header><Database size={15} /><span><b>身份合并可逆快照</b>
                 <small>每次合并只加密保存双方档案及受影响的关系、事件参与和审阅记录，不再复制整张关系图。</small>

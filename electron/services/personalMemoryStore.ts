@@ -5627,7 +5627,9 @@ export class PersonalMemoryStore {
       } = task || {}
       const payloadJson = JSON.stringify(directoryTask)
       const sourceSessionId = String(task.sourceSessionId || task.source || '')
-      const normalizedEvidence = (task.evidence || []).flatMap((item: any) => {
+      const storedTask = storedTaskMap.get(String(task.id))
+      const preserveStoredEvidence = !Array.isArray(task.evidence) && Boolean(storedTask)
+      const normalizedEvidence = (Array.isArray(task.evidence) ? task.evidence : []).flatMap((item: any) => {
         const messageId = String(item.messageId || '')
         if (!messageId) return []
         return [[
@@ -5639,15 +5641,21 @@ export class PersonalMemoryStore {
           String(item.excerpt || '').slice(0, 2000)
         ]]
       })
-      const evidenceFingerprint = createHash('sha256')
-        .update(JSON.stringify(normalizedEvidence))
-        .digest('hex')
-      const storedTask = storedTaskMap.get(String(task.id))
+      const evidenceFingerprint = preserveStoredEvidence
+        ? String(storedTask?.evidence_fingerprint || '')
+        : createHash('sha256').update(JSON.stringify(normalizedEvidence)).digest('hex')
       const documentId = `task:${task.id}`
       const searchText = [
         task.title, task.detail, task.owner, ...(task.collaborators || []), task.project,
         task.source, task.assignmentEvidence
       ].filter(Boolean).join('；')
+      const storedSearchDocument = storedSearchDocumentMap.get(documentId)
+      let storedSearchMetadata: any = null
+      try { storedSearchMetadata = JSON.parse(storedSearchDocument?.metadata_json || '') } catch {}
+      const evidenceCount = preserveStoredEvidence
+        ? Number(storedSearchMetadata?.evidenceCount ?? storedSearchDocument?.evidence_count ?? 0)
+        : new Set(normalizedEvidence.map((item: any[]) =>
+          `${item[0]}\0${item[1]}\0${item[2]}`)).size
       const searchMetadata = {
         status: task.status,
         priority: task.priority,
@@ -5661,13 +5669,9 @@ export class PersonalMemoryStore {
         taskKind: task.taskKind || 'action',
         ownershipPolicyReason: task.ownershipPolicyReason || '',
         evidenceFingerprint,
-        evidenceCount: new Set(normalizedEvidence.map((item: any[]) =>
-          `${item[0]}\0${item[1]}\0${item[2]}`)).size
+        evidenceCount
       }
       const expectedContentHash = createHash('sha256').update(searchText).digest('hex')
-      const storedSearchDocument = storedSearchDocumentMap.get(documentId)
-      let storedSearchMetadata: any = null
-      try { storedSearchMetadata = JSON.parse(storedSearchDocument?.metadata_json || '') } catch {}
       const searchDocumentHealthy = storedSearchDocument?.document_type === 'task'
         && storedSearchDocument.source_id === String(task.id)
         && storedSearchDocument.title === String(task.title || '')
@@ -5701,13 +5705,15 @@ export class PersonalMemoryStore {
       )
       this.upsertSearchDocument(documentId, 'task', task.id, task.title,
         searchText, searchMetadata, now)
-      this.db.prepare('DELETE FROM search_document_evidence WHERE document_id=?').run(documentId)
+      if (!preserveStoredEvidence) {
+        this.db.prepare('DELETE FROM search_document_evidence WHERE document_id=?').run(documentId)
+      }
       const insertEvidence = this.db.prepare(`
         INSERT OR IGNORE INTO search_document_evidence(
           document_id,source_id,message_id,session_id,timestamp,sender,excerpt
         ) VALUES(?,?,?,?,?,?,?)
       `)
-      for (const item of task.evidence || []) {
+      for (const item of Array.isArray(task.evidence) ? task.evidence : []) {
         const messageId = String(item.messageId || '')
         if (!messageId) continue
         insertEvidence.run(documentId,
@@ -5748,6 +5754,50 @@ export class PersonalMemoryStore {
       if (!withinTransaction) this.db.exec('ROLLBACK')
       throw error
     }
+  }
+
+  getTaskEvidenceStorageStats(): any {
+    if (!this.db) return { authoritativeTaskEvidenceRows: 0, closedTaskEvidenceRows: 0 }
+    const row = this.db.prepare(`
+      SELECT
+        COUNT(*) AS authoritative_rows,
+        SUM(CASE WHEN td.status IN ('done','cancelled') THEN 1 ELSE 0 END) AS closed_rows
+      FROM search_document_evidence evidence
+      JOIN task_directory td ON evidence.document_id='task:' || td.id
+    `).get() as any
+    return {
+      authoritativeTaskEvidenceRows: Number(row?.authoritative_rows || 0),
+      closedTaskEvidenceRows: Number(row?.closed_rows || 0)
+    }
+  }
+
+  listTaskEvidence(taskIds: string[]): Map<string, any[]> {
+    const ids = [...new Set((Array.isArray(taskIds) ? taskIds : [])
+      .map(id => String(id || '').trim()).filter(Boolean))].slice(0, 500)
+    const result = new Map<string, any[]>(ids.map(id => [id, []]))
+    if (!this.db || !ids.length) return result
+    const placeholders = ids.map(() => '?').join(',')
+    const rows = this.db.prepare(`
+      SELECT substr(document_id,6) AS task_id,source_id,message_id,session_id,
+        timestamp,sender,excerpt
+      FROM search_document_evidence
+      WHERE document_id IN (${placeholders})
+      ORDER BY task_id,timestamp,source_id,session_id,message_id
+    `).all(...ids.map(id => `task:${id}`)) as any[]
+    for (const row of rows) {
+      const taskId = String(row.task_id || '')
+      const evidence = result.get(taskId)
+      if (!evidence) continue
+      evidence.push({
+        sourceId: String(row.source_id || 'legacy'),
+        messageId: String(row.message_id || ''),
+        sessionId: String(row.session_id || ''),
+        timestamp: Number(row.timestamp || 0),
+        sender: String(row.sender || ''),
+        excerpt: String(row.excerpt || '')
+      })
+    }
+    return result
   }
 
   listActiveTaskWorkset(options: {

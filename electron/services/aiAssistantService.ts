@@ -133,6 +133,10 @@ import {
   ENTITY_EVIDENCE_MESSAGE_HOT_LIMIT,
   compactEntityEvidenceMessageIds
 } from '../../shared/entityEvidenceHotset.ts'
+import {
+  buildEncryptedAssistantState,
+  getTaskStateStorageStats
+} from '../../shared/taskStateStorage.ts'
 import { applyRelationConfirmation, planRelationConfirmation, type RelationCorrection } from './relationCorrectionPolicy'
 import {
   enqueueUniqueNotification,
@@ -773,7 +777,11 @@ export class AiAssistantService {
       const loaded = durable.value
       const migratedPlaintext = durable.recovery.source !== 'empty' && !durable.encrypted
       if (migratedPlaintext) {
-        writeEncryptedDurableJson(this.statePath, loaded, this.stateEncryptionKey)
+        writeEncryptedDurableJson(
+          this.statePath,
+          buildEncryptedAssistantState(loaded),
+          this.stateEncryptionKey
+        )
       }
       this.stateStorage = {
         ...durable.recovery,
@@ -1008,7 +1016,11 @@ export class AiAssistantService {
       if (strictMemorySync) throw error
     }
     if (graphSynced) this.compactGraphReviewState()
-    writeEncryptedDurableJson(this.statePath, this.state, this.stateEncryptionKey)
+    writeEncryptedDurableJson(
+      this.statePath,
+      buildEncryptedAssistantState(this.state),
+      this.stateEncryptionKey
+    )
     this.stateStorage.encrypted = true
     this.stateStorage.lastWriteAt = new Date().toISOString()
     try {
@@ -1020,9 +1032,21 @@ export class AiAssistantService {
   }
 
   private persistCrossStoreMutationState(): void {
-    writeEncryptedDurableJson(this.statePath, this.state, this.stateEncryptionKey)
+    writeEncryptedDurableJson(
+      this.statePath,
+      buildEncryptedAssistantState(this.state),
+      this.stateEncryptionKey
+    )
     this.stateStorage.encrypted = true
     this.stateStorage.lastWriteAt = new Date().toISOString()
+  }
+
+  private hydrateTaskEvidenceFromSql(taskIds: string[]): void {
+    const missing = this.state.tasks.filter(task =>
+      taskIds.includes(task.id) && !Array.isArray(task.evidence))
+    if (!missing.length) return
+    const evidence = personalMemoryStore.listTaskEvidence(missing.map(task => task.id))
+    for (const task of missing) task.evidence = evidence.get(task.id) || []
   }
 
   private recoverPreparedTaskMutationCommits(): { attempted: number; unattempted: number } {
@@ -1039,6 +1063,10 @@ export class AiAssistantService {
         this.taskMutationRecovery.attempted += 1
         try {
           if (commit.parseError) throw new Error(commit.parseError)
+          this.hydrateTaskEvidenceFromSql([
+            ...Object.keys(commit.beforeTokens || {}),
+            ...Object.keys(commit.afterTokens || {})
+          ])
           const action = classifyTaskMutationRecovery(
             this.state.tasks,
             commit.beforeTokens,
@@ -3875,6 +3903,7 @@ export class AiAssistantService {
   }
 
   getTaskWorkspace(taskId: string): any {
+    this.hydrateTaskEvidenceFromSql([String(taskId || '')])
     const task = this.state.tasks.find(item => item.id === String(taskId || ''))
     if (!task) return null
     const history = personalMemoryStore.listTaskHistory([task.id], TASK_HISTORY_LIMIT)
@@ -4688,6 +4717,10 @@ export class AiAssistantService {
     return {
       ...databaseDiagnostics,
       identityMergeSnapshotStorage: personalMemoryStore.getIdentityMergeSnapshotStorageStats(),
+      taskStateStorage: {
+        ...getTaskStateStorageStats(this.state.tasks),
+        ...personalMemoryStore.getTaskEvidenceStorageStats()
+      },
       graphEntityEvidenceHotset: {
         version: 'graph-entity-evidence-hotset-v1',
         hotLimitPerEntity: ENTITY_EVIDENCE_MESSAGE_HOT_LIMIT,
@@ -4934,7 +4967,11 @@ export class AiAssistantService {
     const safety = this.createMemoryBackup([path])
     try {
       const result = personalMemoryStore.restoreBackup(path, safety.path)
-      writeEncryptedDurableJson(this.statePath, restoredState, this.stateEncryptionKey)
+      writeEncryptedDurableJson(
+        this.statePath,
+        buildEncryptedAssistantState(restoredState),
+        this.stateEncryptionKey
+      )
       this.loadState()
       this.saveState()
       return { ...result, safetyBackup: safety.path, restoredStateFrom: stateBackupPath }
@@ -4948,7 +4985,11 @@ export class AiAssistantService {
             this.stateEncryptionKey
           )
           if (safetyState.recovery.source !== 'empty') {
-            writeEncryptedDurableJson(this.statePath, safetyState.value, this.stateEncryptionKey)
+            writeEncryptedDurableJson(
+              this.statePath,
+              buildEncryptedAssistantState(safetyState.value),
+              this.stateEncryptionKey
+            )
           }
         }
         this.loadState()

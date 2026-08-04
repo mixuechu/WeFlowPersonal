@@ -11085,3 +11085,55 @@ test('document structured analysis has an independent content-version checkpoint
   })
   assert.equal(store.listPendingDocumentAnalysis('document-analysis-v1', 2, now).length, 0)
 }))
+
+test('omitted closed-task evidence preserves SQLCipher authority while an explicit empty set clears it', () => withStore(store => {
+  const task = {
+    id: 'closed-task-state-storage',
+    title: '已经完成的长期任务',
+    detail: '初始详情',
+    owner: '我',
+    priority: 'medium',
+    status: 'done',
+    classification: 'mine',
+    source: '微信',
+    sourceSessionId: 'closed-task-session',
+    createdAt: '2026-08-01T00:00:00.000Z',
+    updatedAt: '2026-08-01T00:00:00.000Z',
+    evidence: Array.from({ length: 125 }, (_, index) => ({
+      sourceId: 'wechat',
+      sessionId: 'closed-task-session',
+      messageId: `closed-task-message-${index}`,
+      timestamp: index,
+      sender: '任务发送者',
+      excerpt: `关闭任务原文 ${index}`
+    }))
+  }
+  store.syncTasks([task])
+  assert.deepEqual(store.getTaskEvidenceStorageStats(), {
+    authoritativeTaskEvidenceRows: 125,
+    closedTaskEvidenceRows: 125
+  })
+
+  const { evidence: _evidence, ...lightweight } = task
+  store.syncTasks([{ ...lightweight, detail: '重启后的轻量结构更新' }])
+  const database = (store as any).db
+  assert.equal(database.prepare(`
+    SELECT COUNT(*) FROM search_document_evidence
+    WHERE document_id='task:closed-task-state-storage'
+  `).pluck().get(), 125)
+  assert.equal(store.listTaskArchive({ query: '轻量结构更新', limit: 10 }).total, 1)
+  const hydrated = store.listTaskEvidence(['closed-task-state-storage'])
+  assert.equal(hydrated.get('closed-task-state-storage')?.length, 125)
+  assert.equal(hydrated.get('closed-task-state-storage')?.at(-1)?.messageId,
+    'closed-task-message-124')
+
+  store.syncTasks([{ ...lightweight, detail: '显式移除原文', evidence: [] }])
+  assert.equal(database.prepare(`
+    SELECT COUNT(*) FROM search_document_evidence
+    WHERE document_id='task:closed-task-state-storage'
+  `).pluck().get(), 0)
+  assert.deepEqual(store.getTaskEvidenceStorageStats(), {
+    authoritativeTaskEvidenceRows: 0,
+    closedTaskEvidenceRows: 0
+  })
+}))
