@@ -9589,6 +9589,8 @@ test('assistant conversations persist ordered turns, citations and deletion acro
     acceptedStatements: 1,
     rejectedStatements: 1,
     acceptedCitationIds: 1,
+    removedConflictCitationIds: 0,
+    rejectedConflictStatements: 0,
     promptIsolationVersion: 'untrusted-memory-envelope-v1',
     statementCitations: [['claim:one']],
     leakedSensitiveField: '不能离开主进程'
@@ -9639,6 +9641,8 @@ test('assistant conversations persist ordered turns, citations and deletion acro
     acceptedStatements: 1,
     rejectedStatements: 1,
     acceptedCitationIds: 1,
+    removedConflictCitationIds: 0,
+    rejectedConflictStatements: 0,
     promptIsolationVersion: 'untrusted-memory-envelope-v1',
     statementCitations: [['claim:one']]
   })

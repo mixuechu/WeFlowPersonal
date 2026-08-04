@@ -13907,6 +13907,8 @@ export class PersonalMemoryStore {
       acceptedStatements: count('acceptedStatements'),
       rejectedStatements: count('rejectedStatements'),
       acceptedCitationIds: count('acceptedCitationIds'),
+      removedConflictCitationIds: count('removedConflictCitationIds'),
+      rejectedConflictStatements: count('rejectedConflictStatements'),
       promptIsolationVersion,
       statementCitations
     }

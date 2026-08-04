@@ -200,9 +200,50 @@ test('memory evidence eligibility keeps review status separate from factual supp
     acceptedStatements: 1,
     rejectedStatements: 1,
     acceptedCitationIds: 1,
+    removedConflictCitationIds: 0,
+    rejectedConflictStatements: 0,
     promptIsolationVersion: 'untrusted-memory-envelope-v1',
     statementCitations: [['confirmed']]
   })
+
+  const conflictedContext = buildModelMemoryContext([{
+    id: 'conflicted',
+    document_type: 'claim',
+    metadata: { status: 'confirmed' },
+    evidence: [
+      { messageId: 'support-1', evidence_role: 'direct' },
+      { messageId: 'contra-1', evidence_role: 'contradiction' }
+    ],
+    evidenceRoleCounts: { supporting: 1, contradiction: 1 }
+  }])
+  const undisclosedConflict = finalizeGroundedMemoryAnswer({
+    statements: [{ text: '这件事已经确定。', citationIds: ['conflicted'] }],
+    uncertainty: ''
+  }, conflictedContext)
+  assert.equal(undisclosedConflict.groundingAudit.removedConflictCitationIds, 1)
+  assert.equal(undisclosedConflict.groundingAudit.rejectedConflictStatements, 1)
+  assert.deepEqual(undisclosedConflict.citationIds, [])
+  assert.match(undisclosedConflict.answer, /没有足够/)
+
+  const mixedConflict = finalizeGroundedMemoryAnswer({
+    statements: [{
+      text: '这条陈述另有一份干净支持。',
+      citationIds: ['confirmed', 'conflicted']
+    }],
+    uncertainty: ''
+  }, [...context, ...conflictedContext])
+  assert.deepEqual(mixedConflict.citationIds, ['confirmed'])
+  assert.equal(mixedConflict.groundingAudit.acceptedStatements, 1)
+  assert.equal(mixedConflict.groundingAudit.removedConflictCitationIds, 1)
+  assert.equal(mixedConflict.groundingAudit.rejectedConflictStatements, 0)
+
+  const disclosedConflict = finalizeGroundedMemoryAnswer({
+    statements: [{ text: '现有记录存在冲突，这件事仍待核实。', citationIds: ['conflicted'] }],
+    uncertainty: '一条原文构成反证。'
+  }, conflictedContext)
+  assert.deepEqual(disclosedConflict.citationIds, ['conflicted'])
+  assert.equal(disclosedConflict.groundingAudit.removedConflictCitationIds, 0)
+  assert.equal(disclosedConflict.groundingAudit.rejectedConflictStatements, 0)
 
   const legacyWholeAnswer = finalizeGroundedMemoryAnswer({
     answer: '旧版整段回答即使带合法顶层引用，也不能绕过逐条门禁。',

@@ -5624,7 +5624,7 @@ function AiAssistantPage() {
             text,
             citationIds: assistant.groundingAudit?.statementCitations?.[statementIndex] || []
           })),
-        uncertainty: ''
+        uncertainty: String(assistant.uncertainty || '')
       })
     } else {
       setMemoryAnswer(null)
@@ -8071,6 +8071,9 @@ function AiAssistantPage() {
                   {Number(item.groundingAudit.rejectedStatements || 0)
                     ? `，拦截 ${Number(item.groundingAudit.rejectedStatements)} 条无合格引用陈述`
                     : ''}
+                  {Number(item.groundingAudit.removedConflictCitationIds || 0)
+                    ? `；隔离 ${Number(item.groundingAudit.removedConflictCitationIds)} 个未披露反证的引用`
+                    : ''}
                 </small>}
                 {item.role === 'assistant' && item.groundingRevalidation?.status !== 'current' && <small>
                   {item.groundingRevalidation?.status === 'invalid'
@@ -8119,6 +8122,9 @@ function AiAssistantPage() {
               {Number(memoryAnswer.groundingAudit.rejectedStatements || 0)
                 ? ` 已拦截 ${Number(memoryAnswer.groundingAudit.rejectedStatements)} 条无合格引用陈述。`
                 : ' 没有发现无合格引用陈述。'}
+              {Number(memoryAnswer.groundingAudit.removedConflictCitationIds || 0)
+                ? ` 另隔离 ${Number(memoryAnswer.groundingAudit.removedConflictCitationIds)} 个未明确披露反证的引用，其中 ${Number(memoryAnswer.groundingAudit.rejectedConflictStatements || 0)} 条陈述因此被拒绝。`
+                : ''}
               {' '}聊天、邮件和文档内容均按不可信数据隔离，不会被当作模型指令执行。
             </small>}
             {memoryAnswer.groundingRevalidation?.status === 'current' && <small className="assistant-grounding-current">
