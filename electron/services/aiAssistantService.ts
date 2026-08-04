@@ -4719,7 +4719,8 @@ export class AiAssistantService {
       identityMergeSnapshotStorage: personalMemoryStore.getIdentityMergeSnapshotStorageStats(),
       taskStateStorage: {
         ...getTaskStateStorageStats(this.state.tasks),
-        ...personalMemoryStore.getTaskEvidenceStorageStats()
+        ...personalMemoryStore.getTaskEvidenceStorageStats(),
+        historyEvidence: personalMemoryStore.getTaskHistoryEvidenceStorageStats()
       },
       graphEntityEvidenceHotset: {
         version: 'graph-entity-evidence-hotset-v1',

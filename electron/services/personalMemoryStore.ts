@@ -361,6 +361,15 @@ export class PersonalMemoryStore {
       ) STRICT;
       CREATE INDEX IF NOT EXISTS idx_task_history_task ON task_history(task_id,created_at);
 
+      CREATE TABLE IF NOT EXISTS task_history_evidence (
+        change_set_id TEXT PRIMARY KEY,
+        task_id TEXT NOT NULL,
+        evidence_json TEXT NOT NULL DEFAULT '[]',
+        created_at TEXT NOT NULL
+      ) STRICT;
+      CREATE INDEX IF NOT EXISTS idx_task_history_evidence_task
+        ON task_history_evidence(task_id,created_at);
+
       CREATE TABLE IF NOT EXISTS task_directory (
         id TEXT PRIMARY KEY,
         status TEXT NOT NULL,
@@ -761,6 +770,7 @@ export class PersonalMemoryStore {
       WHERE decision='candidate' AND reason=''
     `).run()
     this.ensureColumn('task_directory', 'evidence_fingerprint', `TEXT NOT NULL DEFAULT ''`)
+    this.ensureColumn('task_history', 'change_set_id', `TEXT NOT NULL DEFAULT ''`)
     this.ensureColumn('merge_history', 'source_name', `TEXT NOT NULL DEFAULT ''`)
     this.ensureColumn('merge_history', 'target_name', `TEXT NOT NULL DEFAULT ''`)
     this.db.exec(`
@@ -790,6 +800,7 @@ export class PersonalMemoryStore {
     this.ensureMemoryEvidenceArchiveRevisionTriggers()
     this.ensureStructuredMemoryRevisionTriggers()
     this.ensureGraphReviewRevisionTriggers()
+    this.normalizeTaskHistoryEvidence()
     this.ensureTaskArchiveRevisionTriggers()
     this.ensureTaskOwnershipReviewRevisionTriggers()
     this.ensureIdentityMergeArchiveRevisionTriggers()
@@ -1781,7 +1792,7 @@ export class PersonalMemoryStore {
   }
 
   private taskArchiveRevisionTables(): string[] {
-    return ['task_directory', 'search_document_evidence', 'task_history']
+    return ['task_directory', 'search_document_evidence', 'task_history', 'task_history_evidence']
   }
 
   private ensureTaskArchiveRevisionTriggers(): void {
@@ -1789,7 +1800,7 @@ export class PersonalMemoryStore {
       prefix: 'task_archive_revision',
       revisionKey: 'task_archive_revision',
       tables: this.taskArchiveRevisionTables(),
-      version: 'task-archive-revision-v2'
+      version: 'task-archive-revision-v3'
     })
   }
 
@@ -1805,7 +1816,7 @@ export class PersonalMemoryStore {
       prefix: 'task_archive_revision',
       revisionKey: 'task_archive_revision',
       tables: this.taskArchiveRevisionTables(),
-      version: 'task-archive-revision-v2',
+      version: 'task-archive-revision-v3',
       revision: this.getTaskArchiveRevision()
     })
   }
@@ -1815,6 +1826,7 @@ export class PersonalMemoryStore {
       'task_directory',
       'search_document_evidence',
       'task_history',
+      'task_history_evidence',
       'task_review_decisions',
       'task_review_history'
     ]
@@ -1825,7 +1837,7 @@ export class PersonalMemoryStore {
       prefix: 'task_ownership_review_revision',
       revisionKey: 'task_ownership_review_revision',
       tables: this.taskOwnershipReviewRevisionTables(),
-      version: 'task-ownership-review-revision-v2'
+      version: 'task-ownership-review-revision-v3'
     })
   }
 
@@ -1841,7 +1853,7 @@ export class PersonalMemoryStore {
       prefix: 'task_ownership_review_revision',
       revisionKey: 'task_ownership_review_revision',
       tables: this.taskOwnershipReviewRevisionTables(),
-      version: 'task-ownership-review-revision-v2',
+      version: 'task-ownership-review-revision-v3',
       revision: this.getTaskOwnershipReviewRevision()
     })
   }
@@ -3098,6 +3110,63 @@ export class PersonalMemoryStore {
     })()
   }
 
+  private normalizeTaskHistoryEvidence(): void {
+    if (!this.db) return
+    const migrationKey = 'task_history_evidence_storage_v2'
+    const previous = this.db.prepare('SELECT value FROM schema_meta WHERE key=?').get(migrationKey) as any
+    if (previous?.value) return
+    const rows = this.db.prepare(`
+      SELECT id,task_id,reason,evidence_json,created_at
+      FROM task_history WHERE evidence_json!='[]' AND evidence_json!=''
+      ORDER BY task_id,created_at,id
+    `).all() as any[]
+    const groups = new Map<string, any[]>()
+    for (const row of rows) {
+      const key = JSON.stringify([
+        String(row.task_id || ''),
+        String(row.created_at || ''),
+        String(row.reason || ''),
+        String(row.evidence_json || '[]')
+      ])
+      const group = groups.get(key) || []
+      group.push(row)
+      groups.set(key, group)
+    }
+    const insertEvidence = this.db.prepare(`
+      INSERT OR IGNORE INTO task_history_evidence(change_set_id,task_id,evidence_json,created_at)
+      VALUES(?,?,?,?)
+    `)
+    const updateHistory = this.db.prepare(`
+      UPDATE task_history SET change_set_id=?,evidence_json='[]' WHERE id=?
+    `)
+    const audit = {
+      version: 'task-history-evidence-v2',
+      policy: 'one_evidence_copy_per_change_set',
+      migratedAt: new Date().toISOString(),
+      historyRows: rows.length,
+      changeSets: groups.size,
+      duplicateCopiesRemoved: Math.max(0, rows.length - groups.size),
+      bytesBefore: rows.reduce((total, row) =>
+        total + Buffer.byteLength(String(row.evidence_json || '[]')), 0),
+      bytesAfter: 0,
+      bytesReclaimed: 0
+    }
+    this.db.transaction(() => {
+      for (const [key, group] of groups) {
+        const first = group[0]
+        const changeSetId = `task_change_${createHash('sha256').update(key).digest('hex').slice(0, 32)}`
+        insertEvidence.run(changeSetId, first.task_id, first.evidence_json, first.created_at)
+        audit.bytesAfter += Buffer.byteLength(String(first.evidence_json || '[]'))
+        for (const row of group) updateHistory.run(changeSetId, row.id)
+      }
+      audit.bytesReclaimed = Math.max(0, audit.bytesBefore - audit.bytesAfter)
+      this.db!.prepare(`
+        INSERT INTO schema_meta(key,value,updated_at) VALUES(?,?,?)
+        ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_at=excluded.updated_at
+      `).run(migrationKey, JSON.stringify(audit), audit.migratedAt)
+    })()
+  }
+
   private compactIdentityMergeSnapshots(): void {
     if (!this.db) return
     const migrationKey = 'identity_merge_snapshot_storage_v2'
@@ -3674,6 +3743,7 @@ export class PersonalMemoryStore {
       deleteIds('evidence', 'relation_id', preview.relationIds)
       this.db.prepare('DELETE FROM relation_history WHERE subject_id=? OR object_id=?').run(entityId, entityId)
       deleteIds('events', 'id', preview.eventIds)
+      deleteIds('task_history_evidence', 'task_id', taskIds)
       deleteIds('task_history', 'task_id', taskIds)
       deleteIds('task_review_decisions', 'task_id', taskIds)
       deleteIds('task_review_history', 'task_id', taskIds)
@@ -7774,24 +7844,44 @@ export class PersonalMemoryStore {
     if (!this.db || !changes.length) return
     const fields = ['status', 'title', 'detail', 'owner', 'collaborators', 'project', 'dependsOnIds', 'taskKind', 'due', 'priority']
     const insert = this.db.prepare(`
-      INSERT INTO task_history(task_id,field,before_value,after_value,reason,evidence_json,created_at)
-      VALUES(?,?,?,?,?,?,?)
+      INSERT INTO task_history(
+        task_id,field,before_value,after_value,reason,evidence_json,created_at,change_set_id
+      ) VALUES(?,?,?,?,?,'[]',?,?)
+    `)
+    const insertEvidence = this.db.prepare(`
+      INSERT INTO task_history_evidence(change_set_id,task_id,evidence_json,created_at)
+      VALUES(?,?,?,?)
     `)
     const now = new Date().toISOString()
     this.db.transaction(() => {
-      for (const change of changes) {
-        for (const field of fields) {
+      for (const [changeIndex, change] of changes.entries()) {
+        const changedFields = fields.filter(field =>
+          JSON.stringify(change.before?.[field] ?? '') !== JSON.stringify(change.after?.[field] ?? ''))
+        if (!changedFields.length) continue
+        const evidenceJson = JSON.stringify(change.evidence || [])
+        const changeSetId = `task_change_${createHash('sha256').update(JSON.stringify([
+          now,
+          changeIndex,
+          change.taskId,
+          change.before,
+          change.after,
+          change.reason || 'manual_edit',
+          evidenceJson
+        ])).digest('hex').slice(0, 32)}`
+        if (evidenceJson !== '[]') {
+          insertEvidence.run(changeSetId, change.taskId, evidenceJson, now)
+        }
+        for (const field of changedFields) {
           const left = JSON.stringify(change.before?.[field] ?? '')
           const right = JSON.stringify(change.after?.[field] ?? '')
-          if (left === right) continue
           insert.run(
             change.taskId,
             field,
             left,
             right,
             String(change.reason || 'manual_edit'),
-            JSON.stringify(change.evidence || []),
-            now
+            now,
+            changeSetId
           )
         }
       }
@@ -7954,9 +8044,46 @@ export class PersonalMemoryStore {
     const ids = [...new Set(taskIds.map(String))].slice(0, 500)
     const placeholders = ids.map(() => '?').join(',')
     return this.db.prepare(`
-      SELECT * FROM task_history WHERE task_id IN (${placeholders})
-      ORDER BY created_at DESC,id DESC LIMIT ?
+      SELECT history.id,history.task_id,history.field,history.before_value,
+        history.after_value,history.reason,
+        COALESCE(change_set.evidence_json,history.evidence_json,'[]') AS evidence_json,
+        history.created_at,history.change_set_id
+      FROM task_history history
+      LEFT JOIN task_history_evidence change_set
+        ON change_set.change_set_id=history.change_set_id
+      WHERE history.task_id IN (${placeholders})
+      ORDER BY history.created_at DESC,history.id DESC LIMIT ?
     `).all(...ids, Math.max(1, Math.min(1000, limit))) as any[]
+  }
+
+  getTaskHistoryEvidenceStorageStats(): any {
+    if (!this.db) return {
+      version: 'task-history-evidence-v2',
+      historyRows: 0,
+      changeSets: 0,
+      evidenceBytes: 0,
+      migration: {}
+    }
+    const current = this.db.prepare(`
+      SELECT
+        (SELECT COUNT(*) FROM task_history) AS history_rows,
+        (SELECT COUNT(*) FROM task_history_evidence) AS change_sets,
+        (SELECT COALESCE(SUM(LENGTH(CAST(evidence_json AS BLOB))),0)
+          FROM task_history_evidence) AS evidence_bytes
+    `).get() as any
+    const meta = this.db.prepare(`
+      SELECT value FROM schema_meta WHERE key='task_history_evidence_storage_v2'
+    `).get() as any
+    let migration: any = {}
+    try { migration = JSON.parse(String(meta?.value || '{}')) } catch {}
+    return {
+      version: 'task-history-evidence-v2',
+      policy: 'one_evidence_copy_per_change_set',
+      historyRows: Number(current?.history_rows || 0),
+      changeSets: Number(current?.change_sets || 0),
+      evidenceBytes: Number(current?.evidence_bytes || 0),
+      migration
+    }
   }
 
   countTaskHistory(taskId: string): number {

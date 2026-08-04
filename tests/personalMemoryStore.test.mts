@@ -6688,18 +6688,18 @@ test('task archive revision covers directory evidence and history and self-heals
     first.recordTaskChanges(task.id, { status: 'doing' }, { status: 'done' }, 'revision-test', task.evidence)
     assert.ok(Number(first.getTaskArchiveRevision()) > afterDirectoryAndEvidence)
     const taskArchiveRevisionHealth = first.getTaskArchiveRevisionHealth()
-    assert.equal(taskArchiveRevisionHealth.version, 'task-archive-revision-v2')
-    assert.equal(taskArchiveRevisionHealth.expectedTriggers, 9)
-    assert.equal(taskArchiveRevisionHealth.validTriggers, 9)
+    assert.equal(taskArchiveRevisionHealth.version, 'task-archive-revision-v3')
+    assert.equal(taskArchiveRevisionHealth.expectedTriggers, 12)
+    assert.equal(taskArchiveRevisionHealth.validTriggers, 12)
     assert.equal(taskArchiveRevisionHealth.healthy, true)
     ;(first as any).db.exec('DROP TRIGGER trg_task_archive_revision_task_directory_insert')
-    assert.equal(first.getTaskArchiveRevisionHealth().installedTriggers, 8)
+    assert.equal(first.getTaskArchiveRevisionHealth().installedTriggers, 11)
     assert.equal(first.getTaskArchiveRevisionHealth().healthy, false)
     first.close()
 
     const reopened = new PersonalMemoryStore()
     reopened.initialize(databasePath)
-    assert.equal(reopened.getTaskArchiveRevisionHealth().installedTriggers, 9)
+    assert.equal(reopened.getTaskArchiveRevisionHealth().installedTriggers, 12)
     assert.equal(reopened.getTaskArchiveRevisionHealth().healthy, true)
     assert.equal(reopened.listTaskArchive().items[0]?.id, task.id)
     reopened.close()
@@ -6767,9 +6767,9 @@ test('task ownership review revision covers queue decisions and action history a
     first.revokeTaskReviewDecision('task-ownership-review-revision-fingerprint')
     assert.ok(Number(first.getTaskOwnershipReviewRevision()) > afterDecision)
     const initialHealth = first.getTaskOwnershipReviewRevisionHealth()
-    assert.equal(initialHealth.version, 'task-ownership-review-revision-v2')
-    assert.equal(initialHealth.expectedTriggers, 15)
-    assert.equal(initialHealth.validTriggers, 15)
+    assert.equal(initialHealth.version, 'task-ownership-review-revision-v3')
+    assert.equal(initialHealth.expectedTriggers, 18)
+    assert.equal(initialHealth.validTriggers, 18)
     assert.equal(initialHealth.healthy, true)
     ;(first as any).db.exec(`
       DROP TRIGGER trg_task_ownership_review_revision_task_review_decisions_insert;
@@ -6777,15 +6777,15 @@ test('task ownership review revision covers queue decisions and action history a
       AFTER INSERT ON task_review_decisions BEGIN SELECT 1; END;
     `)
     const driftedHealth = first.getTaskOwnershipReviewRevisionHealth()
-    assert.equal(driftedHealth.installedTriggers, 15)
-    assert.equal(driftedHealth.validTriggers, 14)
+    assert.equal(driftedHealth.installedTriggers, 18)
+    assert.equal(driftedHealth.validTriggers, 17)
     assert.equal(driftedHealth.healthy, false)
     first.close()
 
     const reopened = new PersonalMemoryStore()
     reopened.initialize(databasePath)
     const repairedHealth = reopened.getTaskOwnershipReviewRevisionHealth()
-    assert.equal(repairedHealth.validTriggers, 15)
+    assert.equal(repairedHealth.validTriggers, 18)
     assert.equal(repairedHealth.repairedTriggersThisStart, 1)
     assert.equal(repairedHealth.healthy, true)
     assert.equal(reopened.listTaskOwnershipReviews().items[0]?.id, 'task-ownership-review-revision')
@@ -9031,7 +9031,68 @@ test('task status changes are persisted as an auditable history', () => withStor
   assert.deepEqual(new Set(history.map(item => item.field)), new Set(['status', 'due']))
   assert.ok(history.every(item => item.reason === 'manual_edit'))
   assert.ok(history.every(item => JSON.parse(item.evidence_json)[0].messageId === 'message-history'))
+  const database = (store as any).db
+  assert.equal(database.prepare(`SELECT COUNT(*) FROM task_history_evidence`).pluck().get(), 1)
+  assert.equal(database.prepare(`
+    SELECT COUNT(*) FROM task_history WHERE evidence_json!='[]'
+  `).pluck().get(), 0)
+  assert.deepEqual(store.getTaskHistoryEvidenceStorageStats(), {
+    version: 'task-history-evidence-v2',
+    policy: 'one_evidence_copy_per_change_set',
+    historyRows: 2,
+    changeSets: 1,
+    evidenceBytes: Buffer.byteLength(JSON.stringify([{ messageId: 'message-history' }])),
+    migration: store.getTaskHistoryEvidenceStorageStats().migration
+  })
 }))
+
+test('legacy task history evidence copies compact once and remain visible on every field row', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'weflow-task-history-evidence-'))
+  const databasePath = join(directory, 'memory.sqlite')
+  const key = randomBytes(32)
+  const first = new PersonalMemoryStore()
+  try {
+    first.initialize(databasePath, key)
+    const database = (first as any).db
+    const evidenceJson = JSON.stringify(Array.from({ length: 200 }, (_, index) => ({
+      messageId: `legacy-history-message-${index}`,
+      excerpt: `不应按字段重复的任务审计原文 ${index}`
+    })))
+    const insert = database.prepare(`
+      INSERT INTO task_history(
+        task_id,field,before_value,after_value,reason,evidence_json,created_at,change_set_id
+      ) VALUES(?,?,?,?,?,?,?,'')
+    `)
+    for (const field of ['status', 'due', 'priority', 'owner', 'project']) {
+      insert.run('legacy-history-task', field, '"before"', '"after"',
+        'legacy_multi_field_edit', evidenceJson, '2026-08-01T00:00:00.000Z')
+    }
+    database.prepare("DELETE FROM schema_meta WHERE key='task_history_evidence_storage_v2'").run()
+    first.close()
+
+    const reopened = new PersonalMemoryStore()
+    reopened.initialize(databasePath, key)
+    const reopenedDatabase = (reopened as any).db
+    assert.equal(reopenedDatabase.prepare(`
+      SELECT COUNT(*) FROM task_history WHERE evidence_json!='[]'
+    `).pluck().get(), 0)
+    assert.equal(reopenedDatabase.prepare(`
+      SELECT COUNT(*) FROM task_history_evidence WHERE task_id='legacy-history-task'
+    `).pluck().get(), 1)
+    const history = reopened.listTaskHistory(['legacy-history-task'])
+    assert.equal(history.length, 5)
+    assert.ok(history.every(item => JSON.parse(item.evidence_json).length === 200))
+    const stats = reopened.getTaskHistoryEvidenceStorageStats()
+    assert.equal(stats.migration.historyRows, 5)
+    assert.equal(stats.migration.changeSets, 1)
+    assert.equal(stats.migration.duplicateCopiesRemoved, 4)
+    assert.ok(stats.migration.bytesReclaimed >= Buffer.byteLength(evidenceJson) * 4)
+    reopened.close()
+  } finally {
+    try { first.close() } catch {}
+    rmSync(directory, { recursive: true, force: true })
+  }
+})
 
 test('batch task history is atomic when any member fails', () => withStore(store => {
   const database = (store as any).db

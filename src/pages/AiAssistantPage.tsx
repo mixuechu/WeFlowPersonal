@@ -8935,6 +8935,9 @@ function AiAssistantPage() {
                 <span>权威原文 <b>{Number(memoryDiagnostics.taskStateStorage.authoritativeTaskEvidenceRows || 0).toLocaleString()}</b></span>
                 <span>关闭任务原文 <b>{Number(memoryDiagnostics.taskStateStorage.closedTaskEvidenceRows || 0).toLocaleString()}</b></span>
                 <span>本次写入省略 <b>{Number(memoryDiagnostics.taskStateStorage.closedEvidenceRowsOmittedOnWrite || 0).toLocaleString()}</b></span>
+                <span>审计字段历史 <b>{Number(memoryDiagnostics.taskStateStorage.historyEvidence?.historyRows || 0).toLocaleString()}</b></span>
+                <span>审计证据集 <b>{Number(memoryDiagnostics.taskStateStorage.historyEvidence?.changeSets || 0).toLocaleString()}</b></span>
+                <span>旧重复回收 <b>{(Number(memoryDiagnostics.taskStateStorage.historyEvidence?.migration?.bytesReclaimed || 0) / 1024).toFixed(1)} KB</b></span>
               </div>
             </div>}
             {memoryDiagnostics.identityMergeSnapshotStorage?.version && <div className="assistant-recovery-audit healthy">
