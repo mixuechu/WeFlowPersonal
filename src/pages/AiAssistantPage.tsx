@@ -8991,6 +8991,17 @@ function AiAssistantPage() {
                 <span>累计自愈 <b>{Number(memoryDiagnostics.entityEvidenceFts.repairsTotal || 0).toLocaleString()}</b> 次</span>
               </div>
             </div>}
+            {memoryDiagnostics.evidenceScopeIndexes?.version && <div className={`assistant-recovery-audit ${memoryDiagnostics.evidenceScopeIndexesHealthy ? 'healthy' : 'unhealthy'}`}>
+              <header><Search size={15} /><span><b>组合范围证据索引</b>
+                <small>通用、实体、事实、关系和事件证据均以“记忆身份＋来源＋会话＋时间”建立本机复合索引；启动会核对列顺序和部分索引条件并自动修复漂移。</small>
+              </span></header>
+              <div className="assistant-recovery-current">
+                <span>当前状态 <b>{memoryDiagnostics.evidenceScopeIndexesHealthy ? '覆盖正常' : '需要检查'}</b></span>
+                <span>索引覆盖 <b>{Number(memoryDiagnostics.evidenceScopeIndexes.installedIndexes || 0)} / {Number(memoryDiagnostics.evidenceScopeIndexes.expectedIndexes || 0)}</b></span>
+                <span>本次修复 <b>{Number(memoryDiagnostics.evidenceScopeIndexes.repairedIndexesThisStart || 0)}</b> 项</span>
+                <span>累计自愈 <b>{Number(memoryDiagnostics.evidenceScopeIndexes.repairsTotal || 0)}</b> 次</span>
+              </div>
+            </div>}
             {memoryDiagnostics.memorySearchFeedbackArchiveRevision?.version && <div className={`assistant-recovery-audit ${memoryDiagnostics.memorySearchFeedbackArchiveRevisionHealthy ? 'healthy' : 'unhealthy'}`}>
               <header><ShieldCheck size={15} /><span><b>检索反馈档案分页与删除保护</b>
                 <small>有用、无关、撤销和永久清理会推进独立 SQLCipher revision；旧分页会自动重载，删除确认若不再对应刚才预览的范围则必须重新预览，避免误删新增判断。</small>

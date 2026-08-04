@@ -776,6 +776,7 @@ export class PersonalMemoryStore {
     this.repairStructuredEvidenceIdentity()
     this.repairStructuredEvidenceReferences()
     this.repairGenericSearchEvidenceIdentity()
+    this.ensureEvidenceScopeIndexes()
     this.ensureEntityEvidenceFtsIndex()
     this.ensureMemorySearchRevisionTriggers()
     this.ensureMemorySearchFeedbackArchiveRevisionTriggers()
@@ -1033,6 +1034,137 @@ export class PersonalMemoryStore {
       INSERT INTO schema_meta(key,value,updated_at) VALUES('entity_evidence_fts_integrity',?,?)
       ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_at=excluded.updated_at
     `).run(JSON.stringify(audit), checkedAt)
+  }
+
+  private evidenceScopeIndexDefinitions(): Array<{
+    name: string
+    table: string
+    columns: string[]
+    where?: string
+  }> {
+    return [{
+      name: 'idx_search_document_evidence_scope',
+      table: 'search_document_evidence',
+      columns: ['document_id', 'source_id', 'session_id', 'timestamp']
+    }, {
+      name: 'idx_entity_evidence_scope',
+      table: 'entity_evidence',
+      columns: ['entity_id', 'source_id', 'session_id', 'timestamp']
+    }, {
+      name: 'idx_evidence_claim_scope',
+      table: 'evidence',
+      columns: ['claim_id', 'source_id', 'session_id', 'timestamp'],
+      where: 'claim_id is not null'
+    }, {
+      name: 'idx_evidence_relation_scope',
+      table: 'evidence',
+      columns: ['relation_id', 'source_id', 'session_id', 'timestamp'],
+      where: 'relation_id is not null'
+    }, {
+      name: 'idx_evidence_event_scope',
+      table: 'evidence',
+      columns: ['event_id', 'source_id', 'session_id', 'timestamp'],
+      where: 'event_id is not null'
+    }]
+  }
+
+  private inspectEvidenceScopeIndexes(): {
+    expectedIndexes: number
+    installedIndexes: number
+    healthy: boolean
+    unhealthyIndexes: string[]
+  } {
+    if (!this.db) {
+      return {
+        expectedIndexes: 5,
+        installedIndexes: 0,
+        healthy: false,
+        unhealthyIndexes: this.evidenceScopeIndexDefinitions().map(item => item.name)
+      }
+    }
+    const unhealthyIndexes: string[] = []
+    let installedIndexes = 0
+    for (const definition of this.evidenceScopeIndexDefinitions()) {
+      const row = this.db.prepare(`
+        SELECT sql FROM sqlite_master WHERE type='index' AND name=?
+      `).get(definition.name) as any
+      if (row?.sql) installedIndexes += 1
+      const columns = row?.sql
+        ? (this.db.prepare(`PRAGMA index_info(${definition.name})`).all() as Array<{ name: string }>)
+          .map(item => item.name)
+        : []
+      const sql = String(row?.sql || '').toLowerCase().replace(/\s+/g, ' ')
+      const columnsHealthy =
+        JSON.stringify(columns) === JSON.stringify(definition.columns)
+      const tableHealthy = sql.includes(`on ${definition.table}(`)
+      const whereHealthy = definition.where
+        ? sql.includes(`where ${definition.where}`)
+        : !sql.includes(' where ')
+      if (!columnsHealthy || !tableHealthy || !whereHealthy) {
+        unhealthyIndexes.push(definition.name)
+      }
+    }
+    return {
+      expectedIndexes: this.evidenceScopeIndexDefinitions().length,
+      installedIndexes,
+      healthy: unhealthyIndexes.length === 0,
+      unhealthyIndexes
+    }
+  }
+
+  private ensureEvidenceScopeIndexes(): void {
+    if (!this.db) return
+    const before = this.inspectEvidenceScopeIndexes()
+    const previousRow = this.db.prepare(`
+      SELECT value FROM schema_meta WHERE key='evidence_scope_index_integrity'
+    `).get() as any
+    let previous: any = {}
+    try { previous = JSON.parse(String(previousRow?.value || '{}')) } catch {}
+    if (!before.healthy) {
+      const statements: string[] = []
+      const unhealthy = new Set(before.unhealthyIndexes)
+      for (const definition of this.evidenceScopeIndexDefinitions()) {
+        if (!unhealthy.has(definition.name)) continue
+        statements.push(`DROP INDEX IF EXISTS ${definition.name};`)
+        statements.push(`CREATE INDEX ${definition.name}
+          ON ${definition.table}(${definition.columns.join(',')})
+          ${definition.where ? `WHERE ${definition.where}` : ''};`)
+      }
+      this.db.exec(statements.join('\n'))
+    }
+    const after = this.inspectEvidenceScopeIndexes()
+    const checkedAt = new Date().toISOString()
+    const audit = {
+      version: 1,
+      checkedAt,
+      ...after,
+      repairedThisStart: !before.healthy,
+      repairedIndexesThisStart: before.unhealthyIndexes.length,
+      repairsTotal: Number(previous.repairsTotal || 0) + (!before.healthy ? 1 : 0)
+    }
+    this.db.prepare(`
+      INSERT INTO schema_meta(key,value,updated_at)
+      VALUES('evidence_scope_index_integrity',?,?)
+      ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_at=excluded.updated_at
+    `).run(JSON.stringify(audit), checkedAt)
+  }
+
+  getEvidenceScopeIndexHealth(): any {
+    const live = this.inspectEvidenceScopeIndexes()
+    if (!this.db) return { version: 1, ...live, repairsTotal: 0 }
+    const row = this.db.prepare(`
+      SELECT value,updated_at FROM schema_meta WHERE key='evidence_scope_index_integrity'
+    `).get() as any
+    let audit: any = {}
+    try { audit = JSON.parse(String(row?.value || '{}')) } catch {}
+    return {
+      version: 1,
+      checkedAt: String(audit.checkedAt || row?.updated_at || ''),
+      repairedThisStart: Boolean(audit.repairedThisStart),
+      repairedIndexesThisStart: Number(audit.repairedIndexesThisStart || 0),
+      repairsTotal: Number(audit.repairsTotal || 0),
+      ...live
+    }
   }
 
   getEntityEvidenceFtsHealth(): any {
@@ -3373,6 +3505,7 @@ export class PersonalMemoryStore {
       || taskSearchIndex.currentMismatches === 0
     const memorySearchRevision = this.getMemorySearchRevisionHealth()
     const entityEvidenceFts = this.getEntityEvidenceFtsHealth()
+    const evidenceScopeIndexes = this.getEvidenceScopeIndexHealth()
     const memorySearchFeedbackArchiveRevision =
       this.getMemorySearchFeedbackArchiveRevisionHealth()
     const memoryDeletionAuditRevision = this.getMemoryDeletionAuditRevisionHealth()
@@ -3394,6 +3527,7 @@ export class PersonalMemoryStore {
         && structuredSearchIndexHealthy
         && taskSearchIndexHealthy
         && entityEvidenceFts.healthy
+        && evidenceScopeIndexes.healthy
         && memorySearchRevision.healthy
         && memorySearchFeedbackArchiveRevision.healthy
         && memoryDeletionAuditRevision.healthy
@@ -3414,6 +3548,7 @@ export class PersonalMemoryStore {
       structuredSearchIndexHealthy,
       taskSearchIndexHealthy,
       entityEvidenceFtsHealthy: entityEvidenceFts.healthy,
+      evidenceScopeIndexesHealthy: evidenceScopeIndexes.healthy,
       memorySearchRevisionHealthy: memorySearchRevision.healthy,
       memorySearchFeedbackArchiveRevisionHealthy:
         memorySearchFeedbackArchiveRevision.healthy,
@@ -3443,6 +3578,7 @@ export class PersonalMemoryStore {
       structuredSearchIndex,
       taskSearchIndex,
       entityEvidenceFts,
+      evidenceScopeIndexes,
       memorySearchRevision,
       memorySearchFeedbackArchiveRevision,
       memoryDeletionAuditRevision,

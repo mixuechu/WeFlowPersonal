@@ -4659,6 +4659,98 @@ test('entity evidence trigram index repairs trigger and row drift on restart', (
   }
 })
 
+test('composed evidence scope indexes cover query plans and self-heal definition drift', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'weflow-evidence-scope-index-'))
+  const databasePath = join(directory, 'memory.sqlite')
+  const first = new PersonalMemoryStore()
+  try {
+    first.initialize(databasePath)
+    const database = (first as any).db
+    const plans = [{
+      name: 'idx_search_document_evidence_scope',
+      sql: `SELECT 1 FROM search_document_evidence
+        WHERE document_id=? AND source_id=? AND session_id=? AND timestamp>=?`
+    }, {
+      name: 'idx_entity_evidence_scope',
+      sql: `SELECT 1 FROM entity_evidence
+        WHERE entity_id=? AND source_id=? AND session_id=? AND timestamp>=?`
+    }, {
+      name: 'idx_evidence_claim_scope',
+      sql: `SELECT 1 FROM evidence
+        WHERE claim_id=? AND source_id=? AND session_id=? AND timestamp>=?`
+    }, {
+      name: 'idx_evidence_relation_scope',
+      sql: `SELECT 1 FROM evidence
+        WHERE relation_id=? AND source_id=? AND session_id=? AND timestamp>=?`
+    }, {
+      name: 'idx_evidence_event_scope',
+      sql: `SELECT 1 FROM evidence
+        WHERE event_id=? AND source_id=? AND session_id=? AND timestamp>=?`
+    }]
+    for (const plan of plans) {
+      const details = (database.prepare(`EXPLAIN QUERY PLAN ${plan.sql}`)
+        .all('memory-id', 'wechat', 'scope-session', 1_700_000_000) as Array<{ detail: string }>)
+        .map(row => row.detail).join(' ')
+      assert.match(details, new RegExp(plan.name))
+    }
+    first.upsertResources([{
+      id: 'scope-index-scale-resource',
+      resourceType: 'document',
+      title: '范围索引规模资料',
+      content: '验证五千条原文下组合范围仍绑定同一证据',
+      evidence: Array.from({ length: 5_000 }, (_, index) => ({
+        sourceId: index % 2 ? 'mail' : 'documents',
+        messageId: `scope-index-scale-${index}`,
+        sessionId: index === 4_999 ? 'scale-target-session' : `scale-session-${index % 20}`,
+        timestamp: 1_800_000_000 + index,
+        sender: '规模测试',
+        excerpt: `组合范围规模证据 ${index}`
+      }))
+    }])
+    const scaleScope = first.listScopedSearchDocumentIds({
+      sourceIds: ['mail'],
+      sessionId: 'scale-target-session',
+      from: new Date(1_800_004_999 * 1000).toISOString(),
+      to: new Date(1_800_004_999 * 1000).toISOString()
+    })
+    assert.equal(scaleScope?.has('resource:scope-index-scale-resource'), true)
+    assert.equal(first.getDocumentEvidencePayload(
+      'resource',
+      'scope-index-scale-resource',
+      {
+        sourceIds: ['mail'],
+        sessionId: 'scale-target-session',
+        from: new Date(1_800_004_999 * 1000).toISOString(),
+        to: new Date(1_800_004_999 * 1000).toISOString()
+      }
+    ).evidenceTotal, 1)
+    assert.equal(first.getEvidenceScopeIndexHealth().healthy, true)
+    database.exec(`
+      DROP INDEX idx_entity_evidence_scope;
+      CREATE INDEX idx_entity_evidence_scope
+        ON entity_evidence(entity_id,timestamp);
+    `)
+    assert.equal(first.getEvidenceScopeIndexHealth().healthy, false)
+    first.close()
+
+    const reopened = new PersonalMemoryStore()
+    try {
+      reopened.initialize(databasePath)
+      const diagnostics = reopened.getDiagnostics()
+      assert.equal(diagnostics.evidenceScopeIndexesHealthy, true)
+      assert.equal(diagnostics.evidenceScopeIndexes.installedIndexes, 5)
+      assert.equal(diagnostics.evidenceScopeIndexes.repairedThisStart, true)
+      assert.equal(diagnostics.evidenceScopeIndexes.repairedIndexesThisStart, 1)
+      assert.equal(diagnostics.evidenceScopeIndexes.unhealthyIndexes.length, 0)
+    } finally {
+      reopened.close()
+    }
+  } finally {
+    first.close()
+    rmSync(directory, { recursive: true, force: true })
+  }
+})
+
 test('direct entity evidence follows reversible identity merges without copying plaintext', () => withStore(store => {
   const entities = ['source-identity-evidence', 'target-identity-evidence'].map((id, index) => ({
     id,
