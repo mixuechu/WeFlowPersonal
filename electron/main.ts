@@ -4697,6 +4697,12 @@ function registerIpcHandlers() {
     aiAssistantService.getCrossStoreRecoveryPage(options))
   ipcMain.handle('ai-assistant:retryCrossStoreRecovery', () =>
     aiAssistantService.retryCrossStoreRecovery())
+  ipcMain.handle('ai-assistant:previewAbandonCrossStoreRecovery', (
+    _, kind: 'task' | 'source', commitId: string
+  ) => aiAssistantService.previewAbandonCrossStoreRecovery(kind, commitId))
+  ipcMain.handle('ai-assistant:abandonCrossStoreRecovery', (
+    _, kind: 'task' | 'source', commitId: string, input?: any
+  ) => aiAssistantService.abandonCrossStoreRecovery(kind, commitId, input))
   ipcMain.handle('ai-assistant:createMemoryBackup', () => aiAssistantService.createMemoryBackup())
   ipcMain.handle('ai-assistant:inspectMemoryBackup', (_, path: string) => aiAssistantService.inspectMemoryBackup(path))
   ipcMain.handle('ai-assistant:restoreMemoryBackup', (_, path: string, input?: any) =>

@@ -57,6 +57,11 @@ import {
   type TaskFromMemoryPreviewIdentity
 } from './taskFromMemoryPreviewPolicy'
 import {
+  assertCrossStoreRecoveryAbandon,
+  buildCrossStoreRecoveryAbandonToken,
+  type CrossStoreRecoveryAbandonIdentity
+} from './crossStoreRecoveryAbandonPolicy'
+import {
   assertTaskMutationBatch,
   buildTaskMutationToken,
   classifyTaskMutationRecovery,
@@ -5150,6 +5155,142 @@ export class AiAssistantService {
       taskRemaining: taskHealth.prepared,
       sourceRemaining: sourceHealth.prepared
     }
+  }
+
+  private inspectCrossStoreRecoveryAbandon(
+    kindInput: unknown,
+    commitIdInput: unknown
+  ): {
+    commit: any
+    identity: CrossStoreRecoveryAbandonIdentity
+    items: any[]
+  } {
+    if (kindInput !== 'task' && kindInput !== 'source') {
+      throw new Error('恢复现场类型无效')
+    }
+    const kind = kindInput
+    const commit = personalMemoryStore.getPreparedCrossStoreRecoveryCommit(
+      kind,
+      String(commitIdInput || '')
+    )
+    if (!commit) throw new Error('恢复现场已经处理或不存在，请刷新目录')
+    const digest = (value: unknown): string => crypto.createHash('sha256')
+      .update(JSON.stringify(value))
+      .digest('hex')
+    let action: 'apply' | 'abandon' | 'conflict'
+    let currentState: any
+    let items: any[]
+    if (kind === 'task') {
+      const ids = [...new Set([
+        ...Object.keys(commit.beforeTokens || {}),
+        ...Object.keys(commit.afterTokens || {})
+      ])]
+      this.hydrateTaskEvidenceFromSql(ids)
+      const byId = new Map(this.state.tasks.map(task => [task.id, task]))
+      const currentTokens = Object.fromEntries(ids.map(id => {
+        const task = byId.get(id)
+        return [id, task ? buildTaskMutationToken(task) : TASK_ABSENT_MUTATION_TOKEN]
+      }))
+      action = classifyTaskMutationRecovery(
+        this.state.tasks,
+        commit.beforeTokens,
+        commit.afterTokens
+      )
+      currentState = currentTokens
+      items = (commit.changes || []).map((change: any) => ({
+        id: String(change?.taskId || ''),
+        beforeTitle: String(change?.before?.title || ''),
+        beforeStatus: String(change?.before?.status || ''),
+        attemptedTitle: String(change?.after?.title || ''),
+        attemptedStatus: String(change?.after?.status || ''),
+        currentTitle: String(byId.get(String(change?.taskId || ''))?.title || ''),
+        currentStatus: String(byId.get(String(change?.taskId || ''))?.status || '不存在')
+      }))
+    } else {
+      action = classifyConversationSourceMutationRecovery(
+        this.state.cursor,
+        commit.beforeTokens,
+        commit.afterTokens
+      )
+      const ids = [...new Set([
+        ...Object.keys(commit.beforeTokens || {}),
+        ...Object.keys(commit.afterTokens || {})
+      ])]
+      const currentTokens = Object.fromEntries(ids.map(id => [
+        id,
+        buildConversationSourceCursorToken(id, readConversationSourceCursorState(this.state.cursor, id))
+      ]))
+      const policies = new Map(personalMemoryStore.getConversationPolicyRecords()
+        .map(policy => [policy.sessionId, policy]))
+      currentState = {
+        cursorTokens: currentTokens,
+        policies: ids.map(id => policies.get(id) || { sessionId: id, missing: true })
+      }
+      items = (commit.policies || []).map((policy: any) => {
+        const current = policies.get(String(policy?.sessionId || ''))
+        return {
+          id: String(policy?.sessionId || ''),
+          displayName: String(policy?.displayName || current?.displayName || ''),
+          attemptedEnabled: Boolean(policy?.enabled),
+          currentEnabled: current ? Boolean(current.enabled) : null,
+          sessionType: policy?.sessionType === 'group' ? 'group' : 'private'
+        }
+      })
+    }
+    if (action !== 'conflict') {
+      throw new Error(action === 'apply'
+        ? '当前状态已精确包含这次中断写入，请先点击安全恢复完成提交'
+        : '当前状态仍与写入前一致，请先点击安全恢复自动放弃')
+    }
+    const preparedPayload = {
+      beforeTokens: commit.beforeTokens,
+      afterTokens: commit.afterTokens,
+      changes: commit.changes,
+      policies: commit.policies
+    }
+    return {
+      commit,
+      items,
+      identity: {
+        kind,
+        commitId: commit.commitId,
+        preparedPayloadSha256: digest(preparedPayload),
+        currentStateSha256: digest(currentState),
+        recoveryAttempts: Number(commit.recoveryAttempts || 0)
+      }
+    }
+  }
+
+  previewAbandonCrossStoreRecovery(kind: unknown, commitId: unknown): any {
+    const inspection = this.inspectCrossStoreRecoveryAbandon(kind, commitId)
+    return {
+      kind: inspection.identity.kind,
+      commitId: inspection.identity.commitId,
+      preparedAt: inspection.commit.preparedAt,
+      recoveryAttempts: inspection.identity.recoveryAttempts,
+      lastError: inspection.commit.lastError
+        ? sanitizeDiagnosticText(inspection.commit.lastError)
+        : '',
+      items: inspection.items,
+      previewToken: buildCrossStoreRecoveryAbandonToken(inspection.identity)
+    }
+  }
+
+  abandonCrossStoreRecovery(kind: unknown, commitId: unknown, input: any = {}): boolean {
+    const inspection = this.inspectCrossStoreRecoveryAbandon(kind, commitId)
+    assertCrossStoreRecoveryAbandon(inspection.identity, input)
+    if (inspection.identity.kind === 'task') {
+      personalMemoryStore.abandonTaskMutationCommit(
+        inspection.identity.commitId,
+        'user_kept_current_state'
+      )
+    } else {
+      personalMemoryStore.abandonConversationSourceMutationCommit(
+        inspection.identity.commitId,
+        'user_kept_current_state'
+      )
+    }
+    return true
   }
 
   createMemoryBackup(protectedPaths: string[] = []): any {

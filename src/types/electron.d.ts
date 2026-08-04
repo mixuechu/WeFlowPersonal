@@ -2075,6 +2075,12 @@ export interface ElectronAPI {
       }>
       getCrossStoreRecoveryPage: (options?: any) => Promise<any>
       retryCrossStoreRecovery: () => Promise<any>
+      previewAbandonCrossStoreRecovery: (
+        kind: 'task' | 'source', commitId: string
+      ) => Promise<any>
+      abandonCrossStoreRecovery: (
+        kind: 'task' | 'source', commitId: string, input?: any
+      ) => Promise<boolean>
       createMemoryBackup: () => Promise<any>
       inspectMemoryBackup: (path: string) => Promise<any>
       restoreMemoryBackup: (

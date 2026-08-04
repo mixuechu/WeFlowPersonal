@@ -8917,6 +8917,51 @@ export class PersonalMemoryStore {
     }
   }
 
+  getPreparedCrossStoreRecoveryCommit(
+    kind: 'task' | 'source',
+    commitIdInput: string
+  ): any {
+    if (!this.db) return null
+    const commitId = String(commitIdInput || '').trim()
+    if (!commitId) return null
+    const table = kind === 'task'
+      ? 'task_mutation_commits'
+      : 'conversation_source_mutation_commits'
+    const row = this.db.prepare(`
+      SELECT * FROM ${table} WHERE commit_id=? AND status='prepared'
+    `).get(commitId) as any
+    if (!row) return null
+    const payloadFields = kind === 'task'
+      ? ['before_tokens_json', 'after_tokens_json', 'changes_json']
+      : ['before_tokens_json', 'after_tokens_json', 'policies_json']
+    const payload = readRecoveryPayload(row, payloadFields)
+    const parseObject = (value: unknown): Record<string, string> => {
+      const parsed = JSON.parse(String(value || '{}'))
+      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error()
+      return parsed
+    }
+    const parseArray = (value: unknown): any[] => {
+      const parsed = JSON.parse(String(value || '[]'))
+      if (!Array.isArray(parsed)) throw new Error()
+      return parsed
+    }
+    try {
+      return {
+        kind,
+        commitId,
+        preparedAt: String(row.prepared_at || ''),
+        recoveryAttempts: Number(row.recovery_attempts || 0),
+        lastError: String(row.last_error || ''),
+        beforeTokens: parseObject(payload.before_tokens_json),
+        afterTokens: parseObject(payload.after_tokens_json),
+        changes: kind === 'task' ? parseArray(payload.changes_json) : [],
+        policies: kind === 'source' ? parseArray(payload.policies_json) : []
+      }
+    } catch {
+      throw new Error('恢复载荷无法解析，不能安全生成放弃预览')
+    }
+  }
+
   listTaskHistory(taskIds: string[], limit = 200): any[] {
     if (!this.db || !taskIds.length) return []
     const ids = [...new Set(taskIds.map(String))].slice(0, 500)

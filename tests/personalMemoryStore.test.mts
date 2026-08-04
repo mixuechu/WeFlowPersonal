@@ -10167,6 +10167,32 @@ test('cross-store recovery directory pages task and source failures without expo
   assert.equal(refreshed.total, 1)
   assert.equal(refreshed.items[0].kind, 'task')
   assert.equal(refreshed.items[0].payload_codec, 'gzip-json-v1')
+  const prepared = store.getPreparedCrossStoreRecoveryCommit('task', 'cross-store-task')
+  assert.equal(prepared.changes[0].after.status, 'done')
+  assert.equal(prepared.changes[0].evidence[0].excerpt,
+    '不应进入恢复目录的任务原文')
+  store.abandonTaskMutationCommit('cross-store-task', 'user_kept_current_state')
+  assert.equal(store.getPreparedCrossStoreRecoveryCommit('task', 'cross-store-task'), null)
+  const audit = (store as any).db.prepare(`
+    SELECT status,recovery_action,before_tokens_json,after_tokens_json,changes_json,
+      payload_blob
+    FROM task_mutation_commits WHERE commit_id='cross-store-task'
+  `).get()
+  assert.deepEqual({
+    status: audit.status,
+    recovery_action: audit.recovery_action,
+    before_tokens_json: audit.before_tokens_json,
+    after_tokens_json: audit.after_tokens_json,
+    changes_json: audit.changes_json,
+    payload_blob: audit.payload_blob
+  }, {
+    status: 'abandoned',
+    recovery_action: 'user_kept_current_state',
+    before_tokens_json: '{}',
+    after_tokens_json: '{}',
+    changes_json: '[]',
+    payload_blob: null
+  })
 }))
 
 test('partial ingestion keeps completed checkpoints visible for safe resume', () => withStore(store => {

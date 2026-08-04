@@ -755,6 +755,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
     getCrossStoreRecoveryPage: (options?: any) =>
       ipcRenderer.invoke('ai-assistant:getCrossStoreRecoveryPage', options),
     retryCrossStoreRecovery: () => ipcRenderer.invoke('ai-assistant:retryCrossStoreRecovery'),
+    previewAbandonCrossStoreRecovery: (kind: 'task' | 'source', commitId: string) =>
+      ipcRenderer.invoke('ai-assistant:previewAbandonCrossStoreRecovery', kind, commitId),
+    abandonCrossStoreRecovery: (
+      kind: 'task' | 'source', commitId: string, input?: any
+    ) => ipcRenderer.invoke('ai-assistant:abandonCrossStoreRecovery', kind, commitId, input),
     createMemoryBackup: () => ipcRenderer.invoke('ai-assistant:createMemoryBackup'),
     inspectMemoryBackup: (path: string) => ipcRenderer.invoke('ai-assistant:inspectMemoryBackup', path),
     restoreMemoryBackup: (path: string, input?: any) =>

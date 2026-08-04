@@ -959,10 +959,13 @@ function AiAssistantPage() {
   const [crossStoreRecoveryQueue, setCrossStoreRecoveryQueue] = useState<any>(null)
   const [crossStoreRecoveryLoadingMore, setCrossStoreRecoveryLoadingMore] = useState(false)
   const [crossStoreRecoveryRetrying, setCrossStoreRecoveryRetrying] = useState(false)
+  const [crossStoreAbandonDialog, setCrossStoreAbandonDialog] = useState<any>(null)
+  const [crossStoreAbandonConfirmation, setCrossStoreAbandonConfirmation] = useState('')
   const ingestionArchiveGate = useRef(new LatestRequestGate())
   const ingestionDossierGate = useRef(new LatestRequestGate())
   const ingestionRecoveryGate = useRef(new LatestRequestGate())
   const crossStoreRecoveryGate = useRef(new LatestRequestGate())
+  const crossStoreAbandonGate = useRef(new LatestRequestGate())
   const [backingUpMemory, setBackingUpMemory] = useState(false)
   const [restoringMemory, setRestoringMemory] = useState(false)
   const [memoryRestoreDialog, setMemoryRestoreDialog] = useState<any>(null)
@@ -3419,6 +3422,72 @@ function AiAssistantPage() {
       setMessage(error?.message || String(error))
     } finally {
       setCrossStoreRecoveryRetrying(false)
+    }
+  }
+
+  const openCrossStoreAbandonPreview = async (commit: any) => {
+    const request = crossStoreAbandonGate.current.begin()
+    setCrossStoreAbandonConfirmation('')
+    setCrossStoreAbandonDialog({
+      status: 'loading',
+      kind: commit.kind,
+      commitId: commit.commitId
+    })
+    try {
+      const preview = await window.electronAPI.aiAssistant
+        .previewAbandonCrossStoreRecovery(commit.kind, commit.commitId)
+      if (!crossStoreAbandonGate.current.isCurrent(request)) return
+      setCrossStoreAbandonDialog({ status: 'ready', ...preview })
+    } catch (error: any) {
+      if (!crossStoreAbandonGate.current.isCurrent(request)) return
+      setCrossStoreAbandonDialog({
+        status: 'error',
+        kind: commit.kind,
+        commitId: commit.commitId,
+        error: error?.message || String(error)
+      })
+    }
+  }
+
+  const closeCrossStoreAbandonDialog = () => {
+    if (crossStoreAbandonDialog?.status === 'abandoning') return
+    crossStoreAbandonGate.current.invalidate()
+    setCrossStoreAbandonDialog(null)
+    setCrossStoreAbandonConfirmation('')
+  }
+
+  const confirmCrossStoreAbandon = async () => {
+    if (crossStoreAbandonDialog?.status !== 'ready' ||
+      !crossStoreAbandonDialog.previewToken ||
+      crossStoreAbandonConfirmation !== '保留当前状态') return
+    const request = crossStoreAbandonGate.current.begin()
+    setCrossStoreAbandonDialog((current: any) => ({
+      ...current,
+      status: 'abandoning',
+      error: ''
+    }))
+    try {
+      await window.electronAPI.aiAssistant.abandonCrossStoreRecovery(
+        crossStoreAbandonDialog.kind,
+        crossStoreAbandonDialog.commitId,
+        {
+          previewToken: crossStoreAbandonDialog.previewToken,
+          confirmation: crossStoreAbandonConfirmation
+        }
+      )
+      if (!crossStoreAbandonGate.current.isCurrent(request)) return
+      setCrossStoreAbandonDialog(null)
+      setCrossStoreAbandonConfirmation('')
+      setMessage('已保留当前状态，并安全放弃这次无法自动收敛的旧中断写入。')
+      await loadCrossStoreRecoveryQueue()
+      await load()
+    } catch (error: any) {
+      if (!crossStoreAbandonGate.current.isCurrent(request)) return
+      setCrossStoreAbandonDialog((current: any) => ({
+        ...current,
+        status: 'error',
+        error: error?.message || String(error)
+      }))
     }
   }
 
@@ -6514,6 +6583,10 @@ function AiAssistantPage() {
                       ? ` · 加密冷存储 ${formatBytes(commit.originalPayloadBytes)}`
                       : ' · 热恢复载荷'}</small>
                   {commit.lastError && <p>{commit.lastError}</p>}
+                  {Number(commit.recoveryAttempts || 0) > 0 && <button
+                    onClick={() => void openCrossStoreAbandonPreview(commit)}>
+                    检查并处理永久冲突
+                  </button>}
                 </article>)}
                 {!crossStoreRecoveryQueue.loading && !crossStoreRecoveryQueue.items?.length &&
                   <em>写入恢复队列已经清空。</em>}
@@ -10727,6 +10800,81 @@ function AiAssistantPage() {
             </div>
             <footer><button onClick={() => void window.electronAPI.aiAssistant.getMemoryDiagnostics().then(setMemoryDiagnostics)}>刷新</button>
               <button className="primary" onClick={() => setShowDiagnostics(false)}>完成</button></footer>
+          </div>
+        </div>
+      )}
+
+      {crossStoreAbandonDialog && (
+        <div className="assistant-modal-backdrop" role="presentation">
+          <div className="assistant-modal assistant-delete-modal" role="dialog" aria-modal="true"
+            aria-labelledby="cross-store-abandon-title">
+            <div className="assistant-modal-title"><div>
+              <h2 id="cross-store-abandon-title">保留当前状态</h2>
+              <p>只放弃旧的中断写入现场，不会强制覆盖当前任务或信息来源设置。</p>
+            </div><button aria-label="关闭恢复冲突确认"
+              disabled={crossStoreAbandonDialog.status === 'abandoning'}
+              onClick={closeCrossStoreAbandonDialog}><X size={16} /></button></div>
+            {crossStoreAbandonDialog.status === 'loading' && <div className="assistant-delete-status">
+              <RefreshCw size={16} /><span><strong>正在核对恢复现场和当前状态…</strong>
+                <small>只有确定同时不匹配写入前后状态的冲突才能人工放弃。</small></span>
+            </div>}
+            {crossStoreAbandonDialog.status === 'error' && <div className="assistant-error">
+              <strong>当前不能人工放弃</strong>
+              <span>{crossStoreAbandonDialog.error || '恢复现场已经变化，请重新检查。'}</span>
+            </div>}
+            {(crossStoreAbandonDialog.status === 'ready' ||
+              crossStoreAbandonDialog.status === 'abandoning') && <>
+              <div className="assistant-delete-preview">
+                <strong>
+                  {crossStoreAbandonDialog.kind === 'task' ? '任务写入冲突' : '信息来源策略冲突'}
+                </strong>
+                <p>这次写入已自动尝试 {crossStoreAbandonDialog.recoveryAttempts || 0} 次。
+                  确认后保留界面当前状态，只把恢复现场记为“本人选择放弃”，不会应用旧目标值。</p>
+              </div>
+              <div className="assistant-cross-store-conflict-items">
+                {(crossStoreAbandonDialog.items || []).map((item: any) =>
+                  <article key={item.id}>
+                    <strong>{crossStoreAbandonDialog.kind === 'task'
+                      ? item.currentTitle || item.attemptedTitle || item.beforeTitle || item.id
+                      : item.displayName || item.id}</strong>
+                    {crossStoreAbandonDialog.kind === 'task' ? <>
+                      <span>当前：{item.currentStatus || '未知'} · 旧写入目标：
+                        {item.attemptedStatus || '未知'}</span>
+                      {(item.beforeTitle && item.beforeTitle !== item.attemptedTitle) &&
+                        <small>旧标题“{item.beforeTitle}” → “{item.attemptedTitle}”</small>}
+                    </> : <>
+                      <span>当前：{item.currentEnabled === null
+                        ? '尚无策略'
+                        : item.currentEnabled ? '允许分析' : '停止分析'}
+                        {' '}· 旧写入目标：{item.attemptedEnabled ? '允许分析' : '停止分析'}</span>
+                      <small>{item.sessionType === 'group' ? '群聊' : '私聊'} · {item.id}</small>
+                    </>}
+                  </article>)}
+              </div>
+              <label><span>输入“保留当前状态”确认</span><input autoFocus
+                value={crossStoreAbandonConfirmation}
+                disabled={crossStoreAbandonDialog.status === 'abandoning'}
+                onChange={event => setCrossStoreAbandonConfirmation(event.target.value)}
+                placeholder="保留当前状态" /></label>
+            </>}
+            <div className="assistant-modal-actions">
+              <button disabled={crossStoreAbandonDialog.status === 'abandoning'}
+                onClick={closeCrossStoreAbandonDialog}>取消</button>
+              {crossStoreAbandonDialog.status === 'error' && <button className="primary"
+                onClick={() => void openCrossStoreAbandonPreview(crossStoreAbandonDialog)}>
+                重新检查
+              </button>}
+              {(crossStoreAbandonDialog.status === 'ready' ||
+                crossStoreAbandonDialog.status === 'abandoning') &&
+                <button className="danger"
+                  disabled={crossStoreAbandonDialog.status === 'abandoning' ||
+                    crossStoreAbandonConfirmation !== '保留当前状态'}
+                  onClick={() => void confirmCrossStoreAbandon()}>
+                  {crossStoreAbandonDialog.status === 'abandoning'
+                    ? '正在安全放弃…'
+                    : '保留当前状态并放弃旧写入'}
+                </button>}
+            </div>
           </div>
         </div>
       )}
