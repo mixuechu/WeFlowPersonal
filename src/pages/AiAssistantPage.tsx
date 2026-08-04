@@ -6397,7 +6397,12 @@ function AiAssistantPage() {
               {' '}个已失败但仍可重放的批次已转入 SQLCipher 无损冷存储，
               当前占用 {formatBytes(Number(
                 ingestionStatus.commitHealth.failedPayloadStorage.retainedBytes || 0
-              ))}，相对原始载荷节省约 {formatBytes(Number(
+              ))}；其中 {Number(
+                ingestionStatus.commitHealth.failedPayloadStorage.redundantRows || 0
+              ).toLocaleString()} 个具备哈希校验双副本，
+              主/备副本自动修复 {Number(
+                ingestionStatus.commitHealth.failedPayloadStorage.backupRecoveries || 0
+              ).toLocaleString()} 次。相对原始载荷节省约 {formatBytes(Number(
                 ingestionStatus.commitHealth.failedPayloadStorage.reclaimedBytes || 0
               ))}；重试时会透明恢复完整模型结果与消息窗口。
             </small>}
@@ -6436,7 +6441,12 @@ function AiAssistantPage() {
                   <b>{commit.source_kind === 'document' ? '文档' : '微信'}批次 #{commit.batch_index}</b>
                   <span>{new Date(commit.prepared_at).toLocaleString('zh-CN')} ·
                     已尝试恢复 {Number(commit.recovery_attempts || 0)} 次</span>
-                  <small>运行 {commit.run_id} · 恢复 ID {commit.commit_id}</small>
+                  <small>运行 {commit.run_id} · 恢复 ID {commit.commit_id}
+                    {Number(commit.payload_redundant || 0) === 1 ? ' · 哈希校验双副本' : ' · 单副本旧现场'}
+                    {Number(commit.payload_backup_recoveries || 0) > 0
+                      ? ` · 主/备副本自愈 ${Number(commit.payload_backup_recoveries)} 次`
+                      : ''}
+                  </small>
                   {commit.last_error && <p>{commit.last_error}</p>}
                 </article>)}
                 {!ingestionRecoveryQueue.loading && !ingestionRecoveryQueue.items?.length &&
@@ -6699,7 +6709,14 @@ function AiAssistantPage() {
                   <small>影响 {commit.affectedCount || '未知'} 项 · 恢复 ID {commit.commitId}
                     {commit.coldStored
                       ? ` · 加密冷存储 ${formatBytes(commit.originalPayloadBytes)}`
-                      : ' · 热恢复载荷'}</small>
+                      : ' · 热恢复载荷'}
+                    {commit.coldStored
+                      ? commit.payloadRedundant ? ' · 哈希校验双副本' : ' · 单副本旧现场'
+                      : ''}
+                    {Number(commit.backupRecoveries || 0) > 0
+                      ? ` · 主/备副本自愈 ${Number(commit.backupRecoveries)} 次`
+                      : ''}
+                  </small>
                   {commit.lastError && <p>{commit.lastError}</p>}
                   {Number(commit.recoveryAttempts || 0) > 0 && <button
                     onClick={() => void openCrossStoreAbandonPreview(commit)}>
@@ -10393,6 +10410,8 @@ function AiAssistantPage() {
                 <span>快照内重复原文 <b>{Number(memoryDiagnostics.taskStateStorage.reviewSnapshots?.embeddedEvidenceRows || 0).toLocaleString()}</b></span>
                 <span>归属旧副本回收 <b>{(Number(memoryDiagnostics.taskStateStorage.reviewSnapshots?.migration?.bytesReclaimed || 0) / 1024).toFixed(1)} KB</b></span>
                 <span>失败提交冷存储 <b>{Number(memoryDiagnostics.taskMutationCommits?.compressedPayloads || 0).toLocaleString()}</b></span>
+                <span>任务恢复双副本 <b>{Number(memoryDiagnostics.taskMutationCommits?.redundantPayloads || 0).toLocaleString()}</b></span>
+                <span>任务副本自愈 <b>{Number(memoryDiagnostics.taskMutationCommits?.backupRecoveries || 0).toLocaleString()}</b></span>
                 <span>失败载荷回收 <b>{(Number(memoryDiagnostics.taskMutationCommits?.reclaimedPayloadBytes || 0) / 1024).toFixed(1)} KB</b></span>
               </div>
             </div>}
@@ -10751,6 +10770,8 @@ function AiAssistantPage() {
                 <span>恢复失败 <b>{Number(memoryDiagnostics.conversationSourceMutationCommits.recoveryFailures || 0)}</b></span>
                 <span>保留载荷 <b>{Number(memoryDiagnostics.conversationSourceMutationCommits.retainedPayloadBytes || 0).toLocaleString()} B</b></span>
                 <span>压缩冷存储 <b>{Number(memoryDiagnostics.conversationSourceMutationCommits.compressedPayloads || 0)}</b></span>
+                <span>哈希校验双副本 <b>{Number(memoryDiagnostics.conversationSourceMutationCommits.redundantPayloads || 0)}</b></span>
+                <span>副本自动修复 <b>{Number(memoryDiagnostics.conversationSourceMutationCommits.backupRecoveries || 0)}</b></span>
                 <span>估算回收 <b>{(Number(memoryDiagnostics.conversationSourceMutationCommits.reclaimedPayloadBytes || 0) / 1024).toFixed(1)} KB</b></span>
               </div>
               {!!Number(memoryDiagnostics.conversationSourceMutationCommits.compressedPayloads || 0) && <small>
@@ -10855,6 +10876,9 @@ function AiAssistantPage() {
                           : '时间未知'}
                       {' · '}影响 {Number(entry.affectedCount || 0)} 项
                       {' · '}自动尝试 {Number(entry.recoveryAttempts || 0)} 次
+                      {Number(entry.backupRecoveries || 0) > 0
+                        ? ` · 曾发生载荷副本自愈 ${Number(entry.backupRecoveries)} 次`
+                        : ''}
                     </small>
                   </span>
                   <span className="assistant-recovery-commit-id">{entry.commitId}</span>

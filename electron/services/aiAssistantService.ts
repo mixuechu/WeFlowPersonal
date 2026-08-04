@@ -5122,6 +5122,8 @@ export class AiAssistantService {
         lastError: item.last_error ? sanitizeDiagnosticText(item.last_error) : '',
         affectedCount: Number(item.affected_count || 0),
         coldStored: String(item.payload_codec || '') === 'gzip-json-v1',
+        payloadRedundant: Number(item.payload_redundant || 0) === 1,
+        backupRecoveries: Number(item.payload_backup_recoveries || 0),
         originalPayloadBytes: Number(item.payload_original_bytes || 0)
       }))
     }
@@ -5155,6 +5157,7 @@ export class AiAssistantService {
         appliedAt: String(item.applied_at || ''),
         recoveryAttempts: Number(item.recovery_attempts || 0),
         recoveryAction: String(item.recovery_action || ''),
+        backupRecoveries: Number(item.payload_backup_recoveries || 0),
         lastError: item.last_error ? sanitizeDiagnosticText(item.last_error) : '',
         affectedCount: Number(item.affected_count || 0)
       }))

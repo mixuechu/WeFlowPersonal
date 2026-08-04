@@ -252,17 +252,52 @@ test('source mutation finalize rolls every policy back and preserves prepared re
     assert.match(prepared[0].policies[0].displayName, /重复来源载荷/)
     const physical = database.prepare(`
       SELECT before_tokens_json,after_tokens_json,policies_json,payload_codec,
-        LENGTH(payload_blob) AS stored_bytes,payload_original_bytes
+        LENGTH(payload_blob) AS stored_bytes,LENGTH(payload_backup_blob) AS backup_bytes,
+        payload_sha256,payload_original_bytes
       FROM conversation_source_mutation_commits WHERE commit_id='source-commit-failure'
     `).get()
     assert.deepEqual([
       physical.before_tokens_json, physical.after_tokens_json, physical.policies_json
     ], ['{}', '{}', '[]'])
     assert.equal(physical.payload_codec, 'gzip-json-v1')
+    assert.equal(physical.backup_bytes, physical.stored_bytes)
+    assert.match(physical.payload_sha256, /^[a-f0-9]{64}$/)
     assert.ok(physical.stored_bytes < physical.payload_original_bytes / 5)
     const health = store.getConversationSourceMutationCommitHealth()
     assert.equal(health.compressedPayloads, 1)
+    assert.equal(health.redundantPayloads, 1)
     assert.ok(health.reclaimedPayloadBytes > 1_000)
+    database.prepare(`
+      UPDATE conversation_source_mutation_commits
+      SET payload_blob=X'00' WHERE commit_id='source-commit-failure'
+    `).run()
+    assert.equal(
+      store.listPreparedConversationSourceMutationCommits()[0].policies.length,
+      2
+    )
+    assert.equal(
+      store.getConversationSourceMutationCommitHealth().backupRecoveries,
+      1
+    )
+    database.prepare(`
+      UPDATE conversation_source_mutation_commits
+      SET payload_sha256=? WHERE commit_id='source-commit-failure'
+    `).run('0'.repeat(64))
+    assert.equal(
+      store.listPreparedConversationSourceMutationCommits()[0].policies.length,
+      2
+    )
+    assert.equal(
+      store.getConversationSourceMutationCommitHealth().backupRecoveries,
+      2
+    )
+    assert.notEqual(
+      database.prepare(`
+        SELECT payload_sha256 FROM conversation_source_mutation_commits
+        WHERE commit_id='source-commit-failure'
+      `).get().payload_sha256,
+      '0'.repeat(64)
+    )
     database.exec('DROP TRIGGER reject_bad_source_commit')
     store.finalizeConversationSourceMutationCommit('source-commit-failure')
     assert.equal(store.getConversationSourceMutationCommitHealth().retainedPayloadBytes, 0)
@@ -10094,16 +10129,37 @@ test('prepared task mutation commits directory and history atomically then compa
   assert.equal(database.prepare(`SELECT status FROM task_directory WHERE id='prepared-task-a'`).get().status, 'todo')
   const compressed = database.prepare(`
     SELECT before_tokens_json,after_tokens_json,changes_json,payload_codec,
-      LENGTH(payload_blob) AS stored_bytes,payload_original_bytes
+      LENGTH(payload_blob) AS stored_bytes,LENGTH(payload_backup_blob) AS backup_bytes,
+      payload_sha256,payload_original_bytes
     FROM task_mutation_commits WHERE commit_id='prepared-task-commit'
   `).get()
   assert.deepEqual([
     compressed.before_tokens_json, compressed.after_tokens_json, compressed.changes_json
   ], ['{}', '{}', '[]'])
   assert.equal(compressed.payload_codec, 'gzip-json-v1')
+  assert.equal(compressed.backup_bytes, compressed.stored_bytes)
+  assert.match(compressed.payload_sha256, /^[a-f0-9]{64}$/)
   assert.ok(compressed.stored_bytes < compressed.payload_original_bytes / 5)
   assert.equal(store.listPreparedTaskMutationCommits()[0].changes.length, 2)
   assert.equal(store.getTaskMutationCommitHealth().compressedPayloads, 1)
+  assert.equal(store.getTaskMutationCommitHealth().redundantPayloads, 1)
+  database.prepare(`
+    UPDATE task_mutation_commits SET payload_blob=X'00'
+    WHERE commit_id='prepared-task-commit'
+  `).run()
+  assert.equal(store.listPreparedTaskMutationCommits()[0].changes.length, 2)
+  assert.equal(store.getTaskMutationCommitHealth().backupRecoveries, 1)
+  database.prepare(`
+    UPDATE task_mutation_commits SET payload_backup_blob=X'01'
+    WHERE commit_id='prepared-task-commit'
+  `).run()
+  assert.equal(store.listPreparedTaskMutationCommits()[0].changes.length, 2)
+  assert.equal(store.getTaskMutationCommitHealth().backupRecoveries, 2)
+  const taskCopies = database.prepare(`
+    SELECT hex(payload_blob) AS primary_hex,hex(payload_backup_blob) AS backup_hex
+    FROM task_mutation_commits WHERE commit_id='prepared-task-commit'
+  `).get()
+  assert.equal(taskCopies.primary_hex, taskCopies.backup_hex)
 
   database.exec('DROP TRIGGER fail_prepared_task_history')
   store.finalizeTaskMutationCommit('prepared-task-commit', after)
@@ -10582,7 +10638,8 @@ test('prepared ingestion commits survive retries and become an auditable committ
   assert.deepEqual(store.listPreparedIngestionBatchCommits()[0].messages, input.messages)
   const coldPayload = (store as any).db.prepare(`
     SELECT digest_json,messages_json,checkpoint_keys_json,completion_json,payload_codec,
-      LENGTH(payload_blob) AS retained_bytes,payload_original_bytes
+      LENGTH(payload_blob) AS retained_bytes,LENGTH(payload_backup_blob) AS backup_bytes,
+      payload_sha256,payload_original_bytes
     FROM ingestion_batch_commits WHERE commit_id=?
   `).get(input.commitId)
   assert.deepEqual([
@@ -10592,9 +10649,27 @@ test('prepared ingestion commits survive retries and become an auditable committ
     coldPayload.completion_json
   ], ['{}', '[]', '[]', '{}'])
   assert.equal(coldPayload.payload_codec, 'gzip-json-v1')
+  assert.equal(coldPayload.backup_bytes, coldPayload.retained_bytes)
+  assert.match(coldPayload.payload_sha256, /^[a-f0-9]{64}$/)
   assert.ok(coldPayload.retained_bytes < coldPayload.payload_original_bytes / 5)
   assert.equal(store.getIngestionCommitHealth().failedPayloadStorage.compressedRows, 1)
+  assert.equal(store.getIngestionCommitHealth().failedPayloadStorage.redundantRows, 1)
   assert.ok(store.getIngestionCommitHealth().failedPayloadStorage.reclaimedBytes > 10_000)
+  ;(store as any).db.prepare(`
+    UPDATE ingestion_batch_commits SET payload_blob=X'00' WHERE commit_id=?
+  `).run(input.commitId)
+  const repaired = store.listPreparedIngestionBatchCommits()[0]
+  assert.deepEqual(repaired.digest, input.digest)
+  assert.deepEqual(repaired.messages, input.messages)
+  assert.equal(
+    store.getIngestionCommitHealth().failedPayloadStorage.backupRecoveries,
+    1
+  )
+  const repairedCopies = (store as any).db.prepare(`
+    SELECT hex(payload_blob) AS primary_hex,hex(payload_backup_blob) AS backup_hex
+    FROM ingestion_batch_commits WHERE commit_id=?
+  `).get(input.commitId)
+  assert.equal(repairedCopies.primary_hex, repairedCopies.backup_hex)
 
   store.finalizeIngestionBatchCommit(input.commitId, {
     model: 'deepseek-test',
@@ -10619,8 +10694,10 @@ test('prepared ingestion commits survive retries and become an auditable committ
       lastCompactedAt: ''
     },
     failedPayloadStorage: {
-      version: 'ingestion-failed-payload-gzip-v1',
+      version: 'ingestion-failed-payload-redundancy-v2',
       compressedRows: 0,
+      redundantRows: 0,
+      backupRecoveries: 0,
       retainedBytes: 0,
       originalBytes: 0,
       reclaimedBytes: 0
@@ -10746,9 +10823,11 @@ test('legacy failed ingestion payload enters cold storage and replays after SQLC
     assert.equal(recovered.completion.summary, '旧完成信息'.repeat(1_000))
     const health = second.getIngestionCommitHealth().failedPayloadStorage
     assert.equal(health.compressedRows, 1)
+    assert.equal(health.redundantRows, 1)
     assert.ok(health.reclaimedBytes > 10_000)
     const physical = (second as any).db.prepare(`
-      SELECT digest_json,messages_json,checkpoint_keys_json,completion_json,payload_codec
+      SELECT digest_json,messages_json,checkpoint_keys_json,completion_json,payload_codec,
+        LENGTH(payload_blob)=LENGTH(payload_backup_blob) AS same_size,payload_sha256
       FROM ingestion_batch_commits WHERE commit_id='legacy-ingestion-cold'
     `).get()
     assert.deepEqual(physical, {
@@ -10756,14 +10835,58 @@ test('legacy failed ingestion payload enters cold storage and replays after SQLC
       messages_json: '[]',
       checkpoint_keys_json: '[]',
       completion_json: '{}',
-      payload_codec: 'gzip-json-v1'
+      payload_codec: 'gzip-json-v1',
+      same_size: 1,
+      payload_sha256: physical.payload_sha256
     })
+    assert.match(physical.payload_sha256, /^[a-f0-9]{64}$/)
   } finally {
     first.close()
     second.close()
     rmSync(directory, { recursive: true, force: true })
   }
 })
+
+test('dual-corrupted ingestion recovery stays prepared and never advances its checkpoint', () =>
+  withStore(store => {
+    const checkpointKey = 'wechat:dual-corrupt-session:dual-corrupt-message'
+    store.prepareIngestionBatchCommit({
+      commitId: 'dual-corrupt-ingestion',
+      runId: 'dual-corrupt-run',
+      batchIndex: 1,
+      digest: { tasks: [{ title: '不能从损坏载荷应用' }] },
+      messages: [{ id: 'dual-corrupt-message', content: '仍需从原断点重新核验' }],
+      checkpointKeys: [checkpointKey],
+      createdAt: '2026-08-04T00:00:00.000Z'
+    })
+    store.recordIngestionBatchCommitRecoveryFailure(
+      'dual-corrupt-ingestion',
+      'injected initial recovery failure'
+    )
+    ;(store as any).db.prepare(`
+      UPDATE ingestion_batch_commits
+      SET payload_blob=X'00',payload_backup_blob=X'01'
+      WHERE commit_id='dual-corrupt-ingestion'
+    `).run()
+    const prepared = store.listPreparedIngestionBatchCommits()[0]
+    assert.match(prepared.parseError, /压缩载荷/)
+    assert.equal(store.getIngestionCommitHealth().prepared, 1)
+    assert.equal(
+      store.getProcessedIngestionMessageKeys([checkpointKey]).size,
+      0
+    )
+    const physical = (store as any).db.prepare(`
+      SELECT status,hex(payload_blob) AS primary_hex,
+        hex(payload_backup_blob) AS backup_hex,applied_at
+      FROM ingestion_batch_commits WHERE commit_id='dual-corrupt-ingestion'
+    `).get()
+    assert.deepEqual(physical, {
+      status: 'prepared',
+      primary_hex: '00',
+      backup_hex: '01',
+      applied_at: null
+    })
+  }))
 
 test('prepared recovery batches drain beyond the first hundred and leave only attempted failures', () =>
   withStore(store => {
