@@ -4839,6 +4839,103 @@ export class PersonalMemoryStore {
     }
   }
 
+  listRelationDossierAuditPage(options: {
+    relationId: string
+    kind: 'history' | 'correction'
+    expectedSearchRevision: string
+    offset?: number
+    limit?: number
+    revision?: string
+  }): {
+    items: any[]
+    total: number
+    hasMore: boolean
+    offset: number
+    limit: number
+    revision: string
+    searchRevision: string
+    stale: boolean
+  } {
+    const relationId = String(options.relationId || '').trim()
+    const offset = Math.max(0, Math.min(1_000_000, Math.floor(Number(options.offset) || 0)))
+    const limit = Math.max(1, Math.min(100, Math.floor(Number(options.limit) || 40)))
+    const searchRevision = this.getMemorySearchRevision()
+    const revision = this.getGraphReviewRevision()
+    const empty = {
+      items: [],
+      total: 0,
+      hasMore: false,
+      offset,
+      limit,
+      revision,
+      searchRevision,
+      stale: false
+    }
+    if (!this.db || !relationId) return empty
+    if (String(options.expectedSearchRevision || '').trim() !== searchRevision) {
+      return { ...empty, stale: true }
+    }
+    if (offset > 0 && String(options.revision || '').trim() !== revision) {
+      return { ...empty, stale: true }
+    }
+    const document = this.db.prepare(`
+      SELECT 1 FROM search_documents
+      WHERE id=? AND document_type='relation' AND source_id=?
+    `).get(`relation:${relationId}`, relationId)
+    if (!document) return { ...empty, stale: true }
+    let total = 0
+    let items: any[] = []
+    if (options.kind === 'correction') {
+      total = Number((this.db.prepare(`
+        SELECT COUNT(*) AS count FROM relation_corrections
+        WHERE before_relation_id=? OR after_relation_id=?
+      `).get(relationId, relationId) as any)?.count || 0)
+      items = this.db.prepare(`
+        SELECT correction.*,
+          before_subject.canonical_name AS before_subject_name,
+          before_object.canonical_name AS before_object_name,
+          after_subject.canonical_name AS after_subject_name,
+          after_object.canonical_name AS after_object_name
+        FROM relation_corrections correction
+        LEFT JOIN entities before_subject ON before_subject.id=correction.before_subject_id
+        LEFT JOIN entities before_object ON before_object.id=correction.before_object_id
+        LEFT JOIN entities after_subject ON after_subject.id=correction.after_subject_id
+        LEFT JOIN entities after_object ON after_object.id=correction.after_object_id
+        WHERE correction.before_relation_id=? OR correction.after_relation_id=?
+        ORDER BY correction.id DESC LIMIT ? OFFSET ?
+      `).all(relationId, relationId, limit, offset) as any[]
+    } else {
+      total = Number((this.db.prepare(`
+        SELECT COUNT(*) AS count FROM relation_history WHERE relation_id=?
+      `).get(relationId) as any)?.count || 0)
+      items = this.db.prepare(`
+        SELECT history.*,subject.canonical_name AS subject_name,
+          object.canonical_name AS object_name
+        FROM relation_history history
+        LEFT JOIN entities subject ON subject.id=history.subject_id
+        LEFT JOIN entities object ON object.id=history.object_id
+        WHERE history.relation_id=?
+        ORDER BY history.id DESC LIMIT ? OFFSET ?
+      `).all(relationId, limit, offset) as any[]
+    }
+    const completedSearchRevision = this.getMemorySearchRevision()
+    const completedRevision = this.getGraphReviewRevision()
+    if (completedSearchRevision !== searchRevision || completedRevision !== revision) {
+      return {
+        ...empty,
+        revision: completedRevision,
+        searchRevision: completedSearchRevision,
+        stale: true
+      }
+    }
+    return {
+      ...empty,
+      items,
+      total,
+      hasMore: offset + items.length < total
+    }
+  }
+
   listReviewLedger(limit = 300): any[] {
     if (!this.db) return []
     return (this.db.prepare(`
@@ -5520,29 +5617,16 @@ export class PersonalMemoryStore {
       if (item) {
         item = {
           ...item,
-          history: this.db.prepare(`
-            SELECT history.*,subject.canonical_name AS subject_name,
-              object.canonical_name AS object_name
-            FROM relation_history history
-            LEFT JOIN entities subject ON subject.id=history.subject_id
-            LEFT JOIN entities object ON object.id=history.object_id
-            WHERE history.relation_id=?
-            ORDER BY history.id DESC LIMIT 40
-          `).all(sourceId),
-          corrections: this.db.prepare(`
-            SELECT correction.*,
-              before_subject.canonical_name AS before_subject_name,
-              before_object.canonical_name AS before_object_name,
-              after_subject.canonical_name AS after_subject_name,
-              after_object.canonical_name AS after_object_name
-            FROM relation_corrections correction
-            LEFT JOIN entities before_subject ON before_subject.id=correction.before_subject_id
-            LEFT JOIN entities before_object ON before_object.id=correction.before_object_id
-            LEFT JOIN entities after_subject ON after_subject.id=correction.after_subject_id
-            LEFT JOIN entities after_object ON after_object.id=correction.after_object_id
-            WHERE correction.before_relation_id=? OR correction.after_relation_id=?
-            ORDER BY correction.id DESC LIMIT 40
-          `).all(sourceId, sourceId)
+          historyPage: this.listRelationDossierAuditPage({
+            relationId: sourceId,
+            kind: 'history',
+            expectedSearchRevision: revision
+          }),
+          correctionPage: this.listRelationDossierAuditPage({
+            relationId: sourceId,
+            kind: 'correction',
+            expectedSearchRevision: revision
+          })
         }
       }
     }

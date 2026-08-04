@@ -1896,6 +1896,16 @@ export interface ElectronAPI {
         id: string,
         expectedSearchRevision: string
       ) => Promise<any>
+      getRelationDossierAuditPage: (
+        relationId: string,
+        kind: 'history' | 'correction',
+        options?: {
+          expectedSearchRevision: string
+          offset?: number
+          limit?: number
+          revision?: string
+        }
+      ) => Promise<any>
       getResourceTrashArchive: (options?: {
         query?: string
         limit?: number

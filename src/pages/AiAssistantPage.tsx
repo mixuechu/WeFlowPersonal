@@ -609,6 +609,7 @@ function AiAssistantPage() {
   const [resourceLoadingMore, setResourceLoadingMore] = useState(false)
   const [selectedResourceDossier, setSelectedResourceDossier] = useState<any>(null)
   const [structuredMemoryDossier, setStructuredMemoryDossier] = useState<any>(null)
+  const [relationDossierAuditLoading, setRelationDossierAuditLoading] = useState('')
   const structuredMemoryDossierGate = useRef(new LatestRequestGate())
   const [resourceTrashArchive, setResourceTrashArchive] = useState<any>({
     items: [], total: 0, hasMore: false, revision: '', status: 'idle'
@@ -2563,6 +2564,7 @@ function AiAssistantPage() {
       return
     }
     const request = structuredMemoryDossierGate.current.begin()
+    setRelationDossierAuditLoading('')
     setStructuredMemoryDossier({ kind, sourceId: id, status: 'loading' })
     try {
       const result = await window.electronAPI.aiAssistant.getStructuredMemoryDossier(
@@ -2593,6 +2595,60 @@ function AiAssistantPage() {
         status: 'error',
         error: error?.message || String(error)
       })
+    }
+  }
+  const loadMoreRelationDossierAudit = async (kind: 'history' | 'correction') => {
+    const dossier = structuredMemoryDossier
+    const relation = dossier?.kind === 'relation' && dossier?.status === 'ready'
+      ? dossier.item
+      : null
+    const field = kind === 'history' ? 'historyPage' : 'correctionPage'
+    const page = relation?.[field]
+    if (!relation || !page?.hasMore || relationDossierAuditLoading) return
+    const request = structuredMemoryDossierGate.current.begin()
+    setRelationDossierAuditLoading(kind)
+    try {
+      const result = await window.electronAPI.aiAssistant.getRelationDossierAuditPage(
+        relation.id,
+        kind,
+        {
+          expectedSearchRevision: String(dossier.revision || ''),
+          offset: page.items.length,
+          limit: 40,
+          revision: page.revision
+        }
+      )
+      if (!structuredMemoryDossierGate.current.isCurrent(request)) return
+      if (result?.stale) {
+        setStructuredMemoryDossier(null)
+        setMessage('关系或审计历史在分页期间已有变化，请从检索结果重新打开。')
+        setMemorySearchRefreshKey(value => value + 1)
+        return
+      }
+      setStructuredMemoryDossier((current: any) => current?.item?.id === relation.id
+        ? {
+            ...current,
+            item: {
+              ...current.item,
+              [field]: {
+                ...result,
+                items: [
+                  ...(current.item[field]?.items || []),
+                  ...(result.items || []).filter((entry: any) =>
+                    !(current.item[field]?.items || []).some((known: any) => known.id === entry.id))
+                ]
+              }
+            }
+          }
+        : current)
+    } catch (error: any) {
+      if (structuredMemoryDossierGate.current.isCurrent(request)) {
+        setMessage(error?.message || String(error))
+      }
+    } finally {
+      if (structuredMemoryDossierGate.current.isCurrent(request)) {
+        setRelationDossierAuditLoading('')
+      }
     }
   }
   const loadMoreResourceTrash = async () => {
@@ -8365,8 +8421,8 @@ function AiAssistantPage() {
                       关系有效期：{item.valid_from || '未知'} — {item.valid_to || '至今'}
                     </small>}
                     {kind === 'relation' && <small>
-                      关系状态历史：{Number(item.history_count || 0)} 条
-                      {item.corrections?.length ? ` · 人工方向/谓词纠正 ${item.corrections.length} 条` : ''}
+                      关系状态历史：{Number(item.historyPage?.total || 0)} 条
+                      {' · '}人工方向/谓词纠正 {Number(item.correctionPage?.total || 0)} 条
                     </small>}
                     {kind === 'event' && <div className="assistant-tags">
                       {(item.participants || []).map((participant: any) =>
@@ -8438,10 +8494,11 @@ function AiAssistantPage() {
                   </details>}
                   {kind === 'relation' && <details open>
                     <summary>
-                      关系变化与人工纠正（{Number(item.history_count || 0) + Number(item.corrections?.length || 0)} 条）
+                      关系变化与人工纠正（
+                      {Number(item.historyPage?.total || 0) + Number(item.correctionPage?.total || 0)} 条）
                     </summary>
                     <div className="assistant-task-history">
-                      {(item.corrections || []).map((correction: any) => <small key={`relation-correction-${correction.id}`}>
+                      {(item.correctionPage?.items || []).map((correction: any) => <small key={`relation-correction-${correction.id}`}>
                         {new Date(correction.created_at).toLocaleString('zh-CN')} · 人工纠正：
                         {correction.before_subject_name || correction.before_subject_id} —
                         {correction.before_predicate} → {correction.before_object_name || correction.before_object_id}
@@ -8449,16 +8506,28 @@ function AiAssistantPage() {
                         {correction.after_subject_name || correction.after_subject_id} —
                         {correction.after_predicate} → {correction.after_object_name || correction.after_object_id}
                       </small>)}
-                      {(item.history || []).map((history: any) => <small key={`relation-history-${history.id}`}>
+                      {item.correctionPage?.hasMore && <button
+                        disabled={Boolean(relationDossierAuditLoading)}
+                        onClick={() => void loadMoreRelationDossierAudit('correction')}>
+                        {relationDossierAuditLoading === 'correction'
+                          ? '正在加载人工纠正…'
+                          : `加载更多人工纠正（已显示 ${item.correctionPage.items.length} / ${item.correctionPage.total}）`}
+                      </button>}
+                      {(item.historyPage?.items || []).map((history: any) => <small key={`relation-history-${history.id}`}>
                         {new Date(history.created_at).toLocaleString('zh-CN')} ·
                         {history.change_type || '状态变化'}：
                         {history.subject_name || history.subject_id} — {history.predicate} →
                         {history.object_name || history.object_id} · {history.status}
                       </small>)}
-                      {!item.history?.length && !item.corrections?.length &&
+                      {item.historyPage?.hasMore && <button
+                        disabled={Boolean(relationDossierAuditLoading)}
+                        onClick={() => void loadMoreRelationDossierAudit('history')}>
+                        {relationDossierAuditLoading === 'history'
+                          ? '正在加载关系变化…'
+                          : `加载更多关系变化（已显示 ${item.historyPage.items.length} / ${item.historyPage.total}）`}
+                      </button>}
+                      {!item.historyPage?.items?.length && !item.correctionPage?.items?.length &&
                         <small>这条关系尚无额外变化或人工纠正记录。</small>}
-                      {Number(item.history_count || 0) > Number(item.history?.length || 0) &&
-                        <small>当前显示最近 {item.history.length} / {item.history_count} 条关系变化。</small>}
                     </div>
                   </details>}
                 </>

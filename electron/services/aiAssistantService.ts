@@ -6135,6 +6135,27 @@ export class AiAssistantService {
     )
   }
 
+  getRelationDossierAuditPage(
+    relationId: string,
+    kind: string,
+    options: any = {}
+  ): any {
+    const normalizedKind = String(kind || '')
+    if (!['history', 'correction'].includes(normalizedKind)) {
+      throw new Error('无效的关系审计类型')
+    }
+    const id = String(relationId || '').trim()
+    if (!id) throw new Error('关系 ID 不能为空')
+    return personalMemoryStore.listRelationDossierAuditPage({
+      relationId: id,
+      kind: normalizedKind as 'history' | 'correction',
+      expectedSearchRevision: String(options?.expectedSearchRevision || ''),
+      offset: Number(options?.offset || 0),
+      limit: Number(options?.limit || 40),
+      revision: String(options?.revision || '')
+    })
+  }
+
   getResourceTrashArchive(options?: any): any {
     return personalMemoryStore.listResourceTrashArchive(options || {})
   }

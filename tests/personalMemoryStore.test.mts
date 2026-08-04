@@ -1723,6 +1723,108 @@ test('structured search dossiers bind the exact type, id and current search revi
   assert.equal(relation.item.subject_name, '档案人物')
   assert.equal(relation.item.object_name, '档案项目')
   assert.equal(relation.item.evidence[0].message_id, 'dossier-relation-message')
+  const database = (store as any).db
+  const insertHistory = database.prepare(`
+    INSERT INTO relation_history(
+      relation_id,subject_id,predicate,object_id,status,confidence,
+      change_type,snapshot_json,created_at
+    ) VALUES(?,?,?,?,?,?,?,?,?)
+  `)
+  const insertCorrection = database.prepare(`
+    INSERT INTO relation_corrections(
+      review_id,before_relation_id,after_relation_id,
+      before_subject_id,before_predicate,before_object_id,
+      after_subject_id,after_predicate,after_object_id,created_at
+    ) VALUES(?,?,?,?,?,?,?,?,?,?)
+  `)
+  for (let index = 0; index < 94; index += 1) {
+    insertHistory.run(
+      'dossier-relation',
+      'dossier-person',
+      index % 2 ? '推进' : '负责',
+      'dossier-project',
+      index % 3 ? 'confirmed' : 'candidate',
+      0.8,
+      'status_changed',
+      '{}',
+      `2026-08-04T11:${String(index % 60).padStart(2, '0')}:00.000Z`
+    )
+  }
+  for (let index = 0; index < 65; index += 1) {
+    insertCorrection.run(
+      `dossier-review-${index}`,
+      'dossier-relation',
+      'dossier-relation',
+      'dossier-person',
+      '参与',
+      'dossier-project',
+      'dossier-person',
+      '负责',
+      'dossier-project',
+      `2026-08-04T12:${String(index % 60).padStart(2, '0')}:00.000Z`
+    )
+  }
+  const dossierWithPages = store.getStructuredMemoryDossier(
+    'relation',
+    'dossier-relation',
+    revision
+  )
+  assert.equal(dossierWithPages.item.historyPage.total, 95)
+  assert.equal(dossierWithPages.item.historyPage.items.length, 40)
+  assert.equal(dossierWithPages.item.historyPage.hasMore, true)
+  assert.equal(dossierWithPages.item.correctionPage.total, 65)
+  assert.equal(dossierWithPages.item.correctionPage.items.length, 40)
+  const historySecond = store.listRelationDossierAuditPage({
+    relationId: 'dossier-relation',
+    kind: 'history',
+    expectedSearchRevision: revision,
+    offset: 40,
+    limit: 40,
+    revision: dossierWithPages.item.historyPage.revision
+  })
+  const historyLast = store.listRelationDossierAuditPage({
+    relationId: 'dossier-relation',
+    kind: 'history',
+    expectedSearchRevision: revision,
+    offset: 80,
+    limit: 40,
+    revision: dossierWithPages.item.historyPage.revision
+  })
+  assert.equal(historySecond.items.length, 40)
+  assert.equal(historyLast.items.length, 15)
+  assert.equal(historyLast.hasMore, false)
+  assert.equal(new Set([
+    ...dossierWithPages.item.historyPage.items,
+    ...historySecond.items,
+    ...historyLast.items
+  ].map((item: any) => item.id)).size, 95)
+  const correctionSecond = store.listRelationDossierAuditPage({
+    relationId: 'dossier-relation',
+    kind: 'correction',
+    expectedSearchRevision: revision,
+    offset: 40,
+    revision: dossierWithPages.item.correctionPage.revision
+  })
+  assert.equal(correctionSecond.items.length, 25)
+  assert.equal(correctionSecond.hasMore, false)
+  insertHistory.run(
+    'dossier-relation',
+    'dossier-person',
+    '新增变化',
+    'dossier-project',
+    'confirmed',
+    0.9,
+    'status_changed',
+    '{}',
+    '2026-08-04T13:00:00.000Z'
+  )
+  assert.equal(store.listRelationDossierAuditPage({
+    relationId: 'dossier-relation',
+    kind: 'history',
+    expectedSearchRevision: revision,
+    offset: 40,
+    revision: dossierWithPages.item.historyPage.revision
+  }).stale, true)
   assert.equal(store.getStructuredMemoryDossier('event', 'dossier-claim', revision), null)
   assert.equal(store.getStructuredMemoryDossier('claim', 'dossier-claim', '' as any).stale, true)
 
