@@ -758,6 +758,8 @@ function AiAssistantPage() {
   const dataSourceDirectoryGate = useRef(new LatestRequestGate())
   const [dataSourceToggling, setDataSourceToggling] = useState<Record<string, boolean>>({})
   const dataSourceToggleGates = useRef(new KeyedLatestRequestGates())
+  const calendarConnectorGate = useRef(new LatestRequestGate())
+  const mailConnectorGate = useRef(new LatestRequestGate())
   const [eventTimeline, setEventTimeline] = useState<{ items: any[]; total: number; hasMore: boolean; revision?: string; stale?: boolean }>({
     items: [], total: 0, hasMore: false
   })
@@ -1449,6 +1451,12 @@ function AiAssistantPage() {
   useEffect(() => {
     if (!showDataSources) {
       dataSourceDirectoryGate.current.invalidate()
+      calendarConnectorGate.current.invalidate()
+      mailConnectorGate.current.invalidate()
+      setCalendarPicker(null)
+      setMailPicker(null)
+      setCalendarConnecting(false)
+      setMailConnecting(false)
       setDataSourcesLoading(false)
       return
     }
@@ -6705,6 +6713,8 @@ function AiAssistantPage() {
   }
 
   const configureCalendarSource = async (source: any) => {
+    const request = calendarConnectorGate.current.begin()
+    mailConnectorGate.current.invalidate()
     setCalendarConnecting(true)
     setMailPicker(null)
     try {
@@ -6721,17 +6731,21 @@ function AiAssistantPage() {
         }
       }
       const calendarSnapshot = await window.electronAPI.aiAssistant.listCalendars()
+      if (!calendarConnectorGate.current.isCurrent(request)) return
       const calendars = calendarSnapshot.items
       setCalendarPicker({
         calendars,
         selectedIds: calendars.filter(calendar => calendar.selected).map(calendar => String(calendar.id)),
         expectedMutationToken: String(calendarSnapshot.mutationToken || '')
       })
-      setDataSources(await window.electronAPI.aiAssistant.getDataSources())
+      const sources = await window.electronAPI.aiAssistant.getDataSources()
+      if (calendarConnectorGate.current.isCurrent(request)) setDataSources(sources)
     } catch (error: any) {
-      setMessage(error?.message || String(error))
+      if (calendarConnectorGate.current.isCurrent(request)) {
+        setMessage(error?.message || String(error))
+      }
     } finally {
-      setCalendarConnecting(false)
+      if (calendarConnectorGate.current.isCurrent(request)) setCalendarConnecting(false)
     }
   }
 
@@ -6740,16 +6754,21 @@ function AiAssistantPage() {
       setMessage('请至少选择一个要索引的日历。')
       return
     }
+    const selection = calendarPicker
+    const request = calendarConnectorGate.current.begin()
     setCalendarConnecting(true)
     try {
       await window.electronAPI.aiAssistant.configureDataSource('calendar', {
-        calendarIds: calendarPicker.selectedIds,
-        expectedMutationToken: calendarPicker.expectedMutationToken
+        calendarIds: selection.selectedIds,
+        expectedMutationToken: selection.expectedMutationToken
       })
-      setDataSources(await window.electronAPI.aiAssistant.getDataSources())
+      const sources = await window.electronAPI.aiAssistant.getDataSources()
+      if (!calendarConnectorGate.current.isCurrent(request)) return
+      setDataSources(sources)
       setCalendarPicker(null)
       setMessage('所选日历已连接；只会在本机增量索引事件，不会自动生成待办。')
     } catch (error: any) {
+      if (!calendarConnectorGate.current.isCurrent(request)) return
       const errorMessage = error?.message || String(error)
       setMessage(errorMessage)
       if (errorMessage.includes('数据源配置在展示后发生了变化')) {
@@ -6757,11 +6776,13 @@ function AiAssistantPage() {
         setDataSources(await window.electronAPI.aiAssistant.getDataSources())
       }
     } finally {
-      setCalendarConnecting(false)
+      if (calendarConnectorGate.current.isCurrent(request)) setCalendarConnecting(false)
     }
   }
 
   const configureMailSource = async (source: any) => {
+    const request = mailConnectorGate.current.begin()
+    calendarConnectorGate.current.invalidate()
     setMailConnecting(true)
     setCalendarPicker(null)
     try {
@@ -6776,6 +6797,7 @@ function AiAssistantPage() {
         }
       }
       const mailboxSnapshot = await window.electronAPI.aiAssistant.listMailboxes()
+      if (!mailConnectorGate.current.isCurrent(request)) return
       const mailboxes = mailboxSnapshot.items
       setMailPicker({
         mailboxes,
@@ -6783,11 +6805,14 @@ function AiAssistantPage() {
         allowModelAnalysis: Boolean(mailboxSnapshot.allowModelAnalysis),
         expectedMutationToken: String(mailboxSnapshot.mutationToken || '')
       })
-      setDataSources(await window.electronAPI.aiAssistant.getDataSources())
+      const sources = await window.electronAPI.aiAssistant.getDataSources()
+      if (mailConnectorGate.current.isCurrent(request)) setDataSources(sources)
     } catch (error: any) {
-      setMessage(error?.message || String(error))
+      if (mailConnectorGate.current.isCurrent(request)) {
+        setMessage(error?.message || String(error))
+      }
     } finally {
-      setMailConnecting(false)
+      if (mailConnectorGate.current.isCurrent(request)) setMailConnecting(false)
     }
   }
 
@@ -6796,17 +6821,22 @@ function AiAssistantPage() {
       setMessage('请至少选择一个要索引的 Mail 邮箱。')
       return
     }
+    const selection = mailPicker
+    const request = mailConnectorGate.current.begin()
     setMailConnecting(true)
     try {
       await window.electronAPI.aiAssistant.configureDataSource('mail', {
-        mailboxIds: mailPicker.selectedIds,
-        allowModelAnalysis: mailPicker.allowModelAnalysis,
-        expectedMutationToken: mailPicker.expectedMutationToken
+        mailboxIds: selection.selectedIds,
+        allowModelAnalysis: selection.allowModelAnalysis,
+        expectedMutationToken: selection.expectedMutationToken
       })
-      setDataSources(await window.electronAPI.aiAssistant.getDataSources())
+      const sources = await window.electronAPI.aiAssistant.getDataSources()
+      if (!mailConnectorGate.current.isCurrent(request)) return
+      setDataSources(sources)
       setMailPicker(null)
       setMessage('所选 Mail 邮箱已连接；邮件正文只进入本机检索，不会默认发送给模型或生成待办。')
     } catch (error: any) {
+      if (!mailConnectorGate.current.isCurrent(request)) return
       const errorMessage = error?.message || String(error)
       setMessage(errorMessage)
       if (errorMessage.includes('数据源配置在展示后发生了变化')) {
@@ -6814,8 +6844,19 @@ function AiAssistantPage() {
         setDataSources(await window.electronAPI.aiAssistant.getDataSources())
       }
     } finally {
-      setMailConnecting(false)
+      if (mailConnectorGate.current.isCurrent(request)) setMailConnecting(false)
     }
+  }
+
+  const closeDataSourceModal = () => {
+    dataSourceDirectoryGate.current.invalidate()
+    calendarConnectorGate.current.invalidate()
+    mailConnectorGate.current.invalidate()
+    setCalendarPicker(null)
+    setMailPicker(null)
+    setCalendarConnecting(false)
+    setMailConnecting(false)
+    setShowDataSources(false)
   }
 
   return (
@@ -13320,7 +13361,7 @@ function AiAssistantPage() {
             <div className="assistant-modal-title"><div><h2>数据源连接器</h2>
               <p>每个连接器拥有独立状态和 checkpoint；文档、Mail 与日历的权威记忆、原文、检索索引和断点按页一起提交，失败整页回滚。</p>
               <p>连接器配置仅在打开本窗口时按需读取，不进入每 15 秒的首页状态心跳。</p>
-            </div><button onClick={() => setShowDataSources(false)}><X size={16} /></button></div>
+            </div><button onClick={closeDataSourceModal}><X size={16} /></button></div>
             <div className="assistant-source-list">
               {dataSourcesLoading && <div className="assistant-source-empty">正在按需读取连接器配置…</div>}
               {dataSources.map(source => (
@@ -13424,7 +13465,11 @@ function AiAssistantPage() {
                 ))}
               </div>
               <div className="assistant-calendar-actions">
-                <button onClick={() => setCalendarPicker(null)}>取消</button>
+                <button onClick={() => {
+                  calendarConnectorGate.current.invalidate()
+                  setCalendarConnecting(false)
+                  setCalendarPicker(null)
+                }}>取消</button>
                 <button className="primary" disabled={calendarConnecting || !calendarPicker.selectedIds.length}
                   onClick={() => void saveCalendarSelection()}>保存选择</button>
               </div>
@@ -13456,13 +13501,17 @@ function AiAssistantPage() {
                   <small>默认关闭。开启后，仅命中你问题的邮件片段会按当前脱敏策略发送；仍不会自动生成待办。</small></span>
               </label>
               <div className="assistant-calendar-actions">
-                <button onClick={() => setMailPicker(null)}>取消</button>
+                <button onClick={() => {
+                  mailConnectorGate.current.invalidate()
+                  setMailConnecting(false)
+                  setMailPicker(null)
+                }}>取消</button>
                 <button className="primary" disabled={mailConnecting || !mailPicker.selectedIds.length}
                   onClick={() => void saveMailSelection()}>保存选择</button>
               </div>
             </div>}
             <div className="assistant-source-footer"><span>{dataSources.filter(source => source.enabled).length} 个连接器已开启</span>
-              <button className="primary" onClick={() => setShowDataSources(false)}>完成</button></div>
+              <button className="primary" onClick={closeDataSourceModal}>完成</button></div>
           </div>
         </div>
       )}

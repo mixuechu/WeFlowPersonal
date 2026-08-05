@@ -17571,6 +17571,7 @@ test('data source registry persists enablement, capability and independent run h
   assert.throws(() => store.setDataSourceEnabled(
     'wechat', true, initialWechat?.mutationToken
   ), /数据源状态在展示后发生了变化/)
+  const disabledWechat = store.listDataSources().find(item => item.id === 'wechat')
   store.updateDataSourceRun('wechat', {
     status: 'healthy',
     checkpoint: 'cursor-42',
@@ -17582,7 +17583,16 @@ test('data source registry persists enablement, capability and independent run h
   assert.equal(source.checkpoint, 'cursor-42')
   assert.equal(source.status, 'healthy')
   assert.deepEqual(source.capabilities, ['incremental', 'original-evidence'])
+  assert.equal(source.mutationToken, disabledWechat?.mutationToken)
   assert.notEqual(source.mutationToken, initialWechat?.mutationToken)
+
+  const enabledAfterRunProgress = store.setDataSourceEnabled(
+    'wechat',
+    true,
+    disabledWechat?.mutationToken
+  )
+  assert.equal(enabledAfterRunProgress.enabled, true)
+  assert.equal(enabledAfterRunProgress.checkpoint, 'cursor-42')
 
   store.updateDataSourceRun('wechat', { status: 'running', attemptedAt: '2026-07-30T00:01:00.000Z' })
   store.registerDataSources([
@@ -17600,6 +17610,12 @@ test('data source registry persists enablement, capability and independent run h
   assert.equal(availabilityRefreshed.status, 'error')
   assert.match(availabilityRefreshed.lastError, /原 checkpoint 重试/)
 
+  store.updateDataSourceRun('calendar', {
+    status: 'error',
+    checkpoint: 'background-calendar-cursor',
+    attemptedAt: '2026-07-30T00:02:00.000Z',
+    error: '后台运行状态不应使配置表单过期'
+  })
   const configured = store.configureDataSource(
     'calendar',
     { calendarIds: ['work'] },

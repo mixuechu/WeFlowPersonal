@@ -17450,9 +17450,7 @@ export class PersonalMemoryStore {
     const rows = this.db.prepare(`
       SELECT *,
         weflow_sha256(source_id || char(0) || enabled || char(0) || available || char(0) ||
-          config_json || char(0) || checkpoint || char(0) || status || char(0) ||
-          COALESCE(last_attempt_at,'') || char(0) || COALESCE(last_success_at,'') || char(0) ||
-          COALESCE(last_error,'') || char(0) || updated_at) AS mutation_token
+          config_json) AS mutation_token
       FROM data_source_connectors ORDER BY available DESC,source_id
     `).all() as any[]
     return rows.map(row => ({
@@ -17480,9 +17478,7 @@ export class PersonalMemoryStore {
     const source = this.db.prepare(`
       SELECT available,
         weflow_sha256(source_id || char(0) || enabled || char(0) || available || char(0) ||
-          config_json || char(0) || checkpoint || char(0) || status || char(0) ||
-          COALESCE(last_attempt_at,'') || char(0) || COALESCE(last_success_at,'') || char(0) ||
-          COALESCE(last_error,'') || char(0) || updated_at) AS mutation_token
+          config_json) AS mutation_token
       FROM data_source_connectors WHERE source_id=?
     `).get(sourceId) as any
     if (!source) throw new Error('未知数据源')
@@ -17504,9 +17500,7 @@ export class PersonalMemoryStore {
     if (!this.db) throw new Error('个人记忆数据库尚未初始化')
     const source = this.db.prepare(`
       SELECT weflow_sha256(source_id || char(0) || enabled || char(0) || available || char(0) ||
-        config_json || char(0) || checkpoint || char(0) || status || char(0) ||
-        COALESCE(last_attempt_at,'') || char(0) || COALESCE(last_success_at,'') || char(0) ||
-        COALESCE(last_error,'') || char(0) || updated_at) AS mutation_token
+        config_json) AS mutation_token
       FROM data_source_connectors WHERE source_id=?
     `).get(sourceId) as any
     if (!source) throw new Error('未知数据源')
