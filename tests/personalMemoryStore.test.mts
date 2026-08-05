@@ -10055,6 +10055,15 @@ test('structured memory revision covers review payloads and repairs its trigger 
     }])
     assert.ok(Number(first.getStructuredMemoryRevision()) > initial)
     const visibleRevision = first.getStructuredMemoryRevision()
+    const entityDossierPage = first.listClaimArchive({
+      entityId: 'revision-person',
+      status: 'candidate',
+      limit: 40
+    })
+    assert.equal(entityDossierPage.revision, visibleRevision)
+    assert.deepEqual(entityDossierPage.items.map(item => item.id), [
+      'structured-revision-claim'
+    ])
     assert.doesNotThrow(() =>
       assertStructuredMemoryMutationRevision(visibleRevision, first.getStructuredMemoryRevision()))
     first.updateMemoryItemStatus('claim', 'structured-revision-claim', 'confirmed')
@@ -10062,6 +10071,12 @@ test('structured memory revision covers review payloads and repairs its trigger 
       () => assertStructuredMemoryMutationRevision(visibleRevision, first.getStructuredMemoryRevision()),
       /事实与事件档案在展示后发生了变化/
     )
+    assert.equal(first.listClaimArchive({
+      entityId: 'revision-person',
+      offset: 1,
+      limit: 40,
+      revision: entityDossierPage.revision
+    }).stale, true)
     const initialHealth = first.getStructuredMemoryRevisionHealth()
     assert.equal(initialHealth.version, 'structured-memory-revision-v2')
     assert.equal(initialHealth.expectedTriggers, 24)

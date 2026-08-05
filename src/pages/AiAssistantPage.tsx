@@ -640,6 +640,9 @@ function AiAssistantPage() {
     events: { items: [], total: 0, hasMore: false, revision: '', status: 'idle' }
   })
   const [entityDossierLoadingMore, setEntityDossierLoadingMore] = useState<Record<string, boolean>>({})
+  const [entityDossierMutations, setEntityDossierMutations] =
+    useState<Record<string, boolean>>({})
+  const entityDossierMutationLocks = useRef(new Set<string>())
   const [entityDossierRefreshKeys, setEntityDossierRefreshKeys] = useState({
     claims: 0, relations: 0, events: 0
   })
@@ -5046,6 +5049,47 @@ function AiAssistantPage() {
         setClaimArchiveRefreshKey(value => value + 1)
         setEventTimelineRefreshKey(value => value + 1)
       }
+    }
+  }
+
+  const updateEntityDossierMemoryStatus = async (
+    kind: 'claim' | 'event',
+    id: string,
+    nextStatus: 'confirmed' | 'rejected'
+  ) => {
+    const section = kind === 'claim' ? 'claims' : 'events'
+    const operationKey = `${kind}:${id}`
+    if (entityDossierMutationLocks.current.has(operationKey)) return
+    entityDossierMutationLocks.current.add(operationKey)
+    setEntityDossierMutations(current =>
+      setKeyedLoadingState(current, operationKey, true))
+    try {
+      await window.electronAPI.aiAssistant.updateMemoryItemStatus(
+        kind,
+        id,
+        nextStatus,
+        String(entityDossierPages[section]?.revision || '')
+      )
+      setMessage(nextStatus === 'confirmed'
+        ? `${kind === 'claim' ? '事实' : '事件'}已确认并写入可信审计。`
+        : `${kind === 'claim' ? '事实' : '事件'}已标记为不准确。`)
+      await load()
+      refreshEntityDossierSection(section)
+      setClaimArchiveRefreshKey(value => value + 1)
+      setEventTimelineRefreshKey(value => value + 1)
+      if (memoryItemAudits[`${kind}:${id}`]) void loadMemoryItemAudit(kind, id)
+    } catch (error: any) {
+      const errorMessage = error?.message || String(error)
+      setMessage(errorMessage)
+      if (errorMessage.includes('事实与事件档案在展示后发生了变化')) {
+        const gate = kind === 'claim' ? entityClaimGate : entityEventGate
+        gate.current.invalidate()
+        refreshEntityDossierSection(section)
+      }
+    } finally {
+      entityDossierMutationLocks.current.delete(operationKey)
+      setEntityDossierMutations(current =>
+        setKeyedLoadingState(current, operationKey, false))
     }
   }
 
@@ -10917,12 +10961,49 @@ function AiAssistantPage() {
                 </em>}
                 {dossierClaims.map((claim: any) => <article key={claim.id}>
                   <div><b>{claim.polarity === 'negative' ? '并非 ' : ''}{claim.predicate}</b><span>{claim.object_entity_name || claim.object_value || '待确认'}</span></div>
-                  <small>{claim.status === 'confirmed' ? '已确认' : '待确认'} · {Math.round(Number(claim.confidence || 0) * 100)}% · {claim.source_nature === 'self_statement' ? '本人陈述' : claim.source_nature === 'other_statement' ? '他人陈述' : '模型推断'} · {memorySourceLabels(claim)}</small>
+                  <small>{claim.status === 'confirmed' ? '已确认'
+                    : claim.status === 'rejected' ? '不准确' : '待确认'} · {Math.round(Number(claim.confidence || 0) * 100)}% · {claim.source_nature === 'self_statement' ? '本人陈述' : claim.source_nature === 'other_statement' ? '他人陈述' : '模型推断'} · {memorySourceLabels(claim)}</small>
                   <div className="assistant-evidence-stack"><EvidenceRows evidence={claim.evidence}
                     total={claim.evidence_count} roleLabels onOpenArchive={() =>
                       void openMemoryEvidenceArchive(
                         'claim', claim.id, `${selectedEntity?.canonicalName || '人物'} · ${claim.predicate}`
                       )} /></div>
+                  {!claimEntitiesTrusted(claim) && <small>
+                    涉及的实体尚未确认；请先处理身份候选，再确认或纠正此事实。
+                  </small>}
+                  <div className="assistant-memory-actions">
+                    <button disabled={!claimEntitiesTrusted(claim)}
+                      title={!claimEntitiesTrusted(claim)
+                        ? '请先确认事实涉及的实体' : ''}
+                      onClick={() => void openClaimCorrection({
+                      sourceId: claim.id,
+                      title: claim.predicate
+                    })}>纠正</button>
+                    {claim.status !== 'rejected' && <button
+                      disabled={!!entityDossierMutations[`claim:${claim.id}`]}
+                      onClick={() => void updateEntityDossierMemoryStatus(
+                        'claim', claim.id, 'rejected'
+                      )}>不准确</button>}
+                    <button onClick={() => void ignoreMemoryItem('claim', claim)}>
+                      不重要
+                    </button>
+                    {claim.status !== 'confirmed' && <button className="primary"
+                      disabled={!claimEntitiesTrusted(claim) ||
+                        !!entityDossierMutations[`claim:${claim.id}`]}
+                      title={!claimEntitiesTrusted(claim)
+                        ? '请先确认事实涉及的实体' : ''}
+                      onClick={() => void updateEntityDossierMemoryStatus(
+                        'claim', claim.id, 'confirmed'
+                      )}>
+                      {entityDossierMutations[`claim:${claim.id}`]
+                        ? '正在保存…'
+                        : claim.status === 'rejected' ? '恢复并确认' : '确认事实'}
+                    </button>}
+                    <button className="danger"
+                      onClick={() => void permanentlyDeleteMemoryItem('claim', claim)}>
+                      永久删除
+                    </button>
+                  </div>
                 </article>)}
                 {entityDossierPages.claims?.status === 'ready' && !dossierClaims.length && <em>当前范围内没有结构化事实</em>}
                 {entityDossierPages.claims?.hasMore && <button
@@ -11018,10 +11099,50 @@ function AiAssistantPage() {
                 {dossierEvents.map((event: any) => <article key={event.id}>
                   <div><b>{event.title}</b><span>{event.start_at || '时间待确认'}</span></div>
                   {event.description && <p>{event.description}</p>}
-                  <small>{event.event_type} · {event.status === 'confirmed' ? '已确认' : '待确认'} · {event.location || '地点未记录'} · {memorySourceLabels(event)}</small>
+                  <small>{event.event_type} · {
+                    event.status === 'confirmed' ? '已确认'
+                      : event.status === 'rejected' ? '不准确'
+                        : event.status === 'cancelled' ? '已取消' : '待确认'
+                  } · {event.location || '地点未记录'} · {memorySourceLabels(event)}</small>
                   <div className="assistant-evidence-stack"><EvidenceRows evidence={event.evidence}
                     total={event.evidence_count} onOpenArchive={() =>
                       void openMemoryEvidenceArchive('event', event.id, event.title || '事件原文')} /></div>
+                  {!eventEntitiesTrusted(event) && <small>
+                    存在尚未确认的参与实体；请先处理身份候选，再确认或纠正此事件。
+                  </small>}
+                  <div className="assistant-memory-actions">
+                    <button disabled={!eventEntitiesTrusted(event)}
+                      title={!eventEntitiesTrusted(event)
+                        ? '请先确认事件参与实体' : ''}
+                      onClick={() => void openEventCorrection({
+                      sourceId: event.id
+                    })}>纠正</button>
+                    {!['rejected', 'cancelled'].includes(event.status) && <button
+                      disabled={!!entityDossierMutations[`event:${event.id}`]}
+                      onClick={() => void updateEntityDossierMemoryStatus(
+                        'event', event.id, 'rejected'
+                      )}>不准确</button>}
+                    <button onClick={() => void ignoreMemoryItem('event', event)}>
+                      不重要
+                    </button>
+                    {event.status !== 'confirmed' && event.status !== 'cancelled' &&
+                      <button className="primary"
+                        disabled={!eventEntitiesTrusted(event) ||
+                          !!entityDossierMutations[`event:${event.id}`]}
+                        title={!eventEntitiesTrusted(event)
+                          ? '请先确认事件参与实体' : ''}
+                        onClick={() => void updateEntityDossierMemoryStatus(
+                          'event', event.id, 'confirmed'
+                        )}>
+                        {entityDossierMutations[`event:${event.id}`]
+                          ? '正在保存…'
+                          : event.status === 'rejected' ? '恢复并确认' : '确认事件'}
+                      </button>}
+                    <button className="danger"
+                      onClick={() => void permanentlyDeleteMemoryItem('event', event)}>
+                      永久删除
+                    </button>
+                  </div>
                 </article>)}
                 {entityDossierPages.events?.status === 'ready' && !dossierEvents.length && <em>当前范围内没有相关事件</em>}
                 {entityDossierPages.events?.hasMore && <button
