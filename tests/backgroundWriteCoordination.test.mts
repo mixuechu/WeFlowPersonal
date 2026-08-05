@@ -35,6 +35,27 @@ test('shutdown barrier waits for every unique writer and contains rejected work'
   })
 })
 
+test('shutdown barrier also waits for ancillary scheduler and notification work', async () => {
+  const releases: Array<() => void> = []
+  const makePending = () => new Promise<void>(resolve => { releases.push(resolve) })
+  const writers = [makePending(), makePending(), makePending(), makePending(), makePending()]
+  let completed = false
+  const barrier = waitForBackgroundWrites(writers).then(result => {
+    completed = true
+    return result
+  })
+
+  releases.slice(0, 4).forEach(release => release())
+  await Promise.resolve()
+  assert.equal(completed, false)
+  releases[4]()
+  assert.deepEqual(await barrier, {
+    waited: 5,
+    fulfilled: 5,
+    rejected: 0
+  })
+})
+
 test('background writer diagnostics expose the authoritative owner and waiting phase', () => {
   assert.deepEqual(describeBackgroundWriteState({
     syncing: false,

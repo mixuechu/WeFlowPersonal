@@ -616,6 +616,7 @@ export class AiAssistantService {
   private activeSyncTrigger: 'manual' | 'startup' | 'daily' | 'backlog' | 'resume' | null = null
   private activeSyncPhase: IncrementalSyncPhase | null = null
   private scheduler: ReturnType<typeof setInterval> | null = null
+  private schedulerTickPromise: Promise<string> | null = null
   private notificationFlushPromise: Promise<void> | null = null
   private preparedRecoveryContinuation: ReturnType<typeof setTimeout> | null = null
   private connectorAuthorizationCache = new AsyncExpiringValue<{
@@ -859,7 +860,9 @@ export class AiAssistantService {
     const settled = await waitForBackgroundWrites([
       this.activeSync,
       this.vectorIndexPromise,
-      this.memorySearchRepairPromise
+      this.memorySearchRepairPromise,
+      this.schedulerTickPromise,
+      this.notificationFlushPromise
     ])
     personalMemoryStore.close()
     return { ...settled, databaseClosed: true }
@@ -8266,7 +8269,20 @@ export class AiAssistantService {
     return event ? { ...event, structuredMemoryRevision: revision } : null
   }
 
-  private async schedulerTick(
+  private schedulerTick(
+    source: 'timer' | 'system_resume' = 'timer',
+    observedNow?: Date
+  ): Promise<string> {
+    if (this.disposed) return Promise.resolve('service_disposed')
+    if (this.schedulerTickPromise) return this.schedulerTickPromise
+    const promise = this.runSchedulerTick(source, observedNow).finally(() => {
+      if (this.schedulerTickPromise === promise) this.schedulerTickPromise = null
+    })
+    this.schedulerTickPromise = promise
+    return promise
+  }
+
+  private async runSchedulerTick(
     source: 'timer' | 'system_resume' = 'timer',
     observedNow?: Date
   ): Promise<string> {
@@ -8444,6 +8460,7 @@ export class AiAssistantService {
   }
 
   private async flushNotificationOutbox(now: Date): Promise<void> {
+    if (this.disposed) return
     if (this.isNotificationQuiet(now) || !this.state.notifications.pending.length) return
     if (this.notificationFlushPromise) return this.notificationFlushPromise
     this.notificationFlushPromise = (async () => {
