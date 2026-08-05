@@ -2074,6 +2074,8 @@ export interface ElectronAPI {
           fromTimestamp?: number
           toTimestamp?: number
           expectedSearchRevision?: string
+          expectedContentHash?: string
+          expectedEvidenceAuthorityRevision?: number
         }
       ) => Promise<{
         items: any[]
@@ -2087,6 +2089,7 @@ export interface ElectronAPI {
         revision: string
         stale: boolean
         searchSnapshotStale?: boolean
+        evidenceSnapshotStale?: boolean
         searchRevision?: string
         sourceMissing?: boolean
       }>

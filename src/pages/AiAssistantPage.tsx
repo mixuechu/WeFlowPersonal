@@ -5658,7 +5658,12 @@ function AiAssistantPage() {
     sourceId: string,
     title: string,
     filters: MemoryEvidenceArchiveFilters = EMPTY_MEMORY_EVIDENCE_FILTERS,
-    expectedSearchRevision = ''
+    openingSnapshot: {
+      searchRevision?: string
+      contentHash?: string
+      evidenceAuthorityRevision?: number
+      origin?: 'search' | 'citation'
+    } = {}
   ) => {
     const request = memoryEvidenceArchiveGate.current.begin()
     setMemoryEvidenceLoadingMore(false)
@@ -5688,22 +5693,31 @@ function AiAssistantPage() {
           role: filters.role,
           fromTimestamp: memoryEvidenceTimestamp(filters.from),
           toTimestamp: memoryEvidenceTimestamp(filters.to, true),
-          expectedSearchRevision
+          expectedSearchRevision: openingSnapshot.searchRevision,
+          expectedContentHash: openingSnapshot.contentHash,
+          expectedEvidenceAuthorityRevision: openingSnapshot.evidenceAuthorityRevision
         }
       )
       if (!memoryEvidenceArchiveGate.current.isCurrent(request)) return
       if (page.stale) {
-        if (page.searchSnapshotStale) {
+        if (page.searchSnapshotStale || page.evidenceSnapshotStale) {
           setMemoryEvidenceArchive(null)
-          setMessage(page.sourceMissing
-            ? '这条检索结果已经删除或不再可用，已刷新检索结果。'
-            : '这条检索结果在打开证据前已经变化，已刷新后再核验，避免把旧卡片连接到新内容。')
-          setMemorySearchRefreshKey(value => value + 1)
+          if (openingSnapshot.origin === 'citation') {
+            setMessage(page.sourceMissing
+              ? '这条引用的权威来源已经删除，已重新核验当前问答。'
+              : '这条引用在打开证据前已经变化，已重新核验当前问答，请从更新后的引用再次打开。')
+            if (memoryConversationId) void openMemoryConversation(memoryConversationId)
+          } else {
+            setMessage(page.sourceMissing
+              ? '这条检索结果已经删除或不再可用，已刷新检索结果。'
+              : '这条检索结果在打开证据前已经变化，已刷新后再核验，避免把旧卡片连接到新内容。')
+            setMemorySearchRefreshKey(value => value + 1)
+          }
           return
         }
         window.setTimeout(() => {
           if (memoryEvidenceArchiveGate.current.isCurrent(request)) {
-            void openMemoryEvidenceArchive(documentType, sourceId, title, filters, expectedSearchRevision)
+            void openMemoryEvidenceArchive(documentType, sourceId, title, filters, openingSnapshot)
           }
         }, 250)
         return
@@ -8093,7 +8107,7 @@ function AiAssistantPage() {
                         result.source_id,
                         result.title,
                         EMPTY_MEMORY_EVIDENCE_FILTERS,
-                        memorySearchState.revision
+                        { searchRevision: memorySearchState.revision, origin: 'search' }
                       )}>
                       查看完整证据档案
                     </button>
@@ -8691,7 +8705,17 @@ function AiAssistantPage() {
                   </small>
                 })}
                 {!!citation.evidence?.length && !!citation.sourceId && <button className="assistant-open-evidence-archive" onClick={() =>
-                  void openMemoryEvidenceArchive(citation.type, citation.sourceId, citation.title)}>
+                  void openMemoryEvidenceArchive(
+                    citation.type,
+                    citation.sourceId,
+                    citation.title,
+                    EMPTY_MEMORY_EVIDENCE_FILTERS,
+                    {
+                      contentHash: citation.currentContentHash,
+                      evidenceAuthorityRevision: citation.evidenceAuthorityRevision,
+                      origin: 'citation'
+                    }
+                  )}>
                   查看完整证据档案
                 </button>}
                 {citation.feedbackContext && !citation.citationUnavailable && <div className="assistant-citation-feedback">

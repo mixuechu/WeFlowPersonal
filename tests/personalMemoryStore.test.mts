@@ -9411,6 +9411,124 @@ test('opening a search result evidence archive is bound to the visible document 
     assert.notEqual(recreated.revision, visibleRevision)
   }))
 
+test('opening a hydrated citation evidence archive binds document content and evidence authority', () =>
+  withStore(store => {
+    const baseTask = {
+      id: 'citation-evidence-snapshot',
+      title: '引用证据快照',
+      detail: '正文和完整原文必须分别参与点击时核验',
+      priority: 'medium',
+      status: 'todo',
+      classification: 'mine'
+    }
+    store.syncTasks([{
+      ...baseTask,
+      evidence: [{
+        sourceId: 'wechat',
+        messageId: 'citation-snapshot-1',
+        sessionId: 'citation-snapshot-session',
+        timestamp: 1_767_225_600,
+        sender: '引用测试',
+        excerpt: '第一条原文'
+      }]
+    }])
+    const visible = store.getSearchDocumentById('task:citation-evidence-snapshot')
+    assert.ok(visible)
+    const contentHash = String(visible.content_hash)
+    const evidenceAuthorityRevision = Number(visible.evidenceAuthorityRevision || 0)
+    assert.deepEqual(
+      store.validateDocumentEvidenceSnapshot(
+        'task',
+        'citation-evidence-snapshot',
+        contentHash,
+        evidenceAuthorityRevision
+      ),
+      {
+        stale: false,
+        exists: true,
+        contentHash,
+        evidenceAuthorityRevision
+      }
+    )
+
+    store.syncTasks([{
+      ...baseTask,
+      evidence: [{
+        sourceId: 'wechat',
+        messageId: 'citation-snapshot-1',
+        sessionId: 'citation-snapshot-session',
+        timestamp: 1_767_225_600,
+        sender: '引用测试',
+        excerpt: '第一条原文'
+      }, {
+        sourceId: 'mail',
+        messageId: 'citation-snapshot-2',
+        sessionId: 'citation-snapshot-mail',
+        timestamp: 1_767_225_601,
+        sender: '邮件测试',
+        excerpt: '新增权威原文'
+      }]
+    }])
+    const evidenceChanged = store.validateDocumentEvidenceSnapshot(
+      'task',
+      'citation-evidence-snapshot',
+      contentHash,
+      evidenceAuthorityRevision
+    )
+    assert.equal(evidenceChanged.exists, true)
+    assert.equal(evidenceChanged.contentHash, contentHash)
+    assert.equal(evidenceChanged.stale, true)
+    assert.ok(evidenceChanged.evidenceAuthorityRevision > evidenceAuthorityRevision)
+
+    const current = store.getSearchDocumentById('task:citation-evidence-snapshot')
+    store.syncTasks([{
+      ...baseTask,
+      detail: '正文在引用展示后被人工更新',
+      evidence: [{
+        sourceId: 'wechat',
+        messageId: 'citation-snapshot-1',
+        sessionId: 'citation-snapshot-session',
+        timestamp: 1_767_225_600,
+        sender: '引用测试',
+        excerpt: '第一条原文'
+      }, {
+        sourceId: 'mail',
+        messageId: 'citation-snapshot-2',
+        sessionId: 'citation-snapshot-mail',
+        timestamp: 1_767_225_601,
+        sender: '邮件测试',
+        excerpt: '新增权威原文'
+      }]
+    }])
+    const contentChanged = store.validateDocumentEvidenceSnapshot(
+      'task',
+      'citation-evidence-snapshot',
+      String(current.content_hash),
+      Number(current.evidenceAuthorityRevision || 0)
+    )
+    assert.equal(contentChanged.exists, true)
+    assert.notEqual(contentChanged.contentHash, String(current.content_hash))
+    assert.equal(contentChanged.stale, true)
+
+    const database = (store as any).db
+    database.prepare(`DELETE FROM search_documents WHERE id=?`)
+      .run('task:citation-evidence-snapshot')
+    assert.deepEqual(
+      store.validateDocumentEvidenceSnapshot(
+        'task',
+        'citation-evidence-snapshot',
+        contentChanged.contentHash,
+        contentChanged.evidenceAuthorityRevision
+      ),
+      {
+        stale: true,
+        exists: false,
+        contentHash: '',
+        evidenceAuthorityRevision: 0
+      }
+    )
+  }))
+
 test('scoped memory browsing reaches every result beyond the ranked search window', () =>
   withStore(store => {
     const tasks = Array.from({ length: 1_205 }, (_, index) => ({

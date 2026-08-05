@@ -8069,6 +8069,33 @@ export class AiAssistantService {
         }
       }
     }
+    const expectedContentHash = String(pagination?.expectedContentHash || '').trim()
+    const hasExpectedEvidenceRevision = pagination?.expectedEvidenceAuthorityRevision !== undefined
+      && pagination?.expectedEvidenceAuthorityRevision !== null
+    if (expectedContentHash || hasExpectedEvidenceRevision) {
+      const snapshot = personalMemoryStore.validateDocumentEvidenceSnapshot(
+        normalizedType,
+        normalizedSourceId,
+        expectedContentHash,
+        Number(pagination?.expectedEvidenceAuthorityRevision)
+      )
+      if (snapshot.stale) {
+        return {
+          items: [],
+          total: 0,
+          unfilteredTotal: 0,
+          hasMore: false,
+          offset: 0,
+          limit: Math.max(1, Math.min(100, Number(pagination?.limit) || 40)),
+          documentType: normalizedType,
+          sourceId: normalizedSourceId,
+          revision: '',
+          stale: true,
+          evidenceSnapshotStale: true,
+          sourceMissing: !snapshot.exists
+        }
+      }
+    }
     return personalMemoryStore.getDocumentEvidencePage(normalizedType, normalizedSourceId, {
       offset: Number(pagination?.offset || 0),
       limit: Number(pagination?.limit || 40),

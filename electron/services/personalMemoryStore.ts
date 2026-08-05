@@ -15878,6 +15878,83 @@ export class PersonalMemoryStore {
     }
   }
 
+  validateDocumentEvidenceSnapshot(
+    documentType: string,
+    sourceId: string,
+    expectedContentHash: string,
+    expectedEvidenceAuthorityRevision: number
+  ): {
+    stale: boolean
+    exists: boolean
+    contentHash: string
+    evidenceAuthorityRevision: number
+  } {
+    const normalizedType = String(documentType || '').trim()
+    const normalizedSourceId = String(sourceId || '').trim()
+    const expectedHash = String(expectedContentHash || '').trim().toLowerCase()
+    const expectedRevision = Number(expectedEvidenceAuthorityRevision)
+    const empty = {
+      stale: true,
+      exists: false,
+      contentHash: '',
+      evidenceAuthorityRevision: 0
+    }
+    if (!this.db) return empty
+    const document = this.db.prepare(`
+      SELECT content_hash FROM search_documents
+      WHERE id=? AND document_type=? AND source_id=?
+    `).get(
+      `${normalizedType}:${normalizedSourceId}`,
+      normalizedType,
+      normalizedSourceId
+    ) as any
+    if (!document) return empty
+    const contentHash = String(document.content_hash || '').trim().toLowerCase()
+    let evidenceAuthorityRevision = 0
+    if (normalizedType === 'entity') {
+      evidenceAuthorityRevision = Math.max(0, Number((this.db.prepare(`
+        WITH RECURSIVE entity_scope(entity_id) AS (
+          SELECT ?
+          UNION
+          SELECT history.source_entity_id
+          FROM merge_history history
+          JOIN entity_scope scope ON history.target_entity_id=scope.entity_id
+          WHERE history.reverted_at IS NULL
+        )
+        SELECT COALESCE(SUM(revision),0) AS revision
+        FROM general_evidence_revisions
+        WHERE document_id IN (
+          SELECT 'entity:' || entity_id FROM entity_scope
+        )
+      `).get(normalizedSourceId) as any)?.revision || 0))
+    } else {
+      const documentId = `${normalizedType}:${normalizedSourceId}`
+      const hasGenericEvidence = Boolean((this.db.prepare(`
+        SELECT 1 FROM search_document_evidence WHERE document_id=? LIMIT 1
+      `).get(documentId) as any))
+      if (hasGenericEvidence) {
+        evidenceAuthorityRevision = Math.max(0, Number((this.db.prepare(`
+          SELECT revision FROM general_evidence_revisions WHERE document_id=?
+        `).get(documentId) as any)?.revision || 0))
+      } else if (new Set(['claim', 'event', 'relation']).has(normalizedType)) {
+        evidenceAuthorityRevision = Math.max(0, Number((this.db.prepare(`
+          SELECT revision FROM structured_evidence_revisions
+          WHERE document_type=? AND source_id=?
+        `).get(normalizedType, normalizedSourceId) as any)?.revision || 0))
+      }
+    }
+    return {
+      exists: true,
+      contentHash,
+      evidenceAuthorityRevision,
+      stale: !/^[a-f0-9]{64}$/.test(expectedHash)
+        || !Number.isFinite(expectedRevision)
+        || expectedRevision < 0
+        || expectedHash !== contentHash
+        || Math.floor(expectedRevision) !== evidenceAuthorityRevision
+    }
+  }
+
   private compactAssistantGroundingAudit(value: any): any {
     if (!value || typeof value !== 'object') return {}
     const count = (key: string) => Math.max(0, Math.min(10_000, Math.floor(Number(value[key]) || 0)))
