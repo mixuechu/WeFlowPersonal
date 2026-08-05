@@ -9252,11 +9252,20 @@ export class PersonalMemoryStore {
       ORDER BY created_at DESC,audit_kind ASC,audit_id DESC
       LIMIT ? OFFSET ?
     `).all(kind, itemId, kind, itemId, limit, offset) as any[]
+    const entityName = this.db.prepare(`
+      SELECT canonical_name FROM entities WHERE id=?
+    `)
     const snapshot = (raw: unknown): any => {
       let value: any = {}
       try { value = JSON.parse(String(raw || '{}')) } catch {}
+      const subjectId = String(value.subject_id || '')
+      const currentSubject = subjectId
+        ? entityName.get(subjectId) as { canonical_name?: string } | undefined
+        : undefined
       return kind === 'claim'
         ? {
+            subjectId,
+            subjectName: String(value.subject_name || currentSubject?.canonical_name || ''),
             value: String(value.object_value || ''),
             objectEntityId: String(value.object_entity_id || ''),
             predicate: String(value.predicate || ''),
@@ -10869,9 +10878,17 @@ export class PersonalMemoryStore {
       objectValue
     ].filter(Boolean).join(' ')
     const now = new Date().toISOString()
+    const beforeSubject = this.db.prepare(
+      'SELECT canonical_name FROM entities WHERE id=?'
+    ).get(before.subject_id) as { canonical_name?: string } | undefined
+    const beforeSnapshot = {
+      ...before,
+      subject_name: beforeSubject?.canonical_name || ''
+    }
     const after = {
       ...before,
       subject_id: subjectId,
+      subject_name: subject.canonical_name || '',
       object_entity_id: null,
       object_value: objectValue,
       predicate,
@@ -10896,7 +10913,7 @@ export class PersonalMemoryStore {
       )
       this.db!.prepare(`
         INSERT INTO memory_corrections(item_kind,item_id,before_json,after_json,created_at) VALUES('claim',?,?,?,?)
-      `).run(id, JSON.stringify(before), JSON.stringify(after), now)
+      `).run(id, JSON.stringify(beforeSnapshot), JSON.stringify(after), now)
       this.upsertSearchDocument(`claim:${id}`, 'claim', id, after.predicate,
         after.search_text,
         {

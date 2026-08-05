@@ -262,9 +262,12 @@ function schedulerCatchupResultLabel(value: string): string {
 function memoryAuditSnapshotText(kind: 'claim' | 'event', value: any): string {
   if (kind === 'claim') {
     const object = value?.value || (value?.objectEntityId ? `实体 ${value.objectEntityId}` : '空值')
+    const subject = value?.subjectName || value?.subjectId || '未知主体'
+    const subjectIdentity = value?.subjectId ? ` [${value.subjectId}]` : ''
     const validity = value?.validFrom || value?.validTo
       ? ` · 有效期 ${value.validFrom || '未知'}—${value.validTo || '至今'}` : ''
-    return `${value?.predicate || '事实'}：${value?.polarity === 'negative' ? '否定 ' : ''}${object}` +
+    return `${subject}${subjectIdentity} · ${value?.predicate || '事实'}：` +
+      `${value?.polarity === 'negative' ? '否定 ' : ''}${object}` +
       ` · ${memoryAuditStatusLabel(value?.status || '')}${validity}`
   }
   return `${value?.title || '未命名事件'} · ${value?.eventType || '事件'}` +

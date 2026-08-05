@@ -11854,6 +11854,22 @@ test('human claim correction preserves negative semantics and rejects invalid va
   assert.equal(rebuiltMetadata.polarity, 'negative')
   assert.equal(rebuiltMetadata.sourceNature, 'human_confirmation')
   assert.equal(rebuiltMetadata.correctionCount, 1)
+
+  database.prepare(`
+    UPDATE entities SET canonical_name='主体后来改名'
+    WHERE id='person-corrected-subject'
+  `).run()
+  const correctionAudit = store.listMemoryItemAuditPage({
+    kind: 'claim',
+    itemId: 'claim-negative-correction',
+    limit: 40
+  })
+  assert.equal(correctionAudit.total, 1)
+  assert.equal(correctionAudit.items[0].before.subjectId, 'person-negative-correction')
+  assert.equal(correctionAudit.items[0].before.subjectName, '错误事实主体')
+  assert.equal(correctionAudit.items[0].after.subjectId, 'person-corrected-subject')
+  assert.equal(correctionAudit.items[0].after.subjectName, '正确事实主体')
+  assert.equal(correctionAudit.items[0].after.predicate, '投资于')
 }))
 
 test('human claim and event review decisions survive repeated extraction and remain auditable', () => withStore(store => {
