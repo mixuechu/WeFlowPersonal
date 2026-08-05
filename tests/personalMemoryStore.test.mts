@@ -11795,6 +11795,18 @@ test('human claim correction preserves negative semantics and rejects invalid va
     predicate: '   ',
     polarity: 'negative'
   }), /谓词不能为空/)
+  assert.throws(() => store.correctClaim('claim-negative-correction', {
+    value: '四十二',
+    valueType: 'number'
+  }), /必须填写有效数字/)
+  assert.throws(() => store.correctClaim('claim-negative-correction', {
+    value: '2026-02-30',
+    valueType: 'date'
+  }), /日期型事实值格式无效/)
+  assert.throws(() => store.correctClaim('claim-negative-correction', {
+    value: '也许',
+    valueType: 'boolean'
+  }), /布尔型事实值只能是/)
   assert.equal(store.getClaim('claim-negative-correction').correction_count, 0)
 
   store.correctClaim('claim-negative-correction', {
@@ -11802,6 +11814,7 @@ test('human claim correction preserves negative semantics and rejects invalid va
     subjectId: 'person-corrected-subject',
     predicate: '投资于',
     polarity: 'negative',
+    valueType: 'text',
     validFrom: '2026-08-01'
   })
   store.upsertClaims([{
@@ -11817,6 +11830,7 @@ test('human claim correction preserves negative semantics and rejects invalid va
   assert.equal(corrected.object_value, 'Onyx Devs Lab')
   assert.equal(corrected.predicate, '投资于')
   assert.equal(corrected.polarity, 'negative')
+  assert.equal(corrected.value_type, 'text')
   assert.equal(corrected.valid_from, '2026-08-01')
   assert.equal(corrected.status, 'confirmed')
   assert.equal(corrected.correction_count, 1)
@@ -11834,6 +11848,7 @@ test('human claim correction preserves negative semantics and rejects invalid va
   const correctedMetadata = JSON.parse(search.metadata_json)
   assert.equal(correctedMetadata.subjectId, 'person-corrected-subject')
   assert.equal(correctedMetadata.polarity, 'negative')
+  assert.equal(correctedMetadata.valueType, 'text')
   assert.equal(correctedMetadata.sourceNature, 'human_confirmation')
   assert.equal(correctedMetadata.correctionCount, 1)
 
@@ -11852,6 +11867,7 @@ test('human claim correction preserves negative semantics and rejects invalid va
   const rebuiltMetadata = JSON.parse(rebuilt.metadata_json)
   assert.equal(rebuiltMetadata.subjectId, 'person-corrected-subject')
   assert.equal(rebuiltMetadata.polarity, 'negative')
+  assert.equal(rebuiltMetadata.valueType, 'text')
   assert.equal(rebuiltMetadata.sourceNature, 'human_confirmation')
   assert.equal(rebuiltMetadata.correctionCount, 1)
 
@@ -11870,6 +11886,53 @@ test('human claim correction preserves negative semantics and rejects invalid va
   assert.equal(correctionAudit.items[0].after.subjectId, 'person-corrected-subject')
   assert.equal(correctionAudit.items[0].after.subjectName, '正确事实主体')
   assert.equal(correctionAudit.items[0].after.predicate, '投资于')
+  assert.equal(correctionAudit.items[0].after.valueType, 'text')
+}))
+
+test('human claim correction validates and persists structured scalar value types', () => withStore(store => {
+  store.syncGraph({
+    entities: [{
+      id: 'typed-claim-person',
+      type: 'person',
+      canonicalName: '类型纠正对象',
+      aliases: [],
+      accountIds: []
+    }],
+    relations: [],
+    reviewQueue: []
+  })
+  const cases = [
+    { suffix: 'number', valueType: 'number', value: '42.5' },
+    { suffix: 'date', valueType: 'date', value: '2026-08-05' },
+    { suffix: 'boolean', valueType: 'boolean', value: '是' }
+  ] as const
+  for (const item of cases) {
+    const id = `typed-claim-${item.suffix}`
+    store.upsertClaims([{
+      id,
+      subjectId: 'typed-claim-person',
+      predicate: '类型测试',
+      objectValue: '模型旧文本',
+      valueType: 'text',
+      confidence: 0.7,
+      status: 'candidate',
+      sourceNature: 'inference',
+      searchText: '类型纠正对象 类型测试 模型旧文本',
+      evidence: evidence(`typed-message-${item.suffix}`, '类型测试原文')
+    }])
+    store.correctClaim(id, {
+      value: item.value,
+      valueType: item.valueType
+    })
+    const corrected = store.getClaim(id)
+    assert.equal(corrected.value_type, item.valueType)
+    assert.equal(corrected.object_value, item.value)
+    const document = store.searchText(item.value).find(row => row.id === `claim:${id}`)
+    assert.ok(document)
+    assert.equal(JSON.parse(document.metadata_json).valueType, item.valueType)
+    const audit = store.listMemoryItemAuditPage({ kind: 'claim', itemId: id })
+    assert.equal(audit.items[0].after.valueType, item.valueType)
+  }
 }))
 
 test('human claim and event review decisions survive repeated extraction and remain auditable', () => withStore(store => {

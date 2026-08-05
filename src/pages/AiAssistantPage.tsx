@@ -266,9 +266,12 @@ function memoryAuditSnapshotText(kind: 'claim' | 'event', value: any): string {
     const subjectIdentity = value?.subjectId ? ` [${value.subjectId}]` : ''
     const validity = value?.validFrom || value?.validTo
       ? ` · 有效期 ${value.validFrom || '未知'}—${value.validTo || '至今'}` : ''
+    const valueType = ({
+      text: '文本', number: '数值', date: '日期', boolean: '布尔'
+    } as Record<string, string>)[value?.valueType] || value?.valueType || '文本'
     return `${subject}${subjectIdentity} · ${value?.predicate || '事实'}：` +
       `${value?.polarity === 'negative' ? '否定 ' : ''}${object}` +
-      ` · ${memoryAuditStatusLabel(value?.status || '')}${validity}`
+      ` · ${valueType} · ${memoryAuditStatusLabel(value?.status || '')}${validity}`
   }
   return `${value?.title || '未命名事件'} · ${value?.eventType || '事件'}` +
     `${value?.startAt || value?.endAt ? ` · ${value.startAt || '未知'}—${value.endAt || '未结束'}` : ''}` +
@@ -5119,6 +5122,7 @@ function AiAssistantPage() {
         subjectId: editingClaim.subjectId,
         entityDirectoryRevision: editingClaim.directoryRevision,
         polarity: editingClaim.polarity,
+        valueType: editingClaim.valueType,
         validFrom: editingClaim.validFrom,
         validTo: editingClaim.validTo
       }, String(editingClaim.expectedRevision || ''))
@@ -6266,6 +6270,8 @@ function AiAssistantPage() {
       value: claim.object_entity_name || claim.object_value || '',
       predicate: claim.predicate || citation.title || '',
       polarity: claim.polarity === 'negative' ? 'negative' : 'positive',
+      valueType: ['number', 'date', 'boolean'].includes(claim.value_type)
+        ? claim.value_type : 'text',
       validFrom: claimDateInput(claim.valid_from),
       validTo: claimDateInput(claim.valid_to),
       expectedRevision: String(claim.structuredMemoryRevision || ''),
@@ -11899,6 +11905,17 @@ function AiAssistantPage() {
               }))}>
               <option value="positive">肯定：主体具有该事实</option>
               <option value="negative">否定：主体明确不具有该事实</option>
+            </select></label>
+            <label><span>事实值类型</span><select
+              value={editingClaim.valueType || 'text'}
+              onChange={event => setEditingClaim((current: any) => ({
+                ...current,
+                valueType: event.target.value
+              }))}>
+              <option value="text">文本</option>
+              <option value="number">数值</option>
+              <option value="date">日期</option>
+              <option value="boolean">布尔（true/false、是/否、有/无）</option>
             </select></label>
             <div className="assistant-settings-inline">
               <label><span>生效时间（可选）</span><input type="date"

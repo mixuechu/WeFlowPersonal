@@ -3653,6 +3653,7 @@ export class PersonalMemoryStore {
         subjectId: row.subject_id,
         objectEntityId: row.object_entity_id || undefined,
         polarity: row.polarity,
+        valueType: row.value_type,
         status: row.status,
         sourceNature: row.source_nature,
         correctionCount: Number(row.correction_count || 0),
@@ -3878,6 +3879,7 @@ export class PersonalMemoryStore {
             subjectId: claim.subject_id,
             objectEntityId: claim.object_entity_id || undefined,
             polarity: claim.polarity,
+            valueType: claim.value_type,
             status: claim.status,
             sourceNature: claim.source_nature,
             correctionCount: Number(claim.correction_count || 0),
@@ -6612,6 +6614,7 @@ export class PersonalMemoryStore {
           subjectId: claim.subjectId,
           objectEntityId: claim.objectEntityId,
           polarity: incomingPolarity,
+          valueType: claim.valueType || 'text',
           status: claim.status,
           sourceNature,
           correctionCount: 0,
@@ -9270,6 +9273,7 @@ export class PersonalMemoryStore {
             objectEntityId: String(value.object_entity_id || ''),
             predicate: String(value.predicate || ''),
             polarity: String(value.polarity || ''),
+            valueType: String(value.value_type || ''),
             validFrom: String(value.valid_from || ''),
             validTo: String(value.valid_to || ''),
             status: String(value.status || ''),
@@ -10837,6 +10841,7 @@ export class PersonalMemoryStore {
     predicate?: string
     subjectId?: string
     polarity?: 'positive' | 'negative'
+    valueType?: 'text' | 'number' | 'date' | 'boolean'
     validFrom?: string
     validTo?: string
   }): any {
@@ -10865,12 +10870,23 @@ export class PersonalMemoryStore {
     if (!predicate) throw new Error('事实谓词不能为空')
     const subjectId = String(input.subjectId ?? before.subject_id).trim()
     if (!subjectId) throw new Error('事实主体不能为空')
+    const valueType = ['text', 'number', 'date', 'boolean'].includes(String(input.valueType))
+      ? String(input.valueType)
+      : String(before.value_type || 'text')
     const polarity = input.polarity === 'negative' ? 'negative' : 'positive'
     const subject = this.db.prepare(
       'SELECT canonical_name FROM entities WHERE id=?'
     ).get(subjectId) as { canonical_name?: string } | undefined
     if (!subject) throw new Error('事实主体不存在或已经删除')
     const objectValue = String(input.value || '').trim().slice(0, 1000)
+    if (valueType === 'number' && (!objectValue || !Number.isFinite(Number(objectValue)))) {
+      throw new Error('数值型事实必须填写有效数字')
+    }
+    if (valueType === 'date') normalizeBoundary(objectValue, '日期型事实值')
+    if (valueType === 'boolean' &&
+      !['true', 'false', '是', '否', '有', '无'].includes(objectValue.toLocaleLowerCase('zh-CN'))) {
+      throw new Error('布尔型事实值只能是 true、false、是、否、有或无')
+    }
     const searchText = [
       subject?.canonical_name || '',
       polarity === 'negative' ? '并非' : '',
@@ -10893,6 +10909,7 @@ export class PersonalMemoryStore {
       object_value: objectValue,
       predicate,
       polarity,
+      value_type: valueType,
       valid_from: validFrom,
       valid_to: validTo,
       status: 'confirmed',
@@ -10904,10 +10921,10 @@ export class PersonalMemoryStore {
     if (!after.object_value) return null
     const transaction = this.db.transaction(() => {
       this.db!.prepare(`
-        UPDATE claims SET subject_id=?,predicate=?,object_entity_id=NULL,object_value=?,polarity=?,valid_from=?,valid_to=?,status='confirmed',
+        UPDATE claims SET subject_id=?,predicate=?,object_entity_id=NULL,object_value=?,polarity=?,value_type=?,valid_from=?,valid_to=?,status='confirmed',
           source_nature='human_confirmation',conflict_group=NULL,search_text=?,updated_at=? WHERE id=?
       `).run(
-        after.subject_id, after.predicate, after.object_value, after.polarity,
+        after.subject_id, after.predicate, after.object_value, after.polarity, after.value_type,
         after.valid_from, after.valid_to,
         after.search_text, now, id
       )
@@ -10919,6 +10936,7 @@ export class PersonalMemoryStore {
         {
           subjectId: after.subject_id,
           polarity: after.polarity,
+          valueType: after.value_type,
           status: 'confirmed',
           sourceNature: 'human_confirmation',
           correctionCount: Number((this.db!.prepare(`
