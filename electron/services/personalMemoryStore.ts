@@ -10826,6 +10826,7 @@ export class PersonalMemoryStore {
   correctClaim(id: string, input: {
     value: string
     predicate?: string
+    subjectId?: string
     polarity?: 'positive' | 'negative'
     validFrom?: string
     validTo?: string
@@ -10853,10 +10854,13 @@ export class PersonalMemoryStore {
     }
     const predicate = String(input.predicate ?? before.predicate).trim().slice(0, 200)
     if (!predicate) throw new Error('事实谓词不能为空')
+    const subjectId = String(input.subjectId ?? before.subject_id).trim()
+    if (!subjectId) throw new Error('事实主体不能为空')
     const polarity = input.polarity === 'negative' ? 'negative' : 'positive'
     const subject = this.db.prepare(
       'SELECT canonical_name FROM entities WHERE id=?'
-    ).get(before.subject_id) as { canonical_name?: string } | undefined
+    ).get(subjectId) as { canonical_name?: string } | undefined
+    if (!subject) throw new Error('事实主体不存在或已经删除')
     const objectValue = String(input.value || '').trim().slice(0, 1000)
     const searchText = [
       subject?.canonical_name || '',
@@ -10867,6 +10871,7 @@ export class PersonalMemoryStore {
     const now = new Date().toISOString()
     const after = {
       ...before,
+      subject_id: subjectId,
       object_entity_id: null,
       object_value: objectValue,
       predicate,
@@ -10882,10 +10887,11 @@ export class PersonalMemoryStore {
     if (!after.object_value) return null
     const transaction = this.db.transaction(() => {
       this.db!.prepare(`
-        UPDATE claims SET predicate=?,object_entity_id=NULL,object_value=?,polarity=?,valid_from=?,valid_to=?,status='confirmed',
+        UPDATE claims SET subject_id=?,predicate=?,object_entity_id=NULL,object_value=?,polarity=?,valid_from=?,valid_to=?,status='confirmed',
           source_nature='human_confirmation',conflict_group=NULL,search_text=?,updated_at=? WHERE id=?
       `).run(
-        after.predicate, after.object_value, after.polarity, after.valid_from, after.valid_to,
+        after.subject_id, after.predicate, after.object_value, after.polarity,
+        after.valid_from, after.valid_to,
         after.search_text, now, id
       )
       this.db!.prepare(`
@@ -10894,7 +10900,7 @@ export class PersonalMemoryStore {
       this.upsertSearchDocument(`claim:${id}`, 'claim', id, after.predicate,
         after.search_text,
         {
-          subjectId: before.subject_id,
+          subjectId: after.subject_id,
           polarity: after.polarity,
           status: 'confirmed',
           sourceNature: 'human_confirmation',

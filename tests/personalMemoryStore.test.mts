@@ -11747,13 +11747,22 @@ test('human claim correction survives repeated extraction while new evidence is 
 
 test('human claim correction preserves negative semantics and rejects invalid validity ranges', () => withStore(store => {
   store.syncGraph({
-    entities: [{
-      id: 'person-negative-correction',
-      type: 'person',
-      canonicalName: '否定纠正对象',
-      aliases: [],
-      accountIds: []
-    }],
+    entities: [
+      {
+        id: 'person-negative-correction',
+        type: 'person',
+        canonicalName: '错误事实主体',
+        aliases: [],
+        accountIds: []
+      },
+      {
+        id: 'person-corrected-subject',
+        type: 'person',
+        canonicalName: '正确事实主体',
+        aliases: ['同名备注'],
+        accountIds: ['wxid-correct-subject']
+      }
+    ],
     relations: [],
     reviewQueue: []
   })
@@ -11790,6 +11799,7 @@ test('human claim correction preserves negative semantics and rejects invalid va
 
   store.correctClaim('claim-negative-correction', {
     value: 'Onyx Devs Lab',
+    subjectId: 'person-corrected-subject',
     predicate: '投资于',
     polarity: 'negative',
     validFrom: '2026-08-01'
@@ -11802,6 +11812,8 @@ test('human claim correction preserves negative semantics and rejects invalid va
     evidence: evidence('negative-correction-message-2', '重跑原文')
   }])
   const corrected = store.getClaim('claim-negative-correction')
+  assert.equal(corrected.subject_id, 'person-corrected-subject')
+  assert.equal(corrected.subject_name, '正确事实主体')
   assert.equal(corrected.object_value, 'Onyx Devs Lab')
   assert.equal(corrected.predicate, '投资于')
   assert.equal(corrected.polarity, 'negative')
@@ -11811,6 +11823,8 @@ test('human claim correction preserves negative semantics and rejects invalid va
   assert.equal(corrected.evidence_count, 2)
   assert.match(corrected.search_text, /并非/)
   assert.match(corrected.search_text, /投资于/)
+  assert.match(corrected.search_text, /正确事实主体/)
+  assert.doesNotMatch(corrected.search_text, /错误事实主体/)
   assert.match(corrected.search_text, /Onyx Devs Lab/)
   const search = store.searchText('Onyx Devs Lab')
     .find(item => item.id === 'claim:claim-negative-correction')
@@ -11818,6 +11832,7 @@ test('human claim correction preserves negative semantics and rejects invalid va
   assert.equal(search.title, '投资于')
   assert.match(search.search_text, /并非/)
   const correctedMetadata = JSON.parse(search.metadata_json)
+  assert.equal(correctedMetadata.subjectId, 'person-corrected-subject')
   assert.equal(correctedMetadata.polarity, 'negative')
   assert.equal(correctedMetadata.sourceNature, 'human_confirmation')
   assert.equal(correctedMetadata.correctionCount, 1)
@@ -11835,6 +11850,7 @@ test('human claim correction preserves negative semantics and rejects invalid va
   assert.match(rebuilt.search_text, /并非/)
   assert.doesNotMatch(rebuilt.search_text, /模型重跑后的肯定结论/)
   const rebuiltMetadata = JSON.parse(rebuilt.metadata_json)
+  assert.equal(rebuiltMetadata.subjectId, 'person-corrected-subject')
   assert.equal(rebuiltMetadata.polarity, 'negative')
   assert.equal(rebuiltMetadata.sourceNature, 'human_confirmation')
   assert.equal(rebuiltMetadata.correctionCount, 1)

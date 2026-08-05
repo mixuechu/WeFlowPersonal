@@ -5105,13 +5105,16 @@ function AiAssistantPage() {
   }
 
   const saveClaimCorrection = async () => {
-    if (!editingClaim?.id || !String(editingClaim.predicate || '').trim() ||
+    if (!editingClaim?.id || !editingClaim.subjectId ||
+      !String(editingClaim.predicate || '').trim() ||
       !String(editingClaim.value || '').trim()) return
     const correctedClaimId = editingClaim.id
     try {
       await window.electronAPI.aiAssistant.correctClaim(editingClaim.id, {
         value: editingClaim.value,
         predicate: editingClaim.predicate,
+        subjectId: editingClaim.subjectId,
+        entityDirectoryRevision: editingClaim.directoryRevision,
         polarity: editingClaim.polarity,
         validFrom: editingClaim.validFrom,
         validTo: editingClaim.validTo
@@ -6264,7 +6267,10 @@ function AiAssistantPage() {
       validTo: claimDateInput(claim.valid_to),
       expectedRevision: String(claim.structuredMemoryRevision || ''),
       origin: 'citation',
-      subjectName: claim.subject_name || claim.subject_id || '',
+      originalSubjectName: claim.subject_name || claim.subject_id || '',
+      subjectId: claim.subjectEntity?.id || '',
+      subjectEntity: claim.subjectEntity || null,
+      directoryRevision: claim.entityDirectoryRevision || '',
       status: claim.status || '',
       evidenceCount: Number(claim.evidence_count || claim.evidence?.length || 0)
     })
@@ -8611,20 +8617,8 @@ function AiAssistantPage() {
                   <strong>{claim.subject_name || '未知主体'} · {claim.predicate}</strong>
                   <span className={claim.status}>{claim.status === 'confirmed' ? '已确认' : claim.status === 'rejected' ? '不准确' : '待确认'}</span>
                 </div>
-                {editingClaim?.id === claim.id && editingClaim?.origin !== 'citation' ? <div className="assistant-claim-editor">
-                  <input value={editingClaim.predicate}
-                    maxLength={200}
-                    onChange={event => setEditingClaim({ ...editingClaim, predicate: event.target.value })}
-                    placeholder="正确的事实谓词，例如：投资于" />
-                  <input value={editingClaim.value} onChange={event => setEditingClaim({ ...editingClaim, value: event.target.value })} placeholder="正确的事实值" />
-                  <select value={editingClaim.polarity || 'positive'}
-                    onChange={event => setEditingClaim({ ...editingClaim, polarity: event.target.value })}>
-                    <option value="positive">肯定：主体具有该事实</option>
-                    <option value="negative">否定：主体不具有该事实</option>
-                  </select>
-                  <input type="date" value={editingClaim.validFrom} onChange={event => setEditingClaim({ ...editingClaim, validFrom: event.target.value })} aria-label="事实生效时间" />
-                  <input type="date" value={editingClaim.validTo} onChange={event => setEditingClaim({ ...editingClaim, validTo: event.target.value })} aria-label="事实失效时间" />
-                </div> : <p>{claim.polarity === 'negative' ? '否定：' : ''}{claim.object_entity_name || claim.object_value || '未记录值'}</p>}
+                <p>{claim.polarity === 'negative' ? '否定：' : ''}
+                  {claim.object_entity_name || claim.object_value || '未记录值'}</p>
                 <small>来源：{claim.source_nature === 'self_statement' ? '本人明确陈述' : claim.source_nature === 'other_statement' ? '他人陈述' : claim.source_nature === 'human_confirmation' ? '人工纠正确认' : '模型推断'} · {Math.round(Number(claim.confidence || 0) * 100)}% 可信{claim.conflict_group ? ' · 与其他事实冲突' : ''}</small>
                 <small>原始载体：{memorySourceLabels(claim)}
                   {!!claim.correction_count && ` · 人工纠正 ${claim.correction_count} 次${claim.corrected_at ? `（最近 ${new Date(claim.corrected_at).toLocaleString('zh-CN')}）` : ''}`}
@@ -8667,17 +8661,10 @@ function AiAssistantPage() {
                     )} />
                 </div>
                 <div className="assistant-memory-actions">
-                  {editingClaim?.id === claim.id && editingClaim?.origin !== 'citation'
-                    ? <><button onClick={() => setEditingClaim(null)}>取消</button><button className="primary" onClick={() => void saveClaimCorrection()}>保存纠正</button></>
-                    : <button disabled={!claimEntitiesTrusted(claim)} title={!claimEntitiesTrusted(claim) ? '请先确认事实涉及的实体' : ''} onClick={() => setEditingClaim({
-                      id: claim.id,
-                      value: claim.object_entity_name || claim.object_value || '',
-                      predicate: claim.predicate || '',
-                      polarity: claim.polarity === 'negative' ? 'negative' : 'positive',
-                      validFrom: claimDateInput(claim.valid_from),
-                      validTo: claimDateInput(claim.valid_to),
-                      expectedRevision: String(claimArchive.revision || '')
-                    })}>纠正</button>}
+                  <button onClick={() => void openClaimCorrection({
+                    sourceId: claim.id,
+                    title: claim.predicate
+                  })}>纠正</button>
                   {claim.status !== 'rejected' &&
                     <button onClick={() => void updateMemoryStatus('claim', claim.id, 'rejected')}>不准确</button>}
                   <button onClick={() => void ignoreMemoryItem('claim', claim)}>不重要</button>
@@ -11853,7 +11840,8 @@ function AiAssistantPage() {
               setEditingClaim(null)
             }}><X size={16} /></button></div>
             <div className="assistant-delete-preview">
-              <strong>{editingClaim.subjectName || '未知主体'} · {editingClaim.predicate || '事实'}</strong>
+              <strong>{editingClaim.subjectEntity?.canonicalName ||
+                editingClaim.originalSubjectName || '未知主体'} · {editingClaim.predicate || '事实'}</strong>
               <p>
                 当前状态：{editingClaim.status === 'confirmed'
                   ? '已确认'
@@ -11862,6 +11850,29 @@ function AiAssistantPage() {
               </p>
               <p>保存后会成为人工确认值并记录前后版本；后续模型只能追加证据，不能覆盖人工内容。</p>
             </div>
+            <label><span>正确的事实主体</span>
+              <TrustedEntityPicker
+                value={editingClaim.subjectId || ''}
+                selected={editingClaim.subjectEntity}
+                placeholder="按姓名、备注、账号或 ID 搜索可信实体"
+                ariaLabel="回答引用事实主体"
+                onSelect={entity => setEditingClaim((current: any) => ({
+                  ...current,
+                  subjectId: entity.id,
+                  subjectEntity: entity,
+                  directoryRevision: entity.directoryRevision
+                }))}
+                onClear={() => setEditingClaim((current: any) => ({
+                  ...current,
+                  subjectId: '',
+                  subjectEntity: null
+                }))}
+                onError={error => setMessage(error)} />
+              {!editingClaim.subjectEntity && <small>
+                原主体“{editingClaim.originalSubjectName || '未知'}”当前不在可信实体目录中；
+                请选择正确实体后才能保存。
+              </small>}
+            </label>
             <label><span>正确的事实谓词</span><input
               value={editingClaim.predicate || ''}
               maxLength={200}
@@ -11910,6 +11921,7 @@ function AiAssistantPage() {
               }}>取消</button>
               <button className="primary"
                 disabled={!String(editingClaim.predicate || '').trim() ||
+                  !editingClaim.subjectId ||
                   !String(editingClaim.value || '').trim()}
                 onClick={() => void saveClaimCorrection()}>保存纠正并确认</button>
             </div>

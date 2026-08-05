@@ -8673,7 +8673,18 @@ export class AiAssistantService {
       expectedRevision,
       personalMemoryStore.getStructuredMemoryRevision()
     )
-    this.assertStructuredEntityTrust('claim', id)
+    const requestedSubjectId = String(input?.subjectId || '').trim()
+    if (requestedSubjectId) {
+      const selected = resolveTrustedEntitySelection(this.state.graph.entities, {
+        entityId: requestedSubjectId,
+        expectedRevision: input?.entityDirectoryRevision
+      })
+      if (selected.stale) {
+        throw new Error('可信实体目录在你选择事实主体后发生了变化，请重新选择')
+      }
+    } else {
+      this.assertStructuredEntityTrust('claim', id)
+    }
     return personalMemoryStore.correctClaim(id, input)
   }
 
@@ -8689,11 +8700,26 @@ export class AiAssistantService {
   getMemoryClaim(id: string): any {
     const revision = personalMemoryStore.getStructuredMemoryRevision()
     const claim = personalMemoryStore.getClaim(id)
+    const directory = buildTrustedEntityDirectory(this.state.graph.entities, { limit: 1 })
+    const subject = claim
+      ? this.state.graph.entities.find(entity =>
+        entity.id === claim.subject_id && isTrustedEntity(entity))
+      : null
     const completedRevision = personalMemoryStore.getStructuredMemoryRevision()
     if (completedRevision !== revision) {
       throw new Error('事实与事件档案在读取期间发生了变化，请重新打开')
     }
-    return claim ? { ...claim, structuredMemoryRevision: revision } : null
+    return claim ? {
+      ...claim,
+      structuredMemoryRevision: revision,
+      entityDirectoryRevision: directory.revision,
+      subjectEntity: subject ? {
+        id: subject.id,
+        type: subject.type,
+        canonicalName: subject.canonicalName,
+        trustStatus: subject.trustStatus
+      } : null
+    } : null
   }
 
   getMemoryEvent(id: string): any {
