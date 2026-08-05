@@ -11808,7 +11808,10 @@ test('human claim correction preserves negative semantics and rejects invalid va
     .find(item => item.id === 'claim:claim-negative-correction')
   assert.ok(search)
   assert.match(search.search_text, /并非/)
-  assert.equal(JSON.parse(search.metadata_json).polarity, 'negative')
+  const correctedMetadata = JSON.parse(search.metadata_json)
+  assert.equal(correctedMetadata.polarity, 'negative')
+  assert.equal(correctedMetadata.sourceNature, 'human_confirmation')
+  assert.equal(correctedMetadata.correctionCount, 1)
 
   const database = (store as any).db
   database.prepare(`
@@ -11821,6 +11824,10 @@ test('human claim correction preserves negative semantics and rejects invalid va
   assert.ok(rebuilt)
   assert.match(rebuilt.search_text, /并非/)
   assert.doesNotMatch(rebuilt.search_text, /模型重跑后的肯定结论/)
+  const rebuiltMetadata = JSON.parse(rebuilt.metadata_json)
+  assert.equal(rebuiltMetadata.polarity, 'negative')
+  assert.equal(rebuiltMetadata.sourceNature, 'human_confirmation')
+  assert.equal(rebuiltMetadata.correctionCount, 1)
 }))
 
 test('human claim and event review decisions survive repeated extraction and remain auditable', () => withStore(store => {
@@ -12148,8 +12155,21 @@ test('human event correction is audited, searchable and protected from repeated 
   assert.equal(Object.hasOwn(event, 'evidence'), false)
   assert.equal(Object.hasOwn(event, 'participants'), false)
   assert.equal(store.getEvent('event-does-not-exist'), null)
-  assert.ok(store.searchText('报价').some(item => item.id === 'event:event-corrected'))
+  const correctedSearch = store.searchText('报价')
+    .find(item => item.id === 'event:event-corrected')
+  assert.ok(correctedSearch)
+  assert.equal(JSON.parse(correctedSearch.metadata_json).sourceNature, 'human_confirmation')
+  assert.equal(JSON.parse(correctedSearch.metadata_json).correctionCount, 1)
   assert.equal(store.getEmbeddingStats('event-correction-vector').pending, 0)
+  const database = (store as any).db
+  database.prepare(`DELETE FROM search_documents WHERE id='event:event-corrected'`).run()
+  assert.equal(store.repairRuntimeSearchDerivedState([]).healthy, true)
+  const rebuiltSearch = store.searchText('报价')
+    .find(item => item.id === 'event:event-corrected')
+  assert.ok(rebuiltSearch)
+  assert.equal(JSON.parse(rebuiltSearch.metadata_json).sourceNature, 'human_confirmation')
+  assert.equal(JSON.parse(rebuiltSearch.metadata_json).correctionCount, 1)
+  assert.equal(store.getEmbeddingStats('event-correction-vector').pending, 1)
   const timeline = store.listEventTimeline()
   assert.equal(timeline.items[0].corrected_at !== null, true)
   store.upsertEvents([{ ...extracted, status: 'cancelled', evidence: evidence('event-message-cancelled', '来源事件已取消') }])

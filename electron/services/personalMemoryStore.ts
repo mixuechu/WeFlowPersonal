@@ -3522,7 +3522,10 @@ export class PersonalMemoryStore {
         document.id, document.id, document.id, document.id
       ) as any)?.count || 0), 0)
     const missingClaims = this.db.prepare(`
-      SELECT * FROM claims c
+      SELECT c.*,
+        (SELECT COUNT(*) FROM memory_corrections correction
+          WHERE correction.item_kind='claim' AND correction.item_id=c.id) AS correction_count
+      FROM claims c
       WHERE NOT EXISTS(
         SELECT 1 FROM search_documents d
         WHERE d.id='claim:' || c.id AND d.document_type='claim' AND d.source_id=c.id
@@ -3536,7 +3539,10 @@ export class PersonalMemoryStore {
       )
     `).all() as any[]
     const missingEvents = this.db.prepare(`
-      SELECT * FROM events ev
+      SELECT ev.*,
+        (SELECT COUNT(*) FROM memory_corrections correction
+          WHERE correction.item_kind='event' AND correction.item_id=ev.id) AS correction_count
+      FROM events ev
       WHERE NOT EXISTS(
         SELECT 1 FROM search_documents d
         WHERE d.id='event:' || ev.id AND d.document_type='event' AND d.source_id=ev.id
@@ -3636,7 +3642,9 @@ export class PersonalMemoryStore {
     for (const row of this.db.prepare(`
       SELECT d.id AS document_id,d.source_id AS document_source_id,
         d.title AS document_title,d.search_text AS document_search_text,
-        d.content_hash AS document_content_hash,d.metadata_json,c.*
+        d.content_hash AS document_content_hash,d.metadata_json,c.*,
+        (SELECT COUNT(*) FROM memory_corrections correction
+          WHERE correction.item_kind='claim' AND correction.item_id=c.id) AS correction_count
       FROM search_documents d
       JOIN claims c ON c.id=d.source_id WHERE d.document_type='claim'
     `).all() as any[]) {
@@ -3646,6 +3654,8 @@ export class PersonalMemoryStore {
         objectEntityId: row.object_entity_id || undefined,
         polarity: row.polarity,
         status: row.status,
+        sourceNature: row.source_nature,
+        correctionCount: Number(row.correction_count || 0),
         validFrom: row.valid_from || undefined,
         validTo: row.valid_to || undefined,
         conflictGroup: row.conflict_group || undefined
@@ -3669,7 +3679,9 @@ export class PersonalMemoryStore {
     for (const row of this.db.prepare(`
       SELECT d.id AS document_id,d.source_id AS document_source_id,
         d.title AS document_title,d.search_text AS document_search_text,
-        d.content_hash AS document_content_hash,d.metadata_json,ev.*
+        d.content_hash AS document_content_hash,d.metadata_json,ev.*,
+        (SELECT COUNT(*) FROM memory_corrections correction
+          WHERE correction.item_kind='event' AND correction.item_id=ev.id) AS correction_count
       FROM search_documents d
       JOIN events ev ON ev.id=d.source_id WHERE d.document_type='event'
     `).all() as any[]) {
@@ -3681,7 +3693,9 @@ export class PersonalMemoryStore {
         participantIds: (this.db.prepare(`
           SELECT entity_id FROM event_participants WHERE event_id=? ORDER BY entity_id
         `).all(row.document_source_id) as Array<{ entity_id: string }>).map(item => item.entity_id),
-        status: row.status
+        status: row.status,
+        sourceNature: row.source_nature,
+        correctionCount: Number(row.correction_count || 0)
       }, row.updated_at)
     }
     for (const row of this.db.prepare(`
@@ -3865,6 +3879,8 @@ export class PersonalMemoryStore {
             objectEntityId: claim.object_entity_id || undefined,
             polarity: claim.polarity,
             status: claim.status,
+            sourceNature: claim.source_nature,
+            correctionCount: Number(claim.correction_count || 0),
             validFrom: claim.valid_from || undefined,
             validTo: claim.valid_to || undefined
           },
@@ -3895,7 +3911,9 @@ export class PersonalMemoryStore {
             endAt: event.end_at || undefined,
             participantIds: (participantIds.all(event.id) as Array<{ entity_id: string }>)
               .map(item => item.entity_id),
-            status: event.status
+            status: event.status,
+            sourceNature: event.source_nature,
+            correctionCount: Number(event.correction_count || 0)
           },
           event.updated_at || checkedAt
         )
@@ -6590,7 +6608,16 @@ export class PersonalMemoryStore {
         }
       }
       this.upsertSearchDocument(`claim:${claim.id}`, 'claim', claim.id, claim.predicate, claim.searchText,
-        { subjectId: claim.subjectId, objectEntityId: claim.objectEntityId, polarity: incomingPolarity, status: claim.status, validFrom: claim.validFrom, validTo: claim.validTo }, now)
+        {
+          subjectId: claim.subjectId,
+          objectEntityId: claim.objectEntityId,
+          polarity: incomingPolarity,
+          status: claim.status,
+          sourceNature,
+          correctionCount: 0,
+          validFrom: claim.validFrom,
+          validTo: claim.validTo
+        }, now)
     }
   }
 
@@ -6684,7 +6711,15 @@ export class PersonalMemoryStore {
         enrichEvidenceSender.run(sender, sender, event.id, sourceId, sessionId, item.messageId)
       }
       this.upsertSearchDocument(`event:${event.id}`, 'event', event.id, event.title, event.searchText,
-        { eventType: event.eventType, startAt: event.startAt, endAt: event.endAt, participantIds: (event.participants || []).map((item: any) => item.entityId), status: event.status }, now)
+        {
+          eventType: event.eventType,
+          startAt: event.startAt,
+          endAt: event.endAt,
+          participantIds: (event.participants || []).map((item: any) => item.entityId),
+          status: event.status,
+          sourceNature: event.sourceNature || 'inference',
+          correctionCount: 0
+        }, now)
     }
   }
 
@@ -10859,6 +10894,10 @@ export class PersonalMemoryStore {
           polarity: after.polarity,
           status: 'confirmed',
           sourceNature: 'human_confirmation',
+          correctionCount: Number((this.db!.prepare(`
+            SELECT COUNT(*) AS count FROM memory_corrections
+            WHERE item_kind='claim' AND item_id=?
+          `).get(id) as any)?.count || 0),
           validFrom: after.valid_from,
           validTo: after.valid_to
         }, now)
