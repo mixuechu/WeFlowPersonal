@@ -8510,6 +8510,21 @@ function AiAssistantPage() {
                 审计只保存微信、文档、日历、Mail、旧版或未知来源类别、资料计数、
                 脱敏计数和请求 SHA-256；不保存问题、聊天正文、邮箱地址或连接器内部 ID。
               </small>
+              {dashboard?.assistantArchive?.modelRequestAudits?.linkIntegrity && <small>
+                已提交回答链接 {Number(
+                  dashboard.assistantArchive.modelRequestAudits.linkIntegrity.linked || 0
+                ).toLocaleString()} 条；
+                删除回答时会在同一 SQLCipher 事务清除不透明导航 ID。
+                {Number(
+                  dashboard.assistantArchive.modelRequestAudits.linkIntegrity.clearedThisStart || 0
+                ) > 0
+                  ? ` 本次启动已清理 ${Number(
+                    dashboard.assistantArchive.modelRequestAudits.linkIntegrity.clearedThisStart
+                  ).toLocaleString()} 条历史孤儿链接。`
+                  : ' 当前未发现孤儿链接。'}
+                {!dashboard.assistantArchive.modelRequestAudits.linkIntegrity.deleteTriggerHealthy &&
+                  ' 删除联动触发器异常，请打开完整诊断。'}
+              </small>}
               <small>
                 回答已提交 {Number(modelRequestAudits.answerCounts?.committed || 0)} ·
                 响应被拒绝 {Number(modelRequestAudits.answerCounts?.rejected || 0)} ·

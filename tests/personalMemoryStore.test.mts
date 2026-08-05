@@ -11733,6 +11733,8 @@ test('assistant archive paginates years of conversations and complete long threa
   assert.equal(stats.sourcePrivacyStorage.policy, 'category_only_no_connector_identity')
   assert.equal(JSON.stringify(stats.sourcePrivacyStorage).includes('历史问题'), false)
   assert.equal(stats.modelRequestAudits.policy, 'category_only_digest_no_prompt_v1')
+  assert.equal(stats.modelRequestAudits.linkIntegrity.policy, 'opaque_target_auto_clear_v1')
+  assert.equal(stats.modelRequestAudits.linkIntegrity.orphaned, 0)
   assert.equal(JSON.stringify(stats.modelRequestAudits).includes('历史问题'), false)
   assert.equal(stats.total, 600)
   assert.equal(first.total, 600)
@@ -13245,6 +13247,13 @@ test('model request audit is privacy-minimized, revision-paged and recovers inte
     assert.equal(afterConversationDeletion.items[0].conversation_id, '')
     assert.equal(afterConversationDeletion.items[0].answer_message_id, '')
     assert.equal(afterConversationDeletion.items[0].answer_outcome, 'committed')
+    const clearedCommittedLink = (second as any).db.prepare(`
+      SELECT conversation_id,answer_message_id
+      FROM assistant_model_request_audits WHERE id=?
+    `).get(receivedId)
+    assert.equal(clearedCommittedLink.conversation_id, '')
+    assert.equal(clearedCommittedLink.answer_message_id, '')
+    assert.equal(second.getAssistantModelRequestAuditStats().linkIntegrity.orphaned, 0)
     assert.equal(reopened.items.filter((item: any) =>
       item.status === 'interrupted' &&
       item.outcome_code === 'process_interrupted'
@@ -13283,6 +13292,95 @@ test('model request audit is privacy-minimized, revision-paged and recovers inte
     assert.equal(unusableAudit?.answer_message_id, '')
     assert.equal(second.getAssistantModelRequestAuditStats().policy,
       'category_only_digest_no_prompt_v1')
+  } finally {
+    first.close()
+    second.close()
+    rmSync(directory, { recursive: true, force: true })
+  }
+})
+
+test('model answer audit links delete atomically and orphan drift self-heals on reopen', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'weflow-model-answer-link-repair-'))
+  const databasePath = join(directory, 'memory.sqlite')
+  const key = randomBytes(32)
+  const first = new PersonalMemoryStore()
+  const second = new PersonalMemoryStore()
+  try {
+    first.initialize(databasePath, key)
+    const auditId = first.recordAssistantModelRequestStarted({
+      version: 'model-source-privacy-v2',
+      policy: {
+        wechat: true, documents: false, calendar: false, mail: false, unknown: false
+      },
+      contextDocuments: 1,
+      privacyExcludedDocuments: 0,
+      budgetOmittedDocuments: 0,
+      contextSourceIds: ['wechat'],
+      excludedSourceIds: [],
+      incompleteSourceDocuments: 0,
+      outboundSha256: '9'.repeat(64),
+      redaction: { level: 'standard', total: 0, counts: {} },
+      boundaryChecks: ['before_send']
+    }, 'deepseek-link-repair-test')
+    first.finishAssistantModelRequestAudit(auditId, 'response_received')
+    const exchange = first.saveAssistantExchangeDetailed(
+      '链接事务问题',
+      '链接事务回答',
+      [],
+      undefined,
+      {},
+      '',
+      { modelRequestAuditId: auditId }
+    )
+    const db = (first as any).db
+    db.exec(`
+      DROP TRIGGER trg_assistant_model_request_audit_answer_delete;
+      CREATE TRIGGER trg_assistant_model_request_audit_answer_delete
+      BEFORE DELETE ON assistant_messages
+      WHEN OLD.id='${exchange.answerMessageId}'
+      BEGIN
+        SELECT RAISE(ABORT,'forced link cleanup failure');
+      END;
+    `)
+    assert.equal(first.getDiagnostics().modelRequestAuditLinkIntegrityHealthy, false)
+    assert.throws(
+      () => first.deleteAssistantConversation(exchange.conversationId),
+      /forced link cleanup failure/
+    )
+    assert.equal(first.getAssistantConversation(exchange.conversationId)?.messages.length, 2)
+    assert.equal(db.prepare(`
+      SELECT answer_message_id FROM assistant_model_request_audits WHERE id=?
+    `).get(auditId).answer_message_id, exchange.answerMessageId)
+
+    db.exec('DROP TRIGGER trg_assistant_model_request_audit_answer_delete')
+    db.prepare('DELETE FROM assistant_messages WHERE id=?').run(exchange.answerMessageId)
+    assert.equal(db.prepare(`
+      SELECT answer_message_id FROM assistant_model_request_audits WHERE id=?
+    `).get(auditId).answer_message_id, exchange.answerMessageId)
+    first.close()
+
+    second.initialize(databasePath, key)
+    const stats = second.getAssistantModelRequestAuditStats()
+    assert.equal(stats.linkIntegrity.scannedThisStart, 1)
+    assert.equal(stats.linkIntegrity.clearedThisStart, 1)
+    assert.equal(stats.linkIntegrity.orphaned, 0)
+    assert.equal(stats.linkIntegrity.deleteTriggerHealthy, true)
+    assert.equal(stats.linkIntegrity.triggerRepairedThisStart, true)
+    const diagnostics = second.getDiagnostics()
+    assert.equal(diagnostics.modelRequestAuditLinkIntegrityHealthy, true)
+    assert.equal(diagnostics.modelRequestAuditLinkIntegrity.orphaned, 0)
+    const repaired = (second as any).db.prepare(`
+      SELECT conversation_id,answer_message_id
+      FROM assistant_model_request_audits WHERE id=?
+    `).get(auditId)
+    assert.equal(repaired.conversation_id, '')
+    assert.equal(repaired.answer_message_id, '')
+    const publicAudit = second.listAssistantModelRequestAuditsPage({
+      answerOutcome: 'committed',
+      limit: 10
+    }).items[0]
+    assert.equal(publicAudit.conversation_id, '')
+    assert.equal(publicAudit.answer_message_id, '')
   } finally {
     first.close()
     second.close()

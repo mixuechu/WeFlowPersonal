@@ -267,6 +267,11 @@ export class PersonalMemoryStore {
   private databasePath = ''
   private encryptionKey: Buffer | null = null
   private encryptionMigrated = false
+  private assistantModelAuditLinkRepair = {
+    scanned: 0,
+    cleared: 0,
+    triggerRepairedThisStart: false
+  }
 
   private mergeStructuredEvidenceQuality(
     itemKind: 'claim' | 'relation' | 'event',
@@ -1381,6 +1386,7 @@ export class PersonalMemoryStore {
     this.ensureCrossStoreRecoveryRevisionTriggers()
     this.ensureAssistantHistoryRevisionTriggers()
     this.ensureAssistantModelRequestAuditColumns()
+    this.ensureAssistantModelRequestAuditLinkIntegrity()
     this.ensureAssistantModelRequestAuditRevisionTriggers()
     this.repairInterruptedAssistantModelRequests()
     this.ensureStructuredEvidenceRevisionLedger()
@@ -2643,6 +2649,53 @@ export class PersonalMemoryStore {
       `).run()
     })
     transaction()
+  }
+
+  private ensureAssistantModelRequestAuditLinkIntegrity(): void {
+    if (!this.db) return
+    const triggerName = 'trg_assistant_model_request_audit_answer_delete'
+    const previousTriggerSql = String((this.db.prepare(`
+      SELECT sql FROM sqlite_master WHERE type='trigger' AND name=?
+    `).get(triggerName) as any)?.sql || '')
+    const triggerWasHealthy = previousTriggerSql.includes('AFTER DELETE ON assistant_messages')
+      && previousTriggerSql.includes('answer_message_id=OLD.id')
+      && previousTriggerSql.includes("SET conversation_id='',answer_message_id=''")
+    const scanned = Number((this.db.prepare(`
+      SELECT COUNT(*) AS count FROM assistant_model_request_audits
+      WHERE conversation_id!='' OR answer_message_id!=''
+    `).get() as any)?.count || 0)
+    const repair = this.db.transaction(() => {
+      this.db!.exec(`DROP TRIGGER IF EXISTS ${triggerName}`)
+      this.db!.exec(`
+        CREATE TRIGGER ${triggerName}
+        AFTER DELETE ON assistant_messages
+        WHEN EXISTS(
+          SELECT 1 FROM assistant_model_request_audits
+          WHERE answer_message_id=OLD.id
+        )
+        BEGIN
+          UPDATE assistant_model_request_audits
+          SET conversation_id='',answer_message_id=''
+          WHERE answer_message_id=OLD.id;
+        END
+      `)
+      return Number(this.db!.prepare(`
+        UPDATE assistant_model_request_audits
+        SET conversation_id='',answer_message_id=''
+        WHERE (conversation_id!='' OR answer_message_id!='')
+          AND NOT EXISTS(
+            SELECT 1 FROM assistant_messages answer
+            WHERE answer.id=assistant_model_request_audits.answer_message_id
+              AND answer.conversation_id=assistant_model_request_audits.conversation_id
+              AND answer.role='assistant'
+          )
+      `).run().changes || 0)
+    })()
+    this.assistantModelAuditLinkRepair = {
+      scanned,
+      cleared: repair,
+      triggerRepairedThisStart: !triggerWasHealthy
+    }
   }
 
   private repairInterruptedAssistantModelRequests(): void {
@@ -5374,6 +5427,8 @@ export class PersonalMemoryStore {
     const ingestionRecoveryRevision = this.getIngestionRecoveryRevisionHealth()
     const crossStoreRecoveryRevision = this.getCrossStoreRecoveryRevisionHealth()
     const assistantHistoryRevision = this.getAssistantHistoryRevisionHealth()
+    const modelRequestAuditLinkIntegrity =
+      this.getAssistantModelRequestAuditStats().linkIntegrity
     const resourceArchiveRevision = this.getResourceArchiveRevisionHealth()
     const structuredEvidenceRevision = this.getStructuredEvidenceRevisionHealth()
     const generalEvidenceRevision = this.getGeneralEvidenceRevisionHealth()
@@ -5445,6 +5500,8 @@ export class PersonalMemoryStore {
         && ingestionRecoveryRevision.healthy
         && crossStoreRecoveryRevision.healthy
         && assistantHistoryRevision.healthy
+        && modelRequestAuditLinkIntegrity.deleteTriggerHealthy
+        && modelRequestAuditLinkIntegrity.orphaned === 0
         && resourceArchiveRevision.healthy
         && structuredEvidenceRevision.healthy
         && generalEvidenceRevision.healthy,
@@ -5470,6 +5527,9 @@ export class PersonalMemoryStore {
       ingestionRecoveryRevisionHealthy: ingestionRecoveryRevision.healthy,
       crossStoreRecoveryRevisionHealthy: crossStoreRecoveryRevision.healthy,
       assistantHistoryRevisionHealthy: assistantHistoryRevision.healthy,
+      modelRequestAuditLinkIntegrityHealthy:
+        modelRequestAuditLinkIntegrity.deleteTriggerHealthy
+        && modelRequestAuditLinkIntegrity.orphaned === 0,
       resourceArchiveRevisionHealthy: resourceArchiveRevision.healthy,
       structuredEvidenceRevisionHealthy: structuredEvidenceRevision.healthy,
       generalEvidenceRevisionHealthy: generalEvidenceRevision.healthy,
@@ -5504,6 +5564,7 @@ export class PersonalMemoryStore {
       ingestionRecoveryRevision,
       crossStoreRecoveryRevision,
       assistantHistoryRevision,
+      modelRequestAuditLinkIntegrity,
       resourceArchiveRevision,
       structuredEvidenceRevision,
       generalEvidenceRevision,
@@ -16640,10 +16701,34 @@ export class PersonalMemoryStore {
         process_interrupted_after_response: 0,
         legacy_transport_only: 0
       },
+      linkIntegrity: {
+        policy: 'opaque_target_auto_clear_v1',
+        linked: 0,
+        orphaned: 0,
+        scannedThisStart: 0,
+        clearedThisStart: 0,
+        deleteTriggerHealthy: false,
+        triggerRepairedThisStart: false
+      },
       revision: '0',
       policy: 'category_only_digest_no_prompt_v1'
     }
     const page = this.listAssistantModelRequestAuditsPage({ limit: 1 })
+    const linkCounts = this.db.prepare(`
+      SELECT
+        SUM(CASE WHEN conversation_id!='' OR answer_message_id!='' THEN 1 ELSE 0 END) AS linked,
+        SUM(CASE WHEN (conversation_id!='' OR answer_message_id!='') AND NOT EXISTS(
+          SELECT 1 FROM assistant_messages answer
+          WHERE answer.id=assistant_model_request_audits.answer_message_id
+            AND answer.conversation_id=assistant_model_request_audits.conversation_id
+            AND answer.role='assistant'
+        ) THEN 1 ELSE 0 END) AS orphaned
+      FROM assistant_model_request_audits
+    `).get() as any
+    const deleteTriggerHealthy = String((this.db.prepare(`
+      SELECT sql FROM sqlite_master
+      WHERE type='trigger' AND name='trg_assistant_model_request_audit_answer_delete'
+    `).get() as any)?.sql || '').includes('answer_message_id=OLD.id')
     return {
       total: Number((this.db.prepare(`
         SELECT COUNT(*) AS count FROM assistant_model_request_audits
@@ -16651,6 +16736,16 @@ export class PersonalMemoryStore {
       counts: page.counts,
       answerCounts: page.answerCounts,
       answerReasonCounts: page.answerReasonCounts,
+      linkIntegrity: {
+        policy: 'opaque_target_auto_clear_v1',
+        linked: Math.max(0, Number(linkCounts?.linked || 0)),
+        orphaned: Math.max(0, Number(linkCounts?.orphaned || 0)),
+        scannedThisStart: this.assistantModelAuditLinkRepair.scanned,
+        clearedThisStart: this.assistantModelAuditLinkRepair.cleared,
+        deleteTriggerHealthy,
+        triggerRepairedThisStart:
+          this.assistantModelAuditLinkRepair.triggerRepairedThisStart
+      },
       revision: page.revision,
       policy: 'category_only_digest_no_prompt_v1'
     }
