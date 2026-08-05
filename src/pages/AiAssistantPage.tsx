@@ -7002,6 +7002,9 @@ function AiAssistantPage() {
                   {memoryDiagnostics.structuredEvidenceMigration?.version
                     ? ` · 证据去重 ${Number(memoryDiagnostics.structuredEvidenceMigration.duplicatesRemoved || 0).toLocaleString()} 条 / 恢复发送者 ${Number(memoryDiagnostics.structuredEvidenceMigration.sendersRecovered || 0).toLocaleString()} 条 / 来源回填 ${Number(memoryDiagnostics.structuredEvidenceMigration.sourceRowsBackfilledTotal || 0).toLocaleString()} 条 / 来源身份${memoryDiagnostics.structuredEvidenceMigration.sourceIdentity === true ? '正常' : '待迁移'} / 约束${memoryDiagnostics.structuredEvidenceMigration.constraintsHealthy === false ? '异常' : '正常'}`
                     : ''}
+                  {memoryDiagnostics.structuredEvidenceQualityMerge?.version
+                    ? ` · 证据质量升级 ${Number(memoryDiagnostics.structuredEvidenceQualityMerge.upgradesTotal || 0).toLocaleString()} 次`
+                    : ''}
                   {memoryDiagnostics.structuredEvidenceReferences?.version
                     ? ` · 引用${memoryDiagnostics.referentialIntegrityHealthy ? '完整' : '异常'} / 清理孤儿 ${Number(memoryDiagnostics.structuredEvidenceReferences.orphansRemovedTotal || 0).toLocaleString()} 条`
                     : ''}
@@ -11254,6 +11257,20 @@ function AiAssistantPage() {
                 <span>迁移时间 <b>{memoryDiagnostics.structuredEvidenceMigration.migratedAt
                   ? new Date(memoryDiagnostics.structuredEvidenceMigration.migratedAt).toLocaleString('zh-CN')
                   : '未知'}</b></span>
+              </div>
+            </div>}
+            {memoryDiagnostics.structuredEvidenceQualityMerge?.version && <div className="assistant-recovery-audit healthy">
+              <header><ShieldCheck size={15} /><span><b>结构化证据质量合并</b>
+                <small>同一条原消息重复抽取时不复制证据；只把时间、发送者、原文和证据角色升级到更完整、更可靠的版本，且绝不降级反证。</small>
+              </span></header>
+              <div className="assistant-recovery-current">
+                <span>累计升级 <b>{Number(memoryDiagnostics.structuredEvidenceQualityMerge.upgradesTotal || 0).toLocaleString()}</b> 次</span>
+                <span>事实 <b>{Number(memoryDiagnostics.structuredEvidenceQualityMerge.byKind?.claim || 0).toLocaleString()}</b></span>
+                <span>关系 <b>{Number(memoryDiagnostics.structuredEvidenceQualityMerge.byKind?.relation || 0).toLocaleString()}</b></span>
+                <span>事件 <b>{Number(memoryDiagnostics.structuredEvidenceQualityMerge.byKind?.event || 0).toLocaleString()}</b></span>
+                <span>最近升级 <b>{memoryDiagnostics.structuredEvidenceQualityMerge.lastUpgradedAt
+                  ? new Date(memoryDiagnostics.structuredEvidenceQualityMerge.lastUpgradedAt).toLocaleString('zh-CN')
+                  : '暂无'}</b></span>
               </div>
             </div>}
             {memoryDiagnostics.structuredEvidenceReferences?.version && <div className={`assistant-recovery-audit ${memoryDiagnostics.referentialIntegrityHealthy ? 'healthy' : 'unhealthy'}`}>

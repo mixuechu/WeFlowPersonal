@@ -268,6 +268,97 @@ export class PersonalMemoryStore {
   private encryptionKey: Buffer | null = null
   private encryptionMigrated = false
 
+  private mergeStructuredEvidenceQuality(
+    itemKind: 'claim' | 'relation' | 'event',
+    itemId: string,
+    item: any,
+    evidenceRole: string
+  ): number {
+    if (!this.db) return 0
+    const foreignKey = {
+      claim: 'claim_id',
+      relation: 'relation_id',
+      event: 'event_id'
+    }[itemKind]
+    const role = ['contradiction', 'direct', 'indirect'].includes(evidenceRole)
+      ? evidenceRole
+      : 'indirect'
+    const values = {
+      itemId,
+      sourceId: evidenceSourceId(item),
+      sessionId: String(item.sessionId || item.session_id || ''),
+      messageId: String(item.messageId || item.message_id || ''),
+      timestamp: Number(item.timestamp || 0),
+      sender: String(item.sender || ''),
+      excerpt: String(item.excerpt || '').slice(0, 1000),
+      role
+    }
+    const result = this.db.prepare(`
+      UPDATE evidence SET
+        timestamp=MAX(timestamp,@timestamp),
+        sender=CASE
+          WHEN @sender!='' AND sender!=@sender THEN @sender
+          ELSE sender
+        END,
+        excerpt=CASE
+          WHEN LENGTH(@excerpt)>LENGTH(excerpt) THEN @excerpt
+          ELSE excerpt
+        END,
+        evidence_role=CASE
+          WHEN (
+            CASE @role
+              WHEN 'contradiction' THEN 3 WHEN 'direct' THEN 2
+              WHEN 'indirect' THEN 1 ELSE 0
+            END
+          ) > (
+            CASE evidence_role
+              WHEN 'contradiction' THEN 3 WHEN 'direct' THEN 2
+              WHEN 'indirect' THEN 1 ELSE 0
+            END
+          ) THEN @role
+          ELSE evidence_role
+        END
+      WHERE ${foreignKey}=@itemId
+        AND source_id=@sourceId AND session_id=@sessionId AND message_id=@messageId
+        AND (
+          timestamp<@timestamp
+          OR (@sender!='' AND sender!=@sender)
+          OR LENGTH(excerpt)<LENGTH(@excerpt)
+          OR (
+            CASE @role
+              WHEN 'contradiction' THEN 3 WHEN 'direct' THEN 2
+              WHEN 'indirect' THEN 1 ELSE 0
+            END
+          ) > (
+            CASE evidence_role
+              WHEN 'contradiction' THEN 3 WHEN 'direct' THEN 2
+              WHEN 'indirect' THEN 1 ELSE 0
+            END
+          )
+        )
+    `).run(values)
+    if (!result.changes) return 0
+    const now = new Date().toISOString()
+    let previous: any = {}
+    try {
+      previous = JSON.parse(String((this.db.prepare(`
+        SELECT value FROM schema_meta WHERE key='structured_evidence_quality_merge_v1'
+      `).get() as any)?.value || '{}'))
+    } catch {}
+    const byKind = { ...(previous.byKind || {}) }
+    byKind[itemKind] = Number(byKind[itemKind] || 0) + Number(result.changes)
+    this.db.prepare(`
+      INSERT INTO schema_meta(key,value,updated_at) VALUES(?,?,?)
+      ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_at=excluded.updated_at
+    `).run('structured_evidence_quality_merge_v1', JSON.stringify({
+      version: 1,
+      upgradesTotal: Number(previous.upgradesTotal || 0) + Number(result.changes),
+      byKind,
+      lastUpgradedAt: now
+    }), now)
+    return Number(result.changes)
+  }
+
   private readRecoveryPayload(
     table: 'ingestion_batch_commits' | 'task_mutation_commits' |
       'conversation_source_mutation_commits',
@@ -4814,6 +4905,32 @@ export class PersonalMemoryStore {
         }
       }
     })()
+    const structuredEvidenceQualityMerge = (() => {
+      const row = this.db!.prepare(`
+        SELECT value,updated_at FROM schema_meta
+        WHERE key='structured_evidence_quality_merge_v1'
+      `).get() as any
+      try {
+        const audit = JSON.parse(String(row?.value || '{}'))
+        return {
+          version: Number(audit.version || 0),
+          upgradesTotal: Number(audit.upgradesTotal || 0),
+          byKind: {
+            claim: Number(audit.byKind?.claim || 0),
+            relation: Number(audit.byKind?.relation || 0),
+            event: Number(audit.byKind?.event || 0)
+          },
+          lastUpgradedAt: String(audit.lastUpgradedAt || row?.updated_at || '')
+        }
+      } catch {
+        return {
+          version: 0,
+          upgradesTotal: 0,
+          byKind: { claim: 0, relation: 0, event: 0 },
+          lastUpgradedAt: ''
+        }
+      }
+    })()
     const structuredEvidenceReferences = (() => {
       const row = this.db!.prepare(`
         SELECT value,updated_at FROM schema_meta
@@ -5204,6 +5321,7 @@ export class PersonalMemoryStore {
       databaseBytes: statSync(this.databasePath).size,
       counts,
       structuredEvidenceMigration,
+      structuredEvidenceQualityMerge,
       structuredEvidenceReferences,
       genericSearchEvidenceIdentity,
       structuredSearchIndex,
@@ -6185,10 +6303,6 @@ export class PersonalMemoryStore {
           relation_id,source_id,message_id,session_id,timestamp,sender,excerpt,evidence_role
         ) VALUES(?,?,?,?,?,?,?,'direct')
       `)
-      const enrichEvidenceSender = this.db.prepare(`
-        UPDATE evidence SET sender=CASE WHEN ?!='' THEN ? ELSE sender END
-        WHERE relation_id=? AND source_id=? AND session_id=? AND message_id=?
-      `)
       for (const relation of allowedRelations) {
         const stored = getStoredRelation.get(relation.id) as any
         const directionExplanation = String(
@@ -6245,9 +6359,7 @@ export class PersonalMemoryStore {
             relation.id, sourceId, evidence.messageId, sessionId,
             Number(evidence.timestamp || 0), sender, evidence.excerpt || ''
           )
-          enrichEvidenceSender.run(
-            sender, sender, relation.id, sourceId, sessionId, evidence.messageId
-          )
+          this.mergeStructuredEvidenceQuality('relation', relation.id, evidence, 'direct')
         }
         this.upsertSearchDocument(`relation:${relation.id}`, 'relation', relation.id, relation.predicate, searchText,
           {
@@ -6937,10 +7049,6 @@ export class PersonalMemoryStore {
         claim_id,source_id,message_id,session_id,timestamp,sender,excerpt,evidence_role
       ) VALUES(?,?,?,?,?,?,?,?)
     `)
-    const enrichEvidenceSender = this.db.prepare(`
-      UPDATE evidence SET sender=CASE WHEN ?!='' THEN ? ELSE sender END
-      WHERE claim_id=? AND source_id=? AND session_id=? AND message_id=?
-    `)
     for (const claim of claims) {
       if (this.isMemoryItemSuppressed('claim', claim.id, this.memoryItemSemanticFingerprint('claim', claim))) continue
       const sourceNature = claim.sourceNature || 'inference'
@@ -6963,7 +7071,7 @@ export class PersonalMemoryStore {
             claim.id, sourceId, item.messageId, sessionId, item.timestamp,
             sender, item.excerpt, evidenceRole
           )
-          enrichEvidenceSender.run(sender, sender, claim.id, sourceId, sessionId, item.messageId)
+          this.mergeStructuredEvidenceQuality('claim', claim.id, item, evidenceRole)
         }
         continue
       }
@@ -7037,7 +7145,7 @@ export class PersonalMemoryStore {
           claim.id, sourceId, item.messageId, sessionId, item.timestamp,
           sender, item.excerpt, evidenceRole
         )
-        enrichEvidenceSender.run(sender, sender, claim.id, sourceId, sessionId, item.messageId)
+        this.mergeStructuredEvidenceQuality('claim', claim.id, item, evidenceRole)
       }
       for (const prior of conflicting) {
         for (const item of claim.evidence || []) {
@@ -7048,7 +7156,7 @@ export class PersonalMemoryStore {
             prior.id, sourceId, item.messageId, sessionId, item.timestamp,
             sender, item.excerpt, 'contradiction'
           )
-          enrichEvidenceSender.run(sender, sender, prior.id, sourceId, sessionId, item.messageId)
+          this.mergeStructuredEvidenceQuality('claim', prior.id, item, 'contradiction')
         }
         const priorEvidence = this.db.prepare(`
           SELECT source_id,message_id,session_id,timestamp,sender,excerpt FROM evidence
@@ -7059,9 +7167,7 @@ export class PersonalMemoryStore {
             claim.id, item.source_id, item.message_id, item.session_id, item.timestamp,
             item.sender, item.excerpt, 'contradiction'
           )
-          enrichEvidenceSender.run(
-            item.sender, item.sender, claim.id, item.source_id, item.session_id, item.message_id
-          )
+          this.mergeStructuredEvidenceQuality('claim', claim.id, item, 'contradiction')
         }
       }
       this.upsertSearchDocument(`claim:${claim.id}`, 'claim', claim.id, claim.predicate, claim.searchText,
@@ -7097,10 +7203,6 @@ export class PersonalMemoryStore {
       INSERT OR IGNORE INTO evidence(
         event_id,source_id,message_id,session_id,timestamp,sender,excerpt,evidence_role
       ) VALUES(?,?,?,?,?,?,?,?)
-    `)
-    const enrichEvidenceSender = this.db.prepare(`
-      UPDATE evidence SET sender=CASE WHEN ?!='' THEN ? ELSE sender END
-      WHERE event_id=? AND source_id=? AND session_id=? AND message_id=?
     `)
     for (const event of events) {
       const evidenceItems = event.evidence || []
@@ -7163,7 +7265,10 @@ export class PersonalMemoryStore {
             event.id, sourceId, item.messageId, sessionId, item.timestamp, sender, item.excerpt,
             item.role && item.role !== 'support' ? item.role : 'indirect'
           )
-          enrichEvidenceSender.run(sender, sender, event.id, sourceId, sessionId, item.messageId)
+          this.mergeStructuredEvidenceQuality(
+            'event', event.id, item,
+            item.role && item.role !== 'support' ? item.role : 'indirect'
+          )
         }
         if (event.status === 'cancelled') {
           this.db.prepare(`UPDATE events SET status='cancelled',updated_at=? WHERE id=?`).run(now, event.id)
@@ -7191,7 +7296,10 @@ export class PersonalMemoryStore {
           event.id, sourceId, item.messageId, sessionId, item.timestamp, sender, item.excerpt,
           item.role && item.role !== 'support' ? item.role : 'direct'
         )
-        enrichEvidenceSender.run(sender, sender, event.id, sourceId, sessionId, item.messageId)
+        this.mergeStructuredEvidenceQuality(
+          'event', event.id, item,
+          item.role && item.role !== 'support' ? item.role : 'direct'
+        )
       }
       this.upsertSearchDocument(`event:${event.id}`, 'event', event.id, event.title, event.searchText,
         {

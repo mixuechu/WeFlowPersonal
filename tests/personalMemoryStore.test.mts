@@ -3096,7 +3096,7 @@ test('structured evidence constraints self-heal after index drift without trusti
   }
 })
 
-test('relation and event evidence keep senders without duplicating repeated extraction', () => withStore(store => {
+test('structured evidence upgrades quality without duplicating or downgrading repeated extraction', () => withStore(store => {
   const relation = {
     id: 'sender-relation',
     subjectId: 'sender-person-a',
@@ -3122,9 +3122,23 @@ test('relation and event evidence keep senders without duplicating repeated extr
   }
   store.syncGraph(graph)
   store.syncGraph(graph)
+  store.syncGraph({
+    ...graph,
+    relations: [{
+      ...relation,
+      evidence: [{
+        ...relation.evidence[0],
+        timestamp: 1_700_000_101,
+        sender: '关系发送者新备注',
+        excerpt: '我们一起完成这个项目，并约定周五交付完整版本'
+      }]
+    }]
+  })
   const relationPage = store.getDocumentEvidencePage('relation', relation.id)
   assert.equal(relationPage.total, 1)
-  assert.equal(relationPage.items[0].sender, '关系发送者')
+  assert.equal(relationPage.items[0].sender, '关系发送者新备注')
+  assert.equal(relationPage.items[0].timestamp, 1_700_000_101)
+  assert.equal(relationPage.items[0].excerpt, '我们一起完成这个项目，并约定周五交付完整版本')
 
   const event = {
     id: 'sender-event',
@@ -3145,11 +3159,75 @@ test('relation and event evidence keep senders without duplicating repeated extr
       excerpt: '明天开一次测试会议'
     }]
   }
-  store.upsertEvents([event])
-  store.upsertEvents([{ ...event, evidence: [{ ...event.evidence[0], sender: '事件发送者新备注' }] }])
+  store.upsertEvents([{ ...event, evidence: [{ ...event.evidence[0], role: 'indirect' }] }])
+  store.upsertEvents([{ ...event, evidence: [{
+    ...event.evidence[0],
+    timestamp: 1_700_000_201,
+    sender: '事件发送者新备注',
+    excerpt: '明天开一次测试会议，讨论发布方案',
+    role: 'direct'
+  }] }])
+  store.upsertEvents([{ ...event, evidence: [{
+    ...event.evidence[0],
+    timestamp: 1_700_000_199,
+    sender: '',
+    excerpt: '短句',
+    role: 'indirect'
+  }] }])
   const eventPage = store.getDocumentEvidencePage('event', event.id)
   assert.equal(eventPage.total, 1)
   assert.equal(eventPage.items[0].sender, '事件发送者新备注')
+  assert.equal(eventPage.items[0].timestamp, 1_700_000_201)
+  assert.equal(eventPage.items[0].excerpt, '明天开一次测试会议，讨论发布方案')
+  assert.equal(eventPage.items[0].evidence_role, 'direct')
+
+  const claim = {
+    id: 'quality-claim',
+    subjectId: 'sender-person-a',
+    predicate: '负责',
+    objectValue: '发布',
+    polarity: 'positive',
+    valueType: 'text',
+    confidence: 0.8,
+    status: 'candidate',
+    sourceNature: 'other_statement',
+    searchText: '发送者甲负责发布',
+    evidence: [{
+      messageId: 'quality-claim-message',
+      sessionId: 'sender-session',
+      timestamp: 1_700_000_300,
+      sender: '最初发送者',
+      excerpt: '他负责发布',
+      role: 'indirect'
+    }]
+  }
+  store.upsertClaims([claim])
+  store.upsertClaims([{ ...claim, evidence: [{
+    ...claim.evidence[0],
+    timestamp: 1_700_000_301,
+    sender: '确认发送者',
+    excerpt: '我确认由发送者甲负责本周五的完整发布',
+    role: 'contradiction'
+  }] }])
+  store.upsertClaims([{ ...claim, evidence: [{
+    ...claim.evidence[0],
+    timestamp: 1_700_000_299,
+    sender: '',
+    excerpt: '短句',
+    role: 'direct'
+  }] }])
+  const claimPage = store.getDocumentEvidencePage('claim', claim.id)
+  assert.equal(claimPage.total, 1)
+  assert.equal(claimPage.items[0].timestamp, 1_700_000_301)
+  assert.equal(claimPage.items[0].sender, '确认发送者')
+  assert.equal(claimPage.items[0].excerpt, '我确认由发送者甲负责本周五的完整发布')
+  assert.equal(claimPage.items[0].evidence_role, 'contradiction')
+
+  const diagnostics = store.getDiagnostics()
+  assert.ok(diagnostics.structuredEvidenceQualityMerge.upgradesTotal >= 3)
+  assert.ok(diagnostics.structuredEvidenceQualityMerge.byKind.claim >= 1)
+  assert.ok(diagnostics.structuredEvidenceQualityMerge.byKind.relation >= 1)
+  assert.ok(diagnostics.structuredEvidenceQualityMerge.byKind.event >= 1)
 }))
 
 test('structured evidence preserves identical message ids from different sources across restart', () => {
