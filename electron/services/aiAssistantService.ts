@@ -32,12 +32,13 @@ import {
   runAfterSettledBarrier,
   runAfterVectorBarrier,
   shouldDeferPreparedRecovery,
-  waitForBackgroundWrites,
+  waitForNamedBackgroundWrites,
   vectorIndexConflictMessage
 } from './backgroundWriteCoordination'
 import { extractAttachmentText } from './attachmentTextExtractor'
 import { structureOcrText } from './imageOcrStructuring'
 import { captureWebSnapshot } from './webSnapshotService'
+import { ModelRequestCoordinator } from './modelRequestCoordinator'
 import { extractScannedPdfText, getPdfOcrStatus } from './pdfOcrService'
 import { exportService } from './export'
 import {
@@ -620,6 +621,8 @@ export class AiAssistantService {
   private schedulerTickPromise: Promise<string> | null = null
   private systemResumePromise: Promise<string> | null = null
   private notificationFlushPromise: Promise<void> | null = null
+  private memoryQuestionPromises = new Set<Promise<any>>()
+  private modelRequests = new ModelRequestCoordinator()
   private preparedRecoveryContinuation: ReturnType<typeof setTimeout> | null = null
   private connectorAuthorizationCache = new AsyncExpiringValue<{
     calendar: string
@@ -838,12 +841,24 @@ export class AiAssistantService {
     fulfilled: number
     rejected: number
     databaseClosed: boolean
+    modelRequestsAborted: number
+    timedOut: boolean
+    pending: string[]
   }> {
     if (this.disposed) {
-      return { waited: 0, fulfilled: 0, rejected: 0, databaseClosed: false }
+      return {
+        waited: 0,
+        fulfilled: 0,
+        rejected: 0,
+        databaseClosed: false,
+        modelRequestsAborted: 0,
+        timedOut: false,
+        pending: []
+      }
     }
     this.disposed = true
     this.cancelRequested = Boolean(this.activeSync)
+    const modelRequestsAborted = this.modelRequests.stop()
     if (this.scheduler) clearInterval(this.scheduler)
     this.scheduler = null
     if (this.preparedRecoveryContinuation) clearTimeout(this.preparedRecoveryContinuation)
@@ -859,16 +874,21 @@ export class AiAssistantService {
       { type: 'cancelled', at: new Date().toISOString() }
     )
     this.persistVectorIndexContinuationHealth()
-    const settled = await waitForBackgroundWrites([
-      this.activeSync,
-      this.vectorIndexPromise,
-      this.memorySearchRepairPromise,
-      this.schedulerTickPromise,
-      this.systemResumePromise,
-      this.notificationFlushPromise
-    ])
-    personalMemoryStore.close()
-    return { ...settled, databaseClosed: true }
+    const settled = await waitForNamedBackgroundWrites([
+      { name: 'incremental_sync', promise: this.activeSync },
+      { name: 'vector_index', promise: this.vectorIndexPromise },
+      { name: 'search_repair', promise: this.memorySearchRepairPromise },
+      { name: 'scheduler_tick', promise: this.schedulerTickPromise },
+      { name: 'system_resume', promise: this.systemResumePromise },
+      { name: 'notification_flush', promise: this.notificationFlushPromise },
+      ...[...this.memoryQuestionPromises].map((promise, index) => ({
+        name: `memory_question_${index + 1}`,
+        promise
+      }))
+    ], 4_000)
+    const databaseClosed = !settled.timedOut && settled.pending.length === 0
+    if (databaseClosed) personalMemoryStore.close()
+    return { ...settled, databaseClosed, modelRequestsAborted }
   }
 
   handleSystemSuspend(observedAt = new Date()): void {
@@ -2120,7 +2140,7 @@ export class AiAssistantService {
     let lastError: any = null
     for (let attempt = 0; attempt < 2; attempt += 1) {
       const startedAt = Date.now()
-      const response = await fetch(`${baseUrl}/chat/completions`, {
+      const response = await this.modelRequests.fetch(`${baseUrl}/chat/completions`, {
         method: 'POST',
         headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -2132,8 +2152,7 @@ export class AiAssistantService {
             { role: 'system', content: SYSTEM_PROMPT + (attempt ? '\n务必输出单个完整 JSON 对象。' : '') },
             { role: 'user', content: outbound.text }
           ]
-        }),
-        signal: AbortSignal.timeout(90_000)
+        })
       })
       const payload = await response.json().catch(() => ({}))
       if (!response.ok) throw new Error(payload?.error?.message || `DeepSeek 请求失败 (${response.status})`)
@@ -3726,6 +3745,10 @@ export class AiAssistantService {
       vectorIndexing: backgroundWrites.vectorIndexing,
       searchRepairing: backgroundWrites.searchRepairing,
       backgroundWrites,
+      modelRequests: {
+        ...this.modelRequests.getStatus(),
+        memoryQuestions: this.memoryQuestionPromises.size
+      },
       cancelling: this.cancelRequested,
       scheduleTime: this.config.get('aiAssistantScheduleTime'),
       model: this.config.get('aiAssistantApiModel'),
@@ -5130,6 +5153,11 @@ export class AiAssistantService {
         vectorIndexing: Boolean(this.vectorIndexPromise),
         searchRepairing: Boolean(this.memorySearchRepairPromise)
       }),
+      modelRequests: {
+        ...this.modelRequests.getStatus(),
+        memoryQuestions: this.memoryQuestionPromises.size,
+        timeoutSeconds: 90
+      },
       identityMergeSnapshotStorage: personalMemoryStore.getIdentityMergeSnapshotStorageStats(),
       taskStateStorage: {
         ...getTaskStateStorageStats(this.state.tasks),
@@ -7734,6 +7762,21 @@ export class AiAssistantService {
   }
 
   async askMemory(question: string, conversationId?: string, options: MemorySearchOptions = {}): Promise<any> {
+    if (this.disposed) throw new Error('AI 助理正在安全退出，不能开始新的记忆问答')
+    const promise = this.runMemoryQuestion(question, conversationId, options)
+    this.memoryQuestionPromises.add(promise)
+    try {
+      return await promise
+    } finally {
+      this.memoryQuestionPromises.delete(promise)
+    }
+  }
+
+  private async runMemoryQuestion(
+    question: string,
+    conversationId?: string,
+    options: MemorySearchOptions = {}
+  ): Promise<any> {
     const query = String(question || '').trim()
     if (!query) throw new Error('请输入问题')
     const explicitEntitySelection = options.entityId
@@ -7893,7 +7936,7 @@ export class AiAssistantService {
       searchOptions: modelSearchOptions,
       context
     }), redactionLevel)
-    const response = await fetch(`${baseUrl}/chat/completions`, {
+    const response = await this.modelRequests.fetch(`${baseUrl}/chat/completions`, {
       method: 'POST',
       headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -7902,8 +7945,7 @@ export class AiAssistantService {
           { role: 'system', content: MEMORY_RAG_SYSTEM_PROMPT },
           { role: 'user', content: outbound.text }
         ]
-      }),
-      signal: AbortSignal.timeout(90_000)
+      })
     })
     const payload = await response.json().catch(() => ({}))
     if (!response.ok) throw new Error(payload?.error?.message || `DeepSeek 请求失败 (${response.status})`)

@@ -9,6 +9,7 @@ import {
   runAfterVectorBarrier,
   shouldDeferPreparedRecovery,
   waitForBackgroundWrites,
+  waitForNamedBackgroundWrites,
   vectorIndexConflictMessage
 } from '../electron/services/backgroundWriteCoordination.ts'
 
@@ -76,6 +77,40 @@ test('resume work runs after an existing scheduler tick even when that tick fail
   release?.()
   assert.equal(await resume, 'resume_completed')
   assert.deepEqual(order, ['timer', 'resume'])
+})
+
+test('bounded shutdown identifies unfinished writers without closing over their failure', async () => {
+  let release: (() => void) | undefined
+  const stuck = new Promise<void>(resolve => { release = resolve })
+  const shared = Promise.resolve()
+  const result = await waitForNamedBackgroundWrites([
+    { name: 'incremental_sync', promise: stuck },
+    { name: 'scheduler_tick', promise: stuck },
+    { name: 'notification_flush', promise: shared },
+    { name: 'duplicate_notification', promise: shared }
+  ], 5)
+  assert.deepEqual(result, {
+    waited: 2,
+    fulfilled: 1,
+    rejected: 0,
+    timedOut: true,
+    pending: ['incremental_sync', 'scheduler_tick']
+  })
+  release?.()
+})
+
+test('bounded shutdown reports rejection but still completes when every writer settles', async () => {
+  const result = await waitForNamedBackgroundWrites([
+    { name: 'sync', promise: Promise.resolve() },
+    { name: 'repair', promise: Promise.reject(new Error('expected')) }
+  ], 100)
+  assert.deepEqual(result, {
+    waited: 2,
+    fulfilled: 1,
+    rejected: 1,
+    timedOut: false,
+    pending: []
+  })
 })
 
 test('background writer diagnostics expose the authoritative owner and waiting phase', () => {

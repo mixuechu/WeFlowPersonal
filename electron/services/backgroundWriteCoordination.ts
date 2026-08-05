@@ -25,6 +25,51 @@ export async function waitForBackgroundWrites(
   }
 }
 
+export async function waitForNamedBackgroundWrites(
+  entries: Array<{ name: string; promise: Promise<unknown> | null | undefined }>,
+  timeoutMs: number
+): Promise<{
+  waited: number
+  fulfilled: number
+  rejected: number
+  timedOut: boolean
+  pending: string[]
+}> {
+  const byPromise = new Map<Promise<unknown>, Set<string>>()
+  for (const entry of entries) {
+    if (!entry.promise) continue
+    const names = byPromise.get(entry.promise) || new Set<string>()
+    names.add(entry.name)
+    byPromise.set(entry.promise, names)
+  }
+  const pending = new Set([...byPromise.values()].flatMap(names => [...names]))
+  let fulfilled = 0
+  let rejected = 0
+  const settled = [...byPromise.entries()].map(([promise, names]) =>
+    promise.then(
+      () => { fulfilled += 1 },
+      () => { rejected += 1 }
+    ).finally(() => {
+      for (const name of names) pending.delete(name)
+    })
+  )
+  let timeout: ReturnType<typeof setTimeout> | null = null
+  const timedOut = await Promise.race([
+    Promise.all(settled).then(() => false),
+    new Promise<boolean>(resolve => {
+      timeout = setTimeout(() => resolve(true), Math.max(1, timeoutMs))
+    })
+  ])
+  if (timeout) clearTimeout(timeout)
+  return {
+    waited: byPromise.size,
+    fulfilled,
+    rejected,
+    timedOut,
+    pending: [...pending].sort()
+  }
+}
+
 export async function runAfterSettledBarrier<T>(
   barrier: Promise<unknown>,
   run: () => Promise<T>
