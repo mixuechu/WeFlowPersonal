@@ -5045,6 +5045,40 @@ export class PersonalMemoryStore {
     const taskSearchIndexHealthy = ([1, 2].includes(taskSearchIndex.version)
       || liveTaskSearchIndex.authoritativeTasks === 0)
       && liveTaskSearchIndex.currentMismatches === 0
+    const resourceEvidenceArchive = (() => {
+      const row = this.db!.prepare(`
+        SELECT value,updated_at FROM schema_meta
+        WHERE key='resource_evidence_archive_integrity'
+      `).get() as any
+      try {
+        const audit = JSON.parse(String(row?.value || '{}'))
+        return {
+          version: Number(audit.version || 0),
+          policy: String(audit.policy || ''),
+          checkedAt: String(audit.checkedAt || row?.updated_at || ''),
+          resourcesProcessedThisSync: Number(audit.resourcesProcessedThisSync || 0),
+          incomingEvidenceRowsThisSync: Number(audit.incomingEvidenceRowsThisSync || 0),
+          preservedHistoricalRowsThisSync: Number(audit.preservedHistoricalRowsThisSync || 0),
+          authoritativeEvidenceRows: Number(audit.authoritativeEvidenceRows || 0),
+          syncRunsTotal: Number(audit.syncRunsTotal || 0),
+          preservedHistoricalRowsTotal: Number(audit.preservedHistoricalRowsTotal || 0),
+          historicalRecoveryAvailable: audit.historicalRecoveryAvailable === true
+        }
+      } catch {
+        return {
+          version: 0,
+          policy: '',
+          checkedAt: String(row?.updated_at || ''),
+          resourcesProcessedThisSync: 0,
+          incomingEvidenceRowsThisSync: 0,
+          preservedHistoricalRowsThisSync: 0,
+          authoritativeEvidenceRows: 0,
+          syncRunsTotal: 0,
+          preservedHistoricalRowsTotal: 0,
+          historicalRecoveryAvailable: false
+        }
+      }
+    })()
     const memorySearchRevision = this.getMemorySearchRevisionHealth()
     const entityEvidenceFts = this.getEntityEvidenceFtsHealth()
     const evidenceScopeIndexes = this.getEvidenceScopeIndexHealth()
@@ -5174,6 +5208,7 @@ export class PersonalMemoryStore {
       genericSearchEvidenceIdentity,
       structuredSearchIndex,
       taskSearchIndex,
+      resourceEvidenceArchive,
       entityEvidenceFts,
       evidenceScopeIndexes,
       memorySearchRevision,
@@ -7463,7 +7498,7 @@ export class PersonalMemoryStore {
     transaction()
   }
 
-  upsertResources(resources: any[]): void {
+  upsertResources(resources: any[], preserveExistingEvidence = false): void {
     if (!this.db || !resources.length) return
     const upsert = this.db.prepare(`
       INSERT INTO memory_resources(
@@ -7475,10 +7510,18 @@ export class PersonalMemoryStore {
         metadata_json=excluded.metadata_json,updated_at=excluded.updated_at
     `)
     const insertEvidence = this.db.prepare(`
-      INSERT OR IGNORE INTO search_document_evidence(
+      INSERT INTO search_document_evidence(
         document_id,source_id,message_id,session_id,timestamp,sender,excerpt
       ) VALUES(?,?,?,?,?,?,?)
+      ON CONFLICT(document_id,source_id,session_id,message_id) DO UPDATE SET
+        timestamp=MAX(search_document_evidence.timestamp,excluded.timestamp),
+        sender=CASE WHEN excluded.sender!='' THEN excluded.sender
+          ELSE search_document_evidence.sender END,
+        excerpt=CASE WHEN length(excluded.excerpt)>=length(search_document_evidence.excerpt)
+          THEN excluded.excerpt ELSE search_document_evidence.excerpt END
     `)
+    let incomingEvidenceRows = 0
+    let preservedHistoricalRows = 0
     for (const resource of resources) {
       const resourceId = String(resource.id)
       if (this.db.prepare('SELECT 1 FROM resource_suppressions WHERE resource_id=?').get(resourceId)) continue
@@ -7524,13 +7567,69 @@ export class PersonalMemoryStore {
       ].filter(Boolean).join('；')
       this.upsertSearchDocument(documentId, 'resource', resourceId, String(resource.title || '未命名资源'),
         searchText, { ...metadata, resourceType: resource.resourceType, url: resource.url || '', fileName: resource.fileName || '' }, now)
-      this.db.prepare('DELETE FROM search_document_evidence WHERE document_id=?').run(documentId)
+      const previousEvidenceCount = Number(this.db.prepare(`
+        SELECT COUNT(*) AS count FROM search_document_evidence WHERE document_id=?
+      `).get(documentId)?.count || 0)
+      if (!preserveExistingEvidence) {
+        this.db.prepare('DELETE FROM search_document_evidence WHERE document_id=?').run(documentId)
+      }
+      const incomingIdentities = new Set<string>()
       for (const item of resource.evidence || []) {
         if (!item.messageId) continue
-        insertEvidence.run(documentId, evidenceSourceId(item, metadata.sourceId),
-          String(item.messageId), String(item.sessionId || ''),
+        const sourceId = evidenceSourceId(item, metadata.sourceId)
+        const messageId = String(item.messageId)
+        const sessionId = String(item.sessionId || '')
+        const identity = JSON.stringify([sourceId, sessionId, messageId])
+        if (incomingIdentities.has(identity)) continue
+        incomingIdentities.add(identity)
+        incomingEvidenceRows += 1
+        insertEvidence.run(documentId, sourceId,
+          messageId, sessionId,
           Number(item.timestamp || 0), String(item.sender || ''), String(item.excerpt || '').slice(0, 2000))
       }
+      if (preserveExistingEvidence) {
+        const afterEvidenceCount = Number(this.db.prepare(`
+          SELECT COUNT(*) AS count FROM search_document_evidence WHERE document_id=?
+        `).get(documentId)?.count || 0)
+        preservedHistoricalRows += Math.max(
+          0,
+          afterEvidenceCount - incomingIdentities.size
+        )
+        if (!incomingIdentities.size) preservedHistoricalRows += Math.max(
+          0,
+          previousEvidenceCount - afterEvidenceCount
+        )
+      }
+    }
+    if (preserveExistingEvidence) {
+      const checkedAt = new Date().toISOString()
+      const previous = this.db.prepare(`
+        SELECT value FROM schema_meta WHERE key='resource_evidence_archive_integrity'
+      `).get() as any
+      let audit: any = {}
+      try { audit = JSON.parse(String(previous?.value || '{}')) } catch {}
+      const authoritativeEvidenceRows = Number(this.db.prepare(`
+        SELECT COUNT(*) AS count FROM search_document_evidence
+        WHERE document_id LIKE 'resource:%'
+      `).get()?.count || 0)
+      this.db.prepare(`
+        INSERT INTO schema_meta(key,value,updated_at)
+        VALUES('resource_evidence_archive_integrity',?,?)
+        ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_at=excluded.updated_at
+      `).run(JSON.stringify({
+        version: 1,
+        policy: 'connector_content_versions_append_only',
+        checkedAt,
+        resourcesProcessedThisSync: resources.length,
+        incomingEvidenceRowsThisSync: incomingEvidenceRows,
+        preservedHistoricalRowsThisSync: preservedHistoricalRows,
+        authoritativeEvidenceRows,
+        syncRunsTotal: Math.max(0, Number(audit.syncRunsTotal || 0)) + 1,
+        preservedHistoricalRowsTotal:
+          Math.max(0, Number(audit.preservedHistoricalRowsTotal || 0))
+          + preservedHistoricalRows,
+        historicalRecoveryAvailable: false
+      }), checkedAt)
     }
   }
 

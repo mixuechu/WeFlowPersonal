@@ -15509,6 +15509,87 @@ test('message resources remain idempotent, searchable and traceable to original 
   assert.equal(store.getMemoryStats().resources, 0)
 }))
 
+test('connector resources retain complete content-version evidence while snapshots still replace', () => withStore(store => {
+  const resource = {
+    id: 'local-document:versioned-resource',
+    resourceType: 'document',
+    title: '长期项目方案.md',
+    content: '第一版方案',
+    metadata: {
+      sourceId: 'documents',
+      contentHash: 'hash-v1',
+      sessionName: '项目资料'
+    },
+    evidence: [{
+      sourceId: 'documents',
+      sessionId: 'data-source:documents',
+      messageId: 'document-id:hash-v1',
+      timestamp: 1,
+      sender: '本机文档连接器',
+      excerpt: '第一版方案'
+    }]
+  }
+  store.upsertResources([resource], true)
+  store.upsertResources([{
+    ...resource,
+    content: '第二版方案',
+    metadata: { ...resource.metadata, contentHash: 'hash-v2' },
+    evidence: [{
+      sourceId: 'documents',
+      sessionId: 'data-source:documents',
+      messageId: 'document-id:hash-v2',
+      timestamp: 2,
+      sender: '',
+      excerpt: '第二版'
+    }]
+  }], true)
+  store.upsertResources([{
+    ...resource,
+    content: '第二版方案',
+    metadata: { ...resource.metadata, contentHash: 'hash-v2' },
+    evidence: [{
+      sourceId: 'documents',
+      sessionId: 'data-source:documents',
+      messageId: 'document-id:hash-v2',
+      timestamp: 3,
+      sender: '项目方案.md',
+      excerpt: '第二版方案（补全后的完整原文）'
+    }]
+  }], true)
+
+  const versions = store.getDocumentEvidence('resource', resource.id)
+  assert.deepEqual(versions.map(item => [
+    item.message_id, item.timestamp, item.sender, item.excerpt
+  ]), [
+    ['document-id:hash-v1', 1, '本机文档连接器', '第一版方案'],
+    ['document-id:hash-v2', 3, '项目方案.md', '第二版方案（补全后的完整原文）']
+  ])
+  const archive = store.getDiagnostics().resourceEvidenceArchive
+  assert.equal(archive.version, 1)
+  assert.equal(archive.authoritativeEvidenceRows, 2)
+  assert.equal(archive.syncRunsTotal, 3)
+  assert.equal(archive.preservedHistoricalRowsThisSync, 1)
+  assert.equal(archive.historicalRecoveryAvailable, false)
+
+  store.upsertResources([{
+    ...resource,
+    content: '普通快照替换',
+    evidence: [{
+      sourceId: 'wechat',
+      sessionId: 'snapshot-session',
+      messageId: 'snapshot-current',
+      timestamp: 4,
+      sender: '当前发送者',
+      excerpt: '当前快照'
+    }]
+  }])
+  assert.deepEqual(
+    store.getDocumentEvidence('resource', resource.id)
+      .map(item => item.message_id),
+    ['snapshot-current']
+  )
+}))
+
 test('resource archive pages stay bounded, revision-safe and hydrate only one dossier', () => withStore(store => {
   const resources = Array.from({ length: 125 }, (_, index) => ({
     id: `resource-archive-${String(index).padStart(3, '0')}`,

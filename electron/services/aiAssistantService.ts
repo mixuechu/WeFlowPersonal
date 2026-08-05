@@ -2691,7 +2691,7 @@ export class AiAssistantService {
                   excerpt: String(item.content || item.title).slice(0, 2000)
                 }]
               }
-            }))
+            }), true)
           },
           { limit: 10 }
         )
@@ -2834,7 +2834,7 @@ export class AiAssistantService {
                 }]
               }
             })
-            personalMemoryStore.upsertResources(resources)
+            personalMemoryStore.upsertResources(resources, true)
             personalMemoryStore.upsertEvents(events)
           },
           { limit: 100 }
@@ -2916,7 +2916,7 @@ export class AiAssistantService {
                   excerpt: String(item.content || item.title).slice(0, 2000)
                 }]
               }
-            }))
+            }), true)
           },
           { limit: 50 }
         )

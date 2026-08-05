@@ -7014,6 +7014,9 @@ function AiAssistantPage() {
                   {memoryDiagnostics.taskSearchIndex?.version
                     ? ` · 待办检索${memoryDiagnostics.taskSearchIndexHealthy ? '一致' : '异常'} / 自愈 ${Number(memoryDiagnostics.taskSearchIndex.repairedDerivedDocumentsTotal || 0).toLocaleString()}`
                     : ''}
+                  {memoryDiagnostics.resourceEvidenceArchive?.version
+                    ? ` · 资源版本原文 ${Number(memoryDiagnostics.resourceEvidenceArchive.authoritativeEvidenceRows || 0).toLocaleString()} 条 / 累计保留历史 ${Number(memoryDiagnostics.resourceEvidenceArchive.preservedHistoricalRowsTotal || 0).toLocaleString()} 条`
+                    : ''}
                 </small>
               </span>
             </div>
@@ -11565,6 +11568,23 @@ function AiAssistantPage() {
                   ? new Date(memoryDiagnostics.taskSearchIndex.checkedAt).toLocaleString('zh-CN')
                   : '未知'}</b></span>
               </div>
+            </div>}
+            {memoryDiagnostics.resourceEvidenceArchive?.version && <div className="assistant-recovery-audit healthy">
+              <header><Database size={15} /><span><b>本机资源版本原文档案</b>
+                <small>文档、日历和邮件以稳定资源 ID 更新当前正文，同时按“来源＋会话＋版本消息”在 SQLCipher 追加保留每次内容版本；显式删除与回收站清理仍会完整删除对应证据。</small>
+              </span></header>
+              <div className="assistant-recovery-current">
+                <span>权威版本原文 <b>{Number(memoryDiagnostics.resourceEvidenceArchive.authoritativeEvidenceRows || 0).toLocaleString()}</b></span>
+                <span>本轮保留旧版本 <b>{Number(memoryDiagnostics.resourceEvidenceArchive.preservedHistoricalRowsThisSync || 0).toLocaleString()}</b></span>
+                <span>累计保留旧版本 <b>{Number(memoryDiagnostics.resourceEvidenceArchive.preservedHistoricalRowsTotal || 0).toLocaleString()}</b></span>
+                <span>累计连接器同步 <b>{Number(memoryDiagnostics.resourceEvidenceArchive.syncRunsTotal || 0).toLocaleString()}</b></span>
+                <span>最近更新 <b>{memoryDiagnostics.resourceEvidenceArchive.checkedAt
+                  ? new Date(memoryDiagnostics.resourceEvidenceArchive.checkedAt).toLocaleString('zh-CN')
+                  : '未知'}</b></span>
+              </div>
+              {!memoryDiagnostics.resourceEvidenceArchive.historicalRecoveryAvailable && <small>
+                旧版本曾经已被旧应用覆盖且没有其他审计副本时无法反向恢复；从本版本开始持续保留。
+              </small>}
             </div>}
             {memoryDiagnostics.embeddings?.ann && <div className={`assistant-ann-audit ${memoryDiagnostics.embeddings.ann.active ? 'active' : 'exact'}`}>
               <div><Network size={15} /><span><b>本地语义检索 · {memoryDiagnostics.embeddings.ann.active ? 'ANN 多探针索引' : '精确向量扫描'}</b>
