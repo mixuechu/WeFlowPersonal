@@ -1650,6 +1650,7 @@ export interface ElectronAPI {
         status?: 'pending' | 'resolved' | 'all'
         kind?: string
         query?: string
+        reviewId?: string
         offset?: number
         limit?: number
         revision?: string

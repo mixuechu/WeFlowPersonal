@@ -918,6 +918,18 @@ test('resolved graph reviews leave encrypted state but remain paginated in SQLCi
       query: '待处理',
       limit: 2
     }).hasMore, true)
+    const exactReview = store.listReviewLedgerPage({
+      status: 'resolved',
+      reviewId: 'resolved-1777',
+      limit: 1
+    })
+    assert.equal(exactReview.total, 1)
+    assert.equal(exactReview.items[0]?.id, 'resolved-1777')
+    assert.deepEqual(exactReview.counts, { pending: 0, resolved: 1, all: 1 })
+    assert.equal(store.listReviewLedgerPage({
+      status: 'pending',
+      reviewId: 'resolved-1777'
+    }).total, 0)
     store.syncGraph({
       entities: [],
       relations: [],
@@ -6304,6 +6316,73 @@ test('project review counts include candidate relations from both directions', (
     entityId: 'review-project', status: 'candidate',
     limit: 1, offset: 1, revision: page.revision
   }).items.length, 1)
+}))
+
+test('entity relationship directory links deterministic pending reviews without copying payloads', () => withStore(store => {
+  const relation = {
+    id: 'directory-review-relation',
+    subjectId: 'directory-review-person',
+    predicate: '参与',
+    objectId: 'directory-review-project',
+    confidence: 0.8,
+    status: 'candidate',
+    evidence: evidence('directory-review-message', '人物参与项目')
+  }
+  const entities = [
+    { id: 'directory-review-person', type: 'person', canonicalName: '目录人物', trustStatus: 'confirmed' },
+    { id: 'directory-review-project', type: 'project', canonicalName: '目录项目', trustStatus: 'confirmed' }
+  ]
+  const reviews = [{
+    id: 'directory-review-older',
+    kind: 'relation',
+    relationId: relation.id,
+    title: '旧候选',
+    detail: '不要复制到目录',
+    confidence: 0.7,
+    status: 'pending',
+    createdAt: '2026-08-05T00:00:00.000Z'
+  }, {
+    id: 'directory-review-newer-b',
+    kind: 'relation',
+    relationId: relation.id,
+    title: '新候选乙',
+    detail: '不要复制到目录',
+    confidence: 0.8,
+    status: 'pending',
+    createdAt: '2026-08-06T00:00:00.000Z'
+  }, {
+    id: 'directory-review-newer-a',
+    kind: 'relation',
+    relationId: relation.id,
+    title: '新候选甲',
+    detail: '不要复制到目录',
+    confidence: 0.8,
+    status: 'pending',
+    createdAt: '2026-08-06T00:00:00.000Z'
+  }]
+  store.syncGraph({ entities, relations: [relation], reviewQueue: reviews } as any)
+  const page = store.listEntityRelationPage({ entityId: 'directory-review-person' })
+  assert.equal(page.items[0].pending_review_id, 'directory-review-newer-a')
+  assert.equal(page.items[0].pending_review_count, 3)
+  assert.equal('detail' in page.items[0], false)
+
+  store.syncGraph({
+    entities,
+    relations: [relation],
+    reviewQueue: reviews.map(review => ({
+      ...review,
+      status: 'confirmed',
+      resolvedAt: '2026-08-06T01:00:00.000Z'
+    }))
+  } as any)
+  const resolved = store.listEntityRelationPage({ entityId: 'directory-review-person' })
+  assert.equal(resolved.items[0].pending_review_id, null)
+  assert.equal(resolved.items[0].pending_review_count, 0)
+  assert.equal(store.listEntityRelationPage({
+    entityId: 'directory-review-person',
+    offset: 1,
+    revision: page.revision
+  }).stale, true)
 }))
 
 test('entity evidence separates current memory links from historical audit and preserves roles', () => withStore(store => {

@@ -6962,6 +6962,7 @@ export class PersonalMemoryStore {
     status?: 'pending' | 'resolved' | 'all'
     kind?: string
     query?: string
+    reviewId?: string
     offset?: number
     limit?: number
     revision?: string
@@ -6984,6 +6985,7 @@ export class PersonalMemoryStore {
       : 'pending'
     const kind = String(options?.kind || '').trim()
     const query = String(options?.query || '').trim().toLocaleLowerCase('zh-CN')
+    const reviewId = String(options?.reviewId || '').trim()
     const offset = Math.max(0, Math.min(100_000, Math.floor(Number(options?.offset) || 0)))
     const limit = Math.max(1, Math.min(100, Math.floor(Number(options?.limit) || 40)))
     const revision = this.getGraphReviewRevision()
@@ -6997,9 +6999,10 @@ export class PersonalMemoryStore {
     const scopeSql = `
       FROM review_queue
       WHERE (?='' OR kind=?)
+        AND (?='' OR id=?)
         AND (?='' OR instr(lower(title || char(0) || detail || char(0) || payload_json), ?) > 0)
     `
-    const scopeParams = [kind, kind, query, query]
+    const scopeParams = [kind, kind, reviewId, reviewId, query, query]
     const countRows = this.db.prepare(`
       SELECT CASE WHEN status='pending' THEN 'pending' ELSE 'resolved' END AS bucket, COUNT(*) AS count
       ${scopeSql}
@@ -10274,7 +10277,14 @@ export class PersonalMemoryStore {
       SELECT r.*,subject.canonical_name AS subject_name,object.canonical_name AS object_name,
         (SELECT COUNT(*) FROM evidence e WHERE e.relation_id=r.id) AS evidence_count,
         (SELECT GROUP_CONCAT(DISTINCT e.source_id) FROM evidence e
-          WHERE e.relation_id=r.id) AS source_ids
+          WHERE e.relation_id=r.id) AS source_ids,
+        (SELECT q.id FROM review_queue q
+          WHERE q.kind='relation' AND q.status='pending'
+            AND json_extract(q.payload_json,'$.relationId')=r.id
+          ORDER BY q.created_at DESC,q.id ASC LIMIT 1) AS pending_review_id,
+        (SELECT COUNT(*) FROM review_queue q
+          WHERE q.kind='relation' AND q.status='pending'
+            AND json_extract(q.payload_json,'$.relationId')=r.id) AS pending_review_count
       ${fromAndWhere}
       ORDER BY
         CASE WHEN r.status='confirmed' THEN 0 ELSE 1 END,

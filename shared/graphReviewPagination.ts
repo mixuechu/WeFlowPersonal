@@ -4,6 +4,7 @@ export type GraphReviewPageOptions = {
   status: ReviewStatusFilter
   kind?: string
   query?: string
+  reviewId?: string
   offset?: number
   limit?: number
   revision?: string
@@ -24,14 +25,16 @@ function reviewMatchesQuery(review: any, query: string): boolean {
 
 export function filterGraphReviews(
   reviews: any[],
-  options: Pick<GraphReviewPageOptions, 'status' | 'kind' | 'query'>
+  options: Pick<GraphReviewPageOptions, 'status' | 'kind' | 'query' | 'reviewId'>
 ): any[] {
   const query = String(options.query || '').trim().toLocaleLowerCase('zh-CN')
+  const reviewId = String(options.reviewId || '').trim()
   return [...(reviews || [])]
     .filter(review =>
       (options.status === 'all' ||
         (options.status === 'pending' ? review.status === 'pending' : review.status !== 'pending')) &&
       (!options.kind || review.kind === options.kind) &&
+      (!reviewId || review.id === reviewId) &&
       reviewMatchesQuery(review, query))
     .sort((left, right) => {
       const timeOrder = String(right.resolvedAt || right.createdAt || '')
@@ -51,8 +54,11 @@ export function paginateGraphReviews(reviews: any[], options: GraphReviewPageOpt
   const offset = Math.max(0, Math.min(100_000, Math.floor(Number(options.offset) || 0)))
   const limit = Math.max(1, Math.min(100, Math.floor(Number(options.limit) || 40)))
   const query = String(options.query || '').trim().toLocaleLowerCase('zh-CN')
+  const reviewId = String(options.reviewId || '').trim()
   const matchingScope = (reviews || []).filter(review =>
-    (!options.kind || review.kind === options.kind) && reviewMatchesQuery(review, query))
+    (!options.kind || review.kind === options.kind) &&
+    (!reviewId || review.id === reviewId) &&
+    reviewMatchesQuery(review, query))
   const counts = {
     pending: matchingScope.filter(review => review.status === 'pending').length,
     resolved: matchingScope.filter(review => review.status !== 'pending').length,

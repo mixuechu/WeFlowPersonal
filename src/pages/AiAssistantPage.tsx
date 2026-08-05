@@ -1050,6 +1050,7 @@ function AiAssistantPage() {
   const [reviewStatusFilter, setReviewStatusFilter] = useState<ReviewStatusFilter>('pending')
   const [reviewKindFilter, setReviewKindFilter] = useState('')
   const [reviewQuery, setReviewQuery] = useState('')
+  const [focusedReviewId, setFocusedReviewId] = useState('')
   const [reviewPage, setReviewPage] = useState<{
     items: any[]
     total: number
@@ -2258,6 +2259,7 @@ function AiAssistantPage() {
         status: reviewStatusFilter,
         kind: reviewKindFilter || undefined,
         query: reviewQuery.trim() || undefined,
+        reviewId: focusedReviewId || undefined,
         offset: 0,
         limit: 40
       }).then(page => {
@@ -2285,7 +2287,15 @@ function AiAssistantPage() {
       window.clearTimeout(timer)
       if (reviewPageGate.current.isCurrent(request)) reviewPageGate.current.invalidate()
     }
-  }, [reviewStatusFilter, reviewKindFilter, reviewQuery, reviewRefreshKey, dashboard?.graphReviewRevision])
+  }, [reviewStatusFilter, reviewKindFilter, reviewQuery, focusedReviewId, reviewRefreshKey, dashboard?.graphReviewRevision])
+
+  useEffect(() => {
+    if (!focusedReviewId || reviewPage.status !== 'ready') return
+    const target = document.getElementById(`graph-review-${focusedReviewId}`)
+    if (!target) return
+    target.scrollIntoView({ behavior: 'smooth', block: 'center' })
+    target.focus({ preventScroll: true })
+  }, [focusedReviewId, reviewPage.status, reviewPage.items])
 
   useEffect(() => {
     const request = mergeArchiveGate.current.begin()
@@ -3199,6 +3209,15 @@ function AiAssistantPage() {
         target.searchRevision
       )
     }
+  }
+  const openAuthoritativeRelationReview = (reviewId: string) => {
+    const id = String(reviewId || '').trim()
+    if (!id) return
+    closeEntityDossier(false)
+    setReviewStatusFilter('pending')
+    setReviewKindFilter('relation')
+    setReviewQuery('')
+    setFocusedReviewId(id)
   }
   const openEntityFromProjectDossier = (entityId: string) => {
     const id = String(entityId || '').trim()
@@ -4951,6 +4970,7 @@ function AiAssistantPage() {
         status: reviewStatusFilter,
         kind: reviewKindFilter || undefined,
         query: reviewQuery.trim() || undefined,
+        reviewId: focusedReviewId || undefined,
         offset: reviewPage.items.length,
         limit: 40,
         revision: reviewPage.revision
@@ -10019,11 +10039,11 @@ function AiAssistantPage() {
             </small>}
             <div className="assistant-review-filters">
               <div>
-                <button className={reviewStatusFilter === 'pending' ? 'active' : ''} onClick={() => setReviewStatusFilter('pending')}>待处理 {pendingReviewCount}</button>
-                <button className={reviewStatusFilter === 'resolved' ? 'active' : ''} onClick={() => setReviewStatusFilter('resolved')}>已处理 {resolvedReviewCount}</button>
-                <button className={reviewStatusFilter === 'all' ? 'active' : ''} onClick={() => setReviewStatusFilter('all')}>全部 {reviewPage.counts.all}</button>
+                <button className={reviewStatusFilter === 'pending' ? 'active' : ''} onClick={() => { setFocusedReviewId(''); setReviewStatusFilter('pending') }}>待处理 {pendingReviewCount}</button>
+                <button className={reviewStatusFilter === 'resolved' ? 'active' : ''} onClick={() => { setFocusedReviewId(''); setReviewStatusFilter('resolved') }}>已处理 {resolvedReviewCount}</button>
+                <button className={reviewStatusFilter === 'all' ? 'active' : ''} onClick={() => { setFocusedReviewId(''); setReviewStatusFilter('all') }}>全部 {reviewPage.counts.all}</button>
               </div>
-              <select value={reviewKindFilter} onChange={event => setReviewKindFilter(event.target.value)}>
+              <select value={reviewKindFilter} onChange={event => { setFocusedReviewId(''); setReviewKindFilter(event.target.value) }}>
                 <option value="">全部类型</option>
                 <option value="entity_creation">实体存在与名称</option>
                 <option value="entity_summary">实体摘要</option>
@@ -10031,9 +10051,14 @@ function AiAssistantPage() {
                 <option value="relation">有向关系</option>
                 <option value="possible_duplicate">身份合并</option>
               </select>
-              <input value={reviewQuery} placeholder="搜索名称、原文、建议或处理原因" onChange={event => setReviewQuery(event.target.value)} />
+              <input value={reviewQuery} placeholder="搜索名称、原文、建议或处理原因" onChange={event => { setFocusedReviewId(''); setReviewQuery(event.target.value) }} />
             </div>
-            {visibleReviews.map((review: any) => <article className={`assistant-review-item ${review.status !== 'pending' ? 'resolved' : ''}`} key={review.id}>
+            {focusedReviewId && <div className="assistant-review-note">
+              正在定位人物档案中的权威关系候选。
+              <button onClick={() => setFocusedReviewId('')}>返回完整审阅队列</button>
+            </div>}
+            {visibleReviews.map((review: any) => <article id={`graph-review-${review.id}`} tabIndex={-1}
+              className={`assistant-review-item ${review.status !== 'pending' ? 'resolved' : ''}`} key={review.id}>
               {(() => {
                 const isPending = review.status === 'pending'
                 const relation = review.kind === 'relation' ? review.relation : null
@@ -11059,7 +11084,17 @@ function AiAssistantPage() {
                           'relation', relation.id,
                           `${relation.subject_name || relation.subjectId} · ${relation.predicate} · ${relation.object_name || relation.objectId}`
                         )} /></div>
-                    <button className="assistant-dossier-task-action danger" onClick={() => void permanentlyDeleteMemoryItem('relation', relation)}>永久删除关系</button>
+                    <div className="assistant-memory-actions">
+                      {relation.status === 'candidate' && relation.pendingReviewId && <button className="primary"
+                        onClick={() => openAuthoritativeRelationReview(relation.pendingReviewId)}>
+                        审阅关系方向
+                        {relation.pendingReviewCount > 1 ? `（${relation.pendingReviewCount} 个候选）` : ''}
+                      </button>}
+                      {relation.status === 'candidate' && !relation.pendingReviewId && <small>
+                        当前没有可处理的权威候选；关系可能已在其他窗口处理，请刷新档案。
+                      </small>}
+                      <button className="danger" onClick={() => void permanentlyDeleteMemoryItem('relation', relation)}>永久删除关系</button>
+                    </div>
                   </article>
                 })}
                 {entityDossierPages.relations?.status === 'ready' && !dossierRelations.length && <em>当前范围内没有关系</em>}

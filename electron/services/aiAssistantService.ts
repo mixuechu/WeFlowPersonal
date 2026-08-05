@@ -4696,6 +4696,7 @@ export class AiAssistantService {
       status,
       kind: String(options?.kind || '').trim(),
       query: String(options?.query || '').trim(),
+      reviewId: String(options?.reviewId || '').trim(),
       offset: options?.offset,
       limit: options?.limit,
       revision: String(options?.revision || '')
@@ -5251,6 +5252,8 @@ export class AiAssistantService {
         ...relation,
         subjectId: relation.subject_id,
         objectId: relation.object_id,
+        pendingReviewId: relation.pending_review_id || undefined,
+        pendingReviewCount: Number(relation.pending_review_count || 0),
         createdAt: relation.created_at,
         updatedAt: relation.updated_at
       }))
