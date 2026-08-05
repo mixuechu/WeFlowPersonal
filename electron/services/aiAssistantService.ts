@@ -54,6 +54,7 @@ import {
   MEMORY_SEARCH_FEEDBACK_VERSION,
   type MemorySearchFeedbackAction
 } from './memorySearchFeedback.ts'
+import { buildMemorySearchFeedbackMutationToken } from './memorySearchFeedbackMutationPolicy.ts'
 import {
   assertMemoryCitationReviewToken,
   buildMemoryCitationReviewIdentity,
@@ -7397,21 +7398,89 @@ export class AiAssistantService {
     return applyMemorySearchFeedback(items, decisions)
   }
 
-  updateMemorySearchFeedback(input: {
+  private memorySearchFeedbackMutationToken(
+    query: string,
+    options: MemorySearchOptions,
+    document: any
+  ): string {
+    const context = buildMemorySearchFeedbackContext(query, options)
+    const currentAction = personalMemoryStore.listMemorySearchFeedback(
+      context.queryFingerprint,
+      context.scopeFingerprint,
+      500
+    ).find(entry => String(entry.documentId || '') === String(document?.id || ''))?.action || ''
+    return buildMemorySearchFeedbackMutationToken({
+      queryFingerprint: context.queryFingerprint,
+      scopeFingerprint: context.scopeFingerprint,
+      documentId: String(document?.id || ''),
+      documentType: String(document?.document_type || ''),
+      sourceId: String(document?.source_id || ''),
+      contentHash: String(document?.content_hash || ''),
+      evidenceAuthorityRevision: Number(document?.evidenceAuthorityRevision || 0),
+      currentAction: String(currentAction || '')
+    })
+  }
+
+  async updateMemorySearchFeedback(input: {
     query?: string
     options?: MemorySearchOptions
     documentId?: string
     action?: MemorySearchFeedbackAction
-  }): any {
+    mutationToken?: string
+  }): Promise<any> {
     const query = String(input?.query || '')
     const options = input?.options || {}
+    const mutationToken = String(input?.mutationToken || '').trim()
+    const documentId = String(input?.documentId || '').trim()
+    if (!documentId) throw new Error('缺少检索记忆 ID')
+    const trustedEntity = options.entityId
+      ? this.state.graph.entities.find(entity =>
+          entity.id === options.entityId && isTrustedEntity(entity))
+      : null
+    if (options.entityId && !trustedEntity) {
+      throw new Error('反馈对应的实体范围已经变化或不再可信，请刷新后重试')
+    }
+    if (options.sessionId) {
+      const directory = await this.buildConversationSourceDirectory({
+        query: options.sessionId,
+        limit: 10,
+        offset: 0
+      })
+      if (!directory.items.some((item: any) => item.sessionId === options.sessionId)) {
+        throw new Error('反馈对应的会话范围已经变化或不再存在，请刷新后重试')
+      }
+    }
+    const scopedOptions: MemorySearchOptions = trustedEntity ? {
+      ...options,
+      entityTerms: [
+        trustedEntity.canonicalName,
+        ...(trustedEntity.aliases || []),
+        ...(trustedEntity.accountIds || []),
+        ...(trustedEntity.externalIdentities || []).flatMap(identity => [
+          identity.accountId,
+          identity.displayName
+        ])
+      ]
+    } : options
+    const allowedIds = personalMemoryStore.listScopedSearchDocumentIds(scopedOptions)
+    const document = personalMemoryStore.getSearchDocumentById(documentId, scopedOptions)
+    if (!document || (allowedIds !== null && !allowedIds.has(documentId))) {
+      throw new Error('这条记忆已经删除或不再属于当前检索范围，请刷新后重试')
+    }
+    if (!mutationToken || mutationToken !== this.memorySearchFeedbackMutationToken(
+      query,
+      scopedOptions,
+      document
+    )) {
+      throw new Error('这条检索结果或当前反馈状态已经变化，请刷新后重新提交')
+    }
     const context = buildMemorySearchFeedbackContext(query, options)
     const result = personalMemoryStore.recordMemorySearchFeedback({
       queryFingerprint: context.queryFingerprint,
       scopeFingerprint: context.scopeFingerprint,
       queryText: context.query,
       scopeJson: context.scopeJson,
-      documentId: String(input?.documentId || ''),
+      documentId,
       action: input?.action as MemorySearchFeedbackAction
     })
     return {
@@ -7421,13 +7490,32 @@ export class AiAssistantService {
         context.queryFingerprint,
         context.scopeFingerprint,
         500
+      ),
+      mutationToken: this.memorySearchFeedbackMutationToken(
+        query,
+        scopedOptions,
+        document
       )
     }
   }
 
   getMemorySearchFeedbackArchive(options?: any): any {
+    const archive = personalMemoryStore.getMemorySearchFeedbackArchive(options || {})
     return {
-      ...personalMemoryStore.getMemorySearchFeedbackArchive(options || {}),
+      ...archive,
+      items: (archive.items || []).map((item: any) => {
+        const scope = item.scope && typeof item.scope === 'object' ? item.scope : {}
+        const document = personalMemoryStore.getSearchDocumentById(
+          String(item.documentId || ''),
+          scope
+        )
+        return {
+          ...item,
+          feedbackMutationToken: document
+            ? this.memorySearchFeedbackMutationToken(item.queryText, scope, document)
+            : ''
+        }
+      }),
       version: MEMORY_SEARCH_FEEDBACK_VERSION
     }
   }
@@ -7625,7 +7713,14 @@ export class AiAssistantService {
         revision: completedRevision, stale: true
       }
     }
-    const presentedResults = presentMemorySearchResults(page.results)
+    const presentedResults = presentMemorySearchResults(page.results).map(result => ({
+      ...result,
+      feedbackMutationToken: this.memorySearchFeedbackMutationToken(
+        text,
+        scopedOptions,
+        result
+      )
+    }))
     return {
       ...page,
       results: presentedResults,
@@ -8213,7 +8308,10 @@ export class AiAssistantService {
           const canonicalFeedbackContext = context ? {
             query: context.query,
             options: feedbackOptions,
-            version: MEMORY_SEARCH_FEEDBACK_VERSION
+            version: MEMORY_SEARCH_FEEDBACK_VERSION,
+            feedbackMutationToken: document
+              ? this.memorySearchFeedbackMutationToken(context.query, feedbackOptions, document)
+              : ''
           } : undefined
           if (!document) return {
             ...citation,

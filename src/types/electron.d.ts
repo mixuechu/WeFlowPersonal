@@ -2019,6 +2019,7 @@ export interface ElectronAPI {
         options?: any
         documentId: string
         action: 'helpful' | 'not_relevant' | 'cleared'
+        mutationToken: string
       }) => Promise<any>
       getMemorySearchFeedbackArchive: (options?: {
         id?: number

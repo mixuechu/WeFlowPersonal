@@ -5296,7 +5296,7 @@ function AiAssistantPage() {
   const updateMemorySearchFeedback = async (
     documentId: string,
     action: 'helpful' | 'not_relevant' | 'cleared',
-    context?: { query?: string; options?: any }
+    context?: { query?: string; options?: any; feedbackMutationToken?: string }
   ) => {
     const query = context?.query ?? memoryQuery.trim()
     const options = context?.options ?? memorySearchOptions
@@ -5306,13 +5306,23 @@ function AiAssistantPage() {
     setMemorySearchFeedbackSaving(current =>
       setKeyedActionState(current, operationKey, action))
     try {
-      await window.electronAPI.aiAssistant.updateMemorySearchFeedback({
+      const feedbackResult = await window.electronAPI.aiAssistant.updateMemorySearchFeedback({
         query,
         options,
         documentId,
-        action
+        action,
+        mutationToken: context?.feedbackMutationToken || ''
       })
       if (!memorySearchFeedbackGates.current.isCurrent(operationKey, request)) return
+      setMemoryResults(current => current.map((result: any) =>
+        result.id === documentId
+          ? {
+              ...result,
+              feedbackMutationToken: feedbackResult.mutationToken,
+              relevance_feedback: action === 'cleared' ? '' : action
+            }
+          : result
+      ))
       if (context) {
         const nextFeedback = action === 'cleared' ? '' : action
         setMemoryAnswer((current: any) => current ? {
@@ -5324,7 +5334,14 @@ function AiAssistantPage() {
               citation.feedbackContext?.query,
               citation.feedbackContext?.options
             ) === operationKey
-              ? { ...citation, relevanceFeedback: nextFeedback }
+              ? {
+                  ...citation,
+                  relevanceFeedback: nextFeedback,
+                  feedbackContext: {
+                    ...citation.feedbackContext,
+                    feedbackMutationToken: feedbackResult.mutationToken
+                  }
+                }
               : citation)
         } : current)
         const targetConversationId = memoryConversationId
@@ -5345,6 +5362,10 @@ function AiAssistantPage() {
     } catch (error: any) {
       if (memorySearchFeedbackGates.current.isCurrent(operationKey, request)) {
         setMessage(error?.message || String(error))
+        if (String(error?.message || error).includes('刷新后')) {
+          setMemorySearchRefreshKey(value => value + 1)
+          setMemoryFeedbackArchiveRefreshKey(value => value + 1)
+        }
       }
     } finally {
       if (memorySearchFeedbackGates.current.isCurrent(operationKey, request)) {
@@ -7692,18 +7713,24 @@ function AiAssistantPage() {
                 <button
                   className={result.relevance_feedback === 'helpful' ? 'active' : ''}
                   disabled={Boolean(feedbackSavingAction)}
-                  onClick={() => void updateMemorySearchFeedback(result.id, 'helpful')}>
+                  onClick={() => void updateMemorySearchFeedback(result.id, 'helpful', {
+                    feedbackMutationToken: result.feedbackMutationToken
+                  })}>
                   {feedbackSavingAction === 'helpful' ? '记录中…' : '有用'}
                 </button>
                 <button
                   className={result.relevance_feedback === 'not_relevant' ? 'active' : ''}
                   disabled={Boolean(feedbackSavingAction)}
-                  onClick={() => void updateMemorySearchFeedback(result.id, 'not_relevant')}>
+                  onClick={() => void updateMemorySearchFeedback(result.id, 'not_relevant', {
+                    feedbackMutationToken: result.feedbackMutationToken
+                  })}>
                   {feedbackSavingAction === 'not_relevant' ? '记录中…' : '与本次检索无关'}
                 </button>
                 {result.relevance_feedback && <button
                   disabled={Boolean(feedbackSavingAction)}
-                  onClick={() => void updateMemorySearchFeedback(result.id, 'cleared')}>撤销反馈</button>}
+                  onClick={() => void updateMemorySearchFeedback(result.id, 'cleared', {
+                    feedbackMutationToken: result.feedbackMutationToken
+                  })}>撤销反馈</button>}
                 {result.relevance_feedback && <small>
                   已按你的反馈{result.relevance_feedback === 'helpful' ? '保守提升' : '保守降低'}本查询排序
                 </small>}
@@ -7799,7 +7826,11 @@ function AiAssistantPage() {
                   const actionLabel = item.action === 'helpful' ? '设为有用'
                     : item.action === 'not_relevant' ? '设为无关'
                       : '撤销反馈'
-                  const feedbackContext = { query: item.queryText, options: scope }
+                  const feedbackContext = {
+                    query: item.queryText,
+                    options: scope,
+                    feedbackMutationToken: item.feedbackMutationToken
+                  }
                   const feedbackSavingAction =
                     memoryFeedbackSavingAction(item.documentId, feedbackContext)
                   return <article key={item.id}>
@@ -7812,16 +7843,19 @@ function AiAssistantPage() {
                     <strong>{item.documentTitle || item.documentId}</strong>
                     <p>查询：“{item.queryText || '范围浏览'}”</p>
                     <small>{scopeLabels.length ? scopeLabels.join(' · ') : '全部范围'} · {item.documentType || '记忆'}</small>
+                    {!item.feedbackMutationToken && <small>
+                      原记忆已经不可用；保留反馈审计，但不能重新应用或撤销为当前偏好。
+                    </small>}
                     <div>
                       {item.isCurrent && item.action !== 'cleared' && <button
-                        disabled={Boolean(feedbackSavingAction)}
+                        disabled={Boolean(feedbackSavingAction) || !item.feedbackMutationToken}
                         onClick={() => void updateMemorySearchFeedback(
                           item.documentId,
                           'cleared',
                           feedbackContext
                         )}>{feedbackSavingAction === 'cleared' ? '正在撤销…' : '撤销当前反馈'}</button>}
                       {!item.isCurrent && item.action !== 'cleared' && <button
-                        disabled={Boolean(feedbackSavingAction)}
+                        disabled={Boolean(feedbackSavingAction) || !item.feedbackMutationToken}
                         onClick={() => void updateMemorySearchFeedback(
                           item.documentId,
                           item.action,
