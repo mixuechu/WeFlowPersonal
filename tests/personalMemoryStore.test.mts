@@ -2531,6 +2531,35 @@ test('structured search dossiers bind the exact type, id and current search revi
     '主持人'
   )
   const database = (store as any).db
+  const insertMemoryCorrection = database.prepare(`
+    INSERT INTO memory_corrections(
+      item_kind,item_id,before_json,after_json,created_at
+    ) VALUES(?,?,?,?,?)
+  `)
+  for (let index = 0; index < 65; index += 1) {
+    insertMemoryCorrection.run(
+      'claim',
+      'dossier-claim',
+      JSON.stringify({ predicate: '所在城市', object_value: `旧值 ${index}` }),
+      JSON.stringify({ predicate: '所在城市', object_value: `新值 ${index}` }),
+      `2026-08-04T10:${String(index % 60).padStart(2, '0')}:00.000Z`
+    )
+  }
+  const claimWithAudit = store.getCurrentStructuredMemoryDossier(
+    'claim',
+    'dossier-claim'
+  )
+  assert.equal(claimWithAudit.item.auditPage.total, 65)
+  assert.equal(claimWithAudit.item.auditPage.items.length, 40)
+  assert.equal(claimWithAudit.item.auditPage.hasMore, true)
+  const claimAuditLast = store.listMemoryItemAuditPage({
+    kind: 'claim',
+    itemId: 'dossier-claim',
+    offset: 40,
+    revision: claimWithAudit.item.auditPage.revision
+  })
+  assert.equal(claimAuditLast.items.length, 25)
+  assert.equal(claimAuditLast.hasMore, false)
   const insertHistory = database.prepare(`
     INSERT INTO relation_history(
       relation_id,subject_id,predicate,object_id,status,confidence,
@@ -2653,6 +2682,19 @@ test('structured search dossiers bind the exact type, id and current search revi
     expectedSearchRevision: revision,
     offset: 40,
     revision: dossierWithPages.item.historyPage.revision
+  }).stale, true)
+  insertMemoryCorrection.run(
+    'claim',
+    'dossier-claim',
+    '{}',
+    JSON.stringify({ predicate: '所在城市', object_value: '并发更新' }),
+    '2026-08-04T13:01:00.000Z'
+  )
+  assert.equal(store.listMemoryItemAuditPage({
+    kind: 'claim',
+    itemId: 'dossier-claim',
+    offset: 40,
+    revision: claimWithAudit.item.auditPage.revision
   }).stale, true)
   assert.equal(store.getStructuredMemoryDossier('event', 'dossier-claim', revision), null)
   assert.equal(store.getStructuredMemoryDossier('claim', 'dossier-claim', '' as any).stale, true)

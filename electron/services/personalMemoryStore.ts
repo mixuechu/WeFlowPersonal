@@ -7928,6 +7928,15 @@ export class PersonalMemoryStore {
       }
     }
     if (!item) return null
+    if (kind === 'claim' || kind === 'event') {
+      const auditPage = this.listMemoryItemAuditPage({
+        kind,
+        itemId: sourceId,
+        revision: structuredRevision
+      })
+      if (auditPage.stale) return stale()
+      item = { ...item, auditPage }
+    }
     const evidence = this.getDocumentEvidencePayload(kind, sourceId)
     const completedRevision = this.getMemorySearchRevision()
     const completedStructuredRevision = this.getStructuredMemoryRevision()
@@ -9337,7 +9346,7 @@ export class PersonalMemoryStore {
     const revision = this.getTaskArchiveRevision()
     const offset = Math.max(0, Math.min(1_000_000, Math.floor(Number(options.offset) || 0)))
     const expectedRevision = String(options.revision || '').trim()
-    if (offset > 0 && expectedRevision !== revision) {
+    if (expectedRevision && expectedRevision !== revision) {
       return { items: [], total: 0, hasMore: false, revision, stale: true }
     }
     const conditions = [`classification='mine'`]

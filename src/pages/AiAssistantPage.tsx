@@ -3046,6 +3046,25 @@ function AiAssistantPage() {
       }
     }
   }
+  const seedMemoryItemAuditFromDossier = (
+    kind: 'claim' | 'event',
+    itemId: string,
+    auditPage: any
+  ) => {
+    const key = `${kind}:${itemId}`
+    delete memoryItemAuditRequests.current[key]
+    setMemoryItemAuditLoading(existing => setKeyedLoadingState(existing, key, false))
+    setMemoryItemAudits(existing => setBoundedAuditCache(existing, key, {
+      ...(auditPage || {
+        items: [],
+        total: 0,
+        hasMore: false,
+        revision: '',
+        stale: false
+      }),
+      status: 'ready'
+    }))
+  }
   const loadMoreResources = async () => {
     if (resourceLoadingMore || !resourceArchive.hasMore) return
     const request = resourceArchiveGate.current.begin()
@@ -3176,7 +3195,9 @@ function AiAssistantPage() {
         return
       }
       setStructuredMemoryDossier({ ...result, status: 'ready' })
-      if (kind !== 'relation') void loadMemoryItemAudit(kind, id)
+      if (kind !== 'relation') {
+        seedMemoryItemAuditFromDossier(kind, id, result.item?.auditPage)
+      }
     } catch (error: any) {
       if (!structuredMemoryDossierGate.current.isCurrent(request)) return
       setStructuredMemoryDossier({
@@ -3227,7 +3248,9 @@ function AiAssistantPage() {
         origin: 'entity_dossier',
         status: 'ready'
       })
-      if (kind !== 'relation') void loadMemoryItemAudit(kind, id)
+      if (kind !== 'relation') {
+        seedMemoryItemAuditFromDossier(kind, id, result.item?.auditPage)
+      }
     } catch (error: any) {
       if (!structuredMemoryDossierGate.current.isCurrent(request)) return
       setStructuredMemoryDossier({
