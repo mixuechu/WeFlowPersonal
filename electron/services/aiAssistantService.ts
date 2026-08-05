@@ -8674,13 +8674,23 @@ export class AiAssistantService {
       personalMemoryStore.getStructuredMemoryRevision()
     )
     const requestedSubjectId = String(input?.subjectId || '').trim()
+    const requestedObjectEntityId = String(input?.objectEntityId || '').trim()
+    if (requestedObjectEntityId && !requestedSubjectId) {
+      throw new Error('选择事实对象实体时必须同时选择可信事实主体')
+    }
     if (requestedSubjectId) {
-      const selected = resolveTrustedEntitySelection(this.state.graph.entities, {
-        entityId: requestedSubjectId,
-        expectedRevision: input?.entityDirectoryRevision
-      })
+      const selected = requestedObjectEntityId
+        ? resolveTrustedEntityPairSelection(this.state.graph.entities, {
+            fromId: requestedSubjectId,
+            toId: requestedObjectEntityId,
+            expectedRevision: input?.entityDirectoryRevision
+          })
+        : resolveTrustedEntitySelection(this.state.graph.entities, {
+            entityId: requestedSubjectId,
+            expectedRevision: input?.entityDirectoryRevision
+          })
       if (selected.stale) {
-        throw new Error('可信实体目录在你选择事实主体后发生了变化，请重新选择')
+        throw new Error('可信实体目录在你选择事实主体或对象后发生了变化，请重新选择')
       }
     } else {
       this.assertStructuredEntityTrust('claim', id)
@@ -8705,6 +8715,10 @@ export class AiAssistantService {
       ? this.state.graph.entities.find(entity =>
         entity.id === claim.subject_id && isTrustedEntity(entity))
       : null
+    const object = claim?.object_entity_id
+      ? this.state.graph.entities.find(entity =>
+        entity.id === claim.object_entity_id && isTrustedEntity(entity))
+      : null
     const completedRevision = personalMemoryStore.getStructuredMemoryRevision()
     if (completedRevision !== revision) {
       throw new Error('事实与事件档案在读取期间发生了变化，请重新打开')
@@ -8718,6 +8732,12 @@ export class AiAssistantService {
         type: subject.type,
         canonicalName: subject.canonicalName,
         trustStatus: subject.trustStatus
+      } : null,
+      objectEntity: object ? {
+        id: object.id,
+        type: object.type,
+        canonicalName: object.canonicalName,
+        trustStatus: object.trustStatus
       } : null
     } : null
   }

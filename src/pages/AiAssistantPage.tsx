@@ -261,7 +261,9 @@ function schedulerCatchupResultLabel(value: string): string {
 
 function memoryAuditSnapshotText(kind: 'claim' | 'event', value: any): string {
   if (kind === 'claim') {
-    const object = value?.value || (value?.objectEntityId ? `实体 ${value.objectEntityId}` : '空值')
+    const object = value?.objectEntityId
+      ? `${value?.objectEntityName || '未知实体'} [${value.objectEntityId}]`
+      : value?.value || '空值'
     const subject = value?.subjectName || value?.subjectId || '未知主体'
     const subjectIdentity = value?.subjectId ? ` [${value.subjectId}]` : ''
     const validity = value?.validFrom || value?.validTo
@@ -5113,13 +5115,17 @@ function AiAssistantPage() {
   const saveClaimCorrection = async () => {
     if (!editingClaim?.id || !editingClaim.subjectId ||
       !String(editingClaim.predicate || '').trim() ||
-      !String(editingClaim.value || '').trim()) return
+      (editingClaim.valueMode === 'entity'
+        ? !editingClaim.objectEntityId
+        : !String(editingClaim.value || '').trim())) return
     const correctedClaimId = editingClaim.id
     try {
       await window.electronAPI.aiAssistant.correctClaim(editingClaim.id, {
         value: editingClaim.value,
         predicate: editingClaim.predicate,
         subjectId: editingClaim.subjectId,
+        objectEntityId: editingClaim.valueMode === 'entity'
+          ? editingClaim.objectEntityId : undefined,
         entityDirectoryRevision: editingClaim.directoryRevision,
         polarity: editingClaim.polarity,
         valueType: editingClaim.valueType,
@@ -6267,7 +6273,11 @@ function AiAssistantPage() {
     }
     setEditingClaim({
       id: claim.id,
-      value: claim.object_entity_name || claim.object_value || '',
+      value: claim.object_value || '',
+      valueMode: claim.object_entity_id ? 'entity' : 'scalar',
+      originalObjectName: claim.object_entity_name || claim.object_entity_id || '',
+      objectEntityId: claim.objectEntity?.id || '',
+      objectEntity: claim.objectEntity || null,
       predicate: claim.predicate || citation.title || '',
       polarity: claim.polarity === 'negative' ? 'negative' : 'positive',
       valueType: ['number', 'date', 'boolean'].includes(claim.value_type)
@@ -11890,13 +11900,61 @@ function AiAssistantPage() {
                 ...current,
                 predicate: event.target.value
               }))} /></label>
-            <label><span>正确的事实值</span><input autoFocus
-              value={editingClaim.value || ''}
-              maxLength={1000}
+            <label><span>事实值形态</span><select
+              value={editingClaim.valueMode || 'scalar'}
               onChange={event => setEditingClaim((current: any) => ({
                 ...current,
-                value: event.target.value
-              }))} /></label>
+                valueMode: event.target.value,
+                objectEntityId: '',
+                objectEntity: null
+              }))}>
+              <option value="entity">可信实体（保留稳定 ID，可参与图搜索）</option>
+              <option value="scalar">普通值（文本、数值、日期或布尔）</option>
+            </select></label>
+            {editingClaim.valueMode === 'entity'
+              ? <label><span>正确的事实对象</span>
+                  <TrustedEntityPicker
+                    value={editingClaim.objectEntityId || ''}
+                    selected={editingClaim.objectEntity}
+                    placeholder="按姓名、备注、账号或 ID 搜索可信实体"
+                    ariaLabel="回答引用事实对象"
+                    onSelect={entity => setEditingClaim((current: any) => ({
+                      ...current,
+                      objectEntityId: entity.id,
+                      objectEntity: entity,
+                      directoryRevision: entity.directoryRevision
+                    }))}
+                    onClear={() => setEditingClaim((current: any) => ({
+                      ...current,
+                      objectEntityId: '',
+                      objectEntity: null
+                    }))}
+                    onError={error => setMessage(error)} />
+                  {!editingClaim.objectEntity && <small>
+                    原对象“{editingClaim.originalObjectName || '未知'}”当前不在可信实体目录中；
+                    请选择正确实体，或切换为普通值。
+                  </small>}
+                </label>
+              : <>
+                  <label><span>正确的事实值</span><input autoFocus
+                    value={editingClaim.value || ''}
+                    maxLength={1000}
+                    onChange={event => setEditingClaim((current: any) => ({
+                      ...current,
+                      value: event.target.value
+                    }))} /></label>
+                  <label><span>事实值类型</span><select
+                    value={editingClaim.valueType || 'text'}
+                    onChange={event => setEditingClaim((current: any) => ({
+                      ...current,
+                      valueType: event.target.value
+                    }))}>
+                    <option value="text">文本</option>
+                    <option value="number">数值</option>
+                    <option value="date">日期</option>
+                    <option value="boolean">布尔（true/false、是/否、有/无）</option>
+                  </select></label>
+                </>}
             <label><span>事实语义</span><select
               value={editingClaim.polarity || 'positive'}
               onChange={event => setEditingClaim((current: any) => ({
@@ -11905,17 +11963,6 @@ function AiAssistantPage() {
               }))}>
               <option value="positive">肯定：主体具有该事实</option>
               <option value="negative">否定：主体明确不具有该事实</option>
-            </select></label>
-            <label><span>事实值类型</span><select
-              value={editingClaim.valueType || 'text'}
-              onChange={event => setEditingClaim((current: any) => ({
-                ...current,
-                valueType: event.target.value
-              }))}>
-              <option value="text">文本</option>
-              <option value="number">数值</option>
-              <option value="date">日期</option>
-              <option value="boolean">布尔（true/false、是/否、有/无）</option>
             </select></label>
             <div className="assistant-settings-inline">
               <label><span>生效时间（可选）</span><input type="date"
@@ -11942,7 +11989,9 @@ function AiAssistantPage() {
               <button className="primary"
                 disabled={!String(editingClaim.predicate || '').trim() ||
                   !editingClaim.subjectId ||
-                  !String(editingClaim.value || '').trim()}
+                  (editingClaim.valueMode === 'entity'
+                    ? !editingClaim.objectEntityId
+                    : !String(editingClaim.value || '').trim())}
                 onClick={() => void saveClaimCorrection()}>保存纠正并确认</button>
             </div>
           </div>

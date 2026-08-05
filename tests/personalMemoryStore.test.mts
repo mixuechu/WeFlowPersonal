@@ -11935,6 +11935,78 @@ test('human claim correction validates and persists structured scalar value type
   }
 }))
 
+test('human claim correction preserves trusted object identities across same-name entities', () => withStore(store => {
+  store.syncGraph({
+    entities: [
+      { id: 'object-claim-person', type: 'person', canonicalName: '实体事实主体', aliases: [], accountIds: [] },
+      { id: 'same-name-org-a', type: 'organization', canonicalName: '同名公司', aliases: ['旧实体'], accountIds: [] },
+      { id: 'same-name-org-b', type: 'organization', canonicalName: '同名公司', aliases: ['正确实体'], accountIds: [] }
+    ],
+    relations: [],
+    reviewQueue: []
+  })
+  const extracted = {
+    id: 'claim-object-correction',
+    subjectId: 'object-claim-person',
+    predicate: '任职于',
+    objectEntityId: 'same-name-org-a',
+    confidence: 0.78,
+    status: 'candidate',
+    sourceNature: 'direct_statement',
+    searchText: '实体事实主体 任职于 同名公司',
+    evidence: evidence('object-correction-message-1', '原始实体事实')
+  }
+  store.upsertClaims([extracted])
+  store.correctClaim(extracted.id, {
+    value: '这段普通文本必须被忽略',
+    objectEntityId: 'same-name-org-b',
+    validFrom: '2026-08-05'
+  })
+  store.upsertClaims([{
+    ...extracted,
+    searchText: '模型重跑仍指向旧实体',
+    evidence: evidence('object-correction-message-2', '重跑实体事实')
+  }])
+
+  const corrected = store.getClaim(extracted.id)
+  assert.equal(corrected.object_entity_id, 'same-name-org-b')
+  assert.equal(corrected.object_entity_name, '同名公司')
+  assert.equal(corrected.object_value, null)
+  assert.equal(corrected.value_type, 'text')
+  assert.equal(corrected.valid_from, '2026-08-05')
+  assert.equal(corrected.status, 'confirmed')
+  assert.equal(corrected.source_nature, 'human_confirmation')
+  assert.equal(corrected.evidence_count, 2)
+  assert.doesNotMatch(corrected.search_text, /必须被忽略/)
+
+  let search = store.searchText('同名公司')
+    .find(item => item.id === `claim:${extracted.id}`)
+  assert.ok(search)
+  assert.equal(JSON.parse(search.metadata_json).objectEntityId, 'same-name-org-b')
+
+  const database = (store as any).db
+  database.prepare(`DELETE FROM search_documents WHERE id=?`).run(`claim:${extracted.id}`)
+  assert.equal(store.repairRuntimeSearchDerivedState([]).healthy, true)
+  search = store.searchText('同名公司')
+    .find(item => item.id === `claim:${extracted.id}`)
+  assert.ok(search)
+  assert.equal(JSON.parse(search.metadata_json).objectEntityId, 'same-name-org-b')
+  assert.doesNotMatch(search.search_text, /模型重跑仍指向旧实体/)
+
+  database.prepare(`
+    UPDATE entities SET canonical_name='正确实体后来改名' WHERE id='same-name-org-b'
+  `).run()
+  const audit = store.listMemoryItemAuditPage({
+    kind: 'claim',
+    itemId: extracted.id
+  })
+  assert.equal(audit.total, 1)
+  assert.equal(audit.items[0].before.objectEntityId, 'same-name-org-a')
+  assert.equal(audit.items[0].before.objectEntityName, '同名公司')
+  assert.equal(audit.items[0].after.objectEntityId, 'same-name-org-b')
+  assert.equal(audit.items[0].after.objectEntityName, '同名公司')
+}))
+
 test('human claim and event review decisions survive repeated extraction and remain auditable', () => withStore(store => {
   store.syncGraph({
     entities: [{ id: 'person-reviewed', type: 'person', canonicalName: '审阅对象', aliases: [], accountIds: [] }],

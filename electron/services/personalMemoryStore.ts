@@ -9262,15 +9262,20 @@ export class PersonalMemoryStore {
       let value: any = {}
       try { value = JSON.parse(String(raw || '{}')) } catch {}
       const subjectId = String(value.subject_id || '')
+      const objectEntityId = String(value.object_entity_id || '')
       const currentSubject = subjectId
         ? entityName.get(subjectId) as { canonical_name?: string } | undefined
+        : undefined
+      const currentObject = objectEntityId
+        ? entityName.get(objectEntityId) as { canonical_name?: string } | undefined
         : undefined
       return kind === 'claim'
         ? {
             subjectId,
             subjectName: String(value.subject_name || currentSubject?.canonical_name || ''),
             value: String(value.object_value || ''),
-            objectEntityId: String(value.object_entity_id || ''),
+            objectEntityId,
+            objectEntityName: String(value.object_entity_name || currentObject?.canonical_name || ''),
             predicate: String(value.predicate || ''),
             polarity: String(value.polarity || ''),
             valueType: String(value.value_type || ''),
@@ -10840,6 +10845,7 @@ export class PersonalMemoryStore {
     value: string
     predicate?: string
     subjectId?: string
+    objectEntityId?: string
     polarity?: 'positive' | 'negative'
     valueType?: 'text' | 'number' | 'date' | 'boolean'
     validFrom?: string
@@ -10870,7 +10876,10 @@ export class PersonalMemoryStore {
     if (!predicate) throw new Error('事实谓词不能为空')
     const subjectId = String(input.subjectId ?? before.subject_id).trim()
     if (!subjectId) throw new Error('事实主体不能为空')
-    const valueType = ['text', 'number', 'date', 'boolean'].includes(String(input.valueType))
+    const objectEntityId = String(input.objectEntityId || '').trim()
+    const valueType = objectEntityId
+      ? 'text'
+      : ['text', 'number', 'date', 'boolean'].includes(String(input.valueType))
       ? String(input.valueType)
       : String(before.value_type || 'text')
     const polarity = input.polarity === 'negative' ? 'negative' : 'positive'
@@ -10878,7 +10887,13 @@ export class PersonalMemoryStore {
       'SELECT canonical_name FROM entities WHERE id=?'
     ).get(subjectId) as { canonical_name?: string } | undefined
     if (!subject) throw new Error('事实主体不存在或已经删除')
-    const objectValue = String(input.value || '').trim().slice(0, 1000)
+    const objectEntity = objectEntityId
+      ? this.db.prepare('SELECT canonical_name FROM entities WHERE id=?')
+        .get(objectEntityId) as { canonical_name?: string } | undefined
+      : undefined
+    if (objectEntityId && !objectEntity) throw new Error('事实对象不存在或已经删除')
+    const objectValue = objectEntityId ? null : String(input.value || '').trim().slice(0, 1000)
+    if (!objectEntityId && !objectValue) throw new Error('事实值不能为空')
     if (valueType === 'number' && (!objectValue || !Number.isFinite(Number(objectValue)))) {
       throw new Error('数值型事实必须填写有效数字')
     }
@@ -10891,21 +10906,27 @@ export class PersonalMemoryStore {
       subject?.canonical_name || '',
       polarity === 'negative' ? '并非' : '',
       predicate,
-      objectValue
+      objectEntity?.canonical_name || objectValue
     ].filter(Boolean).join(' ')
     const now = new Date().toISOString()
     const beforeSubject = this.db.prepare(
       'SELECT canonical_name FROM entities WHERE id=?'
     ).get(before.subject_id) as { canonical_name?: string } | undefined
+    const beforeObject = before.object_entity_id
+      ? this.db.prepare('SELECT canonical_name FROM entities WHERE id=?')
+        .get(before.object_entity_id) as { canonical_name?: string } | undefined
+      : undefined
     const beforeSnapshot = {
       ...before,
-      subject_name: beforeSubject?.canonical_name || ''
+      subject_name: beforeSubject?.canonical_name || '',
+      object_entity_name: beforeObject?.canonical_name || ''
     }
     const after = {
       ...before,
       subject_id: subjectId,
       subject_name: subject.canonical_name || '',
-      object_entity_id: null,
+      object_entity_id: objectEntityId || null,
+      object_entity_name: objectEntity?.canonical_name || '',
       object_value: objectValue,
       predicate,
       polarity,
@@ -10918,13 +10939,13 @@ export class PersonalMemoryStore {
       search_text: searchText,
       updated_at: now
     }
-    if (!after.object_value) return null
     const transaction = this.db.transaction(() => {
       this.db!.prepare(`
-        UPDATE claims SET subject_id=?,predicate=?,object_entity_id=NULL,object_value=?,polarity=?,value_type=?,valid_from=?,valid_to=?,status='confirmed',
+        UPDATE claims SET subject_id=?,predicate=?,object_entity_id=?,object_value=?,polarity=?,value_type=?,valid_from=?,valid_to=?,status='confirmed',
           source_nature='human_confirmation',conflict_group=NULL,search_text=?,updated_at=? WHERE id=?
       `).run(
-        after.subject_id, after.predicate, after.object_value, after.polarity, after.value_type,
+        after.subject_id, after.predicate, after.object_entity_id, after.object_value,
+        after.polarity, after.value_type,
         after.valid_from, after.valid_to,
         after.search_text, now, id
       )
@@ -10935,6 +10956,7 @@ export class PersonalMemoryStore {
         after.search_text,
         {
           subjectId: after.subject_id,
+          objectEntityId: after.object_entity_id || undefined,
           polarity: after.polarity,
           valueType: after.value_type,
           status: 'confirmed',
