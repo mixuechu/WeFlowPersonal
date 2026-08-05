@@ -8690,6 +8690,8 @@ export class AiAssistantService {
   getAssistantModelRequestAudits(options?: any): any {
     return personalMemoryStore.listAssistantModelRequestAuditsPage({
       status: String(options?.status || ''),
+      answerOutcome: String(options?.answerOutcome || ''),
+      answerOutcomeCode: String(options?.answerOutcomeCode || ''),
       from: String(options?.from || ''),
       to: String(options?.to || ''),
       offset: Number(options?.offset || 0),

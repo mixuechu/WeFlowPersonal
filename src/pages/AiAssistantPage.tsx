@@ -1184,9 +1184,16 @@ function AiAssistantPage() {
     answerCounts: {
       processing: 0, committed: 0, rejected: 0, interrupted: 0,
       not_applicable: 0, legacy_unknown: 0
+    },
+    answerReasonCounts: {
+      invalid_model_json: 0, grounding_rejected: 0, evidence_changed: 0,
+      answer_commit_failed: 0, response_processing_failed: 0,
+      process_interrupted_after_response: 0, legacy_transport_only: 0
     }
   })
   const [modelRequestAuditStatus, setModelRequestAuditStatus] = useState('')
+  const [modelRequestAuditAnswerOutcome, setModelRequestAuditAnswerOutcome] = useState('')
+  const [modelRequestAuditAnswerReason, setModelRequestAuditAnswerReason] = useState('')
   const [modelRequestAuditFrom, setModelRequestAuditFrom] = useState('')
   const [modelRequestAuditTo, setModelRequestAuditTo] = useState('')
   const [modelRequestAuditsLoadingMore, setModelRequestAuditsLoadingMore] = useState(false)
@@ -1355,6 +1362,8 @@ function AiAssistantPage() {
   }), [assistantArchiveQuery, assistantArchiveFrom, assistantArchiveTo, assistantArchiveRevalidation])
   const modelRequestAuditOptions = useMemo(() => ({
     status: modelRequestAuditStatus || undefined,
+    answerOutcome: modelRequestAuditAnswerOutcome || undefined,
+    answerOutcomeCode: modelRequestAuditAnswerReason || undefined,
     from: modelRequestAuditFrom
       ? new Date(`${modelRequestAuditFrom}T00:00:00+08:00`).toISOString()
       : undefined,
@@ -1363,7 +1372,13 @@ function AiAssistantPage() {
       : undefined,
     offset: 0,
     limit: 30
-  }), [modelRequestAuditStatus, modelRequestAuditFrom, modelRequestAuditTo])
+  }), [
+    modelRequestAuditStatus,
+    modelRequestAuditAnswerOutcome,
+    modelRequestAuditAnswerReason,
+    modelRequestAuditFrom,
+    modelRequestAuditTo
+  ])
   const assistantAnswerReviewOptions = useMemo(() => ({
     status: assistantAnswerReviewStatus,
     reviewState: assistantAnswerReviewState,
@@ -8419,6 +8434,71 @@ function AiAssistantPage() {
                   </option>
                   <option value="sending">
                     正在请求（{Number(modelRequestAudits.counts?.sending || 0)}）
+                  </option>
+                </select>
+                <select value={modelRequestAuditAnswerOutcome}
+                  onChange={event => setModelRequestAuditAnswerOutcome(event.target.value)}>
+                  <option value="">全部回答结果</option>
+                  <option value="committed">
+                    回答已提交（{Number(modelRequestAudits.answerCounts?.committed || 0)}）
+                  </option>
+                  <option value="rejected">
+                    响应被拒绝（{Number(modelRequestAudits.answerCounts?.rejected || 0)}）
+                  </option>
+                  <option value="interrupted">
+                    响应后中断（{Number(modelRequestAudits.answerCounts?.interrupted || 0)}）
+                  </option>
+                  <option value="processing">
+                    正在处理（{Number(modelRequestAudits.answerCounts?.processing || 0)}）
+                  </option>
+                  <option value="not_applicable">
+                    未收到可处理响应（{Number(
+                      modelRequestAudits.answerCounts?.not_applicable || 0
+                    )}）
+                  </option>
+                  <option value="legacy_unknown">
+                    旧版结果未知（{Number(
+                      modelRequestAudits.answerCounts?.legacy_unknown || 0
+                    )}）
+                  </option>
+                </select>
+                <select value={modelRequestAuditAnswerReason}
+                  onChange={event => setModelRequestAuditAnswerReason(event.target.value)}>
+                  <option value="">全部回答结果原因</option>
+                  <option value="invalid_model_json">
+                    模型格式无效（{Number(
+                      modelRequestAudits.answerReasonCounts?.invalid_model_json || 0
+                    )}）
+                  </option>
+                  <option value="grounding_rejected">
+                    逐句证据门禁拒绝（{Number(
+                      modelRequestAudits.answerReasonCounts?.grounding_rejected || 0
+                    )}）
+                  </option>
+                  <option value="evidence_changed">
+                    权威证据变化（{Number(
+                      modelRequestAudits.answerReasonCounts?.evidence_changed || 0
+                    )}）
+                  </option>
+                  <option value="answer_commit_failed">
+                    本地提交失败（{Number(
+                      modelRequestAudits.answerReasonCounts?.answer_commit_failed || 0
+                    )}）
+                  </option>
+                  <option value="response_processing_failed">
+                    响应处理失败（{Number(
+                      modelRequestAudits.answerReasonCounts?.response_processing_failed || 0
+                    )}）
+                  </option>
+                  <option value="process_interrupted_after_response">
+                    响应后进程中断（{Number(
+                      modelRequestAudits.answerReasonCounts?.process_interrupted_after_response || 0
+                    )}）
+                  </option>
+                  <option value="legacy_transport_only">
+                    旧版仅有传输结果（{Number(
+                      modelRequestAudits.answerReasonCounts?.legacy_transport_only || 0
+                    )}）
                   </option>
                 </select>
                 <input type="date" value={modelRequestAuditFrom}

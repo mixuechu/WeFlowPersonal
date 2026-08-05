@@ -2606,6 +2606,12 @@ export class PersonalMemoryStore {
           ADD COLUMN answer_completed_at TEXT
         `)
       }
+      this.db!.exec(`
+        CREATE INDEX IF NOT EXISTS idx_assistant_model_request_audits_answer_time
+        ON assistant_model_request_audits(
+          answer_outcome,answer_outcome_code,started_at DESC,id DESC
+        )
+      `)
       this.db!.prepare(`
         UPDATE assistant_model_request_audits
         SET answer_outcome='legacy_unknown',
@@ -16397,6 +16403,8 @@ export class PersonalMemoryStore {
 
   listAssistantModelRequestAuditsPage(options: {
     status?: string
+    answerOutcome?: string
+    answerOutcomeCode?: string
     from?: string
     to?: string
     offset?: number
@@ -16413,6 +16421,15 @@ export class PersonalMemoryStore {
       answerCounts: {
         processing: 0, committed: 0, rejected: 0, interrupted: 0,
         not_applicable: 0, legacy_unknown: 0
+      },
+      answerReasonCounts: {
+        invalid_model_json: 0,
+        grounding_rejected: 0,
+        evidence_changed: 0,
+        answer_commit_failed: 0,
+        response_processing_failed: 0,
+        process_interrupted_after_response: 0,
+        legacy_transport_only: 0
       }
     }
     if (!this.db) return empty
@@ -16424,45 +16441,74 @@ export class PersonalMemoryStore {
     const normalizedStatus = new Set([
       'sending', 'response_received', 'failed', 'interrupted'
     ]).has(String(options.status || '')) ? String(options.status) : ''
+    const normalizedAnswerOutcome = new Set([
+      'processing', 'committed', 'rejected', 'interrupted',
+      'not_applicable', 'legacy_unknown'
+    ]).has(String(options.answerOutcome || '')) ? String(options.answerOutcome) : ''
+    const normalizedAnswerOutcomeCode = new Set([
+      'invalid_model_json', 'grounding_rejected', 'evidence_changed',
+      'answer_commit_failed', 'response_processing_failed',
+      'process_interrupted_after_response', 'answer_committed',
+      'legacy_transport_only'
+    ]).has(String(options.answerOutcomeCode || ''))
+      ? String(options.answerOutcomeCode)
+      : ''
     const from = String(options.from || '').trim()
     const to = String(options.to || '').trim()
-    const filters: string[] = []
-    const args: any[] = []
-    if (normalizedStatus) {
-      filters.push('status=?')
-      args.push(normalizedStatus)
+    const buildWhere = (include: {
+      status?: boolean
+      answerOutcome?: boolean
+      answerOutcomeCode?: boolean
+    } = {}): { where: string; args: string[] } => {
+      const filters: string[] = []
+      const args: string[] = []
+      if (include.status !== false && normalizedStatus) {
+        filters.push('status=?')
+        args.push(normalizedStatus)
+      }
+      if (include.answerOutcome !== false && normalizedAnswerOutcome) {
+        filters.push('answer_outcome=?')
+        args.push(normalizedAnswerOutcome)
+      }
+      if (include.answerOutcomeCode !== false && normalizedAnswerOutcomeCode) {
+        filters.push('answer_outcome_code=?')
+        args.push(normalizedAnswerOutcomeCode)
+      }
+      if (from) {
+        filters.push('started_at>=?')
+        args.push(from)
+      }
+      if (to) {
+        filters.push('started_at<=?')
+        args.push(to)
+      }
+      return {
+        where: filters.length ? `WHERE ${filters.join(' AND ')}` : '',
+        args
+      }
     }
-    if (from) {
-      filters.push('started_at>=?')
-      args.push(from)
-    }
-    if (to) {
-      filters.push('started_at<=?')
-      args.push(to)
-    }
-    const where = filters.length ? `WHERE ${filters.join(' AND ')}` : ''
+    const selected = buildWhere()
     const total = Number((this.db.prepare(`
-      SELECT COUNT(*) AS count FROM assistant_model_request_audits ${where}
-    `).get(...args) as any)?.count || 0)
-    const facetFilters = filters.filter(item => item !== 'status=?')
-    const facetArgs = normalizedStatus ? args.slice(1) : args
-    const facetWhere = facetFilters.length ? `WHERE ${facetFilters.join(' AND ')}` : ''
+      SELECT COUNT(*) AS count FROM assistant_model_request_audits ${selected.where}
+    `).get(...selected.args) as any)?.count || 0)
+    const transportFacet = buildWhere({ status: false })
     const countRows = this.db.prepare(`
       SELECT status,COUNT(*) AS count
-      FROM assistant_model_request_audits ${facetWhere}
+      FROM assistant_model_request_audits ${transportFacet.where}
       GROUP BY status
-    `).all(...facetArgs) as any[]
+    `).all(...transportFacet.args) as any[]
     const counts = { sending: 0, response_received: 0, failed: 0, interrupted: 0 }
     for (const row of countRows) {
       if (row.status in counts) {
         counts[row.status as keyof typeof counts] = Math.max(0, Number(row.count || 0))
       }
     }
+    const answerFacet = buildWhere({ answerOutcome: false })
     const answerCountRows = this.db.prepare(`
       SELECT answer_outcome,COUNT(*) AS count
-      FROM assistant_model_request_audits ${facetWhere}
+      FROM assistant_model_request_audits ${answerFacet.where}
       GROUP BY answer_outcome
-    `).all(...facetArgs) as any[]
+    `).all(...answerFacet.args) as any[]
     const answerCounts = {
       processing: 0, committed: 0, rejected: 0, interrupted: 0,
       not_applicable: 0, legacy_unknown: 0
@@ -16473,13 +16519,36 @@ export class PersonalMemoryStore {
           Math.max(0, Number(row.count || 0))
       }
     }
+    const reasonFacet = buildWhere({ answerOutcomeCode: false })
+    const reasonSql = `
+      SELECT answer_outcome_code,COUNT(*) AS count
+      FROM assistant_model_request_audits ${reasonFacet.where}
+      ${reasonFacet.where ? 'AND' : 'WHERE'} answer_outcome_code!=''
+      GROUP BY answer_outcome_code
+    `
+    const answerReasonCounts = {
+      invalid_model_json: 0,
+      grounding_rejected: 0,
+      evidence_changed: 0,
+      answer_commit_failed: 0,
+      response_processing_failed: 0,
+      process_interrupted_after_response: 0,
+      legacy_transport_only: 0
+    }
+    const answerReasonRowsResult = this.db.prepare(reasonSql).all(...reasonFacet.args) as any[]
+    for (const row of answerReasonRowsResult) {
+      if (row.answer_outcome_code in answerReasonCounts) {
+        answerReasonCounts[row.answer_outcome_code as keyof typeof answerReasonCounts] =
+          Math.max(0, Number(row.count || 0))
+      }
+    }
     const rows = this.db.prepare(`
       SELECT id,status,outcome_code,model,audit_json,
         answer_outcome,answer_outcome_code,
         started_at,completed_at,answer_completed_at
-      FROM assistant_model_request_audits ${where}
+      FROM assistant_model_request_audits ${selected.where}
       ORDER BY started_at DESC,id DESC LIMIT ? OFFSET ?
-    `).all(...args, limit, offset) as any[]
+    `).all(...selected.args, limit, offset) as any[]
     const items = rows.map(row => {
       let audit: any = {}
       try { audit = JSON.parse(String(row.audit_json || '{}')) } catch {}
@@ -16513,7 +16582,8 @@ export class PersonalMemoryStore {
       revision,
       stale: false,
       counts,
-      answerCounts
+      answerCounts,
+      answerReasonCounts
     }
   }
 
@@ -16525,6 +16595,15 @@ export class PersonalMemoryStore {
         processing: 0, committed: 0, rejected: 0, interrupted: 0,
         not_applicable: 0, legacy_unknown: 0
       },
+      answerReasonCounts: {
+        invalid_model_json: 0,
+        grounding_rejected: 0,
+        evidence_changed: 0,
+        answer_commit_failed: 0,
+        response_processing_failed: 0,
+        process_interrupted_after_response: 0,
+        legacy_transport_only: 0
+      },
       revision: '0',
       policy: 'category_only_digest_no_prompt_v1'
     }
@@ -16535,6 +16614,7 @@ export class PersonalMemoryStore {
       `).get() as any)?.count || 0),
       counts: page.counts,
       answerCounts: page.answerCounts,
+      answerReasonCounts: page.answerReasonCounts,
       revision: page.revision,
       policy: 'category_only_digest_no_prompt_v1'
     }

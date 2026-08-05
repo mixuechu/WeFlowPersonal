@@ -13288,6 +13288,81 @@ test('transport-only model request audits upgrade without inventing answer succe
   }
 })
 
+test('model answer outcome facets filter complete history before revision-safe paging', () =>
+  withStore(store => {
+    const audit = {
+      version: 'model-source-privacy-v2',
+      policy: {
+        wechat: true, documents: true, calendar: false, mail: false, unknown: false
+      },
+      contextDocuments: 1,
+      privacyExcludedDocuments: 0,
+      budgetOmittedDocuments: 0,
+      contextSourceIds: ['wechat'],
+      excludedSourceIds: [],
+      incompleteSourceDocuments: 0,
+      outboundSha256: 'f'.repeat(64),
+      redaction: { level: 'standard', total: 0, counts: {} },
+      boundaryChecks: ['before_send']
+    }
+    for (let index = 0; index < 90; index += 1) {
+      const id = store.recordAssistantModelRequestStarted({
+        ...audit,
+        outboundSha256: createHash('sha256').update(`request-${index}`).digest('hex')
+      }, 'deepseek-facet-test')
+      store.finishAssistantModelRequestAudit(id, 'response_received')
+      store.finishAssistantModelRequestAnswerAudit(
+        id,
+        'rejected',
+        index < 75 ? 'invalid_model_json' : 'evidence_changed'
+      )
+    }
+    const first = store.listAssistantModelRequestAuditsPage({
+      answerOutcome: 'rejected',
+      answerOutcomeCode: 'invalid_model_json',
+      limit: 30
+    })
+    const second = store.listAssistantModelRequestAuditsPage({
+      answerOutcome: 'rejected',
+      answerOutcomeCode: 'invalid_model_json',
+      offset: 30,
+      limit: 30,
+      revision: first.revision
+    })
+    const last = store.listAssistantModelRequestAuditsPage({
+      answerOutcome: 'rejected',
+      answerOutcomeCode: 'invalid_model_json',
+      offset: 60,
+      limit: 30,
+      revision: first.revision
+    })
+    assert.equal(first.total, 75)
+    assert.deepEqual([first.items.length, second.items.length, last.items.length], [30, 30, 15])
+    assert.equal(new Set([...first.items, ...second.items, ...last.items]
+      .map((item: any) => item.id)).size, 75)
+    assert.equal(first.counts.response_received, 75)
+    assert.equal(first.answerCounts.rejected, 75)
+    assert.equal(first.answerReasonCounts.invalid_model_json, 75)
+    assert.equal(first.answerReasonCounts.evidence_changed, 15)
+    assert.equal(store.listAssistantModelRequestAuditsPage({
+      answerOutcomeCode: 'evidence_changed',
+      limit: 30
+    }).total, 15)
+    const newId = store.recordAssistantModelRequestStarted({
+      ...audit,
+      outboundSha256: 'e'.repeat(64)
+    }, 'deepseek-facet-test')
+    store.finishAssistantModelRequestAudit(newId, 'response_received')
+    store.finishAssistantModelRequestAnswerAudit(newId, 'rejected', 'invalid_model_json')
+    assert.equal(store.listAssistantModelRequestAuditsPage({
+      answerOutcome: 'rejected',
+      answerOutcomeCode: 'invalid_model_json',
+      offset: 30,
+      limit: 30,
+      revision: first.revision
+    }).stale, true)
+  }))
+
 test('human claim correction survives repeated extraction while new evidence is retained', () => withStore(store => {
   store.syncGraph({
     entities: [{ id: 'person-corrected', type: 'person', canonicalName: '纠正对象', aliases: [], accountIds: [] }],
