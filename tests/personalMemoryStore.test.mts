@@ -2678,6 +2678,92 @@ test('structured search dossiers bind the exact type, id and current search revi
   assert.equal(store.getStructuredMemoryDossier('claim', 'dossier-claim', revision).stale, true)
 }))
 
+test('event dossiers page every participant role and reject mixed structured revisions', () => withStore(store => {
+  const entities = Array.from({ length: 245 }, (_, index) => ({
+    id: `large-event-person-${String(index).padStart(3, '0')}`,
+    type: 'person',
+    canonicalName: `大型事件参与者 ${String(index).padStart(3, '0')}`,
+    summary: '',
+    confidence: 1,
+    trustStatus: 'confirmed',
+    aliases: [],
+    accountIds: []
+  }))
+  store.syncGraph({ entities, relations: [], reviewQueue: [] } as any)
+  store.upsertEvents([{
+    id: 'large-participant-event',
+    eventType: 'meeting',
+    title: '大型参与者事件',
+    description: '验证完整参与者分页',
+    startAt: '2026-08-06T08:00:00.000Z',
+    confidence: 1,
+    status: 'confirmed',
+    searchText: '大型参与者事件 完整参与者分页',
+    participants: entities.map((entity, index) => ({
+      entityId: entity.id,
+      role: `角色 ${String(index % 7).padStart(2, '0')}`
+    })),
+    evidence: evidence('large-participant-event-message', '大型参与者事件')
+  }])
+
+  const dossier = store.getCurrentStructuredMemoryDossier(
+    'event',
+    'large-participant-event'
+  )
+  assert.equal(dossier.stale, false)
+  assert.equal(dossier.item.participant_count, 245)
+  assert.equal(dossier.item.participantPage.items.length, 40)
+  assert.equal(dossier.item.participantPage.total, 245)
+  assert.equal(dossier.item.participantPage.hasMore, true)
+
+  const pages = [dossier.item.participantPage]
+  while (pages.at(-1).hasMore) {
+    const previous = pages.at(-1)
+    pages.push(store.listEventDossierParticipantPage({
+      eventId: 'large-participant-event',
+      expectedSearchRevision: dossier.revision,
+      offset: pages.reduce((sum, page) => sum + page.items.length, 0),
+      limit: 40,
+      revision: dossier.item.participantPage.revision
+    }))
+    assert.equal(previous.stale, false)
+  }
+  const allParticipants = pages.flatMap(page => page.items)
+  assert.equal(allParticipants.length, 245)
+  assert.equal(new Set(allParticipants.map(item =>
+    `${item.entity_id}\0${item.role}`)).size, 245)
+  assert.equal(pages.at(-1).items.length, 5)
+
+  ;(store as any).db.prepare(`
+    INSERT INTO event_participants(event_id,entity_id,role) VALUES(?,?,?)
+  `).run('large-participant-event', entities[0].id, '新增角色')
+  assert.equal(store.listEventDossierParticipantPage({
+    eventId: 'large-participant-event',
+    expectedSearchRevision: dossier.revision,
+    offset: 40,
+    revision: dossier.item.participantPage.revision
+  }).stale, true)
+
+  const storeInternals = store as any
+  const originalEvidencePayload = storeInternals.getDocumentEvidencePayload.bind(store)
+  let changedDuringAssembly = false
+  storeInternals.getDocumentEvidencePayload = (...args: any[]) => {
+    if (!changedDuringAssembly) {
+      changedDuringAssembly = true
+      storeInternals.db.prepare(`
+        INSERT INTO event_participants(event_id,entity_id,role) VALUES(?,?,?)
+      `).run('large-participant-event', entities[1].id, '组装期间新增角色')
+    }
+    return originalEvidencePayload(...args)
+  }
+  const concurrentDossier = store.getCurrentStructuredMemoryDossier(
+    'event',
+    'large-participant-event'
+  )
+  assert.equal(concurrentDossier.stale, true)
+  storeInternals.getDocumentEvidencePayload = originalEvidencePayload
+}))
+
 test('multi-year fact archive is fully pageable and filters before ranking', () => withStore(store => {
   store.syncGraph({
     entities: [{

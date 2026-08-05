@@ -7236,6 +7236,18 @@ export class AiAssistantService {
     )
   }
 
+  getEventDossierParticipantPage(eventId: string, options: any = {}): any {
+    const id = String(eventId || '').trim()
+    if (!id) throw new Error('事件 ID 不能为空')
+    return personalMemoryStore.listEventDossierParticipantPage({
+      eventId: id,
+      expectedSearchRevision: String(options?.expectedSearchRevision || ''),
+      offset: Number(options?.offset || 0),
+      limit: Number(options?.limit || 40),
+      revision: String(options?.revision || '')
+    })
+  }
+
   getRelationDossierAuditPage(
     relationId: string,
     kind: string,

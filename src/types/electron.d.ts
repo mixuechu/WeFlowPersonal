@@ -1953,6 +1953,15 @@ export interface ElectronAPI {
         kind: 'claim' | 'event' | 'relation',
         id: string
       ) => Promise<any>
+      getEventDossierParticipantPage: (
+        eventId: string,
+        options: {
+          expectedSearchRevision: string
+          offset?: number
+          limit?: number
+          revision?: string
+        }
+      ) => Promise<any>
       getRelationDossierAuditPage: (
         relationId: string,
         kind: 'history' | 'correction',

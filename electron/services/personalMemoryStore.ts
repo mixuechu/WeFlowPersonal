@@ -7840,6 +7840,7 @@ export class PersonalMemoryStore {
     const sourceId = String(id || '').trim()
     const expectedRevision = String(expectedSearchRevision || '').trim()
     const revision = this.getMemorySearchRevision()
+    const structuredRevision = this.getStructuredMemoryRevision()
     const stale = () => ({
       kind,
       sourceId,
@@ -7887,16 +7888,15 @@ export class PersonalMemoryStore {
         FROM events ev WHERE ev.id=?
       `).get(sourceId)
       if (item) {
+        const participantPage = this.listEventDossierParticipantPage({
+          eventId: sourceId,
+          expectedSearchRevision: revision
+        })
+        if (!participantPage || participantPage.stale) return stale()
         item = {
           ...item,
-          participants: this.db.prepare(`
-            SELECT participant.entity_id,participant.role,entity.canonical_name
-            FROM event_participants participant
-            JOIN entities entity ON entity.id=participant.entity_id
-            WHERE participant.event_id=?
-            ORDER BY participant.role,entity.canonical_name,participant.entity_id
-            LIMIT 200
-          `).all(sourceId)
+          participants: participantPage.items,
+          participantPage
         }
       }
     } else {
@@ -7930,7 +7930,12 @@ export class PersonalMemoryStore {
     if (!item) return null
     const evidence = this.getDocumentEvidencePayload(kind, sourceId)
     const completedRevision = this.getMemorySearchRevision()
-    if (completedRevision !== revision) {
+    const completedStructuredRevision = this.getStructuredMemoryRevision()
+    const eventParticipantRevisionChanged = kind === 'event' &&
+      String(item?.participantPage?.revision || '') !== structuredRevision
+    if (completedRevision !== revision ||
+      completedStructuredRevision !== structuredRevision ||
+      eventParticipantRevisionChanged) {
       return {
         kind,
         sourceId,
@@ -7944,6 +7949,7 @@ export class PersonalMemoryStore {
       kind,
       sourceId,
       revision,
+      structuredRevision,
       stale: false,
       document: {
         id: document.id,
@@ -7965,6 +7971,67 @@ export class PersonalMemoryStore {
     id: string
   ): any | null {
     return this.getStructuredMemoryDossier(kind, id, this.getMemorySearchRevision())
+  }
+
+  listEventDossierParticipantPage(options: {
+    eventId: string
+    expectedSearchRevision: string
+    offset?: number
+    limit?: number
+    revision?: string
+  }): any {
+    if (!this.db) return {
+      items: [], total: 0, offset: 0, limit: 40, hasMore: false,
+      revision: '0', searchRevision: '0', stale: false
+    }
+    const eventId = String(options.eventId || '').trim()
+    const expectedSearchRevision = String(options.expectedSearchRevision || '').trim()
+    const searchRevision = this.getMemorySearchRevision()
+    const revision = this.getStructuredMemoryRevision()
+    const requestedRevision = String(options.revision || '').trim()
+    const offset = Math.max(0, Math.floor(Number(options.offset) || 0))
+    const limit = Math.max(1, Math.min(100, Math.floor(Number(options.limit) || 40)))
+    const stale = () => ({
+      items: [],
+      total: 0,
+      offset,
+      limit,
+      hasMore: false,
+      revision,
+      searchRevision,
+      stale: true
+    })
+    if (!eventId || !expectedSearchRevision || expectedSearchRevision !== searchRevision) {
+      return stale()
+    }
+    if (requestedRevision && requestedRevision !== revision) return stale()
+    if (!this.db.prepare('SELECT 1 FROM events WHERE id=?').get(eventId)) return null
+    const total = Number((this.db.prepare(`
+      SELECT COUNT(*) AS count FROM event_participants WHERE event_id=?
+    `).get(eventId) as any)?.count || 0)
+    const items = this.db.prepare(`
+      SELECT participant.entity_id,participant.role,entity.canonical_name
+      FROM event_participants participant
+      LEFT JOIN entities entity ON entity.id=participant.entity_id
+      WHERE participant.event_id=?
+      ORDER BY participant.role,entity.canonical_name,participant.entity_id
+      LIMIT ? OFFSET ?
+    `).all(eventId, limit, offset)
+    const completedSearchRevision = this.getMemorySearchRevision()
+    const completedRevision = this.getStructuredMemoryRevision()
+    if (completedSearchRevision !== searchRevision || completedRevision !== revision) {
+      return stale()
+    }
+    return {
+      items,
+      total,
+      offset,
+      limit,
+      hasMore: offset + items.length < total,
+      revision,
+      searchRevision,
+      stale: false
+    }
   }
 
   mergeEntityEventParticipants(sourceId: string, targetId: string): void {

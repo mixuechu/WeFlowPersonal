@@ -801,10 +801,12 @@ function AiAssistantPage() {
   const [structuredMemoryDossier, setStructuredMemoryDossier] = useState<any>(null)
   const [relationDossierAuditLoading, setRelationDossierAuditLoading] =
     useState<Record<string, boolean>>({})
+  const [eventDossierParticipantsLoading, setEventDossierParticipantsLoading] = useState(false)
   const [authorityReturnTarget, setAuthorityReturnTarget] =
     useState<AuthorityReturnTarget | null>(null)
   const structuredMemoryDossierGate = useRef(new LatestRequestGate())
   const relationDossierAuditGates = useRef(new KeyedLatestRequestGates())
+  const eventDossierParticipantsGate = useRef(new LatestRequestGate())
   const [resourceTrashArchive, setResourceTrashArchive] = useState<any>({
     items: [], total: 0, hasMore: false, revision: '', status: 'idle'
   })
@@ -3151,6 +3153,8 @@ function AiAssistantPage() {
     const request = structuredMemoryDossierGate.current.begin()
     relationDossierAuditGates.current.invalidateAll()
     setRelationDossierAuditLoading({})
+    eventDossierParticipantsGate.current.invalidate()
+    setEventDossierParticipantsLoading(false)
     setStructuredMemoryDossier({ kind, sourceId: id, status: 'loading' })
     try {
       const result = await window.electronAPI.aiAssistant.getStructuredMemoryDossier(
@@ -3194,6 +3198,8 @@ function AiAssistantPage() {
     const request = structuredMemoryDossierGate.current.begin()
     relationDossierAuditGates.current.invalidateAll()
     setRelationDossierAuditLoading({})
+    eventDossierParticipantsGate.current.invalidate()
+    setEventDossierParticipantsLoading(false)
     setStructuredMemoryDossier({
       kind,
       sourceId: id,
@@ -3241,6 +3247,8 @@ function AiAssistantPage() {
     structuredMemoryDossierGate.current.invalidate()
     relationDossierAuditGates.current.invalidateAll()
     setRelationDossierAuditLoading({})
+    eventDossierParticipantsGate.current.invalidate()
+    setEventDossierParticipantsLoading(false)
     setStructuredMemoryDossier(null)
     setSelectedEntityId(id)
     setShowEntityDossier(true)
@@ -3335,6 +3343,71 @@ function AiAssistantPage() {
     } finally {
       if (relationDossierAuditGates.current.isCurrent(kind, request)) {
         setRelationDossierAuditLoading(current => setKeyedLoadingState(current, kind, false))
+      }
+    }
+  }
+  const loadMoreEventDossierParticipants = async () => {
+    const dossier = structuredMemoryDossier
+    const event = dossier?.kind === 'event' && dossier?.status === 'ready'
+      ? dossier.item
+      : null
+    const page = event?.participantPage
+    if (!event || !page?.hasMore || eventDossierParticipantsLoading) return
+    const request = eventDossierParticipantsGate.current.begin()
+    setEventDossierParticipantsLoading(true)
+    try {
+      const result = await window.electronAPI.aiAssistant.getEventDossierParticipantPage(
+        event.id,
+        {
+          expectedSearchRevision: String(dossier.revision || ''),
+          offset: page.items.length,
+          limit: 40,
+          revision: String(page.revision || '')
+        }
+      )
+      if (!eventDossierParticipantsGate.current.isCurrent(request)) return
+      if (!result || result.stale) {
+        const fromEntityDossier = dossier.origin === 'entity_dossier'
+        eventDossierParticipantsGate.current.invalidate()
+        setEventDossierParticipantsLoading(false)
+        setStructuredMemoryDossier(null)
+        setMessage(fromEntityDossier
+          ? '事件参与者在分页期间已有变化，已刷新当前人物的事件。'
+          : '事件参与者在分页期间已有变化，请从检索结果重新打开。')
+        if (fromEntityDossier) refreshEntityDossierSection('events')
+        else setMemorySearchRefreshKey(value => value + 1)
+        return
+      }
+      setStructuredMemoryDossier((current: any) => current?.item?.id === event.id
+        ? {
+            ...current,
+            item: {
+              ...current.item,
+              participants: [
+                ...(current.item.participants || []),
+                ...(result.items || []).filter((entry: any) =>
+                  !(current.item.participants || []).some((known: any) =>
+                    known.entity_id === entry.entity_id && known.role === entry.role))
+              ],
+              participantPage: {
+                ...result,
+                items: [
+                  ...(current.item.participantPage?.items || []),
+                  ...(result.items || []).filter((entry: any) =>
+                    !(current.item.participantPage?.items || []).some((known: any) =>
+                      known.entity_id === entry.entity_id && known.role === entry.role))
+                ]
+              }
+            }
+          }
+        : current)
+    } catch (error: any) {
+      if (eventDossierParticipantsGate.current.isCurrent(request)) {
+        setMessage(error?.message || String(error))
+      }
+    } finally {
+      if (eventDossierParticipantsGate.current.isCurrent(request)) {
+        setEventDossierParticipantsLoading(false)
       }
     }
   }
@@ -10762,6 +10835,8 @@ function AiAssistantPage() {
                 structuredMemoryDossierGate.current.invalidate()
                 relationDossierAuditGates.current.invalidateAll()
                 setRelationDossierAuditLoading({})
+                eventDossierParticipantsGate.current.invalidate()
+                setEventDossierParticipantsLoading(false)
                 setStructuredMemoryDossier(null)
               }}><X size={18} /></button>
             </div>
@@ -10833,13 +10908,27 @@ function AiAssistantPage() {
                       关系状态历史：{Number(item.historyPage?.total || 0)} 条
                       {' · '}人工方向/谓词纠正 {Number(item.correctionPage?.total || 0)} 条
                     </small>}
-                    {kind === 'event' && <div className="assistant-tags">
-                      {(item.participants || []).map((participant: any) =>
-                        <button key={`${participant.entity_id}:${participant.role}`}
-                          onClick={() => openEntityFromStructuredDossier(participant.entity_id)}>
-                          {participant.canonical_name || participant.entity_id} · {participant.role || '参与者'}
-                        </button>)}
-                    </div>}
+                    {kind === 'event' && <>
+                      <small>
+                        参与者角色：已显示 {Number(item.participantPage?.items?.length ||
+                          item.participants?.length || 0)} / {Number(item.participantPage?.total ||
+                          item.participant_count || 0)}
+                      </small>
+                      <div className="assistant-tags">
+                        {(item.participants || []).map((participant: any) =>
+                          <button key={`${participant.entity_id}:${participant.role}`}
+                            onClick={() => openEntityFromStructuredDossier(participant.entity_id)}>
+                            {participant.canonical_name || participant.entity_id} · {participant.role || '参与者'}
+                          </button>)}
+                      </div>
+                      {item.participantPage?.hasMore && <button
+                        disabled={eventDossierParticipantsLoading}
+                        onClick={() => void loadMoreEventDossierParticipants()}>
+                        {eventDossierParticipantsLoading
+                          ? '正在加载参与者…'
+                          : `加载更多参与者（已显示 ${item.participantPage.items.length} / ${item.participantPage.total}）`}
+                      </button>}
+                    </>}
                     {kind === 'claim' && <div className="assistant-tags">
                       {item.subject_id && <button
                         onClick={() => openEntityFromStructuredDossier(item.subject_id)}>
@@ -10867,6 +10956,8 @@ function AiAssistantPage() {
                       structuredMemoryDossierGate.current.invalidate()
                       relationDossierAuditGates.current.invalidateAll()
                       setRelationDossierAuditLoading({})
+                      eventDossierParticipantsGate.current.invalidate()
+                      setEventDossierParticipantsLoading(false)
                       setStructuredMemoryDossier(null)
                       void openMemoryEvidenceArchive(kind, item.id, title)
                     }}
@@ -10939,6 +11030,8 @@ function AiAssistantPage() {
                 structuredMemoryDossierGate.current.invalidate()
                 relationDossierAuditGates.current.invalidateAll()
                 setRelationDossierAuditLoading({})
+                eventDossierParticipantsGate.current.invalidate()
+                setEventDossierParticipantsLoading(false)
                 setStructuredMemoryDossier(null)
               }}>关闭</button>
             </div>

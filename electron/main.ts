@@ -4647,6 +4647,9 @@ function registerIpcHandlers() {
   ipcMain.handle('ai-assistant:getCurrentStructuredMemoryDossier',
     (_, kind: string, id: string) =>
       aiAssistantService.getCurrentStructuredMemoryDossier(kind, id))
+  ipcMain.handle('ai-assistant:getEventDossierParticipantPage',
+    (_, eventId: string, options?: any) =>
+      aiAssistantService.getEventDossierParticipantPage(eventId, options))
   ipcMain.handle('ai-assistant:getRelationDossierAuditPage',
     (_, relationId: string, kind: string, options?: any) =>
       aiAssistantService.getRelationDossierAuditPage(relationId, kind, options))
