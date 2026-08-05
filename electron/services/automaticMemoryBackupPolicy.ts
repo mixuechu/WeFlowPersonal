@@ -1,7 +1,14 @@
 import { assessScheduledSyncResult } from './scheduledSyncPolicy.ts'
+import { buildEncryptedAssistantState } from '../../shared/taskStateStorage.ts'
 
 export const AUTOMATIC_MEMORY_BACKUP_POLICY_VERSION = 'automatic-memory-backup-v1'
+export const AUTOMATIC_MEMORY_BACKUP_STATE_POLICY_VERSION =
+  'automatic-memory-backup-state-v2'
 export const AUTOMATIC_MEMORY_BACKUP_RETRY_MS = 60 * 60_000
+
+export function buildAutomaticMemoryBackupSnapshotState(state: any): any {
+  return buildEncryptedAssistantState(state)
+}
 
 export function automaticMemoryBackupDate(timestampMs = Date.now()): string {
   return new Intl.DateTimeFormat('en-CA', {

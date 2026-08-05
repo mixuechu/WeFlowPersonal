@@ -2,7 +2,9 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import {
   AUTOMATIC_MEMORY_BACKUP_RETRY_MS,
+  AUTOMATIC_MEMORY_BACKUP_STATE_POLICY_VERSION,
   automaticMemoryBackupDate,
+  buildAutomaticMemoryBackupSnapshotState,
   shouldCreateAutomaticMemoryBackup
 } from '../electron/services/automaticMemoryBackupPolicy.ts'
 
@@ -46,4 +48,51 @@ test('automatic memory backup failures retry after a bounded cross-restart backo
     }, now),
     { create: true, reason: 'due', date: '2026-08-01' }
   )
+})
+
+test('automatic backup marker rewrite keeps the encrypted task state bounded', () => {
+  const state = {
+    version: 3,
+    cursor: {
+      lastAutomaticBackupDate: '2026-08-06',
+      lastAutomaticBackupAt: '2026-08-05T18:50:00.000Z',
+      lastAutomaticBackupError: null
+    },
+    tasks: [{
+      id: 'active-task',
+      status: 'todo',
+      title: '当前任务',
+      evidence: [{ messageId: 'active-message', excerpt: '当前任务原文' }],
+      sourceMessageIds: ['active-message']
+    }, {
+      id: 'closed-task',
+      status: 'done',
+      title: '多年历史任务',
+      detail: '结构继续保留',
+      evidence: Array.from({ length: 2_000 }, (_, index) => ({
+        messageId: `closed-message-${index}`,
+        excerpt: `不应复制进自动快照的历史原文 ${index}`
+      })),
+      sourceMessageIds: Array.from(
+        { length: 2_000 },
+        (_, index) => `closed-message-${index}`
+      )
+    }],
+    graph: { entities: [], relations: [], reviewQueue: [] }
+  }
+  const snapshot = buildAutomaticMemoryBackupSnapshotState(state)
+  assert.equal(
+    AUTOMATIC_MEMORY_BACKUP_STATE_POLICY_VERSION,
+    'automatic-memory-backup-state-v2'
+  )
+  assert.deepEqual(snapshot.cursor, state.cursor)
+  assert.equal(snapshot.tasks[0].evidence.length, 1)
+  assert.equal('evidence' in snapshot.tasks[1], false)
+  assert.equal('sourceMessageIds' in snapshot.tasks[1], false)
+  assert.equal(snapshot.tasks[1].detail, '结构继续保留')
+  assert.equal(
+    JSON.stringify(snapshot).includes('不应复制进自动快照的历史原文'),
+    false
+  )
+  assert.equal(state.tasks[1].evidence.length, 2_000)
 })

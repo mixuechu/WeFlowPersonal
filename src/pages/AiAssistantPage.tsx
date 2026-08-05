@@ -7003,6 +7003,8 @@ function AiAssistantPage() {
                   {memoryDiagnostics.automaticBackup?.lastBackupAt
                     ? ` · 自动快照 ${new Date(memoryDiagnostics.automaticBackup.lastBackupAt).toLocaleString('zh-CN', { hour12: false })}`
                     : ' · 自动快照等待首次完整同步'}
+                  {memoryDiagnostics.automaticBackup?.statePolicyVersion
+                    ? ' · 快照状态仅保留行动热集' : ''}
                   {memoryDiagnostics.embeddings ? ` · 语义索引 ${memoryDiagnostics.embeddings.indexed}/${memoryDiagnostics.embeddings.total}（${memoryDiagnostics.embeddings.ann?.active ? 'ANN' : '精确'}）` : ''}
                   {status?.backgroundWrites?.active ? ` · 后台写入：${status.backgroundWrites.message}` : ''}
                   {memoryDiagnostics.ocr ? ` · OCR ${memoryDiagnostics.ocr.chinese ? '中文可用' : '未就绪'}` : ''}

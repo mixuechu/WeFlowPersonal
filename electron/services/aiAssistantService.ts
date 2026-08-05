@@ -370,6 +370,8 @@ import {
 } from './scheduledSyncPolicy'
 import {
   AUTOMATIC_MEMORY_BACKUP_POLICY_VERSION,
+  AUTOMATIC_MEMORY_BACKUP_STATE_POLICY_VERSION,
+  buildAutomaticMemoryBackupSnapshotState,
   shouldCreateAutomaticMemoryBackup
 } from './automaticMemoryBackupPolicy'
 
@@ -3525,7 +3527,7 @@ export class AiAssistantService {
       // successful automatic-backup marker instead of immediately duplicating it.
       writeEncryptedDurableJson(
         `${backup.path}.state.json`,
-        this.state,
+        buildAutomaticMemoryBackupSnapshotState(this.state),
         this.stateEncryptionKey
       )
     } catch (error) {
@@ -5444,6 +5446,7 @@ export class AiAssistantService {
       },
       automaticBackup: {
         policyVersion: AUTOMATIC_MEMORY_BACKUP_POLICY_VERSION,
+        statePolicyVersion: AUTOMATIC_MEMORY_BACKUP_STATE_POLICY_VERSION,
         cadence: 'after_complete_sync_once_per_shanghai_day',
         lastBackupDate: this.state.cursor.lastAutomaticBackupDate,
         lastBackupAt: this.state.cursor.lastAutomaticBackupAt,
