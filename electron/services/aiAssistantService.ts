@@ -209,7 +209,14 @@ import {
   buildEncryptedAssistantState,
   getTaskStateStorageStats
 } from '../../shared/taskStateStorage.ts'
-import { applyRelationConfirmation, planRelationConfirmation, type RelationCorrection } from './relationCorrectionPolicy'
+import {
+  applyRelationConfirmation,
+  normalizeRelationsAfterIdentityMerge,
+  planRelationConfirmation,
+  reconcileRelationReviewsAfterIdentityMerge,
+  relationSemanticId,
+  type RelationCorrection
+} from './relationCorrectionPolicy'
 import { assessAutomaticSearchMaintenance } from './automaticSearchMaintenancePolicy.ts'
 import {
   deliverNotificationBatch,
@@ -6801,29 +6808,26 @@ export class AiAssistantService {
           if (relation.subjectId === source.id) relation.subjectId = target.id
           if (relation.objectId === source.id) relation.objectId = target.id
         }
-        const normalizedRelations = new Map<string, GraphRelation>()
-        for (const relation of this.state.graph.relations) {
-          if (relation.subjectId === relation.objectId) continue
-          const relationId = crypto.createHash('sha256')
-            .update(`${relation.subjectId}|${relation.predicate}|${relation.objectId}`).digest('hex').slice(0, 20)
-          const existingRelation = normalizedRelations.get(relationId)
-          if (existingRelation) {
-            const knownEvidence = new Set(existingRelation.evidence.map(item => item.messageId))
-            existingRelation.evidence.push(...relation.evidence.filter(item => !knownEvidence.has(item.messageId)))
-            existingRelation.evidenceTotal = existingRelation.evidence.length
-            existingRelation.confidence = Math.max(existingRelation.confidence, relation.confidence)
-          } else {
-            normalizedRelations.set(relationId, {
-              ...relation,
-              id: relationId,
-              evidenceTotal: Math.max(
-                Number(relation.evidenceTotal || 0),
-                relation.evidence.length
-              )
-            })
-          }
-        }
-        this.state.graph.relations = [...normalizedRelations.values()]
+        const relationIdMap = new Map<string, string | null>(
+          this.state.graph.relations.map(relation => [
+            relation.id,
+            relation.subjectId === relation.objectId
+              ? null
+              : relationSemanticId(
+                  relation.subjectId,
+                  relation.predicate,
+                  relation.objectId
+                )
+          ])
+        )
+        this.state.graph.relations =
+          normalizeRelationsAfterIdentityMerge(this.state.graph.relations)
+        reconcileRelationReviewsAfterIdentityMerge({
+          reviewQueue: this.state.graph.reviewQueue,
+          relationIdMap,
+          relations: this.state.graph.relations,
+          resolvedAt: resolutionNow
+        })
         this.state.graph.entities = this.state.graph.entities.filter(entity => entity.id !== source.id)
         for (const pending of this.state.graph.reviewQueue) {
           if (pending.id !== review.id && pending.status === 'pending' &&

@@ -124,3 +124,93 @@ export function applyRelationConfirmation(input: {
   source.updatedAt = input.now
   return { relations: input.relations, confirmedRelation: source, mergedIntoExisting: false }
 }
+
+function relationStatusRank(value: unknown): number {
+  return value === 'confirmed' ? 3 : value === 'candidate' ? 2 : value === 'rejected' ? 1 : 0
+}
+
+export function normalizeRelationsAfterIdentityMerge(relations: any[]): any[] {
+  const normalized = new Map<string, any>()
+  const evidenceKey = (item: any): string => [
+    String(item?.sourceId || item?.source_id || ''),
+    String(item?.sessionId || item?.session_id || ''),
+    String(item?.messageId || item?.message_id || '')
+  ].join('\u001f')
+  for (const relation of Array.isArray(relations) ? relations : []) {
+    if (!relation?.subjectId || !relation?.objectId ||
+      relation.subjectId === relation.objectId) continue
+    const id = relationSemanticId(
+      String(relation.subjectId),
+      compact(relation.predicate, 100),
+      String(relation.objectId)
+    )
+    const existing = normalized.get(id)
+    if (!existing) {
+      normalized.set(id, {
+        ...relation,
+        id,
+        evidence: [...(relation.evidence || [])],
+        evidenceTotal: Math.max(
+          Number(relation.evidenceTotal || 0),
+          Number(relation.evidence?.length || 0)
+        )
+      })
+      continue
+    }
+    const knownEvidence = new Set((existing.evidence || []).map(evidenceKey))
+    for (const item of relation.evidence || []) {
+      const key = evidenceKey(item)
+      if (knownEvidence.has(key)) continue
+      knownEvidence.add(key)
+      existing.evidence.push(item)
+    }
+    if (relationStatusRank(relation.status) > relationStatusRank(existing.status)) {
+      existing.status = relation.status
+      existing.directionExplanation = relation.directionExplanation
+    }
+    existing.confidence = Math.max(
+      Number(existing.confidence || 0),
+      Number(relation.confidence || 0)
+    )
+    existing.evidenceTotal = Math.max(
+      Number(existing.evidenceTotal || 0),
+      Number(relation.evidenceTotal || 0),
+      existing.evidence.length
+    )
+    existing.createdAt = [existing.createdAt, relation.createdAt]
+      .filter(Boolean).sort()[0] || existing.createdAt
+    existing.updatedAt = [existing.updatedAt, relation.updatedAt]
+      .filter(Boolean).sort().at(-1) || existing.updatedAt
+  }
+  return [...normalized.values()]
+}
+
+export function reconcileRelationReviewsAfterIdentityMerge(input: {
+  reviewQueue: any[]
+  relationIdMap: Map<string, string | null>
+  relations: any[]
+  resolvedAt: string
+}): void {
+  const relations = new Map((input.relations || []).map(relation => [relation.id, relation]))
+  const retainedPending = new Set<string>()
+  for (const review of input.reviewQueue || []) {
+    if (review?.kind !== 'relation' || review?.status !== 'pending' ||
+      !input.relationIdMap.has(String(review.relationId || ''))) continue
+    const mappedId = input.relationIdMap.get(String(review.relationId || '')) || null
+    const target = mappedId ? relations.get(mappedId) : null
+    let reason = ''
+    if (!target) reason = '身份合并后关系成为自环或已经消失'
+    else if (target.status === 'confirmed') reason = '身份合并后候选已并入人工确认关系'
+    else if (retainedPending.has(mappedId!)) reason = '身份合并后候选与另一条待审关系重复'
+    if (reason) {
+      review.status = 'rejected'
+      review.resolvedAt = input.resolvedAt
+      review.resolutionActor = 'system'
+      review.resolutionReason = reason
+      review.detail = `${String(review.detail || '')} ${reason}，此候选自动关闭。`.trim()
+      continue
+    }
+    review.relationId = mappedId
+    retainedPending.add(mappedId!)
+  }
+}
