@@ -6179,7 +6179,13 @@ export class PersonalMemoryStore {
     if (!this.db) return []
     const rows = entityId
       ? this.db.prepare(`
-          SELECT h.*,subject.canonical_name AS subject_name,object.canonical_name AS object_name
+          SELECT h.*,subject.canonical_name AS subject_name,object.canonical_name AS object_name,
+            CASE WHEN json_valid(h.snapshot_json)
+              THEN COALESCE(json_extract(h.snapshot_json,'$.directionExplanation'),'')
+              ELSE '' END AS direction_explanation,
+            CASE WHEN json_valid(h.snapshot_json)
+                AND json_type(h.snapshot_json,'$.directionExplanation')='text'
+              THEN 1 ELSE 0 END AS direction_explanation_recorded
           FROM relation_history h
           LEFT JOIN entities subject ON subject.id=h.subject_id
           LEFT JOIN entities object ON object.id=h.object_id
@@ -6187,7 +6193,13 @@ export class PersonalMemoryStore {
           ORDER BY h.id DESC LIMIT ?
         `).all(entityId, entityId, limit)
       : this.db.prepare(`
-          SELECT h.*,subject.canonical_name AS subject_name,object.canonical_name AS object_name
+          SELECT h.*,subject.canonical_name AS subject_name,object.canonical_name AS object_name,
+            CASE WHEN json_valid(h.snapshot_json)
+              THEN COALESCE(json_extract(h.snapshot_json,'$.directionExplanation'),'')
+              ELSE '' END AS direction_explanation,
+            CASE WHEN json_valid(h.snapshot_json)
+                AND json_type(h.snapshot_json,'$.directionExplanation')='text'
+              THEN 1 ELSE 0 END AS direction_explanation_recorded
           FROM relation_history h
           LEFT JOIN entities subject ON subject.id=h.subject_id
           LEFT JOIN entities object ON object.id=h.object_id
@@ -6219,7 +6231,13 @@ export class PersonalMemoryStore {
       countSql = `SELECT COUNT(*) AS count FROM relation_history
         WHERE subject_id=? OR object_id=?`
       rowsSql = `
-        SELECT h.*,subject.canonical_name AS subject_name,object.canonical_name AS object_name
+        SELECT h.*,subject.canonical_name AS subject_name,object.canonical_name AS object_name,
+          CASE WHEN json_valid(h.snapshot_json)
+            THEN COALESCE(json_extract(h.snapshot_json,'$.directionExplanation'),'')
+            ELSE '' END AS direction_explanation,
+          CASE WHEN json_valid(h.snapshot_json)
+              AND json_type(h.snapshot_json,'$.directionExplanation')='text'
+            THEN 1 ELSE 0 END AS direction_explanation_recorded
         FROM relation_history h
         LEFT JOIN entities subject ON subject.id=h.subject_id
         LEFT JOIN entities object ON object.id=h.object_id
@@ -6341,7 +6359,13 @@ export class PersonalMemoryStore {
       `).get(relationId) as any)?.count || 0)
       items = this.db.prepare(`
         SELECT history.*,subject.canonical_name AS subject_name,
-          object.canonical_name AS object_name
+          object.canonical_name AS object_name,
+          CASE WHEN json_valid(history.snapshot_json)
+            THEN COALESCE(json_extract(history.snapshot_json,'$.directionExplanation'),'')
+            ELSE '' END AS direction_explanation,
+          CASE WHEN json_valid(history.snapshot_json)
+              AND json_type(history.snapshot_json,'$.directionExplanation')='text'
+            THEN 1 ELSE 0 END AS direction_explanation_recorded
         FROM relation_history history
         LEFT JOIN entities subject ON subject.id=history.subject_id
         LEFT JOIN entities object ON object.id=history.object_id

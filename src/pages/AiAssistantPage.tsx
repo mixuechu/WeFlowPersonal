@@ -287,6 +287,25 @@ function memoryAuditSnapshotText(kind: 'claim' | 'event', value: any): string {
     `${value?.location ? ` · ${value.location}` : ''}${participants} · ${memoryAuditStatusLabel(value?.status || '')}`
 }
 
+function relationHistoryChangeLabel(value: unknown): string {
+  return value === 'created'
+    ? '首次发现'
+    : value === 'status_changed'
+      ? '可信状态变化'
+      : value === 'direction_updated'
+        ? '方向说明变化'
+        : '证据与置信度更新'
+}
+
+function relationHistoryDirectionText(item: any): string {
+  const explanation = String(item?.direction_explanation || '').trim()
+  if (explanation) return `方向说明：${explanation}`
+  return item?.change_type === 'direction_updated' &&
+    !Number(item?.direction_explanation_recorded || 0)
+    ? '方向说明：旧版历史快照未保存'
+    : ''
+}
+
 function MemoryItemAuditRows({ kind, items }: { kind: 'claim' | 'event'; items: any[] }) {
   return <div className="assistant-evidence-stack">
     {items.map(item => item.auditKind === 'correction'
@@ -9451,7 +9470,9 @@ function AiAssistantPage() {
                     {selectedEntityRelationHistory.slice(0, 8).map((item: any) =>
                       <div className="assistant-relation-history" key={item.id}>
                         <b>{item.subject_name || item.subject_id} — {item.predicate} → {item.object_name || item.object_id}</b>
-                        <span>{item.change_type === 'created' ? '首次发现' : item.change_type === 'status_changed' ? '可信状态变化' : '证据与置信度更新'} · {item.status === 'confirmed' ? '已确认' : item.status === 'rejected' ? '已拒绝' : '待确认'}</span>
+                        <span>{relationHistoryChangeLabel(item.change_type)} · {item.status === 'confirmed' ? '已确认' : item.status === 'rejected' ? '已拒绝' : '待确认'}</span>
+                        {relationHistoryDirectionText(item) &&
+                          <small>{relationHistoryDirectionText(item)}</small>}
                         <small>{new Date(item.created_at).toLocaleString('zh-CN')} · {Math.round(Number(item.confidence || 0) * 100)}%</small>
                       </div>)}
                     {!selectedEntityRelationHistory.length && <em>尚无关系变化记录</em>}
@@ -10173,9 +10194,11 @@ function AiAssistantPage() {
                       </button>}
                       {(item.historyPage?.items || []).map((history: any) => <small key={`relation-history-${history.id}`}>
                         {new Date(history.created_at).toLocaleString('zh-CN')} ·
-                        {history.change_type || '状态变化'}：
+                        {relationHistoryChangeLabel(history.change_type)}：
                         {history.subject_name || history.subject_id} — {history.predicate} →
                         {history.object_name || history.object_id} · {history.status}
+                        {relationHistoryDirectionText(history) &&
+                          <><br />{relationHistoryDirectionText(history)}</>}
                       </small>)}
                       {item.historyPage?.hasMore && <button
                         disabled={Boolean(relationDossierAuditLoading.history)}
@@ -10634,7 +10657,9 @@ function AiAssistantPage() {
                 <h3>关系变化历史 <small>{graphWorkspace.focus?.auditPages?.relationHistory?.total ?? selectedEntityRelationHistory.length}</small></h3>
                 {selectedEntityRelationHistory.map((item: any) => <article key={item.id} className="assistant-dossier-history-row">
                   <div><b>{item.subject_name || item.subject_id} — {item.predicate} → {item.object_name || item.object_id}</b>
-                    <span>{item.change_type === 'created' ? '首次发现' : item.change_type === 'status_changed' ? '可信状态变化' : '证据更新'}</span></div>
+                    <span>{relationHistoryChangeLabel(item.change_type)}</span></div>
+                  {relationHistoryDirectionText(item) &&
+                    <small>{relationHistoryDirectionText(item)}</small>}
                   <small>{new Date(item.created_at).toLocaleString('zh-CN')} · {item.status} · {Math.round(Number(item.confidence || 0) * 100)}%</small>
                 </article>)}
                 {!selectedEntityRelationHistory.length && <em>尚无关系变化历史</em>}

@@ -1655,6 +1655,7 @@ test('relationship history keeps creation and later review state instead of over
     objectId: 'org-b',
     confidence: 0.7,
     status: 'candidate',
+    directionExplanation: '从人物甲指向组织乙：人物甲服务于组织乙。',
     evidence: [],
     createdAt: '2026-07-29T00:00:00.000Z',
     updatedAt: '2026-07-29T00:00:00.000Z'
@@ -1668,6 +1669,14 @@ test('relationship history keeps creation and later review state instead of over
   const history = store.listRelationHistory('person-a')
   assert.deepEqual(history.map(item => item.change_type), ['status_changed', 'created'])
   assert.deepEqual(history.map(item => item.status), ['confirmed', 'candidate'])
+  assert.deepEqual(
+    history.map(item => item.direction_explanation),
+    [relation.directionExplanation, relation.directionExplanation]
+  )
+  assert.deepEqual(
+    history.map(item => item.direction_explanation_recorded),
+    [1, 1]
+  )
 }))
 
 test('relation direction authority survives reopen, empty syncs and search index repair', () => {
@@ -1793,6 +1802,15 @@ test('relation direction authority survives reopen, empty syncs and search index
       JSON.parse(history[0].snapshot_json).directionExplanation,
       authoritativeExplanation
     )
+    assert.equal(history[0].direction_explanation, authoritativeExplanation)
+    assert.equal(history[0].direction_explanation_recorded, 1)
+    ;(reopened as any).db.prepare(`
+      UPDATE relation_history SET snapshot_json='{malformed'
+      WHERE id=?
+    `).run(history[0].id)
+    const malformedHistory = reopened.listRelationHistory('direction-person')
+    assert.equal(malformedHistory[0].direction_explanation, '')
+    assert.equal(malformedHistory[0].direction_explanation_recorded, 0)
   } finally {
     first.close()
     reopened.close()
@@ -2147,7 +2165,9 @@ test('structured search dossiers bind the exact type, id and current search revi
       index % 3 ? 'confirmed' : 'candidate',
       0.8,
       'status_changed',
-      '{}',
+      index === 93
+        ? JSON.stringify({ directionExplanation: '档案人物负责档案项目。' })
+        : '{}',
       `2026-08-04T11:${String(index % 60).padStart(2, '0')}:00.000Z`
     )
   }
@@ -2173,6 +2193,18 @@ test('structured search dossiers bind the exact type, id and current search revi
   assert.equal(dossierWithPages.item.historyPage.total, 95)
   assert.equal(dossierWithPages.item.historyPage.items.length, 40)
   assert.equal(dossierWithPages.item.historyPage.hasMore, true)
+  assert.equal(
+    dossierWithPages.item.historyPage.items[0].direction_explanation,
+    '档案人物负责档案项目。'
+  )
+  assert.equal(
+    dossierWithPages.item.historyPage.items[0].direction_explanation_recorded,
+    1
+  )
+  assert.equal(
+    dossierWithPages.item.historyPage.items[1].direction_explanation_recorded,
+    0
+  )
   assert.equal(dossierWithPages.item.correctionPage.total, 65)
   assert.equal(dossierWithPages.item.correctionPage.items.length, 40)
   const historySecond = store.listRelationDossierAuditPage({
