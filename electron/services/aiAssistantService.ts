@@ -29,6 +29,7 @@ import {
   getVectorIndexWriteConflict,
   preparedRecoveryConflictMessage,
   type IncrementalSyncPhase,
+  runAfterSettledBarrier,
   runAfterVectorBarrier,
   shouldDeferPreparedRecovery,
   waitForBackgroundWrites,
@@ -617,6 +618,7 @@ export class AiAssistantService {
   private activeSyncPhase: IncrementalSyncPhase | null = null
   private scheduler: ReturnType<typeof setInterval> | null = null
   private schedulerTickPromise: Promise<string> | null = null
+  private systemResumePromise: Promise<string> | null = null
   private notificationFlushPromise: Promise<void> | null = null
   private preparedRecoveryContinuation: ReturnType<typeof setTimeout> | null = null
   private connectorAuthorizationCache = new AsyncExpiringValue<{
@@ -862,6 +864,7 @@ export class AiAssistantService {
       this.vectorIndexPromise,
       this.memorySearchRepairPromise,
       this.schedulerTickPromise,
+      this.systemResumePromise,
       this.notificationFlushPromise
     ])
     personalMemoryStore.close()
@@ -869,11 +872,22 @@ export class AiAssistantService {
   }
 
   handleSystemSuspend(observedAt = new Date()): void {
+    if (this.disposed) return
     this.state.cursor.lastSystemSuspendAt = observedAt.toISOString()
     this.saveState()
   }
 
   async handleSystemResume(observedAt = new Date()): Promise<string> {
+    if (this.disposed) return 'service_disposed'
+    if (this.systemResumePromise) return this.systemResumePromise
+    const promise = this.runSystemResume(observedAt).finally(() => {
+      if (this.systemResumePromise === promise) this.systemResumePromise = null
+    })
+    this.systemResumePromise = promise
+    return promise
+  }
+
+  private async runSystemResume(observedAt: Date): Promise<string> {
     this.state.cursor.lastSystemResumeAt = observedAt.toISOString()
     this.state.cursor.systemResumeCount =
       Math.max(0, Number(this.state.cursor.systemResumeCount || 0)) + 1
@@ -8274,7 +8288,13 @@ export class AiAssistantService {
     observedNow?: Date
   ): Promise<string> {
     if (this.disposed) return Promise.resolve('service_disposed')
-    if (this.schedulerTickPromise) return this.schedulerTickPromise
+    if (this.schedulerTickPromise) {
+      if (source === 'timer') return this.schedulerTickPromise
+      return runAfterSettledBarrier(
+        this.schedulerTickPromise,
+        () => this.schedulerTick(source, observedNow)
+      )
+    }
     const promise = this.runSchedulerTick(source, observedNow).finally(() => {
       if (this.schedulerTickPromise === promise) this.schedulerTickPromise = null
     })

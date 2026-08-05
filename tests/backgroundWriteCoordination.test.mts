@@ -5,6 +5,7 @@ import {
   getBackgroundWriteConflict,
   getVectorIndexWriteConflict,
   preparedRecoveryConflictMessage,
+  runAfterSettledBarrier,
   runAfterVectorBarrier,
   shouldDeferPreparedRecovery,
   waitForBackgroundWrites,
@@ -54,6 +55,27 @@ test('shutdown barrier also waits for ancillary scheduler and notification work'
     fulfilled: 5,
     rejected: 0
   })
+})
+
+test('resume work runs after an existing scheduler tick even when that tick fails', async () => {
+  const order: string[] = []
+  let release: (() => void) | undefined
+  const timerTick = new Promise<void>((_resolve, reject) => {
+    release = () => {
+      order.push('timer')
+      reject(new Error('expected timer failure'))
+    }
+  })
+  const resume = runAfterSettledBarrier(timerTick, async () => {
+    order.push('resume')
+    return 'resume_completed'
+  })
+
+  await Promise.resolve()
+  assert.deepEqual(order, [])
+  release?.()
+  assert.equal(await resume, 'resume_completed')
+  assert.deepEqual(order, ['timer', 'resume'])
 })
 
 test('background writer diagnostics expose the authoritative owner and waiting phase', () => {

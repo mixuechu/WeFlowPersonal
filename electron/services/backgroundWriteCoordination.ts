@@ -25,6 +25,14 @@ export async function waitForBackgroundWrites(
   }
 }
 
+export async function runAfterSettledBarrier<T>(
+  barrier: Promise<unknown>,
+  run: () => Promise<T>
+): Promise<T> {
+  await Promise.allSettled([barrier])
+  return run()
+}
+
 export function describeBackgroundWriteState(input: {
   syncing: boolean
   syncPhase?: IncrementalSyncPhase | null
