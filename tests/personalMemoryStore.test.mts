@@ -80,6 +80,7 @@ import { editDistance, entityPinyinTerms, fuzzyEntityScore, pinyinEntityScore } 
 import { buildWeeklyBriefing, isQuietTime } from '../electron/services/briefingIntelligence.ts'
 import { groundBriefingDigest } from '../electron/services/briefingEvidencePolicy.ts'
 import {
+  buildStructuredExtractionEvidence,
   structuredEvidenceKey,
   validateStructuredDigestEvidence
 } from '../electron/services/structuredEvidencePolicy.ts'
@@ -4441,6 +4442,36 @@ test('all structured extraction rejects forged, context and cross-session eviden
     events: 1,
     possibleDuplicates: 0
   })
+})
+
+test('structured extraction evidence preserves explicit source and sender identity', () => {
+  const incoming = buildStructuredExtractionEvidence({
+    sourceId: 'documents',
+    sessionId: 'data-source:documents',
+    id: 'document-42',
+    timestamp: 1_800_000_000,
+    senderName: '项目计划.docx',
+    direction: '本机文档'
+  }, '文档证据正文', 'indirect')
+  assert.deepEqual(incoming, {
+    sourceId: 'documents',
+    messageId: 'documents:data-source:documents:document-42',
+    sessionId: 'data-source:documents',
+    timestamp: 1_800_000_000,
+    sender: '项目计划.docx',
+    excerpt: '文档证据正文',
+    role: 'indirect'
+  })
+  const outgoing = buildStructuredExtractionEvidence({
+    sourceId: 'wechat',
+    sessionId: 'private-chat',
+    id: 'message-7',
+    senderName: '错误显示名',
+    direction: '我发送'
+  }, '本人发出的原文')
+  assert.equal(outgoing.sender, '我')
+  assert.equal(outgoing.sourceId, 'wechat')
+  assert.equal('role' in outgoing, false)
 })
 
 test('extracted people reuse only evidence-verified account anchors, never names alone', () => {

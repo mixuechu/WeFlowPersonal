@@ -120,6 +120,7 @@ import { classifyTaskAssignment, evaluateTaskAssignmentPolicy } from './taskAssi
 import { buildWeeklyBriefing, isQuietTime } from './briefingIntelligence'
 import { groundBriefingDigest } from './briefingEvidencePolicy'
 import {
+  buildStructuredExtractionEvidence,
   structuredEvidenceKey,
   validateStructuredDigestEvidence
 } from './structuredEvidencePolicy'
@@ -2391,12 +2392,11 @@ export class AiAssistantService {
       if (/伴侣|配偶|夫妻|父亲|母亲|兄弟|姐妹|朋友|同学/.test(predicate) &&
           (subjectType !== 'person' || objectType !== 'person')) continue
       const id = crypto.createHash('sha256').update(`${subjectId}|${predicate}|${objectId}`).digest('hex').slice(0, 20)
-      const evidence = (Array.isArray(item.__evidenceMessages) ? item.__evidenceMessages : []).map((message: any) => ({
-        messageId: structuredEvidenceKey(message),
-        sessionId: String(message.sessionId),
-        timestamp: Number(message.timestamp),
-        excerpt: redact(String(message.content)).slice(0, 160)
-      }))
+      const evidence = (Array.isArray(item.__evidenceMessages) ? item.__evidenceMessages : [])
+        .map((message: any) => buildStructuredExtractionEvidence(
+          message,
+          redact(String(message.content)).slice(0, 160)
+        ))
       if (personalMemoryStore.isExtractedMemoryItemSuppressed('relation', {
         id, subjectId, predicate, objectId, evidence
       })) continue
@@ -2448,13 +2448,12 @@ export class AiAssistantService {
 
   private persistClaimsAndEvents(digest: any, tempIds: Map<string, string>, sourceMessages: any[], now: string): void {
     const evidenceFor = (messages: any[], role: 'direct' | 'indirect' | 'contradiction' = 'direct') =>
-      (Array.isArray(messages) ? messages : []).map(message => ({
-        messageId: structuredEvidenceKey(message),
-        sessionId: String(message.sessionId),
-        timestamp: Number(message.timestamp),
-        excerpt: redact(String(message.content)).slice(0, 300),
-        role
-      }))
+      (Array.isArray(messages) ? messages : []).map(message =>
+        buildStructuredExtractionEvidence(
+          message,
+          redact(String(message.content)).slice(0, 300),
+          role
+        ))
     const claims = (Array.isArray(digest.claims) ? digest.claims : []).flatMap((item: any) => {
       const subjectId = tempIds.get(String(item.subjectTempId || ''))
       const objectEntityId = tempIds.get(String(item.objectTempId || ''))

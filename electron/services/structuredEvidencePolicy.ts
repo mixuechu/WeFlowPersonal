@@ -8,6 +8,32 @@ export function structuredEvidenceKey(message: any): string {
   return `${message?.sourceId || 'wechat'}:${message?.sessionId || ''}:${message?.id || ''}`
 }
 
+export function buildStructuredExtractionEvidence(
+  message: any,
+  excerpt: string,
+  role?: 'direct' | 'indirect' | 'contradiction'
+): {
+  sourceId: string
+  messageId: string
+  sessionId: string
+  timestamp: number
+  sender: string
+  excerpt: string
+  role?: 'direct' | 'indirect' | 'contradiction'
+} {
+  const evidence = {
+    sourceId: String(message?.sourceId || 'wechat'),
+    messageId: structuredEvidenceKey(message),
+    sessionId: String(message?.sessionId || ''),
+    timestamp: Number(message?.timestamp || 0),
+    sender: message?.direction === '我发送'
+      ? '我'
+      : String(message?.senderName || message?.senderId || ''),
+    excerpt: String(excerpt || '')
+  }
+  return role ? { ...evidence, role } : evidence
+}
+
 function validateItems(
   value: unknown,
   evidenceField: string,
