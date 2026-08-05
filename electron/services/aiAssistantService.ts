@@ -47,6 +47,7 @@ import {
   paginateMemoryResults,
   type MemorySearchOptions
 } from './memorySearchFilters'
+import { runWithMemoryScopeRevalidation } from './memoryScopeRevalidation.ts'
 import {
   applyMemorySearchFeedback,
   buildMemorySearchFeedbackContext,
@@ -5984,6 +5985,31 @@ export class AiAssistantService {
     })
   }
 
+  private async assertMemoryScopeSelectionsCurrent(
+    options: MemorySearchOptions,
+    phase: 'before_retrieval' | 'after_retrieval' | 'after_model'
+  ): Promise<void> {
+    if (options.entityId) {
+      const selection = resolveTrustedEntitySelection(this.state.graph.entities, {
+        entityId: options.entityId,
+        expectedRevision: options.entitySelectionRevision
+      })
+      if (selection.stale) {
+        const timing = phase === 'after_model'
+          ? '在回答生成期间'
+          : phase === 'after_retrieval' ? '在检索期间' : ''
+        throw new Error(`所选实体${timing}已经变化或不再可信，请重新选择实体范围`)
+      }
+    }
+    const sessionSelection = await this.resolveMemorySessionSelection(options)
+    if (sessionSelection?.stale) {
+      const timing = phase === 'after_model'
+        ? '在回答生成期间'
+        : phase === 'after_retrieval' ? '在检索期间' : ''
+      throw new Error(`所选会话${timing}已经改名、变更策略或不再存在，请重新选择会话范围`)
+    }
+  }
+
   private commitConversationSourcePolicies(policies: Array<{
     sessionId: string
     displayName: string
@@ -7338,20 +7364,13 @@ export class AiAssistantService {
   }
 
   async searchMemoryWithTrustedScope(query: string, options: MemorySearchOptions = {}): Promise<any[]> {
-    if (options.entityId) {
-      const selection = resolveTrustedEntitySelection(this.state.graph.entities, {
-        entityId: options.entityId,
-        expectedRevision: options.entitySelectionRevision
-      })
-      if (selection.stale) {
-        throw new Error('所选实体已经变化或不再可信，请重新选择实体范围')
-      }
-    }
-    const sessionSelection = await this.resolveMemorySessionSelection(options)
-    if (sessionSelection?.stale) {
-      throw new Error('所选会话已经改名、变更策略或不再存在，请重新选择会话范围')
-    }
-    return this.searchMemoryHybrid(query, options)
+    return runWithMemoryScopeRevalidation(
+      boundary => this.assertMemoryScopeSelectionsCurrent(
+        options,
+        boundary === 'before' ? 'before_retrieval' : 'after_retrieval'
+      ),
+      () => this.searchMemoryHybrid(query, options)
+    )
   }
 
   private memorySearchFeedbackContext(query: string, options: MemorySearchOptions): {
@@ -7845,19 +7864,7 @@ export class AiAssistantService {
   ): Promise<any> {
     const query = String(question || '').trim()
     if (!query) throw new Error('请输入问题')
-    const explicitEntitySelection = options.entityId
-      ? resolveTrustedEntitySelection(this.state.graph.entities, {
-          entityId: options.entityId,
-          expectedRevision: options.entitySelectionRevision
-        })
-      : null
-    if (explicitEntitySelection?.stale) {
-      throw new Error('所选实体已经变化或不再可信，请重新选择实体范围')
-    }
-    const explicitSessionSelection = await this.resolveMemorySessionSelection(options)
-    if (explicitSessionSelection?.stale) {
-      throw new Error('所选会话已经改名、变更策略或不再存在，请重新选择会话范围')
-    }
+    await this.assertMemoryScopeSelectionsCurrent(options, 'before_retrieval')
     const storedConversation = conversationId
       ? personalMemoryStore.getAssistantConversation(conversationId, 8)
       : null
@@ -7871,6 +7878,12 @@ export class AiAssistantService {
     const contextualQuestion = buildContextualMemoryQuestion(query, conversationHistory)
     const trustedEntities = this.state.graph.entities.filter(isTrustedEntity)
     const plan = buildMemoryQueryPlan(contextualQuestion.query, trustedEntities)
+    if (options.entityId) {
+      plan.explanation.unshift('显式实体范围已绑定稳定 ID 与可信目录版本，并会在回答保存前再次复核')
+    }
+    if (options.sessionId) {
+      plan.explanation.unshift('显式会话范围已绑定稳定 ID 与选择指纹，并会在回答保存前再次复核')
+    }
     if (contextualQuestion.usedHistory) plan.explanation.unshift('结合上一轮问题解析本次指代')
     if (conversationHistoryAudit.excludedAssistant) {
       plan.explanation.unshift(
@@ -7987,16 +8000,7 @@ export class AiAssistantService {
         `长文语义命中：${semanticChunkHits} 份资料优先发送实际命中片段，完整正文继续留在本机`
       )
     }
-    if (options.entityId && resolveTrustedEntitySelection(this.state.graph.entities, {
-      entityId: options.entityId,
-      expectedRevision: options.entitySelectionRevision
-    }).stale) {
-      throw new Error('所选实体在检索期间发生变化，请重新选择后再提问')
-    }
-    const completedSessionSelection = await this.resolveMemorySessionSelection(options)
-    if (completedSessionSelection?.stale) {
-      throw new Error('所选会话在检索期间发生变化，请重新选择后再提问')
-    }
+    await this.assertMemoryScopeSelectionsCurrent(options, 'after_retrieval')
     const apiKey = String(this.config.get('aiAssistantApiKey') || '').trim()
     if (!apiKey) throw new Error('请先设置 DeepSeek API Key')
     const baseUrl = String(this.config.get('aiAssistantApiBaseUrl') || 'https://api.deepseek.com').replace(/\/$/, '')
@@ -8014,17 +8018,23 @@ export class AiAssistantService {
       searchOptions: modelSearchOptions,
       context
     }), redactionLevel)
-    const { response, payload } = await this.modelRequests.fetchJson(`${baseUrl}/chat/completions`, {
-      method: 'POST',
-      headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        model, temperature: 0.1, max_tokens: 1800, response_format: { type: 'json_object' },
-        messages: [
-          { role: 'system', content: MEMORY_RAG_SYSTEM_PROMPT },
-          { role: 'user', content: outbound.text }
-        ]
-      })
-    }, 90_000, true)
+    const { response, payload } = await runWithMemoryScopeRevalidation(
+      boundary => this.assertMemoryScopeSelectionsCurrent(
+        options,
+        boundary === 'before' ? 'after_retrieval' : 'after_model'
+      ),
+      () => this.modelRequests.fetchJson(`${baseUrl}/chat/completions`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          model, temperature: 0.1, max_tokens: 1800, response_format: { type: 'json_object' },
+          messages: [
+            { role: 'system', content: MEMORY_RAG_SYSTEM_PROMPT },
+            { role: 'user', content: outbound.text }
+          ]
+        })
+      }, 90_000, true)
+    )
     if (!response.ok) throw new Error(payload?.error?.message || `DeepSeek 请求失败 (${response.status})`)
     const parsed = parseModelJson(payload?.choices?.[0]?.message?.content)
     const grounded = finalizeGroundedMemoryAnswer(parsed, context)
@@ -8048,10 +8058,7 @@ export class AiAssistantService {
       }
     })
     const uncertainty = grounded.uncertainty
-    const answerSessionSelection = await this.resolveMemorySessionSelection(options)
-    if (answerSessionSelection?.stale) {
-      throw new Error('所选会话在回答生成期间发生变化，本次回答未保存；请重新选择后提问')
-    }
+    await this.assertMemoryScopeSelectionsCurrent(options, 'after_model')
     const answerCommitSearchRevision = personalMemoryStore.getMemorySearchRevision()
     const authenticatedDraft = this.enrichAssistantCitationFeedback({
       messages: [{
