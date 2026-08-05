@@ -109,14 +109,41 @@ export function filterModelEligibleMemoryResults(
   results: any[],
   sourcePolicies: Record<string, { allowModelAnalysis?: boolean }> = {}
 ): any[] {
+  const effectivePolicies = {
+    wechat: { allowModelAnalysis: true },
+    documents: { allowModelAnalysis: true },
+    calendar: { allowModelAnalysis: false },
+    mail: { allowModelAnalysis: false },
+    ...sourcePolicies
+  }
   return (results || []).filter(item => {
     if (getMemoryEvidenceEligibility(item).visibility === 'excluded') return false
-    if (item?.metadata?.modelAnalysisAllowed === false) return false
-    const sourceId = String(item?.metadata?.sourceId || '')
-    if (!sourceId) return true
-    const policy = sourcePolicies[sourceId]
-    return !policy || policy.allowModelAnalysis !== false
+    const sourceIds = new Set<string>()
+    const metadataSourceId = String(item?.metadata?.sourceId || '').trim().toLowerCase()
+    if (metadataSourceId) sourceIds.add(metadataSourceId)
+    for (const evidence of Array.isArray(item?.evidence) ? item.evidence : []) {
+      const evidenceSourceId = String(
+        evidence?.source_id || evidence?.sourceId || ''
+      ).trim().toLowerCase()
+      if (evidenceSourceId) sourceIds.add(evidenceSourceId)
+    }
+    if (!sourceIds.size) return false
+    return [...sourceIds].every(sourceId =>
+      effectivePolicies[sourceId]?.allowModelAnalysis === true)
   })
+}
+
+export function assertModelSourcePolicySnapshot(
+  expectedMutationToken: unknown,
+  currentMutationToken: unknown,
+  boundary: 'before' | 'after'
+): void {
+  if (String(currentMutationToken || '') === String(expectedMutationToken || '')) return
+  throw new Error(
+    boundary === 'before'
+      ? 'Mail 隐私配置在检索后发生了变化，已停止发送；请按当前设置重新提问'
+      : 'Mail 隐私配置在回答期间发生了变化，本轮结果未保存；请按当前设置重新提问'
+  )
 }
 
 export type MemoryEvidenceEligibility = {

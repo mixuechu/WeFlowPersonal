@@ -6,6 +6,7 @@ import {
   type LocalMailMessage
 } from '../electron/services/localMailDataSource.ts'
 import {
+  assertModelSourcePolicySnapshot,
   buildModelMemoryContext,
   buildUntrustedMemoryQuestionEnvelope,
   filterTrustedConversationHistory,
@@ -67,7 +68,7 @@ test('mail evidence stays searchable locally but current connector policy gates 
     {
       id: 'mail-message:1',
       search_text: '本机可检索的邮件正文',
-      metadata: { sourceId: 'mail', modelAnalysisAllowed: true }
+      metadata: { sourceId: 'mail', modelAnalysisAllowed: false }
     },
     {
       id: 'chat-message:1',
@@ -87,11 +88,48 @@ test('mail evidence stays searchable locally but current connector policy gates 
     }).map(item => item.id),
     ['mail-message:1', 'chat-message:1']
   )
+  assert.deepEqual(
+    filterModelEligibleMemoryResults([
+      ...localResults,
+      {
+        id: 'unknown-source',
+        search_text: '来源身份缺失的本机资料',
+        evidence: [{ sourceId: 'future-connector', messageId: 'future-1' }]
+      },
+      {
+        id: 'spoofed-source',
+        search_text: 'metadata 冒充微信但原文来自 Mail',
+        metadata: { sourceId: 'wechat' },
+        evidence: [{ sourceId: 'mail', messageId: 'mail-2' }]
+      },
+      {
+        id: 'calendar-event',
+        search_text: '默认不上传模型的日历',
+        metadata: { sourceId: 'calendar' }
+      }
+    ], {
+      mail: { allowModelAnalysis: false }
+    }).map(item => item.id),
+    ['chat-message:1']
+  )
   assert.equal(localResults.length, 2)
 })
 
+test('model send boundary rejects a changed connector privacy snapshot', () => {
+  assert.doesNotThrow(() =>
+    assertModelSourcePolicySnapshot('privacy-v1', 'privacy-v1', 'before'))
+  assert.throws(
+    () => assertModelSourcePolicySnapshot('privacy-v1', 'privacy-v2', 'before'),
+    /已停止发送/
+  )
+  assert.throws(
+    () => assertModelSourcePolicySnapshot('privacy-v1', 'privacy-v2', 'after'),
+    /结果未保存/
+  )
+})
+
 test('memory evidence eligibility keeps review status separate from factual support', () => {
-  const evidence = [{ message_id: 'message-1', excerpt: '原始证据' }]
+  const evidence = [{ source_id: 'wechat', message_id: 'message-1', excerpt: '原始证据' }]
   const item = (type: string, status?: string, withEvidence = true) => ({
     document_type: type,
     metadata: status ? { status } : {},
@@ -157,7 +195,11 @@ test('memory evidence eligibility keeps review status separate from factual supp
     id: 'contradiction-only',
     document_type: 'claim',
     metadata: { status: 'confirmed' },
-    evidence: [{ messageId: 'contra-1', evidence_role: 'contradiction' }],
+    evidence: [{
+      sourceId: 'wechat',
+      messageId: 'contra-1',
+      evidence_role: 'contradiction'
+    }],
     evidenceTotal: 1,
     evidenceRoleCounts: { supporting: 0, contradiction: 1 },
     evidenceSelection: {
@@ -235,8 +277,8 @@ test('memory evidence eligibility keeps review status separate from factual supp
     document_type: 'claim',
     metadata: { status: 'confirmed' },
     evidence: [
-      { messageId: 'support-1', evidence_role: 'direct' },
-      { messageId: 'contra-1', evidence_role: 'contradiction' }
+      { sourceId: 'wechat', messageId: 'support-1', evidence_role: 'direct' },
+      { sourceId: 'wechat', messageId: 'contra-1', evidence_role: 'contradiction' }
     ],
     evidenceRoleCounts: { supporting: 1, contradiction: 1 }
   }])

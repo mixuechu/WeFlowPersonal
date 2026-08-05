@@ -289,9 +289,11 @@ import {
 import {
   PERSONAL_DATA_SOURCE_CATALOG,
   MEMORY_RAG_SYSTEM_PROMPT,
+  assertModelSourcePolicySnapshot,
   buildModelMemoryContext,
   buildUntrustedMemoryQuestionEnvelope,
   classifyDocumentTaskOwnership,
+  filterModelEligibleMemoryResults,
   filterTrustedConversationHistory,
   finalizeGroundedMemoryAnswer,
   groundedAnswerRequiresRetry,
@@ -8449,9 +8451,17 @@ export class AiAssistantService {
     results = this.applyStoredMemorySearchFeedback(contextualQuestion.query, plannedOptions, results)
       .slice(0, usedFallbackTerms ? 30 : 40)
     const mailSource = personalMemoryStore.listDataSources().find(source => source.id === 'mail')
-    const context = buildModelMemoryContext(results, {
+    const modelSourcePolicies = {
       mail: { allowModelAnalysis: Boolean(mailSource?.config?.allowModelAnalysis) }
-    }, 20)
+    }
+    const eligibleResults = filterModelEligibleMemoryResults(results, modelSourcePolicies)
+    const privacyExcludedResults = Math.max(0, results.length - eligibleResults.length)
+    if (privacyExcludedResults) {
+      plan.explanation.push(
+        `来源隐私门禁：${privacyExcludedResults} 份未授权、未知来源或已拒绝资料仅留在本机，未进入 DeepSeek 上下文`
+      )
+    }
+    const context = buildModelMemoryContext(eligibleResults, modelSourcePolicies, 20)
     const semanticChunkHits = context.filter(item => item.semanticMatchExcerpt).length
     if (semanticChunkHits) {
       plan.explanation.push(
@@ -8476,11 +8486,21 @@ export class AiAssistantService {
       searchOptions: modelSearchOptions,
       context
     }), redactionLevel)
+    const expectedMailPrivacyToken = String(mailSource?.mutationToken || '')
     const { response, payload } = await runWithMemoryScopeRevalidation(
-      boundary => this.assertMemoryScopeSelectionsCurrent(
-        options,
-        boundary === 'before' ? 'after_retrieval' : 'after_model'
-      ),
+      async boundary => {
+        await this.assertMemoryScopeSelectionsCurrent(
+          options,
+          boundary === 'before' ? 'after_retrieval' : 'after_model'
+        )
+        const currentMailSource = personalMemoryStore.listDataSources()
+          .find(source => source.id === 'mail')
+        assertModelSourcePolicySnapshot(
+          expectedMailPrivacyToken,
+          currentMailSource?.mutationToken,
+          boundary
+        )
+      },
       () => this.modelRequests.fetchJson(`${baseUrl}/chat/completions`, {
         method: 'POST',
         headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
