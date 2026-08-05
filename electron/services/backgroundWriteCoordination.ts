@@ -11,6 +11,20 @@ export type BackgroundWriteState = {
   message: string | null
 }
 
+export async function waitForBackgroundWrites(
+  promises: Array<Promise<unknown> | null | undefined>
+): Promise<{ waited: number; fulfilled: number; rejected: number }> {
+  const unique = [...new Set(promises.filter(
+    (promise): promise is Promise<unknown> => Boolean(promise)
+  ))]
+  const results = await Promise.allSettled(unique)
+  return {
+    waited: results.length,
+    fulfilled: results.filter(result => result.status === 'fulfilled').length,
+    rejected: results.filter(result => result.status === 'rejected').length
+  }
+}
+
 export function describeBackgroundWriteState(input: {
   syncing: boolean
   syncPhase?: IncrementalSyncPhase | null

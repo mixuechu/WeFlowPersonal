@@ -31,6 +31,7 @@ import {
   type IncrementalSyncPhase,
   runAfterVectorBarrier,
   shouldDeferPreparedRecovery,
+  waitForBackgroundWrites,
   vectorIndexConflictMessage
 } from './backgroundWriteCoordination'
 import { extractAttachmentText } from './attachmentTextExtractor'
@@ -625,6 +626,8 @@ export class AiAssistantService {
   private lastSchedulerTickAt = 0
   private vectorIndexPromise: Promise<any> | null = null
   private vectorIndexContinuation: ReturnType<typeof setTimeout> | null = null
+  private startupSyncTimer: ReturnType<typeof setTimeout> | null = null
+  private startupNotificationTimer: ReturnType<typeof setTimeout> | null = null
   private disposed = false
   private vectorIndexContinuationHealth: VectorIndexContinuationHealth = {
     scheduled: false,
@@ -813,25 +816,53 @@ export class AiAssistantService {
     this.scheduler = setInterval(() => void this.schedulerTick(), 60_000)
     this.scheduler.unref()
     if (this.config.get('aiAssistantEnabled')) {
-      setTimeout(() => void this.sync('startup').catch(() => undefined), 5_000)
+      this.startupSyncTimer = setTimeout(() => {
+        this.startupSyncTimer = null
+        void this.sync('startup').catch(() => undefined)
+      }, 5_000)
+      this.startupSyncTimer.unref()
     }
-    setTimeout(() => void this.flushNotificationOutbox(new Date()), 8_000)
+    this.startupNotificationTimer = setTimeout(() => {
+      this.startupNotificationTimer = null
+      if (!this.disposed) void this.flushNotificationOutbox(new Date())
+    }, 8_000)
+    this.startupNotificationTimer.unref()
     this.scheduleVectorIndexContinuation(12_000)
   }
 
-  dispose(): void {
+  async prepareForAppShutdown(): Promise<{
+    waited: number
+    fulfilled: number
+    rejected: number
+    databaseClosed: boolean
+  }> {
+    if (this.disposed) {
+      return { waited: 0, fulfilled: 0, rejected: 0, databaseClosed: false }
+    }
     this.disposed = true
+    this.cancelRequested = Boolean(this.activeSync)
     if (this.scheduler) clearInterval(this.scheduler)
     this.scheduler = null
     if (this.preparedRecoveryContinuation) clearTimeout(this.preparedRecoveryContinuation)
     this.preparedRecoveryContinuation = null
+    if (this.startupSyncTimer) clearTimeout(this.startupSyncTimer)
+    this.startupSyncTimer = null
+    if (this.startupNotificationTimer) clearTimeout(this.startupNotificationTimer)
+    this.startupNotificationTimer = null
     if (this.vectorIndexContinuation) clearTimeout(this.vectorIndexContinuation)
     this.vectorIndexContinuation = null
     this.vectorIndexContinuationHealth = recordVectorIndexContinuation(
       this.vectorIndexContinuationHealth,
       { type: 'cancelled', at: new Date().toISOString() }
     )
+    this.persistVectorIndexContinuationHealth()
+    const settled = await waitForBackgroundWrites([
+      this.activeSync,
+      this.vectorIndexPromise,
+      this.memorySearchRepairPromise
+    ])
     personalMemoryStore.close()
+    return { ...settled, databaseClosed: true }
   }
 
   handleSystemSuspend(observedAt = new Date()): void {
@@ -3110,6 +3141,7 @@ export class AiAssistantService {
   }
 
   async sync(trigger: 'manual' | 'startup' | 'daily' | 'backlog' | 'resume' = 'manual'): Promise<any> {
+    if (this.disposed) throw new Error('AI 助理正在安全退出，不能开始新的增量处理')
     if (this.activeSync) return this.activeSync
     if (this.memorySearchRepairPromise) {
       throw new Error('当前正在核验检索索引，请在完成后再开始增量处理')
@@ -5207,6 +5239,7 @@ export class AiAssistantService {
   }
 
   async repairMemorySearchIndexes(): Promise<any> {
+    if (this.disposed) throw new Error('AI 助理正在安全退出，不能核验检索索引')
     if (this.memorySearchRepairPromise) return this.memorySearchRepairPromise
     if (this.activeSync) throw new Error('当前正在增量处理，请在本轮结束后再核验检索索引')
     if (this.vectorIndexPromise) throw new Error('当前正在构建本地向量索引，请完成后再核验')
@@ -7569,6 +7602,7 @@ export class AiAssistantService {
     maxBatches?: number
     allowDuringSearchRepair?: boolean
   } = {}): Promise<any> {
+    if (this.disposed) throw new Error('AI 助理正在安全退出，不能构建语义索引')
     if (options.maxBatches === undefined) {
       const conflict = getVectorIndexWriteConflict({
         syncing: Boolean(this.activeSync),

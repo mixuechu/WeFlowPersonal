@@ -5065,7 +5065,6 @@ const shutdownAppServices = async (): Promise<void> => {
     messagePushService.stop()
     insightService.stop()
     groupSummaryService.stop()
-    aiAssistantService.dispose()
     // 兜底：10秒后强制退出，防止某个异步任务卡住导致进程残留。
     // 正常路径会等待服务和 WCDB worker 完整清理后立即退出。
     const forceExitTimer = setTimeout(() => {
@@ -5074,6 +5073,7 @@ const shutdownAppServices = async (): Promise<void> => {
       app.exit(0)
     }, 10_000)
     forceExitTimer.unref()
+    await runShutdownStep('ai-assistant-stop', () => aiAssistantService.prepareForAppShutdown())
     await runShutdownStep('cloud-control-stop', () => cloudControlService.prepareForAppShutdown())
     // 停止自动下载服务
     await runShutdownStep('image-download-stop', () => imageDownloadService.stopAutoDownload())

@@ -7,8 +7,33 @@ import {
   preparedRecoveryConflictMessage,
   runAfterVectorBarrier,
   shouldDeferPreparedRecovery,
+  waitForBackgroundWrites,
   vectorIndexConflictMessage
 } from '../electron/services/backgroundWriteCoordination.ts'
+
+test('shutdown barrier waits for every unique writer and contains rejected work', async () => {
+  let release: (() => void) | undefined
+  const pending = new Promise<void>(resolve => { release = resolve })
+  let completed = false
+  const barrier = waitForBackgroundWrites([
+    pending,
+    pending,
+    Promise.reject(new Error('expected writer failure')),
+    null
+  ]).then(result => {
+    completed = true
+    return result
+  })
+
+  await Promise.resolve()
+  assert.equal(completed, false)
+  release?.()
+  assert.deepEqual(await barrier, {
+    waited: 2,
+    fulfilled: 1,
+    rejected: 1
+  })
+})
 
 test('background writer diagnostics expose the authoritative owner and waiting phase', () => {
   assert.deepEqual(describeBackgroundWriteState({
