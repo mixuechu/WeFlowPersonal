@@ -11096,6 +11096,18 @@ function AiAssistantPage() {
                 : '未配置费率'}</b></span>
               <span>运行结果 <b>{memoryDiagnostics.ingestionSummary?.completedRuns || 0} 完成 / {memoryDiagnostics.ingestionSummary?.partialRuns || 0} 部分 / {memoryDiagnostics.ingestionSummary?.failedRuns || 0} 失败</b></span>
             </div>
+            {memoryDiagnostics.eventDeduplicationAuthority?.version && <div className="assistant-recovery-audit healthy">
+              <header><ShieldCheck size={15} /><span><b>事件去重权威保护</b>
+                <small>相同原文与相同时间的重复事件按人工纠正、受保护审阅和可信状态确定性归并；两条都有人工作出决定时保守并存，等待你继续审阅。</small>
+              </span></header>
+              <div className="assistant-recovery-current">
+                <span>本次重复组 <b>{Number(memoryDiagnostics.eventDeduplicationAuthority.duplicateGroupsThisStart || 0).toLocaleString()}</b></span>
+                <span>本次安全归并 <b>{Number(memoryDiagnostics.eventDeduplicationAuthority.mergedEventsThisStart || 0).toLocaleString()}</b></span>
+                <span>本次保留人工分歧 <b>{Number(memoryDiagnostics.eventDeduplicationAuthority.protectedEventsPreservedThisStart || 0).toLocaleString()}</b></span>
+                <span>累计安全归并 <b>{Number(memoryDiagnostics.eventDeduplicationAuthority.mergedEventsTotal || 0).toLocaleString()}</b></span>
+                <span>累计迁移审阅 <b>{Number(memoryDiagnostics.eventDeduplicationAuthority.reviewsReassignedTotal || 0).toLocaleString()}</b></span>
+              </div>
+            </div>}
             {memoryDiagnostics.graphRelationEvidenceHotset?.version && <div className="assistant-recovery-audit healthy">
               <header><Database size={15} /><span><b>图谱关系原文分层</b>
                 <small>SQLCipher 保存完整关系原文；常驻内存只保留每条关系最新热窗口，纠正、合并和撤销前按需补全受影响关系。</small>

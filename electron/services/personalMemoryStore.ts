@@ -4448,8 +4448,23 @@ export class PersonalMemoryStore {
 
   private repairDuplicateEvents(): void {
     if (!this.db) return
+    const previousRow = this.db.prepare(`
+      SELECT value FROM schema_meta WHERE key='event_deduplication_authority'
+    `).get() as any
+    let previous: any = {}
+    try { previous = JSON.parse(String(previousRow?.value || '{}')) } catch {}
     const rows = this.db.prepare(`
-      SELECT e.source_id,e.session_id,e.message_id,ev.id,ev.title,ev.start_at
+      SELECT e.source_id,e.session_id,e.message_id,ev.id,ev.title,ev.start_at,
+        ev.status,ev.created_at,
+        EXISTS(
+          SELECT 1 FROM memory_corrections correction
+          WHERE correction.item_kind='event' AND correction.item_id=ev.id
+        ) AS corrected,
+        EXISTS(
+          SELECT 1 FROM memory_review_decisions decision
+          WHERE decision.item_kind='event' AND decision.item_id=ev.id
+            AND decision.protect_from_extraction=1
+        ) AS protected_review
       FROM evidence e JOIN events ev ON ev.id=e.event_id
       WHERE e.event_id IS NOT NULL AND e.event_id!=''
       ORDER BY e.source_id,e.session_id,e.message_id,ev.id
@@ -4460,6 +4475,10 @@ export class PersonalMemoryStore {
       id: string
       title: string
       start_at?: string
+      status?: string
+      created_at?: string
+      corrected: number
+      protected_review: number
     }>
     const groups = new Map<string, typeof rows>()
     for (const row of rows) {
@@ -4468,25 +4487,85 @@ export class PersonalMemoryStore {
       if (!group.some(existing => existing.id === row.id)) group.push(row)
       groups.set(identity, group)
     }
-    for (const group of groups.values()) {
-      if (group.length < 2) continue
-      const candidates = [...group]
-      while (candidates.length > 1) {
-        const left = candidates.shift()!
-        const rightIndex = candidates.findIndex(right => !left.start_at || !right.start_at || left.start_at === right.start_at)
-        if (rightIndex < 0) continue
-        const right = candidates.splice(rightIndex, 1)[0]
-        const leftScore = (left.start_at ? 1000 : 0) + left.title.length
-        const [target, source] = leftScore >= ((right.start_at ? 1000 : 0) + right.title.length) ? [left, right] : [right, left]
-        this.db.prepare('INSERT OR IGNORE INTO event_participants(event_id,entity_id,role) SELECT ?,entity_id,role FROM event_participants WHERE event_id=?').run(target.id, source.id)
-        this.db.prepare('UPDATE OR IGNORE evidence SET event_id=? WHERE event_id=?').run(target.id, source.id)
-        this.db.prepare('DELETE FROM evidence WHERE event_id=?').run(source.id)
-        this.db.prepare('DELETE FROM event_participants WHERE event_id=?').run(source.id)
-        this.db.prepare('DELETE FROM events WHERE id=?').run(source.id)
-        this.db.prepare('DELETE FROM search_fts WHERE document_id=?').run(`event:${source.id}`)
-        this.db.prepare('DELETE FROM search_documents WHERE id=?').run(`event:${source.id}`)
+    const statusRank = (status: unknown): number =>
+      status === 'confirmed' ? 3 : status === 'candidate' ? 2 :
+        status === 'cancelled' ? 1 : status === 'rejected' ? 0 : 1
+    const authorityRank = (item: typeof rows[number]): number[] => [
+      item.corrected ? 1 : 0,
+      item.protected_review ? 1 : 0,
+      statusRank(item.status),
+      item.start_at ? 1 : 0,
+      item.title.length
+    ]
+    const compareAuthority = (left: typeof rows[number], right: typeof rows[number]): number => {
+      const a = authorityRank(left)
+      const b = authorityRank(right)
+      for (let index = 0; index < a.length; index += 1) {
+        if (a[index] !== b[index]) return b[index] - a[index]
       }
+      const created = String(left.created_at || '').localeCompare(String(right.created_at || ''))
+      return created || left.id.localeCompare(right.id)
     }
+    const removed = new Set<string>()
+    let duplicateGroups = 0
+    let mergedEvents = 0
+    let protectedEventsPreserved = 0
+    let reviewsReassigned = 0
+    const transaction = this.db.transaction(() => {
+      for (const group of groups.values()) {
+        const candidates = group.filter(item => !removed.has(item.id)).sort(compareAuthority)
+        if (candidates.length < 2) continue
+        duplicateGroups += 1
+        for (let sourceIndex = candidates.length - 1; sourceIndex > 0; sourceIndex -= 1) {
+          const source = candidates[sourceIndex]
+          if (removed.has(source.id)) continue
+          const target = candidates.find(candidate =>
+            candidate.id !== source.id &&
+            !removed.has(candidate.id) &&
+            (!candidate.start_at || !source.start_at || candidate.start_at === source.start_at)
+          )
+          if (!target) continue
+          const targetProtected = Boolean(target.corrected || target.protected_review)
+          const sourceProtected = Boolean(source.corrected || source.protected_review)
+          if (targetProtected && sourceProtected) {
+            protectedEventsPreserved += 1
+            continue
+          }
+          if (sourceProtected) continue
+          this.db.prepare('INSERT OR IGNORE INTO event_participants(event_id,entity_id,role) SELECT ?,entity_id,role FROM event_participants WHERE event_id=?').run(target.id, source.id)
+          this.db.prepare('UPDATE OR IGNORE evidence SET event_id=? WHERE event_id=?').run(target.id, source.id)
+          this.db.prepare('DELETE FROM evidence WHERE event_id=?').run(source.id)
+          const reassigned = this.db.prepare(`
+            UPDATE memory_review_decisions SET item_id=?
+            WHERE item_kind='event' AND item_id=?
+          `).run(target.id, source.id)
+          reviewsReassigned += Number(reassigned.changes || 0)
+          this.db.prepare('DELETE FROM event_participants WHERE event_id=?').run(source.id)
+          this.db.prepare('DELETE FROM events WHERE id=?').run(source.id)
+          this.db.prepare('DELETE FROM search_fts WHERE document_id=?').run(`event:${source.id}`)
+          this.db.prepare('DELETE FROM search_documents WHERE id=?').run(`event:${source.id}`)
+          removed.add(source.id)
+          mergedEvents += 1
+        }
+      }
+      const now = new Date().toISOString()
+      this.db!.prepare(`
+        INSERT INTO schema_meta(key,value,updated_at) VALUES('event_deduplication_authority',?,?)
+        ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_at=excluded.updated_at
+      `).run(JSON.stringify({
+        version: 1,
+        checkedAt: now,
+        duplicateGroupsThisStart: duplicateGroups,
+        mergedEventsThisStart: mergedEvents,
+        protectedEventsPreservedThisStart: protectedEventsPreserved,
+        reviewsReassignedThisStart: reviewsReassigned,
+        mergedEventsTotal: Number(previous.mergedEventsTotal || 0) + mergedEvents,
+        protectedEventsPreservedTotal:
+          Number(previous.protectedEventsPreservedTotal || 0) + protectedEventsPreserved,
+        reviewsReassignedTotal: Number(previous.reviewsReassignedTotal || 0) + reviewsReassigned
+      }), now)
+    })
+    transaction()
   }
 
   close(): void {
@@ -4777,6 +4856,40 @@ export class PersonalMemoryStore {
     const resourceArchiveRevision = this.getResourceArchiveRevisionHealth()
     const structuredEvidenceRevision = this.getStructuredEvidenceRevisionHealth()
     const generalEvidenceRevision = this.getGeneralEvidenceRevisionHealth()
+    const eventDeduplicationAuthority = (() => {
+      const row = this.db!.prepare(`
+        SELECT value,updated_at FROM schema_meta
+        WHERE key='event_deduplication_authority'
+      `).get() as any
+      try {
+        const audit = JSON.parse(String(row?.value || '{}'))
+        return {
+          version: Number(audit.version || 0),
+          checkedAt: String(audit.checkedAt || row?.updated_at || ''),
+          duplicateGroupsThisStart: Number(audit.duplicateGroupsThisStart || 0),
+          mergedEventsThisStart: Number(audit.mergedEventsThisStart || 0),
+          protectedEventsPreservedThisStart:
+            Number(audit.protectedEventsPreservedThisStart || 0),
+          reviewsReassignedThisStart: Number(audit.reviewsReassignedThisStart || 0),
+          mergedEventsTotal: Number(audit.mergedEventsTotal || 0),
+          protectedEventsPreservedTotal:
+            Number(audit.protectedEventsPreservedTotal || 0),
+          reviewsReassignedTotal: Number(audit.reviewsReassignedTotal || 0)
+        }
+      } catch {
+        return {
+          version: 0,
+          checkedAt: String(row?.updated_at || ''),
+          duplicateGroupsThisStart: 0,
+          mergedEventsThisStart: 0,
+          protectedEventsPreservedThisStart: 0,
+          reviewsReassignedThisStart: 0,
+          mergedEventsTotal: 0,
+          protectedEventsPreservedTotal: 0,
+          reviewsReassignedTotal: 0
+        }
+      }
+    })()
     return {
       healthy: integrity === 'ok'
         && structuredEvidenceMigration.constraintsHealthy
@@ -4859,6 +4972,7 @@ export class PersonalMemoryStore {
       resourceArchiveRevision,
       structuredEvidenceRevision,
       generalEvidenceRevision,
+      eventDeduplicationAuthority,
       backups
     }
   }
@@ -6673,9 +6787,26 @@ export class PersonalMemoryStore {
       const evidenceItems = event.evidence || []
       if (evidenceItems.length) {
         const findMatches = this.db.prepare(`
-          SELECT DISTINCT ev.id,ev.start_at FROM events ev
+          SELECT DISTINCT ev.id,ev.start_at,
+            EXISTS(
+              SELECT 1 FROM memory_corrections correction
+              WHERE correction.item_kind='event' AND correction.item_id=ev.id
+            ) AS corrected,
+            EXISTS(
+              SELECT 1 FROM memory_review_decisions decision
+              WHERE decision.item_kind='event' AND decision.item_id=ev.id
+                AND decision.protect_from_extraction=1
+            ) AS protected_review,
+            CASE ev.status
+              WHEN 'confirmed' THEN 3 WHEN 'candidate' THEN 2
+              WHEN 'cancelled' THEN 1 ELSE 0
+            END AS status_rank,
+            ev.created_at
+          FROM events ev
           JOIN evidence e ON e.event_id=ev.id
           WHERE e.source_id=? AND e.session_id=? AND e.message_id=?
+          ORDER BY corrected DESC,protected_review DESC,status_rank DESC,
+            (ev.start_at IS NOT NULL) DESC,LENGTH(ev.title) DESC,ev.created_at ASC,ev.id ASC
         `)
         const matches = evidenceItems.flatMap((item: any) =>
           findMatches.all(

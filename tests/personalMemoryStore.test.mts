@@ -12534,6 +12534,117 @@ test('human event correction is audited, searchable and protected from repeated 
   }), /结束时间不能早于开始时间/)
 }))
 
+test('event deduplication deterministically preserves human authority and its audit', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'weflow-event-authority-dedup-'))
+  const databasePath = join(directory, 'memory.sqlite')
+  const first = new PersonalMemoryStore()
+  const second = new PersonalMemoryStore()
+  const makeEvent = (id: string, title: string, messageId: string) => ({
+    id,
+    eventType: 'meeting',
+    title,
+    description: `${title}说明`,
+    startAt: '2026-08-05T02:00:00.000Z',
+    confidence: 0.8,
+    status: 'candidate',
+    sourceNature: 'inference',
+    searchText: title,
+    participants: [{ entityId: 'event-authority-person', role: 'participant' }],
+    evidence: evidence(messageId, `${title}原文`)
+  })
+  try {
+    first.initialize(databasePath)
+    first.syncGraph({
+      entities: [{
+        id: 'event-authority-person',
+        type: 'person',
+        canonicalName: '事件权威人物',
+        aliases: [],
+        accountIds: []
+      }],
+      relations: [],
+      reviewQueue: []
+    })
+    first.upsertEvents([
+      makeEvent('event-plain-duplicate', '非常长但错误的模型事件标题', 'plain-only'),
+      makeEvent('event-human-authority', '人工事件', 'human-only'),
+      makeEvent('event-protected-a', '人工保留事件甲', 'protected-a-only'),
+      makeEvent('event-protected-b', '人工保留事件乙', 'protected-b-only')
+    ])
+    first.correctEvent('event-human-authority', {
+      title: '人工确认的客户会议',
+      eventType: 'review',
+      description: '人工确认后的说明',
+      startAt: '2026-08-05T02:00:00.000Z',
+      location: '上海'
+    })
+    first.updateMemoryItemStatus('event', 'event-plain-duplicate', 'candidate', {
+      actor: 'system',
+      reason: '旧版非保护候选记录',
+      protectFromExtraction: false
+    })
+    first.updateMemoryItemStatus('event', 'event-protected-a', 'confirmed')
+    first.updateMemoryItemStatus('event', 'event-protected-b', 'confirmed')
+    const database = (first as any).db
+    const insertSharedEvidence = database.prepare(`
+      INSERT INTO evidence(
+        event_id,source_id,message_id,session_id,timestamp,sender,excerpt,evidence_role
+      ) VALUES(?,?,?,?,?,?,?,?)
+    `)
+    for (const eventId of ['event-plain-duplicate', 'event-human-authority']) {
+      insertSharedEvidence.run(
+        eventId, 'wechat', 'shared-authority-message', 'shared-authority-session',
+        Date.parse('2026-08-05T02:00:00.000Z'), '发送者', '同一条事件原文', 'direct'
+      )
+    }
+    for (const eventId of ['event-protected-a', 'event-protected-b']) {
+      insertSharedEvidence.run(
+        eventId, 'wechat', 'shared-protected-message', 'shared-protected-session',
+        Date.parse('2026-08-05T02:00:00.000Z'), '发送者', '两条人工事件都引用的原文', 'direct'
+      )
+    }
+    first.close()
+
+    second.initialize(databasePath)
+    assert.equal(second.getEvent('event-plain-duplicate'), null)
+    const authoritative = second.getEvent('event-human-authority')
+    assert.equal(authoritative.title, '人工确认的客户会议')
+    assert.equal(authoritative.event_type, 'review')
+    assert.equal(authoritative.status, 'confirmed')
+    assert.equal(authoritative.source_nature, 'human_confirmation')
+    assert.equal(authoritative.evidence_count, 3)
+    assert.ok(second.getEvent('event-protected-a'))
+    assert.ok(second.getEvent('event-protected-b'))
+    const audit = second.listMemoryItemAuditPage({
+      kind: 'event',
+      itemId: 'event-human-authority',
+      limit: 40
+    })
+    assert.equal(audit.total, 2)
+    assert.ok(audit.items.some(item => item.auditKind === 'correction'))
+    assert.ok(audit.items.some(item => item.reason === '旧版非保护候选记录'))
+    const diagnostics = second.getDiagnostics().eventDeduplicationAuthority
+    assert.equal(diagnostics.mergedEventsThisStart, 1)
+    assert.equal(diagnostics.protectedEventsPreservedThisStart, 1)
+    assert.equal(diagnostics.reviewsReassignedThisStart, 1)
+
+    second.upsertEvents([{
+      ...makeEvent('event-model-rephrased', '模型再次生成的错误标题', 'new-model-evidence'),
+      evidence: [{
+        ...evidence('shared-authority-message', '同一条事件原文')[0],
+        sourceId: 'wechat',
+        sessionId: 'shared-authority-session'
+      }]
+    }])
+    assert.equal(second.getEvent('event-model-rephrased'), null)
+    assert.equal(second.getEvent('event-human-authority').title, '人工确认的客户会议')
+  } finally {
+    first.close()
+    second.close()
+    rmSync(directory, { recursive: true, force: true })
+  }
+})
+
 test('structured memory trust identities are resolved by stable id without feed hydration', () => withStore(store => {
   store.syncGraph({
     entities: [
