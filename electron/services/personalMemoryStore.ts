@@ -879,6 +879,20 @@ export class PersonalMemoryStore {
       CREATE INDEX IF NOT EXISTS idx_assistant_answer_review_decisions_message
         ON assistant_answer_review_decisions(message_id,created_at DESC,id DESC);
 
+      CREATE TABLE IF NOT EXISTS assistant_model_request_audits (
+        id INTEGER PRIMARY KEY,
+        status TEXT NOT NULL CHECK(status IN ('sending','response_received','failed','interrupted')),
+        outcome_code TEXT NOT NULL DEFAULT '',
+        model TEXT NOT NULL DEFAULT '',
+        audit_json TEXT NOT NULL DEFAULT '{}',
+        started_at TEXT NOT NULL,
+        completed_at TEXT
+      ) STRICT;
+      CREATE INDEX IF NOT EXISTS idx_assistant_model_request_audits_time
+        ON assistant_model_request_audits(started_at DESC,id DESC);
+      CREATE INDEX IF NOT EXISTS idx_assistant_model_request_audits_status_time
+        ON assistant_model_request_audits(status,started_at DESC,id DESC);
+
       CREATE TABLE IF NOT EXISTS ingestion_runs (
         id TEXT PRIMARY KEY,
         started_at TEXT NOT NULL,
@@ -1358,6 +1372,8 @@ export class PersonalMemoryStore {
     this.ensureIngestionRecoveryRevisionTriggers()
     this.ensureCrossStoreRecoveryRevisionTriggers()
     this.ensureAssistantHistoryRevisionTriggers()
+    this.ensureAssistantModelRequestAuditRevisionTriggers()
+    this.repairInterruptedAssistantModelRequests()
     this.ensureStructuredEvidenceRevisionLedger()
     this.ensureGeneralEvidenceRevisionLedger()
     this.ensureResourceArchiveRevisionTriggers()
@@ -2543,6 +2559,32 @@ export class PersonalMemoryStore {
       tables: this.assistantHistoryRevisionTables(),
       version: 'assistant-history-revision-v4'
     })
+  }
+
+  private ensureAssistantModelRequestAuditRevisionTriggers(): void {
+    this.ensureRevisionTriggerSet({
+      prefix: 'assistant_model_request_audit_revision',
+      revisionKey: 'assistant_model_request_audit_revision',
+      tables: ['assistant_model_request_audits'],
+      version: 'assistant-model-request-audit-revision-v1'
+    })
+  }
+
+  private repairInterruptedAssistantModelRequests(): void {
+    if (!this.db) return
+    const now = new Date().toISOString()
+    this.db.prepare(`
+      UPDATE assistant_model_request_audits
+      SET status='interrupted',outcome_code='process_interrupted',completed_at=?
+      WHERE status='sending'
+    `).run(now)
+  }
+
+  getAssistantModelRequestAuditRevision(): string {
+    if (!this.db) return '0'
+    return String((this.db.prepare(`
+      SELECT value FROM schema_meta WHERE key='assistant_model_request_audit_revision'
+    `).get() as any)?.value || '0')
   }
 
   getAssistantHistoryRevision(): string {
@@ -16211,6 +16253,165 @@ export class PersonalMemoryStore {
     }
   }
 
+  recordAssistantModelRequestStarted(sourcePrivacyAudit: any, model: string): number {
+    if (!this.db) return 0
+    const compacted = this.compactAssistantGroundingAudit({
+      version: 'statement-citations-v1',
+      sourcePrivacyAudit
+    })?.sourcePrivacyAudit
+    if (!compacted || !/^[a-f0-9]{64}$/.test(String(compacted.outboundSha256 || ''))) {
+      throw new Error('模型发送审计缺少有效的不可逆请求摘要')
+    }
+    const result = this.db.prepare(`
+      INSERT INTO assistant_model_request_audits(
+        status,outcome_code,model,audit_json,started_at,completed_at
+      ) VALUES('sending','',?,?,?,NULL)
+    `).run(
+      String(model || '').trim().slice(0, 120),
+      JSON.stringify(compacted),
+      new Date().toISOString()
+    )
+    return Number(result.lastInsertRowid || 0)
+  }
+
+  finishAssistantModelRequestAudit(
+    id: number,
+    status: 'response_received' | 'failed',
+    outcomeCode = ''
+  ): void {
+    if (!this.db) return
+    const normalizedId = Math.max(0, Math.floor(Number(id) || 0))
+    if (!normalizedId) return
+    const normalizedOutcome = status === 'response_received'
+      ? 'response_received'
+      : new Set([
+          'request_failed', 'http_error', 'scope_changed', 'privacy_policy_changed',
+          'cancelled', 'timeout'
+        ]).has(String(outcomeCode || ''))
+          ? String(outcomeCode)
+          : 'request_failed'
+    this.db.prepare(`
+      UPDATE assistant_model_request_audits
+      SET status=?,outcome_code=?,completed_at=?
+      WHERE id=? AND status='sending'
+    `).run(status, normalizedOutcome, new Date().toISOString(), normalizedId)
+  }
+
+  listAssistantModelRequestAuditsPage(options: {
+    status?: string
+    from?: string
+    to?: string
+    offset?: number
+    limit?: number
+    revision?: string
+  } = {}): any {
+    const limit = Math.max(1, Math.min(100, Math.floor(Number(options.limit) || 30)))
+    const offset = Math.max(0, Math.min(1_000_000, Math.floor(Number(options.offset) || 0)))
+    const empty = {
+      items: [], total: 0, hasMore: false, offset, limit,
+      revision: this.getAssistantModelRequestAuditRevision(),
+      stale: false,
+      counts: { sending: 0, response_received: 0, failed: 0, interrupted: 0 }
+    }
+    if (!this.db) return empty
+    const revision = this.getAssistantModelRequestAuditRevision()
+    const requestedRevision = String(options.revision || '').trim()
+    if (requestedRevision && requestedRevision !== revision) {
+      return { ...empty, revision, stale: true }
+    }
+    const normalizedStatus = new Set([
+      'sending', 'response_received', 'failed', 'interrupted'
+    ]).has(String(options.status || '')) ? String(options.status) : ''
+    const from = String(options.from || '').trim()
+    const to = String(options.to || '').trim()
+    const filters: string[] = []
+    const args: any[] = []
+    if (normalizedStatus) {
+      filters.push('status=?')
+      args.push(normalizedStatus)
+    }
+    if (from) {
+      filters.push('started_at>=?')
+      args.push(from)
+    }
+    if (to) {
+      filters.push('started_at<=?')
+      args.push(to)
+    }
+    const where = filters.length ? `WHERE ${filters.join(' AND ')}` : ''
+    const total = Number((this.db.prepare(`
+      SELECT COUNT(*) AS count FROM assistant_model_request_audits ${where}
+    `).get(...args) as any)?.count || 0)
+    const facetFilters = filters.filter(item => item !== 'status=?')
+    const facetArgs = normalizedStatus ? args.slice(1) : args
+    const facetWhere = facetFilters.length ? `WHERE ${facetFilters.join(' AND ')}` : ''
+    const countRows = this.db.prepare(`
+      SELECT status,COUNT(*) AS count
+      FROM assistant_model_request_audits ${facetWhere}
+      GROUP BY status
+    `).all(...facetArgs) as any[]
+    const counts = { sending: 0, response_received: 0, failed: 0, interrupted: 0 }
+    for (const row of countRows) {
+      if (row.status in counts) {
+        counts[row.status as keyof typeof counts] = Math.max(0, Number(row.count || 0))
+      }
+    }
+    const rows = this.db.prepare(`
+      SELECT id,status,outcome_code,model,audit_json,started_at,completed_at
+      FROM assistant_model_request_audits ${where}
+      ORDER BY started_at DESC,id DESC LIMIT ? OFFSET ?
+    `).all(...args, limit, offset) as any[]
+    const items = rows.map(row => {
+      let audit: any = {}
+      try { audit = JSON.parse(String(row.audit_json || '{}')) } catch {}
+      const compacted = this.compactAssistantGroundingAudit({
+        version: 'statement-citations-v1',
+        sourcePrivacyAudit: audit
+      })?.sourcePrivacyAudit || {}
+      return {
+        id: Number(row.id || 0),
+        status: String(row.status || ''),
+        outcome_code: String(row.outcome_code || ''),
+        model: String(row.model || ''),
+        sourcePrivacyAudit: compacted,
+        started_at: String(row.started_at || ''),
+        completed_at: String(row.completed_at || '')
+      }
+    })
+    const completedRevision = this.getAssistantModelRequestAuditRevision()
+    if (completedRevision !== revision) {
+      return { ...empty, revision: completedRevision, stale: true }
+    }
+    return {
+      items,
+      total,
+      hasMore: offset + items.length < total,
+      offset,
+      limit,
+      revision,
+      stale: false,
+      counts
+    }
+  }
+
+  getAssistantModelRequestAuditStats(): any {
+    if (!this.db) return {
+      total: 0,
+      counts: { sending: 0, response_received: 0, failed: 0, interrupted: 0 },
+      revision: '0',
+      policy: 'category_only_digest_no_prompt_v1'
+    }
+    const page = this.listAssistantModelRequestAuditsPage({ limit: 1 })
+    return {
+      total: Number((this.db.prepare(`
+        SELECT COUNT(*) AS count FROM assistant_model_request_audits
+      `).get() as any)?.count || 0),
+      counts: page.counts,
+      revision: page.revision,
+      policy: 'category_only_digest_no_prompt_v1'
+    }
+  }
+
   saveAssistantExchange(
     question: string,
     answer: string,
@@ -17136,6 +17337,7 @@ export class PersonalMemoryStore {
     answerDependencies: any
     evidenceRevisions: any
     generalEvidenceRevisions: any
+    modelRequestAudits?: any
   } {
     if (!this.db) return {
       total: 0,
@@ -17146,7 +17348,8 @@ export class PersonalMemoryStore {
       exchangeIntegrity: this.getAssistantExchangeIntegrityStats(),
       answerDependencies: this.getAssistantAnswerDependencyStats(),
       evidenceRevisions: this.getStructuredEvidenceRevisionHealth(),
-      generalEvidenceRevisions: this.getGeneralEvidenceRevisionHealth()
+      generalEvidenceRevisions: this.getGeneralEvidenceRevisionHealth(),
+      modelRequestAudits: this.getAssistantModelRequestAuditStats()
     }
     const total = Number((this.db.prepare(`
       SELECT COUNT(*) AS count FROM assistant_conversations
@@ -17168,7 +17371,8 @@ export class PersonalMemoryStore {
       exchangeIntegrity: this.getAssistantExchangeIntegrityStats(),
       answerDependencies: this.getAssistantAnswerDependencyStats(),
       evidenceRevisions: this.getStructuredEvidenceRevisionHealth(),
-      generalEvidenceRevisions: this.getGeneralEvidenceRevisionHealth()
+      generalEvidenceRevisions: this.getGeneralEvidenceRevisionHealth(),
+      modelRequestAudits: this.getAssistantModelRequestAuditStats()
     }
   }
 

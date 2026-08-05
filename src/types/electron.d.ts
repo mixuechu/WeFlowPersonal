@@ -2142,6 +2142,7 @@ export interface ElectronAPI {
       getMemoryEvent: (id: string) => Promise<any>
       askMemory: (question: string, conversationId?: string, options?: any) => Promise<any>
       getAssistantConversations: (options?: any) => Promise<any>
+      getAssistantModelRequestAudits: (options?: any) => Promise<any>
       getAssistantAnswerReviews: (options?: any) => Promise<any>
       reviewAssistantAnswer: (
         messageId: string,

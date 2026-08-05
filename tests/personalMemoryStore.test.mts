@@ -11722,7 +11722,7 @@ test('assistant archive paginates years of conversations and complete long threa
   assert.deepEqual(Object.keys(stats).sort(), [
     'answerDependencies', 'citationStorage', 'evidenceRevisions', 'exchangeIntegrity',
     'generalEvidenceRevisions', 'latestId', 'latestMessageCount', 'latestUpdatedAt',
-    'sourcePrivacyStorage', 'total'
+    'modelRequestAudits', 'sourcePrivacyStorage', 'total'
   ])
   assert.deepEqual(Object.keys(stats.citationStorage).sort(), [
     'bytesReclaimed', 'citationsCompacted', 'completedAt', 'malformedPayloadsCleared',
@@ -11732,6 +11732,8 @@ test('assistant archive paginates years of conversations and complete long threa
   assert.equal(JSON.stringify(stats.citationStorage).includes('历史回答'), false)
   assert.equal(stats.sourcePrivacyStorage.policy, 'category_only_no_connector_identity')
   assert.equal(JSON.stringify(stats.sourcePrivacyStorage).includes('历史问题'), false)
+  assert.equal(stats.modelRequestAudits.policy, 'category_only_digest_no_prompt_v1')
+  assert.equal(JSON.stringify(stats.modelRequestAudits).includes('历史问题'), false)
   assert.equal(stats.total, 600)
   assert.equal(first.total, 600)
   assert.equal(first.items.length, 40)
@@ -13082,6 +13084,100 @@ test('assistant archive and message pagination survive a SQLCipher process-style
     const decisionArchive = second.listAssistantAnswerReviewDecisionsPage(reviewAnswerId)
     assert.equal(decisionArchive.total, 1)
     assert.equal(decisionArchive.items[0].action, 'acknowledged')
+  } finally {
+    first.close()
+    second.close()
+    rmSync(directory, { recursive: true, force: true })
+  }
+})
+
+test('model request audit is privacy-minimized, revision-paged and recovers interrupted sends', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'weflow-model-request-audit-'))
+  const databasePath = join(directory, 'memory.sqlite')
+  const key = randomBytes(32)
+  const first = new PersonalMemoryStore()
+  const second = new PersonalMemoryStore()
+  try {
+    first.initialize(databasePath, key)
+    const baseAudit = {
+      version: 'model-source-privacy-v2',
+      policy: {
+        wechat: true, documents: true, calendar: false, mail: false, unknown: false
+      },
+      contextDocuments: 2,
+      privacyExcludedDocuments: 1,
+      budgetOmittedDocuments: 0,
+      contextSourceIds: ['wechat', 'mailbox:owner@example.test'],
+      excludedSourceIds: ['calendar', 'connector:secret@example.test'],
+      incompleteSourceDocuments: 1,
+      outboundSha256: 'a'.repeat(64),
+      redaction: { level: 'strict', total: 2, counts: { 邮箱: 2 } },
+      boundaryChecks: ['before_send'],
+      rawPrompt: '不应写入模型发送审计的原始问题'
+    }
+    const receivedId = first.recordAssistantModelRequestStarted(baseAudit, 'deepseek-test')
+    first.finishAssistantModelRequestAudit(receivedId, 'response_received')
+    const failedId = first.recordAssistantModelRequestStarted({
+      ...baseAudit,
+      outboundSha256: 'b'.repeat(64)
+    }, 'deepseek-test')
+    first.finishAssistantModelRequestAudit(failedId, 'failed', 'timeout')
+    first.recordAssistantModelRequestStarted({
+      ...baseAudit,
+      outboundSha256: 'c'.repeat(64)
+    }, 'deepseek-test')
+
+    const firstPage = first.listAssistantModelRequestAuditsPage({ limit: 2 })
+    assert.equal(firstPage.total, 3)
+    assert.equal(firstPage.items.length, 2)
+    assert.deepEqual(firstPage.counts, {
+      sending: 1,
+      response_received: 1,
+      failed: 1,
+      interrupted: 0
+    })
+    assert.deepEqual(firstPage.items[0].sourcePrivacyAudit.contextSourceIds, [
+      'unknown', 'wechat'
+    ])
+    assert.deepEqual(firstPage.items[0].sourcePrivacyAudit.excludedSourceIds, [
+      'calendar', 'unknown'
+    ])
+    assert.equal(firstPage.items[0].sourcePrivacyAudit.rawPrompt, undefined)
+    const rawAudit = String((first as any).db.prepare(`
+      SELECT GROUP_CONCAT(audit_json, '') AS payload
+      FROM assistant_model_request_audits
+    `).get()?.payload || '')
+    assert.equal(rawAudit.includes('owner@example.test'), false)
+    assert.equal(rawAudit.includes('secret@example.test'), false)
+    assert.equal(rawAudit.includes('原始问题'), false)
+
+    const staleRevision = firstPage.revision
+    first.recordAssistantModelRequestStarted({
+      ...baseAudit,
+      outboundSha256: 'd'.repeat(64)
+    }, 'deepseek-test')
+    assert.equal(first.listAssistantModelRequestAuditsPage({
+      offset: 2,
+      limit: 2,
+      revision: staleRevision
+    }).stale, true)
+    first.close()
+
+    second.initialize(databasePath, key)
+    const reopened = second.listAssistantModelRequestAuditsPage({ limit: 10 })
+    assert.equal(reopened.total, 4)
+    assert.deepEqual(reopened.counts, {
+      sending: 0,
+      response_received: 1,
+      failed: 1,
+      interrupted: 2
+    })
+    assert.equal(reopened.items.filter((item: any) =>
+      item.status === 'interrupted' &&
+      item.outcome_code === 'process_interrupted'
+    ).length, 2)
+    assert.equal(second.getAssistantModelRequestAuditStats().policy,
+      'category_only_digest_no_prompt_v1')
   } finally {
     first.close()
     second.close()

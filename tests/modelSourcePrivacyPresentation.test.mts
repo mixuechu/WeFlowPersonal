@@ -24,5 +24,14 @@ test('model source privacy audit presentation explains current and historical bo
   assert.match(presented.detail, /来源证明不完整/)
   assert.match(presented.detail, /请求指纹 a{12}/)
   assert.match(presented.detail, /边界均已核验/)
+  assert.match(presentModelSourcePrivacyAudit({
+    ...{
+      version: 'model-source-privacy-v2',
+      policy: { mail: false },
+      contextDocuments: 1,
+      outboundSha256: 'b'.repeat(64),
+      boundaryChecks: ['before_send']
+    }
+  }, { requestLedger: true }).detail, /发送前边界已核验.*发送状态为准/)
   assert.equal(presentModelSourcePrivacyAudit({}).valid, false)
 })

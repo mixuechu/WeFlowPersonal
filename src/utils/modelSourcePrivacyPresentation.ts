@@ -16,7 +16,10 @@ function sourceList(value: unknown): string {
     : '无'
 }
 
-export function presentModelSourcePrivacyAudit(audit: any): {
+export function presentModelSourcePrivacyAudit(
+  audit: any,
+  options: { requestLedger?: boolean } = {}
+): {
   valid: boolean
   summary: string
   detail: string
@@ -45,7 +48,11 @@ export function presentModelSourcePrivacyAudit(audit: any): {
       incomplete ? `${incomplete} 份资料的来源证明不完整，已从严隔离` : '',
       `发送前脱敏 ${Math.max(0, Math.floor(Number(audit?.redaction?.total) || 0))} 处`,
       `请求指纹 ${digest}`,
-      boundaryVerified ? '发送前与回答后边界均已核验' : '边界核验记录不完整'
+      boundaryVerified
+        ? '发送前与回答后边界均已核验'
+        : options.requestLedger && boundaryChecks.has('before_send')
+          ? '发送前边界已核验；响应结果以本条发送状态为准'
+          : '边界核验记录不完整'
     ].filter(Boolean).join('；')
   }
 }

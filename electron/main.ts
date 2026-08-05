@@ -4732,6 +4732,8 @@ function registerIpcHandlers() {
   ipcMain.handle('ai-assistant:getMemoryEvent', (_, id: string) => aiAssistantService.getMemoryEvent(id))
   ipcMain.handle('ai-assistant:askMemory', (_, question: string, conversationId?: string, options?: any) => aiAssistantService.askMemory(question, conversationId, options))
   ipcMain.handle('ai-assistant:getAssistantConversations', (_, options?: any) => aiAssistantService.getAssistantConversations(options))
+  ipcMain.handle('ai-assistant:getAssistantModelRequestAudits', (_, options?: any) =>
+    aiAssistantService.getAssistantModelRequestAudits(options))
   ipcMain.handle('ai-assistant:getAssistantAnswerReviews', (_, options?: any) =>
     aiAssistantService.getAssistantAnswerReviews(options))
   ipcMain.handle('ai-assistant:reviewAssistantAnswer', (

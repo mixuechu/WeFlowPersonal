@@ -1177,6 +1177,17 @@ function AiAssistantPage() {
   const [assistantArchiveRefreshKey, setAssistantArchiveRefreshKey] = useState(0)
   const [assistantMessagesLoadingMore, setAssistantMessagesLoadingMore] = useState(false)
   const assistantArchiveGate = useRef(new LatestRequestGate())
+  const [modelRequestAuditsOpen, setModelRequestAuditsOpen] = useState(false)
+  const [modelRequestAudits, setModelRequestAudits] = useState<any>({
+    items: [], total: 0, hasMore: false,
+    counts: { sending: 0, response_received: 0, failed: 0, interrupted: 0 }
+  })
+  const [modelRequestAuditStatus, setModelRequestAuditStatus] = useState('')
+  const [modelRequestAuditFrom, setModelRequestAuditFrom] = useState('')
+  const [modelRequestAuditTo, setModelRequestAuditTo] = useState('')
+  const [modelRequestAuditsLoadingMore, setModelRequestAuditsLoadingMore] = useState(false)
+  const [modelRequestAuditRefreshKey, setModelRequestAuditRefreshKey] = useState(0)
+  const modelRequestAuditGate = useRef(new LatestRequestGate())
   const [assistantAnswerReviewsOpen, setAssistantAnswerReviewsOpen] = useState(false)
   const [assistantAnswerReviews, setAssistantAnswerReviews] = useState<any>({
     items: [], total: 0, hasMore: false,
@@ -1338,6 +1349,17 @@ function AiAssistantPage() {
     offset: 0,
     limit: 30
   }), [assistantArchiveQuery, assistantArchiveFrom, assistantArchiveTo, assistantArchiveRevalidation])
+  const modelRequestAuditOptions = useMemo(() => ({
+    status: modelRequestAuditStatus || undefined,
+    from: modelRequestAuditFrom
+      ? new Date(`${modelRequestAuditFrom}T00:00:00+08:00`).toISOString()
+      : undefined,
+    to: modelRequestAuditTo
+      ? new Date(`${modelRequestAuditTo}T23:59:59.999+08:00`).toISOString()
+      : undefined,
+    offset: 0,
+    limit: 30
+  }), [modelRequestAuditStatus, modelRequestAuditFrom, modelRequestAuditTo])
   const assistantAnswerReviewOptions = useMemo(() => ({
     status: assistantAnswerReviewStatus,
     reviewState: assistantAnswerReviewState,
@@ -1836,6 +1858,44 @@ function AiAssistantPage() {
       if (assistantArchiveGate.current.isCurrent(request)) assistantArchiveGate.current.invalidate()
     }
   }, [assistantArchiveOptions, dashboard?.assistantArchive?.revision, assistantArchiveRefreshKey])
+
+  useEffect(() => {
+    if (!modelRequestAuditsOpen) {
+      modelRequestAuditGate.current.invalidate()
+      return
+    }
+    const request = modelRequestAuditGate.current.begin()
+    setModelRequestAuditsLoadingMore(false)
+    setModelRequestAudits((current: any) => ({ ...current, items: [], loading: true }))
+    void window.electronAPI.aiAssistant.getAssistantModelRequestAudits(modelRequestAuditOptions)
+      .then(result => {
+        if (!modelRequestAuditGate.current.isCurrent(request)) return
+        if (result.stale) {
+          window.setTimeout(() => {
+            if (modelRequestAuditGate.current.isCurrent(request)) {
+              setModelRequestAuditRefreshKey(value => value + 1)
+            }
+          }, 250)
+          return
+        }
+        setModelRequestAudits({ ...result, loading: false })
+      }).catch(() => {
+        if (!modelRequestAuditGate.current.isCurrent(request)) return
+        setModelRequestAudits((current: any) => ({
+          ...current, items: [], total: 0, hasMore: false, loading: false
+        }))
+      })
+    return () => {
+      if (modelRequestAuditGate.current.isCurrent(request)) {
+        modelRequestAuditGate.current.invalidate()
+      }
+    }
+  }, [
+    modelRequestAuditsOpen,
+    modelRequestAuditOptions,
+    dashboard?.assistantArchive?.modelRequestAudits?.revision,
+    modelRequestAuditRefreshKey
+  ])
 
   useEffect(() => {
     if (!assistantAnswerReviewsOpen) {
@@ -5922,6 +5982,40 @@ function AiAssistantPage() {
     }
   }
 
+  const loadMoreModelRequestAudits = async () => {
+    if (modelRequestAuditsLoadingMore || !modelRequestAudits.hasMore) return
+    const request = modelRequestAuditGate.current.begin()
+    setModelRequestAuditsLoadingMore(true)
+    try {
+      const result = await window.electronAPI.aiAssistant.getAssistantModelRequestAudits({
+        ...modelRequestAuditOptions,
+        offset: modelRequestAudits.items.length,
+        limit: 30,
+        revision: modelRequestAudits.revision
+      })
+      if (!modelRequestAuditGate.current.isCurrent(request)) return
+      if (result.stale) {
+        setMessage('模型发送审计已有变化，已自动从第一页刷新')
+        setModelRequestAuditRefreshKey(value => value + 1)
+        return
+      }
+      setModelRequestAudits((current: any) => ({
+        ...result,
+        items: [...current.items, ...result.items.filter((item: any) =>
+          !current.items.some((known: any) => known.id === item.id))],
+        loading: false
+      }))
+    } catch (error: any) {
+      if (modelRequestAuditGate.current.isCurrent(request)) {
+        setMessage(error?.message || String(error))
+      }
+    } finally {
+      if (modelRequestAuditGate.current.isCurrent(request)) {
+        setModelRequestAuditsLoadingMore(false)
+      }
+    }
+  }
+
   const loadMoreAssistantAnswerReviews = async () => {
     if (assistantAnswerReviewsLoadingMore || !assistantAnswerReviews.hasMore) return
     const request = assistantAnswerReviewsGate.current.begin()
@@ -8296,6 +8390,96 @@ function AiAssistantPage() {
             <div><span className="assistant-eyebrow">EVIDENCE Q&A</span><h3><Bot size={16} /> 向个人记忆提问</h3></div>
             <button onClick={startNewMemoryConversation}>新对话</button>
           </div>
+          <details className="assistant-answer-review-archive"
+            open={modelRequestAuditsOpen}
+            onToggle={event => setModelRequestAuditsOpen(event.currentTarget.open)}>
+            <summary>
+              模型发送审计 · {Number(
+                dashboard?.assistantArchive?.modelRequestAudits?.total || 0
+              ).toLocaleString()}
+              <small>成功、失败和断电中断均保留不可逆摘要，不保存问题或原文</small>
+            </summary>
+            {modelRequestAuditsOpen && <>
+              <div className="assistant-answer-review-filters">
+                <select value={modelRequestAuditStatus}
+                  onChange={event => setModelRequestAuditStatus(event.target.value)}>
+                  <option value="">全部发送状态</option>
+                  <option value="response_received">
+                    已收到响应（{Number(modelRequestAudits.counts?.response_received || 0)}）
+                  </option>
+                  <option value="failed">
+                    请求失败（{Number(modelRequestAudits.counts?.failed || 0)}）
+                  </option>
+                  <option value="interrupted">
+                    进程中断（{Number(modelRequestAudits.counts?.interrupted || 0)}）
+                  </option>
+                  <option value="sending">
+                    正在请求（{Number(modelRequestAudits.counts?.sending || 0)}）
+                  </option>
+                </select>
+                <input type="date" value={modelRequestAuditFrom}
+                  onChange={event => setModelRequestAuditFrom(event.target.value)} />
+                <input type="date" value={modelRequestAuditTo}
+                  onChange={event => setModelRequestAuditTo(event.target.value)} />
+              </div>
+              <small>
+                审计只保存微信、文档、日历、Mail、旧版或未知来源类别、资料计数、
+                脱敏计数和请求 SHA-256；不保存问题、聊天正文、邮箱地址或连接器内部 ID。
+              </small>
+              <div className="assistant-answer-review-list">
+                {(modelRequestAudits.items || []).map((item: any) => {
+                  const privacy = presentModelSourcePrivacyAudit(
+                    item.sourcePrivacyAudit,
+                    { requestLedger: true }
+                  )
+                  const statusLabel = item.status === 'response_received'
+                    ? '✓ 已收到响应'
+                    : item.status === 'failed'
+                      ? '⚠ 请求失败'
+                      : item.status === 'interrupted'
+                        ? '△ 进程中断'
+                        : '… 正在请求'
+                  const outcomeLabel: Record<string, string> = {
+                    response_received: '服务端已返回',
+                    http_error: '服务端返回错误',
+                    privacy_policy_changed: '隐私设置变化，结果未采用',
+                    scope_changed: '检索范围变化，结果未采用',
+                    cancelled: '应用退出或请求已取消',
+                    timeout: '请求超时',
+                    request_failed: '网络或请求失败',
+                    process_interrupted: '上次运行在请求完成前中断'
+                  }
+                  return <article key={item.id}>
+                    <header>
+                      <b>{statusLabel}</b>
+                      <span>{new Date(item.started_at).toLocaleString('zh-CN')}</span>
+                    </header>
+                    <strong>{item.model || '未记录模型'}</strong>
+                    {item.outcome_code && <small>
+                      {outcomeLabel[item.outcome_code] || '请求状态已记录'}
+                    </small>}
+                    {privacy.valid && <>
+                      <p>{privacy.summary}</p>
+                      <small>{privacy.detail}</small>
+                    </>}
+                    {item.completed_at && <small>
+                      完成于 {new Date(item.completed_at).toLocaleString('zh-CN')}
+                    </small>}
+                  </article>
+                })}
+              </div>
+              {modelRequestAudits.loading &&
+                <div className="assistant-empty">正在读取模型发送审计…</div>}
+              {!modelRequestAudits.loading && !modelRequestAudits.items?.length &&
+                <div className="assistant-empty">当前筛选下没有模型发送记录。</div>}
+              {modelRequestAudits.hasMore && <button
+                className="assistant-search-load-more"
+                disabled={modelRequestAuditsLoadingMore}
+                onClick={() => void loadMoreModelRequestAudits()}>
+                {modelRequestAuditsLoadingMore ? '正在加载…' : '加载更早发送记录'}
+              </button>}
+            </>}
+          </details>
           <details className="assistant-answer-review-archive"
             open={assistantAnswerReviewsOpen}
             onToggle={event => setAssistantAnswerReviewsOpen(event.currentTarget.open)}>

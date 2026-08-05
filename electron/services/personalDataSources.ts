@@ -175,6 +175,7 @@ export function buildModelSourcePrivacyAudit(input: {
     total?: unknown
     counts?: Record<string, unknown>
   }
+  boundaryChecks?: Array<'before_send' | 'after_response'>
 }): any {
   const eligibleIds = new Set((input.eligibleResults || []).map(item => String(item?.id || '')))
   const sentIds = new Set((input.sentResults || []).map(item => String(item?.id || '')))
@@ -234,7 +235,9 @@ export function buildModelSourcePrivacyAudit(input: {
       total: Math.max(0, Math.min(100_000, Math.floor(Number(input.redaction?.total) || 0))),
       counts
     },
-    boundaryChecks: ['before_send', 'after_response']
+    boundaryChecks: [...new Set(
+      input.boundaryChecks || ['before_send', 'after_response']
+    )]
   }
 }
 

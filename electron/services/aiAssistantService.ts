@@ -4375,6 +4375,7 @@ export class AiAssistantService {
           policy: 'reference_only_authoritative_hydration'
         },
         sourcePrivacyStorage: assistantArchiveStats.sourcePrivacyStorage,
+        modelRequestAudits: assistantArchiveStats.modelRequestAudits,
         exchangeIntegrity: assistantArchiveStats.exchangeIntegrity,
         answerDependencies: {
           ...assistantArchiveStats.answerDependencies,
@@ -8489,46 +8490,92 @@ export class AiAssistantService {
       searchOptions: modelSearchOptions,
       context
     }), redactionLevel)
+    const requestSourcePrivacyAudit = buildModelSourcePrivacyAudit({
+      results,
+      eligibleResults,
+      sentResults,
+      mailModelAnalysisAllowed: Boolean(mailSource?.config?.allowModelAnalysis),
+      outboundText: outbound.text,
+      redaction: outbound.summary,
+      boundaryChecks: ['before_send']
+    })
+    let modelRequestAuditId = 0
     const expectedMailPrivacyToken = String(mailSource?.mutationToken || '')
-    const { response, payload } = await runWithMemoryScopeRevalidation(
-      async boundary => {
-        await this.assertMemoryScopeSelectionsCurrent(
-          options,
-          boundary === 'before' ? 'after_retrieval' : 'after_model'
+    let response: any
+    let payload: any
+    try {
+      const result = await runWithMemoryScopeRevalidation(
+        async boundary => {
+          await this.assertMemoryScopeSelectionsCurrent(
+            options,
+            boundary === 'before' ? 'after_retrieval' : 'after_model'
+          )
+          const currentMailSource = personalMemoryStore.listDataSources()
+            .find(source => source.id === 'mail')
+          assertModelSourcePolicySnapshot(
+            expectedMailPrivacyToken,
+            currentMailSource?.mutationToken,
+            boundary
+          )
+          if (boundary === 'before' && !modelRequestAuditId) {
+            modelRequestAuditId = personalMemoryStore.recordAssistantModelRequestStarted(
+              requestSourcePrivacyAudit,
+              model
+            )
+          }
+        },
+        () => this.modelRequests.fetchJson(`${baseUrl}/chat/completions`, {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            model, temperature: 0.1, max_tokens: 1800, response_format: { type: 'json_object' },
+            messages: [
+              { role: 'system', content: MEMORY_RAG_SYSTEM_PROMPT },
+              { role: 'user', content: outbound.text }
+            ]
+          })
+        }, 90_000, true)
+      )
+      response = result.response
+      payload = result.payload
+      if (!response.ok) {
+        personalMemoryStore.finishAssistantModelRequestAudit(
+          modelRequestAuditId, 'failed', 'http_error'
         )
-        const currentMailSource = personalMemoryStore.listDataSources()
-          .find(source => source.id === 'mail')
-        assertModelSourcePolicySnapshot(
-          expectedMailPrivacyToken,
-          currentMailSource?.mutationToken,
-          boundary
-        )
-      },
-      () => this.modelRequests.fetchJson(`${baseUrl}/chat/completions`, {
-        method: 'POST',
-        headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          model, temperature: 0.1, max_tokens: 1800, response_format: { type: 'json_object' },
-          messages: [
-            { role: 'system', content: MEMORY_RAG_SYSTEM_PROMPT },
-            { role: 'user', content: outbound.text }
-          ]
-        })
-      }, 90_000, true)
-    )
-    if (!response.ok) throw new Error(payload?.error?.message || `DeepSeek 请求失败 (${response.status})`)
+        throw new Error(payload?.error?.message || `DeepSeek 请求失败 (${response.status})`)
+      }
+      personalMemoryStore.finishAssistantModelRequestAudit(
+        modelRequestAuditId, 'response_received'
+      )
+    } catch (error: any) {
+      const message = String(error?.message || '')
+      const outcomeCode = message.includes('隐私配置')
+        ? 'privacy_policy_changed'
+        : message.includes('所选实体') || message.includes('所选会话')
+          ? 'scope_changed'
+          : error?.name === 'AbortError'
+            ? 'cancelled'
+            : /timeout|超时/i.test(message)
+              ? 'timeout'
+              : 'request_failed'
+      personalMemoryStore.finishAssistantModelRequestAudit(
+        modelRequestAuditId, 'failed', outcomeCode
+      )
+      throw error
+    }
     const parsed = parseModelJson(payload?.choices?.[0]?.message?.content)
     const grounded = finalizeGroundedMemoryAnswer(parsed, context)
+    const sourcePrivacyAudit = buildModelSourcePrivacyAudit({
+      results,
+      eligibleResults,
+      sentResults,
+      mailModelAnalysisAllowed: Boolean(mailSource?.config?.allowModelAnalysis),
+      outboundText: outbound.text,
+      redaction: outbound.summary
+    })
     const groundingAudit = {
       ...grounded.groundingAudit,
-      sourcePrivacyAudit: buildModelSourcePrivacyAudit({
-        results,
-        eligibleResults,
-        sentResults,
-        mailModelAnalysisAllowed: Boolean(mailSource?.config?.allowModelAnalysis),
-        outboundText: outbound.text,
-        redaction: outbound.summary
-      })
+      sourcePrivacyAudit
     }
     const answer = grounded.answer
     const feedbackContext = buildMemorySearchFeedbackContext(contextualQuestion.query, plannedOptions)
@@ -8621,6 +8668,17 @@ export class AiAssistantService {
       from: String(options?.from || ''),
       to: String(options?.to || ''),
       revalidationStatus: options?.revalidationStatus,
+      offset: Number(options?.offset || 0),
+      limit: Number(options?.limit || 30),
+      revision: String(options?.revision || '')
+    })
+  }
+
+  getAssistantModelRequestAudits(options?: any): any {
+    return personalMemoryStore.listAssistantModelRequestAuditsPage({
+      status: String(options?.status || ''),
+      from: String(options?.from || ''),
+      to: String(options?.to || ''),
       offset: Number(options?.offset || 0),
       limit: Number(options?.limit || 30),
       revision: String(options?.revision || '')

@@ -192,6 +192,14 @@ test('model source privacy audit keeps only bounded policy proof and irreversibl
   assert.match(audit.outboundSha256, /^[a-f0-9]{64}$/)
   assert.equal(JSON.stringify(audit).includes('不得在审计中保存'), false)
   assert.deepEqual(audit.boundaryChecks, ['before_send', 'after_response'])
+  assert.deepEqual(buildModelSourcePrivacyAudit({
+    results: [],
+    eligibleResults: [],
+    sentResults: [],
+    mailModelAnalysisAllowed: false,
+    outboundText: '发送前摘要',
+    boundaryChecks: ['before_send']
+  }).boundaryChecks, ['before_send'])
 })
 
 test('memory evidence eligibility keeps review status separate from factual support', () => {
