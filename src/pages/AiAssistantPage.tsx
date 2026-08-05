@@ -13258,7 +13258,7 @@ function AiAssistantPage() {
         <div className="assistant-modal-backdrop">
           <div className="assistant-modal assistant-source-modal">
             <div className="assistant-modal-title"><div><h2>数据源连接器</h2>
-              <p>每个连接器拥有独立状态和 checkpoint；文档与 Mail 的资源、原文、检索索引和断点按页一起提交，失败整页重试。</p>
+              <p>每个连接器拥有独立状态和 checkpoint；文档、Mail 与日历的权威记忆、原文、检索索引和断点按页一起提交，失败整页回滚。</p>
             </div><button onClick={() => setShowDataSources(false)}><X size={16} /></button></div>
             <div className="assistant-source-list">
               {dataSources.map(source => (

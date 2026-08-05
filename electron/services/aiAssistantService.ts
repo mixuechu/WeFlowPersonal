@@ -2705,7 +2705,7 @@ export class AiAssistantService {
     if (!source?.enabled || !source.available || !source.config?.folderPath) return { indexed: 0 }
     const attemptedAt = new Date().toISOString()
     let checkpoint = String(source.checkpoint || '')
-    if (!personalMemoryStore.updateResourceConnectorRunIfCurrent({
+    if (!personalMemoryStore.updateDataSourceRunIfCurrent({
       sourceId: 'documents',
       expectedCheckpoint: checkpoint,
       expectedConfig: source.config,
@@ -2770,7 +2770,7 @@ export class AiAssistantService {
         if (!result.hasMore) break
       }
       const warning = warnings[0] ? `仍有 ${warnings.length} 个文档等待重试：${warnings[0]}` : ''
-      personalMemoryStore.updateResourceConnectorRunIfCurrent({
+      personalMemoryStore.updateDataSourceRunIfCurrent({
         sourceId: 'documents',
         expectedCheckpoint: checkpoint,
         expectedConfig: source.config,
@@ -2781,7 +2781,7 @@ export class AiAssistantService {
       return { indexed, error: warning || undefined }
     } catch (error) {
       const message = sanitizeDiagnosticText(error)
-      personalMemoryStore.updateResourceConnectorRunIfCurrent({
+      personalMemoryStore.updateDataSourceRunIfCurrent({
         sourceId: 'documents',
         expectedCheckpoint: checkpoint,
         expectedConfig: source.config,
@@ -2800,8 +2800,14 @@ export class AiAssistantService {
       : []
     if (!source?.enabled || !source.available || !calendarIds.length) return { indexed: 0 }
     const attemptedAt = new Date().toISOString()
-    personalMemoryStore.updateDataSourceRun('calendar', { status: 'running', attemptedAt })
     let checkpoint = String(source.checkpoint || '')
+    if (!personalMemoryStore.updateDataSourceRunIfCurrent({
+      sourceId: 'calendar',
+      expectedCheckpoint: checkpoint,
+      expectedConfig: source.config,
+      status: 'running',
+      attemptedAt
+    })) return { indexed: 0, error: '日历连接器状态已变化，本轮未启动' }
     let indexed = 0
     try {
       const authorization = await localCalendarService.getStatus()
@@ -2813,7 +2819,7 @@ export class AiAssistantService {
         const result = await runPersonalDataSourceBatch(
           connector,
           checkpoint,
-          async items => {
+          async (items, pageContext) => {
             const updatedAt = new Date().toISOString()
             const graphBeforeCalendarPage = structuredClone(this.state.graph)
             const pendingEvidenceBeforeCalendarPage = [...this.pendingEntityEvidence]
@@ -2902,17 +2908,23 @@ export class AiAssistantService {
                 }]
               }
               })
+              const graphCommitId = graphChanged ? crypto.randomUUID() : ''
+              personalMemoryStore.commitCalendarConnectorPage({
+                sourceId: 'calendar',
+                expectedCheckpoint: pageContext.currentCheckpoint,
+                nextCheckpoint: pageContext.nextCheckpoint,
+                expectedConfig: source.config,
+                graph: graphChanged ? this.state.graph : undefined,
+                graphCommitId,
+                entityEvidence: graphChanged ? this.pendingEntityEvidence : [],
+                resources,
+                events,
+                preserveExistingResourceEvidence: true,
+                attemptedAt
+              })
+              authorityCommitted = true
+              checkpoint = pageContext.nextCheckpoint
               if (graphChanged) {
-                const graphCommitId = crypto.randomUUID()
-                personalMemoryStore.syncGraphResourcesAndEvents(
-                  this.state.graph,
-                  graphCommitId,
-                  this.pendingEntityEvidence,
-                  resources,
-                  events,
-                  true
-                )
-                authorityCommitted = true
                 this.pendingEntityEvidence = []
                 this.state.graph.lastSqlCommitId = graphCommitId
                 compactGraphRelationEvidence(
@@ -2920,9 +2932,6 @@ export class AiAssistantService {
                   personalMemoryStore.getRelationEvidenceCounts()
                 )
                 this.saveState()
-              } else {
-                personalMemoryStore.upsertResourcesAndEvents(resources, events, true)
-                authorityCommitted = true
               }
             } catch (error) {
               if (!authorityCommitted) {
@@ -2936,23 +2945,23 @@ export class AiAssistantService {
         )
         checkpoint = result.checkpoint
         indexed += result.pulled
-        personalMemoryStore.updateDataSourceRun('calendar', {
-          status: 'running',
-          checkpoint,
-          attemptedAt
-        })
         if (!result.hasMore) break
       }
-      personalMemoryStore.updateDataSourceRun('calendar', {
+      personalMemoryStore.updateDataSourceRunIfCurrent({
+        sourceId: 'calendar',
+        expectedCheckpoint: checkpoint,
+        expectedConfig: source.config,
         status: 'healthy',
-        checkpoint,
         succeededAt: new Date().toISOString(),
         error: ''
       })
       return { indexed }
     } catch (error) {
       const message = sanitizeDiagnosticText(error)
-      personalMemoryStore.updateDataSourceRun('calendar', {
+      personalMemoryStore.updateDataSourceRunIfCurrent({
+        sourceId: 'calendar',
+        expectedCheckpoint: checkpoint,
+        expectedConfig: source.config,
         status: 'error',
         attemptedAt,
         error: message
@@ -2969,7 +2978,7 @@ export class AiAssistantService {
     if (!source?.enabled || !source.available || !mailboxIds.length) return { indexed: 0 }
     const attemptedAt = new Date().toISOString()
     let checkpoint = String(source.checkpoint || '')
-    if (!personalMemoryStore.updateResourceConnectorRunIfCurrent({
+    if (!personalMemoryStore.updateDataSourceRunIfCurrent({
       sourceId: 'mail',
       expectedCheckpoint: checkpoint,
       expectedConfig: source.config,
@@ -3034,7 +3043,7 @@ export class AiAssistantService {
         indexed += result.pulled
         if (!result.hasMore) break
       }
-      personalMemoryStore.updateResourceConnectorRunIfCurrent({
+      personalMemoryStore.updateDataSourceRunIfCurrent({
         sourceId: 'mail',
         expectedCheckpoint: checkpoint,
         expectedConfig: source.config,
@@ -3045,7 +3054,7 @@ export class AiAssistantService {
       return { indexed }
     } catch (error) {
       const message = sanitizeDiagnosticText(error)
-      personalMemoryStore.updateResourceConnectorRunIfCurrent({
+      personalMemoryStore.updateDataSourceRunIfCurrent({
         sourceId: 'mail',
         expectedCheckpoint: checkpoint,
         expectedConfig: source.config,

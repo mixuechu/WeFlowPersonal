@@ -16176,7 +16176,7 @@ test('resource connector page commits authority and checkpoint atomically and re
     true,
     initial.mutationToken
   )
-  assert.equal(store.updateResourceConnectorRunIfCurrent({
+  assert.equal(store.updateDataSourceRunIfCurrent({
     sourceId: 'documents',
     expectedCheckpoint: '',
     expectedConfig: configured.config,
@@ -16259,7 +16259,7 @@ test('resource connector page commits authority and checkpoint atomically and re
     resources: [{ ...resource, id: 'local-document:stale-page' }],
     preserveExistingEvidence: true
   }), /配置已变化/)
-  assert.equal(store.updateResourceConnectorRunIfCurrent({
+  assert.equal(store.updateDataSourceRunIfCurrent({
     sourceId: 'documents',
     expectedCheckpoint: '',
     expectedConfig: configured.config,
@@ -16277,6 +16277,22 @@ test('resource connector page commits authority and checkpoint atomically and re
 
 test('calendar resource and structured event commit atomically', () => withStore(store => {
   const database = (store as any).db
+  store.registerDataSources([{
+    id: 'calendar',
+    kind: 'calendar',
+    displayName: 'macOS 日历',
+    description: '测试日历连接器',
+    available: true,
+    localOnly: true,
+    capabilities: ['incremental', 'original-evidence', 'events']
+  }])
+  const initialSource = store.listDataSources().find(item => item.id === 'calendar')
+  const configuredSource = store.configureDataSource(
+    'calendar',
+    { calendarIds: ['atomic-calendar'] },
+    true,
+    initialSource.mutationToken
+  )
   database.exec(`
     CREATE TRIGGER fail_calendar_event_search
     BEFORE INSERT ON search_documents
@@ -16292,7 +16308,12 @@ test('calendar resource and structured event commit atomically', () => withStore
     evidence: store.getMemoryEvidenceArchiveRevision(),
     graph: store.getGraphReviewRevision()
   }
-  assert.throws(() => store.syncGraphResourcesAndEvents({
+  assert.throws(() => store.commitCalendarConnectorPage({
+    sourceId: 'calendar',
+    expectedCheckpoint: '',
+    nextCheckpoint: 'calendar-page-1',
+    expectedConfig: configuredSource.config,
+    graph: {
     entities: [{
       id: 'calendar-atomic-attendee',
       type: 'person',
@@ -16312,7 +16333,9 @@ test('calendar resource and structured event commit atomically', () => withStore
       status: 'pending',
       confidence: 0.9
     }]
-  } as any, 'calendar-atomic-graph-commit', [{
+    } as any,
+    graphCommitId: 'calendar-atomic-graph-commit',
+    entityEvidence: [{
     entityId: 'calendar-atomic-attendee',
     sourceId: 'calendar',
     messageId: 'calendar-atomic-message',
@@ -16321,7 +16344,8 @@ test('calendar resource and structured event commit atomically', () => withStore
     sender: 'macOS 日历连接器',
     excerpt: '日历参与者身份原文',
     evidenceKind: 'identity'
-  }], [{
+    }],
+    resources: [{
     id: 'calendar-atomic-resource',
     resourceType: 'calendar-event',
     title: '日历原子会议',
@@ -16335,7 +16359,8 @@ test('calendar resource and structured event commit atomically', () => withStore
       sender: 'macOS 日历连接器',
       excerpt: '日历资源原文'
     }]
-  }], [{
+    }],
+    events: [{
     id: 'calendar-atomic-event',
     eventType: 'calendar',
     title: '日历原子会议',
@@ -16356,7 +16381,13 @@ test('calendar resource and structured event commit atomically', () => withStore
       excerpt: '日历事件原文',
       role: 'direct'
     }]
-  }], true), /forced calendar event search failure/)
+    }],
+    preserveExistingResourceEvidence: true
+  }), /forced calendar event search failure/)
+  assert.equal(
+    store.listDataSources().find(item => item.id === 'calendar').checkpoint,
+    ''
+  )
   assert.equal(Number(database.prepare(`
     SELECT COUNT(*) AS count FROM memory_resources WHERE id='calendar-atomic-resource'
   `).get().count), 0)
@@ -16392,6 +16423,39 @@ test('calendar resource and structured event commit atomically', () => withStore
   assert.equal(store.getStructuredMemoryRevision(), revisions.structured)
   assert.equal(store.getMemoryEvidenceArchiveRevision(), revisions.evidence)
   assert.equal(store.getGraphReviewRevision(), revisions.graph)
+
+  database.exec('DROP TRIGGER fail_calendar_event_search')
+  store.commitCalendarConnectorPage({
+    sourceId: 'calendar',
+    expectedCheckpoint: '',
+    nextCheckpoint: 'calendar-empty-page',
+    expectedConfig: configuredSource.config,
+    resources: [],
+    events: []
+  })
+  assert.equal(
+    store.listDataSources().find(item => item.id === 'calendar').checkpoint,
+    'calendar-empty-page'
+  )
+  const beforeReconfigure = store.listDataSources().find(item => item.id === 'calendar')
+  store.configureDataSource(
+    'calendar',
+    { calendarIds: ['new-calendar'] },
+    true,
+    beforeReconfigure.mutationToken
+  )
+  assert.throws(() => store.commitCalendarConnectorPage({
+    sourceId: 'calendar',
+    expectedCheckpoint: '',
+    nextCheckpoint: 'stale-calendar-page',
+    expectedConfig: configuredSource.config,
+    resources: [],
+    events: []
+  }), /配置已变化/)
+  assert.equal(
+    store.listDataSources().find(item => item.id === 'calendar').checkpoint,
+    ''
+  )
 }))
 
 test('resource content replacement and append roll back authority when search indexing fails', () => withStore(store => {
