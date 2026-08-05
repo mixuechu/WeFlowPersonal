@@ -6721,12 +6721,9 @@ function AiAssistantPage() {
         }
       }
       const calendars = await window.electronAPI.aiAssistant.listCalendars()
-      const configuredIds = Array.isArray(source.config?.calendarIds)
-        ? source.config.calendarIds.map(String)
-        : []
       setCalendarPicker({
         calendars,
-        selectedIds: configuredIds.filter((id: string) => calendars.some(calendar => calendar.id === id)),
+        selectedIds: calendars.filter(calendar => calendar.selected).map(calendar => String(calendar.id)),
         expectedMutationToken: String(source.mutationToken || '')
       })
       setDataSources(await window.electronAPI.aiAssistant.getDataSources())
@@ -6778,12 +6775,9 @@ function AiAssistantPage() {
         }
       }
       const mailboxes = await window.electronAPI.aiAssistant.listMailboxes()
-      const configuredIds = Array.isArray(source.config?.mailboxIds)
-        ? source.config.mailboxIds.map(String)
-        : []
       setMailPicker({
         mailboxes,
-        selectedIds: configuredIds.filter((id: string) => mailboxes.some(mailbox => mailbox.id === id)),
+        selectedIds: mailboxes.filter(mailbox => mailbox.selected).map(mailbox => String(mailbox.id)),
         allowModelAnalysis: Boolean(source.config?.allowModelAnalysis),
         expectedMutationToken: String(source.mutationToken || '')
       })
@@ -13375,7 +13369,7 @@ function AiAssistantPage() {
                       event.preventDefault()
                       event.stopPropagation()
                       void configureDocumentSource()
-                    }}>{source.config?.folderPath ? '更换文档目录' : '选择文档目录'}</button>}
+                    }}>{source.config?.folderConfigured ? '更换文档目录' : '选择文档目录'}</button>}
                     {source.id === 'calendar' && source.available && <button type="button" disabled={calendarConnecting}
                       onClick={event => {
                         event.preventDefault()

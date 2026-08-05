@@ -1,6 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import {
+  markSelectedConnectorItems,
   presentDataSourceForRenderer,
   presentDataSourcesForRenderer
 } from '../electron/services/dataSourcePresentation.ts'
@@ -19,7 +20,11 @@ test('data source presentation keeps raw connector checkpoints out of renderer p
     id: 'calendar',
     displayName: 'macOS 日历',
     checkpoint,
-    config: { calendarIds: ['selected-calendar'] },
+    config: {
+      calendarIds: ['selected-calendar-secret-id'],
+      folderPath: '/Users/private/Documents',
+      allowModelAnalysis: true
+    },
     mutationToken: 'opaque-mutation-token',
     lastError: '读取 /Users/private/Documents/customer-plan.docx 时邮箱 owner@example.com 和 sk-supersecret123456789 失败'
   })
@@ -28,7 +33,7 @@ test('data source presentation keeps raw connector checkpoints out of renderer p
   assert.equal(presented.checkpointStatus.bytes, new TextEncoder().encode(checkpoint).byteLength)
   assert.equal(presented.checkpointStatus.policy, 'sqlcipher-internal-only')
   assert.equal(presented.mutationToken, 'opaque-mutation-token')
-  assert.deepEqual(presented.config, { calendarIds: ['selected-calendar'] })
+  assert.deepEqual(presented.config, {})
   assert.equal(presented.lastError.includes('/Users/private'), false)
   assert.equal(presented.lastError.includes('owner@example.com'), false)
   assert.equal(presented.lastError.includes('sk-supersecret'), false)
@@ -36,9 +41,39 @@ test('data source presentation keeps raw connector checkpoints out of renderer p
   assert.equal(serialized.includes('mail-secret-local-id'), false)
   assert.equal(serialized.includes('private calendar notes'), false)
   assert.equal(serialized.includes('owner@example.com'), false)
+  assert.equal(serialized.includes('selected-calendar-secret-id'), false)
+  assert.equal(serialized.includes('/Users/private/Documents'), false)
   assert.ok(serialized.length < 500)
 
   assert.deepEqual(presentDataSourcesForRenderer(null), [])
   assert.equal(presentDataSourcesForRenderer([{ id: 'empty', checkpoint: '' }])[0]
     .checkpointStatus.stored, false)
+  assert.deepEqual(presentDataSourceForRenderer({
+    id: 'documents',
+    config: { folderPath: '/Users/private/Documents' }
+  }).config, { folderConfigured: true })
+  assert.deepEqual(presentDataSourceForRenderer({
+    id: 'mail',
+    config: {
+      mailboxIds: ['private-mailbox-id'],
+      allowModelAnalysis: true
+    }
+  }).config, { allowModelAnalysis: true })
+})
+
+test('connector picker selection binds stable ids instead of duplicate display names', () => {
+  const items = markSelectedConnectorItems([
+    { id: 'calendar-personal', title: '工作' },
+    { id: 'calendar-shared', title: '工作' },
+    { id: 42, title: '数字身份' }
+  ], ['calendar-shared', '42'])
+  assert.deepEqual(items.map(item => ({
+    id: item.id,
+    selected: item.selected
+  })), [
+    { id: 'calendar-personal', selected: false },
+    { id: 'calendar-shared', selected: true },
+    { id: 42, selected: true }
+  ])
+  assert.deepEqual(markSelectedConnectorItems(null, null), [])
 })

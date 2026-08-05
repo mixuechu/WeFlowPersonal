@@ -7,11 +7,19 @@ export type DataSourceCheckpointStatus = {
 export function presentDataSourceForRenderer(source: any): any {
   const {
     checkpoint: rawCheckpoint,
+    config: rawConfig,
     ...publicSource
   } = source || {}
   const checkpoint = String(rawCheckpoint || '')
+  const config = rawConfig && typeof rawConfig === 'object' ? rawConfig : {}
+  const publicConfig = publicSource.id === 'documents'
+    ? { folderConfigured: Boolean(config.folderPath) }
+    : publicSource.id === 'mail'
+      ? { allowModelAnalysis: Boolean(config.allowModelAnalysis) }
+      : {}
   return {
     ...publicSource,
+    config: publicConfig,
     lastError: publicSource.lastError
       ? sanitizeDiagnosticText(publicSource.lastError)
       : null,
@@ -25,5 +33,15 @@ export function presentDataSourceForRenderer(source: any): any {
 
 export function presentDataSourcesForRenderer(sources: unknown): any[] {
   return (Array.isArray(sources) ? sources : []).map(presentDataSourceForRenderer)
+}
+
+export function markSelectedConnectorItems(items: unknown, selectedIds: unknown): any[] {
+  const selected = new Set(
+    (Array.isArray(selectedIds) ? selectedIds : []).map(value => String(value))
+  )
+  return (Array.isArray(items) ? items : []).map((item: any) => ({
+    ...item,
+    selected: selected.has(String(item?.id || ''))
+  }))
 }
 import { sanitizeDiagnosticText } from './diagnosticRedaction.ts'

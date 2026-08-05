@@ -307,8 +307,8 @@ import { LocalCalendarDataSource, localCalendarService } from './localCalendarDa
 import { LocalMailDataSource, localMailService } from './localMailDataSource'
 import { AsyncExpiringValue } from './asyncExpiringValue'
 import {
-  presentDataSourceForRenderer,
-  presentDataSourcesForRenderer
+  markSelectedConnectorItems,
+  presentDataSourceForRenderer
 } from './dataSourcePresentation'
 import {
   mapCalendarParticipantIdentities,
@@ -3975,26 +3975,28 @@ export class AiAssistantService {
           : 'unavailable'
       }
     })
-    return presentDataSourcesForRenderer(personalMemoryStore.listDataSources()).map(source =>
-      source.id === 'documents'
+    return personalMemoryStore.listDataSources().map(internalSource => {
+      const source = presentDataSourceForRenderer(internalSource)
+      return source.id === 'documents'
         ? { ...source, analysis }
         : source.id === 'calendar'
           ? {
               ...source,
               authorization: authorizations.calendar,
-              selectedCalendarCount: Array.isArray(source.config?.calendarIds)
-                ? source.config.calendarIds.length
+              selectedCalendarCount: Array.isArray(internalSource.config?.calendarIds)
+                ? internalSource.config.calendarIds.length
                 : 0
             }
           : source.id === 'mail'
             ? {
                 ...source,
                 authorization: authorizations.mail,
-                selectedMailboxCount: Array.isArray(source.config?.mailboxIds)
-                  ? source.config.mailboxIds.length
+                selectedMailboxCount: Array.isArray(internalSource.config?.mailboxIds)
+                  ? internalSource.config.mailboxIds.length
                   : 0
               }
-          : source)
+            : source
+    })
   }
 
   async getCalendarAuthorization(): Promise<any> {
@@ -4014,7 +4016,11 @@ export class AiAssistantService {
     if (!['fullAccess', 'authorized'].includes(status.authorization)) {
       throw new Error('请先明确授权读取日历')
     }
-    return localCalendarService.listCalendars()
+    const source = personalMemoryStore.listDataSources().find(item => item.id === 'calendar')
+    return markSelectedConnectorItems(
+      await localCalendarService.listCalendars(),
+      source?.config?.calendarIds
+    )
   }
 
   async getMailAuthorization(): Promise<any> {
@@ -4034,7 +4040,11 @@ export class AiAssistantService {
     if (status.authorization !== 'authorized') {
       throw new Error('请先明确授权只读访问 macOS Mail')
     }
-    return localMailService.listMailboxes()
+    const source = personalMemoryStore.listDataSources().find(item => item.id === 'mail')
+    return markSelectedConnectorItems(
+      await localMailService.listMailboxes(),
+      source?.config?.mailboxIds
+    )
   }
 
   setDataSourceEnabled(sourceId: string, enabled: boolean, expectedMutationToken: string): any {
