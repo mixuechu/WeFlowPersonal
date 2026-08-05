@@ -106,6 +106,20 @@ test('mail evidence stays searchable locally but current connector policy gates 
         id: 'calendar-event',
         search_text: '默认不上传模型的日历',
         metadata: { sourceId: 'calendar' }
+      },
+      {
+        id: 'bounded-preview-hides-mail',
+        search_text: '最近样本只有微信，但完整证据包含邮件',
+        evidence: [{ sourceId: 'wechat', messageId: 'wechat-recent' }],
+        evidenceSourceIds: ['mail', 'wechat'],
+        evidenceSourceIdsComplete: true
+      },
+      {
+        id: 'incomplete-source-proof',
+        search_text: '来源种类异常超限，不能证明完整集合',
+        evidence: [{ sourceId: 'wechat', messageId: 'wechat-recent-2' }],
+        evidenceSourceIds: ['wechat'],
+        evidenceSourceIdsComplete: false
       }
     ], {
       mail: { allowModelAnalysis: false }

@@ -121,11 +121,22 @@ export function filterModelEligibleMemoryResults(
     const sourceIds = new Set<string>()
     const metadataSourceId = String(item?.metadata?.sourceId || '').trim().toLowerCase()
     if (metadataSourceId) sourceIds.add(metadataSourceId)
-    for (const evidence of Array.isArray(item?.evidence) ? item.evidence : []) {
-      const evidenceSourceId = String(
-        evidence?.source_id || evidence?.sourceId || ''
-      ).trim().toLowerCase()
-      if (evidenceSourceId) sourceIds.add(evidenceSourceId)
+    if (item?.evidenceSourceIdsComplete === false) return false
+    const authoritativeSourceIds = Array.isArray(item?.evidenceSourceIds)
+      ? item.evidenceSourceIds
+      : null
+    if (authoritativeSourceIds) {
+      for (const sourceId of authoritativeSourceIds) {
+        const normalized = String(sourceId || '').trim().toLowerCase()
+        if (normalized) sourceIds.add(normalized)
+      }
+    } else {
+      for (const evidence of Array.isArray(item?.evidence) ? item.evidence : []) {
+        const evidenceSourceId = String(
+          evidence?.source_id || evidence?.sourceId || ''
+        ).trim().toLowerCase()
+        if (evidenceSourceId) sourceIds.add(evidenceSourceId)
+      }
     }
     if (!sourceIds.size) return false
     return [...sourceIds].every(sourceId =>

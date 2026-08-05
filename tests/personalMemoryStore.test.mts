@@ -44,6 +44,7 @@ import {
 import { assertTaskOwnershipMutationRevision } from '../electron/services/taskOwnershipMutationPolicy.ts'
 import { assertStructuredMemoryMutationRevision } from '../electron/services/structuredMemoryMutationPolicy.ts'
 import { buildMemorySearchFeedbackContext } from '../electron/services/memorySearchFeedback.ts'
+import { filterModelEligibleMemoryResults } from '../electron/services/personalDataSources.ts'
 import {
   filterMemorySearchResults,
   isMemorySearchPageRevisionStale,
@@ -4369,7 +4370,12 @@ test('generic search evidence migrates to source-and-session identity and preser
           'resource-cross-session-evidence',
           { sourceIds: ['mail'] }
         ),
-        { evidence: [], evidenceTotal: 0 }
+        {
+          evidence: [],
+          evidenceTotal: 0,
+          evidenceSourceIds: [],
+          evidenceSourceIdsComplete: true
+        }
       )
       migrated.upsertResources([{
         id: 'resource-cascade-evidence',
@@ -4461,6 +4467,80 @@ test('unchanged tasks repair missing search documents and evidence after an inte
   assert.equal(diagnostics.taskSearchIndex.repairedDerivedDocumentsThisSync, 1)
   assert.equal(diagnostics.taskSearchIndex.repairedMissingDocumentsThisSync, 1)
   assert.equal(diagnostics.taskSearchIndex.repairedEvidenceSetsThisSync, 1)
+}))
+
+test('model source proof covers complete evidence beyond the bounded card preview', () => withStore(store => {
+  store.upsertResources([{
+    id: 'privacy-source-proof',
+    resourceType: 'chat-history',
+    title: '跨来源长期证据',
+    content: '最近证据均来自微信，但最早证据来自 Mail',
+    metadata: { sourceId: 'wechat' },
+    evidence: [{
+      sourceId: 'mail',
+      messageId: 'old-mail-evidence',
+      sessionId: 'mail-session',
+      timestamp: 1,
+      sender: 'Mail',
+      excerpt: '较早的邮件原文'
+    }, ...Array.from({ length: MEMORY_CARD_EVIDENCE_LIMIT + 5 }, (_, index) => ({
+      sourceId: 'wechat',
+      messageId: `recent-wechat-${index}`,
+      sessionId: 'wechat-session',
+      timestamp: 100 + index,
+      sender: '微信',
+      excerpt: `较新的微信原文 ${index}`
+    }))]
+  }])
+  const payload = store.getDocumentEvidencePayload('resource', 'privacy-source-proof')
+  assert.equal(payload.evidence.length, MEMORY_CARD_EVIDENCE_LIMIT)
+  assert.ok(payload.evidence.every(item => item.source_id === 'wechat'))
+  assert.deepEqual(payload.evidenceSourceIds, ['mail', 'wechat'])
+  assert.equal(payload.evidenceSourceIdsComplete, true)
+  const searchResult = {
+    id: 'resource:privacy-source-proof',
+    document_type: 'resource',
+    metadata: { sourceId: 'wechat' },
+    ...payload
+  }
+  assert.deepEqual(filterModelEligibleMemoryResults([searchResult], {
+    mail: { allowModelAnalysis: false }
+  }), [])
+  assert.deepEqual(filterModelEligibleMemoryResults([searchResult], {
+    mail: { allowModelAnalysis: true }
+  }).map(item => item.id), ['resource:privacy-source-proof'])
+
+  const excessivePolicies: Record<string, { allowModelAnalysis: boolean }> = {}
+  const excessiveEvidence = Array.from({ length: 65 }, (_, index) => {
+    const sourceId = `future-source-${String(index).padStart(2, '0')}`
+    excessivePolicies[sourceId] = { allowModelAnalysis: true }
+    return {
+      sourceId,
+      messageId: `future-message-${index}`,
+      sessionId: 'future-session',
+      timestamp: index,
+      sender: '未来连接器',
+      excerpt: `异常来源 ${index}`
+    }
+  })
+  store.upsertResources([{
+    id: 'privacy-source-proof-overflow',
+    resourceType: 'document',
+    title: '异常来源集合',
+    content: '来源种类超过可证明上限',
+    evidence: excessiveEvidence
+  }])
+  const overflow = store.getDocumentEvidencePayload(
+    'resource',
+    'privacy-source-proof-overflow'
+  )
+  assert.equal(overflow.evidenceSourceIds.length, 64)
+  assert.equal(overflow.evidenceSourceIdsComplete, false)
+  assert.deepEqual(filterModelEligibleMemoryResults([{
+    id: 'resource:privacy-source-proof-overflow',
+    document_type: 'resource',
+    ...overflow
+  }], excessivePolicies), [])
 }))
 
 test('task directory and search payload roll back together when a derived write fails', () => withStore(store => {

@@ -14996,6 +14996,8 @@ export class PersonalMemoryStore {
   ): {
     evidence: any[]
     evidenceTotal: number
+    evidenceSourceIds: string[]
+    evidenceSourceIdsComplete: boolean
     evidenceTimeScopeMode?: 'none' | 'document_time' | 'evidence_time'
     evidenceRoleCounts?: { supporting: number; contradiction: number }
     evidenceAuthorityRevision?: number
@@ -15007,7 +15009,23 @@ export class PersonalMemoryStore {
       truncated: boolean
     }
   } {
-    if (!this.db) return { evidence: [], evidenceTotal: 0 }
+    if (!this.db) return {
+      evidence: [],
+      evidenceTotal: 0,
+      evidenceSourceIds: [],
+      evidenceSourceIdsComplete: true
+    }
+    const boundedEvidenceSourceIds = (
+      rows: Array<{ source_id?: unknown }>
+    ): { evidenceSourceIds: string[]; evidenceSourceIdsComplete: boolean } => {
+      const normalized = [...new Set(rows
+        .map(row => String(row?.source_id || '').trim().toLowerCase())
+        .filter(Boolean))]
+      return {
+        evidenceSourceIds: normalized.slice(0, 64),
+        evidenceSourceIdsComplete: normalized.length <= 64
+      }
+    }
     const sourceIds = [...new Set((scope.sourceIds || [])
       .map(value => String(value).trim().toLowerCase()).filter(Boolean))]
     const sessions = [...new Set([scope.sessionId, scope.sessionName]
@@ -15115,6 +15133,14 @@ export class PersonalMemoryStore {
               SELECT 'entity:' || entity_id FROM entity_scope
             )
           `).get(sourceId) as any)?.revision || 0))
+      const sourceIdentity = boundedEvidenceSourceIds(this.db.prepare(`
+        ${entityScopeCte}
+        SELECT DISTINCT LOWER(ee.source_id) AS source_id
+        FROM entity_evidence ee
+        WHERE ee.entity_id IN (SELECT entity_id FROM entity_scope)${directScope.sql}
+        ORDER BY source_id
+        LIMIT 65
+      `).all(sourceId, ...directScope.parameters) as Array<{ source_id?: unknown }>)
       const evidenceTotal = Number((this.db.prepare(`
         ${entityScopeCte}
         SELECT COUNT(*) AS count FROM entity_evidence ee
@@ -15122,7 +15148,7 @@ export class PersonalMemoryStore {
       `).get(sourceId, ...directScope.parameters) as any)?.count || 0)
       if (!evidenceTotal) return {
         evidence: [], evidenceTotal: 0, evidenceAuthorityRevision,
-        evidenceScopeRestricted, ...timeScope
+        evidenceScopeRestricted, ...sourceIdentity, ...timeScope
       }
       const evidence = (this.db.prepare(`
         ${entityScopeCte}
@@ -15135,10 +15161,17 @@ export class PersonalMemoryStore {
       `).all(sourceId, ...directScope.parameters, MEMORY_CARD_EVIDENCE_LIMIT) as any[]).reverse()
       return {
         evidence, evidenceTotal, evidenceAuthorityRevision,
-        evidenceScopeRestricted, ...timeScope
+        evidenceScopeRestricted, ...sourceIdentity, ...timeScope
       }
     }
     const genericScope = evidenceScope('sde')
+    const genericSourceIdentity = boundedEvidenceSourceIds(this.db.prepare(`
+      SELECT DISTINCT LOWER(sde.source_id) AS source_id
+      FROM search_document_evidence sde
+      WHERE sde.document_id=?${genericScope.sql}
+      ORDER BY source_id
+      LIMIT 65
+    `).all(documentId, ...genericScope.parameters) as Array<{ source_id?: unknown }>)
     const genericTotal = Number((this.db.prepare(`
       SELECT COUNT(*) AS count FROM search_document_evidence sde
       WHERE sde.document_id=?${genericScope.sql}
@@ -15159,6 +15192,7 @@ export class PersonalMemoryStore {
         evidenceTotal: genericTotal,
         evidenceAuthorityRevision,
         evidenceScopeRestricted,
+        ...genericSourceIdentity,
         ...timeScope
       }
     }
@@ -15169,8 +15203,21 @@ export class PersonalMemoryStore {
         : documentType === 'relation'
           ? 'relation_id'
           : ''
-    if (!foreignKey) return { evidence: [], evidenceTotal: 0, ...timeScope }
+    if (!foreignKey) return {
+      evidence: [],
+      evidenceTotal: 0,
+      evidenceSourceIds: [],
+      evidenceSourceIdsComplete: true,
+      ...timeScope
+    }
     const structuredScope = evidenceScope('e')
+    const structuredSourceIdentity = boundedEvidenceSourceIds(this.db.prepare(`
+      SELECT DISTINCT LOWER(e.source_id) AS source_id
+      FROM evidence e
+      WHERE e.${foreignKey}=?${structuredScope.sql}
+      ORDER BY source_id
+      LIMIT 65
+    `).all(sourceId, ...structuredScope.parameters) as Array<{ source_id?: unknown }>)
     const evidenceAuthorityRevision = Math.max(0, Number((this.db.prepare(`
           SELECT revision FROM structured_evidence_revisions
           WHERE document_type=? AND source_id=?
@@ -15192,6 +15239,7 @@ export class PersonalMemoryStore {
       evidenceTotal: 0,
       evidenceAuthorityRevision,
       evidenceScopeRestricted,
+      ...structuredSourceIdentity,
       ...timeScope
     }
     const contradictionLimit = Math.min(5, MEMORY_CARD_EVIDENCE_LIMIT)
@@ -15233,6 +15281,7 @@ export class PersonalMemoryStore {
       evidenceTotal,
       evidenceAuthorityRevision,
       evidenceScopeRestricted,
+      ...structuredSourceIdentity,
       evidenceRoleCounts,
       evidenceSelection: {
         version: 'role-balanced-v1',
