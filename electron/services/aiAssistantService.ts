@@ -307,7 +307,7 @@ import { LocalCalendarDataSource, localCalendarService } from './localCalendarDa
 import { LocalMailDataSource, localMailService } from './localMailDataSource'
 import { AsyncExpiringValue } from './asyncExpiringValue'
 import {
-  markSelectedConnectorItems,
+  buildConnectorPickerSnapshot,
   presentDataSourceForRenderer
 } from './dataSourcePresentation'
 import {
@@ -4008,19 +4008,18 @@ export class AiAssistantService {
   async requestCalendarAccess(): Promise<any> {
     const result = await localCalendarService.requestAccess()
     this.cacheConnectorAuthorization('calendar', result.authorization)
-    return presentDataSourceForRenderer(result)
+    return result
   }
 
-  async listCalendars(): Promise<any[]> {
+  async listCalendars(): Promise<any> {
     const status = await localCalendarService.getStatus()
     if (!['fullAccess', 'authorized'].includes(status.authorization)) {
       throw new Error('请先明确授权读取日历')
     }
+    const calendars = await localCalendarService.listCalendars()
     const source = personalMemoryStore.listDataSources().find(item => item.id === 'calendar')
-    return markSelectedConnectorItems(
-      await localCalendarService.listCalendars(),
-      source?.config?.calendarIds
-    )
+    if (!source) throw new Error('日历数据源状态不存在，请刷新后重试')
+    return buildConnectorPickerSnapshot(calendars, source, 'calendarIds')
   }
 
   async getMailAuthorization(): Promise<any> {
@@ -4035,16 +4034,15 @@ export class AiAssistantService {
     return result
   }
 
-  async listMailboxes(): Promise<any[]> {
+  async listMailboxes(): Promise<any> {
     const status = await localMailService.getStatus()
     if (status.authorization !== 'authorized') {
       throw new Error('请先明确授权只读访问 macOS Mail')
     }
+    const mailboxes = await localMailService.listMailboxes()
     const source = personalMemoryStore.listDataSources().find(item => item.id === 'mail')
-    return markSelectedConnectorItems(
-      await localMailService.listMailboxes(),
-      source?.config?.mailboxIds
-    )
+    if (!source) throw new Error('Mail 数据源状态不存在，请刷新后重试')
+    return buildConnectorPickerSnapshot(mailboxes, source, 'mailboxIds')
   }
 
   setDataSourceEnabled(sourceId: string, enabled: boolean, expectedMutationToken: string): any {
@@ -4068,7 +4066,7 @@ export class AiAssistantService {
     if (sourceId === 'wechat' && !enabled && this.activeSync) {
       this.cancelRequested = true
     }
-    return result
+    return presentDataSourceForRenderer(result)
   }
 
   async configureDataSource(sourceId: string, input: any): Promise<any> {

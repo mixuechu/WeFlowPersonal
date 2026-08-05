@@ -44,4 +44,15 @@ export function markSelectedConnectorItems(items: unknown, selectedIds: unknown)
     selected: selected.has(String(item?.id || ''))
   }))
 }
+
+export function buildConnectorPickerSnapshot(
+  items: unknown,
+  source: any,
+  selectionKey: 'calendarIds' | 'mailboxIds'
+): { items: any[]; mutationToken: string } {
+  return {
+    items: markSelectedConnectorItems(items, source?.config?.[selectionKey]),
+    mutationToken: String(source?.mutationToken || '')
+  }
+}
 import { sanitizeDiagnosticText } from './diagnosticRedaction.ts'

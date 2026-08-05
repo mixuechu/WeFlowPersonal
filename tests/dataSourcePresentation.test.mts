@@ -1,6 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import {
+  buildConnectorPickerSnapshot,
   markSelectedConnectorItems,
   presentDataSourceForRenderer,
   presentDataSourcesForRenderer
@@ -59,6 +60,25 @@ test('data source presentation keeps raw connector checkpoints out of renderer p
       allowModelAnalysis: true
     }
   }).config, { allowModelAnalysis: true })
+})
+
+test('connector picker snapshot binds selected identities and save token together', () => {
+  const snapshot = buildConnectorPickerSnapshot([
+    { id: 'mailbox-a', displayName: '收件箱' },
+    { id: 'mailbox-b', displayName: '收件箱' }
+  ], {
+    config: { mailboxIds: ['mailbox-b'] },
+    mutationToken: 'current-source-token'
+  }, 'mailboxIds')
+  assert.equal(snapshot.mutationToken, 'current-source-token')
+  assert.deepEqual(snapshot.items.map(item => [item.id, item.selected]), [
+    ['mailbox-a', false],
+    ['mailbox-b', true]
+  ])
+  assert.deepEqual(buildConnectorPickerSnapshot([], null, 'calendarIds'), {
+    items: [],
+    mutationToken: ''
+  })
 })
 
 test('connector picker selection binds stable ids instead of duplicate display names', () => {

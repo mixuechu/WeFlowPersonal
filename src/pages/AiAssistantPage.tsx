@@ -6720,11 +6720,12 @@ function AiAssistantPage() {
           )
         }
       }
-      const calendars = await window.electronAPI.aiAssistant.listCalendars()
+      const calendarSnapshot = await window.electronAPI.aiAssistant.listCalendars()
+      const calendars = calendarSnapshot.items
       setCalendarPicker({
         calendars,
         selectedIds: calendars.filter(calendar => calendar.selected).map(calendar => String(calendar.id)),
-        expectedMutationToken: String(source.mutationToken || '')
+        expectedMutationToken: String(calendarSnapshot.mutationToken || '')
       })
       setDataSources(await window.electronAPI.aiAssistant.getDataSources())
     } catch (error: any) {
@@ -6774,12 +6775,13 @@ function AiAssistantPage() {
           )
         }
       }
-      const mailboxes = await window.electronAPI.aiAssistant.listMailboxes()
+      const mailboxSnapshot = await window.electronAPI.aiAssistant.listMailboxes()
+      const mailboxes = mailboxSnapshot.items
       setMailPicker({
         mailboxes,
         selectedIds: mailboxes.filter(mailbox => mailbox.selected).map(mailbox => String(mailbox.id)),
         allowModelAnalysis: Boolean(source.config?.allowModelAnalysis),
-        expectedMutationToken: String(source.mutationToken || '')
+        expectedMutationToken: String(mailboxSnapshot.mutationToken || '')
       })
       setDataSources(await window.electronAPI.aiAssistant.getDataSources())
     } catch (error: any) {
