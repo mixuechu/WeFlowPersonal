@@ -38,7 +38,7 @@ import {
 import { extractAttachmentText } from './attachmentTextExtractor'
 import { structureOcrText } from './imageOcrStructuring'
 import { captureWebSnapshot } from './webSnapshotService'
-import { ModelRequestCoordinator } from './modelRequestCoordinator'
+import { ModelRequestCoordinator, RequestCoordinator } from './modelRequestCoordinator'
 import { extractScannedPdfText, getPdfOcrStatus } from './pdfOcrService'
 import { exportService } from './export'
 import {
@@ -623,6 +623,8 @@ export class AiAssistantService {
   private notificationFlushPromise: Promise<void> | null = null
   private memoryQuestionPromises = new Set<Promise<any>>()
   private modelRequests = new ModelRequestCoordinator()
+  private localApiRequests = new RequestCoordinator('WeFlow 本机数据请求')
+  private localApiCallPromises = new Set<Promise<any>>()
   private preparedRecoveryContinuation: ReturnType<typeof setTimeout> | null = null
   private connectorAuthorizationCache = new AsyncExpiringValue<{
     calendar: string
@@ -842,6 +844,7 @@ export class AiAssistantService {
     rejected: number
     databaseClosed: boolean
     modelRequestsAborted: number
+    localApiRequestsAborted: number
     timedOut: boolean
     pending: string[]
   }> {
@@ -852,6 +855,7 @@ export class AiAssistantService {
         rejected: 0,
         databaseClosed: false,
         modelRequestsAborted: 0,
+        localApiRequestsAborted: 0,
         timedOut: false,
         pending: []
       }
@@ -859,6 +863,7 @@ export class AiAssistantService {
     this.disposed = true
     this.cancelRequested = Boolean(this.activeSync)
     const modelRequestsAborted = this.modelRequests.stop()
+    const localApiRequestsAborted = this.localApiRequests.stop()
     if (this.scheduler) clearInterval(this.scheduler)
     this.scheduler = null
     if (this.preparedRecoveryContinuation) clearTimeout(this.preparedRecoveryContinuation)
@@ -884,11 +889,20 @@ export class AiAssistantService {
       ...[...this.memoryQuestionPromises].map((promise, index) => ({
         name: `memory_question_${index + 1}`,
         promise
+      })),
+      ...[...this.localApiCallPromises].map((promise, index) => ({
+        name: `local_api_${index + 1}`,
+        promise
       }))
     ], 4_000)
     const databaseClosed = !settled.timedOut && settled.pending.length === 0
     if (databaseClosed) personalMemoryStore.close()
-    return { ...settled, databaseClosed, modelRequestsAborted }
+    return {
+      ...settled,
+      databaseClosed,
+      modelRequestsAborted,
+      localApiRequestsAborted
+    }
   }
 
   handleSystemSuspend(observedAt = new Date()): void {
@@ -1502,6 +1516,17 @@ export class AiAssistantService {
   }
 
   private async api(path: string, params: Record<string, any> = {}): Promise<any> {
+    if (this.disposed) throw new Error('AI 助理正在安全退出，不能读取本机微信数据')
+    const promise = this.runLocalApi(path, params)
+    this.localApiCallPromises.add(promise)
+    try {
+      return await promise
+    } finally {
+      this.localApiCallPromises.delete(promise)
+    }
+  }
+
+  private async runLocalApi(path: string, params: Record<string, any>): Promise<any> {
     const { port, token } = await this.ensureHttpApi()
     const url = new URL(`http://127.0.0.1:${port}${path}`)
     for (const [key, value] of Object.entries(params)) {
@@ -1510,15 +1535,15 @@ export class AiAssistantService {
     let lastError: any = null
     for (let attempt = 0; attempt < 3; attempt += 1) {
       try {
-        const response = await fetch(url, {
-          headers: { Authorization: `Bearer ${token}` },
-          signal: AbortSignal.timeout(30_000)
-        })
+        const response = await this.localApiRequests.fetch(url, {
+          headers: { Authorization: `Bearer ${token}` }
+        }, 30_000)
         const payload = await response.json()
         if (!response.ok || payload.success === false) throw new Error(payload.error || `HTTP ${response.status}`)
         return payload
       } catch (error) {
         lastError = error
+        if (!this.localApiRequests.getStatus().accepting) break
       }
     }
     throw lastError
@@ -3747,7 +3772,9 @@ export class AiAssistantService {
       backgroundWrites,
       modelRequests: {
         ...this.modelRequests.getStatus(),
-        memoryQuestions: this.memoryQuestionPromises.size
+        memoryQuestions: this.memoryQuestionPromises.size,
+        localApiActive: this.localApiRequests.getStatus().active,
+        localApiCalls: this.localApiCallPromises.size
       },
       cancelling: this.cancelRequested,
       scheduleTime: this.config.get('aiAssistantScheduleTime'),
@@ -5156,6 +5183,8 @@ export class AiAssistantService {
       modelRequests: {
         ...this.modelRequests.getStatus(),
         memoryQuestions: this.memoryQuestionPromises.size,
+        localApiActive: this.localApiRequests.getStatus().active,
+        localApiCalls: this.localApiCallPromises.size,
         timeoutSeconds: 90
       },
       identityMergeSnapshotStorage: personalMemoryStore.getIdentityMergeSnapshotStorageStats(),

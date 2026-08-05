@@ -10707,6 +10707,8 @@ function AiAssistantPage() {
                     : '未运行'}</b></span>
                 <span>模型请求 <b>{Number(status?.modelRequests?.active || 0)}</b></span>
                 <span>记忆问答 <b>{Number(status?.modelRequests?.memoryQuestions || 0)}</b></span>
+                <span>本机数据请求 <b>{Number(status?.modelRequests?.localApiActive || 0)}</b></span>
+                <span>本机调用栈 <b>{Number(status?.modelRequests?.localApiCalls || 0)}</b></span>
                 <span>请求截止 <b>{Number(memoryDiagnostics.modelRequests?.timeoutSeconds || 90)} 秒</b></span>
                 <span>诊断快照 <b>{memoryDiagnostics.backgroundWrites.message || '空闲'}</b></span>
               </div>

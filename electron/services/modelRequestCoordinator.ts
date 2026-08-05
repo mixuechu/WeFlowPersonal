@@ -1,11 +1,13 @@
 type FetchLike = (input: string | URL, init?: RequestInit) => Promise<Response>
 
-export class ModelRequestCoordinator {
+export class RequestCoordinator {
   private controllers = new Set<AbortController>()
   private accepting = true
   private readonly fetcher: FetchLike
+  private readonly label: string
 
-  constructor(fetcher: FetchLike = fetch) {
+  constructor(label: string, fetcher: FetchLike = fetch) {
+    this.label = label
     this.fetcher = fetcher
   }
 
@@ -14,11 +16,11 @@ export class ModelRequestCoordinator {
   }
 
   async fetch(input: string | URL, init: RequestInit = {}, timeoutMs = 90_000): Promise<Response> {
-    if (!this.accepting) throw new Error('AI 助理正在安全退出，不能开始新的模型请求')
+    if (!this.accepting) throw new Error(`AI 助理正在安全退出，不能开始新的${this.label}`)
     const controller = new AbortController()
     this.controllers.add(controller)
     const timeout = setTimeout(() => {
-      controller.abort(new Error(`模型请求超过 ${Math.ceil(timeoutMs / 1000)} 秒，已安全取消`))
+      controller.abort(new Error(`${this.label}超过 ${Math.ceil(timeoutMs / 1000)} 秒，已安全取消`))
     }, Math.max(1, timeoutMs))
     timeout.unref?.()
     try {
@@ -29,12 +31,18 @@ export class ModelRequestCoordinator {
     }
   }
 
-  stop(reason = '应用正在安全退出，模型请求已取消'): number {
+  stop(reason?: string): number {
     this.accepting = false
     const active = this.controllers.size
     for (const controller of this.controllers) {
-      controller.abort(new Error(reason))
+      controller.abort(new Error(reason || `应用正在安全退出，${this.label}已取消`))
     }
     return active
+  }
+}
+
+export class ModelRequestCoordinator extends RequestCoordinator {
+  constructor(fetcher: FetchLike = fetch) {
+    super('模型请求', fetcher)
   }
 }

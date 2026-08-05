@@ -1,6 +1,9 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { ModelRequestCoordinator } from '../electron/services/modelRequestCoordinator.ts'
+import {
+  ModelRequestCoordinator,
+  RequestCoordinator
+} from '../electron/services/modelRequestCoordinator.ts'
 
 test('model request coordinator aborts active requests and rejects new work after stop', async () => {
   const coordinator = new ModelRequestCoordinator((_input, init) => new Promise((_resolve, reject) => {
@@ -27,4 +30,20 @@ test('model request coordinator enforces its own bounded deadline', async () => 
     /超过 1 秒/
   )
   assert.equal(coordinator.getStatus().active, 0)
+})
+
+test('generic request coordinator identifies local API timeouts and stops retries', async () => {
+  const coordinator = new RequestCoordinator(
+    'WeFlow 本机数据请求',
+    (_input, init) => new Promise((_resolve, reject) => {
+      init?.signal?.addEventListener('abort', () => reject(init.signal?.reason), { once: true })
+    })
+  )
+  const request = coordinator.fetch('http://127.0.0.1:5031/api', {}, 5)
+  await assert.rejects(request, /WeFlow 本机数据请求超过 1 秒/)
+  assert.equal(coordinator.stop(), 0)
+  await assert.rejects(
+    coordinator.fetch('http://127.0.0.1:5031/api'),
+    /不能开始新的WeFlow 本机数据请求/
+  )
 })
