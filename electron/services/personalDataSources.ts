@@ -785,6 +785,11 @@ export async function runPersonalDataSourceBatch(
     Date.parse(left.occurredAt) - Date.parse(right.occurredAt))
   const nextCheckpoint = String(result.nextCheckpoint || checkpoint)
   const warnings = (result.warnings || []).map(value => String(value).slice(0, 500)).slice(0, 20)
+  if ((items.length > 0 || Boolean(result.hasMore)) && nextCheckpoint === checkpoint) {
+    throw new Error(
+      `数据源 ${connector.displayName} 返回了新内容或后续页，但 checkpoint 未推进；本页未消费，将从原断点安全重试`
+    )
+  }
   await consume(items, {
     currentCheckpoint: checkpoint,
     nextCheckpoint,

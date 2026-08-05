@@ -70,6 +70,43 @@ test('data source checkpoint advances only after deduplicated items are consumed
   assert.equal(committedCheckpoint, 'cursor-1')
 })
 
+test('data source pages with work cannot commit a stagnant checkpoint', async () => {
+  let consumed = false
+  const connector = fakeConnector()
+  connector.pull = async () => ({
+    items: [{
+      sourceId: connector.id,
+      externalId: 'stagnant-item',
+      kind: 'document',
+      occurredAt: '2026-08-06T00:00:00.000Z',
+      title: '停滞页',
+      content: '存在内容但断点没有推进'
+    }],
+    nextCheckpoint: 'cursor-stagnant',
+    hasMore: false
+  })
+  await assert.rejects(
+    runPersonalDataSourceBatch(connector, 'cursor-stagnant', async () => {
+      consumed = true
+    }),
+    /checkpoint 未推进/
+  )
+  assert.equal(consumed, false)
+
+  connector.pull = async () => ({
+    items: [],
+    nextCheckpoint: 'cursor-stagnant',
+    hasMore: true
+  })
+  await assert.rejects(
+    runPersonalDataSourceBatch(connector, 'cursor-stagnant', async () => {
+      consumed = true
+    }),
+    /checkpoint 未推进/
+  )
+  assert.equal(consumed, false)
+})
+
 test('document evidence cannot impersonate the owner or silently assign generic tasks', () => {
   assert.equal(normalizeDataSourceClaimNature('documents', 'self_statement'), 'other_statement')
   assert.equal(normalizeDataSourceClaimNature('wechat', 'self_statement'), 'self_statement')

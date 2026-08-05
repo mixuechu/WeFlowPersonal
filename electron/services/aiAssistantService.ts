@@ -307,6 +307,10 @@ import { LocalCalendarDataSource, localCalendarService } from './localCalendarDa
 import { LocalMailDataSource, localMailService } from './localMailDataSource'
 import { AsyncExpiringValue } from './asyncExpiringValue'
 import {
+  presentDataSourceForRenderer,
+  presentDataSourcesForRenderer
+} from './dataSourcePresentation'
+import {
   mapCalendarParticipantIdentities,
   type ExternalIdentity
 } from './calendarParticipantIdentity'
@@ -3941,7 +3945,7 @@ export class AiAssistantService {
       scheduleTime: this.config.get('aiAssistantScheduleTime'),
       model: this.config.get('aiAssistantApiModel'),
       cursor: buildCursorStatusPayload(this.state.cursor),
-      dataSources: personalMemoryStore.listDataSources()
+      dataSources: presentDataSourcesForRenderer(personalMemoryStore.listDataSources())
     }
   }
 
@@ -3972,7 +3976,7 @@ export class AiAssistantService {
           : 'unavailable'
       }
     })
-    return personalMemoryStore.listDataSources().map(source =>
+    return presentDataSourcesForRenderer(personalMemoryStore.listDataSources()).map(source =>
       source.id === 'documents'
         ? { ...source, analysis }
         : source.id === 'calendar'
@@ -4003,7 +4007,7 @@ export class AiAssistantService {
   async requestCalendarAccess(): Promise<any> {
     const result = await localCalendarService.requestAccess()
     this.cacheConnectorAuthorization('calendar', result.authorization)
-    return result
+    return presentDataSourceForRenderer(result)
   }
 
   async listCalendars(): Promise<any[]> {
@@ -4061,12 +4065,12 @@ export class AiAssistantService {
   async configureDataSource(sourceId: string, input: any): Promise<any> {
     if (sourceId === 'documents') {
       const connector = new LocalDocumentDataSource(String(input?.folderPath || ''))
-      return personalMemoryStore.configureDataSource(
+      return presentDataSourceForRenderer(personalMemoryStore.configureDataSource(
         'documents',
         { folderPath: connector.root },
         true,
         String(input?.expectedMutationToken || '')
-      )
+      ))
     }
     if (sourceId === 'calendar') {
       const status = await localCalendarService.getStatus()
@@ -4081,12 +4085,12 @@ export class AiAssistantService {
           .filter(id => availableIds.has(id))
       )]
       if (!calendarIds.length) throw new Error('请至少选择一个日历')
-      return personalMemoryStore.configureDataSource(
+      return presentDataSourceForRenderer(personalMemoryStore.configureDataSource(
         'calendar',
         { calendarIds },
         true,
         String(input?.expectedMutationToken || '')
-      )
+      ))
     }
     if (sourceId === 'mail') {
       const status = await localMailService.getStatus()
@@ -4101,10 +4105,10 @@ export class AiAssistantService {
           .filter(id => availableIds.has(id))
       )]
       if (!mailboxIds.length) throw new Error('请至少选择一个 Mail 邮箱')
-      return personalMemoryStore.configureDataSource('mail', {
+      return presentDataSourceForRenderer(personalMemoryStore.configureDataSource('mail', {
         mailboxIds,
         allowModelAnalysis: Boolean(input?.allowModelAnalysis)
-      }, true, String(input?.expectedMutationToken || ''))
+      }, true, String(input?.expectedMutationToken || '')))
     }
     throw new Error('该数据源暂不支持本机配置')
   }

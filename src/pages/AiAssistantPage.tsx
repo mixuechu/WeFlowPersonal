@@ -13315,6 +13315,11 @@ function AiAssistantPage() {
                       incremental: '增量断点', 'original-evidence': '原文证据', tasks: '待办',
                       claims: '事实', events: '事件', attachments: '附件'
                     } as Record<string, string>)[capability] || capability).join(' · ')}</small>
+                    <small>
+                      {source.checkpointStatus?.stored
+                        ? `增量断点已加密保存在 SQLCipher（${Math.max(1, Math.ceil(Number(source.checkpointStatus.bytes || 0) / 1024))} KB）；原始游标不进入界面`
+                        : '尚无增量断点；首次成功页提交后将加密保存'}
+                    </small>
                     {source.id === 'documents' && source.analysis && <small>
                       结构化抽取：{source.analysis.completed}/{source.analysis.total} 已完成
                       {source.analysis.pending ? ` · ${source.analysis.pending} 个待处理` : ''}
