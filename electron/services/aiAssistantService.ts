@@ -290,6 +290,7 @@ import {
   PERSONAL_DATA_SOURCE_CATALOG,
   MEMORY_RAG_SYSTEM_PROMPT,
   assertModelSourcePolicySnapshot,
+  buildModelSourcePrivacyAudit,
   buildModelMemoryContext,
   buildUntrustedMemoryQuestionEnvelope,
   classifyDocumentTaskOwnership,
@@ -8461,7 +8462,8 @@ export class AiAssistantService {
         `来源隐私门禁：${privacyExcludedResults} 份未授权、未知来源或已拒绝资料仅留在本机，未进入 DeepSeek 上下文`
       )
     }
-    const context = buildModelMemoryContext(eligibleResults, modelSourcePolicies, 20)
+    const sentResults = eligibleResults.slice(0, 20)
+    const context = buildModelMemoryContext(sentResults, modelSourcePolicies, 20)
     const semanticChunkHits = context.filter(item => item.semanticMatchExcerpt).length
     if (semanticChunkHits) {
       plan.explanation.push(
@@ -8516,6 +8518,17 @@ export class AiAssistantService {
     if (!response.ok) throw new Error(payload?.error?.message || `DeepSeek 请求失败 (${response.status})`)
     const parsed = parseModelJson(payload?.choices?.[0]?.message?.content)
     const grounded = finalizeGroundedMemoryAnswer(parsed, context)
+    const groundingAudit = {
+      ...grounded.groundingAudit,
+      sourcePrivacyAudit: buildModelSourcePrivacyAudit({
+        results,
+        eligibleResults,
+        sentResults,
+        mailModelAnalysisAllowed: Boolean(mailSource?.config?.allowModelAnalysis),
+        outboundText: outbound.text,
+        redaction: outbound.summary
+      })
+    }
     const answer = grounded.answer
     const feedbackContext = buildMemorySearchFeedbackContext(contextualQuestion.query, plannedOptions)
     const feedbackOptions = (() => {
@@ -8542,13 +8555,13 @@ export class AiAssistantService {
       messages: [{
         id: '',
         citations,
-        groundingAudit: grounded.groundingAudit
+        groundingAudit
       }]
     })?.messages?.[0]
     const authenticatedDraftCitations = authenticatedDraft?.citations || citations
     const draftRevalidation = authenticatedDraft?.groundingRevalidation
-      || revalidateGroundedStatements(grounded.groundingAudit, authenticatedDraftCitations)
-    if (groundedAnswerRequiresRetry(grounded.groundingAudit, draftRevalidation)) {
+      || revalidateGroundedStatements(groundingAudit, authenticatedDraftCitations)
+    if (groundedAnswerRequiresRetry(groundingAudit, draftRevalidation)) {
       throw new Error('引用证据在回答生成期间发生了变化，本次回答未保存；请重新提问以使用最新记忆')
     }
     const savedExchange = personalMemoryStore.saveAssistantExchangeDetailed(
@@ -8556,7 +8569,7 @@ export class AiAssistantService {
       answer,
       authenticatedDraftCitations,
       conversationId,
-      grounded.groundingAudit,
+      groundingAudit,
       uncertainty,
       { expectedSearchRevision: answerCommitSearchRevision }
     )
@@ -8575,8 +8588,8 @@ export class AiAssistantService {
       uncertainty,
       citations: authenticatedCitations,
       groundedStatements: grounded.statements,
-      groundingAudit: grounded.groundingAudit,
-      groundingRevalidation: revalidateGroundedStatements(grounded.groundingAudit, authenticatedCitations),
+      groundingAudit,
+      groundingRevalidation: revalidateGroundedStatements(groundingAudit, authenticatedCitations),
       sensitiveRedaction: outbound.summary,
       queryPlan: {
         ...plan,

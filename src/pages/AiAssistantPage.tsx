@@ -14,6 +14,7 @@ import { buildMemorySessionScope } from '../utils/memorySessionScope'
 import { buildResourceStructurePresentation } from '../utils/resourceStructurePresentation'
 import { buildMemoryBackupDirectory } from '../utils/memoryBackupPresentation'
 import { buildEntitySidebarPresentation } from '../utils/entitySidebarPresentation'
+import { presentModelSourcePrivacyAudit } from '../utils/modelSourcePrivacyPresentation'
 import { setKeyedLoadingState } from '../utils/keyedLoadingState'
 import { KeyedLatestRequestGates } from '../utils/keyedLatestRequestGates'
 import {
@@ -8605,6 +8606,15 @@ function AiAssistantPage() {
                     ? `；整条省略 ${Number(item.groundingAudit.rejectedAnswerBudgetStatements)} 条超过回答总预算的声明`
                     : ''}
                 </small>}
+                {item.role === 'assistant' && (() => {
+                  const privacy = presentModelSourcePrivacyAudit(
+                    item.groundingAudit?.sourcePrivacyAudit
+                  )
+                  return privacy.valid ? <details className="assistant-query-plan">
+                    <summary>{privacy.summary}</summary>
+                    <div><span>{privacy.detail}</span></div>
+                  </details> : null
+                })()}
                 {item.role === 'assistant' && item.groundingRevalidation?.status !== 'current' && <small>
                   {item.groundingRevalidation?.status === 'invalid'
                     ? `历史结论已失去当前证据支持（${Number(item.groundingRevalidation.invalidStatements || 0)} 条）`
@@ -8663,6 +8673,15 @@ function AiAssistantPage() {
                 : ''}
               {' '}聊天、邮件和文档内容均按不可信数据隔离，不会被当作模型指令执行。
             </small>}
+            {(() => {
+              const privacy = presentModelSourcePrivacyAudit(
+                memoryAnswer.groundingAudit?.sourcePrivacyAudit
+              )
+              return privacy.valid ? <details className="assistant-query-plan">
+                <summary>{privacy.summary}</summary>
+                <div><span>{privacy.detail}</span></div>
+              </details> : null
+            })()}
             {memoryAnswer.groundingRevalidation?.status === 'current' && <small className="assistant-grounding-current">
               当前重新核验：{Number(memoryAnswer.groundingRevalidation.supportedStatements || 0)} 条陈述的权威内容指纹和可信资格均未变化。
             </small>}

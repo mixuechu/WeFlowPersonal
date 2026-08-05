@@ -8,6 +8,7 @@ import {
 import {
   assertModelSourcePolicySnapshot,
   buildModelMemoryContext,
+  buildModelSourcePrivacyAudit,
   buildUntrustedMemoryQuestionEnvelope,
   filterTrustedConversationHistory,
   filterModelEligibleMemoryResults,
@@ -140,6 +141,57 @@ test('model send boundary rejects a changed connector privacy snapshot', () => {
     () => assertModelSourcePolicySnapshot('privacy-v1', 'privacy-v2', 'after'),
     /结果未保存/
   )
+})
+
+test('model source privacy audit keeps only bounded policy proof and irreversible digests', () => {
+  const audit = buildModelSourcePrivacyAudit({
+    results: [{
+      id: 'wechat-doc',
+      evidenceSourceIds: ['wechat'],
+      evidenceSourceIdsComplete: true
+    }, {
+      id: 'mail-doc',
+      evidenceSourceIds: ['mail'],
+      evidenceSourceIdsComplete: true
+    }, {
+      id: 'unknown-doc',
+      evidenceSourceIds: ['future-private-source'],
+      evidenceSourceIdsComplete: false
+    }],
+    eligibleResults: [{
+      id: 'wechat-doc',
+      evidenceSourceIds: ['wechat'],
+      evidenceSourceIdsComplete: true
+    }],
+    sentResults: [{
+      id: 'wechat-doc',
+      evidenceSourceIds: ['wechat'],
+      evidenceSourceIdsComplete: true
+    }],
+    mailModelAnalysisAllowed: false,
+    outboundText: '已经脱敏、不得在审计中保存的模型请求正文',
+    redaction: {
+      level: 'strict',
+      total: 3,
+      counts: { 邮箱: 2, 手机号: 1 }
+    }
+  })
+  assert.deepEqual(audit.policy, {
+    wechat: true,
+    documents: true,
+    calendar: false,
+    mail: false,
+    unknown: false
+  })
+  assert.equal(audit.contextDocuments, 1)
+  assert.equal(audit.privacyExcludedDocuments, 2)
+  assert.equal(audit.budgetOmittedDocuments, 0)
+  assert.deepEqual(audit.contextSourceIds, ['wechat'])
+  assert.deepEqual(audit.excludedSourceIds, ['mail', 'future-private-source'])
+  assert.equal(audit.incompleteSourceDocuments, 1)
+  assert.match(audit.outboundSha256, /^[a-f0-9]{64}$/)
+  assert.equal(JSON.stringify(audit).includes('不得在审计中保存'), false)
+  assert.deepEqual(audit.boundaryChecks, ['before_send', 'after_response'])
 })
 
 test('memory evidence eligibility keeps review status separate from factual support', () => {

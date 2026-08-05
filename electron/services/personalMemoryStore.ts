@@ -16019,6 +16019,67 @@ export class PersonalMemoryStore {
       .map((citationIds: any) => [...new Set((Array.isArray(citationIds) ? citationIds : [])
         .map(item => String(item || '').trim().slice(0, 512))
         .filter(Boolean))].slice(0, 20))
+    const privacy = value.sourcePrivacyAudit && typeof value.sourcePrivacyAudit === 'object'
+      ? value.sourcePrivacyAudit
+      : null
+    const compactSourceIds = (sourceIds: unknown) => [...new Set(
+      (Array.isArray(sourceIds) ? sourceIds : [])
+        .map(item => String(item || '').trim().toLowerCase().slice(0, 80))
+        .filter(Boolean)
+    )].sort().slice(0, 64)
+    const redactionCounts = Object.fromEntries(
+      Object.entries(
+        privacy?.redaction?.counts && typeof privacy.redaction.counts === 'object'
+          ? privacy.redaction.counts
+          : {}
+      ).map(([key, item]) => [
+        String(key || '').trim().slice(0, 40),
+        Math.max(0, Math.min(100_000, Math.floor(Number(item) || 0)))
+      ] as const).filter(([key, item]) => Boolean(key) && item > 0).slice(0, 16)
+    )
+    const sourcePrivacyAudit = privacy?.version === 'model-source-privacy-v2'
+      ? {
+          version: 'model-source-privacy-v2',
+          policy: {
+            wechat: true,
+            documents: true,
+            calendar: false,
+            mail: privacy?.policy?.mail === true,
+            unknown: false
+          },
+          contextDocuments: Math.max(
+            0, Math.min(10_000, Math.floor(Number(privacy.contextDocuments) || 0))
+          ),
+          privacyExcludedDocuments: Math.max(
+            0, Math.min(10_000, Math.floor(Number(privacy.privacyExcludedDocuments) || 0))
+          ),
+          budgetOmittedDocuments: Math.max(
+            0, Math.min(10_000, Math.floor(Number(privacy.budgetOmittedDocuments) || 0))
+          ),
+          contextSourceIds: compactSourceIds(privacy.contextSourceIds),
+          excludedSourceIds: compactSourceIds(privacy.excludedSourceIds),
+          incompleteSourceDocuments: Math.max(
+            0, Math.min(10_000, Math.floor(Number(privacy.incompleteSourceDocuments) || 0))
+          ),
+          outboundSha256: /^[a-f0-9]{64}$/i.test(String(privacy.outboundSha256 || ''))
+            ? String(privacy.outboundSha256).toLowerCase()
+            : '',
+          redaction: {
+            level: ['credentials', 'standard', 'strict'].includes(
+              String(privacy?.redaction?.level || '')
+            ) ? String(privacy.redaction.level) : 'standard',
+            total: Math.max(
+              0, Math.min(100_000, Math.floor(Number(privacy?.redaction?.total) || 0))
+            ),
+            counts: redactionCounts
+          },
+          boundaryChecks: [...new Set(
+            (Array.isArray(privacy.boundaryChecks) ? privacy.boundaryChecks : [])
+              .map((item: unknown) => String(item || ''))
+              .filter((item: string) => ['before_send', 'after_response'].includes(item))
+          )]
+        }
+      : null
     return {
       version,
       proposedStatements: count('proposedStatements'),
@@ -16036,6 +16097,7 @@ export class PersonalMemoryStore {
       ...(insufficientEvidencePolicyVersion === 'deterministic-insufficient-evidence-v1'
         ? { insufficientEvidencePolicyVersion }
         : {}),
+      ...(sourcePrivacyAudit ? { sourcePrivacyAudit } : {}),
       statementCitations
     }
   }

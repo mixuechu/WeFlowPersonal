@@ -11166,6 +11166,31 @@ test('assistant conversations persist ordered turns, citations and deletion acro
     rejectedAnswerBudgetStatements: 0,
     promptIsolationVersion: 'untrusted-memory-envelope-v1',
     statementCitations: [['claim:one']],
+    sourcePrivacyAudit: {
+      version: 'model-source-privacy-v2',
+      policy: {
+        wechat: true,
+        documents: true,
+        calendar: false,
+        mail: false,
+        unknown: false
+      },
+      contextDocuments: 1,
+      privacyExcludedDocuments: 2,
+      budgetOmittedDocuments: 3,
+      contextSourceIds: ['wechat'],
+      excludedSourceIds: ['unknown', 'mail'],
+      incompleteSourceDocuments: 1,
+      outboundSha256: 'c'.repeat(64),
+      redaction: {
+        level: 'strict',
+        total: 2,
+        counts: { 邮箱: 2 },
+        leakedText: '不能持久化'
+      },
+      boundaryChecks: ['before_send', 'after_response', 'forged'],
+      rawOutbound: '不能持久化'
+    },
     leakedSensitiveField: '不能离开主进程'
   }, '存在一条较早反证，结论需要保留条件')
   const conversationId = firstSavedExchange.conversationId
@@ -11231,9 +11256,33 @@ test('assistant conversations persist ordered turns, citations and deletion acro
     rejectedOversizedStatements: 0,
     rejectedAnswerBudgetStatements: 0,
     promptIsolationVersion: 'untrusted-memory-envelope-v1',
+    sourcePrivacyAudit: {
+      version: 'model-source-privacy-v2',
+      policy: {
+        wechat: true,
+        documents: true,
+        calendar: false,
+        mail: false,
+        unknown: false
+      },
+      contextDocuments: 1,
+      privacyExcludedDocuments: 2,
+      budgetOmittedDocuments: 3,
+      contextSourceIds: ['wechat'],
+      excludedSourceIds: ['mail', 'unknown'],
+      incompleteSourceDocuments: 1,
+      outboundSha256: 'c'.repeat(64),
+      redaction: {
+        level: 'strict',
+        total: 2,
+        counts: { 邮箱: 2 }
+      },
+      boundaryChecks: ['before_send', 'after_response']
+    },
     statementCitations: [['claim:one']]
   })
   assert.equal(JSON.stringify(complete.messages[1].groundingAudit).includes('不能离开主进程'), false)
+  assert.equal(JSON.stringify(complete.messages[1].groundingAudit).includes('不能持久化'), false)
   assert.equal(
     complete.messages[5].groundingAudit.insufficientEvidencePolicyVersion,
     'deterministic-insufficient-evidence-v1'
@@ -12932,6 +12981,21 @@ test('assistant archive and message pagination survive a SQLCipher process-style
       rejectedStatements: 0,
       acceptedCitationIds: 1,
       promptIsolationVersion: 'untrusted-memory-envelope-v1',
+      sourcePrivacyAudit: {
+        version: 'model-source-privacy-v2',
+        policy: {
+          wechat: true, documents: true, calendar: false, mail: true, unknown: false
+        },
+        contextDocuments: 1,
+        privacyExcludedDocuments: 4,
+        budgetOmittedDocuments: 2,
+        contextSourceIds: ['documents'],
+        excludedSourceIds: ['calendar', 'legacy'],
+        incompleteSourceDocuments: 1,
+        outboundSha256: 'd'.repeat(64),
+        redaction: { level: 'standard', total: 1, counts: { 邮箱: 1 } },
+        boundaryChecks: ['before_send', 'after_response']
+      },
       statementCitations: [['resource:reopen-review']]
     })
     const reviewAnswerId = String(firstDatabase.prepare(`
@@ -12971,6 +13035,14 @@ test('assistant archive and message pagination survive a SQLCipher process-style
     assert.equal(latest.hasOlder, true)
     assert.equal(older.hasOlder, false)
     assert.equal(new Set([...latest.messages, ...older.messages].map((message: any) => message.id)).size, 62)
+    const reopenedPrivacyAudit = [...latest.messages, ...older.messages]
+      .find((message: any) => message.id === reviewAnswerId)?.groundingAudit?.sourcePrivacyAudit
+    assert.equal(reopenedPrivacyAudit.version, 'model-source-privacy-v2')
+    assert.equal(reopenedPrivacyAudit.policy.mail, true)
+    assert.deepEqual(reopenedPrivacyAudit.contextSourceIds, ['documents'])
+    assert.deepEqual(reopenedPrivacyAudit.excludedSourceIds, ['calendar', 'legacy'])
+    assert.equal(reopenedPrivacyAudit.outboundSha256, 'd'.repeat(64))
+    assert.deepEqual(reopenedPrivacyAudit.boundaryChecks, ['before_send', 'after_response'])
     const answerReviews = second.listAssistantAnswerReviewsPage({
       status: 'invalid',
       query: '重启核验问题',

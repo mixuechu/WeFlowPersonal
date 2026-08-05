@@ -29,6 +29,37 @@ export type PersonalDataSourcePullResult = {
   warnings?: string[]
 }
 
+export const MODEL_SOURCE_PRIVACY_AUDIT_VERSION = 'model-source-privacy-v2'
+
+function memoryResultSourceIdentity(item: any): {
+  sourceIds: string[]
+  complete: boolean
+} {
+  const sourceIds = new Set<string>()
+  const metadataSourceId = String(item?.metadata?.sourceId || '').trim().toLowerCase()
+  if (metadataSourceId) sourceIds.add(metadataSourceId)
+  const authoritativeSourceIds = Array.isArray(item?.evidenceSourceIds)
+    ? item.evidenceSourceIds
+    : null
+  if (authoritativeSourceIds) {
+    for (const sourceId of authoritativeSourceIds) {
+      const normalized = String(sourceId || '').trim().toLowerCase()
+      if (normalized) sourceIds.add(normalized)
+    }
+  } else {
+    for (const evidence of Array.isArray(item?.evidence) ? item.evidence : []) {
+      const evidenceSourceId = String(
+        evidence?.source_id || evidence?.sourceId || ''
+      ).trim().toLowerCase()
+      if (evidenceSourceId) sourceIds.add(evidenceSourceId)
+    }
+  }
+  return {
+    sourceIds: [...sourceIds].sort(),
+    complete: item?.evidenceSourceIdsComplete !== false
+  }
+}
+
 export interface PersonalDataSourceConnector {
   id: string
   kind: PersonalDataSourceKind
@@ -118,30 +149,83 @@ export function filterModelEligibleMemoryResults(
   }
   return (results || []).filter(item => {
     if (getMemoryEvidenceEligibility(item).visibility === 'excluded') return false
-    const sourceIds = new Set<string>()
-    const metadataSourceId = String(item?.metadata?.sourceId || '').trim().toLowerCase()
-    if (metadataSourceId) sourceIds.add(metadataSourceId)
-    if (item?.evidenceSourceIdsComplete === false) return false
-    const authoritativeSourceIds = Array.isArray(item?.evidenceSourceIds)
-      ? item.evidenceSourceIds
-      : null
-    if (authoritativeSourceIds) {
-      for (const sourceId of authoritativeSourceIds) {
-        const normalized = String(sourceId || '').trim().toLowerCase()
-        if (normalized) sourceIds.add(normalized)
-      }
-    } else {
-      for (const evidence of Array.isArray(item?.evidence) ? item.evidence : []) {
-        const evidenceSourceId = String(
-          evidence?.source_id || evidence?.sourceId || ''
-        ).trim().toLowerCase()
-        if (evidenceSourceId) sourceIds.add(evidenceSourceId)
-      }
-    }
-    if (!sourceIds.size) return false
-    return [...sourceIds].every(sourceId =>
+    const identity = memoryResultSourceIdentity(item)
+    if (!identity.complete || !identity.sourceIds.length) return false
+    return identity.sourceIds.every(sourceId =>
       effectivePolicies[sourceId]?.allowModelAnalysis === true)
   })
+}
+
+export function buildModelSourcePrivacyAudit(input: {
+  results: any[]
+  eligibleResults: any[]
+  sentResults: any[]
+  mailModelAnalysisAllowed: boolean
+  outboundText: string
+  redaction?: {
+    level?: unknown
+    total?: unknown
+    counts?: Record<string, unknown>
+  }
+}): any {
+  const eligibleIds = new Set((input.eligibleResults || []).map(item => String(item?.id || '')))
+  const sentIds = new Set((input.sentResults || []).map(item => String(item?.id || '')))
+  const contextSourceIds = new Set<string>()
+  const excludedSourceIds = new Set<string>()
+  let incompleteSourceDocuments = 0
+  for (const item of input.results || []) {
+    const identity = memoryResultSourceIdentity(item)
+    if (!identity.complete) incompleteSourceDocuments += 1
+    const itemId = String(item?.id || '')
+    const target = sentIds.has(itemId)
+      ? contextSourceIds
+      : eligibleIds.has(itemId) ? null : excludedSourceIds
+    if (!target) continue
+    for (const sourceId of identity.sourceIds) target.add(sourceId)
+  }
+  const counts = Object.fromEntries(
+    Object.entries(input.redaction?.counts || {})
+      .map(([key, value]) => [
+        String(key || '').trim().slice(0, 40),
+        Math.max(0, Math.min(100_000, Math.floor(Number(value) || 0)))
+      ] as const)
+      .filter(([key, value]) => Boolean(key) && value > 0)
+      .slice(0, 16)
+  )
+  return {
+    version: MODEL_SOURCE_PRIVACY_AUDIT_VERSION,
+    policy: {
+      wechat: true,
+      documents: true,
+      calendar: false,
+      mail: Boolean(input.mailModelAnalysisAllowed),
+      unknown: false
+    },
+    contextDocuments: Math.max(0, Math.min(10_000, input.sentResults?.length || 0)),
+    privacyExcludedDocuments: Math.max(
+      0,
+      Math.min(10_000, (input.results?.length || 0) - (input.eligibleResults?.length || 0))
+    ),
+    budgetOmittedDocuments: Math.max(
+      0,
+      Math.min(
+        10_000,
+        (input.eligibleResults?.length || 0) - (input.sentResults?.length || 0)
+      )
+    ),
+    contextSourceIds: [...contextSourceIds].slice(0, 64),
+    excludedSourceIds: [...excludedSourceIds].slice(0, 64),
+    incompleteSourceDocuments: Math.max(0, Math.min(10_000, incompleteSourceDocuments)),
+    outboundSha256: createHash('sha256').update(String(input.outboundText || '')).digest('hex'),
+    redaction: {
+      level: ['credentials', 'standard', 'strict'].includes(String(input.redaction?.level || ''))
+        ? String(input.redaction?.level)
+        : 'standard',
+      total: Math.max(0, Math.min(100_000, Math.floor(Number(input.redaction?.total) || 0))),
+      counts
+    },
+    boundaryChecks: ['before_send', 'after_response']
+  }
 }
 
 export function assertModelSourcePolicySnapshot(
@@ -302,6 +386,10 @@ export function buildModelMemoryContext(
           Math.floor(Number(item.evidenceAuthorityRevision) || 0)
         ),
         evidenceScopeRestricted: Boolean(item.evidenceScopeRestricted),
+        evidenceSourceIds: Array.isArray(item.evidenceSourceIds)
+          ? item.evidenceSourceIds.slice(0, 64)
+          : undefined,
+        evidenceSourceIdsComplete: item.evidenceSourceIdsComplete !== false,
         canSupportFacts: eligibility.canSupportFacts
       }
     })
