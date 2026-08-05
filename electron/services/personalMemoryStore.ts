@@ -6755,23 +6755,15 @@ export class PersonalMemoryStore {
           WHERE decision.item_kind='event' AND decision.item_id=ev.id
           ORDER BY decision.id DESC LIMIT 1) AS reviewed_at,
         (SELECT COUNT(*) FROM evidence e WHERE e.event_id=ev.id) AS evidence_count,
+        (SELECT COUNT(*) FROM event_participants participant
+          WHERE participant.event_id=ev.id) AS participant_count,
         (SELECT mc.created_at FROM memory_corrections mc
           WHERE mc.item_kind='event' AND mc.item_id=ev.id
           ORDER BY mc.id DESC LIMIT 1) AS corrected_at
       FROM events ev WHERE ev.id=?
     `).get(String(id || '')) as any
     if (!event) return null
-    return {
-      ...event,
-      participants: this.db.prepare(`
-        SELECT ep.entity_id,ep.role,e.canonical_name
-        FROM event_participants ep JOIN entities e ON e.id=ep.entity_id WHERE ep.event_id=?
-      `).all(event.id),
-      evidence: this.db.prepare(`
-        SELECT source_id,message_id,session_id,timestamp,sender,excerpt,evidence_role
-        FROM evidence WHERE event_id=? ORDER BY timestamp
-      `).all(event.id)
-    }
+    return event
   }
 
   getStructuredMemoryDossier(

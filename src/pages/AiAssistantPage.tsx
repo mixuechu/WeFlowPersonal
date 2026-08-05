@@ -776,6 +776,7 @@ function AiAssistantPage() {
   const [editingClaim, setEditingClaim] = useState<any>(null)
   const claimCitationCorrectionGate = useRef(new LatestRequestGate())
   const [editingEvent, setEditingEvent] = useState<any>(null)
+  const eventCitationCorrectionGate = useRef(new LatestRequestGate())
   const [memoryItemAudits, setMemoryItemAudits] = useState<Record<string, any>>({})
   const [memoryItemAuditLoading, setMemoryItemAuditLoading] =
     useState<Record<string, boolean>>({})
@@ -5128,7 +5129,7 @@ function AiAssistantPage() {
     }
   }
 
-  const beginEventCorrection = (event: any) => {
+  const beginEventCorrection = (event: any, origin: 'timeline' | 'citation' = 'timeline') => {
     setEditingEvent({
       id: event.id,
       title: event.title || '',
@@ -5137,10 +5138,16 @@ function AiAssistantPage() {
       startAt: isoToShanghaiInput(event.start_at),
       endAt: isoToShanghaiInput(event.end_at),
       location: event.location || '',
-      expectedRevision: String(event.structuredMemoryRevision || eventTimeline.revision || '')
+      expectedRevision: String(event.structuredMemoryRevision || eventTimeline.revision || ''),
+      origin,
+      status: event.status || '',
+      evidenceCount: Number(event.evidence_count || 0),
+      participantCount: Number(event.participant_count || event.participants?.length || 0)
     })
-    window.setTimeout(() =>
-      document.getElementById(`memory-event-${event.id}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' }), 0)
+    if (origin === 'timeline') {
+      window.setTimeout(() =>
+        document.getElementById(`memory-event-${event.id}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' }), 0)
+    }
   }
 
   const saveEventCorrection = async () => {
@@ -6256,16 +6263,23 @@ function AiAssistantPage() {
   }
 
   const openEventCorrection = async (citation: any) => {
-    const event = await window.electronAPI.aiAssistant.getMemoryEvent(citation.sourceId)
+    const request = eventCitationCorrectionGate.current.begin()
+    setMessage('正在从本机权威事件档案读取当前值…')
+    const event = await window.electronAPI.aiAssistant
+      .getMemoryEvent(citation.sourceId)
+      .catch((error: any) => {
+        if (eventCitationCorrectionGate.current.isCurrent(request)) {
+          setMessage(error?.message || String(error))
+        }
+        return null
+      })
+    if (!eventCitationCorrectionGate.current.isCurrent(request)) return
     if (!event) {
-      setMessage('该事件不存在或已经被删除。')
+      setMessage('该事件不存在或已经被永久删除。')
       return
     }
-    setEventSourceFilter('')
-    setEventStatusFilter('')
-    setEventFrom('')
-    setEventTo('')
-    beginEventCorrection(event)
+    beginEventCorrection(event, 'citation')
+    setMessage('')
   }
 
   const openSources = async () => {
@@ -8689,7 +8703,8 @@ function AiAssistantPage() {
                 <button onClick={() => { setEventSourceFilter(''); setEventStatusFilter(''); setEventFrom(''); setEventTo('') }}>清除范围</button>}
             </div>
             <div className="assistant-memory-list">
-              {editingEvent && !visibleEvents.some((event: any) => event.id === editingEvent.id) &&
+              {editingEvent?.origin !== 'citation' &&
+                !visibleEvents.some((event: any) => event.id === editingEvent.id) &&
                 <article className="assistant-memory-item" id={`memory-event-${editingEvent.id}`}>
                   <div className="assistant-memory-item-head"><strong>正在纠正历史事件</strong><span className="confirmed">人工编辑</span></div>
                   <div className="assistant-event-editor">
@@ -8707,7 +8722,7 @@ function AiAssistantPage() {
                   <strong>{event.title}</strong>
                   <span className={event.status}>{event.status === 'confirmed' ? '已确认' : event.status === 'cancelled' ? '已取消' : '待确认'}</span>
                 </div>
-                {editingEvent?.id === event.id ? <div className="assistant-event-editor">
+                {editingEvent?.id === event.id && editingEvent?.origin !== 'citation' ? <div className="assistant-event-editor">
                   <input value={editingEvent.title} onChange={input => setEditingEvent({ ...editingEvent, title: input.target.value })} placeholder="事件标题" />
                   <input value={editingEvent.eventType} onChange={input => setEditingEvent({ ...editingEvent, eventType: input.target.value })} placeholder="事件类型" />
                   <textarea value={editingEvent.description} onChange={input => setEditingEvent({ ...editingEvent, description: input.target.value })} placeholder="事件说明" />
@@ -8757,7 +8772,7 @@ function AiAssistantPage() {
                     )} />
                 </div>
                 <div className="assistant-memory-actions">
-                  {editingEvent?.id === event.id
+                  {editingEvent?.id === event.id && editingEvent?.origin !== 'citation'
                     ? <><button onClick={() => setEditingEvent(null)}>取消</button><button className="primary" onClick={() => void saveEventCorrection()}>保存并确认</button></>
                     : <button disabled={!eventEntitiesTrusted(event)} title={!eventEntitiesTrusted(event) ? '请先确认事件参与实体' : ''} onClick={() => beginEventCorrection(event)}>纠正</button>}
                   {event.status !== 'rejected' && <button onClick={() => void updateMemoryStatus('event', event.id, 'rejected')}>不准确</button>}
@@ -11861,6 +11876,90 @@ function AiAssistantPage() {
               <button className="primary"
                 disabled={!String(editingClaim.value || '').trim()}
                 onClick={() => void saveClaimCorrection()}>保存纠正并确认</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {editingEvent?.origin === 'citation' && (
+        <div className="assistant-modal-backdrop" role="presentation">
+          <div className="assistant-modal assistant-delete-modal" role="dialog"
+            aria-modal="true" aria-labelledby="event-citation-correction-title">
+            <div className="assistant-modal-title"><div>
+              <h2 id="event-citation-correction-title">纠正回答引用中的事件</h2>
+              <p>该事件按稳定 ID 从本机 SQLCipher 权威档案读取，不依赖时间线分页或当前筛选。</p>
+            </div><button aria-label="关闭事件纠正" onClick={() => {
+              eventCitationCorrectionGate.current.invalidate()
+              setEditingEvent(null)
+            }}><X size={16} /></button></div>
+            <div className="assistant-delete-preview">
+              <strong>{editingEvent.title || '未命名事件'}</strong>
+              <p>
+                当前状态：{editingEvent.status === 'confirmed'
+                  ? '已确认'
+                  : editingEvent.status === 'rejected'
+                    ? '不准确'
+                    : editingEvent.status === 'cancelled' ? '已取消' : '待确认'}
+                {' · '}{Number(editingEvent.evidenceCount || 0)} 条权威原文
+                {' · '}{Number(editingEvent.participantCount || 0)} 个参与者记录。
+              </p>
+              <p>保存后会成为人工确认事件并记录前后版本；后续模型只能追加证据，不能覆盖人工内容。</p>
+            </div>
+            <label><span>事件标题</span><input autoFocus
+              value={editingEvent.title || ''}
+              maxLength={500}
+              onChange={event => setEditingEvent((current: any) => ({
+                ...current,
+                title: event.target.value
+              }))} /></label>
+            <div className="assistant-settings-inline">
+              <label><span>事件类型</span><input
+                value={editingEvent.eventType || ''}
+                maxLength={120}
+                onChange={event => setEditingEvent((current: any) => ({
+                  ...current,
+                  eventType: event.target.value
+                }))} /></label>
+              <label><span>地点（可选）</span><input
+                value={editingEvent.location || ''}
+                maxLength={500}
+                onChange={event => setEditingEvent((current: any) => ({
+                  ...current,
+                  location: event.target.value
+                }))} /></label>
+            </div>
+            <label><span>事件说明（可选）</span><textarea
+              value={editingEvent.description || ''}
+              maxLength={4000}
+              onChange={event => setEditingEvent((current: any) => ({
+                ...current,
+                description: event.target.value
+              }))} /></label>
+            <div className="assistant-settings-inline">
+              <label><span>开始时间（上海）</span><input type="datetime-local"
+                value={editingEvent.startAt || ''}
+                onChange={event => setEditingEvent((current: any) => ({
+                  ...current,
+                  startAt: event.target.value
+                }))} /></label>
+              <label><span>结束时间（上海）</span><input type="datetime-local"
+                value={editingEvent.endAt || ''}
+                onChange={event => setEditingEvent((current: any) => ({
+                  ...current,
+                  endAt: event.target.value
+                }))} /></label>
+            </div>
+            <small className="assistant-settings-note">
+              提交时会核验打开表单时的结构化记忆 revision；后台新增证据、状态变化或其他纠正发生后，旧表单不会覆盖新状态。
+            </small>
+            <div className="assistant-modal-actions">
+              <button onClick={() => {
+                eventCitationCorrectionGate.current.invalidate()
+                setEditingEvent(null)
+              }}>取消</button>
+              <button className="primary"
+                disabled={!String(editingEvent.title || '').trim()}
+                onClick={() => void saveEventCorrection()}>保存纠正并确认</button>
             </div>
           </div>
         </div>
