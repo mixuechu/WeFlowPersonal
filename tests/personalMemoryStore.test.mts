@@ -1195,8 +1195,20 @@ test('relation confirmation can atomically correct direction and predicate', () 
 
 test('relation corrections preserve before and after direction in audit history', () => {
   withStore(store => {
-    const before = { id: 'before', subjectId: 'a', predicate: '服务对象', objectId: 'b' }
-    const after = { id: 'after', subjectId: 'b', predicate: '服务于', objectId: 'a' }
+    const before = {
+      id: 'before',
+      subjectId: 'a',
+      predicate: '服务对象',
+      objectId: 'b',
+      directionExplanation: '乙方向甲方提供服务，甲方是服务对象。'
+    }
+    const after = {
+      id: 'after',
+      subjectId: 'b',
+      predicate: '服务于',
+      objectId: 'a',
+      directionExplanation: '从乙方指向甲方：乙方服务于甲方。'
+    }
     store.recordRelationCorrection('review-1', before, after)
     store.recordRelationCorrection('review-2', after, after)
     const rows = store.listRelationCorrections('a')
@@ -1204,7 +1216,86 @@ test('relation corrections preserve before and after direction in audit history'
     assert.equal(rows[0].before_predicate, '服务对象')
     assert.equal(rows[0].after_predicate, '服务于')
     assert.equal(rows[0].after_subject_id, 'b')
+    assert.equal(rows[0].before_direction_explanation, before.directionExplanation)
+    assert.equal(rows[0].after_direction_explanation, after.directionExplanation)
   })
+})
+
+test('legacy relation correction ledgers migrate and new direction explanations survive reopen', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'weflow-relation-correction-ledger-test-'))
+  const databasePath = join(directory, 'memory.sqlite')
+  const first = new PersonalMemoryStore()
+  const migrated = new PersonalMemoryStore()
+  const reopened = new PersonalMemoryStore()
+  try {
+    first.initialize(databasePath)
+    const database = (first as any).db
+    database.exec(`
+      DROP INDEX IF EXISTS idx_relation_corrections_before;
+      DROP INDEX IF EXISTS idx_relation_corrections_after;
+      ALTER TABLE relation_corrections RENAME TO relation_corrections_current;
+      CREATE TABLE relation_corrections (
+        id INTEGER PRIMARY KEY,
+        review_id TEXT NOT NULL,
+        before_relation_id TEXT NOT NULL,
+        after_relation_id TEXT NOT NULL,
+        before_subject_id TEXT NOT NULL,
+        before_predicate TEXT NOT NULL,
+        before_object_id TEXT NOT NULL,
+        after_subject_id TEXT NOT NULL,
+        after_predicate TEXT NOT NULL,
+        after_object_id TEXT NOT NULL,
+        created_at TEXT NOT NULL
+      ) STRICT;
+      INSERT INTO relation_corrections(
+        review_id,before_relation_id,after_relation_id,
+        before_subject_id,before_predicate,before_object_id,
+        after_subject_id,after_predicate,after_object_id,created_at
+      ) VALUES(
+        'legacy-review','legacy-before','legacy-after',
+        'legacy-a','旧关系','legacy-b',
+        'legacy-b','新关系','legacy-a','2026-08-05T00:00:00.000Z'
+      );
+      DROP TABLE relation_corrections_current;
+      CREATE INDEX idx_relation_corrections_before
+        ON relation_corrections(before_subject_id,before_object_id,created_at);
+      CREATE INDEX idx_relation_corrections_after
+        ON relation_corrections(after_subject_id,after_object_id,created_at);
+    `)
+    first.close()
+
+    migrated.initialize(databasePath)
+    const legacy = migrated.getRelationCorrectionByReview('legacy-review')
+    assert.equal(legacy.before_direction_explanation, '')
+    assert.equal(legacy.after_direction_explanation, '')
+    migrated.recordRelationCorrection('new-review', {
+      id: 'new-before',
+      subjectId: 'new-a',
+      predicate: '服务对象',
+      objectId: 'new-b',
+      directionExplanation: '新乙方向新甲方提供服务。'
+    }, {
+      id: 'new-after',
+      subjectId: 'new-b',
+      predicate: '服务于',
+      objectId: 'new-a',
+      directionExplanation: '从新乙方指向新甲方：新乙方服务于新甲方。'
+    })
+    migrated.close()
+
+    reopened.initialize(databasePath)
+    const current = reopened.getRelationCorrectionByReview('new-review')
+    assert.equal(current.before_direction_explanation, '新乙方向新甲方提供服务。')
+    assert.equal(
+      current.after_direction_explanation,
+      '从新乙方指向新甲方：新乙方服务于新甲方。'
+    )
+  } finally {
+    first.close()
+    migrated.close()
+    reopened.close()
+    rmSync(directory, { recursive: true, force: true })
+  }
 })
 
 test('entity audit sections paginate complete histories with one authoritative revision', () => withStore(store => {

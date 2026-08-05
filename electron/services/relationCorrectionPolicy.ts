@@ -21,7 +21,13 @@ export function planRelationConfirmation(input: {
   entities: any[]
   correction?: RelationCorrection
 }): {
-  before: { id: string; subjectId: string; predicate: string; objectId: string }
+  before: {
+    id: string
+    subjectId: string
+    predicate: string
+    objectId: string
+    directionExplanation: string
+  }
   after: { id: string; subjectId: string; predicate: string; objectId: string; directionExplanation: string }
   changed: boolean
 } {
@@ -53,7 +59,8 @@ export function planRelationConfirmation(input: {
     id: String(relation.id),
     subjectId: String(relation.subjectId),
     predicate: compact(relation.predicate, 100),
-    objectId: String(relation.objectId)
+    objectId: String(relation.objectId),
+    directionExplanation: compact(relation.directionExplanation, 500)
   }
   const after = {
     id,

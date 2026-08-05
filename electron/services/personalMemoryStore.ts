@@ -554,9 +554,11 @@ export class PersonalMemoryStore {
         before_subject_id TEXT NOT NULL,
         before_predicate TEXT NOT NULL,
         before_object_id TEXT NOT NULL,
+        before_direction_explanation TEXT NOT NULL DEFAULT '',
         after_subject_id TEXT NOT NULL,
         after_predicate TEXT NOT NULL,
         after_object_id TEXT NOT NULL,
+        after_direction_explanation TEXT NOT NULL DEFAULT '',
         created_at TEXT NOT NULL
       ) STRICT;
       CREATE INDEX IF NOT EXISTS idx_relation_corrections_before ON relation_corrections(before_subject_id,before_object_id,created_at);
@@ -1097,6 +1099,16 @@ export class PersonalMemoryStore {
     this.ensureColumn('entities', 'identity_version', 'INTEGER NOT NULL DEFAULT 1')
     this.ensureColumn('search_documents', 'embedding_chunk_count', 'INTEGER NOT NULL DEFAULT 0')
     this.ensureColumn('relations', 'direction_explanation', `TEXT NOT NULL DEFAULT ''`)
+    this.ensureColumn(
+      'relation_corrections',
+      'before_direction_explanation',
+      `TEXT NOT NULL DEFAULT ''`
+    )
+    this.ensureColumn(
+      'relation_corrections',
+      'after_direction_explanation',
+      `TEXT NOT NULL DEFAULT ''`
+    )
     this.db.prepare(`
       UPDATE relations
       SET search_text=TRIM(search_text || ' ' || direction_explanation)
@@ -5318,12 +5330,16 @@ export class PersonalMemoryStore {
       INSERT INTO relation_corrections(
         review_id,before_relation_id,after_relation_id,
         before_subject_id,before_predicate,before_object_id,
-        after_subject_id,after_predicate,after_object_id,created_at
-      ) VALUES(?,?,?,?,?,?,?,?,?,?)
+        before_direction_explanation,
+        after_subject_id,after_predicate,after_object_id,
+        after_direction_explanation,created_at
+      ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
     `).run(
       reviewId, before.id, after.id,
       before.subjectId, before.predicate, before.objectId,
+      String(before.directionExplanation || '').slice(0, 500),
       after.subjectId, after.predicate, after.objectId,
+      String(after.directionExplanation || '').slice(0, 500),
       new Date().toISOString()
     )
   }

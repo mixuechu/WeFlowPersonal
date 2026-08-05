@@ -9607,7 +9607,8 @@ function AiAssistantPage() {
                 </div>}
                 {relation && <div className="assistant-review-note">
                   <div><b>模型原始方向：</b>{relationCorrectionAudit
-                    ? `${reviewEntity(relationCorrectionAudit.before_subject_id)?.canonicalName || relationCorrectionAudit.before_subject_id} — ${relationCorrectionAudit.before_predicate} → ${reviewEntity(relationCorrectionAudit.before_object_id)?.canonicalName || relationCorrectionAudit.before_object_id}`
+                    ? relationCorrectionAudit.before_direction_explanation ||
+                      `${reviewEntity(relationCorrectionAudit.before_subject_id)?.canonicalName || relationCorrectionAudit.before_subject_id} — ${relationCorrectionAudit.before_predicate} → ${reviewEntity(relationCorrectionAudit.before_object_id)?.canonicalName || relationCorrectionAudit.before_object_id}`
                     : relation.directionExplanation || (
                     relation.predicate === '服务对象'
                       ? `${object?.canonicalName || '宾语'}向${subject?.canonicalName || '主语'}提供服务；${subject?.canonicalName || '主语'}是${object?.canonicalName || '宾语'}的服务对象。`
@@ -10160,6 +10161,8 @@ function AiAssistantPage() {
                         {' → '}
                         {correction.after_subject_name || correction.after_subject_id} —
                         {correction.after_predicate} → {correction.after_object_name || correction.after_object_id}
+                        <br />纠正前说明：{correction.before_direction_explanation || '旧版记录未保存'}
+                        <br />纠正后说明：{correction.after_direction_explanation || '旧版记录未保存'}
                       </small>)}
                       {item.correctionPage?.hasMore && <button
                         disabled={Boolean(relationDossierAuditLoading.correction)}
@@ -10665,6 +10668,8 @@ function AiAssistantPage() {
                   return <article key={item.id} className="assistant-dossier-history-row">
                     <div><b>{entityName(item.before_subject_id, item.before_subject_name)} — {item.before_predicate} → {entityName(item.before_object_id, item.before_object_name)}</b><span>修正为</span></div>
                     <div><b>{entityName(item.after_subject_id, item.after_subject_name)} — {item.after_predicate} → {entityName(item.after_object_id, item.after_object_name)}</b></div>
+                    <small>纠正前说明：{item.before_direction_explanation || '旧版记录未保存'}<br />
+                      纠正后说明：{item.after_direction_explanation || '旧版记录未保存'}</small>
                     <small>{new Date(item.created_at).toLocaleString('zh-CN')} · 原文证据已迁移至修正后关系</small>
                   </article>
                 })}
