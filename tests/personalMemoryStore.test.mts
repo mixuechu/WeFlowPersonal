@@ -12340,6 +12340,15 @@ test('human memory review survives process restart and legacy startup normalizat
 })
 
 test('human event correction is audited, searchable and protected from repeated extraction', () => withStore(store => {
+  store.syncGraph({
+    entities: [
+      { id: 'event-participant-wrong', type: 'person', canonicalName: '错误参与者', aliases: [], accountIds: [] },
+      { id: 'event-participant-right', type: 'person', canonicalName: '正确参与者', aliases: [], accountIds: [] },
+      { id: 'event-participant-late', type: 'person', canonicalName: '模型后来新增者', aliases: [], accountIds: [] }
+    ],
+    relations: [],
+    reviewQueue: []
+  })
   const extracted = {
     id: 'event-corrected',
     eventType: 'meeting',
@@ -12352,6 +12361,7 @@ test('human event correction is audited, searchable and protected from repeated 
     status: 'candidate',
     sourceNature: 'inference',
     searchText: '错误的会议 模型原始说明 旧地点',
+    participants: [{ entityId: 'event-participant-wrong', role: '错误角色' }],
     evidence: evidence('event-message-1', '会议原文')
   }
   store.upsertEvents([extracted])
@@ -12361,7 +12371,8 @@ test('human event correction is audited, searchable and protected from repeated 
     description: '确认第二版方案与报价',
     startAt: '2026-07-31T06:00:00.000Z',
     endAt: '2026-07-31T07:30:00.000Z',
-    location: '上海会议室'
+    location: '上海会议室',
+    participants: [{ entityId: 'event-participant-right', role: '主持人' }]
   })
   assert.equal(corrected.status, 'confirmed')
   assert.equal(corrected.source_nature, 'human_confirmation')
@@ -12371,6 +12382,7 @@ test('human event correction is audited, searchable and protected from repeated 
     ...extracted,
     confidence: 0.99,
     title: '模型再次输出的错误会议',
+    participants: [{ entityId: 'event-participant-late', role: '模型猜测角色' }],
     evidence: evidence('event-message-2', '重新抽取追加的证据')
   }])
   const event = store.getEvent('event-corrected')
@@ -12381,7 +12393,12 @@ test('human event correction is audited, searchable and protected from repeated 
   assert.equal(event.source_nature, 'human_confirmation')
   assert.equal(event.correction_count, 1)
   assert.equal(event.evidence_count, 2)
-  assert.equal(event.participant_count, 0)
+  assert.equal(event.participant_count, 1)
+  assert.deepEqual(store.listEventParticipantsForCorrection('event-corrected').items, [{
+    entity_id: 'event-participant-right',
+    role: '主持人',
+    canonical_name: '正确参与者'
+  }])
   assert.equal(Object.hasOwn(event, 'evidence'), false)
   assert.equal(Object.hasOwn(event, 'participants'), false)
   assert.equal(store.getEvent('event-does-not-exist'), null)
@@ -12390,6 +12407,10 @@ test('human event correction is audited, searchable and protected from repeated 
   assert.ok(correctedSearch)
   assert.equal(JSON.parse(correctedSearch.metadata_json).sourceNature, 'human_confirmation')
   assert.equal(JSON.parse(correctedSearch.metadata_json).correctionCount, 1)
+  assert.deepEqual(JSON.parse(correctedSearch.metadata_json).participantIds,
+    ['event-participant-right'])
+  assert.match(correctedSearch.search_text, /正确参与者/)
+  assert.doesNotMatch(correctedSearch.search_text, /错误参与者|模型后来新增者/)
   assert.equal(store.getEmbeddingStats('event-correction-vector').pending, 0)
   const database = (store as any).db
   database.prepare(`DELETE FROM search_documents WHERE id='event:event-corrected'`).run()
@@ -12399,6 +12420,9 @@ test('human event correction is audited, searchable and protected from repeated 
   assert.ok(rebuiltSearch)
   assert.equal(JSON.parse(rebuiltSearch.metadata_json).sourceNature, 'human_confirmation')
   assert.equal(JSON.parse(rebuiltSearch.metadata_json).correctionCount, 1)
+  assert.deepEqual(JSON.parse(rebuiltSearch.metadata_json).participantIds,
+    ['event-participant-right'])
+  assert.match(rebuiltSearch.search_text, /正确参与者/)
   assert.equal(store.getEmbeddingStats('event-correction-vector').pending, 1)
   const timeline = store.listEventTimeline()
   assert.equal(timeline.items[0].corrected_at !== null, true)
@@ -12406,6 +12430,25 @@ test('human event correction is audited, searchable and protected from repeated 
   assert.equal(store.getEvent('event-corrected').status, 'cancelled')
   assert.equal(store.getEvent('event-corrected').title, '客户方案评审')
   assert.equal(JSON.parse(store.searchText('报价')[0].metadata_json).status, 'cancelled')
+  database.prepare(`
+    UPDATE entities SET canonical_name='正确参与者后来改名'
+    WHERE id='event-participant-right'
+  `).run()
+  const correctionAudit = store.listMemoryItemAuditPage({
+    kind: 'event',
+    itemId: 'event-corrected'
+  })
+  assert.equal(correctionAudit.items[0].before.participants[0].entityId,
+    'event-participant-wrong')
+  assert.equal(correctionAudit.items[0].before.participantsRecorded, true)
+  assert.equal(correctionAudit.items[0].before.participants[0].canonicalName,
+    '错误参与者')
+  assert.equal(correctionAudit.items[0].after.participants[0].entityId,
+    'event-participant-right')
+  assert.equal(correctionAudit.items[0].after.participantsRecorded, true)
+  assert.equal(correctionAudit.items[0].after.participants[0].canonicalName,
+    '正确参与者')
+  assert.equal(correctionAudit.items[0].after.participants[0].role, '主持人')
   assert.throws(() => store.correctEvent('event-corrected', {
     title: '非法时间',
     startAt: '2026-08-01T10:00:00.000Z',

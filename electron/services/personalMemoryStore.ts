@@ -6674,7 +6674,6 @@ export class PersonalMemoryStore {
         SELECT 1 FROM memory_corrections WHERE item_kind='event' AND item_id=? LIMIT 1
       `).get(event.id))
       if (manuallyCorrected || manuallyReviewed) {
-        for (const item of event.participants || []) participant.run(event.id, item.entityId, item.role || 'participant')
         for (const item of event.evidence || []) {
           const sender = String(item.sender || '')
           const sourceId = evidenceSourceId(item)
@@ -6802,6 +6801,28 @@ export class PersonalMemoryStore {
     `).get(String(id || '')) as any
     if (!event) return null
     return event
+  }
+
+  listEventParticipantsForCorrection(id: string, limit = 256): {
+    items: any[]
+    total: number
+    truncated: boolean
+  } {
+    if (!this.db) return { items: [], total: 0, truncated: false }
+    const eventId = String(id || '').trim()
+    const safeLimit = Math.max(1, Math.min(256, Math.floor(Number(limit) || 256)))
+    const total = Number((this.db.prepare(`
+      SELECT COUNT(*) AS count FROM event_participants WHERE event_id=?
+    `).get(eventId) as any)?.count || 0)
+    const items = this.db.prepare(`
+      SELECT ep.entity_id,ep.role,e.canonical_name
+      FROM event_participants ep
+      LEFT JOIN entities e ON e.id=ep.entity_id
+      WHERE ep.event_id=?
+      ORDER BY e.canonical_name,ep.entity_id,ep.role
+      LIMIT ?
+    `).all(eventId, safeLimit) as any[]
+    return { items, total, truncated: total > items.length }
   }
 
   getStructuredMemoryEntityIds(
@@ -9269,6 +9290,13 @@ export class PersonalMemoryStore {
       const currentObject = objectEntityId
         ? entityName.get(objectEntityId) as { canonical_name?: string } | undefined
         : undefined
+      const participants = Array.isArray(value.participants)
+        ? value.participants.slice(0, 256).map((participant: any) => ({
+            entityId: String(participant.entity_id || participant.entityId || ''),
+            canonicalName: String(participant.canonical_name || participant.canonicalName || ''),
+            role: String(participant.role || 'participant')
+          })).filter((participant: any) => participant.entityId)
+        : []
       return kind === 'claim'
         ? {
             subjectId,
@@ -9291,6 +9319,8 @@ export class PersonalMemoryStore {
             startAt: String(value.start_at || ''),
             endAt: String(value.end_at || ''),
             location: String(value.location || ''),
+            participants,
+            participantsRecorded: Array.isArray(value.participants),
             status: String(value.status || ''),
             sourceNature: String(value.source_nature || '')
           }
@@ -10999,6 +11029,7 @@ export class PersonalMemoryStore {
     startAt?: string
     endAt?: string
     location?: string
+    participants?: Array<{ entityId?: string; role?: string }>
   }): any {
     if (!this.db) return null
     const before = this.db.prepare('SELECT * FROM events WHERE id=?').get(id) as any
@@ -11016,7 +11047,34 @@ export class PersonalMemoryStore {
     if (normalized.endAt && !Number.isFinite(Date.parse(normalized.endAt))) throw new Error('事件结束时间格式无效')
     if (normalized.startAt && normalized.endAt &&
       Date.parse(normalized.endAt) < Date.parse(normalized.startAt)) throw new Error('事件结束时间不能早于开始时间')
+    const existingParticipants = this.listEventParticipantsForCorrection(id)
+    if (existingParticipants.truncated) {
+      throw new Error('事件参与者超过安全编辑上限，无法生成完整纠正审计')
+    }
+    const replacesParticipants = Array.isArray(input.participants)
+    if (replacesParticipants && input.participants!.length > 256) {
+      throw new Error('单个事件最多支持 256 条参与者记录')
+    }
+    const participantEntity = this.db.prepare('SELECT canonical_name FROM entities WHERE id=?')
+    const participants = replacesParticipants
+      ? [...new Map(input.participants!.map(item => {
+          const entityId = String(item.entityId || '').trim()
+          const role = String(item.role || 'participant').trim().slice(0, 120) || 'participant'
+          if (!entityId) throw new Error('事件参与者不能为空')
+          const entity = participantEntity.get(entityId) as { canonical_name?: string } | undefined
+          if (!entity) throw new Error('事件参与者不存在或已经删除')
+          return [`${entityId}\u0000${role}`, {
+            entity_id: entityId,
+            canonical_name: String(entity.canonical_name || ''),
+            role
+          }]
+        })).values()]
+      : existingParticipants.items
     const now = new Date().toISOString()
+    const beforeSnapshot = {
+      ...before,
+      participants: existingParticipants.items
+    }
     const after = {
       ...before,
       event_type: normalized.eventType,
@@ -11028,9 +11086,12 @@ export class PersonalMemoryStore {
       confidence: 1,
       status: 'confirmed',
       source_nature: 'human_confirmation',
+      participants,
       search_text: [
         normalized.title, normalized.eventType, normalized.description,
-        normalized.startAt, normalized.endAt, normalized.location
+        normalized.startAt, normalized.endAt, normalized.location,
+        ...participants.flatMap((participant: any) =>
+          [participant.canonical_name, participant.role])
       ].filter(Boolean).join('；'),
       updated_at: now
     }
@@ -11043,24 +11104,29 @@ export class PersonalMemoryStore {
         after.event_type, after.title, after.description, after.start_at, after.end_at,
         after.location, after.search_text, now, id
       )
+      if (replacesParticipants) {
+        this.db!.prepare('DELETE FROM event_participants WHERE event_id=?').run(id)
+        const insertParticipant = this.db!.prepare(`
+          INSERT INTO event_participants(event_id,entity_id,role) VALUES(?,?,?)
+        `)
+        for (const participant of participants) {
+          insertParticipant.run(id, participant.entity_id, participant.role)
+        }
+      }
       this.db!.prepare(`
         INSERT INTO memory_corrections(item_kind,item_id,before_json,after_json,created_at)
         VALUES('event',?,?,?,?)
-      `).run(id, JSON.stringify(before), JSON.stringify(after), now)
-      const participants = this.db!.prepare(`
+      `).run(id, JSON.stringify(beforeSnapshot), JSON.stringify(after), now)
+      const indexedParticipants = this.db!.prepare(`
         SELECT ep.entity_id,e.canonical_name,ep.role
         FROM event_participants ep LEFT JOIN entities e ON e.id=ep.entity_id
         WHERE ep.event_id=?
       `).all(id) as any[]
-      const searchText = [
-        after.search_text,
-        ...participants.flatMap(participant => [participant.canonical_name, participant.role])
-      ].filter(Boolean).join('；')
-      this.upsertSearchDocument(`event:${id}`, 'event', id, after.title, searchText, {
+      this.upsertSearchDocument(`event:${id}`, 'event', id, after.title, after.search_text, {
         eventType: after.event_type,
         startAt: after.start_at,
         endAt: after.end_at,
-        participantIds: participants.map(participant => participant.entity_id),
+        participantIds: indexedParticipants.map(participant => participant.entity_id),
         status: 'confirmed',
         sourceNature: 'human_confirmation',
         correctionCount: Number((this.db!.prepare(`

@@ -275,9 +275,16 @@ function memoryAuditSnapshotText(kind: 'claim' | 'event', value: any): string {
       `${value?.polarity === 'negative' ? '否定 ' : ''}${object}` +
       ` · ${valueType} · ${memoryAuditStatusLabel(value?.status || '')}${validity}`
   }
+  const participants = value?.participantsRecorded === false
+    ? ' · 旧记录未保存参与者快照'
+    : Array.isArray(value?.participants) && value.participants.length
+      ? ` · 参与者 ${value.participants.map((participant: any) =>
+          `${participant.canonicalName || participant.entityId} [${participant.entityId}]（${participant.role || 'participant'}）`
+        ).join('、')}`
+      : ' · 无参与者'
   return `${value?.title || '未命名事件'} · ${value?.eventType || '事件'}` +
     `${value?.startAt || value?.endAt ? ` · ${value.startAt || '未知'}—${value.endAt || '未结束'}` : ''}` +
-    `${value?.location ? ` · ${value.location}` : ''} · ${memoryAuditStatusLabel(value?.status || '')}`
+    `${value?.location ? ` · ${value.location}` : ''}${participants} · ${memoryAuditStatusLabel(value?.status || '')}`
 }
 
 function MemoryItemAuditRows({ kind, items }: { kind: 'claim' | 'event'; items: any[] }) {
@@ -499,6 +506,71 @@ function TrustedEntityPicker({
         匹配 {total} 个，继续输入名称、别名或账号缩小范围
       </span>}
     </div>}
+  </div>
+}
+
+function EventParticipantEditor({
+  participants,
+  disabled,
+  onChange,
+  onDirectoryRevision,
+  onError
+}: {
+  participants: any[]
+  disabled?: boolean
+  onChange: (participants: any[]) => void
+  onDirectoryRevision: (revision: string) => void
+  onError: (message: string) => void
+}) {
+  const update = (index: number, patch: any) =>
+    onChange(participants.map((participant, itemIndex) =>
+      itemIndex === index ? { ...participant, ...patch } : participant))
+  return <div className="assistant-evidence-stack">
+    {participants.map((participant, index) => <div
+      className="assistant-settings-inline"
+      key={participant.key || `${participant.entityId}:${participant.role}:${index}`}>
+      <label><span>参与实体</span>
+        <TrustedEntityPicker
+          value={participant.entityId || ''}
+          selected={participant.entity}
+          placeholder="搜索姓名、备注、账号或稳定 ID"
+          ariaLabel={`事件参与者 ${index + 1}`}
+          disabled={disabled}
+          onSelect={entity => {
+            update(index, {
+              entityId: entity.id,
+              entity,
+              canonicalName: entity.canonicalName
+            })
+            onDirectoryRevision(entity.directoryRevision)
+          }}
+          onClear={() => update(index, { entityId: '', entity: null })}
+          onError={onError} />
+        {!participant.entity && participant.originalName && <small>
+          原参与者“{participant.originalName}”当前不可信；请选择正确实体或移除此行。
+        </small>}
+      </label>
+      <label><span>角色</span><input
+        value={participant.role || ''}
+        maxLength={120}
+        disabled={disabled}
+        placeholder="例如：主持人、参会人、付款方"
+        onChange={event => update(index, { role: event.target.value })} /></label>
+      <button type="button" disabled={disabled}
+        onClick={() => onChange(participants.filter((_, itemIndex) => itemIndex !== index))}>
+        移除参与者
+      </button>
+    </div>)}
+    {!disabled && participants.length < 256 && <button type="button"
+      onClick={() => onChange([...participants, {
+        key: `new-${Date.now()}-${participants.length}`,
+        entityId: '',
+        entity: null,
+        originalName: '',
+        role: 'participant'
+      }])}>
+      添加参与者
+    </button>}
   </div>
 }
 
@@ -5167,7 +5239,25 @@ function AiAssistantPage() {
       origin,
       status: event.status || '',
       evidenceCount: Number(event.evidence_count || 0),
-      participantCount: Number(event.participant_count || event.participants?.length || 0)
+      participantCount: Number(event.participantTotal ??
+        event.participant_count ?? event.participants?.length ?? 0),
+      participants: (event.participants || []).map((participant: any, index: number) => ({
+        key: `${participant.entityId || participant.entity_id}:${participant.role}:${index}`,
+        entityId: participant.entityId || participant.entity_id || '',
+        entity: Object.prototype.hasOwnProperty.call(participant, 'entity')
+          ? participant.entity
+          : participant.entityId || participant.entity_id ? {
+              id: participant.entityId || participant.entity_id,
+              canonicalName: participant.canonicalName || participant.canonical_name || '',
+              type: participant.type || 'entity',
+              trustStatus: participant.trustStatus || 'confirmed'
+            } : null,
+        originalName: participant.canonicalName || participant.canonical_name ||
+          participant.entityId || participant.entity_id || '',
+        role: participant.role || 'participant'
+      })),
+      directoryRevision: event.entityDirectoryRevision || '',
+      participantEditingSupported: event.participantEditingSupported !== false
     })
     if (origin === 'timeline') {
       window.setTimeout(() =>
@@ -5176,7 +5266,10 @@ function AiAssistantPage() {
   }
 
   const saveEventCorrection = async () => {
-    if (!editingEvent?.id || !String(editingEvent.title || '').trim()) return
+    if (!editingEvent?.id || !String(editingEvent.title || '').trim() ||
+      editingEvent.participantEditingSupported === false ||
+      editingEvent.participants.some((participant: any) =>
+        !participant.entityId || !String(participant.role || '').trim())) return
     const correctedEventId = editingEvent.id
     try {
       await window.electronAPI.aiAssistant.correctEvent(editingEvent.id, {
@@ -5185,7 +5278,12 @@ function AiAssistantPage() {
         description: editingEvent.description,
         startAt: shanghaiInputToIso(editingEvent.startAt),
         endAt: shanghaiInputToIso(editingEvent.endAt),
-        location: editingEvent.location
+        location: editingEvent.location,
+        participants: editingEvent.participants.map((participant: any) => ({
+          entityId: participant.entityId,
+          role: participant.role
+        })),
+        entityDirectoryRevision: editingEvent.directoryRevision
       }, String(editingEvent.expectedRevision || ''))
       setEditingEvent(null)
       setMessage('事件纠正已确认并写入版本审计；后续重抽取只会追加证据。')
@@ -6297,7 +6395,10 @@ function AiAssistantPage() {
     setMessage('')
   }
 
-  const openEventCorrection = async (citation: any) => {
+  const openEventCorrection = async (
+    citation: any,
+    origin: 'timeline' | 'citation' = 'citation'
+  ) => {
     const request = eventCitationCorrectionGate.current.begin()
     setMessage('正在从本机权威事件档案读取当前值…')
     const event = await window.electronAPI.aiAssistant
@@ -6313,7 +6414,7 @@ function AiAssistantPage() {
       setMessage('该事件不存在或已经被永久删除。')
       return
     }
-    beginEventCorrection(event, 'citation')
+    beginEventCorrection(event, origin)
     setMessage('')
   }
 
@@ -8741,8 +8842,24 @@ function AiAssistantPage() {
                     <input type="datetime-local" value={editingEvent.startAt} onChange={event => setEditingEvent({ ...editingEvent, startAt: event.target.value })} />
                     <input type="datetime-local" value={editingEvent.endAt} onChange={event => setEditingEvent({ ...editingEvent, endAt: event.target.value })} />
                     <input value={editingEvent.location} onChange={event => setEditingEvent({ ...editingEvent, location: event.target.value })} placeholder="地点" />
+                    <EventParticipantEditor
+                      participants={editingEvent.participants || []}
+                      disabled={editingEvent.participantEditingSupported === false}
+                      onChange={participants => setEditingEvent((current: any) => ({
+                        ...current, participants
+                      }))}
+                      onDirectoryRevision={directoryRevision =>
+                        setEditingEvent((current: any) => ({ ...current, directoryRevision }))}
+                      onError={setMessage} />
                   </div>
-                  <div className="assistant-memory-actions"><button onClick={() => setEditingEvent(null)}>取消</button><button className="primary" onClick={() => void saveEventCorrection()}>保存并确认</button></div>
+                  {editingEvent.participantEditingSupported === false && <small>
+                    参与者记录超过安全编辑上限；为避免截断丢失，当前不能保存纠正。
+                  </small>}
+                  <div className="assistant-memory-actions"><button onClick={() => setEditingEvent(null)}>取消</button><button className="primary"
+                    disabled={editingEvent.participantEditingSupported === false ||
+                      editingEvent.participants.some((participant: any) =>
+                        !participant.entityId || !String(participant.role || '').trim())}
+                    onClick={() => void saveEventCorrection()}>保存并确认</button></div>
                 </article>}
               {visibleEvents.map((event: any) => <article className="assistant-memory-item" id={`memory-event-${event.id}`} key={event.id}>
                 <div className="assistant-memory-item-head">
@@ -8756,6 +8873,15 @@ function AiAssistantPage() {
                   <input type="datetime-local" value={editingEvent.startAt} onChange={input => setEditingEvent({ ...editingEvent, startAt: input.target.value })} />
                   <input type="datetime-local" value={editingEvent.endAt} onChange={input => setEditingEvent({ ...editingEvent, endAt: input.target.value })} />
                   <input value={editingEvent.location} onChange={input => setEditingEvent({ ...editingEvent, location: input.target.value })} placeholder="地点" />
+                  <EventParticipantEditor
+                    participants={editingEvent.participants || []}
+                    disabled={editingEvent.participantEditingSupported === false}
+                    onChange={participants => setEditingEvent((current: any) => ({
+                      ...current, participants
+                    }))}
+                    onDirectoryRevision={directoryRevision =>
+                      setEditingEvent((current: any) => ({ ...current, directoryRevision }))}
+                    onError={setMessage} />
                 </div> : <>
                   {event.description && <p>{event.description}</p>}
                   <small>{event.start_at || '时间待确认'}{event.end_at ? ` — ${event.end_at}` : ''}{event.location ? ` · ${event.location}` : ''}</small>
@@ -8800,8 +8926,14 @@ function AiAssistantPage() {
                 </div>
                 <div className="assistant-memory-actions">
                   {editingEvent?.id === event.id && editingEvent?.origin !== 'citation'
-                    ? <><button onClick={() => setEditingEvent(null)}>取消</button><button className="primary" onClick={() => void saveEventCorrection()}>保存并确认</button></>
-                    : <button disabled={!eventEntitiesTrusted(event)} title={!eventEntitiesTrusted(event) ? '请先确认事件参与实体' : ''} onClick={() => beginEventCorrection(event)}>纠正</button>}
+                    ? <><button onClick={() => setEditingEvent(null)}>取消</button><button className="primary"
+                      disabled={editingEvent.participantEditingSupported === false ||
+                        editingEvent.participants.some((participant: any) =>
+                          !participant.entityId || !String(participant.role || '').trim())}
+                      onClick={() => void saveEventCorrection()}>保存并确认</button></>
+                    : <button onClick={() => void openEventCorrection({
+                      sourceId: event.id
+                    }, 'timeline')}>纠正</button>}
                   {event.status !== 'rejected' && <button onClick={() => void updateMemoryStatus('event', event.id, 'rejected')}>不准确</button>}
                   <button onClick={() => void ignoreMemoryItem('event', event)}>不重要</button>
                   {event.status !== 'confirmed' && <button className="primary" disabled={!eventEntitiesTrusted(event)} title={!eventEntitiesTrusted(event) ? '请先确认事件参与实体' : ''} onClick={() => void updateMemoryStatus('event', event.id, 'confirmed')}>{event.status === 'rejected' ? '恢复并确认' : '确认事件'}</button>}
@@ -11979,6 +12111,20 @@ function AiAssistantPage() {
                   validTo: event.target.value
                 }))} /></label>
             </div>
+            <div><strong>参与者与角色</strong>
+              <EventParticipantEditor
+                participants={editingEvent.participants || []}
+                disabled={editingEvent.participantEditingSupported === false}
+                onChange={participants => setEditingEvent((current: any) => ({
+                  ...current, participants
+                }))}
+                onDirectoryRevision={directoryRevision =>
+                  setEditingEvent((current: any) => ({ ...current, directoryRevision }))}
+                onError={setMessage} />
+            </div>
+            {editingEvent.participantEditingSupported === false && <small>
+              该事件有超过 256 条参与者记录。为防止只加载部分数据后误覆盖，当前版本不允许保存纠正。
+            </small>}
             <small className="assistant-settings-note">
               提交时会核验打开表单时的结构化记忆 revision；后台新增证据、状态变化或其他纠正发生后，旧表单不会覆盖新状态。
             </small>
@@ -12076,7 +12222,10 @@ function AiAssistantPage() {
                 setEditingEvent(null)
               }}>取消</button>
               <button className="primary"
-                disabled={!String(editingEvent.title || '').trim()}
+                disabled={!String(editingEvent.title || '').trim() ||
+                  editingEvent.participantEditingSupported === false ||
+                  editingEvent.participants.some((participant: any) =>
+                    !participant.entityId || !String(participant.role || '').trim())}
                 onClick={() => void saveEventCorrection()}>保存纠正并确认</button>
             </div>
           </div>

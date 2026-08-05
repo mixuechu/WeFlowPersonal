@@ -8717,7 +8717,26 @@ export class AiAssistantService {
       expectedRevision,
       personalMemoryStore.getStructuredMemoryRevision()
     )
-    this.assertStructuredEntityTrust('event', id)
+    if (Array.isArray(input?.participants)) {
+      const directory = buildTrustedEntityDirectory(this.state.graph.entities, { limit: 1 })
+      if (!input?.entityDirectoryRevision ||
+        String(input.entityDirectoryRevision) !== directory.revision) {
+        throw new Error('可信实体目录在你编辑事件参与者后发生了变化，请重新打开')
+      }
+      for (const entityId of [...new Set(input.participants
+        .map((participant: any) => String(participant?.entityId || '').trim())
+        .filter(Boolean))]) {
+        const selected = resolveTrustedEntitySelection(this.state.graph.entities, {
+          entityId,
+          expectedRevision: directory.revision
+        })
+        if (selected.stale) {
+          throw new Error('事件参与者不存在、尚未确认或已经失信，请重新选择')
+        }
+      }
+    } else {
+      this.assertStructuredEntityTrust('event', id)
+    }
     return personalMemoryStore.correctEvent(id, input)
   }
 
@@ -8759,11 +8778,38 @@ export class AiAssistantService {
   getMemoryEvent(id: string): any {
     const revision = personalMemoryStore.getStructuredMemoryRevision()
     const event = personalMemoryStore.getEvent(id)
+    const participantPage = event
+      ? personalMemoryStore.listEventParticipantsForCorrection(id)
+      : { items: [], total: 0, truncated: false }
+    const directory = buildTrustedEntityDirectory(this.state.graph.entities, { limit: 1 })
+    const trustedById = new Map(this.state.graph.entities
+      .filter(isTrustedEntity)
+      .map(entity => [entity.id, entity]))
     const completedRevision = personalMemoryStore.getStructuredMemoryRevision()
     if (completedRevision !== revision) {
       throw new Error('事实与事件档案在读取期间发生了变化，请重新打开')
     }
-    return event ? { ...event, structuredMemoryRevision: revision } : null
+    return event ? {
+      ...event,
+      structuredMemoryRevision: revision,
+      entityDirectoryRevision: directory.revision,
+      participants: participantPage.items.map(participant => {
+        const entity = trustedById.get(participant.entity_id)
+        return {
+          entityId: participant.entity_id,
+          canonicalName: participant.canonical_name || participant.entity_id,
+          role: participant.role,
+          entity: entity ? {
+            id: entity.id,
+            type: entity.type,
+            canonicalName: entity.canonicalName,
+            trustStatus: entity.trustStatus
+          } : null
+        }
+      }),
+      participantTotal: participantPage.total,
+      participantEditingSupported: !participantPage.truncated
+    } : null
   }
 
   private schedulerTick(
