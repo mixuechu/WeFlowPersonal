@@ -7223,6 +7223,19 @@ export class AiAssistantService {
     )
   }
 
+  getCurrentStructuredMemoryDossier(kind: string, id: string): any {
+    const normalizedKind = String(kind || '')
+    if (!['claim', 'event', 'relation'].includes(normalizedKind)) {
+      throw new Error('无效的结构化记忆类型')
+    }
+    const sourceId = String(id || '').trim()
+    if (!sourceId) throw new Error('结构化记忆 ID 不能为空')
+    return personalMemoryStore.getCurrentStructuredMemoryDossier(
+      normalizedKind as 'claim' | 'event' | 'relation',
+      sourceId
+    )
+  }
+
   getRelationDossierAuditPage(
     relationId: string,
     kind: string,

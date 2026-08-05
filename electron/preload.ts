@@ -712,6 +712,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
         id,
         expectedSearchRevision
       ),
+    getCurrentStructuredMemoryDossier: (kind: string, id: string) =>
+      ipcRenderer.invoke('ai-assistant:getCurrentStructuredMemoryDossier', kind, id),
     getRelationDossierAuditPage: (relationId: string, kind: string, options?: any) =>
       ipcRenderer.invoke('ai-assistant:getRelationDossierAuditPage', relationId, kind, options),
     getResourceTrashArchive: (options?: any) =>

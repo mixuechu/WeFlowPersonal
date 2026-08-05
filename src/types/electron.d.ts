@@ -1949,6 +1949,10 @@ export interface ElectronAPI {
         id: string,
         expectedSearchRevision: string
       ) => Promise<any>
+      getCurrentStructuredMemoryDossier: (
+        kind: 'claim' | 'event' | 'relation',
+        id: string
+      ) => Promise<any>
       getRelationDossierAuditPage: (
         relationId: string,
         kind: 'history' | 'correction',

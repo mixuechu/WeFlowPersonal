@@ -2587,6 +2587,14 @@ test('structured search dossiers bind the exact type, id and current search revi
   )
   assert.equal(dossierWithPages.item.correctionPage.total, 65)
   assert.equal(dossierWithPages.item.correctionPage.items.length, 40)
+  const currentDossier = store.getCurrentStructuredMemoryDossier(
+    'relation',
+    'dossier-relation'
+  )
+  assert.equal(currentDossier.stale, false)
+  assert.equal(currentDossier.revision, revision)
+  assert.equal(currentDossier.item.historyPage.total, 95)
+  assert.equal(currentDossier.item.correctionPage.total, 65)
   const historySecond = store.listRelationDossierAuditPage({
     relationId: 'dossier-relation',
     kind: 'history',
@@ -6400,6 +6408,13 @@ test('entity relationship directory links deterministic pending reviews without 
   assert.equal(rejectedPage.items[0].id, relation.id)
   assert.equal(rejectedPage.items[0].status, 'rejected')
   assert.equal(rejectedPage.items[0].evidenceTotal, 1)
+  const rejectedDossier = store.getCurrentStructuredMemoryDossier(
+    'relation',
+    relation.id
+  )
+  assert.equal(rejectedDossier.stale, false)
+  assert.equal(rejectedDossier.item.status, 'rejected')
+  assert.equal(rejectedDossier.item.evidence_count, 1)
 }))
 
 test('entity evidence separates current memory links from historical audit and preserves roles', () => withStore(store => {

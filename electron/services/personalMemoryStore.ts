@@ -7960,6 +7960,13 @@ export class PersonalMemoryStore {
     }
   }
 
+  getCurrentStructuredMemoryDossier(
+    kind: 'claim' | 'event' | 'relation',
+    id: string
+  ): any | null {
+    return this.getStructuredMemoryDossier(kind, id, this.getMemorySearchRevision())
+  }
+
   mergeEntityEventParticipants(sourceId: string, targetId: string): void {
     if (!this.db || !sourceId || !targetId || sourceId === targetId) return
     const transaction = this.db.transaction(() => {
