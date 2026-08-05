@@ -293,6 +293,7 @@ import {
   buildModelSourcePrivacyAudit,
   buildModelMemoryContext,
   buildUntrustedMemoryQuestionEnvelope,
+  classifyModelAnswerAuditFailure,
   classifyDocumentTaskOwnership,
   filterModelEligibleMemoryResults,
   filterTrustedConversationHistory,
@@ -8563,6 +8564,7 @@ export class AiAssistantService {
       )
       throw error
     }
+    try {
     const parsed = parseModelJson(payload?.choices?.[0]?.message?.content)
     const grounded = finalizeGroundedMemoryAnswer(parsed, context)
     const sourcePrivacyAudit = buildModelSourcePrivacyAudit({
@@ -8619,7 +8621,10 @@ export class AiAssistantService {
       conversationId,
       groundingAudit,
       uncertainty,
-      { expectedSearchRevision: answerCommitSearchRevision }
+      {
+        expectedSearchRevision: answerCommitSearchRevision,
+        modelRequestAuditId
+      }
     )
     const authenticatedAnswer = this.enrichAssistantCitationFeedback({
       messages: [{
@@ -8659,6 +8664,14 @@ export class AiAssistantService {
           steps: plannedGraphPath.steps?.map((step: any) => ({ predicate: step.predicate, forward: step.forward }))
         } : null
       }
+    }
+    } catch (error: any) {
+      personalMemoryStore.finishAssistantModelRequestAnswerAudit(
+        modelRequestAuditId,
+        'rejected',
+        classifyModelAnswerAuditFailure(error)
+      )
+      throw error
     }
   }
 

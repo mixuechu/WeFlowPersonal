@@ -13117,6 +13117,15 @@ test('model request audit is privacy-minimized, revision-paged and recovers inte
     }
     const receivedId = first.recordAssistantModelRequestStarted(baseAudit, 'deepseek-test')
     first.finishAssistantModelRequestAudit(receivedId, 'response_received')
+    const committedConversationId = first.saveAssistantExchangeDetailed(
+      '端到端审计问题',
+      '端到端审计回答',
+      [],
+      undefined,
+      {},
+      '',
+      { modelRequestAuditId: receivedId }
+    ).conversationId
     const failedId = first.recordAssistantModelRequestStarted({
       ...baseAudit,
       outboundSha256: 'b'.repeat(64)
@@ -13136,6 +13145,14 @@ test('model request audit is privacy-minimized, revision-paged and recovers inte
       failed: 1,
       interrupted: 0
     })
+    assert.deepEqual(firstPage.answerCounts, {
+      processing: 0,
+      committed: 1,
+      rejected: 0,
+      interrupted: 0,
+      not_applicable: 1,
+      legacy_unknown: 0
+    })
     assert.deepEqual(firstPage.items[0].sourcePrivacyAudit.contextSourceIds, [
       'unknown', 'wechat'
     ])
@@ -13152,10 +13169,21 @@ test('model request audit is privacy-minimized, revision-paged and recovers inte
     assert.equal(rawAudit.includes('原始问题'), false)
 
     const staleRevision = firstPage.revision
-    first.recordAssistantModelRequestStarted({
+    const processingId = first.recordAssistantModelRequestStarted({
       ...baseAudit,
       outboundSha256: 'd'.repeat(64)
     }, 'deepseek-test')
+    first.finishAssistantModelRequestAudit(processingId, 'response_received')
+    const rejectedId = first.recordAssistantModelRequestStarted({
+      ...baseAudit,
+      outboundSha256: 'e'.repeat(64)
+    }, 'deepseek-test')
+    first.finishAssistantModelRequestAudit(rejectedId, 'response_received')
+    first.finishAssistantModelRequestAnswerAudit(
+      rejectedId,
+      'rejected',
+      'invalid_model_json'
+    )
     assert.equal(first.listAssistantModelRequestAuditsPage({
       offset: 2,
       limit: 2,
@@ -13165,19 +13193,94 @@ test('model request audit is privacy-minimized, revision-paged and recovers inte
 
     second.initialize(databasePath, key)
     const reopened = second.listAssistantModelRequestAuditsPage({ limit: 10 })
-    assert.equal(reopened.total, 4)
+    assert.equal(reopened.total, 5)
     assert.deepEqual(reopened.counts, {
       sending: 0,
-      response_received: 1,
+      response_received: 3,
       failed: 1,
-      interrupted: 2
+      interrupted: 1
+    })
+    assert.deepEqual(reopened.answerCounts, {
+      processing: 0,
+      committed: 1,
+      rejected: 1,
+      interrupted: 1,
+      not_applicable: 2,
+      legacy_unknown: 0
     })
     assert.equal(reopened.items.filter((item: any) =>
       item.status === 'interrupted' &&
       item.outcome_code === 'process_interrupted'
-    ).length, 2)
+    ).length, 1)
+    assert.equal(reopened.items.some((item: any) =>
+      item.answer_outcome === 'interrupted' &&
+      item.answer_outcome_code === 'process_interrupted_after_response'
+    ), true)
+    assert.equal(reopened.items.some((item: any) =>
+      item.answer_outcome === 'rejected' &&
+      item.answer_outcome_code === 'invalid_model_json'
+    ), true)
+    assert.equal(second.getAssistantConversation(committedConversationId)?.messages.length, 2)
     assert.equal(second.getAssistantModelRequestAuditStats().policy,
       'category_only_digest_no_prompt_v1')
+  } finally {
+    first.close()
+    second.close()
+    rmSync(directory, { recursive: true, force: true })
+  }
+})
+
+test('transport-only model request audits upgrade without inventing answer success', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'weflow-model-request-audit-upgrade-'))
+  const databasePath = join(directory, 'memory.sqlite')
+  const key = randomBytes(32)
+  const first = new PersonalMemoryStore()
+  const second = new PersonalMemoryStore()
+  try {
+    first.initialize(databasePath, key)
+    const db = (first as any).db
+    const triggerNames = (db.prepare(`
+      SELECT name FROM sqlite_master
+      WHERE type='trigger' AND name LIKE 'trg_assistant_model_request_audit_revision_%'
+    `).all() as any[]).map(row => String(row.name || ''))
+    for (const name of triggerNames) {
+      db.exec(`DROP TRIGGER IF EXISTS "${name.replace(/"/g, '""')}"`)
+    }
+    db.exec(`
+      DROP TABLE assistant_model_request_audits;
+      CREATE TABLE assistant_model_request_audits (
+        id INTEGER PRIMARY KEY,
+        status TEXT NOT NULL CHECK(status IN (
+          'sending','response_received','failed','interrupted'
+        )),
+        outcome_code TEXT NOT NULL DEFAULT '',
+        model TEXT NOT NULL DEFAULT '',
+        audit_json TEXT NOT NULL DEFAULT '{}',
+        started_at TEXT NOT NULL,
+        completed_at TEXT
+      ) STRICT;
+      CREATE INDEX idx_assistant_model_request_audits_time
+        ON assistant_model_request_audits(started_at DESC,id DESC);
+      CREATE INDEX idx_assistant_model_request_audits_status_time
+        ON assistant_model_request_audits(status,started_at DESC,id DESC);
+    `)
+    db.prepare(`
+      INSERT INTO assistant_model_request_audits(
+        status,outcome_code,model,audit_json,started_at,completed_at
+      ) VALUES('response_received','response_received','legacy-model','{}',?,?)
+    `).run('2026-08-01T00:00:00.000Z', '2026-08-01T00:00:01.000Z')
+    first.close()
+
+    second.initialize(databasePath, key)
+    const upgraded = second.listAssistantModelRequestAuditsPage({ limit: 10 })
+    assert.equal(upgraded.total, 1)
+    assert.equal(upgraded.items[0].answer_outcome, 'legacy_unknown')
+    assert.equal(upgraded.items[0].answer_outcome_code, 'legacy_transport_only')
+    assert.equal(upgraded.answerCounts.legacy_unknown, 1)
+    assert.equal((second as any).db.prepare(`
+      SELECT COUNT(*) AS count FROM pragma_table_info('assistant_model_request_audits')
+      WHERE name IN ('answer_outcome','answer_outcome_code','answer_completed_at')
+    `).get().count, 3)
   } finally {
     first.close()
     second.close()

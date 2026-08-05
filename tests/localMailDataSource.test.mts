@@ -10,6 +10,7 @@ import {
   buildModelMemoryContext,
   buildModelSourcePrivacyAudit,
   buildUntrustedMemoryQuestionEnvelope,
+  classifyModelAnswerAuditFailure,
   filterTrustedConversationHistory,
   filterModelEligibleMemoryResults,
   finalizeGroundedMemoryAnswer,
@@ -140,6 +141,29 @@ test('model send boundary rejects a changed connector privacy snapshot', () => {
   assert.throws(
     () => assertModelSourcePolicySnapshot('privacy-v1', 'privacy-v2', 'after'),
     /结果未保存/
+  )
+})
+
+test('model answer audit distinguishes parsing, grounding, evidence and commit failures', () => {
+  assert.equal(
+    classifyModelAnswerAuditFailure(new Error('模型没有返回有效 JSON')),
+    'invalid_model_json'
+  )
+  assert.equal(
+    classifyModelAnswerAuditFailure(new Error('逐句门禁拒绝了这条陈述')),
+    'grounding_rejected'
+  )
+  assert.equal(
+    classifyModelAnswerAuditFailure(new Error('引用证据在回答生成期间发生了变化')),
+    'evidence_changed'
+  )
+  assert.equal(
+    classifyModelAnswerAuditFailure(new Error('本地事务提交失败')),
+    'answer_commit_failed'
+  )
+  assert.equal(
+    classifyModelAnswerAuditFailure(new Error('无法处理模型响应')),
+    'response_processing_failed'
   )
 })
 

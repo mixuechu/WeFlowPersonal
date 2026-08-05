@@ -254,6 +254,24 @@ export function assertModelSourcePolicySnapshot(
   )
 }
 
+export function classifyModelAnswerAuditFailure(error: unknown):
+  | 'invalid_model_json'
+  | 'grounding_rejected'
+  | 'evidence_changed'
+  | 'answer_commit_failed'
+  | 'response_processing_failed' {
+  const message = String((error as any)?.message || error || '')
+  if (/JSON|json/.test(message)) return 'invalid_model_json'
+  if (message.includes('证据') || message.includes('引用')) return 'evidence_changed'
+  if (message.includes('门禁') || message.includes('陈述')) return 'grounding_rejected'
+  if (
+    message.includes('提交') ||
+    message.includes('事务') ||
+    message.includes('审计状态')
+  ) return 'answer_commit_failed'
+  return 'response_processing_failed'
+}
+
 export type MemoryEvidenceEligibility = {
   status: 'candidate' | 'confirmed' | 'rejected' | 'cancelled' | 'not_applicable'
   visibility: 'normal' | 'excluded'

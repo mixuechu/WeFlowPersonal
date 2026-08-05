@@ -1180,7 +1180,11 @@ function AiAssistantPage() {
   const [modelRequestAuditsOpen, setModelRequestAuditsOpen] = useState(false)
   const [modelRequestAudits, setModelRequestAudits] = useState<any>({
     items: [], total: 0, hasMore: false,
-    counts: { sending: 0, response_received: 0, failed: 0, interrupted: 0 }
+    counts: { sending: 0, response_received: 0, failed: 0, interrupted: 0 },
+    answerCounts: {
+      processing: 0, committed: 0, rejected: 0, interrupted: 0,
+      not_applicable: 0, legacy_unknown: 0
+    }
   })
   const [modelRequestAuditStatus, setModelRequestAuditStatus] = useState('')
   const [modelRequestAuditFrom, setModelRequestAuditFrom] = useState('')
@@ -8426,6 +8430,12 @@ function AiAssistantPage() {
                 审计只保存微信、文档、日历、Mail、旧版或未知来源类别、资料计数、
                 脱敏计数和请求 SHA-256；不保存问题、聊天正文、邮箱地址或连接器内部 ID。
               </small>
+              <small>
+                回答已提交 {Number(modelRequestAudits.answerCounts?.committed || 0)} ·
+                响应被拒绝 {Number(modelRequestAudits.answerCounts?.rejected || 0)} ·
+                响应后中断 {Number(modelRequestAudits.answerCounts?.interrupted || 0)} ·
+                正在处理 {Number(modelRequestAudits.answerCounts?.processing || 0)}
+              </small>
               <div className="assistant-answer-review-list">
                 {(modelRequestAudits.items || []).map((item: any) => {
                   const privacy = presentModelSourcePrivacyAudit(
@@ -8449,6 +8459,24 @@ function AiAssistantPage() {
                     request_failed: '网络或请求失败',
                     process_interrupted: '上次运行在请求完成前中断'
                   }
+                  const answerOutcomeLabel: Record<string, string> = {
+                    processing: '正在执行解析、证据门禁与本地提交',
+                    committed: '✓ 回答已通过门禁并原子写入本机历史',
+                    rejected: '⚠ 响应未形成可用回答',
+                    interrupted: '△ 收到响应后进程中断，回答未提交',
+                    not_applicable: '请求未收到可处理响应',
+                    legacy_unknown: '旧版仅记录传输结果，无法证明回答是否提交'
+                  }
+                  const answerOutcomeReason: Record<string, string> = {
+                    invalid_model_json: '模型返回格式无效',
+                    grounding_rejected: '逐句证据门禁拒绝',
+                    evidence_changed: '权威证据在处理期间发生变化',
+                    answer_commit_failed: '本地原子提交失败',
+                    response_processing_failed: '响应处理失败',
+                    process_interrupted_after_response: '响应处理期间应用退出',
+                    answer_committed: '问答与审计在同一事务提交',
+                    legacy_transport_only: '旧版没有端到端回答结果'
+                  }
                   return <article key={item.id}>
                     <header>
                       <b>{statusLabel}</b>
@@ -8457,6 +8485,18 @@ function AiAssistantPage() {
                     <strong>{item.model || '未记录模型'}</strong>
                     {item.outcome_code && <small>
                       {outcomeLabel[item.outcome_code] || '请求状态已记录'}
+                    </small>}
+                    {item.answer_outcome && <small className={
+                      item.answer_outcome === 'committed'
+                        ? 'assistant-grounding-current'
+                        : ['rejected', 'interrupted'].includes(item.answer_outcome)
+                          ? 'assistant-grounding-warning'
+                          : ''
+                    }>
+                      {answerOutcomeLabel[item.answer_outcome] || '回答结果已记录'}
+                      {item.answer_outcome_code
+                        ? ` · ${answerOutcomeReason[item.answer_outcome_code] || '有限结果码已保存'}`
+                        : ''}
                     </small>}
                     {privacy.valid && <>
                       <p>{privacy.summary}</p>

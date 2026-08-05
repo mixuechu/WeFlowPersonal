@@ -885,8 +885,15 @@ export class PersonalMemoryStore {
         outcome_code TEXT NOT NULL DEFAULT '',
         model TEXT NOT NULL DEFAULT '',
         audit_json TEXT NOT NULL DEFAULT '{}',
+        answer_outcome TEXT NOT NULL DEFAULT 'pending'
+          CHECK(answer_outcome IN (
+            'pending','processing','committed','rejected','interrupted',
+            'not_applicable','legacy_unknown'
+          )),
+        answer_outcome_code TEXT NOT NULL DEFAULT '',
         started_at TEXT NOT NULL,
-        completed_at TEXT
+        completed_at TEXT,
+        answer_completed_at TEXT
       ) STRICT;
       CREATE INDEX IF NOT EXISTS idx_assistant_model_request_audits_time
         ON assistant_model_request_audits(started_at DESC,id DESC);
@@ -1372,6 +1379,7 @@ export class PersonalMemoryStore {
     this.ensureIngestionRecoveryRevisionTriggers()
     this.ensureCrossStoreRecoveryRevisionTriggers()
     this.ensureAssistantHistoryRevisionTriggers()
+    this.ensureAssistantModelRequestAuditColumns()
     this.ensureAssistantModelRequestAuditRevisionTriggers()
     this.repairInterruptedAssistantModelRequests()
     this.ensureStructuredEvidenceRevisionLedger()
@@ -2570,14 +2578,67 @@ export class PersonalMemoryStore {
     })
   }
 
+  private ensureAssistantModelRequestAuditColumns(): void {
+    if (!this.db) return
+    const columns = new Set((this.db.prepare(`
+      PRAGMA table_info(assistant_model_request_audits)
+    `).all() as any[]).map(row => String(row.name || '')))
+    const transaction = this.db.transaction(() => {
+      if (!columns.has('answer_outcome')) {
+        this.db!.exec(`
+          ALTER TABLE assistant_model_request_audits
+          ADD COLUMN answer_outcome TEXT NOT NULL DEFAULT 'pending'
+            CHECK(answer_outcome IN (
+              'pending','processing','committed','rejected','interrupted',
+              'not_applicable','legacy_unknown'
+            ))
+        `)
+      }
+      if (!columns.has('answer_outcome_code')) {
+        this.db!.exec(`
+          ALTER TABLE assistant_model_request_audits
+          ADD COLUMN answer_outcome_code TEXT NOT NULL DEFAULT ''
+        `)
+      }
+      if (!columns.has('answer_completed_at')) {
+        this.db!.exec(`
+          ALTER TABLE assistant_model_request_audits
+          ADD COLUMN answer_completed_at TEXT
+        `)
+      }
+      this.db!.prepare(`
+        UPDATE assistant_model_request_audits
+        SET answer_outcome='legacy_unknown',
+            answer_outcome_code='legacy_transport_only'
+        WHERE status='response_received' AND answer_outcome='pending'
+      `).run()
+      this.db!.prepare(`
+        UPDATE assistant_model_request_audits
+        SET answer_outcome='not_applicable'
+        WHERE status IN ('failed','interrupted') AND answer_outcome='pending'
+      `).run()
+    })
+    transaction()
+  }
+
   private repairInterruptedAssistantModelRequests(): void {
     if (!this.db) return
     const now = new Date().toISOString()
-    this.db.prepare(`
-      UPDATE assistant_model_request_audits
-      SET status='interrupted',outcome_code='process_interrupted',completed_at=?
-      WHERE status='sending'
-    `).run(now)
+    this.db.transaction(() => {
+      this.db!.prepare(`
+        UPDATE assistant_model_request_audits
+        SET status='interrupted',outcome_code='process_interrupted',
+            answer_outcome='not_applicable',completed_at=?
+        WHERE status='sending'
+      `).run(now)
+      this.db!.prepare(`
+        UPDATE assistant_model_request_audits
+        SET answer_outcome='interrupted',
+            answer_outcome_code='process_interrupted_after_response',
+            answer_completed_at=?
+        WHERE status='response_received' AND answer_outcome='processing'
+      `).run(now)
+    })()
   }
 
   getAssistantModelRequestAuditRevision(): string {
@@ -16292,9 +16353,46 @@ export class PersonalMemoryStore {
           : 'request_failed'
     this.db.prepare(`
       UPDATE assistant_model_request_audits
-      SET status=?,outcome_code=?,completed_at=?
+      SET status=?,outcome_code=?,completed_at=?,
+          answer_outcome=CASE
+            WHEN ?='response_received' THEN 'processing'
+            ELSE 'not_applicable'
+          END
       WHERE id=? AND status='sending'
-    `).run(status, normalizedOutcome, new Date().toISOString(), normalizedId)
+    `).run(
+      status,
+      normalizedOutcome,
+      new Date().toISOString(),
+      status,
+      normalizedId
+    )
+  }
+
+  finishAssistantModelRequestAnswerAudit(
+    id: number,
+    outcome: 'committed' | 'rejected',
+    outcomeCode = ''
+  ): void {
+    if (!this.db) return
+    const normalizedId = Math.max(0, Math.floor(Number(id) || 0))
+    if (!normalizedId) return
+    const allowedRejectedCodes = new Set([
+      'invalid_model_json',
+      'grounding_rejected',
+      'evidence_changed',
+      'answer_commit_failed',
+      'response_processing_failed'
+    ])
+    const normalizedCode = outcome === 'committed'
+      ? 'answer_committed'
+      : allowedRejectedCodes.has(String(outcomeCode || ''))
+        ? String(outcomeCode)
+        : 'response_processing_failed'
+    this.db.prepare(`
+      UPDATE assistant_model_request_audits
+      SET answer_outcome=?,answer_outcome_code=?,answer_completed_at=?
+      WHERE id=? AND status='response_received' AND answer_outcome='processing'
+    `).run(outcome, normalizedCode, new Date().toISOString(), normalizedId)
   }
 
   listAssistantModelRequestAuditsPage(options: {
@@ -16311,7 +16409,11 @@ export class PersonalMemoryStore {
       items: [], total: 0, hasMore: false, offset, limit,
       revision: this.getAssistantModelRequestAuditRevision(),
       stale: false,
-      counts: { sending: 0, response_received: 0, failed: 0, interrupted: 0 }
+      counts: { sending: 0, response_received: 0, failed: 0, interrupted: 0 },
+      answerCounts: {
+        processing: 0, committed: 0, rejected: 0, interrupted: 0,
+        not_applicable: 0, legacy_unknown: 0
+      }
     }
     if (!this.db) return empty
     const revision = this.getAssistantModelRequestAuditRevision()
@@ -16356,8 +16458,25 @@ export class PersonalMemoryStore {
         counts[row.status as keyof typeof counts] = Math.max(0, Number(row.count || 0))
       }
     }
+    const answerCountRows = this.db.prepare(`
+      SELECT answer_outcome,COUNT(*) AS count
+      FROM assistant_model_request_audits ${facetWhere}
+      GROUP BY answer_outcome
+    `).all(...facetArgs) as any[]
+    const answerCounts = {
+      processing: 0, committed: 0, rejected: 0, interrupted: 0,
+      not_applicable: 0, legacy_unknown: 0
+    }
+    for (const row of answerCountRows) {
+      if (row.answer_outcome in answerCounts) {
+        answerCounts[row.answer_outcome as keyof typeof answerCounts] =
+          Math.max(0, Number(row.count || 0))
+      }
+    }
     const rows = this.db.prepare(`
-      SELECT id,status,outcome_code,model,audit_json,started_at,completed_at
+      SELECT id,status,outcome_code,model,audit_json,
+        answer_outcome,answer_outcome_code,
+        started_at,completed_at,answer_completed_at
       FROM assistant_model_request_audits ${where}
       ORDER BY started_at DESC,id DESC LIMIT ? OFFSET ?
     `).all(...args, limit, offset) as any[]
@@ -16374,8 +16493,11 @@ export class PersonalMemoryStore {
         outcome_code: String(row.outcome_code || ''),
         model: String(row.model || ''),
         sourcePrivacyAudit: compacted,
+        answer_outcome: String(row.answer_outcome || ''),
+        answer_outcome_code: String(row.answer_outcome_code || ''),
         started_at: String(row.started_at || ''),
-        completed_at: String(row.completed_at || '')
+        completed_at: String(row.completed_at || ''),
+        answer_completed_at: String(row.answer_completed_at || '')
       }
     })
     const completedRevision = this.getAssistantModelRequestAuditRevision()
@@ -16390,7 +16512,8 @@ export class PersonalMemoryStore {
       limit,
       revision,
       stale: false,
-      counts
+      counts,
+      answerCounts
     }
   }
 
@@ -16398,6 +16521,10 @@ export class PersonalMemoryStore {
     if (!this.db) return {
       total: 0,
       counts: { sending: 0, response_received: 0, failed: 0, interrupted: 0 },
+      answerCounts: {
+        processing: 0, committed: 0, rejected: 0, interrupted: 0,
+        not_applicable: 0, legacy_unknown: 0
+      },
       revision: '0',
       policy: 'category_only_digest_no_prompt_v1'
     }
@@ -16407,6 +16534,7 @@ export class PersonalMemoryStore {
         SELECT COUNT(*) AS count FROM assistant_model_request_audits
       `).get() as any)?.count || 0),
       counts: page.counts,
+      answerCounts: page.answerCounts,
       revision: page.revision,
       policy: 'category_only_digest_no_prompt_v1'
     }
@@ -16437,7 +16565,10 @@ export class PersonalMemoryStore {
     conversationId?: string,
     groundingAudit: any = {},
     uncertainty = '',
-    options: { expectedSearchRevision?: string } = {}
+    options: {
+      expectedSearchRevision?: string
+      modelRequestAuditId?: number
+    } = {}
   ): { conversationId: string; questionMessageId: string; answerMessageId: string } {
     if (!this.db) return { conversationId: '', questionMessageId: '', answerMessageId: '' }
     const existing = conversationId
@@ -16508,6 +16639,22 @@ export class PersonalMemoryStore {
           )
         }
       })
+      const modelRequestAuditId = Math.max(
+        0,
+        Math.floor(Number(options.modelRequestAuditId) || 0)
+      )
+      if (modelRequestAuditId) {
+        const auditResult = this.db!.prepare(`
+          UPDATE assistant_model_request_audits
+          SET answer_outcome='committed',
+              answer_outcome_code='answer_committed',
+              answer_completed_at=?
+          WHERE id=? AND status='response_received' AND answer_outcome='processing'
+        `).run(answerAt, modelRequestAuditId)
+        if (Number(auditResult.changes || 0) !== 1) {
+          throw new Error('模型发送审计状态已经变化，本次回答未保存')
+        }
+      }
     })
     save()
     return { conversationId: id, questionMessageId, answerMessageId }
