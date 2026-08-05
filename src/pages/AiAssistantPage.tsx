@@ -3183,32 +3183,37 @@ function AiAssistantPage() {
       })
     }
   }
-  const openCurrentRelationDossier = async (relationId: string) => {
-    const id = String(relationId || '').trim()
+  const openCurrentStructuredMemoryDossier = async (
+    kind: 'claim' | 'event' | 'relation',
+    sourceId: string
+  ) => {
+    const id = String(sourceId || '').trim()
     if (!id) return
+    const section = kind === 'claim' ? 'claims' : kind === 'event' ? 'events' : 'relations'
+    const kindLabel = kind === 'claim' ? '事实' : kind === 'event' ? '事件' : '关系'
     const request = structuredMemoryDossierGate.current.begin()
     relationDossierAuditGates.current.invalidateAll()
     setRelationDossierAuditLoading({})
     setStructuredMemoryDossier({
-      kind: 'relation',
+      kind,
       sourceId: id,
       origin: 'entity_dossier',
       status: 'loading'
     })
     try {
       const result = await window.electronAPI.aiAssistant
-        .getCurrentStructuredMemoryDossier('relation', id)
+        .getCurrentStructuredMemoryDossier(kind, id)
       if (!structuredMemoryDossierGate.current.isCurrent(request)) return
       if (result?.stale) {
         setStructuredMemoryDossier(null)
-        setMessage('人物关系在读取期间已有变化，已刷新当前人物的关系。')
-        refreshEntityDossierSection('relations')
+        setMessage(`人物${kindLabel}在读取期间已有变化，已刷新当前人物的${kindLabel}。`)
+        refreshEntityDossierSection(section)
         return
       }
       if (!result) {
         setStructuredMemoryDossier(null)
-        setMessage('这条关系已经删除或不再存在，已刷新当前人物的关系。')
-        refreshEntityDossierSection('relations')
+        setMessage(`这条${kindLabel}已经删除或不再存在，已刷新当前人物的${kindLabel}。`)
+        refreshEntityDossierSection(section)
         return
       }
       setStructuredMemoryDossier({
@@ -3216,10 +3221,11 @@ function AiAssistantPage() {
         origin: 'entity_dossier',
         status: 'ready'
       })
+      if (kind !== 'relation') void loadMemoryItemAudit(kind, id)
     } catch (error: any) {
       if (!structuredMemoryDossierGate.current.isCurrent(request)) return
       setStructuredMemoryDossier({
-        kind: 'relation',
+        kind,
         sourceId: id,
         origin: 'entity_dossier',
         status: 'error',
@@ -10749,7 +10755,7 @@ function AiAssistantPage() {
                   )}
                 </h2>
                 <p>{structuredMemoryDossier.origin === 'entity_dossier'
-                  ? '人物关系 revision、结构化类型和稳定 ID 已共同校验；下方内容重新读取自当前 SQLCipher 权威记录。'
+                  ? '人物档案 revision、结构化类型和稳定 ID 已共同校验；下方内容重新读取自当前 SQLCipher 权威记录。'
                   : '检索 revision、结构化类型和稳定 ID 已共同校验；下方内容重新读取自当前 SQLCipher 权威记录。'}</p>
               </div>
               <button aria-label="关闭结构化记忆权威档案" onClick={() => {
@@ -10763,14 +10769,17 @@ function AiAssistantPage() {
               {structuredMemoryDossier.status === 'loading' &&
                 <div className="assistant-empty">
                   {structuredMemoryDossier.origin === 'entity_dossier'
-                    ? '正在校验人物关系 revision 并读取权威记录…'
+                    ? '正在校验人物档案 revision 并读取权威记录…'
                     : '正在校验检索 revision 并读取权威记录…'}
                 </div>}
               {structuredMemoryDossier.status === 'error' && <div className="assistant-error">
                 {structuredMemoryDossier.error || '结构化记忆档案读取失败'}
                 <button onClick={() => void (
                   structuredMemoryDossier.origin === 'entity_dossier'
-                    ? openCurrentRelationDossier(structuredMemoryDossier.sourceId)
+                    ? openCurrentStructuredMemoryDossier(
+                        structuredMemoryDossier.kind,
+                        structuredMemoryDossier.sourceId
+                      )
                     : openStructuredMemoryDossier(
                         structuredMemoryDossier.kind,
                         structuredMemoryDossier.sourceId
@@ -11169,6 +11178,12 @@ function AiAssistantPage() {
                     涉及的实体尚未确认；请先处理身份候选，再确认或纠正此事实。
                   </small>}
                   <div className="assistant-memory-actions">
+                    <button onClick={() => void openCurrentStructuredMemoryDossier(
+                      'claim',
+                      claim.id
+                    )}>
+                      查看完整事实审计
+                    </button>
                     <button disabled={!claimEntitiesTrusted(claim)}
                       title={!claimEntitiesTrusted(claim)
                         ? '请先确认事实涉及的实体' : ''}
@@ -11260,7 +11275,10 @@ function AiAssistantPage() {
                           `${relation.subject_name || relation.subjectId} · ${relation.predicate} · ${relation.object_name || relation.objectId}`
                         )} /></div>
                     <div className="assistant-memory-actions">
-                      <button onClick={() => void openCurrentRelationDossier(relation.id)}>
+                      <button onClick={() => void openCurrentStructuredMemoryDossier(
+                        'relation',
+                        relation.id
+                      )}>
                         查看完整关系审计
                       </button>
                       {['confirmed', 'rejected'].includes(relation.status) && <button
@@ -11340,6 +11358,12 @@ function AiAssistantPage() {
                     存在尚未确认的参与实体；请先处理身份候选，再确认或纠正此事件。
                   </small>}
                   <div className="assistant-memory-actions">
+                    <button onClick={() => void openCurrentStructuredMemoryDossier(
+                      'event',
+                      event.id
+                    )}>
+                      查看完整事件审计
+                    </button>
                     <button disabled={!eventEntitiesTrusted(event)}
                       title={!eventEntitiesTrusted(event)
                         ? '请先确认事件参与实体' : ''}

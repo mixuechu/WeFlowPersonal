@@ -2522,6 +2522,14 @@ test('structured search dossiers bind the exact type, id and current search revi
   assert.equal(relation.item.subject_name, '档案人物')
   assert.equal(relation.item.object_name, '档案项目')
   assert.equal(relation.item.evidence[0].message_id, 'dossier-relation-message')
+  assert.equal(
+    store.getCurrentStructuredMemoryDossier('claim', 'dossier-claim').item.object_value,
+    '上海'
+  )
+  assert.equal(
+    store.getCurrentStructuredMemoryDossier('event', 'dossier-event').item.participants[0].role,
+    '主持人'
+  )
   const database = (store as any).db
   const insertHistory = database.prepare(`
     INSERT INTO relation_history(
