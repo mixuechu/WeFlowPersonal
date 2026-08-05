@@ -8690,6 +8690,16 @@ export class AiAssistantService {
     return personalMemoryStore.correctEvent(id, input)
   }
 
+  getMemoryClaim(id: string): any {
+    const revision = personalMemoryStore.getStructuredMemoryRevision()
+    const claim = personalMemoryStore.getClaim(id)
+    const completedRevision = personalMemoryStore.getStructuredMemoryRevision()
+    if (completedRevision !== revision) {
+      throw new Error('事实与事件档案在读取期间发生了变化，请重新打开')
+    }
+    return claim ? { ...claim, structuredMemoryRevision: revision } : null
+  }
+
   getMemoryEvent(id: string): any {
     const revision = personalMemoryStore.getStructuredMemoryRevision()
     const event = personalMemoryStore.getEvent(id)

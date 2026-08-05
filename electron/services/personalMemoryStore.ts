@@ -6722,6 +6722,24 @@ export class PersonalMemoryStore {
     `).all(entityId) as Array<{ eventId: string; role: string }>)
   }
 
+  getClaim(id: string): any | null {
+    if (!this.db) return null
+    const claim = this.db.prepare(`
+      SELECT c.*,s.canonical_name AS subject_name,o.canonical_name AS object_entity_name,
+        (SELECT COUNT(*) FROM memory_corrections correction
+          WHERE correction.item_kind='claim' AND correction.item_id=c.id) AS correction_count,
+        (SELECT COUNT(*) FROM memory_review_decisions decision
+          WHERE decision.item_kind='claim' AND decision.item_id=c.id) AS review_count,
+        (SELECT COUNT(*) FROM evidence e WHERE e.claim_id=c.id) AS evidence_count
+      FROM claims c
+      LEFT JOIN entities s ON s.id=c.subject_id
+      LEFT JOIN entities o ON o.id=c.object_entity_id
+      WHERE c.id=?
+    `).get(String(id || '')) as any
+    if (!claim) return null
+    return claim
+  }
+
   getEvent(id: string): any | null {
     if (!this.db) return null
     const event = this.db.prepare(`

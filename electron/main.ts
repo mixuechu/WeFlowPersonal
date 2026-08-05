@@ -4728,6 +4728,7 @@ function registerIpcHandlers() {
   ipcMain.handle('ai-assistant:correctEvent', (
     _, id: string, input: any, expectedRevision?: string
   ) => aiAssistantService.correctEvent(id, input, expectedRevision))
+  ipcMain.handle('ai-assistant:getMemoryClaim', (_, id: string) => aiAssistantService.getMemoryClaim(id))
   ipcMain.handle('ai-assistant:getMemoryEvent', (_, id: string) => aiAssistantService.getMemoryEvent(id))
   ipcMain.handle('ai-assistant:askMemory', (_, question: string, conversationId?: string, options?: any) => aiAssistantService.askMemory(question, conversationId, options))
   ipcMain.handle('ai-assistant:getAssistantConversations', (_, options?: any) => aiAssistantService.getAssistantConversations(options))

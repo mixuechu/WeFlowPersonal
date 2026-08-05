@@ -2131,6 +2131,7 @@ export interface ElectronAPI {
       ) => Promise<any>
       correctClaim: (id: string, input: any, expectedRevision?: string) => Promise<any>
       correctEvent: (id: string, input: any, expectedRevision?: string) => Promise<any>
+      getMemoryClaim: (id: string) => Promise<any>
       getMemoryEvent: (id: string) => Promise<any>
       askMemory: (question: string, conversationId?: string, options?: any) => Promise<any>
       getAssistantConversations: (options?: any) => Promise<any>

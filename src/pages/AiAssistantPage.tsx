@@ -774,6 +774,7 @@ function AiAssistantPage() {
   const [conversationDeletionConfirmation, setConversationDeletionConfirmation] = useState('')
   const conversationDeletionGate = useRef(new LatestRequestGate())
   const [editingClaim, setEditingClaim] = useState<any>(null)
+  const claimCitationCorrectionGate = useRef(new LatestRequestGate())
   const [editingEvent, setEditingEvent] = useState<any>(null)
   const [memoryItemAudits, setMemoryItemAudits] = useState<Record<string, any>>({})
   const [memoryItemAuditLoading, setMemoryItemAuditLoading] =
@@ -6223,12 +6224,20 @@ function AiAssistantPage() {
     }
   }
 
-  const openClaimCorrection = (citation: any) => {
-    const claim = visibleClaims.find((item: any) => item.id === citation.sourceId)
+  const openClaimCorrection = async (citation: any) => {
+    const request = claimCitationCorrectionGate.current.begin()
+    setMessage('正在从本机权威事实档案读取当前值…')
+    const claim = await window.electronAPI.aiAssistant
+      .getMemoryClaim(citation.sourceId)
+      .catch((error: any) => {
+        if (claimCitationCorrectionGate.current.isCurrent(request)) {
+          setMessage(error?.message || String(error))
+        }
+        return null
+      })
+    if (!claimCitationCorrectionGate.current.isCurrent(request)) return
     if (!claim) {
-      setMemoryQuery(citation.title)
-      setMemoryTypeFilter('claim')
-      setMessage('已定位该事实；它当前不在可见事实列表中，可能已被拒绝或归档。')
+      setMessage('该事实不存在或已经被永久删除。')
       return
     }
     setEditingClaim({
@@ -6236,9 +6245,14 @@ function AiAssistantPage() {
       value: claim.object_entity_name || claim.object_value || '',
       validFrom: claim.valid_from || '',
       validTo: claim.valid_to || '',
-      expectedRevision: String(claimArchive.revision || '')
+      expectedRevision: String(claim.structuredMemoryRevision || ''),
+      origin: 'citation',
+      subjectName: claim.subject_name || claim.subject_id || '',
+      predicate: claim.predicate || citation.title || '',
+      status: claim.status || '',
+      evidenceCount: Number(claim.evidence_count || claim.evidence?.length || 0)
     })
-    window.setTimeout(() => document.getElementById(`memory-claim-${claim.id}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' }), 0)
+    setMessage('')
   }
 
   const openEventCorrection = async (citation: any) => {
@@ -8502,7 +8516,7 @@ function AiAssistantPage() {
                   此历史回答生成于引用反馈功能上线前，未保存当轮检索范围。
                 </small>}
                 {!citation.citationUnavailable && ['relation', 'claim', 'event'].includes(citation.type) && <div className="assistant-citation-actions">
-                  {citation.type === 'claim' && <button onClick={() => openClaimCorrection(citation)}>纠正事实</button>}
+                  {citation.type === 'claim' && <button onClick={() => void openClaimCorrection(citation)}>纠正事实</button>}
                   {citation.type === 'event' && <button onClick={() => void openEventCorrection(citation)}>纠正事件</button>}
                   {citation.type === 'relation' && <button
                     disabled={!citation.relationCorrectionContext}
@@ -8574,7 +8588,7 @@ function AiAssistantPage() {
                   <strong>{claim.subject_name || '未知主体'} · {claim.predicate}</strong>
                   <span className={claim.status}>{claim.status === 'confirmed' ? '已确认' : claim.status === 'rejected' ? '不准确' : '待确认'}</span>
                 </div>
-                {editingClaim?.id === claim.id ? <div className="assistant-claim-editor">
+                {editingClaim?.id === claim.id && editingClaim?.origin !== 'citation' ? <div className="assistant-claim-editor">
                   <input value={editingClaim.value} onChange={event => setEditingClaim({ ...editingClaim, value: event.target.value })} placeholder="正确的事实值" />
                   <input value={editingClaim.validFrom} onChange={event => setEditingClaim({ ...editingClaim, validFrom: event.target.value })} placeholder="生效时间（可选）" />
                   <input value={editingClaim.validTo} onChange={event => setEditingClaim({ ...editingClaim, validTo: event.target.value })} placeholder="失效时间（可选）" />
@@ -8621,7 +8635,7 @@ function AiAssistantPage() {
                     )} />
                 </div>
                 <div className="assistant-memory-actions">
-                  {editingClaim?.id === claim.id
+                  {editingClaim?.id === claim.id && editingClaim?.origin !== 'citation'
                     ? <><button onClick={() => setEditingClaim(null)}>取消</button><button className="primary" onClick={() => void saveClaimCorrection()}>保存纠正</button></>
                     : <button disabled={!claimEntitiesTrusted(claim)} title={!claimEntitiesTrusted(claim) ? '请先确认事实涉及的实体' : ''} onClick={() => setEditingClaim({
                       id: claim.id,
@@ -11787,6 +11801,66 @@ function AiAssistantPage() {
                     ? '正在安全放弃…'
                     : '保留当前状态并放弃旧写入'}
                 </button>}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {editingClaim?.origin === 'citation' && (
+        <div className="assistant-modal-backdrop" role="presentation">
+          <div className="assistant-modal assistant-delete-modal" role="dialog"
+            aria-modal="true" aria-labelledby="claim-citation-correction-title">
+            <div className="assistant-modal-title"><div>
+              <h2 id="claim-citation-correction-title">纠正回答引用中的事实</h2>
+              <p>该事实按稳定 ID 从本机 SQLCipher 权威档案读取，不依赖当前列表是否已加载。</p>
+            </div><button aria-label="关闭事实纠正" onClick={() => {
+              claimCitationCorrectionGate.current.invalidate()
+              setEditingClaim(null)
+            }}><X size={16} /></button></div>
+            <div className="assistant-delete-preview">
+              <strong>{editingClaim.subjectName || '未知主体'} · {editingClaim.predicate || '事实'}</strong>
+              <p>
+                当前状态：{editingClaim.status === 'confirmed'
+                  ? '已确认'
+                  : editingClaim.status === 'rejected' ? '不准确' : '待确认'}
+                {' · '}{Number(editingClaim.evidenceCount || 0)} 条权威原文。
+              </p>
+              <p>保存后会成为人工确认值并记录前后版本；后续模型只能追加证据，不能覆盖人工内容。</p>
+            </div>
+            <label><span>正确的事实值</span><input autoFocus
+              value={editingClaim.value || ''}
+              maxLength={1000}
+              onChange={event => setEditingClaim((current: any) => ({
+                ...current,
+                value: event.target.value
+              }))} /></label>
+            <div className="assistant-settings-inline">
+              <label><span>生效时间（可选）</span><input
+                value={editingClaim.validFrom || ''}
+                placeholder="例如 2026-08-01"
+                onChange={event => setEditingClaim((current: any) => ({
+                  ...current,
+                  validFrom: event.target.value
+                }))} /></label>
+              <label><span>失效时间（可选）</span><input
+                value={editingClaim.validTo || ''}
+                placeholder="留空表示至今"
+                onChange={event => setEditingClaim((current: any) => ({
+                  ...current,
+                  validTo: event.target.value
+                }))} /></label>
+            </div>
+            <small className="assistant-settings-note">
+              提交时会核验打开表单时的结构化记忆 revision；后台新增证据、状态变化或其他纠正发生后，旧表单不会覆盖新状态。
+            </small>
+            <div className="assistant-modal-actions">
+              <button onClick={() => {
+                claimCitationCorrectionGate.current.invalidate()
+                setEditingClaim(null)
+              }}>取消</button>
+              <button className="primary"
+                disabled={!String(editingClaim.value || '').trim()}
+                onClick={() => void saveClaimCorrection()}>保存纠正并确认</button>
             </div>
           </div>
         </div>

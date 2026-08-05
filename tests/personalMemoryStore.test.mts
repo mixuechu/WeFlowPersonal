@@ -11734,6 +11734,12 @@ test('human claim correction survives repeated extraction while new evidence is 
   assert.equal(claim.correction_count, 1)
   assert.deepEqual(claim.evidence.map((item: any) => item.message_id),
     ['message-corrected-1', 'message-corrected-2'])
+  const directClaim = store.getClaim('claim-corrected')
+  assert.equal(directClaim.subject_name, '纠正对象')
+  assert.equal(directClaim.object_value, '北京')
+  assert.equal(directClaim.evidence_count, 2)
+  assert.equal('evidence' in directClaim, false)
+  assert.equal(store.getClaim('missing-claim'), null)
   const search = store.searchText('北京').find(item => item.id === 'claim:claim-corrected')
   assert.ok(search)
   assert.equal(JSON.parse(search.metadata_json).status, 'confirmed')
