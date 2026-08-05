@@ -4,6 +4,7 @@ export type MemorySearchOptions = {
   entityTerms?: string[]
   sessionId?: string
   sessionName?: string
+  sessionSelectionToken?: string
   from?: string
   to?: string
   documentTypes?: string[]

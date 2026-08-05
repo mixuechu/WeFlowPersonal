@@ -2002,6 +2002,8 @@ export interface ElectronAPI {
         entityScopeStale?: boolean
         entityDirectoryRevision?: string
         entityScopeStaleReason?: 'missing_revision' | 'revision_changed' | 'entity_untrusted'
+        sessionScopeStale?: boolean
+        sessionScopeStaleReason?: 'missing_session_id' | 'missing_selection_token' | 'unknown_session' | 'selection_changed'
         feedback: Array<{
           id: number
           documentId: string

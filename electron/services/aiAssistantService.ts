@@ -61,6 +61,7 @@ import {
 import {
   assertConversationSourceMutation,
   buildConversationSourceDirectory,
+  resolveConversationSourceSelection,
   type ConversationSourceDirectoryOptions
 } from './conversationSourceDirectory.ts'
 import {
@@ -5968,6 +5969,21 @@ export class AiAssistantService {
     return this.buildConversationSourceDirectory(options)
   }
 
+  private async resolveMemorySessionSelection(options: MemorySearchOptions): Promise<
+    ReturnType<typeof resolveConversationSourceSelection> | null
+  > {
+    if (!options.sessionId) return null
+    const directory = await this.buildConversationSourceDirectory({
+      query: options.sessionId,
+      limit: 10,
+      offset: 0
+    })
+    return resolveConversationSourceSelection(directory.items, {
+      sessionId: options.sessionId,
+      expectedSelectionToken: options.sessionSelectionToken
+    })
+  }
+
   private commitConversationSourcePolicies(policies: Array<{
     sessionId: string
     displayName: string
@@ -7331,6 +7347,10 @@ export class AiAssistantService {
         throw new Error('所选实体已经变化或不再可信，请重新选择实体范围')
       }
     }
+    const sessionSelection = await this.resolveMemorySessionSelection(options)
+    if (sessionSelection?.stale) {
+      throw new Error('所选会话已经改名、变更策略或不再存在，请重新选择会话范围')
+    }
     return this.searchMemoryHybrid(query, options)
   }
 
@@ -7445,6 +7465,15 @@ export class AiAssistantService {
         entityScopeStaleReason: entitySelection.reason
       }
     }
+    const sessionSelection = await this.resolveMemorySessionSelection(options)
+    if (sessionSelection?.stale) {
+      return {
+        results: [], offset, limit, total: 0, hasMore: false, truncated: false,
+        scopeCandidates: null, feedback: [], feedbackVersion: MEMORY_SEARCH_FEEDBACK_VERSION,
+        revision, stale: false, sessionScopeStale: true,
+        sessionScopeStaleReason: sessionSelection.reason
+      }
+    }
     const selectedEntity = entitySelection?.entity || null
     const scopedOptions = selectedEntity ? {
       ...options,
@@ -7556,6 +7585,15 @@ export class AiAssistantService {
         entityScopeStaleReason: completedEntitySelection.reason
       }
     }
+    const completedSessionSelection = await this.resolveMemorySessionSelection(options)
+    if (completedSessionSelection?.stale) {
+      return {
+        results: [], offset, limit, total: 0, hasMore: false, truncated: false,
+        scopeCandidates: null, feedback: [], feedbackVersion: MEMORY_SEARCH_FEEDBACK_VERSION,
+        revision: completedRevision, stale: false, sessionScopeStale: true,
+        sessionScopeStaleReason: completedSessionSelection.reason
+      }
+    }
     if (isMemorySearchPageRevisionStale({
       offset,
       expectedRevision,
@@ -7579,6 +7617,7 @@ export class AiAssistantService {
       revision,
       stale: false,
       entityScopeStale: false,
+      sessionScopeStale: false,
       entityDirectoryRevision: entitySelection?.revision
     }
   }
@@ -7815,6 +7854,10 @@ export class AiAssistantService {
     if (explicitEntitySelection?.stale) {
       throw new Error('所选实体已经变化或不再可信，请重新选择实体范围')
     }
+    const explicitSessionSelection = await this.resolveMemorySessionSelection(options)
+    if (explicitSessionSelection?.stale) {
+      throw new Error('所选会话已经改名、变更策略或不再存在，请重新选择会话范围')
+    }
     const storedConversation = conversationId
       ? personalMemoryStore.getAssistantConversation(conversationId, 8)
       : null
@@ -7950,12 +7993,20 @@ export class AiAssistantService {
     }).stale) {
       throw new Error('所选实体在检索期间发生变化，请重新选择后再提问')
     }
+    const completedSessionSelection = await this.resolveMemorySessionSelection(options)
+    if (completedSessionSelection?.stale) {
+      throw new Error('所选会话在检索期间发生变化，请重新选择后再提问')
+    }
     const apiKey = String(this.config.get('aiAssistantApiKey') || '').trim()
     if (!apiKey) throw new Error('请先设置 DeepSeek API Key')
     const baseUrl = String(this.config.get('aiAssistantApiBaseUrl') || 'https://api.deepseek.com').replace(/\/$/, '')
     const model = String(this.config.get('aiAssistantApiModel') || 'deepseek-v4-flash')
     const redactionLevel = String(this.config.get('aiAssistantSensitiveRedactionLevel') || 'standard') as SensitiveRedactionLevel
-    const { entitySelectionRevision: _entitySelectionRevision, ...modelSearchOptions } = plannedOptions
+    const {
+      entitySelectionRevision: _entitySelectionRevision,
+      sessionSelectionToken: _sessionSelectionToken,
+      ...modelSearchOptions
+    } = plannedOptions
     const outbound = redactSensitiveText(buildUntrustedMemoryQuestionEnvelope({
       question: query,
       conversationHistory,
@@ -7997,6 +8048,10 @@ export class AiAssistantService {
       }
     })
     const uncertainty = grounded.uncertainty
+    const answerSessionSelection = await this.resolveMemorySessionSelection(options)
+    if (answerSessionSelection?.stale) {
+      throw new Error('所选会话在回答生成期间发生变化，本次回答未保存；请重新选择后提问')
+    }
     const answerCommitSearchRevision = personalMemoryStore.getMemorySearchRevision()
     const authenticatedDraft = this.enrichAssistantCitationFeedback({
       messages: [{

@@ -1108,6 +1108,7 @@ function AiAssistantPage() {
     entitySelectionRevision: memoryEntitySelection?.directoryRevision || undefined,
     sessionId: selectedMemorySessionScope.sessionId,
     sessionName: selectedMemorySessionScope.sessionName,
+    sessionSelectionToken: selectedMemorySessionScope.sessionSelectionToken,
     sourceIds: memorySourceFilter ? [memorySourceFilter] : undefined,
     documentTypes: memoryTypeFilter ? [memoryTypeFilter] : undefined,
     from: memoryFrom || undefined,
@@ -1925,6 +1926,14 @@ function AiAssistantPage() {
           setMemoryEntityFilter('')
           setMemorySearchState({ status: 'idle', query: '' })
           setMessage('所选实体已经变化、合并或不再可信，请重新选择实体范围。')
+          return
+        }
+        if (page.sessionScopeStale) {
+          setMemorySessionSelection(null)
+          setMemorySessionFilter('')
+          setMemorySessionQuery('')
+          setMemorySearchState({ status: 'idle', query: '' })
+          setMessage('所选会话已经改名、变更策略或不再存在，请重新选择会话范围。')
           return
         }
         if (page.stale) {
@@ -5186,6 +5195,11 @@ function AiAssistantPage() {
           setMemoryEntitySelection(null)
           setMemoryEntityFilter('')
         }
+        if (errorMessage.includes('所选会话')) {
+          setMemorySessionSelection(null)
+          setMemorySessionFilter('')
+          setMemorySessionQuery('')
+        }
         setMemoryAnswer({ answer: errorMessage, citations: [], uncertainty: '' })
       }
     } finally {
@@ -5229,6 +5243,13 @@ function AiAssistantPage() {
         setMemoryEntitySelection(null)
         setMemoryEntityFilter('')
         setMessage('所选实体在翻页期间发生变化，已清除该范围，请重新选择。')
+        return
+      }
+      if (page.sessionScopeStale) {
+        setMemorySessionSelection(null)
+        setMemorySessionFilter('')
+        setMemorySessionQuery('')
+        setMessage('所选会话在翻页期间发生变化，已清除该范围，请重新选择。')
         return
       }
       if (page.stale) {
@@ -7472,6 +7493,7 @@ function AiAssistantPage() {
               </div>
               {memorySessionSelection && <small className="assistant-memory-session-selected">
                 已选：{memorySessionSelection.type === 'group' ? '群聊' : '私聊'} · {memorySessionSelection.sessionId}
+                {' · 已绑定稳定 ID 与选择校验'}
                 {!memorySessionSelection.enabled ? ' · 当前已停止新分析' : ''}
                 {!memorySessionSelection.legacyNameFallbackSafe
                   ? ` · 有 ${memorySessionSelection.displayNameCollisionCount} 个同名会话，仅按 ID 精确检索`

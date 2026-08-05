@@ -25,6 +25,7 @@ export interface ConversationSourceItem {
   lastTimestamp: number
   policyUpdatedAt: string
   mutationToken: string
+  selectionToken: string
   displayNameCollisionCount: number
   legacyNameFallbackSafe: boolean
 }
@@ -58,6 +59,20 @@ export function buildConversationSourceMutationToken(
     item.type,
     item.enabled,
     item.lastTimestamp,
+    item.policyUpdatedAt
+  ])
+}
+
+export function buildConversationSourceSelectionToken(
+  item: Pick<ConversationSourceItem,
+    'sessionId' | 'displayName' | 'type' | 'enabled' | 'policyUpdatedAt'>
+): string {
+  return digest([
+    'conversation-source-selection-v1',
+    item.sessionId,
+    item.displayName,
+    item.type,
+    item.enabled,
     item.policyUpdatedAt
   ])
 }
@@ -100,7 +115,11 @@ export function buildConversationSourceDirectory(
       lastTimestamp: Number(session.lastTimestamp || 0),
       policyUpdatedAt: String(policy?.updatedAt || '')
     }
-    return [{ ...base, mutationToken: buildConversationSourceMutationToken(base) }]
+    return [{
+      ...base,
+      mutationToken: buildConversationSourceMutationToken(base),
+      selectionToken: buildConversationSourceSelectionToken(base)
+    }]
   })
   const displayNameCounts = new Map<string, number>()
   for (const item of normalized) {
@@ -161,6 +180,26 @@ export function buildConversationSourceDirectory(
       privateEnabled: all.filter(item => item.type === 'private' && item.enabled).length
     }
   }
+}
+
+export function resolveConversationSourceSelection(
+  items: readonly ConversationSourceItem[],
+  input: { sessionId?: string; expectedSelectionToken?: string }
+): {
+  item: ConversationSourceItem | null
+  stale: boolean
+  reason: 'ok' | 'missing_session_id' | 'missing_selection_token' | 'unknown_session' | 'selection_changed'
+} {
+  const sessionId = String(input.sessionId || '').trim()
+  if (!sessionId) return { item: null, stale: true, reason: 'missing_session_id' }
+  const expected = String(input.expectedSelectionToken || '').trim()
+  if (!expected) return { item: null, stale: true, reason: 'missing_selection_token' }
+  const item = items.find(candidate => candidate.sessionId === sessionId) || null
+  if (!item) return { item: null, stale: true, reason: 'unknown_session' }
+  if (item.selectionToken !== expected) {
+    return { item: null, stale: true, reason: 'selection_changed' }
+  }
+  return { item, stale: false, reason: 'ok' }
 }
 
 export function assertConversationSourceMutation(

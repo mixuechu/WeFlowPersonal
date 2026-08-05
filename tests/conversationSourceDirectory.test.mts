@@ -2,7 +2,8 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import {
   assertConversationSourceMutation,
-  buildConversationSourceDirectory
+  buildConversationSourceDirectory,
+  resolveConversationSourceSelection
 } from '../electron/services/conversationSourceDirectory.ts'
 
 const sessions = Array.from({ length: 10_005 }, (_, index) => ({
@@ -100,4 +101,36 @@ test('pagination revision and item mutation token reject stale directory state',
     ),
     /目录已经变化/
   )
+})
+
+test('conversation scope selection binds one durable id and rejects renamed or policy-changed state', () => {
+  const initial = buildConversationSourceDirectory([
+    { username: 'same-name-a', displayName: '同名联系人', lastTimestamp: 9 },
+    { username: 'same-name-b', displayName: '同名联系人', lastTimestamp: 8 }
+  ], [])
+  const selected = initial.items.find(item => item.sessionId === 'same-name-a')!
+  assert.equal(resolveConversationSourceSelection(initial.items, {
+    sessionId: 'same-name-a',
+    expectedSelectionToken: selected.selectionToken
+  }).item?.sessionId, 'same-name-a')
+  assert.equal(resolveConversationSourceSelection(initial.items, {
+    sessionId: 'same-name-b',
+    expectedSelectionToken: selected.selectionToken
+  }).reason, 'selection_changed')
+
+  const renamed = buildConversationSourceDirectory([
+    { username: 'same-name-a', displayName: '新名称', lastTimestamp: 10 }
+  ], [])
+  assert.equal(resolveConversationSourceSelection(renamed.items, {
+    sessionId: 'same-name-a',
+    expectedSelectionToken: selected.selectionToken
+  }).reason, 'selection_changed')
+
+  const newMessageOnly = buildConversationSourceDirectory([
+    { username: 'same-name-a', displayName: '同名联系人', lastTimestamp: 99 }
+  ], [])
+  assert.equal(resolveConversationSourceSelection(newMessageOnly.items, {
+    sessionId: 'same-name-a',
+    expectedSelectionToken: selected.selectionToken
+  }).stale, false)
 })

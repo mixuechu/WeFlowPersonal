@@ -7,10 +7,12 @@ test('unique session names still bind retrieval to the durable id', () => {
     sessionId: 'wxid-unique',
     displayName: '唯一联系人',
     displayNameCollisionCount: 1,
-    legacyNameFallbackSafe: true
+    legacyNameFallbackSafe: true,
+    selectionToken: 'session-selection-1'
   }), {
     sessionId: 'wxid-unique',
     sessionName: undefined,
+    sessionSelectionToken: 'session-selection-1',
     precision: 'id_only'
   })
 })
@@ -24,6 +26,7 @@ test('same-name sessions bind retrieval to the selected id only', () => {
   }), {
     sessionId: 'room-a@chatroom',
     sessionName: undefined,
+    sessionSelectionToken: undefined,
     precision: 'id_only_due_to_name_collision'
   })
 })
