@@ -2800,14 +2800,19 @@ export class AiAssistantService {
           checkpoint,
           async items => {
             const updatedAt = new Date().toISOString()
+            const graphBeforeCalendarPage = structuredClone(this.state.graph)
+            const pendingEvidenceBeforeCalendarPage = [...this.pendingEntityEvidence]
+            let authorityCommitted = false
             const identityMapping = mapCalendarParticipantIdentities(
               items,
               this.state.graph.entities,
               updatedAt
             )
-            if (identityMapping.changed || identityMapping.duplicateSuggestions.length) {
-              const graphBeforeCalendarIdentity = structuredClone(this.state.graph)
-              try {
+            const graphChanged = Boolean(
+              identityMapping.changed || identityMapping.duplicateSuggestions.length
+            )
+            try {
+              if (graphChanged) {
                 this.state.graph.entities = identityMapping.entities as GraphEntity[]
                 for (const suggestion of identityMapping.duplicateSuggestions) {
                   const left = this.state.graph.entities.find(entity => entity.id === suggestion.leftEntityId)
@@ -2822,14 +2827,8 @@ export class AiAssistantService {
                     this.state.graph.identityScan.lastCandidateCount += 1
                   }
                 }
-                this.checkpointGraphToSql()
-                this.saveState()
-              } catch (error) {
-                this.state.graph = graphBeforeCalendarIdentity
-                throw error
               }
-            }
-            const resources = items.map(item => {
+              const resources = items.map(item => {
               const metadata: any = item.metadata || {}
               const contentHash = String(metadata.contentHash || '')
               const messageId = `${item.externalId}:${contentHash.slice(0, 16)}`
@@ -2858,8 +2857,8 @@ export class AiAssistantService {
                   excerpt: String(item.content || item.title).slice(0, 2000)
                 }]
               }
-            })
-            const events = items.map(item => {
+              })
+              const events = items.map(item => {
               const metadata: any = item.metadata || {}
               const contentHash = String(metadata.contentHash || '')
               return {
@@ -2887,9 +2886,36 @@ export class AiAssistantService {
                   role: 'direct'
                 }]
               }
-            })
-            personalMemoryStore.upsertResources(resources, true)
-            personalMemoryStore.upsertEvents(events)
+              })
+              if (graphChanged) {
+                const graphCommitId = crypto.randomUUID()
+                personalMemoryStore.syncGraphResourcesAndEvents(
+                  this.state.graph,
+                  graphCommitId,
+                  this.pendingEntityEvidence,
+                  resources,
+                  events,
+                  true
+                )
+                authorityCommitted = true
+                this.pendingEntityEvidence = []
+                this.state.graph.lastSqlCommitId = graphCommitId
+                compactGraphRelationEvidence(
+                  this.state.graph.relations,
+                  personalMemoryStore.getRelationEvidenceCounts()
+                )
+                this.saveState()
+              } else {
+                personalMemoryStore.upsertResourcesAndEvents(resources, events, true)
+                authorityCommitted = true
+              }
+            } catch (error) {
+              if (!authorityCommitted) {
+                this.state.graph = graphBeforeCalendarPage
+                this.pendingEntityEvidence = pendingEvidenceBeforeCalendarPage
+              }
+              throw error
+            }
           },
           { limit: 100 }
         )

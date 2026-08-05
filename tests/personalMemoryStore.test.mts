@@ -16158,6 +16158,125 @@ test('resource batches atomically roll back authority, search and evidence after
   `).get().count), 0)
 }))
 
+test('calendar resource and structured event commit atomically', () => withStore(store => {
+  const database = (store as any).db
+  database.exec(`
+    CREATE TRIGGER fail_calendar_event_search
+    BEFORE INSERT ON search_documents
+    WHEN NEW.id='event:calendar-atomic-event'
+    BEGIN
+      SELECT RAISE(ABORT,'forced calendar event search failure');
+    END;
+  `)
+  const revisions = {
+    search: store.getMemorySearchRevision(),
+    resource: store.getResourceArchiveRevision(),
+    structured: store.getStructuredMemoryRevision(),
+    evidence: store.getMemoryEvidenceArchiveRevision(),
+    graph: store.getGraphReviewRevision()
+  }
+  assert.throws(() => store.syncGraphResourcesAndEvents({
+    entities: [{
+      id: 'calendar-atomic-attendee',
+      type: 'person',
+      canonicalName: '日历原子参与者',
+      trustStatus: 'candidate',
+      confidence: 0.9,
+      aliases: [],
+      accountIds: []
+    }],
+    relations: [],
+    reviewQueue: [{
+      id: 'calendar-atomic-review',
+      kind: 'entity',
+      entityId: 'calendar-atomic-attendee',
+      title: '日历原子参与者',
+      detail: '等待身份确认',
+      status: 'pending',
+      confidence: 0.9
+    }]
+  } as any, 'calendar-atomic-graph-commit', [{
+    entityId: 'calendar-atomic-attendee',
+    sourceId: 'calendar',
+    messageId: 'calendar-atomic-message',
+    sessionId: 'data-source:calendar:test',
+    timestamp: 1,
+    sender: 'macOS 日历连接器',
+    excerpt: '日历参与者身份原文',
+    evidenceKind: 'identity'
+  }], [{
+    id: 'calendar-atomic-resource',
+    resourceType: 'calendar-event',
+    title: '日历原子会议',
+    content: '资源正文必须与时间线事件一起提交',
+    metadata: { sourceId: 'calendar', contentHash: 'calendar-atomic-hash' },
+    evidence: [{
+      sourceId: 'calendar',
+      sessionId: 'data-source:calendar:test',
+      messageId: 'calendar-atomic-message',
+      timestamp: 1,
+      sender: 'macOS 日历连接器',
+      excerpt: '日历资源原文'
+    }]
+  }], [{
+    id: 'calendar-atomic-event',
+    eventType: 'calendar',
+    title: '日历原子会议',
+    description: '时间线事件在最后的搜索写入触发故障',
+    confidence: 1,
+    status: 'confirmed',
+    searchText: '日历原子会议',
+    participants: [{
+      entityId: 'calendar-atomic-attendee',
+      role: 'attendee'
+    }],
+    evidence: [{
+      sourceId: 'calendar',
+      sessionId: 'data-source:calendar:test',
+      messageId: 'calendar-atomic-message',
+      timestamp: 1,
+      sender: 'macOS 日历连接器',
+      excerpt: '日历事件原文',
+      role: 'direct'
+    }]
+  }], true), /forced calendar event search failure/)
+  assert.equal(Number(database.prepare(`
+    SELECT COUNT(*) AS count FROM memory_resources WHERE id='calendar-atomic-resource'
+  `).get().count), 0)
+  assert.equal(Number(database.prepare(`
+    SELECT COUNT(*) AS count FROM entities WHERE id='calendar-atomic-attendee'
+  `).get().count), 0)
+  assert.equal(Number(database.prepare(`
+    SELECT COUNT(*) AS count FROM review_queue WHERE id='calendar-atomic-review'
+  `).get().count), 0)
+  assert.equal(Number(database.prepare(`
+    SELECT COUNT(*) AS count FROM entity_evidence WHERE entity_id='calendar-atomic-attendee'
+  `).get().count), 0)
+  assert.equal(Number(database.prepare(`
+    SELECT COUNT(*) AS count FROM events WHERE id='calendar-atomic-event'
+  `).get().count), 0)
+  assert.equal(Number(database.prepare(`
+    SELECT COUNT(*) AS count FROM evidence WHERE event_id='calendar-atomic-event'
+  `).get().count), 0)
+  assert.equal(Number(database.prepare(`
+    SELECT COUNT(*) AS count FROM search_documents
+    WHERE id IN ('resource:calendar-atomic-resource','event:calendar-atomic-event')
+  `).get().count), 0)
+  assert.equal(Number(database.prepare(`
+    SELECT COUNT(*) AS count FROM search_document_evidence
+    WHERE document_id='resource:calendar-atomic-resource'
+  `).get().count), 0)
+  assert.equal(Number(database.prepare(`
+    SELECT COUNT(*) AS count FROM search_fts
+    WHERE document_id IN ('resource:calendar-atomic-resource','event:calendar-atomic-event')
+  `).get().count), 0)
+  assert.equal(store.getMemorySearchRevision(), revisions.search)
+  assert.equal(store.getResourceArchiveRevision(), revisions.resource)
+  assert.equal(store.getStructuredMemoryRevision(), revisions.structured)
+  assert.equal(store.getMemoryEvidenceArchiveRevision(), revisions.evidence)
+  assert.equal(store.getGraphReviewRevision(), revisions.graph)
+}))
+
 test('resource content replacement and append roll back authority when search indexing fails', () => withStore(store => {
   store.upsertResources([{
     id: 'atomic-resource-content',

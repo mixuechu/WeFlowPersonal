@@ -8007,6 +8007,43 @@ export class PersonalMemoryStore {
     }
   }
 
+  upsertResourcesAndEvents(
+    resources: any[],
+    events: any[],
+    preserveExistingResourceEvidence = false
+  ): void {
+    if (!this.db || (!resources.length && !events.length)) return
+    this.db.transaction(() => {
+      this.upsertResources(resources, preserveExistingResourceEvidence)
+      this.upsertEvents(events)
+    })()
+  }
+
+  syncGraphResourcesAndEvents(
+    graph: MemoryGraph,
+    commitId: string,
+    entityEvidence: Array<{
+      entityId: string
+      sourceId: string
+      messageId: string
+      sessionId: string
+      timestamp: number
+      sender: string
+      excerpt: string
+      evidenceKind?: string
+    }>,
+    resources: any[],
+    events: any[],
+    preserveExistingResourceEvidence = false
+  ): void {
+    if (!this.db) return
+    this.db.transaction(() => {
+      this.syncGraph(graph, commitId, { entityEvidence })
+      this.upsertResources(resources, preserveExistingResourceEvidence)
+      this.upsertEvents(events)
+    })()
+  }
+
   deleteResource(id: string, reason = 'manual_delete'): any {
     if (!this.db) return { success: false, id }
     const resourceId = String(id || '').trim()
