@@ -12561,12 +12561,21 @@ test('event deduplication deterministically preserves human authority and its au
         canonicalName: '事件权威人物',
         aliases: [],
         accountIds: []
+      }, {
+        id: 'event-duplicate-participant',
+        type: 'person',
+        canonicalName: '重复事件新增参与者',
+        aliases: [],
+        accountIds: []
       }],
       relations: [],
       reviewQueue: []
     })
     first.upsertEvents([
-      makeEvent('event-plain-duplicate', '非常长但错误的模型事件标题', 'plain-only'),
+      {
+        ...makeEvent('event-plain-duplicate', '非常长但错误的模型事件标题', 'plain-only'),
+        participants: [{ entityId: 'event-duplicate-participant', role: '记录人' }]
+      },
       makeEvent('event-human-authority', '人工事件', 'human-only'),
       makeEvent('event-protected-a', '人工保留事件甲', 'protected-a-only'),
       makeEvent('event-protected-b', '人工保留事件乙', 'protected-b-only')
@@ -12585,6 +12594,7 @@ test('event deduplication deterministically preserves human authority and its au
     })
     first.updateMemoryItemStatus('event', 'event-protected-a', 'confirmed')
     first.updateMemoryItemStatus('event', 'event-protected-b', 'confirmed')
+    first.saveEmbedding('event:event-human-authority', 'event-dedup-vector', [1, 0])
     const database = (first as any).db
     const insertSharedEvidence = database.prepare(`
       INSERT INTO evidence(
@@ -12613,6 +12623,7 @@ test('event deduplication deterministically preserves human authority and its au
     assert.equal(authoritative.status, 'confirmed')
     assert.equal(authoritative.source_nature, 'human_confirmation')
     assert.equal(authoritative.evidence_count, 3)
+    assert.equal(authoritative.participant_count, 2)
     assert.ok(second.getEvent('event-protected-a'))
     assert.ok(second.getEvent('event-protected-b'))
     const audit = second.listMemoryItemAuditPage({
@@ -12627,6 +12638,24 @@ test('event deduplication deterministically preserves human authority and its au
     assert.equal(diagnostics.mergedEventsThisStart, 1)
     assert.equal(diagnostics.protectedEventsPreservedThisStart, 1)
     assert.equal(diagnostics.reviewsReassignedThisStart, 1)
+    assert.equal(diagnostics.searchDocumentsRefreshedThisStart, 1)
+    const indexedEvent = second.searchText('人工确认的客户会议')
+      .find(item => item.id === 'event:event-human-authority')
+    assert.ok(indexedEvent)
+    assert.deepEqual(
+      JSON.parse(indexedEvent.metadata_json).participantIds,
+      ['event-authority-person', 'event-duplicate-participant']
+    )
+    const retainedVector = (second as any).db.prepare(`
+      SELECT embedding_model,embedding_chunk_count,
+        (SELECT COUNT(*) FROM search_document_embedding_chunks chunk
+          WHERE chunk.document_id=search_documents.id
+            AND chunk.content_hash=search_documents.content_hash) AS current_chunks
+      FROM search_documents WHERE id='event:event-human-authority'
+    `).get()
+    assert.equal(retainedVector.embedding_model, 'event-dedup-vector')
+    assert.equal(retainedVector.embedding_chunk_count, 1)
+    assert.equal(retainedVector.current_chunks, 1)
 
     second.upsertEvents([{
       ...makeEvent('event-model-rephrased', '模型再次生成的错误标题', 'new-model-evidence'),

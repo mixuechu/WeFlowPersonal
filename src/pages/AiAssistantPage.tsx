@@ -11103,6 +11103,7 @@ function AiAssistantPage() {
               <div className="assistant-recovery-current">
                 <span>本次重复组 <b>{Number(memoryDiagnostics.eventDeduplicationAuthority.duplicateGroupsThisStart || 0).toLocaleString()}</b></span>
                 <span>本次安全归并 <b>{Number(memoryDiagnostics.eventDeduplicationAuthority.mergedEventsThisStart || 0).toLocaleString()}</b></span>
+                <span>本次同步检索 <b>{Number(memoryDiagnostics.eventDeduplicationAuthority.searchDocumentsRefreshedThisStart || 0).toLocaleString()}</b></span>
                 <span>本次保留人工分歧 <b>{Number(memoryDiagnostics.eventDeduplicationAuthority.protectedEventsPreservedThisStart || 0).toLocaleString()}</b></span>
                 <span>累计安全归并 <b>{Number(memoryDiagnostics.eventDeduplicationAuthority.mergedEventsTotal || 0).toLocaleString()}</b></span>
                 <span>累计迁移审阅 <b>{Number(memoryDiagnostics.eventDeduplicationAuthority.reviewsReassignedTotal || 0).toLocaleString()}</b></span>

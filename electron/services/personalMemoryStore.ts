@@ -4511,6 +4511,8 @@ export class PersonalMemoryStore {
     let mergedEvents = 0
     let protectedEventsPreserved = 0
     let reviewsReassigned = 0
+    const refreshedTargets = new Set<string>()
+    const checkedAt = new Date().toISOString()
     const transaction = this.db.transaction(() => {
       for (const group of groups.values()) {
         const candidates = group.filter(item => !removed.has(item.id)).sort(compareAuthority)
@@ -4545,25 +4547,56 @@ export class PersonalMemoryStore {
           this.db.prepare('DELETE FROM search_fts WHERE document_id=?').run(`event:${source.id}`)
           this.db.prepare('DELETE FROM search_documents WHERE id=?').run(`event:${source.id}`)
           removed.add(source.id)
+          refreshedTargets.add(target.id)
           mergedEvents += 1
         }
       }
-      const now = new Date().toISOString()
+      const participantIds = this.db!.prepare(`
+        SELECT entity_id FROM event_participants WHERE event_id=? ORDER BY entity_id
+      `)
+      for (const targetId of refreshedTargets) {
+        this.db!.prepare('UPDATE events SET updated_at=? WHERE id=?').run(checkedAt, targetId)
+        const event = this.db!.prepare(`
+          SELECT ev.*,
+            (SELECT COUNT(*) FROM memory_corrections correction
+              WHERE correction.item_kind='event' AND correction.item_id=ev.id
+            ) AS correction_count
+          FROM events ev WHERE ev.id=?
+        `).get(targetId) as any
+        if (!event) continue
+        this.upsertSearchDocument(
+          `event:${event.id}`, 'event', event.id, event.title, event.search_text,
+          {
+            eventType: event.event_type,
+            startAt: event.start_at || undefined,
+            endAt: event.end_at || undefined,
+            participantIds: (participantIds.all(event.id) as Array<{ entity_id: string }>)
+              .map(item => item.entity_id),
+            status: event.status,
+            sourceNature: event.source_nature,
+            correctionCount: Number(event.correction_count || 0)
+          },
+          checkedAt
+        )
+      }
       this.db!.prepare(`
         INSERT INTO schema_meta(key,value,updated_at) VALUES('event_deduplication_authority',?,?)
         ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_at=excluded.updated_at
       `).run(JSON.stringify({
         version: 1,
-        checkedAt: now,
+        checkedAt,
         duplicateGroupsThisStart: duplicateGroups,
         mergedEventsThisStart: mergedEvents,
         protectedEventsPreservedThisStart: protectedEventsPreserved,
         reviewsReassignedThisStart: reviewsReassigned,
+        searchDocumentsRefreshedThisStart: refreshedTargets.size,
         mergedEventsTotal: Number(previous.mergedEventsTotal || 0) + mergedEvents,
         protectedEventsPreservedTotal:
           Number(previous.protectedEventsPreservedTotal || 0) + protectedEventsPreserved,
-        reviewsReassignedTotal: Number(previous.reviewsReassignedTotal || 0) + reviewsReassigned
-      }), now)
+        reviewsReassignedTotal: Number(previous.reviewsReassignedTotal || 0) + reviewsReassigned,
+        searchDocumentsRefreshedTotal:
+          Number(previous.searchDocumentsRefreshedTotal || 0) + refreshedTargets.size
+      }), checkedAt)
     })
     transaction()
   }
@@ -4871,10 +4904,14 @@ export class PersonalMemoryStore {
           protectedEventsPreservedThisStart:
             Number(audit.protectedEventsPreservedThisStart || 0),
           reviewsReassignedThisStart: Number(audit.reviewsReassignedThisStart || 0),
+          searchDocumentsRefreshedThisStart:
+            Number(audit.searchDocumentsRefreshedThisStart || 0),
           mergedEventsTotal: Number(audit.mergedEventsTotal || 0),
           protectedEventsPreservedTotal:
             Number(audit.protectedEventsPreservedTotal || 0),
-          reviewsReassignedTotal: Number(audit.reviewsReassignedTotal || 0)
+          reviewsReassignedTotal: Number(audit.reviewsReassignedTotal || 0),
+          searchDocumentsRefreshedTotal:
+            Number(audit.searchDocumentsRefreshedTotal || 0)
         }
       } catch {
         return {
@@ -4884,9 +4921,11 @@ export class PersonalMemoryStore {
           mergedEventsThisStart: 0,
           protectedEventsPreservedThisStart: 0,
           reviewsReassignedThisStart: 0,
+          searchDocumentsRefreshedThisStart: 0,
           mergedEventsTotal: 0,
           protectedEventsPreservedTotal: 0,
-          reviewsReassignedTotal: 0
+          reviewsReassignedTotal: 0,
+          searchDocumentsRefreshedTotal: 0
         }
       }
     })()
