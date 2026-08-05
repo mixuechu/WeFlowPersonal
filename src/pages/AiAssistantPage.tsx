@@ -6505,6 +6505,7 @@ function AiAssistantPage() {
       return
     }
     setRelationCitationCorrectionDialog({
+      origin: 'citation',
       status: 'editing',
       citation,
       subjectId: context.subjectId,
@@ -6517,15 +6518,51 @@ function AiAssistantPage() {
     })
   }
 
+  const openEntityRelationCorrection = async (relation: any) => {
+    setMessage('正在从本机权威关系档案读取当前方向…')
+    try {
+      const current = await window.electronAPI.aiAssistant.getMemoryRelation(relation.id)
+      if (!current) {
+        setMessage('该关系不存在、已被拒绝或已经删除。')
+        refreshEntityDossierSection('relations')
+        return
+      }
+      if (!current.subjectEntity || !current.objectEntity) {
+        setMessage('关系端点尚未全部确认为可信实体，请先处理身份候选。')
+        return
+      }
+      setRelationCitationCorrectionDialog({
+        origin: 'entity_dossier',
+        relationId: current.id,
+        expectedRevision: current.relationRevision,
+        status: 'editing',
+        subjectId: current.subjectId,
+        predicate: current.predicate,
+        objectId: current.objectId,
+        subjectEntity: current.subjectEntity,
+        objectEntity: current.objectEntity,
+        directoryRevision: current.entityDirectoryRevision,
+        error: ''
+      })
+      setMessage('')
+    } catch (error: any) {
+      setMessage(error?.message || String(error))
+    }
+  }
+
   const closeRelationCitationCorrection = () => {
     if (['loading', 'saving'].includes(relationCitationCorrectionDialog?.status)) return
     setRelationCitationCorrectionDialog(null)
   }
 
   const relationCitationCorrectionInput = (dialog: any) => ({
-    assistantMessageId: memoryAnswer?.assistantMessageId,
-    documentId: dialog.citation.documentId,
-    reviewToken: dialog.citation.reviewToken,
+    ...(dialog.origin === 'citation' ? {
+      assistantMessageId: memoryAnswer?.assistantMessageId,
+      documentId: dialog.citation.documentId,
+      reviewToken: dialog.citation.reviewToken
+    } : {
+      expectedRevision: dialog.expectedRevision
+    }),
     entityDirectoryRevision: dialog.directoryRevision,
     relationCorrection: {
       subjectId: dialog.subjectId,
@@ -6545,10 +6582,15 @@ function AiAssistantPage() {
       error: ''
     }))
     try {
-      const preview = await window.electronAPI.aiAssistant
-        .previewRelationCorrectionFromMemoryDocument(
-          dialog.citation.sourceId,
-          relationCitationCorrectionInput(dialog)
+      const relationId = dialog.origin === 'citation'
+        ? dialog.citation.sourceId
+        : dialog.relationId
+      const preview = dialog.origin === 'citation'
+        ? await window.electronAPI.aiAssistant.previewRelationCorrectionFromMemoryDocument(
+          relationId, relationCitationCorrectionInput(dialog)
+        )
+        : await window.electronAPI.aiAssistant.previewRelationCorrection(
+          relationId, relationCitationCorrectionInput(dialog)
         )
       setRelationCitationCorrectionDialog((current: any) => ({
         ...current,
@@ -6575,16 +6617,31 @@ function AiAssistantPage() {
       error: ''
     }))
     try {
-      await window.electronAPI.aiAssistant.reviewMemoryDocument(
-        'relation',
-        dialog.citation.sourceId,
-        'corrected',
-        {
+      const relationId = dialog.origin === 'citation'
+        ? dialog.citation.sourceId
+        : dialog.relationId
+      if (dialog.origin === 'citation') {
+        await window.electronAPI.aiAssistant.reviewMemoryDocument(
+          'relation', relationId, 'corrected', {
+            ...relationCitationCorrectionInput(dialog),
+            correctionPreviewToken: dialog.preview.previewToken
+          }
+        )
+      } else {
+        await window.electronAPI.aiAssistant.correctRelation(relationId, {
           ...relationCitationCorrectionInput(dialog),
           correctionPreviewToken: dialog.preview.previewToken
-        }
-      )
+        })
+      }
       setRelationCitationCorrectionDialog(null)
+      if (dialog.origin === 'entity_dossier') {
+        refreshEntityDossierSection('relations')
+        setReviewRefreshKey(value => value + 1)
+        setGraphWorkspaceRefreshKey(value => value + 1)
+        setMessage('关系已纠正并确认；旧方向、最终方向和完整原文均已写入审计。')
+        await load()
+        return
+      }
       const assistantMessageId = String(memoryAnswer?.assistantMessageId || '')
       const conversationId = String(memoryAnswer?.conversationId || memoryConversationId || '')
       if (assistantMessageId && conversationId) {
@@ -6611,6 +6668,34 @@ function AiAssistantPage() {
         preview: null,
         error: error?.message || String(error)
       }))
+    }
+  }
+
+  const rejectEntityRelation = async (relation: any) => {
+    const key = `relation:${relation.id}`
+    if (entityDossierMutationLocks.current.has(key)) return
+    entityDossierMutationLocks.current.add(key)
+    setEntityDossierMutations(current => ({ ...current, [key]: true }))
+    try {
+      await window.electronAPI.aiAssistant.rejectRelation(
+        relation.id,
+        String(entityDossierPages.relations?.revision || '')
+      )
+      setMessage('已将关系标记为不准确；它将退出可信图搜索和问答。')
+      refreshEntityDossierSection('relations')
+      setReviewRefreshKey(value => value + 1)
+      setGraphWorkspaceRefreshKey(value => value + 1)
+      await load()
+    } catch (error: any) {
+      setMessage(error?.message || String(error))
+      refreshEntityDossierSection('relations')
+    } finally {
+      entityDossierMutationLocks.current.delete(key)
+      setEntityDossierMutations(current => {
+        const next = { ...current }
+        delete next[key]
+        return next
+      })
     }
   }
 
@@ -11085,6 +11170,16 @@ function AiAssistantPage() {
                           `${relation.subject_name || relation.subjectId} · ${relation.predicate} · ${relation.object_name || relation.objectId}`
                         )} /></div>
                     <div className="assistant-memory-actions">
+                      {relation.status === 'confirmed' && <button
+                        onClick={() => void openEntityRelationCorrection(relation)}>
+                        纠正方向或关系
+                      </button>}
+                      {relation.status === 'confirmed' && <button
+                        disabled={!!entityDossierMutations[`relation:${relation.id}`]}
+                        onClick={() => void rejectEntityRelation(relation)}>
+                        {entityDossierMutations[`relation:${relation.id}`]
+                          ? '正在保存…' : '不准确'}
+                      </button>}
                       {relation.status === 'candidate' && relation.pendingReviewId && <button className="primary"
                         onClick={() => openAuthoritativeRelationReview(relation.pendingReviewId)}>
                         审阅关系方向
@@ -12973,7 +13068,11 @@ function AiAssistantPage() {
           <div className="assistant-modal assistant-relation-correction-modal" role="dialog"
             aria-modal="true" aria-labelledby="relation-citation-correction-title">
             <div className="assistant-modal-title"><div>
-              <h2 id="relation-citation-correction-title">纠正回答引用中的关系</h2>
+              <h2 id="relation-citation-correction-title">
+                {relationCitationCorrectionDialog.origin === 'entity_dossier'
+                  ? '纠正人物档案中的关系'
+                  : '纠正回答引用中的关系'}
+              </h2>
               <p>方向始终按“主语 — 谓词 → 宾语”保存；原关系和人工最终值都会进入本机审计。</p>
             </div><button aria-label="关闭关系纠正"
               disabled={['loading', 'saving'].includes(relationCitationCorrectionDialog.status)}
@@ -13077,7 +13176,11 @@ function AiAssistantPage() {
                 {' — '}{String(relationCitationCorrectionDialog.predicate || '').trim() || '谓词待填写'} →{' '}
                 {relationCitationCorrectionDialog.objectEntity?.canonicalName || '宾语待选择'}
               </span>
-              <small>保存时会重新核验引用、完整证据和可信实体目录；任一项变化都会整笔拒绝。</small>
+              <small>保存时会重新核验{
+                relationCitationCorrectionDialog.origin === 'entity_dossier'
+                  ? '关系版本'
+                  : '引用'
+              }、完整证据和可信实体目录；任一项变化都会整笔拒绝。</small>
             </div>
             {relationCitationCorrectionDialog.status === 'loading' &&
               <div className="assistant-delete-status">

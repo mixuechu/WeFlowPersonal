@@ -338,6 +338,10 @@ import {
   isNegativeDecisionCurrent
 } from './identityDisambiguation'
 import { type GraphReviewPageOptions } from '../../shared/graphReviewPagination'
+import {
+  assertEntityRelationMutationRevision,
+  entityRelationMutationRevision
+} from './entityRelationMutationPolicy'
 import { buildGraphViewport, type GraphViewportOptions } from '../../shared/graphViewport'
 import {
   buildGraphDashboardPayload,
@@ -9128,6 +9132,161 @@ export class AiAssistantService {
       participantTotal: participantPage.total,
       participantEditingSupported: !participantPage.truncated
     } : null
+  }
+
+  getMemoryRelation(id: string): any {
+    const relationRevision = entityRelationMutationRevision(
+      personalMemoryStore.getGraphReviewRevision(),
+      personalMemoryStore.getStructuredMemoryRevision()
+    )
+    const relation = this.state.graph.relations.find(item =>
+      item.id === String(id || '').trim() && item.status !== 'rejected')
+    if (!relation) return null
+    const directory = buildTrustedEntityDirectory(this.state.graph.entities, { limit: 1 })
+    const subject = this.state.graph.entities.find(entity =>
+      entity.id === relation.subjectId && isTrustedEntity(entity))
+    const object = this.state.graph.entities.find(entity =>
+      entity.id === relation.objectId && isTrustedEntity(entity))
+    const completedRevision = entityRelationMutationRevision(
+      personalMemoryStore.getGraphReviewRevision(),
+      personalMemoryStore.getStructuredMemoryRevision()
+    )
+    if (completedRevision !== relationRevision) {
+      throw new Error('关系档案在读取期间发生了变化，请重新打开')
+    }
+    return {
+      ...relation,
+      relationRevision,
+      entityDirectoryRevision: directory.revision,
+      subjectEntity: subject ? {
+        id: subject.id, type: subject.type,
+        canonicalName: subject.canonicalName, trustStatus: subject.trustStatus
+      } : null,
+      objectEntity: object ? {
+        id: object.id, type: object.type,
+        canonicalName: object.canonicalName, trustStatus: object.trustStatus
+      } : null
+    }
+  }
+
+  previewRelationCorrection(
+    id: string,
+    input: {
+      expectedRevision?: string
+      entityDirectoryRevision?: string
+      relationCorrection?: RelationCorrection
+    } = {}
+  ): any {
+    const currentRevision = assertEntityRelationMutationRevision(
+      input.expectedRevision,
+      personalMemoryStore.getGraphReviewRevision(),
+      personalMemoryStore.getStructuredMemoryRevision()
+    )
+    const correction = input.relationCorrection || {}
+    const selected = resolveTrustedEntityPairSelection(this.state.graph.entities, {
+      fromId: correction.subjectId,
+      toId: correction.objectId,
+      expectedRevision: input.entityDirectoryRevision
+    })
+    if (selected.stale) throw new Error('可信实体目录在你选择后发生了变化，请重新选择关系两端')
+    const relation = this.state.graph.relations.find(item => item.id === id)
+    if (!relation || relation.status === 'rejected') {
+      throw new Error('关系已经变化或不存在，请刷新人物档案')
+    }
+    const plan = planRelationConfirmation({
+      review: { kind: 'relation', relationId: id },
+      relation,
+      entities: this.state.graph.entities,
+      correction
+    })
+    if (!plan.changed) throw new Error('关系方向和谓词没有变化，无需保存纠正')
+    this.hydrateRelationEvidence([plan.before.id, plan.after.id])
+    const sourceRelation = this.state.graph.relations.find(item => item.id === id)
+    if (!sourceRelation) throw new Error('关系在读取完整证据时发生了变化，请刷新后重试')
+    const targetRelation = this.state.graph.relations.find(item =>
+      item.id === plan.after.id && item.id !== id) || null
+    return buildCitationRelationCorrectionPreview({
+      assistantMessageId: 'entity-dossier',
+      documentId: `relation:${id}`,
+      citationReviewToken: currentRevision,
+      entityDirectoryRevision: String(input.entityDirectoryRevision || ''),
+      sourceRelation,
+      targetRelation,
+      plan,
+      reviewQueue: this.state.graph.reviewQueue
+    })
+  }
+
+  correctRelation(
+    id: string,
+    input: {
+      expectedRevision?: string
+      entityDirectoryRevision?: string
+      relationCorrection?: RelationCorrection
+      correctionPreviewToken?: string
+    } = {}
+  ): any {
+    const preview = this.previewRelationCorrection(id, input)
+    assertCitationRelationCorrectionPreview(preview, input.correctionPreviewToken)
+    const relation = this.state.graph.relations.find(item => item.id === id)
+    if (!relation) throw new Error('关系已经变化或不存在，请刷新人物档案')
+    const plan = planRelationConfirmation({
+      review: { kind: 'relation', relationId: id },
+      relation,
+      entities: this.state.graph.entities,
+      correction: input.relationCorrection
+    })
+    if (personalMemoryStore.isExtractedMemoryItemSuppressed('relation', {
+      ...plan.after,
+      evidence: relation.evidence
+    })) throw new Error('修正后的关系曾被永久删除，不能通过纠正恢复')
+    const snapshot = structuredClone(this.state.graph)
+    const now = new Date().toISOString()
+    const auditId = `dossier_relation_correction_${crypto.randomUUID()}`
+    return runReversibleGraphMutation({
+      snapshot,
+      transact: apply => personalMemoryStore.runInTransaction(apply),
+      apply: () => {
+        const confirmedRelation = applyCitationRelationCorrection(
+          this.state.graph, id, plan, now
+        )
+        personalMemoryStore.recordRelationCorrection(auditId, plan.before, plan.after)
+        this.saveState(true)
+        return confirmedRelation
+      },
+      restore: graph => { this.state.graph = graph },
+      persistRestored: () => this.persistCrossStoreMutationState(),
+      onRollbackError: error => {
+        console.error('[AI Assistant] 人物档案关系纠正回滚失败:', sanitizeDiagnosticText(error))
+      }
+    })
+  }
+
+  rejectRelation(id: string, expectedRevision: string): any {
+    assertEntityRelationMutationRevision(
+      expectedRevision,
+      personalMemoryStore.getGraphReviewRevision(),
+      personalMemoryStore.getStructuredMemoryRevision()
+    )
+    const relation = this.state.graph.relations.find(item => item.id === id)
+    if (!relation || relation.status === 'rejected') return null
+    const snapshot = structuredClone(this.state.graph)
+    return runReversibleGraphMutation({
+      snapshot,
+      transact: apply => personalMemoryStore.runInTransaction(apply),
+      apply: () => {
+        const rejected = applyCitationRelationDecision(
+          this.state.graph, id, 'rejected', new Date().toISOString()
+        )
+        this.saveState(true)
+        return rejected
+      },
+      restore: graph => { this.state.graph = graph },
+      persistRestored: () => this.persistCrossStoreMutationState(),
+      onRollbackError: error => {
+        console.error('[AI Assistant] 人物档案关系拒绝回滚失败:', sanitizeDiagnosticText(error))
+      }
+    })
   }
 
   private schedulerTick(
