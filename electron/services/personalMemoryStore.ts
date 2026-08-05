@@ -6766,6 +6766,32 @@ export class PersonalMemoryStore {
     return event
   }
 
+  getStructuredMemoryEntityIds(
+    kind: 'claim' | 'event',
+    id: string
+  ): string[] | null {
+    if (!this.db) return null
+    const itemId = String(id || '').trim()
+    if (!itemId) return null
+    if (kind === 'claim') {
+      const claim = this.db.prepare(`
+        SELECT subject_id,object_entity_id FROM claims WHERE id=?
+      `).get(itemId) as { subject_id?: string; object_entity_id?: string } | undefined
+      if (!claim) return null
+      return [...new Set([claim.subject_id, claim.object_entity_id]
+        .map(value => String(value || '').trim())
+        .filter(Boolean))]
+    }
+    const exists = this.db.prepare('SELECT 1 FROM events WHERE id=?').get(itemId)
+    if (!exists) return null
+    return (this.db.prepare(`
+      SELECT DISTINCT entity_id FROM event_participants
+      WHERE event_id=? AND entity_id IS NOT NULL AND entity_id<>''
+      ORDER BY entity_id
+    `).all(itemId) as Array<{ entity_id: string }>)
+      .map(row => String(row.entity_id))
+  }
+
   getStructuredMemoryDossier(
     kind: 'claim' | 'event' | 'relation',
     id: string,

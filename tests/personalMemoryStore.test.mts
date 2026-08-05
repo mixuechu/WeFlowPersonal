@@ -12085,6 +12085,54 @@ test('human event correction is audited, searchable and protected from repeated 
   }), /结束时间不能早于开始时间/)
 }))
 
+test('structured memory trust identities are resolved by stable id without feed hydration', () => withStore(store => {
+  store.syncGraph({
+    entities: [
+      { id: 'trust-subject', type: 'person', canonicalName: '事实主体', aliases: [], accountIds: [] },
+      { id: 'trust-object', type: 'organization', canonicalName: '事实对象', aliases: [], accountIds: [] },
+      { id: 'trust-participant-a', type: 'person', canonicalName: '参与者甲', aliases: [], accountIds: [] },
+      { id: 'trust-participant-b', type: 'person', canonicalName: '参与者乙', aliases: [], accountIds: [] }
+    ],
+    relations: [],
+    reviewQueue: []
+  })
+  store.upsertClaims([{
+    id: 'trust-claim',
+    subjectId: 'trust-subject',
+    predicate: '服务于',
+    objectEntityId: 'trust-object',
+    confidence: 0.8,
+    status: 'candidate',
+    sourceNature: 'direct_statement',
+    searchText: '事实主体服务于事实对象',
+    evidence: evidence('trust-claim-message', '服务关系原文')
+  }])
+  store.upsertEvents([{
+    id: 'trust-event',
+    eventType: 'meeting',
+    title: '信任校验会议',
+    confidence: 0.8,
+    status: 'candidate',
+    sourceNature: 'direct_statement',
+    searchText: '信任校验会议',
+    participants: [
+      { entityId: 'trust-participant-b', role: '参会人' },
+      { entityId: 'trust-participant-a', role: '主持人' }
+    ],
+    evidence: evidence('trust-event-message', '会议信任校验原文')
+  }])
+  assert.deepEqual(
+    store.getStructuredMemoryEntityIds('claim', 'trust-claim'),
+    ['trust-subject', 'trust-object']
+  )
+  assert.deepEqual(
+    store.getStructuredMemoryEntityIds('event', 'trust-event'),
+    ['trust-participant-a', 'trust-participant-b']
+  )
+  assert.equal(store.getStructuredMemoryEntityIds('claim', 'missing-claim'), null)
+  assert.equal(store.getStructuredMemoryEntityIds('event', 'missing-event'), null)
+}))
+
 test('negative claims preserve polarity and attach contradiction evidence both ways', () => withStore(store => {
   store.syncGraph({
     entities: [{ id: 'person-polarity', type: 'person', canonicalName: '极性测试', aliases: [], accountIds: [] }],

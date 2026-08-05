@@ -6950,19 +6950,15 @@ export class AiAssistantService {
   }
 
   private assertStructuredEntityTrust(kind: 'claim' | 'event', id: string): void {
-    const feed = personalMemoryStore.getMemoryFeed()
-    if (kind === 'claim') {
-      const claim = (feed.claims || []).find((item: any) => item.id === id)
-      const entityIds = [claim?.subject_id, claim?.object_entity_id].filter(Boolean)
-      if (entityIds.some(entityId => !isTrustedEntity(this.state.graph.entities.find(entity => entity.id === entityId)))) {
-        throw new Error('请先确认事实涉及的实体，再确认事实')
-      }
-    } else {
-      const event = (feed.events || []).find((item: any) => item.id === id)
-      const entityIds = (event?.participants || []).map((item: any) => item.entity_id).filter(Boolean)
-      if (entityIds.some((entityId: string) => !isTrustedEntity(this.state.graph.entities.find(entity => entity.id === entityId)))) {
-        throw new Error('请先确认事件参与实体，再确认事件')
-      }
+    const entityIds = personalMemoryStore.getStructuredMemoryEntityIds(kind, id)
+    if (!entityIds) {
+      throw new Error(kind === 'claim' ? '该事实不存在或已经被删除' : '该事件不存在或已经被删除')
+    }
+    if (entityIds.some(entityId =>
+      !isTrustedEntity(this.state.graph.entities.find(entity => entity.id === entityId)))) {
+      throw new Error(kind === 'claim'
+        ? '请先确认事实涉及的实体，再确认事实'
+        : '请先确认事件参与实体，再确认事件')
     }
   }
 
