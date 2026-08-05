@@ -11456,7 +11456,7 @@ function AiAssistantPage() {
             </div>}
             {memoryDiagnostics.memoryEvidenceArchiveRevision?.version && <div className={`assistant-recovery-audit ${memoryDiagnostics.memoryEvidenceArchiveRevisionHealthy ? 'healthy' : 'unhealthy'}`}>
               <header><ShieldCheck size={15} /><span><b>完整原文证据分页一致性保护</b>
-                <small>通用证据与事实、事件、关系的权威原文共享 SQLCipher revision；增量补证据、发送者修复、反证加入或记忆删除发生时，旧证据页会被拒绝并自动从最新第一页重载。</small>
+                <small>身份原文、通用证据与事实、事件、关系的权威原文共享 SQLCipher revision；增量补证据、发送者修复、反证加入或记忆删除发生时，旧证据页会被拒绝并自动从最新第一页重载。</small>
               </span></header>
               <div className="assistant-recovery-current">
                 <span>当前状态 <b>{memoryDiagnostics.memoryEvidenceArchiveRevisionHealthy ? '保护正常' : '需要检查'}</b></span>

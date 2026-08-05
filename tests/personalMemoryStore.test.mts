@@ -3118,7 +3118,15 @@ test('structured evidence upgrades quality without duplicating or downgrading re
       { id: 'sender-person-b', type: 'person', canonicalName: '发送者乙', trustStatus: 'confirmed' }
     ],
     relations: [relation],
-    reviewQueue: []
+    reviewQueue: [{
+      id: 'sender-relation-review',
+      kind: 'relation',
+      title: '确认协作关系',
+      detail: '确认关系方向',
+      confidence: 0.9,
+      status: 'pending',
+      relationId: relation.id
+    }]
   }
   store.syncGraph(graph)
   store.syncGraph(graph)
@@ -3228,6 +3236,43 @@ test('structured evidence upgrades quality without duplicating or downgrading re
   assert.ok(diagnostics.structuredEvidenceQualityMerge.byKind.claim >= 1)
   assert.ok(diagnostics.structuredEvidenceQualityMerge.byKind.relation >= 1)
   assert.ok(diagnostics.structuredEvidenceQualityMerge.byKind.event >= 1)
+
+  const stableRevisions = {
+    search: store.getMemorySearchRevision(),
+    structured: store.getStructuredMemoryRevision(),
+    graph: store.getGraphReviewRevision()
+  }
+  store.syncGraph({
+    ...graph,
+    relations: [{
+      ...relation,
+      evidence: [{
+        ...relation.evidence[0],
+        timestamp: 1_700_000_101,
+        sender: '关系发送者新备注',
+        excerpt: '我们一起完成这个项目，并约定周五交付完整版本'
+      }]
+    }]
+  })
+  store.upsertEvents([{ ...event, evidence: [{
+    ...event.evidence[0],
+    timestamp: 1_700_000_201,
+    sender: '事件发送者新备注',
+    excerpt: '明天开一次测试会议，讨论发布方案',
+    role: 'direct'
+  }] }])
+  store.upsertClaims([{ ...claim, evidence: [{
+    ...claim.evidence[0],
+    timestamp: 1_700_000_301,
+    sender: '确认发送者',
+    excerpt: '我确认由发送者甲负责本周五的完整发布',
+    role: 'contradiction'
+  }] }])
+  assert.deepEqual({
+    search: store.getMemorySearchRevision(),
+    structured: store.getStructuredMemoryRevision(),
+    graph: store.getGraphReviewRevision()
+  }, stableRevisions)
 }))
 
 test('structured evidence preserves identical message ids from different sources across restart', () => {
@@ -9162,7 +9207,7 @@ test('search feedback archive revision advances and self-heals on restart', () =
   }
 })
 
-test('complete evidence archive revision covers both evidence stores and self-heals on restart', () => {
+test('complete evidence archive revision covers every authoritative evidence store and self-heals on restart', () => {
   const directory = mkdtempSync(join(tmpdir(), 'weflow-evidence-archive-revision-'))
   const databasePath = join(directory, 'memory.sqlite')
   try {
@@ -9234,21 +9279,56 @@ test('complete evidence archive revision covers both evidence stores and self-he
     database.prepare('DELETE FROM evidence WHERE message_id=?')
       .run('structured-evidence-message')
     expectAdvanced()
+    database.prepare(`
+      INSERT INTO entities(
+        id,type,canonical_name,created_at,updated_at,trust_status,summary_status
+      ) VALUES(?,?,?,?,?,'confirmed','empty')
+    `).run(
+      'evidence-revision-entity',
+      'person',
+      '原文版本人物',
+      '2026-08-05T00:00:00.000Z',
+      '2026-08-05T00:00:00.000Z'
+    )
+    database.prepare(`
+      INSERT INTO entity_evidence(
+        entity_id,source_id,message_id,session_id,timestamp,sender,excerpt,evidence_kind
+      ) VALUES(?,?,?,?,?,?,?,'identity_anchor')
+    `).run(
+      'evidence-revision-entity',
+      'wechat',
+      'entity-evidence-revision-message',
+      'entity-evidence-revision-session',
+      1_754_000_002,
+      '身份发送者',
+      '身份原文'
+    )
+    expectAdvanced()
+    database.prepare(`
+      UPDATE entity_evidence SET excerpt='身份原文已核验'
+      WHERE message_id='entity-evidence-revision-message'
+    `).run()
+    expectAdvanced()
+    database.prepare(`
+      DELETE FROM entity_evidence
+      WHERE message_id='entity-evidence-revision-message'
+    `).run()
+    expectAdvanced()
     const evidenceRevisionHealth = first.getMemoryEvidenceArchiveRevisionHealth()
-    assert.equal(evidenceRevisionHealth.version, 'memory-evidence-archive-revision-v2')
-    assert.equal(evidenceRevisionHealth.expectedTriggers, 6)
-    assert.equal(evidenceRevisionHealth.validTriggers, 6)
+    assert.equal(evidenceRevisionHealth.version, 'memory-evidence-archive-revision-v3')
+    assert.equal(evidenceRevisionHealth.expectedTriggers, 9)
+    assert.equal(evidenceRevisionHealth.validTriggers, 9)
     assert.equal(evidenceRevisionHealth.healthy, true)
     database.exec(
       'DROP TRIGGER trg_memory_evidence_archive_revision_evidence_update'
     )
-    assert.equal(first.getMemoryEvidenceArchiveRevisionHealth().installedTriggers, 5)
+    assert.equal(first.getMemoryEvidenceArchiveRevisionHealth().installedTriggers, 8)
     assert.equal(first.getMemoryEvidenceArchiveRevisionHealth().healthy, false)
     first.close()
 
     const reopened = new PersonalMemoryStore()
     reopened.initialize(databasePath)
-    assert.equal(reopened.getMemoryEvidenceArchiveRevisionHealth().installedTriggers, 6)
+    assert.equal(reopened.getMemoryEvidenceArchiveRevisionHealth().installedTriggers, 9)
     assert.equal(reopened.getMemoryEvidenceArchiveRevisionHealth().healthy, true)
     reopened.close()
   } finally {
@@ -15588,8 +15668,10 @@ test('message resources remain idempotent, searchable and traceable to original 
   }
   store.upsertResources([updatedResource])
   const stableRevision = store.getMemorySearchRevision()
+  const stableResourceRevision = store.getResourceArchiveRevision()
   store.upsertResources([updatedResource])
   assert.equal(store.getMemorySearchRevision(), stableRevision)
+  assert.equal(store.getResourceArchiveRevision(), stableResourceRevision)
 
   const feed = store.getMemoryFeed()
   assert.equal(feed.resources.length, 1)

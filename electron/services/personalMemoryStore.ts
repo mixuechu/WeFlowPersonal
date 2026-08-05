@@ -359,6 +359,21 @@ export class PersonalMemoryStore {
     return Number(result.changes)
   }
 
+  private updateSearchDocumentMetadataIfChanged(
+    documentId: string,
+    metadata: any,
+    updatedAt: string
+  ): number {
+    if (!this.db) return 0
+    const metadataJson = typeof metadata === 'string'
+      ? metadata
+      : JSON.stringify(metadata)
+    return Number(this.db.prepare(`
+      UPDATE search_documents SET metadata_json=?,updated_at=?
+      WHERE id=? AND metadata_json IS NOT ?
+    `).run(metadataJson, updatedAt, documentId, metadataJson).changes || 0)
+  }
+
   private readRecoveryPayload(
     table: 'ingestion_batch_commits' | 'task_mutation_commits' |
       'conversation_source_mutation_commits',
@@ -1957,8 +1972,8 @@ export class PersonalMemoryStore {
     this.ensureRevisionTriggerSet({
       prefix: 'memory_evidence_archive_revision',
       revisionKey: 'memory_evidence_archive_revision',
-      tables: ['search_document_evidence', 'evidence'],
-      version: 'memory-evidence-archive-revision-v2'
+      tables: ['search_document_evidence', 'evidence', 'entity_evidence'],
+      version: 'memory-evidence-archive-revision-v3'
     })
   }
 
@@ -1973,8 +1988,8 @@ export class PersonalMemoryStore {
     return this.getRevisionTriggerSetHealth({
       prefix: 'memory_evidence_archive_revision',
       revisionKey: 'memory_evidence_archive_revision',
-      tables: ['search_document_evidence', 'evidence'],
-      version: 'memory-evidence-archive-revision-v2',
+      tables: ['search_document_evidence', 'evidence', 'entity_evidence'],
+      version: 'memory-evidence-archive-revision-v3',
       revision: this.getMemoryEvidenceArchiveRevision()
     })
   }
@@ -3990,11 +4005,10 @@ export class PersonalMemoryStore {
         deleteFts.run(document.id)
         insertFts.run(document.id, document.title, document.search_text)
       }
-      const updateMetadata = this.db!.prepare(`
-        UPDATE search_documents SET metadata_json=?,updated_at=? WHERE id=?
-      `)
       for (const repair of metadataRepairs) {
-        updateMetadata.run(repair.metadataJson, repair.updatedAt, repair.id)
+        this.updateSearchDocumentMetadataIfChanged(
+          repair.id, repair.metadataJson, repair.updatedAt
+        )
       }
       for (const repair of structuredDocumentRepairs) {
         this.upsertSearchDocument(
@@ -6195,6 +6209,15 @@ export class PersonalMemoryStore {
           summary=excluded.summary, confidence=excluded.confidence, updated_at=excluded.updated_at,
           identity_version=excluded.identity_version,last_disambiguated_at=excluded.last_disambiguated_at,
           trust_status=excluded.trust_status,summary_status=excluded.summary_status,deleted_at=NULL
+        WHERE entities.type IS NOT excluded.type
+          OR entities.canonical_name IS NOT excluded.canonical_name
+          OR entities.summary IS NOT excluded.summary
+          OR entities.confidence IS NOT excluded.confidence
+          OR entities.identity_version IS NOT excluded.identity_version
+          OR entities.last_disambiguated_at IS NOT excluded.last_disambiguated_at
+          OR entities.trust_status IS NOT excluded.trust_status
+          OR entities.summary_status IS NOT excluded.summary_status
+          OR entities.deleted_at IS NOT NULL
       `)
       const insertAlias = this.db.prepare(`INSERT OR IGNORE INTO aliases(entity_id,value,normalized_value,alias_type,confidence) VALUES(?,?,?,?,?)`)
       const deleteAliases = this.db.prepare('DELETE FROM aliases WHERE entity_id=?')
@@ -6340,6 +6363,13 @@ export class PersonalMemoryStore {
             ELSE relations.direction_explanation
           END,
           search_text=excluded.search_text,updated_at=excluded.updated_at
+        WHERE relations.confidence IS NOT excluded.confidence
+          OR relations.status IS NOT excluded.status
+          OR (
+            excluded.direction_explanation!=''
+            AND relations.direction_explanation IS NOT excluded.direction_explanation
+          )
+          OR relations.search_text IS NOT excluded.search_text
       `)
       const getStoredRelation = this.db.prepare('SELECT * FROM relations WHERE id=?')
       const insertRelationHistory = this.db.prepare(`
@@ -6423,6 +6453,12 @@ export class PersonalMemoryStore {
         VALUES(?,?,?,?,?,?,?,?,?)
         ON CONFLICT(id) DO UPDATE SET title=excluded.title,detail=excluded.detail,confidence=excluded.confidence,
           status=excluded.status,payload_json=excluded.payload_json,resolved_at=excluded.resolved_at
+        WHERE review_queue.title IS NOT excluded.title
+          OR review_queue.detail IS NOT excluded.detail
+          OR review_queue.confidence IS NOT excluded.confidence
+          OR review_queue.status IS NOT excluded.status
+          OR review_queue.payload_json IS NOT excluded.payload_json
+          OR review_queue.resolved_at IS NOT excluded.resolved_at
       `)
       const activeReviewIds = new Set(graph.reviewQueue.map(review => review.id))
       const storedPendingReviewIds = this.db.prepare(
@@ -7091,6 +7127,17 @@ export class PersonalMemoryStore {
         valid_from=COALESCE(excluded.valid_from,valid_from),valid_to=COALESCE(excluded.valid_to,valid_to),
         polarity=excluded.polarity,search_text=excluded.search_text,updated_at=excluded.updated_at,source_nature=excluded.source_nature,
         conflict_group=COALESCE(excluded.conflict_group,conflict_group)
+      WHERE claims.confidence<excluded.confidence
+        OR claims.status IS NOT excluded.status
+        OR (excluded.valid_from IS NOT NULL AND claims.valid_from IS NOT excluded.valid_from)
+        OR (excluded.valid_to IS NOT NULL AND claims.valid_to IS NOT excluded.valid_to)
+        OR claims.polarity IS NOT excluded.polarity
+        OR claims.search_text IS NOT excluded.search_text
+        OR claims.source_nature IS NOT excluded.source_nature
+        OR (
+          excluded.conflict_group IS NOT NULL
+          AND claims.conflict_group IS NOT excluded.conflict_group
+        )
     `)
     const evidence = this.db.prepare(`
       INSERT OR IGNORE INTO evidence(
@@ -7163,8 +7210,10 @@ export class PersonalMemoryStore {
           .map(item => item.id)
         if (ids.length) {
           const placeholders = ids.map(() => '?').join(',')
-          this.db.prepare(`UPDATE claims SET status='candidate',conflict_group=?,updated_at=? WHERE id IN (${placeholders})`)
-            .run(conflictGroup, now, ...ids)
+          this.db.prepare(`UPDATE claims SET status='candidate',conflict_group=?,updated_at=?
+            WHERE id IN (${placeholders})
+              AND (status!='candidate' OR conflict_group IS NOT ?)`)
+            .run(conflictGroup, now, ...ids, conflictGroup)
           for (const id of ids) {
             const documentId = `claim:${id}`
             const document = this.db.prepare('SELECT metadata_json FROM search_documents WHERE id=?').get(documentId) as any
@@ -7173,8 +7222,7 @@ export class PersonalMemoryStore {
             try { metadata = JSON.parse(document.metadata_json || '{}') } catch {}
             metadata.status = 'candidate'
             metadata.conflictGroup = conflictGroup
-            this.db.prepare('UPDATE search_documents SET metadata_json=?,updated_at=? WHERE id=?')
-              .run(JSON.stringify(metadata), now, documentId)
+            this.updateSearchDocumentMetadataIfChanged(documentId, metadata, now)
           }
         }
         claim.status = 'candidate'
@@ -7245,6 +7293,14 @@ export class PersonalMemoryStore {
         end_at=COALESCE(excluded.end_at,end_at),location=COALESCE(excluded.location,location),
         confidence=MAX(confidence,excluded.confidence),status=excluded.status,source_nature=excluded.source_nature,
         search_text=excluded.search_text,updated_at=excluded.updated_at
+      WHERE events.description IS NOT excluded.description
+        OR (excluded.start_at IS NOT NULL AND events.start_at IS NOT excluded.start_at)
+        OR (excluded.end_at IS NOT NULL AND events.end_at IS NOT excluded.end_at)
+        OR (excluded.location IS NOT NULL AND events.location IS NOT excluded.location)
+        OR events.confidence<excluded.confidence
+        OR events.status IS NOT excluded.status
+        OR events.source_nature IS NOT excluded.source_nature
+        OR events.search_text IS NOT excluded.search_text
     `)
     const participant = this.db.prepare('INSERT OR IGNORE INTO event_participants(event_id,entity_id,role) VALUES(?,?,?)')
     const evidence = this.db.prepare(`
@@ -7319,15 +7375,19 @@ export class PersonalMemoryStore {
           )
         }
         if (event.status === 'cancelled') {
-          this.db.prepare(`UPDATE events SET status='cancelled',updated_at=? WHERE id=?`).run(now, event.id)
+          this.db.prepare(`
+            UPDATE events SET status='cancelled',updated_at=?
+            WHERE id=? AND status!='cancelled'
+          `).run(now, event.id)
           const document = this.db.prepare('SELECT metadata_json FROM search_documents WHERE id=?')
             .get(`event:${event.id}`) as any
           if (document) {
             let metadata: any = {}
             try { metadata = JSON.parse(document.metadata_json || '{}') } catch {}
             metadata.status = 'cancelled'
-            this.db.prepare('UPDATE search_documents SET metadata_json=?,updated_at=? WHERE id=?')
-              .run(JSON.stringify(metadata), now, `event:${event.id}`)
+            this.updateSearchDocumentMetadataIfChanged(
+              `event:${event.id}`, metadata, now
+            )
           }
         }
         continue
@@ -7664,6 +7724,13 @@ export class PersonalMemoryStore {
         resource_type=excluded.resource_type,title=excluded.title,url=excluded.url,
         file_name=excluded.file_name,file_ext=excluded.file_ext,content=excluded.content,
         metadata_json=excluded.metadata_json,updated_at=excluded.updated_at
+      WHERE memory_resources.resource_type IS NOT excluded.resource_type
+        OR memory_resources.title IS NOT excluded.title
+        OR memory_resources.url IS NOT excluded.url
+        OR memory_resources.file_name IS NOT excluded.file_name
+        OR memory_resources.file_ext IS NOT excluded.file_ext
+        OR memory_resources.content IS NOT excluded.content
+        OR memory_resources.metadata_json IS NOT excluded.metadata_json
     `)
     const insertEvidence = this.db.prepare(`
       INSERT INTO search_document_evidence(
@@ -8265,6 +8332,15 @@ export class PersonalMemoryStore {
         due=excluded.due,project=excluded.project,task_kind=excluded.task_kind,title=excluded.title,
         payload_json=excluded.payload_json,evidence_fingerprint=excluded.evidence_fingerprint,
         updated_at=excluded.updated_at
+      WHERE task_directory.status IS NOT excluded.status
+        OR task_directory.classification IS NOT excluded.classification
+        OR task_directory.priority IS NOT excluded.priority
+        OR task_directory.due IS NOT excluded.due
+        OR task_directory.project IS NOT excluded.project
+        OR task_directory.task_kind IS NOT excluded.task_kind
+        OR task_directory.title IS NOT excluded.title
+        OR task_directory.payload_json IS NOT excluded.payload_json
+        OR task_directory.evidence_fingerprint IS NOT excluded.evidence_fingerprint
     `)
     const existing = this.db.prepare(`SELECT id FROM search_documents WHERE document_type='task'`).all() as Array<{ id: string }>
     for (const { id } of existing) {
@@ -10686,8 +10762,7 @@ export class PersonalMemoryStore {
         let metadata: any = {}
         try { metadata = JSON.parse(document.metadata_json || '{}') } catch {}
         metadata.status = status
-        this.db!.prepare('UPDATE search_documents SET metadata_json=?,updated_at=? WHERE id=?')
-          .run(JSON.stringify(metadata), now, documentId)
+        this.updateSearchDocumentMetadataIfChanged(documentId, metadata, now)
       }
       return this.db!.prepare(`
         SELECT item.*,
