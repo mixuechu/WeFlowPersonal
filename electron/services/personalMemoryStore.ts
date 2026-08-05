@@ -4510,6 +4510,7 @@ export class PersonalMemoryStore {
     let duplicateGroups = 0
     let mergedEvents = 0
     let protectedEventsPreserved = 0
+    let ambiguousCandidatesPreserved = 0
     let reviewsReassigned = 0
     const refreshedTargets = new Set<string>()
     const checkedAt = new Date().toISOString()
@@ -4529,6 +4530,16 @@ export class PersonalMemoryStore {
           if (!target) continue
           const targetProtected = Boolean(target.corrected || target.protected_review)
           const sourceProtected = Boolean(source.corrected || source.protected_review)
+          const compatibleProtectedTargets = candidates.filter(candidate =>
+            candidate.id !== source.id &&
+            !removed.has(candidate.id) &&
+            Boolean(candidate.corrected || candidate.protected_review) &&
+            (!candidate.start_at || !source.start_at || candidate.start_at === source.start_at)
+          )
+          if (!sourceProtected && compatibleProtectedTargets.length > 1) {
+            ambiguousCandidatesPreserved += 1
+            continue
+          }
           if (targetProtected && sourceProtected) {
             protectedEventsPreserved += 1
             continue
@@ -4588,11 +4599,15 @@ export class PersonalMemoryStore {
         duplicateGroupsThisStart: duplicateGroups,
         mergedEventsThisStart: mergedEvents,
         protectedEventsPreservedThisStart: protectedEventsPreserved,
+        ambiguousCandidatesPreservedThisStart: ambiguousCandidatesPreserved,
         reviewsReassignedThisStart: reviewsReassigned,
         searchDocumentsRefreshedThisStart: refreshedTargets.size,
         mergedEventsTotal: Number(previous.mergedEventsTotal || 0) + mergedEvents,
         protectedEventsPreservedTotal:
           Number(previous.protectedEventsPreservedTotal || 0) + protectedEventsPreserved,
+        ambiguousCandidatesPreservedTotal:
+          Number(previous.ambiguousCandidatesPreservedTotal || 0) +
+          ambiguousCandidatesPreserved,
         reviewsReassignedTotal: Number(previous.reviewsReassignedTotal || 0) + reviewsReassigned,
         searchDocumentsRefreshedTotal:
           Number(previous.searchDocumentsRefreshedTotal || 0) + refreshedTargets.size
@@ -4903,12 +4918,16 @@ export class PersonalMemoryStore {
           mergedEventsThisStart: Number(audit.mergedEventsThisStart || 0),
           protectedEventsPreservedThisStart:
             Number(audit.protectedEventsPreservedThisStart || 0),
+          ambiguousCandidatesPreservedThisStart:
+            Number(audit.ambiguousCandidatesPreservedThisStart || 0),
           reviewsReassignedThisStart: Number(audit.reviewsReassignedThisStart || 0),
           searchDocumentsRefreshedThisStart:
             Number(audit.searchDocumentsRefreshedThisStart || 0),
           mergedEventsTotal: Number(audit.mergedEventsTotal || 0),
           protectedEventsPreservedTotal:
             Number(audit.protectedEventsPreservedTotal || 0),
+          ambiguousCandidatesPreservedTotal:
+            Number(audit.ambiguousCandidatesPreservedTotal || 0),
           reviewsReassignedTotal: Number(audit.reviewsReassignedTotal || 0),
           searchDocumentsRefreshedTotal:
             Number(audit.searchDocumentsRefreshedTotal || 0)
@@ -4920,10 +4939,12 @@ export class PersonalMemoryStore {
           duplicateGroupsThisStart: 0,
           mergedEventsThisStart: 0,
           protectedEventsPreservedThisStart: 0,
+          ambiguousCandidatesPreservedThisStart: 0,
           reviewsReassignedThisStart: 0,
           searchDocumentsRefreshedThisStart: 0,
           mergedEventsTotal: 0,
           protectedEventsPreservedTotal: 0,
+          ambiguousCandidatesPreservedTotal: 0,
           reviewsReassignedTotal: 0,
           searchDocumentsRefreshedTotal: 0
         }
@@ -6847,14 +6868,23 @@ export class PersonalMemoryStore {
           ORDER BY corrected DESC,protected_review DESC,status_rank DESC,
             (ev.start_at IS NOT NULL) DESC,LENGTH(ev.title) DESC,ev.created_at ASC,ev.id ASC
         `)
-        const matches = evidenceItems.flatMap((item: any) =>
-          findMatches.all(
+        const matches = [...new Map(evidenceItems.flatMap((item: any) =>
+          (findMatches.all(
             evidenceSourceId(item),
             String(item.sessionId || ''),
             String(item.messageId || '')
-          ) as Array<{ id: string; start_at?: string }>
-        )
-        const reusable = matches.find(match => !match.start_at || !event.startAt || match.start_at === event.startAt)
+          ) as Array<{
+            id: string
+            start_at?: string
+            corrected?: number
+            protected_review?: number
+          }>).map(match => [match.id, match])
+        )).values()]
+        const compatible = matches.filter(match =>
+          !match.start_at || !event.startAt || match.start_at === event.startAt)
+        const protectedMatches = compatible.filter(match =>
+          Boolean(match.corrected || match.protected_review))
+        const reusable = protectedMatches.length > 1 ? undefined : compatible[0]
         if (reusable) event.id = reusable.id
       }
       if (this.isMemoryItemSuppressed('event', event.id, this.memoryItemSemanticFingerprint('event', event))) continue

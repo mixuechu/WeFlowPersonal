@@ -12578,7 +12578,8 @@ test('event deduplication deterministically preserves human authority and its au
       },
       makeEvent('event-human-authority', '人工事件', 'human-only'),
       makeEvent('event-protected-a', '人工保留事件甲', 'protected-a-only'),
-      makeEvent('event-protected-b', '人工保留事件乙', 'protected-b-only')
+      makeEvent('event-protected-b', '人工保留事件乙', 'protected-b-only'),
+      makeEvent('event-ambiguous-candidate', '需要人工判断归属的候选', 'ambiguous-only')
     ])
     first.correctEvent('event-human-authority', {
       title: '人工确认的客户会议',
@@ -12607,7 +12608,9 @@ test('event deduplication deterministically preserves human authority and its au
         Date.parse('2026-08-05T02:00:00.000Z'), '发送者', '同一条事件原文', 'direct'
       )
     }
-    for (const eventId of ['event-protected-a', 'event-protected-b']) {
+    for (const eventId of [
+      'event-protected-a', 'event-protected-b', 'event-ambiguous-candidate'
+    ]) {
       insertSharedEvidence.run(
         eventId, 'wechat', 'shared-protected-message', 'shared-protected-session',
         Date.parse('2026-08-05T02:00:00.000Z'), '发送者', '两条人工事件都引用的原文', 'direct'
@@ -12626,6 +12629,7 @@ test('event deduplication deterministically preserves human authority and its au
     assert.equal(authoritative.participant_count, 2)
     assert.ok(second.getEvent('event-protected-a'))
     assert.ok(second.getEvent('event-protected-b'))
+    assert.equal(second.getEvent('event-ambiguous-candidate').status, 'candidate')
     const audit = second.listMemoryItemAuditPage({
       kind: 'event',
       itemId: 'event-human-authority',
@@ -12637,6 +12641,7 @@ test('event deduplication deterministically preserves human authority and its au
     const diagnostics = second.getDiagnostics().eventDeduplicationAuthority
     assert.equal(diagnostics.mergedEventsThisStart, 1)
     assert.equal(diagnostics.protectedEventsPreservedThisStart, 1)
+    assert.equal(diagnostics.ambiguousCandidatesPreservedThisStart, 1)
     assert.equal(diagnostics.reviewsReassignedThisStart, 1)
     assert.equal(diagnostics.searchDocumentsRefreshedThisStart, 1)
     const indexedEvent = second.searchText('人工确认的客户会议')
@@ -12663,10 +12668,22 @@ test('event deduplication deterministically preserves human authority and its au
         ...evidence('shared-authority-message', '同一条事件原文')[0],
         sourceId: 'wechat',
         sessionId: 'shared-authority-session'
+      }, {
+        ...evidence('human-only', '人工事件原文')[0],
+        sourceId: 'wechat'
       }]
     }])
     assert.equal(second.getEvent('event-model-rephrased'), null)
     assert.equal(second.getEvent('event-human-authority').title, '人工确认的客户会议')
+    second.upsertEvents([{
+      ...makeEvent('event-new-ambiguous-model', '模型不能替人工分歧选边', 'unused'),
+      evidence: [{
+        ...evidence('shared-protected-message', '两条人工事件都引用的原文')[0],
+        sourceId: 'wechat',
+        sessionId: 'shared-protected-session'
+      }]
+    }])
+    assert.equal(second.getEvent('event-new-ambiguous-model').status, 'candidate')
   } finally {
     first.close()
     second.close()
