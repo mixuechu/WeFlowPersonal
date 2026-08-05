@@ -60,6 +60,7 @@ import {
   buildMemoryCitationReviewIdentity,
   buildMemoryCitationReviewToken
 } from './memoryCitationReviewPolicy.ts'
+import { applyCitationRelationDecision } from './citationRelationReview.ts'
 import {
   assertConversationSourceMutation,
   buildConversationSourceDirectory,
@@ -7147,18 +7148,30 @@ export class AiAssistantService {
       const object = this.state.graph.entities.find(entity => entity.id === relation.objectId)
       if (!isTrustedEntity(subject) || !isTrustedEntity(object)) throw new Error('请先确认关系两端的实体，再确认关系')
     }
-    relation.status = decision
-    relation.updatedAt = new Date().toISOString()
-    for (const review of this.state.graph.reviewQueue) {
-      if (review.kind === 'relation' && review.relationId === id && review.status === 'pending') {
-        review.status = decision
-        review.resolvedAt = new Date().toISOString()
-        review.resolutionActor = 'user'
-        review.resolutionReason = decision === 'confirmed' ? '用户在统一记忆中确认关系' : '用户在统一记忆中拒绝关系'
+    const snapshot = structuredClone(this.state.graph)
+    return runReversibleGraphMutation({
+      snapshot,
+      transact: apply => personalMemoryStore.runInTransaction(apply),
+      apply: () => {
+        const applied = applyCitationRelationDecision(
+          this.state.graph,
+          id,
+          decision,
+          new Date().toISOString()
+        )
+        if (!applied) throw new Error('关系已经变化或不存在，请刷新回答后再审阅')
+        this.saveState(true)
+        return applied
+      },
+      restore: graph => { this.state.graph = graph },
+      persistRestored: () => this.persistCrossStoreMutationState(),
+      onRollbackError: error => {
+        console.error(
+          '[AI Assistant] 问答关系审阅回滚状态写入失败:',
+          sanitizeDiagnosticText(error)
+        )
       }
-    }
-    this.saveState()
-    return relation
+    })
   }
 
   previewForgetEntity(id: string): any {

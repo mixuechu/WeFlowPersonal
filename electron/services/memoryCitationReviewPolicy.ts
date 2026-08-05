@@ -8,6 +8,7 @@ export type MemoryCitationReviewIdentity = {
   contentHash: string
   status: string
   evidenceTotal: number
+  evidenceAuthorityRevision: number
   evidenceKeys: string[]
   scopeFingerprint: string
 }
@@ -36,6 +37,10 @@ export const buildMemoryCitationReviewIdentity = (input: {
   evidenceTotal: Math.max(
     Array.isArray(input.document?.evidence) ? input.document.evidence.length : 0,
     Number(input.document?.evidenceTotal || 0)
+  ),
+  evidenceAuthorityRevision: Math.max(
+    0,
+    Math.floor(Number(input.document?.evidenceAuthorityRevision) || 0)
   ),
   evidenceKeys: [...new Set((Array.isArray(input.document?.evidence) ? input.document.evidence : [])
     .map(normalizeEvidenceKey)

@@ -13,6 +13,7 @@ const document = {
   content_hash: 'a'.repeat(64),
   metadata: { status: 'proposed' },
   evidenceTotal: 3,
+  evidenceAuthorityRevision: 7,
   evidence: [{
     source_id: 'wechat',
     session_id: 'chat_1',
@@ -36,6 +37,7 @@ test('citation review token binds the answer, document, scope and evidence', () 
     { ...document, content_hash: 'b'.repeat(64) },
     { ...document, metadata: { status: 'confirmed' } },
     { ...document, evidenceTotal: 4 },
+    { ...document, evidenceAuthorityRevision: 8 },
     { ...document, evidence: [{ ...document.evidence[0], message_id: 'message_2' }] },
     { ...document, evidence: [{ ...document.evidence[0], excerpt: '证据正文已修订' }] }
   ]) {
