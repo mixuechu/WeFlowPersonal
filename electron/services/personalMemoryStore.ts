@@ -10788,18 +10788,42 @@ export class PersonalMemoryStore {
     `).get() || { mine: 0, rejected: 0, suppressed: 0, reconciled: 0 }
   }
 
-  correctClaim(id: string, input: { value: string; validFrom?: string; validTo?: string }): any {
+  correctClaim(id: string, input: {
+    value: string
+    polarity?: 'positive' | 'negative'
+    validFrom?: string
+    validTo?: string
+  }): any {
     if (!this.db) return null
     const before = this.db.prepare('SELECT * FROM claims WHERE id=?').get(id) as any
     if (!before) return null
+    const normalizeBoundary = (value: unknown, label: string): string | null => {
+      const normalized = String(value || '').trim().slice(0, 100)
+      if (!normalized) return null
+      const datePrefix = normalized.match(/^(\d{4})-(\d{2})-(\d{2})(?:$|T)/)
+      if (!datePrefix || !Number.isFinite(Date.parse(normalized))) {
+        throw new Error(`${label}格式无效`)
+      }
+      const [, year, month, day] = datePrefix
+      const canonical = new Date(Date.UTC(Number(year), Number(month) - 1, Number(day)))
+        .toISOString().slice(0, 10)
+      if (canonical !== `${year}-${month}-${day}`) throw new Error(`${label}格式无效`)
+      return normalized
+    }
+    const validFrom = normalizeBoundary(input.validFrom, '事实生效时间')
+    const validTo = normalizeBoundary(input.validTo, '事实失效时间')
+    if (validFrom && validTo && Date.parse(validTo) < Date.parse(validFrom)) {
+      throw new Error('事实失效时间不能早于生效时间')
+    }
+    const polarity = input.polarity === 'negative' ? 'negative' : 'positive'
     const now = new Date().toISOString()
     const after = {
       ...before,
       object_entity_id: null,
       object_value: String(input.value || '').trim().slice(0, 1000),
-      polarity: 'positive',
-      valid_from: String(input.validFrom || '').trim() || null,
-      valid_to: String(input.validTo || '').trim() || null,
+      polarity,
+      valid_from: validFrom,
+      valid_to: validTo,
       status: 'confirmed',
       source_nature: 'human_confirmation',
       conflict_group: null,
@@ -10809,17 +10833,17 @@ export class PersonalMemoryStore {
     const subject = this.db.prepare('SELECT canonical_name FROM entities WHERE id=?').get(before.subject_id) as { canonical_name?: string } | undefined
     const transaction = this.db.transaction(() => {
       this.db!.prepare(`
-        UPDATE claims SET object_entity_id=NULL,object_value=?,polarity='positive',valid_from=?,valid_to=?,status='confirmed',
+        UPDATE claims SET object_entity_id=NULL,object_value=?,polarity=?,valid_from=?,valid_to=?,status='confirmed',
           source_nature='human_confirmation',conflict_group=NULL,updated_at=? WHERE id=?
-      `).run(after.object_value, after.valid_from, after.valid_to, now, id)
+      `).run(after.object_value, after.polarity, after.valid_from, after.valid_to, now, id)
       this.db!.prepare(`
         INSERT INTO memory_corrections(item_kind,item_id,before_json,after_json,created_at) VALUES('claim',?,?,?,?)
       `).run(id, JSON.stringify(before), JSON.stringify(after), now)
       this.upsertSearchDocument(`claim:${id}`, 'claim', id, before.predicate,
-        `${subject?.canonical_name || ''} ${before.predicate} ${after.object_value}`.trim(),
+        `${subject?.canonical_name || ''} ${after.polarity === 'negative' ? '并非' : ''} ${before.predicate} ${after.object_value}`.trim(),
         {
           subjectId: before.subject_id,
-          polarity: 'positive',
+          polarity: after.polarity,
           status: 'confirmed',
           sourceNature: 'human_confirmation',
           validFrom: after.valid_from,

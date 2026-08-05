@@ -11745,6 +11745,70 @@ test('human claim correction survives repeated extraction while new evidence is 
   assert.equal(JSON.parse(search.metadata_json).status, 'confirmed')
 }))
 
+test('human claim correction preserves negative semantics and rejects invalid validity ranges', () => withStore(store => {
+  store.syncGraph({
+    entities: [{
+      id: 'person-negative-correction',
+      type: 'person',
+      canonicalName: '否定纠正对象',
+      aliases: [],
+      accountIds: []
+    }],
+    relations: [],
+    reviewQueue: []
+  })
+  const extracted = {
+    id: 'claim-negative-correction',
+    subjectId: 'person-negative-correction',
+    predicate: '任职于',
+    objectValue: '错误公司',
+    polarity: 'positive',
+    confidence: 0.72,
+    status: 'candidate',
+    sourceNature: 'other_statement',
+    searchText: '否定纠正对象 任职于 错误公司',
+    evidence: evidence('negative-correction-message-1', '听说在错误公司工作')
+  }
+  store.upsertClaims([extracted])
+  assert.throws(() => store.correctClaim('claim-negative-correction', {
+    value: 'Onyx Devs Lab',
+    polarity: 'negative',
+    validFrom: '2026-02-30'
+  }), /生效时间格式无效/)
+  assert.throws(() => store.correctClaim('claim-negative-correction', {
+    value: 'Onyx Devs Lab',
+    polarity: 'negative',
+    validFrom: '2026-08-02',
+    validTo: '2026-08-01'
+  }), /失效时间不能早于生效时间/)
+  assert.equal(store.getClaim('claim-negative-correction').correction_count, 0)
+
+  store.correctClaim('claim-negative-correction', {
+    value: 'Onyx Devs Lab',
+    polarity: 'negative',
+    validFrom: '2026-08-01'
+  })
+  store.upsertClaims([{
+    ...extracted,
+    polarity: 'positive',
+    objectValue: '另一错误公司',
+    searchText: '模型重跑后的肯定结论',
+    evidence: evidence('negative-correction-message-2', '重跑原文')
+  }])
+  const corrected = store.getClaim('claim-negative-correction')
+  assert.equal(corrected.object_value, 'Onyx Devs Lab')
+  assert.equal(corrected.polarity, 'negative')
+  assert.equal(corrected.valid_from, '2026-08-01')
+  assert.equal(corrected.status, 'confirmed')
+  assert.equal(corrected.correction_count, 1)
+  assert.equal(corrected.evidence_count, 2)
+  const search = store.searchText('Onyx Devs Lab')
+    .find(item => item.id === 'claim:claim-negative-correction')
+  assert.ok(search)
+  assert.match(search.search_text, /并非/)
+  assert.equal(JSON.parse(search.metadata_json).polarity, 'negative')
+}))
+
 test('human claim and event review decisions survive repeated extraction and remain auditable', () => withStore(store => {
   store.syncGraph({
     entities: [{ id: 'person-reviewed', type: 'person', canonicalName: '审阅对象', aliases: [], accountIds: [] }],

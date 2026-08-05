@@ -5105,6 +5105,7 @@ function AiAssistantPage() {
     try {
       await window.electronAPI.aiAssistant.correctClaim(editingClaim.id, {
         value: editingClaim.value,
+        polarity: editingClaim.polarity,
         validFrom: editingClaim.validFrom,
         validTo: editingClaim.validTo
       }, String(editingClaim.expectedRevision || ''))
@@ -6250,6 +6251,7 @@ function AiAssistantPage() {
     setEditingClaim({
       id: claim.id,
       value: claim.object_entity_name || claim.object_value || '',
+      polarity: claim.polarity === 'negative' ? 'negative' : 'positive',
       validFrom: claim.valid_from || '',
       validTo: claim.valid_to || '',
       expectedRevision: String(claim.structuredMemoryRevision || ''),
@@ -8604,8 +8606,13 @@ function AiAssistantPage() {
                 </div>
                 {editingClaim?.id === claim.id && editingClaim?.origin !== 'citation' ? <div className="assistant-claim-editor">
                   <input value={editingClaim.value} onChange={event => setEditingClaim({ ...editingClaim, value: event.target.value })} placeholder="正确的事实值" />
-                  <input value={editingClaim.validFrom} onChange={event => setEditingClaim({ ...editingClaim, validFrom: event.target.value })} placeholder="生效时间（可选）" />
-                  <input value={editingClaim.validTo} onChange={event => setEditingClaim({ ...editingClaim, validTo: event.target.value })} placeholder="失效时间（可选）" />
+                  <select value={editingClaim.polarity || 'positive'}
+                    onChange={event => setEditingClaim({ ...editingClaim, polarity: event.target.value })}>
+                    <option value="positive">肯定：主体具有该事实</option>
+                    <option value="negative">否定：主体不具有该事实</option>
+                  </select>
+                  <input type="date" value={editingClaim.validFrom} onChange={event => setEditingClaim({ ...editingClaim, validFrom: event.target.value })} aria-label="事实生效时间" />
+                  <input type="date" value={editingClaim.validTo} onChange={event => setEditingClaim({ ...editingClaim, validTo: event.target.value })} aria-label="事实失效时间" />
                 </div> : <p>{claim.polarity === 'negative' ? '否定：' : ''}{claim.object_entity_name || claim.object_value || '未记录值'}</p>}
                 <small>来源：{claim.source_nature === 'self_statement' ? '本人明确陈述' : claim.source_nature === 'other_statement' ? '他人陈述' : claim.source_nature === 'human_confirmation' ? '人工纠正确认' : '模型推断'} · {Math.round(Number(claim.confidence || 0) * 100)}% 可信{claim.conflict_group ? ' · 与其他事实冲突' : ''}</small>
                 <small>原始载体：{memorySourceLabels(claim)}
@@ -8654,6 +8661,7 @@ function AiAssistantPage() {
                     : <button disabled={!claimEntitiesTrusted(claim)} title={!claimEntitiesTrusted(claim) ? '请先确认事实涉及的实体' : ''} onClick={() => setEditingClaim({
                       id: claim.id,
                       value: claim.object_entity_name || claim.object_value || '',
+                      polarity: claim.polarity === 'negative' ? 'negative' : 'positive',
                       validFrom: claim.valid_from || '',
                       validTo: claim.valid_to || '',
                       expectedRevision: String(claimArchive.revision || '')
@@ -11849,17 +11857,24 @@ function AiAssistantPage() {
                 ...current,
                 value: event.target.value
               }))} /></label>
+            <label><span>事实语义</span><select
+              value={editingClaim.polarity || 'positive'}
+              onChange={event => setEditingClaim((current: any) => ({
+                ...current,
+                polarity: event.target.value
+              }))}>
+              <option value="positive">肯定：主体具有该事实</option>
+              <option value="negative">否定：主体明确不具有该事实</option>
+            </select></label>
             <div className="assistant-settings-inline">
-              <label><span>生效时间（可选）</span><input
+              <label><span>生效时间（可选）</span><input type="date"
                 value={editingClaim.validFrom || ''}
-                placeholder="例如 2026-08-01"
                 onChange={event => setEditingClaim((current: any) => ({
                   ...current,
                   validFrom: event.target.value
                 }))} /></label>
-              <label><span>失效时间（可选）</span><input
+              <label><span>失效时间（可选）</span><input type="date"
                 value={editingClaim.validTo || ''}
-                placeholder="留空表示至今"
                 onChange={event => setEditingClaim((current: any) => ({
                   ...current,
                   validTo: event.target.value
