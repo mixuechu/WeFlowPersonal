@@ -2266,6 +2266,137 @@ test('claim and event extraction batches roll back authority, evidence and searc
   assert.deepEqual(events.map(event => event.id), ['atomic-event-a', 'atomic-event-b'])
 }))
 
+test('model graph, structured memory and tasks roll back as one batch', () => withStore(store => {
+  store.syncGraph({
+    entities: [{
+      id: 'model-batch-person',
+      type: 'person',
+      canonicalName: '模型批次人物',
+      trustStatus: 'confirmed'
+    }],
+    relations: [],
+    reviewQueue: []
+  } as any)
+  const database = (store as any).db
+  database.exec(`
+    CREATE TRIGGER fail_model_batch_task_search
+    BEFORE INSERT ON search_documents
+    WHEN NEW.id='task:model-batch-task'
+    BEGIN
+      SELECT RAISE(ABORT,'forced model task search failure');
+    END;
+  `)
+  const revisions = {
+    search: store.getMemorySearchRevision(),
+    structured: store.getStructuredMemoryRevision(),
+    evidence: store.getMemoryEvidenceArchiveRevision(),
+    graph: store.getGraphReviewRevision(),
+    tasks: store.getTaskArchiveRevision()
+  }
+  const graph = {
+    entities: [{
+      id: 'model-batch-person',
+      type: 'person',
+      canonicalName: '模型批次人物',
+      trustStatus: 'confirmed'
+    }, {
+      id: 'model-batch-project',
+      type: 'project',
+      canonicalName: '模型批次项目',
+      trustStatus: 'candidate'
+    }],
+    relations: [{
+      id: 'model-batch-relation',
+      subjectId: 'model-batch-person',
+      predicate: '负责',
+      objectId: 'model-batch-project',
+      status: 'candidate',
+      confidence: 0.8,
+      evidence: evidence('model-batch-relation-message', '我负责模型批次项目')
+    }],
+    reviewQueue: []
+  }
+  const task = {
+    id: 'model-batch-task',
+    title: '完成模型批次项目',
+    detail: '必须和图谱及事实一起提交',
+    owner: '我',
+    status: 'todo',
+    classification: 'mine',
+    priority: 'high',
+    taskKind: 'action',
+    source: '微信',
+    sourceSessionId: 'model-batch-session',
+    createdAt: '2026-08-06T00:00:00.000Z',
+    updatedAt: '2026-08-06T00:00:00.000Z',
+    evidence: evidence('model-batch-task-message', '请完成模型批次项目')
+  }
+  assert.throws(() => store.syncGraphAndStructuredMemory(
+    graph as any,
+    'model-batch-commit',
+    [],
+    [{
+      id: 'model-batch-claim',
+      subjectId: 'model-batch-person',
+      predicate: '负责项目',
+      objectEntityId: 'model-batch-project',
+      confidence: 0.9,
+      status: 'candidate',
+      searchText: '模型批次人物 负责 模型批次项目',
+      evidence: evidence('model-batch-claim-message', '我负责模型批次项目')
+    }],
+    [{
+      id: 'model-batch-event',
+      eventType: 'work',
+      title: '启动模型批次项目',
+      confidence: 0.8,
+      status: 'candidate',
+      searchText: '启动模型批次项目',
+      participants: [],
+      evidence: evidence('model-batch-event-message', '模型批次项目今天启动')
+    }],
+    {
+      tasks: [task],
+      changes: [{
+        taskId: task.id,
+        before: {},
+        after: task,
+        reason: 'created_from_model_batch',
+        evidence: task.evidence
+      }]
+    }
+  ), /forced model task search failure/)
+  for (const [table, ids] of [
+    ['entities', ['model-batch-project']],
+    ['relations', ['model-batch-relation']],
+    ['claims', ['model-batch-claim']],
+    ['events', ['model-batch-event']],
+    ['task_directory', ['model-batch-task']]
+  ] as const) {
+    assert.equal(Number(database.prepare(
+      `SELECT COUNT(*) AS count FROM ${table} WHERE id IN (${ids.map(() => '?').join(',')})`
+    ).get(...ids).count), 0)
+  }
+  assert.equal(Number(database.prepare(`
+    SELECT COUNT(*) AS count FROM task_history WHERE task_id='model-batch-task'
+  `).get().count), 0)
+  assert.equal(Number(database.prepare(`
+    SELECT COUNT(*) AS count FROM task_history_evidence WHERE task_id='model-batch-task'
+  `).get().count), 0)
+  assert.equal(Number(database.prepare(`
+    SELECT COUNT(*) AS count FROM search_documents
+    WHERE id IN (
+      'entity:model-batch-project','relation:model-batch-relation',
+      'claim:model-batch-claim','event:model-batch-event','task:model-batch-task'
+    )
+  `).get().count), 0)
+  assert.equal(store.getMemorySearchRevision(), revisions.search)
+  assert.equal(store.getStructuredMemoryRevision(), revisions.structured)
+  assert.equal(store.getMemoryEvidenceArchiveRevision(), revisions.evidence)
+  assert.equal(store.getGraphReviewRevision(), revisions.graph)
+  assert.equal(store.getTaskArchiveRevision(), revisions.tasks)
+}))
+
 test('structured search dossiers bind the exact type, id and current search revision', () => withStore(store => {
   store.syncGraph({
     entities: [{

@@ -7149,12 +7149,26 @@ export class PersonalMemoryStore {
       evidenceKind?: string
     }>,
     claims: any[],
-    events: any[]
+    events: any[],
+    taskCommit?: {
+      tasks: any[]
+      changes: Array<{
+        taskId: string
+        before: any
+        after: any
+        reason?: string
+        evidence?: any[]
+      }>
+    }
   ): void {
     if (!this.db) return
     this.db.transaction(() => {
       this.syncGraph(graph, commitId, { entityEvidence })
       this.upsertClaimsAndEvents(claims, events)
+      if (taskCommit) {
+        this.recordTaskChangeSets(taskCommit.changes)
+        this.syncTasks(taskCommit.tasks, true, true)
+      }
     })()
   }
 

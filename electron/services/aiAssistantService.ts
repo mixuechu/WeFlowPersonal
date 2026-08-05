@@ -1486,11 +1486,17 @@ export class AiAssistantService {
         try {
           if (commit.parseError) throw new Error(commit.parseError)
           const tempIds = this.mergeGraphDigest(commit.digest, commit.messages, commit.createdAt, commit.commitId)
-          this.persistClaimsAndEvents(commit.digest, tempIds, commit.messages, commit.createdAt)
-          if (commit.sourceKind === 'document') {
-            this.persistDocumentTasks(commit.digest, commit.messages, commit.createdAt)
-          } else {
-            this.mergeRecoveredWechatTasks(commit.digest, commit.messages, commit.createdAt)
+          const taskCommit = commit.sourceKind === 'document'
+            ? this.persistDocumentTasks(commit.digest, commit.messages, commit.createdAt)
+            : this.mergeRecoveredWechatTasks(commit.digest, commit.messages, commit.createdAt)
+          this.persistClaimsAndEvents(
+            commit.digest,
+            tempIds,
+            commit.messages,
+            commit.createdAt,
+            taskCommit.changes
+          )
+          if (commit.sourceKind !== 'document') {
             this.state.cursor.recentMessageIds = [...new Set([
               ...this.state.cursor.recentMessageIds,
               ...commit.checkpointKeys
@@ -2482,7 +2488,19 @@ export class AiAssistantService {
     return tempIds
   }
 
-  private persistClaimsAndEvents(digest: any, tempIds: Map<string, string>, sourceMessages: any[], now: string): void {
+  private persistClaimsAndEvents(
+    digest: any,
+    tempIds: Map<string, string>,
+    sourceMessages: any[],
+    now: string,
+    taskChanges: Array<{
+      taskId: string
+      before: any
+      after: any
+      reason?: string
+      evidence?: any[]
+    }> = []
+  ): void {
     const evidenceFor = (messages: any[], role: 'direct' | 'indirect' | 'contradiction' = 'direct') =>
       (Array.isArray(messages) ? messages : []).map(message =>
         buildStructuredExtractionEvidence(
@@ -2543,7 +2561,8 @@ export class AiAssistantService {
       graphCommitId,
       this.pendingEntityEvidence,
       claims,
-      events
+      events,
+      { tasks: this.state.tasks, changes: taskChanges }
     )
     this.pendingEntityEvidence = []
     this.state.graph.lastSqlCommitId = graphCommitId
@@ -2959,8 +2978,12 @@ export class AiAssistantService {
     }
   }
 
-  private mergeRecoveredWechatTasks(digest: any, messages: any[], createdAt: string): number {
+  private mergeRecoveredWechatTasks(digest: any, messages: any[], createdAt: string): {
+    saved: number
+    changes: Array<{ taskId: string; before: any; after: any; reason: string; evidence: any[] }>
+  } {
     const existing = new Map(this.state.tasks.map(task => [task.id, task]))
+    const changes: Array<{ taskId: string; before: any; after: any; reason: string; evidence: any[] }> = []
     let saved = 0
     for (const item of Array.isArray(digest.tasks) ? digest.tasks : []) {
       const sourceMessageIds = Array.isArray(item.sourceEvidenceKeys)
@@ -3028,26 +3051,30 @@ export class AiAssistantService {
         updatedAt: createdAt
       } : { ...task, createdAt, updatedAt: createdAt }
       existing.set(merged.id, merged)
-      personalMemoryStore.recordTaskChanges(
-        merged.id,
-        previous || {},
-        merged,
-        previous ? 'replayed_ingestion_batch' : 'recovered_from_ingestion_batch',
-        merged.evidence || []
-      )
+      changes.push({
+        taskId: merged.id,
+        before: previous || {},
+        after: merged,
+        reason: previous ? 'replayed_ingestion_batch' : 'recovered_from_ingestion_batch',
+        evidence: merged.evidence || []
+      })
       saved += 1
     }
     this.state.tasks = [...existing.values()].sort((left, right) =>
       String(right.createdAt).localeCompare(String(left.createdAt)))
-    return saved
+    return { saved, changes }
   }
 
-  private persistDocumentTasks(digest: any, messages: any[], createdAt: string): number {
+  private persistDocumentTasks(digest: any, messages: any[], createdAt: string): {
+    saved: number
+    changes: Array<{ taskId: string; before: any; after: any; reason: string; evidence: any[] }>
+  } {
     const ownerTerms = [
       String(this.config.get('aiAssistantOwnerName') || ''),
       ...String(this.config.get('aiAssistantOwnerAliases') || '').split(/[,，、\n]/)
     ].map(value => value.trim().toLowerCase()).filter(Boolean)
     const existing = new Map(this.state.tasks.map(task => [task.id, task]))
+    const changes: Array<{ taskId: string; before: any; after: any; reason: string; evidence: any[] }> = []
     let saved = 0
     for (const item of Array.isArray(digest.tasks) ? digest.tasks : []) {
       const sourceMessageIds = (Array.isArray(item.sourceEvidenceKeys)
@@ -3122,18 +3149,18 @@ export class AiAssistantService {
         updatedAt: createdAt
       } : { ...task, createdAt, updatedAt: createdAt }
       existing.set(merged.id, merged)
-      personalMemoryStore.recordTaskChanges(
-        merged.id,
-        previous || {},
-        merged,
-        previous ? 'document_content_update' : 'created_from_document',
-        merged.evidence || []
-      )
+      changes.push({
+        taskId: merged.id,
+        before: previous || {},
+        after: merged,
+        reason: previous ? 'document_content_update' : 'created_from_document',
+        evidence: merged.evidence || []
+      })
       saved += 1
     }
     this.state.tasks = [...existing.values()].sort((left, right) =>
       String(right.createdAt).localeCompare(String(left.createdAt)))
-    return saved
+    return { saved, changes }
   }
 
   private async processPendingDocumentAnalysis(): Promise<{
@@ -3224,8 +3251,9 @@ export class AiAssistantService {
           }
         })
         const tempIds = this.mergeGraphDigest(digest, [message], createdAt, commitId)
-        this.persistClaimsAndEvents(digest, tempIds, [message], createdAt)
-        tasks += this.persistDocumentTasks(digest, [message], createdAt)
+        const taskCommit = this.persistDocumentTasks(digest, [message], createdAt)
+        tasks += taskCommit.saved
+        this.persistClaimsAndEvents(digest, tempIds, [message], createdAt, taskCommit.changes)
         this.saveState(true)
         personalMemoryStore.finalizeIngestionBatchCommit(commitId, {
           ...digest.__meta,
@@ -3535,8 +3563,8 @@ export class AiAssistantService {
           })
           digests.push({ digest, batch })
           const tempIds = this.mergeGraphDigest(digest, batch, createdAt, commitId)
-          this.persistClaimsAndEvents(digest, tempIds, batch, createdAt)
-          this.mergeRecoveredWechatTasks(digest, batch, createdAt)
+          const taskCommit = this.mergeRecoveredWechatTasks(digest, batch, createdAt)
+          this.persistClaimsAndEvents(digest, tempIds, batch, createdAt, taskCommit.changes)
           successfulMessageKeys.push(...checkpointKeys)
           this.state.cursor.recentMessageIds = [...new Set([...this.state.cursor.recentMessageIds, ...checkpointKeys])].slice(-20_000)
           this.saveState(true)
