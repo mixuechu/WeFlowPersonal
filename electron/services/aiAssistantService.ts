@@ -3944,8 +3944,7 @@ export class AiAssistantService {
       cancelling: this.cancelRequested,
       scheduleTime: this.config.get('aiAssistantScheduleTime'),
       model: this.config.get('aiAssistantApiModel'),
-      cursor: buildCursorStatusPayload(this.state.cursor),
-      dataSources: presentDataSourcesForRenderer(personalMemoryStore.listDataSources())
+      cursor: buildCursorStatusPayload(this.state.cursor)
     }
   }
 

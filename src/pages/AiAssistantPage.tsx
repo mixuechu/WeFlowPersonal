@@ -754,6 +754,8 @@ function AiAssistantPage() {
   const [sourceEnabledFilter, setSourceEnabledFilter] = useState<'all' | 'enabled' | 'disabled'>('all')
   const sourceDirectoryGate = useRef(new LatestRequestGate())
   const [dataSources, setDataSources] = useState<any[]>([])
+  const [dataSourcesLoading, setDataSourcesLoading] = useState(false)
+  const dataSourceDirectoryGate = useRef(new LatestRequestGate())
   const [dataSourceToggling, setDataSourceToggling] = useState<Record<string, boolean>>({})
   const dataSourceToggleGates = useRef(new KeyedLatestRequestGates())
   const [eventTimeline, setEventTimeline] = useState<{ items: any[]; total: number; hasMore: boolean; revision?: string; stale?: boolean }>({
@@ -1428,24 +1430,44 @@ function AiAssistantPage() {
 
   const load = useCallback(async () => {
     const request = dashboardLoadGate.current.begin()
-    const [nextStatus, nextDashboard, nextDataSources] = await Promise.all([
+    const [nextStatus, nextDashboard] = await Promise.all([
       window.electronAPI.aiAssistant.status(),
-      window.electronAPI.aiAssistant.dashboard(),
-      window.electronAPI.aiAssistant.getDataSources()
+      window.electronAPI.aiAssistant.dashboard()
     ])
     if (!dashboardLoadGate.current.isCurrent(request)) return
     setStatus(nextStatus)
     setDashboard(nextDashboard)
-    setDataSources(nextDataSources)
   }, [])
 
   useEffect(() => {
     void load()
     void window.electronAPI.aiAssistant.getMemoryDiagnostics().then(setMemoryDiagnostics).catch(() => {})
-    void window.electronAPI.aiAssistant.getDataSources().then(setDataSources).catch(() => {})
     const timer = window.setInterval(() => void load(), 15_000)
     return () => window.clearInterval(timer)
   }, [load])
+
+  useEffect(() => {
+    if (!showDataSources) {
+      dataSourceDirectoryGate.current.invalidate()
+      setDataSourcesLoading(false)
+      return
+    }
+    const request = dataSourceDirectoryGate.current.begin()
+    setDataSources([])
+    setDataSourcesLoading(true)
+    void window.electronAPI.aiAssistant.getDataSources()
+      .then(result => {
+        if (dataSourceDirectoryGate.current.isCurrent(request)) setDataSources(result)
+      })
+      .catch(error => {
+        if (dataSourceDirectoryGate.current.isCurrent(request)) {
+          setMessage(error?.message || String(error))
+        }
+      })
+      .finally(() => {
+        if (dataSourceDirectoryGate.current.isCurrent(request)) setDataSourcesLoading(false)
+      })
+  }, [showDataSources])
 
   useEffect(() => {
     if (!memorySessionPickerOpen) return
@@ -13301,8 +13323,10 @@ function AiAssistantPage() {
           <div className="assistant-modal assistant-source-modal">
             <div className="assistant-modal-title"><div><h2>数据源连接器</h2>
               <p>每个连接器拥有独立状态和 checkpoint；文档、Mail 与日历的权威记忆、原文、检索索引和断点按页一起提交，失败整页回滚。</p>
+              <p>连接器配置仅在打开本窗口时按需读取，不进入每 15 秒的首页状态心跳。</p>
             </div><button onClick={() => setShowDataSources(false)}><X size={16} /></button></div>
             <div className="assistant-source-list">
+              {dataSourcesLoading && <div className="assistant-source-empty">正在按需读取连接器配置…</div>}
               {dataSources.map(source => (
                 <label className="assistant-source-row" key={source.id}>
                   <span><strong>{source.displayName}</strong>
