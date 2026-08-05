@@ -2278,6 +2278,13 @@ test('model graph, structured memory and tasks roll back as one batch', () => wi
     reviewQueue: []
   } as any)
   const database = (store as any).db
+  store.recordTaskReviewDecision({
+    evidenceFingerprint: 'model-batch-suppression',
+    taskId: 'previously-rejected-task',
+    decision: 'rejected',
+    title: '历史拒绝任务',
+    source: '模型批次'
+  })
   database.exec(`
     CREATE TRIGGER fail_model_batch_task_search
     BEFORE INSERT ON search_documents
@@ -2291,7 +2298,8 @@ test('model graph, structured memory and tasks roll back as one batch', () => wi
     structured: store.getStructuredMemoryRevision(),
     evidence: store.getMemoryEvidenceArchiveRevision(),
     graph: store.getGraphReviewRevision(),
-    tasks: store.getTaskArchiveRevision()
+    tasks: store.getTaskArchiveRevision(),
+    taskOwnership: store.getTaskOwnershipReviewRevision()
   }
   const graph = {
     entities: [{
@@ -2383,6 +2391,7 @@ test('model graph, structured memory and tasks roll back as one batch', () => wi
   assert.equal(Number(database.prepare(`
     SELECT COUNT(*) AS count FROM task_history_evidence WHERE task_id='model-batch-task'
   `).get().count), 0)
+  assert.equal(store.getTaskReviewDecision('model-batch-suppression').suppression_count, 0)
   assert.equal(Number(database.prepare(`
     SELECT COUNT(*) AS count FROM search_documents
     WHERE id IN (
@@ -2395,6 +2404,25 @@ test('model graph, structured memory and tasks roll back as one batch', () => wi
   assert.equal(store.getMemoryEvidenceArchiveRevision(), revisions.evidence)
   assert.equal(store.getGraphReviewRevision(), revisions.graph)
   assert.equal(store.getTaskArchiveRevision(), revisions.tasks)
+  assert.equal(store.getTaskOwnershipReviewRevision(), revisions.taskOwnership)
+  database.exec('DROP TRIGGER fail_model_batch_task_search')
+  store.prepareIngestionBatchCommit({
+    commitId: 'model-batch-suppression-commit',
+    runId: 'model-batch-suppression-run',
+    batchIndex: 0,
+    digest: {},
+    messages: [],
+    checkpointKeys: [],
+    createdAt: '2026-08-06T00:00:00.000Z'
+  })
+  store.finalizeIngestionBatchCommit('model-batch-suppression-commit', {
+    taskReviewSuppressionFingerprints: ['model-batch-suppression']
+  })
+  store.finalizeIngestionBatchCommit('model-batch-suppression-commit', {
+    taskReviewSuppressionFingerprints: ['model-batch-suppression']
+  })
+  assert.equal(store.getTaskReviewDecision('model-batch-suppression').suppression_count, 1)
+  assert.ok(Number(store.getTaskOwnershipReviewRevision()) > Number(revisions.taskOwnership))
 }))
 
 test('structured search dossiers bind the exact type, id and current search revision', () => withStore(store => {

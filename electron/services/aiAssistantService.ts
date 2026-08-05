@@ -1508,7 +1508,7 @@ export class AiAssistantService {
             tempIds,
             commit.messages,
             commit.createdAt,
-            taskCommit.changes,
+            taskCommit,
             memoryGuard.markAuthorityCommitted
           )
           if (commit.sourceKind !== 'document') {
@@ -1521,7 +1521,8 @@ export class AiAssistantService {
           personalMemoryStore.finalizeIngestionBatchCommit(commit.commitId, {
             ...commit.digest.__meta,
             promptVersion: EXTRACTION_PROMPT_VERSION,
-            schemaVersion: EXTRACTION_SCHEMA_VERSION
+            schemaVersion: EXTRACTION_SCHEMA_VERSION,
+            taskReviewSuppressionFingerprints: taskCommit.suppressionFingerprints
           })
           if (commit.sourceKind === 'document') {
             personalMemoryStore.finishIngestionRun(commit.runId, {
@@ -2507,13 +2508,16 @@ export class AiAssistantService {
     tempIds: Map<string, string>,
     sourceMessages: any[],
     now: string,
-    taskChanges: Array<{
-      taskId: string
-      before: any
-      after: any
-      reason?: string
-      evidence?: any[]
-    }> = [],
+    taskCommit: {
+      changes: Array<{
+        taskId: string
+        before: any
+        after: any
+        reason?: string
+        evidence?: any[]
+      }>
+      suppressionFingerprints: string[]
+    } = { changes: [], suppressionFingerprints: [] },
     onAuthorityCommitted?: () => void
   ): void {
     const evidenceFor = (messages: any[], role: 'direct' | 'indirect' | 'contradiction' = 'direct') =>
@@ -2577,7 +2581,10 @@ export class AiAssistantService {
       this.pendingEntityEvidence,
       claims,
       events,
-      { tasks: this.state.tasks, changes: taskChanges }
+      {
+        tasks: this.state.tasks,
+        changes: taskCommit.changes
+      }
     )
     onAuthorityCommitted?.()
     this.pendingEntityEvidence = []
@@ -2997,10 +3004,12 @@ export class AiAssistantService {
   private mergeRecoveredWechatTasks(digest: any, messages: any[], createdAt: string): {
     saved: number
     changes: Array<{ taskId: string; before: any; after: any; reason: string; evidence: any[] }>
+    suppressionFingerprints: string[]
   } {
     const existing = new Map(this.state.tasks.map(task => [task.id, task]))
     const changes: Array<{ taskId: string; before: any; after: any; reason: string; evidence: any[] }> = []
     const dependencyTitlesByTaskId = new Map<string, string[]>()
+    const suppressionFingerprints: string[] = []
     let saved = 0
     for (const item of Array.isArray(digest.tasks) ? digest.tasks : []) {
       const sourceMessageIds = Array.isArray(item.sourceEvidenceKeys)
@@ -3049,7 +3058,7 @@ export class AiAssistantService {
         feedbackFingerprint ? personalMemoryStore.getTaskReviewDecision(feedbackFingerprint) : null
       )
       if (!reviewedTask) {
-        personalMemoryStore.recordTaskReviewSuppression(feedbackFingerprint)
+        if (feedbackFingerprint) suppressionFingerprints.push(feedbackFingerprint)
         continue
       }
       Object.assign(task, reviewedTask)
@@ -3086,12 +3095,13 @@ export class AiAssistantService {
     })
     this.state.tasks = [...existing.values()].sort((left, right) =>
       String(right.createdAt).localeCompare(String(left.createdAt)))
-    return { saved, changes }
+    return { saved, changes, suppressionFingerprints }
   }
 
   private persistDocumentTasks(digest: any, messages: any[], createdAt: string): {
     saved: number
     changes: Array<{ taskId: string; before: any; after: any; reason: string; evidence: any[] }>
+    suppressionFingerprints: string[]
   } {
     const ownerTerms = [
       String(this.config.get('aiAssistantOwnerName') || ''),
@@ -3099,6 +3109,7 @@ export class AiAssistantService {
     ].map(value => value.trim().toLowerCase()).filter(Boolean)
     const existing = new Map(this.state.tasks.map(task => [task.id, task]))
     const changes: Array<{ taskId: string; before: any; after: any; reason: string; evidence: any[] }> = []
+    const suppressionFingerprints: string[] = []
     let saved = 0
     for (const item of Array.isArray(digest.tasks) ? digest.tasks : []) {
       const sourceMessageIds = (Array.isArray(item.sourceEvidenceKeys)
@@ -3157,7 +3168,7 @@ export class AiAssistantService {
         : null
       const reviewedTask = applyTaskReviewFeedback(task, feedback)
       if (!reviewedTask) {
-        personalMemoryStore.recordTaskReviewSuppression(feedbackFingerprint)
+        if (feedbackFingerprint) suppressionFingerprints.push(feedbackFingerprint)
         continue
       }
       Object.assign(task, reviewedTask)
@@ -3184,7 +3195,7 @@ export class AiAssistantService {
     }
     this.state.tasks = [...existing.values()].sort((left, right) =>
       String(right.createdAt).localeCompare(String(left.createdAt)))
-    return { saved, changes }
+    return { saved, changes, suppressionFingerprints }
   }
 
   private async processPendingDocumentAnalysis(): Promise<{
@@ -3294,14 +3305,15 @@ export class AiAssistantService {
           tempIds,
           [message],
           createdAt,
-          taskCommit.changes,
+          taskCommit,
           memoryGuard.markAuthorityCommitted
         )
         this.saveState(true)
         personalMemoryStore.finalizeIngestionBatchCommit(commitId, {
           ...digest.__meta,
           promptVersion: `${EXTRACTION_PROMPT_VERSION}/document-v1`,
-          durationMs: Number(digest.__meta?.durationMs || Date.now() - startedAt)
+          durationMs: Number(digest.__meta?.durationMs || Date.now() - startedAt),
+          taskReviewSuppressionFingerprints: taskCommit.suppressionFingerprints
         })
         tasks += taskCommit.saved
         personalMemoryStore.finishIngestionRun(runId, {
@@ -3627,14 +3639,15 @@ export class AiAssistantService {
             tempIds,
             batch,
             createdAt,
-            taskCommit.changes,
+            taskCommit,
             memoryGuard.markAuthorityCommitted
           )
           this.state.cursor.recentMessageIds = [...new Set([...this.state.cursor.recentMessageIds, ...checkpointKeys])].slice(-20_000)
           this.saveState(true)
           personalMemoryStore.finalizeIngestionBatchCommit(commitId, {
             ...digest.__meta,
-            durationMs: Number(digest.__meta?.durationMs || Date.now() - batchStartedAt)
+            durationMs: Number(digest.__meta?.durationMs || Date.now() - batchStartedAt),
+            taskReviewSuppressionFingerprints: taskCommit.suppressionFingerprints
           })
           digests.push({ digest, batch })
           for (const change of taskCommit.changes) {

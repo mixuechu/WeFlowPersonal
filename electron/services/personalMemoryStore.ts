@@ -11659,12 +11659,22 @@ export class PersonalMemoryStore {
   }
 
   recordTaskReviewSuppression(evidenceFingerprint: string): void {
-    if (!this.db) return
+    this.recordTaskReviewSuppressions([evidenceFingerprint])
+  }
+
+  recordTaskReviewSuppressions(evidenceFingerprints: string[]): void {
+    if (!this.db || !evidenceFingerprints.length) return
     const now = new Date().toISOString()
-    this.db.prepare(`
+    const update = this.db.prepare(`
       UPDATE task_review_decisions SET suppression_count=suppression_count+1,
         last_suppressed_at=?,updated_at=? WHERE evidence_fingerprint=? AND decision='rejected'
-    `).run(now, now, evidenceFingerprint)
+    `)
+    this.db.transaction(() => {
+      for (const evidenceFingerprint of evidenceFingerprints) {
+        if (!String(evidenceFingerprint || '').trim()) continue
+        update.run(now, now, evidenceFingerprint)
+      }
+    })()
   }
 
   listTaskReviewDecisions(limit = 50): any[] {
@@ -12211,6 +12221,7 @@ export class PersonalMemoryStore {
       structuredEvidence?: any
       extractionContext?: any
       extractionCoverage?: any
+      taskReviewSuppressionFingerprints?: string[]
     } = {}
   ): void {
     if (!this.db) return
@@ -12565,14 +12576,19 @@ export class PersonalMemoryStore {
       if (row.source_kind === 'wechat') {
         this.recordProcessedIngestionMessageKeys(checkpointKeys, commitId, new Date().toISOString())
       }
+      this.recordTaskReviewSuppressions(metrics.taskReviewSuppressionFingerprints || [])
       this.markIngestionBatchCommitApplied(commitId)
+      const {
+        taskReviewSuppressionFingerprints: _taskReviewSuppressionFingerprints,
+        ...auditMetrics
+      } = metrics
       this.recordIngestionBatch(
         String(row.run_id),
         Number(row.batch_index),
         messageCount,
         'completed',
         '',
-        metrics
+        auditMetrics
       )
       if (row.source_kind === 'document') {
         this.db!.prepare(`
