@@ -394,6 +394,7 @@ export class PersonalMemoryStore {
         object_id TEXT NOT NULL REFERENCES entities(id) ON DELETE CASCADE,
         confidence REAL NOT NULL,
         status TEXT NOT NULL,
+        direction_explanation TEXT NOT NULL DEFAULT '',
         valid_from TEXT,
         valid_to TEXT,
         search_text TEXT NOT NULL,
@@ -1078,6 +1079,7 @@ export class PersonalMemoryStore {
     `)
     this.ensureColumn('entities', 'identity_version', 'INTEGER NOT NULL DEFAULT 1')
     this.ensureColumn('search_documents', 'embedding_chunk_count', 'INTEGER NOT NULL DEFAULT 0')
+    this.ensureColumn('relations', 'direction_explanation', `TEXT NOT NULL DEFAULT ''`)
     this.ensureColumn('search_document_embedding_chunks', 'start_offset', 'INTEGER NOT NULL DEFAULT 0')
     this.ensureColumn('search_document_embedding_chunks', 'end_offset', 'INTEGER NOT NULL DEFAULT 0')
     this.ensureColumn('vector_ann_state', 'indexed_chunk_count', 'INTEGER NOT NULL DEFAULT 0')
@@ -3674,7 +3676,8 @@ export class PersonalMemoryStore {
         subjectId: row.subject_id,
         objectId: row.object_id,
         predicate: row.predicate,
-        status: row.status
+        status: row.status,
+        directionExplanation: row.direction_explanation || undefined
       }, row.updated_at)
     }
     for (const row of this.db.prepare(`
@@ -3896,7 +3899,8 @@ export class PersonalMemoryStore {
             subjectId: relation.subject_id,
             objectId: relation.object_id,
             predicate: relation.predicate,
-            status: relation.status
+            status: relation.status,
+            directionExplanation: relation.direction_explanation || undefined
           },
           relation.updated_at || checkedAt
         )
@@ -5748,7 +5752,7 @@ export class PersonalMemoryStore {
           predicate: row.predicate,
           objectId: row.object_id,
           confidence: Number(row.confidence || 0),
-          directionExplanation: '',
+          directionExplanation: String(row.direction_explanation || ''),
           status: row.status,
           validFrom: row.valid_from || undefined,
           validTo: row.valid_to || undefined,
@@ -5964,9 +5968,16 @@ export class PersonalMemoryStore {
       }
       const entityNames = new Map(graph.entities.map(entity => [entity.id, entity.canonicalName]))
       const upsertRelation = this.db.prepare(`
-        INSERT INTO relations(id,subject_id,predicate,object_id,confidence,status,search_text,created_at,updated_at)
-        VALUES(?,?,?,?,?,?,?,?,?)
+        INSERT INTO relations(
+          id,subject_id,predicate,object_id,confidence,status,direction_explanation,
+          search_text,created_at,updated_at
+        )
+        VALUES(?,?,?,?,?,?,?,?,?,?)
         ON CONFLICT(id) DO UPDATE SET confidence=excluded.confidence,status=excluded.status,
+          direction_explanation=CASE
+            WHEN excluded.direction_explanation!='' THEN excluded.direction_explanation
+            ELSE relations.direction_explanation
+          END,
           search_text=excluded.search_text,updated_at=excluded.updated_at
       `)
       const getStoredRelation = this.db.prepare('SELECT * FROM relations WHERE id=?')
@@ -5986,12 +5997,17 @@ export class PersonalMemoryStore {
       for (const relation of allowedRelations) {
         const searchText = `${entityNames.get(relation.subjectId) || relation.subjectId} ${relation.predicate} ${entityNames.get(relation.objectId) || relation.objectId}`
         const stored = getStoredRelation.get(relation.id) as any
+        const directionExplanation = String(
+          relation.directionExplanation || stored?.direction_explanation || ''
+        ).slice(0, 500)
+        relation.directionExplanation = directionExplanation
         const nextSnapshot = {
           subjectId: relation.subjectId,
           predicate: relation.predicate,
           objectId: relation.objectId,
           confidence: Number(relation.confidence || 0),
           status: relation.status,
+          directionExplanation,
           evidenceCount: Math.max(
             Number(relation.evidenceTotal || 0),
             Number(relation.evidence?.length || 0)
@@ -5999,15 +6015,28 @@ export class PersonalMemoryStore {
         }
         const changed = !stored || stored.subject_id !== relation.subjectId || stored.predicate !== relation.predicate ||
           stored.object_id !== relation.objectId || stored.status !== relation.status ||
+          String(stored.direction_explanation || '') !== directionExplanation ||
           Math.abs(Number(stored.confidence || 0) - nextSnapshot.confidence) >= 0.01
         if (changed) {
+          const changeType = !stored
+            ? 'created'
+            : stored.status !== relation.status
+              ? 'status_changed'
+              : String(stored.direction_explanation || '') !== directionExplanation
+                ? 'direction_updated'
+                : 'evidence_updated'
           insertRelationHistory.run(
             relation.id, relation.subjectId, relation.predicate, relation.objectId, relation.status,
-            nextSnapshot.confidence, stored ? (stored.status !== relation.status ? 'status_changed' : 'evidence_updated') : 'created',
+            nextSnapshot.confidence, changeType,
             JSON.stringify(nextSnapshot), relation.updatedAt || now
           )
         }
-        upsertRelation.run(relation.id, relation.subjectId, relation.predicate, relation.objectId, Number(relation.confidence || 0), relation.status, searchText, relation.createdAt || now, relation.updatedAt || now)
+        upsertRelation.run(
+          relation.id, relation.subjectId, relation.predicate, relation.objectId,
+          Number(relation.confidence || 0), relation.status,
+          directionExplanation,
+          searchText, relation.createdAt || now, relation.updatedAt || now
+        )
         for (const evidence of relation.evidence || []) {
           const sender = String(evidence.sender || '')
           const sourceId = evidenceSourceId(evidence)
@@ -6021,7 +6050,13 @@ export class PersonalMemoryStore {
           )
         }
         this.upsertSearchDocument(`relation:${relation.id}`, 'relation', relation.id, relation.predicate, searchText,
-          { subjectId: relation.subjectId, objectId: relation.objectId, predicate: relation.predicate, status: relation.status }, now)
+          {
+            subjectId: relation.subjectId,
+            objectId: relation.objectId,
+            predicate: relation.predicate,
+            status: relation.status,
+            directionExplanation
+          }, now)
       }
       const upsertReview = this.db.prepare(`
         INSERT INTO review_queue(id,kind,title,detail,confidence,status,payload_json,created_at,resolved_at)

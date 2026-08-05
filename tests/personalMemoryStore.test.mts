@@ -1579,6 +1579,96 @@ test('relationship history keeps creation and later review state instead of over
   assert.deepEqual(history.map(item => item.status), ['confirmed', 'candidate'])
 }))
 
+test('relation direction authority survives reopen, empty syncs and search index repair', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'weflow-relation-direction-test-'))
+  const databasePath = join(directory, 'memory.sqlite')
+  const entities = [
+    {
+      id: 'direction-person',
+      type: 'person',
+      canonicalName: '方向人物',
+      aliases: [],
+      accountIds: [],
+      trustStatus: 'confirmed'
+    },
+    {
+      id: 'direction-org',
+      type: 'organization',
+      canonicalName: '方向组织',
+      aliases: [],
+      accountIds: [],
+      trustStatus: 'confirmed'
+    }
+  ]
+  const relation = {
+    id: 'direction-authority',
+    subjectId: 'direction-person',
+    predicate: '服务于',
+    objectId: 'direction-org',
+    confidence: 0.9,
+    status: 'confirmed',
+    directionExplanation: '从“方向人物”指向“方向组织”：方向人物服务于方向组织。',
+    evidence: [],
+    createdAt: '2026-08-05T00:00:00.000Z',
+    updatedAt: '2026-08-05T00:00:00.000Z'
+  }
+  const first = new PersonalMemoryStore()
+  const reopened = new PersonalMemoryStore()
+  try {
+    first.initialize(databasePath)
+    first.syncGraph({ entities, relations: [relation], reviewQueue: [] } as any)
+    const originalDocument = (first as any).db.prepare(`
+      SELECT metadata_json FROM search_documents WHERE id='relation:direction-authority'
+    `).get()
+    assert.equal(
+      JSON.parse(originalDocument.metadata_json).directionExplanation,
+      relation.directionExplanation
+    )
+    first.close()
+
+    reopened.initialize(databasePath)
+    assert.equal(
+      reopened.loadGraphSnapshot().relations[0].directionExplanation,
+      relation.directionExplanation
+    )
+    const stateRelation = { ...relation, directionExplanation: '' }
+    reopened.syncGraph({
+      entities,
+      relations: [stateRelation],
+      reviewQueue: []
+    } as any)
+    assert.equal(stateRelation.directionExplanation, relation.directionExplanation)
+    assert.equal(
+      reopened.loadGraphSnapshot().relations[0].directionExplanation,
+      relation.directionExplanation
+    )
+
+    ;(reopened as any).db.prepare(`
+      UPDATE search_documents SET metadata_json='{"status":"candidate"}'
+      WHERE id='relation:direction-authority'
+    `).run()
+    ;(reopened as any).repairStructuredSearchIndex()
+    const repairedDocument = (reopened as any).db.prepare(`
+      SELECT metadata_json FROM search_documents WHERE id='relation:direction-authority'
+    `).get()
+    assert.equal(
+      JSON.parse(repairedDocument.metadata_json).directionExplanation,
+      relation.directionExplanation
+    )
+
+    const history = reopened.listRelationHistory('direction-person')
+    assert.equal(history.length, 1)
+    assert.equal(
+      JSON.parse(history[0].snapshot_json).directionExplanation,
+      relation.directionExplanation
+    )
+  } finally {
+    first.close()
+    reopened.close()
+    rmSync(directory, { recursive: true, force: true })
+  }
+})
+
 test('event timeline filters cross-source evidence, status and time with stable pagination', () => withStore(store => {
   const makeEvent = (
     id: string,
@@ -6719,6 +6809,7 @@ test('graph commit mismatch recovers authoritative entities relations evidence a
     assert.ok(snapshot.entities[0].evidenceMessageIds.includes('wechat:recovery-session:recovery-message'))
     assert.equal(snapshot.relations.length, 1)
     assert.equal(snapshot.relations[0].status, 'confirmed')
+    assert.equal(snapshot.relations[0].directionExplanation, '恢复甲向恢复组织')
     assert.equal(snapshot.relations[0].evidence[0].sender, '恢复甲')
     assert.equal(snapshot.reviewQueue.length, 1)
     assert.equal(snapshot.reviewQueue[0].id, 'graph-recovery-pending')
