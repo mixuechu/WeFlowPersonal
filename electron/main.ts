@@ -4662,7 +4662,7 @@ function registerIpcHandlers() {
     aiAssistantService.purgeMemoryResourceTrash(id, input))
   ipcMain.handle('ai-assistant:reviewMemoryDocument', (
     _, kind: 'relation' | 'claim' | 'event', id: string,
-    decision: 'confirmed' | 'rejected', input?: any
+    decision: 'confirmed' | 'rejected' | 'corrected', input?: any
   ) => aiAssistantService.reviewMemoryDocument(kind, id, decision, input))
   ipcMain.handle('ai-assistant:previewForgetEntity', (_, id: string) => aiAssistantService.previewForgetEntity(id))
   ipcMain.handle('ai-assistant:forgetEntity', (_, id: string, input?: any) =>

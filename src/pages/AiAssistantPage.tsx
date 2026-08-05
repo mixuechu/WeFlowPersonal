@@ -1084,6 +1084,8 @@ function AiAssistantPage() {
   const [askingMemory, setAskingMemory] = useState(false)
   const [creatingMemoryTask, setCreatingMemoryTask] = useState(false)
   const [memoryTaskPreviewDialog, setMemoryTaskPreviewDialog] = useState<any>(null)
+  const [relationCitationCorrectionDialog, setRelationCitationCorrectionDialog] =
+    useState<any>(null)
   const memoryTaskPreviewGate = useRef(new LatestRequestGate())
   const [memoryEntityFilter, setMemoryEntityFilter] = useState('')
   const [memoryEntitySelection, setMemoryEntitySelection] = useState<any>(null)
@@ -6104,6 +6106,87 @@ function AiAssistantPage() {
     }
   }
 
+  const openRelationCitationCorrection = (citation: any) => {
+    const context = citation?.relationCorrectionContext
+    if (!context?.subjectId || !context?.objectId || !context?.predicate ||
+      !context?.subjectEntity || !context?.objectEntity || !context?.directoryRevision) {
+      setMessage('这条历史引用缺少可安全纠正的关系身份，请重新提问后再操作。')
+      return
+    }
+    setRelationCitationCorrectionDialog({
+      status: 'ready',
+      citation,
+      subjectId: context.subjectId,
+      predicate: context.predicate,
+      objectId: context.objectId,
+      subjectEntity: context.subjectEntity,
+      objectEntity: context.objectEntity,
+      directoryRevision: context.directoryRevision,
+      error: ''
+    })
+  }
+
+  const closeRelationCitationCorrection = () => {
+    if (relationCitationCorrectionDialog?.status === 'saving') return
+    setRelationCitationCorrectionDialog(null)
+  }
+
+  const saveRelationCitationCorrection = async () => {
+    const dialog = relationCitationCorrectionDialog
+    if (!dialog || dialog.status === 'saving') return
+    if (!dialog.subjectId || !dialog.objectId || dialog.subjectId === dialog.objectId ||
+      !String(dialog.predicate || '').trim()) return
+    setRelationCitationCorrectionDialog((current: any) => ({
+      ...current,
+      status: 'saving',
+      error: ''
+    }))
+    try {
+      await window.electronAPI.aiAssistant.reviewMemoryDocument(
+        'relation',
+        dialog.citation.sourceId,
+        'corrected',
+        {
+          assistantMessageId: memoryAnswer?.assistantMessageId,
+          documentId: dialog.citation.documentId,
+          reviewToken: dialog.citation.reviewToken,
+          entityDirectoryRevision: dialog.directoryRevision,
+          relationCorrection: {
+            subjectId: dialog.subjectId,
+            predicate: String(dialog.predicate || '').trim(),
+            objectId: dialog.objectId
+          }
+        }
+      )
+      setRelationCitationCorrectionDialog(null)
+      const assistantMessageId = String(memoryAnswer?.assistantMessageId || '')
+      const conversationId = String(memoryAnswer?.conversationId || memoryConversationId || '')
+      if (assistantMessageId && conversationId) {
+        const refreshed = await window.electronAPI.aiAssistant.getAssistantConversation(
+          conversationId,
+          { anchorMessageId: assistantMessageId }
+        )
+        const answerMessage = refreshed?.messages?.find((item: any) =>
+          item.id === assistantMessageId)
+        if (answerMessage) {
+          setMemoryAnswer((current: any) => ({
+            ...current,
+            citations: answerMessage.citations || [],
+            groundingRevalidation: answerMessage.groundingRevalidation
+          }))
+        }
+      }
+      setMessage('关系方向已纠正并写入审计；旧回答会按新的权威关系重新核验。')
+      await load()
+    } catch (error: any) {
+      setRelationCitationCorrectionDialog((current: any) => ({
+        ...current,
+        status: 'error',
+        error: error?.message || String(error)
+      }))
+    }
+  }
+
   const openClaimCorrection = (citation: any) => {
     const claim = visibleClaims.find((item: any) => item.id === citation.sourceId)
     if (!claim) {
@@ -8385,6 +8468,12 @@ function AiAssistantPage() {
                 {!citation.citationUnavailable && ['relation', 'claim', 'event'].includes(citation.type) && <div className="assistant-citation-actions">
                   {citation.type === 'claim' && <button onClick={() => openClaimCorrection(citation)}>纠正事实</button>}
                   {citation.type === 'event' && <button onClick={() => void openEventCorrection(citation)}>纠正事件</button>}
+                  {citation.type === 'relation' && <button
+                    disabled={!citation.relationCorrectionContext}
+                    title={citation.relationCorrectionContext
+                      ? '修改主语、谓词或宾语，并保留旧值到新值审计'
+                      : '旧版引用缺少关系身份，请重新提问后再纠正'}
+                    onClick={() => openRelationCitationCorrection(citation)}>纠正方向</button>}
                   {citation.status !== 'confirmed' && <button className="primary" onClick={() => void reviewMemoryCitation(citation, 'confirmed')}>确认</button>}
                   {citation.status !== 'rejected' && <button onClick={() => void reviewMemoryCitation(citation, 'rejected')}>不准确</button>}
                   <button className="danger" onClick={() => void permanentlyDeleteMemoryItem(citation.type, citation)}>永久删除</button>
@@ -11662,6 +11751,132 @@ function AiAssistantPage() {
                     ? '正在安全放弃…'
                     : '保留当前状态并放弃旧写入'}
                 </button>}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {relationCitationCorrectionDialog && (
+        <div className="assistant-modal-backdrop" role="presentation">
+          <div className="assistant-modal assistant-relation-correction-modal" role="dialog"
+            aria-modal="true" aria-labelledby="relation-citation-correction-title">
+            <div className="assistant-modal-title"><div>
+              <h2 id="relation-citation-correction-title">纠正回答引用中的关系</h2>
+              <p>方向始终按“主语 — 谓词 → 宾语”保存；原关系和人工最终值都会进入本机审计。</p>
+            </div><button aria-label="关闭关系纠正"
+              disabled={relationCitationCorrectionDialog.status === 'saving'}
+              onClick={closeRelationCitationCorrection}><X size={16} /></button></div>
+            {relationCitationCorrectionDialog.status === 'error' &&
+              <div className="assistant-error">
+                <strong>关系没有被修改</strong>
+                <span>{relationCitationCorrectionDialog.error}</span>
+                <small>如果实体目录或原文在表单打开后变化，请重新打开引用再选择。</small>
+              </div>}
+            <div className="assistant-relation-correction-fields">
+              <label><span>主语（箭头起点）</span>
+                <TrustedEntityPicker
+                  value={relationCitationCorrectionDialog.subjectId}
+                  selected={relationCitationCorrectionDialog.subjectEntity}
+                  placeholder="搜索主语实体"
+                  ariaLabel="回答引用关系主语"
+                  disabled={relationCitationCorrectionDialog.status === 'saving'}
+                  onSelect={entity => setRelationCitationCorrectionDialog((current: any) => ({
+                    ...current,
+                    status: 'ready',
+                    subjectId: entity.id,
+                    subjectEntity: entity,
+                    directoryRevision: entity.directoryRevision,
+                    error: ''
+                  }))}
+                  onClear={() => setRelationCitationCorrectionDialog((current: any) => ({
+                    ...current,
+                    subjectId: '',
+                    subjectEntity: null
+                  }))}
+                  onError={error => setRelationCitationCorrectionDialog((current: any) => ({
+                    ...current,
+                    status: 'error',
+                    error
+                  }))} />
+              </label>
+              <label><span>关系谓词</span><input
+                value={relationCitationCorrectionDialog.predicate || ''}
+                disabled={relationCitationCorrectionDialog.status === 'saving'}
+                maxLength={100}
+                placeholder="例如：服务于、负责、认识"
+                onChange={event => setRelationCitationCorrectionDialog((current: any) => ({
+                  ...current,
+                  status: 'ready',
+                  predicate: event.target.value,
+                  error: ''
+                }))} /></label>
+              <label><span>宾语（箭头终点）</span>
+                <TrustedEntityPicker
+                  value={relationCitationCorrectionDialog.objectId}
+                  selected={relationCitationCorrectionDialog.objectEntity}
+                  placeholder="搜索宾语实体"
+                  ariaLabel="回答引用关系宾语"
+                  disabled={relationCitationCorrectionDialog.status === 'saving'}
+                  onSelect={entity => setRelationCitationCorrectionDialog((current: any) => ({
+                    ...current,
+                    status: 'ready',
+                    objectId: entity.id,
+                    objectEntity: entity,
+                    directoryRevision: entity.directoryRevision,
+                    error: ''
+                  }))}
+                  onClear={() => setRelationCitationCorrectionDialog((current: any) => ({
+                    ...current,
+                    objectId: '',
+                    objectEntity: null
+                  }))}
+                  onError={error => setRelationCitationCorrectionDialog((current: any) => ({
+                    ...current,
+                    status: 'error',
+                    error
+                  }))} />
+              </label>
+            </div>
+            <button type="button"
+              disabled={relationCitationCorrectionDialog.status === 'saving' ||
+                !relationCitationCorrectionDialog.subjectId ||
+                !relationCitationCorrectionDialog.objectId}
+              onClick={() => setRelationCitationCorrectionDialog((current: any) => ({
+                ...current,
+                status: 'ready',
+                subjectId: current.objectId,
+                objectId: current.subjectId,
+                subjectEntity: current.objectEntity,
+                objectEntity: current.subjectEntity,
+                error: ''
+              }))}>交换主语与宾语</button>
+            <div className="assistant-relation-preview">
+              <b>保存后的方向：</b>
+              <span>
+                {relationCitationCorrectionDialog.subjectEntity?.canonicalName || '主语待选择'}
+                {' — '}{String(relationCitationCorrectionDialog.predicate || '').trim() || '谓词待填写'} →{' '}
+                {relationCitationCorrectionDialog.objectEntity?.canonicalName || '宾语待选择'}
+              </span>
+              <small>保存时会重新核验引用、完整证据和可信实体目录；任一项变化都会整笔拒绝。</small>
+            </div>
+            {relationCitationCorrectionDialog.subjectId ===
+              relationCitationCorrectionDialog.objectId &&
+              <small className="error">主语和宾语不能是同一个实体。</small>}
+            <div className="assistant-modal-actions">
+              <button disabled={relationCitationCorrectionDialog.status === 'saving'}
+                onClick={closeRelationCitationCorrection}>取消</button>
+              <button className="primary"
+                disabled={relationCitationCorrectionDialog.status === 'saving' ||
+                  !relationCitationCorrectionDialog.subjectId ||
+                  !relationCitationCorrectionDialog.objectId ||
+                  relationCitationCorrectionDialog.subjectId ===
+                    relationCitationCorrectionDialog.objectId ||
+                  !String(relationCitationCorrectionDialog.predicate || '').trim()}
+                onClick={() => void saveRelationCitationCorrection()}>
+                {relationCitationCorrectionDialog.status === 'saving'
+                  ? '正在原子保存…'
+                  : '确认纠正并写入审计'}
+              </button>
             </div>
           </div>
         </div>

@@ -60,7 +60,10 @@ import {
   buildMemoryCitationReviewIdentity,
   buildMemoryCitationReviewToken
 } from './memoryCitationReviewPolicy.ts'
-import { applyCitationRelationDecision } from './citationRelationReview.ts'
+import {
+  applyCitationRelationDecision,
+  applyCitationRelationCorrection
+} from './citationRelationReview.ts'
 import {
   assertConversationSourceMutation,
   buildConversationSourceDirectory,
@@ -412,7 +415,14 @@ type GraphRelation = {
   objectId: string
   confidence: number
   directionExplanation?: string
-  evidence: Array<{ messageId: string; sessionId: string; timestamp: number; excerpt: string }>
+  evidence: Array<{
+    sourceId?: string
+    messageId: string
+    sessionId: string
+    timestamp: number
+    sender?: string
+    excerpt: string
+  }>
   evidenceTotal?: number
   status: 'candidate' | 'confirmed' | 'rejected'
   createdAt: string
@@ -7107,8 +7117,14 @@ export class AiAssistantService {
   reviewMemoryDocument(
     kind: 'relation' | 'claim' | 'event',
     id: string,
-    decision: 'confirmed' | 'rejected',
-    input: { assistantMessageId?: string; documentId?: string; reviewToken?: string } = {}
+    decision: 'confirmed' | 'rejected' | 'corrected',
+    input: {
+      assistantMessageId?: string
+      documentId?: string
+      reviewToken?: string
+      entityDirectoryRevision?: string
+      relationCorrection?: RelationCorrection
+    } = {}
   ): any {
     const assistantMessageId = String(input.assistantMessageId || '').trim()
     const documentId = String(input.documentId || '').trim()
@@ -7138,11 +7154,68 @@ export class AiAssistantService {
       scopeFingerprint: context?.scopeFingerprint || 'unscoped'
     }), input.reviewToken)
     if (kind === 'claim' || kind === 'event') {
+      if (decision === 'corrected') throw new Error('事实与事件请使用各自的纠正表单')
       if (decision === 'confirmed') this.assertStructuredEntityTrust(kind, id)
       return personalMemoryStore.updateMemoryItemStatus(kind, id, decision)
     }
     const relation = this.state.graph.relations.find(item => item.id === id)
     if (!relation) return null
+    if (decision === 'corrected') {
+      const correction = input.relationCorrection || {}
+      const selected = resolveTrustedEntityPairSelection(this.state.graph.entities, {
+        fromId: correction.subjectId,
+        toId: correction.objectId,
+        expectedRevision: input.entityDirectoryRevision
+      })
+      if (selected.stale) {
+        throw new Error('可信实体目录在你选择后发生了变化，请重新选择关系两端')
+      }
+      const syntheticReview = { kind: 'relation', relationId: id }
+      const relationPlan = planRelationConfirmation({
+        review: syntheticReview,
+        relation,
+        entities: this.state.graph.entities,
+        correction
+      })
+      if (!relationPlan.changed) throw new Error('关系方向和谓词没有变化，无需保存纠正')
+      this.hydrateRelationEvidence([relationPlan.before.id, relationPlan.after.id])
+      const hydratedRelation = this.state.graph.relations.find(item => item.id === id)
+      if (!hydratedRelation) throw new Error('关系在读取完整证据时发生了变化，请刷新后重试')
+      if (personalMemoryStore.isExtractedMemoryItemSuppressed('relation', {
+        ...relationPlan.after,
+        evidence: hydratedRelation.evidence
+      })) throw new Error('修正后的关系曾被永久删除，不能通过纠正恢复')
+      const snapshot = structuredClone(this.state.graph)
+      const now = new Date().toISOString()
+      const auditId = `citation_relation_correction_${crypto.randomUUID()}`
+      return runReversibleGraphMutation({
+        snapshot,
+        transact: apply => personalMemoryStore.runInTransaction(apply),
+        apply: () => {
+          const confirmedRelation = applyCitationRelationCorrection(
+            this.state.graph,
+            id,
+            relationPlan,
+            now
+          )
+          personalMemoryStore.recordRelationCorrection(
+            auditId,
+            relationPlan.before,
+            relationPlan.after
+          )
+          this.saveState(true)
+          return confirmedRelation
+        },
+        restore: graph => { this.state.graph = graph },
+        persistRestored: () => this.persistCrossStoreMutationState(),
+        onRollbackError: error => {
+          console.error(
+            '[AI Assistant] 问答关系纠正回滚状态写入失败:',
+            sanitizeDiagnosticText(error)
+          )
+        }
+      })
+    }
     if (decision === 'confirmed') {
       const subject = this.state.graph.entities.find(entity => entity.id === relation.subjectId)
       const object = this.state.graph.entities.find(entity => entity.id === relation.objectId)
@@ -8428,6 +8501,36 @@ export class AiAssistantService {
             ),
             relevanceFeedback,
             ...(canonicalFeedbackContext ? { feedbackContext: canonicalFeedbackContext } : {})
+          }
+          if (String(document.document_type || '') === 'relation') {
+            const subjectId = String(document.metadata?.subjectId || '')
+            const objectId = String(document.metadata?.objectId || '')
+            const subject = this.state.graph.entities.find(entity => entity.id === subjectId)
+            const object = this.state.graph.entities.find(entity => entity.id === objectId)
+            const directoryRevision = buildTrustedEntityDirectory(
+              this.state.graph.entities,
+              { limit: 1 }
+            ).revision
+            Object.assign(hydratedCitation, {
+              relationCorrectionContext: {
+                subjectId,
+                predicate: String(document.metadata?.predicate || ''),
+                objectId,
+                subjectEntity: subject ? {
+                  id: subject.id,
+                  type: subject.type,
+                  canonicalName: subject.canonicalName,
+                  trustStatus: subject.trustStatus
+                } : null,
+                objectEntity: object ? {
+                  id: object.id,
+                  type: object.type,
+                  canonicalName: object.canonicalName,
+                  trustStatus: object.trustStatus
+                } : null,
+                directoryRevision
+              }
+            })
           }
           return {
             ...hydratedCitation,

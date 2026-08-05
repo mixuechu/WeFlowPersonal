@@ -726,7 +726,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
       ipcRenderer.invoke('ai-assistant:purgeMemoryResourceTrash', id, input),
     reviewMemoryDocument: (
       kind: 'relation' | 'claim' | 'event', id: string,
-      decision: 'confirmed' | 'rejected', input?: any
+      decision: 'confirmed' | 'rejected' | 'corrected', input?: any
     ) => ipcRenderer.invoke('ai-assistant:reviewMemoryDocument', kind, id, decision, input),
     previewForgetEntity: (id: string) => ipcRenderer.invoke('ai-assistant:previewForgetEntity', id),
     forgetEntity: (id: string, input?: any) => ipcRenderer.invoke('ai-assistant:forgetEntity', id, input),

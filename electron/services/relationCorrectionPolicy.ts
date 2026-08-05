@@ -84,10 +84,21 @@ export function applyRelationConfirmation(input: {
     ? input.relations.find(relation => relation.id === input.plan.after.id && relation.id !== source.id)
     : source
   if (target && target !== source) {
-    const knownEvidence = new Set((target.evidence || []).map((item: any) => item.messageId))
+    const evidenceKey = (item: any): string => [
+      String(item?.sourceId || item?.source_id || ''),
+      String(item?.sessionId || item?.session_id || ''),
+      String(item?.messageId || item?.message_id || '')
+    ].join('\u001f')
+    const knownEvidence = new Set((target.evidence || []).map(evidenceKey))
+    const additionalEvidence = (source.evidence || []).filter((item: any) => {
+      const key = evidenceKey(item)
+      if (knownEvidence.has(key)) return false
+      knownEvidence.add(key)
+      return true
+    })
     target.evidence = [
       ...(target.evidence || []),
-      ...(source.evidence || []).filter((item: any) => !knownEvidence.has(item.messageId))
+      ...additionalEvidence
     ]
     target.evidenceTotal = target.evidence.length
     target.confidence = Math.max(Number(target.confidence || 0), Number(source.confidence || 0))

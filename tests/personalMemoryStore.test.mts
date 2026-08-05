@@ -1321,7 +1321,11 @@ test('relation correction merges into an existing semantic edge without losing e
     subjectId: 'a',
     predicate: '错误方向',
     objectId: 'b',
-    evidence: [{ messageId: 'source-evidence' }, { messageId: 'shared-evidence' }],
+    evidence: [
+      { sourceId: 'wechat', sessionId: 'source-session', messageId: 'source-evidence' },
+      { sourceId: 'wechat', sessionId: 'source-session', messageId: 'shared-evidence' },
+      { sourceId: 'wechat', sessionId: 'other-session', messageId: 'shared-evidence' }
+    ],
     confidence: 0.7,
     status: 'candidate'
   }
@@ -1330,7 +1334,10 @@ test('relation correction merges into an existing semantic edge without losing e
     subjectId: 'b',
     predicate: '服务于',
     objectId: 'a',
-    evidence: [{ messageId: 'existing-evidence' }, { messageId: 'shared-evidence' }],
+    evidence: [
+      { sourceId: 'wechat', sessionId: 'target-session', messageId: 'existing-evidence' },
+      { sourceId: 'wechat', sessionId: 'source-session', messageId: 'shared-evidence' }
+    ],
     confidence: 0.8,
     status: 'candidate'
   }
@@ -1351,8 +1358,14 @@ test('relation correction merges into an existing semantic edge without losing e
   assert.equal(result.confirmedRelation.status, 'confirmed')
   assert.equal(result.confirmedRelation.confidence, 0.8)
   assert.deepEqual(
-    result.confirmedRelation.evidence.map((item: any) => item.messageId).sort(),
-    ['existing-evidence', 'shared-evidence', 'source-evidence']
+    result.confirmedRelation.evidence.map((item: any) =>
+      `${item.sessionId}:${item.messageId}`).sort(),
+    [
+      'other-session:shared-evidence',
+      'source-session:shared-evidence',
+      'source-session:source-evidence',
+      'target-session:existing-evidence'
+    ]
   )
 })
 
