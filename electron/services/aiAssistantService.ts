@@ -8044,6 +8044,31 @@ export class AiAssistantService {
     if (!normalizedSourceId || normalizedSourceId.length > 512 || /[\u0000-\u001f]/.test(normalizedSourceId)) {
       throw new Error('记忆标识无效')
     }
+    const expectedSearchRevision = String(pagination?.expectedSearchRevision || '').trim()
+    if (expectedSearchRevision) {
+      const snapshot = personalMemoryStore.validateSearchDocumentSnapshot(
+        normalizedType,
+        normalizedSourceId,
+        expectedSearchRevision
+      )
+      if (snapshot.stale) {
+        return {
+          items: [],
+          total: 0,
+          unfilteredTotal: 0,
+          hasMore: false,
+          offset: 0,
+          limit: Math.max(1, Math.min(100, Number(pagination?.limit) || 40)),
+          documentType: normalizedType,
+          sourceId: normalizedSourceId,
+          revision: '',
+          stale: true,
+          searchSnapshotStale: true,
+          searchRevision: snapshot.revision,
+          sourceMissing: !snapshot.exists
+        }
+      }
+    }
     return personalMemoryStore.getDocumentEvidencePage(normalizedType, normalizedSourceId, {
       offset: Number(pagination?.offset || 0),
       limit: Number(pagination?.limit || 40),

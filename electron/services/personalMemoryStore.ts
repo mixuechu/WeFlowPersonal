@@ -15848,6 +15848,36 @@ export class PersonalMemoryStore {
     }
   }
 
+  validateSearchDocumentSnapshot(
+    documentType: string,
+    sourceId: string,
+    expectedRevision: string
+  ): { revision: string; stale: boolean; exists: boolean } {
+    const expected = String(expectedRevision || '').trim()
+    if (!this.db) return { revision: '0', stale: true, exists: false }
+    const normalizedType = String(documentType || '').trim()
+    const normalizedSourceId = String(sourceId || '').trim()
+    const row = this.db.prepare(`
+      SELECT
+        COALESCE((SELECT value FROM schema_meta WHERE key='memory_search_revision'),'0') AS revision,
+        EXISTS(
+          SELECT 1 FROM search_documents
+          WHERE id=? AND document_type=? AND source_id=?
+        ) AS document_exists
+    `).get(
+      `${normalizedType}:${normalizedSourceId}`,
+      normalizedType,
+      normalizedSourceId
+    ) as any
+    const revision = String(row?.revision || '0')
+    const exists = Boolean(Number(row?.document_exists || 0))
+    return {
+      revision,
+      exists,
+      stale: !expected || expected !== revision || !exists
+    }
+  }
+
   private compactAssistantGroundingAudit(value: any): any {
     if (!value || typeof value !== 'object') return {}
     const count = (key: string) => Math.max(0, Math.min(10_000, Math.floor(Number(value[key]) || 0)))

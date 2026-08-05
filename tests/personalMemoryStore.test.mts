@@ -9355,6 +9355,62 @@ test('memory result pages are stable, bounded and report remaining ranked candid
   }), true)
 })
 
+test('opening a search result evidence archive is bound to the visible document snapshot', () =>
+  withStore(store => {
+    store.syncTasks([{
+      id: 'evidence-search-snapshot',
+      title: '证据档案快照',
+      detail: '搜索卡必须只打开用户实际看到的权威文档版本',
+      priority: 'medium',
+      status: 'todo',
+      classification: 'mine',
+      evidence: [{
+        sourceId: 'wechat',
+        messageId: 'snapshot-message',
+        sessionId: 'snapshot-session',
+        timestamp: 1_767_225_600,
+        sender: '快照测试',
+        excerpt: '原始证据'
+      }]
+    }])
+    const visibleRevision = store.getMemorySearchRevision()
+    assert.deepEqual(
+      store.validateSearchDocumentSnapshot('task', 'evidence-search-snapshot', visibleRevision),
+      { revision: visibleRevision, stale: false, exists: true }
+    )
+    assert.deepEqual(
+      store.validateSearchDocumentSnapshot('task', 'evidence-search-snapshot', 'older-revision'),
+      { revision: visibleRevision, stale: true, exists: true }
+    )
+
+    const database = (store as any).db
+    database.prepare(`DELETE FROM search_documents WHERE id=?`)
+      .run('task:evidence-search-snapshot')
+    const deletedRevision = store.getMemorySearchRevision()
+    assert.notEqual(deletedRevision, visibleRevision)
+    assert.deepEqual(
+      store.validateSearchDocumentSnapshot('task', 'evidence-search-snapshot', visibleRevision),
+      { revision: deletedRevision, stale: true, exists: false }
+    )
+
+    store.syncTasks([{
+      id: 'evidence-search-snapshot',
+      title: '同 ID 的新版本',
+      detail: '旧卡片不能静默连接到重建内容',
+      priority: 'high',
+      status: 'doing',
+      classification: 'mine'
+    }])
+    const recreated = store.validateSearchDocumentSnapshot(
+      'task',
+      'evidence-search-snapshot',
+      visibleRevision
+    )
+    assert.equal(recreated.exists, true)
+    assert.equal(recreated.stale, true)
+    assert.notEqual(recreated.revision, visibleRevision)
+  }))
+
 test('scoped memory browsing reaches every result beyond the ranked search window', () =>
   withStore(store => {
     const tasks = Array.from({ length: 1_205 }, (_, index) => ({

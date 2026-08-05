@@ -5657,7 +5657,8 @@ function AiAssistantPage() {
     documentType: string,
     sourceId: string,
     title: string,
-    filters: MemoryEvidenceArchiveFilters = EMPTY_MEMORY_EVIDENCE_FILTERS
+    filters: MemoryEvidenceArchiveFilters = EMPTY_MEMORY_EVIDENCE_FILTERS,
+    expectedSearchRevision = ''
   ) => {
     const request = memoryEvidenceArchiveGate.current.begin()
     setMemoryEvidenceLoadingMore(false)
@@ -5686,14 +5687,23 @@ function AiAssistantPage() {
           sender: filters.sender,
           role: filters.role,
           fromTimestamp: memoryEvidenceTimestamp(filters.from),
-          toTimestamp: memoryEvidenceTimestamp(filters.to, true)
+          toTimestamp: memoryEvidenceTimestamp(filters.to, true),
+          expectedSearchRevision
         }
       )
       if (!memoryEvidenceArchiveGate.current.isCurrent(request)) return
       if (page.stale) {
+        if (page.searchSnapshotStale) {
+          setMemoryEvidenceArchive(null)
+          setMessage(page.sourceMissing
+            ? '这条检索结果已经删除或不再可用，已刷新检索结果。'
+            : '这条检索结果在打开证据前已经变化，已刷新后再核验，避免把旧卡片连接到新内容。')
+          setMemorySearchRefreshKey(value => value + 1)
+          return
+        }
         window.setTimeout(() => {
           if (memoryEvidenceArchiveGate.current.isCurrent(request)) {
-            void openMemoryEvidenceArchive(documentType, sourceId, title, filters)
+            void openMemoryEvidenceArchive(documentType, sourceId, title, filters, expectedSearchRevision)
           }
         }, 250)
         return
@@ -8078,7 +8088,13 @@ function AiAssistantPage() {
                     {evidenceTotal > evidence.length &&
                       <p className="assistant-evidence-limit-note">当前显示最近 {evidence.length} 条，共有 {evidenceTotal} 条去重原文证据；可结合来源、人物和时间范围继续检索。</p>}
                     <button className="assistant-open-evidence-archive" onClick={() =>
-                      void openMemoryEvidenceArchive(result.document_type, result.source_id, result.title)}>
+                      void openMemoryEvidenceArchive(
+                        result.document_type,
+                        result.source_id,
+                        result.title,
+                        EMPTY_MEMORY_EVIDENCE_FILTERS,
+                        memorySearchState.revision
+                      )}>
                       查看完整证据档案
                     </button>
                   </div>

@@ -2073,6 +2073,7 @@ export interface ElectronAPI {
           role?: 'direct' | 'indirect' | 'contradiction' | 'support' | 'original' | ''
           fromTimestamp?: number
           toTimestamp?: number
+          expectedSearchRevision?: string
         }
       ) => Promise<{
         items: any[]
@@ -2085,6 +2086,9 @@ export interface ElectronAPI {
         sourceId: string
         revision: string
         stale: boolean
+        searchSnapshotStale?: boolean
+        searchRevision?: string
+        sourceMissing?: boolean
       }>
       indexMemoryVectors: () => Promise<any>
       findGraphPath: (fromId: string, toId: string, maxDepth?: number, entityDirectoryRevision?: string) => Promise<any>
