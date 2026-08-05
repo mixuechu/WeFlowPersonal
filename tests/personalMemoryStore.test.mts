@@ -2059,6 +2059,144 @@ test('conflicting current claims coexist as review candidates', () => withStore(
   assert.deepEqual(new Set(claims.map(claim => claim.evidence[0].evidence_role)), new Set(['direct', 'indirect']))
 }))
 
+test('claim and event extraction batches roll back authority, evidence and search together', () => withStore(store => {
+  store.syncGraph({
+    entities: [{
+      id: 'atomic-structured-person',
+      type: 'person',
+      canonicalName: '结构化原子人物',
+      trustStatus: 'confirmed',
+      confidence: 1,
+      aliases: [],
+      accountIds: []
+    }],
+    relations: [],
+    reviewQueue: []
+  })
+  const database = (store as any).db
+  const claims = [{
+    id: 'atomic-claim-a',
+    subjectId: 'atomic-structured-person',
+    predicate: '所在城市',
+    objectValue: '上海',
+    confidence: 0.9,
+    status: 'confirmed',
+    sourceNature: 'self_statement',
+    searchText: '结构化原子人物 所在城市 上海',
+    evidence: evidence('atomic-claim-message-a', '我在上海')
+  }, {
+    id: 'atomic-claim-b',
+    subjectId: 'atomic-structured-person',
+    predicate: '所在城市',
+    objectValue: '杭州',
+    confidence: 0.8,
+    status: 'confirmed',
+    sourceNature: 'other_statement',
+    searchText: '结构化原子人物 所在城市 杭州',
+    evidence: evidence('atomic-claim-message-b', '听说他在杭州')
+  }]
+  database.exec(`
+    CREATE TRIGGER fail_second_claim_search
+    BEFORE INSERT ON search_documents
+    WHEN NEW.id='claim:atomic-claim-b'
+    BEGIN
+      SELECT RAISE(ABORT,'forced second claim search failure');
+    END;
+  `)
+  const claimSearchRevision = store.getMemorySearchRevision()
+  const claimStructuredRevision = store.getStructuredMemoryRevision()
+  const claimEvidenceRevision = store.getMemoryEvidenceArchiveRevision()
+  assert.throws(() => store.upsertClaims(claims), /forced second claim search failure/)
+  assert.equal(Number(database.prepare(`
+    SELECT COUNT(*) AS count FROM claims
+    WHERE id IN ('atomic-claim-a','atomic-claim-b')
+  `).get().count), 0)
+  assert.equal(Number(database.prepare(`
+    SELECT COUNT(*) AS count FROM evidence
+    WHERE claim_id IN ('atomic-claim-a','atomic-claim-b')
+  `).get().count), 0)
+  assert.equal(Number(database.prepare(`
+    SELECT COUNT(*) AS count FROM search_documents
+    WHERE id IN ('claim:atomic-claim-a','claim:atomic-claim-b')
+  `).get().count), 0)
+  assert.equal(Number(database.prepare(`
+    SELECT COUNT(*) AS count FROM search_fts
+    WHERE document_id IN ('claim:atomic-claim-a','claim:atomic-claim-b')
+  `).get().count), 0)
+  assert.equal(store.getMemorySearchRevision(), claimSearchRevision)
+  assert.equal(store.getStructuredMemoryRevision(), claimStructuredRevision)
+  assert.equal(store.getMemoryEvidenceArchiveRevision(), claimEvidenceRevision)
+  assert.deepEqual(claims.map(claim => claim.status), ['confirmed', 'confirmed'])
+  database.exec('DROP TRIGGER fail_second_claim_search')
+
+  const events = [{
+    id: 'atomic-event-a',
+    eventType: 'meeting',
+    title: '结构化原子会议甲',
+    description: '第一条必须随第二条一起回滚',
+    confidence: 0.9,
+    status: 'candidate',
+    searchText: '结构化原子会议甲 第一条',
+    participants: [],
+    evidence: evidence('atomic-event-message-a', '会议甲原文')
+  }, {
+    id: 'atomic-event-b',
+    eventType: 'meeting',
+    title: '结构化原子会议乙',
+    description: '第二条触发搜索故障',
+    confidence: 0.8,
+    status: 'candidate',
+    searchText: '结构化原子会议乙 第二条',
+    participants: [],
+    evidence: evidence('atomic-event-message-b', '会议乙原文')
+  }]
+  database.exec(`
+    CREATE TRIGGER fail_second_event_search
+    BEFORE INSERT ON search_documents
+    WHEN NEW.id='event:atomic-event-b'
+    BEGIN
+      SELECT RAISE(ABORT,'forced second event search failure');
+    END;
+  `)
+  const eventSearchRevision = store.getMemorySearchRevision()
+  const eventStructuredRevision = store.getStructuredMemoryRevision()
+  const eventEvidenceRevision = store.getMemoryEvidenceArchiveRevision()
+  assert.throws(() => store.upsertClaimsAndEvents(
+    claims, events
+  ), /forced second event search failure/)
+  assert.equal(Number(database.prepare(`
+    SELECT COUNT(*) AS count FROM claims
+    WHERE id IN ('atomic-claim-a','atomic-claim-b')
+  `).get().count), 0)
+  assert.equal(Number(database.prepare(`
+    SELECT COUNT(*) AS count FROM events
+    WHERE id IN ('atomic-event-a','atomic-event-b')
+  `).get().count), 0)
+  assert.equal(Number(database.prepare(`
+    SELECT COUNT(*) AS count FROM evidence
+    WHERE claim_id IN ('atomic-claim-a','atomic-claim-b')
+      OR event_id IN ('atomic-event-a','atomic-event-b')
+  `).get().count), 0)
+  assert.equal(Number(database.prepare(`
+    SELECT COUNT(*) AS count FROM search_documents
+    WHERE id IN (
+      'claim:atomic-claim-a','claim:atomic-claim-b',
+      'event:atomic-event-a','event:atomic-event-b'
+    )
+  `).get().count), 0)
+  assert.equal(Number(database.prepare(`
+    SELECT COUNT(*) AS count FROM search_fts
+    WHERE document_id IN (
+      'claim:atomic-claim-a','claim:atomic-claim-b',
+      'event:atomic-event-a','event:atomic-event-b'
+    )
+  `).get().count), 0)
+  assert.equal(store.getMemorySearchRevision(), eventSearchRevision)
+  assert.equal(store.getStructuredMemoryRevision(), eventStructuredRevision)
+  assert.equal(store.getMemoryEvidenceArchiveRevision(), eventEvidenceRevision)
+  assert.deepEqual(events.map(event => event.id), ['atomic-event-a', 'atomic-event-b'])
+}))
+
 test('structured search dossiers bind the exact type, id and current search revision', () => withStore(store => {
   store.syncGraph({
     entities: [{

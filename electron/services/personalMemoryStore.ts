@@ -7127,48 +7127,136 @@ export class PersonalMemoryStore {
     }
   }
 
+  upsertClaimsAndEvents(claims: any[], events: any[]): void {
+    if (!this.db || (!claims.length && !events.length)) return
+    this.db.transaction(() => {
+      this.upsertClaims(claims)
+      this.upsertEvents(events)
+    })()
+  }
+
   upsertClaims(claims: any[]): void {
     if (!this.db || !claims.length) return
-    const now = new Date().toISOString()
-    const upsert = this.db.prepare(`
-      INSERT INTO claims(id,subject_id,predicate,object_entity_id,object_value,polarity,value_type,confidence,status,valid_from,valid_to,search_text,created_at,updated_at,source_nature,conflict_group)
-      VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-      ON CONFLICT(id) DO UPDATE SET confidence=MAX(confidence,excluded.confidence),status=excluded.status,
-        valid_from=COALESCE(excluded.valid_from,valid_from),valid_to=COALESCE(excluded.valid_to,valid_to),
-        polarity=excluded.polarity,search_text=excluded.search_text,updated_at=excluded.updated_at,source_nature=excluded.source_nature,
-        conflict_group=COALESCE(excluded.conflict_group,conflict_group)
-      WHERE claims.confidence<excluded.confidence
-        OR claims.status IS NOT excluded.status
-        OR (excluded.valid_from IS NOT NULL AND claims.valid_from IS NOT excluded.valid_from)
-        OR (excluded.valid_to IS NOT NULL AND claims.valid_to IS NOT excluded.valid_to)
-        OR claims.polarity IS NOT excluded.polarity
-        OR claims.search_text IS NOT excluded.search_text
-        OR claims.source_nature IS NOT excluded.source_nature
-        OR (
-          excluded.conflict_group IS NOT NULL
-          AND claims.conflict_group IS NOT excluded.conflict_group
-        )
-    `)
-    const evidence = this.db.prepare(`
-      INSERT OR IGNORE INTO evidence(
-        claim_id,source_id,message_id,session_id,timestamp,sender,excerpt,evidence_role
-      ) VALUES(?,?,?,?,?,?,?,?)
-    `)
-    for (const claim of claims) {
-      if (this.isMemoryItemSuppressed('claim', claim.id, this.memoryItemSemanticFingerprint('claim', claim))) continue
-      const sourceNature = claim.sourceNature || 'inference'
-      const manuallyReviewed = Boolean(this.db.prepare(`
-        SELECT 1 FROM memory_review_decisions
-        WHERE item_kind='claim' AND item_id=? AND protect_from_extraction=1 LIMIT 1
-      `).get(claim.id))
-      const manuallyCorrected = Boolean(this.db.prepare(`
-        SELECT 1 FROM memory_corrections WHERE item_kind='claim' AND item_id=? LIMIT 1
-      `).get(claim.id))
-      if (manuallyCorrected || manuallyReviewed) {
+    const withinTransaction = this.db.inTransaction
+    if (withinTransaction) this.db.exec('SAVEPOINT weflow_upsert_claims')
+    else this.db.exec('BEGIN IMMEDIATE')
+    try {
+      const now = new Date().toISOString()
+      const upsert = this.db.prepare(`
+        INSERT INTO claims(id,subject_id,predicate,object_entity_id,object_value,polarity,value_type,confidence,status,valid_from,valid_to,search_text,created_at,updated_at,source_nature,conflict_group)
+        VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+        ON CONFLICT(id) DO UPDATE SET confidence=MAX(confidence,excluded.confidence),status=excluded.status,
+          valid_from=COALESCE(excluded.valid_from,valid_from),valid_to=COALESCE(excluded.valid_to,valid_to),
+          polarity=excluded.polarity,search_text=excluded.search_text,updated_at=excluded.updated_at,source_nature=excluded.source_nature,
+          conflict_group=COALESCE(excluded.conflict_group,conflict_group)
+        WHERE claims.confidence<excluded.confidence
+          OR claims.status IS NOT excluded.status
+          OR (excluded.valid_from IS NOT NULL AND claims.valid_from IS NOT excluded.valid_from)
+          OR (excluded.valid_to IS NOT NULL AND claims.valid_to IS NOT excluded.valid_to)
+          OR claims.polarity IS NOT excluded.polarity
+          OR claims.search_text IS NOT excluded.search_text
+          OR claims.source_nature IS NOT excluded.source_nature
+          OR (
+            excluded.conflict_group IS NOT NULL
+            AND claims.conflict_group IS NOT excluded.conflict_group
+          )
+      `)
+      const evidence = this.db.prepare(`
+        INSERT OR IGNORE INTO evidence(
+          claim_id,source_id,message_id,session_id,timestamp,sender,excerpt,evidence_role
+        ) VALUES(?,?,?,?,?,?,?,?)
+      `)
+      for (const rawClaim of claims) {
+        const claim = { ...rawClaim }
+        if (this.isMemoryItemSuppressed('claim', claim.id, this.memoryItemSemanticFingerprint('claim', claim))) continue
+        const sourceNature = claim.sourceNature || 'inference'
+        const manuallyReviewed = Boolean(this.db.prepare(`
+          SELECT 1 FROM memory_review_decisions
+          WHERE item_kind='claim' AND item_id=? AND protect_from_extraction=1 LIMIT 1
+        `).get(claim.id))
+        const manuallyCorrected = Boolean(this.db.prepare(`
+          SELECT 1 FROM memory_corrections WHERE item_kind='claim' AND item_id=? LIMIT 1
+        `).get(claim.id))
+        if (manuallyCorrected || manuallyReviewed) {
+          for (const item of claim.evidence || []) {
+            const evidenceRole = item.role && item.role !== 'support'
+              ? item.role
+              : sourceNature === 'self_statement' ? 'direct' : 'indirect'
+            const sender = String(item.sender || '')
+            const sourceId = evidenceSourceId(item)
+            const sessionId = String(item.sessionId || '')
+            evidence.run(
+              claim.id, sourceId, item.messageId, sessionId, item.timestamp,
+              sender, item.excerpt, evidenceRole
+            )
+            this.mergeStructuredEvidenceQuality('claim', claim.id, item, evidenceRole)
+          }
+          continue
+        }
+        const existingValues = this.db.prepare(`
+          SELECT id,COALESCE(object_entity_id,object_value,'') AS value,
+            polarity,valid_from,valid_to,
+            CASE WHEN
+              EXISTS(
+                SELECT 1 FROM memory_corrections correction
+                WHERE correction.item_kind='claim' AND correction.item_id=claims.id
+              ) OR EXISTS(
+                SELECT 1 FROM memory_review_decisions decision
+                WHERE decision.item_kind='claim' AND decision.item_id=claims.id
+                  AND decision.protect_from_extraction=1
+              )
+            THEN 1 ELSE 0 END AS protected_from_extraction
+          FROM claims WHERE subject_id=? AND predicate=? AND status!='rejected' AND id!=?
+        `).all(claim.subjectId, claim.predicate, claim.id) as Array<{
+          id: string
+          value: string
+          polarity: string
+          valid_from?: string
+          valid_to?: string
+          protected_from_extraction: number
+        }>
+        const incomingValue = String(claim.objectEntityId || claim.objectValue || '')
+        const incomingPolarity = claim.polarity === 'negative' ? 'negative' : 'positive'
+        const conflicting = existingValues.filter(item => {
+          if (!item.value) return false
+          if (item.value === incomingValue && item.polarity === incomingPolarity) return false
+          if (item.valid_to && claim.validFrom && item.valid_to < claim.validFrom) return false
+          if (claim.validTo && item.valid_from && claim.validTo < item.valid_from) return false
+          return true
+        })
+        const conflictGroup = conflicting.length
+          ? `conflict_${Buffer.from(`${claim.subjectId}|${claim.predicate}`).toString('base64url').slice(0, 24)}`
+          : null
+        if (conflictGroup) {
+          const ids = conflicting
+            .filter(item => !item.protected_from_extraction)
+            .map(item => item.id)
+          if (ids.length) {
+            const placeholders = ids.map(() => '?').join(',')
+            this.db.prepare(`UPDATE claims SET status='candidate',conflict_group=?,updated_at=?
+              WHERE id IN (${placeholders})
+                AND (status!='candidate' OR conflict_group IS NOT ?)`)
+              .run(conflictGroup, now, ...ids, conflictGroup)
+            for (const id of ids) {
+              const documentId = `claim:${id}`
+              const document = this.db.prepare('SELECT metadata_json FROM search_documents WHERE id=?').get(documentId) as any
+              if (!document) continue
+              let metadata: any = {}
+              try { metadata = JSON.parse(document.metadata_json || '{}') } catch {}
+              metadata.status = 'candidate'
+              metadata.conflictGroup = conflictGroup
+              this.updateSearchDocumentMetadataIfChanged(documentId, metadata, now)
+            }
+          }
+          claim.status = 'candidate'
+        }
+        upsert.run(claim.id, claim.subjectId, claim.predicate, claim.objectEntityId || null, claim.objectValue || null,
+          incomingPolarity, claim.valueType || 'text', claim.confidence, claim.status || 'candidate', claim.validFrom || null,
+          claim.validTo || null, claim.searchText, claim.createdAt || now, now, sourceNature, conflictGroup)
         for (const item of claim.evidence || []) {
           const evidenceRole = item.role && item.role !== 'support'
             ? item.role
-            : sourceNature === 'self_statement' ? 'direct' : 'indirect'
+            : sourceNature === 'self_statement' || sourceNature === 'human_confirmation' ? 'direct' : 'indirect'
           const sender = String(item.sender || '')
           const sourceId = evidenceSourceId(item)
           const sessionId = String(item.sessionId || '')
@@ -7178,257 +7266,209 @@ export class PersonalMemoryStore {
           )
           this.mergeStructuredEvidenceQuality('claim', claim.id, item, evidenceRole)
         }
-        continue
-      }
-      const existingValues = this.db.prepare(`
-        SELECT id,COALESCE(object_entity_id,object_value,'') AS value,
-          polarity,valid_from,valid_to,
-          CASE WHEN
-            EXISTS(
-              SELECT 1 FROM memory_corrections correction
-              WHERE correction.item_kind='claim' AND correction.item_id=claims.id
-            ) OR EXISTS(
-              SELECT 1 FROM memory_review_decisions decision
-              WHERE decision.item_kind='claim' AND decision.item_id=claims.id
-                AND decision.protect_from_extraction=1
+        for (const prior of conflicting) {
+          for (const item of claim.evidence || []) {
+            const sender = String(item.sender || '')
+            const sourceId = evidenceSourceId(item)
+            const sessionId = String(item.sessionId || '')
+            evidence.run(
+              prior.id, sourceId, item.messageId, sessionId, item.timestamp,
+              sender, item.excerpt, 'contradiction'
             )
-          THEN 1 ELSE 0 END AS protected_from_extraction
-        FROM claims WHERE subject_id=? AND predicate=? AND status!='rejected' AND id!=?
-      `).all(claim.subjectId, claim.predicate, claim.id) as Array<{
-        id: string
-        value: string
-        polarity: string
-        valid_from?: string
-        valid_to?: string
-        protected_from_extraction: number
-      }>
-      const incomingValue = String(claim.objectEntityId || claim.objectValue || '')
-      const incomingPolarity = claim.polarity === 'negative' ? 'negative' : 'positive'
-      const conflicting = existingValues.filter(item => {
-        if (!item.value) return false
-        if (item.value === incomingValue && item.polarity === incomingPolarity) return false
-        if (item.valid_to && claim.validFrom && item.valid_to < claim.validFrom) return false
-        if (claim.validTo && item.valid_from && claim.validTo < item.valid_from) return false
-        return true
-      })
-      const conflictGroup = conflicting.length
-        ? `conflict_${Buffer.from(`${claim.subjectId}|${claim.predicate}`).toString('base64url').slice(0, 24)}`
-        : null
-      if (conflictGroup) {
-        const ids = conflicting
-          .filter(item => !item.protected_from_extraction)
-          .map(item => item.id)
-        if (ids.length) {
-          const placeholders = ids.map(() => '?').join(',')
-          this.db.prepare(`UPDATE claims SET status='candidate',conflict_group=?,updated_at=?
-            WHERE id IN (${placeholders})
-              AND (status!='candidate' OR conflict_group IS NOT ?)`)
-            .run(conflictGroup, now, ...ids, conflictGroup)
-          for (const id of ids) {
-            const documentId = `claim:${id}`
-            const document = this.db.prepare('SELECT metadata_json FROM search_documents WHERE id=?').get(documentId) as any
-            if (!document) continue
-            let metadata: any = {}
-            try { metadata = JSON.parse(document.metadata_json || '{}') } catch {}
-            metadata.status = 'candidate'
-            metadata.conflictGroup = conflictGroup
-            this.updateSearchDocumentMetadataIfChanged(documentId, metadata, now)
+            this.mergeStructuredEvidenceQuality('claim', prior.id, item, 'contradiction')
+          }
+          const priorEvidence = this.db.prepare(`
+            SELECT source_id,message_id,session_id,timestamp,sender,excerpt FROM evidence
+            WHERE claim_id=? AND evidence_role!='contradiction'
+          `).all(prior.id) as any[]
+          for (const item of priorEvidence) {
+            evidence.run(
+              claim.id, item.source_id, item.message_id, item.session_id, item.timestamp,
+              item.sender, item.excerpt, 'contradiction'
+            )
+            this.mergeStructuredEvidenceQuality('claim', claim.id, item, 'contradiction')
           }
         }
-        claim.status = 'candidate'
+        this.upsertSearchDocument(`claim:${claim.id}`, 'claim', claim.id, claim.predicate, claim.searchText,
+          {
+            subjectId: claim.subjectId,
+            objectEntityId: claim.objectEntityId,
+            polarity: incomingPolarity,
+            valueType: claim.valueType || 'text',
+            status: claim.status,
+            sourceNature,
+            correctionCount: 0,
+            validFrom: claim.validFrom,
+            validTo: claim.validTo
+          }, now)
       }
-      upsert.run(claim.id, claim.subjectId, claim.predicate, claim.objectEntityId || null, claim.objectValue || null,
-        incomingPolarity, claim.valueType || 'text', claim.confidence, claim.status || 'candidate', claim.validFrom || null,
-        claim.validTo || null, claim.searchText, claim.createdAt || now, now, sourceNature, conflictGroup)
-      for (const item of claim.evidence || []) {
-        const evidenceRole = item.role && item.role !== 'support'
-          ? item.role
-          : sourceNature === 'self_statement' || sourceNature === 'human_confirmation' ? 'direct' : 'indirect'
-        const sender = String(item.sender || '')
-        const sourceId = evidenceSourceId(item)
-        const sessionId = String(item.sessionId || '')
-        evidence.run(
-          claim.id, sourceId, item.messageId, sessionId, item.timestamp,
-          sender, item.excerpt, evidenceRole
-        )
-        this.mergeStructuredEvidenceQuality('claim', claim.id, item, evidenceRole)
+      if (withinTransaction) this.db.exec('RELEASE SAVEPOINT weflow_upsert_claims')
+      else this.db.exec('COMMIT')
+    } catch (error) {
+      if (withinTransaction) {
+        this.db.exec('ROLLBACK TO SAVEPOINT weflow_upsert_claims')
+        this.db.exec('RELEASE SAVEPOINT weflow_upsert_claims')
+      } else {
+        this.db.exec('ROLLBACK')
       }
-      for (const prior of conflicting) {
-        for (const item of claim.evidence || []) {
-          const sender = String(item.sender || '')
-          const sourceId = evidenceSourceId(item)
-          const sessionId = String(item.sessionId || '')
-          evidence.run(
-            prior.id, sourceId, item.messageId, sessionId, item.timestamp,
-            sender, item.excerpt, 'contradiction'
-          )
-          this.mergeStructuredEvidenceQuality('claim', prior.id, item, 'contradiction')
-        }
-        const priorEvidence = this.db.prepare(`
-          SELECT source_id,message_id,session_id,timestamp,sender,excerpt FROM evidence
-          WHERE claim_id=? AND evidence_role!='contradiction'
-        `).all(prior.id) as any[]
-        for (const item of priorEvidence) {
-          evidence.run(
-            claim.id, item.source_id, item.message_id, item.session_id, item.timestamp,
-            item.sender, item.excerpt, 'contradiction'
-          )
-          this.mergeStructuredEvidenceQuality('claim', claim.id, item, 'contradiction')
-        }
-      }
-      this.upsertSearchDocument(`claim:${claim.id}`, 'claim', claim.id, claim.predicate, claim.searchText,
-        {
-          subjectId: claim.subjectId,
-          objectEntityId: claim.objectEntityId,
-          polarity: incomingPolarity,
-          valueType: claim.valueType || 'text',
-          status: claim.status,
-          sourceNature,
-          correctionCount: 0,
-          validFrom: claim.validFrom,
-          validTo: claim.validTo
-        }, now)
+      throw error
     }
   }
 
   upsertEvents(events: any[]): void {
     if (!this.db || !events.length) return
-    const now = new Date().toISOString()
-    const upsert = this.db.prepare(`
-      INSERT INTO events(
-        id,event_type,title,description,start_at,end_at,location,confidence,status,source_nature,search_text,created_at,updated_at
-      )
-      VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)
-      ON CONFLICT(id) DO UPDATE SET description=excluded.description,start_at=COALESCE(excluded.start_at,start_at),
-        end_at=COALESCE(excluded.end_at,end_at),location=COALESCE(excluded.location,location),
-        confidence=MAX(confidence,excluded.confidence),status=excluded.status,source_nature=excluded.source_nature,
-        search_text=excluded.search_text,updated_at=excluded.updated_at
-      WHERE events.description IS NOT excluded.description
-        OR (excluded.start_at IS NOT NULL AND events.start_at IS NOT excluded.start_at)
-        OR (excluded.end_at IS NOT NULL AND events.end_at IS NOT excluded.end_at)
-        OR (excluded.location IS NOT NULL AND events.location IS NOT excluded.location)
-        OR events.confidence<excluded.confidence
-        OR events.status IS NOT excluded.status
-        OR events.source_nature IS NOT excluded.source_nature
-        OR events.search_text IS NOT excluded.search_text
-    `)
-    const participant = this.db.prepare('INSERT OR IGNORE INTO event_participants(event_id,entity_id,role) VALUES(?,?,?)')
-    const evidence = this.db.prepare(`
-      INSERT OR IGNORE INTO evidence(
-        event_id,source_id,message_id,session_id,timestamp,sender,excerpt,evidence_role
-      ) VALUES(?,?,?,?,?,?,?,?)
-    `)
-    for (const event of events) {
-      const evidenceItems = event.evidence || []
-      if (evidenceItems.length) {
-        const findMatches = this.db.prepare(`
-          SELECT DISTINCT ev.id,ev.start_at,
-            EXISTS(
-              SELECT 1 FROM memory_corrections correction
-              WHERE correction.item_kind='event' AND correction.item_id=ev.id
-            ) AS corrected,
-            EXISTS(
-              SELECT 1 FROM memory_review_decisions decision
-              WHERE decision.item_kind='event' AND decision.item_id=ev.id
-                AND decision.protect_from_extraction=1
-            ) AS protected_review,
-            CASE ev.status
-              WHEN 'confirmed' THEN 3 WHEN 'candidate' THEN 2
-              WHEN 'cancelled' THEN 1 ELSE 0
-            END AS status_rank,
-            ev.created_at
-          FROM events ev
-          JOIN evidence e ON e.event_id=ev.id
-          WHERE e.source_id=? AND e.session_id=? AND e.message_id=?
-          ORDER BY corrected DESC,protected_review DESC,status_rank DESC,
-            (ev.start_at IS NOT NULL) DESC,LENGTH(ev.title) DESC,ev.created_at ASC,ev.id ASC
-        `)
-        const matches = [...new Map(evidenceItems.flatMap((item: any) =>
-          (findMatches.all(
-            evidenceSourceId(item),
-            String(item.sessionId || ''),
-            String(item.messageId || '')
-          ) as Array<{
-            id: string
-            start_at?: string
-            corrected?: number
-            protected_review?: number
-          }>).map(match => [match.id, match])
-        )).values()]
-        const compatible = matches.filter(match =>
-          !match.start_at || !event.startAt || match.start_at === event.startAt)
-        const protectedMatches = compatible.filter(match =>
-          Boolean(match.corrected || match.protected_review))
-        const reusable = protectedMatches.length > 1 ? undefined : compatible[0]
-        if (reusable) event.id = reusable.id
-      }
-      if (this.isMemoryItemSuppressed('event', event.id, this.memoryItemSemanticFingerprint('event', event))) continue
-      const manuallyReviewed = Boolean(this.db.prepare(`
-        SELECT 1 FROM memory_review_decisions
-        WHERE item_kind='event' AND item_id=? AND protect_from_extraction=1 LIMIT 1
-      `).get(event.id))
-      const manuallyCorrected = Boolean(this.db.prepare(`
-        SELECT 1 FROM memory_corrections WHERE item_kind='event' AND item_id=? LIMIT 1
-      `).get(event.id))
-      if (manuallyCorrected || manuallyReviewed) {
+    const withinTransaction = this.db.inTransaction
+    if (withinTransaction) this.db.exec('SAVEPOINT weflow_upsert_events')
+    else this.db.exec('BEGIN IMMEDIATE')
+    try {
+      const now = new Date().toISOString()
+      const upsert = this.db.prepare(`
+        INSERT INTO events(
+          id,event_type,title,description,start_at,end_at,location,confidence,status,source_nature,search_text,created_at,updated_at
+        )
+        VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)
+        ON CONFLICT(id) DO UPDATE SET description=excluded.description,start_at=COALESCE(excluded.start_at,start_at),
+          end_at=COALESCE(excluded.end_at,end_at),location=COALESCE(excluded.location,location),
+          confidence=MAX(confidence,excluded.confidence),status=excluded.status,source_nature=excluded.source_nature,
+          search_text=excluded.search_text,updated_at=excluded.updated_at
+        WHERE events.description IS NOT excluded.description
+          OR (excluded.start_at IS NOT NULL AND events.start_at IS NOT excluded.start_at)
+          OR (excluded.end_at IS NOT NULL AND events.end_at IS NOT excluded.end_at)
+          OR (excluded.location IS NOT NULL AND events.location IS NOT excluded.location)
+          OR events.confidence<excluded.confidence
+          OR events.status IS NOT excluded.status
+          OR events.source_nature IS NOT excluded.source_nature
+          OR events.search_text IS NOT excluded.search_text
+      `)
+      const participant = this.db.prepare('INSERT OR IGNORE INTO event_participants(event_id,entity_id,role) VALUES(?,?,?)')
+      const evidence = this.db.prepare(`
+        INSERT OR IGNORE INTO evidence(
+          event_id,source_id,message_id,session_id,timestamp,sender,excerpt,evidence_role
+        ) VALUES(?,?,?,?,?,?,?,?)
+      `)
+      for (const rawEvent of events) {
+        const event = { ...rawEvent }
+        const evidenceItems = event.evidence || []
+        if (evidenceItems.length) {
+          const findMatches = this.db.prepare(`
+            SELECT DISTINCT ev.id,ev.start_at,
+              EXISTS(
+                SELECT 1 FROM memory_corrections correction
+                WHERE correction.item_kind='event' AND correction.item_id=ev.id
+              ) AS corrected,
+              EXISTS(
+                SELECT 1 FROM memory_review_decisions decision
+                WHERE decision.item_kind='event' AND decision.item_id=ev.id
+                  AND decision.protect_from_extraction=1
+              ) AS protected_review,
+              CASE ev.status
+                WHEN 'confirmed' THEN 3 WHEN 'candidate' THEN 2
+                WHEN 'cancelled' THEN 1 ELSE 0
+              END AS status_rank,
+              ev.created_at
+            FROM events ev
+            JOIN evidence e ON e.event_id=ev.id
+            WHERE e.source_id=? AND e.session_id=? AND e.message_id=?
+            ORDER BY corrected DESC,protected_review DESC,status_rank DESC,
+              (ev.start_at IS NOT NULL) DESC,LENGTH(ev.title) DESC,ev.created_at ASC,ev.id ASC
+          `)
+          const matches = [...new Map(evidenceItems.flatMap((item: any) =>
+            (findMatches.all(
+              evidenceSourceId(item),
+              String(item.sessionId || ''),
+              String(item.messageId || '')
+            ) as Array<{
+              id: string
+              start_at?: string
+              corrected?: number
+              protected_review?: number
+            }>).map(match => [match.id, match])
+          )).values()]
+          const compatible = matches.filter(match =>
+            !match.start_at || !event.startAt || match.start_at === event.startAt)
+          const protectedMatches = compatible.filter(match =>
+            Boolean(match.corrected || match.protected_review))
+          const reusable = protectedMatches.length > 1 ? undefined : compatible[0]
+          if (reusable) event.id = reusable.id
+        }
+        if (this.isMemoryItemSuppressed('event', event.id, this.memoryItemSemanticFingerprint('event', event))) continue
+        const manuallyReviewed = Boolean(this.db.prepare(`
+          SELECT 1 FROM memory_review_decisions
+          WHERE item_kind='event' AND item_id=? AND protect_from_extraction=1 LIMIT 1
+        `).get(event.id))
+        const manuallyCorrected = Boolean(this.db.prepare(`
+          SELECT 1 FROM memory_corrections WHERE item_kind='event' AND item_id=? LIMIT 1
+        `).get(event.id))
+        if (manuallyCorrected || manuallyReviewed) {
+          for (const item of event.evidence || []) {
+            const sender = String(item.sender || '')
+            const sourceId = evidenceSourceId(item)
+            const sessionId = String(item.sessionId || '')
+            evidence.run(
+              event.id, sourceId, item.messageId, sessionId, item.timestamp, sender, item.excerpt,
+              item.role && item.role !== 'support' ? item.role : 'indirect'
+            )
+            this.mergeStructuredEvidenceQuality(
+              'event', event.id, item,
+              item.role && item.role !== 'support' ? item.role : 'indirect'
+            )
+          }
+          if (event.status === 'cancelled') {
+            this.db.prepare(`
+              UPDATE events SET status='cancelled',updated_at=?
+              WHERE id=? AND status!='cancelled'
+            `).run(now, event.id)
+            const document = this.db.prepare('SELECT metadata_json FROM search_documents WHERE id=?')
+              .get(`event:${event.id}`) as any
+            if (document) {
+              let metadata: any = {}
+              try { metadata = JSON.parse(document.metadata_json || '{}') } catch {}
+              metadata.status = 'cancelled'
+              this.updateSearchDocumentMetadataIfChanged(
+                `event:${event.id}`, metadata, now
+              )
+            }
+          }
+          continue
+        }
+        upsert.run(event.id, event.eventType, event.title, event.description || '', event.startAt || null, event.endAt || null,
+          event.location || null, event.confidence, event.status || 'candidate', event.sourceNature || 'inference',
+          event.searchText, event.createdAt || now, now)
+        for (const item of event.participants || []) participant.run(event.id, item.entityId, item.role || 'participant')
         for (const item of event.evidence || []) {
           const sender = String(item.sender || '')
           const sourceId = evidenceSourceId(item)
           const sessionId = String(item.sessionId || '')
           evidence.run(
             event.id, sourceId, item.messageId, sessionId, item.timestamp, sender, item.excerpt,
-            item.role && item.role !== 'support' ? item.role : 'indirect'
+            item.role && item.role !== 'support' ? item.role : 'direct'
           )
           this.mergeStructuredEvidenceQuality(
             'event', event.id, item,
-            item.role && item.role !== 'support' ? item.role : 'indirect'
+            item.role && item.role !== 'support' ? item.role : 'direct'
           )
         }
-        if (event.status === 'cancelled') {
-          this.db.prepare(`
-            UPDATE events SET status='cancelled',updated_at=?
-            WHERE id=? AND status!='cancelled'
-          `).run(now, event.id)
-          const document = this.db.prepare('SELECT metadata_json FROM search_documents WHERE id=?')
-            .get(`event:${event.id}`) as any
-          if (document) {
-            let metadata: any = {}
-            try { metadata = JSON.parse(document.metadata_json || '{}') } catch {}
-            metadata.status = 'cancelled'
-            this.updateSearchDocumentMetadataIfChanged(
-              `event:${event.id}`, metadata, now
-            )
-          }
-        }
-        continue
+        this.upsertSearchDocument(`event:${event.id}`, 'event', event.id, event.title, event.searchText,
+          {
+            eventType: event.eventType,
+            startAt: event.startAt,
+            endAt: event.endAt,
+            participantIds: (event.participants || []).map((item: any) => item.entityId),
+            status: event.status,
+            sourceNature: event.sourceNature || 'inference',
+            correctionCount: 0
+          }, now)
       }
-      upsert.run(event.id, event.eventType, event.title, event.description || '', event.startAt || null, event.endAt || null,
-        event.location || null, event.confidence, event.status || 'candidate', event.sourceNature || 'inference',
-        event.searchText, event.createdAt || now, now)
-      for (const item of event.participants || []) participant.run(event.id, item.entityId, item.role || 'participant')
-      for (const item of event.evidence || []) {
-        const sender = String(item.sender || '')
-        const sourceId = evidenceSourceId(item)
-        const sessionId = String(item.sessionId || '')
-        evidence.run(
-          event.id, sourceId, item.messageId, sessionId, item.timestamp, sender, item.excerpt,
-          item.role && item.role !== 'support' ? item.role : 'direct'
-        )
-        this.mergeStructuredEvidenceQuality(
-          'event', event.id, item,
-          item.role && item.role !== 'support' ? item.role : 'direct'
-        )
+      if (withinTransaction) this.db.exec('RELEASE SAVEPOINT weflow_upsert_events')
+      else this.db.exec('COMMIT')
+    } catch (error) {
+      if (withinTransaction) {
+        this.db.exec('ROLLBACK TO SAVEPOINT weflow_upsert_events')
+        this.db.exec('RELEASE SAVEPOINT weflow_upsert_events')
+      } else {
+        this.db.exec('ROLLBACK')
       }
-      this.upsertSearchDocument(`event:${event.id}`, 'event', event.id, event.title, event.searchText,
-        {
-          eventType: event.eventType,
-          startAt: event.startAt,
-          endAt: event.endAt,
-          participantIds: (event.participants || []).map((item: any) => item.entityId),
-          status: event.status,
-          sourceNature: event.sourceNature || 'inference',
-          correctionCount: 0
-        }, now)
+      throw error
     }
   }
 

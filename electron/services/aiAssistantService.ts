@@ -2537,8 +2537,7 @@ export class AiAssistantService {
         participants, evidence, createdAt: now
       }]
     })
-    personalMemoryStore.upsertClaims(claims)
-    personalMemoryStore.upsertEvents(events)
+    personalMemoryStore.upsertClaimsAndEvents(claims, events)
   }
 
   private enqueueIdentityCandidates(entity: GraphEntity, now: string): void {
