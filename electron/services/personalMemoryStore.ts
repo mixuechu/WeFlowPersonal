@@ -33,7 +33,7 @@ type MemoryGraph = {
 }
 
 type MemoryEvidenceSource = 'wechat' | 'documents' | 'calendar' | 'mail' | 'legacy'
-const TASK_EVIDENCE_FINGERPRINT_VERSION = 2
+const TASK_EVIDENCE_FINGERPRINT_VERSION = 3
 
 function relationSearchText(
   subjectName: unknown,
@@ -113,7 +113,19 @@ function canonicalTaskEvidenceRows(rows: any[][]): any[][] {
       String(row?.[5] || '').slice(0, 2000)
     ]
     const identity = JSON.stringify(normalized.slice(0, 3))
-    if (!unique.has(identity)) unique.set(identity, normalized)
+    const existing = unique.get(identity)
+    if (!existing) {
+      unique.set(identity, normalized)
+      continue
+    }
+    unique.set(identity, [
+      existing[0],
+      existing[1],
+      existing[2],
+      Math.max(Number(existing[3] || 0), Number(normalized[3] || 0)),
+      String(normalized[4] || '') || String(existing[4] || ''),
+      String(normalized[5] || '') || String(existing[5] || '')
+    ])
   }
   return [...unique.values()]
     .sort((left, right) => JSON.stringify(left).localeCompare(JSON.stringify(right)))
@@ -1219,6 +1231,7 @@ export class PersonalMemoryStore {
     this.ensureStructuredMemoryRevisionTriggers()
     this.ensureGraphReviewRevisionTriggers()
     this.normalizeTaskHistoryEvidence()
+    this.repairTaskEvidenceArchiveFromHistory()
     this.compactTaskReviewSnapshots()
     this.backfillCrossStoreMutationAffectedCounts()
     this.compactFailedCrossStoreMutationPayloads()
@@ -4132,6 +4145,87 @@ export class PersonalMemoryStore {
     })()
   }
 
+  private repairTaskEvidenceArchiveFromHistory(): void {
+    if (!this.db) return
+    const metaKey = 'task_evidence_archive_integrity_v1'
+    const existing = this.db.prepare('SELECT value FROM schema_meta WHERE key=?').get(metaKey) as any
+    if (existing?.value) return
+    const rows = this.db.prepare(`
+      SELECT history.task_id,history.evidence_json
+      FROM task_history_evidence history
+      JOIN search_documents document ON document.id='task:' || history.task_id
+      WHERE document.document_type='task' AND history.evidence_json NOT IN ('','[]')
+      ORDER BY history.task_id,history.created_at,history.change_set_id
+    `).all() as Array<{ task_id: string; evidence_json: string }>
+    const upsertEvidence = this.db.prepare(`
+      INSERT INTO search_document_evidence(
+        document_id,source_id,message_id,session_id,timestamp,sender,excerpt
+      ) VALUES(?,?,?,?,?,?,?)
+      ON CONFLICT(document_id,source_id,session_id,message_id) DO UPDATE SET
+        timestamp=MAX(search_document_evidence.timestamp,excluded.timestamp),
+        sender=CASE WHEN excluded.sender!='' THEN excluded.sender
+          ELSE search_document_evidence.sender END,
+        excerpt=CASE WHEN length(excluded.excerpt)>=length(search_document_evidence.excerpt)
+          THEN excluded.excerpt ELSE search_document_evidence.excerpt END
+    `)
+    let historyRowsRead = 0
+    let validEvidenceRows = 0
+    let rowsInserted = 0
+    let rowsEnriched = 0
+    const beforeCount = Number(this.db.prepare(`
+      SELECT COUNT(*) AS count FROM search_document_evidence
+      WHERE document_id LIKE 'task:%'
+    `).get()?.count || 0)
+    const now = new Date().toISOString()
+    this.db.transaction(() => {
+      for (const row of rows) {
+        historyRowsRead += 1
+        const evidence = parseJsonArray(row.evidence_json)
+        for (const item of evidence) {
+          const messageId = String(item?.messageId ?? item?.message_id ?? '').trim()
+          if (!messageId) continue
+          validEvidenceRows += 1
+          const sourceId = evidenceSourceId(item)
+          const sessionId = String(item?.sessionId ?? item?.session_id ?? '').trim()
+          const previous = this.db!.prepare(`
+            SELECT timestamp,sender,excerpt FROM search_document_evidence
+            WHERE document_id=? AND source_id=? AND session_id=? AND message_id=?
+          `).get(`task:${row.task_id}`, sourceId, sessionId, messageId) as any
+          const timestamp = Number(item?.timestamp || 0)
+          const sender = String(item?.sender || '').slice(0, 500)
+          const excerpt = String(item?.excerpt || '').slice(0, 2000)
+          upsertEvidence.run(
+            `task:${row.task_id}`, sourceId, messageId, sessionId,
+            timestamp, sender, excerpt
+          )
+          if (!previous) rowsInserted += 1
+          else if (
+            timestamp > Number(previous.timestamp || 0)
+            || (sender && sender !== String(previous.sender || ''))
+            || excerpt.length > String(previous.excerpt || '').length
+          ) rowsEnriched += 1
+        }
+      }
+      const afterCount = Number(this.db!.prepare(`
+        SELECT COUNT(*) AS count FROM search_document_evidence
+        WHERE document_id LIKE 'task:%'
+      `).get()?.count || 0)
+      this.db!.prepare(`
+        INSERT INTO schema_meta(key,value,updated_at) VALUES(?,?,?)
+      `).run(metaKey, JSON.stringify({
+        version: 1,
+        policy: 'sqlcipher_complete_archive_state_hotset_50',
+        checkedAt: now,
+        historyRowsRead,
+        validEvidenceRows,
+        rowsBefore: beforeCount,
+        rowsAfter: afterCount,
+        rowsInserted,
+        rowsEnriched
+      }), now)
+    })()
+  }
+
   private compactTaskReviewSnapshots(): void {
     if (!this.db) return
     const metaKey = 'task_review_snapshot_storage_v2'
@@ -4892,6 +4986,11 @@ export class PersonalMemoryStore {
       `).get() as any
       try {
         const audit = JSON.parse(String(row?.value || '{}'))
+        const archiveRow = this.db!.prepare(`
+          SELECT value FROM schema_meta WHERE key='task_evidence_archive_integrity_v1'
+        `).get() as any
+        let archive: any = {}
+        try { archive = JSON.parse(String(archiveRow?.value || '{}')) } catch {}
         return {
           version: Number(audit.version || 0),
           checkedAt: String(audit.checkedAt || row?.updated_at || ''),
@@ -4902,6 +5001,17 @@ export class PersonalMemoryStore {
           repairedDerivedDocumentsTotal: Number(audit.repairedDerivedDocumentsTotal || 0),
           repairedMissingDocumentsTotal: Number(audit.repairedMissingDocumentsTotal || 0),
           repairedEvidenceSetsTotal: Number(audit.repairedEvidenceSetsTotal || 0),
+          evidenceArchive: {
+            version: Number(archive.version || 0),
+            policy: String(archive.policy || ''),
+            checkedAt: String(archive.checkedAt || ''),
+            historyRowsRead: Number(archive.historyRowsRead || 0),
+            validEvidenceRows: Number(archive.validEvidenceRows || 0),
+            rowsBefore: Number(archive.rowsBefore || 0),
+            rowsAfter: Number(archive.rowsAfter || 0),
+            rowsInserted: Number(archive.rowsInserted || 0),
+            rowsEnriched: Number(archive.rowsEnriched || 0)
+          },
           currentMismatches: Number(audit.currentMismatches || 0)
         }
       } catch {
@@ -4915,13 +5025,24 @@ export class PersonalMemoryStore {
           repairedDerivedDocumentsTotal: 0,
           repairedMissingDocumentsTotal: 0,
           repairedEvidenceSetsTotal: 0,
+          evidenceArchive: {
+            version: 0,
+            policy: '',
+            checkedAt: '',
+            historyRowsRead: 0,
+            validEvidenceRows: 0,
+            rowsBefore: 0,
+            rowsAfter: 0,
+            rowsInserted: 0,
+            rowsEnriched: 0
+          },
           currentMismatches: 0
         }
       }
     })()
     const liveTaskSearchIndex = this.getTaskSearchIndexLiveHealth()
     Object.assign(taskSearchIndex, liveTaskSearchIndex)
-    const taskSearchIndexHealthy = (taskSearchIndex.version === 1
+    const taskSearchIndexHealthy = ([1, 2].includes(taskSearchIndex.version)
       || liveTaskSearchIndex.authoritativeTasks === 0)
       && liveTaskSearchIndex.currentMismatches === 0
     const memorySearchRevision = this.getMemorySearchRevisionHealth()
@@ -5087,7 +5208,7 @@ export class PersonalMemoryStore {
     this.ensureStructuredEvidenceRevisionLedger()
     this.ensureGeneralEvidenceRevisionLedger()
     this.repairStructuredSearchIndex()
-    this.syncTasks(Array.isArray(tasks) ? tasks : [])
+    this.syncTasks(Array.isArray(tasks) ? tasks : [], false, true)
     const after = this.getDiagnostics()
     const beforeIndex = before.structuredSearchIndex || {}
     const afterIndex = after.structuredSearchIndex || {}
@@ -7795,7 +7916,11 @@ export class PersonalMemoryStore {
     return { id: resourceId, content, metadata, updatedAt: now }
   }
 
-  syncTasks(tasks: any[], withinTransaction = false): void {
+  syncTasks(
+    tasks: any[],
+    withinTransaction = false,
+    preserveExistingEvidence = false
+  ): void {
     if (!this.db) return
     const now = new Date().toISOString()
     if (!withinTransaction) this.db.exec('BEGIN IMMEDIATE')
@@ -7879,19 +8004,26 @@ export class PersonalMemoryStore {
         row.source_id, row.message_id, row.session_id, row.timestamp, row.sender, row.excerpt
       ])
       const storedEvidenceFingerprint = taskEvidenceContentFingerprint(storedEvidenceRows)
+      const authoritativeEvidenceRows = preserveStoredEvidence
+        ? canonicalTaskEvidenceRows(storedEvidenceRows)
+        : canonicalTaskEvidenceRows(
+          preserveExistingEvidence
+            ? [...storedEvidenceRows, ...normalizedEvidence]
+            : normalizedEvidence
+        )
       const evidenceFingerprint = preserveStoredEvidence
         ? (Number(storedSearchMetadata?.evidenceFingerprintVersion || 0)
             === TASK_EVIDENCE_FINGERPRINT_VERSION
           ? String(storedTask?.evidence_fingerprint || '')
           : storedEvidenceFingerprint)
-        : taskEvidenceContentFingerprint(normalizedEvidence)
+        : taskEvidenceContentFingerprint(authoritativeEvidenceRows)
       const searchText = [
         task.title, task.detail, task.owner, ...(task.collaborators || []), task.project,
         task.source, task.assignmentEvidence
       ].filter(Boolean).join('；')
       const evidenceCount = preserveStoredEvidence
         ? canonicalTaskEvidenceRows(storedEvidenceRows).length
-        : canonicalTaskEvidenceRows(normalizedEvidence).length
+        : authoritativeEvidenceRows.length
       const searchMetadata = {
         status: task.status,
         priority: task.priority,
@@ -7943,21 +8075,23 @@ export class PersonalMemoryStore {
       )
       this.upsertSearchDocument(documentId, 'task', task.id, task.title,
         searchText, searchMetadata, now)
-      if (!preserveStoredEvidence) {
+      if (!preserveStoredEvidence && !preserveExistingEvidence) {
         this.db.prepare('DELETE FROM search_document_evidence WHERE document_id=?').run(documentId)
       }
       const insertEvidence = this.db.prepare(`
-        INSERT OR IGNORE INTO search_document_evidence(
+        INSERT INTO search_document_evidence(
           document_id,source_id,message_id,session_id,timestamp,sender,excerpt
         ) VALUES(?,?,?,?,?,?,?)
+        ON CONFLICT(document_id,source_id,session_id,message_id) DO UPDATE SET
+          timestamp=excluded.timestamp,
+          sender=excluded.sender,
+          excerpt=excluded.excerpt
       `)
-      for (const item of Array.isArray(task.evidence) ? task.evidence : []) {
-        const messageId = String(item.messageId || '')
-        if (!messageId) continue
-        insertEvidence.run(documentId,
-          evidenceSourceId({ ...item, sessionId: item.sessionId || sourceSessionId }), messageId,
-          String(item.sessionId || sourceSessionId),
-          Number(item.timestamp || 0), String(item.sender || ''), String(item.excerpt || '').slice(0, 2000))
+      for (const item of authoritativeEvidenceRows) {
+        insertEvidence.run(
+          documentId, item[0], item[1], item[2],
+          item[3], item[4], item[5]
+        )
       }
     }
       const previousRow = this.db.prepare(`
@@ -7970,7 +8104,7 @@ export class PersonalMemoryStore {
         VALUES('task_search_index_integrity',?,?)
         ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_at=excluded.updated_at
       `).run(JSON.stringify({
-        version: 1,
+        version: 2,
         checkedAt: now,
         authoritativeTasks: tasks.length,
         repairedDerivedDocumentsThisSync: repairedDerivedDocuments,
@@ -10415,7 +10549,7 @@ export class PersonalMemoryStore {
         throw new Error('任务恢复载荷无法解析')
       }
       this.recordTaskChangeSets(changes)
-      this.syncTasks(tasks, true)
+      this.syncTasks(tasks, true, true)
       this.db!.prepare(`
         UPDATE task_mutation_commits
         SET status='committed',applied_at=?,recovery_action='applied',last_error=NULL,

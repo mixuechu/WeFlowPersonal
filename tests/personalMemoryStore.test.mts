@@ -3735,7 +3735,7 @@ test('task search keeps original message evidence', () => withStore(store => {
       'legacy', 'message-task-1', '项目群', 1_700_000_001, '客户甲',
       '麻烦你确认一下几点更新'
     ]])).digest('hex'),
-    evidenceFingerprintVersion: 2,
+    evidenceFingerprintVersion: 3,
     evidenceCount: 1
   })
   assert.deepEqual(store.getDocumentEvidence('task', 'task-1').map(item => ({ ...item })), [{
@@ -7227,7 +7227,7 @@ test('task evidence fingerprint detects equal-count content replacement and repa
   assert.equal(repaired.diagnostics.taskSearchIndex.currentEvidenceSetMismatches, 0)
 }))
 
-test('task evidence fingerprint v2 is stable across input ordering', () => withStore(store => {
+test('task evidence fingerprint v3 is stable across input ordering', () => withStore(store => {
   const evidenceRows = [{
     sourceId: 'wechat',
     messageId: 'task-order-message-b',
@@ -7265,6 +7265,114 @@ test('task evidence fingerprint v2 is stable across input ordering', () => withS
   assert.equal(second, first)
   assert.equal(store.getDiagnostics().taskSearchIndexHealthy, true)
 }))
+
+test('authoritative task evidence appends beyond the state hotset and enriches repeated carriers', () => withStore(store => {
+  const task = {
+    id: 'task-complete-evidence-archive',
+    title: '长期累计任务证据',
+    source: '项目群',
+    sourceSessionId: 'long-task-session',
+    status: 'todo',
+    priority: 'medium',
+    classification: 'mine'
+  }
+  const initialEvidence = Array.from({ length: 60 }, (_, index) => ({
+    sourceId: 'wechat',
+    sessionId: 'long-task-session',
+    messageId: `long-task-message-${index}`,
+    timestamp: index,
+    sender: index === 59 ? '' : '群友',
+    excerpt: `历史原文 ${index}`
+  }))
+  store.syncTasks([{ ...task, evidence: initialEvidence }], false, true)
+  const hotset = initialEvidence.slice(-50).map(item => item.messageId === 'long-task-message-59'
+    ? { ...item, timestamp: 100, sender: '补全发送者', excerpt: '补全后的最新原文' }
+    : item)
+  store.syncTasks([{ ...task, evidence: hotset }], false, true)
+
+  const archived = store.listTaskEvidence([task.id]).get(task.id) || []
+  assert.equal(archived.length, 60)
+  assert.equal(archived[0].messageId, 'long-task-message-0')
+  assert.deepEqual(
+    archived.filter(item => item.messageId === 'long-task-message-59')
+      .map(item => [item.timestamp, item.sender, item.excerpt]),
+    [[100, '补全发送者', '补全后的最新原文']]
+  )
+  const diagnostics = store.getDiagnostics()
+  assert.equal(diagnostics.taskSearchIndexHealthy, true)
+  assert.equal(diagnostics.taskSearchIndex.evidenceFingerprintVersion, 3)
+}))
+
+test('startup repairs task evidence truncated by legacy state replacement from change history', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'weflow-task-evidence-archive-repair-'))
+  const databasePath = join(directory, 'memory.sqlite')
+  const first = new PersonalMemoryStore()
+  const task = {
+    id: 'task-legacy-truncated-evidence',
+    title: '恢复旧版截断证据',
+    source: '旧版项目群',
+    sourceSessionId: 'legacy-task-session',
+    status: 'todo',
+    priority: 'high',
+    classification: 'mine'
+  }
+  const historicalEvidence = [{
+    sourceId: 'wechat',
+    sessionId: 'legacy-task-session',
+    messageId: 'legacy-old-message',
+    timestamp: 1,
+    sender: '旧发送者',
+    excerpt: '旧版被热集覆盖的原文'
+  }, {
+    sourceId: 'wechat',
+    sessionId: 'legacy-task-session',
+    messageId: 'legacy-current-message',
+    timestamp: 2,
+    sender: '新发送者',
+    excerpt: '仍在热集中的原文'
+  }]
+  try {
+    first.initialize(databasePath)
+    first.syncTasks([{ ...task, evidence: historicalEvidence }])
+    first.recordTaskChanges(
+      task.id,
+      {},
+      task,
+      'legacy_full_evidence_snapshot',
+      historicalEvidence
+    )
+    first.syncTasks([{ ...task, evidence: historicalEvidence.slice(-1) }])
+    const database = (first as any).db
+    assert.equal(database.prepare(`
+      SELECT COUNT(*) FROM search_document_evidence
+      WHERE document_id='task:task-legacy-truncated-evidence'
+    `).pluck().get(), 1)
+    database.prepare(`
+      DELETE FROM schema_meta WHERE key='task_evidence_archive_integrity_v1'
+    `).run()
+    first.close()
+
+    const reopened = new PersonalMemoryStore()
+    try {
+      reopened.initialize(databasePath)
+      const repaired = reopened.listTaskEvidence([task.id]).get(task.id) || []
+      assert.deepEqual(repaired.map(item => item.messageId), [
+        'legacy-old-message',
+        'legacy-current-message'
+      ])
+      const archive = reopened.getDiagnostics().taskSearchIndex.evidenceArchive
+      assert.equal(archive.rowsInserted, 1)
+      assert.equal(archive.rowsAfter, 2)
+      reopened.syncTasks([{ ...task, evidence: historicalEvidence.slice(-1) }], false, true)
+      assert.equal(reopened.getDiagnostics().taskSearchIndexHealthy, true)
+    } finally {
+      reopened.close()
+    }
+  } finally {
+    first.close()
+    rmSync(directory, { recursive: true, force: true })
+  }
+})
 
 test('task evidence content drift remains blocked across restart', () => {
   const directory = mkdtempSync(join(tmpdir(), 'weflow-task-evidence-restart-'))

@@ -11546,7 +11546,7 @@ function AiAssistantPage() {
             </div>}
             {memoryDiagnostics.taskSearchIndex?.version && <div className={`assistant-recovery-audit ${memoryDiagnostics.taskSearchIndexHealthy ? 'healthy' : 'unhealthy'}`}>
               <header><Search size={15} /><span><b>待办目录与检索派生数据对账</b>
-                <small>每次同步以加密待办目录和当前任务证据为权威，核验搜索正文、范围元数据与证据数量；断电留下的半写入结果会在启动同步时事务化重建。</small>
+                <small>SQLCipher 永久保存完整待办原文档案，状态文件只保留最近 50 条热集；每次同步追加合并并核验搜索正文、范围元数据与证据数量，启动还会从历史变更档案恢复旧版曾截断的原文。</small>
               </span></header>
               <div className="assistant-recovery-current">
                 <span>当前状态 <b>{memoryDiagnostics.taskSearchIndexHealthy ? '一致' : '需要检查'}</b></span>
@@ -11558,6 +11558,9 @@ function AiAssistantPage() {
                 <span>实时证据集合漂移 <b>{Number(memoryDiagnostics.taskSearchIndex.currentEvidenceSetMismatches || 0).toLocaleString()}</b></span>
                 <span>证据内容指纹 <b>v{Number(memoryDiagnostics.taskSearchIndex.evidenceFingerprintVersion || 0)}</b> / 旧版 {Number(memoryDiagnostics.taskSearchIndex.currentLegacyFingerprintDocuments || 0).toLocaleString()}</span>
                 <span>证据集合修复 <b>{Number(memoryDiagnostics.taskSearchIndex.repairedEvidenceSetsTotal || 0).toLocaleString()}</b></span>
+                <span>历史原文恢复 <b>{Number(memoryDiagnostics.taskSearchIndex.evidenceArchive?.rowsInserted || 0).toLocaleString()}</b> 新增 / {Number(memoryDiagnostics.taskSearchIndex.evidenceArchive?.rowsEnriched || 0).toLocaleString()} 补全</span>
+                <span>权威原文规模 <b>{Number(memoryDiagnostics.taskSearchIndex.evidenceArchive?.rowsAfter || 0).toLocaleString()}</b></span>
+                <span>启动热集恢复 <b>{Number(memoryDiagnostics.taskStateStorage?.hotsetRecovery?.restored || 0).toLocaleString()}</b> 个待办 / +{Number(memoryDiagnostics.taskStateStorage?.hotsetRecovery?.evidenceAdded || 0).toLocaleString()} 条</span>
                 <span>最近核对 <b>{memoryDiagnostics.taskSearchIndex.checkedAt
                   ? new Date(memoryDiagnostics.taskSearchIndex.checkedAt).toLocaleString('zh-CN')
                   : '未知'}</b></span>

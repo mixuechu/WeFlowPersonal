@@ -693,6 +693,12 @@ export class AiAssistantService {
     restored: 0,
     lastRunAt: ''
   }
+  private taskEvidenceHotsetRecovery = {
+    checked: 0,
+    restored: 0,
+    evidenceAdded: 0,
+    lastRunAt: ''
+  }
   private taskMutationRecovery = {
     attempted: 0,
     applied: 0,
@@ -830,6 +836,7 @@ export class AiAssistantService {
     this.loadState()
     const sourceMutationRecovery = this.recoverPreparedConversationSourceMutationCommits()
     const taskMutationRecovery = this.recoverPreparedTaskMutationCommits()
+    this.restoreActiveTaskEvidenceHotsets()
     personalMemoryStore.recordProcessedIngestionMessageKeys(
       this.state.cursor.recentMessageIds,
       'legacy-state-hot-cache-migration'
@@ -1258,7 +1265,7 @@ export class AiAssistantService {
     this.stateStorage.encrypted = true
     this.stateStorage.lastWriteAt = new Date().toISOString()
     try {
-      personalMemoryStore.syncTasks(this.state.tasks)
+      personalMemoryStore.syncTasks(this.state.tasks, false, true)
     } catch (error) {
       console.error('[AI Assistant] 个人记忆任务同步失败:', sanitizeDiagnosticText(error))
       if (strictMemorySync) throw error
@@ -1281,6 +1288,34 @@ export class AiAssistantService {
     if (!missing.length) return
     const evidence = personalMemoryStore.listTaskEvidence(missing.map(task => task.id))
     for (const task of missing) task.evidence = evidence.get(task.id) || []
+  }
+
+  private restoreActiveTaskEvidenceHotsets(): void {
+    const active = this.state.tasks.filter(task =>
+      !['done', 'cancelled'].includes(String(task.status || '')))
+    let restored = 0
+    let evidenceAdded = 0
+    for (let offset = 0; offset < active.length; offset += 500) {
+      const batch = active.slice(offset, offset + 500)
+      const evidenceByTask = personalMemoryStore.listTaskEvidence(batch.map(task => task.id))
+      for (const task of batch) {
+        const previous = Array.isArray(task.evidence) ? task.evidence : []
+        const merged = mergeTaskEvidenceHotset(
+          previous,
+          evidenceByTask.get(task.id) || []
+        )
+        if (JSON.stringify(merged) === JSON.stringify(previous)) continue
+        task.evidence = merged
+        restored += 1
+        evidenceAdded += Math.max(0, merged.length - previous.length)
+      }
+    }
+    this.taskEvidenceHotsetRecovery = {
+      checked: active.length,
+      restored,
+      evidenceAdded,
+      lastRunAt: new Date().toISOString()
+    }
   }
 
   private recoverPreparedTaskMutationCommits(): { attempted: number; unattempted: number } {
@@ -5211,6 +5246,7 @@ export class AiAssistantService {
       taskStateStorage: {
         ...getTaskStateStorageStats(this.state.tasks),
         ...personalMemoryStore.getTaskEvidenceStorageStats(),
+        hotsetRecovery: this.taskEvidenceHotsetRecovery,
         historyEvidence: personalMemoryStore.getTaskHistoryEvidenceStorageStats(),
         reviewSnapshots: personalMemoryStore.getTaskReviewSnapshotStorageStats()
       },
