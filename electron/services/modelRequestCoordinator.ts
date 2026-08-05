@@ -16,6 +16,38 @@ export class RequestCoordinator {
   }
 
   async fetch(input: string | URL, init: RequestInit = {}, timeoutMs = 90_000): Promise<Response> {
+    return this.runWithDeadline(
+      input,
+      init,
+      timeoutMs,
+      response => Promise.resolve(response)
+    )
+  }
+
+  async fetchJson(
+    input: string | URL,
+    init: RequestInit = {},
+    timeoutMs = 90_000,
+    tolerateInvalidJson = false
+  ): Promise<{ response: Response; payload: any }> {
+    return this.runWithDeadline(input, init, timeoutMs, async response => {
+      try {
+        return { response, payload: await response.json() }
+      } catch (error) {
+        if (tolerateInvalidJson && error instanceof SyntaxError) {
+          return { response, payload: {} }
+        }
+        throw error
+      }
+    })
+  }
+
+  private async runWithDeadline<T>(
+    input: string | URL,
+    init: RequestInit,
+    timeoutMs: number,
+    consume: (response: Response) => Promise<T>
+  ): Promise<T> {
     if (!this.accepting) throw new Error(`AI 助理正在安全退出，不能开始新的${this.label}`)
     const controller = new AbortController()
     this.controllers.add(controller)
@@ -24,7 +56,8 @@ export class RequestCoordinator {
     }, Math.max(1, timeoutMs))
     timeout.unref?.()
     try {
-      return await this.fetcher(input, { ...init, signal: controller.signal })
+      const response = await this.fetcher(input, { ...init, signal: controller.signal })
+      return await consume(response)
     } finally {
       clearTimeout(timeout)
       this.controllers.delete(controller)

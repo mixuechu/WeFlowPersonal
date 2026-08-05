@@ -47,3 +47,49 @@ test('generic request coordinator identifies local API timeouts and stops retrie
     /不能开始新的WeFlow 本机数据请求/
   )
 })
+
+test('request deadline remains active while a response body is still streaming', async () => {
+  const coordinator = new RequestCoordinator(
+    '慢正文请求',
+    (_input, init) => Promise.resolve({
+      ok: true,
+      json: () => new Promise((_resolve, reject) => {
+        init?.signal?.addEventListener('abort', () => reject(init.signal?.reason), { once: true })
+      })
+    } as Response)
+  )
+  await assert.rejects(
+    coordinator.fetchJson('https://example.invalid/slow-body', {}, 5),
+    /慢正文请求超过 1 秒/
+  )
+  assert.deepEqual(coordinator.getStatus(), { accepting: true, active: 0 })
+})
+
+test('invalid model JSON can be tolerated without hiding transport failures', async () => {
+  const coordinator = new ModelRequestCoordinator(() => Promise.resolve({
+    ok: true,
+    json: async () => { throw new SyntaxError('invalid json') }
+  } as Response))
+  const tolerant = await coordinator.fetchJson(
+    'https://example.invalid/model',
+    {},
+    100,
+    true
+  )
+  assert.deepEqual(tolerant.payload, {})
+  await assert.rejects(
+    coordinator.fetchJson('https://example.invalid/model', {}, 100),
+    /invalid json/
+  )
+
+  const stalled = new ModelRequestCoordinator((_input, init) => Promise.resolve({
+    ok: true,
+    json: () => new Promise((_resolve, reject) => {
+      init?.signal?.addEventListener('abort', () => reject(init.signal?.reason), { once: true })
+    })
+  } as Response))
+  await assert.rejects(
+    stalled.fetchJson('https://example.invalid/model', {}, 5, true),
+    /模型请求超过 1 秒/
+  )
+})

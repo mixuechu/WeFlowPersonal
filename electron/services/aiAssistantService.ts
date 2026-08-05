@@ -1535,10 +1535,9 @@ export class AiAssistantService {
     let lastError: any = null
     for (let attempt = 0; attempt < 3; attempt += 1) {
       try {
-        const response = await this.localApiRequests.fetch(url, {
+        const { response, payload } = await this.localApiRequests.fetchJson(url, {
           headers: { Authorization: `Bearer ${token}` }
         }, 30_000)
-        const payload = await response.json()
         if (!response.ok || payload.success === false) throw new Error(payload.error || `HTTP ${response.status}`)
         return payload
       } catch (error) {
@@ -2165,7 +2164,7 @@ export class AiAssistantService {
     let lastError: any = null
     for (let attempt = 0; attempt < 2; attempt += 1) {
       const startedAt = Date.now()
-      const response = await this.modelRequests.fetch(`${baseUrl}/chat/completions`, {
+      const { response, payload } = await this.modelRequests.fetchJson(`${baseUrl}/chat/completions`, {
         method: 'POST',
         headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -2178,8 +2177,7 @@ export class AiAssistantService {
             { role: 'user', content: outbound.text }
           ]
         })
-      })
-      const payload = await response.json().catch(() => ({}))
+      }, 90_000, true)
       if (!response.ok) throw new Error(payload?.error?.message || `DeepSeek 请求失败 (${response.status})`)
       try {
         return {
@@ -7965,7 +7963,7 @@ export class AiAssistantService {
       searchOptions: modelSearchOptions,
       context
     }), redactionLevel)
-    const response = await this.modelRequests.fetch(`${baseUrl}/chat/completions`, {
+    const { response, payload } = await this.modelRequests.fetchJson(`${baseUrl}/chat/completions`, {
       method: 'POST',
       headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -7975,8 +7973,7 @@ export class AiAssistantService {
           { role: 'user', content: outbound.text }
         ]
       })
-    })
-    const payload = await response.json().catch(() => ({}))
+    }, 90_000, true)
     if (!response.ok) throw new Error(payload?.error?.message || `DeepSeek 请求失败 (${response.status})`)
     const parsed = parseModelJson(payload?.choices?.[0]?.message?.content)
     const grounded = finalizeGroundedMemoryAnswer(parsed, context)
