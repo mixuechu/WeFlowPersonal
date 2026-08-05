@@ -374,6 +374,15 @@ export class PersonalMemoryStore {
     `).run(metadataJson, updatedAt, documentId, metadataJson).changes || 0)
   }
 
+  private advanceMemorySearchRevision(updatedAt = new Date().toISOString()): void {
+    if (!this.db) return
+    this.db.prepare(`
+      UPDATE schema_meta
+      SET value=CAST(CAST(value AS INTEGER)+1 AS TEXT),updated_at=?
+      WHERE key='memory_search_revision'
+    `).run(updatedAt)
+  }
+
   private readRecoveryPayload(
     table: 'ingestion_batch_commits' | 'task_mutation_commits' |
       'conversation_source_mutation_commits',
@@ -4005,6 +4014,7 @@ export class PersonalMemoryStore {
         deleteFts.run(document.id)
         insertFts.run(document.id, document.title, document.search_text)
       }
+      if (ftsMismatches.length) this.advanceMemorySearchRevision(checkedAt)
       for (const repair of metadataRepairs) {
         this.updateSearchDocumentMetadataIfChanged(
           repair.id, repair.metadataJson, repair.updatedAt
@@ -17217,38 +17227,43 @@ export class PersonalMemoryStore {
     if (!this.db) return
     const hash = createHash('sha256').update(searchText).digest('hex')
     const metadataJson = JSON.stringify(metadata)
-    this.db.prepare(`
-      DELETE FROM search_documents
-      WHERE document_type=? AND source_id=? AND id<>?
-    `).run(type, sourceId, id)
-    const result = this.db.prepare(`
-      INSERT INTO search_documents(id,document_type,source_id,title,search_text,metadata_json,content_hash,updated_at)
-      VALUES(?,?,?,?,?,?,?,?)
-      ON CONFLICT(id) DO UPDATE SET
-        document_type=excluded.document_type,source_id=excluded.source_id,
-        title=excluded.title,search_text=excluded.search_text,
-        metadata_json=excluded.metadata_json,
-        embedding_model=CASE WHEN search_documents.content_hash=excluded.content_hash THEN search_documents.embedding_model ELSE NULL END,
-        embedding_dimensions=CASE WHEN search_documents.content_hash=excluded.content_hash THEN search_documents.embedding_dimensions ELSE NULL END,
-        embedding_json=CASE WHEN search_documents.content_hash=excluded.content_hash THEN search_documents.embedding_json ELSE NULL END,
-        content_hash=excluded.content_hash,updated_at=excluded.updated_at
-      WHERE search_documents.document_type!=excluded.document_type
-        OR search_documents.source_id!=excluded.source_id
-        OR search_documents.title!=excluded.title
-        OR search_documents.search_text!=excluded.search_text
-        OR search_documents.metadata_json!=excluded.metadata_json
-        OR search_documents.content_hash!=excluded.content_hash
-    `).run(id, type, sourceId, title, searchText, metadataJson, hash, now)
-    const fts = this.db.prepare(`
-      SELECT title,search_text FROM search_fts WHERE document_id=? LIMIT 1
-    `).get(id) as any
-    if (
-      !result.changes
-      && String(fts?.title || '') === title
-      && String(fts?.search_text || '') === searchText
-    ) return
-    this.db.prepare('DELETE FROM search_fts WHERE document_id=?').run(id)
-    this.db.prepare('INSERT INTO search_fts(document_id,title,search_text) VALUES(?,?,?)').run(id, title, searchText)
+    this.db.transaction(() => {
+      this.db!.prepare(`
+        DELETE FROM search_documents
+        WHERE document_type=? AND source_id=? AND id<>?
+      `).run(type, sourceId, id)
+      const result = this.db!.prepare(`
+        INSERT INTO search_documents(id,document_type,source_id,title,search_text,metadata_json,content_hash,updated_at)
+        VALUES(?,?,?,?,?,?,?,?)
+        ON CONFLICT(id) DO UPDATE SET
+          document_type=excluded.document_type,source_id=excluded.source_id,
+          title=excluded.title,search_text=excluded.search_text,
+          metadata_json=excluded.metadata_json,
+          embedding_model=CASE WHEN search_documents.content_hash=excluded.content_hash THEN search_documents.embedding_model ELSE NULL END,
+          embedding_dimensions=CASE WHEN search_documents.content_hash=excluded.content_hash THEN search_documents.embedding_dimensions ELSE NULL END,
+          embedding_json=CASE WHEN search_documents.content_hash=excluded.content_hash THEN search_documents.embedding_json ELSE NULL END,
+          content_hash=excluded.content_hash,updated_at=excluded.updated_at
+        WHERE search_documents.document_type!=excluded.document_type
+          OR search_documents.source_id!=excluded.source_id
+          OR search_documents.title!=excluded.title
+          OR search_documents.search_text!=excluded.search_text
+          OR search_documents.metadata_json!=excluded.metadata_json
+          OR search_documents.content_hash!=excluded.content_hash
+      `).run(id, type, sourceId, title, searchText, metadataJson, hash, now)
+      const fts = this.db!.prepare(`
+        SELECT title,search_text FROM search_fts WHERE document_id=? LIMIT 1
+      `).get(id) as any
+      if (
+        !result.changes
+        && String(fts?.title || '') === title
+        && String(fts?.search_text || '') === searchText
+      ) return
+      this.db!.prepare('DELETE FROM search_fts WHERE document_id=?').run(id)
+      this.db!.prepare(
+        'INSERT INTO search_fts(document_id,title,search_text) VALUES(?,?,?)'
+      ).run(id, title, searchText)
+      if (!result.changes) this.advanceMemorySearchRevision(now)
+    })()
   }
 }
 

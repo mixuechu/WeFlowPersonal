@@ -4260,6 +4260,67 @@ test('runtime search repair restores derived indexes without reopening the datab
   assert.ok(Date.parse(store.getSearchMaintenanceCheckpoint().checkedAt) > 0)
 }))
 
+test('FTS-only repairs advance search revision exactly once and remain idempotent', () => withStore(store => {
+  const resources = [{
+    id: 'fts-revision-a',
+    resourceType: 'document',
+    title: '海盐检索版本甲',
+    content: '海盐检索版本共同关键词',
+    metadata: { sourceId: 'documents' },
+    updatedAt: '2026-08-05T01:00:00.000Z'
+  }, {
+    id: 'fts-revision-b',
+    resourceType: 'document',
+    title: '海盐检索版本乙',
+    content: '海盐检索版本共同关键词',
+    metadata: { sourceId: 'documents' },
+    updatedAt: '2026-08-05T01:00:01.000Z'
+  }]
+  store.upsertResources(resources)
+  const database = (store as any).db
+  const beforeRepair = Number(store.getMemorySearchRevision())
+  database.prepare(`
+    DELETE FROM search_fts WHERE document_id='resource:fts-revision-a'
+  `).run()
+  assert.equal(Number(store.getMemorySearchRevision()), beforeRepair)
+  assert.equal(Number(database.prepare(`
+    SELECT COUNT(*) AS count FROM search_fts
+    WHERE document_id='resource:fts-revision-a'
+  `).get().count), 0)
+  assert.equal(Number(database.prepare(`
+    SELECT COUNT(*) AS count FROM search_fts
+    WHERE document_id='resource:fts-revision-b'
+  `).get().count), 1)
+
+  ;(store as any).repairStructuredSearchIndex()
+  assert.equal(Number(store.getMemorySearchRevision()), beforeRepair + 1)
+  assert.equal(Number(database.prepare(`
+    SELECT COUNT(*) AS count FROM search_fts
+    WHERE document_id IN ('resource:fts-revision-a','resource:fts-revision-b')
+  `).get().count), 2)
+  assert.deepEqual(
+    new Set(store.searchText('海盐检索版本', 10).map((item: any) => item.id)),
+    new Set(['resource:fts-revision-a', 'resource:fts-revision-b'])
+  )
+  const afterRepair = store.getMemorySearchRevision()
+  ;(store as any).repairStructuredSearchIndex()
+  assert.equal(store.getMemorySearchRevision(), afterRepair)
+
+  database.prepare(`
+    DELETE FROM search_fts WHERE document_id='resource:fts-revision-a'
+  `).run()
+  const beforeWriteRepair = Number(store.getMemorySearchRevision())
+  store.upsertResources([resources[0]])
+  assert.equal(Number(store.getMemorySearchRevision()), beforeWriteRepair + 1)
+  assert.equal(
+    store.searchText('海盐检索版本甲', 10)[0]?.id,
+    'resource:fts-revision-a'
+  )
+  const afterWriteRepair = store.getMemorySearchRevision()
+  store.upsertResources([resources[0]])
+  assert.equal(store.getMemorySearchRevision(), afterWriteRepair)
+}))
+
 test('live structured search audit rejects resource hash drift before trusted backup', () => withStore(store => {
   store.upsertResources([{
     id: 'live-resource-hash-drift',
