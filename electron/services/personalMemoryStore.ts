@@ -9016,10 +9016,86 @@ export class PersonalMemoryStore {
       SELECT ep.entity_id,ep.role,e.canonical_name
       FROM event_participants ep JOIN entities e ON e.id=ep.entity_id WHERE ep.event_id=?
     `)
+    const candidateIds = rows
+      .filter(event => event.status === 'candidate')
+      .map(event => String(event.id))
+    const ambiguityByEvent = new Map<string, {
+      relatedTotal: number
+      relatedEvents: any[]
+    }>()
+    if (candidateIds.length) {
+      const ambiguityRows = this.db.prepare(`
+        WITH ambiguous AS (
+          SELECT candidate.id AS candidate_id,other.id AS related_id,
+            other.title AS related_title,other.event_type AS related_type,
+            other.status AS related_status,other.start_at AS related_start_at,
+            CASE WHEN EXISTS(
+              SELECT 1 FROM memory_corrections correction
+              WHERE correction.item_kind='event' AND correction.item_id=other.id
+            ) THEN 'human_correction' ELSE 'protected_review' END AS authority_reason,
+            COUNT(DISTINCT candidate_evidence.source_id || char(31) ||
+              candidate_evidence.session_id || char(31) ||
+              candidate_evidence.message_id) AS shared_evidence_count
+          FROM events candidate
+          JOIN evidence candidate_evidence ON candidate_evidence.event_id=candidate.id
+          JOIN evidence related_evidence
+            ON related_evidence.source_id=candidate_evidence.source_id
+            AND related_evidence.session_id=candidate_evidence.session_id
+            AND related_evidence.message_id=candidate_evidence.message_id
+          JOIN events other ON other.id=related_evidence.event_id
+          WHERE candidate.id IN (${candidateIds.map(() => '?').join(',')})
+            AND other.id<>candidate.id
+            AND (candidate.start_at IS NULL OR other.start_at IS NULL
+              OR candidate.start_at=other.start_at)
+            AND (
+              EXISTS(
+                SELECT 1 FROM memory_corrections correction
+                WHERE correction.item_kind='event' AND correction.item_id=other.id
+              )
+              OR EXISTS(
+                SELECT 1 FROM memory_review_decisions decision
+                WHERE decision.item_kind='event' AND decision.item_id=other.id
+                  AND decision.protect_from_extraction=1
+              )
+            )
+          GROUP BY candidate.id,other.id
+        ),
+        ranked AS (
+          SELECT ambiguous.*,
+            COUNT(*) OVER(PARTITION BY candidate_id) AS related_total,
+            ROW_NUMBER() OVER(
+              PARTITION BY candidate_id
+              ORDER BY authority_reason,related_start_at,related_id
+            ) AS related_rank
+          FROM ambiguous
+        )
+        SELECT * FROM ranked
+        WHERE related_total>=2 AND related_rank<=8
+        ORDER BY candidate_id,related_rank
+      `).all(...candidateIds) as any[]
+      for (const row of ambiguityRows) {
+        const candidateId = String(row.candidate_id)
+        const ambiguity = ambiguityByEvent.get(candidateId) || {
+          relatedTotal: Number(row.related_total || 0),
+          relatedEvents: []
+        }
+        ambiguity.relatedEvents.push({
+          id: String(row.related_id),
+          title: String(row.related_title || '未命名事件'),
+          eventType: String(row.related_type || 'event'),
+          status: String(row.related_status || ''),
+          startAt: String(row.related_start_at || ''),
+          authorityReason: String(row.authority_reason || 'protected_review'),
+          sharedEvidenceCount: Number(row.shared_evidence_count || 0)
+        })
+        ambiguityByEvent.set(candidateId, ambiguity)
+      }
+    }
     const items = rows.map(event => ({
       ...event,
       participants: participantStatement.all(event.id) as any[],
-      evidence: (evidenceStatement.all(event.id, MEMORY_CARD_EVIDENCE_LIMIT) as any[]).reverse()
+      evidence: (evidenceStatement.all(event.id, MEMORY_CARD_EVIDENCE_LIMIT) as any[]).reverse(),
+      dedupAmbiguity: ambiguityByEvent.get(String(event.id)) || null
     }))
     const completedRevision = this.getStructuredMemoryRevision()
     if (completedRevision !== revision) {

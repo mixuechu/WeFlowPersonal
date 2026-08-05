@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { BookOpen, Bot, CalendarDays, Check, Clock3, Database, Filter, Network, Paperclip, RefreshCw, Search, Settings2, ShieldCheck, Sparkles, X } from 'lucide-react'
+import { BookOpen, Bot, CalendarDays, Check, Clock3, Database, Filter, Network, Paperclip, RefreshCw, Search, Settings2, ShieldCheck, Sparkles, TriangleAlert, X } from 'lucide-react'
 import { buildTaskCalendar, shanghaiToday } from '../utils/taskCalendar'
 import type { ReviewStatusFilter } from '../utils/graphReviewFilters'
 import { evidenceLocalMessageId, groupMemorySearchResults, memoryEvidenceSourceLabel, MEMORY_TYPE_LABELS, normalizeMemoryEvidence, type MemoryEvidence } from '../utils/memorySearchPresentation'
@@ -8894,6 +8894,35 @@ function AiAssistantPage() {
                     ? ` 其中 ${event.protected_review_count} 次决定受重抽取保护，模型只能追加原文。`
                     : ' 当前仅有系统临时调整，不会冻结后续模型更新。'}
                 </small>}
+                {event.dedupAmbiguity && <div className="assistant-recovery-audit warning">
+                  <header><TriangleAlert size={15} /><span>
+                    <b>系统没有自动合并这条候选</b>
+                    <small>
+                      同一原文和时间同时匹配 {event.dedupAmbiguity.relatedTotal} 条人工事件；
+                      为避免替你选错版本，当前候选被保留等待确认。
+                    </small>
+                  </span></header>
+                  <div>
+                    {event.dedupAmbiguity.relatedEvents.map((related: any) => <article key={related.id}>
+                      <span>
+                        <b>{related.title}</b>
+                        <small>
+                          {related.authorityReason === 'human_correction' ? '人工纠正' : '人工审阅'}
+                          {related.startAt ? ` · ${related.startAt}` : ''}
+                          {` · 共享 ${related.sharedEvidenceCount} 条原文`}
+                        </small>
+                      </span>
+                      <button onClick={() => void openEventCorrection({
+                        sourceId: related.id
+                      }, 'timeline')}>查看并纠正</button>
+                    </article>)}
+                    {event.dedupAmbiguity.relatedTotal >
+                      event.dedupAmbiguity.relatedEvents.length && <small>
+                      另有 {event.dedupAmbiguity.relatedTotal -
+                        event.dedupAmbiguity.relatedEvents.length} 条相关人工事件未在卡片展开。
+                    </small>}
+                  </div>
+                </div>}
                 {Number(event.review_count || 0) + Number(event.correction_count || 0) > 0 &&
                   <details className="assistant-evidence-details" onToggle={toggle => {
                     if (toggle.currentTarget.open && !memoryItemAudits[`event:${event.id}`]) {

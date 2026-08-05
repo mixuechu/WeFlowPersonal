@@ -12630,6 +12630,15 @@ test('event deduplication deterministically preserves human authority and its au
     assert.ok(second.getEvent('event-protected-a'))
     assert.ok(second.getEvent('event-protected-b'))
     assert.equal(second.getEvent('event-ambiguous-candidate').status, 'candidate')
+    const ambiguousTimelineEvent = second.listEventTimeline({ status: 'candidate' })
+      .items.find(item => item.id === 'event-ambiguous-candidate')
+    assert.equal(ambiguousTimelineEvent.dedupAmbiguity.relatedTotal, 2)
+    assert.deepEqual(
+      ambiguousTimelineEvent.dedupAmbiguity.relatedEvents.map((item: any) => item.id),
+      ['event-protected-a', 'event-protected-b']
+    )
+    assert.ok(ambiguousTimelineEvent.dedupAmbiguity.relatedEvents.every((item: any) =>
+      item.authorityReason === 'protected_review' && item.sharedEvidenceCount === 1))
     const audit = second.listMemoryItemAuditPage({
       kind: 'event',
       itemId: 'event-human-authority',
@@ -12684,6 +12693,9 @@ test('event deduplication deterministically preserves human authority and its au
       }]
     }])
     assert.equal(second.getEvent('event-new-ambiguous-model').status, 'candidate')
+    const newAmbiguousTimelineEvent = second.listEventTimeline({ status: 'candidate' })
+      .items.find(item => item.id === 'event-new-ambiguous-model')
+    assert.equal(newAmbiguousTimelineEvent.dedupAmbiguity.relatedTotal, 2)
   } finally {
     first.close()
     second.close()
