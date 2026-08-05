@@ -2161,9 +2161,73 @@ test('claim and event extraction batches roll back authority, evidence and searc
   const eventSearchRevision = store.getMemorySearchRevision()
   const eventStructuredRevision = store.getStructuredMemoryRevision()
   const eventEvidenceRevision = store.getMemoryEvidenceArchiveRevision()
-  assert.throws(() => store.upsertClaimsAndEvents(
-    claims, events
+  const graphRevision = store.getGraphReviewRevision()
+  const graph = {
+    entities: [{
+      id: 'atomic-structured-person',
+      type: 'person',
+      canonicalName: '结构化原子人物',
+      trustStatus: 'confirmed',
+      confidence: 1,
+      aliases: [],
+      accountIds: []
+    }, {
+      id: 'atomic-structured-project',
+      type: 'project',
+      canonicalName: '结构化原子项目',
+      trustStatus: 'confirmed',
+      confidence: 0.9,
+      aliases: [],
+      accountIds: []
+    }],
+    relations: [{
+      id: 'atomic-structured-relation',
+      subjectId: 'atomic-structured-person',
+      predicate: '参与',
+      objectId: 'atomic-structured-project',
+      status: 'candidate',
+      confidence: 0.8,
+      evidence: evidence('atomic-relation-message', '我参与结构化原子项目')
+    }],
+    reviewQueue: [{
+      id: 'atomic-structured-review',
+      kind: 'relation',
+      title: '结构化原子关系候选',
+      detail: '等待确认',
+      status: 'pending',
+      confidence: 0.8,
+      relationId: 'atomic-structured-relation'
+    }]
+  }
+  assert.throws(() => store.syncGraphAndStructuredMemory(
+    graph as any,
+    'atomic-structured-commit',
+    [{
+      entityId: 'atomic-structured-project',
+      sourceId: 'wechat',
+      messageId: 'atomic-project-message',
+      sessionId: 'atomic-structured-session',
+      timestamp: 3,
+      sender: '结构化发送者',
+      excerpt: '结构化原子项目身份依据',
+      evidenceKind: 'identity'
+    }],
+    claims,
+    events
   ), /forced second event search failure/)
+  assert.equal(Number(database.prepare(`
+    SELECT COUNT(*) AS count FROM entities WHERE id='atomic-structured-project'
+  `).get().count), 0)
+  assert.equal(Number(database.prepare(`
+    SELECT COUNT(*) AS count FROM relations WHERE id='atomic-structured-relation'
+  `).get().count), 0)
+  assert.equal(Number(database.prepare(`
+    SELECT COUNT(*) AS count FROM review_queue WHERE id='atomic-structured-review'
+  `).get().count), 0)
+  assert.equal(Number(database.prepare(`
+    SELECT COUNT(*) AS count FROM entity_evidence
+    WHERE entity_id='atomic-structured-project'
+  `).get().count), 0)
   assert.equal(Number(database.prepare(`
     SELECT COUNT(*) AS count FROM claims
     WHERE id IN ('atomic-claim-a','atomic-claim-b')
@@ -2180,6 +2244,8 @@ test('claim and event extraction batches roll back authority, evidence and searc
   assert.equal(Number(database.prepare(`
     SELECT COUNT(*) AS count FROM search_documents
     WHERE id IN (
+      'entity:atomic-structured-project',
+      'relation:atomic-structured-relation',
       'claim:atomic-claim-a','claim:atomic-claim-b',
       'event:atomic-event-a','event:atomic-event-b'
     )
@@ -2187,6 +2253,8 @@ test('claim and event extraction batches roll back authority, evidence and searc
   assert.equal(Number(database.prepare(`
     SELECT COUNT(*) AS count FROM search_fts
     WHERE document_id IN (
+      'entity:atomic-structured-project',
+      'relation:atomic-structured-relation',
       'claim:atomic-claim-a','claim:atomic-claim-b',
       'event:atomic-event-a','event:atomic-event-b'
     )
@@ -2194,6 +2262,7 @@ test('claim and event extraction batches roll back authority, evidence and searc
   assert.equal(store.getMemorySearchRevision(), eventSearchRevision)
   assert.equal(store.getStructuredMemoryRevision(), eventStructuredRevision)
   assert.equal(store.getMemoryEvidenceArchiveRevision(), eventEvidenceRevision)
+  assert.equal(store.getGraphReviewRevision(), graphRevision)
   assert.deepEqual(events.map(event => event.id), ['atomic-event-a', 'atomic-event-b'])
 }))
 

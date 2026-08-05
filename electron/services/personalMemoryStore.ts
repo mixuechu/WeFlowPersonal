@@ -7135,6 +7135,29 @@ export class PersonalMemoryStore {
     })()
   }
 
+  syncGraphAndStructuredMemory(
+    graph: MemoryGraph,
+    commitId: string,
+    entityEvidence: Array<{
+      entityId: string
+      sourceId: string
+      messageId: string
+      sessionId: string
+      timestamp: number
+      sender: string
+      excerpt: string
+      evidenceKind?: string
+    }>,
+    claims: any[],
+    events: any[]
+  ): void {
+    if (!this.db) return
+    this.db.transaction(() => {
+      this.syncGraph(graph, commitId, { entityEvidence })
+      this.upsertClaimsAndEvents(claims, events)
+    })()
+  }
+
   upsertClaims(claims: any[]): void {
     if (!this.db || !claims.length) return
     const withinTransaction = this.db.inTransaction

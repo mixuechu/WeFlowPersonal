@@ -2537,7 +2537,20 @@ export class AiAssistantService {
         participants, evidence, createdAt: now
       }]
     })
-    personalMemoryStore.upsertClaimsAndEvents(claims, events)
+    const graphCommitId = crypto.randomUUID()
+    personalMemoryStore.syncGraphAndStructuredMemory(
+      this.state.graph,
+      graphCommitId,
+      this.pendingEntityEvidence,
+      claims,
+      events
+    )
+    this.pendingEntityEvidence = []
+    this.state.graph.lastSqlCommitId = graphCommitId
+    compactGraphRelationEvidence(
+      this.state.graph.relations,
+      personalMemoryStore.getRelationEvidenceCounts()
+    )
   }
 
   private enqueueIdentityCandidates(entity: GraphEntity, now: string): void {
@@ -3211,7 +3224,6 @@ export class AiAssistantService {
           }
         })
         const tempIds = this.mergeGraphDigest(digest, [message], createdAt, commitId)
-        this.checkpointGraphToSql()
         this.persistClaimsAndEvents(digest, tempIds, [message], createdAt)
         tasks += this.persistDocumentTasks(digest, [message], createdAt)
         this.saveState(true)
@@ -3523,7 +3535,6 @@ export class AiAssistantService {
           })
           digests.push({ digest, batch })
           const tempIds = this.mergeGraphDigest(digest, batch, createdAt, commitId)
-          this.checkpointGraphToSql()
           this.persistClaimsAndEvents(digest, tempIds, batch, createdAt)
           this.mergeRecoveredWechatTasks(digest, batch, createdAt)
           successfulMessageKeys.push(...checkpointKeys)
