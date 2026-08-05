@@ -15698,6 +15698,100 @@ test('legacy task review snapshots compact embedded evidence and remain reversib
   }
 })
 
+test('resource batches atomically roll back authority, search and evidence after a later failure', () => withStore(store => {
+  const database = (store as any).db
+  database.exec(`
+    CREATE TRIGGER fail_second_resource_evidence
+    BEFORE INSERT ON search_document_evidence
+    WHEN NEW.document_id='resource:atomic-resource-b'
+    BEGIN
+      SELECT RAISE(ABORT,'forced resource evidence failure');
+    END;
+  `)
+  const searchRevision = store.getMemorySearchRevision()
+  const resourceRevision = store.getResourceArchiveRevision()
+  assert.throws(() => store.upsertResources([{
+    id: 'atomic-resource-a',
+    resourceType: 'document',
+    title: '原子资源甲',
+    content: '第一条本应随整批回滚',
+    metadata: { sourceId: 'documents' },
+    evidence: [{
+      sourceId: 'documents',
+      sessionId: 'data-source:documents',
+      messageId: 'atomic-message-a',
+      timestamp: 1,
+      sender: '本机文档连接器',
+      excerpt: '第一条证据'
+    }]
+  }, {
+    id: 'atomic-resource-b',
+    resourceType: 'document',
+    title: '原子资源乙',
+    content: '第二条在证据阶段触发故障',
+    metadata: { sourceId: 'documents' },
+    evidence: [{
+      sourceId: 'documents',
+      sessionId: 'data-source:documents',
+      messageId: 'atomic-message-b',
+      timestamp: 2,
+      sender: '本机文档连接器',
+      excerpt: '第二条证据'
+    }]
+  }]), /forced resource evidence failure/)
+
+  assert.equal(Number(database.prepare(`
+    SELECT COUNT(*) AS count FROM memory_resources
+    WHERE id IN ('atomic-resource-a','atomic-resource-b')
+  `).get().count), 0)
+  assert.equal(Number(database.prepare(`
+    SELECT COUNT(*) AS count FROM search_documents
+    WHERE id IN ('resource:atomic-resource-a','resource:atomic-resource-b')
+  `).get().count), 0)
+  assert.equal(Number(database.prepare(`
+    SELECT COUNT(*) AS count FROM search_fts
+    WHERE document_id IN ('resource:atomic-resource-a','resource:atomic-resource-b')
+  `).get().count), 0)
+  assert.equal(Number(database.prepare(`
+    SELECT COUNT(*) AS count FROM search_document_evidence
+    WHERE document_id IN ('resource:atomic-resource-a','resource:atomic-resource-b')
+  `).get().count), 0)
+  assert.equal(store.getMemorySearchRevision(), searchRevision)
+  assert.equal(store.getResourceArchiveRevision(), resourceRevision)
+
+  database.exec('BEGIN IMMEDIATE')
+  database.prepare(`
+    INSERT INTO schema_meta(key,value,updated_at) VALUES('resource_outer_before','kept','2026-08-05T02:00:00.000Z')
+  `).run()
+  assert.throws(() => store.upsertResources([{
+    id: 'atomic-resource-b',
+    resourceType: 'document',
+    title: '嵌套事务资源',
+    content: '保存点失败不能破坏调用方事务',
+    metadata: { sourceId: 'documents' },
+    evidence: [{
+      sourceId: 'documents',
+      sessionId: 'data-source:documents',
+      messageId: 'atomic-message-b',
+      timestamp: 2,
+      sender: '本机文档连接器',
+      excerpt: '仍然触发故障'
+    }]
+  }]), /forced resource evidence failure/)
+  assert.equal(database.inTransaction, true)
+  database.prepare(`
+    INSERT INTO schema_meta(key,value,updated_at) VALUES('resource_outer_after','kept','2026-08-05T02:00:01.000Z')
+  `).run()
+  database.exec('COMMIT')
+  assert.equal(Number(database.prepare(`
+    SELECT COUNT(*) AS count FROM schema_meta
+    WHERE key IN ('resource_outer_before','resource_outer_after') AND value='kept'
+  `).get().count), 2)
+  assert.equal(Number(database.prepare(`
+    SELECT COUNT(*) AS count FROM memory_resources WHERE id='atomic-resource-b'
+  `).get().count), 0)
+}))
+
 test('message resources remain idempotent, searchable and traceable to original evidence', () => withStore(store => {
   const resource = {
     id: 'resource-link-1',

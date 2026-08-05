@@ -4896,7 +4896,7 @@ export class PersonalMemoryStore {
         SELECT value,updated_at FROM schema_meta
         WHERE key='structured_evidence_identity_version'
       `).get() as any
-      try {
+    try {
         const audit = JSON.parse(String(row?.value || '{}'))
         return {
           version: Number(audit.version || 0),
@@ -7726,190 +7726,207 @@ export class PersonalMemoryStore {
 
   upsertResources(resources: any[], preserveExistingEvidence = false): void {
     if (!this.db || !resources.length) return
-    const upsert = this.db.prepare(`
-      INSERT INTO memory_resources(
-        id,resource_type,title,url,file_name,file_ext,content,metadata_json,created_at,updated_at
-      ) VALUES(?,?,?,?,?,?,?,?,?,?)
-      ON CONFLICT(id) DO UPDATE SET
-        resource_type=excluded.resource_type,title=excluded.title,url=excluded.url,
-        file_name=excluded.file_name,file_ext=excluded.file_ext,content=excluded.content,
-        metadata_json=excluded.metadata_json,updated_at=excluded.updated_at
-      WHERE memory_resources.resource_type IS NOT excluded.resource_type
-        OR memory_resources.title IS NOT excluded.title
-        OR memory_resources.url IS NOT excluded.url
-        OR memory_resources.file_name IS NOT excluded.file_name
-        OR memory_resources.file_ext IS NOT excluded.file_ext
-        OR memory_resources.content IS NOT excluded.content
-        OR memory_resources.metadata_json IS NOT excluded.metadata_json
-    `)
-    const insertEvidence = this.db.prepare(`
-      INSERT INTO search_document_evidence(
-        document_id,source_id,message_id,session_id,timestamp,sender,excerpt
-      ) VALUES(?,?,?,?,?,?,?)
-      ON CONFLICT(document_id,source_id,session_id,message_id) DO UPDATE SET
-        timestamp=MAX(search_document_evidence.timestamp,excluded.timestamp),
-        sender=CASE WHEN excluded.sender!='' THEN excluded.sender
-          ELSE search_document_evidence.sender END,
-        excerpt=CASE WHEN length(excluded.excerpt)>length(search_document_evidence.excerpt)
-          THEN excluded.excerpt ELSE search_document_evidence.excerpt END
-      WHERE search_document_evidence.timestamp<excluded.timestamp
-        OR (
-          excluded.sender!=''
-          AND excluded.sender!=search_document_evidence.sender
-        )
-        OR length(search_document_evidence.excerpt)<length(excluded.excerpt)
-    `)
-    let incomingEvidenceRows = 0
-    let preservedHistoricalRows = 0
-    for (const resource of resources) {
-      const resourceId = String(resource.id)
-      if (this.db.prepare('SELECT 1 FROM resource_suppressions WHERE resource_id=?').get(resourceId)) continue
-      const now = String(resource.updatedAt || new Date().toISOString())
-      const metadata = resource.metadata && typeof resource.metadata === 'object' ? resource.metadata : {}
-      const existing = this.db.prepare('SELECT metadata_json FROM memory_resources WHERE id=?').get(resourceId) as any
-      let existingMetadata: any = {}
-      try { existingMetadata = JSON.parse(existing?.metadata_json || '{}') } catch {}
-      if (!metadata.attachmentStructure && existingMetadata.attachmentStructure) {
-        metadata.attachmentStructure = existingMetadata.attachmentStructure
-        metadata.attachmentStructureParserVersion = existingMetadata.attachmentStructureParserVersion || ''
-        metadata.attachmentStructureMigrationStatus = existingMetadata.attachmentStructureMigrationStatus || ''
-        metadata.attachmentStructureMigratedAt = existingMetadata.attachmentStructureMigratedAt || ''
-      }
-      if (resource.resourceType === 'document' && metadata.contentHash &&
-          metadata.contentHash === existingMetadata.contentHash) {
-        for (const key of [
-          'documentAnalysisStatus',
-          'documentAnalysisVersion',
-          'documentAnalysisContentHash',
-          'documentAnalysisAttempts',
-          'documentAnalysisLastAttemptAt',
-          'documentAnalysisCompletedAt',
-          'documentAnalysisNextAt',
-          'documentAnalysisError'
-        ]) {
-          if (existingMetadata[key] !== undefined && metadata[key] === undefined) {
-            metadata[key] = existingMetadata[key]
+    const withinTransaction = this.db.inTransaction
+    if (withinTransaction) this.db.exec('SAVEPOINT weflow_upsert_resources')
+    else this.db.exec('BEGIN IMMEDIATE')
+      try {
+      const upsert = this.db.prepare(`
+        INSERT INTO memory_resources(
+          id,resource_type,title,url,file_name,file_ext,content,metadata_json,created_at,updated_at
+        ) VALUES(?,?,?,?,?,?,?,?,?,?)
+        ON CONFLICT(id) DO UPDATE SET
+          resource_type=excluded.resource_type,title=excluded.title,url=excluded.url,
+          file_name=excluded.file_name,file_ext=excluded.file_ext,content=excluded.content,
+          metadata_json=excluded.metadata_json,updated_at=excluded.updated_at
+        WHERE memory_resources.resource_type IS NOT excluded.resource_type
+          OR memory_resources.title IS NOT excluded.title
+          OR memory_resources.url IS NOT excluded.url
+          OR memory_resources.file_name IS NOT excluded.file_name
+          OR memory_resources.file_ext IS NOT excluded.file_ext
+          OR memory_resources.content IS NOT excluded.content
+          OR memory_resources.metadata_json IS NOT excluded.metadata_json
+      `)
+      const insertEvidence = this.db.prepare(`
+        INSERT INTO search_document_evidence(
+          document_id,source_id,message_id,session_id,timestamp,sender,excerpt
+        ) VALUES(?,?,?,?,?,?,?)
+        ON CONFLICT(document_id,source_id,session_id,message_id) DO UPDATE SET
+          timestamp=MAX(search_document_evidence.timestamp,excluded.timestamp),
+          sender=CASE WHEN excluded.sender!='' THEN excluded.sender
+            ELSE search_document_evidence.sender END,
+          excerpt=CASE WHEN length(excluded.excerpt)>length(search_document_evidence.excerpt)
+            THEN excluded.excerpt ELSE search_document_evidence.excerpt END
+        WHERE search_document_evidence.timestamp<excluded.timestamp
+          OR (
+            excluded.sender!=''
+            AND excluded.sender!=search_document_evidence.sender
+          )
+          OR length(search_document_evidence.excerpt)<length(excluded.excerpt)
+      `)
+      let incomingEvidenceRows = 0
+      let preservedHistoricalRows = 0
+      for (const resource of resources) {
+        const resourceId = String(resource.id)
+        if (this.db.prepare('SELECT 1 FROM resource_suppressions WHERE resource_id=?').get(resourceId)) continue
+        const now = String(resource.updatedAt || new Date().toISOString())
+        const metadata = resource.metadata && typeof resource.metadata === 'object'
+          ? { ...resource.metadata }
+          : {}
+        const existing = this.db.prepare('SELECT metadata_json FROM memory_resources WHERE id=?').get(resourceId) as any
+        let existingMetadata: any = {}
+        try { existingMetadata = JSON.parse(existing?.metadata_json || '{}') } catch {}
+        if (!metadata.attachmentStructure && existingMetadata.attachmentStructure) {
+          metadata.attachmentStructure = existingMetadata.attachmentStructure
+          metadata.attachmentStructureParserVersion = existingMetadata.attachmentStructureParserVersion || ''
+          metadata.attachmentStructureMigrationStatus = existingMetadata.attachmentStructureMigrationStatus || ''
+          metadata.attachmentStructureMigratedAt = existingMetadata.attachmentStructureMigratedAt || ''
+        }
+        if (resource.resourceType === 'document' && metadata.contentHash &&
+            metadata.contentHash === existingMetadata.contentHash) {
+          for (const key of [
+            'documentAnalysisStatus',
+            'documentAnalysisVersion',
+            'documentAnalysisContentHash',
+            'documentAnalysisAttempts',
+            'documentAnalysisLastAttemptAt',
+            'documentAnalysisCompletedAt',
+            'documentAnalysisNextAt',
+            'documentAnalysisError'
+          ]) {
+            if (existingMetadata[key] !== undefined && metadata[key] === undefined) {
+              metadata[key] = existingMetadata[key]
+            }
           }
         }
-      }
-      upsert.run(
-        resourceId, String(resource.resourceType || 'resource'),
-        String(resource.title || '未命名资源'), String(resource.url || ''),
-        String(resource.fileName || ''), String(resource.fileExt || ''),
-        String(resource.content || ''), JSON.stringify(metadata),
-        String(resource.createdAt || now), now
-      )
-      const documentId = `resource:${resourceId}`
-      const searchText = [
-        resource.title, resource.content, resource.url, resource.fileName, resource.fileExt,
-        metadata.sessionName, metadata.senderName, metadata.appMsgKind
-      ].filter(Boolean).join('；')
-      this.upsertSearchDocument(documentId, 'resource', resourceId, String(resource.title || '未命名资源'),
-        searchText, { ...metadata, resourceType: resource.resourceType, url: resource.url || '', fileName: resource.fileName || '' }, now)
-      const previousEvidenceCount = Number(this.db.prepare(`
-        SELECT COUNT(*) AS count FROM search_document_evidence WHERE document_id=?
-      `).get(documentId)?.count || 0)
-      const incomingEvidenceRowsForResource: Array<{
-        sourceId: string
-        messageId: string
-        sessionId: string
-        timestamp: number
-        sender: string
-        excerpt: string
-      }> = []
-      const incomingIdentities = new Set<string>()
-      for (const item of resource.evidence || []) {
-        if (!item.messageId) continue
-        const sourceId = evidenceSourceId(item, metadata.sourceId)
-        const messageId = String(item.messageId)
-        const sessionId = String(item.sessionId || '')
-        const identity = JSON.stringify([sourceId, sessionId, messageId])
-        if (incomingIdentities.has(identity)) continue
-        incomingIdentities.add(identity)
-        incomingEvidenceRows += 1
-        incomingEvidenceRowsForResource.push({
-          sourceId,
-          messageId,
-          sessionId,
-          timestamp: Number(item.timestamp || 0),
-          sender: String(item.sender || ''),
-          excerpt: String(item.excerpt || '').slice(0, 2000)
-        })
-      }
-      let evidenceAlreadyExact = false
-      if (!preserveExistingEvidence) {
-        const existingEvidenceRows = this.db.prepare(`
-          SELECT source_id AS sourceId,message_id AS messageId,session_id AS sessionId,
-            timestamp,sender,excerpt
-          FROM search_document_evidence WHERE document_id=?
-        `).all(documentId) as typeof incomingEvidenceRowsForResource
-        const canonicalEvidenceRows = (rows: typeof incomingEvidenceRowsForResource) =>
-          rows.map(item => JSON.stringify({
-            sourceId: String(item.sourceId || ''),
-            messageId: String(item.messageId || ''),
-            sessionId: String(item.sessionId || ''),
+        upsert.run(
+          resourceId, String(resource.resourceType || 'resource'),
+          String(resource.title || '未命名资源'), String(resource.url || ''),
+          String(resource.fileName || ''), String(resource.fileExt || ''),
+          String(resource.content || ''), JSON.stringify(metadata),
+          String(resource.createdAt || now), now
+        )
+        const documentId = `resource:${resourceId}`
+        const searchText = [
+          resource.title, resource.content, resource.url, resource.fileName, resource.fileExt,
+          metadata.sessionName, metadata.senderName, metadata.appMsgKind
+        ].filter(Boolean).join('；')
+        this.upsertSearchDocument(documentId, 'resource', resourceId, String(resource.title || '未命名资源'),
+          searchText, { ...metadata, resourceType: resource.resourceType, url: resource.url || '', fileName: resource.fileName || '' }, now)
+        const previousEvidenceCount = Number(this.db.prepare(`
+          SELECT COUNT(*) AS count FROM search_document_evidence WHERE document_id=?
+        `).get(documentId)?.count || 0)
+        const incomingEvidenceRowsForResource: Array<{
+          sourceId: string
+          messageId: string
+          sessionId: string
+          timestamp: number
+          sender: string
+          excerpt: string
+        }> = []
+        const incomingIdentities = new Set<string>()
+        for (const item of resource.evidence || []) {
+          if (!item.messageId) continue
+          const sourceId = evidenceSourceId(item, metadata.sourceId)
+          const messageId = String(item.messageId)
+          const sessionId = String(item.sessionId || '')
+          const identity = JSON.stringify([sourceId, sessionId, messageId])
+          if (incomingIdentities.has(identity)) continue
+          incomingIdentities.add(identity)
+          incomingEvidenceRows += 1
+          incomingEvidenceRowsForResource.push({
+            sourceId,
+            messageId,
+            sessionId,
             timestamp: Number(item.timestamp || 0),
             sender: String(item.sender || ''),
-            excerpt: String(item.excerpt || '')
-          })).sort()
-        evidenceAlreadyExact =
-          JSON.stringify(canonicalEvidenceRows(existingEvidenceRows)) ===
-          JSON.stringify(canonicalEvidenceRows(incomingEvidenceRowsForResource))
-        if (!evidenceAlreadyExact) {
-          this.db.prepare('DELETE FROM search_document_evidence WHERE document_id=?').run(documentId)
+            excerpt: String(item.excerpt || '').slice(0, 2000)
+          })
         }
-      }
-      if (!evidenceAlreadyExact) {
-        for (const item of incomingEvidenceRowsForResource) {
-          insertEvidence.run(
-            documentId, item.sourceId, item.messageId, item.sessionId,
-            item.timestamp, item.sender, item.excerpt
+        let evidenceAlreadyExact = false
+        if (!preserveExistingEvidence) {
+          const existingEvidenceRows = this.db.prepare(`
+            SELECT source_id AS sourceId,message_id AS messageId,session_id AS sessionId,
+              timestamp,sender,excerpt
+            FROM search_document_evidence WHERE document_id=?
+          `).all(documentId) as typeof incomingEvidenceRowsForResource
+          const canonicalEvidenceRows = (rows: typeof incomingEvidenceRowsForResource) =>
+            rows.map(item => JSON.stringify({
+              sourceId: String(item.sourceId || ''),
+              messageId: String(item.messageId || ''),
+              sessionId: String(item.sessionId || ''),
+              timestamp: Number(item.timestamp || 0),
+              sender: String(item.sender || ''),
+              excerpt: String(item.excerpt || '')
+            })).sort()
+          evidenceAlreadyExact =
+            JSON.stringify(canonicalEvidenceRows(existingEvidenceRows)) ===
+            JSON.stringify(canonicalEvidenceRows(incomingEvidenceRowsForResource))
+          if (!evidenceAlreadyExact) {
+            this.db.prepare('DELETE FROM search_document_evidence WHERE document_id=?').run(documentId)
+          }
+        }
+        if (!evidenceAlreadyExact) {
+          for (const item of incomingEvidenceRowsForResource) {
+            insertEvidence.run(
+              documentId, item.sourceId, item.messageId, item.sessionId,
+              item.timestamp, item.sender, item.excerpt
+            )
+          }
+        }
+        if (preserveExistingEvidence) {
+          const afterEvidenceCount = Number(this.db.prepare(`
+            SELECT COUNT(*) AS count FROM search_document_evidence WHERE document_id=?
+          `).get(documentId)?.count || 0)
+          preservedHistoricalRows += Math.max(
+            0,
+            afterEvidenceCount - incomingIdentities.size
+          )
+          if (!incomingIdentities.size) preservedHistoricalRows += Math.max(
+            0,
+            previousEvidenceCount - afterEvidenceCount
           )
         }
       }
       if (preserveExistingEvidence) {
-        const afterEvidenceCount = Number(this.db.prepare(`
-          SELECT COUNT(*) AS count FROM search_document_evidence WHERE document_id=?
-        `).get(documentId)?.count || 0)
-        preservedHistoricalRows += Math.max(
-          0,
-          afterEvidenceCount - incomingIdentities.size
-        )
-        if (!incomingIdentities.size) preservedHistoricalRows += Math.max(
-          0,
-          previousEvidenceCount - afterEvidenceCount
-        )
+        const checkedAt = new Date().toISOString()
+        const previous = this.db.prepare(`
+          SELECT value FROM schema_meta WHERE key='resource_evidence_archive_integrity'
+        `).get() as any
+        let audit: any = {}
+        try { audit = JSON.parse(String(previous?.value || '{}')) } catch {}
+        const authoritativeEvidenceRows = Number(this.db.prepare(`
+          SELECT COUNT(*) AS count FROM search_document_evidence
+          WHERE document_id LIKE 'resource:%'
+        `).get()?.count || 0)
+        this.db.prepare(`
+          INSERT INTO schema_meta(key,value,updated_at)
+          VALUES('resource_evidence_archive_integrity',?,?)
+          ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_at=excluded.updated_at
+        `).run(JSON.stringify({
+          version: 1,
+          policy: 'connector_content_versions_append_only',
+          checkedAt,
+          resourcesProcessedThisSync: resources.length,
+          incomingEvidenceRowsThisSync: incomingEvidenceRows,
+          preservedHistoricalRowsThisSync: preservedHistoricalRows,
+          authoritativeEvidenceRows,
+          syncRunsTotal: Math.max(0, Number(audit.syncRunsTotal || 0)) + 1,
+          preservedHistoricalRowsTotal:
+            Math.max(0, Number(audit.preservedHistoricalRowsTotal || 0))
+            + preservedHistoricalRows,
+          historicalRecoveryAvailable: false
+        }), checkedAt)
       }
-    }
-    if (preserveExistingEvidence) {
-      const checkedAt = new Date().toISOString()
-      const previous = this.db.prepare(`
-        SELECT value FROM schema_meta WHERE key='resource_evidence_archive_integrity'
-      `).get() as any
-      let audit: any = {}
-      try { audit = JSON.parse(String(previous?.value || '{}')) } catch {}
-      const authoritativeEvidenceRows = Number(this.db.prepare(`
-        SELECT COUNT(*) AS count FROM search_document_evidence
-        WHERE document_id LIKE 'resource:%'
-      `).get()?.count || 0)
-      this.db.prepare(`
-        INSERT INTO schema_meta(key,value,updated_at)
-        VALUES('resource_evidence_archive_integrity',?,?)
-        ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_at=excluded.updated_at
-      `).run(JSON.stringify({
-        version: 1,
-        policy: 'connector_content_versions_append_only',
-        checkedAt,
-        resourcesProcessedThisSync: resources.length,
-        incomingEvidenceRowsThisSync: incomingEvidenceRows,
-        preservedHistoricalRowsThisSync: preservedHistoricalRows,
-        authoritativeEvidenceRows,
-        syncRunsTotal: Math.max(0, Number(audit.syncRunsTotal || 0)) + 1,
-        preservedHistoricalRowsTotal:
-          Math.max(0, Number(audit.preservedHistoricalRowsTotal || 0))
-          + preservedHistoricalRows,
-        historicalRecoveryAvailable: false
-      }), checkedAt)
+      if (withinTransaction) this.db.exec('RELEASE SAVEPOINT weflow_upsert_resources')
+      else this.db.exec('COMMIT')
+    } catch (error) {
+      if (withinTransaction) {
+        this.db.exec('ROLLBACK TO SAVEPOINT weflow_upsert_resources')
+        this.db.exec('RELEASE SAVEPOINT weflow_upsert_resources')
+      } else {
+        this.db.exec('ROLLBACK')
+      }
+      throw error
     }
   }
 
