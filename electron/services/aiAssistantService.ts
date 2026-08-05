@@ -195,6 +195,10 @@ import {
   assertGraphReviewMutationRevision,
   runReversibleGraphMutation
 } from './graphReviewMutationPolicy'
+import {
+  createModelBatchMemoryGuard,
+  resolveNewModelTaskDependencies
+} from './modelBatchMemoryGuard'
 import { assertTaskOwnershipMutationRevision } from './taskOwnershipMutationPolicy'
 import { assertStructuredMemoryMutationRevision } from './structuredMemoryMutationPolicy'
 import {
@@ -1481,8 +1485,18 @@ export class AiAssistantService {
       for (const commit of batch) {
         seenCommitIds.add(commit.commitId)
         attempted += 1
-        const stateBeforeRecovery = structuredClone(this.state)
-        const pendingEntityEvidenceBeforeRecovery = [...this.pendingEntityEvidence]
+        const memoryGuard = createModelBatchMemoryGuard({
+          stateSnapshot: {
+            graph: structuredClone(this.state.graph),
+            tasks: structuredClone(this.state.tasks)
+          },
+          evidenceSnapshot: [...this.pendingEntityEvidence],
+          restore: (state, evidence) => {
+            this.state.graph = state.graph
+            this.state.tasks = state.tasks
+            this.pendingEntityEvidence = evidence
+          }
+        })
         try {
           if (commit.parseError) throw new Error(commit.parseError)
           const tempIds = this.mergeGraphDigest(commit.digest, commit.messages, commit.createdAt, commit.commitId)
@@ -1494,7 +1508,8 @@ export class AiAssistantService {
             tempIds,
             commit.messages,
             commit.createdAt,
-            taskCommit.changes
+            taskCommit.changes,
+            memoryGuard.markAuthorityCommitted
           )
           if (commit.sourceKind !== 'document') {
             this.state.cursor.recentMessageIds = [...new Set([
@@ -1518,8 +1533,7 @@ export class AiAssistantService {
           }
           recovered += 1
         } catch (error) {
-          this.state = stateBeforeRecovery
-          this.pendingEntityEvidence = pendingEntityEvidenceBeforeRecovery
+          memoryGuard.rollbackUncommitted()
           failed += 1
           personalMemoryStore.recordIngestionBatchCommitRecoveryFailure(
             commit.commitId,
@@ -2499,7 +2513,8 @@ export class AiAssistantService {
       after: any
       reason?: string
       evidence?: any[]
-    }> = []
+    }> = [],
+    onAuthorityCommitted?: () => void
   ): void {
     const evidenceFor = (messages: any[], role: 'direct' | 'indirect' | 'contradiction' = 'direct') =>
       (Array.isArray(messages) ? messages : []).map(message =>
@@ -2564,6 +2579,7 @@ export class AiAssistantService {
       events,
       { tasks: this.state.tasks, changes: taskChanges }
     )
+    onAuthorityCommitted?.()
     this.pendingEntityEvidence = []
     this.state.graph.lastSqlCommitId = graphCommitId
     compactGraphRelationEvidence(
@@ -2984,6 +3000,7 @@ export class AiAssistantService {
   } {
     const existing = new Map(this.state.tasks.map(task => [task.id, task]))
     const changes: Array<{ taskId: string; before: any; after: any; reason: string; evidence: any[] }> = []
+    const dependencyTitlesByTaskId = new Map<string, string[]>()
     let saved = 0
     for (const item of Array.isArray(digest.tasks) ? digest.tasks : []) {
       const sourceMessageIds = Array.isArray(item.sourceEvidenceKeys)
@@ -3051,6 +3068,8 @@ export class AiAssistantService {
         updatedAt: createdAt
       } : { ...task, createdAt, updatedAt: createdAt }
       existing.set(merged.id, merged)
+      dependencyTitlesByTaskId.set(merged.id, (Array.isArray(item.dependsOnTitles) ? item.dependsOnTitles : [])
+        .map((value: any) => String(value || '').trim().toLowerCase()).filter(Boolean).slice(0, 20))
       changes.push({
         taskId: merged.id,
         before: previous || {},
@@ -3060,6 +3079,11 @@ export class AiAssistantService {
       })
       saved += 1
     }
+    resolveNewModelTaskDependencies({
+      tasks: [...existing.values()],
+      changes,
+      dependencyTitlesByTaskId
+    })
     this.state.tasks = [...existing.values()].sort((left, right) =>
       String(right.createdAt).localeCompare(String(left.createdAt)))
     return { saved, changes }
@@ -3214,6 +3238,7 @@ export class AiAssistantService {
         promptVersion: `${EXTRACTION_PROMPT_VERSION}/document-v1`,
         schemaVersion: EXTRACTION_SCHEMA_VERSION
       })
+      let memoryGuard: ReturnType<typeof createModelBatchMemoryGuard> | null = null
       try {
         const rawDigest = await this.callAi([message])
         const evidenceValidation = validateStructuredDigestEvidence(rawDigest, [message])
@@ -3250,16 +3275,35 @@ export class AiAssistantService {
             documentAnalysisError: ''
           }
         })
+        memoryGuard = createModelBatchMemoryGuard({
+          stateSnapshot: {
+            graph: structuredClone(this.state.graph),
+            tasks: structuredClone(this.state.tasks)
+          },
+          evidenceSnapshot: [...this.pendingEntityEvidence],
+          restore: (state, pendingEvidence) => {
+            this.state.graph = state.graph
+            this.state.tasks = state.tasks
+            this.pendingEntityEvidence = pendingEvidence
+          }
+        })
         const tempIds = this.mergeGraphDigest(digest, [message], createdAt, commitId)
         const taskCommit = this.persistDocumentTasks(digest, [message], createdAt)
-        tasks += taskCommit.saved
-        this.persistClaimsAndEvents(digest, tempIds, [message], createdAt, taskCommit.changes)
+        this.persistClaimsAndEvents(
+          digest,
+          tempIds,
+          [message],
+          createdAt,
+          taskCommit.changes,
+          memoryGuard.markAuthorityCommitted
+        )
         this.saveState(true)
         personalMemoryStore.finalizeIngestionBatchCommit(commitId, {
           ...digest.__meta,
           promptVersion: `${EXTRACTION_PROMPT_VERSION}/document-v1`,
           durationMs: Number(digest.__meta?.durationMs || Date.now() - startedAt)
         })
+        tasks += taskCommit.saved
         personalMemoryStore.finishIngestionRun(runId, {
           status: 'completed',
           messageCount: 1,
@@ -3268,6 +3312,7 @@ export class AiAssistantService {
         })
         completed += 1
       } catch (error) {
+        memoryGuard?.rollbackUncommitted()
         const detail = sanitizeDiagnosticText(error)
         const retryDays = Math.min(7, Math.max(1, 2 ** attempts))
         personalMemoryStore.replaceResourceContent(resource.id, resource.content, {
@@ -3486,6 +3531,7 @@ export class AiAssistantService {
       await this.continuePendingAttachmentStructures()
       const successfulMessageKeys: string[] = []
       const batchErrors: string[] = []
+      const tasks = new Map<string, AssistantTask>()
       const batches = this.buildAnalysisBatches(
         collected.messages,
         forcedContextKeys
@@ -3506,6 +3552,7 @@ export class AiAssistantService {
         const work = batchQueue.shift()!
         const batch = work.batch
         const batchStartedAt = Date.now()
+        let memoryGuard: ReturnType<typeof createModelBatchMemoryGuard> | null = null
         try {
           const rawDigest = await this.callAi(batch)
           const coverage = inspectExtractionCoverage(rawDigest)
@@ -3561,17 +3608,39 @@ export class AiAssistantService {
             checkpointKeys,
             createdAt
           })
-          digests.push({ digest, batch })
+          memoryGuard = createModelBatchMemoryGuard({
+            stateSnapshot: {
+              graph: structuredClone(this.state.graph),
+              tasks: structuredClone(this.state.tasks)
+            },
+            evidenceSnapshot: [...this.pendingEntityEvidence],
+            restore: (state, pendingEvidence) => {
+              this.state.graph = state.graph
+              this.state.tasks = state.tasks
+              this.pendingEntityEvidence = pendingEvidence
+            }
+          })
           const tempIds = this.mergeGraphDigest(digest, batch, createdAt, commitId)
           const taskCommit = this.mergeRecoveredWechatTasks(digest, batch, createdAt)
-          this.persistClaimsAndEvents(digest, tempIds, batch, createdAt, taskCommit.changes)
-          successfulMessageKeys.push(...checkpointKeys)
+          this.persistClaimsAndEvents(
+            digest,
+            tempIds,
+            batch,
+            createdAt,
+            taskCommit.changes,
+            memoryGuard.markAuthorityCommitted
+          )
           this.state.cursor.recentMessageIds = [...new Set([...this.state.cursor.recentMessageIds, ...checkpointKeys])].slice(-20_000)
           this.saveState(true)
           personalMemoryStore.finalizeIngestionBatchCommit(commitId, {
             ...digest.__meta,
             durationMs: Number(digest.__meta?.durationMs || Date.now() - batchStartedAt)
           })
+          digests.push({ digest, batch })
+          for (const change of taskCommit.changes) {
+            tasks.set(change.taskId, change.after)
+          }
+          successfulMessageKeys.push(...checkpointKeys)
           if (this.cancelRequested) {
             cancelled = true
             batchErrors.push('用户已安全暂停，剩余批次将在下次继续')
@@ -3579,6 +3648,7 @@ export class AiAssistantService {
           }
           batchIndex += 1
         } catch (error: any) {
+          memoryGuard?.rollbackUncommitted()
           const message = sanitizeDiagnosticText(error)
           batchErrors.push(message)
           personalMemoryStore.recordIngestionBatch(runId, batchIndex, batch.length, 'failed', message, {
@@ -3590,7 +3660,6 @@ export class AiAssistantService {
           batchIndex += 1
         }
       }
-      const tasks = new Map<string, AssistantTask>()
       const highlightItems: any[] = []
       const summaries: string[] = []
       const summaryEvidence: any[] = []
@@ -3603,86 +3672,6 @@ export class AiAssistantService {
         summaryEvidence.push(...groundedBriefing.summaryEvidence)
         if (groundedBriefing.rejectedSummary) rejectedSummaryCount += 1
         rejectedHighlightCount += groundedBriefing.rejectedHighlightCount
-        for (const item of Array.isArray(digest.tasks) ? digest.tasks : []) {
-          const sourceMessageIds = Array.isArray(item.sourceEvidenceKeys) ? item.sourceEvidenceKeys.map(String).slice(0, 20) : []
-          const evidenceMessages = Array.isArray(item.__evidenceMessages) ? item.__evidenceMessages : []
-          const assignment = classifyTaskAssignment({
-            evidenceMessages,
-            modelClassification: item.classification,
-            modelTaskKind: item.taskKind
-          })
-          if (!assignment.keep) continue
-          const taskKind = assignment.taskKind
-          const task: AssistantTask = {
-            id: stableTaskId(item),
-            title: String(item.title || '待确认事项').slice(0, 160),
-            detail: String(item.detail || '').slice(0, 500),
-            owner: String(item.owner || '我').slice(0, 50),
-            collaborators: (Array.isArray(item.collaborators) ? item.collaborators : [])
-              .map((value: any) => String(value || '').trim().slice(0, 80)).filter(Boolean).slice(0, 20),
-            project: String(item.project || '').trim().slice(0, 160),
-            dependsOnIds: [],
-            taskKind,
-            due: String(item.due || '').slice(0, 40),
-            priority: ['high', 'medium', 'low'].includes(item.priority) ? item.priority : 'medium',
-            source: String(item.source || '').slice(0, 100),
-            sourceSessionId: String(evidenceMessages[0]?.sessionId || ''),
-            confidence: Math.max(0, Math.min(1, Number(item.confidence ?? 0.7))),
-            status: taskKind === 'waiting' ? 'waiting' : 'todo',
-            classification: assignment.classification,
-            assignmentEvidence: String(item.assignmentEvidence || '').slice(0, 300),
-            ownershipPolicyReason: assignment.rationale,
-            sourceMessageIds,
-            evidence: evidenceMessages.map(message => ({
-              sourceId: String(message.sourceId || 'wechat'),
-              sessionId: String(message.sessionId || ''),
-              messageId: structuredEvidenceKey(message),
-              timestamp: Number(message.timestamp),
-              sender: message.direction === '我发送' ? '我' : String(message.senderName || message.senderId || '对方'),
-              excerpt: redact(String(message.content)).slice(0, 300)
-            }))
-          }
-          const feedbackFingerprint = taskEvidenceFingerprint(task)
-          const feedback = feedbackFingerprint
-            ? personalMemoryStore.getTaskReviewDecision(feedbackFingerprint)
-            : null
-          const reviewedTask = applyTaskReviewFeedback(task, feedback)
-          if (!reviewedTask) {
-            personalMemoryStore.recordTaskReviewSuppression(feedbackFingerprint)
-            continue
-          }
-          Object.assign(task, reviewedTask)
-          ;(task as any).dependsOnTitles = (Array.isArray(item.dependsOnTitles) ? item.dependsOnTitles : [])
-            .map((value: any) => String(value || '').trim()).filter(Boolean).slice(0, 20)
-          tasks.set(task.id, task)
-        }
-      }
-      const titleToId = new Map([...tasks.values()].map(task => [task.title.trim().toLowerCase(), task.id]))
-      for (const task of tasks.values()) {
-        task.dependsOnIds = ((task as any).dependsOnTitles || [])
-          .map((title: string) => titleToId.get(title.toLowerCase())).filter(Boolean)
-        delete (task as any).dependsOnTitles
-      }
-      const existing = new Map(this.state.tasks.map(task => [task.id, task]))
-      for (const task of tasks.values()) {
-        const previous = existing.get(task.id) || findMatchingTask(task, this.state.tasks)
-        if (previous && previous.id !== task.id) existing.delete(previous.id)
-        if (previous) task.id = previous.id
-        const mergedTask: AssistantTask = previous ? {
-          ...task,
-          status: previous.status,
-          owner: previous.owner || task.owner,
-          collaborators: previous.collaborators || task.collaborators,
-          project: previous.project || task.project,
-          dependsOnIds: previous.dependsOnIds || task.dependsOnIds,
-          taskKind: previous.taskKind || task.taskKind,
-          evidence: mergeTaskEvidenceHotset(previous.evidence, task.evidence),
-          createdAt: previous.createdAt,
-          updatedAt: createdAt
-        } : { ...task, createdAt, updatedAt: createdAt }
-        existing.set(task.id, mergedTask)
-        personalMemoryStore.recordTaskChanges(task.id, previous || {}, mergedTask,
-          previous ? 'incremental_message_update' : 'created_from_message', mergedTask.evidence || [])
       }
       const today = shanghaiDate()
       this.runContextualIdentityScan(createdAt)
@@ -3706,7 +3695,6 @@ export class AiAssistantService {
           generatedAt: createdAt
         }
       }
-      this.state.tasks = [...existing.values()].sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)))
       this.state.cursor.recentMessageIds = [...new Set([...this.state.cursor.recentMessageIds, ...successfulMessageKeys])].slice(-20_000)
       const cursorProgress = planSessionCursorProgress({
         current: this.state.cursor.sessionCursors,
