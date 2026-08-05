@@ -55,4 +55,14 @@ export function buildConnectorPickerSnapshot(
     mutationToken: String(source?.mutationToken || '')
   }
 }
+
+export function buildMailConnectorPickerSnapshot(
+  items: unknown,
+  source: any
+): { items: any[]; mutationToken: string; allowModelAnalysis: boolean } {
+  return {
+    ...buildConnectorPickerSnapshot(items, source, 'mailboxIds'),
+    allowModelAnalysis: Boolean(source?.config?.allowModelAnalysis)
+  }
+}
 import { sanitizeDiagnosticText } from './diagnosticRedaction.ts'

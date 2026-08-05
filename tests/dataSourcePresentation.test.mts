@@ -2,6 +2,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import {
   buildConnectorPickerSnapshot,
+  buildMailConnectorPickerSnapshot,
   markSelectedConnectorItems,
   presentDataSourceForRenderer,
   presentDataSourcesForRenderer
@@ -60,6 +61,26 @@ test('data source presentation keeps raw connector checkpoints out of renderer p
       allowModelAnalysis: true
     }
   }).config, { allowModelAnalysis: true })
+})
+
+test('mail picker snapshot binds privacy authorization to the same save token', () => {
+  const snapshot = buildMailConnectorPickerSnapshot([
+    { id: 'mailbox-current', displayName: '收件箱' }
+  ], {
+    config: {
+      mailboxIds: ['mailbox-current'],
+      allowModelAnalysis: true
+    },
+    mutationToken: 'privacy-current-token'
+  })
+  assert.equal(snapshot.allowModelAnalysis, true)
+  assert.equal(snapshot.mutationToken, 'privacy-current-token')
+  assert.equal(snapshot.items[0].selected, true)
+  assert.deepEqual(buildMailConnectorPickerSnapshot([], null), {
+    items: [],
+    mutationToken: '',
+    allowModelAnalysis: false
+  })
 })
 
 test('connector picker snapshot binds selected identities and save token together', () => {

@@ -2222,6 +2222,7 @@ export interface ElectronAPI {
           selected: boolean
         }>
         mutationToken: string
+        allowModelAnalysis: boolean
       }>
       setDataSourceEnabled: (
         sourceId: string,

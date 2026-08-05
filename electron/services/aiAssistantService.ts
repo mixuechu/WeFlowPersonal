@@ -308,6 +308,7 @@ import { LocalMailDataSource, localMailService } from './localMailDataSource'
 import { AsyncExpiringValue } from './asyncExpiringValue'
 import {
   buildConnectorPickerSnapshot,
+  buildMailConnectorPickerSnapshot,
   presentDataSourceForRenderer
 } from './dataSourcePresentation'
 import {
@@ -4042,7 +4043,7 @@ export class AiAssistantService {
     const mailboxes = await localMailService.listMailboxes()
     const source = personalMemoryStore.listDataSources().find(item => item.id === 'mail')
     if (!source) throw new Error('Mail 数据源状态不存在，请刷新后重试')
-    return buildConnectorPickerSnapshot(mailboxes, source, 'mailboxIds')
+    return buildMailConnectorPickerSnapshot(mailboxes, source)
   }
 
   setDataSourceEnabled(sourceId: string, enabled: boolean, expectedMutationToken: string): any {

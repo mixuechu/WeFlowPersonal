@@ -6780,7 +6780,7 @@ function AiAssistantPage() {
       setMailPicker({
         mailboxes,
         selectedIds: mailboxes.filter(mailbox => mailbox.selected).map(mailbox => String(mailbox.id)),
-        allowModelAnalysis: Boolean(source.config?.allowModelAnalysis),
+        allowModelAnalysis: Boolean(mailboxSnapshot.allowModelAnalysis),
         expectedMutationToken: String(mailboxSnapshot.mutationToken || '')
       })
       setDataSources(await window.electronAPI.aiAssistant.getDataSources())
