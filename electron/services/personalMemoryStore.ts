@@ -891,6 +891,8 @@ export class PersonalMemoryStore {
             'not_applicable','legacy_unknown'
           )),
         answer_outcome_code TEXT NOT NULL DEFAULT '',
+        conversation_id TEXT NOT NULL DEFAULT '',
+        answer_message_id TEXT NOT NULL DEFAULT '',
         started_at TEXT NOT NULL,
         completed_at TEXT,
         answer_completed_at TEXT
@@ -899,7 +901,6 @@ export class PersonalMemoryStore {
         ON assistant_model_request_audits(started_at DESC,id DESC);
       CREATE INDEX IF NOT EXISTS idx_assistant_model_request_audits_status_time
         ON assistant_model_request_audits(status,started_at DESC,id DESC);
-
       CREATE TABLE IF NOT EXISTS ingestion_runs (
         id TEXT PRIMARY KEY,
         started_at TEXT NOT NULL,
@@ -2606,11 +2607,28 @@ export class PersonalMemoryStore {
           ADD COLUMN answer_completed_at TEXT
         `)
       }
+      if (!columns.has('conversation_id')) {
+        this.db!.exec(`
+          ALTER TABLE assistant_model_request_audits
+          ADD COLUMN conversation_id TEXT NOT NULL DEFAULT ''
+        `)
+      }
+      if (!columns.has('answer_message_id')) {
+        this.db!.exec(`
+          ALTER TABLE assistant_model_request_audits
+          ADD COLUMN answer_message_id TEXT NOT NULL DEFAULT ''
+        `)
+      }
       this.db!.exec(`
         CREATE INDEX IF NOT EXISTS idx_assistant_model_request_audits_answer_time
         ON assistant_model_request_audits(
           answer_outcome,answer_outcome_code,started_at DESC,id DESC
         )
+      `)
+      this.db!.exec(`
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_assistant_model_request_audits_answer_message
+        ON assistant_model_request_audits(answer_message_id)
+        WHERE answer_message_id!=''
       `)
       this.db!.prepare(`
         UPDATE assistant_model_request_audits
@@ -2649,9 +2667,13 @@ export class PersonalMemoryStore {
 
   getAssistantModelRequestAuditRevision(): string {
     if (!this.db) return '0'
-    return String((this.db.prepare(`
+    const auditRevision = String((this.db.prepare(`
       SELECT value FROM schema_meta WHERE key='assistant_model_request_audit_revision'
     `).get() as any)?.value || '0')
+    const historyRevision = String((this.db.prepare(`
+      SELECT value FROM schema_meta WHERE key='assistant_history_revision'
+    `).get() as any)?.value || '0')
+    return `model-answer-link-v1:${auditRevision}:${historyRevision}`
   }
 
   getAssistantHistoryRevision(): string {
@@ -16543,11 +16565,23 @@ export class PersonalMemoryStore {
       }
     }
     const rows = this.db.prepare(`
-      SELECT id,status,outcome_code,model,audit_json,
+      SELECT audit.id,audit.status,audit.outcome_code,audit.model,audit.audit_json,
         answer_outcome,answer_outcome_code,
-        started_at,completed_at,answer_completed_at
-      FROM assistant_model_request_audits ${selected.where}
-      ORDER BY started_at DESC,id DESC LIMIT ? OFFSET ?
+        started_at,completed_at,answer_completed_at,
+        CASE WHEN audit.answer_outcome='committed' AND EXISTS(
+          SELECT 1 FROM assistant_messages answer
+          WHERE answer.id=audit.answer_message_id
+            AND answer.conversation_id=audit.conversation_id
+            AND answer.role='assistant'
+        ) THEN audit.conversation_id ELSE '' END AS conversation_id,
+        CASE WHEN audit.answer_outcome='committed' AND EXISTS(
+          SELECT 1 FROM assistant_messages answer
+          WHERE answer.id=audit.answer_message_id
+            AND answer.conversation_id=audit.conversation_id
+            AND answer.role='assistant'
+        ) THEN audit.answer_message_id ELSE '' END AS answer_message_id
+      FROM assistant_model_request_audits audit ${selected.where}
+      ORDER BY audit.started_at DESC,audit.id DESC LIMIT ? OFFSET ?
     `).all(...selected.args, limit, offset) as any[]
     const items = rows.map(row => {
       let audit: any = {}
@@ -16566,7 +16600,9 @@ export class PersonalMemoryStore {
         answer_outcome_code: String(row.answer_outcome_code || ''),
         started_at: String(row.started_at || ''),
         completed_at: String(row.completed_at || ''),
-        answer_completed_at: String(row.answer_completed_at || '')
+        answer_completed_at: String(row.answer_completed_at || ''),
+        conversation_id: String(row.conversation_id || ''),
+        answer_message_id: String(row.answer_message_id || '')
       }
     })
     const completedRevision = this.getAssistantModelRequestAuditRevision()
@@ -16728,9 +16764,11 @@ export class PersonalMemoryStore {
           UPDATE assistant_model_request_audits
           SET answer_outcome='committed',
               answer_outcome_code='answer_committed',
-              answer_completed_at=?
+              answer_completed_at=?,
+              conversation_id=?,
+              answer_message_id=?
           WHERE id=? AND status='response_received' AND answer_outcome='processing'
-        `).run(answerAt, modelRequestAuditId)
+        `).run(answerAt, id, answerMessageId, modelRequestAuditId)
         if (Number(auditResult.changes || 0) !== 1) {
           throw new Error('模型发送审计状态已经变化，本次回答未保存')
         }

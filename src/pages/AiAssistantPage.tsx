@@ -8585,6 +8585,17 @@ function AiAssistantPage() {
                     {item.completed_at && <small>
                       完成于 {new Date(item.completed_at).toLocaleString('zh-CN')}
                     </small>}
+                    {item.conversation_id && item.answer_message_id && <button
+                      onClick={async () => {
+                        await openMemoryConversation(
+                          item.conversation_id,
+                          item.answer_message_id
+                        )
+                        document.querySelector('.assistant-conversation-thread')
+                          ?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+                      }}>
+                      查看已提交回答
+                    </button>}
                   </article>
                 })}
               </div>

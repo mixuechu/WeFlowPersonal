@@ -13117,7 +13117,7 @@ test('model request audit is privacy-minimized, revision-paged and recovers inte
     }
     const receivedId = first.recordAssistantModelRequestStarted(baseAudit, 'deepseek-test')
     first.finishAssistantModelRequestAudit(receivedId, 'response_received')
-    const committedConversationId = first.saveAssistantExchangeDetailed(
+    const committedExchange = first.saveAssistantExchangeDetailed(
       '端到端审计问题',
       '端到端审计回答',
       [],
@@ -13125,7 +13125,8 @@ test('model request audit is privacy-minimized, revision-paged and recovers inte
       {},
       '',
       { modelRequestAuditId: receivedId }
-    ).conversationId
+    )
+    const committedConversationId = committedExchange.conversationId
     const failedId = first.recordAssistantModelRequestStarted({
       ...baseAudit,
       outboundSha256: 'b'.repeat(64)
@@ -13160,6 +13161,12 @@ test('model request audit is privacy-minimized, revision-paged and recovers inte
       'calendar', 'unknown'
     ])
     assert.equal(firstPage.items[0].sourcePrivacyAudit.rawPrompt, undefined)
+    const committedAudit = first.listAssistantModelRequestAuditsPage({
+      answerOutcome: 'committed',
+      limit: 10
+    }).items.find((item: any) => item.id === receivedId)
+    assert.equal(committedAudit?.conversation_id, committedExchange.conversationId)
+    assert.equal(committedAudit?.answer_message_id, committedExchange.answerMessageId)
     const rawAudit = String((first as any).db.prepare(`
       SELECT GROUP_CONCAT(audit_json, '') AS payload
       FROM assistant_model_request_audits
@@ -13167,6 +13174,17 @@ test('model request audit is privacy-minimized, revision-paged and recovers inte
     assert.equal(rawAudit.includes('owner@example.test'), false)
     assert.equal(rawAudit.includes('secret@example.test'), false)
     assert.equal(rawAudit.includes('原始问题'), false)
+    const rawCommittedLink = (first as any).db.prepare(`
+      SELECT conversation_id,answer_message_id
+      FROM assistant_model_request_audits WHERE id=?
+    `).get(receivedId)
+    assert.equal(rawCommittedLink.conversation_id, committedExchange.conversationId)
+    assert.equal(rawCommittedLink.answer_message_id, committedExchange.answerMessageId)
+    const rawAuditRow = JSON.stringify((first as any).db.prepare(`
+      SELECT * FROM assistant_model_request_audits WHERE id=?
+    `).get(receivedId))
+    assert.equal(rawAuditRow.includes('端到端审计问题'), false)
+    assert.equal(rawAuditRow.includes('端到端审计回答'), false)
 
     const staleRevision = firstPage.revision
     const processingId = first.recordAssistantModelRequestStarted({
@@ -13208,6 +13226,25 @@ test('model request audit is privacy-minimized, revision-paged and recovers inte
       not_applicable: 2,
       legacy_unknown: 0
     })
+    const reopenedCommitted = reopened.items.find((item: any) => item.id === receivedId)
+    assert.equal(reopenedCommitted?.conversation_id, committedConversationId)
+    assert.equal(reopenedCommitted?.answer_message_id, committedExchange.answerMessageId)
+    assert.equal(second.getAssistantConversation(committedConversationId)?.messages.length, 2)
+    const linkedRevision = reopened.revision
+    assert.equal(second.deleteAssistantConversation(committedConversationId), true)
+    assert.equal(second.listAssistantModelRequestAuditsPage({
+      offset: 1,
+      limit: 1,
+      revision: linkedRevision
+    }).stale, true)
+    const afterConversationDeletion = second.listAssistantModelRequestAuditsPage({
+      answerOutcome: 'committed',
+      limit: 10
+    })
+    assert.equal(afterConversationDeletion.total, 1)
+    assert.equal(afterConversationDeletion.items[0].conversation_id, '')
+    assert.equal(afterConversationDeletion.items[0].answer_message_id, '')
+    assert.equal(afterConversationDeletion.items[0].answer_outcome, 'committed')
     assert.equal(reopened.items.filter((item: any) =>
       item.status === 'interrupted' &&
       item.outcome_code === 'process_interrupted'
@@ -13220,7 +13257,30 @@ test('model request audit is privacy-minimized, revision-paged and recovers inte
       item.answer_outcome === 'rejected' &&
       item.answer_outcome_code === 'invalid_model_json'
     ), true)
-    assert.equal(second.getAssistantConversation(committedConversationId)?.messages.length, 2)
+    const unusableAuditId = second.recordAssistantModelRequestStarted({
+      ...baseAudit,
+      outboundSha256: 'f'.repeat(64)
+    }, 'deepseek-test')
+    second.finishAssistantModelRequestAudit(unusableAuditId, 'failed', 'timeout')
+    assert.throws(() => second.saveAssistantExchangeDetailed(
+      '不应提交的问题',
+      '不应提交的回答',
+      [],
+      undefined,
+      {},
+      '',
+      { modelRequestAuditId: unusableAuditId }
+    ), /模型发送审计状态已经变化/)
+    assert.equal(second.listAssistantConversationsPage({
+      query: '不应提交的问题',
+      limit: 10
+    }).total, 0)
+    const unusableAudit = second.listAssistantModelRequestAuditsPage({
+      status: 'failed',
+      limit: 10
+    }).items.find((item: any) => item.id === unusableAuditId)
+    assert.equal(unusableAudit?.conversation_id, '')
+    assert.equal(unusableAudit?.answer_message_id, '')
     assert.equal(second.getAssistantModelRequestAuditStats().policy,
       'category_only_digest_no_prompt_v1')
   } finally {
@@ -13279,8 +13339,15 @@ test('transport-only model request audits upgrade without inventing answer succe
     assert.equal(upgraded.answerCounts.legacy_unknown, 1)
     assert.equal((second as any).db.prepare(`
       SELECT COUNT(*) AS count FROM pragma_table_info('assistant_model_request_audits')
-      WHERE name IN ('answer_outcome','answer_outcome_code','answer_completed_at')
-    `).get().count, 3)
+      WHERE name IN (
+        'answer_outcome','answer_outcome_code','answer_completed_at',
+        'conversation_id','answer_message_id'
+      )
+    `).get().count, 5)
+    assert.equal((second as any).db.prepare(`
+      SELECT COUNT(*) AS count FROM sqlite_master
+      WHERE type='index' AND name='idx_assistant_model_request_audits_answer_message'
+    `).get().count, 1)
   } finally {
     first.close()
     second.close()
