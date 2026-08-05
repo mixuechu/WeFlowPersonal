@@ -8487,6 +8487,11 @@ function AiAssistantPage() {
                 已净化 {Number(dashboard.assistantArchive.citationStorage.citationsCompacted || 0)} 条旧引用，
                 释放约 {(Number(dashboard.assistantArchive.citationStorage.bytesReclaimed || 0) / 1024).toFixed(1)} KB。
               </small>}
+              {dashboard?.assistantArchive?.sourcePrivacyStorage?.policy === 'category_only_no_connector_identity' && <small>
+                模型来源审计只保留微信、文档、日历、Mail、旧版或未知类别，不保存连接器内部身份；
+                已检查 {Number(dashboard.assistantArchive.sourcePrivacyStorage.scannedMessages || 0).toLocaleString()} 条历史回答，
+                归并 {Number(dashboard.assistantArchive.sourcePrivacyStorage.unknownSourceIdsCollapsed || 0).toLocaleString()} 个非规范来源标识。
+              </small>}
               {dashboard?.assistantArchive?.exchangeIntegrity?.policy === 'atomic_exchange_v1' && <small>
                 每次问题与回答由 SQLCipher 单事务提交；已配对
                 {' '}{Number(dashboard.assistantArchive.exchangeIntegrity.pairedExchanges || 0).toLocaleString()} 个完整回合。

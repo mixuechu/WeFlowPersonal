@@ -187,7 +187,7 @@ test('model source privacy audit keeps only bounded policy proof and irreversibl
   assert.equal(audit.privacyExcludedDocuments, 2)
   assert.equal(audit.budgetOmittedDocuments, 0)
   assert.deepEqual(audit.contextSourceIds, ['wechat'])
-  assert.deepEqual(audit.excludedSourceIds, ['mail', 'future-private-source'])
+  assert.deepEqual(audit.excludedSourceIds, ['mail', 'unknown'])
   assert.equal(audit.incompleteSourceDocuments, 1)
   assert.match(audit.outboundSha256, /^[a-f0-9]{64}$/)
   assert.equal(JSON.stringify(audit).includes('不得在审计中保存'), false)

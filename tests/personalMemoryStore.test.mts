@@ -11721,7 +11721,8 @@ test('assistant archive paginates years of conversations and complete long threa
   const stats = store.getAssistantArchiveStats()
   assert.deepEqual(Object.keys(stats).sort(), [
     'answerDependencies', 'citationStorage', 'evidenceRevisions', 'exchangeIntegrity',
-    'generalEvidenceRevisions', 'latestId', 'latestMessageCount', 'latestUpdatedAt', 'total'
+    'generalEvidenceRevisions', 'latestId', 'latestMessageCount', 'latestUpdatedAt',
+    'sourcePrivacyStorage', 'total'
   ])
   assert.deepEqual(Object.keys(stats.citationStorage).sort(), [
     'bytesReclaimed', 'citationsCompacted', 'completedAt', 'malformedPayloadsCleared',
@@ -11729,6 +11730,8 @@ test('assistant archive paginates years of conversations and complete long threa
   ])
   assert.equal(JSON.stringify(stats.citationStorage).includes('历史问题'), false)
   assert.equal(JSON.stringify(stats.citationStorage).includes('历史回答'), false)
+  assert.equal(stats.sourcePrivacyStorage.policy, 'category_only_no_connector_identity')
+  assert.equal(JSON.stringify(stats.sourcePrivacyStorage).includes('历史问题'), false)
   assert.equal(stats.total, 600)
   assert.equal(first.total, 600)
   assert.equal(first.items.length, 40)
@@ -13016,6 +13019,21 @@ test('assistant archive and message pagination survive a SQLCipher process-style
       'acknowledged',
       visibleReview.mutation_token
     )
+    const rawGrounding = JSON.parse(String(firstDatabase.prepare(`
+      SELECT grounding_json FROM assistant_messages WHERE id=?
+    `).get(reviewAnswerId)?.grounding_json || '{}'))
+    rawGrounding.sourcePrivacyAudit.excludedSourceIds = [
+      'calendar',
+      'legacy',
+      'mailbox:owner@example.test'
+    ]
+    rawGrounding.sourcePrivacyAudit.rawOutbound = '不应保留的旧版请求正文'
+    firstDatabase.prepare(`
+      UPDATE assistant_messages SET grounding_json=? WHERE id=?
+    `).run(JSON.stringify(rawGrounding), reviewAnswerId)
+    firstDatabase.prepare(`
+      DELETE FROM schema_meta WHERE key='assistant_source_privacy_storage_v1'
+    `).run()
     first.close()
 
     second.initialize(databasePath, key)
@@ -13040,9 +13058,19 @@ test('assistant archive and message pagination survive a SQLCipher process-style
     assert.equal(reopenedPrivacyAudit.version, 'model-source-privacy-v2')
     assert.equal(reopenedPrivacyAudit.policy.mail, true)
     assert.deepEqual(reopenedPrivacyAudit.contextSourceIds, ['documents'])
-    assert.deepEqual(reopenedPrivacyAudit.excludedSourceIds, ['calendar', 'legacy'])
+    assert.deepEqual(reopenedPrivacyAudit.excludedSourceIds, ['calendar', 'legacy', 'unknown'])
     assert.equal(reopenedPrivacyAudit.outboundSha256, 'd'.repeat(64))
     assert.deepEqual(reopenedPrivacyAudit.boundaryChecks, ['before_send', 'after_response'])
+    const privacyStorage = second.getAssistantSourcePrivacyStorageStats()
+    assert.equal(privacyStorage.policy, 'category_only_no_connector_identity')
+    assert.equal(privacyStorage.privacyAudits, 1)
+    assert.equal(privacyStorage.unknownSourceIdsCollapsed, 1)
+    assert.ok(privacyStorage.updatedMessages >= 1)
+    const repairedGrounding = String((second as any).db.prepare(`
+      SELECT grounding_json FROM assistant_messages WHERE id=?
+    `).get(reviewAnswerId)?.grounding_json || '')
+    assert.equal(repairedGrounding.includes('owner@example.test'), false)
+    assert.equal(repairedGrounding.includes('不应保留的旧版请求正文'), false)
     const answerReviews = second.listAssistantAnswerReviewsPage({
       status: 'invalid',
       query: '重启核验问题',

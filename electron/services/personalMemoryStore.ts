@@ -1390,6 +1390,7 @@ export class PersonalMemoryStore {
       WHERE evidence_role='support'
     `).run()
     this.repairAssistantCitationStorage()
+    this.repairAssistantSourcePrivacyStorage()
     this.repairAssistantExchangeIntegrity()
     this.repairAssistantAnswerDependencies()
     this.compactCommittedIngestionPayloads()
@@ -16022,9 +16023,15 @@ export class PersonalMemoryStore {
     const privacy = value.sourcePrivacyAudit && typeof value.sourcePrivacyAudit === 'object'
       ? value.sourcePrivacyAudit
       : null
+    const knownSourceIds = new Set([
+      'wechat', 'documents', 'calendar', 'mail', 'legacy', 'unknown'
+    ])
     const compactSourceIds = (sourceIds: unknown) => [...new Set(
       (Array.isArray(sourceIds) ? sourceIds : [])
-        .map(item => String(item || '').trim().toLowerCase().slice(0, 80))
+        .map(item => {
+          const sourceId = String(item || '').trim().toLowerCase()
+          return knownSourceIds.has(sourceId) ? sourceId : 'unknown'
+        })
         .filter(Boolean)
     )].sort().slice(0, 64)
     const redactionCounts = Object.fromEntries(
@@ -16099,6 +16106,108 @@ export class PersonalMemoryStore {
         : {}),
       ...(sourcePrivacyAudit ? { sourcePrivacyAudit } : {}),
       statementCitations
+    }
+  }
+
+  private repairAssistantSourcePrivacyStorage(): void {
+    if (!this.db) return
+    const key = 'assistant_source_privacy_storage_v1'
+    const existing = this.db.prepare('SELECT value FROM schema_meta WHERE key=?').get(key) as any
+    if (existing?.value) return
+    const rows = this.db.prepare(`
+      SELECT id,grounding_json FROM assistant_messages
+      WHERE role='assistant' AND grounding_json!='{}'
+    `).all() as Array<{ id: string; grounding_json: string }>
+    const update = this.db.prepare('UPDATE assistant_messages SET grounding_json=? WHERE id=?')
+    let updatedMessages = 0
+    let malformedPayloadsCleared = 0
+    let unknownSourceIdsCollapsed = 0
+    let bytesReclaimed = 0
+    let privacyAudits = 0
+    const canonicalSources = new Set([
+      'wechat', 'documents', 'calendar', 'mail', 'legacy', 'unknown'
+    ])
+    const transaction = this.db.transaction(() => {
+      for (const row of rows) {
+        let parsed: any = {}
+        try {
+          const value = JSON.parse(String(row.grounding_json || '{}'))
+          if (value && typeof value === 'object' && !Array.isArray(value)) parsed = value
+          else malformedPayloadsCleared += 1
+        } catch {
+          malformedPayloadsCleared += 1
+        }
+        const rawPrivacy = parsed?.sourcePrivacyAudit
+        if (rawPrivacy?.version === 'model-source-privacy-v2') {
+          privacyAudits += 1
+          for (const sourceId of [
+            ...(Array.isArray(rawPrivacy.contextSourceIds) ? rawPrivacy.contextSourceIds : []),
+            ...(Array.isArray(rawPrivacy.excludedSourceIds) ? rawPrivacy.excludedSourceIds : [])
+          ]) {
+            if (!canonicalSources.has(String(sourceId || '').trim().toLowerCase())) {
+              unknownSourceIdsCollapsed += 1
+            }
+          }
+        }
+        const compacted = this.compactAssistantGroundingAudit(parsed)
+        const next = JSON.stringify(compacted)
+        const previous = String(row.grounding_json || '{}')
+        if (next === previous) continue
+        update.run(next, row.id)
+        updatedMessages += 1
+        bytesReclaimed += Math.max(0, Buffer.byteLength(previous) - Buffer.byteLength(next))
+      }
+      const completedAt = new Date().toISOString()
+      this.db!.prepare(`
+        INSERT INTO schema_meta(key,value,updated_at) VALUES(?,?,?)
+      `).run(key, JSON.stringify({
+        version: 1,
+        policy: 'category_only_no_connector_identity',
+        scannedMessages: rows.length,
+        updatedMessages,
+        privacyAudits,
+        malformedPayloadsCleared,
+        unknownSourceIdsCollapsed,
+        bytesReclaimed,
+        completedAt
+      }), completedAt)
+    })
+    transaction()
+  }
+
+  getAssistantSourcePrivacyStorageStats(): any {
+    if (!this.db) return {
+      version: 1,
+      policy: 'category_only_no_connector_identity',
+      scannedMessages: 0,
+      updatedMessages: 0,
+      privacyAudits: 0,
+      malformedPayloadsCleared: 0,
+      unknownSourceIdsCollapsed: 0,
+      bytesReclaimed: 0,
+      storedBytes: 0,
+      completedAt: ''
+    }
+    const row = this.db.prepare(`
+      SELECT value FROM schema_meta WHERE key='assistant_source_privacy_storage_v1'
+    `).get() as any
+    let audit: any = {}
+    try { audit = JSON.parse(String(row?.value || '{}')) } catch {}
+    const storedBytes = Number((this.db.prepare(`
+      SELECT COALESCE(SUM(LENGTH(CAST(grounding_json AS BLOB))),0) AS bytes
+      FROM assistant_messages
+    `).get() as any)?.bytes || 0)
+    return {
+      version: 1,
+      policy: 'category_only_no_connector_identity',
+      scannedMessages: Math.max(0, Number(audit.scannedMessages || 0)),
+      updatedMessages: Math.max(0, Number(audit.updatedMessages || 0)),
+      privacyAudits: Math.max(0, Number(audit.privacyAudits || 0)),
+      malformedPayloadsCleared: Math.max(0, Number(audit.malformedPayloadsCleared || 0)),
+      unknownSourceIdsCollapsed: Math.max(0, Number(audit.unknownSourceIdsCollapsed || 0)),
+      bytesReclaimed: Math.max(0, Number(audit.bytesReclaimed || 0)),
+      storedBytes: Math.max(0, storedBytes),
+      completedAt: String(audit.completedAt || '')
     }
   }
 
@@ -17055,6 +17164,7 @@ export class PersonalMemoryStore {
       latestUpdatedAt: String(latest?.updated_at || ''),
       latestMessageCount: Number(latest?.message_count || 0),
       citationStorage: this.getAssistantCitationStorageStats(),
+      sourcePrivacyStorage: this.getAssistantSourcePrivacyStorageStats(),
       exchangeIntegrity: this.getAssistantExchangeIntegrityStats(),
       answerDependencies: this.getAssistantAnswerDependencyStats(),
       evidenceRevisions: this.getStructuredEvidenceRevisionHealth(),

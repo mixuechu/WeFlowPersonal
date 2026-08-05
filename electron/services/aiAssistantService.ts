@@ -4374,6 +4374,7 @@ export class AiAssistantService {
           ...assistantArchiveStats.citationStorage,
           policy: 'reference_only_authoritative_hydration'
         },
+        sourcePrivacyStorage: assistantArchiveStats.sourcePrivacyStorage,
         exchangeIntegrity: assistantArchiveStats.exchangeIntegrity,
         answerDependencies: {
           ...assistantArchiveStats.answerDependencies,

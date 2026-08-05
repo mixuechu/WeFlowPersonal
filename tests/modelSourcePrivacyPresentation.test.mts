@@ -11,7 +11,7 @@ test('model source privacy audit presentation explains current and historical bo
     budgetOmittedDocuments: 2,
     incompleteSourceDocuments: 1,
     contextSourceIds: ['wechat', 'documents'],
-    excludedSourceIds: ['mail', 'future-source'],
+    excludedSourceIds: ['mail', 'unknown'],
     outboundSha256: 'a'.repeat(64),
     redaction: { total: 4 },
     boundaryChecks: ['before_send', 'after_response']
@@ -19,7 +19,7 @@ test('model source privacy audit presentation explains current and historical bo
   assert.equal(presented.valid, true)
   assert.match(presented.summary, /发送 7 份.*隐私隔离 3 份.*Mail 未授权/)
   assert.match(presented.detail, /微信、本机文档/)
-  assert.match(presented.detail, /Mail、未知来源\(future-source\)/)
+  assert.match(presented.detail, /Mail、未知来源/)
   assert.match(presented.detail, /预算另省略 2 份/)
   assert.match(presented.detail, /来源证明不完整/)
   assert.match(presented.detail, /请求指纹 a{12}/)

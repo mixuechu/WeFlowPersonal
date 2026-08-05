@@ -30,6 +30,14 @@ export type PersonalDataSourcePullResult = {
 }
 
 export const MODEL_SOURCE_PRIVACY_AUDIT_VERSION = 'model-source-privacy-v2'
+const AUDIT_SOURCE_CATEGORIES = new Set([
+  'wechat', 'documents', 'calendar', 'mail', 'legacy'
+])
+
+function modelSourceAuditCategory(value: unknown): string {
+  const normalized = String(value || '').trim().toLowerCase()
+  return AUDIT_SOURCE_CATEGORIES.has(normalized) ? normalized : 'unknown'
+}
 
 function memoryResultSourceIdentity(item: any): {
   sourceIds: string[]
@@ -181,7 +189,9 @@ export function buildModelSourcePrivacyAudit(input: {
       ? contextSourceIds
       : eligibleIds.has(itemId) ? null : excludedSourceIds
     if (!target) continue
-    for (const sourceId of identity.sourceIds) target.add(sourceId)
+    for (const sourceId of identity.sourceIds) {
+      target.add(modelSourceAuditCategory(sourceId))
+    }
   }
   const counts = Object.fromEntries(
     Object.entries(input.redaction?.counts || {})

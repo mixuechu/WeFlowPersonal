@@ -3,7 +3,8 @@ const SOURCE_LABELS: Record<string, string> = {
   documents: '本机文档',
   calendar: '日历',
   mail: 'Mail',
-  legacy: '旧版未知来源'
+  legacy: '旧版未知来源',
+  unknown: '未知来源'
 }
 
 function sourceList(value: unknown): string {
@@ -11,7 +12,7 @@ function sourceList(value: unknown): string {
     .map(item => String(item || '').trim().toLowerCase())
     .filter(Boolean)
   return ids.length
-    ? ids.map(id => SOURCE_LABELS[id] || `未知来源(${id})`).join('、')
+    ? ids.map(id => SOURCE_LABELS[id] || '未知来源').join('、')
     : '无'
 }
 
