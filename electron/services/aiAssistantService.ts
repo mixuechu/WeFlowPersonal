@@ -5239,7 +5239,7 @@ export class AiAssistantService {
       direction: ['outgoing', 'incoming'].includes(String(options?.direction || ''))
         ? options.direction
         : 'all',
-      status: ['candidate', 'confirmed'].includes(String(options?.status || ''))
+      status: ['candidate', 'confirmed', 'rejected'].includes(String(options?.status || ''))
         ? options.status
         : 'all',
       sourceId: ['wechat', 'documents', 'calendar', 'mail', 'legacy'].includes(
@@ -9140,7 +9140,7 @@ export class AiAssistantService {
       personalMemoryStore.getStructuredMemoryRevision()
     )
     const relation = this.state.graph.relations.find(item =>
-      item.id === String(id || '').trim() && item.status !== 'rejected')
+      item.id === String(id || '').trim())
     if (!relation) return null
     const directory = buildTrustedEntityDirectory(this.state.graph.entities, { limit: 1 })
     const subject = this.state.graph.entities.find(entity =>
@@ -9190,12 +9190,14 @@ export class AiAssistantService {
     })
     if (selected.stale) throw new Error('可信实体目录在你选择后发生了变化，请重新选择关系两端')
     const relation = this.state.graph.relations.find(item => item.id === id)
-    if (!relation || relation.status === 'rejected') {
+    if (!relation) {
       throw new Error('关系已经变化或不存在，请刷新人物档案')
     }
     const plan = planRelationConfirmation({
       review: { kind: 'relation', relationId: id },
-      relation,
+      relation: relation.status === 'rejected'
+        ? { ...relation, status: 'candidate' }
+        : relation,
       entities: this.state.graph.entities,
       correction
     })
@@ -9232,7 +9234,9 @@ export class AiAssistantService {
     if (!relation) throw new Error('关系已经变化或不存在，请刷新人物档案')
     const plan = planRelationConfirmation({
       review: { kind: 'relation', relationId: id },
-      relation,
+      relation: relation.status === 'rejected'
+        ? { ...relation, status: 'candidate' }
+        : relation,
       entities: this.state.graph.entities,
       correction: input.relationCorrection
     })
@@ -9285,6 +9289,40 @@ export class AiAssistantService {
       persistRestored: () => this.persistCrossStoreMutationState(),
       onRollbackError: error => {
         console.error('[AI Assistant] 人物档案关系拒绝回滚失败:', sanitizeDiagnosticText(error))
+      }
+    })
+  }
+
+  restoreRelation(id: string, expectedRevision: string): any {
+    assertEntityRelationMutationRevision(
+      expectedRevision,
+      personalMemoryStore.getGraphReviewRevision(),
+      personalMemoryStore.getStructuredMemoryRevision()
+    )
+    const relation = this.state.graph.relations.find(item => item.id === id)
+    if (!relation || relation.status !== 'rejected') return null
+    const subject = this.state.graph.entities.find(entity => entity.id === relation.subjectId)
+    const object = this.state.graph.entities.find(entity => entity.id === relation.objectId)
+    if (subject?.trustStatus !== 'confirmed' || object?.trustStatus !== 'confirmed') {
+      throw new Error('关系端点已有未确认或失信实体，请先处理身份后再恢复')
+    }
+    const violation = relationTypeViolation(relation, this.state.graph.entities)
+    if (violation) throw new Error(`${violation}；请通过关系纠正重新选择端点或谓词`)
+    const snapshot = structuredClone(this.state.graph)
+    return runReversibleGraphMutation({
+      snapshot,
+      transact: apply => personalMemoryStore.runInTransaction(apply),
+      apply: () => {
+        const restored = applyCitationRelationDecision(
+          this.state.graph, id, 'confirmed', new Date().toISOString()
+        )
+        this.saveState(true)
+        return restored
+      },
+      restore: graph => { this.state.graph = graph },
+      persistRestored: () => this.persistCrossStoreMutationState(),
+      onRollbackError: error => {
+        console.error('[AI Assistant] 人物档案关系恢复回滚失败:', sanitizeDiagnosticText(error))
       }
     })
   }

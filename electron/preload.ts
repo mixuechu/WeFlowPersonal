@@ -790,6 +790,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
       ipcRenderer.invoke('ai-assistant:correctRelation', id, input),
     rejectRelation: (id: string, expectedRevision: string) =>
       ipcRenderer.invoke('ai-assistant:rejectRelation', id, expectedRevision),
+    restoreRelation: (id: string, expectedRevision: string) =>
+      ipcRenderer.invoke('ai-assistant:restoreRelation', id, expectedRevision),
     askMemory: (question: string, conversationId?: string, options?: any) => ipcRenderer.invoke('ai-assistant:askMemory', question, conversationId, options),
     getAssistantConversations: (options?: any) => ipcRenderer.invoke('ai-assistant:getAssistantConversations', options),
     getAssistantModelRequestAudits: (options?: any) =>

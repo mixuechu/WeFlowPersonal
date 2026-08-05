@@ -4738,6 +4738,8 @@ function registerIpcHandlers() {
     aiAssistantService.correctRelation(id, input))
   ipcMain.handle('ai-assistant:rejectRelation', (_, id: string, expectedRevision: string) =>
     aiAssistantService.rejectRelation(id, expectedRevision))
+  ipcMain.handle('ai-assistant:restoreRelation', (_, id: string, expectedRevision: string) =>
+    aiAssistantService.restoreRelation(id, expectedRevision))
   ipcMain.handle('ai-assistant:askMemory', (_, question: string, conversationId?: string, options?: any) => aiAssistantService.askMemory(question, conversationId, options))
   ipcMain.handle('ai-assistant:getAssistantConversations', (_, options?: any) => aiAssistantService.getAssistantConversations(options))
   ipcMain.handle('ai-assistant:getAssistantModelRequestAudits', (_, options?: any) =>

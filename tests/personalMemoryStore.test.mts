@@ -6383,6 +6383,23 @@ test('entity relationship directory links deterministic pending reviews without 
     offset: 1,
     revision: page.revision
   }).stale, true)
+
+  store.syncGraph({
+    entities,
+    relations: [{ ...relation, status: 'rejected', updatedAt: '2026-08-06T02:00:00.000Z' }],
+    reviewQueue: []
+  } as any)
+  assert.equal(store.listEntityRelationPage({
+    entityId: 'directory-review-person'
+  }).total, 0)
+  const rejectedPage = store.listEntityRelationPage({
+    entityId: 'directory-review-person',
+    status: 'rejected'
+  })
+  assert.equal(rejectedPage.total, 1)
+  assert.equal(rejectedPage.items[0].id, relation.id)
+  assert.equal(rejectedPage.items[0].status, 'rejected')
+  assert.equal(rejectedPage.items[0].evidenceTotal, 1)
 }))
 
 test('entity evidence separates current memory links from historical audit and preserves roles', () => withStore(store => {

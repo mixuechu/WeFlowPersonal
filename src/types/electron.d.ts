@@ -2145,6 +2145,7 @@ export interface ElectronAPI {
       previewRelationCorrection: (id: string, input?: any) => Promise<any>
       correctRelation: (id: string, input?: any) => Promise<any>
       rejectRelation: (id: string, expectedRevision: string) => Promise<any>
+      restoreRelation: (id: string, expectedRevision: string) => Promise<any>
       askMemory: (question: string, conversationId?: string, options?: any) => Promise<any>
       getAssistantConversations: (options?: any) => Promise<any>
       getAssistantModelRequestAudits: (options?: any) => Promise<any>

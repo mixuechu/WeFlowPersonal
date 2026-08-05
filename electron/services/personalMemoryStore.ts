@@ -10205,7 +10205,7 @@ export class PersonalMemoryStore {
   listEntityRelationPage(options: {
     entityId: string
     direction?: 'all' | 'outgoing' | 'incoming'
-    status?: 'all' | 'candidate' | 'confirmed'
+    status?: 'all' | 'candidate' | 'confirmed' | 'rejected'
     sourceId?: MemoryEvidenceSource
     query?: string
     limit?: number
@@ -10221,7 +10221,7 @@ export class PersonalMemoryStore {
     const direction = ['outgoing', 'incoming'].includes(String(options.direction || ''))
       ? String(options.direction)
       : 'all'
-    const status = ['candidate', 'confirmed'].includes(String(options.status || ''))
+    const status = ['candidate', 'confirmed', 'rejected'].includes(String(options.status || ''))
       ? String(options.status)
       : 'all'
     const query = String(options.query || '').trim().toLowerCase()
@@ -10231,7 +10231,7 @@ export class PersonalMemoryStore {
       return { items: [], total: 0, hasMore: false, revision, stale: true }
     }
     const where = [
-      `r.status!='rejected'`,
+      status === 'rejected' ? `r.status='rejected'` : `r.status!='rejected'`,
       direction === 'outgoing'
         ? 'r.subject_id=?'
         : direction === 'incoming'
@@ -10239,7 +10239,7 @@ export class PersonalMemoryStore {
           : '(r.subject_id=? OR r.object_id=?)'
     ]
     const parameters: any[] = direction === 'all' ? [entityId, entityId] : [entityId]
-    if (status !== 'all') {
+    if (status !== 'all' && status !== 'rejected') {
       where.push('r.status=?')
       parameters.push(status)
     }

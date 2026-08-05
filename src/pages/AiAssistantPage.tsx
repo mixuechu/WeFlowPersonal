@@ -655,7 +655,7 @@ function AiAssistantPage() {
   const [entityClaimTo, setEntityClaimTo] = useState('')
   const [entityRelationQuery, setEntityRelationQuery] = useState('')
   const [entityRelationDirection, setEntityRelationDirection] = useState<'all' | 'outgoing' | 'incoming'>('all')
-  const [entityRelationStatus, setEntityRelationStatus] = useState<'all' | 'candidate' | 'confirmed'>('all')
+  const [entityRelationStatus, setEntityRelationStatus] = useState<'all' | 'candidate' | 'confirmed' | 'rejected'>('all')
   const [entityRelationSource, setEntityRelationSource] = useState<'all' | 'wechat' | 'documents' | 'calendar' | 'mail' | 'legacy'>('all')
   const [entityEventQuery, setEntityEventQuery] = useState('')
   const [entityEventStatus, setEntityEventStatus] = useState<'all' | 'candidate' | 'confirmed' | 'rejected' | 'cancelled'>('all')
@@ -6523,7 +6523,7 @@ function AiAssistantPage() {
     try {
       const current = await window.electronAPI.aiAssistant.getMemoryRelation(relation.id)
       if (!current) {
-        setMessage('该关系不存在、已被拒绝或已经删除。')
+        setMessage('该关系不存在或已经被永久删除。')
         refreshEntityDossierSection('relations')
         return
       }
@@ -6682,6 +6682,35 @@ function AiAssistantPage() {
         String(entityDossierPages.relations?.revision || '')
       )
       setMessage('已将关系标记为不准确；它将退出可信图搜索和问答。')
+      refreshEntityDossierSection('relations')
+      setReviewRefreshKey(value => value + 1)
+      setGraphWorkspaceRefreshKey(value => value + 1)
+      await load()
+    } catch (error: any) {
+      setMessage(error?.message || String(error))
+      refreshEntityDossierSection('relations')
+    } finally {
+      entityDossierMutationLocks.current.delete(key)
+      setEntityDossierMutations(current => {
+        const next = { ...current }
+        delete next[key]
+        return next
+      })
+    }
+  }
+
+  const restoreEntityRelation = async (relation: any) => {
+    const key = `relation:${relation.id}`
+    if (entityDossierMutationLocks.current.has(key)) return
+    entityDossierMutationLocks.current.add(key)
+    setEntityDossierMutations(current => ({ ...current, [key]: true }))
+    try {
+      const restored = await window.electronAPI.aiAssistant.restoreRelation(
+        relation.id,
+        String(entityDossierPages.relations?.revision || '')
+      )
+      if (!restored) throw new Error('该关系已经变化或不存在，请刷新人物档案')
+      setMessage('关系已恢复并确认，重新进入可信图搜索和证据问答。')
       refreshEntityDossierSection('relations')
       setReviewRefreshKey(value => value + 1)
       setGraphWorkspaceRefreshKey(value => value + 1)
@@ -11141,6 +11170,7 @@ function AiAssistantPage() {
                     <option value="all">全部状态</option>
                     <option value="confirmed">已确认</option>
                     <option value="candidate">待确认</option>
+                    <option value="rejected">不准确</option>
                   </select>
                   <select value={entityRelationSource}
                     onChange={event => setEntityRelationSource(event.target.value as any)}>
@@ -11162,7 +11192,9 @@ function AiAssistantPage() {
                     <button className="assistant-dossier-link" onClick={() => setSelectedEntityId(neighborId)}>
                       <b>{outgoing ? relation.predicate : `被${relation.predicate}`}</b><span>{neighborName || selectedEntityNames[neighborId] || neighborId}</span>
                     </button>
-                    <small>{relation.status === 'confirmed' ? '已确认' : '待确认'} · {Math.round(Number(relation.confidence || 0) * 100)}% · {memorySourceLabels(relation)}</small>
+                    <small>{relation.status === 'confirmed'
+                      ? '已确认'
+                      : relation.status === 'rejected' ? '不准确' : '待确认'} · {Math.round(Number(relation.confidence || 0) * 100)}% · {memorySourceLabels(relation)}</small>
                     <div className="assistant-evidence-stack"><EvidenceRows evidence={relation.evidence}
                       total={relation.evidenceTotal} onOpenArchive={() =>
                         void openMemoryEvidenceArchive(
@@ -11170,7 +11202,7 @@ function AiAssistantPage() {
                           `${relation.subject_name || relation.subjectId} · ${relation.predicate} · ${relation.object_name || relation.objectId}`
                         )} /></div>
                     <div className="assistant-memory-actions">
-                      {relation.status === 'confirmed' && <button
+                      {['confirmed', 'rejected'].includes(relation.status) && <button
                         onClick={() => void openEntityRelationCorrection(relation)}>
                         纠正方向或关系
                       </button>}
@@ -11179,6 +11211,12 @@ function AiAssistantPage() {
                         onClick={() => void rejectEntityRelation(relation)}>
                         {entityDossierMutations[`relation:${relation.id}`]
                           ? '正在保存…' : '不准确'}
+                      </button>}
+                      {relation.status === 'rejected' && <button className="primary"
+                        disabled={!!entityDossierMutations[`relation:${relation.id}`]}
+                        onClick={() => void restoreEntityRelation(relation)}>
+                        {entityDossierMutations[`relation:${relation.id}`]
+                          ? '正在恢复…' : '恢复并确认'}
                       </button>}
                       {relation.status === 'candidate' && relation.pendingReviewId && <button className="primary"
                         onClick={() => openAuthoritativeRelationReview(relation.pendingReviewId)}>
