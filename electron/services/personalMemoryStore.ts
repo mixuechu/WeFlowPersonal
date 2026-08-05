@@ -4256,8 +4256,14 @@ export class PersonalMemoryStore {
         timestamp=MAX(search_document_evidence.timestamp,excluded.timestamp),
         sender=CASE WHEN excluded.sender!='' THEN excluded.sender
           ELSE search_document_evidence.sender END,
-        excerpt=CASE WHEN length(excluded.excerpt)>=length(search_document_evidence.excerpt)
+        excerpt=CASE WHEN length(excluded.excerpt)>length(search_document_evidence.excerpt)
           THEN excluded.excerpt ELSE search_document_evidence.excerpt END
+      WHERE search_document_evidence.timestamp<excluded.timestamp
+        OR (
+          excluded.sender!=''
+          AND excluded.sender!=search_document_evidence.sender
+        )
+        OR length(search_document_evidence.excerpt)<length(excluded.excerpt)
     `)
     let historyRowsRead = 0
     let validEvidenceRows = 0
@@ -6261,10 +6267,52 @@ export class PersonalMemoryStore {
         ) VALUES(?,?,?,?,?,?,?,?)
         ON CONFLICT(entity_id,source_id,session_id,message_id) DO UPDATE SET
           timestamp=MAX(entity_evidence.timestamp,excluded.timestamp),
-          sender=CASE WHEN excluded.sender!='' THEN excluded.sender ELSE entity_evidence.sender END,
+          sender=CASE
+            WHEN excluded.sender!='' AND excluded.sender!=entity_evidence.sender
+              THEN excluded.sender
+            ELSE entity_evidence.sender
+          END,
           excerpt=CASE WHEN LENGTH(excluded.excerpt)>LENGTH(entity_evidence.excerpt)
             THEN excluded.excerpt ELSE entity_evidence.excerpt END,
-          evidence_kind=excluded.evidence_kind
+          evidence_kind=CASE
+            WHEN (
+              CASE excluded.evidence_kind
+                WHEN 'identity_anchor' THEN 3
+                WHEN 'identity' THEN 2
+                WHEN 'entity_mention' THEN 1
+                ELSE 0
+              END
+            ) > (
+              CASE entity_evidence.evidence_kind
+                WHEN 'identity_anchor' THEN 3
+                WHEN 'identity' THEN 2
+                WHEN 'entity_mention' THEN 1
+                ELSE 0
+              END
+            ) THEN excluded.evidence_kind
+            ELSE entity_evidence.evidence_kind
+          END
+        WHERE entity_evidence.timestamp<excluded.timestamp
+          OR (
+            excluded.sender!=''
+            AND excluded.sender!=entity_evidence.sender
+          )
+          OR LENGTH(entity_evidence.excerpt)<LENGTH(excluded.excerpt)
+          OR (
+            CASE excluded.evidence_kind
+              WHEN 'identity_anchor' THEN 3
+              WHEN 'identity' THEN 2
+              WHEN 'entity_mention' THEN 1
+              ELSE 0
+            END
+          ) > (
+            CASE entity_evidence.evidence_kind
+              WHEN 'identity_anchor' THEN 3
+              WHEN 'identity' THEN 2
+              WHEN 'entity_mention' THEN 1
+              ELSE 0
+            END
+          )
       `)
       for (const item of options.entityEvidence || []) {
         if (!activeEntityIds.has(String(item.entityId || ''))) continue
@@ -7625,8 +7673,14 @@ export class PersonalMemoryStore {
         timestamp=MAX(search_document_evidence.timestamp,excluded.timestamp),
         sender=CASE WHEN excluded.sender!='' THEN excluded.sender
           ELSE search_document_evidence.sender END,
-        excerpt=CASE WHEN length(excluded.excerpt)>=length(search_document_evidence.excerpt)
+        excerpt=CASE WHEN length(excluded.excerpt)>length(search_document_evidence.excerpt)
           THEN excluded.excerpt ELSE search_document_evidence.excerpt END
+      WHERE search_document_evidence.timestamp<excluded.timestamp
+        OR (
+          excluded.sender!=''
+          AND excluded.sender!=search_document_evidence.sender
+        )
+        OR length(search_document_evidence.excerpt)<length(excluded.excerpt)
     `)
     let incomingEvidenceRows = 0
     let preservedHistoricalRows = 0
@@ -7678,9 +7732,14 @@ export class PersonalMemoryStore {
       const previousEvidenceCount = Number(this.db.prepare(`
         SELECT COUNT(*) AS count FROM search_document_evidence WHERE document_id=?
       `).get(documentId)?.count || 0)
-      if (!preserveExistingEvidence) {
-        this.db.prepare('DELETE FROM search_document_evidence WHERE document_id=?').run(documentId)
-      }
+      const incomingEvidenceRowsForResource: Array<{
+        sourceId: string
+        messageId: string
+        sessionId: string
+        timestamp: number
+        sender: string
+        excerpt: string
+      }> = []
       const incomingIdentities = new Set<string>()
       for (const item of resource.evidence || []) {
         if (!item.messageId) continue
@@ -7691,9 +7750,45 @@ export class PersonalMemoryStore {
         if (incomingIdentities.has(identity)) continue
         incomingIdentities.add(identity)
         incomingEvidenceRows += 1
-        insertEvidence.run(documentId, sourceId,
-          messageId, sessionId,
-          Number(item.timestamp || 0), String(item.sender || ''), String(item.excerpt || '').slice(0, 2000))
+        incomingEvidenceRowsForResource.push({
+          sourceId,
+          messageId,
+          sessionId,
+          timestamp: Number(item.timestamp || 0),
+          sender: String(item.sender || ''),
+          excerpt: String(item.excerpt || '').slice(0, 2000)
+        })
+      }
+      let evidenceAlreadyExact = false
+      if (!preserveExistingEvidence) {
+        const existingEvidenceRows = this.db.prepare(`
+          SELECT source_id AS sourceId,message_id AS messageId,session_id AS sessionId,
+            timestamp,sender,excerpt
+          FROM search_document_evidence WHERE document_id=?
+        `).all(documentId) as typeof incomingEvidenceRowsForResource
+        const canonicalEvidenceRows = (rows: typeof incomingEvidenceRowsForResource) =>
+          rows.map(item => JSON.stringify({
+            sourceId: String(item.sourceId || ''),
+            messageId: String(item.messageId || ''),
+            sessionId: String(item.sessionId || ''),
+            timestamp: Number(item.timestamp || 0),
+            sender: String(item.sender || ''),
+            excerpt: String(item.excerpt || '')
+          })).sort()
+        evidenceAlreadyExact =
+          JSON.stringify(canonicalEvidenceRows(existingEvidenceRows)) ===
+          JSON.stringify(canonicalEvidenceRows(incomingEvidenceRowsForResource))
+        if (!evidenceAlreadyExact) {
+          this.db.prepare('DELETE FROM search_document_evidence WHERE document_id=?').run(documentId)
+        }
+      }
+      if (!evidenceAlreadyExact) {
+        for (const item of incomingEvidenceRowsForResource) {
+          insertEvidence.run(
+            documentId, item.sourceId, item.messageId, item.sessionId,
+            item.timestamp, item.sender, item.excerpt
+          )
+        }
       }
       if (preserveExistingEvidence) {
         const afterEvidenceCount = Number(this.db.prepare(`
@@ -8293,6 +8388,9 @@ export class PersonalMemoryStore {
           timestamp=excluded.timestamp,
           sender=excluded.sender,
           excerpt=excluded.excerpt
+        WHERE search_document_evidence.timestamp!=excluded.timestamp
+          OR search_document_evidence.sender!=excluded.sender
+          OR search_document_evidence.excerpt!=excluded.excerpt
       `)
       for (const item of authoritativeEvidenceRows) {
         insertEvidence.run(
@@ -9885,7 +9983,8 @@ export class PersonalMemoryStore {
       ),
       scoped AS (
         SELECT ee.source_id,ee.message_id,ee.session_id,ee.timestamp,ee.sender,ee.excerpt,
-          'identity' AS memory_kind,'original' AS evidence_role,1 AS is_current
+          'identity' AS memory_kind,'original' AS evidence_role,
+          ee.evidence_kind AS identity_evidence_kind,1 AS is_current
         FROM entity_evidence ee
         WHERE ee.entity_id IN (SELECT entity_id FROM entity_scope)
         UNION ALL
@@ -9896,6 +9995,7 @@ export class PersonalMemoryStore {
             ELSE 'event'
           END AS memory_kind,
           COALESCE(NULLIF(e.evidence_role,''),'direct') AS evidence_role,
+          '' AS identity_evidence_kind,
           CASE
             WHEN e.claim_id IS NOT NULL AND EXISTS (
               SELECT 1 FROM claims active_claim WHERE active_claim.id=e.claim_id
@@ -9931,6 +10031,7 @@ export class PersonalMemoryStore {
           MAX(sender) AS sender,MAX(excerpt) AS excerpt,
           GROUP_CONCAT(DISTINCT memory_kind) AS memory_kinds,
           GROUP_CONCAT(DISTINCT evidence_role) AS evidence_roles,
+          GROUP_CONCAT(DISTINCT NULLIF(identity_evidence_kind,'')) AS identity_evidence_kinds,
           MAX(is_current) AS is_current,
           MAX(CASE WHEN is_current=0 THEN 1 ELSE 0 END) AS has_historical
         FROM scoped
@@ -9965,6 +10066,7 @@ export class PersonalMemoryStore {
         ...row,
         memoryKinds: String(row.memory_kinds || '').split(',').filter(Boolean),
         evidenceRoles: String(row.evidence_roles || '').split(',').filter(Boolean),
+        identityEvidenceKinds: String(row.identity_evidence_kinds || '').split(',').filter(Boolean),
         isCurrent: Boolean(row.is_current),
         hasHistorical: Boolean(row.has_historical)
       })),
@@ -14914,6 +15016,7 @@ export class PersonalMemoryStore {
         ? this.db.prepare(`
             ${entityScopeCte}
             SELECT ee.source_id,ee.message_id,ee.session_id,ee.timestamp,ee.sender,ee.excerpt,
+              ee.evidence_kind,
               'original' AS evidence_role
             FROM entity_evidence ee
             WHERE ee.entity_id IN (SELECT entity_id FROM entity_scope)${filter.sql}
@@ -17038,11 +17141,12 @@ export class PersonalMemoryStore {
   private upsertSearchDocument(id: string, type: string, sourceId: string, title: string, searchText: string, metadata: any, now: string): void {
     if (!this.db) return
     const hash = createHash('sha256').update(searchText).digest('hex')
+    const metadataJson = JSON.stringify(metadata)
     this.db.prepare(`
       DELETE FROM search_documents
       WHERE document_type=? AND source_id=? AND id<>?
     `).run(type, sourceId, id)
-    this.db.prepare(`
+    const result = this.db.prepare(`
       INSERT INTO search_documents(id,document_type,source_id,title,search_text,metadata_json,content_hash,updated_at)
       VALUES(?,?,?,?,?,?,?,?)
       ON CONFLICT(id) DO UPDATE SET
@@ -17053,7 +17157,21 @@ export class PersonalMemoryStore {
         embedding_dimensions=CASE WHEN search_documents.content_hash=excluded.content_hash THEN search_documents.embedding_dimensions ELSE NULL END,
         embedding_json=CASE WHEN search_documents.content_hash=excluded.content_hash THEN search_documents.embedding_json ELSE NULL END,
         content_hash=excluded.content_hash,updated_at=excluded.updated_at
-    `).run(id, type, sourceId, title, searchText, JSON.stringify(metadata), hash, now)
+      WHERE search_documents.document_type!=excluded.document_type
+        OR search_documents.source_id!=excluded.source_id
+        OR search_documents.title!=excluded.title
+        OR search_documents.search_text!=excluded.search_text
+        OR search_documents.metadata_json!=excluded.metadata_json
+        OR search_documents.content_hash!=excluded.content_hash
+    `).run(id, type, sourceId, title, searchText, metadataJson, hash, now)
+    const fts = this.db.prepare(`
+      SELECT title,search_text FROM search_fts WHERE document_id=? LIMIT 1
+    `).get(id) as any
+    if (
+      !result.changes
+      && String(fts?.title || '') === title
+      && String(fts?.search_text || '') === searchText
+    ) return
     this.db.prepare('DELETE FROM search_fts WHERE document_id=?').run(id)
     this.db.prepare('INSERT INTO search_fts(document_id,title,search_text) VALUES(?,?,?)').run(id, title, searchText)
   }

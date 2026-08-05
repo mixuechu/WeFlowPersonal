@@ -150,6 +150,15 @@ function entityEvidenceRoleLabels(item: { evidenceRoles?: string[] }): string {
   return (item.evidenceRoles || []).map(role => labels[role] || role).join('、') || '原文'
 }
 
+function identityEvidenceKindLabels(item: { identityEvidenceKinds?: string[] }): string {
+  const labels: Record<string, string> = {
+    identity_anchor: '身份锚点',
+    identity: '身份依据',
+    entity_mention: '名称提及'
+  }
+  return (item.identityEvidenceKinds || []).map(kind => labels[kind] || kind).join('、')
+}
+
 function EvidenceRows({
   evidence: rawEvidence,
   total,
@@ -10645,6 +10654,9 @@ function AiAssistantPage() {
                   <small>用于：{(evidence.memoryKinds || []).map((kind: string) =>
                     kind === 'identity' ? '身份识别' : kind === 'claim' ? '事实'
                       : kind === 'relation' ? '关系' : '事件').join('、') || '结构化记忆'} ·
+                    {identityEvidenceKindLabels(evidence)
+                      ? `${identityEvidenceKindLabels(evidence)} · `
+                      : ''}
                     {evidence.isCurrent ? '当前记忆关联' : '仅历史审计'}
                     {evidence.hasHistorical && evidence.isCurrent ? '（同时含历史关联）' : ''} ·
                     {entityEvidenceRoleLabels(evidence)}</small>

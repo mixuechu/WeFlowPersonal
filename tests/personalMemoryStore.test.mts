@@ -5963,6 +5963,61 @@ test('direct entity evidence is keyword searchable, scope aware and hydrated as 
       evidenceKind: 'identity_anchor'
     }]
   })
+  const stableRevision = store.getMemorySearchRevision()
+  store.syncGraph(graph as any, '', {
+    entityEvidence: [{
+      entityId: 'searchable-evidence-entity',
+      sourceId: 'wechat',
+      messageId: 'wechat:searchable-entity-session:old-identity',
+      sessionId: 'searchable-entity-session',
+      timestamp: 1_920_000_000,
+      sender: '旧发送者',
+      excerpt: '首次提到火星暗号项目',
+      evidenceKind: 'entity_mention'
+    }, {
+      entityId: 'searchable-evidence-entity',
+      sourceId: 'mail',
+      messageId: 'mail:new-identity',
+      sessionId: 'data-source:mail:searchable',
+      timestamp: 1_920_000_100,
+      sender: '',
+      excerpt: '短句',
+      evidenceKind: 'entity_mention'
+    }]
+  })
+  assert.equal(store.getMemorySearchRevision(), stableRevision)
+  assert.equal(store.getDocumentEvidencePage('entity', 'searchable-evidence-entity', {
+    source: 'mail'
+  }).items[0].evidence_kind, 'identity_anchor')
+
+  store.syncGraph(graph as any, '', {
+    entityEvidence: [{
+      entityId: 'searchable-evidence-entity',
+      sourceId: 'wechat',
+      messageId: 'wechat:searchable-entity-session:old-identity',
+      sessionId: 'searchable-entity-session',
+      timestamp: 1_920_000_001,
+      sender: '身份确认人',
+      excerpt: '再次核验后确认火星暗号项目是稳定的身份锚点',
+      evidenceKind: 'identity_anchor'
+    }]
+  })
+  assert.ok(Number(store.getMemorySearchRevision()) > Number(stableRevision))
+  const upgradedIdentity = store.getDocumentEvidencePage(
+    'entity',
+    'searchable-evidence-entity',
+    { source: 'wechat' }
+  ).items[0]
+  assert.equal(upgradedIdentity.evidence_kind, 'identity_anchor')
+  assert.equal(upgradedIdentity.timestamp, 1_920_000_001)
+  assert.equal(upgradedIdentity.sender, '身份确认人')
+  assert.equal(upgradedIdentity.excerpt, '再次核验后确认火星暗号项目是稳定的身份锚点')
+  const identityArchive = store.listEntityEvidencePage({
+    entityId: 'searchable-evidence-entity',
+    memoryKind: 'identity',
+    sourceId: 'wechat'
+  })
+  assert.deepEqual(identityArchive.items[0].identityEvidenceKinds, ['identity_anchor'])
 
   const result = store.searchText('火星暗号', 10)
     .find(item => item.id === 'entity:searchable-evidence-entity')
@@ -15526,7 +15581,15 @@ test('message resources remain idempotent, searchable and traceable to original 
     }]
   }
   store.upsertResources([resource])
-  store.upsertResources([{ ...resource, content: `${resource.content} 请查看链接。`, updatedAt: '2026-07-30T02:00:00.000Z' }])
+  const updatedResource = {
+    ...resource,
+    content: `${resource.content} 请查看链接。`,
+    updatedAt: '2026-07-30T02:00:00.000Z'
+  }
+  store.upsertResources([updatedResource])
+  const stableRevision = store.getMemorySearchRevision()
+  store.upsertResources([updatedResource])
+  assert.equal(store.getMemorySearchRevision(), stableRevision)
 
   const feed = store.getMemoryFeed()
   assert.equal(feed.resources.length, 1)
