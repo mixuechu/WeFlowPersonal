@@ -11781,10 +11781,16 @@ test('human claim correction preserves negative semantics and rejects invalid va
     validFrom: '2026-08-02',
     validTo: '2026-08-01'
   }), /失效时间不能早于生效时间/)
+  assert.throws(() => store.correctClaim('claim-negative-correction', {
+    value: 'Onyx Devs Lab',
+    predicate: '   ',
+    polarity: 'negative'
+  }), /谓词不能为空/)
   assert.equal(store.getClaim('claim-negative-correction').correction_count, 0)
 
   store.correctClaim('claim-negative-correction', {
     value: 'Onyx Devs Lab',
+    predicate: '投资于',
     polarity: 'negative',
     validFrom: '2026-08-01'
   })
@@ -11797,16 +11803,19 @@ test('human claim correction preserves negative semantics and rejects invalid va
   }])
   const corrected = store.getClaim('claim-negative-correction')
   assert.equal(corrected.object_value, 'Onyx Devs Lab')
+  assert.equal(corrected.predicate, '投资于')
   assert.equal(corrected.polarity, 'negative')
   assert.equal(corrected.valid_from, '2026-08-01')
   assert.equal(corrected.status, 'confirmed')
   assert.equal(corrected.correction_count, 1)
   assert.equal(corrected.evidence_count, 2)
   assert.match(corrected.search_text, /并非/)
+  assert.match(corrected.search_text, /投资于/)
   assert.match(corrected.search_text, /Onyx Devs Lab/)
   const search = store.searchText('Onyx Devs Lab')
     .find(item => item.id === 'claim:claim-negative-correction')
   assert.ok(search)
+  assert.equal(search.title, '投资于')
   assert.match(search.search_text, /并非/)
   const correctedMetadata = JSON.parse(search.metadata_json)
   assert.equal(correctedMetadata.polarity, 'negative')
@@ -11822,6 +11831,7 @@ test('human claim correction preserves negative semantics and rejects invalid va
   const rebuilt = store.searchText('Onyx Devs Lab')
     .find(item => item.id === 'claim:claim-negative-correction')
   assert.ok(rebuilt)
+  assert.equal(rebuilt.title, '投资于')
   assert.match(rebuilt.search_text, /并非/)
   assert.doesNotMatch(rebuilt.search_text, /模型重跑后的肯定结论/)
   const rebuiltMetadata = JSON.parse(rebuilt.metadata_json)
