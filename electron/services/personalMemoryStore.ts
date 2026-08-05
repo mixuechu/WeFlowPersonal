@@ -6535,9 +6535,27 @@ export class PersonalMemoryStore {
         continue
       }
       const existingValues = this.db.prepare(`
-        SELECT id,COALESCE(object_entity_id,object_value,'') AS value,polarity,valid_from,valid_to
+        SELECT id,COALESCE(object_entity_id,object_value,'') AS value,
+          polarity,valid_from,valid_to,
+          CASE WHEN
+            EXISTS(
+              SELECT 1 FROM memory_corrections correction
+              WHERE correction.item_kind='claim' AND correction.item_id=claims.id
+            ) OR EXISTS(
+              SELECT 1 FROM memory_review_decisions decision
+              WHERE decision.item_kind='claim' AND decision.item_id=claims.id
+                AND decision.protect_from_extraction=1
+            )
+          THEN 1 ELSE 0 END AS protected_from_extraction
         FROM claims WHERE subject_id=? AND predicate=? AND status!='rejected' AND id!=?
-      `).all(claim.subjectId, claim.predicate, claim.id) as Array<{ id: string; value: string; polarity: string; valid_from?: string; valid_to?: string }>
+      `).all(claim.subjectId, claim.predicate, claim.id) as Array<{
+        id: string
+        value: string
+        polarity: string
+        valid_from?: string
+        valid_to?: string
+        protected_from_extraction: number
+      }>
       const incomingValue = String(claim.objectEntityId || claim.objectValue || '')
       const incomingPolarity = claim.polarity === 'negative' ? 'negative' : 'positive'
       const conflicting = existingValues.filter(item => {
@@ -6551,20 +6569,24 @@ export class PersonalMemoryStore {
         ? `conflict_${Buffer.from(`${claim.subjectId}|${claim.predicate}`).toString('base64url').slice(0, 24)}`
         : null
       if (conflictGroup) {
-        const ids = conflicting.map(item => item.id)
-        const placeholders = ids.map(() => '?').join(',')
-        this.db.prepare(`UPDATE claims SET status='candidate',conflict_group=?,updated_at=? WHERE id IN (${placeholders})`)
-          .run(conflictGroup, now, ...ids)
-        for (const id of ids) {
-          const documentId = `claim:${id}`
-          const document = this.db.prepare('SELECT metadata_json FROM search_documents WHERE id=?').get(documentId) as any
-          if (!document) continue
-          let metadata: any = {}
-          try { metadata = JSON.parse(document.metadata_json || '{}') } catch {}
-          metadata.status = 'candidate'
-          metadata.conflictGroup = conflictGroup
-          this.db.prepare('UPDATE search_documents SET metadata_json=?,updated_at=? WHERE id=?')
-            .run(JSON.stringify(metadata), now, documentId)
+        const ids = conflicting
+          .filter(item => !item.protected_from_extraction)
+          .map(item => item.id)
+        if (ids.length) {
+          const placeholders = ids.map(() => '?').join(',')
+          this.db.prepare(`UPDATE claims SET status='candidate',conflict_group=?,updated_at=? WHERE id IN (${placeholders})`)
+            .run(conflictGroup, now, ...ids)
+          for (const id of ids) {
+            const documentId = `claim:${id}`
+            const document = this.db.prepare('SELECT metadata_json FROM search_documents WHERE id=?').get(documentId) as any
+            if (!document) continue
+            let metadata: any = {}
+            try { metadata = JSON.parse(document.metadata_json || '{}') } catch {}
+            metadata.status = 'candidate'
+            metadata.conflictGroup = conflictGroup
+            this.db.prepare('UPDATE search_documents SET metadata_json=?,updated_at=? WHERE id=?')
+              .run(JSON.stringify(metadata), now, documentId)
+          }
         }
         claim.status = 'candidate'
       }

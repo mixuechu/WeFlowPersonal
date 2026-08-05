@@ -12060,6 +12060,84 @@ test('claim correction distinguishes omitted object identity from an explicit sc
   }).total, 2)
 }))
 
+test('new conflicting claim ids cannot downgrade corrected or human-reviewed authority', () => withStore(store => {
+  store.syncGraph({
+    entities: [{
+      id: 'protected-conflict-person',
+      type: 'person',
+      canonicalName: '冲突保护对象',
+      aliases: [],
+      accountIds: []
+    }],
+    relations: [],
+    reviewQueue: []
+  })
+  const base = (id: string, predicate: string, value: string, messageId: string) => ({
+    id,
+    subjectId: 'protected-conflict-person',
+    predicate,
+    objectValue: value,
+    confidence: 0.8,
+    status: 'candidate',
+    sourceNature: 'other_statement',
+    searchText: `冲突保护对象 ${predicate} ${value}`,
+    evidence: evidence(messageId, `${predicate} ${value}`)
+  })
+  store.upsertClaims([
+    base('corrected-authority', '所在城市', '上海', 'authority-message-1'),
+    base('reviewed-authority', '负责项目', '可信项目', 'authority-message-2')
+  ])
+  store.correctClaim('corrected-authority', { value: '北京' })
+  store.updateMemoryItemStatus('claim', 'reviewed-authority', 'confirmed')
+
+  store.upsertClaims([
+    base('conflict-against-correction', '所在城市', '广州', 'authority-conflict-1'),
+    base('conflict-against-review', '负责项目', '错误项目', 'authority-conflict-2')
+  ])
+
+  const corrected = store.getClaim('corrected-authority')
+  const reviewed = store.getClaim('reviewed-authority')
+  assert.equal(corrected.status, 'confirmed')
+  assert.equal(corrected.object_value, '北京')
+  assert.equal(corrected.source_nature, 'human_confirmation')
+  assert.equal(corrected.conflict_group, null)
+  assert.equal(reviewed.status, 'confirmed')
+  assert.equal(reviewed.object_value, '可信项目')
+  assert.equal(reviewed.conflict_group, null)
+  assert.equal(store.getClaim('conflict-against-correction').status, 'candidate')
+  assert.equal(store.getClaim('conflict-against-review').status, 'candidate')
+
+  const correctedDocument = store.searchText('北京')
+    .find(item => item.id === 'claim:corrected-authority')
+  const reviewedDocument = store.searchText('可信项目')
+    .find(item => item.id === 'claim:reviewed-authority')
+  assert.ok(correctedDocument)
+  assert.ok(reviewedDocument)
+  assert.equal(JSON.parse(correctedDocument.metadata_json).status, 'confirmed')
+  assert.equal(JSON.parse(reviewedDocument.metadata_json).status, 'confirmed')
+  assert.equal(JSON.parse(correctedDocument.metadata_json).conflictGroup, undefined)
+  assert.equal(JSON.parse(reviewedDocument.metadata_json).conflictGroup, undefined)
+
+  const database = (store as any).db
+  assert.equal(Number(database.prepare(`
+    SELECT COUNT(*) AS count FROM evidence
+    WHERE claim_id='corrected-authority' AND evidence_role='contradiction'
+  `).get().count), 1)
+  assert.equal(Number(database.prepare(`
+    SELECT COUNT(*) AS count FROM evidence
+    WHERE claim_id='reviewed-authority' AND evidence_role='contradiction'
+  `).get().count), 1)
+  database.prepare(`
+    DELETE FROM search_documents
+    WHERE id IN ('claim:corrected-authority','claim:reviewed-authority')
+  `).run()
+  assert.equal(store.repairRuntimeSearchDerivedState([]).healthy, true)
+  assert.equal(JSON.parse(store.searchText('北京')
+    .find(item => item.id === 'claim:corrected-authority').metadata_json).status, 'confirmed')
+  assert.equal(JSON.parse(store.searchText('可信项目')
+    .find(item => item.id === 'claim:reviewed-authority').metadata_json).status, 'confirmed')
+}))
+
 test('human claim and event review decisions survive repeated extraction and remain auditable', () => withStore(store => {
   store.syncGraph({
     entities: [{ id: 'person-reviewed', type: 'person', canonicalName: '审阅对象', aliases: [], accountIds: [] }],
