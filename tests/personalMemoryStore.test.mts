@@ -1607,40 +1607,71 @@ test('relation direction authority survives reopen, empty syncs and search index
     objectId: 'direction-org',
     confidence: 0.9,
     status: 'confirmed',
-    directionExplanation: '从“方向人物”指向“方向组织”：方向人物服务于方向组织。',
+    directionExplanation: '',
     evidence: [],
     createdAt: '2026-08-05T00:00:00.000Z',
     updatedAt: '2026-08-05T00:00:00.000Z'
   }
+  const authoritativeExplanation = '从“方向人物”指向“方向组织”：方向人物负责海盐计划。'
   const first = new PersonalMemoryStore()
   const reopened = new PersonalMemoryStore()
   try {
     first.initialize(databasePath)
     first.syncGraph({ entities, relations: [relation], reviewQueue: [] } as any)
+    ;(first as any).db.prepare(`
+      UPDATE search_documents
+      SET embedding_model='test-model',embedding_dimensions=2,embedding_json='[0.6,0.8]',
+        embedding_chunk_count=1
+      WHERE id='relation:direction-authority'
+    `).run()
+    ;(first as any).db.prepare(`
+      INSERT INTO search_document_embedding_chunks(
+        document_id,chunk_index,model,dimensions,vector_json,content_hash,chunk_hash,
+        start_offset,end_offset,updated_at
+      )
+      SELECT id,0,'test-model',2,'[0.6,0.8]',content_hash,'legacy-direction-chunk',
+        0,LENGTH(title || char(10) || search_text),updated_at
+      FROM search_documents WHERE id='relation:direction-authority'
+    `).run()
+    const correctedRelation = {
+      ...relation,
+      directionExplanation: authoritativeExplanation,
+      updatedAt: '2026-08-05T01:00:00.000Z'
+    }
+    first.syncGraph({ entities, relations: [correctedRelation], reviewQueue: [] } as any)
     const originalDocument = (first as any).db.prepare(`
-      SELECT metadata_json FROM search_documents WHERE id='relation:direction-authority'
+      SELECT search_text,metadata_json,embedding_model
+      FROM search_documents WHERE id='relation:direction-authority'
     `).get()
     assert.equal(
       JSON.parse(originalDocument.metadata_json).directionExplanation,
-      relation.directionExplanation
+      authoritativeExplanation
     )
+    assert.match(originalDocument.search_text, /方向人物负责海盐计划/)
+    assert.equal(originalDocument.embedding_model, null)
+    assert.equal((first as any).db.prepare(`
+      SELECT COUNT(*) AS count FROM search_document_embedding_chunks
+      WHERE document_id='relation:direction-authority'
+    `).get().count, 0)
+    assert.equal(first.searchText('海盐计划').some((row: any) =>
+      row.id === 'relation:direction-authority'), true)
     first.close()
 
     reopened.initialize(databasePath)
     assert.equal(
       reopened.loadGraphSnapshot().relations[0].directionExplanation,
-      relation.directionExplanation
+      authoritativeExplanation
     )
-    const stateRelation = { ...relation, directionExplanation: '' }
+    const stateRelation = { ...correctedRelation, directionExplanation: '' }
     reopened.syncGraph({
       entities,
       relations: [stateRelation],
       reviewQueue: []
     } as any)
-    assert.equal(stateRelation.directionExplanation, relation.directionExplanation)
+    assert.equal(stateRelation.directionExplanation, authoritativeExplanation)
     assert.equal(
       reopened.loadGraphSnapshot().relations[0].directionExplanation,
-      relation.directionExplanation
+      authoritativeExplanation
     )
 
     ;(reopened as any).db.prepare(`
@@ -1653,14 +1684,23 @@ test('relation direction authority survives reopen, empty syncs and search index
     `).get()
     assert.equal(
       JSON.parse(repairedDocument.metadata_json).directionExplanation,
-      relation.directionExplanation
+      authoritativeExplanation
+    )
+    assert.match(
+      (reopened as any).db.prepare(`
+        SELECT search_text FROM search_documents WHERE id='relation:direction-authority'
+      `).get().search_text,
+      /方向人物负责海盐计划/
     )
 
     const history = reopened.listRelationHistory('direction-person')
-    assert.equal(history.length, 1)
+    assert.deepEqual(
+      history.map((item: any) => item.change_type),
+      ['direction_updated', 'created']
+    )
     assert.equal(
       JSON.parse(history[0].snapshot_json).directionExplanation,
-      relation.directionExplanation
+      authoritativeExplanation
     )
   } finally {
     first.close()

@@ -35,6 +35,23 @@ type MemoryGraph = {
 type MemoryEvidenceSource = 'wechat' | 'documents' | 'calendar' | 'mail' | 'legacy'
 const TASK_EVIDENCE_FINGERPRINT_VERSION = 2
 
+function relationSearchText(
+  subjectName: unknown,
+  predicate: unknown,
+  objectName: unknown,
+  directionExplanation: unknown
+): string {
+  const base = [subjectName, predicate, objectName]
+    .map(value => String(value || '').trim())
+    .filter(Boolean)
+    .join(' ')
+  const explanation = String(directionExplanation || '').trim()
+  return [base, explanation && !base.includes(explanation) ? explanation : '']
+    .filter(Boolean)
+    .join(' ')
+    .slice(0, 2000)
+}
+
 function assistantAnswerReviewMutationToken(input: {
   messageId: unknown
   stateKey: unknown
@@ -1080,6 +1097,12 @@ export class PersonalMemoryStore {
     this.ensureColumn('entities', 'identity_version', 'INTEGER NOT NULL DEFAULT 1')
     this.ensureColumn('search_documents', 'embedding_chunk_count', 'INTEGER NOT NULL DEFAULT 0')
     this.ensureColumn('relations', 'direction_explanation', `TEXT NOT NULL DEFAULT ''`)
+    this.db.prepare(`
+      UPDATE relations
+      SET search_text=TRIM(search_text || ' ' || direction_explanation)
+      WHERE direction_explanation!=''
+        AND INSTR(search_text,direction_explanation)=0
+    `).run()
     this.ensureColumn('search_document_embedding_chunks', 'start_offset', 'INTEGER NOT NULL DEFAULT 0')
     this.ensureColumn('search_document_embedding_chunks', 'end_offset', 'INTEGER NOT NULL DEFAULT 0')
     this.ensureColumn('vector_ann_state', 'indexed_chunk_count', 'INTEGER NOT NULL DEFAULT 0')
@@ -5995,12 +6018,17 @@ export class PersonalMemoryStore {
         WHERE relation_id=? AND source_id=? AND session_id=? AND message_id=?
       `)
       for (const relation of allowedRelations) {
-        const searchText = `${entityNames.get(relation.subjectId) || relation.subjectId} ${relation.predicate} ${entityNames.get(relation.objectId) || relation.objectId}`
         const stored = getStoredRelation.get(relation.id) as any
         const directionExplanation = String(
           relation.directionExplanation || stored?.direction_explanation || ''
         ).slice(0, 500)
         relation.directionExplanation = directionExplanation
+        const searchText = relationSearchText(
+          entityNames.get(relation.subjectId) || relation.subjectId,
+          relation.predicate,
+          entityNames.get(relation.objectId) || relation.objectId,
+          directionExplanation
+        )
         const nextSnapshot = {
           subjectId: relation.subjectId,
           predicate: relation.predicate,
