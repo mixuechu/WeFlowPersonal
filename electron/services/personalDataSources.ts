@@ -759,7 +759,15 @@ function validateItem(connector: PersonalDataSourceConnector, item: PersonalData
 export async function runPersonalDataSourceBatch(
   connector: PersonalDataSourceConnector,
   checkpoint: string,
-  consume: (items: PersonalDataSourceItem[]) => Promise<void>,
+  consume: (
+    items: PersonalDataSourceItem[],
+    page: {
+      currentCheckpoint: string
+      nextCheckpoint: string
+      hasMore: boolean
+      warnings: string[]
+    }
+  ) => Promise<void> | void,
   options: { limit?: number; signal?: AbortSignal } = {}
 ): Promise<{ checkpoint: string; pulled: number; hasMore: boolean; warnings: string[] }> {
   if (!connector.available) throw new Error(`数据源 ${connector.displayName} 尚不可用`)
@@ -775,11 +783,18 @@ export async function runPersonalDataSourceBatch(
   }
   const items = [...unique.values()].sort((left, right) =>
     Date.parse(left.occurredAt) - Date.parse(right.occurredAt))
-  await consume(items)
+  const nextCheckpoint = String(result.nextCheckpoint || checkpoint)
+  const warnings = (result.warnings || []).map(value => String(value).slice(0, 500)).slice(0, 20)
+  await consume(items, {
+    currentCheckpoint: checkpoint,
+    nextCheckpoint,
+    hasMore: Boolean(result.hasMore),
+    warnings
+  })
   return {
-    checkpoint: String(result.nextCheckpoint || checkpoint),
+    checkpoint: nextCheckpoint,
     pulled: items.length,
     hasMore: Boolean(result.hasMore),
-    warnings: (result.warnings || []).map(value => String(value).slice(0, 500)).slice(0, 20)
+    warnings
   }
 }

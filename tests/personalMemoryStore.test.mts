@@ -16158,6 +16158,123 @@ test('resource batches atomically roll back authority, search and evidence after
   `).get().count), 0)
 }))
 
+test('resource connector page commits authority and checkpoint atomically and rejects stale configuration', () => withStore(store => {
+  const database = (store as any).db
+  store.registerDataSources([{
+    id: 'documents',
+    kind: 'document',
+    displayName: '本机文档目录',
+    description: '测试连接器',
+    available: true,
+    localOnly: true,
+    capabilities: ['incremental', 'original-evidence']
+  }])
+  const initial = store.listDataSources().find(item => item.id === 'documents')
+  const configured = store.configureDataSource(
+    'documents',
+    { folderPath: '/tmp/weflow-atomic-documents' },
+    true,
+    initial.mutationToken
+  )
+  assert.equal(store.updateResourceConnectorRunIfCurrent({
+    sourceId: 'documents',
+    expectedCheckpoint: '',
+    expectedConfig: configured.config,
+    status: 'running',
+    attemptedAt: '2026-08-06T00:00:00.000Z'
+  }), true)
+  const resource = {
+    id: 'local-document:atomic-page',
+    resourceType: 'document',
+    title: '连接器原子页',
+    content: '资源、全文、证据和 checkpoint 必须一起提交',
+    metadata: { sourceId: 'documents', contentHash: 'atomic-content-v1' },
+    evidence: [{
+      sourceId: 'documents',
+      sessionId: 'data-source:documents',
+      messageId: 'atomic-page-message',
+      timestamp: 1,
+      sender: '本机文档连接器',
+      excerpt: '原子页证据'
+    }]
+  }
+  database.exec(`
+    CREATE TRIGGER fail_connector_page_evidence
+    BEFORE INSERT ON search_document_evidence
+    WHEN NEW.document_id='resource:local-document:atomic-page'
+    BEGIN
+      SELECT RAISE(ABORT,'forced connector page failure');
+    END;
+  `)
+  const revisions = {
+    search: store.getMemorySearchRevision(),
+    resource: store.getResourceArchiveRevision()
+  }
+  assert.throws(() => store.commitResourceConnectorPage({
+    sourceId: 'documents',
+    expectedCheckpoint: '',
+    nextCheckpoint: 'page-1',
+    expectedConfig: configured.config,
+    resources: [resource],
+    preserveExistingEvidence: true
+  }), /forced connector page failure/)
+  assert.equal(store.listDataSources().find(item => item.id === 'documents').checkpoint, '')
+  assert.equal(Number(database.prepare(`
+    SELECT COUNT(*) AS count FROM memory_resources WHERE id='local-document:atomic-page'
+  `).get().count), 0)
+  assert.equal(Number(database.prepare(`
+    SELECT COUNT(*) AS count FROM search_documents WHERE id='resource:local-document:atomic-page'
+  `).get().count), 0)
+  assert.equal(store.getMemorySearchRevision(), revisions.search)
+  assert.equal(store.getResourceArchiveRevision(), revisions.resource)
+
+  database.exec('DROP TRIGGER fail_connector_page_evidence')
+  store.commitResourceConnectorPage({
+    sourceId: 'documents',
+    expectedCheckpoint: '',
+    nextCheckpoint: 'page-1',
+    expectedConfig: configured.config,
+    resources: [resource],
+    preserveExistingEvidence: true
+  })
+  assert.equal(store.listDataSources().find(item => item.id === 'documents').checkpoint, 'page-1')
+  assert.equal(Number(database.prepare(`
+    SELECT COUNT(*) AS count FROM search_document_evidence
+    WHERE document_id='resource:local-document:atomic-page'
+  `).get().count), 1)
+
+  const beforeReconfigure = store.listDataSources().find(item => item.id === 'documents')
+  const reconfigured = store.configureDataSource(
+    'documents',
+    { folderPath: '/tmp/weflow-new-folder' },
+    true,
+    beforeReconfigure.mutationToken
+  )
+  assert.equal(reconfigured.checkpoint, '')
+  assert.throws(() => store.commitResourceConnectorPage({
+    sourceId: 'documents',
+    expectedCheckpoint: '',
+    nextCheckpoint: 'stale-page',
+    expectedConfig: configured.config,
+    resources: [{ ...resource, id: 'local-document:stale-page' }],
+    preserveExistingEvidence: true
+  }), /配置已变化/)
+  assert.equal(store.updateResourceConnectorRunIfCurrent({
+    sourceId: 'documents',
+    expectedCheckpoint: '',
+    expectedConfig: configured.config,
+    status: 'error',
+    error: '旧同步不应污染新配置'
+  }), false)
+  assert.equal(Number(database.prepare(`
+    SELECT COUNT(*) AS count FROM memory_resources WHERE id='local-document:stale-page'
+  `).get().count), 0)
+  const current = store.listDataSources().find(item => item.id === 'documents')
+  assert.equal(current.checkpoint, '')
+  assert.equal(current.status, 'idle')
+  assert.equal(current.lastError, null)
+}))
+
 test('calendar resource and structured event commit atomically', () => withStore(store => {
   const database = (store as any).db
   database.exec(`

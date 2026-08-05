@@ -2704,8 +2704,14 @@ export class AiAssistantService {
     const source = personalMemoryStore.listDataSources().find(item => item.id === 'documents')
     if (!source?.enabled || !source.available || !source.config?.folderPath) return { indexed: 0 }
     const attemptedAt = new Date().toISOString()
-    personalMemoryStore.updateDataSourceRun('documents', { status: 'running', attemptedAt })
     let checkpoint = String(source.checkpoint || '')
+    if (!personalMemoryStore.updateResourceConnectorRunIfCurrent({
+      sourceId: 'documents',
+      expectedCheckpoint: checkpoint,
+      expectedConfig: source.config,
+      status: 'running',
+      attemptedAt
+    })) return { indexed: 0, error: '文档连接器状态已变化，本轮未启动' }
     let indexed = 0
     const warnings: string[] = []
     try {
@@ -2714,9 +2720,9 @@ export class AiAssistantService {
         const result = await runPersonalDataSourceBatch(
           connector,
           checkpoint,
-          async items => {
+          async (items, pageContext) => {
             const updatedAt = new Date().toISOString()
-            personalMemoryStore.upsertResources(items.map(item => {
+            const resources = items.map(item => {
               const metadata = item.metadata || {}
               const contentHash = String(metadata.contentHash || '')
               return {
@@ -2745,31 +2751,40 @@ export class AiAssistantService {
                   excerpt: String(item.content || item.title).slice(0, 2000)
                 }]
               }
-            }), true)
+            })
+            personalMemoryStore.commitResourceConnectorPage({
+              sourceId: 'documents',
+              expectedCheckpoint: pageContext.currentCheckpoint,
+              nextCheckpoint: pageContext.nextCheckpoint,
+              expectedConfig: source.config,
+              resources,
+              preserveExistingEvidence: true,
+              attemptedAt
+            })
           },
           { limit: 10 }
         )
         checkpoint = result.checkpoint
         indexed += result.pulled
         warnings.push(...result.warnings)
-        personalMemoryStore.updateDataSourceRun('documents', {
-          status: 'running',
-          checkpoint,
-          attemptedAt
-        })
         if (!result.hasMore) break
       }
       const warning = warnings[0] ? `仍有 ${warnings.length} 个文档等待重试：${warnings[0]}` : ''
-      personalMemoryStore.updateDataSourceRun('documents', {
+      personalMemoryStore.updateResourceConnectorRunIfCurrent({
+        sourceId: 'documents',
+        expectedCheckpoint: checkpoint,
+        expectedConfig: source.config,
         status: warning ? 'error' : 'healthy',
-        checkpoint,
         succeededAt: new Date().toISOString(),
         error: warning
       })
       return { indexed, error: warning || undefined }
     } catch (error) {
       const message = sanitizeDiagnosticText(error)
-      personalMemoryStore.updateDataSourceRun('documents', {
+      personalMemoryStore.updateResourceConnectorRunIfCurrent({
+        sourceId: 'documents',
+        expectedCheckpoint: checkpoint,
+        expectedConfig: source.config,
         status: 'error',
         attemptedAt,
         error: message
@@ -2953,8 +2968,14 @@ export class AiAssistantService {
       : []
     if (!source?.enabled || !source.available || !mailboxIds.length) return { indexed: 0 }
     const attemptedAt = new Date().toISOString()
-    personalMemoryStore.updateDataSourceRun('mail', { status: 'running', attemptedAt })
     let checkpoint = String(source.checkpoint || '')
+    if (!personalMemoryStore.updateResourceConnectorRunIfCurrent({
+      sourceId: 'mail',
+      expectedCheckpoint: checkpoint,
+      expectedConfig: source.config,
+      status: 'running',
+      attemptedAt
+    })) return { indexed: 0, error: 'Mail 连接器状态已变化，本轮未启动' }
     let indexed = 0
     try {
       const authorization = await localMailService.getStatus()
@@ -2966,9 +2987,9 @@ export class AiAssistantService {
         const result = await runPersonalDataSourceBatch(
           connector,
           checkpoint,
-          async items => {
+          async (items, pageContext) => {
             const updatedAt = new Date().toISOString()
-            personalMemoryStore.upsertResources(items.map(item => {
+            const resources = items.map(item => {
               const metadata: any = item.metadata || {}
               const contentHash = String(metadata.contentHash || '')
               return {
@@ -2996,29 +3017,38 @@ export class AiAssistantService {
                   excerpt: String(item.content || item.title).slice(0, 2000)
                 }]
               }
-            }), true)
+            })
+            personalMemoryStore.commitResourceConnectorPage({
+              sourceId: 'mail',
+              expectedCheckpoint: pageContext.currentCheckpoint,
+              nextCheckpoint: pageContext.nextCheckpoint,
+              expectedConfig: source.config,
+              resources,
+              preserveExistingEvidence: true,
+              attemptedAt
+            })
           },
           { limit: 50 }
         )
         checkpoint = result.checkpoint
         indexed += result.pulled
-        personalMemoryStore.updateDataSourceRun('mail', {
-          status: 'running',
-          checkpoint,
-          attemptedAt
-        })
         if (!result.hasMore) break
       }
-      personalMemoryStore.updateDataSourceRun('mail', {
+      personalMemoryStore.updateResourceConnectorRunIfCurrent({
+        sourceId: 'mail',
+        expectedCheckpoint: checkpoint,
+        expectedConfig: source.config,
         status: 'healthy',
-        checkpoint,
         succeededAt: new Date().toISOString(),
         error: ''
       })
       return { indexed }
     } catch (error) {
       const message = sanitizeDiagnosticText(error)
-      personalMemoryStore.updateDataSourceRun('mail', {
+      personalMemoryStore.updateResourceConnectorRunIfCurrent({
+        sourceId: 'mail',
+        expectedCheckpoint: checkpoint,
+        expectedConfig: source.config,
         status: 'error',
         attemptedAt,
         error: message

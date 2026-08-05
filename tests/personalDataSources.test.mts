@@ -45,11 +45,19 @@ function fakeConnector(): PersonalDataSourceConnector {
 
 test('data source checkpoint advances only after deduplicated items are consumed', async () => {
   const consumed: any[] = []
-  const result = await runPersonalDataSourceBatch(fakeConnector(), 'cursor-1', async items => {
+  let consumedPage: any
+  const result = await runPersonalDataSourceBatch(fakeConnector(), 'cursor-1', async (items, page) => {
     consumed.push(...items)
+    consumedPage = page
   })
   assert.equal(consumed.length, 1)
   assert.equal(consumed[0].title, '重复文档')
+  assert.deepEqual(consumedPage, {
+    currentCheckpoint: 'cursor-1',
+    nextCheckpoint: 'cursor-1-next',
+    hasMore: false,
+    warnings: []
+  })
   assert.deepEqual(result, { checkpoint: 'cursor-1-next', pulled: 1, hasMore: false, warnings: [] })
 
   let committedCheckpoint = 'cursor-1'

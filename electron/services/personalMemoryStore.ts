@@ -8019,6 +8019,87 @@ export class PersonalMemoryStore {
     })()
   }
 
+  commitResourceConnectorPage(input: {
+    sourceId: string
+    expectedCheckpoint: string
+    nextCheckpoint: string
+    expectedConfig: Record<string, unknown>
+    resources: any[]
+    preserveExistingEvidence?: boolean
+    attemptedAt?: string
+  }): void {
+    if (!this.db) throw new Error('个人记忆数据库尚未初始化')
+    const sourceId = String(input.sourceId || '').trim()
+    const expectedCheckpoint = String(input.expectedCheckpoint || '')
+    const nextCheckpoint = String(input.nextCheckpoint || expectedCheckpoint)
+    const expectedConfigJson = JSON.stringify(input.expectedConfig || {})
+    const now = new Date().toISOString()
+    this.db.transaction(() => {
+      const source = this.db!.prepare(`
+        SELECT checkpoint,config_json,enabled,available
+        FROM data_source_connectors WHERE source_id=?
+      `).get(sourceId) as any
+      if (!source) throw new Error('未知数据源')
+      if (source.enabled !== 1 || source.available !== 1) {
+        throw new Error('数据源已停用或当前不可用，本页没有提交')
+      }
+      if (String(source.checkpoint || '') !== expectedCheckpoint) {
+        throw new Error('数据源 checkpoint 已变化，本页没有提交')
+      }
+      if (String(source.config_json || '{}') !== expectedConfigJson) {
+        throw new Error('数据源配置已变化，本页没有提交')
+      }
+      this.upsertResources(input.resources || [], Boolean(input.preserveExistingEvidence))
+      const result = this.db!.prepare(`
+        UPDATE data_source_connectors
+        SET checkpoint=?,status='running',
+          last_attempt_at=COALESCE(?,last_attempt_at),
+          last_error=NULL,updated_at=?
+        WHERE source_id=? AND checkpoint=? AND config_json=? AND enabled=1 AND available=1
+      `).run(
+        nextCheckpoint,
+        input.attemptedAt ? String(input.attemptedAt) : null,
+        now,
+        sourceId,
+        expectedCheckpoint,
+        expectedConfigJson
+      )
+      if (Number(result.changes || 0) !== 1) {
+        throw new Error('数据源状态在提交期间发生变化，本页没有提交')
+      }
+    })()
+  }
+
+  updateResourceConnectorRunIfCurrent(input: {
+    sourceId: string
+    expectedCheckpoint: string
+    expectedConfig: Record<string, unknown>
+    status: 'idle' | 'running' | 'healthy' | 'error'
+    attemptedAt?: string
+    succeededAt?: string
+    error?: string
+  }): boolean {
+    if (!this.db) return false
+    const result = this.db.prepare(`
+      UPDATE data_source_connectors
+      SET status=?,
+        last_attempt_at=COALESCE(?,last_attempt_at),
+        last_success_at=COALESCE(?,last_success_at),
+        last_error=?,updated_at=?
+      WHERE source_id=? AND checkpoint=? AND config_json=? AND enabled=1 AND available=1
+    `).run(
+      input.status,
+      input.attemptedAt ? String(input.attemptedAt) : null,
+      input.succeededAt ? String(input.succeededAt) : null,
+      input.error ? String(input.error) : null,
+      new Date().toISOString(),
+      String(input.sourceId || ''),
+      String(input.expectedCheckpoint || ''),
+      JSON.stringify(input.expectedConfig || {})
+    )
+    return Number(result.changes || 0) === 1
+  }
+
   syncGraphResourcesAndEvents(
     graph: MemoryGraph,
     commitId: string,
