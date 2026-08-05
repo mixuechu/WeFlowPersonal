@@ -724,6 +724,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
       ipcRenderer.invoke('ai-assistant:previewPurgeMemoryResourceTrash', id),
     purgeMemoryResourceTrash: (id: string, input?: any) =>
       ipcRenderer.invoke('ai-assistant:purgeMemoryResourceTrash', id, input),
+    previewRelationCorrectionFromMemoryDocument: (id: string, input?: any) =>
+      ipcRenderer.invoke('ai-assistant:previewRelationCorrectionFromMemoryDocument', id, input),
     reviewMemoryDocument: (
       kind: 'relation' | 'claim' | 'event', id: string,
       decision: 'confirmed' | 'rejected' | 'corrected', input?: any

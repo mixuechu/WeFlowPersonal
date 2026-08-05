@@ -4660,6 +4660,9 @@ function registerIpcHandlers() {
     aiAssistantService.previewPurgeMemoryResourceTrash(id))
   ipcMain.handle('ai-assistant:purgeMemoryResourceTrash', (_, id: string, input?: any) =>
     aiAssistantService.purgeMemoryResourceTrash(id, input))
+  ipcMain.handle('ai-assistant:previewRelationCorrectionFromMemoryDocument', (
+    _, id: string, input?: any
+  ) => aiAssistantService.previewRelationCorrectionFromMemoryDocument(id, input))
   ipcMain.handle('ai-assistant:reviewMemoryDocument', (
     _, kind: 'relation' | 'claim' | 'event', id: string,
     decision: 'confirmed' | 'rejected' | 'corrected', input?: any

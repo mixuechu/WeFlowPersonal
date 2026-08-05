@@ -65,6 +65,10 @@ import {
   applyCitationRelationCorrection
 } from './citationRelationReview.ts'
 import {
+  assertCitationRelationCorrectionPreview,
+  buildCitationRelationCorrectionPreview
+} from './citationRelationCorrectionPolicy.ts'
+import {
   assertConversationSourceMutation,
   buildConversationSourceDirectory,
   resolveConversationSourceSelection,
@@ -7114,18 +7118,19 @@ export class AiAssistantService {
     return personalMemoryStore.purgeResourceTrash(id)
   }
 
-  reviewMemoryDocument(
+  private inspectMemoryCitationReview(
     kind: 'relation' | 'claim' | 'event',
     id: string,
-    decision: 'confirmed' | 'rejected' | 'corrected',
     input: {
       assistantMessageId?: string
       documentId?: string
       reviewToken?: string
-      entityDirectoryRevision?: string
-      relationCorrection?: RelationCorrection
-    } = {}
-  ): any {
+    }
+  ): {
+    assistantMessageId: string
+    documentId: string
+    document: any
+  } {
     const assistantMessageId = String(input.assistantMessageId || '').trim()
     const documentId = String(input.documentId || '').trim()
     const storedAnswer = personalMemoryStore.getAssistantAnswerMessage(assistantMessageId)
@@ -7153,6 +7158,69 @@ export class AiAssistantService {
       document,
       scopeFingerprint: context?.scopeFingerprint || 'unscoped'
     }), input.reviewToken)
+    return { assistantMessageId, documentId, document }
+  }
+
+  previewRelationCorrectionFromMemoryDocument(
+    id: string,
+    input: {
+      assistantMessageId?: string
+      documentId?: string
+      reviewToken?: string
+      entityDirectoryRevision?: string
+      relationCorrection?: RelationCorrection
+    } = {}
+  ): any {
+    const inspected = this.inspectMemoryCitationReview('relation', id, input)
+    const correction = input.relationCorrection || {}
+    const selected = resolveTrustedEntityPairSelection(this.state.graph.entities, {
+      fromId: correction.subjectId,
+      toId: correction.objectId,
+      expectedRevision: input.entityDirectoryRevision
+    })
+    if (selected.stale) {
+      throw new Error('可信实体目录在你选择后发生了变化，请重新选择关系两端')
+    }
+    const relation = this.state.graph.relations.find(item => item.id === id)
+    if (!relation) throw new Error('关系已经变化或不存在，请刷新回答后再纠正')
+    const plan = planRelationConfirmation({
+      review: { kind: 'relation', relationId: id },
+      relation,
+      entities: this.state.graph.entities,
+      correction
+    })
+    if (!plan.changed) throw new Error('关系方向和谓词没有变化，无需保存纠正')
+    this.hydrateRelationEvidence([plan.before.id, plan.after.id])
+    const sourceRelation = this.state.graph.relations.find(item => item.id === id)
+    if (!sourceRelation) throw new Error('关系在读取完整证据时发生了变化，请刷新后重试')
+    const targetRelation = this.state.graph.relations.find(item =>
+      item.id === plan.after.id && item.id !== id) || null
+    return buildCitationRelationCorrectionPreview({
+      assistantMessageId: inspected.assistantMessageId,
+      documentId: inspected.documentId,
+      citationReviewToken: String(input.reviewToken || ''),
+      entityDirectoryRevision: String(input.entityDirectoryRevision || ''),
+      sourceRelation,
+      targetRelation,
+      plan,
+      reviewQueue: this.state.graph.reviewQueue
+    })
+  }
+
+  reviewMemoryDocument(
+    kind: 'relation' | 'claim' | 'event',
+    id: string,
+    decision: 'confirmed' | 'rejected' | 'corrected',
+    input: {
+      assistantMessageId?: string
+      documentId?: string
+      reviewToken?: string
+      correctionPreviewToken?: string
+      entityDirectoryRevision?: string
+      relationCorrection?: RelationCorrection
+    } = {}
+  ): any {
+    this.inspectMemoryCitationReview(kind, id, input)
     if (kind === 'claim' || kind === 'event') {
       if (decision === 'corrected') throw new Error('事实与事件请使用各自的纠正表单')
       if (decision === 'confirmed') this.assertStructuredEntityTrust(kind, id)
@@ -7161,6 +7229,11 @@ export class AiAssistantService {
     const relation = this.state.graph.relations.find(item => item.id === id)
     if (!relation) return null
     if (decision === 'corrected') {
+      const correctionPreview = this.previewRelationCorrectionFromMemoryDocument(id, input)
+      assertCitationRelationCorrectionPreview(
+        correctionPreview,
+        input.correctionPreviewToken
+      )
       const correction = input.relationCorrection || {}
       const selected = resolveTrustedEntityPairSelection(this.state.graph.entities, {
         fromId: correction.subjectId,

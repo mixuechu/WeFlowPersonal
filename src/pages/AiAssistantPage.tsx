@@ -6114,7 +6114,7 @@ function AiAssistantPage() {
       return
     }
     setRelationCitationCorrectionDialog({
-      status: 'ready',
+      status: 'editing',
       citation,
       subjectId: context.subjectId,
       predicate: context.predicate,
@@ -6127,15 +6127,57 @@ function AiAssistantPage() {
   }
 
   const closeRelationCitationCorrection = () => {
-    if (relationCitationCorrectionDialog?.status === 'saving') return
+    if (['loading', 'saving'].includes(relationCitationCorrectionDialog?.status)) return
     setRelationCitationCorrectionDialog(null)
+  }
+
+  const relationCitationCorrectionInput = (dialog: any) => ({
+    assistantMessageId: memoryAnswer?.assistantMessageId,
+    documentId: dialog.citation.documentId,
+    reviewToken: dialog.citation.reviewToken,
+    entityDirectoryRevision: dialog.directoryRevision,
+    relationCorrection: {
+      subjectId: dialog.subjectId,
+      predicate: String(dialog.predicate || '').trim(),
+      objectId: dialog.objectId
+    }
+  })
+
+  const previewRelationCitationCorrection = async () => {
+    const dialog = relationCitationCorrectionDialog
+    if (!dialog || ['loading', 'saving'].includes(dialog.status)) return
+    if (!dialog.subjectId || !dialog.objectId || dialog.subjectId === dialog.objectId ||
+      !String(dialog.predicate || '').trim()) return
+    setRelationCitationCorrectionDialog((current: any) => ({
+      ...current,
+      status: 'loading',
+      error: ''
+    }))
+    try {
+      const preview = await window.electronAPI.aiAssistant
+        .previewRelationCorrectionFromMemoryDocument(
+          dialog.citation.sourceId,
+          relationCitationCorrectionInput(dialog)
+        )
+      setRelationCitationCorrectionDialog((current: any) => ({
+        ...current,
+        status: 'preview_ready',
+        preview,
+        error: ''
+      }))
+    } catch (error: any) {
+      setRelationCitationCorrectionDialog((current: any) => ({
+        ...current,
+        status: 'error',
+        preview: null,
+        error: error?.message || String(error)
+      }))
+    }
   }
 
   const saveRelationCitationCorrection = async () => {
     const dialog = relationCitationCorrectionDialog
-    if (!dialog || dialog.status === 'saving') return
-    if (!dialog.subjectId || !dialog.objectId || dialog.subjectId === dialog.objectId ||
-      !String(dialog.predicate || '').trim()) return
+    if (!dialog?.preview?.previewToken || dialog.status === 'saving') return
     setRelationCitationCorrectionDialog((current: any) => ({
       ...current,
       status: 'saving',
@@ -6147,15 +6189,8 @@ function AiAssistantPage() {
         dialog.citation.sourceId,
         'corrected',
         {
-          assistantMessageId: memoryAnswer?.assistantMessageId,
-          documentId: dialog.citation.documentId,
-          reviewToken: dialog.citation.reviewToken,
-          entityDirectoryRevision: dialog.directoryRevision,
-          relationCorrection: {
-            subjectId: dialog.subjectId,
-            predicate: String(dialog.predicate || '').trim(),
-            objectId: dialog.objectId
-          }
+          ...relationCitationCorrectionInput(dialog),
+          correctionPreviewToken: dialog.preview.previewToken
         }
       )
       setRelationCitationCorrectionDialog(null)
@@ -6182,6 +6217,7 @@ function AiAssistantPage() {
       setRelationCitationCorrectionDialog((current: any) => ({
         ...current,
         status: 'error',
+        preview: null,
         error: error?.message || String(error)
       }))
     }
@@ -11764,7 +11800,7 @@ function AiAssistantPage() {
               <h2 id="relation-citation-correction-title">纠正回答引用中的关系</h2>
               <p>方向始终按“主语 — 谓词 → 宾语”保存；原关系和人工最终值都会进入本机审计。</p>
             </div><button aria-label="关闭关系纠正"
-              disabled={relationCitationCorrectionDialog.status === 'saving'}
+              disabled={['loading', 'saving'].includes(relationCitationCorrectionDialog.status)}
               onClick={closeRelationCitationCorrection}><X size={16} /></button></div>
             {relationCitationCorrectionDialog.status === 'error' &&
               <div className="assistant-error">
@@ -11779,19 +11815,22 @@ function AiAssistantPage() {
                   selected={relationCitationCorrectionDialog.subjectEntity}
                   placeholder="搜索主语实体"
                   ariaLabel="回答引用关系主语"
-                  disabled={relationCitationCorrectionDialog.status === 'saving'}
+                  disabled={['loading', 'saving'].includes(relationCitationCorrectionDialog.status)}
                   onSelect={entity => setRelationCitationCorrectionDialog((current: any) => ({
                     ...current,
-                    status: 'ready',
+                    status: 'editing',
                     subjectId: entity.id,
                     subjectEntity: entity,
                     directoryRevision: entity.directoryRevision,
+                    preview: null,
                     error: ''
                   }))}
                   onClear={() => setRelationCitationCorrectionDialog((current: any) => ({
                     ...current,
+                    status: 'editing',
                     subjectId: '',
-                    subjectEntity: null
+                    subjectEntity: null,
+                    preview: null
                   }))}
                   onError={error => setRelationCitationCorrectionDialog((current: any) => ({
                     ...current,
@@ -11801,13 +11840,14 @@ function AiAssistantPage() {
               </label>
               <label><span>关系谓词</span><input
                 value={relationCitationCorrectionDialog.predicate || ''}
-                disabled={relationCitationCorrectionDialog.status === 'saving'}
+                disabled={['loading', 'saving'].includes(relationCitationCorrectionDialog.status)}
                 maxLength={100}
                 placeholder="例如：服务于、负责、认识"
                 onChange={event => setRelationCitationCorrectionDialog((current: any) => ({
                   ...current,
-                  status: 'ready',
+                  status: 'editing',
                   predicate: event.target.value,
+                  preview: null,
                   error: ''
                 }))} /></label>
               <label><span>宾语（箭头终点）</span>
@@ -11816,19 +11856,22 @@ function AiAssistantPage() {
                   selected={relationCitationCorrectionDialog.objectEntity}
                   placeholder="搜索宾语实体"
                   ariaLabel="回答引用关系宾语"
-                  disabled={relationCitationCorrectionDialog.status === 'saving'}
+                  disabled={['loading', 'saving'].includes(relationCitationCorrectionDialog.status)}
                   onSelect={entity => setRelationCitationCorrectionDialog((current: any) => ({
                     ...current,
-                    status: 'ready',
+                    status: 'editing',
                     objectId: entity.id,
                     objectEntity: entity,
                     directoryRevision: entity.directoryRevision,
+                    preview: null,
                     error: ''
                   }))}
                   onClear={() => setRelationCitationCorrectionDialog((current: any) => ({
                     ...current,
+                    status: 'editing',
                     objectId: '',
-                    objectEntity: null
+                    objectEntity: null,
+                    preview: null
                   }))}
                   onError={error => setRelationCitationCorrectionDialog((current: any) => ({
                     ...current,
@@ -11838,16 +11881,17 @@ function AiAssistantPage() {
               </label>
             </div>
             <button type="button"
-              disabled={relationCitationCorrectionDialog.status === 'saving' ||
+              disabled={['loading', 'saving'].includes(relationCitationCorrectionDialog.status) ||
                 !relationCitationCorrectionDialog.subjectId ||
                 !relationCitationCorrectionDialog.objectId}
               onClick={() => setRelationCitationCorrectionDialog((current: any) => ({
                 ...current,
-                status: 'ready',
+                status: 'editing',
                 subjectId: current.objectId,
                 objectId: current.subjectId,
                 subjectEntity: current.objectEntity,
                 objectEntity: current.subjectEntity,
+                preview: null,
                 error: ''
               }))}>交换主语与宾语</button>
             <div className="assistant-relation-preview">
@@ -11859,24 +11903,56 @@ function AiAssistantPage() {
               </span>
               <small>保存时会重新核验引用、完整证据和可信实体目录；任一项变化都会整笔拒绝。</small>
             </div>
+            {relationCitationCorrectionDialog.status === 'loading' &&
+              <div className="assistant-delete-status">
+                <RefreshCw size={16} /><span><strong>正在核对实际影响…</strong>
+                  <small>从 SQLCipher 读取完整关系证据、既有同义边和待处理候选。</small></span>
+              </div>}
+            {relationCitationCorrectionDialog.preview &&
+              <div className="assistant-delete-preview">
+                <strong>{relationCitationCorrectionDialog.preview.mergesExistingRelation
+                  ? '会合并到一条已经存在的同义关系'
+                  : '会创建纠正后的新关系身份'}</strong>
+                <p>
+                  当前关系 {Number(relationCitationCorrectionDialog.preview.sourceEvidenceCount)} 条原文；
+                  {relationCitationCorrectionDialog.preview.mergesExistingRelation
+                    ? `目标关系已有 ${Number(relationCitationCorrectionDialog.preview.targetEvidenceCount)} 条；`
+                    : ''}
+                  保存后共 {Number(relationCitationCorrectionDialog.preview.mergedEvidenceCount)} 条去重原文。
+                  {Number(relationCitationCorrectionDialog.preview.duplicateEvidenceCount) > 0
+                    ? ` ${Number(relationCitationCorrectionDialog.preview.duplicateEvidenceCount)} 条完全相同来源身份会合并。`
+                    : ''}
+                </p>
+                <p>
+                  将收敛 {Number(relationCitationCorrectionDialog.preview.affectedReviewCount)} 个相关待审候选；
+                  不会删除原消息，旧方向和最终方向都会进入审计。
+                </p>
+              </div>}
             {relationCitationCorrectionDialog.subjectId ===
               relationCitationCorrectionDialog.objectId &&
               <small className="error">主语和宾语不能是同一个实体。</small>}
             <div className="assistant-modal-actions">
-              <button disabled={relationCitationCorrectionDialog.status === 'saving'}
+              <button disabled={['loading', 'saving'].includes(relationCitationCorrectionDialog.status)}
                 onClick={closeRelationCitationCorrection}>取消</button>
-              <button className="primary"
-                disabled={relationCitationCorrectionDialog.status === 'saving' ||
+              {!relationCitationCorrectionDialog.preview && <button className="primary"
+                disabled={['loading', 'saving'].includes(relationCitationCorrectionDialog.status) ||
                   !relationCitationCorrectionDialog.subjectId ||
                   !relationCitationCorrectionDialog.objectId ||
                   relationCitationCorrectionDialog.subjectId ===
-                    relationCitationCorrectionDialog.objectId ||
+                  relationCitationCorrectionDialog.objectId ||
                   !String(relationCitationCorrectionDialog.predicate || '').trim()}
+                onClick={() => void previewRelationCitationCorrection()}>
+                {relationCitationCorrectionDialog.status === 'loading'
+                  ? '正在核对影响…'
+                  : '核对实际影响'}
+              </button>}
+              {relationCitationCorrectionDialog.preview && <button className="primary"
+                disabled={relationCitationCorrectionDialog.status === 'saving'}
                 onClick={() => void saveRelationCitationCorrection()}>
                 {relationCitationCorrectionDialog.status === 'saving'
                   ? '正在原子保存…'
-                  : '确认纠正并写入审计'}
-              </button>
+                  : '确认影响并写入审计'}
+              </button>}
             </div>
           </div>
         </div>
