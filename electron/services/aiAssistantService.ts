@@ -8675,20 +8675,34 @@ export class AiAssistantService {
     )
     const requestedSubjectId = String(input?.subjectId || '').trim()
     const requestedObjectEntityId = String(input?.objectEntityId || '').trim()
-    if (requestedObjectEntityId && !requestedSubjectId) {
-      throw new Error('选择事实对象实体时必须同时选择可信事实主体')
+    const currentClaim = personalMemoryStore.getClaim(id)
+    const hasObjectEntityField = Object.prototype.hasOwnProperty.call(input || {}, 'objectEntityId')
+    const effectiveObjectEntityId = input?.valueMode === 'scalar'
+      ? ''
+      : requestedObjectEntityId || (
+          input?.valueMode !== 'entity' && !hasObjectEntityField
+            ? String(currentClaim?.object_entity_id || '').trim()
+            : ''
+        )
+    if (input?.valueMode === 'entity' && !effectiveObjectEntityId) {
+      throw new Error('实体型事实必须选择可信事实对象')
     }
-    if (requestedSubjectId) {
-      const selected = requestedObjectEntityId
-        ? resolveTrustedEntityPairSelection(this.state.graph.entities, {
-            fromId: requestedSubjectId,
-            toId: requestedObjectEntityId,
-            expectedRevision: input?.entityDirectoryRevision
-          })
-        : resolveTrustedEntitySelection(this.state.graph.entities, {
-            entityId: requestedSubjectId,
-            expectedRevision: input?.entityDirectoryRevision
-          })
+    if (effectiveObjectEntityId && requestedSubjectId) {
+      const selected = resolveTrustedEntityPairSelection(this.state.graph.entities, {
+        fromId: requestedSubjectId,
+        toId: effectiveObjectEntityId,
+        expectedRevision: input?.entityDirectoryRevision
+      })
+      if (selected.stale) {
+        throw new Error('可信实体目录在你选择事实主体或对象后发生了变化，请重新选择')
+      }
+    } else if (requestedObjectEntityId && !requestedSubjectId) {
+      throw new Error('选择事实对象实体时必须同时选择可信事实主体')
+    } else if (requestedSubjectId) {
+      const selected = resolveTrustedEntitySelection(this.state.graph.entities, {
+        entityId: requestedSubjectId,
+        expectedRevision: input?.entityDirectoryRevision
+      })
       if (selected.stale) {
         throw new Error('可信实体目录在你选择事实主体或对象后发生了变化，请重新选择')
       }

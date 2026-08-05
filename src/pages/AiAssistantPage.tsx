@@ -5122,6 +5122,7 @@ function AiAssistantPage() {
     try {
       await window.electronAPI.aiAssistant.correctClaim(editingClaim.id, {
         value: editingClaim.value,
+        valueMode: editingClaim.valueMode,
         predicate: editingClaim.predicate,
         subjectId: editingClaim.subjectId,
         objectEntityId: editingClaim.valueMode === 'entity'

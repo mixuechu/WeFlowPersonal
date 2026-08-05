@@ -10846,6 +10846,7 @@ export class PersonalMemoryStore {
     predicate?: string
     subjectId?: string
     objectEntityId?: string
+    valueMode?: 'entity' | 'scalar'
     polarity?: 'positive' | 'negative'
     valueType?: 'text' | 'number' | 'date' | 'boolean'
     validFrom?: string
@@ -10876,8 +10877,24 @@ export class PersonalMemoryStore {
     if (!predicate) throw new Error('事实谓词不能为空')
     const subjectId = String(input.subjectId ?? before.subject_id).trim()
     if (!subjectId) throw new Error('事实主体不能为空')
-    const objectEntityId = String(input.objectEntityId || '').trim()
-    const valueType = objectEntityId
+    const requestedValueMode = input.valueMode === 'entity' || input.valueMode === 'scalar'
+      ? input.valueMode
+      : null
+    const hasObjectEntityField = Object.prototype.hasOwnProperty.call(input, 'objectEntityId')
+    const valueMode = requestedValueMode || (
+      String(input.objectEntityId || '').trim()
+        ? 'entity'
+        : before.object_entity_id && !hasObjectEntityField
+          ? 'entity'
+          : 'scalar'
+    )
+    const objectEntityId = valueMode === 'entity'
+      ? String(input.objectEntityId || before.object_entity_id || '').trim()
+      : ''
+    if (valueMode === 'entity' && !objectEntityId) {
+      throw new Error('实体型事实必须选择可信事实对象')
+    }
+    const valueType = valueMode === 'entity'
       ? 'text'
       : ['text', 'number', 'date', 'boolean'].includes(String(input.valueType))
       ? String(input.valueType)
@@ -10892,8 +10909,10 @@ export class PersonalMemoryStore {
         .get(objectEntityId) as { canonical_name?: string } | undefined
       : undefined
     if (objectEntityId && !objectEntity) throw new Error('事实对象不存在或已经删除')
-    const objectValue = objectEntityId ? null : String(input.value || '').trim().slice(0, 1000)
-    if (!objectEntityId && !objectValue) throw new Error('事实值不能为空')
+    const objectValue = valueMode === 'entity'
+      ? null
+      : String(input.value || '').trim().slice(0, 1000)
+    if (valueMode === 'scalar' && !objectValue) throw new Error('事实值不能为空')
     if (valueType === 'number' && (!objectValue || !Number.isFinite(Number(objectValue)))) {
       throw new Error('数值型事实必须填写有效数字')
     }

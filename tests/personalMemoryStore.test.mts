@@ -12007,6 +12007,59 @@ test('human claim correction preserves trusted object identities across same-nam
   assert.equal(audit.items[0].after.objectEntityName, '同名公司')
 }))
 
+test('claim correction distinguishes omitted object identity from an explicit scalar conversion', () => withStore(store => {
+  store.syncGraph({
+    entities: [
+      { id: 'mode-claim-person', type: 'person', canonicalName: '模式事实主体', aliases: [], accountIds: [] },
+      { id: 'mode-claim-org', type: 'organization', canonicalName: '模式事实组织', aliases: [], accountIds: [] }
+    ],
+    relations: [],
+    reviewQueue: []
+  })
+  store.upsertClaims([{
+    id: 'claim-value-mode',
+    subjectId: 'mode-claim-person',
+    predicate: '任职于',
+    objectEntityId: 'mode-claim-org',
+    confidence: 0.8,
+    status: 'candidate',
+    sourceNature: 'direct_statement',
+    searchText: '模式事实主体 任职于 模式事实组织',
+    evidence: evidence('value-mode-message', '对象模式原文')
+  }])
+
+  store.correctClaim('claim-value-mode', {
+    value: '旧窗口回传的显示名称',
+    validFrom: '2026-08-01'
+  })
+  let corrected = store.getClaim('claim-value-mode')
+  assert.equal(corrected.object_entity_id, 'mode-claim-org')
+  assert.equal(corrected.object_value, null)
+  assert.match(corrected.search_text, /模式事实组织/)
+  assert.doesNotMatch(corrected.search_text, /旧窗口回传/)
+
+  store.correctClaim('claim-value-mode', {
+    valueMode: 'scalar',
+    value: '外部顾问',
+    valueType: 'text',
+    validFrom: '2026-08-01'
+  })
+  corrected = store.getClaim('claim-value-mode')
+  assert.equal(corrected.object_entity_id, null)
+  assert.equal(corrected.object_value, '外部顾问')
+  assert.match(corrected.search_text, /外部顾问/)
+
+  assert.throws(() => store.correctClaim('claim-value-mode', {
+    valueMode: 'entity',
+    value: '不得猜测实体'
+  }), /必须选择可信事实对象/)
+  assert.equal(store.getClaim('claim-value-mode').object_value, '外部顾问')
+  assert.equal(store.listMemoryItemAuditPage({
+    kind: 'claim',
+    itemId: 'claim-value-mode'
+  }).total, 2)
+}))
+
 test('human claim and event review decisions survive repeated extraction and remain auditable', () => withStore(store => {
   store.syncGraph({
     entities: [{ id: 'person-reviewed', type: 'person', canonicalName: '审阅对象', aliases: [], accountIds: [] }],
