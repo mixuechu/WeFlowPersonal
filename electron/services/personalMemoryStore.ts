@@ -8270,46 +8270,67 @@ export class PersonalMemoryStore {
 
   replaceResourceContent(id: string, content: string, metadataPatch: Record<string, any>): any {
     if (!this.db) return null
+    const database = this.db
     const resourceId = String(id || '').trim()
-    const row = this.db.prepare('SELECT * FROM memory_resources WHERE id=?').get(resourceId) as any
-    if (!row || this.db.prepare('SELECT 1 FROM resource_suppressions WHERE resource_id=?').get(resourceId)) return null
-    let metadata: any = {}
-    try { metadata = JSON.parse(row.metadata_json || '{}') } catch {}
-    metadata = { ...metadata, ...metadataPatch }
-    const nextContent = String(content || '').trim().slice(0, 80_000)
-    const now = new Date().toISOString()
-    this.db.prepare('UPDATE memory_resources SET content=?,metadata_json=?,updated_at=? WHERE id=?')
-      .run(nextContent, JSON.stringify(metadata), now, resourceId)
-    this.upsertSearchDocument(
-      `resource:${resourceId}`, 'resource', resourceId, String(row.title || '未命名资源'),
-      [row.title, nextContent, row.url, row.file_name, row.file_ext, metadata.sessionName, metadata.senderName]
-        .filter(Boolean).join('；'),
-      { ...metadata, resourceType: row.resource_type, url: row.url || '', fileName: row.file_name || '' },
-      now
-    )
-    return { id: resourceId, content: nextContent, metadata, updatedAt: now }
+    return database.transaction(() => {
+      const row = database.prepare('SELECT * FROM memory_resources WHERE id=?').get(resourceId) as any
+      if (!row || database.prepare(
+        'SELECT 1 FROM resource_suppressions WHERE resource_id=?'
+      ).get(resourceId)) return null
+      let metadata: any = {}
+      try { metadata = JSON.parse(row.metadata_json || '{}') } catch {}
+      metadata = { ...metadata, ...metadataPatch }
+      const nextContent = String(content || '').trim().slice(0, 80_000)
+      const now = new Date().toISOString()
+      database.prepare('UPDATE memory_resources SET content=?,metadata_json=?,updated_at=? WHERE id=?')
+        .run(nextContent, JSON.stringify(metadata), now, resourceId)
+      this.upsertSearchDocument(
+        `resource:${resourceId}`, 'resource', resourceId, String(row.title || '未命名资源'),
+        [row.title, nextContent, row.url, row.file_name, row.file_ext,
+          metadata.sessionName, metadata.senderName].filter(Boolean).join('；'),
+        {
+          ...metadata,
+          resourceType: row.resource_type,
+          url: row.url || '',
+          fileName: row.file_name || ''
+        },
+        now
+      )
+      return { id: resourceId, content: nextContent, metadata, updatedAt: now }
+    })()
   }
 
   appendResourceContent(id: string, text: string, metadataPatch: Record<string, any>): any {
     if (!this.db) return null
+    const database = this.db
     const resourceId = String(id || '').trim()
-    const row = this.db.prepare('SELECT * FROM memory_resources WHERE id=?').get(resourceId) as any
-    if (!row || this.db.prepare('SELECT 1 FROM resource_suppressions WHERE resource_id=?').get(resourceId)) return null
-    let metadata: any = {}
-    try { metadata = JSON.parse(row.metadata_json || '{}') } catch {}
-    metadata = { ...metadata, ...metadataPatch }
-    const content = [String(row.content || '').trim(), String(text || '').trim()].filter(Boolean).join('\n').slice(0, 80_000)
-    const now = new Date().toISOString()
-    this.db.prepare('UPDATE memory_resources SET content=?,metadata_json=?,updated_at=? WHERE id=?')
-      .run(content, JSON.stringify(metadata), now, resourceId)
-    this.upsertSearchDocument(
-      `resource:${resourceId}`, 'resource', resourceId, String(row.title || '未命名资源'),
-      [row.title, content, row.url, row.file_name, row.file_ext, metadata.sessionName, metadata.senderName]
-        .filter(Boolean).join('；'),
-      { ...metadata, resourceType: row.resource_type, url: row.url || '', fileName: row.file_name || '' },
-      now
-    )
-    return { id: resourceId, content, metadata, updatedAt: now }
+    return database.transaction(() => {
+      const row = database.prepare('SELECT * FROM memory_resources WHERE id=?').get(resourceId) as any
+      if (!row || database.prepare(
+        'SELECT 1 FROM resource_suppressions WHERE resource_id=?'
+      ).get(resourceId)) return null
+      let metadata: any = {}
+      try { metadata = JSON.parse(row.metadata_json || '{}') } catch {}
+      metadata = { ...metadata, ...metadataPatch }
+      const content = [String(row.content || '').trim(), String(text || '').trim()]
+        .filter(Boolean).join('\n').slice(0, 80_000)
+      const now = new Date().toISOString()
+      database.prepare('UPDATE memory_resources SET content=?,metadata_json=?,updated_at=? WHERE id=?')
+        .run(content, JSON.stringify(metadata), now, resourceId)
+      this.upsertSearchDocument(
+        `resource:${resourceId}`, 'resource', resourceId, String(row.title || '未命名资源'),
+        [row.title, content, row.url, row.file_name, row.file_ext,
+          metadata.sessionName, metadata.senderName].filter(Boolean).join('；'),
+        {
+          ...metadata,
+          resourceType: row.resource_type,
+          url: row.url || '',
+          fileName: row.file_name || ''
+        },
+        now
+      )
+      return { id: resourceId, content, metadata, updatedAt: now }
+    })()
   }
 
   syncTasks(

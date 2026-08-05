@@ -15792,6 +15792,91 @@ test('resource batches atomically roll back authority, search and evidence after
   `).get().count), 0)
 }))
 
+test('resource content replacement and append roll back authority when search indexing fails', () => withStore(store => {
+  store.upsertResources([{
+    id: 'atomic-resource-content',
+    resourceType: 'document',
+    title: '原子正文资源',
+    content: '最初正文',
+    metadata: { sourceId: 'documents', extractionStage: 'initial' },
+    evidence: [{
+      sourceId: 'documents',
+      sessionId: 'data-source:documents',
+      messageId: 'atomic-content-message',
+      timestamp: 1,
+      sender: '本机文档连接器',
+      excerpt: '最初正文'
+    }]
+  }])
+  const database = (store as any).db
+  database.exec(`
+    CREATE TRIGGER fail_resource_content_search_update
+    BEFORE UPDATE ON search_documents
+    WHEN OLD.id='resource:atomic-resource-content'
+    BEGIN
+      SELECT RAISE(ABORT,'forced resource content search failure');
+    END;
+  `)
+  const initialSearchRevision = store.getMemorySearchRevision()
+  const initialResourceRevision = store.getResourceArchiveRevision()
+  const readResource = () => {
+    const row = database.prepare(`
+      SELECT content,metadata_json FROM memory_resources
+      WHERE id='atomic-resource-content'
+    `).get()
+    return { content: row.content, metadata: JSON.parse(row.metadata_json) }
+  }
+
+  assert.throws(() => store.replaceResourceContent(
+    'atomic-resource-content',
+    '替换后正文',
+    { extractionStage: 'replacement' }
+  ), /forced resource content search failure/)
+  assert.deepEqual(readResource(), {
+    content: '最初正文',
+    metadata: { sourceId: 'documents', extractionStage: 'initial' }
+  })
+  assert.equal(store.getMemorySearchRevision(), initialSearchRevision)
+  assert.equal(store.getResourceArchiveRevision(), initialResourceRevision)
+  assert.equal(store.searchText('替换后正文').length, 0)
+
+  assert.throws(() => store.appendResourceContent(
+    'atomic-resource-content',
+    '追加后正文',
+    { extractionStage: 'append' }
+  ), /forced resource content search failure/)
+  assert.deepEqual(readResource(), {
+    content: '最初正文',
+    metadata: { sourceId: 'documents', extractionStage: 'initial' }
+  })
+  assert.equal(store.getMemorySearchRevision(), initialSearchRevision)
+  assert.equal(store.getResourceArchiveRevision(), initialResourceRevision)
+  assert.equal(store.searchText('追加后正文').length, 0)
+
+  database.exec('DROP TRIGGER fail_resource_content_search_update')
+  store.replaceResourceContent(
+    'atomic-resource-content',
+    '替换成功正文',
+    { extractionStage: 'replacement' }
+  )
+  store.appendResourceContent(
+    'atomic-resource-content',
+    '追加成功正文',
+    { extractionStage: 'append' }
+  )
+  assert.deepEqual(readResource(), {
+    content: '替换成功正文\n追加成功正文',
+    metadata: { sourceId: 'documents', extractionStage: 'append' }
+  })
+  assert.equal(
+    store.searchText('追加成功正文')[0]?.id,
+    'resource:atomic-resource-content'
+  )
+  assert.equal(store.getDocumentEvidencePage(
+    'resource', 'atomic-resource-content'
+  ).total, 1)
+}))
+
 test('message resources remain idempotent, searchable and traceable to original evidence', () => withStore(store => {
   const resource = {
     id: 'resource-link-1',
