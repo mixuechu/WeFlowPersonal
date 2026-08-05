@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto'
+import { evidenceArchiveIdentity } from '../../shared/evidencePayload.ts'
 
 export type TaskCitationEvidence = {
   sourceId: string
@@ -7,6 +8,48 @@ export type TaskCitationEvidence = {
   timestamp: number
   sender: string
   excerpt: string
+}
+
+export function mergeTaskEvidenceHotset(
+  previous: unknown,
+  incoming: unknown,
+  limit = 50
+): TaskCitationEvidence[] {
+  const boundedLimit = Math.max(1, Math.min(200, Math.floor(Number(limit) || 50)))
+  const merged = new Map<string, TaskCitationEvidence>()
+  for (const item of [
+    ...(Array.isArray(previous) ? previous : []),
+    ...(Array.isArray(incoming) ? incoming : [])
+  ]) {
+    const normalized: TaskCitationEvidence = {
+      sourceId: inferEvidenceSourceId(item),
+      sessionId: String(item?.session_id ?? item?.sessionId ?? '').trim().slice(0, 512),
+      messageId: String(item?.message_id ?? item?.messageId ?? '').trim().slice(0, 1000),
+      timestamp: Number.isFinite(Number(item?.timestamp)) ? Number(item.timestamp) : 0,
+      sender: String(item?.sender || '').slice(0, 500),
+      excerpt: String(item?.excerpt || '').slice(0, 2000)
+    }
+    if (!normalized.messageId) continue
+    const identity = evidenceArchiveIdentity(normalized)
+    const existing = merged.get(identity)
+    if (!existing) {
+      merged.set(identity, normalized)
+      continue
+    }
+    merged.set(identity, {
+      ...existing,
+      timestamp: Math.max(existing.timestamp, normalized.timestamp),
+      sender: normalized.sender || existing.sender,
+      excerpt: normalized.excerpt.length >= existing.excerpt.length
+        ? normalized.excerpt
+        : existing.excerpt
+    })
+  }
+  return [...merged.values()]
+    .sort((left, right) =>
+      left.timestamp - right.timestamp ||
+      evidenceArchiveIdentity(left).localeCompare(evidenceArchiveIdentity(right)))
+    .slice(-boundedLimit)
 }
 
 function inferEvidenceSourceId(item: any): string {

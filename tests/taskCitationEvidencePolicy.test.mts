@@ -2,6 +2,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import {
   buildTaskEvidenceFromCitations,
+  mergeTaskEvidenceHotset,
   taskIdFromAssistantAnswer
 } from '../electron/services/taskCitationEvidencePolicy.ts'
 
@@ -71,4 +72,46 @@ test('one authenticated answer maps to one stable task identity', () => {
   assert.equal(first, taskIdFromAssistantAnswer('answer-message-1'))
   assert.notEqual(first, taskIdFromAssistantAnswer('answer-message-2'))
   assert.throws(() => taskIdFromAssistantAnswer(''), /回答消息 ID/)
+})
+
+test('task evidence hotsets retain cross-source identities and enrich repeated evidence', () => {
+  const merged = mergeTaskEvidenceHotset([{
+    sourceId: 'wechat',
+    sessionId: 'shared',
+    messageId: 'same',
+    timestamp: 10,
+    sender: '',
+    excerpt: '短'
+  }, {
+    sourceId: 'mail',
+    sessionId: 'shared',
+    messageId: 'same',
+    timestamp: 11,
+    sender: '邮件发送者',
+    excerpt: '邮件证据'
+  }], [{
+    sourceId: 'wechat',
+    sessionId: 'shared',
+    messageId: 'same',
+    timestamp: 12,
+    sender: '微信发送者',
+    excerpt: '更完整的微信证据'
+  }])
+  assert.equal(merged.length, 2)
+  assert.deepEqual(merged.map(item => item.sourceId), ['mail', 'wechat'])
+  assert.equal(merged[1].sender, '微信发送者')
+  assert.equal(merged[1].excerpt, '更完整的微信证据')
+  assert.equal(merged[1].timestamp, 12)
+
+  const bounded = mergeTaskEvidenceHotset([], Array.from({ length: 55 }, (_, index) => ({
+    sourceId: 'wechat',
+    sessionId: 'group',
+    messageId: `message-${index}`,
+    timestamp: index,
+    sender: '群友',
+    excerpt: String(index)
+  })))
+  assert.equal(bounded.length, 50)
+  assert.equal(bounded[0].messageId, 'message-5')
+  assert.equal(bounded.at(-1)?.messageId, 'message-54')
 })

@@ -211,3 +211,38 @@ test('identity merge and revert inspection share one bounded entity evidence win
   })
   assert.equal(inspection.safe, true)
 })
+
+test('identity merge relation previews preserve equal message ids from different carriers', () => {
+  const merged = buildExpectedMergedRelations([{
+    id: 'source-edge',
+    subjectId: 'source',
+    predicate: '合作',
+    objectId: 'other',
+    confidence: 0.7,
+    evidence: [{
+      sourceId: 'wechat',
+      sessionId: 'shared',
+      messageId: 'same',
+      timestamp: 1,
+      excerpt: '微信原文'
+    }]
+  }, {
+    id: 'target-edge',
+    subjectId: 'target',
+    predicate: '合作',
+    objectId: 'other',
+    confidence: 0.8,
+    evidence: [{
+      sourceId: 'mail',
+      sessionId: 'shared',
+      messageId: 'same',
+      timestamp: 2,
+      excerpt: '邮件原文'
+    }]
+  }], 'source', 'target')
+  assert.equal(merged.length, 1)
+  assert.deepEqual(
+    merged[0].evidence.map((item: any) => `${item.sourceId}:${item.sessionId}:${item.messageId}`),
+    ['wechat:shared:same', 'mail:shared:same']
+  )
+})

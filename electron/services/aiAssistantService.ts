@@ -87,6 +87,7 @@ import {
 } from './taskReviewFeedback'
 import {
   buildTaskEvidenceFromCitations,
+  mergeTaskEvidenceHotset,
   taskIdFromAssistantAnswer
 } from './taskCitationEvidencePolicy'
 import {
@@ -2975,9 +2976,7 @@ export class AiAssistantService {
         project: previous.project || task.project,
         dependsOnIds: previous.dependsOnIds || task.dependsOnIds,
         taskKind: previous.taskKind || task.taskKind,
-        evidence: [...(previous.evidence || []), ...(task.evidence || [])]
-          .filter((value, index, rows) => rows.findIndex(candidate => candidate.messageId === value.messageId) === index)
-          .slice(-50),
+        evidence: mergeTaskEvidenceHotset(previous.evidence, task.evidence),
         createdAt: previous.createdAt,
         updatedAt: createdAt
       } : { ...task, createdAt, updatedAt: createdAt }
@@ -3071,9 +3070,7 @@ export class AiAssistantService {
         status: previous.status,
         owner: previous.owner || task.owner,
         classification: previous.classification || task.classification,
-        evidence: [...(previous.evidence || []), ...(task.evidence || [])]
-          .filter((item, index, rows) => rows.findIndex(candidate => candidate.messageId === item.messageId) === index)
-          .slice(-50),
+        evidence: mergeTaskEvidenceHotset(previous.evidence, task.evidence),
         createdAt: previous.createdAt,
         updatedAt: createdAt
       } : { ...task, createdAt, updatedAt: createdAt }
@@ -3606,12 +3603,13 @@ export class AiAssistantService {
           project: previous.project || task.project,
           dependsOnIds: previous.dependsOnIds || task.dependsOnIds,
           taskKind: previous.taskKind || task.taskKind,
+          evidence: mergeTaskEvidenceHotset(previous.evidence, task.evidence),
           createdAt: previous.createdAt,
           updatedAt: createdAt
         } : { ...task, createdAt, updatedAt: createdAt }
         existing.set(task.id, mergedTask)
         personalMemoryStore.recordTaskChanges(task.id, previous || {}, mergedTask,
-          previous ? 'incremental_message_update' : 'created_from_message', task.evidence || [])
+          previous ? 'incremental_message_update' : 'created_from_message', mergedTask.evidence || [])
       }
       const today = shanghaiDate()
       this.runContextualIdentityScan(createdAt)

@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto'
+import { evidenceArchiveIdentity } from '../../shared/evidencePayload.ts'
 import { compactEntityEvidenceMessageIds } from '../../shared/entityEvidenceHotset.ts'
 
 function stableHash(value: unknown): string {
@@ -105,9 +106,13 @@ export function buildExpectedMergedRelations(
       .digest('hex').slice(0, 20)
     const existing = normalized.get(id)
     if (existing) {
-      const knownMessageIds = new Set((existing.evidence || []).map((item: any) => String(item.messageId || '')))
-      existing.evidence.push(...(relation.evidence || []).filter((item: any) =>
-        !knownMessageIds.has(String(item.messageId || ''))))
+      const knownEvidence = new Set((existing.evidence || []).map(evidenceArchiveIdentity))
+      existing.evidence.push(...(relation.evidence || []).filter((item: any) => {
+        const identity = evidenceArchiveIdentity(item)
+        if (knownEvidence.has(identity)) return false
+        knownEvidence.add(identity)
+        return true
+      }))
       existing.evidenceTotal = existing.evidence.length
       existing.confidence = Math.max(Number(existing.confidence || 0), Number(relation.confidence || 0))
     } else {
