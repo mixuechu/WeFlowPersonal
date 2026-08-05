@@ -10816,31 +10816,44 @@ export class PersonalMemoryStore {
       throw new Error('事实失效时间不能早于生效时间')
     }
     const polarity = input.polarity === 'negative' ? 'negative' : 'positive'
+    const subject = this.db.prepare(
+      'SELECT canonical_name FROM entities WHERE id=?'
+    ).get(before.subject_id) as { canonical_name?: string } | undefined
+    const objectValue = String(input.value || '').trim().slice(0, 1000)
+    const searchText = [
+      subject?.canonical_name || '',
+      polarity === 'negative' ? '并非' : '',
+      before.predicate,
+      objectValue
+    ].filter(Boolean).join(' ')
     const now = new Date().toISOString()
     const after = {
       ...before,
       object_entity_id: null,
-      object_value: String(input.value || '').trim().slice(0, 1000),
+      object_value: objectValue,
       polarity,
       valid_from: validFrom,
       valid_to: validTo,
       status: 'confirmed',
       source_nature: 'human_confirmation',
       conflict_group: null,
+      search_text: searchText,
       updated_at: now
     }
     if (!after.object_value) return null
-    const subject = this.db.prepare('SELECT canonical_name FROM entities WHERE id=?').get(before.subject_id) as { canonical_name?: string } | undefined
     const transaction = this.db.transaction(() => {
       this.db!.prepare(`
         UPDATE claims SET object_entity_id=NULL,object_value=?,polarity=?,valid_from=?,valid_to=?,status='confirmed',
-          source_nature='human_confirmation',conflict_group=NULL,updated_at=? WHERE id=?
-      `).run(after.object_value, after.polarity, after.valid_from, after.valid_to, now, id)
+          source_nature='human_confirmation',conflict_group=NULL,search_text=?,updated_at=? WHERE id=?
+      `).run(
+        after.object_value, after.polarity, after.valid_from, after.valid_to,
+        after.search_text, now, id
+      )
       this.db!.prepare(`
         INSERT INTO memory_corrections(item_kind,item_id,before_json,after_json,created_at) VALUES('claim',?,?,?,?)
       `).run(id, JSON.stringify(before), JSON.stringify(after), now)
       this.upsertSearchDocument(`claim:${id}`, 'claim', id, before.predicate,
-        `${subject?.canonical_name || ''} ${after.polarity === 'negative' ? '并非' : ''} ${before.predicate} ${after.object_value}`.trim(),
+        after.search_text,
         {
           subjectId: before.subject_id,
           polarity: after.polarity,

@@ -11802,11 +11802,25 @@ test('human claim correction preserves negative semantics and rejects invalid va
   assert.equal(corrected.status, 'confirmed')
   assert.equal(corrected.correction_count, 1)
   assert.equal(corrected.evidence_count, 2)
+  assert.match(corrected.search_text, /并非/)
+  assert.match(corrected.search_text, /Onyx Devs Lab/)
   const search = store.searchText('Onyx Devs Lab')
     .find(item => item.id === 'claim:claim-negative-correction')
   assert.ok(search)
   assert.match(search.search_text, /并非/)
   assert.equal(JSON.parse(search.metadata_json).polarity, 'negative')
+
+  const database = (store as any).db
+  database.prepare(`
+    DELETE FROM search_documents WHERE id='claim:claim-negative-correction'
+  `).run()
+  const repaired = store.repairRuntimeSearchDerivedState([])
+  assert.equal(repaired.healthy, true)
+  const rebuilt = store.searchText('Onyx Devs Lab')
+    .find(item => item.id === 'claim:claim-negative-correction')
+  assert.ok(rebuilt)
+  assert.match(rebuilt.search_text, /并非/)
+  assert.doesNotMatch(rebuilt.search_text, /模型重跑后的肯定结论/)
 }))
 
 test('human claim and event review decisions survive repeated extraction and remain auditable', () => withStore(store => {
