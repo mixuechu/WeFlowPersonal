@@ -2721,7 +2721,7 @@ test('structured search dossiers bind the exact type, id and current search revi
 }))
 
 test('event dossiers page every participant role and reject mixed structured revisions', () => withStore(store => {
-  const entities = Array.from({ length: 245 }, (_, index) => ({
+  const entities = Array.from({ length: 305 }, (_, index) => ({
     id: `large-event-person-${String(index).padStart(3, '0')}`,
     type: 'person',
     canonicalName: `大型事件参与者 ${String(index).padStart(3, '0')}`,
@@ -2753,9 +2753,9 @@ test('event dossiers page every participant role and reject mixed structured rev
     'large-participant-event'
   )
   assert.equal(dossier.stale, false)
-  assert.equal(dossier.item.participant_count, 245)
+  assert.equal(dossier.item.participant_count, 305)
   assert.equal(dossier.item.participantPage.items.length, 40)
-  assert.equal(dossier.item.participantPage.total, 245)
+  assert.equal(dossier.item.participantPage.total, 305)
   assert.equal(dossier.item.participantPage.hasMore, true)
 
   const pages = [dossier.item.participantPage]
@@ -2771,10 +2771,10 @@ test('event dossiers page every participant role and reject mixed structured rev
     assert.equal(previous.stale, false)
   }
   const allParticipants = pages.flatMap(page => page.items)
-  assert.equal(allParticipants.length, 245)
+  assert.equal(allParticipants.length, 305)
   assert.equal(new Set(allParticipants.map(item =>
-    `${item.entity_id}\0${item.role}`)).size, 245)
-  assert.equal(pages.at(-1).items.length, 5)
+    `${item.entity_id}\0${item.role}`)).size, 305)
+  assert.equal(pages.at(-1).items.length, 25)
 
   ;(store as any).db.prepare(`
     INSERT INTO event_participants(event_id,entity_id,role) VALUES(?,?,?)
@@ -2804,6 +2804,82 @@ test('event dossiers page every participant role and reject mixed structured rev
   )
   assert.equal(concurrentDossier.stale, true)
   storeInternals.getDocumentEvidencePayload = originalEvidencePayload
+
+  const participantsBeforeMetadataCorrection =
+    store.listEventParticipantsForCorrection('large-participant-event')
+  assert.equal(participantsBeforeMetadataCorrection.total, 307)
+  assert.equal(participantsBeforeMetadataCorrection.truncated, false)
+  const correctionParticipantRevision = store.getStructuredMemoryRevision()
+  const correctionParticipantPage = store.listEventCorrectionParticipantPage({
+    eventId: 'large-participant-event',
+    revision: correctionParticipantRevision,
+    offset: 0,
+    limit: 100
+  })
+  assert.equal(correctionParticipantPage.items.length, 100)
+  assert.equal(correctionParticipantPage.total, 307)
+  assert.equal(correctionParticipantPage.hasMore, true)
+  assert.equal(correctionParticipantPage.stale, false)
+  store.correctEvent('large-participant-event', {
+    title: '大型参与者事件（元数据纠正）',
+    eventType: 'meeting',
+    description: '只纠正事件正文，不替换参与者',
+    startAt: '2026-08-06T08:00:00.000Z',
+    location: '上海'
+  })
+  assert.equal(
+    store.listEventParticipantsForCorrection('large-participant-event').total,
+    307
+  )
+  const metadataAudit = store.listMemoryItemAuditPage({
+    kind: 'event',
+    itemId: 'large-participant-event'
+  })
+  assert.equal(metadataAudit.items[0].before.participantTotal, 307)
+  assert.equal(metadataAudit.items[0].before.participants.length, 40)
+  assert.equal(metadataAudit.items[0].before.participantsTruncated, true)
+  assert.equal(metadataAudit.items[0].after.participantTotal, 307)
+  const correctionId = Number(String(metadataAudit.items[0].id)
+    .replace('correction:', ''))
+  const snapshotPages: any[] = []
+  do {
+    snapshotPages.push(store.listEventCorrectionParticipantSnapshotPage({
+      correctionId,
+      phase: 'before',
+      revision: metadataAudit.revision,
+      offset: snapshotPages.reduce((sum, page) => sum + page.items.length, 0),
+      limit: 40
+    }))
+  } while (snapshotPages.at(-1).hasMore)
+  assert.equal(snapshotPages.flatMap(page => page.items).length, 307)
+
+  store.correctEvent('large-participant-event', {
+    title: '大型参与者事件（全量参与者纠正）',
+    eventType: 'meeting',
+    description: '显式替换超过 256 条参与者',
+    startAt: '2026-08-06T08:00:00.000Z',
+    participants: entities.map((entity, index) => ({
+      entityId: entity.id,
+      role: `最终角色 ${String(index % 9).padStart(2, '0')}`
+    }))
+  })
+  assert.equal(
+    store.listEventParticipantsForCorrection('large-participant-event').total,
+    305
+  )
+  assert.equal(store.listEventCorrectionParticipantPage({
+    eventId: 'large-participant-event',
+    revision: correctionParticipantRevision,
+    offset: 100,
+    limit: 100
+  }).stale, true)
+  assert.equal(store.listEventCorrectionParticipantSnapshotPage({
+    correctionId,
+    phase: 'before',
+    revision: metadataAudit.revision,
+    offset: 40,
+    limit: 40
+  }).stale, true)
 }))
 
 test('multi-year fact archive is fully pageable and filters before ranking', () => withStore(store => {

@@ -1729,6 +1729,11 @@ export interface ElectronAPI {
         revision: string
         stale: boolean
       }>
+      getEventCorrectionParticipantSnapshotPage: (
+        correctionId: number,
+        phase: 'before' | 'after',
+        options: { revision: string; offset?: number; limit?: number }
+      ) => Promise<any>
       getProjectWorkspace: (projectId: string) => Promise<{
         project: any
         payloadPolicy: { version: string; evidence: string; loadedOnDemand: boolean }
@@ -2154,6 +2159,10 @@ export interface ElectronAPI {
       correctEvent: (id: string, input: any, expectedRevision?: string) => Promise<any>
       getMemoryClaim: (id: string) => Promise<any>
       getMemoryEvent: (id: string) => Promise<any>
+      getEventCorrectionParticipantPage: (
+        eventId: string,
+        options: { revision: string; offset?: number; limit?: number }
+      ) => Promise<any>
       getMemoryRelation: (id: string) => Promise<any>
       previewRelationCorrection: (id: string, input?: any) => Promise<any>
       correctRelation: (id: string, input?: any) => Promise<any>

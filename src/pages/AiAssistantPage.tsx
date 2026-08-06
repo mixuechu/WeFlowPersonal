@@ -290,7 +290,9 @@ function memoryAuditSnapshotText(kind: 'claim' | 'event', value: any): string {
     : Array.isArray(value?.participants) && value.participants.length
       ? ` · 参与者 ${value.participants.map((participant: any) =>
           `${participant.canonicalName || participant.entityId} [${participant.entityId}]（${participant.role || 'participant'}）`
-        ).join('、')}`
+        ).join('、')}${value.participantsTruncated
+          ? `（已显示 ${value.participants.length} / ${value.participantTotal}）`
+          : ''}`
       : ' · 无参与者'
   return `${value?.title || '未命名事件'} · ${value?.eventType || '事件'}` +
     `${value?.startAt || value?.endAt ? ` · ${value.startAt || '未知'}—${value.endAt || '未结束'}` : ''}` +
@@ -316,13 +318,37 @@ function relationHistoryDirectionText(item: any): string {
     : ''
 }
 
-function MemoryItemAuditRows({ kind, items }: { kind: 'claim' | 'event'; items: any[] }) {
+function MemoryItemAuditRows({
+  kind,
+  items,
+  onOpenEventParticipants
+}: {
+  kind: 'claim' | 'event'
+  items: any[]
+  onOpenEventParticipants?: (
+    correctionId: number,
+    phase: 'before' | 'after',
+    title: string
+  ) => void
+}) {
   return <div className="assistant-evidence-stack">
     {items.map(item => item.auditKind === 'correction'
       ? <small key={item.id}>
           <b>本人纠正</b> · {new Date(item.createdAt).toLocaleString('zh-CN')}<br />
           修正前：{memoryAuditSnapshotText(kind, item.before)}<br />
           修正后：{memoryAuditSnapshotText(kind, item.after)}
+          {kind === 'event' && item.before?.participantsTruncated &&
+            <><br /><button onClick={() => onOpenEventParticipants?.(
+              Number(String(item.id).replace('correction:', '')),
+              'before',
+              '纠正前参与者快照'
+            )}>查看全部纠正前参与者（{item.before.participantTotal}）</button></>}
+          {kind === 'event' && item.after?.participantsTruncated &&
+            <><br /><button onClick={() => onOpenEventParticipants?.(
+              Number(String(item.id).replace('correction:', '')),
+              'after',
+              '纠正后参与者快照'
+            )}>查看全部纠正后参与者（{item.after.participantTotal}）</button></>}
         </small>
       : <small key={item.id}>
           <b>{item.actor === 'system' ? '系统规则' : '本人操作'}</b> ·
@@ -590,7 +616,7 @@ function EventParticipantEditor({
         移除参与者
       </button>
     </div>)}
-    {!disabled && participants.length < 256 && <button type="button"
+    {!disabled && <button type="button"
       onClick={() => onChange([...participants, {
         key: `new-${Date.now()}-${participants.length}`,
         entityId: '',
@@ -904,6 +930,9 @@ function AiAssistantPage() {
   const [memoryItemAuditLoading, setMemoryItemAuditLoading] =
     useState<Record<string, boolean>>({})
   const memoryItemAuditRequests = useRef<Record<string, symbol>>({})
+  const [eventCorrectionParticipantArchive, setEventCorrectionParticipantArchive] =
+    useState<any>(null)
+  const eventCorrectionParticipantArchiveGate = useRef(new LatestRequestGate())
   const [memoryDeletionDialog, setMemoryDeletionDialog] = useState<any>(null)
   const [memoryDeletionConfirmation, setMemoryDeletionConfirmation] = useState('')
   const memoryDeletionGate = useRef(new LatestRequestGate())
@@ -3064,6 +3093,101 @@ function AiAssistantPage() {
       }),
       status: 'ready'
     }))
+  }
+  const openEventCorrectionParticipantArchive = async (
+    correctionId: number,
+    phase: 'before' | 'after',
+    title: string,
+    revision: string
+  ) => {
+    const request = eventCorrectionParticipantArchiveGate.current.begin()
+    setEventCorrectionParticipantArchive({
+      correctionId,
+      phase,
+      title,
+      revision,
+      items: [],
+      total: 0,
+      hasMore: false,
+      status: 'loading'
+    })
+    try {
+      const page = await window.electronAPI.aiAssistant
+        .getEventCorrectionParticipantSnapshotPage(correctionId, phase, {
+          revision,
+          offset: 0,
+          limit: 40
+        })
+      if (!eventCorrectionParticipantArchiveGate.current.isCurrent(request)) return
+      if (!page || page.stale) {
+        setEventCorrectionParticipantArchive(null)
+        setMessage('事件纠正快照在打开前已有变化，请重新展开可信审计。')
+        return
+      }
+      setEventCorrectionParticipantArchive({
+        correctionId,
+        phase,
+        title,
+        ...page,
+        status: 'ready'
+      })
+    } catch (error: any) {
+      if (!eventCorrectionParticipantArchiveGate.current.isCurrent(request)) return
+      setEventCorrectionParticipantArchive({
+        correctionId,
+        phase,
+        title,
+        revision,
+        items: [],
+        total: 0,
+        hasMore: false,
+        status: 'error',
+        error: error?.message || String(error)
+      })
+    }
+  }
+  const loadMoreEventCorrectionParticipantArchive = async () => {
+    const archive = eventCorrectionParticipantArchive
+    if (!archive || archive.status !== 'ready' || !archive.hasMore) return
+    const request = eventCorrectionParticipantArchiveGate.current.begin()
+    setEventCorrectionParticipantArchive((current: any) => ({
+      ...current,
+      status: 'loading_more'
+    }))
+    try {
+      const page = await window.electronAPI.aiAssistant
+        .getEventCorrectionParticipantSnapshotPage(
+          archive.correctionId,
+          archive.phase,
+          {
+            revision: archive.revision,
+            offset: Number(archive.nextOffset ?? archive.items.length),
+            limit: 40
+          }
+        )
+      if (!eventCorrectionParticipantArchiveGate.current.isCurrent(request)) return
+      if (!page || page.stale) {
+        setEventCorrectionParticipantArchive(null)
+        setMessage('事件纠正快照在分页期间已有变化，请重新展开可信审计。')
+        return
+      }
+      setEventCorrectionParticipantArchive((current: any) => ({
+        ...current,
+        ...page,
+        items: [
+          ...(current.items || []),
+          ...(page.items || [])
+        ],
+        status: 'ready'
+      }))
+    } catch (error: any) {
+      if (!eventCorrectionParticipantArchiveGate.current.isCurrent(request)) return
+      setEventCorrectionParticipantArchive((current: any) => ({
+        ...current,
+        status: 'error',
+        error: error?.message || String(error)
+      }))
+    }
   }
   const loadMoreResources = async () => {
     if (resourceLoadingMore || !resourceArchive.hasMore) return
@@ -5609,7 +5733,9 @@ function AiAssistantPage() {
         role: participant.role || 'participant'
       })),
       directoryRevision: event.entityDirectoryRevision || '',
-      participantEditingSupported: event.participantEditingSupported !== false
+      participantEditingSupported: event.participantEditingSupported !== false,
+      participantsDirty: false,
+      participantsLoading: false
     })
     if (origin === 'timeline') {
       window.setTimeout(() =>
@@ -5619,9 +5745,8 @@ function AiAssistantPage() {
 
   const saveEventCorrection = async () => {
     if (!editingEvent?.id || !String(editingEvent.title || '').trim() ||
-      editingEvent.participantEditingSupported === false ||
-      editingEvent.participants.some((participant: any) =>
-        !participant.entityId || !String(participant.role || '').trim())) return
+      (editingEvent.participantsDirty && editingEvent.participants.some((participant: any) =>
+        !participant.entityId || !String(participant.role || '').trim()))) return
     const correctedEventId = editingEvent.id
     try {
       await window.electronAPI.aiAssistant.correctEvent(editingEvent.id, {
@@ -5631,10 +5756,12 @@ function AiAssistantPage() {
         startAt: shanghaiInputToIso(editingEvent.startAt),
         endAt: shanghaiInputToIso(editingEvent.endAt),
         location: editingEvent.location,
-        participants: editingEvent.participants.map((participant: any) => ({
-          entityId: participant.entityId,
-          role: participant.role
-        })),
+        participants: editingEvent.participantsDirty
+          ? editingEvent.participants.map((participant: any) => ({
+              entityId: participant.entityId,
+              role: participant.role
+            }))
+          : undefined,
         entityDirectoryRevision: editingEvent.directoryRevision
       }, String(editingEvent.expectedRevision || ''))
       setEditingEvent(null)
@@ -5655,6 +5782,59 @@ function AiAssistantPage() {
         setClaimArchiveRefreshKey(value => value + 1)
         setEventTimelineRefreshKey(value => value + 1)
       }
+    }
+  }
+
+  const loadMoreEditingEventParticipants = async () => {
+    if (!editingEvent?.id || editingEvent.participantsLoading ||
+      editingEvent.participantEditingSupported !== false) return
+    const eventId = editingEvent.id
+    const expectedRevision = String(editingEvent.expectedRevision || '')
+    setEditingEvent((current: any) => current?.id === eventId
+      ? { ...current, participantsLoading: true }
+      : current)
+    try {
+      const page = await window.electronAPI.aiAssistant.getEventCorrectionParticipantPage(
+        eventId,
+        {
+          revision: expectedRevision,
+          offset: editingEvent.participants.length,
+          limit: 100
+        }
+      )
+      if (!page || page.stale) {
+        setEditingEvent(null)
+        setMessage('事件参与者在编辑期间已有变化，请重新打开纠正表单。')
+        setEventTimelineRefreshKey(value => value + 1)
+        return
+      }
+      setEditingEvent((current: any) => {
+        if (current?.id !== eventId ||
+          String(current.expectedRevision || '') !== expectedRevision) return current
+        const additions = (page.items || []).map((participant: any, index: number) => ({
+          key: `${participant.entity_id}:${participant.role}:${current.participants.length + index}`,
+          entityId: participant.entity_id,
+          entity: {
+            id: participant.entity_id,
+            canonicalName: participant.canonical_name || participant.entity_id,
+            type: 'entity',
+            trustStatus: 'confirmed'
+          },
+          originalName: participant.canonical_name || participant.entity_id,
+          role: participant.role || 'participant'
+        }))
+        return {
+          ...current,
+          participants: [...current.participants, ...additions],
+          participantEditingSupported: !page.hasMore,
+          participantsLoading: false
+        }
+      })
+    } catch (error: any) {
+      setEditingEvent((current: any) => current?.id === eventId
+        ? { ...current, participantsLoading: false }
+        : current)
+      setMessage(error?.message || String(error))
     }
   }
 
@@ -9663,17 +9843,22 @@ function AiAssistantPage() {
                       participants={editingEvent.participants || []}
                       disabled={editingEvent.participantEditingSupported === false}
                       onChange={participants => setEditingEvent((current: any) => ({
-                        ...current, participants
+                        ...current, participants, participantsDirty: true
                       }))}
                       onDirectoryRevision={directoryRevision =>
                         setEditingEvent((current: any) => ({ ...current, directoryRevision }))}
                       onError={setMessage} />
                   </div>
                   {editingEvent.participantEditingSupported === false && <small>
-                    参与者记录超过安全编辑上限；为避免截断丢失，当前不能保存纠正。
+                    已加载 {editingEvent.participants.length} / {editingEvent.participantCount} 条参与者。
+                    可先保存其他字段；修改参与者前必须加载完整列表。
+                    <button disabled={editingEvent.participantsLoading}
+                      onClick={() => void loadMoreEditingEventParticipants()}>
+                      {editingEvent.participantsLoading ? '正在加载…' : '继续加载参与者'}
+                    </button>
                   </small>}
                   <div className="assistant-memory-actions"><button onClick={() => setEditingEvent(null)}>取消</button><button className="primary"
-                    disabled={editingEvent.participantEditingSupported === false ||
+                    disabled={editingEvent.participantsDirty &&
                       editingEvent.participants.some((participant: any) =>
                         !participant.entityId || !String(participant.role || '').trim())}
                     onClick={() => void saveEventCorrection()}>保存并确认</button></div>
@@ -9694,11 +9879,19 @@ function AiAssistantPage() {
                     participants={editingEvent.participants || []}
                     disabled={editingEvent.participantEditingSupported === false}
                     onChange={participants => setEditingEvent((current: any) => ({
-                      ...current, participants
+                      ...current, participants, participantsDirty: true
                     }))}
                     onDirectoryRevision={directoryRevision =>
                       setEditingEvent((current: any) => ({ ...current, directoryRevision }))}
                     onError={setMessage} />
+                  {editingEvent.participantEditingSupported === false && <small>
+                    已加载 {editingEvent.participants.length} / {editingEvent.participantCount} 条参与者。
+                    可先保存其他字段；修改参与者前必须加载完整列表。
+                    <button disabled={editingEvent.participantsLoading}
+                      onClick={() => void loadMoreEditingEventParticipants()}>
+                      {editingEvent.participantsLoading ? '正在加载…' : '继续加载参与者'}
+                    </button>
+                  </small>}
                 </div> : <>
                   {event.description && <p>{event.description}</p>}
                   <small>{event.start_at || '时间待确认'}{event.end_at ? ` — ${event.end_at}` : ''}{event.location ? ` · ${event.location}` : ''}</small>
@@ -9752,7 +9945,15 @@ function AiAssistantPage() {
                     {memoryItemAudits[`event:${event.id}`]?.status === 'error' &&
                       <small>审计读取失败：{memoryItemAudits[`event:${event.id}`].error}</small>}
                     {memoryItemAudits[`event:${event.id}`]?.items &&
-                      <MemoryItemAuditRows kind="event" items={memoryItemAudits[`event:${event.id}`].items} />}
+                      <MemoryItemAuditRows kind="event"
+                        items={memoryItemAudits[`event:${event.id}`].items}
+                        onOpenEventParticipants={(correctionId, phase, title) =>
+                          void openEventCorrectionParticipantArchive(
+                            correctionId,
+                            phase,
+                            title,
+                            memoryItemAudits[`event:${event.id}`].revision
+                          )} />}
                     {memoryItemAuditLoading[`event:${event.id}`] &&
                       <small>正在读取 SQLCipher 审计账本…</small>}
                     {memoryItemAudits[`event:${event.id}`]?.hasMore && <button
@@ -9773,7 +9974,7 @@ function AiAssistantPage() {
                 <div className="assistant-memory-actions">
                   {editingEvent?.id === event.id && editingEvent?.origin !== 'citation'
                     ? <><button onClick={() => setEditingEvent(null)}>取消</button><button className="primary"
-                      disabled={editingEvent.participantEditingSupported === false ||
+                      disabled={editingEvent.participantsDirty &&
                         editingEvent.participants.some((participant: any) =>
                           !participant.entityId || !String(participant.role || '').trim())}
                       onClick={() => void saveEventCorrection()}>保存并确认</button></>
@@ -10994,7 +11195,16 @@ function AiAssistantPage() {
                     {audit?.status === 'error' && <small className="assistant-error">
                       审计读取失败：{audit.error}
                     </small>}
-                    {!!audit?.items?.length && <MemoryItemAuditRows kind={kind} items={audit.items} />}
+                    {!!audit?.items?.length && <MemoryItemAuditRows kind={kind} items={audit.items}
+                      onOpenEventParticipants={kind === 'event'
+                        ? (correctionId, phase, title) =>
+                            void openEventCorrectionParticipantArchive(
+                              correctionId,
+                              phase,
+                              title,
+                              audit.revision
+                            )
+                        : undefined} />}
                     {!memoryItemAuditLoading[`${kind}:${item.id}`] && !audit?.items?.length &&
                       <small>这条记忆尚无人工纠正或可信状态变更。</small>}
                     {audit?.hasMore && <button
@@ -13181,20 +13391,6 @@ function AiAssistantPage() {
                   validTo: event.target.value
                 }))} /></label>
             </div>
-            <div><strong>参与者与角色</strong>
-              <EventParticipantEditor
-                participants={editingEvent.participants || []}
-                disabled={editingEvent.participantEditingSupported === false}
-                onChange={participants => setEditingEvent((current: any) => ({
-                  ...current, participants
-                }))}
-                onDirectoryRevision={directoryRevision =>
-                  setEditingEvent((current: any) => ({ ...current, directoryRevision }))}
-                onError={setMessage} />
-            </div>
-            {editingEvent.participantEditingSupported === false && <small>
-              该事件有超过 256 条参与者记录。为防止只加载部分数据后误覆盖，当前版本不允许保存纠正。
-            </small>}
             <small className="assistant-settings-note">
               提交时会核验打开表单时的结构化记忆 revision；后台新增证据、状态变化或其他纠正发生后，旧表单不会覆盖新状态。
             </small>
@@ -13283,6 +13479,25 @@ function AiAssistantPage() {
                   endAt: event.target.value
                 }))} /></label>
             </div>
+            <div><strong>参与者与角色</strong>
+              <EventParticipantEditor
+                participants={editingEvent.participants || []}
+                disabled={editingEvent.participantEditingSupported === false}
+                onChange={participants => setEditingEvent((current: any) => ({
+                  ...current, participants, participantsDirty: true
+                }))}
+                onDirectoryRevision={directoryRevision =>
+                  setEditingEvent((current: any) => ({ ...current, directoryRevision }))}
+                onError={setMessage} />
+            </div>
+            {editingEvent.participantEditingSupported === false && <small>
+              已加载 {editingEvent.participants.length} / {editingEvent.participantCount} 条参与者。
+              可直接纠正标题、时间等字段；修改参与者前必须加载完整列表。
+              <button disabled={editingEvent.participantsLoading}
+                onClick={() => void loadMoreEditingEventParticipants()}>
+                {editingEvent.participantsLoading ? '正在加载…' : '继续加载参与者'}
+              </button>
+            </small>}
             <small className="assistant-settings-note">
               提交时会核验打开表单时的结构化记忆 revision；后台新增证据、状态变化或其他纠正发生后，旧表单不会覆盖新状态。
             </small>
@@ -13293,10 +13508,60 @@ function AiAssistantPage() {
               }}>取消</button>
               <button className="primary"
                 disabled={!String(editingEvent.title || '').trim() ||
-                  editingEvent.participantEditingSupported === false ||
-                  editingEvent.participants.some((participant: any) =>
-                    !participant.entityId || !String(participant.role || '').trim())}
+                  (editingEvent.participantsDirty && editingEvent.participants.some((participant: any) =>
+                    !participant.entityId || !String(participant.role || '').trim()))}
                 onClick={() => void saveEventCorrection()}>保存纠正并确认</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {eventCorrectionParticipantArchive && (
+        <div className="assistant-modal-backdrop" role="presentation">
+          <div className="assistant-modal assistant-evidence-archive-modal" role="dialog"
+            aria-modal="true" aria-labelledby="event-correction-participant-archive-title">
+            <div className="assistant-modal-title">
+              <div>
+                <span className="assistant-eyebrow">EVENT CORRECTION SNAPSHOT</span>
+                <h2 id="event-correction-participant-archive-title">
+                  {eventCorrectionParticipantArchive.title}
+                </h2>
+                <p>
+                  从 SQLCipher 人工纠正快照按稳定顺序读取；
+                  已显示 {eventCorrectionParticipantArchive.items?.length || 0} /
+                  {eventCorrectionParticipantArchive.total || 0} 条。
+                </p>
+              </div>
+              <button aria-label="关闭事件参与者快照" onClick={() => {
+                eventCorrectionParticipantArchiveGate.current.invalidate()
+                setEventCorrectionParticipantArchive(null)
+              }}><X size={18} /></button>
+            </div>
+            <div className="assistant-modal-body assistant-evidence-stack">
+              {eventCorrectionParticipantArchive.status === 'loading' &&
+                <small>正在读取参与者快照…</small>}
+              {eventCorrectionParticipantArchive.status === 'error' &&
+                <small className="assistant-error">
+                  读取失败：{eventCorrectionParticipantArchive.error || '未知错误'}
+                </small>}
+              {(eventCorrectionParticipantArchive.items || []).map((participant: any, index: number) =>
+                <article key={`${participant.entityId}:${participant.role}:${index}`}>
+                  <b>{participant.canonicalName || participant.entityId}</b>
+                  <small>{participant.entityId} · {participant.role || 'participant'}</small>
+                </article>)}
+            </div>
+            <div className="assistant-modal-actions">
+              <button onClick={() => {
+                eventCorrectionParticipantArchiveGate.current.invalidate()
+                setEventCorrectionParticipantArchive(null)
+              }}>关闭</button>
+              {eventCorrectionParticipantArchive.hasMore && <button className="primary"
+                disabled={eventCorrectionParticipantArchive.status === 'loading_more'}
+                onClick={() => void loadMoreEventCorrectionParticipantArchive()}>
+                {eventCorrectionParticipantArchive.status === 'loading_more'
+                  ? '正在加载…'
+                  : '加载更多参与者'}
+              </button>}
             </div>
           </div>
         </div>

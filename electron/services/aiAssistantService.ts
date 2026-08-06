@@ -5019,6 +5019,23 @@ export class AiAssistantService {
     })
   }
 
+  getEventCorrectionParticipantSnapshotPage(
+    correctionId: number,
+    phase: string,
+    options: any = {}
+  ): any {
+    if (!['before', 'after'].includes(String(phase || ''))) {
+      throw new Error('无效的事件纠正快照阶段')
+    }
+    return personalMemoryStore.listEventCorrectionParticipantSnapshotPage({
+      correctionId: Number(correctionId || 0),
+      phase: phase as 'before' | 'after',
+      revision: String(options?.revision || ''),
+      offset: Number(options?.offset || 0),
+      limit: Number(options?.limit || 40)
+    })
+  }
+
   getProjectWorkspace(projectId: string): any {
     const id = String(projectId || '').trim()
     if (!id) throw new Error('请选择项目')
@@ -9126,7 +9143,7 @@ export class AiAssistantService {
     const revision = personalMemoryStore.getStructuredMemoryRevision()
     const event = personalMemoryStore.getEvent(id)
     const participantPage = event
-      ? personalMemoryStore.listEventParticipantsForCorrection(id)
+      ? personalMemoryStore.listEventParticipantsForCorrection(id, 40)
       : { items: [], total: 0, truncated: false }
     const directory = buildTrustedEntityDirectory(this.state.graph.entities, { limit: 1 })
     const trustedById = new Map(this.state.graph.entities
@@ -9157,6 +9174,17 @@ export class AiAssistantService {
       participantTotal: participantPage.total,
       participantEditingSupported: !participantPage.truncated
     } : null
+  }
+
+  getEventCorrectionParticipantPage(eventId: string, options: any = {}): any {
+    const id = String(eventId || '').trim()
+    if (!id) throw new Error('事件 ID 不能为空')
+    return personalMemoryStore.listEventCorrectionParticipantPage({
+      eventId: id,
+      revision: String(options?.revision || ''),
+      offset: Number(options?.offset || 0),
+      limit: Number(options?.limit || 40)
+    })
   }
 
   getMemoryRelation(id: string): any {

@@ -4548,6 +4548,13 @@ function registerIpcHandlers() {
   ipcMain.handle('ai-assistant:getMemoryItemAuditPage',
     (_, kind: string, itemId: string, options?: any) =>
       aiAssistantService.getMemoryItemAuditPage(kind, itemId, options))
+  ipcMain.handle('ai-assistant:getEventCorrectionParticipantSnapshotPage',
+    (_, correctionId: number, phase: string, options?: any) =>
+      aiAssistantService.getEventCorrectionParticipantSnapshotPage(
+        correctionId,
+        phase,
+        options
+      ))
   ipcMain.handle('ai-assistant:getProjectDirectory', (_, options?: any) =>
     aiAssistantService.getProjectDirectory(options))
   ipcMain.handle('ai-assistant:getProjectWorkspace', (_, projectId: string) =>
@@ -4736,6 +4743,9 @@ function registerIpcHandlers() {
   ) => aiAssistantService.correctEvent(id, input, expectedRevision))
   ipcMain.handle('ai-assistant:getMemoryClaim', (_, id: string) => aiAssistantService.getMemoryClaim(id))
   ipcMain.handle('ai-assistant:getMemoryEvent', (_, id: string) => aiAssistantService.getMemoryEvent(id))
+  ipcMain.handle('ai-assistant:getEventCorrectionParticipantPage',
+    (_, eventId: string, options?: any) =>
+      aiAssistantService.getEventCorrectionParticipantPage(eventId, options))
   ipcMain.handle('ai-assistant:getMemoryRelation', (_, id: string) =>
     aiAssistantService.getMemoryRelation(id))
   ipcMain.handle('ai-assistant:previewRelationCorrection', (_, id: string, input?: any) =>

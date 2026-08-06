@@ -628,6 +628,16 @@ contextBridge.exposeInMainWorld('electronAPI', {
       ipcRenderer.invoke('ai-assistant:getEntityAuditPage', entityId, options),
     getMemoryItemAuditPage: (kind: string, itemId: string, options?: any) =>
       ipcRenderer.invoke('ai-assistant:getMemoryItemAuditPage', kind, itemId, options),
+    getEventCorrectionParticipantSnapshotPage: (
+      correctionId: number,
+      phase: string,
+      options?: any
+    ) => ipcRenderer.invoke(
+      'ai-assistant:getEventCorrectionParticipantSnapshotPage',
+      correctionId,
+      phase,
+      options
+    ),
     getProjectDirectory: (options?: any) => ipcRenderer.invoke('ai-assistant:getProjectDirectory', options),
     getProjectWorkspace: (projectId: string) => ipcRenderer.invoke('ai-assistant:getProjectWorkspace', projectId),
     getProjectMemberPage: (projectId: string, options?: any) =>
@@ -787,6 +797,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
       ipcRenderer.invoke('ai-assistant:correctEvent', id, input, expectedRevision),
     getMemoryClaim: (id: string) => ipcRenderer.invoke('ai-assistant:getMemoryClaim', id),
     getMemoryEvent: (id: string) => ipcRenderer.invoke('ai-assistant:getMemoryEvent', id),
+    getEventCorrectionParticipantPage: (eventId: string, options?: any) =>
+      ipcRenderer.invoke('ai-assistant:getEventCorrectionParticipantPage', eventId, options),
     getMemoryRelation: (id: string) => ipcRenderer.invoke('ai-assistant:getMemoryRelation', id),
     previewRelationCorrection: (id: string, input?: any) =>
       ipcRenderer.invoke('ai-assistant:previewRelationCorrection', id, input),
