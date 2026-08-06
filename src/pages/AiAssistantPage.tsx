@@ -27,6 +27,11 @@ import {
   type SearchDossierKind,
   type SearchDossierReturnTarget
 } from '../utils/searchDossierReturnTarget'
+import {
+  planReviewContinuation,
+  resolveReviewContinuation,
+  type ReviewContinuationPlan
+} from '../utils/reviewContinuation'
 import { LatestRequestGate } from '../utils/latestRequestGate'
 import { buildMemorySessionScope } from '../utils/memorySessionScope'
 import { buildResourceStructurePresentation } from '../utils/resourceStructurePresentation'
@@ -1127,6 +1132,14 @@ function AiAssistantPage() {
   const [reviewKindFilter, setReviewKindFilter] = useState('')
   const [reviewQuery, setReviewQuery] = useState('')
   const [focusedReviewId, setFocusedReviewId] = useState('')
+  const reviewContextKey = JSON.stringify([
+    reviewStatusFilter,
+    reviewKindFilter,
+    reviewQuery.trim(),
+    focusedReviewId
+  ])
+  const reviewContextKeyRef = useRef(reviewContextKey)
+  reviewContextKeyRef.current = reviewContextKey
   const [reviewReturnTarget, setReviewReturnTarget] =
     useState<ReviewReturnTarget | null>(null)
   const reviewReturnTargetRef = useRef<ReviewReturnTarget | null>(null)
@@ -1159,6 +1172,8 @@ function AiAssistantPage() {
   const [reviewLoadingMore, setReviewLoadingMore] = useState(false)
   const [reviewRefreshKey, setReviewRefreshKey] = useState(0)
   const reviewPageGate = useRef(new LatestRequestGate())
+  const [reviewContinuationPlan, setReviewContinuationPlan] =
+    useState<ReviewContinuationPlan | null>(null)
   const [reviewEvidencePages, setReviewEvidencePages] = useState<Record<string, any>>({})
   const reviewEvidenceGates = useRef(new KeyedLatestRequestGates())
   const [mergeArchive, setMergeArchive] = useState<{
@@ -2453,6 +2468,31 @@ function AiAssistantPage() {
     target.scrollIntoView({ behavior: 'smooth', block: 'center' })
     target.focus({ preventScroll: true })
   }, [focusedReviewId, reviewPage.status, reviewPage.items])
+
+  useEffect(() => {
+    if (!reviewContinuationPlan || reviewPage.status !== 'ready') return
+    const nextId = resolveReviewContinuation(
+      reviewContinuationPlan,
+      reviewPage.items
+    )
+    setReviewContinuationPlan(null)
+    if (!nextId) {
+      setMessage(reviewContinuationPlan.remaining > 0
+        ? `上一条已处理；当前页暂时没有下一条，队列仍有 ${reviewContinuationPlan.remaining} 条，请刷新或调整筛选。`
+        : '当前筛选下的待处理候选已经全部完成。')
+      return
+    }
+    window.requestAnimationFrame(() => {
+      const target = document.getElementById(`graph-review-${nextId}`)
+      if (!target) {
+        setMessage('下一条候选在页面刷新期间发生变化，请按当前队列继续审阅。')
+        return
+      }
+      target.scrollIntoView({ behavior: 'smooth', block: 'center' })
+      target.focus({ preventScroll: true })
+      setMessage(`上一条已处理，已定位下一条；当前筛选预计还剩 ${reviewContinuationPlan.remaining} 条。`)
+    })
+  }, [reviewContinuationPlan, reviewPage.status, reviewPage.items])
 
   useEffect(() => {
     const request = mergeArchiveGate.current.begin()
@@ -5580,6 +5620,13 @@ function AiAssistantPage() {
     reviewDecisionLocks.current.add(id)
     setReviewDecisionSaving(current => setKeyedLoadingState(current, id, true))
     try {
+      const returnTargetBeforeDecision =
+        resolveCompletedReviewReturn(reviewReturnTargetRef.current, id)
+      const continuationContextKey = reviewContextKeyRef.current
+      const continuationPlan = !returnTargetBeforeDecision &&
+        reviewStatusFilter === 'pending'
+        ? planReviewContinuation(reviewPage.items, id, reviewPage.total)
+        : null
       await window.electronAPI.aiAssistant.updateGraphReview(id, decision, {
         ...options,
         expectedRevision: String(reviewPage.revision || '')
@@ -5605,8 +5652,15 @@ function AiAssistantPage() {
         return next
       })
       await load()
+      if (continuationPlan &&
+        reviewContextKeyRef.current === continuationContextKey) {
+        setReviewContinuationPlan(continuationPlan)
+      }
       setReviewRefreshKey(value => value + 1)
-      const returnTarget = resolveCompletedReviewReturn(reviewReturnTargetRef.current, id)
+      const returnTarget = resolveCompletedReviewReturn(
+        reviewReturnTargetRef.current,
+        id
+      )
       if (returnTarget) await restoreReviewReturnTarget(returnTarget)
     } catch (error: any) {
       const errorMessage = error?.message || String(error)
@@ -11441,7 +11495,11 @@ function AiAssistantPage() {
             {reviewPage.status === 'error' && <div className="assistant-empty">审阅记录读取失败：{reviewPage.error}</div>}
             {reviewPage.status === 'ready' && !visibleReviews.length && <div className="assistant-empty">{reviewStatusFilter === 'pending' ? '当前没有符合筛选条件的待处理候选。' : '当前没有符合筛选条件的审阅历史。'}</div>}
             {reviewPage.status === 'ready' && visibleReviews.length > 0 && <div className="assistant-review-page-status">
-              <small>已加载 {visibleReviews.length} / {reviewPage.total} 条符合条件的记录；筛选和排序由本机后端执行。</small>
+              <small>已加载 {visibleReviews.length} / {reviewPage.total} 条符合条件的记录；筛选和排序由本机后端执行。
+                {reviewStatusFilter === 'pending'
+                  ? ' 完成一条后会在刷新后的权威队列中自动定位下一条。'
+                  : ''}
+              </small>
               {reviewPage.hasMore && <button type="button" disabled={reviewLoadingMore} onClick={() => void loadMoreReviews()}>
                 {reviewLoadingMore ? '正在加载…' : '加载更多审阅记录'}
               </button>}
