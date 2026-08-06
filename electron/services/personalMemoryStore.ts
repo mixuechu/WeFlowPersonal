@@ -33,6 +33,12 @@ type MemoryGraph = {
 }
 
 type MemoryEvidenceSource = 'wechat' | 'documents' | 'calendar' | 'mail' | 'legacy'
+
+type MemoryChangeOrigin = {
+  kind: 'model_batch' | 'connector_page' | 'human_action' | 'system'
+  id?: string
+  sourceKind?: 'wechat' | 'documents' | 'calendar' | 'mail' | 'local' | 'system'
+}
 const TASK_EVIDENCE_FINGERPRINT_VERSION = 3
 
 function searchEvidenceScopeSql(
@@ -1417,6 +1423,9 @@ export class PersonalMemoryStore {
         item_id TEXT NOT NULL,
         change_kind TEXT NOT NULL,
         change_detail TEXT NOT NULL DEFAULT 'item',
+        origin_kind TEXT NOT NULL DEFAULT 'legacy_unknown',
+        origin_id TEXT NOT NULL DEFAULT '',
+        source_kind TEXT NOT NULL DEFAULT 'legacy',
         status_before TEXT NOT NULL DEFAULT '',
         status_after TEXT NOT NULL DEFAULT '',
         changed_at TEXT NOT NULL
@@ -1439,6 +1448,12 @@ export class PersonalMemoryStore {
       CREATE INDEX IF NOT EXISTS idx_merge_history_active_target
         ON merge_history(target_entity_id,source_entity_id)
         WHERE reverted_at IS NULL;
+      CREATE TABLE IF NOT EXISTS memory_change_context (
+        singleton INTEGER PRIMARY KEY CHECK(singleton=1),
+        origin_kind TEXT NOT NULL,
+        origin_id TEXT NOT NULL DEFAULT '',
+        source_kind TEXT NOT NULL DEFAULT 'system'
+      ) STRICT;
 
       CREATE VIRTUAL TABLE IF NOT EXISTS search_fts USING fts5(
         document_id UNINDEXED,
@@ -1520,9 +1535,17 @@ export class PersonalMemoryStore {
     this.ensureColumn('ingestion_batch_commits', 'payload_original_bytes', 'INTEGER NOT NULL DEFAULT 0')
     this.ensureColumn('memory_item_suppressions', 'semantic_fingerprint', `TEXT NOT NULL DEFAULT ''`)
     this.ensureColumn('memory_change_log', 'change_detail', `TEXT NOT NULL DEFAULT 'item'`)
+    this.ensureColumn('memory_change_log', 'origin_kind', `TEXT NOT NULL DEFAULT 'legacy_unknown'`)
+    this.ensureColumn('memory_change_log', 'origin_id', `TEXT NOT NULL DEFAULT ''`)
+    this.ensureColumn('memory_change_log', 'source_kind', `TEXT NOT NULL DEFAULT 'legacy'`)
     this.db.exec(`
       CREATE INDEX IF NOT EXISTS idx_memory_change_log_detail_time
-      ON memory_change_log(change_detail,changed_at DESC,id DESC)
+      ON memory_change_log(change_detail,changed_at DESC,id DESC);
+      CREATE INDEX IF NOT EXISTS idx_memory_change_log_origin_time
+      ON memory_change_log(origin_kind,changed_at DESC,id DESC);
+      CREATE INDEX IF NOT EXISTS idx_memory_change_log_source_time
+      ON memory_change_log(source_kind,changed_at DESC,id DESC);
+      DELETE FROM memory_change_context;
     `)
     this.ensureColumn('data_source_connectors', 'config_json', `TEXT NOT NULL DEFAULT '{}'`)
     this.ensureColumn('task_review_decisions', 'task_json', `TEXT NOT NULL DEFAULT '{}'`)
@@ -2173,6 +2196,7 @@ export class PersonalMemoryStore {
     statusColumn: string
     updatedColumn: string
   }): string[] {
+    const originValues = this.memoryChangeOriginValueSql()
     const statusBefore = definition.statusColumn ? `OLD.${definition.statusColumn}` : `''`
     const statusAfter = definition.statusColumn ? `NEW.${definition.statusColumn}` : `''`
     const statusChanged = definition.statusColumn
@@ -2229,9 +2253,10 @@ export class PersonalMemoryStore {
       CREATE TRIGGER ${prefix}_insert AFTER INSERT ON ${definition.table}
       BEGIN
         INSERT INTO memory_change_log(
-          item_kind,item_id,change_kind,change_detail,status_before,status_after,changed_at
+          item_kind,item_id,change_kind,change_detail,origin_kind,origin_id,source_kind,
+          status_before,status_after,changed_at
         ) VALUES(
-          '${definition.itemKind}',NEW.id,'discovered','item','',${statusAfter},
+          '${definition.itemKind}',NEW.id,'discovered','item',${originValues},'',${statusAfter},
           strftime('%Y-%m-%dT%H:%M:%fZ','now')
         );
         ${currentLinks('NEW')}
@@ -2241,11 +2266,13 @@ export class PersonalMemoryStore {
       ${updateWhen}
       BEGIN
         INSERT INTO memory_change_log(
-          item_kind,item_id,change_kind,change_detail,status_before,status_after,changed_at
+          item_kind,item_id,change_kind,change_detail,origin_kind,origin_id,source_kind,
+          status_before,status_after,changed_at
         ) VALUES(
           '${definition.itemKind}',NEW.id,
           CASE WHEN ${statusChanged} THEN 'reviewed' ELSE 'updated' END,
           ${updateDetail},
+          ${originValues},
           ${statusBefore},${statusAfter},
           strftime('%Y-%m-%dT%H:%M:%fZ','now')
         );
@@ -2255,9 +2282,10 @@ export class PersonalMemoryStore {
       CREATE TRIGGER ${prefix}_delete AFTER DELETE ON ${definition.table}
       BEGIN
         INSERT INTO memory_change_log(
-          item_kind,item_id,change_kind,change_detail,status_before,status_after,changed_at
+          item_kind,item_id,change_kind,change_detail,origin_kind,origin_id,source_kind,
+          status_before,status_after,changed_at
         ) VALUES(
-          '${definition.itemKind}',OLD.id,'removed','item',${statusBefore},'',
+          '${definition.itemKind}',OLD.id,'removed','item',${originValues},${statusBefore},'',
           strftime('%Y-%m-%dT%H:%M:%fZ','now')
         );
         ${currentLinks('OLD')}
@@ -2266,15 +2294,23 @@ export class PersonalMemoryStore {
     `]
   }
 
+  private memoryChangeOriginValueSql(): string {
+    return `COALESCE((SELECT origin_kind FROM memory_change_context WHERE singleton=1),'system'),
+      COALESCE((SELECT origin_id FROM memory_change_context WHERE singleton=1),''),
+      COALESCE((SELECT source_kind FROM memory_change_context WHERE singleton=1),'system')`
+  }
+
   private memoryChangeEntityParticipantTriggerSql(): string[] {
+    const originValues = this.memoryChangeOriginValueSql()
     return [`
       CREATE TRIGGER trg_memory_growth_event_participants_insert
       AFTER INSERT ON event_participants
       BEGIN
         INSERT INTO memory_change_log(
-          item_kind,item_id,change_kind,change_detail,status_before,status_after,changed_at
+          item_kind,item_id,change_kind,change_detail,origin_kind,origin_id,source_kind,
+          status_before,status_after,changed_at
         )
-        SELECT 'event',NEW.event_id,'enriched','participant','',
+        SELECT 'event',NEW.event_id,'enriched','participant',${originValues},'',
           COALESCE(event.status,''),strftime('%Y-%m-%dT%H:%M:%fZ','now')
         FROM events event WHERE event.id=NEW.event_id;
         INSERT OR IGNORE INTO memory_change_entity_links(change_id,entity_id)
@@ -2298,14 +2334,16 @@ export class PersonalMemoryStore {
   }
 
   private memoryChangeEnrichmentTriggerSql(): string[] {
+    const originValues = this.memoryChangeOriginValueSql()
     return [`
       CREATE TRIGGER trg_memory_growth_entity_evidence_insert
       AFTER INSERT ON entity_evidence
       BEGIN
         INSERT INTO memory_change_log(
-          item_kind,item_id,change_kind,change_detail,status_before,status_after,changed_at
+          item_kind,item_id,change_kind,change_detail,origin_kind,origin_id,source_kind,
+          status_before,status_after,changed_at
         )
-        SELECT 'entity',NEW.entity_id,'enriched','evidence','',
+        SELECT 'entity',NEW.entity_id,'enriched','evidence',${originValues},'',
           COALESCE(entity.trust_status,''),strftime('%Y-%m-%dT%H:%M:%fZ','now')
         FROM entities entity WHERE entity.id=NEW.entity_id;
         INSERT OR IGNORE INTO memory_change_entity_links(change_id,entity_id)
@@ -2316,9 +2354,10 @@ export class PersonalMemoryStore {
       AFTER INSERT ON evidence WHEN NEW.claim_id IS NOT NULL
       BEGIN
         INSERT INTO memory_change_log(
-          item_kind,item_id,change_kind,change_detail,status_before,status_after,changed_at
+          item_kind,item_id,change_kind,change_detail,origin_kind,origin_id,source_kind,
+          status_before,status_after,changed_at
         )
-        SELECT 'claim',NEW.claim_id,'enriched','evidence','',
+        SELECT 'claim',NEW.claim_id,'enriched','evidence',${originValues},'',
           COALESCE(claim.status,''),strftime('%Y-%m-%dT%H:%M:%fZ','now')
         FROM claims claim WHERE claim.id=NEW.claim_id;
         INSERT OR IGNORE INTO memory_change_entity_links(change_id,entity_id)
@@ -2334,9 +2373,10 @@ export class PersonalMemoryStore {
       AFTER INSERT ON evidence WHEN NEW.relation_id IS NOT NULL
       BEGIN
         INSERT INTO memory_change_log(
-          item_kind,item_id,change_kind,change_detail,status_before,status_after,changed_at
+          item_kind,item_id,change_kind,change_detail,origin_kind,origin_id,source_kind,
+          status_before,status_after,changed_at
         )
-        SELECT 'relation',NEW.relation_id,'enriched','evidence','',
+        SELECT 'relation',NEW.relation_id,'enriched','evidence',${originValues},'',
           COALESCE(relation.status,''),strftime('%Y-%m-%dT%H:%M:%fZ','now')
         FROM relations relation WHERE relation.id=NEW.relation_id;
         INSERT OR IGNORE INTO memory_change_entity_links(change_id,entity_id)
@@ -2353,9 +2393,10 @@ export class PersonalMemoryStore {
       AFTER INSERT ON evidence WHEN NEW.event_id IS NOT NULL
       BEGIN
         INSERT INTO memory_change_log(
-          item_kind,item_id,change_kind,change_detail,status_before,status_after,changed_at
+          item_kind,item_id,change_kind,change_detail,origin_kind,origin_id,source_kind,
+          status_before,status_after,changed_at
         )
-        SELECT 'event',NEW.event_id,'enriched','evidence','',
+        SELECT 'event',NEW.event_id,'enriched','evidence',${originValues},'',
           COALESCE(event.status,''),strftime('%Y-%m-%dT%H:%M:%fZ','now')
         FROM events event WHERE event.id=NEW.event_id;
         INSERT OR IGNORE INTO memory_change_entity_links(change_id,entity_id)
@@ -2497,12 +2538,12 @@ export class PersonalMemoryStore {
     const after = this.inspectMemoryChangeLogTriggers()
     const repaired = before.unhealthyTriggers.length + before.unexpectedTriggers.length
     const audit = {
-      version: 'memory-change-log-v3',
+      version: 'memory-change-log-v4',
       checkedAt: now,
       repairedThisStart: repaired > 0,
       repairedTriggersThisStart: repaired,
       repairsTotal: Number(previous.repairsTotal || 0) + (repaired > 0 ? 1 : 0),
-      privacyPolicy: 'identity_status_time_detail_and_stable_entity_links',
+      privacyPolicy: 'identity_status_time_detail_stable_links_and_bounded_origin_no_content',
       entityLinkBackfillPolicy: 'current_authority_only_no_guessing',
       historicalBackfill: false,
       ...after
@@ -2531,7 +2572,7 @@ export class PersonalMemoryStore {
       revision: this.getMemoryChangeLogRevision()
     })
     if (!this.db) return {
-      version: 'memory-change-log-v3',
+      version: 'memory-change-log-v4',
       revision: '0',
       trackedSince: '',
       total: 0,
@@ -2552,8 +2593,11 @@ export class PersonalMemoryStore {
     let entityLinkBackfill: any = {}
     try { audit = JSON.parse(String(auditRow?.value || '{}')) } catch {}
     try { entityLinkBackfill = JSON.parse(String(linkBackfill?.value || '{}')) } catch {}
+    const activeOriginContexts = Number((this.db.prepare(`
+      SELECT COUNT(*) AS count FROM memory_change_context
+    `).get() as any)?.count || 0)
     return {
-      version: 'memory-change-log-v3',
+      version: 'memory-change-log-v4',
       revision: this.getMemoryChangeLogRevision(),
       trackedSince: String(started?.value || ''),
       total: Number((this.db.prepare(`
@@ -2563,7 +2607,9 @@ export class PersonalMemoryStore {
       repairedThisStart: Boolean(audit.repairedThisStart),
       repairedTriggersThisStart: Number(audit.repairedTriggersThisStart || 0),
       repairsTotal: Number(audit.repairsTotal || 0),
-      privacyPolicy: 'identity_status_time_detail_and_stable_entity_links',
+      privacyPolicy: 'identity_status_time_detail_stable_links_and_bounded_origin_no_content',
+      activeOriginContexts,
+      originContextClean: activeOriginContexts === 0,
       entityLinkBackfillPolicy: 'current_authority_only_no_guessing',
       entityLinkBackfill: {
         completedAt: String(entityLinkBackfill.completedAt || ''),
@@ -2572,7 +2618,7 @@ export class PersonalMemoryStore {
       historicalBackfill: false,
       ...triggers,
       revisionTriggers,
-      healthy: triggers.healthy && revisionTriggers.healthy
+      healthy: triggers.healthy && revisionTriggers.healthy && activeOriginContexts === 0
     }
   }
 
@@ -2580,6 +2626,8 @@ export class PersonalMemoryStore {
     kind?: 'entity' | 'claim' | 'relation' | 'event' | 'resource' | 'all'
     change?: 'discovered' | 'updated' | 'enriched' | 'reviewed' | 'removed' | 'all'
     detail?: 'item' | 'content' | 'identity' | 'status' | 'evidence' | 'participant' | 'all'
+    origin?: 'model_batch' | 'connector_page' | 'human_action' | 'system' | 'legacy_unknown' | 'all'
+    source?: 'wechat' | 'documents' | 'calendar' | 'mail' | 'local' | 'system' | 'legacy' | 'all'
     from?: string
     to?: string
     limit?: number
@@ -2626,6 +2674,16 @@ export class PersonalMemoryStore {
       .includes(String(options.detail))) {
       conditions.push('log.change_detail=?')
       parameters.push(String(options.detail))
+    }
+    if (['model_batch', 'connector_page', 'human_action', 'system', 'legacy_unknown']
+      .includes(String(options.origin))) {
+      conditions.push('log.origin_kind=?')
+      parameters.push(String(options.origin))
+    }
+    if (['wechat', 'documents', 'calendar', 'mail', 'local', 'system', 'legacy']
+      .includes(String(options.source))) {
+      conditions.push('log.source_kind=?')
+      parameters.push(String(options.source))
     }
     const entityId = String(options.entityId || '').trim().slice(0, 240)
     if (entityId) {
@@ -2722,6 +2780,9 @@ export class PersonalMemoryStore {
         itemId: String(row.item_id).slice(0, 240),
         changeKind: String(row.change_kind).slice(0, 40),
         changeDetail: String(row.change_detail || 'item').slice(0, 40),
+        originKind: String(row.origin_kind || 'legacy_unknown').slice(0, 40),
+        originId: String(row.origin_id || '').slice(0, 240),
+        sourceKind: String(row.source_kind || 'legacy').slice(0, 40),
         statusBefore: String(row.status_before || '').slice(0, 80),
         statusAfter: String(row.status_after || '').slice(0, 80),
         changedAt: String(row.changed_at || '').slice(0, 80),
@@ -6855,7 +6916,11 @@ export class PersonalMemoryStore {
       : this.db.prepare('SELECT * FROM entity_profile_corrections ORDER BY id DESC LIMIT ?').all(limit) as any[]
   }
 
-  forgetEntity(entityId: string, taskIds: string[] = []): any {
+  forgetEntity(
+    entityId: string,
+    taskIds: string[] = [],
+    origin?: MemoryChangeOrigin
+  ): any {
     if (!this.db) return null
     const preview = this.previewForgetEntity(entityId)
     if (!preview) return null
@@ -6871,7 +6936,9 @@ export class PersonalMemoryStore {
       this.db!.prepare(`DELETE FROM ${table} WHERE ${column} IN (${ids.map(() => '?').join(',')})`).run(...ids)
     }
     this.db.exec('BEGIN IMMEDIATE')
+    let previousOrigin: any
     try {
+      previousOrigin = origin ? this.installMemoryChangeOrigin(origin) : undefined
       deleteIds('search_fts', 'document_id', documentIds)
       deleteIds('search_documents', 'id', documentIds)
       deleteIds('search_document_evidence', 'document_id', documentIds)
@@ -6901,6 +6968,7 @@ export class PersonalMemoryStore {
       }
       this.db.prepare('DELETE FROM assistant_conversations WHERE id NOT IN (SELECT DISTINCT conversation_id FROM assistant_messages)').run()
       this.db.prepare('DELETE FROM entities WHERE id=?').run(entityId)
+      if (origin) this.restoreMemoryChangeOrigin(previousOrigin)
       this.db.exec('COMMIT')
       return {
         success: true,
@@ -7700,9 +7768,63 @@ export class PersonalMemoryStore {
     }
   }
 
-  runInTransaction<T>(operation: () => T): T {
+  private installMemoryChangeOrigin(origin: MemoryChangeOrigin): any {
     if (!this.db) throw new Error('个人记忆数据库尚未初始化')
-    return this.db.transaction(operation)()
+    const previous = this.db.prepare(`
+      SELECT origin_kind,origin_id,source_kind
+      FROM memory_change_context WHERE singleton=1
+    `).get() as any
+    const kind = ['model_batch', 'connector_page', 'human_action', 'system']
+      .includes(String(origin.kind)) ? String(origin.kind) : 'system'
+    const id = String(origin.id || '').trim().slice(0, 240)
+    const sourceKind = ['wechat', 'documents', 'calendar', 'mail', 'local', 'system']
+      .includes(String(origin.sourceKind))
+      ? String(origin.sourceKind)
+      : kind === 'human_action' ? 'local' : 'system'
+    this.db.prepare(`
+      INSERT INTO memory_change_context(singleton,origin_kind,origin_id,source_kind)
+      VALUES(1,?,?,?)
+      ON CONFLICT(singleton) DO UPDATE SET
+        origin_kind=excluded.origin_kind,
+        origin_id=excluded.origin_id,
+        source_kind=excluded.source_kind
+    `).run(kind, id, sourceKind)
+    return previous
+  }
+
+  private restoreMemoryChangeOrigin(previous: any): void {
+    if (!this.db) return
+    if (previous) {
+      this.db.prepare(`
+        UPDATE memory_change_context
+        SET origin_kind=?,origin_id=?,source_kind=? WHERE singleton=1
+      `).run(previous.origin_kind, previous.origin_id, previous.source_kind)
+    } else {
+      this.db.prepare('DELETE FROM memory_change_context WHERE singleton=1').run()
+    }
+  }
+
+  runWithMemoryChangeOrigin<T>(
+    origin: MemoryChangeOrigin,
+    operation: () => T
+  ): T {
+    if (!this.db) throw new Error('个人记忆数据库尚未初始化')
+    const execute = () => {
+      const previous = this.installMemoryChangeOrigin(origin)
+      try {
+        return operation()
+      } finally {
+        this.restoreMemoryChangeOrigin(previous)
+      }
+    }
+    return this.db.inTransaction ? execute() : this.db.transaction(execute)()
+  }
+
+  runInTransaction<T>(operation: () => T, origin?: MemoryChangeOrigin): T {
+    if (!this.db) throw new Error('个人记忆数据库尚未初始化')
+    return origin
+      ? this.runWithMemoryChangeOrigin(origin, operation)
+      : this.db.transaction(operation)()
   }
 
   listRelationHistory(entityId = '', limit = 200): any[] {
@@ -8330,17 +8452,20 @@ export class PersonalMemoryStore {
         reason?: string
         evidence?: any[]
       }>
-    }
+    },
+    origin?: MemoryChangeOrigin
   ): void {
     if (!this.db) return
-    this.db.transaction(() => {
+    const apply = () => {
       this.syncGraph(graph, commitId, { entityEvidence })
       this.upsertClaimsAndEvents(claims, events)
       if (taskCommit) {
         this.recordTaskChangeSets(taskCommit.changes)
         this.syncTasks(taskCommit.tasks, true, true)
       }
-    })()
+    }
+    if (origin) this.runWithMemoryChangeOrigin(origin, apply)
+    else this.db.transaction(apply)()
   }
 
   upsertClaims(claims: any[]): void {
@@ -9451,7 +9576,13 @@ export class PersonalMemoryStore {
     const nextCheckpoint = String(input.nextCheckpoint || expectedCheckpoint)
     const expectedConfigJson = JSON.stringify(input.expectedConfig || {})
     const now = new Date().toISOString()
-    this.db.transaction(() => {
+    this.runWithMemoryChangeOrigin({
+      kind: 'connector_page',
+      id: `calendar:${createHash('sha256').update(
+        `${sourceId}\0${expectedCheckpoint}\0${nextCheckpoint}`
+      ).digest('hex').slice(0, 24)}`,
+      sourceKind: 'calendar'
+    }, () => {
       const source = this.db!.prepare(`
         SELECT checkpoint,config_json,enabled,available
         FROM data_source_connectors WHERE source_id=?
@@ -9492,17 +9623,19 @@ export class PersonalMemoryStore {
       if (Number(result.changes || 0) !== 1) {
         throw new Error('数据源状态在提交期间发生变化，本页没有提交')
       }
-    })()
+    })
   }
 
-  deleteResource(id: string, reason = 'manual_delete'): any {
+  deleteResource(id: string, reason = 'manual_delete', origin?: MemoryChangeOrigin): any {
     if (!this.db) return { success: false, id }
     const resourceId = String(id || '').trim()
     if (!resourceId) return { success: false, id: resourceId }
     const documentId = `resource:${resourceId}`
     const now = new Date().toISOString()
     this.db.exec('BEGIN IMMEDIATE')
+    let previousOrigin: any
     try {
+      previousOrigin = origin ? this.installMemoryChangeOrigin(origin) : undefined
       const resource = this.db.prepare('SELECT * FROM memory_resources WHERE id=?').get(resourceId) as any
       const evidence = this.db.prepare(`
         SELECT source_id,message_id,session_id,timestamp,sender,excerpt
@@ -9523,6 +9656,7 @@ export class PersonalMemoryStore {
       this.db.prepare('DELETE FROM search_fts WHERE document_id=?').run(documentId)
       this.db.prepare('DELETE FROM search_documents WHERE id=?').run(documentId)
       const result = this.db.prepare('DELETE FROM memory_resources WHERE id=?').run(resourceId)
+      if (origin) this.restoreMemoryChangeOrigin(previousOrigin)
       this.db.exec('COMMIT')
       return { success: true, id: resourceId, deleted: Number(result.changes || 0), suppressed: true }
     } catch (error) {
@@ -9586,7 +9720,11 @@ export class PersonalMemoryStore {
     })
   }
 
-  restoreResource(id: string, expectedMutationToken: string): any {
+  restoreResource(
+    id: string,
+    expectedMutationToken: string,
+    origin?: MemoryChangeOrigin
+  ): any {
     if (!this.db) return { success: false, id }
     const resourceId = String(id || '').trim()
     const trash = this.db.prepare(`
@@ -9605,7 +9743,9 @@ export class PersonalMemoryStore {
     let metadata: any = {}
     try { metadata = JSON.parse(row.metadata_json || '{}') } catch {}
     this.db.exec('BEGIN IMMEDIATE')
+    let previousOrigin: any
     try {
+      previousOrigin = origin ? this.installMemoryChangeOrigin(origin) : undefined
       this.db.prepare('DELETE FROM resource_suppressions WHERE resource_id=?').run(resourceId)
       this.upsertResources([{
         id: resourceId,
@@ -9628,6 +9768,7 @@ export class PersonalMemoryStore {
         }))
       }])
       this.db.prepare('DELETE FROM resource_trash WHERE resource_id=?').run(resourceId)
+      if (origin) this.restoreMemoryChangeOrigin(previousOrigin)
       this.db.exec('COMMIT')
       return { success: true, id: resourceId }
     } catch (error) {
@@ -12383,7 +12524,12 @@ export class PersonalMemoryStore {
     }
   }
 
-  deleteMemoryItem(kind: 'claim' | 'event' | 'relation', id: string, reason = 'manual_delete'): any {
+  deleteMemoryItem(
+    kind: 'claim' | 'event' | 'relation',
+    id: string,
+    reason = 'manual_delete',
+    origin?: MemoryChangeOrigin
+  ): any {
     if (!this.db) throw new Error('个人记忆库尚未初始化')
     const preview = this.previewDeleteMemoryItem(kind, id)
     if (!preview) throw new Error('该记忆不存在或已删除')
@@ -12391,7 +12537,9 @@ export class PersonalMemoryStore {
     const itemId = preview.id
     const documentId = preview.documentId
     this.db.exec('BEGIN IMMEDIATE')
+    let previousOrigin: any
     try {
+      previousOrigin = origin ? this.installMemoryChangeOrigin(origin) : undefined
       this.db.prepare(`
         INSERT INTO memory_item_suppressions(item_kind,item_id,semantic_fingerprint,reason,created_at)
         VALUES(?,?,?,?,?)
@@ -12433,6 +12581,7 @@ export class PersonalMemoryStore {
         JSON.stringify(preview.counts),
         now
       )
+      if (origin) this.restoreMemoryChangeOrigin(previousOrigin)
       this.db.exec('COMMIT')
       return { success: true, kind, id: itemId, fingerprint: preview.fingerprint, removed: preview.counts, suppressed: true }
     } catch (error) {

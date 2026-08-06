@@ -93,6 +93,35 @@ const MEMORY_GROWTH_DETAIL_LABELS: Record<string, string> = {
   participant: '事件参与者'
 }
 
+const MEMORY_GROWTH_ORIGIN_LABELS: Record<string, string> = {
+  model_batch: '自动抽取',
+  connector_page: '本机连接器',
+  human_action: '本人操作',
+  system: '系统维护',
+  legacy_unknown: '旧版未知'
+}
+
+const MEMORY_GROWTH_SOURCE_LABELS: Record<string, string> = {
+  wechat: '微信',
+  documents: '本机文档',
+  calendar: '日历',
+  mail: '邮件',
+  local: '本机操作',
+  system: '系统',
+  legacy: '旧版来源'
+}
+
+const memoryGrowthOriginSummary = (entry: any): string => {
+  const origin = MEMORY_GROWTH_ORIGIN_LABELS[entry.originKind] || entry.originKind || '旧版未知'
+  const source = MEMORY_GROWTH_SOURCE_LABELS[entry.sourceKind] || entry.sourceKind || '旧版来源'
+  const id = String(entry.originId || '').trim()
+  const shortId = id ? id.slice(-12) : ''
+  const identityLabel = entry.originKind === 'model_batch' || entry.originKind === 'connector_page'
+    ? '批次'
+    : '操作'
+  return `${origin} · ${source}${shortId ? ` · ${identityLabel} ${shortId}` : ''}`
+}
+
 type Task = {
   id: string
   title: string
@@ -1089,6 +1118,10 @@ function AiAssistantPage() {
     useState<'all' | 'discovered' | 'updated' | 'enriched' | 'reviewed' | 'removed'>('all')
   const [memoryGrowthDetail, setMemoryGrowthDetail] =
     useState<'all' | 'item' | 'content' | 'identity' | 'status' | 'evidence' | 'participant'>('all')
+  const [memoryGrowthOrigin, setMemoryGrowthOrigin] =
+    useState<'all' | 'model_batch' | 'connector_page' | 'human_action' | 'system' | 'legacy_unknown'>('all')
+  const [memoryGrowthSource, setMemoryGrowthSource] =
+    useState<'all' | 'wechat' | 'documents' | 'calendar' | 'mail' | 'local' | 'system' | 'legacy'>('all')
   const [memoryGrowthFrom, setMemoryGrowthFrom] = useState('')
   const [memoryGrowthTo, setMemoryGrowthTo] = useState('')
   const [memoryGrowthEntity, setMemoryGrowthEntity] = useState<any>(null)
@@ -1687,6 +1720,8 @@ function AiAssistantPage() {
     kind: memoryGrowthKind,
     change: memoryGrowthChange,
     detail: memoryGrowthDetail,
+    origin: memoryGrowthOrigin,
+    source: memoryGrowthSource,
     from: memoryGrowthFrom
       ? new Date(`${memoryGrowthFrom}T00:00:00+08:00`).toISOString()
       : undefined,
@@ -1697,8 +1732,8 @@ function AiAssistantPage() {
     limit: 40,
     offset: 0
   }), [
-    memoryGrowthKind, memoryGrowthChange, memoryGrowthDetail, memoryGrowthFrom, memoryGrowthTo,
-    memoryGrowthEntity?.id
+    memoryGrowthKind, memoryGrowthChange, memoryGrowthDetail, memoryGrowthOrigin,
+    memoryGrowthSource, memoryGrowthFrom, memoryGrowthTo, memoryGrowthEntity?.id
   ])
   const mergeArchiveOptions = useMemo(() => ({
     status: mergeArchiveStatus,
@@ -8858,17 +8893,44 @@ function AiAssistantPage() {
               <option value="evidence">新增证据</option>
               <option value="participant">事件参与者</option>
             </select>
+            <select value={memoryGrowthOrigin}
+              onChange={event => setMemoryGrowthOrigin(
+                event.target.value as typeof memoryGrowthOrigin
+              )}>
+              <option value="all">所有产生方式</option>
+              <option value="model_batch">自动抽取</option>
+              <option value="connector_page">本机连接器</option>
+              <option value="human_action">本人操作</option>
+              <option value="system">系统维护</option>
+              <option value="legacy_unknown">旧版未知</option>
+            </select>
+            <select value={memoryGrowthSource}
+              onChange={event => setMemoryGrowthSource(
+                event.target.value as typeof memoryGrowthSource
+              )}>
+              <option value="all">所有信息来源</option>
+              <option value="wechat">微信</option>
+              <option value="documents">本机文档</option>
+              <option value="calendar">日历</option>
+              <option value="mail">邮件</option>
+              <option value="local">本机操作</option>
+              <option value="system">系统</option>
+              <option value="legacy">旧版来源</option>
+            </select>
             <label><span>变化从</span><input type="date" value={memoryGrowthFrom}
               onChange={event => setMemoryGrowthFrom(event.target.value)} /></label>
             <label><span>到</span><input type="date" value={memoryGrowthTo}
               onChange={event => setMemoryGrowthTo(event.target.value)} /></label>
             {(memoryGrowthEntity || memoryGrowthKind !== 'all' ||
               memoryGrowthChange !== 'all' || memoryGrowthDetail !== 'all' ||
+              memoryGrowthOrigin !== 'all' || memoryGrowthSource !== 'all' ||
               memoryGrowthFrom || memoryGrowthTo) && <button onClick={() => {
               setMemoryGrowthEntity(null)
               setMemoryGrowthKind('all')
               setMemoryGrowthChange('all')
               setMemoryGrowthDetail('all')
+              setMemoryGrowthOrigin('all')
+              setMemoryGrowthSource('all')
               setMemoryGrowthFrom('')
               setMemoryGrowthTo('')
             }}>清除范围</button>}
@@ -8894,6 +8956,7 @@ function AiAssistantPage() {
                     ? ` · ${entry.statusBefore} → ${entry.statusAfter}`
                     : entry.statusAfter ? ` · ${entry.statusAfter}` : ''}
                 </small>
+                <small>{memoryGrowthOriginSummary(entry)}</small>
               </div>
               {entry.currentExists ? <button type="button"
                 onClick={() => void openMemoryGrowthItem(entry)}>
@@ -8918,7 +8981,7 @@ function AiAssistantPage() {
             {memoryGrowth.trackedSince
               ? `从 ${new Date(memoryGrowth.trackedSince).toLocaleString('zh-CN')} 开始记录`
               : '正在建立记录起点'}
-            {' · '}账本只保存类型、稳定 ID、关联实体、状态和时间，不复制事实正文或聊天原文；实体筛选按稳定 ID 隔离同名对象，点击时才从 SQLCipher 水合当前档案。
+            {' · '}账本只保存类型、稳定 ID、关联实体、状态、产生批次和时间，不复制事实正文、Prompt、连接器游标或聊天原文；实体筛选按稳定 ID 隔离同名对象，点击时才从 SQLCipher 水合当前档案。
           </small>
         </section>
         {ingestionStatus && (
@@ -13345,6 +13408,7 @@ function AiAssistantPage() {
                           ? ` · ${entry.statusBefore} → ${entry.statusAfter}`
                           : entry.statusAfter ? ` · ${entry.statusAfter}` : ''}
                       </small>
+                      <small>{memoryGrowthOriginSummary(entry)}</small>
                     </div>
                     {entry.currentExists ? <button type="button"
                       onClick={() => void openMemoryGrowthItem(entry)}>

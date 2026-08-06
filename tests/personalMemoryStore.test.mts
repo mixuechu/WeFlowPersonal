@@ -7527,7 +7527,11 @@ test('memory growth log is privacy-minimal, pageable and self-heals trigger drif
       [`SELECT id FROM memory_change_log WHERE change_kind='reviewed'
         ORDER BY changed_at DESC,id DESC LIMIT 40`, 'idx_memory_change_log_change_time'],
       [`SELECT id FROM memory_change_log WHERE change_detail='evidence'
-        ORDER BY changed_at DESC,id DESC LIMIT 40`, 'idx_memory_change_log_detail_time']
+        ORDER BY changed_at DESC,id DESC LIMIT 40`, 'idx_memory_change_log_detail_time'],
+      [`SELECT id FROM memory_change_log WHERE origin_kind='human_action'
+        ORDER BY changed_at DESC,id DESC LIMIT 40`, 'idx_memory_change_log_origin_time'],
+      [`SELECT id FROM memory_change_log WHERE source_kind='wechat'
+        ORDER BY changed_at DESC,id DESC LIMIT 40`, 'idx_memory_change_log_source_time']
     ]) {
       const plan = (database.prepare(`EXPLAIN QUERY PLAN ${sql}`).all() as Array<{ detail: string }>)
         .map(row => row.detail).join(' ')
@@ -7602,8 +7606,10 @@ test('memory growth log is privacy-minimal, pageable and self-heals trigger drif
     assert.equal(firstPage.hasMore, true)
     assert.deepEqual(Object.keys(firstPage.items[0]).sort(), [
       'changeDetail', 'changeKind', 'changedAt', 'currentExists', 'id', 'itemId',
-      'itemKind', 'statusAfter', 'statusBefore', 'title'
+      'itemKind', 'originId', 'originKind', 'sourceKind', 'statusAfter', 'statusBefore', 'title'
     ])
+    assert.equal(firstPage.items[0].originKind, 'system')
+    assert.equal(firstPage.items[0].sourceKind, 'system')
     assert.equal(JSON.stringify(firstPage).includes('search_text'), false)
     assert.equal(JSON.stringify(firstPage).includes('excerpt'), false)
     assert.deepEqual(
@@ -7748,6 +7754,104 @@ test('memory growth log is privacy-minimal, pageable and self-heals trigger drif
     }
   } finally {
     first.close()
+    rmSync(directory, { recursive: true, force: true })
+  }
+})
+
+test('memory growth origins are nested, filterable and rollback without context leaks', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'weflow-memory-growth-origin-'))
+  const databasePath = join(directory, 'memory.sqlite')
+  const store = new PersonalMemoryStore()
+  try {
+    store.initialize(databasePath)
+    const database = (store as any).db
+    store.runWithMemoryChangeOrigin({
+      kind: 'model_batch',
+      id: 'model-batch-growth-safe',
+      sourceKind: 'wechat'
+    }, () => {
+      database.exec(`
+        INSERT INTO events(
+          id,event_type,title,confidence,status,search_text,created_at,updated_at
+        ) VALUES(
+          'growth-origin-event','meeting','来源批次测试',0.8,'candidate','来源批次测试',
+          '2026-08-06T01:05:30.000Z','2026-08-06T01:05:30.000Z'
+        );
+      `)
+      store.runWithMemoryChangeOrigin({
+        kind: 'human_action',
+        id: 'nested-human-growth-safe',
+        sourceKind: 'local'
+      }, () => database.exec(`
+        UPDATE events SET status='confirmed',updated_at='2026-08-06T01:05:31.000Z'
+        WHERE id='growth-origin-event'
+      `))
+      database.exec(`
+        UPDATE events SET title='来源批次测试（补充）',updated_at='2026-08-06T01:05:32.000Z'
+        WHERE id='growth-origin-event'
+      `)
+    })
+    assert.equal(store.listMemoryChangeLogPage({
+      origin: 'model_batch', source: 'wechat', limit: 20
+    }).total, 2)
+    assert.equal(store.listMemoryChangeLogPage({
+      origin: 'human_action', source: 'local', limit: 20
+    }).total, 1)
+    assert.equal(store.listMemoryChangeLogPage({
+      origin: 'model_batch', limit: 20
+    }).items.every(item => item.originId === 'model-batch-growth-safe'), true)
+    assert.equal(Number(database.prepare(`
+      SELECT COUNT(*) AS count FROM memory_change_context
+    `).get().count), 0)
+    assert.throws(() => store.runWithMemoryChangeOrigin({
+      kind: 'model_batch',
+      id: 'rolled-back-origin',
+      sourceKind: 'documents'
+    }, () => {
+      database.exec(`
+        INSERT INTO events(
+          id,event_type,title,confidence,status,search_text,created_at,updated_at
+        ) VALUES(
+          'growth-origin-rollback','meeting','回滚来源测试',0.8,'candidate','回滚来源测试',
+          '2026-08-06T01:05:33.000Z','2026-08-06T01:05:33.000Z'
+        )
+      `)
+      throw new Error('rollback origin')
+    }), /rollback origin/)
+    assert.equal(store.listMemoryChangeLogPage({
+      origin: 'model_batch', source: 'documents', limit: 20
+    }).total, 0)
+    assert.equal(Number(database.prepare(`
+      SELECT COUNT(*) AS count FROM memory_change_context
+    `).get().count), 0)
+    database.exec(`
+      INSERT INTO events(
+        id,event_type,title,confidence,status,search_text,created_at,updated_at
+      ) VALUES(
+        'growth-origin-system','meeting','系统来源测试',0.8,'candidate','系统来源测试',
+        '2026-08-06T01:05:34.000Z','2026-08-06T01:05:34.000Z'
+      )
+    `)
+    const system = store.listMemoryChangeLogPage({
+      origin: 'system', source: 'system', limit: 20
+    })
+    assert.equal(system.total, 1)
+    assert.equal(system.items[0].originId, '')
+    store.deleteMemoryItem('event', 'growth-origin-system', 'manual_delete', {
+      kind: 'human_action',
+      id: 'explicit-delete-origin',
+      sourceKind: 'local'
+    })
+    const deleted = store.listMemoryChangeLogPage({
+      origin: 'human_action', source: 'local', change: 'removed', limit: 20
+    })
+    assert.equal(deleted.total, 1)
+    assert.equal(deleted.items[0].originId, 'explicit-delete-origin')
+    assert.equal(store.getMemoryChangeLogHealth().originContextClean, true)
+    assert.equal(JSON.stringify(store.listMemoryChangeLogPage({ limit: 20 }))
+      .includes('回滚来源测试'), false)
+  } finally {
+    store.close()
     rmSync(directory, { recursive: true, force: true })
   }
 })

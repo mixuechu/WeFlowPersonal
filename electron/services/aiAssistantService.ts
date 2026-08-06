@@ -1530,7 +1530,12 @@ export class AiAssistantService {
             commit.messages,
             commit.createdAt,
             taskCommit,
-            memoryGuard.markAuthorityCommitted
+            memoryGuard.markAuthorityCommitted,
+            {
+              kind: 'model_batch',
+              id: commit.commitId,
+              sourceKind: commit.sourceKind === 'document' ? 'documents' : 'wechat'
+            }
           )
           if (commit.sourceKind !== 'document') {
             this.state.cursor.recentMessageIds = [...new Set([
@@ -2545,7 +2550,12 @@ export class AiAssistantService {
       }>
       suppressionFingerprints: string[]
     } = { changes: [], suppressionFingerprints: [] },
-    onAuthorityCommitted?: () => void
+    onAuthorityCommitted?: () => void,
+    origin?: {
+      kind: 'model_batch'
+      id: string
+      sourceKind: 'wechat' | 'documents'
+    }
   ): void {
     const evidenceFor = (messages: any[], role: 'direct' | 'indirect' | 'contradiction' = 'direct') =>
       (Array.isArray(messages) ? messages : []).map(message =>
@@ -2611,7 +2621,8 @@ export class AiAssistantService {
       {
         tasks: this.state.tasks,
         changes: taskCommit.changes
-      }
+      },
+      origin
     )
     onAuthorityCommitted?.()
     this.pendingEntityEvidence = []
@@ -3399,7 +3410,8 @@ export class AiAssistantService {
           [message],
           createdAt,
           taskCommit,
-          memoryGuard.markAuthorityCommitted
+          memoryGuard.markAuthorityCommitted,
+          { kind: 'model_batch', id: commitId, sourceKind: 'documents' }
         )
         this.saveState(true)
         personalMemoryStore.finalizeIngestionBatchCommit(commitId, {
@@ -3738,7 +3750,8 @@ export class AiAssistantService {
             batch,
             createdAt,
             taskCommit,
-            memoryGuard.markAuthorityCommitted
+            memoryGuard.markAuthorityCommitted,
+            { kind: 'model_batch', id: commitId, sourceKind: 'wechat' }
           )
           this.state.cursor.recentMessageIds = [...new Set([...this.state.cursor.recentMessageIds, ...checkpointKeys])].slice(-20_000)
           this.saveState(true)
@@ -4724,6 +4737,13 @@ export class AiAssistantService {
         .includes(options?.detail)
         ? options.detail
         : 'all',
+      origin: [
+        'model_batch', 'connector_page', 'human_action', 'system', 'legacy_unknown', 'all'
+      ].includes(options?.origin) ? options.origin : 'all',
+      source: [
+        'wechat', 'documents', 'calendar', 'mail', 'local', 'system', 'legacy', 'all'
+      ].includes(options?.source) ? options.source : 'all',
+      entityId: String(options?.entityId || ''),
       from: String(options?.from || ''),
       to: String(options?.to || ''),
       limit: Number(options?.limit || 40),
@@ -6840,7 +6860,11 @@ export class AiAssistantService {
     const snapshot = structuredClone(this.state.graph)
     return runReversibleGraphMutation({
       snapshot,
-      transact: apply => personalMemoryStore.runInTransaction(apply),
+      transact: apply => personalMemoryStore.runInTransaction(apply, {
+        kind: 'human_action',
+        id: `graph-review:${id}:${decision}`,
+        sourceKind: 'local'
+      }),
       apply: () => this.applyGraphReview(id, decision, options),
       restore: graph => { this.state.graph = graph },
       persistRestored: () => this.persistCrossStoreMutationState(),
@@ -7230,16 +7254,22 @@ export class AiAssistantService {
       currentFingerprint: inspection.currentFingerprint
     }, input)
     const restoredGraph = restoreIdentityMergeGraph(snapshot, this.state.graph)
-    personalMemoryStore.syncGraph(restoredGraph, crypto.randomUUID(), {
-      identityMergeRevert: {
-        mergeId: Number(id),
-        sourceId: snapshot.source.id,
-        targetId: snapshot.target.id,
-        sourceParticipants: Array.isArray(snapshot.sourceEventParticipants)
-          ? snapshot.sourceEventParticipants : [],
-        targetParticipants: Array.isArray(snapshot.targetEventParticipants)
-          ? snapshot.targetEventParticipants : []
-      }
+    personalMemoryStore.runWithMemoryChangeOrigin({
+      kind: 'human_action',
+      id: `identity-merge-revert:${Number(id)}`,
+      sourceKind: 'local'
+    }, () => {
+      personalMemoryStore.syncGraph(restoredGraph, crypto.randomUUID(), {
+        identityMergeRevert: {
+          mergeId: Number(id),
+          sourceId: snapshot.source.id,
+          targetId: snapshot.target.id,
+          sourceParticipants: Array.isArray(snapshot.sourceEventParticipants)
+            ? snapshot.sourceEventParticipants : [],
+          targetParticipants: Array.isArray(snapshot.targetEventParticipants)
+            ? snapshot.targetEventParticipants : []
+        }
+      })
     })
     this.state.graph = restoredGraph
     this.saveState()
@@ -7257,7 +7287,11 @@ export class AiAssistantService {
       personalMemoryStore.getStructuredMemoryRevision()
     )
     if (status === 'confirmed') this.assertStructuredEntityTrust(kind, id)
-    return personalMemoryStore.updateMemoryItemStatus(kind, id, status)
+    return personalMemoryStore.runWithMemoryChangeOrigin({
+      kind: 'human_action',
+      id: `memory-status:${kind}:${id}:${status}`,
+      sourceKind: 'local'
+    }, () => personalMemoryStore.updateMemoryItemStatus(kind, id, status))
   }
 
   private assertStructuredEntityTrust(kind: 'claim' | 'event', id: string): void {
@@ -7297,7 +7331,11 @@ export class AiAssistantService {
     const preview = this.previewDeleteMemoryItem(kind, id, 'manual_delete')
     if (!preview) throw new Error('该记忆不存在或已经删除')
     assertStructuredMemoryDeletionConfirmation(preview, input)
-    const result = personalMemoryStore.deleteMemoryItem(kind, id)
+    const result = personalMemoryStore.deleteMemoryItem(kind, id, 'manual_delete', {
+      kind: 'human_action',
+      id: `memory-delete:${kind}:${id}`,
+      sourceKind: 'local'
+    })
     if (kind === 'relation') {
       this.state.graph.relations = this.state.graph.relations.filter(relation => relation.id !== id)
       this.state.graph.reviewQueue = this.state.graph.reviewQueue.filter(review => review.relationId !== id)
@@ -7316,7 +7354,11 @@ export class AiAssistantService {
     if (!preview) throw new Error('该记忆不存在或已经删除')
     assertStructuredMemoryDeletionConfirmation(preview, input)
     return {
-      ...personalMemoryStore.deleteMemoryItem(kind, id, 'not_important'),
+      ...personalMemoryStore.deleteMemoryItem(kind, id, 'not_important', {
+        kind: 'human_action',
+        id: `memory-not-important:${kind}:${id}`,
+        sourceKind: 'local'
+      }),
       spaceReclaimedForReuse: true
     }
   }
@@ -7422,13 +7464,22 @@ export class AiAssistantService {
     const preview = this.previewDeleteMemoryResource(id)
     if (!preview) throw new Error('该资源不存在或已进入回收站')
     assertResourceDeletionConfirmation(preview, input)
-    return personalMemoryStore.deleteResource(id)
+    return personalMemoryStore.deleteResource(id, 'manual_delete', {
+      kind: 'human_action',
+      id: `resource-delete:${id}`,
+      sourceKind: 'local'
+    })
   }
 
   restoreMemoryResource(id: string, expectedMutationToken: string): any {
     return personalMemoryStore.restoreResource(
       id,
-      String(expectedMutationToken || '').trim()
+      String(expectedMutationToken || '').trim(),
+      {
+        kind: 'human_action',
+        id: `resource-restore:${id}`,
+        sourceKind: 'local'
+      }
     )
   }
 
@@ -7556,7 +7607,11 @@ export class AiAssistantService {
     if (kind === 'claim' || kind === 'event') {
       if (decision === 'corrected') throw new Error('事实与事件请使用各自的纠正表单')
       if (decision === 'confirmed') this.assertStructuredEntityTrust(kind, id)
-      return personalMemoryStore.updateMemoryItemStatus(kind, id, decision)
+      return personalMemoryStore.runWithMemoryChangeOrigin({
+        kind: 'human_action',
+        id: `citation-review:${kind}:${id}:${decision}`,
+        sourceKind: 'local'
+      }, () => personalMemoryStore.updateMemoryItemStatus(kind, id, decision))
     }
     const relation = this.state.graph.relations.find(item => item.id === id)
     if (!relation) return null
@@ -7595,7 +7650,11 @@ export class AiAssistantService {
       const auditId = `citation_relation_correction_${crypto.randomUUID()}`
       return runReversibleGraphMutation({
         snapshot,
-        transact: apply => personalMemoryStore.runInTransaction(apply),
+        transact: apply => personalMemoryStore.runInTransaction(apply, {
+          kind: 'human_action',
+          id: `citation-relation-correction:${id}`,
+          sourceKind: 'local'
+        }),
         apply: () => {
           const confirmedRelation = applyCitationRelationCorrection(
             this.state.graph,
@@ -7629,7 +7688,11 @@ export class AiAssistantService {
     const snapshot = structuredClone(this.state.graph)
     return runReversibleGraphMutation({
       snapshot,
-      transact: apply => personalMemoryStore.runInTransaction(apply),
+      transact: apply => personalMemoryStore.runInTransaction(apply, {
+        kind: 'human_action',
+        id: `citation-relation-review:${id}:${decision}`,
+        sourceKind: 'local'
+      }),
       apply: () => {
         const applied = applyCitationRelationDecision(
           this.state.graph,
@@ -7692,7 +7755,11 @@ export class AiAssistantService {
     if (!preview) throw new Error('实体不存在或已被遗忘')
     assertEntityForgetConfirmation(preview, input)
     const taskIds = new Set(preview.taskIds)
-    const result = personalMemoryStore.forgetEntity(id, [...taskIds])
+    const result = personalMemoryStore.forgetEntity(id, [...taskIds], {
+      kind: 'human_action',
+      id: `entity-forget:${id}`,
+      sourceKind: 'local'
+    })
     if (!result) throw new Error('人物资料删除失败，当前记忆未改变')
     this.state.tasks = this.state.tasks.filter(task => !taskIds.has(task.id))
     for (const briefing of Object.values(this.state.briefings)) {
@@ -9379,7 +9446,11 @@ export class AiAssistantService {
     } else {
       this.assertStructuredEntityTrust('claim', id)
     }
-    return personalMemoryStore.correctClaim(id, input)
+    return personalMemoryStore.runWithMemoryChangeOrigin({
+      kind: 'human_action',
+      id: `claim-correction:${id}`,
+      sourceKind: 'local'
+    }, () => personalMemoryStore.correctClaim(id, input))
   }
 
   correctEvent(id: string, input: any, expectedRevision?: string): any {
@@ -9407,7 +9478,11 @@ export class AiAssistantService {
     } else {
       this.assertStructuredEntityTrust('event', id)
     }
-    return personalMemoryStore.correctEvent(id, input)
+    return personalMemoryStore.runWithMemoryChangeOrigin({
+      kind: 'human_action',
+      id: `event-correction:${id}`,
+      sourceKind: 'local'
+    }, () => personalMemoryStore.correctEvent(id, input))
   }
 
   getMemoryClaim(id: string): any {
@@ -9608,7 +9683,11 @@ export class AiAssistantService {
     const auditId = `dossier_relation_correction_${crypto.randomUUID()}`
     return runReversibleGraphMutation({
       snapshot,
-      transact: apply => personalMemoryStore.runInTransaction(apply),
+      transact: apply => personalMemoryStore.runInTransaction(apply, {
+        kind: 'human_action',
+        id: `dossier-relation-correction:${id}`,
+        sourceKind: 'local'
+      }),
       apply: () => {
         const confirmedRelation = applyCitationRelationCorrection(
           this.state.graph, id, plan, now
@@ -9636,7 +9715,11 @@ export class AiAssistantService {
     const snapshot = structuredClone(this.state.graph)
     return runReversibleGraphMutation({
       snapshot,
-      transact: apply => personalMemoryStore.runInTransaction(apply),
+      transact: apply => personalMemoryStore.runInTransaction(apply, {
+        kind: 'human_action',
+        id: `dossier-relation-reject:${id}`,
+        sourceKind: 'local'
+      }),
       apply: () => {
         const rejected = applyCitationRelationDecision(
           this.state.graph, id, 'rejected', new Date().toISOString()
@@ -9670,7 +9753,11 @@ export class AiAssistantService {
     const snapshot = structuredClone(this.state.graph)
     return runReversibleGraphMutation({
       snapshot,
-      transact: apply => personalMemoryStore.runInTransaction(apply),
+      transact: apply => personalMemoryStore.runInTransaction(apply, {
+        kind: 'human_action',
+        id: `dossier-relation-restore:${id}`,
+        sourceKind: 'local'
+      }),
       apply: () => {
         const restored = applyCitationRelationDecision(
           this.state.graph, id, 'confirmed', new Date().toISOString()
