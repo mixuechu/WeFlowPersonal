@@ -5120,6 +5120,17 @@ function AiAssistantPage() {
         ?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 0)
   }
 
+  const focusIdentityMergeCandidates = () => {
+    setFocusedReviewId('')
+    clearReviewReturnTarget()
+    setReviewStatusFilter('pending')
+    setReviewKindFilter('possible_duplicate')
+    setReviewQuery('')
+    window.setTimeout(() =>
+      document.getElementById('graph-review-ledger')
+        ?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 0)
+  }
+
   const loadMoreProjectEvidence = async () => {
     const projectEntityId = String(projectWorkspace.project?.entityId || '')
     if (!projectEntityId || projectEvidenceLoadingMore || !projectEvidencePage.hasMore) return
@@ -10960,7 +10971,11 @@ function AiAssistantPage() {
           {identityDisambiguation && <div className="assistant-identity-status">
             <span><strong>{identityDisambiguation.mode === 'full' ? '全图身份巡检' : '增量身份消歧'}</strong>
               <small>{identityDisambiguation.reason}</small></span>
-            <span><b>{identityDisambiguation.lastCandidateCount || 0}</b><small>上次新增候选</small></span>
+            <button type="button" disabled={!identityDisambiguation.lastCandidateCount}
+              onClick={focusIdentityMergeCandidates}>
+              <b>{identityDisambiguation.lastCandidateCount || 0}</b>
+              <small>上次新增身份合并候选 · 查看</small>
+            </button>
             <span><b>{identityDisambiguation.lastRunAt ? new Date(identityDisambiguation.lastRunAt).toLocaleString('zh-CN') : '尚未运行'}</b><small>最近消歧</small></span>
           </div>}
           <div className="assistant-path-finder">
@@ -11187,7 +11202,7 @@ function AiAssistantPage() {
               </aside>
             </div>
           ) : <div className="assistant-empty">下一次同步会从新增消息开始建立人物、组织、项目和关系证据。</div>}
-          <div className="assistant-review-section">
+          <div className="assistant-review-section" id="graph-review-ledger" tabIndex={-1}>
             <div className="assistant-section-heading"><div><span className="assistant-eyebrow">REVIEW LEDGER</span><h3>身份与关系审阅</h3></div><span className="assistant-count">{pendingReviewCount} 待处理 · {resolvedReviewCount} 已处理</span></div>
             {dashboard?.graphReviewStorage?.statePolicy === 'pending_only' && <small className="assistant-evidence">
               加密运行状态只保留 {dashboard.graphReviewStorage.pending || 0} 条待处理工作；已处理历史由 SQLCipher 审阅账本分页保存，可在重启后继续筛选查看。

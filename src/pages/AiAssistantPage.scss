@@ -972,7 +972,9 @@
 .assistant-review-resolution b, .assistant-review-resolution span { font-size: 10px; }
 @media (max-width: 900px) { .assistant-review-filters { grid-template-columns: 1fr; } }
 .assistant-identity-status { margin: 10px 0 14px; padding: 10px 12px; border: 1px solid #d8e3d9; border-radius: 10px; display: grid; grid-template-columns: minmax(220px, 1fr) auto auto; align-items: center; gap: 18px; color: #315c4e; background: #f5faf6; }
-.assistant-identity-status > span { display: grid; gap: 2px; }
+.assistant-identity-status > span,.assistant-identity-status > button { display: grid; gap: 2px; }
+.assistant-identity-status > button { padding: 5px 7px; border: 1px solid #c8d8cb; border-radius: 7px; color: inherit; background: #fff; text-align: left; cursor: pointer; }
+.assistant-identity-status > button:disabled { opacity: .6; cursor: default; }
 .assistant-identity-status strong, .assistant-identity-status b { font-size: 11px; }
 .assistant-identity-status small { color: #748078; font-size: 9px; }
 .assistant-relation-history { padding: 8px 9px; border-left: 2px solid #b9cdbd; display: grid; gap: 2px; background: #f7faf7; }
