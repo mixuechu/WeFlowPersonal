@@ -4544,6 +4544,7 @@ export class AiAssistantService {
       query: String(options?.query || ''),
       from: String(options?.from || ''),
       to: String(options?.to || ''),
+      entityId: String(options?.entityId || ''),
       limit: Number(options?.limit || 40),
       offset: Number(options?.offset || 0),
       revision: String(options?.revision || '')

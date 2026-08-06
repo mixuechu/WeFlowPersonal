@@ -1079,9 +1079,16 @@ function AiAssistantPage() {
     useState<'all' | 'discovered' | 'updated' | 'reviewed' | 'removed'>('all')
   const [memoryGrowthFrom, setMemoryGrowthFrom] = useState('')
   const [memoryGrowthTo, setMemoryGrowthTo] = useState('')
+  const [memoryGrowthEntity, setMemoryGrowthEntity] = useState<any>(null)
   const [memoryGrowthLoadingMore, setMemoryGrowthLoadingMore] = useState(false)
   const [memoryGrowthRefreshKey, setMemoryGrowthRefreshKey] = useState(0)
   const memoryGrowthGate = useRef(new LatestRequestGate())
+  const [entityMemoryGrowth, setEntityMemoryGrowth] = useState<any>({
+    items: [], total: 0, hasMore: false, counts: {}, revision: '',
+    trackedSince: '', status: 'idle'
+  })
+  const [entityMemoryGrowthLoadingMore, setEntityMemoryGrowthLoadingMore] = useState(false)
+  const entityMemoryGrowthGate = useRef(new LatestRequestGate())
   const [editingTask, setEditingTask] = useState<any>(null)
   const [taskDependencyQuery, setTaskDependencyQuery] = useState('')
   const [taskDependencyCandidates, setTaskDependencyCandidates] = useState<any>({
@@ -1673,9 +1680,13 @@ function AiAssistantPage() {
     to: memoryGrowthTo
       ? new Date(`${memoryGrowthTo}T23:59:59.999+08:00`).toISOString()
       : undefined,
+    entityId: memoryGrowthEntity?.id || undefined,
     limit: 40,
     offset: 0
-  }), [memoryGrowthKind, memoryGrowthChange, memoryGrowthFrom, memoryGrowthTo])
+  }), [
+    memoryGrowthKind, memoryGrowthChange, memoryGrowthFrom, memoryGrowthTo,
+    memoryGrowthEntity?.id
+  ])
   const mergeArchiveOptions = useMemo(() => ({
     status: mergeArchiveStatus,
     query: mergeArchiveQuery || undefined,
@@ -2329,6 +2340,44 @@ function AiAssistantPage() {
       if (memoryGrowthGate.current.isCurrent(request)) memoryGrowthGate.current.invalidate()
     }
   }, [memoryGrowthOptions, dashboard?.memoryGrowth?.revision, memoryGrowthRefreshKey])
+
+  useEffect(() => {
+    if (!showEntityDossier || !selectedEntityId) {
+      entityMemoryGrowthGate.current.invalidate()
+      setEntityMemoryGrowth({
+        items: [], total: 0, hasMore: false, counts: {}, revision: '',
+        trackedSince: '', status: 'idle'
+      })
+      return
+    }
+    const request = entityMemoryGrowthGate.current.begin()
+    setEntityMemoryGrowthLoadingMore(false)
+    setEntityMemoryGrowth((current: any) => ({
+      ...current, items: [], status: 'loading'
+    }))
+    void window.electronAPI.aiAssistant.getMemoryChangeLogPage({
+      entityId: selectedEntityId,
+      limit: 20,
+      offset: 0
+    }).then(result => {
+      if (!entityMemoryGrowthGate.current.isCurrent(request)) return
+      if (result.stale) return
+      setEntityMemoryGrowth({ ...result, status: 'ready' })
+    }).catch(error => {
+      if (!entityMemoryGrowthGate.current.isCurrent(request)) return
+      setEntityMemoryGrowth({
+        items: [], total: 0, hasMore: false, counts: {}, revision: '',
+        trackedSince: '', status: 'error', error: error?.message || String(error)
+      })
+    })
+    return () => {
+      if (entityMemoryGrowthGate.current.isCurrent(request)) {
+        entityMemoryGrowthGate.current.invalidate()
+      }
+    }
+  }, [
+    showEntityDossier, selectedEntityId, dashboard?.memoryGrowth?.revision
+  ])
 
   useEffect(() => {
     if (!showDiagnostics || !memoryDiagnostics) {
@@ -4534,6 +4583,51 @@ function AiAssistantPage() {
       }
     } finally {
       if (memoryGrowthGate.current.isCurrent(request)) setMemoryGrowthLoadingMore(false)
+    }
+  }
+
+  const loadMoreEntityMemoryGrowth = async () => {
+    if (!selectedEntityId || entityMemoryGrowthLoadingMore ||
+      !entityMemoryGrowth.hasMore) return
+    const request = entityMemoryGrowthGate.current.begin()
+    setEntityMemoryGrowthLoadingMore(true)
+    try {
+      const result = await window.electronAPI.aiAssistant.getMemoryChangeLogPage({
+        entityId: selectedEntityId,
+        offset: entityMemoryGrowth.items.length,
+        limit: 20,
+        revision: entityMemoryGrowth.revision
+      })
+      if (!entityMemoryGrowthGate.current.isCurrent(request)) return
+      if (result.stale) {
+        setEntityMemoryGrowth((current: any) => ({
+          ...current, items: [], status: 'loading'
+        }))
+        const latest = await window.electronAPI.aiAssistant.getMemoryChangeLogPage({
+          entityId: selectedEntityId,
+          limit: 20,
+          offset: 0
+        })
+        if (entityMemoryGrowthGate.current.isCurrent(request)) {
+          setEntityMemoryGrowth({ ...latest, status: 'ready' })
+        }
+        return
+      }
+      setEntityMemoryGrowth((current: any) => ({
+        ...result,
+        status: 'ready',
+        counts: current.counts,
+        items: [...current.items, ...result.items.filter((item: any) =>
+          !current.items.some((known: any) => known.id === item.id))]
+      }))
+    } catch (error: any) {
+      if (entityMemoryGrowthGate.current.isCurrent(request)) {
+        setMessage(error?.message || String(error))
+      }
+    } finally {
+      if (entityMemoryGrowthGate.current.isCurrent(request)) {
+        setEntityMemoryGrowthLoadingMore(false)
+      }
     }
   }
 
@@ -8713,6 +8807,14 @@ function AiAssistantPage() {
             </span>
           </div>
           <div className="assistant-task-filters">
+            <TrustedEntityPicker
+              value={memoryGrowthEntity?.id || ''}
+              selected={memoryGrowthEntity}
+              placeholder="按人物、组织或项目筛选成长"
+              ariaLabel="记忆成长关联实体"
+              onSelect={entity => setMemoryGrowthEntity(entity)}
+              onClear={() => setMemoryGrowthEntity(null)}
+              onError={error => setMessage(error)} />
             <select value={memoryGrowthKind}
               onChange={event => setMemoryGrowthKind(event.target.value as typeof memoryGrowthKind)}>
               <option value="all">所有记忆类型</option>
@@ -8734,8 +8836,9 @@ function AiAssistantPage() {
               onChange={event => setMemoryGrowthFrom(event.target.value)} /></label>
             <label><span>到</span><input type="date" value={memoryGrowthTo}
               onChange={event => setMemoryGrowthTo(event.target.value)} /></label>
-            {(memoryGrowthKind !== 'all' || memoryGrowthChange !== 'all' ||
+            {(memoryGrowthEntity || memoryGrowthKind !== 'all' || memoryGrowthChange !== 'all' ||
               memoryGrowthFrom || memoryGrowthTo) && <button onClick={() => {
+              setMemoryGrowthEntity(null)
               setMemoryGrowthKind('all')
               setMemoryGrowthChange('all')
               setMemoryGrowthFrom('')
@@ -8783,7 +8886,7 @@ function AiAssistantPage() {
             {memoryGrowth.trackedSince
               ? `从 ${new Date(memoryGrowth.trackedSince).toLocaleString('zh-CN')} 开始记录`
               : '正在建立记录起点'}
-            {' · '}账本只保存类型、稳定 ID、状态和时间，不复制事实正文或聊天原文；点击时才从 SQLCipher 水合当前档案。
+            {' · '}账本只保存类型、稳定 ID、关联实体、状态和时间，不复制事实正文或聊天原文；实体筛选按稳定 ID 隔离同名对象，点击时才从 SQLCipher 水合当前档案。
           </small>
         </section>
         {ingestionStatus && (
@@ -13177,6 +13280,54 @@ function AiAssistantPage() {
               </button>
             </div>}
             <div className="assistant-dossier-grid">
+              <section className="assistant-dossier-wide assistant-entity-memory-growth"
+                id="entity-dossier-memory-growth">
+                <h3>记忆成长时间线 <small>{Number(entityMemoryGrowth.total || 0)}</small></h3>
+                <small>
+                  这里只展示通过稳定实体 ID 与当前档案关联的变化；同名人物不会混入，
+                  本体后来删除时仍保留当时的关联身份和变化时间。
+                </small>
+                {entityMemoryGrowth.status === 'loading' && <em>正在读取该实体的成长记录…</em>}
+                {entityMemoryGrowth.status === 'error' && <em>
+                  成长记录读取失败：{entityMemoryGrowth.error}
+                </em>}
+                <div className="assistant-memory-growth-list">
+                  {(entityMemoryGrowth.items || []).map((entry: any) => <article key={entry.id}>
+                    <span className={`assistant-memory-growth-kind ${entry.itemKind}`}>
+                      {MEMORY_GROWTH_KIND_LABELS[entry.itemKind] || entry.itemKind}
+                    </span>
+                    <div>
+                      <strong>{entry.title ||
+                        `${MEMORY_GROWTH_KIND_LABELS[entry.itemKind] || '记忆'}已删除`}</strong>
+                      <small>
+                        {MEMORY_GROWTH_CHANGE_LABELS[entry.changeKind] || entry.changeKind}
+                        {' · '}{entry.changedAt
+                          ? new Date(entry.changedAt).toLocaleString('zh-CN')
+                          : '时间未知'}
+                        {entry.statusBefore && entry.statusAfter &&
+                          entry.statusBefore !== entry.statusAfter
+                          ? ` · ${entry.statusBefore} → ${entry.statusAfter}`
+                          : entry.statusAfter ? ` · ${entry.statusAfter}` : ''}
+                      </small>
+                    </div>
+                    {entry.currentExists ? <button type="button"
+                      onClick={() => void openMemoryGrowthItem(entry)}>
+                      查看当前档案
+                    </button> : <span className="assistant-memory-growth-removed">本体已删除</span>}
+                  </article>)}
+                </div>
+                {entityMemoryGrowth.status === 'ready' &&
+                  !entityMemoryGrowth.items?.length && <em>
+                    自成长账本启用以来，尚未记录到与该实体关联的变化。
+                  </em>}
+                {entityMemoryGrowth.hasMore && <button
+                  disabled={entityMemoryGrowthLoadingMore}
+                  onClick={() => void loadMoreEntityMemoryGrowth()}>
+                  {entityMemoryGrowthLoadingMore
+                    ? '正在加载…'
+                    : `加载更早变化（已显示 ${entityMemoryGrowth.items.length} / ${entityMemoryGrowth.total}）`}
+                </button>}
+              </section>
               <section id="entity-dossier-identities">
                 <h3>身份与别名 <small>{Number(entityIdentityAnchorPage.unfilteredTotal || 0)}</small></h3>
                 <div className="assistant-inline-filters">

@@ -7516,7 +7516,7 @@ test('memory growth log is privacy-minimal, pageable and self-heals trigger drif
     const database = (first as any).db
     const initial = first.getMemoryChangeLogHealth()
     assert.equal(initial.healthy, true)
-    assert.equal(initial.expectedTriggers, 15)
+    assert.equal(initial.expectedTriggers, 17)
     assert.equal(initial.total, 0)
     assert.match(initial.trackedSince, /^20/)
     for (const [sql, index] of [
@@ -7531,6 +7531,12 @@ test('memory growth log is privacy-minimal, pageable and self-heals trigger drif
         .map(row => row.detail).join(' ')
       assert.match(plan, new RegExp(index))
     }
+    const entityPlan = (database.prepare(`
+      EXPLAIN QUERY PLAN
+      SELECT change_id FROM memory_change_entity_links
+      WHERE entity_id='growth-person' ORDER BY change_id DESC LIMIT 40
+    `).all() as Array<{ detail: string }>).map(row => row.detail).join(' ')
+    assert.match(entityPlan, /idx_memory_change_entity_links_entity/)
     database.exec(`
       INSERT INTO entities(
         id,type,canonical_name,summary,confidence,created_at,updated_at,trust_status,summary_status
@@ -7561,6 +7567,8 @@ test('memory growth log is privacy-minimal, pageable and self-heals trigger drif
         'growth-resource','document','成长资料',
         '2026-08-06T01:05:00.000Z','2026-08-06T01:05:00.000Z'
       );
+      INSERT INTO event_participants(event_id,entity_id,role)
+      VALUES('growth-event','growth-person','participant');
     `)
     const firstPage = first.listMemoryChangeLogPage({ limit: 3 })
     assert.equal(firstPage.total, 6)
@@ -7578,6 +7586,40 @@ test('memory growth log is privacy-minimal, pageable and self-heals trigger drif
       new Set(first.listMemoryChangeLogPage({ limit: 20 }).items.map(item => item.itemKind)),
       new Set(['entity', 'claim', 'relation', 'event', 'resource'])
     )
+    const personGrowth = first.listMemoryChangeLogPage({
+      entityId: 'growth-person', limit: 20
+    })
+    assert.equal(personGrowth.total, 4)
+    assert.deepEqual(
+      new Set(personGrowth.items.map(item => item.itemKind)),
+      new Set(['entity', 'claim', 'relation', 'event'])
+    )
+    const projectGrowth = first.listMemoryChangeLogPage({
+      entityId: 'growth-project', limit: 20
+    })
+    assert.equal(projectGrowth.total, 2)
+    assert.deepEqual(
+      new Set(projectGrowth.items.map(item => item.itemKind)),
+      new Set(['entity', 'relation'])
+    )
+    database.exec(`
+      INSERT INTO merge_history(
+        source_entity_id,target_entity_id,source_name,target_name,snapshot_json,created_at
+      ) VALUES(
+        'growth-person','growth-project','成长人物','成长项目','{}',
+        '2026-08-06T01:10:00.000Z'
+      );
+    `)
+    assert.equal(first.listMemoryChangeLogPage({
+      entityId: 'growth-project', limit: 20
+    }).total, 5)
+    database.exec(`
+      UPDATE merge_history SET reverted_at='2026-08-06T01:11:00.000Z'
+      WHERE source_entity_id='growth-person' AND target_entity_id='growth-project';
+    `)
+    assert.equal(first.listMemoryChangeLogPage({
+      entityId: 'growth-project', limit: 20
+    }).total, 2)
     database.exec(`
       UPDATE events SET title=title WHERE id='growth-event';
       BEGIN;
@@ -7598,6 +7640,7 @@ test('memory growth log is privacy-minimal, pageable and self-heals trigger drif
       UPDATE events SET title='成长会议（更新）',updated_at='2026-08-06T02:01:00.000Z'
       WHERE id='growth-event';
       DELETE FROM memory_resources WHERE id='growth-resource';
+      DELETE FROM relations WHERE id='growth-relation';
     `)
     const reviewed = first.listMemoryChangeLogPage({ change: 'reviewed', limit: 20 })
     assert.equal(reviewed.total, 1)
@@ -7605,10 +7648,16 @@ test('memory growth log is privacy-minimal, pageable and self-heals trigger drif
     assert.equal(reviewed.items[0].statusBefore, 'candidate')
     assert.equal(reviewed.items[0].statusAfter, 'confirmed')
     const removed = first.listMemoryChangeLogPage({ change: 'removed', limit: 20 })
-    assert.equal(removed.total, 1)
-    assert.equal(removed.items[0].itemId, 'growth-resource')
-    assert.equal(removed.items[0].title, '')
-    assert.equal(removed.items[0].currentExists, false)
+    assert.equal(removed.total, 2)
+    const removedResource = removed.items.find(item => item.itemId === 'growth-resource')
+    assert.equal(removedResource?.title, '')
+    assert.equal(removedResource?.currentExists, false)
+    const removedRelation = first.listMemoryChangeLogPage({
+      entityId: 'growth-person', change: 'removed', limit: 20
+    })
+    assert.equal(removedRelation.total, 1)
+    assert.equal(removedRelation.items[0].itemId, 'growth-relation')
+    assert.equal(removedRelation.items[0].currentExists, false)
     const oldRevision = first.listMemoryChangeLogPage({ limit: 1 }).revision
     database.exec(`
       INSERT INTO events(
@@ -7624,6 +7673,13 @@ test('memory growth log is privacy-minimal, pageable and self-heals trigger drif
     database.exec(`
       DROP TRIGGER trg_memory_growth_claims_update;
       CREATE TRIGGER trg_memory_growth_claims_update AFTER UPDATE ON claims BEGIN SELECT 1; END;
+      DELETE FROM memory_change_entity_links
+      WHERE entity_id='growth-person'
+        AND change_id=(
+          SELECT MIN(id) FROM memory_change_log
+          WHERE item_kind='claim' AND item_id='growth-claim'
+        );
+      DELETE FROM schema_meta WHERE key='memory_change_entity_links_backfill_v1';
     `)
     assert.equal(first.getMemoryChangeLogHealth().healthy, false)
     first.close()
@@ -7635,13 +7691,77 @@ test('memory growth log is privacy-minimal, pageable and self-heals trigger drif
       assert.equal(health.healthy, true)
       assert.equal(health.repairedThisStart, true)
       assert.equal(health.repairedTriggersThisStart, 1)
-      assert.equal(health.total, 10)
+      assert.equal(health.total, 11)
+      assert.match(health.entityLinkBackfill.completedAt, /^20/)
+      assert.ok(health.entityLinkBackfill.linked >= 1)
+      assert.equal(reopened.listMemoryChangeLogPage({
+        entityId: 'growth-person', kind: 'claim', limit: 20
+      }).total, 2)
       assert.equal(reopened.getDiagnostics().memoryChangeLog.healthy, true)
     } finally {
       reopened.close()
     }
   } finally {
     first.close()
+    rmSync(directory, { recursive: true, force: true })
+  }
+})
+
+test('entity memory growth stays complete beyond five hundred changes and isolates same names', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'weflow-memory-growth-entity-scale-'))
+  const databasePath = join(directory, 'memory.sqlite')
+  const store = new PersonalMemoryStore()
+  try {
+    store.initialize(databasePath)
+    const database = (store as any).db
+    database.exec(`
+      INSERT INTO entities(
+        id,type,canonical_name,summary,confidence,created_at,updated_at,trust_status,summary_status
+      ) VALUES
+        ('growth-scale-a','person','同名成员','',1,
+          '2026-08-06T00:00:00.000Z','2026-08-06T00:00:00.000Z','confirmed','empty'),
+        ('growth-scale-b','person','同名成员','',1,
+          '2026-08-06T00:00:01.000Z','2026-08-06T00:00:01.000Z','confirmed','empty');
+    `)
+    const insertLog = database.prepare(`
+      INSERT INTO memory_change_log(
+        item_kind,item_id,change_kind,status_before,status_after,changed_at
+      ) VALUES('claim',?,'updated','candidate','candidate',?)
+    `)
+    const insertLink = database.prepare(`
+      INSERT INTO memory_change_entity_links(change_id,entity_id) VALUES(?,?)
+    `)
+    database.transaction(() => {
+      for (let index = 0; index < 2_410; index += 1) {
+        const entityId = index % 2 ? 'growth-scale-b' : 'growth-scale-a'
+        const result = insertLog.run(
+          `growth-scale-claim-${index}`,
+          `2026-08-06T01:${String(Math.floor(index / 60) % 60).padStart(2, '0')}:` +
+            `${String(index % 60).padStart(2, '0')}.000Z`
+        )
+        insertLink.run(result.lastInsertRowid, entityId)
+      }
+    })()
+    const first = store.listMemoryChangeLogPage({
+      entityId: 'growth-scale-a', limit: 40
+    })
+    assert.equal(first.total, 1_206)
+    assert.equal(first.items.length, 40)
+    const last = store.listMemoryChangeLogPage({
+      entityId: 'growth-scale-a',
+      offset: 1_200,
+      limit: 40,
+      revision: first.revision
+    })
+    assert.equal(last.stale, false)
+    assert.equal(last.items.length, 6)
+    assert.equal(last.hasMore, false)
+    assert.equal(store.listMemoryChangeLogPage({
+      entityId: 'growth-scale-b', limit: 1
+    }).total, 1_206)
+    assert.equal(first.items.some(item => item.itemId.includes('growth-scale-b')), false)
+  } finally {
+    store.close()
     rmSync(directory, { recursive: true, force: true })
   }
 })

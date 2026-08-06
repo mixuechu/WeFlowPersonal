@@ -14,6 +14,10 @@ const main = readFileSync(
   new URL('../electron/main.ts', import.meta.url),
   'utf8'
 )
+const service = readFileSync(
+  new URL('../electron/services/aiAssistantService.ts', import.meta.url),
+  'utf8'
+)
 
 test('memory growth is a first-class pageable archive with current dossier navigation', () => {
   const growth = page.indexOf('id="memory-growth"')
@@ -22,10 +26,14 @@ test('memory growth is a first-class pageable archive with current dossier navig
   assert.ok(ingestion > growth)
   assert.match(page.slice(growth, ingestion), /memoryGrowthKind/)
   assert.match(page.slice(growth, ingestion), /memoryGrowthChange/)
+  assert.match(page.slice(growth, ingestion), /memoryGrowthEntity/)
   assert.match(page.slice(growth, ingestion), /loadMoreMemoryGrowth/)
   assert.match(page.slice(growth, ingestion), /openMemoryGrowthItem/)
+  assert.match(page, /id="entity-dossier-memory-growth"/)
+  assert.match(page, /loadMoreEntityMemoryGrowth/)
   assert.match(page, /getCurrentStructuredMemoryDossier\(structuredKind, id\)/)
   assert.match(page, /openSearchResourceDossier\(id\)/)
   assert.match(preload, /getMemoryChangeLogPage/)
   assert.match(main, /ai-assistant:getMemoryChangeLogPage/)
+  assert.match(service, /entityId: String\(options\?\.entityId \|\| ''\)/)
 })

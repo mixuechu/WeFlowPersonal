@@ -1428,6 +1428,16 @@ export class PersonalMemoryStore {
         ON memory_change_log(change_kind,changed_at DESC,id DESC);
       CREATE INDEX IF NOT EXISTS idx_memory_change_log_item
         ON memory_change_log(item_kind,item_id,id DESC);
+      CREATE TABLE IF NOT EXISTS memory_change_entity_links (
+        change_id INTEGER NOT NULL REFERENCES memory_change_log(id) ON DELETE CASCADE,
+        entity_id TEXT NOT NULL,
+        PRIMARY KEY(change_id,entity_id)
+      ) STRICT;
+      CREATE INDEX IF NOT EXISTS idx_memory_change_entity_links_entity
+        ON memory_change_entity_links(entity_id,change_id DESC);
+      CREATE INDEX IF NOT EXISTS idx_merge_history_active_target
+        ON merge_history(target_entity_id,source_entity_id)
+        WHERE reverted_at IS NULL;
 
       CREATE VIRTUAL TABLE IF NOT EXISTS search_fts USING fts5(
         document_id UNINDEXED,
@@ -2167,6 +2177,41 @@ export class PersonalMemoryStore {
         OR OLD.${definition.statusColumn} IS NOT NEW.${definition.statusColumn}`
       : `WHEN OLD.${definition.updatedColumn} IS NOT NEW.${definition.updatedColumn}`
     const prefix = `trg_memory_growth_${definition.name.replace(/^memory_change_/, '')}`
+    const currentLinks = (row: 'NEW' | 'OLD') => {
+      if (definition.itemKind === 'entity') {
+        return `INSERT OR IGNORE INTO memory_change_entity_links(change_id,entity_id)
+          VALUES((SELECT MAX(id) FROM memory_change_log),${row}.id);`
+      }
+      if (definition.itemKind === 'claim') {
+        return `INSERT OR IGNORE INTO memory_change_entity_links(change_id,entity_id)
+          SELECT (SELECT MAX(id) FROM memory_change_log),entity_id
+          FROM (
+            SELECT ${row}.subject_id AS entity_id
+            UNION SELECT ${row}.object_entity_id
+          ) WHERE entity_id IS NOT NULL AND entity_id!='';`
+      }
+      if (definition.itemKind === 'relation') {
+        return `INSERT OR IGNORE INTO memory_change_entity_links(change_id,entity_id)
+          SELECT (SELECT MAX(id) FROM memory_change_log),entity_id
+          FROM (
+            SELECT ${row}.subject_id AS entity_id
+            UNION SELECT ${row}.object_id
+          ) WHERE entity_id IS NOT NULL AND entity_id!='';`
+      }
+      if (definition.itemKind === 'event') {
+        return `INSERT OR IGNORE INTO memory_change_entity_links(change_id,entity_id)
+          SELECT (SELECT MAX(id) FROM memory_change_log),entity_id
+          FROM event_participants WHERE event_id=${row}.id;`
+      }
+      return ''
+    }
+    const historicalLinks = `INSERT OR IGNORE INTO memory_change_entity_links(change_id,entity_id)
+      SELECT (SELECT MAX(id) FROM memory_change_log),link.entity_id
+      FROM memory_change_entity_links link
+      JOIN memory_change_log prior ON prior.id=link.change_id
+      WHERE prior.item_kind='${definition.itemKind}'
+        AND prior.item_id=OLD.id
+        AND prior.id!=(SELECT MAX(id) FROM memory_change_log);`
     return [`
       CREATE TRIGGER ${prefix}_insert AFTER INSERT ON ${definition.table}
       BEGIN
@@ -2176,6 +2221,7 @@ export class PersonalMemoryStore {
           '${definition.itemKind}',NEW.id,'discovered','',${statusAfter},
           strftime('%Y-%m-%dT%H:%M:%fZ','now')
         );
+        ${currentLinks('NEW')}
       END;
     `, `
       CREATE TRIGGER ${prefix}_update AFTER UPDATE ON ${definition.table}
@@ -2189,6 +2235,7 @@ export class PersonalMemoryStore {
           ${statusBefore},${statusAfter},
           strftime('%Y-%m-%dT%H:%M:%fZ','now')
         );
+        ${currentLinks('NEW')}
       END;
     `, `
       CREATE TRIGGER ${prefix}_delete AFTER DELETE ON ${definition.table}
@@ -2199,8 +2246,31 @@ export class PersonalMemoryStore {
           '${definition.itemKind}',OLD.id,'removed',${statusBefore},'',
           strftime('%Y-%m-%dT%H:%M:%fZ','now')
         );
+        ${currentLinks('OLD')}
+        ${historicalLinks}
       END;
     `]
+  }
+
+  private memoryChangeEntityParticipantTriggerSql(): string[] {
+    return ['INSERT', 'UPDATE'].map(operation => `
+      CREATE TRIGGER trg_memory_growth_event_participants_${operation.toLowerCase()}
+      AFTER ${operation} ON event_participants
+      BEGIN
+        INSERT OR IGNORE INTO memory_change_entity_links(change_id,entity_id)
+        SELECT log.id,NEW.entity_id
+        FROM memory_change_log log
+        WHERE log.item_kind='event' AND log.item_id=NEW.event_id;
+      END;
+    `)
+  }
+
+  private memoryChangeLogExpectedTriggerSql(): string[] {
+    return [
+      ...this.memoryChangeLogTriggerDefinitions()
+        .flatMap(definition => this.memoryChangeLogTriggerSql(definition)),
+      ...this.memoryChangeEntityParticipantTriggerSql()
+    ]
   }
 
   private inspectMemoryChangeLogTriggers(): {
@@ -2210,8 +2280,7 @@ export class PersonalMemoryStore {
     unhealthyTriggers: string[]
     unexpectedTriggers: string[]
   } {
-    const expected = this.memoryChangeLogTriggerDefinitions()
-      .flatMap(definition => this.memoryChangeLogTriggerSql(definition))
+    const expected = this.memoryChangeLogExpectedTriggerSql()
     const expectedByName = new Map(expected.map(sql => {
       const name = sql.match(/CREATE TRIGGER\s+(\S+)/i)?.[1] || ''
       return [name, sql]
@@ -2252,8 +2321,7 @@ export class PersonalMemoryStore {
     `).get() as any
     let previous: any = {}
     try { previous = JSON.parse(String(previousRow?.value || '{}')) } catch {}
-    const definitions = this.memoryChangeLogTriggerDefinitions()
-      .flatMap(definition => this.memoryChangeLogTriggerSql(definition))
+    const definitions = this.memoryChangeLogExpectedTriggerSql()
     const byName = new Map(definitions.map(sql => [
       sql.match(/CREATE TRIGGER\s+(\S+)/i)?.[1] || '', sql
     ]))
@@ -2272,21 +2340,69 @@ export class PersonalMemoryStore {
       VALUES('memory_change_log_started_at',?,?)
       ON CONFLICT(key) DO NOTHING
     `).run(now, now)
+    const entityLinkBackfill = this.db.prepare(`
+      SELECT value FROM schema_meta WHERE key='memory_change_entity_links_backfill_v1'
+    `).get() as any
+    if (!entityLinkBackfill?.value) {
+      this.db.transaction(() => {
+        this.db!.exec(`
+          INSERT OR IGNORE INTO memory_change_entity_links(change_id,entity_id)
+          SELECT log.id,log.item_id
+          FROM memory_change_log log
+          JOIN entities entity ON log.item_kind='entity' AND entity.id=log.item_id;
+          INSERT OR IGNORE INTO memory_change_entity_links(change_id,entity_id)
+          SELECT log.id,claim.subject_id
+          FROM memory_change_log log
+          JOIN claims claim ON log.item_kind='claim' AND claim.id=log.item_id
+          WHERE claim.subject_id IS NOT NULL AND claim.subject_id!='';
+          INSERT OR IGNORE INTO memory_change_entity_links(change_id,entity_id)
+          SELECT log.id,claim.object_entity_id
+          FROM memory_change_log log
+          JOIN claims claim ON log.item_kind='claim' AND claim.id=log.item_id
+          WHERE claim.object_entity_id IS NOT NULL AND claim.object_entity_id!='';
+          INSERT OR IGNORE INTO memory_change_entity_links(change_id,entity_id)
+          SELECT log.id,relation.subject_id
+          FROM memory_change_log log
+          JOIN relations relation ON log.item_kind='relation' AND relation.id=log.item_id;
+          INSERT OR IGNORE INTO memory_change_entity_links(change_id,entity_id)
+          SELECT log.id,relation.object_id
+          FROM memory_change_log log
+          JOIN relations relation ON log.item_kind='relation' AND relation.id=log.item_id;
+          INSERT OR IGNORE INTO memory_change_entity_links(change_id,entity_id)
+          SELECT log.id,participant.entity_id
+          FROM memory_change_log log
+          JOIN event_participants participant
+            ON log.item_kind='event' AND participant.event_id=log.item_id;
+        `)
+        const linked = Number((this.db!.prepare(`
+          SELECT COUNT(*) AS count FROM memory_change_entity_links
+        `).get() as any)?.count || 0)
+        this.db!.prepare(`
+          INSERT INTO schema_meta(key,value,updated_at)
+          VALUES('memory_change_entity_links_backfill_v1',?,?)
+        `).run(JSON.stringify({
+          completedAt: now,
+          linked,
+          policy: 'current_authority_only_no_guessing'
+        }), now)
+      })()
+    }
     this.ensureRevisionTriggerSet({
       prefix: 'memory_change_log_revision',
       revisionKey: 'memory_change_log_revision',
-      tables: ['memory_change_log'],
-      version: 'memory-change-log-revision-v1'
+      tables: ['memory_change_log', 'memory_change_entity_links', 'merge_history'],
+      version: 'memory-change-log-revision-v2'
     })
     const after = this.inspectMemoryChangeLogTriggers()
     const repaired = before.unhealthyTriggers.length + before.unexpectedTriggers.length
     const audit = {
-      version: 'memory-change-log-v1',
+      version: 'memory-change-log-v2',
       checkedAt: now,
       repairedThisStart: repaired > 0,
       repairedTriggersThisStart: repaired,
       repairsTotal: Number(previous.repairsTotal || 0) + (repaired > 0 ? 1 : 0),
-      privacyPolicy: 'identity_status_time_only',
+      privacyPolicy: 'identity_status_time_and_stable_entity_links',
+      entityLinkBackfillPolicy: 'current_authority_only_no_guessing',
       historicalBackfill: false,
       ...after
     }
@@ -2309,12 +2425,12 @@ export class PersonalMemoryStore {
     const revisionTriggers = this.getRevisionTriggerSetHealth({
       prefix: 'memory_change_log_revision',
       revisionKey: 'memory_change_log_revision',
-      tables: ['memory_change_log'],
-      version: 'memory-change-log-revision-v1',
+      tables: ['memory_change_log', 'memory_change_entity_links', 'merge_history'],
+      version: 'memory-change-log-revision-v2',
       revision: this.getMemoryChangeLogRevision()
     })
     if (!this.db) return {
-      version: 'memory-change-log-v1',
+      version: 'memory-change-log-v2',
       revision: '0',
       trackedSince: '',
       total: 0,
@@ -2328,10 +2444,15 @@ export class PersonalMemoryStore {
     const started = this.db.prepare(`
       SELECT value FROM schema_meta WHERE key='memory_change_log_started_at'
     `).get() as any
+    const linkBackfill = this.db.prepare(`
+      SELECT value FROM schema_meta WHERE key='memory_change_entity_links_backfill_v1'
+    `).get() as any
     let audit: any = {}
+    let entityLinkBackfill: any = {}
     try { audit = JSON.parse(String(auditRow?.value || '{}')) } catch {}
+    try { entityLinkBackfill = JSON.parse(String(linkBackfill?.value || '{}')) } catch {}
     return {
-      version: 'memory-change-log-v1',
+      version: 'memory-change-log-v2',
       revision: this.getMemoryChangeLogRevision(),
       trackedSince: String(started?.value || ''),
       total: Number((this.db.prepare(`
@@ -2341,7 +2462,12 @@ export class PersonalMemoryStore {
       repairedThisStart: Boolean(audit.repairedThisStart),
       repairedTriggersThisStart: Number(audit.repairedTriggersThisStart || 0),
       repairsTotal: Number(audit.repairsTotal || 0),
-      privacyPolicy: 'identity_status_time_only',
+      privacyPolicy: 'identity_status_time_and_stable_entity_links',
+      entityLinkBackfillPolicy: 'current_authority_only_no_guessing',
+      entityLinkBackfill: {
+        completedAt: String(entityLinkBackfill.completedAt || ''),
+        linked: Math.max(0, Number(entityLinkBackfill.linked || 0))
+      },
       historicalBackfill: false,
       ...triggers,
       revisionTriggers,
@@ -2357,6 +2483,7 @@ export class PersonalMemoryStore {
     limit?: number
     offset?: number
     revision?: string
+    entityId?: string
   } = {}): {
     items: any[]
     total: number
@@ -2391,6 +2518,25 @@ export class PersonalMemoryStore {
     if (['discovered', 'updated', 'reviewed', 'removed'].includes(String(options.change))) {
       conditions.push('log.change_kind=?')
       parameters.push(String(options.change))
+    }
+    const entityId = String(options.entityId || '').trim().slice(0, 240)
+    if (entityId) {
+      conditions.push(`EXISTS(
+        SELECT 1 FROM memory_change_entity_links entity_link
+        WHERE entity_link.change_id=log.id AND entity_link.entity_id IN (
+          WITH RECURSIVE current_identity(entity_id) AS (
+            VALUES(?)
+            UNION
+            SELECT history.source_entity_id
+            FROM merge_history history
+            JOIN current_identity
+              ON history.target_entity_id=current_identity.entity_id
+            WHERE history.reverted_at IS NULL
+          )
+          SELECT entity_id FROM current_identity
+        )
+      )`)
+      parameters.push(entityId)
     }
     const from = options.from && Number.isFinite(Date.parse(options.from)) ? String(options.from) : ''
     const to = options.to && Number.isFinite(Date.parse(options.to)) ? String(options.to) : ''
@@ -2450,9 +2596,10 @@ export class PersonalMemoryStore {
     const counts: Record<string, number> = { all: 0 }
     if (offset === 0) {
       const grouped = this.db.prepare(`
-        SELECT item_kind,change_kind,COUNT(*) AS count FROM memory_change_log
+        SELECT item_kind,change_kind,COUNT(*) AS count FROM memory_change_log log
+        ${where}
         GROUP BY item_kind,change_kind
-      `).all() as Array<{ item_kind: string; change_kind: string; count: number }>
+      `).all(...parameters) as Array<{ item_kind: string; change_kind: string; count: number }>
       for (const row of grouped) {
         const count = Number(row.count || 0)
         counts.all += count
