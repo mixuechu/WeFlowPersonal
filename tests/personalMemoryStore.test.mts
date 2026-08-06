@@ -11147,7 +11147,12 @@ test('ingestion archive revision covers run and batch lifecycle and self-heals o
     const first = new PersonalMemoryStore()
     first.initialize(databasePath)
     const initial = Number(first.getIngestionArchiveRevision())
-    first.startIngestionRun('ingestion-revision-run', 'deepseek-test', 'prompt-test')
+    first.startIngestionRun(
+      'ingestion-revision-run',
+      'deepseek-test',
+      'prompt-test',
+      { trigger: 'backlog', backlogBeforeCount: 7 }
+    )
     const afterRun = Number(first.getIngestionArchiveRevision())
     assert.ok(afterRun > initial)
     first.recordIngestionBatch(
@@ -11179,7 +11184,10 @@ test('ingestion archive revision covers run and batch lifecycle and self-heals o
       messageCount: 12,
       entityCount: 2,
       relationCount: 1,
-      status: 'completed'
+      status: 'partial',
+      backlogAfterCount: 3,
+      backlogOutcome: 'progressed',
+      backlogNextAttemptAt: '2026-08-06T05:15:00.000Z'
     })
     assert.ok(Number(first.getIngestionArchiveRevision()) > afterBatch)
     const ingestionArchiveRevisionHealth = first.getIngestionArchiveRevisionHealth()
@@ -11198,7 +11206,16 @@ test('ingestion archive revision covers run and batch lifecycle and self-heals o
     reopened.initialize(databasePath)
     assert.equal(reopened.getIngestionArchiveRevisionHealth().installedTriggers, 6)
     assert.equal(reopened.getIngestionArchiveRevisionHealth().healthy, true)
-    assert.equal(reopened.listIngestionRunPage().items[0]?.status, 'completed')
+    const run = reopened.listIngestionRunPage({ query: 'backlog' }).items[0]
+    assert.equal(run?.status, 'partial')
+    assert.equal(run?.trigger_kind, 'backlog')
+    assert.equal(run?.backlog_before_count, 7)
+    assert.equal(run?.backlog_after_count, 3)
+    assert.equal(run?.backlog_outcome, 'progressed')
+    assert.equal(run?.backlog_next_attempt_at, '2026-08-06T05:15:00.000Z')
+    assert.equal(reopened.listIngestionRunPage({ query: 'progressed' }).total, 1)
+    assert.equal(reopened.listIngestionRunPage({ query: '积压自动接力' }).total, 1)
+    assert.equal(reopened.listIngestionRunPage({ query: '已推进' }).total, 1)
     assert.equal(reopened.getIngestionRunDossier('ingestion-revision-run')?.batchTotal, 1)
     reopened.close()
   } finally {
@@ -16852,7 +16869,12 @@ test('document ingestion commit advances the content-version checkpoint atomical
 }))
 
 test('startup reconciliation closes interrupted run ledgers without losing prepared recovery payloads', () => withStore(store => {
-  store.startIngestionRun('run-interrupted', 'deepseek-test', 'prompt-test')
+  store.startIngestionRun(
+    'run-interrupted',
+    'deepseek-test',
+    'prompt-test',
+    { trigger: 'resume', backlogBeforeCount: 4 }
+  )
   store.recordIngestionBatch('run-interrupted', 0, 20, 'running')
   store.recordIngestionBatch('run-interrupted', 0, 20, 'completed')
   store.recordIngestionBatch('run-interrupted', 1, 10, 'running')
@@ -16883,6 +16905,10 @@ test('startup reconciliation closes interrupted run ledgers without losing prepa
   assert.equal(run.relation_count, 9)
   assert.equal(run.recovered_batch_count, 1)
   assert.equal(run.interrupted_batch_count, 1)
+  assert.equal(run.trigger_kind, 'resume')
+  assert.equal(run.backlog_before_count, 4)
+  assert.equal(run.backlog_after_count, 4)
+  assert.equal(run.backlog_outcome, 'interrupted')
   assert.match(run.error, /1 个加密批次仍等待自动恢复/)
   assert.equal(run.batches[1].status, 'failed')
   assert.equal(store.listPreparedIngestionBatchCommits().length, 1)

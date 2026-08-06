@@ -916,6 +916,11 @@ export class PersonalMemoryStore {
         event_count INTEGER NOT NULL DEFAULT 0,
         model TEXT NOT NULL DEFAULT '',
         prompt_version TEXT NOT NULL DEFAULT '',
+        trigger_kind TEXT NOT NULL DEFAULT 'legacy',
+        backlog_before_count INTEGER NOT NULL DEFAULT 0,
+        backlog_after_count INTEGER NOT NULL DEFAULT 0,
+        backlog_outcome TEXT NOT NULL DEFAULT 'idle',
+        backlog_next_attempt_at TEXT,
         status TEXT NOT NULL,
         error TEXT
       ) STRICT;
@@ -1294,6 +1299,11 @@ export class PersonalMemoryStore {
     this.ensureColumn('ingestion_runs', 'recovered_at', 'TEXT')
     this.ensureColumn('ingestion_runs', 'recovered_batch_count', 'INTEGER NOT NULL DEFAULT 0')
     this.ensureColumn('ingestion_runs', 'interrupted_batch_count', 'INTEGER NOT NULL DEFAULT 0')
+    this.ensureColumn('ingestion_runs', 'trigger_kind', `TEXT NOT NULL DEFAULT 'legacy'`)
+    this.ensureColumn('ingestion_runs', 'backlog_before_count', 'INTEGER NOT NULL DEFAULT 0')
+    this.ensureColumn('ingestion_runs', 'backlog_after_count', 'INTEGER NOT NULL DEFAULT 0')
+    this.ensureColumn('ingestion_runs', 'backlog_outcome', `TEXT NOT NULL DEFAULT 'idle'`)
+    this.ensureColumn('ingestion_runs', 'backlog_next_attempt_at', 'TEXT')
     this.ensureColumn('ingestion_batch_commits', 'source_kind', `TEXT NOT NULL DEFAULT 'wechat'`)
     this.ensureColumn('ingestion_batch_commits', 'resource_id', `TEXT NOT NULL DEFAULT ''`)
     this.ensureColumn('ingestion_batch_commits', 'resource_content_hash', `TEXT NOT NULL DEFAULT ''`)
@@ -12866,12 +12876,29 @@ export class PersonalMemoryStore {
     `).get(id) || null
   }
 
-  startIngestionRun(id: string, model: string, promptVersion: string): void {
+  startIngestionRun(
+    id: string,
+    model: string,
+    promptVersion: string,
+    audit: {
+      trigger?: 'manual' | 'startup' | 'daily' | 'backlog' | 'resume' | 'document'
+      backlogBeforeCount?: number
+    } = {}
+  ): void {
     if (!this.db) return
     this.db.prepare(`
-      INSERT INTO ingestion_runs(id,started_at,model,prompt_version,status)
-      VALUES(?,?,?,?,?)
-    `).run(id, new Date().toISOString(), model, promptVersion, 'running')
+      INSERT INTO ingestion_runs(
+        id,started_at,model,prompt_version,trigger_kind,backlog_before_count,status
+      ) VALUES(?,?,?,?,?,?,?)
+    `).run(
+      id,
+      new Date().toISOString(),
+      model,
+      promptVersion,
+      audit.trigger || 'manual',
+      Math.max(0, Math.floor(Number(audit.backlogBeforeCount) || 0)),
+      'running'
+    )
   }
 
   recordIngestionBatch(
@@ -13394,11 +13421,39 @@ export class PersonalMemoryStore {
     }
   }
 
-  finishIngestionRun(id: string, input: { status: 'completed' | 'partial' | 'failed'; messageCount: number; entityCount: number; relationCount: number; error?: string }): void {
+  finishIngestionRun(id: string, input: {
+    status: 'completed' | 'partial' | 'failed'
+    messageCount: number
+    entityCount: number
+    relationCount: number
+    error?: string
+    backlogAfterCount?: number
+    backlogOutcome?: 'idle' | 'progressed' | 'waiting' | 'failed' | 'paused' | 'drained' | 'interrupted'
+    backlogNextAttemptAt?: string | null
+  }): void {
     if (!this.db) return
     this.db.prepare(`
-      UPDATE ingestion_runs SET finished_at=?,message_count=?,entity_count=?,relation_count=?,status=?,error=? WHERE id=?
-    `).run(new Date().toISOString(), input.messageCount, input.entityCount, input.relationCount, input.status, input.error || null, id)
+      UPDATE ingestion_runs SET
+        finished_at=?,message_count=?,entity_count=?,relation_count=?,status=?,error=?,
+        backlog_after_count=COALESCE(?,backlog_after_count),
+        backlog_outcome=COALESCE(?,backlog_outcome),
+        backlog_next_attempt_at=CASE WHEN ? THEN ? ELSE backlog_next_attempt_at END
+      WHERE id=?
+    `).run(
+      new Date().toISOString(),
+      input.messageCount,
+      input.entityCount,
+      input.relationCount,
+      input.status,
+      input.error || null,
+      input.backlogAfterCount === undefined
+        ? null
+        : Math.max(0, Math.floor(Number(input.backlogAfterCount) || 0)),
+      input.backlogOutcome || null,
+      input.backlogNextAttemptAt !== undefined ? 1 : 0,
+      input.backlogNextAttemptAt || null,
+      id
+    )
   }
 
   reconcileInterruptedIngestionRuns(input: {
@@ -13445,7 +13500,8 @@ export class PersonalMemoryStore {
           UPDATE ingestion_runs
           SET finished_at=?,message_count=?,entity_count=?,relation_count=?,
             status='partial',error=?,recovered_at=?,recovered_batch_count=?,
-            interrupted_batch_count=?
+            interrupted_batch_count=?,backlog_after_count=backlog_before_count,
+            backlog_outcome='interrupted'
           WHERE id=? AND status='running'
         `).run(
           now,
@@ -13639,10 +13695,25 @@ export class PersonalMemoryStore {
     }
     const query = String(options.query || '').trim().toLocaleLowerCase('zh-CN')
     if (query) {
+      const auditQueryAliases: Record<string, string> = {
+        手动补齐: 'manual',
+        应用启动: 'startup',
+        每日计划: 'daily',
+        积压自动接力: 'backlog',
+        电脑唤醒: 'resume',
+        文档分析: 'document',
+        已推进: 'progressed',
+        已清空: 'drained',
+        未推进并退避: 'failed',
+        安全暂停: 'paused',
+        异常退出: 'interrupted',
+        等待下一轮: 'waiting'
+      }
       conditions.push(`instr(lower(
-        r.id || char(0) || r.model || char(0) || r.prompt_version || char(0) || COALESCE(r.error,'')
+        r.id || char(0) || r.model || char(0) || r.prompt_version || char(0) ||
+        r.trigger_kind || char(0) || r.backlog_outcome || char(0) || COALESCE(r.error,'')
       ),?)>0`)
-      parameters.push(query)
+      parameters.push(auditQueryAliases[query] || query)
     }
     const from = options.from && Number.isFinite(Date.parse(options.from)) ? String(options.from) : ''
     const to = options.to && Number.isFinite(Date.parse(options.to)) ? String(options.to) : ''

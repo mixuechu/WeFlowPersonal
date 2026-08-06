@@ -14025,7 +14025,7 @@ function AiAssistantPage() {
                 </select>
                 <input value={ingestionArchiveQuery}
                   onChange={event => setIngestionArchiveQuery(event.target.value)}
-                  placeholder="搜索运行 ID、模型、Prompt 或错误" />
+                  placeholder="搜索运行 ID、触发来源、结果、模型、Prompt 或错误" />
                 <label><span>开始从</span><input type="date" value={ingestionArchiveFrom}
                   onChange={event => setIngestionArchiveFrom(event.target.value)} /></label>
                 <label><span>到</span><input type="date" value={ingestionArchiveTo}
@@ -14049,6 +14049,26 @@ function AiAssistantPage() {
                   </span>
                 </div>
                 <small>{run.model || '模型待记录'} · {run.prompt_version || 'Prompt 版本待记录'} · Token {Number(run.input_tokens || 0).toLocaleString()} 入 / {Number(run.output_tokens || 0).toLocaleString()} 出</small>
+                <p>
+                  触发：{run.trigger_kind === 'manual' ? '手动补齐'
+                    : run.trigger_kind === 'startup' ? '应用启动'
+                      : run.trigger_kind === 'daily' ? '每日计划'
+                        : run.trigger_kind === 'backlog' ? '积压自动接力'
+                          : run.trigger_kind === 'resume' ? '电脑唤醒'
+                            : run.trigger_kind === 'document' ? '文档分析'
+                              : '旧版运行'}
+                  {' · '}分页积压 {Number(run.backlog_before_count || 0)} → {Number(run.backlog_after_count || 0)}
+                  {' · '}{run.backlog_outcome === 'progressed' ? '已推进'
+                    : run.backlog_outcome === 'drained' ? '已清空'
+                      : run.backlog_outcome === 'failed' ? '未推进并退避'
+                        : run.backlog_outcome === 'paused' ? '安全暂停'
+                        : run.backlog_outcome === 'interrupted' ? '异常退出，保留原断点'
+                          : run.backlog_outcome === 'waiting' ? '等待下一轮'
+                            : '无分页积压'}
+                  {run.backlog_next_attempt_at
+                    ? ` · 下次 ${new Date(run.backlog_next_attempt_at).toLocaleString('zh-CN', { hour12: false })}`
+                    : ''}
+                </p>
                 {run.recovered_at && <p>
                   上次退出时未结束，已于 {new Date(run.recovered_at).toLocaleString('zh-CN')} 对账：
                   保留 {Number(run.recovered_batch_count || 0)} 个成功批次，

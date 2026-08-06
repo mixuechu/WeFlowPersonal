@@ -3323,7 +3323,8 @@ export class AiAssistantService {
       personalMemoryStore.startIngestionRun(
         runId,
         String(this.config.get('aiAssistantApiModel') || ''),
-        DOCUMENT_ANALYSIS_VERSION
+        DOCUMENT_ANALYSIS_VERSION,
+        { trigger: 'document' }
       )
       personalMemoryStore.recordIngestionBatch(runId, 0, 1, 'running', '', {
         model: String(this.config.get('aiAssistantApiModel') || ''),
@@ -3595,7 +3596,12 @@ export class AiAssistantService {
     personalMemoryStore.startIngestionRun(
       runId,
       String(this.config.get('aiAssistantApiModel') || ''),
-      `${EXTRACTION_PROMPT_VERSION}/${EXTRACTION_SCHEMA_VERSION}`
+      `${EXTRACTION_PROMPT_VERSION}/${EXTRACTION_SCHEMA_VERSION}`,
+      {
+        trigger: this.activeSyncTrigger || 'manual',
+        backlogBeforeCount: Object.keys(previousSessionOffsets)
+          .filter(sessionId => Number(previousSessionOffsets[sessionId]) > 0).length
+      }
     )
     const now = Math.floor(Date.now() / 1000)
     const lookbackDays = Number(this.config.get('aiAssistantInitialLookbackDays')) || 3
@@ -3843,7 +3849,10 @@ export class AiAssistantService {
         messageCount: successfulMessageKeys.length,
         entityCount: this.state.graph.entities.length,
         relationCount: this.state.graph.relations.length,
-        error: runErrors[0]
+        error: runErrors[0],
+        backlogAfterCount: this.state.cursor.backlogRetry.remainingBacklogCount,
+        backlogOutcome: this.state.cursor.backlogRetry.lastOutcome,
+        backlogNextAttemptAt: this.state.cursor.backlogRetry.nextAttemptAt
       })
       runFinished = true
       if (!runErrors.length) {
@@ -3923,7 +3932,10 @@ export class AiAssistantService {
           status: 'failed', messageCount: 0,
           entityCount: this.state.graph.entities.length,
           relationCount: this.state.graph.relations.length,
-          error: this.state.cursor.lastError
+          error: this.state.cursor.lastError,
+          backlogAfterCount: this.state.cursor.backlogRetry.remainingBacklogCount,
+          backlogOutcome: this.state.cursor.backlogRetry.lastOutcome,
+          backlogNextAttemptAt: this.state.cursor.backlogRetry.nextAttemptAt
         })
       }
       throw error
