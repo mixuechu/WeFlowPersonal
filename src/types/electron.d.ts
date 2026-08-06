@@ -2043,6 +2043,8 @@ export interface ElectronAPI {
         supportCounts?: Record<string, number>
         supportCountsBasis?: 'lexical_archive' | 'scope_browse'
         supportCountsSearchMode?: 'fts' | 'substring_fallback'
+        contradictionCount?: number
+        contradictionCountBasis?: 'lexical_archive' | 'scope_browse'
         scopeCandidates: number | null
         revision: string
         stale: boolean

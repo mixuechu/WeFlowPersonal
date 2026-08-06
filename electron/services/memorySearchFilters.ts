@@ -10,6 +10,7 @@ export type MemorySearchOptions = {
   documentTypes?: string[]
   trustStatuses?: string[]
   supportability?: string
+  evidenceConflict?: string
   relationTypes?: string[]
   sourceIds?: string[]
 }
@@ -87,6 +88,7 @@ export function filterMemorySearchResults(
   const types = new Set((options.documentTypes || []).filter(Boolean))
   const trustStatuses = new Set((options.trustStatuses || []).filter(Boolean))
   const supportability = String(options.supportability || '')
+  const evidenceConflict = String(options.evidenceConflict || '')
   const sources = new Set((options.sourceIds || []).map(value => value.trim().toLowerCase()).filter(Boolean))
   const relationTypes = new Set((options.relationTypes || []).map(value => value.trim().toLowerCase()).filter(Boolean))
   const entityTerms = (options.entityTerms || []).map(value => value.trim().toLowerCase()).filter(Boolean)
@@ -112,6 +114,11 @@ export function filterMemorySearchResults(
       if (supportability === 'supporting' ? !canSupportFacts
         : supportability === 'review_only' ? canSupportFacts
           : true) return false
+    }
+    if (evidenceConflict) {
+      const hasContradiction = (item.evidence || []).some((evidence: any) =>
+        String(evidence.evidence_role || evidence.evidenceRole || '') === 'contradiction')
+      if (evidenceConflict === 'with_contradiction' ? !hasContradiction : true) return false
     }
     if (relationTypes.size && item.document_type === 'relation') {
       const predicate = String(item.metadata?.predicate || item.title || '').trim().toLowerCase()

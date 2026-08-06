@@ -8030,6 +8030,10 @@ export class AiAssistantService {
       ...scopedOptions,
       supportability: undefined
     })
+    const conflictFacetAllowedIds = personalMemoryStore.listScopedSearchDocumentIds({
+      ...scopedOptions,
+      evidenceConflict: undefined
+    })
     if (!text && allowedIds === null) {
       return {
         results: [], offset, limit, total: 0, hasMore: false, truncated: false,
@@ -8080,6 +8084,19 @@ export class AiAssistantService {
       : {
           counts: personalMemoryStore.getSearchDocumentSupportCountsInScope(
             supportFacetAllowedIds || new Set(),
+            scopedOptions
+          ),
+          searchMode: undefined
+        }
+    const conflictFacet = text
+      ? personalMemoryStore.getSearchDocumentContradictionCountByKeyword(
+          text,
+          conflictFacetAllowedIds,
+          scopedOptions
+        )
+      : {
+          count: personalMemoryStore.getSearchDocumentContradictionCountInScope(
+            conflictFacetAllowedIds || new Set(),
             scopedOptions
           ),
           searchMode: undefined
@@ -8170,6 +8187,8 @@ export class AiAssistantService {
     page.supportCounts = supportFacet.counts
     page.supportCountsBasis = text ? 'lexical_archive' : 'scope_browse'
     page.supportCountsSearchMode = supportFacet.searchMode
+    page.contradictionCount = conflictFacet.count
+    page.contradictionCountBasis = text ? 'lexical_archive' : 'scope_browse'
     const feedback = this.memorySearchFeedbackContext(text, scopedOptions).entries
     const completedRevision = personalMemoryStore.getMemorySearchRevision()
     const completedEntitySelection = options.entityId

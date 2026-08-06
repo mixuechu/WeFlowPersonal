@@ -946,6 +946,8 @@ function AiAssistantPage() {
     supportCounts?: Record<string, number>
     supportCountsBasis?: 'lexical_archive' | 'scope_browse'
     supportCountsSearchMode?: 'fts' | 'substring_fallback'
+    contradictionCount?: number
+    contradictionCountBasis?: 'lexical_archive' | 'scope_browse'
   }>({ status: 'idle', query: '' })
   const [memoryLoadingMore, setMemoryLoadingMore] = useState(false)
   const [memorySearchFeedback, setMemorySearchFeedback] = useState<any[]>([])
@@ -1392,6 +1394,7 @@ function AiAssistantPage() {
   const [memoryTypeFilter, setMemoryTypeFilter] = useState('')
   const [memoryTrustFilter, setMemoryTrustFilter] = useState('')
   const [memorySupportFilter, setMemorySupportFilter] = useState('')
+  const [memoryConflictFilter, setMemoryConflictFilter] = useState('')
   const [memoryFrom, setMemoryFrom] = useState('')
   const [memoryTo, setMemoryTo] = useState('')
   const selectedMemorySessionScope = useMemo(
@@ -1408,15 +1411,18 @@ function AiAssistantPage() {
     documentTypes: memoryTypeFilter ? [memoryTypeFilter] : undefined,
     trustStatuses: memoryTrustFilter ? [memoryTrustFilter] : undefined,
     supportability: memorySupportFilter || undefined,
+    evidenceConflict: memoryConflictFilter || undefined,
     from: memoryFrom || undefined,
     to: memoryTo || undefined
   }), [
     memoryEntityFilter, memoryEntitySelection, memorySessionFilter, selectedMemorySessionScope,
     memorySourceFilter, memoryTypeFilter, memoryTrustFilter, memorySupportFilter,
+    memoryConflictFilter,
     memoryFrom, memoryTo
   ])
   const hasMemoryScope = Boolean(memoryEntityFilter || memorySessionFilter || memorySourceFilter ||
-    memoryTypeFilter || memoryTrustFilter || memorySupportFilter || memoryFrom || memoryTo)
+    memoryTypeFilter || memoryTrustFilter || memorySupportFilter || memoryConflictFilter ||
+    memoryFrom || memoryTo)
   const memoryFeedbackArchiveOptions = useMemo(() => ({
     action: memoryFeedbackArchiveAction || undefined,
     query: memoryFeedbackArchiveQuery.trim() || undefined,
@@ -2357,6 +2363,8 @@ function AiAssistantPage() {
           supportCounts: page.supportCounts,
           supportCountsBasis: page.supportCountsBasis,
           supportCountsSearchMode: page.supportCountsSearchMode,
+          contradictionCount: page.contradictionCount,
+          contradictionCountBasis: page.contradictionCountBasis,
           nextOffset: Number(page.offset || 0) + page.results.length
         })
       }).catch(error => {
@@ -6756,6 +6764,8 @@ function AiAssistantPage() {
         supportCounts: page.supportCounts,
         supportCountsBasis: page.supportCountsBasis,
         supportCountsSearchMode: page.supportCountsSearchMode,
+        contradictionCount: page.contradictionCount,
+        contradictionCountBasis: page.contradictionCountBasis,
         nextOffset: Number(page.offset || 0) + page.results.length
       })
     } catch (error: any) {
@@ -9440,7 +9450,7 @@ function AiAssistantPage() {
             </select>
             <label><span>从</span><input type="date" value={memoryFrom} onChange={event => setMemoryFrom(event.target.value)} /></label>
             <label><span>至</span><input type="date" value={memoryTo} onChange={event => setMemoryTo(event.target.value)} /></label>
-            {(memoryEntityFilter || memorySessionFilter || memorySourceFilter || memoryTypeFilter || memoryTrustFilter || memorySupportFilter || memoryFrom || memoryTo) &&
+            {(memoryEntityFilter || memorySessionFilter || memorySourceFilter || memoryTypeFilter || memoryTrustFilter || memorySupportFilter || memoryConflictFilter || memoryFrom || memoryTo) &&
               <button onClick={() => {
                 setMemoryEntityFilter('')
                 setMemoryEntitySelection(null)
@@ -9452,11 +9462,12 @@ function AiAssistantPage() {
                 setMemoryTypeFilter('')
                 setMemoryTrustFilter('')
                 setMemorySupportFilter('')
+                setMemoryConflictFilter('')
                 setMemoryFrom('')
                 setMemoryTo('')
               }}>清除范围</button>}
           </div>
-          {(memoryEntityFilter || memorySessionFilter || memorySourceFilter || memoryTypeFilter || memoryTrustFilter || memorySupportFilter || memoryFrom || memoryTo) &&
+          {(memoryEntityFilter || memorySessionFilter || memorySourceFilter || memoryTypeFilter || memoryTrustFilter || memorySupportFilter || memoryConflictFilter || memoryFrom || memoryTo) &&
             <small className="assistant-scope-note">当前范围在全文/向量召回之前生效，范围外内容不会参与排序或发送给模型。
               {memorySearchState.scopeCandidates !== null && memorySearchState.scopeCandidates !== undefined &&
                 ` · 当前候选 ${Number(memorySearchState.scopeCandidates || 0).toLocaleString()} 条`}
@@ -9494,7 +9505,8 @@ function AiAssistantPage() {
                     {MEMORY_TYPE_LABELS[type] || type} · {Number(memorySearchState.typeCounts?.[type] || 0)}
                   </button>)}
               </div>}
-            {memorySearchState.status === 'ready' && Object.keys(memorySearchState.trustCounts || {}).length > 0 &&
+            {memorySearchState.status === 'ready' &&
+              (Object.keys(memorySearchState.trustCounts || {}).length > 0 || Boolean(memoryConflictFilter)) &&
               <div className="assistant-search-type-facets">
                 <div>
                   <strong>按可信层级核验</strong>
@@ -9535,6 +9547,15 @@ function AiAssistantPage() {
                     disabled={!Number(memorySearchState.supportCounts?.review_only || 0)}
                     onClick={() => setMemorySupportFilter('review_only')}>
                     仅供审阅 · {Number(memorySearchState.supportCounts?.review_only || 0)}
+                  </button>
+                </>}
+                {(Number(memorySearchState.contradictionCount || 0) > 0 || Boolean(memoryConflictFilter)) && <>
+                  <span className="assistant-search-facet-divider" aria-hidden="true" />
+                  <button
+                    className={`warning ${memoryConflictFilter === 'with_contradiction' ? 'active' : ''}`}
+                    onClick={() => setMemoryConflictFilter(current =>
+                      current === 'with_contradiction' ? '' : 'with_contradiction')}>
+                    含反证待核验 · {Number(memorySearchState.contradictionCount || 0)}
                   </button>
                 </>}
               </div>}
@@ -9819,6 +9840,7 @@ function AiAssistantPage() {
                     scope.supportability
                       ? `证据资格 ${scope.supportability === 'supporting' ? '可作为回答依据' : '仅供审阅'}`
                       : '',
+                    scope.evidenceConflict ? '证据冲突 含反证' : '',
                     scope.from || scope.to ? `时间 ${scope.from || '不限'} → ${scope.to || '不限'}` : ''
                   ].filter(Boolean)
                   const actionLabel = item.action === 'helpful' ? '设为有用'

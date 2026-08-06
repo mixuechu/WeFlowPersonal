@@ -10463,6 +10463,12 @@ test('memory trust scopes and facets separate confirmed candidates from source m
     const invalidSupport = store.listScopedSearchDocumentIds({
       supportability: 'forged-supportability'
     })
+    const contradictions = store.listScopedSearchDocumentIds({
+      evidenceConflict: 'with_contradiction'
+    })
+    const invalidConflict = store.listScopedSearchDocumentIds({
+      evidenceConflict: 'forged-conflict'
+    })
     assert.deepEqual([...confirmed!].filter(id => id.includes('trust-facet')), [
       'claim:trust-facet-confirmed'
     ])
@@ -10483,6 +10489,10 @@ test('memory trust scopes and facets separate confirmed candidates from source m
       'claim:trust-facet-candidate'
     ])
     assert.equal(invalidSupport?.size, 0)
+    assert.deepEqual([...contradictions!].filter(id => id.includes('trust-facet')), [
+      'claim:trust-facet-confirmed'
+    ])
+    assert.equal(invalidConflict?.size, 0)
     assert.deepEqual(
       store.getSearchDocumentTrustCountsByKeyword('可信层级关键词', null),
       {
@@ -10524,6 +10534,16 @@ test('memory trust scopes and facets separate confirmed candidates from source m
     })!
     assert.equal(calendarSupporting.has('claim:trust-facet-confirmed'), false)
     assert.equal(calendarReviewOnly.has('claim:trust-facet-confirmed'), true)
+    const wechatContradictions = store.listScopedSearchDocumentIds({
+      sourceIds: ['wechat'],
+      evidenceConflict: 'with_contradiction'
+    })!
+    const calendarContradictions = store.listScopedSearchDocumentIds({
+      sourceIds: ['calendar'],
+      evidenceConflict: 'with_contradiction'
+    })!
+    assert.equal(wechatContradictions.has('claim:trust-facet-confirmed'), false)
+    assert.equal(calendarContradictions.has('claim:trust-facet-confirmed'), true)
     const futureSupporting = store.listScopedSearchDocumentIds({
       from: '2027-01-01',
       to: '2027-12-31',
@@ -10536,6 +10556,11 @@ test('memory trust scopes and facets separate confirmed candidates from source m
     })!
     assert.equal(futureSupporting.has('claim:trust-facet-confirmed'), false)
     assert.equal(futureReviewOnly.has('claim:trust-facet-confirmed'), true)
+    assert.equal(store.listScopedSearchDocumentIds({
+      from: '2027-01-01',
+      to: '2027-12-31',
+      evidenceConflict: 'with_contradiction'
+    })!.has('claim:trust-facet-confirmed'), true)
     assert.deepEqual(
       store.getSearchDocumentSupportCountsByKeyword(
         '可信层级关键词',
@@ -10546,6 +10571,29 @@ test('memory trust scopes and facets separate confirmed candidates from source m
         counts: { supporting: 0, review_only: 1 },
         searchMode: 'fts'
       }
+    )
+    assert.deepEqual(
+      store.getSearchDocumentContradictionCountByKeyword(
+        '可信层级关键词',
+        store.listScopedSearchDocumentIds({ sourceIds: ['wechat'] }),
+        { sourceIds: ['wechat'] }
+      ),
+      { count: 0, searchMode: 'fts' }
+    )
+    assert.deepEqual(
+      store.getSearchDocumentContradictionCountByKeyword(
+        '可信层级关键词',
+        store.listScopedSearchDocumentIds({ sourceIds: ['calendar'] }),
+        { sourceIds: ['calendar'] }
+      ),
+      { count: 1, searchMode: 'fts' }
+    )
+    assert.equal(
+      store.getSearchDocumentContradictionCountInScope(
+        store.listScopedSearchDocumentIds({ sourceIds: ['calendar'] })!,
+        { sourceIds: ['calendar'] }
+      ),
+      1
     )
   }))
 

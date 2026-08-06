@@ -114,6 +114,28 @@ function searchDocumentSupportsFactsSql(
   }
 }
 
+function searchDocumentHasContradictionSql(
+  options: MemorySearchOptions = {},
+  alias = 'd'
+): { sql: string; parameters: Array<string | number> } {
+  const branches = [
+    { type: 'claim', foreignKey: 'claim_id' },
+    { type: 'relation', foreignKey: 'relation_id' },
+    { type: 'event', foreignKey: 'event_id' }
+  ]
+  const parameters: Array<string | number> = []
+  const sql = branches.map(branch => {
+    const scope = searchEvidenceScopeSql('conflict', options)
+    parameters.push(...scope.parameters)
+    return `(${alias}.document_type='${branch.type}'
+      AND EXISTS (SELECT 1 FROM evidence conflict
+        WHERE conflict.${branch.foreignKey}=${alias}.source_id
+          AND conflict.evidence_role='contradiction'
+          AND ${scope.sql}))`
+  }).join('\n    OR ')
+  return { sql: `(${sql})`, parameters }
+}
+
 function relationSearchText(
   subjectName: unknown,
   predicate: unknown,
@@ -14036,6 +14058,7 @@ export class PersonalMemoryStore {
       options.documentTypes?.length ||
       options.trustStatuses?.length ||
       options.supportability ||
+      options.evidenceConflict ||
       options.relationTypes?.length ||
       options.sourceIds?.length
     )
@@ -14084,6 +14107,14 @@ export class PersonalMemoryStore {
       parameters.push(...supportsFacts.parameters)
     }
     else if (supportability) conditions.push('0=1')
+    const evidenceConflict = String(options.evidenceConflict || '').trim().toLowerCase()
+    if (evidenceConflict === 'with_contradiction') {
+      const contradiction = searchDocumentHasContradictionSql(options)
+      conditions.push(contradiction.sql)
+      parameters.push(...contradiction.parameters)
+    } else if (evidenceConflict) {
+      conditions.push('0=1')
+    }
     const sourceIds = [...new Set((options.sourceIds || [])
       .map(value => String(value).trim().toLowerCase()).filter(Boolean))]
     const sessions = options.sessionId
@@ -14296,6 +14327,25 @@ export class PersonalMemoryStore {
       supporting: Number(row?.supporting || 0),
       review_only: Number(row?.review_only || 0)
     }
+  }
+
+  getSearchDocumentContradictionCountInScope(
+    allowedIds: Set<string>,
+    options: MemorySearchOptions = {}
+  ): number {
+    if (!this.db || !allowedIds.size) return 0
+    this.replaceActiveSearchScope(allowedIds)
+    const contradiction = searchDocumentHasContradictionSql(options)
+    return Number((this.db.prepare(`
+      SELECT COUNT(*) AS count
+      FROM search_documents d
+      JOIN active_memory_search_scope scope ON scope.id=d.id
+      WHERE ${contradiction.sql}
+        AND NOT (
+          d.document_type IN ('claim','relation','event')
+          AND COALESCE(json_extract(d.metadata_json,'$.status'),'')='rejected'
+        )
+    `).get(...contradiction.parameters) as any)?.count || 0)
   }
 
   listSearchDocumentsInScopePage(
@@ -14586,6 +14636,52 @@ export class PersonalMemoryStore {
       pattern
     ) as any
     return { counts: toCounts(row), searchMode: 'substring_fallback' }
+  }
+
+  getSearchDocumentContradictionCountByKeyword(
+    query: string,
+    allowedIds: Set<string> | null,
+    options: MemorySearchOptions = {}
+  ): { count: number; searchMode: 'fts' | 'substring_fallback' } {
+    const normalized = String(query || '').trim().replace(/["']/g, ' ')
+    if (!this.db || !normalized || (allowedIds && !allowedIds.size)) {
+      return { count: 0, searchMode: 'fts' }
+    }
+    if (allowedIds) this.replaceActiveSearchScope(allowedIds)
+    const scopeJoin = allowedIds
+      ? 'JOIN active_memory_search_scope scope ON scope.id=d.id'
+      : ''
+    const contradiction = searchDocumentHasContradictionSql(options)
+    const trustedCondition = `NOT (
+      d.document_type IN ('claim','relation','event')
+      AND COALESCE(json_extract(d.metadata_json,'$.status'),'')='rejected'
+    )`
+    const ftsQuery = `"${normalized.replace(/"/g, '""')}"`
+    try {
+      const total = Number((this.db.prepare(`
+        SELECT COUNT(*) AS count
+        FROM search_fts JOIN search_documents d ON d.id=search_fts.document_id
+        ${scopeJoin}
+        WHERE search_fts MATCH ? AND ${trustedCondition}
+      `).get(ftsQuery) as any)?.count || 0)
+      const count = Number((this.db.prepare(`
+        SELECT COUNT(*) AS count
+        FROM search_fts JOIN search_documents d ON d.id=search_fts.document_id
+        ${scopeJoin}
+        WHERE search_fts MATCH ? AND ${trustedCondition}
+          AND ${contradiction.sql}
+      `).get(ftsQuery, ...contradiction.parameters) as any)?.count || 0)
+      if (total > 0) return { count, searchMode: 'fts' }
+    } catch {}
+    const pattern = `%${normalized}%`
+    const count = Number((this.db.prepare(`
+      SELECT COUNT(*) AS count
+      FROM search_documents d ${scopeJoin}
+      WHERE (d.title LIKE ? OR d.search_text LIKE ?)
+        AND ${trustedCondition}
+        AND ${contradiction.sql}
+    `).get(pattern, pattern, ...contradiction.parameters) as any)?.count || 0)
+    return { count, searchMode: 'substring_fallback' }
   }
 
   recordMemorySearchFeedback(input: {
@@ -16496,6 +16592,8 @@ export class PersonalMemoryStore {
               documentTypes: cleanList(storedContext.options?.documentTypes),
               trustStatuses: cleanList(storedContext.options?.trustStatuses),
               supportability: String(storedContext.options?.supportability || '')
+                .trim().toLowerCase().slice(0, 32),
+              evidenceConflict: String(storedContext.options?.evidenceConflict || '')
                 .trim().toLowerCase().slice(0, 32),
               relationTypes: cleanList(storedContext.options?.relationTypes),
               sourceIds: cleanList(storedContext.options?.sourceIds)

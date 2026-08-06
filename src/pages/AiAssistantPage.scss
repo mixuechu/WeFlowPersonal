@@ -737,6 +737,15 @@
   opacity: .42;
   cursor: default;
 }
+.assistant-search-type-facets button.warning {
+  border-color: rgba(174, 103, 39, .26);
+  color: #925a27;
+}
+.assistant-search-type-facets button.warning.active {
+  border-color: rgba(174, 103, 39, .42);
+  background: rgba(204, 131, 57, .14);
+  color: #7c461c;
+}
 .assistant-search-result-grid { display: grid; grid-template-columns: repeat(auto-fill,minmax(260px,1fr)); gap: 9px; }
 .assistant-search-results article { padding: 11px 12px; border: 1px solid #e8e5dd; border-radius: 10px; background: rgba(255,255,255,.55); }
 .assistant-search-results article span { display: block; color: #8a918a; font-size: 8px; text-transform: uppercase; }
