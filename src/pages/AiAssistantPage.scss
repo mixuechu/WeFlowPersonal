@@ -755,6 +755,10 @@
 .assistant-answer-review-archive > summary small { color: #8b918b; font-size: 8px; font-weight: 400; }
 .assistant-answer-review-filters { display: grid; grid-template-columns: repeat(2,minmax(100px,.22fr)) 1fr repeat(2,minmax(110px,.24fr)); gap: 6px; margin: 9px 0 6px; }
 .assistant-answer-review-filters input,.assistant-answer-review-filters select { min-width: 0; padding: 6px 7px; border: 1px solid #d8ddd7; border-radius: 7px; color: #566158; background: #fff; font-size: 8px; }
+.assistant-answer-review-counts { display: flex; flex-wrap: wrap; gap: 5px; }
+.assistant-answer-review-counts button { padding: 4px 7px; border: 1px solid #d8ddd7; border-radius: 999px; color: #68746b; background: #fff; font-size: 8px; cursor: pointer; }
+.assistant-answer-review-counts button:hover { border-color: #aebfb3; color: #3f6654; background: #f5faf6; }
+.assistant-answer-review-counts button b { color: #3f6654; }
 .assistant-answer-review-list { display: grid; gap: 6px; max-height: 340px; margin-top: 7px; overflow: auto; }
 .assistant-answer-review-list article { display: grid; gap: 4px; padding: 9px; border: 1px solid #e4e1d9; border-radius: 8px; background: #fff; }
 .assistant-answer-review-list header { display: flex; justify-content: space-between; gap: 10px; color: #80877f; font-size: 8px; }

@@ -44,6 +44,10 @@ import {
   memoryFeedbackOperationKey,
   setKeyedActionState
 } from '../utils/memoryFeedbackOperation'
+import {
+  answerReviewDrilldownFilters,
+  type AnswerReviewDrilldownTarget
+} from '../utils/answerReviewDrilldown'
 import { evidenceArchiveIdentity } from '../../shared/evidencePayload'
 import './AiAssistantPage.scss'
 
@@ -1338,6 +1342,17 @@ function AiAssistantPage() {
   const assistantAnswerReviewsGate = useRef(new LatestRequestGate())
   const assistantAnswerReviewMutationGates = useRef(new KeyedLatestRequestGates())
   const assistantAnswerReviewHistoryGates = useRef(new Map<string, LatestRequestGate>())
+  const drillIntoAssistantAnswerReviews = useCallback((target: AnswerReviewDrilldownTarget) => {
+    const filters = answerReviewDrilldownFilters(target)
+    setAssistantAnswerReviewsOpen(true)
+    setAssistantAnswerReviewStatus(filters.status)
+    setAssistantAnswerReviewState(filters.reviewState)
+    setAssistantAnswerReviewReason(filters.invalidReason)
+    window.requestAnimationFrame(() => {
+      document.getElementById('assistant-answer-review-list')
+        ?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+    })
+  }, [])
   const [askingMemory, setAskingMemory] = useState(false)
   const [creatingMemoryTask, setCreatingMemoryTask] = useState(false)
   const [memoryTaskPreviewDialog, setMemoryTaskPreviewDialog] = useState<any>(null)
@@ -9882,15 +9897,22 @@ function AiAssistantPage() {
                 <input type="date" value={assistantAnswerReviewTo}
                   onChange={event => setAssistantAnswerReviewTo(event.target.value)} />
               </div>
-              <small>
-                待处理 {Number(assistantAnswerReviews.counts?.pending || 0)} ·
-                已知晓 {Number(assistantAnswerReviews.counts?.resolved || 0)} ·
-                需要处理总计 {Number(assistantAnswerReviews.counts?.attention || 0)} ·
-                已失去支持 {Number(assistantAnswerReviews.counts?.invalid || 0)} ·
-                待重新核验 {Number(assistantAnswerReviews.counts?.needs_review || 0)} ·
-                当前有效 {Number(assistantAnswerReviews.counts?.current || 0)}
-              </small>
-              <div className="assistant-answer-review-list">
+              <div className="assistant-answer-review-counts"
+                aria-label="按回答核验统计筛选">
+                {([
+                  ['pending', '待处理', assistantAnswerReviews.counts?.pending],
+                  ['resolved', '已知晓', assistantAnswerReviews.counts?.resolved],
+                  ['attention', '需要处理总计', assistantAnswerReviews.counts?.attention],
+                  ['invalid', '已失去支持', assistantAnswerReviews.counts?.invalid],
+                  ['needs_review', '待重新核验', assistantAnswerReviews.counts?.needs_review],
+                  ['current', '当前有效', assistantAnswerReviews.counts?.current]
+                ] as const).map(([target, label, count]) => <button key={target}
+                  type="button"
+                  onClick={() => drillIntoAssistantAnswerReviews(target)}>
+                  {label} <b>{Number(count || 0)}</b>
+                </button>)}
+              </div>
+              <div className="assistant-answer-review-list" id="assistant-answer-review-list">
                 {(assistantAnswerReviews.items || []).map((item: any) => <article key={item.message_id}>
                   <header>
                     <b>{item.revalidation_status === 'invalid' ? '⚠ 已失去支持'
