@@ -7428,6 +7428,85 @@ test('composed evidence scope indexes cover query plans and self-heal definition
   }
 })
 
+test('review inbox aggregation stays indexed and repairs index drift on restart', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'weflow-review-inbox-index-health-'))
+  const databasePath = join(directory, 'memory.sqlite')
+  const first = new PersonalMemoryStore()
+  try {
+    first.initialize(databasePath)
+    const database = (first as any).db
+    const plans = [{
+      index: 'idx_claims_status',
+      sql: `SELECT COUNT(*) FROM claims WHERE status='candidate'`,
+      args: []
+    }, {
+      index: 'idx_relations_status',
+      sql: `SELECT COUNT(*) FROM relations WHERE status='confirmed'`,
+      args: []
+    }, {
+      index: 'idx_events_status',
+      sql: `SELECT COUNT(*) FROM events WHERE status='candidate'`,
+      args: []
+    }, {
+      index: 'idx_review_queue_status',
+      sql: `SELECT COUNT(*) FROM review_queue WHERE status='pending'`,
+      args: []
+    }, {
+      index: 'idx_evidence_claim_role',
+      sql: `SELECT 1 FROM evidence WHERE claim_id=? AND evidence_role='contradiction'`,
+      args: ['claim-id']
+    }, {
+      index: 'idx_evidence_relation_role',
+      sql: `SELECT 1 FROM evidence WHERE relation_id=? AND evidence_role='contradiction'`,
+      args: ['relation-id']
+    }, {
+      index: 'idx_evidence_event_role',
+      sql: `SELECT 1 FROM evidence WHERE event_id=? AND evidence_role='contradiction'`,
+      args: ['event-id']
+    }]
+    for (const plan of plans) {
+      const details = (database.prepare(`EXPLAIN QUERY PLAN ${plan.sql}`)
+        .all(...plan.args) as Array<{ detail: string }>).map(row => row.detail).join(' ')
+      assert.match(details, new RegExp(plan.index))
+    }
+    assert.deepEqual(first.getReviewInboxIndexHealth(), {
+      version: 1,
+      checkedAt: first.getReviewInboxIndexHealth().checkedAt,
+      repairedThisStart: true,
+      repairedIndexesThisStart: 7,
+      repairsTotal: 1,
+      expectedIndexes: 7,
+      installedIndexes: 7,
+      healthy: true,
+      unhealthyIndexes: []
+    })
+    database.exec(`
+      DROP INDEX idx_evidence_claim_role;
+      CREATE INDEX idx_evidence_claim_role ON evidence(claim_id,timestamp);
+    `)
+    assert.equal(first.getReviewInboxIndexHealth().healthy, false)
+    first.close()
+
+    const reopened = new PersonalMemoryStore()
+    try {
+      reopened.initialize(databasePath)
+      const health = reopened.getReviewInboxIndexHealth()
+      assert.equal(health.healthy, true)
+      assert.equal(health.installedIndexes, 7)
+      assert.equal(health.repairedThisStart, true)
+      assert.equal(health.repairedIndexesThisStart, 1)
+      assert.equal(health.repairsTotal, 2)
+      assert.deepEqual(health.unhealthyIndexes, [])
+      assert.equal(reopened.getDiagnostics().reviewInboxIndexes.healthy, true)
+    } finally {
+      reopened.close()
+    }
+  } finally {
+    first.close()
+    rmSync(directory, { recursive: true, force: true })
+  }
+})
+
 test('direct entity evidence follows reversible identity merges without copying plaintext', () => withStore(store => {
   const entities = ['source-identity-evidence', 'target-identity-evidence'].map((id, index) => ({
     id,

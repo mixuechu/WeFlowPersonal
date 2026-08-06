@@ -1550,6 +1550,7 @@ export class PersonalMemoryStore {
     this.repairStructuredEvidenceReferences()
     this.repairGenericSearchEvidenceIdentity()
     this.ensureEvidenceScopeIndexes()
+    this.ensureReviewInboxIndexes()
     this.ensureEntityEvidenceFtsIndex()
     this.ensureMemorySearchRevisionTriggers()
     this.ensureMemorySearchFeedbackArchiveRevisionTriggers()
@@ -1942,6 +1943,141 @@ export class PersonalMemoryStore {
     if (!this.db) return { version: 1, ...live, repairsTotal: 0 }
     const row = this.db.prepare(`
       SELECT value,updated_at FROM schema_meta WHERE key='evidence_scope_index_integrity'
+    `).get() as any
+    let audit: any = {}
+    try { audit = JSON.parse(String(row?.value || '{}')) } catch {}
+    return {
+      version: 1,
+      checkedAt: String(audit.checkedAt || row?.updated_at || ''),
+      repairedThisStart: Boolean(audit.repairedThisStart),
+      repairedIndexesThisStart: Number(audit.repairedIndexesThisStart || 0),
+      repairsTotal: Number(audit.repairsTotal || 0),
+      ...live
+    }
+  }
+
+  private reviewInboxIndexDefinitions(): Array<{
+    name: string
+    table: string
+    columns: string[]
+    where?: string
+  }> {
+    return [{
+      name: 'idx_claims_status',
+      table: 'claims',
+      columns: ['status']
+    }, {
+      name: 'idx_relations_status',
+      table: 'relations',
+      columns: ['status']
+    }, {
+      name: 'idx_events_status',
+      table: 'events',
+      columns: ['status']
+    }, {
+      name: 'idx_review_queue_status',
+      table: 'review_queue',
+      columns: ['status']
+    }, {
+      name: 'idx_evidence_claim_role',
+      table: 'evidence',
+      columns: ['claim_id', 'evidence_role'],
+      where: 'claim_id is not null'
+    }, {
+      name: 'idx_evidence_relation_role',
+      table: 'evidence',
+      columns: ['relation_id', 'evidence_role'],
+      where: 'relation_id is not null'
+    }, {
+      name: 'idx_evidence_event_role',
+      table: 'evidence',
+      columns: ['event_id', 'evidence_role'],
+      where: 'event_id is not null'
+    }]
+  }
+
+  private inspectReviewInboxIndexes(): {
+    expectedIndexes: number
+    installedIndexes: number
+    healthy: boolean
+    unhealthyIndexes: string[]
+  } {
+    const definitions = this.reviewInboxIndexDefinitions()
+    if (!this.db) return {
+      expectedIndexes: definitions.length,
+      installedIndexes: 0,
+      healthy: false,
+      unhealthyIndexes: definitions.map(item => item.name)
+    }
+    const unhealthyIndexes: string[] = []
+    let installedIndexes = 0
+    for (const definition of definitions) {
+      const row = this.db.prepare(`
+        SELECT sql FROM sqlite_master WHERE type='index' AND name=?
+      `).get(definition.name) as any
+      if (row?.sql) installedIndexes += 1
+      const columns = row?.sql
+        ? (this.db.prepare(`PRAGMA index_info(${definition.name})`).all() as Array<{ name: string }>)
+          .map(item => item.name)
+        : []
+      const sql = String(row?.sql || '').toLowerCase().replace(/\s+/g, ' ')
+      const columnsHealthy = JSON.stringify(columns) === JSON.stringify(definition.columns)
+      const tableHealthy = sql.includes(`on ${definition.table}(`)
+      const whereHealthy = definition.where
+        ? sql.includes(`where ${definition.where}`)
+        : !sql.includes(' where ')
+      if (!columnsHealthy || !tableHealthy || !whereHealthy) unhealthyIndexes.push(definition.name)
+    }
+    return {
+      expectedIndexes: definitions.length,
+      installedIndexes,
+      healthy: unhealthyIndexes.length === 0,
+      unhealthyIndexes
+    }
+  }
+
+  private ensureReviewInboxIndexes(): void {
+    if (!this.db) return
+    const before = this.inspectReviewInboxIndexes()
+    const previousRow = this.db.prepare(`
+      SELECT value FROM schema_meta WHERE key='review_inbox_index_integrity'
+    `).get() as any
+    let previous: any = {}
+    try { previous = JSON.parse(String(previousRow?.value || '{}')) } catch {}
+    if (!before.healthy) {
+      const unhealthy = new Set(before.unhealthyIndexes)
+      const statements: string[] = []
+      for (const definition of this.reviewInboxIndexDefinitions()) {
+        if (!unhealthy.has(definition.name)) continue
+        statements.push(`DROP INDEX IF EXISTS ${definition.name};`)
+        statements.push(`CREATE INDEX ${definition.name}
+          ON ${definition.table}(${definition.columns.join(',')})
+          ${definition.where ? `WHERE ${definition.where}` : ''};`)
+      }
+      this.db.exec(statements.join('\n'))
+    }
+    const after = this.inspectReviewInboxIndexes()
+    const checkedAt = new Date().toISOString()
+    const audit = {
+      version: 1,
+      checkedAt,
+      ...after,
+      repairedThisStart: !before.healthy,
+      repairedIndexesThisStart: before.unhealthyIndexes.length,
+      repairsTotal: Number(previous.repairsTotal || 0) + (!before.healthy ? 1 : 0)
+    }
+    this.db.prepare(`
+      INSERT INTO schema_meta(key,value,updated_at)
+      VALUES('review_inbox_index_integrity',?,?)
+      ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_at=excluded.updated_at
+    `).run(JSON.stringify(audit), checkedAt)
+  }
+
+  getReviewInboxIndexHealth(): any {
+    const live = this.inspectReviewInboxIndexes()
+    if (!this.db) return { version: 1, ...live, repairsTotal: 0 }
+    const row = this.db.prepare(`
+      SELECT value,updated_at FROM schema_meta WHERE key='review_inbox_index_integrity'
     `).get() as any
     let audit: any = {}
     try { audit = JSON.parse(String(row?.value || '{}')) } catch {}
@@ -5599,6 +5735,7 @@ export class PersonalMemoryStore {
     const memorySearchRevision = this.getMemorySearchRevisionHealth()
     const entityEvidenceFts = this.getEntityEvidenceFtsHealth()
     const evidenceScopeIndexes = this.getEvidenceScopeIndexHealth()
+    const reviewInboxIndexes = this.getReviewInboxIndexHealth()
     const memorySearchFeedbackArchiveRevision =
       this.getMemorySearchFeedbackArchiveRevisionHealth()
     const memoryDeletionAuditRevision = this.getMemoryDeletionAuditRevisionHealth()
@@ -5736,6 +5873,7 @@ export class PersonalMemoryStore {
       resourceEvidenceArchive,
       entityEvidenceFts,
       evidenceScopeIndexes,
+      reviewInboxIndexes,
       memorySearchRevision,
       memorySearchFeedbackArchiveRevision,
       memoryDeletionAuditRevision,
@@ -5764,6 +5902,7 @@ export class PersonalMemoryStore {
     // These tables and triggers are derived from authoritative memory, evidence, and task rows.
     // Rebuilding them never changes the underlying facts, relations, events, resources, or tasks.
     this.ensureEvidenceScopeIndexes()
+    this.ensureReviewInboxIndexes()
     this.ensureEntityEvidenceFtsIndex()
     this.ensureMemorySearchRevisionTriggers()
     this.ensureStructuredEvidenceRevisionLedger()
