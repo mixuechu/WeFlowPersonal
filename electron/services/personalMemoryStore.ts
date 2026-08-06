@@ -10132,6 +10132,7 @@ export class PersonalMemoryStore {
 
   listEventTimeline(options: {
     entityId?: string
+    eventTypes?: string[]
     sourceId?: MemoryEvidenceSource
     status?: 'candidate' | 'confirmed' | 'rejected' | 'cancelled'
     query?: string
@@ -10161,6 +10162,13 @@ export class PersonalMemoryStore {
         WHERE entity_scope.event_id=ev.id AND entity_scope.entity_id=?
       )`)
       parameters.push(entityId)
+    }
+    const eventTypes = [...new Set((options.eventTypes || [])
+      .map(value => String(value || '').trim())
+      .filter(Boolean))]
+    if (eventTypes.length) {
+      conditions.push(`ev.event_type IN (${eventTypes.map(() => '?').join(',')})`)
+      parameters.push(...eventTypes)
     }
     const query = String(options.query || '').trim().toLocaleLowerCase('zh-CN')
     if (query) {

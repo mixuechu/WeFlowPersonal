@@ -1901,6 +1901,15 @@ test('event timeline filters cross-source evidence, status and time with stable 
   assert.equal(store.listEventTimeline({ sourceId: 'wechat' }).items[0].id, 'wechat-event')
   assert.equal(store.listEventTimeline({ sourceId: 'mail' }).items[0].id, 'mail-event')
   assert.equal(store.listEventTimeline({ sourceId: 'legacy' }).items[0].id, 'legacy-event')
+  assert.deepEqual(
+    store.listEventTimeline({ eventTypes: ['calendar'] }).items.map(item => item.id),
+    ['cancelled-event', 'calendar-event']
+  )
+  assert.deepEqual(
+    store.listEventTimeline({ eventTypes: ['meeting'], status: 'candidate' })
+      .items.map(item => item.id),
+    ['document-event', 'wechat-event', 'mail-event', 'legacy-event']
+  )
 
   const manyEvidence = Array.from({ length: 25 }, (_, index) => ({
     sourceId: 'wechat',
@@ -1919,6 +1928,87 @@ test('event timeline filters cross-source evidence, status and time with stable 
   assert.equal(bounded.evidence_count, 25)
   assert.equal(bounded.evidence.length, 20)
   assert.equal(bounded.evidence.at(-1).message_id, 'wechat:timeline:25')
+}))
+
+test('project key event timeline pages beyond legacy workspace windows and rejects stale continuation', () => withStore(store => {
+  store.syncGraph({
+    entities: [{
+      id: 'long-running-project',
+      type: 'project',
+      canonicalName: '多年项目',
+      aliases: [],
+      accountIds: [],
+      trustStatus: 'confirmed',
+      confidence: 1,
+      summary: ''
+    }],
+    relations: [],
+    reviewQueue: []
+  })
+  const keyTypes = ['decision', 'delivery', 'meeting', 'organization_change']
+  const events = Array.from({ length: 260 }, (_, index) => {
+    const timestamp = new Date(Date.UTC(2022, 0, 1 + index)).toISOString()
+    return {
+      id: `long-project-key-${String(index).padStart(3, '0')}`,
+      eventType: keyTypes[index % keyTypes.length],
+      title: `多年项目关键事件 ${index}`,
+      description: `第 ${index} 个项目决策或里程碑`,
+      startAt: timestamp,
+      endAt: '',
+      location: '',
+      confidence: 1,
+      status: 'confirmed',
+      searchText: `多年项目关键事件 ${index}`,
+      createdAt: timestamp,
+      participants: [{ entityId: 'long-running-project', role: 'project' }],
+      evidence: []
+    }
+  })
+  store.upsertEvents(events)
+  store.upsertEvents(Array.from({ length: 45 }, (_, index) => ({
+    ...events[index],
+    id: `long-project-generic-${String(index).padStart(3, '0')}`,
+    eventType: 'conversation',
+    title: `不应进入关键时间线 ${index}`
+  })))
+
+  const first = store.listEventTimeline({
+    entityId: 'long-running-project',
+    eventTypes: keyTypes,
+    limit: 40
+  })
+  assert.equal(first.total, 260)
+  assert.equal(first.items.length, 40)
+  assert.equal(first.hasMore, true)
+  const collected = [...first.items]
+  let offset = first.items.length
+  while (offset < first.total) {
+    const page = store.listEventTimeline({
+      entityId: 'long-running-project',
+      eventTypes: keyTypes,
+      limit: 40,
+      offset,
+      revision: first.revision
+    })
+    assert.equal(page.stale, false)
+    collected.push(...page.items)
+    offset += page.items.length
+  }
+  assert.equal(collected.length, 260)
+  assert.ok(collected.some(item => item.id === 'long-project-key-000'))
+  assert.ok(!collected.some(item => item.id.startsWith('long-project-generic-')))
+
+  ;(store as any).db.prepare(`UPDATE events SET updated_at=? WHERE id=?`)
+    .run('2030-01-01T00:00:00.000Z', 'long-project-key-000')
+  const stale = store.listEventTimeline({
+    entityId: 'long-running-project',
+    eventTypes: keyTypes,
+    limit: 40,
+    offset: 40,
+    revision: first.revision
+  })
+  assert.equal(stale.stale, true)
+  assert.equal(stale.items.length, 0)
 }))
 
 test('calendar participant identities persist as email anchors and event merges are reversible', () => withStore(store => {

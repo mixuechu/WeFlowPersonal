@@ -5218,6 +5218,9 @@ export class AiAssistantService {
   getEventTimeline(options: any = {}): any {
     const page = personalMemoryStore.listEventTimeline({
       entityId: String(options?.entityId || ''),
+      eventTypes: Array.isArray(options?.eventTypes)
+        ? options.eventTypes.map((value: unknown) => String(value || '').trim()).filter(Boolean)
+        : undefined,
       sourceId: ['wechat', 'documents', 'calendar', 'mail', 'legacy'].includes(options?.sourceId)
         ? options.sourceId
         : undefined,

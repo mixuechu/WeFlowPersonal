@@ -762,6 +762,14 @@ function AiAssistantPage() {
   const [projectEventSource, setProjectEventSource] = useState('')
   const [projectEventFrom, setProjectEventFrom] = useState('')
   const [projectEventTo, setProjectEventTo] = useState('')
+  const [projectKeyEventPage, setProjectKeyEventPage] = useState<any>({
+    items: [], total: 0, hasMore: false, revision: '', status: 'idle'
+  })
+  const [projectKeyEventLoadingMore, setProjectKeyEventLoadingMore] = useState(false)
+  const [projectKeyEventQuery, setProjectKeyEventQuery] = useState('')
+  const [projectKeyEventStatus, setProjectKeyEventStatus] = useState('')
+  const [projectKeyEventRefreshKey, setProjectKeyEventRefreshKey] = useState(0)
+  const projectKeyEventGate = useRef(new LatestRequestGate())
   const [projectEvidencePage, setProjectEvidencePage] = useState<any>({
     items: [], total: 0, unfilteredTotal: 0, hasMore: false, revision: '', status: 'idle'
   })
@@ -2827,6 +2835,51 @@ function AiAssistantPage() {
   ])
 
   useEffect(() => {
+    const request = projectKeyEventGate.current.begin()
+    const projectEntityId = String(projectWorkspace.project?.entityId || '')
+    setProjectKeyEventLoadingMore(false)
+    if (projectWorkspace.status !== 'ready' || !projectEntityId) {
+      setProjectKeyEventPage({
+        items: [], total: 0, hasMore: false, revision: '',
+        status: projectWorkspace.status === 'ready' ? 'derived' : 'idle'
+      })
+      return () => {
+        if (projectKeyEventGate.current.isCurrent(request)) projectKeyEventGate.current.invalidate()
+      }
+    }
+    setProjectKeyEventPage({
+      items: [], total: 0, hasMore: false, revision: '', status: 'loading'
+    })
+    const timer = window.setTimeout(() => {
+      void window.electronAPI.aiAssistant.getEventTimeline({
+        entityId: projectEntityId,
+        eventTypes: ['decision', 'delivery', 'meeting', 'organization_change'],
+        query: projectKeyEventQuery.trim() || undefined,
+        status: projectKeyEventStatus || undefined,
+        limit: 40,
+        offset: 0
+      }).then(page => {
+        if (!projectKeyEventGate.current.isCurrent(request)) return
+        setProjectKeyEventPage({ ...page, status: 'ready' })
+      }).catch(error => {
+        if (!projectKeyEventGate.current.isCurrent(request)) return
+        setProjectKeyEventPage({
+          items: [], total: 0, hasMore: false, revision: '', status: 'error',
+          error: error?.message || String(error)
+        })
+      })
+    }, projectKeyEventQuery.trim() ? 180 : 0)
+    return () => {
+      window.clearTimeout(timer)
+      if (projectKeyEventGate.current.isCurrent(request)) projectKeyEventGate.current.invalidate()
+    }
+  }, [
+    projectWorkspace.status, projectWorkspace.project?.entityId,
+    dashboard?.memoryRevision, projectKeyEventQuery, projectKeyEventStatus,
+    projectKeyEventRefreshKey
+  ])
+
+  useEffect(() => {
     const request = projectEvidenceGate.current.begin()
     const projectEntityId = String(projectWorkspace.project?.entityId || '')
     setProjectEvidenceLoadingMore(false)
@@ -4651,6 +4704,49 @@ function AiAssistantPage() {
       if (projectMemoryPageGates.current.isCurrent(kind, request)) {
         setProjectMemoryLoadingMore(current => setKeyedLoadingState(current, kind, false))
       }
+    }
+  }
+
+  const loadMoreProjectKeyEvents = async () => {
+    const projectEntityId = String(projectWorkspace.project?.entityId || '')
+    if (!projectEntityId || projectKeyEventLoadingMore || !projectKeyEventPage.hasMore) return
+    const request = projectKeyEventGate.current.begin()
+    setProjectKeyEventLoadingMore(true)
+    try {
+      const page = await window.electronAPI.aiAssistant.getEventTimeline({
+        entityId: projectEntityId,
+        eventTypes: ['decision', 'delivery', 'meeting', 'organization_change'],
+        query: projectKeyEventQuery.trim() || undefined,
+        status: projectKeyEventStatus || undefined,
+        limit: 40,
+        offset: projectKeyEventPage.items.length,
+        revision: projectKeyEventPage.revision
+      })
+      if (!projectKeyEventGate.current.isCurrent(request)) return
+      if (page.stale) {
+        setProjectKeyEventPage((current: any) => ({ ...current, status: 'stale' }))
+        window.setTimeout(() => {
+          if (projectKeyEventGate.current.isCurrent(request)) {
+            setProjectKeyEventRefreshKey(value => value + 1)
+          }
+        }, 250)
+        return
+      }
+      setProjectKeyEventPage((current: any) => ({
+        ...page,
+        items: [
+          ...current.items,
+          ...page.items.filter((item: any) =>
+            !current.items.some((known: any) => known.id === item.id))
+        ],
+        status: 'ready'
+      }))
+    } catch (error: any) {
+      if (projectKeyEventGate.current.isCurrent(request)) {
+        setMessage(error?.message || String(error))
+      }
+    } finally {
+      if (projectKeyEventGate.current.isCurrent(request)) setProjectKeyEventLoadingMore(false)
     }
   }
 
@@ -12435,8 +12531,26 @@ function AiAssistantPage() {
                 </button>}
               </section>}
               <section>
-                <h3>关键里程碑与决策 <small>{selectedProject.milestones.length + selectedProject.decisions.length}</small></h3>
-                {[...selectedProject.decisions, ...selectedProject.milestones].map((event: any) => <article key={event.id}>
+                <h3>关键里程碑与决策 <small>{selectedProject.entityId
+                  ? projectKeyEventPage.total
+                  : selectedProject.milestones.length + selectedProject.decisions.length}</small></h3>
+                {selectedProject.entityId && <div className="assistant-inline-filters">
+                  <input value={projectKeyEventQuery}
+                    onChange={event => setProjectKeyEventQuery(event.target.value)}
+                    placeholder="搜索决策、交付、会议…" />
+                  <select value={projectKeyEventStatus}
+                    onChange={event => setProjectKeyEventStatus(event.target.value)}>
+                    <option value="">可信时间线</option>
+                    <option value="confirmed">仅已确认</option>
+                    <option value="candidate">仅待确认</option>
+                    <option value="cancelled">仅已取消</option>
+                    <option value="rejected">仅已拒绝</option>
+                  </select>
+                </div>}
+                {(selectedProject.entityId
+                  ? projectKeyEventPage.items
+                  : [...selectedProject.decisions, ...selectedProject.milestones]
+                ).map((event: any) => <article key={event.id}>
                   <div><b>{event.title}</b><span>{event.event_type}</span></div>
                   <small>{event.start_at || '时间待确认'} · {event.status === 'confirmed' ? '已确认' : '待确认'}</small>
                   <div className="assistant-evidence-stack"><EvidenceRows
@@ -12445,7 +12559,19 @@ function AiAssistantPage() {
                       'event', event.id, event.title || '里程碑原文'
                     )} /></div>
                 </article>)}
-                {!selectedProject.milestones.length && !selectedProject.decisions.length && <em>尚无里程碑或决策事件</em>}
+                {projectKeyEventPage.status === 'loading' && <em>正在读取完整关键时间线…</em>}
+                {projectKeyEventPage.status === 'error' && <em>关键时间线读取失败：{projectKeyEventPage.error}</em>}
+                {(selectedProject.entityId
+                  ? projectKeyEventPage.status === 'ready' && !projectKeyEventPage.items.length
+                  : !selectedProject.milestones.length && !selectedProject.decisions.length
+                ) && <em>尚无里程碑或决策事件</em>}
+                {selectedProject.entityId && projectKeyEventPage.hasMore && <button
+                  disabled={projectKeyEventLoadingMore}
+                  onClick={() => void loadMoreProjectKeyEvents()}>
+                  {projectKeyEventLoadingMore
+                    ? '正在加载…'
+                    : `加载更多关键事件（已显示 ${projectKeyEventPage.items.length} / ${projectKeyEventPage.total}）`}
+                </button>}
               </section>
               {!!selectedProject.pendingReview?.total && <section>
                 <h3>候选线索 <small>{selectedProject.pendingReview.total}</small></h3>
