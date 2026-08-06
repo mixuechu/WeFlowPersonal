@@ -949,6 +949,8 @@ function AiAssistantPage() {
     contradictionCount?: number
     noContradictionCount?: number
     contradictionCountBasis?: 'lexical_archive' | 'scope_browse'
+    evidenceStrengthCounts?: Record<string, number>
+    evidenceStrengthCountsBasis?: 'lexical_archive' | 'scope_browse'
   }>({ status: 'idle', query: '' })
   const [memoryLoadingMore, setMemoryLoadingMore] = useState(false)
   const [memorySearchFeedback, setMemorySearchFeedback] = useState<any[]>([])
@@ -1396,6 +1398,7 @@ function AiAssistantPage() {
   const [memoryTrustFilter, setMemoryTrustFilter] = useState('')
   const [memorySupportFilter, setMemorySupportFilter] = useState('')
   const [memoryConflictFilter, setMemoryConflictFilter] = useState('')
+  const [memoryEvidenceStrengthFilter, setMemoryEvidenceStrengthFilter] = useState('')
   const [memoryFrom, setMemoryFrom] = useState('')
   const [memoryTo, setMemoryTo] = useState('')
   const selectedMemorySessionScope = useMemo(
@@ -1413,16 +1416,18 @@ function AiAssistantPage() {
     trustStatuses: memoryTrustFilter ? [memoryTrustFilter] : undefined,
     supportability: memorySupportFilter || undefined,
     evidenceConflict: memoryConflictFilter || undefined,
+    evidenceStrength: memoryEvidenceStrengthFilter || undefined,
     from: memoryFrom || undefined,
     to: memoryTo || undefined
   }), [
     memoryEntityFilter, memoryEntitySelection, memorySessionFilter, selectedMemorySessionScope,
     memorySourceFilter, memoryTypeFilter, memoryTrustFilter, memorySupportFilter,
-    memoryConflictFilter,
+    memoryConflictFilter, memoryEvidenceStrengthFilter,
     memoryFrom, memoryTo
   ])
   const hasMemoryScope = Boolean(memoryEntityFilter || memorySessionFilter || memorySourceFilter ||
     memoryTypeFilter || memoryTrustFilter || memorySupportFilter || memoryConflictFilter ||
+    memoryEvidenceStrengthFilter ||
     memoryFrom || memoryTo)
   const memoryFeedbackArchiveOptions = useMemo(() => ({
     action: memoryFeedbackArchiveAction || undefined,
@@ -2367,6 +2372,8 @@ function AiAssistantPage() {
           contradictionCount: page.contradictionCount,
           noContradictionCount: page.noContradictionCount,
           contradictionCountBasis: page.contradictionCountBasis,
+          evidenceStrengthCounts: page.evidenceStrengthCounts,
+          evidenceStrengthCountsBasis: page.evidenceStrengthCountsBasis,
           nextOffset: Number(page.offset || 0) + page.results.length
         })
       }).catch(error => {
@@ -6769,6 +6776,8 @@ function AiAssistantPage() {
         contradictionCount: page.contradictionCount,
         noContradictionCount: page.noContradictionCount,
         contradictionCountBasis: page.contradictionCountBasis,
+        evidenceStrengthCounts: page.evidenceStrengthCounts,
+        evidenceStrengthCountsBasis: page.evidenceStrengthCountsBasis,
         nextOffset: Number(page.offset || 0) + page.results.length
       })
     } catch (error: any) {
@@ -9455,7 +9464,7 @@ function AiAssistantPage() {
             </select>
             <label><span>从</span><input type="date" value={memoryFrom} onChange={event => setMemoryFrom(event.target.value)} /></label>
             <label><span>至</span><input type="date" value={memoryTo} onChange={event => setMemoryTo(event.target.value)} /></label>
-            {(memoryEntityFilter || memorySessionFilter || memorySourceFilter || memoryTypeFilter || memoryTrustFilter || memorySupportFilter || memoryConflictFilter || memoryFrom || memoryTo) &&
+            {(memoryEntityFilter || memorySessionFilter || memorySourceFilter || memoryTypeFilter || memoryTrustFilter || memorySupportFilter || memoryConflictFilter || memoryEvidenceStrengthFilter || memoryFrom || memoryTo) &&
               <button onClick={() => {
                 setMemoryEntityFilter('')
                 setMemoryEntitySelection(null)
@@ -9468,11 +9477,12 @@ function AiAssistantPage() {
                 setMemoryTrustFilter('')
                 setMemorySupportFilter('')
                 setMemoryConflictFilter('')
+                setMemoryEvidenceStrengthFilter('')
                 setMemoryFrom('')
                 setMemoryTo('')
               }}>清除范围</button>}
           </div>
-          {(memoryEntityFilter || memorySessionFilter || memorySourceFilter || memoryTypeFilter || memoryTrustFilter || memorySupportFilter || memoryConflictFilter || memoryFrom || memoryTo) &&
+          {(memoryEntityFilter || memorySessionFilter || memorySourceFilter || memoryTypeFilter || memoryTrustFilter || memorySupportFilter || memoryConflictFilter || memoryEvidenceStrengthFilter || memoryFrom || memoryTo) &&
             <small className="assistant-scope-note">当前范围在全文/向量召回之前生效，范围外内容不会参与排序或发送给模型。
               {memorySearchState.scopeCandidates !== null && memorySearchState.scopeCandidates !== undefined &&
                 ` · 当前候选 ${Number(memorySearchState.scopeCandidates || 0).toLocaleString()} 条`}
@@ -9486,6 +9496,32 @@ function AiAssistantPage() {
                 {memorySearchState.searchMode === 'lexical_archive'
                   ? ` · ${memorySearchState.lexicalSearchMode === 'substring_fallback' ? '子串回退' : '本机全文'}完整分页，不使用语义扩展`
                   : memorySearchState.truncated ? ' · 混合相关性排序池已达 500 条上限，可切换“完整关键词档案”继续查阅' : ''}
+              </div>}
+            {memorySearchState.status === 'ready' &&
+              Object.values(memorySearchState.evidenceStrengthCounts || {})
+                .some(count => Number(count || 0) > 0) &&
+              <div className="assistant-search-type-facets">
+                <div>
+                  <strong>按陈述强度核验</strong>
+                  <small>{memorySearchState.evidenceStrengthCountsBasis === 'lexical_archive'
+                    ? '完整关键词档案中的结构化原文强度'
+                    : '当前其余范围内的结构化原文强度'}
+                    {' · “仅间接转述”表示当前范围有转述、但没有直接陈述'}</small>
+                </div>
+                <button className={!memoryEvidenceStrengthFilter ? 'active' : ''}
+                  onClick={() => setMemoryEvidenceStrengthFilter('')}>全部强度</button>
+                <button
+                  className={memoryEvidenceStrengthFilter === 'direct' ? 'active' : ''}
+                  disabled={!Number(memorySearchState.evidenceStrengthCounts?.direct || 0)}
+                  onClick={() => setMemoryEvidenceStrengthFilter('direct')}>
+                  含直接陈述 · {Number(memorySearchState.evidenceStrengthCounts?.direct || 0)}
+                </button>
+                <button
+                  className={memoryEvidenceStrengthFilter === 'indirect_only' ? 'active' : ''}
+                  disabled={!Number(memorySearchState.evidenceStrengthCounts?.indirect_only || 0)}
+                  onClick={() => setMemoryEvidenceStrengthFilter('indirect_only')}>
+                  仅间接转述 · {Number(memorySearchState.evidenceStrengthCounts?.indirect_only || 0)}
+                </button>
               </div>}
             {memorySearchState.status === 'error' &&
               <div className="assistant-search-status error">“{memorySearchState.query}”检索失败：{memorySearchState.error}</div>}
@@ -9857,6 +9893,10 @@ function AiAssistantPage() {
                     scope.evidenceConflict
                       ? `证据冲突 ${scope.evidenceConflict === 'with_contradiction'
                           ? '含反证' : '当前范围未发现反证'}`
+                      : '',
+                    scope.evidenceStrength
+                      ? `陈述强度 ${scope.evidenceStrength === 'direct'
+                          ? '含直接陈述' : '仅间接转述'}`
                       : '',
                     scope.from || scope.to ? `时间 ${scope.from || '不限'} → ${scope.to || '不限'}` : ''
                   ].filter(Boolean)

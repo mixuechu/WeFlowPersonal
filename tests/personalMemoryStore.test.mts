@@ -10016,6 +10016,15 @@ test('memory scope filters apply entity, session, date and document type togethe
   assert.equal(filterMemorySearchResults(items, {
     evidenceConflict: 'forged-conflict'
   }).length, 0)
+  assert.deepEqual(filterMemorySearchResults(items, {
+    evidenceStrength: 'direct'
+  }).map(item => item.id), ['relation-1'])
+  assert.equal(filterMemorySearchResults(items, {
+    evidenceStrength: 'indirect_only'
+  }).length, 0)
+  assert.equal(filterMemorySearchResults(items, {
+    evidenceStrength: 'forged-strength'
+  }).length, 0)
   assert.equal(filterMemorySearchResults(items, { from: '2026-07-29' }).length, 0)
 })
 
@@ -10457,6 +10466,14 @@ test('memory trust scopes and facets separate confirmed candidates from source m
           timestamp: 1_800_000_002,
           excerpt: '日历载体只提供反证',
           role: 'contradiction'
+        },
+        {
+          sourceId: 'mail',
+          messageId: 'trust-confirmed-mail-indirect',
+          sessionId: 'data-source:mail',
+          timestamp: 1_700_000_003,
+          excerpt: '邮件载体只有第三方转述',
+          role: 'indirect'
         }
       ]
     }, {
@@ -10469,7 +10486,7 @@ test('memory trust scopes and facets separate confirmed candidates from source m
       sourceNature: 'other_statement',
       searchText: '可信层级关键词 待确认事实',
       evidence: evidence('trust-candidate-message', '可信层级关键词 待确认事实')
-        .map(item => ({ ...item, sourceId: 'wechat' }))
+        .map(item => ({ ...item, sourceId: 'wechat', role: 'indirect' }))
     }])
     store.syncTasks([{
       id: 'trust-facet-task',
@@ -10510,6 +10527,12 @@ test('memory trust scopes and facets separate confirmed candidates from source m
     const noContradictions = store.listScopedSearchDocumentIds({
       evidenceConflict: 'without_contradiction'
     })
+    const directEvidence = store.listScopedSearchDocumentIds({
+      evidenceStrength: 'direct'
+    })
+    const indirectOnlyEvidence = store.listScopedSearchDocumentIds({
+      evidenceStrength: 'indirect_only'
+    })
     const invalidConflict = store.listScopedSearchDocumentIds({
       evidenceConflict: 'forged-conflict'
     })
@@ -10541,6 +10564,15 @@ test('memory trust scopes and facets separate confirmed candidates from source m
       'claim:trust-facet-candidate',
       'task:trust-facet-task'
     ])
+    assert.deepEqual([...directEvidence!].filter(id => id.includes('trust-facet')), [
+      'claim:trust-facet-confirmed'
+    ])
+    assert.deepEqual([...indirectOnlyEvidence!].filter(id => id.includes('trust-facet')), [
+      'claim:trust-facet-candidate'
+    ])
+    assert.equal(store.listScopedSearchDocumentIds({
+      evidenceStrength: 'forged-strength'
+    })?.size, 0)
     assert.equal(invalidConflict?.size, 0)
     assert.deepEqual(
       store.getSearchDocumentTrustCountsByKeyword('可信层级关键词', null),
@@ -10599,10 +10631,30 @@ test('memory trust scopes and facets separate confirmed candidates from source m
       sourceIds: ['calendar'],
       evidenceConflict: 'without_contradiction'
     })!
+    const wechatDirect = store.listScopedSearchDocumentIds({
+      sourceIds: ['wechat'],
+      evidenceStrength: 'direct'
+    })!
+    const wechatIndirectOnly = store.listScopedSearchDocumentIds({
+      sourceIds: ['wechat'],
+      evidenceStrength: 'indirect_only'
+    })!
+    const mailDirect = store.listScopedSearchDocumentIds({
+      sourceIds: ['mail'],
+      evidenceStrength: 'direct'
+    })!
+    const mailIndirectOnly = store.listScopedSearchDocumentIds({
+      sourceIds: ['mail'],
+      evidenceStrength: 'indirect_only'
+    })!
     assert.equal(wechatContradictions.has('claim:trust-facet-confirmed'), false)
     assert.equal(calendarContradictions.has('claim:trust-facet-confirmed'), true)
     assert.equal(wechatWithoutContradictions.has('claim:trust-facet-confirmed'), true)
     assert.equal(calendarWithoutContradictions.has('claim:trust-facet-confirmed'), false)
+    assert.equal(wechatDirect.has('claim:trust-facet-confirmed'), true)
+    assert.equal(wechatIndirectOnly.has('claim:trust-facet-confirmed'), false)
+    assert.equal(mailDirect.has('claim:trust-facet-confirmed'), false)
+    assert.equal(mailIndirectOnly.has('claim:trust-facet-confirmed'), true)
     const futureSupporting = store.listScopedSearchDocumentIds({
       from: '2027-01-01',
       to: '2027-12-31',

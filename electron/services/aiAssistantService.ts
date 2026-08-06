@@ -8034,6 +8034,10 @@ export class AiAssistantService {
       ...scopedOptions,
       evidenceConflict: undefined
     })
+    const strengthFacetOptions = {
+      ...scopedOptions,
+      evidenceStrength: undefined
+    }
     if (!text && allowedIds === null) {
       return {
         results: [], offset, limit, total: 0, hasMore: false, truncated: false,
@@ -8102,7 +8106,7 @@ export class AiAssistantService {
           searchMode: undefined
         }
     const conflictFacetTotal = text
-      ? personalMemoryStore.listSearchDocumentsByKeywordPage(
+        ? personalMemoryStore.listSearchDocumentsByKeywordPage(
           text,
           conflictFacetAllowedIds,
           { offset: 0, limit: 1 }
@@ -8111,6 +8115,25 @@ export class AiAssistantService {
           conflictFacetAllowedIds || new Set(),
           { offset: 0, limit: 1 }
         ).total
+    const evidenceStrengthCounts = Object.fromEntries(
+      ['direct', 'indirect_only'].map(strength => {
+        const strengthAllowedIds = personalMemoryStore.listScopedSearchDocumentIds({
+          ...strengthFacetOptions,
+          evidenceStrength: strength
+        }) || new Set<string>()
+        const total = text
+          ? personalMemoryStore.listSearchDocumentsByKeywordPage(
+              text,
+              strengthAllowedIds,
+              { offset: 0, limit: 1 }
+            ).total
+          : personalMemoryStore.listSearchDocumentsInScopePage(
+              strengthAllowedIds,
+              { offset: 0, limit: 1 }
+            ).total
+        return [strength, total]
+      })
+    )
     if (text && searchMode === 'lexical_archive') {
       const lexicalPage = personalMemoryStore.listSearchDocumentsByKeywordPage(
         text,
@@ -8200,6 +8223,8 @@ export class AiAssistantService {
     page.contradictionCount = conflictFacet.count
     page.noContradictionCount = Math.max(0, conflictFacetTotal - conflictFacet.count)
     page.contradictionCountBasis = text ? 'lexical_archive' : 'scope_browse'
+    page.evidenceStrengthCounts = evidenceStrengthCounts
+    page.evidenceStrengthCountsBasis = text ? 'lexical_archive' : 'scope_browse'
     const feedback = this.memorySearchFeedbackContext(text, scopedOptions).entries
     const completedRevision = personalMemoryStore.getMemorySearchRevision()
     const completedEntitySelection = options.entityId

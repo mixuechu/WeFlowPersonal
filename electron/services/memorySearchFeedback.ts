@@ -38,6 +38,8 @@ export function buildMemorySearchFeedbackContext(
   if (supportability) scope.supportability = supportability
   const evidenceConflict = String(options.evidenceConflict || '').trim().toLowerCase()
   if (evidenceConflict) scope.evidenceConflict = evidenceConflict
+  const evidenceStrength = String(options.evidenceStrength || '').trim().toLowerCase()
+  if (evidenceStrength) scope.evidenceStrength = evidenceStrength
   const scopeJson = JSON.stringify(scope)
   return {
     query: normalizedQuery,

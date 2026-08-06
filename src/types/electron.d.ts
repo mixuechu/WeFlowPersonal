@@ -2046,6 +2046,8 @@ export interface ElectronAPI {
         contradictionCount?: number
         noContradictionCount?: number
         contradictionCountBasis?: 'lexical_archive' | 'scope_browse'
+        evidenceStrengthCounts?: Record<string, number>
+        evidenceStrengthCountsBasis?: 'lexical_archive' | 'scope_browse'
         scopeCandidates: number | null
         revision: string
         stale: boolean

@@ -47,6 +47,14 @@ test('search feedback context is stable but isolated by retrieval scope', () => 
     evidenceConflict: 'with_contradiction'
   })
   assert.notEqual(first.scopeFingerprint, contradictionsOnly.scopeFingerprint)
+  const directOnly = buildMemorySearchFeedbackContext('谁在等我 回复', {
+    entityId: 'person-1',
+    sourceIds: ['wechat', 'calendar'],
+    documentTypes: ['task', 'event'],
+    evidenceStrength: 'direct'
+  })
+  assert.notEqual(first.scopeFingerprint, directOnly.scopeFingerprint)
+  assert.notEqual(contradictionsOnly.scopeFingerprint, directOnly.scopeFingerprint)
 })
 
 test('search feedback conservatively reranks without deleting any result', () => {

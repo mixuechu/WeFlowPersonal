@@ -136,6 +136,43 @@ function searchDocumentHasContradictionSql(
   return { sql: `(${sql})`, parameters }
 }
 
+function searchDocumentEvidenceStrengthSql(
+  strength: 'direct' | 'indirect_only',
+  options: MemorySearchOptions = {},
+  alias = 'd'
+): { sql: string; parameters: Array<string | number> } {
+  const branches = [
+    { type: 'claim', foreignKey: 'claim_id' },
+    { type: 'relation', foreignKey: 'relation_id' },
+    { type: 'event', foreignKey: 'event_id' }
+  ]
+  const parameters: Array<string | number> = []
+  const sql = branches.map(branch => {
+    const selectedScope = searchEvidenceScopeSql('strength', options)
+    parameters.push(...selectedScope.parameters)
+    const selectedRole = strength === 'direct'
+      ? `COALESCE(strength.evidence_role,'direct')='direct'`
+      : `strength.evidence_role='indirect'`
+    let directExclusion = ''
+    if (strength === 'indirect_only') {
+      const directScope = searchEvidenceScopeSql('direct_strength', options)
+      parameters.push(...directScope.parameters)
+      directExclusion = `
+        AND NOT EXISTS (SELECT 1 FROM evidence direct_strength
+          WHERE direct_strength.${branch.foreignKey}=${alias}.source_id
+            AND COALESCE(direct_strength.evidence_role,'direct')='direct'
+            AND ${directScope.sql})`
+    }
+    return `(${alias}.document_type='${branch.type}'
+      AND EXISTS (SELECT 1 FROM evidence strength
+        WHERE strength.${branch.foreignKey}=${alias}.source_id
+          AND ${selectedRole}
+          AND ${selectedScope.sql})
+      ${directExclusion})`
+  }).join('\n    OR ')
+  return { sql: `(${sql})`, parameters }
+}
+
 function relationSearchText(
   subjectName: unknown,
   predicate: unknown,
@@ -14059,6 +14096,7 @@ export class PersonalMemoryStore {
       options.trustStatuses?.length ||
       options.supportability ||
       options.evidenceConflict ||
+      options.evidenceStrength ||
       options.relationTypes?.length ||
       options.sourceIds?.length
     )
@@ -14116,6 +14154,14 @@ export class PersonalMemoryStore {
         : `NOT ${contradiction.sql}`)
       parameters.push(...contradiction.parameters)
     } else if (evidenceConflict) {
+      conditions.push('0=1')
+    }
+    const evidenceStrength = String(options.evidenceStrength || '').trim().toLowerCase()
+    if (evidenceStrength === 'direct' || evidenceStrength === 'indirect_only') {
+      const strength = searchDocumentEvidenceStrengthSql(evidenceStrength, options)
+      conditions.push(strength.sql)
+      parameters.push(...strength.parameters)
+    } else if (evidenceStrength) {
       conditions.push('0=1')
     }
     const sourceIds = [...new Set((options.sourceIds || [])

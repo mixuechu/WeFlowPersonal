@@ -11,6 +11,7 @@ export type MemorySearchOptions = {
   trustStatuses?: string[]
   supportability?: string
   evidenceConflict?: string
+  evidenceStrength?: string
   relationTypes?: string[]
   sourceIds?: string[]
 }
@@ -89,6 +90,7 @@ export function filterMemorySearchResults(
   const trustStatuses = new Set((options.trustStatuses || []).filter(Boolean))
   const supportability = String(options.supportability || '')
   const evidenceConflict = String(options.evidenceConflict || '')
+  const evidenceStrength = String(options.evidenceStrength || '')
   const sources = new Set((options.sourceIds || []).map(value => value.trim().toLowerCase()).filter(Boolean))
   const relationTypes = new Set((options.relationTypes || []).map(value => value.trim().toLowerCase()).filter(Boolean))
   const entityTerms = (options.entityTerms || []).map(value => value.trim().toLowerCase()).filter(Boolean)
@@ -120,6 +122,16 @@ export function filterMemorySearchResults(
         String(evidence.evidence_role || evidence.evidenceRole || '') === 'contradiction')
       if (evidenceConflict === 'with_contradiction' ? !hasContradiction
         : evidenceConflict === 'without_contradiction' ? hasContradiction
+          : true) return false
+    }
+    if (evidenceStrength) {
+      if (!['claim', 'relation', 'event'].includes(String(item.document_type || ''))) return false
+      const roles = new Set((item.evidence || []).map((evidence: any) =>
+        String(evidence.evidence_role || evidence.evidenceRole || 'direct')))
+      const hasDirect = roles.has('direct')
+      const hasIndirect = roles.has('indirect')
+      if (evidenceStrength === 'direct' ? !hasDirect
+        : evidenceStrength === 'indirect_only' ? (!hasIndirect || hasDirect)
           : true) return false
     }
     if (relationTypes.size && item.document_type === 'relation') {
