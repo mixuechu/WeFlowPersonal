@@ -5577,6 +5577,10 @@ export class AiAssistantService {
       status: ['running', 'completed', 'partial', 'failed', 'all'].includes(options?.status)
         ? options.status
         : 'all',
+      trigger: ['manual', 'startup', 'daily', 'backlog', 'resume', 'document', 'legacy', 'all']
+        .includes(options?.trigger) ? options.trigger : 'all',
+      backlogOutcome: ['idle', 'progressed', 'waiting', 'failed', 'paused', 'drained', 'interrupted', 'all']
+        .includes(options?.backlogOutcome) ? options.backlogOutcome : 'all',
       query: String(options?.query || ''),
       from: String(options?.from || ''),
       to: String(options?.to || ''),

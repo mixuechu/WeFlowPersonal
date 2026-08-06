@@ -11216,6 +11216,14 @@ test('ingestion archive revision covers run and batch lifecycle and self-heals o
     assert.equal(reopened.listIngestionRunPage({ query: 'progressed' }).total, 1)
     assert.equal(reopened.listIngestionRunPage({ query: '积压自动接力' }).total, 1)
     assert.equal(reopened.listIngestionRunPage({ query: '已推进' }).total, 1)
+    assert.equal(reopened.listIngestionRunPage({
+      trigger: 'backlog',
+      backlogOutcome: 'progressed'
+    }).total, 1)
+    assert.equal(reopened.listIngestionRunPage({
+      trigger: 'resume',
+      backlogOutcome: 'progressed'
+    }).total, 0)
     assert.equal(reopened.getIngestionRunDossier('ingestion-revision-run')?.batchTotal, 1)
     reopened.close()
   } finally {

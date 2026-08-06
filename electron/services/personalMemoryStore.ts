@@ -13657,6 +13657,8 @@ export class PersonalMemoryStore {
 
   listIngestionRunPage(options: {
     status?: 'running' | 'completed' | 'partial' | 'failed' | 'all'
+    trigger?: 'manual' | 'startup' | 'daily' | 'backlog' | 'resume' | 'document' | 'legacy' | 'all'
+    backlogOutcome?: 'idle' | 'progressed' | 'waiting' | 'failed' | 'paused' | 'drained' | 'interrupted' | 'all'
     query?: string
     from?: string
     to?: string
@@ -13692,6 +13694,16 @@ export class PersonalMemoryStore {
     if (['running', 'completed', 'partial', 'failed'].includes(String(options.status || ''))) {
       conditions.push('r.status=?')
       parameters.push(String(options.status))
+    }
+    if (['manual', 'startup', 'daily', 'backlog', 'resume', 'document', 'legacy']
+      .includes(String(options.trigger || ''))) {
+      conditions.push('r.trigger_kind=?')
+      parameters.push(String(options.trigger))
+    }
+    if (['idle', 'progressed', 'waiting', 'failed', 'paused', 'drained', 'interrupted']
+      .includes(String(options.backlogOutcome || ''))) {
+      conditions.push('r.backlog_outcome=?')
+      parameters.push(String(options.backlogOutcome))
     }
     const query = String(options.query || '').trim().toLocaleLowerCase('zh-CN')
     if (query) {

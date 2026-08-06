@@ -1214,6 +1214,12 @@ function AiAssistantPage() {
   const [ingestionArchiveStatus, setIngestionArchiveStatus] = useState<
     'all' | 'running' | 'completed' | 'partial' | 'failed'
   >('all')
+  const [ingestionArchiveTrigger, setIngestionArchiveTrigger] = useState<
+    'all' | 'manual' | 'startup' | 'daily' | 'backlog' | 'resume' | 'document' | 'legacy'
+  >('all')
+  const [ingestionArchiveBacklogOutcome, setIngestionArchiveBacklogOutcome] = useState<
+    'all' | 'idle' | 'progressed' | 'waiting' | 'failed' | 'paused' | 'drained' | 'interrupted'
+  >('all')
   const [ingestionArchiveQuery, setIngestionArchiveQuery] = useState('')
   const [ingestionArchiveFrom, setIngestionArchiveFrom] = useState('')
   const [ingestionArchiveTo, setIngestionArchiveTo] = useState('')
@@ -1553,13 +1559,16 @@ function AiAssistantPage() {
   ])
   const ingestionArchiveOptions = useMemo(() => ({
     status: ingestionArchiveStatus,
+    trigger: ingestionArchiveTrigger,
+    backlogOutcome: ingestionArchiveBacklogOutcome,
     query: ingestionArchiveQuery || undefined,
     from: ingestionArchiveFrom ? new Date(`${ingestionArchiveFrom}T00:00:00+08:00`).toISOString() : undefined,
     to: ingestionArchiveTo ? new Date(`${ingestionArchiveTo}T23:59:59.999+08:00`).toISOString() : undefined,
     limit: 30,
     offset: 0
   }), [
-    ingestionArchiveStatus, ingestionArchiveQuery, ingestionArchiveFrom, ingestionArchiveTo
+    ingestionArchiveStatus, ingestionArchiveTrigger, ingestionArchiveBacklogOutcome,
+    ingestionArchiveQuery, ingestionArchiveFrom, ingestionArchiveTo
   ])
   const crossStoreRecoveryArchiveOptions = useMemo(() => ({
     kind: crossStoreRecoveryArchiveKind,
@@ -14023,6 +14032,30 @@ function AiAssistantPage() {
                   <option value="partial">部分完成</option>
                   <option value="failed">失败</option>
                 </select>
+                <select value={ingestionArchiveTrigger}
+                  onChange={event => setIngestionArchiveTrigger(event.target.value as typeof ingestionArchiveTrigger)}>
+                  <option value="all">所有触发来源</option>
+                  <option value="manual">手动补齐</option>
+                  <option value="startup">应用启动</option>
+                  <option value="daily">每日计划</option>
+                  <option value="backlog">积压自动接力</option>
+                  <option value="resume">电脑唤醒</option>
+                  <option value="document">文档分析</option>
+                  <option value="legacy">旧版运行</option>
+                </select>
+                <select value={ingestionArchiveBacklogOutcome}
+                  onChange={event => setIngestionArchiveBacklogOutcome(
+                    event.target.value as typeof ingestionArchiveBacklogOutcome
+                  )}>
+                  <option value="all">所有接力结果</option>
+                  <option value="progressed">已推进</option>
+                  <option value="drained">已清空</option>
+                  <option value="waiting">等待下一轮</option>
+                  <option value="failed">未推进并退避</option>
+                  <option value="paused">安全暂停</option>
+                  <option value="interrupted">异常退出</option>
+                  <option value="idle">无分页积压</option>
+                </select>
                 <input value={ingestionArchiveQuery}
                   onChange={event => setIngestionArchiveQuery(event.target.value)}
                   placeholder="搜索运行 ID、触发来源、结果、模型、Prompt 或错误" />
@@ -14030,9 +14063,11 @@ function AiAssistantPage() {
                   onChange={event => setIngestionArchiveFrom(event.target.value)} /></label>
                 <label><span>到</span><input type="date" value={ingestionArchiveTo}
                   onChange={event => setIngestionArchiveTo(event.target.value)} /></label>
-                {(ingestionArchiveStatus !== 'all' || ingestionArchiveQuery ||
+                {(ingestionArchiveStatus !== 'all' || ingestionArchiveTrigger !== 'all' ||
+                  ingestionArchiveBacklogOutcome !== 'all' || ingestionArchiveQuery ||
                   ingestionArchiveFrom || ingestionArchiveTo) && <button onClick={() => {
-                  setIngestionArchiveStatus('all'); setIngestionArchiveQuery('')
+                  setIngestionArchiveStatus('all'); setIngestionArchiveTrigger('all')
+                  setIngestionArchiveBacklogOutcome('all'); setIngestionArchiveQuery('')
                   setIngestionArchiveFrom(''); setIngestionArchiveTo('')
                 }}>清除范围</button>}
               </div>
