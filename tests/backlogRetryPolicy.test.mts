@@ -28,6 +28,9 @@ test('healthy backlog progress schedules one bounded continuation without failur
   assert.equal(result.paused, false)
   assert.equal(result.nextAttemptAt, '2026-07-31T02:15:00.000Z')
   assert.equal(result.lastProgressAt, now.toISOString())
+  assert.equal(result.lastOutcome, 'progressed')
+  assert.equal(result.previousBacklogCount, 0)
+  assert.equal(result.remainingBacklogCount, 1)
 })
 
 test('stalled operational failures back off exponentially and cap at six hours', () => {
@@ -58,11 +61,15 @@ test('safe cancellation pauses in-session continuation while retaining its offse
   })
   assert.equal(state.paused, true)
   assert.equal(state.nextAttemptAt, null)
+  assert.equal(state.lastOutcome, 'paused')
+  assert.equal(state.previousBacklogCount, 1)
+  assert.equal(state.remainingBacklogCount, 1)
 })
 
 test('drained backlog clears retry state', () => {
   const state = planBacklogRetry({
     previous: {
+      ...EMPTY_BACKLOG_RETRY_STATE,
       nextAttemptAt: now.toISOString(),
       failureCount: 3,
       paused: true,
@@ -75,7 +82,12 @@ test('drained backlog clears retry state', () => {
     operationalFailure: false,
     cancelled: false
   })
-  assert.deepEqual(state, EMPTY_BACKLOG_RETRY_STATE)
+  assert.equal(state.nextAttemptAt, null)
+  assert.equal(state.failureCount, 0)
+  assert.equal(state.paused, false)
+  assert.equal(state.lastOutcome, 'drained')
+  assert.equal(state.previousBacklogCount, 1)
+  assert.equal(state.remainingBacklogCount, 0)
 })
 
 test('automatic continuation requires an enabled source, a due time and a live offset', () => {

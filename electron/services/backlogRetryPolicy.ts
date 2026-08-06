@@ -4,6 +4,9 @@ export type BacklogRetryState = {
   paused: boolean
   lastAttemptAt: string | null
   lastProgressAt: string | null
+  lastOutcome: 'idle' | 'progressed' | 'waiting' | 'failed' | 'paused' | 'drained'
+  previousBacklogCount: number
+  remainingBacklogCount: number
 }
 
 export const EMPTY_BACKLOG_RETRY_STATE: BacklogRetryState = {
@@ -11,7 +14,10 @@ export const EMPTY_BACKLOG_RETRY_STATE: BacklogRetryState = {
   failureCount: 0,
   paused: false,
   lastAttemptAt: null,
-  lastProgressAt: null
+  lastProgressAt: null,
+  lastOutcome: 'idle',
+  previousBacklogCount: 0,
+  remainingBacklogCount: 0
 }
 
 function normalizedOffsets(offsets: Record<string, number> | undefined): Record<string, number> {
@@ -43,18 +49,31 @@ export function planBacklogRetry(input: {
   maxDelayMs?: number
 }): BacklogRetryState {
   const current = normalizedOffsets(input.currentOffsets)
+  const previous = normalizedOffsets(input.previousOffsets)
   const nowIso = input.now.toISOString()
   if (!Object.keys(current).length) {
-    return { ...EMPTY_BACKLOG_RETRY_STATE }
+    const drained = Object.keys(previous).length > 0
+    return {
+      ...EMPTY_BACKLOG_RETRY_STATE,
+      lastAttemptAt: nowIso,
+      lastProgressAt: drained ? nowIso : input.previous.lastProgressAt,
+      lastOutcome: drained ? 'drained' : 'idle',
+      previousBacklogCount: Object.keys(previous).length
+    }
   }
   const progressed = didBacklogProgress(input.previousOffsets, current)
+  const previousBacklogCount = Object.keys(previous).length
+  const remainingBacklogCount = Object.keys(current).length
   if (input.cancelled) {
     return {
       ...input.previous,
       nextAttemptAt: null,
       paused: true,
       lastAttemptAt: nowIso,
-      lastProgressAt: progressed ? nowIso : input.previous.lastProgressAt
+      lastProgressAt: progressed ? nowIso : input.previous.lastProgressAt,
+      lastOutcome: 'paused',
+      previousBacklogCount,
+      remainingBacklogCount
     }
   }
   const baseDelayMs = Math.max(60_000, Number(input.baseDelayMs || 15 * 60_000))
@@ -70,7 +89,10 @@ export function planBacklogRetry(input: {
     failureCount,
     paused: false,
     lastAttemptAt: nowIso,
-    lastProgressAt: progressed ? nowIso : input.previous.lastProgressAt
+    lastProgressAt: progressed ? nowIso : input.previous.lastProgressAt,
+    lastOutcome: progressed ? 'progressed' : input.operationalFailure ? 'failed' : 'waiting',
+    previousBacklogCount,
+    remainingBacklogCount
   }
 }
 

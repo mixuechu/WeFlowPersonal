@@ -1,4 +1,4 @@
-export const CURSOR_STATUS_PAYLOAD_VERSION = 'cursor-status-v2'
+export const CURSOR_STATUS_PAYLOAD_VERSION = 'cursor-status-v3'
 
 export function buildCursorStatusPayload(cursor: any): any {
   const recentMessageIds = Array.isArray(cursor?.recentMessageIds) ? cursor.recentMessageIds : []
@@ -51,7 +51,11 @@ export function buildCursorStatusPayload(cursor: any): any {
       nextAttemptAt: cursor?.backlogRetry?.nextAttemptAt || null,
       failureCount: Number(cursor?.backlogRetry?.failureCount || 0),
       paused: Boolean(cursor?.backlogRetry?.paused),
-      lastProgressAt: cursor?.backlogRetry?.lastProgressAt || null
+      lastAttemptAt: cursor?.backlogRetry?.lastAttemptAt || null,
+      lastProgressAt: cursor?.backlogRetry?.lastProgressAt || null,
+      lastOutcome: cursor?.backlogRetry?.lastOutcome || 'idle',
+      previousBacklogCount: Number(cursor?.backlogRetry?.previousBacklogCount || 0),
+      remainingBacklogCount: Number(cursor?.backlogRetry?.remainingBacklogCount || 0)
     },
     privateStateCounts: {
       recentMessageKeys: recentMessageIds.length,

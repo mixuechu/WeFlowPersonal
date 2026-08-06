@@ -7920,7 +7920,11 @@ test('renderer cursor status exposes counts but keeps durable keys and session m
       nextAttemptAt: '2026-07-31T00:15:00.000Z',
       failureCount: 2,
       paused: false,
-      lastProgressAt: '2026-07-31T00:00:00.000Z'
+      lastAttemptAt: '2026-07-31T00:02:00.000Z',
+      lastProgressAt: '2026-07-31T00:00:00.000Z',
+      lastOutcome: 'progressed',
+      previousBacklogCount: 1_100,
+      remainingBacklogCount: 1_000
     }
   }
   const payload = buildCursorStatusPayload(cursor)
@@ -7932,6 +7936,16 @@ test('renderer cursor status exposes counts but keeps durable keys and session m
   assert.equal(payload.lastScheduledError, '日历连接器暂时失败')
   assert.equal(payload.scheduledRetryCount, 2)
   assert.equal(payload.nextScheduledRetryAt, '2026-07-31T00:32:00.000Z')
+  assert.deepEqual(payload.backlogRetry, {
+    nextAttemptAt: '2026-07-31T00:15:00.000Z',
+    failureCount: 2,
+    paused: false,
+    lastAttemptAt: '2026-07-31T00:02:00.000Z',
+    lastProgressAt: '2026-07-31T00:00:00.000Z',
+    lastOutcome: 'progressed',
+    previousBacklogCount: 1_100,
+    remainingBacklogCount: 1_000
+  })
   assert.deepEqual(payload.systemWake, {
     lastSuspendAt: '2026-07-31T02:00:00.000Z',
     lastResumeAt: '2026-07-31T08:00:00.000Z',

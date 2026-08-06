@@ -8262,11 +8262,26 @@ function AiAssistantPage() {
             {Number(status?.cursor?.pendingSessionBacklogCount || 0) > 0 && <small>
               仍有 {Number(status.cursor.pendingSessionBacklogCount)} 个高流量微信会话超过本轮安全分页上限；
               下一页位置已经保存，继续补齐会从该位置向后读取，不会重复停在最新 10,000 条。
+              {status.cursor.backlogRetry?.lastAttemptAt
+                ? ` 上次接力于 ${new Date(status.cursor.backlogRetry.lastAttemptAt).toLocaleString('zh-CN', { hour12: false })}：${
+                    status.cursor.backlogRetry.lastOutcome === 'progressed'
+                      ? `已推进，剩余 ${Number(status.cursor.backlogRetry.remainingBacklogCount || status.cursor.pendingSessionBacklogCount)} 个会话`
+                      : status.cursor.backlogRetry.lastOutcome === 'failed'
+                        ? '未能推进，正在按失败次数退避'
+                        : status.cursor.backlogRetry.lastOutcome === 'paused'
+                          ? '已按安全暂停停在当前断点'
+                          : '已保存当前断点，等待下一轮'
+                  }。`
+                : ''}
               {status.cursor.backlogRetry?.paused
                 ? ' 自动接力已因安全暂停停止，下次手动、启动或每日运行会继续。'
                 : status.cursor.backlogRetry?.nextAttemptAt
                   ? ` 将于 ${new Date(status.cursor.backlogRetry.nextAttemptAt).toLocaleString('zh-CN', { hour12: false })} 自动接力${Number(status.cursor.backlogRetry.failureCount || 0) > 0 ? `（连续失败 ${Number(status.cursor.backlogRetry.failureCount)} 次，已退避）` : ''}。`
                   : ''}
+            </small>}
+            {status?.cursor?.backlogRetry?.lastOutcome === 'drained' && status.cursor.backlogRetry?.lastAttemptAt && <small>
+              分页积压已于 {new Date(status.cursor.backlogRetry.lastAttemptAt).toLocaleString('zh-CN', { hour12: false })} 清空；
+              上次接力前有 {Number(status.cursor.backlogRetry.previousBacklogCount || 0)} 个高流量会话，现已全部追平。
             </small>}
             {ingestionStatus.error && <small>{ingestionStatus.error}</small>}
           </div>
