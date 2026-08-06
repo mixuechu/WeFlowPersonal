@@ -10007,6 +10007,15 @@ test('memory scope filters apply entity, session, date and document type togethe
   assert.equal(filterMemorySearchResults(items, {
     supportability: 'forged-status'
   }).length, 0)
+  assert.deepEqual(filterMemorySearchResults(items, {
+    evidenceConflict: 'without_contradiction'
+  }).map(item => item.id), ['relation-1', 'task-1', 'entity-with-index-time-only'])
+  assert.equal(filterMemorySearchResults(items, {
+    evidenceConflict: 'with_contradiction'
+  }).length, 0)
+  assert.equal(filterMemorySearchResults(items, {
+    evidenceConflict: 'forged-conflict'
+  }).length, 0)
   assert.equal(filterMemorySearchResults(items, { from: '2026-07-29' }).length, 0)
 })
 
@@ -10498,6 +10507,9 @@ test('memory trust scopes and facets separate confirmed candidates from source m
     const contradictions = store.listScopedSearchDocumentIds({
       evidenceConflict: 'with_contradiction'
     })
+    const noContradictions = store.listScopedSearchDocumentIds({
+      evidenceConflict: 'without_contradiction'
+    })
     const invalidConflict = store.listScopedSearchDocumentIds({
       evidenceConflict: 'forged-conflict'
     })
@@ -10523,6 +10535,11 @@ test('memory trust scopes and facets separate confirmed candidates from source m
     assert.equal(invalidSupport?.size, 0)
     assert.deepEqual([...contradictions!].filter(id => id.includes('trust-facet')), [
       'claim:trust-facet-confirmed'
+    ])
+    assert.deepEqual([...noContradictions!].filter(id => id.includes('trust-facet')), [
+      'entity:trust-facet-person',
+      'claim:trust-facet-candidate',
+      'task:trust-facet-task'
     ])
     assert.equal(invalidConflict?.size, 0)
     assert.deepEqual(
@@ -10574,8 +10591,18 @@ test('memory trust scopes and facets separate confirmed candidates from source m
       sourceIds: ['calendar'],
       evidenceConflict: 'with_contradiction'
     })!
+    const wechatWithoutContradictions = store.listScopedSearchDocumentIds({
+      sourceIds: ['wechat'],
+      evidenceConflict: 'without_contradiction'
+    })!
+    const calendarWithoutContradictions = store.listScopedSearchDocumentIds({
+      sourceIds: ['calendar'],
+      evidenceConflict: 'without_contradiction'
+    })!
     assert.equal(wechatContradictions.has('claim:trust-facet-confirmed'), false)
     assert.equal(calendarContradictions.has('claim:trust-facet-confirmed'), true)
+    assert.equal(wechatWithoutContradictions.has('claim:trust-facet-confirmed'), true)
+    assert.equal(calendarWithoutContradictions.has('claim:trust-facet-confirmed'), false)
     const futureSupporting = store.listScopedSearchDocumentIds({
       from: '2027-01-01',
       to: '2027-12-31',

@@ -2044,6 +2044,7 @@ export interface ElectronAPI {
         supportCountsBasis?: 'lexical_archive' | 'scope_browse'
         supportCountsSearchMode?: 'fts' | 'substring_fallback'
         contradictionCount?: number
+        noContradictionCount?: number
         contradictionCountBasis?: 'lexical_archive' | 'scope_browse'
         scopeCandidates: number | null
         revision: string

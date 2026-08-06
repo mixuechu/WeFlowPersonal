@@ -118,7 +118,9 @@ export function filterMemorySearchResults(
     if (evidenceConflict) {
       const hasContradiction = (item.evidence || []).some((evidence: any) =>
         String(evidence.evidence_role || evidence.evidenceRole || '') === 'contradiction')
-      if (evidenceConflict === 'with_contradiction' ? !hasContradiction : true) return false
+      if (evidenceConflict === 'with_contradiction' ? !hasContradiction
+        : evidenceConflict === 'without_contradiction' ? hasContradiction
+          : true) return false
     }
     if (relationTypes.size && item.document_type === 'relation') {
       const predicate = String(item.metadata?.predicate || item.title || '').trim().toLowerCase()

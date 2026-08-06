@@ -8101,6 +8101,16 @@ export class AiAssistantService {
           ),
           searchMode: undefined
         }
+    const conflictFacetTotal = text
+      ? personalMemoryStore.listSearchDocumentsByKeywordPage(
+          text,
+          conflictFacetAllowedIds,
+          { offset: 0, limit: 1 }
+        ).total
+      : personalMemoryStore.listSearchDocumentsInScopePage(
+          conflictFacetAllowedIds || new Set(),
+          { offset: 0, limit: 1 }
+        ).total
     if (text && searchMode === 'lexical_archive') {
       const lexicalPage = personalMemoryStore.listSearchDocumentsByKeywordPage(
         text,
@@ -8188,6 +8198,7 @@ export class AiAssistantService {
     page.supportCountsBasis = text ? 'lexical_archive' : 'scope_browse'
     page.supportCountsSearchMode = supportFacet.searchMode
     page.contradictionCount = conflictFacet.count
+    page.noContradictionCount = Math.max(0, conflictFacetTotal - conflictFacet.count)
     page.contradictionCountBasis = text ? 'lexical_archive' : 'scope_browse'
     const feedback = this.memorySearchFeedbackContext(text, scopedOptions).entries
     const completedRevision = personalMemoryStore.getMemorySearchRevision()

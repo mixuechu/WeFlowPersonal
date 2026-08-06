@@ -14108,9 +14108,12 @@ export class PersonalMemoryStore {
     }
     else if (supportability) conditions.push('0=1')
     const evidenceConflict = String(options.evidenceConflict || '').trim().toLowerCase()
-    if (evidenceConflict === 'with_contradiction') {
+    if (evidenceConflict === 'with_contradiction' ||
+        evidenceConflict === 'without_contradiction') {
       const contradiction = searchDocumentHasContradictionSql(options)
-      conditions.push(contradiction.sql)
+      conditions.push(evidenceConflict === 'with_contradiction'
+        ? contradiction.sql
+        : `NOT ${contradiction.sql}`)
       parameters.push(...contradiction.parameters)
     } else if (evidenceConflict) {
       conditions.push('0=1')

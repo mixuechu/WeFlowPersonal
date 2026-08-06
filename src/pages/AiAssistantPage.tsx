@@ -947,6 +947,7 @@ function AiAssistantPage() {
     supportCountsBasis?: 'lexical_archive' | 'scope_browse'
     supportCountsSearchMode?: 'fts' | 'substring_fallback'
     contradictionCount?: number
+    noContradictionCount?: number
     contradictionCountBasis?: 'lexical_archive' | 'scope_browse'
   }>({ status: 'idle', query: '' })
   const [memoryLoadingMore, setMemoryLoadingMore] = useState(false)
@@ -2364,6 +2365,7 @@ function AiAssistantPage() {
           supportCountsBasis: page.supportCountsBasis,
           supportCountsSearchMode: page.supportCountsSearchMode,
           contradictionCount: page.contradictionCount,
+          noContradictionCount: page.noContradictionCount,
           contradictionCountBasis: page.contradictionCountBasis,
           nextOffset: Number(page.offset || 0) + page.results.length
         })
@@ -6765,6 +6767,7 @@ function AiAssistantPage() {
         supportCountsBasis: page.supportCountsBasis,
         supportCountsSearchMode: page.supportCountsSearchMode,
         contradictionCount: page.contradictionCount,
+        noContradictionCount: page.noContradictionCount,
         contradictionCountBasis: page.contradictionCountBasis,
         nextOffset: Number(page.offset || 0) + page.results.length
       })
@@ -9551,8 +9554,17 @@ function AiAssistantPage() {
                     仅供审阅 · {Number(memorySearchState.supportCounts?.review_only || 0)}
                   </button>
                 </>}
-                {(Number(memorySearchState.contradictionCount || 0) > 0 || Boolean(memoryConflictFilter)) && <>
+                {(Number(memorySearchState.contradictionCount || 0) > 0 ||
+                  Number(memorySearchState.noContradictionCount || 0) > 0 ||
+                  Boolean(memoryConflictFilter)) && <>
                   <span className="assistant-search-facet-divider" aria-hidden="true" />
+                  <button
+                    className={memoryConflictFilter === 'without_contradiction' ? 'active' : ''}
+                    disabled={!Number(memorySearchState.noContradictionCount || 0)}
+                    onClick={() => setMemoryConflictFilter(current =>
+                      current === 'without_contradiction' ? '' : 'without_contradiction')}>
+                    当前范围未发现反证 · {Number(memorySearchState.noContradictionCount || 0)}
+                  </button>
                   <button
                     className={`warning ${memoryConflictFilter === 'with_contradiction' ? 'active' : ''}`}
                     onClick={() => setMemoryConflictFilter(current =>
@@ -9842,7 +9854,10 @@ function AiAssistantPage() {
                     scope.supportability
                       ? `证据资格 ${scope.supportability === 'supporting' ? '可作为回答依据' : '仅供审阅'}`
                       : '',
-                    scope.evidenceConflict ? '证据冲突 含反证' : '',
+                    scope.evidenceConflict
+                      ? `证据冲突 ${scope.evidenceConflict === 'with_contradiction'
+                          ? '含反证' : '当前范围未发现反证'}`
+                      : '',
                     scope.from || scope.to ? `时间 ${scope.from || '不限'} → ${scope.to || '不限'}` : ''
                   ].filter(Boolean)
                   const actionLabel = item.action === 'helpful' ? '设为有用'
