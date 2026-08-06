@@ -9544,6 +9544,17 @@ function AiAssistantPage() {
                 : ''}
             </button>
             <button
+              className={`warning ${isMemorySearchReviewPresetActive(
+                'confirmed_conflict', memoryReviewPresetFilters) ? 'active' : ''}`}
+              disabled={memorySearchState.status === 'ready' &&
+                !Number(memorySearchState.reviewPresetCounts?.confirmed_conflict || 0)}
+              onClick={() => applyMemoryReviewPreset('confirmed_conflict')}>
+              已确认但含反证 · 优先裁决
+              {memorySearchState.status === 'ready'
+                ? ` · ${Number(memorySearchState.reviewPresetCounts?.confirmed_conflict || 0)}`
+                : ''}
+            </button>
+            <button
               className={isMemorySearchReviewPresetActive(
                 'fragile_candidate', memoryReviewPresetFilters) ? 'active' : ''}
               disabled={memorySearchState.status === 'ready' &&

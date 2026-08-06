@@ -8162,7 +8162,11 @@ export class AiAssistantService {
       })
     )
     const reviewPresetCounts = Object.fromEntries(
-      (['conservative_support', 'fragile_candidate'] as MemorySearchReviewPreset[])
+      ([
+        'conservative_support',
+        'confirmed_conflict',
+        'fragile_candidate'
+      ] as MemorySearchReviewPreset[])
         .map(preset => {
           const presetOptions = memorySearchReviewPresetOptions(
             scopedOptions as Record<string, unknown>,

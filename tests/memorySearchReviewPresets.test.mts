@@ -41,6 +41,29 @@ test('fragile candidate preset remains an explicit review-only queue', () => {
   }), false)
 })
 
+test('confirmed conflict preset isolates trusted memories that need a new ruling', () => {
+  const filters = memorySearchReviewPreset('confirmed_conflict')
+  assert.deepEqual(filters, {
+    trustStatus: 'confirmed',
+    supportability: 'supporting',
+    evidenceConflict: 'with_contradiction',
+    evidenceStrength: '',
+    evidenceBreadth: ''
+  })
+  assert.equal(isMemorySearchReviewPresetActive('confirmed_conflict', filters), true)
+  assert.equal(isMemorySearchReviewPresetActive('conservative_support', filters), false)
+  assert.deepEqual(memorySearchReviewPresetOptions({
+    evidenceStrength: 'direct',
+    evidenceBreadth: 'multi_source'
+  }, 'confirmed_conflict'), {
+    trustStatuses: ['confirmed'],
+    supportability: 'supporting',
+    evidenceConflict: 'with_contradiction',
+    evidenceStrength: undefined,
+    evidenceBreadth: undefined
+  })
+})
+
 test('review preset count scopes replace only the five evidence gates', () => {
   const original = {
     entityId: 'person-a',

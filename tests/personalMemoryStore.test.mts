@@ -10786,6 +10786,19 @@ test('evidence review preset scopes count exact combinations before paging', () 
         evidenceRow('preset-direct-document', 'documents', 'direct')
       ]
     }, {
+      id: 'preset-conflict',
+      subjectId: 'preset-count-person',
+      predicate: '所在地',
+      objectValue: '出现反证',
+      confidence: 0.85,
+      status: 'confirmed',
+      sourceNature: 'self_statement',
+      searchText: '组合计数关键词 已确认但含反证',
+      evidence: [
+        evidenceRow('preset-conflict-direct', 'wechat', 'direct'),
+        evidenceRow('preset-conflict-contradiction', 'documents', 'contradiction')
+      ]
+    }, {
       id: 'preset-fragile',
       subjectId: 'preset-count-person',
       predicate: '可能参与',
@@ -10837,6 +10850,9 @@ test('evidence review preset scopes count exact combinations before paging', () 
     const fragileIds = store.listScopedSearchDocumentIds(
       memorySearchReviewPresetOptions(baseScope, 'fragile_candidate') as any
     )!
+    const conflictIds = store.listScopedSearchDocumentIds(
+      memorySearchReviewPresetOptions(baseScope, 'confirmed_conflict') as any
+    )!
 
     assert.deepEqual(
       [...conservativeIds].filter(id => id.includes('preset-')),
@@ -10846,6 +10862,11 @@ test('evidence review preset scopes count exact combinations before paging', () 
       [...fragileIds].filter(id => id.includes('preset-')),
       ['claim:preset-fragile']
     )
+    assert.deepEqual(
+      [...conflictIds].filter(id => id.includes('preset-')),
+      ['claim:preset-conflict']
+    )
+    assert.equal(conservativeIds.has('claim:preset-conflict'), false)
     assert.equal(
       store.listSearchDocumentsByKeywordPage(
         '组合计数关键词',
@@ -10858,6 +10879,14 @@ test('evidence review preset scopes count exact combinations before paging', () 
       store.listSearchDocumentsByKeywordPage(
         '组合计数关键词',
         fragileIds,
+        { offset: 0, limit: 1 }
+      ).total,
+      1
+    )
+    assert.equal(
+      store.listSearchDocumentsByKeywordPage(
+        '组合计数关键词',
+        conflictIds,
         { offset: 0, limit: 1 }
       ).total,
       1

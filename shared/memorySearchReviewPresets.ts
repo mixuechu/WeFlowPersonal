@@ -1,5 +1,6 @@
 export type MemorySearchReviewPreset =
   | 'conservative_support'
+  | 'confirmed_conflict'
   | 'fragile_candidate'
 
 export type MemorySearchReviewFilters = {
@@ -17,6 +18,13 @@ const PRESETS: Record<MemorySearchReviewPreset, MemorySearchReviewFilters> = {
     evidenceConflict: 'without_contradiction',
     evidenceStrength: 'direct',
     evidenceBreadth: 'multi_source'
+  },
+  confirmed_conflict: {
+    trustStatus: 'confirmed',
+    supportability: 'supporting',
+    evidenceConflict: 'with_contradiction',
+    evidenceStrength: '',
+    evidenceBreadth: ''
   },
   fragile_candidate: {
     trustStatus: 'candidate',
@@ -43,8 +51,8 @@ export function memorySearchReviewPresetOptions(
     trustStatuses: [filters.trustStatus],
     supportability: filters.supportability,
     evidenceConflict: filters.evidenceConflict || undefined,
-    evidenceStrength: filters.evidenceStrength,
-    evidenceBreadth: filters.evidenceBreadth
+    evidenceStrength: filters.evidenceStrength || undefined,
+    evidenceBreadth: filters.evidenceBreadth || undefined
   }
 }
 
