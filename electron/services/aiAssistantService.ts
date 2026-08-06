@@ -8074,11 +8074,13 @@ export class AiAssistantService {
     const supportFacet = text
       ? personalMemoryStore.getSearchDocumentSupportCountsByKeyword(
           text,
-          supportFacetAllowedIds
+          supportFacetAllowedIds,
+          scopedOptions
         )
       : {
           counts: personalMemoryStore.getSearchDocumentSupportCountsInScope(
-            supportFacetAllowedIds || new Set()
+            supportFacetAllowedIds || new Set(),
+            scopedOptions
           ),
           searchMode: undefined
         }

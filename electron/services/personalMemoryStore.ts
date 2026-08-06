@@ -35,27 +35,83 @@ type MemoryGraph = {
 type MemoryEvidenceSource = 'wechat' | 'documents' | 'calendar' | 'mail' | 'legacy'
 const TASK_EVIDENCE_FINGERPRINT_VERSION = 3
 
-function searchDocumentSupportsFactsSql(alias = 'd'): string {
-  return `(
-    (${alias}.document_type='claim'
+function searchEvidenceScopeSql(
+  alias: string,
+  options: Pick<MemorySearchOptions, 'sourceIds' | 'sessionId' | 'sessionName' | 'from' | 'to'>
+): { sql: string; parameters: Array<string | number> } {
+  const clauses: string[] = []
+  const parameters: Array<string | number> = []
+  const sourceIds = [...new Set((options.sourceIds || [])
+    .map(value => String(value).trim().toLowerCase()).filter(Boolean))]
+  if (sourceIds.length) {
+    clauses.push(`LOWER(${alias}.source_id) IN (${sourceIds.map(() => '?').join(',')})`)
+    parameters.push(...sourceIds)
+  }
+  const sessions = options.sessionId
+    ? [...new Set([options.sessionId, options.sessionName]
+        .map(value => String(value || '').trim()).filter(Boolean))]
+    : []
+  if (sessions.length) {
+    clauses.push(`${alias}.session_id IN (${sessions.map(() => '?').join(',')})`)
+    parameters.push(...sessions)
+  }
+  const boundary = (value: string | undefined, endOfDay: boolean): number | null => {
+    const text = String(value || '').trim()
+    if (!text) return null
+    const normalized = /^\d{4}-\d{2}-\d{2}$/.test(text)
+      ? `${text}T${endOfDay ? '23:59:59.999' : '00:00:00.000'}+08:00`
+      : text
+    const timestamp = Date.parse(normalized)
+    return Number.isFinite(timestamp) ? Math.floor(timestamp / 1000) : null
+  }
+  const from = boundary(options.from, false)
+  const to = boundary(options.to, true)
+  if (from !== null) {
+    clauses.push(`${alias}.timestamp>=?`)
+    parameters.push(from)
+  }
+  if (to !== null) {
+    clauses.push(`${alias}.timestamp<=?`)
+    parameters.push(to)
+  }
+  return {
+    sql: clauses.length ? clauses.join(' AND ') : '1=1',
+    parameters
+  }
+}
+
+function searchDocumentSupportsFactsSql(
+  options: MemorySearchOptions = {},
+  alias = 'd'
+): { sql: string; parameters: Array<string | number> } {
+  const branches = [
+    { type: 'claim', foreignKey: 'claim_id', table: 'evidence' },
+    { type: 'relation', foreignKey: 'relation_id', table: 'evidence' },
+    { type: 'event', foreignKey: 'event_id', table: 'evidence' }
+  ]
+  const parameters: Array<string | number> = []
+  const structured = branches.map(branch => {
+    const scope = searchEvidenceScopeSql('support', options)
+    parameters.push(...scope.parameters)
+    return `(${alias}.document_type='${branch.type}'
       AND COALESCE(json_extract(${alias}.metadata_json,'$.status'),'')='confirmed'
-      AND EXISTS (SELECT 1 FROM evidence support
-        WHERE support.claim_id=${alias}.source_id
-          AND COALESCE(support.evidence_role,'direct')!='contradiction'))
-    OR (${alias}.document_type='relation'
-      AND COALESCE(json_extract(${alias}.metadata_json,'$.status'),'')='confirmed'
-      AND EXISTS (SELECT 1 FROM evidence support
-        WHERE support.relation_id=${alias}.source_id
-          AND COALESCE(support.evidence_role,'direct')!='contradiction'))
-    OR (${alias}.document_type='event'
-      AND COALESCE(json_extract(${alias}.metadata_json,'$.status'),'')='confirmed'
-      AND EXISTS (SELECT 1 FROM evidence support
-        WHERE support.event_id=${alias}.source_id
-          AND COALESCE(support.evidence_role,'direct')!='contradiction'))
+      AND EXISTS (SELECT 1 FROM ${branch.table} support
+        WHERE support.${branch.foreignKey}=${alias}.source_id
+          AND COALESCE(support.evidence_role,'direct')!='contradiction'
+          AND ${scope.sql}))`
+  })
+  const genericScope = searchEvidenceScopeSql('support', options)
+  parameters.push(...genericScope.parameters)
+  return {
+    sql: `(
+    ${structured.join('\n    OR ')}
     OR (${alias}.document_type NOT IN ('entity','claim','relation','event')
       AND EXISTS (SELECT 1 FROM search_document_evidence support
-        WHERE support.document_id=${alias}.id))
-  )`
+        WHERE support.document_id=${alias}.id
+          AND ${genericScope.sql}))
+  )`,
+    parameters
+  }
 }
 
 function relationSearchText(
@@ -14018,10 +14074,15 @@ export class PersonalMemoryStore {
       conditions.push(`(${clauses.join(' OR ')})`)
       parameters.push(...trustStatuses.filter(status => status !== 'source'))
     }
-    const supportsFactsSql = searchDocumentSupportsFactsSql()
+    const supportsFacts = searchDocumentSupportsFactsSql(options)
     const supportability = String(options.supportability || '').trim().toLowerCase()
-    if (supportability === 'supporting') conditions.push(supportsFactsSql)
-    else if (supportability === 'review_only') conditions.push(`NOT ${supportsFactsSql}`)
+    if (supportability === 'supporting') {
+      conditions.push(supportsFacts.sql)
+      parameters.push(...supportsFacts.parameters)
+    } else if (supportability === 'review_only') {
+      conditions.push(`NOT ${supportsFacts.sql}`)
+      parameters.push(...supportsFacts.parameters)
+    }
     else if (supportability) conditions.push('0=1')
     const sourceIds = [...new Set((options.sourceIds || [])
       .map(value => String(value).trim().toLowerCase()).filter(Boolean))]
@@ -14213,21 +14274,24 @@ export class PersonalMemoryStore {
     return Object.fromEntries(rows.map(row => [String(row.status), Number(row.count || 0)]))
   }
 
-  getSearchDocumentSupportCountsInScope(allowedIds: Set<string>): Record<string, number> {
+  getSearchDocumentSupportCountsInScope(
+    allowedIds: Set<string>,
+    options: MemorySearchOptions = {}
+  ): Record<string, number> {
     if (!this.db || !allowedIds.size) return {}
     this.replaceActiveSearchScope(allowedIds)
-    const supportsFactsSql = searchDocumentSupportsFactsSql()
+    const supportsFacts = searchDocumentSupportsFactsSql(options)
     const row = this.db.prepare(`
       SELECT
-        SUM(CASE WHEN ${supportsFactsSql} THEN 1 ELSE 0 END) AS supporting,
-        SUM(CASE WHEN NOT ${supportsFactsSql} THEN 1 ELSE 0 END) AS review_only
+        SUM(CASE WHEN ${supportsFacts.sql} THEN 1 ELSE 0 END) AS supporting,
+        SUM(CASE WHEN NOT ${supportsFacts.sql} THEN 1 ELSE 0 END) AS review_only
       FROM search_documents d
       JOIN active_memory_search_scope scope ON scope.id=d.id
       WHERE NOT (
         d.document_type IN ('claim','relation','event')
         AND COALESCE(json_extract(d.metadata_json,'$.status'),'')='rejected'
       )
-    `).get() as any
+    `).get(...supportsFacts.parameters, ...supportsFacts.parameters) as any
     return {
       supporting: Number(row?.supporting || 0),
       review_only: Number(row?.review_only || 0)
@@ -14470,7 +14534,8 @@ export class PersonalMemoryStore {
 
   getSearchDocumentSupportCountsByKeyword(
     query: string,
-    allowedIds: Set<string> | null
+    allowedIds: Set<string> | null,
+    options: MemorySearchOptions = {}
   ): { counts: Record<string, number>; searchMode: 'fts' | 'substring_fallback' } {
     const normalized = String(query || '').trim().replace(/["']/g, ' ')
     if (!this.db || !normalized || (allowedIds && !allowedIds.size)) {
@@ -14480,7 +14545,7 @@ export class PersonalMemoryStore {
     const scopeJoin = allowedIds
       ? 'JOIN active_memory_search_scope scope ON scope.id=d.id'
       : ''
-    const supportsFactsSql = searchDocumentSupportsFactsSql()
+    const supportsFacts = searchDocumentSupportsFactsSql(options)
     const trustedCondition = `NOT (
       d.document_type IN ('claim','relation','event')
       AND COALESCE(json_extract(d.metadata_json,'$.status'),'')='rejected'
@@ -14490,8 +14555,8 @@ export class PersonalMemoryStore {
       review_only: Number(row?.review_only || 0)
     })
     const selectCounts = `
-      SUM(CASE WHEN ${supportsFactsSql} THEN 1 ELSE 0 END) AS supporting,
-      SUM(CASE WHEN NOT ${supportsFactsSql} THEN 1 ELSE 0 END) AS review_only
+      SUM(CASE WHEN ${supportsFacts.sql} THEN 1 ELSE 0 END) AS supporting,
+      SUM(CASE WHEN NOT ${supportsFacts.sql} THEN 1 ELSE 0 END) AS review_only
     `
     const ftsQuery = `"${normalized.replace(/"/g, '""')}"`
     try {
@@ -14500,7 +14565,11 @@ export class PersonalMemoryStore {
         FROM search_fts JOIN search_documents d ON d.id=search_fts.document_id
         ${scopeJoin}
         WHERE search_fts MATCH ? AND ${trustedCondition}
-      `).get(ftsQuery) as any
+      `).get(
+        ...supportsFacts.parameters,
+        ...supportsFacts.parameters,
+        ftsQuery
+      ) as any
       if (Number(row?.supporting || 0) + Number(row?.review_only || 0) > 0) {
         return { counts: toCounts(row), searchMode: 'fts' }
       }
@@ -14510,7 +14579,12 @@ export class PersonalMemoryStore {
       SELECT ${selectCounts}
       FROM search_documents d ${scopeJoin}
       WHERE (d.title LIKE ? OR d.search_text LIKE ?) AND ${trustedCondition}
-    `).get(pattern, pattern) as any
+    `).get(
+      ...supportsFacts.parameters,
+      ...supportsFacts.parameters,
+      pattern,
+      pattern
+    ) as any
     return { counts: toCounts(row), searchMode: 'substring_fallback' }
   }
 

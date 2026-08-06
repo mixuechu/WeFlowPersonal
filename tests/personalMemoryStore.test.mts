@@ -10406,8 +10406,18 @@ test('memory trust scopes and facets separate confirmed candidates from source m
       status: 'confirmed',
       sourceNature: 'self_statement',
       searchText: '可信层级关键词 已确认事实',
-      evidence: evidence('trust-confirmed-message', '可信层级关键词 已确认事实')
-        .map(item => ({ ...item, sourceId: 'wechat' }))
+      evidence: [
+        ...evidence('trust-confirmed-message', '可信层级关键词 已确认事实')
+          .map(item => ({ ...item, sourceId: 'wechat' })),
+        {
+          sourceId: 'calendar',
+          messageId: 'trust-confirmed-calendar-contradiction',
+          sessionId: 'data-source:calendar',
+          timestamp: 1_800_000_002,
+          excerpt: '日历载体只提供反证',
+          role: 'contradiction'
+        }
+      ]
     }, {
       id: 'trust-facet-candidate',
       subjectId: 'trust-facet-person',
@@ -10504,6 +10514,39 @@ test('memory trust scopes and facets separate confirmed candidates from source m
     ).total, 1)
     assert.equal(wechatScope.has('task:trust-facet-task'), true)
     assert.equal(documentScope.has('task:trust-facet-task'), true)
+    const calendarSupporting = store.listScopedSearchDocumentIds({
+      sourceIds: ['calendar'],
+      supportability: 'supporting'
+    })!
+    const calendarReviewOnly = store.listScopedSearchDocumentIds({
+      sourceIds: ['calendar'],
+      supportability: 'review_only'
+    })!
+    assert.equal(calendarSupporting.has('claim:trust-facet-confirmed'), false)
+    assert.equal(calendarReviewOnly.has('claim:trust-facet-confirmed'), true)
+    const futureSupporting = store.listScopedSearchDocumentIds({
+      from: '2027-01-01',
+      to: '2027-12-31',
+      supportability: 'supporting'
+    })!
+    const futureReviewOnly = store.listScopedSearchDocumentIds({
+      from: '2027-01-01',
+      to: '2027-12-31',
+      supportability: 'review_only'
+    })!
+    assert.equal(futureSupporting.has('claim:trust-facet-confirmed'), false)
+    assert.equal(futureReviewOnly.has('claim:trust-facet-confirmed'), true)
+    assert.deepEqual(
+      store.getSearchDocumentSupportCountsByKeyword(
+        '可信层级关键词',
+        store.listScopedSearchDocumentIds({ sourceIds: ['calendar'] }),
+        { sourceIds: ['calendar'] }
+      ),
+      {
+        counts: { supporting: 0, review_only: 1 },
+        searchMode: 'fts'
+      }
+    )
   }))
 
 test('memory search revision covers documents, evidence, vectors and relevance decisions', () =>
