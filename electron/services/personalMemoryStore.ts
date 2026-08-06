@@ -14133,6 +14133,22 @@ export class PersonalMemoryStore {
     `).all(Math.max(1, Math.min(500, Number(limit) || 500))) as any[]
   }
 
+  getSearchDocumentTypeCountsInScope(allowedIds: Set<string>): Record<string, number> {
+    if (!this.db || !allowedIds.size) return {}
+    this.replaceActiveSearchScope(allowedIds)
+    const rows = this.db.prepare(`
+      SELECT d.document_type AS type,COUNT(*) AS count
+      FROM search_documents d
+      JOIN active_memory_search_scope scope ON scope.id=d.id
+      WHERE NOT (
+        d.document_type IN ('claim','relation','event')
+        AND COALESCE(json_extract(d.metadata_json,'$.status'),'')='rejected'
+      )
+      GROUP BY d.document_type
+    `).all() as any[]
+    return Object.fromEntries(rows.map(row => [String(row.type), Number(row.count || 0)]))
+  }
+
   listSearchDocumentsInScopePage(
     allowedIds: Set<string>,
     options: {
@@ -14282,6 +14298,45 @@ export class PersonalMemoryStore {
       hasMore: offset + items.length < total,
       searchMode: 'substring_fallback'
     }
+  }
+
+  getSearchDocumentTypeCountsByKeyword(
+    query: string,
+    allowedIds: Set<string> | null
+  ): { counts: Record<string, number>; searchMode: 'fts' | 'substring_fallback' } {
+    const normalized = String(query || '').trim().replace(/["']/g, ' ')
+    if (!this.db || !normalized || (allowedIds && !allowedIds.size)) {
+      return { counts: {}, searchMode: 'fts' }
+    }
+    if (allowedIds) this.replaceActiveSearchScope(allowedIds)
+    const scopeJoin = allowedIds
+      ? 'JOIN active_memory_search_scope scope ON scope.id=d.id'
+      : ''
+    const trustedCondition = `NOT (
+      d.document_type IN ('claim','relation','event')
+      AND COALESCE(json_extract(d.metadata_json,'$.status'),'')='rejected'
+    )`
+    const toCounts = (rows: any[]): Record<string, number> =>
+      Object.fromEntries(rows.map(row => [String(row.type), Number(row.count || 0)]))
+    const ftsQuery = `"${normalized.replace(/"/g, '""')}"`
+    try {
+      const rows = this.db.prepare(`
+        SELECT d.document_type AS type,COUNT(*) AS count
+        FROM search_fts JOIN search_documents d ON d.id=search_fts.document_id
+        ${scopeJoin}
+        WHERE search_fts MATCH ? AND ${trustedCondition}
+        GROUP BY d.document_type
+      `).all(ftsQuery) as any[]
+      if (rows.length) return { counts: toCounts(rows), searchMode: 'fts' }
+    } catch {}
+    const pattern = `%${normalized}%`
+    const rows = this.db.prepare(`
+      SELECT d.document_type AS type,COUNT(*) AS count
+      FROM search_documents d ${scopeJoin}
+      WHERE (d.title LIKE ? OR d.search_text LIKE ?) AND ${trustedCondition}
+      GROUP BY d.document_type
+    `).all(pattern, pattern) as any[]
+    return { counts: toCounts(rows), searchMode: 'substring_fallback' }
   }
 
   recordMemorySearchFeedback(input: {

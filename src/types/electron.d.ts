@@ -2032,6 +2032,9 @@ export interface ElectronAPI {
         truncated: boolean
         searchMode?: 'hybrid' | 'lexical_archive' | 'scope_browse'
         lexicalSearchMode?: 'fts' | 'substring_fallback'
+        typeCounts?: Record<string, number>
+        typeCountsBasis?: 'lexical_archive' | 'scope_browse'
+        typeCountsSearchMode?: 'fts' | 'substring_fallback'
         scopeCandidates: number | null
         revision: string
         stale: boolean

@@ -935,6 +935,9 @@ function AiAssistantPage() {
     nextOffset?: number
     searchMode?: 'hybrid' | 'lexical_archive' | 'scope_browse'
     lexicalSearchMode?: 'fts' | 'substring_fallback'
+    typeCounts?: Record<string, number>
+    typeCountsBasis?: 'lexical_archive' | 'scope_browse'
+    typeCountsSearchMode?: 'fts' | 'substring_fallback'
   }>({ status: 'idle', query: '' })
   const [memoryLoadingMore, setMemoryLoadingMore] = useState(false)
   const [memorySearchFeedback, setMemorySearchFeedback] = useState<any[]>([])
@@ -2329,6 +2332,9 @@ function AiAssistantPage() {
           revision: page.revision,
           searchMode: page.searchMode,
           lexicalSearchMode: page.lexicalSearchMode,
+          typeCounts: page.typeCounts,
+          typeCountsBasis: page.typeCountsBasis,
+          typeCountsSearchMode: page.typeCountsSearchMode,
           nextOffset: Number(page.offset || 0) + page.results.length
         })
       }).catch(error => {
@@ -6717,6 +6723,9 @@ function AiAssistantPage() {
         revision: page.revision,
         searchMode: page.searchMode,
         lexicalSearchMode: page.lexicalSearchMode,
+        typeCounts: page.typeCounts,
+        typeCountsBasis: page.typeCountsBasis,
+        typeCountsSearchMode: page.typeCountsSearchMode,
         nextOffset: Number(page.offset || 0) + page.results.length
       })
     } catch (error: any) {
@@ -9425,6 +9434,27 @@ function AiAssistantPage() {
               </div>}
             {memorySearchState.status === 'error' &&
               <div className="assistant-search-status error">“{memorySearchState.query}”检索失败：{memorySearchState.error}</div>}
+            {memorySearchState.status === 'ready' && Object.keys(memorySearchState.typeCounts || {}).length > 0 &&
+              <div className="assistant-search-type-facets">
+                <div>
+                  <strong>按类型查看完整档案</strong>
+                  <small>{memorySearchState.typeCountsBasis === 'lexical_archive'
+                    ? `${memorySearchState.typeCountsSearchMode === 'substring_fallback' ? '子串' : '全文'}关键词统计，不包含仅由语义扩展召回的结果`
+                    : '当前人物、会话、来源和时间范围内的完整统计'}</small>
+                </div>
+                <button className={!memoryTypeFilter ? 'active' : ''}
+                  onClick={() => setMemoryTypeFilter('')}>
+                  全部 · {Object.values(memorySearchState.typeCounts || {})
+                    .reduce((sum, count) => sum + Number(count || 0), 0)}
+                </button>
+                {['entity', 'relation', 'claim', 'event', 'task', 'resource']
+                  .filter(type => Number(memorySearchState.typeCounts?.[type] || 0) > 0)
+                  .map(type => <button key={type}
+                    className={memoryTypeFilter === type ? 'active' : ''}
+                    onClick={() => setMemoryTypeFilter(type)}>
+                    {MEMORY_TYPE_LABELS[type] || type} · {Number(memorySearchState.typeCounts?.[type] || 0)}
+                  </button>)}
+              </div>}
             {memorySearchFeedback.length > 0 && <details className="assistant-search-feedback-ledger">
               <summary>本查询的相关性反馈（{memorySearchFeedback.length}）</summary>
               <small>反馈只影响完全相同的查询与当前人物、会话、来源、类型和时间范围；原记忆及其可信状态不会改变。</small>

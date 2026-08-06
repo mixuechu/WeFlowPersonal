@@ -10280,6 +10280,9 @@ test('scoped memory browsing reaches every result beyond the ranked search windo
       ...first.items.map(item => item.id),
       ...beyondOldCap.items.map(item => item.id)
     ]).size, 105)
+    assert.deepEqual(store.getSearchDocumentTypeCountsInScope(scope!), {
+      task: 1_205
+    })
 
     store.recordMemorySearchFeedback({
       queryFingerprint: context.queryFingerprint,
@@ -10363,6 +10366,10 @@ test('complete keyword archive pages every exact indexed match beyond five hundr
       ...middle.items.map(item => item.id),
       ...last.items.map(item => item.id)
     ]).size, 205)
+    assert.deepEqual(
+      store.getSearchDocumentTypeCountsByKeyword('完整关键词盲区', scope),
+      { counts: { task: 1_205 }, searchMode: 'fts' }
+    )
   }))
 
 test('memory search revision covers documents, evidence, vectors and relevance decisions', () =>
