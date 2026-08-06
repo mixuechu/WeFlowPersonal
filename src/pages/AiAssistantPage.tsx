@@ -958,6 +958,8 @@ function AiAssistantPage() {
     evidenceStrengthCountsBasis?: 'lexical_archive' | 'scope_browse'
     evidenceBreadthCounts?: Record<string, number>
     evidenceBreadthCountsBasis?: 'lexical_archive' | 'scope_browse'
+    reviewPresetCounts?: Record<string, number>
+    reviewPresetCountsBasis?: 'lexical_archive' | 'scope_browse'
   }>({ status: 'idle', query: '' })
   const [memoryLoadingMore, setMemoryLoadingMore] = useState(false)
   const [memorySearchFeedback, setMemorySearchFeedback] = useState<any[]>([])
@@ -2403,6 +2405,8 @@ function AiAssistantPage() {
           evidenceStrengthCountsBasis: page.evidenceStrengthCountsBasis,
           evidenceBreadthCounts: page.evidenceBreadthCounts,
           evidenceBreadthCountsBasis: page.evidenceBreadthCountsBasis,
+          reviewPresetCounts: page.reviewPresetCounts,
+          reviewPresetCountsBasis: page.reviewPresetCountsBasis,
           nextOffset: Number(page.offset || 0) + page.results.length
         })
       }).catch(error => {
@@ -6809,6 +6813,8 @@ function AiAssistantPage() {
         evidenceStrengthCountsBasis: page.evidenceStrengthCountsBasis,
         evidenceBreadthCounts: page.evidenceBreadthCounts,
         evidenceBreadthCountsBasis: page.evidenceBreadthCountsBasis,
+        reviewPresetCounts: page.reviewPresetCounts,
+        reviewPresetCountsBasis: page.reviewPresetCountsBasis,
         nextOffset: Number(page.offset || 0) + page.results.length
       })
     } catch (error: any) {
@@ -9127,24 +9133,6 @@ function AiAssistantPage() {
                 setTaskArchiveQuery(''); setTaskArchiveFrom(''); setTaskArchiveTo('')
               }}>清除范围</button>}
           </div>
-          <div className="assistant-search-type-facets">
-            <div>
-              <strong>一键证据审阅</strong>
-              <small>只组合证据门禁，保留当前人物、会话、来源、类型和日期范围</small>
-            </div>
-            <button
-              className={isMemorySearchReviewPresetActive(
-                'conservative_support', memoryReviewPresetFilters) ? 'active' : ''}
-              onClick={() => applyMemoryReviewPreset('conservative_support')}>
-              多源直接支持 · 当前未发现反证
-            </button>
-            <button
-              className={isMemorySearchReviewPresetActive(
-                'fragile_candidate', memoryReviewPresetFilters) ? 'active' : ''}
-              onClick={() => applyMemoryReviewPreset('fragile_candidate')}>
-              单源间接候选 · 优先复核
-            </button>
-          </div>
           <small className="assistant-evidence">
             历史任务从本机 SQLCipher 目录按需分页读取，不参与 15 秒首页轮询；项目目录可搜索全部
             {taskArchiveProjects.total} 个匹配项目{taskArchiveProjects.loading ? '（检索中）' : ''}，不再截断前 500 个。
@@ -9531,6 +9519,41 @@ function AiAssistantPage() {
                 setMemoryFrom('')
                 setMemoryTo('')
               }}>清除范围</button>}
+          </div>
+          <div className="assistant-search-type-facets" data-memory-review-presets>
+            <div>
+              <strong>一键证据审阅</strong>
+              <small>
+                只组合证据门禁，保留当前人物、会话、来源、类型和日期范围
+                {memorySearchState.status === 'ready'
+                  ? memorySearchState.reviewPresetCountsBasis === 'lexical_archive'
+                    ? ' · 数量来自当前完整关键词档案'
+                    : ' · 数量来自当前完整范围'
+                  : ''}
+              </small>
+            </div>
+            <button
+              className={isMemorySearchReviewPresetActive(
+                'conservative_support', memoryReviewPresetFilters) ? 'active' : ''}
+              disabled={memorySearchState.status === 'ready' &&
+                !Number(memorySearchState.reviewPresetCounts?.conservative_support || 0)}
+              onClick={() => applyMemoryReviewPreset('conservative_support')}>
+              多源直接支持 · 当前未发现反证
+              {memorySearchState.status === 'ready'
+                ? ` · ${Number(memorySearchState.reviewPresetCounts?.conservative_support || 0)}`
+                : ''}
+            </button>
+            <button
+              className={isMemorySearchReviewPresetActive(
+                'fragile_candidate', memoryReviewPresetFilters) ? 'active' : ''}
+              disabled={memorySearchState.status === 'ready' &&
+                !Number(memorySearchState.reviewPresetCounts?.fragile_candidate || 0)}
+              onClick={() => applyMemoryReviewPreset('fragile_candidate')}>
+              单源间接候选 · 优先复核
+              {memorySearchState.status === 'ready'
+                ? ` · ${Number(memorySearchState.reviewPresetCounts?.fragile_candidate || 0)}`
+                : ''}
+            </button>
           </div>
           {(memoryEntityFilter || memorySessionFilter || memorySourceFilter || memoryTypeFilter || memoryTrustFilter || memorySupportFilter || memoryConflictFilter || memoryEvidenceStrengthFilter || memoryEvidenceBreadthFilter || memoryFrom || memoryTo) &&
             <small className="assistant-scope-note">当前范围在全文/向量召回之前生效，范围外内容不会参与排序或发送给模型。

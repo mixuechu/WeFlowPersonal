@@ -2,7 +2,8 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import {
   isMemorySearchReviewPresetActive,
-  memorySearchReviewPreset
+  memorySearchReviewPreset,
+  memorySearchReviewPresetOptions
 } from '../shared/memorySearchReviewPresets.ts'
 
 test('conservative evidence review preset binds every trust gate', () => {
@@ -38,4 +39,33 @@ test('fragile candidate preset remains an explicit review-only queue', () => {
     ...filters,
     evidenceStrength: 'direct'
   }), false)
+})
+
+test('review preset count scopes replace only the five evidence gates', () => {
+  const original = {
+    entityId: 'person-a',
+    sessionId: 'session-a',
+    sourceIds: ['wechat'],
+    documentTypes: ['claim'],
+    from: '2026-08-01',
+    trustStatuses: ['source'],
+    supportability: 'supporting',
+    evidenceConflict: 'with_contradiction',
+    evidenceStrength: 'direct',
+    evidenceBreadth: 'multi_source'
+  }
+  assert.deepEqual(memorySearchReviewPresetOptions(original, 'fragile_candidate'), {
+    entityId: 'person-a',
+    sessionId: 'session-a',
+    sourceIds: ['wechat'],
+    documentTypes: ['claim'],
+    from: '2026-08-01',
+    trustStatuses: ['candidate'],
+    supportability: 'review_only',
+    evidenceConflict: undefined,
+    evidenceStrength: 'indirect_only',
+    evidenceBreadth: 'single_source'
+  })
+  assert.deepEqual(original.trustStatuses, ['source'])
+  assert.equal(original.evidenceConflict, 'with_contradiction')
 })

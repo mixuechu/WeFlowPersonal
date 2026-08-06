@@ -50,6 +50,7 @@ import {
   isMemorySearchPageRevisionStale,
   paginateMemoryResults
 } from '../electron/services/memorySearchFilters.ts'
+import { memorySearchReviewPresetOptions } from '../shared/memorySearchReviewPresets.ts'
 import { buildContextualMemoryQuestion, buildMemoryQueryPlan } from '../electron/services/memoryQueryPlanner.ts'
 import {
   applyReminderPreferences,
@@ -10739,6 +10740,126 @@ test('memory trust scopes and facets separate confirmed candidates from source m
         store.listScopedSearchDocumentIds({ sourceIds: ['calendar'] })!,
         { sourceIds: ['calendar'] }
       ),
+      1
+    )
+  }))
+
+test('evidence review preset scopes count exact combinations before paging', () =>
+  withStore(store => {
+    store.syncGraph({
+      entities: [{
+        id: 'preset-count-person',
+        type: 'person',
+        canonicalName: '组合计数人物',
+        summary: '',
+        confidence: 1,
+        trustStatus: 'confirmed',
+        aliases: [],
+        accountIds: []
+      }],
+      relations: [],
+      reviewQueue: []
+    } as any)
+    const evidenceRow = (
+      messageId: string,
+      sourceId: string,
+      role: 'direct' | 'indirect' | 'contradiction'
+    ) => ({
+      sourceId,
+      messageId,
+      sessionId: sourceId === 'wechat' ? 'preset-session' : `data-source:${sourceId}`,
+      timestamp: 1_800_100_000,
+      excerpt: `组合计数关键词 ${messageId}`,
+      role
+    })
+    store.upsertClaims([{
+      id: 'preset-conservative',
+      subjectId: 'preset-count-person',
+      predicate: '负责',
+      objectValue: '多源可信',
+      confidence: 0.95,
+      status: 'confirmed',
+      sourceNature: 'self_statement',
+      searchText: '组合计数关键词 多源直接支持',
+      evidence: [
+        evidenceRow('preset-direct-wechat', 'wechat', 'direct'),
+        evidenceRow('preset-direct-document', 'documents', 'direct')
+      ]
+    }, {
+      id: 'preset-fragile',
+      subjectId: 'preset-count-person',
+      predicate: '可能参与',
+      objectValue: '单源候选',
+      confidence: 0.65,
+      status: 'candidate',
+      sourceNature: 'other_statement',
+      searchText: '组合计数关键词 单源间接候选',
+      evidence: [evidenceRow('preset-indirect-wechat', 'wechat', 'indirect')]
+    }, {
+      id: 'preset-distractor',
+      subjectId: 'preset-count-person',
+      predicate: '可能参与',
+      objectValue: '多源候选',
+      confidence: 0.65,
+      status: 'candidate',
+      sourceNature: 'other_statement',
+      searchText: '组合计数关键词 多源间接候选',
+      evidence: [
+        evidenceRow('preset-indirect-document', 'documents', 'indirect'),
+        evidenceRow('preset-indirect-mail', 'mail', 'indirect')
+      ]
+    }])
+    store.syncTasks([{
+      id: 'preset-task',
+      title: '组合计数关键词 原始任务',
+      detail: '',
+      priority: 'low',
+      status: 'todo',
+      classification: 'mine',
+      evidence: [{
+        sourceId: 'wechat',
+        messageId: 'preset-task-message',
+        sessionId: 'preset-session',
+        timestamp: 1_800_100_000,
+        sender: '测试',
+        excerpt: '组合计数关键词 原始任务'
+      }]
+    }])
+
+    const baseScope = {
+      documentTypes: ['claim'],
+      trustStatuses: ['source'],
+      evidenceConflict: 'with_contradiction'
+    }
+    const conservativeIds = store.listScopedSearchDocumentIds(
+      memorySearchReviewPresetOptions(baseScope, 'conservative_support') as any
+    )!
+    const fragileIds = store.listScopedSearchDocumentIds(
+      memorySearchReviewPresetOptions(baseScope, 'fragile_candidate') as any
+    )!
+
+    assert.deepEqual(
+      [...conservativeIds].filter(id => id.includes('preset-')),
+      ['claim:preset-conservative']
+    )
+    assert.deepEqual(
+      [...fragileIds].filter(id => id.includes('preset-')),
+      ['claim:preset-fragile']
+    )
+    assert.equal(
+      store.listSearchDocumentsByKeywordPage(
+        '组合计数关键词',
+        conservativeIds,
+        { offset: 0, limit: 1 }
+      ).total,
+      1
+    )
+    assert.equal(
+      store.listSearchDocumentsByKeywordPage(
+        '组合计数关键词',
+        fragileIds,
+        { offset: 0, limit: 1 }
+      ).total,
       1
     )
   }))

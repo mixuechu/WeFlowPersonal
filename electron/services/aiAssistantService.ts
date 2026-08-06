@@ -56,6 +56,10 @@ import {
 } from './memorySearchFeedback.ts'
 import { buildMemorySearchFeedbackMutationToken } from './memorySearchFeedbackMutationPolicy.ts'
 import {
+  memorySearchReviewPresetOptions,
+  type MemorySearchReviewPreset
+} from '../../shared/memorySearchReviewPresets.ts'
+import {
   assertMemoryCitationReviewToken,
   buildMemoryCitationReviewIdentity,
   buildMemoryCitationReviewToken
@@ -8157,6 +8161,28 @@ export class AiAssistantService {
         return [breadth, total]
       })
     )
+    const reviewPresetCounts = Object.fromEntries(
+      (['conservative_support', 'fragile_candidate'] as MemorySearchReviewPreset[])
+        .map(preset => {
+          const presetOptions = memorySearchReviewPresetOptions(
+            scopedOptions as Record<string, unknown>,
+            preset
+          ) as MemorySearchOptions
+          const presetAllowedIds =
+            personalMemoryStore.listScopedSearchDocumentIds(presetOptions) || new Set<string>()
+          const total = text
+            ? personalMemoryStore.listSearchDocumentsByKeywordPage(
+                text,
+                presetAllowedIds,
+                { offset: 0, limit: 1 }
+              ).total
+            : personalMemoryStore.listSearchDocumentsInScopePage(
+                presetAllowedIds,
+                { offset: 0, limit: 1 }
+              ).total
+          return [preset, total]
+        })
+    )
     if (text && searchMode === 'lexical_archive') {
       const lexicalPage = personalMemoryStore.listSearchDocumentsByKeywordPage(
         text,
@@ -8250,6 +8276,8 @@ export class AiAssistantService {
     page.evidenceStrengthCountsBasis = text ? 'lexical_archive' : 'scope_browse'
     page.evidenceBreadthCounts = evidenceBreadthCounts
     page.evidenceBreadthCountsBasis = text ? 'lexical_archive' : 'scope_browse'
+    page.reviewPresetCounts = reviewPresetCounts
+    page.reviewPresetCountsBasis = text ? 'lexical_archive' : 'scope_browse'
     const feedback = this.memorySearchFeedbackContext(text, scopedOptions).entries
     const completedRevision = personalMemoryStore.getMemorySearchRevision()
     const completedEntitySelection = options.entityId

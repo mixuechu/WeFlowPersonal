@@ -33,6 +33,21 @@ export function memorySearchReviewPreset(
   return { ...PRESETS[preset] }
 }
 
+export function memorySearchReviewPresetOptions(
+  options: Record<string, unknown>,
+  preset: MemorySearchReviewPreset
+): Record<string, unknown> {
+  const filters = PRESETS[preset]
+  return {
+    ...options,
+    trustStatuses: [filters.trustStatus],
+    supportability: filters.supportability,
+    evidenceConflict: filters.evidenceConflict || undefined,
+    evidenceStrength: filters.evidenceStrength,
+    evidenceBreadth: filters.evidenceBreadth
+  }
+}
+
 export function isMemorySearchReviewPresetActive(
   preset: MemorySearchReviewPreset,
   filters: Partial<MemorySearchReviewFilters>

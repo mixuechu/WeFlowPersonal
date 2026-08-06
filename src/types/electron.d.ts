@@ -2050,6 +2050,8 @@ export interface ElectronAPI {
         evidenceStrengthCountsBasis?: 'lexical_archive' | 'scope_browse'
         evidenceBreadthCounts?: Record<string, number>
         evidenceBreadthCountsBasis?: 'lexical_archive' | 'scope_browse'
+        reviewPresetCounts?: Record<string, number>
+        reviewPresetCountsBasis?: 'lexical_archive' | 'scope_browse'
         scopeCandidates: number | null
         revision: string
         stale: boolean
