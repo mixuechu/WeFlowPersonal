@@ -5031,6 +5031,7 @@ export class AiAssistantService {
       correctionId: Number(correctionId || 0),
       phase: phase as 'before' | 'after',
       revision: String(options?.revision || ''),
+      query: String(options?.query || ''),
       offset: Number(options?.offset || 0),
       limit: Number(options?.limit || 40)
     })

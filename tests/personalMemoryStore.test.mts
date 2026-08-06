@@ -2852,6 +2852,37 @@ test('event dossiers page every participant role and reject mixed structured rev
     }))
   } while (snapshotPages.at(-1).hasMore)
   assert.equal(snapshotPages.flatMap(page => page.items).length, 307)
+  const namedSnapshotMatch = store.listEventCorrectionParticipantSnapshotPage({
+    correctionId,
+    phase: 'before',
+    revision: metadataAudit.revision,
+    query: 'large-event-person-304',
+    limit: 40
+  })
+  assert.equal(namedSnapshotMatch.total, 1)
+  assert.equal(namedSnapshotMatch.unfilteredTotal, 307)
+  assert.equal(namedSnapshotMatch.items[0].canonicalName, '大型事件参与者 304')
+  const roleSnapshotMatches = store.listEventCorrectionParticipantSnapshotPage({
+    correctionId,
+    phase: 'after',
+    revision: metadataAudit.revision,
+    query: '角色 00',
+    limit: 40
+  })
+  assert.equal(roleSnapshotMatches.total, 44)
+  assert.equal(roleSnapshotMatches.items.length, 40)
+  assert.equal(roleSnapshotMatches.hasMore, true)
+  const remainingRoleSnapshotMatches =
+    store.listEventCorrectionParticipantSnapshotPage({
+      correctionId,
+      phase: 'after',
+      revision: metadataAudit.revision,
+      query: '角色 00',
+      offset: roleSnapshotMatches.nextOffset,
+      limit: 40
+    })
+  assert.equal(remainingRoleSnapshotMatches.items.length, 4)
+  assert.equal(remainingRoleSnapshotMatches.hasMore, false)
 
   store.correctEvent('large-participant-event', {
     title: '大型参与者事件（全量参与者纠正）',

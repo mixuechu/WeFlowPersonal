@@ -1732,7 +1732,7 @@ export interface ElectronAPI {
       getEventCorrectionParticipantSnapshotPage: (
         correctionId: number,
         phase: 'before' | 'after',
-        options: { revision: string; offset?: number; limit?: number }
+        options: { revision: string; query?: string; offset?: number; limit?: number }
       ) => Promise<any>
       getProjectWorkspace: (projectId: string) => Promise<{
         project: any

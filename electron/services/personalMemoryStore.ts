@@ -10888,6 +10888,7 @@ export class PersonalMemoryStore {
     correctionId: number
     phase: 'before' | 'after'
     revision: string
+    query?: string
     offset?: number
     limit?: number
   }): any {
@@ -10897,6 +10898,7 @@ export class PersonalMemoryStore {
     }
     const revision = this.getStructuredMemoryRevision()
     const expectedRevision = String(options.revision || '').trim()
+    const query = String(options.query || '').trim().toLocaleLowerCase('zh-CN').slice(0, 200)
     const offset = Math.max(0, Math.floor(Number(options.offset) || 0))
     const limit = Math.max(1, Math.min(100, Math.floor(Number(options.limit) || 40)))
     if (!expectedRevision || expectedRevision !== revision) {
@@ -10915,9 +10917,7 @@ export class PersonalMemoryStore {
     let snapshot: any = {}
     try { snapshot = JSON.parse(String(row.snapshot_json || '{}')) } catch {}
     const rawParticipants = Array.isArray(snapshot.participants) ? snapshot.participants : null
-    const total = rawParticipants?.length || 0
-    const rawPage = (rawParticipants || []).slice(offset, offset + limit)
-    const items = rawPage
+    const normalizedParticipants = (rawParticipants || [])
       .map((participant: any) => ({
         entityId: String(participant.entity_id || participant.entityId || ''),
         canonicalName: String(
@@ -10927,6 +10927,14 @@ export class PersonalMemoryStore {
         role: String(participant.role || 'participant')
       }))
       .filter((participant: any) => participant.entityId)
+    const filteredParticipants = query
+      ? normalizedParticipants.filter((participant: any) =>
+          `${participant.canonicalName}\n${participant.entityId}\n${participant.role}`
+            .toLocaleLowerCase('zh-CN').includes(query))
+      : normalizedParticipants
+    const total = filteredParticipants.length
+    const rawPage = filteredParticipants.slice(offset, offset + limit)
+    const items = rawPage
     const completedRevision = this.getStructuredMemoryRevision()
     if (completedRevision !== revision) {
       return {
@@ -10941,8 +10949,10 @@ export class PersonalMemoryStore {
       offset,
       nextOffset: offset + rawPage.length,
       limit,
+      query,
       revision,
       recorded: rawParticipants !== null,
+      unfilteredTotal: normalizedParticipants.length,
       stale: false
     }
   }
