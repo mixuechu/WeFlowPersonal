@@ -9,6 +9,11 @@ import {
   buildProjectReturnTarget,
   type AuthorityReturnTarget
 } from '../utils/authorityDossierNavigation'
+import {
+  buildProjectReviewReturnTarget,
+  resolveCompletedReviewReturn,
+  type ReviewReturnTarget
+} from '../utils/reviewReturnTarget'
 import { LatestRequestGate } from '../utils/latestRequestGate'
 import { buildMemorySessionScope } from '../utils/memorySessionScope'
 import { buildResourceStructurePresentation } from '../utils/resourceStructurePresentation'
@@ -1105,6 +1110,12 @@ function AiAssistantPage() {
   const [reviewKindFilter, setReviewKindFilter] = useState('')
   const [reviewQuery, setReviewQuery] = useState('')
   const [focusedReviewId, setFocusedReviewId] = useState('')
+  const [reviewReturnTarget, setReviewReturnTarget] =
+    useState<ReviewReturnTarget | null>(null)
+  const reviewReturnTargetRef = useRef<ReviewReturnTarget | null>(null)
+  const [reviewDecisionSaving, setReviewDecisionSaving] =
+    useState<Record<string, boolean>>({})
+  const reviewDecisionLocks = useRef(new Set<string>())
   const [reviewPage, setReviewPage] = useState<{
     items: any[]
     total: number
@@ -3567,16 +3578,36 @@ function AiAssistantPage() {
     setReviewStatusFilter('pending')
     setReviewKindFilter('relation')
     setReviewQuery('')
+    reviewReturnTargetRef.current = null
+    setReviewReturnTarget(null)
     setFocusedReviewId(id)
   }
   const openProjectRelationReview = (reviewId: string) => {
     const id = String(reviewId || '').trim()
     if (!id) return
+    const returnTarget = buildProjectReviewReturnTarget(selectedProjectId, id)
+    if (!returnTarget) return
     setSelectedProjectId('')
     setReviewStatusFilter('pending')
     setReviewKindFilter('relation')
     setReviewQuery('')
+    reviewReturnTargetRef.current = returnTarget
+    setReviewReturnTarget(returnTarget)
     setFocusedReviewId(id)
+  }
+  const clearReviewReturnTarget = () => {
+    reviewReturnTargetRef.current = null
+    setReviewReturnTarget(null)
+  }
+  const returnToProjectFromReview = () => {
+    const projectId = reviewReturnTargetRef.current?.projectId || ''
+    if (!projectId) return
+    reviewPageGate.current.invalidate()
+    reviewEvidenceGates.current.invalidateAll()
+    setFocusedReviewId('')
+    clearReviewReturnTarget()
+    setSelectedProjectId(projectId)
+    setProjectWorkspaceRefreshKey(value => value + 1)
   }
   const openProjectStructuredMemoryDossier = (
     kind: 'claim' | 'relation' | 'event',
@@ -5357,6 +5388,9 @@ function AiAssistantPage() {
       relationCorrection?: { subjectId?: string; predicate?: string; objectId?: string }
     }
   ) => {
+    if (reviewDecisionLocks.current.has(id)) return
+    reviewDecisionLocks.current.add(id)
+    setReviewDecisionSaving(current => setKeyedLoadingState(current, id, true))
     try {
       await window.electronAPI.aiAssistant.updateGraphReview(id, decision, {
         ...options,
@@ -5384,6 +5418,14 @@ function AiAssistantPage() {
       })
       await load()
       setReviewRefreshKey(value => value + 1)
+      const projectId = resolveCompletedReviewReturn(reviewReturnTargetRef.current, id)
+      if (projectId) {
+        reviewReturnTargetRef.current = null
+        setReviewReturnTarget(null)
+        setFocusedReviewId('')
+        setSelectedProjectId(projectId)
+        setProjectWorkspaceRefreshKey(value => value + 1)
+      }
     } catch (error: any) {
       const errorMessage = error?.message || String(error)
       setMessage(errorMessage)
@@ -5391,6 +5433,10 @@ function AiAssistantPage() {
         reviewPageGate.current.invalidate()
         setReviewRefreshKey(value => value + 1)
       }
+    } finally {
+      reviewDecisionLocks.current.delete(id)
+      setReviewDecisionSaving(current =>
+        setKeyedLoadingState(current, id, false))
     }
   }
 
@@ -10858,11 +10904,11 @@ function AiAssistantPage() {
             </small>}
             <div className="assistant-review-filters">
               <div>
-                <button className={reviewStatusFilter === 'pending' ? 'active' : ''} onClick={() => { setFocusedReviewId(''); setReviewStatusFilter('pending') }}>待处理 {pendingReviewCount}</button>
-                <button className={reviewStatusFilter === 'resolved' ? 'active' : ''} onClick={() => { setFocusedReviewId(''); setReviewStatusFilter('resolved') }}>已处理 {resolvedReviewCount}</button>
-                <button className={reviewStatusFilter === 'all' ? 'active' : ''} onClick={() => { setFocusedReviewId(''); setReviewStatusFilter('all') }}>全部 {reviewPage.counts.all}</button>
+                <button className={reviewStatusFilter === 'pending' ? 'active' : ''} onClick={() => { setFocusedReviewId(''); clearReviewReturnTarget(); setReviewStatusFilter('pending') }}>待处理 {pendingReviewCount}</button>
+                <button className={reviewStatusFilter === 'resolved' ? 'active' : ''} onClick={() => { setFocusedReviewId(''); clearReviewReturnTarget(); setReviewStatusFilter('resolved') }}>已处理 {resolvedReviewCount}</button>
+                <button className={reviewStatusFilter === 'all' ? 'active' : ''} onClick={() => { setFocusedReviewId(''); clearReviewReturnTarget(); setReviewStatusFilter('all') }}>全部 {reviewPage.counts.all}</button>
               </div>
-              <select value={reviewKindFilter} onChange={event => { setFocusedReviewId(''); setReviewKindFilter(event.target.value) }}>
+              <select value={reviewKindFilter} onChange={event => { setFocusedReviewId(''); clearReviewReturnTarget(); setReviewKindFilter(event.target.value) }}>
                 <option value="">全部类型</option>
                 <option value="entity_creation">实体存在与名称</option>
                 <option value="entity_summary">实体摘要</option>
@@ -10870,11 +10916,18 @@ function AiAssistantPage() {
                 <option value="relation">有向关系</option>
                 <option value="possible_duplicate">身份合并</option>
               </select>
-              <input value={reviewQuery} placeholder="搜索名称、原文、建议或处理原因" onChange={event => { setFocusedReviewId(''); setReviewQuery(event.target.value) }} />
+              <input value={reviewQuery} placeholder="搜索名称、原文、建议或处理原因" onChange={event => { setFocusedReviewId(''); clearReviewReturnTarget(); setReviewQuery(event.target.value) }} />
             </div>
             {focusedReviewId && <div className="assistant-review-note">
-              正在定位人物档案中的权威关系候选。
-              <button onClick={() => setFocusedReviewId('')}>返回完整审阅队列</button>
+              {reviewReturnTarget
+                ? '正在审阅项目中的权威关系候选；确认、拒绝或修正成功后会返回项目并重新读取最新档案。'
+                : '正在定位人物档案中的权威关系候选。'}
+              {reviewReturnTarget
+                ? <button onClick={returnToProjectFromReview}>暂不处理，返回项目</button>
+                : <button onClick={() => {
+                    setFocusedReviewId('')
+                    clearReviewReturnTarget()
+                  }}>返回完整审阅队列</button>}
             </div>}
             {visibleReviews.map((review: any) => <article id={`graph-review-${review.id}`} tabIndex={-1}
               className={`assistant-review-item ${review.status !== 'pending' ? 'resolved' : ''}`} key={review.id}>
@@ -11157,11 +11210,15 @@ function AiAssistantPage() {
                   </button>}
                 </div>}
               </div>}
-              {isPending && <div className="assistant-review-actions"><button onClick={() => void decideReview(review.id, 'rejected')}>拒绝</button><button className="primary" disabled={(review.kind === 'possible_duplicate' && (!review.leftEntityId || !review.rightEntityId || !selectedMergeTargetId)) || Boolean(entityNameInvalidReason) || Boolean(relationInvalidReason) || Boolean(profileInvalidReason)} title={review.kind === 'possible_duplicate' && (!review.leftEntityId || !review.rightEntityId) ? '候选信息不完整，暂不能合并' : review.kind === 'possible_duplicate' && !selectedMergeTargetId ? '请先选择合并后保留的身份' : entityNameInvalidReason || relationInvalidReason || profileInvalidReason} onClick={() => void decideReview(review.id, 'confirmed', review.kind === 'possible_duplicate' ? { mergeTargetEntityId: selectedMergeTargetId } : review.kind === 'entity_creation' ? { correctedCanonicalName: entityNameEdits[review.id] ?? review.entityCanonicalName ?? '' } : review.kind === 'relation' && relationEdit ? { relationCorrection: {
+              {isPending && <div className="assistant-review-actions"><button
+                disabled={!!reviewDecisionSaving[review.id]}
+                onClick={() => void decideReview(review.id, 'rejected')}>
+                {reviewDecisionSaving[review.id] ? '正在保存…' : '拒绝'}
+              </button><button className="primary" disabled={!!reviewDecisionSaving[review.id] || (review.kind === 'possible_duplicate' && (!review.leftEntityId || !review.rightEntityId || !selectedMergeTargetId)) || Boolean(entityNameInvalidReason) || Boolean(relationInvalidReason) || Boolean(profileInvalidReason)} title={review.kind === 'possible_duplicate' && (!review.leftEntityId || !review.rightEntityId) ? '候选信息不完整，暂不能合并' : review.kind === 'possible_duplicate' && !selectedMergeTargetId ? '请先选择合并后保留的身份' : entityNameInvalidReason || relationInvalidReason || profileInvalidReason} onClick={() => void decideReview(review.id, 'confirmed', review.kind === 'possible_duplicate' ? { mergeTargetEntityId: selectedMergeTargetId } : review.kind === 'entity_creation' ? { correctedCanonicalName: entityNameEdits[review.id] ?? review.entityCanonicalName ?? '' } : review.kind === 'relation' && relationEdit ? { relationCorrection: {
                 subjectId: relationEdit.subjectId,
                 predicate: relationEdit.predicate,
                 objectId: relationEdit.objectId
-              } } : review.kind === 'entity_summary' ? { correctedSummaryText: profileEditValue } : review.kind === 'entity_alias' ? { correctedAliasText: profileEditValue } : undefined)}>{review.kind === 'relation' ? '确认修正后方向' : review.kind === 'possible_duplicate' ? '按此方向合并' : review.kind === 'entity_creation' ? '确认名称并启用' : review.kind === 'entity_summary' || review.kind === 'entity_alias' ? '确认人工最终值' : '确认'}</button></div>}</>
+              } } : review.kind === 'entity_summary' ? { correctedSummaryText: profileEditValue } : review.kind === 'entity_alias' ? { correctedAliasText: profileEditValue } : undefined)}>{reviewDecisionSaving[review.id] ? '正在保存…' : review.kind === 'relation' ? '确认修正后方向' : review.kind === 'possible_duplicate' ? '按此方向合并' : review.kind === 'entity_creation' ? '确认名称并启用' : review.kind === 'entity_summary' || review.kind === 'entity_alias' ? '确认人工最终值' : '确认'}</button></div>}</>
               })()}
             </article>)}
             {reviewPage.status === 'loading' && <div className="assistant-empty">正在读取符合条件的审阅记录…</div>}
