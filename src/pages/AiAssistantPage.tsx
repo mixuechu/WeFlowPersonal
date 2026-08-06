@@ -12879,7 +12879,7 @@ function AiAssistantPage() {
                   </strong>
                   <p>
                     {memoryGrowthOriginDossier.originKind === 'connector_page'
-                      ? '标识由来源、前后 checkpoint 的不可逆摘要生成；原始游标不会进入渲染进程。'
+                      ? '标识由来源与该次页级或增量运行身份的不可逆摘要生成；原始游标、路径、账号和消息身份不会进入渲染进程。'
                       : memoryGrowthOriginDossier.originKind === 'human_action'
                         ? '该标识绑定具体操作和稳定对象 ID；同一事务产生的全部变化已在上方聚合。'
                         : memoryGrowthOriginDossier.originKind === 'system'

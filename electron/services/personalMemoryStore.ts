@@ -9611,6 +9611,31 @@ export class PersonalMemoryStore {
     }
   }
 
+  commitWechatResourceBatch(input: {
+    runId: string
+    resources: any[]
+  }): void {
+    if (!this.db) throw new Error('个人记忆数据库尚未初始化')
+    const runId = String(input.runId || '').trim()
+    if (!runId) throw new Error('微信资源批次缺少增量运行身份')
+    const resources = Array.isArray(input.resources) ? input.resources : []
+    const resourceIdentity = resources
+      .map(resource => String(resource?.id || '').trim())
+      .filter(Boolean)
+      .sort()
+      .join('\0')
+    this.runWithMemoryChangeOrigin({
+      kind: 'connector_page',
+      id: `wechat:${createHash('sha256')
+        .update(`wechat\0${runId}\0${resourceIdentity}`)
+        .digest('hex')
+        .slice(0, 24)}`,
+      sourceKind: 'wechat'
+    }, () => {
+      this.upsertResources(resources)
+    })
+  }
+
   commitResourceConnectorPage(input: {
     sourceId: string
     expectedCheckpoint: string
@@ -10128,11 +10153,16 @@ export class PersonalMemoryStore {
     return { total, completed, pending: Math.max(0, total - completed - deferred), deferred }
   }
 
-  replaceResourceContent(id: string, content: string, metadataPatch: Record<string, any>): any {
+  replaceResourceContent(
+    id: string,
+    content: string,
+    metadataPatch: Record<string, any>,
+    origin?: MemoryChangeOrigin
+  ): any {
     if (!this.db) return null
     const database = this.db
     const resourceId = String(id || '').trim()
-    return database.transaction(() => {
+    const operation = () => {
       const row = database.prepare('SELECT * FROM memory_resources WHERE id=?').get(resourceId) as any
       if (!row || database.prepare(
         'SELECT 1 FROM resource_suppressions WHERE resource_id=?'
@@ -10157,14 +10187,22 @@ export class PersonalMemoryStore {
         now
       )
       return { id: resourceId, content: nextContent, metadata, updatedAt: now }
-    })()
+    }
+    return origin
+      ? this.runWithMemoryChangeOrigin(origin, operation)
+      : database.transaction(operation)()
   }
 
-  appendResourceContent(id: string, text: string, metadataPatch: Record<string, any>): any {
+  appendResourceContent(
+    id: string,
+    text: string,
+    metadataPatch: Record<string, any>,
+    origin?: MemoryChangeOrigin
+  ): any {
     if (!this.db) return null
     const database = this.db
     const resourceId = String(id || '').trim()
-    return database.transaction(() => {
+    const operation = () => {
       const row = database.prepare('SELECT * FROM memory_resources WHERE id=?').get(resourceId) as any
       if (!row || database.prepare(
         'SELECT 1 FROM resource_suppressions WHERE resource_id=?'
@@ -10190,7 +10228,10 @@ export class PersonalMemoryStore {
         now
       )
       return { id: resourceId, content, metadata, updatedAt: now }
-    })()
+    }
+    return origin
+      ? this.runWithMemoryChangeOrigin(origin, operation)
+      : database.transaction(operation)()
   }
 
   syncTasks(

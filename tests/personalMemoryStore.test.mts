@@ -19006,6 +19006,112 @@ test('resource connector page commits authority and checkpoint atomically and re
   assert.equal(JSON.stringify(mailOrigin).includes('private-mail-checkpoint'), false)
 }))
 
+test('wechat resource batch records a private connector origin and rolls back all derived state', () => withStore(store => {
+  const database = (store as any).db
+  const privateRunId = 'run_private-wechat-resource-identity'
+  const resource = {
+    id: 'wechat-resource:origin-batch',
+    resourceType: 'link',
+    title: '微信资源来源测试',
+    content: '微信消息资源正文',
+    metadata: {
+      sourceId: 'wechat',
+      sessionId: 'private-session-id'
+    },
+    evidence: [{
+      sourceId: 'wechat',
+      sessionId: 'private-session-id',
+      messageId: 'private-message-id',
+      timestamp: 3,
+      sender: 'private-sender',
+      excerpt: '不会进入来源档案的微信原文'
+    }]
+  }
+  database.exec(`
+    CREATE TRIGGER fail_wechat_resource_evidence
+    BEFORE INSERT ON search_document_evidence
+    WHEN NEW.document_id='resource:wechat-resource:origin-batch'
+    BEGIN
+      SELECT RAISE(ABORT,'forced wechat resource failure');
+    END;
+  `)
+  const revisions = {
+    search: store.getMemorySearchRevision(),
+    resource: store.getResourceArchiveRevision()
+  }
+  assert.throws(() => store.commitWechatResourceBatch({
+    runId: privateRunId,
+    resources: [resource]
+  }), /forced wechat resource failure/)
+  assert.equal(Number(database.prepare(`
+    SELECT COUNT(*) AS count FROM memory_resources
+    WHERE id='wechat-resource:origin-batch'
+  `).get().count), 0)
+  assert.equal(Number(database.prepare(`
+    SELECT COUNT(*) AS count FROM search_documents
+    WHERE id='resource:wechat-resource:origin-batch'
+  `).get().count), 0)
+  assert.equal(store.getMemorySearchRevision(), revisions.search)
+  assert.equal(store.getResourceArchiveRevision(), revisions.resource)
+  assert.equal(store.listMemoryChangeLogPage({
+    origin: 'connector_page',
+    source: 'wechat',
+    limit: 20
+  }).total, 0)
+
+  database.exec('DROP TRIGGER fail_wechat_resource_evidence')
+  store.commitWechatResourceBatch({
+    runId: privateRunId,
+    resources: [resource]
+  })
+  const growth = store.listMemoryChangeLogPage({
+    origin: 'connector_page',
+    source: 'wechat',
+    limit: 20
+  })
+  assert.equal(growth.total, 1)
+  assert.match(growth.items[0].originId, /^wechat:[a-f0-9]{24}$/)
+  assert.equal(growth.items[0].originId.includes(privateRunId), false)
+  const dossier = store.getMemoryChangeOriginDossier(
+    growth.items[0].id,
+    growth.revision
+  )
+  assert.equal(dossier.originKind, 'connector_page')
+  assert.equal(dossier.sourceKind, 'wechat')
+  assert.equal(dossier.totalChanges, 1)
+  const publicDossier = JSON.stringify(dossier)
+  assert.equal(publicDossier.includes(privateRunId), false)
+  assert.equal(publicDossier.includes('private-session-id'), false)
+  assert.equal(publicDossier.includes('private-message-id'), false)
+  assert.equal(publicDossier.includes('private-sender'), false)
+  assert.equal(publicDossier.includes('不会进入来源档案'), false)
+
+  store.appendResourceContent(
+    resource.id,
+    '本地继续补齐的 OCR 正文',
+    { attachmentPdfOcrStatus: 'completed' },
+    {
+      kind: 'connector_page',
+      id: 'wechat:1234567890abcdef12345678',
+      sourceKind: 'wechat'
+    }
+  )
+  const enrichedGrowth = store.listMemoryChangeLogPage({
+    origin: 'connector_page',
+    source: 'wechat',
+    limit: 20
+  })
+  assert.equal(enrichedGrowth.total, 2)
+  assert.equal(enrichedGrowth.items[0].originId, 'wechat:1234567890abcdef12345678')
+  assert.equal(enrichedGrowth.items[0].changeKind, 'updated')
+  const enrichedDossier = store.getMemoryChangeOriginDossier(
+    enrichedGrowth.items[0].id,
+    enrichedGrowth.revision
+  )
+  assert.equal(enrichedDossier.totalChanges, 1)
+  assert.equal(enrichedDossier.sourceKind, 'wechat')
+}))
+
 test('calendar resource and structured event commit atomically', () => withStore(store => {
   const database = (store as any).db
   store.registerDataSources([{

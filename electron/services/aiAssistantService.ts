@@ -1902,7 +1902,26 @@ export class AiAssistantService {
     }
   }
 
-  private async continuePendingImageSemantics(): Promise<void> {
+  private wechatResourceMaintenanceOrigin(
+    runId: string,
+    resourceId: string,
+    stage: string
+  ): {
+    kind: 'connector_page'
+    id: string
+    sourceKind: 'wechat'
+  } {
+    return {
+      kind: 'connector_page',
+      id: `wechat:${crypto.createHash('sha256')
+        .update(`wechat\0${runId}\0${stage}\0${resourceId}`)
+        .digest('hex')
+        .slice(0, 24)}`,
+      sourceKind: 'wechat'
+    }
+  }
+
+  private async continuePendingImageSemantics(runId: string): Promise<void> {
     if (!this.config.get('aiAssistantAnalyzeImages')) return
     const status = localImageSemanticService.getStatus()
     if (!status.available) return
@@ -1915,7 +1934,7 @@ export class AiAssistantService {
           visualMigrationStatus: 'not_found',
           visualMigrationAttempts: attempts + 1,
           visualMigrationNextAt: new Date(Date.now() + 7 * 86_400_000).toISOString()
-        })
+        }, this.wechatResourceMaintenanceOrigin(runId, resource.id, 'image-semantics'))
         continue
       }
       const result = await localImageSemanticService.classify(filePath)
@@ -1925,7 +1944,7 @@ export class AiAssistantService {
           visualMigrationStatus: 'failed',
           visualMigrationAttempts: attempts + 1,
           visualMigrationNextAt: new Date(Date.now() + retryDays * 86_400_000).toISOString()
-        })
+        }, this.wechatResourceMaintenanceOrigin(runId, resource.id, 'image-semantics'))
         continue
       }
       const semanticText = buildImageSemanticText(result.labels)
@@ -1940,7 +1959,7 @@ export class AiAssistantService {
         visualMigrationAttempts: attempts + 1,
         visualMigrationNextAt: '',
         visualMigratedAt: new Date().toISOString()
-      })
+      }, this.wechatResourceMaintenanceOrigin(runId, resource.id, 'image-semantics'))
     }
   }
 
@@ -2008,7 +2027,7 @@ export class AiAssistantService {
     }
   }
 
-  private async continuePendingPdfOcr(): Promise<void> {
+  private async continuePendingPdfOcr(runId: string): Promise<void> {
     if (!this.config.get('aiAssistantOcrImages')) return
     const pending = personalMemoryStore.listPendingPdfOcrResources(1)
     for (const resource of pending) {
@@ -2017,7 +2036,7 @@ export class AiAssistantService {
         personalMemoryStore.appendResourceContent(resource.id, '', {
           attachmentPdfOcrStatus: 'not_found',
           attachmentPdfOcrTruncated: false
-        })
+        }, this.wechatResourceMaintenanceOrigin(runId, resource.id, 'pdf-ocr'))
         continue
       }
       const startPage = Math.max(2, Number(resource.metadata?.attachmentPdfOcrNextPage || 2))
@@ -2032,12 +2051,13 @@ export class AiAssistantService {
           attachmentPdfTotalPages: scanned.totalPages || resource.metadata?.attachmentPdfTotalPages || 0,
           attachmentPdfOcrTruncated: retryable ? true : scanned.truncated,
           attachmentPdfOcrNextPage: retryable ? startPage : scanned.nextPage
-        }
+        },
+        this.wechatResourceMaintenanceOrigin(runId, resource.id, 'pdf-ocr')
       )
     }
   }
 
-  private async continuePendingAttachmentStructures(): Promise<void> {
+  private async continuePendingAttachmentStructures(runId: string): Promise<void> {
     const pending = personalMemoryStore.listPendingAttachmentStructureResources(
       ATTACHMENT_STRUCTURE_PARSER_VERSION,
       1
@@ -2050,7 +2070,7 @@ export class AiAssistantService {
           attachmentStructureMigrationStatus: 'not_found',
           attachmentStructureMigrationAttempts: attempts + 1,
           attachmentStructureMigrationNextAt: new Date(Date.now() + 7 * 86_400_000).toISOString()
-        })
+        }, this.wechatResourceMaintenanceOrigin(runId, resource.id, 'attachment-structure'))
         continue
       }
       const extracted = await extractAttachmentText(filePath)
@@ -2064,19 +2084,23 @@ export class AiAssistantService {
           attachmentStructureMigrationAttempts: attempts + 1,
           attachmentStructureMigrationNextAt: '',
           attachmentStructureMigratedAt: new Date().toISOString()
-        })
+        }, this.wechatResourceMaintenanceOrigin(runId, resource.id, 'attachment-structure'))
       } else {
         const retryDays = Math.min(7, Math.max(1, 2 ** attempts))
         personalMemoryStore.replaceResourceContent(resource.id, resource.content, {
           attachmentStructureMigrationStatus: extracted.status || 'failed',
           attachmentStructureMigrationAttempts: attempts + 1,
           attachmentStructureMigrationNextAt: new Date(Date.now() + retryDays * 86_400_000).toISOString()
-        })
+        }, this.wechatResourceMaintenanceOrigin(runId, resource.id, 'attachment-structure'))
       }
     }
   }
 
-  private persistMessageResources(messages: any[], createdAt: string): void {
+  private persistMessageResources(
+    messages: any[],
+    createdAt: string,
+    runId: string
+  ): void {
     const resourceTypes = new Set(['link', 'file', 'forward', 'miniapp', 'image', 'voice'])
     const resources = messages.flatMap(message => {
       if (!resourceTypes.has(message.semanticType)) return []
@@ -2151,7 +2175,7 @@ export class AiAssistantService {
         }]
       }]
     })
-    personalMemoryStore.upsertResources(resources)
+    personalMemoryStore.commitWechatResourceBatch({ runId, resources })
   }
 
   private async callAi(messages: any[]): Promise<any> {
@@ -3647,10 +3671,10 @@ export class AiAssistantService {
         .map(messageKey))
       const digests: Array<{ digest: any; batch: any[] }> = []
       const createdAt = new Date().toISOString()
-      await this.continuePendingPdfOcr()
-      this.persistMessageResources(fresh, createdAt)
-      await this.continuePendingImageSemantics()
-      await this.continuePendingAttachmentStructures()
+      await this.continuePendingPdfOcr(runId)
+      this.persistMessageResources(fresh, createdAt, runId)
+      await this.continuePendingImageSemantics(runId)
+      await this.continuePendingAttachmentStructures(runId)
       const successfulMessageKeys: string[] = []
       const batchErrors: string[] = []
       const tasks = new Map<string, AssistantTask>()
