@@ -4232,6 +4232,7 @@ export class AiAssistantService {
     const assistantArchiveStats = personalMemoryStore.getAssistantArchiveStats()
     const taskReviewArchiveStats = personalMemoryStore.getTaskReviewArchiveStats()
     const memoryDeletionArchiveStats = personalMemoryStore.getMemoryDeletionAuditStats()
+    const memoryChangeLogHealth = personalMemoryStore.getMemoryChangeLogHealth()
     const mergeHistoryArchiveStats = personalMemoryStore.getMergeHistoryArchiveStats()
     const identityMergeSnapshotStorage = personalMemoryStore.getIdentityMergeSnapshotStorageStats()
     const resourceArchiveRevision = personalMemoryStore.getResourceArchiveRevision()
@@ -4353,6 +4354,13 @@ export class AiAssistantService {
         revision: revisions.memoryDeletion,
         version: 'memory-deletion-audit-v1',
         directory: 'paginated_without_content'
+      },
+      memoryGrowth: {
+        total: memoryChangeLogHealth.total,
+        revision: memoryChangeLogHealth.revision,
+        trackedSince: memoryChangeLogHealth.trackedSince,
+        privacyPolicy: memoryChangeLogHealth.privacyPolicy,
+        historicalBackfill: memoryChangeLogHealth.historicalBackfill
       },
       ownerEntity: this.getOwnerEntityPresentation(),
       memoryStats,
@@ -4695,6 +4703,22 @@ export class AiAssistantService {
         ? options.reason
         : 'all',
       query: String(options?.query || ''),
+      from: String(options?.from || ''),
+      to: String(options?.to || ''),
+      limit: Number(options?.limit || 40),
+      offset: Number(options?.offset || 0),
+      revision: String(options?.revision || '')
+    })
+  }
+
+  getMemoryChangeLogPage(options: any = {}): any {
+    return personalMemoryStore.listMemoryChangeLogPage({
+      kind: ['entity', 'claim', 'relation', 'event', 'resource', 'all'].includes(options?.kind)
+        ? options.kind
+        : 'all',
+      change: ['discovered', 'updated', 'reviewed', 'removed', 'all'].includes(options?.change)
+        ? options.change
+        : 'all',
       from: String(options?.from || ''),
       to: String(options?.to || ''),
       limit: Number(options?.limit || 40),

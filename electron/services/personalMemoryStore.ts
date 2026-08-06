@@ -1411,6 +1411,24 @@ export class PersonalMemoryStore {
       CREATE INDEX IF NOT EXISTS idx_memory_deletion_audit_created
         ON memory_deletion_audit(created_at DESC);
 
+      CREATE TABLE IF NOT EXISTS memory_change_log (
+        id INTEGER PRIMARY KEY,
+        item_kind TEXT NOT NULL,
+        item_id TEXT NOT NULL,
+        change_kind TEXT NOT NULL,
+        status_before TEXT NOT NULL DEFAULT '',
+        status_after TEXT NOT NULL DEFAULT '',
+        changed_at TEXT NOT NULL
+      ) STRICT;
+      CREATE INDEX IF NOT EXISTS idx_memory_change_log_time
+        ON memory_change_log(changed_at DESC,id DESC);
+      CREATE INDEX IF NOT EXISTS idx_memory_change_log_kind_time
+        ON memory_change_log(item_kind,changed_at DESC,id DESC);
+      CREATE INDEX IF NOT EXISTS idx_memory_change_log_change_time
+        ON memory_change_log(change_kind,changed_at DESC,id DESC);
+      CREATE INDEX IF NOT EXISTS idx_memory_change_log_item
+        ON memory_change_log(item_kind,item_id,id DESC);
+
       CREATE VIRTUAL TABLE IF NOT EXISTS search_fts USING fts5(
         document_id UNINDEXED,
         title,
@@ -1612,6 +1630,7 @@ export class PersonalMemoryStore {
     this.repairAssistantAnswerDependencies()
     this.compactCommittedIngestionPayloads()
     this.repairDuplicateEvents()
+    this.ensureMemoryChangeLog()
     this.db.prepare(`
       INSERT INTO schema_meta(key, value, updated_at) VALUES('schema_version', '1', ?)
       ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at
@@ -2088,6 +2107,379 @@ export class PersonalMemoryStore {
       repairedIndexesThisStart: Number(audit.repairedIndexesThisStart || 0),
       repairsTotal: Number(audit.repairsTotal || 0),
       ...live
+    }
+  }
+
+  private memoryChangeLogTriggerDefinitions(): Array<{
+    name: string
+    table: string
+    itemKind: 'entity' | 'claim' | 'relation' | 'event' | 'resource'
+    statusColumn: string
+    updatedColumn: string
+  }> {
+    return [{
+      name: 'memory_change_entities',
+      table: 'entities',
+      itemKind: 'entity',
+      statusColumn: 'trust_status',
+      updatedColumn: 'updated_at'
+    }, {
+      name: 'memory_change_claims',
+      table: 'claims',
+      itemKind: 'claim',
+      statusColumn: 'status',
+      updatedColumn: 'updated_at'
+    }, {
+      name: 'memory_change_relations',
+      table: 'relations',
+      itemKind: 'relation',
+      statusColumn: 'status',
+      updatedColumn: 'updated_at'
+    }, {
+      name: 'memory_change_events',
+      table: 'events',
+      itemKind: 'event',
+      statusColumn: 'status',
+      updatedColumn: 'updated_at'
+    }, {
+      name: 'memory_change_resources',
+      table: 'memory_resources',
+      itemKind: 'resource',
+      statusColumn: '',
+      updatedColumn: 'updated_at'
+    }]
+  }
+
+  private memoryChangeLogTriggerSql(definition: {
+    name: string
+    table: string
+    itemKind: string
+    statusColumn: string
+    updatedColumn: string
+  }): string[] {
+    const statusBefore = definition.statusColumn ? `OLD.${definition.statusColumn}` : `''`
+    const statusAfter = definition.statusColumn ? `NEW.${definition.statusColumn}` : `''`
+    const statusChanged = definition.statusColumn
+      ? `OLD.${definition.statusColumn} IS NOT NEW.${definition.statusColumn}`
+      : '0'
+    const updateWhen = definition.statusColumn
+      ? `WHEN OLD.${definition.updatedColumn} IS NOT NEW.${definition.updatedColumn}
+        OR OLD.${definition.statusColumn} IS NOT NEW.${definition.statusColumn}`
+      : `WHEN OLD.${definition.updatedColumn} IS NOT NEW.${definition.updatedColumn}`
+    const prefix = `trg_memory_growth_${definition.name.replace(/^memory_change_/, '')}`
+    return [`
+      CREATE TRIGGER ${prefix}_insert AFTER INSERT ON ${definition.table}
+      BEGIN
+        INSERT INTO memory_change_log(
+          item_kind,item_id,change_kind,status_before,status_after,changed_at
+        ) VALUES(
+          '${definition.itemKind}',NEW.id,'discovered','',${statusAfter},
+          strftime('%Y-%m-%dT%H:%M:%fZ','now')
+        );
+      END;
+    `, `
+      CREATE TRIGGER ${prefix}_update AFTER UPDATE ON ${definition.table}
+      ${updateWhen}
+      BEGIN
+        INSERT INTO memory_change_log(
+          item_kind,item_id,change_kind,status_before,status_after,changed_at
+        ) VALUES(
+          '${definition.itemKind}',NEW.id,
+          CASE WHEN ${statusChanged} THEN 'reviewed' ELSE 'updated' END,
+          ${statusBefore},${statusAfter},
+          strftime('%Y-%m-%dT%H:%M:%fZ','now')
+        );
+      END;
+    `, `
+      CREATE TRIGGER ${prefix}_delete AFTER DELETE ON ${definition.table}
+      BEGIN
+        INSERT INTO memory_change_log(
+          item_kind,item_id,change_kind,status_before,status_after,changed_at
+        ) VALUES(
+          '${definition.itemKind}',OLD.id,'removed',${statusBefore},'',
+          strftime('%Y-%m-%dT%H:%M:%fZ','now')
+        );
+      END;
+    `]
+  }
+
+  private inspectMemoryChangeLogTriggers(): {
+    expectedTriggers: number
+    installedTriggers: number
+    healthy: boolean
+    unhealthyTriggers: string[]
+    unexpectedTriggers: string[]
+  } {
+    const expected = this.memoryChangeLogTriggerDefinitions()
+      .flatMap(definition => this.memoryChangeLogTriggerSql(definition))
+    const expectedByName = new Map(expected.map(sql => {
+      const name = sql.match(/CREATE TRIGGER\s+(\S+)/i)?.[1] || ''
+      return [name, sql]
+    }))
+    if (!this.db) return {
+      expectedTriggers: expected.length,
+      installedTriggers: 0,
+      healthy: false,
+      unhealthyTriggers: [...expectedByName.keys()],
+      unexpectedTriggers: []
+    }
+    const normalize = (value: unknown) => String(value || '').toLowerCase()
+      .replace(/;/g, '').replace(/\s+/g, ' ').trim()
+    const rows = this.db.prepare(`
+      SELECT name,sql FROM sqlite_master
+      WHERE type='trigger' AND name LIKE 'trg_memory_growth_%'
+    `).all() as Array<{ name: string; sql: string }>
+    const installed = new Map(rows.map(row => [row.name, row.sql]))
+    const unhealthyTriggers = [...expectedByName.entries()]
+      .filter(([name, sql]) => normalize(installed.get(name)) !== normalize(sql))
+      .map(([name]) => name)
+    const unexpectedTriggers = rows.map(row => row.name)
+      .filter(name => !expectedByName.has(name)).sort()
+    return {
+      expectedTriggers: expected.length,
+      installedTriggers: [...expectedByName.keys()].filter(name => installed.has(name)).length,
+      healthy: unhealthyTriggers.length === 0 && unexpectedTriggers.length === 0,
+      unhealthyTriggers,
+      unexpectedTriggers
+    }
+  }
+
+  private ensureMemoryChangeLog(): void {
+    if (!this.db) return
+    const before = this.inspectMemoryChangeLogTriggers()
+    const previousRow = this.db.prepare(`
+      SELECT value FROM schema_meta WHERE key='memory_change_log_integrity'
+    `).get() as any
+    let previous: any = {}
+    try { previous = JSON.parse(String(previousRow?.value || '{}')) } catch {}
+    const definitions = this.memoryChangeLogTriggerDefinitions()
+      .flatMap(definition => this.memoryChangeLogTriggerSql(definition))
+    const byName = new Map(definitions.map(sql => [
+      sql.match(/CREATE TRIGGER\s+(\S+)/i)?.[1] || '', sql
+    ]))
+    if (!before.healthy) {
+      this.db.transaction(() => {
+        for (const name of [...before.unhealthyTriggers, ...before.unexpectedTriggers]) {
+          this.db!.exec(`DROP TRIGGER IF EXISTS "${name.replace(/"/g, '""')}"`)
+          const sql = byName.get(name)
+          if (sql) this.db!.exec(sql)
+        }
+      })()
+    }
+    const now = new Date().toISOString()
+    this.db.prepare(`
+      INSERT INTO schema_meta(key,value,updated_at)
+      VALUES('memory_change_log_started_at',?,?)
+      ON CONFLICT(key) DO NOTHING
+    `).run(now, now)
+    this.ensureRevisionTriggerSet({
+      prefix: 'memory_change_log_revision',
+      revisionKey: 'memory_change_log_revision',
+      tables: ['memory_change_log'],
+      version: 'memory-change-log-revision-v1'
+    })
+    const after = this.inspectMemoryChangeLogTriggers()
+    const repaired = before.unhealthyTriggers.length + before.unexpectedTriggers.length
+    const audit = {
+      version: 'memory-change-log-v1',
+      checkedAt: now,
+      repairedThisStart: repaired > 0,
+      repairedTriggersThisStart: repaired,
+      repairsTotal: Number(previous.repairsTotal || 0) + (repaired > 0 ? 1 : 0),
+      privacyPolicy: 'identity_status_time_only',
+      historicalBackfill: false,
+      ...after
+    }
+    this.db.prepare(`
+      INSERT INTO schema_meta(key,value,updated_at)
+      VALUES('memory_change_log_integrity',?,?)
+      ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_at=excluded.updated_at
+    `).run(JSON.stringify(audit), now)
+  }
+
+  getMemoryChangeLogRevision(): string {
+    if (!this.db) return '0'
+    return String((this.db.prepare(`
+      SELECT value FROM schema_meta WHERE key='memory_change_log_revision'
+    `).get() as any)?.value || '0')
+  }
+
+  getMemoryChangeLogHealth(): any {
+    const triggers = this.inspectMemoryChangeLogTriggers()
+    const revisionTriggers = this.getRevisionTriggerSetHealth({
+      prefix: 'memory_change_log_revision',
+      revisionKey: 'memory_change_log_revision',
+      tables: ['memory_change_log'],
+      version: 'memory-change-log-revision-v1',
+      revision: this.getMemoryChangeLogRevision()
+    })
+    if (!this.db) return {
+      version: 'memory-change-log-v1',
+      revision: '0',
+      trackedSince: '',
+      total: 0,
+      ...triggers,
+      revisionTriggers,
+      healthy: false
+    }
+    const auditRow = this.db.prepare(`
+      SELECT value,updated_at FROM schema_meta WHERE key='memory_change_log_integrity'
+    `).get() as any
+    const started = this.db.prepare(`
+      SELECT value FROM schema_meta WHERE key='memory_change_log_started_at'
+    `).get() as any
+    let audit: any = {}
+    try { audit = JSON.parse(String(auditRow?.value || '{}')) } catch {}
+    return {
+      version: 'memory-change-log-v1',
+      revision: this.getMemoryChangeLogRevision(),
+      trackedSince: String(started?.value || ''),
+      total: Number((this.db.prepare(`
+        SELECT COALESCE(MAX(id),0) AS count FROM memory_change_log
+      `).get() as any)?.count || 0),
+      checkedAt: String(audit.checkedAt || auditRow?.updated_at || ''),
+      repairedThisStart: Boolean(audit.repairedThisStart),
+      repairedTriggersThisStart: Number(audit.repairedTriggersThisStart || 0),
+      repairsTotal: Number(audit.repairsTotal || 0),
+      privacyPolicy: 'identity_status_time_only',
+      historicalBackfill: false,
+      ...triggers,
+      revisionTriggers,
+      healthy: triggers.healthy && revisionTriggers.healthy
+    }
+  }
+
+  listMemoryChangeLogPage(options: {
+    kind?: 'entity' | 'claim' | 'relation' | 'event' | 'resource' | 'all'
+    change?: 'discovered' | 'updated' | 'reviewed' | 'removed' | 'all'
+    from?: string
+    to?: string
+    limit?: number
+    offset?: number
+    revision?: string
+  } = {}): {
+    items: any[]
+    total: number
+    hasMore: boolean
+    offset: number
+    limit: number
+    revision: string
+    stale: boolean
+    trackedSince: string
+    counts: Record<string, number>
+  } {
+    const revision = this.getMemoryChangeLogRevision()
+    const limit = Math.max(1, Math.min(100, Math.floor(Number(options.limit) || 40)))
+    const offset = Math.max(0, Math.min(1_000_000, Math.floor(Number(options.offset) || 0)))
+    const empty = {
+      items: [], total: 0, hasMore: false, offset, limit, revision,
+      stale: false, trackedSince: '', counts: {}
+    }
+    if (!this.db) return empty
+    const started = String((this.db.prepare(`
+      SELECT value FROM schema_meta WHERE key='memory_change_log_started_at'
+    `).get() as any)?.value || '')
+    if (offset > 0 && String(options.revision || '') !== revision) {
+      return { ...empty, revision, stale: true, trackedSince: started }
+    }
+    const conditions: string[] = []
+    const parameters: Array<string | number> = []
+    if (['entity', 'claim', 'relation', 'event', 'resource'].includes(String(options.kind))) {
+      conditions.push('log.item_kind=?')
+      parameters.push(String(options.kind))
+    }
+    if (['discovered', 'updated', 'reviewed', 'removed'].includes(String(options.change))) {
+      conditions.push('log.change_kind=?')
+      parameters.push(String(options.change))
+    }
+    const from = options.from && Number.isFinite(Date.parse(options.from)) ? String(options.from) : ''
+    const to = options.to && Number.isFinite(Date.parse(options.to)) ? String(options.to) : ''
+    if (from) {
+      conditions.push('log.changed_at>=?')
+      parameters.push(from)
+    }
+    if (to) {
+      conditions.push('log.changed_at<=?')
+      parameters.push(to)
+    }
+    const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : ''
+    const total = Number((this.db.prepare(`
+      SELECT COUNT(*) AS count FROM memory_change_log log ${where}
+    `).get(...parameters) as any)?.count || 0)
+    const rows = this.db.prepare(`
+      SELECT log.*,
+        CASE log.item_kind
+          WHEN 'entity' THEN (SELECT canonical_name FROM entities WHERE id=log.item_id)
+          WHEN 'claim' THEN (
+            SELECT COALESCE(subject.canonical_name,'未知主体') || ' · ' || claim.predicate ||
+              CASE
+                WHEN object_entity.canonical_name IS NOT NULL THEN ' · ' || object_entity.canonical_name
+                WHEN claim.object_value IS NOT NULL AND claim.object_value!='' THEN ' · ' || claim.object_value
+                ELSE ''
+              END
+            FROM claims claim
+            LEFT JOIN entities subject ON subject.id=claim.subject_id
+            LEFT JOIN entities object_entity ON object_entity.id=claim.object_entity_id
+            WHERE claim.id=log.item_id
+          )
+          WHEN 'relation' THEN (
+            SELECT COALESCE(subject.canonical_name,'未知主体') || ' — ' || relation.predicate ||
+              ' → ' || COALESCE(object_entity.canonical_name,'未知对象')
+            FROM relations relation
+            LEFT JOIN entities subject ON subject.id=relation.subject_id
+            LEFT JOIN entities object_entity ON object_entity.id=relation.object_id
+            WHERE relation.id=log.item_id
+          )
+          WHEN 'event' THEN (SELECT title FROM events WHERE id=log.item_id)
+          WHEN 'resource' THEN (SELECT title FROM memory_resources WHERE id=log.item_id)
+          ELSE NULL
+        END AS current_title,
+        CASE log.item_kind
+          WHEN 'entity' THEN EXISTS(SELECT 1 FROM entities WHERE id=log.item_id)
+          WHEN 'claim' THEN EXISTS(SELECT 1 FROM claims WHERE id=log.item_id)
+          WHEN 'relation' THEN EXISTS(SELECT 1 FROM relations WHERE id=log.item_id)
+          WHEN 'event' THEN EXISTS(SELECT 1 FROM events WHERE id=log.item_id)
+          WHEN 'resource' THEN EXISTS(SELECT 1 FROM memory_resources WHERE id=log.item_id)
+          ELSE 0
+        END AS current_exists
+      FROM memory_change_log log
+      ${where}
+      ORDER BY log.changed_at DESC,log.id DESC
+      LIMIT ? OFFSET ?
+    `).all(...parameters, limit, offset) as any[]
+    const counts: Record<string, number> = { all: 0 }
+    if (offset === 0) {
+      const grouped = this.db.prepare(`
+        SELECT item_kind,change_kind,COUNT(*) AS count FROM memory_change_log
+        GROUP BY item_kind,change_kind
+      `).all() as Array<{ item_kind: string; change_kind: string; count: number }>
+      for (const row of grouped) {
+        const count = Number(row.count || 0)
+        counts.all += count
+        counts[row.item_kind] = (counts[row.item_kind] || 0) + count
+        counts[row.change_kind] = (counts[row.change_kind] || 0) + count
+      }
+    }
+    return {
+      items: rows.map(row => ({
+        id: Number(row.id),
+        itemKind: String(row.item_kind).slice(0, 40),
+        itemId: String(row.item_id).slice(0, 240),
+        changeKind: String(row.change_kind).slice(0, 40),
+        statusBefore: String(row.status_before || '').slice(0, 80),
+        statusAfter: String(row.status_after || '').slice(0, 80),
+        changedAt: String(row.changed_at || '').slice(0, 80),
+        title: String(row.current_title || '').replace(/\s+/g, ' ').trim().slice(0, 500),
+        currentExists: Boolean(row.current_exists)
+      })),
+      total,
+      hasMore: offset + rows.length < total,
+      offset,
+      limit,
+      revision,
+      stale: false,
+      trackedSince: started,
+      counts
     }
   }
 
@@ -5736,6 +6128,7 @@ export class PersonalMemoryStore {
     const entityEvidenceFts = this.getEntityEvidenceFtsHealth()
     const evidenceScopeIndexes = this.getEvidenceScopeIndexHealth()
     const reviewInboxIndexes = this.getReviewInboxIndexHealth()
+    const memoryChangeLog = this.getMemoryChangeLogHealth()
     const memorySearchFeedbackArchiveRevision =
       this.getMemorySearchFeedbackArchiveRevisionHealth()
     const memoryDeletionAuditRevision = this.getMemoryDeletionAuditRevisionHealth()
@@ -5874,6 +6267,7 @@ export class PersonalMemoryStore {
       entityEvidenceFts,
       evidenceScopeIndexes,
       reviewInboxIndexes,
+      memoryChangeLog,
       memorySearchRevision,
       memorySearchFeedbackArchiveRevision,
       memoryDeletionAuditRevision,
@@ -5903,6 +6297,7 @@ export class PersonalMemoryStore {
     // Rebuilding them never changes the underlying facts, relations, events, resources, or tasks.
     this.ensureEvidenceScopeIndexes()
     this.ensureReviewInboxIndexes()
+    this.ensureMemoryChangeLog()
     this.ensureEntityEvidenceFtsIndex()
     this.ensureMemorySearchRevisionTriggers()
     this.ensureStructuredEvidenceRevisionLedger()

@@ -7507,6 +7507,145 @@ test('review inbox aggregation stays indexed and repairs index drift on restart'
   }
 })
 
+test('memory growth log is privacy-minimal, pageable and self-heals trigger drift', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'weflow-memory-growth-log-'))
+  const databasePath = join(directory, 'memory.sqlite')
+  const first = new PersonalMemoryStore()
+  try {
+    first.initialize(databasePath)
+    const database = (first as any).db
+    const initial = first.getMemoryChangeLogHealth()
+    assert.equal(initial.healthy, true)
+    assert.equal(initial.expectedTriggers, 15)
+    assert.equal(initial.total, 0)
+    assert.match(initial.trackedSince, /^20/)
+    for (const [sql, index] of [
+      [`SELECT id FROM memory_change_log ORDER BY changed_at DESC,id DESC LIMIT 40`,
+        'idx_memory_change_log_time'],
+      [`SELECT id FROM memory_change_log WHERE item_kind='claim'
+        ORDER BY changed_at DESC,id DESC LIMIT 40`, 'idx_memory_change_log_kind_time'],
+      [`SELECT id FROM memory_change_log WHERE change_kind='reviewed'
+        ORDER BY changed_at DESC,id DESC LIMIT 40`, 'idx_memory_change_log_change_time']
+    ]) {
+      const plan = (database.prepare(`EXPLAIN QUERY PLAN ${sql}`).all() as Array<{ detail: string }>)
+        .map(row => row.detail).join(' ')
+      assert.match(plan, new RegExp(index))
+    }
+    database.exec(`
+      INSERT INTO entities(
+        id,type,canonical_name,summary,confidence,created_at,updated_at,trust_status,summary_status
+      ) VALUES
+        ('growth-person','person','成长人物','',1,'2026-08-06T01:00:00.000Z','2026-08-06T01:00:00.000Z','confirmed','empty'),
+        ('growth-project','project','成长项目','',1,'2026-08-06T01:01:00.000Z','2026-08-06T01:01:00.000Z','confirmed','empty');
+      INSERT INTO claims(
+        id,subject_id,predicate,object_value,confidence,status,search_text,created_at,updated_at
+      ) VALUES(
+        'growth-claim','growth-person','负责','成长项目',0.8,'candidate','成长人物负责成长项目',
+        '2026-08-06T01:02:00.000Z','2026-08-06T01:02:00.000Z'
+      );
+      INSERT INTO relations(
+        id,subject_id,predicate,object_id,confidence,status,search_text,created_at,updated_at
+      ) VALUES(
+        'growth-relation','growth-person','负责','growth-project',0.8,'candidate',
+        '成长人物负责成长项目','2026-08-06T01:03:00.000Z','2026-08-06T01:03:00.000Z'
+      );
+      INSERT INTO events(
+        id,event_type,title,confidence,status,search_text,created_at,updated_at
+      ) VALUES(
+        'growth-event','meeting','成长会议',0.8,'candidate','成长会议',
+        '2026-08-06T01:04:00.000Z','2026-08-06T01:04:00.000Z'
+      );
+      INSERT INTO memory_resources(
+        id,resource_type,title,created_at,updated_at
+      ) VALUES(
+        'growth-resource','document','成长资料',
+        '2026-08-06T01:05:00.000Z','2026-08-06T01:05:00.000Z'
+      );
+    `)
+    const firstPage = first.listMemoryChangeLogPage({ limit: 3 })
+    assert.equal(firstPage.total, 6)
+    assert.equal(firstPage.items.length, 3)
+    assert.equal(firstPage.hasMore, true)
+    assert.equal(firstPage.items[0].itemKind, 'resource')
+    assert.equal(firstPage.items[0].title, '成长资料')
+    assert.deepEqual(Object.keys(firstPage.items[0]).sort(), [
+      'changeKind', 'changedAt', 'currentExists', 'id', 'itemId',
+      'itemKind', 'statusAfter', 'statusBefore', 'title'
+    ])
+    assert.equal(JSON.stringify(firstPage).includes('search_text'), false)
+    assert.equal(JSON.stringify(firstPage).includes('excerpt'), false)
+    assert.deepEqual(
+      new Set(first.listMemoryChangeLogPage({ limit: 20 }).items.map(item => item.itemKind)),
+      new Set(['entity', 'claim', 'relation', 'event', 'resource'])
+    )
+    database.exec(`
+      UPDATE events SET title=title WHERE id='growth-event';
+      BEGIN;
+      INSERT INTO events(
+        id,event_type,title,confidence,status,search_text,created_at,updated_at
+      ) VALUES(
+        'growth-rolled-back','meeting','不会提交的事件',0.8,'candidate','不会提交',
+        '2026-08-06T01:06:00.000Z','2026-08-06T01:06:00.000Z'
+      );
+      ROLLBACK;
+    `)
+    assert.equal(first.listMemoryChangeLogPage({ limit: 20 }).total, 6)
+    assert.equal(JSON.stringify(first.listMemoryChangeLogPage({ limit: 20 }))
+      .includes('growth-rolled-back'), false)
+    database.exec(`
+      UPDATE claims SET status='confirmed',updated_at='2026-08-06T02:00:00.000Z'
+      WHERE id='growth-claim';
+      UPDATE events SET title='成长会议（更新）',updated_at='2026-08-06T02:01:00.000Z'
+      WHERE id='growth-event';
+      DELETE FROM memory_resources WHERE id='growth-resource';
+    `)
+    const reviewed = first.listMemoryChangeLogPage({ change: 'reviewed', limit: 20 })
+    assert.equal(reviewed.total, 1)
+    assert.equal(reviewed.items[0].itemId, 'growth-claim')
+    assert.equal(reviewed.items[0].statusBefore, 'candidate')
+    assert.equal(reviewed.items[0].statusAfter, 'confirmed')
+    const removed = first.listMemoryChangeLogPage({ change: 'removed', limit: 20 })
+    assert.equal(removed.total, 1)
+    assert.equal(removed.items[0].itemId, 'growth-resource')
+    assert.equal(removed.items[0].title, '')
+    assert.equal(removed.items[0].currentExists, false)
+    const oldRevision = first.listMemoryChangeLogPage({ limit: 1 }).revision
+    database.exec(`
+      INSERT INTO events(
+        id,event_type,title,confidence,status,search_text,created_at,updated_at
+      ) VALUES(
+        'growth-event-later','delivery','后续交付',0.8,'candidate','后续交付',
+        '2026-08-06T03:00:00.000Z','2026-08-06T03:00:00.000Z'
+      );
+    `)
+    assert.equal(first.listMemoryChangeLogPage({
+      offset: 1, limit: 1, revision: oldRevision
+    }).stale, true)
+    database.exec(`
+      DROP TRIGGER trg_memory_growth_claims_update;
+      CREATE TRIGGER trg_memory_growth_claims_update AFTER UPDATE ON claims BEGIN SELECT 1; END;
+    `)
+    assert.equal(first.getMemoryChangeLogHealth().healthy, false)
+    first.close()
+
+    const reopened = new PersonalMemoryStore()
+    try {
+      reopened.initialize(databasePath)
+      const health = reopened.getMemoryChangeLogHealth()
+      assert.equal(health.healthy, true)
+      assert.equal(health.repairedThisStart, true)
+      assert.equal(health.repairedTriggersThisStart, 1)
+      assert.equal(health.total, 10)
+      assert.equal(reopened.getDiagnostics().memoryChangeLog.healthy, true)
+    } finally {
+      reopened.close()
+    }
+  } finally {
+    first.close()
+    rmSync(directory, { recursive: true, force: true })
+  }
+})
+
 test('direct entity evidence follows reversible identity merges without copying plaintext', () => withStore(store => {
   const entities = ['source-identity-evidence', 'target-identity-evidence'].map((id, index) => ({
     id,

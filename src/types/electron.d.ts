@@ -1857,6 +1857,17 @@ export interface ElectronAPI {
         revision: string
         stale: boolean
       }>
+      getMemoryChangeLogPage: (options?: any) => Promise<{
+        items: any[]
+        total: number
+        hasMore: boolean
+        offset: number
+        limit: number
+        counts: Record<string, number>
+        revision: string
+        stale: boolean
+        trackedSince: string
+      }>
       getMergeHistoryPage: (options?: any) => Promise<{
         items: any[]
         total: number

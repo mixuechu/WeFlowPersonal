@@ -975,6 +975,48 @@
 .assistant-owner-profile-summary strong { font-size: 14px; color: #26372e; }
 .assistant-owner-profile-summary span { font-size: 9px; color: #66756c; }
 .assistant-owner-profile-summary small { font-size: 9px; line-height: 1.6; color: #7c887f; }
+.assistant-memory-growth { margin-top: 14px; }
+.assistant-memory-growth-list { display: grid; gap: 7px; margin-top: 10px; }
+.assistant-memory-growth-list article {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  border: 1px solid #e4e8e5;
+  border-radius: 10px;
+  background: #fbfcfb;
+}
+.assistant-memory-growth-list article > div { min-width: 0; display: grid; gap: 3px; }
+.assistant-memory-growth-list article strong {
+  overflow: hidden;
+  color: #303c35;
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.assistant-memory-growth-list article small { color: #7b877f; font-size: 8px; }
+.assistant-memory-growth-list article button {
+  border: 1px solid #ccd8d0;
+  border-radius: 8px;
+  background: #f3f7f4;
+  color: #476052;
+  font-size: 9px;
+}
+.assistant-memory-growth-kind {
+  min-width: 34px;
+  padding: 4px 6px;
+  border-radius: 999px;
+  background: #e8efe9;
+  color: #4d6757;
+  font-size: 8px;
+  text-align: center;
+}
+.assistant-memory-growth-kind.claim { background: #edf1f7; color: #53657c; }
+.assistant-memory-growth-kind.event { background: #f4efe6; color: #766247; }
+.assistant-memory-growth-kind.relation { background: #eeeaf6; color: #665681; }
+.assistant-memory-growth-kind.resource { background: #e8f2f2; color: #496d6d; }
+.assistant-memory-growth-removed { color: #9b7167; font-size: 8px; }
 .assistant-review-inbox-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit,minmax(150px,1fr));

@@ -68,6 +68,21 @@ import {
 } from '../../shared/reviewInbox'
 import './AiAssistantPage.scss'
 
+const MEMORY_GROWTH_KIND_LABELS: Record<string, string> = {
+  entity: '实体',
+  claim: '事实',
+  relation: '关系',
+  event: '事件',
+  resource: '资源'
+}
+
+const MEMORY_GROWTH_CHANGE_LABELS: Record<string, string> = {
+  discovered: '新发现',
+  updated: '内容更新',
+  reviewed: '可信状态变化',
+  removed: '已删除'
+}
+
 type Task = {
   id: string
   title: string
@@ -1054,6 +1069,19 @@ function AiAssistantPage() {
   const [memoryDeletionLoadingMore, setMemoryDeletionLoadingMore] = useState(false)
   const [memoryDeletionArchiveRefreshKey, setMemoryDeletionArchiveRefreshKey] = useState(0)
   const memoryDeletionArchiveGate = useRef(new LatestRequestGate())
+  const [memoryGrowth, setMemoryGrowth] = useState<any>({
+    items: [], total: 0, hasMore: false, counts: {}, revision: '',
+    trackedSince: '', loading: false
+  })
+  const [memoryGrowthKind, setMemoryGrowthKind] =
+    useState<'all' | 'entity' | 'claim' | 'relation' | 'event' | 'resource'>('all')
+  const [memoryGrowthChange, setMemoryGrowthChange] =
+    useState<'all' | 'discovered' | 'updated' | 'reviewed' | 'removed'>('all')
+  const [memoryGrowthFrom, setMemoryGrowthFrom] = useState('')
+  const [memoryGrowthTo, setMemoryGrowthTo] = useState('')
+  const [memoryGrowthLoadingMore, setMemoryGrowthLoadingMore] = useState(false)
+  const [memoryGrowthRefreshKey, setMemoryGrowthRefreshKey] = useState(0)
+  const memoryGrowthGate = useRef(new LatestRequestGate())
   const [editingTask, setEditingTask] = useState<any>(null)
   const [taskDependencyQuery, setTaskDependencyQuery] = useState('')
   const [taskDependencyCandidates, setTaskDependencyCandidates] = useState<any>({
@@ -1636,6 +1664,18 @@ function AiAssistantPage() {
     memoryDeletionKind, memoryDeletionReason, memoryDeletionQuery,
     memoryDeletionFrom, memoryDeletionTo
   ])
+  const memoryGrowthOptions = useMemo(() => ({
+    kind: memoryGrowthKind,
+    change: memoryGrowthChange,
+    from: memoryGrowthFrom
+      ? new Date(`${memoryGrowthFrom}T00:00:00+08:00`).toISOString()
+      : undefined,
+    to: memoryGrowthTo
+      ? new Date(`${memoryGrowthTo}T23:59:59.999+08:00`).toISOString()
+      : undefined,
+    limit: 40,
+    offset: 0
+  }), [memoryGrowthKind, memoryGrowthChange, memoryGrowthFrom, memoryGrowthTo])
   const mergeArchiveOptions = useMemo(() => ({
     status: mergeArchiveStatus,
     query: mergeArchiveQuery || undefined,
@@ -2260,6 +2300,35 @@ function AiAssistantPage() {
     showDiagnostics, memoryDeletionOptions,
     dashboard?.memoryDeletionArchive?.revision, memoryDeletionArchiveRefreshKey
   ])
+
+  useEffect(() => {
+    const request = memoryGrowthGate.current.begin()
+    setMemoryGrowthLoadingMore(false)
+    setMemoryGrowth((current: any) => ({ ...current, items: [], loading: true }))
+    void window.electronAPI.aiAssistant.getMemoryChangeLogPage(memoryGrowthOptions)
+      .then(result => {
+        if (!memoryGrowthGate.current.isCurrent(request)) return
+        if (result.stale) {
+          window.setTimeout(() => {
+            if (memoryGrowthGate.current.isCurrent(request)) {
+              setMemoryGrowthRefreshKey(value => value + 1)
+            }
+          }, 250)
+          return
+        }
+        setMemoryGrowth({ ...result, loading: false })
+      }).catch(error => {
+        if (!memoryGrowthGate.current.isCurrent(request)) return
+        setMemoryGrowth({
+          items: [], total: 0, hasMore: false, counts: {},
+          revision: '', trackedSince: '', loading: false
+        })
+        setMessage(error?.message || String(error))
+      })
+    return () => {
+      if (memoryGrowthGate.current.isCurrent(request)) memoryGrowthGate.current.invalidate()
+    }
+  }, [memoryGrowthOptions, dashboard?.memoryGrowth?.revision, memoryGrowthRefreshKey])
 
   useEffect(() => {
     if (!showDiagnostics || !memoryDiagnostics) {
@@ -3747,6 +3816,56 @@ function AiAssistantPage() {
       })
     }
   }
+  const openMemoryGrowthItem = async (item: any) => {
+    if (!item?.currentExists) return
+    const kind = String(item.itemKind || '')
+    const id = String(item.itemId || '').trim()
+    if (!id) return
+    if (kind === 'entity') {
+      setSelectedEntityId(id)
+      setShowEntityDossier(true)
+      return
+    }
+    if (kind === 'resource') {
+      await openSearchResourceDossier(id)
+      return
+    }
+    if (!['claim', 'event', 'relation'].includes(kind)) return
+    const structuredKind = kind as 'claim' | 'event' | 'relation'
+    const request = structuredMemoryDossierGate.current.begin()
+    relationDossierAuditGates.current.invalidateAll()
+    setRelationDossierAuditLoading({})
+    eventDossierParticipantsGate.current.invalidate()
+    setEventDossierParticipantsLoading(false)
+    setStructuredMemoryDossier({ kind: structuredKind, sourceId: id, origin: 'memory_growth', status: 'loading' })
+    try {
+      const result = await window.electronAPI.aiAssistant.getCurrentStructuredMemoryDossier(structuredKind, id)
+      if (!structuredMemoryDossierGate.current.isCurrent(request)) return
+      if (!result || result.stale) {
+        setStructuredMemoryDossier(null)
+        setMessage('这条记忆在打开期间已经变化或删除，已刷新成长记录。')
+        setMemoryGrowthRefreshKey(value => value + 1)
+        return
+      }
+      setStructuredMemoryDossier({
+        ...result,
+        origin: 'memory_growth',
+        status: 'ready'
+      })
+      if (structuredKind !== 'relation') {
+        seedMemoryItemAuditFromDossier(structuredKind, id, result.item?.auditPage)
+      }
+    } catch (error: any) {
+      if (!structuredMemoryDossierGate.current.isCurrent(request)) return
+      setStructuredMemoryDossier({
+        kind: structuredKind,
+        sourceId: id,
+        origin: 'memory_growth',
+        status: 'error',
+        error: error?.message || String(error)
+      })
+    }
+  }
   const openStructuredMemoryDossier = async (
     kind: 'claim' | 'event' | 'relation',
     sourceId: string,
@@ -4383,6 +4502,38 @@ function AiAssistantPage() {
       if (memoryDeletionArchiveGate.current.isCurrent(request)) {
         setMemoryDeletionLoadingMore(false)
       }
+    }
+  }
+
+  const loadMoreMemoryGrowth = async () => {
+    if (memoryGrowthLoadingMore || !memoryGrowth.hasMore) return
+    const request = memoryGrowthGate.current.begin()
+    setMemoryGrowthLoadingMore(true)
+    try {
+      const result = await window.electronAPI.aiAssistant.getMemoryChangeLogPage({
+        ...memoryGrowthOptions,
+        offset: memoryGrowth.items.length,
+        limit: 40,
+        revision: memoryGrowth.revision
+      })
+      if (!memoryGrowthGate.current.isCurrent(request)) return
+      if (result.stale) {
+        setMessage('记忆成长记录在浏览期间已有更新，已从最新第一页刷新')
+        setMemoryGrowthRefreshKey(value => value + 1)
+        return
+      }
+      setMemoryGrowth((current: any) => ({
+        ...result,
+        counts: current.counts,
+        items: [...current.items, ...result.items.filter((item: any) =>
+          !current.items.some((known: any) => known.id === item.id))]
+      }))
+    } catch (error: any) {
+      if (memoryGrowthGate.current.isCurrent(request)) {
+        setMessage(error?.message || String(error))
+      }
+    } finally {
+      if (memoryGrowthGate.current.isCurrent(request)) setMemoryGrowthLoadingMore(false)
     }
   }
 
@@ -8549,6 +8700,90 @@ function AiAssistantPage() {
           </div>}
           <small className="assistant-evidence">
             数量来自 SQLCipher 权威账本；点击会清除目标模块的旧筛选并打开完整待处理范围，不携带聊天原文到首页。
+          </small>
+        </section>
+        <section className="assistant-panel assistant-memory-growth" id="memory-growth">
+          <div className="assistant-section-heading">
+            <div>
+              <span className="assistant-eyebrow">MEMORY GROWTH</span>
+              <h3><BookOpen size={16} /> 记忆成长记录</h3>
+            </div>
+            <span className="assistant-count">
+              {memoryGrowth.loading ? '正在读取' : `${memoryGrowth.total.toLocaleString()} 条匹配`}
+            </span>
+          </div>
+          <div className="assistant-task-filters">
+            <select value={memoryGrowthKind}
+              onChange={event => setMemoryGrowthKind(event.target.value as typeof memoryGrowthKind)}>
+              <option value="all">所有记忆类型</option>
+              <option value="entity">实体</option>
+              <option value="claim">事实</option>
+              <option value="relation">关系</option>
+              <option value="event">事件</option>
+              <option value="resource">资源</option>
+            </select>
+            <select value={memoryGrowthChange}
+              onChange={event => setMemoryGrowthChange(event.target.value as typeof memoryGrowthChange)}>
+              <option value="all">所有变化</option>
+              <option value="discovered">新发现</option>
+              <option value="updated">内容更新</option>
+              <option value="reviewed">可信状态变化</option>
+              <option value="removed">已删除</option>
+            </select>
+            <label><span>变化从</span><input type="date" value={memoryGrowthFrom}
+              onChange={event => setMemoryGrowthFrom(event.target.value)} /></label>
+            <label><span>到</span><input type="date" value={memoryGrowthTo}
+              onChange={event => setMemoryGrowthTo(event.target.value)} /></label>
+            {(memoryGrowthKind !== 'all' || memoryGrowthChange !== 'all' ||
+              memoryGrowthFrom || memoryGrowthTo) && <button onClick={() => {
+              setMemoryGrowthKind('all')
+              setMemoryGrowthChange('all')
+              setMemoryGrowthFrom('')
+              setMemoryGrowthTo('')
+            }}>清除范围</button>}
+          </div>
+          <div className="assistant-memory-growth-list">
+            {memoryGrowth.items.map((entry: any) => <article key={entry.id}>
+              <span className={`assistant-memory-growth-kind ${entry.itemKind}`}>
+                {MEMORY_GROWTH_KIND_LABELS[entry.itemKind] || entry.itemKind}
+              </span>
+              <div>
+                <strong>{entry.title || `${MEMORY_GROWTH_KIND_LABELS[entry.itemKind] || '记忆'}已删除`}</strong>
+                <small>
+                  {MEMORY_GROWTH_CHANGE_LABELS[entry.changeKind] || entry.changeKind}
+                  {' · '}{entry.changedAt
+                    ? new Date(entry.changedAt).toLocaleString('zh-CN')
+                    : '时间未知'}
+                  {entry.statusBefore && entry.statusAfter &&
+                    entry.statusBefore !== entry.statusAfter
+                    ? ` · ${entry.statusBefore} → ${entry.statusAfter}`
+                    : entry.statusAfter ? ` · ${entry.statusAfter}` : ''}
+                </small>
+              </div>
+              {entry.currentExists ? <button type="button"
+                onClick={() => void openMemoryGrowthItem(entry)}>
+                查看当前档案
+              </button> : <span className="assistant-memory-growth-removed">本体已删除</span>}
+            </article>)}
+          </div>
+          {!memoryGrowth.items.length && <div className="assistant-empty">
+            {memoryGrowth.loading
+              ? '正在从本机加密变化账本读取…'
+              : '当前范围尚无记忆变化。新账本不会伪造安装前的历史。'}
+          </div>}
+          {memoryGrowth.hasMore && <div className="assistant-timeline-more">
+            <button disabled={memoryGrowthLoadingMore}
+              onClick={() => void loadMoreMemoryGrowth()}>
+              {memoryGrowthLoadingMore
+                ? '正在加载…'
+                : `加载更多（已显示 ${memoryGrowth.items.length}/${memoryGrowth.total}）`}
+            </button>
+          </div>}
+          <small className="assistant-evidence">
+            {memoryGrowth.trackedSince
+              ? `从 ${new Date(memoryGrowth.trackedSince).toLocaleString('zh-CN')} 开始记录`
+              : '正在建立记录起点'}
+            {' · '}账本只保存类型、稳定 ID、状态和时间，不复制事实正文或聊天原文；点击时才从 SQLCipher 水合当前档案。
           </small>
         </section>
         {ingestionStatus && (
