@@ -10459,6 +10459,7 @@ export class PersonalMemoryStore {
   listEntityIdentityAnchorPage(options: {
     entityId: string
     kind?: 'all' | 'alias' | 'identity'
+    identityScope?: 'all' | 'wechat' | 'external'
     platform?: string
     query?: string
     limit?: number
@@ -10520,9 +10521,18 @@ export class PersonalMemoryStore {
       ? String(options.kind)
       : 'all'
     const platform = String(options.platform || '').trim().toLocaleLowerCase('zh-CN').slice(0, 80)
+    const identityScope = ['wechat', 'external'].includes(String(options.identityScope || ''))
+      ? String(options.identityScope)
+      : 'all'
     const query = String(options.query || '').trim().toLocaleLowerCase('zh-CN').slice(0, 200)
     const filtered = allItems.filter(item =>
       (kind === 'all' || item.kind === kind) &&
+      (identityScope === 'all' || (
+        item.kind === 'identity' &&
+        (identityScope === 'wechat'
+          ? item.platform.toLocaleLowerCase('zh-CN') === 'wechat'
+          : item.platform.toLocaleLowerCase('zh-CN') !== 'wechat')
+      )) &&
       (!platform || item.platform.toLocaleLowerCase('zh-CN') === platform) &&
       (!query || `${item.value}\n${item.displayName}\n${item.platform}`
         .toLocaleLowerCase('zh-CN').includes(query)))

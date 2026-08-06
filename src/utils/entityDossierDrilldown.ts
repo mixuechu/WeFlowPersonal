@@ -1,0 +1,38 @@
+export type EntityDossierMetric =
+  | 'aliases'
+  | 'wechat'
+  | 'external'
+  | 'evidence'
+  | 'currentEvidence'
+  | 'relationships'
+  | 'tasks'
+
+export type EntityDossierDrilldown = {
+  sectionId: string
+  identityKind?: 'alias' | 'wechat' | 'external'
+  resetScope?: 'evidence' | 'currentEvidence' | 'relationships'
+}
+
+export function entityDossierDrilldown(
+  metric: EntityDossierMetric
+): EntityDossierDrilldown {
+  if (metric === 'aliases' || metric === 'wechat' || metric === 'external') {
+    return {
+      sectionId: 'entity-dossier-identities',
+      identityKind: metric === 'aliases' ? 'alias' : metric
+    }
+  }
+  if (metric === 'evidence' || metric === 'currentEvidence') {
+    return {
+      sectionId: 'entity-dossier-evidence',
+      resetScope: metric
+    }
+  }
+  if (metric === 'relationships') {
+    return {
+      sectionId: 'entity-dossier-relations',
+      resetScope: 'relationships'
+    }
+  }
+  return { sectionId: 'entity-dossier-tasks' }
+}

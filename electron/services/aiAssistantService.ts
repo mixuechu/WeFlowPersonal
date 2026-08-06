@@ -5307,6 +5307,9 @@ export class AiAssistantService {
       kind: ['alias', 'identity'].includes(String(options?.kind || ''))
         ? options.kind
         : 'all',
+      identityScope: ['wechat', 'external'].includes(String(options?.identityScope || ''))
+        ? options.identityScope
+        : 'all',
       platform: String(options?.platform || ''),
       query: String(options?.query || ''),
       limit: Number(options?.limit || 40),

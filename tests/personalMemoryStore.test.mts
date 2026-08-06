@@ -6670,6 +6670,34 @@ test('entity identity anchors stay bounded, searchable and content-revision page
   assert.equal(email.total, 30)
   assert.ok(email.items.every((item: any) =>
     item.kind === 'identity' && item.platform === 'email'))
+  const wechat = store.listEntityIdentityAnchorPage({
+    entityId: entity.id,
+    kind: 'identity',
+    identityScope: 'wechat',
+    limit: 100
+  })
+  assert.equal(wechat.total, 80)
+  assert.ok(wechat.items.every((item: any) =>
+    item.kind === 'identity' && item.platform === 'wechat'))
+  const external = store.listEntityIdentityAnchorPage({
+    entityId: entity.id,
+    kind: 'identity',
+    identityScope: 'external',
+    limit: 40
+  })
+  assert.equal(external.total, 60)
+  assert.equal(external.items.length, 40)
+  assert.ok(external.items.every((item: any) =>
+    item.kind === 'identity' && item.platform !== 'wechat'))
+  const externalSecond = store.listEntityIdentityAnchorPage({
+    entityId: entity.id,
+    kind: 'identity',
+    identityScope: 'external',
+    offset: 40,
+    limit: 40,
+    revision: external.revision
+  })
+  assert.equal(externalSecond.items.length, 20)
   const exactAlias = store.listEntityIdentityAnchorPage({
     entityId: entity.id,
     kind: 'alias',

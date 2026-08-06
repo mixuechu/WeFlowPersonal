@@ -52,6 +52,10 @@ import {
   projectDossierDrilldown,
   type ProjectDossierMetric
 } from '../utils/projectDossierDrilldown'
+import {
+  entityDossierDrilldown,
+  type EntityDossierMetric
+} from '../utils/entityDossierDrilldown'
 import { evidenceArchiveIdentity } from '../../shared/evidencePayload'
 import './AiAssistantPage.scss'
 
@@ -2631,7 +2635,12 @@ function AiAssistantPage() {
     const timer = window.setTimeout(() => {
       void window.electronAPI.aiAssistant.getEntityIdentityAnchorPage({
         entityId: selectedEntityId,
-        kind: entityIdentityAnchorKind,
+        kind: entityIdentityAnchorKind === 'alias'
+          ? 'alias'
+          : entityIdentityAnchorKind === 'all' ? 'all' : 'identity',
+        identityScope: ['wechat', 'external'].includes(entityIdentityAnchorKind)
+          ? entityIdentityAnchorKind
+          : 'all',
         platform: entityIdentityAnchorPlatform,
         query: entityIdentityAnchorQuery.trim(),
         offset: 0,
@@ -4724,7 +4733,12 @@ function AiAssistantPage() {
     try {
       const page = await window.electronAPI.aiAssistant.getEntityIdentityAnchorPage({
         entityId: selectedEntityId,
-        kind: entityIdentityAnchorKind,
+        kind: entityIdentityAnchorKind === 'alias'
+          ? 'alias'
+          : entityIdentityAnchorKind === 'all' ? 'all' : 'identity',
+        identityScope: ['wechat', 'external'].includes(entityIdentityAnchorKind)
+          ? entityIdentityAnchorKind
+          : 'all',
         platform: entityIdentityAnchorPlatform,
         query: entityIdentityAnchorQuery.trim(),
         offset: entityIdentityAnchorPage.items.length,
@@ -5168,6 +5182,33 @@ function AiAssistantPage() {
     window.setTimeout(() =>
       document.getElementById('entity-dossier-events')
         ?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 0)
+  }
+
+  const focusEntityDossierMetric = (metric: EntityDossierMetric) => {
+    const target = entityDossierDrilldown(metric)
+    if (target.identityKind) {
+      setEntityIdentityAnchorKind(target.identityKind)
+      setEntityIdentityAnchorPlatform('')
+      setEntityIdentityAnchorQuery('')
+    }
+    if (target.resetScope === 'evidence' || target.resetScope === 'currentEvidence') {
+      setEntityEvidenceQuery('')
+      setEntityEvidenceSource('')
+      setEntityEvidenceKind('')
+      setEntityEvidenceState(target.resetScope === 'currentEvidence' ? 'current' : '')
+      setEntityEvidenceRole('')
+      setEntityEvidenceFrom('')
+      setEntityEvidenceTo('')
+    }
+    if (target.resetScope === 'relationships') {
+      setEntityRelationQuery('')
+      setEntityRelationDirection('all')
+      setEntityRelationStatus('all')
+      setEntityRelationSource('all')
+    }
+    window.requestAnimationFrame(() =>
+      document.getElementById(target.sectionId)
+        ?.scrollIntoView({ behavior: 'smooth', block: 'start' }))
   }
 
   const focusIdentityMergeCandidates = () => {
@@ -12256,16 +12297,42 @@ function AiAssistantPage() {
               </button>
             </header>
             <div className="assistant-dossier-identity">
-              <span><small>别名</small><b>{entityIdentityAnchorPage.counts?.alias || 0} 个</b></span>
-              <span><small>微信身份锚点</small><b>{entityIdentityAnchorPage.counts?.wechat || 0} 个</b></span>
-              <span><small>外部身份锚点</small><b>{entityIdentityAnchorPage.counts?.external || 0} 个</b></span>
-              <span><small>关联原文档案</small><b>{Number(entityEvidencePage.unfilteredTotal || 0)} 条</b></span>
+              <button type="button" className="assistant-dossier-metric-action"
+                onClick={() => focusEntityDossierMetric('aliases')}>
+                <small>别名 · 查看</small><b>{entityIdentityAnchorPage.counts?.alias || 0} 个</b>
+              </button>
+              <button type="button" className="assistant-dossier-metric-action"
+                onClick={() => focusEntityDossierMetric('wechat')}>
+                <small>微信身份锚点 · 查看</small>
+                <b>{entityIdentityAnchorPage.counts?.wechat || 0} 个</b>
+              </button>
+              <button type="button" className="assistant-dossier-metric-action"
+                onClick={() => focusEntityDossierMetric('external')}>
+                <small>外部身份锚点 · 查看</small>
+                <b>{entityIdentityAnchorPage.counts?.external || 0} 个</b>
+              </button>
+              <button type="button" className="assistant-dossier-metric-action"
+                onClick={() => focusEntityDossierMetric('evidence')}>
+                <small>关联原文档案 · 查看</small>
+                <b>{Number(entityEvidencePage.unfilteredTotal || 0)} 条</b>
+              </button>
               <span><small>身份版本</small><b>v{selectedEntity.identityVersion || 1}</b></span>
             </div>
             {selectedEntityInsight && <div className="assistant-dossier-metrics">
-              <span><b>{selectedEntityInsight.strength}</b><small>关系强度 · {selectedEntityInsight.strengthLabel}</small></span>
-              <span><b>{selectedEntityInsight.evidenceCount}</b><small>去重证据</small></span>
-              <span><b>{selectedEntityTasks.filter(task => !['done', 'cancelled'].includes(task.status)).length}</b><small>进行中事项</small></span>
+              <button type="button" className="assistant-dossier-metric-action"
+                onClick={() => focusEntityDossierMetric('relationships')}>
+                <b>{selectedEntityInsight.strength}</b>
+                <small>关系强度 · {selectedEntityInsight.strengthLabel} · 查看</small>
+              </button>
+              <button type="button" className="assistant-dossier-metric-action"
+                onClick={() => focusEntityDossierMetric('currentEvidence')}>
+                <b>{selectedEntityInsight.evidenceCount}</b><small>去重证据 · 查看</small>
+              </button>
+              <button type="button" className="assistant-dossier-metric-action"
+                onClick={() => focusEntityDossierMetric('tasks')}>
+                <b>{Number(graphWorkspace.focus?.taskTotal ?? selectedEntityTasks.length)}</b>
+                <small>关联事项 · 查看</small>
+              </button>
               <button type="button" className="assistant-dossier-metric-action"
                 disabled={!selectedEntityInsight.pendingCommitmentCount}
                 onClick={openEntityPendingCommitments}>
@@ -12274,7 +12341,7 @@ function AiAssistantPage() {
               </button>
             </div>}
             <div className="assistant-dossier-grid">
-              <section>
+              <section id="entity-dossier-identities">
                 <h3>身份与别名 <small>{Number(entityIdentityAnchorPage.unfilteredTotal || 0)}</small></h3>
                 <div className="assistant-inline-filters">
                   <input value={entityIdentityAnchorQuery}
@@ -12283,14 +12350,18 @@ function AiAssistantPage() {
                   <select value={entityIdentityAnchorKind}
                     onChange={event => {
                       setEntityIdentityAnchorKind(event.target.value)
-                      if (event.target.value === 'alias') setEntityIdentityAnchorPlatform('')
+                      if (['alias', 'wechat', 'external'].includes(event.target.value)) {
+                        setEntityIdentityAnchorPlatform('')
+                      }
                     }}>
                     <option value="all">全部身份</option>
                     <option value="alias">仅别名</option>
                     <option value="identity">仅账号</option>
+                    <option value="wechat">仅微信身份锚点</option>
+                    <option value="external">仅外部身份锚点</option>
                   </select>
                   <select value={entityIdentityAnchorPlatform}
-                    disabled={entityIdentityAnchorKind === 'alias'}
+                    disabled={['alias', 'wechat', 'external'].includes(entityIdentityAnchorKind)}
                     onChange={event => setEntityIdentityAnchorPlatform(event.target.value)}>
                     <option value="">全部平台</option>
                     {(entityIdentityAnchorPage.platforms || []).map((platform: string) =>
@@ -12416,7 +12487,7 @@ function AiAssistantPage() {
                     : `加载更多事实（已显示 ${dossierClaims.length} / ${entityDossierPages.claims.total}）`}
                 </button>}
               </section>
-              <section>
+              <section id="entity-dossier-relations">
                 <h3>关系与证据 <small>{Number(entityDossierPages.relations?.total || 0)}</small></h3>
                 <div className="assistant-inline-filters">
                   <input value={entityRelationQuery}
@@ -12601,7 +12672,7 @@ function AiAssistantPage() {
                     : `加载更多事件（已显示 ${dossierEvents.length} / ${entityDossierPages.events.total}）`}
                 </button>}
               </section>
-              <section>
+              <section id="entity-dossier-tasks">
                 <h3>关联事项 <small>{Number(graphWorkspace.focus?.taskTotal ?? selectedEntityTasks.length)}</small></h3>
                 {selectedEntityTasks.map(task => <article key={task.id}>
                   <div>
@@ -12624,7 +12695,7 @@ function AiAssistantPage() {
                     : `加载更多关联事项（已显示 ${selectedEntityTasks.length} / ${graphWorkspace.focus.taskTotal}）`}
                 </button>}
               </section>
-              <section className="assistant-dossier-wide">
+              <section className="assistant-dossier-wide" id="entity-dossier-evidence">
                 <h3>人物相关原文档案 <small>{Number(entityEvidencePage.total || 0)} / {Number(entityEvidencePage.unfilteredTotal || 0)}</small></h3>
                 <p>汇总人物首次出现、身份锚点，以及事实、关系和事件中与此实体直接关联的去重原文。</p>
                 <div className="assistant-inline-filters">
