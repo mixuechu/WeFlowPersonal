@@ -13955,6 +13955,7 @@ export class PersonalMemoryStore {
       options.from ||
       options.to ||
       options.documentTypes?.length ||
+      options.trustStatuses?.length ||
       options.relationTypes?.length ||
       options.sourceIds?.length
     )
@@ -13978,6 +13979,20 @@ export class PersonalMemoryStore {
     if (documentTypes.length) {
       conditions.push(`d.document_type IN (${documentTypes.map(() => '?').join(',')})`)
       parameters.push(...documentTypes)
+    }
+    const requestedTrustStatuses = [...new Set((options.trustStatuses || []).map(String)
+      .filter(Boolean))]
+    const trustStatuses = requestedTrustStatuses
+      .filter(value => ['confirmed', 'candidate', 'cancelled', 'source'].includes(value))
+    if (requestedTrustStatuses.length && !trustStatuses.length) {
+      conditions.push('0=1')
+    } else if (trustStatuses.length) {
+      const clauses = trustStatuses.map(status => status === 'source'
+        ? `d.document_type NOT IN ('claim','relation','event')`
+        : `(d.document_type IN ('claim','relation','event')
+          AND COALESCE(json_extract(d.metadata_json,'$.status'),'candidate')=?)`)
+      conditions.push(`(${clauses.join(' OR ')})`)
+      parameters.push(...trustStatuses.filter(status => status !== 'source'))
     }
     const sourceIds = [...new Set((options.sourceIds || [])
       .map(value => String(value).trim().toLowerCase()).filter(Boolean))]
@@ -14147,6 +14162,26 @@ export class PersonalMemoryStore {
       GROUP BY d.document_type
     `).all() as any[]
     return Object.fromEntries(rows.map(row => [String(row.type), Number(row.count || 0)]))
+  }
+
+  getSearchDocumentTrustCountsInScope(allowedIds: Set<string>): Record<string, number> {
+    if (!this.db || !allowedIds.size) return {}
+    this.replaceActiveSearchScope(allowedIds)
+    const rows = this.db.prepare(`
+      SELECT CASE
+        WHEN d.document_type IN ('claim','relation','event')
+          THEN COALESCE(json_extract(d.metadata_json,'$.status'),'candidate')
+        ELSE 'source'
+      END AS status,COUNT(*) AS count
+      FROM search_documents d
+      JOIN active_memory_search_scope scope ON scope.id=d.id
+      WHERE NOT (
+        d.document_type IN ('claim','relation','event')
+        AND COALESCE(json_extract(d.metadata_json,'$.status'),'')='rejected'
+      )
+      GROUP BY status
+    `).all() as any[]
+    return Object.fromEntries(rows.map(row => [String(row.status), Number(row.count || 0)]))
   }
 
   listSearchDocumentsInScopePage(
@@ -14335,6 +14370,50 @@ export class PersonalMemoryStore {
       FROM search_documents d ${scopeJoin}
       WHERE (d.title LIKE ? OR d.search_text LIKE ?) AND ${trustedCondition}
       GROUP BY d.document_type
+    `).all(pattern, pattern) as any[]
+    return { counts: toCounts(rows), searchMode: 'substring_fallback' }
+  }
+
+  getSearchDocumentTrustCountsByKeyword(
+    query: string,
+    allowedIds: Set<string> | null
+  ): { counts: Record<string, number>; searchMode: 'fts' | 'substring_fallback' } {
+    const normalized = String(query || '').trim().replace(/["']/g, ' ')
+    if (!this.db || !normalized || (allowedIds && !allowedIds.size)) {
+      return { counts: {}, searchMode: 'fts' }
+    }
+    if (allowedIds) this.replaceActiveSearchScope(allowedIds)
+    const scopeJoin = allowedIds
+      ? 'JOIN active_memory_search_scope scope ON scope.id=d.id'
+      : ''
+    const statusExpression = `CASE
+      WHEN d.document_type IN ('claim','relation','event')
+        THEN COALESCE(json_extract(d.metadata_json,'$.status'),'candidate')
+      ELSE 'source'
+    END`
+    const trustedCondition = `NOT (
+      d.document_type IN ('claim','relation','event')
+      AND COALESCE(json_extract(d.metadata_json,'$.status'),'')='rejected'
+    )`
+    const toCounts = (rows: any[]): Record<string, number> =>
+      Object.fromEntries(rows.map(row => [String(row.status), Number(row.count || 0)]))
+    const ftsQuery = `"${normalized.replace(/"/g, '""')}"`
+    try {
+      const rows = this.db.prepare(`
+        SELECT ${statusExpression} AS status,COUNT(*) AS count
+        FROM search_fts JOIN search_documents d ON d.id=search_fts.document_id
+        ${scopeJoin}
+        WHERE search_fts MATCH ? AND ${trustedCondition}
+        GROUP BY status
+      `).all(ftsQuery) as any[]
+      if (rows.length) return { counts: toCounts(rows), searchMode: 'fts' }
+    } catch {}
+    const pattern = `%${normalized}%`
+    const rows = this.db.prepare(`
+      SELECT ${statusExpression} AS status,COUNT(*) AS count
+      FROM search_documents d ${scopeJoin}
+      WHERE (d.title LIKE ? OR d.search_text LIKE ?) AND ${trustedCondition}
+      GROUP BY status
     `).all(pattern, pattern) as any[]
     return { counts: toCounts(rows), searchMode: 'substring_fallback' }
   }
@@ -16245,6 +16324,7 @@ export class PersonalMemoryStore {
               from: String(storedContext.options?.from || '').trim().slice(0, 64),
               to: String(storedContext.options?.to || '').trim().slice(0, 64),
               documentTypes: cleanList(storedContext.options?.documentTypes),
+              trustStatuses: cleanList(storedContext.options?.trustStatuses),
               relationTypes: cleanList(storedContext.options?.relationTypes),
               sourceIds: cleanList(storedContext.options?.sourceIds)
             },

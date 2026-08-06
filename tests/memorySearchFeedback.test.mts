@@ -25,6 +25,14 @@ test('search feedback context is stable but isolated by retrieval scope', () => 
   assert.equal(first.scopeFingerprint, reordered.scopeFingerprint)
   assert.notEqual(first.scopeFingerprint, anotherPerson.scopeFingerprint)
   assert.equal(first.query, '谁在等我 回复')
+  assert.equal(first.scopeJson.includes('trustStatuses'), false)
+  const confirmedOnly = buildMemorySearchFeedbackContext('谁在等我 回复', {
+    entityId: 'person-1',
+    sourceIds: ['wechat', 'calendar'],
+    documentTypes: ['task', 'event'],
+    trustStatuses: ['confirmed']
+  })
+  assert.notEqual(first.scopeFingerprint, confirmedOnly.scopeFingerprint)
 })
 
 test('search feedback conservatively reranks without deleting any result', () => {

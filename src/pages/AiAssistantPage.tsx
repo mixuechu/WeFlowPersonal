@@ -938,6 +938,9 @@ function AiAssistantPage() {
     typeCounts?: Record<string, number>
     typeCountsBasis?: 'lexical_archive' | 'scope_browse'
     typeCountsSearchMode?: 'fts' | 'substring_fallback'
+    trustCounts?: Record<string, number>
+    trustCountsBasis?: 'lexical_archive' | 'scope_browse'
+    trustCountsSearchMode?: 'fts' | 'substring_fallback'
   }>({ status: 'idle', query: '' })
   const [memoryLoadingMore, setMemoryLoadingMore] = useState(false)
   const [memorySearchFeedback, setMemorySearchFeedback] = useState<any[]>([])
@@ -1382,6 +1385,7 @@ function AiAssistantPage() {
   const memorySessionPickerGate = useRef(new LatestRequestGate())
   const [memorySourceFilter, setMemorySourceFilter] = useState('')
   const [memoryTypeFilter, setMemoryTypeFilter] = useState('')
+  const [memoryTrustFilter, setMemoryTrustFilter] = useState('')
   const [memoryFrom, setMemoryFrom] = useState('')
   const [memoryTo, setMemoryTo] = useState('')
   const selectedMemorySessionScope = useMemo(
@@ -1396,13 +1400,15 @@ function AiAssistantPage() {
     sessionSelectionToken: selectedMemorySessionScope.sessionSelectionToken,
     sourceIds: memorySourceFilter ? [memorySourceFilter] : undefined,
     documentTypes: memoryTypeFilter ? [memoryTypeFilter] : undefined,
+    trustStatuses: memoryTrustFilter ? [memoryTrustFilter] : undefined,
     from: memoryFrom || undefined,
     to: memoryTo || undefined
   }), [
     memoryEntityFilter, memoryEntitySelection, memorySessionFilter, selectedMemorySessionScope,
-    memorySourceFilter, memoryTypeFilter, memoryFrom, memoryTo
+    memorySourceFilter, memoryTypeFilter, memoryTrustFilter, memoryFrom, memoryTo
   ])
-  const hasMemoryScope = Boolean(memoryEntityFilter || memorySessionFilter || memorySourceFilter || memoryTypeFilter || memoryFrom || memoryTo)
+  const hasMemoryScope = Boolean(memoryEntityFilter || memorySessionFilter || memorySourceFilter ||
+    memoryTypeFilter || memoryTrustFilter || memoryFrom || memoryTo)
   const memoryFeedbackArchiveOptions = useMemo(() => ({
     action: memoryFeedbackArchiveAction || undefined,
     query: memoryFeedbackArchiveQuery.trim() || undefined,
@@ -2335,6 +2341,9 @@ function AiAssistantPage() {
           typeCounts: page.typeCounts,
           typeCountsBasis: page.typeCountsBasis,
           typeCountsSearchMode: page.typeCountsSearchMode,
+          trustCounts: page.trustCounts,
+          trustCountsBasis: page.trustCountsBasis,
+          trustCountsSearchMode: page.trustCountsSearchMode,
           nextOffset: Number(page.offset || 0) + page.results.length
         })
       }).catch(error => {
@@ -6726,6 +6735,9 @@ function AiAssistantPage() {
         typeCounts: page.typeCounts,
         typeCountsBasis: page.typeCountsBasis,
         typeCountsSearchMode: page.typeCountsSearchMode,
+        trustCounts: page.trustCounts,
+        trustCountsBasis: page.trustCountsBasis,
+        trustCountsSearchMode: page.trustCountsSearchMode,
         nextOffset: Number(page.offset || 0) + page.results.length
       })
     } catch (error: any) {
@@ -9401,9 +9413,16 @@ function AiAssistantPage() {
               <option value="entity">实体</option><option value="relation">关系</option><option value="claim">事实</option>
               <option value="event">事件</option><option value="task">待办</option><option value="resource">资源</option>
             </select>
+            <select value={memoryTrustFilter} onChange={event => setMemoryTrustFilter(event.target.value)}>
+              <option value="">所有可信层级</option>
+              <option value="confirmed">已确认记忆</option>
+              <option value="candidate">待确认线索</option>
+              <option value="cancelled">已取消记忆</option>
+              <option value="source">原始资料</option>
+            </select>
             <label><span>从</span><input type="date" value={memoryFrom} onChange={event => setMemoryFrom(event.target.value)} /></label>
             <label><span>至</span><input type="date" value={memoryTo} onChange={event => setMemoryTo(event.target.value)} /></label>
-            {(memoryEntityFilter || memorySessionFilter || memorySourceFilter || memoryTypeFilter || memoryFrom || memoryTo) &&
+            {(memoryEntityFilter || memorySessionFilter || memorySourceFilter || memoryTypeFilter || memoryTrustFilter || memoryFrom || memoryTo) &&
               <button onClick={() => {
                 setMemoryEntityFilter('')
                 setMemoryEntitySelection(null)
@@ -9413,11 +9432,12 @@ function AiAssistantPage() {
                 setMemorySessionPickerOpen(false)
                 setMemorySourceFilter('')
                 setMemoryTypeFilter('')
+                setMemoryTrustFilter('')
                 setMemoryFrom('')
                 setMemoryTo('')
               }}>清除范围</button>}
           </div>
-          {(memoryEntityFilter || memorySessionFilter || memorySourceFilter || memoryTypeFilter || memoryFrom || memoryTo) &&
+          {(memoryEntityFilter || memorySessionFilter || memorySourceFilter || memoryTypeFilter || memoryTrustFilter || memoryFrom || memoryTo) &&
             <small className="assistant-scope-note">当前范围在全文/向量召回之前生效，范围外内容不会参与排序或发送给模型。
               {memorySearchState.scopeCandidates !== null && memorySearchState.scopeCandidates !== undefined &&
                 ` · 当前候选 ${Number(memorySearchState.scopeCandidates || 0).toLocaleString()} 条`}
@@ -9453,6 +9473,32 @@ function AiAssistantPage() {
                     className={memoryTypeFilter === type ? 'active' : ''}
                     onClick={() => setMemoryTypeFilter(type)}>
                     {MEMORY_TYPE_LABELS[type] || type} · {Number(memorySearchState.typeCounts?.[type] || 0)}
+                  </button>)}
+              </div>}
+            {memorySearchState.status === 'ready' && Object.keys(memorySearchState.trustCounts || {}).length > 0 &&
+              <div className="assistant-search-type-facets">
+                <div>
+                  <strong>按可信层级核验</strong>
+                  <small>{memorySearchState.trustCountsBasis === 'lexical_archive'
+                    ? `${memorySearchState.trustCountsSearchMode === 'substring_fallback' ? '子串' : '全文'}关键词档案统计；待确认线索不会成为问答依据`
+                    : '当前其余范围条件内的完整统计；已拒绝内容始终隔离'}</small>
+                </div>
+                <button className={!memoryTrustFilter ? 'active' : ''}
+                  onClick={() => setMemoryTrustFilter('')}>
+                  全部 · {Object.values(memorySearchState.trustCounts || {})
+                    .reduce((sum, count) => sum + Number(count || 0), 0)}
+                </button>
+                {([
+                  ['confirmed', '已确认'],
+                  ['candidate', '待确认'],
+                  ['cancelled', '已取消'],
+                  ['source', '原始资料']
+                ] as Array<[string, string]>)
+                  .filter(([status]) => Number(memorySearchState.trustCounts?.[status] || 0) > 0)
+                  .map(([status, label]) => <button key={status}
+                    className={memoryTrustFilter === status ? 'active' : ''}
+                    onClick={() => setMemoryTrustFilter(status)}>
+                    {label} · {Number(memorySearchState.trustCounts?.[status] || 0)}
                   </button>)}
               </div>}
             {memorySearchFeedback.length > 0 && <details className="assistant-search-feedback-ledger">
@@ -9706,6 +9752,7 @@ function AiAssistantPage() {
                     scope.sessionId ? `会话 ${scope.sessionId}` : '',
                     (scope.sourceIds || []).length ? `来源 ${(scope.sourceIds || []).join('、')}` : '',
                     (scope.documentTypes || []).length ? `类型 ${(scope.documentTypes || []).join('、')}` : '',
+                    (scope.trustStatuses || []).length ? `可信层级 ${(scope.trustStatuses || []).join('、')}` : '',
                     scope.from || scope.to ? `时间 ${scope.from || '不限'} → ${scope.to || '不限'}` : ''
                   ].filter(Boolean)
                   const actionLabel = item.action === 'helpful' ? '设为有用'

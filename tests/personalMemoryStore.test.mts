@@ -10372,6 +10372,84 @@ test('complete keyword archive pages every exact indexed match beyond five hundr
     )
   }))
 
+test('memory trust scopes and facets separate confirmed candidates from source material', () =>
+  withStore(store => {
+    store.syncGraph({
+      entities: [{
+        id: 'trust-facet-person',
+        type: 'person',
+        canonicalName: '可信分面人物',
+        summary: '',
+        confidence: 1,
+        trustStatus: 'confirmed',
+        aliases: [],
+        accountIds: []
+      }],
+      relations: [],
+      reviewQueue: []
+    } as any)
+    store.upsertClaims([{
+      id: 'trust-facet-confirmed',
+      subjectId: 'trust-facet-person',
+      predicate: '负责',
+      objectValue: '可信层级关键词',
+      confidence: 0.95,
+      status: 'confirmed',
+      sourceNature: 'self_statement',
+      searchText: '可信层级关键词 已确认事实',
+      evidence: evidence('trust-confirmed-message', '可信层级关键词 已确认事实')
+    }, {
+      id: 'trust-facet-candidate',
+      subjectId: 'trust-facet-person',
+      predicate: '关注',
+      objectValue: '可信层级关键词',
+      confidence: 0.75,
+      status: 'candidate',
+      sourceNature: 'other_statement',
+      searchText: '可信层级关键词 待确认事实',
+      evidence: evidence('trust-candidate-message', '可信层级关键词 待确认事实')
+    }])
+    store.syncTasks([{
+      id: 'trust-facet-task',
+      title: '可信层级关键词 原始待办',
+      detail: '原始资料不冒充结构化事实',
+      priority: 'low',
+      status: 'todo',
+      classification: 'mine',
+      evidence: [{
+        sourceId: 'wechat',
+        messageId: 'trust-task-message',
+        sessionId: 'trust-task-session',
+        timestamp: 1_800_000_000,
+        sender: '可信测试',
+        excerpt: '可信层级关键词 原始待办'
+      }]
+    }])
+
+    const confirmed = store.listScopedSearchDocumentIds({ trustStatuses: ['confirmed'] })
+    const candidate = store.listScopedSearchDocumentIds({ trustStatuses: ['candidate'] })
+    const source = store.listScopedSearchDocumentIds({ trustStatuses: ['source'] })
+    const invalid = store.listScopedSearchDocumentIds({ trustStatuses: ['forged-status'] })
+    assert.deepEqual([...confirmed!].filter(id => id.includes('trust-facet')), [
+      'claim:trust-facet-confirmed'
+    ])
+    assert.deepEqual([...candidate!].filter(id => id.includes('trust-facet')), [
+      'claim:trust-facet-candidate'
+    ])
+    assert.deepEqual([...source!].filter(id => id.includes('trust-facet')), [
+      'entity:trust-facet-person',
+      'task:trust-facet-task'
+    ])
+    assert.equal(invalid?.size, 0)
+    assert.deepEqual(
+      store.getSearchDocumentTrustCountsByKeyword('可信层级关键词', null),
+      {
+        counts: { candidate: 1, confirmed: 1, source: 1 },
+        searchMode: 'fts'
+      }
+    )
+  }))
+
 test('memory search revision covers documents, evidence, vectors and relevance decisions', () =>
   withStore(store => {
     const revisions: number[] = [Number(store.getMemorySearchRevision())]

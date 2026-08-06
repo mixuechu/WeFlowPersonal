@@ -23,7 +23,7 @@ export function buildMemorySearchFeedbackContext(
   options: MemorySearchOptions = {}
 ): MemorySearchFeedbackContext {
   const normalizedQuery = String(query || '').trim().replace(/\s+/g, ' ').toLowerCase().slice(0, 1000)
-  const scope = {
+  const scope: Record<string, unknown> = {
     entityId: String(options.entityId || '').trim(),
     sessionId: String(options.sessionId || '').trim(),
     from: String(options.from || '').trim(),
@@ -32,6 +32,8 @@ export function buildMemorySearchFeedbackContext(
     relationTypes: normalizedList(options.relationTypes),
     sourceIds: normalizedList(options.sourceIds)
   }
+  const trustStatuses = normalizedList(options.trustStatuses)
+  if (trustStatuses.length) scope.trustStatuses = trustStatuses
   const scopeJson = JSON.stringify(scope)
   return {
     query: normalizedQuery,

@@ -8018,6 +8018,10 @@ export class AiAssistantService {
       ...scopedOptions,
       documentTypes: undefined
     })
+    const trustFacetAllowedIds = personalMemoryStore.listScopedSearchDocumentIds({
+      ...scopedOptions,
+      trustStatuses: undefined
+    })
     if (!text && allowedIds === null) {
       return {
         results: [], offset, limit, total: 0, hasMore: false, truncated: false,
@@ -8030,6 +8034,14 @@ export class AiAssistantService {
       ? personalMemoryStore.getSearchDocumentTypeCountsByKeyword(text, facetAllowedIds)
       : {
           counts: personalMemoryStore.getSearchDocumentTypeCountsInScope(facetAllowedIds || new Set()),
+          searchMode: undefined
+        }
+    const trustFacet = text
+      ? personalMemoryStore.getSearchDocumentTrustCountsByKeyword(text, trustFacetAllowedIds)
+      : {
+          counts: personalMemoryStore.getSearchDocumentTrustCountsInScope(
+            trustFacetAllowedIds || new Set()
+          ),
           searchMode: undefined
         }
     if (text && searchMode === 'lexical_archive') {
@@ -8110,6 +8122,9 @@ export class AiAssistantService {
     page.typeCounts = typeFacet.counts
     page.typeCountsBasis = text ? 'lexical_archive' : 'scope_browse'
     page.typeCountsSearchMode = typeFacet.searchMode
+    page.trustCounts = trustFacet.counts
+    page.trustCountsBasis = text ? 'lexical_archive' : 'scope_browse'
+    page.trustCountsSearchMode = trustFacet.searchMode
     const feedback = this.memorySearchFeedbackContext(text, scopedOptions).entries
     const completedRevision = personalMemoryStore.getMemorySearchRevision()
     const completedEntitySelection = options.entityId

@@ -2035,6 +2035,9 @@ export interface ElectronAPI {
         typeCounts?: Record<string, number>
         typeCountsBasis?: 'lexical_archive' | 'scope_browse'
         typeCountsSearchMode?: 'fts' | 'substring_fallback'
+        trustCounts?: Record<string, number>
+        trustCountsBasis?: 'lexical_archive' | 'scope_browse'
+        trustCountsSearchMode?: 'fts' | 'substring_fallback'
         scopeCandidates: number | null
         revision: string
         stale: boolean

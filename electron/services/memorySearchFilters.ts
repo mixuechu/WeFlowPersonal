@@ -8,6 +8,7 @@ export type MemorySearchOptions = {
   from?: string
   to?: string
   documentTypes?: string[]
+  trustStatuses?: string[]
   relationTypes?: string[]
   sourceIds?: string[]
 }
@@ -83,6 +84,7 @@ export function filterMemorySearchResults(
   databaseScopeApplied = false
 ): any[] {
   const types = new Set((options.documentTypes || []).filter(Boolean))
+  const trustStatuses = new Set((options.trustStatuses || []).filter(Boolean))
   const sources = new Set((options.sourceIds || []).map(value => value.trim().toLowerCase()).filter(Boolean))
   const relationTypes = new Set((options.relationTypes || []).map(value => value.trim().toLowerCase()).filter(Boolean))
   const entityTerms = (options.entityTerms || []).map(value => value.trim().toLowerCase()).filter(Boolean)
@@ -93,6 +95,12 @@ export function filterMemorySearchResults(
     // must not re-enter ordinary retrieval or downstream model context.
     if (isRejectedExtractedMemory(item)) return false
     if (types.size && !types.has(String(item.document_type || ''))) return false
+    if (trustStatuses.size) {
+      const trustStatus = ['claim', 'relation', 'event'].includes(String(item.document_type || ''))
+        ? String(item.metadata?.status || 'candidate')
+        : 'source'
+      if (!trustStatuses.has(trustStatus)) return false
+    }
     if (relationTypes.size && item.document_type === 'relation') {
       const predicate = String(item.metadata?.predicate || item.title || '').trim().toLowerCase()
       if (![...relationTypes].some(type => predicate.includes(type) || type.includes(predicate))) return false
