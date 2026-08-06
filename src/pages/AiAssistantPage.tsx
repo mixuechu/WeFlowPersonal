@@ -10,7 +10,9 @@ import {
   type AuthorityReturnTarget
 } from '../utils/authorityDossierNavigation'
 import {
+  buildEntityReviewReturnTarget,
   buildProjectReviewReturnTarget,
+  isSameReviewReturnTarget,
   resolveCompletedReviewReturn,
   type ReviewReturnTarget
 } from '../utils/reviewReturnTarget'
@@ -3573,13 +3575,14 @@ function AiAssistantPage() {
   }
   const openAuthoritativeRelationReview = (reviewId: string) => {
     const id = String(reviewId || '').trim()
-    if (!id) return
+    const returnTarget = buildEntityReviewReturnTarget(selectedEntityId, id)
+    if (!returnTarget) return
     closeEntityDossier(false)
     setReviewStatusFilter('pending')
     setReviewKindFilter('relation')
     setReviewQuery('')
-    reviewReturnTargetRef.current = null
-    setReviewReturnTarget(null)
+    reviewReturnTargetRef.current = returnTarget
+    setReviewReturnTarget(returnTarget)
     setFocusedReviewId(id)
   }
   const openProjectRelationReview = (reviewId: string) => {
@@ -3599,15 +3602,45 @@ function AiAssistantPage() {
     reviewReturnTargetRef.current = null
     setReviewReturnTarget(null)
   }
-  const returnToProjectFromReview = () => {
-    const projectId = reviewReturnTargetRef.current?.projectId || ''
-    if (!projectId) return
+  const restoreReviewReturnTarget = async (target: ReviewReturnTarget) => {
+    if (!isSameReviewReturnTarget(reviewReturnTargetRef.current, target)) return
+    if (target.kind === 'entity') {
+      try {
+        const directory = await window.electronAPI.aiAssistant.getTrustedEntityDirectory({
+          query: target.sourceId,
+          limit: 20,
+          offset: 0
+        })
+        if (!isSameReviewReturnTarget(reviewReturnTargetRef.current, target)) return
+        const entity = directory.items.find((item: any) => item.id === target.sourceId)
+        if (!entity) {
+          clearReviewReturnTarget()
+          setMessage('原实体在审阅期间已被合并、拒绝或删除，已留在审阅区，未恢复失效档案。')
+          return
+        }
+        reviewPageGate.current.invalidate()
+        reviewEvidenceGates.current.invalidateAll()
+        setFocusedReviewId('')
+        clearReviewReturnTarget()
+        setSelectedEntityId(entity.id)
+        setShowEntityDossier(true)
+        setGraphWorkspaceRefreshKey(value => value + 1)
+      } catch (error: any) {
+        if (!isSameReviewReturnTarget(reviewReturnTargetRef.current, target)) return
+        setMessage(`暂时无法验证原实体，已保留在审阅区：${error?.message || String(error)}`)
+      }
+      return
+    }
     reviewPageGate.current.invalidate()
     reviewEvidenceGates.current.invalidateAll()
     setFocusedReviewId('')
     clearReviewReturnTarget()
-    setSelectedProjectId(projectId)
+    setSelectedProjectId(target.sourceId)
     setProjectWorkspaceRefreshKey(value => value + 1)
+  }
+  const returnFromReviewTarget = () => {
+    const target = reviewReturnTargetRef.current
+    if (target) void restoreReviewReturnTarget(target)
   }
   const openProjectStructuredMemoryDossier = (
     kind: 'claim' | 'relation' | 'event',
@@ -5418,14 +5451,8 @@ function AiAssistantPage() {
       })
       await load()
       setReviewRefreshKey(value => value + 1)
-      const projectId = resolveCompletedReviewReturn(reviewReturnTargetRef.current, id)
-      if (projectId) {
-        reviewReturnTargetRef.current = null
-        setReviewReturnTarget(null)
-        setFocusedReviewId('')
-        setSelectedProjectId(projectId)
-        setProjectWorkspaceRefreshKey(value => value + 1)
-      }
+      const returnTarget = resolveCompletedReviewReturn(reviewReturnTargetRef.current, id)
+      if (returnTarget) await restoreReviewReturnTarget(returnTarget)
     } catch (error: any) {
       const errorMessage = error?.message || String(error)
       setMessage(errorMessage)
@@ -10920,10 +10947,12 @@ function AiAssistantPage() {
             </div>
             {focusedReviewId && <div className="assistant-review-note">
               {reviewReturnTarget
-                ? '正在审阅项目中的权威关系候选；确认、拒绝或修正成功后会返回项目并重新读取最新档案。'
+                ? `正在审阅${reviewReturnTarget.kind === 'project' ? '项目' : '实体档案'}中的权威关系候选；确认、拒绝或修正成功后会重新验证来源并读取最新档案。`
                 : '正在定位人物档案中的权威关系候选。'}
               {reviewReturnTarget
-                ? <button onClick={returnToProjectFromReview}>暂不处理，返回项目</button>
+                ? <button onClick={returnFromReviewTarget}>
+                    暂不处理，返回{reviewReturnTarget.kind === 'project' ? '项目' : '实体档案'}
+                  </button>
                 : <button onClick={() => {
                     setFocusedReviewId('')
                     clearReviewReturnTarget()
