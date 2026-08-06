@@ -21,6 +21,12 @@ import {
   reviewSourceKindLabel,
   trustedEntityTypeLabel
 } from '../utils/reviewSourcePresentation'
+import {
+  buildSearchDossierReturnTarget,
+  resolveSearchDossierReturn,
+  type SearchDossierKind,
+  type SearchDossierReturnTarget
+} from '../utils/searchDossierReturnTarget'
 import { LatestRequestGate } from '../utils/latestRequestGate'
 import { buildMemorySessionScope } from '../utils/memorySessionScope'
 import { buildResourceStructurePresentation } from '../utils/resourceStructurePresentation'
@@ -919,6 +925,10 @@ function AiAssistantPage() {
   const memorySearchFeedbackGates = useRef(new KeyedLatestRequestGates())
   const [memorySearchRefreshKey, setMemorySearchRefreshKey] = useState(0)
   const memorySearchGate = useRef(new LatestRequestGate())
+  const memorySearchInputRef = useRef<HTMLInputElement | null>(null)
+  const memoryResultElements = useRef(new Map<string, HTMLElement>())
+  const searchDossierReturnTargetRef =
+    useRef<SearchDossierReturnTarget | null>(null)
   const [memoryFeedbackArchiveOpen, setMemoryFeedbackArchiveOpen] = useState(false)
   const [memoryFeedbackArchive, setMemoryFeedbackArchive] = useState<any>({
     items: [], total: 0, hasMore: false, counts: {}, status: 'idle'
@@ -3440,6 +3450,59 @@ function AiAssistantPage() {
       if (resourceArchiveGate.current.isCurrent(request)) setResourceLoadingMore(false)
     }
   }
+  const beginSearchDossierReturn = (
+    kind: SearchDossierKind,
+    documentId: unknown
+  ) => {
+    searchDossierReturnTargetRef.current =
+      buildSearchDossierReturnTarget(kind, documentId)
+  }
+  const clearSearchDossierReturn = () => {
+    searchDossierReturnTargetRef.current = null
+  }
+  const restoreSearchDossierReturn = (expectedKind?: SearchDossierKind) => {
+    const documentId = resolveSearchDossierReturn(
+      searchDossierReturnTargetRef.current,
+      expectedKind
+    )
+    if (!documentId) return false
+    searchDossierReturnTargetRef.current = null
+    window.requestAnimationFrame(() => {
+      const result = memoryResultElements.current.get(documentId)
+      if (result?.isConnected) {
+        result.scrollIntoView({ behavior: 'smooth', block: 'center' })
+        result.focus({ preventScroll: true })
+        return
+      }
+      memorySearchInputRef.current?.focus()
+      setMessage('原检索卡片已因结果刷新、删除或分页变化而不可见；查询与筛选仍保留，可重新检索定位。')
+    })
+    return true
+  }
+  const closeSearchTaskDossier = () => {
+    setTaskDossierModalOpen(false)
+    setSelectedTaskId('')
+    restoreSearchDossierReturn('task')
+  }
+  const closeSearchResourceDossier = () => {
+    resourceDossierGate.current.invalidate()
+    setSelectedResourceDossier(null)
+    restoreSearchDossierReturn('resource')
+  }
+  const closeStructuredMemoryDossier = () => {
+    const fromSearch = !structuredMemoryDossier?.origin
+    structuredMemoryDossierGate.current.invalidate()
+    relationDossierAuditGates.current.invalidateAll()
+    setRelationDossierAuditLoading({})
+    eventDossierParticipantsGate.current.invalidate()
+    setEventDossierParticipantsLoading(false)
+    setStructuredMemoryDossier(null)
+    if (fromSearch) restoreSearchDossierReturn('structured')
+  }
+  const closeProjectDossier = () => {
+    setSelectedProjectId('')
+    restoreSearchDossierReturn('project')
+  }
   const openResourceDossier = async (resource: any) => {
     if (selectedResourceDossier?.id === resource.id) {
       resourceDossierGate.current.invalidate()
@@ -3485,12 +3548,14 @@ function AiAssistantPage() {
         setSelectedResourceDossier(null)
         setMessage('资源在读取期间发生变化，请从检索结果重新打开。')
         setMemorySearchRefreshKey(value => value + 1)
+        restoreSearchDossierReturn('resource')
         return
       }
       if (!result) {
         setSelectedResourceDossier(null)
         setMessage('该资源已经删除或不再可用。')
         setMemorySearchRefreshKey(value => value + 1)
+        restoreSearchDossierReturn('resource')
         return
       }
       setSelectedResourceDossier({ ...result, origin: 'search', status: 'ready' })
@@ -3533,12 +3598,14 @@ function AiAssistantPage() {
         setStructuredMemoryDossier(null)
         setMessage('这条检索结果在打开前已有变化，已刷新检索结果。')
         setMemorySearchRefreshKey(value => value + 1)
+        restoreSearchDossierReturn('structured')
         return
       }
       if (!result) {
         setStructuredMemoryDossier(null)
         setMessage('这条结构化记忆已经删除或不再存在。')
         setMemorySearchRefreshKey(value => value + 1)
+        restoreSearchDossierReturn('structured')
         return
       }
       setStructuredMemoryDossier({ ...result, status: 'ready' })
@@ -3638,7 +3705,11 @@ function AiAssistantPage() {
     const target = authorityReturnTarget
     setShowEntityDossier(false)
     setAuthorityReturnTarget(null)
-    if (!returnToParent || !target) return
+    if (!returnToParent) return
+    if (!target) {
+      restoreSearchDossierReturn('entity')
+      return
+    }
     if (target.kind === 'project') {
       setSelectedProjectId(target.sourceId)
     } else {
@@ -6695,6 +6766,7 @@ function AiAssistantPage() {
               ? '这条检索结果已经删除或不再可用，已刷新检索结果。'
               : '这条检索结果在打开证据前已经变化，已刷新后再核验，避免把旧卡片连接到新内容。')
             setMemorySearchRefreshKey(value => value + 1)
+            restoreSearchDossierReturn()
           }
           return
         }
@@ -6738,6 +6810,7 @@ function AiAssistantPage() {
     memoryEvidenceArchiveGate.current.invalidate()
     setMemoryEvidenceLoadingMore(false)
     setMemoryEvidenceArchive(null)
+    restoreSearchDossierReturn()
   }
 
   const loadMoreMemoryEvidence = async () => {
@@ -8975,7 +9048,9 @@ function AiAssistantPage() {
             <div><span className="assistant-eyebrow">MEMORY SEARCH</span><h3><Search size={16} /> 搜索个人记忆</h3></div>
           </div>
           <div className="assistant-graph-toolbar">
-            <input value={memoryQuery} onChange={event => setMemoryQuery(event.target.value)} placeholder="搜索人物、事实、事件、关系或项目" />
+            <input ref={memorySearchInputRef} value={memoryQuery}
+              onChange={event => setMemoryQuery(event.target.value)}
+              placeholder="搜索人物、事实、事件、关系或项目" />
             <label>
               <input type="checkbox"
                 checked={memorySearchMode === 'lexical_archive'}
@@ -9139,7 +9214,11 @@ function AiAssistantPage() {
                 ? normalizeMemoryEvidence(result.matchedEvidence)
                 : null
               const feedbackSavingAction = memoryFeedbackSavingAction(result.id)
-              return <article key={result.id}>
+              return <article key={result.id} tabIndex={-1}
+                ref={node => {
+                  if (node) memoryResultElements.current.set(result.id, node)
+                  else memoryResultElements.current.delete(result.id)
+                }}>
               <span>{MEMORY_TYPE_LABELS[result.document_type] || result.document_type}
                 {result.match_source ? ` · ${result.match_source}匹配` : ''}
                 {result.match_reason === 'pinyin_entity' ? ' · 拼音命中' : result.match_reason === 'fuzzy_entity' ? ' · 名称近似召回' : result.match_reason === 'entity_alias_or_account' ? ' · 别名/微信 ID 命中' : result.match_reason === 'entity_evidence' ? ' · 身份原文命中' : ''}
@@ -9177,10 +9256,14 @@ function AiAssistantPage() {
               </div>}
               {result.document_type === 'entity' && result.source_id && <div className="assistant-search-authority-actions">
                 {result.metadata?.entityType === 'project'
-                  ? <button className="primary" onClick={() => setSelectedProjectId(String(result.source_id))}>
+                  ? <button className="primary" onClick={() => {
+                    beginSearchDossierReturn('project', result.id)
+                    setSelectedProjectId(String(result.source_id))
+                  }}>
                     打开项目驾驶舱
                   </button>
                   : <button className="primary" onClick={() => {
+                    beginSearchDossierReturn('entity', result.id)
                     setSelectedEntityId(String(result.source_id))
                     setShowEntityDossier(true)
                   }}>打开完整实体档案</button>}
@@ -9188,23 +9271,28 @@ function AiAssistantPage() {
               </div>}
               {result.document_type === 'task' && result.source_id && <div className="assistant-search-authority-actions">
                 <button className="primary" onClick={() => {
+                  beginSearchDossierReturn('task', result.id)
                   setSelectedTaskId(String(result.source_id))
                   setTaskDossierModalOpen(true)
                 }}>打开完整待办档案</button>
                 <small>读取当前权威待办状态、完整原文入口和修改历史，不依赖当前列表是否已加载。</small>
               </div>}
               {result.document_type === 'resource' && result.source_id && <div className="assistant-search-authority-actions">
-                <button className="primary" onClick={() =>
+                <button className="primary" onClick={() => {
+                  beginSearchDossierReturn('resource', result.id)
                   void openSearchResourceDossier(String(result.source_id))
-                }>打开完整资源档案</button>
+                }}>打开完整资源档案</button>
                 <small>按稳定资源 ID 读取当前 SQLCipher 记录，并在同一次请求中复核资源 revision。</small>
               </div>}
               {['claim', 'event', 'relation'].includes(result.document_type) &&
                 result.source_id && <div className="assistant-search-authority-actions">
-                  <button className="primary" onClick={() => void openStructuredMemoryDossier(
-                    result.document_type as 'claim' | 'event' | 'relation',
-                    String(result.source_id)
-                  )}>打开权威结构化档案</button>
+                  <button className="primary" onClick={() => {
+                    beginSearchDossierReturn('structured', result.id)
+                    void openStructuredMemoryDossier(
+                      result.document_type as 'claim' | 'event' | 'relation',
+                      String(result.source_id)
+                    )
+                  }}>打开权威结构化档案</button>
                   <small>绑定当前检索 revision 与稳定类型/ID；打开后重新读取当前值、参与实体、审计和原文。</small>
                 </div>}
               {matchedEvidence && <div className="assistant-search-matched-evidence">
@@ -9273,14 +9361,16 @@ function AiAssistantPage() {
                   })}
                     {evidenceTotal > evidence.length &&
                       <p className="assistant-evidence-limit-note">当前显示最近 {evidence.length} 条，共有 {evidenceTotal} 条去重原文证据；可结合来源、人物和时间范围继续检索。</p>}
-                    <button className="assistant-open-evidence-archive" onClick={() =>
+                    <button className="assistant-open-evidence-archive" onClick={() => {
+                      beginSearchDossierReturn('evidence', result.id)
                       void openMemoryEvidenceArchive(
                         result.document_type,
                         result.source_id,
                         result.title,
                         EMPTY_MEMORY_EVIDENCE_FILTERS,
                         { searchRevision: memorySearchState.revision, origin: 'search' }
-                      )}>
+                      )
+                    }}>
                       查看完整证据档案
                     </button>
                   </div>
@@ -11430,8 +11520,7 @@ function AiAssistantPage() {
                 <p>按稳定任务 ID 从当前权威状态读取；检索摘要仅用于找到它，不作为详情来源。</p>
               </div>
               <button aria-label="关闭待办权威档案" onClick={() => {
-                setTaskDossierModalOpen(false)
-                setSelectedTaskId('')
+                closeSearchTaskDossier()
               }}><X size={18} /></button>
             </div>
             <div className="assistant-modal-body">
@@ -11495,9 +11584,8 @@ function AiAssistantPage() {
             </div>
             <div className="assistant-modal-actions">
               <button onClick={() => {
-                setTaskDossierModalOpen(false)
-                setSelectedTaskId('')
-              }}>关闭</button>
+                closeSearchTaskDossier()
+              }}>返回检索结果</button>
             </div>
           </div>
         </div>
@@ -11516,8 +11604,7 @@ function AiAssistantPage() {
                 <p>按稳定资源 ID 从 SQLCipher 单项读取，并在返回前复核当前资源 revision。</p>
               </div>
               <button aria-label="关闭资源权威档案" onClick={() => {
-                resourceDossierGate.current.invalidate()
-                setSelectedResourceDossier(null)
+                closeSearchResourceDossier()
               }}><X size={18} /></button>
             </div>
             <div className="assistant-modal-body">
@@ -11567,9 +11654,8 @@ function AiAssistantPage() {
             </div>
             <div className="assistant-modal-actions">
               <button onClick={() => {
-                resourceDossierGate.current.invalidate()
-                setSelectedResourceDossier(null)
-              }}>关闭</button>
+                closeSearchResourceDossier()
+              }}>返回检索结果</button>
             </div>
           </div>
         </div>
@@ -11595,12 +11681,7 @@ function AiAssistantPage() {
                     : '检索 revision、结构化类型和稳定 ID 已共同校验；下方内容重新读取自当前 SQLCipher 权威记录。'}</p>
               </div>
               <button aria-label="关闭结构化记忆权威档案" onClick={() => {
-                structuredMemoryDossierGate.current.invalidate()
-                relationDossierAuditGates.current.invalidateAll()
-                setRelationDossierAuditLoading({})
-                eventDossierParticipantsGate.current.invalidate()
-                setEventDossierParticipantsLoading(false)
-                setStructuredMemoryDossier(null)
+                closeStructuredMemoryDossier()
               }}><X size={18} /></button>
             </div>
             <div className="assistant-modal-body">
@@ -11809,13 +11890,8 @@ function AiAssistantPage() {
             </div>
             <div className="assistant-modal-actions">
               <button onClick={() => {
-                structuredMemoryDossierGate.current.invalidate()
-                relationDossierAuditGates.current.invalidateAll()
-                setRelationDossierAuditLoading({})
-                eventDossierParticipantsGate.current.invalidate()
-                setEventDossierParticipantsLoading(false)
-                setStructuredMemoryDossier(null)
-              }}>关闭</button>
+                closeStructuredMemoryDossier()
+              }}>{structuredMemoryDossier.origin ? '关闭' : '返回检索结果'}</button>
             </div>
           </div>
         </div>
@@ -11997,7 +12073,13 @@ function AiAssistantPage() {
                 <small>{selectedEntity.summaryStatus === 'confirmed' ? '已确认摘要' : selectedEntity.summaryStatus === 'legacy_unverified' ? '历史未验证摘要，不参与可信检索' : '尚无已确认摘要'}</small>
               </div>
               <button
-                aria-label={authorityReturnTarget ? '返回上一级权威档案' : '关闭实体档案'}
+                aria-label={authorityReturnTarget
+                  ? '返回上一级权威档案'
+                  : resolveSearchDossierReturn(
+                      searchDossierReturnTargetRef.current, 'entity'
+                    )
+                    ? '返回检索结果'
+                    : '关闭实体档案'}
                 onClick={() => closeEntityDossier()}>
                 <X size={18} />
               </button>
@@ -12505,12 +12587,19 @@ function AiAssistantPage() {
             </div>
             <footer>
               <button onClick={() => {
+                clearSearchDossierReturn()
                 setMemoryEntityFilter(selectedEntity.id)
                 setMemoryQuery(selectedEntity.canonicalName)
                 closeEntityDossier(false)
               }}>在统一记忆中检索此实体</button>
               <button className="primary" onClick={() => closeEntityDossier()}>
-                {authorityReturnLabel(authorityReturnTarget)}
+                {authorityReturnTarget
+                  ? authorityReturnLabel(authorityReturnTarget)
+                  : resolveSearchDossierReturn(
+                      searchDossierReturnTargetRef.current, 'entity'
+                    )
+                    ? '返回检索结果'
+                    : '完成'}
               </button>
             </footer>
           </div>
@@ -12521,7 +12610,7 @@ function AiAssistantPage() {
         <div className="assistant-modal-backdrop">
           <div className="assistant-project-modal assistant-project-state">
             <header><div><span className="assistant-eyebrow">PROJECT DOSSIER</span><h2>正在加载项目档案…</h2></div>
-              <button aria-label="关闭项目详情" onClick={() => setSelectedProjectId('')}><X size={18} /></button></header>
+              <button aria-label="关闭项目详情" onClick={closeProjectDossier}><X size={18} /></button></header>
             <div className="assistant-empty">正在本机聚合任务、可信关系、事实、事件和有界原文证据。</div>
           </div>
         </div>
@@ -12531,7 +12620,7 @@ function AiAssistantPage() {
         <div className="assistant-modal-backdrop">
           <div className="assistant-project-modal assistant-project-state">
             <header><div><span className="assistant-eyebrow">PROJECT DOSSIER</span><h2>项目档案读取失败</h2></div>
-              <button aria-label="关闭项目详情" onClick={() => setSelectedProjectId('')}><X size={18} /></button></header>
+              <button aria-label="关闭项目详情" onClick={closeProjectDossier}><X size={18} /></button></header>
             <div className="assistant-empty">{projectWorkspace.error}</div>
             <footer><button onClick={() => setProjectWorkspaceRefreshKey(value => value + 1)}>重试</button></footer>
           </div>
@@ -12544,7 +12633,7 @@ function AiAssistantPage() {
             <header>
               <div><span className="assistant-eyebrow">PROJECT DOSSIER</span><h2>{selectedProject.name}</h2>
                 <p>{selectedProject.summary || '这是由结构化记忆自动聚合的项目视图，所有结论均来自下方任务、事件、关系和原文证据。'}</p></div>
-              <button aria-label="关闭项目详情" onClick={() => setSelectedProjectId('')}><X size={18} /></button>
+              <button aria-label="关闭项目详情" onClick={closeProjectDossier}><X size={18} /></button>
             </header>
             <div className="assistant-dossier-metrics">
               <span><b>{selectedProject.progress}%</b><small>任务完成度</small></span>
@@ -13006,12 +13095,16 @@ function AiAssistantPage() {
                 查看项目实体与审计历史
               </button>}
               {selectedProject.entityId && <button onClick={() => {
+                clearSearchDossierReturn()
                 void selectMemoryEntityScope(selectedProject.entityId, selectedProject.name).then(() => {
                   setMemoryQuery(selectedProject.name)
                   setSelectedProjectId('')
                 })
               }}>在统一记忆中检索</button>}
-              <button className="primary" onClick={() => setSelectedProjectId('')}>完成</button>
+              <button className="primary" onClick={closeProjectDossier}>
+                {resolveSearchDossierReturn(searchDossierReturnTargetRef.current, 'project')
+                  ? '返回检索结果' : '完成'}
+              </button>
             </footer>
           </div>
         </div>
