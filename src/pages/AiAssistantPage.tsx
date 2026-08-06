@@ -57,6 +57,11 @@ import {
   type EntityDossierMetric
 } from '../utils/entityDossierDrilldown'
 import { evidenceArchiveIdentity } from '../../shared/evidencePayload'
+import {
+  isMemorySearchReviewPresetActive,
+  memorySearchReviewPreset,
+  type MemorySearchReviewPreset
+} from '../../shared/memorySearchReviewPresets'
 import './AiAssistantPage.scss'
 
 type Task = {
@@ -1433,6 +1438,24 @@ function AiAssistantPage() {
     memoryTypeFilter || memoryTrustFilter || memorySupportFilter || memoryConflictFilter ||
     memoryEvidenceStrengthFilter || memoryEvidenceBreadthFilter ||
     memoryFrom || memoryTo)
+  const memoryReviewPresetFilters = useMemo(() => ({
+    trustStatus: memoryTrustFilter,
+    supportability: memorySupportFilter,
+    evidenceConflict: memoryConflictFilter,
+    evidenceStrength: memoryEvidenceStrengthFilter,
+    evidenceBreadth: memoryEvidenceBreadthFilter
+  }), [
+    memoryTrustFilter, memorySupportFilter, memoryConflictFilter,
+    memoryEvidenceStrengthFilter, memoryEvidenceBreadthFilter
+  ])
+  const applyMemoryReviewPreset = useCallback((preset: MemorySearchReviewPreset) => {
+    const filters = memorySearchReviewPreset(preset)
+    setMemoryTrustFilter(filters.trustStatus)
+    setMemorySupportFilter(filters.supportability)
+    setMemoryConflictFilter(filters.evidenceConflict)
+    setMemoryEvidenceStrengthFilter(filters.evidenceStrength)
+    setMemoryEvidenceBreadthFilter(filters.evidenceBreadth)
+  }, [])
   const memoryFeedbackArchiveOptions = useMemo(() => ({
     action: memoryFeedbackArchiveAction || undefined,
     query: memoryFeedbackArchiveQuery.trim() || undefined,
@@ -9103,6 +9126,24 @@ function AiAssistantPage() {
                 setTaskArchiveStatus('all'); setTaskArchivePriority(''); setTaskArchiveProject('')
                 setTaskArchiveQuery(''); setTaskArchiveFrom(''); setTaskArchiveTo('')
               }}>清除范围</button>}
+          </div>
+          <div className="assistant-search-type-facets">
+            <div>
+              <strong>一键证据审阅</strong>
+              <small>只组合证据门禁，保留当前人物、会话、来源、类型和日期范围</small>
+            </div>
+            <button
+              className={isMemorySearchReviewPresetActive(
+                'conservative_support', memoryReviewPresetFilters) ? 'active' : ''}
+              onClick={() => applyMemoryReviewPreset('conservative_support')}>
+              多源直接支持 · 当前未发现反证
+            </button>
+            <button
+              className={isMemorySearchReviewPresetActive(
+                'fragile_candidate', memoryReviewPresetFilters) ? 'active' : ''}
+              onClick={() => applyMemoryReviewPreset('fragile_candidate')}>
+              单源间接候选 · 优先复核
+            </button>
           </div>
           <small className="assistant-evidence">
             历史任务从本机 SQLCipher 目录按需分页读取，不参与 15 秒首页轮询；项目目录可搜索全部
