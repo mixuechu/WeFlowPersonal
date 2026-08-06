@@ -46,3 +46,18 @@ test('entity overview metrics map to authoritative dossier sections', () => {
     eventPreset: 'pendingCommitments'
   })
 })
+
+test('entity audit metrics map to their complete pageable ledgers', () => {
+  assert.deepEqual(entityDossierDrilldown('relationHistory'), {
+    sectionId: 'entity-dossier-relation-history'
+  })
+  assert.deepEqual(entityDossierDrilldown('entityCorrections'), {
+    sectionId: 'entity-dossier-entity-corrections'
+  })
+  assert.deepEqual(entityDossierDrilldown('relationCorrections'), {
+    sectionId: 'entity-dossier-relation-corrections'
+  })
+  assert.deepEqual(entityDossierDrilldown('profileCorrections'), {
+    sectionId: 'entity-dossier-profile-corrections'
+  })
+})

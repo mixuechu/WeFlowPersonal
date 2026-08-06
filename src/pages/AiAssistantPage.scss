@@ -906,6 +906,9 @@
 .assistant-entity-dossier > button:hover { border-color: #b9cbbd; background: #f6faf6; }
 .assistant-entity-dossier > button b { font-size: 9px; font-weight: 600; }
 .assistant-entity-dossier > button span { font-size: 9px; overflow-wrap: anywhere; }
+.assistant-entity-dossier > button.assistant-entity-dossier-heading-action { margin-top: 6px; padding: 0; border: 0; display: flex; align-items: center; justify-content: space-between; gap: 8px; color: #4c514b; background: transparent; font-size: 10px; font-weight: 700; }
+.assistant-entity-dossier > button.assistant-entity-dossier-heading-action span { color: #6b8877; font-size: 8px; font-weight: 500; white-space: nowrap; }
+.assistant-entity-dossier > button.assistant-entity-dossier-heading-action:hover { color: #285d49; background: transparent; }
 .assistant-entity-dossier > em { color: #999d97; font-size: 9px; font-style: normal; }
 .assistant-review-section { margin-top: 24px; }
 .assistant-review-filters { margin: 8px 0 4px; display: grid; grid-template-columns: auto minmax(130px, .35fr) minmax(220px, 1fr); gap: 8px; align-items: center; }

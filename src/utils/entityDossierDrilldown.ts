@@ -9,6 +9,10 @@ export type EntityDossierMetric =
   | 'events'
   | 'tasks'
   | 'pendingCommitments'
+  | 'relationHistory'
+  | 'entityCorrections'
+  | 'relationCorrections'
+  | 'profileCorrections'
 
 export type EntityDossierDrilldown = {
   sectionId: string
@@ -55,6 +59,18 @@ export function entityDossierDrilldown(
       sectionId: 'entity-dossier-events',
       eventPreset: 'pendingCommitments'
     }
+  }
+  if (metric === 'relationHistory') {
+    return { sectionId: 'entity-dossier-relation-history' }
+  }
+  if (metric === 'entityCorrections') {
+    return { sectionId: 'entity-dossier-entity-corrections' }
+  }
+  if (metric === 'relationCorrections') {
+    return { sectionId: 'entity-dossier-relation-corrections' }
+  }
+  if (metric === 'profileCorrections') {
+    return { sectionId: 'entity-dossier-profile-corrections' }
   }
   return { sectionId: 'entity-dossier-tasks' }
 }

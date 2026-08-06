@@ -11274,22 +11274,27 @@ function AiAssistantPage() {
                     <details><summary>强度计算依据</summary>{selectedEntityInsight.explanation.map((item: string) => <small key={item}>{item}</small>)}</details>
                   </div>}
                   <div className="assistant-entity-dossier">
-                    <strong>
+                    <button type="button" className="assistant-entity-dossier-heading-action"
+                      onClick={() => focusEntityDossierMetric('claims')}>
                       结构化事实 · {entitySidebar.claims.total}
                       {entitySidebar.claims.truncated
                         ? `（侧栏预览 ${entitySidebar.claims.preview}）`
                         : ''}
-                    </strong>
+                      <span>查看完整档案</span>
+                    </button>
                     {selectedEntityClaims.slice(0, 6).map((claim: any) =>
                       <button key={claim.id} onClick={() => setMemoryQuery(`${selectedEntity.canonicalName} ${claim.predicate}`)}>
                         <b>{claim.predicate}</b><span>{claim.object_entity_name || claim.object_value || '待确认'}</span>
                       </button>)}
                     {!selectedEntityClaims.length && <em>尚无事实</em>}
-                    <strong>关系 · {entitySidebar.relations.total}
+                    <button type="button" className="assistant-entity-dossier-heading-action"
+                      onClick={() => focusEntityDossierMetric('relationships')}>
+                      关系 · {entitySidebar.relations.total}
                       {entitySidebar.relations.truncated
                         ? `（侧栏预览 ${entitySidebar.relations.preview}）`
                         : ''}
-                    </strong>
+                      <span>查看完整档案</span>
+                    </button>
                     {selectedEntityRelations.slice(0, 6).map((relation: any) => {
                       const outgoing = relation.subjectId === selectedEntity.id
                       const neighborId = outgoing ? relation.objectId : relation.subjectId
@@ -11299,12 +11304,14 @@ function AiAssistantPage() {
                       </button>
                     })}
                     {!selectedEntityRelations.length && <em>尚无关系</em>}
-                    <strong>
+                    <button type="button" className="assistant-entity-dossier-heading-action"
+                      onClick={() => focusEntityDossierMetric('relationHistory')}>
                       关系变化 · {entitySidebar.relationHistory.total}
                       {entitySidebar.relationHistory.truncated
                         ? `（侧栏预览 ${entitySidebar.relationHistory.preview}）`
                         : ''}
-                    </strong>
+                      <span>查看完整审计</span>
+                    </button>
                     {selectedEntityRelationHistory.slice(0, 8).map((item: any) =>
                       <div className="assistant-relation-history" key={item.id}>
                         <b>{item.subject_name || item.subject_id} — {item.predicate} → {item.object_name || item.object_id}</b>
@@ -11314,12 +11321,14 @@ function AiAssistantPage() {
                         <small>{new Date(item.created_at).toLocaleString('zh-CN')} · {Math.round(Number(item.confidence || 0) * 100)}%</small>
                       </div>)}
                     {!selectedEntityRelationHistory.length && <em>尚无关系变化记录</em>}
-                    <strong>
+                    <button type="button" className="assistant-entity-dossier-heading-action"
+                      onClick={() => focusEntityDossierMetric('events')}>
                       相关事件 · {entitySidebar.events.total}
                       {entitySidebar.events.truncated
                         ? `（侧栏预览 ${entitySidebar.events.preview}）`
                         : ''}
-                    </strong>
+                      <span>查看完整档案</span>
+                    </button>
                     {selectedEntityEvents.slice(0, 5).map((event: any) =>
                       <button key={event.id} onClick={() => setMemoryQuery(event.title)}>
                         <b>{event.start_at || '时间待确认'}</b><span>{event.title}</span>
@@ -12381,6 +12390,26 @@ function AiAssistantPage() {
                 <b>{selectedEntityInsight.pendingCommitmentCount}</b>
                 <small>待确认承诺 · 查看</small>
               </button>
+              <button type="button" className="assistant-dossier-metric-action"
+                onClick={() => focusEntityDossierMetric('relationHistory')}>
+                <b>{graphWorkspace.focus?.auditPages?.relationHistory?.total || 0}</b>
+                <small>关系变化审计 · 查看</small>
+              </button>
+              <button type="button" className="assistant-dossier-metric-action"
+                onClick={() => focusEntityDossierMetric('entityCorrections')}>
+                <b>{graphWorkspace.focus?.auditPages?.entityCorrections?.total || 0}</b>
+                <small>名称修正审计 · 查看</small>
+              </button>
+              <button type="button" className="assistant-dossier-metric-action"
+                onClick={() => focusEntityDossierMetric('relationCorrections')}>
+                <b>{graphWorkspace.focus?.auditPages?.relationCorrections?.total || 0}</b>
+                <small>关系修正审计 · 查看</small>
+              </button>
+              <button type="button" className="assistant-dossier-metric-action"
+                onClick={() => focusEntityDossierMetric('profileCorrections')}>
+                <b>{graphWorkspace.focus?.auditPages?.entityProfileCorrections?.total || 0}</b>
+                <small>档案修正审计 · 查看</small>
+              </button>
             </div>}
             <div className="assistant-dossier-grid">
               <section id="entity-dossier-identities">
@@ -12808,7 +12837,8 @@ function AiAssistantPage() {
                     : `加载更多原文（已显示 ${entityEvidencePage.items.length} / ${entityEvidencePage.total}）`}
                 </button>}
               </section>
-              <section className="assistant-dossier-wide">
+              <section className="assistant-dossier-wide"
+                id="entity-dossier-relation-history" tabIndex={-1}>
                 <h3>关系变化历史 <small>{graphWorkspace.focus?.auditPages?.relationHistory?.total ?? selectedEntityRelationHistory.length}</small></h3>
                 {selectedEntityRelationHistory.map((item: any) => <article key={item.id} className="assistant-dossier-history-row">
                   <div><b>{item.subject_name || item.subject_id} — {item.predicate} → {item.object_name || item.object_id}</b>
@@ -12826,7 +12856,8 @@ function AiAssistantPage() {
                     : `加载更多关系变化（已显示 ${selectedEntityRelationHistory.length} / ${graphWorkspace.focus.auditPages.relationHistory.total}）`}
                 </button>}
               </section>
-              <section className="assistant-dossier-wide">
+              <section className="assistant-dossier-wide"
+                id="entity-dossier-entity-corrections" tabIndex={-1}>
                 <h3>身份名称修正 <small>{graphWorkspace.focus?.auditPages?.entityCorrections?.total ?? selectedEntityCorrections.length}</small></h3>
                 {selectedEntityCorrections.map((item: any) => <article key={item.id} className="assistant-dossier-history-row">
                   <div><b>{item.before_name} → {item.after_name}</b><span>人工确认实体时修正</span></div>
@@ -12841,7 +12872,8 @@ function AiAssistantPage() {
                     : `加载更多名称修正（已显示 ${selectedEntityCorrections.length} / ${graphWorkspace.focus.auditPages.entityCorrections.total}）`}
                 </button>}
               </section>
-              <section className="assistant-dossier-wide">
+              <section className="assistant-dossier-wide"
+                id="entity-dossier-relation-corrections" tabIndex={-1}>
                 <h3>关系人工修正 <small>{graphWorkspace.focus?.auditPages?.relationCorrections?.total ?? selectedEntityRelationCorrections.length}</small></h3>
                 {selectedEntityRelationCorrections.map((item: any) => {
                   const entityName = (id: string, fallback = '') => fallback || selectedEntityNames[id] || id
@@ -12862,7 +12894,8 @@ function AiAssistantPage() {
                     : `加载更多关系修正（已显示 ${selectedEntityRelationCorrections.length} / ${graphWorkspace.focus.auditPages.relationCorrections.total}）`}
                 </button>}
               </section>
-              <section className="assistant-dossier-wide">
+              <section className="assistant-dossier-wide"
+                id="entity-dossier-profile-corrections" tabIndex={-1}>
                 <h3>档案字段人工修正 <small>{graphWorkspace.focus?.auditPages?.entityProfileCorrections?.total ?? selectedEntityProfileCorrections.length}</small></h3>
                 {selectedEntityProfileCorrections.map((item: any) => <article key={item.id} className="assistant-dossier-history-row">
                   <div><b>{item.field === 'summary' ? '实体摘要' : '实体别名'}</b><span>模型建议：“{item.suggested_value}”</span></div>
