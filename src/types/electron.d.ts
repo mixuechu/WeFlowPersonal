@@ -2224,6 +2224,11 @@ export interface ElectronAPI {
       getEntityRelationPage: (options?: any) => Promise<{
         items: any[]; total: number; hasMore: boolean; revision: string; stale: boolean
       }>
+      getEntityIdentityAnchorPage: (options?: any) => Promise<{
+        items: any[]; total: number; unfilteredTotal: number; hasMore: boolean
+        counts: { alias: number; identity: number; wechat: number; external: number }
+        platforms: string[]; revision: string; stale: boolean
+      }>
       getEntityEvidencePage: (options?: any) => Promise<{
         items: any[]; total: number; unfilteredTotal: number
         hasMore: boolean; revision: string; stale: boolean

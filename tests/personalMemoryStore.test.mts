@@ -6524,6 +6524,97 @@ test('project memory is scoped in SQL before limits and preserves authoritative 
   }).stale, true)
 }))
 
+test('entity identity anchors stay bounded, searchable and content-revision paged', () => withStore(store => {
+  const entity = {
+    id: 'large-identity-directory-person',
+    type: 'person',
+    canonicalName: '大型身份目录人物',
+    summary: '',
+    confidence: 1,
+    trustStatus: 'confirmed',
+    summaryStatus: 'confirmed',
+    identityVersion: 1,
+    aliases: Array.from({ length: 125 }, (_, index) =>
+      `历史别名 ${String(index).padStart(3, '0')}`),
+    accountIds: Array.from({ length: 80 }, (_, index) =>
+      `wxid_large_identity_${String(index).padStart(3, '0')}`),
+    externalIdentities: Array.from({ length: 60 }, (_, index) => ({
+      platform: index % 2 ? 'email' : 'github',
+      accountId: index % 2
+        ? `person-${String(index).padStart(3, '0')}@example.com`
+        : `large-person-${String(index).padStart(3, '0')}`,
+      displayName: `外部身份 ${String(index).padStart(3, '0')}`,
+      confidence: 0.9
+    }))
+  }
+  store.syncGraph({ entities: [entity], relations: [], reviewQueue: [] } as any)
+  const first = store.listEntityIdentityAnchorPage({
+    entityId: entity.id,
+    limit: 40
+  })
+  assert.equal(first.items.length, 40)
+  assert.equal(first.total, 265)
+  assert.equal(first.unfilteredTotal, 265)
+  assert.deepEqual(first.counts, {
+    alias: 125,
+    identity: 140,
+    wechat: 80,
+    external: 60
+  })
+  assert.deepEqual(first.platforms, ['email', 'github', 'wechat'])
+  const second = store.listEntityIdentityAnchorPage({
+    entityId: entity.id,
+    offset: 40,
+    limit: 40,
+    revision: first.revision
+  })
+  assert.equal(second.items.length, 40)
+  assert.equal(new Set([...first.items, ...second.items]
+    .map(item => `${item.kind}:${item.platform}:${item.value}`)).size, 80)
+  const email = store.listEntityIdentityAnchorPage({
+    entityId: entity.id,
+    kind: 'identity',
+    platform: 'email',
+    limit: 40
+  })
+  assert.equal(email.total, 30)
+  assert.ok(email.items.every((item: any) =>
+    item.kind === 'identity' && item.platform === 'email'))
+  const exactAlias = store.listEntityIdentityAnchorPage({
+    entityId: entity.id,
+    kind: 'alias',
+    query: '历史别名 124'
+  })
+  assert.equal(exactAlias.total, 1)
+  assert.equal(exactAlias.items[0].value, '历史别名 124')
+  const displayName = store.listEntityIdentityAnchorPage({
+    entityId: entity.id,
+    query: '外部身份 058'
+  })
+  assert.equal(displayName.total, 1)
+  assert.equal(displayName.items[0].platform, 'github')
+
+  store.syncGraph({ entities: [structuredClone(entity)], relations: [], reviewQueue: [] } as any)
+  assert.equal(store.listEntityIdentityAnchorPage({
+    entityId: entity.id,
+    offset: 40,
+    limit: 40,
+    revision: first.revision
+  }).stale, false)
+
+  store.syncGraph({
+    entities: [{ ...entity, aliases: [...entity.aliases, '刚新增的身份别名'] }],
+    relations: [],
+    reviewQueue: []
+  } as any)
+  assert.equal(store.listEntityIdentityAnchorPage({
+    entityId: entity.id,
+    offset: 40,
+    limit: 40,
+    revision: first.revision
+  }).stale, true)
+}))
+
 test('project review counts include candidate relations from both directions', () => withStore(store => {
   store.syncGraph({
     entities: [

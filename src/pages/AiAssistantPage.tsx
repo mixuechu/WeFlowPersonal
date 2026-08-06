@@ -665,6 +665,17 @@ function AiAssistantPage() {
     relations: { items: [], total: 0, hasMore: false, revision: '', status: 'idle' },
     events: { items: [], total: 0, hasMore: false, revision: '', status: 'idle' }
   })
+  const [entityIdentityAnchorPage, setEntityIdentityAnchorPage] = useState<any>({
+    items: [], total: 0, unfilteredTotal: 0, hasMore: false,
+    counts: { alias: 0, identity: 0, wechat: 0, external: 0 },
+    platforms: [], revision: '', status: 'idle'
+  })
+  const [entityIdentityAnchorQuery, setEntityIdentityAnchorQuery] = useState('')
+  const [entityIdentityAnchorKind, setEntityIdentityAnchorKind] = useState('all')
+  const [entityIdentityAnchorPlatform, setEntityIdentityAnchorPlatform] = useState('')
+  const [entityIdentityAnchorLoadingMore, setEntityIdentityAnchorLoadingMore] = useState(false)
+  const [entityIdentityAnchorRefreshKey, setEntityIdentityAnchorRefreshKey] = useState(0)
+  const entityIdentityAnchorGate = useRef(new LatestRequestGate())
   const [entityDossierLoadingMore, setEntityDossierLoadingMore] = useState<Record<string, boolean>>({})
   const [entityDossierMutations, setEntityDossierMutations] =
     useState<Record<string, boolean>>({})
@@ -2418,6 +2429,60 @@ function AiAssistantPage() {
   }, [
     graphQuery, graphRelationType, graphRelationStatus, selectedEntityId, graphFocusDepth, graphNodeLimit,
     dashboard?.graphRevision, dashboard?.projectRevision, graphWorkspaceRefreshKey
+  ])
+
+  useEffect(() => {
+    const request = entityIdentityAnchorGate.current.begin()
+    setEntityIdentityAnchorLoadingMore(false)
+    if (!showEntityDossier || !selectedEntityId) {
+      setEntityIdentityAnchorPage({
+        items: [], total: 0, unfilteredTotal: 0, hasMore: false,
+        counts: { alias: 0, identity: 0, wechat: 0, external: 0 },
+        platforms: [], revision: '', status: 'idle'
+      })
+      return () => {
+        if (entityIdentityAnchorGate.current.isCurrent(request)) {
+          entityIdentityAnchorGate.current.invalidate()
+        }
+      }
+    }
+    setEntityIdentityAnchorPage((current: any) => ({
+      ...current, items: [], total: 0, hasMore: false, status: 'loading'
+    }))
+    const timer = window.setTimeout(() => {
+      void window.electronAPI.aiAssistant.getEntityIdentityAnchorPage({
+        entityId: selectedEntityId,
+        kind: entityIdentityAnchorKind,
+        platform: entityIdentityAnchorPlatform,
+        query: entityIdentityAnchorQuery.trim(),
+        offset: 0,
+        limit: 40
+      }).then(page => {
+        if (!entityIdentityAnchorGate.current.isCurrent(request)) return
+        if (page.stale) return
+        setEntityIdentityAnchorPage({ ...page, status: 'ready' })
+      }).catch(error => {
+        if (!entityIdentityAnchorGate.current.isCurrent(request)) return
+        setEntityIdentityAnchorPage((current: any) => ({
+          ...current,
+          items: [],
+          total: 0,
+          hasMore: false,
+          status: 'error',
+          error: error?.message || String(error)
+        }))
+      })
+    }, entityIdentityAnchorQuery.trim() ? 180 : 0)
+    return () => {
+      window.clearTimeout(timer)
+      if (entityIdentityAnchorGate.current.isCurrent(request)) {
+        entityIdentityAnchorGate.current.invalidate()
+      }
+    }
+  }, [
+    showEntityDossier, selectedEntityId, dashboard?.graphRevision,
+    entityIdentityAnchorQuery, entityIdentityAnchorKind, entityIdentityAnchorPlatform,
+    entityIdentityAnchorRefreshKey
   ])
 
   useEffect(() => {
@@ -4268,6 +4333,50 @@ function AiAssistantPage() {
       if (taskFeedbackDossierGate.current.isCurrent(request)) setMessage(error?.message || String(error))
     } finally {
       if (taskFeedbackDossierGate.current.isCurrent(request)) setTaskFeedbackHistoryLoadingMore(false)
+    }
+  }
+
+  const loadMoreEntityIdentityAnchors = async () => {
+    if (!selectedEntityId || entityIdentityAnchorLoadingMore ||
+      !entityIdentityAnchorPage.hasMore) return
+    const request = entityIdentityAnchorGate.current.begin()
+    setEntityIdentityAnchorLoadingMore(true)
+    try {
+      const page = await window.electronAPI.aiAssistant.getEntityIdentityAnchorPage({
+        entityId: selectedEntityId,
+        kind: entityIdentityAnchorKind,
+        platform: entityIdentityAnchorPlatform,
+        query: entityIdentityAnchorQuery.trim(),
+        offset: entityIdentityAnchorPage.items.length,
+        limit: 40,
+        revision: entityIdentityAnchorPage.revision
+      })
+      if (!entityIdentityAnchorGate.current.isCurrent(request)) return
+      if (page.stale) {
+        setMessage('人物身份目录在浏览期间已有变化，已从最新第一页重新载入。')
+        setEntityIdentityAnchorRefreshKey(value => value + 1)
+        return
+      }
+      setEntityIdentityAnchorPage((current: any) => ({
+        ...page,
+        status: 'ready',
+        items: [
+          ...(current.items || []),
+          ...page.items.filter((item: any) =>
+            !(current.items || []).some((known: any) =>
+              known.kind === item.kind &&
+              known.platform === item.platform &&
+              known.value === item.value))
+        ]
+      }))
+    } catch (error: any) {
+      if (entityIdentityAnchorGate.current.isCurrent(request)) {
+        setMessage(error?.message || String(error))
+      }
+    } finally {
+      if (entityIdentityAnchorGate.current.isCurrent(request)) {
+        setEntityIdentityAnchorLoadingMore(false)
+      }
     }
   }
 
@@ -10441,9 +10550,29 @@ function AiAssistantPage() {
                   <small>实体状态：{selectedEntity.trustStatus === 'confirmed' ? '已确认' : selectedEntity.trustStatus === 'candidate' ? '待确认（不参与可信检索）' : selectedEntity.trustStatus === 'legacy_unverified' ? '历史未验证（不参与可信检索）' : '已拒绝'}</small>
                   <p>{selectedEntity.summary || '等待更多证据补充'}</p>
                   <small>摘要状态：{selectedEntity.summaryStatus === 'confirmed' ? '已确认' : selectedEntity.summaryStatus === 'legacy_unverified' ? '历史未验证（不参与可信检索）' : '尚无已确认摘要'}</small>
-                  <small>别名：{selectedEntity.aliases?.join('、') || '无'}</small>
-                  <small>微信：{selectedEntity.accountIds?.join('、') || '未关联'}</small>
-                  <small>邮箱：{selectedEntity.externalIdentities?.filter((identity: any) => identity.platform === 'email').map((identity: any) => identity.accountId).join('、') || '未关联'}</small>
+                  <small>
+                    别名：{selectedEntity.aliases?.join('、') || '无'}
+                    {Number(graphWorkspace.focus?.identityAnchorSummary?.aliases || 0) >
+                      Number(selectedEntity.aliases?.length || 0)
+                      ? `（预览 ${selectedEntity.aliases.length} / ${graphWorkspace.focus.identityAnchorSummary.aliases}）`
+                      : ''}
+                  </small>
+                  <small>
+                    微信：{selectedEntity.accountIds?.join('、') || '未关联'}
+                    {Number(graphWorkspace.focus?.identityAnchorSummary?.wechat || 0) >
+                      Number(selectedEntity.accountIds?.length || 0)
+                      ? `（预览 ${selectedEntity.accountIds.length} / ${graphWorkspace.focus.identityAnchorSummary.wechat}）`
+                      : ''}
+                  </small>
+                  <small>
+                    外部账号：
+                    {selectedEntity.externalIdentities?.map((identity: any) =>
+                      `${identity.platform}:${identity.accountId}`).join('、') || '未关联'}
+                    {Number(graphWorkspace.focus?.identityAnchorSummary?.external || 0) >
+                      Number(selectedEntity.externalIdentities?.length || 0)
+                      ? `（预览 ${selectedEntity.externalIdentities.length} / ${graphWorkspace.focus.identityAnchorSummary.external}）`
+                      : ''}
+                  </small>
                   <small>关联原文：{Number(graphWorkspace.focus?.evidenceTotal || 0)} 条</small>
                   <button className="assistant-open-dossier" onClick={() => setShowEntityDossier(true)}>
                     打开完整档案（事实 {entitySidebar.claims.total}
@@ -11481,9 +11610,9 @@ function AiAssistantPage() {
               </button>
             </header>
             <div className="assistant-dossier-identity">
-              <span><small>别名</small><b>{selectedEntity.aliases?.join('、') || '暂无'}</b></span>
-              <span><small>微信身份锚点</small><b>{selectedEntity.accountIds?.join('、') || '尚未关联'}</b></span>
-              <span><small>邮箱身份锚点</small><b>{selectedEntity.externalIdentities?.filter((identity: any) => identity.platform === 'email').map((identity: any) => identity.accountId).join('、') || '尚未关联'}</b></span>
+              <span><small>别名</small><b>{entityIdentityAnchorPage.counts?.alias || 0} 个</b></span>
+              <span><small>微信身份锚点</small><b>{entityIdentityAnchorPage.counts?.wechat || 0} 个</b></span>
+              <span><small>外部身份锚点</small><b>{entityIdentityAnchorPage.counts?.external || 0} 个</b></span>
               <span><small>关联原文档案</small><b>{Number(entityEvidencePage.unfilteredTotal || 0)} 条</b></span>
               <span><small>身份版本</small><b>v{selectedEntity.identityVersion || 1}</b></span>
             </div>
@@ -11494,6 +11623,63 @@ function AiAssistantPage() {
               <span><b>{selectedEntityInsight.pendingCommitmentCount}</b><small>待确认承诺</small></span>
             </div>}
             <div className="assistant-dossier-grid">
+              <section>
+                <h3>身份与别名 <small>{Number(entityIdentityAnchorPage.unfilteredTotal || 0)}</small></h3>
+                <div className="assistant-inline-filters">
+                  <input value={entityIdentityAnchorQuery}
+                    onChange={event => setEntityIdentityAnchorQuery(event.target.value)}
+                    placeholder="搜索别名、账号、显示名或平台" />
+                  <select value={entityIdentityAnchorKind}
+                    onChange={event => {
+                      setEntityIdentityAnchorKind(event.target.value)
+                      if (event.target.value === 'alias') setEntityIdentityAnchorPlatform('')
+                    }}>
+                    <option value="all">全部身份</option>
+                    <option value="alias">仅别名</option>
+                    <option value="identity">仅账号</option>
+                  </select>
+                  <select value={entityIdentityAnchorPlatform}
+                    disabled={entityIdentityAnchorKind === 'alias'}
+                    onChange={event => setEntityIdentityAnchorPlatform(event.target.value)}>
+                    <option value="">全部平台</option>
+                    {(entityIdentityAnchorPage.platforms || []).map((platform: string) =>
+                      <option value={platform} key={platform}>{platform}</option>)}
+                  </select>
+                </div>
+                {entityIdentityAnchorPage.status === 'loading' && <em>正在读取身份目录…</em>}
+                {entityIdentityAnchorPage.status === 'error' && <em>
+                  身份目录读取失败：{entityIdentityAnchorPage.error}
+                  <button onClick={() => setEntityIdentityAnchorRefreshKey(value => value + 1)}>
+                    重试
+                  </button>
+                </em>}
+                {(entityIdentityAnchorPage.items || []).map((anchor: any) =>
+                  <article key={`${anchor.kind}:${anchor.platform}:${anchor.value}`}>
+                    <div>
+                      <b>{anchor.value}</b>
+                      <span>{anchor.kind === 'alias'
+                        ? '别名'
+                        : `${anchor.platform}${anchor.displayName
+                          ? ` · ${anchor.displayName}` : ''}`}</span>
+                    </div>
+                    <small>
+                      {anchor.kind === 'alias' ? `别名类型 ${anchor.platform}` : '稳定账号身份'}
+                      {' · '}{Math.round(Number(anchor.confidence || 0) * 100)}% 置信
+                      {anchor.validFrom || anchor.validTo
+                        ? ` · ${anchor.validFrom || '未知'}—${anchor.validTo || '当前'}`
+                        : ''}
+                    </small>
+                  </article>)}
+                {entityIdentityAnchorPage.status === 'ready' &&
+                  !entityIdentityAnchorPage.items?.length && <em>当前筛选下没有身份记录</em>}
+                {entityIdentityAnchorPage.hasMore && <button
+                  disabled={entityIdentityAnchorLoadingMore}
+                  onClick={() => void loadMoreEntityIdentityAnchors()}>
+                  {entityIdentityAnchorLoadingMore
+                    ? '正在加载…'
+                    : `加载更多身份（已显示 ${entityIdentityAnchorPage.items.length} / ${entityIdentityAnchorPage.total}）`}
+                </button>}
+              </section>
               <section>
                 <h3>结构化事实 <small>{Number(entityDossierPages.claims?.total || 0)}</small></h3>
                 <div className="assistant-inline-filters assistant-inline-filters-wide">

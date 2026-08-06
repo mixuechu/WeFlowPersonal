@@ -836,6 +836,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
     getEventTimeline: (options?: any) => ipcRenderer.invoke('ai-assistant:getEventTimeline', options),
     getEntityRelationPage: (options?: any) =>
       ipcRenderer.invoke('ai-assistant:getEntityRelationPage', options),
+    getEntityIdentityAnchorPage: (options?: any) =>
+      ipcRenderer.invoke('ai-assistant:getEntityIdentityAnchorPage', options),
     getEntityEvidencePage: (options?: any) =>
       ipcRenderer.invoke('ai-assistant:getEntityEvidencePage', options),
     getClaimArchive: (options?: any) => ipcRenderer.invoke('ai-assistant:getClaimArchive', options),

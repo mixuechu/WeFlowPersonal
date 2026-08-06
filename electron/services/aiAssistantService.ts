@@ -117,6 +117,7 @@ import {
   type TaskReminder
 } from './taskIntelligence'
 import { buildEntityInsights, paginateEntityRelatedTasks } from './relationshipInsights'
+import { boundEntityIdentityPresentation } from './entityIdentityPresentation'
 import { classifyTaskAssignment, evaluateTaskAssignmentPolicy } from './taskAssignmentPolicy'
 import { buildWeeklyBriefing, isQuietTime } from './briefingIntelligence'
 import { groundBriefingDigest } from './briefingEvidencePolicy'
@@ -4859,8 +4860,10 @@ export class AiAssistantService {
         revision: String(page.revision || ''),
         stale: Boolean(page.stale)
       })
+      const identityPresentation = boundEntityIdentityPresentation(focusEntity)
       focus = {
-        entity: focusEntity,
+        entity: identityPresentation.entity,
+        identityAnchorSummary: identityPresentation.summary,
         insight: insights[focusEntity.id] || null,
         evidenceTotal: evidenceStats.evidenceTotal,
         lastEvidenceAt: evidenceStats.lastEvidenceAt,
@@ -5280,6 +5283,30 @@ export class AiAssistantService {
         updatedAt: relation.updated_at
       }))
     }
+  }
+
+  getEntityIdentityAnchorPage(options: any = {}): any {
+    const entityId = String(options?.entityId || '').trim()
+    const entity = this.state.graph.entities.find(candidate =>
+      candidate.id === entityId && candidate.trustStatus !== 'rejected')
+    if (!entity) {
+      return {
+        items: [], total: 0, unfilteredTotal: 0, hasMore: false,
+        counts: { alias: 0, identity: 0, wechat: 0, external: 0 },
+        platforms: [], revision: '0', stale: false
+      }
+    }
+    return personalMemoryStore.listEntityIdentityAnchorPage({
+      entityId,
+      kind: ['alias', 'identity'].includes(String(options?.kind || ''))
+        ? options.kind
+        : 'all',
+      platform: String(options?.platform || ''),
+      query: String(options?.query || ''),
+      limit: Number(options?.limit || 40),
+      offset: Number(options?.offset || 0),
+      revision: String(options?.revision || '')
+    })
   }
 
   getEntityEvidencePage(options: any = {}): any {

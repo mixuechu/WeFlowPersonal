@@ -10438,6 +10438,118 @@ export class PersonalMemoryStore {
     }
   }
 
+  listEntityIdentityAnchorPage(options: {
+    entityId: string
+    kind?: 'all' | 'alias' | 'identity'
+    platform?: string
+    query?: string
+    limit?: number
+    offset?: number
+    revision?: string
+  }): any {
+    const empty = {
+      items: [], total: 0, unfilteredTotal: 0, hasMore: false,
+      counts: { alias: 0, identity: 0, wechat: 0, external: 0 },
+      revision: '0', stale: false
+    }
+    if (!this.db) return empty
+    const entityId = String(options.entityId || '').trim()
+    if (!entityId || !this.db.prepare(`
+      SELECT 1 FROM entities WHERE id=? AND deleted_at IS NULL
+    `).get(entityId)) return empty
+    const aliases = (this.db.prepare(`
+      SELECT id,value,alias_type,confidence,valid_from,valid_to
+      FROM aliases WHERE entity_id=?
+      ORDER BY alias_type,normalized_value,value,id
+    `).all(entityId) as any[]).map(row => ({
+      id: `alias:${row.id}`,
+      kind: 'alias',
+      platform: String(row.alias_type || 'name'),
+      value: String(row.value || ''),
+      displayName: '',
+      confidence: Number(row.confidence || 0),
+      validFrom: String(row.valid_from || ''),
+      validTo: String(row.valid_to || '')
+    }))
+    const identities = (this.db.prepare(`
+      SELECT id,platform,account_id,display_name,confidence,valid_from,valid_to
+      FROM identities WHERE entity_id=?
+      ORDER BY platform,account_id,id
+    `).all(entityId) as any[]).map(row => ({
+      id: `identity:${row.id}`,
+      kind: 'identity',
+      platform: String(row.platform || 'unknown'),
+      value: String(row.account_id || ''),
+      displayName: String(row.display_name || ''),
+      confidence: Number(row.confidence || 0),
+      validFrom: String(row.valid_from || ''),
+      validTo: String(row.valid_to || '')
+    }))
+    const allItems = [...aliases, ...identities]
+    const revision = createHash('sha256').update(JSON.stringify([
+      entityId,
+      ...allItems.map(item => [
+        item.kind, item.platform, item.value, item.displayName,
+        item.confidence, item.validFrom, item.validTo
+      ])
+    ])).digest('hex').slice(0, 24)
+    const expectedRevision = String(options.revision || '').trim()
+    const offset = Math.max(0, Math.min(1_000_000, Math.floor(Number(options.offset) || 0)))
+    if (expectedRevision && expectedRevision !== revision) {
+      return { ...empty, revision, stale: true }
+    }
+    const kind = ['alias', 'identity'].includes(String(options.kind || ''))
+      ? String(options.kind)
+      : 'all'
+    const platform = String(options.platform || '').trim().toLocaleLowerCase('zh-CN').slice(0, 80)
+    const query = String(options.query || '').trim().toLocaleLowerCase('zh-CN').slice(0, 200)
+    const filtered = allItems.filter(item =>
+      (kind === 'all' || item.kind === kind) &&
+      (!platform || item.platform.toLocaleLowerCase('zh-CN') === platform) &&
+      (!query || `${item.value}\n${item.displayName}\n${item.platform}`
+        .toLocaleLowerCase('zh-CN').includes(query)))
+    const limit = Math.max(1, Math.min(100, Math.floor(Number(options.limit) || 40)))
+    const completedItems = [
+      ...(this.db.prepare(`
+        SELECT value,alias_type,confidence,valid_from,valid_to
+        FROM aliases WHERE entity_id=? ORDER BY alias_type,normalized_value,value,id
+      `).all(entityId) as any[]).map(row => [
+        'alias', String(row.alias_type || 'name'), String(row.value || ''), '',
+        Number(row.confidence || 0), String(row.valid_from || ''), String(row.valid_to || '')
+      ]),
+      ...(this.db.prepare(`
+        SELECT platform,account_id,display_name,confidence,valid_from,valid_to
+        FROM identities WHERE entity_id=? ORDER BY platform,account_id,id
+      `).all(entityId) as any[]).map(row => [
+        'identity', String(row.platform || 'unknown'), String(row.account_id || ''),
+        String(row.display_name || ''), Number(row.confidence || 0),
+        String(row.valid_from || ''), String(row.valid_to || '')
+      ])
+    ]
+    const completedRevision = createHash('sha256').update(JSON.stringify([
+      entityId, ...completedItems
+    ])).digest('hex').slice(0, 24)
+    if (completedRevision !== revision) {
+      return { ...empty, revision: completedRevision, stale: true }
+    }
+    return {
+      ...empty,
+      items: filtered.slice(offset, offset + limit),
+      total: filtered.length,
+      unfilteredTotal: allItems.length,
+      hasMore: offset + limit < filtered.length,
+      counts: {
+        alias: aliases.length,
+        identity: identities.length,
+        wechat: identities.filter(item => item.platform === 'wechat').length,
+        external: identities.filter(item => item.platform !== 'wechat').length
+      },
+      platforms: [...new Set(identities.map(item => item.platform))].sort(),
+      revision,
+      stale: false
+    }
+  }
+
   listProjectMemberPage(options: {
     projectId: string
     limit?: number
