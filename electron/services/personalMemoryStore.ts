@@ -14652,7 +14652,15 @@ export class PersonalMemoryStore {
   ): { resourceCheckpointApplied: boolean } {
     if (!this.db) return { resourceCheckpointApplied: false }
     let resourceCheckpointApplied = false
-    const transaction = this.db.transaction(() => {
+    const prepared = this.db.prepare(`
+      SELECT source_kind FROM ingestion_batch_commits WHERE commit_id=?
+    `).get(commitId) as any
+    if (!prepared) throw new Error(`找不到待提交的记忆批次：${commitId}`)
+    this.runWithMemoryChangeOrigin({
+      kind: 'model_batch',
+      id: String(commitId || '').trim(),
+      sourceKind: prepared.source_kind === 'document' ? 'documents' : 'wechat'
+    }, () => {
       const row = this.db!.prepare(`
         SELECT *
         FROM ingestion_batch_commits WHERE commit_id=?
@@ -14706,7 +14714,6 @@ export class PersonalMemoryStore {
         `).run(new Date().toISOString(), messageCount, String(row.run_id))
       }
     })
-    transaction()
     return { resourceCheckpointApplied }
   }
 

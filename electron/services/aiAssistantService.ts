@@ -1921,6 +1921,25 @@ export class AiAssistantService {
     }
   }
 
+  private documentAnalysisLifecycleOrigin(
+    runId: string,
+    resourceId: string,
+    stage: 'running' | 'failed'
+  ): {
+    kind: 'connector_page'
+    id: string
+    sourceKind: 'documents'
+  } {
+    return {
+      kind: 'connector_page',
+      id: `documents:${crypto.createHash('sha256')
+        .update(`documents\0${runId}\0${stage}\0${resourceId}`)
+        .digest('hex')
+        .slice(0, 24)}`,
+      sourceKind: 'documents'
+    }
+  }
+
   private async continuePendingImageSemantics(runId: string): Promise<void> {
     if (!this.config.get('aiAssistantAnalyzeImages')) return
     const status = localImageSemanticService.getStatus()
@@ -3365,7 +3384,7 @@ export class AiAssistantService {
         documentAnalysisStatus: 'running',
         documentAnalysisAttempts: attempts + 1,
         documentAnalysisLastAttemptAt: createdAt
-      })
+      }, this.documentAnalysisLifecycleOrigin(runId, resource.id, 'running'))
       personalMemoryStore.startIngestionRun(
         runId,
         String(this.config.get('aiAssistantApiModel') || ''),
@@ -3460,7 +3479,7 @@ export class AiAssistantService {
           documentAnalysisStatus: 'failed',
           documentAnalysisError: detail,
           documentAnalysisNextAt: new Date(Date.now() + retryDays * 86_400_000).toISOString()
-        })
+        }, this.documentAnalysisLifecycleOrigin(runId, resource.id, 'failed'))
         personalMemoryStore.recordIngestionBatch(runId, 0, 1, 'failed', detail, {
           model: String(this.config.get('aiAssistantApiModel') || ''),
           promptVersion: `${EXTRACTION_PROMPT_VERSION}/document-v1`,

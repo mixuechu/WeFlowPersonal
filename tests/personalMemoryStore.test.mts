@@ -18088,6 +18088,23 @@ test('document ingestion commit advances the content-version checkpoint atomical
   assert.equal(store.getDocumentAnalysisStats('document-v1').completed, 1)
   assert.equal(store.getIngestionStatus().status, 'completed')
   assert.equal(store.getProcessedIngestionMessageStats().total, 0)
+  const completionGrowth = store.listMemoryChangeLogPage({
+    origin: 'model_batch',
+    source: 'documents',
+    limit: 20
+  })
+  assert.equal(completionGrowth.total, 1)
+  assert.equal(completionGrowth.items[0].originId, 'document-commit-v1')
+  const completionDossier = store.getMemoryChangeOriginDossier(
+    completionGrowth.items[0].id,
+    completionGrowth.revision
+  )
+  assert.equal(completionDossier.originKind, 'model_batch')
+  assert.equal(completionDossier.sourceKind, 'documents')
+  assert.equal(completionDossier.modelBatch.commitId, 'document-commit-v1')
+  assert.equal(completionDossier.modelBatch.runId, 'document-run-v1')
+  assert.equal(completionDossier.modelBatch.batchStatus, 'completed')
+  assert.equal(completionDossier.modelBatch.messageCount, 1)
 
   store.replaceResourceContent('document-commit-test', '第二版内容', {
     contentHash: 'hash-v2',
