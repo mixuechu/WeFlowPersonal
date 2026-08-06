@@ -1545,6 +1545,8 @@ export class PersonalMemoryStore {
       ON memory_change_log(origin_kind,changed_at DESC,id DESC);
       CREATE INDEX IF NOT EXISTS idx_memory_change_log_source_time
       ON memory_change_log(source_kind,changed_at DESC,id DESC);
+      CREATE INDEX IF NOT EXISTS idx_memory_change_log_origin_identity
+      ON memory_change_log(origin_kind,origin_id,source_kind,id DESC);
       DELETE FROM memory_change_context;
     `)
     this.ensureColumn('data_source_connectors', 'config_json', `TEXT NOT NULL DEFAULT '{}'`)
@@ -2797,6 +2799,148 @@ export class PersonalMemoryStore {
       stale: false,
       trackedSince: started,
       counts
+    }
+  }
+
+  getMemoryChangeOriginDossier(
+    changeIdInput: number,
+    expectedRevision: string
+  ): any | null {
+    if (!this.db) return null
+    const changeId = Math.max(0, Math.floor(Number(changeIdInput) || 0))
+    if (!changeId) return null
+    const revision = this.getMemoryChangeLogRevision()
+    if (!expectedRevision || String(expectedRevision) !== revision) {
+      throw new Error('记忆成长记录在打开来源档案前已经变化，请刷新后重试')
+    }
+    const row = this.db.prepare(`
+      SELECT id,item_kind,item_id,change_kind,change_detail,origin_kind,origin_id,
+        source_kind,status_before,status_after,changed_at
+      FROM memory_change_log WHERE id=?
+    `).get(changeId) as any
+    if (!row) return null
+    const originKind = String(row.origin_kind || 'legacy_unknown').slice(0, 40)
+    const originId = String(row.origin_id || '').slice(0, 240)
+    const sourceKind = String(row.source_kind || 'legacy').slice(0, 40)
+    const groupedRows = originId
+      ? this.db.prepare(`
+          SELECT item_kind,change_kind,COUNT(*) AS count
+          FROM memory_change_log
+          WHERE origin_kind=? AND origin_id=? AND source_kind=?
+          GROUP BY item_kind,change_kind
+          ORDER BY item_kind,change_kind
+        `).all(originKind, originId, sourceKind) as any[]
+      : this.db.prepare(`
+          SELECT item_kind,change_kind,COUNT(*) AS count
+          FROM memory_change_log WHERE id=?
+          GROUP BY item_kind,change_kind
+        `).all(changeId) as any[]
+    const range = originId
+      ? this.db.prepare(`
+          SELECT COUNT(*) AS total,MIN(changed_at) AS first_changed_at,
+            MAX(changed_at) AS last_changed_at
+          FROM memory_change_log
+          WHERE origin_kind=? AND origin_id=? AND source_kind=?
+        `).get(originKind, originId, sourceKind) as any
+      : {
+          total: 1,
+          first_changed_at: row.changed_at,
+          last_changed_at: row.changed_at
+        }
+    let modelBatch: any = null
+    if (originKind === 'model_batch' && originId) {
+      const batch = this.db.prepare(`
+        SELECT ingestion_commit.commit_id,ingestion_commit.run_id,
+          ingestion_commit.batch_index,
+          ingestion_commit.status AS commit_status,
+          ingestion_commit.source_kind AS commit_source_kind,
+          ingestion_commit.prepared_at,ingestion_commit.applied_at,
+          ingestion_commit.recovery_attempts,
+          run.started_at AS run_started_at,run.finished_at AS run_finished_at,
+          run.status AS run_status,run.trigger_kind,run.model AS run_model,
+          run.prompt_version AS run_prompt_version,
+          batch.message_count,batch.status AS batch_status,batch.attempts,
+          batch.model,batch.prompt_version,batch.schema_version,
+          batch.input_tokens,batch.output_tokens,batch.duration_ms,
+          batch.redaction_summary_json,batch.evidence_validation_json,
+          batch.extraction_context_json,batch.extraction_coverage_json
+        FROM ingestion_batch_commits ingestion_commit
+        LEFT JOIN ingestion_runs run ON run.id=ingestion_commit.run_id
+        LEFT JOIN ingestion_batches batch
+          ON batch.run_id=ingestion_commit.run_id
+            AND batch.batch_index=ingestion_commit.batch_index
+        WHERE ingestion_commit.commit_id=?
+      `).get(originId) as any
+      if (batch) {
+        const parseAudit = (value: unknown): any => {
+          try {
+            const parsed = JSON.parse(String(value || '{}'))
+            return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+              ? parsed
+              : {}
+          } catch {
+            return {}
+          }
+        }
+        modelBatch = {
+          commitId: String(batch.commit_id || '').slice(0, 240),
+          runId: String(batch.run_id || '').slice(0, 240),
+          batchIndex: Math.max(0, Number(batch.batch_index || 0)),
+          commitStatus: String(batch.commit_status || '').slice(0, 40),
+          sourceKind: String(batch.commit_source_kind || '').slice(0, 40),
+          preparedAt: String(batch.prepared_at || '').slice(0, 80),
+          appliedAt: String(batch.applied_at || '').slice(0, 80),
+          recoveryAttempts: Math.max(0, Number(batch.recovery_attempts || 0)),
+          runStartedAt: String(batch.run_started_at || '').slice(0, 80),
+          runFinishedAt: String(batch.run_finished_at || '').slice(0, 80),
+          runStatus: String(batch.run_status || '').slice(0, 40),
+          triggerKind: String(batch.trigger_kind || '').slice(0, 40),
+          messageCount: Math.max(0, Number(batch.message_count || 0)),
+          batchStatus: String(batch.batch_status || '').slice(0, 40),
+          attempts: Math.max(0, Number(batch.attempts || 0)),
+          model: String(batch.model || batch.run_model || '').slice(0, 160),
+          promptVersion: String(
+            batch.prompt_version || batch.run_prompt_version || ''
+          ).slice(0, 160),
+          schemaVersion: String(batch.schema_version || '').slice(0, 160),
+          inputTokens: Math.max(0, Number(batch.input_tokens || 0)),
+          outputTokens: Math.max(0, Number(batch.output_tokens || 0)),
+          durationMs: Math.max(0, Number(batch.duration_ms || 0)),
+          sensitiveRedaction: parseAudit(batch.redaction_summary_json),
+          structuredEvidence: parseAudit(batch.evidence_validation_json),
+          extractionContext: parseAudit(batch.extraction_context_json),
+          extractionCoverage: parseAudit(batch.extraction_coverage_json)
+        }
+      }
+    }
+    const completedRevision = this.getMemoryChangeLogRevision()
+    if (completedRevision !== revision) {
+      throw new Error('记忆成长记录在读取来源档案期间已经变化，请刷新后重试')
+    }
+    return {
+      change: {
+        id: Number(row.id),
+        itemKind: String(row.item_kind).slice(0, 40),
+        itemId: String(row.item_id).slice(0, 240),
+        changeKind: String(row.change_kind).slice(0, 40),
+        changeDetail: String(row.change_detail || 'item').slice(0, 40),
+        statusBefore: String(row.status_before || '').slice(0, 80),
+        statusAfter: String(row.status_after || '').slice(0, 80),
+        changedAt: String(row.changed_at || '').slice(0, 80)
+      },
+      originKind,
+      originId,
+      sourceKind,
+      totalChanges: Math.max(0, Number(range?.total || 0)),
+      firstChangedAt: String(range?.first_changed_at || '').slice(0, 80),
+      lastChangedAt: String(range?.last_changed_at || '').slice(0, 80),
+      groups: groupedRows.map(group => ({
+        itemKind: String(group.item_kind || '').slice(0, 40),
+        changeKind: String(group.change_kind || '').slice(0, 40),
+        count: Math.max(0, Number(group.count || 0))
+      })),
+      modelBatch,
+      revision
     }
   }
 

@@ -4752,6 +4752,13 @@ export class AiAssistantService {
     })
   }
 
+  getMemoryChangeOriginDossier(changeId: number, expectedRevision: string): any {
+    return personalMemoryStore.getMemoryChangeOriginDossier(
+      Number(changeId),
+      String(expectedRevision || '')
+    )
+  }
+
   getMergeHistoryPage(options: any = {}): any {
     return personalMemoryStore.listMergeHistoryPage({
       status: ['active', 'reverted', 'all'].includes(options?.status)

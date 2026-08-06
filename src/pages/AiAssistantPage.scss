@@ -1003,6 +1003,12 @@
   color: #476052;
   font-size: 9px;
 }
+.assistant-memory-growth-list article > .assistant-memory-growth-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 5px;
+}
 .assistant-memory-growth-kind {
   min-width: 34px;
   padding: 4px 6px;

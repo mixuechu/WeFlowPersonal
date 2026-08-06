@@ -666,6 +666,12 @@ contextBridge.exposeInMainWorld('electronAPI', {
       ipcRenderer.invoke('ai-assistant:getMemoryDeletionAuditPage', options),
     getMemoryChangeLogPage: (options?: any) =>
       ipcRenderer.invoke('ai-assistant:getMemoryChangeLogPage', options),
+    getMemoryChangeOriginDossier: (changeId: number, expectedRevision: string) =>
+      ipcRenderer.invoke(
+        'ai-assistant:getMemoryChangeOriginDossier',
+        changeId,
+        expectedRevision
+      ),
     getMergeHistoryPage: (options?: any) =>
       ipcRenderer.invoke('ai-assistant:getMergeHistoryPage', options),
     sync: () => ipcRenderer.invoke('ai-assistant:sync'),

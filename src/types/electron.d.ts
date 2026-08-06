@@ -1868,6 +1868,10 @@ export interface ElectronAPI {
         stale: boolean
         trackedSince: string
       }>
+      getMemoryChangeOriginDossier: (
+        changeId: number,
+        expectedRevision: string
+      ) => Promise<any>
       getMergeHistoryPage: (options?: any) => Promise<{
         items: any[]
         total: number

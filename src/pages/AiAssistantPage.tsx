@@ -1128,6 +1128,8 @@ function AiAssistantPage() {
   const [memoryGrowthLoadingMore, setMemoryGrowthLoadingMore] = useState(false)
   const [memoryGrowthRefreshKey, setMemoryGrowthRefreshKey] = useState(0)
   const memoryGrowthGate = useRef(new LatestRequestGate())
+  const [memoryGrowthOriginDossier, setMemoryGrowthOriginDossier] = useState<any>(null)
+  const memoryGrowthOriginDossierGate = useRef(new LatestRequestGate())
   const [entityMemoryGrowth, setEntityMemoryGrowth] = useState<any>({
     items: [], total: 0, hasMore: false, counts: {}, revision: '',
     trackedSince: '', status: 'idle'
@@ -3962,6 +3964,39 @@ function AiAssistantPage() {
         error: error?.message || String(error)
       })
     }
+  }
+
+  const openMemoryGrowthOriginDossier = async (item: any, revision: string) => {
+    const changeId = Math.max(0, Math.floor(Number(item?.id) || 0))
+    if (!changeId || !revision) return
+    const request = memoryGrowthOriginDossierGate.current.begin()
+    setMemoryGrowthOriginDossier({ changeId, status: 'loading' })
+    try {
+      const result = await window.electronAPI.aiAssistant
+        .getMemoryChangeOriginDossier(changeId, revision)
+      if (!memoryGrowthOriginDossierGate.current.isCurrent(request)) return
+      if (!result) {
+        setMemoryGrowthOriginDossier({
+          changeId,
+          status: 'error',
+          error: '这条成长记录已经不存在，请刷新后重试。'
+        })
+        return
+      }
+      setMemoryGrowthOriginDossier({ ...result, status: 'ready' })
+    } catch (error: any) {
+      if (!memoryGrowthOriginDossierGate.current.isCurrent(request)) return
+      setMemoryGrowthOriginDossier({
+        changeId,
+        status: 'error',
+        error: error?.message || String(error)
+      })
+    }
+  }
+
+  const closeMemoryGrowthOriginDossier = () => {
+    memoryGrowthOriginDossierGate.current.invalidate()
+    setMemoryGrowthOriginDossier(null)
   }
   const openStructuredMemoryDossier = async (
     kind: 'claim' | 'event' | 'relation',
@@ -8958,10 +8993,16 @@ function AiAssistantPage() {
                 </small>
                 <small>{memoryGrowthOriginSummary(entry)}</small>
               </div>
-              {entry.currentExists ? <button type="button"
-                onClick={() => void openMemoryGrowthItem(entry)}>
-                查看当前档案
-              </button> : <span className="assistant-memory-growth-removed">本体已删除</span>}
+              <div className="assistant-memory-growth-actions">
+                <button type="button" onClick={() =>
+                  void openMemoryGrowthOriginDossier(entry, memoryGrowth.revision)}>
+                  核验来源
+                </button>
+                {entry.currentExists ? <button type="button"
+                  onClick={() => void openMemoryGrowthItem(entry)}>
+                  查看当前档案
+                </button> : <span className="assistant-memory-growth-removed">本体已删除</span>}
+              </div>
             </article>)}
           </div>
           {!memoryGrowth.items.length && <div className="assistant-empty">
@@ -12703,6 +12744,163 @@ function AiAssistantPage() {
         </section>
       </div>
 
+      {memoryGrowthOriginDossier && (
+        <div className="assistant-modal-backdrop" role="presentation">
+          <div className="assistant-modal assistant-evidence-archive-modal"
+            role="dialog" aria-modal="true"
+            aria-labelledby="memory-growth-origin-dossier-title">
+            <div className="assistant-modal-title">
+              <div>
+                <span className="assistant-eyebrow">CAUSAL MEMORY AUDIT</span>
+                <h2 id="memory-growth-origin-dossier-title">这次记忆变化从哪里来</h2>
+                <p>按当前成长账本 revision 从 SQLCipher 反查，不使用界面缓存猜测。</p>
+              </div>
+              <button aria-label="关闭记忆变化来源档案"
+                onClick={closeMemoryGrowthOriginDossier}>
+                <X size={18} />
+              </button>
+            </div>
+            <div className="assistant-modal-body">
+              {memoryGrowthOriginDossier.status === 'loading' &&
+                <div className="assistant-empty">正在核验产生这条变化的权威批次…</div>}
+              {memoryGrowthOriginDossier.status === 'error' &&
+                <div className="assistant-error">
+                  <strong>来源档案无法打开</strong>
+                  <span>{memoryGrowthOriginDossier.error}</span>
+                  <button onClick={() => {
+                    closeMemoryGrowthOriginDossier()
+                    setMemoryGrowthRefreshKey(value => value + 1)
+                  }}>刷新成长记录</button>
+                </div>}
+              {memoryGrowthOriginDossier.status === 'ready' && <>
+                <div className="assistant-memory-item">
+                  <div className="assistant-memory-item-head">
+                    <strong>
+                      {MEMORY_GROWTH_ORIGIN_LABELS[
+                        memoryGrowthOriginDossier.originKind
+                      ] || memoryGrowthOriginDossier.originKind}
+                    </strong>
+                    <span>
+                      {MEMORY_GROWTH_SOURCE_LABELS[
+                        memoryGrowthOriginDossier.sourceKind
+                      ] || memoryGrowthOriginDossier.sourceKind}
+                    </span>
+                  </div>
+                  <p>
+                    本次动作共形成 {Number(
+                      memoryGrowthOriginDossier.totalChanges || 0
+                    ).toLocaleString()} 条记忆变化
+                    {memoryGrowthOriginDossier.firstChangedAt
+                      ? ` · ${new Date(
+                        memoryGrowthOriginDossier.firstChangedAt
+                      ).toLocaleString('zh-CN')}`
+                      : ''}
+                    {memoryGrowthOriginDossier.lastChangedAt &&
+                      memoryGrowthOriginDossier.lastChangedAt !==
+                      memoryGrowthOriginDossier.firstChangedAt
+                      ? ` 至 ${new Date(
+                        memoryGrowthOriginDossier.lastChangedAt
+                      ).toLocaleString('zh-CN')}`
+                      : ''}
+                  </p>
+                  {memoryGrowthOriginDossier.originId && <small>
+                    不透明来源标识：
+                    <code>{memoryGrowthOriginDossier.originId}</code>
+                  </small>}
+                  <div className="assistant-tags">
+                    {(memoryGrowthOriginDossier.groups || []).map((group: any) =>
+                      <span key={`${group.itemKind}:${group.changeKind}`}>
+                        {MEMORY_GROWTH_KIND_LABELS[group.itemKind] || group.itemKind}
+                        {' · '}
+                        {MEMORY_GROWTH_CHANGE_LABELS[group.changeKind] ||
+                          group.changeKind}
+                        {' '}{Number(group.count || 0).toLocaleString()}
+                      </span>)}
+                  </div>
+                </div>
+                {memoryGrowthOriginDossier.modelBatch ? <>
+                  <div className="assistant-memory-item">
+                    <strong>DeepSeek 抽取批次已精确匹配</strong>
+                    <p>
+                      运行 {memoryGrowthOriginDossier.modelBatch.runId}
+                      {' · '}第 {Number(
+                        memoryGrowthOriginDossier.modelBatch.batchIndex || 0
+                      ) + 1} 批
+                      {' · '}提交状态 {
+                        memoryGrowthOriginDossier.modelBatch.commitStatus || '未知'
+                      }
+                      {' · '}恢复尝试 {Number(
+                        memoryGrowthOriginDossier.modelBatch.recoveryAttempts || 0
+                      )} 次
+                    </p>
+                  </div>
+                  <IngestionBatchAudit
+                    run={{
+                      model: memoryGrowthOriginDossier.modelBatch.model,
+                      prompt_version:
+                        memoryGrowthOriginDossier.modelBatch.promptVersion
+                    }}
+                    batch={{
+                      batch_index: memoryGrowthOriginDossier.modelBatch.batchIndex,
+                      status: memoryGrowthOriginDossier.modelBatch.batchStatus ||
+                        memoryGrowthOriginDossier.modelBatch.commitStatus,
+                      message_count:
+                        memoryGrowthOriginDossier.modelBatch.messageCount,
+                      attempts: memoryGrowthOriginDossier.modelBatch.attempts,
+                      model: memoryGrowthOriginDossier.modelBatch.model,
+                      prompt_version:
+                        memoryGrowthOriginDossier.modelBatch.promptVersion,
+                      schema_version:
+                        memoryGrowthOriginDossier.modelBatch.schemaVersion,
+                      input_tokens:
+                        memoryGrowthOriginDossier.modelBatch.inputTokens,
+                      output_tokens:
+                        memoryGrowthOriginDossier.modelBatch.outputTokens,
+                      duration_ms:
+                        memoryGrowthOriginDossier.modelBatch.durationMs,
+                      sensitiveRedaction:
+                        memoryGrowthOriginDossier.modelBatch.sensitiveRedaction,
+                      structuredEvidence:
+                        memoryGrowthOriginDossier.modelBatch.structuredEvidence,
+                      extractionContext:
+                        memoryGrowthOriginDossier.modelBatch.extractionContext,
+                      extractionCoverage:
+                        memoryGrowthOriginDossier.modelBatch.extractionCoverage
+                    }} />
+                </> : <div className="assistant-memory-item">
+                  <strong>
+                    {memoryGrowthOriginDossier.originKind === 'connector_page'
+                      ? '连接器页级事务'
+                      : memoryGrowthOriginDossier.originKind === 'human_action'
+                        ? '本人操作事务'
+                        : memoryGrowthOriginDossier.originKind === 'system'
+                          ? '系统维护事务'
+                          : '旧版记录'}
+                  </strong>
+                  <p>
+                    {memoryGrowthOriginDossier.originKind === 'connector_page'
+                      ? '标识由来源、前后 checkpoint 的不可逆摘要生成；原始游标不会进入渲染进程。'
+                      : memoryGrowthOriginDossier.originKind === 'human_action'
+                        ? '该标识绑定具体操作和稳定对象 ID；同一事务产生的全部变化已在上方聚合。'
+                        : memoryGrowthOriginDossier.originKind === 'system'
+                          ? '没有人工或模型上下文的确定性数据库维护归入系统；空标识不会跨不相关事务聚合。'
+                          : '该变化产生于来源追踪启用之前，系统不会反向猜测其模型批次或操作者。'}
+                  </p>
+                </div>}
+                <small className="assistant-evidence">
+                  来源档案只读取有界审计、固定类别和不可逆标识；不返回聊天原文、
+                  Prompt、模型原始响应、连接器 checkpoint 或配置身份。
+                </small>
+              </>}
+            </div>
+            <div className="assistant-modal-actions">
+              <button className="primary"
+                onClick={closeMemoryGrowthOriginDossier}>完成核验</button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {taskDossierModalOpen && (
         <div className="assistant-modal-backdrop" role="presentation">
           <div className="assistant-modal assistant-evidence-archive-modal" role="dialog" aria-modal="true"
@@ -13410,10 +13608,19 @@ function AiAssistantPage() {
                       </small>
                       <small>{memoryGrowthOriginSummary(entry)}</small>
                     </div>
-                    {entry.currentExists ? <button type="button"
-                      onClick={() => void openMemoryGrowthItem(entry)}>
-                      查看当前档案
-                    </button> : <span className="assistant-memory-growth-removed">本体已删除</span>}
+                    <div className="assistant-memory-growth-actions">
+                      <button type="button" onClick={() =>
+                        void openMemoryGrowthOriginDossier(
+                          entry,
+                          entityMemoryGrowth.revision
+                        )}>
+                        核验来源
+                      </button>
+                      {entry.currentExists ? <button type="button"
+                        onClick={() => void openMemoryGrowthItem(entry)}>
+                        查看当前档案
+                      </button> : <span className="assistant-memory-growth-removed">本体已删除</span>}
+                    </div>
                   </article>)}
                 </div>
                 {entityMemoryGrowth.status === 'ready' &&

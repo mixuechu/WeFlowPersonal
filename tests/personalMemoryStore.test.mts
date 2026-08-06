@@ -7531,7 +7531,11 @@ test('memory growth log is privacy-minimal, pageable and self-heals trigger drif
       [`SELECT id FROM memory_change_log WHERE origin_kind='human_action'
         ORDER BY changed_at DESC,id DESC LIMIT 40`, 'idx_memory_change_log_origin_time'],
       [`SELECT id FROM memory_change_log WHERE source_kind='wechat'
-        ORDER BY changed_at DESC,id DESC LIMIT 40`, 'idx_memory_change_log_source_time']
+        ORDER BY changed_at DESC,id DESC LIMIT 40`, 'idx_memory_change_log_source_time'],
+      [`SELECT id FROM memory_change_log
+        WHERE origin_kind='model_batch' AND origin_id='batch'
+          AND source_kind='wechat' ORDER BY id DESC LIMIT 40`,
+        'idx_memory_change_log_origin_identity']
     ]) {
       const plan = (database.prepare(`EXPLAIN QUERY PLAN ${sql}`).all() as Array<{ detail: string }>)
         .map(row => row.detail).join(' ')
@@ -7765,6 +7769,40 @@ test('memory growth origins are nested, filterable and rollback without context 
   try {
     store.initialize(databasePath)
     const database = (store as any).db
+    store.startIngestionRun(
+      'growth-origin-run',
+      'deepseek-chat',
+      'prompt-origin-v1',
+      { trigger: 'manual' }
+    )
+    store.recordIngestionBatch(
+      'growth-origin-run',
+      0,
+      3,
+      'completed',
+      '',
+      {
+        model: 'deepseek-chat',
+        promptVersion: 'prompt-origin-v1',
+        schemaVersion: 'schema-origin-v1',
+        inputTokens: 120,
+        outputTokens: 30,
+        durationMs: 900,
+        sensitiveRedaction: { version: 1, total: 2 },
+        structuredEvidence: { version: 1, accepted: { events: 1 } },
+        extractionContext: { version: 1, selectedEntities: 2 },
+        extractionCoverage: { version: 1, attempts: 1 }
+      }
+    )
+    store.prepareIngestionBatchCommit({
+      commitId: 'model-batch-growth-safe',
+      runId: 'growth-origin-run',
+      batchIndex: 0,
+      digest: { privateValue: 'PRIVATE DIGEST MUST NOT LEAK' },
+      messages: [{ content: 'PRIVATE MESSAGE MUST NOT LEAK' }],
+      checkpointKeys: ['PRIVATE CHECKPOINT MUST NOT LEAK'],
+      createdAt: '2026-08-06T01:05:29.000Z'
+    })
     store.runWithMemoryChangeOrigin({
       kind: 'model_batch',
       id: 'model-batch-growth-safe',
@@ -7800,6 +7838,22 @@ test('memory growth origins are nested, filterable and rollback without context 
     assert.equal(store.listMemoryChangeLogPage({
       origin: 'model_batch', limit: 20
     }).items.every(item => item.originId === 'model-batch-growth-safe'), true)
+    const modelPage = store.listMemoryChangeLogPage({
+      origin: 'model_batch', limit: 20
+    })
+    const originDossier = store.getMemoryChangeOriginDossier(
+      modelPage.items[0].id,
+      modelPage.revision
+    )
+    assert.equal(originDossier.totalChanges, 2)
+    assert.equal(originDossier.modelBatch.runId, 'growth-origin-run')
+    assert.equal(originDossier.modelBatch.batchIndex, 0)
+    assert.equal(originDossier.modelBatch.messageCount, 3)
+    assert.equal(originDossier.modelBatch.inputTokens, 120)
+    assert.equal(originDossier.modelBatch.sensitiveRedaction.total, 2)
+    assert.equal(JSON.stringify(originDossier).includes('PRIVATE'), false)
+    assert.equal(JSON.stringify(originDossier).includes('checkpointKeys'), false)
+    assert.equal(JSON.stringify(originDossier).includes('messages'), false)
     assert.equal(Number(database.prepare(`
       SELECT COUNT(*) AS count FROM memory_change_context
     `).get().count), 0)
@@ -7832,6 +7886,10 @@ test('memory growth origins are nested, filterable and rollback without context 
         '2026-08-06T01:05:34.000Z','2026-08-06T01:05:34.000Z'
       )
     `)
+    assert.throws(() => store.getMemoryChangeOriginDossier(
+      modelPage.items[0].id,
+      modelPage.revision
+    ), /已经变化/)
     const system = store.listMemoryChangeLogPage({
       origin: 'system', source: 'system', limit: 20
     })

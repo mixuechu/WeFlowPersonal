@@ -4591,6 +4591,9 @@ function registerIpcHandlers() {
     aiAssistantService.getMemoryDeletionAuditPage(options))
   ipcMain.handle('ai-assistant:getMemoryChangeLogPage', (_, options?: any) =>
     aiAssistantService.getMemoryChangeLogPage(options))
+  ipcMain.handle('ai-assistant:getMemoryChangeOriginDossier', (
+    _, changeId: number, expectedRevision: string
+  ) => aiAssistantService.getMemoryChangeOriginDossier(changeId, expectedRevision))
   ipcMain.handle('ai-assistant:getMergeHistoryPage', (_, options?: any) =>
     aiAssistantService.getMergeHistoryPage(options))
   ipcMain.handle('ai-assistant:sync', () => aiAssistantService.sync())
