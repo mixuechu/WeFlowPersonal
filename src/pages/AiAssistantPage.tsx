@@ -79,8 +79,18 @@ const MEMORY_GROWTH_KIND_LABELS: Record<string, string> = {
 const MEMORY_GROWTH_CHANGE_LABELS: Record<string, string> = {
   discovered: '新发现',
   updated: '内容更新',
+  enriched: '新增信息',
   reviewed: '可信状态变化',
   removed: '已删除'
+}
+
+const MEMORY_GROWTH_DETAIL_LABELS: Record<string, string> = {
+  item: '记忆本体',
+  content: '结构化内容',
+  identity: '身份与别名',
+  status: '可信状态',
+  evidence: '新增证据',
+  participant: '事件参与者'
 }
 
 type Task = {
@@ -1076,7 +1086,9 @@ function AiAssistantPage() {
   const [memoryGrowthKind, setMemoryGrowthKind] =
     useState<'all' | 'entity' | 'claim' | 'relation' | 'event' | 'resource'>('all')
   const [memoryGrowthChange, setMemoryGrowthChange] =
-    useState<'all' | 'discovered' | 'updated' | 'reviewed' | 'removed'>('all')
+    useState<'all' | 'discovered' | 'updated' | 'enriched' | 'reviewed' | 'removed'>('all')
+  const [memoryGrowthDetail, setMemoryGrowthDetail] =
+    useState<'all' | 'item' | 'content' | 'identity' | 'status' | 'evidence' | 'participant'>('all')
   const [memoryGrowthFrom, setMemoryGrowthFrom] = useState('')
   const [memoryGrowthTo, setMemoryGrowthTo] = useState('')
   const [memoryGrowthEntity, setMemoryGrowthEntity] = useState<any>(null)
@@ -1674,6 +1686,7 @@ function AiAssistantPage() {
   const memoryGrowthOptions = useMemo(() => ({
     kind: memoryGrowthKind,
     change: memoryGrowthChange,
+    detail: memoryGrowthDetail,
     from: memoryGrowthFrom
       ? new Date(`${memoryGrowthFrom}T00:00:00+08:00`).toISOString()
       : undefined,
@@ -1684,7 +1697,7 @@ function AiAssistantPage() {
     limit: 40,
     offset: 0
   }), [
-    memoryGrowthKind, memoryGrowthChange, memoryGrowthFrom, memoryGrowthTo,
+    memoryGrowthKind, memoryGrowthChange, memoryGrowthDetail, memoryGrowthFrom, memoryGrowthTo,
     memoryGrowthEntity?.id
   ])
   const mergeArchiveOptions = useMemo(() => ({
@@ -8829,18 +8842,33 @@ function AiAssistantPage() {
               <option value="all">所有变化</option>
               <option value="discovered">新发现</option>
               <option value="updated">内容更新</option>
+              <option value="enriched">新增信息</option>
               <option value="reviewed">可信状态变化</option>
               <option value="removed">已删除</option>
+            </select>
+            <select value={memoryGrowthDetail}
+              onChange={event => setMemoryGrowthDetail(
+                event.target.value as typeof memoryGrowthDetail
+              )}>
+              <option value="all">所有变化内容</option>
+              <option value="item">记忆本体</option>
+              <option value="content">结构化内容</option>
+              <option value="identity">身份与别名</option>
+              <option value="status">可信状态</option>
+              <option value="evidence">新增证据</option>
+              <option value="participant">事件参与者</option>
             </select>
             <label><span>变化从</span><input type="date" value={memoryGrowthFrom}
               onChange={event => setMemoryGrowthFrom(event.target.value)} /></label>
             <label><span>到</span><input type="date" value={memoryGrowthTo}
               onChange={event => setMemoryGrowthTo(event.target.value)} /></label>
-            {(memoryGrowthEntity || memoryGrowthKind !== 'all' || memoryGrowthChange !== 'all' ||
+            {(memoryGrowthEntity || memoryGrowthKind !== 'all' ||
+              memoryGrowthChange !== 'all' || memoryGrowthDetail !== 'all' ||
               memoryGrowthFrom || memoryGrowthTo) && <button onClick={() => {
               setMemoryGrowthEntity(null)
               setMemoryGrowthKind('all')
               setMemoryGrowthChange('all')
+              setMemoryGrowthDetail('all')
               setMemoryGrowthFrom('')
               setMemoryGrowthTo('')
             }}>清除范围</button>}
@@ -8854,6 +8882,10 @@ function AiAssistantPage() {
                 <strong>{entry.title || `${MEMORY_GROWTH_KIND_LABELS[entry.itemKind] || '记忆'}已删除`}</strong>
                 <small>
                   {MEMORY_GROWTH_CHANGE_LABELS[entry.changeKind] || entry.changeKind}
+                  {entry.changeDetail
+                    ? ` · ${MEMORY_GROWTH_DETAIL_LABELS[entry.changeDetail] ||
+                      entry.changeDetail}`
+                    : ''}
                   {' · '}{entry.changedAt
                     ? new Date(entry.changedAt).toLocaleString('zh-CN')
                     : '时间未知'}
@@ -13301,6 +13333,10 @@ function AiAssistantPage() {
                         `${MEMORY_GROWTH_KIND_LABELS[entry.itemKind] || '记忆'}已删除`}</strong>
                       <small>
                         {MEMORY_GROWTH_CHANGE_LABELS[entry.changeKind] || entry.changeKind}
+                        {entry.changeDetail
+                          ? ` · ${MEMORY_GROWTH_DETAIL_LABELS[entry.changeDetail] ||
+                            entry.changeDetail}`
+                          : ''}
                         {' · '}{entry.changedAt
                           ? new Date(entry.changedAt).toLocaleString('zh-CN')
                           : '时间未知'}

@@ -7516,7 +7516,7 @@ test('memory growth log is privacy-minimal, pageable and self-heals trigger drif
     const database = (first as any).db
     const initial = first.getMemoryChangeLogHealth()
     assert.equal(initial.healthy, true)
-    assert.equal(initial.expectedTriggers, 17)
+    assert.equal(initial.expectedTriggers, 21)
     assert.equal(initial.total, 0)
     assert.match(initial.trackedSince, /^20/)
     for (const [sql, index] of [
@@ -7525,7 +7525,9 @@ test('memory growth log is privacy-minimal, pageable and self-heals trigger drif
       [`SELECT id FROM memory_change_log WHERE item_kind='claim'
         ORDER BY changed_at DESC,id DESC LIMIT 40`, 'idx_memory_change_log_kind_time'],
       [`SELECT id FROM memory_change_log WHERE change_kind='reviewed'
-        ORDER BY changed_at DESC,id DESC LIMIT 40`, 'idx_memory_change_log_change_time']
+        ORDER BY changed_at DESC,id DESC LIMIT 40`, 'idx_memory_change_log_change_time'],
+      [`SELECT id FROM memory_change_log WHERE change_detail='evidence'
+        ORDER BY changed_at DESC,id DESC LIMIT 40`, 'idx_memory_change_log_detail_time']
     ]) {
       const plan = (database.prepare(`EXPLAIN QUERY PLAN ${sql}`).all() as Array<{ detail: string }>)
         .map(row => row.detail).join(' ')
@@ -7569,15 +7571,37 @@ test('memory growth log is privacy-minimal, pageable and self-heals trigger drif
       );
       INSERT INTO event_participants(event_id,entity_id,role)
       VALUES('growth-event','growth-person','participant');
+      INSERT INTO entity_evidence(
+        entity_id,source_id,message_id,session_id,timestamp,sender,excerpt,evidence_kind
+      ) VALUES(
+        'growth-person','wechat','growth-entity-message','growth-session',1,
+        'growth-person','身份原文不得进入成长响应','identity'
+      );
+      INSERT INTO evidence(
+        claim_id,source_id,message_id,session_id,timestamp,sender,excerpt,evidence_role
+      ) VALUES(
+        'growth-claim','wechat','growth-claim-message','growth-session',2,
+        'growth-person','事实原文不得进入成长响应','direct'
+      );
+      INSERT INTO evidence(
+        relation_id,source_id,message_id,session_id,timestamp,sender,excerpt,evidence_role
+      ) VALUES(
+        'growth-relation','wechat','growth-relation-message','growth-session',3,
+        'growth-person','关系原文不得进入成长响应','direct'
+      );
+      INSERT INTO evidence(
+        event_id,source_id,message_id,session_id,timestamp,sender,excerpt,evidence_role
+      ) VALUES(
+        'growth-event','wechat','growth-event-message','growth-session',4,
+        'growth-person','事件原文不得进入成长响应','direct'
+      );
     `)
     const firstPage = first.listMemoryChangeLogPage({ limit: 3 })
-    assert.equal(firstPage.total, 6)
+    assert.equal(firstPage.total, 11)
     assert.equal(firstPage.items.length, 3)
     assert.equal(firstPage.hasMore, true)
-    assert.equal(firstPage.items[0].itemKind, 'resource')
-    assert.equal(firstPage.items[0].title, '成长资料')
     assert.deepEqual(Object.keys(firstPage.items[0]).sort(), [
-      'changeKind', 'changedAt', 'currentExists', 'id', 'itemId',
+      'changeDetail', 'changeKind', 'changedAt', 'currentExists', 'id', 'itemId',
       'itemKind', 'statusAfter', 'statusBefore', 'title'
     ])
     assert.equal(JSON.stringify(firstPage).includes('search_text'), false)
@@ -7586,10 +7610,30 @@ test('memory growth log is privacy-minimal, pageable and self-heals trigger drif
       new Set(first.listMemoryChangeLogPage({ limit: 20 }).items.map(item => item.itemKind)),
       new Set(['entity', 'claim', 'relation', 'event', 'resource'])
     )
+    const enriched = first.listMemoryChangeLogPage({ change: 'enriched', limit: 20 })
+    assert.equal(enriched.total, 5)
+    assert.equal(first.listMemoryChangeLogPage({
+      detail: 'evidence', limit: 20
+    }).total, 4)
+    assert.equal(first.listMemoryChangeLogPage({
+      detail: 'participant', limit: 20
+    }).total, 1)
+    assert.equal(JSON.stringify(enriched).includes('原文不得进入成长响应'), false)
+    database.exec(`
+      INSERT OR IGNORE INTO event_participants(event_id,entity_id,role)
+      VALUES('growth-event','growth-person','participant');
+      INSERT OR IGNORE INTO evidence(
+        claim_id,source_id,message_id,session_id,timestamp,sender,excerpt,evidence_role
+      ) VALUES(
+        'growth-claim','wechat','growth-claim-message','growth-session',2,
+        'growth-person','重复证据不得再次产生变化','direct'
+      );
+    `)
+    assert.equal(first.listMemoryChangeLogPage({ limit: 20 }).total, 11)
     const personGrowth = first.listMemoryChangeLogPage({
       entityId: 'growth-person', limit: 20
     })
-    assert.equal(personGrowth.total, 4)
+    assert.equal(personGrowth.total, 9)
     assert.deepEqual(
       new Set(personGrowth.items.map(item => item.itemKind)),
       new Set(['entity', 'claim', 'relation', 'event'])
@@ -7597,7 +7641,7 @@ test('memory growth log is privacy-minimal, pageable and self-heals trigger drif
     const projectGrowth = first.listMemoryChangeLogPage({
       entityId: 'growth-project', limit: 20
     })
-    assert.equal(projectGrowth.total, 2)
+    assert.equal(projectGrowth.total, 3)
     assert.deepEqual(
       new Set(projectGrowth.items.map(item => item.itemKind)),
       new Set(['entity', 'relation'])
@@ -7612,14 +7656,14 @@ test('memory growth log is privacy-minimal, pageable and self-heals trigger drif
     `)
     assert.equal(first.listMemoryChangeLogPage({
       entityId: 'growth-project', limit: 20
-    }).total, 5)
+    }).total, 10)
     database.exec(`
       UPDATE merge_history SET reverted_at='2026-08-06T01:11:00.000Z'
       WHERE source_entity_id='growth-person' AND target_entity_id='growth-project';
     `)
     assert.equal(first.listMemoryChangeLogPage({
       entityId: 'growth-project', limit: 20
-    }).total, 2)
+    }).total, 3)
     database.exec(`
       UPDATE events SET title=title WHERE id='growth-event';
       BEGIN;
@@ -7631,7 +7675,7 @@ test('memory growth log is privacy-minimal, pageable and self-heals trigger drif
       );
       ROLLBACK;
     `)
-    assert.equal(first.listMemoryChangeLogPage({ limit: 20 }).total, 6)
+    assert.equal(first.listMemoryChangeLogPage({ limit: 20 }).total, 11)
     assert.equal(JSON.stringify(first.listMemoryChangeLogPage({ limit: 20 }))
       .includes('growth-rolled-back'), false)
     database.exec(`
@@ -7673,6 +7717,7 @@ test('memory growth log is privacy-minimal, pageable and self-heals trigger drif
     database.exec(`
       DROP TRIGGER trg_memory_growth_claims_update;
       CREATE TRIGGER trg_memory_growth_claims_update AFTER UPDATE ON claims BEGIN SELECT 1; END;
+      DROP TRIGGER trg_memory_growth_event_evidence_insert;
       DELETE FROM memory_change_entity_links
       WHERE entity_id='growth-person'
         AND change_id=(
@@ -7690,13 +7735,13 @@ test('memory growth log is privacy-minimal, pageable and self-heals trigger drif
       const health = reopened.getMemoryChangeLogHealth()
       assert.equal(health.healthy, true)
       assert.equal(health.repairedThisStart, true)
-      assert.equal(health.repairedTriggersThisStart, 1)
-      assert.equal(health.total, 11)
+      assert.equal(health.repairedTriggersThisStart, 2)
+      assert.equal(health.total, 16)
       assert.match(health.entityLinkBackfill.completedAt, /^20/)
       assert.ok(health.entityLinkBackfill.linked >= 1)
       assert.equal(reopened.listMemoryChangeLogPage({
         entityId: 'growth-person', kind: 'claim', limit: 20
-      }).total, 2)
+      }).total, 3)
       assert.equal(reopened.getDiagnostics().memoryChangeLog.healthy, true)
     } finally {
       reopened.close()
@@ -7765,6 +7810,62 @@ test('entity memory growth stays complete beyond five hundred changes and isolat
     rmSync(directory, { recursive: true, force: true })
   }
 })
+
+test('event corrections record only genuinely new participant enrichment', () => withStore(store => {
+  const database = (store as any).db
+  database.exec(`
+    INSERT INTO entities(
+      id,type,canonical_name,summary,confidence,created_at,updated_at,trust_status,summary_status
+    ) VALUES(
+      'growth-participant-a','person','参与者甲','',1,
+      '2026-08-06T00:00:00.000Z','2026-08-06T00:00:00.000Z','confirmed','empty'
+    );
+    INSERT INTO events(
+      id,event_type,title,description,confidence,status,source_nature,search_text,created_at,updated_at
+    ) VALUES(
+      'growth-corrected-event','meeting','参与者会议','',1,'confirmed',
+      'human_confirmation','参与者会议',
+      '2026-08-06T00:01:00.000Z','2026-08-06T00:01:00.000Z'
+    );
+    INSERT INTO event_participants(event_id,entity_id,role)
+    VALUES('growth-corrected-event','growth-participant-a','participant');
+  `)
+  assert.equal(store.listMemoryChangeLogPage({
+    detail: 'participant', limit: 20
+  }).total, 1)
+  database.exec(`
+    UPDATE entities SET identity_version=2,updated_at='2026-08-06T00:03:00.000Z'
+    WHERE id='growth-participant-a'
+  `)
+  assert.equal(store.listMemoryChangeLogPage({
+    detail: 'identity', limit: 20
+  }).total, 1)
+  store.correctEvent('growth-corrected-event', {
+    title: '参与者会议',
+    participants: [{ entityId: 'growth-participant-a', role: 'participant' }]
+  })
+  assert.equal(store.listMemoryChangeLogPage({
+    detail: 'participant', limit: 20
+  }).total, 1)
+  database.exec(`
+    INSERT INTO entities(
+      id,type,canonical_name,summary,confidence,created_at,updated_at,trust_status,summary_status
+    ) VALUES(
+      'growth-participant-b','person','参与者乙','',1,
+      '2026-08-06T00:02:00.000Z','2026-08-06T00:02:00.000Z','confirmed','empty'
+    );
+  `)
+  store.correctEvent('growth-corrected-event', {
+    title: '参与者会议',
+    participants: [
+      { entityId: 'growth-participant-a', role: 'participant' },
+      { entityId: 'growth-participant-b', role: 'participant' }
+    ]
+  })
+  assert.equal(store.listMemoryChangeLogPage({
+    detail: 'participant', limit: 20
+  }).total, 2)
+}))
 
 test('direct entity evidence follows reversible identity merges without copying plaintext', () => withStore(store => {
   const entities = ['source-identity-evidence', 'target-identity-evidence'].map((id, index) => ({

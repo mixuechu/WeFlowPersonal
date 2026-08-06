@@ -4717,8 +4717,12 @@ export class AiAssistantService {
       kind: ['entity', 'claim', 'relation', 'event', 'resource', 'all'].includes(options?.kind)
         ? options.kind
         : 'all',
-      change: ['discovered', 'updated', 'reviewed', 'removed', 'all'].includes(options?.change)
+      change: ['discovered', 'updated', 'enriched', 'reviewed', 'removed', 'all'].includes(options?.change)
         ? options.change
+        : 'all',
+      detail: ['item', 'content', 'identity', 'status', 'evidence', 'participant', 'all']
+        .includes(options?.detail)
+        ? options.detail
         : 'all',
       from: String(options?.from || ''),
       to: String(options?.to || ''),

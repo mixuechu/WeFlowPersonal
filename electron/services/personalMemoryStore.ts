@@ -1416,6 +1416,7 @@ export class PersonalMemoryStore {
         item_kind TEXT NOT NULL,
         item_id TEXT NOT NULL,
         change_kind TEXT NOT NULL,
+        change_detail TEXT NOT NULL DEFAULT 'item',
         status_before TEXT NOT NULL DEFAULT '',
         status_after TEXT NOT NULL DEFAULT '',
         changed_at TEXT NOT NULL
@@ -1518,6 +1519,11 @@ export class PersonalMemoryStore {
     this.ensureColumn('ingestion_batch_commits', 'payload_backup_recoveries', 'INTEGER NOT NULL DEFAULT 0')
     this.ensureColumn('ingestion_batch_commits', 'payload_original_bytes', 'INTEGER NOT NULL DEFAULT 0')
     this.ensureColumn('memory_item_suppressions', 'semantic_fingerprint', `TEXT NOT NULL DEFAULT ''`)
+    this.ensureColumn('memory_change_log', 'change_detail', `TEXT NOT NULL DEFAULT 'item'`)
+    this.db.exec(`
+      CREATE INDEX IF NOT EXISTS idx_memory_change_log_detail_time
+      ON memory_change_log(change_detail,changed_at DESC,id DESC)
+    `)
     this.ensureColumn('data_source_connectors', 'config_json', `TEXT NOT NULL DEFAULT '{}'`)
     this.ensureColumn('task_review_decisions', 'task_json', `TEXT NOT NULL DEFAULT '{}'`)
     this.ensureColumn('task_review_decisions', 'reconciliation_count', 'INTEGER NOT NULL DEFAULT 0')
@@ -2176,6 +2182,13 @@ export class PersonalMemoryStore {
       ? `WHEN OLD.${definition.updatedColumn} IS NOT NEW.${definition.updatedColumn}
         OR OLD.${definition.statusColumn} IS NOT NEW.${definition.statusColumn}`
       : `WHEN OLD.${definition.updatedColumn} IS NOT NEW.${definition.updatedColumn}`
+    const updateDetail = definition.itemKind === 'entity'
+      ? `CASE
+          WHEN ${statusChanged} THEN 'status'
+          WHEN OLD.identity_version IS NOT NEW.identity_version THEN 'identity'
+          ELSE 'content'
+        END`
+      : `CASE WHEN ${statusChanged} THEN 'status' ELSE 'content' END`
     const prefix = `trg_memory_growth_${definition.name.replace(/^memory_change_/, '')}`
     const currentLinks = (row: 'NEW' | 'OLD') => {
       if (definition.itemKind === 'entity') {
@@ -2216,9 +2229,9 @@ export class PersonalMemoryStore {
       CREATE TRIGGER ${prefix}_insert AFTER INSERT ON ${definition.table}
       BEGIN
         INSERT INTO memory_change_log(
-          item_kind,item_id,change_kind,status_before,status_after,changed_at
+          item_kind,item_id,change_kind,change_detail,status_before,status_after,changed_at
         ) VALUES(
-          '${definition.itemKind}',NEW.id,'discovered','',${statusAfter},
+          '${definition.itemKind}',NEW.id,'discovered','item','',${statusAfter},
           strftime('%Y-%m-%dT%H:%M:%fZ','now')
         );
         ${currentLinks('NEW')}
@@ -2228,10 +2241,11 @@ export class PersonalMemoryStore {
       ${updateWhen}
       BEGIN
         INSERT INTO memory_change_log(
-          item_kind,item_id,change_kind,status_before,status_after,changed_at
+          item_kind,item_id,change_kind,change_detail,status_before,status_after,changed_at
         ) VALUES(
           '${definition.itemKind}',NEW.id,
           CASE WHEN ${statusChanged} THEN 'reviewed' ELSE 'updated' END,
+          ${updateDetail},
           ${statusBefore},${statusAfter},
           strftime('%Y-%m-%dT%H:%M:%fZ','now')
         );
@@ -2241,9 +2255,9 @@ export class PersonalMemoryStore {
       CREATE TRIGGER ${prefix}_delete AFTER DELETE ON ${definition.table}
       BEGIN
         INSERT INTO memory_change_log(
-          item_kind,item_id,change_kind,status_before,status_after,changed_at
+          item_kind,item_id,change_kind,change_detail,status_before,status_after,changed_at
         ) VALUES(
-          '${definition.itemKind}',OLD.id,'removed',${statusBefore},'',
+          '${definition.itemKind}',OLD.id,'removed','item',${statusBefore},'',
           strftime('%Y-%m-%dT%H:%M:%fZ','now')
         );
         ${currentLinks('OLD')}
@@ -2253,23 +2267,110 @@ export class PersonalMemoryStore {
   }
 
   private memoryChangeEntityParticipantTriggerSql(): string[] {
-    return ['INSERT', 'UPDATE'].map(operation => `
-      CREATE TRIGGER trg_memory_growth_event_participants_${operation.toLowerCase()}
-      AFTER ${operation} ON event_participants
+    return [`
+      CREATE TRIGGER trg_memory_growth_event_participants_insert
+      AFTER INSERT ON event_participants
+      BEGIN
+        INSERT INTO memory_change_log(
+          item_kind,item_id,change_kind,change_detail,status_before,status_after,changed_at
+        )
+        SELECT 'event',NEW.event_id,'enriched','participant','',
+          COALESCE(event.status,''),strftime('%Y-%m-%dT%H:%M:%fZ','now')
+        FROM events event WHERE event.id=NEW.event_id;
+        INSERT OR IGNORE INTO memory_change_entity_links(change_id,entity_id)
+        SELECT (SELECT MAX(id) FROM memory_change_log),participant.entity_id
+        FROM event_participants participant WHERE participant.event_id=NEW.event_id;
+        INSERT OR IGNORE INTO memory_change_entity_links(change_id,entity_id)
+        SELECT log.id,NEW.entity_id
+        FROM memory_change_log log
+        WHERE log.item_kind='event' AND log.item_id=NEW.event_id;
+      END;
+    `, `
+      CREATE TRIGGER trg_memory_growth_event_participants_update
+      AFTER UPDATE ON event_participants
       BEGIN
         INSERT OR IGNORE INTO memory_change_entity_links(change_id,entity_id)
         SELECT log.id,NEW.entity_id
         FROM memory_change_log log
         WHERE log.item_kind='event' AND log.item_id=NEW.event_id;
       END;
-    `)
+    `]
+  }
+
+  private memoryChangeEnrichmentTriggerSql(): string[] {
+    return [`
+      CREATE TRIGGER trg_memory_growth_entity_evidence_insert
+      AFTER INSERT ON entity_evidence
+      BEGIN
+        INSERT INTO memory_change_log(
+          item_kind,item_id,change_kind,change_detail,status_before,status_after,changed_at
+        )
+        SELECT 'entity',NEW.entity_id,'enriched','evidence','',
+          COALESCE(entity.trust_status,''),strftime('%Y-%m-%dT%H:%M:%fZ','now')
+        FROM entities entity WHERE entity.id=NEW.entity_id;
+        INSERT OR IGNORE INTO memory_change_entity_links(change_id,entity_id)
+        VALUES((SELECT MAX(id) FROM memory_change_log),NEW.entity_id);
+      END;
+    `, `
+      CREATE TRIGGER trg_memory_growth_claim_evidence_insert
+      AFTER INSERT ON evidence WHEN NEW.claim_id IS NOT NULL
+      BEGIN
+        INSERT INTO memory_change_log(
+          item_kind,item_id,change_kind,change_detail,status_before,status_after,changed_at
+        )
+        SELECT 'claim',NEW.claim_id,'enriched','evidence','',
+          COALESCE(claim.status,''),strftime('%Y-%m-%dT%H:%M:%fZ','now')
+        FROM claims claim WHERE claim.id=NEW.claim_id;
+        INSERT OR IGNORE INTO memory_change_entity_links(change_id,entity_id)
+        SELECT (SELECT MAX(id) FROM memory_change_log),entity_id
+        FROM (
+          SELECT claim.subject_id AS entity_id FROM claims claim WHERE claim.id=NEW.claim_id
+          UNION
+          SELECT claim.object_entity_id FROM claims claim WHERE claim.id=NEW.claim_id
+        ) WHERE entity_id IS NOT NULL AND entity_id!='';
+      END;
+    `, `
+      CREATE TRIGGER trg_memory_growth_relation_evidence_insert
+      AFTER INSERT ON evidence WHEN NEW.relation_id IS NOT NULL
+      BEGIN
+        INSERT INTO memory_change_log(
+          item_kind,item_id,change_kind,change_detail,status_before,status_after,changed_at
+        )
+        SELECT 'relation',NEW.relation_id,'enriched','evidence','',
+          COALESCE(relation.status,''),strftime('%Y-%m-%dT%H:%M:%fZ','now')
+        FROM relations relation WHERE relation.id=NEW.relation_id;
+        INSERT OR IGNORE INTO memory_change_entity_links(change_id,entity_id)
+        SELECT (SELECT MAX(id) FROM memory_change_log),entity_id
+        FROM (
+          SELECT relation.subject_id AS entity_id
+          FROM relations relation WHERE relation.id=NEW.relation_id
+          UNION
+          SELECT relation.object_id FROM relations relation WHERE relation.id=NEW.relation_id
+        ) WHERE entity_id IS NOT NULL AND entity_id!='';
+      END;
+    `, `
+      CREATE TRIGGER trg_memory_growth_event_evidence_insert
+      AFTER INSERT ON evidence WHEN NEW.event_id IS NOT NULL
+      BEGIN
+        INSERT INTO memory_change_log(
+          item_kind,item_id,change_kind,change_detail,status_before,status_after,changed_at
+        )
+        SELECT 'event',NEW.event_id,'enriched','evidence','',
+          COALESCE(event.status,''),strftime('%Y-%m-%dT%H:%M:%fZ','now')
+        FROM events event WHERE event.id=NEW.event_id;
+        INSERT OR IGNORE INTO memory_change_entity_links(change_id,entity_id)
+        SELECT (SELECT MAX(id) FROM memory_change_log),participant.entity_id
+        FROM event_participants participant WHERE participant.event_id=NEW.event_id;
+      END;
+    `]
   }
 
   private memoryChangeLogExpectedTriggerSql(): string[] {
     return [
       ...this.memoryChangeLogTriggerDefinitions()
         .flatMap(definition => this.memoryChangeLogTriggerSql(definition)),
-      ...this.memoryChangeEntityParticipantTriggerSql()
+      ...this.memoryChangeEntityParticipantTriggerSql(),
+      ...this.memoryChangeEnrichmentTriggerSql()
     ]
   }
 
@@ -2396,12 +2497,12 @@ export class PersonalMemoryStore {
     const after = this.inspectMemoryChangeLogTriggers()
     const repaired = before.unhealthyTriggers.length + before.unexpectedTriggers.length
     const audit = {
-      version: 'memory-change-log-v2',
+      version: 'memory-change-log-v3',
       checkedAt: now,
       repairedThisStart: repaired > 0,
       repairedTriggersThisStart: repaired,
       repairsTotal: Number(previous.repairsTotal || 0) + (repaired > 0 ? 1 : 0),
-      privacyPolicy: 'identity_status_time_and_stable_entity_links',
+      privacyPolicy: 'identity_status_time_detail_and_stable_entity_links',
       entityLinkBackfillPolicy: 'current_authority_only_no_guessing',
       historicalBackfill: false,
       ...after
@@ -2430,7 +2531,7 @@ export class PersonalMemoryStore {
       revision: this.getMemoryChangeLogRevision()
     })
     if (!this.db) return {
-      version: 'memory-change-log-v2',
+      version: 'memory-change-log-v3',
       revision: '0',
       trackedSince: '',
       total: 0,
@@ -2452,7 +2553,7 @@ export class PersonalMemoryStore {
     try { audit = JSON.parse(String(auditRow?.value || '{}')) } catch {}
     try { entityLinkBackfill = JSON.parse(String(linkBackfill?.value || '{}')) } catch {}
     return {
-      version: 'memory-change-log-v2',
+      version: 'memory-change-log-v3',
       revision: this.getMemoryChangeLogRevision(),
       trackedSince: String(started?.value || ''),
       total: Number((this.db.prepare(`
@@ -2462,7 +2563,7 @@ export class PersonalMemoryStore {
       repairedThisStart: Boolean(audit.repairedThisStart),
       repairedTriggersThisStart: Number(audit.repairedTriggersThisStart || 0),
       repairsTotal: Number(audit.repairsTotal || 0),
-      privacyPolicy: 'identity_status_time_and_stable_entity_links',
+      privacyPolicy: 'identity_status_time_detail_and_stable_entity_links',
       entityLinkBackfillPolicy: 'current_authority_only_no_guessing',
       entityLinkBackfill: {
         completedAt: String(entityLinkBackfill.completedAt || ''),
@@ -2477,7 +2578,8 @@ export class PersonalMemoryStore {
 
   listMemoryChangeLogPage(options: {
     kind?: 'entity' | 'claim' | 'relation' | 'event' | 'resource' | 'all'
-    change?: 'discovered' | 'updated' | 'reviewed' | 'removed' | 'all'
+    change?: 'discovered' | 'updated' | 'enriched' | 'reviewed' | 'removed' | 'all'
+    detail?: 'item' | 'content' | 'identity' | 'status' | 'evidence' | 'participant' | 'all'
     from?: string
     to?: string
     limit?: number
@@ -2515,9 +2617,15 @@ export class PersonalMemoryStore {
       conditions.push('log.item_kind=?')
       parameters.push(String(options.kind))
     }
-    if (['discovered', 'updated', 'reviewed', 'removed'].includes(String(options.change))) {
+    if (['discovered', 'updated', 'enriched', 'reviewed', 'removed']
+      .includes(String(options.change))) {
       conditions.push('log.change_kind=?')
       parameters.push(String(options.change))
+    }
+    if (['item', 'content', 'identity', 'status', 'evidence', 'participant']
+      .includes(String(options.detail))) {
+      conditions.push('log.change_detail=?')
+      parameters.push(String(options.detail))
     }
     const entityId = String(options.entityId || '').trim().slice(0, 240)
     if (entityId) {
@@ -2613,6 +2721,7 @@ export class PersonalMemoryStore {
         itemKind: String(row.item_kind).slice(0, 40),
         itemId: String(row.item_id).slice(0, 240),
         changeKind: String(row.change_kind).slice(0, 40),
+        changeDetail: String(row.change_detail || 'item').slice(0, 40),
         statusBefore: String(row.status_before || '').slice(0, 80),
         statusAfter: String(row.status_after || '').slice(0, 80),
         changedAt: String(row.changed_at || '').slice(0, 80),
@@ -13787,9 +13896,19 @@ export class PersonalMemoryStore {
         after.location, after.search_text, now, id
       )
       if (replacesParticipants) {
-        this.db!.prepare('DELETE FROM event_participants WHERE event_id=?').run(id)
+        const desired = new Set(participants.map((participant: any) =>
+          `${participant.entity_id}\u0000${participant.role}`))
+        const removeParticipant = this.db!.prepare(`
+          DELETE FROM event_participants
+          WHERE event_id=? AND entity_id=? AND role=?
+        `)
+        for (const participant of existingParticipants.items) {
+          if (!desired.has(`${participant.entity_id}\u0000${participant.role}`)) {
+            removeParticipant.run(id, participant.entity_id, participant.role)
+          }
+        }
         const insertParticipant = this.db!.prepare(`
-          INSERT INTO event_participants(event_id,entity_id,role) VALUES(?,?,?)
+          INSERT OR IGNORE INTO event_participants(event_id,entity_id,role) VALUES(?,?,?)
         `)
         for (const participant of participants) {
           insertParticipant.run(id, participant.entity_id, participant.role)
