@@ -10891,6 +10891,12 @@ test('evidence review preset scopes count exact combinations before paging', () 
       ).total,
       1
     )
+    assert.deepEqual(store.getMemoryStats().reviewInbox, {
+      candidateClaims: 2,
+      candidateEvents: 0,
+      confirmedConflicts: 1,
+      graphPending: 0
+    })
   }))
 
 test('memory search revision covers documents, evidence, vectors and relevance decisions', () =>

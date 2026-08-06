@@ -62,6 +62,10 @@ import {
   memorySearchReviewPreset,
   type MemorySearchReviewPreset
 } from '../../shared/memorySearchReviewPresets'
+import {
+  buildReviewInbox,
+  type ReviewInboxTarget
+} from '../../shared/reviewInbox'
 import './AiAssistantPage.scss'
 
 type Task = {
@@ -3351,6 +3355,20 @@ function AiAssistantPage() {
   const visibleClaims = claimArchive.items
   const visibleEvents = eventTimeline.items || []
   const visibleResources = resourceArchive.items || []
+  const reviewInbox = useMemo(() => buildReviewInbox({
+    confirmedConflicts: dashboard?.memoryStats?.reviewInbox?.confirmedConflicts,
+    taskOwnership: dashboard?.taskOwnershipReviews?.total,
+    graphPending: dashboard?.memoryStats?.reviewInbox?.graphPending,
+    candidateClaims: dashboard?.memoryStats?.reviewInbox?.candidateClaims,
+    candidateEvents: dashboard?.memoryStats?.reviewInbox?.candidateEvents
+  }), [
+    dashboard?.memoryStats?.reviewInbox?.confirmedConflicts,
+    dashboard?.taskOwnershipReviews?.total,
+    dashboard?.memoryStats?.reviewInbox?.graphPending,
+    dashboard?.memoryStats?.reviewInbox?.candidateClaims,
+    dashboard?.memoryStats?.reviewInbox?.candidateEvents
+  ])
+  const reviewInboxReady = Boolean(dashboard?.memoryStats?.reviewInbox)
   const loadMoreClaims = async () => {
     if (claimLoadingMore || !claimArchive.hasMore) return
     const request = claimArchiveGate.current.begin()
@@ -5350,6 +5368,56 @@ function AiAssistantPage() {
     window.setTimeout(() =>
       document.getElementById('graph-review-ledger')
         ?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 0)
+  }
+
+  const openReviewInboxTarget = (target: ReviewInboxTarget) => {
+    if (target === 'confirmed_conflicts') {
+      setMemoryQuery('')
+      setMemoryEntityFilter('')
+      setMemoryEntitySelection(null)
+      setMemorySessionFilter('')
+      setMemorySessionSelection(null)
+      setMemorySessionQuery('')
+      setMemorySourceFilter('')
+      setMemoryTypeFilter('')
+      setMemoryFrom('')
+      setMemoryTo('')
+      applyMemoryReviewPreset('confirmed_conflict')
+    } else if (target === 'task_ownership') {
+      setTaskOwnershipClassification('')
+      setTaskOwnershipPriority('')
+      setTaskOwnershipQuery('')
+      setTaskOwnershipFrom('')
+      setTaskOwnershipTo('')
+    } else if (target === 'graph_identity') {
+      setFocusedReviewId('')
+      clearReviewReturnTarget()
+      setReviewStatusFilter('pending')
+      setReviewKindFilter('')
+      setReviewQuery('')
+    } else if (target === 'candidate_claims') {
+      setClaimEntityFilter('')
+      setClaimEntitySelection(null)
+      setClaimSourceFilter('')
+      setClaimStatusFilter('candidate')
+      setClaimPredicateFilter('')
+      setClaimFrom('')
+      setClaimTo('')
+    } else {
+      setEventSourceFilter('')
+      setEventStatusFilter('candidate')
+      setEventFrom('')
+      setEventTo('')
+    }
+    const sectionId: Record<ReviewInboxTarget, string> = {
+      confirmed_conflicts: 'memory-search',
+      task_ownership: 'task-ownership-review',
+      graph_identity: 'graph-review-ledger',
+      candidate_claims: 'structured-claims',
+      candidate_events: 'event-timeline'
+    }
+    window.setTimeout(() => document.getElementById(sectionId[target])
+      ?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 0)
   }
 
   const loadMoreProjectEvidence = async () => {
@@ -8427,6 +8495,35 @@ function AiAssistantPage() {
         )}
 
         {message && <div className={`assistant-message ${message.includes('完成') ? 'success' : ''}`}>{message}</div>}
+        <section className="assistant-panel assistant-review-inbox" id="review-inbox">
+          <div className="assistant-section-heading">
+            <div>
+              <span className="assistant-eyebrow">REVIEW INBOX</span>
+              <h3><TriangleAlert size={16} /> 统一审阅收件箱</h3>
+            </div>
+            <span className="assistant-count">
+              {reviewInboxReady ? `${reviewInbox.total} 项待处理` : '正在读取'}
+            </span>
+          </div>
+          {!reviewInboxReady ? <div className="assistant-empty">
+            正在从本机加密账本汇总待处理事项…
+          </div> : reviewInbox.total > 0 ? <div className="assistant-review-inbox-grid">
+            {reviewInbox.items.filter(item => item.count > 0).map(item => <button
+              type="button"
+              key={item.target}
+              className={item.severity === 'warning' ? 'warning' : ''}
+              onClick={() => openReviewInboxTarget(item.target)}>
+              <b>{item.count.toLocaleString()}</b>
+              <strong>{item.label}</strong>
+              <small>{item.detail}</small>
+            </button>)}
+          </div> : <div className="assistant-empty">
+            当前没有需要人工处理的身份、关系、任务归属、事实、事件或反证风险。
+          </div>}
+          <small className="assistant-evidence">
+            数量来自 SQLCipher 权威账本；点击会清除目标模块的旧筛选并打开完整待处理范围，不携带聊天原文到首页。
+          </small>
+        </section>
         {ingestionStatus && (
           <div className={`assistant-ingestion-status ${ingestionStatus.status}`}>
             <strong>最近一次记忆处理：{ingestionStatus.status === 'completed' ? '全部完成' : ingestionStatus.status === 'partial' ? '部分完成，等待重试' : ingestionStatus.status === 'running' ? '正在处理' : '处理失败'}</strong>
@@ -9238,7 +9335,7 @@ function AiAssistantPage() {
 
         {(taskOwnershipReviews.total > 0 || taskReviewFeedback.mine || taskReviewFeedback.rejected ||
           taskReviewFeedback.archive?.total) && (
-          <section className="assistant-panel assistant-review-section">
+          <section className="assistant-panel assistant-review-section" id="task-ownership-review">
             <div className="assistant-section-heading">
               <div><span className="assistant-eyebrow">ASSIGNEE REVIEW</span><h3>待确认归属</h3></div>
               <span className="assistant-count">{taskOwnershipReviews.total} 项不会计入你的待办</span>
@@ -9387,7 +9484,7 @@ function AiAssistantPage() {
           </section>
         )}
 
-        <section className="assistant-panel assistant-memory-search">
+        <section className="assistant-panel assistant-memory-search" id="memory-search">
           <div className="assistant-section-heading">
             <div><span className="assistant-eyebrow">MEMORY SEARCH</span><h3><Search size={16} /> 搜索个人记忆</h3></div>
           </div>
@@ -10850,7 +10947,7 @@ function AiAssistantPage() {
         </section>
 
         <div className="assistant-memory-feed">
-          <section className="assistant-panel">
+          <section className="assistant-panel" id="structured-claims">
             <div className="assistant-section-heading">
               <div><span className="assistant-eyebrow">STRUCTURED CLAIMS</span><h3><BookOpen size={16} /> 持续积累的事实</h3></div>
               <span className="assistant-count">{claimArchive.total} 条</span>
@@ -10969,7 +11066,7 @@ function AiAssistantPage() {
             </div>}
           </section>
 
-          <section className="assistant-panel">
+          <section className="assistant-panel" id="event-timeline">
             <div className="assistant-section-heading">
               <div><span className="assistant-eyebrow">EVENT TIMELINE</span><h3><CalendarDays size={16} /> 事件时间线</h3></div>
               <span className="assistant-count">{eventTimeline.total} 项</span>

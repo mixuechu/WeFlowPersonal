@@ -7893,7 +7893,13 @@ export class PersonalMemoryStore {
   getMemoryStats(): any {
     if (!this.db) return {
       claims: 0, events: 0, resources: 0,
-      claimRevision: '', eventRevision: '', resourceRevision: ''
+      claimRevision: '', eventRevision: '', resourceRevision: '',
+      reviewInbox: {
+        candidateClaims: 0,
+        candidateEvents: 0,
+        confirmedConflicts: 0,
+        graphPending: 0
+      }
     }
     const stats = (table: string) => this.db!.prepare(`
       SELECT COUNT(*) AS count,COALESCE(MAX(updated_at),'') AS revision FROM ${table}
@@ -7906,13 +7912,47 @@ export class PersonalMemoryStore {
       LEFT JOIN resource_suppressions suppressed ON suppressed.resource_id=resource.id
       WHERE suppressed.resource_id IS NULL
     `).get() as { count: number; revision: string }
+    const reviewInbox = this.db.prepare(`
+      SELECT
+        (SELECT COUNT(*) FROM claims WHERE status='candidate') AS candidate_claims,
+        (SELECT COUNT(*) FROM events WHERE status='candidate') AS candidate_events,
+        (SELECT COUNT(*) FROM review_queue WHERE status='pending') AS graph_pending,
+        (
+          SELECT COUNT(*) FROM claims claim
+          WHERE claim.status='confirmed'
+            AND EXISTS (SELECT 1 FROM evidence e
+              WHERE e.claim_id=claim.id AND e.evidence_role='contradiction')
+            AND EXISTS (SELECT 1 FROM evidence e
+              WHERE e.claim_id=claim.id AND e.evidence_role!='contradiction')
+        ) + (
+          SELECT COUNT(*) FROM relations relation
+          WHERE relation.status='confirmed'
+            AND EXISTS (SELECT 1 FROM evidence e
+              WHERE e.relation_id=relation.id AND e.evidence_role='contradiction')
+            AND EXISTS (SELECT 1 FROM evidence e
+              WHERE e.relation_id=relation.id AND e.evidence_role!='contradiction')
+        ) + (
+          SELECT COUNT(*) FROM events event
+          WHERE event.status='confirmed'
+            AND EXISTS (SELECT 1 FROM evidence e
+              WHERE e.event_id=event.id AND e.evidence_role='contradiction')
+            AND EXISTS (SELECT 1 FROM evidence e
+              WHERE e.event_id=event.id AND e.evidence_role!='contradiction')
+        ) AS confirmed_conflicts
+    `).get() as any
     return {
       claims: Number(claims.count),
       events: Number(events.count),
       resources: Number(resources.count),
       claimRevision: claims.revision,
       eventRevision: events.revision,
-      resourceRevision: resources.revision
+      resourceRevision: resources.revision,
+      reviewInbox: {
+        candidateClaims: Number(reviewInbox?.candidate_claims || 0),
+        candidateEvents: Number(reviewInbox?.candidate_events || 0),
+        confirmedConflicts: Number(reviewInbox?.confirmed_conflicts || 0),
+        graphPending: Number(reviewInbox?.graph_pending || 0)
+      }
     }
   }
 

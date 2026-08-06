@@ -962,6 +962,30 @@
 .assistant-entity-dossier > button.assistant-entity-dossier-heading-action:hover { color: #285d49; background: transparent; }
 .assistant-entity-dossier > em { color: #999d97; font-size: 9px; font-style: normal; }
 .assistant-review-section { margin-top: 24px; }
+.assistant-review-inbox { margin-top: 14px; }
+.assistant-review-inbox-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit,minmax(150px,1fr));
+  gap: 8px;
+  margin: 10px 0;
+}
+.assistant-review-inbox-grid button {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  align-items: baseline;
+  gap: 2px 8px;
+  padding: 10px;
+  text-align: left;
+  border: 1px solid #dce3dc;
+  border-radius: 10px;
+  background: #f7f9f6;
+}
+.assistant-review-inbox-grid button:hover { border-color: #8fa99a; background: #f0f5f1; }
+.assistant-review-inbox-grid button.warning { border-color: #e0b09d; background: #fff5f0; }
+.assistant-review-inbox-grid button b { grid-row: 1 / span 2; font-size: 22px; color: #355344; }
+.assistant-review-inbox-grid button.warning b { color: #ad4b32; }
+.assistant-review-inbox-grid button strong { font-size: 11px; color: #354139; }
+.assistant-review-inbox-grid button small { font-size: 8px; color: #7d887f; }
 .assistant-review-filters { margin: 8px 0 4px; display: grid; grid-template-columns: auto minmax(130px, .35fr) minmax(220px, 1fr); gap: 8px; align-items: center; }
 .assistant-review-filters > div { display: flex; gap: 5px; }
 .assistant-review-filters button, .assistant-review-filters select, .assistant-review-filters input { padding: 7px 9px; border: 1px solid #dcd9d0; border-radius: 8px; color: #62675f; background: #fff; font-size: 9px; }

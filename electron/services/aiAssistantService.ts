@@ -4352,7 +4352,8 @@ export class AiAssistantService {
         .update(JSON.stringify({
           claims: [memoryStats.claims, memoryStats.claimRevision],
           events: [memoryStats.events, memoryStats.eventRevision],
-          resources: [memoryStats.resources, memoryStats.resourceRevision]
+          resources: [memoryStats.resources, memoryStats.resourceRevision],
+          reviewInbox: memoryStats.reviewInbox
         }))
         .digest('hex')
         .slice(0, 16),
