@@ -9626,7 +9626,17 @@ export class PersonalMemoryStore {
     const nextCheckpoint = String(input.nextCheckpoint || expectedCheckpoint)
     const expectedConfigJson = JSON.stringify(input.expectedConfig || {})
     const now = new Date().toISOString()
-    this.db.transaction(() => {
+    const originSourceKind: MemoryChangeOrigin['sourceKind'] =
+      sourceId === 'documents' ? 'documents'
+        : sourceId === 'mail' ? 'mail'
+          : 'system'
+    this.runWithMemoryChangeOrigin({
+      kind: 'connector_page',
+      id: `${sourceId || 'connector'}:${createHash('sha256').update(
+        `${sourceId}\0${expectedConfigJson}\0${expectedCheckpoint}\0${nextCheckpoint}`
+      ).digest('hex').slice(0, 24)}`,
+      sourceKind: originSourceKind
+    }, () => {
       const source = this.db!.prepare(`
         SELECT checkpoint,config_json,enabled,available
         FROM data_source_connectors WHERE source_id=?
@@ -9659,7 +9669,7 @@ export class PersonalMemoryStore {
       if (Number(result.changes || 0) !== 1) {
         throw new Error('数据源状态在提交期间发生变化，本页没有提交')
       }
-    })()
+    })
   }
 
   updateDataSourceRunIfCurrent(input: {
@@ -9723,7 +9733,7 @@ export class PersonalMemoryStore {
     this.runWithMemoryChangeOrigin({
       kind: 'connector_page',
       id: `calendar:${createHash('sha256').update(
-        `${sourceId}\0${expectedCheckpoint}\0${nextCheckpoint}`
+        `${sourceId}\0${expectedConfigJson}\0${expectedCheckpoint}\0${nextCheckpoint}`
       ).digest('hex').slice(0, 24)}`,
       sourceKind: 'calendar'
     }, () => {

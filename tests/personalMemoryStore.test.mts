@@ -18863,6 +18863,9 @@ test('resource connector page commits authority and checkpoint atomically and re
   `).get().count), 0)
   assert.equal(store.getMemorySearchRevision(), revisions.search)
   assert.equal(store.getResourceArchiveRevision(), revisions.resource)
+  assert.equal(store.listMemoryChangeLogPage({
+    origin: 'connector_page', source: 'documents', limit: 20
+  }).total, 0)
 
   database.exec('DROP TRIGGER fail_connector_page_evidence')
   store.commitResourceConnectorPage({
@@ -18878,6 +18881,21 @@ test('resource connector page commits authority and checkpoint atomically and re
     SELECT COUNT(*) AS count FROM search_document_evidence
     WHERE document_id='resource:local-document:atomic-page'
   `).get().count), 1)
+  const documentGrowth = store.listMemoryChangeLogPage({
+    origin: 'connector_page', source: 'documents', limit: 20
+  })
+  assert.equal(documentGrowth.total, 1)
+  assert.match(documentGrowth.items[0].originId, /^documents:[a-f0-9]{24}$/)
+  assert.equal(documentGrowth.items[0].originId.includes('page-1'), false)
+  const documentOrigin = store.getMemoryChangeOriginDossier(
+    documentGrowth.items[0].id,
+    documentGrowth.revision
+  )
+  assert.equal(documentOrigin.totalChanges, 1)
+  assert.equal(documentOrigin.originKind, 'connector_page')
+  assert.equal(documentOrigin.sourceKind, 'documents')
+  assert.equal(documentOrigin.modelBatch, null)
+  assert.equal(JSON.stringify(documentOrigin).includes('/tmp/weflow-atomic-documents'), false)
 
   const beforeReconfigure = store.listDataSources().find(item => item.id === 'documents')
   const reconfigured = store.configureDataSource(
@@ -18909,6 +18927,83 @@ test('resource connector page commits authority and checkpoint atomically and re
   assert.equal(current.checkpoint, '')
   assert.equal(current.status, 'idle')
   assert.equal(current.lastError, null)
+  store.commitResourceConnectorPage({
+    sourceId: 'documents',
+    expectedCheckpoint: '',
+    nextCheckpoint: 'page-1',
+    expectedConfig: reconfigured.config,
+    resources: [{
+      ...resource,
+      id: 'local-document:reconfigured-page',
+      title: '重配后的连接器页',
+      metadata: { sourceId: 'documents', contentHash: 'atomic-content-v2' },
+      evidence: [{
+        ...resource.evidence[0],
+        messageId: 'reconfigured-page-message'
+      }]
+    }],
+    preserveExistingEvidence: true
+  })
+  const reconfiguredGrowth = store.listMemoryChangeLogPage({
+    origin: 'connector_page', source: 'documents', limit: 20
+  })
+  assert.equal(reconfiguredGrowth.total, 2)
+  assert.equal(new Set(reconfiguredGrowth.items.map(item => item.originId)).size, 2)
+  assert.equal(reconfiguredGrowth.items.every(item =>
+    /^documents:[a-f0-9]{24}$/.test(item.originId)), true)
+
+  store.registerDataSources([{
+    id: 'mail',
+    kind: 'email',
+    displayName: 'macOS Mail',
+    description: '测试 Mail 连接器',
+    available: true,
+    localOnly: true,
+    capabilities: ['incremental', 'original-evidence']
+  }])
+  const initialMail = store.listDataSources().find(item => item.id === 'mail')
+  const configuredMail = store.configureDataSource(
+    'mail',
+    { mailboxIds: ['private-mailbox-id'], allowModelAnalysis: false },
+    true,
+    initialMail.mutationToken
+  )
+  store.commitResourceConnectorPage({
+    sourceId: 'mail',
+    expectedCheckpoint: '',
+    nextCheckpoint: 'private-mail-checkpoint',
+    expectedConfig: configuredMail.config,
+    resources: [{
+      id: 'mail-message:origin-page',
+      resourceType: 'email',
+      title: 'Mail 来源测试',
+      content: 'Mail 正文不会进入来源账本',
+      metadata: { sourceId: 'mail', contentHash: 'mail-origin-v1' },
+      evidence: [{
+        sourceId: 'mail',
+        sessionId: 'data-source:mail:private-mailbox-id',
+        messageId: 'mail-origin-message',
+        timestamp: 2,
+        sender: 'mail@example.com',
+        excerpt: 'Mail 来源原文'
+      }]
+    }],
+    preserveExistingEvidence: true
+  })
+  const mailGrowth = store.listMemoryChangeLogPage({
+    origin: 'connector_page', source: 'mail', limit: 20
+  })
+  assert.equal(mailGrowth.total, 1)
+  assert.match(mailGrowth.items[0].originId, /^mail:[a-f0-9]{24}$/)
+  assert.equal(mailGrowth.items[0].originId.includes('private'), false)
+  const mailOrigin = store.getMemoryChangeOriginDossier(
+    mailGrowth.items[0].id,
+    mailGrowth.revision
+  )
+  assert.equal(mailOrigin.sourceKind, 'mail')
+  assert.equal(JSON.stringify(mailOrigin).includes('mail@example.com'), false)
+  assert.equal(JSON.stringify(mailOrigin).includes('private-mailbox-id'), false)
+  assert.equal(JSON.stringify(mailOrigin).includes('private-mail-checkpoint'), false)
 }))
 
 test('calendar resource and structured event commit atomically', () => withStore(store => {
