@@ -140,7 +140,7 @@ export function buildEntityInsights(input: {
     const taskScore = Math.min(10, tasks.length * 4)
     const strength = Math.round(Math.min(100, recencyScore + evidenceScore + relationScore + taskScore))
     const pendingCommitmentCount = events.filter(event =>
-      event.event_type === 'commitment' && event.status !== 'confirmed').length
+      event.event_type === 'commitment' && event.status === 'candidate').length
     const explanation = [
       lastContactAt ? `最近证据：${Math.floor(daysSinceContact)} 天前` : '尚无带时间的互动证据',
       `${evidenceCount} 条去重原文证据`,

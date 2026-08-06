@@ -16990,6 +16990,11 @@ test('entity insight strength is explainable and deduplicates shared evidence', 
       status: 'candidate',
       participants: [{ entity_id: 'person-a' }],
       evidence: [{ message_id: 'message-event', timestamp: 1_775_000_100 }]
+    }, {
+      event_type: 'commitment',
+      status: 'rejected',
+      participants: [{ entity_id: 'person-a' }],
+      evidence: []
     }],
     tasks: [{
       id: 'task-person',

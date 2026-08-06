@@ -718,6 +718,7 @@ function AiAssistantPage() {
   const [entityRelationStatus, setEntityRelationStatus] = useState<'all' | 'candidate' | 'confirmed' | 'rejected'>('all')
   const [entityRelationSource, setEntityRelationSource] = useState<'all' | 'wechat' | 'documents' | 'calendar' | 'mail' | 'legacy'>('all')
   const [entityEventQuery, setEntityEventQuery] = useState('')
+  const [entityEventType, setEntityEventType] = useState<'all' | 'commitment'>('all')
   const [entityEventStatus, setEntityEventStatus] = useState<'all' | 'candidate' | 'confirmed' | 'rejected' | 'cancelled'>('all')
   const [entityEventSource, setEntityEventSource] = useState<'all' | 'wechat' | 'documents' | 'calendar' | 'mail' | 'legacy'>('all')
   const [entityEventFrom, setEntityEventFrom] = useState('')
@@ -2781,6 +2782,7 @@ function AiAssistantPage() {
     const timer = window.setTimeout(() => {
       void window.electronAPI.aiAssistant.getEventTimeline({
         entityId: selectedEntityId,
+        eventTypes: entityEventType === 'all' ? undefined : [entityEventType],
         query: entityEventQuery.trim() || undefined,
         status: entityEventStatus === 'all' ? undefined : entityEventStatus,
         sourceId: entityEventSource === 'all' ? undefined : entityEventSource,
@@ -2818,7 +2820,7 @@ function AiAssistantPage() {
     }
   }, [
     showEntityDossier, selectedEntityId, dashboard?.memoryRevision, entityDossierRefreshKeys.events,
-    entityEventQuery, entityEventStatus, entityEventSource, entityEventFrom, entityEventTo
+    entityEventQuery, entityEventType, entityEventStatus, entityEventSource, entityEventFrom, entityEventTo
   ])
 
   useEffect(() => {
@@ -4775,6 +4777,7 @@ function AiAssistantPage() {
             })
           : await window.electronAPI.aiAssistant.getEventTimeline({
               ...options,
+              eventTypes: entityEventType === 'all' ? undefined : [entityEventType],
               query: entityEventQuery.trim() || undefined,
               status: entityEventStatus === 'all' ? undefined : entityEventStatus,
               sourceId: entityEventSource === 'all' ? undefined : entityEventSource,
@@ -5105,6 +5108,15 @@ function AiAssistantPage() {
     if (kind === 'event') setProjectEventStatus('candidate')
     window.setTimeout(() =>
       document.getElementById(`project-memory-${kind}s`)
+        ?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 0)
+  }
+
+  const openEntityPendingCommitments = () => {
+    setEntityEventType('commitment')
+    setEntityEventStatus('candidate')
+    setShowEntityDossier(true)
+    window.setTimeout(() =>
+      document.getElementById('entity-dossier-events')
         ?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 0)
   }
 
@@ -11109,7 +11121,12 @@ function AiAssistantPage() {
                     <div><strong>{selectedEntityInsight.strength}</strong><span>关系强度 · {selectedEntityInsight.strengthLabel}</span></div>
                     <div><strong>{selectedEntityInsight.evidenceCount}</strong><span>去重证据</span></div>
                     <div><strong>{selectedEntityInsight.openTaskCount}</strong><span>关联待办</span></div>
-                    <div><strong>{selectedEntityInsight.pendingCommitmentCount}</strong><span>待确认承诺</span></div>
+                    <button type="button" className="assistant-insight-action"
+                      disabled={!selectedEntityInsight.pendingCommitmentCount}
+                      onClick={openEntityPendingCommitments}>
+                      <strong>{selectedEntityInsight.pendingCommitmentCount}</strong>
+                      <span>待确认承诺 · 查看</span>
+                    </button>
                     {selectedEntityInsight.lastContactAt && <small>最近互动证据：{new Date(selectedEntityInsight.lastContactAt * 1000).toLocaleString('zh-CN')}</small>}
                     <details><summary>强度计算依据</summary>{selectedEntityInsight.explanation.map((item: string) => <small key={item}>{item}</small>)}</details>
                   </div>}
@@ -12177,7 +12194,12 @@ function AiAssistantPage() {
               <span><b>{selectedEntityInsight.strength}</b><small>关系强度 · {selectedEntityInsight.strengthLabel}</small></span>
               <span><b>{selectedEntityInsight.evidenceCount}</b><small>去重证据</small></span>
               <span><b>{selectedEntityTasks.filter(task => !['done', 'cancelled'].includes(task.status)).length}</b><small>进行中事项</small></span>
-              <span><b>{selectedEntityInsight.pendingCommitmentCount}</b><small>待确认承诺</small></span>
+              <button type="button" className="assistant-dossier-metric-action"
+                disabled={!selectedEntityInsight.pendingCommitmentCount}
+                onClick={openEntityPendingCommitments}>
+                <b>{selectedEntityInsight.pendingCommitmentCount}</b>
+                <small>待确认承诺 · 查看</small>
+              </button>
             </div>}
             <div className="assistant-dossier-grid">
               <section>
@@ -12414,11 +12436,16 @@ function AiAssistantPage() {
                     : `加载更多关系（已显示 ${dossierRelations.length} / ${entityDossierPages.relations.total}）`}
                 </button>}
               </section>
-              <section>
+              <section id="entity-dossier-events" tabIndex={-1}>
                 <h3>事件时间线 <small>{Number(entityDossierPages.events?.total || 0)}</small></h3>
                 <div className="assistant-inline-filters assistant-inline-filters-wide">
                   <input value={entityEventQuery} onChange={event => setEntityEventQuery(event.target.value)}
                     placeholder="搜索标题、说明、类型或地点" />
+                  <select value={entityEventType}
+                    onChange={event => setEntityEventType(event.target.value as any)}>
+                    <option value="all">全部事件类型</option>
+                    <option value="commitment">仅承诺</option>
+                  </select>
                   <select value={entityEventStatus} onChange={event => setEntityEventStatus(event.target.value as any)}>
                     <option value="all">有效状态</option><option value="confirmed">已确认</option>
                     <option value="candidate">待确认</option><option value="cancelled">已取消</option>

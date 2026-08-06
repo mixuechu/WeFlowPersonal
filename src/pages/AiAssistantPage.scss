@@ -839,9 +839,11 @@
 .assistant-graph-viewport-note { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin: -4px 0 10px; padding: 7px 9px; border-radius: 8px; color: #57655c; background: #f0f4f0; font-size: 9px; }
 .assistant-graph-viewport-note small { color: #7d867f; font-size: 8px; text-align: right; }
 .assistant-relationship-metrics { margin-top: 9px; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 5px; }
-.assistant-relationship-metrics > div { padding: 7px; border-radius: 7px; display: grid; background: #eef4ef; }
-.assistant-relationship-metrics > div strong { color: #285d49; font-size: 15px; }
-.assistant-relationship-metrics > div span { color: #748078; font-size: 8px; }
+.assistant-relationship-metrics > div,.assistant-insight-action { padding: 7px; border: 0; border-radius: 7px; display: grid; background: #eef4ef; text-align: left; }
+.assistant-relationship-metrics > div strong,.assistant-insight-action strong { color: #285d49; font-size: 15px; }
+.assistant-relationship-metrics > div span,.assistant-insight-action span { color: #748078; font-size: 8px; }
+.assistant-insight-action { cursor: pointer; }
+.assistant-insight-action:disabled { cursor: default; opacity: .65; }
 .assistant-relationship-metrics > small,.assistant-relationship-metrics details { grid-column: 1 / -1; color: #727a73; font-size: 8px; }
 .assistant-relationship-metrics summary { cursor: pointer; }
 .assistant-relationship-metrics details small { display: block; margin-top: 3px; }
@@ -982,7 +984,9 @@
 .assistant-entity-dossier-modal > header p { max-width: 760px; margin: 0; color: var(--text-tertiary); font-size: 11px; line-height: 1.6; }
 .assistant-entity-dossier-modal > header > button { border: 0; color: var(--text-secondary); background: transparent; cursor: pointer; }
 .assistant-dossier-identity, .assistant-dossier-metrics { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 9px; }
-.assistant-dossier-identity > span, .assistant-dossier-metrics > span { min-width: 0; padding: 10px 12px; border: 1px solid #e4e7df; border-radius: 10px; display: grid; gap: 3px; background: #fafbf8; }
+.assistant-dossier-identity > span, .assistant-dossier-metrics > span, .assistant-dossier-metric-action { min-width: 0; padding: 10px 12px; border: 1px solid #e4e7df; border-radius: 10px; display: grid; gap: 3px; background: #fafbf8; text-align: left; }
+.assistant-dossier-metric-action { cursor: pointer; }
+.assistant-dossier-metric-action:disabled { cursor: default; opacity: .65; }
 .assistant-dossier-identity small, .assistant-dossier-metrics small { color: #7a837b; font-size: 9px; }
 .assistant-dossier-identity b { font-size: 10px; overflow-wrap: anywhere; }
 .assistant-dossier-metrics b { color: #315c4e; font-size: 18px; }
