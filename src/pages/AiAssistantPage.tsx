@@ -5135,14 +5135,10 @@ function AiAssistantPage() {
     }
   }
 
-  const focusProjectCandidateSection = (kind: 'claim' | 'relation' | 'event') => {
-    if (kind === 'claim') setProjectClaimStatus('candidate')
-    if (kind === 'relation') setProjectRelationStatus('candidate')
-    if (kind === 'event') setProjectEventStatus('candidate')
-    window.setTimeout(() =>
-      document.getElementById(`project-memory-${kind}s`)
-        ?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 0)
-  }
+  const focusProjectCandidateSection = (kind: 'claim' | 'relation' | 'event') =>
+    focusProjectDossierMetric(kind === 'claim'
+      ? 'candidateClaims'
+      : kind === 'relation' ? 'candidateRelations' : 'candidateEvents')
 
   const focusProjectDossierMetric = (metric: ProjectDossierMetric) => {
     const target = projectDossierDrilldown(metric)
@@ -5169,6 +5165,23 @@ function AiAssistantPage() {
       setProjectEvidenceRole('')
       setProjectEvidenceFrom('')
       setProjectEvidenceTo('')
+    }
+    if (target.claimPreset === 'candidate') {
+      setProjectClaimQuery('')
+      setProjectClaimStatus('candidate')
+      setProjectClaimSource('')
+    }
+    if (target.relationPreset === 'candidate') {
+      setProjectRelationQuery('')
+      setProjectRelationStatus('candidate')
+      setProjectRelationSource('')
+    }
+    if (target.eventPreset === 'candidate') {
+      setProjectEventQuery('')
+      setProjectEventStatus('candidate')
+      setProjectEventSource('')
+      setProjectEventFrom('')
+      setProjectEventTo('')
     }
     window.requestAnimationFrame(() =>
       document.getElementById(sectionId)
@@ -13056,6 +13069,24 @@ function AiAssistantPage() {
                 <b>{selectedProject.pendingReview?.total || 0}</b>
                 <small>候选待确认 · 查看</small>
               </button>
+              <button type="button" className="assistant-dossier-metric-action"
+                disabled={!selectedProject.pendingReview?.counts?.claims}
+                onClick={() => focusProjectDossierMetric('candidateClaims')}>
+                <b>{selectedProject.pendingReview?.counts?.claims || 0}</b>
+                <small>候选事实 · 审阅</small>
+              </button>
+              <button type="button" className="assistant-dossier-metric-action"
+                disabled={!selectedProject.pendingReview?.counts?.relations}
+                onClick={() => focusProjectDossierMetric('candidateRelations')}>
+                <b>{selectedProject.pendingReview?.counts?.relations || 0}</b>
+                <small>候选关系 · 审阅</small>
+              </button>
+              <button type="button" className="assistant-dossier-metric-action"
+                disabled={!selectedProject.pendingReview?.counts?.events}
+                onClick={() => focusProjectDossierMetric('candidateEvents')}>
+                <b>{selectedProject.pendingReview?.counts?.events || 0}</b>
+                <small>候选事件 · 审阅</small>
+              </button>
             </div>
             {selectedProject.entityId && projectMemoryPages.status === 'loading' && <div className="assistant-query-plan">
               正在从 SQLCipher 按项目实体读取完整事实、关系和事件档案…
@@ -13483,14 +13514,17 @@ function AiAssistantPage() {
                   请进入对应权威分页，逐条查看原文、确认、纠正或标记不准确。
                 </small>
                 <div className="assistant-memory-actions">
-                  <button onClick={() => focusProjectCandidateSection('claim')}>
-                    审阅候选事实
+                  <button disabled={!selectedProject.pendingReview?.counts?.claims}
+                    onClick={() => focusProjectCandidateSection('claim')}>
+                    审阅候选事实（{selectedProject.pendingReview?.counts?.claims || 0}）
                   </button>
-                  <button onClick={() => focusProjectCandidateSection('relation')}>
-                    审阅候选关系
+                  <button disabled={!selectedProject.pendingReview?.counts?.relations}
+                    onClick={() => focusProjectCandidateSection('relation')}>
+                    审阅候选关系（{selectedProject.pendingReview?.counts?.relations || 0}）
                   </button>
-                  <button onClick={() => focusProjectCandidateSection('event')}>
-                    审阅候选事件
+                  <button disabled={!selectedProject.pendingReview?.counts?.events}
+                    onClick={() => focusProjectCandidateSection('event')}>
+                    审阅候选事件（{selectedProject.pendingReview?.counts?.events || 0}）
                   </button>
                 </div>
               </section>}

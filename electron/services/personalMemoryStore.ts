@@ -10001,6 +10001,7 @@ export class PersonalMemoryStore {
 
   getProjectReviewCounts(entityIds: string[]): Record<string, {
     candidateClaims: number
+    candidateEvents: number
     candidateMilestones: number
     candidateDecisions: number
     candidateRelations: number
@@ -10012,12 +10013,14 @@ export class PersonalMemoryStore {
     if (!ids.length) return {}
     const result: Record<string, {
       candidateClaims: number
+      candidateEvents: number
       candidateMilestones: number
       candidateDecisions: number
       candidateRelations: number
       total: number
     }> = Object.fromEntries(ids.map(id => [id, {
       candidateClaims: 0,
+      candidateEvents: 0,
       candidateMilestones: 0,
       candidateDecisions: 0,
       candidateRelations: 0,
@@ -10027,20 +10030,26 @@ export class PersonalMemoryStore {
       const batch = ids.slice(offset, offset + 400)
       const placeholders = batch.map(() => '?').join(',')
       const claims = this.db.prepare(`
-        SELECT subject_id AS entity_id,COUNT(*) AS count
-        FROM claims
-        WHERE status='candidate' AND subject_id IN (${placeholders})
-        GROUP BY subject_id
-      `).all(...batch) as any[]
+        SELECT entity_id,COUNT(*) AS count FROM (
+          SELECT id AS claim_id,subject_id AS entity_id FROM claims
+          WHERE status='candidate' AND subject_id IN (${placeholders})
+          UNION
+          SELECT id AS claim_id,object_entity_id AS entity_id FROM claims
+          WHERE status='candidate' AND object_entity_id IN (${placeholders})
+        ) scoped_claims
+        GROUP BY entity_id
+      `).all(...batch, ...batch) as any[]
       for (const row of claims) {
         const item = result[String(row.entity_id)]
         if (item) item.candidateClaims = Number(row.count || 0)
       }
       const events = this.db.prepare(`
         SELECT ep.entity_id,
-          SUM(CASE WHEN ev.event_type='decision' THEN 1 ELSE 0 END) AS decisions,
-          SUM(CASE WHEN ev.event_type IN ('delivery','meeting','organization_change')
-            THEN 1 ELSE 0 END) AS milestones
+          COUNT(DISTINCT ev.id) AS events,
+          COUNT(DISTINCT CASE WHEN ev.event_type='decision' THEN ev.id END) AS decisions,
+          COUNT(DISTINCT CASE WHEN ev.event_type IN (
+            'delivery','meeting','organization_change'
+          ) THEN ev.id END) AS milestones
         FROM event_participants ep
         JOIN events ev ON ev.id=ep.event_id
         WHERE ev.status='candidate' AND ep.entity_id IN (${placeholders})
@@ -10049,6 +10058,7 @@ export class PersonalMemoryStore {
       for (const row of events) {
         const item = result[String(row.entity_id)]
         if (!item) continue
+        item.candidateEvents = Number(row.events || 0)
         item.candidateDecisions = Number(row.decisions || 0)
         item.candidateMilestones = Number(row.milestones || 0)
       }
@@ -10068,8 +10078,7 @@ export class PersonalMemoryStore {
       }
     }
     for (const item of Object.values(result)) {
-      item.total = item.candidateClaims + item.candidateMilestones +
-        item.candidateDecisions + item.candidateRelations
+      item.total = item.candidateClaims + item.candidateEvents + item.candidateRelations
     }
     return result
   }

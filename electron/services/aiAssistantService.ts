@@ -4171,8 +4171,7 @@ export class AiAssistantService {
       pendingReviewTotal: Number(project.pendingReviewTotal || 0) +
         Number(project.entityId
           ? (reviewCounts[project.entityId]?.candidateClaims || 0) +
-            (reviewCounts[project.entityId]?.candidateMilestones || 0) +
-            (reviewCounts[project.entityId]?.candidateDecisions || 0)
+            (reviewCounts[project.entityId]?.candidateEvents || 0)
           : 0)
     }))
     const completedRevision = this.getProjectDirectoryRevision()
@@ -5081,6 +5080,18 @@ export class AiAssistantService {
       Number(project.pendingReview?.milestones?.length || 0) +
       Number(project.pendingReview?.decisions?.length || 0) +
       Number(project.pendingReview?.relations?.length || 0)
+    const candidateReviewCounts = reviewCounts
+      ? {
+          claims: Number(reviewCounts.candidateClaims || 0),
+          relations: Number(reviewCounts.candidateRelations || 0),
+          events: Number(reviewCounts.candidateEvents || 0)
+        }
+      : {
+          claims: Number(project.pendingReview?.claims?.length || 0),
+          relations: Number(project.pendingReview?.relations?.length || 0),
+          events: Number(project.pendingReview?.milestones?.length || 0) +
+            Number(project.pendingReview?.decisions?.length || 0)
+        }
     const authoritativeMemoryReviewCount = reviewCounts
       ? Number(reviewCounts.total || 0)
       : loadedMemoryReviewCount
@@ -5104,7 +5115,8 @@ export class AiAssistantService {
           ...project.pendingReview,
           total: authoritativeMemoryReviewCount,
           loadedMemoryTotal: loadedMemoryReviewCount,
-          authoritativeMemoryTotal: authoritativeMemoryReviewCount
+          authoritativeMemoryTotal: authoritativeMemoryReviewCount,
+          counts: candidateReviewCounts
         },
         claimTotal: projectEntity
           ? Number((memoryFeed as any).claimTotal || 0)

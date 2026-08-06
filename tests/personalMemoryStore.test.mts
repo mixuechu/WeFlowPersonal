@@ -6583,6 +6583,7 @@ test('project memory is scoped in SQL before limits and preserves authoritative 
   ])
   assert.deepEqual(counts['project-memory-scope'], {
     candidateClaims: 260,
+    candidateEvents: 240,
     candidateMilestones: 120,
     candidateDecisions: 120,
     candidateRelations: 0,
@@ -6774,6 +6775,7 @@ test('project review counts include candidate relations from both directions', (
   const count = store.getProjectReviewCounts(['review-project'])['review-project']
   assert.deepEqual(count, {
     candidateClaims: 0,
+    candidateEvents: 0,
     candidateMilestones: 0,
     candidateDecisions: 0,
     candidateRelations: 2,
@@ -6802,6 +6804,11 @@ test('project review counts include candidate relations from both directions', (
     participants: [{ entityId: 'review-project', role: 'project' }],
     evidence: evidence('review-participant-event-message', '审阅项目启动会')
   }])
+  const completeProjectCount =
+    store.getProjectReviewCounts(['review-project'])['review-project']
+  assert.equal(completeProjectCount.candidateClaims, 1)
+  assert.equal(completeProjectCount.candidateEvents, 1)
+  assert.equal(completeProjectCount.total, 4)
   assert.deepEqual(store.getEntityCandidateReviewCounts('review-project'), {
     claims: 1,
     relations: 2,

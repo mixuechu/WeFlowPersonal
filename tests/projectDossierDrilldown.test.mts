@@ -31,3 +31,18 @@ test('project memory metrics request unfiltered authoritative sections', () => {
     resetScope: 'evidence'
   })
 })
+
+test('project candidate metrics map to exact review presets', () => {
+  assert.deepEqual(projectDossierDrilldown('candidateClaims'), {
+    sectionId: 'project-memory-claims',
+    claimPreset: 'candidate'
+  })
+  assert.deepEqual(projectDossierDrilldown('candidateRelations'), {
+    sectionId: 'project-memory-relations',
+    relationPreset: 'candidate'
+  })
+  assert.deepEqual(projectDossierDrilldown('candidateEvents'), {
+    sectionId: 'project-memory-events',
+    eventPreset: 'candidate'
+  })
+})
