@@ -48,6 +48,10 @@ import {
   answerReviewDrilldownFilters,
   type AnswerReviewDrilldownTarget
 } from '../utils/answerReviewDrilldown'
+import {
+  projectDossierDrilldown,
+  type ProjectDossierMetric
+} from '../utils/projectDossierDrilldown'
 import { evidenceArchiveIdentity } from '../../shared/evidencePayload'
 import './AiAssistantPage.scss'
 
@@ -5124,6 +5128,37 @@ function AiAssistantPage() {
     window.setTimeout(() =>
       document.getElementById(`project-memory-${kind}s`)
         ?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 0)
+  }
+
+  const focusProjectDossierMetric = (metric: ProjectDossierMetric) => {
+    const target = projectDossierDrilldown(metric)
+    const sectionId = metric === 'evidence' && !selectedProject?.entityId
+      ? 'project-dossier-evidence-preview'
+      : target.sectionId
+    if (target.resetScope === 'claims') {
+      setProjectClaimQuery('')
+      setProjectClaimStatus('')
+      setProjectClaimSource('')
+    }
+    if (target.resetScope === 'events') {
+      setProjectEventQuery('')
+      setProjectEventStatus('')
+      setProjectEventSource('')
+      setProjectEventFrom('')
+      setProjectEventTo('')
+    }
+    if (target.resetScope === 'evidence') {
+      setProjectEvidenceQuery('')
+      setProjectEvidenceSource('')
+      setProjectEvidenceKind('')
+      setProjectEvidenceState('')
+      setProjectEvidenceRole('')
+      setProjectEvidenceFrom('')
+      setProjectEvidenceTo('')
+    }
+    window.requestAnimationFrame(() =>
+      document.getElementById(sectionId)
+        ?.scrollIntoView({ behavior: 'smooth', block: 'start' }))
   }
 
   const openEntityPendingCommitments = () => {
@@ -12782,17 +12817,42 @@ function AiAssistantPage() {
               <button aria-label="关闭项目详情" onClick={closeProjectDossier}><X size={18} /></button>
             </header>
             <div className="assistant-dossier-metrics">
-              <span><b>{selectedProject.progress}%</b><small>任务完成度</small></span>
-              <span><b>{selectedProject.activeTaskCount}</b><small>进行中任务</small></span>
-              <span><b>{selectedProject.riskTotal ?? selectedProject.risks.length}</b><small>可解释风险</small></span>
-              <span><b>{Number(selectedProject.claimTotal || 0)}</b><small>项目事实</small></span>
-              <span><b>{Number(selectedProject.eventTotal || 0)}</b><small>相关事件</small></span>
-              <span><b>{selectedProject.entityId
+              <button type="button" className="assistant-dossier-metric-action"
+                onClick={() => focusProjectDossierMetric('progress')}>
+                <b>{selectedProject.progress}%</b><small>任务完成度 · 查看</small>
+              </button>
+              <button type="button" className="assistant-dossier-metric-action"
+                onClick={() => focusProjectDossierMetric('tasks')}>
+                <b>{selectedProject.activeTaskCount}</b><small>进行中任务 · 查看</small>
+              </button>
+              <button type="button" className="assistant-dossier-metric-action"
+                onClick={() => focusProjectDossierMetric('risks')}>
+                <b>{selectedProject.riskTotal ?? selectedProject.risks.length}</b>
+                <small>可解释风险 · 查看</small>
+              </button>
+              <button type="button" className="assistant-dossier-metric-action"
+                onClick={() => focusProjectDossierMetric('claims')}>
+                <b>{Number(selectedProject.claimTotal || 0)}</b><small>项目事实 · 查看</small>
+              </button>
+              <button type="button" className="assistant-dossier-metric-action"
+                onClick={() => focusProjectDossierMetric('events')}>
+                <b>{Number(selectedProject.eventTotal || 0)}</b><small>相关事件 · 查看</small>
+              </button>
+              <button type="button" className="assistant-dossier-metric-action"
+                onClick={() => focusProjectDossierMetric('evidence')}>
+                <b>{selectedProject.entityId
                 ? projectEvidencePage.status === 'ready'
                   ? Number(projectEvidencePage.unfilteredTotal || 0)
                   : Number(selectedProject.evidenceTotal ?? selectedProject.evidence.length)
-                : selectedProject.evidenceTotal ?? selectedProject.evidence.length}</b><small>去重证据</small></span>
-              <span><b>{selectedProject.pendingReview?.total || 0}</b><small>候选待确认</small></span>
+                : selectedProject.evidenceTotal ?? selectedProject.evidence.length}</b>
+                <small>去重证据 · 查看</small>
+              </button>
+              <button type="button" className="assistant-dossier-metric-action"
+                disabled={!selectedProject.pendingReview?.total}
+                onClick={() => focusProjectDossierMetric('reviews')}>
+                <b>{selectedProject.pendingReview?.total || 0}</b>
+                <small>候选待确认 · 查看</small>
+              </button>
             </div>
             {selectedProject.entityId && projectMemoryPages.status === 'loading' && <div className="assistant-query-plan">
               正在从 SQLCipher 按项目实体读取完整事实、关系和事件档案…
@@ -12822,7 +12882,7 @@ function AiAssistantPage() {
                     : `加载更多参与者（已显示 ${selectedProject.members.length} / ${selectedProject.memberTotal}）`}
                 </button>}
               </section>
-              <section>
+              <section id="project-dossier-risks">
                 <h3>风险与阻塞 <small>{selectedProject.riskTotal ?? selectedProject.risks.length}</small></h3>
                 {selectedProject.risks.map((risk: any, index: number) => <article key={`${risk.taskId}-${risk.kind}-${index}`} className={`assistant-project-risk ${risk.severity}`}>
                   <div><b>{risk.title}</b><span>{risk.kind}</span></div><small>{risk.detail}</small>
@@ -12836,7 +12896,7 @@ function AiAssistantPage() {
                     : `加载更多风险（已显示 ${selectedProject.risks.length} / ${selectedProject.riskTotal}）`}
                 </button>}
               </section>
-              <section>
+              <section id="project-dossier-tasks">
                 <h3>项目任务 <small>{selectedProject.taskTotal ?? selectedProject.tasks.length}</small></h3>
                 {selectedProject.tasks.map((task: Task) => <article key={task.id}>
                   <div><b>{task.title}</b><span>{task.status}</span></div>
@@ -13069,7 +13129,8 @@ function AiAssistantPage() {
                     : `加载更多事件（已显示 ${projectDossierEvents.length} / ${projectMemoryPages.events.total}）`}
                 </button>}
               </section>
-              {selectedProject.entityId && <section className="assistant-dossier-wide">
+              {selectedProject.entityId && <section className="assistant-dossier-wide"
+                id="project-dossier-evidence">
                 <h3>项目相关原文档案 <small>{Number(projectEvidencePage.total || 0)} / {Number(projectEvidencePage.unfilteredTotal || 0)}</small></h3>
                 <p>汇总项目首次出现、名称或身份锚点，以及事实、关系和事件中直接关联此项目的去重原文。</p>
                 <div className="assistant-inline-filters">
@@ -13212,7 +13273,7 @@ function AiAssistantPage() {
                     : `加载更多关键事件（已显示 ${projectKeyEventPage.items.length} / ${projectKeyEventPage.total}）`}
                 </button>}
               </section>
-              {!!selectedProject.pendingReview?.total && <section>
+              {!!selectedProject.pendingReview?.total && <section id="project-dossier-reviews">
                 <h3>候选线索 <small>{selectedProject.pendingReview.total}</small></h3>
                 <small className="assistant-evidence">
                   候选不参与确定性统计。项目档案不再复制最近 200 条候选快照；
@@ -13230,7 +13291,7 @@ function AiAssistantPage() {
                   </button>
                 </div>
               </section>}
-              <section className="assistant-dossier-wide">
+              <section className="assistant-dossier-wide" id="project-dossier-evidence-preview">
                 <h3>最近原文证据 <small>{selectedProject.evidenceTotal ?? selectedProject.evidence.length}</small></h3>
                 <div className="assistant-evidence-stack"><EvidenceRows evidence={selectedProject.evidence?.slice(-12)} total={selectedProject.evidenceTotal} /></div>
               </section>
