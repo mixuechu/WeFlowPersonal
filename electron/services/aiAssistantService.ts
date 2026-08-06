@@ -5046,23 +5046,16 @@ export class AiAssistantService {
     const projectEntity = this.state.graph.entities.find(entity =>
       entity.id === id && entity.type === 'project' && isTrustedEntity(entity))
     const memoryFeed = projectEntity
-      ? personalMemoryStore.getEntityMemory(id, 200, true)
+      ? personalMemoryStore.getEntityMemory(id, 1, true)
       : personalMemoryStore.getMemoryFeed(500, false)
     const boundedProjectRelations = projectEntity
-      ? this.state.graph.relations
-        .filter(relation => relation.subjectId === id || relation.objectId === id)
-        .sort((left, right) =>
-          Number(right.status === 'confirmed') - Number(left.status === 'confirmed') ||
-          Number(right.confidence || 0) - Number(left.confidence || 0) ||
-          String(right.updatedAt || '').localeCompare(String(left.updatedAt || '')) ||
-          String(left.id).localeCompare(String(right.id)))
-        .slice(0, 200)
+      ? []
       : this.state.graph.relations
     const project = buildProjectInsight({
       entities: this.state.graph.entities,
       relations: boundedProjectRelations,
-      claims: memoryFeed.claims,
-      events: memoryFeed.events,
+      claims: projectEntity ? [] : memoryFeed.claims,
+      events: projectEntity ? [] : memoryFeed.events,
       tasks: this.state.tasks.filter(task => task.classification === 'mine')
     }, id)
     if (!project) throw new Error('项目不存在或已经不在当前可信视图中')
@@ -5106,10 +5099,7 @@ export class AiAssistantService {
           : Number((project.milestones?.length || 0) + (project.decisions?.length || 0) +
             (project.pendingReview?.milestones?.length || 0) +
             (project.pendingReview?.decisions?.length || 0)),
-        memoryTruncated: projectEntity && (
-          Number((memoryFeed as any).claimTotal || 0) > memoryFeed.claims.length ||
-          Number((memoryFeed as any).eventTotal || 0) > memoryFeed.events.length
-        ),
+        memoryTruncated: false,
         tasks: taskPage.items.map((item: any) => {
           const task = this.state.tasks.find(candidate => candidate.id === item.id)
           return task ? { ...item, mutationToken: buildTaskMutationToken(task) } : item
@@ -5130,10 +5120,11 @@ export class AiAssistantService {
         version: 'project-dossier-v2',
         evidence: 'bounded',
         memoryScope: projectEntity ? 'sql_entity_first' : 'derived_name_fallback',
-        claimLimit: projectEntity ? 200 : 500,
-        eventLimit: projectEntity ? 200 : 500,
+        claimLimit: projectEntity ? 0 : 500,
+        eventLimit: projectEntity ? 0 : 500,
         loadedOnDemand: true,
-        taskDirectory: 'paginated_40'
+        taskDirectory: 'paginated_40',
+        structuredMemoryDirectory: projectEntity ? 'authoritative_paginated' : 'derived_fallback'
       }
     }
   }

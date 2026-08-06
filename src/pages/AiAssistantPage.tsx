@@ -747,6 +747,9 @@ function AiAssistantPage() {
   })
   const [projectMemoryLoadingMore, setProjectMemoryLoadingMore] =
     useState<Record<string, boolean>>({})
+  const [projectMemoryMutations, setProjectMemoryMutations] =
+    useState<Record<string, boolean>>({})
+  const projectMemoryMutationLocks = useRef(new Set<string>())
   const [projectMemoryRefreshKey, setProjectMemoryRefreshKey] = useState(0)
   const projectMemoryGate = useRef(new LatestRequestGate())
   const projectMemoryPageGates = useRef(new KeyedLatestRequestGates())
@@ -3465,7 +3468,8 @@ function AiAssistantPage() {
   }
   const openCurrentStructuredMemoryDossier = async (
     kind: 'claim' | 'event' | 'relation',
-    sourceId: string
+    sourceId: string,
+    origin: 'entity_dossier' | 'project_dossier' = 'entity_dossier'
   ) => {
     const id = String(sourceId || '').trim()
     if (!id) return
@@ -3479,7 +3483,7 @@ function AiAssistantPage() {
     setStructuredMemoryDossier({
       kind,
       sourceId: id,
-      origin: 'entity_dossier',
+      origin,
       status: 'loading'
     })
     try {
@@ -3488,19 +3492,29 @@ function AiAssistantPage() {
       if (!structuredMemoryDossierGate.current.isCurrent(request)) return
       if (result?.stale) {
         setStructuredMemoryDossier(null)
-        setMessage(`人物${kindLabel}在读取期间已有变化，已刷新当前人物的${kindLabel}。`)
-        refreshEntityDossierSection(section)
+        setMessage(origin === 'project_dossier'
+          ? `项目${kindLabel}在读取期间已有变化，已刷新当前项目的${kindLabel}。`
+          : `人物${kindLabel}在读取期间已有变化，已刷新当前人物的${kindLabel}。`)
+        if (origin === 'project_dossier') refreshProjectStructuredMemory(
+          kind === 'relation' ? undefined : kind
+        )
+        else refreshEntityDossierSection(section)
         return
       }
       if (!result) {
         setStructuredMemoryDossier(null)
-        setMessage(`这条${kindLabel}已经删除或不再存在，已刷新当前人物的${kindLabel}。`)
-        refreshEntityDossierSection(section)
+        setMessage(origin === 'project_dossier'
+          ? `这条${kindLabel}已经删除或不再存在，已刷新当前项目的${kindLabel}。`
+          : `这条${kindLabel}已经删除或不再存在，已刷新当前人物的${kindLabel}。`)
+        if (origin === 'project_dossier') refreshProjectStructuredMemory(
+          kind === 'relation' ? undefined : kind
+        )
+        else refreshEntityDossierSection(section)
         return
       }
       setStructuredMemoryDossier({
         ...result,
-        origin: 'entity_dossier',
+        origin,
         status: 'ready'
       })
       if (kind !== 'relation') {
@@ -3511,7 +3525,7 @@ function AiAssistantPage() {
       setStructuredMemoryDossier({
         kind,
         sourceId: id,
-        origin: 'entity_dossier',
+        origin,
         status: 'error',
         error: error?.message || String(error)
       })
@@ -3555,6 +3569,22 @@ function AiAssistantPage() {
     setReviewQuery('')
     setFocusedReviewId(id)
   }
+  const openProjectRelationReview = (reviewId: string) => {
+    const id = String(reviewId || '').trim()
+    if (!id) return
+    setSelectedProjectId('')
+    setReviewStatusFilter('pending')
+    setReviewKindFilter('relation')
+    setReviewQuery('')
+    setFocusedReviewId(id)
+  }
+  const openProjectStructuredMemoryDossier = (
+    kind: 'claim' | 'relation' | 'event',
+    sourceId: string
+  ) => {
+    if (!selectedProjectId || !String(sourceId || '').trim()) return
+    void openCurrentStructuredMemoryDossier(kind, sourceId, 'project_dossier')
+  }
   const openEntityFromProjectDossier = (entityId: string) => {
     const id = String(entityId || '').trim()
     const returnTarget = buildProjectReturnTarget(selectedProjectId)
@@ -3588,13 +3618,17 @@ function AiAssistantPage() {
       if (!relationDossierAuditGates.current.isCurrent(kind, request)) return
       if (result?.stale) {
         const fromEntityDossier = dossier.origin === 'entity_dossier'
+        const fromProjectDossier = dossier.origin === 'project_dossier'
         relationDossierAuditGates.current.invalidateAll()
         setRelationDossierAuditLoading({})
         setStructuredMemoryDossier(null)
         setMessage(fromEntityDossier
           ? '关系或审计历史在分页期间已有变化，已刷新当前人物的关系。'
+          : fromProjectDossier
+            ? '关系或审计历史在分页期间已有变化，已刷新当前项目的关系。'
           : '关系或审计历史在分页期间已有变化，请从检索结果重新打开。')
         if (fromEntityDossier) refreshEntityDossierSection('relations')
+        else if (fromProjectDossier) refreshProjectStructuredMemory()
         else setMemorySearchRefreshKey(value => value + 1)
         return
       }
@@ -3646,13 +3680,17 @@ function AiAssistantPage() {
       if (!eventDossierParticipantsGate.current.isCurrent(request)) return
       if (!result || result.stale) {
         const fromEntityDossier = dossier.origin === 'entity_dossier'
+        const fromProjectDossier = dossier.origin === 'project_dossier'
         eventDossierParticipantsGate.current.invalidate()
         setEventDossierParticipantsLoading(false)
         setStructuredMemoryDossier(null)
         setMessage(fromEntityDossier
           ? '事件参与者在分页期间已有变化，已刷新当前人物的事件。'
+          : fromProjectDossier
+            ? '事件参与者在分页期间已有变化，已刷新当前项目的事件。'
           : '事件参与者在分页期间已有变化，请从检索结果重新打开。')
         if (fromEntityDossier) refreshEntityDossierSection('events')
+        else if (fromProjectDossier) refreshProjectStructuredMemory('event')
         else setMemorySearchRefreshKey(value => value + 1)
         return
       }
@@ -4748,6 +4786,58 @@ function AiAssistantPage() {
     } finally {
       if (projectKeyEventGate.current.isCurrent(request)) setProjectKeyEventLoadingMore(false)
     }
+  }
+
+  const refreshProjectStructuredMemory = (kind?: 'claim' | 'event') => {
+    projectMemoryGate.current.invalidate()
+    projectKeyEventGate.current.invalidate()
+    setProjectMemoryRefreshKey(value => value + 1)
+    setProjectKeyEventRefreshKey(value => value + 1)
+    setProjectWorkspaceRefreshKey(value => value + 1)
+    if (kind === 'claim') setClaimArchiveRefreshKey(value => value + 1)
+    if (kind === 'event') setEventTimelineRefreshKey(value => value + 1)
+  }
+
+  const updateProjectMemoryStatus = async (
+    kind: 'claim' | 'event',
+    id: string,
+    nextStatus: 'confirmed' | 'rejected',
+    expectedRevision?: string
+  ) => {
+    const key = `${kind}:${id}`
+    if (projectMemoryMutationLocks.current.has(key)) return
+    projectMemoryMutationLocks.current.add(key)
+    setProjectMemoryMutations(current => setKeyedLoadingState(current, key, true))
+    try {
+      await window.electronAPI.aiAssistant.updateMemoryItemStatus(
+        kind, id, nextStatus, String(expectedRevision || '')
+      )
+      setMessage(nextStatus === 'confirmed'
+        ? `${kind === 'claim' ? '项目事实' : '项目事件'}已确认并写入可信审计。`
+        : `${kind === 'claim' ? '项目事实' : '项目事件'}已标记为不准确。`)
+      await load()
+      refreshProjectStructuredMemory(kind)
+      if (memoryItemAudits[key]) void loadMemoryItemAudit(kind, id)
+    } catch (error: any) {
+      const errorMessage = error?.message || String(error)
+      setMessage(errorMessage)
+      if (errorMessage.includes('事实与事件档案在展示后发生了变化')) {
+        refreshProjectStructuredMemory(kind)
+      }
+    } finally {
+      projectMemoryMutationLocks.current.delete(key)
+      setProjectMemoryMutations(current =>
+        setKeyedLoadingState(current, key, false))
+    }
+  }
+
+  const focusProjectCandidateSection = (kind: 'claim' | 'relation' | 'event') => {
+    if (kind === 'claim') setProjectClaimStatus('candidate')
+    if (kind === 'relation') setProjectRelationStatus('candidate')
+    if (kind === 'event') setProjectEventStatus('candidate')
+    window.setTimeout(() =>
+      document.getElementById(`project-memory-${kind}s`)
+        ?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 0)
   }
 
   const loadMoreProjectEvidence = async () => {
@@ -7080,7 +7170,10 @@ function AiAssistantPage() {
     })
   }
 
-  const openEntityRelationCorrection = async (relation: any) => {
+  const openEntityRelationCorrection = async (
+    relation: any,
+    origin: 'entity_dossier' | 'project_dossier' = 'entity_dossier'
+  ) => {
     setMessage('正在从本机权威关系档案读取当前方向…')
     try {
       const current = await window.electronAPI.aiAssistant.getMemoryRelation(relation.id)
@@ -7094,7 +7187,7 @@ function AiAssistantPage() {
         return
       }
       setRelationCitationCorrectionDialog({
-        origin: 'entity_dossier',
+        origin,
         relationId: current.id,
         expectedRevision: current.relationRevision,
         status: 'editing',
@@ -7201,6 +7294,15 @@ function AiAssistantPage() {
         setReviewRefreshKey(value => value + 1)
         setGraphWorkspaceRefreshKey(value => value + 1)
         setMessage('关系已纠正并确认；旧方向、最终方向和完整原文均已写入审计。')
+        await load()
+        return
+      }
+      if (dialog.origin === 'project_dossier') {
+        refreshProjectStructuredMemory()
+        setReviewRefreshKey(value => value + 1)
+        setGraphWorkspaceRefreshKey(value => value + 1)
+        setStructuredMemoryDossier(null)
+        setMessage('项目关系已纠正并确认；旧方向、最终方向和完整原文均已写入审计。')
         await load()
         return
       }
@@ -11304,8 +11406,10 @@ function AiAssistantPage() {
                   )}
                 </h2>
                 <p>{structuredMemoryDossier.origin === 'entity_dossier'
-                  ? '人物档案 revision、结构化类型和稳定 ID 已共同校验；下方内容重新读取自当前 SQLCipher 权威记录。'
-                  : '检索 revision、结构化类型和稳定 ID 已共同校验；下方内容重新读取自当前 SQLCipher 权威记录。'}</p>
+                  ? '人物档案、结构化类型和稳定 ID 已共同校验；下方内容重新读取自当前 SQLCipher 权威记录。'
+                  : structuredMemoryDossier.origin === 'project_dossier'
+                    ? '项目档案、结构化类型和稳定 ID 已共同校验；下方内容重新读取自当前 SQLCipher 权威记录。'
+                    : '检索 revision、结构化类型和稳定 ID 已共同校验；下方内容重新读取自当前 SQLCipher 权威记录。'}</p>
               </div>
               <button aria-label="关闭结构化记忆权威档案" onClick={() => {
                 structuredMemoryDossierGate.current.invalidate()
@@ -11320,16 +11424,21 @@ function AiAssistantPage() {
               {structuredMemoryDossier.status === 'loading' &&
                 <div className="assistant-empty">
                   {structuredMemoryDossier.origin === 'entity_dossier'
-                    ? '正在校验人物档案 revision 并读取权威记录…'
-                    : '正在校验检索 revision 并读取权威记录…'}
+                    ? '正在校验人物档案并读取权威记录…'
+                    : structuredMemoryDossier.origin === 'project_dossier'
+                      ? '正在校验项目档案并读取权威记录…'
+                      : '正在校验检索 revision 并读取权威记录…'}
                 </div>}
               {structuredMemoryDossier.status === 'error' && <div className="assistant-error">
                 {structuredMemoryDossier.error || '结构化记忆档案读取失败'}
                 <button onClick={() => void (
-                  structuredMemoryDossier.origin === 'entity_dossier'
+                  ['entity_dossier', 'project_dossier'].includes(
+                    structuredMemoryDossier.origin
+                  )
                     ? openCurrentStructuredMemoryDossier(
                         structuredMemoryDossier.kind,
-                        structuredMemoryDossier.sourceId
+                        structuredMemoryDossier.sourceId,
+                        structuredMemoryDossier.origin
                       )
                     : openStructuredMemoryDossier(
                         structuredMemoryDossier.kind,
@@ -11506,6 +11615,11 @@ function AiAssistantPage() {
                       {!item.historyPage?.items?.length && !item.correctionPage?.items?.length &&
                         <small>这条关系尚无额外变化或人工纠正记录。</small>}
                     </div>
+                    <button onClick={() => void openEntityRelationCorrection(
+                      item,
+                      structuredMemoryDossier.origin === 'project_dossier'
+                        ? 'project_dossier' : 'entity_dossier'
+                    )}>纠正关系方向或类型</button>
                   </details>}
                 </>
               })()}
@@ -12323,7 +12437,7 @@ function AiAssistantPage() {
                     : `加载更多任务（已显示 ${selectedProject.tasks.length} / ${selectedProject.taskTotal}）`}
                 </button>}
               </section>
-              <section>
+              <section id="project-memory-claims">
                 <h3>项目事实 <small>{selectedProject.entityId
                   ? Number(projectMemoryPages.claims?.total || 0)
                   : projectDossierClaims.length}</small></h3>
@@ -12343,7 +12457,8 @@ function AiAssistantPage() {
                 {projectDossierClaims.map((claim: any) => <article key={claim.id}>
                   <div><b>{claim.polarity === 'negative' ? '并非 ' : ''}{claim.predicate}</b>
                     <span>{claim.object_entity_name || claim.object_value || '值待确认'}</span></div>
-                  <small>{claim.status === 'confirmed' ? '已确认' : '待确认'} ·
+                  <small>{claim.status === 'confirmed' ? '已确认'
+                    : claim.status === 'rejected' ? '不准确' : '待确认'} ·
                     {Math.round(Number(claim.confidence || 0) * 100)}% ·
                     {claim.source_nature === 'self_statement' ? '本人陈述' : claim.source_nature === 'other_statement' ? '他人陈述' : '模型推断'} ·
                     {memorySourceLabels(claim)}</small>
@@ -12352,6 +12467,32 @@ function AiAssistantPage() {
                     onOpenArchive={() => void openMemoryEvidenceArchive(
                       'claim', claim.id, `${selectedProject.name || '项目'} · ${claim.predicate}`
                     )} /></div>
+                  {selectedProject.entityId && <div className="assistant-memory-actions">
+                    <button onClick={() => openProjectStructuredMemoryDossier(
+                      'claim', claim.id
+                    )}>查看完整审计</button>
+                    <button onClick={() => void openClaimCorrection({
+                      sourceId: claim.id,
+                      title: claim.predicate
+                    })}>纠正事实</button>
+                    {claim.status !== 'rejected' && <button
+                      disabled={!!projectMemoryMutations[`claim:${claim.id}`]}
+                      onClick={() => void updateProjectMemoryStatus(
+                        'claim', claim.id, 'rejected', projectMemoryPages.claims?.revision
+                      )}>不准确</button>}
+                    {claim.status !== 'confirmed' && <button className="primary"
+                      disabled={!claimEntitiesTrusted(claim) ||
+                        !!projectMemoryMutations[`claim:${claim.id}`]}
+                      title={!claimEntitiesTrusted(claim)
+                        ? '请先确认事实涉及的实体' : ''}
+                      onClick={() => void updateProjectMemoryStatus(
+                        'claim', claim.id, 'confirmed', projectMemoryPages.claims?.revision
+                      )}>
+                      {projectMemoryMutations[`claim:${claim.id}`]
+                        ? '正在保存…'
+                        : claim.status === 'rejected' ? '恢复并确认' : '确认事实'}
+                    </button>}
+                  </div>}
                 </article>)}
                 {projectMemoryPages.status !== 'loading' && !projectDossierClaims.length && <em>尚无项目事实</em>}
                 {selectedProject.entityId && projectMemoryPages.claims?.hasMore && <button
@@ -12362,7 +12503,7 @@ function AiAssistantPage() {
                     : `加载更多事实（已显示 ${projectDossierClaims.length} / ${projectMemoryPages.claims.total}）`}
                 </button>}
               </section>
-              <section>
+              <section id="project-memory-relations">
                 <h3>完整项目关系 <small>{selectedProject.entityId
                   ? Number(projectMemoryPages.relations?.total || 0)
                   : selectedProject.members.length}</small></h3>
@@ -12406,6 +12547,23 @@ function AiAssistantPage() {
                         'relation', relation.id,
                         `${relation.subject_name || relation.subjectId} · ${relation.predicate} · ${relation.object_name || relation.objectId}`
                       )} /></div>
+                    {relation.status === 'candidate' && relation.pendingReviewId &&
+                      <div className="assistant-memory-actions">
+                        <button className="primary"
+                          onClick={() => openProjectRelationReview(relation.pendingReviewId)}>
+                          审阅关系方向
+                          {relation.pendingReviewCount > 1
+                            ? `（${relation.pendingReviewCount} 个候选）` : ''}
+                        </button>
+                      </div>}
+                    {relation.status !== 'candidate' && <div className="assistant-memory-actions">
+                      <button onClick={() => openProjectStructuredMemoryDossier(
+                        'relation', relation.id
+                      )}>查看完整关系审计与纠错</button>
+                    </div>}
+                    {relation.status === 'candidate' && !relation.pendingReviewId && <small>
+                      当前候选没有可处理的权威审阅项；请刷新项目档案。
+                    </small>}
                   </article>
                 })}
                 {projectMemoryPages.status !== 'loading' &&
@@ -12419,7 +12577,7 @@ function AiAssistantPage() {
                     : `加载更多关系（已显示 ${projectMemoryPages.relations.items.length} / ${projectMemoryPages.relations.total}）`}
                 </button>}
               </section>
-              <section>
+              <section id="project-memory-events">
                 <h3>完整项目事件 <small>{selectedProject.entityId
                   ? Number(projectMemoryPages.events?.total || 0)
                   : projectDossierEvents.length}</small></h3>
@@ -12445,13 +12603,44 @@ function AiAssistantPage() {
                   <div><b>{event.title}</b><span>{event.start_at || '时间待确认'}</span></div>
                   {event.description && <p>{event.description}</p>}
                   <small>{event.event_type || 'other'} ·
-                    {event.status === 'confirmed' ? '已确认' : event.status === 'cancelled' ? '已取消' : '待确认'} ·
+                    {event.status === 'confirmed' ? '已确认'
+                      : event.status === 'cancelled' ? '已取消'
+                        : event.status === 'rejected' ? '不准确' : '待确认'} ·
                     {event.location || '地点未记录'} · {memorySourceLabels(event)}</small>
                   <div className="assistant-evidence-stack"><EvidenceRows evidence={event.evidence}
                     total={event.evidence_count || event.evidenceTotal}
                     onOpenArchive={() => void openMemoryEvidenceArchive(
                       'event', event.id, event.title || '项目事件原文'
                     )} /></div>
+                  {selectedProject.entityId && <div className="assistant-memory-actions">
+                    <button onClick={() => openProjectStructuredMemoryDossier(
+                      'event', event.id
+                    )}>查看完整审计</button>
+                    <button disabled={!eventEntitiesTrusted(event)}
+                      title={!eventEntitiesTrusted(event)
+                        ? '请先确认事件参与实体' : ''}
+                      onClick={() => void openEventCorrection({
+                        sourceId: event.id
+                      })}>纠正事件</button>
+                    {!['rejected', 'cancelled'].includes(event.status) && <button
+                      disabled={!!projectMemoryMutations[`event:${event.id}`]}
+                      onClick={() => void updateProjectMemoryStatus(
+                        'event', event.id, 'rejected', projectMemoryPages.events?.revision
+                      )}>不准确</button>}
+                    {event.status !== 'confirmed' && event.status !== 'cancelled' &&
+                      <button className="primary"
+                        disabled={!eventEntitiesTrusted(event) ||
+                          !!projectMemoryMutations[`event:${event.id}`]}
+                        title={!eventEntitiesTrusted(event)
+                          ? '请先确认事件参与实体' : ''}
+                        onClick={() => void updateProjectMemoryStatus(
+                          'event', event.id, 'confirmed', projectMemoryPages.events?.revision
+                        )}>
+                        {projectMemoryMutations[`event:${event.id}`]
+                          ? '正在保存…'
+                          : event.status === 'rejected' ? '恢复并确认' : '确认事件'}
+                      </button>}
+                  </div>}
                 </article>)}
                 {projectMemoryPages.status !== 'loading' && !projectDossierEvents.length && <em>尚无相关事件</em>}
                 {selectedProject.entityId && projectMemoryPages.events?.hasMore && <button
@@ -12552,12 +12741,44 @@ function AiAssistantPage() {
                   : [...selectedProject.decisions, ...selectedProject.milestones]
                 ).map((event: any) => <article key={event.id}>
                   <div><b>{event.title}</b><span>{event.event_type}</span></div>
-                  <small>{event.start_at || '时间待确认'} · {event.status === 'confirmed' ? '已确认' : '待确认'}</small>
+                  <small>{event.start_at || '时间待确认'} · {
+                    event.status === 'confirmed' ? '已确认'
+                      : event.status === 'cancelled' ? '已取消'
+                        : event.status === 'rejected' ? '不准确' : '待确认'
+                  }</small>
                   <div className="assistant-evidence-stack"><EvidenceRows
                     evidence={(event.evidence || []).slice(-2)} total={event.evidenceTotal}
                     onOpenArchive={() => void openMemoryEvidenceArchive(
                       'event', event.id, event.title || '里程碑原文'
                     )} /></div>
+                  {selectedProject.entityId && <div className="assistant-memory-actions">
+                    <button onClick={() => openProjectStructuredMemoryDossier(
+                      'event', event.id
+                    )}>查看完整审计</button>
+                    <button disabled={!eventEntitiesTrusted(event)}
+                      title={!eventEntitiesTrusted(event)
+                        ? '请先确认事件参与实体' : ''}
+                      onClick={() => void openEventCorrection({
+                        sourceId: event.id
+                      })}>纠正事件</button>
+                    {!['rejected', 'cancelled'].includes(event.status) && <button
+                      disabled={!!projectMemoryMutations[`event:${event.id}`]}
+                      onClick={() => void updateProjectMemoryStatus(
+                        'event', event.id, 'rejected', projectKeyEventPage.revision
+                      )}>不准确</button>}
+                    {event.status !== 'confirmed' && event.status !== 'cancelled' &&
+                      <button className="primary"
+                        disabled={!eventEntitiesTrusted(event) ||
+                          !!projectMemoryMutations[`event:${event.id}`]}
+                        title={!eventEntitiesTrusted(event)
+                          ? '请先确认事件参与实体' : ''}
+                        onClick={() => void updateProjectMemoryStatus(
+                          'event', event.id, 'confirmed', projectKeyEventPage.revision
+                        )}>
+                        {projectMemoryMutations[`event:${event.id}`]
+                          ? '正在保存…' : '确认事件'}
+                      </button>}
+                  </div>}
                 </article>)}
                 {projectKeyEventPage.status === 'loading' && <em>正在读取完整关键时间线…</em>}
                 {projectKeyEventPage.status === 'error' && <em>关键时间线读取失败：{projectKeyEventPage.error}</em>}
@@ -12575,26 +12796,21 @@ function AiAssistantPage() {
               </section>
               {!!selectedProject.pendingReview?.total && <section>
                 <h3>候选线索 <small>{selectedProject.pendingReview.total}</small></h3>
-                <small className="assistant-evidence">以下内容尚未确认，不参与成员、里程碑、决策或项目事实的确定性统计。</small>
-                {Number(selectedProject.pendingReview.authoritativeMemoryTotal || 0) >
-                  Number(selectedProject.pendingReview.loadedMemoryTotal || 0) &&
-                  <small className="assistant-evidence">
-                    当前展示最近 {selectedProject.pendingReview.loadedMemoryTotal} /
-                    {selectedProject.pendingReview.authoritativeMemoryTotal} 条项目事实、关系与事件候选；
-                    完整候选可在对应分页档案继续审阅。
-                  </small>}
-                {selectedProject.pendingReview.relations.map((relation: any) => <article key={relation.id}>
-                  <strong>待确认关系 · {relation.predicate}</strong>
-                  <small>{Math.round(Number(relation.confidence || 0) * 100)}% 可信</small>
-                </article>)}
-                {[...selectedProject.pendingReview.decisions, ...selectedProject.pendingReview.milestones].map((event: any) => <article key={event.id}>
-                  <strong>待确认{event.event_type === 'decision' ? '决策' : '里程碑'} · {event.title}</strong>
-                  <small>{event.start_at || '时间待确认'} · 不计入已确认项目时间线</small>
-                </article>)}
-                {selectedProject.pendingReview.claims.map((claim: any) => <article key={claim.id}>
-                  <strong>待确认事实 · {claim.predicate}</strong>
-                  <small>{claim.object_value || '值待确认'}</small>
-                </article>)}
+                <small className="assistant-evidence">
+                  候选不参与确定性统计。项目档案不再复制最近 200 条候选快照；
+                  请进入对应权威分页，逐条查看原文、确认、纠正或标记不准确。
+                </small>
+                <div className="assistant-memory-actions">
+                  <button onClick={() => focusProjectCandidateSection('claim')}>
+                    审阅候选事实
+                  </button>
+                  <button onClick={() => focusProjectCandidateSection('relation')}>
+                    审阅候选关系
+                  </button>
+                  <button onClick={() => focusProjectCandidateSection('event')}>
+                    审阅候选事件
+                  </button>
+                </div>
               </section>}
               <section className="assistant-dossier-wide">
                 <h3>最近原文证据 <small>{selectedProject.evidenceTotal ?? selectedProject.evidence.length}</small></h3>
