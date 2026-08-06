@@ -10398,6 +10398,7 @@ test('memory trust scopes and facets separate confirmed candidates from source m
       sourceNature: 'self_statement',
       searchText: '可信层级关键词 已确认事实',
       evidence: evidence('trust-confirmed-message', '可信层级关键词 已确认事实')
+        .map(item => ({ ...item, sourceId: 'wechat' }))
     }, {
       id: 'trust-facet-candidate',
       subjectId: 'trust-facet-person',
@@ -10408,6 +10409,7 @@ test('memory trust scopes and facets separate confirmed candidates from source m
       sourceNature: 'other_statement',
       searchText: '可信层级关键词 待确认事实',
       evidence: evidence('trust-candidate-message', '可信层级关键词 待确认事实')
+        .map(item => ({ ...item, sourceId: 'wechat' }))
     }])
     store.syncTasks([{
       id: 'trust-facet-task',
@@ -10423,6 +10425,13 @@ test('memory trust scopes and facets separate confirmed candidates from source m
         timestamp: 1_800_000_000,
         sender: '可信测试',
         excerpt: '可信层级关键词 原始待办'
+      }, {
+        sourceId: 'documents',
+        messageId: 'trust-task-document',
+        sessionId: 'data-source:documents',
+        timestamp: 1_800_000_001,
+        sender: '本机文档',
+        excerpt: '可信层级关键词 同一待办的文档依据'
       }]
     }])
 
@@ -10448,6 +10457,16 @@ test('memory trust scopes and facets separate confirmed candidates from source m
         searchMode: 'fts'
       }
     )
+    const wechatScope = store.listScopedSearchDocumentIds({ sourceIds: ['wechat'] })!
+    const documentScope = store.listScopedSearchDocumentIds({ sourceIds: ['documents'] })!
+    assert.equal(store.listSearchDocumentsByKeywordPage(
+      '可信层级关键词', wechatScope, { limit: 1 }
+    ).total, 3)
+    assert.equal(store.listSearchDocumentsByKeywordPage(
+      '可信层级关键词', documentScope, { limit: 1 }
+    ).total, 1)
+    assert.equal(wechatScope.has('task:trust-facet-task'), true)
+    assert.equal(documentScope.has('task:trust-facet-task'), true)
   }))
 
 test('memory search revision covers documents, evidence, vectors and relevance decisions', () =>

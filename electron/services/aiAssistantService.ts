@@ -8022,6 +8022,10 @@ export class AiAssistantService {
       ...scopedOptions,
       trustStatuses: undefined
     })
+    const sourceFacetOptions = {
+      ...scopedOptions,
+      sourceIds: undefined
+    }
     if (!text && allowedIds === null) {
       return {
         results: [], offset, limit, total: 0, hasMore: false, truncated: false,
@@ -8044,6 +8048,25 @@ export class AiAssistantService {
           ),
           searchMode: undefined
         }
+    const sourceCounts = Object.fromEntries(
+      ['wechat', 'documents', 'calendar', 'mail', 'legacy'].map(sourceId => {
+        const sourceAllowedIds = personalMemoryStore.listScopedSearchDocumentIds({
+          ...sourceFacetOptions,
+          sourceIds: [sourceId]
+        }) || new Set<string>()
+        const total = text
+          ? personalMemoryStore.listSearchDocumentsByKeywordPage(
+              text,
+              sourceAllowedIds,
+              { offset: 0, limit: 1 }
+            ).total
+          : personalMemoryStore.listSearchDocumentsInScopePage(
+              sourceAllowedIds,
+              { offset: 0, limit: 1 }
+            ).total
+        return [sourceId, total]
+      })
+    )
     if (text && searchMode === 'lexical_archive') {
       const lexicalPage = personalMemoryStore.listSearchDocumentsByKeywordPage(
         text,
@@ -8125,6 +8148,8 @@ export class AiAssistantService {
     page.trustCounts = trustFacet.counts
     page.trustCountsBasis = text ? 'lexical_archive' : 'scope_browse'
     page.trustCountsSearchMode = trustFacet.searchMode
+    page.sourceCounts = sourceCounts
+    page.sourceCountsBasis = text ? 'lexical_archive' : 'scope_browse'
     const feedback = this.memorySearchFeedbackContext(text, scopedOptions).entries
     const completedRevision = personalMemoryStore.getMemorySearchRevision()
     const completedEntitySelection = options.entityId

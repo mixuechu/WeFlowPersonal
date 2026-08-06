@@ -941,6 +941,8 @@ function AiAssistantPage() {
     trustCounts?: Record<string, number>
     trustCountsBasis?: 'lexical_archive' | 'scope_browse'
     trustCountsSearchMode?: 'fts' | 'substring_fallback'
+    sourceCounts?: Record<string, number>
+    sourceCountsBasis?: 'lexical_archive' | 'scope_browse'
   }>({ status: 'idle', query: '' })
   const [memoryLoadingMore, setMemoryLoadingMore] = useState(false)
   const [memorySearchFeedback, setMemorySearchFeedback] = useState<any[]>([])
@@ -2344,6 +2346,8 @@ function AiAssistantPage() {
           trustCounts: page.trustCounts,
           trustCountsBasis: page.trustCountsBasis,
           trustCountsSearchMode: page.trustCountsSearchMode,
+          sourceCounts: page.sourceCounts,
+          sourceCountsBasis: page.sourceCountsBasis,
           nextOffset: Number(page.offset || 0) + page.results.length
         })
       }).catch(error => {
@@ -6738,6 +6742,8 @@ function AiAssistantPage() {
         trustCounts: page.trustCounts,
         trustCountsBasis: page.trustCountsBasis,
         trustCountsSearchMode: page.trustCountsSearchMode,
+        sourceCounts: page.sourceCounts,
+        sourceCountsBasis: page.sourceCountsBasis,
         nextOffset: Number(page.offset || 0) + page.results.length
       })
     } catch (error: any) {
@@ -9499,6 +9505,32 @@ function AiAssistantPage() {
                     className={memoryTrustFilter === status ? 'active' : ''}
                     onClick={() => setMemoryTrustFilter(status)}>
                     {label} · {Number(memorySearchState.trustCounts?.[status] || 0)}
+                  </button>)}
+              </div>}
+            {memorySearchState.status === 'ready' && Object.values(memorySearchState.sourceCounts || {})
+              .some(count => Number(count || 0) > 0) &&
+              <div className="assistant-search-type-facets">
+                <div>
+                  <strong>按原文来源核验</strong>
+                  <small>{memorySearchState.sourceCountsBasis === 'lexical_archive'
+                    ? '完整关键词档案中的权威原文载体数'
+                    : '当前其余范围条件内的权威原文载体数'}
+                    {' · 同一记忆可由多个来源共同支撑，因此各项可以重叠'}</small>
+                </div>
+                <button className={!memorySourceFilter ? 'active' : ''}
+                  onClick={() => setMemorySourceFilter('')}>全部来源</button>
+                {([
+                  ['wechat', '微信'],
+                  ['documents', '本机文档'],
+                  ['calendar', 'macOS 日历'],
+                  ['mail', 'macOS Mail'],
+                  ['legacy', '历史来源未知']
+                ] as Array<[string, string]>)
+                  .filter(([source]) => Number(memorySearchState.sourceCounts?.[source] || 0) > 0)
+                  .map(([source, label]) => <button key={source}
+                    className={memorySourceFilter === source ? 'active' : ''}
+                    onClick={() => setMemorySourceFilter(source)}>
+                    {label} · {Number(memorySearchState.sourceCounts?.[source] || 0)}
                   </button>)}
               </div>}
             {memorySearchFeedback.length > 0 && <details className="assistant-search-feedback-ledger">

@@ -2038,6 +2038,8 @@ export interface ElectronAPI {
         trustCounts?: Record<string, number>
         trustCountsBasis?: 'lexical_archive' | 'scope_browse'
         trustCountsSearchMode?: 'fts' | 'substring_fallback'
+        sourceCounts?: Record<string, number>
+        sourceCountsBasis?: 'lexical_archive' | 'scope_browse'
         scopeCandidates: number | null
         revision: string
         stale: boolean
