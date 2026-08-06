@@ -3631,12 +3631,20 @@ function AiAssistantPage() {
       }
       return
     }
-    reviewPageGate.current.invalidate()
-    reviewEvidenceGates.current.invalidateAll()
-    setFocusedReviewId('')
-    clearReviewReturnTarget()
-    setSelectedProjectId(target.sourceId)
-    setProjectWorkspaceRefreshKey(value => value + 1)
+    try {
+      await window.electronAPI.aiAssistant.getProjectWorkspace(target.sourceId)
+      if (!isSameReviewReturnTarget(reviewReturnTargetRef.current, target)) return
+      reviewPageGate.current.invalidate()
+      reviewEvidenceGates.current.invalidateAll()
+      setFocusedReviewId('')
+      clearReviewReturnTarget()
+      setSelectedProjectId(target.sourceId)
+      setProjectWorkspaceRefreshKey(value => value + 1)
+    } catch (error: any) {
+      if (!isSameReviewReturnTarget(reviewReturnTargetRef.current, target)) return
+      clearReviewReturnTarget()
+      setMessage(`原项目在审阅期间已删除或不再可信，已留在审阅区：${error?.message || String(error)}`)
+    }
   }
   const returnFromReviewTarget = () => {
     const target = reviewReturnTargetRef.current
