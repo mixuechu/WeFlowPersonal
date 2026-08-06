@@ -61,3 +61,18 @@ test('entity audit metrics map to their complete pageable ledgers', () => {
     sectionId: 'entity-dossier-profile-corrections'
   })
 })
+
+test('entity candidate metrics map to exact review presets', () => {
+  assert.deepEqual(entityDossierDrilldown('candidateClaims'), {
+    sectionId: 'entity-dossier-claims',
+    claimPreset: 'candidate'
+  })
+  assert.deepEqual(entityDossierDrilldown('candidateRelations'), {
+    sectionId: 'entity-dossier-relations',
+    relationPreset: 'candidate'
+  })
+  assert.deepEqual(entityDossierDrilldown('candidateEvents'), {
+    sectionId: 'entity-dossier-events',
+    eventPreset: 'candidate'
+  })
+})

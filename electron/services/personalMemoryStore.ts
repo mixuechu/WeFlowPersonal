@@ -10074,6 +10074,39 @@ export class PersonalMemoryStore {
     return result
   }
 
+  getEntityCandidateReviewCounts(entityIdInput: string): {
+    claims: number
+    relations: number
+    events: number
+    total: number
+  } {
+    const entityId = String(entityIdInput || '').trim()
+    const empty = { claims: 0, relations: 0, events: 0, total: 0 }
+    if (!this.db || !entityId) return empty
+    const row = this.db.prepare(`
+      SELECT
+        (SELECT COUNT(*) FROM claims claim
+          WHERE claim.status='candidate'
+            AND (claim.subject_id=? OR claim.object_entity_id=?)) AS claims,
+        (SELECT COUNT(*) FROM relations relation
+          WHERE relation.status='candidate'
+            AND (relation.subject_id=? OR relation.object_id=?)) AS relations,
+        (SELECT COUNT(*) FROM events event
+          WHERE event.status='candidate' AND EXISTS(
+            SELECT 1 FROM event_participants participant
+            WHERE participant.event_id=event.id AND participant.entity_id=?
+          )) AS events
+    `).get(entityId, entityId, entityId, entityId, entityId) as any
+    const counts = {
+      claims: Number(row?.claims || 0),
+      relations: Number(row?.relations || 0),
+      events: Number(row?.events || 0),
+      total: 0
+    }
+    counts.total = counts.claims + counts.relations + counts.events
+    return counts
+  }
+
   getTrustedExtractionMemory(
     entityIds: string[],
     options: { claimLimit?: number; eventLimit?: number } = {}

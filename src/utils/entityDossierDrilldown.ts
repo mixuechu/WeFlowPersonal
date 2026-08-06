@@ -13,12 +13,17 @@ export type EntityDossierMetric =
   | 'entityCorrections'
   | 'relationCorrections'
   | 'profileCorrections'
+  | 'candidateClaims'
+  | 'candidateRelations'
+  | 'candidateEvents'
 
 export type EntityDossierDrilldown = {
   sectionId: string
   identityKind?: 'alias' | 'wechat' | 'external'
   resetScope?: 'evidence' | 'currentEvidence' | 'claims' | 'relationships' | 'events'
-  eventPreset?: 'pendingCommitments'
+  claimPreset?: 'candidate'
+  relationPreset?: 'candidate'
+  eventPreset?: 'candidate' | 'pendingCommitments'
 }
 
 export function entityDossierDrilldown(
@@ -46,6 +51,24 @@ export function entityDossierDrilldown(
     return {
       sectionId: 'entity-dossier-claims',
       resetScope: 'claims'
+    }
+  }
+  if (metric === 'candidateClaims') {
+    return {
+      sectionId: 'entity-dossier-claims',
+      claimPreset: 'candidate'
+    }
+  }
+  if (metric === 'candidateRelations') {
+    return {
+      sectionId: 'entity-dossier-relations',
+      relationPreset: 'candidate'
+    }
+  }
+  if (metric === 'candidateEvents') {
+    return {
+      sectionId: 'entity-dossier-events',
+      eventPreset: 'candidate'
     }
   }
   if (metric === 'events') {

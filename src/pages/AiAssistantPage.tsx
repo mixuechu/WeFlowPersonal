@@ -5212,6 +5212,27 @@ function AiAssistantPage() {
       setEntityEventFrom('')
       setEntityEventTo('')
     }
+    if (target.claimPreset === 'candidate') {
+      setEntityClaimQuery('')
+      setEntityClaimStatus('candidate')
+      setEntityClaimSource('all')
+      setEntityClaimFrom('')
+      setEntityClaimTo('')
+    }
+    if (target.relationPreset === 'candidate') {
+      setEntityRelationQuery('')
+      setEntityRelationDirection('all')
+      setEntityRelationStatus('candidate')
+      setEntityRelationSource('all')
+    }
+    if (target.eventPreset === 'candidate') {
+      setEntityEventQuery('')
+      setEntityEventType('all')
+      setEntityEventStatus('candidate')
+      setEntityEventSource('all')
+      setEntityEventFrom('')
+      setEntityEventTo('')
+    }
     if (target.eventPreset === 'pendingCommitments') {
       setEntityEventQuery('')
       setEntityEventType('commitment')
@@ -11270,6 +11291,24 @@ function AiAssistantPage() {
                       <strong>{selectedEntityInsight.pendingCommitmentCount}</strong>
                       <span>待确认承诺 · 查看</span>
                     </button>
+                    <button type="button" className="assistant-insight-action"
+                      disabled={!graphWorkspace.focus?.candidateReviewCounts?.claims}
+                      onClick={() => focusEntityDossierMetric('candidateClaims')}>
+                      <strong>{graphWorkspace.focus?.candidateReviewCounts?.claims || 0}</strong>
+                      <span>候选事实 · 审阅</span>
+                    </button>
+                    <button type="button" className="assistant-insight-action"
+                      disabled={!graphWorkspace.focus?.candidateReviewCounts?.relations}
+                      onClick={() => focusEntityDossierMetric('candidateRelations')}>
+                      <strong>{graphWorkspace.focus?.candidateReviewCounts?.relations || 0}</strong>
+                      <span>候选关系 · 审阅</span>
+                    </button>
+                    <button type="button" className="assistant-insight-action"
+                      disabled={!graphWorkspace.focus?.candidateReviewCounts?.events}
+                      onClick={() => focusEntityDossierMetric('candidateEvents')}>
+                      <strong>{graphWorkspace.focus?.candidateReviewCounts?.events || 0}</strong>
+                      <span>候选事件 · 审阅</span>
+                    </button>
                     {selectedEntityInsight.lastContactAt && <small>最近互动证据：{new Date(selectedEntityInsight.lastContactAt * 1000).toLocaleString('zh-CN')}</small>}
                     <details><summary>强度计算依据</summary>{selectedEntityInsight.explanation.map((item: string) => <small key={item}>{item}</small>)}</details>
                   </div>}
@@ -12389,6 +12428,24 @@ function AiAssistantPage() {
                 onClick={openEntityPendingCommitments}>
                 <b>{selectedEntityInsight.pendingCommitmentCount}</b>
                 <small>待确认承诺 · 查看</small>
+              </button>
+              <button type="button" className="assistant-dossier-metric-action"
+                disabled={!graphWorkspace.focus?.candidateReviewCounts?.claims}
+                onClick={() => focusEntityDossierMetric('candidateClaims')}>
+                <b>{graphWorkspace.focus?.candidateReviewCounts?.claims || 0}</b>
+                <small>候选事实 · 审阅</small>
+              </button>
+              <button type="button" className="assistant-dossier-metric-action"
+                disabled={!graphWorkspace.focus?.candidateReviewCounts?.relations}
+                onClick={() => focusEntityDossierMetric('candidateRelations')}>
+                <b>{graphWorkspace.focus?.candidateReviewCounts?.relations || 0}</b>
+                <small>候选关系 · 审阅</small>
+              </button>
+              <button type="button" className="assistant-dossier-metric-action"
+                disabled={!graphWorkspace.focus?.candidateReviewCounts?.events}
+                onClick={() => focusEntityDossierMetric('candidateEvents')}>
+                <b>{graphWorkspace.focus?.candidateReviewCounts?.events || 0}</b>
+                <small>候选事件 · 审阅</small>
               </button>
               <button type="button" className="assistant-dossier-metric-action"
                 onClick={() => focusEntityDossierMetric('relationHistory')}>

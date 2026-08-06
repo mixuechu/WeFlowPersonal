@@ -6589,6 +6589,18 @@ test('project memory is scoped in SQL before limits and preserves authoritative 
     total: 500
   })
   assert.equal(counts['unrelated-memory-scope'].candidateClaims, 600)
+  assert.deepEqual(store.getEntityCandidateReviewCounts('project-memory-scope'), {
+    claims: 260,
+    relations: 0,
+    events: 240,
+    total: 500
+  })
+  assert.deepEqual(store.getEntityCandidateReviewCounts('unrelated-memory-scope'), {
+    claims: 600,
+    relations: 0,
+    events: 0,
+    total: 600
+  })
   store.upsertClaims([{
     id: 'relation-page-concurrent-evidence-change',
     subjectId: 'unrelated-memory-scope',
@@ -6766,6 +6778,35 @@ test('project review counts include candidate relations from both directions', (
     candidateDecisions: 0,
     candidateRelations: 2,
     total: 2
+  })
+  store.upsertClaims([{
+    id: 'review-object-claim',
+    subjectId: 'review-person-a',
+    predicate: '为项目负责',
+    objectEntityId: 'review-project',
+    objectValue: '审阅项目',
+    confidence: 0.8,
+    status: 'candidate',
+    sourceNature: 'inference',
+    searchText: '成员甲为审阅项目负责',
+    evidence: evidence('review-object-claim-message', '成员甲为审阅项目负责')
+  }])
+  store.upsertEvents([{
+    id: 'review-participant-event',
+    eventType: 'meeting',
+    title: '审阅项目启动会',
+    confidence: 0.8,
+    status: 'candidate',
+    sourceNature: 'inference',
+    searchText: '审阅项目启动会',
+    participants: [{ entityId: 'review-project', role: 'project' }],
+    evidence: evidence('review-participant-event-message', '审阅项目启动会')
+  }])
+  assert.deepEqual(store.getEntityCandidateReviewCounts('review-project'), {
+    claims: 1,
+    relations: 2,
+    events: 1,
+    total: 4
   })
   const page = store.listEntityRelationPage({
     entityId: 'review-project', status: 'candidate', limit: 1

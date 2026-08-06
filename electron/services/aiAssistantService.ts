@@ -4810,6 +4810,8 @@ export class AiAssistantService {
       const mineTasks = this.state.tasks.filter(task => task.classification === 'mine')
       const memory = personalMemoryStore.getEntityMemory(focusEntity.id, 200)
       const evidenceStats = personalMemoryStore.getEntityEvidenceStats(focusEntity.id)
+      const candidateReviewCounts =
+        personalMemoryStore.getEntityCandidateReviewCounts(focusEntity.id)
       const allRelations = this.state.graph.relations
         .filter(relation => relation.status !== 'rejected' &&
           (relation.subjectId === focusEntity.id || relation.objectId === focusEntity.id))
@@ -4879,6 +4881,7 @@ export class AiAssistantService {
         insight: insights[focusEntity.id] || null,
         evidenceTotal: evidenceStats.evidenceTotal,
         lastEvidenceAt: evidenceStats.lastEvidenceAt,
+        candidateReviewCounts,
         claims: memory.claims,
         claimTotal: memory.claimTotal,
         events: memory.events,
