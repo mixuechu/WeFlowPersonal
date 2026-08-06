@@ -173,6 +173,43 @@ function searchDocumentEvidenceStrengthSql(
   return { sql: `(${sql})`, parameters }
 }
 
+function searchDocumentSupportingSourceCountSql(
+  options: MemorySearchOptions = {},
+  alias = 'd'
+): { sql: string; parameters: Array<string | number> } {
+  const branches = [
+    { type: 'claim', foreignKey: 'claim_id', evidenceAlias: 'claim_breadth' },
+    { type: 'relation', foreignKey: 'relation_id', evidenceAlias: 'relation_breadth' },
+    { type: 'event', foreignKey: 'event_id', evidenceAlias: 'event_breadth' }
+  ]
+  const parameters: Array<string | number> = []
+  const structured = branches.map(branch => {
+    const scope = searchEvidenceScopeSql(branch.evidenceAlias, options)
+    parameters.push(...scope.parameters)
+    return `WHEN ${alias}.document_type='${branch.type}' THEN (
+      SELECT COUNT(DISTINCT LOWER(COALESCE(${branch.evidenceAlias}.source_id,'legacy')))
+      FROM evidence ${branch.evidenceAlias}
+      WHERE ${branch.evidenceAlias}.${branch.foreignKey}=${alias}.source_id
+        AND COALESCE(${branch.evidenceAlias}.evidence_role,'direct')!='contradiction'
+        AND ${scope.sql}
+    )`
+  }).join('\n    ')
+  const genericScope = searchEvidenceScopeSql('generic_breadth', options)
+  parameters.push(...genericScope.parameters)
+  return {
+    sql: `(CASE
+    ${structured}
+    WHEN ${alias}.document_type!='entity' THEN (
+      SELECT COUNT(DISTINCT LOWER(COALESCE(generic_breadth.source_id,'legacy')))
+      FROM search_document_evidence generic_breadth
+      WHERE generic_breadth.document_id=${alias}.id
+        AND ${genericScope.sql}
+    )
+    ELSE 0 END)`,
+    parameters
+  }
+}
+
 function relationSearchText(
   subjectName: unknown,
   predicate: unknown,
@@ -14097,6 +14134,7 @@ export class PersonalMemoryStore {
       options.supportability ||
       options.evidenceConflict ||
       options.evidenceStrength ||
+      options.evidenceBreadth ||
       options.relationTypes?.length ||
       options.sourceIds?.length
     )
@@ -14162,6 +14200,14 @@ export class PersonalMemoryStore {
       conditions.push(strength.sql)
       parameters.push(...strength.parameters)
     } else if (evidenceStrength) {
+      conditions.push('0=1')
+    }
+    const evidenceBreadth = String(options.evidenceBreadth || '').trim().toLowerCase()
+    if (evidenceBreadth === 'multi_source' || evidenceBreadth === 'single_source') {
+      const breadth = searchDocumentSupportingSourceCountSql(options)
+      conditions.push(`${breadth.sql}${evidenceBreadth === 'multi_source' ? '>=2' : '=1'}`)
+      parameters.push(...breadth.parameters)
+    } else if (evidenceBreadth) {
       conditions.push('0=1')
     }
     const sourceIds = [...new Set((options.sourceIds || [])

@@ -8038,6 +8038,10 @@ export class AiAssistantService {
       ...scopedOptions,
       evidenceStrength: undefined
     }
+    const breadthFacetOptions = {
+      ...scopedOptions,
+      evidenceBreadth: undefined
+    }
     if (!text && allowedIds === null) {
       return {
         results: [], offset, limit, total: 0, hasMore: false, truncated: false,
@@ -8134,6 +8138,25 @@ export class AiAssistantService {
         return [strength, total]
       })
     )
+    const evidenceBreadthCounts = Object.fromEntries(
+      ['multi_source', 'single_source'].map(breadth => {
+        const breadthAllowedIds = personalMemoryStore.listScopedSearchDocumentIds({
+          ...breadthFacetOptions,
+          evidenceBreadth: breadth
+        }) || new Set<string>()
+        const total = text
+          ? personalMemoryStore.listSearchDocumentsByKeywordPage(
+              text,
+              breadthAllowedIds,
+              { offset: 0, limit: 1 }
+            ).total
+          : personalMemoryStore.listSearchDocumentsInScopePage(
+              breadthAllowedIds,
+              { offset: 0, limit: 1 }
+            ).total
+        return [breadth, total]
+      })
+    )
     if (text && searchMode === 'lexical_archive') {
       const lexicalPage = personalMemoryStore.listSearchDocumentsByKeywordPage(
         text,
@@ -8225,6 +8248,8 @@ export class AiAssistantService {
     page.contradictionCountBasis = text ? 'lexical_archive' : 'scope_browse'
     page.evidenceStrengthCounts = evidenceStrengthCounts
     page.evidenceStrengthCountsBasis = text ? 'lexical_archive' : 'scope_browse'
+    page.evidenceBreadthCounts = evidenceBreadthCounts
+    page.evidenceBreadthCountsBasis = text ? 'lexical_archive' : 'scope_browse'
     const feedback = this.memorySearchFeedbackContext(text, scopedOptions).entries
     const completedRevision = personalMemoryStore.getMemorySearchRevision()
     const completedEntitySelection = options.entityId

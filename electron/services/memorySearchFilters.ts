@@ -12,6 +12,7 @@ export type MemorySearchOptions = {
   supportability?: string
   evidenceConflict?: string
   evidenceStrength?: string
+  evidenceBreadth?: string
   relationTypes?: string[]
   sourceIds?: string[]
 }
@@ -91,6 +92,7 @@ export function filterMemorySearchResults(
   const supportability = String(options.supportability || '')
   const evidenceConflict = String(options.evidenceConflict || '')
   const evidenceStrength = String(options.evidenceStrength || '')
+  const evidenceBreadth = String(options.evidenceBreadth || '')
   const sources = new Set((options.sourceIds || []).map(value => value.trim().toLowerCase()).filter(Boolean))
   const relationTypes = new Set((options.relationTypes || []).map(value => value.trim().toLowerCase()).filter(Boolean))
   const entityTerms = (options.entityTerms || []).map(value => value.trim().toLowerCase()).filter(Boolean)
@@ -132,6 +134,31 @@ export function filterMemorySearchResults(
       const hasIndirect = roles.has('indirect')
       if (evidenceStrength === 'direct' ? !hasDirect
         : evidenceStrength === 'indirect_only' ? (!hasIndirect || hasDirect)
+          : true) return false
+    }
+    if (evidenceBreadth) {
+      if (item.document_type === 'entity') return false
+      const acceptedSessions = options.sessionId
+        ? new Set([options.sessionId, options.sessionName].filter(Boolean))
+        : null
+      const supportingSources = new Set((item.evidence || [])
+        .filter((evidence: any) =>
+          String(evidence.evidence_role || evidence.evidenceRole || '') !== 'contradiction')
+        .filter((evidence: any) => !sources.size || sources.has(
+          String(evidence.source_id || evidence.sourceId || 'legacy').trim().toLowerCase()))
+        .filter((evidence: any) => !acceptedSessions || acceptedSessions.has(
+          String(evidence.session_id || evidence.sessionId || '')))
+        .filter((evidence: any) => {
+          if (from === null && to === null) return true
+          const timestamp = Number(evidence.timestamp || 0) * 1000
+          return timestamp > 0 && (from === null || timestamp >= from) &&
+            (to === null || timestamp <= to)
+        })
+        .map((evidence: any) =>
+          String(evidence.source_id || evidence.sourceId || 'legacy').trim().toLowerCase())
+        .filter(Boolean))
+      if (evidenceBreadth === 'multi_source' ? supportingSources.size < 2
+        : evidenceBreadth === 'single_source' ? supportingSources.size !== 1
           : true) return false
     }
     if (relationTypes.size && item.document_type === 'relation') {

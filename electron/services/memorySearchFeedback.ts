@@ -40,6 +40,8 @@ export function buildMemorySearchFeedbackContext(
   if (evidenceConflict) scope.evidenceConflict = evidenceConflict
   const evidenceStrength = String(options.evidenceStrength || '').trim().toLowerCase()
   if (evidenceStrength) scope.evidenceStrength = evidenceStrength
+  const evidenceBreadth = String(options.evidenceBreadth || '').trim().toLowerCase()
+  if (evidenceBreadth) scope.evidenceBreadth = evidenceBreadth
   const scopeJson = JSON.stringify(scope)
   return {
     query: normalizedQuery,

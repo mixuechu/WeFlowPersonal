@@ -951,6 +951,8 @@ function AiAssistantPage() {
     contradictionCountBasis?: 'lexical_archive' | 'scope_browse'
     evidenceStrengthCounts?: Record<string, number>
     evidenceStrengthCountsBasis?: 'lexical_archive' | 'scope_browse'
+    evidenceBreadthCounts?: Record<string, number>
+    evidenceBreadthCountsBasis?: 'lexical_archive' | 'scope_browse'
   }>({ status: 'idle', query: '' })
   const [memoryLoadingMore, setMemoryLoadingMore] = useState(false)
   const [memorySearchFeedback, setMemorySearchFeedback] = useState<any[]>([])
@@ -1399,6 +1401,7 @@ function AiAssistantPage() {
   const [memorySupportFilter, setMemorySupportFilter] = useState('')
   const [memoryConflictFilter, setMemoryConflictFilter] = useState('')
   const [memoryEvidenceStrengthFilter, setMemoryEvidenceStrengthFilter] = useState('')
+  const [memoryEvidenceBreadthFilter, setMemoryEvidenceBreadthFilter] = useState('')
   const [memoryFrom, setMemoryFrom] = useState('')
   const [memoryTo, setMemoryTo] = useState('')
   const selectedMemorySessionScope = useMemo(
@@ -1417,17 +1420,18 @@ function AiAssistantPage() {
     supportability: memorySupportFilter || undefined,
     evidenceConflict: memoryConflictFilter || undefined,
     evidenceStrength: memoryEvidenceStrengthFilter || undefined,
+    evidenceBreadth: memoryEvidenceBreadthFilter || undefined,
     from: memoryFrom || undefined,
     to: memoryTo || undefined
   }), [
     memoryEntityFilter, memoryEntitySelection, memorySessionFilter, selectedMemorySessionScope,
     memorySourceFilter, memoryTypeFilter, memoryTrustFilter, memorySupportFilter,
-    memoryConflictFilter, memoryEvidenceStrengthFilter,
+    memoryConflictFilter, memoryEvidenceStrengthFilter, memoryEvidenceBreadthFilter,
     memoryFrom, memoryTo
   ])
   const hasMemoryScope = Boolean(memoryEntityFilter || memorySessionFilter || memorySourceFilter ||
     memoryTypeFilter || memoryTrustFilter || memorySupportFilter || memoryConflictFilter ||
-    memoryEvidenceStrengthFilter ||
+    memoryEvidenceStrengthFilter || memoryEvidenceBreadthFilter ||
     memoryFrom || memoryTo)
   const memoryFeedbackArchiveOptions = useMemo(() => ({
     action: memoryFeedbackArchiveAction || undefined,
@@ -2374,6 +2378,8 @@ function AiAssistantPage() {
           contradictionCountBasis: page.contradictionCountBasis,
           evidenceStrengthCounts: page.evidenceStrengthCounts,
           evidenceStrengthCountsBasis: page.evidenceStrengthCountsBasis,
+          evidenceBreadthCounts: page.evidenceBreadthCounts,
+          evidenceBreadthCountsBasis: page.evidenceBreadthCountsBasis,
           nextOffset: Number(page.offset || 0) + page.results.length
         })
       }).catch(error => {
@@ -6778,6 +6784,8 @@ function AiAssistantPage() {
         contradictionCountBasis: page.contradictionCountBasis,
         evidenceStrengthCounts: page.evidenceStrengthCounts,
         evidenceStrengthCountsBasis: page.evidenceStrengthCountsBasis,
+        evidenceBreadthCounts: page.evidenceBreadthCounts,
+        evidenceBreadthCountsBasis: page.evidenceBreadthCountsBasis,
         nextOffset: Number(page.offset || 0) + page.results.length
       })
     } catch (error: any) {
@@ -9464,7 +9472,7 @@ function AiAssistantPage() {
             </select>
             <label><span>从</span><input type="date" value={memoryFrom} onChange={event => setMemoryFrom(event.target.value)} /></label>
             <label><span>至</span><input type="date" value={memoryTo} onChange={event => setMemoryTo(event.target.value)} /></label>
-            {(memoryEntityFilter || memorySessionFilter || memorySourceFilter || memoryTypeFilter || memoryTrustFilter || memorySupportFilter || memoryConflictFilter || memoryEvidenceStrengthFilter || memoryFrom || memoryTo) &&
+            {(memoryEntityFilter || memorySessionFilter || memorySourceFilter || memoryTypeFilter || memoryTrustFilter || memorySupportFilter || memoryConflictFilter || memoryEvidenceStrengthFilter || memoryEvidenceBreadthFilter || memoryFrom || memoryTo) &&
               <button onClick={() => {
                 setMemoryEntityFilter('')
                 setMemoryEntitySelection(null)
@@ -9478,11 +9486,12 @@ function AiAssistantPage() {
                 setMemorySupportFilter('')
                 setMemoryConflictFilter('')
                 setMemoryEvidenceStrengthFilter('')
+                setMemoryEvidenceBreadthFilter('')
                 setMemoryFrom('')
                 setMemoryTo('')
               }}>清除范围</button>}
           </div>
-          {(memoryEntityFilter || memorySessionFilter || memorySourceFilter || memoryTypeFilter || memoryTrustFilter || memorySupportFilter || memoryConflictFilter || memoryEvidenceStrengthFilter || memoryFrom || memoryTo) &&
+          {(memoryEntityFilter || memorySessionFilter || memorySourceFilter || memoryTypeFilter || memoryTrustFilter || memorySupportFilter || memoryConflictFilter || memoryEvidenceStrengthFilter || memoryEvidenceBreadthFilter || memoryFrom || memoryTo) &&
             <small className="assistant-scope-note">当前范围在全文/向量召回之前生效，范围外内容不会参与排序或发送给模型。
               {memorySearchState.scopeCandidates !== null && memorySearchState.scopeCandidates !== undefined &&
                 ` · 当前候选 ${Number(memorySearchState.scopeCandidates || 0).toLocaleString()} 条`}
@@ -9496,6 +9505,32 @@ function AiAssistantPage() {
                 {memorySearchState.searchMode === 'lexical_archive'
                   ? ` · ${memorySearchState.lexicalSearchMode === 'substring_fallback' ? '子串回退' : '本机全文'}完整分页，不使用语义扩展`
                   : memorySearchState.truncated ? ' · 混合相关性排序池已达 500 条上限，可切换“完整关键词档案”继续查阅' : ''}
+              </div>}
+            {memorySearchState.status === 'ready' &&
+              Object.values(memorySearchState.evidenceBreadthCounts || {})
+                .some(count => Number(count || 0) > 0) &&
+              <div className="assistant-search-type-facets">
+                <div>
+                  <strong>按证据覆盖核验</strong>
+                  <small>{memorySearchState.evidenceBreadthCountsBasis === 'lexical_archive'
+                    ? '完整关键词档案中的独立原文来源数量'
+                    : '当前其余范围内的独立原文来源数量'}
+                    {' · 同一来源的多条重复消息仍只算一个来源'}</small>
+                </div>
+                <button className={!memoryEvidenceBreadthFilter ? 'active' : ''}
+                  onClick={() => setMemoryEvidenceBreadthFilter('')}>全部覆盖</button>
+                <button
+                  className={memoryEvidenceBreadthFilter === 'multi_source' ? 'active' : ''}
+                  disabled={!Number(memorySearchState.evidenceBreadthCounts?.multi_source || 0)}
+                  onClick={() => setMemoryEvidenceBreadthFilter('multi_source')}>
+                  跨来源佐证 · {Number(memorySearchState.evidenceBreadthCounts?.multi_source || 0)}
+                </button>
+                <button
+                  className={memoryEvidenceBreadthFilter === 'single_source' ? 'active' : ''}
+                  disabled={!Number(memorySearchState.evidenceBreadthCounts?.single_source || 0)}
+                  onClick={() => setMemoryEvidenceBreadthFilter('single_source')}>
+                  单一来源支持 · {Number(memorySearchState.evidenceBreadthCounts?.single_source || 0)}
+                </button>
               </div>}
             {memorySearchState.status === 'ready' &&
               Object.values(memorySearchState.evidenceStrengthCounts || {})
@@ -9897,6 +9932,10 @@ function AiAssistantPage() {
                     scope.evidenceStrength
                       ? `陈述强度 ${scope.evidenceStrength === 'direct'
                           ? '含直接陈述' : '仅间接转述'}`
+                      : '',
+                    scope.evidenceBreadth
+                      ? `证据覆盖 ${scope.evidenceBreadth === 'multi_source'
+                          ? '跨来源佐证' : '单一来源支持'}`
                       : '',
                     scope.from || scope.to ? `时间 ${scope.from || '不限'} → ${scope.to || '不限'}` : ''
                   ].filter(Boolean)

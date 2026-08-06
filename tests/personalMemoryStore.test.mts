@@ -10025,6 +10025,15 @@ test('memory scope filters apply entity, session, date and document type togethe
   assert.equal(filterMemorySearchResults(items, {
     evidenceStrength: 'forged-strength'
   }).length, 0)
+  assert.deepEqual(filterMemorySearchResults(items, {
+    evidenceBreadth: 'single_source'
+  }).map(item => item.id), ['relation-1', 'task-1'])
+  assert.equal(filterMemorySearchResults(items, {
+    evidenceBreadth: 'multi_source'
+  }).length, 0)
+  assert.equal(filterMemorySearchResults(items, {
+    evidenceBreadth: 'forged-breadth'
+  }).length, 0)
   assert.equal(filterMemorySearchResults(items, { from: '2026-07-29' }).length, 0)
 })
 
@@ -10533,6 +10542,12 @@ test('memory trust scopes and facets separate confirmed candidates from source m
     const indirectOnlyEvidence = store.listScopedSearchDocumentIds({
       evidenceStrength: 'indirect_only'
     })
+    const multiSourceEvidence = store.listScopedSearchDocumentIds({
+      evidenceBreadth: 'multi_source'
+    })
+    const singleSourceEvidence = store.listScopedSearchDocumentIds({
+      evidenceBreadth: 'single_source'
+    })
     const invalidConflict = store.listScopedSearchDocumentIds({
       evidenceConflict: 'forged-conflict'
     })
@@ -10570,8 +10585,18 @@ test('memory trust scopes and facets separate confirmed candidates from source m
     assert.deepEqual([...indirectOnlyEvidence!].filter(id => id.includes('trust-facet')), [
       'claim:trust-facet-candidate'
     ])
+    assert.deepEqual([...multiSourceEvidence!].filter(id => id.includes('trust-facet')), [
+      'claim:trust-facet-confirmed',
+      'task:trust-facet-task'
+    ])
+    assert.deepEqual([...singleSourceEvidence!].filter(id => id.includes('trust-facet')), [
+      'claim:trust-facet-candidate'
+    ])
     assert.equal(store.listScopedSearchDocumentIds({
       evidenceStrength: 'forged-strength'
+    })?.size, 0)
+    assert.equal(store.listScopedSearchDocumentIds({
+      evidenceBreadth: 'forged-breadth'
     })?.size, 0)
     assert.equal(invalidConflict?.size, 0)
     assert.deepEqual(
@@ -10647,6 +10672,14 @@ test('memory trust scopes and facets separate confirmed candidates from source m
       sourceIds: ['mail'],
       evidenceStrength: 'indirect_only'
     })!
+    const wechatMultiSource = store.listScopedSearchDocumentIds({
+      sourceIds: ['wechat'],
+      evidenceBreadth: 'multi_source'
+    })!
+    const wechatSingleSource = store.listScopedSearchDocumentIds({
+      sourceIds: ['wechat'],
+      evidenceBreadth: 'single_source'
+    })!
     assert.equal(wechatContradictions.has('claim:trust-facet-confirmed'), false)
     assert.equal(calendarContradictions.has('claim:trust-facet-confirmed'), true)
     assert.equal(wechatWithoutContradictions.has('claim:trust-facet-confirmed'), true)
@@ -10655,6 +10688,8 @@ test('memory trust scopes and facets separate confirmed candidates from source m
     assert.equal(wechatIndirectOnly.has('claim:trust-facet-confirmed'), false)
     assert.equal(mailDirect.has('claim:trust-facet-confirmed'), false)
     assert.equal(mailIndirectOnly.has('claim:trust-facet-confirmed'), true)
+    assert.equal(wechatMultiSource.has('claim:trust-facet-confirmed'), false)
+    assert.equal(wechatSingleSource.has('claim:trust-facet-confirmed'), true)
     const futureSupporting = store.listScopedSearchDocumentIds({
       from: '2027-01-01',
       to: '2027-12-31',

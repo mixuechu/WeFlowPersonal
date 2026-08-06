@@ -2048,6 +2048,8 @@ export interface ElectronAPI {
         contradictionCountBasis?: 'lexical_archive' | 'scope_browse'
         evidenceStrengthCounts?: Record<string, number>
         evidenceStrengthCountsBasis?: 'lexical_archive' | 'scope_browse'
+        evidenceBreadthCounts?: Record<string, number>
+        evidenceBreadthCountsBasis?: 'lexical_archive' | 'scope_browse'
         scopeCandidates: number | null
         revision: string
         stale: boolean
