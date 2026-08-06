@@ -9966,6 +9966,15 @@ test('memory scope filters apply entity, session, date and document type togethe
   assert.deepEqual(filterMemorySearchResults(items, {
     sourceIds: ['calendar']
   }, true).map(item => item.id), ['relation-1', 'task-1', 'entity-with-index-time-only'])
+  assert.deepEqual(filterMemorySearchResults(items, {
+    supportability: 'supporting'
+  }).map(item => item.id), ['relation-1', 'task-1'])
+  assert.deepEqual(filterMemorySearchResults(items, {
+    supportability: 'review_only'
+  }).map(item => item.id), ['entity-with-index-time-only'])
+  assert.equal(filterMemorySearchResults(items, {
+    supportability: 'forged-status'
+  }).length, 0)
   assert.equal(filterMemorySearchResults(items, { from: '2026-07-29' }).length, 0)
 })
 
@@ -10439,6 +10448,11 @@ test('memory trust scopes and facets separate confirmed candidates from source m
     const candidate = store.listScopedSearchDocumentIds({ trustStatuses: ['candidate'] })
     const source = store.listScopedSearchDocumentIds({ trustStatuses: ['source'] })
     const invalid = store.listScopedSearchDocumentIds({ trustStatuses: ['forged-status'] })
+    const supporting = store.listScopedSearchDocumentIds({ supportability: 'supporting' })
+    const reviewOnly = store.listScopedSearchDocumentIds({ supportability: 'review_only' })
+    const invalidSupport = store.listScopedSearchDocumentIds({
+      supportability: 'forged-supportability'
+    })
     assert.deepEqual([...confirmed!].filter(id => id.includes('trust-facet')), [
       'claim:trust-facet-confirmed'
     ])
@@ -10450,6 +10464,15 @@ test('memory trust scopes and facets separate confirmed candidates from source m
       'task:trust-facet-task'
     ])
     assert.equal(invalid?.size, 0)
+    assert.deepEqual([...supporting!].filter(id => id.includes('trust-facet')), [
+      'claim:trust-facet-confirmed',
+      'task:trust-facet-task'
+    ])
+    assert.deepEqual([...reviewOnly!].filter(id => id.includes('trust-facet')), [
+      'entity:trust-facet-person',
+      'claim:trust-facet-candidate'
+    ])
+    assert.equal(invalidSupport?.size, 0)
     assert.deepEqual(
       store.getSearchDocumentTrustCountsByKeyword('可信层级关键词', null),
       {
@@ -10457,6 +10480,20 @@ test('memory trust scopes and facets separate confirmed candidates from source m
         searchMode: 'fts'
       }
     )
+    assert.deepEqual(
+      store.getSearchDocumentSupportCountsByKeyword('可信层级关键词', null),
+      {
+        counts: { supporting: 2, review_only: 1 },
+        searchMode: 'fts'
+      }
+    )
+    const supportFacetScope = store.listScopedSearchDocumentIds({
+      documentTypes: ['entity', 'claim', 'task']
+    })!
+    assert.deepEqual(store.getSearchDocumentSupportCountsInScope(supportFacetScope), {
+      supporting: 2,
+      review_only: 2
+    })
     const wechatScope = store.listScopedSearchDocumentIds({ sourceIds: ['wechat'] })!
     const documentScope = store.listScopedSearchDocumentIds({ sourceIds: ['documents'] })!
     assert.equal(store.listSearchDocumentsByKeywordPage(

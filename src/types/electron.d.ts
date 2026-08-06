@@ -2040,6 +2040,9 @@ export interface ElectronAPI {
         trustCountsSearchMode?: 'fts' | 'substring_fallback'
         sourceCounts?: Record<string, number>
         sourceCountsBasis?: 'lexical_archive' | 'scope_browse'
+        supportCounts?: Record<string, number>
+        supportCountsBasis?: 'lexical_archive' | 'scope_browse'
+        supportCountsSearchMode?: 'fts' | 'substring_fallback'
         scopeCandidates: number | null
         revision: string
         stale: boolean

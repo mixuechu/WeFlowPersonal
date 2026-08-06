@@ -34,6 +34,8 @@ export function buildMemorySearchFeedbackContext(
   }
   const trustStatuses = normalizedList(options.trustStatuses)
   if (trustStatuses.length) scope.trustStatuses = trustStatuses
+  const supportability = String(options.supportability || '').trim().toLowerCase()
+  if (supportability) scope.supportability = supportability
   const scopeJson = JSON.stringify(scope)
   return {
     query: normalizedQuery,

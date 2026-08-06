@@ -727,6 +727,16 @@
   background: rgba(57, 151, 91, .12);
   color: #256b3f;
 }
+.assistant-search-facet-divider {
+  width: 1px;
+  height: 22px;
+  margin: 0 2px;
+  background: rgba(73, 91, 77, .16);
+}
+.assistant-search-type-facets button:disabled {
+  opacity: .42;
+  cursor: default;
+}
 .assistant-search-result-grid { display: grid; grid-template-columns: repeat(auto-fill,minmax(260px,1fr)); gap: 9px; }
 .assistant-search-results article { padding: 11px 12px; border: 1px solid #e8e5dd; border-radius: 10px; background: rgba(255,255,255,.55); }
 .assistant-search-results article span { display: block; color: #8a918a; font-size: 8px; text-transform: uppercase; }

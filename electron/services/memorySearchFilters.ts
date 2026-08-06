@@ -9,6 +9,7 @@ export type MemorySearchOptions = {
   to?: string
   documentTypes?: string[]
   trustStatuses?: string[]
+  supportability?: string
   relationTypes?: string[]
   sourceIds?: string[]
 }
@@ -85,6 +86,7 @@ export function filterMemorySearchResults(
 ): any[] {
   const types = new Set((options.documentTypes || []).filter(Boolean))
   const trustStatuses = new Set((options.trustStatuses || []).filter(Boolean))
+  const supportability = String(options.supportability || '')
   const sources = new Set((options.sourceIds || []).map(value => value.trim().toLowerCase()).filter(Boolean))
   const relationTypes = new Set((options.relationTypes || []).map(value => value.trim().toLowerCase()).filter(Boolean))
   const entityTerms = (options.entityTerms || []).map(value => value.trim().toLowerCase()).filter(Boolean)
@@ -100,6 +102,16 @@ export function filterMemorySearchResults(
         ? String(item.metadata?.status || 'candidate')
         : 'source'
       if (!trustStatuses.has(trustStatus)) return false
+    }
+    if (supportability) {
+      const structured = ['claim', 'relation', 'event'].includes(String(item.document_type || ''))
+      const canSupportFacts = item.document_type !== 'entity' &&
+        (!structured || String(item.metadata?.status || '') === 'confirmed') &&
+        (item.evidence || []).some((evidence: any) =>
+          String(evidence.evidence_role || evidence.evidenceRole || '') !== 'contradiction')
+      if (supportability === 'supporting' ? !canSupportFacts
+        : supportability === 'review_only' ? canSupportFacts
+          : true) return false
     }
     if (relationTypes.size && item.document_type === 'relation') {
       const predicate = String(item.metadata?.predicate || item.title || '').trim().toLowerCase()

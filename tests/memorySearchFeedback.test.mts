@@ -33,6 +33,13 @@ test('search feedback context is stable but isolated by retrieval scope', () => 
     trustStatuses: ['confirmed']
   })
   assert.notEqual(first.scopeFingerprint, confirmedOnly.scopeFingerprint)
+  const supportingOnly = buildMemorySearchFeedbackContext('谁在等我 回复', {
+    entityId: 'person-1',
+    sourceIds: ['wechat', 'calendar'],
+    documentTypes: ['task', 'event'],
+    supportability: 'supporting'
+  })
+  assert.notEqual(first.scopeFingerprint, supportingOnly.scopeFingerprint)
 })
 
 test('search feedback conservatively reranks without deleting any result', () => {

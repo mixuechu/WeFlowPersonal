@@ -8026,6 +8026,10 @@ export class AiAssistantService {
       ...scopedOptions,
       sourceIds: undefined
     }
+    const supportFacetAllowedIds = personalMemoryStore.listScopedSearchDocumentIds({
+      ...scopedOptions,
+      supportability: undefined
+    })
     if (!text && allowedIds === null) {
       return {
         results: [], offset, limit, total: 0, hasMore: false, truncated: false,
@@ -8067,6 +8071,17 @@ export class AiAssistantService {
         return [sourceId, total]
       })
     )
+    const supportFacet = text
+      ? personalMemoryStore.getSearchDocumentSupportCountsByKeyword(
+          text,
+          supportFacetAllowedIds
+        )
+      : {
+          counts: personalMemoryStore.getSearchDocumentSupportCountsInScope(
+            supportFacetAllowedIds || new Set()
+          ),
+          searchMode: undefined
+        }
     if (text && searchMode === 'lexical_archive') {
       const lexicalPage = personalMemoryStore.listSearchDocumentsByKeywordPage(
         text,
@@ -8150,6 +8165,9 @@ export class AiAssistantService {
     page.trustCountsSearchMode = trustFacet.searchMode
     page.sourceCounts = sourceCounts
     page.sourceCountsBasis = text ? 'lexical_archive' : 'scope_browse'
+    page.supportCounts = supportFacet.counts
+    page.supportCountsBasis = text ? 'lexical_archive' : 'scope_browse'
+    page.supportCountsSearchMode = supportFacet.searchMode
     const feedback = this.memorySearchFeedbackContext(text, scopedOptions).entries
     const completedRevision = personalMemoryStore.getMemorySearchRevision()
     const completedEntitySelection = options.entityId

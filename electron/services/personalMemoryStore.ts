@@ -35,6 +35,29 @@ type MemoryGraph = {
 type MemoryEvidenceSource = 'wechat' | 'documents' | 'calendar' | 'mail' | 'legacy'
 const TASK_EVIDENCE_FINGERPRINT_VERSION = 3
 
+function searchDocumentSupportsFactsSql(alias = 'd'): string {
+  return `(
+    (${alias}.document_type='claim'
+      AND COALESCE(json_extract(${alias}.metadata_json,'$.status'),'')='confirmed'
+      AND EXISTS (SELECT 1 FROM evidence support
+        WHERE support.claim_id=${alias}.source_id
+          AND COALESCE(support.evidence_role,'direct')!='contradiction'))
+    OR (${alias}.document_type='relation'
+      AND COALESCE(json_extract(${alias}.metadata_json,'$.status'),'')='confirmed'
+      AND EXISTS (SELECT 1 FROM evidence support
+        WHERE support.relation_id=${alias}.source_id
+          AND COALESCE(support.evidence_role,'direct')!='contradiction'))
+    OR (${alias}.document_type='event'
+      AND COALESCE(json_extract(${alias}.metadata_json,'$.status'),'')='confirmed'
+      AND EXISTS (SELECT 1 FROM evidence support
+        WHERE support.event_id=${alias}.source_id
+          AND COALESCE(support.evidence_role,'direct')!='contradiction'))
+    OR (${alias}.document_type NOT IN ('entity','claim','relation','event')
+      AND EXISTS (SELECT 1 FROM search_document_evidence support
+        WHERE support.document_id=${alias}.id))
+  )`
+}
+
 function relationSearchText(
   subjectName: unknown,
   predicate: unknown,
@@ -13956,6 +13979,7 @@ export class PersonalMemoryStore {
       options.to ||
       options.documentTypes?.length ||
       options.trustStatuses?.length ||
+      options.supportability ||
       options.relationTypes?.length ||
       options.sourceIds?.length
     )
@@ -13994,6 +14018,11 @@ export class PersonalMemoryStore {
       conditions.push(`(${clauses.join(' OR ')})`)
       parameters.push(...trustStatuses.filter(status => status !== 'source'))
     }
+    const supportsFactsSql = searchDocumentSupportsFactsSql()
+    const supportability = String(options.supportability || '').trim().toLowerCase()
+    if (supportability === 'supporting') conditions.push(supportsFactsSql)
+    else if (supportability === 'review_only') conditions.push(`NOT ${supportsFactsSql}`)
+    else if (supportability) conditions.push('0=1')
     const sourceIds = [...new Set((options.sourceIds || [])
       .map(value => String(value).trim().toLowerCase()).filter(Boolean))]
     const sessions = options.sessionId
@@ -14182,6 +14211,27 @@ export class PersonalMemoryStore {
       GROUP BY status
     `).all() as any[]
     return Object.fromEntries(rows.map(row => [String(row.status), Number(row.count || 0)]))
+  }
+
+  getSearchDocumentSupportCountsInScope(allowedIds: Set<string>): Record<string, number> {
+    if (!this.db || !allowedIds.size) return {}
+    this.replaceActiveSearchScope(allowedIds)
+    const supportsFactsSql = searchDocumentSupportsFactsSql()
+    const row = this.db.prepare(`
+      SELECT
+        SUM(CASE WHEN ${supportsFactsSql} THEN 1 ELSE 0 END) AS supporting,
+        SUM(CASE WHEN NOT ${supportsFactsSql} THEN 1 ELSE 0 END) AS review_only
+      FROM search_documents d
+      JOIN active_memory_search_scope scope ON scope.id=d.id
+      WHERE NOT (
+        d.document_type IN ('claim','relation','event')
+        AND COALESCE(json_extract(d.metadata_json,'$.status'),'')='rejected'
+      )
+    `).get() as any
+    return {
+      supporting: Number(row?.supporting || 0),
+      review_only: Number(row?.review_only || 0)
+    }
   }
 
   listSearchDocumentsInScopePage(
@@ -14416,6 +14466,52 @@ export class PersonalMemoryStore {
       GROUP BY status
     `).all(pattern, pattern) as any[]
     return { counts: toCounts(rows), searchMode: 'substring_fallback' }
+  }
+
+  getSearchDocumentSupportCountsByKeyword(
+    query: string,
+    allowedIds: Set<string> | null
+  ): { counts: Record<string, number>; searchMode: 'fts' | 'substring_fallback' } {
+    const normalized = String(query || '').trim().replace(/["']/g, ' ')
+    if (!this.db || !normalized || (allowedIds && !allowedIds.size)) {
+      return { counts: {}, searchMode: 'fts' }
+    }
+    if (allowedIds) this.replaceActiveSearchScope(allowedIds)
+    const scopeJoin = allowedIds
+      ? 'JOIN active_memory_search_scope scope ON scope.id=d.id'
+      : ''
+    const supportsFactsSql = searchDocumentSupportsFactsSql()
+    const trustedCondition = `NOT (
+      d.document_type IN ('claim','relation','event')
+      AND COALESCE(json_extract(d.metadata_json,'$.status'),'')='rejected'
+    )`
+    const toCounts = (row: any): Record<string, number> => ({
+      supporting: Number(row?.supporting || 0),
+      review_only: Number(row?.review_only || 0)
+    })
+    const selectCounts = `
+      SUM(CASE WHEN ${supportsFactsSql} THEN 1 ELSE 0 END) AS supporting,
+      SUM(CASE WHEN NOT ${supportsFactsSql} THEN 1 ELSE 0 END) AS review_only
+    `
+    const ftsQuery = `"${normalized.replace(/"/g, '""')}"`
+    try {
+      const row = this.db.prepare(`
+        SELECT ${selectCounts}
+        FROM search_fts JOIN search_documents d ON d.id=search_fts.document_id
+        ${scopeJoin}
+        WHERE search_fts MATCH ? AND ${trustedCondition}
+      `).get(ftsQuery) as any
+      if (Number(row?.supporting || 0) + Number(row?.review_only || 0) > 0) {
+        return { counts: toCounts(row), searchMode: 'fts' }
+      }
+    } catch {}
+    const pattern = `%${normalized}%`
+    const row = this.db.prepare(`
+      SELECT ${selectCounts}
+      FROM search_documents d ${scopeJoin}
+      WHERE (d.title LIKE ? OR d.search_text LIKE ?) AND ${trustedCondition}
+    `).get(pattern, pattern) as any
+    return { counts: toCounts(row), searchMode: 'substring_fallback' }
   }
 
   recordMemorySearchFeedback(input: {
@@ -16325,6 +16421,8 @@ export class PersonalMemoryStore {
               to: String(storedContext.options?.to || '').trim().slice(0, 64),
               documentTypes: cleanList(storedContext.options?.documentTypes),
               trustStatuses: cleanList(storedContext.options?.trustStatuses),
+              supportability: String(storedContext.options?.supportability || '')
+                .trim().toLowerCase().slice(0, 32),
               relationTypes: cleanList(storedContext.options?.relationTypes),
               sourceIds: cleanList(storedContext.options?.sourceIds)
             },
