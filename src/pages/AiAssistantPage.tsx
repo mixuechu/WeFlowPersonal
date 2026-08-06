@@ -16,6 +16,11 @@ import {
   resolveCompletedReviewReturn,
   type ReviewReturnTarget
 } from '../utils/reviewReturnTarget'
+import {
+  compactReviewSourceId,
+  reviewSourceKindLabel,
+  trustedEntityTypeLabel
+} from '../utils/reviewSourcePresentation'
 import { LatestRequestGate } from '../utils/latestRequestGate'
 import { buildMemorySessionScope } from '../utils/memorySessionScope'
 import { buildResourceStructurePresentation } from '../utils/resourceStructurePresentation'
@@ -1115,6 +1120,13 @@ function AiAssistantPage() {
   const [reviewReturnTarget, setReviewReturnTarget] =
     useState<ReviewReturnTarget | null>(null)
   const reviewReturnTargetRef = useRef<ReviewReturnTarget | null>(null)
+  const [reviewReturnSource, setReviewReturnSource] = useState<{
+    status: 'idle' | 'loading' | 'ready' | 'unavailable' | 'error'
+    label?: string
+    typeLabel?: string
+    error?: string
+  }>({ status: 'idle' })
+  const reviewReturnSourceGate = useRef(new LatestRequestGate())
   const [reviewDecisionSaving, setReviewDecisionSaving] =
     useState<Record<string, boolean>>({})
   const reviewDecisionLocks = useRef(new Set<string>())
@@ -2359,6 +2371,70 @@ function AiAssistantPage() {
       if (reviewPageGate.current.isCurrent(request)) reviewPageGate.current.invalidate()
     }
   }, [reviewStatusFilter, reviewKindFilter, reviewQuery, focusedReviewId, reviewRefreshKey, dashboard?.graphReviewRevision])
+
+  useEffect(() => {
+    const target = reviewReturnTarget
+    const request = reviewReturnSourceGate.current.begin()
+    if (!target) {
+      setReviewReturnSource({ status: 'idle' })
+      return () => {
+        if (reviewReturnSourceGate.current.isCurrent(request)) {
+          reviewReturnSourceGate.current.invalidate()
+        }
+      }
+    }
+    setReviewReturnSource({ status: 'loading' })
+    const resolveSource = target.kind === 'project'
+      ? window.electronAPI.aiAssistant.getProjectWorkspace(target.sourceId)
+        .then(workspace => {
+          if (!reviewReturnSourceGate.current.isCurrent(request)) return
+          const project = workspace?.project
+          if (!project) {
+            setReviewReturnSource({
+              status: 'unavailable',
+              error: '项目已删除或不再可信'
+            })
+            return
+          }
+          setReviewReturnSource({
+            status: 'ready',
+            label: String(project.name || target.sourceId),
+            typeLabel: '项目'
+          })
+        })
+      : window.electronAPI.aiAssistant.getTrustedEntityDirectory({
+          query: target.sourceId,
+          limit: 20,
+          offset: 0
+        }).then(directory => {
+          if (!reviewReturnSourceGate.current.isCurrent(request)) return
+          const entity = directory.items.find((item: any) => item.id === target.sourceId)
+          if (!entity) {
+            setReviewReturnSource({
+              status: 'unavailable',
+              error: '实体已合并、拒绝、删除或不再可信'
+            })
+            return
+          }
+          setReviewReturnSource({
+            status: 'ready',
+            label: String(entity.canonicalName || target.sourceId),
+            typeLabel: trustedEntityTypeLabel(entity.type)
+          })
+        })
+    void resolveSource.catch(error => {
+      if (!reviewReturnSourceGate.current.isCurrent(request)) return
+      setReviewReturnSource({
+        status: 'error',
+        error: error?.message || String(error)
+      })
+    })
+    return () => {
+      if (reviewReturnSourceGate.current.isCurrent(request)) {
+        reviewReturnSourceGate.current.invalidate()
+      }
+    }
+  }, [reviewReturnTarget?.kind, reviewReturnTarget?.sourceId])
 
   useEffect(() => {
     if (!focusedReviewId || reviewPage.status !== 'ready') return
@@ -10955,11 +11031,24 @@ function AiAssistantPage() {
             </div>
             {focusedReviewId && <div className="assistant-review-note">
               {reviewReturnTarget
-                ? `正在审阅${reviewReturnTarget.kind === 'project' ? '项目' : '实体档案'}中的权威关系候选；确认、拒绝或修正成功后会重新验证来源并读取最新档案。`
-                : '正在定位人物档案中的权威关系候选。'}
+                ? `正在审阅${reviewSourceKindLabel(reviewReturnTarget.kind)}中的权威关系候选；确认、拒绝或修正成功后会重新验证来源并读取最新档案。`
+                : '正在定位审阅账本中的权威候选。'}
+              {reviewReturnTarget && <div>
+                <b>返回来源：</b>
+                {reviewReturnSource.status === 'loading' && <span>正在按稳定 ID 验证当前来源…</span>}
+                {reviewReturnSource.status === 'ready' && <span>
+                  {reviewReturnSource.typeLabel}“{reviewReturnSource.label}”
+                </span>}
+                {['unavailable', 'error'].includes(reviewReturnSource.status) && <span>
+                  当前不可用：{reviewReturnSource.error}
+                </span>}
+                <small title={reviewReturnTarget.sourceId}>
+                  稳定 ID：{compactReviewSourceId(reviewReturnTarget.sourceId)}
+                </small>
+              </div>}
               {reviewReturnTarget
                 ? <button onClick={returnFromReviewTarget}>
-                    暂不处理，返回{reviewReturnTarget.kind === 'project' ? '项目' : '实体档案'}
+                    暂不处理，返回{reviewSourceKindLabel(reviewReturnTarget.kind)}
                   </button>
                 : <button onClick={() => {
                     setFocusedReviewId('')
