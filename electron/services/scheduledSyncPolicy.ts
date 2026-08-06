@@ -85,6 +85,15 @@ export function shouldRunResumeCatchup(
   return observedAt - previousAttempt >= RESUME_CATCHUP_THROTTLE_MS
 }
 
+export function shouldRunSchedulerWakeCatchup(
+  wake: SchedulerWakeAssessment,
+  lastSyncAttemptAt: unknown,
+  observedAt: number
+): boolean {
+  if (wake.reason !== 'system_resume' && wake.reason !== 'timer_gap') return false
+  return shouldRunResumeCatchup(wake.elapsedMs, lastSyncAttemptAt, observedAt)
+}
+
 export function planResumeCatchupRetry(
   previous: Partial<ResumeCatchupRetryState> | null | undefined,
   assessment: ScheduledSyncAssessment,

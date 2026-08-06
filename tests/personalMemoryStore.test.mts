@@ -175,6 +175,7 @@ import {
   scheduledSyncRetryDelayMs,
   scheduledSyncTargetTimestamp,
   shouldRunResumeCatchup,
+  shouldRunSchedulerWakeCatchup,
   shouldReconcileScheduledSync
 } from '../electron/services/scheduledSyncPolicy.ts'
 
@@ -8096,6 +8097,37 @@ test('daily schedule is acknowledged only after every enabled source and backlog
     '2026-07-31T07:30:00.000Z',
     Date.parse('2026-07-31T08:00:00.000Z')
   ), true)
+  const missedResumeWake = assessSchedulerWake(
+    Date.parse('2026-07-31T01:00:00.000Z'),
+    Date.parse('2026-07-31T08:00:00.000Z')
+  )
+  assert.equal(missedResumeWake.reason, 'timer_gap')
+  assert.equal(shouldRunSchedulerWakeCatchup(
+    missedResumeWake,
+    '2026-07-31T07:30:00.000Z',
+    Date.parse('2026-07-31T08:00:00.000Z')
+  ), true)
+  assert.equal(shouldRunSchedulerWakeCatchup(
+    missedResumeWake,
+    '2026-07-31T07:50:00.000Z',
+    Date.parse('2026-07-31T08:00:00.000Z')
+  ), false)
+  assert.equal(shouldRunSchedulerWakeCatchup(
+    assessSchedulerWake(
+      Date.parse('2026-07-31T07:59:00.000Z'),
+      Date.parse('2026-07-31T08:00:00.000Z')
+    ),
+    '2026-07-31T07:30:00.000Z',
+    Date.parse('2026-07-31T08:00:00.000Z')
+  ), false)
+  assert.equal(shouldRunSchedulerWakeCatchup(
+    assessSchedulerWake(
+      Date.parse('2026-07-31T08:10:00.000Z'),
+      Date.parse('2026-07-31T08:00:00.000Z')
+    ),
+    '2026-07-31T07:30:00.000Z',
+    Date.parse('2026-07-31T08:00:00.000Z')
+  ), false)
   const resumeFailedOnce = planResumeCatchupRetry(
     EMPTY_RESUME_CATCHUP_RETRY_STATE,
     { complete: false, reason: '网络未连接' },

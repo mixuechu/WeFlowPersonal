@@ -378,7 +378,7 @@ import {
   planScheduledSyncState,
   planResumeCatchupRetry,
   scheduledSyncTargetTimestamp,
-  shouldRunResumeCatchup,
+  shouldRunSchedulerWakeCatchup,
   shouldReconcileScheduledSync,
   type ResumeCatchupRetryState
 } from './scheduledSyncPolicy'
@@ -9612,21 +9612,32 @@ export class AiAssistantService {
     const schedule = String(this.config.get('aiAssistantScheduleTime') || '20:00')
     const dailyDue = time >= schedule && this.state.cursor.lastScheduledRunDate !== today
     if (!dailyDue) {
-      if (source === 'system_resume' && shouldRunResumeCatchup(
-        wake.elapsedMs,
+      const resumeLikeWake = source === 'system_resume' || wake.reason === 'timer_gap'
+      if (shouldRunSchedulerWakeCatchup(
+        wake,
         this.state.cursor.lastAttemptAt,
         nowMs
       )) {
+        let outcome = 'resume_incremental_failed'
         try {
           const result = await this.sync('resume')
-          return result?.success === true && !result?.partial && !result?.cancelled
+          outcome = result?.success === true && !result?.partial && !result?.cancelled
             ? 'resume_incremental_completed'
             : 'resume_incremental_partial'
-        } catch {
-          return 'resume_incremental_failed'
+        } catch {}
+        if (source === 'timer' && wake.reason === 'timer_gap') {
+          this.state.cursor.lastResumeCatchupAt = new Date().toISOString()
+          this.state.cursor.lastResumeCatchupResult = outcome
+          this.saveState()
         }
+        return outcome
       }
-      if (source === 'system_resume' && wake.elapsedMs >= 5 * 60_000) {
+      if (resumeLikeWake && wake.elapsedMs >= 5 * 60_000) {
+        if (source === 'timer' && wake.reason === 'timer_gap') {
+          this.state.cursor.lastResumeCatchupAt = new Date().toISOString()
+          this.state.cursor.lastResumeCatchupResult = 'resume_incremental_throttled'
+          this.saveState()
+        }
         return 'resume_incremental_throttled'
       }
       const maintenance = assessAutomaticSearchMaintenance({

@@ -8529,12 +8529,14 @@ function AiAssistantPage() {
             </small>
           </div>
         )}
-        {status?.cursor?.systemWake?.lastResumeAt && (
+        {status?.cursor?.systemWake?.lastWakeAt && (
           <div className="assistant-ingestion-status completed">
-            <strong>电脑唤醒后的增量补齐已检查</strong>
+            <strong>睡眠或定时器中断后的增量补齐已检查</strong>
             <span>
-              最近唤醒 {new Date(status.cursor.systemWake.lastResumeAt).toLocaleString('zh-CN', { hour12: false })}
-              {' · '}累计 {Number(status.cursor.systemWake.resumeCount || 0).toLocaleString()} 次
+              最近检测 {new Date(status.cursor.systemWake.lastWakeAt).toLocaleString('zh-CN', { hour12: false })}
+              {status.cursor.systemWake.lastWakeReason === 'timer_gap'
+                ? ' · 由定时器停顿兜底触发'
+                : ` · 明确唤醒累计 ${Number(status.cursor.systemWake.resumeCount || 0).toLocaleString()} 次`}
             </span>
             <small>{schedulerCatchupResultLabel(status.cursor.systemWake.lastCatchupResult)}</small>
             {status.cursor.systemWake.retry?.pendingSince && <small>
