@@ -5175,15 +5175,6 @@ function AiAssistantPage() {
         ?.scrollIntoView({ behavior: 'smooth', block: 'start' }))
   }
 
-  const openEntityPendingCommitments = () => {
-    setEntityEventType('commitment')
-    setEntityEventStatus('candidate')
-    setShowEntityDossier(true)
-    window.setTimeout(() =>
-      document.getElementById('entity-dossier-events')
-        ?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 0)
-  }
-
   const focusEntityDossierMetric = (metric: EntityDossierMetric) => {
     const target = entityDossierDrilldown(metric)
     if (target.identityKind) {
@@ -5206,10 +5197,37 @@ function AiAssistantPage() {
       setEntityRelationStatus('all')
       setEntityRelationSource('all')
     }
-    window.requestAnimationFrame(() =>
+    if (target.resetScope === 'claims') {
+      setEntityClaimQuery('')
+      setEntityClaimStatus('all')
+      setEntityClaimSource('all')
+      setEntityClaimFrom('')
+      setEntityClaimTo('')
+    }
+    if (target.resetScope === 'events') {
+      setEntityEventQuery('')
+      setEntityEventType('all')
+      setEntityEventStatus('all')
+      setEntityEventSource('all')
+      setEntityEventFrom('')
+      setEntityEventTo('')
+    }
+    if (target.eventPreset === 'pendingCommitments') {
+      setEntityEventQuery('')
+      setEntityEventType('commitment')
+      setEntityEventStatus('candidate')
+      setEntityEventSource('all')
+      setEntityEventFrom('')
+      setEntityEventTo('')
+    }
+    setShowEntityDossier(true)
+    window.setTimeout(() =>
       document.getElementById(target.sectionId)
-        ?.scrollIntoView({ behavior: 'smooth', block: 'start' }))
+        ?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 0)
   }
+
+  const openEntityPendingCommitments = () =>
+    focusEntityDossierMetric('pendingCommitments')
 
   const focusIdentityMergeCandidates = () => {
     setFocusedReviewId('')
@@ -11231,9 +11249,21 @@ function AiAssistantPage() {
                     {forgettingEntityId === selectedEntity.id ? '正在彻底清理…' : '彻底遗忘此实体'}
                   </button>
                   {selectedEntityInsight && <div className="assistant-relationship-metrics">
-                    <div><strong>{selectedEntityInsight.strength}</strong><span>关系强度 · {selectedEntityInsight.strengthLabel}</span></div>
-                    <div><strong>{selectedEntityInsight.evidenceCount}</strong><span>去重证据</span></div>
-                    <div><strong>{selectedEntityInsight.openTaskCount}</strong><span>关联待办</span></div>
+                    <button type="button" className="assistant-insight-action"
+                      onClick={() => focusEntityDossierMetric('relationships')}>
+                      <strong>{selectedEntityInsight.strength}</strong>
+                      <span>关系强度 · {selectedEntityInsight.strengthLabel} · 查看</span>
+                    </button>
+                    <button type="button" className="assistant-insight-action"
+                      onClick={() => focusEntityDossierMetric('currentEvidence')}>
+                      <strong>{selectedEntityInsight.evidenceCount}</strong>
+                      <span>当前证据 · 查看</span>
+                    </button>
+                    <button type="button" className="assistant-insight-action"
+                      onClick={() => focusEntityDossierMetric('tasks')}>
+                      <strong>{selectedEntityInsight.openTaskCount}</strong>
+                      <span>未完成关联事项 · 查看档案</span>
+                    </button>
                     <button type="button" className="assistant-insight-action"
                       disabled={!selectedEntityInsight.pendingCommitmentCount}
                       onClick={openEntityPendingCommitments}>
@@ -12334,6 +12364,18 @@ function AiAssistantPage() {
                 <small>关联事项 · 查看</small>
               </button>
               <button type="button" className="assistant-dossier-metric-action"
+                onClick={() => focusEntityDossierMetric('claims')}>
+                <b>{entitySidebar.claims.total}</b><small>结构化事实 · 查看</small>
+              </button>
+              <button type="button" className="assistant-dossier-metric-action"
+                onClick={() => focusEntityDossierMetric('relationships')}>
+                <b>{entitySidebar.relations.total}</b><small>完整关系 · 查看</small>
+              </button>
+              <button type="button" className="assistant-dossier-metric-action"
+                onClick={() => focusEntityDossierMetric('events')}>
+                <b>{entitySidebar.events.total}</b><small>事件时间线 · 查看</small>
+              </button>
+              <button type="button" className="assistant-dossier-metric-action"
                 disabled={!selectedEntityInsight.pendingCommitmentCount}
                 onClick={openEntityPendingCommitments}>
                 <b>{selectedEntityInsight.pendingCommitmentCount}</b>
@@ -12402,7 +12444,7 @@ function AiAssistantPage() {
                     : `加载更多身份（已显示 ${entityIdentityAnchorPage.items.length} / ${entityIdentityAnchorPage.total}）`}
                 </button>}
               </section>
-              <section>
+              <section id="entity-dossier-claims">
                 <h3>结构化事实 <small>{Number(entityDossierPages.claims?.total || 0)}</small></h3>
                 <div className="assistant-inline-filters assistant-inline-filters-wide">
                   <input value={entityClaimQuery} onChange={event => setEntityClaimQuery(event.target.value)}

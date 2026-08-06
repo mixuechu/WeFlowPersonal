@@ -30,7 +30,19 @@ test('entity overview metrics map to authoritative dossier sections', () => {
     sectionId: 'entity-dossier-relations',
     resetScope: 'relationships'
   })
+  assert.deepEqual(entityDossierDrilldown('claims'), {
+    sectionId: 'entity-dossier-claims',
+    resetScope: 'claims'
+  })
+  assert.deepEqual(entityDossierDrilldown('events'), {
+    sectionId: 'entity-dossier-events',
+    resetScope: 'events'
+  })
   assert.deepEqual(entityDossierDrilldown('tasks'), {
     sectionId: 'entity-dossier-tasks'
+  })
+  assert.deepEqual(entityDossierDrilldown('pendingCommitments'), {
+    sectionId: 'entity-dossier-events',
+    eventPreset: 'pendingCommitments'
   })
 })
