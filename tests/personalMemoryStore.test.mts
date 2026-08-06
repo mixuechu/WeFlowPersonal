@@ -16156,11 +16156,40 @@ test('trusted extraction context excludes candidates and keeps same-name confirm
     relations: [],
     limit: 24
   })
-  assert.equal(EXTRACTION_MEMORY_CONTEXT_VERSION, 'trusted-extraction-context-v1')
+  assert.equal(EXTRACTION_MEMORY_CONTEXT_VERSION, 'trusted-extraction-context-v2')
   assert.deepEqual(new Set(selected.entities.map(entity => entity.id)),
     new Set(['person-zhang-a', 'person-zhang-b']))
   assert.equal(selected.entities.some(entity => entity.id === 'person-zhang-candidate'), false)
   assert.equal(selected.directEntityIds.length, 2)
+})
+
+test('trusted extraction context always includes the explicitly bound owner identity', () => {
+  const selected = selectTrustedExtractionEntities({
+    messages: [{ content: '这条消息没有出现本人的姓名', sessionName: '工作群' }],
+    entities: [{
+      id: 'bound-owner',
+      type: 'person',
+      canonicalName: '同名用户',
+      trustStatus: 'confirmed'
+    }, {
+      id: 'same-name-other',
+      type: 'person',
+      canonicalName: '同名用户',
+      trustStatus: 'confirmed'
+    }, {
+      id: 'untrusted-owner',
+      type: 'person',
+      canonicalName: '候选本人',
+      trustStatus: 'candidate'
+    }],
+    relations: [],
+    ownerEntityIds: ['bound-owner', 'untrusted-owner'],
+    limit: 24
+  })
+  assert.deepEqual(selected.directEntityIds, ['bound-owner'])
+  assert.deepEqual(selected.reasons['bound-owner'], ['用户本人绑定身份'])
+  assert.equal(selected.entities.some(entity => entity.id === 'same-name-other'), false)
+  assert.equal(selected.entities.some(entity => entity.id === 'untrusted-owner'), false)
 })
 
 test('trusted extraction context anchors senders, expands only confirmed one-hop relations and stays bounded', () => {

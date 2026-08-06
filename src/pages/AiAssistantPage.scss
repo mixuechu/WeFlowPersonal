@@ -963,6 +963,18 @@
 .assistant-entity-dossier > em { color: #999d97; font-size: 9px; font-style: normal; }
 .assistant-review-section { margin-top: 24px; }
 .assistant-review-inbox { margin-top: 14px; }
+.assistant-owner-profile { margin-top: 14px; }
+.assistant-owner-profile-summary {
+  display: grid;
+  gap: 4px;
+  padding: 12px 14px;
+  border: 1px solid #dbe4dd;
+  border-radius: 12px;
+  background: #f7faf8;
+}
+.assistant-owner-profile-summary strong { font-size: 14px; color: #26372e; }
+.assistant-owner-profile-summary span { font-size: 9px; color: #66756c; }
+.assistant-owner-profile-summary small { font-size: 9px; line-height: 1.6; color: #7c887f; }
 .assistant-review-inbox-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit,minmax(150px,1fr));

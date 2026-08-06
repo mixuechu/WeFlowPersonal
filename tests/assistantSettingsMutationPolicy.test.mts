@@ -22,6 +22,8 @@ AssistantSettingsMutationIdentity => ({
   ownerName: '用户',
   ownerAliases: '我',
   ownerBackground: '本机用户',
+  ownerEntityId: 'entity-owner',
+  ownerEntityRevision: 'trusted-directory-revision',
   transcribeVoice: false,
   ocrImages: false,
   analyzeImages: true,
@@ -42,6 +44,9 @@ test('assistant settings token binds every visible privacy and scheduling field'
   })))
   assert.notEqual(token, buildAssistantSettingsMutationToken(settings({
     ownerBackground: '新的背景'
+  })))
+  assert.notEqual(token, buildAssistantSettingsMutationToken(settings({
+    ownerEntityId: 'entity-same-name-other'
   })))
 })
 
@@ -70,6 +75,7 @@ test('assistant settings input is normalized as one complete valid patch', () =>
   assert.equal(patch.aiAssistantApiKey, 'sk-new-secret')
   assert.equal(patch.aiAssistantApiBaseUrl, 'http://127.0.0.1:9000/v1')
   assert.equal(patch.aiAssistantOwnerName, '用户')
+  assert.equal(patch.aiAssistantOwnerEntityId, 'entity-owner')
   assert.equal(patch.aiAssistantResourceTrashRetentionDays, 90)
 })
 

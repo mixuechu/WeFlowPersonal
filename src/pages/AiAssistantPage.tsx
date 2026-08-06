@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { BookOpen, Bot, CalendarDays, Check, Clock3, Database, Filter, Network, Paperclip, RefreshCw, Search, Settings2, ShieldCheck, Sparkles, TriangleAlert, X } from 'lucide-react'
+import { BookOpen, Bot, CalendarDays, Check, Clock3, Database, Filter, Network, Paperclip, RefreshCw, Search, Settings2, ShieldCheck, Sparkles, TriangleAlert, UserRound, X } from 'lucide-react'
 import { buildTaskCalendar, shanghaiToday } from '../utils/taskCalendar'
 import type { ReviewStatusFilter } from '../utils/graphReviewFilters'
 import { evidenceLocalMessageId, groupMemorySearchResults, memoryEvidenceSourceLabel, MEMORY_TYPE_LABELS, normalizeMemoryEvidence, type MemoryEvidence } from '../utils/memorySearchPresentation'
@@ -497,6 +497,7 @@ function TrustedEntityPicker({
   onSelect,
   onClear,
   onError,
+  type,
   disabled = false
 }: {
   value: string
@@ -506,6 +507,7 @@ function TrustedEntityPicker({
   onSelect: (entity: any) => void
   onClear: () => void
   onError?: (message: string) => void
+  type?: string
   disabled?: boolean
 }) {
   const [query, setQuery] = useState('')
@@ -527,6 +529,7 @@ function TrustedEntityPicker({
       setLoading(true)
       void window.electronAPI.aiAssistant.getTrustedEntityDirectory({
         query: query.trim() || undefined,
+        type,
         limit: 20,
         offset: 0
       }).then(result => {
@@ -545,7 +548,7 @@ function TrustedEntityPicker({
       })
     }, 220)
     return () => window.clearTimeout(timer)
-  }, [open, query, onError])
+  }, [open, query, onError, type])
 
   return <div className="assistant-memory-entity-picker"
     onBlur={event => {
@@ -8495,6 +8498,30 @@ function AiAssistantPage() {
         )}
 
         {message && <div className={`assistant-message ${message.includes('完成') ? 'success' : ''}`}>{message}</div>}
+        <section className="assistant-panel assistant-owner-profile">
+          <div className="assistant-section-heading">
+            <div>
+              <span className="assistant-eyebrow">MY MEMORY</span>
+              <h3><UserRound size={16} /> 我的长期档案</h3>
+            </div>
+            {dashboard?.ownerEntity && <button type="button" className="assistant-open-dossier"
+              onClick={() => {
+                setSelectedEntityId(dashboard.ownerEntity.id)
+                setShowEntityDossier(true)
+              }}>
+              打开完整档案
+            </button>}
+          </div>
+          {dashboard?.ownerEntity ? <div className="assistant-owner-profile-summary">
+            <strong>{dashboard.ownerEntity.canonicalName}</strong>
+            <span>已绑定可信人物 · {dashboard.ownerEntity.id}</span>
+            <small>
+              DeepSeek 会用这个稳定身份理解“我”和常用称呼；事实、关系、事件和任务仍需各自证据与人工审阅。
+            </small>
+          </div> : <div className="assistant-empty">
+            尚未绑定“我的图谱身份”。请在 AI 助理设置中从已确认人物里选择，避免同名或多个微信身份被错误归到你。
+          </div>}
+        </section>
         <section className="assistant-panel assistant-review-inbox" id="review-inbox">
           <div className="assistant-section-heading">
             <div>
@@ -16102,6 +16129,30 @@ function AiAssistantPage() {
             <label><span>模型</span><input value={settings.model} onChange={event => setSettings({ ...settings, model: event.target.value })} /></label>
             <label><span>我的姓名</span><input value={settings.ownerName || ''} placeholder="用于判断群聊任务是否指向你" onChange={event => setSettings({ ...settings, ownerName: event.target.value })} /></label>
             <label><span>我的常用称呼</span><input value={settings.ownerAliases || ''} placeholder="昵称、群昵称，用逗号分隔" onChange={event => setSettings({ ...settings, ownerAliases: event.target.value })} /></label>
+            <label><span>我的图谱身份</span>
+              <TrustedEntityPicker
+                value={settings.ownerEntityId || ''}
+                selected={settings.ownerEntity}
+                type="person"
+                placeholder="从已确认人物中搜索姓名、微信号或稳定 ID"
+                ariaLabel="我的图谱身份"
+                disabled={settingsSaving}
+                onSelect={entity => setSettings({
+                  ...settings,
+                  ownerEntityId: entity.id,
+                  ownerEntity: entity,
+                  ownerEntityRevision: entity.directoryRevision
+                })}
+                onClear={() => setSettings({
+                  ...settings,
+                  ownerEntityId: '',
+                  ownerEntity: null
+                })}
+                onError={setSettingsError} />
+            </label>
+            <small className="assistant-settings-note">
+              这是“我”在知识图谱中的稳定锚点，只允许选择已确认人物；同名实体按 ID 保持区分。清除绑定不会删除任何人物或历史记忆。
+            </small>
             <label><span>我的背景信息</span><textarea value={settings.ownerBackground || ''} placeholder="公司、职位、负责项目等，帮助理解聊天上下文" onChange={event => setSettings({ ...settings, ownerBackground: event.target.value })} /></label>
             <label><span>发送给模型前的敏感信息脱敏</span><select value={settings.sensitiveRedactionLevel || 'standard'} onChange={event => setSettings({ ...settings, sensitiveRedactionLevel: event.target.value })}>
               <option value="credentials">仅凭证：API Key、密码、访问令牌</option>

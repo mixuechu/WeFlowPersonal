@@ -14,6 +14,8 @@ export type AssistantSettingsMutationIdentity = {
   ownerName: unknown
   ownerAliases: unknown
   ownerBackground: unknown
+  ownerEntityId: unknown
+  ownerEntityRevision: unknown
   transcribeVoice: unknown
   ocrImages: unknown
   analyzeImages: unknown
@@ -35,6 +37,7 @@ export type AssistantSettingsConfigPatch = {
   aiAssistantOwnerName: string
   aiAssistantOwnerAliases: string
   aiAssistantOwnerBackground: string
+  aiAssistantOwnerEntityId: string
   autoTranscribeVoice: boolean
   aiAssistantOcrImages: boolean
   aiAssistantAnalyzeImages: boolean
@@ -113,6 +116,7 @@ export function normalizeAssistantSettingsInput(input: unknown): AssistantSettin
     aiAssistantOwnerName: optionalString(source.ownerName, '我的姓名', 200),
     aiAssistantOwnerAliases: optionalString(source.ownerAliases, '我的常用称呼', 2000),
     aiAssistantOwnerBackground: optionalString(source.ownerBackground, '我的背景信息', 10000),
+    aiAssistantOwnerEntityId: optionalString(source.ownerEntityId ?? '', '我的图谱身份', 200),
     autoTranscribeVoice: requiredBoolean(source.transcribeVoice, '语音转写开关'),
     aiAssistantOcrImages: requiredBoolean(source.ocrImages, '图片文字识别开关'),
     aiAssistantAnalyzeImages: requiredBoolean(source.analyzeImages, '图片场景分析开关'),

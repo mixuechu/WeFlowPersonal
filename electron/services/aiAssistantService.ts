@@ -155,6 +155,7 @@ import {
   resolveTrustedEntitySelection,
   type TrustedEntityDirectoryOptions
 } from './trustedEntityDirectory.ts'
+import { resolveOwnerEntityBinding } from './ownerEntityBindingPolicy.ts'
 import {
   assertEntityForgetConfirmation,
   buildEntityForgetPreviewToken
@@ -2185,20 +2186,25 @@ export class AiAssistantService {
     }, {})).map((conversation: any) => ({ ...conversation, participants: Object.values(conversation.participants) }))
     const configuredOwnerName = String(this.config.get('aiAssistantOwnerName') || '').trim()
     const configuredAliases = String(this.config.get('aiAssistantOwnerAliases') || '').split(/[,，、\n]/).map(item => item.trim()).filter(Boolean)
+    const configuredOwnerEntityId = String(this.config.get('aiAssistantOwnerEntityId') || '').trim()
+    const configuredOwnerEntity = this.state.graph.entities.find(entity =>
+      entity.id === configuredOwnerEntityId && isTrustedEntity(entity))
     const selfIdentity = messages.find(message => message.direction === '我发送' && message.senderIdentity)?.senderIdentity
     const inferredOwnerName = String(
       selfIdentity?.contactRemark || selfIdentity?.wechatNickname || selfIdentity?.displayName || ''
     ).trim()
     const ownerProfile = {
-      name: configuredOwnerName || inferredOwnerName,
+      entityId: configuredOwnerEntity?.id || '',
+      name: configuredOwnerName || configuredOwnerEntity?.canonicalName || inferredOwnerName,
       aliases: [...new Set([
         ...configuredAliases,
+        ...(configuredOwnerEntity?.aliases || []),
         selfIdentity?.contactRemark,
         selfIdentity?.wechatNickname,
         selfIdentity?.groupNickname,
         selfIdentity?.alias
       ].map(value => String(value || '').trim()).filter(Boolean))],
-      wxid: String(selfIdentity?.wxid || ''),
+      wxid: String(selfIdentity?.wxid || configuredOwnerEntity?.accountIds?.[0] || ''),
       background: String(this.config.get('aiAssistantOwnerBackground') || '').trim()
     }
     const contextSelection = selectTrustedExtractionEntities({
@@ -2206,6 +2212,7 @@ export class AiAssistantService {
       entities: this.state.graph.entities.filter(isTrustedEntity),
       relations: this.state.graph.relations,
       ownerNames: [ownerProfile.name, ...ownerProfile.aliases],
+      ownerEntityIds: ownerProfile.entityId ? [ownerProfile.entityId] : [],
       limit: 24
     })
     const contextEntityIds = contextSelection.entities.map(entity => entity.id)
@@ -4347,6 +4354,7 @@ export class AiAssistantService {
         version: 'memory-deletion-audit-v1',
         directory: 'paginated_without_content'
       },
+      ownerEntity: this.getOwnerEntityPresentation(),
       memoryStats,
       memoryRevision: crypto.createHash('sha256')
         .update(JSON.stringify({
@@ -6192,8 +6200,24 @@ export class AiAssistantService {
     }
   }
 
+  private getOwnerEntityPresentation(): any | null {
+    const entityId = String(this.config.get('aiAssistantOwnerEntityId') || '').trim()
+    if (!entityId) return null
+    const directory = buildTrustedEntityDirectory(this.state.graph.entities, {
+      query: entityId,
+      limit: 20
+    })
+    const entity = directory.items.find(item => item.id === entityId)
+    return entity ? { ...entity, directoryRevision: directory.revision } : null
+  }
+
   getSettings(): any {
     const apiKeySecret = String(this.config.get('aiAssistantApiKey') || '')
+    const ownerEntity = this.getOwnerEntityPresentation()
+    const ownerEntityRevision = buildTrustedEntityDirectory(
+      this.state.graph.entities,
+      { limit: 1 }
+    ).revision
     const settings = {
       configured: Boolean(apiKeySecret),
       baseUrl: this.config.get('aiAssistantApiBaseUrl'),
@@ -6207,6 +6231,8 @@ export class AiAssistantService {
       ownerName: this.config.get('aiAssistantOwnerName'),
       ownerAliases: this.config.get('aiAssistantOwnerAliases'),
       ownerBackground: this.config.get('aiAssistantOwnerBackground'),
+      ownerEntityId: this.config.get('aiAssistantOwnerEntityId'),
+      ownerEntityRevision,
       transcribeVoice: this.config.get('autoTranscribeVoice'),
       ocrImages: this.config.get('aiAssistantOcrImages'),
       analyzeImages: this.config.get('aiAssistantAnalyzeImages'),
@@ -6216,6 +6242,7 @@ export class AiAssistantService {
     }
     return {
       ...settings,
+      ownerEntity,
       mutationToken: buildAssistantSettingsMutationToken({
         ...settings,
         apiKeySecret
@@ -6399,12 +6426,20 @@ export class AiAssistantService {
 
   setSettings(input: any): any {
     const currentSettings = this.getSettings()
-    const { mutationToken: _currentMutationToken, ...currentVisibleSettings } = currentSettings
+    const {
+      mutationToken: _currentMutationToken,
+      ownerEntity: _currentOwnerEntity,
+      ...currentVisibleSettings
+    } = currentSettings
     assertAssistantSettingsMutationToken({
       ...currentVisibleSettings,
       apiKeySecret: String(this.config.get('aiAssistantApiKey') || '')
     } as AssistantSettingsMutationIdentity, input?.mutationToken)
     const patch = normalizeAssistantSettingsInput(input)
+    resolveOwnerEntityBinding(this.state.graph.entities, {
+      entityId: patch.aiAssistantOwnerEntityId,
+      directoryRevision: input?.ownerEntityRevision
+    })
     this.config.setMany(patch)
     let maintenanceWarning = ''
     if (patch.aiAssistantResourceTrashRetentionDays !== undefined) {

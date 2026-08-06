@@ -1,4 +1,4 @@
-export const EXTRACTION_MEMORY_CONTEXT_VERSION = 'trusted-extraction-context-v1'
+export const EXTRACTION_MEMORY_CONTEXT_VERSION = 'trusted-extraction-context-v2'
 export const EXTRACTION_CONTEXT_AUDIT_VERSION = 'extraction-context-audit-v1'
 
 type ContextEntity = {
@@ -60,6 +60,7 @@ export function selectTrustedExtractionEntities(input: {
   entities: ContextEntity[]
   relations: ContextRelation[]
   ownerNames?: string[]
+  ownerEntityIds?: string[]
   limit?: number
 }): {
   entities: ContextEntity[]
@@ -73,6 +74,7 @@ export function selectTrustedExtractionEntities(input: {
   const byId = new Map(trusted.map(entity => [entity.id, entity]))
   const anchors = new Set(input.messages.flatMap(identityAnchors))
   const ownerNames = new Set((input.ownerNames || []).map(normalized).filter(Boolean))
+  const ownerEntityIds = new Set((input.ownerEntityIds || []).map(value => String(value || '').trim()).filter(Boolean))
   const haystack = normalized(input.messages.flatMap(message => [
     message.content,
     message.sessionName,
@@ -88,6 +90,9 @@ export function selectTrustedExtractionEntities(input: {
     scores.set(entity.id, Math.max(scores.get(entity.id) || 0, score))
   }
   for (const entity of trusted) {
+    if (ownerEntityIds.has(entity.id)) {
+      add(entity, '用户本人绑定身份', 110)
+    }
     if (entityAnchors(entity).some(anchor => anchors.has(anchor))) {
       add(entity, '当前发送者身份锚点', 100)
     }

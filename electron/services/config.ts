@@ -113,6 +113,7 @@ interface ConfigSchema {
   aiAssistantOwnerName: string
   aiAssistantOwnerAliases: string
   aiAssistantOwnerBackground: string
+  aiAssistantOwnerEntityId: string
   aiAssistantOcrImages: boolean
   aiAssistantAnalyzeImages: boolean
   aiAssistantIndexWebLinks: boolean
@@ -289,6 +290,7 @@ export class ConfigService {
       aiAssistantOwnerName: '',
       aiAssistantOwnerAliases: '',
       aiAssistantOwnerBackground: '',
+      aiAssistantOwnerEntityId: '',
       aiAssistantOcrImages: false,
       aiAssistantAnalyzeImages: true,
       aiAssistantIndexWebLinks: false,
