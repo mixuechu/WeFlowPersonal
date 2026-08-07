@@ -1,6 +1,7 @@
 import { Notification } from "electron";
 import { avatarFileCache } from "./avatarFileCacheService";
 import { buildSystemNotificationActionPayload } from "./systemNotificationNavigationPolicy";
+import { showAndConfirmSystemNotification } from "./systemNotificationDeliveryPolicy";
 
 // 系统通知服务（Linux / macOS）：走各自系统的通知中心（Linux 底层为
 // D-Bus/libnotify，macOS 为通知中心），Windows 使用特制的液态玻璃通知窗口。
@@ -88,11 +89,6 @@ export async function showSystemNotification(
       clearNotificationState(notificationId);
     });
 
-    notification.on("failed", (_, error) => {
-      console.error("[SystemNotification] Notification failed:", error);
-      clearNotificationState(notificationId);
-    });
-
     // Linux 的部分通知服务不会自动过期，需要手动关闭兜底；
     // macOS 横幅由系统自动收起并保留在通知中心，手动 close 反而会把它
     // 从通知中心移除，因此不做超时关闭
@@ -107,7 +103,12 @@ export async function showSystemNotification(
       closeTimers.set(notificationId, timer);
     }
 
-    notification.show();
+    const display = await showAndConfirmSystemNotification(notification);
+    if (!display.shown) {
+      console.error("[SystemNotification] Notification failed:", display.error);
+      clearNotificationState(notificationId);
+      return null;
+    }
 
     console.log(
       `[SystemNotification] Shown notification ${notificationId}: ${data.title}`,

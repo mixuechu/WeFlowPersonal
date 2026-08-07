@@ -10263,7 +10263,7 @@ export class AiAssistantService {
           title: notification.title,
           content: notification.content,
           channel: 'ai-assistant',
-          targetRoute: '/ai-assistant'
+          targetRoute: '/ai-assistant?focus=reminders'
         })
         if (notificationId === null) {
           throw new Error('当前系统无法创建通知；已保留在待发队列')

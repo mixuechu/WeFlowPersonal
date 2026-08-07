@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useLocation } from 'react-router-dom'
 import { BookOpen, Bot, CalendarDays, Check, Clock3, Database, Filter, Network, Paperclip, RefreshCw, Search, Settings2, ShieldCheck, Sparkles, TriangleAlert, UserRound, X } from 'lucide-react'
 import { buildTaskCalendar, shanghaiToday } from '../utils/taskCalendar'
 import type { ReviewStatusFilter } from '../utils/graphReviewFilters'
@@ -762,6 +763,8 @@ function EventParticipantEditor({
 }
 
 function AiAssistantPage() {
+  const location = useLocation()
+  const handledNotificationFocusRef = useRef('')
   const [status, setStatus] = useState<any>(null)
   const [dashboard, setDashboard] = useState<any>(null)
   const [settings, setSettings] = useState<any>(null)
@@ -2140,6 +2143,21 @@ function AiAssistantPage() {
       revision: String(directory.revision || '')
     })
   }, [dashboard?.taskReminderDirectory?.revision])
+
+  useEffect(() => {
+    const focus = new URLSearchParams(location.search).get('focus')
+    if (focus !== 'reminders' || !dashboard) return
+    const requestIdentity = `${location.key}:${location.search}`
+    if (handledNotificationFocusRef.current === requestIdentity) return
+    handledNotificationFocusRef.current = requestIdentity
+    setTaskView('list')
+    setFocusedTaskId('')
+    const timer = window.setTimeout(() => {
+      document.getElementById('assistant-task-reminders')
+        ?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+    }, 120)
+    return () => window.clearTimeout(timer)
+  }, [dashboard, location.key, location.search])
 
   useEffect(() => {
     if (!focusedTaskId || taskWorkset.loading ||
@@ -9551,7 +9569,7 @@ function AiAssistantPage() {
         </section>
 
         <div className="assistant-grid">
-          <section className="assistant-panel">
+          <section className="assistant-panel" id="assistant-task-reminders">
             <div className="assistant-section-heading">
               <div><span className="assistant-eyebrow">ACTION ITEMS</span><h3>持续待办池</h3></div>
               <span className="assistant-count">{taskWorkset.total} 项符合当前范围</span>
