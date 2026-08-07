@@ -9195,6 +9195,25 @@ test('verified memory backup is created only from a healthy database', () => wit
   assert.ok(store.restoreBackup(imported.path).success)
 }))
 
+test('deferred backup retention preserves old snapshots until the state sidecar commits', () => withStore(store => {
+  const backups = Array.from({ length: 10 }, () => {
+    const backup = store.createBackup()
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 2)
+    return backup
+  })
+  const oldest = backups[0]
+  const deferred = store.createBackup([], { deferRetention: true })
+  assert.equal(existsSync(oldest.path), true)
+  assert.equal(existsSync(deferred.path), true)
+  assert.equal(store.getDiagnostics().backups.length, 11)
+
+  const retained = store.finalizeBackupRetention()
+  assert.equal(retained, 10)
+  assert.equal(existsSync(oldest.path), false)
+  assert.equal(existsSync(deferred.path), true)
+  assert.equal(store.getDiagnostics().backups.length, 10)
+}))
+
 test('verified backup rejects evidence revision drift and online repair restores both ledgers', () => withStore(store => {
   const database = (store as any).db
   const before = store.getDiagnostics()

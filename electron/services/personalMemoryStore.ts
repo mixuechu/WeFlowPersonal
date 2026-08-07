@@ -7266,7 +7266,10 @@ export class PersonalMemoryStore {
     }
   }
 
-  createBackup(protectedPaths: string[] = []): any {
+  createBackup(
+    protectedPaths: string[] = [],
+    options: { deferRetention?: boolean } = {}
+  ): any {
     if (!this.db || !this.databasePath) throw new Error('个人记忆数据库尚未初始化')
     const diagnostics = this.getDiagnostics()
     if (!diagnostics.healthy) throw new Error(`数据库一致性检查失败：${diagnostics.integrity}`)
@@ -7280,10 +7283,28 @@ export class PersonalMemoryStore {
     try { chmodSync(backupPath, 0o600) } catch {}
     this.verifyDatabase(backupPath)
     if (this.encryptionKey && this.isPlaintextDatabase(backupPath)) throw new Error('备份验证失败：快照未加密')
-    const protectedBackupPaths = new Set(protectedPaths.map(path => resolve(String(path || ''))))
+    const retainedCount = options.deferRetention
+      ? this.listBackups(backupDirectory).length
+      : this.finalizeBackupRetention(protectedPaths)
+    return {
+      success: true,
+      path: backupPath,
+      bytes: statSync(backupPath).size,
+      createdAt: new Date().toISOString(),
+      retained: retainedCount
+    }
+  }
+
+  finalizeBackupRetention(protectedPaths: string[] = []): number {
+    if (!this.databasePath) throw new Error('个人记忆数据库尚未初始化')
+    const backupDirectory = join(dirname(this.databasePath), 'personal-memory-backups')
+    const protectedBackupPaths = new Set(
+      protectedPaths.map(path => resolve(String(path || '')))
+    )
     const backups = this.listBackups(backupDirectory)
     const retained = backups.slice(0, 10)
-    for (const protectedBackup of backups.filter(item => protectedBackupPaths.has(resolve(item.path)))) {
+    for (const protectedBackup of backups.filter(item =>
+      protectedBackupPaths.has(resolve(item.path)))) {
       if (!retained.some(item => resolve(item.path) === resolve(protectedBackup.path))) {
         retained.push(protectedBackup)
       }
@@ -7293,13 +7314,7 @@ export class PersonalMemoryStore {
       unlinkSync(stale.path)
       try { unlinkSync(`${stale.path}.state.json`) } catch {}
     }
-    return {
-      success: true,
-      path: backupPath,
-      bytes: statSync(backupPath).size,
-      createdAt: new Date().toISOString(),
-      retained: retained.length
-    }
+    return retained.length
   }
 
   getCurrentDatabaseSha256(): string {

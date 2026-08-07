@@ -9311,10 +9311,22 @@ function AiAssistantPage() {
             </div>
             <div className="assistant-memory-health-actions">
               <button onClick={() => setShowDiagnostics(true)}>完整诊断</button>
-              <button onClick={() => void backupMemory()} disabled={backingUpMemory || restoringMemory || !memoryDiagnostics.healthy}>
+              <button
+                onClick={() => void backupMemory()}
+                disabled={backingUpMemory || restoringMemory || !memoryDiagnostics.healthy ||
+                  Boolean(status?.backgroundWrites?.active)}
+                title={status?.backgroundWrites?.active
+                  ? `${status.backgroundWrites.message}，完成后才能创建数据库与状态一致的联合快照`
+                  : undefined}>
                 {backingUpMemory ? '正在验证并备份…' : '立即备份个人记忆'}
               </button>
-              <button onClick={openExportMemoryBundle} disabled={migratingMemory || !memoryDiagnostics.healthy}>
+              <button
+                onClick={openExportMemoryBundle}
+                disabled={migratingMemory || !memoryDiagnostics.healthy ||
+                  Boolean(status?.backgroundWrites?.active)}
+                title={status?.backgroundWrites?.active
+                  ? `${status.backgroundWrites.message}，完成后才能导出一致的迁移包`
+                  : undefined}>
                 {migratingMemory ? '正在处理迁移包…' : '导出到其他电脑'}
               </button>
               <button onClick={() => void openImportMemoryBundle()} disabled={migratingMemory || restoringMemory}>导入迁移包</button>

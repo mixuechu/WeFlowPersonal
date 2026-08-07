@@ -54,4 +54,14 @@ test('memory growth is a first-class pageable archive with current dossier navig
   assert.match(main, /ai-assistant:getMemoryChangeLogPage/)
   assert.match(main, /ai-assistant:getMemoryChangeOriginDossier/)
   assert.match(service, /entityId: String\(options\?\.entityId \|\| ''\)/)
+  const backupMethod = service.slice(
+    service.indexOf('  createMemoryBackup('),
+    service.indexOf('  private inspectMemoryBackupForRestore')
+  )
+  assert.match(backupMethod, /getBackgroundWriteConflict/)
+  assert.match(backupMethod, /allowDuringActiveSync/)
+  assert.match(backupMethod, /deferRetention: true/)
+  assert.match(backupMethod, /createJointMemoryBackup/)
+  assert.match(service, /createMemoryBackup\(\[\], \{ allowDuringActiveSync: true \}\)/)
+  assert.match(page, /完成后才能创建数据库与状态一致的联合快照/)
 })

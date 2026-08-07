@@ -38,6 +38,7 @@ import {
 import { extractAttachmentText } from './attachmentTextExtractor'
 import { structureOcrText } from './imageOcrStructuring'
 import { captureWebSnapshot } from './webSnapshotService'
+import { createJointMemoryBackup } from './jointMemoryBackupPolicy'
 import { ModelRequestCoordinator, RequestCoordinator } from './modelRequestCoordinator'
 import { extractScannedPdfText, getPdfOcrStatus } from './pdfOcrService'
 import { exportService } from './export'
@@ -3598,7 +3599,7 @@ export class AiAssistantService {
     this.state.cursor.lastAutomaticBackupAttemptAt = now.toISOString()
     this.saveState()
     try {
-      const backup = this.createMemoryBackup()
+      const backup = this.createMemoryBackup([], { allowDuringActiveSync: true })
       const completedAt = new Date().toISOString()
       this.state.cursor.lastAutomaticBackupDate = policy.date
       this.state.cursor.lastAutomaticBackupAt = completedAt
@@ -5989,17 +5990,44 @@ export class AiAssistantService {
     return true
   }
 
-  createMemoryBackup(protectedPaths: string[] = []): any {
+  createMemoryBackup(
+    protectedPaths: string[] = [],
+    options: { allowDuringActiveSync?: boolean } = {}
+  ): any {
+    if (this.disposed) throw new Error('AI 助理正在安全退出，不能创建个人记忆联合备份')
+    const conflict = getBackgroundWriteConflict({
+      syncing: Boolean(this.activeSync) && !options.allowDuringActiveSync,
+      vectorIndexing: Boolean(this.vectorIndexPromise),
+      searchRepairing: Boolean(this.memorySearchRepairPromise)
+    })
+    if (conflict) {
+      throw new Error(preparedRecoveryConflictMessage(
+        conflict,
+        '个人记忆联合备份'
+      ))
+    }
     const durable = readEncryptedDurableJson<any>(
       this.statePath,
       structuredClone(EMPTY_STATE),
       this.stateEncryptionKey
     )
     if (durable.recovery.source === 'empty') throw new Error('AI 状态不可读取，未创建不完整快照')
-    const result = personalMemoryStore.createBackup(protectedPaths)
-    const stateBackupPath = `${result.path}.state.json`
-    writeEncryptedDurableJson(stateBackupPath, durable.value, this.stateEncryptionKey)
-    return { ...result, stateBackupPath }
+    return createJointMemoryBackup({
+      createDatabaseBackup: () => personalMemoryStore.createBackup(
+        protectedPaths,
+        { deferRetention: true }
+      ),
+      writeStateBackup: stateBackupPath => {
+        writeEncryptedDurableJson(
+          stateBackupPath,
+          durable.value,
+          this.stateEncryptionKey
+        )
+      },
+      finalizeRetention: () =>
+        personalMemoryStore.finalizeBackupRetention(protectedPaths),
+      removeArtifact: path => unlinkSync(path)
+    })
   }
 
   private inspectMemoryBackupForRestore(path: string): {
