@@ -16987,7 +16987,7 @@ test('diagnostic errors redact local identifiers, credentials and home paths', (
   )
   assert.doesNotMatch(sanitized, /secret-token|sk-testsecret|wxid_private|\/Users\/mimimi|user@example\.com|token=abcdef/)
   assert.match(sanitized, /Bearer \[已隐藏\]/)
-  assert.match(sanitized, /\/Users\/\[本机用户\]/)
+  assert.match(sanitized, /\[已隐藏的本机路径\]/)
 })
 
 test('trusted extraction context excludes candidates and keeps same-name confirmed identities distinct', () => {
