@@ -1,7 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { createHash, randomBytes } from 'node:crypto'
 import { PersonalMemoryStore } from '../electron/services/personalMemoryStore.ts'
@@ -9198,20 +9198,46 @@ test('verified memory backup is created only from a healthy database', () => wit
 test('deferred backup retention preserves old snapshots until the state sidecar commits', () => withStore(store => {
   const backups = Array.from({ length: 10 }, () => {
     const backup = store.createBackup()
+    writeFileSync(`${backup.path}.state.json`, 'encrypted-state-placeholder')
     Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 2)
     return backup
   })
   const oldest = backups[0]
+  const databaseOnly = store.createBackup([], { deferRetention: true })
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 2)
   const deferred = store.createBackup([], { deferRetention: true })
+  writeFileSync(`${deferred.path}.state.json`, 'encrypted-state-placeholder')
+  const stateOnly = join(
+    dirname(deferred.path),
+    'personal-memory-orphan.sqlite.state.json'
+  )
+  writeFileSync(stateOnly, 'encrypted-state-placeholder')
   assert.equal(existsSync(oldest.path), true)
+  assert.equal(existsSync(databaseOnly.path), true)
   assert.equal(existsSync(deferred.path), true)
-  assert.equal(store.getDiagnostics().backups.length, 11)
+  assert.equal(store.getDiagnostics().backups.length, 12)
+  assert.deepEqual(store.getBackupPairIntegrity(), {
+    version: 'joint-backup-integrity-v1',
+    complete: 11,
+    databaseOnly: 1,
+    stateOnly: 1,
+    completeBytes: store.getBackupPairIntegrity().completeBytes,
+    databaseOnlyBytes: store.getBackupPairIntegrity().databaseOnlyBytes,
+    stateOnlyBytes: Buffer.byteLength('encrypted-state-placeholder'),
+    retentionPolicy: 'complete_pairs_latest_10_incomplete_preserved_outside_slots'
+  })
 
-  const retained = store.finalizeBackupRetention()
+  const retained = store.finalizeBackupRetention([], { requireStateSidecar: true })
   assert.equal(retained, 10)
   assert.equal(existsSync(oldest.path), false)
+  assert.equal(existsSync(databaseOnly.path), true)
   assert.equal(existsSync(deferred.path), true)
-  assert.equal(store.getDiagnostics().backups.length, 10)
+  const integrity = store.getDiagnostics().backupPairIntegrity
+  assert.equal(integrity.complete, 10)
+  assert.equal(integrity.databaseOnly, 1)
+  assert.equal(integrity.stateOnly, 1)
+  assert.equal(existsSync(stateOnly), true)
+  assert.equal(store.getDiagnostics().backups.length, 11)
 }))
 
 test('verified backup rejects evidence revision drift and online repair restores both ledgers', () => withStore(store => {

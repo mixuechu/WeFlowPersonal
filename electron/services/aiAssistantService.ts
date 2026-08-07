@@ -6025,7 +6025,10 @@ export class AiAssistantService {
         )
       },
       finalizeRetention: () =>
-        personalMemoryStore.finalizeBackupRetention(protectedPaths),
+        personalMemoryStore.finalizeBackupRetention(
+          protectedPaths,
+          { requireStateSidecar: true }
+        ),
       removeArtifact: path => unlinkSync(path)
     })
   }

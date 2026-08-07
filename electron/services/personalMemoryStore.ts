@@ -6361,6 +6361,7 @@ export class PersonalMemoryStore {
     `).get() as any
     const backupDirectory = join(dirname(this.databasePath), 'personal-memory-backups')
     const backups = this.listBackups(backupDirectory)
+    const backupPairIntegrity = this.getBackupPairIntegrity()
     const structuredEvidenceMigration = (() => {
       const row = this.db!.prepare(`
         SELECT value,updated_at FROM schema_meta
@@ -6862,6 +6863,7 @@ export class PersonalMemoryStore {
       structuredEvidenceRevision,
       generalEvidenceRevision,
       eventDeduplicationAuthority,
+      backupPairIntegrity,
       backups
     }
   }
@@ -7295,14 +7297,20 @@ export class PersonalMemoryStore {
     }
   }
 
-  finalizeBackupRetention(protectedPaths: string[] = []): number {
+  finalizeBackupRetention(
+    protectedPaths: string[] = [],
+    options: { requireStateSidecar?: boolean } = {}
+  ): number {
     if (!this.databasePath) throw new Error('个人记忆数据库尚未初始化')
     const backupDirectory = join(dirname(this.databasePath), 'personal-memory-backups')
     const protectedBackupPaths = new Set(
       protectedPaths.map(path => resolve(String(path || '')))
     )
     const backups = this.listBackups(backupDirectory)
-    const retained = backups.slice(0, 10)
+    const retentionCandidates = options.requireStateSidecar
+      ? backups.filter(item => item.hasState)
+      : backups
+    const retained = retentionCandidates.slice(0, 10)
     for (const protectedBackup of backups.filter(item =>
       protectedBackupPaths.has(resolve(item.path)))) {
       if (!retained.some(item => resolve(item.path) === resolve(protectedBackup.path))) {
@@ -7310,7 +7318,8 @@ export class PersonalMemoryStore {
       }
     }
     const retainedPaths = new Set(retained.map(item => resolve(item.path)))
-    for (const stale of backups.filter(item => !retainedPaths.has(resolve(item.path)))) {
+    for (const stale of retentionCandidates.filter(item =>
+      !retainedPaths.has(resolve(item.path)))) {
       unlinkSync(stale.path)
       try { unlinkSync(`${stale.path}.state.json`) } catch {}
     }
@@ -7505,6 +7514,70 @@ export class PersonalMemoryStore {
         .sort((left, right) => right.createdAt.localeCompare(left.createdAt))
     } catch {
       return []
+    }
+  }
+
+  getBackupPairIntegrity(): {
+    version: string
+    complete: number
+    databaseOnly: number
+    stateOnly: number
+    completeBytes: number
+    databaseOnlyBytes: number
+    stateOnlyBytes: number
+    retentionPolicy: string
+  } {
+    if (!this.databasePath) return {
+      version: 'joint-backup-integrity-v1',
+      complete: 0,
+      databaseOnly: 0,
+      stateOnly: 0,
+      completeBytes: 0,
+      databaseOnlyBytes: 0,
+      stateOnlyBytes: 0,
+      retentionPolicy: 'complete_pairs_latest_10_incomplete_preserved_outside_slots'
+    }
+    const backupDirectory = join(dirname(this.databasePath), 'personal-memory-backups')
+    let names: string[] = []
+    try { names = readdirSync(backupDirectory) } catch {}
+    const databaseNames = new Set(names.filter(name =>
+      /^personal-memory-.*\.sqlite$/.test(name)))
+    const stateNames = names.filter(name =>
+      /^personal-memory-.*\.sqlite\.state\.json$/.test(name))
+    let complete = 0
+    let databaseOnly = 0
+    let stateOnly = 0
+    let completeBytes = 0
+    let databaseOnlyBytes = 0
+    let stateOnlyBytes = 0
+    const bytes = (name: string): number => {
+      try { return statSync(join(backupDirectory, name)).size } catch { return 0 }
+    }
+    for (const name of databaseNames) {
+      const stateName = `${name}.state.json`
+      if (stateNames.includes(stateName)) {
+        complete += 1
+        completeBytes += bytes(name) + bytes(stateName)
+      } else {
+        databaseOnly += 1
+        databaseOnlyBytes += bytes(name)
+      }
+    }
+    for (const stateName of stateNames) {
+      const databaseName = stateName.slice(0, -'.state.json'.length)
+      if (databaseNames.has(databaseName)) continue
+      stateOnly += 1
+      stateOnlyBytes += bytes(stateName)
+    }
+    return {
+      version: 'joint-backup-integrity-v1',
+      complete,
+      databaseOnly,
+      stateOnly,
+      completeBytes,
+      databaseOnlyBytes,
+      stateOnlyBytes,
+      retentionPolicy: 'complete_pairs_latest_10_incomplete_preserved_outside_slots'
     }
   }
 

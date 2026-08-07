@@ -9274,7 +9274,12 @@ function AiAssistantPage() {
               <span><strong>个人记忆库{memoryDiagnostics.healthy ? '健康' : '需要检查'}</strong>
                 <small>{memoryDiagnostics.integrity === 'ok' ? 'SQLite 一致性检查通过' : memoryDiagnostics.integrity}
                   {' · '}{(Number(memoryDiagnostics.databaseBytes || 0) / 1024 / 1024).toFixed(1)} MB
-                  {' · '}{memoryDiagnostics.backups?.length || 0} 个本地快照
+                  {' · '}{Number(memoryDiagnostics.backupPairIntegrity?.complete || 0)} 个完整本地快照
+                  {(Number(memoryDiagnostics.backupPairIntegrity?.databaseOnly || 0) +
+                    Number(memoryDiagnostics.backupPairIntegrity?.stateOnly || 0)) > 0
+                    ? ` / ${Number(memoryDiagnostics.backupPairIntegrity?.databaseOnly || 0) +
+                      Number(memoryDiagnostics.backupPairIntegrity?.stateOnly || 0)} 个历史半快照`
+                    : ''}
                   {memoryDiagnostics.automaticBackup?.lastBackupAt
                     ? ` · 自动快照 ${new Date(memoryDiagnostics.automaticBackup.lastBackupAt).toLocaleString('zh-CN', { hour12: false })}`
                     : ' · 自动快照等待首次完整同步'}
@@ -14818,6 +14823,23 @@ function AiAssistantPage() {
                 <span>本机调用栈 <b>{Number(status?.modelRequests?.localApiCalls || 0)}</b></span>
                 <span>请求截止 <b>{Number(memoryDiagnostics.modelRequests?.timeoutSeconds || 90)} 秒</b></span>
                 <span>诊断快照 <b>{memoryDiagnostics.backgroundWrites.message || '空闲'}</b></span>
+              </div>
+            </div>}
+            {memoryDiagnostics.backupPairIntegrity && <div className={`assistant-recovery-audit ${
+              Number(memoryDiagnostics.backupPairIntegrity.databaseOnly || 0) +
+                Number(memoryDiagnostics.backupPairIntegrity.stateOnly || 0) > 0
+                ? 'warning' : 'healthy'
+            }`}>
+              <header><ShieldCheck size={15} /><span><b>数据库与 AI 状态联合快照完整性</b>
+                <small>最近十份保留名额只计算数据库与加密状态 sidecar 同时存在的完整快照；历史半快照不会挤占可恢复版本，也不会在未经本人确认时自动删除。</small>
+              </span></header>
+              <div className="assistant-recovery-current">
+                <span>完整联合快照 <b>{Number(memoryDiagnostics.backupPairIntegrity.complete || 0)}</b></span>
+                <span>仅数据库 <b>{Number(memoryDiagnostics.backupPairIntegrity.databaseOnly || 0)}</b></span>
+                <span>仅状态副本 <b>{Number(memoryDiagnostics.backupPairIntegrity.stateOnly || 0)}</b></span>
+                <span>完整占用 <b>{(Number(memoryDiagnostics.backupPairIntegrity.completeBytes || 0) / 1024 / 1024).toFixed(1)} MB</b></span>
+                <span>历史半快照占用 <b>{((Number(memoryDiagnostics.backupPairIntegrity.databaseOnlyBytes || 0) +
+                  Number(memoryDiagnostics.backupPairIntegrity.stateOnlyBytes || 0)) / 1024 / 1024).toFixed(1)} MB</b></span>
               </div>
             </div>}
             <div className="assistant-dossier-metrics">
