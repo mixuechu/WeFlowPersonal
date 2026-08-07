@@ -772,6 +772,7 @@ function AiAssistantPage() {
   const [settingsSaving, setSettingsSaving] = useState(false)
   const [settingsError, setSettingsError] = useState('')
   const [syncing, setSyncing] = useState(false)
+  const [retryingNotifications, setRetryingNotifications] = useState(false)
   const [message, setMessage] = useState('')
   const [graphQuery, setGraphQuery] = useState('')
   const [graphRelationType, setGraphRelationType] = useState('')
@@ -1830,6 +1831,23 @@ function AiAssistantPage() {
     setStatus(nextStatus)
     setDashboard(nextDashboard)
   }, [])
+
+  const retryNotificationDelivery = async () => {
+    if (retryingNotifications) return
+    setRetryingNotifications(true)
+    try {
+      const result = await window.electronAPI.aiAssistant.retryNotificationOutbox()
+      setMessage(result.pending
+        ? `通知重试完成，仍有 ${result.pending} 条等待后续重试。`
+        : '待发通知已经全部成功投递。')
+      await load()
+    } catch (error: any) {
+      setMessage(error?.message || '通知重试失败')
+      await load().catch(() => {})
+    } finally {
+      setRetryingNotifications(false)
+    }
+  }
 
   useEffect(() => {
     void load()
@@ -9503,6 +9521,22 @@ function AiAssistantPage() {
             ? `${dashboard.notificationDelivery.pending} 条等待静默结束或下次启动`
             : '没有待发通知'}</span>
           {dashboard.notificationDelivery.lastError && <small>{dashboard.notificationDelivery.lastError}</small>}
+          {dashboard.notificationDelivery.nextAttemptAt && <small>
+            已失败 {dashboard.notificationDelivery.failedPending || 0} 条 ·
+            最高尝试 {dashboard.notificationDelivery.maxAttempts || 0} 次 ·
+            下次自动尝试 {new Date(dashboard.notificationDelivery.nextAttemptAt).toLocaleString('zh-CN')}
+          </small>}
+          {!!dashboard.notificationDelivery.pending && <button
+            disabled={retryingNotifications || dashboard.notificationDelivery.inFlight ||
+              dashboard.notificationDelivery.quiet}
+            title={dashboard.notificationDelivery.quiet
+              ? '当前处于静默时段，结束后会自动重试'
+              : '忽略当前退避时间，立即尝试最多 5 条待发通知'}
+            onClick={() => void retryNotificationDelivery()}>
+            {retryingNotifications || dashboard.notificationDelivery.inFlight
+              ? '正在投递…'
+              : '立即重试通知'}
+          </button>}
           {Number(dashboard.notificationDelivery.discardedPendingCount || 0) > 0 && <small>
             待发队列最多保留最新 {dashboard.notificationDelivery.pendingLimit || 100} 条；
             历史累计淘汰 {Number(dashboard.notificationDelivery.discardedPendingCount).toLocaleString()} 条较旧通知

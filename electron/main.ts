@@ -4614,6 +4614,8 @@ function registerIpcHandlers() {
     _, evidenceFingerprint: string, expectedRevision?: string
   ) => aiAssistantService.revertTaskReview(evidenceFingerprint, expectedRevision))
   ipcMain.handle('ai-assistant:updateReminderPreference', (_, input: any) => aiAssistantService.updateReminderPreference(input))
+  ipcMain.handle('ai-assistant:retryNotificationOutbox', () =>
+    aiAssistantService.retryNotificationOutbox())
   ipcMain.handle('ai-assistant:updateGraphReview', (
     _,
     id: string,

@@ -689,6 +689,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     revertTaskReview: (evidenceFingerprint: string, expectedRevision?: string) =>
       ipcRenderer.invoke('ai-assistant:revertTaskReview', evidenceFingerprint, expectedRevision),
     updateReminderPreference: (input: any) => ipcRenderer.invoke('ai-assistant:updateReminderPreference', input),
+    retryNotificationOutbox: () => ipcRenderer.invoke('ai-assistant:retryNotificationOutbox'),
     updateGraphReview: (id: string, decision: 'confirmed' | 'rejected', options?: {
       expectedRevision?: string
       mergeTargetEntityId?: string

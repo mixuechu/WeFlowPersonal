@@ -1901,6 +1901,11 @@ export interface ElectronAPI {
         action: 'helpful' | 'snooze' | 'mute_kind' | 'restore_kind'
         expectedRevision: string
       }) => Promise<any>
+      retryNotificationOutbox: () => Promise<{
+        pending: number
+        failedPending: number
+        nextAttemptAt: string | null
+      }>
       updateGraphReview: (id: string, decision: 'confirmed' | 'rejected', options?: {
         expectedRevision?: string
         mergeTargetEntityId?: string

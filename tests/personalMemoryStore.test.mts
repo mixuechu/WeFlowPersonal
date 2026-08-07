@@ -5765,6 +5765,8 @@ test('notification outbox persists unique work until a successful delivery', () 
   markNotificationAttempt(outbox, notification.key, { success: false, error: 'temporary failure' })
   assert.equal(outbox.pending[0].attempts, 1)
   assert.equal(outbox.pending[0].lastError, 'temporary failure')
+  assert.ok(Number.isFinite(Date.parse(outbox.pending[0].lastAttemptAt)))
+  assert.ok(Date.parse(outbox.pending[0].nextAttemptAt) > Date.parse(outbox.pending[0].lastAttemptAt))
   markNotificationAttempt(outbox, notification.key, { success: true })
   assert.equal(outbox.pending.length, 0)
   assert.deepEqual(outbox.sentKeys, [notification.key])
@@ -5801,6 +5803,55 @@ test('notification delivery does not let one failed head item starve later work'
   assert.equal(persisted.length, 5)
   assert.deepEqual(persisted[0], Array.from({ length: 8 }, (_, index) => `notification-${index}`))
   assert.deepEqual(persisted[4], ['notification-0', 'notification-5', 'notification-6', 'notification-7'])
+})
+
+test('notification retries persist exponential backoff without starving due work', async () => {
+  const outbox = { pending: [], sentKeys: [] } as any
+  enqueueUniqueNotification(outbox, {
+    key: 'cooling-down',
+    title: '冷却中的通知',
+    content: '稍后再试',
+    createdAt: '2026-08-07T00:00:00.000Z'
+  })
+  enqueueUniqueNotification(outbox, {
+    key: 'due-now',
+    title: '当前可投递',
+    content: '应当继续发送',
+    createdAt: '2026-08-07T00:01:00.000Z'
+  })
+  const firstAttempt = new Date('2026-08-07T01:00:00.000Z')
+  markNotificationAttempt(
+    outbox,
+    'cooling-down',
+    { success: false, error: 'temporary failure' },
+    firstAttempt
+  )
+  assert.equal(outbox.pending[0].nextAttemptAt, '2026-08-07T01:15:00.000Z')
+
+  const delivered: string[] = []
+  const result = await deliverNotificationBatch(outbox, async notification => {
+    delivered.push(notification.key)
+  }, {
+    now: new Date('2026-08-07T01:05:00.000Z'),
+    limit: 5
+  })
+  assert.deepEqual(result, { attempted: 1, sent: 1, failed: 0 })
+  assert.deepEqual(delivered, ['due-now'])
+  assert.deepEqual(outbox.pending.map((item: any) => item.key), ['cooling-down'])
+
+  for (let attempt = 2; attempt <= 7; attempt += 1) {
+    const at = new Date(Date.parse(outbox.pending[0].nextAttemptAt))
+    markNotificationAttempt(
+      outbox,
+      'cooling-down',
+      { success: false, error: 'still unavailable' },
+      at
+    )
+  }
+  assert.equal(
+    Date.parse(outbox.pending[0].nextAttemptAt) - Date.parse(outbox.pending[0].lastAttemptAt),
+    6 * 60 * 60_000
+  )
 })
 
 test('notification queue capacity keeps the newest work and audits every discarded item', () => {

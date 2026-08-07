@@ -4531,7 +4531,17 @@ export class AiAssistantService {
         quietStart: this.config.get('aiAssistantQuietStart'),
         quietEnd: this.config.get('aiAssistantQuietEnd'),
         oldestPendingAt: this.state.notifications.pending[0]?.createdAt || null,
-        lastError: this.state.notifications.pending.find(item => item.lastError)?.lastError || null
+        lastError: this.state.notifications.pending.find(item => item.lastError)?.lastError || null,
+        failedPending: this.state.notifications.pending.filter(item => item.lastError).length,
+        nextAttemptAt: this.state.notifications.pending
+          .map(item => String(item.nextAttemptAt || ''))
+          .filter(value => Number.isFinite(Date.parse(value)))
+          .sort()[0] || null,
+        maxAttempts: this.state.notifications.pending.reduce(
+          (maximum, item) => Math.max(maximum, Math.max(0, Number(item.attempts) || 0)),
+          0
+        ),
+        inFlight: Boolean(this.notificationFlushPromise)
       }
     }
   }
@@ -10253,6 +10263,32 @@ export class AiAssistantService {
     return enqueueUniqueNotification(this.state.notifications, notification)
   }
 
+  async retryNotificationOutbox(): Promise<{
+    pending: number
+    failedPending: number
+    nextAttemptAt: string | null
+  }> {
+    if (this.disposed) throw new Error('AI 助理正在退出，不能重试系统通知')
+    if (this.isNotificationQuiet(new Date())) {
+      throw new Error('当前处于通知静默时段；静默结束后会自动重试')
+    }
+    if (this.notificationFlushPromise) await this.notificationFlushPromise
+    for (const notification of this.state.notifications.pending) {
+      delete notification.nextAttemptAt
+    }
+    this.saveState()
+    await this.flushNotificationOutbox(new Date())
+    const nextAttemptAt = this.state.notifications.pending
+      .map(item => String(item.nextAttemptAt || ''))
+      .filter(value => Number.isFinite(Date.parse(value)))
+      .sort()[0] || null
+    return {
+      pending: this.state.notifications.pending.length,
+      failedPending: this.state.notifications.pending.filter(item => item.lastError).length,
+      nextAttemptAt
+    }
+  }
+
   private async flushNotificationOutbox(now: Date): Promise<void> {
     if (this.disposed) return
     if (this.isNotificationQuiet(now) || !this.state.notifications.pending.length) return
@@ -10270,6 +10306,7 @@ export class AiAssistantService {
         }
       }, {
         limit: 5,
+        now,
         normalizeError: sanitizeDiagnosticText,
         onAttempt: () => this.saveState()
       })
