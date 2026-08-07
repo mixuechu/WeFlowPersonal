@@ -18902,7 +18902,7 @@ test('resource connector page commits authority and checkpoint atomically and re
     origin: 'connector_page', source: 'documents', limit: 20
   })
   assert.equal(documentGrowth.total, 1)
-  assert.match(documentGrowth.items[0].originId, /^documents:[a-f0-9]{24}$/)
+  assert.match(documentGrowth.items[0].originId, /^documents\.page:[a-f0-9]{24}$/)
   assert.equal(documentGrowth.items[0].originId.includes('page-1'), false)
   const documentOrigin = store.getMemoryChangeOriginDossier(
     documentGrowth.items[0].id,
@@ -18911,6 +18911,7 @@ test('resource connector page commits authority and checkpoint atomically and re
   assert.equal(documentOrigin.totalChanges, 1)
   assert.equal(documentOrigin.originKind, 'connector_page')
   assert.equal(documentOrigin.sourceKind, 'documents')
+  assert.equal(documentOrigin.connectorOperation, 'documents_page')
   assert.equal(documentOrigin.modelBatch, null)
   assert.equal(JSON.stringify(documentOrigin).includes('/tmp/weflow-atomic-documents'), false)
 
@@ -18967,7 +18968,7 @@ test('resource connector page commits authority and checkpoint atomically and re
   assert.equal(reconfiguredGrowth.total, 2)
   assert.equal(new Set(reconfiguredGrowth.items.map(item => item.originId)).size, 2)
   assert.equal(reconfiguredGrowth.items.every(item =>
-    /^documents:[a-f0-9]{24}$/.test(item.originId)), true)
+    /^documents\.page:[a-f0-9]{24}$/.test(item.originId)), true)
 
   store.registerDataSources([{
     id: 'mail',
@@ -19011,13 +19012,14 @@ test('resource connector page commits authority and checkpoint atomically and re
     origin: 'connector_page', source: 'mail', limit: 20
   })
   assert.equal(mailGrowth.total, 1)
-  assert.match(mailGrowth.items[0].originId, /^mail:[a-f0-9]{24}$/)
+  assert.match(mailGrowth.items[0].originId, /^mail\.page:[a-f0-9]{24}$/)
   assert.equal(mailGrowth.items[0].originId.includes('private'), false)
   const mailOrigin = store.getMemoryChangeOriginDossier(
     mailGrowth.items[0].id,
     mailGrowth.revision
   )
   assert.equal(mailOrigin.sourceKind, 'mail')
+  assert.equal(mailOrigin.connectorOperation, 'mail_page')
   assert.equal(JSON.stringify(mailOrigin).includes('mail@example.com'), false)
   assert.equal(JSON.stringify(mailOrigin).includes('private-mailbox-id'), false)
   assert.equal(JSON.stringify(mailOrigin).includes('private-mail-checkpoint'), false)
@@ -19087,7 +19089,7 @@ test('wechat resource batch records a private connector origin and rolls back al
     limit: 20
   })
   assert.equal(growth.total, 1)
-  assert.match(growth.items[0].originId, /^wechat:[a-f0-9]{24}$/)
+  assert.match(growth.items[0].originId, /^wechat\.resources:[a-f0-9]{24}$/)
   assert.equal(growth.items[0].originId.includes(privateRunId), false)
   const dossier = store.getMemoryChangeOriginDossier(
     growth.items[0].id,
@@ -19095,6 +19097,7 @@ test('wechat resource batch records a private connector origin and rolls back al
   )
   assert.equal(dossier.originKind, 'connector_page')
   assert.equal(dossier.sourceKind, 'wechat')
+  assert.equal(dossier.connectorOperation, 'wechat_resources')
   assert.equal(dossier.totalChanges, 1)
   const publicDossier = JSON.stringify(dossier)
   assert.equal(publicDossier.includes(privateRunId), false)
@@ -19109,7 +19112,7 @@ test('wechat resource batch records a private connector origin and rolls back al
     { attachmentPdfOcrStatus: 'completed' },
     {
       kind: 'connector_page',
-      id: 'wechat:1234567890abcdef12345678',
+      id: 'wechat.pdf_ocr:1234567890abcdef12345678',
       sourceKind: 'wechat'
     }
   )
@@ -19119,7 +19122,10 @@ test('wechat resource batch records a private connector origin and rolls back al
     limit: 20
   })
   assert.equal(enrichedGrowth.total, 2)
-  assert.equal(enrichedGrowth.items[0].originId, 'wechat:1234567890abcdef12345678')
+  assert.equal(
+    enrichedGrowth.items[0].originId,
+    'wechat.pdf_ocr:1234567890abcdef12345678'
+  )
   assert.equal(enrichedGrowth.items[0].changeKind, 'updated')
   const enrichedDossier = store.getMemoryChangeOriginDossier(
     enrichedGrowth.items[0].id,
@@ -19127,6 +19133,7 @@ test('wechat resource batch records a private connector origin and rolls back al
   )
   assert.equal(enrichedDossier.totalChanges, 1)
   assert.equal(enrichedDossier.sourceKind, 'wechat')
+  assert.equal(enrichedDossier.connectorOperation, 'wechat_pdf_ocr')
 }))
 
 test('calendar resource and structured event commit atomically', () => withStore(store => {

@@ -2822,6 +2822,19 @@ export class PersonalMemoryStore {
     const originKind = String(row.origin_kind || 'legacy_unknown').slice(0, 40)
     const originId = String(row.origin_id || '').slice(0, 240)
     const sourceKind = String(row.source_kind || 'legacy').slice(0, 40)
+    const connectorOperation = originKind === 'connector_page'
+      ? ({
+          'documents.page': 'documents_page',
+          'mail.page': 'mail_page',
+          'calendar.page': 'calendar_page',
+          'wechat.resources': 'wechat_resources',
+          'wechat.pdf_ocr': 'wechat_pdf_ocr',
+          'wechat.image_semantics': 'wechat_image_semantics',
+          'wechat.attachment_structure': 'wechat_attachment_structure',
+          'documents.analysis_running': 'document_analysis_running',
+          'documents.analysis_failed': 'document_analysis_failed'
+        } as Record<string, string>)[originId.split(':', 1)[0]] || ''
+      : ''
     const groupedRows = originId
       ? this.db.prepare(`
           SELECT item_kind,change_kind,COUNT(*) AS count
@@ -2931,6 +2944,7 @@ export class PersonalMemoryStore {
       originKind,
       originId,
       sourceKind,
+      connectorOperation,
       totalChanges: Math.max(0, Number(range?.total || 0)),
       firstChangedAt: String(range?.first_changed_at || '').slice(0, 80),
       lastChangedAt: String(range?.last_changed_at || '').slice(0, 80),
@@ -9626,7 +9640,7 @@ export class PersonalMemoryStore {
       .join('\0')
     this.runWithMemoryChangeOrigin({
       kind: 'connector_page',
-      id: `wechat:${createHash('sha256')
+      id: `wechat.resources:${createHash('sha256')
         .update(`wechat\0${runId}\0${resourceIdentity}`)
         .digest('hex')
         .slice(0, 24)}`,
@@ -9657,7 +9671,11 @@ export class PersonalMemoryStore {
           : 'system'
     this.runWithMemoryChangeOrigin({
       kind: 'connector_page',
-      id: `${sourceId || 'connector'}:${createHash('sha256').update(
+      id: `${sourceId === 'documents'
+        ? 'documents.page'
+        : sourceId === 'mail'
+          ? 'mail.page'
+          : `${sourceId || 'connector'}.page`}:${createHash('sha256').update(
         `${sourceId}\0${expectedConfigJson}\0${expectedCheckpoint}\0${nextCheckpoint}`
       ).digest('hex').slice(0, 24)}`,
       sourceKind: originSourceKind
@@ -9757,7 +9775,7 @@ export class PersonalMemoryStore {
     const now = new Date().toISOString()
     this.runWithMemoryChangeOrigin({
       kind: 'connector_page',
-      id: `calendar:${createHash('sha256').update(
+      id: `calendar.page:${createHash('sha256').update(
         `${sourceId}\0${expectedConfigJson}\0${expectedCheckpoint}\0${nextCheckpoint}`
       ).digest('hex').slice(0, 24)}`,
       sourceKind: 'calendar'

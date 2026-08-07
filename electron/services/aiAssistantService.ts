@@ -1913,7 +1913,7 @@ export class AiAssistantService {
   } {
     return {
       kind: 'connector_page',
-      id: `wechat:${crypto.createHash('sha256')
+      id: `wechat.${stage.replace(/-/g, '_')}:${crypto.createHash('sha256')
         .update(`wechat\0${runId}\0${stage}\0${resourceId}`)
         .digest('hex')
         .slice(0, 24)}`,
@@ -1932,7 +1932,7 @@ export class AiAssistantService {
   } {
     return {
       kind: 'connector_page',
-      id: `documents:${crypto.createHash('sha256')
+      id: `documents.analysis_${stage}:${crypto.createHash('sha256')
         .update(`documents\0${runId}\0${stage}\0${resourceId}`)
         .digest('hex')
         .slice(0, 24)}`,

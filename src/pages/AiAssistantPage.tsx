@@ -111,15 +111,35 @@ const MEMORY_GROWTH_SOURCE_LABELS: Record<string, string> = {
   legacy: '旧版来源'
 }
 
+const MEMORY_GROWTH_CONNECTOR_OPERATION_LABELS: Record<string, string> = {
+  'documents.page': '文档增量页',
+  'mail.page': '邮件增量页',
+  'calendar.page': '日历增量页',
+  'wechat.resources': '微信消息资源',
+  'wechat.pdf_ocr': 'PDF 本地 OCR',
+  'wechat.image_semantics': '图片本地语义',
+  'wechat.attachment_structure': '附件结构补全',
+  'documents.analysis_running': '文档分析开始',
+  'documents.analysis_failed': '文档分析失败'
+}
+
+const memoryGrowthConnectorOperationLabel = (originId: unknown): string =>
+  MEMORY_GROWTH_CONNECTOR_OPERATION_LABELS[
+    String(originId || '').split(':', 1)[0]
+  ] || ''
+
 const memoryGrowthOriginSummary = (entry: any): string => {
   const origin = MEMORY_GROWTH_ORIGIN_LABELS[entry.originKind] || entry.originKind || '旧版未知'
   const source = MEMORY_GROWTH_SOURCE_LABELS[entry.sourceKind] || entry.sourceKind || '旧版来源'
   const id = String(entry.originId || '').trim()
   const shortId = id ? id.slice(-12) : ''
+  const connectorOperation = entry.originKind === 'connector_page'
+    ? memoryGrowthConnectorOperationLabel(id)
+    : ''
   const identityLabel = entry.originKind === 'model_batch' || entry.originKind === 'connector_page'
     ? '批次'
     : '操作'
-  return `${origin} · ${source}${shortId ? ` · ${identityLabel} ${shortId}` : ''}`
+  return `${origin} · ${source}${connectorOperation ? ` · ${connectorOperation}` : ''}${shortId ? ` · ${identityLabel} ${shortId}` : ''}`
 }
 
 type Task = {
@@ -12870,7 +12890,9 @@ function AiAssistantPage() {
                 </> : <div className="assistant-memory-item">
                   <strong>
                     {memoryGrowthOriginDossier.originKind === 'connector_page'
-                      ? '连接器页级事务'
+                      ? memoryGrowthConnectorOperationLabel(
+                          memoryGrowthOriginDossier.originId
+                        ) || '连接器页级事务'
                       : memoryGrowthOriginDossier.originKind === 'human_action'
                         ? '本人操作事务'
                         : memoryGrowthOriginDossier.originKind === 'system'
