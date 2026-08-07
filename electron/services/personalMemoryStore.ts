@@ -2502,6 +2502,9 @@ export class PersonalMemoryStore {
     const before = this.inspectMemoryChangeLogTriggers()
     const connectorOperationIndexBefore =
       this.inspectMemoryChangeConnectorOperationIndex()
+    const activeOriginContextsBefore = Number((this.db.prepare(`
+      SELECT COUNT(*) AS count FROM memory_change_context
+    `).get() as any)?.count || 0)
     const previousRow = this.db.prepare(`
       SELECT value FROM schema_meta WHERE key='memory_change_log_integrity'
     `).get() as any
@@ -2511,7 +2514,8 @@ export class PersonalMemoryStore {
     const byName = new Map(definitions.map(sql => [
       sql.match(/CREATE TRIGGER\s+(\S+)/i)?.[1] || '', sql
     ]))
-    if (!before.healthy || !connectorOperationIndexBefore.healthy) {
+    if (!before.healthy || !connectorOperationIndexBefore.healthy
+      || activeOriginContextsBefore > 0) {
       this.db.transaction(() => {
         for (const name of [...before.unhealthyTriggers, ...before.unexpectedTriggers]) {
           this.db!.exec(`DROP TRIGGER IF EXISTS "${name.replace(/"/g, '""')}"`)
@@ -2523,6 +2527,9 @@ export class PersonalMemoryStore {
             DROP INDEX IF EXISTS idx_memory_change_log_connector_operation_time
           `)
           this.db!.exec(this.memoryChangeConnectorOperationIndexSql())
+        }
+        if (activeOriginContextsBefore > 0) {
+          this.db!.exec('DELETE FROM memory_change_context')
         }
       })()
     }
@@ -2593,12 +2600,14 @@ export class PersonalMemoryStore {
     const audit = {
       version: 'memory-change-log-v5',
       checkedAt: now,
-      repairedThisStart: repaired > 0 || repairedIndexes > 0,
+      repairedThisStart: repaired > 0 || repairedIndexes > 0
+        || activeOriginContextsBefore > 0,
       repairedTriggersThisStart: repaired,
       repairedIndexesThisStart: repairedIndexes,
+      clearedOriginContextsThisStart: activeOriginContextsBefore,
       connectorOperationIndex: connectorOperationIndexAfter,
       repairsTotal: Number(previous.repairsTotal || 0) +
-        (repaired > 0 || repairedIndexes > 0 ? 1 : 0),
+        (repaired > 0 || repairedIndexes > 0 || activeOriginContextsBefore > 0 ? 1 : 0),
       privacyPolicy: 'identity_status_time_detail_stable_links_and_bounded_origin_no_content',
       entityLinkBackfillPolicy: 'current_authority_only_no_guessing',
       historicalBackfill: false,
@@ -2664,6 +2673,8 @@ export class PersonalMemoryStore {
       repairedThisStart: Boolean(audit.repairedThisStart),
       repairedTriggersThisStart: Number(audit.repairedTriggersThisStart || 0),
       repairedIndexesThisStart: Number(audit.repairedIndexesThisStart || 0),
+      clearedOriginContextsThisStart:
+        Number(audit.clearedOriginContextsThisStart || 0),
       repairsTotal: Number(audit.repairsTotal || 0),
       privacyPolicy: 'identity_status_time_detail_stable_links_and_bounded_origin_no_content',
       activeOriginContexts,
@@ -6881,6 +6892,8 @@ export class PersonalMemoryStore {
         && after.taskSearchIndexHealthy
         && after.entityEvidenceFtsHealthy
         && after.evidenceScopeIndexesHealthy
+        && after.reviewInboxIndexesHealthy
+        && after.memoryChangeLogHealthy
         && after.memorySearchRevisionHealthy
         && after.structuredEvidenceRevisionHealthy
         && after.generalEvidenceRevisionHealthy
@@ -6903,7 +6916,25 @@ export class PersonalMemoryStore {
         structuredEvidenceTriggers: Math.max(0,
           Number(after.structuredEvidenceRevision?.repairedTriggersThisStart || 0)),
         generalEvidenceTriggers: Math.max(0,
-          Number(after.generalEvidenceRevision?.repairedTriggersThisStart || 0))
+          Number(after.generalEvidenceRevision?.repairedTriggersThisStart || 0)),
+        reviewInboxIndexes: before.reviewInboxIndexes?.healthy === false
+          && after.reviewInboxIndexesHealthy
+          ? Number(before.reviewInboxIndexes?.unhealthyIndexes?.length || 0)
+          : 0,
+        memoryChangeTriggers: before.memoryChangeLog?.healthy === false
+          && after.memoryChangeLogHealthy
+          ? Number(before.memoryChangeLog?.unhealthyTriggers?.length || 0)
+          : 0,
+        memoryChangeConnectorOperationIndex:
+          before.memoryChangeLog?.connectorOperationIndex?.healthy === false
+          && after.memoryChangeLog?.connectorOperationIndex?.healthy
+            ? 1
+            : 0,
+        memoryChangeOriginContexts:
+          before.memoryChangeLog?.originContextClean === false
+          && after.memoryChangeLog?.originContextClean
+            ? Number(before.memoryChangeLog?.activeOriginContexts || 0)
+            : 0
       },
       diagnostics: after
     }

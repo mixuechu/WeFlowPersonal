@@ -15039,7 +15039,11 @@ function AiAssistantPage() {
                 ANN 孤儿 {Number(memorySearchRepairResult.repaired.annOrphans || 0)}，
                 待办派生文档 {Number(memorySearchRepairResult.repaired.taskDocuments || 0)}；
                 结构化证据触发器 {Number(memorySearchRepairResult.repaired.structuredEvidenceTriggers || 0)}，
-                通用证据触发器 {Number(memorySearchRepairResult.repaired.generalEvidenceTriggers || 0)}；
+                通用证据触发器 {Number(memorySearchRepairResult.repaired.generalEvidenceTriggers || 0)}，
+                审阅收件箱索引 {Number(memorySearchRepairResult.repaired.reviewInboxIndexes || 0)}；
+                成长账本触发器 {Number(memorySearchRepairResult.repaired.memoryChangeTriggers || 0)}，
+                连接器操作索引 {Number(memorySearchRepairResult.repaired.memoryChangeConnectorOperationIndex || 0)}，
+                来源上下文 {Number(memorySearchRepairResult.repaired.memoryChangeOriginContexts || 0)}；
                 当前{memorySearchRepairResult.healthy ? '一致' : '仍需检查'}。
               </small>}
             </div>}

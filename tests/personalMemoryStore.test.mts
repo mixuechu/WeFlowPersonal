@@ -5029,6 +5029,13 @@ test('runtime search repair restores derived indexes without reopening the datab
       'runtime-repair-ann-orphan','ann-test',2,0,1,'orphan-hash',
       '2026-08-04T00:00:00.000Z'
     );
+    DROP INDEX idx_evidence_claim_role;
+    CREATE INDEX idx_evidence_claim_role ON evidence(claim_id,timestamp);
+    DROP INDEX idx_memory_change_log_connector_operation_time;
+    CREATE INDEX idx_memory_change_log_connector_operation_time
+      ON memory_change_log(origin_kind,changed_at DESC,id DESC);
+    INSERT INTO memory_change_context(singleton,origin_kind,origin_id,source_kind)
+    VALUES(1,'connector_page','stale-runtime-context','documents');
   `)
   database.pragma('foreign_keys = ON')
 
@@ -5041,6 +5048,9 @@ test('runtime search repair restores derived indexes without reopening the datab
   assert.ok(drifted.structuredSearchIndex.currentMissingDocuments >= 1)
   assert.ok(drifted.structuredSearchIndex.currentGhostDocuments >= 1)
   assert.ok(drifted.structuredSearchIndex.currentAnnOrphans >= 1)
+  assert.equal(drifted.reviewInboxIndexesHealthy, false)
+  assert.equal(drifted.memoryChangeLog.connectorOperationIndex.healthy, false)
+  assert.equal(drifted.memoryChangeLog.originContextClean, false)
   assert.throws(() => store.createBackup(), /数据库一致性检查失败/)
   const result = store.repairRuntimeSearchDerivedState([task])
 
@@ -5049,6 +5059,9 @@ test('runtime search repair restores derived indexes without reopening the datab
   assert.ok(result.repaired.ghostDocuments >= 1)
   assert.equal(result.repaired.annOrphans, 1)
   assert.equal(result.repaired.taskDocuments, 1)
+  assert.equal(result.repaired.reviewInboxIndexes, 1)
+  assert.equal(result.repaired.memoryChangeConnectorOperationIndex, 1)
+  assert.equal(result.repaired.memoryChangeOriginContexts, 1)
   assert.equal(store.searchText('在线修复事实关键词')[0]?.source_id, 'runtime-repair-claim')
   assert.equal(store.searchText('在线修复待办关键词')[0]?.source_id, 'runtime-repair-task')
   assert.equal(Number(database.prepare(`
@@ -5057,6 +5070,10 @@ test('runtime search repair restores derived indexes without reopening the datab
   assert.equal(result.diagnostics.memorySearchRevisionHealthy, true)
   assert.equal(result.diagnostics.structuredSearchIndexHealthy, true)
   assert.equal(result.diagnostics.taskSearchIndexHealthy, true)
+  assert.equal(result.diagnostics.reviewInboxIndexesHealthy, true)
+  assert.equal(result.diagnostics.memoryChangeLogHealthy, true)
+  assert.equal(result.diagnostics.memoryChangeLog.originContextClean, true)
+  assert.equal(result.diagnostics.memoryChangeLog.clearedOriginContextsThisStart, 1)
   assert.equal(store.getSearchMaintenanceCheckpoint().lastAuditHealthy, true)
   assert.ok(Date.parse(store.getSearchMaintenanceCheckpoint().checkedAt) > 0)
 }))
