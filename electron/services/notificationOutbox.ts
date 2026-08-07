@@ -51,6 +51,19 @@ function validIso(value: unknown): string | undefined {
   return Number.isFinite(Date.parse(text)) ? new Date(Date.parse(text)).toISOString() : undefined
 }
 
+function boundedCounter(value: unknown): number {
+  const numeric = Number(value)
+  if (!Number.isFinite(numeric) || numeric <= 0) return 0
+  return Math.min(Number.MAX_SAFE_INTEGER, Math.floor(numeric))
+}
+
+function addBoundedCounter(value: unknown, increment: number): number {
+  return Math.min(
+    Number.MAX_SAFE_INTEGER,
+    boundedCounter(value) + boundedCounter(increment)
+  )
+}
+
 export function normalizeNotificationOutbox(value: any): NotificationOutbox {
   const sourcePending = Array.isArray(value?.pending) ? value.pending : []
   const sourceSentKeys = Array.isArray(value?.sentKeys) ? value.sentKeys : []
@@ -93,14 +106,18 @@ export function normalizeNotificationOutbox(value: any): NotificationOutbox {
       nextAttemptAt: validIso(raw?.nextAttemptAt)
     })
   }
+  const pendingOverflow = Math.max(0, pending.length - 100)
+  const sentKeyOverflow = Math.max(0, sentKeys.length - 500)
   return {
     pending: pending.slice(-100),
     sentKeys: sentKeys.slice(-500),
-    discardedPendingCount: Math.max(0, Number(value?.discardedPendingCount) || 0),
-    lastDiscardedPendingAt: validIso(value?.lastDiscardedPendingAt),
-    prunedSentKeyCount: Math.max(0, Number(value?.prunedSentKeyCount) || 0),
-    identityMigrationCount: Math.max(0, Number(value?.identityMigrationCount) || 0) + identityMigrations,
-    discardedInvalidCount: Math.max(0, Number(value?.discardedInvalidCount) || 0) + discardedInvalid
+    discardedPendingCount: addBoundedCounter(value?.discardedPendingCount, pendingOverflow),
+    lastDiscardedPendingAt: pendingOverflow > 0
+      ? new Date().toISOString()
+      : validIso(value?.lastDiscardedPendingAt),
+    prunedSentKeyCount: addBoundedCounter(value?.prunedSentKeyCount, sentKeyOverflow),
+    identityMigrationCount: addBoundedCounter(value?.identityMigrationCount, identityMigrations),
+    discardedInvalidCount: addBoundedCounter(value?.discardedInvalidCount, discardedInvalid)
   }
 }
 
@@ -128,7 +145,7 @@ export function enqueueUniqueNotification(
   if (outbox.pending.length > 100) {
     const discarded = outbox.pending.length - 100
     outbox.pending = outbox.pending.slice(-100)
-    outbox.discardedPendingCount = Math.max(0, Number(outbox.discardedPendingCount) || 0) + discarded
+    outbox.discardedPendingCount = addBoundedCounter(outbox.discardedPendingCount, discarded)
     outbox.lastDiscardedPendingAt = new Date().toISOString()
   }
   return true
@@ -146,8 +163,10 @@ export function markNotificationAttempt(
     outbox.pending = outbox.pending.filter(notification => notification.key !== key)
     const sentKeys = [...new Set([...outbox.sentKeys, key])]
     if (sentKeys.length > 500) {
-      outbox.prunedSentKeyCount = Math.max(0, Number(outbox.prunedSentKeyCount) || 0) +
-        (sentKeys.length - 500)
+      outbox.prunedSentKeyCount = addBoundedCounter(
+        outbox.prunedSentKeyCount,
+        sentKeys.length - 500
+      )
     }
     outbox.sentKeys = sentKeys.slice(-500)
     return

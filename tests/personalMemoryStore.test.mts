@@ -5918,6 +5918,31 @@ test('legacy notification state migrates identities and rejects malformed payloa
   assert.equal(normalized.discardedInvalidCount, 4)
 })
 
+test('notification startup normalization audits capacity repair and bounds counters', () => {
+  const normalized = normalizeNotificationOutbox({
+    pending: Array.from({ length: 105 }, (_, index) => ({
+      key: `pending-capacity-${index}`,
+      title: `通知 ${index}`,
+      content: '',
+      createdAt: new Date(1_700_000_000_000 + index).toISOString()
+    })),
+    sentKeys: Array.from({ length: 505 }, (_, index) => `sent-capacity-${index}`),
+    discardedPendingCount: 7,
+    prunedSentKeyCount: 11,
+    identityMigrationCount: Number.POSITIVE_INFINITY,
+    discardedInvalidCount: Number.MAX_SAFE_INTEGER
+  })
+  assert.equal(normalized.pending.length, 100)
+  assert.equal(normalized.pending[0].key, 'pending-capacity-5')
+  assert.equal(normalized.sentKeys.length, 500)
+  assert.equal(normalized.sentKeys[0], 'sent-capacity-5')
+  assert.equal(normalized.discardedPendingCount, 12)
+  assert.equal(normalized.prunedSentKeyCount, 16)
+  assert.equal(normalized.identityMigrationCount, 0)
+  assert.equal(normalized.discardedInvalidCount, Number.MAX_SAFE_INTEGER)
+  assert.ok(Number.isFinite(Date.parse(String(normalized.lastDiscardedPendingAt))))
+})
+
 test('notification enqueue bounds each persisted field before it reaches encrypted state', () => {
   const outbox = { pending: [], sentKeys: [] } as any
   assert.equal(enqueueUniqueNotification(outbox, {
