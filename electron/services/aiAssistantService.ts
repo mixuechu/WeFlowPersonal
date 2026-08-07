@@ -416,6 +416,7 @@ import {
   buildAutomaticMemoryBackupSnapshotState,
   shouldCreateAutomaticMemoryBackup
 } from './automaticMemoryBackupPolicy'
+import { collectCreatedTasksForRun, countCreatedTasks } from './taskRunChangePolicy'
 
 const ATTACHMENT_STRUCTURE_PARSER_VERSION = 'attachment-layout-v3'
 
@@ -3500,7 +3501,7 @@ export class AiAssistantService {
           durationMs: Number(digest.__meta?.durationMs || Date.now() - startedAt),
           taskReviewSuppressionFingerprints: taskCommit.suppressionFingerprints
         })
-        tasks += taskCommit.saved
+        tasks += countCreatedTasks(taskCommit.changes)
         personalMemoryStore.finishIngestionRun(runId, {
           status: 'completed',
           messageCount: 1,
@@ -3733,7 +3734,7 @@ export class AiAssistantService {
       await this.continuePendingAttachmentStructures(runId)
       const successfulMessageKeys: string[] = []
       const batchErrors: string[] = []
-      const tasks = new Map<string, AssistantTask>()
+      const createdTasks = new Map<string, AssistantTask>()
       const batches = this.buildAnalysisBatches(
         collected.messages,
         forcedContextKeys
@@ -3841,9 +3842,7 @@ export class AiAssistantService {
             taskReviewSuppressionFingerprints: taskCommit.suppressionFingerprints
           })
           digests.push({ digest, batch })
-          for (const change of taskCommit.changes) {
-            tasks.set(change.taskId, change.after)
-          }
+          collectCreatedTasksForRun(createdTasks, taskCommit.changes)
           successfulMessageKeys.push(...checkpointKeys)
           if (this.cancelRequested) {
             cancelled = true
@@ -3978,7 +3977,7 @@ export class AiAssistantService {
           error: cancelled ? '' : runErrors[0]
         })
       }
-      const mineTasks = [...tasks.values()].filter(task => task.classification === 'mine')
+      const mineTasks = [...createdTasks.values()].filter(task => task.classification === 'mine')
       if (mineTasks.length > 0) {
         this.enqueueNotification({
           key: buildNotificationDedupKey('new-tasks', mineTasks.map(task => task.id)),
