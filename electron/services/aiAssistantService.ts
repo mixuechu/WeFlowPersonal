@@ -39,8 +39,10 @@ import { extractAttachmentText } from './attachmentTextExtractor'
 import { structureOcrText } from './imageOcrStructuring'
 import { captureWebSnapshot } from './webSnapshotService'
 import {
+  auditJointMemoryBackupInventory,
   createJointMemoryBackup,
-  isJointMemoryBackupRestorable
+  inspectJointMemoryBackupRestorability,
+  type JointMemoryBackupValidationCache
 } from './jointMemoryBackupPolicy'
 import { ModelRequestCoordinator, RequestCoordinator } from './modelRequestCoordinator'
 import { extractScannedPdfText, getPdfOcrStatus } from './pdfOcrService'
@@ -686,6 +688,7 @@ export class AiAssistantService {
     calendar: string
     mail: string
   }>(5 * 60_000)
+  private jointBackupValidationCache: JointMemoryBackupValidationCache = new Map()
   private lastSchedulerAttemptAt = 0
   private lastSchedulerTickAt = 0
   private vectorIndexPromise: Promise<any> | null = null
@@ -5519,6 +5522,50 @@ export class AiAssistantService {
     }
   }
 
+  private inspectJointMemoryBackup(path: string) {
+    return inspectJointMemoryBackupRestorability({
+      backupPath: path,
+      inspectDatabase: backupPath => personalMemoryStore.inspectBackup(backupPath),
+      inspectState: statePath => {
+        const state = readEncryptedDurableJson<any>(
+          statePath,
+          structuredClone(EMPTY_STATE),
+          this.stateEncryptionKey
+        )
+        return {
+          recoverySource: state.recovery.source,
+          encrypted: state.encrypted
+        }
+      }
+    })
+  }
+
+  private auditJointMemoryBackups(backups: Array<{
+    path: string
+    hasState: boolean
+  }>): any {
+    return {
+      ...auditJointMemoryBackupInventory({
+        backups,
+        fingerprint: backup => {
+          const fingerprint = (path: string) => {
+            try {
+              const stat = statSync(path)
+              return `${stat.dev}:${stat.ino}:${stat.size}:${stat.mtimeMs}:${stat.ctimeMs}`
+            } catch {
+              return 'missing'
+            }
+          }
+          return `${fingerprint(backup.path)}:${fingerprint(`${backup.path}.state.json`)}`
+        },
+        inspect: path => this.inspectJointMemoryBackup(path),
+        cache: this.jointBackupValidationCache
+      }),
+      checkedAt: new Date().toISOString(),
+      policy: 'fingerprint_cached_database_and_encrypted_state_validation'
+    }
+  }
+
   async getMemoryDiagnostics(): Promise<any> {
     const ingestionTotals = personalMemoryStore.getIngestionArchiveSummary()
     const ingestionRates = {
@@ -5526,6 +5573,9 @@ export class AiAssistantService {
       outputPerMillion: Math.max(0, Number(this.config.get('aiAssistantOutputCostPerMillion') || 0))
     }
     const databaseDiagnostics = personalMemoryStore.getDiagnostics()
+    const backupRestoreAudit = this.auditJointMemoryBackups(
+      Array.isArray(databaseDiagnostics.backups) ? databaseDiagnostics.backups : []
+    )
     const searchMaintenanceCheckpoint = personalMemoryStore.getSearchMaintenanceCheckpoint()
     const searchMaintenanceSchedule = assessAutomaticSearchMaintenance({
       nowMs: Date.now(),
@@ -5550,6 +5600,7 @@ export class AiAssistantService {
     )
     return {
       ...databaseDiagnostics,
+      backupRestoreAudit,
       backgroundWrites: describeBackgroundWriteState({
         syncing: Boolean(this.activeSync),
         syncPhase: this.activeSyncPhase,
@@ -6032,21 +6083,7 @@ export class AiAssistantService {
           protectedPaths,
           {
             requireStateSidecar: true,
-            isRestorable: backup => isJointMemoryBackupRestorable({
-              backupPath: backup.path,
-              inspectDatabase: path => personalMemoryStore.inspectBackup(path),
-              inspectState: path => {
-                const state = readEncryptedDurableJson<any>(
-                  path,
-                  structuredClone(EMPTY_STATE),
-                  this.stateEncryptionKey
-                )
-                return {
-                  recoverySource: state.recovery.source,
-                  encrypted: state.encrypted
-                }
-              }
-            })
+            isRestorable: backup => this.inspectJointMemoryBackup(backup.path).restorable
           }
         ),
       removeArtifact: path => unlinkSync(path)

@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import {
+  auditJointMemoryBackupInventory,
   createJointMemoryBackup,
   isJointMemoryBackupRestorable
 } from '../electron/services/jointMemoryBackupPolicy.ts'
@@ -91,4 +92,55 @@ test('joint backup retention accepts only encrypted and readable database-state 
     ...valid,
     inspectState: () => ({ recoverySource: 'backup', encrypted: true })
   }), true)
+})
+
+test('joint backup restore audit reuses unchanged fingerprints and invalidates changed files', () => {
+  const cache = new Map()
+  const fingerprints = new Map([
+    ['/private/good.sqlite', 'good-v1'],
+    ['/private/bad.sqlite', 'bad-v1']
+  ])
+  let inspections = 0
+  const run = (backups = [
+    { path: '/private/good.sqlite', hasState: true },
+    { path: '/private/bad.sqlite', hasState: true },
+    { path: '/private/database-only.sqlite', hasState: false }
+  ]) => auditJointMemoryBackupInventory({
+    backups,
+    fingerprint: backup => fingerprints.get(backup.path) || 'missing',
+    inspect: path => {
+      inspections += 1
+      return path.includes('/bad.')
+        ? { restorable: false as const, reason: 'state_invalid' as const }
+        : { restorable: true as const, reason: 'ok' as const }
+    },
+    cache
+  })
+
+  assert.deepEqual(run(), {
+    version: 'joint-backup-restore-audit-v1',
+    paired: 2,
+    restorable: 1,
+    invalid: 1,
+    databaseInvalid: 0,
+    databaseUnencrypted: 0,
+    stateInvalid: 1,
+    stateUnencrypted: 0,
+    validatedNow: 2,
+    reusedFromCache: 0
+  })
+  assert.equal(inspections, 2)
+  const cached = run()
+  assert.equal(cached.validatedNow, 0)
+  assert.equal(cached.reusedFromCache, 2)
+  assert.equal(inspections, 2)
+
+  fingerprints.set('/private/good.sqlite', 'good-v2')
+  const changed = run()
+  assert.equal(changed.validatedNow, 1)
+  assert.equal(changed.reusedFromCache, 1)
+  assert.equal(inspections, 3)
+
+  run([{ path: '/private/good.sqlite', hasState: true }])
+  assert.deepEqual([...cache.keys()], ['/private/good.sqlite'])
 })

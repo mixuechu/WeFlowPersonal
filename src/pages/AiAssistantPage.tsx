@@ -9274,7 +9274,10 @@ function AiAssistantPage() {
               <span><strong>个人记忆库{memoryDiagnostics.healthy ? '健康' : '需要检查'}</strong>
                 <small>{memoryDiagnostics.integrity === 'ok' ? 'SQLite 一致性检查通过' : memoryDiagnostics.integrity}
                   {' · '}{(Number(memoryDiagnostics.databaseBytes || 0) / 1024 / 1024).toFixed(1)} MB
-                  {' · '}{Number(memoryDiagnostics.backupPairIntegrity?.complete || 0)} 个完整本地快照
+                  {' · '}{Number(memoryDiagnostics.backupRestoreAudit?.restorable || 0)} 个已验证可恢复快照
+                  {Number(memoryDiagnostics.backupRestoreAudit?.invalid || 0) > 0
+                    ? ` / ${Number(memoryDiagnostics.backupRestoreAudit.invalid)} 个配对快照验证失败`
+                    : ''}
                   {(Number(memoryDiagnostics.backupPairIntegrity?.databaseOnly || 0) +
                     Number(memoryDiagnostics.backupPairIntegrity?.stateOnly || 0)) > 0
                     ? ` / ${Number(memoryDiagnostics.backupPairIntegrity?.databaseOnly || 0) +
@@ -14827,20 +14830,34 @@ function AiAssistantPage() {
             </div>}
             {memoryDiagnostics.backupPairIntegrity && <div className={`assistant-recovery-audit ${
               Number(memoryDiagnostics.backupPairIntegrity.databaseOnly || 0) +
-                Number(memoryDiagnostics.backupPairIntegrity.stateOnly || 0) > 0
+                Number(memoryDiagnostics.backupPairIntegrity.stateOnly || 0) +
+                Number(memoryDiagnostics.backupRestoreAudit?.invalid || 0) > 0
                 ? 'warning' : 'healthy'
             }`}>
               <header><ShieldCheck size={15} /><span><b>数据库与 AI 状态联合快照配对状态</b>
                 <small>这里显示双文件是否配对；执行保留时还会逐份验证数据库一致性和状态可解密性，只有实际可恢复的组合才占最近十份名额。历史半快照或验证失败的组合都保留现场，不会挤占可恢复版本，也不会在未经本人确认时自动删除。</small>
               </span></header>
               <div className="assistant-recovery-current">
-                <span>完整联合快照 <b>{Number(memoryDiagnostics.backupPairIntegrity.complete || 0)}</b></span>
+                <span>双文件已配对 <b>{Number(memoryDiagnostics.backupPairIntegrity.complete || 0)}</b></span>
+                <span>已验证可恢复 <b>{Number(memoryDiagnostics.backupRestoreAudit?.restorable || 0)}</b></span>
+                <span>配对但验证失败 <b>{Number(memoryDiagnostics.backupRestoreAudit?.invalid || 0)}</b></span>
+                <span>数据库验证失败 <b>{Number(memoryDiagnostics.backupRestoreAudit?.databaseInvalid || 0) +
+                  Number(memoryDiagnostics.backupRestoreAudit?.databaseUnencrypted || 0)}</b></span>
+                <span>状态验证失败 <b>{Number(memoryDiagnostics.backupRestoreAudit?.stateInvalid || 0) +
+                  Number(memoryDiagnostics.backupRestoreAudit?.stateUnencrypted || 0)}</b></span>
                 <span>仅数据库 <b>{Number(memoryDiagnostics.backupPairIntegrity.databaseOnly || 0)}</b></span>
                 <span>仅状态副本 <b>{Number(memoryDiagnostics.backupPairIntegrity.stateOnly || 0)}</b></span>
                 <span>完整占用 <b>{(Number(memoryDiagnostics.backupPairIntegrity.completeBytes || 0) / 1024 / 1024).toFixed(1)} MB</b></span>
                 <span>历史半快照占用 <b>{((Number(memoryDiagnostics.backupPairIntegrity.databaseOnlyBytes || 0) +
                   Number(memoryDiagnostics.backupPairIntegrity.stateOnlyBytes || 0)) / 1024 / 1024).toFixed(1)} MB</b></span>
               </div>
+              {memoryDiagnostics.backupRestoreAudit && <small>
+                最近验证 {memoryDiagnostics.backupRestoreAudit.checkedAt
+                  ? new Date(memoryDiagnostics.backupRestoreAudit.checkedAt).toLocaleString('zh-CN', { hour12: false })
+                  : '未知'}
+                {' · '}本次重新验证 {Number(memoryDiagnostics.backupRestoreAudit.validatedNow || 0)}
+                {' · '}复用未变化文件结果 {Number(memoryDiagnostics.backupRestoreAudit.reusedFromCache || 0)}
+              </small>}
             </div>}
             <div className="assistant-dossier-metrics">
               <span><b>{memoryDiagnostics.ingestionSummary?.runs || 0}</b><small>全部运行</small></span>
