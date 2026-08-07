@@ -5,6 +5,7 @@ import { randomUUID } from 'crypto'
 import { join, dirname } from 'path'
 import { autoUpdater } from 'electron-updater'
 import { resolvePersonalUpdateAvailability } from './services/personalUpdatePolicy'
+import { trayIconCandidateNames, trayIconTargetSize } from './services/trayIconPolicy'
 import { readFile, writeFile, mkdir, rm, readdir, copyFile } from 'fs/promises'
 import { existsSync } from 'fs'
 import { ConfigService } from './services/config'
@@ -1100,6 +1101,29 @@ const resolveAppIconPath = (): string => {
     return join(__dirname, '../resources/icons/macos/icon.icns')
   }
   return join(__dirname, `../public/${iconName}`)
+}
+
+const resolveTrayIcon = (): Electron.NativeImage => {
+  const candidates = trayIconCandidateNames(process.platform).map(iconName => {
+    if (!process.env.VITE_DEV_SERVER_URL) return join(process.resourcesPath, iconName)
+    if (process.platform === 'darwin' && iconName === 'icon.icns') {
+      return join(__dirname, '../resources/icons/macos/icon.icns')
+    }
+    return join(__dirname, `../public/${iconName}`)
+  })
+  for (const candidate of candidates) {
+    if (!existsSync(candidate)) continue
+    const loaded = nativeImage.createFromPath(candidate)
+    if (loaded.isEmpty()) continue
+    const targetSize = trayIconTargetSize(process.platform)
+    const image = targetSize
+      ? loaded.resize({ width: targetSize, height: targetSize, quality: 'best' })
+      : loaded
+    if (image.isEmpty()) continue
+    if (process.platform === 'darwin') image.setTemplateImage(true)
+    return image
+  }
+  throw new Error(`没有可用的托盘图标资源（已检查 ${candidates.length} 个内置候选）`)
 }
 
 const requestMainWindowCloseConfirmation = (win: BrowserWindow): void => {
@@ -4955,10 +4979,8 @@ app.whenReady().then(async () => {
   ensureWeChatRequestHeaderInterceptor()
   mainWindow = createWindow({ autoShow: false })
 
-  const resolvedTrayIcon = resolveAppIconPath()
-
   try {
-    tray = new Tray(resolvedTrayIcon)
+    tray = new Tray(resolveTrayIcon())
     tray.setToolTip('WeFlow')
     const contextMenu = Menu.buildFromTemplate([
       {
