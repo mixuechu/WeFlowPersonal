@@ -1,5 +1,6 @@
 import { Notification } from "electron";
 import { avatarFileCache } from "./avatarFileCacheService";
+import { buildSystemNotificationActionPayload } from "./systemNotificationNavigationPolicy";
 
 // 系统通知服务（Linux / macOS）：走各自系统的通知中心（Linux 底层为
 // D-Bus/libnotify，macOS 为通知中心），Windows 使用特制的液态玻璃通知窗口。
@@ -79,18 +80,8 @@ export async function showSystemNotification(
     activeNotifications.set(notificationId, notification);
 
     notification.on("click", () => {
-      if (data.channel === "ai-insight" && data.insightRecordId) {
-        triggerNotificationCallback({
-          sessionId: data.sessionId,
-          channel: data.channel,
-          insightRecordId: data.insightRecordId,
-          targetRoute: data.targetRoute,
-        });
-        return;
-      }
-      if (data.sessionId) {
-        triggerNotificationCallback(data.sessionId);
-      }
+      const payload = buildSystemNotificationActionPayload(data);
+      if (payload !== null) triggerNotificationCallback(payload);
     });
 
     notification.on("close", () => {

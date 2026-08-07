@@ -10259,12 +10259,15 @@ export class AiAssistantService {
     if (this.notificationFlushPromise) return this.notificationFlushPromise
     this.notificationFlushPromise = (async () => {
       await deliverNotificationBatch(this.state.notifications, async notification => {
-        await showSystemNotification({
+        const notificationId = await showSystemNotification({
           title: notification.title,
           content: notification.content,
           channel: 'ai-assistant',
           targetRoute: '/ai-assistant'
         })
+        if (notificationId === null) {
+          throw new Error('当前系统无法创建通知；已保留在待发队列')
+        }
       }, {
         limit: 5,
         normalizeError: sanitizeDiagnosticText,
