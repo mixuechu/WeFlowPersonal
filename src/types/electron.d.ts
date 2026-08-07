@@ -374,7 +374,13 @@ export interface ElectronAPI {
       reason?: string
       error?: string
     }>
-    checkForUpdates: () => Promise<{ hasUpdate: boolean; version?: string; releaseNotes?: string }>
+    checkForUpdates: () => Promise<{
+      hasUpdate: boolean
+      available?: boolean
+      reason?: string
+      version?: string
+      releaseNotes?: string
+    }>
     downloadAndInstall: () => Promise<void>
     ignoreUpdate: (version: string) => Promise<{ success: boolean }>
     onDownloadProgress: (callback: (progress: number) => void) => () => void

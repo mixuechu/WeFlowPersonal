@@ -84,12 +84,7 @@
   },
   "build": {
     "appId": "com.WeFlow.app",
-    "publish": {
-      "provider": "github",
-      "owner": "hicccc77",
-      "repo": "WeFlow",
-      "releaseType": "release"
-    },
+    "publish": null,
     "productName": "WeFlow 升级版",
     "artifactName": "${productName}-${version}-Setup.${ext}",
     "directories": {

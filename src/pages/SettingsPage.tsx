@@ -779,7 +779,11 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
         setUpdateInfo(result)
         setShowUpdateDialog(true)
         showMessage(`发现新版：${result.version}`, true)
+      } else if (result.available === false) {
+        setUpdateInfo(result)
+        showMessage(result.reason || '当前版本未配置自动更新', false)
       } else {
+        setUpdateInfo(result)
         showMessage('当前已是最新版', true)
       }
     } catch (e: any) {
@@ -5421,7 +5425,11 @@ JSON 输出格式：
           <div className="updates-hero-main">
             <span className="updates-chip">当前版本</span>
             <h2>{appVersion || '...'}</h2>
-            <p>{updateInfo?.hasUpdate ? `发现新版本 v${updateInfo.version}` : '当前已是最新版本，可手动检查更新'}</p>
+            <p>{updateInfo?.hasUpdate
+              ? `发现新版本 v${updateInfo.version}`
+              : updateInfo?.available === false
+                ? updateInfo.reason || '当前版本未配置自动更新'
+                : '尚未检查版本，可手动检查更新'}</p>
           </div>
           <div className="updates-hero-action">
             {updateInfo?.hasUpdate ? (
@@ -5429,9 +5437,15 @@ JSON 输出格式：
                 <Download size={16} /> 立即更新
               </button>
             ) : (
-              <button className="btn btn-secondary" onClick={handleCheckUpdate} disabled={isCheckingUpdate}>
+              <button
+                className="btn btn-secondary"
+                onClick={handleCheckUpdate}
+                disabled={isCheckingUpdate || updateInfo?.available === false}
+              >
                 <RefreshCw size={16} className={isCheckingUpdate ? 'spin' : ''} />
-                {isCheckingUpdate ? '检查中...' : '检查更新'}
+                {isCheckingUpdate
+                  ? '检查中...'
+                  : updateInfo?.available === false ? '本地固化版本' : '检查更新'}
               </button>
             )}
           </div>
@@ -5669,7 +5683,6 @@ JSON 输出格式：
 }
 
 export default SettingsPage
-
 
 
 

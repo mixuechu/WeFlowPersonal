@@ -4,6 +4,7 @@ import { Worker } from 'worker_threads'
 import { randomUUID } from 'crypto'
 import { join, dirname } from 'path'
 import { autoUpdater } from 'electron-updater'
+import { resolvePersonalUpdateAvailability } from './services/personalUpdatePolicy'
 import { readFile, writeFile, mkdir, rm, readdir, copyFile } from 'fs/promises'
 import { existsSync } from 'fs'
 import { ConfigService } from './services/config'
@@ -436,6 +437,12 @@ const shouldOfferUpdateForTrack = (latestVersion: string, currentVersion: string
 
 let lastAppliedUpdaterChannel: string | null = null
 let lastAppliedUpdaterFeedUrl: string | null = null
+const personalUpdateAvailability = resolvePersonalUpdateAvailability({
+  feedBaseUrl: process.env.WEFLOW_PERSONAL_UPDATE_FEED_BASE_URL,
+  explicitEnabled: process.env.AUTO_UPDATE_ENABLED,
+  developmentServer: process.env.VITE_DEV_SERVER_URL
+})
+const AUTO_UPDATE_ENABLED = personalUpdateAvailability.enabled
 const resetUpdaterProviderCache = () => {
   const updater = autoUpdater as any
   // electron-updater 会缓存 provider；切换 channel 后需清理缓存，避免仍请求旧通道
@@ -447,7 +454,8 @@ const resetUpdaterProviderCache = () => {
 }
 
 const getUpdaterFeedUrlByTrack = (track: 'stable' | 'preview' | 'dev'): string => {
-  const repoBase = 'https://github.com/hicccc77/WeFlow/releases'
+  const repoBase = personalUpdateAvailability.feedBaseUrl
+  if (!repoBase) throw new Error(personalUpdateAvailability.reason)
   if (track === 'stable') return `${repoBase}/latest/download`
   if (track === 'preview') return `${repoBase}/download/nightly-preview`
   return `${repoBase}/download/nightly-dev`
@@ -482,11 +490,7 @@ const applyAutoUpdateChannel = (reason: 'startup' | 'settings' = 'startup') => {
   lastAppliedUpdaterFeedUrl = nextFeedUrl
 }
 
-applyAutoUpdateChannel('startup')
-const AUTO_UPDATE_ENABLED =
-  process.env.AUTO_UPDATE_ENABLED === 'true' ||
-  process.env.AUTO_UPDATE_ENABLED === '1' ||
-  (process.env.AUTO_UPDATE_ENABLED == null && !process.env.VITE_DEV_SERVER_URL)
+if (AUTO_UPDATE_ENABLED) applyAutoUpdateChannel('startup')
 
 const getLaunchAtStartupUnsupportedReason = (): string | null => {
   if (process.platform !== 'win32' && process.platform !== 'darwin') {
@@ -2378,7 +2382,11 @@ function registerIpcHandlers() {
 
   ipcMain.handle('app:checkForUpdates', async () => {
     if (!AUTO_UPDATE_ENABLED) {
-      return { hasUpdate: false }
+      return {
+        hasUpdate: false,
+        available: false,
+        reason: personalUpdateAvailability.reason
+      }
     }
     // 每次主动检查前重新应用一次通道配置，确保使用最新选择的更新通道。
     applyAutoUpdateChannel('settings')
@@ -2405,7 +2413,7 @@ function registerIpcHandlers() {
 
   ipcMain.handle('app:downloadAndInstall', async (event) => {
     if (!AUTO_UPDATE_ENABLED) {
-      throw new Error('自动更新已暂时禁用')
+      throw new Error(personalUpdateAvailability.reason)
     }
 
     // 防止重复下载（Issue #294 修复）
@@ -4876,7 +4884,7 @@ app.whenReady().then(async () => {
   const localCacheEncryptionKey = configService.initializeLocalCacheEncryption()
   chatService.initializeRuntimeCacheEncryption(localCacheEncryptionKey)
   snsService.initializeRuntimeCacheEncryption(localCacheEncryptionKey)
-  applyAutoUpdateChannel('startup')
+  if (AUTO_UPDATE_ENABLED) applyAutoUpdateChannel('startup')
   syncLaunchAtStartupPreference()
   const onboardingDone = configService.get('onboardingDone') === true
   const startInBackground = onboardingDone && isSilentStartupEnabled()
