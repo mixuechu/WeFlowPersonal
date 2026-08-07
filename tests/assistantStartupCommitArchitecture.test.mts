@@ -20,17 +20,13 @@ test('assistant startup reaches schedulers only after a strict authority commit'
   assert.ok(schedulerStart > strictCommit)
 })
 
-test('strict assistant state persistence commits task authority before encrypted state', () => {
+test('assistant service delegates persistence ordering to the executable commit policy', () => {
   const saveStart = source.indexOf('private saveState(strictMemorySync = false)')
   const nextMethod = source.indexOf('private persistCrossStoreMutationState', saveStart)
   const saveSource = source.slice(saveStart, nextMethod)
-  const strictTaskSync = saveSource.indexOf(
-    'if (strictMemorySync) {\n      personalMemoryStore.syncTasks'
-  )
-  const encryptedWrite = saveSource.indexOf('writeEncryptedDurableJson')
-  const bestEffortTaskSync = saveSource.indexOf('if (!strictMemorySync)', encryptedWrite)
   assert.ok(saveStart >= 0)
-  assert.ok(strictTaskSync >= 0)
-  assert.ok(encryptedWrite > strictTaskSync)
-  assert.ok(bestEffortTaskSync > encryptedWrite)
+  assert.match(saveSource, /commitAssistantState\(\{\s*strict: strictMemorySync,/)
+  assert.match(saveSource, /syncGraph: \(\) =>/)
+  assert.match(saveSource, /syncTasks: \(\) =>/)
+  assert.match(saveSource, /writeEncryptedState: \(\) =>/)
 })

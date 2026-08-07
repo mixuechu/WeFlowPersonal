@@ -258,6 +258,7 @@ import {
   normalizeNotificationOutbox,
   type NotificationOutbox
 } from './notificationOutbox'
+import { commitAssistantState } from './assistantStateCommitPolicy'
 import { findCommonGraphNeighbors, findScopedGraphPath } from './graphCommonNeighbors'
 import {
   boundedEvidencePayload,
@@ -1306,37 +1307,36 @@ export class AiAssistantService {
 
   private saveState(strictMemorySync = false): void {
     this.compactBriefingState()
-    let graphSynced = false
     const graphCommitId = crypto.randomUUID()
-    try {
-      personalMemoryStore.syncGraph(this.state.graph, graphCommitId, {
-        entityEvidence: this.pendingEntityEvidence
-      })
-      this.pendingEntityEvidence = []
-      this.state.graph.lastSqlCommitId = graphCommitId
-      graphSynced = true
-    } catch (error) {
-      console.error('[AI Assistant] 个人记忆数据库同步失败:', sanitizeDiagnosticText(error))
-      if (strictMemorySync) throw error
-    }
-    if (graphSynced) this.compactGraphReviewState()
-    if (strictMemorySync) {
-      personalMemoryStore.syncTasks(this.state.tasks, false, true)
-    }
-    writeEncryptedDurableJson(
-      this.statePath,
-      buildEncryptedAssistantState(this.state),
-      this.stateEncryptionKey
-    )
-    this.stateStorage.encrypted = true
-    this.stateStorage.lastWriteAt = new Date().toISOString()
-    if (!strictMemorySync) {
-      try {
+    const result = commitAssistantState({
+      strict: strictMemorySync,
+      syncGraph: () => {
+        personalMemoryStore.syncGraph(this.state.graph, graphCommitId, {
+          entityEvidence: this.pendingEntityEvidence
+        })
+        this.pendingEntityEvidence = []
+        this.state.graph.lastSqlCommitId = graphCommitId
+      },
+      syncTasks: () => {
         personalMemoryStore.syncTasks(this.state.tasks, false, true)
-      } catch (error) {
+      },
+      writeEncryptedState: () => {
+        writeEncryptedDurableJson(
+          this.statePath,
+          buildEncryptedAssistantState(this.state),
+          this.stateEncryptionKey
+        )
+        this.stateStorage.encrypted = true
+        this.stateStorage.lastWriteAt = new Date().toISOString()
+      },
+      onGraphError: error => {
+        console.error('[AI Assistant] 个人记忆数据库同步失败:', sanitizeDiagnosticText(error))
+      },
+      onTaskError: error => {
         console.error('[AI Assistant] 个人记忆任务同步失败:', sanitizeDiagnosticText(error))
       }
-    }
+    })
+    if (result.graphSynced) this.compactGraphReviewState()
   }
 
   private persistCrossStoreMutationState(): void {
