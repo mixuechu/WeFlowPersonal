@@ -920,7 +920,7 @@ export class AiAssistantService {
     })
     this.reconcileTaskReviewFeedbackOnStartup()
     this.removeSuppressedRelationsFromState()
-    this.saveState()
+    this.saveState(true)
     this.lastSchedulerTickAt = Date.now()
     this.scheduler = setInterval(() => void this.schedulerTick(), 60_000)
     this.scheduler.unref()
@@ -1320,6 +1320,9 @@ export class AiAssistantService {
       if (strictMemorySync) throw error
     }
     if (graphSynced) this.compactGraphReviewState()
+    if (strictMemorySync) {
+      personalMemoryStore.syncTasks(this.state.tasks, false, true)
+    }
     writeEncryptedDurableJson(
       this.statePath,
       buildEncryptedAssistantState(this.state),
@@ -1327,11 +1330,12 @@ export class AiAssistantService {
     )
     this.stateStorage.encrypted = true
     this.stateStorage.lastWriteAt = new Date().toISOString()
-    try {
-      personalMemoryStore.syncTasks(this.state.tasks, false, true)
-    } catch (error) {
-      console.error('[AI Assistant] 个人记忆任务同步失败:', sanitizeDiagnosticText(error))
-      if (strictMemorySync) throw error
+    if (!strictMemorySync) {
+      try {
+        personalMemoryStore.syncTasks(this.state.tasks, false, true)
+      } catch (error) {
+        console.error('[AI Assistant] 个人记忆任务同步失败:', sanitizeDiagnosticText(error))
+      }
     }
   }
 
