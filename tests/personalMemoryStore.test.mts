@@ -7483,8 +7483,31 @@ test('review inbox aggregation stays indexed and repairs index drift on restart'
     database.exec(`
       DROP INDEX idx_evidence_claim_role;
       CREATE INDEX idx_evidence_claim_role ON evidence(claim_id,timestamp);
+      DROP INDEX idx_evidence_event_role;
+      CREATE INDEX idx_evidence_event_role ON evidence(event_id,timestamp);
     `)
     assert.equal(first.getReviewInboxIndexHealth().healthy, false)
+    assert.equal(first.getDiagnostics().reviewInboxIndexesHealthy, false)
+    assert.equal(first.getDiagnostics().healthy, false)
+    const originalExec = database.exec.bind(database)
+    database.exec = () => {
+      originalExec(`
+        DROP INDEX idx_evidence_claim_role;
+        CREATE INDEX idx_evidence_claim_role
+          ON evidence(claim_id,evidence_role)
+          WHERE claim_id IS NOT NULL;
+      `)
+      throw new Error('injected review inbox index repair failure')
+    }
+    assert.throws(
+      () => (first as any).ensureReviewInboxIndexes(),
+      /injected review inbox index repair failure/
+    )
+    database.exec = originalExec
+    assert.deepEqual(
+      first.getReviewInboxIndexHealth().unhealthyIndexes,
+      ['idx_evidence_claim_role', 'idx_evidence_event_role']
+    )
     first.close()
 
     const reopened = new PersonalMemoryStore()
@@ -7494,10 +7517,13 @@ test('review inbox aggregation stays indexed and repairs index drift on restart'
       assert.equal(health.healthy, true)
       assert.equal(health.installedIndexes, 7)
       assert.equal(health.repairedThisStart, true)
-      assert.equal(health.repairedIndexesThisStart, 1)
+      assert.equal(health.repairedIndexesThisStart, 2)
       assert.equal(health.repairsTotal, 2)
       assert.deepEqual(health.unhealthyIndexes, [])
-      assert.equal(reopened.getDiagnostics().reviewInboxIndexes.healthy, true)
+      const diagnostics = reopened.getDiagnostics()
+      assert.equal(diagnostics.reviewInboxIndexes.healthy, true)
+      assert.equal(diagnostics.reviewInboxIndexesHealthy, true)
+      assert.equal(diagnostics.healthy, true)
     } finally {
       reopened.close()
     }

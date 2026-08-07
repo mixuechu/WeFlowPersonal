@@ -2121,7 +2121,9 @@ export class PersonalMemoryStore {
           ON ${definition.table}(${definition.columns.join(',')})
           ${definition.where ? `WHERE ${definition.where}` : ''};`)
       }
-      this.db.exec(statements.join('\n'))
+      this.db.transaction(() => {
+        this.db!.exec(statements.join('\n'))
+      })()
     }
     const after = this.inspectReviewInboxIndexes()
     const checkedAt = new Date().toISOString()
@@ -6761,6 +6763,7 @@ export class PersonalMemoryStore {
         && taskSearchIndexHealthy
         && entityEvidenceFts.healthy
         && evidenceScopeIndexes.healthy
+        && reviewInboxIndexes.healthy
         && memoryChangeLog.healthy
         && memorySearchRevision.healthy
         && memorySearchFeedbackArchiveRevision.healthy
@@ -6788,6 +6791,7 @@ export class PersonalMemoryStore {
       taskSearchIndexHealthy,
       entityEvidenceFtsHealthy: entityEvidenceFts.healthy,
       evidenceScopeIndexesHealthy: evidenceScopeIndexes.healthy,
+      reviewInboxIndexesHealthy: reviewInboxIndexes.healthy,
       memoryChangeLogHealthy: memoryChangeLog.healthy,
       memorySearchRevisionHealthy: memorySearchRevision.healthy,
       memorySearchFeedbackArchiveRevisionHealthy:

@@ -15081,6 +15081,19 @@ function AiAssistantPage() {
                 <span>累计自愈 <b>{Number(memoryDiagnostics.evidenceScopeIndexes.repairsTotal || 0)}</b> 次</span>
               </div>
             </div>}
+            {memoryDiagnostics.reviewInboxIndexes?.version && <div className={`assistant-recovery-audit ${memoryDiagnostics.reviewInboxIndexesHealthy ? 'healthy' : 'unhealthy'}`}>
+              <header><ShieldCheck size={15} /><span><b>统一审阅收件箱查询索引</b>
+                <small>候选事实、关系、事件、图谱审阅和反证队列使用七个受定义校验的 SQLCipher 索引；缺失或同名错误定义会在启动时作为一个事务整体修复，避免只恢复部分队列性能。</small>
+              </span></header>
+              <div className="assistant-recovery-current">
+                <span>当前状态 <b>{memoryDiagnostics.reviewInboxIndexesHealthy ? '覆盖正常' : '需要检查'}</b></span>
+                <span>索引覆盖 <b>{Number(memoryDiagnostics.reviewInboxIndexes.installedIndexes || 0)} / {Number(memoryDiagnostics.reviewInboxIndexes.expectedIndexes || 0)}</b></span>
+                <span>本次修复 <b>{Number(memoryDiagnostics.reviewInboxIndexes.repairedIndexesThisStart || 0)}</b> 项</span>
+                <span>累计自愈 <b>{Number(memoryDiagnostics.reviewInboxIndexes.repairsTotal || 0).toLocaleString()}</b> 次</span>
+                {Number(memoryDiagnostics.reviewInboxIndexes.unhealthyIndexes?.length || 0) > 0 &&
+                  <span>定义漂移 <b>{memoryDiagnostics.reviewInboxIndexes.unhealthyIndexes.join('、')}</b></span>}
+              </div>
+            </div>}
             {memoryDiagnostics.memoryChangeLog?.version && <div className={`assistant-recovery-audit ${memoryDiagnostics.memoryChangeLogHealthy ? 'healthy' : 'unhealthy'}`}>
               <header><ShieldCheck size={15} /><span><b>记忆成长账本与连接器操作索引</b>
                 <small>每次发现、丰富、审阅和删除都进入隐私最小的成长账本；具体连接器操作使用受精确定义校验的 SQLCipher 表达式索引，定义缺失或漂移会在启动时事务重建。</small>

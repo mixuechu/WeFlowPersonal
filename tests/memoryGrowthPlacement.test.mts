@@ -43,6 +43,8 @@ test('memory growth is a first-class pageable archive with current dossier navig
   assert.match(page, /memoryDiagnostics\.memoryChangeLogHealthy/)
   assert.match(page, /memoryDiagnostics\.memoryChangeLog\.connectorOperationIndex/)
   assert.match(page, /记忆成长账本与连接器操作索引/)
+  assert.match(page, /memoryDiagnostics\.reviewInboxIndexesHealthy/)
+  assert.match(page, /统一审阅收件箱查询索引/)
   assert.match(page, /getCurrentStructuredMemoryDossier\(structuredKind, id\)/)
   assert.match(page, /openSearchResourceDossier\(id\)/)
   assert.match(preload, /getMemoryChangeLogPage/)
