@@ -35,7 +35,10 @@ import {
 import { LatestRequestGate } from '../utils/latestRequestGate'
 import { buildMemorySessionScope } from '../utils/memorySessionScope'
 import { buildResourceStructurePresentation } from '../utils/resourceStructurePresentation'
-import { buildMemoryBackupDirectory } from '../utils/memoryBackupPresentation'
+import {
+  buildMemoryBackupDirectory,
+  describeMemoryBackupRestore
+} from '../utils/memoryBackupPresentation'
 import { buildEntitySidebarPresentation } from '../utils/entitySidebarPresentation'
 import { presentModelSourcePrivacyAudit } from '../utils/modelSourcePrivacyPresentation'
 import { setKeyedLoadingState } from '../utils/keyedLoadingState'
@@ -6118,7 +6121,11 @@ function AiAssistantPage() {
   }
 
   const openMemoryRestoreDialog = async (backup: any) => {
-    if (restoringMemory || !backup?.path || !backup?.hasState) return
+    if (
+      restoringMemory
+      || !backup?.path
+      || !describeMemoryBackupRestore(backup).enabled
+    ) return
     const requestId = memoryRestoreGate.current.begin()
     setMemoryRestoreConfirmation('')
     setMemoryRestoreDialog({ backup, status: 'loading' })
@@ -9359,12 +9366,15 @@ function AiAssistantPage() {
               {!!memoryBackupDirectory.length && <details>
                 <summary>恢复历史快照（{memoryBackupDirectory.length} 份）</summary>
                 <div>
-                  {memoryBackupDirectory.map((backup: any) => <button key={backup.path}
-                    disabled={restoringMemory || !backup.hasState}
-                    title={backup.hasState ? '恢复数据库、图谱、任务和增量游标' : '旧快照缺少完整状态文件'}
-                    onClick={() => void openMemoryRestoreDialog(backup)}>
-                    {new Date(backup.createdAt).toLocaleString('zh-CN')}{backup.hasState ? '' : '（仅数据库）'}
-                  </button>)}
+                  {memoryBackupDirectory.map((backup: any) => {
+                    const availability = describeMemoryBackupRestore(backup)
+                    return <button key={backup.path}
+                      disabled={restoringMemory || !availability.enabled}
+                      title={availability.title}
+                      onClick={() => void openMemoryRestoreDialog(backup)}>
+                      {new Date(backup.createdAt).toLocaleString('zh-CN')}{availability.suffix}
+                    </button>
+                  })}
                 </div>
               </details>}
             </div>

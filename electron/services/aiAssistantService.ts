@@ -5576,6 +5576,19 @@ export class AiAssistantService {
     const backupRestoreAudit = this.auditJointMemoryBackups(
       Array.isArray(databaseDiagnostics.backups) ? databaseDiagnostics.backups : []
     )
+    const annotatedBackups = (Array.isArray(databaseDiagnostics.backups)
+      ? databaseDiagnostics.backups
+      : []).map((backup: any) => {
+      if (!backup?.hasState) {
+        return { ...backup, restoreStatus: 'incomplete', restoreFailure: 'state_missing' }
+      }
+      const assessment = this.jointBackupValidationCache.get(String(backup.path || ''))?.assessment
+      return {
+        ...backup,
+        restoreStatus: assessment?.restorable ? 'restorable' : 'invalid',
+        restoreFailure: assessment?.restorable ? null : assessment?.reason || 'state_invalid'
+      }
+    })
     const searchMaintenanceCheckpoint = personalMemoryStore.getSearchMaintenanceCheckpoint()
     const searchMaintenanceSchedule = assessAutomaticSearchMaintenance({
       nowMs: Date.now(),
@@ -5600,6 +5613,7 @@ export class AiAssistantService {
     )
     return {
       ...databaseDiagnostics,
+      backups: annotatedBackups,
       backupRestoreAudit,
       backgroundWrites: describeBackgroundWriteState({
         syncing: Boolean(this.activeSync),

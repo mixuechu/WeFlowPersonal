@@ -1,6 +1,9 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { buildMemoryBackupDirectory } from '../src/utils/memoryBackupPresentation.ts'
+import {
+  buildMemoryBackupDirectory,
+  describeMemoryBackupRestore
+} from '../src/utils/memoryBackupPresentation.ts'
 
 test('memory backup recovery exposes every retained snapshot beyond the old five-item UI cap', () => {
   const backups = Array.from({ length: 11 }, (_, index) => ({
@@ -24,4 +27,37 @@ test('memory backup recovery ignores malformed entries without inventing paths',
     path: '/private/backups/valid.sqlite',
     hasState: true
   }])
+})
+
+test('memory backup recovery fails closed for unverified and invalid snapshots', () => {
+  assert.equal(describeMemoryBackupRestore({
+    path: '/private/backups/good.sqlite',
+    hasState: true,
+    restoreStatus: 'restorable'
+  }).enabled, true)
+  assert.deepEqual(describeMemoryBackupRestore({
+    path: '/private/backups/bad-db.sqlite',
+    hasState: true,
+    restoreStatus: 'invalid',
+    restoreFailure: 'database_invalid'
+  }), {
+    enabled: false,
+    title: '数据库损坏或无法读取；已保留原始现场，但不能作为完整快照恢复',
+    suffix: '（数据库损坏或无法读取）'
+  })
+  assert.match(describeMemoryBackupRestore({
+    path: '/private/backups/bad-state.sqlite',
+    hasState: true,
+    restoreStatus: 'invalid',
+    restoreFailure: 'state_invalid'
+  }).title, /AI 状态损坏或密钥不匹配/)
+  assert.equal(describeMemoryBackupRestore({
+    path: '/private/backups/legacy.sqlite',
+    hasState: true
+  }).enabled, false)
+  assert.equal(describeMemoryBackupRestore({
+    path: '/private/backups/database-only.sqlite',
+    hasState: false,
+    restoreStatus: 'incomplete'
+  }).suffix, '（仅数据库）')
 })
