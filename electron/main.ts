@@ -43,6 +43,7 @@ import { imageDownloadService } from './services/imageDownloadService'
 import { aiAssistantService } from './services/aiAssistantService'
 import { initializeAppRunRecoveryService } from './services/appRunRecoveryService'
 import { applySensitiveLogPolicy } from './services/sensitiveLogPolicy'
+import { formatPathSanitizationDiagnostic } from './services/pathSanitizationDiagnostic'
 
 // 桌面产品名可独立定制，但始终沿用原 WeFlow 数据目录，避免升级后
 // 配置、解密信息和 AI 助理游标被 Electron 视为一套全新的应用数据。
@@ -635,8 +636,7 @@ function sanitizePathEnv() {
 
   const filtered = parts.filter(isSafe)
   if (filtered.length !== parts.length) {
-    const removed = parts.filter((p) => !isSafe(p))
-    console.warn('[WeFlow] 使用白名单裁剪 PATH，移除目录:', removed)
+    console.warn('[WeFlow]', formatPathSanitizationDiagnostic(parts.length - filtered.length))
     const nextPath = filtered.join(sep)
     process.env.PATH = nextPath
     process.env.Path = nextPath
