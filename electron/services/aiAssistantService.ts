@@ -252,8 +252,10 @@ import {
 } from './relationCorrectionPolicy'
 import { assessAutomaticSearchMaintenance } from './automaticSearchMaintenancePolicy.ts'
 import {
+  buildNotificationDedupKey,
   deliverNotificationBatch,
   enqueueUniqueNotification,
+  normalizeNotificationOutbox,
   type NotificationOutbox
 } from './notificationOutbox'
 import { findCommonGraphNeighbors, findScopedGraphPath } from './graphCommonNeighbors'
@@ -1099,11 +1101,7 @@ export class AiAssistantService {
           }
         },
         notifications: {
-          pending: Array.isArray(loaded.notifications?.pending) ? loaded.notifications.pending : [],
-          sentKeys: Array.isArray(loaded.notifications?.sentKeys) ? loaded.notifications.sentKeys : [],
-          discardedPendingCount: Math.max(0, Number(loaded.notifications?.discardedPendingCount) || 0),
-          lastDiscardedPendingAt: String(loaded.notifications?.lastDiscardedPendingAt || '') || undefined,
-          prunedSentKeyCount: Math.max(0, Number(loaded.notifications?.prunedSentKeyCount) || 0)
+          ...normalizeNotificationOutbox(loaded.notifications)
         },
         reminderPreferences: normalizeReminderPreferences(loaded.reminderPreferences),
         tasks: Array.isArray(loaded.tasks)
@@ -3983,7 +3981,7 @@ export class AiAssistantService {
       const mineTasks = [...tasks.values()].filter(task => task.classification === 'mine')
       if (mineTasks.length > 0) {
         this.enqueueNotification({
-          key: `new-tasks:${mineTasks.map(task => task.id).sort().join(',')}`,
+          key: buildNotificationDedupKey('new-tasks', mineTasks.map(task => task.id)),
           title: `AI 助理发现 ${mineTasks.length} 个新待办`,
           content: mineTasks.slice(0, 2).map(task => task.title).join('；'),
           createdAt: new Date().toISOString()
@@ -4525,6 +4523,8 @@ export class AiAssistantService {
         discardedPendingCount: Number(this.state.notifications.discardedPendingCount || 0),
         lastDiscardedPendingAt: this.state.notifications.lastDiscardedPendingAt || null,
         prunedSentKeyCount: Number(this.state.notifications.prunedSentKeyCount || 0),
+        identityMigrationCount: Number(this.state.notifications.identityMigrationCount || 0),
+        discardedInvalidCount: Number(this.state.notifications.discardedInvalidCount || 0),
         pendingLimit: 100,
         sentKeyLimit: 500,
         quiet: this.isNotificationQuiet(new Date()),

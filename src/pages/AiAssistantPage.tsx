@@ -9544,6 +9544,15 @@ function AiAssistantPage() {
               ? `，最近一次 ${new Date(dashboard.notificationDelivery.lastDiscardedPendingAt).toLocaleString('zh-CN')}`
               : ''}。任务和记忆本体未删除。
           </small>}
+          {(Number(dashboard.notificationDelivery.identityMigrationCount || 0) > 0 ||
+            Number(dashboard.notificationDelivery.discardedInvalidCount || 0) > 0) && <small>
+            通知身份已固定长度迁移 {Number(
+              dashboard.notificationDelivery.identityMigrationCount || 0
+            ).toLocaleString()} 条；
+            启动校验累计隔离 {Number(
+              dashboard.notificationDelivery.discardedInvalidCount || 0
+            ).toLocaleString()} 条异常通知状态。
+          </small>}
         </section>}
 
         <section className="assistant-briefing-card">

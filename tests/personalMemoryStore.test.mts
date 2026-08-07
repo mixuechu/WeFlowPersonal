@@ -112,9 +112,11 @@ import {
   relationSemanticId
 } from '../electron/services/relationCorrectionPolicy.ts'
 import {
+  buildNotificationDedupKey,
   deliverNotificationBatch,
   enqueueUniqueNotification,
-  markNotificationAttempt
+  markNotificationAttempt,
+  normalizeNotificationOutbox
 } from '../electron/services/notificationOutbox.ts'
 import {
   GRAPH_QUERY_EVIDENCE_LIMIT,
@@ -5869,6 +5871,64 @@ test('notification queue capacity keeps the newest work and audits every discard
   assert.equal(outbox.pending[99].key, 'capacity-104')
   assert.equal(outbox.discardedPendingCount, 5)
   assert.ok(Number.isFinite(Date.parse(outbox.lastDiscardedPendingAt)))
+})
+
+test('notification identities stay fixed-size for arbitrarily large task batches', () => {
+  const identities = Array.from({ length: 20_000 }, (_, index) => `task-${index}`)
+  const forward = buildNotificationDedupKey('new-tasks', identities)
+  const reversed = buildNotificationDedupKey('new-tasks', [...identities].reverse())
+  assert.equal(forward, reversed)
+  assert.match(forward, /^new-tasks:v2:[a-f0-9]{64}$/)
+  assert.equal(forward.length, 77)
+  assert.equal(
+    buildNotificationDedupKey('new-tasks', [...identities, 'task-1']),
+    forward
+  )
+})
+
+test('legacy notification state migrates identities and rejects malformed payloads', () => {
+  const normalized = normalizeNotificationOutbox({
+    pending: [{
+      key: 'new-tasks:task-b,task-a',
+      title: '新待办',
+      content: '内容',
+      createdAt: '2026-08-07T00:00:00.000Z',
+      attempts: 2,
+      lastAttemptAt: '2026-08-07T01:00:00.000Z',
+      nextAttemptAt: '2026-08-07T01:30:00.000Z'
+    }, {
+      key: 'new-tasks:task-a,task-b',
+      title: '迁移后重复',
+      content: '不应重复',
+      createdAt: '2026-08-07T00:01:00.000Z'
+    }, {
+      key: '',
+      title: '异常项',
+      createdAt: 'not-a-date'
+    }],
+    sentKeys: ['task-reminders:2026-08-06'],
+    identityMigrationCount: 4,
+    discardedInvalidCount: 3
+  })
+  assert.equal(normalized.pending.length, 1)
+  assert.match(normalized.pending[0].key, /^new-tasks:v2:[a-f0-9]{64}$/)
+  assert.equal(normalized.pending[0].attempts, 2)
+  assert.deepEqual(normalized.sentKeys, ['task-reminders:2026-08-06'])
+  assert.equal(normalized.identityMigrationCount, 6)
+  assert.equal(normalized.discardedInvalidCount, 4)
+})
+
+test('notification enqueue bounds each persisted field before it reaches encrypted state', () => {
+  const outbox = { pending: [], sentKeys: [] } as any
+  assert.equal(enqueueUniqueNotification(outbox, {
+    key: 'x'.repeat(10_000),
+    title: ` 标题${'甲'.repeat(300)} `,
+    content: '乙'.repeat(2_000),
+    createdAt: '2026-08-07T00:00:00.000Z'
+  }), true)
+  assert.match(outbox.pending[0].key, /^notification:v2:[a-f0-9]{64}$/)
+  assert.equal(outbox.pending[0].title.length, 160)
+  assert.equal(outbox.pending[0].content.length, 600)
 })
 
 test('common-neighbor graph query keeps relation direction, status and evidence', () => {
