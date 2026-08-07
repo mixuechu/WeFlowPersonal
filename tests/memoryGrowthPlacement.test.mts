@@ -29,6 +29,7 @@ test('memory growth is a first-class pageable archive with current dossier navig
   assert.match(page.slice(growth, ingestion), /memoryGrowthDetail/)
   assert.match(page.slice(growth, ingestion), /memoryGrowthOrigin/)
   assert.match(page.slice(growth, ingestion), /memoryGrowthSource/)
+  assert.match(page.slice(growth, ingestion), /memoryGrowthConnectorOperation/)
   assert.match(page.slice(growth, ingestion), /memoryGrowthOriginSummary/)
   assert.match(page.slice(growth, ingestion), /openMemoryGrowthOriginDossier/)
   assert.match(page, /memory-growth-origin-dossier-title/)

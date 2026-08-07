@@ -7914,6 +7914,77 @@ test('memory growth origins are nested, filterable and rollback without context 
   }
 })
 
+test('connector operation filtering is complete across pages and keeps legacy origins unclassified', () => withStore(store => {
+  const database = (store as any).db
+  const insert = database.prepare(`
+    INSERT INTO memory_change_log(
+      item_kind,item_id,change_kind,change_detail,origin_kind,origin_id,source_kind,
+      status_before,status_after,changed_at
+    ) VALUES('resource',?,'updated','content','connector_page',?,?,'','',?)
+  `)
+  database.transaction(() => {
+    for (let index = 0; index < 125; index += 1) {
+      insert.run(
+        `pdf-operation-${index}`,
+        `wechat.pdf_ocr:${String(index).padStart(24, '0')}`,
+        'wechat',
+        new Date(Date.UTC(2026, 7, 6, 2, 0, index)).toISOString()
+      )
+    }
+    for (let index = 0; index < 65; index += 1) {
+      insert.run(
+        `document-page-${index}`,
+        `documents.page:${String(index).padStart(24, '0')}`,
+        'documents',
+        new Date(Date.UTC(2026, 7, 6, 3, 0, index)).toISOString()
+      )
+    }
+    insert.run(
+      'legacy-connector-operation',
+      'wechat:1234567890abcdef12345678',
+      'wechat',
+      '2026-08-06T04:00:00.000Z'
+    )
+  })()
+
+  const first = store.listMemoryChangeLogPage({
+    connectorOperation: 'wechat_pdf_ocr',
+    limit: 40
+  })
+  assert.equal(first.total, 125)
+  assert.equal(first.items.length, 40)
+  assert.equal(first.hasMore, true)
+  assert.equal(first.items.every(item =>
+    item.originKind === 'connector_page' &&
+    item.originId.startsWith('wechat.pdf_ocr:')), true)
+  const second = store.listMemoryChangeLogPage({
+    connectorOperation: 'wechat_pdf_ocr',
+    limit: 40,
+    offset: 40,
+    revision: first.revision
+  })
+  assert.equal(second.total, 125)
+  assert.equal(second.items.length, 40)
+  assert.equal(new Set([
+    ...first.items.map(item => item.id),
+    ...second.items.map(item => item.id)
+  ]).size, 80)
+  assert.equal(store.listMemoryChangeLogPage({
+    connectorOperation: 'documents_page',
+    source: 'documents',
+    limit: 100
+  }).total, 65)
+  assert.equal(store.listMemoryChangeLogPage({
+    connectorOperation: 'wechat_resources',
+    limit: 100
+  }).total, 0)
+  assert.equal(store.listMemoryChangeLogPage({
+    origin: 'connector_page',
+    source: 'wechat',
+    limit: 1
+  }).total, 126)
+}))
+
 test('entity memory growth stays complete beyond five hundred changes and isolates same names', () => {
   const directory = mkdtempSync(join(tmpdir(), 'weflow-memory-growth-entity-scale-'))
   const databasePath = join(directory, 'memory.sqlite')

@@ -2630,6 +2630,17 @@ export class PersonalMemoryStore {
     detail?: 'item' | 'content' | 'identity' | 'status' | 'evidence' | 'participant' | 'all'
     origin?: 'model_batch' | 'connector_page' | 'human_action' | 'system' | 'legacy_unknown' | 'all'
     source?: 'wechat' | 'documents' | 'calendar' | 'mail' | 'local' | 'system' | 'legacy' | 'all'
+    connectorOperation?:
+      | 'documents_page'
+      | 'mail_page'
+      | 'calendar_page'
+      | 'wechat_resources'
+      | 'wechat_pdf_ocr'
+      | 'wechat_image_semantics'
+      | 'wechat_attachment_structure'
+      | 'document_analysis_running'
+      | 'document_analysis_failed'
+      | 'all'
     from?: string
     to?: string
     limit?: number
@@ -2686,6 +2697,21 @@ export class PersonalMemoryStore {
       .includes(String(options.source))) {
       conditions.push('log.source_kind=?')
       parameters.push(String(options.source))
+    }
+    const connectorPrefix = ({
+      documents_page: 'documents.page',
+      mail_page: 'mail.page',
+      calendar_page: 'calendar.page',
+      wechat_resources: 'wechat.resources',
+      wechat_pdf_ocr: 'wechat.pdf_ocr',
+      wechat_image_semantics: 'wechat.image_semantics',
+      wechat_attachment_structure: 'wechat.attachment_structure',
+      document_analysis_running: 'documents.analysis_running',
+      document_analysis_failed: 'documents.analysis_failed'
+    } as Record<string, string>)[String(options.connectorOperation || '')]
+    if (connectorPrefix) {
+      conditions.push(`log.origin_kind='connector_page' AND log.origin_id GLOB ?`)
+      parameters.push(`${connectorPrefix}:*`)
     }
     const entityId = String(options.entityId || '').trim().slice(0, 240)
     if (entityId) {

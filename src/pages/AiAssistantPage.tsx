@@ -1142,6 +1142,19 @@ function AiAssistantPage() {
     useState<'all' | 'model_batch' | 'connector_page' | 'human_action' | 'system' | 'legacy_unknown'>('all')
   const [memoryGrowthSource, setMemoryGrowthSource] =
     useState<'all' | 'wechat' | 'documents' | 'calendar' | 'mail' | 'local' | 'system' | 'legacy'>('all')
+  const [memoryGrowthConnectorOperation, setMemoryGrowthConnectorOperation] =
+    useState<
+      | 'all'
+      | 'documents_page'
+      | 'mail_page'
+      | 'calendar_page'
+      | 'wechat_resources'
+      | 'wechat_pdf_ocr'
+      | 'wechat_image_semantics'
+      | 'wechat_attachment_structure'
+      | 'document_analysis_running'
+      | 'document_analysis_failed'
+    >('all')
   const [memoryGrowthFrom, setMemoryGrowthFrom] = useState('')
   const [memoryGrowthTo, setMemoryGrowthTo] = useState('')
   const [memoryGrowthEntity, setMemoryGrowthEntity] = useState<any>(null)
@@ -1744,6 +1757,7 @@ function AiAssistantPage() {
     detail: memoryGrowthDetail,
     origin: memoryGrowthOrigin,
     source: memoryGrowthSource,
+    connectorOperation: memoryGrowthConnectorOperation,
     from: memoryGrowthFrom
       ? new Date(`${memoryGrowthFrom}T00:00:00+08:00`).toISOString()
       : undefined,
@@ -1755,7 +1769,8 @@ function AiAssistantPage() {
     offset: 0
   }), [
     memoryGrowthKind, memoryGrowthChange, memoryGrowthDetail, memoryGrowthOrigin,
-    memoryGrowthSource, memoryGrowthFrom, memoryGrowthTo, memoryGrowthEntity?.id
+    memoryGrowthSource, memoryGrowthConnectorOperation,
+    memoryGrowthFrom, memoryGrowthTo, memoryGrowthEntity?.id
   ])
   const mergeArchiveOptions = useMemo(() => ({
     status: mergeArchiveStatus,
@@ -8972,6 +8987,23 @@ function AiAssistantPage() {
               <option value="system">系统</option>
               <option value="legacy">旧版来源</option>
             </select>
+            <select value={memoryGrowthConnectorOperation}
+              onChange={event => {
+                const value = event.target.value as typeof memoryGrowthConnectorOperation
+                setMemoryGrowthConnectorOperation(value)
+                if (value !== 'all') setMemoryGrowthOrigin('connector_page')
+              }}>
+              <option value="all">所有连接器操作</option>
+              <option value="documents_page">文档增量页</option>
+              <option value="mail_page">邮件增量页</option>
+              <option value="calendar_page">日历增量页</option>
+              <option value="wechat_resources">微信消息资源</option>
+              <option value="wechat_pdf_ocr">PDF 本地 OCR</option>
+              <option value="wechat_image_semantics">图片本地语义</option>
+              <option value="wechat_attachment_structure">附件结构补全</option>
+              <option value="document_analysis_running">文档分析开始</option>
+              <option value="document_analysis_failed">文档分析失败</option>
+            </select>
             <label><span>变化从</span><input type="date" value={memoryGrowthFrom}
               onChange={event => setMemoryGrowthFrom(event.target.value)} /></label>
             <label><span>到</span><input type="date" value={memoryGrowthTo}
@@ -8979,6 +9011,7 @@ function AiAssistantPage() {
             {(memoryGrowthEntity || memoryGrowthKind !== 'all' ||
               memoryGrowthChange !== 'all' || memoryGrowthDetail !== 'all' ||
               memoryGrowthOrigin !== 'all' || memoryGrowthSource !== 'all' ||
+              memoryGrowthConnectorOperation !== 'all' ||
               memoryGrowthFrom || memoryGrowthTo) && <button onClick={() => {
               setMemoryGrowthEntity(null)
               setMemoryGrowthKind('all')
@@ -8986,6 +9019,7 @@ function AiAssistantPage() {
               setMemoryGrowthDetail('all')
               setMemoryGrowthOrigin('all')
               setMemoryGrowthSource('all')
+              setMemoryGrowthConnectorOperation('all')
               setMemoryGrowthFrom('')
               setMemoryGrowthTo('')
             }}>清除范围</button>}

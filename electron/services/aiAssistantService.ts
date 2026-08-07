@@ -4786,6 +4786,11 @@ export class AiAssistantService {
       source: [
         'wechat', 'documents', 'calendar', 'mail', 'local', 'system', 'legacy', 'all'
       ].includes(options?.source) ? options.source : 'all',
+      connectorOperation: [
+        'documents_page', 'mail_page', 'calendar_page', 'wechat_resources',
+        'wechat_pdf_ocr', 'wechat_image_semantics', 'wechat_attachment_structure',
+        'document_analysis_running', 'document_analysis_failed', 'all'
+      ].includes(options?.connectorOperation) ? options.connectorOperation : 'all',
       entityId: String(options?.entityId || ''),
       from: String(options?.from || ''),
       to: String(options?.to || ''),
