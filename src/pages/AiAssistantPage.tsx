@@ -56,6 +56,14 @@ import {
   entityDossierDrilldown,
   type EntityDossierMetric
 } from '../utils/entityDossierDrilldown'
+import {
+  selectMemoryGrowthConnectorOperation,
+  selectMemoryGrowthOrigin,
+  selectMemoryGrowthSource,
+  type MemoryGrowthConnectorOperation,
+  type MemoryGrowthOrigin,
+  type MemoryGrowthSource
+} from '../utils/memoryGrowthFilters'
 import { evidenceArchiveIdentity } from '../../shared/evidencePayload'
 import {
   isMemorySearchReviewPresetActive,
@@ -1139,22 +1147,11 @@ function AiAssistantPage() {
   const [memoryGrowthDetail, setMemoryGrowthDetail] =
     useState<'all' | 'item' | 'content' | 'identity' | 'status' | 'evidence' | 'participant'>('all')
   const [memoryGrowthOrigin, setMemoryGrowthOrigin] =
-    useState<'all' | 'model_batch' | 'connector_page' | 'human_action' | 'system' | 'legacy_unknown'>('all')
+    useState<MemoryGrowthOrigin>('all')
   const [memoryGrowthSource, setMemoryGrowthSource] =
-    useState<'all' | 'wechat' | 'documents' | 'calendar' | 'mail' | 'local' | 'system' | 'legacy'>('all')
+    useState<MemoryGrowthSource>('all')
   const [memoryGrowthConnectorOperation, setMemoryGrowthConnectorOperation] =
-    useState<
-      | 'all'
-      | 'documents_page'
-      | 'mail_page'
-      | 'calendar_page'
-      | 'wechat_resources'
-      | 'wechat_pdf_ocr'
-      | 'wechat_image_semantics'
-      | 'wechat_attachment_structure'
-      | 'document_analysis_running'
-      | 'document_analysis_failed'
-    >('all')
+    useState<MemoryGrowthConnectorOperation>('all')
   const [memoryGrowthFrom, setMemoryGrowthFrom] = useState('')
   const [memoryGrowthTo, setMemoryGrowthTo] = useState('')
   const [memoryGrowthEntity, setMemoryGrowthEntity] = useState<any>(null)
@@ -8964,9 +8961,14 @@ function AiAssistantPage() {
               <option value="participant">事件参与者</option>
             </select>
             <select value={memoryGrowthOrigin}
-              onChange={event => setMemoryGrowthOrigin(
-                event.target.value as typeof memoryGrowthOrigin
-              )}>
+              onChange={event => {
+                const selection = selectMemoryGrowthOrigin(
+                  event.target.value as MemoryGrowthOrigin,
+                  memoryGrowthConnectorOperation
+                )
+                setMemoryGrowthOrigin(selection.origin)
+                setMemoryGrowthConnectorOperation(selection.connectorOperation)
+              }}>
               <option value="all">所有产生方式</option>
               <option value="model_batch">自动抽取</option>
               <option value="connector_page">本机连接器</option>
@@ -8975,9 +8977,14 @@ function AiAssistantPage() {
               <option value="legacy_unknown">旧版未知</option>
             </select>
             <select value={memoryGrowthSource}
-              onChange={event => setMemoryGrowthSource(
-                event.target.value as typeof memoryGrowthSource
-              )}>
+              onChange={event => {
+                const selection = selectMemoryGrowthSource(
+                  event.target.value as MemoryGrowthSource,
+                  memoryGrowthConnectorOperation
+                )
+                setMemoryGrowthSource(selection.source)
+                setMemoryGrowthConnectorOperation(selection.connectorOperation)
+              }}>
               <option value="all">所有信息来源</option>
               <option value="wechat">微信</option>
               <option value="documents">本机文档</option>
@@ -8989,9 +8996,12 @@ function AiAssistantPage() {
             </select>
             <select value={memoryGrowthConnectorOperation}
               onChange={event => {
-                const value = event.target.value as typeof memoryGrowthConnectorOperation
-                setMemoryGrowthConnectorOperation(value)
-                if (value !== 'all') setMemoryGrowthOrigin('connector_page')
+                const selection = selectMemoryGrowthConnectorOperation(
+                  event.target.value as MemoryGrowthConnectorOperation
+                )
+                setMemoryGrowthConnectorOperation(selection.connectorOperation)
+                if (selection.origin) setMemoryGrowthOrigin(selection.origin)
+                if (selection.source) setMemoryGrowthSource(selection.source)
               }}>
               <option value="all">所有连接器操作</option>
               <option value="documents_page">文档增量页</option>
@@ -15069,6 +15079,20 @@ function AiAssistantPage() {
                 <span>索引覆盖 <b>{Number(memoryDiagnostics.evidenceScopeIndexes.installedIndexes || 0)} / {Number(memoryDiagnostics.evidenceScopeIndexes.expectedIndexes || 0)}</b></span>
                 <span>本次修复 <b>{Number(memoryDiagnostics.evidenceScopeIndexes.repairedIndexesThisStart || 0)}</b> 项</span>
                 <span>累计自愈 <b>{Number(memoryDiagnostics.evidenceScopeIndexes.repairsTotal || 0)}</b> 次</span>
+              </div>
+            </div>}
+            {memoryDiagnostics.memoryChangeLog?.version && <div className={`assistant-recovery-audit ${memoryDiagnostics.memoryChangeLogHealthy ? 'healthy' : 'unhealthy'}`}>
+              <header><ShieldCheck size={15} /><span><b>记忆成长账本与连接器操作索引</b>
+                <small>每次发现、丰富、审阅和删除都进入隐私最小的成长账本；具体连接器操作使用受精确定义校验的 SQLCipher 表达式索引，定义缺失或漂移会在启动时事务重建。</small>
+              </span></header>
+              <div className="assistant-recovery-current">
+                <span>当前状态 <b>{memoryDiagnostics.memoryChangeLogHealthy ? '保护正常' : '需要检查'}</b></span>
+                <span>成长记录 <b>{Number(memoryDiagnostics.memoryChangeLog.total || 0).toLocaleString()}</b></span>
+                <span>当前 revision <b>{String(memoryDiagnostics.memoryChangeLog.revision || '0')}</b></span>
+                <span>连接器操作索引 <b>{memoryDiagnostics.memoryChangeLog.connectorOperationIndex?.healthy ? '定义正确' : '缺失或漂移'}</b></span>
+                <span>来源上下文 <b>{memoryDiagnostics.memoryChangeLog.originContextClean ? '已清理' : `${Number(memoryDiagnostics.memoryChangeLog.activeOriginContexts || 0)} 个遗留`}</b></span>
+                <span>本次触发器/索引修复 <b>{Number(memoryDiagnostics.memoryChangeLog.repairedTriggersThisStart || 0)} / {Number(memoryDiagnostics.memoryChangeLog.repairedIndexesThisStart || 0)}</b> 项</span>
+                <span>累计自愈 <b>{Number(memoryDiagnostics.memoryChangeLog.repairsTotal || 0).toLocaleString()}</b> 次</span>
               </div>
             </div>}
             {memoryDiagnostics.memorySearchFeedbackArchiveRevision?.version && <div className={`assistant-recovery-audit ${memoryDiagnostics.memorySearchFeedbackArchiveRevisionHealthy ? 'healthy' : 'unhealthy'}`}>

@@ -7983,6 +7983,40 @@ test('connector operation filtering is complete across pages and keeps legacy or
     source: 'wechat',
     limit: 1
   }).total, 126)
+  const queryPlan = database.prepare(`
+    EXPLAIN QUERY PLAN
+    SELECT id FROM memory_change_log log
+    WHERE log.origin_kind='connector_page'
+      AND substr(log.origin_id,1,instr(log.origin_id,':')-1)=?
+    ORDER BY log.changed_at DESC,log.id DESC
+    LIMIT 40 OFFSET 80
+  `).all('wechat.pdf_ocr')
+  const planText = queryPlan.map((row: any) => String(row.detail || '')).join('\n')
+  assert.match(planText, /idx_memory_change_log_connector_operation_time/)
+  assert.doesNotMatch(planText, /USE TEMP B-TREE FOR ORDER BY/)
+  database.exec(`
+    DROP INDEX idx_memory_change_log_connector_operation_time;
+    CREATE INDEX idx_memory_change_log_connector_operation_time
+    ON memory_change_log(origin_kind);
+  `)
+  assert.equal(store.getMemoryChangeLogHealth().healthy, false)
+  ;(store as any).ensureMemoryChangeLog()
+  const repairedHealth = store.getMemoryChangeLogHealth()
+  assert.equal(repairedHealth.healthy, true)
+  assert.equal(repairedHealth.repairedIndexesThisStart, 1)
+  assert.equal(repairedHealth.connectorOperationIndex.healthy, true)
+  const repairedPlan = database.prepare(`
+    EXPLAIN QUERY PLAN
+    SELECT id FROM memory_change_log log
+    WHERE log.origin_kind='connector_page'
+      AND substr(log.origin_id,1,instr(log.origin_id,':')-1)=?
+    ORDER BY log.changed_at DESC,log.id DESC
+    LIMIT 40 OFFSET 80
+  `).all('wechat.pdf_ocr')
+  const repairedPlanText = repairedPlan
+    .map((row: any) => String(row.detail || '')).join('\n')
+  assert.match(repairedPlanText, /idx_memory_change_log_connector_operation_time/)
+  assert.doesNotMatch(repairedPlanText, /USE TEMP B-TREE FOR ORDER BY/)
 }))
 
 test('entity memory growth stays complete beyond five hundred changes and isolates same names', () => {

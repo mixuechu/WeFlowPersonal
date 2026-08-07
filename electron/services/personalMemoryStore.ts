@@ -1547,6 +1547,13 @@ export class PersonalMemoryStore {
       ON memory_change_log(source_kind,changed_at DESC,id DESC);
       CREATE INDEX IF NOT EXISTS idx_memory_change_log_origin_identity
       ON memory_change_log(origin_kind,origin_id,source_kind,id DESC);
+      CREATE INDEX IF NOT EXISTS idx_memory_change_log_connector_operation_time
+      ON memory_change_log(
+        origin_kind,
+        substr(origin_id,1,instr(origin_id,':')-1),
+        changed_at DESC,
+        id DESC
+      );
       DELETE FROM memory_change_context;
     `)
     this.ensureColumn('data_source_connectors', 'config_json', `TEXT NOT NULL DEFAULT '{}'`)
@@ -2457,9 +2464,42 @@ export class PersonalMemoryStore {
     }
   }
 
+  private memoryChangeConnectorOperationIndexSql(): string {
+    return `
+      CREATE INDEX idx_memory_change_log_connector_operation_time
+      ON memory_change_log(
+        origin_kind,
+        substr(origin_id,1,instr(origin_id,':')-1),
+        changed_at DESC,
+        id DESC
+      )
+    `
+  }
+
+  private inspectMemoryChangeConnectorOperationIndex(): {
+    healthy: boolean
+    installed: boolean
+  } {
+    if (!this.db) return { healthy: false, installed: false }
+    const row = this.db.prepare(`
+      SELECT sql FROM sqlite_master
+      WHERE type='index' AND name='idx_memory_change_log_connector_operation_time'
+    `).get() as any
+    const normalize = (value: unknown) => String(value || '').toLowerCase()
+      .replace(/;/g, '').replace(/\s+/g, ' ').trim()
+    return {
+      installed: Boolean(row?.sql),
+      healthy: normalize(row?.sql) === normalize(
+        this.memoryChangeConnectorOperationIndexSql()
+      )
+    }
+  }
+
   private ensureMemoryChangeLog(): void {
     if (!this.db) return
     const before = this.inspectMemoryChangeLogTriggers()
+    const connectorOperationIndexBefore =
+      this.inspectMemoryChangeConnectorOperationIndex()
     const previousRow = this.db.prepare(`
       SELECT value FROM schema_meta WHERE key='memory_change_log_integrity'
     `).get() as any
@@ -2469,12 +2509,18 @@ export class PersonalMemoryStore {
     const byName = new Map(definitions.map(sql => [
       sql.match(/CREATE TRIGGER\s+(\S+)/i)?.[1] || '', sql
     ]))
-    if (!before.healthy) {
+    if (!before.healthy || !connectorOperationIndexBefore.healthy) {
       this.db.transaction(() => {
         for (const name of [...before.unhealthyTriggers, ...before.unexpectedTriggers]) {
           this.db!.exec(`DROP TRIGGER IF EXISTS "${name.replace(/"/g, '""')}"`)
           const sql = byName.get(name)
           if (sql) this.db!.exec(sql)
+        }
+        if (!connectorOperationIndexBefore.healthy) {
+          this.db!.exec(`
+            DROP INDEX IF EXISTS idx_memory_change_log_connector_operation_time
+          `)
+          this.db!.exec(this.memoryChangeConnectorOperationIndexSql())
         }
       })()
     }
@@ -2538,13 +2584,19 @@ export class PersonalMemoryStore {
       version: 'memory-change-log-revision-v2'
     })
     const after = this.inspectMemoryChangeLogTriggers()
+    const connectorOperationIndexAfter =
+      this.inspectMemoryChangeConnectorOperationIndex()
     const repaired = before.unhealthyTriggers.length + before.unexpectedTriggers.length
+    const repairedIndexes = connectorOperationIndexBefore.healthy ? 0 : 1
     const audit = {
-      version: 'memory-change-log-v4',
+      version: 'memory-change-log-v5',
       checkedAt: now,
-      repairedThisStart: repaired > 0,
+      repairedThisStart: repaired > 0 || repairedIndexes > 0,
       repairedTriggersThisStart: repaired,
-      repairsTotal: Number(previous.repairsTotal || 0) + (repaired > 0 ? 1 : 0),
+      repairedIndexesThisStart: repairedIndexes,
+      connectorOperationIndex: connectorOperationIndexAfter,
+      repairsTotal: Number(previous.repairsTotal || 0) +
+        (repaired > 0 || repairedIndexes > 0 ? 1 : 0),
       privacyPolicy: 'identity_status_time_detail_stable_links_and_bounded_origin_no_content',
       entityLinkBackfillPolicy: 'current_authority_only_no_guessing',
       historicalBackfill: false,
@@ -2574,12 +2626,13 @@ export class PersonalMemoryStore {
       revision: this.getMemoryChangeLogRevision()
     })
     if (!this.db) return {
-      version: 'memory-change-log-v4',
+      version: 'memory-change-log-v5',
       revision: '0',
       trackedSince: '',
       total: 0,
       ...triggers,
       revisionTriggers,
+      connectorOperationIndex: { healthy: false, installed: false },
       healthy: false
     }
     const auditRow = this.db.prepare(`
@@ -2599,7 +2652,7 @@ export class PersonalMemoryStore {
       SELECT COUNT(*) AS count FROM memory_change_context
     `).get() as any)?.count || 0)
     return {
-      version: 'memory-change-log-v4',
+      version: 'memory-change-log-v5',
       revision: this.getMemoryChangeLogRevision(),
       trackedSince: String(started?.value || ''),
       total: Number((this.db.prepare(`
@@ -2608,6 +2661,7 @@ export class PersonalMemoryStore {
       checkedAt: String(audit.checkedAt || auditRow?.updated_at || ''),
       repairedThisStart: Boolean(audit.repairedThisStart),
       repairedTriggersThisStart: Number(audit.repairedTriggersThisStart || 0),
+      repairedIndexesThisStart: Number(audit.repairedIndexesThisStart || 0),
       repairsTotal: Number(audit.repairsTotal || 0),
       privacyPolicy: 'identity_status_time_detail_stable_links_and_bounded_origin_no_content',
       activeOriginContexts,
@@ -2620,7 +2674,10 @@ export class PersonalMemoryStore {
       historicalBackfill: false,
       ...triggers,
       revisionTriggers,
-      healthy: triggers.healthy && revisionTriggers.healthy && activeOriginContexts === 0
+      connectorOperationIndex: this.inspectMemoryChangeConnectorOperationIndex(),
+      healthy: triggers.healthy && revisionTriggers.healthy &&
+        this.inspectMemoryChangeConnectorOperationIndex().healthy &&
+        activeOriginContexts === 0
     }
   }
 
@@ -2710,8 +2767,9 @@ export class PersonalMemoryStore {
       document_analysis_failed: 'documents.analysis_failed'
     } as Record<string, string>)[String(options.connectorOperation || '')]
     if (connectorPrefix) {
-      conditions.push(`log.origin_kind='connector_page' AND log.origin_id GLOB ?`)
-      parameters.push(`${connectorPrefix}:*`)
+      conditions.push(`log.origin_kind='connector_page'
+        AND substr(log.origin_id,1,instr(log.origin_id,':')-1)=?`)
+      parameters.push(connectorPrefix)
     }
     const entityId = String(options.entityId || '').trim().slice(0, 240)
     if (entityId) {
@@ -6703,6 +6761,7 @@ export class PersonalMemoryStore {
         && taskSearchIndexHealthy
         && entityEvidenceFts.healthy
         && evidenceScopeIndexes.healthy
+        && memoryChangeLog.healthy
         && memorySearchRevision.healthy
         && memorySearchFeedbackArchiveRevision.healthy
         && memoryDeletionAuditRevision.healthy
@@ -6729,6 +6788,7 @@ export class PersonalMemoryStore {
       taskSearchIndexHealthy,
       entityEvidenceFtsHealthy: entityEvidenceFts.healthy,
       evidenceScopeIndexesHealthy: evidenceScopeIndexes.healthy,
+      memoryChangeLogHealthy: memoryChangeLog.healthy,
       memorySearchRevisionHealthy: memorySearchRevision.healthy,
       memorySearchFeedbackArchiveRevisionHealthy:
         memorySearchFeedbackArchiveRevision.healthy,
