@@ -1424,6 +1424,9 @@ function AiAssistantPage() {
   const [restoringMemory, setRestoringMemory] = useState(false)
   const [memoryRestoreDialog, setMemoryRestoreDialog] = useState<any>(null)
   const [memoryRestoreConfirmation, setMemoryRestoreConfirmation] = useState('')
+  const [deletingMemoryBackup, setDeletingMemoryBackup] = useState(false)
+  const [memoryBackupDeleteDialog, setMemoryBackupDeleteDialog] = useState<any>(null)
+  const [memoryBackupDeleteConfirmation, setMemoryBackupDeleteConfirmation] = useState('')
   const memoryRestoreGate = useRef(new LatestRequestGate())
   const [migratingMemory, setMigratingMemory] = useState(false)
   const [migrationDialog, setMigrationDialog] = useState<any>(null)
@@ -6180,6 +6183,63 @@ function AiAssistantPage() {
     }
   }
 
+  const openMemoryBackupDeleteDialog = async (backup: any) => {
+    if (deletingMemoryBackup || !backup?.path) return
+    setMemoryBackupDeleteConfirmation('')
+    setMemoryBackupDeleteDialog({ backup, status: 'loading' })
+    try {
+      const preview = await window.electronAPI.aiAssistant.previewDeleteMemoryBackup(backup.path)
+      setMemoryBackupDeleteDialog((current: any) =>
+        current?.backup?.path === backup.path
+          ? { backup, preview, status: 'ready' }
+          : current)
+    } catch (error: any) {
+      setMemoryBackupDeleteDialog((current: any) =>
+        current?.backup?.path === backup.path
+          ? { backup, status: 'error', error: error?.message || String(error) }
+          : current)
+    }
+  }
+
+  const closeMemoryBackupDeleteDialog = () => {
+    if (deletingMemoryBackup) return
+    setMemoryBackupDeleteDialog(null)
+    setMemoryBackupDeleteConfirmation('')
+  }
+
+  const deleteMemoryBackup = async () => {
+    const preview = memoryBackupDeleteDialog?.preview
+    if (
+      deletingMemoryBackup
+      || memoryBackupDeleteDialog?.status !== 'ready'
+      || !preview?.path
+      || memoryBackupDeleteConfirmation !== '移到废纸篓'
+    ) return
+    setDeletingMemoryBackup(true)
+    setMemoryBackupDeleteDialog((current: any) =>
+      current ? { ...current, status: 'deleting', error: '' } : current)
+    try {
+      const result = await window.electronAPI.aiAssistant.deleteMemoryBackup(
+        preview.path,
+        {
+          previewToken: preview.previewToken,
+          confirmation: memoryBackupDeleteConfirmation
+        }
+      )
+      setMessage(`历史快照已移到废纸篓，释放备份目录 ${(Number(result.bytes || 0) / 1024 / 1024).toFixed(1)} MB`)
+      setMemoryBackupDeleteDialog(null)
+      setMemoryBackupDeleteConfirmation('')
+      setMemoryDiagnostics(await window.electronAPI.aiAssistant.getMemoryDiagnostics())
+    } catch (error: any) {
+      const message = error?.message || String(error)
+      setMessage(message)
+      setMemoryBackupDeleteDialog((current: any) =>
+        current ? { ...current, status: 'error', error: message } : current)
+    } finally {
+      setDeletingMemoryBackup(false)
+    }
+  }
+
   const openExportMemoryBundle = () => {
     setMigrationPassphrase('')
     setMigrationPassphraseConfirmation('')
@@ -9368,12 +9428,20 @@ function AiAssistantPage() {
                 <div>
                   {memoryBackupDirectory.map((backup: any) => {
                     const availability = describeMemoryBackupRestore(backup)
-                    return <button key={backup.path}
-                      disabled={restoringMemory || !availability.enabled}
-                      title={availability.title}
-                      onClick={() => void openMemoryRestoreDialog(backup)}>
-                      {new Date(backup.createdAt).toLocaleString('zh-CN')}{availability.suffix}
-                    </button>
+                    return <div key={backup.path}>
+                      <button
+                        disabled={restoringMemory || deletingMemoryBackup || !availability.enabled}
+                        title={availability.title}
+                        onClick={() => void openMemoryRestoreDialog(backup)}>
+                        {new Date(backup.createdAt).toLocaleString('zh-CN')}{availability.suffix}
+                      </button>
+                      <button
+                        disabled={restoringMemory || deletingMemoryBackup}
+                        title="先预览文件数量与空间，再经明确确认移到 macOS 废纸篓"
+                        onClick={() => void openMemoryBackupDeleteDialog(backup)}>
+                        清理此快照
+                      </button>
+                    </div>
                   })}
                 </div>
               </details>}
@@ -14868,6 +14936,11 @@ function AiAssistantPage() {
                 {' · '}本次重新验证 {Number(memoryDiagnostics.backupRestoreAudit.validatedNow || 0)}
                 {' · '}复用未变化文件结果 {Number(memoryDiagnostics.backupRestoreAudit.reusedFromCache || 0)}
               </small>}
+              {memoryDiagnostics.memoryBackupTrashRecovery && <small>
+                启动检查安全暂存区 {Number(memoryDiagnostics.memoryBackupTrashRecovery.checked || 0)}
+                {' · '}已恢复中断清理 {Number(memoryDiagnostics.memoryBackupTrashRecovery.restored || 0)}
+                {' · '}需人工检查 {Number(memoryDiagnostics.memoryBackupTrashRecovery.conflicts || 0)}
+              </small>}
             </div>}
             <div className="assistant-dossier-metrics">
               <span><b>{memoryDiagnostics.ingestionSummary?.runs || 0}</b><small>全部运行</small></span>
@@ -16883,6 +16956,73 @@ function AiAssistantPage() {
                     ? '正在处理…'
                     : resourceDeletionDialog.action === 'purge'
                       ? '确认永久删除' : '确认移入回收站'}
+                </button>}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {memoryBackupDeleteDialog && (
+        <div className="assistant-modal-backdrop" role="presentation">
+          <div className="assistant-modal assistant-delete-modal" role="dialog" aria-modal="true"
+            aria-labelledby="memory-backup-delete-title">
+            <div className="assistant-modal-title"><div>
+              <h2 id="memory-backup-delete-title">清理历史记忆快照</h2>
+              <p>数据库和对应 AI 状态会作为一个目录移到 macOS 废纸篓；不会修改当前个人记忆。</p>
+            </div><button aria-label="关闭快照清理确认" disabled={deletingMemoryBackup}
+              onClick={closeMemoryBackupDeleteDialog}><X size={16} /></button></div>
+            {memoryBackupDeleteDialog.status === 'loading' && <div className="assistant-delete-status">
+              <RefreshCw size={16} /><span><strong>正在计算删除范围…</strong>
+                <small>只读取目标快照并生成内容绑定令牌。</small></span>
+            </div>}
+            {memoryBackupDeleteDialog.status === 'error' && <div className="assistant-error">
+              <strong>快照清理失败</strong>
+              <span>{memoryBackupDeleteDialog.error || '未知错误'}</span>
+            </div>}
+            {(memoryBackupDeleteDialog.status === 'ready' ||
+              memoryBackupDeleteDialog.status === 'deleting') && <>
+              <div className="assistant-delete-preview">
+                <strong>{new Date(memoryBackupDeleteDialog.preview.createdAt)
+                  .toLocaleString('zh-CN', { hour12: false })} 的历史快照</strong>
+                <p>
+                  将移动 {Number(memoryBackupDeleteDialog.preview.artifactCount || 0)} 个文件，
+                  共 {((Number(memoryBackupDeleteDialog.preview.databaseBytes || 0) +
+                    Number(memoryBackupDeleteDialog.preview.stateBytes || 0)) / 1024 / 1024).toFixed(1)} MB。
+                </p>
+                <p>
+                  {memoryBackupDeleteDialog.preview.hasState
+                    ? '数据库与 AI 状态副本会一起移动，不会留下新的半快照。'
+                    : '该历史记录只有数据库文件，将只移动现有文件。'}
+                  操作后仍可从 macOS 废纸篓人工恢复；如果文件在预览后变化，服务端会拒绝本次确认。
+                </p>
+              </div>
+              <label><span>输入“移到废纸篓”确认</span><input autoFocus
+                value={memoryBackupDeleteConfirmation}
+                disabled={memoryBackupDeleteDialog.status === 'deleting'}
+                onChange={event => setMemoryBackupDeleteConfirmation(event.target.value)}
+                onKeyDown={event => {
+                  if (event.key === 'Enter' &&
+                    memoryBackupDeleteConfirmation === '移到废纸篓') {
+                    void deleteMemoryBackup()
+                  }
+                }}
+                placeholder="移到废纸篓" /></label>
+            </>}
+            <div className="assistant-modal-actions">
+              <button disabled={deletingMemoryBackup}
+                onClick={closeMemoryBackupDeleteDialog}>取消</button>
+              {memoryBackupDeleteDialog.status === 'error' && <button
+                disabled={deletingMemoryBackup}
+                onClick={() => void openMemoryBackupDeleteDialog(
+                  memoryBackupDeleteDialog.backup
+                )}>重新预览</button>}
+              {(memoryBackupDeleteDialog.status === 'ready' ||
+                memoryBackupDeleteDialog.status === 'deleting') &&
+                <button className="danger"
+                  disabled={memoryBackupDeleteConfirmation !== '移到废纸篓' ||
+                    deletingMemoryBackup}
+                  onClick={() => void deleteMemoryBackup()}>
+                  {deletingMemoryBackup ? '正在安全移动…' : '确认移到废纸篓'}
                 </button>}
             </div>
           </div>

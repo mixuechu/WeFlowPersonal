@@ -4734,6 +4734,10 @@ function registerIpcHandlers() {
   ipcMain.handle('ai-assistant:inspectMemoryBackup', (_, path: string) => aiAssistantService.inspectMemoryBackup(path))
   ipcMain.handle('ai-assistant:restoreMemoryBackup', (_, path: string, input?: any) =>
     aiAssistantService.restoreMemoryBackup(path, input))
+  ipcMain.handle('ai-assistant:previewDeleteMemoryBackup', (_, path: string) =>
+    aiAssistantService.previewDeleteMemoryBackup(path))
+  ipcMain.handle('ai-assistant:deleteMemoryBackup', (_, path: string, input?: any) =>
+    aiAssistantService.deleteMemoryBackup(path, input))
   ipcMain.handle('ai-assistant:exportMemoryBundle', (_, path: string, passphrase: string) =>
     aiAssistantService.exportMemoryBundle(path, passphrase))
   ipcMain.handle('ai-assistant:inspectMemoryBundle', (_, path: string, passphrase?: string) =>

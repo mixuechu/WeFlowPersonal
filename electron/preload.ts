@@ -793,6 +793,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
     inspectMemoryBackup: (path: string) => ipcRenderer.invoke('ai-assistant:inspectMemoryBackup', path),
     restoreMemoryBackup: (path: string, input?: any) =>
       ipcRenderer.invoke('ai-assistant:restoreMemoryBackup', path, input),
+    previewDeleteMemoryBackup: (path: string) =>
+      ipcRenderer.invoke('ai-assistant:previewDeleteMemoryBackup', path),
+    deleteMemoryBackup: (path: string, input?: any) =>
+      ipcRenderer.invoke('ai-assistant:deleteMemoryBackup', path, input),
     exportMemoryBundle: (path: string, passphrase: string) =>
       ipcRenderer.invoke('ai-assistant:exportMemoryBundle', path, passphrase),
     inspectMemoryBundle: (path: string, passphrase?: string) =>

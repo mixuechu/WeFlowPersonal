@@ -1,7 +1,14 @@
-import { app } from 'electron'
+import { app, shell } from 'electron'
 import crypto from 'crypto'
-import { chmodSync, existsSync, readFileSync, statSync, unlinkSync, writeFileSync } from 'fs'
-import { join } from 'path'
+import {
+  chmodSync,
+  existsSync,
+  readFileSync,
+  statSync,
+  unlinkSync,
+  writeFileSync
+} from 'fs'
+import { basename, dirname, join, resolve } from 'path'
 import { jsonrepair } from 'jsonrepair'
 import JSZip from 'jszip'
 import { ConfigService } from './config'
@@ -44,6 +51,11 @@ import {
   inspectJointMemoryBackupRestorability,
   type JointMemoryBackupValidationCache
 } from './jointMemoryBackupPolicy'
+import {
+  recoverInterruptedMemoryBackupTrash,
+  rollbackStagedMemoryBackupTrash,
+  stageMemoryBackupTrash
+} from './memoryBackupTrashPolicy'
 import { ModelRequestCoordinator, RequestCoordinator } from './modelRequestCoordinator'
 import { extractScannedPdfText, getPdfOcrStatus } from './pdfOcrService'
 import { exportService } from './export'
@@ -172,8 +184,11 @@ import {
   type MemoryImportPreviewIdentity
 } from './memoryImportPolicy'
 import {
+  assertMemoryBackupDeletionConfirmation,
   assertMemoryBackupRestoreConfirmation,
+  buildMemoryBackupDeletionPreviewToken,
   buildMemoryBackupRestorePreviewToken,
+  type MemoryBackupDeletionIdentity,
   type MemoryBackupRestoreIdentity
 } from './memoryBackupRestorePolicy'
 import {
@@ -689,6 +704,13 @@ export class AiAssistantService {
     mail: string
   }>(5 * 60_000)
   private jointBackupValidationCache: JointMemoryBackupValidationCache = new Map()
+  private memoryBackupTrashPromise: Promise<any> | null = null
+  private memoryBackupTrashRecovery = {
+    checked: 0,
+    restored: 0,
+    conflicts: 0,
+    lastRunAt: ''
+  }
   private lastSchedulerAttemptAt = 0
   private lastSchedulerTickAt = 0
   private vectorIndexPromise: Promise<any> | null = null
@@ -785,6 +807,15 @@ export class AiAssistantService {
     keyStorage: ''
   }
 
+  private recoverInterruptedMemoryBackupTrash(databasePath: string): void {
+    const backupDirectory = join(dirname(databasePath), 'personal-memory-backups')
+    const recovery = recoverInterruptedMemoryBackupTrash(backupDirectory)
+    this.memoryBackupTrashRecovery = {
+      ...recovery,
+      lastRunAt: new Date().toISOString()
+    }
+  }
+
   async initialize(): Promise<void> {
     this.disposed = false
     this.statePath = join(app.getPath('userData'), 'ai-assistant-state.json')
@@ -831,6 +862,7 @@ export class AiAssistantService {
     localImageSemanticService.initialize(join(app.getPath('userData'), 'ai-image-semantic-cache.json'), stateKey)
     chatService.initializeTranscriptCacheEncryption(stateKey)
     personalMemoryStore.initialize(databasePath, databaseKey)
+    this.recoverInterruptedMemoryBackupTrash(databasePath)
     this.vectorIndexContinuationHealth = personalMemoryStore.getVectorIndexContinuationHealth()
     this.vectorQueryHealth = personalMemoryStore.getVectorQueryHealth()
     personalMemoryStore.registerDataSources(PERSONAL_DATA_SOURCE_CATALOG)
@@ -5615,6 +5647,7 @@ export class AiAssistantService {
       ...databaseDiagnostics,
       backups: annotatedBackups,
       backupRestoreAudit,
+      memoryBackupTrashRecovery: this.memoryBackupTrashRecovery,
       backgroundWrites: describeBackgroundWriteState({
         syncing: Boolean(this.activeSync),
         syncPhase: this.activeSyncPhase,
@@ -6174,6 +6207,89 @@ export class AiAssistantService {
     const inspected = this.inspectMemoryBackupForRestore(path)
     assertMemoryBackupRestoreConfirmation(inspected.identity, input)
     return this.applyMemoryBackup(inspected.preview.path, inspected.restoredState)
+  }
+
+  private inspectMemoryBackupForDeletion(path: string): {
+    preview: any
+    identity: MemoryBackupDeletionIdentity
+  } {
+    const backups = personalMemoryStore.getDiagnostics().backups || []
+    const allowed = backups.find((backup: any) =>
+      resolve(String(backup?.path || '')) === resolve(String(path || '')))
+    if (!allowed) throw new Error('只能清理由本应用创建且当前仍存在的个人记忆快照')
+    const databasePath = String(allowed.path)
+    const statePath = `${databasePath}.state.json`
+    const databaseBytes = readFileSync(databasePath)
+    const stateBytes = existsSync(statePath) ? readFileSync(statePath) : null
+    const identity: MemoryBackupDeletionIdentity = {
+      backupPath: databasePath,
+      backupDatabaseSha256: crypto.createHash('sha256').update(databaseBytes).digest('hex'),
+      backupStateSha256: stateBytes
+        ? crypto.createHash('sha256').update(stateBytes).digest('hex')
+        : 'missing'
+    }
+    return {
+      identity,
+      preview: {
+        path: databasePath,
+        name: String(allowed.name || basename(databasePath)),
+        createdAt: allowed.createdAt,
+        databaseBytes: databaseBytes.length,
+        stateBytes: stateBytes?.length || 0,
+        artifactCount: stateBytes ? 2 : 1,
+        hasState: Boolean(stateBytes),
+        previewToken: buildMemoryBackupDeletionPreviewToken(identity)
+      }
+    }
+  }
+
+  previewDeleteMemoryBackup(path: string): any {
+    return this.inspectMemoryBackupForDeletion(path).preview
+  }
+
+  async deleteMemoryBackup(
+    path: string,
+    input: { previewToken?: string; confirmation?: string } = {}
+  ): Promise<any> {
+    if (this.memoryBackupTrashPromise) throw new Error('另一份快照正在移到废纸篓，请稍后重试')
+    const operation = (async () => {
+      const inspected = this.inspectMemoryBackupForDeletion(path)
+      assertMemoryBackupDeletionConfirmation(inspected.identity, input)
+      const databasePath = inspected.identity.backupPath
+      const statePath = `${databasePath}.state.json`
+      const stagingDirectory = join(
+        dirname(databasePath),
+        `.weflow-backup-trash-${crypto.randomUUID()}`
+      )
+      let staged: ReturnType<typeof stageMemoryBackupTrash> | null = null
+      try {
+        staged = stageMemoryBackupTrash({
+          databasePath,
+          hasState: existsSync(statePath),
+          stagingDirectory
+        })
+        await shell.trashItem(stagingDirectory)
+        this.jointBackupValidationCache.delete(databasePath)
+        return {
+          success: true,
+          artifactCount: staged.artifacts.length,
+          bytes: Number(inspected.preview.databaseBytes || 0) +
+            Number(inspected.preview.stateBytes || 0),
+          recoverableFromTrash: true
+        }
+      } catch (error) {
+        if (staged && !rollbackStagedMemoryBackupTrash(staged)) {
+          throw new Error('移动到废纸篓失败，快照仍保留在备份目录的安全暂存区；重启应用会自动恢复')
+        }
+        throw error
+      }
+    })()
+    this.memoryBackupTrashPromise = operation
+    try {
+      return await operation
+    } finally {
+      if (this.memoryBackupTrashPromise === operation) this.memoryBackupTrashPromise = null
+    }
   }
 
   private applyMemoryBackup(path: string, knownRestoredState?: any): any {

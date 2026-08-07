@@ -2183,6 +2183,11 @@ export interface ElectronAPI {
         path: string,
         input?: { previewToken?: string; confirmation?: string }
       ) => Promise<any>
+      previewDeleteMemoryBackup: (path: string) => Promise<any>
+      deleteMemoryBackup: (
+        path: string,
+        input?: { previewToken?: string; confirmation?: string }
+      ) => Promise<any>
       exportMemoryBundle: (path: string, passphrase: string) => Promise<any>
       inspectMemoryBundle: (path: string, passphrase?: string) => Promise<any>
       importMemoryBundle: (

@@ -7529,7 +7529,9 @@ export class PersonalMemoryStore {
           const stat = statSync(path)
           return { path, name, bytes: stat.size, createdAt: stat.mtime.toISOString(), hasState: existsSync(`${path}.state.json`) }
         })
-        .sort((left, right) => right.createdAt.localeCompare(left.createdAt))
+        .sort((left, right) =>
+          right.createdAt.localeCompare(left.createdAt) ||
+          right.name.localeCompare(left.name))
     } catch {
       return []
     }
