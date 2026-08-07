@@ -1,6 +1,9 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { createJointMemoryBackup } from '../electron/services/jointMemoryBackupPolicy.ts'
+import {
+  createJointMemoryBackup,
+  isJointMemoryBackupRestorable
+} from '../electron/services/jointMemoryBackupPolicy.ts'
 
 test('joint memory backup retains only after both database and state artifacts exist', () => {
   const order: string[] = []
@@ -55,4 +58,37 @@ test('joint memory backup removes both artifacts and preserves retention on stat
     '/private/incomplete.sqlite.state.json',
     '/private/incomplete.sqlite'
   ])
+})
+
+test('joint backup retention accepts only encrypted and readable database-state pairs', () => {
+  const valid = {
+    backupPath: '/private/valid.sqlite',
+    inspectDatabase: () => ({ integrity: 'ok', encrypted: true }),
+    inspectState: () => ({ recoverySource: 'primary', encrypted: true })
+  }
+  assert.equal(isJointMemoryBackupRestorable(valid), true)
+  assert.equal(isJointMemoryBackupRestorable({
+    ...valid,
+    inspectDatabase: () => {
+      throw new Error('injected corrupt SQLCipher snapshot')
+    }
+  }), false)
+  assert.equal(isJointMemoryBackupRestorable({
+    ...valid,
+    inspectState: () => ({ recoverySource: 'empty', encrypted: true })
+  }), false)
+  assert.equal(isJointMemoryBackupRestorable({
+    ...valid,
+    inspectState: () => {
+      throw new Error('injected wrong state key')
+    }
+  }), false)
+  assert.equal(isJointMemoryBackupRestorable({
+    ...valid,
+    inspectDatabase: () => ({ integrity: 'ok', encrypted: false })
+  }), false)
+  assert.equal(isJointMemoryBackupRestorable({
+    ...valid,
+    inspectState: () => ({ recoverySource: 'backup', encrypted: true })
+  }), true)
 })

@@ -9240,6 +9240,26 @@ test('deferred backup retention preserves old snapshots until the state sidecar 
   assert.equal(store.getDiagnostics().backups.length, 11)
 }))
 
+test('joint backup retention preserves invalid pairs outside the ten restorable slots', () => withStore(store => {
+  const backups = Array.from({ length: 11 }, () => {
+    const backup = store.createBackup([], { deferRetention: true })
+    writeFileSync(`${backup.path}.state.json`, 'encrypted-state-placeholder')
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 2)
+    return backup
+  })
+  const invalidNewest = backups.at(-1)!
+  const retained = store.finalizeBackupRetention([], {
+    requireStateSidecar: true,
+    isRestorable: backup => backup.path !== invalidNewest.path
+  })
+
+  assert.equal(retained, 10)
+  assert.equal(existsSync(invalidNewest.path), true)
+  assert.equal(existsSync(`${invalidNewest.path}.state.json`), true)
+  assert.equal(store.getDiagnostics().backups.length, 11)
+  assert.equal(store.getBackupPairIntegrity().complete, 11)
+}))
+
 test('verified backup rejects evidence revision drift and online repair restores both ledgers', () => withStore(store => {
   const database = (store as any).db
   const before = store.getDiagnostics()

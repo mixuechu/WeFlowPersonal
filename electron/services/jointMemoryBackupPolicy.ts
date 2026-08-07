@@ -19,3 +19,24 @@ export function createJointMemoryBackup<T extends {
   const retained = input.finalizeRetention()
   return { ...databaseBackup, stateBackupPath, retained }
 }
+
+export function isJointMemoryBackupRestorable(input: {
+  backupPath: string
+  inspectDatabase: (path: string) => {
+    integrity?: string
+    encrypted?: boolean
+  }
+  inspectState: (path: string) => {
+    recoverySource?: string
+    encrypted?: boolean
+  }
+}): boolean {
+  try {
+    const database = input.inspectDatabase(input.backupPath)
+    if (database.integrity !== 'ok' || database.encrypted !== true) return false
+    const state = input.inspectState(`${input.backupPath}.state.json`)
+    return state.recoverySource !== 'empty' && state.encrypted === true
+  } catch {
+    return false
+  }
+}

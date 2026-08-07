@@ -38,7 +38,10 @@ import {
 import { extractAttachmentText } from './attachmentTextExtractor'
 import { structureOcrText } from './imageOcrStructuring'
 import { captureWebSnapshot } from './webSnapshotService'
-import { createJointMemoryBackup } from './jointMemoryBackupPolicy'
+import {
+  createJointMemoryBackup,
+  isJointMemoryBackupRestorable
+} from './jointMemoryBackupPolicy'
 import { ModelRequestCoordinator, RequestCoordinator } from './modelRequestCoordinator'
 import { extractScannedPdfText, getPdfOcrStatus } from './pdfOcrService'
 import { exportService } from './export'
@@ -6027,7 +6030,24 @@ export class AiAssistantService {
       finalizeRetention: () =>
         personalMemoryStore.finalizeBackupRetention(
           protectedPaths,
-          { requireStateSidecar: true }
+          {
+            requireStateSidecar: true,
+            isRestorable: backup => isJointMemoryBackupRestorable({
+              backupPath: backup.path,
+              inspectDatabase: path => personalMemoryStore.inspectBackup(path),
+              inspectState: path => {
+                const state = readEncryptedDurableJson<any>(
+                  path,
+                  structuredClone(EMPTY_STATE),
+                  this.stateEncryptionKey
+                )
+                return {
+                  recoverySource: state.recovery.source,
+                  encrypted: state.encrypted
+                }
+              }
+            })
+          }
         ),
       removeArtifact: path => unlinkSync(path)
     })

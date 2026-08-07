@@ -7299,7 +7299,16 @@ export class PersonalMemoryStore {
 
   finalizeBackupRetention(
     protectedPaths: string[] = [],
-    options: { requireStateSidecar?: boolean } = {}
+    options: {
+      requireStateSidecar?: boolean
+      isRestorable?: (backup: {
+        path: string
+        name: string
+        bytes: number
+        createdAt: string
+        hasState: boolean
+      }) => boolean
+    } = {}
   ): number {
     if (!this.databasePath) throw new Error('个人记忆数据库尚未初始化')
     const backupDirectory = join(dirname(this.databasePath), 'personal-memory-backups')
@@ -7307,9 +7316,18 @@ export class PersonalMemoryStore {
       protectedPaths.map(path => resolve(String(path || '')))
     )
     const backups = this.listBackups(backupDirectory)
-    const retentionCandidates = options.requireStateSidecar
+    let retentionCandidates = options.requireStateSidecar
       ? backups.filter(item => item.hasState)
       : backups
+    if (options.isRestorable) {
+      retentionCandidates = retentionCandidates.filter(item => {
+        try {
+          return options.isRestorable?.(item) === true
+        } catch {
+          return false
+        }
+      })
+    }
     const retained = retentionCandidates.slice(0, 10)
     for (const protectedBackup of backups.filter(item =>
       protectedBackupPaths.has(resolve(item.path)))) {

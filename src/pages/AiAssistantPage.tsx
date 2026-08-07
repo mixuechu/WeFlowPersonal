@@ -14830,8 +14830,8 @@ function AiAssistantPage() {
                 Number(memoryDiagnostics.backupPairIntegrity.stateOnly || 0) > 0
                 ? 'warning' : 'healthy'
             }`}>
-              <header><ShieldCheck size={15} /><span><b>数据库与 AI 状态联合快照完整性</b>
-                <small>最近十份保留名额只计算数据库与加密状态 sidecar 同时存在的完整快照；历史半快照不会挤占可恢复版本，也不会在未经本人确认时自动删除。</small>
+              <header><ShieldCheck size={15} /><span><b>数据库与 AI 状态联合快照配对状态</b>
+                <small>这里显示双文件是否配对；执行保留时还会逐份验证数据库一致性和状态可解密性，只有实际可恢复的组合才占最近十份名额。历史半快照或验证失败的组合都保留现场，不会挤占可恢复版本，也不会在未经本人确认时自动删除。</small>
               </span></header>
               <div className="assistant-recovery-current">
                 <span>完整联合快照 <b>{Number(memoryDiagnostics.backupPairIntegrity.complete || 0)}</b></span>
