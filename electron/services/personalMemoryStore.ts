@@ -448,6 +448,7 @@ export class PersonalMemoryStore {
   private databasePath = ''
   private encryptionKey: Buffer | null = null
   private encryptionMigrated = false
+  private humanReviewCalibrationCache: { revision: string; value: any } | null = null
   private assistantModelAuditLinkRepair = {
     scanned: 0,
     cleared: 0,
@@ -604,6 +605,7 @@ export class PersonalMemoryStore {
   }
 
   initialize(databasePath: string, encryptionKey?: Buffer | string): void {
+    this.humanReviewCalibrationCache = null
     mkdirSync(dirname(databasePath), { recursive: true })
     try { chmodSync(dirname(databasePath), 0o700) } catch {}
     this.databasePath = databasePath
@@ -3627,6 +3629,7 @@ export class PersonalMemoryStore {
   private graphReviewRevisionTables(): string[] {
     return [
       'review_queue',
+      'identity_decisions',
       'entities',
       'relations',
       'relation_history',
@@ -3641,7 +3644,7 @@ export class PersonalMemoryStore {
       prefix: 'graph_review_revision',
       revisionKey: 'graph_review_revision',
       tables: this.graphReviewRevisionTables(),
-      version: 'graph-review-revision-v2'
+      version: 'graph-review-revision-v3'
     })
   }
 
@@ -3657,7 +3660,7 @@ export class PersonalMemoryStore {
       prefix: 'graph_review_revision',
       revisionKey: 'graph_review_revision',
       tables: this.graphReviewRevisionTables(),
-      version: 'graph-review-revision-v2',
+      version: 'graph-review-revision-v3',
       revision: this.getGraphReviewRevision()
     })
   }
@@ -6343,6 +6346,7 @@ export class PersonalMemoryStore {
   close(): void {
     this.db?.close()
     this.db = null
+    this.humanReviewCalibrationCache = null
   }
 
   getDiagnostics(): any {
@@ -14270,6 +14274,14 @@ export class PersonalMemoryStore {
       interpretation: 'selected_human_reviews_not_population_accuracy'
     }
     if (!this.db) return empty
+    const revision = [
+      this.getTaskOwnershipReviewRevision(),
+      this.getStructuredMemoryRevision(),
+      this.getGraphReviewRevision()
+    ].join(':')
+    if (this.humanReviewCalibrationCache?.revision === revision) {
+      return this.humanReviewCalibrationCache.value
+    }
     const task = this.db.prepare(`
       SELECT
         SUM(CASE WHEN revoked_at IS NULL AND decision='mine' THEN 1 ELSE 0 END) AS accepted,
@@ -14326,14 +14338,17 @@ export class PersonalMemoryStore {
       different: Number(identity?.different || 0),
       total: Number(identity?.merged || 0) + Number(identity?.different || 0)
     }
-    return {
+    const value = {
       ...empty,
+      revision,
       taskOwnership,
       structuredMemory,
       graphCandidates,
       identityPairs,
       reviewedTotal: taskOwnership.total + structuredMemory.total + graphCandidates.total + identityPairs.total
     }
+    this.humanReviewCalibrationCache = { revision, value }
+    return value
   }
 
   correctClaim(id: string, input: {

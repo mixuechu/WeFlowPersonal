@@ -12363,9 +12363,9 @@ test('graph review revision covers queue and enriched graph state and self-heals
       first.getGraphReviewRevision()
     ), /刷新后重新确认/)
     const initialHealth = first.getGraphReviewRevisionHealth()
-    assert.equal(initialHealth.version, 'graph-review-revision-v2')
-    assert.equal(initialHealth.expectedTriggers, 21)
-    assert.equal(initialHealth.validTriggers, 21)
+    assert.equal(initialHealth.version, 'graph-review-revision-v3')
+    assert.equal(initialHealth.expectedTriggers, 24)
+    assert.equal(initialHealth.validTriggers, 24)
     assert.equal(initialHealth.healthy, true)
     ;(first as any).db.exec(`
       DROP TRIGGER trg_graph_review_revision_review_queue_insert;
@@ -12373,15 +12373,15 @@ test('graph review revision covers queue and enriched graph state and self-heals
       AFTER INSERT ON review_queue BEGIN SELECT 1; END;
     `)
     const driftedHealth = first.getGraphReviewRevisionHealth()
-    assert.equal(driftedHealth.installedTriggers, 21)
-    assert.equal(driftedHealth.validTriggers, 20)
+    assert.equal(driftedHealth.installedTriggers, 24)
+    assert.equal(driftedHealth.validTriggers, 23)
     assert.equal(driftedHealth.healthy, false)
     first.close()
 
     const reopened = new PersonalMemoryStore()
     reopened.initialize(databasePath)
     const repairedHealth = reopened.getGraphReviewRevisionHealth()
-    assert.equal(repairedHealth.validTriggers, 21)
+    assert.equal(repairedHealth.validTriggers, 24)
     assert.equal(repairedHealth.repairedTriggersThisStart, 1)
     assert.equal(repairedHealth.healthy, true)
     assert.equal(reopened.listReviewLedgerPage({ status: 'pending' }).items[0]?.id, 'review-revision-candidate')
@@ -18761,8 +18761,10 @@ test('human review calibration uses latest authoritative decisions without claim
       ) VALUES(?,?,?,?,?,?)
     `).run('entity-1|entity-2', 'entity-1', 'entity-2', 'different', now, now)
 
-    assert.deepEqual(store.getHumanReviewCalibrationStats(), {
+    const firstCalibration = store.getHumanReviewCalibrationStats()
+    assert.deepEqual(firstCalibration, {
       version: 'human-review-calibration-v1',
+      revision: `${store.getTaskOwnershipReviewRevision()}:${store.getStructuredMemoryRevision()}:${store.getGraphReviewRevision()}`,
       taskOwnership: { accepted: 1, rejected: 0, revoked: 1, total: 1 },
       structuredMemory: { accepted: 1, rejected: 0, reopened: 0, total: 1 },
       graphCandidates: { accepted: 0, rejected: 1, total: 1 },
@@ -18770,6 +18772,16 @@ test('human review calibration uses latest authoritative decisions without claim
       reviewedTotal: 4,
       interpretation: 'selected_human_reviews_not_population_accuracy'
     })
+    assert.strictEqual(store.getHumanReviewCalibrationStats(), firstCalibration)
+    database.prepare(`
+      INSERT INTO identity_decisions(
+        pair_key,left_entity_id,right_entity_id,decision,created_at,updated_at
+      ) VALUES(?,?,?,?,?,?)
+    `).run('entity-3|entity-4', 'entity-3', 'entity-4', 'merged', now, now)
+    const refreshedCalibration = store.getHumanReviewCalibrationStats()
+    assert.notStrictEqual(refreshedCalibration, firstCalibration)
+    assert.equal(refreshedCalibration.identityPairs.merged, 1)
+    assert.equal(refreshedCalibration.reviewedTotal, 5)
   })
 })
 
