@@ -34,6 +34,38 @@ test('model request coordinator enforces its own bounded deadline', async () => 
   assert.equal(coordinator.getStatus().active, 0)
 })
 
+test('model request coordinator relays an in-flight caller abort without waiting for its deadline', async () => {
+  const upstream = new AbortController()
+  let observedSignal: AbortSignal | undefined
+  const coordinator = new ModelRequestCoordinator((_input, init) => new Promise((_resolve, reject) => {
+    observedSignal = init?.signal || undefined
+    init?.signal?.addEventListener('abort', () => reject(init.signal?.reason), { once: true })
+  }))
+  const request = coordinator.fetch('https://example.invalid/model', { signal: upstream.signal }, 60_000)
+  await Promise.resolve()
+  const reason = new Error('scope changed')
+  upstream.abort(reason)
+  await assert.rejects(request, /scope changed/)
+  assert.equal(observedSignal?.aborted, true)
+  assert.equal(observedSignal?.reason, reason)
+  assert.deepEqual(coordinator.getStatus(), { accepting: true, active: 0 })
+})
+
+test('model request coordinator preserves a caller signal already aborted before fetch', async () => {
+  const upstream = new AbortController()
+  const reason = new Error('privacy policy changed')
+  upstream.abort(reason)
+  const coordinator = new ModelRequestCoordinator((_input, init) => {
+    assert.equal(init?.signal?.aborted, true)
+    return Promise.reject(init?.signal?.reason)
+  })
+  await assert.rejects(
+    coordinator.fetch('https://example.invalid/model', { signal: upstream.signal }),
+    /privacy policy changed/
+  )
+  assert.equal(coordinator.getStatus().active, 0)
+})
+
 test('generic request coordinator identifies local API timeouts and stops retries', async () => {
   const coordinator = new RequestCoordinator(
     'WeFlow 本机数据请求',

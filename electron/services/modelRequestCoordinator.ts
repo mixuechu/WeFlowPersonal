@@ -105,6 +105,12 @@ export class RequestCoordinator {
   ): Promise<T> {
     if (!this.accepting) throw new Error(`AI 助理正在安全退出，不能开始新的${this.label}`)
     const controller = new AbortController()
+    const upstreamSignal = init.signal || undefined
+    const relayUpstreamAbort = () => {
+      controller.abort(upstreamSignal?.reason || new Error(`${this.label}已由调用方取消`))
+    }
+    if (upstreamSignal?.aborted) relayUpstreamAbort()
+    else upstreamSignal?.addEventListener('abort', relayUpstreamAbort, { once: true })
     this.controllers.add(controller)
     const timeout = setTimeout(() => {
       controller.abort(new Error(`${this.label}超过 ${Math.ceil(timeoutMs / 1000)} 秒，已安全取消`))
@@ -115,6 +121,7 @@ export class RequestCoordinator {
       return await consume(response)
     } finally {
       clearTimeout(timeout)
+      upstreamSignal?.removeEventListener('abort', relayUpstreamAbort)
       this.controllers.delete(controller)
     }
   }
