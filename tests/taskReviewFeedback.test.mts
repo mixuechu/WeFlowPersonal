@@ -3,7 +3,8 @@ import test from 'node:test'
 import {
   applyTaskReviewFeedback,
   reconcileTasksWithReviewDecisions,
-  taskEvidenceFingerprint
+  taskEvidenceFingerprint,
+  taskReviewRestoreClassification
 } from '../electron/services/taskReviewFeedback.ts'
 
 test('task feedback fingerprint follows evidence rather than model wording', () => {
@@ -34,6 +35,14 @@ test('task feedback rejects repeated evidence and restores confirmed ownership',
     ownershipPolicyReason: '相同原文证据此前已由用户确认为我的待办'
   })
   assert.equal(applyTaskReviewFeedback(candidate, null), candidate)
+})
+
+test('reverting ownership feedback restores the classification captured before review', () => {
+  assert.equal(taskReviewRestoreClassification({ classification: 'mine' }), 'mine')
+  assert.equal(taskReviewRestoreClassification({ classification: 'uncertain' }), 'uncertain')
+  assert.equal(taskReviewRestoreClassification({ classification: 'others' }), 'others')
+  assert.equal(taskReviewRestoreClassification({ classification: 'rejected' }), 'uncertain')
+  assert.equal(taskReviewRestoreClassification(null), 'uncertain')
 })
 
 test('startup reconciliation replays exact evidence decisions after an interrupted state save', () => {

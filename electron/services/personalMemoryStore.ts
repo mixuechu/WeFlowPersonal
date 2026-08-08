@@ -25,6 +25,7 @@ import {
   IDENTITY_MERGE_SNAPSHOT_VERSION,
   compactIdentityMergeSnapshot
 } from './identityMergeSnapshot.ts'
+import { taskEvidenceFingerprint } from './taskReviewFeedback.ts'
 
 type MemoryGraph = {
   entities: any[]
@@ -13259,7 +13260,7 @@ export class PersonalMemoryStore {
     evidence?: any[]
   }>): void {
     if (!this.db || !changes.length) return
-    const fields = ['status', 'title', 'detail', 'owner', 'collaborators', 'project', 'dependsOnIds', 'taskKind', 'due', 'priority']
+    const fields = ['status', 'classification', 'title', 'detail', 'owner', 'collaborators', 'project', 'dependsOnIds', 'taskKind', 'due', 'priority']
     const insert = this.db.prepare(`
       INSERT INTO task_history(
         task_id,field,before_value,after_value,reason,evidence_json,created_at,change_set_id
@@ -13401,6 +13402,24 @@ export class PersonalMemoryStore {
         if (!Array.isArray(changes)) throw new Error()
       } catch {
         throw new Error('任务恢复载荷无法解析')
+      }
+      for (const change of changes) {
+        const reason = String(change?.reason || '')
+        if (reason !== 'ownership_audit_confirmed' && reason !== 'ownership_audit_rejected') continue
+        const task = change?.before
+        const fingerprint = String(change?.feedbackEvidenceFingerprint || '').trim()
+        if (!task?.id || !fingerprint || fingerprint !== taskEvidenceFingerprint(task)) {
+          throw new Error('待办归属抽检缺少有效的证据身份')
+        }
+        this.recordTaskReviewDecisionInCurrentTransaction({
+          evidenceFingerprint: fingerprint,
+          taskId: String(task.id),
+          decision: reason === 'ownership_audit_confirmed' ? 'mine' : 'rejected',
+          title: String(task.title || ''),
+          source: String(task.source || ''),
+          evidence: Array.isArray(task.evidence) ? task.evidence : [],
+          task
+        })
       }
       this.recordTaskChangeSets(changes)
       this.syncTasks(tasks, true, true)
@@ -13917,27 +13936,40 @@ export class PersonalMemoryStore {
     task?: any
   }): any {
     if (!this.db) return null
-    const now = new Date().toISOString()
-    const taskJson = JSON.stringify(compactTaskReviewSnapshot(input.task))
     const transaction = this.db.transaction(() => {
-      this.db!.prepare(`
-        INSERT INTO task_review_decisions(
-          evidence_fingerprint,task_id,decision,title,source,evidence_json,task_json,created_at,updated_at
-        ) VALUES(?,?,?,?,?,?,?,?,?)
-        ON CONFLICT(evidence_fingerprint) DO UPDATE SET
-          task_id=excluded.task_id,decision=excluded.decision,title=excluded.title,source=excluded.source,
-          evidence_json=excluded.evidence_json,task_json=excluded.task_json,revoked_at=NULL,updated_at=excluded.updated_at
-      `).run(
-        input.evidenceFingerprint, input.taskId, input.decision, String(input.title || ''),
-        String(input.source || ''), JSON.stringify(input.evidence || []), taskJson, now, now
-      )
-      this.db!.prepare(`
-        INSERT INTO task_review_history(evidence_fingerprint,task_id,action,task_json,created_at)
-        VALUES(?,?,?,?,?)
-      `).run(input.evidenceFingerprint, input.taskId, input.decision, taskJson, now)
+      this.recordTaskReviewDecisionInCurrentTransaction(input)
     })
     transaction()
     return this.getTaskReviewDecision(input.evidenceFingerprint)
+  }
+
+  private recordTaskReviewDecisionInCurrentTransaction(input: {
+    evidenceFingerprint: string
+    taskId: string
+    decision: 'mine' | 'rejected'
+    title?: string
+    source?: string
+    evidence?: any[]
+    task?: any
+  }): void {
+    if (!this.db) throw new Error('个人记忆数据库尚未初始化')
+    const now = new Date().toISOString()
+    const taskJson = JSON.stringify(compactTaskReviewSnapshot(input.task))
+    this.db.prepare(`
+      INSERT INTO task_review_decisions(
+        evidence_fingerprint,task_id,decision,title,source,evidence_json,task_json,created_at,updated_at
+      ) VALUES(?,?,?,?,?,?,?,?,?)
+      ON CONFLICT(evidence_fingerprint) DO UPDATE SET
+        task_id=excluded.task_id,decision=excluded.decision,title=excluded.title,source=excluded.source,
+        evidence_json=excluded.evidence_json,task_json=excluded.task_json,revoked_at=NULL,updated_at=excluded.updated_at
+    `).run(
+      input.evidenceFingerprint, input.taskId, input.decision, String(input.title || ''),
+      String(input.source || ''), JSON.stringify(input.evidence || []), taskJson, now, now
+    )
+    this.db.prepare(`
+      INSERT INTO task_review_history(evidence_fingerprint,task_id,action,task_json,created_at)
+      VALUES(?,?,?,?,?)
+    `).run(input.evidenceFingerprint, input.taskId, input.decision, taskJson, now)
   }
 
   getTaskReviewDecision(evidenceFingerprint: string): any {

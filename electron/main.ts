@@ -4708,6 +4708,9 @@ function registerIpcHandlers() {
   ipcMain.handle('ai-assistant:updateTask', (
     _, id: string, patch: any, mutationToken?: string
   ) => aiAssistantService.updateTask(id, patch, mutationToken))
+  ipcMain.handle('ai-assistant:reviewMineTaskOwnership', (
+    _, id: string, decision: 'mine' | 'rejected', mutationToken?: string
+  ) => aiAssistantService.reviewMineTaskOwnership(id, decision, mutationToken))
   ipcMain.handle('ai-assistant:updateTasks', (_, updates: any[]) => aiAssistantService.updateTasks(updates))
   ipcMain.handle('ai-assistant:previewTaskFromMemory', (_, input: any) =>
     aiAssistantService.previewTaskFromMemory(input))

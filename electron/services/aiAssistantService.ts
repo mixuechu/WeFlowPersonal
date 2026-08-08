@@ -105,7 +105,8 @@ import { buildContextualMemoryQuestion, buildMemoryQueryPlan } from './memoryQue
 import {
   applyTaskReviewFeedback,
   reconcileTasksWithReviewDecisions,
-  taskEvidenceFingerprint
+  taskEvidenceFingerprint,
+  taskReviewRestoreClassification
 } from './taskReviewFeedback'
 import {
   buildTaskEvidenceFromCitations,
@@ -4559,9 +4560,19 @@ export class AiAssistantService {
       limit: 40
     })
     const dossier = buildTaskDossier(task, historyPage.items, historyPage.total)
+    const ownershipFingerprint = taskEvidenceFingerprint(task)
+    const ownershipDecision = ownershipFingerprint
+      ? personalMemoryStore.getTaskReviewDecision(ownershipFingerprint)
+      : null
     return {
       ...dossier,
       task: { ...dossier.task, mutationToken: buildTaskMutationToken(task) },
+      ownershipReview: {
+        eligible: task.classification === 'mine' && Boolean(ownershipFingerprint),
+        decision: ownershipDecision?.decision || '',
+        reviewedAt: ownershipDecision?.updated_at || '',
+        evidenceFingerprint: ownershipFingerprint
+      },
       historyHasMore: historyPage.hasMore,
       historyRevision: historyPage.revision,
       payloadPolicy: {
@@ -6861,6 +6872,77 @@ export class AiAssistantService {
     return this.updateTasks([{ id, patch, mutationToken }])[0] || null
   }
 
+  reviewMineTaskOwnership(
+    idInput: unknown,
+    decisionInput: unknown,
+    mutationToken: unknown
+  ): any {
+    const id = String(idInput || '').trim()
+    const decision = decisionInput === 'mine' || decisionInput === 'rejected'
+      ? decisionInput
+      : null
+    if (!decision) throw new Error('待办归属反馈无效')
+    this.hydrateTaskEvidenceFromSql([id])
+    const task = this.state.tasks.find(item => item.id === id)
+    if (!task) throw new Error('待办已不存在，请刷新后再操作')
+    assertTaskMutationBatch(this.state.tasks, [{ id, mutationToken: String(mutationToken || '') }])
+    if (task.classification !== 'mine') {
+      throw new Error('这条待办已经不在“我的待办”中，请刷新后再操作')
+    }
+    const evidenceFingerprint = taskEvidenceFingerprint(task)
+    if (!evidenceFingerprint) throw new Error('这条待办缺少可绑定的原文证据，不能记录归属反馈')
+    const before = structuredClone(task)
+    const after = decision === 'rejected'
+      ? { ...structuredClone(task), classification: 'rejected', updatedAt: new Date().toISOString() }
+      : structuredClone(task)
+    const previousTasks = this.state.tasks
+    const nextTasks = decision === 'rejected'
+      ? previousTasks.filter(item => item.id !== id)
+      : previousTasks
+    const commitId = `task_ownership_audit_${crypto.randomUUID()}`
+    const change = {
+      taskId: id,
+      before,
+      after,
+      reason: decision === 'mine' ? 'ownership_audit_confirmed' : 'ownership_audit_rejected',
+      evidence: before.evidence || [],
+      feedbackEvidenceFingerprint: evidenceFingerprint
+    }
+    personalMemoryStore.prepareTaskMutationCommit({
+      commitId,
+      beforeTokens: { [id]: buildTaskMutationToken(before) },
+      afterTokens: {
+        [id]: decision === 'rejected'
+          ? TASK_ABSENT_MUTATION_TOKEN
+          : buildTaskMutationToken(after)
+      },
+      changes: [change]
+    })
+    this.state.tasks = nextTasks
+    try {
+      this.persistCrossStoreMutationState()
+      personalMemoryStore.finalizeTaskMutationCommit(commitId, nextTasks)
+    } catch (error) {
+      this.state.tasks = previousTasks
+      try {
+        this.persistCrossStoreMutationState()
+        personalMemoryStore.abandonTaskMutationCommit(commitId, 'runtime_rollback')
+      } catch (rollbackError) {
+        personalMemoryStore.recordTaskMutationRecoveryFailure(commitId, rollbackError)
+      }
+      throw error
+    }
+    return {
+      decision,
+      removed: decision === 'rejected',
+      evidenceFingerprint,
+      task: decision === 'mine'
+        ? { ...after, mutationToken: buildTaskMutationToken(after) }
+        : null,
+      revision: personalMemoryStore.getTaskOwnershipReviewRevision()
+    }
+  }
+
   private inspectTaskFromMemory(assistantMessageIdInput: unknown): {
     assistantMessageId: string
     answer: any
@@ -7069,11 +7151,12 @@ export class AiAssistantService {
     if (!existing && (!snapshot?.id || !snapshot?.title)) {
       throw new Error('这条旧反馈没有可恢复的任务快照，尚不能安全撤销')
     }
+    const restoredClassification = taskReviewRestoreClassification(snapshot)
     const reverted = personalMemoryStore.revokeTaskReviewDecision(fingerprint)
     if (!reverted) return null
     if (existing) {
       const before = { ...existing }
-      existing.classification = 'uncertain'
+      existing.classification = restoredClassification
       existing.updatedAt = new Date().toISOString()
       personalMemoryStore.recordTaskChanges(existing.id, before, existing, 'ownership_review_reverted', existing.evidence || [])
       this.saveState()
@@ -7081,7 +7164,7 @@ export class AiAssistantService {
     }
     const restored: AssistantTask = {
       ...snapshot!,
-      classification: 'uncertain',
+      classification: restoredClassification,
       updatedAt: new Date().toISOString()
     }
     this.state.tasks.unshift(restored)

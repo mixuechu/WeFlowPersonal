@@ -23,6 +23,13 @@ export function applyTaskReviewFeedback(task: any, feedback: any): any | null {
   }
 }
 
+export function taskReviewRestoreClassification(snapshot: any): 'mine' | 'uncertain' | 'others' {
+  const classification = String(snapshot?.classification || '')
+  return classification === 'mine' || classification === 'uncertain' || classification === 'others'
+    ? classification
+    : 'uncertain'
+}
+
 export function reconcileTasksWithReviewDecisions(tasks: any[], decisions: any[]): {
   tasks: any[]
   effects: Array<{ evidenceFingerprint: string; action: 'removed' | 'confirmed' | 'restored' }>

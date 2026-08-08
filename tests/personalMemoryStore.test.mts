@@ -70,6 +70,7 @@ import {
   evaluateTaskAssignmentPolicy,
   TASK_ASSIGNMENT_GOLDEN_SAMPLES
 } from '../electron/services/taskAssignmentPolicy.ts'
+import { taskEvidenceFingerprint } from '../electron/services/taskReviewFeedback.ts'
 import {
   assessIdentityPair,
   buildGraphIdentitySuggestions,
@@ -17533,6 +17534,66 @@ test('prepared task mutation commits directory and history atomically then compa
   assert.equal(store.countTaskHistory('prepared-task-b'), 1)
   assert.equal(store.listTaskArchive({ status: 'all' }).total, 2)
   assert.equal(database.prepare(`SELECT status FROM task_directory WHERE id='prepared-task-a'`).get().status, 'done')
+}))
+
+test('active mine-task ownership audit commits feedback and task removal atomically', () => withStore(store => {
+  const task = {
+    id: 'active-mine-audit',
+    title: '检查活动待办归属',
+    detail: '这条事项已进入我的待办，需要支持真实抽检',
+    owner: '我',
+    priority: 'medium',
+    confidence: 0.9,
+    classification: 'mine',
+    status: 'todo',
+    source: '群聊测试',
+    sourceSessionId: 'mine-audit-session',
+    createdAt: '2026-08-09T00:00:00.000Z',
+    updatedAt: '2026-08-09T00:00:00.000Z',
+    evidence: evidence('mine-audit-message', '请小王查一下几点更新')
+  }
+  const fingerprint = taskEvidenceFingerprint(task)
+  assert.match(fingerprint, /^[a-f0-9]{64}$/)
+  store.syncTasks([task])
+  store.prepareTaskMutationCommit({
+    commitId: 'active-mine-audit-commit',
+    beforeTokens: { [task.id]: 'before' },
+    afterTokens: { [task.id]: 'absent' },
+    changes: [{
+      taskId: task.id,
+      before: task,
+      after: { ...task, classification: 'rejected' },
+      reason: 'ownership_audit_rejected',
+      evidence: task.evidence,
+      feedbackEvidenceFingerprint: fingerprint
+    }]
+  })
+  const database = (store as any).db
+  database.exec(`
+    CREATE TEMP TRIGGER fail_active_mine_audit
+    BEFORE INSERT ON task_review_decisions
+    BEGIN
+      SELECT RAISE(ABORT,'injected ownership audit failure');
+    END
+  `)
+  assert.throws(
+    () => store.finalizeTaskMutationCommit('active-mine-audit-commit', []),
+    /injected ownership audit failure/
+  )
+  assert.equal(database.prepare(`
+    SELECT COUNT(*) AS count FROM task_directory WHERE id=?
+  `).get(task.id).count, 1)
+  assert.equal(store.getTaskReviewDecision(fingerprint), null)
+  database.exec('DROP TRIGGER fail_active_mine_audit')
+
+  store.finalizeTaskMutationCommit('active-mine-audit-commit', [])
+  assert.equal(database.prepare(`
+    SELECT COUNT(*) AS count FROM task_directory WHERE id=?
+  `).get(task.id).count, 0)
+  assert.equal(store.getTaskReviewDecision(fingerprint)?.decision, 'rejected')
+  assert.equal(store.listTaskReviewHistory(fingerprint)[0]?.action, 'rejected')
+  assert.equal(store.getTaskMutationCommitHealth().prepared, 0)
+  assert.equal(store.getTaskMutationCommitHealth().committed, 1)
 }))
 
 test('cross-store recovery directory pages task and source failures without exposing payloads', () => withStore(store => {

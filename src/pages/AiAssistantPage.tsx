@@ -929,6 +929,7 @@ function AiAssistantPage() {
   const [taskWorkspaceRefreshKey, setTaskWorkspaceRefreshKey] = useState(0)
   const taskWorkspaceGate = useRef(new LatestRequestGate())
   const [taskHistoryLoadingMore, setTaskHistoryLoadingMore] = useState(false)
+  const [taskOwnershipAuditSaving, setTaskOwnershipAuditSaving] = useState(false)
   const taskHistoryGate = useRef(new LatestRequestGate())
   const [forgettingEntityId, setForgettingEntityId] = useState('')
   const [showSources, setShowSources] = useState(false)
@@ -6481,6 +6482,41 @@ function AiAssistantPage() {
         setTaskOwnershipRefreshKey(value => value + 1)
         setTaskFeedbackRefreshKey(value => value + 1)
       }
+    }
+  }
+
+  const reviewMineTaskOwnership = async (decision: 'mine' | 'rejected') => {
+    const task = taskWorkspace.task
+    if (!task?.id || !task?.mutationToken || taskOwnershipAuditSaving) return
+    setTaskOwnershipAuditSaving(true)
+    try {
+      await window.electronAPI.aiAssistant.reviewMineTaskOwnership(
+        task.id,
+        decision,
+        task.mutationToken
+      )
+      taskWorkspaceGate.current.invalidate()
+      await load()
+      setTaskWorksetRefreshKey(value => value + 1)
+      setTaskCalendarRefreshKey(value => value + 1)
+      setTaskArchiveRefreshKey(value => value + 1)
+      setTaskOwnershipRefreshKey(value => value + 1)
+      setTaskFeedbackRefreshKey(value => value + 1)
+      if (decision === 'rejected') {
+        closeSearchTaskDossier()
+        setMessage('已从“我的待办”移除，并保存为可撤销的归属反馈。')
+      } else {
+        setTaskWorkspaceRefreshKey(value => value + 1)
+        setMessage('已记录：这确实是我的待办。')
+      }
+    } catch (error: any) {
+      const errorMessage = error?.message || String(error)
+      setMessage(errorMessage)
+      if (errorMessage.includes('查看后已经被更新')) {
+        setTaskWorkspaceRefreshKey(value => value + 1)
+      }
+    } finally {
+      setTaskOwnershipAuditSaving(false)
     }
   }
 
@@ -13186,6 +13222,20 @@ function AiAssistantPage() {
                   </div>
                   {taskWorkspace.task.assignmentEvidence &&
                     <small className="assistant-evidence">归属依据：{taskWorkspace.task.assignmentEvidence}</small>}
+                  {taskWorkspace.ownershipReview?.eligible && <div className="assistant-task-ownership-audit">
+                    <span><b>这项待办真的属于你吗？</b>
+                      <small>反馈绑定当前完整原文证据，可在归属反馈档案中撤销；不会按相似文字影响别的事项。</small>
+                    </span>
+                    <button className={taskWorkspace.ownershipReview.decision === 'mine' ? 'selected' : ''}
+                      disabled={taskOwnershipAuditSaving}
+                      onClick={() => void reviewMineTaskOwnership('mine')}>
+                      {taskOwnershipAuditSaving ? '正在保存…' : '归属正确'}
+                    </button>
+                    <button className="danger" disabled={taskOwnershipAuditSaving}
+                      onClick={() => void reviewMineTaskOwnership('rejected')}>
+                      不属于我
+                    </button>
+                  </div>}
                 </div>
                 <EvidenceRows
                   evidence={taskWorkspace.task.evidence}
