@@ -1,7 +1,9 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import {
+  MODEL_RESPONSE_MAX_BYTES,
   ModelRequestCoordinator,
+  ModelResponseLimitError,
   RequestCoordinator
 } from '../electron/services/modelRequestCoordinator.ts'
 
@@ -92,4 +94,33 @@ test('invalid model JSON can be tolerated without hiding transport failures', as
     stalled.fetchJson('https://example.invalid/model', {}, 5, true),
     /模型请求超过 1 秒/
   )
+})
+
+test('model JSON responses are bounded while their body stream is consumed', async () => {
+  assert.equal(MODEL_RESPONSE_MAX_BYTES, 8 * 1024 * 1024)
+  const coordinator = new ModelRequestCoordinator(() => Promise.resolve(new Response(
+    JSON.stringify({ content: 'x'.repeat(128) }),
+    { headers: { 'content-type': 'application/json' } }
+  )))
+  await assert.rejects(
+    coordinator.fetchJson('https://example.invalid/model', {}, 1_000, false, 64),
+    (error: unknown) => error instanceof ModelResponseLimitError && error.maxBytes === 64
+  )
+  assert.deepEqual(coordinator.getStatus(), { accepting: true, active: 0 })
+})
+
+test('declared oversized model responses are rejected before parsing', async () => {
+  const coordinator = new ModelRequestCoordinator(() => Promise.resolve(new Response('{}', {
+    headers: { 'content-length': '4096', 'content-type': 'application/json' }
+  })))
+  await assert.rejects(
+    coordinator.fetchJson('https://example.invalid/model', {}, 1_000, false, 128),
+    (error: unknown) => error instanceof ModelResponseLimitError && error.code === 'model_response_too_large'
+  )
+})
+
+test('bounded model JSON keeps tolerant parsing semantics below the limit', async () => {
+  const coordinator = new ModelRequestCoordinator(() => Promise.resolve(new Response('not-json')))
+  const result = await coordinator.fetchJson('https://example.invalid/model', {}, 1_000, true, 128)
+  assert.deepEqual(result.payload, {})
 })
