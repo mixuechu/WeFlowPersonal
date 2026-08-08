@@ -9682,6 +9682,18 @@ function AiAssistantPage() {
               放弃 {Number(dashboard.taskMutationCommits.startupRecovery.abandoned)}、
               冲突 {Number(dashboard.taskMutationCommits.startupRecovery.conflicts)}。
             </small>}
+            {Number(dashboard?.mineTaskOwnershipAudit?.total || 0) > 0 &&
+              dashboard?.mineTaskOwnershipAudit?.item && <div className="assistant-task-audit-invitation">
+                <span><strong>帮助校准自动归属</strong>
+                  <small>
+                    还有 {Number(dashboard.mineTaskOwnershipAudit.total).toLocaleString()} 项自动归给你的待办尚未抽检；
+                    按原文证据指纹稳定取样，避免只看到最新或最显眼的事项。
+                  </small>
+                </span>
+                <button onClick={() => setSelectedTaskId(String(dashboard.mineTaskOwnershipAudit.item.id))}>
+                  抽检下一项
+                </button>
+              </div>}
             {(Number(dashboard?.taskMutationCommits?.prepared || 0) +
               Number(dashboard?.conversationSourceMutationCommits?.prepared || 0)) > 0 && <>
               <div className="assistant-ingestion-recovery-actions">

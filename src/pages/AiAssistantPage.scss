@@ -479,6 +479,10 @@
 .assistant-task-ownership-audit button.selected { border-color: #4d8067; background: #eaf4ee; }
 .assistant-task-ownership-audit button.danger { color: #984b43; border-color: #ddbcb7; background: #fff8f7; }
 .assistant-task-ownership-audit button:disabled { opacity: .55; cursor: default; }
+.assistant-task-audit-invitation { margin: 10px 0; padding: 10px 12px; border: 1px solid #d6dfd8; border-radius: 10px; display: flex; align-items: center; gap: 12px; color: #385044; background: #f6faf6; }
+.assistant-task-audit-invitation > span { min-width: 0; flex: 1; display: grid; gap: 3px; }
+.assistant-task-audit-invitation small { color: #748077; font-size: 8px; line-height: 1.45; }
+.assistant-task-audit-invitation button { flex: none; padding: 7px 10px; border: 1px solid #4d8067; border-radius: 8px; color: #fff; background: #4d8067; cursor: pointer; }
 .assistant-ingestion-status { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 8px 16px; margin: 12px 0; padding: 10px 13px; border-radius: 10px; color: #315c4e; background: #e8f3ee; font-size: 11px; }
 .assistant-ingestion-status.partial, .assistant-ingestion-status.failed { color: #8a5a14; background: #fff3d8; }
 .assistant-ingestion-status span { color: inherit; opacity: .78; }

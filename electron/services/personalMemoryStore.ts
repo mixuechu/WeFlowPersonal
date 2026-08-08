@@ -929,6 +929,8 @@ export class PersonalMemoryStore {
         title TEXT NOT NULL,
         payload_json TEXT NOT NULL DEFAULT '{}',
         evidence_fingerprint TEXT NOT NULL DEFAULT '',
+        ownership_fingerprint TEXT NOT NULL DEFAULT '',
+        ownership_audit_eligible INTEGER NOT NULL DEFAULT 0,
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL
       ) STRICT;
@@ -1602,6 +1604,16 @@ export class PersonalMemoryStore {
       WHERE decision='candidate' AND reason=''
     `).run()
     this.ensureColumn('task_directory', 'evidence_fingerprint', `TEXT NOT NULL DEFAULT ''`)
+    this.ensureColumn('task_directory', 'ownership_fingerprint', `TEXT NOT NULL DEFAULT ''`)
+    this.ensureColumn('task_directory', 'ownership_audit_eligible', 'INTEGER NOT NULL DEFAULT 0')
+    this.db.exec(`
+      CREATE INDEX IF NOT EXISTS idx_task_directory_ownership_audit
+      ON task_directory(ownership_fingerprint,id)
+      WHERE ownership_audit_eligible=1
+        AND classification='mine'
+        AND status IN ('todo','doing','waiting')
+        AND ownership_fingerprint!=''
+    `)
     this.ensureColumn('task_history', 'change_set_id', `TEXT NOT NULL DEFAULT ''`)
     this.ensureColumn('merge_history', 'source_name', `TEXT NOT NULL DEFAULT ''`)
     this.ensureColumn('merge_history', 'target_name', `TEXT NOT NULL DEFAULT ''`)
@@ -10508,8 +10520,15 @@ export class PersonalMemoryStore {
       const activeIds = new Set(tasks.map(task => `task:${task.id}`))
       const activeTaskIds = new Set(tasks.map(task => String(task.id)))
       const storedTasks = this.db.prepare(
-      `SELECT id,payload_json,evidence_fingerprint FROM task_directory`
-    ).all() as Array<{ id: string; payload_json: string; evidence_fingerprint: string }>
+      `SELECT id,payload_json,evidence_fingerprint,ownership_fingerprint,ownership_audit_eligible
+       FROM task_directory`
+    ).all() as Array<{
+      id: string
+      payload_json: string
+      evidence_fingerprint: string
+      ownership_fingerprint: string
+      ownership_audit_eligible: number
+    }>
     const storedTaskMap = new Map(storedTasks.map(task => [task.id, task]))
     const storedSearchDocuments = this.db.prepare(`
       SELECT d.id,d.document_type,d.source_id,d.title,d.search_text,d.metadata_json,d.content_hash,
@@ -10533,12 +10552,14 @@ export class PersonalMemoryStore {
     const upsertTask = this.db.prepare(`
       INSERT INTO task_directory(
         id,status,classification,priority,due,project,task_kind,title,payload_json,
-        evidence_fingerprint,created_at,updated_at
-      ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
+        evidence_fingerprint,ownership_fingerprint,ownership_audit_eligible,created_at,updated_at
+      ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)
       ON CONFLICT(id) DO UPDATE SET
         status=excluded.status,classification=excluded.classification,priority=excluded.priority,
         due=excluded.due,project=excluded.project,task_kind=excluded.task_kind,title=excluded.title,
         payload_json=excluded.payload_json,evidence_fingerprint=excluded.evidence_fingerprint,
+        ownership_fingerprint=excluded.ownership_fingerprint,
+        ownership_audit_eligible=excluded.ownership_audit_eligible,
         updated_at=excluded.updated_at
       WHERE task_directory.status IS NOT excluded.status
         OR task_directory.classification IS NOT excluded.classification
@@ -10549,6 +10570,8 @@ export class PersonalMemoryStore {
         OR task_directory.title IS NOT excluded.title
         OR task_directory.payload_json IS NOT excluded.payload_json
         OR task_directory.evidence_fingerprint IS NOT excluded.evidence_fingerprint
+        OR task_directory.ownership_fingerprint IS NOT excluded.ownership_fingerprint
+        OR task_directory.ownership_audit_eligible IS NOT excluded.ownership_audit_eligible
     `)
     const existing = this.db.prepare(`SELECT id FROM search_documents WHERE document_type='task'`).all() as Array<{ id: string }>
     for (const { id } of existing) {
@@ -10603,6 +10626,15 @@ export class PersonalMemoryStore {
           ? String(storedTask?.evidence_fingerprint || '')
           : storedEvidenceFingerprint)
         : taskEvidenceContentFingerprint(authoritativeEvidenceRows)
+      const ownershipFingerprint = taskEvidenceFingerprint({
+        ...task,
+        sourceSessionId: String(task.sourceSessionId || task.source || ''),
+        sourceMessageIds: [],
+        evidence: authoritativeEvidenceRows.map(item => ({ messageId: item[1] }))
+      })
+      const ownershipAuditEligible = task.classification === 'mine'
+        && Boolean(String(task.ownershipPolicyReason || '').trim())
+        && Boolean(ownershipFingerprint) ? 1 : 0
       const searchText = [
         task.title, task.detail, task.owner, ...(task.collaborators || []), task.project,
         task.source, task.assignmentEvidence
@@ -10637,6 +10669,8 @@ export class PersonalMemoryStore {
         && Number(storedSearchDocument.evidence_count || 0) === searchMetadata.evidenceCount
       const unchangedAuthoritativeTask = storedTask?.payload_json === payloadJson
         && storedTask.evidence_fingerprint === evidenceFingerprint
+        && storedTask.ownership_fingerprint === ownershipFingerprint
+        && Number(storedTask.ownership_audit_eligible || 0) === ownershipAuditEligible
       if (unchangedAuthoritativeTask && !searchDocumentHealthy) {
         repairedDerivedDocuments += 1
         if (!storedSearchDocument) repairedMissingDocuments += 1
@@ -10656,6 +10690,8 @@ export class PersonalMemoryStore {
         String(task.title || ''),
         payloadJson,
         evidenceFingerprint,
+        ownershipFingerprint,
+        ownershipAuditEligible,
         String(task.createdAt || now),
         String(task.updatedAt || task.createdAt || now)
       )
@@ -10759,6 +10795,67 @@ export class PersonalMemoryStore {
       })
     }
     return result
+  }
+
+  getMineTaskOwnershipAuditSample(): {
+    item: any | null
+    total: number
+    revision: string
+    strategy: string
+  } {
+    const revision = this.getTaskOwnershipReviewRevision()
+    if (!this.db) {
+      return { item: null, total: 0, revision, strategy: 'stable_evidence_hash_order_v1' }
+    }
+    const where = `
+      td.ownership_audit_eligible=1
+      AND td.classification='mine'
+      AND td.status IN ('todo','doing','waiting')
+      AND td.ownership_fingerprint!=''
+      AND NOT EXISTS (
+        SELECT 1 FROM task_review_decisions trd
+        WHERE trd.evidence_fingerprint=td.ownership_fingerprint
+          AND trd.revoked_at IS NULL
+      )
+    `
+    const total = Number((this.db.prepare(`
+      SELECT COUNT(*) AS count FROM task_directory td INDEXED BY idx_task_directory_ownership_audit
+      WHERE ${where}
+    `).get() as any)?.count || 0)
+    const row = this.db.prepare(`
+      SELECT td.id,td.status,td.classification,td.priority,td.due,td.project,
+        td.task_kind,td.title,td.payload_json,td.created_at,td.updated_at,
+        (SELECT COUNT(*) FROM search_document_evidence sde
+          WHERE sde.document_id='task:' || td.id) AS evidence_count
+      FROM task_directory td INDEXED BY idx_task_directory_ownership_audit
+      WHERE ${where}
+      ORDER BY td.ownership_fingerprint ASC,td.id ASC
+      LIMIT 1
+    `).get() as any
+    let item: any = null
+    if (row) {
+      let payload: any = {}
+      try { payload = JSON.parse(String(row.payload_json || '{}')) } catch {}
+      item = {
+        ...payload,
+        id: String(row.id || ''),
+        title: String(row.title || ''),
+        status: String(row.status || ''),
+        classification: String(row.classification || ''),
+        priority: String(row.priority || ''),
+        due: String(row.due || ''),
+        project: String(row.project || ''),
+        taskKind: String(row.task_kind || 'action'),
+        createdAt: String(row.created_at || ''),
+        updatedAt: String(row.updated_at || ''),
+        evidenceTotal: Number(row.evidence_count || 0)
+      }
+    }
+    const completedRevision = this.getTaskOwnershipReviewRevision()
+    if (completedRevision !== revision) {
+      return { item: null, total: 0, revision: completedRevision, strategy: 'stable_evidence_hash_order_v1' }
+    }
+    return { item, total, revision, strategy: 'stable_evidence_hash_order_v1' }
   }
 
   listActiveTaskWorkset(options: {

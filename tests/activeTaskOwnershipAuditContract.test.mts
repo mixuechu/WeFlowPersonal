@@ -42,3 +42,17 @@ test('real-world calibration separates active mine audits from candidate decisio
   assert.match(page, /自动归给我：正确 \/ 误判/)
   assert.match(page, /待定归属：确认 \/ 排除/)
 })
+
+test('dashboard exposes one bounded sample from the complete unreviewed mine-task queue', () => {
+  const service = read('electron/services/aiAssistantService.ts')
+  const store = read('electron/services/personalMemoryStore.ts')
+  const page = read('src/pages/AiAssistantPage.tsx')
+
+  assert.match(store, /getMineTaskOwnershipAuditSample\(\)/)
+  assert.match(store, /ownership_audit_eligible=1/)
+  assert.match(store, /NOT EXISTS \([\s\S]*?task_review_decisions/)
+  assert.match(store, /ORDER BY td\.ownership_fingerprint ASC,td\.id ASC[\s\S]*?LIMIT 1/)
+  assert.match(service, /mineTaskOwnershipAudit:[\s\S]*?mine-task-ownership-audit-sample-v1/)
+  assert.match(page, /帮助校准自动归属/)
+  assert.match(page, /抽检下一项/)
+})

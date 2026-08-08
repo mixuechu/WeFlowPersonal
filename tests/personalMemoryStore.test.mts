@@ -17596,6 +17596,67 @@ test('active mine-task ownership audit commits feedback and task removal atomica
   assert.equal(store.getTaskMutationCommitHealth().committed, 1)
 }))
 
+test('mine-task ownership audit sample covers every eligible unreviewed task without exposing fingerprints', () => withStore(store => {
+  const automatic = {
+    id: 'mine-audit-queue-auto', title: '自动归属事项', status: 'todo', priority: 'medium',
+    classification: 'mine', source: '项目群', sourceSessionId: 'audit-queue-session',
+    ownershipPolicyReason: '原文明确把事项指派给本人',
+    evidence: evidence('audit-queue-message', '请你负责自动归属事项')
+  }
+  store.syncTasks([automatic, {
+    ...automatic,
+    id: 'mine-audit-queue-manual',
+    title: '手动创建事项',
+    ownershipPolicyReason: '',
+    evidence: evidence('audit-queue-manual-message', '手动生成')
+  }, {
+    ...automatic,
+    id: 'mine-audit-queue-uncertain',
+    title: '待确认事项',
+    classification: 'uncertain',
+    evidence: evidence('audit-queue-uncertain-message', '可能需要处理')
+  }])
+
+  const first = store.getMineTaskOwnershipAuditSample()
+  assert.equal(first.total, 1)
+  assert.equal(first.item?.id, automatic.id)
+  assert.equal(first.strategy, 'stable_evidence_hash_order_v1')
+  assert.equal('ownership_fingerprint' in first.item, false)
+  const queryPlan = (store as any).db.prepare(`
+    EXPLAIN QUERY PLAN
+    SELECT td.id FROM task_directory td INDEXED BY idx_task_directory_ownership_audit
+    WHERE td.ownership_audit_eligible=1
+      AND td.classification='mine'
+      AND td.status IN ('todo','doing','waiting')
+      AND td.ownership_fingerprint!=''
+      AND NOT EXISTS (
+        SELECT 1 FROM task_review_decisions trd
+        WHERE trd.evidence_fingerprint=td.ownership_fingerprint
+          AND trd.revoked_at IS NULL
+      )
+    ORDER BY td.ownership_fingerprint ASC,td.id ASC LIMIT 1
+  `).all().map((row: any) => String(row.detail || '')).join('\n')
+  assert.match(queryPlan, /idx_task_directory_ownership_audit/)
+  assert.doesNotMatch(queryPlan, /USE TEMP B-TREE FOR ORDER BY/)
+
+  const fingerprint = taskEvidenceFingerprint(automatic)
+  store.recordTaskReviewDecision({
+    evidenceFingerprint: fingerprint,
+    taskId: automatic.id,
+    decision: 'mine',
+    task: automatic
+  })
+  const reviewed = store.getMineTaskOwnershipAuditSample()
+  assert.equal(reviewed.total, 0)
+  assert.equal(reviewed.item, null)
+  assert.notEqual(reviewed.revision, first.revision)
+
+  store.revokeTaskReviewDecision(fingerprint)
+  const reopened = store.getMineTaskOwnershipAuditSample()
+  assert.equal(reopened.total, 1)
+  assert.equal(reopened.item?.id, automatic.id)
+}))
+
 test('cross-store recovery directory pages task and source failures without exposing payloads', () => withStore(store => {
   store.prepareTaskMutationCommit({
     commitId: 'cross-store-task',

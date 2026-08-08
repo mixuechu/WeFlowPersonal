@@ -4306,6 +4306,10 @@ export class AiAssistantService {
     const tasks = this.state.tasks.filter(task => task.classification === 'mine')
     const taskWorksetStats = personalMemoryStore.listActiveTaskWorkset({ limit: 1 })
     const taskOwnershipReviewStats = personalMemoryStore.getTaskOwnershipReviewStats()
+    const mineTaskOwnershipAudit = personalMemoryStore.getMineTaskOwnershipAuditSample()
+    const mineTaskOwnershipAuditState = mineTaskOwnershipAudit.item
+      ? this.state.tasks.find(task => task.id === mineTaskOwnershipAudit.item.id)
+      : null
     const allTaskReminders = buildTaskReminders(tasks)
     const reminderResult = applyReminderPreferences(allTaskReminders, this.state.reminderPreferences)
     const taskReminderRevision = this.buildTaskReminderRevision(
@@ -4353,6 +4357,17 @@ export class AiAssistantService {
         version: 'task-ownership-review-v1',
         directory: 'paginated_on_demand',
         dossier: 'on_demand'
+      },
+      mineTaskOwnershipAudit: {
+        ...mineTaskOwnershipAudit,
+        item: mineTaskOwnershipAudit.item && mineTaskOwnershipAuditState
+          ? {
+              ...mineTaskOwnershipAudit.item,
+              mutationToken: buildTaskMutationToken(mineTaskOwnershipAuditState)
+            }
+          : null,
+        version: 'mine-task-ownership-audit-sample-v1',
+        dossier: 'authoritative_task_workspace'
       },
       taskPayloadPolicy: {
         version: 'task-active-workset-v3',
