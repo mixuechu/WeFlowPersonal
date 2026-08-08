@@ -23,7 +23,8 @@ export function isSafePublicAddress(address: string): boolean {
   if (address.includes(':')) {
     const value = address.toLowerCase()
     if (value === '::' || value === '::1' || value.startsWith('fe8') || value.startsWith('fe9') ||
-      value.startsWith('fea') || value.startsWith('feb') || value.startsWith('fc') || value.startsWith('fd')) return false
+      value.startsWith('fea') || value.startsWith('feb') || value.startsWith('fc') || value.startsWith('fd') ||
+      value.startsWith('ff') || value.startsWith('2001:db8:')) return false
     if (value.startsWith('::ffff:')) return isSafePublicAddress(value.slice(7))
     return true
   }
@@ -73,7 +74,7 @@ export function extractWebSnapshotText(html: string): { title: string; descripti
   return { title, description, text }
 }
 
-async function resolvePublicAddress(hostname: string): Promise<{ address: string; family: number } | null> {
+export async function resolvePublicAddress(hostname: string): Promise<{ address: string; family: number } | null> {
   if (isIP(hostname)) return isSafePublicAddress(hostname) ? { address: hostname, family: isIP(hostname) } : null
   const addresses = await lookup(hostname, { all: true, verbatim: true })
   const syntheticProxyAddresses = addresses.length > 0 && addresses.every(item => {
