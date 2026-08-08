@@ -17626,6 +17626,7 @@ test('active mine-task ownership audit commits feedback and task removal atomica
       before: task,
       after: { ...task, classification: 'rejected' },
       reason: 'ownership_audit_rejected',
+      ownershipAuditSelection: 'stable_evidence_hash_queue_v1',
       evidence: task.evidence,
       feedbackEvidenceFingerprint: fingerprint
     }]
@@ -17653,6 +17654,8 @@ test('active mine-task ownership audit commits feedback and task removal atomica
     SELECT COUNT(*) AS count FROM task_directory WHERE id=?
   `).get(task.id).count, 0)
   assert.equal(store.getTaskReviewDecision(fingerprint)?.decision, 'rejected')
+  assert.equal(JSON.parse(store.getTaskReviewDecision(fingerprint)?.task_json || '{}')
+    .ownershipAuditSelection, 'stable_evidence_hash_queue_v1')
   assert.equal(store.listTaskReviewHistory(fingerprint)[0]?.action, 'rejected')
   assert.equal(store.getTaskMutationCommitHealth().prepared, 0)
   assert.equal(store.getTaskMutationCommitHealth().committed, 1)
@@ -17732,6 +17735,43 @@ test('mine-task ownership audit sample covers every eligible unreviewed task wit
   assert.equal(repairedHealth.repairedThisStart, true)
   assert.equal(repairedHealth.repairsTotal, repairsBefore + 1)
   assert.equal(store.getMineTaskOwnershipAuditSample().item?.id, automatic.id)
+}))
+
+test('stable mine-task samples are calibrated separately from opportunistic reviews', () => withStore(store => {
+  const sampled = {
+    id: 'sampled-mine-calibration', title: '稳定队列抽样', classification: 'mine',
+    ownershipAuditSelection: 'stable_evidence_hash_queue_v1'
+  }
+  const opportunistic = {
+    id: 'opportunistic-mine-calibration', title: '主动打开审阅', classification: 'mine'
+  }
+  store.recordTaskReviewDecision({
+    evidenceFingerprint: 'sampled-correct', taskId: sampled.id, decision: 'mine', task: sampled
+  })
+  store.recordTaskReviewDecision({
+    evidenceFingerprint: 'sampled-incorrect', taskId: sampled.id, decision: 'rejected', task: sampled
+  })
+  store.recordTaskReviewDecision({
+    evidenceFingerprint: 'opportunistic-incorrect', taskId: opportunistic.id,
+    decision: 'rejected', task: opportunistic
+  })
+
+  const audit = store.getTaskReviewFeedbackStats().activeMineAudit
+  assert.deepEqual({ correct: audit.correct, incorrect: audit.incorrect, total: audit.total }, {
+    correct: 1, incorrect: 2, total: 3
+  })
+  assert.deepEqual({
+    correct: audit.stableSample.correct,
+    incorrect: audit.stableSample.incorrect,
+    total: audit.stableSample.total,
+    selection: audit.stableSample.selection
+  }, {
+    correct: 1,
+    incorrect: 1,
+    total: 2,
+    selection: 'stable_evidence_hash_queue_v1'
+  })
+  assert.equal(audit.stableSample.calibration.observedRate, 0.5)
 }))
 
 test('cross-store recovery directory pages task and source failures without exposing payloads', () => withStore(store => {
@@ -18964,7 +19004,7 @@ test('human review calibration uses latest authoritative decisions without claim
     const firstTaskFeedback = store.getTaskReviewFeedbackStats()
     assert.strictEqual(store.getTaskReviewFeedbackStats(), firstTaskFeedback)
     assert.deepEqual(firstCalibration, {
-      version: 'human-review-calibration-v6',
+      version: 'human-review-calibration-v7',
       revision: `${store.getTaskOwnershipReviewRevision()}:${store.getStructuredMemoryRevision()}:${store.getGraphReviewRevision()}:${store.getMemoryChangeLogRevision()}:${store.getIngestionArchiveRevision()}:${store.getIngestionRecoveryRevision()}`,
       taskOwnership: { accepted: 1, rejected: 0, revoked: 1, total: 1 },
       activeMineAudit: {
@@ -18980,6 +19020,22 @@ test('human review calibration uses latest authoritative decisions without claim
           remainingToRecommended: 29,
           readyForTrend: false,
           interpretation: 'selected_review_interval_not_population_accuracy'
+        },
+        stableSample: {
+          correct: 0,
+          incorrect: 0,
+          total: 0,
+          calibration: {
+            reviewed: 0,
+            observedRate: null,
+            lower95: null,
+            upper95: null,
+            recommendedMinimum: 30,
+            remainingToRecommended: 30,
+            readyForTrend: false,
+            interpretation: 'selected_review_interval_not_population_accuracy'
+          },
+          selection: 'stable_evidence_hash_queue_v1'
         },
         rollingTrend: {
           version: 'selected-review-rolling-30-v1',
@@ -19216,6 +19272,7 @@ test('human review calibration uses latest authoritative decisions without claim
         readyForTrend: false,
         interpretation: 'selected_review_interval_not_population_accuracy'
       },
+      stableSample: firstTaskFeedback.activeMineAudit.stableSample,
       rollingTrend: firstTaskFeedback.activeMineAudit.rollingTrend,
       versions: firstTaskFeedback.activeMineAudit.versions,
       versionGroupTotal: 1,
@@ -19924,6 +19981,17 @@ test('task ownership feedback persists evidence-scoped decisions and suppression
         readyForTrend: false,
         interpretation: 'selected_review_interval_not_population_accuracy'
       },
+      stableSample: {
+        correct: 0,
+        incorrect: 0,
+        total: 0,
+        calibration: {
+          reviewed: 0, observedRate: null, lower95: null, upper95: null,
+          recommendedMinimum: 30, remainingToRecommended: 30, readyForTrend: false,
+          interpretation: 'selected_review_interval_not_population_accuracy'
+        },
+        selection: 'stable_evidence_hash_queue_v1'
+      },
       rollingTrend: {
         version: 'selected-review-rolling-30-v1',
         scope: null,
@@ -19977,6 +20045,17 @@ test('task ownership feedback persists evidence-scoped decisions and suppression
         remainingToRecommended: 30,
         readyForTrend: false,
         interpretation: 'selected_review_interval_not_population_accuracy'
+      },
+      stableSample: {
+        correct: 0,
+        incorrect: 0,
+        total: 0,
+        calibration: {
+          reviewed: 0, observedRate: null, lower95: null, upper95: null,
+          recommendedMinimum: 30, remainingToRecommended: 30, readyForTrend: false,
+          interpretation: 'selected_review_interval_not_population_accuracy'
+        },
+        selection: 'stable_evidence_hash_queue_v1'
       },
       rollingTrend: {
         version: 'selected-review-rolling-30-v1',

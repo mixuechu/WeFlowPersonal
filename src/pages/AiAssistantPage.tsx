@@ -940,6 +940,11 @@ function AiAssistantPage() {
   const taskWorkspaceGate = useRef(new LatestRequestGate())
   const [taskHistoryLoadingMore, setTaskHistoryLoadingMore] = useState(false)
   const [taskOwnershipAuditSaving, setTaskOwnershipAuditSaving] = useState(false)
+  const [mineTaskAuditSelection, setMineTaskAuditSelection] = useState<{
+    taskId: string
+    revision: string
+    strategy: string
+  } | null>(null)
   const taskHistoryGate = useRef(new LatestRequestGate())
   const [forgettingEntityId, setForgettingEntityId] = useState('')
   const [showSources, setShowSources] = useState(false)
@@ -6520,13 +6525,23 @@ function AiAssistantPage() {
   const reviewMineTaskOwnership = async (decision: 'mine' | 'rejected') => {
     const task = taskWorkspace.task
     if (!task?.id || !task?.mutationToken || taskOwnershipAuditSaving) return
+    const auditSelection = mineTaskAuditSelection
+    let sampleContext: { revision: string; strategy: string } | undefined
+    if (auditSelection && auditSelection.taskId === task.id) {
+      sampleContext = {
+        revision: auditSelection.revision,
+        strategy: auditSelection.strategy
+      }
+    }
     setTaskOwnershipAuditSaving(true)
     try {
       await window.electronAPI.aiAssistant.reviewMineTaskOwnership(
         task.id,
         decision,
-        task.mutationToken
+        task.mutationToken,
+        sampleContext
       )
+      setMineTaskAuditSelection(null)
       taskWorkspaceGate.current.invalidate()
       await load()
       setTaskWorksetRefreshKey(value => value + 1)
@@ -6544,6 +6559,10 @@ function AiAssistantPage() {
     } catch (error: any) {
       const errorMessage = error?.message || String(error)
       setMessage(errorMessage)
+      if (errorMessage.includes('抽检样本在展示后已经变化')) {
+        setMineTaskAuditSelection(null)
+        await load()
+      }
       if (errorMessage.includes('查看后已经被更新')) {
         setTaskWorkspaceRefreshKey(value => value + 1)
       }
@@ -9749,6 +9768,21 @@ function AiAssistantPage() {
               ? ` 还需抽检 ${Number(dashboard.humanReviewCalibration.activeMineAudit.calibration.remainingToRecommended).toLocaleString()} 项，才达到首个趋势观察门槛。`
               : ' 已达到首个趋势观察门槛；仍不能代表未抽检的全部待办。'}
           </p>}
+          {Number(dashboard.humanReviewCalibration.activeMineAudit?.stableSample?.total || 0) > 0 && <p>
+            稳定哈希队列抽检：正确{' '}
+            <b>{Number(dashboard.humanReviewCalibration.activeMineAudit.stableSample.correct).toLocaleString()}</b>
+            {' '} / 误判{' '}
+            <b>{Number(dashboard.humanReviewCalibration.activeMineAudit.stableSample.incorrect).toLocaleString()}</b>
+            {' · '}观察命中{' '}
+            <b>{Math.round(Number(dashboard.humanReviewCalibration.activeMineAudit.stableSample.calibration.observedRate || 0) * 100)}%</b>
+            {' '}（95% 区间{' '}
+            {Math.round(Number(dashboard.humanReviewCalibration.activeMineAudit.stableSample.calibration.lower95 || 0) * 100)}%–
+            {Math.round(Number(dashboard.humanReviewCalibration.activeMineAudit.stableSample.calibration.upper95 || 0) * 100)}%）。
+            <small>
+              只统计从“抽检下一项”进入、并在提交时通过服务端样本身份复核的决定；
+              证据指纹哈希排序避免只抽最新或最显眼的事项。中途停止审阅仍可能产生无应答偏差，因此不冒充全体真实准确率。
+            </small>
+          </p>}
           {Number(dashboard.humanReviewCalibration.activeMineAudit?.rollingTrend?.latest?.reviewed || 0) > 0 && <p>
             最近版本内抽检{' '}
             <b>{Math.round(Number(dashboard.humanReviewCalibration.activeMineAudit.rollingTrend.latest.observedRate || 0) * 100)}%</b>
@@ -9990,7 +10024,14 @@ function AiAssistantPage() {
                     按原文证据指纹稳定取样，避免只看到最新或最显眼的事项。
                   </small>
                 </span>
-                <button onClick={() => setSelectedTaskId(String(dashboard.mineTaskOwnershipAudit.item.id))}>
+                <button onClick={() => {
+                  setMineTaskAuditSelection({
+                    taskId: String(dashboard.mineTaskOwnershipAudit.item.id),
+                    revision: String(dashboard.mineTaskOwnershipAudit.revision || ''),
+                    strategy: String(dashboard.mineTaskOwnershipAudit.strategy || '')
+                  })
+                  setSelectedTaskId(String(dashboard.mineTaskOwnershipAudit.item.id))
+                }}>
                   抽检下一项
                 </button>
               </div>}
@@ -13550,6 +13591,9 @@ function AiAssistantPage() {
                   {taskWorkspace.ownershipReview?.eligible && <div className="assistant-task-ownership-audit">
                     <span><b>这项待办真的属于你吗？</b>
                       <small>反馈绑定当前完整原文证据，可在归属反馈档案中撤销；不会按相似文字影响别的事项。</small>
+                      {mineTaskAuditSelection?.taskId === taskWorkspace.task.id && <small>
+                        这是首页稳定哈希队列选中的抽检样本；保存时后端会重新核验样本身份，并与普通主动审阅分开统计。
+                      </small>}
                       <small>
                         归属版本：{taskWorkspace.task.ownershipPolicyVersion || '历史规则未知'} ·{' '}
                         {taskWorkspace.task.ownershipPromptVersion || '历史 Prompt 未记录'} ·{' '}

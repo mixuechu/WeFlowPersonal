@@ -1895,7 +1895,8 @@ export interface ElectronAPI {
       reviewMineTaskOwnership: (
         id: string,
         decision: 'mine' | 'rejected',
-        mutationToken?: string
+        mutationToken?: string,
+        sampleContext?: { revision: string; strategy: string }
       ) => Promise<any>
       updateTasks: (updates: Array<{ id: string; patch: any; mutationToken?: string }>) => Promise<any[]>
       previewTaskFromMemory: (input: any) => Promise<any>

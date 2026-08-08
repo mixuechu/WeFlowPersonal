@@ -38,7 +38,7 @@ test('real-world calibration separates active mine audits from candidate decisio
 
   assert.match(store, /active_mine_correct/)
   assert.match(store, /candidate_confirmed/)
-  assert.match(store, /human-review-calibration-v6/)
+  assert.match(store, /human-review-calibration-v7/)
   assert.match(page, /自动归给我：正确 \/ 误判/)
   assert.match(page, /待定归属：确认 \/ 排除/)
 })
@@ -162,6 +162,22 @@ test('dashboard exposes one bounded sample from the complete unreviewed mine-tas
   assert.match(service, /mineTaskOwnershipAudit:[\s\S]*?mine-task-ownership-audit-sample-v1/)
   assert.match(page, /帮助校准自动归属/)
   assert.match(page, /抽检下一项/)
+})
+
+test('sampled ownership decisions are server-bound and calibrated separately', () => {
+  const service = read('electron/services/aiAssistantService.ts')
+  const store = read('electron/services/personalMemoryStore.ts')
+  const page = read('src/pages/AiAssistantPage.tsx')
+
+  assert.match(service, /expectedRevision !== currentSample\.revision/)
+  assert.match(service, /currentSample\.item\?\.id \|\| ''\) !== id/)
+  assert.match(service, /ownershipAuditSelection: auditSelection/)
+  assert.match(store, /change\?\.ownershipAuditSelection[\s\S]*?stable_evidence_hash_queue_v1/)
+  assert.match(store, /stable_sample_correct/)
+  assert.match(store, /stable_evidence_hash_queue_v1/)
+  assert.match(page, /auditSelection && auditSelection\.taskId === task\.id/)
+  assert.match(page, /稳定哈希队列抽检/)
+  assert.match(page, /中途停止审阅仍可能产生无应答偏差/)
 })
 
 test('mine-task audit index health is visible and participates in runtime repair', () => {

@@ -13928,7 +13928,12 @@ export class PersonalMemoryStore {
           title: String(task.title || ''),
           source: String(task.source || ''),
           evidence: Array.isArray(task.evidence) ? task.evidence : [],
-          task
+          task: {
+            ...task,
+            ...(String(change?.ownershipAuditSelection || '') === 'stable_evidence_hash_queue_v1'
+              ? { ownershipAuditSelection: 'stable_evidence_hash_queue_v1' }
+              : {})
+          }
         })
       }
       this.recordTaskChangeSets(changes)
@@ -14808,6 +14813,13 @@ export class PersonalMemoryStore {
         incorrect: 0,
         total: 0,
         calibration: selectedReviewBinomialCalibration(0, 0),
+        stableSample: {
+          correct: 0,
+          incorrect: 0,
+          total: 0,
+          calibration: selectedReviewBinomialCalibration(0, 0),
+          selection: 'stable_evidence_hash_queue_v1'
+        },
         rollingTrend: {
           version: 'selected-review-rolling-30-v1',
           scope: null,
@@ -14836,6 +14848,14 @@ export class PersonalMemoryStore {
         SUM(CASE WHEN revoked_at IS NULL AND json_valid(task_json)=1
           AND json_extract(task_json,'$.classification')='mine'
           AND decision='rejected' THEN 1 ELSE 0 END) AS active_mine_incorrect,
+        SUM(CASE WHEN revoked_at IS NULL AND json_valid(task_json)=1
+          AND json_extract(task_json,'$.classification')='mine'
+          AND json_extract(task_json,'$.ownershipAuditSelection')='stable_evidence_hash_queue_v1'
+          AND decision='mine' THEN 1 ELSE 0 END) AS stable_sample_correct,
+        SUM(CASE WHEN revoked_at IS NULL AND json_valid(task_json)=1
+          AND json_extract(task_json,'$.classification')='mine'
+          AND json_extract(task_json,'$.ownershipAuditSelection')='stable_evidence_hash_queue_v1'
+          AND decision='rejected' THEN 1 ELSE 0 END) AS stable_sample_incorrect,
         SUM(CASE WHEN revoked_at IS NULL AND (
           CASE WHEN json_valid(task_json)=1
             THEN COALESCE(json_extract(task_json,'$.classification'),'') ELSE '' END
@@ -14850,6 +14870,8 @@ export class PersonalMemoryStore {
     `).get() as any
     const activeMineCorrect = Number(row?.active_mine_correct || 0)
     const activeMineIncorrect = Number(row?.active_mine_incorrect || 0)
+    const stableSampleCorrect = Number(row?.stable_sample_correct || 0)
+    const stableSampleIncorrect = Number(row?.stable_sample_incorrect || 0)
     const rollingRow = this.db.prepare(`
       WITH versioned AS (
         SELECT
@@ -14978,6 +15000,13 @@ export class PersonalMemoryStore {
       incorrect: activeMineIncorrect,
       total: activeMineCorrect + activeMineIncorrect,
       calibration: selectedReviewBinomialCalibration(activeMineCorrect, activeMineIncorrect),
+      stableSample: {
+        correct: stableSampleCorrect,
+        incorrect: stableSampleIncorrect,
+        total: stableSampleCorrect + stableSampleIncorrect,
+        calibration: selectedReviewBinomialCalibration(stableSampleCorrect, stableSampleIncorrect),
+        selection: 'stable_evidence_hash_queue_v1'
+      },
       rollingTrend: {
         version: 'selected-review-rolling-30-v1',
         scope: rollingRow?.policy_version ? {
@@ -15018,13 +15047,20 @@ export class PersonalMemoryStore {
 
   getHumanReviewCalibrationStats(): any {
     const empty = {
-      version: 'human-review-calibration-v6',
+      version: 'human-review-calibration-v7',
       taskOwnership: { accepted: 0, rejected: 0, revoked: 0, total: 0 },
       activeMineAudit: {
         correct: 0,
         incorrect: 0,
         total: 0,
         calibration: selectedReviewBinomialCalibration(0, 0),
+        stableSample: {
+          correct: 0,
+          incorrect: 0,
+          total: 0,
+          calibration: selectedReviewBinomialCalibration(0, 0),
+          selection: 'stable_evidence_hash_queue_v1'
+        },
         rollingTrend: {
           version: 'selected-review-rolling-30-v1',
           scope: null,

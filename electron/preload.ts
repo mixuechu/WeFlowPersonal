@@ -683,9 +683,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
     reviewMineTaskOwnership: (
       id: string,
       decision: 'mine' | 'rejected',
-      mutationToken?: string
+      mutationToken?: string,
+      sampleContext?: { revision: string; strategy: string }
     ) => ipcRenderer.invoke(
-      'ai-assistant:reviewMineTaskOwnership', id, decision, mutationToken
+      'ai-assistant:reviewMineTaskOwnership', id, decision, mutationToken, sampleContext
     ),
     updateTasks: (updates: any[]) => ipcRenderer.invoke('ai-assistant:updateTasks', updates),
     previewTaskFromMemory: (input: any) =>

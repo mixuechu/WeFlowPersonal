@@ -6985,7 +6985,8 @@ export class AiAssistantService {
   reviewMineTaskOwnership(
     idInput: unknown,
     decisionInput: unknown,
-    mutationToken: unknown
+    mutationToken: unknown,
+    sampleContextInput?: unknown
   ): any {
     const id = String(idInput || '').trim()
     const decision = decisionInput === 'mine' || decisionInput === 'rejected'
@@ -7001,6 +7002,22 @@ export class AiAssistantService {
     }
     const evidenceFingerprint = taskEvidenceFingerprint(task)
     if (!evidenceFingerprint) throw new Error('这条待办缺少可绑定的原文证据，不能记录归属反馈')
+    const sampleContext = sampleContextInput && typeof sampleContextInput === 'object'
+      ? sampleContextInput as Record<string, unknown>
+      : null
+    let auditSelection = ''
+    if (sampleContext) {
+      const expectedRevision = String(sampleContext.revision || '').trim()
+      const currentSample = personalMemoryStore.getMineTaskOwnershipAuditSample()
+      if (
+        !expectedRevision || expectedRevision !== currentSample.revision ||
+        String(currentSample.item?.id || '') !== id ||
+        String(sampleContext.strategy || '') !== currentSample.strategy
+      ) {
+        throw new Error('抽检样本在展示后已经变化，请返回首页重新抽取')
+      }
+      auditSelection = 'stable_evidence_hash_queue_v1'
+    }
     const existingDecision = personalMemoryStore.getTaskReviewDecision(evidenceFingerprint)
     if (decision === 'mine' && isRepeatedMineTaskAudit(existingDecision)) {
       return {
@@ -7026,6 +7043,7 @@ export class AiAssistantService {
       before,
       after,
       reason: decision === 'mine' ? 'ownership_audit_confirmed' : 'ownership_audit_rejected',
+      ownershipAuditSelection: auditSelection,
       evidence: before.evidence || [],
       feedbackEvidenceFingerprint: evidenceFingerprint
     }
