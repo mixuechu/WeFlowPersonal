@@ -38,7 +38,7 @@ test('real-world calibration separates active mine audits from candidate decisio
 
   assert.match(store, /active_mine_correct/)
   assert.match(store, /candidate_confirmed/)
-  assert.match(store, /human-review-calibration-v2/)
+  assert.match(store, /human-review-calibration-v3/)
   assert.match(page, /自动归给我：正确 \/ 误判/)
   assert.match(page, /待定归属：确认 \/ 排除/)
 })
@@ -67,4 +67,15 @@ test('mine-task audit index health is visible and participates in runtime repair
   assert.match(store, /mineTaskOwnershipAuditIndex:[\s\S]*?after\.mineTaskOwnershipAuditIndexHealthy/)
   assert.match(page, /自动归属抽检队列索引/)
   assert.match(page, /mineTaskOwnershipAuditIndex\.repairsTotal/)
+})
+
+test('selected ownership reviews expose uncertainty instead of claiming population accuracy', () => {
+  const store = read('electron/services/personalMemoryStore.ts')
+  const page = read('src/pages/AiAssistantPage.tsx')
+
+  assert.match(store, /selectedReviewBinomialCalibration/)
+  assert.match(store, /selected_review_interval_not_population_accuracy/)
+  assert.match(store, /recommendedMinimum/)
+  assert.match(page, /95% 统计区间/)
+  assert.match(page, /仍不能代表未抽检的全部待办/)
 })

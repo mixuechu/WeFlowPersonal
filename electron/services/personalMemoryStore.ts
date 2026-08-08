@@ -41,6 +41,55 @@ type MemoryChangeOrigin = {
   sourceKind?: 'wechat' | 'documents' | 'calendar' | 'mail' | 'local' | 'system'
 }
 const TASK_EVIDENCE_FINGERPRINT_VERSION = 3
+const TASK_OWNERSHIP_CALIBRATION_RECOMMENDED_SAMPLES = 30
+
+function selectedReviewBinomialCalibration(successes: number, failures: number): {
+  reviewed: number
+  observedRate: number | null
+  lower95: number | null
+  upper95: number | null
+  recommendedMinimum: number
+  remainingToRecommended: number
+  readyForTrend: boolean
+  interpretation: string
+} {
+  const correct = Math.max(0, Math.floor(Number(successes) || 0))
+  const incorrect = Math.max(0, Math.floor(Number(failures) || 0))
+  const reviewed = correct + incorrect
+  if (!reviewed) {
+    return {
+      reviewed: 0,
+      observedRate: null,
+      lower95: null,
+      upper95: null,
+      recommendedMinimum: TASK_OWNERSHIP_CALIBRATION_RECOMMENDED_SAMPLES,
+      remainingToRecommended: TASK_OWNERSHIP_CALIBRATION_RECOMMENDED_SAMPLES,
+      readyForTrend: false,
+      interpretation: 'selected_review_interval_not_population_accuracy'
+    }
+  }
+  const observedRate = correct / reviewed
+  const z = 1.959963984540054
+  const denominator = 1 + (z * z) / reviewed
+  const centre = (observedRate + (z * z) / (2 * reviewed)) / denominator
+  const margin = z * Math.sqrt(
+    (observedRate * (1 - observedRate) / reviewed) + (z * z) / (4 * reviewed * reviewed)
+  ) / denominator
+  const rounded = (value: number) => Math.round(value * 10_000) / 10_000
+  return {
+    reviewed,
+    observedRate: rounded(observedRate),
+    lower95: rounded(Math.max(0, centre - margin)),
+    upper95: rounded(Math.min(1, centre + margin)),
+    recommendedMinimum: TASK_OWNERSHIP_CALIBRATION_RECOMMENDED_SAMPLES,
+    remainingToRecommended: Math.max(
+      0,
+      TASK_OWNERSHIP_CALIBRATION_RECOMMENDED_SAMPLES - reviewed
+    ),
+    readyForTrend: reviewed >= TASK_OWNERSHIP_CALIBRATION_RECOMMENDED_SAMPLES,
+    interpretation: 'selected_review_interval_not_population_accuracy'
+  }
+}
 
 function searchEvidenceScopeSql(
   alias: string,
@@ -14504,10 +14553,13 @@ export class PersonalMemoryStore {
         COALESCE(SUM(CASE WHEN revoked_at IS NULL THEN reconciliation_count ELSE 0 END),0) AS reconciled
       FROM task_review_decisions
     `).get() as any
+    const activeMineCorrect = Number(row?.active_mine_correct || 0)
+    const activeMineIncorrect = Number(row?.active_mine_incorrect || 0)
     const activeMineAudit = {
-      correct: Number(row?.active_mine_correct || 0),
-      incorrect: Number(row?.active_mine_incorrect || 0),
-      total: Number(row?.active_mine_correct || 0) + Number(row?.active_mine_incorrect || 0)
+      correct: activeMineCorrect,
+      incorrect: activeMineIncorrect,
+      total: activeMineCorrect + activeMineIncorrect,
+      calibration: selectedReviewBinomialCalibration(activeMineCorrect, activeMineIncorrect)
     }
     const candidateOwnership = {
       confirmed: Number(row?.candidate_confirmed || 0),
@@ -14532,9 +14584,14 @@ export class PersonalMemoryStore {
 
   getHumanReviewCalibrationStats(): any {
     const empty = {
-      version: 'human-review-calibration-v2',
+      version: 'human-review-calibration-v3',
       taskOwnership: { accepted: 0, rejected: 0, revoked: 0, total: 0 },
-      activeMineAudit: { correct: 0, incorrect: 0, total: 0 },
+      activeMineAudit: {
+        correct: 0,
+        incorrect: 0,
+        total: 0,
+        calibration: selectedReviewBinomialCalibration(0, 0)
+      },
       candidateOwnership: { confirmed: 0, rejected: 0, total: 0 },
       structuredMemory: { accepted: 0, rejected: 0, reopened: 0, total: 0 },
       graphCandidates: { accepted: 0, rejected: 0, total: 0 },

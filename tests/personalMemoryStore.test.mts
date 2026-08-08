@@ -18902,10 +18902,24 @@ test('human review calibration uses latest authoritative decisions without claim
     const firstTaskFeedback = store.getTaskReviewFeedbackStats()
     assert.strictEqual(store.getTaskReviewFeedbackStats(), firstTaskFeedback)
     assert.deepEqual(firstCalibration, {
-      version: 'human-review-calibration-v2',
+      version: 'human-review-calibration-v3',
       revision: `${store.getTaskOwnershipReviewRevision()}:${store.getStructuredMemoryRevision()}:${store.getGraphReviewRevision()}`,
       taskOwnership: { accepted: 1, rejected: 0, revoked: 1, total: 1 },
-      activeMineAudit: { correct: 1, incorrect: 0, total: 1 },
+      activeMineAudit: {
+        correct: 1,
+        incorrect: 0,
+        total: 1,
+        calibration: {
+          reviewed: 1,
+          observedRate: 1,
+          lower95: 0.2065,
+          upper95: 1,
+          recommendedMinimum: 30,
+          remainingToRecommended: 29,
+          readyForTrend: false,
+          interpretation: 'selected_review_interval_not_population_accuracy'
+        }
+      },
       candidateOwnership: { confirmed: 0, rejected: 0, total: 0 },
       structuredMemory: { accepted: 1, rejected: 0, reopened: 0, total: 1 },
       graphCandidates: { accepted: 0, rejected: 1, total: 1 },
@@ -18932,9 +18946,44 @@ test('human review calibration uses latest authoritative decisions without claim
     const refreshedTaskFeedback = store.getTaskReviewFeedbackStats()
     assert.notStrictEqual(refreshedTaskFeedback, firstTaskFeedback)
     assert.equal(refreshedTaskFeedback.rejected, 1)
-    assert.deepEqual(refreshedTaskFeedback.activeMineAudit, { correct: 1, incorrect: 0, total: 1 })
+    assert.deepEqual(refreshedTaskFeedback.activeMineAudit, {
+      correct: 1,
+      incorrect: 0,
+      total: 1,
+      calibration: {
+        reviewed: 1,
+        observedRate: 1,
+        lower95: 0.2065,
+        upper95: 1,
+        recommendedMinimum: 30,
+        remainingToRecommended: 29,
+        readyForTrend: false,
+        interpretation: 'selected_review_interval_not_population_accuracy'
+      }
+    })
     assert.deepEqual(refreshedTaskFeedback.candidateOwnership, { confirmed: 0, rejected: 1, total: 1 })
     assert.equal(store.getHumanReviewCalibrationStats().reviewedTotal, 6)
+    for (let index = 0; index < 29; index += 1) {
+      database.prepare(`
+        INSERT INTO task_review_decisions(
+          evidence_fingerprint,task_id,decision,task_json,created_at,updated_at
+        ) VALUES(?,?,?,?,?,?)
+      `).run(
+        `task-calibration-${index}`,
+        `task-calibration-${index}`,
+        index < 24 ? 'mine' : 'rejected',
+        JSON.stringify({ classification: 'mine' }),
+        now,
+        now
+      )
+    }
+    const trendCalibration = store.getHumanReviewCalibrationStats().activeMineAudit.calibration
+    assert.equal(trendCalibration.reviewed, 30)
+    assert.equal(trendCalibration.observedRate, 0.8333)
+    assert.equal(trendCalibration.readyForTrend, true)
+    assert.equal(trendCalibration.remainingToRecommended, 0)
+    assert.ok(trendCalibration.lower95 < trendCalibration.observedRate)
+    assert.ok(trendCalibration.upper95 > trendCalibration.observedRate)
   })
 })
 
@@ -19079,7 +19128,21 @@ test('task ownership feedback persists evidence-scoped decisions and suppression
     rejected: 1,
     suppressed: 2,
     reconciled: 0,
-    activeMineAudit: { correct: 0, incorrect: 0, total: 0 },
+    activeMineAudit: {
+      correct: 0,
+      incorrect: 0,
+      total: 0,
+      calibration: {
+        reviewed: 0,
+        observedRate: null,
+        lower95: null,
+        upper95: null,
+        recommendedMinimum: 30,
+        remainingToRecommended: 30,
+        readyForTrend: false,
+        interpretation: 'selected_review_interval_not_population_accuracy'
+      }
+    },
     candidateOwnership: { confirmed: 0, rejected: 1, total: 1 }
   })
 
@@ -19101,7 +19164,21 @@ test('task ownership feedback persists evidence-scoped decisions and suppression
     rejected: 0,
     suppressed: 0,
     reconciled: 0,
-    activeMineAudit: { correct: 0, incorrect: 0, total: 0 },
+    activeMineAudit: {
+      correct: 0,
+      incorrect: 0,
+      total: 0,
+      calibration: {
+        reviewed: 0,
+        observedRate: null,
+        lower95: null,
+        upper95: null,
+        recommendedMinimum: 30,
+        remainingToRecommended: 30,
+        readyForTrend: false,
+        interpretation: 'selected_review_interval_not_population_accuracy'
+      }
+    },
     candidateOwnership: { confirmed: 0, rejected: 0, total: 0 }
   })
 }))

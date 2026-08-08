@@ -9561,6 +9561,17 @@ function AiAssistantPage() {
             <span><b>{Number(dashboard.humanReviewCalibration.graphCandidates.accepted || 0)} / {Number(dashboard.humanReviewCalibration.graphCandidates.rejected || 0)}</b><small>图谱候选：确认 / 拒绝</small></span>
             <span><b>{Number(dashboard.humanReviewCalibration.identityPairs.merged || 0)} / {Number(dashboard.humanReviewCalibration.identityPairs.different || 0)}</b><small>身份建议：合并 / 不同人</small></span>
           </div>
+          {Number(dashboard.humanReviewCalibration.activeMineAudit?.calibration?.reviewed || 0) > 0 && <p>
+            当前选择性抽检观察命中率{' '}
+            <b>{Math.round(Number(dashboard.humanReviewCalibration.activeMineAudit.calibration.observedRate || 0) * 100)}%</b>
+            {' · '}95% 统计区间{' '}
+            {Math.round(Number(dashboard.humanReviewCalibration.activeMineAudit.calibration.lower95 || 0) * 100)}%–
+            {Math.round(Number(dashboard.humanReviewCalibration.activeMineAudit.calibration.upper95 || 0) * 100)}%
+            {' · '}样本 {Number(dashboard.humanReviewCalibration.activeMineAudit.calibration.reviewed).toLocaleString()} 项。
+            {!dashboard.humanReviewCalibration.activeMineAudit.calibration.readyForTrend
+              ? ` 还需抽检 ${Number(dashboard.humanReviewCalibration.activeMineAudit.calibration.remainingToRecommended).toLocaleString()} 项，才达到首个趋势观察门槛。`
+              : ' 已达到首个趋势观察门槛；仍不能代表未抽检的全部待办。'}
+          </p>}
           {!Number(dashboard.humanReviewCalibration.reviewedTotal || 0) && <p>完成一些候选确认或拒绝后，这里会开始形成你自己的真实质量基线。</p>}
         </section>}
         {dashboard?.notificationDelivery && <section className={`assistant-notification-delivery ${
