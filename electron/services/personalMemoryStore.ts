@@ -14783,7 +14783,10 @@ export class PersonalMemoryStore {
     const revision = [
       taskRevision,
       this.getStructuredMemoryRevision(),
-      this.getGraphReviewRevision()
+      this.getGraphReviewRevision(),
+      this.getMemoryChangeLogRevision(),
+      this.getIngestionArchiveRevision(),
+      this.getIngestionRecoveryRevision()
     ].join(':')
     if (this.humanReviewCalibrationCache?.revision === revision) {
       return this.humanReviewCalibrationCache.value

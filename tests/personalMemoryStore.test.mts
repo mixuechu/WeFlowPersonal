@@ -18905,7 +18905,7 @@ test('human review calibration uses latest authoritative decisions without claim
     assert.strictEqual(store.getTaskReviewFeedbackStats(), firstTaskFeedback)
     assert.deepEqual(firstCalibration, {
       version: 'human-review-calibration-v6',
-      revision: `${store.getTaskOwnershipReviewRevision()}:${store.getStructuredMemoryRevision()}:${store.getGraphReviewRevision()}`,
+      revision: `${store.getTaskOwnershipReviewRevision()}:${store.getStructuredMemoryRevision()}:${store.getGraphReviewRevision()}:${store.getMemoryChangeLogRevision()}:${store.getIngestionArchiveRevision()}:${store.getIngestionRecoveryRevision()}`,
       taskOwnership: { accepted: 1, rejected: 0, revoked: 1, total: 1 },
       activeMineAudit: {
         correct: 1,
@@ -19260,6 +19260,57 @@ test('structured memory candidate calibration resolves the original model batch 
         && version.schemaVersion === 'schema-calibration'
         && version.model === 'deepseek-calibration'
         && version.sourceKind === 'wechat'))
+  })
+})
+
+test('structured memory calibration cache refreshes when recovery restores batch provenance', () => {
+  withStore(store => {
+    const database = (store as any).db
+    const now = '2026-08-09T07:00:00.000Z'
+    database.prepare(`
+      INSERT INTO ingestion_runs(
+        id,started_at,model,prompt_version,status
+      ) VALUES(?,?,?,?,?)
+    `).run('late-provenance-run', now, 'deepseek-late', 'prompt-late', 'completed')
+    database.prepare(`
+      INSERT INTO ingestion_batches(
+        run_id,batch_index,message_count,status,started_at,finished_at,
+        model,prompt_version,schema_version
+      ) VALUES(?,?,?,?,?,?,?,?,?)
+    `).run(
+      'late-provenance-run', 0, 1, 'completed', now, now,
+      'deepseek-late', 'prompt-late', 'schema-late'
+    )
+    database.prepare(`
+      INSERT INTO memory_change_log(
+        item_kind,item_id,change_kind,change_detail,origin_kind,origin_id,
+        source_kind,status_before,status_after,changed_at
+      ) VALUES('claim','late-provenance-claim','discovered','item','model_batch',
+        'late-provenance-commit','wechat','','candidate',?)
+    `).run(now)
+    database.prepare(`
+      INSERT INTO memory_review_decisions(
+        item_kind,item_id,previous_status,decision,actor,created_at
+      ) VALUES('claim','late-provenance-claim','candidate','confirmed','user',?)
+    `).run(now)
+
+    const before = store.getHumanReviewCalibrationStats()
+    assert.equal(before.structuredMemory.candidateAudit.versions[0].model, 'legacy-unknown-model')
+    database.prepare(`
+      INSERT INTO ingestion_batch_commits(
+        commit_id,run_id,batch_index,status,digest_json,messages_json,
+        checkpoint_keys_json,created_at,prepared_at,applied_at,source_kind
+      ) VALUES(?,?,?,?,?,?,?,?,?,?,?)
+    `).run(
+      'late-provenance-commit', 'late-provenance-run', 0, 'committed',
+      '{}', '[]', '[]', now, now, now, 'wechat'
+    )
+    const after = store.getHumanReviewCalibrationStats()
+    assert.notStrictEqual(after, before)
+    assert.notEqual(after.revision, before.revision)
+    assert.equal(after.structuredMemory.candidateAudit.versions[0].model, 'deepseek-late')
+    assert.equal(after.structuredMemory.candidateAudit.versions[0].promptVersion, 'prompt-late')
+    assert.equal(after.structuredMemory.candidateAudit.versions[0].schemaVersion, 'schema-late')
   })
 })
 
