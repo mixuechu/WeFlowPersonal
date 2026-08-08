@@ -28,6 +28,7 @@ import {
   type InsightRecordTriggerReason,
   type MessageInsightAnalysis
 } from './insightRecordService'
+import { readBoundedIncomingMessage } from './boundedNodeResponse.ts'
 
 // ─── 常量 ────────────────────────────────────────────────────────────────────
 
@@ -359,32 +360,35 @@ function callApi(
 
     const isHttps = urlObj.protocol === 'https:'
     const requestFn = isHttps ? https.request : http.request
-    const req = requestFn(requestOptions, (res) => {
+    const req = requestFn(requestOptions, async (res) => {
       let data = ''
-      res.on('data', (chunk) => { data += chunk })
-      res.on('end', () => {
-        try {
-          if (res.statusCode && res.statusCode >= 400) {
-            reject(new ApiRequestError(`API 请求失败 (${res.statusCode}): ${data.slice(0, 200)}`, res.statusCode, data))
+      try {
+        data = await readBoundedIncomingMessage(res)
+      } catch (error) {
+        reject(error)
+        return
+      }
+      try {
+        if (res.statusCode && res.statusCode >= 400) {
+          reject(new ApiRequestError(`API 请求失败 (${res.statusCode}): ${data.slice(0, 200)}`, res.statusCode, data))
+          return
+        }
+        const parsed = JSON.parse(data)
+        const content = parsed?.choices?.[0]?.message?.content
+        if (typeof content === 'string' && content.trim()) {
+          resolve(content.trim())
+        } else {
+          const finishReason = parsed?.choices?.[0]?.finish_reason
+          const reasoningContent = parsed?.choices?.[0]?.message?.reasoning_content
+          if (typeof reasoningContent === 'string' && reasoningContent.trim()) {
+            reject(new Error(`API 仅返回推理内容未返回正文${finishReason ? `（finish_reason=${finishReason}）` : ''}，请增大最大输出 Token 或关闭思考模式`))
             return
           }
-          const parsed = JSON.parse(data)
-          const content = parsed?.choices?.[0]?.message?.content
-          if (typeof content === 'string' && content.trim()) {
-            resolve(content.trim())
-          } else {
-            const finishReason = parsed?.choices?.[0]?.finish_reason
-            const reasoningContent = parsed?.choices?.[0]?.message?.reasoning_content
-            if (typeof reasoningContent === 'string' && reasoningContent.trim()) {
-              reject(new Error(`API 仅返回推理内容未返回正文${finishReason ? `（finish_reason=${finishReason}）` : ''}，请增大最大输出 Token 或关闭思考模式`))
-              return
-            }
-            reject(new Error(`API 返回格式异常${finishReason ? `（finish_reason=${finishReason}）` : ''}: ${data.slice(0, 200)}`))
-          }
-        } catch (e) {
-          reject(new Error(`JSON 解析失败: ${data.slice(0, 200)}`))
+          reject(new Error(`API 返回格式异常${finishReason ? `（finish_reason=${finishReason}）` : ''}: ${data.slice(0, 200)}`))
         }
-      })
+      } catch {
+        reject(new Error(`JSON 解析失败: ${data.slice(0, 200)}`))
+      }
     })
 
     req.setTimeout(timeoutMs, () => {

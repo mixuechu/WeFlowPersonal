@@ -8,6 +8,7 @@ import { randomUUID, createHash } from 'crypto'
 import { ConfigService } from './config'
 import { chatService, type Message } from './chatService'
 import { wcdbService } from './wcdbService'
+import { readBoundedIncomingMessage } from './boundedNodeResponse.ts'
 
 const API_TIMEOUT_MS = 45_000
 const API_TEMPERATURE = 0.7
@@ -290,26 +291,29 @@ function callProfileApi(
       }
 
       const requestFn = urlObj.protocol === 'https:' ? https.request : http.request
-      const req = requestFn(requestOptions, (res) => {
+      const req = requestFn(requestOptions, async (res) => {
         let data = ''
-        res.on('data', (chunk) => { data += chunk })
-        res.on('end', () => {
-          try {
-            if (res.statusCode && res.statusCode >= 400) {
-              reject(new ApiRequestError(`API 请求失败 (${res.statusCode}): ${data.slice(0, 200)}`, res.statusCode, data))
-              return
-            }
-            const parsed = JSON.parse(data)
-            const content = parsed?.choices?.[0]?.message?.content
-            if (typeof content === 'string' && content.trim()) {
-              resolve(content.trim())
-            } else {
-              reject(new Error(`API 返回格式异常: ${data.slice(0, 200)}`))
-            }
-          } catch {
-            reject(new Error(`JSON 解析失败: ${data.slice(0, 200)}`))
+        try {
+          data = await readBoundedIncomingMessage(res)
+        } catch (error) {
+          reject(error)
+          return
+        }
+        try {
+          if (res.statusCode && res.statusCode >= 400) {
+            reject(new ApiRequestError(`API 请求失败 (${res.statusCode}): ${data.slice(0, 200)}`, res.statusCode, data))
+            return
           }
-        })
+          const parsed = JSON.parse(data)
+          const content = parsed?.choices?.[0]?.message?.content
+          if (typeof content === 'string' && content.trim()) {
+            resolve(content.trim())
+          } else {
+            reject(new Error(`API 返回格式异常: ${data.slice(0, 200)}`))
+          }
+        } catch {
+          reject(new Error(`JSON 解析失败: ${data.slice(0, 200)}`))
+        }
       })
 
       const onAbort = () => {
