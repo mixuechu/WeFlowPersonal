@@ -2,6 +2,8 @@ import { Notification } from "electron";
 import { avatarFileCache } from "./avatarFileCacheService";
 import { buildSystemNotificationActionPayload } from "./systemNotificationNavigationPolicy";
 import { showAndConfirmSystemNotification } from "./systemNotificationDeliveryPolicy";
+import { sanitizeDiagnosticText } from "./diagnosticRedaction";
+import { formatSystemNotificationShown } from "./runtimeConsolePrivacy";
 
 // 系统通知服务（Linux / macOS）：走各自系统的通知中心（Linux 底层为
 // D-Bus/libnotify，macOS 为通知中心），Windows 使用特制的液态玻璃通知窗口。
@@ -48,7 +50,7 @@ function triggerNotificationCallback(payload: unknown): void {
     try {
       callback(payload);
     } catch (error) {
-      console.error("[SystemNotification] Callback error:", error);
+      console.error("[SystemNotification] Callback error:", sanitizeDiagnosticText(error));
     }
   }
 }
@@ -105,18 +107,16 @@ export async function showSystemNotification(
 
     const display = await showAndConfirmSystemNotification(notification);
     if (!display.shown) {
-      console.error("[SystemNotification] Notification failed:", display.error);
+      console.error("[SystemNotification] Notification failed:", sanitizeDiagnosticText(display.error));
       clearNotificationState(notificationId);
       return null;
     }
 
-    console.log(
-      `[SystemNotification] Shown notification ${notificationId}: ${data.title}`,
-    );
+    console.log(formatSystemNotificationShown(notificationId));
 
     return notificationId;
   } catch (error) {
-    console.error("[SystemNotification] Failed to show notification:", error);
+    console.error("[SystemNotification] Failed to show notification:", sanitizeDiagnosticText(error));
     return null;
   }
 }

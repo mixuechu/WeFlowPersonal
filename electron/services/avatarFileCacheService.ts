@@ -3,6 +3,7 @@ import http, { IncomingMessage } from "http";
 import { promises as fs } from "fs";
 import { join } from "path";
 import { ConfigService } from "./config";
+import { formatAvatarCacheConsoleEvent } from "./runtimeConsolePrivacy";
 
 // 头像文件缓存服务 - 复用项目已有的缓存目录结构
 export class AvatarFileCacheService {
@@ -92,7 +93,7 @@ export class AvatarFileCacheService {
       if (oldest) {
         try {
           await fs.rm(join(this.cacheDir, oldest));
-          console.log(`[AvatarFileCache] Evicted: ${oldest}`);
+          console.log(formatAvatarCacheConsoleEvent("evicted"));
         } catch {}
       }
     }
@@ -139,9 +140,7 @@ export class AvatarFileCacheService {
             await fs.writeFile(localPath, buffer);
             const fileName = localPath.split("/").pop()!;
             this.updateLru(fileName);
-            console.log(
-              `[AvatarFileCache] Downloaded: ${url.substring(0, 50)}... -> ${localPath}`,
-            );
+            console.log(formatAvatarCacheConsoleEvent("downloaded"));
             resolve(localPath);
           } catch {
             resolve(null);
@@ -199,7 +198,7 @@ export class AvatarFileCacheService {
         }
       }
       this.lruOrder.length = 0;
-      console.log("[AvatarFileCache] Cache cleared");
+      console.log(formatAvatarCacheConsoleEvent("cleared"));
     } catch {}
   }
 
