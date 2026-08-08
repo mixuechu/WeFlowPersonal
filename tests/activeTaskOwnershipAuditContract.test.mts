@@ -38,9 +38,21 @@ test('real-world calibration separates active mine audits from candidate decisio
 
   assert.match(store, /active_mine_correct/)
   assert.match(store, /candidate_confirmed/)
-  assert.match(store, /human-review-calibration-v4/)
+  assert.match(store, /human-review-calibration-v5/)
   assert.match(page, /自动归给我：正确 \/ 误判/)
   assert.match(page, /待定归属：确认 \/ 排除/)
+})
+
+test('ownership calibration detects rolling drift without small-sample alarms', () => {
+  const store = read('electron/services/personalMemoryStore.ts')
+  const page = read('src/pages/AiAssistantPage.tsx')
+
+  assert.match(store, /selected-review-rolling-30-v1/)
+  assert.match(store, /ROW_NUMBER\(\) OVER \([\s\S]*?updated_at DESC,evidence_fingerprint ASC/)
+  assert.match(store, /latestRolling\.reviewed < 30 \|\| previousRolling\.reviewed < 30/)
+  assert.match(store, /latestRolling\.upper95[\s\S]*?previousRolling\.lower95/)
+  assert.match(page, /最近一组抽检/)
+  assert.match(page, /两组各满 30 项后才判断趋势，避免小样本误报/)
 })
 
 test('dashboard exposes one bounded sample from the complete unreviewed mine-task queue', () => {

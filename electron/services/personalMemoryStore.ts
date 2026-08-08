@@ -14528,6 +14528,12 @@ export class PersonalMemoryStore {
         incorrect: 0,
         total: 0,
         calibration: selectedReviewBinomialCalibration(0, 0),
+        rollingTrend: {
+          version: 'selected-review-rolling-30-v1',
+          latest: selectedReviewBinomialCalibration(0, 0),
+          previous: selectedReviewBinomialCalibration(0, 0),
+          signal: 'insufficient_data'
+        },
         versions: [],
         versionGroupTotal: 0,
         versionsTruncated: false
@@ -14563,6 +14569,42 @@ export class PersonalMemoryStore {
     `).get() as any
     const activeMineCorrect = Number(row?.active_mine_correct || 0)
     const activeMineIncorrect = Number(row?.active_mine_incorrect || 0)
+    const rollingRow = this.db.prepare(`
+      WITH ordered AS (
+        SELECT decision,ROW_NUMBER() OVER (
+          ORDER BY updated_at DESC,evidence_fingerprint ASC
+        ) AS review_position
+        FROM task_review_decisions
+        WHERE revoked_at IS NULL AND json_valid(task_json)=1
+          AND json_extract(task_json,'$.classification')='mine'
+          AND decision IN ('mine','rejected')
+      )
+      SELECT
+        SUM(CASE WHEN review_position<=30 AND decision='mine' THEN 1 ELSE 0 END)
+          AS latest_correct,
+        SUM(CASE WHEN review_position<=30 AND decision='rejected' THEN 1 ELSE 0 END)
+          AS latest_incorrect,
+        SUM(CASE WHEN review_position>30 AND review_position<=60 AND decision='mine' THEN 1 ELSE 0 END)
+          AS previous_correct,
+        SUM(CASE WHEN review_position>30 AND review_position<=60 AND decision='rejected' THEN 1 ELSE 0 END)
+          AS previous_incorrect
+      FROM ordered WHERE review_position<=60
+    `).get() as any
+    const latestRolling = selectedReviewBinomialCalibration(
+      Number(rollingRow?.latest_correct || 0),
+      Number(rollingRow?.latest_incorrect || 0)
+    )
+    const previousRolling = selectedReviewBinomialCalibration(
+      Number(rollingRow?.previous_correct || 0),
+      Number(rollingRow?.previous_incorrect || 0)
+    )
+    const rollingSignal = latestRolling.reviewed < 30 || previousRolling.reviewed < 30
+      ? 'insufficient_data'
+      : Number(latestRolling.upper95) < Number(previousRolling.lower95)
+        ? 'regression'
+        : Number(latestRolling.lower95) > Number(previousRolling.upper95)
+          ? 'improvement'
+          : 'inconclusive'
     const versionRows = this.db.prepare(`
       WITH versioned AS (
         SELECT
@@ -14621,6 +14663,12 @@ export class PersonalMemoryStore {
       incorrect: activeMineIncorrect,
       total: activeMineCorrect + activeMineIncorrect,
       calibration: selectedReviewBinomialCalibration(activeMineCorrect, activeMineIncorrect),
+      rollingTrend: {
+        version: 'selected-review-rolling-30-v1',
+        latest: latestRolling,
+        previous: previousRolling,
+        signal: rollingSignal
+      },
       versions,
       versionGroupTotal,
       versionsTruncated: versions.length < versionGroupTotal
@@ -14648,13 +14696,19 @@ export class PersonalMemoryStore {
 
   getHumanReviewCalibrationStats(): any {
     const empty = {
-      version: 'human-review-calibration-v4',
+      version: 'human-review-calibration-v5',
       taskOwnership: { accepted: 0, rejected: 0, revoked: 0, total: 0 },
       activeMineAudit: {
         correct: 0,
         incorrect: 0,
         total: 0,
         calibration: selectedReviewBinomialCalibration(0, 0),
+        rollingTrend: {
+          version: 'selected-review-rolling-30-v1',
+          latest: selectedReviewBinomialCalibration(0, 0),
+          previous: selectedReviewBinomialCalibration(0, 0),
+          signal: 'insufficient_data'
+        },
         versions: [],
         versionGroupTotal: 0,
         versionsTruncated: false

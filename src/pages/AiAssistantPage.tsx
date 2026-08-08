@@ -9577,6 +9577,22 @@ function AiAssistantPage() {
               ? ` 还需抽检 ${Number(dashboard.humanReviewCalibration.activeMineAudit.calibration.remainingToRecommended).toLocaleString()} 项，才达到首个趋势观察门槛。`
               : ' 已达到首个趋势观察门槛；仍不能代表未抽检的全部待办。'}
           </p>}
+          {Number(dashboard.humanReviewCalibration.activeMineAudit?.rollingTrend?.latest?.reviewed || 0) > 0 && <p>
+            最近一组抽检{' '}
+            <b>{Math.round(Number(dashboard.humanReviewCalibration.activeMineAudit.rollingTrend.latest.observedRate || 0) * 100)}%</b>
+            {' '}（{Number(dashboard.humanReviewCalibration.activeMineAudit.rollingTrend.latest.reviewed)} / 30）；
+            前一组{' '}
+            {Number(dashboard.humanReviewCalibration.activeMineAudit.rollingTrend.previous.reviewed) > 0
+              ? `${Math.round(Number(dashboard.humanReviewCalibration.activeMineAudit.rollingTrend.previous.observedRate || 0) * 100)}%（${Number(dashboard.humanReviewCalibration.activeMineAudit.rollingTrend.previous.reviewed)} / 30）`
+              : '尚无样本'}。
+            {dashboard.humanReviewCalibration.activeMineAudit.rollingTrend.signal === 'regression'
+              ? ' 两组 95% 区间已明确分离，近期选择性抽检出现退化信号。'
+              : dashboard.humanReviewCalibration.activeMineAudit.rollingTrend.signal === 'improvement'
+                ? ' 两组 95% 区间已明确分离，近期选择性抽检出现改善信号。'
+                : dashboard.humanReviewCalibration.activeMineAudit.rollingTrend.signal === 'inconclusive'
+                  ? ' 两组样本已满，但统计区间仍重叠，暂不能判定趋势。'
+                  : ' 两组各满 30 项后才判断趋势，避免小样本误报。'}
+          </p>}
           {!!dashboard.humanReviewCalibration.activeMineAudit?.versions?.length && <details>
             <summary>
               按归属版本查看真实抽检（显示 {dashboard.humanReviewCalibration.activeMineAudit.versions.length} /

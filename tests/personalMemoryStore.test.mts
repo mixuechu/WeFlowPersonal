@@ -18904,7 +18904,7 @@ test('human review calibration uses latest authoritative decisions without claim
     const firstTaskFeedback = store.getTaskReviewFeedbackStats()
     assert.strictEqual(store.getTaskReviewFeedbackStats(), firstTaskFeedback)
     assert.deepEqual(firstCalibration, {
-      version: 'human-review-calibration-v4',
+      version: 'human-review-calibration-v5',
       revision: `${store.getTaskOwnershipReviewRevision()}:${store.getStructuredMemoryRevision()}:${store.getGraphReviewRevision()}`,
       taskOwnership: { accepted: 1, rejected: 0, revoked: 1, total: 1 },
       activeMineAudit: {
@@ -18920,6 +18920,20 @@ test('human review calibration uses latest authoritative decisions without claim
           remainingToRecommended: 29,
           readyForTrend: false,
           interpretation: 'selected_review_interval_not_population_accuracy'
+        },
+        rollingTrend: {
+          version: 'selected-review-rolling-30-v1',
+          latest: {
+            reviewed: 1, observedRate: 1, lower95: 0.2065, upper95: 1,
+            recommendedMinimum: 30, remainingToRecommended: 29, readyForTrend: false,
+            interpretation: 'selected_review_interval_not_population_accuracy'
+          },
+          previous: {
+            reviewed: 0, observedRate: null, lower95: null, upper95: null,
+            recommendedMinimum: 30, remainingToRecommended: 30, readyForTrend: false,
+            interpretation: 'selected_review_interval_not_population_accuracy'
+          },
+          signal: 'insufficient_data'
         },
         versions: [{
           policyVersion: 'legacy-unknown-policy',
@@ -18985,6 +18999,7 @@ test('human review calibration uses latest authoritative decisions without claim
         readyForTrend: false,
         interpretation: 'selected_review_interval_not_population_accuracy'
       },
+      rollingTrend: firstTaskFeedback.activeMineAudit.rollingTrend,
       versions: firstTaskFeedback.activeMineAudit.versions,
       versionGroupTotal: 1,
       versionsTruncated: false
@@ -19061,6 +19076,36 @@ test('human review calibration uses latest authoritative decisions without claim
     assert.equal(boundedVersions.versionGroupTotal, 15)
     assert.equal(boundedVersions.versions.length, 12)
     assert.equal(boundedVersions.versionsTruncated, true)
+  })
+})
+
+test('task ownership rolling calibration detects only full-window interval separation', () => {
+  withStore(store => {
+    const database = (store as any).db
+    const insert = database.prepare(`
+      INSERT INTO task_review_decisions(
+        evidence_fingerprint,task_id,decision,task_json,created_at,updated_at
+      ) VALUES(?,?,?,?,?,?)
+    `)
+    for (let index = 0; index < 60; index += 1) {
+      const timestamp = new Date(Date.UTC(2026, 7, 1, 0, 0, index)).toISOString()
+      insert.run(
+        `rolling-review-${String(index).padStart(2, '0')}`,
+        `rolling-task-${index}`,
+        index < 30 ? 'mine' : 'rejected',
+        JSON.stringify({ classification: 'mine' }),
+        timestamp,
+        timestamp
+      )
+    }
+    const rolling = store.getTaskReviewFeedbackStats().activeMineAudit.rollingTrend
+    assert.equal(rolling.version, 'selected-review-rolling-30-v1')
+    assert.equal(rolling.latest.reviewed, 30)
+    assert.equal(rolling.latest.observedRate, 0)
+    assert.equal(rolling.previous.reviewed, 30)
+    assert.equal(rolling.previous.observedRate, 1)
+    assert.ok(rolling.latest.upper95 < rolling.previous.lower95)
+    assert.equal(rolling.signal, 'regression')
   })
 })
 
@@ -19219,6 +19264,20 @@ test('task ownership feedback persists evidence-scoped decisions and suppression
         readyForTrend: false,
         interpretation: 'selected_review_interval_not_population_accuracy'
       },
+      rollingTrend: {
+        version: 'selected-review-rolling-30-v1',
+        latest: {
+          reviewed: 0, observedRate: null, lower95: null, upper95: null,
+          recommendedMinimum: 30, remainingToRecommended: 30, readyForTrend: false,
+          interpretation: 'selected_review_interval_not_population_accuracy'
+        },
+        previous: {
+          reviewed: 0, observedRate: null, lower95: null, upper95: null,
+          recommendedMinimum: 30, remainingToRecommended: 30, readyForTrend: false,
+          interpretation: 'selected_review_interval_not_population_accuracy'
+        },
+        signal: 'insufficient_data'
+      },
       versions: [],
       versionGroupTotal: 0,
       versionsTruncated: false
@@ -19257,6 +19316,20 @@ test('task ownership feedback persists evidence-scoped decisions and suppression
         remainingToRecommended: 30,
         readyForTrend: false,
         interpretation: 'selected_review_interval_not_population_accuracy'
+      },
+      rollingTrend: {
+        version: 'selected-review-rolling-30-v1',
+        latest: {
+          reviewed: 0, observedRate: null, lower95: null, upper95: null,
+          recommendedMinimum: 30, remainingToRecommended: 30, readyForTrend: false,
+          interpretation: 'selected_review_interval_not_population_accuracy'
+        },
+        previous: {
+          reviewed: 0, observedRate: null, lower95: null, upper95: null,
+          recommendedMinimum: 30, remainingToRecommended: 30, readyForTrend: false,
+          interpretation: 'selected_review_interval_not_population_accuracy'
+        },
+        signal: 'insufficient_data'
       },
       versions: [],
       versionGroupTotal: 0,
