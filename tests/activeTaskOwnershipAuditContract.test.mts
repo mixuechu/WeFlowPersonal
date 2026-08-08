@@ -64,6 +64,23 @@ test('structured memory calibration counts first candidate rulings with extracti
   assert.match(page, /避免版本切换或小样本误报/)
 })
 
+test('identity merge suggestions keep append-only versioned human calibration', () => {
+  const service = read('electron/services/aiAssistantService.ts')
+  const store = read('electron/services/personalMemoryStore.ts')
+  const page = read('src/pages/AiAssistantPage.tsx')
+
+  assert.match(service, /IDENTITY_CANDIDATE_POLICY_VERSION/)
+  assert.match(service, /candidateInstanceId:/)
+  assert.match(service, /recordIdentityReviewDecision/)
+  assert.match(store, /CREATE TABLE IF NOT EXISTS identity_review_decisions/)
+  assert.match(store, /candidate_instance_id TEXT NOT NULL UNIQUE/)
+  assert.match(store, /identity-candidate-rolling-30-v1/)
+  assert.match(store, /latestIdentityRolling\.reviewed < 30 \|\| previousIdentityRolling\.reviewed < 30/)
+  assert.match(page, /同一人建议首次裁决/)
+  assert.match(page, /不含姓名、账号、候选解释或聊天原文/)
+  assert.match(page, /按候选版本查看同一人首次裁决/)
+})
+
 test('ownership calibration detects rolling drift without small-sample alarms', () => {
   const store = read('electron/services/personalMemoryStore.ts')
   const page = read('src/pages/AiAssistantPage.tsx')

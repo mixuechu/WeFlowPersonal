@@ -12366,9 +12366,9 @@ test('graph review revision covers queue and enriched graph state and self-heals
       first.getGraphReviewRevision()
     ), /刷新后重新确认/)
     const initialHealth = first.getGraphReviewRevisionHealth()
-    assert.equal(initialHealth.version, 'graph-review-revision-v3')
-    assert.equal(initialHealth.expectedTriggers, 24)
-    assert.equal(initialHealth.validTriggers, 24)
+    assert.equal(initialHealth.version, 'graph-review-revision-v4')
+    assert.equal(initialHealth.expectedTriggers, 27)
+    assert.equal(initialHealth.validTriggers, 27)
     assert.equal(initialHealth.healthy, true)
     ;(first as any).db.exec(`
       DROP TRIGGER trg_graph_review_revision_review_queue_insert;
@@ -12376,15 +12376,15 @@ test('graph review revision covers queue and enriched graph state and self-heals
       AFTER INSERT ON review_queue BEGIN SELECT 1; END;
     `)
     const driftedHealth = first.getGraphReviewRevisionHealth()
-    assert.equal(driftedHealth.installedTriggers, 24)
-    assert.equal(driftedHealth.validTriggers, 23)
+    assert.equal(driftedHealth.installedTriggers, 27)
+    assert.equal(driftedHealth.validTriggers, 26)
     assert.equal(driftedHealth.healthy, false)
     first.close()
 
     const reopened = new PersonalMemoryStore()
     reopened.initialize(databasePath)
     const repairedHealth = reopened.getGraphReviewRevisionHealth()
-    assert.equal(repairedHealth.validTriggers, 24)
+    assert.equal(repairedHealth.validTriggers, 27)
     assert.equal(repairedHealth.repairedTriggersThisStart, 1)
     assert.equal(repairedHealth.healthy, true)
     assert.equal(reopened.listReviewLedgerPage({ status: 'pending' }).items[0]?.id, 'review-revision-candidate')
@@ -19047,7 +19047,39 @@ test('human review calibration uses latest authoritative decisions without claim
         }
       },
       graphCandidates: { accepted: 0, rejected: 1, total: 1 },
-      identityPairs: { merged: 0, different: 1, total: 1 },
+      identityPairs: {
+        merged: 0,
+        different: 1,
+        total: 1,
+        candidateAudit: {
+          correct: 0,
+          incorrect: 0,
+          total: 0,
+          calibration: {
+            reviewed: 0, observedRate: null, lower95: null, upper95: null,
+            recommendedMinimum: 30, remainingToRecommended: 30, readyForTrend: false,
+            interpretation: 'selected_review_interval_not_population_accuracy'
+          },
+          rollingTrend: {
+            version: 'identity-candidate-rolling-30-v1',
+            scope: null,
+            latest: {
+              reviewed: 0, observedRate: null, lower95: null, upper95: null,
+              recommendedMinimum: 30, remainingToRecommended: 30, readyForTrend: false,
+              interpretation: 'selected_review_interval_not_population_accuracy'
+            },
+            previous: {
+              reviewed: 0, observedRate: null, lower95: null, upper95: null,
+              recommendedMinimum: 30, remainingToRecommended: 30, readyForTrend: false,
+              interpretation: 'selected_review_interval_not_population_accuracy'
+            },
+            signal: 'insufficient_data'
+          },
+          versions: [],
+          versionGroupTotal: 0,
+          versionsTruncated: false
+        }
+      },
       reviewedTotal: 4,
       interpretation: 'selected_human_reviews_not_population_accuracy'
     })
@@ -19423,6 +19455,78 @@ test('structured memory rolling calibration never compares extraction versions',
       .structuredMemory.candidateAudit.rollingTrend
     assert.equal(rolling.scope.itemKind, 'event')
     assert.equal(rolling.scope.promptVersion, 'prompt-current')
+    assert.equal(rolling.latest.reviewed, 30)
+    assert.equal(rolling.latest.observedRate, 0)
+    assert.equal(rolling.previous.reviewed, 0)
+    assert.equal(rolling.signal, 'insufficient_data')
+  })
+})
+
+test('identity candidate audit is append-only per instance and detects full-window regression', () => {
+  withStore(store => {
+    for (let index = 0; index < 60; index += 1) {
+      const timestamp = new Date(Date.UTC(2026, 7, 5, 0, 0, index)).toISOString()
+      const inserted = store.recordIdentityReviewDecision({
+        candidateInstanceId: `identity-candidate-${index}`,
+        reviewId: `identity-review-${index}`,
+        leftEntityId: `identity-left-${index}`,
+        rightEntityId: `identity-right-${index}`,
+        decision: index < 30 ? 'merged' : 'different',
+        candidateSource: 'llm_suggestion',
+        policyVersion: 'identity-policy-regression',
+        promptVersion: 'identity-prompt-regression',
+        schemaVersion: 'identity-schema-regression',
+        model: 'deepseek-regression',
+        sourceKind: 'wechat',
+        createdAt: timestamp
+      })
+      assert.equal(inserted, true)
+    }
+    assert.equal(store.recordIdentityReviewDecision({
+      candidateInstanceId: 'identity-candidate-59',
+      reviewId: 'identity-review-replayed',
+      leftEntityId: 'another-left',
+      rightEntityId: 'another-right',
+      decision: 'merged'
+    }), false)
+    const audit = store.getHumanReviewCalibrationStats().identityPairs.candidateAudit
+    assert.equal(audit.correct, 30)
+    assert.equal(audit.incorrect, 30)
+    assert.equal(audit.total, 60)
+    assert.equal(audit.versions.length, 1)
+    assert.equal(audit.rollingTrend.scope.candidateSource, 'llm_suggestion')
+    assert.equal(audit.rollingTrend.scope.promptVersion, 'identity-prompt-regression')
+    assert.equal(audit.rollingTrend.latest.reviewed, 30)
+    assert.equal(audit.rollingTrend.latest.observedRate, 0)
+    assert.equal(audit.rollingTrend.previous.reviewed, 30)
+    assert.equal(audit.rollingTrend.previous.observedRate, 1)
+    assert.ok(audit.rollingTrend.latest.upper95 < audit.rollingTrend.previous.lower95)
+    assert.equal(audit.rollingTrend.signal, 'regression')
+  })
+})
+
+test('identity candidate rolling calibration never compares generator versions', () => {
+  withStore(store => {
+    for (let index = 0; index < 60; index += 1) {
+      const currentVersion = index >= 30
+      store.recordIdentityReviewDecision({
+        candidateInstanceId: `identity-version-candidate-${index}`,
+        reviewId: `identity-version-review-${index}`,
+        leftEntityId: `identity-version-left-${index}`,
+        rightEntityId: `identity-version-right-${index}`,
+        decision: currentVersion ? 'different' : 'merged',
+        candidateSource: 'rule',
+        policyVersion: currentVersion ? 'identity-policy-current' : 'identity-policy-old',
+        promptVersion: 'not-applicable',
+        schemaVersion: 'identity-schema-versioned',
+        model: 'deterministic-rule',
+        sourceKind: 'local',
+        createdAt: new Date(Date.UTC(2026, 7, 6, 0, 0, index)).toISOString()
+      })
+    }
+    const rolling = store.getHumanReviewCalibrationStats()
+      .identityPairs.candidateAudit.rollingTrend
+    assert.equal(rolling.scope.policyVersion, 'identity-policy-current')
     assert.equal(rolling.latest.reviewed, 30)
     assert.equal(rolling.latest.observedRate, 0)
     assert.equal(rolling.previous.reviewed, 0)

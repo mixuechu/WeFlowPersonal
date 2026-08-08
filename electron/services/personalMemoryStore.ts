@@ -873,6 +873,28 @@ export class PersonalMemoryStore {
         updated_at TEXT NOT NULL
       ) STRICT;
 
+      CREATE TABLE IF NOT EXISTS identity_review_decisions (
+        id INTEGER PRIMARY KEY,
+        candidate_instance_id TEXT NOT NULL UNIQUE,
+        review_id TEXT NOT NULL,
+        pair_key TEXT NOT NULL,
+        left_entity_id TEXT NOT NULL,
+        right_entity_id TEXT NOT NULL,
+        decision TEXT NOT NULL,
+        candidate_source TEXT NOT NULL DEFAULT 'legacy',
+        policy_version TEXT NOT NULL DEFAULT 'legacy-unknown-policy',
+        prompt_version TEXT NOT NULL DEFAULT 'legacy-unknown-prompt',
+        schema_version TEXT NOT NULL DEFAULT 'legacy-unknown-schema',
+        model TEXT NOT NULL DEFAULT 'legacy-unknown-model',
+        source_kind TEXT NOT NULL DEFAULT 'legacy',
+        created_at TEXT NOT NULL
+      ) STRICT;
+      CREATE INDEX IF NOT EXISTS idx_identity_review_decisions_version_time
+        ON identity_review_decisions(
+          candidate_source,policy_version,prompt_version,schema_version,model,source_kind,
+          created_at DESC,id DESC
+        );
+
       CREATE TABLE IF NOT EXISTS memory_corrections (
         id INTEGER PRIMARY KEY,
         item_kind TEXT NOT NULL,
@@ -3773,6 +3795,7 @@ export class PersonalMemoryStore {
     return [
       'review_queue',
       'identity_decisions',
+      'identity_review_decisions',
       'entities',
       'relations',
       'relation_history',
@@ -3787,7 +3810,7 @@ export class PersonalMemoryStore {
       prefix: 'graph_review_revision',
       revisionKey: 'graph_review_revision',
       tables: this.graphReviewRevisionTables(),
-      version: 'graph-review-revision-v3'
+      version: 'graph-review-revision-v4'
     })
   }
 
@@ -3803,7 +3826,7 @@ export class PersonalMemoryStore {
       prefix: 'graph_review_revision',
       revisionKey: 'graph_review_revision',
       tables: this.graphReviewRevisionTables(),
-      version: 'graph-review-revision-v3',
+      version: 'graph-review-revision-v4',
       revision: this.getGraphReviewRevision()
     })
   }
@@ -7391,6 +7414,7 @@ export class PersonalMemoryStore {
       this.db.prepare('DELETE FROM review_queue WHERE payload_json LIKE ?').run(`%${entityId}%`)
       this.db.prepare('DELETE FROM merge_history WHERE source_entity_id=? OR target_entity_id=?').run(entityId, entityId)
       this.db.prepare('DELETE FROM identity_decisions WHERE left_entity_id=? OR right_entity_id=?').run(entityId, entityId)
+      this.db.prepare('DELETE FROM identity_review_decisions WHERE left_entity_id=? OR right_entity_id=?').run(entityId, entityId)
       this.db.prepare('DELETE FROM entity_corrections WHERE entity_id=?').run(entityId)
       this.db.prepare(`
         DELETE FROM relation_corrections
@@ -8782,6 +8806,56 @@ export class PersonalMemoryStore {
       ON CONFLICT(pair_key) DO UPDATE SET decision=excluded.decision,left_version=excluded.left_version,
         right_version=excluded.right_version,reason=excluded.reason,updated_at=excluded.updated_at
     `).run(this.pairKey(leftId, rightId), ordered.leftId, ordered.rightId, decision, ordered.leftVersion, ordered.rightVersion, reason, now, now)
+  }
+
+  recordIdentityReviewDecision(input: {
+    candidateInstanceId: string
+    reviewId: string
+    leftEntityId: string
+    rightEntityId: string
+    decision: 'merged' | 'different'
+    candidateSource?: string
+    policyVersion?: string
+    promptVersion?: string
+    schemaVersion?: string
+    model?: string
+    sourceKind?: string
+    createdAt?: string
+  }): boolean {
+    if (!this.db) return false
+    const candidateInstanceId = String(input.candidateInstanceId || '').trim().slice(0, 160)
+    const reviewId = String(input.reviewId || '').trim().slice(0, 160)
+    const leftEntityId = String(input.leftEntityId || '').trim()
+    const rightEntityId = String(input.rightEntityId || '').trim()
+    if (!candidateInstanceId || !reviewId || !leftEntityId || !rightEntityId || leftEntityId === rightEntityId) {
+      throw new Error('身份候选裁决缺少稳定实例或实体对')
+    }
+    const bounded = (value: unknown, fallback: string) =>
+      (String(value || '').trim() || fallback).slice(0, 120)
+    const sourceKind = ['wechat', 'documents', 'calendar', 'local'].includes(String(input.sourceKind || ''))
+      ? String(input.sourceKind)
+      : 'legacy'
+    const result = this.db.prepare(`
+      INSERT OR IGNORE INTO identity_review_decisions(
+        candidate_instance_id,review_id,pair_key,left_entity_id,right_entity_id,decision,candidate_source,
+        policy_version,prompt_version,schema_version,model,source_kind,created_at
+      ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)
+    `).run(
+      candidateInstanceId,
+      reviewId,
+      this.pairKey(leftEntityId, rightEntityId),
+      leftEntityId <= rightEntityId ? leftEntityId : rightEntityId,
+      leftEntityId <= rightEntityId ? rightEntityId : leftEntityId,
+      input.decision,
+      bounded(input.candidateSource, 'legacy'),
+      bounded(input.policyVersion, 'legacy-unknown-policy'),
+      bounded(input.promptVersion, 'legacy-unknown-prompt'),
+      bounded(input.schemaVersion, 'legacy-unknown-schema'),
+      bounded(input.model, 'legacy-unknown-model'),
+      sourceKind,
+      String(input.createdAt || new Date().toISOString())
+    )
+    return Number(result.changes || 0) === 1
   }
 
   recordMerge(sourceId: string, targetId: string, snapshot: any): number {
@@ -14781,7 +14855,25 @@ export class PersonalMemoryStore {
         }
       },
       graphCandidates: { accepted: 0, rejected: 0, total: 0 },
-      identityPairs: { merged: 0, different: 0, total: 0 },
+      identityPairs: {
+        merged: 0, different: 0, total: 0,
+        candidateAudit: {
+          correct: 0,
+          incorrect: 0,
+          total: 0,
+          calibration: selectedReviewBinomialCalibration(0, 0),
+          rollingTrend: {
+            version: 'identity-candidate-rolling-30-v1',
+            scope: null,
+            latest: selectedReviewBinomialCalibration(0, 0),
+            previous: selectedReviewBinomialCalibration(0, 0),
+            signal: 'insufficient_data'
+          },
+          versions: [],
+          versionGroupTotal: 0,
+          versionsTruncated: false
+        }
+      },
       reviewedTotal: 0,
       interpretation: 'selected_human_reviews_not_population_accuracy'
     }
@@ -14931,6 +15023,54 @@ export class PersonalMemoryStore {
         SUM(CASE WHEN decision='different' THEN 1 ELSE 0 END) AS different
       FROM identity_decisions
     `).get() as any
+    const identityCandidateAudit = this.db.prepare(`
+      SELECT
+        SUM(CASE WHEN decision='merged' THEN 1 ELSE 0 END) AS correct,
+        SUM(CASE WHEN decision='different' THEN 1 ELSE 0 END) AS incorrect
+      FROM identity_review_decisions
+    `).get() as any
+    const identityVersionRows = this.db.prepare(`
+      SELECT candidate_source,policy_version,prompt_version,schema_version,model,source_kind,
+        SUM(CASE WHEN decision='merged' THEN 1 ELSE 0 END) AS correct,
+        SUM(CASE WHEN decision='different' THEN 1 ELSE 0 END) AS incorrect,
+        MAX(created_at) AS last_reviewed_at,
+        COUNT(*) OVER() AS version_group_total
+      FROM identity_review_decisions
+      GROUP BY candidate_source,policy_version,prompt_version,schema_version,model,source_kind
+      ORDER BY last_reviewed_at DESC,candidate_source,policy_version,prompt_version,schema_version,model
+      LIMIT 12
+    `).all() as any[]
+    const identityRollingRow = this.db.prepare(`
+      WITH latest_identity AS (
+        SELECT candidate_source,policy_version,prompt_version,schema_version,model,source_kind
+        FROM identity_review_decisions
+        ORDER BY created_at DESC,id DESC LIMIT 1
+      ), matching AS (
+        SELECT decisions.* FROM identity_review_decisions decisions
+        JOIN latest_identity USING(
+          candidate_source,policy_version,prompt_version,schema_version,model,source_kind
+        )
+      ), ordered AS (
+        SELECT *,ROW_NUMBER() OVER (ORDER BY created_at DESC,id DESC) AS review_position
+        FROM matching
+      )
+      SELECT
+        MAX(candidate_source) AS candidate_source,
+        MAX(policy_version) AS policy_version,
+        MAX(prompt_version) AS prompt_version,
+        MAX(schema_version) AS schema_version,
+        MAX(model) AS model,
+        MAX(source_kind) AS source_kind,
+        SUM(CASE WHEN review_position<=30 AND decision='merged' THEN 1 ELSE 0 END)
+          AS latest_correct,
+        SUM(CASE WHEN review_position<=30 AND decision='different' THEN 1 ELSE 0 END)
+          AS latest_incorrect,
+        SUM(CASE WHEN review_position>30 AND review_position<=60 AND decision='merged' THEN 1 ELSE 0 END)
+          AS previous_correct,
+        SUM(CASE WHEN review_position>30 AND review_position<=60 AND decision='different' THEN 1 ELSE 0 END)
+          AS previous_incorrect
+      FROM ordered WHERE review_position<=60
+    `).get() as any
     const taskOwnership = {
       accepted: Number(taskFeedback.mine || 0),
       rejected: Number(taskFeedback.rejected || 0),
@@ -15012,10 +15152,68 @@ export class PersonalMemoryStore {
       rejected: Number(graph?.rejected || 0),
       total: Number(graph?.accepted || 0) + Number(graph?.rejected || 0)
     }
+    const identityCorrect = Number(identityCandidateAudit?.correct || 0)
+    const identityIncorrect = Number(identityCandidateAudit?.incorrect || 0)
+    const latestIdentityRolling = selectedReviewBinomialCalibration(
+      Number(identityRollingRow?.latest_correct || 0),
+      Number(identityRollingRow?.latest_incorrect || 0)
+    )
+    const previousIdentityRolling = selectedReviewBinomialCalibration(
+      Number(identityRollingRow?.previous_correct || 0),
+      Number(identityRollingRow?.previous_incorrect || 0)
+    )
+    const identityRollingSignal = latestIdentityRolling.reviewed < 30 || previousIdentityRolling.reviewed < 30
+      ? 'insufficient_data'
+      : Number(latestIdentityRolling.upper95) < Number(previousIdentityRolling.lower95)
+        ? 'regression'
+        : Number(latestIdentityRolling.lower95) > Number(previousIdentityRolling.upper95)
+          ? 'improvement'
+          : 'inconclusive'
+    const identityVersionGroupTotal = Number(identityVersionRows[0]?.version_group_total || 0)
+    const identityVersions = identityVersionRows.map(versionRow => {
+      const correct = Number(versionRow.correct || 0)
+      const incorrect = Number(versionRow.incorrect || 0)
+      return {
+        candidateSource: String(versionRow.candidate_source || 'legacy'),
+        policyVersion: String(versionRow.policy_version || ''),
+        promptVersion: String(versionRow.prompt_version || ''),
+        schemaVersion: String(versionRow.schema_version || ''),
+        model: String(versionRow.model || ''),
+        sourceKind: String(versionRow.source_kind || 'legacy'),
+        correct,
+        incorrect,
+        total: correct + incorrect,
+        lastReviewedAt: String(versionRow.last_reviewed_at || ''),
+        calibration: selectedReviewBinomialCalibration(correct, incorrect)
+      }
+    })
     const identityPairs = {
       merged: Number(identity?.merged || 0),
       different: Number(identity?.different || 0),
-      total: Number(identity?.merged || 0) + Number(identity?.different || 0)
+      total: Number(identity?.merged || 0) + Number(identity?.different || 0),
+      candidateAudit: {
+        correct: identityCorrect,
+        incorrect: identityIncorrect,
+        total: identityCorrect + identityIncorrect,
+        calibration: selectedReviewBinomialCalibration(identityCorrect, identityIncorrect),
+        rollingTrend: {
+          version: 'identity-candidate-rolling-30-v1',
+          scope: identityRollingRow?.candidate_source ? {
+            candidateSource: String(identityRollingRow.candidate_source),
+            policyVersion: String(identityRollingRow.policy_version || ''),
+            promptVersion: String(identityRollingRow.prompt_version || ''),
+            schemaVersion: String(identityRollingRow.schema_version || ''),
+            model: String(identityRollingRow.model || ''),
+            sourceKind: String(identityRollingRow.source_kind || 'legacy')
+          } : null,
+          latest: latestIdentityRolling,
+          previous: previousIdentityRolling,
+          signal: identityRollingSignal
+        },
+        versions: identityVersions,
+        versionGroupTotal: identityVersionGroupTotal,
+        versionsTruncated: identityVersions.length < identityVersionGroupTotal
+      }
     }
     const value = {
       ...empty,

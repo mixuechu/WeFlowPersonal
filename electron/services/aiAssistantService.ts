@@ -551,7 +551,7 @@ type AssistantState = {
     entities: GraphEntity[]
     relations: GraphRelation[]
     lastSqlCommitId?: string | null
-    reviewQueue: Array<{ id: string; kind: 'possible_duplicate' | 'relation' | 'entity_summary' | 'entity_alias' | 'entity_creation'; title: string; detail: string; confidence: number; status: 'pending' | 'confirmed' | 'rejected'; createdAt: string; resolvedAt?: string; resolutionActor?: 'user' | 'system'; resolutionReason?: string; leftEntityId?: string; rightEntityId?: string; mergeSourceEntityId?: string; mergeTargetEntityId?: string; relationId?: string; originalRelationId?: string; correctedRelationId?: string; relationCorrection?: RelationCorrection; entityId?: string; entityIdentityVersion?: number; entityCanonicalName?: string; originalEntityCanonicalName?: string; correctedCanonicalName?: string; entityType?: string; legacyReview?: boolean; previousSummary?: string; summaryText?: string; originalSummaryText?: string; correctedSummaryText?: string; aliasText?: string; originalAliasText?: string; correctedAliasText?: string; evidence?: Array<{ messageId: string; sessionId: string; timestamp: number; sender: string; excerpt: string }>; candidateSource?: string; candidateSignals?: Array<{ source: string; label: string; value: string }> }>
+    reviewQueue: Array<{ id: string; kind: 'possible_duplicate' | 'relation' | 'entity_summary' | 'entity_alias' | 'entity_creation'; title: string; detail: string; confidence: number; status: 'pending' | 'confirmed' | 'rejected'; createdAt: string; resolvedAt?: string; resolutionActor?: 'user' | 'system'; resolutionReason?: string; leftEntityId?: string; rightEntityId?: string; mergeSourceEntityId?: string; mergeTargetEntityId?: string; relationId?: string; originalRelationId?: string; correctedRelationId?: string; relationCorrection?: RelationCorrection; entityId?: string; entityIdentityVersion?: number; entityCanonicalName?: string; originalEntityCanonicalName?: string; correctedCanonicalName?: string; entityType?: string; legacyReview?: boolean; previousSummary?: string; summaryText?: string; originalSummaryText?: string; correctedSummaryText?: string; aliasText?: string; originalAliasText?: string; correctedAliasText?: string; evidence?: Array<{ messageId: string; sessionId: string; timestamp: number; sender: string; excerpt: string }>; candidateSource?: string; candidateSignals?: Array<{ source: string; label: string; value: string }>; candidateInstanceId?: string; candidatePolicyVersion?: string; candidatePromptVersion?: string; candidateSchemaVersion?: string; candidateModel?: string; candidateSourceKind?: string }>
     identityScan: { lastFullScanAt: string | null; lastRunAt: string | null; lastMode: 'incremental' | 'full' | null; lastCandidateCount: number }
   }
 }
@@ -609,7 +609,16 @@ const EMPTY_STATE: AssistantState = {
 
 const EXTRACTION_PROMPT_VERSION = 'personal-os-prompt-v8'
 const EXTRACTION_SCHEMA_VERSION = 'personal-memory-schema-v6'
+const IDENTITY_CANDIDATE_POLICY_VERSION = 'identity-candidate-policy-v1'
+const IDENTITY_CANDIDATE_SCHEMA_VERSION = 'identity-candidate-schema-v1'
 const DOCUMENT_ANALYSIS_VERSION = `${EXTRACTION_PROMPT_VERSION}/${EXTRACTION_SCHEMA_VERSION}/document-v1`
+
+type IdentityCandidateProvenance = {
+  promptVersion?: string
+  schemaVersion?: string
+  model?: string
+  sourceKind?: 'wechat' | 'documents' | 'calendar' | 'local'
+}
 
 const SYSTEM_PROMPT = `你是一个谨慎的中文私人助理兼个人记忆图谱分析器。输入包含按会话组织的连续微信消息和用户身份档案。
 输入也可能包含 sourceId=documents 的本机文档证据。文档中的“我”不得自动视为用户本人；除非文档明确写出用户姓名或身份，否则文档事实的 sourceNature 只能是 other_statement 或 inference。文档中的动作、计划和模板条目只有明确写出用户姓名/别名为负责人时才能标为 mine，否则进入 uncertain 或 others。不得把示例、目录、模板字段、历史完成项冒充当前任务。
@@ -2517,7 +2526,13 @@ export class AiAssistantService {
             this.state.graph.reviewQueue.push(aliasCandidate)
           }
         }
-        this.enqueueIdentityCandidates(existing, now)
+        this.enqueueIdentityCandidates(existing, now, {
+          promptVersion: digest.__meta?.promptVersion,
+          schemaVersion: digest.__meta?.schemaVersion,
+          model: digest.__meta?.model,
+          sourceKind: String(digest.__meta?.promptVersion || '').includes('/document-v1')
+            ? 'documents' : 'wechat'
+        })
       } else {
         const created: GraphEntity = {
           id,
@@ -2564,7 +2579,13 @@ export class AiAssistantService {
           confidence: item.confidence,
           createdAt: now
         }))
-        this.enqueueIdentityCandidates(created, now)
+        this.enqueueIdentityCandidates(created, now, {
+          promptVersion: digest.__meta?.promptVersion,
+          schemaVersion: digest.__meta?.schemaVersion,
+          model: digest.__meta?.model,
+          sourceKind: String(digest.__meta?.promptVersion || '').includes('/document-v1')
+            ? 'documents' : 'wechat'
+        })
       }
     }
     for (const item of Array.isArray(digest.relations) ? digest.relations : []) {
@@ -2627,6 +2648,12 @@ export class AiAssistantService {
         source: 'llm_suggestion',
         detail: String(item.reason || ''),
         confidence: Math.max(0, Math.min(1, Number(item.confidence || 0.5)))
+      }, {
+        promptVersion: digest.__meta?.promptVersion,
+        schemaVersion: digest.__meta?.schemaVersion,
+        model: digest.__meta?.model,
+        sourceKind: String(digest.__meta?.promptVersion || '').includes('/document-v1')
+          ? 'documents' : 'wechat'
       })
     }
     return tempIds
@@ -2730,11 +2757,17 @@ export class AiAssistantService {
     )
   }
 
-  private enqueueIdentityCandidates(entity: GraphEntity, now: string): void {
+  private enqueueIdentityCandidates(
+    entity: GraphEntity,
+    now: string,
+    provenance: IdentityCandidateProvenance = {}
+  ): void {
     if (entity.type !== 'person') return
     if (this.state.graph.identityScan.lastRunAt !== now) this.state.graph.identityScan.lastCandidateCount = 0
     for (const candidate of this.state.graph.entities) {
-      if (this.enqueueIdentityPair(entity, candidate, now)) this.state.graph.identityScan.lastCandidateCount += 1
+      if (this.enqueueIdentityPair(entity, candidate, now, undefined, provenance)) {
+        this.state.graph.identityScan.lastCandidateCount += 1
+      }
     }
     entity.lastDisambiguatedAt = now
     this.state.graph.identityScan.lastRunAt = now
@@ -2745,7 +2778,8 @@ export class AiAssistantService {
     left: GraphEntity,
     right: GraphEntity,
     now: string,
-    suggestion?: { source: string; detail: string; confidence: number; label?: string; value?: string }
+    suggestion?: { source: string; detail: string; confidence: number; label?: string; value?: string },
+    provenance: IdentityCandidateProvenance = {}
   ): boolean {
     const assessment = assessIdentityPair(left, right)
     if (!assessment.eligible && (!suggestion || suggestion.confidence < 0.65)) return false
@@ -2769,7 +2803,23 @@ export class AiAssistantService {
       leftEntityId: left.id,
       rightEntityId: right.id,
       candidateSource: suggestion?.source || signals[0]?.source || 'rule',
-      candidateSignals: signals
+      candidateSignals: signals,
+      candidateInstanceId: crypto.createHash('sha256').update([
+        identityPairKey(left.id, right.id),
+        String(left.identityVersion || 1),
+        String(right.identityVersion || 1),
+        suggestion?.source || signals[0]?.source || 'rule',
+        now
+      ].join('|')).digest('hex'),
+      candidatePolicyVersion: IDENTITY_CANDIDATE_POLICY_VERSION,
+      candidatePromptVersion: String(provenance.promptVersion || 'not-applicable').slice(0, 120),
+      candidateSchemaVersion: String(provenance.schemaVersion || IDENTITY_CANDIDATE_SCHEMA_VERSION).slice(0, 120),
+      candidateModel: String(provenance.model || (
+        suggestion?.source === 'vector_similarity' ? localEmbeddingService.modelVersion : 'deterministic-rule'
+      )).slice(0, 120),
+      candidateSourceKind: provenance.sourceKind || (
+        suggestion?.source === 'calendar_name_match' ? 'calendar' : 'local'
+      )
     } as const
     if (existing) Object.assign(existing, candidateReview)
     else this.state.graph.reviewQueue.push(candidateReview)
@@ -2979,6 +3029,8 @@ export class AiAssistantService {
                     value: suggestion.name,
                     detail: `日历邮箱身份“${left.canonicalName}”与已有实体“${right.canonicalName}”显示名相同，但邮箱与微信身份不能据此自动合并。`,
                     confidence: 0.75
+                  }, {
+                    sourceKind: 'calendar'
                   })) {
                     this.state.graph.identityScan.lastCandidateCount += 1
                   }
@@ -7327,6 +7379,22 @@ export class AiAssistantService {
           correction: options?.relationCorrection
         })
       : null
+    if (review.kind === 'possible_duplicate' && review.leftEntityId && review.rightEntityId) {
+      personalMemoryStore.recordIdentityReviewDecision({
+        candidateInstanceId: review.candidateInstanceId || `legacy:${review.id}:${review.createdAt}`,
+        reviewId: review.id,
+        leftEntityId: review.leftEntityId,
+        rightEntityId: review.rightEntityId,
+        decision: decision === 'confirmed' ? 'merged' : 'different',
+        candidateSource: review.candidateSource,
+        policyVersion: review.candidatePolicyVersion,
+        promptVersion: review.candidatePromptVersion,
+        schemaVersion: review.candidateSchemaVersion,
+        model: review.candidateModel,
+        sourceKind: review.candidateSourceKind,
+        createdAt: resolutionNow
+      })
+    }
     if (relationPlan?.changed) {
       this.hydrateRelationEvidence([relationPlan.before.id, relationPlan.after.id])
     }
