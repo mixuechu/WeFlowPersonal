@@ -14768,6 +14768,13 @@ export class PersonalMemoryStore {
             claim: { correct: 0, incorrect: 0, total: 0 },
             event: { correct: 0, incorrect: 0, total: 0 }
           },
+          rollingTrend: {
+            version: 'structured-candidate-rolling-30-v1',
+            scope: null,
+            latest: selectedReviewBinomialCalibration(0, 0),
+            previous: selectedReviewBinomialCalibration(0, 0),
+            signal: 'insufficient_data'
+          },
           versions: [],
           versionGroupTotal: 0,
           versionsTruncated: false
@@ -14824,7 +14831,7 @@ export class PersonalMemoryStore {
         WHERE change_kind='discovered' AND item_kind IN ('claim','event')
         GROUP BY item_kind,item_id
       ), audited AS (
-        SELECT decision.item_kind,decision.item_id,decision.decision,
+        SELECT decision.id AS decision_id,decision.item_kind,decision.item_id,decision.decision,
           decision.created_at,discovery.origin_kind,discovery.source_kind,
           CASE WHEN discovery.origin_kind='model_batch'
               AND COALESCE(batch.prompt_version,run.prompt_version,'')!=''
@@ -14880,6 +14887,36 @@ export class PersonalMemoryStore {
       ORDER BY last_reviewed_at DESC,item_kind,prompt_version,schema_version,model
       LIMIT 12
     `).all() as any[]
+    const memoryRollingRow = this.db.prepare(`
+      ${memoryCandidateAuditCte}, latest_identity AS (
+        SELECT item_kind,prompt_version,schema_version,model,source_kind_version
+        FROM audited ORDER BY created_at DESC,decision_id DESC,item_id ASC LIMIT 1
+      ), matching AS (
+        SELECT audited.* FROM audited JOIN latest_identity USING(
+          item_kind,prompt_version,schema_version,model,source_kind_version
+        )
+      ), ordered AS (
+        SELECT *,ROW_NUMBER() OVER (
+          ORDER BY created_at DESC,decision_id DESC,item_id ASC
+        ) AS review_position
+        FROM matching
+      )
+      SELECT
+        MAX(item_kind) AS item_kind,
+        MAX(prompt_version) AS prompt_version,
+        MAX(schema_version) AS schema_version,
+        MAX(model) AS model,
+        MAX(source_kind_version) AS source_kind_version,
+        SUM(CASE WHEN review_position<=30 AND decision='confirmed' THEN 1 ELSE 0 END)
+          AS latest_correct,
+        SUM(CASE WHEN review_position<=30 AND decision='rejected' THEN 1 ELSE 0 END)
+          AS latest_incorrect,
+        SUM(CASE WHEN review_position>30 AND review_position<=60
+          AND decision='confirmed' THEN 1 ELSE 0 END) AS previous_correct,
+        SUM(CASE WHEN review_position>30 AND review_position<=60
+          AND decision='rejected' THEN 1 ELSE 0 END) AS previous_incorrect
+      FROM ordered WHERE review_position<=60
+    `).get() as any
     const graph = this.db.prepare(`
       SELECT
         SUM(CASE WHEN status='confirmed' THEN 1 ELSE 0 END) AS accepted,
@@ -14907,6 +14944,21 @@ export class PersonalMemoryStore {
     const eventCorrect = Number(memoryCandidateAuditRow?.event_correct || 0)
     const eventIncorrect = Number(memoryCandidateAuditRow?.event_incorrect || 0)
     const memoryVersionGroupTotal = Number(memoryVersionRows[0]?.version_group_total || 0)
+    const latestMemoryRolling = selectedReviewBinomialCalibration(
+      Number(memoryRollingRow?.latest_correct || 0),
+      Number(memoryRollingRow?.latest_incorrect || 0)
+    )
+    const previousMemoryRolling = selectedReviewBinomialCalibration(
+      Number(memoryRollingRow?.previous_correct || 0),
+      Number(memoryRollingRow?.previous_incorrect || 0)
+    )
+    const memoryRollingSignal = latestMemoryRolling.reviewed < 30 || previousMemoryRolling.reviewed < 30
+      ? 'insufficient_data'
+      : Number(latestMemoryRolling.upper95) < Number(previousMemoryRolling.lower95)
+        ? 'regression'
+        : Number(latestMemoryRolling.lower95) > Number(previousMemoryRolling.upper95)
+          ? 'improvement'
+          : 'inconclusive'
     const memoryVersions = memoryVersionRows.map(versionRow => {
       const correct = Number(versionRow.correct || 0)
       const incorrect = Number(versionRow.incorrect || 0)
@@ -14936,6 +14988,19 @@ export class PersonalMemoryStore {
         byKind: {
           claim: { correct: claimCorrect, incorrect: claimIncorrect, total: claimCorrect + claimIncorrect },
           event: { correct: eventCorrect, incorrect: eventIncorrect, total: eventCorrect + eventIncorrect }
+        },
+        rollingTrend: {
+          version: 'structured-candidate-rolling-30-v1',
+          scope: memoryRollingRow?.item_kind ? {
+            itemKind: String(memoryRollingRow.item_kind),
+            promptVersion: String(memoryRollingRow.prompt_version || ''),
+            schemaVersion: String(memoryRollingRow.schema_version || ''),
+            model: String(memoryRollingRow.model || ''),
+            sourceKind: String(memoryRollingRow.source_kind_version || 'legacy')
+          } : null,
+          latest: latestMemoryRolling,
+          previous: previousMemoryRolling,
+          signal: memoryRollingSignal
         },
         versions: memoryVersions,
         versionGroupTotal: memoryVersionGroupTotal,

@@ -18990,6 +18990,37 @@ test('human review calibration uses latest authoritative decisions without claim
             claim: { correct: 0, incorrect: 1, total: 1 },
             event: { correct: 0, incorrect: 0, total: 0 }
           },
+          rollingTrend: {
+            version: 'structured-candidate-rolling-30-v1',
+            scope: {
+              itemKind: 'claim',
+              promptVersion: 'legacy-unknown-prompt',
+              schemaVersion: 'legacy-unknown-schema',
+              model: 'legacy-unknown-model',
+              sourceKind: 'legacy'
+            },
+            latest: {
+              reviewed: 1,
+              observedRate: 0,
+              lower95: 0,
+              upper95: 0.7935,
+              recommendedMinimum: 30,
+              remainingToRecommended: 29,
+              readyForTrend: false,
+              interpretation: 'selected_review_interval_not_population_accuracy'
+            },
+            previous: {
+              reviewed: 0,
+              observedRate: null,
+              lower95: null,
+              upper95: null,
+              recommendedMinimum: 30,
+              remainingToRecommended: 30,
+              readyForTrend: false,
+              interpretation: 'selected_review_interval_not_population_accuracy'
+            },
+            signal: 'insufficient_data'
+          },
           versions: [{
             itemKind: 'claim',
             promptVersion: 'legacy-unknown-prompt',
@@ -19311,6 +19342,91 @@ test('structured memory calibration cache refreshes when recovery restores batch
     assert.equal(after.structuredMemory.candidateAudit.versions[0].model, 'deepseek-late')
     assert.equal(after.structuredMemory.candidateAudit.versions[0].promptVersion, 'prompt-late')
     assert.equal(after.structuredMemory.candidateAudit.versions[0].schemaVersion, 'schema-late')
+  })
+})
+
+test('structured memory rolling calibration detects full-window candidate regression', () => {
+  withStore(store => {
+    const database = (store as any).db
+    const insertGrowth = database.prepare(`
+      INSERT INTO memory_change_log(
+        item_kind,item_id,change_kind,change_detail,origin_kind,origin_id,
+        source_kind,status_before,status_after,changed_at
+      ) VALUES('claim',?,'discovered','item','legacy_unknown','','legacy','','candidate',?)
+    `)
+    const insertDecision = database.prepare(`
+      INSERT INTO memory_review_decisions(
+        item_kind,item_id,previous_status,decision,actor,created_at
+      ) VALUES('claim',?,'candidate',?,'user',?)
+    `)
+    for (let index = 0; index < 60; index += 1) {
+      const itemId = `memory-rolling-${String(index).padStart(2, '0')}`
+      const timestamp = new Date(Date.UTC(2026, 7, 3, 0, 0, index)).toISOString()
+      insertGrowth.run(itemId, timestamp)
+      insertDecision.run(itemId, index < 30 ? 'confirmed' : 'rejected', timestamp)
+    }
+    const rolling = store.getHumanReviewCalibrationStats()
+      .structuredMemory.candidateAudit.rollingTrend
+    assert.equal(rolling.scope.itemKind, 'claim')
+    assert.equal(rolling.latest.reviewed, 30)
+    assert.equal(rolling.latest.observedRate, 0)
+    assert.equal(rolling.previous.reviewed, 30)
+    assert.equal(rolling.previous.observedRate, 1)
+    assert.ok(rolling.latest.upper95 < rolling.previous.lower95)
+    assert.equal(rolling.signal, 'regression')
+  })
+})
+
+test('structured memory rolling calibration never compares extraction versions', () => {
+  withStore(store => {
+    const database = (store as any).db
+    const now = '2026-08-09T08:00:00.000Z'
+    database.prepare(`
+      INSERT INTO ingestion_runs(id,started_at,model,prompt_version,status)
+      VALUES('memory-version-run',?,'deepseek-versioned','run-prompt','completed')
+    `).run(now)
+    const insertBatch = database.prepare(`
+      INSERT INTO ingestion_batches(
+        run_id,batch_index,message_count,status,started_at,finished_at,
+        model,prompt_version,schema_version
+      ) VALUES('memory-version-run',?,30,'completed',?,?, 'deepseek-versioned',?, 'schema-versioned')
+    `)
+    const insertCommit = database.prepare(`
+      INSERT INTO ingestion_batch_commits(
+        commit_id,run_id,batch_index,status,digest_json,messages_json,
+        checkpoint_keys_json,created_at,prepared_at,applied_at,source_kind
+      ) VALUES(?,'memory-version-run',?,'committed','{}','[]','[]',?,?,?,'wechat')
+    `)
+    for (const [batchIndex, prompt] of [[0, 'prompt-old'], [1, 'prompt-current']] as const) {
+      insertBatch.run(batchIndex, now, now, prompt)
+      insertCommit.run(`memory-version-commit-${batchIndex}`, batchIndex, now, now, now)
+    }
+    const insertGrowth = database.prepare(`
+      INSERT INTO memory_change_log(
+        item_kind,item_id,change_kind,change_detail,origin_kind,origin_id,
+        source_kind,status_before,status_after,changed_at
+      ) VALUES('event',?,'discovered','item','model_batch',?,'wechat','','candidate',?)
+    `)
+    const insertDecision = database.prepare(`
+      INSERT INTO memory_review_decisions(
+        item_kind,item_id,previous_status,decision,actor,created_at
+      ) VALUES('event',?,'candidate',?,'user',?)
+    `)
+    for (let index = 0; index < 60; index += 1) {
+      const currentVersion = index >= 30
+      const itemId = `memory-versioned-${String(index).padStart(2, '0')}`
+      const timestamp = new Date(Date.UTC(2026, 7, 4, 0, 0, index)).toISOString()
+      insertGrowth.run(itemId, `memory-version-commit-${currentVersion ? 1 : 0}`, timestamp)
+      insertDecision.run(itemId, currentVersion ? 'rejected' : 'confirmed', timestamp)
+    }
+    const rolling = store.getHumanReviewCalibrationStats()
+      .structuredMemory.candidateAudit.rollingTrend
+    assert.equal(rolling.scope.itemKind, 'event')
+    assert.equal(rolling.scope.promptVersion, 'prompt-current')
+    assert.equal(rolling.latest.reviewed, 30)
+    assert.equal(rolling.latest.observedRate, 0)
+    assert.equal(rolling.previous.reviewed, 0)
+    assert.equal(rolling.signal, 'insufficient_data')
   })
 })
 

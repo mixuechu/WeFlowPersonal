@@ -9580,6 +9580,29 @@ function AiAssistantPage() {
             事件 {Number(dashboard.humanReviewCalibration.structuredMemory.candidateAudit.byKind?.event?.correct || 0)} / {Number(dashboard.humanReviewCalibration.structuredMemory.candidateAudit.byKind?.event?.incorrect || 0)}。
             <small>只计算模型候选的第一次本人确认或拒绝；后续恢复、反复修改与系统级联不重复计入，也不代表未审阅记忆的总体准确率。</small>
           </p>}
+          {Number(dashboard.humanReviewCalibration.structuredMemory?.candidateAudit?.rollingTrend?.latest?.reviewed || 0) > 0 && <p>
+            最近抽取版本内{dashboard.humanReviewCalibration.structuredMemory.candidateAudit.rollingTrend.scope?.itemKind === 'claim' ? '事实' : '事件'}首次裁决{' '}
+            <b>{Math.round(Number(dashboard.humanReviewCalibration.structuredMemory.candidateAudit.rollingTrend.latest.observedRate || 0) * 100)}%</b>
+            {' '}（{Number(dashboard.humanReviewCalibration.structuredMemory.candidateAudit.rollingTrend.latest.reviewed)} / 30）；
+            前一组{' '}
+            {Number(dashboard.humanReviewCalibration.structuredMemory.candidateAudit.rollingTrend.previous.reviewed) > 0
+              ? `${Math.round(Number(dashboard.humanReviewCalibration.structuredMemory.candidateAudit.rollingTrend.previous.observedRate || 0) * 100)}%（${Number(dashboard.humanReviewCalibration.structuredMemory.candidateAudit.rollingTrend.previous.reviewed)} / 30）`
+              : '尚无样本'}。
+            {dashboard.humanReviewCalibration.structuredMemory.candidateAudit.rollingTrend.signal === 'regression'
+              ? ' 两组 95% 区间已明确分离，近期候选质量出现退化信号。'
+              : dashboard.humanReviewCalibration.structuredMemory.candidateAudit.rollingTrend.signal === 'improvement'
+                ? ' 两组 95% 区间已明确分离，近期候选质量出现改善信号。'
+                : dashboard.humanReviewCalibration.structuredMemory.candidateAudit.rollingTrend.signal === 'inconclusive'
+                  ? ' 两组样本已满，但统计区间仍重叠，暂不能判定趋势。'
+                  : ' 同一版本内两组各满 30 项后才判断趋势，避免版本切换或小样本误报。'}
+            {dashboard.humanReviewCalibration.structuredMemory.candidateAudit.rollingTrend.scope && <small>
+              {' '}范围：{dashboard.humanReviewCalibration.structuredMemory.candidateAudit.rollingTrend.scope.sourceKind === 'wechat'
+                ? '微信' : dashboard.humanReviewCalibration.structuredMemory.candidateAudit.rollingTrend.scope.sourceKind === 'documents'
+                  ? '本机文档' : '历史来源'} · {dashboard.humanReviewCalibration.structuredMemory.candidateAudit.rollingTrend.scope.promptVersion}
+              {' '}· {dashboard.humanReviewCalibration.structuredMemory.candidateAudit.rollingTrend.scope.schemaVersion}
+              {' '}· {dashboard.humanReviewCalibration.structuredMemory.candidateAudit.rollingTrend.scope.model}
+            </small>}
+          </p>}
           {Number(dashboard.humanReviewCalibration.activeMineAudit?.calibration?.reviewed || 0) > 0 && <p>
             当前选择性抽检观察命中率{' '}
             <b>{Math.round(Number(dashboard.humanReviewCalibration.activeMineAudit.calibration.observedRate || 0) * 100)}%</b>

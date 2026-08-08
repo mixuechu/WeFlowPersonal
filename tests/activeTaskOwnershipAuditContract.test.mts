@@ -58,6 +58,10 @@ test('structured memory calibration counts first candidate rulings with extracti
   assert.match(page, /模型候选首次裁决/)
   assert.match(page, /后续恢复、反复修改与系统级联不重复计入/)
   assert.match(page, /按抽取版本查看事实事件首次裁决/)
+  assert.match(store, /structured-candidate-rolling-30-v1/)
+  assert.match(store, /latestMemoryRolling\.reviewed < 30 \|\| previousMemoryRolling\.reviewed < 30/)
+  assert.match(page, /最近抽取版本内/)
+  assert.match(page, /避免版本切换或小样本误报/)
 })
 
 test('ownership calibration detects rolling drift without small-sample alarms', () => {
