@@ -9566,6 +9566,13 @@ function AiAssistantPage() {
             <span><b>{Number(dashboard.humanReviewCalibration.graphCandidates.accepted || 0)} / {Number(dashboard.humanReviewCalibration.graphCandidates.rejected || 0)}</b><small>图谱候选：确认 / 拒绝</small></span>
             <span><b>{Number(dashboard.humanReviewCalibration.identityPairs.merged || 0)} / {Number(dashboard.humanReviewCalibration.identityPairs.different || 0)}</b><small>身份建议：合并 / 不同人</small></span>
           </div>
+          {(Number(dashboard.humanReviewCalibration.legacyBackfill?.identityReviews || 0) > 0 ||
+            Number(dashboard.humanReviewCalibration.legacyBackfill?.graphReviews || 0) > 0) && <p>
+            已从升级前仍可核验的人工审阅中安全回填：同一人建议{' '}
+            <b>{Number(dashboard.humanReviewCalibration.legacyBackfill.identityReviews).toLocaleString()}</b> 项，图谱候选{' '}
+            <b>{Number(dashboard.humanReviewCalibration.legacyBackfill.graphReviews).toLocaleString()}</b> 项。
+            <small>只迁移本人裁决和候选结果，不复制姓名、候选解释或聊天原文；无法证明版本的历史样本明确归入“历史未知”。</small>
+          </p>}
           {Number(dashboard.humanReviewCalibration.structuredMemory?.candidateAudit?.total || 0) > 0 && <p>
             模型候选首次裁决：正确{' '}
             <b>{Number(dashboard.humanReviewCalibration.structuredMemory.candidateAudit.correct).toLocaleString()}</b>

@@ -1729,6 +1729,7 @@ export class PersonalMemoryStore {
     this.ensureMemoryDeletionAuditRevisionTriggers()
     this.ensureMemoryEvidenceArchiveRevisionTriggers()
     this.ensureStructuredMemoryRevisionTriggers()
+    this.backfillHumanReviewCalibrationHistory()
     this.ensureGraphReviewRevisionTriggers()
     this.normalizeTaskHistoryEvidence()
     this.repairTaskEvidenceArchiveFromHistory()
@@ -3825,6 +3826,112 @@ export class PersonalMemoryStore {
       'relation_corrections',
       'entity_profile_corrections'
     ]
+  }
+
+  private backfillHumanReviewCalibrationHistory(): void {
+    if (!this.db) return
+    const migrationKey = 'human_review_calibration_backfill_v1'
+    if (this.db.prepare('SELECT 1 FROM schema_meta WHERE key=?').get(migrationKey)) return
+    const now = new Date().toISOString()
+    this.db.exec('BEGIN IMMEDIATE')
+    try {
+      const identityResult = this.db.prepare(`
+        INSERT OR IGNORE INTO identity_review_decisions(
+          candidate_instance_id,review_id,pair_key,left_entity_id,right_entity_id,
+          decision,candidate_source,policy_version,prompt_version,schema_version,
+          model,source_kind,created_at
+        )
+        SELECT
+          CASE WHEN json_type(payload_json,'$.candidateInstanceId')='text'
+              AND trim(json_extract(payload_json,'$.candidateInstanceId'))!=''
+            THEN substr(json_extract(payload_json,'$.candidateInstanceId'),1,160)
+            ELSE 'legacy:' || id || ':' || created_at END,
+          id,
+          min(json_extract(payload_json,'$.leftEntityId'),json_extract(payload_json,'$.rightEntityId'))
+            || '|' || max(json_extract(payload_json,'$.leftEntityId'),json_extract(payload_json,'$.rightEntityId')),
+          min(json_extract(payload_json,'$.leftEntityId'),json_extract(payload_json,'$.rightEntityId')),
+          max(json_extract(payload_json,'$.leftEntityId'),json_extract(payload_json,'$.rightEntityId')),
+          CASE WHEN status='confirmed' THEN 'merged' ELSE 'different' END,
+          CASE WHEN json_type(payload_json,'$.candidateSource')='text'
+            THEN substr(json_extract(payload_json,'$.candidateSource'),1,120) ELSE 'legacy' END,
+          CASE WHEN json_type(payload_json,'$.candidatePolicyVersion')='text'
+            THEN substr(json_extract(payload_json,'$.candidatePolicyVersion'),1,120) ELSE 'legacy-unknown-policy' END,
+          CASE WHEN json_type(payload_json,'$.candidatePromptVersion')='text'
+            THEN substr(json_extract(payload_json,'$.candidatePromptVersion'),1,120) ELSE 'legacy-unknown-prompt' END,
+          CASE WHEN json_type(payload_json,'$.candidateSchemaVersion')='text'
+            THEN substr(json_extract(payload_json,'$.candidateSchemaVersion'),1,120) ELSE 'legacy-unknown-schema' END,
+          CASE WHEN json_type(payload_json,'$.candidateModel')='text'
+            THEN substr(json_extract(payload_json,'$.candidateModel'),1,120) ELSE 'legacy-unknown-model' END,
+          CASE WHEN json_extract(payload_json,'$.candidateSourceKind') IN ('wechat','documents','calendar','local')
+            THEN json_extract(payload_json,'$.candidateSourceKind') ELSE 'legacy' END,
+          COALESCE(resolved_at,created_at)
+        FROM review_queue
+        WHERE kind='possible_duplicate' AND status IN ('confirmed','rejected')
+          AND json_valid(payload_json)=1
+          AND json_extract(payload_json,'$.resolutionActor')='user'
+          AND json_type(payload_json,'$.leftEntityId')='text'
+          AND json_type(payload_json,'$.rightEntityId')='text'
+          AND trim(json_extract(payload_json,'$.leftEntityId'))!=''
+          AND trim(json_extract(payload_json,'$.rightEntityId'))!=''
+          AND json_extract(payload_json,'$.leftEntityId')!=json_extract(payload_json,'$.rightEntityId')
+      `).run()
+      const graphResult = this.db.prepare(`
+        INSERT OR IGNORE INTO graph_candidate_review_decisions(
+          candidate_instance_id,review_id,candidate_kind,outcome,candidate_source,
+          policy_version,prompt_version,schema_version,model,source_kind,
+          related_entity_ids_json,created_at
+        )
+        SELECT
+          CASE WHEN json_type(payload_json,'$.candidateInstanceId')='text'
+              AND trim(json_extract(payload_json,'$.candidateInstanceId'))!=''
+            THEN substr(json_extract(payload_json,'$.candidateInstanceId'),1,160)
+            ELSE 'legacy:' || id || ':' || created_at END,
+          id,kind,
+          CASE WHEN status='rejected' THEN 'rejected'
+            WHEN COALESCE(json_extract(payload_json,'$.originalRelationId'),'')!=''
+              OR COALESCE(json_extract(payload_json,'$.correctedCanonicalName'),'')!=''
+              OR COALESCE(json_extract(payload_json,'$.correctedSummaryText'),'')!=''
+              OR COALESCE(json_extract(payload_json,'$.correctedAliasText'),'')!=''
+            THEN 'accepted_corrected' ELSE 'accepted_exact' END,
+          CASE WHEN json_type(payload_json,'$.candidateSource')='text'
+            THEN substr(json_extract(payload_json,'$.candidateSource'),1,120) ELSE 'legacy' END,
+          CASE WHEN json_type(payload_json,'$.candidatePolicyVersion')='text'
+            THEN substr(json_extract(payload_json,'$.candidatePolicyVersion'),1,120) ELSE 'legacy-unknown-policy' END,
+          CASE WHEN json_type(payload_json,'$.candidatePromptVersion')='text'
+            THEN substr(json_extract(payload_json,'$.candidatePromptVersion'),1,120) ELSE 'legacy-unknown-prompt' END,
+          CASE WHEN json_type(payload_json,'$.candidateSchemaVersion')='text'
+            THEN substr(json_extract(payload_json,'$.candidateSchemaVersion'),1,120) ELSE 'legacy-unknown-schema' END,
+          CASE WHEN json_type(payload_json,'$.candidateModel')='text'
+            THEN substr(json_extract(payload_json,'$.candidateModel'),1,120) ELSE 'legacy-unknown-model' END,
+          CASE WHEN json_extract(payload_json,'$.candidateSourceKind') IN ('wechat','documents','calendar','local')
+            THEN json_extract(payload_json,'$.candidateSourceKind') ELSE 'legacy' END,
+          CASE WHEN kind='relation' THEN json_array(
+            COALESCE(json_extract(payload_json,'$.relationCorrection.subjectId'),
+              (SELECT subject_id FROM relations WHERE id=COALESCE(
+                json_extract(payload_json,'$.correctedRelationId'),json_extract(payload_json,'$.relationId'))),''),
+            COALESCE(json_extract(payload_json,'$.relationCorrection.objectId'),
+              (SELECT object_id FROM relations WHERE id=COALESCE(
+                json_extract(payload_json,'$.correctedRelationId'),json_extract(payload_json,'$.relationId'))),'')
+          ) ELSE json_array(COALESCE(json_extract(payload_json,'$.entityId'),'')) END,
+          COALESCE(resolved_at,created_at)
+        FROM review_queue
+        WHERE kind IN ('relation','entity_creation','entity_summary','entity_alias')
+          AND status IN ('confirmed','rejected') AND json_valid(payload_json)=1
+          AND json_extract(payload_json,'$.resolutionActor')='user'
+      `).run()
+      this.db.prepare(`
+        INSERT INTO schema_meta(key,value,updated_at) VALUES(?,?,?)
+      `).run(migrationKey, JSON.stringify({
+        version: 'human-review-calibration-backfill-v1',
+        identityReviews: Number(identityResult.changes || 0),
+        graphReviews: Number(graphResult.changes || 0),
+        completedAt: now
+      }), now)
+      this.db.exec('COMMIT')
+    } catch (error) {
+      this.db.exec('ROLLBACK')
+      throw error
+    }
   }
 
   private ensureGraphReviewRevisionTriggers(): void {
@@ -14971,6 +15078,12 @@ export class PersonalMemoryStore {
           versionsTruncated: false
         }
       },
+      legacyBackfill: {
+        version: 'human-review-calibration-backfill-v1',
+        identityReviews: 0,
+        graphReviews: 0,
+        completedAt: ''
+      },
       reviewedTotal: 0,
       interpretation: 'selected_human_reviews_not_population_accuracy'
     }
@@ -14988,6 +15101,19 @@ export class PersonalMemoryStore {
       return this.humanReviewCalibrationCache.value
     }
     const taskFeedback = this.getTaskReviewFeedbackStats()
+    let legacyBackfill = empty.legacyBackfill
+    const legacyBackfillRow = this.db.prepare(`
+      SELECT value FROM schema_meta WHERE key='human_review_calibration_backfill_v1'
+    `).get() as any
+    try {
+      const parsed = JSON.parse(String(legacyBackfillRow?.value || '{}'))
+      legacyBackfill = {
+        version: 'human-review-calibration-backfill-v1',
+        identityReviews: Math.max(0, Number(parsed.identityReviews || 0)),
+        graphReviews: Math.max(0, Number(parsed.graphReviews || 0)),
+        completedAt: String(parsed.completedAt || '')
+      }
+    } catch {}
     const revokedTaskReviews = this.taskReviewFeedbackStatsCache?.revision === taskRevision
       ? this.taskReviewFeedbackStatsCache.revoked
       : 0
@@ -15444,6 +15570,7 @@ export class PersonalMemoryStore {
       structuredMemory,
       graphCandidates,
       identityPairs,
+      legacyBackfill,
       reviewedTotal: taskOwnership.total + structuredMemory.total + graphCandidates.total + identityPairs.total
     }
     this.humanReviewCalibrationCache = { revision, value }

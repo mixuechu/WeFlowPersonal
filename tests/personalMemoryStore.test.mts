@@ -19114,6 +19114,12 @@ test('human review calibration uses latest authoritative decisions without claim
           versionsTruncated: false
         }
       },
+      legacyBackfill: {
+        version: 'human-review-calibration-backfill-v1',
+        identityReviews: 0,
+        graphReviews: 0,
+        completedAt: firstCalibration.legacyBackfill.completedAt
+      },
       reviewedTotal: 4,
       interpretation: 'selected_human_reviews_not_population_accuracy'
     })
@@ -19633,6 +19639,74 @@ test('graph candidate rolling calibration isolates candidate kind and full model
     assert.equal(rolling.previous.reviewed, 0)
     assert.equal(rolling.signal, 'insufficient_data')
   })
+})
+
+test('legacy graph and identity reviews backfill once without copying candidate content', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'weflow-review-calibration-backfill-'))
+  const databasePath = join(directory, 'memory.sqlite')
+  try {
+    const first = new PersonalMemoryStore()
+    first.initialize(databasePath)
+    const database = (first as any).db
+    database.prepare(`DELETE FROM schema_meta WHERE key='human_review_calibration_backfill_v1'`).run()
+    const insert = database.prepare(`
+      INSERT INTO review_queue(
+        id,kind,title,detail,confidence,status,payload_json,created_at,resolved_at
+      ) VALUES(?,?,?,?,?,?,?,?,?)
+    `)
+    const now = '2026-08-08T08:00:00.000Z'
+    insert.run('legacy-identity-user', 'possible_duplicate', '不得复制姓名', '不得复制解释', 0.8,
+      'confirmed', JSON.stringify({
+        resolutionActor: 'user', leftEntityId: 'legacy-left', rightEntityId: 'legacy-right',
+        evidence: [{ excerpt: '不得复制聊天原文' }]
+      }), now, now)
+    insert.run('legacy-relation-exact', 'relation', '旧关系', '旧解释', 0.8, 'confirmed',
+      JSON.stringify({ resolutionActor: 'user', relationId: 'missing-relation' }), now, now)
+    insert.run('legacy-summary-corrected', 'entity_summary', '旧摘要', '旧解释', 0.8, 'confirmed',
+      JSON.stringify({
+        resolutionActor: 'user', entityId: 'legacy-person',
+        correctedSummaryText: '人工修正后的摘要', summaryText: '模型原摘要'
+      }), now, now)
+    insert.run('legacy-alias-rejected', 'entity_alias', '旧别名', '旧解释', 0.8, 'rejected',
+      JSON.stringify({ resolutionActor: 'user', entityId: 'legacy-person', aliasText: '旧别名' }), now, now)
+    insert.run('legacy-system-review', 'relation', '系统关闭', '不应计入', 0.8, 'rejected',
+      JSON.stringify({ resolutionActor: 'system', relationId: 'system-relation' }), now, now)
+    first.close()
+
+    const reopened = new PersonalMemoryStore()
+    reopened.initialize(databasePath)
+    const calibration = reopened.getHumanReviewCalibrationStats()
+    assert.equal(calibration.legacyBackfill.identityReviews, 1)
+    assert.equal(calibration.legacyBackfill.graphReviews, 3)
+    assert.equal(calibration.identityPairs.candidateAudit.correct, 1)
+    assert.equal(calibration.graphCandidates.candidateAudit.exact, 1)
+    assert.equal(calibration.graphCandidates.candidateAudit.corrected, 1)
+    assert.equal(calibration.graphCandidates.candidateAudit.rejected, 1)
+    const graphRows = (reopened as any).db.prepare(`
+      SELECT review_id,related_entity_ids_json FROM graph_candidate_review_decisions ORDER BY review_id
+    `).all()
+    assert.equal(JSON.stringify(graphRows).includes('人工修正后的摘要'), false)
+    assert.equal(JSON.stringify(graphRows).includes('模型原摘要'), false)
+    assert.equal(JSON.stringify(graphRows).includes('不得复制'), false)
+    const graphColumns = (reopened as any).db.prepare(`
+      SELECT name FROM pragma_table_info('graph_candidate_review_decisions') ORDER BY cid
+    `).all().map((row: any) => row.name)
+    assert.equal(graphColumns.includes('title'), false)
+    assert.equal(graphColumns.includes('detail'), false)
+    assert.equal(graphColumns.includes('evidence_json'), false)
+    reopened.close()
+
+    const reopenedAgain = new PersonalMemoryStore()
+    reopenedAgain.initialize(databasePath)
+    const repeated = reopenedAgain.getHumanReviewCalibrationStats()
+    assert.equal(repeated.legacyBackfill.identityReviews, 1)
+    assert.equal(repeated.legacyBackfill.graphReviews, 3)
+    assert.equal(repeated.identityPairs.candidateAudit.total, 1)
+    assert.equal(repeated.graphCandidates.candidateAudit.total, 3)
+    reopenedAgain.close()
+  } finally {
+    rmSync(directory, { recursive: true, force: true })
+  }
 })
 
 test('forget entity transaction removes graph, memory, search, task audit and assistant traces', () => withStore(store => {

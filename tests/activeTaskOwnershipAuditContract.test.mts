@@ -98,6 +98,18 @@ test('graph candidates preserve exact, corrected and rejected versioned calibrat
   assert.match(page, /按版本查看图谱候选首次裁决/)
 })
 
+test('legacy user reviews backfill calibration without copying review content', () => {
+  const store = read('electron/services/personalMemoryStore.ts')
+  const page = read('src/pages/AiAssistantPage.tsx')
+
+  assert.match(store, /backfillHumanReviewCalibrationHistory/)
+  assert.match(store, /human_review_calibration_backfill_v1/)
+  assert.match(store, /resolutionActor'\)='user'/)
+  assert.match(store, /legacy-unknown-prompt/)
+  assert.match(page, /已从升级前仍可核验的人工审阅中安全回填/)
+  assert.match(page, /不复制姓名、候选解释或聊天原文/)
+})
+
 test('ownership calibration detects rolling drift without small-sample alarms', () => {
   const store = read('electron/services/personalMemoryStore.ts')
   const page = read('src/pages/AiAssistantPage.tsx')
