@@ -44,6 +44,7 @@ import { aiAssistantService } from './services/aiAssistantService'
 import { initializeAppRunRecoveryService } from './services/appRunRecoveryService'
 import { applySensitiveLogPolicy } from './services/sensitiveLogPolicy'
 import { formatPathSanitizationDiagnostic } from './services/pathSanitizationDiagnostic'
+import { isAllowedRendererNavigation } from './services/rendererNavigationPolicy'
 
 // 桌面产品名可独立定制，但始终沿用原 WeFlow 数据目录，避免升级后
 // 配置、解密信息和 AI 助理游标被 Electron 视为一套全新的应用数据。
@@ -331,6 +332,27 @@ const normalizeAllowedExternalUrl = (rawUrl: unknown): string | null => {
     return null
   }
 }
+
+const installRendererNavigationGuard = (): void => {
+  const policy = {
+    distRoot: join(__dirname, '../dist'),
+    devServerUrl: process.env.VITE_DEV_SERVER_URL
+  }
+
+  app.on('web-contents-created', (_event, contents) => {
+    contents.setWindowOpenHandler(() => ({ action: 'deny' }))
+    contents.on('will-attach-webview', (event) => {
+      event.preventDefault()
+    })
+    contents.on('will-navigate', (event, targetUrl) => {
+      if (isAllowedRendererNavigation(targetUrl, policy)) return
+      event.preventDefault()
+      console.warn('[RendererSecurity] Blocked navigation outside the application origin')
+    })
+  })
+}
+
+installRendererNavigationGuard()
 
 const postExportWorkerControl = (taskId: string, action: 'pause' | 'resume' | 'cancel') => {
   const worker = activeExportWorkers.get(taskId)
@@ -1150,8 +1172,7 @@ function createWindow(options: { autoShow?: boolean } = {}) {
     webPreferences: {
       preload: join(__dirname, 'preload.js'),
       contextIsolation: true,
-      nodeIntegration: false,
-      webSecurity: false // Allow loading local files (video playback)
+      nodeIntegration: false
     },
     frame: false,
     show: false
@@ -1185,20 +1206,6 @@ function createWindow(options: { autoShow?: boolean } = {}) {
   } else {
     win.loadFile(join(__dirname, '../dist/index.html'))
   }
-
-  // 忽略微信 CDN 域名的证书错误（部分节点证书配置不正确）
-  win.webContents.on('certificate-error', (event, url, _error, _cert, callback) => {
-    const trusted = ['.qq.com', '.qpic.cn', '.weixin.qq.com', '.wechat.com']
-    try {
-      const host = new URL(url).hostname
-      if (trusted.some(d => host.endsWith(d))) {
-        event.preventDefault()
-        callback(true)
-        return
-      }
-    } catch {}
-    callback(false)
-  })
 
   win.on('close', (e) => {
     if (isAppQuitting || win !== mainWindow) return
@@ -1498,8 +1505,7 @@ function createVideoPlayerWindow(videoPath: string, videoWidth?: number, videoHe
     webPreferences: {
       preload: join(__dirname, 'preload.js'),
       contextIsolation: true,
-      nodeIntegration: false,
-      webSecurity: false
+      nodeIntegration: false
     },
     titleBarStyle: 'hidden',
     titleBarOverlay: {
@@ -1557,8 +1563,7 @@ function createImageViewerWindow(imagePath: string, liveVideoPath?: string) {
     webPreferences: {
       preload: join(__dirname, 'preload.js'),
       contextIsolation: true,
-      nodeIntegration: false,
-      webSecurity: false // 允许加载本地文件
+      nodeIntegration: false
     },
     frame: false,
     show: false,
