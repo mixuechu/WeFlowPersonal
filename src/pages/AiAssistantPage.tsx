@@ -15313,7 +15313,8 @@ function AiAssistantPage() {
                 待办派生文档 {Number(memorySearchRepairResult.repaired.taskDocuments || 0)}；
                 结构化证据触发器 {Number(memorySearchRepairResult.repaired.structuredEvidenceTriggers || 0)}，
                 通用证据触发器 {Number(memorySearchRepairResult.repaired.generalEvidenceTriggers || 0)}，
-                审阅收件箱索引 {Number(memorySearchRepairResult.repaired.reviewInboxIndexes || 0)}；
+                审阅收件箱索引 {Number(memorySearchRepairResult.repaired.reviewInboxIndexes || 0)}，
+                自动归属抽检索引 {Number(memorySearchRepairResult.repaired.mineTaskOwnershipAuditIndex || 0)}；
                 成长账本触发器 {Number(memorySearchRepairResult.repaired.memoryChangeTriggers || 0)}，
                 连接器操作索引 {Number(memorySearchRepairResult.repaired.memoryChangeConnectorOperationIndex || 0)}，
                 来源上下文 {Number(memorySearchRepairResult.repaired.memoryChangeOriginContexts || 0)}；
@@ -15369,6 +15370,17 @@ function AiAssistantPage() {
                 <span>累计自愈 <b>{Number(memoryDiagnostics.reviewInboxIndexes.repairsTotal || 0).toLocaleString()}</b> 次</span>
                 {Number(memoryDiagnostics.reviewInboxIndexes.unhealthyIndexes?.length || 0) > 0 &&
                   <span>定义漂移 <b>{memoryDiagnostics.reviewInboxIndexes.unhealthyIndexes.join('、')}</b></span>}
+              </div>
+            </div>}
+            {memoryDiagnostics.mineTaskOwnershipAuditIndex?.version && <div className={`assistant-recovery-audit ${memoryDiagnostics.mineTaskOwnershipAuditIndexHealthy ? 'healthy' : 'unhealthy'}`}>
+              <header><ShieldCheck size={15} /><span><b>自动归属抽检队列索引</b>
+                <small>按证据指纹稳定选择尚未审阅的活动待办；启动和主动检索修复都会核对列顺序、部分条件与索引表，定义缺失或漂移时在 SQLCipher 事务内重建。</small>
+              </span></header>
+              <div className="assistant-recovery-current">
+                <span>当前状态 <b>{memoryDiagnostics.mineTaskOwnershipAuditIndexHealthy ? '定义正确' : '需要检查'}</b></span>
+                <span>当前安装 <b>{memoryDiagnostics.mineTaskOwnershipAuditIndex.installed ? '是' : '否'}</b></span>
+                <span>本次启动修复 <b>{memoryDiagnostics.mineTaskOwnershipAuditIndex.repairedThisStart ? '1' : '0'}</b> 项</span>
+                <span>累计自愈 <b>{Number(memoryDiagnostics.mineTaskOwnershipAuditIndex.repairsTotal || 0).toLocaleString()}</b> 次</span>
               </div>
             </div>}
             {memoryDiagnostics.memoryChangeLog?.version && <div className={`assistant-recovery-audit ${memoryDiagnostics.memoryChangeLogHealthy ? 'healthy' : 'unhealthy'}`}>

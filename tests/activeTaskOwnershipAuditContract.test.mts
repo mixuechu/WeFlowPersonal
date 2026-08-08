@@ -56,3 +56,15 @@ test('dashboard exposes one bounded sample from the complete unreviewed mine-tas
   assert.match(page, /帮助校准自动归属/)
   assert.match(page, /抽检下一项/)
 })
+
+test('mine-task audit index health is visible and participates in runtime repair', () => {
+  const store = read('electron/services/personalMemoryStore.ts')
+  const page = read('src/pages/AiAssistantPage.tsx')
+
+  assert.match(store, /ensureMineTaskOwnershipAuditIndex\(\)/)
+  assert.match(store, /mineTaskOwnershipAuditIndexHealthy/)
+  assert.match(store, /after\.mineTaskOwnershipAuditIndexHealthy/)
+  assert.match(store, /mineTaskOwnershipAuditIndex:[\s\S]*?after\.mineTaskOwnershipAuditIndexHealthy/)
+  assert.match(page, /自动归属抽检队列索引/)
+  assert.match(page, /mineTaskOwnershipAuditIndex\.repairsTotal/)
+})

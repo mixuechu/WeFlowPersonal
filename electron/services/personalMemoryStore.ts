@@ -1606,14 +1606,7 @@ export class PersonalMemoryStore {
     this.ensureColumn('task_directory', 'evidence_fingerprint', `TEXT NOT NULL DEFAULT ''`)
     this.ensureColumn('task_directory', 'ownership_fingerprint', `TEXT NOT NULL DEFAULT ''`)
     this.ensureColumn('task_directory', 'ownership_audit_eligible', 'INTEGER NOT NULL DEFAULT 0')
-    this.db.exec(`
-      CREATE INDEX IF NOT EXISTS idx_task_directory_ownership_audit
-      ON task_directory(ownership_fingerprint,id)
-      WHERE ownership_audit_eligible=1
-        AND classification='mine'
-        AND status IN ('todo','doing','waiting')
-        AND ownership_fingerprint!=''
-    `)
+    this.ensureMineTaskOwnershipAuditIndex()
     this.ensureColumn('task_history', 'change_set_id', `TEXT NOT NULL DEFAULT ''`)
     this.ensureColumn('merge_history', 'source_name', `TEXT NOT NULL DEFAULT ''`)
     this.ensureColumn('merge_history', 'target_name', `TEXT NOT NULL DEFAULT ''`)
@@ -1943,6 +1936,88 @@ export class PersonalMemoryStore {
       columns: ['event_id', 'source_id', 'session_id', 'timestamp'],
       where: 'event_id is not null'
     }]
+  }
+
+  private inspectMineTaskOwnershipAuditIndex(): {
+    version: number
+    healthy: boolean
+    installed: boolean
+    columns: string[]
+  } {
+    const empty = { version: 1, healthy: false, installed: false, columns: [] as string[] }
+    if (!this.db) return empty
+    const name = 'idx_task_directory_ownership_audit'
+    const row = this.db.prepare(`
+      SELECT sql FROM sqlite_master WHERE type='index' AND name=?
+    `).get(name) as any
+    if (!row?.sql) return empty
+    const columns = (this.db.prepare(`PRAGMA index_info(${name})`).all() as Array<{ name: string }>)
+      .map(item => String(item.name || ''))
+    const index = this.db.prepare(`
+      SELECT partial FROM pragma_index_list('task_directory') WHERE name=?
+    `).get(name) as any
+    const sql = String(row.sql || '').toLowerCase().replace(/\s+/g, ' ')
+    const healthy = Number(index?.partial || 0) === 1
+      && JSON.stringify(columns) === JSON.stringify(['ownership_fingerprint', 'id'])
+      && sql.includes('on task_directory(ownership_fingerprint,id)')
+      && sql.includes('where ownership_audit_eligible=1')
+      && sql.includes("classification='mine'")
+      && sql.includes("status in ('todo','doing','waiting')")
+      && sql.includes("ownership_fingerprint!=''")
+    return { version: 1, healthy, installed: true, columns }
+  }
+
+  private ensureMineTaskOwnershipAuditIndex(): void {
+    if (!this.db) return
+    const before = this.inspectMineTaskOwnershipAuditIndex()
+    const previousRow = this.db.prepare(`
+      SELECT value FROM schema_meta WHERE key='mine_task_ownership_audit_index_integrity'
+    `).get() as any
+    let previous: any = {}
+    try { previous = JSON.parse(String(previousRow?.value || '{}')) } catch {}
+    if (!before.healthy) {
+      this.db.transaction(() => {
+        this.db!.exec(`
+          DROP INDEX IF EXISTS idx_task_directory_ownership_audit;
+          CREATE INDEX idx_task_directory_ownership_audit
+          ON task_directory(ownership_fingerprint,id)
+          WHERE ownership_audit_eligible=1
+            AND classification='mine'
+            AND status IN ('todo','doing','waiting')
+            AND ownership_fingerprint!='';
+        `)
+      })()
+    }
+    const after = this.inspectMineTaskOwnershipAuditIndex()
+    const checkedAt = new Date().toISOString()
+    const audit = {
+      ...after,
+      checkedAt,
+      repairedThisStart: !before.healthy,
+      repairsTotal: Number(previous.repairsTotal || 0) + (!before.healthy ? 1 : 0)
+    }
+    this.db.prepare(`
+      INSERT INTO schema_meta(key,value,updated_at)
+      VALUES('mine_task_ownership_audit_index_integrity',?,?)
+      ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_at=excluded.updated_at
+    `).run(JSON.stringify(audit), checkedAt)
+  }
+
+  getMineTaskOwnershipAuditIndexHealth(): any {
+    const live = this.inspectMineTaskOwnershipAuditIndex()
+    if (!this.db) return { ...live, checkedAt: '', repairedThisStart: false, repairsTotal: 0 }
+    const row = this.db.prepare(`
+      SELECT value,updated_at FROM schema_meta
+      WHERE key='mine_task_ownership_audit_index_integrity'
+    `).get() as any
+    let audit: any = {}
+    try { audit = JSON.parse(String(row?.value || '{}')) } catch {}
+    return {
+      ...live,
+      checkedAt: String(audit.checkedAt || row?.updated_at || ''),
+      repairedThisStart: Boolean(audit.repairedThisStart),
+      repairsTotal: Number(audit.repairsTotal || 0)
+    }
   }
 
   private inspectEvidenceScopeIndexes(): {
@@ -6725,6 +6800,7 @@ export class PersonalMemoryStore {
     const entityEvidenceFts = this.getEntityEvidenceFtsHealth()
     const evidenceScopeIndexes = this.getEvidenceScopeIndexHealth()
     const reviewInboxIndexes = this.getReviewInboxIndexHealth()
+    const mineTaskOwnershipAuditIndex = this.getMineTaskOwnershipAuditIndexHealth()
     const memoryChangeLog = this.getMemoryChangeLogHealth()
     const memorySearchFeedbackArchiveRevision =
       this.getMemorySearchFeedbackArchiveRevisionHealth()
@@ -6800,6 +6876,7 @@ export class PersonalMemoryStore {
         && entityEvidenceFts.healthy
         && evidenceScopeIndexes.healthy
         && reviewInboxIndexes.healthy
+        && mineTaskOwnershipAuditIndex.healthy
         && memoryChangeLog.healthy
         && memorySearchRevision.healthy
         && memorySearchFeedbackArchiveRevision.healthy
@@ -6828,6 +6905,7 @@ export class PersonalMemoryStore {
       entityEvidenceFtsHealthy: entityEvidenceFts.healthy,
       evidenceScopeIndexesHealthy: evidenceScopeIndexes.healthy,
       reviewInboxIndexesHealthy: reviewInboxIndexes.healthy,
+      mineTaskOwnershipAuditIndexHealthy: mineTaskOwnershipAuditIndex.healthy,
       memoryChangeLogHealthy: memoryChangeLog.healthy,
       memorySearchRevisionHealthy: memorySearchRevision.healthy,
       memorySearchFeedbackArchiveRevisionHealthy:
@@ -6868,6 +6946,7 @@ export class PersonalMemoryStore {
       entityEvidenceFts,
       evidenceScopeIndexes,
       reviewInboxIndexes,
+      mineTaskOwnershipAuditIndex,
       memoryChangeLog,
       memorySearchRevision,
       memorySearchFeedbackArchiveRevision,
@@ -6899,6 +6978,7 @@ export class PersonalMemoryStore {
     // Rebuilding them never changes the underlying facts, relations, events, resources, or tasks.
     this.ensureEvidenceScopeIndexes()
     this.ensureReviewInboxIndexes()
+    this.ensureMineTaskOwnershipAuditIndex()
     this.ensureMemoryChangeLog()
     this.ensureEntityEvidenceFtsIndex()
     this.ensureMemorySearchRevisionTriggers()
@@ -6919,6 +6999,7 @@ export class PersonalMemoryStore {
         && after.entityEvidenceFtsHealthy
         && after.evidenceScopeIndexesHealthy
         && after.reviewInboxIndexesHealthy
+        && after.mineTaskOwnershipAuditIndexHealthy
         && after.memoryChangeLogHealthy
         && after.memorySearchRevisionHealthy
         && after.structuredEvidenceRevisionHealthy
@@ -6947,6 +7028,9 @@ export class PersonalMemoryStore {
           && after.reviewInboxIndexesHealthy
           ? Number(before.reviewInboxIndexes?.unhealthyIndexes?.length || 0)
           : 0,
+        mineTaskOwnershipAuditIndex:
+          before.mineTaskOwnershipAuditIndex?.healthy === false
+          && after.mineTaskOwnershipAuditIndexHealthy ? 1 : 0,
         memoryChangeTriggers: before.memoryChangeLog?.healthy === false
           && after.memoryChangeLogHealthy
           ? Number(before.memoryChangeLog?.unhealthyTriggers?.length || 0)

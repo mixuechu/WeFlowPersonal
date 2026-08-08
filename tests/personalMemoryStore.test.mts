@@ -17655,6 +17655,21 @@ test('mine-task ownership audit sample covers every eligible unreviewed task wit
   const reopened = store.getMineTaskOwnershipAuditSample()
   assert.equal(reopened.total, 1)
   assert.equal(reopened.item?.id, automatic.id)
+
+  const database = (store as any).db
+  const repairsBefore = store.getMineTaskOwnershipAuditIndexHealth().repairsTotal
+  database.exec(`
+    DROP INDEX idx_task_directory_ownership_audit;
+    CREATE INDEX idx_task_directory_ownership_audit ON task_directory(title);
+  `)
+  assert.equal(store.getMineTaskOwnershipAuditIndexHealth().healthy, false)
+  assert.equal(store.getDiagnostics().mineTaskOwnershipAuditIndexHealthy, false)
+  ;(store as any).ensureMineTaskOwnershipAuditIndex()
+  const repairedHealth = store.getMineTaskOwnershipAuditIndexHealth()
+  assert.equal(repairedHealth.healthy, true)
+  assert.equal(repairedHealth.repairedThisStart, true)
+  assert.equal(repairedHealth.repairsTotal, repairsBefore + 1)
+  assert.equal(store.getMineTaskOwnershipAuditSample().item?.id, automatic.id)
 }))
 
 test('cross-store recovery directory pages task and source failures without exposing payloads', () => withStore(store => {
