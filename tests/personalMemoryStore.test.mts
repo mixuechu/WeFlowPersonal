@@ -992,6 +992,57 @@ test('SQLCipher review ledger remains available after process-style reopen', () 
   }
 })
 
+test('review ledger applies calibration outcomes before SQLCipher counts and pagination', () => {
+  withStore(store => {
+    const resolved = (id: string, kind: string, status: string, extra: any = {}) => ({
+      id,
+      kind,
+      title: id,
+      detail: '',
+      confidence: 0.8,
+      status,
+      createdAt: '2026-08-09T00:00:00.000Z',
+      resolvedAt: '2026-08-09T01:00:00.000Z',
+      resolutionActor: 'user',
+      ...extra
+    })
+    store.syncGraph({
+      entities: [],
+      relations: [],
+      reviewQueue: [
+        resolved('relation-exact', 'relation', 'confirmed'),
+        resolved('relation-corrected', 'relation', 'confirmed', {
+          originalRelationId: 'before-relation', correctedRelationId: 'after-relation'
+        }),
+        resolved('relation-rejected', 'relation', 'rejected'),
+        resolved('identity-merged', 'possible_duplicate', 'confirmed'),
+        resolved('system-rejected', 'relation', 'rejected', { resolutionActor: 'system' }),
+        { id: 'pending-relation', kind: 'relation', title: '', detail: '', confidence: 0.8,
+          status: 'pending', createdAt: '2026-08-09T02:00:00.000Z' }
+      ]
+    } as any)
+    const exact = store.listReviewLedgerPage({
+      status: 'resolved', kind: 'relation', calibrationOutcome: 'exact', limit: 1
+    })
+    assert.equal(exact.total, 1)
+    assert.deepEqual(exact.counts, { pending: 0, resolved: 1, all: 1 })
+    assert.equal(exact.items[0]?.id, 'relation-exact')
+    assert.equal(exact.hasMore, false)
+    assert.equal(store.listReviewLedgerPage({
+      status: 'resolved', kind: 'relation', calibrationOutcome: 'corrected'
+    }).items[0]?.id, 'relation-corrected')
+    assert.deepEqual(store.listReviewLedgerPage({
+      status: 'resolved', kind: 'relation', calibrationOutcome: 'rejected'
+    }).items.map(item => item.id), ['relation-rejected'])
+    assert.deepEqual(store.listReviewLedgerPage({
+      status: 'resolved', kind: 'possible_duplicate', calibrationOutcome: 'exact'
+    }).items.map(item => item.id), ['identity-merged'])
+    assert.equal(store.listReviewLedgerPage({
+      status: 'pending', kind: 'relation', calibrationOutcome: 'rejected'
+    }).total, 0)
+  })
+})
+
 test('review ledger filters pending and resolved decisions by kind, evidence and time', () => {
   const reviews = [
     {
@@ -1032,6 +1083,15 @@ test('review ledger filters pending and resolved decisions by kind, evidence and
   assert.deepEqual(
     filterGraphReviews(reviews, { status: 'resolved' }).map(item => item.id),
     ['confirmed-alias', 'rejected-relation']
+  )
+  const calibrated = reviews.map(review => ({ ...review, resolutionActor: 'user' }))
+  assert.deepEqual(
+    filterGraphReviews(calibrated, { status: 'resolved', calibrationOutcome: 'exact' }).map(item => item.id),
+    ['confirmed-alias']
+  )
+  assert.deepEqual(
+    filterGraphReviews(calibrated, { status: 'resolved', calibrationOutcome: 'rejected' }).map(item => item.id),
+    ['rejected-relation']
   )
 })
 

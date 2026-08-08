@@ -18,7 +18,14 @@ test('calibration review drilldown always opens the resolved authoritative ledge
       sectionId: 'graph-review-ledger',
       status: 'resolved',
       kind,
-      query: ''
+      query: '',
+      calibrationOutcome: ''
     })
   }
+})
+
+test('calibration review drilldown preserves an exact server-side outcome scope', () => {
+  assert.equal(calibrationReviewDrilldown('relation', 'exact').calibrationOutcome, 'exact')
+  assert.equal(calibrationReviewDrilldown('entity_summary', 'corrected').calibrationOutcome, 'corrected')
+  assert.equal(calibrationReviewDrilldown('identity', 'rejected').calibrationOutcome, 'rejected')
 })

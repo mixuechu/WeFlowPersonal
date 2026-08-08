@@ -5002,6 +5002,8 @@ export class AiAssistantService {
       kind: String(options?.kind || '').trim(),
       query: String(options?.query || '').trim(),
       reviewId: String(options?.reviewId || '').trim(),
+      calibrationOutcome: ['exact', 'corrected', 'rejected'].includes(String(options?.calibrationOutcome || ''))
+        ? options?.calibrationOutcome : '',
       offset: options?.offset,
       limit: options?.limit,
       revision: String(options?.revision || '')

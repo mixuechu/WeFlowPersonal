@@ -122,6 +122,20 @@ test('calibration metrics navigate to resolved authoritative review kinds', () =
   assert.match(page, /核验本类型历史/)
 })
 
+test('review archive filters calibration outcomes before authoritative pagination', () => {
+  const store = read('electron/services/personalMemoryStore.ts')
+  const service = read('electron/services/aiAssistantService.ts')
+  const page = read('src/pages/AiAssistantPage.tsx')
+
+  assert.match(store, /calibrationOutcomeSql/)
+  assert.match(store, /resolutionActor'\)='user'/)
+  assert.match(service, /calibrationOutcome:/)
+  assert.match(page, /reviewCalibrationOutcomeFilter/)
+  assert.match(page, /原样确认/)
+  assert.match(page, /修改后采用/)
+  assert.match(page, /本人拒绝/)
+})
+
 test('ownership calibration detects rolling drift without small-sample alarms', () => {
   const store = read('electron/services/personalMemoryStore.ts')
   const page = read('src/pages/AiAssistantPage.tsx')

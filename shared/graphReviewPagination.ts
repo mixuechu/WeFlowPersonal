@@ -1,13 +1,24 @@
 export type ReviewStatusFilter = 'pending' | 'resolved' | 'all'
+export type ReviewCalibrationOutcomeFilter = '' | 'exact' | 'corrected' | 'rejected'
 
 export type GraphReviewPageOptions = {
   status: ReviewStatusFilter
   kind?: string
   query?: string
   reviewId?: string
+  calibrationOutcome?: ReviewCalibrationOutcomeFilter
   offset?: number
   limit?: number
   revision?: string
+}
+
+export function graphReviewCalibrationOutcome(review: any): ReviewCalibrationOutcomeFilter | null {
+  if (review?.status === 'pending' || review?.resolutionActor !== 'user') return null
+  if (review?.status === 'rejected') return 'rejected'
+  if (review?.status !== 'confirmed') return null
+  return review?.originalRelationId || review?.correctedCanonicalName ||
+    review?.correctedSummaryText || review?.correctedAliasText
+    ? 'corrected' : 'exact'
 }
 
 function reviewMatchesQuery(review: any, query: string): boolean {
@@ -25,7 +36,7 @@ function reviewMatchesQuery(review: any, query: string): boolean {
 
 export function filterGraphReviews(
   reviews: any[],
-  options: Pick<GraphReviewPageOptions, 'status' | 'kind' | 'query' | 'reviewId'>
+  options: Pick<GraphReviewPageOptions, 'status' | 'kind' | 'query' | 'reviewId' | 'calibrationOutcome'>
 ): any[] {
   const query = String(options.query || '').trim().toLocaleLowerCase('zh-CN')
   const reviewId = String(options.reviewId || '').trim()
@@ -35,6 +46,7 @@ export function filterGraphReviews(
         (options.status === 'pending' ? review.status === 'pending' : review.status !== 'pending')) &&
       (!options.kind || review.kind === options.kind) &&
       (!reviewId || review.id === reviewId) &&
+      (!options.calibrationOutcome || graphReviewCalibrationOutcome(review) === options.calibrationOutcome) &&
       reviewMatchesQuery(review, query))
     .sort((left, right) => {
       const timeOrder = String(right.resolvedAt || right.createdAt || '')
@@ -58,6 +70,7 @@ export function paginateGraphReviews(reviews: any[], options: GraphReviewPageOpt
   const matchingScope = (reviews || []).filter(review =>
     (!options.kind || review.kind === options.kind) &&
     (!reviewId || review.id === reviewId) &&
+    (!options.calibrationOutcome || graphReviewCalibrationOutcome(review) === options.calibrationOutcome) &&
     reviewMatchesQuery(review, query))
   const counts = {
     pending: matchingScope.filter(review => review.status === 'pending').length,

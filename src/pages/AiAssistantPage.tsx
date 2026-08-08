@@ -3,6 +3,7 @@ import { useLocation } from 'react-router-dom'
 import { BookOpen, Bot, CalendarDays, Check, Clock3, Database, Filter, Network, Paperclip, RefreshCw, Search, Settings2, ShieldCheck, Sparkles, TriangleAlert, UserRound, X } from 'lucide-react'
 import { buildTaskCalendar, shanghaiToday } from '../utils/taskCalendar'
 import type { ReviewStatusFilter } from '../utils/graphReviewFilters'
+import type { ReviewCalibrationOutcomeFilter } from '../../shared/graphReviewPagination'
 import { evidenceLocalMessageId, groupMemorySearchResults, memoryEvidenceSourceLabel, MEMORY_TYPE_LABELS, normalizeMemoryEvidence, type MemoryEvidence } from '../utils/memorySearchPresentation'
 import {
   authorityReturnLabel,
@@ -1305,11 +1306,14 @@ function AiAssistantPage() {
   const [reviewStatusFilter, setReviewStatusFilter] = useState<ReviewStatusFilter>('pending')
   const [reviewKindFilter, setReviewKindFilter] = useState('')
   const [reviewQuery, setReviewQuery] = useState('')
+  const [reviewCalibrationOutcomeFilter, setReviewCalibrationOutcomeFilter] =
+    useState<ReviewCalibrationOutcomeFilter>('')
   const [focusedReviewId, setFocusedReviewId] = useState('')
   const reviewContextKey = JSON.stringify([
     reviewStatusFilter,
     reviewKindFilter,
     reviewQuery.trim(),
+    reviewCalibrationOutcomeFilter,
     focusedReviewId
   ])
   const reviewContextKeyRef = useRef(reviewContextKey)
@@ -2738,6 +2742,7 @@ function AiAssistantPage() {
         kind: reviewKindFilter || undefined,
         query: reviewQuery.trim() || undefined,
         reviewId: focusedReviewId || undefined,
+        calibrationOutcome: reviewCalibrationOutcomeFilter || undefined,
         offset: 0,
         limit: 40
       }).then(page => {
@@ -2765,7 +2770,7 @@ function AiAssistantPage() {
       window.clearTimeout(timer)
       if (reviewPageGate.current.isCurrent(request)) reviewPageGate.current.invalidate()
     }
-  }, [reviewStatusFilter, reviewKindFilter, reviewQuery, focusedReviewId, reviewRefreshKey, dashboard?.graphReviewRevision])
+  }, [reviewStatusFilter, reviewKindFilter, reviewQuery, reviewCalibrationOutcomeFilter, focusedReviewId, reviewRefreshKey, dashboard?.graphReviewRevision])
 
   useEffect(() => {
     const target = reviewReturnTarget
@@ -5780,18 +5785,23 @@ function AiAssistantPage() {
     setReviewStatusFilter('pending')
     setReviewKindFilter('possible_duplicate')
     setReviewQuery('')
+    setReviewCalibrationOutcomeFilter('')
     window.setTimeout(() =>
       document.getElementById('graph-review-ledger')
         ?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 0)
   }
 
-  const focusCalibrationReviewArchive = (target: CalibrationReviewTarget) => {
-    const drilldown = calibrationReviewDrilldown(target)
+  const focusCalibrationReviewArchive = (
+    target: CalibrationReviewTarget,
+    outcome: ReviewCalibrationOutcomeFilter = ''
+  ) => {
+    const drilldown = calibrationReviewDrilldown(target, outcome)
     setFocusedReviewId('')
     clearReviewReturnTarget()
     setReviewStatusFilter(drilldown.status)
     setReviewKindFilter(drilldown.kind)
     setReviewQuery(drilldown.query)
+    setReviewCalibrationOutcomeFilter(drilldown.calibrationOutcome)
     setMessage('已进入校准指标对应的 SQLCipher 已处理审阅档案；这里展示可核验的候选与本人裁决。')
     window.setTimeout(() => document.getElementById(drilldown.sectionId)
       ?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 0)
@@ -5822,6 +5832,7 @@ function AiAssistantPage() {
       setReviewStatusFilter('pending')
       setReviewKindFilter('')
       setReviewQuery('')
+      setReviewCalibrationOutcomeFilter('')
     } else if (target === 'candidate_claims') {
       setClaimEntityFilter('')
       setClaimEntitySelection(null)
@@ -6679,6 +6690,7 @@ function AiAssistantPage() {
         kind: reviewKindFilter || undefined,
         query: reviewQuery.trim() || undefined,
         reviewId: focusedReviewId || undefined,
+        calibrationOutcome: reviewCalibrationOutcomeFilter || undefined,
         offset: reviewPage.items.length,
         limit: 40,
         revision: reviewPage.revision
@@ -9640,6 +9652,8 @@ function AiAssistantPage() {
             <button type="button" onClick={() => focusCalibrationReviewArchive('identity')}>
               核验已处理身份建议
             </button>
+            <button type="button" onClick={() => focusCalibrationReviewArchive('identity', 'exact')}>只看合并</button>
+            <button type="button" onClick={() => focusCalibrationReviewArchive('identity', 'rejected')}>只看不同人</button>
           </p>}
           {Number(dashboard.humanReviewCalibration.graphCandidates?.candidateAudit?.total || 0) > 0 && <p>
             图谱候选首次裁决：原样正确{' '}
@@ -9657,6 +9671,21 @@ function AiAssistantPage() {
             <button type="button" onClick={() => focusCalibrationReviewArchive('entity_creation')}>实体</button>
             <button type="button" onClick={() => focusCalibrationReviewArchive('entity_summary')}>摘要</button>
             <button type="button" onClick={() => focusCalibrationReviewArchive('entity_alias')}>别名</button>
+            {([
+              ['relation', '关系'],
+              ['entity_creation', '实体'],
+              ['entity_summary', '摘要'],
+              ['entity_alias', '别名']
+            ] as const).map(([kind, label]) => {
+              const result = dashboard.humanReviewCalibration.graphCandidates.candidateAudit.byKind?.[kind]
+              if (!Number(result?.total || 0)) return null
+              return <span key={`calibration-${kind}`}>
+                <small>{label}：</small>
+                {!!Number(result.exact || 0) && <button type="button" onClick={() => focusCalibrationReviewArchive(kind, 'exact')}>原样 {Number(result.exact)}</button>}
+                {!!Number(result.corrected || 0) && <button type="button" onClick={() => focusCalibrationReviewArchive(kind, 'corrected')}>修改 {Number(result.corrected)}</button>}
+                {!!Number(result.rejected || 0) && <button type="button" onClick={() => focusCalibrationReviewArchive(kind, 'rejected')}>拒绝 {Number(result.rejected)}</button>}
+              </span>
+            })}
           </p>}
           {Number(dashboard.humanReviewCalibration.graphCandidates?.candidateAudit?.rollingTrend?.latest?.reviewed || 0) > 0 && <p>
             最近图谱候选版本内严格原样命中{' '}
@@ -12896,9 +12925,9 @@ function AiAssistantPage() {
             </small>}
             <div className="assistant-review-filters">
               <div>
-                <button className={reviewStatusFilter === 'pending' ? 'active' : ''} onClick={() => { setFocusedReviewId(''); clearReviewReturnTarget(); setReviewStatusFilter('pending') }}>待处理 {pendingReviewCount}</button>
+                <button className={reviewStatusFilter === 'pending' ? 'active' : ''} onClick={() => { setFocusedReviewId(''); clearReviewReturnTarget(); setReviewCalibrationOutcomeFilter(''); setReviewStatusFilter('pending') }}>待处理 {pendingReviewCount}</button>
                 <button className={reviewStatusFilter === 'resolved' ? 'active' : ''} onClick={() => { setFocusedReviewId(''); clearReviewReturnTarget(); setReviewStatusFilter('resolved') }}>已处理 {resolvedReviewCount}</button>
-                <button className={reviewStatusFilter === 'all' ? 'active' : ''} onClick={() => { setFocusedReviewId(''); clearReviewReturnTarget(); setReviewStatusFilter('all') }}>全部 {reviewPage.counts.all}</button>
+                <button className={reviewStatusFilter === 'all' ? 'active' : ''} onClick={() => { setFocusedReviewId(''); clearReviewReturnTarget(); setReviewCalibrationOutcomeFilter(''); setReviewStatusFilter('all') }}>全部 {reviewPage.counts.all}</button>
               </div>
               <select value={reviewKindFilter} onChange={event => { setFocusedReviewId(''); clearReviewReturnTarget(); setReviewKindFilter(event.target.value) }}>
                 <option value="">全部类型</option>
@@ -12907,6 +12936,18 @@ function AiAssistantPage() {
                 <option value="entity_alias">实体别名</option>
                 <option value="relation">有向关系</option>
                 <option value="possible_duplicate">身份合并</option>
+              </select>
+              <select value={reviewCalibrationOutcomeFilter} onChange={event => {
+                setFocusedReviewId('')
+                clearReviewReturnTarget()
+                const outcome = event.target.value as ReviewCalibrationOutcomeFilter
+                setReviewCalibrationOutcomeFilter(outcome)
+                if (outcome) setReviewStatusFilter('resolved')
+              }}>
+                <option value="">全部人工结果</option>
+                <option value="exact">原样确认</option>
+                <option value="corrected">修改后采用</option>
+                <option value="rejected">本人拒绝</option>
               </select>
               <input value={reviewQuery} placeholder="搜索名称、原文、建议或处理原因" onChange={event => { setFocusedReviewId(''); clearReviewReturnTarget(); setReviewQuery(event.target.value) }} />
             </div>

@@ -8764,6 +8764,7 @@ export class PersonalMemoryStore {
     kind?: string
     query?: string
     reviewId?: string
+    calibrationOutcome?: '' | 'exact' | 'corrected' | 'rejected'
     offset?: number
     limit?: number
     revision?: string
@@ -8787,6 +8788,9 @@ export class PersonalMemoryStore {
     const kind = String(options?.kind || '').trim()
     const query = String(options?.query || '').trim().toLocaleLowerCase('zh-CN')
     const reviewId = String(options?.reviewId || '').trim()
+    const calibrationOutcome = ['exact', 'corrected', 'rejected'].includes(String(options?.calibrationOutcome || ''))
+      ? String(options?.calibrationOutcome)
+      : ''
     const offset = Math.max(0, Math.min(100_000, Math.floor(Number(options?.offset) || 0)))
     const limit = Math.max(1, Math.min(100, Math.floor(Number(options?.limit) || 40)))
     const revision = this.getGraphReviewRevision()
@@ -8797,11 +8801,29 @@ export class PersonalMemoryStore {
         counts: { pending: 0, resolved: 0, all: 0 }, revision, stale: true
       }
     }
+    const correctedOutcomeSql = `(
+      COALESCE(json_extract(payload_json,'$.originalRelationId'),'')!=''
+      OR COALESCE(json_extract(payload_json,'$.correctedCanonicalName'),'')!=''
+      OR COALESCE(json_extract(payload_json,'$.correctedSummaryText'),'')!=''
+      OR COALESCE(json_extract(payload_json,'$.correctedAliasText'),'')!=''
+    )`
+    const calibrationOutcomeSql = !calibrationOutcome ? ''
+      : calibrationOutcome === 'rejected'
+        ? ` AND status='rejected' AND json_valid(payload_json)=1
+          AND json_extract(payload_json,'$.resolutionActor')='user'`
+        : calibrationOutcome === 'corrected'
+          ? ` AND status='confirmed' AND json_valid(payload_json)=1
+            AND json_extract(payload_json,'$.resolutionActor')='user'
+            AND ${correctedOutcomeSql}`
+          : ` AND status='confirmed' AND json_valid(payload_json)=1
+            AND json_extract(payload_json,'$.resolutionActor')='user'
+            AND NOT ${correctedOutcomeSql}`
     const scopeSql = `
       FROM review_queue
       WHERE (?='' OR kind=?)
         AND (?='' OR id=?)
         AND (?='' OR instr(lower(title || char(0) || detail || char(0) || payload_json), ?) > 0)
+        ${calibrationOutcomeSql}
     `
     const scopeParams = [kind, kind, reviewId, reviewId, query, query]
     const countRows = this.db.prepare(`
