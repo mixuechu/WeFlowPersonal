@@ -14738,7 +14738,7 @@ export class PersonalMemoryStore {
 
   getHumanReviewCalibrationStats(): any {
     const empty = {
-      version: 'human-review-calibration-v5',
+      version: 'human-review-calibration-v6',
       taskOwnership: { accepted: 0, rejected: 0, revoked: 0, total: 0 },
       activeMineAudit: {
         correct: 0,
@@ -14757,7 +14757,22 @@ export class PersonalMemoryStore {
         versionsTruncated: false
       },
       candidateOwnership: { confirmed: 0, rejected: 0, total: 0 },
-      structuredMemory: { accepted: 0, rejected: 0, reopened: 0, total: 0 },
+      structuredMemory: {
+        accepted: 0, rejected: 0, reopened: 0, total: 0,
+        candidateAudit: {
+          correct: 0,
+          incorrect: 0,
+          total: 0,
+          calibration: selectedReviewBinomialCalibration(0, 0),
+          byKind: {
+            claim: { correct: 0, incorrect: 0, total: 0 },
+            event: { correct: 0, incorrect: 0, total: 0 }
+          },
+          versions: [],
+          versionGroupTotal: 0,
+          versionsTruncated: false
+        }
+      },
       graphCandidates: { accepted: 0, rejected: 0, total: 0 },
       identityPairs: { merged: 0, different: 0, total: 0 },
       reviewedTotal: 0,
@@ -14790,6 +14805,78 @@ export class PersonalMemoryStore {
         SUM(CASE WHEN decision='candidate' THEN 1 ELSE 0 END) AS reopened
       FROM latest WHERE position=1
     `).get() as any
+    const memoryCandidateAuditCte = `
+      WITH candidate_decisions AS (
+        SELECT item_kind,item_id,decision,created_at,id,
+          ROW_NUMBER() OVER (
+            PARTITION BY item_kind,item_id ORDER BY id ASC
+          ) AS decision_position
+        FROM memory_review_decisions
+        WHERE actor='user' AND previous_status='candidate'
+          AND decision IN ('confirmed','rejected')
+          AND item_kind IN ('claim','event')
+      ), first_discovery AS (
+        SELECT item_kind,item_id,MIN(id) AS change_id
+        FROM memory_change_log
+        WHERE change_kind='discovered' AND item_kind IN ('claim','event')
+        GROUP BY item_kind,item_id
+      ), audited AS (
+        SELECT decision.item_kind,decision.item_id,decision.decision,
+          decision.created_at,discovery.origin_kind,discovery.source_kind,
+          CASE WHEN discovery.origin_kind='model_batch'
+              AND COALESCE(batch.prompt_version,run.prompt_version,'')!=''
+            THEN substr(COALESCE(batch.prompt_version,run.prompt_version),1,120)
+            ELSE 'legacy-unknown-prompt' END AS prompt_version,
+          CASE WHEN discovery.origin_kind='model_batch'
+              AND COALESCE(batch.schema_version,'')!=''
+            THEN substr(batch.schema_version,1,120)
+            ELSE 'legacy-unknown-schema' END AS schema_version,
+          CASE WHEN discovery.origin_kind='model_batch'
+              AND COALESCE(batch.model,run.model,'')!=''
+            THEN substr(COALESCE(batch.model,run.model),1,120)
+            ELSE 'legacy-unknown-model' END AS model,
+          CASE WHEN discovery.origin_kind='model_batch'
+              AND discovery.source_kind IN ('wechat','documents')
+            THEN discovery.source_kind ELSE 'legacy' END AS source_kind_version
+        FROM candidate_decisions decision
+        LEFT JOIN first_discovery first
+          ON first.item_kind=decision.item_kind AND first.item_id=decision.item_id
+        LEFT JOIN memory_change_log discovery ON discovery.id=first.change_id
+        LEFT JOIN ingestion_batch_commits commit_row
+          ON discovery.origin_kind='model_batch' AND commit_row.commit_id=discovery.origin_id
+        LEFT JOIN ingestion_batches batch
+          ON batch.run_id=commit_row.run_id AND batch.batch_index=commit_row.batch_index
+        LEFT JOIN ingestion_runs run ON run.id=commit_row.run_id
+        WHERE decision.decision_position=1
+      )
+    `
+    const memoryCandidateAuditRow = this.db.prepare(`
+      ${memoryCandidateAuditCte}
+      SELECT
+        SUM(CASE WHEN decision='confirmed' THEN 1 ELSE 0 END) AS correct,
+        SUM(CASE WHEN decision='rejected' THEN 1 ELSE 0 END) AS incorrect,
+        SUM(CASE WHEN item_kind='claim' AND decision='confirmed' THEN 1 ELSE 0 END)
+          AS claim_correct,
+        SUM(CASE WHEN item_kind='claim' AND decision='rejected' THEN 1 ELSE 0 END)
+          AS claim_incorrect,
+        SUM(CASE WHEN item_kind='event' AND decision='confirmed' THEN 1 ELSE 0 END)
+          AS event_correct,
+        SUM(CASE WHEN item_kind='event' AND decision='rejected' THEN 1 ELSE 0 END)
+          AS event_incorrect
+      FROM audited
+    `).get() as any
+    const memoryVersionRows = this.db.prepare(`
+      ${memoryCandidateAuditCte}
+      SELECT item_kind,prompt_version,schema_version,model,source_kind_version,
+        SUM(CASE WHEN decision='confirmed' THEN 1 ELSE 0 END) AS correct,
+        SUM(CASE WHEN decision='rejected' THEN 1 ELSE 0 END) AS incorrect,
+        MAX(created_at) AS last_reviewed_at,
+        COUNT(*) OVER() AS version_group_total
+      FROM audited
+      GROUP BY item_kind,prompt_version,schema_version,model,source_kind_version
+      ORDER BY last_reviewed_at DESC,item_kind,prompt_version,schema_version,model
+      LIMIT 12
+    `).all() as any[]
     const graph = this.db.prepare(`
       SELECT
         SUM(CASE WHEN status='confirmed' THEN 1 ELSE 0 END) AS accepted,
@@ -14810,11 +14897,47 @@ export class PersonalMemoryStore {
       revoked: revokedTaskReviews,
       total: Number(taskFeedback.mine || 0) + Number(taskFeedback.rejected || 0)
     }
+    const memoryCandidateCorrect = Number(memoryCandidateAuditRow?.correct || 0)
+    const memoryCandidateIncorrect = Number(memoryCandidateAuditRow?.incorrect || 0)
+    const claimCorrect = Number(memoryCandidateAuditRow?.claim_correct || 0)
+    const claimIncorrect = Number(memoryCandidateAuditRow?.claim_incorrect || 0)
+    const eventCorrect = Number(memoryCandidateAuditRow?.event_correct || 0)
+    const eventIncorrect = Number(memoryCandidateAuditRow?.event_incorrect || 0)
+    const memoryVersionGroupTotal = Number(memoryVersionRows[0]?.version_group_total || 0)
+    const memoryVersions = memoryVersionRows.map(versionRow => {
+      const correct = Number(versionRow.correct || 0)
+      const incorrect = Number(versionRow.incorrect || 0)
+      return {
+        itemKind: String(versionRow.item_kind || ''),
+        promptVersion: String(versionRow.prompt_version || ''),
+        schemaVersion: String(versionRow.schema_version || ''),
+        model: String(versionRow.model || ''),
+        sourceKind: String(versionRow.source_kind_version || 'legacy'),
+        correct,
+        incorrect,
+        total: correct + incorrect,
+        lastReviewedAt: String(versionRow.last_reviewed_at || ''),
+        calibration: selectedReviewBinomialCalibration(correct, incorrect)
+      }
+    })
     const structuredMemory = {
       accepted: Number(memory?.accepted || 0),
       rejected: Number(memory?.rejected || 0),
       reopened: Number(memory?.reopened || 0),
-      total: Number(memory?.accepted || 0) + Number(memory?.rejected || 0) + Number(memory?.reopened || 0)
+      total: Number(memory?.accepted || 0) + Number(memory?.rejected || 0) + Number(memory?.reopened || 0),
+      candidateAudit: {
+        correct: memoryCandidateCorrect,
+        incorrect: memoryCandidateIncorrect,
+        total: memoryCandidateCorrect + memoryCandidateIncorrect,
+        calibration: selectedReviewBinomialCalibration(memoryCandidateCorrect, memoryCandidateIncorrect),
+        byKind: {
+          claim: { correct: claimCorrect, incorrect: claimIncorrect, total: claimCorrect + claimIncorrect },
+          event: { correct: eventCorrect, incorrect: eventIncorrect, total: eventCorrect + eventIncorrect }
+        },
+        versions: memoryVersions,
+        versionGroupTotal: memoryVersionGroupTotal,
+        versionsTruncated: memoryVersions.length < memoryVersionGroupTotal
+      }
     }
     const graphCandidates = {
       accepted: Number(graph?.accepted || 0),

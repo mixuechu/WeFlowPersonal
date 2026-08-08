@@ -38,9 +38,23 @@ test('real-world calibration separates active mine audits from candidate decisio
 
   assert.match(store, /active_mine_correct/)
   assert.match(store, /candidate_confirmed/)
-  assert.match(store, /human-review-calibration-v5/)
+  assert.match(store, /human-review-calibration-v6/)
   assert.match(page, /自动归给我：正确 \/ 误判/)
   assert.match(page, /待定归属：确认 \/ 排除/)
+})
+
+test('structured memory calibration counts first candidate rulings with extraction provenance', () => {
+  const store = read('electron/services/personalMemoryStore.ts')
+  const page = read('src/pages/AiAssistantPage.tsx')
+
+  assert.match(store, /previous_status='candidate'/)
+  assert.match(store, /PARTITION BY item_kind,item_id ORDER BY id ASC/)
+  assert.match(store, /memory_change_log discovery/)
+  assert.match(store, /ingestion_batch_commits commit_row/)
+  assert.match(store, /GROUP BY item_kind,prompt_version,schema_version,model,source_kind_version/)
+  assert.match(page, /模型候选首次裁决/)
+  assert.match(page, /后续恢复、反复修改与系统级联不重复计入/)
+  assert.match(page, /按抽取版本查看事实事件首次裁决/)
 })
 
 test('ownership calibration detects rolling drift without small-sample alarms', () => {

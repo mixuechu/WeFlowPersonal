@@ -18904,7 +18904,7 @@ test('human review calibration uses latest authoritative decisions without claim
     const firstTaskFeedback = store.getTaskReviewFeedbackStats()
     assert.strictEqual(store.getTaskReviewFeedbackStats(), firstTaskFeedback)
     assert.deepEqual(firstCalibration, {
-      version: 'human-review-calibration-v5',
+      version: 'human-review-calibration-v6',
       revision: `${store.getTaskOwnershipReviewRevision()}:${store.getStructuredMemoryRevision()}:${store.getGraphReviewRevision()}`,
       taskOwnership: { accepted: 1, rejected: 0, revoked: 1, total: 1 },
       activeMineAudit: {
@@ -18967,7 +18967,54 @@ test('human review calibration uses latest authoritative decisions without claim
         versionsTruncated: false
       },
       candidateOwnership: { confirmed: 0, rejected: 0, total: 0 },
-      structuredMemory: { accepted: 1, rejected: 0, reopened: 0, total: 1 },
+      structuredMemory: {
+        accepted: 1,
+        rejected: 0,
+        reopened: 0,
+        total: 1,
+        candidateAudit: {
+          correct: 0,
+          incorrect: 1,
+          total: 1,
+          calibration: {
+            reviewed: 1,
+            observedRate: 0,
+            lower95: 0,
+            upper95: 0.7935,
+            recommendedMinimum: 30,
+            remainingToRecommended: 29,
+            readyForTrend: false,
+            interpretation: 'selected_review_interval_not_population_accuracy'
+          },
+          byKind: {
+            claim: { correct: 0, incorrect: 1, total: 1 },
+            event: { correct: 0, incorrect: 0, total: 0 }
+          },
+          versions: [{
+            itemKind: 'claim',
+            promptVersion: 'legacy-unknown-prompt',
+            schemaVersion: 'legacy-unknown-schema',
+            model: 'legacy-unknown-model',
+            sourceKind: 'legacy',
+            correct: 0,
+            incorrect: 1,
+            total: 1,
+            lastReviewedAt: now,
+            calibration: {
+              reviewed: 1,
+              observedRate: 0,
+              lower95: 0,
+              upper95: 0.7935,
+              recommendedMinimum: 30,
+              remainingToRecommended: 29,
+              readyForTrend: false,
+              interpretation: 'selected_review_interval_not_population_accuracy'
+            }
+          }],
+          versionGroupTotal: 1,
+          versionsTruncated: false
+        }
+      },
       graphCandidates: { accepted: 0, rejected: 1, total: 1 },
       identityPairs: { merged: 0, different: 1, total: 1 },
       reviewedTotal: 4,
@@ -19150,6 +19197,69 @@ test('task ownership rolling calibration never compares different extraction ver
     assert.equal(rolling.latest.observedRate, 0)
     assert.equal(rolling.previous.reviewed, 0)
     assert.equal(rolling.signal, 'insufficient_data')
+  })
+})
+
+test('structured memory candidate calibration resolves the original model batch version', () => {
+  withStore(store => {
+    const database = (store as any).db
+    const now = '2026-08-09T06:00:00.000Z'
+    database.prepare(`
+      INSERT INTO ingestion_runs(
+        id,started_at,model,prompt_version,status
+      ) VALUES(?,?,?,?,?)
+    `).run('memory-calibration-run', now, 'deepseek-calibration', 'prompt-calibration', 'completed')
+    database.prepare(`
+      INSERT INTO ingestion_batches(
+        run_id,batch_index,message_count,status,started_at,finished_at,
+        model,prompt_version,schema_version
+      ) VALUES(?,?,?,?,?,?,?,?,?)
+    `).run(
+      'memory-calibration-run', 0, 2, 'completed', now, now,
+      'deepseek-calibration', 'prompt-calibration', 'schema-calibration'
+    )
+    database.prepare(`
+      INSERT INTO ingestion_batch_commits(
+        commit_id,run_id,batch_index,status,digest_json,messages_json,
+        checkpoint_keys_json,created_at,prepared_at,applied_at,source_kind
+      ) VALUES(?,?,?,?,?,?,?,?,?,?,?)
+    `).run(
+      'memory-calibration-commit', 'memory-calibration-run', 0, 'committed',
+      '{}', '[]', '[]', now, now, now, 'wechat'
+    )
+    for (const [kind, decision] of [['claim', 'confirmed'], ['event', 'rejected']] as const) {
+      database.prepare(`
+        INSERT INTO memory_change_log(
+          item_kind,item_id,change_kind,change_detail,origin_kind,origin_id,
+          source_kind,status_before,status_after,changed_at
+        ) VALUES(?,?,'discovered','item','model_batch',?,'wechat','', 'candidate',?)
+      `).run(kind, `memory-calibration-${kind}`, 'memory-calibration-commit', now)
+      database.prepare(`
+        INSERT INTO memory_review_decisions(
+          item_kind,item_id,previous_status,decision,actor,created_at
+        ) VALUES(?,?,'candidate',?,'user',?)
+      `).run(kind, `memory-calibration-${kind}`, decision, now)
+    }
+    database.prepare(`
+      INSERT INTO memory_review_decisions(
+        item_kind,item_id,previous_status,decision,actor,created_at
+      ) VALUES('claim','memory-calibration-claim','confirmed','rejected','user',?)
+    `).run(new Date(Date.parse(now) + 1).toISOString())
+
+    const audit = store.getHumanReviewCalibrationStats().structuredMemory.candidateAudit
+    assert.equal(audit.correct, 1)
+    assert.equal(audit.incorrect, 1)
+    assert.deepEqual(audit.byKind, {
+      claim: { correct: 1, incorrect: 0, total: 1 },
+      event: { correct: 0, incorrect: 1, total: 1 }
+    })
+    assert.equal(audit.versionGroupTotal, 2)
+    assert.equal(audit.versions.length, 2)
+    assert.ok(audit.versions.every((version: any) =>
+      version.promptVersion === 'prompt-calibration'
+        && version.schemaVersion === 'schema-calibration'
+        && version.model === 'deepseek-calibration'
+        && version.sourceKind === 'wechat'))
   })
 })
 

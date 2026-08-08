@@ -9566,6 +9566,20 @@ function AiAssistantPage() {
             <span><b>{Number(dashboard.humanReviewCalibration.graphCandidates.accepted || 0)} / {Number(dashboard.humanReviewCalibration.graphCandidates.rejected || 0)}</b><small>图谱候选：确认 / 拒绝</small></span>
             <span><b>{Number(dashboard.humanReviewCalibration.identityPairs.merged || 0)} / {Number(dashboard.humanReviewCalibration.identityPairs.different || 0)}</b><small>身份建议：合并 / 不同人</small></span>
           </div>
+          {Number(dashboard.humanReviewCalibration.structuredMemory?.candidateAudit?.total || 0) > 0 && <p>
+            模型候选首次裁决：正确{' '}
+            <b>{Number(dashboard.humanReviewCalibration.structuredMemory.candidateAudit.correct).toLocaleString()}</b>
+            {' '} / 不准确{' '}
+            <b>{Number(dashboard.humanReviewCalibration.structuredMemory.candidateAudit.incorrect).toLocaleString()}</b>
+            {' · '}观察命中{' '}
+            {Math.round(Number(dashboard.humanReviewCalibration.structuredMemory.candidateAudit.calibration.observedRate || 0) * 100)}%
+            {' '}（95% 区间{' '}
+            {Math.round(Number(dashboard.humanReviewCalibration.structuredMemory.candidateAudit.calibration.lower95 || 0) * 100)}%–
+            {Math.round(Number(dashboard.humanReviewCalibration.structuredMemory.candidateAudit.calibration.upper95 || 0) * 100)}%）。
+            {' '}事实 {Number(dashboard.humanReviewCalibration.structuredMemory.candidateAudit.byKind?.claim?.correct || 0)} / {Number(dashboard.humanReviewCalibration.structuredMemory.candidateAudit.byKind?.claim?.incorrect || 0)}；
+            事件 {Number(dashboard.humanReviewCalibration.structuredMemory.candidateAudit.byKind?.event?.correct || 0)} / {Number(dashboard.humanReviewCalibration.structuredMemory.candidateAudit.byKind?.event?.incorrect || 0)}。
+            <small>只计算模型候选的第一次本人确认或拒绝；后续恢复、反复修改与系统级联不重复计入，也不代表未审阅记忆的总体准确率。</small>
+          </p>}
           {Number(dashboard.humanReviewCalibration.activeMineAudit?.calibration?.reviewed || 0) > 0 && <p>
             当前选择性抽检观察命中率{' '}
             <b>{Math.round(Number(dashboard.humanReviewCalibration.activeMineAudit.calibration.observedRate || 0) * 100)}%</b>
@@ -9620,6 +9634,29 @@ function AiAssistantPage() {
             </div>
             {dashboard.humanReviewCalibration.activeMineAudit.versionsTruncated && <small>
               当前仅展示最近有人工判断的 12 组版本；总量统计仍覆盖全部历史版本。
+            </small>}
+          </details>}
+          {!!dashboard.humanReviewCalibration.structuredMemory?.candidateAudit?.versions?.length && <details>
+            <summary>
+              按抽取版本查看事实事件首次裁决（显示{' '}
+              {dashboard.humanReviewCalibration.structuredMemory.candidateAudit.versions.length} /{' '}
+              {Number(dashboard.humanReviewCalibration.structuredMemory.candidateAudit.versionGroupTotal ||
+                dashboard.humanReviewCalibration.structuredMemory.candidateAudit.versions.length)} 组）
+            </summary>
+            <div className="assistant-task-history">
+              {dashboard.humanReviewCalibration.structuredMemory.candidateAudit.versions.map((version: any) => <small
+                key={`${version.itemKind}:${version.sourceKind}:${version.promptVersion}:${version.schemaVersion}:${version.model}`}>
+                <b>{version.itemKind === 'claim' ? '事实' : '事件'} · {version.sourceKind === 'wechat'
+                  ? '微信' : version.sourceKind === 'documents' ? '本机文档' : '历史来源'}</b>
+                {' · '}{version.promptVersion} · {version.schemaVersion} · {version.model}
+                {' · '}正确 {Number(version.correct).toLocaleString()} / 不准确 {Number(version.incorrect).toLocaleString()}
+                {version.calibration?.observedRate !== null
+                  ? ` · 观察命中 ${Math.round(Number(version.calibration.observedRate) * 100)}%（95% 区间 ${Math.round(Number(version.calibration.lower95) * 100)}%–${Math.round(Number(version.calibration.upper95) * 100)}%）`
+                  : ''}
+              </small>)}
+            </div>
+            {dashboard.humanReviewCalibration.structuredMemory.candidateAudit.versionsTruncated && <small>
+              当前仅展示最近有首次人工裁决的 12 组抽取版本；总量统计仍覆盖全部历史。
             </small>}
           </details>}
           {!Number(dashboard.humanReviewCalibration.reviewedTotal || 0) && <p>完成一些候选确认或拒绝后，这里会开始形成你自己的真实质量基线。</p>}
