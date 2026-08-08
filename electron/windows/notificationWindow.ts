@@ -1,4 +1,4 @@
-import { BrowserWindow, desktopCapturer, ipcMain, screen } from "electron";
+import { BrowserWindow, desktopCapturer, ipcMain, screen, WebContents } from "electron";
 import { join } from "path";
 import { ConfigService } from "../services/config";
 import { sanitizeDiagnosticText } from "../services/diagnosticRedaction";
@@ -41,6 +41,10 @@ export function setNotificationNavigateHandler(
 }
 
 let notificationWindow: BrowserWindow | null = null;
+
+export const isNotificationRenderer = (contents: WebContents | null): boolean => Boolean(
+  contents && notificationWindow && !notificationWindow.isDestroyed() && notificationWindow.webContents === contents
+);
 let closeTimer: NodeJS.Timeout | null = null;
 
 // 空闲销毁：隐藏的通知窗口（含渲染进程）常驻占用 ~120MB 工作集，

@@ -472,6 +472,7 @@
 - [x] 生产与构建依赖执行双口径供应链门禁：分别以完整依赖树和 `--omit=dev` 生产树审计，确认 Electron 最终应用可达的 React Router、配置校验、更新器 YAML 与 Excel 归档依赖，以及 Sass/Vite/Electron 构建链中的传递依赖均升级到兼容的已修复版本；lockfile 固定实际解析结果，两种审计均为零漏洞后才允许正式发布。共享 `verify:dependencies` 已接入 macOS、Linux、Windows x64 与 Windows arm64 四条正式 Release 流水线，审计服务不可用也会 fail-closed；联网审计不耦合本机 `build`，电脑离线时仍可使用已锁定依赖构建。升级后的全量回归、签名 macOS 产物及打包内 Electron ABI 148 SQLCipher 加密完整性验证共同通过，避免只让审计数字归零却交付不可运行应用
 - [x] Electron 全部渲染窗口共享导航与来源隔离：任一 `WebContents` 创建时即拒绝页面自行弹出新窗口和挂载 webview，顶层导航只允许打包内 `dist` 文件或开发时配置的精确 origin；外部网页继续只能经过受协议白名单约束的主进程入口交给系统浏览器。主窗口、视频和图片窗口不再用 `webSecurity: false` 为本机媒体关闭整套同源保护，微信 CDN 证书错误也不再按域名无条件放行；所有窗口保持上下文隔离且禁止 Node 集成，静态契约防止后续新增窗口重新引入这些危险配置
 - [x] 全部高权限 IPC 统一绑定可信应用主 frame：331 个 invoke handler 与同步消息监听器在注册时共同套用发送者门禁，只接受打包内 `dist` 页面或开发服务器精确 origin 的顶层 frame；外部页面、空来源和子 frame 即使获得通道名也不能调用数据库、文件、密钥、导出或 AI 能力，后续新增 handler 自动继承而不依赖逐项自觉。渲染层的通用 `openPath` 同时停止执行任意路径，输入必须是存在的绝对路径且只能由 Finder 定位，应用包、脚本或文档不会再被主进程直接启动
+- [x] Chromium 权限执行来源与用途双重最小化：默认 session 同时安装 permission check 与 request handler，所有权限必须来自可信应用顶层 frame；普通界面只允许经浏览器清洗后的剪贴板文本写入，剪贴板读取、摄像头、麦克风、定位、网页通知、USB/HID/串口、文件系统及未知权限统一拒绝。唯一媒体例外只在 Windows 原生玻璃不可用时授予实际通知窗口的视频桌面回退流，绑定具体 `WebContents` 身份且任何音频请求仍拒绝；macOS/Linux 及主窗口即使伪造通知路由也不能获得屏幕捕获
 - 验收：可以作为独立产品长期运行，并能解释数据从何而来、如何删除。
 
 ## 实施顺序

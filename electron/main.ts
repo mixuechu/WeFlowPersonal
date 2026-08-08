@@ -29,7 +29,7 @@ import { windowsHelloService } from './services/windowsHelloService'
 import { exportCardDiagnosticsService } from './services/exportCardDiagnosticsService'
 import { cloudControlService } from './services/cloudControlService'
 
-import { destroyNotificationWindow, registerNotificationHandlers, showNotification, setNotificationNavigateHandler } from './windows/notificationWindow'
+import { destroyNotificationWindow, isNotificationRenderer, registerNotificationHandlers, showNotification, setNotificationNavigateHandler } from './windows/notificationWindow'
 import { httpService } from './services/httpService'
 import { messagePushService } from './services/messagePushService'
 import { insightService } from './services/insightService'
@@ -45,6 +45,7 @@ import { initializeAppRunRecoveryService } from './services/appRunRecoveryServic
 import { applySensitiveLogPolicy } from './services/sensitiveLogPolicy'
 import { formatPathSanitizationDiagnostic } from './services/pathSanitizationDiagnostic'
 import { isAllowedIpcSender, isAllowedRendererNavigation } from './services/rendererNavigationPolicy'
+import { isAllowedRendererPermission } from './services/rendererPermissionPolicy'
 
 // 桌面产品名可独立定制，但始终沿用原 WeFlow 数据目录，避免升级后
 // 配置、解密信息和 AI 助理游标被 Electron 视为一套全新的应用数据。
@@ -386,6 +387,34 @@ const installRendererNavigationGuard = (): void => {
 
 installTrustedIpcBoundary()
 installRendererNavigationGuard()
+
+const installRendererPermissionPolicy = (): void => {
+  const isTrustedMainFrame = (contents: Electron.WebContents | null, isMainFrame: boolean): boolean => Boolean(
+    contents &&
+    isMainFrame &&
+    isAllowedRendererNavigation(contents.getURL(), trustedRendererPolicy)
+  )
+
+  session.defaultSession.setPermissionCheckHandler((contents, permission, _origin, details) => (
+    isAllowedRendererPermission({
+      permission,
+      trustedMainFrame: isTrustedMainFrame(contents, details.isMainFrame),
+      notificationRenderer: isNotificationRenderer(contents),
+      platform: process.platform,
+      mediaType: details.mediaType
+    })
+  ))
+
+  session.defaultSession.setPermissionRequestHandler((contents, permission, callback, details) => {
+    callback(isAllowedRendererPermission({
+      permission,
+      trustedMainFrame: isTrustedMainFrame(contents, details.isMainFrame),
+      notificationRenderer: isNotificationRenderer(contents),
+      platform: process.platform,
+      mediaTypes: 'mediaTypes' in details ? details.mediaTypes : undefined
+    }))
+  })
+}
 
 const postExportWorkerControl = (taskId: string, action: 'pause' | 'resume' | 'cancel') => {
   const worker = activeExportWorkers.get(taskId)
@@ -4946,6 +4975,7 @@ function checkForUpdatesOnStartup() {
 }
 
 app.whenReady().then(async () => {
+  installRendererPermissionPolicy()
   // 先初始化配置，以便在启动早期判定是否需要静默启动
   configService = new ConfigService()
   const localCacheEncryptionKey = configService.initializeLocalCacheEncryption()
