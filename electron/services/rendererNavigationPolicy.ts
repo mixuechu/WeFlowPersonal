@@ -41,3 +41,9 @@ export const isAllowedRendererNavigation = (
     return false
   }
 }
+
+export const isAllowedIpcSender = (
+  rawUrl: unknown,
+  isMainFrame: boolean,
+  policy: RendererNavigationPolicy
+): boolean => isMainFrame && isAllowedRendererNavigation(rawUrl, policy)

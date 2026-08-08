@@ -2,7 +2,7 @@ import './preload-env'
 import { app, BrowserWindow, ipcMain, nativeTheme, session, Tray, Menu, nativeImage, powerMonitor } from 'electron'
 import { Worker } from 'worker_threads'
 import { randomUUID } from 'crypto'
-import { join, dirname } from 'path'
+import { join, dirname, isAbsolute, resolve } from 'path'
 import { autoUpdater } from 'electron-updater'
 import { resolvePersonalUpdateAvailability } from './services/personalUpdatePolicy'
 import { trayIconCandidateNames, trayIconTargetSize } from './services/trayIconPolicy'
@@ -44,7 +44,7 @@ import { aiAssistantService } from './services/aiAssistantService'
 import { initializeAppRunRecoveryService } from './services/appRunRecoveryService'
 import { applySensitiveLogPolicy } from './services/sensitiveLogPolicy'
 import { formatPathSanitizationDiagnostic } from './services/pathSanitizationDiagnostic'
-import { isAllowedRendererNavigation } from './services/rendererNavigationPolicy'
+import { isAllowedIpcSender, isAllowedRendererNavigation } from './services/rendererNavigationPolicy'
 
 // 桌面产品名可独立定制，但始终沿用原 WeFlow 数据目录，避免升级后
 // 配置、解密信息和 AI 助理游标被 Electron 视为一套全新的应用数据。
@@ -333,25 +333,58 @@ const normalizeAllowedExternalUrl = (rawUrl: unknown): string | null => {
   }
 }
 
-const installRendererNavigationGuard = (): void => {
-  const policy = {
-    distRoot: join(__dirname, '../dist'),
-    devServerUrl: process.env.VITE_DEV_SERVER_URL
-  }
+const trustedRendererPolicy = {
+  distRoot: join(__dirname, '../dist'),
+  devServerUrl: process.env.VITE_DEV_SERVER_URL
+}
 
+const isTrustedIpcSender = (event: any): boolean => {
+  const senderFrame = event?.senderFrame
+  const mainFrame = event?.sender?.mainFrame
+  if (!senderFrame || !mainFrame) return false
+  return isAllowedIpcSender(senderFrame.url, senderFrame === mainFrame, trustedRendererPolicy)
+}
+
+const installTrustedIpcBoundary = (): void => {
+  const registerHandle = ipcMain.handle.bind(ipcMain)
+  const registerOn = ipcMain.on.bind(ipcMain)
+
+  ipcMain.handle = ((channel: string, listener: (...args: any[]) => any) => (
+    registerHandle(channel, (event, ...args) => {
+      if (!isTrustedIpcSender(event)) {
+        console.warn(`[IpcSecurity] Rejected untrusted invoke on ${channel}`)
+        throw new Error('不受信任的页面不能调用本机能力')
+      }
+      return listener(event, ...args)
+    })
+  )) as typeof ipcMain.handle
+
+  ipcMain.on = ((channel: string, listener: (...args: any[]) => any) => (
+    registerOn(channel, (event, ...args) => {
+      if (!isTrustedIpcSender(event)) {
+        console.warn(`[IpcSecurity] Rejected untrusted message on ${channel}`)
+        return
+      }
+      listener(event, ...args)
+    })
+  )) as typeof ipcMain.on
+}
+
+const installRendererNavigationGuard = (): void => {
   app.on('web-contents-created', (_event, contents) => {
     contents.setWindowOpenHandler(() => ({ action: 'deny' }))
     contents.on('will-attach-webview', (event) => {
       event.preventDefault()
     })
     contents.on('will-navigate', (event, targetUrl) => {
-      if (isAllowedRendererNavigation(targetUrl, policy)) return
+      if (isAllowedRendererNavigation(targetUrl, trustedRendererPolicy)) return
       event.preventDefault()
       console.warn('[RendererSecurity] Blocked navigation outside the application origin')
     })
   })
 }
 
+installTrustedIpcBoundary()
 installRendererNavigationGuard()
 
 const postExportWorkerControl = (taskId: string, action: 'pause' | 'resume' | 'cancel') => {
@@ -2280,7 +2313,12 @@ function registerIpcHandlers() {
 
   ipcMain.handle('shell:openPath', async (_, path: string) => {
     const { shell } = await import('electron')
-    return shell.openPath(path)
+    const targetPath = String(path || '').trim()
+    if (!targetPath || !isAbsolute(targetPath) || targetPath.includes('\0') || !existsSync(targetPath)) {
+      return '不允许定位无效的本机路径'
+    }
+    shell.showItemInFolder(resolve(targetPath))
+    return ''
   })
 
   ipcMain.handle('shell:openExternal', async (_, url: string) => {

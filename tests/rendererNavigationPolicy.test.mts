@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
-import { isAllowedRendererNavigation } from '../electron/services/rendererNavigationPolicy.ts'
+import { isAllowedIpcSender, isAllowedRendererNavigation } from '../electron/services/rendererNavigationPolicy.ts'
 
 const distRoot = join('/Applications', 'WeFlow.app', 'Contents', 'Resources', 'app.asar', 'dist')
 
@@ -23,6 +23,14 @@ test('development renderer navigation is restricted to the configured server ori
   assert.equal(isAllowedRendererNavigation('https://127.0.0.1:5173/', policy), false)
 })
 
+test('IPC accepts only a trusted application URL in the sender main frame', () => {
+  const trustedUrl = pathToFileURL(join(distRoot, 'index.html')).toString()
+  assert.equal(isAllowedIpcSender(trustedUrl, true, { distRoot }), true)
+  assert.equal(isAllowedIpcSender(trustedUrl, false, { distRoot }), false)
+  assert.equal(isAllowedIpcSender('https://example.com/', true, { distRoot }), false)
+  assert.equal(isAllowedIpcSender('', true, { distRoot }), false)
+})
+
 test('every application window inherits the global navigation guard and web security', () => {
   const repositoryRoot = join(import.meta.dirname, '..')
   const main = readFileSync(join(repositoryRoot, 'electron/main.ts'), 'utf8')
@@ -33,6 +41,11 @@ test('every application window inherits the global navigation guard and web secu
   assert.match(main, /setWindowOpenHandler\(\(\) => \(\{ action: 'deny' \}\)\)/)
   assert.match(main, /contents\.on\('will-attach-webview'/)
   assert.match(main, /contents\.on\('will-navigate'/)
+  assert.match(main, /installTrustedIpcBoundary\(\)/)
+  assert.match(main, /ipcMain\.handle =/)
+  assert.match(main, /ipcMain\.on =/)
+  assert.match(main, /shell\.showItemInFolder\(resolve\(targetPath\)\)/)
+  assert.doesNotMatch(main, /return shell\.openPath\(path\)/)
   assert.doesNotMatch(windowSources, /webSecurity:\s*false/)
   assert.doesNotMatch(windowSources, /nodeIntegration:\s*true/)
   assert.doesNotMatch(windowSources, /certificate-error/)
