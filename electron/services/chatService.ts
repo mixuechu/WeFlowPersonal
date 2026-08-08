@@ -27,6 +27,9 @@ import {
   writeEncryptedSensitiveCache,
   type SensitiveCachePrivacy
 } from './encryptedSensitiveCache.ts'
+import { detectSupportedRasterExtension, fetchPublicRemoteBuffer } from './publicRemoteFetchService.ts'
+
+const CHAT_EMOJI_MAX_BYTES = 12 * 1024 * 1024
 
 export interface ChatSession {
   username: string
@@ -8139,9 +8142,10 @@ class ChatService {
 
     // 检查内存缓存
     const cached = emojiCache.get(cacheKey)
-    if (cached && existsSync(cached)) {
+    if (cached && await this.validateEmojiCacheFile(cached)) {
       return { success: true, localPath: cached }
     }
+    if (cached) emojiCache.delete(cacheKey)
 
     // 检查是否正在下载
     const downloading = emojiDownloading.get(cacheKey)
@@ -8156,14 +8160,15 @@ class ChatService {
     // 确保缓存目录存在
     const cacheDir = this.getEmojiCacheDir()
     if (!existsSync(cacheDir)) {
-      mkdirSync(cacheDir, { recursive: true })
+      mkdirSync(cacheDir, { recursive: true, mode: 0o700 })
     }
+    await fsPromises.chmod(cacheDir, 0o700).catch(() => {})
 
     // 检查本地是否已有缓存文件
     const extensions = ['.gif', '.png', '.webp', '.jpg', '.jpeg']
     for (const ext of extensions) {
       const filePath = join(cacheDir, `${cacheKey}${ext}`)
-      if (existsSync(filePath)) {
+      if (await this.validateEmojiCacheFile(filePath)) {
         emojiCache.set(cacheKey, filePath)
         return { success: true, localPath: filePath }
       }
@@ -8182,10 +8187,10 @@ class ChatService {
         return { success: true, localPath }
       }
       return { success: false, error: '下载失败' }
-    } catch (e) {
-      console.error(`[ChatService] 表情包下载异常: url=${cdnUrl}, md5=${md5}`, e)
+    } catch {
+      console.error('[ChatService] 表情包下载失败')
       emojiDownloading.delete(cacheKey)
-      return { success: false, error: String(e) }
+      return { success: false, error: '下载失败' }
     }
   }
 
@@ -8213,81 +8218,53 @@ class ChatService {
   /**
    * 执行表情包下载
    */
-  private doDownloadEmoji(url: string, cacheKey: string, cacheDir: string): Promise<string | null> {
-    return new Promise((resolve) => {
-      const protocol = url.startsWith('https') ? https : http
-
-      const request = protocol.get(url, (response) => {
-        // 处理重定向
-        if (response.statusCode === 301 || response.statusCode === 302) {
-          const redirectUrl = response.headers.location
-          if (redirectUrl) {
-            this.doDownloadEmoji(redirectUrl, cacheKey, cacheDir).then(resolve)
-            return
-          }
-        }
-
-        if (response.statusCode !== 200) {
-          resolve(null)
-          return
-        }
-
-        const chunks: Buffer[] = []
-        response.on('data', (chunk) => chunks.push(chunk))
-        response.on('end', () => {
-          const buffer = Buffer.concat(chunks)
-          if (buffer.length === 0) {
-            resolve(null)
-            return
-          }
-
-          // 检测文件类型
-          const ext = this.detectImageExtension(buffer) || this.getExtFromUrl(url) || '.gif'
-          const filePath = join(cacheDir, `${cacheKey}${ext}`)
-
-          try {
-            writeFileSync(filePath, buffer)
-            resolve(filePath)
-          } catch {
-            resolve(null)
-          }
-        })
-        response.on('error', () => resolve(null))
-      })
-
-      request.on('error', () => resolve(null))
-      request.setTimeout(10000, () => {
-        request.destroy()
-        resolve(null)
-      })
-    })
+  private async validateEmojiCacheFile(filePath: string): Promise<boolean> {
+    try {
+      const stat = await fsPromises.stat(filePath)
+      if (!stat.isFile() || stat.size <= 0 || stat.size > CHAT_EMOJI_MAX_BYTES) {
+        await fsPromises.rm(filePath, { force: true }).catch(() => {})
+        return false
+      }
+      const buffer = await fsPromises.readFile(filePath)
+      if (!detectSupportedRasterExtension(buffer)) {
+        await fsPromises.rm(filePath, { force: true }).catch(() => {})
+        return false
+      }
+      await fsPromises.chmod(filePath, 0o600)
+      return true
+    } catch {
+      return false
+    }
   }
 
-  /**
-   * 检测图片格式
-   */
-  private detectImageExtension(buffer: Buffer): string | null {
-    if (buffer.length < 12) return null
-
-    // GIF
-    if (buffer[0] === 0x47 && buffer[1] === 0x49 && buffer[2] === 0x46) {
-      return '.gif'
+  private async doDownloadEmoji(url: string, cacheKey: string, cacheDir: string): Promise<string | null> {
+    try {
+      const result = await fetchPublicRemoteBuffer(url, {
+        maxBytes: CHAT_EMOJI_MAX_BYTES,
+        timeoutMs: 10_000,
+        headers: {
+          Accept: 'image/png,image/jpeg,image/gif,image/webp',
+          'User-Agent': 'MicroMessenger Client'
+        }
+      })
+      if (result.body.length === 0) return null
+      const ext = detectSupportedRasterExtension(result.body)
+      if (!ext || !['.gif', '.png', '.webp', '.jpg', '.jpeg'].includes(ext)) return null
+      const filePath = join(cacheDir, `${cacheKey}${ext}`)
+      const temporaryPath = `${filePath}.${process.pid}.tmp`
+      try {
+        await fsPromises.writeFile(temporaryPath, result.body, { mode: 0o600 })
+        await fsPromises.chmod(temporaryPath, 0o600)
+        await fsPromises.rename(temporaryPath, filePath)
+        await fsPromises.chmod(filePath, 0o600)
+        return filePath
+      } catch {
+        await fsPromises.rm(temporaryPath, { force: true }).catch(() => {})
+        return null
+      }
+    } catch {
+      return null
     }
-    // PNG
-    if (buffer[0] === 0x89 && buffer[1] === 0x50 && buffer[2] === 0x4E && buffer[3] === 0x47) {
-      return '.png'
-    }
-    // JPEG
-    if (buffer[0] === 0xFF && buffer[1] === 0xD8 && buffer[2] === 0xFF) {
-      return '.jpg'
-    }
-    // WEBP
-    if (buffer[0] === 0x52 && buffer[1] === 0x49 && buffer[2] === 0x46 && buffer[3] === 0x46 &&
-      buffer[8] === 0x57 && buffer[9] === 0x45 && buffer[10] === 0x42 && buffer[11] === 0x50) {
-      return '.webp'
-    }
-
-    return null
   }
 
   /**
