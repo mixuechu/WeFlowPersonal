@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react'
 import { Quote, X } from 'lucide-react'
 import LiquidGlass from './LiquidGlass'
+import { releaseNotesToSafeText } from '../utils/releaseNotesPresentation'
 import './UpdateDialog.scss'
 
 interface UpdateInfo {
@@ -44,6 +45,7 @@ const UpdateDialog: React.FC<UpdateDialogProps> = ({
     const total = safeProgress.total
     const transferred = safeProgress.transferred
     const remaining = safeProgress.remaining
+    const releaseNotesText = releaseNotesToSafeText(updateInfo.releaseNotes)
 
     // Format bytes
     const formatBytes = (bytes: number) => {
@@ -98,8 +100,8 @@ const UpdateDialog: React.FC<UpdateDialogProps> = ({
                             <Quote size={20} />
                         </div>
                         <div className="text-box">
-                            {updateInfo.releaseNotes ? (
-                                <div dangerouslySetInnerHTML={{ __html: updateInfo.releaseNotes }} />
+                            {releaseNotesText ? (
+                                <div className="update-notes-text">{releaseNotesText}</div>
                             ) : (
                                 <p>修复了一些已知问题，提升了稳定性。</p>
                             )}

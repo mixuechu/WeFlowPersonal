@@ -46,6 +46,7 @@ import { applySensitiveLogPolicy } from './services/sensitiveLogPolicy'
 import { formatPathSanitizationDiagnostic } from './services/pathSanitizationDiagnostic'
 import { isAllowedIpcSender, isAllowedRendererNavigation } from './services/rendererNavigationPolicy'
 import { isAllowedRendererPermission } from './services/rendererPermissionPolicy'
+import { releaseNotesToSafeText } from '../src/utils/releaseNotesPresentation'
 
 // 桌面产品名可独立定制，但始终沿用原 WeFlow 数据目录，避免升级后
 // 配置、解密信息和 AI 助理游标被 Electron 视为一套全新的应用数据。
@@ -915,7 +916,7 @@ const getDialogReleaseNotes = (rawReleaseNotes: unknown): string => {
   if (track !== 'stable') {
     return '修复了一些已知问题'
   }
-  return normalizeReleaseNotes(rawReleaseNotes)
+  return releaseNotesToSafeText(normalizeReleaseNotes(rawReleaseNotes))
 }
 
 type AnnualReportYearsLoadStrategy = 'cache' | 'native' | 'hybrid'
