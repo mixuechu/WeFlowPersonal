@@ -448,6 +448,11 @@ export class PersonalMemoryStore {
   private databasePath = ''
   private encryptionKey: Buffer | null = null
   private encryptionMigrated = false
+  private taskReviewFeedbackStatsCache: {
+    revision: string
+    value: any
+    revoked: number
+  } | null = null
   private humanReviewCalibrationCache: { revision: string; value: any } | null = null
   private assistantModelAuditLinkRepair = {
     scanned: 0,
@@ -605,6 +610,7 @@ export class PersonalMemoryStore {
   }
 
   initialize(databasePath: string, encryptionKey?: Buffer | string): void {
+    this.taskReviewFeedbackStatsCache = null
     this.humanReviewCalibrationCache = null
     mkdirSync(dirname(databasePath), { recursive: true })
     try { chmodSync(dirname(databasePath), 0o700) } catch {}
@@ -6346,6 +6352,7 @@ export class PersonalMemoryStore {
   close(): void {
     this.db?.close()
     this.db = null
+    this.taskReviewFeedbackStatsCache = null
     this.humanReviewCalibrationCache = null
   }
 
@@ -14253,14 +14260,31 @@ export class PersonalMemoryStore {
 
   getTaskReviewFeedbackStats(): any {
     if (!this.db) return { mine: 0, rejected: 0, suppressed: 0, reconciled: 0 }
-    return this.db.prepare(`
+    const revision = this.getTaskOwnershipReviewRevision()
+    if (this.taskReviewFeedbackStatsCache?.revision === revision) {
+      return this.taskReviewFeedbackStatsCache.value
+    }
+    const row = this.db.prepare(`
       SELECT
         SUM(CASE WHEN revoked_at IS NULL AND decision='mine' THEN 1 ELSE 0 END) AS mine,
         SUM(CASE WHEN revoked_at IS NULL AND decision='rejected' THEN 1 ELSE 0 END) AS rejected,
+        SUM(CASE WHEN revoked_at IS NOT NULL THEN 1 ELSE 0 END) AS revoked,
         COALESCE(SUM(CASE WHEN revoked_at IS NULL THEN suppression_count ELSE 0 END),0) AS suppressed,
         COALESCE(SUM(CASE WHEN revoked_at IS NULL THEN reconciliation_count ELSE 0 END),0) AS reconciled
       FROM task_review_decisions
-    `).get() || { mine: 0, rejected: 0, suppressed: 0, reconciled: 0 }
+    `).get() as any
+    const value = {
+      mine: Number(row?.mine || 0),
+      rejected: Number(row?.rejected || 0),
+      suppressed: Number(row?.suppressed || 0),
+      reconciled: Number(row?.reconciled || 0)
+    }
+    this.taskReviewFeedbackStatsCache = {
+      revision,
+      value,
+      revoked: Number(row?.revoked || 0)
+    }
+    return value
   }
 
   getHumanReviewCalibrationStats(): any {
@@ -14274,21 +14298,19 @@ export class PersonalMemoryStore {
       interpretation: 'selected_human_reviews_not_population_accuracy'
     }
     if (!this.db) return empty
+    const taskRevision = this.getTaskOwnershipReviewRevision()
     const revision = [
-      this.getTaskOwnershipReviewRevision(),
+      taskRevision,
       this.getStructuredMemoryRevision(),
       this.getGraphReviewRevision()
     ].join(':')
     if (this.humanReviewCalibrationCache?.revision === revision) {
       return this.humanReviewCalibrationCache.value
     }
-    const task = this.db.prepare(`
-      SELECT
-        SUM(CASE WHEN revoked_at IS NULL AND decision='mine' THEN 1 ELSE 0 END) AS accepted,
-        SUM(CASE WHEN revoked_at IS NULL AND decision='rejected' THEN 1 ELSE 0 END) AS rejected,
-        SUM(CASE WHEN revoked_at IS NOT NULL THEN 1 ELSE 0 END) AS revoked
-      FROM task_review_decisions
-    `).get() as any
+    const taskFeedback = this.getTaskReviewFeedbackStats()
+    const revokedTaskReviews = this.taskReviewFeedbackStatsCache?.revision === taskRevision
+      ? this.taskReviewFeedbackStatsCache.revoked
+      : 0
     const memory = this.db.prepare(`
       WITH latest AS (
         SELECT decision, ROW_NUMBER() OVER (
@@ -14317,10 +14339,10 @@ export class PersonalMemoryStore {
       FROM identity_decisions
     `).get() as any
     const taskOwnership = {
-      accepted: Number(task?.accepted || 0),
-      rejected: Number(task?.rejected || 0),
-      revoked: Number(task?.revoked || 0),
-      total: Number(task?.accepted || 0) + Number(task?.rejected || 0)
+      accepted: Number(taskFeedback.mine || 0),
+      rejected: Number(taskFeedback.rejected || 0),
+      revoked: revokedTaskReviews,
+      total: Number(taskFeedback.mine || 0) + Number(taskFeedback.rejected || 0)
     }
     const structuredMemory = {
       accepted: Number(memory?.accepted || 0),

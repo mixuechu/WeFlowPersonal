@@ -18762,6 +18762,8 @@ test('human review calibration uses latest authoritative decisions without claim
     `).run('entity-1|entity-2', 'entity-1', 'entity-2', 'different', now, now)
 
     const firstCalibration = store.getHumanReviewCalibrationStats()
+    const firstTaskFeedback = store.getTaskReviewFeedbackStats()
+    assert.strictEqual(store.getTaskReviewFeedbackStats(), firstTaskFeedback)
     assert.deepEqual(firstCalibration, {
       version: 'human-review-calibration-v1',
       revision: `${store.getTaskOwnershipReviewRevision()}:${store.getStructuredMemoryRevision()}:${store.getGraphReviewRevision()}`,
@@ -18782,6 +18784,16 @@ test('human review calibration uses latest authoritative decisions without claim
     assert.notStrictEqual(refreshedCalibration, firstCalibration)
     assert.equal(refreshedCalibration.identityPairs.merged, 1)
     assert.equal(refreshedCalibration.reviewedTotal, 5)
+    assert.strictEqual(store.getTaskReviewFeedbackStats(), firstTaskFeedback)
+    database.prepare(`
+      INSERT INTO task_review_decisions(
+        evidence_fingerprint,task_id,decision,created_at,updated_at
+      ) VALUES(?,?,?,?,?)
+    `).run('task-rejected', 'task-3', 'rejected', now, now)
+    const refreshedTaskFeedback = store.getTaskReviewFeedbackStats()
+    assert.notStrictEqual(refreshedTaskFeedback, firstTaskFeedback)
+    assert.equal(refreshedTaskFeedback.rejected, 1)
+    assert.equal(store.getHumanReviewCalibrationStats().reviewedTotal, 6)
   })
 })
 

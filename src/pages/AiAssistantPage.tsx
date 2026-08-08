@@ -15382,7 +15382,7 @@ function AiAssistantPage() {
             </div>}
             {memoryDiagnostics.graphReviewRevision?.version && <div className={`assistant-recovery-audit ${memoryDiagnostics.graphReviewRevisionHealthy ? 'healthy' : 'unhealthy'}`}>
               <header><ShieldCheck size={15} /><span><b>图谱审阅分页一致性保护</b>
-                <small>候选队列、实体、关系和关系纠正共享数据库 revision；触发器即使名称仍在但定义被替换，也会被诊断发现并在启动时按项修复。</small>
+                <small>候选队列、身份判断、实体、关系和关系纠正共享数据库 revision；触发器即使名称仍在但定义被替换，也会被诊断发现并在启动时按项修复。</small>
               </span></header>
               <div className="assistant-recovery-current">
                 <span>当前状态 <b>{memoryDiagnostics.graphReviewRevisionHealthy ? '保护正常' : '需要检查'}</b></span>
