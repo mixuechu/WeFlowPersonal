@@ -517,6 +517,8 @@
 .assistant-human-calibration > div > span { padding: 8px; border-radius: 8px; display: grid; gap: 3px; background: #f1f5f0; }
 .assistant-human-calibration > div b { font-size: 11px; }
 .assistant-human-calibration > p { margin: 9px 0 0; }
+.assistant-human-calibration > p button { margin: 5px 5px 0 0; padding: 4px 7px; border: 1px solid #cbd8ce; border-radius: 7px; background: #f7faf6; color: #315c4e; font-size: 8px; cursor: pointer; }
+.assistant-human-calibration > p button:hover { background: #edf4ed; }
 .assistant-notification-delivery { margin: 10px 0; padding: 9px 12px; border: 1px solid #d5e2d7; border-radius: 10px; display: flex; justify-content: space-between; align-items: center; gap: 12px; color: #315c4e; background: #f7faf7; font-size: 9px; }
 .assistant-notification-delivery > div { display: flex; align-items: center; gap: 8px; }
 .assistant-notification-delivery > div span { display: grid; gap: 2px; }

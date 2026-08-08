@@ -61,6 +61,10 @@ import {
   type EntityDossierMetric
 } from '../utils/entityDossierDrilldown'
 import {
+  calibrationReviewDrilldown,
+  type CalibrationReviewTarget
+} from '../utils/calibrationReviewDrilldown'
+import {
   selectMemoryGrowthConnectorOperation,
   selectMemoryGrowthOrigin,
   selectMemoryGrowthSource,
@@ -5781,6 +5785,18 @@ function AiAssistantPage() {
         ?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 0)
   }
 
+  const focusCalibrationReviewArchive = (target: CalibrationReviewTarget) => {
+    const drilldown = calibrationReviewDrilldown(target)
+    setFocusedReviewId('')
+    clearReviewReturnTarget()
+    setReviewStatusFilter(drilldown.status)
+    setReviewKindFilter(drilldown.kind)
+    setReviewQuery(drilldown.query)
+    setMessage('已进入校准指标对应的 SQLCipher 已处理审阅档案；这里展示可核验的候选与本人裁决。')
+    window.setTimeout(() => document.getElementById(drilldown.sectionId)
+      ?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 0)
+  }
+
   const openReviewInboxTarget = (target: ReviewInboxTarget) => {
     if (target === 'confirmed_conflicts') {
       setMemoryQuery('')
@@ -9621,6 +9637,9 @@ function AiAssistantPage() {
             {Math.round(Number(dashboard.humanReviewCalibration.identityPairs.candidateAudit.calibration.lower95 || 0) * 100)}%–
             {Math.round(Number(dashboard.humanReviewCalibration.identityPairs.candidateAudit.calibration.upper95 || 0) * 100)}%）。
             <small>追加式记录每个候选实例的第一次本人裁决；不含姓名、账号、候选解释或聊天原文，也不代表未审阅实体对的总体准确率。</small>
+            <button type="button" onClick={() => focusCalibrationReviewArchive('identity')}>
+              核验已处理身份建议
+            </button>
           </p>}
           {Number(dashboard.humanReviewCalibration.graphCandidates?.candidateAudit?.total || 0) > 0 && <p>
             图谱候选首次裁决：原样正确{' '}
@@ -9634,6 +9653,10 @@ function AiAssistantPage() {
             <small>
               关系、实体创建、摘要和别名分别统计；人工修改后采用不会冒充模型原样正确。账本不保存候选正文或原文。
             </small>
+            <button type="button" onClick={() => focusCalibrationReviewArchive('relation')}>关系</button>
+            <button type="button" onClick={() => focusCalibrationReviewArchive('entity_creation')}>实体</button>
+            <button type="button" onClick={() => focusCalibrationReviewArchive('entity_summary')}>摘要</button>
+            <button type="button" onClick={() => focusCalibrationReviewArchive('entity_alias')}>别名</button>
           </p>}
           {Number(dashboard.humanReviewCalibration.graphCandidates?.candidateAudit?.rollingTrend?.latest?.reviewed || 0) > 0 && <p>
             最近图谱候选版本内严格原样命中{' '}
@@ -9657,6 +9680,11 @@ function AiAssistantPage() {
               {' · '}{dashboard.humanReviewCalibration.graphCandidates.candidateAudit.rollingTrend.scope.schemaVersion}
               {' · '}{dashboard.humanReviewCalibration.graphCandidates.candidateAudit.rollingTrend.scope.model}
             </small>}
+            {['relation', 'entity_creation', 'entity_summary', 'entity_alias'].includes(
+              String(dashboard.humanReviewCalibration.graphCandidates.candidateAudit.rollingTrend.scope?.candidateKind || '')
+            ) && <button type="button" onClick={() => focusCalibrationReviewArchive(
+              dashboard.humanReviewCalibration.graphCandidates.candidateAudit.rollingTrend.scope.candidateKind as CalibrationReviewTarget
+            )}>核验本类型历史</button>}
           </p>}
           {Number(dashboard.humanReviewCalibration.identityPairs?.candidateAudit?.rollingTrend?.latest?.reviewed || 0) > 0 && <p>
             最近候选版本内同一人建议{' '}

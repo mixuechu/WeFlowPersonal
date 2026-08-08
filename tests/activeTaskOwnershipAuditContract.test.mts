@@ -110,6 +110,18 @@ test('legacy user reviews backfill calibration without copying review content', 
   assert.match(page, /不复制姓名、候选解释或聊天原文/)
 })
 
+test('calibration metrics navigate to resolved authoritative review kinds', () => {
+  const page = read('src/pages/AiAssistantPage.tsx')
+  const navigation = read('src/utils/calibrationReviewDrilldown.ts')
+
+  assert.match(navigation, /status: 'resolved'/)
+  assert.match(navigation, /target === 'identity' \? 'possible_duplicate' : target/)
+  assert.match(page, /focusCalibrationReviewArchive/)
+  assert.match(page, /setReviewQuery\(drilldown\.query\)/)
+  assert.match(page, /核验已处理身份建议/)
+  assert.match(page, /核验本类型历史/)
+})
+
 test('ownership calibration detects rolling drift without small-sample alarms', () => {
   const store = read('electron/services/personalMemoryStore.ts')
   const page = read('src/pages/AiAssistantPage.tsx')
