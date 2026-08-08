@@ -38,7 +38,7 @@ test('real-world calibration separates active mine audits from candidate decisio
 
   assert.match(store, /active_mine_correct/)
   assert.match(store, /candidate_confirmed/)
-  assert.match(store, /human-review-calibration-v3/)
+  assert.match(store, /human-review-calibration-v4/)
   assert.match(page, /自动归给我：正确 \/ 误判/)
   assert.match(page, /待定归属：确认 \/ 排除/)
 })
@@ -78,4 +78,21 @@ test('selected ownership reviews expose uncertainty instead of claiming populati
   assert.match(store, /recommendedMinimum/)
   assert.match(page, /95% 统计区间/)
   assert.match(page, /仍不能代表未抽检的全部待办/)
+})
+
+test('ownership calibration keeps rule, prompt, schema, model and source versions comparable', () => {
+  const service = read('electron/services/aiAssistantService.ts')
+  const store = read('electron/services/personalMemoryStore.ts')
+  const page = read('src/pages/AiAssistantPage.tsx')
+
+  assert.match(service, /ownershipPolicyVersion: TASK_ASSIGNMENT_POLICY_VERSION/)
+  assert.match(service, /ownershipPolicyVersion: DOCUMENT_TASK_OWNERSHIP_POLICY_VERSION/)
+  assert.match(service, /ownershipPromptVersion:/)
+  assert.match(service, /ownershipSchemaVersion:/)
+  assert.match(service, /ownershipModel:/)
+  assert.match(store, /legacy-unknown-policy/)
+  assert.match(store, /GROUP BY policy_version,prompt_version,schema_version,model,source_kind/)
+  assert.match(store, /COUNT\(\*\) OVER\(\) AS version_group_total/)
+  assert.match(page, /按归属版本查看真实抽检/)
+  assert.match(page, /当前仅展示最近有人工判断的 12 组版本/)
 })

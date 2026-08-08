@@ -130,6 +130,8 @@ export function normalizeDataSourceClaimNature(
     : normalized
 }
 
+export const DOCUMENT_TASK_OWNERSHIP_POLICY_VERSION = 'document-task-ownership-v1'
+
 export function classifyDocumentTaskOwnership(
   modelClassification: string,
   content: string,

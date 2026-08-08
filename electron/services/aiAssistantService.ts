@@ -142,7 +142,11 @@ import {
 } from './taskIntelligence'
 import { buildEntityInsights, paginateEntityRelatedTasks } from './relationshipInsights'
 import { boundEntityIdentityPresentation } from './entityIdentityPresentation'
-import { classifyTaskAssignment, evaluateTaskAssignmentPolicy } from './taskAssignmentPolicy'
+import {
+  TASK_ASSIGNMENT_POLICY_VERSION,
+  classifyTaskAssignment,
+  evaluateTaskAssignmentPolicy
+} from './taskAssignmentPolicy'
 import { buildWeeklyBriefing, isQuietTime } from './briefingIntelligence'
 import { groundBriefingDigest } from './briefingEvidencePolicy'
 import {
@@ -327,6 +331,7 @@ import {
   buildUntrustedMemoryQuestionEnvelope,
   classifyModelAnswerAuditFailure,
   classifyDocumentTaskOwnership,
+  DOCUMENT_TASK_OWNERSHIP_POLICY_VERSION,
   filterModelEligibleMemoryResults,
   filterTrustedConversationHistory,
   finalizeGroundedMemoryAnswer,
@@ -443,6 +448,11 @@ type AssistantTask = {
   classification?: 'mine' | 'uncertain'
   assignmentEvidence?: string
   ownershipPolicyReason?: string
+  ownershipPolicyVersion?: string
+  ownershipPromptVersion?: string
+  ownershipSchemaVersion?: string
+  ownershipModel?: string
+  ownershipSourceKind?: 'wechat' | 'documents' | 'legacy'
   sourceMessageIds?: string[]
   evidence?: Array<{
     sourceId?: string
@@ -3232,6 +3242,11 @@ export class AiAssistantService {
         classification: assignment.classification,
         assignmentEvidence: String(item.assignmentEvidence || '').slice(0, 300),
         ownershipPolicyReason: assignment.rationale,
+        ownershipPolicyVersion: TASK_ASSIGNMENT_POLICY_VERSION,
+        ownershipPromptVersion: String(digest.__meta?.promptVersion || EXTRACTION_PROMPT_VERSION).slice(0, 120),
+        ownershipSchemaVersion: String(digest.__meta?.schemaVersion || EXTRACTION_SCHEMA_VERSION).slice(0, 120),
+        ownershipModel: String(digest.__meta?.model || 'unknown').slice(0, 120),
+        ownershipSourceKind: 'wechat',
         sourceMessageIds,
         evidence: evidenceMessages.map((message: any) => ({
           sourceId: String(message.sourceId || 'wechat'),
@@ -3342,6 +3357,11 @@ export class AiAssistantService {
         ownershipPolicyReason: classification === 'mine'
           ? '文档正文明确出现用户姓名或别名，仍保留原文证据'
           : '文档没有明确把事项指派给用户，进入人工归属确认',
+        ownershipPolicyVersion: DOCUMENT_TASK_OWNERSHIP_POLICY_VERSION,
+        ownershipPromptVersion: String(digest.__meta?.promptVersion || `${EXTRACTION_PROMPT_VERSION}/document-v1`).slice(0, 120),
+        ownershipSchemaVersion: String(digest.__meta?.schemaVersion || EXTRACTION_SCHEMA_VERSION).slice(0, 120),
+        ownershipModel: String(digest.__meta?.model || 'unknown').slice(0, 120),
+        ownershipSourceKind: 'documents',
         sourceMessageIds,
         evidence: evidenceMessages.map(message => ({
           sourceId: 'documents',

@@ -171,6 +171,11 @@ type Task = {
   classification?: 'mine' | 'uncertain' | 'others'
   assignmentEvidence?: string
   ownershipPolicyReason?: string
+  ownershipPolicyVersion?: string
+  ownershipPromptVersion?: string
+  ownershipSchemaVersion?: string
+  ownershipModel?: string
+  ownershipSourceKind?: 'wechat' | 'documents' | 'legacy'
   createdAt?: string
   updatedAt?: string
   mutationToken?: string
@@ -9572,6 +9577,27 @@ function AiAssistantPage() {
               ? ` 还需抽检 ${Number(dashboard.humanReviewCalibration.activeMineAudit.calibration.remainingToRecommended).toLocaleString()} 项，才达到首个趋势观察门槛。`
               : ' 已达到首个趋势观察门槛；仍不能代表未抽检的全部待办。'}
           </p>}
+          {!!dashboard.humanReviewCalibration.activeMineAudit?.versions?.length && <details>
+            <summary>
+              按归属版本查看真实抽检（显示 {dashboard.humanReviewCalibration.activeMineAudit.versions.length} /
+              {' '}{Number(dashboard.humanReviewCalibration.activeMineAudit.versionGroupTotal ||
+                dashboard.humanReviewCalibration.activeMineAudit.versions.length)} 组）
+            </summary>
+            <div className="assistant-task-history">
+              {dashboard.humanReviewCalibration.activeMineAudit.versions.map((version: any) => <small
+                key={`${version.sourceKind}:${version.policyVersion}:${version.promptVersion}:${version.schemaVersion}:${version.model}`}>
+                <b>{version.sourceKind === 'wechat' ? '微信' : version.sourceKind === 'documents' ? '本机文档' : '历史来源'}</b>
+                {' · '}{version.policyVersion} · {version.promptVersion} · {version.schemaVersion} · {version.model}
+                {' · '}正确 {Number(version.correct).toLocaleString()} / 误判 {Number(version.incorrect).toLocaleString()}
+                {version.calibration?.observedRate !== null
+                  ? ` · 观察命中 ${Math.round(Number(version.calibration.observedRate) * 100)}%（95% 区间 ${Math.round(Number(version.calibration.lower95) * 100)}%–${Math.round(Number(version.calibration.upper95) * 100)}%）`
+                  : ''}
+              </small>)}
+            </div>
+            {dashboard.humanReviewCalibration.activeMineAudit.versionsTruncated && <small>
+              当前仅展示最近有人工判断的 12 组版本；总量统计仍覆盖全部历史版本。
+            </small>}
+          </details>}
           {!Number(dashboard.humanReviewCalibration.reviewedTotal || 0) && <p>完成一些候选确认或拒绝后，这里会开始形成你自己的真实质量基线。</p>}
         </section>}
         {dashboard?.notificationDelivery && <section className={`assistant-notification-delivery ${
@@ -13249,6 +13275,11 @@ function AiAssistantPage() {
                   {taskWorkspace.ownershipReview?.eligible && <div className="assistant-task-ownership-audit">
                     <span><b>这项待办真的属于你吗？</b>
                       <small>反馈绑定当前完整原文证据，可在归属反馈档案中撤销；不会按相似文字影响别的事项。</small>
+                      <small>
+                        归属版本：{taskWorkspace.task.ownershipPolicyVersion || '历史规则未知'} ·{' '}
+                        {taskWorkspace.task.ownershipPromptVersion || '历史 Prompt 未记录'} ·{' '}
+                        {taskWorkspace.task.ownershipModel || '历史模型未记录'}
+                      </small>
                     </span>
                     <button className={taskWorkspace.ownershipReview.decision === 'mine' ? 'selected' : ''}
                       disabled={taskOwnershipAuditSaving}

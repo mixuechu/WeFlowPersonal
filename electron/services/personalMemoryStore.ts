@@ -14523,7 +14523,15 @@ export class PersonalMemoryStore {
   getTaskReviewFeedbackStats(): any {
     if (!this.db) return {
       mine: 0, rejected: 0, suppressed: 0, reconciled: 0,
-      activeMineAudit: { correct: 0, incorrect: 0, total: 0 },
+      activeMineAudit: {
+        correct: 0,
+        incorrect: 0,
+        total: 0,
+        calibration: selectedReviewBinomialCalibration(0, 0),
+        versions: [],
+        versionGroupTotal: 0,
+        versionsTruncated: false
+      },
       candidateOwnership: { confirmed: 0, rejected: 0, total: 0 }
     }
     const revision = this.getTaskOwnershipReviewRevision()
@@ -14555,11 +14563,67 @@ export class PersonalMemoryStore {
     `).get() as any
     const activeMineCorrect = Number(row?.active_mine_correct || 0)
     const activeMineIncorrect = Number(row?.active_mine_incorrect || 0)
+    const versionRows = this.db.prepare(`
+      WITH versioned AS (
+        SELECT
+          CASE WHEN json_type(task_json,'$.ownershipPolicyVersion')='text'
+            AND trim(json_extract(task_json,'$.ownershipPolicyVersion'))!=''
+            THEN substr(json_extract(task_json,'$.ownershipPolicyVersion'),1,120)
+            ELSE 'legacy-unknown-policy' END AS policy_version,
+          CASE WHEN json_type(task_json,'$.ownershipPromptVersion')='text'
+            AND trim(json_extract(task_json,'$.ownershipPromptVersion'))!=''
+            THEN substr(json_extract(task_json,'$.ownershipPromptVersion'),1,120)
+            ELSE 'legacy-unknown-prompt' END AS prompt_version,
+          CASE WHEN json_type(task_json,'$.ownershipSchemaVersion')='text'
+            AND trim(json_extract(task_json,'$.ownershipSchemaVersion'))!=''
+            THEN substr(json_extract(task_json,'$.ownershipSchemaVersion'),1,120)
+            ELSE 'legacy-unknown-schema' END AS schema_version,
+          CASE WHEN json_type(task_json,'$.ownershipModel')='text'
+            AND trim(json_extract(task_json,'$.ownershipModel'))!=''
+            THEN substr(json_extract(task_json,'$.ownershipModel'),1,120)
+            ELSE 'legacy-unknown-model' END AS model,
+          CASE WHEN json_extract(task_json,'$.ownershipSourceKind') IN ('wechat','documents')
+            THEN json_extract(task_json,'$.ownershipSourceKind') ELSE 'legacy' END AS source_kind,
+          decision,updated_at
+        FROM task_review_decisions
+        WHERE revoked_at IS NULL AND json_valid(task_json)=1
+          AND json_extract(task_json,'$.classification')='mine'
+      )
+      SELECT policy_version,prompt_version,schema_version,model,source_kind,
+        SUM(CASE WHEN decision='mine' THEN 1 ELSE 0 END) AS correct,
+        SUM(CASE WHEN decision='rejected' THEN 1 ELSE 0 END) AS incorrect,
+        MAX(updated_at) AS last_reviewed_at,
+        COUNT(*) OVER() AS version_group_total
+      FROM versioned
+      GROUP BY policy_version,prompt_version,schema_version,model,source_kind
+      ORDER BY last_reviewed_at DESC,policy_version,prompt_version,model
+      LIMIT 12
+    `).all() as any[]
+    const versionGroupTotal = Number(versionRows[0]?.version_group_total || 0)
+    const versions = versionRows.map(version => {
+      const correct = Number(version.correct || 0)
+      const incorrect = Number(version.incorrect || 0)
+      return {
+        policyVersion: String(version.policy_version || ''),
+        promptVersion: String(version.prompt_version || ''),
+        schemaVersion: String(version.schema_version || ''),
+        model: String(version.model || ''),
+        sourceKind: String(version.source_kind || 'legacy'),
+        correct,
+        incorrect,
+        total: correct + incorrect,
+        lastReviewedAt: String(version.last_reviewed_at || ''),
+        calibration: selectedReviewBinomialCalibration(correct, incorrect)
+      }
+    })
     const activeMineAudit = {
       correct: activeMineCorrect,
       incorrect: activeMineIncorrect,
       total: activeMineCorrect + activeMineIncorrect,
-      calibration: selectedReviewBinomialCalibration(activeMineCorrect, activeMineIncorrect)
+      calibration: selectedReviewBinomialCalibration(activeMineCorrect, activeMineIncorrect),
+      versions,
+      versionGroupTotal,
+      versionsTruncated: versions.length < versionGroupTotal
     }
     const candidateOwnership = {
       confirmed: Number(row?.candidate_confirmed || 0),
@@ -14584,13 +14648,16 @@ export class PersonalMemoryStore {
 
   getHumanReviewCalibrationStats(): any {
     const empty = {
-      version: 'human-review-calibration-v3',
+      version: 'human-review-calibration-v4',
       taskOwnership: { accepted: 0, rejected: 0, revoked: 0, total: 0 },
       activeMineAudit: {
         correct: 0,
         incorrect: 0,
         total: 0,
-        calibration: selectedReviewBinomialCalibration(0, 0)
+        calibration: selectedReviewBinomialCalibration(0, 0),
+        versions: [],
+        versionGroupTotal: 0,
+        versionsTruncated: false
       },
       candidateOwnership: { confirmed: 0, rejected: 0, total: 0 },
       structuredMemory: { accepted: 0, rejected: 0, reopened: 0, total: 0 },

@@ -361,7 +361,9 @@ test('prepared cross-store mutation queues expose every fresh commit beyond fail
           displayName: `Session ${suffix}`,
           sessionType: 'private',
           enabled: false
-        }]
+        }],
+        versionGroupTotal: 1,
+        versionsTruncated: false
       })
     }
     for (let index = 0; index < 101; index += 1) {
@@ -18902,7 +18904,7 @@ test('human review calibration uses latest authoritative decisions without claim
     const firstTaskFeedback = store.getTaskReviewFeedbackStats()
     assert.strictEqual(store.getTaskReviewFeedbackStats(), firstTaskFeedback)
     assert.deepEqual(firstCalibration, {
-      version: 'human-review-calibration-v3',
+      version: 'human-review-calibration-v4',
       revision: `${store.getTaskOwnershipReviewRevision()}:${store.getStructuredMemoryRevision()}:${store.getGraphReviewRevision()}`,
       taskOwnership: { accepted: 1, rejected: 0, revoked: 1, total: 1 },
       activeMineAudit: {
@@ -18918,7 +18920,30 @@ test('human review calibration uses latest authoritative decisions without claim
           remainingToRecommended: 29,
           readyForTrend: false,
           interpretation: 'selected_review_interval_not_population_accuracy'
-        }
+        },
+        versions: [{
+          policyVersion: 'legacy-unknown-policy',
+          promptVersion: 'legacy-unknown-prompt',
+          schemaVersion: 'legacy-unknown-schema',
+          model: 'legacy-unknown-model',
+          sourceKind: 'legacy',
+          correct: 1,
+          incorrect: 0,
+          total: 1,
+          lastReviewedAt: now,
+          calibration: {
+            reviewed: 1,
+            observedRate: 1,
+            lower95: 0.2065,
+            upper95: 1,
+            recommendedMinimum: 30,
+            remainingToRecommended: 29,
+            readyForTrend: false,
+            interpretation: 'selected_review_interval_not_population_accuracy'
+          }
+        }],
+        versionGroupTotal: 1,
+        versionsTruncated: false
       },
       candidateOwnership: { confirmed: 0, rejected: 0, total: 0 },
       structuredMemory: { accepted: 1, rejected: 0, reopened: 0, total: 1 },
@@ -18959,7 +18984,10 @@ test('human review calibration uses latest authoritative decisions without claim
         remainingToRecommended: 29,
         readyForTrend: false,
         interpretation: 'selected_review_interval_not_population_accuracy'
-      }
+      },
+      versions: firstTaskFeedback.activeMineAudit.versions,
+      versionGroupTotal: 1,
+      versionsTruncated: false
     })
     assert.deepEqual(refreshedTaskFeedback.candidateOwnership, { confirmed: 0, rejected: 1, total: 1 })
     assert.equal(store.getHumanReviewCalibrationStats().reviewedTotal, 6)
@@ -18972,7 +19000,14 @@ test('human review calibration uses latest authoritative decisions without claim
         `task-calibration-${index}`,
         `task-calibration-${index}`,
         index < 24 ? 'mine' : 'rejected',
-        JSON.stringify({ classification: 'mine' }),
+        JSON.stringify({
+          classification: 'mine',
+          ownershipPolicyVersion: 'task-assignment-v2',
+          ownershipPromptVersion: 'personal-os-prompt-v8',
+          ownershipSchemaVersion: 'personal-memory-schema-v6',
+          ownershipModel: 'deepseek-chat',
+          ownershipSourceKind: 'wechat'
+        }),
         now,
         now
       )
@@ -18984,6 +19019,48 @@ test('human review calibration uses latest authoritative decisions without claim
     assert.equal(trendCalibration.remainingToRecommended, 0)
     assert.ok(trendCalibration.lower95 < trendCalibration.observedRate)
     assert.ok(trendCalibration.upper95 > trendCalibration.observedRate)
+    const trendAudit = store.getHumanReviewCalibrationStats().activeMineAudit
+    const trendVersions = trendAudit.versions
+    assert.equal(trendVersions.length, 2)
+    assert.equal(trendAudit.versionGroupTotal, 2)
+    assert.equal(trendAudit.versionsTruncated, false)
+    const currentVersion = trendVersions.find((item: any) =>
+      item.policyVersion === 'task-assignment-v2')
+    const legacyVersion = trendVersions.find((item: any) =>
+      item.policyVersion === 'legacy-unknown-policy')
+    assert.equal(currentVersion?.promptVersion, 'personal-os-prompt-v8')
+    assert.equal(currentVersion?.schemaVersion, 'personal-memory-schema-v6')
+    assert.equal(currentVersion?.model, 'deepseek-chat')
+    assert.equal(currentVersion?.sourceKind, 'wechat')
+    assert.equal(currentVersion?.total, 29)
+    assert.equal(currentVersion?.correct, 24)
+    assert.equal(currentVersion?.incorrect, 5)
+    assert.equal(legacyVersion?.total, 1)
+    for (let index = 0; index < 13; index += 1) {
+      database.prepare(`
+        INSERT INTO task_review_decisions(
+          evidence_fingerprint,task_id,decision,task_json,created_at,updated_at
+        ) VALUES(?,?,?,?,?,?)
+      `).run(
+        `task-version-cap-${index}`,
+        `task-version-cap-${index}`,
+        'mine',
+        JSON.stringify({
+          classification: 'mine',
+          ownershipPolicyVersion: `task-assignment-experiment-${index}`,
+          ownershipPromptVersion: 'personal-os-prompt-v8',
+          ownershipSchemaVersion: 'personal-memory-schema-v6',
+          ownershipModel: 'deepseek-chat',
+          ownershipSourceKind: 'wechat'
+        }),
+        now,
+        new Date(Date.parse(now) + index + 1).toISOString()
+      )
+    }
+    const boundedVersions = store.getHumanReviewCalibrationStats().activeMineAudit
+    assert.equal(boundedVersions.versionGroupTotal, 15)
+    assert.equal(boundedVersions.versions.length, 12)
+    assert.equal(boundedVersions.versionsTruncated, true)
   })
 })
 
@@ -19141,7 +19218,10 @@ test('task ownership feedback persists evidence-scoped decisions and suppression
         remainingToRecommended: 30,
         readyForTrend: false,
         interpretation: 'selected_review_interval_not_population_accuracy'
-      }
+      },
+      versions: [],
+      versionGroupTotal: 0,
+      versionsTruncated: false
     },
     candidateOwnership: { confirmed: 0, rejected: 1, total: 1 }
   })
@@ -19177,7 +19257,10 @@ test('task ownership feedback persists evidence-scoped decisions and suppression
         remainingToRecommended: 30,
         readyForTrend: false,
         interpretation: 'selected_review_interval_not_population_accuracy'
-      }
+      },
+      versions: [],
+      versionGroupTotal: 0,
+      versionsTruncated: false
     },
     candidateOwnership: { confirmed: 0, rejected: 0, total: 0 }
   })
