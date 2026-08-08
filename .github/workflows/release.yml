@@ -30,6 +30,9 @@ jobs:
       - name: Install Dependencies
         run: npm install --ignore-scripts
 
+      - name: Verify production and complete dependency trees
+        run: npm run verify:dependencies
+
       - name: Ensure mac key helpers are executable
         shell: bash
         run: |
@@ -112,6 +115,9 @@ jobs:
       - name: Install Dependencies
         run: npm install
 
+      - name: Verify production and complete dependency trees
+        run: npm run verify:dependencies
+
       - name: Ensure linux key helper is executable
         shell: bash
         run: |
@@ -170,6 +176,9 @@ jobs:
       - name: Install Dependencies
         run: npm install
 
+      - name: Verify production and complete dependency trees
+        run: npm run verify:dependencies
+
       - name: Sync version with tag
         shell: bash
         run: |
@@ -222,6 +231,9 @@ jobs:
           cache: 'npm'
       - name: Install Dependencies
         run: npm install
+
+      - name: Verify production and complete dependency trees
+        run: npm run verify:dependencies
 
       - name: Sync version with tag
         shell: bash
