@@ -18714,6 +18714,65 @@ test('anonymous task-assignment golden set meets the published quality baseline'
   assert.ok(delegated.rationale.includes('执行者是收件人'))
 })
 
+test('human review calibration uses latest authoritative decisions without claiming population accuracy', () => {
+  withStore(store => {
+    const database = (store as any).db
+    const now = '2026-08-09T00:00:00.000Z'
+    database.prepare(`
+      INSERT INTO task_review_decisions(
+        evidence_fingerprint,task_id,decision,created_at,updated_at
+      ) VALUES(?,?,?,?,?)
+    `).run('task-mine', 'task-1', 'mine', now, now)
+    database.prepare(`
+      INSERT INTO task_review_decisions(
+        evidence_fingerprint,task_id,decision,revoked_at,created_at,updated_at
+      ) VALUES(?,?,?,?,?,?)
+    `).run('task-revoked', 'task-2', 'rejected', now, now, now)
+    database.prepare(`
+      INSERT INTO memory_review_decisions(
+        item_kind,item_id,previous_status,decision,actor,created_at
+      ) VALUES(?,?,?,?,?,?)
+    `).run('claim', 'claim-1', 'candidate', 'rejected', 'user', now)
+    database.prepare(`
+      INSERT INTO memory_review_decisions(
+        item_kind,item_id,previous_status,decision,actor,created_at
+      ) VALUES(?,?,?,?,?,?)
+    `).run('claim', 'claim-1', 'rejected', 'confirmed', 'user', now)
+    database.prepare(`
+      INSERT INTO memory_review_decisions(
+        item_kind,item_id,previous_status,decision,actor,created_at
+      ) VALUES(?,?,?,?,?,?)
+    `).run('event', 'event-system', 'candidate', 'rejected', 'system', now)
+    database.prepare(`
+      INSERT INTO review_queue(
+        id,kind,title,detail,confidence,status,payload_json,created_at,resolved_at
+      ) VALUES(?,?,?,?,?,?,?,?,?)
+    `).run('review-user', 'relation', '', '', 0.8, 'rejected',
+      JSON.stringify({ resolutionActor: 'user' }), now, now)
+    database.prepare(`
+      INSERT INTO review_queue(
+        id,kind,title,detail,confidence,status,payload_json,created_at,resolved_at
+      ) VALUES(?,?,?,?,?,?,?,?,?)
+    `).run('review-system', 'relation', '', '', 0.8, 'confirmed',
+      JSON.stringify({ resolutionActor: 'system' }), now, now)
+    database.prepare(`
+      INSERT INTO identity_decisions(
+        pair_key,left_entity_id,right_entity_id,decision,created_at,updated_at
+      ) VALUES(?,?,?,?,?,?)
+    `).run('entity-1|entity-2', 'entity-1', 'entity-2', 'different', now, now)
+
+    assert.deepEqual(store.getHumanReviewCalibrationStats(), {
+      version: 'human-review-calibration-v1',
+      taskOwnership: { accepted: 1, rejected: 0, revoked: 1, total: 1 },
+      structuredMemory: { accepted: 1, rejected: 0, reopened: 0, total: 1 },
+      graphCandidates: { accepted: 0, rejected: 1, total: 1 },
+      identityPairs: { merged: 0, different: 1, total: 1 },
+      reviewedTotal: 4,
+      interpretation: 'selected_human_reviews_not_population_accuracy'
+    })
+  })
+})
+
 test('forget entity transaction removes graph, memory, search, task audit and assistant traces', () => withStore(store => {
   store.syncGraph({
     entities: [{

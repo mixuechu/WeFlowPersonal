@@ -14259,6 +14259,83 @@ export class PersonalMemoryStore {
     `).get() || { mine: 0, rejected: 0, suppressed: 0, reconciled: 0 }
   }
 
+  getHumanReviewCalibrationStats(): any {
+    const empty = {
+      version: 'human-review-calibration-v1',
+      taskOwnership: { accepted: 0, rejected: 0, revoked: 0, total: 0 },
+      structuredMemory: { accepted: 0, rejected: 0, reopened: 0, total: 0 },
+      graphCandidates: { accepted: 0, rejected: 0, total: 0 },
+      identityPairs: { merged: 0, different: 0, total: 0 },
+      reviewedTotal: 0,
+      interpretation: 'selected_human_reviews_not_population_accuracy'
+    }
+    if (!this.db) return empty
+    const task = this.db.prepare(`
+      SELECT
+        SUM(CASE WHEN revoked_at IS NULL AND decision='mine' THEN 1 ELSE 0 END) AS accepted,
+        SUM(CASE WHEN revoked_at IS NULL AND decision='rejected' THEN 1 ELSE 0 END) AS rejected,
+        SUM(CASE WHEN revoked_at IS NOT NULL THEN 1 ELSE 0 END) AS revoked
+      FROM task_review_decisions
+    `).get() as any
+    const memory = this.db.prepare(`
+      WITH latest AS (
+        SELECT decision, ROW_NUMBER() OVER (
+          PARTITION BY item_kind,item_id ORDER BY id DESC
+        ) AS position
+        FROM memory_review_decisions WHERE actor='user'
+      )
+      SELECT
+        SUM(CASE WHEN decision='confirmed' THEN 1 ELSE 0 END) AS accepted,
+        SUM(CASE WHEN decision='rejected' THEN 1 ELSE 0 END) AS rejected,
+        SUM(CASE WHEN decision='candidate' THEN 1 ELSE 0 END) AS reopened
+      FROM latest WHERE position=1
+    `).get() as any
+    const graph = this.db.prepare(`
+      SELECT
+        SUM(CASE WHEN status='confirmed' THEN 1 ELSE 0 END) AS accepted,
+        SUM(CASE WHEN status='rejected' THEN 1 ELSE 0 END) AS rejected
+      FROM review_queue
+      WHERE status!='pending' AND json_valid(payload_json)=1
+        AND json_extract(payload_json,'$.resolutionActor')='user'
+    `).get() as any
+    const identity = this.db.prepare(`
+      SELECT
+        SUM(CASE WHEN decision='merged' THEN 1 ELSE 0 END) AS merged,
+        SUM(CASE WHEN decision='different' THEN 1 ELSE 0 END) AS different
+      FROM identity_decisions
+    `).get() as any
+    const taskOwnership = {
+      accepted: Number(task?.accepted || 0),
+      rejected: Number(task?.rejected || 0),
+      revoked: Number(task?.revoked || 0),
+      total: Number(task?.accepted || 0) + Number(task?.rejected || 0)
+    }
+    const structuredMemory = {
+      accepted: Number(memory?.accepted || 0),
+      rejected: Number(memory?.rejected || 0),
+      reopened: Number(memory?.reopened || 0),
+      total: Number(memory?.accepted || 0) + Number(memory?.rejected || 0) + Number(memory?.reopened || 0)
+    }
+    const graphCandidates = {
+      accepted: Number(graph?.accepted || 0),
+      rejected: Number(graph?.rejected || 0),
+      total: Number(graph?.accepted || 0) + Number(graph?.rejected || 0)
+    }
+    const identityPairs = {
+      merged: Number(identity?.merged || 0),
+      different: Number(identity?.different || 0),
+      total: Number(identity?.merged || 0) + Number(identity?.different || 0)
+    }
+    return {
+      ...empty,
+      taskOwnership,
+      structuredMemory,
+      graphCandidates,
+      identityPairs,
+      reviewedTotal: taskOwnership.total + structuredMemory.total + graphCandidates.total + identityPairs.total
+    }
+  }
+
   correctClaim(id: string, input: {
     value: string
     predicate?: string

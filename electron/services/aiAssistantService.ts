@@ -4519,6 +4519,7 @@ export class AiAssistantService {
         generalEvidenceRevisions: assistantArchiveStats.generalEvidenceRevisions
       },
       qualityBaseline: evaluateTaskAssignmentPolicy(),
+      humanReviewCalibration: personalMemoryStore.getHumanReviewCalibrationStats(),
       weeklyBriefing: buildWeeklyBriefing(this.state.briefings, tasks),
       notificationDelivery: {
         pending: this.state.notifications.pending.length,

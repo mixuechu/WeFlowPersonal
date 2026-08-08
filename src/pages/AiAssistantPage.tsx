@@ -9511,6 +9511,21 @@ function AiAssistantPage() {
           </span></div>
           <span>{dashboard.qualityBaseline.failures?.length ? `${dashboard.qualityBaseline.failures.length} 个样本未通过` : '全部通过'}</span>
         </section>}
+        {dashboard?.humanReviewCalibration && <section className="assistant-human-calibration">
+          <header>
+            <div><ShieldCheck size={15} /><span><strong>真实人工审阅校准</strong>
+              <small>来自你已经处理的真实候选；这是选择性审阅样本，不等同于全部抽取准确率。</small>
+            </span></div>
+            <b>{Number(dashboard.humanReviewCalibration.reviewedTotal || 0).toLocaleString()} 项最新判断</b>
+          </header>
+          <div>
+            <span><b>{Number(dashboard.humanReviewCalibration.taskOwnership.accepted || 0)} / {Number(dashboard.humanReviewCalibration.taskOwnership.rejected || 0)}</b><small>待办归属：确认 / 拒绝</small></span>
+            <span><b>{Number(dashboard.humanReviewCalibration.structuredMemory.accepted || 0)} / {Number(dashboard.humanReviewCalibration.structuredMemory.rejected || 0)}</b><small>事实事件：确认 / 拒绝</small></span>
+            <span><b>{Number(dashboard.humanReviewCalibration.graphCandidates.accepted || 0)} / {Number(dashboard.humanReviewCalibration.graphCandidates.rejected || 0)}</b><small>图谱候选：确认 / 拒绝</small></span>
+            <span><b>{Number(dashboard.humanReviewCalibration.identityPairs.merged || 0)} / {Number(dashboard.humanReviewCalibration.identityPairs.different || 0)}</b><small>身份建议：合并 / 不同人</small></span>
+          </div>
+          {!Number(dashboard.humanReviewCalibration.reviewedTotal || 0) && <p>完成一些候选确认或拒绝后，这里会开始形成你自己的真实质量基线。</p>}
+        </section>}
         {dashboard?.notificationDelivery && <section className={`assistant-notification-delivery ${
           dashboard.notificationDelivery.lastError || dashboard.notificationDelivery.discardedPendingCount ? 'warning' : ''
         }`}>

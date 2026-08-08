@@ -495,6 +495,16 @@
 .assistant-quality-baseline span { display: grid; gap: 2px; }
 .assistant-quality-baseline small { color: #738077; font-size: 8px; }
 .assistant-quality-baseline.warning { border-color: #e2cfb8; color: #835d28; background: #fff9ef; }
+.assistant-human-calibration { margin: 10px 0; padding: 11px 12px; border: 1px solid #d8dfd8; border-radius: 11px; color: #3e5145; background: #fafbf8; }
+.assistant-human-calibration header { display: flex; align-items: center; justify-content: space-between; gap: 14px; }
+.assistant-human-calibration header > div { display: flex; align-items: center; gap: 8px; }
+.assistant-human-calibration header span { display: grid; gap: 2px; }
+.assistant-human-calibration header small,.assistant-human-calibration > p,.assistant-human-calibration div small { color: #778178; font-size: 8px; }
+.assistant-human-calibration header > b { color: #315c4e; font-size: 9px; }
+.assistant-human-calibration > div { display: grid; grid-template-columns: repeat(4,minmax(0,1fr)); gap: 8px; margin-top: 9px; }
+.assistant-human-calibration > div > span { padding: 8px; border-radius: 8px; display: grid; gap: 3px; background: #f1f5f0; }
+.assistant-human-calibration > div b { font-size: 11px; }
+.assistant-human-calibration > p { margin: 9px 0 0; }
 .assistant-notification-delivery { margin: 10px 0; padding: 9px 12px; border: 1px solid #d5e2d7; border-radius: 10px; display: flex; justify-content: space-between; align-items: center; gap: 12px; color: #315c4e; background: #f7faf7; font-size: 9px; }
 .assistant-notification-delivery > div { display: flex; align-items: center; gap: 8px; }
 .assistant-notification-delivery > div span { display: grid; gap: 2px; }
@@ -1223,6 +1233,7 @@
 
 @media (max-width: 920px) {
   .assistant-grid { grid-template-columns: 1fr; }
+  .assistant-human-calibration > div { grid-template-columns: repeat(2,minmax(0,1fr)); }
   .assistant-memory-scope { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .assistant-path-finder { grid-template-columns: 1fr auto 1fr; }
   .assistant-path-finder > button { grid-column: 1 / -1; }
