@@ -2783,6 +2783,10 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
   // 确认启动 API 服务
   const confirmStartApi = async () => {
     setShowApiWarning(false)
+    if (httpApiToken.trim().length < 16) {
+      showMessage('请先生成或设置至少 16 位的 Access Token', false)
+      return
+    }
     setIsTogglingApi(true)
     try {
       const result = await window.electronAPI.http.start(httpApiPort, httpApiHost)
@@ -4592,15 +4596,16 @@ JSON 输出格式：
       <div className="form-group">
         <label>Access Token (鉴权凭证)</label>
         <span className="form-hint">
-          设置后，请求头需携带 <code>Authorization: Bearer &lt;token&gt;</code>，
-          或者参数中携带 <code>?access_token=&lt;token&gt;</code>
+          所有受保护请求必须通过请求头携带 <code>Authorization: Bearer &lt;token&gt;</code>。
+          Token 不允许放在 URL 或请求正文中，避免进入浏览历史、代理日志和截图。
         </span>
         <div style={{ display: 'flex', gap: '8px', marginTop: '8px' }}>
           <input
-              type="text"
+              type="password"
               className="field-input"
               value={httpApiToken}
-              placeholder="留空表示不验证 Token"
+              placeholder="未配置或少于 16 位时拒绝所有受保护请求"
+              autoComplete="new-password"
               onChange={(e) => {
                 const val = e.target.value
                 setHttpApiToken(val)
@@ -4828,14 +4833,14 @@ JSON 输出格式：
           <input
               type="text"
               className="field-input"
-              value={`http://${httpApiHost}:${httpApiPort}/api/v1/push/messages${httpApiToken ? `?access_token=${httpApiToken}` : ''}`}
+              value={`http://${httpApiHost}:${httpApiPort}/api/v1/push/messages`}
               readOnly
           />
           <button
               className="btn btn-secondary"
               onClick={() => {
-                navigator.clipboard.writeText(`http://${httpApiHost}:${httpApiPort}/api/v1/push/messages${httpApiToken ? `?access_token=${httpApiToken}` : ''}`)
-                showMessage('已复制推送地址', true)
+                navigator.clipboard.writeText(`http://${httpApiHost}:${httpApiPort}/api/v1/push/messages`)
+                showMessage('已复制不含 Token 的推送地址', true)
               }}
               title="复制"
           >
@@ -4854,6 +4859,7 @@ JSON 输出格式：
               <code>{`http://${httpApiHost}:${httpApiPort}/api/v1/push/messages`}</code>
             </div>
             <p className="api-desc">通过 SSE 长连接接收消息事件，建议接收端按 `event + rawid` 去重。</p>
+            <p className="api-desc">订阅端需支持自定义请求头并携带 <code>Authorization: Bearer &lt;token&gt;</code>；原生 EventSource 不能设置请求头，请使用 fetch 流或支持鉴权头的 SSE 客户端。</p>
             <div className="api-params">
               {['event', 'sessionId', 'sessionType', 'rawid', 'avatarUrl', 'sourceName', 'groupName?', 'content', 'timestamp'].map((param) => (
                 <span key={param} className="param">
@@ -4881,7 +4887,7 @@ JSON 输出格式：
                 </div>
                 <div className="warning-item">
                   <span className="bullet">•</span>
-                  <span>不要在公共或不信任的网络环境下使用</span>
+                  <span>服务只接受至少 16 位 Token 的 Authorization 请求头；不要把 Token 拼进 URL</span>
                 </div>
                 <div className="warning-item">
                   <span className="bullet">•</span>
@@ -5683,7 +5689,6 @@ JSON 输出格式：
 }
 
 export default SettingsPage
-
 
 
 

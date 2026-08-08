@@ -18,6 +18,13 @@ import * as os from 'os'
 import { ApiMessageMapperPool } from './apiMessageMapperPool'
 import { mapRowsToMessagesLite } from './apiMessageMapping'
 import { paginateByStableStringCursor } from '../../shared/stableCursorPagination'
+import { sanitizeDiagnosticText } from './diagnosticRedaction'
+import {
+  extractBearerToken,
+  isValidHttpApiToken,
+  normalizeHttpApiBindHost,
+  normalizeHttpApiPort
+} from './httpApiSecurityPolicy'
 
 // ChatLab 格式定义
 interface ChatLabHeader {
@@ -159,8 +166,12 @@ class HttpService {
       return { success: true, port: this.port }
     }
 
-    this.port = port
-    this.host = host
+    const safePort = normalizeHttpApiPort(port)
+    const safeHost = normalizeHttpApiBindHost(host)
+    if (safePort === null) return { success: false, error: 'Port must be an integer between 1024 and 65535' }
+    if (safeHost === null) return { success: false, error: 'Host must be an explicit IPv4 address or localhost' }
+    this.port = safePort
+    this.host = safeHost
 
     return new Promise((resolve) => {
       this.server = http.createServer((req, res) => this.handleRequest(req, res))
@@ -185,12 +196,15 @@ class HttpService {
       })
 
       this.server.on('error', (err: NodeJS.ErrnoException) => {
+        this.running = false
+        this.server = null
         if (err.code === 'EADDRINUSE') {
           console.error(`[HttpService] Port ${this.port} is already in use`)
           resolve({ success: false, error: `Port ${this.port} is already in use` })
         } else {
-          console.error('[HttpService] Server error:', err)
-          resolve({ success: false, error: err.message })
+          const detail = sanitizeDiagnosticText(err)
+          console.error('[HttpService] Server error:', detail)
+          resolve({ success: false, error: detail })
         }
       })
 
@@ -357,10 +371,14 @@ class HttpService {
       const port = Number(this.configService.get('httpApiPort')) || 5031
       const host = String(this.configService.get('httpApiHost') || '127.0.0.1').trim() || '127.0.0.1'
       try {
-        await this.start(port, host)
-        console.log(`[HttpService] Auto-started on port ${port}`)
+        const result = await this.start(port, host)
+        if (result.success) {
+          console.log(`[HttpService] Auto-started on port ${result.port}`)
+        } else {
+          console.error('[HttpService] Auto-start failed:', result.error)
+        }
       } catch (err) {
-        console.error('[HttpService] Auto-start failed:', err)
+        console.error('[HttpService] Auto-start failed:', sanitizeDiagnosticText(err))
       }
     }
   }
@@ -404,25 +422,16 @@ class HttpService {
         return timingSafeEqual(bufA, bufB)
     }
 
-    private verifyToken(req: http.IncomingMessage, url: URL, body: Record<string, any>): boolean {
+    private verifyToken(req: http.IncomingMessage): boolean {
         const expectedToken = String(this.configService.get('httpApiToken') || '').trim()
-        if (!expectedToken) {
-            // token 未配置时拒绝所有请求，防止未授权访问
-            console.warn('[HttpService] Access denied: httpApiToken not configured')
+        if (!isValidHttpApiToken(expectedToken)) {
+            // Missing and weak legacy tokens both fail closed.
+            console.warn('[HttpService] Access denied: a strong httpApiToken is not configured')
             return false
         }
 
-        const authHeader = req.headers.authorization
-        if (authHeader && authHeader.toLowerCase().startsWith('bearer ')) {
-            const token = authHeader.substring(7).trim()
-            if (this.safeEqual(token, expectedToken)) return true
-        }
-
-        const queryToken = url.searchParams.get('access_token')
-        if (queryToken && this.safeEqual(queryToken.trim(), expectedToken)) return true
-
-        const bodyToken = body['access_token']
-        return !!(bodyToken && this.safeEqual(String(bodyToken).trim(), expectedToken))
+        const token = extractBearerToken(req.headers.authorization)
+        return !!token && this.safeEqual(token, expectedToken)
     }
 
     /**
@@ -437,6 +446,10 @@ class HttpService {
         }
         res.setHeader('Access-Control-Allow-Methods', 'GET, POST, DELETE, OPTIONS')
         res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization')
+        res.setHeader('Cache-Control', 'no-store')
+        res.setHeader('Pragma', 'no-cache')
+        res.setHeader('Referrer-Policy', 'no-referrer')
+        res.setHeader('X-Content-Type-Options', 'nosniff')
 
         if (req.method === 'OPTIONS') {
             res.writeHead(204)
@@ -448,24 +461,27 @@ class HttpService {
         const pathname = url.pathname
 
         try {
-            const bodyParams = await this.parseBody(req)
+            if (pathname !== '/health' && pathname !== '/api/v1/health') {
+                // Authenticate before reading or parsing a potentially large
+                // request body. Credentials are accepted only from the header,
+                // never from URLs or body fields that may be logged elsewhere.
+                if (!this.verifyToken(req)) {
+                    this.sendError(res, 401, 'Unauthorized: use Authorization: Bearer <token>')
+                    return
+                }
+            }
 
+            const bodyParams = await this.parseBody(req)
             for (const [key, value] of Object.entries(bodyParams)) {
                 if (!url.searchParams.has(key)) {
                     url.searchParams.set(key, String(value))
                 }
             }
 
-            if (pathname !== '/health' && pathname !== '/api/v1/health') {
-                if (!this.verifyToken(req, url, bodyParams)) {
-                    this.sendError(res, 401, 'Unauthorized: Invalid or missing access_token')
-                    return
-                }
-            }
-
             if (pathname === '/health' || pathname === '/api/v1/health') {
                 this.sendJson(res, { status: 'ok' })
             } else if (pathname === '/api/v1/push/messages') {
+                if (req.method !== 'GET') return this.sendMethodNotAllowed(res, 'GET')
                 this.handleMessagePushStream(req, res, url)
             } else if (pathname === '/api/v1/messages') {
                 await this.handleMessages(url, res)
@@ -519,8 +535,9 @@ class HttpService {
                 this.sendError(res, 404, 'Not Found')
             }
         } catch (error) {
-            console.error('[HttpService] Request error:', error)
-            this.sendError(res, 500, String(error))
+            const detail = sanitizeDiagnosticText(error)
+            console.error('[HttpService] Request error:', detail)
+            this.sendError(res, 500, detail)
         }
     }
   private startMessagePushHeartbeat(): void {
