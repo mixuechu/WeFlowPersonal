@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import {
   applyTaskReviewFeedback,
+  isRepeatedMineTaskAudit,
   reconcileTasksWithReviewDecisions,
   taskEvidenceFingerprint,
   taskReviewRestoreClassification
@@ -43,6 +44,19 @@ test('reverting ownership feedback restores the classification captured before r
   assert.equal(taskReviewRestoreClassification({ classification: 'others' }), 'others')
   assert.equal(taskReviewRestoreClassification({ classification: 'rejected' }), 'uncertain')
   assert.equal(taskReviewRestoreClassification(null), 'uncertain')
+})
+
+test('only a prior confirmation of an already-mine task is a repeated active audit', () => {
+  assert.equal(isRepeatedMineTaskAudit({
+    decision: 'mine', task_json: JSON.stringify({ classification: 'mine' })
+  }), true)
+  assert.equal(isRepeatedMineTaskAudit({
+    decision: 'mine', task_json: JSON.stringify({ classification: 'uncertain' })
+  }), false)
+  assert.equal(isRepeatedMineTaskAudit({
+    decision: 'rejected', task_json: JSON.stringify({ classification: 'mine' })
+  }), false)
+  assert.equal(isRepeatedMineTaskAudit({ decision: 'mine', task_json: '{broken' }), false)
 })
 
 test('startup reconciliation replays exact evidence decisions after an interrupted state save', () => {

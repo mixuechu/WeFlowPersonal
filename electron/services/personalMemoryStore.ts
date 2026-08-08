@@ -14291,7 +14291,11 @@ export class PersonalMemoryStore {
   }
 
   getTaskReviewFeedbackStats(): any {
-    if (!this.db) return { mine: 0, rejected: 0, suppressed: 0, reconciled: 0 }
+    if (!this.db) return {
+      mine: 0, rejected: 0, suppressed: 0, reconciled: 0,
+      activeMineAudit: { correct: 0, incorrect: 0, total: 0 },
+      candidateOwnership: { confirmed: 0, rejected: 0, total: 0 }
+    }
     const revision = this.getTaskOwnershipReviewRevision()
     if (this.taskReviewFeedbackStatsCache?.revision === revision) {
       return this.taskReviewFeedbackStatsCache.value
@@ -14301,15 +14305,41 @@ export class PersonalMemoryStore {
         SUM(CASE WHEN revoked_at IS NULL AND decision='mine' THEN 1 ELSE 0 END) AS mine,
         SUM(CASE WHEN revoked_at IS NULL AND decision='rejected' THEN 1 ELSE 0 END) AS rejected,
         SUM(CASE WHEN revoked_at IS NOT NULL THEN 1 ELSE 0 END) AS revoked,
+        SUM(CASE WHEN revoked_at IS NULL AND json_valid(task_json)=1
+          AND json_extract(task_json,'$.classification')='mine'
+          AND decision='mine' THEN 1 ELSE 0 END) AS active_mine_correct,
+        SUM(CASE WHEN revoked_at IS NULL AND json_valid(task_json)=1
+          AND json_extract(task_json,'$.classification')='mine'
+          AND decision='rejected' THEN 1 ELSE 0 END) AS active_mine_incorrect,
+        SUM(CASE WHEN revoked_at IS NULL AND (
+          CASE WHEN json_valid(task_json)=1
+            THEN COALESCE(json_extract(task_json,'$.classification'),'') ELSE '' END
+        )!='mine' AND decision='mine' THEN 1 ELSE 0 END) AS candidate_confirmed,
+        SUM(CASE WHEN revoked_at IS NULL AND (
+          CASE WHEN json_valid(task_json)=1
+            THEN COALESCE(json_extract(task_json,'$.classification'),'') ELSE '' END
+        )!='mine' AND decision='rejected' THEN 1 ELSE 0 END) AS candidate_rejected,
         COALESCE(SUM(CASE WHEN revoked_at IS NULL THEN suppression_count ELSE 0 END),0) AS suppressed,
         COALESCE(SUM(CASE WHEN revoked_at IS NULL THEN reconciliation_count ELSE 0 END),0) AS reconciled
       FROM task_review_decisions
     `).get() as any
+    const activeMineAudit = {
+      correct: Number(row?.active_mine_correct || 0),
+      incorrect: Number(row?.active_mine_incorrect || 0),
+      total: Number(row?.active_mine_correct || 0) + Number(row?.active_mine_incorrect || 0)
+    }
+    const candidateOwnership = {
+      confirmed: Number(row?.candidate_confirmed || 0),
+      rejected: Number(row?.candidate_rejected || 0),
+      total: Number(row?.candidate_confirmed || 0) + Number(row?.candidate_rejected || 0)
+    }
     const value = {
       mine: Number(row?.mine || 0),
       rejected: Number(row?.rejected || 0),
       suppressed: Number(row?.suppressed || 0),
-      reconciled: Number(row?.reconciled || 0)
+      reconciled: Number(row?.reconciled || 0),
+      activeMineAudit,
+      candidateOwnership
     }
     this.taskReviewFeedbackStatsCache = {
       revision,
@@ -14321,8 +14351,10 @@ export class PersonalMemoryStore {
 
   getHumanReviewCalibrationStats(): any {
     const empty = {
-      version: 'human-review-calibration-v1',
+      version: 'human-review-calibration-v2',
       taskOwnership: { accepted: 0, rejected: 0, revoked: 0, total: 0 },
+      activeMineAudit: { correct: 0, incorrect: 0, total: 0 },
+      candidateOwnership: { confirmed: 0, rejected: 0, total: 0 },
       structuredMemory: { accepted: 0, rejected: 0, reopened: 0, total: 0 },
       graphCandidates: { accepted: 0, rejected: 0, total: 0 },
       identityPairs: { merged: 0, different: 0, total: 0 },
@@ -14396,6 +14428,8 @@ export class PersonalMemoryStore {
       ...empty,
       revision,
       taskOwnership,
+      activeMineAudit: taskFeedback.activeMineAudit,
+      candidateOwnership: taskFeedback.candidateOwnership,
       structuredMemory,
       graphCandidates,
       identityPairs,

@@ -104,6 +104,7 @@ import {
 import { buildContextualMemoryQuestion, buildMemoryQueryPlan } from './memoryQueryPlanner'
 import {
   applyTaskReviewFeedback,
+  isRepeatedMineTaskAudit,
   reconcileTasksWithReviewDecisions,
   taskEvidenceFingerprint,
   taskReviewRestoreClassification
@@ -6891,6 +6892,17 @@ export class AiAssistantService {
     }
     const evidenceFingerprint = taskEvidenceFingerprint(task)
     if (!evidenceFingerprint) throw new Error('这条待办缺少可绑定的原文证据，不能记录归属反馈')
+    const existingDecision = personalMemoryStore.getTaskReviewDecision(evidenceFingerprint)
+    if (decision === 'mine' && isRepeatedMineTaskAudit(existingDecision)) {
+      return {
+        decision,
+        removed: false,
+        evidenceFingerprint,
+        task: { ...task, mutationToken: buildTaskMutationToken(task) },
+        revision: personalMemoryStore.getTaskOwnershipReviewRevision(),
+        unchanged: true
+      }
+    }
     const before = structuredClone(task)
     const after = decision === 'rejected'
       ? { ...structuredClone(task), classification: 'rejected', updatedAt: new Date().toISOString() }

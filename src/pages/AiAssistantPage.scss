@@ -509,7 +509,7 @@
 .assistant-human-calibration header span { display: grid; gap: 2px; }
 .assistant-human-calibration header small,.assistant-human-calibration > p,.assistant-human-calibration div small { color: #778178; font-size: 8px; }
 .assistant-human-calibration header > b { color: #315c4e; font-size: 9px; }
-.assistant-human-calibration > div { display: grid; grid-template-columns: repeat(4,minmax(0,1fr)); gap: 8px; margin-top: 9px; }
+.assistant-human-calibration > div { display: grid; grid-template-columns: repeat(auto-fit,minmax(130px,1fr)); gap: 8px; margin-top: 9px; }
 .assistant-human-calibration > div > span { padding: 8px; border-radius: 8px; display: grid; gap: 3px; background: #f1f5f0; }
 .assistant-human-calibration > div b { font-size: 11px; }
 .assistant-human-calibration > p { margin: 9px 0 0; }

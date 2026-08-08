@@ -18781,9 +18781,9 @@ test('human review calibration uses latest authoritative decisions without claim
     const now = '2026-08-09T00:00:00.000Z'
     database.prepare(`
       INSERT INTO task_review_decisions(
-        evidence_fingerprint,task_id,decision,created_at,updated_at
-      ) VALUES(?,?,?,?,?)
-    `).run('task-mine', 'task-1', 'mine', now, now)
+        evidence_fingerprint,task_id,decision,task_json,created_at,updated_at
+      ) VALUES(?,?,?,?,?,?)
+    `).run('task-mine', 'task-1', 'mine', JSON.stringify({ classification: 'mine' }), now, now)
     database.prepare(`
       INSERT INTO task_review_decisions(
         evidence_fingerprint,task_id,decision,revoked_at,created_at,updated_at
@@ -18826,9 +18826,11 @@ test('human review calibration uses latest authoritative decisions without claim
     const firstTaskFeedback = store.getTaskReviewFeedbackStats()
     assert.strictEqual(store.getTaskReviewFeedbackStats(), firstTaskFeedback)
     assert.deepEqual(firstCalibration, {
-      version: 'human-review-calibration-v1',
+      version: 'human-review-calibration-v2',
       revision: `${store.getTaskOwnershipReviewRevision()}:${store.getStructuredMemoryRevision()}:${store.getGraphReviewRevision()}`,
       taskOwnership: { accepted: 1, rejected: 0, revoked: 1, total: 1 },
+      activeMineAudit: { correct: 1, incorrect: 0, total: 1 },
+      candidateOwnership: { confirmed: 0, rejected: 0, total: 0 },
       structuredMemory: { accepted: 1, rejected: 0, reopened: 0, total: 1 },
       graphCandidates: { accepted: 0, rejected: 1, total: 1 },
       identityPairs: { merged: 0, different: 1, total: 1 },
@@ -18854,6 +18856,8 @@ test('human review calibration uses latest authoritative decisions without claim
     const refreshedTaskFeedback = store.getTaskReviewFeedbackStats()
     assert.notStrictEqual(refreshedTaskFeedback, firstTaskFeedback)
     assert.equal(refreshedTaskFeedback.rejected, 1)
+    assert.deepEqual(refreshedTaskFeedback.activeMineAudit, { correct: 1, incorrect: 0, total: 1 })
+    assert.deepEqual(refreshedTaskFeedback.candidateOwnership, { confirmed: 0, rejected: 1, total: 1 })
     assert.equal(store.getHumanReviewCalibrationStats().reviewedTotal, 6)
   })
 })
@@ -18998,7 +19002,9 @@ test('task ownership feedback persists evidence-scoped decisions and suppression
     mine: 0,
     rejected: 1,
     suppressed: 2,
-    reconciled: 0
+    reconciled: 0,
+    activeMineAudit: { correct: 0, incorrect: 0, total: 0 },
+    candidateOwnership: { confirmed: 0, rejected: 1, total: 1 }
   })
 
   store.recordTaskReviewReconciliation('evidence-task-1')
@@ -19018,7 +19024,9 @@ test('task ownership feedback persists evidence-scoped decisions and suppression
     mine: 0,
     rejected: 0,
     suppressed: 0,
-    reconciled: 0
+    reconciled: 0,
+    activeMineAudit: { correct: 0, incorrect: 0, total: 0 },
+    candidateOwnership: { confirmed: 0, rejected: 0, total: 0 }
   })
 }))
 

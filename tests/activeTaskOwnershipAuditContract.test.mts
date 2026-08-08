@@ -31,3 +31,14 @@ test('mine-task rejection uses the recoverable task mutation protocol', () => {
   assert.match(store, /recordTaskReviewDecisionInCurrentTransaction/)
   assert.match(store, /fingerprint !== taskEvidenceFingerprint\(task\)/)
 })
+
+test('real-world calibration separates active mine audits from candidate decisions', () => {
+  const store = read('electron/services/personalMemoryStore.ts')
+  const page = read('src/pages/AiAssistantPage.tsx')
+
+  assert.match(store, /active_mine_correct/)
+  assert.match(store, /candidate_confirmed/)
+  assert.match(store, /human-review-calibration-v2/)
+  assert.match(page, /自动归给我：正确 \/ 误判/)
+  assert.match(page, /待定归属：确认 \/ 排除/)
+})

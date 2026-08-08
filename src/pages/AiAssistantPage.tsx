@@ -9555,7 +9555,8 @@ function AiAssistantPage() {
             <b>{Number(dashboard.humanReviewCalibration.reviewedTotal || 0).toLocaleString()} 项最新判断</b>
           </header>
           <div>
-            <span><b>{Number(dashboard.humanReviewCalibration.taskOwnership.accepted || 0)} / {Number(dashboard.humanReviewCalibration.taskOwnership.rejected || 0)}</b><small>待办归属：确认 / 拒绝</small></span>
+            <span><b>{Number(dashboard.humanReviewCalibration.activeMineAudit?.correct || 0)} / {Number(dashboard.humanReviewCalibration.activeMineAudit?.incorrect || 0)}</b><small>自动归给我：正确 / 误判</small></span>
+            <span><b>{Number(dashboard.humanReviewCalibration.candidateOwnership?.confirmed || 0)} / {Number(dashboard.humanReviewCalibration.candidateOwnership?.rejected || 0)}</b><small>待定归属：确认 / 排除</small></span>
             <span><b>{Number(dashboard.humanReviewCalibration.structuredMemory.accepted || 0)} / {Number(dashboard.humanReviewCalibration.structuredMemory.rejected || 0)}</b><small>事实事件：确认 / 拒绝</small></span>
             <span><b>{Number(dashboard.humanReviewCalibration.graphCandidates.accepted || 0)} / {Number(dashboard.humanReviewCalibration.graphCandidates.rejected || 0)}</b><small>图谱候选：确认 / 拒绝</small></span>
             <span><b>{Number(dashboard.humanReviewCalibration.identityPairs.merged || 0)} / {Number(dashboard.humanReviewCalibration.identityPairs.different || 0)}</b><small>身份建议：合并 / 不同人</small></span>

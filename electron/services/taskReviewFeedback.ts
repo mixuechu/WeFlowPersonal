@@ -30,6 +30,13 @@ export function taskReviewRestoreClassification(snapshot: any): 'mine' | 'uncert
     : 'uncertain'
 }
 
+export function isRepeatedMineTaskAudit(decision: any): boolean {
+  if (decision?.decision !== 'mine') return false
+  let snapshot: any = {}
+  try { snapshot = JSON.parse(String(decision?.task_json || '{}')) } catch {}
+  return snapshot?.classification === 'mine'
+}
+
 export function reconcileTasksWithReviewDecisions(tasks: any[], decisions: any[]): {
   tasks: any[]
   effects: Array<{ evidenceFingerprint: string; action: 'removed' | 'confirmed' | 'restored' }>
