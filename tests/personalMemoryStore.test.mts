@@ -18923,6 +18923,13 @@ test('human review calibration uses latest authoritative decisions without claim
         },
         rollingTrend: {
           version: 'selected-review-rolling-30-v1',
+          scope: {
+            policyVersion: 'legacy-unknown-policy',
+            promptVersion: 'legacy-unknown-prompt',
+            schemaVersion: 'legacy-unknown-schema',
+            model: 'legacy-unknown-model',
+            sourceKind: 'legacy'
+          },
           latest: {
             reviewed: 1, observedRate: 1, lower95: 0.2065, upper95: 1,
             recommendedMinimum: 30, remainingToRecommended: 29, readyForTrend: false,
@@ -19109,6 +19116,43 @@ test('task ownership rolling calibration detects only full-window interval separ
   })
 })
 
+test('task ownership rolling calibration never compares different extraction versions', () => {
+  withStore(store => {
+    const database = (store as any).db
+    const insert = database.prepare(`
+      INSERT INTO task_review_decisions(
+        evidence_fingerprint,task_id,decision,task_json,created_at,updated_at
+      ) VALUES(?,?,?,?,?,?)
+    `)
+    for (let index = 0; index < 60; index += 1) {
+      const timestamp = new Date(Date.UTC(2026, 7, 2, 0, 0, index)).toISOString()
+      const currentVersion = index >= 30
+      insert.run(
+        `version-isolated-review-${String(index).padStart(2, '0')}`,
+        `version-isolated-task-${index}`,
+        currentVersion ? 'rejected' : 'mine',
+        JSON.stringify({
+          classification: 'mine',
+          ownershipPolicyVersion: currentVersion ? 'policy-current' : 'policy-previous',
+          ownershipPromptVersion: currentVersion ? 'prompt-current' : 'prompt-previous',
+          ownershipSchemaVersion: 'schema-v1',
+          ownershipModel: 'deepseek-chat',
+          ownershipSourceKind: 'wechat'
+        }),
+        timestamp,
+        timestamp
+      )
+    }
+    const rolling = store.getTaskReviewFeedbackStats().activeMineAudit.rollingTrend
+    assert.equal(rolling.scope.policyVersion, 'policy-current')
+    assert.equal(rolling.scope.promptVersion, 'prompt-current')
+    assert.equal(rolling.latest.reviewed, 30)
+    assert.equal(rolling.latest.observedRate, 0)
+    assert.equal(rolling.previous.reviewed, 0)
+    assert.equal(rolling.signal, 'insufficient_data')
+  })
+})
+
 test('forget entity transaction removes graph, memory, search, task audit and assistant traces', () => withStore(store => {
   store.syncGraph({
     entities: [{
@@ -19266,6 +19310,7 @@ test('task ownership feedback persists evidence-scoped decisions and suppression
       },
       rollingTrend: {
         version: 'selected-review-rolling-30-v1',
+        scope: null,
         latest: {
           reviewed: 0, observedRate: null, lower95: null, upper95: null,
           recommendedMinimum: 30, remainingToRecommended: 30, readyForTrend: false,
@@ -19319,6 +19364,7 @@ test('task ownership feedback persists evidence-scoped decisions and suppression
       },
       rollingTrend: {
         version: 'selected-review-rolling-30-v1',
+        scope: null,
         latest: {
           reviewed: 0, observedRate: null, lower95: null, upper95: null,
           recommendedMinimum: 30, remainingToRecommended: 30, readyForTrend: false,

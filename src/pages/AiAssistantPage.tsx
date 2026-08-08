@@ -9578,7 +9578,7 @@ function AiAssistantPage() {
               : ' 已达到首个趋势观察门槛；仍不能代表未抽检的全部待办。'}
           </p>}
           {Number(dashboard.humanReviewCalibration.activeMineAudit?.rollingTrend?.latest?.reviewed || 0) > 0 && <p>
-            最近一组抽检{' '}
+            最近版本内抽检{' '}
             <b>{Math.round(Number(dashboard.humanReviewCalibration.activeMineAudit.rollingTrend.latest.observedRate || 0) * 100)}%</b>
             {' '}（{Number(dashboard.humanReviewCalibration.activeMineAudit.rollingTrend.latest.reviewed)} / 30）；
             前一组{' '}
@@ -9592,6 +9592,14 @@ function AiAssistantPage() {
                 : dashboard.humanReviewCalibration.activeMineAudit.rollingTrend.signal === 'inconclusive'
                   ? ' 两组样本已满，但统计区间仍重叠，暂不能判定趋势。'
                   : ' 两组各满 30 项后才判断趋势，避免小样本误报。'}
+            {dashboard.humanReviewCalibration.activeMineAudit.rollingTrend.scope && <small>
+              {' '}范围：{dashboard.humanReviewCalibration.activeMineAudit.rollingTrend.scope.sourceKind === 'wechat'
+                ? '微信' : dashboard.humanReviewCalibration.activeMineAudit.rollingTrend.scope.sourceKind === 'documents'
+                  ? '本机文档' : '历史来源'} · {dashboard.humanReviewCalibration.activeMineAudit.rollingTrend.scope.policyVersion}
+              {' '}· {dashboard.humanReviewCalibration.activeMineAudit.rollingTrend.scope.promptVersion}
+              {' '}· {dashboard.humanReviewCalibration.activeMineAudit.rollingTrend.scope.schemaVersion}
+              {' '}· {dashboard.humanReviewCalibration.activeMineAudit.rollingTrend.scope.model}
+            </small>}
           </p>}
           {!!dashboard.humanReviewCalibration.activeMineAudit?.versions?.length && <details>
             <summary>

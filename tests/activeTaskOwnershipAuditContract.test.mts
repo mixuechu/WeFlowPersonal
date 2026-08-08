@@ -48,10 +48,12 @@ test('ownership calibration detects rolling drift without small-sample alarms', 
   const page = read('src/pages/AiAssistantPage.tsx')
 
   assert.match(store, /selected-review-rolling-30-v1/)
+  assert.match(store, /latest_identity AS \([\s\S]*?ORDER BY updated_at DESC,evidence_fingerprint ASC LIMIT 1/)
+  assert.match(store, /JOIN latest_identity USING\([\s\S]*?policy_version,prompt_version,schema_version,model,source_kind/)
   assert.match(store, /ROW_NUMBER\(\) OVER \([\s\S]*?updated_at DESC,evidence_fingerprint ASC/)
   assert.match(store, /latestRolling\.reviewed < 30 \|\| previousRolling\.reviewed < 30/)
   assert.match(store, /latestRolling\.upper95[\s\S]*?previousRolling\.lower95/)
-  assert.match(page, /最近一组抽检/)
+  assert.match(page, /最近版本内抽检/)
   assert.match(page, /两组各满 30 项后才判断趋势，避免小样本误报/)
 })
 

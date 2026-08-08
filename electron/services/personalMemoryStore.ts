@@ -14530,6 +14530,7 @@ export class PersonalMemoryStore {
         calibration: selectedReviewBinomialCalibration(0, 0),
         rollingTrend: {
           version: 'selected-review-rolling-30-v1',
+          scope: null,
           latest: selectedReviewBinomialCalibration(0, 0),
           previous: selectedReviewBinomialCalibration(0, 0),
           signal: 'insufficient_data'
@@ -14570,16 +14571,50 @@ export class PersonalMemoryStore {
     const activeMineCorrect = Number(row?.active_mine_correct || 0)
     const activeMineIncorrect = Number(row?.active_mine_incorrect || 0)
     const rollingRow = this.db.prepare(`
-      WITH ordered AS (
-        SELECT decision,ROW_NUMBER() OVER (
-          ORDER BY updated_at DESC,evidence_fingerprint ASC
-        ) AS review_position
+      WITH versioned AS (
+        SELECT
+          CASE WHEN json_type(task_json,'$.ownershipPolicyVersion')='text'
+            AND trim(json_extract(task_json,'$.ownershipPolicyVersion'))!=''
+            THEN substr(json_extract(task_json,'$.ownershipPolicyVersion'),1,120)
+            ELSE 'legacy-unknown-policy' END AS policy_version,
+          CASE WHEN json_type(task_json,'$.ownershipPromptVersion')='text'
+            AND trim(json_extract(task_json,'$.ownershipPromptVersion'))!=''
+            THEN substr(json_extract(task_json,'$.ownershipPromptVersion'),1,120)
+            ELSE 'legacy-unknown-prompt' END AS prompt_version,
+          CASE WHEN json_type(task_json,'$.ownershipSchemaVersion')='text'
+            AND trim(json_extract(task_json,'$.ownershipSchemaVersion'))!=''
+            THEN substr(json_extract(task_json,'$.ownershipSchemaVersion'),1,120)
+            ELSE 'legacy-unknown-schema' END AS schema_version,
+          CASE WHEN json_type(task_json,'$.ownershipModel')='text'
+            AND trim(json_extract(task_json,'$.ownershipModel'))!=''
+            THEN substr(json_extract(task_json,'$.ownershipModel'),1,120)
+            ELSE 'legacy-unknown-model' END AS model,
+          CASE WHEN json_extract(task_json,'$.ownershipSourceKind') IN ('wechat','documents')
+            THEN json_extract(task_json,'$.ownershipSourceKind') ELSE 'legacy' END AS source_kind,
+          evidence_fingerprint,decision,updated_at
         FROM task_review_decisions
         WHERE revoked_at IS NULL AND json_valid(task_json)=1
           AND json_extract(task_json,'$.classification')='mine'
           AND decision IN ('mine','rejected')
+      ), latest_identity AS (
+        SELECT policy_version,prompt_version,schema_version,model,source_kind
+        FROM versioned ORDER BY updated_at DESC,evidence_fingerprint ASC LIMIT 1
+      ), matching AS (
+        SELECT versioned.* FROM versioned JOIN latest_identity USING(
+          policy_version,prompt_version,schema_version,model,source_kind
+        )
+      ), ordered AS (
+        SELECT *,ROW_NUMBER() OVER (
+          ORDER BY updated_at DESC,evidence_fingerprint ASC
+        ) AS review_position
+        FROM matching
       )
       SELECT
+        MAX(policy_version) AS policy_version,
+        MAX(prompt_version) AS prompt_version,
+        MAX(schema_version) AS schema_version,
+        MAX(model) AS model,
+        MAX(source_kind) AS source_kind,
         SUM(CASE WHEN review_position<=30 AND decision='mine' THEN 1 ELSE 0 END)
           AS latest_correct,
         SUM(CASE WHEN review_position<=30 AND decision='rejected' THEN 1 ELSE 0 END)
@@ -14665,6 +14700,13 @@ export class PersonalMemoryStore {
       calibration: selectedReviewBinomialCalibration(activeMineCorrect, activeMineIncorrect),
       rollingTrend: {
         version: 'selected-review-rolling-30-v1',
+        scope: rollingRow?.policy_version ? {
+          policyVersion: String(rollingRow.policy_version),
+          promptVersion: String(rollingRow.prompt_version || ''),
+          schemaVersion: String(rollingRow.schema_version || ''),
+          model: String(rollingRow.model || ''),
+          sourceKind: String(rollingRow.source_kind || 'legacy')
+        } : null,
         latest: latestRolling,
         previous: previousRolling,
         signal: rollingSignal
@@ -14705,6 +14747,7 @@ export class PersonalMemoryStore {
         calibration: selectedReviewBinomialCalibration(0, 0),
         rollingTrend: {
           version: 'selected-review-rolling-30-v1',
+          scope: null,
           latest: selectedReviewBinomialCalibration(0, 0),
           previous: selectedReviewBinomialCalibration(0, 0),
           signal: 'insufficient_data'
