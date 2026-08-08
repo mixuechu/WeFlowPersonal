@@ -81,6 +81,23 @@ test('identity merge suggestions keep append-only versioned human calibration', 
   assert.match(page, /按候选版本查看同一人首次裁决/)
 })
 
+test('graph candidates preserve exact, corrected and rejected versioned calibration', () => {
+  const service = read('electron/services/aiAssistantService.ts')
+  const store = read('electron/services/personalMemoryStore.ts')
+  const page = read('src/pages/AiAssistantPage.tsx')
+
+  assert.match(service, /GRAPH_CANDIDATE_POLICY_VERSION/)
+  assert.match(service, /stampModelCandidate/)
+  assert.match(service, /recordGraphCandidateReviewDecision/)
+  assert.match(store, /CREATE TABLE IF NOT EXISTS graph_candidate_review_decisions/)
+  assert.match(store, /accepted_exact/)
+  assert.match(store, /accepted_corrected/)
+  assert.match(store, /graph-candidate-rolling-30-v1/)
+  assert.match(page, /图谱候选首次裁决：原样正确/)
+  assert.match(page, /人工修改后采用不会冒充模型原样正确/)
+  assert.match(page, /按版本查看图谱候选首次裁决/)
+})
+
 test('ownership calibration detects rolling drift without small-sample alarms', () => {
   const store = read('electron/services/personalMemoryStore.ts')
   const page = read('src/pages/AiAssistantPage.tsx')

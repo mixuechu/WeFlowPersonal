@@ -895,6 +895,27 @@ export class PersonalMemoryStore {
           created_at DESC,id DESC
         );
 
+      CREATE TABLE IF NOT EXISTS graph_candidate_review_decisions (
+        id INTEGER PRIMARY KEY,
+        candidate_instance_id TEXT NOT NULL UNIQUE,
+        review_id TEXT NOT NULL,
+        candidate_kind TEXT NOT NULL,
+        outcome TEXT NOT NULL,
+        candidate_source TEXT NOT NULL DEFAULT 'legacy',
+        policy_version TEXT NOT NULL DEFAULT 'legacy-unknown-policy',
+        prompt_version TEXT NOT NULL DEFAULT 'legacy-unknown-prompt',
+        schema_version TEXT NOT NULL DEFAULT 'legacy-unknown-schema',
+        model TEXT NOT NULL DEFAULT 'legacy-unknown-model',
+        source_kind TEXT NOT NULL DEFAULT 'legacy',
+        related_entity_ids_json TEXT NOT NULL DEFAULT '[]',
+        created_at TEXT NOT NULL
+      ) STRICT;
+      CREATE INDEX IF NOT EXISTS idx_graph_candidate_reviews_version_time
+        ON graph_candidate_review_decisions(
+          candidate_kind,policy_version,prompt_version,schema_version,model,source_kind,
+          created_at DESC,id DESC
+        );
+
       CREATE TABLE IF NOT EXISTS memory_corrections (
         id INTEGER PRIMARY KEY,
         item_kind TEXT NOT NULL,
@@ -3796,6 +3817,7 @@ export class PersonalMemoryStore {
       'review_queue',
       'identity_decisions',
       'identity_review_decisions',
+      'graph_candidate_review_decisions',
       'entities',
       'relations',
       'relation_history',
@@ -3810,7 +3832,7 @@ export class PersonalMemoryStore {
       prefix: 'graph_review_revision',
       revisionKey: 'graph_review_revision',
       tables: this.graphReviewRevisionTables(),
-      version: 'graph-review-revision-v4'
+      version: 'graph-review-revision-v5'
     })
   }
 
@@ -3826,7 +3848,7 @@ export class PersonalMemoryStore {
       prefix: 'graph_review_revision',
       revisionKey: 'graph_review_revision',
       tables: this.graphReviewRevisionTables(),
-      version: 'graph-review-revision-v4',
+      version: 'graph-review-revision-v5',
       revision: this.getGraphReviewRevision()
     })
   }
@@ -7415,6 +7437,13 @@ export class PersonalMemoryStore {
       this.db.prepare('DELETE FROM merge_history WHERE source_entity_id=? OR target_entity_id=?').run(entityId, entityId)
       this.db.prepare('DELETE FROM identity_decisions WHERE left_entity_id=? OR right_entity_id=?').run(entityId, entityId)
       this.db.prepare('DELETE FROM identity_review_decisions WHERE left_entity_id=? OR right_entity_id=?').run(entityId, entityId)
+      this.db.prepare(`
+        DELETE FROM graph_candidate_review_decisions
+        WHERE EXISTS (
+          SELECT 1 FROM json_each(graph_candidate_review_decisions.related_entity_ids_json)
+          WHERE json_each.value=?
+        )
+      `).run(entityId)
       this.db.prepare('DELETE FROM entity_corrections WHERE entity_id=?').run(entityId)
       this.db.prepare(`
         DELETE FROM relation_corrections
@@ -8853,6 +8882,54 @@ export class PersonalMemoryStore {
       bounded(input.schemaVersion, 'legacy-unknown-schema'),
       bounded(input.model, 'legacy-unknown-model'),
       sourceKind,
+      String(input.createdAt || new Date().toISOString())
+    )
+    return Number(result.changes || 0) === 1
+  }
+
+  recordGraphCandidateReviewDecision(input: {
+    candidateInstanceId: string
+    reviewId: string
+    candidateKind: 'relation' | 'entity_creation' | 'entity_summary' | 'entity_alias'
+    outcome: 'accepted_exact' | 'accepted_corrected' | 'rejected'
+    candidateSource?: string
+    policyVersion?: string
+    promptVersion?: string
+    schemaVersion?: string
+    model?: string
+    sourceKind?: string
+    relatedEntityIds?: string[]
+    createdAt?: string
+  }): boolean {
+    if (!this.db) return false
+    const candidateInstanceId = String(input.candidateInstanceId || '').trim().slice(0, 160)
+    const reviewId = String(input.reviewId || '').trim().slice(0, 160)
+    if (!candidateInstanceId || !reviewId) throw new Error('图谱候选裁决缺少稳定实例')
+    const bounded = (value: unknown, fallback: string) =>
+      (String(value || '').trim() || fallback).slice(0, 120)
+    const sourceKind = ['wechat', 'documents', 'calendar', 'local'].includes(String(input.sourceKind || ''))
+      ? String(input.sourceKind)
+      : 'legacy'
+    const relatedEntityIds = [...new Set((input.relatedEntityIds || [])
+      .map(value => String(value || '').trim()).filter(Boolean))].sort().slice(0, 8)
+    const result = this.db.prepare(`
+      INSERT OR IGNORE INTO graph_candidate_review_decisions(
+        candidate_instance_id,review_id,candidate_kind,outcome,candidate_source,
+        policy_version,prompt_version,schema_version,model,source_kind,
+        related_entity_ids_json,created_at
+      ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
+    `).run(
+      candidateInstanceId,
+      reviewId,
+      input.candidateKind,
+      input.outcome,
+      bounded(input.candidateSource, 'legacy'),
+      bounded(input.policyVersion, 'legacy-unknown-policy'),
+      bounded(input.promptVersion, 'legacy-unknown-prompt'),
+      bounded(input.schemaVersion, 'legacy-unknown-schema'),
+      bounded(input.model, 'legacy-unknown-model'),
+      sourceKind,
+      JSON.stringify(relatedEntityIds),
       String(input.createdAt || new Date().toISOString())
     )
     return Number(result.changes || 0) === 1
@@ -14854,7 +14931,27 @@ export class PersonalMemoryStore {
           versionsTruncated: false
         }
       },
-      graphCandidates: { accepted: 0, rejected: 0, total: 0 },
+      graphCandidates: {
+        accepted: 0, rejected: 0, total: 0,
+        candidateAudit: {
+          exact: 0,
+          corrected: 0,
+          rejected: 0,
+          total: 0,
+          calibration: selectedReviewBinomialCalibration(0, 0),
+          byKind: {},
+          rollingTrend: {
+            version: 'graph-candidate-rolling-30-v1',
+            scope: null,
+            latest: selectedReviewBinomialCalibration(0, 0),
+            previous: selectedReviewBinomialCalibration(0, 0),
+            signal: 'insufficient_data'
+          },
+          versions: [],
+          versionGroupTotal: 0,
+          versionsTruncated: false
+        }
+      },
       identityPairs: {
         merged: 0, different: 0, total: 0,
         candidateAudit: {
@@ -15017,6 +15114,58 @@ export class PersonalMemoryStore {
       WHERE status!='pending' AND json_valid(payload_json)=1
         AND json_extract(payload_json,'$.resolutionActor')='user'
     `).get() as any
+    const graphCandidateAuditRows = this.db.prepare(`
+      SELECT candidate_kind,
+        SUM(CASE WHEN outcome='accepted_exact' THEN 1 ELSE 0 END) AS exact,
+        SUM(CASE WHEN outcome='accepted_corrected' THEN 1 ELSE 0 END) AS corrected,
+        SUM(CASE WHEN outcome='rejected' THEN 1 ELSE 0 END) AS rejected
+      FROM graph_candidate_review_decisions
+      GROUP BY candidate_kind
+      ORDER BY candidate_kind
+    `).all() as any[]
+    const graphCandidateVersionRows = this.db.prepare(`
+      SELECT candidate_kind,candidate_source,policy_version,prompt_version,schema_version,model,source_kind,
+        SUM(CASE WHEN outcome='accepted_exact' THEN 1 ELSE 0 END) AS exact,
+        SUM(CASE WHEN outcome='accepted_corrected' THEN 1 ELSE 0 END) AS corrected,
+        SUM(CASE WHEN outcome='rejected' THEN 1 ELSE 0 END) AS rejected,
+        MAX(created_at) AS last_reviewed_at,
+        COUNT(*) OVER() AS version_group_total
+      FROM graph_candidate_review_decisions
+      GROUP BY candidate_kind,candidate_source,policy_version,prompt_version,schema_version,model,source_kind
+      ORDER BY last_reviewed_at DESC,candidate_kind,candidate_source,policy_version,prompt_version,schema_version,model
+      LIMIT 12
+    `).all() as any[]
+    const graphCandidateRollingRow = this.db.prepare(`
+      WITH latest_identity AS (
+        SELECT candidate_kind,candidate_source,policy_version,prompt_version,schema_version,model,source_kind
+        FROM graph_candidate_review_decisions ORDER BY created_at DESC,id DESC LIMIT 1
+      ), matching AS (
+        SELECT decisions.* FROM graph_candidate_review_decisions decisions
+        JOIN latest_identity USING(
+          candidate_kind,candidate_source,policy_version,prompt_version,schema_version,model,source_kind
+        )
+      ), ordered AS (
+        SELECT *,ROW_NUMBER() OVER (ORDER BY created_at DESC,id DESC) AS review_position
+        FROM matching
+      )
+      SELECT
+        MAX(candidate_kind) AS candidate_kind,
+        MAX(candidate_source) AS candidate_source,
+        MAX(policy_version) AS policy_version,
+        MAX(prompt_version) AS prompt_version,
+        MAX(schema_version) AS schema_version,
+        MAX(model) AS model,
+        MAX(source_kind) AS source_kind,
+        SUM(CASE WHEN review_position<=30 AND outcome='accepted_exact' THEN 1 ELSE 0 END)
+          AS latest_correct,
+        SUM(CASE WHEN review_position<=30 AND outcome!='accepted_exact' THEN 1 ELSE 0 END)
+          AS latest_incorrect,
+        SUM(CASE WHEN review_position>30 AND review_position<=60 AND outcome='accepted_exact' THEN 1 ELSE 0 END)
+          AS previous_correct,
+        SUM(CASE WHEN review_position>30 AND review_position<=60 AND outcome!='accepted_exact' THEN 1 ELSE 0 END)
+          AS previous_incorrect
+      FROM ordered WHERE review_position<=60
+    `).get() as any
     const identity = this.db.prepare(`
       SELECT
         SUM(CASE WHEN decision='merged' THEN 1 ELSE 0 END) AS merged,
@@ -15147,10 +15296,81 @@ export class PersonalMemoryStore {
         versionsTruncated: memoryVersions.length < memoryVersionGroupTotal
       }
     }
+    const graphByKind = Object.fromEntries(graphCandidateAuditRows.map(row => {
+      const exact = Number(row.exact || 0)
+      const corrected = Number(row.corrected || 0)
+      const rejected = Number(row.rejected || 0)
+      return [String(row.candidate_kind || ''), { exact, corrected, rejected, total: exact + corrected + rejected }]
+    }))
+    const graphExact = graphCandidateAuditRows.reduce((sum, row) => sum + Number(row.exact || 0), 0)
+    const graphCorrected = graphCandidateAuditRows.reduce((sum, row) => sum + Number(row.corrected || 0), 0)
+    const graphRejected = graphCandidateAuditRows.reduce((sum, row) => sum + Number(row.rejected || 0), 0)
+    const latestGraphRolling = selectedReviewBinomialCalibration(
+      Number(graphCandidateRollingRow?.latest_correct || 0),
+      Number(graphCandidateRollingRow?.latest_incorrect || 0)
+    )
+    const previousGraphRolling = selectedReviewBinomialCalibration(
+      Number(graphCandidateRollingRow?.previous_correct || 0),
+      Number(graphCandidateRollingRow?.previous_incorrect || 0)
+    )
+    const graphRollingSignal = latestGraphRolling.reviewed < 30 || previousGraphRolling.reviewed < 30
+      ? 'insufficient_data'
+      : Number(latestGraphRolling.upper95) < Number(previousGraphRolling.lower95)
+        ? 'regression'
+        : Number(latestGraphRolling.lower95) > Number(previousGraphRolling.upper95)
+          ? 'improvement'
+          : 'inconclusive'
+    const graphVersionGroupTotal = Number(graphCandidateVersionRows[0]?.version_group_total || 0)
+    const graphVersions = graphCandidateVersionRows.map(row => {
+      const exact = Number(row.exact || 0)
+      const corrected = Number(row.corrected || 0)
+      const rejected = Number(row.rejected || 0)
+      return {
+        candidateKind: String(row.candidate_kind || ''),
+        candidateSource: String(row.candidate_source || 'legacy'),
+        policyVersion: String(row.policy_version || ''),
+        promptVersion: String(row.prompt_version || ''),
+        schemaVersion: String(row.schema_version || ''),
+        model: String(row.model || ''),
+        sourceKind: String(row.source_kind || 'legacy'),
+        exact,
+        corrected,
+        rejected,
+        total: exact + corrected + rejected,
+        lastReviewedAt: String(row.last_reviewed_at || ''),
+        calibration: selectedReviewBinomialCalibration(exact, corrected + rejected)
+      }
+    })
     const graphCandidates = {
       accepted: Number(graph?.accepted || 0),
       rejected: Number(graph?.rejected || 0),
-      total: Number(graph?.accepted || 0) + Number(graph?.rejected || 0)
+      total: Number(graph?.accepted || 0) + Number(graph?.rejected || 0),
+      candidateAudit: {
+        exact: graphExact,
+        corrected: graphCorrected,
+        rejected: graphRejected,
+        total: graphExact + graphCorrected + graphRejected,
+        calibration: selectedReviewBinomialCalibration(graphExact, graphCorrected + graphRejected),
+        byKind: graphByKind,
+        rollingTrend: {
+          version: 'graph-candidate-rolling-30-v1',
+          scope: graphCandidateRollingRow?.candidate_kind ? {
+            candidateKind: String(graphCandidateRollingRow.candidate_kind),
+            candidateSource: String(graphCandidateRollingRow.candidate_source || 'legacy'),
+            policyVersion: String(graphCandidateRollingRow.policy_version || ''),
+            promptVersion: String(graphCandidateRollingRow.prompt_version || ''),
+            schemaVersion: String(graphCandidateRollingRow.schema_version || ''),
+            model: String(graphCandidateRollingRow.model || ''),
+            sourceKind: String(graphCandidateRollingRow.source_kind || 'legacy')
+          } : null,
+          latest: latestGraphRolling,
+          previous: previousGraphRolling,
+          signal: graphRollingSignal
+        },
+        versions: graphVersions,
+        versionGroupTotal: graphVersionGroupTotal,
+        versionsTruncated: graphVersions.length < graphVersionGroupTotal
+      }
     }
     const identityCorrect = Number(identityCandidateAudit?.correct || 0)
     const identityIncorrect = Number(identityCandidateAudit?.incorrect || 0)

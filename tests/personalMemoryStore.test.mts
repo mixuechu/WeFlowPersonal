@@ -12366,9 +12366,9 @@ test('graph review revision covers queue and enriched graph state and self-heals
       first.getGraphReviewRevision()
     ), /刷新后重新确认/)
     const initialHealth = first.getGraphReviewRevisionHealth()
-    assert.equal(initialHealth.version, 'graph-review-revision-v4')
-    assert.equal(initialHealth.expectedTriggers, 27)
-    assert.equal(initialHealth.validTriggers, 27)
+    assert.equal(initialHealth.version, 'graph-review-revision-v5')
+    assert.equal(initialHealth.expectedTriggers, 30)
+    assert.equal(initialHealth.validTriggers, 30)
     assert.equal(initialHealth.healthy, true)
     ;(first as any).db.exec(`
       DROP TRIGGER trg_graph_review_revision_review_queue_insert;
@@ -12376,15 +12376,15 @@ test('graph review revision covers queue and enriched graph state and self-heals
       AFTER INSERT ON review_queue BEGIN SELECT 1; END;
     `)
     const driftedHealth = first.getGraphReviewRevisionHealth()
-    assert.equal(driftedHealth.installedTriggers, 27)
-    assert.equal(driftedHealth.validTriggers, 26)
+    assert.equal(driftedHealth.installedTriggers, 30)
+    assert.equal(driftedHealth.validTriggers, 29)
     assert.equal(driftedHealth.healthy, false)
     first.close()
 
     const reopened = new PersonalMemoryStore()
     reopened.initialize(databasePath)
     const repairedHealth = reopened.getGraphReviewRevisionHealth()
-    assert.equal(repairedHealth.validTriggers, 27)
+    assert.equal(repairedHealth.validTriggers, 30)
     assert.equal(repairedHealth.repairedTriggersThisStart, 1)
     assert.equal(repairedHealth.healthy, true)
     assert.equal(reopened.listReviewLedgerPage({ status: 'pending' }).items[0]?.id, 'review-revision-candidate')
@@ -19046,7 +19046,41 @@ test('human review calibration uses latest authoritative decisions without claim
           versionsTruncated: false
         }
       },
-      graphCandidates: { accepted: 0, rejected: 1, total: 1 },
+      graphCandidates: {
+        accepted: 0,
+        rejected: 1,
+        total: 1,
+        candidateAudit: {
+          exact: 0,
+          corrected: 0,
+          rejected: 0,
+          total: 0,
+          calibration: {
+            reviewed: 0, observedRate: null, lower95: null, upper95: null,
+            recommendedMinimum: 30, remainingToRecommended: 30, readyForTrend: false,
+            interpretation: 'selected_review_interval_not_population_accuracy'
+          },
+          byKind: {},
+          rollingTrend: {
+            version: 'graph-candidate-rolling-30-v1',
+            scope: null,
+            latest: {
+              reviewed: 0, observedRate: null, lower95: null, upper95: null,
+              recommendedMinimum: 30, remainingToRecommended: 30, readyForTrend: false,
+              interpretation: 'selected_review_interval_not_population_accuracy'
+            },
+            previous: {
+              reviewed: 0, observedRate: null, lower95: null, upper95: null,
+              recommendedMinimum: 30, remainingToRecommended: 30, readyForTrend: false,
+              interpretation: 'selected_review_interval_not_population_accuracy'
+            },
+            signal: 'insufficient_data'
+          },
+          versions: [],
+          versionGroupTotal: 0,
+          versionsTruncated: false
+        }
+      },
       identityPairs: {
         merged: 0,
         different: 1,
@@ -19529,6 +19563,73 @@ test('identity candidate rolling calibration never compares generator versions',
     assert.equal(rolling.scope.policyVersion, 'identity-policy-current')
     assert.equal(rolling.latest.reviewed, 30)
     assert.equal(rolling.latest.observedRate, 0)
+    assert.equal(rolling.previous.reviewed, 0)
+    assert.equal(rolling.signal, 'insufficient_data')
+  })
+})
+
+test('graph candidate audit separates exact, corrected and rejected outcomes', () => {
+  withStore(store => {
+    for (let index = 0; index < 60; index += 1) {
+      const outcome = index < 30
+        ? 'accepted_exact' as const
+        : index % 2 ? 'accepted_corrected' as const : 'rejected' as const
+      assert.equal(store.recordGraphCandidateReviewDecision({
+        candidateInstanceId: `graph-candidate-${index}`,
+        reviewId: `graph-review-${index}`,
+        candidateKind: 'relation',
+        outcome,
+        candidateSource: 'model_extraction',
+        policyVersion: 'graph-policy-regression',
+        promptVersion: 'graph-prompt-regression',
+        schemaVersion: 'graph-schema-regression',
+        model: 'deepseek-graph-regression',
+        sourceKind: 'wechat',
+        relatedEntityIds: [`graph-person-${index}`, 'graph-shared-project'],
+        createdAt: new Date(Date.UTC(2026, 7, 7, 0, 0, index)).toISOString()
+      }), true)
+    }
+    assert.equal(store.recordGraphCandidateReviewDecision({
+      candidateInstanceId: 'graph-candidate-59',
+      reviewId: 'graph-review-replayed',
+      candidateKind: 'entity_alias',
+      outcome: 'accepted_exact'
+    }), false)
+    const audit = store.getHumanReviewCalibrationStats().graphCandidates.candidateAudit
+    assert.equal(audit.exact, 30)
+    assert.equal(audit.corrected, 15)
+    assert.equal(audit.rejected, 15)
+    assert.deepEqual(audit.byKind.relation, { exact: 30, corrected: 15, rejected: 15, total: 60 })
+    assert.equal(audit.rollingTrend.scope.candidateKind, 'relation')
+    assert.equal(audit.rollingTrend.latest.observedRate, 0)
+    assert.equal(audit.rollingTrend.previous.observedRate, 1)
+    assert.equal(audit.rollingTrend.signal, 'regression')
+  })
+})
+
+test('graph candidate rolling calibration isolates candidate kind and full model version', () => {
+  withStore(store => {
+    for (let index = 0; index < 60; index += 1) {
+      const currentVersion = index >= 30
+      store.recordGraphCandidateReviewDecision({
+        candidateInstanceId: `graph-version-candidate-${index}`,
+        reviewId: `graph-version-review-${index}`,
+        candidateKind: currentVersion ? 'entity_summary' : 'relation',
+        outcome: currentVersion ? 'rejected' : 'accepted_exact',
+        candidateSource: 'model_extraction',
+        policyVersion: 'graph-policy-versioned',
+        promptVersion: currentVersion ? 'graph-prompt-current' : 'graph-prompt-old',
+        schemaVersion: 'graph-schema-versioned',
+        model: 'deepseek-graph-versioned',
+        sourceKind: 'documents',
+        createdAt: new Date(Date.UTC(2026, 7, 8, 0, 0, index)).toISOString()
+      })
+    }
+    const rolling = store.getHumanReviewCalibrationStats()
+      .graphCandidates.candidateAudit.rollingTrend
+    assert.equal(rolling.scope.candidateKind, 'entity_summary')
+    assert.equal(rolling.scope.promptVersion, 'graph-prompt-current')
+    assert.equal(rolling.latest.reviewed, 30)
     assert.equal(rolling.previous.reviewed, 0)
     assert.equal(rolling.signal, 'insufficient_data')
   })

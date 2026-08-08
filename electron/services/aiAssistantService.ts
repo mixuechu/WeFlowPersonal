@@ -611,6 +611,7 @@ const EXTRACTION_PROMPT_VERSION = 'personal-os-prompt-v8'
 const EXTRACTION_SCHEMA_VERSION = 'personal-memory-schema-v6'
 const IDENTITY_CANDIDATE_POLICY_VERSION = 'identity-candidate-policy-v1'
 const IDENTITY_CANDIDATE_SCHEMA_VERSION = 'identity-candidate-schema-v1'
+const GRAPH_CANDIDATE_POLICY_VERSION = 'graph-candidate-policy-v1'
 const DOCUMENT_ANALYSIS_VERSION = `${EXTRACTION_PROMPT_VERSION}/${EXTRACTION_SCHEMA_VERSION}/document-v1`
 
 type IdentityCandidateProvenance = {
@@ -2439,6 +2440,25 @@ export class AiAssistantService {
     commitId = ''
   ): Map<string, string> {
     const tempIds = new Map<string, string>()
+    const stampModelCandidate = (candidate: any): any => {
+      if (!candidate?.id || !candidate?.kind) return candidate
+      const promptVersion = String(digest.__meta?.promptVersion || EXTRACTION_PROMPT_VERSION).slice(0, 120)
+      const schemaVersion = String(digest.__meta?.schemaVersion || EXTRACTION_SCHEMA_VERSION).slice(0, 120)
+      const model = String(digest.__meta?.model || 'legacy-unknown-model').slice(0, 120)
+      const sourceKind = promptVersion.includes('/document-v1') ? 'documents' : 'wechat'
+      return Object.assign(candidate, {
+        candidateSource: candidate.candidateSource || 'model_extraction',
+        candidateInstanceId: crypto.createHash('sha256').update([
+          candidate.kind, candidate.id, candidate.createdAt || now,
+          GRAPH_CANDIDATE_POLICY_VERSION, promptVersion, schemaVersion, model, sourceKind
+        ].join('|')).digest('hex'),
+        candidatePolicyVersion: GRAPH_CANDIDATE_POLICY_VERSION,
+        candidatePromptVersion: promptVersion,
+        candidateSchemaVersion: schemaVersion,
+        candidateModel: model,
+        candidateSourceKind: sourceKind
+      })
+    }
     const entities = Array.isArray(digest.entities) ? digest.entities : []
     for (const item of entities) {
       const reservedNames = new Set(['用户', '我', '本人', '自己', '对方', '群友', '某人', '未知', '未知用户', 'unknown', 'user'])
@@ -2512,7 +2532,7 @@ export class AiAssistantService {
           createdAt: now
         })
         if (summaryCandidate && !this.state.graph.reviewQueue.some(review => review.id === summaryCandidate.id)) {
-          this.state.graph.reviewQueue.push(summaryCandidate)
+          this.state.graph.reviewQueue.push(stampModelCandidate(summaryCandidate))
         }
         for (const aliasCandidate of buildEntityAliasCandidates({
           entity: existing,
@@ -2523,7 +2543,7 @@ export class AiAssistantService {
           createdAt: now
         })) {
           if (!this.state.graph.reviewQueue.some(review => review.id === aliasCandidate.id)) {
-            this.state.graph.reviewQueue.push(aliasCandidate)
+            this.state.graph.reviewQueue.push(stampModelCandidate(aliasCandidate))
           }
         }
         this.enqueueIdentityCandidates(existing, now, {
@@ -2558,7 +2578,7 @@ export class AiAssistantService {
           evidenceKeys: evidenceIds,
           createdAt: now
         })
-        if (entityReview) this.state.graph.reviewQueue.push(entityReview)
+        if (entityReview) this.state.graph.reviewQueue.push(stampModelCandidate(entityReview))
         const summaryCandidate = buildEntitySummaryCandidate({
           entityId: created.id,
           entityName: created.canonicalName,
@@ -2570,7 +2590,7 @@ export class AiAssistantService {
           identityVersion: created.identityVersion,
           createdAt: now
         })
-        if (summaryCandidate) this.state.graph.reviewQueue.push(summaryCandidate)
+        if (summaryCandidate) this.state.graph.reviewQueue.push(stampModelCandidate(summaryCandidate))
         this.state.graph.reviewQueue.push(...buildEntityAliasCandidates({
           entity: created,
           aliases: candidateAliases,
@@ -2578,7 +2598,7 @@ export class AiAssistantService {
           evidenceKeys: evidenceIds,
           confidence: item.confidence,
           createdAt: now
-        }))
+        }).map(stampModelCandidate))
         this.enqueueIdentityCandidates(created, now, {
           promptVersion: digest.__meta?.promptVersion,
           schemaVersion: digest.__meta?.schemaVersion,
@@ -2629,11 +2649,11 @@ export class AiAssistantService {
         if (relation.status === 'candidate') {
           const subject = this.state.graph.entities.find(entity => entity.id === subjectId)?.canonicalName || '未知'
           const object = this.state.graph.entities.find(entity => entity.id === objectId)?.canonicalName || '未知'
-          this.state.graph.reviewQueue.push({
+          this.state.graph.reviewQueue.push(stampModelCandidate({
             id: `review_rel_${id}`, kind: 'relation', title: `${subject} — ${predicate} → ${object}`,
             detail: String(item.directionExplanation || evidence[0]?.excerpt || '需要根据消息证据确认这条关系').slice(0, 300),
             confidence: relation.confidence, status: 'pending', createdAt: now, relationId: id
-          })
+          }))
         }
       }
     }
@@ -7410,6 +7430,38 @@ export class AiAssistantService {
     const aliasPlan = review.kind === 'entity_alias' && decision === 'confirmed' && profileEntity
       ? planEntityAliasConfirmation(review, profileEntity, options?.correctedAliasText)
       : null
+    if (['relation', 'entity_creation', 'entity_summary', 'entity_alias'].includes(review.kind)) {
+      const creationCorrected = review.kind === 'entity_creation' && decision === 'confirmed'
+        && options?.correctedCanonicalName !== undefined
+        && String(options.correctedCanonicalName || '').trim().toLocaleLowerCase('zh-CN') !==
+          String(review.entityCanonicalName || '').trim().toLocaleLowerCase('zh-CN')
+      const corrected = Boolean(
+        relationPlan?.changed || summaryPlan?.changed || aliasPlan?.changed || creationCorrected
+      )
+      const relatedEntityIds = review.kind === 'relation'
+        ? [
+            relation?.subjectId,
+            relation?.objectId,
+            relationPlan?.after.subjectId,
+            relationPlan?.after.objectId
+          ].filter(Boolean) as string[]
+        : review.entityId ? [review.entityId] : []
+      personalMemoryStore.recordGraphCandidateReviewDecision({
+        candidateInstanceId: review.candidateInstanceId || `legacy:${review.id}:${review.createdAt}`,
+        reviewId: review.id,
+        candidateKind: review.kind as 'relation' | 'entity_creation' | 'entity_summary' | 'entity_alias',
+        outcome: decision === 'rejected'
+          ? 'rejected' : corrected ? 'accepted_corrected' : 'accepted_exact',
+        candidateSource: review.candidateSource,
+        policyVersion: review.candidatePolicyVersion,
+        promptVersion: review.candidatePromptVersion,
+        schemaVersion: review.candidateSchemaVersion,
+        model: review.candidateModel,
+        sourceKind: review.candidateSourceKind,
+        relatedEntityIds,
+        createdAt: resolutionNow
+      })
+    }
     review.status = decision
     if (review.kind === 'entity_summary' && review.entityId) {
       const entity = this.state.graph.entities.find(item => item.id === review.entityId)

@@ -9615,6 +9615,42 @@ function AiAssistantPage() {
             {Math.round(Number(dashboard.humanReviewCalibration.identityPairs.candidateAudit.calibration.upper95 || 0) * 100)}%）。
             <small>追加式记录每个候选实例的第一次本人裁决；不含姓名、账号、候选解释或聊天原文，也不代表未审阅实体对的总体准确率。</small>
           </p>}
+          {Number(dashboard.humanReviewCalibration.graphCandidates?.candidateAudit?.total || 0) > 0 && <p>
+            图谱候选首次裁决：原样正确{' '}
+            <b>{Number(dashboard.humanReviewCalibration.graphCandidates.candidateAudit.exact).toLocaleString()}</b>
+            {' '} / 修改后采用{' '}
+            <b>{Number(dashboard.humanReviewCalibration.graphCandidates.candidateAudit.corrected).toLocaleString()}</b>
+            {' '} / 拒绝{' '}
+            <b>{Number(dashboard.humanReviewCalibration.graphCandidates.candidateAudit.rejected).toLocaleString()}</b>
+            {' · '}严格原样命中{' '}
+            {Math.round(Number(dashboard.humanReviewCalibration.graphCandidates.candidateAudit.calibration.observedRate || 0) * 100)}%。
+            <small>
+              关系、实体创建、摘要和别名分别统计；人工修改后采用不会冒充模型原样正确。账本不保存候选正文或原文。
+            </small>
+          </p>}
+          {Number(dashboard.humanReviewCalibration.graphCandidates?.candidateAudit?.rollingTrend?.latest?.reviewed || 0) > 0 && <p>
+            最近图谱候选版本内严格原样命中{' '}
+            <b>{Math.round(Number(dashboard.humanReviewCalibration.graphCandidates.candidateAudit.rollingTrend.latest.observedRate || 0) * 100)}%</b>
+            {' '}（{Number(dashboard.humanReviewCalibration.graphCandidates.candidateAudit.rollingTrend.latest.reviewed)} / 30）；前一组{' '}
+            {Number(dashboard.humanReviewCalibration.graphCandidates.candidateAudit.rollingTrend.previous.reviewed) > 0
+              ? `${Math.round(Number(dashboard.humanReviewCalibration.graphCandidates.candidateAudit.rollingTrend.previous.observedRate || 0) * 100)}%（${Number(dashboard.humanReviewCalibration.graphCandidates.candidateAudit.rollingTrend.previous.reviewed)} / 30）`
+              : '尚无样本'}。
+            {dashboard.humanReviewCalibration.graphCandidates.candidateAudit.rollingTrend.signal === 'regression'
+              ? ' 两组 95% 区间已明确分离，近期图谱候选质量退化。'
+              : dashboard.humanReviewCalibration.graphCandidates.candidateAudit.rollingTrend.signal === 'improvement'
+                ? ' 两组 95% 区间已明确分离，近期图谱候选质量改善。'
+                : dashboard.humanReviewCalibration.graphCandidates.candidateAudit.rollingTrend.signal === 'inconclusive'
+                  ? ' 两组样本已满但区间重叠，暂不能判定趋势。'
+                  : ' 同类型、同来源和同完整版本两组各满 30 项后才判断。'}
+            {dashboard.humanReviewCalibration.graphCandidates.candidateAudit.rollingTrend.scope && <small>
+              {' '}范围：{dashboard.humanReviewCalibration.graphCandidates.candidateAudit.rollingTrend.scope.candidateKind}
+              {' · '}{dashboard.humanReviewCalibration.graphCandidates.candidateAudit.rollingTrend.scope.sourceKind}
+              {' · '}{dashboard.humanReviewCalibration.graphCandidates.candidateAudit.rollingTrend.scope.policyVersion}
+              {' · '}{dashboard.humanReviewCalibration.graphCandidates.candidateAudit.rollingTrend.scope.promptVersion}
+              {' · '}{dashboard.humanReviewCalibration.graphCandidates.candidateAudit.rollingTrend.scope.schemaVersion}
+              {' · '}{dashboard.humanReviewCalibration.graphCandidates.candidateAudit.rollingTrend.scope.model}
+            </small>}
+          </p>}
           {Number(dashboard.humanReviewCalibration.identityPairs?.candidateAudit?.rollingTrend?.latest?.reviewed || 0) > 0 && <p>
             最近候选版本内同一人建议{' '}
             <b>{Math.round(Number(dashboard.humanReviewCalibration.identityPairs.candidateAudit.rollingTrend.latest.observedRate || 0) * 100)}%</b>
@@ -9737,6 +9773,28 @@ function AiAssistantPage() {
             </div>
             {dashboard.humanReviewCalibration.identityPairs.candidateAudit.versionsTruncated && <small>
               当前仅展示最近有首次人工裁决的 12 组候选版本；总量统计仍覆盖全部历史。
+            </small>}
+          </details>}
+          {!!dashboard.humanReviewCalibration.graphCandidates?.candidateAudit?.versions?.length && <details>
+            <summary>
+              按版本查看图谱候选首次裁决（显示{' '}
+              {dashboard.humanReviewCalibration.graphCandidates.candidateAudit.versions.length} /{' '}
+              {Number(dashboard.humanReviewCalibration.graphCandidates.candidateAudit.versionGroupTotal ||
+                dashboard.humanReviewCalibration.graphCandidates.candidateAudit.versions.length)} 组）
+            </summary>
+            <div className="assistant-task-history">
+              {dashboard.humanReviewCalibration.graphCandidates.candidateAudit.versions.map((version: any) => <small
+                key={`${version.candidateKind}:${version.candidateSource}:${version.sourceKind}:${version.policyVersion}:${version.promptVersion}:${version.schemaVersion}:${version.model}`}>
+                <b>{version.candidateKind} · {version.sourceKind}</b>
+                {' · '}{version.policyVersion} · {version.promptVersion} · {version.schemaVersion} · {version.model}
+                {' · '}原样 {Number(version.exact).toLocaleString()} / 修改 {Number(version.corrected).toLocaleString()} / 拒绝 {Number(version.rejected).toLocaleString()}
+                {version.calibration?.observedRate !== null
+                  ? ` · 严格命中 ${Math.round(Number(version.calibration.observedRate) * 100)}%（95% 区间 ${Math.round(Number(version.calibration.lower95) * 100)}%–${Math.round(Number(version.calibration.upper95) * 100)}%）`
+                  : ''}
+              </small>)}
+            </div>
+            {dashboard.humanReviewCalibration.graphCandidates.candidateAudit.versionsTruncated && <small>
+              当前仅展示最近有首次人工裁决的 12 组图谱候选版本；总量覆盖全部历史。
             </small>}
           </details>}
           {!Number(dashboard.humanReviewCalibration.reviewedTotal || 0) && <p>完成一些候选确认或拒绝后，这里会开始形成你自己的真实质量基线。</p>}
