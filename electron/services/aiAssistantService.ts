@@ -154,7 +154,11 @@ import {
   structuredEvidenceKey,
   validateStructuredDigestEvidence
 } from './structuredEvidencePolicy'
-import { planExtractedEntityResolution } from './entityResolutionPolicy'
+import {
+  addEntityToResolutionIndex,
+  buildExtractedEntityResolutionIndex,
+  planExtractedEntityResolution
+} from './entityResolutionPolicy'
 import {
   buildEntitySummaryCandidate,
   planEntitySummaryConfirmation
@@ -380,10 +384,14 @@ import { localOcrService } from './localOcrService'
 import { buildImageSemanticText, localImageSemanticService } from './localImageSemanticService'
 import {
   assessIdentityPair,
+  addIdentityCandidateToLookup,
+  buildIdentityCandidateLookup,
   buildGraphIdentitySuggestions,
   buildNameBuckets,
   getFullIdentityScanSchedule,
   identityPairKey,
+  listIndexedIdentityCandidates,
+  type IdentityCandidateLookup,
   isNegativeDecisionCurrent
 } from './identityDisambiguation'
 import { type GraphReviewPageOptions } from '../../shared/graphReviewPagination'
@@ -2564,6 +2572,37 @@ export class AiAssistantService {
         candidateSourceKind: sourceKind
       })
     }
+    const entityResolutionIndex = buildExtractedEntityResolutionIndex(this.state.graph.entities)
+    const entitiesById = new Map(this.state.graph.entities.map(entity => [entity.id, entity]))
+    const entitiesByCanonicalName = new Map<string, GraphEntity>()
+    for (const entity of this.state.graph.entities) {
+      if (!entitiesByCanonicalName.has(entity.canonicalName)) {
+        entitiesByCanonicalName.set(entity.canonicalName, entity)
+      }
+    }
+    const relationsById = new Map(this.state.graph.relations.map(relation => [relation.id, relation]))
+    const reviewsById = new Map(this.state.graph.reviewQueue.map(review => [review.id, review]))
+    const pendingEntityReviewsByEntityId = new Map<string, any[]>()
+    for (const review of this.state.graph.reviewQueue) {
+      if (review.kind !== 'entity_creation' || review.status !== 'pending' || !review.entityId) continue
+      pendingEntityReviewsByEntityId.set(review.entityId, [
+        ...(pendingEntityReviewsByEntityId.get(review.entityId) || []),
+        review
+      ])
+    }
+    const identityCandidateLookup = buildIdentityCandidateLookup(this.state.graph.entities)
+    const appendReview = (candidate: any, stamp = true): any => {
+      const review = stamp ? stampModelCandidate(candidate) : candidate
+      this.state.graph.reviewQueue.push(review)
+      if (review?.id) reviewsById.set(review.id, review)
+      if (review?.kind === 'entity_creation' && review?.status === 'pending' && review?.entityId) {
+        pendingEntityReviewsByEntityId.set(review.entityId, [
+          ...(pendingEntityReviewsByEntityId.get(review.entityId) || []),
+          review
+        ])
+      }
+      return review
+    }
     const entities = Array.isArray(digest.entities) ? digest.entities : []
     for (const item of entities) {
       const reservedNames = new Set(['用户', '我', '本人', '自己', '对方', '群友', '某人', '未知', '未知用户', 'unknown', 'user'])
@@ -2576,7 +2615,7 @@ export class AiAssistantService {
       if (!canonicalName || reservedNames.has(canonicalName.toLowerCase())) continue
       const resolution = planExtractedEntityResolution(
         { ...item, canonicalName, aliases: itemAliases },
-        this.state.graph.entities
+        entityResolutionIndex
       )
       const accountIds = resolution.verifiedAccountIds
       const aliases = [...new Set(resolution.verifiedAliases
@@ -2608,15 +2647,14 @@ export class AiAssistantService {
         existing.accountIds = [...new Set([...existing.accountIds, ...accountIds])]
         if (accountIds.length) {
           existing.trustStatus = 'confirmed'
-          for (const pending of this.state.graph.reviewQueue) {
-            if (pending.kind === 'entity_creation' && pending.entityId === existing.id && pending.status === 'pending') {
-              pending.status = 'confirmed'
-              pending.detail = `${pending.detail} 后续新增原文提供了可验证身份锚点，已自动确认。`
-              pending.resolvedAt = now
-              pending.resolutionActor = 'system'
-              pending.resolutionReason = '新增原文提供了可验证身份锚点，系统按确定性规则自动确认'
-            }
+          for (const pending of pendingEntityReviewsByEntityId.get(existing.id) || []) {
+            pending.status = 'confirmed'
+            pending.detail = `${pending.detail} 后续新增原文提供了可验证身份锚点，已自动确认。`
+            pending.resolvedAt = now
+            pending.resolutionActor = 'system'
+            pending.resolutionReason = '新增原文提供了可验证身份锚点，系统按确定性规则自动确认'
           }
+          pendingEntityReviewsByEntityId.delete(existing.id)
         }
         existing.confidence = Math.max(existing.confidence, Number(item.confidence || 0))
         existing.evidenceMessageIds = compactEntityEvidenceMessageIds([
@@ -2636,8 +2674,8 @@ export class AiAssistantService {
           identityVersion: existing.identityVersion,
           createdAt: now
         })
-        if (summaryCandidate && !this.state.graph.reviewQueue.some(review => review.id === summaryCandidate.id)) {
-          this.state.graph.reviewQueue.push(stampModelCandidate(summaryCandidate))
+        if (summaryCandidate && !reviewsById.has(summaryCandidate.id)) {
+          appendReview(summaryCandidate)
         }
         for (const aliasCandidate of buildEntityAliasCandidates({
           entity: existing,
@@ -2647,17 +2685,19 @@ export class AiAssistantService {
           confidence: item.confidence,
           createdAt: now
         })) {
-          if (!this.state.graph.reviewQueue.some(review => review.id === aliasCandidate.id)) {
-            this.state.graph.reviewQueue.push(stampModelCandidate(aliasCandidate))
+          if (!reviewsById.has(aliasCandidate.id)) {
+            appendReview(aliasCandidate)
           }
         }
+        addEntityToResolutionIndex(entityResolutionIndex, existing)
+        addIdentityCandidateToLookup(identityCandidateLookup, existing)
         this.enqueueIdentityCandidates(existing, now, {
           promptVersion: digest.__meta?.promptVersion,
           schemaVersion: digest.__meta?.schemaVersion,
           model: digest.__meta?.model,
           sourceKind: String(digest.__meta?.promptVersion || '').includes('/document-v1')
             ? 'documents' : 'wechat'
-        })
+        }, identityCandidateLookup, reviewsById)
       } else {
         const created: GraphEntity = {
           id,
@@ -2677,13 +2717,19 @@ export class AiAssistantService {
           lastDisambiguatedAt: null
         }
         this.state.graph.entities.push(created)
+        entitiesById.set(created.id, created)
+        if (!entitiesByCanonicalName.has(created.canonicalName)) {
+          entitiesByCanonicalName.set(created.canonicalName, created)
+        }
+        addEntityToResolutionIndex(entityResolutionIndex, created)
+        addIdentityCandidateToLookup(identityCandidateLookup, created)
         const entityReview = buildEntityCreationReview({
           entity: created,
           evidenceMessages: item.__evidenceMessages,
           evidenceKeys: evidenceIds,
           createdAt: now
         })
-        if (entityReview) this.state.graph.reviewQueue.push(stampModelCandidate(entityReview))
+        if (entityReview) appendReview(entityReview)
         const summaryCandidate = buildEntitySummaryCandidate({
           entityId: created.id,
           entityName: created.canonicalName,
@@ -2695,22 +2741,22 @@ export class AiAssistantService {
           identityVersion: created.identityVersion,
           createdAt: now
         })
-        if (summaryCandidate) this.state.graph.reviewQueue.push(stampModelCandidate(summaryCandidate))
-        this.state.graph.reviewQueue.push(...buildEntityAliasCandidates({
+        if (summaryCandidate) appendReview(summaryCandidate)
+        for (const aliasCandidate of buildEntityAliasCandidates({
           entity: created,
           aliases: candidateAliases,
           evidenceMessages: item.__evidenceMessages,
           evidenceKeys: evidenceIds,
           confidence: item.confidence,
           createdAt: now
-        }).map(stampModelCandidate))
+        })) appendReview(aliasCandidate)
         this.enqueueIdentityCandidates(created, now, {
           promptVersion: digest.__meta?.promptVersion,
           schemaVersion: digest.__meta?.schemaVersion,
           model: digest.__meta?.model,
           sourceKind: String(digest.__meta?.promptVersion || '').includes('/document-v1')
             ? 'documents' : 'wechat'
-        })
+        }, identityCandidateLookup, reviewsById)
       }
     }
     for (const item of Array.isArray(digest.relations) ? digest.relations : []) {
@@ -2719,8 +2765,8 @@ export class AiAssistantService {
       if (!subjectId || !objectId || subjectId === objectId) continue
       const predicate = String(item.predicate || '').trim().slice(0, 80)
       if (!predicate) continue
-      const subjectType = this.state.graph.entities.find(entity => entity.id === subjectId)?.type
-      const objectType = this.state.graph.entities.find(entity => entity.id === objectId)?.type
+      const subjectType = entitiesById.get(subjectId)?.type
+      const objectType = entitiesById.get(objectId)?.type
       if (/伴侣|配偶|夫妻|父亲|母亲|兄弟|姐妹|朋友|同学/.test(predicate) &&
           (subjectType !== 'person' || objectType !== 'person')) continue
       const id = crypto.createHash('sha256').update(`${subjectId}|${predicate}|${objectId}`).digest('hex').slice(0, 20)
@@ -2732,7 +2778,7 @@ export class AiAssistantService {
       if (personalMemoryStore.isExtractedMemoryItemSuppressed('relation', {
         id, subjectId, predicate, objectId, evidence
       })) continue
-      const existing = this.state.graph.relations.find(relation => relation.id === id)
+      const existing = relationsById.get(id)
       if (existing) {
         const known = new Set(existing.evidence.map(item => item.messageId))
         existing.evidence.push(...evidence.filter(item => !known.has(item.messageId)))
@@ -2751,24 +2797,24 @@ export class AiAssistantService {
           updatedAt: now
         }
         this.state.graph.relations.push(relation)
+        relationsById.set(id, relation)
         if (relation.status === 'candidate') {
-          const subject = this.state.graph.entities.find(entity => entity.id === subjectId)?.canonicalName || '未知'
-          const object = this.state.graph.entities.find(entity => entity.id === objectId)?.canonicalName || '未知'
-          this.state.graph.reviewQueue.push(stampModelCandidate({
+          const subject = entitiesById.get(subjectId)?.canonicalName || '未知'
+          const object = entitiesById.get(objectId)?.canonicalName || '未知'
+          appendReview({
             id: `review_rel_${id}`, kind: 'relation', title: `${subject} — ${predicate} → ${object}`,
             detail: String(item.directionExplanation || evidence[0]?.excerpt || '需要根据消息证据确认这条关系').slice(0, 300),
             confidence: relation.confidence, status: 'pending', createdAt: now, relationId: id
-          }))
+          })
         }
       }
     }
     for (const item of Array.isArray(digest.possibleDuplicates) ? digest.possibleDuplicates : []) {
       const leftId = tempIds.get(String(item.leftTempId || ''))
       if (!leftId) continue
-      const right = this.state.graph.entities.find(entity => entity.canonicalName === String(item.rightExistingName || ''))
+      const right = entitiesByCanonicalName.get(String(item.rightExistingName || ''))
       if (!right || right.id === leftId) continue
-      const leftName = this.state.graph.entities.find(entity => entity.id === leftId)?.canonicalName || '未知人物'
-      const left = this.state.graph.entities.find(entity => entity.id === leftId)
+      const left = entitiesById.get(leftId)
       if (left) this.enqueueIdentityPair(left, right, now, {
         source: 'llm_suggestion',
         detail: String(item.reason || ''),
@@ -2779,7 +2825,7 @@ export class AiAssistantService {
         model: digest.__meta?.model,
         sourceKind: String(digest.__meta?.promptVersion || '').includes('/document-v1')
           ? 'documents' : 'wechat'
-      })
+      }, reviewsById)
     }
     return tempIds
   }
@@ -2885,12 +2931,17 @@ export class AiAssistantService {
   private enqueueIdentityCandidates(
     entity: GraphEntity,
     now: string,
-    provenance: IdentityCandidateProvenance = {}
+    provenance: IdentityCandidateProvenance = {},
+    candidateLookup?: IdentityCandidateLookup,
+    reviewsById?: Map<string, any>
   ): void {
     if (entity.type !== 'person') return
     if (this.state.graph.identityScan.lastRunAt !== now) this.state.graph.identityScan.lastCandidateCount = 0
-    for (const candidate of this.state.graph.entities) {
-      if (this.enqueueIdentityPair(entity, candidate, now, undefined, provenance)) {
+    const candidates = candidateLookup
+      ? listIndexedIdentityCandidates(candidateLookup, entity)
+      : this.state.graph.entities
+    for (const candidate of candidates) {
+      if (this.enqueueIdentityPair(entity, candidate, now, undefined, provenance, reviewsById)) {
         this.state.graph.identityScan.lastCandidateCount += 1
       }
     }
@@ -2904,14 +2955,15 @@ export class AiAssistantService {
     right: GraphEntity,
     now: string,
     suggestion?: { source: string; detail: string; confidence: number; label?: string; value?: string },
-    provenance: IdentityCandidateProvenance = {}
+    provenance: IdentityCandidateProvenance = {},
+    reviewsById?: Map<string, any>
   ): boolean {
     const assessment = assessIdentityPair(left, right)
     if (!assessment.eligible && (!suggestion || suggestion.confidence < 0.65)) return false
     const decision = personalMemoryStore.getIdentityDecision(left.id, right.id)
     if (isNegativeDecisionCurrent(decision, left, right)) return false
     const id = crypto.createHash('sha256').update(identityPairKey(left.id, right.id)).digest('hex').slice(0, 20)
-    const existing = this.state.graph.reviewQueue.find(review => review.id === id)
+    const existing = reviewsById?.get(id) || this.state.graph.reviewQueue.find(review => review.id === id)
     if (existing?.status === 'pending') return false
     const signals = assessment.signals.map(signal => ({ source: signal.source, label: signal.label, value: signal.value }))
     if (suggestion?.label && !signals.some(signal => signal.source === suggestion.source)) {
@@ -2947,7 +2999,10 @@ export class AiAssistantService {
       )
     } as const
     if (existing) Object.assign(existing, candidateReview)
-    else this.state.graph.reviewQueue.push(candidateReview)
+    else {
+      this.state.graph.reviewQueue.push(candidateReview)
+      reviewsById?.set(id, candidateReview)
+    }
     return true
   }
 

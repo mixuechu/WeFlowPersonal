@@ -2,6 +2,58 @@ function normalize(value: unknown): string {
   return String(value || '').trim().toLocaleLowerCase('zh-CN').replace(/\s+/g, '')
 }
 
+export type ExtractedEntityResolutionIndex = {
+  byTypeAndAccount: Map<string, any[]>
+  byTypeAndCanonicalName: Map<string, any[]>
+  accountMemberIds: Map<string, Set<string>>
+  canonicalNameMemberIds: Map<string, Set<string>>
+}
+
+const resolutionKey = (type: unknown, value: unknown): string =>
+  `${String(type || 'person')}\u0000${String(value || '')}`
+
+export function addEntityToResolutionIndex(
+  index: ExtractedEntityResolutionIndex,
+  entity: any
+): void {
+  const append = (
+    map: Map<string, any[]>,
+    members: Map<string, Set<string>>,
+    key: string
+  ): void => {
+    const ids = members.get(key) || new Set<string>()
+    if (ids.has(entity.id)) return
+    ids.add(entity.id)
+    members.set(key, ids)
+    map.set(key, [...(map.get(key) || []), entity])
+  }
+  for (const accountId of entity?.accountIds || []) {
+    append(
+      index.byTypeAndAccount,
+      index.accountMemberIds,
+      resolutionKey(entity?.type, accountId)
+    )
+  }
+  append(
+    index.byTypeAndCanonicalName,
+    index.canonicalNameMemberIds,
+    resolutionKey(entity?.type, normalize(entity?.canonicalName))
+  )
+}
+
+export function buildExtractedEntityResolutionIndex(
+  entities: any[]
+): ExtractedEntityResolutionIndex {
+  const index: ExtractedEntityResolutionIndex = {
+    byTypeAndAccount: new Map(),
+    byTypeAndCanonicalName: new Map(),
+    accountMemberIds: new Map(),
+    canonicalNameMemberIds: new Map()
+  }
+  for (const entity of entities) addEntityToResolutionIndex(index, entity)
+  return index
+}
+
 function identityNames(identity: any): string[] {
   return [
     identity?.displayName,
@@ -19,7 +71,7 @@ function requestedAliases(item: any): string[] {
 
 export function planExtractedEntityResolution(
   item: any,
-  existingEntities: any[]
+  existingEntities: any[] | ExtractedEntityResolutionIndex
 ): {
   existing: any | null
   verifiedAccountIds: string[]
@@ -56,8 +108,12 @@ export function planExtractedEntityResolution(
       identityNames(identity).includes(canonicalName)
   }))
   const rejectedAccountIds = requestedAccounts.filter(accountId => !verifiedAccountIds.includes(accountId))
-  const accountMatches = existingEntities.filter(entity =>
-    entity.type === type && (entity.accountIds || []).some((id: string) => verifiedAccountIds.includes(id)))
+  const accountMatches = Array.isArray(existingEntities)
+    ? existingEntities.filter(entity =>
+      entity.type === type && (entity.accountIds || []).some((id: string) => verifiedAccountIds.includes(id)))
+    : [...new Map(verifiedAccountIds.flatMap(accountId =>
+      (existingEntities.byTypeAndAccount.get(resolutionKey(type, accountId)) || [])
+        .map(entity => [String(entity.id), entity] as const))).values()]
   if (verifiedAccountIds.length && accountMatches.length === 1) {
     return {
       existing: accountMatches[0],
@@ -70,8 +126,9 @@ export function planExtractedEntityResolution(
     }
   }
   const canonical = normalize(item?.canonicalName)
-  const sameNameCandidates = existingEntities.filter(entity =>
-    entity.type === type && normalize(entity.canonicalName) === canonical)
+  const sameNameCandidates = Array.isArray(existingEntities)
+    ? existingEntities.filter(entity => entity.type === type && normalize(entity.canonicalName) === canonical)
+    : [...(existingEntities.byTypeAndCanonicalName.get(resolutionKey(type, canonical)) || [])]
   if (type !== 'person' && sameNameCandidates.length === 1 && Number(item?.confidence || 0) >= 0.9) {
     return {
       existing: sameNameCandidates[0],

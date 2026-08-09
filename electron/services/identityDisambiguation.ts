@@ -30,11 +30,68 @@ export type IdentityPairSuggestion = {
   value: string
 }
 
+export type IdentityCandidateLookup = {
+  bySignal: Map<string, IdentityCandidateEntity[]>
+  memberIdsBySignal: Map<string, Set<string>>
+  orderById: Map<string, number>
+}
+
 export const FULL_IDENTITY_SCAN_THRESHOLD = 500
 export const FULL_IDENTITY_SCAN_INTERVAL_DAYS = 7
 
 function normalize(value: unknown): string {
   return String(value || '').trim().toLocaleLowerCase('zh-CN').replace(/\s+/g, '')
+}
+
+function identitySignals(entity: IdentityCandidateEntity): string[] {
+  if (entity.type !== 'person') return []
+  return [...new Set([
+    ...(entity.accountIds || []).map(value => `account:${normalize(value)}`),
+    ...[entity.canonicalName, ...(entity.aliases || [])]
+      .map(normalize).filter(value => value.length >= 2).map(value => `name:${value}`)
+  ].filter(value => !value.endsWith(':')))]
+}
+
+export function addIdentityCandidateToLookup(
+  lookup: IdentityCandidateLookup,
+  entity: IdentityCandidateEntity,
+  order = lookup.orderById.size
+): void {
+  if (!lookup.orderById.has(entity.id)) lookup.orderById.set(entity.id, order)
+  for (const signal of identitySignals(entity)) {
+    const memberIds = lookup.memberIdsBySignal.get(signal) || new Set<string>()
+    if (memberIds.has(entity.id)) continue
+    memberIds.add(entity.id)
+    lookup.memberIdsBySignal.set(signal, memberIds)
+    lookup.bySignal.set(signal, [...(lookup.bySignal.get(signal) || []), entity])
+  }
+}
+
+export function buildIdentityCandidateLookup(
+  entities: IdentityCandidateEntity[]
+): IdentityCandidateLookup {
+  const lookup: IdentityCandidateLookup = {
+    bySignal: new Map(),
+    memberIdsBySignal: new Map(),
+    orderById: new Map()
+  }
+  entities.forEach((entity, order) => addIdentityCandidateToLookup(lookup, entity, order))
+  return lookup
+}
+
+export function listIndexedIdentityCandidates(
+  lookup: IdentityCandidateLookup,
+  entity: IdentityCandidateEntity
+): IdentityCandidateEntity[] {
+  const candidates = new Map<string, IdentityCandidateEntity>()
+  for (const signal of identitySignals(entity)) {
+    for (const candidate of lookup.bySignal.get(signal) || []) {
+      if (candidate.id !== entity.id) candidates.set(candidate.id, candidate)
+    }
+  }
+  return [...candidates.values()].sort((left, right) =>
+    (lookup.orderById.get(left.id) ?? Number.MAX_SAFE_INTEGER) -
+    (lookup.orderById.get(right.id) ?? Number.MAX_SAFE_INTEGER))
 }
 
 export function assessIdentityPair(
