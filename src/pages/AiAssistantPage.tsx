@@ -86,8 +86,9 @@ import {
 import {
   blockedEntityMissingGuidance,
   blockedEntityReviewScope,
-  shouldReturnToBlockedRelationReview,
-  type BlockedRelationReturnTarget
+  buildBlockedStructuredMemoryReturnTarget,
+  shouldReturnToBlockedIdentitySource,
+  type BlockedIdentityReturnTarget
 } from '../utils/blockedEntityReviewNavigation'
 import './AiAssistantPage.scss'
 
@@ -328,8 +329,11 @@ type UntrustedEntityReviewTarget = {
 function BlockedEntityReviewActions({ item, memoryKind, onOpen, onOpenAll }: {
   item: any
   memoryKind: 'claim' | 'event' | 'relation'
-  onOpen: (target: UntrustedEntityReviewTarget) => void
-  onOpenAll: () => void
+  onOpen: (
+    target: UntrustedEntityReviewTarget,
+    returnTarget?: BlockedIdentityReturnTarget
+  ) => void
+  onOpenAll: (returnTarget?: BlockedIdentityReturnTarget) => void
 }) {
   const targets = (Array.isArray(item?.untrusted_entity_review_targets)
     ? item.untrusted_entity_review_targets : []).slice(0, 20) as UntrustedEntityReviewTarget[]
@@ -338,14 +342,18 @@ function BlockedEntityReviewActions({ item, memoryKind, onOpen, onOpenAll }: {
     : memoryKind === 'event' ? '事件参与实体' : '关系两端实体'
   const actionableTargets = targets.filter(target => target.trustStatus !== 'missing')
   const missingTargets = targets.filter(target => target.trustStatus === 'missing')
+  const returnTarget = memoryKind === 'relation'
+    ? undefined
+    : buildBlockedStructuredMemoryReturnTarget(memoryKind, item) || undefined
   return <div className="assistant-blocked-entity-review">
     <small>{noun}尚未全部可信；确认前请审阅候选，缺失身份则直接纠正到可信实体。</small>
     <div>
       {actionableTargets.map(target => <button type="button" key={target.id}
-        onClick={() => onOpen(target)}>
+        onClick={() => onOpen(target, returnTarget)}>
         {target.trustStatus === 'candidate' ? '审阅' : '核验'}：{target.canonicalName}
       </button>)}
-      {(!targets.length || total > targets.length) && <button type="button" onClick={onOpenAll}>
+      {(!targets.length || total > targets.length) && <button type="button"
+        onClick={() => onOpenAll(returnTarget)}>
         打开全部身份候选{total > targets.length ? `（另 ${total - targets.length} 项）` : ''}
       </button>}
     </div>
@@ -1391,7 +1399,7 @@ function AiAssistantPage() {
   }>({ status: 'idle' })
   const reviewReturnSourceGate = useRef(new LatestRequestGate())
   const [blockedIdentityReviewReturn, setBlockedIdentityReviewReturn] =
-    useState<BlockedRelationReturnTarget | null>(null)
+    useState<BlockedIdentityReturnTarget | null>(null)
   const [reviewDecisionSaving, setReviewDecisionSaving] =
     useState<Record<string, boolean>>({})
   const reviewDecisionLocks = useRef(new Set<string>())
@@ -4214,7 +4222,7 @@ function AiAssistantPage() {
   const openCurrentStructuredMemoryDossier = async (
     kind: 'claim' | 'event' | 'relation',
     sourceId: string,
-    origin: 'entity_dossier' | 'project_dossier' = 'entity_dossier'
+    origin: 'entity_dossier' | 'project_dossier' | 'identity_review' = 'entity_dossier'
   ) => {
     const id = String(sourceId || '').trim()
     if (!id) return
@@ -4237,24 +4245,28 @@ function AiAssistantPage() {
       if (!structuredMemoryDossierGate.current.isCurrent(request)) return
       if (result?.stale) {
         setStructuredMemoryDossier(null)
-        setMessage(origin === 'project_dossier'
+        setMessage(origin === 'identity_review'
+          ? `原${kindLabel}在身份审阅期间已有变化，请从最新列表重新定位。`
+          : origin === 'project_dossier'
           ? `项目${kindLabel}在读取期间已有变化，已刷新当前项目的${kindLabel}。`
           : `人物${kindLabel}在读取期间已有变化，已刷新当前人物的${kindLabel}。`)
         if (origin === 'project_dossier') refreshProjectStructuredMemory(
           kind === 'relation' ? undefined : kind
         )
-        else refreshEntityDossierSection(section)
+        else if (origin === 'entity_dossier') refreshEntityDossierSection(section)
         return
       }
       if (!result) {
         setStructuredMemoryDossier(null)
-        setMessage(origin === 'project_dossier'
+        setMessage(origin === 'identity_review'
+          ? `原${kindLabel}已经删除或不再存在。`
+          : origin === 'project_dossier'
           ? `这条${kindLabel}已经删除或不再存在，已刷新当前项目的${kindLabel}。`
           : `这条${kindLabel}已经删除或不再存在，已刷新当前人物的${kindLabel}。`)
         if (origin === 'project_dossier') refreshProjectStructuredMemory(
           kind === 'relation' ? undefined : kind
         )
-        else refreshEntityDossierSection(section)
+        else if (origin === 'entity_dossier') refreshEntityDossierSection(section)
         return
       }
       setStructuredMemoryDossier({
@@ -5936,15 +5948,25 @@ function AiAssistantPage() {
       ?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 0)
   }
 
-  const returnToBlockedRelationReview = (target = blockedIdentityReviewReturn) => {
+  const returnToBlockedIdentitySource = async (target = blockedIdentityReviewReturn) => {
     if (!target) return
+    setBlockedIdentityReviewReturn(null)
+    setFocusedReviewEntityId('')
+    setFocusedReviewEntityName('')
+    if (target.kind === 'structured_memory') {
+      setMessage(`正在返回${target.memoryKind === 'claim' ? '事实' : '事件'}“${target.title}”，并读取最新权威状态。`)
+      await openCurrentStructuredMemoryDossier(
+        target.memoryKind,
+        target.sourceId,
+        'identity_review'
+      )
+      return
+    }
     setReviewStatusFilter('pending')
     setReviewKindFilter('relation')
     setReviewQuery('')
     setReviewCalibrationOutcomeFilter('')
     setFocusedReviewId(target.reviewId)
-    setFocusedReviewEntityId('')
-    setBlockedIdentityReviewReturn(null)
     setMessage(`已返回关系候选“${target.title}”，并按最新权威状态重新读取。`)
     window.setTimeout(() => document.getElementById('graph-review-ledger')
       ?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 0)
@@ -5952,7 +5974,7 @@ function AiAssistantPage() {
 
   const openBlockedEntityReview = (
     target: UntrustedEntityReviewTarget,
-    returnReview?: { reviewId: string; title: string; entityIds?: string[] }
+    returnTarget?: BlockedIdentityReturnTarget
   ) => {
     setFocusedReviewId('')
     setFocusedReviewEntityId(target.id)
@@ -5962,10 +5984,10 @@ function AiAssistantPage() {
     setReviewKindFilter('entity_creation')
     setReviewQuery('')
     setReviewCalibrationOutcomeFilter('')
-    setBlockedIdentityReviewReturn(returnReview ? {
-      ...returnReview,
-      entityIds: returnReview.entityIds?.length
-        ? [...new Set(returnReview.entityIds)] : [target.id]
+    setBlockedIdentityReviewReturn(returnTarget ? {
+      ...returnTarget,
+      entityIds: returnTarget.entityIds?.length
+        ? [...new Set(returnTarget.entityIds)] : [target.id]
     } : null)
     setMessage(target.trustStatus === 'candidate'
       ? `已定位“${target.canonicalName}”的待处理身份候选。`
@@ -5976,7 +5998,7 @@ function AiAssistantPage() {
 
   const openAllBlockedEntityReviews = (
     item: any,
-    returnReview?: { reviewId: string; title: string }
+    returnTarget?: BlockedIdentityReturnTarget
   ) => {
     const scope = blockedEntityReviewScope(item)
     setFocusedReviewId('')
@@ -5986,8 +6008,8 @@ function AiAssistantPage() {
     setReviewKindFilter('entity_creation')
     setReviewQuery('')
     setReviewCalibrationOutcomeFilter('')
-    setBlockedIdentityReviewReturn(returnReview ? {
-      ...returnReview,
+    setBlockedIdentityReviewReturn(returnTarget ? {
+      ...returnTarget,
       entityIds: scope.entityIds
     } : null)
     setMessage(scope.status === 'pending'
@@ -6582,10 +6604,10 @@ function AiAssistantPage() {
       const returnTargetBeforeDecision =
         resolveCompletedReviewReturn(reviewReturnTargetRef.current, id)
       const continuationContextKey = reviewContextKeyRef.current
-      const blockedRelationReturnBeforeDecision = blockedIdentityReviewReturn
+      const blockedReturnBeforeDecision = blockedIdentityReviewReturn
       const decidedReviewBeforeDecision = reviewPage.items.find((item: any) => item.id === id)
-      const completedBlockedEndpoint = shouldReturnToBlockedRelationReview(
-        blockedRelationReturnBeforeDecision,
+      const completedBlockedIdentity = shouldReturnToBlockedIdentitySource(
+        blockedReturnBeforeDecision,
         decidedReviewBeforeDecision
       )
       const continuationPlan = !returnTargetBeforeDecision &&
@@ -6617,9 +6639,10 @@ function AiAssistantPage() {
         return next
       })
       await load()
-      if (completedBlockedEndpoint && blockedRelationReturnBeforeDecision &&
-        blockedRelationReturnBeforeDecision.reviewId !== id) {
-        returnToBlockedRelationReview(blockedRelationReturnBeforeDecision)
+      if (completedBlockedIdentity && blockedReturnBeforeDecision &&
+        !(blockedReturnBeforeDecision.kind === 'relation_review' &&
+          blockedReturnBeforeDecision.reviewId === id)) {
+        await returnToBlockedIdentitySource(blockedReturnBeforeDecision)
         return
       }
       if (continuationPlan &&
@@ -12318,7 +12341,7 @@ function AiAssistantPage() {
                   </details>}
                 {!claimEntitiesTrusted(claim) && <BlockedEntityReviewActions item={claim}
                   memoryKind="claim" onOpen={openBlockedEntityReview}
-                  onOpenAll={() => openAllBlockedEntityReviews(claim)} />}
+                  onOpenAll={returnTarget => openAllBlockedEntityReviews(claim, returnTarget)} />}
                 {claim.polarity === 'negative' && <small>该条是对“{claim.predicate}”的明确否定陈述，仍需结合反证人工确认。</small>}
                 {(claim.valid_from || claim.valid_to) && <small>有效期：{claim.valid_from || '未知'} — {claim.valid_to || '至今'}</small>}
                 <div className="assistant-evidence-stack">
@@ -12515,7 +12538,7 @@ function AiAssistantPage() {
                 {!!event.participants?.length && <small>参与者：{event.participants.map((item: any) => `${item.canonical_name}（${item.role}）`).join('、')}</small>}
                 {!eventEntitiesTrusted(event) && <BlockedEntityReviewActions item={event}
                   memoryKind="event" onOpen={openBlockedEntityReview}
-                  onOpenAll={() => openAllBlockedEntityReviews(event)} />}
+                  onOpenAll={returnTarget => openAllBlockedEntityReviews(event, returnTarget)} />}
                 <div className="assistant-evidence-stack">
                   <EvidenceRows evidence={event.evidence} total={event.evidence_count}
                     onOpenArchive={() => void openMemoryEvidenceArchive(
@@ -13122,10 +13145,15 @@ function AiAssistantPage() {
                 : ' 图谱跨存储提交点一致。'}
             </small>}
             {blockedIdentityReviewReturn && <div className="assistant-review-note">
-              <b>正在先处理关系端点身份：</b>
+              <b>正在先处理{
+                blockedIdentityReviewReturn.kind === 'relation_review'
+                  ? '关系端点' : blockedIdentityReviewReturn.memoryKind === 'claim'
+                    ? '事实涉及的' : '事件参与者'
+              }身份：</b>
               <span>完成身份审阅后会自动返回“{blockedIdentityReviewReturn.title}”；也可以现在返回重新选择已确认实体。</span>
-              <button type="button" onClick={() => returnToBlockedRelationReview()}>
-                返回原关系候选
+              <button type="button" onClick={() => void returnToBlockedIdentitySource()}>
+                返回原{blockedIdentityReviewReturn.kind === 'relation_review'
+                  ? '关系候选' : blockedIdentityReviewReturn.memoryKind === 'claim' ? '事实' : '事件'}
               </button>
             </div>}
             {focusedReviewEntityId && <div className="assistant-review-note">
@@ -13387,13 +13415,19 @@ function AiAssistantPage() {
                       untrusted_entity_count: relationUntrustedTargets.length
                     }} memoryKind="relation"
                     onOpen={target => openBlockedEntityReview(target, {
+                      kind: 'relation_review',
                       reviewId: review.id,
                       title: review.title,
                       entityIds: relationUntrustedTargets.map(target => target.id)
                     })}
                     onOpenAll={() => openAllBlockedEntityReviews({
                       untrusted_entity_review_targets: relationUntrustedTargets
-                    }, { reviewId: review.id, title: review.title })} />}
+                    }, {
+                      kind: 'relation_review',
+                      reviewId: review.id,
+                      title: review.title,
+                      entityIds: relationUntrustedTargets.map(target => target.id)
+                    })} />}
                   {(relation.evidence || []).map((evidence: any) => <div key={evidence.messageId}><small>证据：“{evidence.excerpt}”</small></div>)}
                 </div>}
                 {review.kind === 'entity_summary' && <div className="assistant-review-note">
@@ -14595,7 +14629,7 @@ function AiAssistantPage() {
                       )} /></div>
                   {!claimEntitiesTrusted(claim) && <BlockedEntityReviewActions item={claim}
                     memoryKind="claim" onOpen={openBlockedEntityReview}
-                    onOpenAll={() => openAllBlockedEntityReviews(claim)} />}
+                    onOpenAll={returnTarget => openAllBlockedEntityReviews(claim, returnTarget)} />}
                   <div className="assistant-memory-actions">
                     <button onClick={() => void openCurrentStructuredMemoryDossier(
                       'claim',
@@ -14780,7 +14814,7 @@ function AiAssistantPage() {
                       void openMemoryEvidenceArchive('event', event.id, event.title || '事件原文')} /></div>
                   {!eventEntitiesTrusted(event) && <BlockedEntityReviewActions item={event}
                     memoryKind="event" onOpen={openBlockedEntityReview}
-                    onOpenAll={() => openAllBlockedEntityReviews(event)} />}
+                    onOpenAll={returnTarget => openAllBlockedEntityReviews(event, returnTarget)} />}
                   <div className="assistant-memory-actions">
                     <button onClick={() => void openCurrentStructuredMemoryDossier(
                       'event',
@@ -15198,7 +15232,7 @@ function AiAssistantPage() {
                     )} /></div>
                   {!claimEntitiesTrusted(claim) && <BlockedEntityReviewActions item={claim}
                     memoryKind="claim" onOpen={openBlockedEntityReview}
-                    onOpenAll={() => openAllBlockedEntityReviews(claim)} />}
+                    onOpenAll={returnTarget => openAllBlockedEntityReviews(claim, returnTarget)} />}
                   {selectedProject.entityId && <div className="assistant-memory-actions">
                     <button onClick={() => openProjectStructuredMemoryDossier(
                       'claim', claim.id
@@ -15346,7 +15380,7 @@ function AiAssistantPage() {
                     )} /></div>
                   {!eventEntitiesTrusted(event) && <BlockedEntityReviewActions item={event}
                     memoryKind="event" onOpen={openBlockedEntityReview}
-                    onOpenAll={() => openAllBlockedEntityReviews(event)} />}
+                    onOpenAll={returnTarget => openAllBlockedEntityReviews(event, returnTarget)} />}
                   {selectedProject.entityId && <div className="assistant-memory-actions">
                     <button onClick={() => openProjectStructuredMemoryDossier(
                       'event', event.id
@@ -15489,7 +15523,7 @@ function AiAssistantPage() {
                     )} /></div>
                   {!eventEntitiesTrusted(event) && <BlockedEntityReviewActions item={event}
                     memoryKind="event" onOpen={openBlockedEntityReview}
-                    onOpenAll={() => openAllBlockedEntityReviews(event)} />}
+                    onOpenAll={returnTarget => openAllBlockedEntityReviews(event, returnTarget)} />}
                   {selectedProject.entityId && <div className="assistant-memory-actions">
                     <button onClick={() => openProjectStructuredMemoryDossier(
                       'event', event.id

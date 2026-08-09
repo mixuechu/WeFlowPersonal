@@ -1,8 +1,21 @@
 export type BlockedRelationReturnTarget = {
+  kind: 'relation_review'
   reviewId: string
   title: string
   entityIds: string[]
 }
+
+export type BlockedStructuredMemoryReturnTarget = {
+  kind: 'structured_memory'
+  memoryKind: 'claim' | 'event'
+  sourceId: string
+  title: string
+  entityIds: string[]
+}
+
+export type BlockedIdentityReturnTarget =
+  | BlockedRelationReturnTarget
+  | BlockedStructuredMemoryReturnTarget
 
 export function blockedEntityMissingGuidance(
   memoryKind: 'claim' | 'event' | 'relation'
@@ -30,13 +43,39 @@ export function blockedEntityReviewScope(item: {
   }
 }
 
-export function shouldReturnToBlockedRelationReview(
-  target: BlockedRelationReturnTarget | null,
+export function buildBlockedStructuredMemoryReturnTarget(
+  memoryKind: 'claim' | 'event',
+  item: {
+    id?: string
+    title?: string
+    subject_name?: string
+    predicate?: string
+    untrusted_entity_review_targets?: Array<{ id?: string; trustStatus?: string }>
+  } | null | undefined
+): BlockedStructuredMemoryReturnTarget | null {
+  const sourceId = String(item?.id || '').trim()
+  if (!sourceId) return null
+  const title = memoryKind === 'claim'
+    ? `${String(item?.subject_name || '未知主体').trim() || '未知主体'} · ${String(item?.predicate || '事实').trim() || '事实'}`
+    : String(item?.title || '事件').trim() || '事件'
+  return {
+    kind: 'structured_memory',
+    memoryKind,
+    sourceId,
+    title,
+    entityIds: blockedEntityReviewScope(item).entityIds
+  }
+}
+
+export function shouldReturnToBlockedIdentitySource(
+  target: BlockedIdentityReturnTarget | null,
   completedReview: { id?: string; kind?: string; entityId?: string } | null | undefined
 ): boolean {
   if (!target || !completedReview || completedReview.kind !== 'entity_creation') return false
   const reviewId = String(completedReview.id || '').trim()
   const entityId = String(completedReview.entityId || '').trim()
-  return Boolean(reviewId && reviewId !== target.reviewId && entityId &&
+  const isOriginalRelationReview = target.kind === 'relation_review' &&
+    reviewId === target.reviewId
+  return Boolean(reviewId && !isOriginalRelationReview && entityId &&
     target.entityIds.includes(entityId))
 }
