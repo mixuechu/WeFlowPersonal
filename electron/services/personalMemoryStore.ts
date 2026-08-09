@@ -5095,7 +5095,8 @@ export class PersonalMemoryStore {
     })
     const constraintsHealthyBefore = constraintState.every(Boolean)
     if (previousVersion >= 3 && constraintsHealthyBefore) {
-      if (migrationAudit?.driftDetectedThisStart) {
+      if (migrationAudit?.driftDetectedThisStart
+          || Number(migrationAudit?.sourceRowsBackfilledThisStart || 0) !== 0) {
         const checkedAt = new Date().toISOString()
         this.db.prepare(`
           UPDATE schema_meta SET value=?,updated_at=?
@@ -5103,7 +5104,8 @@ export class PersonalMemoryStore {
         `).run(JSON.stringify({
           ...migrationAudit,
           constraintsHealthy: true,
-          driftDetectedThisStart: false
+          driftDetectedThisStart: false,
+          sourceRowsBackfilledThisStart: 0
         }), checkedAt)
       }
       return
@@ -9224,7 +9226,9 @@ export class PersonalMemoryStore {
     if (!this.db) return
     const key = 'graph_review_evidence_index_integrity_v1'
     const normalizeSql = (value: unknown) => String(value || '')
-      .replace(/["`\[\]]/g, '').replace(/\s+/g, ' ').trim().toLowerCase()
+      .replace(/["`\[\]]/g, '')
+      .replace(/\bif\s+not\s+exists\b/gi, '')
+      .replace(/\s+/g, ' ').trim().toLowerCase()
     const actual = (this.db.prepare(`
       SELECT sql FROM sqlite_master WHERE type='index' AND name='idx_graph_review_evidence_page'
     `).get() as any)?.sql

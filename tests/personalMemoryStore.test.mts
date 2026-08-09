@@ -1710,6 +1710,31 @@ test('legacy graph review evidence migrates atomically out of payloads and casca
   }
 })
 
+test('graph review evidence page index verification is idempotent across restarts', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'weflow-review-index-idempotence-test-'))
+  const databasePath = join(directory, 'memory.sqlite')
+  const first = new PersonalMemoryStore()
+  const second = new PersonalMemoryStore()
+  try {
+    first.initialize(databasePath)
+    const firstHealth = first.getGraphReviewEvidenceStorageHealth()
+    assert.equal(firstHealth.indexHealthy, true)
+    assert.equal(firstHealth.repairedIndexThisStart, false)
+    const repairsTotal = firstHealth.indexRepairsTotal
+    first.close()
+
+    second.initialize(databasePath)
+    const secondHealth = second.getGraphReviewEvidenceStorageHealth()
+    assert.equal(secondHealth.indexHealthy, true)
+    assert.equal(secondHealth.repairedIndexThisStart, false)
+    assert.equal(secondHealth.indexRepairsTotal, repairsTotal)
+  } finally {
+    first.close()
+    second.close()
+    rmSync(directory, { recursive: true, force: true })
+  }
+})
+
 test('legacy graph review evidence provenance repairs only uniquely proven carriers and is idempotent', () => {
   const directory = mkdtempSync(join(tmpdir(), 'weflow-review-provenance-repair-test-'))
   const databasePath = join(directory, 'memory.sqlite')
@@ -5154,6 +5179,7 @@ test('structured evidence constraints self-heal after index drift without trusti
         verifiedAgain.initialize(databasePath)
         const verifiedDiagnostics = verifiedAgain.getDiagnostics().structuredEvidenceMigration
         assert.equal(verifiedDiagnostics.driftDetectedThisStart, false)
+        assert.equal(verifiedDiagnostics.sourceRowsBackfilledThisStart, 0)
         assert.equal(verifiedDiagnostics.constraintDriftRepairs, 1)
         assert.equal(verifiedDiagnostics.repairRuns, auditBefore.repairRuns + 1)
       } finally {
