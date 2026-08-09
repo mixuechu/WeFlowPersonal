@@ -17,6 +17,7 @@ import {
   LOCAL_EMBEDDING_MAX_CHUNKS,
   LOCAL_EMBEDDING_REVISION,
   LocalEmbeddingService,
+  LocalEmbeddingWorkerClient,
   buildEmbeddingChunkDetails,
   buildEmbeddingChunks,
   meanNormalizedEmbeddings,
@@ -11699,6 +11700,88 @@ test('local embedding never unloads a session while inference is active', async 
     assert.equal(disposals, 1)
   } finally {
     releaseInference?.()
+    await service.dispose()
+    rmSync(directory, { recursive: true, force: true })
+  }
+})
+
+test('isolated embedding worker protocol returns vectors and shuts down gracefully', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'weflow-embedding-worker-'))
+  const workerPath = join(directory, 'fixture-worker.mjs')
+  writeFileSync(workerPath, `
+    process.on('message', message => {
+      if (message.type === 'initialize') {
+        process.send({ type: 'ready' })
+        return
+      }
+      if (message.type === 'dispose') {
+        process.send({ type: 'disposed', id: message.id })
+        return
+      }
+      process.send({
+        type: 'result',
+        id: message.id,
+        vectors: message.texts.map((text, index) => [String(text).length, index + 1])
+      })
+    })
+  `)
+  const client = new LocalEmbeddingWorkerClient(directory, workerPath)
+  try {
+    await client.ready()
+    const tensor = await client.embed(['甲', '乙乙'])
+    assert.deepEqual(tensor.dims, [2, 2])
+    assert.deepEqual(Array.from(tensor.data), [1, 1, 2, 2])
+    await client.dispose()
+  } finally {
+    await client.dispose()
+    rmSync(directory, { recursive: true, force: true })
+  }
+})
+
+test('isolated embedding worker rejects in-flight work after an abnormal exit', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'weflow-embedding-worker-crash-'))
+  const workerPath = join(directory, 'fixture-worker.mjs')
+  writeFileSync(workerPath, `
+    process.on('message', message => {
+      if (message.type === 'initialize') {
+        process.send({ type: 'ready' })
+        return
+      }
+      if (message.type === 'embed') process.exit(7)
+    })
+  `)
+  const client = new LocalEmbeddingWorkerClient(directory, workerPath)
+  try {
+    await client.ready()
+    await assert.rejects(client.embed(['触发异常']), /异常退出|提前退出/)
+  } finally {
+    await client.dispose()
+    rmSync(directory, { recursive: true, force: true })
+  }
+})
+
+test('local embedding replaces a failed runtime before the next request', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'weflow-embedding-runtime-restart-'))
+  let loads = 0
+  let disposals = 0
+  const service = new LocalEmbeddingService(async () => {
+    loads += 1
+    const generation = loads
+    const extractor: any = async () => {
+      if (generation === 1) throw new Error('fixture runtime exited')
+      return { dims: [1, 2], data: Float32Array.from([3, 4]) }
+    }
+    extractor.dispose = async () => { disposals += 1 }
+    return extractor
+  }, 60_000)
+  try {
+    service.initialize(directory)
+    await assert.rejects(service.embed(['第一次']), /fixture runtime exited/)
+    assert.equal(service.getStatus().loaded, false)
+    assert.equal(disposals, 1)
+    assert.deepEqual(await service.embed(['第二次']), [[3, 4]])
+    assert.equal(loads, 2)
+  } finally {
     await service.dispose()
     rmSync(directory, { recursive: true, force: true })
   }

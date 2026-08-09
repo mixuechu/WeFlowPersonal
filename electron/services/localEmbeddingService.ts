@@ -1,6 +1,9 @@
 import { createReadStream, existsSync, mkdirSync, unlinkSync } from 'node:fs'
 import { createHash } from 'node:crypto'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
+import { fork, type ChildProcess } from 'node:child_process'
+import { sanitizeDiagnosticText } from './diagnosticRedaction.ts'
 
 export const LOCAL_EMBEDDING_MODEL = 'onnx-community/bge-small-zh-v1.5-ONNX'
 export const LOCAL_EMBEDDING_REVISION = '9507db33464b5da99a532ac26b2a251767cbc62b'
@@ -168,6 +171,152 @@ export function recordModelCacheIntegrity(
   }
 }
 
+type EmbeddingWorkerMessage = {
+  type: 'ready' | 'result' | 'disposed' | 'error'
+  id?: number
+  vectors?: number[][]
+  error?: string
+}
+
+export class LocalEmbeddingWorkerClient {
+  private readonly worker: ChildProcess
+  private readonly pending = new Map<number, {
+    resolve: (value: number[][]) => void
+    reject: (error: Error) => void
+  }>()
+  private readonly readyPromise: Promise<void>
+  private readyResolve: (() => void) | null = null
+  private readyReject: ((error: Error) => void) | null = null
+  private nextId = 1
+  private exited = false
+
+  constructor(cacheDirectory: string, workerPathOverride = '') {
+    let workerPath = workerPathOverride
+    if (!workerPath) {
+      const moduleDirectory = dirname(fileURLToPath(import.meta.url))
+      const developmentPath = join(moduleDirectory, '../dist-electron/localEmbeddingWorker.js')
+      const packagedPath = join(moduleDirectory, 'localEmbeddingWorker.js')
+      workerPath = process.env.NODE_ENV === 'development' && existsSync(developmentPath)
+        ? developmentPath
+        : packagedPath
+    }
+    if (!existsSync(workerPath)) throw new Error('本地向量隔离 worker 不存在')
+    this.readyPromise = new Promise<void>((resolve, reject) => {
+      this.readyResolve = resolve
+      this.readyReject = reject
+    })
+    this.worker = fork(workerPath, [], {
+      env: { ...process.env },
+      stdio: ['ignore', 'ignore', 'ignore', 'ipc'],
+      serialization: 'advanced'
+    })
+    this.worker.on('message', message => this.handleMessage(message as EmbeddingWorkerMessage))
+    this.worker.on('error', error => this.handleExit(error))
+    this.worker.on('exit', code => this.handleExit(
+      code === 0 ? null : new Error(`本地向量隔离 worker 异常退出（${code}）`)
+    ))
+    this.worker.send({
+      type: 'initialize',
+      cacheDirectory,
+      model: LOCAL_EMBEDDING_MODEL,
+      revision: LOCAL_EMBEDDING_REVISION
+    })
+  }
+
+  async ready(): Promise<void> {
+    return this.readyPromise
+  }
+
+  async embed(texts: string[]): Promise<{ dims: number[]; data: Float32Array }> {
+    await this.readyPromise
+    if (this.exited) throw new Error('本地向量隔离 worker 已退出')
+    const id = this.nextId++
+    const vectors = await new Promise<number[][]>((resolve, reject) => {
+      this.pending.set(id, { resolve, reject })
+      try {
+        this.worker.send({ type: 'embed', id, texts })
+      } catch (error) {
+        this.pending.delete(id)
+        reject(error instanceof Error ? error : new Error(String(error)))
+      }
+    })
+    const dimensions = vectors[0]?.length || 0
+    return {
+      dims: [vectors.length, dimensions],
+      data: Float32Array.from(vectors.flat())
+    }
+  }
+
+  async dispose(): Promise<void> {
+    if (this.exited) return
+    const id = this.nextId++
+    const graceful = new Promise<void>(resolve => {
+      const timer = setTimeout(resolve, 2_000)
+      timer.unref?.()
+      this.pending.set(id, {
+        resolve: () => { clearTimeout(timer); resolve() },
+        reject: () => { clearTimeout(timer); resolve() }
+      })
+    })
+    try { this.worker.send({ type: 'dispose', id }) } catch {}
+    await graceful
+    this.exited = true
+    this.rejectPending(new Error('本地向量隔离 worker 已释放'))
+    try { if (!this.worker.killed) this.worker.kill('SIGTERM') } catch {}
+  }
+
+  private handleMessage(message: EmbeddingWorkerMessage): void {
+    if (message.type === 'ready') {
+      this.readyResolve?.()
+      this.readyResolve = null
+      this.readyReject = null
+      return
+    }
+    const id = Number(message.id || 0)
+    if (message.type === 'error' && !id) {
+      const failure = new Error(String(message.error || '本地向量 worker 初始化失败'))
+      this.readyReject?.(failure)
+      this.readyResolve = null
+      this.readyReject = null
+      return
+    }
+    const task = this.pending.get(id)
+    if (!task) return
+    this.pending.delete(id)
+    if (message.type === 'result') task.resolve(Array.isArray(message.vectors) ? message.vectors : [])
+    else if (message.type === 'disposed') task.resolve([])
+    else task.reject(new Error(String(message.error || '本地向量 worker 执行失败')))
+  }
+
+  private handleExit(error: Error | null): void {
+    if (this.exited) return
+    this.exited = true
+    const failure = error || new Error('本地向量隔离 worker 提前退出')
+    this.readyReject?.(failure)
+    this.readyResolve = null
+    this.readyReject = null
+    this.rejectPending(failure)
+  }
+
+  private rejectPending(error: Error): void {
+    for (const task of this.pending.values()) task.reject(error)
+    this.pending.clear()
+  }
+}
+
+async function createIsolatedEmbeddingExtractor(cacheDirectory: string): Promise<any> {
+  const client = new LocalEmbeddingWorkerClient(cacheDirectory)
+  try {
+    await client.ready()
+  } catch (error) {
+    await client.dispose()
+    throw error
+  }
+  const extractor: any = (texts: string[]) => client.embed(texts)
+  extractor.dispose = () => client.dispose()
+  return extractor
+}
+
 export class LocalEmbeddingService {
   private cacheDirectory = ''
   private readonly extractorLoader: (() => Promise<any>) | null
@@ -175,6 +324,7 @@ export class LocalEmbeddingService {
   private extractorPromise: Promise<any> | null = null
   private activeInferences = 0
   private idleUnloadTimer: ReturnType<typeof setTimeout> | null = null
+  private extractorResetRequested = false
   private unloadCount = 0
   private lastLoadedAt = ''
   private lastUnloadedAt = ''
@@ -219,6 +369,7 @@ export class LocalEmbeddingService {
         inferenceBatchSize: LOCAL_EMBEDDING_INFERENCE_BATCH_SIZE
       },
       cacheDirectory: this.cacheDirectory,
+      runtime: this.extractorLoader ? 'in_process_test' : 'isolated_process',
       loaded: Boolean(this.extractorPromise) && !this.lastError,
       activeInferences: this.activeInferences,
       idleUnloadScheduled: Boolean(this.idleUnloadTimer),
@@ -244,9 +395,18 @@ export class LocalEmbeddingService {
       if (!dimensions) throw new Error('本地向量模型返回了无效维度')
       const values = Array.from(tensor.data as Float32Array, Number)
       return clean.map((_, index) => values.slice(index * dimensions, (index + 1) * dimensions))
+    } catch (error) {
+      this.lastError = sanitizeDiagnosticText(error)
+      this.extractorResetRequested = true
+      throw error
     } finally {
       this.activeInferences = Math.max(0, this.activeInferences - 1)
-      this.scheduleIdleUnload()
+      if (this.activeInferences === 0 && this.extractorResetRequested) {
+        this.extractorResetRequested = false
+        await this.unloadExtractor()
+      } else {
+        this.scheduleIdleUnload()
+      }
     }
   }
 
@@ -311,15 +471,8 @@ export class LocalEmbeddingService {
           result,
           new Date().toISOString()
         )
-        return import('@huggingface/transformers')
-      }).then(async ({ env, pipeline }) => {
-        env.cacheDir = this.cacheDirectory
-        env.allowLocalModels = true
-        env.allowRemoteModels = true
-        const extractor = await pipeline('feature-extraction', LOCAL_EMBEDDING_MODEL, {
-          dtype: 'q8',
-          revision: LOCAL_EMBEDDING_REVISION
-        })
+        return createIsolatedEmbeddingExtractor(this.cacheDirectory)
+      }).then(async extractor => {
         const result = await verifyModelCacheManifest({
           cacheDirectory: this.cacheDirectory,
           model: LOCAL_EMBEDDING_MODEL,
@@ -332,6 +485,7 @@ export class LocalEmbeddingService {
           new Date().toISOString()
         )
         if (result.state !== 'verified') {
+          if (typeof extractor?.dispose === 'function') await extractor.dispose()
           throw new Error('固定版本本地向量模型缓存未能通过 SHA-256 完整性校验')
         }
         return extractor
@@ -340,7 +494,7 @@ export class LocalEmbeddingService {
         this.lastLoadedAt = new Date().toISOString()
         return extractor
       }).catch(error => {
-        this.lastError = error instanceof Error ? error.message : String(error)
+        this.lastError = sanitizeDiagnosticText(error)
         this.extractorPromise = null
         throw error
       })

@@ -16505,6 +16505,8 @@ function AiAssistantPage() {
                   : memoryDiagnostics.embeddings.loaded
                     ? memoryDiagnostics.embeddings.idleUnloadScheduled ? '已加载 · 等待空闲释放' : '已加载'
                     : '已释放 · 查询时重载'}</b></span>
+                <span>推理隔离 <b>{memoryDiagnostics.embeddings.runtime === 'isolated_process'
+                  ? '独立子进程 · 可完整回收' : '兼容模式'}</b></span>
                 <span>空闲释放 <b>{Math.round(Number(memoryDiagnostics.embeddings.idleUnloadMs || 0) / 60_000)} 分钟
                   · 累计 {Number(memoryDiagnostics.embeddings.unloadCount || 0).toLocaleString()} 次</b></span>
                 <span>模型缓存 <b>{memoryDiagnostics.embeddings.integrity?.state === 'verified'

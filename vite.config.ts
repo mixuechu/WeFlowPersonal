@@ -218,6 +218,22 @@ export default defineConfig({
         }
       },
       {
+        entry: 'electron/localEmbeddingWorker.ts',
+        onstart: handleElectronOnStart,
+        vite: {
+          build: {
+            outDir: 'dist-electron',
+            rollupOptions: {
+              external: ['@huggingface/transformers'],
+              output: {
+                entryFileNames: 'localEmbeddingWorker.js',
+                codeSplitting: false
+              }
+            }
+          }
+        }
+      },
+      {
         entry: 'electron/transcribeWorker.ts',
         onstart: handleElectronOnStart,
         vite: {
