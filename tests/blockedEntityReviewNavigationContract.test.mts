@@ -21,6 +21,17 @@ test('every blocked claim and event surface links to exact identity review work'
   assert.match(page, /function BlockedEntityReviewActions/)
   assert.match(page, /setReviewQuery\(target\.id\)/)
   assert.match(page, /target\.trustStatus === 'candidate' \? 'pending' : 'all'/)
-  assert.equal(page.match(/<BlockedEntityReviewActions item=/g)?.length, 7)
+  assert.equal(page.match(/<BlockedEntityReviewActions item=/g)?.length, 8)
   assert.match(page, /onOpenAll=\{\(\) => openReviewInboxTarget\('graph_identity'\)\}/)
+})
+
+test('blocked relation reviews return after exact endpoint identity work', () => {
+  const page = read('src/pages/AiAssistantPage.tsx')
+  assert.match(page, /const \[blockedIdentityReviewReturn, setBlockedIdentityReviewReturn\]/)
+  assert.match(page, /memoryKind="relation"/)
+  assert.match(page, /openBlockedEntityReview\(target, \{\s*reviewId: review\.id/)
+  assert.match(page, /setReviewKindFilter\('entity_creation'\)/)
+  assert.match(page, /setFocusedReviewId\(target\.reviewId\)/)
+  assert.match(page, /blockedRelationReturnBeforeDecision\.reviewId !== id/)
+  assert.match(page, /returnToBlockedRelationReview\(blockedRelationReturnBeforeDecision\)/)
 })

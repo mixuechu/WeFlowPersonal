@@ -321,14 +321,15 @@ type UntrustedEntityReviewTarget = {
 
 function BlockedEntityReviewActions({ item, memoryKind, onOpen, onOpenAll }: {
   item: any
-  memoryKind: 'claim' | 'event'
+  memoryKind: 'claim' | 'event' | 'relation'
   onOpen: (target: UntrustedEntityReviewTarget) => void
   onOpenAll: () => void
 }) {
   const targets = (Array.isArray(item?.untrusted_entity_review_targets)
     ? item.untrusted_entity_review_targets : []).slice(0, 20) as UntrustedEntityReviewTarget[]
   const total = Math.max(targets.length, Number(item?.untrusted_entity_count || 0))
-  const noun = memoryKind === 'claim' ? '事实涉及的实体' : '事件参与实体'
+  const noun = memoryKind === 'claim' ? '事实涉及的实体'
+    : memoryKind === 'event' ? '事件参与实体' : '关系两端实体'
   return <div className="assistant-blocked-entity-review">
     <small>{noun}尚未全部可信；先处理下列身份候选，之后才能确认或纠正。</small>
     <div>
@@ -1374,6 +1375,10 @@ function AiAssistantPage() {
     error?: string
   }>({ status: 'idle' })
   const reviewReturnSourceGate = useRef(new LatestRequestGate())
+  const [blockedIdentityReviewReturn, setBlockedIdentityReviewReturn] = useState<{
+    reviewId: string
+    title: string
+  } | null>(null)
   const [reviewDecisionSaving, setReviewDecisionSaving] =
     useState<Record<string, boolean>>({})
   const reviewDecisionLocks = useRef(new Set<string>())
@@ -5910,13 +5915,30 @@ function AiAssistantPage() {
       ?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 0)
   }
 
-  const openBlockedEntityReview = (target: UntrustedEntityReviewTarget) => {
+  const returnToBlockedRelationReview = (target = blockedIdentityReviewReturn) => {
+    if (!target) return
+    setReviewStatusFilter('pending')
+    setReviewKindFilter('relation')
+    setReviewQuery('')
+    setReviewCalibrationOutcomeFilter('')
+    setFocusedReviewId(target.reviewId)
+    setBlockedIdentityReviewReturn(null)
+    setMessage(`已返回关系候选“${target.title}”，并按最新权威状态重新读取。`)
+    window.setTimeout(() => document.getElementById('graph-review-ledger')
+      ?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 0)
+  }
+
+  const openBlockedEntityReview = (
+    target: UntrustedEntityReviewTarget,
+    returnReview?: { reviewId: string; title: string }
+  ) => {
     setFocusedReviewId('')
     clearReviewReturnTarget()
     setReviewStatusFilter(target.trustStatus === 'candidate' ? 'pending' : 'all')
-    setReviewKindFilter('')
+    setReviewKindFilter('entity_creation')
     setReviewQuery(target.id)
     setReviewCalibrationOutcomeFilter('')
+    setBlockedIdentityReviewReturn(returnReview || null)
     setMessage(target.trustStatus === 'candidate'
       ? `已定位“${target.canonicalName}”的待处理身份候选。`
       : `“${target.canonicalName}”当前不是可信实体；已打开相关身份审阅记录供核验。`)
@@ -6509,6 +6531,7 @@ function AiAssistantPage() {
       const returnTargetBeforeDecision =
         resolveCompletedReviewReturn(reviewReturnTargetRef.current, id)
       const continuationContextKey = reviewContextKeyRef.current
+      const blockedRelationReturnBeforeDecision = blockedIdentityReviewReturn
       const continuationPlan = !returnTargetBeforeDecision &&
         reviewStatusFilter === 'pending'
         ? planReviewContinuation(reviewPage.items, id, reviewPage.total)
@@ -6538,6 +6561,11 @@ function AiAssistantPage() {
         return next
       })
       await load()
+      if (blockedRelationReturnBeforeDecision &&
+        blockedRelationReturnBeforeDecision.reviewId !== id) {
+        returnToBlockedRelationReview(blockedRelationReturnBeforeDecision)
+        return
+      }
       if (continuationPlan &&
         reviewContextKeyRef.current === continuationContextKey) {
         setReviewContinuationPlan(continuationPlan)
@@ -13036,6 +13064,13 @@ function AiAssistantPage() {
                 ? ` 检测到上次退出发生在 SQLCipher 提交与状态文件写入之间，已从权威数据库恢复 ${dashboard.graphReviewStorage.recoveredEntities || 0} 个实体、${dashboard.graphReviewStorage.recoveredRelations || 0} 条关系和 ${dashboard.graphReviewStorage.recoveredPendingReviews || 0} 个待处理候选。`
                 : ' 图谱跨存储提交点一致。'}
             </small>}
+            {blockedIdentityReviewReturn && <div className="assistant-review-note">
+              <b>正在先处理关系端点身份：</b>
+              <span>完成身份审阅后会自动返回“{blockedIdentityReviewReturn.title}”；也可以现在返回重新选择已确认实体。</span>
+              <button type="button" onClick={() => returnToBlockedRelationReview()}>
+                返回原关系候选
+              </button>
+            </div>}
             <div className="assistant-review-filters">
               <div>
                 <button className={reviewStatusFilter === 'pending' ? 'active' : ''} onClick={() => { setFocusedReviewId(''); clearReviewReturnTarget(); setReviewCalibrationOutcomeFilter(''); setReviewStatusFilter('pending') }}>待处理 {pendingReviewCount}</button>
@@ -13118,6 +13153,16 @@ function AiAssistantPage() {
                     ? relationEdit.objectEntity
                     : reviewEntity(relationEdit.objectId)
                   : null
+                const relationUntrustedTargets = [...new Map([
+                  correctedRelationSubject,
+                  correctedRelationObject
+                ].filter((entity: any) => entity?.id && entity.trustStatus !== 'confirmed')
+                  .map((entity: any) => [entity.id, {
+                    id: entity.id,
+                    canonicalName: entity.canonicalName || entity.id,
+                    trustStatus: ['candidate', 'rejected'].includes(entity.trustStatus)
+                      ? entity.trustStatus : 'missing'
+                  }])).values()]
                 const relationInvalidReason = !relationEdit
                   ? ''
                   : !relationEdit.subjectId || !relationEdit.predicate.trim() || !relationEdit.objectId
@@ -13262,6 +13307,19 @@ function AiAssistantPage() {
                       ? <small>{relationInvalidReason}</small>
                       : <small>修改会重算关系 ID、迁移原文证据并保留旧值→新值审计；不会静默丢失证据。</small>}
                   </div>}
+                  {isPending && relationUntrustedTargets.length > 0 &&
+                    <BlockedEntityReviewActions item={{
+                      untrusted_entity_review_targets: relationUntrustedTargets,
+                      untrusted_entity_count: relationUntrustedTargets.length
+                    }} memoryKind="relation"
+                    onOpen={target => openBlockedEntityReview(target, {
+                      reviewId: review.id,
+                      title: review.title
+                    })}
+                    onOpenAll={() => {
+                      setBlockedIdentityReviewReturn({ reviewId: review.id, title: review.title })
+                      openReviewInboxTarget('graph_identity')
+                    }} />}
                   {(relation.evidence || []).map((evidence: any) => <div key={evidence.messageId}><small>证据：“{evidence.excerpt}”</small></div>)}
                 </div>}
                 {review.kind === 'entity_summary' && <div className="assistant-review-note">
