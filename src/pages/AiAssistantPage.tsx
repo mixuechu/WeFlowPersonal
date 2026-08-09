@@ -1097,6 +1097,8 @@ function AiAssistantPage() {
   const resourceTrashRestoreGates = useRef(new KeyedLatestRequestGates())
   const dashboardLoadGate = useRef(new LatestRequestGate())
   const dashboardRefresh = useRef(new TrailingCoalescedRequest<[any, any]>())
+  const memoryDiagnosticsRefresh = useRef(new TrailingCoalescedRequest<any>())
+  const memoryDiagnosticsForceRequested = useRef(false)
   const claimArchiveGate = useRef(new LatestRequestGate())
   const eventTimelineGate = useRef(new LatestRequestGate())
   const resourceArchiveGate = useRef(new LatestRequestGate())
@@ -1470,6 +1472,9 @@ function AiAssistantPage() {
   const [entityRestoreConfirmation, setEntityRestoreConfirmation] = useState('')
   const entityRestoreGate = useRef(new LatestRequestGate())
   const [memoryDiagnostics, setMemoryDiagnostics] = useState<any>(null)
+  const [memoryDiagnosticsError, setMemoryDiagnosticsError] = useState('')
+  const [memoryDiagnosticsRefreshing, setMemoryDiagnosticsRefreshing] = useState(false)
+  const [memoryDiagnosticsLoadedAt, setMemoryDiagnosticsLoadedAt] = useState('')
   const [repairingMemorySearchIndexes, setRepairingMemorySearchIndexes] = useState(false)
   const [memorySearchRepairResult, setMemorySearchRepairResult] = useState<any>(null)
   const [showDiagnostics, setShowDiagnostics] = useState(false)
@@ -1929,6 +1934,29 @@ function AiAssistantPage() {
     crossStoreRecoveryArchiveFrom, crossStoreRecoveryArchiveTo
   ])
 
+  const refreshMemoryDiagnostics = useCallback(async (forceIntegrityCheck = false) => {
+    if (forceIntegrityCheck) memoryDiagnosticsForceRequested.current = true
+    setMemoryDiagnosticsRefreshing(true)
+    try {
+      const diagnostics = await memoryDiagnosticsRefresh.current.run(() => {
+        const force = memoryDiagnosticsForceRequested.current
+        memoryDiagnosticsForceRequested.current = false
+        return window.electronAPI.aiAssistant.getMemoryDiagnostics(
+          force ? { forceIntegrityCheck: true } : undefined
+        )
+      })
+      setMemoryDiagnostics(diagnostics)
+      setMemoryDiagnosticsLoadedAt(new Date().toISOString())
+      setMemoryDiagnosticsError('')
+      return diagnostics
+    } catch (error) {
+      setMemoryDiagnosticsError(error instanceof Error ? error.message : String(error))
+      throw error
+    } finally {
+      setMemoryDiagnosticsRefreshing(false)
+    }
+  }, [])
+
   const load = useCallback(async () => {
     const request = dashboardLoadGate.current.begin()
     try {
@@ -1967,13 +1995,18 @@ function AiAssistantPage() {
 
   useEffect(() => {
     void load().catch(() => {})
-    void window.electronAPI.aiAssistant.getMemoryDiagnostics().then(setMemoryDiagnostics).catch(() => {})
+    void refreshMemoryDiagnostics().catch(() => {})
     const timer = window.setInterval(() => void load().catch(() => {}), 15_000)
+    const diagnosticsTimer = window.setInterval(
+      () => void refreshMemoryDiagnostics().catch(() => {}),
+      60_000
+    )
     return () => {
       window.clearInterval(timer)
+      window.clearInterval(diagnosticsTimer)
       dashboardLoadGate.current.invalidate()
     }
-  }, [load])
+  }, [load, refreshMemoryDiagnostics])
 
   useEffect(() => {
     if (!showDiagnostics || !focusAppRecoveryDiagnostics || !memoryDiagnostics?.appRecovery) return
@@ -4690,7 +4723,7 @@ function AiAssistantPage() {
       const result = await window.electronAPI.aiAssistant.setSettings(settings)
       setShowSettings(false)
       await load()
-      setMemoryDiagnostics(await window.electronAPI.aiAssistant.getMemoryDiagnostics())
+      await refreshMemoryDiagnostics().catch(() => {})
       setMessage(result?.maintenanceWarning || 'AI 助理设置已完整保存')
     } catch (error: any) {
       const errorMessage = error?.message || String(error)
@@ -5117,7 +5150,7 @@ function AiAssistantPage() {
       setMessage(`恢复重试完成：尝试 ${result.attempted} 批，成功 ${result.recovered} 批，` +
         `失败 ${result.failed} 批，仍待处理 ${result.remaining} 批。`)
       await loadIngestionRecoveryQueue()
-      setMemoryDiagnostics(await window.electronAPI.aiAssistant.getMemoryDiagnostics())
+      await refreshMemoryDiagnostics().catch(() => {})
       await load()
     } catch (error: any) {
       setMessage(error?.message || String(error))
@@ -5238,7 +5271,7 @@ function AiAssistantPage() {
       setMessage(`写入恢复重试完成：核验 ${result.attempted} 组，完成 ${result.applied} 组，` +
         `安全放弃 ${result.abandoned} 组，冲突 ${result.conflicts} 组，仍保留 ${result.remaining} 组。`)
       await loadCrossStoreRecoveryQueue()
-      setMemoryDiagnostics(await window.electronAPI.aiAssistant.getMemoryDiagnostics())
+      await refreshMemoryDiagnostics().catch(() => {})
       await load()
     } catch (error: any) {
       setMessage(error?.message || String(error))
@@ -6394,7 +6427,7 @@ function AiAssistantPage() {
     try {
       const result = await window.electronAPI.aiAssistant.createMemoryBackup()
       setMessage(`个人记忆备份完成：${result.path}`)
-      setMemoryDiagnostics(await window.electronAPI.aiAssistant.getMemoryDiagnostics())
+      await refreshMemoryDiagnostics().catch(() => {})
     } catch (error: any) {
       setMessage(error?.message || String(error))
     } finally {
@@ -6451,7 +6484,7 @@ function AiAssistantPage() {
       setMessage('个人记忆已恢复；恢复前的安全快照已保留。')
       setMemoryRestoreDialog(null)
       setMemoryRestoreConfirmation('')
-      setMemoryDiagnostics(await window.electronAPI.aiAssistant.getMemoryDiagnostics())
+      await refreshMemoryDiagnostics().catch(() => {})
       await load()
     } catch (error: any) {
       const message = error?.message || String(error)
@@ -6508,7 +6541,7 @@ function AiAssistantPage() {
       setMessage(`历史快照已移到废纸篓，释放备份目录 ${(Number(result.bytes || 0) / 1024 / 1024).toFixed(1)} MB`)
       setMemoryBackupDeleteDialog(null)
       setMemoryBackupDeleteConfirmation('')
-      setMemoryDiagnostics(await window.electronAPI.aiAssistant.getMemoryDiagnostics())
+      await refreshMemoryDiagnostics().catch(() => {})
     } catch (error: any) {
       const message = error?.message || String(error)
       setMessage(message)
@@ -6548,7 +6581,7 @@ function AiAssistantPage() {
       setMigrationPassphrase('')
       setMigrationPassphraseConfirmation('')
       setMessage(`口令保护的便携迁移包已校验并导出：${result.path}`)
-      setMemoryDiagnostics(await window.electronAPI.aiAssistant.getMemoryDiagnostics())
+      await refreshMemoryDiagnostics().catch(() => {})
     } catch (error: any) {
       setMessage(error?.message || String(error))
     } finally {
@@ -6595,7 +6628,7 @@ function AiAssistantPage() {
         setMigrationPassphrase('')
         setMigrationImportConfirmation('')
         setMessage('个人记忆迁移完成；导入前的安全快照已保留。')
-        setMemoryDiagnostics(await window.electronAPI.aiAssistant.getMemoryDiagnostics())
+        await refreshMemoryDiagnostics().catch(() => {})
         await load()
       }
     } catch (error: any) {
@@ -6626,7 +6659,7 @@ function AiAssistantPage() {
         `本地语义索引完成：${result.indexed} 条新增，累计 ${result.total - result.pending}/${result.total} 条`
         + `${result.ann?.rebuilt ? '；ANN 文档与分块索引已重建。' : '。'}`
       )
-      setMemoryDiagnostics(await window.electronAPI.aiAssistant.getMemoryDiagnostics())
+      await refreshMemoryDiagnostics().catch(() => {})
     } catch (error: any) {
       setMessage(error?.message || String(error))
     } finally {
@@ -7218,7 +7251,7 @@ function AiAssistantPage() {
       if (memoryAnswer?.citations?.some((citation: any) => citation.documentId === `${kind}:${id}`)) setMemoryAnswer(null)
       closeMemoryDeletionDialog()
       await load()
-      setMemoryDiagnostics(await window.electronAPI.aiAssistant.getMemoryDiagnostics())
+      await refreshMemoryDiagnostics().catch(() => {})
     } catch (error: any) {
       setMemoryDeletionDialog((current: any) => ({
         ...current,
@@ -9058,7 +9091,7 @@ function AiAssistantPage() {
       setEntityForgetDialog(null)
       setEntityForgetConfirmation('')
       await load()
-      setMemoryDiagnostics(await window.electronAPI.aiAssistant.getMemoryDiagnostics())
+      await refreshMemoryDiagnostics().catch(() => {})
     } catch (error: any) {
       setEntityForgetDialog((current: any) => ({
         ...current,
@@ -9388,6 +9421,21 @@ function AiAssistantPage() {
         {dashboardLoadError && <div className="assistant-message">
           状态刷新暂时失败：{dashboardLoadError}。系统不会叠加重复请求，将在下一轮自动重试。
         </div>}
+        {memoryDiagnosticsError && <section className="assistant-recovery-banner page-incident" role="alert">
+          <TriangleAlert size={15} />
+          <span><strong>个人记忆诊断暂时无法刷新</strong>
+            <small>
+              {memoryDiagnosticsLoadedAt
+                ? `界面仍保留 ${new Date(memoryDiagnosticsLoadedAt).toLocaleString('zh-CN', { hour12: false })} 的最近成功结果；`
+                : '当前尚无可验证的诊断结果；'}
+              {' '}{memoryDiagnosticsError}。系统每 60 秒有界重试，不会叠加请求。
+            </small>
+          </span>
+          <button disabled={memoryDiagnosticsRefreshing}
+            onClick={() => void refreshMemoryDiagnostics().catch(() => {})}>
+            {memoryDiagnosticsRefreshing ? '正在重试…' : '立即重试'}
+          </button>
+        </section>}
         <section className="assistant-panel assistant-owner-profile">
           <div className="assistant-section-heading">
             <div>
@@ -9806,6 +9854,9 @@ function AiAssistantPage() {
                   {' · '}{(Number(memoryDiagnostics.databaseBytes || 0) / 1024 / 1024).toFixed(1)} MB
                   {memoryDiagnostics.integrityAudit?.checkedAt
                     ? ` · 完整校验 ${new Date(memoryDiagnostics.integrityAudit.checkedAt).toLocaleString('zh-CN', { hour12: false })}${memoryDiagnostics.integrityAudit.cachedThisCall ? '（复用）' : ''}`
+                    : ''}
+                  {memoryDiagnosticsLoadedAt
+                    ? ` · 诊断刷新 ${new Date(memoryDiagnosticsLoadedAt).toLocaleTimeString('zh-CN', { hour12: false })}`
                     : ''}
                   {' · '}{Number(memoryDiagnostics.backupRestoreAudit?.restorable || 0)} 个已验证可恢复快照
                   {Number(memoryDiagnostics.backupRestoreAudit?.invalid || 0) > 0
@@ -16258,6 +16309,8 @@ function AiAssistantPage() {
                   try {
                     const result = await window.electronAPI.aiAssistant.repairMemorySearchIndexes()
                     setMemoryDiagnostics(result.diagnostics)
+                    setMemoryDiagnosticsLoadedAt(new Date().toISOString())
+                    setMemoryDiagnosticsError('')
                     setMemorySearchRepairResult(result)
                   } catch (error) {
                     setMemorySearchRepairResult({
@@ -17106,7 +17159,10 @@ function AiAssistantPage() {
                 </button>
               </div>}
             </div>
-            <footer><button onClick={() => void window.electronAPI.aiAssistant.getMemoryDiagnostics({ forceIntegrityCheck: true }).then(setMemoryDiagnostics)}>完整校验并刷新</button>
+            <footer><button disabled={memoryDiagnosticsRefreshing}
+              onClick={() => void refreshMemoryDiagnostics(true).catch(() => {})}>
+              {memoryDiagnosticsRefreshing ? '正在校验…' : '完整校验并刷新'}
+            </button>
               <button className="primary" onClick={() => setShowDiagnostics(false)}>完成</button></footer>
           </div>
         </div>
