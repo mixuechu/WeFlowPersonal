@@ -1072,7 +1072,7 @@ export class AiAssistantService {
       if (!this.disposed) void this.flushNotificationOutbox(new Date())
     }, 8_000)
     this.startupNotificationTimer.unref()
-    this.scheduleVectorIndexContinuation(12_000)
+    if (this.config.get('aiAssistantEnabled')) this.scheduleVectorIndexContinuation(12_000)
   }
 
   async prepareForAppShutdown(): Promise<{
@@ -4127,6 +4127,9 @@ export class AiAssistantService {
 
   async sync(trigger: 'manual' | 'startup' | 'daily' | 'backlog' | 'resume' = 'manual'): Promise<any> {
     if (this.disposed) throw new Error('AI 助理正在安全退出，不能开始新的增量处理')
+    if (!this.config.get('aiAssistantEnabled')) {
+      throw new Error('AI 助理已关闭，未开始增量处理或模型请求')
+    }
     if (this.activeSync) return this.activeSync
     if (this.memorySearchRepairPromise) {
       throw new Error('当前正在核验检索索引，请在完成后再开始增量处理')
@@ -7425,6 +7428,7 @@ export class AiAssistantService {
   }
 
   setSettings(input: any): any {
+    const wasEnabled = Boolean(this.config.get('aiAssistantEnabled'))
     const currentSettings = this.getSettings()
     const {
       mutationToken: _currentMutationToken,
@@ -7441,6 +7445,19 @@ export class AiAssistantService {
       directoryRevision: input?.ownerEntityRevision
     })
     this.config.setMany(patch)
+    const enabled = Boolean(this.config.get('aiAssistantEnabled'))
+    if (wasEnabled && !enabled) {
+      this.cancelRequested = Boolean(this.activeSync)
+      if (this.vectorIndexContinuation) clearTimeout(this.vectorIndexContinuation)
+      this.vectorIndexContinuation = null
+      this.vectorIndexContinuationHealth = recordVectorIndexContinuation(
+        this.vectorIndexContinuationHealth,
+        { type: 'cancelled', at: new Date().toISOString() }
+      )
+      this.persistVectorIndexContinuationHealth()
+    } else if (!wasEnabled && enabled) {
+      this.scheduleVectorIndexContinuation()
+    }
     let maintenanceWarning = ''
     if (patch.aiAssistantResourceTrashRetentionDays !== undefined) {
       try {
@@ -9820,7 +9837,7 @@ export class AiAssistantService {
   }
 
   private scheduleVectorIndexContinuation(delayMs = 1_000): void {
-    if (this.disposed || this.vectorIndexContinuation) return
+    if (this.disposed || !this.config.get('aiAssistantEnabled') || this.vectorIndexContinuation) return
     this.vectorIndexContinuationHealth = recordVectorIndexContinuation(
       this.vectorIndexContinuationHealth,
       { type: 'scheduled', at: new Date().toISOString() }
@@ -9828,6 +9845,14 @@ export class AiAssistantService {
     this.vectorIndexContinuation = setTimeout(() => {
       this.vectorIndexContinuation = null
       if (this.disposed) return
+      if (!this.config.get('aiAssistantEnabled')) {
+        this.vectorIndexContinuationHealth = recordVectorIndexContinuation(
+          this.vectorIndexContinuationHealth,
+          { type: 'cancelled', at: new Date().toISOString() }
+        )
+        this.persistVectorIndexContinuationHealth()
+        return
+      }
       if (this.activeSync || this.memorySearchRepairPromise) {
         this.scheduleVectorIndexContinuation(5_000)
         return
@@ -9846,6 +9871,14 @@ export class AiAssistantService {
           this.scheduleVectorIndexContinuation()
         }
       }).catch(error => {
+        if (!this.config.get('aiAssistantEnabled')) {
+          this.vectorIndexContinuationHealth = recordVectorIndexContinuation(
+            this.vectorIndexContinuationHealth,
+            { type: 'cancelled', at: new Date().toISOString() }
+          )
+          this.persistVectorIndexContinuationHealth()
+          return
+        }
         console.warn('[AI Assistant] 本地向量索引暂未完成:', error)
         this.vectorIndexContinuationHealth = recordVectorIndexContinuation(
           this.vectorIndexContinuationHealth,
@@ -9888,6 +9921,9 @@ export class AiAssistantService {
     allowDuringSearchRepair?: boolean
   } = {}): Promise<any> {
     if (this.disposed) throw new Error('AI 助理正在安全退出，不能构建语义索引')
+    if (!this.config.get('aiAssistantEnabled')) {
+      throw new Error('AI 助理已关闭，未开始本地向量补建')
+    }
     if (options.maxBatches === undefined) {
       const conflict = getVectorIndexWriteConflict({
         syncing: Boolean(this.activeSync),
@@ -9920,6 +9956,9 @@ export class AiAssistantService {
         listCandidates: limit =>
           personalMemoryStore.listEmbeddingCandidates(localEmbeddingService.modelVersion, limit),
         embed: async documents => {
+          if (!this.config.get('aiAssistantEnabled')) {
+            throw new Error('AI 助理已关闭，本地向量补建已安全停止')
+          }
           const details = await localEmbeddingService.embedDocumentDetails(
             documents.map((item: any) => `${item.title}\n${item.search_text}`)
           )
@@ -9938,15 +9977,20 @@ export class AiAssistantService {
           String(item.content_hash || ''),
           pendingEmbeddingChunks.get(`${item.id}\u0000${String(item.content_hash || '')}`) || []
         ),
-        commitBatch: items => personalMemoryStore.saveEmbeddingBatch(items.map(({ document, vector }) => ({
-          id: document.id,
-          model: localEmbeddingService.modelVersion,
-          vector,
-          expectedContentHash: String(document.content_hash || ''),
-          chunks: pendingEmbeddingChunks.get(
-            `${document.id}\u0000${String(document.content_hash || '')}`
-          ) || []
-        })))
+        commitBatch: items => {
+          if (!this.config.get('aiAssistantEnabled')) {
+            throw new Error('AI 助理已关闭，本批向量未写入')
+          }
+          return personalMemoryStore.saveEmbeddingBatch(items.map(({ document, vector }) => ({
+            id: document.id,
+            model: localEmbeddingService.modelVersion,
+            vector,
+            expectedContentHash: String(document.content_hash || ''),
+            chunks: pendingEmbeddingChunks.get(
+              `${document.id}\u0000${String(document.content_hash || '')}`
+            ) || []
+          })))
+        }
       })
       const stats = personalMemoryStore.getEmbeddingStats(localEmbeddingService.modelVersion)
       const ann = pass.drained
