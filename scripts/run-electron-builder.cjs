@@ -1,4 +1,7 @@
 const { spawnSync } = require('child_process')
+const { join } = require('path')
+
+const nativeModule = 'better-sqlite3-multiple-ciphers'
 
 const cli = require.resolve('electron-builder/out/cli/cli.js')
 const env = {
@@ -12,9 +15,33 @@ const result = spawnSync(process.execPath, [cli, ...process.argv.slice(2)], {
   stdio: 'inherit'
 })
 
+// electron-builder/@electron-rebuild intentionally rewrites the workspace addon
+// for Electron before afterPack copies it into the application. Once packaging is
+// fully finished, put the ignored workspace dependency back on the current Node
+// ABI so a following `npm test` cannot fail with a misleading ABI error. Always
+// attempt this after a failed build too: afterPack may already have rewritten it.
+const npmCommand = process.platform === 'win32' ? 'npm.cmd' : 'npm'
+const restore = spawnSync(npmCommand, ['rebuild', nativeModule], {
+  env,
+  stdio: 'inherit'
+})
+const verify = restore.status === 0 && !restore.error && !restore.signal
+  ? spawnSync(process.execPath, [join(__dirname, 'verify-workspace-sqlcipher.cjs')], {
+      env,
+      stdio: 'inherit'
+    })
+  : null
+
 if (result.error) throw result.error
-if (result.signal) {
-  console.error(`electron-builder 被信号 ${result.signal} 终止`)
+if (result.signal) console.error(`electron-builder 被信号 ${result.signal} 终止`)
+if (restore.error) throw restore.error
+if (restore.signal) console.error(`Node SQLCipher ABI 恢复被信号 ${restore.signal} 终止`)
+if (verify?.error) throw verify.error
+if (verify?.signal) console.error(`Node SQLCipher ABI 校验被信号 ${verify.signal} 终止`)
+
+const builderSucceeded = !result.signal && result.status === 0
+const restoreSucceeded = !restore.signal && restore.status === 0
+const verifySucceeded = Boolean(verify) && !verify.signal && verify.status === 0
+if (!builderSucceeded || !restoreSucceeded || !verifySucceeded) {
   process.exit(1)
 }
-process.exit(result.status ?? 1)

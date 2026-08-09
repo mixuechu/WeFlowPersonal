@@ -15,6 +15,22 @@ test('packaged SQLCipher verification uses a script app instead of unsupported E
   assert.match(verifier, /value:\s*database\.prepare/)
 })
 
+test('electron packaging restores and verifies the workspace Node SQLCipher ABI', () => {
+  const packageJson = JSON.parse(readFileSync(join(repositoryRoot, 'package.json'), 'utf8'))
+  const builder = readFileSync(join(repositoryRoot, 'scripts/run-electron-builder.cjs'), 'utf8')
+  const verifier = readFileSync(join(repositoryRoot, 'scripts/verify-workspace-sqlcipher.cjs'), 'utf8')
+  assert.equal(
+    packageJson.scripts?.['verify:workspace-sqlcipher'],
+    'node scripts/verify-workspace-sqlcipher.cjs'
+  )
+  assert.match(builder, /spawnSync\(npmCommand, \['rebuild', nativeModule\]/)
+  assert.match(builder, /verify-workspace-sqlcipher\.cjs/)
+  assert.match(builder, /afterPack may already have rewritten it/)
+  assert.match(verifier, /require\('better-sqlite3-multiple-ciphers'\)/)
+  assert.match(verifier, /value:\s*database\.prepare/)
+  assert.match(verifier, /workspace-ok/)
+})
+
 test('mac signing skips sealed Electron data resources but never native code', () => {
   const packageJson = JSON.parse(readFileSync(join(repositoryRoot, 'package.json'), 'utf8'))
   const ignorePatterns = (packageJson.build?.mac?.signIgnore || []).map((pattern: string) => new RegExp(pattern))
