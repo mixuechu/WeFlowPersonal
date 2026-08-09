@@ -15864,16 +15864,18 @@ function AiAssistantPage() {
               </div>
             </div>}
             {memoryDiagnostics.taskStateStorage?.version && <div className="assistant-recovery-audit healthy">
-              <header><Database size={15} /><span><b>历史任务原文分层</b>
-                <small>进行中的任务保留本机热数据；完成和取消任务的结构仍可用于依赖计算，但原文只留在 SQLCipher 权威档案，不再重复写入加密状态文件。</small>
+              <header><Database size={15} /><span><b>任务状态与原文分层</b>
+                <small>进行中的任务每项只在加密状态保留最近 {Number(memoryDiagnostics.taskStateStorage.activeEvidenceLimit || 50)} 条原文热集；完成和取消任务只保留依赖计算所需结构，按需审阅仍从 SQLCipher 权威库读取完整证据。</small>
               </span></header>
               <div className="assistant-recovery-current">
                 <span>活跃任务 <b>{Number(memoryDiagnostics.taskStateStorage.activeTasks || 0).toLocaleString()}</b></span>
                 <span>关闭任务 <b>{Number(memoryDiagnostics.taskStateStorage.closedTasks || 0).toLocaleString()}</b></span>
                 <span>权威原文 <b>{Number(memoryDiagnostics.taskStateStorage.authoritativeTaskEvidenceRows || 0).toLocaleString()}</b></span>
+                <span>活跃热集原文 <b>{Number(memoryDiagnostics.taskStateStorage.activeEvidenceRows || 0).toLocaleString()}</b></span>
+                <span>活跃写入省略 <b>{Number(memoryDiagnostics.taskStateStorage.activeEvidenceRowsOmittedOnWrite || 0).toLocaleString()}</b></span>
                 <span>关闭任务原文 <b>{Number(memoryDiagnostics.taskStateStorage.closedTaskEvidenceRows || 0).toLocaleString()}</b></span>
-                <span>本次写入省略 <b>{Number(memoryDiagnostics.taskStateStorage.closedEvidenceRowsOmittedOnWrite || 0).toLocaleString()}</b></span>
-              <span>审计字段历史 <b>{Number(memoryDiagnostics.taskStateStorage.historyEvidence?.historyRows || 0).toLocaleString()}</b></span>
+                <span>关闭写入省略 <b>{Number(memoryDiagnostics.taskStateStorage.closedEvidenceRowsOmittedOnWrite || 0).toLocaleString()}</b></span>
+                <span>审计字段历史 <b>{Number(memoryDiagnostics.taskStateStorage.historyEvidence?.historyRows || 0).toLocaleString()}</b></span>
                 <span>审计证据集 <b>{Number(memoryDiagnostics.taskStateStorage.historyEvidence?.changeSets || 0).toLocaleString()}</b></span>
                 <span>旧重复回收 <b>{(Number(memoryDiagnostics.taskStateStorage.historyEvidence?.migration?.bytesReclaimed || 0) / 1024).toFixed(1)} KB</b></span>
                 <span>归属判断 <b>{Number(memoryDiagnostics.taskStateStorage.reviewSnapshots?.decisions || 0).toLocaleString()}</b></span>
