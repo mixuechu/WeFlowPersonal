@@ -391,6 +391,7 @@ import {
   getFullIdentityScanSchedule,
   identityPairKey,
   listIndexedIdentityCandidates,
+  planStaleVectorIdentityReviews,
   type IdentityCandidateLookup,
   isNegativeDecisionCurrent
 } from './identityDisambiguation'
@@ -605,6 +606,7 @@ type AssistantState = {
       vectorTruncated: boolean
       vectorScanDurationMs: number
       vectorPendingAfter: number
+      vectorRetiredCandidates: number
       vectorCheckpointCommitted: boolean
       vectorContinuationAt: string | null
       vectorContinuationError: string | null
@@ -671,7 +673,7 @@ const EMPTY_STATE: AssistantState = {
     vectorComparisons: 0, vectorMatchedComparisons: 0,
     vectorProbesWithMatches: 0, vectorRepresentedProbes: 0,
     vectorTruncated: false, vectorScanDurationMs: 0,
-    vectorPendingAfter: 0, vectorCheckpointCommitted: false,
+    vectorPendingAfter: 0, vectorRetiredCandidates: 0, vectorCheckpointCommitted: false,
     vectorContinuationAt: null, vectorContinuationError: null
   } }
 }
@@ -3155,6 +3157,7 @@ export class AiAssistantService {
     this.state.graph.identityScan.vectorScanDurationMs = vectorScan.stats.durationMs
     if (!vectorScan.checkpoint.probes.length) {
       this.state.graph.identityScan.vectorPendingAfter = vectorScan.stats.pendingBefore
+      this.state.graph.identityScan.vectorRetiredCandidates = 0
       this.state.graph.identityScan.vectorCheckpointCommitted = true
       this.state.graph.identityScan.vectorContinuationError = null
       return { committed: true, pendingAfter: vectorScan.stats.pendingBefore, candidates: 0 }
@@ -3180,8 +3183,24 @@ export class AiAssistantService {
         confidence: Math.min(0.92, pair.score)
       })
     }
+    const staleVectorReviewIds = planStaleVectorIdentityReviews(
+      this.state.graph.reviewQueue,
+      new Set(vectorScan.checkpoint.probes.map(probe => probe.sourceId)),
+      new Set(suggestions.map(suggestion => identityPairKey(
+        suggestion.leftId,
+        suggestion.rightId
+      ))),
+      !vectorScan.stats.truncated
+    )
     const reviewQueueBefore = structuredClone(this.state.graph.reviewQueue)
     const candidateCountBefore = this.state.graph.identityScan.lastCandidateCount
+    if (staleVectorReviewIds.length) {
+      const staleIds = new Set(staleVectorReviewIds)
+      this.state.graph.reviewQueue = this.state.graph.reviewQueue.filter(
+        review => !staleIds.has(review.id)
+      )
+      for (const reviewId of staleVectorReviewIds) reviewsById.delete(reviewId)
+    }
     let candidates = 0
     const identityDecisions = this.loadIdentityDecisionIndex(
       suggestions.map(suggestion => identityPairKey(suggestion.leftId, suggestion.rightId)),
@@ -3203,12 +3222,14 @@ export class AiAssistantService {
     })
     try {
       const graphCommitId = crypto.randomUUID()
-      personalMemoryStore.commitIdentityVectorScanBatch(
+      const commit = personalMemoryStore.commitIdentityVectorScanBatch(
         vectorScan.checkpoint,
         vectorReviews,
-        graphCommitId
+        graphCommitId,
+        staleVectorReviewIds
       )
       this.state.graph.lastSqlCommitId = graphCommitId
+      this.state.graph.identityScan.vectorRetiredCandidates = commit.retiredReviews
       this.state.graph.identityScan.vectorCheckpointCommitted = true
       this.state.graph.identityScan.vectorContinuationError = null
       let pendingAfter = Math.max(
@@ -3231,6 +3252,7 @@ export class AiAssistantService {
       reviewsById.clear()
       for (const review of reviewQueueBefore) reviewsById.set(review.id, review)
       this.state.graph.identityScan.vectorPendingAfter = vectorScan.stats.pendingBefore
+      this.state.graph.identityScan.vectorRetiredCandidates = 0
       this.state.graph.identityScan.vectorCheckpointCommitted = false
       this.state.graph.identityScan.vectorContinuationError = sanitizeDiagnosticText(error)
       return { committed: false, pendingAfter: vectorScan.stats.pendingBefore, candidates: 0 }

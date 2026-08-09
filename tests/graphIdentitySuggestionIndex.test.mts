@@ -6,7 +6,8 @@ import { fileURLToPath } from 'node:url'
 import {
   buildGraphIdentitySuggestionPlan,
   buildGraphIdentitySuggestions,
-  buildNameIdentityPairPlan
+  buildNameIdentityPairPlan,
+  planStaleVectorIdentityReviews
 } from '../electron/services/identityDisambiguation.ts'
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)))
@@ -138,6 +139,9 @@ test('identity scan diagnostics expose hub exclusions and truncation in the UI',
   assert.match(service, /this\.state\.graph\.reviewQueue = reviewQueueBefore[\s\S]*reviewsById\.clear\(\)/)
   assert.match(service, /return \{ committed: false, pendingAfter: vectorScan\.stats\.pendingBefore, candidates: 0 \}/)
   assert.match(service, /进度已提交，但读取剩余积压失败/)
+  assert.match(service, /planStaleVectorIdentityReviews\([\s\S]*!vectorScan\.stats\.truncated/)
+  assert.match(service, /graphCommitId,[\s\S]*staleVectorReviewIds/)
+  assert.match(store, /DELETE FROM review_queue[\s\S]*candidateSource'\)='vector_similarity'/)
   assert.match(service, /continueIdentityVectorScanWhileIdle\(now\)/)
   assert.match(service, /getIdentityVectorScanBacklog\([\s\S]*localEmbeddingService\.modelVersion/)
   assert.match(service, /if \(!vectorScan\.checkpoint\.probes\.length\)[\s\S]*vectorCheckpointCommitted = true/)
@@ -145,8 +149,47 @@ test('identity scan diagnostics expose hub exclusions and truncation in the UI',
   assert.match(page, /提交后剩余向量探针/)
   assert.match(page, /增量向量身份比较/)
   assert.match(page, /获得候选席位 \/ 存在命中的探针/)
+  assert.match(page, /本轮撤销过期纯向量候选/)
+  assert.match(page, /本机人物档案向量相似建议/)
+  assert.match(page, /共同关系邻居建议/)
   assert.match(page, /向量候选已达上限/)
   assert.match(page, /本轮向量进度未提交/)
+})
+
+test('complete vector rescans retire only unsupported pure-vector identity reviews', () => {
+  const reviews = [{
+    id: 'stale-vector', kind: 'possible_duplicate', status: 'pending',
+    leftEntityId: 'a', rightEntityId: 'b', candidateSource: 'vector_similarity',
+    candidateSignals: [{ source: 'vector_similarity' }]
+  }, {
+    id: 'still-current', kind: 'possible_duplicate', status: 'pending',
+    leftEntityId: 'a', rightEntityId: 'c', candidateSource: 'vector_similarity',
+    candidateSignals: [{ source: 'vector_similarity' }]
+  }, {
+    id: 'rule-supported', kind: 'possible_duplicate', status: 'pending',
+    leftEntityId: 'a', rightEntityId: 'd', candidateSource: 'vector_similarity',
+    candidateSignals: [{ source: 'exact_name' }, { source: 'vector_similarity' }]
+  }, {
+    id: 'unscanned', kind: 'possible_duplicate', status: 'pending',
+    leftEntityId: 'x', rightEntityId: 'y', candidateSource: 'vector_similarity',
+    candidateSignals: [{ source: 'vector_similarity' }]
+  }, {
+    id: 'human-resolved', kind: 'possible_duplicate', status: 'rejected',
+    leftEntityId: 'a', rightEntityId: 'e', candidateSource: 'vector_similarity',
+    candidateSignals: [{ source: 'vector_similarity' }]
+  }]
+  assert.deepEqual(planStaleVectorIdentityReviews(
+    reviews,
+    new Set(['a']),
+    new Set(['a|c']),
+    true
+  ), ['stale-vector'])
+  assert.deepEqual(planStaleVectorIdentityReviews(
+    reviews,
+    new Set(['a']),
+    new Set(['a|c']),
+    false
+  ), [])
 })
 
 test('weekly name scan keeps deterministic deduplicated order and bounds huge same-name buckets', () => {

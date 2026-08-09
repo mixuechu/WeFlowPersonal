@@ -19912,7 +19912,12 @@ export class PersonalMemoryStore {
     pairs: Array<{ leftId: string; rightId: string; score: number }>
     checkpoint: {
       model: string
-      probes: Array<{ documentId: string; contentHash: string; vectorHash: string }>
+      probes: Array<{
+        documentId: string
+        sourceId: string
+        contentHash: string
+        vectorHash: string
+      }>
     }
     stats: {
       eligible: number
@@ -20062,6 +20067,7 @@ export class PersonalMemoryStore {
         model,
         probes: probes.map(probe => ({
           documentId: probe.id,
+          sourceId: probe.source_id,
           contentHash: probe.content_hash,
           vectorHash: probe.vector_hash
         }))
@@ -20109,11 +20115,22 @@ export class PersonalMemoryStore {
   commitIdentityVectorScanBatch(
     checkpoint: {
       model: string
-      probes: Array<{ documentId: string; contentHash: string; vectorHash: string }>
+      probes: Array<{
+        documentId: string
+        sourceId: string
+        contentHash: string
+        vectorHash: string
+      }>
     },
     reviews: any[],
+    graphCommitId: string,
+    staleVectorReviewIds: string[] = []
+  ): {
+    committedProbes: number
+    persistedReviews: number
+    retiredReviews: number
     graphCommitId: string
-  ): { committedProbes: number; persistedReviews: number; graphCommitId: string } {
+  } {
     if (!this.db) throw new Error('个人记忆数据库尚未初始化')
     const model = String(checkpoint?.model || '')
     const commitId = String(graphCommitId || '').trim()
@@ -20122,10 +20139,11 @@ export class PersonalMemoryStore {
       .slice(0, 200)
       .map(probe => ({
         documentId: String(probe?.documentId || ''),
+        sourceId: String(probe?.sourceId || ''),
         contentHash: String(probe?.contentHash || ''),
         vectorHash: String(probe?.vectorHash || '')
       }))
-      .filter(probe => probe.documentId && probe.contentHash && probe.vectorHash)
+      .filter(probe => probe.documentId && probe.sourceId && probe.contentHash && probe.vectorHash)
     if (probes.length !== (Array.isArray(checkpoint?.probes)
       ? checkpoint.probes.slice(0, 200).length
       : 0) || new Set(probes.map(probe => probe.documentId)).size !== probes.length) {
@@ -20133,6 +20151,9 @@ export class PersonalMemoryStore {
     }
     const pendingReviews = (Array.isArray(reviews) ? reviews : [])
       .filter(review => review?.id && review?.status === 'pending')
+    const retiredIds = [...new Set((Array.isArray(staleVectorReviewIds)
+      ? staleVectorReviewIds
+      : []).map(value => String(value || '').trim()).filter(Boolean))]
     const now = new Date().toISOString()
     return this.db.transaction(() => {
       const currentProbeCount = Number((this.db!.prepare(`
@@ -20140,6 +20161,7 @@ export class PersonalMemoryStore {
         FROM json_each(?) requested
         JOIN search_documents current
           ON current.id=json_extract(requested.value,'$.documentId')
+          AND current.source_id=json_extract(requested.value,'$.sourceId')
           AND current.embedding_model=?
           AND current.content_hash=json_extract(requested.value,'$.contentHash')
           AND current.embedding_json IS NOT NULL
@@ -20148,6 +20170,12 @@ export class PersonalMemoryStore {
       if (currentProbeCount !== probes.length) {
         throw new Error('向量身份扫描 checkpoint 已过期，未写入候选或进度')
       }
+      const retiredReviews = retiredIds.length ? Number(this.db!.prepare(`
+        DELETE FROM review_queue
+        WHERE kind='possible_duplicate' AND status='pending'
+          AND json_extract(payload_json,'$.candidateSource')='vector_similarity'
+          AND id IN (SELECT CAST(value AS TEXT) FROM json_each(?))
+      `).run(JSON.stringify(retiredIds)).changes || 0) : 0
       const upsertReview = this.db!.prepare(`
         INSERT INTO review_queue(id,kind,title,detail,confidence,status,payload_json,created_at,resolved_at)
         VALUES(?,?,?,?,?,?,?,?,NULL)
@@ -20207,7 +20235,7 @@ export class PersonalMemoryStore {
         VALUES('graph_state_commit',?,?)
         ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_at=excluded.updated_at
       `).run(commitId, now)
-      return { committedProbes, persistedReviews, graphCommitId: commitId }
+      return { committedProbes, persistedReviews, retiredReviews, graphCommitId: commitId }
     })()
   }
 

@@ -2785,9 +2785,15 @@ test('entity vector identity checkpoints are invalidated by same-model vector re
   const initial = store.scanSimilarEntityPairsIncremental('identity-vector-version', 0.88, 20, 2)
   assert.equal(initial.checkpoint.probes.length, 2)
   assert.ok(initial.checkpoint.probes.every(probe => probe.vectorHash.length === 64))
-  assert.equal(store.commitIdentityVectorScanBatch(
-    initial.checkpoint, [], 'identity-vector-version-initial'
-  ).committedProbes, 2)
+  const initialCommit = store.commitIdentityVectorScanBatch(initial.checkpoint, [{
+    id: 'retirable-vector-review', kind: 'possible_duplicate', title: '仅由旧向量支持',
+    detail: '', confidence: 0.9, status: 'pending', createdAt: new Date().toISOString(),
+    leftEntityId: 'vector-version-a', rightEntityId: 'vector-version-b',
+    candidateSource: 'vector_similarity', candidateSignals: [{ source: 'vector_similarity' }]
+  }], 'identity-vector-version-initial')
+  assert.equal(initialCommit.committedProbes, 2)
+  assert.equal(initialCommit.persistedReviews, 1)
+  assert.equal(initialCommit.retiredReviews, 0)
   assert.equal(store.getIdentityVectorScanBacklog('identity-vector-version').pending, 0)
   assert.throws(() => store.commitIdentityVectorScanBatch(initial.checkpoint, [{
     id: 'duplicate-vector-review', kind: 'possible_duplicate', title: '重复提交候选',
@@ -2805,17 +2811,21 @@ test('entity vector identity checkpoints are invalidated by same-model vector re
   assert.throws(() => store.commitIdentityVectorScanBatch(stale.checkpoint, [{
     id: 'stale-vector-review', kind: 'possible_duplicate', title: '陈旧向量候选',
     detail: '', confidence: 0.9, status: 'pending', createdAt: new Date().toISOString()
-  }], 'identity-vector-version-stale'), /checkpoint 已过期/)
+  }], 'identity-vector-version-stale', ['retirable-vector-review']), /checkpoint 已过期/)
   assert.equal(store.getIdentityVectorScanBacklog('identity-vector-version').pending, 1)
   assert.equal(store.listGraphReviewsByIds(['stale-vector-review']).length, 0)
+  assert.equal(store.listGraphReviewsByIds(['retirable-vector-review']).length, 1)
   assert.equal(store.getGraphCommitId(), 'identity-vector-version-initial')
 
   const fresh = store.scanSimilarEntityPairsIncremental('identity-vector-version', 0.88, 20, 2)
   assert.notEqual(fresh.checkpoint.probes[0].vectorHash, stale.checkpoint.probes[0].vectorHash)
-  assert.equal(store.commitIdentityVectorScanBatch(
-    fresh.checkpoint, [], 'identity-vector-version-fresh'
-  ).committedProbes, 1)
+  const freshCommit = store.commitIdentityVectorScanBatch(
+    fresh.checkpoint, [], 'identity-vector-version-fresh', ['retirable-vector-review']
+  )
+  assert.equal(freshCommit.committedProbes, 1)
+  assert.equal(freshCommit.retiredReviews, 1)
   assert.equal(store.getIdentityVectorScanBacklog('identity-vector-version').pending, 0)
+  assert.equal(store.listGraphReviewsByIds(['retirable-vector-review']).length, 0)
   const stored = db.prepare(`
     SELECT vector_hash FROM identity_vector_scan_state
     WHERE document_id='entity:vector-version-a' AND model='identity-vector-version'

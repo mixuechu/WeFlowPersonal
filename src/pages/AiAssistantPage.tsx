@@ -12959,6 +12959,7 @@ function AiAssistantPage() {
             <span><b>{identityDisambiguation.vectorComparisons || 0} 次 · {Number(identityDisambiguation.vectorScanDurationMs || 0).toFixed(1)}ms</b><small>增量向量身份比较</small></span>
             <span><b>{identityDisambiguation.vectorMatchedComparisons || 0}</b><small>达到相似阈值的有向比较</small></span>
             <span><b>{identityDisambiguation.vectorRepresentedProbes || 0} / {identityDisambiguation.vectorProbesWithMatches || 0}</b><small>获得候选席位 / 存在命中的探针</small></span>
+            <span><b>{identityDisambiguation.vectorRetiredCandidates || 0}</b><small>本轮撤销过期纯向量候选</small></span>
             {identityDisambiguation.vectorTruncated && <span className="warning"><b>向量候选已达上限</b><small>本轮只保留最高分候选，其余低分命中未进入人工队列</small></span>}
             {!identityDisambiguation.vectorCheckpointCommitted && Number(identityDisambiguation.vectorProbes || 0) > 0 && <span className="warning"><b>本轮向量进度未提交</b><small>{identityDisambiguation.vectorContinuationError || '候选与探针账本未能原子提交，下次会从同一批重试'}</small></span>}
             {identityDisambiguation.vectorContinuationAt && <span><b>{new Date(identityDisambiguation.vectorContinuationAt).toLocaleString('zh-CN', { hour12: false })}</b><small>最近空闲向量续跑</small></span>}
@@ -13439,7 +13440,13 @@ function AiAssistantPage() {
                     : <><b>请先选择保留哪一个身份</b><small>系统不会再替你默认决定合并方向。</small></>}
                 </div>}
                 {review.kind === 'possible_duplicate' && <div className="assistant-review-note">
-                  <b>候选来源：</b>{review.candidateSource === 'llm_suggestion' ? '模型基于上下文建议' : '确定性身份规则'}
+                  <b>候选来源：</b>{review.candidateSource === 'llm_suggestion'
+                    ? '模型基于上下文建议'
+                    : review.candidateSource === 'vector_similarity'
+                      ? '本机人物档案向量相似建议'
+                      : review.candidateSource === 'graph_neighbors'
+                        ? '共同关系邻居建议'
+                        : '确定性身份规则'}
                   {(review.candidateSignals || []).map((signal: any, index: number) =>
                     <div key={`${signal.source}-${index}`}><small>{signal.label}：“{signal.value}”</small></div>)}
                   <div><small>拒绝后会记为负样本；两边身份信息未变化前不会再次出现。</small></div>
