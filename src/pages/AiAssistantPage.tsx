@@ -1043,10 +1043,10 @@ function AiAssistantPage() {
   const dataSourceToggleGates = useRef(new KeyedLatestRequestGates())
   const calendarConnectorGate = useRef(new LatestRequestGate())
   const mailConnectorGate = useRef(new LatestRequestGate())
-  const [eventTimeline, setEventTimeline] = useState<{ items: any[]; total: number; hasMore: boolean; revision?: string; stale?: boolean }>({
+  const [eventTimeline, setEventTimeline] = useState<{ items: any[]; total: number; hasMore: boolean; revision?: string; stale?: boolean; loading?: boolean; error?: string }>({
     items: [], total: 0, hasMore: false
   })
-  const [claimArchive, setClaimArchive] = useState<{ items: any[]; total: number; hasMore: boolean; revision?: string; stale?: boolean; loading?: boolean }>({
+  const [claimArchive, setClaimArchive] = useState<{ items: any[]; total: number; hasMore: boolean; revision?: string; stale?: boolean; loading?: boolean; error?: string }>({
     items: [], total: 0, hasMore: false
   })
   const [claimArchiveRefreshKey, setClaimArchiveRefreshKey] = useState(0)
@@ -2085,7 +2085,7 @@ function AiAssistantPage() {
   useEffect(() => {
     const request = claimArchiveGate.current.begin()
     setClaimLoadingMore(false)
-    setClaimArchive(current => ({ ...current, items: [], loading: true }))
+    setClaimArchive(current => ({ ...current, items: [], loading: true, error: undefined }))
     void window.electronAPI.aiAssistant.getClaimArchive(claimArchiveOptions).then(result => {
       if (!claimArchiveGate.current.isCurrent(request)) return
       if (result.stale) {
@@ -2095,9 +2095,12 @@ function AiAssistantPage() {
         return
       }
       setClaimArchive({ ...result, loading: false })
-    }).catch(() => {
+    }).catch(error => {
       if (!claimArchiveGate.current.isCurrent(request)) return
-      setClaimArchive({ items: [], total: 0, hasMore: false, loading: false })
+      setClaimArchive({
+        items: [], total: 0, hasMore: false, loading: false,
+        error: error?.message || String(error)
+      })
     })
     return () => {
       if (claimArchiveGate.current.isCurrent(request)) claimArchiveGate.current.invalidate()
@@ -2107,7 +2110,7 @@ function AiAssistantPage() {
   useEffect(() => {
     const request = eventTimelineGate.current.begin()
     setEventLoadingMore(false)
-    setEventTimeline(current => ({ ...current, items: [] }))
+    setEventTimeline(current => ({ ...current, items: [], loading: true, error: undefined }))
     void window.electronAPI.aiAssistant.getEventTimeline(eventTimelineOptions).then(result => {
       if (!eventTimelineGate.current.isCurrent(request)) return
       if (result.stale) {
@@ -2116,10 +2119,13 @@ function AiAssistantPage() {
         }, 250)
         return
       }
-      setEventTimeline(result)
-    }).catch(() => {
+      setEventTimeline({ ...result, loading: false })
+    }).catch(error => {
       if (eventTimelineGate.current.isCurrent(request)) {
-        setEventTimeline({ items: [], total: 0, hasMore: false })
+        setEventTimeline({
+          items: [], total: 0, hasMore: false, loading: false,
+          error: error?.message || String(error)
+        })
       }
     })
     return () => {
@@ -3802,6 +3808,7 @@ function AiAssistantPage() {
     if (claimLoadingMore || !claimArchive.hasMore) return
     const request = claimArchiveGate.current.begin()
     setClaimLoadingMore(true)
+    setClaimArchive(current => ({ ...current, error: undefined }))
     try {
       const result = await window.electronAPI.aiAssistant.getClaimArchive({
         ...claimArchiveOptions,
@@ -3821,7 +3828,11 @@ function AiAssistantPage() {
           !current.items.some((known: any) => known.id === item.id))]
       }))
     } catch (error: any) {
-      if (claimArchiveGate.current.isCurrent(request)) setMessage(error?.message || String(error))
+      if (claimArchiveGate.current.isCurrent(request)) {
+        const errorMessage = error?.message || String(error)
+        setClaimArchive(current => ({ ...current, error: errorMessage }))
+        setMessage(errorMessage)
+      }
     } finally {
       if (claimArchiveGate.current.isCurrent(request)) setClaimLoadingMore(false)
     }
@@ -3830,6 +3841,7 @@ function AiAssistantPage() {
     if (eventLoadingMore || !eventTimeline.hasMore) return
     const request = eventTimelineGate.current.begin()
     setEventLoadingMore(true)
+    setEventTimeline(current => ({ ...current, error: undefined }))
     try {
       const result = await window.electronAPI.aiAssistant.getEventTimeline({
         ...eventTimelineOptions,
@@ -3849,7 +3861,11 @@ function AiAssistantPage() {
           !current.items.some((known: any) => known.id === item.id))]
       }))
     } catch (error: any) {
-      if (eventTimelineGate.current.isCurrent(request)) setMessage(error?.message || String(error))
+      if (eventTimelineGate.current.isCurrent(request)) {
+        const errorMessage = error?.message || String(error)
+        setEventTimeline(current => ({ ...current, error: errorMessage }))
+        setMessage(errorMessage)
+      }
     } finally {
       if (eventTimelineGate.current.isCurrent(request)) setEventLoadingMore(false)
     }
@@ -12532,7 +12548,8 @@ function AiAssistantPage() {
           <section className="assistant-panel" id="structured-claims">
             <div className="assistant-section-heading">
               <div><span className="assistant-eyebrow">STRUCTURED CLAIMS</span><h3><BookOpen size={16} /> 持续积累的事实</h3></div>
-              <span className="assistant-count">{claimArchive.total} 条</span>
+              <span className="assistant-count">{claimArchive.error && !visibleClaims.length
+                ? '读取失败' : `${claimArchive.total} 条`}</span>
             </div>
             <div className="assistant-memory-scope assistant-event-scope">
               <TrustedEntityPicker
@@ -12639,11 +12656,21 @@ function AiAssistantPage() {
                   <button className="danger" onClick={() => void permanentlyDeleteMemoryItem('claim', claim)}>永久删除</button>
                 </div>
               </article>)}
-              {!visibleClaims.length && <div className="assistant-empty">
+              {claimArchive.error && <div className="assistant-task-load-failure" role="alert">
+                <strong>{visibleClaims.length ? '更多事实读取失败' : '事实档案读取失败'}</strong>
+                <span>{claimArchive.error}。{visibleClaims.length
+                  ? ` 已加载的 ${visibleClaims.length} 条仍可审阅，但当前尚未读完。`
+                  : ' 当前不会把失败解释为“没有事实”。'}</span>
+                <button disabled={claimLoadingMore} onClick={() => {
+                  if (visibleClaims.length) void loadMoreClaims()
+                  else setClaimArchiveRefreshKey(value => value + 1)
+                }}>{claimLoadingMore ? '正在重试…' : '立即重试'}</button>
+              </div>}
+              {!claimArchive.error && !visibleClaims.length && <div className="assistant-empty">
                 {claimArchive.loading ? '正在读取事实档案…' : '当前范围没有事实；后续增量消息会形成带原文证据的记录。'}
               </div>}
             </div>
-            {claimArchive.hasMore && <div className="assistant-timeline-more">
+            {claimArchive.hasMore && !claimArchive.error && <div className="assistant-timeline-more">
               <button disabled={claimLoadingMore} onClick={() => void loadMoreClaims()}>
                 {claimLoadingMore ? '正在加载…' : `加载更多（已显示 ${visibleClaims.length}/${claimArchive.total}）`}
               </button>
@@ -12653,7 +12680,8 @@ function AiAssistantPage() {
           <section className="assistant-panel" id="event-timeline">
             <div className="assistant-section-heading">
               <div><span className="assistant-eyebrow">EVENT TIMELINE</span><h3><CalendarDays size={16} /> 事件时间线</h3></div>
-              <span className="assistant-count">{eventTimeline.total} 项</span>
+              <span className="assistant-count">{eventTimeline.error && !visibleEvents.length
+                ? '读取失败' : `${eventTimeline.total} 项`}</span>
             </div>
             <div className="assistant-memory-scope assistant-event-scope">
               <select value={eventSourceFilter} onChange={event => setEventSourceFilter(event.target.value)}>
@@ -12837,9 +12865,23 @@ function AiAssistantPage() {
                   <button className="danger" onClick={() => void permanentlyDeleteMemoryItem('event', event)}>永久删除</button>
                 </div>
               </article>)}
-              {!visibleEvents.length && <div className="assistant-empty">会议、决定、交付和承诺等事件会显示在这里。</div>}
+              {eventTimeline.error && <div className="assistant-task-load-failure" role="alert">
+                <strong>{visibleEvents.length ? '更多事件读取失败' : '事件时间线读取失败'}</strong>
+                <span>{eventTimeline.error}。{visibleEvents.length
+                  ? ` 已加载的 ${visibleEvents.length} 项仍可审阅，但当前尚未读完。`
+                  : ' 当前不会把失败解释为“没有事件”。'}</span>
+                <button disabled={eventLoadingMore} onClick={() => {
+                  if (visibleEvents.length) void loadMoreEvents()
+                  else setEventTimelineRefreshKey(value => value + 1)
+                }}>{eventLoadingMore ? '正在重试…' : '立即重试'}</button>
+              </div>}
+              {!eventTimeline.error && !visibleEvents.length && <div className="assistant-empty">
+                {eventTimeline.loading
+                  ? '正在读取事件时间线…'
+                  : '会议、决定、交付和承诺等事件会显示在这里。'}
+              </div>}
             </div>
-            {eventTimeline.hasMore && <div className="assistant-timeline-more">
+            {eventTimeline.hasMore && !eventTimeline.error && <div className="assistant-timeline-more">
               <button disabled={eventLoadingMore} onClick={() => void loadMoreEvents()}>
                 {eventLoadingMore ? '正在加载…' : `加载更多（已显示 ${visibleEvents.length}/${eventTimeline.total}）`}
               </button>
