@@ -12744,7 +12744,9 @@ function AiAssistantPage() {
               {' · '}明确截断 {Number(dashboard.resourceContentBudget.truncated || 0).toLocaleString()}
               {' · '}历史边界未知 {Number(dashboard.resourceContentBudget.boundaryUnknown || 0).toLocaleString()}
               {!!dashboard.resourceContentBudget.pendingLegacy &&
-                ` · 还有 ${Number(dashboard.resourceContentBudget.pendingLegacy).toLocaleString()} 项将在后续启动继续核验`}
+                ` · 还有 ${Number(dashboard.resourceContentBudget.pendingLegacy).toLocaleString()} 项将在空闲时自动接力核验`}
+              {!!dashboard.resourceContentBudget.migration?.lastError &&
+                ` · 最近接力失败：${dashboard.resourceContentBudget.migration.lastError}`}
             </div>}
             <div className="assistant-memory-list">
               {visibleResources.map((directoryResource: any) => {

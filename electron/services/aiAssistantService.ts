@@ -11213,6 +11213,23 @@ export class AiAssistantService {
           return 'search_maintenance_failed'
         }
       }
+      const resourceContentBudget = personalMemoryStore.getResourceContentBudgetStats()
+      if (Number(resourceContentBudget.pendingLegacy || 0) > 0) {
+        if (this.vectorIndexPromise || this.memorySearchRepairPromise) {
+          return 'resource_content_budget_waiting_for_idle'
+        }
+        try {
+          const migration = personalMemoryStore.repairLegacyResourceContentBudgets(100)
+          return Number(migration.remaining || 0) > 0
+            ? 'resource_content_budget_progressed'
+            : 'resource_content_budget_completed'
+        } catch (error) {
+          personalMemoryStore.recordResourceContentBudgetMigrationFailure(
+            sanitizeDiagnosticText(error)
+          )
+          return 'resource_content_budget_failed'
+        }
+      }
       const identityVectorBacklog = personalMemoryStore.getIdentityVectorScanBacklog(
         localEmbeddingService.modelVersion
       )

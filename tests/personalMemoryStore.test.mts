@@ -22742,6 +22742,11 @@ test('legacy resource budget migration is bounded and never guesses exact-limit 
   assert.equal(boundaryMetadata.contentStorageTruncated, false)
   assert.equal(boundaryMetadata.contentStorageAuditStatus, 'legacy_boundary_unknown')
 
+  const failed = store.recordResourceContentBudgetMigrationFailure('synthetic bounded failure')
+  assert.equal(failed.failureStreak, 1)
+  assert.equal(failed.lastError, 'synthetic bounded failure')
+  assert.equal(store.getResourceContentBudgetStats().migration.failureStreak, 1)
+
   const second = store.repairLegacyResourceContentBudgets(1)
   assert.deepEqual(
     { checked: second.checked, truncated: second.truncated, remaining: second.remaining },
@@ -22766,6 +22771,8 @@ test('legacy resource budget migration is bounded and never guesses exact-limit 
   assert.equal(stats.boundaryUnknown, 1)
   assert.equal(stats.truncated, 1)
   assert.equal(stats.healthy, true)
+  assert.equal(stats.migration.failureStreak, 0)
+  assert.equal(stats.migration.lastError, '')
 }))
 
 test('message resources remain idempotent, searchable and traceable to original evidence', () => withStore(store => {

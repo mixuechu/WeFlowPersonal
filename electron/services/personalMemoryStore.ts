@@ -11878,13 +11878,39 @@ export class PersonalMemoryStore {
       repaired,
       truncated,
       boundaryUnknown,
-      remaining
+      remaining,
+      failureStreak: 0,
+      lastErrorAt: '',
+      lastError: ''
     }
     this.db.prepare(`
       INSERT INTO schema_meta(key,value,updated_at)
       VALUES('resource_content_budget_migration',?,?)
       ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_at=excluded.updated_at
     `).run(JSON.stringify(result), checkedAt)
+    return result
+  }
+
+  recordResourceContentBudgetMigrationFailure(error: string): any {
+    if (!this.db) return null
+    const auditRow = this.db.prepare(`
+      SELECT value FROM schema_meta WHERE key='resource_content_budget_migration'
+    `).get() as any
+    let previous: any = {}
+    try { previous = JSON.parse(String(auditRow?.value || '{}')) } catch {}
+    const failedAt = new Date().toISOString()
+    const result = {
+      ...previous,
+      version: 'resource-content-budget-migration-v1',
+      lastErrorAt: failedAt,
+      lastError: String(error || '历史资源正文预算迁移失败').slice(0, 500),
+      failureStreak: Math.max(0, Number(previous?.failureStreak || 0)) + 1
+    }
+    this.db.prepare(`
+      INSERT INTO schema_meta(key,value,updated_at)
+      VALUES('resource_content_budget_migration',?,?)
+      ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_at=excluded.updated_at
+    `).run(JSON.stringify(result), failedAt)
     return result
   }
 

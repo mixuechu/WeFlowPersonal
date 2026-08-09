@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url'
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)))
 const service = readFileSync(join(root, 'electron/services/aiAssistantService.ts'), 'utf8')
+const store = readFileSync(join(root, 'electron/services/personalMemoryStore.ts'), 'utf8')
 const page = readFileSync(join(root, 'src/pages/AiAssistantPage.tsx'), 'utf8')
 
 test('scanned PDF continuation stops when the authoritative resource text budget is full', () => {
@@ -22,4 +23,16 @@ test('resource dossiers disclose storage truncation and its model boundary', () 
   assert.match(page, /contentStorageCompletenessUnknown/)
   assert.match(page, /历史边界未知/)
   assert.match(page, /resourceContentBudget\.pendingLegacy/)
+  assert.match(page, /空闲时自动接力核验/)
+  assert.match(page, /migration\?\.lastError/)
+})
+
+test('legacy resource budget migration continues while idle and persists bounded failures', () => {
+  assert.match(service, /getResourceContentBudgetStats\(\)[\s\S]*pendingLegacy/)
+  assert.match(service, /this\.vectorIndexPromise \|\| this\.memorySearchRepairPromise/)
+  assert.match(service, /repairLegacyResourceContentBudgets\(100\)/)
+  assert.match(service, /recordResourceContentBudgetMigrationFailure\([\s\S]*sanitizeDiagnosticText/)
+  assert.match(service, /resource_content_budget_progressed/)
+  assert.match(service, /resource_content_budget_completed/)
+  assert.match(store, /failureStreak: Math\.max\(0, Number\(previous\?\.failureStreak \|\| 0\)\) \+ 1/)
 })
