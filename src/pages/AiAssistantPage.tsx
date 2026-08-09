@@ -13212,13 +13212,13 @@ function AiAssistantPage() {
           ) : <div className="assistant-empty">下一次同步会从新增消息开始建立人物、组织、项目和关系证据。</div>}
           <div className="assistant-review-section" id="graph-review-ledger" tabIndex={-1}>
             <div className="assistant-section-heading"><div><span className="assistant-eyebrow">REVIEW LEDGER</span><h3>身份与关系审阅</h3></div><span className="assistant-count">{pendingReviewCount} 待处理 · {resolvedReviewCount} 已处理</span></div>
-            {dashboard?.graphReviewStorage?.statePolicy === 'pending_only' && <small className="assistant-evidence">
-              加密运行状态只保留 {dashboard.graphReviewStorage.pending || 0} 条待处理工作，每项最多 {dashboard.graphReviewStorage.pendingEvidenceLimit || 20} 条近期原文热集；当前状态内共 {Number(dashboard.graphReviewStorage.pendingEvidenceRows || 0).toLocaleString()} 条，另有 {Number(dashboard.graphReviewStorage.omittedPendingEvidenceRows || 0).toLocaleString()} 条完整原文只保存在 SQLCipher。已处理历史由 SQLCipher 审阅账本分页保存，可在重启后继续筛选查看。
+            {dashboard?.graphReviewStorage?.statePolicy === 'sqlcipher-authoritative-metadata-only-v1' && <small className="assistant-evidence">
+              加密运行状态不再复制实体、关系或候选正文；当前内存中的 {Number(dashboard.graphStateStorage?.runtimeEntities || 0).toLocaleString()} 个实体、{Number(dashboard.graphStateStorage?.runtimeRelations || 0).toLocaleString()} 条关系、{dashboard.graphReviewStorage.pending || 0} 条待处理工作及其 {Number(dashboard.graphReviewStorage.pendingEvidenceRows || 0).toLocaleString()} 条近期原文，写盘副本均为 0，并以 SQLCipher 为权威。完整原文、已处理历史和可分页审阅账本不会因状态文件收敛而丢失。
               {dashboard.graphReviewStorage.archivedThisRun
                 ? ` 本次启动已迁移 ${dashboard.graphReviewStorage.archivedThisRun} 条历史、移除 ${dashboard.graphReviewStorage.archivedEvidenceThisRun || 0} 份重复原文副本。`
                 : ''}
               {dashboard.graphReviewStorage.recoveredFromSqlThisStart
-                ? ` 检测到上次退出发生在 SQLCipher 提交与状态文件写入之间，已从权威数据库恢复 ${dashboard.graphReviewStorage.recoveredEntities || 0} 个实体、${dashboard.graphReviewStorage.recoveredRelations || 0} 条关系和 ${dashboard.graphReviewStorage.recoveredPendingReviews || 0} 个待处理候选。`
+                ? ` 本次启动已从权威数据库加载 ${dashboard.graphReviewStorage.recoveredEntities || 0} 个实体、${dashboard.graphReviewStorage.recoveredRelations || 0} 条关系和 ${dashboard.graphReviewStorage.recoveredPendingReviews || 0} 个待处理候选。`
                 : ' 图谱跨存储提交点一致。'}
             </small>}
             {blockedIdentityReviewReturn && <div className="assistant-review-note">

@@ -418,6 +418,7 @@ import {
 } from '../../shared/graphReviewStorage'
 import {
   GRAPH_COMMIT_RECOVERY_VERSION,
+  GRAPH_STATE_SNAPSHOT_POLICY,
   recoverGraphStateFromSql,
   shouldRecoverGraphFromSql
 } from '../../shared/graphCommitRecovery'
@@ -566,6 +567,7 @@ type AssistantState = {
     entities: GraphEntity[]
     relations: GraphRelation[]
     lastSqlCommitId?: string | null
+    snapshotPolicy?: string
     reviewQueue: Array<{ id: string; kind: 'possible_duplicate' | 'relation' | 'entity_summary' | 'entity_alias' | 'entity_creation'; title: string; detail: string; confidence: number; status: 'pending' | 'confirmed' | 'rejected'; createdAt: string; resolvedAt?: string; resolutionActor?: 'user' | 'system'; resolutionReason?: string; leftEntityId?: string; rightEntityId?: string; mergeSourceEntityId?: string; mergeTargetEntityId?: string; relationId?: string; originalRelationId?: string; correctedRelationId?: string; relationCorrection?: RelationCorrection; entityId?: string; entityIdentityVersion?: number; entityCanonicalName?: string; originalEntityCanonicalName?: string; correctedCanonicalName?: string; entityType?: string; legacyReview?: boolean; previousSummary?: string; summaryText?: string; originalSummaryText?: string; correctedSummaryText?: string; aliasText?: string; originalAliasText?: string; correctedAliasText?: string; evidence?: Array<{ sourceId?: string; messageId: string; sessionId: string; timestamp: number; sender: string; excerpt: string }>; candidateSource?: string; candidateSignals?: Array<{ source: string; label: string; value: string }>; candidateInstanceId?: string; candidatePolicyVersion?: string; candidatePromptVersion?: string; candidateSchemaVersion?: string; candidateModel?: string; candidateSourceKind?: string }>
     identityScan: { lastFullScanAt: string | null; lastRunAt: string | null; lastMode: 'incremental' | 'full' | null; lastCandidateCount: number }
   }
@@ -845,7 +847,7 @@ export class AiAssistantService {
   private graphReviewStorage = {
     version: GRAPH_REVIEW_STORAGE_VERSION,
     recoveryVersion: GRAPH_COMMIT_RECOVERY_VERSION,
-    statePolicy: 'pending_only',
+    statePolicy: GRAPH_STATE_SNAPSHOT_POLICY,
     pendingEvidenceLimit: GRAPH_REVIEW_STATE_EVIDENCE_LIMIT,
     pending: 0,
     pendingEvidenceRows: 0,
@@ -1188,6 +1190,7 @@ export class AiAssistantService {
           })) : [],
           relations: Array.isArray(loaded.graph?.relations) ? loaded.graph.relations : [],
           lastSqlCommitId: loaded.graph?.lastSqlCommitId || null,
+          snapshotPolicy: String(loaded.graph?.snapshotPolicy || 'legacy-inline'),
           reviewQueue: Array.isArray(loaded.graph?.reviewQueue) ? loaded.graph.reviewQueue : [],
           identityScan: {
             ...structuredClone(EMPTY_STATE.graph.identityScan),
@@ -1196,7 +1199,11 @@ export class AiAssistantService {
         }
       }
       const sqlCommitId = personalMemoryStore.getGraphCommitId()
-      if (shouldRecoverGraphFromSql(sqlCommitId, this.state.graph.lastSqlCommitId)) {
+      if (shouldRecoverGraphFromSql(
+        sqlCommitId,
+        this.state.graph.lastSqlCommitId,
+        this.state.graph.snapshotPolicy
+      )) {
         const snapshot = personalMemoryStore.loadGraphSnapshot()
         this.state.graph = recoverGraphStateFromSql(this.state.graph, snapshot, sqlCommitId)
         this.graphReviewStorage.recoveredFromSqlThisStart = true
@@ -4626,6 +4633,20 @@ export class AiAssistantService {
         entityEvidenceMessageIds: 'sqlcipher_authoritative_hotset_500',
         relationEvidence: 'sqlcipher_authoritative_hotset_100',
         reviewEntities: 'page_scoped'
+      },
+      graphStateStorage: {
+        version: GRAPH_COMMIT_RECOVERY_VERSION,
+        policy: GRAPH_STATE_SNAPSHOT_POLICY,
+        sqlCommitIdPresent: Boolean(String(this.state.graph.lastSqlCommitId || '').trim()),
+        runtimeEntities: this.state.graph.entities.length,
+        runtimeRelations: this.state.graph.relations.length,
+        runtimePendingReviews: this.state.graph.reviewQueue.filter(review =>
+          review.status === 'pending').length,
+        persistedEntities: this.state.graph.lastSqlCommitId ? 0 : this.state.graph.entities.length,
+        persistedRelations: this.state.graph.lastSqlCommitId ? 0 : this.state.graph.relations.length,
+        persistedPendingReviews: this.state.graph.lastSqlCommitId ? 0
+          : this.state.graph.reviewQueue.filter(review => review.status === 'pending').length,
+        recovery: 'mandatory_sqlcipher_hydration_on_start'
       },
       graphRevision,
       graphReviewRevision,

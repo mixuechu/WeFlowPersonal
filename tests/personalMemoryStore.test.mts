@@ -156,6 +156,7 @@ import {
 } from '../shared/graphReviewStorage.ts'
 import {
   GRAPH_COMMIT_RECOVERY_VERSION,
+  GRAPH_STATE_SNAPSHOT_POLICY,
   recoverGraphStateFromSql,
   shouldRecoverGraphFromSql
 } from '../shared/graphCommitRecovery.ts'
@@ -9873,9 +9874,12 @@ test('graph commit mismatch recovers authoritative entities relations evidence a
     }
     store.syncGraph(graph as any, 'graph-commit-authoritative')
     assert.equal(store.getGraphCommitId(), 'graph-commit-authoritative')
-    assert.equal(GRAPH_COMMIT_RECOVERY_VERSION, 'graph-sql-authority-v1')
+    assert.equal(GRAPH_COMMIT_RECOVERY_VERSION, 'graph-sql-authority-v2')
     assert.equal(shouldRecoverGraphFromSql('graph-commit-authoritative', 'graph-commit-stale'), true)
     assert.equal(shouldRecoverGraphFromSql('graph-commit-authoritative', 'graph-commit-authoritative'), false)
+    assert.equal(shouldRecoverGraphFromSql(
+      'graph-commit-authoritative', 'graph-commit-authoritative', GRAPH_STATE_SNAPSHOT_POLICY
+    ), true)
     assert.equal(shouldRecoverGraphFromSql('', 'graph-commit-stale'), false)
     const snapshot = store.loadGraphSnapshot()
     assert.equal(snapshot.entities.length, 2)
@@ -9923,6 +9927,7 @@ test('graph commit mismatch recovers authoritative entities relations evidence a
     assert.deepEqual(recovered.reviewQueue.map((review: any) => review.id), ['graph-recovery-pending'])
     assert.equal(recovered.identityScan.lastFullScanAt, '2026-07-30T00:00:00.000Z')
     assert.equal(recovered.lastSqlCommitId, 'graph-commit-authoritative')
+    assert.equal(recovered.snapshotPolicy, GRAPH_STATE_SNAPSHOT_POLICY)
   })
 })
 

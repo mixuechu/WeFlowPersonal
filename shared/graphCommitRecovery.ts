@@ -1,14 +1,17 @@
 import { compactEntityEvidenceMessageIds } from './entityEvidenceHotset.ts'
 
-export const GRAPH_COMMIT_RECOVERY_VERSION = 'graph-sql-authority-v1'
+export const GRAPH_COMMIT_RECOVERY_VERSION = 'graph-sql-authority-v2'
+export const GRAPH_STATE_SNAPSHOT_POLICY = 'sqlcipher-authoritative-metadata-only-v1'
 
 export function shouldRecoverGraphFromSql(
   sqlCommitId: unknown,
-  stateCommitId: unknown
+  stateCommitId: unknown,
+  stateSnapshotPolicy?: unknown
 ): boolean {
   const sql = String(sqlCommitId || '').trim()
   const state = String(stateCommitId || '').trim()
-  return Boolean(sql && state && sql !== state)
+  const metadataOnly = String(stateSnapshotPolicy || '').trim() === GRAPH_STATE_SNAPSHOT_POLICY
+  return Boolean(sql && (metadataOnly || (state && sql !== state)))
 }
 
 export function recoverGraphStateFromSql(
@@ -35,9 +38,11 @@ export function recoverGraphStateFromSql(
     relations: (Array.isArray(snapshot?.relations) ? snapshot.relations : []).map((relation: any) => ({
       ...previousRelations.get(relation.id),
       ...relation,
-      directionExplanation: (previousRelations.get(relation.id) as any)?.directionExplanation || ''
+      directionExplanation: (previousRelations.get(relation.id) as any)?.directionExplanation
+        || relation.directionExplanation || ''
     })),
     reviewQueue: Array.isArray(snapshot?.reviewQueue) ? snapshot.reviewQueue : [],
-    lastSqlCommitId: sqlCommitId
+    lastSqlCommitId: sqlCommitId,
+    snapshotPolicy: GRAPH_STATE_SNAPSHOT_POLICY
   }
 }

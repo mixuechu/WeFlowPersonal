@@ -7,6 +7,7 @@ import {
   buildEncryptedAssistantState,
   getTaskStateStorageStats
 } from '../shared/taskStateStorage.ts'
+import { GRAPH_STATE_SNAPSHOT_POLICY } from '../shared/graphCommitRecovery.ts'
 
 test('encrypted assistant state bounds active evidence and omits closed evidence copies', () => {
   const active = {
@@ -89,4 +90,32 @@ test('encrypted assistant state bounds active evidence and omits closed evidence
   }).tasks[0]
   assert.equal('evidence' in missingEvidence, false)
   assert.equal(missingEvidence.evidenceTotal, 12)
+
+  const committedGraphState = {
+    tasks: [],
+    graph: {
+      lastSqlCommitId: 'authoritative-graph-commit',
+      snapshotPolicy: 'legacy-inline',
+      identityScan: { lastFullScanAt: '2026-08-09T00:00:00.000Z' },
+      entities: Array.from({ length: 2_000 }, (_, index) => ({
+        id: `entity-${index}`, canonicalName: `实体 ${index}`
+      })),
+      relations: Array.from({ length: 3_000 }, (_, index) => ({
+        id: `relation-${index}`, subjectId: 'entity-0', objectId: 'entity-1'
+      })),
+      reviewQueue: [{ id: 'pending-inline-review', status: 'pending', evidence: [{
+        sourceId: 'wechat', sessionId: 'session', messageId: 'message', excerpt: '不应复制'
+      }] }]
+    }
+  }
+  const storedGraphState = buildEncryptedAssistantState(committedGraphState)
+  assert.equal(storedGraphState.graph.snapshotPolicy, GRAPH_STATE_SNAPSHOT_POLICY)
+  assert.equal(storedGraphState.graph.lastSqlCommitId, 'authoritative-graph-commit')
+  assert.deepEqual(storedGraphState.graph.entities, [])
+  assert.deepEqual(storedGraphState.graph.relations, [])
+  assert.deepEqual(storedGraphState.graph.reviewQueue, [])
+  assert.deepEqual(storedGraphState.graph.identityScan, committedGraphState.graph.identityScan)
+  assert.equal(JSON.stringify(storedGraphState).includes('实体 1999'), false)
+  assert.equal(committedGraphState.graph.entities.length, 2_000)
+  assert.equal(committedGraphState.graph.relations.length, 3_000)
 })

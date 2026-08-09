@@ -1,4 +1,5 @@
 import { compactGraphReviewWorkset } from './graphReviewStorage.ts'
+import { GRAPH_STATE_SNAPSHOT_POLICY } from './graphCommitRecovery.ts'
 
 export const TASK_STATE_STORAGE_VERSION = 'task-state-storage-v3'
 export const ACTIVE_TASK_STATE_EVIDENCE_LIMIT = 50
@@ -51,6 +52,7 @@ export function compactTaskForEncryptedState(task: any): any {
 
 export function buildEncryptedAssistantState(state: any): any {
   const compactedReviews = compactGraphReviewWorkset(state?.graph?.reviewQueue)
+  const graphHasSqlAuthority = Boolean(String(state?.graph?.lastSqlCommitId || '').trim())
   return {
     ...state,
     tasks: Array.isArray(state?.tasks)
@@ -58,7 +60,10 @@ export function buildEncryptedAssistantState(state: any): any {
       : [],
     graph: {
       ...(state?.graph || {}),
-      reviewQueue: compactedReviews.pending
+      entities: graphHasSqlAuthority ? [] : (Array.isArray(state?.graph?.entities) ? state.graph.entities : []),
+      relations: graphHasSqlAuthority ? [] : (Array.isArray(state?.graph?.relations) ? state.graph.relations : []),
+      reviewQueue: graphHasSqlAuthority ? [] : compactedReviews.pending,
+      snapshotPolicy: graphHasSqlAuthority ? GRAPH_STATE_SNAPSHOT_POLICY : 'legacy-inline'
     }
   }
 }
