@@ -83,6 +83,10 @@ import {
   buildReviewInbox,
   type ReviewInboxTarget
 } from '../../shared/reviewInbox'
+import {
+  shouldReturnToBlockedRelationReview,
+  type BlockedRelationReturnTarget
+} from '../utils/blockedEntityReviewNavigation'
 import './AiAssistantPage.scss'
 
 const MEMORY_GROWTH_KIND_LABELS: Record<string, string> = {
@@ -1375,10 +1379,8 @@ function AiAssistantPage() {
     error?: string
   }>({ status: 'idle' })
   const reviewReturnSourceGate = useRef(new LatestRequestGate())
-  const [blockedIdentityReviewReturn, setBlockedIdentityReviewReturn] = useState<{
-    reviewId: string
-    title: string
-  } | null>(null)
+  const [blockedIdentityReviewReturn, setBlockedIdentityReviewReturn] =
+    useState<BlockedRelationReturnTarget | null>(null)
   const [reviewDecisionSaving, setReviewDecisionSaving] =
     useState<Record<string, boolean>>({})
   const reviewDecisionLocks = useRef(new Set<string>())
@@ -5930,7 +5932,7 @@ function AiAssistantPage() {
 
   const openBlockedEntityReview = (
     target: UntrustedEntityReviewTarget,
-    returnReview?: { reviewId: string; title: string }
+    returnReview?: { reviewId: string; title: string; entityIds?: string[] }
   ) => {
     setFocusedReviewId('')
     clearReviewReturnTarget()
@@ -5938,7 +5940,11 @@ function AiAssistantPage() {
     setReviewKindFilter('entity_creation')
     setReviewQuery(target.id)
     setReviewCalibrationOutcomeFilter('')
-    setBlockedIdentityReviewReturn(returnReview || null)
+    setBlockedIdentityReviewReturn(returnReview ? {
+      ...returnReview,
+      entityIds: returnReview.entityIds?.length
+        ? [...new Set(returnReview.entityIds)] : [target.id]
+    } : null)
     setMessage(target.trustStatus === 'candidate'
       ? `已定位“${target.canonicalName}”的待处理身份候选。`
       : `“${target.canonicalName}”当前不是可信实体；已打开相关身份审阅记录供核验。`)
@@ -6532,6 +6538,11 @@ function AiAssistantPage() {
         resolveCompletedReviewReturn(reviewReturnTargetRef.current, id)
       const continuationContextKey = reviewContextKeyRef.current
       const blockedRelationReturnBeforeDecision = blockedIdentityReviewReturn
+      const decidedReviewBeforeDecision = reviewPage.items.find((item: any) => item.id === id)
+      const completedBlockedEndpoint = shouldReturnToBlockedRelationReview(
+        blockedRelationReturnBeforeDecision,
+        decidedReviewBeforeDecision
+      )
       const continuationPlan = !returnTargetBeforeDecision &&
         reviewStatusFilter === 'pending'
         ? planReviewContinuation(reviewPage.items, id, reviewPage.total)
@@ -6561,7 +6572,7 @@ function AiAssistantPage() {
         return next
       })
       await load()
-      if (blockedRelationReturnBeforeDecision &&
+      if (completedBlockedEndpoint && blockedRelationReturnBeforeDecision &&
         blockedRelationReturnBeforeDecision.reviewId !== id) {
         returnToBlockedRelationReview(blockedRelationReturnBeforeDecision)
         return
@@ -13073,11 +13084,11 @@ function AiAssistantPage() {
             </div>}
             <div className="assistant-review-filters">
               <div>
-                <button className={reviewStatusFilter === 'pending' ? 'active' : ''} onClick={() => { setFocusedReviewId(''); clearReviewReturnTarget(); setReviewCalibrationOutcomeFilter(''); setReviewStatusFilter('pending') }}>待处理 {pendingReviewCount}</button>
-                <button className={reviewStatusFilter === 'resolved' ? 'active' : ''} onClick={() => { setFocusedReviewId(''); clearReviewReturnTarget(); setReviewStatusFilter('resolved') }}>已处理 {resolvedReviewCount}</button>
-                <button className={reviewStatusFilter === 'all' ? 'active' : ''} onClick={() => { setFocusedReviewId(''); clearReviewReturnTarget(); setReviewCalibrationOutcomeFilter(''); setReviewStatusFilter('all') }}>全部 {reviewPage.counts.all}</button>
+                <button className={reviewStatusFilter === 'pending' ? 'active' : ''} onClick={() => { setFocusedReviewId(''); clearReviewReturnTarget(); setBlockedIdentityReviewReturn(null); setReviewCalibrationOutcomeFilter(''); setReviewStatusFilter('pending') }}>待处理 {pendingReviewCount}</button>
+                <button className={reviewStatusFilter === 'resolved' ? 'active' : ''} onClick={() => { setFocusedReviewId(''); clearReviewReturnTarget(); setBlockedIdentityReviewReturn(null); setReviewStatusFilter('resolved') }}>已处理 {resolvedReviewCount}</button>
+                <button className={reviewStatusFilter === 'all' ? 'active' : ''} onClick={() => { setFocusedReviewId(''); clearReviewReturnTarget(); setBlockedIdentityReviewReturn(null); setReviewCalibrationOutcomeFilter(''); setReviewStatusFilter('all') }}>全部 {reviewPage.counts.all}</button>
               </div>
-              <select value={reviewKindFilter} onChange={event => { setFocusedReviewId(''); clearReviewReturnTarget(); setReviewKindFilter(event.target.value) }}>
+              <select value={reviewKindFilter} onChange={event => { setFocusedReviewId(''); clearReviewReturnTarget(); setBlockedIdentityReviewReturn(null); setReviewKindFilter(event.target.value) }}>
                 <option value="">全部类型</option>
                 <option value="entity_creation">实体存在与名称</option>
                 <option value="entity_summary">实体摘要</option>
@@ -13088,6 +13099,7 @@ function AiAssistantPage() {
               <select value={reviewCalibrationOutcomeFilter} onChange={event => {
                 setFocusedReviewId('')
                 clearReviewReturnTarget()
+                setBlockedIdentityReviewReturn(null)
                 const outcome = event.target.value as ReviewCalibrationOutcomeFilter
                 setReviewCalibrationOutcomeFilter(outcome)
                 if (outcome) setReviewStatusFilter('resolved')
@@ -13097,7 +13109,7 @@ function AiAssistantPage() {
                 <option value="corrected">修改后采用</option>
                 <option value="rejected">本人拒绝</option>
               </select>
-              <input value={reviewQuery} placeholder="搜索名称、原文、建议或处理原因" onChange={event => { setFocusedReviewId(''); clearReviewReturnTarget(); setReviewQuery(event.target.value) }} />
+              <input value={reviewQuery} placeholder="搜索名称、原文、建议或处理原因" onChange={event => { setFocusedReviewId(''); clearReviewReturnTarget(); setBlockedIdentityReviewReturn(null); setReviewQuery(event.target.value) }} />
             </div>
             {focusedReviewId && <div className="assistant-review-note">
               {reviewReturnTarget
@@ -13123,6 +13135,7 @@ function AiAssistantPage() {
                 : <button onClick={() => {
                     setFocusedReviewId('')
                     clearReviewReturnTarget()
+                    setBlockedIdentityReviewReturn(null)
                   }}>返回完整审阅队列</button>}
             </div>}
             {visibleReviews.map((review: any) => <article id={`graph-review-${review.id}`} tabIndex={-1}
@@ -13314,10 +13327,15 @@ function AiAssistantPage() {
                     }} memoryKind="relation"
                     onOpen={target => openBlockedEntityReview(target, {
                       reviewId: review.id,
-                      title: review.title
+                      title: review.title,
+                      entityIds: relationUntrustedTargets.map(target => target.id)
                     })}
                     onOpenAll={() => {
-                      setBlockedIdentityReviewReturn({ reviewId: review.id, title: review.title })
+                      setBlockedIdentityReviewReturn({
+                        reviewId: review.id,
+                        title: review.title,
+                        entityIds: relationUntrustedTargets.map(target => target.id)
+                      })
                       openReviewInboxTarget('graph_identity')
                     }} />}
                   {(relation.evidence || []).map((evidence: any) => <div key={evidence.messageId}><small>证据：“{evidence.excerpt}”</small></div>)}
