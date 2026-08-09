@@ -103,6 +103,7 @@ import {
 } from '../utils/appRecoveryPresentation'
 import { TrailingCoalescedRequest } from '../utils/trailingCoalescedRequest'
 import { ASSISTANT_MODULE_NAVIGATION } from '../utils/assistantModuleNavigation'
+import { shouldRenderDetachedEventEditor } from '../utils/detachedEventEditor'
 import './AiAssistantPage.scss'
 
 const MEMORY_GROWTH_KIND_LABELS: Record<string, string> = {
@@ -3724,6 +3725,10 @@ function AiAssistantPage() {
   const ingestionCounts = Object.fromEntries((ingestionStatus?.batches || []).map((item: any) => [item.status, Number(item.count || 0)]))
   const visibleClaims = claimArchive.items
   const visibleEvents = eventTimeline.items || []
+  const visibleEventIds = useMemo(
+    () => new Set(visibleEvents.map((event: any) => String(event.id))),
+    [visibleEvents]
+  )
   const visibleResources = resourceArchive.items || []
   const reviewInbox = useMemo(() => buildReviewInbox({
     confirmedConflicts: dashboard?.memoryStats?.reviewInbox?.confirmedConflicts,
@@ -12558,8 +12563,7 @@ function AiAssistantPage() {
                 <button onClick={() => { setEventSourceFilter(''); setEventStatusFilter(''); setEventFrom(''); setEventTo('') }}>清除范围</button>}
             </div>
             <div className="assistant-memory-list">
-              {editingEvent?.origin !== 'citation' &&
-                !visibleEvents.some((event: any) => event.id === editingEvent.id) &&
+              {shouldRenderDetachedEventEditor(editingEvent, visibleEventIds) &&
                 <article className="assistant-memory-item" id={`memory-event-${editingEvent.id}`}>
                   <div className="assistant-memory-item-head"><strong>正在纠正历史事件</strong><span className="confirmed">人工编辑</span></div>
                   <div className="assistant-event-editor">
