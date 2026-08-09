@@ -2441,6 +2441,9 @@ export class AiAssistantService {
   }
 
   private async callAi(messages: any[]): Promise<any> {
+    if (!this.config.get('aiAssistantEnabled')) {
+      throw new Error('AI 助理已关闭，未发送 DeepSeek 请求')
+    }
     const apiKey = String(this.config.get('aiAssistantApiKey') || '').trim()
     if (!apiKey) throw new Error('请先设置 DeepSeek API Key')
     const baseUrl = String(this.config.get('aiAssistantApiBaseUrl') || 'https://api.deepseek.com').replace(/\/$/, '')
@@ -2565,6 +2568,9 @@ export class AiAssistantService {
     let lastError: any = null
     for (let attempt = 0; attempt < 2; attempt += 1) {
       const startedAt = Date.now()
+      if (!this.config.get('aiAssistantEnabled')) {
+        throw new Error('AI 助理已关闭，未发送 DeepSeek 请求')
+      }
       const { response, payload } = await this.modelRequests.fetchJson(`${baseUrl}/chat/completions`, {
         method: 'POST',
         headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
@@ -7448,6 +7454,7 @@ export class AiAssistantService {
     const enabled = Boolean(this.config.get('aiAssistantEnabled'))
     if (wasEnabled && !enabled) {
       this.cancelRequested = Boolean(this.activeSync)
+      this.modelRequests.cancelActive('AI 助理已关闭，当前模型请求已取消')
       if (this.vectorIndexContinuation) clearTimeout(this.vectorIndexContinuation)
       this.vectorIndexContinuation = null
       this.vectorIndexContinuationHealth = recordVectorIndexContinuation(
@@ -9126,6 +9133,16 @@ export class AiAssistantService {
     const scopeCandidateCount = allowedIds?.size ?? null
     const candidateLimit = Math.max(300, Math.min(500, Number(maxResults) || 40))
     const lexical = this.searchMemory(query, candidateLimit, allowedIds, scopedOptions)
+    if (!this.config.get('aiAssistantEnabled')) {
+      const filtered = filterMemorySearchResults(lexical, scopedOptions, allowedIds !== null)
+      return this.applyStoredMemorySearchFeedback(query, scopedOptions, filtered)
+        .slice(0, Math.max(1, Math.min(500, maxResults))).map(item => ({
+        ...item,
+        retrieval_scope_applied: allowedIds !== null,
+        retrieval_scope_candidates: scopeCandidateCount,
+        semantic_search_disabled: true
+      }))
+    }
     let dimensionRepairs = 0
     try {
       const [queryVector] = await withVectorQueryDeadline(
@@ -10084,6 +10101,9 @@ export class AiAssistantService {
 
   async askMemory(question: string, conversationId?: string, options: MemorySearchOptions = {}): Promise<any> {
     if (this.disposed) throw new Error('AI 助理正在安全退出，不能开始新的记忆问答')
+    if (!this.config.get('aiAssistantEnabled')) {
+      throw new Error('AI 助理已关闭，未开始记忆问答或模型请求')
+    }
     const promise = this.runMemoryQuestion(question, conversationId, options)
     this.memoryQuestionPromises.add(promise)
     try {
@@ -10279,6 +10299,9 @@ export class AiAssistantService {
     try {
       const result = await runWithMemoryScopeRevalidation(
         async boundary => {
+          if (!this.config.get('aiAssistantEnabled')) {
+            throw new Error('AI 助理已关闭，本次问答未发送或保存')
+          }
           await this.assertMemoryScopeSelectionsCurrent(
             options,
             boundary === 'before' ? 'after_retrieval' : 'after_model'
@@ -10322,8 +10345,10 @@ export class AiAssistantService {
       )
     } catch (error: any) {
       const message = String(error?.message || '')
-      const outcomeCode = message.includes('隐私配置')
-        ? 'privacy_policy_changed'
+      const outcomeCode = message.includes('AI 助理已关闭')
+        ? 'assistant_disabled'
+        : message.includes('隐私配置')
+          ? 'privacy_policy_changed'
         : message.includes('所选实体') || message.includes('所选会话')
           ? 'scope_changed'
           : error?.name === 'AbortError'
@@ -10371,6 +10396,9 @@ export class AiAssistantService {
       }
     })
     const uncertainty = grounded.uncertainty
+    if (!this.config.get('aiAssistantEnabled')) {
+      throw new Error('AI 助理已关闭，本次回答未保存')
+    }
     await this.assertMemoryScopeSelectionsCurrent(options, 'after_model')
     const answerCommitSearchRevision = personalMemoryStore.getMemorySearchRevision()
     const authenticatedDraft = this.enrichAssistantCitationFeedback({

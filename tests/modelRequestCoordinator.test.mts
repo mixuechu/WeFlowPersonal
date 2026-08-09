@@ -23,6 +23,25 @@ test('model request coordinator aborts active requests and rejects new work afte
   )
 })
 
+test('model request coordinator can cancel active work and accept a later request', async () => {
+  let attempt = 0
+  const coordinator = new ModelRequestCoordinator((_input, init) => {
+    attempt += 1
+    if (attempt === 2) return Promise.resolve(new Response('{}'))
+    return new Promise((_resolve, reject) => {
+      init?.signal?.addEventListener('abort', () => reject(init.signal?.reason), { once: true })
+    })
+  })
+  const first = coordinator.fetch('https://example.invalid/model')
+  await Promise.resolve()
+  assert.equal(coordinator.cancelActive('assistant disabled'), 1)
+  await assert.rejects(first, /assistant disabled/)
+  assert.deepEqual(coordinator.getStatus(), { accepting: true, active: 0 })
+  const second = await coordinator.fetch('https://example.invalid/model')
+  assert.equal(second.ok, true)
+  assert.deepEqual(coordinator.getStatus(), { accepting: true, active: 0 })
+})
+
 test('model request coordinator enforces its own bounded deadline', async () => {
   const coordinator = new ModelRequestCoordinator((_input, init) => new Promise((_resolve, reject) => {
     init?.signal?.addEventListener('abort', () => reject(init.signal?.reason), { once: true })

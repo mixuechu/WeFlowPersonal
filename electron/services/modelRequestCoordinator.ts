@@ -134,6 +134,14 @@ export class RequestCoordinator {
     }
     return active
   }
+
+  cancelActive(reason?: string): number {
+    const active = this.controllers.size
+    for (const controller of this.controllers) {
+      controller.abort(new Error(reason || `${this.label}已取消`))
+    }
+    return active
+  }
 }
 
 export class ModelRequestCoordinator extends RequestCoordinator {
