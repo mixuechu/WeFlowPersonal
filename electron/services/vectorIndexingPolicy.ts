@@ -160,26 +160,70 @@ export type VectorIndexContinuationHealth = {
 export type VectorIndexPowerPolicy = {
   onBattery: boolean
   thermalState: 'unknown' | 'nominal' | 'fair' | 'serious' | 'critical'
+  memoryAvailableBytes: number
+  memoryTotalBytes: number
+  memoryPauseThresholdBytes: number
+  memoryResumeThresholdBytes: number
+  memoryDeferred: boolean
   deferred: boolean
-  reason: '' | 'battery' | 'thermal'
+  reason: '' | 'battery' | 'thermal' | 'memory'
 }
+
+export const VECTOR_INDEX_MEMORY_PAUSE_MIN_BYTES = 1024 ** 3
+export const VECTOR_INDEX_MEMORY_RESUME_MIN_BYTES = Math.floor(1.5 * 1024 ** 3)
+export const VECTOR_INDEX_MEMORY_PAUSE_RATIO = 0.08
+export const VECTOR_INDEX_MEMORY_RESUME_RATIO = 0.12
 
 export function assessVectorIndexPowerPolicy(input: {
   onBattery?: unknown
   thermalState?: unknown
+  memoryAvailableBytes?: unknown
+  memoryTotalBytes?: unknown
+  memoryPreviouslyDeferred?: unknown
 }): VectorIndexPowerPolicy {
   const thermalState = ['nominal', 'fair', 'serious', 'critical'].includes(
     String(input.thermalState || '').toLowerCase()
   )
     ? String(input.thermalState || '').toLowerCase() as VectorIndexPowerPolicy['thermalState']
     : 'unknown'
+  const rawMemoryTotalBytes = Number(input.memoryTotalBytes || 0)
+  const rawMemoryAvailableBytes = Number(input.memoryAvailableBytes || 0)
+  const memoryTotalBytes = Number.isFinite(rawMemoryTotalBytes)
+    ? Math.max(0, rawMemoryTotalBytes) : 0
+  const memoryAvailableBytes = Number.isFinite(rawMemoryAvailableBytes)
+    ? Math.max(0, rawMemoryAvailableBytes) : 0
+  const memoryPauseThresholdBytes = Math.max(
+    VECTOR_INDEX_MEMORY_PAUSE_MIN_BYTES,
+    Math.floor(memoryTotalBytes * VECTOR_INDEX_MEMORY_PAUSE_RATIO)
+  )
+  const memoryResumeThresholdBytes = Math.max(
+    VECTOR_INDEX_MEMORY_RESUME_MIN_BYTES,
+    Math.floor(memoryTotalBytes * VECTOR_INDEX_MEMORY_RESUME_RATIO)
+  )
+  const memoryKnown = memoryTotalBytes > 0
+    && input.memoryAvailableBytes !== undefined
+    && input.memoryAvailableBytes !== null
+    && Number.isFinite(rawMemoryAvailableBytes)
+  const memoryDeferred = memoryKnown && (Boolean(input.memoryPreviouslyDeferred)
+    ? memoryAvailableBytes < memoryResumeThresholdBytes
+    : memoryAvailableBytes < memoryPauseThresholdBytes)
+  const base = {
+    onBattery: Boolean(input.onBattery),
+    thermalState,
+    memoryAvailableBytes: memoryKnown ? Math.floor(memoryAvailableBytes) : 0,
+    memoryTotalBytes: memoryKnown ? Math.floor(memoryTotalBytes) : 0,
+    memoryPauseThresholdBytes,
+    memoryResumeThresholdBytes,
+    memoryDeferred
+  }
   if (thermalState === 'serious' || thermalState === 'critical') {
-    return { onBattery: Boolean(input.onBattery), thermalState, deferred: true, reason: 'thermal' }
+    return { ...base, deferred: true, reason: 'thermal' }
   }
   if (Boolean(input.onBattery)) {
-    return { onBattery: true, thermalState, deferred: true, reason: 'battery' }
+    return { ...base, onBattery: true, deferred: true, reason: 'battery' }
   }
-  return { onBattery: false, thermalState, deferred: false, reason: '' }
+  if (memoryDeferred) return { ...base, deferred: true, reason: 'memory' }
+  return { ...base, onBattery: false, deferred: false, reason: '' }
 }
 
 export const VECTOR_INDEX_RETRY_BASE_MS = 60_000

@@ -16527,11 +16527,23 @@ function AiAssistantPage() {
                   : memoryDiagnostics.embeddings.powerPolicy?.deferred
                     ? memoryDiagnostics.embeddings.powerPolicy.reason === 'thermal'
                       ? '温度较高 · 已暂停'
-                      : '使用电池 · 已暂停'
+                      : memoryDiagnostics.embeddings.powerPolicy.reason === 'memory'
+                        ? '可用内存不足 · 已暂停'
+                        : '使用电池 · 已暂停'
                     : memoryDiagnostics.embeddings.background?.scheduled ? '已排队' : '空闲'}</b></span>
                 <span>后台能耗 <b>{memoryDiagnostics.embeddings.powerPolicy?.deferred
-                  ? '等待插电或温度恢复'
+                  ? memoryDiagnostics.embeddings.powerPolicy.reason === 'memory'
+                    ? '等待系统可回收内存恢复'
+                    : '等待插电或温度恢复'
                   : '允许续建'}</b></span>
+                <span>系统可用内存 <b>{Number(memoryDiagnostics.embeddings.powerPolicy?.memoryTotalBytes || 0) > 0
+                  ? `${formatBytes(Number(memoryDiagnostics.embeddings.powerPolicy.memoryAvailableBytes || 0))} / ${formatBytes(Number(memoryDiagnostics.embeddings.powerPolicy.memoryTotalBytes || 0))}`
+                  : '平台暂未提供'}</b></span>
+                <span>内存恢复门槛 <b>{Number(memoryDiagnostics.embeddings.powerPolicy?.memoryTotalBytes || 0) > 0
+                  ? formatBytes(Number(memoryDiagnostics.embeddings.powerPolicy?.memoryDeferred
+                    ? memoryDiagnostics.embeddings.powerPolicy?.memoryResumeThresholdBytes
+                    : memoryDiagnostics.embeddings.powerPolicy?.memoryPauseThresholdBytes))
+                  : '平台暂未提供'}</b></span>
                 <span>后台累计 <b>{Number(memoryDiagnostics.embeddings.background?.indexedCount || 0).toLocaleString()}</b> 条 / {Number(memoryDiagnostics.embeddings.background?.runCount || 0).toLocaleString()} 轮</span>
                 <span>近期速度 <b>{Number(memoryDiagnostics.embeddings.background?.recentDocumentsPerMinute || 0) > 0
                   ? `${Number(memoryDiagnostics.embeddings.background.recentDocumentsPerMinute).toFixed(1)} 条/分钟`
@@ -16542,10 +16554,18 @@ function AiAssistantPage() {
                 <span>预计完成 <b>{memoryDiagnostics.embeddings.background?.estimatedCompletionAt
                   ? new Date(memoryDiagnostics.embeddings.background.estimatedCompletionAt).toLocaleString('zh-CN', { hour12: false })
                   : Number(memoryDiagnostics.embeddings.pending || 0) > 0
-                    ? memoryDiagnostics.embeddings.powerPolicy?.deferred ? '恢复供电后继续计算' : '计算中'
+                    ? memoryDiagnostics.embeddings.powerPolicy?.deferred
+                      ? memoryDiagnostics.embeddings.powerPolicy.reason === 'memory'
+                        ? '可用内存恢复后继续计算'
+                        : '恢复供电后继续计算'
+                      : '计算中'
                     : '已完成'}</b></span>
                 {memoryDiagnostics.embeddings.powerPolicy?.lastChangedAt && <span>电源策略更新 <b>{
                   new Date(memoryDiagnostics.embeddings.powerPolicy.lastChangedAt)
+                    .toLocaleString('zh-CN', { hour12: false })
+                }</b></span>}
+                {memoryDiagnostics.embeddings.powerPolicy?.lastMeasuredAt && <span>资源检查 <b>{
+                  new Date(memoryDiagnostics.embeddings.powerPolicy.lastMeasuredAt)
                     .toLocaleString('zh-CN', { hour12: false })
                 }</b></span>}
                 <span>连续失败 <b>{Number(memoryDiagnostics.embeddings.background?.failureStreak || 0).toLocaleString()}</b> 次</span>

@@ -36,6 +36,8 @@ import {
   validateEmbeddingBatch,
   vectorIndexRetryDelayMs,
   vectorIndexScheduleDelayMs,
+  VECTOR_INDEX_MEMORY_PAUSE_MIN_BYTES,
+  VECTOR_INDEX_MEMORY_RESUME_MIN_BYTES,
   withVectorQueryDeadline
 } from '../electron/services/vectorIndexingPolicy.ts'
 import {
@@ -12052,12 +12054,20 @@ test('bounded vector indexing exits on zero progress instead of spinning forever
 })
 
 test('vector continuation defers automatic work on battery or serious thermal pressure', () => {
+  const unknownMemory = {
+    memoryAvailableBytes: 0,
+    memoryTotalBytes: 0,
+    memoryPauseThresholdBytes: VECTOR_INDEX_MEMORY_PAUSE_MIN_BYTES,
+    memoryResumeThresholdBytes: VECTOR_INDEX_MEMORY_RESUME_MIN_BYTES,
+    memoryDeferred: false
+  }
   assert.deepEqual(assessVectorIndexPowerPolicy({
     onBattery: false,
     thermalState: 'nominal'
   }), {
     onBattery: false,
     thermalState: 'nominal',
+    ...unknownMemory,
     deferred: false,
     reason: ''
   })
@@ -12067,6 +12077,7 @@ test('vector continuation defers automatic work on battery or serious thermal pr
   }), {
     onBattery: true,
     thermalState: 'fair',
+    ...unknownMemory,
     deferred: true,
     reason: 'battery'
   })
@@ -12076,6 +12087,7 @@ test('vector continuation defers automatic work on battery or serious thermal pr
   }), {
     onBattery: false,
     thermalState: 'serious',
+    ...unknownMemory,
     deferred: true,
     reason: 'thermal'
   })
@@ -12085,6 +12097,7 @@ test('vector continuation defers automatic work on battery or serious thermal pr
   }), {
     onBattery: true,
     thermalState: 'critical',
+    ...unknownMemory,
     deferred: true,
     reason: 'thermal'
   })
@@ -12094,9 +12107,48 @@ test('vector continuation defers automatic work on battery or serious thermal pr
   }), {
     onBattery: false,
     thermalState: 'unknown',
+    ...unknownMemory,
     deferred: false,
     reason: ''
   })
+})
+
+test('vector continuation pauses and resumes with a hysteretic memory budget', () => {
+  const gib = 1024 ** 3
+  const total = 16 * gib
+  const paused = assessVectorIndexPowerPolicy({
+    onBattery: false,
+    thermalState: 'nominal',
+    memoryTotalBytes: total,
+    memoryAvailableBytes: 1.1 * gib,
+    memoryPreviouslyDeferred: false
+  })
+  assert.equal(paused.deferred, true)
+  assert.equal(paused.reason, 'memory')
+  assert.equal(paused.memoryDeferred, true)
+  assert.ok(paused.memoryPauseThresholdBytes > gib)
+  const stillPaused = assessVectorIndexPowerPolicy({
+    onBattery: false,
+    thermalState: 'nominal',
+    memoryTotalBytes: total,
+    memoryAvailableBytes: 1.5 * gib,
+    memoryPreviouslyDeferred: true
+  })
+  assert.equal(stillPaused.reason, 'memory')
+  const resumed = assessVectorIndexPowerPolicy({
+    onBattery: false,
+    thermalState: 'nominal',
+    memoryTotalBytes: total,
+    memoryAvailableBytes: 2.1 * gib,
+    memoryPreviouslyDeferred: true
+  })
+  assert.equal(resumed.deferred, false)
+  assert.equal(resumed.memoryDeferred, false)
+  const exhausted = assessVectorIndexPowerPolicy({
+    memoryTotalBytes: total,
+    memoryAvailableBytes: 0
+  })
+  assert.equal(exhausted.reason, 'memory')
 })
 
 test('vector continuation health exposes scheduling, progress, retry and recovery', () => {

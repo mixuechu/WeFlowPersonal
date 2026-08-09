@@ -5180,13 +5180,28 @@ app.whenReady().then(async () => {
 
   await httpService.autoStart()
   await aiAssistantService.initialize()
-  const updateAiAssistantPowerState = () => aiAssistantService.updatePowerState({
-    onBattery: powerMonitor.isOnBatteryPower(),
-    thermalState: process.platform === 'darwin'
-      ? powerMonitor.getCurrentThermalState()
-      : 'unknown'
-  })
+  const updateAiAssistantPowerState = () => {
+    let memoryTotalBytes = 0
+    let memoryAvailableBytes = 0
+    try {
+      const memory = process.getSystemMemoryInfo()
+      memoryTotalBytes = Math.max(0, Number(memory.total || 0)) * 1024
+      memoryAvailableBytes = Math.min(memoryTotalBytes, Math.max(0,
+        Number(memory.free || 0) + Number(memory.purgeable || 0)
+          + Number(memory.fileBacked || 0)) * 1024)
+    } catch {}
+    aiAssistantService.updatePowerState({
+      onBattery: powerMonitor.isOnBatteryPower(),
+      thermalState: process.platform === 'darwin'
+        ? powerMonitor.getCurrentThermalState()
+        : 'unknown',
+      memoryTotalBytes,
+      memoryAvailableBytes
+    })
+  }
   updateAiAssistantPowerState()
+  const aiAssistantResourceMonitor = setInterval(updateAiAssistantPowerState, 30_000)
+  aiAssistantResourceMonitor.unref()
   powerMonitor.on('on-ac', updateAiAssistantPowerState)
   powerMonitor.on('on-battery', updateAiAssistantPowerState)
   powerMonitor.on('thermal-state-change', updateAiAssistantPowerState)
