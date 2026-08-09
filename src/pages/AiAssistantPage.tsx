@@ -84,6 +84,7 @@ import {
   type ReviewInboxTarget
 } from '../../shared/reviewInbox'
 import {
+  blockedEntityMissingGuidance,
   blockedEntityReviewScope,
   shouldReturnToBlockedRelationReview,
   type BlockedRelationReturnTarget
@@ -335,10 +336,12 @@ function BlockedEntityReviewActions({ item, memoryKind, onOpen, onOpenAll }: {
   const total = Math.max(targets.length, Number(item?.untrusted_entity_count || 0))
   const noun = memoryKind === 'claim' ? '事实涉及的实体'
     : memoryKind === 'event' ? '事件参与实体' : '关系两端实体'
+  const actionableTargets = targets.filter(target => target.trustStatus !== 'missing')
+  const missingTargets = targets.filter(target => target.trustStatus === 'missing')
   return <div className="assistant-blocked-entity-review">
-    <small>{noun}尚未全部可信；先处理下列身份候选，之后才能确认或纠正。</small>
+    <small>{noun}尚未全部可信；确认前请审阅候选，缺失身份则直接纠正到可信实体。</small>
     <div>
-      {targets.map(target => <button type="button" key={target.id}
+      {actionableTargets.map(target => <button type="button" key={target.id}
         onClick={() => onOpen(target)}>
         {target.trustStatus === 'candidate' ? '审阅' : '核验'}：{target.canonicalName}
       </button>)}
@@ -346,6 +349,10 @@ function BlockedEntityReviewActions({ item, memoryKind, onOpen, onOpenAll }: {
         打开全部身份候选{total > targets.length ? `（另 ${total - targets.length} 项）` : ''}
       </button>}
     </div>
+    {missingTargets.map(target => <small className="assistant-evidence" key={target.id}>
+      {target.canonicalName !== target.id ? `“${target.canonicalName}”：` : ''}
+      {blockedEntityMissingGuidance(memoryKind)}
+    </small>)}
   </div>
 }
 

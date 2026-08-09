@@ -19,6 +19,8 @@ test('claim and event pages expose bounded untrusted entity review targets', () 
 test('every blocked claim and event surface links to exact identity review work', () => {
   const page = read('src/pages/AiAssistantPage.tsx')
   assert.match(page, /function BlockedEntityReviewActions/)
+  assert.match(page, /targets\.filter\(target => target\.trustStatus !== 'missing'\)/)
+  assert.match(page, /blockedEntityMissingGuidance\(memoryKind\)/)
   assert.match(page, /setFocusedReviewEntityId\(target\.id\)/)
   assert.match(page, /setFocusedReviewEntityName\(target\.canonicalName\)/)
   assert.match(page, /entityId: focusedReviewEntityId \|\| undefined/)
