@@ -176,6 +176,18 @@ type EmbeddingWorkerMessage = {
   id?: number
   vectors?: number[][]
   error?: string
+  runtimeMemory?: {
+    rssBytes?: number
+    heapUsedBytes?: number
+    externalBytes?: number
+  }
+}
+
+export type LocalEmbeddingRuntimeMemory = {
+  pid: number
+  rssBytes: number
+  heapUsedBytes: number
+  externalBytes: number
 }
 
 export class LocalEmbeddingWorkerClient {
@@ -189,6 +201,7 @@ export class LocalEmbeddingWorkerClient {
   private readyReject: ((error: Error) => void) | null = null
   private nextId = 1
   private exited = false
+  private runtimeMemory: LocalEmbeddingRuntimeMemory | null = null
 
   constructor(cacheDirectory: string, workerPathOverride = '') {
     let workerPath = workerPathOverride
@@ -225,6 +238,10 @@ export class LocalEmbeddingWorkerClient {
 
   async ready(): Promise<void> {
     return this.readyPromise
+  }
+
+  getRuntimeMemory(): LocalEmbeddingRuntimeMemory | null {
+    return this.runtimeMemory ? { ...this.runtimeMemory } : null
   }
 
   async embed(texts: string[]): Promise<{ dims: number[]; data: Float32Array }> {
@@ -266,6 +283,15 @@ export class LocalEmbeddingWorkerClient {
   }
 
   private handleMessage(message: EmbeddingWorkerMessage): void {
+    const pid = Number(this.worker.pid || 0)
+    if (pid > 0 && message.runtimeMemory) {
+      this.runtimeMemory = {
+        pid,
+        rssBytes: Math.max(0, Number(message.runtimeMemory.rssBytes || 0)),
+        heapUsedBytes: Math.max(0, Number(message.runtimeMemory.heapUsedBytes || 0)),
+        externalBytes: Math.max(0, Number(message.runtimeMemory.externalBytes || 0))
+      }
+    }
     if (message.type === 'ready') {
       this.readyResolve?.()
       this.readyResolve = null
@@ -291,6 +317,7 @@ export class LocalEmbeddingWorkerClient {
   private handleExit(error: Error | null): void {
     if (this.exited) return
     this.exited = true
+    this.runtimeMemory = null
     const failure = error || new Error('本地向量隔离 worker 提前退出')
     this.readyReject?.(failure)
     this.readyResolve = null
@@ -314,6 +341,7 @@ async function createIsolatedEmbeddingExtractor(cacheDirectory: string): Promise
   }
   const extractor: any = (texts: string[]) => client.embed(texts)
   extractor.dispose = () => client.dispose()
+  extractor.getRuntimeMemory = () => client.getRuntimeMemory()
   return extractor
 }
 
@@ -322,6 +350,7 @@ export class LocalEmbeddingService {
   private readonly extractorLoader: (() => Promise<any>) | null
   private readonly idleUnloadMs: number
   private extractorPromise: Promise<any> | null = null
+  private loadedExtractor: any = null
   private activeInferences = 0
   private idleUnloadTimer: ReturnType<typeof setTimeout> | null = null
   private extractorResetRequested = false
@@ -381,6 +410,12 @@ export class LocalEmbeddingService {
       lastError: this.lastError,
       integrity: { ...this.integrity }
     }
+  }
+
+  getRuntimeProcessMemory(): LocalEmbeddingRuntimeMemory | null {
+    // The resolved extractor is mirrored without awaiting so a diagnostics refresh
+    // never blocks on model download or initialization.
+    return this.loadedExtractor?.getRuntimeMemory?.() || null
   }
 
   async embed(texts: string[]): Promise<number[][]> {
@@ -491,11 +526,13 @@ export class LocalEmbeddingService {
         return extractor
       })
       this.extractorPromise = loading.then(extractor => {
+        this.loadedExtractor = extractor
         this.lastLoadedAt = new Date().toISOString()
         return extractor
       }).catch(error => {
         this.lastError = sanitizeDiagnosticText(error)
         this.extractorPromise = null
+        this.loadedExtractor = null
         throw error
       })
     }
@@ -524,6 +561,7 @@ export class LocalEmbeddingService {
     if (this.activeInferences > 0 || !this.extractorPromise) return
     const unloading = this.extractorPromise
     this.extractorPromise = null
+    this.loadedExtractor = null
     try {
       const extractor = await unloading
       if (typeof extractor?.dispose === 'function') await extractor.dispose()

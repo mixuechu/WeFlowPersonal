@@ -100,8 +100,10 @@ export async function runVectorIndexPass<T extends { id: string; content_hash?: 
   const batchSize = Math.max(1, Math.floor(Number(input.batchSize) || 1))
   let indexed = 0
   let batches = 0
+  let prefetched: T[] | null = null
   while (batches < maxBatches) {
-    const documents = input.listCandidates(batchSize)
+    const documents = prefetched ?? input.listCandidates(batchSize)
+    prefetched = null
     if (!documents.length) return { indexed, batches, drained: true }
     const vectors = await input.embed(documents)
     const validation = validateEmbeddingBatch(vectors, documents.length)
@@ -123,11 +125,18 @@ export async function runVectorIndexPass<T extends { id: string; content_hash?: 
     }
     indexed += committed
     batches += 1
+    const next = input.listCandidates(batchSize)
+    const identity = (document: T) => `${document.id}\u0000${String(document.content_hash || '')}`
+    if (next.length === documents.length
+      && next.every((document, index) => identity(document) === identity(documents[index]))) {
+      throw new Error('向量补建提交后相同文档仍在待处理队首，已停止自旋并进入退避')
+    }
+    prefetched = next
   }
   return {
     indexed,
     batches,
-    drained: input.listCandidates(1).length === 0
+    drained: (prefetched ?? input.listCandidates(1)).length === 0
   }
 }
 

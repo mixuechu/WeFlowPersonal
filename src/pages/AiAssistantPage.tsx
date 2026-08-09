@@ -15890,6 +15890,25 @@ function AiAssistantPage() {
                 最近被延后的操作：{memoryDiagnostics.wcdbQueue.lastRejectedType}。完成当前查询后可直接重试。
               </small>}
             </div>}
+            {memoryDiagnostics.runtimeMemory && <div className="assistant-recovery-audit healthy">
+              <header><Database size={15} /><span><b>桌面运行内存</b>
+                <small>按 Electron 实际进程工作集汇总主进程、界面、GPU，并补齐框架未纳入统计的已注册本地模型进程；运行期峰值只在本次启动内累计，不向界面传递进程名称、PID 或个人内容。</small>
+              </span></header>
+              <div className="assistant-recovery-current">
+                <span>当前总量 <b>{formatBytes(Number(memoryDiagnostics.runtimeMemory.workingSetBytes || 0))}</b></span>
+                <span>运行期峰值 <b>{formatBytes(Number(memoryDiagnostics.runtimeMemory.peakObservedBytes || 0))}</b></span>
+                <span>进程数量 <b>{Number(memoryDiagnostics.runtimeMemory.processes || 0).toLocaleString()}</b></span>
+                <span>主进程 RSS <b>{formatBytes(Number(memoryDiagnostics.runtimeMemory.mainNode?.rssBytes || 0))}</b></span>
+                <span>JS 堆 <b>{formatBytes(Number(memoryDiagnostics.runtimeMemory.mainNode?.heapUsedBytes || 0))} / {formatBytes(Number(memoryDiagnostics.runtimeMemory.mainNode?.heapTotalBytes || 0))}</b></span>
+                <span>界面进程 <b>{formatBytes(Number(memoryDiagnostics.runtimeMemory.byType?.renderer?.workingSetBytes || 0))}</b></span>
+                <span>本机工具（含模型） <b>{formatBytes(Number(memoryDiagnostics.runtimeMemory.byType?.utility?.workingSetBytes || 0))}</b></span>
+                <span>补齐独立进程 <b>{Number(memoryDiagnostics.runtimeMemory.supplementalProcesses || 0).toLocaleString()}</b></span>
+                <span>GPU <b>{formatBytes(Number(memoryDiagnostics.runtimeMemory.byType?.gpu?.workingSetBytes || 0))}</b></span>
+              </div>
+              {!memoryDiagnostics.runtimeMemory.available && <small>
+                当前系统未返回完整 Electron 进程工作集，因此总量暂以主进程 RSS 与已注册本机工具之和表示；下次诊断刷新会自动重试。
+              </small>}
+            </div>}
             {memoryDiagnostics.backupPairIntegrity && <div className={`assistant-recovery-audit ${
               Number(memoryDiagnostics.backupPairIntegrity.databaseOnly || 0) +
                 Number(memoryDiagnostics.backupPairIntegrity.stateOnly || 0) +

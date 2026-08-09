@@ -14,6 +14,7 @@ import JSZip from 'jszip'
 import { ConfigService } from './config'
 import { httpService } from './httpService'
 import { wcdbService } from './wcdbService'
+import { collectRuntimeMemoryDiagnostics } from './runtimeMemoryDiagnostics'
 import { showSystemNotification } from './systemNotificationService'
 import { personalMemoryStore, RESOURCE_CONTENT_CHAR_LIMIT } from './personalMemoryStore'
 import { localEmbeddingService } from './localEmbeddingService'
@@ -828,6 +829,7 @@ export class AiAssistantService {
   private lastSchedulerAttemptAt = 0
   private lastSchedulerTickAt = 0
   private vectorIndexPromise: Promise<any> | null = null
+  private runtimeMemoryPeakBytes = 0
   private vectorIndexContinuation: ReturnType<typeof setTimeout> | null = null
   private startupSyncTimer: ReturnType<typeof setTimeout> | null = null
   private startupNotificationTimer: ReturnType<typeof setTimeout> | null = null
@@ -6362,6 +6364,34 @@ export class AiAssistantService {
       0
     )
     const entityEvidenceAuthority = personalMemoryStore.getEntityEvidenceAuthorityStats()
+    const embeddingRuntimeMemory = localEmbeddingService.getRuntimeProcessMemory()
+    const supplementalRuntimeProcesses = embeddingRuntimeMemory
+      ? [{
+          pid: embeddingRuntimeMemory.pid,
+          type: 'utility' as const,
+          workingSetBytes: embeddingRuntimeMemory.rssBytes
+        }]
+      : []
+    const memoryMeasuredAt = new Date().toISOString()
+    let runtimeMemory = collectRuntimeMemoryDiagnostics(
+      [],
+      process.memoryUsage(),
+      this.runtimeMemoryPeakBytes,
+      memoryMeasuredAt,
+      supplementalRuntimeProcesses
+    )
+    try {
+      runtimeMemory = collectRuntimeMemoryDiagnostics(
+        app.getAppMetrics(),
+        process.memoryUsage(),
+        this.runtimeMemoryPeakBytes,
+        memoryMeasuredAt,
+        supplementalRuntimeProcesses
+      )
+    } catch {
+      // Keep the main-process RSS available when Chromium metrics are temporarily unavailable.
+    }
+    this.runtimeMemoryPeakBytes = runtimeMemory.peakObservedBytes
     return {
       ...databaseDiagnostics,
       backups: annotatedBackups,
@@ -6374,6 +6404,7 @@ export class AiAssistantService {
         searchRepairing: Boolean(this.memorySearchRepairPromise)
       }),
       wcdbQueue: wcdbService.getQueueHealth(),
+      runtimeMemory,
       modelRequests: {
         ...this.modelRequests.getStatus(),
         memoryQuestions: this.memoryQuestionPromises.size,
@@ -10094,7 +10125,14 @@ export class AiAssistantService {
       const ann = pass.drained
         ? personalMemoryStore.ensureApproximateVectorIndex(localEmbeddingService.modelVersion)
         : stats.ann
-      return { indexed: pass.indexed, batches: pass.batches, drained: pass.drained, ...stats, ann }
+      return {
+        ...stats,
+        indexed: pass.indexed,
+        indexedTotal: Number(stats.indexed || 0),
+        batches: pass.batches,
+        drained: pass.drained,
+        ann
+      }
     })().finally(() => { this.vectorIndexPromise = null })
     return this.vectorIndexPromise
   }

@@ -8,7 +8,17 @@ type WorkerInput = {
 }
 
 const send = (message: Record<string, unknown>) => {
-  if (typeof process.send === 'function') process.send(message)
+  if (typeof process.send === 'function') {
+    const memory = process.memoryUsage()
+    process.send({
+      ...message,
+      runtimeMemory: {
+        rssBytes: memory.rss,
+        heapUsedBytes: memory.heapUsed,
+        externalBytes: memory.external
+      }
+    })
+  }
 }
 
 let extractorPromise: Promise<any> | null = null

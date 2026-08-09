@@ -1919,6 +1919,20 @@ export class PersonalMemoryStore {
     const db = new Database(path, { readonly, fileMustExist: readonly })
     db.function('weflow_sha256', { deterministic: true }, (value: unknown) =>
       createHash('sha256').update(String(value ?? '')).digest('hex'))
+    db.function('weflow_utf16_length', { deterministic: true }, (value: unknown) =>
+      String(value ?? '').length)
+    db.function('weflow_utf16_slice_sha256', { deterministic: true }, (
+      value: unknown,
+      startOffset: unknown,
+      endOffset: unknown
+    ) => {
+      const text = String(value ?? '')
+      const start = Number(startOffset)
+      const end = Number(endOffset)
+      if (!Number.isInteger(start) || !Number.isInteger(end)
+        || start < 0 || end <= start || end > text.length) return ''
+      return createHash('sha256').update(text.slice(start, end)).digest('hex')
+    })
     if (this.encryptionKey) {
       db.pragma('cipher=sqlcipher')
       db.pragma('legacy=4')
@@ -19646,13 +19660,13 @@ export class PersonalMemoryStore {
               OR chunk.dimensions<>embedding_dimensions
               OR chunk.start_offset<0
               OR chunk.end_offset<=chunk.start_offset
-              OR chunk.end_offset>length(trim(replace(replace(
+              OR chunk.end_offset>weflow_utf16_length(trim(replace(replace(
                 search_documents.title || char(10) || search_documents.search_text,
                 char(13) || char(10),char(10)),char(13),char(10))))
-              OR chunk.chunk_hash<>weflow_sha256(substr(trim(replace(replace(
+              OR chunk.chunk_hash<>weflow_utf16_slice_sha256(trim(replace(replace(
                 search_documents.title || char(10) || search_documents.search_text,
                 char(13) || char(10),char(10)),char(13),char(10))),
-                chunk.start_offset+1,chunk.end_offset-chunk.start_offset))
+                chunk.start_offset,chunk.end_offset)
               OR json_valid(chunk.vector_json)<>1
               OR json_type(CASE WHEN json_valid(chunk.vector_json)=1 THEN chunk.vector_json ELSE '[]' END)<>'array'
               OR json_array_length(CASE WHEN json_valid(chunk.vector_json)=1 THEN chunk.vector_json ELSE '[]' END)<>chunk.dimensions
@@ -19867,7 +19881,7 @@ export class PersonalMemoryStore {
     }
     if (!this.db) return empty
     const row = this.db.prepare(`
-      SELECT value FROM schema_meta WHERE key='vector_index_continuation_health_v1'
+      SELECT value FROM schema_meta WHERE key='vector_index_continuation_health_v2'
     `).get() as any
     try {
       const stored = JSON.parse(String(row?.value || '{}'))
@@ -19918,7 +19932,7 @@ export class PersonalMemoryStore {
     }
     this.db.prepare(`
       INSERT INTO schema_meta(key,value,updated_at)
-      VALUES('vector_index_continuation_health_v1',?,?)
+      VALUES('vector_index_continuation_health_v2',?,?)
       ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_at=excluded.updated_at
     `).run(JSON.stringify(value), now)
   }
@@ -20009,13 +20023,13 @@ export class PersonalMemoryStore {
                 OR json_type(CASE WHEN json_valid(chunk.vector_json)=1 THEN chunk.vector_json ELSE '[]' END)<>'array'
                 OR chunk.start_offset<0
                 OR chunk.end_offset<=chunk.start_offset
-                OR chunk.end_offset>length(trim(replace(replace(
+                OR chunk.end_offset>weflow_utf16_length(trim(replace(replace(
                   search_documents.title || char(10) || search_documents.search_text,
                   char(13) || char(10),char(10)),char(13),char(10))))
-                OR chunk.chunk_hash<>weflow_sha256(substr(trim(replace(replace(
+                OR chunk.chunk_hash<>weflow_utf16_slice_sha256(trim(replace(replace(
                   search_documents.title || char(10) || search_documents.search_text,
                   char(13) || char(10),char(10)),char(13),char(10))),
-                  chunk.start_offset+1,chunk.end_offset-chunk.start_offset))
+                  chunk.start_offset,chunk.end_offset)
                 OR json_array_length(CASE WHEN json_valid(chunk.vector_json)=1 THEN chunk.vector_json ELSE '[]' END)<>chunk.dimensions
                 OR EXISTS(SELECT 1 FROM json_each(CASE WHEN json_valid(chunk.vector_json)=1 THEN chunk.vector_json ELSE '[]' END)
                   WHERE json_each.type NOT IN ('integer','real'))

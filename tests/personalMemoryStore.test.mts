@@ -11506,6 +11506,41 @@ test('multi-vector long documents rank by their best semantic chunk without dupl
     .some(item => item.id === long.id), true)
 }))
 
+test('embedding chunk validation uses JavaScript UTF-16 offsets for emoji text', () => withStore(store => {
+  const model = 'test-utf16-vector:2d'
+  store.upsertResources([{
+    id: 'emoji-semantic-resource',
+    resourceType: 'document',
+    title: '含表情的记录 🚀',
+    content: `${'项目背景🙂。'.repeat(120)}最终结论✅`,
+    createdAt: '2026-08-10T00:00:00.000Z',
+    updatedAt: '2026-08-10T00:00:00.000Z'
+  }])
+  const document = store.listEmbeddingCandidates(model, 10)
+    .find(item => item.id === 'resource:emoji-semantic-resource')
+  assert.ok(document)
+  const chunks = buildEmbeddingChunkDetails(`${document.title}\n${document.search_text}`)
+    .map((chunk, index) => ({
+      vector: index % 2 ? [0, 1] : [1, 0],
+      chunkHash: createHash('sha256').update(chunk.text).digest('hex'),
+      startOffset: chunk.startOffset,
+      endOffset: chunk.endOffset
+    }))
+  assert.equal(store.saveEmbeddingBatch([{
+    id: document.id,
+    model,
+    vector: meanNormalizedEmbeddings(chunks.map(chunk => chunk.vector)),
+    expectedContentHash: document.content_hash,
+    chunks
+  }]), 1)
+  assert.equal(store.listEmbeddingCandidates(model, 10)
+    .some(item => item.id === document.id), false)
+  const stats = store.getEmbeddingStats(model)
+  assert.equal(stats.total, 1)
+  assert.equal(stats.indexed, 1)
+  assert.equal(stats.pending, 0)
+}))
+
 test('malformed vectors remain pending and recover safely across restart', () => {
   const directory = mkdtempSync(join(tmpdir(), 'weflow-invalid-vector-'))
   const databasePath = join(directory, 'memory.sqlite')
@@ -11958,13 +11993,14 @@ test('bounded vector indexing rejects a malformed batch before any partial commi
 test('bounded vector indexing delegates a validated model batch to one atomic commit', async () => {
   let individualCommits = 0
   let batchCommits = 0
+  let pending = true
   const result = await runVectorIndexPass({
     maxBatches: 1,
     batchSize: 2,
-    listCandidates: () => [
+    listCandidates: () => pending ? [
       { id: 'atomic-vector-one', content_hash: 'hash-one' },
       { id: 'atomic-vector-two', content_hash: 'hash-two' }
-    ],
+    ] : [],
     embed: async () => [[1, 0], [0, 1]],
     commit: () => {
       individualCommits += 1
@@ -11976,12 +12012,28 @@ test('bounded vector indexing delegates a validated model batch to one atomic co
         'atomic-vector-one',
         'atomic-vector-two'
       ])
+      pending = false
       return items.length
     }
   })
-  assert.deepEqual(result, { indexed: 2, batches: 1, drained: false })
+  assert.deepEqual(result, { indexed: 2, batches: 1, drained: true })
   assert.equal(batchCommits, 1)
   assert.equal(individualCommits, 0)
+})
+
+test('bounded vector indexing rejects false-positive commits that leave the same queue head', async () => {
+  let embeds = 0
+  await assert.rejects(() => runVectorIndexPass({
+    maxBatches: 3,
+    batchSize: 1,
+    listCandidates: () => [{ id: 'still-pending', content_hash: 'same-version' }],
+    embed: async () => {
+      embeds += 1
+      return [[1, 0]]
+    },
+    commit: () => true
+  }), /相同文档仍在待处理队首/)
+  assert.equal(embeds, 1)
 })
 
 test('bounded vector indexing exits on zero progress instead of spinning forever', async () => {
@@ -12157,7 +12209,7 @@ test('vector continuation health persists in SQLCipher without reviving an old t
     })
     ;(reopened as any).db.prepare(`
       UPDATE schema_meta SET value='not-json'
-      WHERE key='vector_index_continuation_health_v1'
+      WHERE key='vector_index_continuation_health_v2'
     `).run()
     const recovered = reopened.getVectorIndexContinuationHealth()
     assert.equal(recovered.scheduled, false)
@@ -12171,6 +12223,26 @@ test('vector continuation health persists in SQLCipher without reviving an old t
     reopened.close()
     rmSync(directory, { recursive: true, force: true })
   }
+})
+
+test('vector continuation v2 ignores legacy counters inflated by repeated queue heads', () => withStore(store => {
+  ;(store as any).db.prepare(`
+    INSERT INTO schema_meta(key,value,updated_at) VALUES(?,?,?)
+  `).run('vector_index_continuation_health_v1', JSON.stringify({
+    runCount: 152_056,
+    indexedCount: 10_309_314,
+    recentDocumentsPerMinute: 45_000
+  }), '2026-08-10T00:00:00.000Z')
+  const health = store.getVectorIndexContinuationHealth()
+  assert.equal(health.runCount, 0)
+  assert.equal(health.indexedCount, 0)
+  assert.equal(health.recentDocumentsPerMinute, 0)
+}))
+
+test('vector index service keeps pass progress separate from cumulative coverage', () => {
+  const source = readFileSync(join(process.cwd(), 'electron/services/aiAssistantService.ts'), 'utf8')
+  assert.match(source, /indexed: pass\.indexed,[\s\S]{0,120}indexedTotal: Number\(stats\.indexed/)
+  assert.doesNotMatch(source, /indexed: pass\.indexed[^\n]*\.\.\.stats/)
 })
 
 test('vector continuation ETA smooths noisy runs and expires after failure', () => {
