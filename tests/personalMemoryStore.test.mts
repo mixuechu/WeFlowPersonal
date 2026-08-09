@@ -1800,13 +1800,18 @@ test('legacy graph review evidence provenance repairs only uniquely proven carri
 
     reopened.initialize(databasePath)
     const health = reopened.getGraphReviewEvidenceStorageHealth()
-    assert.equal(health.provenanceRepair.policy, 'unique_authoritative_carrier_only')
+    assert.equal(health.provenanceRepair.policy,
+      'unique_authoritative_carrier_only_with_weekly_retry')
+    assert.equal(health.provenanceRepair.version, 3)
     assert.equal(health.provenanceRepair.rowsCheckedThisStart, 5)
     assert.equal(health.provenanceRepair.sourceRowsRepairedThisStart, 2)
     assert.equal(health.provenanceRepair.senderRowsRepairedThisStart, 2)
     assert.equal(health.provenanceRepair.rowsMergedThisStart, 1)
     assert.equal(health.provenanceRepair.ambiguousSenderRowsThisStart, 1)
     assert.equal(health.provenanceRepair.unresolvedRowsThisStart, 2)
+    assert.equal(health.provenanceRepair.deferredRowsThisStart, 0)
+    assert.equal(health.provenanceRepair.retryIntervalDays, 7)
+    assert.ok(Date.parse(health.provenanceRepair.nextRetryAt) > Date.now())
     const page = (reviewId: string) => reopened.listGraphReviewEvidencePage({
       reviewId, revision: reopened.getGraphReviewRevision(), limit: 40
     })
@@ -1826,15 +1831,30 @@ test('legacy graph review evidence provenance repairs only uniquely proven carri
     assert.equal(afterRestart.sourceRowsRepairedThisStart, 0)
     assert.equal(afterRestart.senderRowsRepairedThisStart, 0)
     assert.equal(afterRestart.rowsMergedThisStart, 0)
-    assert.equal(afterRestart.rowsCheckedThisStart, 2)
-    assert.equal(afterRestart.batchesThisStart, 1)
-    assert.equal(afterRestart.authorityQueriesThisStart, 1)
+    assert.equal(afterRestart.rowsCheckedThisStart, 0)
+    assert.equal(afterRestart.batchesThisStart, 0)
+    assert.equal(afterRestart.authorityQueriesThisStart, 0)
+    assert.equal(afterRestart.deferredByBackoffThisStart, true)
+    assert.equal(afterRestart.deferredRowsThisStart, 2)
     assert.equal(afterRestart.sourceRowsRepairedTotal, 2)
     assert.equal(afterRestart.senderRowsRepairedTotal, 2)
     assert.equal(afterRestart.rowsMergedTotal, 1)
     assert.equal(afterRestart.indexesHealthy, true)
     assert.equal(afterRestart.installedIndexes, 4)
     ;(secondRestart as any).db.exec(`
+      INSERT INTO review_queue(
+        id,kind,title,detail,confidence,status,payload_json,created_at,resolved_at
+      ) VALUES(
+        'repair-new-unresolved','entity_creation','新增旧候选','',0.5,
+        'pending','{}','2026-08-09T01:00:00.000Z',NULL
+      );
+      INSERT INTO graph_review_evidence(
+        review_id,evidence_key,source_id,session_id,message_id,timestamp,
+        sender,excerpt,evidence_json,created_at
+      ) VALUES(
+        'repair-new-unresolved','new-unresolved-key','legacy','room','new-opaque-message',
+        102,'','新增未知原文','{}','2026-08-09T01:00:00.000Z'
+      );
       DROP INDEX idx_evidence_carrier_sender;
       CREATE INDEX idx_evidence_carrier_sender ON evidence(timestamp,session_id);
     `)
@@ -1846,6 +1866,9 @@ test('legacy graph review evidence provenance repairs only uniquely proven carri
     assert.equal(repairedHealth.healthy, true)
     assert.equal(repairedHealth.provenanceRepair.indexesHealthy, true)
     assert.equal(repairedHealth.provenanceRepair.repairedIndexesThisStart, 1)
+    assert.equal(repairedHealth.provenanceRepair.deferredByBackoffThisStart, false)
+    assert.equal(repairedHealth.provenanceRepair.rowsCheckedThisStart, 3)
+    assert.equal(repairedHealth.provenanceRepair.unresolvedRowsThisStart, 3)
   } finally {
     first.close()
     reopened.close()

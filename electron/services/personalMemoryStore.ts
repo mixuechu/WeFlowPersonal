@@ -1845,8 +1845,8 @@ export class PersonalMemoryStore {
     this.ensureGraphReviewEvidencePageIndex()
     this.migrateGraphReviewEvidenceArchive()
     this.ensureGraphReviewEvidenceProvenanceIndexes()
-    this.repairGraphReviewEvidenceProvenance()
     this.ensureGraphReviewRevisionTriggers()
+    this.repairGraphReviewEvidenceProvenance()
     this.normalizeTaskHistoryEvidence()
     this.repairTaskEvidenceArchiveFromHistory()
     this.compactTaskReviewSnapshots()
@@ -9487,6 +9487,57 @@ export class PersonalMemoryStore {
       ).get(auditKey) as any)?.value || '{}'))
     } catch {}
     const batchLimit = 500
+    const retryIntervalMs = 7 * 24 * 60 * 60 * 1_000
+    const checkedAt = new Date().toISOString()
+    const unresolvedSummary = () => {
+      const row = this.db!.prepare(`
+        SELECT COUNT(*) AS count,COALESCE(MAX(rowid),0) AS max_rowid,
+          COALESCE(SUM(rowid),0) AS rowid_sum
+        FROM graph_review_evidence
+        WHERE message_id!='' AND (source_id='legacy' OR sender='')
+      `).get() as any
+      return {
+        count: Number(row?.count || 0),
+        signature: `${this.getGraphReviewRevision()}:${Number(row?.count || 0)}:${Number(row?.max_rowid || 0)}:${Number(row?.rowid_sum || 0)}`
+      }
+    }
+    const pendingBefore = unresolvedSummary()
+    const nextRetryAt = String(previous.nextRetryAt || '')
+    const retryNotDue = pendingBefore.count > 0 && nextRetryAt &&
+      Date.parse(nextRetryAt) > Date.parse(checkedAt)
+    if (retryNotDue && String(previous.unresolvedSignature || '') === pendingBefore.signature) {
+      this.db.prepare(`
+        INSERT INTO schema_meta(key,value,updated_at) VALUES(?,?,?)
+        ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_at=excluded.updated_at
+      `).run(auditKey, JSON.stringify({
+        version: 3,
+        policy: 'unique_authoritative_carrier_only_with_weekly_retry',
+        batchingPolicy: 'rowid_keyset_bounded_v1',
+        checkedAt,
+        lastAttemptAt: String(previous.lastAttemptAt || previous.checkedAt || ''),
+        nextRetryAt,
+        retryIntervalDays: 7,
+        deferredByBackoffThisStart: true,
+        deferredRowsThisStart: pendingBefore.count,
+        unresolvedSignature: pendingBefore.signature,
+        batchLimit,
+        batchesThisStart: 0,
+        authorityQueriesThisStart: 0,
+        peakRowsThisStart: 0,
+        peakCarriersThisStart: 0,
+        rowsCheckedThisStart: 0,
+        sourceRowsRepairedThisStart: 0,
+        senderRowsRepairedThisStart: 0,
+        rowsMergedThisStart: 0,
+        ambiguousSenderRowsThisStart: 0,
+        unresolvedRowsThisStart: pendingBefore.count,
+        sourceRowsRepairedTotal: Number(previous.sourceRowsRepairedTotal || 0),
+        senderRowsRepairedTotal: Number(previous.senderRowsRepairedTotal || 0),
+        rowsMergedTotal: Number(previous.rowsMergedTotal || 0),
+        ambiguousSenderRowsTotal: Number(previous.ambiguousSenderRowsTotal || 0)
+      }), checkedAt)
+      return
+    }
     const listBatch = this.db.prepare(`
       SELECT rowid AS evidence_rowid,review_id,evidence_key,source_id,session_id,
         message_id,timestamp,sender,excerpt,evidence_json,created_at
@@ -9658,19 +9709,24 @@ export class PersonalMemoryStore {
       transaction()
     }
     const transaction = this.db.transaction(() => {
-      const checkedAt = new Date().toISOString()
-      const unresolvedRows = Number((this.db!.prepare(`
-        SELECT COUNT(*) AS count FROM graph_review_evidence
-        WHERE message_id!='' AND (source_id='legacy' OR sender='')
-      `).get() as any)?.count || 0)
+      const pendingAfter = unresolvedSummary()
+      const retryAt = pendingAfter.count > 0
+        ? new Date(Date.parse(checkedAt) + retryIntervalMs).toISOString()
+        : ''
       this.db!.prepare(`
         INSERT INTO schema_meta(key,value,updated_at) VALUES(?,?,?)
         ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_at=excluded.updated_at
       `).run(auditKey, JSON.stringify({
-        version: 2,
-        policy: 'unique_authoritative_carrier_only',
+        version: 3,
+        policy: 'unique_authoritative_carrier_only_with_weekly_retry',
         batchingPolicy: 'rowid_keyset_bounded_v1',
         checkedAt,
+        lastAttemptAt: checkedAt,
+        nextRetryAt: retryAt,
+        retryIntervalDays: 7,
+        deferredByBackoffThisStart: false,
+        deferredRowsThisStart: 0,
+        unresolvedSignature: pendingAfter.signature,
         batchLimit,
         batchesThisStart: batches,
         authorityQueriesThisStart: authorityQueries,
@@ -9681,7 +9737,7 @@ export class PersonalMemoryStore {
         senderRowsRepairedThisStart: senderRowsRepaired,
         rowsMergedThisStart: rowsMerged,
         ambiguousSenderRowsThisStart: ambiguousSenderRows,
-        unresolvedRowsThisStart: unresolvedRows,
+        unresolvedRowsThisStart: pendingAfter.count,
         sourceRowsRepairedTotal: Number(previous.sourceRowsRepairedTotal || 0) + sourceRowsRepaired,
         senderRowsRepairedTotal: Number(previous.senderRowsRepairedTotal || 0) + senderRowsRepaired,
         rowsMergedTotal: Number(previous.rowsMergedTotal || 0) + rowsMerged,
@@ -9735,6 +9791,8 @@ export class PersonalMemoryStore {
     try { provenanceAudit = JSON.parse(String(provenanceAuditRow?.value || '{}')) } catch {}
     try { provenanceIndexAudit = JSON.parse(String(provenanceIndexAuditRow?.value || '{}')) } catch {}
     const provenanceIndexes = this.inspectGraphReviewEvidenceProvenanceIndexes()
+    const { unresolvedSignature: _privateUnresolvedSignature, ...safeProvenanceAudit } =
+      provenanceAudit && typeof provenanceAudit === 'object' ? provenanceAudit : {}
     const columnsHealthy = expectedColumns.every(column => columns.includes(column))
     const indexHealthy = /review_id\s*,\s*timestamp\s+desc\s*,\s*source_id\s*,\s*session_id\s*,\s*message_id\s+desc\s*,\s*evidence_key/i.test(String(index))
     return {
@@ -9751,7 +9809,7 @@ export class PersonalMemoryStore {
       indexRepairsTotal: Number(indexAudit.repairsTotal || 0),
       ...migration,
       provenanceRepair: {
-        ...provenanceAudit,
+        ...safeProvenanceAudit,
         indexesHealthy: provenanceIndexes.healthy,
         expectedIndexes: provenanceIndexes.expectedIndexes,
         installedIndexes: provenanceIndexes.installedIndexes,
