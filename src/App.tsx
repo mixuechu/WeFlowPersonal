@@ -17,7 +17,9 @@ import UpdateProgressCapsule from './components/UpdateProgressCapsule'
 import LockScreen from './components/LockScreen'
 import { GlobalSessionMonitor } from './components/GlobalSessionMonitor'
 import WindowCloseDialog from './components/WindowCloseDialog'
+import { PageLoadingFallback, PageRouteBoundary } from './components/PageRouteBoundary'
 import { resolveAutomationScopeKey } from './pages/Export/hooks/useAutomation'
+import { consumePageRecoveryRoute } from './utils/pageRecoveryRoute'
 
 // 全部页面懒加载：主窗口首屏只解析 App 壳 + HomePage；
 // 常驻的通知窗口等独立窗口路由也因此只加载各自的小 chunk，
@@ -65,6 +67,11 @@ function App() {
     state: null,
     key: 'settings-fallback'
   } as Location)
+
+  useEffect(() => {
+    const recoveryRoute = consumePageRecoveryRoute(window.sessionStorage)
+    if (recoveryRoute) navigate(recoveryRoute, { replace: true })
+  }, [navigate])
 
   const {
     setDbConnected,
@@ -773,8 +780,9 @@ function App() {
               </Suspense>
             )}
 
-            <Suspense fallback={null}>
-              <Routes location={routeLocation}>
+            <PageRouteBoundary>
+              <Suspense fallback={<PageLoadingFallback />}>
+                <Routes location={routeLocation}>
                 <Route path="/" element={<HomePage />} />
                 <Route path="/home" element={<HomePage />} />
                 <Route path="/account-management" element={<AccountManagementPage />} />
@@ -802,8 +810,9 @@ function App() {
                 <Route path="/backup" element={<BackupPage />} />
                 <Route path="/chat-history/:sessionId/:messageId" element={<ChatHistoryPage />} />
                 <Route path="/chat-history-inline/:payloadId" element={<ChatHistoryPage />} />
-              </Routes>
-            </Suspense>
+                </Routes>
+              </Suspense>
+            </PageRouteBoundary>
           </RouteGuard>
         </main>
       </div>
