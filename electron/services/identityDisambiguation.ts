@@ -187,6 +187,33 @@ export function planStaleGraphIdentityReviews(
   })
 }
 
+export function planStaleRuleIdentityReviews(
+  reviews: Array<{
+    id?: string
+    kind?: string
+    status?: string
+    leftEntityId?: string
+    rightEntityId?: string
+    candidateSource?: string
+    candidateSignals?: Array<{ source?: string }>
+  }>,
+  entitiesById: ReadonlyMap<string, IdentityCandidateEntity>
+): string[] {
+  const ruleSources = new Set(['rule', 'shared_account', 'exact_name', 'alias_overlap'])
+  return reviews.flatMap(review => {
+    const signals = Array.isArray(review.candidateSignals) ? review.candidateSignals : []
+    const pureRule = ruleSources.has(String(review.candidateSource || '')) &&
+      (!signals.length || signals.every(signal => ruleSources.has(String(signal?.source || ''))))
+    if (!review.id || review.kind !== 'possible_duplicate' || review.status !== 'pending' || !pureRule) {
+      return []
+    }
+    const left = entitiesById.get(String(review.leftEntityId || ''))
+    const right = entitiesById.get(String(review.rightEntityId || ''))
+    if (left && right && assessIdentityPair(left, right).eligible) return []
+    return [String(review.id)]
+  })
+}
+
 export function isNegativeDecisionCurrent(
   decision: any,
   left: IdentityCandidateEntity,

@@ -12949,6 +12949,7 @@ function AiAssistantPage() {
             <span><b>{identityDisambiguation.contextualPairCandidates || 0}</b><small>共同邻居候选对</small></span>
             <span><b>{identityDisambiguation.contextualSkippedHubs || 0}</b><small>已忽略低区分度超级枢纽</small></span>
             <span><b>{identityDisambiguation.contextualRetiredCandidates || 0}</b><small>本轮撤销过期纯关系候选</small></span>
+            <span><b>{identityDisambiguation.ruleRetiredCandidates || 0}</b><small>本轮撤销过期纯规则候选</small></span>
             {identityDisambiguation.contextualTruncated && <span className="warning"><b>已达安全上限</b><small>其余组合需等待新证据或人工检索复核</small></span>}
             <span><b>{identityDisambiguation.fullPairCandidates || 0}</b><small>最近每周同名候选对</small></span>
             <span><b>{identityDisambiguation.fullLargestNameBucket || 0}</b><small>最大同名/别名桶</small></span>

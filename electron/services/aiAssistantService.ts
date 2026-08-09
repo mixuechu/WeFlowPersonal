@@ -392,6 +392,7 @@ import {
   identityPairKey,
   listIndexedIdentityCandidates,
   planStaleGraphIdentityReviews,
+  planStaleRuleIdentityReviews,
   planStaleVectorIdentityReviews,
   type IdentityCandidateLookup,
   isNegativeDecisionCurrent
@@ -591,6 +592,7 @@ type AssistantState = {
       contextualPairCandidates: number
       contextualTruncated: boolean
       contextualRetiredCandidates: number
+      ruleRetiredCandidates: number
       fullPairCandidates: number
       fullLargestNameBucket: number
       fullTruncated: boolean
@@ -669,6 +671,7 @@ const EMPTY_STATE: AssistantState = {
     contextualRelations: 0, contextualEligibleNeighbors: 0, contextualSkippedHubs: 0,
     contextualPairCandidates: 0, contextualTruncated: false,
     contextualRetiredCandidates: 0,
+    ruleRetiredCandidates: 0,
     fullPairCandidates: 0, fullLargestNameBucket: 0, fullTruncated: false,
     decisionLookupPairs: 0, decisionLookupQueries: 0, decisionLookupDurationMs: 0,
     decisionLookupAt: null,
@@ -3126,6 +3129,18 @@ export class AiAssistantService {
     this.state.graph.identityScan.contextualSkippedHubs = graphPlan.stats.skippedHighDegreeNeighbors
     this.state.graph.identityScan.contextualPairCandidates = graphPlan.stats.pairCandidates
     this.state.graph.identityScan.contextualTruncated = graphPlan.stats.truncated
+    const staleRuleReviewIds = planStaleRuleIdentityReviews(
+      this.state.graph.reviewQueue,
+      byId
+    )
+    if (staleRuleReviewIds.length) {
+      const staleIds = new Set(staleRuleReviewIds)
+      this.state.graph.reviewQueue = this.state.graph.reviewQueue.filter(
+        review => !staleIds.has(review.id)
+      )
+      for (const reviewId of staleRuleReviewIds) reviewsById.delete(reviewId)
+    }
+    this.state.graph.identityScan.ruleRetiredCandidates = staleRuleReviewIds.length
     this.runVectorIdentityScan(now, people, byId, reviewsById)
     const staleGraphReviewIds = planStaleGraphIdentityReviews(
       this.state.graph.reviewQueue,

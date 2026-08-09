@@ -8,6 +8,7 @@ import {
   buildGraphIdentitySuggestions,
   buildNameIdentityPairPlan,
   planStaleGraphIdentityReviews,
+  planStaleRuleIdentityReviews,
   planStaleVectorIdentityReviews
 } from '../electron/services/identityDisambiguation.ts'
 
@@ -155,6 +156,8 @@ test('identity scan diagnostics expose hub exclusions and truncation in the UI',
   assert.match(page, /共同关系邻居建议/)
   assert.match(service, /planStaleGraphIdentityReviews\([\s\S]*skippedHighDegreeNeighbors === 0/)
   assert.match(page, /本轮撤销过期纯关系候选/)
+  assert.match(service, /planStaleRuleIdentityReviews\([\s\S]*this\.runVectorIdentityScan/)
+  assert.match(page, /本轮撤销过期纯规则候选/)
   assert.match(page, /向量候选已达上限/)
   assert.match(page, /本轮向量进度未提交/)
 })
@@ -223,6 +226,52 @@ test('complete contextual scans retire only unsupported pure-graph identity revi
     new Set(['a|c']),
     false
   ), [])
+})
+
+test('current entity identities retire only unsupported pure-rule identity reviews', () => {
+  const entities = new Map([
+    ['a', { id: 'a', type: 'person', canonicalName: '甲', aliases: ['共同别名'], accountIds: [] }],
+    ['b', { id: 'b', type: 'person', canonicalName: '乙', aliases: ['共同别名'], accountIds: [] }],
+    ['c', { id: 'c', type: 'person', canonicalName: '丙', aliases: [], accountIds: [] }],
+    ['d', { id: 'd', type: 'person', canonicalName: '丁', aliases: [], accountIds: [] }],
+    ['e', { id: 'e', type: 'person', canonicalName: '戊', aliases: [], accountIds: ['wx-shared'] }],
+    ['f', { id: 'f', type: 'person', canonicalName: '己', aliases: [], accountIds: ['wx-shared'] }],
+    ['g', { id: 'g', type: 'person', canonicalName: '庚', aliases: [], accountIds: [] }]
+  ])
+  const reviews = [{
+    id: 'still-rule-supported', kind: 'possible_duplicate', status: 'pending',
+    leftEntityId: 'a', rightEntityId: 'b', candidateSource: 'alias_overlap',
+    candidateSignals: [{ source: 'alias_overlap' }]
+  }, {
+    id: 'still-account-supported', kind: 'possible_duplicate', status: 'pending',
+    leftEntityId: 'e', rightEntityId: 'f', candidateSource: 'shared_account',
+    candidateSignals: [{ source: 'shared_account' }]
+  }, {
+    id: 'removed-account', kind: 'possible_duplicate', status: 'pending',
+    leftEntityId: 'e', rightEntityId: 'g', candidateSource: 'shared_account',
+    candidateSignals: [{ source: 'shared_account' }]
+  }, {
+    id: 'renamed-rule', kind: 'possible_duplicate', status: 'pending',
+    leftEntityId: 'a', rightEntityId: 'c', candidateSource: 'exact_name',
+    candidateSignals: [{ source: 'exact_name' }]
+  }, {
+    id: 'missing-endpoint', kind: 'possible_duplicate', status: 'pending',
+    leftEntityId: 'a', rightEntityId: 'missing', candidateSource: 'shared_account',
+    candidateSignals: [{ source: 'shared_account' }]
+  }, {
+    id: 'mixed-model', kind: 'possible_duplicate', status: 'pending',
+    leftEntityId: 'a', rightEntityId: 'd', candidateSource: 'llm_suggestion',
+    candidateSignals: [{ source: 'exact_name' }, { source: 'llm_suggestion' }]
+  }, {
+    id: 'resolved-rule', kind: 'possible_duplicate', status: 'rejected',
+    leftEntityId: 'a', rightEntityId: 'c', candidateSource: 'exact_name',
+    candidateSignals: [{ source: 'exact_name' }]
+  }]
+  assert.deepEqual(planStaleRuleIdentityReviews(reviews, entities), [
+    'removed-account',
+    'renamed-rule',
+    'missing-endpoint'
+  ])
 })
 
 test('weekly name scan keeps deterministic deduplicated order and bounds huge same-name buckets', () => {
