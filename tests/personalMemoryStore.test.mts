@@ -1569,12 +1569,11 @@ test('graph review directory bounds evidence while the complete archive stays pa
     reopened.initialize(databasePath)
     const snapshot = reopened.loadGraphSnapshot()
     assert.equal(snapshot.reviewQueue.length, 1)
-    assert.equal(snapshot.reviewQueue[0].evidence.length, 20)
+    assert.equal(snapshot.reviewQueue[0].evidence.length, 0)
     assert.equal(snapshot.reviewQueue[0].evidenceTotal, 125)
-    assert.equal(snapshot.reviewQueue[0].evidence[0].messageId, 'review-message-124')
-    assert.equal(snapshot.reviewQueue[0].evidence.at(-1).messageId, 'review-message-105')
     assert.equal(reopened.getGraphSnapshotHydrationStats().queryCount, 8)
-    assert.equal(reopened.getGraphSnapshotHydrationStats().reviewEvidenceRows, 20)
+    assert.equal(reopened.getGraphSnapshotHydrationStats().reviewEvidenceRows, 0)
+    assert.equal(reopened.getGraphSnapshotHydrationStats().reviewEvidenceTotalRows, 125)
     const revision = reopened.getGraphReviewRevision()
     assert.equal(reopened.listGraphReviewEvidencePage({
       reviewId: 'large-review-evidence', offset: 0, limit: 40, revision: ''
@@ -3989,6 +3988,96 @@ test('memory cards expose evidence totals but bound their latest evidence payloa
   assert.equal(enrichedPage.items.at(-1).sender, '修正后的发送者')
 }))
 
+test('pending review backlog keeps every candidate but zero evidence bodies in the startup graph', () => {
+  withStore(store => {
+    const reviewCount = 1_200
+    const evidencePerReview = 4
+    store.syncGraph({
+      entities: [],
+      relations: [],
+      reviewQueue: Array.from({ length: reviewCount }, (_, reviewIndex) => ({
+        id: `startup-review-${String(reviewIndex).padStart(4, '0')}`,
+        kind: 'entity_creation',
+        title: `长期积压候选 ${reviewIndex}`,
+        detail: '仅在打开审阅页后读取原文',
+        confidence: 0.7,
+        status: 'pending',
+        createdAt: new Date(1_700_000_000_000 + reviewIndex * 1_000).toISOString(),
+        entityId: `startup-entity-${reviewIndex}`,
+        entityCanonicalName: `候选实体 ${reviewIndex}`,
+        entityType: 'person',
+        evidence: Array.from({ length: evidencePerReview }, (_, evidenceIndex) => ({
+          sourceId: 'wechat',
+          sessionId: `startup-session-${reviewIndex % 12}`,
+          messageId: `startup-message-${reviewIndex}-${evidenceIndex}`,
+          timestamp: 1_700_000_000 + reviewIndex * 10 + evidenceIndex,
+          sender: `发送者 ${reviewIndex}`,
+          excerpt: `候选 ${reviewIndex} 的原文 ${evidenceIndex}`
+        }))
+      }))
+    } as any)
+
+    const snapshot = store.loadGraphSnapshot()
+    assert.equal(snapshot.reviewQueue.length, reviewCount)
+    assert.ok(snapshot.reviewQueue.every((review: any) => review.evidence.length === 0))
+    assert.ok(snapshot.reviewQueue.every((review: any) =>
+      review.evidenceTotal === evidencePerReview))
+    const hydration = store.getGraphSnapshotHydrationStats()
+    assert.equal(hydration.queryCount, 8)
+    assert.equal(hydration.reviewEvidenceRows, 0)
+    assert.equal(hydration.reviewEvidenceTotalRows, reviewCount * evidencePerReview)
+    assert.equal(hydration.hydratedHotRows, 0)
+    const page = store.listReviewLedgerPage({ status: 'pending', limit: 40 })
+    assert.equal(page.total, reviewCount)
+    assert.equal(page.items.length, 40)
+    assert.ok(page.items.every((review: any) => review.evidence.length === 3))
+    assert.ok(page.items.every((review: any) => review.evidenceTotal === evidencePerReview))
+  })
+})
+
+test('review decisions preserve authoritative evidence after a counts-only startup snapshot', () => {
+  withStore(store => {
+    store.syncGraph({
+      entities: [], relations: [], reviewQueue: [{
+        id: 'counts-only-review-decision',
+        kind: 'entity_creation',
+        title: '待确认身份',
+        detail: '启动后确认仍应保留原文',
+        confidence: 0.8,
+        status: 'pending',
+        createdAt: '2026-08-09T00:00:00.000Z',
+        entityId: 'counts-only-entity',
+        entityCanonicalName: '待确认身份',
+        entityType: 'person',
+        evidence: [
+          { sourceId: 'wechat', sessionId: 'decision-session', messageId: 'decision-1', timestamp: 1, sender: '甲', excerpt: '第一条依据' },
+          { sourceId: 'mail', sessionId: 'decision-mail', messageId: 'decision-2', timestamp: 2, sender: '乙', excerpt: '第二条依据' }
+        ]
+      }]
+    } as any)
+    const snapshot = store.loadGraphSnapshot()
+    assert.equal(snapshot.reviewQueue[0].evidence.length, 0)
+    snapshot.reviewQueue[0].status = 'confirmed'
+    snapshot.reviewQueue[0].resolvedAt = '2026-08-09T01:00:00.000Z'
+    snapshot.reviewQueue[0].resolutionActor = 'user'
+    store.syncGraph(snapshot as any)
+
+    const resolved = store.listReviewLedgerPage({ status: 'resolved', limit: 40 })
+    assert.equal(resolved.total, 1)
+    assert.equal(resolved.items[0].evidenceTotal, 2)
+    assert.deepEqual(resolved.items[0].evidence.map((item: any) => item.messageId),
+      ['decision-2', 'decision-1'])
+    const archive = store.listGraphReviewEvidencePage({
+      reviewId: 'counts-only-review-decision',
+      revision: resolved.revision,
+      limit: 40
+    })
+    assert.equal(archive.total, 2)
+    assert.deepEqual(archive.items.map((item: any) => item.excerpt),
+      ['第二条依据', '第一条依据'])
+  })
+})
+
 test('relation graph snapshots keep a bounded hotset while SQLCipher retains every evidence row', () => {
   const directory = mkdtempSync(join(tmpdir(), 'weflow-relation-evidence-hotset-'))
   const databasePath = join(directory, 'memory.sqlite')
@@ -4042,8 +4131,8 @@ test('relation graph snapshots keep a bounded hotset while SQLCipher retains eve
     assert.equal(hotset.evidence[0].messageId,
       `relation-evidence-${allEvidence.length - GRAPH_RELATION_EVIDENCE_HOT_LIMIT}`)
     const hydration = first.getGraphSnapshotHydrationStats()
-    assert.equal(hydration.version, 'graph-snapshot-batch-v3')
-    assert.equal(hydration.strategy, 'fixed_eight_queries_relation_counts_only')
+    assert.equal(hydration.version, 'graph-snapshot-batch-v4')
+    assert.equal(hydration.strategy, 'fixed_eight_queries_relation_and_review_counts_only')
     assert.equal(hydration.entityEvidencePolicy, 'direct_identity_and_active_merge_chain')
     assert.equal(hydration.structuredCarrierCopies, 0)
     assert.equal(hydration.queryCount, 8)
@@ -4056,6 +4145,7 @@ test('relation graph snapshots keep a bounded hotset while SQLCipher retains eve
     assert.equal(hydration.relationEvidenceRows, 0)
     assert.equal(hydration.relationEvidenceTotalRows, allEvidence.length)
     assert.equal(hydration.reviewEvidenceRows, 0)
+    assert.equal(hydration.reviewEvidenceTotalRows, 0)
     assert.equal(hydration.hydratedHotRows, 0)
     assert.ok(['healthy', 'attention', 'critical'].includes(hydration.performanceStatus))
     assert.ok(hydration.durationMs >= 0)
@@ -10045,7 +10135,7 @@ test('graph commit mismatch recovers authoritative entities relations evidence a
     assert.equal(snapshot.reviewQueue.length, 1)
     assert.equal(snapshot.reviewQueue[0].id, 'graph-recovery-pending')
     const hydration = store.getGraphSnapshotHydrationStats()
-    assert.equal(hydration.strategy, 'fixed_eight_queries_relation_counts_only')
+    assert.equal(hydration.strategy, 'fixed_eight_queries_relation_and_review_counts_only')
     assert.equal(hydration.queryCount, 8)
     assert.equal(hydration.entities, 2)
     assert.equal(hydration.relations, 1)

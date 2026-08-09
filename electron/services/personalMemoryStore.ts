@@ -536,8 +536,8 @@ export class PersonalMemoryStore {
     triggerRepairedThisStart: false
   }
   private graphSnapshotHydration = {
-    version: 'graph-snapshot-batch-v3',
-    strategy: 'fixed_eight_queries_relation_counts_only',
+    version: 'graph-snapshot-batch-v4',
+    strategy: 'fixed_eight_queries_relation_and_review_counts_only',
     entityEvidencePolicy: 'direct_identity_and_active_merge_chain',
     structuredCarrierCopies: 0,
     queryCount: 0,
@@ -553,6 +553,7 @@ export class PersonalMemoryStore {
     relationEvidenceRows: 0,
     relationEvidenceTotalRows: 0,
     reviewEvidenceRows: 0,
+    reviewEvidenceTotalRows: 0,
     lastLoadedAt: ''
   }
 
@@ -8150,20 +8151,13 @@ export class PersonalMemoryStore {
       ORDER BY created_at,id
     `).all() as Array<{ id: string; payload_json: string }>
     queryCount += 1
-    const reviewEvidenceRows = this.db.prepare(`
-      WITH ranked AS (
-        SELECT review_id,source_id,session_id,message_id,timestamp,sender,excerpt,evidence_json,
-          COUNT(*) OVER(PARTITION BY review_id) AS evidence_total,
-          ROW_NUMBER() OVER(
-            PARTITION BY review_id
-            ORDER BY timestamp DESC,source_id,session_id,message_id DESC,evidence_key
-          ) AS evidence_rank
-        FROM graph_review_evidence
-        WHERE review_id IN (SELECT id FROM review_queue WHERE status='pending')
-      )
-      SELECT * FROM ranked WHERE evidence_rank<=20
-      ORDER BY review_id,evidence_rank
-    `).all() as any[]
+    const reviewEvidenceCountRows = this.db.prepare(`
+      SELECT evidence.review_id,COUNT(*) AS evidence_total
+      FROM graph_review_evidence evidence
+      JOIN review_queue review ON review.id=evidence.review_id
+      WHERE review.status='pending'
+      GROUP BY evidence.review_id ORDER BY evidence.review_id
+    `).all() as Array<{ review_id: string; evidence_total: number }>
     queryCount += 1
     const aliasesByEntity = new Map<string, string[]>()
     for (const row of aliasRows) {
@@ -8186,12 +8180,9 @@ export class PersonalMemoryStore {
     const evidenceCountByRelation = new Map(relationEvidenceCountRows.map(row => [
       String(row.relation_id), Number(row.evidence_total || 0)
     ]))
-    const evidenceByReview = new Map<string, any[]>()
-    for (const row of reviewEvidenceRows) {
-      const values = evidenceByReview.get(String(row.review_id)) || []
-      values.push(row)
-      evidenceByReview.set(String(row.review_id), values)
-    }
+    const evidenceCountByReview = new Map(reviewEvidenceCountRows.map(row => [
+      String(row.review_id), Number(row.evidence_total || 0)
+    ]))
     const snapshot = {
       entities: entityRows.map(row => {
         const entityIdentities = identitiesByEntity.get(String(row.id)) || []
@@ -8244,23 +8235,12 @@ export class PersonalMemoryStore {
         try {
           const review = JSON.parse(String(row.payload_json || '{}'))
           if (!review?.id || review?.status !== 'pending') return []
-          const rows = evidenceByReview.get(String(review.id)) || []
           return [{
             ...review,
-            evidence: rows.map(item => {
-              let stored: any = {}
-              try { stored = JSON.parse(String(item.evidence_json || '{}')) } catch {}
-              return {
-                ...stored,
-                sourceId: String(item.source_id || 'legacy'),
-                sessionId: String(item.session_id || ''),
-                messageId: String(item.message_id || ''),
-                timestamp: Number(item.timestamp || 0),
-                sender: String(item.sender || ''),
-                excerpt: String(item.excerpt || '')
-              }
-            }),
-            evidenceTotal: Number(rows[0]?.evidence_total || review.evidenceTotal || 0)
+            evidence: [],
+            evidenceTotal: Number(
+              evidenceCountByReview.get(String(review.id)) || review.evidenceTotal || 0
+            )
           }]
         } catch {
           return []
@@ -8269,16 +8249,15 @@ export class PersonalMemoryStore {
     }
     const durationMs = Date.now() - startedAt
     this.graphSnapshotHydration = {
-      version: 'graph-snapshot-batch-v3',
-      strategy: 'fixed_eight_queries_relation_counts_only',
+      version: 'graph-snapshot-batch-v4',
+      strategy: 'fixed_eight_queries_relation_and_review_counts_only',
       entityEvidencePolicy: 'direct_identity_and_active_merge_chain',
       structuredCarrierCopies: 0,
       queryCount,
       durationMs,
       performanceStatus: durationMs >= 5_000
         ? 'critical' : durationMs >= 2_000 ? 'attention' : 'healthy',
-      hydratedHotRows: aliasRows.length + identityRows.length + entityEvidenceRows.length +
-        reviewEvidenceRows.length,
+      hydratedHotRows: aliasRows.length + identityRows.length + entityEvidenceRows.length,
       entities: snapshot.entities.length,
       relations: snapshot.relations.length,
       pendingReviews: snapshot.reviewQueue.length,
@@ -8288,7 +8267,9 @@ export class PersonalMemoryStore {
       relationEvidenceRows: 0,
       relationEvidenceTotalRows: relationEvidenceCountRows.reduce(
         (total, row) => total + Number(row.evidence_total || 0), 0),
-      reviewEvidenceRows: reviewEvidenceRows.length,
+      reviewEvidenceRows: 0,
+      reviewEvidenceTotalRows: reviewEvidenceCountRows.reduce(
+        (total, row) => total + Number(row.evidence_total || 0), 0),
       lastLoadedAt: new Date().toISOString()
     }
     return snapshot

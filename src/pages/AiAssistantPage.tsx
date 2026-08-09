@@ -13221,10 +13221,10 @@ function AiAssistantPage() {
                 ? ` 本次启动已从权威数据库加载 ${dashboard.graphReviewStorage.recoveredEntities || 0} 个实体、${dashboard.graphReviewStorage.recoveredRelations || 0} 条关系和 ${dashboard.graphReviewStorage.recoveredPendingReviews || 0} 个待处理候选。`
                 : ' 图谱跨存储提交点一致。'}
               {dashboard.graphStateStorage?.hydration?.lastLoadedAt
-                ? ` 本次权威图谱使用固定 ${Number(dashboard.graphStateStorage.hydration.queryCount || 0)} 次批量查询加载，耗时 ${Number(dashboard.graphStateStorage.hydration.durationMs || 0).toLocaleString()} 毫秒（${dashboard.graphStateStorage.hydration.performanceStatus === 'critical' ? '较慢' : dashboard.graphStateStorage.hydration.performanceStatus === 'attention' ? '需关注' : '正常'}），共水合 ${Number(dashboard.graphStateStorage.hydration.hydratedHotRows || 0).toLocaleString()} 条有界身份、账号与原文热集；查询次数不会随实体、关系或候选数量增长。`
+                ? ` 本次权威图谱使用固定 ${Number(dashboard.graphStateStorage.hydration.queryCount || 0)} 次批量查询加载，耗时 ${Number(dashboard.graphStateStorage.hydration.durationMs || 0).toLocaleString()} 毫秒（${dashboard.graphStateStorage.hydration.performanceStatus === 'critical' ? '较慢' : dashboard.graphStateStorage.hydration.performanceStatus === 'attention' ? '需关注' : '正常'}），共水合 ${Number(dashboard.graphStateStorage.hydration.hydratedHotRows || 0).toLocaleString()} 条有界身份与账号热集；关系和候选只加载原文总数，查询次数不会随实体、关系或候选数量增长。`
                 : ''}
               {dashboard.graphStateStorage?.hydration?.entityEvidencePolicy === 'direct_identity_and_active_merge_chain'
-                ? ' 实体内存消息键只保留直接身份依据及有效合并链，关系正文也不再随全部边常驻内存；人物侧栏、路径、共同实体和修改预览会从 SQLCipher 精确加载所见关系原文，事实与事件继续走各自权威档案。'
+                ? ' 实体内存消息键只保留直接身份依据及有效合并链，关系和待审候选正文都不再随全部工作集常驻内存；人物侧栏、路径、共同实体、候选目录和修改预览会从 SQLCipher 精确加载所见原文，事实与事件继续走各自权威档案。'
                 : ''}
             </small>}
             {blockedIdentityReviewReturn && <div className="assistant-review-note">
@@ -15848,14 +15848,15 @@ function AiAssistantPage() {
             </div>}
             {memoryDiagnostics.graphRelationEvidenceHotset?.version && <div className="assistant-recovery-audit healthy">
               <header><Database size={15} /><span><b>图谱关系原文分层</b>
-                <small>SQLCipher 保存完整关系原文；常驻内存只保留每条关系最新热窗口，纠正、合并和撤销前按需补全受影响关系。</small>
+                <small>SQLCipher 保存完整关系原文；启动不常驻关系正文，人物侧栏和图查询只加载所见预览，纠正、合并和撤销前按需补全受影响关系。</small>
               </span></header>
               <div className="assistant-recovery-current">
                 <span>权威原文 <b>{Number(memoryDiagnostics.graphRelationEvidenceHotset.authoritativeEvidenceRows || 0).toLocaleString()}</b></span>
                 <span>内存热窗口 <b>{Number(memoryDiagnostics.graphRelationEvidenceHotset.inMemoryEvidenceRows || 0).toLocaleString()}</b></span>
                 <span>按需加载 <b>{Number(memoryDiagnostics.graphRelationEvidenceHotset.deferredEvidenceRows || 0).toLocaleString()}</b></span>
                 <span>已分层关系 <b>{Number(memoryDiagnostics.graphRelationEvidenceHotset.relationsWithDeferredEvidence || 0).toLocaleString()}</b></span>
-                <span>单关系上限 <b>{Number(memoryDiagnostics.graphRelationEvidenceHotset.hotLimitPerRelation || 100)}</b></span>
+                <span>启动单关系正文 <b>{Number(memoryDiagnostics.graphRelationEvidenceHotset.startupHotLimitPerRelation ?? 0)}</b></span>
+                <span>按需预览上限 <b>{Number(memoryDiagnostics.graphRelationEvidenceHotset.onDemandPreviewLimit ?? 8)}</b></span>
               </div>
             </div>}
             {memoryDiagnostics.graphEntityEvidenceHotset?.version && <div className="assistant-recovery-audit healthy">
