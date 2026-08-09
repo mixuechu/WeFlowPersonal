@@ -808,9 +808,9 @@
 .assistant-citation-evidence { display: flex !important; align-items: flex-start; justify-content: space-between; gap: 8px; }
 .assistant-citation-evidence span { flex: 1; }
 .assistant-open-evidence-archive { margin-top: 8px; padding: 5px 8px; border: 1px solid #cfd9d1; border-radius: 7px; color: #3f6555; background: #f7faf8; font-size: 9px; cursor: pointer; }
-.assistant-evidence-archive-modal { width: min(900px, calc(100vw - 48px)); max-height: calc(100vh - 48px); grid-template-rows: auto auto auto minmax(0, 1fr) auto; }
+.assistant-evidence-archive-modal { width: min(900px, calc(100vw - 48px)); max-height: calc(100vh - 48px); overflow: hidden; grid-template-rows: auto auto auto minmax(0, 1fr) auto; }
 .assistant-evidence-archive-status { padding: 9px 11px; border-radius: 9px; color: #53645a; background: #eef4f0; font-size: 10px; }
-.assistant-evidence-archive-filters { display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); gap: 8px; padding: 10px; border: 1px solid #e2e8e3; border-radius: 10px; background: rgba(248,250,248,.82); }
+.assistant-evidence-archive-filters { max-height: min(280px, 38vh); overflow-y: auto; overscroll-behavior: contain; display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); gap: 8px; padding: 10px; border: 1px solid #e2e8e3; border-radius: 10px; background: rgba(248,250,248,.82); }
 .assistant-evidence-archive-filters label { display: grid; gap: 4px; color: #69736c; font-size: 9px; }
 .assistant-evidence-archive-filters input,
 .assistant-evidence-archive-filters select { width: 100%; min-width: 0; padding: 7px 8px; border: 1px solid #d8dfda; border-radius: 7px; color: #354139; background: #fff; font: inherit; font-size: 10px; }
@@ -824,7 +824,8 @@
   .assistant-evidence-archive-filters { grid-template-columns: 1fr 1fr; }
 }
 @media (max-width: 520px) {
-  .assistant-evidence-archive-filters { grid-template-columns: 1fr; }
+  .assistant-evidence-archive-modal { width: calc(100vw - 24px); max-height: calc(100vh - 24px); padding: 16px; gap: 10px; }
+  .assistant-evidence-archive-filters { max-height: min(240px, 34vh); grid-template-columns: 1fr; }
 }
 .assistant-claim-editor { display: grid; grid-template-columns: 2fr 1fr 1fr; gap: 7px; margin: 9px 0; }
 .assistant-claim-editor input { min-width: 0; padding: 7px 9px; border: 1px solid #dcd9d0; border-radius: 8px; background: #fff; font-size: 10px; }

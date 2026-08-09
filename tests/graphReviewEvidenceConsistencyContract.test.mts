@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url'
 const root = dirname(dirname(fileURLToPath(import.meta.url)))
 const store = readFileSync(join(root, 'electron/services/personalMemoryStore.ts'), 'utf8')
 const assistantPage = readFileSync(join(root, 'src/pages/AiAssistantPage.tsx'), 'utf8')
+const assistantStyles = readFileSync(join(root, 'src/pages/AiAssistantPage.scss'), 'utf8')
 
 test('graph review directory and archive share one SQLCipher evidence authority', () => {
   assert.match(store, /private normalizeGraphReviewEvidence\(payload: any\)/)
@@ -61,4 +62,15 @@ test('graph review evidence archive filters before authoritative pagination', ()
   assert.match(assistantPage, /'graph_review', review\.id/)
   assert.match(assistantPage, /筛选原文档案/)
   assert.match(assistantPage, /memoryEvidenceArchive\.documentType !== 'graph_review'/)
+})
+
+test('complete evidence archive keeps filters and evidence usable in short narrow windows', () => {
+  assert.match(assistantStyles,
+    /\.assistant-evidence-archive-modal\s*\{[^}]*max-height:[^;}]*100vh[^}]*overflow:\s*hidden/)
+  assert.match(assistantStyles,
+    /\.assistant-evidence-archive-filters\s*\{[^}]*max-height:[^}]*38vh[^}]*overflow-y:\s*auto/)
+  assert.match(assistantStyles,
+    /@media \(max-width: 520px\)[\s\S]*?\.assistant-evidence-archive-modal\s*\{[^}]*100vw - 24px[^}]*100vh - 24px/)
+  assert.match(assistantStyles,
+    /@media \(max-width: 520px\)[\s\S]*?\.assistant-evidence-archive-filters\s*\{[^}]*34vh[^}]*grid-template-columns:\s*1fr/)
 })
