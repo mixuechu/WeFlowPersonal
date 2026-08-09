@@ -4,7 +4,10 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { dirname, join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { createHash, randomBytes } from 'node:crypto'
-import { PersonalMemoryStore } from '../electron/services/personalMemoryStore.ts'
+import {
+  PersonalMemoryStore,
+  RESOURCE_CONTENT_CHAR_LIMIT
+} from '../electron/services/personalMemoryStore.ts'
 import {
   LOCAL_EMBEDDING_MODEL,
   LOCAL_EMBEDDING_MANIFEST,
@@ -22611,7 +22614,12 @@ test('resource content replacement and append roll back authority when search in
   ), /forced resource content search failure/)
   assert.deepEqual(readResource(), {
     content: '最初正文',
-    metadata: { sourceId: 'documents', extractionStage: 'initial' }
+    metadata: {
+      sourceId: 'documents', extractionStage: 'initial',
+      contentStorageLimitChars: RESOURCE_CONTENT_CHAR_LIMIT,
+      contentStorageOriginalChars: 4,
+      contentStorageTruncated: false
+    }
   })
   assert.equal(store.getMemorySearchRevision(), initialSearchRevision)
   assert.equal(store.getResourceArchiveRevision(), initialResourceRevision)
@@ -22624,7 +22632,12 @@ test('resource content replacement and append roll back authority when search in
   ), /forced resource content search failure/)
   assert.deepEqual(readResource(), {
     content: '最初正文',
-    metadata: { sourceId: 'documents', extractionStage: 'initial' }
+    metadata: {
+      sourceId: 'documents', extractionStage: 'initial',
+      contentStorageLimitChars: RESOURCE_CONTENT_CHAR_LIMIT,
+      contentStorageOriginalChars: 4,
+      contentStorageTruncated: false
+    }
   })
   assert.equal(store.getMemorySearchRevision(), initialSearchRevision)
   assert.equal(store.getResourceArchiveRevision(), initialResourceRevision)
@@ -22643,7 +22656,12 @@ test('resource content replacement and append roll back authority when search in
   )
   assert.deepEqual(readResource(), {
     content: '替换成功正文\n追加成功正文',
-    metadata: { sourceId: 'documents', extractionStage: 'append' }
+    metadata: {
+      sourceId: 'documents', extractionStage: 'append',
+      contentStorageLimitChars: RESOURCE_CONTENT_CHAR_LIMIT,
+      contentStorageOriginalChars: 13,
+      contentStorageTruncated: false
+    }
   })
   assert.equal(
     store.searchText('追加成功正文')[0]?.id,
@@ -22652,6 +22670,45 @@ test('resource content replacement and append roll back authority when search in
   assert.equal(store.getDocumentEvidencePage(
     'resource', 'atomic-resource-content'
   ).total, 1)
+}))
+
+test('resource content budget is authoritative, visible and stable across append and replacement', () => withStore(store => {
+  const database = (store as any).db
+  const originalContent = '甲'.repeat(RESOURCE_CONTENT_CHAR_LIMIT + 12)
+  store.upsertResources([{
+    id: 'bounded-resource-content',
+    resourceType: 'file',
+    title: '超长扫描文件',
+    content: originalContent,
+    metadata: { attachmentFormat: '.pdf-ocr' },
+    evidence: []
+  }])
+  const read = () => {
+    const row = database.prepare(`
+      SELECT content,metadata_json FROM memory_resources WHERE id='bounded-resource-content'
+    `).get()
+    return { content: row.content, metadata: JSON.parse(row.metadata_json) }
+  }
+  const initial = read()
+  assert.equal(initial.content.length, RESOURCE_CONTENT_CHAR_LIMIT)
+  assert.equal(initial.metadata.contentStorageLimitChars, RESOURCE_CONTENT_CHAR_LIMIT)
+  assert.equal(initial.metadata.contentStorageOriginalChars, RESOURCE_CONTENT_CHAR_LIMIT + 12)
+  assert.equal(initial.metadata.contentStorageTruncated, true)
+  assert.equal(store.searchText('乙').length, 0)
+
+  store.appendResourceContent('bounded-resource-content', '乙'.repeat(10), {})
+  const appended = read()
+  assert.equal(appended.content, initial.content)
+  assert.equal(appended.metadata.contentStorageOriginalChars, RESOURCE_CONTENT_CHAR_LIMIT + 23)
+  assert.equal(appended.metadata.contentStorageTruncated, true)
+  assert.equal(store.searchText('乙').length, 0)
+
+  store.replaceResourceContent('bounded-resource-content', '短正文', {})
+  const replaced = read()
+  assert.equal(replaced.content, '短正文')
+  assert.equal(replaced.metadata.contentStorageOriginalChars, 3)
+  assert.equal(replaced.metadata.contentStorageTruncated, false)
+  assert.equal(store.searchText('短正文')[0]?.id, 'resource:bounded-resource-content')
 }))
 
 test('message resources remain idempotent, searchable and traceable to original evidence', () => withStore(store => {

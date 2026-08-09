@@ -12767,6 +12767,14 @@ function AiAssistantPage() {
                   扫描 PDF：已 OCR {resource.metadata.attachmentPdfOcrPages || 0}
                   {resource.metadata.attachmentPdfTotalPages ? ` / ${resource.metadata.attachmentPdfTotalPages}` : ''} 页
                   {resource.metadata.attachmentPdfOcrTruncated ? ' · 其余页面将在后续增强中处理' : ''}
+                  {resource.metadata.attachmentPdfOcrStorageTruncated
+                    ? ` · 正文预算已满，本批第 ${resource.metadata.attachmentPdfOcrUnindexedFromPage || '?'} 页起可能未完整索引`
+                    : ''}
+                </small>}
+                {resource.metadata?.contentStorageTruncated && <small className="assistant-diagnostics-error">
+                  正文原始约 {Number(resource.metadata.contentStorageOriginalChars || 0).toLocaleString()} 字符，
+                  本机按 {Number(resource.metadata.contentStorageLimitChars || 80_000).toLocaleString()} 字符安全预算保存并检索；
+                  超出部分未被模型读取。
                 </small>}
                 {resource.metadata?.attachmentStructure?.kind === 'spreadsheet' && <div className="assistant-evidence-stack">
                   <small>

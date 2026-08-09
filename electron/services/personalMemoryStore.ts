@@ -40,6 +40,28 @@ type MemoryChangeOrigin = {
   id?: string
   sourceKind?: 'wechat' | 'documents' | 'calendar' | 'mail' | 'local' | 'system'
 }
+export const RESOURCE_CONTENT_CHAR_LIMIT = 80_000
+
+const applyResourceContentBudget = (
+  value: unknown,
+  metadata: Record<string, any>,
+  originalChars?: number
+): { content: string; metadata: Record<string, any> } => {
+  const raw = String(value || '').trim()
+  const measuredOriginalChars = Math.max(
+    raw.length,
+    Number.isFinite(originalChars) ? Math.max(0, Number(originalChars)) : raw.length
+  )
+  return {
+    content: raw.slice(0, RESOURCE_CONTENT_CHAR_LIMIT),
+    metadata: {
+      ...metadata,
+      contentStorageLimitChars: RESOURCE_CONTENT_CHAR_LIMIT,
+      contentStorageOriginalChars: measuredOriginalChars,
+      contentStorageTruncated: measuredOriginalChars > RESOURCE_CONTENT_CHAR_LIMIT
+    }
+  }
+}
 const TASK_EVIDENCE_FINGERPRINT_VERSION = 3
 const TASK_OWNERSHIP_CALIBRATION_RECOMMENDED_SAMPLES = 30
 
@@ -11197,7 +11219,7 @@ export class PersonalMemoryStore {
         const resourceId = String(resource.id)
         if (this.db.prepare('SELECT 1 FROM resource_suppressions WHERE resource_id=?').get(resourceId)) continue
         const now = String(resource.updatedAt || new Date().toISOString())
-        const metadata = resource.metadata && typeof resource.metadata === 'object'
+        let metadata = resource.metadata && typeof resource.metadata === 'object'
           ? { ...resource.metadata }
           : {}
         const existing = this.db.prepare('SELECT metadata_json FROM memory_resources WHERE id=?').get(resourceId) as any
@@ -11226,16 +11248,18 @@ export class PersonalMemoryStore {
             }
           }
         }
+        const budgetedContent = applyResourceContentBudget(resource.content, metadata)
+        metadata = budgetedContent.metadata
         upsert.run(
           resourceId, String(resource.resourceType || 'resource'),
           String(resource.title || '未命名资源'), String(resource.url || ''),
           String(resource.fileName || ''), String(resource.fileExt || ''),
-          String(resource.content || ''), JSON.stringify(metadata),
+          budgetedContent.content, JSON.stringify(metadata),
           String(resource.createdAt || now), now
         )
         const documentId = `resource:${resourceId}`
         const searchText = [
-          resource.title, resource.content, resource.url, resource.fileName, resource.fileExt,
+          resource.title, budgetedContent.content, resource.url, resource.fileName, resource.fileExt,
           metadata.sessionName, metadata.senderName, metadata.appMsgKind
         ].filter(Boolean).join('；')
         this.upsertSearchDocument(documentId, 'resource', resourceId, String(resource.title || '未命名资源'),
@@ -11921,7 +11945,9 @@ export class PersonalMemoryStore {
       let metadata: any = {}
       try { metadata = JSON.parse(row.metadata_json || '{}') } catch {}
       metadata = { ...metadata, ...metadataPatch }
-      const nextContent = String(content || '').trim().slice(0, 80_000)
+      const budgeted = applyResourceContentBudget(content, metadata)
+      metadata = budgeted.metadata
+      const nextContent = budgeted.content
       const now = new Date().toISOString()
       database.prepare('UPDATE memory_resources SET content=?,metadata_json=?,updated_at=? WHERE id=?')
         .run(nextContent, JSON.stringify(metadata), now, resourceId)
@@ -11960,9 +11986,20 @@ export class PersonalMemoryStore {
       ).get(resourceId)) return null
       let metadata: any = {}
       try { metadata = JSON.parse(row.metadata_json || '{}') } catch {}
+      const storedOriginalChars = Number(metadata.contentStorageOriginalChars || 0)
       metadata = { ...metadata, ...metadataPatch }
-      const content = [String(row.content || '').trim(), String(text || '').trim()]
-        .filter(Boolean).join('\n').slice(0, 80_000)
+      const previousContent = String(row.content || '').trim()
+      const appendedText = String(text || '').trim()
+      const combined = [previousContent, appendedText].filter(Boolean).join('\n')
+      const previousOriginalChars = Math.max(
+        previousContent.length,
+        storedOriginalChars
+      )
+      const combinedOriginalChars = previousOriginalChars +
+        (previousContent && appendedText ? 1 : 0) + appendedText.length
+      const budgeted = applyResourceContentBudget(combined, metadata, combinedOriginalChars)
+      metadata = budgeted.metadata
+      const content = budgeted.content
       const now = new Date().toISOString()
       database.prepare('UPDATE memory_resources SET content=?,metadata_json=?,updated_at=? WHERE id=?')
         .run(content, JSON.stringify(metadata), now, resourceId)

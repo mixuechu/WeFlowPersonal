@@ -14,7 +14,7 @@ import JSZip from 'jszip'
 import { ConfigService } from './config'
 import { httpService } from './httpService'
 import { showSystemNotification } from './systemNotificationService'
-import { personalMemoryStore } from './personalMemoryStore'
+import { personalMemoryStore, RESOURCE_CONTENT_CHAR_LIMIT } from './personalMemoryStore'
 import { localEmbeddingService } from './localEmbeddingService'
 import { presentMemorySearchResults } from './memorySearchResultPolicy'
 import {
@@ -2297,15 +2297,22 @@ export class AiAssistantService {
       const startPage = Math.max(2, Number(resource.metadata?.attachmentPdfOcrNextPage || 2))
       const scanned = await extractScannedPdfText(filePath, startPage)
       const retryable = scanned.status === 'failed' || scanned.status === 'dependency_missing'
+      const appendedText = scanned.success ? redact(scanned.text).trim() : ''
+      const projectedChars = String(resource.content || '').trim().length +
+        (String(resource.content || '').trim() && appendedText ? 1 : 0) + appendedText.length
+      const storageTruncated = Boolean(resource.metadata?.contentStorageTruncated) ||
+        projectedChars > RESOURCE_CONTENT_CHAR_LIMIT
       personalMemoryStore.appendResourceContent(
         resource.id,
-        scanned.success ? redact(scanned.text) : '',
+        appendedText,
         {
           attachmentPdfOcrStatus: scanned.status,
           attachmentPdfOcrPages: Number(resource.metadata?.attachmentPdfOcrPages || 0) + scanned.processedPages,
           attachmentPdfTotalPages: scanned.totalPages || resource.metadata?.attachmentPdfTotalPages || 0,
-          attachmentPdfOcrTruncated: retryable ? true : scanned.truncated,
-          attachmentPdfOcrNextPage: retryable ? startPage : scanned.nextPage
+          attachmentPdfOcrTruncated: storageTruncated ? false : retryable ? true : scanned.truncated,
+          attachmentPdfOcrNextPage: retryable ? startPage : scanned.nextPage,
+          attachmentPdfOcrStorageTruncated: storageTruncated,
+          attachmentPdfOcrUnindexedFromPage: storageTruncated ? startPage : 0
         },
         this.wechatResourceMaintenanceOrigin(runId, resource.id, 'pdf-ocr')
       )
