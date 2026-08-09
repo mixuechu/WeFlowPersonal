@@ -4646,7 +4646,8 @@ export class AiAssistantService {
         persistedRelations: this.state.graph.lastSqlCommitId ? 0 : this.state.graph.relations.length,
         persistedPendingReviews: this.state.graph.lastSqlCommitId ? 0
           : this.state.graph.reviewQueue.filter(review => review.status === 'pending').length,
-        recovery: 'mandatory_sqlcipher_hydration_on_start'
+        recovery: 'mandatory_sqlcipher_hydration_on_start',
+        hydration: personalMemoryStore.getGraphSnapshotHydrationStats()
       },
       graphRevision,
       graphReviewRevision,

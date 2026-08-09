@@ -535,6 +535,21 @@ export class PersonalMemoryStore {
     cleared: 0,
     triggerRepairedThisStart: false
   }
+  private graphSnapshotHydration = {
+    version: 'graph-snapshot-batch-v1',
+    strategy: 'fixed_eight_queries',
+    queryCount: 0,
+    durationMs: 0,
+    entities: 0,
+    relations: 0,
+    pendingReviews: 0,
+    aliasRows: 0,
+    identityRows: 0,
+    entityEvidenceKeys: 0,
+    relationEvidenceRows: 0,
+    reviewEvidenceRows: 0,
+    lastLoadedAt: ''
+  }
 
   private mergeStructuredEvidenceQuality(
     itemKind: 'claim' | 'relation' | 'event',
@@ -8071,75 +8086,147 @@ export class PersonalMemoryStore {
 
   loadGraphSnapshot(): MemoryGraph {
     if (!this.db) return { entities: [], relations: [], reviewQueue: [] }
+    const startedAt = Date.now()
+    let queryCount = 0
     const entityRows = this.db.prepare(`
       SELECT * FROM entities WHERE deleted_at IS NULL ORDER BY id
     `).all() as any[]
-    const aliases = this.db.prepare(`
-      SELECT value FROM aliases WHERE entity_id=? ORDER BY id
-    `)
-    const identities = this.db.prepare(`
-      SELECT platform,account_id,display_name,confidence
-      FROM identities WHERE entity_id=? ORDER BY platform,account_id
-    `)
-    const entityEvidence = this.db.prepare(`
-      WITH RECURSIVE entity_scope(entity_id) AS (
-        SELECT ?
+    queryCount += 1
+    const aliasRows = this.db.prepare(`
+      SELECT alias.entity_id,alias.value FROM aliases alias
+      JOIN entities entity ON entity.id=alias.entity_id
+      WHERE entity.deleted_at IS NULL ORDER BY alias.entity_id,alias.id
+    `).all() as Array<{ entity_id: string; value: string }>
+    queryCount += 1
+    const identityRows = this.db.prepare(`
+      SELECT identity.entity_id,identity.platform,identity.account_id,
+        identity.display_name,identity.confidence
+      FROM identities identity JOIN entities entity ON entity.id=identity.entity_id
+      WHERE entity.deleted_at IS NULL
+      ORDER BY identity.entity_id,identity.platform,identity.account_id
+    `).all() as any[]
+    queryCount += 1
+    const entityEvidenceRows = this.db.prepare(`
+      WITH RECURSIVE entity_scope(root_id,entity_id) AS (
+        SELECT id,id FROM entities WHERE deleted_at IS NULL
         UNION
-        SELECT history.source_entity_id
+        SELECT scope.root_id,history.source_entity_id
         FROM merge_history history
         JOIN entity_scope scope ON history.target_entity_id=scope.entity_id
         WHERE history.reverted_at IS NULL
+      ), carriers(root_id,message_id,timestamp) AS (
+        SELECT scope.root_id,evidence.message_id,evidence.timestamp
+        FROM entity_scope scope JOIN entity_evidence evidence
+          ON evidence.entity_id=scope.entity_id
+        UNION ALL
+        SELECT scope.root_id,evidence.message_id,evidence.timestamp
+        FROM entity_scope scope JOIN relations relation ON relation.subject_id=scope.entity_id
+        JOIN evidence ON evidence.relation_id=relation.id
+        UNION ALL
+        SELECT scope.root_id,evidence.message_id,evidence.timestamp
+        FROM entity_scope scope JOIN relations relation ON relation.object_id=scope.entity_id
+        JOIN evidence ON evidence.relation_id=relation.id
+        UNION ALL
+        SELECT scope.root_id,evidence.message_id,evidence.timestamp
+        FROM entity_scope scope JOIN claims claim ON claim.subject_id=scope.entity_id
+        JOIN evidence ON evidence.claim_id=claim.id
+        UNION ALL
+        SELECT scope.root_id,evidence.message_id,evidence.timestamp
+        FROM entity_scope scope JOIN claims claim ON claim.object_entity_id=scope.entity_id
+        JOIN evidence ON evidence.claim_id=claim.id
+        UNION ALL
+        SELECT scope.root_id,evidence.message_id,evidence.timestamp
+        FROM entity_scope scope JOIN event_participants participant
+          ON participant.entity_id=scope.entity_id
+        JOIN evidence ON evidence.event_id=participant.event_id
+      ), grouped AS (
+        SELECT root_id,message_id,MAX(timestamp) AS timestamp
+        FROM carriers WHERE message_id!='' GROUP BY root_id,message_id
+      ), ranked AS (
+        SELECT root_id,message_id,
+          ROW_NUMBER() OVER (
+            PARTITION BY root_id ORDER BY timestamp DESC,message_id
+          ) AS evidence_rank
+        FROM grouped
       )
-      SELECT message_id FROM (
-        SELECT ee.message_id,ee.timestamp
-        FROM entity_evidence ee WHERE ee.entity_id IN (SELECT entity_id FROM entity_scope)
-        UNION
-        SELECT evidence.message_id,evidence.timestamp
-        FROM evidence
-        LEFT JOIN relations ON relations.id=evidence.relation_id
-        LEFT JOIN claims ON claims.id=evidence.claim_id
-        LEFT JOIN event_participants ON event_participants.event_id=evidence.event_id
-        WHERE relations.subject_id=? OR relations.object_id=?
-          OR claims.subject_id=? OR claims.object_entity_id=?
-          OR event_participants.entity_id=?
+      SELECT root_id,message_id FROM ranked WHERE evidence_rank<=500
+      ORDER BY root_id,evidence_rank
+    `).all() as Array<{ root_id: string; message_id: string }>
+    queryCount += 1
+    const relationRows = this.db.prepare(`SELECT * FROM relations ORDER BY id`).all() as any[]
+    queryCount += 1
+    const relationEvidenceRows = this.db.prepare(`
+      WITH ranked AS (
+        SELECT relation_id,source_id,message_id,session_id,timestamp,sender,excerpt,
+          COUNT(*) OVER(PARTITION BY relation_id) AS evidence_total,
+          ROW_NUMBER() OVER(
+            PARTITION BY relation_id
+            ORDER BY timestamp DESC,source_id DESC,session_id DESC,message_id DESC
+          ) AS evidence_rank
+        FROM evidence WHERE relation_id IS NOT NULL
       )
-      GROUP BY message_id
-      ORDER BY MAX(timestamp) DESC,message_id
-      LIMIT 500
-    `)
-    const evidence = this.db.prepare(`
-      SELECT source_id,message_id,session_id,timestamp,sender,excerpt,evidence_total
-      FROM (
-        SELECT source_id,message_id,session_id,timestamp,sender,excerpt,
-          COUNT(*) OVER() AS evidence_total
-        FROM evidence WHERE relation_id=?
-        ORDER BY timestamp DESC,source_id DESC,session_id DESC,message_id DESC
-        LIMIT ?
-      )
-      ORDER BY timestamp,source_id,session_id,message_id
-    `)
-    const relationRows = this.db.prepare(`
-      SELECT * FROM relations ORDER BY id
-    `).all() as any[]
+      SELECT * FROM ranked WHERE evidence_rank<=?
+      ORDER BY relation_id,timestamp,source_id,session_id,message_id
+    `).all(GRAPH_RELATION_EVIDENCE_HOT_LIMIT) as any[]
+    queryCount += 1
     const reviewRows = this.db.prepare(`
-      SELECT payload_json FROM review_queue WHERE status='pending'
+      SELECT id,payload_json FROM review_queue WHERE status='pending'
       ORDER BY created_at,id
-    `).all() as Array<{ payload_json: string }>
-    const reviewEvidence = this.db.prepare(`
-      SELECT source_id,session_id,message_id,timestamp,sender,excerpt,evidence_json,
-        COUNT(*) OVER() AS evidence_total
-      FROM graph_review_evidence WHERE review_id=?
-      ORDER BY timestamp DESC,source_id,session_id,message_id DESC,evidence_key
-      LIMIT 20
-    `)
-    return {
+    `).all() as Array<{ id: string; payload_json: string }>
+    queryCount += 1
+    const reviewEvidenceRows = this.db.prepare(`
+      WITH ranked AS (
+        SELECT review_id,source_id,session_id,message_id,timestamp,sender,excerpt,evidence_json,
+          COUNT(*) OVER(PARTITION BY review_id) AS evidence_total,
+          ROW_NUMBER() OVER(
+            PARTITION BY review_id
+            ORDER BY timestamp DESC,source_id,session_id,message_id DESC,evidence_key
+          ) AS evidence_rank
+        FROM graph_review_evidence
+        WHERE review_id IN (SELECT id FROM review_queue WHERE status='pending')
+      )
+      SELECT * FROM ranked WHERE evidence_rank<=20
+      ORDER BY review_id,evidence_rank
+    `).all() as any[]
+    queryCount += 1
+    const aliasesByEntity = new Map<string, string[]>()
+    for (const row of aliasRows) {
+      const values = aliasesByEntity.get(row.entity_id) || []
+      values.push(row.value)
+      aliasesByEntity.set(row.entity_id, values)
+    }
+    const identitiesByEntity = new Map<string, any[]>()
+    for (const row of identityRows) {
+      const values = identitiesByEntity.get(String(row.entity_id)) || []
+      values.push(row)
+      identitiesByEntity.set(String(row.entity_id), values)
+    }
+    const evidenceKeysByEntity = new Map<string, string[]>()
+    for (const row of entityEvidenceRows) {
+      const values = evidenceKeysByEntity.get(String(row.root_id)) || []
+      values.push(String(row.message_id))
+      evidenceKeysByEntity.set(String(row.root_id), values)
+    }
+    const evidenceByRelation = new Map<string, any[]>()
+    for (const row of relationEvidenceRows) {
+      const values = evidenceByRelation.get(String(row.relation_id)) || []
+      values.push(row)
+      evidenceByRelation.set(String(row.relation_id), values)
+    }
+    const evidenceByReview = new Map<string, any[]>()
+    for (const row of reviewEvidenceRows) {
+      const values = evidenceByReview.get(String(row.review_id)) || []
+      values.push(row)
+      evidenceByReview.set(String(row.review_id), values)
+    }
+    const snapshot = {
       entities: entityRows.map(row => {
-        const entityIdentities = identities.all(row.id) as any[]
+        const entityIdentities = identitiesByEntity.get(String(row.id)) || []
         return {
           id: row.id,
           type: row.type,
           canonicalName: row.canonical_name,
-          aliases: (aliases.all(row.id) as Array<{ value: string }>).map(item => item.value),
+          aliases: aliasesByEntity.get(String(row.id)) || [],
           accountIds: entityIdentities
             .filter(item => item.platform === 'wechat')
             .map(item => item.account_id),
@@ -8155,9 +8242,7 @@ export class PersonalMemoryStore {
           summaryStatus: row.summary_status,
           trustStatus: row.trust_status,
           confidence: Number(row.confidence || 0),
-          evidenceMessageIds: (entityEvidence.all(
-            row.id, row.id, row.id, row.id, row.id, row.id
-          ) as Array<{ message_id: string }>).map(item => item.message_id),
+          evidenceMessageIds: evidenceKeysByEntity.get(String(row.id)) || [],
           createdAt: row.created_at,
           updatedAt: row.updated_at,
           identityVersion: Number(row.identity_version || 1),
@@ -8165,7 +8250,7 @@ export class PersonalMemoryStore {
         }
       }),
       relations: relationRows.map(row => {
-        const hotEvidence = evidence.all(row.id, GRAPH_RELATION_EVIDENCE_HOT_LIMIT) as any[]
+        const hotEvidence = evidenceByRelation.get(String(row.id)) || []
         return {
           id: row.id,
           subjectId: row.subject_id,
@@ -8194,7 +8279,7 @@ export class PersonalMemoryStore {
         try {
           const review = JSON.parse(String(row.payload_json || '{}'))
           if (!review?.id || review?.status !== 'pending') return []
-          const rows = reviewEvidence.all(review.id) as any[]
+          const rows = evidenceByReview.get(String(review.id)) || []
           return [{
             ...review,
             evidence: rows.map(item => {
@@ -8217,6 +8302,26 @@ export class PersonalMemoryStore {
         }
       })
     }
+    this.graphSnapshotHydration = {
+      version: 'graph-snapshot-batch-v1',
+      strategy: 'fixed_eight_queries',
+      queryCount,
+      durationMs: Date.now() - startedAt,
+      entities: snapshot.entities.length,
+      relations: snapshot.relations.length,
+      pendingReviews: snapshot.reviewQueue.length,
+      aliasRows: aliasRows.length,
+      identityRows: identityRows.length,
+      entityEvidenceKeys: entityEvidenceRows.length,
+      relationEvidenceRows: relationEvidenceRows.length,
+      reviewEvidenceRows: reviewEvidenceRows.length,
+      lastLoadedAt: new Date().toISOString()
+    }
+    return snapshot
+  }
+
+  getGraphSnapshotHydrationStats(): any {
+    return { ...this.graphSnapshotHydration }
   }
 
   getRelationEvidenceCounts(): Map<string, number> {

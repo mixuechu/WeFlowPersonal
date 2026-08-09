@@ -13220,6 +13220,9 @@ function AiAssistantPage() {
               {dashboard.graphReviewStorage.recoveredFromSqlThisStart
                 ? ` 本次启动已从权威数据库加载 ${dashboard.graphReviewStorage.recoveredEntities || 0} 个实体、${dashboard.graphReviewStorage.recoveredRelations || 0} 条关系和 ${dashboard.graphReviewStorage.recoveredPendingReviews || 0} 个待处理候选。`
                 : ' 图谱跨存储提交点一致。'}
+              {dashboard.graphStateStorage?.hydration?.lastLoadedAt
+                ? ` 本次权威图谱使用固定 ${Number(dashboard.graphStateStorage.hydration.queryCount || 0)} 次批量查询加载，耗时 ${Number(dashboard.graphStateStorage.hydration.durationMs || 0).toLocaleString()} 毫秒；查询次数不会随实体、关系或候选数量增长。`
+                : ''}
             </small>}
             {blockedIdentityReviewReturn && <div className="assistant-review-note">
               <b>正在先处理{
