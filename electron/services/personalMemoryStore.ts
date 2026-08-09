@@ -8829,6 +8829,7 @@ export class PersonalMemoryStore {
     kind?: string
     query?: string
     reviewId?: string
+    entityId?: string
     calibrationOutcome?: '' | 'exact' | 'corrected' | 'rejected'
     offset?: number
     limit?: number
@@ -8853,6 +8854,7 @@ export class PersonalMemoryStore {
     const kind = String(options?.kind || '').trim()
     const query = String(options?.query || '').trim().toLocaleLowerCase('zh-CN')
     const reviewId = String(options?.reviewId || '').trim()
+    const entityId = String(options?.entityId || '').trim()
     const calibrationOutcome = ['exact', 'corrected', 'rejected'].includes(String(options?.calibrationOutcome || ''))
       ? String(options?.calibrationOutcome)
       : ''
@@ -8887,10 +8889,12 @@ export class PersonalMemoryStore {
       FROM review_queue
       WHERE (?='' OR kind=?)
         AND (?='' OR id=?)
+        AND (?='' OR CASE WHEN json_valid(payload_json)=1
+          THEN COALESCE(json_extract(payload_json,'$.entityId'),'') ELSE '' END=?)
         AND (?='' OR instr(lower(title || char(0) || detail || char(0) || payload_json), ?) > 0)
         ${calibrationOutcomeSql}
     `
-    const scopeParams = [kind, kind, reviewId, reviewId, query, query]
+    const scopeParams = [kind, kind, reviewId, reviewId, entityId, entityId, query, query]
     const countRows = this.db.prepare(`
       SELECT CASE WHEN status='pending' THEN 'pending' ELSE 'resolved' END AS bucket, COUNT(*) AS count
       ${scopeSql}

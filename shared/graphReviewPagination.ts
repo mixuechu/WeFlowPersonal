@@ -6,6 +6,7 @@ export type GraphReviewPageOptions = {
   kind?: string
   query?: string
   reviewId?: string
+  entityId?: string
   calibrationOutcome?: ReviewCalibrationOutcomeFilter
   offset?: number
   limit?: number
@@ -36,16 +37,18 @@ function reviewMatchesQuery(review: any, query: string): boolean {
 
 export function filterGraphReviews(
   reviews: any[],
-  options: Pick<GraphReviewPageOptions, 'status' | 'kind' | 'query' | 'reviewId' | 'calibrationOutcome'>
+  options: Pick<GraphReviewPageOptions, 'status' | 'kind' | 'query' | 'reviewId' | 'entityId' | 'calibrationOutcome'>
 ): any[] {
   const query = String(options.query || '').trim().toLocaleLowerCase('zh-CN')
   const reviewId = String(options.reviewId || '').trim()
+  const entityId = String(options.entityId || '').trim()
   return [...(reviews || [])]
     .filter(review =>
       (options.status === 'all' ||
         (options.status === 'pending' ? review.status === 'pending' : review.status !== 'pending')) &&
       (!options.kind || review.kind === options.kind) &&
       (!reviewId || review.id === reviewId) &&
+      (!entityId || String(review.entityId || '') === entityId) &&
       (!options.calibrationOutcome || graphReviewCalibrationOutcome(review) === options.calibrationOutcome) &&
       reviewMatchesQuery(review, query))
     .sort((left, right) => {
@@ -67,9 +70,11 @@ export function paginateGraphReviews(reviews: any[], options: GraphReviewPageOpt
   const limit = Math.max(1, Math.min(100, Math.floor(Number(options.limit) || 40)))
   const query = String(options.query || '').trim().toLocaleLowerCase('zh-CN')
   const reviewId = String(options.reviewId || '').trim()
+  const entityId = String(options.entityId || '').trim()
   const matchingScope = (reviews || []).filter(review =>
     (!options.kind || review.kind === options.kind) &&
     (!reviewId || review.id === reviewId) &&
+    (!entityId || String(review.entityId || '') === entityId) &&
     (!options.calibrationOutcome || graphReviewCalibrationOutcome(review) === options.calibrationOutcome) &&
     reviewMatchesQuery(review, query))
   const counts = {

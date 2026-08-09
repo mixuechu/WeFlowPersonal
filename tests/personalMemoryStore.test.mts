@@ -1097,6 +1097,31 @@ test('review ledger filters pending and resolved decisions by kind, evidence and
   )
 })
 
+test('review ledger binds exact entity identity before pagination instead of searching payload text', () => {
+  withStore(store => {
+    store.syncGraph({
+      entities: [],
+      relations: [],
+      reviewQueue: [{
+        id: 'entity-review-a', kind: 'entity_creation', title: '同名候选', detail: '',
+        confidence: 0.8, status: 'pending', createdAt: '2026-08-09T00:00:00.000Z',
+        entityId: 'entity-a', entityCanonicalName: '王伟'
+      }, {
+        id: 'entity-review-b', kind: 'entity_creation', title: '同名候选',
+        detail: '原文偶然包含 entity-a，但此候选属于另一个稳定身份',
+        confidence: 0.8, status: 'pending', createdAt: '2026-08-09T00:01:00.000Z',
+        entityId: 'entity-b', entityCanonicalName: '王伟'
+      }]
+    } as any)
+    const page = store.listReviewLedgerPage({
+      status: 'pending', kind: 'entity_creation', entityId: 'entity-a'
+    })
+    assert.equal(page.total, 1)
+    assert.deepEqual(page.items.map(item => item.id), ['entity-review-a'])
+    assert.deepEqual(page.counts, { pending: 1, resolved: 0, all: 1 })
+  })
+})
+
 test('review ledger pagination keeps stable boundaries and scoped counts', () => {
   const reviews = Array.from({ length: 95 }, (_, index) => ({
     id: `review-${String(index).padStart(3, '0')}`,
