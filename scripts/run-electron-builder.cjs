@@ -1,4 +1,5 @@
 const { spawnSync } = require('child_process')
+const { existsSync } = require('fs')
 const { join } = require('path')
 
 const nativeModule = 'better-sqlite3-multiple-ciphers'
@@ -31,6 +32,21 @@ const verify = restore.status === 0 && !restore.error && !restore.signal
       stdio: 'inherit'
     })
   : null
+const packagedAddon = process.platform === 'darwin'
+  ? [
+      join(process.cwd(), 'release', 'mac-arm64'),
+      join(process.cwd(), 'release', 'mac'),
+      join(process.cwd(), 'release', 'mac-x64')
+    ].map(directory => join(directory, 'WeFlow.app', 'Contents', 'Resources',
+      'app.asar.unpacked', 'node_modules', nativeModule))
+      .find(existsSync) || ''
+  : ''
+const verifyPackaged = result.status === 0 && restore.status === 0 && packagedAddon
+  ? spawnSync(require('electron'), [
+      join(__dirname, 'verify-packaged-sqlcipher.cjs'),
+      packagedAddon
+    ], { env, stdio: 'inherit' })
+  : null
 
 if (result.error) throw result.error
 if (result.signal) console.error(`electron-builder 被信号 ${result.signal} 终止`)
@@ -38,10 +54,14 @@ if (restore.error) throw restore.error
 if (restore.signal) console.error(`Node SQLCipher ABI 恢复被信号 ${restore.signal} 终止`)
 if (verify?.error) throw verify.error
 if (verify?.signal) console.error(`Node SQLCipher ABI 校验被信号 ${verify.signal} 终止`)
+if (verifyPackaged?.error) throw verifyPackaged.error
+if (verifyPackaged?.signal) console.error(`安装包 SQLCipher ABI 校验被信号 ${verifyPackaged.signal} 终止`)
 
 const builderSucceeded = !result.signal && result.status === 0
 const restoreSucceeded = !restore.signal && restore.status === 0
 const verifySucceeded = Boolean(verify) && !verify.signal && verify.status === 0
-if (!builderSucceeded || !restoreSucceeded || !verifySucceeded) {
+const packagedVerifySucceeded = process.platform !== 'darwin'
+  || Boolean(verifyPackaged) && !verifyPackaged.signal && verifyPackaged.status === 0
+if (!builderSucceeded || !restoreSucceeded || !verifySucceeded || !packagedVerifySucceeded) {
   process.exit(1)
 }

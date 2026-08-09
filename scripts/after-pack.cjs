@@ -80,6 +80,10 @@ module.exports = async function afterPack(context) {
   ], { stdio: 'inherit' })
   if (!existsSync(encryptedSqliteSource)) throw new Error('SQLCipher 原生模块重编译后不存在')
   mkdirSync(join(encryptedSqliteTarget, '..'), { recursive: true })
+  // electron-builder may populate app.asar.unpacked with a hard link to the
+  // workspace addon. Break that link before copying the Electron ABI build;
+  // otherwise the post-build Node ABI restore mutates the packaged addon too.
+  rmSync(encryptedSqliteTarget, { force: true })
   copyFileSync(encryptedSqliteSource, encryptedSqliteTarget)
   chmodSync(encryptedSqliteTarget, 0o755)
   console.log(`[afterPack] Rebuilt SQLCipher addon for Electron ${electronVersion}/${targetArch}`)

@@ -1867,7 +1867,6 @@ export class PersonalMemoryStore {
     this.ensureStructuredEvidenceRevisionLedger()
     this.ensureGeneralEvidenceRevisionLedger()
     this.ensureResourceArchiveRevisionTriggers()
-    this.repairStructuredSearchIndex()
     this.backfillMergeHistoryNames()
     this.compactIdentityMergeSnapshots()
     this.db.exec(`CREATE INDEX IF NOT EXISTS idx_memory_corrections_item
@@ -1903,6 +1902,11 @@ export class PersonalMemoryStore {
     this.repairDuplicateEvents()
     this.ensureMemoryChangeLog()
     this.repairLegacyResourceContentBudgets()
+    // Run the derived-search reconciliation only after every startup migration
+    // that can change authoritative memory. Otherwise a later trust downgrade
+    // (for example a legacy non-self claim becoming a candidate) immediately
+    // makes the freshly repaired search metadata stale again.
+    this.repairStructuredSearchIndex()
     this.db.prepare(`
       INSERT INTO schema_meta(key, value, updated_at) VALUES('schema_version', '1', ?)
       ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at
@@ -5712,7 +5716,12 @@ export class PersonalMemoryStore {
         )
     `).all() as any[]
     const checkedAt = new Date().toISOString()
-    const metadataRepairs: Array<{ id: string; metadataJson: string; updatedAt: string }> = []
+    const metadataRepairs: Array<{
+      id: string
+      kind: 'claim' | 'relation' | 'event'
+      metadataJson: string
+      updatedAt: string
+    }> = []
     const structuredDocumentRepairs: Array<{
       id: string
       type: string
@@ -5782,6 +5791,7 @@ export class PersonalMemoryStore {
         })
       } else if (metadataChanged) metadataRepairs.push({
         id: String(document.document_id),
+        kind: type as 'claim' | 'relation' | 'event',
         metadataJson: JSON.stringify(next),
         updatedAt: String(updatedAt || checkedAt)
       })
@@ -5952,6 +5962,11 @@ export class PersonalMemoryStore {
       + missingEvents.length + missingResources.length + missingEntities.length
     const authoritativeMismatchCount = metadataRepairs.length
       + structuredDocumentRepairs.length + resourceRepairs.length + entityRepairs.length
+    const metadataMismatchKinds = {
+      claims: metadataRepairs.filter(item => item.kind === 'claim').length,
+      relations: metadataRepairs.filter(item => item.kind === 'relation').length,
+      events: metadataRepairs.filter(item => item.kind === 'event').length
+    }
     if (options.dryRun) {
       return {
         liveCheckedAt: checkedAt,
@@ -5960,6 +5975,7 @@ export class PersonalMemoryStore {
         currentMissingDocuments: missingDocumentCount,
         currentFtsPayloadMismatches: ftsMismatches.length,
         currentMetadataMismatches: authoritativeMismatchCount,
+        currentMetadataMismatchesByKind: metadataMismatchKinds,
         currentAnnOrphans: orphanAnn,
         currentOrphanPayloadRows: orphanFts + orphanEvidence
       }
@@ -6114,6 +6130,7 @@ export class PersonalMemoryStore {
         orphanAnnRowsRemovedThisStart: orphanAnn,
         ftsPayloadsRebuiltThisStart: ftsMismatches.length,
         metadataDocumentsRepairedThisStart: metadataRepairs.length,
+        metadataDocumentsRepairedByKindThisStart: metadataMismatchKinds,
         structuredDocumentsRepairedThisStart: structuredDocumentRepairs.length,
         resourceDocumentsRepairedThisStart: resourceRepairs.length,
         entityDocumentsRepairedThisStart: entityRepairs.length,
@@ -7051,6 +7068,11 @@ export class PersonalMemoryStore {
           orphanAnnRowsRemovedThisStart: Number(audit.orphanAnnRowsRemovedThisStart || 0),
           ftsPayloadsRebuiltThisStart: Number(audit.ftsPayloadsRebuiltThisStart || 0),
           metadataDocumentsRepairedThisStart: Number(audit.metadataDocumentsRepairedThisStart || 0),
+          metadataDocumentsRepairedByKindThisStart: {
+            claims: Number(audit.metadataDocumentsRepairedByKindThisStart?.claims || 0),
+            relations: Number(audit.metadataDocumentsRepairedByKindThisStart?.relations || 0),
+            events: Number(audit.metadataDocumentsRepairedByKindThisStart?.events || 0)
+          },
           structuredDocumentsRepairedThisStart: Number(audit.structuredDocumentsRepairedThisStart || 0),
           resourceDocumentsRepairedThisStart: Number(audit.resourceDocumentsRepairedThisStart || 0),
           entityDocumentsRepairedThisStart: Number(audit.entityDocumentsRepairedThisStart || 0),
@@ -7082,6 +7104,7 @@ export class PersonalMemoryStore {
           orphanAnnRowsRemovedThisStart: 0,
           ftsPayloadsRebuiltThisStart: 0,
           metadataDocumentsRepairedThisStart: 0,
+          metadataDocumentsRepairedByKindThisStart: { claims: 0, relations: 0, events: 0 },
           structuredDocumentsRepairedThisStart: 0,
           resourceDocumentsRepairedThisStart: 0,
           entityDocumentsRepairedThisStart: 0,
@@ -7388,6 +7411,11 @@ export class PersonalMemoryStore {
       backupPairIntegrity,
       backups
     }
+  }
+
+  reconcileStructuredSearchAfterAuthorityCommit(): void {
+    if (!this.db) throw new Error('个人记忆数据库尚未初始化')
+    this.repairStructuredSearchIndex()
   }
 
   repairRuntimeSearchDerivedState(tasks: any[]): any {
@@ -8741,7 +8769,7 @@ export class PersonalMemoryStore {
             objectId: relation.objectId,
             predicate: relation.predicate,
             status: relation.status,
-            directionExplanation
+            directionExplanation: directionExplanation || undefined
           }, now)
       }
       const upsertReview = this.db.prepare(`

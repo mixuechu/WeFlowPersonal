@@ -25,10 +25,20 @@ test('electron packaging restores and verifies the workspace Node SQLCipher ABI'
   )
   assert.match(builder, /spawnSync\(npmCommand, \['rebuild', nativeModule\]/)
   assert.match(builder, /verify-workspace-sqlcipher\.cjs/)
+  assert.match(builder, /verify-packaged-sqlcipher\.cjs/)
+  assert.match(builder, /packagedVerifySucceeded/)
   assert.match(builder, /afterPack may already have rewritten it/)
   assert.match(verifier, /require\('better-sqlite3-multiple-ciphers'\)/)
   assert.match(verifier, /value:\s*database\.prepare/)
   assert.match(verifier, /workspace-ok/)
+})
+
+test('mac packaging separates the packaged Electron addon from the restored Node addon', () => {
+  const afterPack = readFileSync(join(repositoryRoot, 'scripts/after-pack.cjs'), 'utf8')
+  const breakLinkAt = afterPack.indexOf('rmSync(encryptedSqliteTarget, { force: true })')
+  const copyAt = afterPack.indexOf('copyFileSync(encryptedSqliteSource, encryptedSqliteTarget)')
+  assert.ok(breakLinkAt >= 0)
+  assert.ok(copyAt > breakLinkAt)
 })
 
 test('mac signing skips sealed Electron data resources but never native code', () => {

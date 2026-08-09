@@ -5786,6 +5786,10 @@ test('structured search index reconciliation removes ghosts and rebuilds missing
       assert.equal(diagnostics.structuredSearchIndex.ftsPayloadsRebuiltThisStart, 1)
       assert.equal(diagnostics.structuredSearchIndex.ftsPayloadsRebuiltTotal, 1)
       assert.equal(diagnostics.structuredSearchIndex.metadataDocumentsRepairedThisStart, 1)
+      assert.deepEqual(
+        diagnostics.structuredSearchIndex.metadataDocumentsRepairedByKindThisStart,
+        { claims: 1, relations: 0, events: 0 }
+      )
       assert.equal(diagnostics.structuredSearchIndex.metadataDocumentsRepairedTotal, 1)
       assert.equal(diagnostics.structuredSearchIndex.structuredDocumentsRepairedThisStart, 1)
       assert.equal(diagnostics.structuredSearchIndex.structuredDocumentsRepairedTotal, 1)
@@ -5890,6 +5894,107 @@ test('structured search index reconciliation removes ghosts and rebuilds missing
     first.close()
     rmSync(directory, { recursive: true, force: true })
   }
+})
+
+test('startup trust migrations finish before the final structured search reconciliation', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'weflow-search-startup-order-test-'))
+  const databasePath = join(directory, 'memory.sqlite')
+  const first = new PersonalMemoryStore()
+  try {
+    first.initialize(databasePath)
+    first.syncGraph({
+      entities: [{
+        id: 'startup-order-person',
+        type: 'person',
+        canonicalName: '启动顺序人物',
+        trustStatus: 'confirmed'
+      }],
+      relations: [],
+      reviewQueue: []
+    })
+    first.upsertClaims([{
+      id: 'startup-order-claim',
+      subjectId: 'startup-order-person',
+      predicate: '负责',
+      objectValue: '启动顺序验证',
+      confidence: 0.8,
+      status: 'candidate',
+      sourceNature: 'other_statement',
+      searchText: '启动顺序人物负责启动顺序验证',
+      evidence: [{
+        messageId: 'startup-order-message',
+        sessionId: 'startup-order-session',
+        timestamp: 1_700_002_099,
+        sender: '启动顺序发送者',
+        excerpt: '负责启动顺序验证'
+      }]
+    }])
+    ;(first as any).db.prepare(`
+      UPDATE claims SET status='confirmed' WHERE id='startup-order-claim'
+    `).run()
+    ;(first as any).db.prepare(`
+      UPDATE search_documents
+      SET metadata_json=json_set(metadata_json, '$.status', 'confirmed')
+      WHERE id='claim:startup-order-claim'
+    `).run()
+    first.close()
+
+    const reopened = new PersonalMemoryStore()
+    try {
+      reopened.initialize(databasePath)
+      const claim = (reopened as any).db.prepare(`
+        SELECT status FROM claims WHERE id='startup-order-claim'
+      `).get()
+      const document = (reopened as any).db.prepare(`
+        SELECT metadata_json FROM search_documents WHERE id='claim:startup-order-claim'
+      `).get()
+      assert.equal(claim.status, 'candidate')
+      assert.equal(JSON.parse(document.metadata_json).status, 'candidate')
+      assert.equal(reopened.getDiagnostics().structuredSearchIndexHealthy, true)
+    } finally {
+      reopened.close()
+    }
+  } finally {
+    first.close()
+    rmSync(directory, { recursive: true, force: true })
+  }
+})
+
+test('empty relation direction metadata remains normalized across repeated graph syncs', () => {
+  withStore(store => {
+    const graph = {
+      entities: [
+        { id: 'direction-a', type: 'person', canonicalName: '方向甲', trustStatus: 'confirmed' },
+        { id: 'direction-b', type: 'person', canonicalName: '方向乙', trustStatus: 'confirmed' }
+      ],
+      relations: [{
+        id: 'direction-empty-relation',
+        subjectId: 'direction-a',
+        predicate: '认识',
+        objectId: 'direction-b',
+        confidence: 0.8,
+        status: 'candidate',
+        directionExplanation: '',
+        evidence: []
+      }],
+      reviewQueue: []
+    }
+    store.syncGraph(graph as any)
+    store.syncGraph(graph as any)
+    const document = (store as any).db.prepare(`
+      SELECT metadata_json FROM search_documents WHERE id='relation:direction-empty-relation'
+    `).get()
+    assert.equal(
+      Object.prototype.hasOwnProperty.call(JSON.parse(document.metadata_json), 'directionExplanation'),
+      false
+    )
+    const diagnostics = store.getDiagnostics()
+    assert.equal(diagnostics.structuredSearchIndex.currentMetadataMismatches, 0)
+    assert.deepEqual(
+      diagnostics.structuredSearchIndex.currentMetadataMismatchesByKind,
+      { claims: 0, relations: 0, events: 0 }
+    )
+  })
 })
 
 test('task search keeps original message evidence', () => withStore(store => {

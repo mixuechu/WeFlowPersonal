@@ -1082,6 +1082,11 @@ export class AiAssistantService {
     this.reconcileTaskReviewFeedbackOnStartup()
     this.removeSuppressedRelationsFromState()
     this.saveState(true)
+    // Loading the encrypted graph and tasks can legitimately update SQLCipher
+    // authority after its own schema migrations have finished. Reconcile the
+    // derived search layer once more before any scheduler or query can observe
+    // the startup state.
+    personalMemoryStore.reconcileStructuredSearchAfterAuthorityCommit()
     this.lastSchedulerTickAt = Date.now()
     this.scheduler = setInterval(() => void this.schedulerTick(), 60_000)
     this.scheduler.unref()

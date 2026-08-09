@@ -13,11 +13,16 @@ test('assistant startup reaches schedulers only after a strict authority commit'
   const initializeSource = source.slice(initializeStart, shutdownStart)
   const finalRecovery = initializeSource.indexOf('this.removeSuppressedRelationsFromState()')
   const strictCommit = initializeSource.indexOf('this.saveState(true)', finalRecovery)
-  const schedulerStart = initializeSource.indexOf('this.scheduler = setInterval', strictCommit)
+  const searchReconciliation = initializeSource.indexOf(
+    'personalMemoryStore.reconcileStructuredSearchAfterAuthorityCommit()',
+    strictCommit
+  )
+  const schedulerStart = initializeSource.indexOf('this.scheduler = setInterval', searchReconciliation)
   assert.ok(initializeStart >= 0)
   assert.ok(finalRecovery >= 0)
   assert.ok(strictCommit > finalRecovery)
-  assert.ok(schedulerStart > strictCommit)
+  assert.ok(searchReconciliation > strictCommit)
+  assert.ok(schedulerStart > searchReconciliation)
 })
 
 test('assistant service delegates persistence ordering to the executable commit policy', () => {
