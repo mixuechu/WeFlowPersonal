@@ -1,4 +1,5 @@
 import crypto from 'crypto'
+import { buildEntityCandidateEvidence } from './entityCandidateEvidencePolicy.ts'
 
 export type EntityTrustStatus = 'candidate' | 'confirmed' | 'legacy_unverified' | 'rejected'
 
@@ -26,13 +27,7 @@ export function buildEntityCreationReview(input: {
   createdAt: string
 }): any | null {
   if (!input.entity?.id || isTrustedEntity(input.entity)) return null
-  const evidence = (input.evidenceMessages || []).map((message, index) => ({
-    messageId: String(input.evidenceKeys[index] || ''),
-    sessionId: String(message?.sessionId || ''),
-    timestamp: Number(message?.timestamp || 0),
-    sender: compact(message?.sender || message?.senderIdentity?.displayName || '', 100),
-    excerpt: compact(message?.content, 500)
-  })).filter(item => item.messageId && item.excerpt)
+  const evidence = buildEntityCandidateEvidence(input.evidenceMessages, input.evidenceKeys)
   if (!evidence.length) return null
   return {
     id: `entity_${crypto.createHash('sha256')

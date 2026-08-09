@@ -1,4 +1,5 @@
 import crypto from 'crypto'
+import { buildEntityCandidateEvidence } from './entityCandidateEvidencePolicy.ts'
 
 function compact(value: unknown, limit: number): string {
   return String(value || '').replace(/\s+/g, ' ').trim().slice(0, limit)
@@ -20,13 +21,7 @@ export function buildEntityAliasCandidates(input: {
     input.entity?.canonicalName,
     ...(input.entity?.aliases || [])
   ].map(normalize).filter(Boolean))
-  const evidence = (input.evidenceMessages || []).map((message, index) => ({
-    messageId: String(input.evidenceKeys[index] || ''),
-    sessionId: String(message?.sessionId || ''),
-    timestamp: Number(message?.timestamp || 0),
-    sender: compact(message?.sender || message?.senderIdentity?.displayName || '', 100),
-    excerpt: compact(message?.content, 500)
-  })).filter(item => item.messageId && item.excerpt)
+  const evidence = buildEntityCandidateEvidence(input.evidenceMessages, input.evidenceKeys)
   if (!evidence.length) return []
   return [...new Set((input.aliases || []).map(alias => compact(alias, 100)).filter(Boolean))]
     .filter(alias => !currentNames.has(normalize(alias)))

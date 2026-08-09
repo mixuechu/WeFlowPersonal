@@ -1,12 +1,10 @@
 import crypto from 'crypto'
+import {
+  buildEntityCandidateEvidence,
+  type EntityCandidateEvidence
+} from './entityCandidateEvidencePolicy.ts'
 
-export type EntitySummaryEvidence = {
-  messageId: string
-  sessionId: string
-  timestamp: number
-  sender: string
-  excerpt: string
-}
+export type EntitySummaryEvidence = EntityCandidateEvidence
 
 function compact(value: unknown, limit: number): string {
   return String(value || '').replace(/\s+/g, ' ').trim().slice(0, limit)
@@ -26,13 +24,7 @@ export function buildEntitySummaryCandidate(input: {
   const summaryText = compact(input.summary, 800)
   const previousSummary = compact(input.previousSummary, 800)
   if (!summaryText || summaryText === previousSummary) return null
-  const evidence: EntitySummaryEvidence[] = (input.evidenceMessages || []).map((message, index) => ({
-    messageId: String(input.evidenceKeys[index] || ''),
-    sessionId: String(message?.sessionId || ''),
-    timestamp: Number(message?.timestamp || 0),
-    sender: compact(message?.sender || message?.senderIdentity?.displayName || '', 100),
-    excerpt: compact(message?.content, 500)
-  })).filter(item => item.messageId && item.excerpt)
+  const evidence = buildEntityCandidateEvidence(input.evidenceMessages, input.evidenceKeys)
   if (!evidence.length) return null
   const id = `summary_${crypto.createHash('sha256')
     .update(`${input.entityId}|${summaryText}|${evidence.map(item => item.messageId).join('|')}`)

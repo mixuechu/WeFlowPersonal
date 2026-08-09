@@ -6736,6 +6736,8 @@ test('unverified aliases remain evidence-backed review candidates', () => {
   assert.equal(candidates[0].kind, 'entity_alias')
   assert.equal(candidates[0].aliasText, '三哥')
   assert.equal(candidates[0].status, 'pending')
+  assert.equal(candidates[0].evidence[0].sourceId, 'wechat')
+  assert.equal(candidates[0].evidence[0].sender, '李四')
   assert.match(candidates[0].evidence[0].excerpt, /三哥/)
   assert.equal(canApplyEntityAliasCandidate(candidates[0], entity), true)
   assert.equal(canApplyEntityAliasCandidate(candidates[0], {
@@ -6778,6 +6780,8 @@ test('unanchored entities remain evidence-backed candidates outside trusted sear
   assert.ok(review)
   assert.equal(review.kind, 'entity_creation')
   assert.equal(review.status, 'pending')
+  assert.equal(review.evidence[0].sourceId, 'wechat')
+  assert.equal(review.evidence[0].sender, '李四')
   assert.equal(review.evidence[0].messageId, 'wechat:session-a:message-a')
   assert.equal(canConfirmEntityCreation(review, entity), true)
   assert.equal(canConfirmEntityCreation(review, { ...entity, canonicalName: '名字已变化' }), false)
@@ -6786,6 +6790,13 @@ test('unanchored entities remain evidence-backed candidates outside trusted sear
   assert.equal(inferLegacyEntityTrustStatus({ accountIds: [], externalIdentities: [] }), 'legacy_unverified')
 
   store.syncGraph({ entities: [entity], relations: [], reviewQueue: [review] })
+  const reviewEvidence = store.listGraphReviewEvidencePage({
+    reviewId: review.id,
+    revision: store.getGraphReviewRevision()
+  })
+  assert.equal(reviewEvidence.total, 1)
+  assert.equal(reviewEvidence.items[0].sourceId, 'wechat')
+  assert.equal(reviewEvidence.items[0].sender, '李四')
   assert.equal(store.searchText('候选火星人物').length, 0)
   store.syncGraph({
     entities: [{ ...entity, trustStatus: 'confirmed' }],
@@ -6939,6 +6950,8 @@ test('entity summaries remain evidence-backed candidates until non-stale confirm
   assert.equal(candidate.status, 'pending')
   assert.equal(candidate.previousSummary, '旧摘要')
   assert.equal(candidate.summaryText, '张三正在负责新产品演示。')
+  assert.equal(candidate.evidence[0].sourceId, 'wechat')
+  assert.equal(candidate.evidence[0].sender, '张三')
   assert.equal(candidate.evidence[0].messageId, 'wechat:session-a:message-a')
   assert.match(candidate.evidence[0].excerpt, /我来负责/)
   assert.equal(canApplyEntitySummaryCandidate(candidate, {
