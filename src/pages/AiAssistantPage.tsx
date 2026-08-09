@@ -90,6 +90,15 @@ import {
   shouldReturnToBlockedIdentitySource,
   type BlockedIdentityReturnTarget
 } from '../utils/blockedEntityReviewNavigation'
+import {
+  appRunDurationLabel,
+  appRunElapsedLabel,
+  appRunExitReasonLabel,
+  appRunIncidentLabel,
+  appRunShutdownStatusLabel,
+  appRunShutdownStepLabel,
+  appRunStageLabel
+} from '../utils/appRecoveryPresentation'
 import './AiAssistantPage.scss'
 
 const MEMORY_GROWTH_KIND_LABELS: Record<string, string> = {
@@ -16673,8 +16682,10 @@ function AiAssistantPage() {
               <div className="assistant-recovery-current">
                 <span>本次启动 <b>{memoryDiagnostics.appRecovery.current?.startedAt
                   ? new Date(memoryDiagnostics.appRecovery.current.startedAt).toLocaleString('zh-CN') : '未记录'}</b></span>
-                <span>阶段 <b>{memoryDiagnostics.appRecovery.current?.stage || '未知'}</b></span>
-                <span>上次退出 <b>{memoryDiagnostics.appRecovery.previous?.cleanExit ? '正常' : memoryDiagnostics.appRecovery.previous?.exitReason || '无记录'}</b></span>
+                <span>阶段 <b>{appRunStageLabel(memoryDiagnostics.appRecovery.current?.stage)}</b></span>
+                <span>上次退出 <b>{memoryDiagnostics.appRecovery.previous
+                  ? appRunExitReasonLabel(memoryDiagnostics.appRecovery.previous.exitReason, memoryDiagnostics.appRecovery.previous.cleanExit)
+                  : '无记录'}</b></span>
                 {memoryDiagnostics.stateStorage && <span>状态文件 <b>{memoryDiagnostics.stateStorage.source === 'backup'
                   ? '已从良好副本恢复'
                   : memoryDiagnostics.stateStorage.source === 'primary' ? '主副本正常' : '首次初始化'}</b></span>}
@@ -16682,14 +16693,29 @@ function AiAssistantPage() {
               {memoryDiagnostics.stateStorage?.recovered && <p className="assistant-diagnostics-error">
                 检测到主状态文件不可用，已验证最近良好副本并{memoryDiagnostics.stateStorage.repairedPrimary ? '自动修复主文件' : '以内存恢复运行'}。
               </p>}
+              {(memoryDiagnostics.appRecovery.current?.incidents || []).map((incident: any, index: number) =>
+                <p className="assistant-diagnostics-error" key={`current-incident-${index}`}>
+                  本次运行 · {new Date(incident.at).toLocaleTimeString('zh-CN')} · {appRunIncidentLabel(incident.kind)} · {incident.detail}
+                </p>)}
               <details>
                 <summary>最近运行记录（{memoryDiagnostics.appRecovery.history?.length || 0}）</summary>
                 <div>
                   {(memoryDiagnostics.appRecovery.history || []).map((run: any) => <article key={run.id}>
-                    <span><b>{new Date(run.startedAt).toLocaleString('zh-CN')}</b><small>{run.version} · {run.cleanExit ? '正常结束' : '异常中断'} · {run.exitReason || '未知原因'}</small></span>
-                    <span>{run.incidents?.length || 0} 个异常事件</span>
+                    <span><b>{new Date(run.startedAt).toLocaleString('zh-CN')}</b><small>{run.version} · {appRunExitReasonLabel(run.exitReason, run.cleanExit)} · {appRunElapsedLabel(run.startedAt, run.endedAt || run.lastHeartbeatAt)}</small></span>
+                    <span>{run.incidents?.length || 0} 个异常事件 · {run.shutdownSteps?.length || 0} 个退出步骤</span>
+                    <small className="assistant-recovery-run-timing">
+                      界面就绪 {run.readyAt ? new Date(run.readyAt).toLocaleTimeString('zh-CN') : '未记录'}
+                      {' · '}服务就绪 {run.servicesReadyAt ? new Date(run.servicesReadyAt).toLocaleTimeString('zh-CN') : '未记录'}
+                      {' · '}最后心跳 {new Date(run.lastHeartbeatAt).toLocaleTimeString('zh-CN')}
+                    </small>
+                    {(run.shutdownSteps || []).map((step: any, index: number) =>
+                      <p className={`assistant-recovery-step ${step.status}`} key={`${run.id}-step-${index}`}>
+                        退出步骤 · {appRunShutdownStepLabel(step.name)} · {appRunShutdownStatusLabel(step.status)}
+                        {step.durationMs == null ? '' : ` · ${appRunDurationLabel(step.durationMs)}`}
+                        {step.detail ? ` · ${step.detail}` : ''}
+                      </p>)}
                     {(run.incidents || []).map((incident: any, index: number) =>
-                      <p key={`${run.id}-${index}`}>{new Date(incident.at).toLocaleTimeString('zh-CN')} · {incident.kind} · {incident.detail}</p>)}
+                      <p key={`${run.id}-${index}`}>{new Date(incident.at).toLocaleTimeString('zh-CN')} · {appRunIncidentLabel(incident.kind)} · {incident.detail}</p>)}
                   </article>)}
                   {!memoryDiagnostics.appRecovery.history?.length && <em>首次记录，尚无历史会话。</em>}
                 </div>
