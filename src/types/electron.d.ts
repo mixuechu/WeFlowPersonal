@@ -2184,7 +2184,7 @@ export interface ElectronAPI {
       indexMemoryVectors: () => Promise<any>
       findGraphPath: (fromId: string, toId: string, maxDepth?: number, entityDirectoryRevision?: string) => Promise<any>
       findCommonNeighbors: (fromId: string, toId: string, entityDirectoryRevision?: string) => Promise<any>
-      getMemoryDiagnostics: () => Promise<any>
+      getMemoryDiagnostics: (options?: { forceIntegrityCheck?: boolean }) => Promise<any>
       repairMemorySearchIndexes: () => Promise<any>
       getIngestionRunPage: (options?: any) => Promise<{
         items: any[]

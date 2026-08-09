@@ -4823,7 +4823,10 @@ function registerIpcHandlers() {
   ipcMain.handle('ai-assistant:findCommonNeighbors', (
     _, fromId: string, toId: string, entityDirectoryRevision?: string
   ) => aiAssistantService.findCommonNeighbors(fromId, toId, entityDirectoryRevision))
-  ipcMain.handle('ai-assistant:getMemoryDiagnostics', () => aiAssistantService.getMemoryDiagnostics())
+  ipcMain.handle('ai-assistant:getMemoryDiagnostics', (_, options?: any) =>
+    aiAssistantService.getMemoryDiagnostics({
+      forceIntegrityCheck: options?.forceIntegrityCheck === true
+    }))
   ipcMain.handle('ai-assistant:repairMemorySearchIndexes', () =>
     aiAssistantService.repairMemorySearchIndexes())
   ipcMain.handle('ai-assistant:getIngestionRunPage', (_, options?: any) =>

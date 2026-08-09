@@ -552,6 +552,14 @@ export class PersonalMemoryStore {
     revoked: number
   } | null = null
   private humanReviewCalibrationCache: { revision: string; value: any } | null = null
+  private integrityCheckCache: {
+    integrity: string
+    foreignKeyViolations: number
+    checkedAt: string
+    expiresAtMs: number
+    durationMs: number
+    runsThisProcess: number
+  } | null = null
   private assistantModelAuditLinkRepair = {
     scanned: 0,
     cleared: 0,
@@ -732,6 +740,7 @@ export class PersonalMemoryStore {
   initialize(databasePath: string, encryptionKey?: Buffer | string): void {
     this.taskReviewFeedbackStatsCache = null
     this.humanReviewCalibrationCache = null
+    this.integrityCheckCache = null
     mkdirSync(dirname(databasePath), { recursive: true })
     try { chmodSync(dirname(databasePath), 0o700) } catch {}
     this.databasePath = databasePath
@@ -6920,13 +6929,43 @@ export class PersonalMemoryStore {
     this.db = null
     this.taskReviewFeedbackStatsCache = null
     this.humanReviewCalibrationCache = null
+    this.integrityCheckCache = null
   }
 
-  getDiagnostics(): any {
+  getDiagnostics(options: { forceIntegrityCheck?: boolean } = {}): any {
     if (!this.db || !this.databasePath) return { healthy: false, integrity: 'not_initialized' }
-    const integrityRows = this.db.prepare('PRAGMA integrity_check').all() as Array<{ integrity_check: string }>
-    const integrity = integrityRows.map(row => row.integrity_check).join('; ')
-    const foreignKeyViolations = (this.db.prepare('PRAGMA foreign_key_check').all() as any[]).length
+    const nowMs = Date.now()
+    const cachedIntegrity = !options.forceIntegrityCheck && this.integrityCheckCache &&
+      this.integrityCheckCache.expiresAtMs > nowMs
+    if (!cachedIntegrity) {
+      const startedAt = Date.now()
+      const integrityRows = this.db.prepare('PRAGMA integrity_check').all() as Array<{
+        integrity_check: string
+      }>
+      const previousRuns = Number(this.integrityCheckCache?.runsThisProcess || 0)
+      this.integrityCheckCache = {
+        integrity: integrityRows.map(row => row.integrity_check).join('; '),
+        foreignKeyViolations:
+          (this.db.prepare('PRAGMA foreign_key_check').all() as any[]).length,
+        checkedAt: new Date().toISOString(),
+        expiresAtMs: nowMs + 10 * 60 * 1_000,
+        durationMs: Math.max(0, Date.now() - startedAt),
+        runsThisProcess: previousRuns + 1
+      }
+    }
+    const integrity = String(this.integrityCheckCache?.integrity || 'not_checked')
+    const foreignKeyViolations = Number(this.integrityCheckCache?.foreignKeyViolations || 0)
+    const integrityAudit = {
+      version: 1,
+      policy: 'ten_minute_ui_cache_force_on_critical_operations',
+      checkedAt: String(this.integrityCheckCache?.checkedAt || ''),
+      expiresAt: this.integrityCheckCache
+        ? new Date(this.integrityCheckCache.expiresAtMs).toISOString() : '',
+      durationMs: Number(this.integrityCheckCache?.durationMs || 0),
+      runsThisProcess: Number(this.integrityCheckCache?.runsThisProcess || 0),
+      cachedThisCall: Boolean(cachedIntegrity),
+      forcedThisCall: options.forceIntegrityCheck === true
+    }
     const counts = this.db.prepare(`
       SELECT
         (SELECT COUNT(*) FROM entities WHERE deleted_at IS NULL) AS entities,
@@ -7393,6 +7432,7 @@ export class PersonalMemoryStore {
         && structuredEvidenceRevision.healthy
         && generalEvidenceRevision.healthy,
       integrity,
+      integrityAudit,
       foreignKeyViolations,
       referentialIntegrityHealthy,
       genericSearchEvidenceIdentityHealthy: genericSearchEvidenceIdentity.constraintsHealthy,
@@ -7476,7 +7516,7 @@ export class PersonalMemoryStore {
 
   repairRuntimeSearchDerivedState(tasks: any[]): any {
     if (!this.db) throw new Error('个人记忆数据库尚未初始化')
-    const before = this.getDiagnostics()
+    const before = this.getDiagnostics({ forceIntegrityCheck: true })
     // These tables and triggers are derived from authoritative memory, evidence, and task rows.
     // Rebuilding them never changes the underlying facts, relations, events, resources, or tasks.
     this.ensureEvidenceScopeIndexes()
@@ -7489,7 +7529,7 @@ export class PersonalMemoryStore {
     this.ensureGeneralEvidenceRevisionLedger()
     this.repairStructuredSearchIndex()
     this.syncTasks(Array.isArray(tasks) ? tasks : [], false, true)
-    const after = this.getDiagnostics()
+    const after = this.getDiagnostics({ forceIntegrityCheck: true })
     const beforeIndex = before.structuredSearchIndex || {}
     const afterIndex = after.structuredSearchIndex || {}
     const beforeTasks = before.taskSearchIndex || {}
@@ -7896,7 +7936,7 @@ export class PersonalMemoryStore {
     options: { deferRetention?: boolean } = {}
   ): any {
     if (!this.db || !this.databasePath) throw new Error('个人记忆数据库尚未初始化')
-    const diagnostics = this.getDiagnostics()
+    const diagnostics = this.getDiagnostics({ forceIntegrityCheck: true })
     if (!diagnostics.healthy) throw new Error(`数据库一致性检查失败：${diagnostics.integrity}`)
     const backupDirectory = join(dirname(this.databasePath), 'personal-memory-backups')
     mkdirSync(backupDirectory, { recursive: true })
@@ -8072,7 +8112,7 @@ export class PersonalMemoryStore {
       copyFileSync(allowed.path, temporary)
       renameSync(temporary, this.databasePath)
       this.initialize(this.databasePath)
-      const diagnostics = this.getDiagnostics()
+      const diagnostics = this.getDiagnostics({ forceIntegrityCheck: true })
       if (!diagnostics.healthy) throw new Error(`恢复后的数据库验证失败：${diagnostics.integrity}`)
       return { success: true, restoredFrom: allowed.path, safetyBackup: safetyBackup.path, diagnostics }
     } catch (error) {

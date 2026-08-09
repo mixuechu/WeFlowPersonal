@@ -22201,6 +22201,30 @@ test('forget entity transaction removes graph, memory, search, task audit and as
   assert.ok(store.searchText('保留组织').some(item => item.id === 'entity:org-keep'))
 }))
 
+test('routine diagnostics cache full integrity checks while critical calls force fresh checks', () =>
+  withStore(store => {
+    const first = store.getDiagnostics()
+    assert.equal(first.integrity, 'ok')
+    assert.equal(first.integrityAudit.cachedThisCall, false)
+    assert.equal(first.integrityAudit.forcedThisCall, false)
+    assert.equal(first.integrityAudit.runsThisProcess, 1)
+
+    const routineRefresh = store.getDiagnostics()
+    assert.equal(routineRefresh.integrityAudit.cachedThisCall, true)
+    assert.equal(routineRefresh.integrityAudit.runsThisProcess, 1)
+    assert.equal(routineRefresh.integrityAudit.checkedAt, first.integrityAudit.checkedAt)
+
+    const manualRefresh = store.getDiagnostics({ forceIntegrityCheck: true })
+    assert.equal(manualRefresh.integrityAudit.cachedThisCall, false)
+    assert.equal(manualRefresh.integrityAudit.forcedThisCall, true)
+    assert.equal(manualRefresh.integrityAudit.runsThisProcess, 2)
+
+    store.createBackup()
+    const afterBackup = store.getDiagnostics()
+    assert.equal(afterBackup.integrityAudit.cachedThisCall, true)
+    assert.equal(afterBackup.integrityAudit.runsThisProcess, 3)
+  }))
+
 test('task ownership feedback persists evidence-scoped decisions and suppression counts', () => withStore(store => {
   const recorded = store.recordTaskReviewDecision({
     evidenceFingerprint: 'evidence-task-1',

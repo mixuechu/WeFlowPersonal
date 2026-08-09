@@ -9756,6 +9756,9 @@ function AiAssistantPage() {
               <span><strong>个人记忆库{memoryDiagnostics.healthy ? '健康' : '需要检查'}</strong>
                 <small>{memoryDiagnostics.integrity === 'ok' ? 'SQLite 一致性检查通过' : memoryDiagnostics.integrity}
                   {' · '}{(Number(memoryDiagnostics.databaseBytes || 0) / 1024 / 1024).toFixed(1)} MB
+                  {memoryDiagnostics.integrityAudit?.checkedAt
+                    ? ` · 完整校验 ${new Date(memoryDiagnostics.integrityAudit.checkedAt).toLocaleString('zh-CN', { hour12: false })}${memoryDiagnostics.integrityAudit.cachedThisCall ? '（复用）' : ''}`
+                    : ''}
                   {' · '}{Number(memoryDiagnostics.backupRestoreAudit?.restorable || 0)} 个已验证可恢复快照
                   {Number(memoryDiagnostics.backupRestoreAudit?.invalid || 0) > 0
                     ? ` / ${Number(memoryDiagnostics.backupRestoreAudit.invalid)} 个配对快照验证失败`
@@ -17036,7 +17039,7 @@ function AiAssistantPage() {
                 </button>
               </div>}
             </div>
-            <footer><button onClick={() => void window.electronAPI.aiAssistant.getMemoryDiagnostics().then(setMemoryDiagnostics)}>刷新</button>
+            <footer><button onClick={() => void window.electronAPI.aiAssistant.getMemoryDiagnostics({ forceIntegrityCheck: true }).then(setMemoryDiagnostics)}>完整校验并刷新</button>
               <button className="primary" onClick={() => setShowDiagnostics(false)}>完成</button></footer>
           </div>
         </div>

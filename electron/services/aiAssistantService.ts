@@ -6344,13 +6344,15 @@ export class AiAssistantService {
     }
   }
 
-  async getMemoryDiagnostics(): Promise<any> {
+  async getMemoryDiagnostics(options: { forceIntegrityCheck?: boolean } = {}): Promise<any> {
     const ingestionTotals = personalMemoryStore.getIngestionArchiveSummary()
     const ingestionRates = {
       inputPerMillion: Math.max(0, Number(this.config.get('aiAssistantInputCostPerMillion') || 0)),
       outputPerMillion: Math.max(0, Number(this.config.get('aiAssistantOutputCostPerMillion') || 0))
     }
-    const databaseDiagnostics = personalMemoryStore.getDiagnostics()
+    const databaseDiagnostics = personalMemoryStore.getDiagnostics({
+      forceIntegrityCheck: options.forceIntegrityCheck === true
+    })
     const backupRestoreAudit = this.auditJointMemoryBackups(
       Array.isArray(databaseDiagnostics.backups) ? databaseDiagnostics.backups : []
     )
