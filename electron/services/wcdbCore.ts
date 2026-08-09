@@ -1982,6 +1982,34 @@ export class WcdbCore {
   }
 
   /**
+   * Prepare the worker for process exit without entering wcdb_shutdown().
+   *
+   * The WCDB bridge is read-only in this process and its native shutdown can
+   * become non-cancellable while joining SDK-owned threads. During application
+   * exit the OS will reclaim the worker and its handles, so first remove every
+   * JavaScript handle that could keep the detached worker alive. User-initiated
+   * disconnects still use close() and perform the full native shutdown.
+   */
+  prepareForProcessExit(): void {
+    this.monitorCallback = null
+    if (this.monitorReconnectTimer) {
+      clearTimeout(this.monitorReconnectTimer)
+      this.monitorReconnectTimer = null
+    }
+    if (this.monitorPipeClient) {
+      this.monitorPipeClient.destroy()
+      this.monitorPipeClient = null
+    }
+    this.stopPeriodicPurge()
+    this.stopLogPolling()
+    if (this.logFlushTimer) {
+      clearTimeout(this.logFlushTimer)
+      this.logFlushTimer = null
+    }
+    this.pendingLogLines = []
+  }
+
+  /**
    * 关闭服务（与 close 相同）
    */
   shutdown(): void {

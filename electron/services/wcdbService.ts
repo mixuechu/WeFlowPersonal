@@ -228,18 +228,32 @@ export class WcdbService {
   async shutdown(): Promise<{
     gracefulClose: boolean
     workerTerminated: boolean
+    workerDetached?: boolean
+    shutdownStrategy?: 'no_worker' | 'process_exit_detach' | 'forced_terminate'
     boundedFallback: boolean
     pendingBeforeClose?: number
     pendingTypes?: string[]
     oldestPendingMs?: number
   }> {
     if (this.shuttingDown) {
-      return { gracefulClose: false, workerTerminated: false, boundedFallback: true }
+      return {
+        gracefulClose: false,
+        workerTerminated: false,
+        workerDetached: false,
+        shutdownStrategy: 'forced_terminate',
+        boundedFallback: true
+      }
     }
     const worker = this.worker
     if (!worker) {
       this.shuttingDown = true
-      return { gracefulClose: true, workerTerminated: true, boundedFallback: false }
+      return {
+        gracefulClose: true,
+        workerTerminated: true,
+        workerDetached: false,
+        shutdownStrategy: 'no_worker',
+        boundedFallback: false
+      }
     }
     const settleWithin = async (promise: Promise<unknown>, timeoutMs: number): Promise<boolean> =>
       await new Promise(resolve => {
@@ -265,10 +279,11 @@ export class WcdbService {
         )
       })
 
-    // A native cloud report or shutdown can be non-cancellable. Give the ordered
-    // WCDB close a short grace period, then detach this read-only worker so app
-    // shutdown is never held hostage by native code that cannot observe an
-    // AbortSignal. Recovery diagnostics distinguish this from queue pressure.
+    // A native WCDB call can be non-cancellable. Queue a JS-only quiesce behind
+    // every accepted request and, once acknowledged, detach the read-only worker
+    // for process exit instead of entering wcdb_shutdown(), whose native thread
+    // join can itself hang. If an earlier native request is stuck, retain the
+    // bounded terminate fallback. Recovery diagnostics distinguish both paths.
     const pendingBeforeClose = this.pending.size
     const pendingSnapshot = [...this.pending.values()]
     const pendingTypes = [...new Set(pendingSnapshot.map(item => item.type))]
@@ -277,10 +292,12 @@ export class WcdbService {
     const oldestPendingMs = pendingSnapshot.length
       ? Math.max(0, Date.now() - Math.min(...pendingSnapshot.map(item => item.startedAt)))
       : 0
-    const closePromise = this.callWorker('close')
+    const closePromise = this.callWorker('prepareForProcessExit')
     this.shuttingDown = true
     const gracefulClose = await settleWithin(closePromise, 2_000)
-    const workerTerminated = await settleWithin(worker.terminate(), 1_500)
+    const workerTerminated = gracefulClose
+      ? false
+      : await settleWithin(worker.terminate(), 1_500)
     worker.unref()
     if (this.worker === worker) this.worker = null
     for (const pending of this.pending.values()) {
@@ -290,7 +307,9 @@ export class WcdbService {
     return {
       gracefulClose,
       workerTerminated,
-      boundedFallback: !gracefulClose || !workerTerminated,
+      workerDetached: gracefulClose,
+      shutdownStrategy: gracefulClose ? 'process_exit_detach' : 'forced_terminate',
+      boundedFallback: !gracefulClose,
       pendingBeforeClose,
       pendingTypes,
       oldestPendingMs

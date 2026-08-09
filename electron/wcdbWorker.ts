@@ -47,6 +47,10 @@ if (parentPort) {
                     core.close()
                     result = { success: true }
                     break
+                case 'prepareForProcessExit':
+                    core.prepareForProcessExit()
+                    result = { success: true, strategy: 'process_exit_detach' }
+                    break
                 case 'isConnected':
                     result = core.isConnected()
                     break

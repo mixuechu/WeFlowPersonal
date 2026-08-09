@@ -38,6 +38,52 @@ test('WCDB admission rejects the first over-capacity RPC but still accepts close
   assert.match(service.getQueueHealth().lastRejectedAt, /^\d{4}-\d{2}-\d{2}T/)
 })
 
+test('idle WCDB shutdown uses an acknowledged process-exit detach without native close', async () => {
+  const service = new WcdbService() as any
+  const sent: Array<{ id: number; type: string }> = []
+  let terminateCalls = 0
+  let unrefCalls = 0
+  service.worker = {
+    postMessage: (message: { id: number; type: string }) => {
+      sent.push(message)
+      queueMicrotask(() => {
+        const pending = service.pending.get(message.id)
+        service.pending.delete(message.id)
+        pending?.resolve({ success: true, strategy: 'process_exit_detach' })
+      })
+    },
+    terminate: async () => { terminateCalls += 1; return 0 },
+    unref: () => { unrefCalls += 1 }
+  }
+
+  const result = await service.shutdown()
+  assert.deepEqual(sent.map(item => item.type), ['prepareForProcessExit'])
+  assert.equal(terminateCalls, 0)
+  assert.equal(unrefCalls, 1)
+  assert.deepEqual(result, {
+    gracefulClose: true,
+    workerTerminated: false,
+    workerDetached: true,
+    shutdownStrategy: 'process_exit_detach',
+    boundedFallback: false,
+    pendingBeforeClose: 0,
+    pendingTypes: [],
+    oldestPendingMs: 0
+  })
+})
+
+test('WCDB process-exit preparation avoids the native shutdown call', () => {
+  const workerSource = readFileSync(join(root, 'electron/wcdbWorker.ts'), 'utf8')
+  const coreSource = readFileSync(join(root, 'electron/services/wcdbCore.ts'), 'utf8')
+  const workerCase = workerSource.match(/case 'prepareForProcessExit':[\s\S]*?break/)?.[0] || ''
+  const coreMethod = coreSource.match(/prepareForProcessExit\(\): void \{[\s\S]*?\n  \}/)?.[0] || ''
+  assert.match(workerCase, /core\.prepareForProcessExit\(\)/)
+  assert.doesNotMatch(workerCase, /core\.close\(\)/)
+  assert.match(coreMethod, /this\.stopPeriodicPurge\(\)/)
+  assert.match(coreMethod, /this\.stopLogPolling\(\)/)
+  assert.doesNotMatch(coreMethod, /wcdbShutdown|cloudStop|stopMonitor\(\)/)
+})
+
 test('export quote hydration deduplicates ids and submits only eight WCDB calls at once', () => {
   const source = readFileSync(join(root, 'electron/services/export/core/ExportContext.ts'), 'utf8')
   const method = source.match(/public async resolveQuotedMessagesForExport[\s\S]*?\n    public /)?.[0] || ''
