@@ -11641,6 +11641,69 @@ test('local embedding identity pins an immutable model revision', () => {
   }
 })
 
+test('local embedding releases an idle model session and reloads it on demand', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'weflow-model-lifecycle-'))
+  let loads = 0
+  let disposals = 0
+  const service = new LocalEmbeddingService(async () => {
+    loads += 1
+    const extractor: any = async (texts: string[]) => ({
+      dims: [texts.length, 2],
+      data: Float32Array.from(texts.flatMap((_, index) => [index + 1, index + 2]))
+    })
+    extractor.dispose = async () => { disposals += 1 }
+    return extractor
+  }, 10)
+  try {
+    service.initialize(directory)
+    assert.deepEqual(await service.embed(['第一条']), [[1, 2]])
+    assert.equal(service.getStatus().loaded, true)
+    assert.equal(service.getStatus().idleUnloadScheduled, true)
+    await new Promise(resolve => setTimeout(resolve, 30))
+    assert.equal(service.getStatus().loaded, false)
+    assert.equal(service.getStatus().unloadCount, 1)
+    assert.equal(disposals, 1)
+    assert.deepEqual(await service.embed(['第二条']), [[1, 2]])
+    assert.equal(loads, 2)
+    await service.dispose()
+    assert.equal(disposals, 2)
+    assert.equal(service.getStatus().loaded, false)
+  } finally {
+    await service.dispose()
+    rmSync(directory, { recursive: true, force: true })
+  }
+})
+
+test('local embedding never unloads a session while inference is active', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'weflow-model-inference-'))
+  let releaseInference: (() => void) | null = null
+  let disposals = 0
+  const service = new LocalEmbeddingService(async () => {
+    const extractor: any = async () => {
+      await new Promise<void>(resolve => { releaseInference = resolve })
+      return { dims: [1, 2], data: Float32Array.from([1, 2]) }
+    }
+    extractor.dispose = async () => { disposals += 1 }
+    return extractor
+  }, 5)
+  try {
+    service.initialize(directory)
+    const inference = service.embed(['仍在推理'])
+    await new Promise(resolve => setTimeout(resolve, 15))
+    assert.equal(service.getStatus().activeInferences, 1)
+    assert.equal(disposals, 0)
+    releaseInference?.()
+    await inference
+    await new Promise(resolve => setTimeout(resolve, 20))
+    assert.equal(service.getStatus().activeInferences, 0)
+    assert.equal(disposals, 1)
+  } finally {
+    releaseInference?.()
+    await service.dispose()
+    rmSync(directory, { recursive: true, force: true })
+  }
+})
+
 test('long document embedding chunks cover the complete 80k document with overlap', () => {
   const sections = Array.from({ length: 81 }, (_, index) =>
     `段落-${String(index).padStart(3, '0')}-开始 ${String.fromCharCode(0x4e00 + index).repeat(970)} 段落-${String(index).padStart(3, '0')}-结束`)

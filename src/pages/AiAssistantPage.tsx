@@ -16500,6 +16500,13 @@ function AiAssistantPage() {
                   {Number(memoryDiagnostics.embeddings.chunking.inferenceBatchSize || 0).toLocaleString()} 块/推理批
                 </span>}
                 <span>模型提交 <b>{String(memoryDiagnostics.embeddings.revision || '').slice(0, 12) || '未知'}</b></span>
+                <span>模型会话 <b>{memoryDiagnostics.embeddings.activeInferences
+                  ? `推理中（${Number(memoryDiagnostics.embeddings.activeInferences)}）`
+                  : memoryDiagnostics.embeddings.loaded
+                    ? memoryDiagnostics.embeddings.idleUnloadScheduled ? '已加载 · 等待空闲释放' : '已加载'
+                    : '已释放 · 查询时重载'}</b></span>
+                <span>空闲释放 <b>{Math.round(Number(memoryDiagnostics.embeddings.idleUnloadMs || 0) / 60_000)} 分钟
+                  · 累计 {Number(memoryDiagnostics.embeddings.unloadCount || 0).toLocaleString()} 次</b></span>
                 <span>模型缓存 <b>{memoryDiagnostics.embeddings.integrity?.state === 'verified'
                   ? 'SHA-256 正常'
                   : memoryDiagnostics.embeddings.integrity?.state === 'repaired'
@@ -16516,6 +16523,9 @@ function AiAssistantPage() {
                 {memoryDiagnostics.embeddings.query.lastFallbackAt
                   ? ` · ${new Date(memoryDiagnostics.embeddings.query.lastFallbackAt).toLocaleString('zh-CN')}`
                   : ''}
+              </small>}
+              {memoryDiagnostics.embeddings.lastUnloadError && <small className="assistant-diagnostics-error">
+                最近一次本地模型空闲释放失败：{memoryDiagnostics.embeddings.lastUnloadError}
               </small>}
               {memoryDiagnostics.embeddings.query?.lastDimensionRepairAt && <small>
                 最近一次维度漂移修复：{new Date(memoryDiagnostics.embeddings.query.lastDimensionRepairAt).toLocaleString('zh-CN')}

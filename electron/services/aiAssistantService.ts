@@ -1133,7 +1133,10 @@ export class AiAssistantService {
       }))
     ], 4_000)
     const databaseClosed = !settled.timedOut && settled.pending.length === 0
-    if (databaseClosed) personalMemoryStore.close()
+    if (databaseClosed) {
+      await localEmbeddingService.dispose()
+      personalMemoryStore.close()
+    }
     return {
       ...settled,
       databaseClosed,

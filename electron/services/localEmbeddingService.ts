@@ -10,6 +10,7 @@ export const LOCAL_EMBEDDING_CHUNK_SIZE = 480
 export const LOCAL_EMBEDDING_CHUNK_OVERLAP = 80
 export const LOCAL_EMBEDDING_MAX_CHUNKS = 256
 export const LOCAL_EMBEDDING_INFERENCE_BATCH_SIZE = 24
+export const LOCAL_EMBEDDING_IDLE_UNLOAD_MS = 2 * 60_000
 export const LOCAL_EMBEDDING_MANIFEST = [
   { path: 'config.json', sha256: '34fa1ea6278c257de3cc8ce7e9bdc48647b802145a9da0fc32e95db620efd04f' },
   { path: 'tokenizer.json', sha256: '3d09c84ebd10306706a79a8276b3ab736a40d8ec03251c7639f4e52c3a1a4f8e' },
@@ -169,7 +170,15 @@ export function recordModelCacheIntegrity(
 
 export class LocalEmbeddingService {
   private cacheDirectory = ''
+  private readonly extractorLoader: (() => Promise<any>) | null
+  private readonly idleUnloadMs: number
   private extractorPromise: Promise<any> | null = null
+  private activeInferences = 0
+  private idleUnloadTimer: ReturnType<typeof setTimeout> | null = null
+  private unloadCount = 0
+  private lastLoadedAt = ''
+  private lastUnloadedAt = ''
+  private lastUnloadError = ''
   private lastError = ''
   private integrity: ModelCacheIntegrityHealth = {
     state: 'not_checked',
@@ -178,6 +187,14 @@ export class LocalEmbeddingService {
     missing: LOCAL_EMBEDDING_MANIFEST.length,
     removed: 0,
     lastRepairAt: ''
+  }
+
+  constructor(
+    extractorLoader: (() => Promise<any>) | null = null,
+    idleUnloadMs = LOCAL_EMBEDDING_IDLE_UNLOAD_MS
+  ) {
+    this.extractorLoader = extractorLoader
+    this.idleUnloadMs = idleUnloadMs
   }
 
   initialize(userDataPath: string): void {
@@ -203,6 +220,13 @@ export class LocalEmbeddingService {
       },
       cacheDirectory: this.cacheDirectory,
       loaded: Boolean(this.extractorPromise) && !this.lastError,
+      activeInferences: this.activeInferences,
+      idleUnloadScheduled: Boolean(this.idleUnloadTimer),
+      idleUnloadMs: this.idleUnloadMs,
+      unloadCount: this.unloadCount,
+      lastLoadedAt: this.lastLoadedAt,
+      lastUnloadedAt: this.lastUnloadedAt,
+      lastUnloadError: this.lastUnloadError,
       lastError: this.lastError,
       integrity: { ...this.integrity }
     }
@@ -211,12 +235,25 @@ export class LocalEmbeddingService {
   async embed(texts: string[]): Promise<number[][]> {
     const clean = texts.map(text => String(text || '').trim().slice(0, 4000))
     if (!clean.length) return []
-    const extractor = await this.getExtractor()
-    const tensor = await extractor(clean, { pooling: 'mean', normalize: true })
-    const dimensions = Number(tensor.dims?.[tensor.dims.length - 1] || 0)
-    if (!dimensions) throw new Error('本地向量模型返回了无效维度')
-    const values = Array.from(tensor.data as Float32Array, Number)
-    return clean.map((_, index) => values.slice(index * dimensions, (index + 1) * dimensions))
+    this.cancelIdleUnload()
+    this.activeInferences += 1
+    try {
+      const extractor = await this.getExtractor()
+      const tensor = await extractor(clean, { pooling: 'mean', normalize: true })
+      const dimensions = Number(tensor.dims?.[tensor.dims.length - 1] || 0)
+      if (!dimensions) throw new Error('本地向量模型返回了无效维度')
+      const values = Array.from(tensor.data as Float32Array, Number)
+      return clean.map((_, index) => values.slice(index * dimensions, (index + 1) * dimensions))
+    } finally {
+      this.activeInferences = Math.max(0, this.activeInferences - 1)
+      this.scheduleIdleUnload()
+    }
+  }
+
+  async dispose(): Promise<void> {
+    this.cancelIdleUnload()
+    if (this.activeInferences > 0) return
+    await this.unloadExtractor()
   }
 
   async embedDocuments(texts: string[]): Promise<number[][]> {
@@ -261,7 +298,9 @@ export class LocalEmbeddingService {
     if (!this.cacheDirectory) throw new Error('本地向量服务尚未初始化')
     if (!this.extractorPromise) {
       this.lastError = ''
-      this.extractorPromise = verifyModelCacheManifest({
+      const loading = this.extractorLoader
+        ? this.extractorLoader()
+        : verifyModelCacheManifest({
         cacheDirectory: this.cacheDirectory,
         model: LOCAL_EMBEDDING_MODEL,
         revision: LOCAL_EMBEDDING_REVISION,
@@ -296,6 +335,10 @@ export class LocalEmbeddingService {
           throw new Error('固定版本本地向量模型缓存未能通过 SHA-256 完整性校验')
         }
         return extractor
+      })
+      this.extractorPromise = loading.then(extractor => {
+        this.lastLoadedAt = new Date().toISOString()
+        return extractor
       }).catch(error => {
         this.lastError = error instanceof Error ? error.message : String(error)
         this.extractorPromise = null
@@ -303,6 +346,39 @@ export class LocalEmbeddingService {
       })
     }
     return this.extractorPromise
+  }
+
+  private cancelIdleUnload(): void {
+    if (this.idleUnloadTimer) clearTimeout(this.idleUnloadTimer)
+    this.idleUnloadTimer = null
+  }
+
+  private scheduleIdleUnload(): void {
+    if (this.activeInferences > 0 || !this.extractorPromise || this.idleUnloadTimer) return
+    this.idleUnloadTimer = setTimeout(() => {
+      this.idleUnloadTimer = null
+      if (this.activeInferences > 0) {
+        this.scheduleIdleUnload()
+        return
+      }
+      void this.unloadExtractor()
+    }, Math.max(0, this.idleUnloadMs))
+    this.idleUnloadTimer.unref?.()
+  }
+
+  private async unloadExtractor(): Promise<void> {
+    if (this.activeInferences > 0 || !this.extractorPromise) return
+    const unloading = this.extractorPromise
+    this.extractorPromise = null
+    try {
+      const extractor = await unloading
+      if (typeof extractor?.dispose === 'function') await extractor.dispose()
+      this.unloadCount += 1
+      this.lastUnloadedAt = new Date().toISOString()
+      this.lastUnloadError = ''
+    } catch (error) {
+      this.lastUnloadError = error instanceof Error ? error.message : String(error)
+    }
   }
 }
 
