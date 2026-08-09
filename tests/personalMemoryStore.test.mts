@@ -1122,6 +1122,124 @@ test('review ledger binds exact entity identity before pagination instead of sea
   })
 })
 
+test('entity rejection cascade snapshots stay private while remaining recoverable by exact review id', () => {
+  withStore(store => {
+    const cascade = {
+      version: 1,
+      reviewId: 'rejected-entity-review',
+      rejectedAt: '2026-08-09T03:00:00.000Z',
+      entity: {
+        id: 'rejected-entity', canonicalName: '被拒绝实体', identityVersion: 2,
+        previousTrustStatus: 'candidate'
+      },
+      relations: [],
+      memories: [],
+      autoClosedReviewCount: 3
+    }
+    store.syncGraph({
+      entities: [{
+        id: 'rejected-entity', type: 'person', canonicalName: '被拒绝实体',
+        trustStatus: 'rejected', identityVersion: 2, aliases: [], accountIds: [],
+        externalIdentities: [], confidence: 0.8,
+        updatedAt: '2026-08-09T03:00:00.000Z'
+      }],
+      relations: [],
+      reviewQueue: [{
+        id: 'rejected-entity-review', kind: 'entity_creation', title: '被拒绝实体', detail: '',
+        confidence: 0.8, status: 'rejected', createdAt: '2026-08-09T02:00:00.000Z',
+        resolvedAt: '2026-08-09T03:00:00.000Z', resolutionActor: 'user',
+        entityId: 'rejected-entity', entityCanonicalName: '被拒绝实体',
+        entityRejectionCascadeSnapshot: cascade
+      }]
+    } as any)
+    const page = store.listReviewLedgerPage({
+      status: 'resolved', kind: 'entity_creation', reviewId: 'rejected-entity-review'
+    })
+    assert.equal(page.items[0].entityRejectionCascadeAvailable, true)
+    assert.equal('entityRejectionCascadeSnapshot' in page.items[0], false)
+    const authoritative = store.listGraphReviewsByIds(['rejected-entity-review'])[0]
+    assert.deepEqual(authoritative.entityRejectionCascadeSnapshot, cascade)
+    store.syncGraph({
+      entities: [{
+        id: 'rejected-entity', type: 'person', canonicalName: '被拒绝实体',
+        trustStatus: 'confirmed', identityVersion: 2, aliases: [], accountIds: [],
+        externalIdentities: [], confidence: 0.8,
+        updatedAt: '2026-08-09T04:00:00.000Z'
+      }],
+      relations: [],
+      reviewQueue: [authoritative, {
+        id: 'entity-restore-audit', kind: 'entity_creation', title: '身份恢复', detail: '',
+        confidence: 1, status: 'confirmed', createdAt: '2026-08-09T04:00:00.000Z',
+        resolvedAt: '2026-08-09T04:00:00.000Z', resolutionActor: 'user',
+        restoredFromReviewId: 'rejected-entity-review'
+      }]
+    } as any)
+    assert.equal(store.listReviewLedgerPage({
+      status: 'resolved', reviewId: 'rejected-entity-review'
+    }).items[0].entityRejectionRestored, true)
+  })
+})
+
+test('memory cascade state exposes only the latest exact system decision identity', () => {
+  withStore(store => {
+    store.syncGraph({
+      entities: [{
+        id: 'cascade-person', type: 'person', canonicalName: '级联人物',
+        trustStatus: 'confirmed', aliases: [], accountIds: [], externalIdentities: [], confidence: 1
+      }],
+      relations: [],
+      reviewQueue: []
+    } as any)
+    store.upsertClaims([{
+      id: 'cascade-claim', subjectId: 'cascade-person', predicate: '参与',
+      objectValue: '项目', confidence: 0.8, status: 'confirmed',
+      sourceNature: 'other_statement', searchText: '级联人物 参与 项目',
+      evidence: evidence('cascade-message', '级联人物参与项目')
+    }])
+    store.upsertEvents([{
+      id: 'cascade-event', eventType: 'meeting', title: '级联会议', description: '',
+      startAt: '2026-08-09T02:00:00.000Z', endAt: '', location: '', confidence: 0.8,
+      status: 'candidate', searchText: '级联会议',
+      participants: [{ entityId: 'cascade-person', role: '参与者' }],
+      evidence: evidence('cascade-event-message', '级联人物参加会议')
+    }])
+    assert.deepEqual(store.listEntityMemoryStatusRefs('cascade-person'), [{
+      kind: 'claim', id: 'cascade-claim', status: 'confirmed', entityIds: ['cascade-person']
+    }, {
+      kind: 'event', id: 'cascade-event', status: 'candidate', entityIds: ['cascade-person']
+    }])
+    const db = (store as any).db
+    const claimPlan = db.prepare(`EXPLAIN QUERY PLAN
+      SELECT id FROM claims WHERE object_entity_id=?`).all('cascade-person') as any[]
+    const eventPlan = db.prepare(`EXPLAIN QUERY PLAN
+      SELECT event_id FROM event_participants WHERE entity_id=?`).all('cascade-person') as any[]
+    assert.match(claimPlan.map(row => row.detail).join(' '), /idx_claims_object_entity/)
+    assert.match(eventPlan.map(row => row.detail).join(' '), /idx_event_participants_entity/)
+    store.updateMemoryItemStatus('claim', 'cascade-claim', 'rejected', {
+      actor: 'system',
+      reason: '关联实体已被用户拒绝，事实随之拒绝',
+      protectFromExtraction: true,
+      at: '2026-08-09T03:00:00.000Z'
+    })
+    assert.deepEqual(store.getMemoryCascadeStates([
+      { kind: 'claim', id: 'cascade-claim' },
+      { kind: 'claim', id: 'missing-claim' }
+    ]), [{
+      kind: 'claim',
+      id: 'cascade-claim',
+      status: 'rejected',
+      updatedAt: '2026-08-09T03:00:00.000Z',
+      latestDecision: {
+        previousStatus: 'confirmed',
+        decision: 'rejected',
+        actor: 'system',
+        reason: '关联实体已被用户拒绝，事实随之拒绝',
+        createdAt: '2026-08-09T03:00:00.000Z'
+      }
+    }])
+  })
+})
+
 test('review ledger pagination keeps stable boundaries and scoped counts', () => {
   const reviews = Array.from({ length: 95 }, (_, index) => ({
     id: `review-${String(index).padStart(3, '0')}`,

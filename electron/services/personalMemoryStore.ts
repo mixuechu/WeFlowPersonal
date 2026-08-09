@@ -784,6 +784,8 @@ export class PersonalMemoryStore {
         updated_at TEXT NOT NULL
       ) STRICT;
       CREATE INDEX IF NOT EXISTS idx_claims_subject_predicate ON claims(subject_id, predicate);
+      CREATE INDEX IF NOT EXISTS idx_claims_object_entity
+        ON claims(object_entity_id,id) WHERE object_entity_id IS NOT NULL;
 
       CREATE TABLE IF NOT EXISTS evidence (
         id INTEGER PRIMARY KEY,
@@ -861,6 +863,8 @@ export class PersonalMemoryStore {
         role TEXT NOT NULL DEFAULT 'participant',
         PRIMARY KEY(event_id, entity_id, role)
       ) STRICT;
+      CREATE INDEX IF NOT EXISTS idx_event_participants_entity
+        ON event_participants(entity_id,event_id,role);
 
       CREATE TABLE IF NOT EXISTS review_queue (
         id TEXT PRIMARY KEY,
@@ -8925,7 +8929,9 @@ export class PersonalMemoryStore {
     }
     if (query) {
       scopeConditions.push(`instr(lower(
-        title || char(0) || detail || char(0) || payload_json
+        title || char(0) || detail || char(0) || CASE WHEN json_valid(payload_json)=1
+          THEN json_remove(payload_json,'$.entityRejectionCascadeSnapshot')
+          ELSE payload_json END
       ), ?) > 0`)
       scopeParams.push(query)
     }
@@ -8953,12 +8959,29 @@ export class PersonalMemoryStore {
       ORDER BY COALESCE(resolved_at,created_at) DESC, id ASC
       LIMIT ? OFFSET ?
     `).all(...scopeParams, limit, offset) as any[]
+    const restoredReviewIds = new Set<string>()
+    const visibleReviewIds = rows.map(row => String(row.id || '')).filter(Boolean)
+    if (visibleReviewIds.length) {
+      const restoredRows = this.db.prepare(`
+        SELECT json_extract(payload_json,'$.restoredFromReviewId') AS review_id
+        FROM review_queue
+        WHERE status='confirmed' AND json_valid(payload_json)=1
+          AND json_type(payload_json,'$.restoredFromReviewId')='text'
+          AND json_extract(payload_json,'$.restoredFromReviewId')
+            IN (${visibleReviewIds.map(() => '?').join(',')})
+      `).all(...visibleReviewIds) as Array<{ review_id: string }>
+      for (const row of restoredRows) restoredReviewIds.add(String(row.review_id || ''))
+    }
     const items = rows.map(row => {
       let payload: any = {}
       try { payload = JSON.parse(String(row.payload_json || '{}')) } catch {}
+      const rejectionCascadeSnapshot = payload.entityRejectionCascadeSnapshot
+      delete payload.entityRejectionCascadeSnapshot
       const fullEvidence = Array.isArray(payload.evidence) ? payload.evidence : []
       return {
         ...payload,
+        entityRejectionCascadeAvailable: Boolean(rejectionCascadeSnapshot),
+        entityRejectionRestored: restoredReviewIds.has(String(row.id || '')),
         evidence: fullEvidence.slice(-3),
         evidenceTotal: fullEvidence.length,
         id: row.id,
@@ -13852,11 +13875,12 @@ export class PersonalMemoryStore {
       actor?: 'user' | 'system'
       reason?: string
       protectFromExtraction?: boolean
+      at?: string
     } = {}
   ): any {
     if (!this.db) return null
     const table = kind === 'claim' ? 'claims' : 'events'
-    const now = new Date().toISOString()
+    const now = String(options.at || new Date().toISOString())
     const actor = options.actor || 'user'
     const reason = String(options.reason || (
       actor === 'user'
@@ -13901,6 +13925,114 @@ export class PersonalMemoryStore {
         FROM ${table} item WHERE item.id=?
       `).get(kind, kind, id) || null
     })()
+  }
+
+  getMemoryCascadeStates(items: Array<{
+    kind: 'claim' | 'event'
+    id: string
+  }>): Array<{
+    kind: 'claim' | 'event'
+    id: string
+    status: string
+    updatedAt: string
+    latestDecision: {
+      previousStatus: string
+      decision: string
+      actor: string
+      reason: string
+      createdAt: string
+    } | null
+  }> {
+    if (!this.db) return []
+    const normalized = [...new Map((items || []).flatMap(item => {
+      const kind = item?.kind === 'event' ? 'event' : item?.kind === 'claim' ? 'claim' : null
+      const id = String(item?.id || '').trim()
+      return kind && id ? [[`${kind}:${id}`, { kind, id }]] : []
+    })).values()]
+    const output: any[] = []
+    for (const kind of ['claim', 'event'] as const) {
+      const ids = normalized.filter(item => item.kind === kind).map(item => item.id)
+      const table = kind === 'claim' ? 'claims' : 'events'
+      for (let offset = 0; offset < ids.length; offset += 400) {
+        const chunk = ids.slice(offset, offset + 400)
+        const rows = this.db.prepare(`
+          SELECT item.id,item.status,item.updated_at,
+            decision.previous_status AS decision_previous_status,
+            decision.decision AS decision_status,
+            decision.actor AS decision_actor,
+            decision.reason AS decision_reason,
+            decision.created_at AS decision_created_at
+          FROM ${table} item
+          LEFT JOIN memory_review_decisions decision ON decision.id=(
+            SELECT latest.id FROM memory_review_decisions latest
+            WHERE latest.item_kind=? AND latest.item_id=item.id
+            ORDER BY latest.id DESC LIMIT 1
+          )
+          WHERE item.id IN (${chunk.map(() => '?').join(',')})
+        `).all(kind, ...chunk) as any[]
+        output.push(...rows.map(row => ({
+          kind,
+          id: String(row.id || ''),
+          status: String(row.status || ''),
+          updatedAt: String(row.updated_at || ''),
+          latestDecision: row.decision_status ? {
+            previousStatus: String(row.decision_previous_status || ''),
+            decision: String(row.decision_status || ''),
+            actor: String(row.decision_actor || ''),
+            reason: String(row.decision_reason || ''),
+            createdAt: String(row.decision_created_at || '')
+          } : null
+        })))
+      }
+    }
+    return output
+  }
+
+  listEntityMemoryStatusRefs(entityId: string): Array<{
+    kind: 'claim' | 'event'
+    id: string
+    status: string
+    entityIds: string[]
+  }> {
+    if (!this.db) return []
+    const id = String(entityId || '').trim()
+    if (!id) return []
+    const claims = this.db.prepare(`
+      SELECT id,status,subject_id,object_entity_id FROM claims
+      WHERE subject_id=? OR object_entity_id=? ORDER BY id
+    `).all(id, id) as any[]
+    const events = this.db.prepare(`
+      SELECT event.id,event.status,
+        COALESCE((SELECT json_group_array(participant.entity_id)
+          FROM event_participants participant
+          WHERE participant.event_id=event.id),'[]') AS entity_ids_json
+      FROM events event
+      WHERE EXISTS(SELECT 1 FROM event_participants target
+        WHERE target.event_id=event.id AND target.entity_id=?)
+      ORDER BY event.id
+    `).all(id) as any[]
+    return [
+      ...claims.map(row => ({
+        kind: 'claim' as const,
+        id: String(row.id || ''),
+        status: String(row.status || ''),
+        entityIds: [...new Set([row.subject_id, row.object_entity_id]
+          .map(value => String(value || '').trim()).filter(Boolean))].sort()
+      })),
+      ...events.map(row => {
+        let entityIds: string[] = []
+        try {
+          entityIds = [...new Set((JSON.parse(String(row.entity_ids_json || '[]')) as unknown[])
+            .map(value => String(value || '').trim()).filter(Boolean))].sort()
+        } catch {}
+        return {
+          kind: 'event' as const,
+          id: String(row.id || ''),
+          status: String(row.status || ''),
+          entityIds
+        }
+      })
+    ]
   }
 
   recordTaskChanges(taskId: string, before: any, after: any, reason = 'manual_edit', evidence: any[] = []): void {

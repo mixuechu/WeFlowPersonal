@@ -4737,6 +4737,12 @@ function registerIpcHandlers() {
       relationCorrection?: { subjectId?: string; predicate?: string; objectId?: string }
     }
   ) => aiAssistantService.updateGraphReview(id, decision, options))
+  ipcMain.handle('ai-assistant:previewRestoreRejectedEntity', (
+    _, id: string, expectedRevision?: string
+  ) => aiAssistantService.previewRestoreRejectedEntity(id, expectedRevision))
+  ipcMain.handle('ai-assistant:restoreRejectedEntity', (
+    _, id: string, input?: any
+  ) => aiAssistantService.restoreRejectedEntity(id, input))
   ipcMain.handle('ai-assistant:previewRevertMerge', (
     _, id: number, expectedRevision?: string
   ) => aiAssistantService.previewRevertMerge(id, expectedRevision))

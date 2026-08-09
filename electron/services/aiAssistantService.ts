@@ -241,6 +241,16 @@ import {
   restoreIdentityMergeGraph
 } from './identityMergeRevertPolicy'
 import {
+  assertEntityRejectionRestoreConfirmation,
+  buildEntityRejectionRestorePreviewToken,
+  ENTITY_REJECTION_CASCADE_VERSION,
+  ENTITY_REJECTION_CLAIM_REASON,
+  ENTITY_REJECTION_EVENT_REASON,
+  inspectEntityRejectionRestore,
+  restoredCascadeStatus,
+  type EntityRejectionCascadeSnapshot
+} from './entityRejectionRestorePolicy'
+import {
   ENTITY_EVIDENCE_MESSAGE_HOT_LIMIT,
   compactEntityEvidenceMessageIds
 } from '../../shared/entityEvidenceHotset.ts'
@@ -7567,13 +7577,52 @@ export class AiAssistantService {
           review.resolutionReason = '实体名称已变化或候选已失效，系统拒绝过期确认'
         }
       } else if (decision === 'rejected' && entity) {
+        const connectedRelations = this.state.graph.relations.filter(relation =>
+          relation.subjectId === entity.id || relation.objectId === entity.id)
+        const connectedMemories = personalMemoryStore.listEntityMemoryStatusRefs(entity.id)
+        const autoClosedReviewCount = this.state.graph.reviewQueue.filter(pending => {
+          if (pending.status !== 'pending' || pending.id === review.id) return false
+          const connectedRelation = pending.relationId
+            ? this.state.graph.relations.find(relation => relation.id === pending.relationId)
+            : null
+          return pending.entityId === entity.id ||
+            pending.leftEntityId === entity.id ||
+            pending.rightEntityId === entity.id ||
+            connectedRelation?.subjectId === entity.id ||
+            connectedRelation?.objectId === entity.id
+        }).length
+        const cascadeSnapshot: EntityRejectionCascadeSnapshot = {
+          version: ENTITY_REJECTION_CASCADE_VERSION,
+          reviewId: review.id,
+          rejectedAt: resolutionNow,
+          entity: {
+            id: entity.id,
+            canonicalName: entity.canonicalName,
+            identityVersion: Number(entity.identityVersion || 0),
+            previousTrustStatus: String(entity.trustStatus || 'candidate')
+          },
+          relations: connectedRelations.map(relation => ({
+            id: relation.id,
+            subjectId: relation.subjectId,
+            objectId: relation.objectId,
+            previousStatus: relation.status
+          })),
+          memories: [
+            ...connectedMemories.map(memory => ({
+              kind: memory.kind,
+              id: memory.id,
+              previousStatus: memory.status,
+              entityIds: memory.entityIds
+            }))
+          ],
+          autoClosedReviewCount
+        }
+        ;(review as any).entityRejectionCascadeSnapshot = cascadeSnapshot
         entity.trustStatus = 'rejected'
-        entity.updatedAt = new Date().toISOString()
-        for (const relation of this.state.graph.relations) {
-          if (relation.subjectId === entity.id || relation.objectId === entity.id) {
-            relation.status = 'rejected'
-            relation.updatedAt = entity.updatedAt
-          }
+        entity.updatedAt = resolutionNow
+        for (const relation of connectedRelations) {
+          relation.status = 'rejected'
+          relation.updatedAt = resolutionNow
         }
         for (const pending of this.state.graph.reviewQueue) {
           if (pending.status !== 'pending') continue
@@ -7592,24 +7641,14 @@ export class AiAssistantService {
             pending.resolutionReason = '关联实体已被用户拒绝'
           }
         }
-        const feed = personalMemoryStore.getMemoryFeed()
-        for (const claim of feed.claims || []) {
-          if (claim.subject_id === entity.id || claim.object_entity_id === entity.id) {
-            personalMemoryStore.updateMemoryItemStatus('claim', claim.id, 'rejected', {
-              actor: 'system',
-              reason: '关联实体已被用户拒绝，事实随之拒绝',
-              protectFromExtraction: true
-            })
-          }
-        }
-        for (const event of feed.events || []) {
-          if ((event.participants || []).some((participant: any) => participant.entity_id === entity.id)) {
-            personalMemoryStore.updateMemoryItemStatus('event', event.id, 'rejected', {
-              actor: 'system',
-              reason: '关联实体已被用户拒绝，事件随之拒绝',
-              protectFromExtraction: true
-            })
-          }
+        for (const memory of connectedMemories) {
+          personalMemoryStore.updateMemoryItemStatus(memory.kind, memory.id, 'rejected', {
+            actor: 'system',
+            reason: memory.kind === 'claim'
+              ? ENTITY_REJECTION_CLAIM_REASON : ENTITY_REJECTION_EVENT_REASON,
+            protectFromExtraction: true,
+            at: resolutionNow
+          })
         }
       }
     }
@@ -7799,6 +7838,148 @@ export class AiAssistantService {
         currentFingerprint: inspection.currentFingerprint
       }) : ''
     }
+  }
+
+  previewRestoreRejectedEntity(reviewId: string, expectedRevision?: string): any {
+    const id = String(reviewId || '').trim()
+    const graphReviewRevision = personalMemoryStore.getGraphReviewRevision()
+    if (!id || !String(expectedRevision || '').trim() ||
+      String(expectedRevision) !== graphReviewRevision) {
+      throw new Error('身份审阅档案在展示后发生了变化，请刷新后重新核对')
+    }
+    const review = personalMemoryStore.listGraphReviewsByIds([id])[0]
+    if (!review || review.kind !== 'entity_creation' || review.status !== 'rejected' ||
+      review.resolutionActor !== 'user') return null
+    const snapshot = review.entityRejectionCascadeSnapshot as EntityRejectionCascadeSnapshot | undefined
+    const currentEntity = this.state.graph.entities.find(entity => entity.id === snapshot?.entity?.id)
+    const inspection = inspectEntityRejectionRestore({
+      snapshot,
+      currentEntity,
+      currentRelations: this.state.graph.relations.filter(relation =>
+        snapshot?.relations?.some(expected => expected.id === relation.id)),
+      currentMemories: personalMemoryStore.getMemoryCascadeStates(snapshot?.memories || [])
+    })
+    const structuredMemoryRevision = personalMemoryStore.getStructuredMemoryRevision()
+    return {
+      reviewId: id,
+      entityId: String(snapshot?.entity?.id || review.entityId || ''),
+      entityName: String(snapshot?.entity?.canonicalName || review.entityCanonicalName || '未命名实体'),
+      graphReviewRevision,
+      structuredMemoryRevision,
+      safe: inspection.safe,
+      reason: inspection.reason,
+      counts: inspection.counts,
+      previewToken: inspection.safe ? buildEntityRejectionRestorePreviewToken({
+        reviewId: id,
+        graphReviewRevision,
+        structuredMemoryRevision,
+        currentFingerprint: inspection.currentFingerprint
+      }) : ''
+    }
+  }
+
+  restoreRejectedEntity(
+    reviewId: string,
+    input: { previewToken?: string; confirmation?: string } = {}
+  ): any {
+    const id = String(reviewId || '').trim()
+    const graphReviewRevision = personalMemoryStore.getGraphReviewRevision()
+    const structuredMemoryRevision = personalMemoryStore.getStructuredMemoryRevision()
+    const review = personalMemoryStore.listGraphReviewsByIds([id])[0]
+    const snapshot = review?.entityRejectionCascadeSnapshot as EntityRejectionCascadeSnapshot | undefined
+    const currentEntity = this.state.graph.entities.find(entity => entity.id === snapshot?.entity?.id)
+    const inspection = inspectEntityRejectionRestore({
+      snapshot,
+      currentEntity,
+      currentRelations: this.state.graph.relations.filter(relation =>
+        snapshot?.relations?.some(expected => expected.id === relation.id)),
+      currentMemories: personalMemoryStore.getMemoryCascadeStates(snapshot?.memories || [])
+    })
+    if (!review || review.kind !== 'entity_creation' || review.status !== 'rejected' ||
+      review.resolutionActor !== 'user' || !inspection.safe || !snapshot || !currentEntity) {
+      throw new Error(`该身份拒绝不能安全自动恢复：${inspection.reason || '审阅记录已经变化或不完整'}`)
+    }
+    assertEntityRejectionRestoreConfirmation({
+      reviewId: id,
+      graphReviewRevision,
+      structuredMemoryRevision,
+      currentFingerprint: inspection.currentFingerprint
+    }, input)
+    const graphSnapshot = structuredClone(this.state.graph)
+    return runReversibleGraphMutation({
+      snapshot: graphSnapshot,
+      transact: apply => personalMemoryStore.runInTransaction(apply, {
+        kind: 'human_action',
+        id: `entity-rejection-restore:${id}`,
+        sourceKind: 'local'
+      }),
+      apply: () => {
+        const restoredAt = new Date().toISOString()
+        currentEntity.trustStatus = 'confirmed'
+        currentEntity.updatedAt = restoredAt
+        const trustedEntityIds = new Set(this.state.graph.entities
+          .filter(entity => entity.trustStatus === 'confirmed')
+          .map(entity => entity.id))
+        let downgraded = 0
+        for (const expected of snapshot.relations) {
+          const relation = this.state.graph.relations.find(item => item.id === expected.id)!
+          const status = restoredCascadeStatus(
+            expected.previousStatus,
+            [relation.subjectId, relation.objectId],
+            trustedEntityIds
+          )
+          if (status !== expected.previousStatus) downgraded += 1
+          relation.status = status as any
+          relation.updatedAt = restoredAt
+        }
+        for (const expected of snapshot.memories) {
+          const status = restoredCascadeStatus(
+            expected.previousStatus,
+            expected.entityIds || [],
+            trustedEntityIds
+          )
+          if (status !== expected.previousStatus) downgraded += 1
+          if (status !== 'rejected') {
+            personalMemoryStore.updateMemoryItemStatus(expected.kind, expected.id, status as any, {
+              actor: 'system',
+              reason: '本人恢复被拒绝身份，按拒绝前状态恢复关联记忆',
+              protectFromExtraction: false,
+              at: restoredAt
+            })
+          }
+        }
+        this.state.graph.reviewQueue.push({
+          id: `entity_restore_${crypto.createHash('sha256')
+            .update(`${id}|${restoredAt}`).digest('hex').slice(0, 20)}`,
+          kind: 'entity_creation',
+          title: `${currentEntity.canonicalName} · 身份恢复`,
+          detail: `本人撤销先前的身份拒绝；${inspection.counts.relations} 条关系、${inspection.counts.claims} 条事实和 ${inspection.counts.events} 条事件已按拒绝前状态恢复。${inspection.counts.archivedReviews} 条当时自动关闭的旧候选继续保留为历史，不直接复活过期建议。`,
+          confidence: 1,
+          status: 'confirmed',
+          createdAt: restoredAt,
+          resolvedAt: restoredAt,
+          resolutionActor: 'user',
+          resolutionReason: '用户通过级联预览恢复先前拒绝的身份',
+          entityId: currentEntity.id,
+          entityCanonicalName: currentEntity.canonicalName,
+          entityType: currentEntity.type,
+          candidateSource: 'manual_restore',
+          restoredFromReviewId: id
+        } as any)
+        this.saveState(true)
+        return {
+          success: true,
+          entityId: currentEntity.id,
+          counts: inspection.counts,
+          downgraded
+        }
+      },
+      restore: graph => { this.state.graph = graph },
+      persistRestored: () => this.persistCrossStoreMutationState(),
+      onRollbackError: error => {
+        console.error('[AI Assistant] 身份拒绝恢复回滚状态写入失败:', sanitizeDiagnosticText(error))
+      }
+    })
   }
 
   revertMerge(

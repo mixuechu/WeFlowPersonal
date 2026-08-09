@@ -1448,6 +1448,9 @@ function AiAssistantPage() {
   const [mergeRevertDialog, setMergeRevertDialog] = useState<any>(null)
   const [mergeRevertConfirmation, setMergeRevertConfirmation] = useState('')
   const mergeRevertGate = useRef(new LatestRequestGate())
+  const [entityRestoreDialog, setEntityRestoreDialog] = useState<any>(null)
+  const [entityRestoreConfirmation, setEntityRestoreConfirmation] = useState('')
+  const entityRestoreGate = useRef(new LatestRequestGate())
   const [memoryDiagnostics, setMemoryDiagnostics] = useState<any>(null)
   const [repairingMemorySearchIndexes, setRepairingMemorySearchIndexes] = useState(false)
   const [memorySearchRepairResult, setMemorySearchRepairResult] = useState<any>(null)
@@ -6830,6 +6833,77 @@ function AiAssistantPage() {
       if (errorMessage.includes('已经变化') || errorMessage.includes('确认已失效')) {
         mergeArchiveGate.current.invalidate()
         setMergeArchiveRefreshKey(value => value + 1)
+      }
+    }
+  }
+
+  const previewRestoreRejectedEntity = async (review: any) => {
+    const reviewId = String(review?.id || '').trim()
+    if (!reviewId) return
+    const request = entityRestoreGate.current.begin()
+    setEntityRestoreConfirmation('')
+    setEntityRestoreDialog({ reviewId, status: 'loading' })
+    try {
+      const preview = await window.electronAPI.aiAssistant.previewRestoreRejectedEntity(
+        reviewId,
+        String(reviewPage.revision || '')
+      )
+      if (!entityRestoreGate.current.isCurrent(request)) return
+      setEntityRestoreDialog(preview
+        ? { reviewId, preview, status: preview.safe ? 'ready' : 'blocked' }
+        : { reviewId, status: 'error', error: '该身份拒绝不存在或不是本人处理的实体候选' })
+    } catch (error: any) {
+      if (!entityRestoreGate.current.isCurrent(request)) return
+      setEntityRestoreDialog({
+        reviewId,
+        status: 'error',
+        error: error?.message || String(error)
+      })
+    }
+  }
+
+  const closeEntityRestoreDialog = () => {
+    if (entityRestoreDialog?.status === 'restoring') return
+    entityRestoreGate.current.invalidate()
+    setEntityRestoreDialog(null)
+    setEntityRestoreConfirmation('')
+  }
+
+  const confirmRestoreRejectedEntity = async () => {
+    if (entityRestoreDialog?.status !== 'ready' ||
+      entityRestoreConfirmation !== '恢复身份' ||
+      !entityRestoreDialog.preview?.previewToken) return
+    const request = entityRestoreGate.current.begin()
+    setEntityRestoreDialog((current: any) => ({ ...current, status: 'restoring', error: undefined }))
+    try {
+      const result = await window.electronAPI.aiAssistant.restoreRejectedEntity(
+        entityRestoreDialog.reviewId,
+        {
+          previewToken: entityRestoreDialog.preview.previewToken,
+          confirmation: entityRestoreConfirmation
+        }
+      )
+      if (!entityRestoreGate.current.isCurrent(request)) return
+      entityRestoreGate.current.invalidate()
+      setEntityRestoreDialog(null)
+      setEntityRestoreConfirmation('')
+      setMessage(`身份及关联内容已安全恢复${Number(result?.downgraded || 0) > 0
+        ? `；${result.downgraded} 项因仍涉及其他未确认实体而保守恢复为候选。`
+        : '。'}`)
+      await load()
+      setReviewRefreshKey(value => value + 1)
+      setClaimArchiveRefreshKey(value => value + 1)
+      setEventTimelineRefreshKey(value => value + 1)
+    } catch (error: any) {
+      if (!entityRestoreGate.current.isCurrent(request)) return
+      const errorMessage = error?.message || String(error)
+      setEntityRestoreDialog((current: any) => ({
+        ...current,
+        status: 'error',
+        error: errorMessage
+      }))
+      if (errorMessage.includes('变化') || errorMessage.includes('失效')) {
+        setReviewRefreshKey(value => value + 1)
       }
     }
   }
@@ -13489,6 +13563,20 @@ function AiAssistantPage() {
                   <span>{review.resolutionReason || (review.resolutionActor === 'system' ? '由系统规则处理' : '历史处理原因未记录')}</span>
                   <small>{review.resolutionActor === 'system' ? '系统自动处理' : '人工处理'} · {review.resolvedAt ? new Date(review.resolvedAt).toLocaleString('zh-CN') : '旧版记录，处理时间未知'}</small>
                 </div>}
+                {review.kind === 'entity_creation' && review.status === 'rejected' &&
+                  review.resolutionActor === 'user' && <div className="assistant-review-note">
+                    {review.entityRejectionRestored ? <small>
+                      这次身份拒绝已经通过级联预览恢复；原拒绝记录继续保留作为审计历史。
+                    </small> : review.entityRejectionCascadeAvailable ? <>
+                      <b>可以撤销这次身份拒绝</b>
+                      <span>系统会先核对当时级联关闭的关系、事实和事件；任何内容后来被修改都不会自动覆盖。</span>
+                      <button type="button" onClick={() => void previewRestoreRejectedEntity(review)}>
+                        预览恢复范围
+                      </button>
+                    </> : <small>
+                      这条拒绝发生在可逆级联快照上线前；为避免误恢复后来独立修改的关系和记忆，不能一键恢复。
+                    </small>}
+                  </div>}
                 <p>{review.detail}</p><small>{Math.round(review.confidence * 100)}% 可信 · {
                   review.kind === 'possible_duplicate'
                     ? '确认后合并身份'
@@ -17374,6 +17462,73 @@ function AiAssistantPage() {
                     !memoryFeedbackDeleteDialog.preview?.rowsToDelete}
                   onClick={() => void confirmMemoryFeedbackDeletion()}>
                   {memoryFeedbackDeleteDialog.status === 'deleting' ? '正在清理…' : '确认永久删除'}
+                </button>}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {entityRestoreDialog && (
+        <div className="assistant-modal-backdrop" role="presentation">
+          <div className="assistant-modal assistant-delete-modal" role="dialog" aria-modal="true"
+            aria-labelledby="entity-restore-title">
+            <div className="assistant-modal-title"><div>
+              <h2 id="entity-restore-title">恢复已拒绝身份</h2>
+              <p>恢复身份及当时由它触发的级联状态，不覆盖拒绝后发生的人工变化。</p>
+            </div><button aria-label="关闭身份恢复确认"
+              disabled={entityRestoreDialog.status === 'restoring'}
+              onClick={closeEntityRestoreDialog}><X size={16} /></button></div>
+            {entityRestoreDialog.status === 'loading' && <div className="assistant-delete-status">
+              <RefreshCw size={16} /><span><strong>正在核对拒绝后的全部关联变化…</strong>
+                <small>实体、关系、事实或事件中任一项后来变化，旧恢复授权都会失效。</small></span>
+            </div>}
+            {(entityRestoreDialog.status === 'error' || entityRestoreDialog.status === 'blocked') &&
+              <div className="assistant-error">
+                <strong>{entityRestoreDialog.status === 'blocked'
+                  ? '当前不能安全自动恢复'
+                  : '身份恢复失败'}</strong>
+                <span>{entityRestoreDialog.error || entityRestoreDialog.preview?.reason || '未知错误'}</span>
+                {(String(entityRestoreDialog.error || '').includes('变化') ||
+                  String(entityRestoreDialog.error || '').includes('失效')) &&
+                  <button onClick={() => {
+                    const reviewId = entityRestoreDialog.reviewId
+                    closeEntityRestoreDialog()
+                    const review = reviewPage.items.find((item: any) => item.id === reviewId)
+                    if (review) void previewRestoreRejectedEntity(review)
+                  }}>重新核对当前范围</button>}
+              </div>}
+            {(entityRestoreDialog.status === 'ready' || entityRestoreDialog.status === 'restoring') && <>
+              <div className="assistant-delete-preview">
+                <strong>{entityRestoreDialog.preview.entityName}</strong>
+                <p>
+                  将重新确认该身份，并恢复 {entityRestoreDialog.preview.counts.relations} 条关系、
+                  {entityRestoreDialog.preview.counts.claims} 条事实和
+                  {entityRestoreDialog.preview.counts.events} 条事件。
+                  当时自动关闭的 {entityRestoreDialog.preview.counts.archivedReviews} 条旧候选继续保留为历史，
+                  不会复活可能已经过期的模型建议。
+                </p>
+                <small>若其他参与实体仍未确认，原本已确认的关联内容会保守恢复为候选，而不会直接进入可信检索和问答。</small>
+              </div>
+              <label><span>输入“恢复身份”确认</span>
+                <input autoFocus value={entityRestoreConfirmation}
+                  disabled={entityRestoreDialog.status === 'restoring'}
+                  onChange={event => setEntityRestoreConfirmation(event.target.value)}
+                  onKeyDown={event => {
+                    if (event.key === 'Enter' && entityRestoreConfirmation === '恢复身份') {
+                      void confirmRestoreRejectedEntity()
+                    }
+                  }}
+                  placeholder="恢复身份" /></label>
+            </>}
+            <div className="assistant-modal-actions">
+              <button disabled={entityRestoreDialog.status === 'restoring'}
+                onClick={closeEntityRestoreDialog}>取消</button>
+              {(entityRestoreDialog.status === 'ready' || entityRestoreDialog.status === 'restoring') &&
+                <button className="danger"
+                  disabled={entityRestoreDialog.status === 'restoring' ||
+                    entityRestoreConfirmation !== '恢复身份'}
+                  onClick={() => void confirmRestoreRejectedEntity()}>
+                  {entityRestoreDialog.status === 'restoring' ? '正在安全恢复…' : '确认恢复身份'}
                 </button>}
             </div>
           </div>

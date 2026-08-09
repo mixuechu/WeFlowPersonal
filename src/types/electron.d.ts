@@ -1928,6 +1928,11 @@ export interface ElectronAPI {
         correctedAliasText?: string
         relationCorrection?: { subjectId?: string; predicate?: string; objectId?: string }
       }) => Promise<any>
+      previewRestoreRejectedEntity: (id: string, expectedRevision?: string) => Promise<any>
+      restoreRejectedEntity: (
+        id: string,
+        input?: { previewToken?: string; confirmation?: string }
+      ) => Promise<any>
       getTrustedEntityDirectory: (options?: {
         query?: string
         type?: string
