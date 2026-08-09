@@ -19859,7 +19859,11 @@ export class PersonalMemoryStore {
       lastAttemptAt: '',
       lastSuccessAt: '',
       lastErrorAt: '',
-      lastError: ''
+      lastError: '',
+      lastRunDurationMs: 0,
+      recentDocumentsPerMinute: 0,
+      lastPendingCount: 0,
+      estimatedCompletionAt: ''
     }
     if (!this.db) return empty
     const row = this.db.prepare(`
@@ -19881,7 +19885,13 @@ export class PersonalMemoryStore {
         lastAttemptAt: String(stored.lastAttemptAt || '').slice(0, 64),
         lastSuccessAt: String(stored.lastSuccessAt || '').slice(0, 64),
         lastErrorAt: String(stored.lastErrorAt || '').slice(0, 64),
-        lastError: String(stored.lastError || '').slice(0, 500)
+        lastError: String(stored.lastError || '').slice(0, 500),
+        lastRunDurationMs: safeCount(stored.lastRunDurationMs),
+        recentDocumentsPerMinute: Math.max(0, Math.min(1_000_000,
+          Number.isFinite(Number(stored.recentDocumentsPerMinute))
+            ? Number(stored.recentDocumentsPerMinute) : 0)),
+        lastPendingCount: safeCount(stored.lastPendingCount),
+        estimatedCompletionAt: String(stored.estimatedCompletionAt || '').slice(0, 64)
       }
     } catch {
       return empty
@@ -19891,12 +19901,18 @@ export class PersonalMemoryStore {
   saveVectorIndexContinuationHealth(health: VectorIndexContinuationHealth): void {
     if (!this.db) return
     const now = new Date().toISOString()
+    const recentRate = Number(health.recentDocumentsPerMinute || 0)
     const value = {
       ...health,
       scheduled: false,
       runCount: Math.max(0, Math.floor(Number(health.runCount || 0))),
       indexedCount: Math.max(0, Math.floor(Number(health.indexedCount || 0))),
       failureStreak: Math.max(0, Math.floor(Number(health.failureStreak || 0))),
+      lastRunDurationMs: Math.max(0, Math.floor(Number(health.lastRunDurationMs || 0))),
+      recentDocumentsPerMinute: Number.isFinite(recentRate)
+        ? Math.max(0, Math.min(1_000_000, recentRate)) : 0,
+      lastPendingCount: Math.max(0, Math.floor(Number(health.lastPendingCount || 0))),
+      estimatedCompletionAt: String(health.estimatedCompletionAt || '').slice(0, 64),
       nextRetryAt: String(health.nextRetryAt || '').slice(0, 64),
       lastError: String(health.lastError || '').slice(0, 500)
     }

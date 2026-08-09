@@ -16489,6 +16489,15 @@ function AiAssistantPage() {
                   ? '运行中'
                   : memoryDiagnostics.embeddings.background?.scheduled ? '已排队' : '空闲'}</b></span>
                 <span>后台累计 <b>{Number(memoryDiagnostics.embeddings.background?.indexedCount || 0).toLocaleString()}</b> 条 / {Number(memoryDiagnostics.embeddings.background?.runCount || 0).toLocaleString()} 轮</span>
+                <span>近期速度 <b>{Number(memoryDiagnostics.embeddings.background?.recentDocumentsPerMinute || 0) > 0
+                  ? `${Number(memoryDiagnostics.embeddings.background.recentDocumentsPerMinute).toFixed(1)} 条/分钟`
+                  : '等待有效样本'}</b></span>
+                <span>本轮耗时 <b>{Number(memoryDiagnostics.embeddings.background?.lastRunDurationMs || 0) > 0
+                  ? `${(Number(memoryDiagnostics.embeddings.background.lastRunDurationMs) / 1000).toFixed(1)} 秒`
+                  : '尚无'}</b></span>
+                <span>预计完成 <b>{memoryDiagnostics.embeddings.background?.estimatedCompletionAt
+                  ? new Date(memoryDiagnostics.embeddings.background.estimatedCompletionAt).toLocaleString('zh-CN', { hour12: false })
+                  : Number(memoryDiagnostics.embeddings.pending || 0) > 0 ? '计算中' : '已完成'}</b></span>
                 <span>连续失败 <b>{Number(memoryDiagnostics.embeddings.background?.failureStreak || 0).toLocaleString()}</b> 次</span>
                 <span>查询降级 <b>{Number(memoryDiagnostics.embeddings.query?.fallbackCount || 0).toLocaleString()}</b> 次</span>
                 <span>维度漂移修复 <b>{Number(memoryDiagnostics.embeddings.query?.dimensionRepairCount || 0).toLocaleString()}</b> 条</span>

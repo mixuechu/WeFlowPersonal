@@ -142,6 +142,10 @@ export type VectorIndexContinuationHealth = {
   lastSuccessAt: string
   lastErrorAt: string
   lastError: string
+  lastRunDurationMs: number
+  recentDocumentsPerMinute: number
+  lastPendingCount: number
+  estimatedCompletionAt: string
 }
 
 export const VECTOR_INDEX_RETRY_BASE_MS = 60_000
@@ -168,7 +172,7 @@ export function recordVectorIndexContinuation(
   current: VectorIndexContinuationHealth,
   event:
     | { type: 'scheduled' | 'started' | 'cancelled'; at: string }
-    | { type: 'succeeded'; at: string; indexed?: number }
+    | { type: 'succeeded'; at: string; indexed?: number; pending?: number }
     | { type: 'failed'; at: string; error?: string }
 ): VectorIndexContinuationHealth {
   if (event.type === 'scheduled') {
@@ -185,15 +189,42 @@ export function recordVectorIndexContinuation(
   }
   if (event.type === 'cancelled') return { ...current, scheduled: false }
   if (event.type === 'succeeded') {
+    const indexed = Math.max(0, Math.floor(Number(event.indexed || 0)))
+    const pending = Math.max(0, Math.floor(Number(event.pending || 0)))
+    const succeededAt = Date.parse(event.at)
+    const attemptedAt = Date.parse(String(current.lastAttemptAt || ''))
+    const elapsedMs = succeededAt - attemptedAt
+    const lastRunDurationMs = Number.isFinite(succeededAt) && Number.isFinite(attemptedAt)
+      && elapsedMs >= 0
+      ? Math.max(1, Math.floor(elapsedMs))
+      : 0
+    const observedRate = indexed > 0 && lastRunDurationMs > 0
+      ? indexed * 60_000 / lastRunDurationMs
+      : 0
+    const previousRate = Math.max(0, Number(current.recentDocumentsPerMinute || 0))
+    const recentDocumentsPerMinute = observedRate > 0
+      ? previousRate > 0 ? previousRate * 0.7 + observedRate * 0.3 : observedRate
+      : 0
+    const estimatedRemainingMs = recentDocumentsPerMinute > 0
+      ? pending / recentDocumentsPerMinute * 60_000
+      : Number.POSITIVE_INFINITY
+    const estimatedCompletionAt = pending > 0 && Number.isFinite(succeededAt)
+      && estimatedRemainingMs > 0 && estimatedRemainingMs <= 365 * 24 * 60 * 60_000
+      ? new Date(succeededAt + estimatedRemainingMs).toISOString()
+      : ''
     return {
       ...current,
       scheduled: false,
       indexedCount: Math.max(0, Number(current.indexedCount || 0))
-        + Math.max(0, Math.floor(Number(event.indexed || 0))),
+        + indexed,
       failureStreak: 0,
       nextRetryAt: '',
       lastSuccessAt: event.at,
-      lastError: ''
+      lastError: '',
+      lastRunDurationMs,
+      recentDocumentsPerMinute,
+      lastPendingCount: pending,
+      estimatedCompletionAt
     }
   }
   const failureStreak = Math.max(0, Math.floor(Number(current.failureStreak || 0))) + 1
@@ -206,7 +237,8 @@ export function recordVectorIndexContinuation(
       ? new Date(failedAt + vectorIndexRetryDelayMs(failureStreak)).toISOString()
       : '',
     lastErrorAt: event.at,
-    lastError: String(event.error || 'unknown_vector_index_error').slice(0, 500)
+    lastError: String(event.error || 'unknown_vector_index_error').slice(0, 500),
+    estimatedCompletionAt: ''
   }
 }
 

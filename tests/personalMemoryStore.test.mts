@@ -12009,7 +12009,11 @@ test('vector continuation health exposes scheduling, progress, retry and recover
     lastAttemptAt: '',
     lastSuccessAt: '',
     lastErrorAt: '',
-    lastError: ''
+    lastError: '',
+    lastRunDurationMs: 0,
+    recentDocumentsPerMinute: 0,
+    lastPendingCount: 0,
+    estimatedCompletionAt: ''
   }
   const scheduled = recordVectorIndexContinuation(initial, {
     type: 'scheduled',
@@ -12040,7 +12044,8 @@ test('vector continuation health exposes scheduling, progress, retry and recover
   const recovered = recordVectorIndexContinuation(retry, {
     type: 'succeeded',
     at: '2026-08-05T02:01:05.000Z',
-    indexed: 48
+    indexed: 48,
+    pending: 96
   })
   assert.equal(recovered.scheduled, false)
   assert.equal(recovered.indexedCount, 48)
@@ -12048,6 +12053,10 @@ test('vector continuation health exposes scheduling, progress, retry and recover
   assert.equal(recovered.nextRetryAt, '')
   assert.equal(recovered.lastSuccessAt, '2026-08-05T02:01:05.000Z')
   assert.equal(recovered.lastError, '')
+  assert.equal(recovered.lastRunDurationMs, 64_000)
+  assert.equal(recovered.recentDocumentsPerMinute, 45)
+  assert.equal(recovered.lastPendingCount, 96)
+  assert.equal(recovered.estimatedCompletionAt, '2026-08-05T02:03:13.000Z')
   assert.equal(recordVectorIndexContinuation(recovered, {
     type: 'cancelled',
     at: '2026-08-05T02:02:00.000Z'
@@ -12072,7 +12081,11 @@ test('vector continuation health persists in SQLCipher without reviving an old t
       lastAttemptAt: '2026-08-05T02:00:01.000Z',
       lastSuccessAt: '2026-08-05T02:00:05.000Z',
       lastErrorAt: '2026-08-05T01:59:00.000Z',
-      lastError: ''
+      lastError: '',
+      lastRunDurationMs: 4_250,
+      recentDocumentsPerMinute: 112.5,
+      lastPendingCount: 900,
+      estimatedCompletionAt: '2026-08-05T02:08:05.000Z'
     })
     first.close()
 
@@ -12087,7 +12100,11 @@ test('vector continuation health persists in SQLCipher without reviving an old t
       lastAttemptAt: '2026-08-05T02:00:01.000Z',
       lastSuccessAt: '2026-08-05T02:00:05.000Z',
       lastErrorAt: '2026-08-05T01:59:00.000Z',
-      lastError: ''
+      lastError: '',
+      lastRunDurationMs: 4_250,
+      recentDocumentsPerMinute: 112.5,
+      lastPendingCount: 900,
+      estimatedCompletionAt: '2026-08-05T02:08:05.000Z'
     })
     ;(reopened as any).db.prepare(`
       UPDATE schema_meta SET value='not-json'
@@ -12105,6 +12122,44 @@ test('vector continuation health persists in SQLCipher without reviving an old t
     reopened.close()
     rmSync(directory, { recursive: true, force: true })
   }
+})
+
+test('vector continuation ETA smooths noisy runs and expires after failure', () => {
+  const initial = {
+    scheduled: false,
+    runCount: 0,
+    indexedCount: 0,
+    failureStreak: 0,
+    nextRetryAt: '',
+    lastScheduledAt: '',
+    lastAttemptAt: '',
+    lastSuccessAt: '',
+    lastErrorAt: '',
+    lastError: '',
+    lastRunDurationMs: 0,
+    recentDocumentsPerMinute: 0,
+    lastPendingCount: 0,
+    estimatedCompletionAt: ''
+  }
+  const first = recordVectorIndexContinuation(
+    recordVectorIndexContinuation(initial, { type: 'started', at: '2026-08-05T02:00:00.000Z' }),
+    { type: 'succeeded', at: '2026-08-05T02:01:00.000Z', indexed: 60, pending: 120 }
+  )
+  assert.equal(first.recentDocumentsPerMinute, 60)
+  assert.equal(first.estimatedCompletionAt, '2026-08-05T02:03:00.000Z')
+  const second = recordVectorIndexContinuation(
+    recordVectorIndexContinuation(first, { type: 'started', at: '2026-08-05T02:02:00.000Z' }),
+    { type: 'succeeded', at: '2026-08-05T02:02:30.000Z', indexed: 60, pending: 78 }
+  )
+  assert.equal(second.recentDocumentsPerMinute, 78)
+  assert.equal(second.estimatedCompletionAt, '2026-08-05T02:03:30.000Z')
+  const failed = recordVectorIndexContinuation(second, {
+    type: 'failed',
+    at: '2026-08-05T02:02:31.000Z',
+    error: 'fixture failure'
+  })
+  assert.equal(failed.estimatedCompletionAt, '')
+  assert.equal(failed.recentDocumentsPerMinute, 78)
 })
 
 test('vector continuation retry backs off across restart and caps at six hours', () => {

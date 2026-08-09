@@ -839,7 +839,11 @@ export class AiAssistantService {
     lastAttemptAt: '',
     lastSuccessAt: '',
     lastErrorAt: '',
-    lastError: ''
+    lastError: '',
+    lastRunDurationMs: 0,
+    recentDocumentsPerMinute: 0,
+    lastPendingCount: 0,
+    estimatedCompletionAt: ''
   }
   private vectorQueryHealth: VectorQueryHealth = {
     fallbackCount: 0,
@@ -9907,7 +9911,12 @@ export class AiAssistantService {
       void this.ensureVectorIndex({ maxBatches: 2 }).then(result => {
         this.vectorIndexContinuationHealth = recordVectorIndexContinuation(
           this.vectorIndexContinuationHealth,
-          { type: 'succeeded', at: new Date().toISOString(), indexed: Number(result.indexed || 0) }
+          {
+            type: 'succeeded',
+            at: new Date().toISOString(),
+            indexed: Number(result.indexed || 0),
+            pending: Number(result.pending || 0)
+          }
         )
         this.persistVectorIndexContinuationHealth()
         if (Number(result.pending || 0) > 0 || approximateVectorIndexNeedsRecovery(result.ann)) {
