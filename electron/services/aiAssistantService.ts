@@ -787,6 +787,20 @@ export class AiAssistantService {
     restored: 0,
     lastRunAt: ''
   }
+  private entityTrustReconciliation = {
+    version: 'entity-trust-reconciliation-v2',
+    checkedClaims: 0,
+    checkedEvents: 0,
+    checkedRelations: 0,
+    downgradedClaims: 0,
+    downgradedEvents: 0,
+    downgradedRelations: 0,
+    downgradedClaimsTotal: 0,
+    downgradedEventsTotal: 0,
+    downgradedRelationsTotal: 0,
+    lastRunAt: '',
+    scope: 'all_confirmed_sqlcipher_memory'
+  }
   private taskEvidenceHotsetRecovery = {
     checked: 0,
     restored: 0,
@@ -1233,34 +1247,58 @@ export class AiAssistantService {
 
   private enforceEntityTrustOnDerivedMemory(): void {
     const trustedIds = new Set(this.state.graph.entities.filter(isTrustedEntity).map(entity => entity.id))
-    for (const relation of this.state.graph.relations) {
-      if (relation.status === 'confirmed' &&
-          (!trustedIds.has(relation.subjectId) || !trustedIds.has(relation.objectId))) {
-        relation.status = 'candidate'
-      }
-    }
-    const feed = personalMemoryStore.getMemoryFeed()
-    for (const claim of feed.claims || []) {
-      if (claim.status === 'confirmed' &&
-          (!trustedIds.has(claim.subject_id) ||
-           (claim.object_entity_id && !trustedIds.has(claim.object_entity_id)))) {
-        personalMemoryStore.updateMemoryItemStatus('claim', claim.id, 'candidate', {
-          actor: 'system',
-          reason: '事实涉及尚未确认的实体，自动降级为待确认',
-          protectFromExtraction: false
+    const relationViolations = this.state.graph.relations.filter(relation =>
+      relation.status === 'confirmed' &&
+      (!trustedIds.has(relation.subjectId) || !trustedIds.has(relation.objectId)))
+    const violations = personalMemoryStore.listConfirmedMemoryTrustViolations(trustedIds)
+    const reconciledAt = new Date().toISOString()
+    const graphSnapshot = structuredClone(this.state.graph)
+    const audit = runReversibleGraphMutation({
+      snapshot: graphSnapshot,
+      transact: apply => personalMemoryStore.runInTransaction(apply, {
+        kind: 'system',
+        id: 'startup-entity-trust-reconciliation',
+        sourceKind: 'system'
+      }),
+      apply: () => {
+        for (const claimId of violations.claims) {
+          personalMemoryStore.updateMemoryItemStatus('claim', claimId, 'candidate', {
+            actor: 'system',
+            reason: '事实涉及尚未确认的实体，自动降级为待确认',
+            protectFromExtraction: false
+          })
+        }
+        for (const eventId of violations.events) {
+          personalMemoryStore.updateMemoryItemStatus('event', eventId, 'candidate', {
+            actor: 'system',
+            reason: '事件参与者包含尚未确认的实体，自动降级为待确认',
+            protectFromExtraction: false
+          })
+        }
+        for (const relation of relationViolations) {
+          relation.status = 'candidate'
+          relation.updatedAt = reconciledAt
+        }
+        const result = personalMemoryStore.recordEntityTrustReconciliation({
+          checkedClaims: violations.checkedClaims,
+          checkedEvents: violations.checkedEvents,
+          checkedRelations: this.state.graph.relations
+            .filter(relation => relation.status === 'confirmed').length + relationViolations.length,
+          downgradedClaims: violations.claims.length,
+          downgradedEvents: violations.events.length,
+          downgradedRelations: relationViolations.length,
+          at: reconciledAt
         })
+        this.saveState(true)
+        return result
+      },
+      restore: graph => { this.state.graph = graph },
+      persistRestored: () => this.persistCrossStoreMutationState(),
+      onRollbackError: error => {
+        console.error('[AI Assistant] 实体信任对账回滚状态写入失败:', sanitizeDiagnosticText(error))
       }
-    }
-    for (const event of feed.events || []) {
-      const participantIds = (event.participants || []).map((item: any) => item.entity_id).filter(Boolean)
-      if (event.status === 'confirmed' && participantIds.some((id: string) => !trustedIds.has(id))) {
-        personalMemoryStore.updateMemoryItemStatus('event', event.id, 'candidate', {
-          actor: 'system',
-          reason: '事件参与者包含尚未确认的实体，自动降级为待确认',
-          protectFromExtraction: false
-        })
-      }
-    }
+    })
+    this.entityTrustReconciliation = audit
   }
 
   private ensureLegacyEntityReviews(): void {
@@ -5844,6 +5882,7 @@ export class AiAssistantService {
         authoritativeEvidence: 'sqlcipher_on_demand',
         mergeAndRecoveryBounded: true
       },
+      entityTrustReconciliation: this.entityTrustReconciliation,
       graphRelationEvidenceHotset: {
         version: 'graph-relation-evidence-hotset-v1',
         hotLimitPerRelation: 100,

@@ -11071,7 +11071,8 @@ export class PersonalMemoryStore {
   ): void {
     if (!this.db) return
     const now = new Date().toISOString()
-    if (!withinTransaction) this.db.exec('BEGIN IMMEDIATE')
+    const ownsTransaction = !withinTransaction && !this.db.inTransaction
+    if (ownsTransaction) this.db.exec('BEGIN IMMEDIATE')
     try {
       let repairedDerivedDocuments = 0
       let repairedMissingDocuments = 0
@@ -11313,9 +11314,9 @@ export class PersonalMemoryStore {
           + repairedEvidenceSets,
         currentMismatches: 0
       }), now)
-      if (!withinTransaction) this.db.exec('COMMIT')
+      if (ownsTransaction) this.db.exec('COMMIT')
     } catch (error) {
-      if (!withinTransaction) this.db.exec('ROLLBACK')
+      if (ownsTransaction) this.db.exec('ROLLBACK')
       throw error
     }
   }
@@ -13904,7 +13905,7 @@ export class PersonalMemoryStore {
             : '用户将该记忆恢复为待确认'
         : '系统规则调整可信状态'
     )).slice(0, 300)
-    return this.db.transaction(() => {
+    const operation = () => {
       const previous = this.db!.prepare(`SELECT status FROM ${table} WHERE id=?`).get(id) as any
       if (!previous) return null
       this.db!.prepare(`
@@ -13939,7 +13940,8 @@ export class PersonalMemoryStore {
             ORDER BY decision.id DESC LIMIT 1) AS reviewed_at
         FROM ${table} item WHERE item.id=?
       `).get(kind, kind, id) || null
-    })()
+    }
+    return this.db.inTransaction ? operation() : this.db.transaction(operation)()
   }
 
   getMemoryCascadeStates(items: Array<{
@@ -14048,6 +14050,88 @@ export class PersonalMemoryStore {
         }
       })
     ]
+  }
+
+  listConfirmedMemoryTrustViolations(trustedEntityIds: Set<string>): {
+    checkedClaims: number
+    checkedEvents: number
+    claims: string[]
+    events: string[]
+  } {
+    if (!this.db) return { checkedClaims: 0, checkedEvents: 0, claims: [], events: [] }
+    const trusted = trustedEntityIds instanceof Set
+      ? trustedEntityIds : new Set<string>()
+    const claims = this.db.prepare(`
+      SELECT id,subject_id,object_entity_id FROM claims
+      WHERE status='confirmed' ORDER BY id
+    `).all() as Array<{ id: string; subject_id: string | null; object_entity_id: string | null }>
+    const events = this.db.prepare(`
+      SELECT id FROM events WHERE status='confirmed' ORDER BY id
+    `).all() as Array<{ id: string }>
+    const participants = this.db.prepare(`
+      SELECT participant.event_id,participant.entity_id
+      FROM event_participants participant
+      INNER JOIN events event ON event.id=participant.event_id
+      WHERE event.status='confirmed'
+      ORDER BY participant.event_id,participant.entity_id
+    `).all() as Array<{ event_id: string; entity_id: string }>
+    const untrustedEvents = new Set<string>()
+    for (const participant of participants) {
+      if (!trusted.has(String(participant.entity_id || ''))) {
+        untrustedEvents.add(String(participant.event_id || ''))
+      }
+    }
+    return {
+      checkedClaims: claims.length,
+      checkedEvents: events.length,
+      claims: claims.filter(claim =>
+        !trusted.has(String(claim.subject_id || '')) ||
+        (Boolean(claim.object_entity_id) &&
+          !trusted.has(String(claim.object_entity_id || '')))
+      ).map(claim => claim.id),
+      events: events.map(event => event.id).filter(id => untrustedEvents.has(id))
+    }
+  }
+
+  recordEntityTrustReconciliation(input: {
+    checkedClaims: number
+    checkedEvents: number
+    checkedRelations: number
+    downgradedClaims: number
+    downgradedEvents: number
+    downgradedRelations: number
+    at?: string
+  }): any {
+    if (!this.db) throw new Error('个人记忆数据库尚未初始化')
+    const row = this.db.prepare(`
+      SELECT value FROM schema_meta WHERE key='entity_trust_reconciliation_v2'
+    `).get() as any
+    let previous: any = {}
+    try { previous = JSON.parse(String(row?.value || '{}')) } catch {}
+    const lastRunAt = String(input.at || new Date().toISOString())
+    const audit = {
+      version: 'entity-trust-reconciliation-v2',
+      scope: 'all_confirmed_sqlcipher_memory',
+      checkedClaims: Math.max(0, Number(input.checkedClaims || 0)),
+      checkedEvents: Math.max(0, Number(input.checkedEvents || 0)),
+      checkedRelations: Math.max(0, Number(input.checkedRelations || 0)),
+      downgradedClaims: Math.max(0, Number(input.downgradedClaims || 0)),
+      downgradedEvents: Math.max(0, Number(input.downgradedEvents || 0)),
+      downgradedRelations: Math.max(0, Number(input.downgradedRelations || 0)),
+      downgradedClaimsTotal: Math.max(0, Number(previous.downgradedClaimsTotal || 0)) +
+        Math.max(0, Number(input.downgradedClaims || 0)),
+      downgradedEventsTotal: Math.max(0, Number(previous.downgradedEventsTotal || 0)) +
+        Math.max(0, Number(input.downgradedEvents || 0)),
+      downgradedRelationsTotal: Math.max(0, Number(previous.downgradedRelationsTotal || 0)) +
+        Math.max(0, Number(input.downgradedRelations || 0)),
+      lastRunAt
+    }
+    this.db.prepare(`
+      INSERT INTO schema_meta(key,value,updated_at)
+      VALUES('entity_trust_reconciliation_v2',?,?)
+      ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_at=excluded.updated_at
+    `).run(JSON.stringify(audit), lastRunAt)
+    return audit
   }
 
   recordTaskChanges(taskId: string, before: any, after: any, reason = 'manual_edit', evidence: any[] = []): void {

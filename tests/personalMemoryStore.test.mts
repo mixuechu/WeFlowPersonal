@@ -1244,6 +1244,183 @@ test('memory cascade state exposes only the latest exact system decision identit
   })
 })
 
+test('entity trust reconciliation scans confirmed memory beyond the bounded dashboard feed', () => {
+  withStore(store => {
+    store.syncGraph({
+      entities: [{
+        id: 'trust-safe', type: 'person', canonicalName: '可信人物', trustStatus: 'confirmed',
+        aliases: [], accountIds: [], externalIdentities: [], confidence: 1
+      }, {
+        id: 'trust-unsafe', type: 'person', canonicalName: '未确认人物', trustStatus: 'candidate',
+        aliases: [], accountIds: [], externalIdentities: [], confidence: 0.7
+      }],
+      relations: [], reviewQueue: []
+    } as any)
+    store.upsertClaims([{
+      id: 'trust-old-unsafe-claim', subjectId: 'trust-unsafe', predicate: '旧事实',
+      objectValue: '不应保持确认', confidence: 0.9, status: 'confirmed',
+      sourceNature: 'other_statement', searchText: '未确认人物旧事实',
+      evidence: evidence('trust-old-unsafe-claim-message', '未确认人物旧事实')
+    }, ...Array.from({ length: 110 }, (_, index) => ({
+      id: `trust-new-safe-claim-${index}`, subjectId: 'trust-safe', predicate: `安全事实${index}`,
+      objectValue: `值${index}`, confidence: 0.9, status: 'confirmed',
+      sourceNature: 'self_statement', searchText: `可信人物安全事实${index}`,
+      evidence: evidence(`trust-new-safe-claim-message-${index}`, `可信人物安全事实${index}`)
+    }))])
+    store.upsertEvents([{
+      id: 'trust-old-unsafe-event', eventType: 'meeting', title: '旧事件', description: '',
+      startAt: '2020-01-01T00:00:00.000Z', endAt: '', location: '', confidence: 0.9,
+      status: 'confirmed', searchText: '未确认人物旧事件',
+      participants: [{ entityId: 'trust-unsafe', role: '参与者' }],
+      evidence: evidence('trust-old-unsafe-event-message', '未确认人物旧事件')
+    }, ...Array.from({ length: 110 }, (_, index) => ({
+      id: `trust-new-safe-event-${index}`, eventType: 'meeting', title: `安全事件${index}`,
+      description: '', startAt: `2026-08-${String(10 + index % 20).padStart(2, '0')}T00:00:00.000Z`,
+      endAt: '', location: '', confidence: 0.9, status: 'confirmed',
+      searchText: `可信人物安全事件${index}`,
+      participants: [{ entityId: 'trust-safe', role: '参与者' }],
+      evidence: evidence(`trust-new-safe-event-message-${index}`, `可信人物安全事件${index}`)
+    }))])
+    const db = (store as any).db
+    db.prepare(`UPDATE claims SET updated_at='2020-01-01T00:00:00.000Z'
+      WHERE id='trust-old-unsafe-claim'`).run()
+    const feed = store.getMemoryFeed(100, false)
+    assert.equal(feed.claims.some((item: any) => item.id === 'trust-old-unsafe-claim'), false)
+    assert.equal(feed.events.some((item: any) => item.id === 'trust-old-unsafe-event'), false)
+
+    const violations = store.listConfirmedMemoryTrustViolations(new Set(['trust-safe']))
+    assert.equal(violations.checkedClaims, 111)
+    assert.equal(violations.checkedEvents, 111)
+    assert.deepEqual(violations.claims, ['trust-old-unsafe-claim'])
+    assert.deepEqual(violations.events, ['trust-old-unsafe-event'])
+    const firstAudit = store.recordEntityTrustReconciliation({
+      ...violations,
+      checkedRelations: 2,
+      downgradedClaims: violations.claims.length,
+      downgradedEvents: violations.events.length,
+      downgradedRelations: 1,
+      at: '2026-08-09T07:00:00.000Z'
+    })
+    const secondAudit = store.recordEntityTrustReconciliation({
+      checkedClaims: 110, checkedEvents: 110, checkedRelations: 1,
+      downgradedClaims: 0, downgradedEvents: 0, downgradedRelations: 0,
+      at: '2026-08-09T08:00:00.000Z'
+    })
+    assert.equal(firstAudit.downgradedClaimsTotal, 1)
+    assert.equal(secondAudit.downgradedClaimsTotal, 1)
+    assert.equal(secondAudit.downgradedEventsTotal, 1)
+    assert.equal(secondAudit.downgradedRelationsTotal, 1)
+  })
+})
+
+test('entity trust reconciliation rolls every downgrade and audit row back on failure', () => {
+  withStore(store => {
+    store.syncGraph({
+      entities: [{
+        id: 'trust-rollback-unsafe', type: 'person', canonicalName: '回滚人物',
+        trustStatus: 'candidate', aliases: [], accountIds: [], confidence: 0.7
+      }], relations: [], reviewQueue: []
+    } as any)
+    store.upsertClaims([{
+      id: 'trust-rollback-claim', subjectId: 'trust-rollback-unsafe', predicate: '参与',
+      objectValue: '回滚测试', confidence: 0.9, status: 'confirmed',
+      sourceNature: 'other_statement', searchText: '回滚事实',
+      evidence: evidence('trust-rollback-claim-message', '回滚事实')
+    }])
+    store.upsertEvents([{
+      id: 'trust-rollback-event', eventType: 'meeting', title: '回滚事件', description: '',
+      startAt: '', endAt: '', location: '', confidence: 0.9, status: 'confirmed',
+      searchText: '回滚事件', participants: [{ entityId: 'trust-rollback-unsafe', role: '参与者' }],
+      evidence: evidence('trust-rollback-event-message', '回滚事件')
+    }])
+    const violations = store.listConfirmedMemoryTrustViolations(new Set())
+    assert.deepEqual(violations.claims, ['trust-rollback-claim'])
+    assert.deepEqual(violations.events, ['trust-rollback-event'])
+    let graph: any = { relations: [{ id: 'trust-rollback-relation', status: 'confirmed' }] }
+    let persisted: any = null
+    assert.throws(() => runReversibleGraphMutation({
+      snapshot: structuredClone(graph),
+      transact: apply => store.runInTransaction(apply, {
+        kind: 'system', id: 'trust-reconciliation-fault', sourceKind: 'system'
+      }),
+      apply: () => {
+        store.updateMemoryItemStatus('claim', violations.claims[0], 'candidate', {
+          actor: 'system', reason: '事务回滚测试', protectFromExtraction: false
+        })
+        store.updateMemoryItemStatus('event', violations.events[0], 'candidate', {
+          actor: 'system', reason: '事务回滚测试', protectFromExtraction: false
+        })
+        graph.relations[0].status = 'candidate'
+        store.recordEntityTrustReconciliation({
+          checkedClaims: 1, checkedEvents: 1, checkedRelations: 1,
+          downgradedClaims: 1, downgradedEvents: 1, downgradedRelations: 1
+        })
+        throw new Error('injected trust reconciliation failure')
+      },
+      restore: snapshot => { graph = snapshot },
+      persistRestored: () => { persisted = structuredClone(graph) }
+    }), /injected trust reconciliation failure/)
+    assert.equal(graph.relations[0].status, 'confirmed')
+    assert.deepEqual(persisted, graph)
+    const after = store.listConfirmedMemoryTrustViolations(new Set())
+    assert.deepEqual(after.claims, ['trust-rollback-claim'])
+    assert.deepEqual(after.events, ['trust-rollback-event'])
+    assert.deepEqual(store.getMemoryCascadeStates([
+      { kind: 'claim', id: 'trust-rollback-claim' },
+      { kind: 'event', id: 'trust-rollback-event' }
+    ]).map(item => [item.kind, item.status, item.latestDecision]), [
+      ['claim', 'confirmed', null], ['event', 'confirmed', null]
+    ])
+    assert.equal((store as any).db.prepare(`
+      SELECT COUNT(*) AS count FROM schema_meta WHERE key='entity_trust_reconciliation_v2'
+    `).get().count, 0)
+  })
+})
+
+test('entity trust reconciliation can commit memory downgrades inside its outer transaction', () => {
+  withStore(store => {
+    store.syncGraph({
+      entities: [{
+        id: 'trust-commit-unsafe', type: 'person', canonicalName: '待确认人物',
+        trustStatus: 'candidate', aliases: [], accountIds: [], confidence: 0.7
+      }], relations: [], reviewQueue: []
+    } as any)
+    store.upsertClaims([{
+      id: 'trust-commit-claim', subjectId: 'trust-commit-unsafe', predicate: '参与',
+      objectValue: '启动对账', confidence: 0.9, status: 'confirmed',
+      sourceNature: 'other_statement', searchText: '待确认人物参与启动对账',
+      evidence: evidence('trust-commit-claim-message', '待确认人物参与启动对账')
+    }])
+    store.upsertEvents([{
+      id: 'trust-commit-event', eventType: 'meeting', title: '启动对账事件', description: '',
+      startAt: '', endAt: '', location: '', confidence: 0.9, status: 'confirmed',
+      searchText: '启动对账事件', participants: [{ entityId: 'trust-commit-unsafe', role: '参与者' }],
+      evidence: evidence('trust-commit-event-message', '启动对账事件')
+    }])
+    store.runInTransaction(() => {
+      store.updateMemoryItemStatus('claim', 'trust-commit-claim', 'candidate', {
+        actor: 'system', reason: '启动全历史信任对账', protectFromExtraction: false
+      })
+      store.updateMemoryItemStatus('event', 'trust-commit-event', 'candidate', {
+        actor: 'system', reason: '启动全历史信任对账', protectFromExtraction: false
+      })
+      store.recordEntityTrustReconciliation({
+        checkedClaims: 1, checkedEvents: 1, checkedRelations: 0,
+        downgradedClaims: 1, downgradedEvents: 1, downgradedRelations: 0
+      })
+      // saveState() invokes this public path without its legacy nested hint. The store must
+      // still honor the authoritative database transaction that is already active.
+      store.syncTasks([], false, true)
+    }, { kind: 'system', id: 'startup-entity-trust-reconciliation', sourceKind: 'system' })
+    assert.deepEqual(store.getMemoryCascadeStates([
+      { kind: 'claim', id: 'trust-commit-claim' },
+      { kind: 'event', id: 'trust-commit-event' }
+    ]).map(item => [item.kind, item.status, item.latestDecision?.actor]), [
+      ['claim', 'candidate', 'system'], ['event', 'candidate', 'system']
+    ])
+  })
+})
+
 test('review ledger pagination keeps stable boundaries and scoped counts', () => {
   const reviews = Array.from({ length: 95 }, (_, index) => ({
     id: `review-${String(index).padStart(3, '0')}`,

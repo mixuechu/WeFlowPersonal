@@ -9748,6 +9748,9 @@ function AiAssistantPage() {
                   {memoryDiagnostics.resourceEvidenceArchive?.version
                     ? ` · 资源版本原文 ${Number(memoryDiagnostics.resourceEvidenceArchive.authoritativeEvidenceRows || 0).toLocaleString()} 条 / 累计保留历史 ${Number(memoryDiagnostics.resourceEvidenceArchive.preservedHistoricalRowsTotal || 0).toLocaleString()} 条`
                     : ''}
+                  {memoryDiagnostics.entityTrustReconciliation?.version
+                    ? ` · 实体信任全量核对 ${Number(memoryDiagnostics.entityTrustReconciliation.checkedClaims || 0) + Number(memoryDiagnostics.entityTrustReconciliation.checkedEvents || 0) + Number(memoryDiagnostics.entityTrustReconciliation.checkedRelations || 0)} 项 / 本次降级 ${Number(memoryDiagnostics.entityTrustReconciliation.downgradedClaims || 0) + Number(memoryDiagnostics.entityTrustReconciliation.downgradedEvents || 0) + Number(memoryDiagnostics.entityTrustReconciliation.downgradedRelations || 0)} 项`
+                    : ''}
                 </small>
               </span>
             </div>
@@ -15787,6 +15790,25 @@ function AiAssistantPage() {
                 : '未配置费率'}</b></span>
               <span>运行结果 <b>{memoryDiagnostics.ingestionSummary?.completedRuns || 0} 完成 / {memoryDiagnostics.ingestionSummary?.partialRuns || 0} 部分 / {memoryDiagnostics.ingestionSummary?.failedRuns || 0} 失败</b></span>
             </div>
+            {memoryDiagnostics.entityTrustReconciliation?.version && <div className="assistant-recovery-audit healthy">
+              <header><ShieldCheck size={15} /><span><b>实体信任与全历史记忆对账</b>
+                <small>每次启动直接扫描 SQLCipher 中全部已确认事实和事件，不依赖首页最近数据；任何仍连接未确认、历史未验证或已拒绝实体的内容都会事务化降为候选。图谱关系使用完整内存图同步核对。</small>
+              </span></header>
+              <div className="assistant-recovery-current">
+                <span>核对关系 <b>{Number(memoryDiagnostics.entityTrustReconciliation.checkedRelations || 0).toLocaleString()}</b></span>
+                <span>核对事实 <b>{Number(memoryDiagnostics.entityTrustReconciliation.checkedClaims || 0).toLocaleString()}</b></span>
+                <span>核对事件 <b>{Number(memoryDiagnostics.entityTrustReconciliation.checkedEvents || 0).toLocaleString()}</b></span>
+                <span>本次降级关系 <b>{Number(memoryDiagnostics.entityTrustReconciliation.downgradedRelations || 0).toLocaleString()}</b></span>
+                <span>本次降级事实 <b>{Number(memoryDiagnostics.entityTrustReconciliation.downgradedClaims || 0).toLocaleString()}</b></span>
+                <span>本次降级事件 <b>{Number(memoryDiagnostics.entityTrustReconciliation.downgradedEvents || 0).toLocaleString()}</b></span>
+                <span>累计降级 <b>{(Number(memoryDiagnostics.entityTrustReconciliation.downgradedRelationsTotal || 0) +
+                  Number(memoryDiagnostics.entityTrustReconciliation.downgradedClaimsTotal || 0) +
+                  Number(memoryDiagnostics.entityTrustReconciliation.downgradedEventsTotal || 0)).toLocaleString()}</b></span>
+                <span>最近核对 <b>{memoryDiagnostics.entityTrustReconciliation.lastRunAt
+                  ? new Date(memoryDiagnostics.entityTrustReconciliation.lastRunAt).toLocaleString('zh-CN', { hour12: false })
+                  : '尚未执行'}</b></span>
+              </div>
+            </div>}
             {memoryDiagnostics.eventDeduplicationAuthority?.version && <div className="assistant-recovery-audit healthy">
               <header><ShieldCheck size={15} /><span><b>事件去重权威保护</b>
                 <small>相同原文与相同时间的重复事件按人工纠正、受保护审阅和可信状态确定性归并；两条都有人工作出决定时保守并存，等待你继续审阅。</small>
