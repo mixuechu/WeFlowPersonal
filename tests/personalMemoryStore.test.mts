@@ -1670,6 +1670,107 @@ test('legacy graph review evidence migrates atomically out of payloads and casca
   }
 })
 
+test('legacy graph review evidence provenance repairs only uniquely proven carriers and is idempotent', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'weflow-review-provenance-repair-test-'))
+  const databasePath = join(directory, 'memory.sqlite')
+  const first = new PersonalMemoryStore()
+  const reopened = new PersonalMemoryStore()
+  const secondRestart = new PersonalMemoryStore()
+  try {
+    first.initialize(databasePath)
+    const review = (id: string) => ({
+      id, kind: 'entity_creation', title: id, detail: '', confidence: 0.7,
+      status: 'pending', createdAt: '2026-08-09T00:00:00.000Z', evidence: []
+    })
+    first.syncGraph({
+      entities: [
+        { id: 'repair-person-a', type: 'person', canonicalName: '甲', trustStatus: 'confirmed' },
+        { id: 'repair-person-b', type: 'person', canonicalName: '乙', trustStatus: 'confirmed' }
+      ],
+      relations: [],
+      reviewQueue: [
+        review('repair-unique'), review('repair-ambiguous'), review('repair-unresolved'),
+        review('repair-preserved'), review('repair-collision')
+      ]
+    } as any)
+    const db = (first as any).db
+    const insertAuthority = db.prepare(`
+      INSERT INTO entity_evidence(
+        entity_id,source_id,message_id,session_id,timestamp,sender,excerpt,evidence_kind
+      ) VALUES(?,?,?,?,?,?,?,'identity')
+    `)
+    insertAuthority.run(
+      'repair-person-a', 'wechat', 'wechat:room:unique', 'room', 100, '唯一发送者', '权威原文'
+    )
+    insertAuthority.run(
+      'repair-person-a', 'wechat', 'wechat:room:ambiguous', 'room', 101, '发送者甲', '歧义一'
+    )
+    insertAuthority.run(
+      'repair-person-b', 'wechat', 'wechat:room:ambiguous', 'room', 101, '发送者乙', '歧义二'
+    )
+    const insertReviewEvidence = db.prepare(`
+      INSERT INTO graph_review_evidence(
+        review_id,evidence_key,source_id,session_id,message_id,timestamp,
+        sender,excerpt,evidence_json,created_at
+      ) VALUES(?,?,?,?,?,?,?,?,?,?)
+    `)
+    const evidence = (reviewId: string, key: string, sourceId: string, messageId: string,
+      sender = '', excerpt = reviewId) => insertReviewEvidence.run(
+      reviewId, key, sourceId, 'room', messageId, 100, sender, excerpt,
+      JSON.stringify({ sourceId, sessionId: 'room', messageId, sender, excerpt, timestamp: 100 }),
+      '2026-08-09T00:00:00.000Z'
+    )
+    evidence('repair-unique', 'legacy-unique-key', 'legacy', 'wechat:room:unique')
+    evidence('repair-ambiguous', 'ambiguous-key', 'wechat', 'wechat:room:ambiguous')
+    evidence('repair-unresolved', 'unresolved-key', 'legacy', 'opaque-message')
+    evidence('repair-preserved', 'preserved-key', 'wechat', 'wechat:room:ambiguous', '人工已有发送者')
+    const collisionMessage = 'wechat:room:unique'
+    const collisionKey = (first as any).graphReviewEvidenceKey({
+      sourceId: 'wechat', sessionId: 'room', messageId: collisionMessage
+    })
+    evidence('repair-collision', 'collision-legacy-key', 'legacy', collisionMessage, '', '更长的旧候选原文')
+    evidence('repair-collision', collisionKey, 'wechat', collisionMessage, '', '短')
+    first.close()
+
+    reopened.initialize(databasePath)
+    const health = reopened.getGraphReviewEvidenceStorageHealth()
+    assert.equal(health.provenanceRepair.policy, 'unique_authoritative_carrier_only')
+    assert.equal(health.provenanceRepair.rowsCheckedThisStart, 5)
+    assert.equal(health.provenanceRepair.sourceRowsRepairedThisStart, 2)
+    assert.equal(health.provenanceRepair.senderRowsRepairedThisStart, 2)
+    assert.equal(health.provenanceRepair.rowsMergedThisStart, 1)
+    assert.equal(health.provenanceRepair.ambiguousSenderRowsThisStart, 1)
+    assert.equal(health.provenanceRepair.unresolvedRowsThisStart, 2)
+    const page = (reviewId: string) => reopened.listGraphReviewEvidencePage({
+      reviewId, revision: reopened.getGraphReviewRevision(), limit: 40
+    })
+    assert.deepEqual(page('repair-unique').items.map((item: any) => [item.sourceId, item.sender]), [
+      ['wechat', '唯一发送者']
+    ])
+    assert.equal(page('repair-ambiguous').items[0].sender, '')
+    assert.equal(page('repair-unresolved').items[0].sourceId, 'legacy')
+    assert.equal(page('repair-preserved').items[0].sender, '人工已有发送者')
+    assert.equal(page('repair-collision').total, 1)
+    assert.equal(page('repair-collision').items[0].sender, '唯一发送者')
+    assert.equal(page('repair-collision').items[0].excerpt, '更长的旧候选原文')
+    reopened.close()
+
+    secondRestart.initialize(databasePath)
+    const afterRestart = secondRestart.getGraphReviewEvidenceStorageHealth().provenanceRepair
+    assert.equal(afterRestart.sourceRowsRepairedThisStart, 0)
+    assert.equal(afterRestart.senderRowsRepairedThisStart, 0)
+    assert.equal(afterRestart.rowsMergedThisStart, 0)
+    assert.equal(afterRestart.sourceRowsRepairedTotal, 2)
+    assert.equal(afterRestart.senderRowsRepairedTotal, 2)
+    assert.equal(afterRestart.rowsMergedTotal, 1)
+  } finally {
+    first.close()
+    reopened.close()
+    secondRestart.close()
+    rmSync(directory, { recursive: true, force: true })
+  }
+})
+
 test('relation confirmation can atomically correct direction and predicate', () => {
   const entities = [
     { id: 'a', canonicalName: '甲方', trustStatus: 'confirmed' },

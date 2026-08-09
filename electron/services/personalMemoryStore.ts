@@ -1822,6 +1822,7 @@ export class PersonalMemoryStore {
     this.backfillHumanReviewCalibrationHistory()
     this.ensureGraphReviewEvidencePageIndex()
     this.migrateGraphReviewEvidenceArchive()
+    this.repairGraphReviewEvidenceProvenance()
     this.ensureGraphReviewRevisionTriggers()
     this.normalizeTaskHistoryEvidence()
     this.repairTaskEvidenceArchiveFromHistory()
@@ -9273,6 +9274,167 @@ export class PersonalMemoryStore {
     }
   }
 
+  private repairGraphReviewEvidenceProvenance(): void {
+    if (!this.db) return
+    const auditKey = 'graph_review_evidence_provenance_repair_v1'
+    let previous: any = {}
+    try {
+      previous = JSON.parse(String((this.db.prepare(
+        'SELECT value FROM schema_meta WHERE key=?'
+      ).get(auditKey) as any)?.value || '{}'))
+    } catch {}
+    const rows = this.db.prepare(`
+      SELECT review_id,evidence_key,source_id,session_id,message_id,timestamp,
+        sender,excerpt,evidence_json,created_at
+      FROM graph_review_evidence
+      WHERE message_id!='' AND (source_id='legacy' OR sender='')
+      ORDER BY review_id,CASE WHEN source_id='legacy' THEN 0 ELSE 1 END,evidence_key
+    `).all() as any[]
+    const authority = this.db.prepare(`
+      SELECT source_id,sender FROM entity_evidence
+      WHERE session_id=? AND message_id=?
+      UNION ALL
+      SELECT source_id,sender FROM evidence
+      WHERE session_id=? AND message_id=?
+      UNION ALL
+      SELECT source_id,sender FROM search_document_evidence
+      WHERE session_id=? AND message_id=?
+    `)
+    const update = this.db.prepare(`
+      UPDATE graph_review_evidence SET
+        evidence_key=?,source_id=?,sender=?,evidence_json=?
+      WHERE review_id=? AND evidence_key=?
+    `)
+    const updateMerged = this.db.prepare(`
+      UPDATE graph_review_evidence SET
+        timestamp=?,sender=?,excerpt=?,evidence_json=?,created_at=?
+      WHERE review_id=? AND evidence_key=?
+    `)
+    const remove = this.db.prepare(`
+      DELETE FROM graph_review_evidence WHERE review_id=? AND evidence_key=?
+    `)
+    const findCollision = this.db.prepare(`
+      SELECT review_id,evidence_key,source_id,session_id,message_id,timestamp,
+        sender,excerpt,evidence_json,created_at
+      FROM graph_review_evidence WHERE review_id=? AND evidence_key=?
+    `)
+    const findCurrent = this.db.prepare(`
+      SELECT review_id,evidence_key,source_id,session_id,message_id,timestamp,
+        sender,excerpt,evidence_json,created_at
+      FROM graph_review_evidence WHERE review_id=? AND evidence_key=?
+    `)
+    let sourceRowsRepaired = 0
+    let senderRowsRepaired = 0
+    let rowsMerged = 0
+    let ambiguousSenderRows = 0
+    const transaction = this.db.transaction(() => {
+      for (const queuedRow of rows) {
+        const row = findCurrent.get(queuedRow.review_id, queuedRow.evidence_key) as any
+        if (!row || (String(row.source_id || '') !== 'legacy' && String(row.sender || '') !== '')) {
+          continue
+        }
+        const sessionId = String(row.session_id || '').trim()
+        const messageId = String(row.message_id || '').trim()
+        const currentSource = String(row.source_id || 'legacy').trim() || 'legacy'
+        const authoritative = authority.all(
+          sessionId, messageId, sessionId, messageId, sessionId, messageId
+        ) as any[]
+        const authoritySources = [...new Set(authoritative
+          .map(item => String(item.source_id || '').trim())
+          .filter(source => source && source !== 'legacy'))]
+        const embeddedSource = messageId.match(/^(wechat|documents|calendar|mail):/)?.[1] || ''
+        const strictlyEmbedded = embeddedSource && sessionId &&
+          messageId.startsWith(`${embeddedSource}:${sessionId}:`)
+          ? embeddedSource
+          : ''
+        const repairedSource = currentSource !== 'legacy'
+          ? currentSource
+          : strictlyEmbedded || (authoritySources.length === 1 ? authoritySources[0] : 'legacy')
+        const matchingSenders = [...new Set(authoritative
+          .filter(item => String(item.source_id || 'legacy').trim() === repairedSource)
+          .map(item => String(item.sender || '').trim())
+          .filter(Boolean))]
+        const currentSender = String(row.sender || '').trim()
+        const repairedSender = currentSender || (matchingSenders.length === 1 ? matchingSenders[0] : '')
+        if (!currentSender && matchingSenders.length > 1) ambiguousSenderRows += 1
+        const sourceChanged = currentSource === 'legacy' && repairedSource !== 'legacy'
+        const senderChanged = !currentSender && Boolean(repairedSender)
+        if (!sourceChanged && !senderChanged) {
+          continue
+        }
+        let evidenceJson: any = {}
+        try { evidenceJson = JSON.parse(String(row.evidence_json || '{}')) } catch {}
+        evidenceJson = {
+          ...(evidenceJson && typeof evidenceJson === 'object' ? evidenceJson : {}),
+          sourceId: repairedSource,
+          sessionId,
+          messageId,
+          sender: repairedSender,
+          timestamp: Number(row.timestamp || 0),
+          excerpt: String(row.excerpt || '')
+        }
+        const nextKey = this.graphReviewEvidenceKey(evidenceJson)
+        const collision = nextKey === String(row.evidence_key || '')
+          ? null
+          : findCollision.get(row.review_id, nextKey) as any
+        if (collision) {
+          let collisionJson: any = {}
+          try { collisionJson = JSON.parse(String(collision.evidence_json || '{}')) } catch {}
+          const sender = String(collision.sender || '').trim() || repairedSender
+          const excerpt = String(collision.excerpt || '').length >= String(row.excerpt || '').length
+            ? String(collision.excerpt || '') : String(row.excerpt || '')
+          const timestamp = Math.max(Number(collision.timestamp || 0), Number(row.timestamp || 0))
+          const mergedJson = {
+            ...(collisionJson && typeof collisionJson === 'object' ? collisionJson : {}),
+            sourceId: repairedSource,
+            sessionId,
+            messageId,
+            sender,
+            timestamp,
+            excerpt
+          }
+          updateMerged.run(
+            timestamp, sender, excerpt, JSON.stringify(mergedJson),
+            String(collision.created_at || row.created_at || ''), row.review_id, nextKey
+          )
+          remove.run(row.review_id, row.evidence_key)
+          rowsMerged += 1
+        } else {
+          update.run(
+            nextKey, repairedSource, repairedSender, JSON.stringify(evidenceJson),
+            row.review_id, row.evidence_key
+          )
+        }
+        if (sourceChanged) sourceRowsRepaired += 1
+        if (senderChanged) senderRowsRepaired += 1
+      }
+      const checkedAt = new Date().toISOString()
+      const unresolvedRows = Number((this.db!.prepare(`
+        SELECT COUNT(*) AS count FROM graph_review_evidence
+        WHERE message_id!='' AND (source_id='legacy' OR sender='')
+      `).get() as any)?.count || 0)
+      this.db!.prepare(`
+        INSERT INTO schema_meta(key,value,updated_at) VALUES(?,?,?)
+        ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_at=excluded.updated_at
+      `).run(auditKey, JSON.stringify({
+        version: 1,
+        policy: 'unique_authoritative_carrier_only',
+        checkedAt,
+        rowsCheckedThisStart: rows.length,
+        sourceRowsRepairedThisStart: sourceRowsRepaired,
+        senderRowsRepairedThisStart: senderRowsRepaired,
+        rowsMergedThisStart: rowsMerged,
+        ambiguousSenderRowsThisStart: ambiguousSenderRows,
+        unresolvedRowsThisStart: unresolvedRows,
+        sourceRowsRepairedTotal: Number(previous.sourceRowsRepairedTotal || 0) + sourceRowsRepaired,
+        senderRowsRepairedTotal: Number(previous.senderRowsRepairedTotal || 0) + senderRowsRepaired,
+        rowsMergedTotal: Number(previous.rowsMergedTotal || 0) + rowsMerged,
+        ambiguousSenderRowsTotal: Number(previous.ambiguousSenderRowsTotal || 0) + ambiguousSenderRows
+      }), checkedAt)
+    })
+    transaction()
+  }
+
   getGraphReviewEvidenceStorageHealth(): any {
     if (!this.db) return { healthy: false, version: 1, evidenceRows: 0 }
     const columns = (this.db.prepare(`PRAGMA table_info('graph_review_evidence')`).all() as any[])
@@ -9302,10 +9464,15 @@ export class PersonalMemoryStore {
     const indexAuditRow = this.db.prepare(`
       SELECT value FROM schema_meta WHERE key='graph_review_evidence_index_integrity_v1'
     `).get() as any
+    const provenanceAuditRow = this.db.prepare(`
+      SELECT value FROM schema_meta WHERE key='graph_review_evidence_provenance_repair_v1'
+    `).get() as any
     let migration: any = {}
     let indexAudit: any = {}
+    let provenanceAudit: any = {}
     try { migration = JSON.parse(String(auditRow?.value || '{}')) } catch {}
     try { indexAudit = JSON.parse(String(indexAuditRow?.value || '{}')) } catch {}
+    try { provenanceAudit = JSON.parse(String(provenanceAuditRow?.value || '{}')) } catch {}
     const columnsHealthy = expectedColumns.every(column => columns.includes(column))
     const indexHealthy = /review_id\s*,\s*timestamp\s+desc\s*,\s*source_id\s*,\s*session_id\s*,\s*message_id\s+desc\s*,\s*evidence_key/i.test(String(index))
     return {
@@ -9319,7 +9486,8 @@ export class PersonalMemoryStore {
       evidenceRows,
       repairedIndexThisStart: indexAudit.repairedThisStart === true,
       indexRepairsTotal: Number(indexAudit.repairsTotal || 0),
-      ...migration
+      ...migration,
+      provenanceRepair: provenanceAudit
     }
   }
 
