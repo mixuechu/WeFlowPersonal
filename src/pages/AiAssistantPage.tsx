@@ -16005,6 +16005,7 @@ function AiAssistantPage() {
                 待办派生文档 {Number(memorySearchRepairResult.repaired.taskDocuments || 0)}；
                 结构化证据触发器 {Number(memorySearchRepairResult.repaired.structuredEvidenceTriggers || 0)}，
                 通用证据触发器 {Number(memorySearchRepairResult.repaired.generalEvidenceTriggers || 0)}，
+                证据范围与实体记忆索引 {Number(memorySearchRepairResult.repaired.evidenceScopeIndexes || 0)}，
                 审阅收件箱索引 {Number(memorySearchRepairResult.repaired.reviewInboxIndexes || 0)}，
                 自动归属抽检索引 {Number(memorySearchRepairResult.repaired.mineTaskOwnershipAuditIndex || 0)}；
                 成长账本触发器 {Number(memorySearchRepairResult.repaired.memoryChangeTriggers || 0)}，
@@ -16041,8 +16042,8 @@ function AiAssistantPage() {
               </div>
             </div>}
             {memoryDiagnostics.evidenceScopeIndexes?.version && <div className={`assistant-recovery-audit ${memoryDiagnostics.evidenceScopeIndexesHealthy ? 'healthy' : 'unhealthy'}`}>
-              <header><Search size={15} /><span><b>组合范围证据索引</b>
-                <small>通用、实体、事实、关系和事件证据均以“记忆身份＋来源＋会话＋时间”建立本机复合索引；启动会核对列顺序和部分索引条件并自动修复漂移。</small>
+              <header><Search size={15} /><span><b>组合范围与实体记忆索引</b>
+                <small>通用、身份、事实、关系和事件证据按“记忆身份＋来源＋会话＋时间”建立复合索引；事实对象与事件参与者另按实体建立全历史入口。启动会核对表、列顺序和部分条件并自动修复漂移。</small>
               </span></header>
               <div className="assistant-recovery-current">
                 <span>当前状态 <b>{memoryDiagnostics.evidenceScopeIndexesHealthy ? '覆盖正常' : '需要检查'}</b></span>

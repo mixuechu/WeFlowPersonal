@@ -5241,6 +5241,8 @@ test('runtime search repair restores derived indexes without reopening the datab
     );
     DROP INDEX idx_evidence_claim_role;
     CREATE INDEX idx_evidence_claim_role ON evidence(claim_id,timestamp);
+    DROP INDEX idx_claims_object_entity;
+    CREATE INDEX idx_claims_object_entity ON claims(id,object_entity_id);
     DROP INDEX idx_memory_change_log_connector_operation_time;
     CREATE INDEX idx_memory_change_log_connector_operation_time
       ON memory_change_log(origin_kind,changed_at DESC,id DESC);
@@ -5258,6 +5260,7 @@ test('runtime search repair restores derived indexes without reopening the datab
   assert.ok(drifted.structuredSearchIndex.currentMissingDocuments >= 1)
   assert.ok(drifted.structuredSearchIndex.currentGhostDocuments >= 1)
   assert.ok(drifted.structuredSearchIndex.currentAnnOrphans >= 1)
+  assert.equal(drifted.evidenceScopeIndexesHealthy, false)
   assert.equal(drifted.reviewInboxIndexesHealthy, false)
   assert.equal(drifted.memoryChangeLog.connectorOperationIndex.healthy, false)
   assert.equal(drifted.memoryChangeLog.originContextClean, false)
@@ -5269,6 +5272,7 @@ test('runtime search repair restores derived indexes without reopening the datab
   assert.ok(result.repaired.ghostDocuments >= 1)
   assert.equal(result.repaired.annOrphans, 1)
   assert.equal(result.repaired.taskDocuments, 1)
+  assert.equal(result.repaired.evidenceScopeIndexes, 1)
   assert.equal(result.repaired.reviewInboxIndexes, 1)
   assert.equal(result.repaired.memoryChangeConnectorOperationIndex, 1)
   assert.equal(result.repaired.memoryChangeOriginContexts, 1)
@@ -5280,6 +5284,7 @@ test('runtime search repair restores derived indexes without reopening the datab
   assert.equal(result.diagnostics.memorySearchRevisionHealthy, true)
   assert.equal(result.diagnostics.structuredSearchIndexHealthy, true)
   assert.equal(result.diagnostics.taskSearchIndexHealthy, true)
+  assert.equal(result.diagnostics.evidenceScopeIndexesHealthy, true)
   assert.equal(result.diagnostics.reviewInboxIndexesHealthy, true)
   assert.equal(result.diagnostics.memoryChangeLogHealthy, true)
   assert.equal(result.diagnostics.memoryChangeLog.originContextClean, true)
@@ -7809,10 +7814,55 @@ test('composed evidence scope indexes cover query plans and self-heal definition
       reopened.initialize(databasePath)
       const diagnostics = reopened.getDiagnostics()
       assert.equal(diagnostics.evidenceScopeIndexesHealthy, true)
-      assert.equal(diagnostics.evidenceScopeIndexes.installedIndexes, 5)
+      assert.equal(diagnostics.evidenceScopeIndexes.installedIndexes, 7)
       assert.equal(diagnostics.evidenceScopeIndexes.repairedThisStart, true)
       assert.equal(diagnostics.evidenceScopeIndexes.repairedIndexesThisStart, 1)
       assert.equal(diagnostics.evidenceScopeIndexes.unhealthyIndexes.length, 0)
+    } finally {
+      reopened.close()
+    }
+  } finally {
+    first.close()
+    rmSync(directory, { recursive: true, force: true })
+  }
+})
+
+test('entity memory lookup indexes self-heal exact definition drift and remain visible', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'weflow-entity-memory-index-health-'))
+  const databasePath = join(directory, 'memory.sqlite')
+  const first = new PersonalMemoryStore()
+  try {
+    first.initialize(databasePath)
+    const database = (first as any).db
+    assert.equal(first.getEvidenceScopeIndexHealth().healthy, true)
+    database.exec(`
+      DROP INDEX idx_claims_object_entity;
+      CREATE INDEX idx_claims_object_entity ON claims(object_entity_id);
+      DROP INDEX idx_event_participants_entity;
+      CREATE INDEX idx_event_participants_entity ON event_participants(event_id,entity_id,role);
+    `)
+    const drifted = first.getEvidenceScopeIndexHealth()
+    assert.equal(drifted.healthy, false)
+    assert.deepEqual(drifted.unhealthyIndexes.sort(), [
+      'idx_claims_object_entity', 'idx_event_participants_entity'
+    ])
+    first.close()
+
+    const reopened = new PersonalMemoryStore()
+    try {
+      reopened.initialize(databasePath)
+      const health = reopened.getEvidenceScopeIndexHealth()
+      assert.equal(health.version, 2)
+      assert.equal(health.healthy, true)
+      assert.equal(health.installedIndexes, 7)
+      assert.equal(health.repairedIndexesThisStart, 2)
+      const reopenedDatabase = (reopened as any).db
+      const claimPlan = reopenedDatabase.prepare(`EXPLAIN QUERY PLAN
+        SELECT id FROM claims WHERE object_entity_id=?`).all('entity') as any[]
+      const eventPlan = reopenedDatabase.prepare(`EXPLAIN QUERY PLAN
+        SELECT event_id FROM event_participants WHERE entity_id=?`).all('entity') as any[]
+      assert.match(claimPlan.map(row => row.detail).join(' '), /idx_claims_object_entity/)
+      assert.match(eventPlan.map(row => row.detail).join(' '), /idx_event_participants_entity/)
     } finally {
       reopened.close()
     }

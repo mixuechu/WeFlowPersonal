@@ -2061,6 +2061,15 @@ export class PersonalMemoryStore {
       table: 'evidence',
       columns: ['event_id', 'source_id', 'session_id', 'timestamp'],
       where: 'event_id is not null'
+    }, {
+      name: 'idx_claims_object_entity',
+      table: 'claims',
+      columns: ['object_entity_id', 'id'],
+      where: 'object_entity_id is not null'
+    }, {
+      name: 'idx_event_participants_entity',
+      table: 'event_participants',
+      columns: ['entity_id', 'event_id', 'role']
     }]
   }
 
@@ -2190,7 +2199,7 @@ export class PersonalMemoryStore {
   } {
     if (!this.db) {
       return {
-        expectedIndexes: 5,
+        expectedIndexes: this.evidenceScopeIndexDefinitions().length,
         installedIndexes: 0,
         healthy: false,
         unhealthyIndexes: this.evidenceScopeIndexDefinitions().map(item => item.name)
@@ -2244,12 +2253,14 @@ export class PersonalMemoryStore {
           ON ${definition.table}(${definition.columns.join(',')})
           ${definition.where ? `WHERE ${definition.where}` : ''};`)
       }
-      this.db.exec(statements.join('\n'))
+      this.db.transaction(() => {
+        this.db!.exec(statements.join('\n'))
+      })()
     }
     const after = this.inspectEvidenceScopeIndexes()
     const checkedAt = new Date().toISOString()
     const audit = {
-      version: 1,
+      version: 2,
       checkedAt,
       ...after,
       repairedThisStart: !before.healthy,
@@ -2265,14 +2276,14 @@ export class PersonalMemoryStore {
 
   getEvidenceScopeIndexHealth(): any {
     const live = this.inspectEvidenceScopeIndexes()
-    if (!this.db) return { version: 1, ...live, repairsTotal: 0 }
+    if (!this.db) return { version: 2, ...live, repairsTotal: 0 }
     const row = this.db.prepare(`
       SELECT value,updated_at FROM schema_meta WHERE key='evidence_scope_index_integrity'
     `).get() as any
     let audit: any = {}
     try { audit = JSON.parse(String(row?.value || '{}')) } catch {}
     return {
-      version: 1,
+      version: 2,
       checkedAt: String(audit.checkedAt || row?.updated_at || ''),
       repairedThisStart: Boolean(audit.repairedThisStart),
       repairedIndexesThisStart: Number(audit.repairedIndexesThisStart || 0),
@@ -7317,6 +7328,10 @@ export class PersonalMemoryStore {
           Number(after.structuredEvidenceRevision?.repairedTriggersThisStart || 0)),
         generalEvidenceTriggers: Math.max(0,
           Number(after.generalEvidenceRevision?.repairedTriggersThisStart || 0)),
+        evidenceScopeIndexes: before.evidenceScopeIndexes?.healthy === false
+          && after.evidenceScopeIndexesHealthy
+          ? Number(before.evidenceScopeIndexes?.unhealthyIndexes?.length || 0)
+          : 0,
         reviewInboxIndexes: before.reviewInboxIndexes?.healthy === false
           && after.reviewInboxIndexesHealthy
           ? Number(before.reviewInboxIndexes?.unhealthyIndexes?.length || 0)
