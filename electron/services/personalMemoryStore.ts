@@ -1401,6 +1401,10 @@ export class PersonalMemoryStore {
       CREATE INDEX IF NOT EXISTS idx_search_documents_entity_embedding_scan
         ON search_documents(embedding_model,updated_at,id)
         WHERE document_type='entity' AND embedding_json IS NOT NULL;
+      CREATE INDEX IF NOT EXISTS idx_search_documents_person_embedding_scan
+        ON search_documents(embedding_model,updated_at,id)
+        WHERE document_type='entity' AND embedding_json IS NOT NULL
+          AND json_extract(metadata_json,'$.entityType')='person';
       CREATE INDEX IF NOT EXISTS idx_search_document_embedding_chunks_model
         ON search_document_embedding_chunks(model,dimensions,document_id);
 
@@ -19872,6 +19876,7 @@ export class PersonalMemoryStore {
     const rows = this.db.prepare(`
       SELECT source_id,embedding_json FROM search_documents
       WHERE document_type='entity' AND embedding_model=? AND embedding_json IS NOT NULL
+        AND json_extract(metadata_json,'$.entityType')='person'
     `).all(model) as Array<{ source_id: string; embedding_json: string }>
     const vectors = rows.flatMap(row => {
       try {
@@ -19930,6 +19935,7 @@ export class PersonalMemoryStore {
     const rows = this.db.prepare(`
       SELECT source_id,content_hash,embedding_json FROM search_documents
       WHERE document_type='entity' AND embedding_model=? AND embedding_json IS NOT NULL
+        AND json_extract(metadata_json,'$.entityType')='person'
         AND json_valid(embedding_json)=1 AND json_type(embedding_json)='array'
         AND embedding_dimensions>0
         AND json_array_length(embedding_json)=embedding_dimensions
@@ -19951,6 +19957,7 @@ export class PersonalMemoryStore {
     })
     const pendingWhere = `
       d.document_type='entity' AND d.embedding_model=? AND d.embedding_json IS NOT NULL
+      AND json_extract(d.metadata_json,'$.entityType')='person'
       AND json_valid(d.embedding_json)=1 AND json_type(d.embedding_json)='array'
       AND d.embedding_dimensions>0
       AND json_array_length(d.embedding_json)=d.embedding_dimensions
@@ -20073,6 +20080,7 @@ export class PersonalMemoryStore {
         ON scanned.document_id=d.id AND scanned.model=d.embedding_model
         AND scanned.content_hash=d.content_hash
       WHERE d.document_type='entity' AND d.embedding_model=? AND d.embedding_json IS NOT NULL
+        AND json_extract(d.metadata_json,'$.entityType')='person'
         AND json_valid(d.embedding_json)=1 AND json_type(d.embedding_json)='array'
         AND d.embedding_dimensions>0
         AND json_array_length(d.embedding_json)=d.embedding_dimensions

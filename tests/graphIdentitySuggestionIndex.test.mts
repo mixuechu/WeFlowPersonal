@@ -124,6 +124,8 @@ test('identity scan diagnostics expose hub exclusions and truncation in the UI',
   assert.ok(contextualScan.length > 0)
   assert.doesNotMatch(contextualScan, /listSimilarEntityPairs\(/)
   assert.match(store, /CREATE TABLE IF NOT EXISTS identity_vector_scan_state/)
+  assert.match(store, /idx_search_documents_person_embedding_scan/)
+  assert.match(store, /json_extract\(d?\.?metadata_json,'\$\.entityType'\)='person'/)
   assert.match(store, /LIMIT \?\n\s*`\)\.all\(model, boundedProbeLimit\)/)
   assert.match(store, /commitIdentityVectorScanBatch\(/)
   assert.match(store, /INSERT OR IGNORE INTO identity_vector_scan_state[\s\S]*SELECT id,embedding_model,content_hash/)

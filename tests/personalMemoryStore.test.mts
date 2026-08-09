@@ -2649,7 +2649,7 @@ test('entity vector identity scans advance a durable bounded probe backlog inste
         `vector-person-${index}`,
         `人物${index}`,
         `人物${index}`,
-        '{}',
+        JSON.stringify({ entityType: 'person' }),
         'identity-incremental-test',
         2,
         JSON.stringify([Math.cos(angle), Math.sin(angle)]),
@@ -2716,6 +2716,19 @@ test('entity vector identity scans advance a durable bounded probe backlog inste
   assert.equal(changedModel.stats.probes, 1)
   store.commitIdentityVectorScanBatch(changedModel.checkpoint, [], 'vector-scan-model-change')
   assert.equal(store.getIdentityVectorScanBacklog('identity-incremental-test-v2').pending, 0)
+  const queryPlan = db.prepare(`
+    EXPLAIN QUERY PLAN SELECT d.id
+    FROM search_documents d
+    LEFT JOIN identity_vector_scan_state scanned
+      ON scanned.document_id=d.id AND scanned.model=d.embedding_model
+      AND scanned.content_hash=d.content_hash
+    WHERE d.document_type='entity' AND d.embedding_model=? AND d.embedding_json IS NOT NULL
+      AND json_extract(d.metadata_json,'$.entityType')='person'
+      AND scanned.document_id IS NULL
+    ORDER BY d.updated_at,d.id LIMIT ?
+  `).all('identity-incremental-test', 32)
+  assert.ok(queryPlan.some((row: any) =>
+    String(row.detail || '').includes('idx_search_documents_person_embedding_scan')))
 }))
 
 test('entity vector identity scan gives every matched probe a fair candidate slot before dense-cluster repeats', () => withStore(store => {
@@ -2727,8 +2740,8 @@ test('entity vector identity scan gives every matched probe a fair candidate slo
       content_hash,updated_at
     ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
   `)
-  const add = (id: string, angle: number, order: number): void => insert.run(
-    `entity:${id}`, 'entity', id, id, id, '{}', 'identity-fair-test', 2,
+  const add = (id: string, angle: number, order: number, entityType = 'person'): void => insert.run(
+    `entity:${id}`, 'entity', id, id, id, JSON.stringify({ entityType }), 'identity-fair-test', 2,
     JSON.stringify([Math.cos(angle), Math.sin(angle)]), 1, `hash-${id}`,
     new Date(1_700_100_000_000 + order).toISOString()
   )
@@ -2741,12 +2754,14 @@ test('entity vector identity scan gives every matched probe a fair candidate slo
     add('candidate-b', 0.5, 40)
     add('candidate-c', 1, 41)
     add('candidate-d', 1.5, 42)
+    for (let index = 0; index < 50; index += 1) add(`organization-${index}`, 0, 50 + index, 'organization')
   })()
 
   const first = store.scanSimilarEntityPairsIncremental('identity-fair-test', 0.9999, 4, 4)
   const second = store.scanSimilarEntityPairsIncremental('identity-fair-test', 0.9999, 4, 4)
   assert.equal(first.stats.probesWithMatches, 4)
   assert.equal(first.stats.representedProbes, 4)
+  assert.equal(first.stats.eligible, 27)
   assert.equal(first.stats.truncated, true)
   assert.deepEqual(second.pairs, first.pairs)
   for (const probeId of ['probe-a', 'probe-b', 'probe-c', 'probe-d']) {
