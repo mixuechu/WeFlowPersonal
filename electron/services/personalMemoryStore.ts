@@ -6766,6 +6766,7 @@ export class PersonalMemoryStore {
     let mergedEvents = 0
     let protectedEventsPreserved = 0
     let ambiguousCandidatesPreserved = 0
+    let temporallyDistinctEventsPreserved = 0
     let reviewsReassigned = 0
     const refreshedTargets = new Set<string>()
     const checkedAt = new Date().toISOString()
@@ -6782,7 +6783,13 @@ export class PersonalMemoryStore {
             !removed.has(candidate.id) &&
             (!candidate.start_at || !source.start_at || candidate.start_at === source.start_at)
           )
-          if (!target) continue
+          if (!target) {
+            // One message can legitimately describe multiple events at
+            // different explicit times. Preserve them and expose that
+            // conservative decision in diagnostics.
+            temporallyDistinctEventsPreserved += 1
+            continue
+          }
           const targetProtected = Boolean(target.corrected || target.protected_review)
           const sourceProtected = Boolean(source.corrected || source.protected_review)
           const compatibleProtectedTargets = candidates.filter(candidate =>
@@ -6849,12 +6856,13 @@ export class PersonalMemoryStore {
         INSERT INTO schema_meta(key,value,updated_at) VALUES('event_deduplication_authority',?,?)
         ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_at=excluded.updated_at
       `).run(JSON.stringify({
-        version: 1,
+        version: 2,
         checkedAt,
         duplicateGroupsThisStart: duplicateGroups,
         mergedEventsThisStart: mergedEvents,
         protectedEventsPreservedThisStart: protectedEventsPreserved,
         ambiguousCandidatesPreservedThisStart: ambiguousCandidatesPreserved,
+        temporallyDistinctEventsPreservedThisStart: temporallyDistinctEventsPreserved,
         reviewsReassignedThisStart: reviewsReassigned,
         searchDocumentsRefreshedThisStart: refreshedTargets.size,
         mergedEventsTotal: Number(previous.mergedEventsTotal || 0) + mergedEvents,
@@ -6863,6 +6871,9 @@ export class PersonalMemoryStore {
         ambiguousCandidatesPreservedTotal:
           Number(previous.ambiguousCandidatesPreservedTotal || 0) +
           ambiguousCandidatesPreserved,
+        temporallyDistinctEventsPreservedTotal:
+          Number(previous.temporallyDistinctEventsPreservedTotal || 0) +
+          temporallyDistinctEventsPreserved,
         reviewsReassignedTotal: Number(previous.reviewsReassignedTotal || 0) + reviewsReassigned,
         searchDocumentsRefreshedTotal:
           Number(previous.searchDocumentsRefreshedTotal || 0) + refreshedTargets.size
@@ -7277,6 +7288,8 @@ export class PersonalMemoryStore {
             Number(audit.protectedEventsPreservedThisStart || 0),
           ambiguousCandidatesPreservedThisStart:
             Number(audit.ambiguousCandidatesPreservedThisStart || 0),
+          temporallyDistinctEventsPreservedThisStart:
+            Number(audit.temporallyDistinctEventsPreservedThisStart || 0),
           reviewsReassignedThisStart: Number(audit.reviewsReassignedThisStart || 0),
           searchDocumentsRefreshedThisStart:
             Number(audit.searchDocumentsRefreshedThisStart || 0),
@@ -7285,6 +7298,8 @@ export class PersonalMemoryStore {
             Number(audit.protectedEventsPreservedTotal || 0),
           ambiguousCandidatesPreservedTotal:
             Number(audit.ambiguousCandidatesPreservedTotal || 0),
+          temporallyDistinctEventsPreservedTotal:
+            Number(audit.temporallyDistinctEventsPreservedTotal || 0),
           reviewsReassignedTotal: Number(audit.reviewsReassignedTotal || 0),
           searchDocumentsRefreshedTotal:
             Number(audit.searchDocumentsRefreshedTotal || 0)
@@ -7297,11 +7312,13 @@ export class PersonalMemoryStore {
           mergedEventsThisStart: 0,
           protectedEventsPreservedThisStart: 0,
           ambiguousCandidatesPreservedThisStart: 0,
+          temporallyDistinctEventsPreservedThisStart: 0,
           reviewsReassignedThisStart: 0,
           searchDocumentsRefreshedThisStart: 0,
           mergedEventsTotal: 0,
           protectedEventsPreservedTotal: 0,
           ambiguousCandidatesPreservedTotal: 0,
+          temporallyDistinctEventsPreservedTotal: 0,
           reviewsReassignedTotal: 0,
           searchDocumentsRefreshedTotal: 0
         }

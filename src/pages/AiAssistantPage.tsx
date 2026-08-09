@@ -15996,7 +15996,7 @@ function AiAssistantPage() {
             </div>}
             {memoryDiagnostics.eventDeduplicationAuthority?.version && <div className="assistant-recovery-audit healthy">
               <header><ShieldCheck size={15} /><span><b>事件去重权威保护</b>
-                <small>相同原文与相同时间的重复事件按人工纠正、受保护审阅和可信状态确定性归并；两条都有人工作出决定时保守并存，等待你继续审阅。</small>
+                <small>共享原文且时间兼容的重复事件按人工纠正、受保护审阅和可信状态确定性归并；明确发生在不同时间的事件保守并存，两条都有人工作出决定时等待你继续审阅。</small>
               </span></header>
               <div className="assistant-recovery-current">
                 <span>本次重复组 <b>{Number(memoryDiagnostics.eventDeduplicationAuthority.duplicateGroupsThisStart || 0).toLocaleString()}</b></span>
@@ -16004,6 +16004,7 @@ function AiAssistantPage() {
                 <span>本次同步检索 <b>{Number(memoryDiagnostics.eventDeduplicationAuthority.searchDocumentsRefreshedThisStart || 0).toLocaleString()}</b></span>
                 <span>本次保留人工分歧 <b>{Number(memoryDiagnostics.eventDeduplicationAuthority.protectedEventsPreservedThisStart || 0).toLocaleString()}</b></span>
                 <span>歧义候选待审 <b>{Number(memoryDiagnostics.eventDeduplicationAuthority.ambiguousCandidatesPreservedThisStart || 0).toLocaleString()}</b></span>
+                <span>不同时间保留 <b>{Number(memoryDiagnostics.eventDeduplicationAuthority.temporallyDistinctEventsPreservedThisStart || 0).toLocaleString()}</b></span>
                 <span>累计安全归并 <b>{Number(memoryDiagnostics.eventDeduplicationAuthority.mergedEventsTotal || 0).toLocaleString()}</b></span>
                 <span>累计迁移审阅 <b>{Number(memoryDiagnostics.eventDeduplicationAuthority.reviewsReassignedTotal || 0).toLocaleString()}</b></span>
               </div>
