@@ -41,6 +41,10 @@ import {
   assertGraphReviewMutationRevision,
   runReversibleGraphMutation
 } from '../electron/services/graphReviewMutationPolicy.ts'
+import {
+  buildEntityRejectionRestorePlan,
+  type EntityRejectionCascadeSnapshot
+} from '../electron/services/entityRejectionRestorePolicy.ts'
 import { assertTaskOwnershipMutationRevision } from '../electron/services/taskOwnershipMutationPolicy.ts'
 import { assertStructuredMemoryMutationRevision } from '../electron/services/structuredMemoryMutationPolicy.ts'
 import { buildMemorySearchFeedbackContext } from '../electron/services/memorySearchFeedback.ts'
@@ -12560,6 +12564,85 @@ test('reversible graph mutation restores memory and persists the restored snapsh
   assert.deepEqual(graph, { status: 'candidate', revision: 1 })
   assert.deepEqual(persisted, graph)
 })
+
+test('entity rejection restore rolls graph and mixed SQLCipher memory states back together', () => withStore(store => {
+  const rejectedAt = '2026-08-09T06:00:00.000Z'
+  const graph: any = {
+    entities: [{ id: 'restore-a', trustStatus: 'rejected' },
+      { id: 'restore-b', trustStatus: 'confirmed' },
+      { id: 'restore-c', trustStatus: 'candidate' }],
+    relations: [{
+      id: 'restore-relation', subjectId: 'restore-a', objectId: 'restore-b',
+      predicate: '协作', confidence: 0.8, status: 'rejected', evidence: [],
+      createdAt: rejectedAt, updatedAt: rejectedAt
+    }],
+    reviewQueue: []
+  }
+  store.syncGraph({ ...graph, entities: graph.entities.map((entity: any) => ({
+    type: 'person', canonicalName: entity.id, confidence: 1, aliases: [], accountIds: [],
+    identityVersion: 1, updatedAt: rejectedAt, ...entity
+  })) })
+  store.upsertClaims([{
+    id: 'restore-claim', subjectId: 'restore-a', predicate: '参与', objectValue: '恢复测试',
+    confidence: 0.8, status: 'rejected', sourceNature: 'other_statement',
+    searchText: '恢复事实', evidence: evidence('restore-claim-message', '恢复事实')
+  }])
+  store.upsertEvents([{
+    id: 'restore-event', eventType: 'meeting', title: '恢复事件', description: '',
+    startAt: '', endAt: '', location: '', confidence: 0.8, status: 'rejected',
+    searchText: '恢复事件', participants: [
+      { entityId: 'restore-a', role: '参与者' }, { entityId: 'restore-c', role: '参与者' }
+    ], evidence: evidence('restore-event-message', '恢复事件')
+  }])
+  const snapshot: EntityRejectionCascadeSnapshot = {
+    version: 1, reviewId: 'restore-review', rejectedAt,
+    entity: { id: 'restore-a', canonicalName: 'restore-a', identityVersion: 1, previousTrustStatus: 'candidate' },
+    relations: [{
+      id: 'restore-relation', subjectId: 'restore-a', objectId: 'restore-b', previousStatus: 'confirmed'
+    }],
+    memories: [
+      { kind: 'claim', id: 'restore-claim', previousStatus: 'confirmed', entityIds: ['restore-a'] },
+      { kind: 'event', id: 'restore-event', previousStatus: 'confirmed', entityIds: ['restore-a', 'restore-c'] }
+    ],
+    autoClosedReviewCount: 0
+  }
+  const plan = buildEntityRejectionRestorePlan({
+    snapshot,
+    currentRelations: graph.relations,
+    trustedEntityIds: new Set(['restore-b'])
+  })
+  assert.equal(plan.relations[0].status, 'confirmed')
+  assert.equal(plan.memories[0].status, 'confirmed')
+  assert.equal(plan.memories[1].status, 'candidate')
+  assert.equal(plan.downgraded, 1)
+
+  let currentGraph = structuredClone(graph)
+  let persisted: any = null
+  assert.throws(() => runReversibleGraphMutation({
+    snapshot: structuredClone(currentGraph),
+    transact: apply => store.runInTransaction(apply, {
+      kind: 'human_action', id: 'restore-fault-injection', sourceKind: 'local'
+    }),
+    apply: () => {
+      currentGraph.entities[0].trustStatus = 'confirmed'
+      currentGraph.relations[0].status = plan.relations[0].status
+      for (const memory of plan.memories) {
+        store.updateMemoryItemStatus(memory.kind, memory.id, memory.status as any, {
+          actor: 'system', reason: '故障注入恢复', protectFromExtraction: false
+        })
+      }
+      throw new Error('injected entity restore commit failure')
+    },
+    restore: original => { currentGraph = original },
+    persistRestored: () => { persisted = structuredClone(currentGraph) }
+  }), /injected entity restore commit failure/)
+  assert.equal(currentGraph.entities[0].trustStatus, 'rejected')
+  assert.equal(currentGraph.relations[0].status, 'rejected')
+  assert.deepEqual(persisted, currentGraph)
+  assert.deepEqual(store.listEntityMemoryStatusRefs('restore-a').map(item => [item.id, item.status]), [
+    ['restore-claim', 'rejected'], ['restore-event', 'rejected']
+  ])
+}))
 
 test('nested graph sync rolls review and correction side effects back together', () => withStore(store => {
   const entities = [

@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import {
   assertEntityRejectionRestoreConfirmation,
+  buildEntityRejectionRestorePlan,
   buildEntityRejectionRestorePreviewToken,
   ENTITY_REJECTION_CLAIM_REASON,
   ENTITY_REJECTION_EVENT_REASON,
@@ -108,4 +109,36 @@ test('confirmed downstream content is downgraded when another endpoint remains u
   assert.equal(restoredCascadeStatus(
     'rejected', ['entity-a', 'entity-b'], new Set(['entity-a'])
   ), 'rejected')
+})
+
+test('one deterministic restore plan covers every relation and memory before writes begin', () => {
+  const plan = buildEntityRejectionRestorePlan({
+    snapshot: {
+      ...snapshot,
+      memories: [
+        ...snapshot.memories,
+        { kind: 'claim', id: 'claim-terminal', previousStatus: 'rejected', entityIds: ['entity-a'] }
+      ]
+    },
+    currentRelations: currentInput().currentRelations,
+    trustedEntityIds: new Set(['entity-b'])
+  })
+  assert.deepEqual(plan, {
+    entityId: 'entity-a',
+    relations: [{ id: 'relation-a', status: 'confirmed' }],
+    memories: [
+      { kind: 'claim', id: 'claim-a', status: 'confirmed', write: true },
+      { kind: 'event', id: 'event-a', status: 'candidate', write: true },
+      { kind: 'claim', id: 'claim-terminal', status: 'rejected', write: false }
+    ],
+    downgraded: 0
+  })
+})
+
+test('restore planning fails closed before mutations when a snapshotted relation is missing', () => {
+  assert.throws(() => buildEntityRejectionRestorePlan({
+    snapshot,
+    currentRelations: [],
+    trustedEntityIds: new Set(['entity-b'])
+  }), /relation-a.*不能生成身份恢复计划/)
 })

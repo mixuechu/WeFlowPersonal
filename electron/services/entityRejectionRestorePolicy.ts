@@ -194,3 +194,62 @@ export function restoredCascadeStatus(
   return (relatedEntityIds || []).some(entityId => !trustedEntityIds.has(entityId))
     ? 'candidate' : 'confirmed'
 }
+
+export type EntityRejectionRestorePlan = {
+  entityId: string
+  relations: Array<{ id: string; status: string }>
+  memories: Array<{
+    kind: 'claim' | 'event'
+    id: string
+    status: string
+    write: boolean
+  }>
+  downgraded: number
+}
+
+export function buildEntityRejectionRestorePlan(input: {
+  snapshot: EntityRejectionCascadeSnapshot
+  currentRelations: any[]
+  trustedEntityIds: Set<string>
+}): EntityRejectionRestorePlan {
+  const trustedEntityIds = new Set(input.trustedEntityIds)
+  trustedEntityIds.add(input.snapshot.entity.id)
+  const currentRelations = new Map(
+    (input.currentRelations || []).map(relation => [String(relation?.id || ''), relation])
+  )
+  let downgraded = 0
+  const relations = input.snapshot.relations.map(expected => {
+    const relation = currentRelations.get(expected.id)
+    if (!relation || String(relation.subjectId || '') !== expected.subjectId ||
+      String(relation.objectId || '') !== expected.objectId) {
+      throw new Error(`关联关系 ${expected.id} 已变化，不能生成身份恢复计划`)
+    }
+    const status = restoredCascadeStatus(
+      expected.previousStatus,
+      [expected.subjectId, expected.objectId],
+      trustedEntityIds
+    )
+    if (status !== expected.previousStatus) downgraded += 1
+    return { id: expected.id, status }
+  })
+  const memories = input.snapshot.memories.map(expected => {
+    const status = restoredCascadeStatus(
+      expected.previousStatus,
+      expected.entityIds || [],
+      trustedEntityIds
+    )
+    if (status !== expected.previousStatus) downgraded += 1
+    return {
+      kind: expected.kind,
+      id: expected.id,
+      status,
+      write: status !== 'rejected'
+    }
+  })
+  return {
+    entityId: input.snapshot.entity.id,
+    relations,
+    memories,
+    downgraded
+  }
+}

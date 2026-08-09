@@ -42,3 +42,14 @@ test('entity rejection scopes all related memories in SQL instead of a bounded d
   assert.match(store, /FROM events event\s+WHERE EXISTS/s)
   assert.match(service, /entityIds: memory\.entityIds/)
 })
+
+test('restore computes one fail-closed plan before opening its reversible mutation', () => {
+  const service = read('electron/services/aiAssistantService.ts')
+  const policy = read('electron/services/entityRejectionRestorePolicy.ts')
+  const planAt = service.indexOf('const restorePlan = buildEntityRejectionRestorePlan')
+  const mutationAt = service.indexOf('return runReversibleGraphMutation({', planAt)
+  assert.ok(planAt >= 0 && mutationAt > planAt)
+  assert.match(policy, /throw new Error\(`关联关系 \$\{expected\.id\} 已变化，不能生成身份恢复计划`\)/)
+  assert.match(service, /for \(const planned of restorePlan\.relations\)/)
+  assert.match(service, /for \(const planned of restorePlan\.memories\)/)
+})

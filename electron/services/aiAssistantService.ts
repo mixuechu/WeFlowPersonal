@@ -242,12 +242,12 @@ import {
 } from './identityMergeRevertPolicy'
 import {
   assertEntityRejectionRestoreConfirmation,
+  buildEntityRejectionRestorePlan,
   buildEntityRejectionRestorePreviewToken,
   ENTITY_REJECTION_CASCADE_VERSION,
   ENTITY_REJECTION_CLAIM_REASON,
   ENTITY_REJECTION_EVENT_REASON,
   inspectEntityRejectionRestore,
-  restoredCascadeStatus,
   type EntityRejectionCascadeSnapshot
 } from './entityRejectionRestorePolicy'
 import {
@@ -7905,6 +7905,14 @@ export class AiAssistantService {
       structuredMemoryRevision,
       currentFingerprint: inspection.currentFingerprint
     }, input)
+    const restorePlan = buildEntityRejectionRestorePlan({
+      snapshot,
+      currentRelations: this.state.graph.relations.filter(relation =>
+        snapshot.relations.some(expected => expected.id === relation.id)),
+      trustedEntityIds: new Set(this.state.graph.entities
+        .filter(entity => entity.trustStatus === 'confirmed')
+        .map(entity => entity.id))
+    })
     const graphSnapshot = structuredClone(this.state.graph)
     return runReversibleGraphMutation({
       snapshot: graphSnapshot,
@@ -7917,30 +7925,14 @@ export class AiAssistantService {
         const restoredAt = new Date().toISOString()
         currentEntity.trustStatus = 'confirmed'
         currentEntity.updatedAt = restoredAt
-        const trustedEntityIds = new Set(this.state.graph.entities
-          .filter(entity => entity.trustStatus === 'confirmed')
-          .map(entity => entity.id))
-        let downgraded = 0
-        for (const expected of snapshot.relations) {
-          const relation = this.state.graph.relations.find(item => item.id === expected.id)!
-          const status = restoredCascadeStatus(
-            expected.previousStatus,
-            [relation.subjectId, relation.objectId],
-            trustedEntityIds
-          )
-          if (status !== expected.previousStatus) downgraded += 1
-          relation.status = status as any
+        for (const planned of restorePlan.relations) {
+          const relation = this.state.graph.relations.find(item => item.id === planned.id)!
+          relation.status = planned.status as any
           relation.updatedAt = restoredAt
         }
-        for (const expected of snapshot.memories) {
-          const status = restoredCascadeStatus(
-            expected.previousStatus,
-            expected.entityIds || [],
-            trustedEntityIds
-          )
-          if (status !== expected.previousStatus) downgraded += 1
-          if (status !== 'rejected') {
-            personalMemoryStore.updateMemoryItemStatus(expected.kind, expected.id, status as any, {
+        for (const planned of restorePlan.memories) {
+          if (planned.write) {
+            personalMemoryStore.updateMemoryItemStatus(planned.kind, planned.id, planned.status as any, {
               actor: 'system',
               reason: '本人恢复被拒绝身份，按拒绝前状态恢复关联记忆',
               protectFromExtraction: false,
@@ -7971,7 +7963,7 @@ export class AiAssistantService {
           success: true,
           entityId: currentEntity.id,
           counts: inspection.counts,
-          downgraded
+          downgraded: restorePlan.downgraded
         }
       },
       restore: graph => { this.state.graph = graph },
