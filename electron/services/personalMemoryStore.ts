@@ -368,6 +368,32 @@ function taskEvidenceContentFingerprint(rows: any[][]): string {
     .digest('hex')
 }
 
+function taskOwnershipVersionScope(value: any): {
+  policyVersion: string
+  promptVersion: string
+  schemaVersion: string
+  model: string
+  sourceKind: 'wechat' | 'documents' | 'legacy'
+} {
+  const bounded = (input: unknown, fallback: string) =>
+    String(input || '').trim().slice(0, 120) || fallback
+  return {
+    policyVersion: bounded(value?.ownershipPolicyVersion, 'legacy-unknown-policy'),
+    promptVersion: bounded(value?.ownershipPromptVersion, 'legacy-unknown-prompt'),
+    schemaVersion: bounded(value?.ownershipSchemaVersion, 'legacy-unknown-schema'),
+    model: bounded(value?.ownershipModel, 'legacy-unknown-model'),
+    sourceKind: value?.ownershipSourceKind === 'wechat' || value?.ownershipSourceKind === 'documents'
+      ? value.ownershipSourceKind
+      : 'legacy'
+  }
+}
+
+function taskOwnershipVersionKey(value: any): string {
+  return createHash('sha256')
+    .update(JSON.stringify(taskOwnershipVersionScope(value)))
+    .digest('hex')
+}
+
 function compactTaskReviewSnapshot(value: unknown): any {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return {}
   const {
@@ -1022,6 +1048,7 @@ export class PersonalMemoryStore {
         payload_json TEXT NOT NULL DEFAULT '{}',
         evidence_fingerprint TEXT NOT NULL DEFAULT '',
         ownership_fingerprint TEXT NOT NULL DEFAULT '',
+        ownership_version_key TEXT NOT NULL DEFAULT '',
         ownership_audit_eligible INTEGER NOT NULL DEFAULT 0,
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL
@@ -1697,7 +1724,9 @@ export class PersonalMemoryStore {
     `).run()
     this.ensureColumn('task_directory', 'evidence_fingerprint', `TEXT NOT NULL DEFAULT ''`)
     this.ensureColumn('task_directory', 'ownership_fingerprint', `TEXT NOT NULL DEFAULT ''`)
+    this.ensureColumn('task_directory', 'ownership_version_key', `TEXT NOT NULL DEFAULT ''`)
     this.ensureColumn('task_directory', 'ownership_audit_eligible', 'INTEGER NOT NULL DEFAULT 0')
+    this.backfillTaskOwnershipVersionKeys()
     this.ensureMineTaskOwnershipAuditIndex()
     this.ensureColumn('task_history', 'change_set_id', `TEXT NOT NULL DEFAULT ''`)
     this.ensureColumn('merge_history', 'source_name', `TEXT NOT NULL DEFAULT ''`)
@@ -2037,7 +2066,7 @@ export class PersonalMemoryStore {
     installed: boolean
     columns: string[]
   } {
-    const empty = { version: 1, healthy: false, installed: false, columns: [] as string[] }
+    const empty = { version: 2, healthy: false, installed: false, columns: [] as string[] }
     if (!this.db) return empty
     const name = 'idx_task_directory_ownership_audit'
     const row = this.db.prepare(`
@@ -2051,13 +2080,49 @@ export class PersonalMemoryStore {
     `).get(name) as any
     const sql = String(row.sql || '').toLowerCase().replace(/\s+/g, ' ')
     const healthy = Number(index?.partial || 0) === 1
-      && JSON.stringify(columns) === JSON.stringify(['ownership_fingerprint', 'id'])
-      && sql.includes('on task_directory(ownership_fingerprint,id)')
+      && JSON.stringify(columns) === JSON.stringify([
+        'ownership_version_key', 'ownership_fingerprint', 'id'
+      ])
+      && sql.includes('on task_directory(ownership_version_key,ownership_fingerprint,id)')
       && sql.includes('where ownership_audit_eligible=1')
       && sql.includes("classification='mine'")
       && sql.includes("status in ('todo','doing','waiting')")
       && sql.includes("ownership_fingerprint!=''")
-    return { version: 1, healthy, installed: true, columns }
+    return { version: 2, healthy, installed: true, columns }
+  }
+
+  private backfillTaskOwnershipVersionKeys(): number {
+    if (!this.db) return 0
+    const rows = this.db.prepare(`
+      SELECT id,payload_json FROM task_directory WHERE ownership_version_key=''
+    `).all() as Array<{ id: string; payload_json: string }>
+    if (!rows.length) return 0
+    const update = this.db.prepare(`
+      UPDATE task_directory SET ownership_version_key=?
+      WHERE id=? AND ownership_version_key=''
+    `)
+    let updated = 0
+    this.db.transaction(() => {
+      for (const row of rows) {
+        updated += Number(update.run(
+          taskOwnershipVersionKey(parseJsonObject(row.payload_json)), row.id
+        ).changes || 0)
+      }
+      const now = new Date().toISOString()
+      const previous = parseJsonObject((this.db!.prepare(`
+        SELECT value FROM schema_meta WHERE key='task_ownership_version_key_v1'
+      `).get() as any)?.value)
+      this.db!.prepare(`
+        INSERT INTO schema_meta(key,value,updated_at) VALUES(?,?,?)
+        ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_at=excluded.updated_at
+      `).run('task_ownership_version_key_v1', JSON.stringify({
+        version: 1,
+        rowsBackfilledThisStart: updated,
+        rowsBackfilledTotal: Number(previous.rowsBackfilledTotal || 0) + updated,
+        lastBackfilledAt: now
+      }), now)
+    })()
+    return updated
   }
 
   private ensureMineTaskOwnershipAuditIndex(): void {
@@ -2073,7 +2138,7 @@ export class PersonalMemoryStore {
         this.db!.exec(`
           DROP INDEX IF EXISTS idx_task_directory_ownership_audit;
           CREATE INDEX idx_task_directory_ownership_audit
-          ON task_directory(ownership_fingerprint,id)
+          ON task_directory(ownership_version_key,ownership_fingerprint,id)
           WHERE ownership_audit_eligible=1
             AND classification='mine'
             AND status IN ('todo','doing','waiting')
@@ -10933,13 +10998,15 @@ export class PersonalMemoryStore {
       const activeIds = new Set(tasks.map(task => `task:${task.id}`))
       const activeTaskIds = new Set(tasks.map(task => String(task.id)))
       const storedTasks = this.db.prepare(
-      `SELECT id,payload_json,evidence_fingerprint,ownership_fingerprint,ownership_audit_eligible
+      `SELECT id,payload_json,evidence_fingerprint,ownership_fingerprint,
+        ownership_version_key,ownership_audit_eligible
        FROM task_directory`
     ).all() as Array<{
       id: string
       payload_json: string
       evidence_fingerprint: string
       ownership_fingerprint: string
+      ownership_version_key: string
       ownership_audit_eligible: number
     }>
     const storedTaskMap = new Map(storedTasks.map(task => [task.id, task]))
@@ -10965,13 +11032,15 @@ export class PersonalMemoryStore {
     const upsertTask = this.db.prepare(`
       INSERT INTO task_directory(
         id,status,classification,priority,due,project,task_kind,title,payload_json,
-        evidence_fingerprint,ownership_fingerprint,ownership_audit_eligible,created_at,updated_at
-      ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+        evidence_fingerprint,ownership_fingerprint,ownership_version_key,
+        ownership_audit_eligible,created_at,updated_at
+      ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
       ON CONFLICT(id) DO UPDATE SET
         status=excluded.status,classification=excluded.classification,priority=excluded.priority,
         due=excluded.due,project=excluded.project,task_kind=excluded.task_kind,title=excluded.title,
         payload_json=excluded.payload_json,evidence_fingerprint=excluded.evidence_fingerprint,
         ownership_fingerprint=excluded.ownership_fingerprint,
+        ownership_version_key=excluded.ownership_version_key,
         ownership_audit_eligible=excluded.ownership_audit_eligible,
         updated_at=excluded.updated_at
       WHERE task_directory.status IS NOT excluded.status
@@ -10984,6 +11053,7 @@ export class PersonalMemoryStore {
         OR task_directory.payload_json IS NOT excluded.payload_json
         OR task_directory.evidence_fingerprint IS NOT excluded.evidence_fingerprint
         OR task_directory.ownership_fingerprint IS NOT excluded.ownership_fingerprint
+        OR task_directory.ownership_version_key IS NOT excluded.ownership_version_key
         OR task_directory.ownership_audit_eligible IS NOT excluded.ownership_audit_eligible
     `)
     const existing = this.db.prepare(`SELECT id FROM search_documents WHERE document_type='task'`).all() as Array<{ id: string }>
@@ -11048,6 +11118,7 @@ export class PersonalMemoryStore {
       const ownershipAuditEligible = task.classification === 'mine'
         && Boolean(String(task.ownershipPolicyReason || '').trim())
         && Boolean(ownershipFingerprint) ? 1 : 0
+      const ownershipVersionKey = taskOwnershipVersionKey(task)
       const searchText = [
         task.title, task.detail, task.owner, ...(task.collaborators || []), task.project,
         task.source, task.assignmentEvidence
@@ -11083,6 +11154,7 @@ export class PersonalMemoryStore {
       const unchangedAuthoritativeTask = storedTask?.payload_json === payloadJson
         && storedTask.evidence_fingerprint === evidenceFingerprint
         && storedTask.ownership_fingerprint === ownershipFingerprint
+        && storedTask.ownership_version_key === ownershipVersionKey
         && Number(storedTask.ownership_audit_eligible || 0) === ownershipAuditEligible
       if (unchangedAuthoritativeTask && !searchDocumentHealthy) {
         repairedDerivedDocuments += 1
@@ -11104,6 +11176,7 @@ export class PersonalMemoryStore {
         payloadJson,
         evidenceFingerprint,
         ownershipFingerprint,
+        ownershipVersionKey,
         ownershipAuditEligible,
         String(task.createdAt || now),
         String(task.updatedAt || task.createdAt || now)
@@ -11215,10 +11288,14 @@ export class PersonalMemoryStore {
     total: number
     revision: string
     strategy: string
+    cohort: any | null
   } {
     const revision = this.getTaskOwnershipReviewRevision()
     if (!this.db) {
-      return { item: null, total: 0, revision, strategy: 'stable_evidence_hash_order_v1' }
+      return {
+        item: null, total: 0, revision,
+        strategy: 'latest_version_stable_evidence_hash_order_v2', cohort: null
+      }
     }
     const where = `
       td.ownership_audit_eligible=1
@@ -11235,17 +11312,31 @@ export class PersonalMemoryStore {
       SELECT COUNT(*) AS count FROM task_directory td INDEXED BY idx_task_directory_ownership_audit
       WHERE ${where}
     `).get() as any)?.count || 0)
+    const cohortRow = this.db.prepare(`
+      SELECT ownership_version_key,remaining,latest_created_at,cohort_total FROM (
+        SELECT td.ownership_version_key,COUNT(*) AS remaining,
+          MAX(td.created_at) AS latest_created_at,
+          COUNT(*) OVER() AS cohort_total
+        FROM task_directory td INDEXED BY idx_task_directory_ownership_audit
+        WHERE ${where}
+        GROUP BY td.ownership_version_key
+      )
+      ORDER BY latest_created_at DESC,ownership_version_key ASC
+      LIMIT 1
+    `).get() as any
+    const cohortKey = String(cohortRow?.ownership_version_key || '')
     const row = this.db.prepare(`
       SELECT td.id,td.status,td.classification,td.priority,td.due,td.project,
         td.task_kind,td.title,td.payload_json,td.created_at,td.updated_at,
         (SELECT COUNT(*) FROM search_document_evidence sde
           WHERE sde.document_id='task:' || td.id) AS evidence_count
       FROM task_directory td INDEXED BY idx_task_directory_ownership_audit
-      WHERE ${where}
+      WHERE ${where} AND td.ownership_version_key=?
       ORDER BY td.ownership_fingerprint ASC,td.id ASC
       LIMIT 1
-    `).get() as any
+    `).get(cohortKey) as any
     let item: any = null
+    let cohort: any = null
     if (row) {
       let payload: any = {}
       try { payload = JSON.parse(String(row.payload_json || '{}')) } catch {}
@@ -11263,12 +11354,24 @@ export class PersonalMemoryStore {
         updatedAt: String(row.updated_at || ''),
         evidenceTotal: Number(row.evidence_count || 0)
       }
+      cohort = {
+        ...taskOwnershipVersionScope(payload),
+        remaining: Number(cohortRow?.remaining || 0),
+        cohortTotal: Number(cohortRow?.cohort_total || 0),
+        latestCreatedAt: String(cohortRow?.latest_created_at || '')
+      }
     }
     const completedRevision = this.getTaskOwnershipReviewRevision()
     if (completedRevision !== revision) {
-      return { item: null, total: 0, revision: completedRevision, strategy: 'stable_evidence_hash_order_v1' }
+      return {
+        item: null, total: 0, revision: completedRevision,
+        strategy: 'latest_version_stable_evidence_hash_order_v2', cohort: null
+      }
     }
-    return { item, total, revision, strategy: 'stable_evidence_hash_order_v1' }
+    return {
+      item, total, revision,
+      strategy: 'latest_version_stable_evidence_hash_order_v2', cohort
+    }
   }
 
   listActiveTaskWorkset(options: {
@@ -13930,8 +14033,9 @@ export class PersonalMemoryStore {
           evidence: Array.isArray(task.evidence) ? task.evidence : [],
           task: {
             ...task,
-            ...(String(change?.ownershipAuditSelection || '') === 'stable_evidence_hash_queue_v1'
-              ? { ownershipAuditSelection: 'stable_evidence_hash_queue_v1' }
+            ...(['stable_evidence_hash_queue_v1', 'latest_version_stable_hash_queue_v2']
+              .includes(String(change?.ownershipAuditSelection || ''))
+              ? { ownershipAuditSelection: String(change.ownershipAuditSelection) }
               : {})
           }
         })
@@ -14818,7 +14922,7 @@ export class PersonalMemoryStore {
           incorrect: 0,
           total: 0,
           calibration: selectedReviewBinomialCalibration(0, 0),
-          selection: 'stable_evidence_hash_queue_v1'
+          selection: 'server_bound_stable_hash_queues_v1_v2'
         },
         rollingTrend: {
           version: 'selected-review-rolling-30-v1',
@@ -14850,11 +14954,15 @@ export class PersonalMemoryStore {
           AND decision='rejected' THEN 1 ELSE 0 END) AS active_mine_incorrect,
         SUM(CASE WHEN revoked_at IS NULL AND json_valid(task_json)=1
           AND json_extract(task_json,'$.classification')='mine'
-          AND json_extract(task_json,'$.ownershipAuditSelection')='stable_evidence_hash_queue_v1'
+          AND json_extract(task_json,'$.ownershipAuditSelection') IN (
+            'stable_evidence_hash_queue_v1','latest_version_stable_hash_queue_v2'
+          )
           AND decision='mine' THEN 1 ELSE 0 END) AS stable_sample_correct,
         SUM(CASE WHEN revoked_at IS NULL AND json_valid(task_json)=1
           AND json_extract(task_json,'$.classification')='mine'
-          AND json_extract(task_json,'$.ownershipAuditSelection')='stable_evidence_hash_queue_v1'
+          AND json_extract(task_json,'$.ownershipAuditSelection') IN (
+            'stable_evidence_hash_queue_v1','latest_version_stable_hash_queue_v2'
+          )
           AND decision='rejected' THEN 1 ELSE 0 END) AS stable_sample_incorrect,
         SUM(CASE WHEN revoked_at IS NULL AND (
           CASE WHEN json_valid(task_json)=1
@@ -15005,7 +15113,7 @@ export class PersonalMemoryStore {
         incorrect: stableSampleIncorrect,
         total: stableSampleCorrect + stableSampleIncorrect,
         calibration: selectedReviewBinomialCalibration(stableSampleCorrect, stableSampleIncorrect),
-        selection: 'stable_evidence_hash_queue_v1'
+        selection: 'server_bound_stable_hash_queues_v1_v2'
       },
       rollingTrend: {
         version: 'selected-review-rolling-30-v1',
@@ -15047,7 +15155,7 @@ export class PersonalMemoryStore {
 
   getHumanReviewCalibrationStats(): any {
     const empty = {
-      version: 'human-review-calibration-v7',
+      version: 'human-review-calibration-v8',
       taskOwnership: { accepted: 0, rejected: 0, revoked: 0, total: 0 },
       activeMineAudit: {
         correct: 0,
@@ -15059,7 +15167,7 @@ export class PersonalMemoryStore {
           incorrect: 0,
           total: 0,
           calibration: selectedReviewBinomialCalibration(0, 0),
-          selection: 'stable_evidence_hash_queue_v1'
+          selection: 'server_bound_stable_hash_queues_v1_v2'
         },
         rollingTrend: {
           version: 'selected-review-rolling-30-v1',

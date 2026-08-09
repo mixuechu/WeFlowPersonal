@@ -38,7 +38,7 @@ test('real-world calibration separates active mine audits from candidate decisio
 
   assert.match(store, /active_mine_correct/)
   assert.match(store, /candidate_confirmed/)
-  assert.match(store, /human-review-calibration-v7/)
+  assert.match(store, /human-review-calibration-v8/)
   assert.match(page, /自动归给我：正确 \/ 误判/)
   assert.match(page, /待定归属：确认 \/ 排除/)
 })
@@ -159,9 +159,14 @@ test('dashboard exposes one bounded sample from the complete unreviewed mine-tas
   assert.match(store, /ownership_audit_eligible=1/)
   assert.match(store, /NOT EXISTS \([\s\S]*?task_review_decisions/)
   assert.match(store, /ORDER BY td\.ownership_fingerprint ASC,td\.id ASC[\s\S]*?LIMIT 1/)
-  assert.match(service, /mineTaskOwnershipAudit:[\s\S]*?mine-task-ownership-audit-sample-v1/)
+  assert.match(service, /mineTaskOwnershipAudit:[\s\S]*?mine-task-ownership-audit-sample-v2/)
   assert.match(page, /帮助校准自动归属/)
   assert.match(page, /抽检下一项/)
+  assert.match(store, /GROUP BY td\.ownership_version_key/)
+  assert.match(store, /ORDER BY latest_created_at DESC,ownership_version_key ASC/)
+  assert.match(store, /latest_version_stable_evidence_hash_order_v2/)
+  assert.match(page, /当前优先抽最近产生待办的归属版本/)
+  assert.match(page, /cohort\?\.cohortTotal/)
 })
 
 test('sampled ownership decisions are server-bound and calibrated separately', () => {
@@ -172,11 +177,11 @@ test('sampled ownership decisions are server-bound and calibrated separately', (
   assert.match(service, /expectedRevision !== currentSample\.revision/)
   assert.match(service, /currentSample\.item\?\.id \|\| ''\) !== id/)
   assert.match(service, /ownershipAuditSelection: auditSelection/)
-  assert.match(store, /change\?\.ownershipAuditSelection[\s\S]*?stable_evidence_hash_queue_v1/)
+  assert.match(store, /change\?\.ownershipAuditSelection[\s\S]*?latest_version_stable_hash_queue_v2/)
   assert.match(store, /stable_sample_correct/)
   assert.match(store, /stable_evidence_hash_queue_v1/)
   assert.match(page, /auditSelection && auditSelection\.taskId === task\.id/)
-  assert.match(page, /稳定哈希队列抽检/)
+  assert.match(page, /分层哈希抽检/)
   assert.match(page, /中途停止审阅仍可能产生无应答偏差/)
 })
 

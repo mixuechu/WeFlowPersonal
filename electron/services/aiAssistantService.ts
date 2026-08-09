@@ -4458,7 +4458,7 @@ export class AiAssistantService {
               mutationToken: buildTaskMutationToken(mineTaskOwnershipAuditState)
             }
           : null,
-        version: 'mine-task-ownership-audit-sample-v1',
+        version: 'mine-task-ownership-audit-sample-v2',
         dossier: 'authoritative_task_workspace'
       },
       taskPayloadPolicy: {
@@ -7016,7 +7016,7 @@ export class AiAssistantService {
       ) {
         throw new Error('抽检样本在展示后已经变化，请返回首页重新抽取')
       }
-      auditSelection = 'stable_evidence_hash_queue_v1'
+      auditSelection = 'latest_version_stable_hash_queue_v2'
     }
     const existingDecision = personalMemoryStore.getTaskReviewDecision(evidenceFingerprint)
     if (decision === 'mine' && isRepeatedMineTaskAudit(existingDecision)) {

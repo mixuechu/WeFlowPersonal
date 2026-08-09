@@ -9769,7 +9769,7 @@ function AiAssistantPage() {
               : ' 已达到首个趋势观察门槛；仍不能代表未抽检的全部待办。'}
           </p>}
           {Number(dashboard.humanReviewCalibration.activeMineAudit?.stableSample?.total || 0) > 0 && <p>
-            稳定哈希队列抽检：正确{' '}
+            服务端绑定的分层哈希抽检：正确{' '}
             <b>{Number(dashboard.humanReviewCalibration.activeMineAudit.stableSample.correct).toLocaleString()}</b>
             {' '} / 误判{' '}
             <b>{Number(dashboard.humanReviewCalibration.activeMineAudit.stableSample.incorrect).toLocaleString()}</b>
@@ -9780,7 +9780,7 @@ function AiAssistantPage() {
             {Math.round(Number(dashboard.humanReviewCalibration.activeMineAudit.stableSample.calibration.upper95 || 0) * 100)}%）。
             <small>
               只统计从“抽检下一项”进入、并在提交时通过服务端样本身份复核的决定；
-              证据指纹哈希排序避免只抽最新或最显眼的事项。中途停止审阅仍可能产生无应答偏差，因此不冒充全体真实准确率。
+              先选最近出现的完整归属版本层，再用证据指纹哈希排序，避免大量旧版本长期淹没当前 Prompt/模型。中途停止审阅仍可能产生无应答偏差，因此不冒充全体真实准确率。
             </small>
           </p>}
           {Number(dashboard.humanReviewCalibration.activeMineAudit?.rollingTrend?.latest?.reviewed || 0) > 0 && <p>
@@ -10021,8 +10021,19 @@ function AiAssistantPage() {
                 <span><strong>帮助校准自动归属</strong>
                   <small>
                     还有 {Number(dashboard.mineTaskOwnershipAudit.total).toLocaleString()} 项自动归给你的待办尚未抽检；
-                    按原文证据指纹稳定取样，避免只看到最新或最显眼的事项。
+                    当前优先抽最近产生待办的归属版本，该层剩余{' '}
+                    {Number(dashboard.mineTaskOwnershipAudit.cohort?.remaining || 0).toLocaleString()} 项，
+                    共 {Number(dashboard.mineTaskOwnershipAudit.cohort?.cohortTotal || 0).toLocaleString()} 个版本层；
+                    层内再按原文证据指纹稳定取样。
                   </small>
+                  {dashboard.mineTaskOwnershipAudit.cohort && <small>
+                    当前层：{dashboard.mineTaskOwnershipAudit.cohort.sourceKind === 'wechat'
+                      ? '微信' : dashboard.mineTaskOwnershipAudit.cohort.sourceKind === 'documents'
+                        ? '本机文档' : '历史来源'} ·{' '}
+                    {dashboard.mineTaskOwnershipAudit.cohort.policyVersion} ·{' '}
+                    {dashboard.mineTaskOwnershipAudit.cohort.promptVersion} ·{' '}
+                    {dashboard.mineTaskOwnershipAudit.cohort.model}
+                  </small>}
                 </span>
                 <button onClick={() => {
                   setMineTaskAuditSelection({
@@ -13592,7 +13603,7 @@ function AiAssistantPage() {
                     <span><b>这项待办真的属于你吗？</b>
                       <small>反馈绑定当前完整原文证据，可在归属反馈档案中撤销；不会按相似文字影响别的事项。</small>
                       {mineTaskAuditSelection?.taskId === taskWorkspace.task.id && <small>
-                        这是首页稳定哈希队列选中的抽检样本；保存时后端会重新核验样本身份，并与普通主动审阅分开统计。
+                        这是首页“最新归属版本＋层内稳定哈希”队列选中的抽检样本；保存时后端会重新核验样本身份，并与普通主动审阅分开统计。
                       </small>}
                       <small>
                         归属版本：{taskWorkspace.task.ownershipPolicyVersion || '历史规则未知'} ·{' '}
@@ -15735,7 +15746,7 @@ function AiAssistantPage() {
             </div>}
             {memoryDiagnostics.mineTaskOwnershipAuditIndex?.version && <div className={`assistant-recovery-audit ${memoryDiagnostics.mineTaskOwnershipAuditIndexHealthy ? 'healthy' : 'unhealthy'}`}>
               <header><ShieldCheck size={15} /><span><b>自动归属抽检队列索引</b>
-                <small>按证据指纹稳定选择尚未审阅的活动待办；启动和主动检索修复都会核对列顺序、部分条件与索引表，定义缺失或漂移时在 SQLCipher 事务内重建。</small>
+                <small>按完整归属版本键分层，再按证据指纹稳定选择尚未审阅的活动待办；启动和主动检索修复都会核对列顺序、部分条件与索引表，定义缺失或漂移时在 SQLCipher 事务内重建。</small>
               </span></header>
               <div className="assistant-recovery-current">
                 <span>当前状态 <b>{memoryDiagnostics.mineTaskOwnershipAuditIndexHealthy ? '定义正确' : '需要检查'}</b></span>

@@ -17685,7 +17685,9 @@ test('mine-task ownership audit sample covers every eligible unreviewed task wit
   const first = store.getMineTaskOwnershipAuditSample()
   assert.equal(first.total, 1)
   assert.equal(first.item?.id, automatic.id)
-  assert.equal(first.strategy, 'stable_evidence_hash_order_v1')
+  assert.equal(first.strategy, 'latest_version_stable_evidence_hash_order_v2')
+  assert.equal(first.cohort?.remaining, 1)
+  assert.equal(first.cohort?.cohortTotal, 1)
   assert.equal('ownership_fingerprint' in first.item, false)
   const queryPlan = (store as any).db.prepare(`
     EXPLAIN QUERY PLAN
@@ -17694,6 +17696,9 @@ test('mine-task ownership audit sample covers every eligible unreviewed task wit
       AND td.classification='mine'
       AND td.status IN ('todo','doing','waiting')
       AND td.ownership_fingerprint!=''
+      AND td.ownership_version_key=(
+        SELECT ownership_version_key FROM task_directory WHERE id='mine-audit-queue-auto'
+      )
       AND NOT EXISTS (
         SELECT 1 FROM task_review_decisions trd
         WHERE trd.evidence_fingerprint=td.ownership_fingerprint
@@ -17737,6 +17742,81 @@ test('mine-task ownership audit sample covers every eligible unreviewed task wit
   assert.equal(store.getMineTaskOwnershipAuditSample().item?.id, automatic.id)
 }))
 
+test('mine-task audit samples the newest complete ownership version before legacy backlog', () => withStore(store => {
+  const base = {
+    status: 'todo', priority: 'medium', classification: 'mine', source: '项目群',
+    sourceSessionId: 'version-cohort-session', ownershipPolicyReason: '原文明确指派给本人'
+  }
+  const legacy = {
+    ...base,
+    id: 'ownership-version-legacy', title: '旧版本任务',
+    createdAt: '2026-07-01T00:00:00.000Z',
+    ownershipPolicyVersion: 'policy-v1', ownershipPromptVersion: 'prompt-v1',
+    ownershipSchemaVersion: 'schema-v1', ownershipModel: 'model-v1',
+    ownershipSourceKind: 'wechat',
+    evidence: evidence('ownership-version-legacy-message', '请你跟进旧版本任务')
+  }
+  const latest = {
+    ...base,
+    id: 'ownership-version-latest', title: '新版本任务',
+    createdAt: '2026-08-01T00:00:00.000Z',
+    ownershipPolicyVersion: 'policy-v2', ownershipPromptVersion: 'prompt-v2',
+    ownershipSchemaVersion: 'schema-v2', ownershipModel: 'model-v2',
+    ownershipSourceKind: 'documents',
+    evidence: evidence('ownership-version-latest-message', '请你跟进新版本任务')
+  }
+  store.syncTasks([legacy, latest])
+
+  const first = store.getMineTaskOwnershipAuditSample()
+  assert.equal(first.total, 2)
+  assert.equal(first.item?.id, latest.id)
+  assert.deepEqual(first.cohort, {
+    policyVersion: 'policy-v2', promptVersion: 'prompt-v2', schemaVersion: 'schema-v2',
+    model: 'model-v2', sourceKind: 'documents', remaining: 1, cohortTotal: 2,
+    latestCreatedAt: '2026-08-01T00:00:00.000Z'
+  })
+
+  store.recordTaskReviewDecision({
+    evidenceFingerprint: taskEvidenceFingerprint(latest),
+    taskId: latest.id,
+    decision: 'mine',
+    task: { ...latest, ownershipAuditSelection: 'latest_version_stable_hash_queue_v2' }
+  })
+  const second = store.getMineTaskOwnershipAuditSample()
+  assert.equal(second.total, 1)
+  assert.equal(second.item?.id, legacy.id)
+  assert.equal(second.cohort?.policyVersion, 'policy-v1')
+  assert.equal(second.cohort?.cohortTotal, 1)
+}))
+
+test('ownership version keys backfill idempotently and remain covered by the audit index', () => withStore(store => {
+  const task = {
+    id: 'ownership-version-backfill', title: '版本键回填', status: 'todo', priority: 'medium',
+    classification: 'mine', source: '项目群', sourceSessionId: 'version-backfill-session',
+    ownershipPolicyReason: '原文明确指派给本人', ownershipPolicyVersion: 'policy-backfill',
+    ownershipPromptVersion: 'prompt-backfill', ownershipSchemaVersion: 'schema-backfill',
+    ownershipModel: 'model-backfill', ownershipSourceKind: 'wechat',
+    evidence: evidence('ownership-version-backfill-message', '请你处理版本键回填')
+  }
+  store.syncTasks([task])
+  const database = (store as any).db
+  database.prepare(`UPDATE task_directory SET ownership_version_key='' WHERE id=?`).run(task.id)
+  assert.equal((store as any).backfillTaskOwnershipVersionKeys(), 1)
+  assert.match(String(database.prepare(`
+    SELECT ownership_version_key AS value FROM task_directory WHERE id=?
+  `).get(task.id).value), /^[a-f0-9]{64}$/)
+  assert.equal((store as any).backfillTaskOwnershipVersionKeys(), 0)
+  assert.deepEqual(database.prepare(`PRAGMA index_info(idx_task_directory_ownership_audit)`)
+    .all().map((row: any) => row.name), [
+    'ownership_version_key', 'ownership_fingerprint', 'id'
+  ])
+  const audit = JSON.parse(String(database.prepare(`
+    SELECT value FROM schema_meta WHERE key='task_ownership_version_key_v1'
+  `).get().value))
+  assert.equal(audit.rowsBackfilledThisStart, 1)
+  assert.equal(audit.rowsBackfilledTotal, 1)
+}))
+
 test('stable mine-task samples are calibrated separately from opportunistic reviews', () => withStore(store => {
   const sampled = {
     id: 'sampled-mine-calibration', title: '稳定队列抽样', classification: 'mine',
@@ -17769,7 +17849,7 @@ test('stable mine-task samples are calibrated separately from opportunistic revi
     correct: 1,
     incorrect: 1,
     total: 2,
-    selection: 'stable_evidence_hash_queue_v1'
+    selection: 'server_bound_stable_hash_queues_v1_v2'
   })
   assert.equal(audit.stableSample.calibration.observedRate, 0.5)
 }))
@@ -19004,7 +19084,7 @@ test('human review calibration uses latest authoritative decisions without claim
     const firstTaskFeedback = store.getTaskReviewFeedbackStats()
     assert.strictEqual(store.getTaskReviewFeedbackStats(), firstTaskFeedback)
     assert.deepEqual(firstCalibration, {
-      version: 'human-review-calibration-v7',
+      version: 'human-review-calibration-v8',
       revision: `${store.getTaskOwnershipReviewRevision()}:${store.getStructuredMemoryRevision()}:${store.getGraphReviewRevision()}:${store.getMemoryChangeLogRevision()}:${store.getIngestionArchiveRevision()}:${store.getIngestionRecoveryRevision()}`,
       taskOwnership: { accepted: 1, rejected: 0, revoked: 1, total: 1 },
       activeMineAudit: {
@@ -19035,7 +19115,7 @@ test('human review calibration uses latest authoritative decisions without claim
             readyForTrend: false,
             interpretation: 'selected_review_interval_not_population_accuracy'
           },
-          selection: 'stable_evidence_hash_queue_v1'
+          selection: 'server_bound_stable_hash_queues_v1_v2'
         },
         rollingTrend: {
           version: 'selected-review-rolling-30-v1',
@@ -19990,7 +20070,7 @@ test('task ownership feedback persists evidence-scoped decisions and suppression
           recommendedMinimum: 30, remainingToRecommended: 30, readyForTrend: false,
           interpretation: 'selected_review_interval_not_population_accuracy'
         },
-        selection: 'stable_evidence_hash_queue_v1'
+        selection: 'server_bound_stable_hash_queues_v1_v2'
       },
       rollingTrend: {
         version: 'selected-review-rolling-30-v1',
@@ -20055,7 +20135,7 @@ test('task ownership feedback persists evidence-scoped decisions and suppression
           recommendedMinimum: 30, remainingToRecommended: 30, readyForTrend: false,
           interpretation: 'selected_review_interval_not_population_accuracy'
         },
-        selection: 'stable_evidence_hash_queue_v1'
+        selection: 'server_bound_stable_hash_queues_v1_v2'
       },
       rollingTrend: {
         version: 'selected-review-rolling-30-v1',
