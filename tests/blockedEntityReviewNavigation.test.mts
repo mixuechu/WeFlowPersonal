@@ -1,6 +1,9 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { shouldReturnToBlockedRelationReview } from '../src/utils/blockedEntityReviewNavigation.ts'
+import {
+  blockedEntityReviewScope,
+  shouldReturnToBlockedRelationReview
+} from '../src/utils/blockedEntityReviewNavigation.ts'
 
 const target = {
   reviewId: 'relation-review',
@@ -37,4 +40,24 @@ test('does not treat other review kinds or the original relation as endpoint wor
     kind: 'entity_creation',
     entityId: 'entity-a'
   }), false)
+})
+
+test('all blocked identities use the exact entity review kind and preserve history when needed', () => {
+  assert.deepEqual(blockedEntityReviewScope({
+    untrusted_entity_review_targets: [
+      { id: 'entity-a', trustStatus: 'candidate' },
+      { id: 'entity-a', trustStatus: 'candidate' },
+      { id: 'entity-b', trustStatus: 'candidate' }
+    ]
+  }), { status: 'pending', entityIds: ['entity-a', 'entity-b'] })
+  assert.deepEqual(blockedEntityReviewScope({
+    untrusted_entity_review_targets: [
+      { id: 'entity-a', trustStatus: 'candidate' },
+      { id: 'entity-b', trustStatus: 'rejected' }
+    ]
+  }), { status: 'all', entityIds: ['entity-a', 'entity-b'] })
+  assert.deepEqual(blockedEntityReviewScope(undefined), {
+    status: 'pending',
+    entityIds: []
+  })
 })

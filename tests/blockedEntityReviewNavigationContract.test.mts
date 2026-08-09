@@ -22,7 +22,9 @@ test('every blocked claim and event surface links to exact identity review work'
   assert.match(page, /setReviewQuery\(target\.id\)/)
   assert.match(page, /target\.trustStatus === 'candidate' \? 'pending' : 'all'/)
   assert.equal(page.match(/<BlockedEntityReviewActions item=/g)?.length, 8)
-  assert.match(page, /onOpenAll=\{\(\) => openReviewInboxTarget\('graph_identity'\)\}/)
+  assert.equal(page.match(/onOpenAll=\{\(\) => openAllBlockedEntityReviews\(/g)?.length, 8)
+  assert.match(page, /setReviewKindFilter\('entity_creation'\)/)
+  assert.match(page, /setReviewStatusFilter\(scope\.status\)/)
 })
 
 test('blocked relation reviews return after exact endpoint identity work', () => {
