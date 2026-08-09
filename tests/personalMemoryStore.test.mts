@@ -22775,6 +22775,63 @@ test('legacy resource budget migration is bounded and never guesses exact-limit 
   assert.equal(stats.migration.lastError, '')
 }))
 
+test('legacy resource budget migration rolls the complete batch and audit back on a later search failure', () => withStore(store => {
+  const database = (store as any).db
+  const insert = database.prepare(`
+    INSERT INTO memory_resources(
+      id,resource_type,title,url,file_name,file_ext,content,metadata_json,created_at,updated_at
+    ) VALUES(?,?,?,?,?,?,?,?,?,?)
+  `)
+  const now = '2026-08-10T00:00:00.000Z'
+  for (const suffix of ['a', 'b']) {
+    insert.run(
+      `legacy-atomic-${suffix}`, 'file', `旧版原子资源 ${suffix}`, '', '', '.pdf',
+      suffix.repeat(RESOURCE_CONTENT_CHAR_LIMIT + 1), '{}', now, now
+    )
+  }
+  const auditBefore = database.prepare(`
+    SELECT value,updated_at FROM schema_meta WHERE key='resource_content_budget_migration'
+  `).get()
+  const searchRevisionBefore = store.getMemorySearchRevision()
+  const resourceRevisionBefore = store.getResourceArchiveRevision()
+  database.exec(`
+    CREATE TRIGGER fail_second_legacy_resource_search
+    BEFORE INSERT ON search_documents
+    WHEN NEW.id='resource:legacy-atomic-b'
+    BEGIN
+      SELECT RAISE(ABORT,'forced second legacy resource search failure');
+    END;
+  `)
+
+  assert.throws(
+    () => store.repairLegacyResourceContentBudgets(2),
+    /forced second legacy resource search failure/
+  )
+  const resourcesAfterFailure = database.prepare(`
+    SELECT id,content,metadata_json FROM memory_resources
+    WHERE id LIKE 'legacy-atomic-%' ORDER BY id
+  `).all()
+  assert.equal(resourcesAfterFailure.length, 2)
+  for (const row of resourcesAfterFailure) {
+    assert.equal(row.content.length, RESOURCE_CONTENT_CHAR_LIMIT + 1)
+    assert.equal(JSON.parse(row.metadata_json).contentStorageLimitChars, undefined)
+  }
+  assert.equal(database.prepare(`
+    SELECT COUNT(*) AS count FROM search_documents WHERE id LIKE 'resource:legacy-atomic-%'
+  `).get().count, 0)
+  assert.deepEqual(database.prepare(`
+    SELECT value,updated_at FROM schema_meta WHERE key='resource_content_budget_migration'
+  `).get(), auditBefore)
+  assert.equal(store.getMemorySearchRevision(), searchRevisionBefore)
+  assert.equal(store.getResourceArchiveRevision(), resourceRevisionBefore)
+
+  database.exec('DROP TRIGGER fail_second_legacy_resource_search')
+  const repaired = store.repairLegacyResourceContentBudgets(2)
+  assert.equal(repaired.repaired, 2)
+  assert.equal(repaired.truncated, 2)
+  assert.equal(repaired.remaining, 0)
+}))
+
 test('message resources remain idempotent, searchable and traceable to original evidence', () => withStore(store => {
   const resource = {
     id: 'resource-link-1',

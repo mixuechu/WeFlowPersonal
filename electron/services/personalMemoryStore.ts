@@ -11810,85 +11810,87 @@ export class PersonalMemoryStore {
       ORDER BY id
       LIMIT ?
     `).all(RESOURCE_CONTENT_CHAR_LIMIT, boundedLimit) as any[]
-    let repaired = 0
-    let truncated = 0
-    let boundaryUnknown = 0
-    for (const row of rows) {
-      let metadata: Record<string, any> = {}
-      try { metadata = JSON.parse(String(row.metadata_json || '{}')) } catch {}
-      const originalChars = String(row.content || '').length
-      const isOversized = originalChars > RESOURCE_CONTENT_CHAR_LIMIT
-      const nextMetadata = {
-        ...metadata,
-        contentStorageLimitChars: RESOURCE_CONTENT_CHAR_LIMIT,
-        contentStorageOriginalChars: originalChars,
-        contentStorageTruncated: isOversized,
-        contentStorageCompletenessUnknown: !isOversized,
-        contentStorageAuditStatus: isOversized
-          ? 'legacy_oversized_truncated'
-          : 'legacy_boundary_unknown'
+    return this.db.transaction(() => {
+      let repaired = 0
+      let truncated = 0
+      let boundaryUnknown = 0
+      for (const row of rows) {
+        let metadata: Record<string, any> = {}
+        try { metadata = JSON.parse(String(row.metadata_json || '{}')) } catch {}
+        const originalChars = String(row.content || '').length
+        const isOversized = originalChars > RESOURCE_CONTENT_CHAR_LIMIT
+        const nextMetadata = {
+          ...metadata,
+          contentStorageLimitChars: RESOURCE_CONTENT_CHAR_LIMIT,
+          contentStorageOriginalChars: originalChars,
+          contentStorageTruncated: isOversized,
+          contentStorageCompletenessUnknown: !isOversized,
+          contentStorageAuditStatus: isOversized
+            ? 'legacy_oversized_truncated'
+            : 'legacy_boundary_unknown'
+        }
+        const nextContent = String(row.content || '').slice(0, RESOURCE_CONTENT_CHAR_LIMIT)
+        const now = new Date().toISOString()
+        this.runWithMemoryChangeOrigin({
+          kind: 'system',
+          id: `resource.content_budget:${createHash('sha256')
+            .update(String(row.id || ''))
+            .digest('hex')
+            .slice(0, 24)}`,
+          sourceKind: 'system'
+        }, () => {
+          this.db!.prepare(`
+            UPDATE memory_resources SET content=?,metadata_json=?,updated_at=? WHERE id=?
+          `).run(nextContent, JSON.stringify(nextMetadata), now, String(row.id || ''))
+          this.upsertSearchDocument(
+            `resource:${String(row.id || '')}`,
+            'resource',
+            String(row.id || ''),
+            String(row.title || '未命名资源'),
+            [row.title, nextContent, row.url, row.file_name, row.file_ext,
+              nextMetadata.sessionName, nextMetadata.senderName].filter(Boolean).join('；'),
+            {
+              ...nextMetadata,
+              resourceType: row.resource_type,
+              url: row.url || '',
+              fileName: row.file_name || ''
+            },
+            now
+          )
+        })
+        repaired += 1
+        if (isOversized) truncated += 1
+        else boundaryUnknown += 1
       }
-      const nextContent = String(row.content || '').slice(0, RESOURCE_CONTENT_CHAR_LIMIT)
-      const now = new Date().toISOString()
-      this.runWithMemoryChangeOrigin({
-        kind: 'system',
-        id: `resource.content_budget:${createHash('sha256')
-          .update(String(row.id || ''))
-          .digest('hex')
-          .slice(0, 24)}`,
-        sourceKind: 'system'
-      }, () => {
-        this.db!.prepare(`
-          UPDATE memory_resources SET content=?,metadata_json=?,updated_at=? WHERE id=?
-        `).run(nextContent, JSON.stringify(nextMetadata), now, String(row.id || ''))
-        this.upsertSearchDocument(
-          `resource:${String(row.id || '')}`,
-          'resource',
-          String(row.id || ''),
-          String(row.title || '未命名资源'),
-          [row.title, nextContent, row.url, row.file_name, row.file_ext,
-            nextMetadata.sessionName, nextMetadata.senderName].filter(Boolean).join('；'),
-          {
-            ...nextMetadata,
-            resourceType: row.resource_type,
-            url: row.url || '',
-            fileName: row.file_name || ''
-          },
-          now
-        )
-      })
-      repaired += 1
-      if (isOversized) truncated += 1
-      else boundaryUnknown += 1
-    }
-    const remaining = Number(this.db.prepare(`
-      SELECT COUNT(*) AS count FROM memory_resources
-      WHERE length(content)>=?
-        AND (
-          json_valid(metadata_json)=0
-          OR json_type(metadata_json,'$.contentStorageLimitChars') IS NULL
-        )
-    `).get(RESOURCE_CONTENT_CHAR_LIMIT)?.count || 0)
-    const checkedAt = new Date().toISOString()
-    const result = {
-      version: 'resource-content-budget-migration-v1',
-      checkedAt,
-      batchLimit: boundedLimit,
-      checked: rows.length,
-      repaired,
-      truncated,
-      boundaryUnknown,
-      remaining,
-      failureStreak: 0,
-      lastErrorAt: '',
-      lastError: ''
-    }
-    this.db.prepare(`
-      INSERT INTO schema_meta(key,value,updated_at)
-      VALUES('resource_content_budget_migration',?,?)
-      ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_at=excluded.updated_at
-    `).run(JSON.stringify(result), checkedAt)
-    return result
+      const remaining = Number(this.db!.prepare(`
+        SELECT COUNT(*) AS count FROM memory_resources
+        WHERE length(content)>=?
+          AND (
+            json_valid(metadata_json)=0
+            OR json_type(metadata_json,'$.contentStorageLimitChars') IS NULL
+          )
+      `).get(RESOURCE_CONTENT_CHAR_LIMIT)?.count || 0)
+      const checkedAt = new Date().toISOString()
+      const result = {
+        version: 'resource-content-budget-migration-v1',
+        checkedAt,
+        batchLimit: boundedLimit,
+        checked: rows.length,
+        repaired,
+        truncated,
+        boundaryUnknown,
+        remaining,
+        failureStreak: 0,
+        lastErrorAt: '',
+        lastError: ''
+      }
+      this.db!.prepare(`
+        INSERT INTO schema_meta(key,value,updated_at)
+        VALUES('resource_content_budget_migration',?,?)
+        ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_at=excluded.updated_at
+      `).run(JSON.stringify(result), checkedAt)
+      return result
+    })()
   }
 
   recordResourceContentBudgetMigrationFailure(error: string): any {

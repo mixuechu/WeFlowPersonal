@@ -35,4 +35,5 @@ test('legacy resource budget migration continues while idle and persists bounded
   assert.match(service, /resource_content_budget_progressed/)
   assert.match(service, /resource_content_budget_completed/)
   assert.match(store, /failureStreak: Math\.max\(0, Number\(previous\?\.failureStreak \|\| 0\)\) \+ 1/)
+  assert.match(store, /return this\.db\.transaction\(\(\) => \{[\s\S]*for \(const row of rows\)[\s\S]*resource_content_budget_migration/)
 })
