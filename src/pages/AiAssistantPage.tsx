@@ -99,6 +99,7 @@ import {
   appRunShutdownStepLabel,
   appRunStageLabel
 } from '../utils/appRecoveryPresentation'
+import { TrailingCoalescedRequest } from '../utils/trailingCoalescedRequest'
 import './AiAssistantPage.scss'
 
 const MEMORY_GROWTH_KIND_LABELS: Record<string, string> = {
@@ -855,6 +856,7 @@ function AiAssistantPage() {
   const [syncing, setSyncing] = useState(false)
   const [retryingNotifications, setRetryingNotifications] = useState(false)
   const [message, setMessage] = useState('')
+  const [dashboardLoadError, setDashboardLoadError] = useState('')
   const [graphQuery, setGraphQuery] = useState('')
   const [graphRelationType, setGraphRelationType] = useState('')
   const [graphRelationStatus, setGraphRelationStatus] = useState('')
@@ -1089,6 +1091,7 @@ function AiAssistantPage() {
     useState<Record<string, boolean>>({})
   const resourceTrashRestoreGates = useRef(new KeyedLatestRequestGates())
   const dashboardLoadGate = useRef(new LatestRequestGate())
+  const dashboardRefresh = useRef(new TrailingCoalescedRequest<[any, any]>())
   const claimArchiveGate = useRef(new LatestRequestGate())
   const eventTimelineGate = useRef(new LatestRequestGate())
   const resourceArchiveGate = useRef(new LatestRequestGate())
@@ -1921,13 +1924,21 @@ function AiAssistantPage() {
 
   const load = useCallback(async () => {
     const request = dashboardLoadGate.current.begin()
-    const [nextStatus, nextDashboard] = await Promise.all([
-      window.electronAPI.aiAssistant.status(),
-      window.electronAPI.aiAssistant.dashboard()
-    ])
-    if (!dashboardLoadGate.current.isCurrent(request)) return
-    setStatus(nextStatus)
-    setDashboard(nextDashboard)
+    try {
+      const [nextStatus, nextDashboard] = await dashboardRefresh.current.run(() => Promise.all([
+        window.electronAPI.aiAssistant.status(),
+        window.electronAPI.aiAssistant.dashboard()
+      ]))
+      if (!dashboardLoadGate.current.isCurrent(request)) return
+      setStatus(nextStatus)
+      setDashboard(nextDashboard)
+      setDashboardLoadError('')
+    } catch (error) {
+      if (dashboardLoadGate.current.isCurrent(request)) {
+        setDashboardLoadError(error instanceof Error ? error.message : String(error))
+      }
+      throw error
+    }
   }, [])
 
   const retryNotificationDelivery = async () => {
@@ -1948,10 +1959,13 @@ function AiAssistantPage() {
   }
 
   useEffect(() => {
-    void load()
+    void load().catch(() => {})
     void window.electronAPI.aiAssistant.getMemoryDiagnostics().then(setMemoryDiagnostics).catch(() => {})
-    const timer = window.setInterval(() => void load(), 15_000)
-    return () => window.clearInterval(timer)
+    const timer = window.setInterval(() => void load().catch(() => {}), 15_000)
+    return () => {
+      window.clearInterval(timer)
+      dashboardLoadGate.current.invalidate()
+    }
   }, [load])
 
   useEffect(() => {
@@ -9319,6 +9333,9 @@ function AiAssistantPage() {
         )}
 
         {message && <div className={`assistant-message ${message.includes('完成') ? 'success' : ''}`}>{message}</div>}
+        {dashboardLoadError && <div className="assistant-message">
+          状态刷新暂时失败：{dashboardLoadError}。系统不会叠加重复请求，将在下一轮自动重试。
+        </div>}
         <section className="assistant-panel assistant-owner-profile">
           <div className="assistant-section-heading">
             <div>

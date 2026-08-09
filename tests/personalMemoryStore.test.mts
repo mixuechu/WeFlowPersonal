@@ -22342,16 +22342,30 @@ test('wechat resource batch records a private connector origin and rolls back al
   assert.equal(publicDossier.includes('private-sender'), false)
   assert.equal(publicDossier.includes('不会进入来源档案'), false)
 
-  store.appendResourceContent(
-    resource.id,
-    '本地继续补齐的 OCR 正文',
-    { attachmentPdfOcrStatus: 'completed' },
-    {
-      kind: 'connector_page',
-      id: 'wechat.pdf_ocr:1234567890abcdef12345678',
-      sourceKind: 'wechat'
+  const originalDate = globalThis.Date
+  const unchangedTimestamp = String(database.prepare(
+    'SELECT updated_at FROM memory_resources WHERE id=?'
+  ).get(resource.id).updated_at)
+  globalThis.Date = class extends originalDate {
+    constructor(...args: ConstructorParameters<DateConstructor>) {
+      super(...(args.length > 0 ? args : [unchangedTimestamp]))
     }
-  )
+    static now() { return new originalDate(unchangedTimestamp).getTime() }
+  } as DateConstructor
+  try {
+    store.appendResourceContent(
+      resource.id,
+      '本地继续补齐的 OCR 正文',
+      { attachmentPdfOcrStatus: 'completed' },
+      {
+        kind: 'connector_page',
+        id: 'wechat.pdf_ocr:1234567890abcdef12345678',
+        sourceKind: 'wechat'
+      }
+    )
+  } finally {
+    globalThis.Date = originalDate
+  }
   const enrichedGrowth = store.listMemoryChangeLogPage({
     origin: 'connector_page',
     source: 'wechat',

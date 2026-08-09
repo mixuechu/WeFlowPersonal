@@ -2519,37 +2519,48 @@ export class PersonalMemoryStore {
     itemKind: 'entity' | 'claim' | 'relation' | 'event' | 'resource'
     statusColumn: string
     updatedColumn: string
+    watchedColumns: string[]
   }> {
     return [{
       name: 'memory_change_entities',
       table: 'entities',
       itemKind: 'entity',
       statusColumn: 'trust_status',
-      updatedColumn: 'updated_at'
+      updatedColumn: 'updated_at',
+      watchedColumns: ['type', 'canonical_name', 'summary', 'confidence', 'deleted_at',
+        'trust_status', 'summary_status', 'identity_version']
     }, {
       name: 'memory_change_claims',
       table: 'claims',
       itemKind: 'claim',
       statusColumn: 'status',
-      updatedColumn: 'updated_at'
+      updatedColumn: 'updated_at',
+      watchedColumns: ['subject_id', 'predicate', 'object_entity_id', 'object_value', 'polarity',
+        'value_type', 'confidence', 'status', 'valid_from', 'valid_to', 'search_text']
     }, {
       name: 'memory_change_relations',
       table: 'relations',
       itemKind: 'relation',
       statusColumn: 'status',
-      updatedColumn: 'updated_at'
+      updatedColumn: 'updated_at',
+      watchedColumns: ['subject_id', 'predicate', 'object_id', 'confidence', 'status',
+        'direction_explanation', 'valid_from', 'valid_to', 'search_text']
     }, {
       name: 'memory_change_events',
       table: 'events',
       itemKind: 'event',
       statusColumn: 'status',
-      updatedColumn: 'updated_at'
+      updatedColumn: 'updated_at',
+      watchedColumns: ['event_type', 'title', 'description', 'start_at', 'end_at', 'location',
+        'confidence', 'status', 'source_nature', 'search_text']
     }, {
       name: 'memory_change_resources',
       table: 'memory_resources',
       itemKind: 'resource',
       statusColumn: '',
-      updatedColumn: 'updated_at'
+      updatedColumn: 'updated_at',
+      watchedColumns: ['resource_type', 'title', 'url', 'file_name', 'file_ext', 'content',
+        'metadata_json']
     }]
   }
 
@@ -2559,6 +2570,7 @@ export class PersonalMemoryStore {
     itemKind: string
     statusColumn: string
     updatedColumn: string
+    watchedColumns: string[]
   }): string[] {
     const originValues = this.memoryChangeOriginValueSql()
     const statusBefore = definition.statusColumn ? `OLD.${definition.statusColumn}` : `''`
@@ -2566,10 +2578,10 @@ export class PersonalMemoryStore {
     const statusChanged = definition.statusColumn
       ? `OLD.${definition.statusColumn} IS NOT NEW.${definition.statusColumn}`
       : '0'
-    const updateWhen = definition.statusColumn
-      ? `WHEN OLD.${definition.updatedColumn} IS NOT NEW.${definition.updatedColumn}
-        OR OLD.${definition.statusColumn} IS NOT NEW.${definition.statusColumn}`
-      : `WHEN OLD.${definition.updatedColumn} IS NOT NEW.${definition.updatedColumn}`
+    const updateSignals = [definition.updatedColumn, ...definition.watchedColumns]
+      .filter((column, index, columns) => column && columns.indexOf(column) === index)
+      .map(column => `OLD.${column} IS NOT NEW.${column}`)
+    const updateWhen = `WHEN ${updateSignals.join('\n        OR ')}`
     const updateDetail = definition.itemKind === 'entity'
       ? `CASE
           WHEN ${statusChanged} THEN 'status'
