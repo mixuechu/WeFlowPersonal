@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
+import { createHash } from 'node:crypto'
 import {
   applyTaskReviewFeedback,
   isRepeatedMineTaskAudit,
@@ -20,11 +21,50 @@ test('task feedback fingerprint follows evidence rather than model wording', () 
     evidence: [{ messageId: 'wechat:group-1:123' }]
   })
   assert.equal(first, reformulated)
+  assert.equal(first, createHash('sha256').update('group-1|wechat:group-1:123').digest('hex'))
   assert.notEqual(first, taskEvidenceFingerprint({
     title: '确认更新时间',
     sourceSessionId: 'group-1',
     sourceMessageIds: ['wechat:group-1:124']
   }))
+})
+
+test('task feedback fingerprint distinguishes one message id carried by multiple sources', () => {
+  const original = {
+    title: '确认发布时间',
+    sourceSessionId: 'group-1',
+    sourceMessageIds: ['shared-message'],
+    evidence: [{
+      sourceId: 'wechat', sessionId: 'group-1', messageId: 'shared-message',
+      timestamp: 1, excerpt: '微信原文'
+    }]
+  }
+  const enrichedExactCarrier = {
+    ...original,
+    evidence: [{
+      sourceId: 'wechat', sessionId: 'group-1', messageId: 'shared-message',
+      timestamp: 2, sender: '张三', excerpt: '更完整的微信原文'
+    }]
+  }
+  const additionalDocumentCarrier = {
+    ...original,
+    evidence: [
+      ...original.evidence,
+      {
+        sourceId: 'documents', sessionId: 'document-1', messageId: 'shared-message',
+        timestamp: 3, excerpt: '文档原文'
+      }
+    ]
+  }
+  assert.equal(taskEvidenceFingerprint(original), taskEvidenceFingerprint(enrichedExactCarrier))
+  assert.notEqual(taskEvidenceFingerprint(original), taskEvidenceFingerprint(additionalDocumentCarrier))
+  assert.equal(
+    taskEvidenceFingerprint(additionalDocumentCarrier),
+    taskEvidenceFingerprint({
+      ...additionalDocumentCarrier,
+      evidence: [...additionalDocumentCarrier.evidence].reverse()
+    })
+  )
 })
 
 test('task feedback rejects repeated evidence and restores confirmed ownership', () => {

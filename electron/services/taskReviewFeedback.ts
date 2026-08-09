@@ -1,15 +1,35 @@
 import crypto from 'node:crypto'
 
 export function taskEvidenceFingerprint(task: any): string {
+  const evidence = Array.isArray(task?.evidence) ? task.evidence : []
   const evidenceKeys = [
     ...(Array.isArray(task?.sourceMessageIds) ? task.sourceMessageIds : []),
     ...(Array.isArray(task?.sourceEvidenceKeys) ? task.sourceEvidenceKeys : []),
-    ...(Array.isArray(task?.evidence) ? task.evidence.map((item: any) => item?.messageId) : [])
+    ...evidence.map((item: any) => item?.messageId)
   ].map(value => String(value || '').trim()).filter(Boolean).sort()
   if (!evidenceKeys.length) return ''
+  const carriersByMessageId = new Map<string, Set<string>>()
+  for (const item of evidence) {
+    const messageId = String(item?.messageId || item?.message_id || '').trim()
+    if (!messageId) continue
+    const carrier = [
+      String(item?.sourceId || item?.source_id || '').trim(),
+      String(item?.sessionId || item?.session_id || '').trim(),
+      messageId
+    ].join('\0')
+    const carriers = carriersByMessageId.get(messageId) || new Set<string>()
+    carriers.add(carrier)
+    carriersByMessageId.set(messageId, carriers)
+  }
+  const collisionDiscriminators = [...carriersByMessageId.entries()]
+    .filter(([, carriers]) => carriers.size > 1)
+    .flatMap(([, carriers]) => [...carriers].map(carrier =>
+      `carrier:${crypto.createHash('sha256').update(carrier).digest('hex')}`))
+    .sort()
   return crypto.createHash('sha256').update([
     String(task?.sourceSessionId || task?.source || '').trim(),
-    ...new Set(evidenceKeys)
+    ...new Set(evidenceKeys),
+    ...collisionDiscriminators
   ].join('|')).digest('hex')
 }
 

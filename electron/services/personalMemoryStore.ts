@@ -11705,7 +11705,9 @@ export class PersonalMemoryStore {
         ...task,
         sourceSessionId: String(task.sourceSessionId || task.source || ''),
         sourceMessageIds: [],
-        evidence: authoritativeEvidenceRows.map(item => ({ messageId: item[1] }))
+        evidence: authoritativeEvidenceRows.map(item => ({
+          sourceId: item[0], messageId: item[1], sessionId: item[2]
+        }))
       })
       const ownershipAuditEligible = task.classification === 'mine'
         && Boolean(String(task.ownershipPolicyReason || '').trim())

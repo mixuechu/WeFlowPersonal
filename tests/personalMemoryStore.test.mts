@@ -5704,6 +5704,39 @@ test('task search keeps original message evidence', () => withStore(store => {
   }])
 }))
 
+test('task ownership fingerprint keeps cross-source carrier collisions after SQL normalization', () => withStore(store => {
+  const task = {
+    id: 'task-cross-source-ownership',
+    title: '确认跨来源事项',
+    detail: '',
+    source: '项目群',
+    sourceSessionId: 'group-1',
+    owner: '我',
+    priority: 'medium',
+    status: 'todo',
+    classification: 'mine',
+    ownershipPolicyReason: '原文明确指派给我',
+    sourceMessageIds: ['shared-message'],
+    evidence: [{
+      sourceId: 'wechat', sessionId: 'group-1', messageId: 'shared-message',
+      timestamp: 1, sender: '客户', excerpt: '微信原文'
+    }, {
+      sourceId: 'documents', sessionId: 'document-1', messageId: 'shared-message',
+      timestamp: 2, sender: '本机文档', excerpt: '文档原文'
+    }]
+  }
+  store.syncTasks([task])
+  const row = (store as any).db.prepare(`
+    SELECT ownership_fingerprint FROM task_directory WHERE id=?
+  `).get(task.id)
+  assert.equal(row.ownership_fingerprint, taskEvidenceFingerprint(task))
+  assert.notEqual(row.ownership_fingerprint, taskEvidenceFingerprint({
+    ...task,
+    evidence: [task.evidence[0]]
+  }))
+  assert.equal(store.getDocumentEvidence('task', task.id).length, 2)
+}))
+
 test('generic search evidence migrates to source-and-session identity and preserves same message ids', () => {
   const directory = mkdtempSync(join(tmpdir(), 'weflow-generic-evidence-identity-test-'))
   const databasePath = join(directory, 'memory.sqlite')
