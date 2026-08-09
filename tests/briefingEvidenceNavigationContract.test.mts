@@ -13,7 +13,14 @@ test('latest briefing summary and highlights use the shared evidence navigation 
 })
 
 test('shared evidence rows fail closed for non-WeChat and malformed message identities', () => {
-  assert.match(page, /const navigation = wechatEvidenceNavigation\(item\)/)
-  assert.match(page, /evidenceNavigationUnavailableReason\(item\)/)
+  assert.match(page, /function EvidenceNavigationAction/)
+  assert.match(page, /const navigation = wechatEvidenceNavigation\(evidence\)/)
+  assert.match(page, /evidenceNavigationUnavailableReason\(evidence\)/)
   assert.match(page, /openChatHistoryWindow\(\s*navigation\.sessionId, navigation\.messageId/)
+})
+
+test('every AI assistant original-message action shares the source-aware navigation gate', () => {
+  assert.equal(page.match(/openChatHistoryWindow\(/g)?.length, 1)
+  assert.match(page, /<EvidenceNavigationAction evidence=\{matchedEvidence\} label="打开命中原消息" \/>/)
+  assert.ok((page.match(/<EvidenceNavigationAction evidence=/g) || []).length >= 5)
 })

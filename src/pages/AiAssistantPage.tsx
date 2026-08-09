@@ -4,7 +4,7 @@ import { BookOpen, Bot, CalendarDays, Check, Clock3, Database, Filter, Network, 
 import { buildTaskCalendar, shanghaiToday } from '../utils/taskCalendar'
 import type { ReviewStatusFilter } from '../utils/graphReviewFilters'
 import type { ReviewCalibrationOutcomeFilter } from '../../shared/graphReviewPagination'
-import { evidenceLocalMessageId, evidenceNavigationUnavailableReason, groupMemorySearchResults, memoryEvidenceSourceLabel, MEMORY_TYPE_LABELS, normalizeMemoryEvidence, type MemoryEvidence, wechatEvidenceNavigation } from '../utils/memorySearchPresentation'
+import { evidenceNavigationUnavailableReason, groupMemorySearchResults, memoryEvidenceSourceLabel, MEMORY_TYPE_LABELS, normalizeMemoryEvidence, type MemoryEvidence, wechatEvidenceNavigation } from '../utils/memorySearchPresentation'
 import {
   authorityReturnLabel,
   buildAuthorityReturnTarget,
@@ -300,6 +300,19 @@ function identityEvidenceKindLabels(item: { identityEvidenceKinds?: string[] }):
   return (item.identityEvidenceKinds || []).map(kind => labels[kind] || kind).join('、')
 }
 
+function EvidenceNavigationAction({ evidence, label = '打开原消息' }: {
+  evidence: any
+  label?: string
+}) {
+  const navigation = wechatEvidenceNavigation(evidence)
+  if (!navigation) return <em className="assistant-evidence-navigation-note">
+    {evidenceNavigationUnavailableReason(evidence)}
+  </em>
+  return <button onClick={() => void window.electronAPI.window.openChatHistoryWindow(
+    navigation.sessionId, navigation.messageId
+  )}>{label}</button>
+}
+
 function EvidenceRows({
   evidence: rawEvidence,
   total,
@@ -322,18 +335,12 @@ function EvidenceRows({
   </>
   return <>
     {evidence.map((item, index) => {
-      const navigation = wechatEvidenceNavigation(item)
-      const navigationUnavailableReason = evidenceNavigationUnavailableReason(item)
       const role = item.role === 'indirect' ? '间接证据'
         : item.role === 'contradiction' ? '反证'
           : roleLabels ? '直接证据' : '证据'
       return <div className="assistant-evidence-row" key={`${item.sourceId}-${item.sessionId}-${item.messageId}-${index}`}>
         <small>{role} · {memoryEvidenceSourceLabel(item)}{item.sessionName ? ` · ${item.sessionName}` : ''} · {item.sender || '发送者未知'} · {evidenceTime(item.timestamp)}：“{item.excerpt}”</small>
-        {navigation
-          ? <button onClick={() => void window.electronAPI.window.openChatHistoryWindow(
-            navigation.sessionId, navigation.messageId
-          )}>打开原消息</button>
-          : <em className="assistant-evidence-navigation-note">{navigationUnavailableReason}</em>}
+        <EvidenceNavigationAction evidence={item} />
       </div>
     })}
     {Number(total || 0) > evidence.length && <small className="assistant-evidence-limit">
@@ -11121,11 +11128,7 @@ function AiAssistantPage() {
                   </small>
                 </header>
                 <p>“{matchedEvidence.excerpt || '原文摘录为空'}”</p>
-                {matchedEvidence.sessionId && evidenceLocalMessageId(matchedEvidence) && <button onClick={() =>
-                  void window.electronAPI.window.openChatHistoryWindow(
-                    matchedEvidence.sessionId,
-                    evidenceLocalMessageId(matchedEvidence)!
-                  )}>打开命中原消息</button>}
+                <EvidenceNavigationAction evidence={matchedEvidence} label="打开命中原消息" />
               </div>}
               <div className="assistant-search-feedback-actions">
                 <button
@@ -11161,12 +11164,10 @@ function AiAssistantPage() {
                   : '暂无可展开的原始证据'}</summary>
                 {evidence.length
                   ? <div>{evidence.map((item, index) => {
-                    const localMessageId = evidenceLocalMessageId(item)
                     return <blockquote key={`${item.sourceId}-${item.sessionId}-${item.messageId}-${index}`}>
                       <header>
                         <span>{memoryEvidenceSourceLabel(item)} · {item.sender || '原文'}{item.timestamp ? ` · ${new Date(item.timestamp * 1000).toLocaleString('zh-CN')}` : ''}</span>
-                        {item.sessionId && localMessageId && <button onClick={() =>
-                          void window.electronAPI.window.openChatHistoryWindow(item.sessionId, localMessageId)}>打开原消息</button>}
+                        <EvidenceNavigationAction evidence={item} />
                       </header>
                       <p>“{item.excerpt || '原文摘录为空'}”</p>
                       {item.role && item.role !== 'support' && <small>{
@@ -12037,11 +12038,9 @@ function AiAssistantPage() {
                   </small>}
                 {(citation.evidence || []).map((rawEvidence: any, index: number) => {
                   const evidence = normalizeMemoryEvidence(rawEvidence)
-                  const localMessageId = evidenceLocalMessageId(evidence)
                   return <small className="assistant-citation-evidence" key={`${evidence.sourceId}-${evidence.sessionId}-${evidence.messageId}-${index}`}>
                     <span>{memoryEvidenceSourceLabel(evidence)} · {evidence.sender || '原文'}{evidence.timestamp ? ` · ${new Date(evidence.timestamp * 1000).toLocaleString('zh-CN')}` : ''}：“{evidence.excerpt}”</span>
-                    {evidence.sessionId && localMessageId && <button onClick={() =>
-                      void window.electronAPI.window.openChatHistoryWindow(evidence.sessionId, localMessageId)}>打开原消息</button>}
+                    <EvidenceNavigationAction evidence={evidence} />
                   </small>
                 })}
                 {!!citation.evidence?.length && !!citation.sourceId && <button className="assistant-open-evidence-archive" onClick={() =>
@@ -14103,17 +14102,13 @@ function AiAssistantPage() {
             <div className="assistant-evidence-archive-list">
               {memoryEvidenceArchive.items.map((rawEvidence, index) => {
                 const evidence = normalizeMemoryEvidence(rawEvidence)
-                const localMessageId = evidenceLocalMessageId(evidence)
                 const role = evidence.role === 'indirect' ? '间接证据'
                   : evidence.role === 'contradiction' ? '反证'
                     : evidence.role === 'direct' ? '直接证据' : '原文'
                 return <article key={`${evidence.sourceId}-${evidence.sessionId}-${evidence.messageId}-${index}`}>
                   <header>
                     <span>{role} · {memoryEvidenceSourceLabel(evidence)} · {evidence.sender || '发送者未标注'} · {evidenceTime(evidence.timestamp)}</span>
-                    {evidence.sessionId && localMessageId && <button onClick={() =>
-                      void window.electronAPI.window.openChatHistoryWindow(evidence.sessionId, localMessageId)}>
-                      打开原消息
-                    </button>}
+                    <EvidenceNavigationAction evidence={evidence} />
                   </header>
                   <p>“{evidence.excerpt || '原文摘录为空'}”</p>
                 </article>
