@@ -50,6 +50,95 @@ type AppRunLedger = {
 
 const emptyLedger = (): AppRunLedger => ({ schemaVersion: 1, current: null, history: [] })
 
+const SESSION_STAGES = new Set<AppRunSession['stage']>(['starting', 'ready', 'services_ready', 'shutting_down', 'ended'])
+const EXIT_REASONS = new Set<AppRunExitReason>(['normal', 'update_restart', 'forced_timeout', 'uncaught_exception', 'unknown_interruption'])
+const INCIDENT_KINDS = new Set<AppRunIncident['kind']>(['renderer_gone', 'child_process_gone', 'uncaught_exception', 'unhandled_rejection'])
+const SHUTDOWN_STEP_STATUSES = new Set<AppRunShutdownStep['status']>(['running', 'completed', 'failed'])
+
+const boundedText = (value: unknown, maximum: number): string => typeof value === 'string'
+  ? sanitizeDiagnosticText(value).slice(0, maximum)
+  : ''
+
+const boundedTimestamp = (value: unknown): string | undefined => {
+  if (typeof value !== 'string' || !Number.isFinite(Date.parse(value))) return undefined
+  return value.slice(0, 40)
+}
+
+const normalizePersistedSession = (value: unknown): AppRunSession | null => {
+  if (!value || typeof value !== 'object') return null
+  const raw = value as Record<string, unknown>
+  const id = boundedText(raw.id, 100)
+  const version = boundedText(raw.version, 40)
+  const startedAt = boundedTimestamp(raw.startedAt)
+  const lastHeartbeatAt = boundedTimestamp(raw.lastHeartbeatAt)
+  const stage = SESSION_STAGES.has(raw.stage as AppRunSession['stage'])
+    ? raw.stage as AppRunSession['stage']
+    : null
+  if (!id || !version || !startedAt || !lastHeartbeatAt || !stage) return null
+
+  const incidents = (Array.isArray(raw.incidents) ? raw.incidents : [])
+    .slice(-20)
+    .flatMap((item): AppRunIncident[] => {
+      if (!item || typeof item !== 'object') return []
+      const incident = item as Record<string, unknown>
+      const at = boundedTimestamp(incident.at)
+      const kind = INCIDENT_KINDS.has(incident.kind as AppRunIncident['kind'])
+        ? incident.kind as AppRunIncident['kind']
+        : null
+      if (!at || !kind) return []
+      return [{
+        at,
+        kind,
+        detail: boundedText(incident.detail, 300) || '未提供错误详情',
+        fatal: incident.fatal === true
+      }]
+    })
+  const shutdownSteps = (Array.isArray(raw.shutdownSteps) ? raw.shutdownSteps : [])
+    .slice(-20)
+    .flatMap((item): AppRunShutdownStep[] => {
+      if (!item || typeof item !== 'object') return []
+      const step = item as Record<string, unknown>
+      const name = boundedText(step.name, 80)
+      const status = SHUTDOWN_STEP_STATUSES.has(step.status as AppRunShutdownStep['status'])
+        ? step.status as AppRunShutdownStep['status']
+        : null
+      const stepStartedAt = boundedTimestamp(step.startedAt)
+      if (!name || !status || !stepStartedAt) return []
+      const endedAt = boundedTimestamp(step.endedAt)
+      const durationMs = typeof step.durationMs === 'number' && Number.isFinite(step.durationMs)
+        ? Math.max(0, Math.min(step.durationMs, 86_400_000))
+        : undefined
+      const detail = boundedText(step.detail, 300)
+      return [{
+        name,
+        status,
+        startedAt: stepStartedAt,
+        ...(endedAt ? { endedAt } : {}),
+        ...(durationMs == null ? {} : { durationMs }),
+        ...(detail ? { detail } : {})
+      }]
+    })
+  const exitReason = EXIT_REASONS.has(raw.exitReason as AppRunExitReason)
+    ? raw.exitReason as AppRunExitReason
+    : undefined
+
+  return {
+    id,
+    version,
+    startedAt,
+    lastHeartbeatAt,
+    stage,
+    cleanExit: raw.cleanExit === true,
+    incidents,
+    ...(boundedTimestamp(raw.readyAt) ? { readyAt: boundedTimestamp(raw.readyAt) } : {}),
+    ...(boundedTimestamp(raw.servicesReadyAt) ? { servicesReadyAt: boundedTimestamp(raw.servicesReadyAt) } : {}),
+    ...(boundedTimestamp(raw.shutdownStartedAt) ? { shutdownStartedAt: boundedTimestamp(raw.shutdownStartedAt) } : {}),
+    ...(boundedTimestamp(raw.endedAt) ? { endedAt: boundedTimestamp(raw.endedAt) } : {}),
+    ...(exitReason ? { exitReason } : {}),
+    ...(shutdownSteps.length > 0 ? { shutdownSteps } : {})
+  }
+}
+
 export class AppRunRecoveryService {
   private readonly ledgerPath: string
   private ledger: AppRunLedger = emptyLedger()
@@ -244,8 +333,11 @@ export class AppRunRecoveryService {
       if (parsed?.schemaVersion !== 1 || !Array.isArray(parsed.history)) return emptyLedger()
       return {
         schemaVersion: 1,
-        current: parsed.current && typeof parsed.current === 'object' ? parsed.current : null,
-        history: parsed.history.filter((item: unknown) => item && typeof item === 'object').slice(0, 30)
+        current: normalizePersistedSession(parsed.current),
+        history: parsed.history
+          .slice(0, 30)
+          .map(normalizePersistedSession)
+          .filter((item: AppRunSession | null): item is AppRunSession => item !== null)
       }
     } catch {
       return emptyLedger()
