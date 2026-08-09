@@ -12,7 +12,8 @@ import {
   planStaleGraphIdentityReviews,
   planStaleIdentityVersionReviews,
   planStaleRuleIdentityReviews,
-  planStaleVectorIdentityReviews
+  planStaleVectorIdentityReviews,
+  resolveModelIdentitySuggestionTarget
 } from '../electron/services/identityDisambiguation.ts'
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)))
@@ -102,6 +103,31 @@ test('identity scans retire only pending candidates whose endpoint versions are 
     { id: 'resolved', ...base, status: 'rejected', leftIdentityVersion: 1, rightIdentityVersion: 5 },
     { id: 'relation', ...base, kind: 'relation', leftIdentityVersion: 1, rightIdentityVersion: 5 }
   ], entities), ['left-changed', 'right-changed', 'swapped', 'legacy', 'missing'])
+})
+
+test('model identity suggestions resolve only an exact trusted person id and canonical name', () => {
+  const entities = new Map([
+    ['person-a', { id: 'person-a', type: 'person', canonicalName: '同名用户', trustStatus: 'confirmed' }],
+    ['person-b', { id: 'person-b', type: 'person', canonicalName: '同名用户', trustStatus: 'confirmed' }],
+    ['candidate', { id: 'candidate', type: 'person', canonicalName: '候选人物', trustStatus: 'candidate' }],
+    ['organization', { id: 'organization', type: 'organization', canonicalName: '同名用户', trustStatus: 'confirmed' }]
+  ])
+  assert.equal(resolveModelIdentitySuggestionTarget({
+    rightExistingEntityId: 'person-b', rightExistingName: '同名用户'
+  }, entities)?.id, 'person-b')
+  assert.equal(resolveModelIdentitySuggestionTarget({ rightExistingName: '同名用户' }, entities), null)
+  assert.equal(resolveModelIdentitySuggestionTarget({
+    rightExistingEntityId: 'person-a', rightExistingName: '错误名称'
+  }, entities), null)
+  assert.equal(resolveModelIdentitySuggestionTarget({
+    rightExistingEntityId: 'candidate', rightExistingName: '候选人物'
+  }, entities), null)
+  assert.equal(resolveModelIdentitySuggestionTarget({
+    rightExistingEntityId: 'organization', rightExistingName: '同名用户'
+  }, entities), null)
+  assert.equal(resolveModelIdentitySuggestionTarget({
+    rightExistingEntityId: 'invented', rightExistingName: '同名用户'
+  }, entities), null)
 })
 
 function exhaustiveSuggestions(entities: any[], relations: any[]): any[] {
@@ -258,6 +284,9 @@ test('identity scan diagnostics expose hub exclusions and truncation in the UI',
   assert.ok(contextualScan.indexOf('planStaleIdentityVersionReviews(') <
     contextualScan.indexOf('this.runVectorIdentityScan('))
   assert.match(contextualScan, /assessIdentityPair\(left, right\)\.eligible && this\.enqueueIdentityPair\([\s\S]*?left, right, now, undefined/)
+  assert.match(service, /rightExistingEntityId/)
+  assert.doesNotMatch(service, /entitiesByCanonicalName\.get\(String\(item\.rightExistingName/)
+  assert.match(service, /buildStructuredExtractionEvidence\([\s\S]*?source: 'llm_suggestion'/)
 })
 
 test('complete vector rescans retire only unsupported pure-vector identity reviews', () => {

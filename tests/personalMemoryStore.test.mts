@@ -2179,7 +2179,11 @@ test('a regenerated identity candidate receives a new authoritative queue creati
     id: 'stable-pair-review', kind: 'possible_duplicate', title: '甲 ↔ 乙', detail: '第一版',
     confidence: 0.7, status: 'pending', createdAt: '2026-08-01T00:00:00.000Z',
     leftEntityId: 'a', rightEntityId: 'b', leftIdentityVersion: 1, rightIdentityVersion: 1,
-    candidateSource: 'exact_name', candidateInstanceId: 'instance-v1'
+    candidateSource: 'llm_suggestion', candidateInstanceId: 'instance-v1',
+    evidence: [{
+      sourceId: 'wechat', sessionId: 'session-a', messageId: 'wechat:session-a:old',
+      timestamp: 1, sender: '旧发送者', excerpt: '旧实例原文'
+    }]
   }
   store.syncGraph({ entities, relations: [], reviewQueue: [candidate] } as any)
   const db = (store as any).db
@@ -2191,7 +2195,11 @@ test('a regenerated identity candidate receives a new authoritative queue creati
     detail: '身份版本变化后的新实例',
     createdAt: '2026-08-09T00:00:00.000Z',
     leftIdentityVersion: 2,
-    candidateInstanceId: 'instance-v2'
+    candidateInstanceId: 'instance-v2',
+    evidence: [{
+      sourceId: 'wechat', sessionId: 'session-b', messageId: 'wechat:session-b:new',
+      timestamp: 2, sender: '新发送者', excerpt: '新实例原文'
+    }]
   }
   store.syncGraph({
     entities: [{ ...entities[0], identityVersion: 2 }, entities[1]],
@@ -2203,6 +2211,27 @@ test('a regenerated identity candidate receives a new authoritative queue creati
   assert.equal(row.created_at, regenerated.createdAt)
   assert.equal(JSON.parse(row.payload_json).candidateInstanceId, 'instance-v2')
   assert.equal(store.listGraphReviewsByIds([candidate.id])[0].createdAt, regenerated.createdAt)
+  let revision = store.getGraphReviewRevision()
+  let evidencePage = store.listGraphReviewEvidencePage({ reviewId: candidate.id, revision })
+  assert.deepEqual(evidencePage.items.map((item: any) => item.excerpt), ['新实例原文'])
+
+  store.syncGraph({
+    entities: [{ ...entities[0], identityVersion: 2 }, entities[1]],
+    relations: [],
+    reviewQueue: [{
+      ...regenerated,
+      evidence: [...regenerated.evidence, {
+        sourceId: 'wechat', sessionId: 'session-c', messageId: 'wechat:session-c:more',
+        timestamp: 3, sender: '补充发送者', excerpt: '同一实例新增原文'
+      }]
+    }]
+  } as any)
+  revision = store.getGraphReviewRevision()
+  evidencePage = store.listGraphReviewEvidencePage({ reviewId: candidate.id, revision })
+  assert.equal(evidencePage.total, 2)
+  assert.deepEqual(evidencePage.items.map((item: any) => item.excerpt), [
+    '同一实例新增原文', '新实例原文'
+  ])
 }))
 
 test('relationship history keeps creation and later review state instead of overwriting it', () => withStore(store => {
@@ -2725,8 +2754,12 @@ test('entity vector identity scans advance a durable bounded probe backlog inste
   const committed = store.commitIdentityVectorScanBatch(first.checkpoint, [{
     id: 'vector-review-committed', kind: 'possible_duplicate', title: '人物0 ↔ 人物1',
     detail: '本地向量相似，等待人工确认', confidence: 0.9, status: 'pending',
-    createdAt: new Date().toISOString(), leftEntityId: 'vector-person-0',
-    rightEntityId: 'vector-person-1', candidateSource: 'vector_similarity'
+    createdAt: '2026-08-01T00:00:00.000Z', leftEntityId: 'vector-person-0',
+    rightEntityId: 'vector-person-1', candidateSource: 'vector_similarity',
+    candidateInstanceId: 'vector-instance-v1', evidence: [{
+      sourceId: 'wechat', sessionId: 'old-vector', messageId: 'wechat:old-vector:message',
+      timestamp: 1, sender: '旧实例', excerpt: '旧向量实例原文'
+    }]
   }], 'vector-scan-committed-1')
   assert.equal(committed.committedProbes, 32)
   assert.equal(committed.persistedReviews, 1)
@@ -2738,11 +2771,26 @@ test('entity vector identity scans advance a durable bounded probe backlog inste
     'identity-incremental-test', 0.999, 200, 32)
   assert.equal(second.stats.pendingBefore, 4_968)
   assert.equal(second.stats.probes, 32)
-  store.commitIdentityVectorScanBatch(second.checkpoint, [], 'vector-scan-committed-2')
+  store.commitIdentityVectorScanBatch(second.checkpoint, [{
+    id: 'vector-review-committed', kind: 'possible_duplicate', title: '人物0 ↔ 人物1',
+    detail: '新向量实例，等待人工确认', confidence: 0.91, status: 'pending',
+    createdAt: '2026-08-09T00:00:00.000Z', leftEntityId: 'vector-person-0',
+    rightEntityId: 'vector-person-1', candidateSource: 'vector_similarity',
+    candidateInstanceId: 'vector-instance-v2', evidence: [{
+      sourceId: 'wechat', sessionId: 'new-vector', messageId: 'wechat:new-vector:message',
+      timestamp: 2, sender: '新实例', excerpt: '新向量实例原文'
+    }]
+  }], 'vector-scan-committed-2')
   assert.equal(Number(db.prepare(`
     SELECT COUNT(*) AS count FROM identity_vector_scan_state
     WHERE model='identity-incremental-test'
   `).get()?.count || 0), 64)
+  const vectorEvidence = store.listGraphReviewEvidencePage({
+    reviewId: 'vector-review-committed', revision: store.getGraphReviewRevision()
+  })
+  assert.deepEqual(vectorEvidence.items.map((item: any) => item.excerpt), ['新向量实例原文'])
+  assert.equal(db.prepare(`SELECT created_at FROM review_queue WHERE id=?`).pluck()
+    .get('vector-review-committed'), '2026-08-09T00:00:00.000Z')
 
   store.saveEmbedding('entity:vector-person-0', 'identity-incremental-test-v2', [1, 0])
   const changedModel = store.scanSimilarEntityPairsIncremental(
@@ -6493,7 +6541,10 @@ test('all structured extraction rejects forged, context and cross-session eviden
     relations: [{ subjectTempId: 'person-a', objectTempId: 'project-a', evidenceKeys: [structuredEvidenceKey(coreB)] }],
     claims: [{ subjectTempId: 'person-a', predicate: '负责', evidenceKeys: [structuredEvidenceKey(context)] }],
     events: [{ title: '项目启动', evidenceKeys: ['forged:key'] }],
-    possibleDuplicates: [{ leftTempId: 'person-a', rightExistingName: '张三旧号', evidenceKeys: [validKey] }]
+    possibleDuplicates: [{
+      leftTempId: 'person-a', rightExistingEntityId: 'existing-person-a',
+      rightExistingName: '张三旧号', evidenceKeys: [validKey]
+    }]
   }, [coreA, coreB, context])
 
   assert.deepEqual(validated.digest.tasks.map((item: any) => item.title), ['处理项目甲'])

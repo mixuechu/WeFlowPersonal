@@ -8710,22 +8710,35 @@ export class PersonalMemoryStore {
           OR review_queue.resolved_at IS NOT excluded.resolved_at
       `)
       const activeReviewIds = new Set(graph.reviewQueue.map(review => review.id))
-      const storedPendingReviewIds = this.db.prepare(
-        `SELECT id FROM review_queue WHERE status='pending'`
-      ).all() as Array<{ id: string }>
+      const storedPendingReviews = this.db.prepare(`
+        SELECT id,CASE WHEN json_valid(payload_json)=1
+          THEN COALESCE(json_extract(payload_json,'$.candidateInstanceId'),'') ELSE '' END
+          AS candidate_instance_id
+        FROM review_queue WHERE status='pending'
+      `).all() as Array<{ id: string; candidate_instance_id: string }>
+      const storedCandidateInstances = new Map(storedPendingReviews.map(row => [
+        String(row.id), String(row.candidate_instance_id || '')
+      ]))
       const deletePendingReview = this.db.prepare(`DELETE FROM review_queue WHERE id=? AND status='pending'`)
+      const deleteReviewEvidence = this.db.prepare(`DELETE FROM graph_review_evidence WHERE review_id=?`)
       const countReviewEvidence = this.db.prepare(`
         SELECT COUNT(*) AS count FROM graph_review_evidence WHERE review_id=?
       `)
       const updateReviewPayload = this.db.prepare(`
         UPDATE review_queue SET payload_json=? WHERE id=? AND payload_json IS NOT ?
       `)
-      for (const { id } of storedPendingReviewIds) {
+      for (const { id } of storedPendingReviews) {
         if (!activeReviewIds.has(id)) deletePendingReview.run(id)
       }
       for (const review of graph.reviewQueue) {
         if (review.kind === 'relation' && review.relationId && this.isMemoryItemSuppressed('relation', review.relationId)) continue
         const normalizedEvidence = this.normalizeGraphReviewEvidence(review)
+        const storedCandidateInstance = storedCandidateInstances.get(String(review.id))
+        const incomingCandidateInstance = String(review.candidateInstanceId || '')
+        if (storedCandidateInstance !== undefined &&
+          storedCandidateInstance !== incomingCandidateInstance) {
+          deleteReviewEvidence.run(review.id)
+        }
         const existingEvidenceTotal = Number(
           (countReviewEvidence.get(review.id) as any)?.count || 0
         )
@@ -20197,14 +20210,57 @@ export class PersonalMemoryStore {
           OR review_queue.payload_json IS NOT excluded.payload_json
           OR review_queue.resolved_at IS NOT NULL
       `)
+      const storedCandidateInstances = new Map((pendingReviews.length
+        ? this.db!.prepare(`
+            SELECT id,CASE WHEN json_valid(payload_json)=1
+              THEN COALESCE(json_extract(payload_json,'$.candidateInstanceId'),'') ELSE '' END
+              AS candidate_instance_id
+            FROM review_queue
+            WHERE id IN (SELECT CAST(value AS TEXT) FROM json_each(?))
+          `).all(JSON.stringify(pendingReviews.map(review => String(review.id))))
+        : []).map((row: any) => [String(row.id), String(row.candidate_instance_id || '')]))
+      const deleteReviewEvidence = this.db!.prepare(
+        `DELETE FROM graph_review_evidence WHERE review_id=?`
+      )
+      const countReviewEvidence = this.db!.prepare(
+        `SELECT COUNT(*) AS count FROM graph_review_evidence WHERE review_id=?`
+      )
+      const updateReviewPayload = this.db!.prepare(
+        `UPDATE review_queue SET payload_json=? WHERE id=? AND payload_json IS NOT ?`
+      )
       let persistedReviews = 0
       for (const review of pendingReviews) {
-        const compactPayload = this.graphReviewPayloadWithoutEvidence(review, 0)
+        const storedCandidateInstance = storedCandidateInstances.get(String(review.id))
+        const incomingCandidateInstance = String(review.candidateInstanceId || '')
+        if (storedCandidateInstance !== undefined &&
+          storedCandidateInstance !== incomingCandidateInstance) {
+          deleteReviewEvidence.run(String(review.id))
+        }
+        const normalizedEvidence = this.normalizeGraphReviewEvidence(review)
+        const existingEvidenceTotal = Number(
+          (countReviewEvidence.get(String(review.id)) as any)?.count || 0
+        )
+        const compactPayload = this.graphReviewPayloadWithoutEvidence(
+          review,
+          Math.max(existingEvidenceTotal, normalizedEvidence.length)
+        )
         upsertReview.run(
           String(review.id), String(review.kind || ''), String(review.title || ''),
           String(review.detail || ''), Number(review.confidence || 0), 'pending',
           JSON.stringify(compactPayload), String(review.createdAt || now)
         )
+        this.persistGraphReviewEvidence(String(review.id), { evidence: normalizedEvidence }, now)
+        const authoritativeEvidenceTotal = Number(
+          (countReviewEvidence.get(String(review.id)) as any)?.count || 0
+        )
+        if (authoritativeEvidenceTotal !== Number(compactPayload.evidenceTotal || 0)) {
+          compactPayload.evidenceTotal = authoritativeEvidenceTotal
+          updateReviewPayload.run(
+            JSON.stringify(compactPayload),
+            String(review.id),
+            JSON.stringify(compactPayload)
+          )
+        }
         persistedReviews += 1
       }
       const record = this.db!.prepare(`

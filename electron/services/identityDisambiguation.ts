@@ -5,6 +5,7 @@ export type IdentityCandidateEntity = {
   aliases?: string[]
   accountIds?: string[]
   identityVersion?: number
+  trustStatus?: string
 }
 
 export type IdentityCandidateSignal = {
@@ -129,6 +130,21 @@ export function assessIdentityPair(
 
 export function identityPairKey(leftId: string, rightId: string): string {
   return [leftId, rightId].sort().join('|')
+}
+
+export function resolveModelIdentitySuggestionTarget(
+  suggestion: {
+    rightExistingEntityId?: string
+    rightExistingName?: string
+  },
+  entitiesById: ReadonlyMap<string, IdentityCandidateEntity>
+): IdentityCandidateEntity | null {
+  const entityId = String(suggestion?.rightExistingEntityId || '').trim()
+  const expectedName = String(suggestion?.rightExistingName || '').trim()
+  const entity = entitiesById.get(entityId)
+  if (!entityId || !expectedName || !entity || entity.type !== 'person' ||
+    entity.trustStatus !== 'confirmed' || entity.canonicalName !== expectedName) return null
+  return entity
 }
 
 export function planStaleVectorIdentityReviews(
