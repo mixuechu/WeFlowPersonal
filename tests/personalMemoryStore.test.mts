@@ -1479,6 +1479,11 @@ test('graph review directory bounds evidence while the complete archive stays pa
     sender: `发送者 ${index}`,
     excerpt: `审阅原文 ${index}`
   }))
+  const persistedEvidenceRows = [
+    ...evidenceRows,
+    { ...evidenceRows[50], excerpt: '同一载体的重复旧摘录' },
+    { ...evidenceRows[51] }
+  ]
   const graph = {
     entities: [],
     relations: [],
@@ -1493,7 +1498,7 @@ test('graph review directory bounds evidence while the complete archive stays pa
       entityId: 'large-review-entity',
       entityCanonicalName: '大量原文实体',
       entityType: 'person',
-      evidence: evidenceRows
+      evidence: persistedEvidenceRows
     }]
   }
   const first = new PersonalMemoryStore()
@@ -1506,7 +1511,11 @@ test('graph review directory bounds evidence while the complete archive stays pa
     assert.equal(directoryPage.items[0].evidence.length, 3)
     assert.deepEqual(
       directoryPage.items[0].evidence.map((item: any) => item.messageId),
-      ['review-message-122', 'review-message-123', 'review-message-124']
+      ['review-message-124', 'review-message-123', 'review-message-122']
+    )
+    assert.deepEqual(
+      directoryPage.items[0].evidence.map((item: any) => item.sourceId),
+      ['wechat', 'mail', 'wechat']
     )
     assert.equal(JSON.stringify(directoryPage.items[0]).includes('审阅原文 0'), false)
     first.close()

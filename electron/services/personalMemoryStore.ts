@@ -8866,6 +8866,37 @@ export class PersonalMemoryStore {
     })
   }
 
+  private normalizeGraphReviewEvidence(payload: any): any[] {
+    const seen = new Set<string>()
+    return (Array.isArray(payload?.evidence) ? payload.evidence : [])
+      .flatMap((item: any) => {
+        const sourceId = evidenceSourceId(item)
+        const messageId = String(item?.messageId || item?.message_id || '').trim()
+        const sessionId = String(item?.sessionId || item?.session_id || '').trim()
+        const timestamp = Number(item?.timestamp || 0)
+        const excerpt = String(item?.excerpt || '').trim()
+        if (!messageId && !excerpt) return []
+        const key = messageId
+          ? `${sourceId}\0${sessionId}\0${messageId}`
+          : `${sourceId}\0${sessionId}\0${timestamp}\0${excerpt}`
+        if (seen.has(key)) return []
+        seen.add(key)
+        return [{
+          ...item,
+          sourceId,
+          messageId,
+          sessionId,
+          timestamp,
+          excerpt
+        }]
+      })
+      .sort((left: any, right: any) =>
+        Number(right.timestamp || 0) - Number(left.timestamp || 0)
+        || String(left.sourceId || '').localeCompare(String(right.sourceId || ''))
+        || String(left.sessionId || '').localeCompare(String(right.sessionId || ''))
+        || String(right.messageId || '').localeCompare(String(left.messageId || '')))
+  }
+
   listReviewLedgerPage(options?: {
     status?: 'pending' | 'resolved' | 'all'
     kind?: string
@@ -8992,12 +9023,12 @@ export class PersonalMemoryStore {
       try { payload = JSON.parse(String(row.payload_json || '{}')) } catch {}
       const rejectionCascadeSnapshot = payload.entityRejectionCascadeSnapshot
       delete payload.entityRejectionCascadeSnapshot
-      const fullEvidence = Array.isArray(payload.evidence) ? payload.evidence : []
+      const fullEvidence = this.normalizeGraphReviewEvidence(payload)
       return {
         ...payload,
         entityRejectionCascadeAvailable: Boolean(rejectionCascadeSnapshot),
         entityRejectionRestored: restoredReviewIds.has(String(row.id || '')),
-        evidence: fullEvidence.slice(-3),
+        evidence: fullEvidence.slice(0, 3),
         evidenceTotal: fullEvidence.length,
         id: row.id,
         kind: row.kind,
@@ -9056,23 +9087,7 @@ export class PersonalMemoryStore {
     if (!row) return { ...empty, stale: true }
     let payload: any = {}
     try { payload = JSON.parse(String(row.payload_json || '{}')) } catch {}
-    const seen = new Set<string>()
-    const evidence = (Array.isArray(payload.evidence) ? payload.evidence : [])
-      .filter((item: any) => {
-        const key = [
-          evidenceSourceId(item),
-          String(item?.sessionId || ''),
-          String(item?.messageId || ''),
-          String(item?.timestamp || ''),
-          String(item?.excerpt || '')
-        ].join('\0')
-        if (seen.has(key)) return false
-        seen.add(key)
-        return Boolean(String(item?.messageId || '').trim() || String(item?.excerpt || '').trim())
-      })
-      .sort((left: any, right: any) =>
-        Number(right?.timestamp || 0) - Number(left?.timestamp || 0)
-        || String(right?.messageId || '').localeCompare(String(left?.messageId || '')))
+    const evidence = this.normalizeGraphReviewEvidence(payload)
     const completedRevision = this.getGraphReviewRevision()
     if (completedRevision !== revision) {
       return { ...empty, revision: completedRevision, stale: true }
