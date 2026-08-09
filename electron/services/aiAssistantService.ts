@@ -3180,6 +3180,8 @@ export class AiAssistantService {
         confidence: Math.min(0.92, pair.score)
       })
     }
+    const reviewQueueBefore = structuredClone(this.state.graph.reviewQueue)
+    const candidateCountBefore = this.state.graph.identityScan.lastCandidateCount
     let candidates = 0
     const identityDecisions = this.loadIdentityDecisionIndex(
       suggestions.map(suggestion => identityPairKey(suggestion.leftId, suggestion.rightId)),
@@ -3207,16 +3209,31 @@ export class AiAssistantService {
         graphCommitId
       )
       this.state.graph.lastSqlCommitId = graphCommitId
-      const backlog = personalMemoryStore.getIdentityVectorScanBacklog(localEmbeddingService.modelVersion)
-      this.state.graph.identityScan.vectorPendingAfter = backlog.pending
       this.state.graph.identityScan.vectorCheckpointCommitted = true
       this.state.graph.identityScan.vectorContinuationError = null
-      return { committed: true, pendingAfter: backlog.pending, candidates }
+      let pendingAfter = Math.max(
+        0,
+        vectorScan.stats.pendingBefore - vectorScan.checkpoint.probes.length
+      )
+      try {
+        pendingAfter = personalMemoryStore.getIdentityVectorScanBacklog(
+          localEmbeddingService.modelVersion
+        ).pending
+      } catch (error) {
+        this.state.graph.identityScan.vectorContinuationError =
+          `进度已提交，但读取剩余积压失败：${sanitizeDiagnosticText(error)}`
+      }
+      this.state.graph.identityScan.vectorPendingAfter = pendingAfter
+      return { committed: true, pendingAfter, candidates }
     } catch (error) {
+      this.state.graph.reviewQueue = reviewQueueBefore
+      this.state.graph.identityScan.lastCandidateCount = candidateCountBefore
+      reviewsById.clear()
+      for (const review of reviewQueueBefore) reviewsById.set(review.id, review)
       this.state.graph.identityScan.vectorPendingAfter = vectorScan.stats.pendingBefore
       this.state.graph.identityScan.vectorCheckpointCommitted = false
       this.state.graph.identityScan.vectorContinuationError = sanitizeDiagnosticText(error)
-      return { committed: false, pendingAfter: vectorScan.stats.pendingBefore, candidates }
+      return { committed: false, pendingAfter: vectorScan.stats.pendingBefore, candidates: 0 }
     }
   }
 

@@ -20188,6 +20188,9 @@ export class PersonalMemoryStore {
           now, probe.documentId, model, probe.contentHash, probe.vectorHash
         ).changes || 0)
       }
+      if (committedProbes !== probes.length) {
+        throw new Error('向量身份扫描 checkpoint 已提交或发生竞争，未写入候选或进度')
+      }
       this.db!.prepare(`
         DELETE FROM identity_vector_scan_state
         WHERE NOT EXISTS (

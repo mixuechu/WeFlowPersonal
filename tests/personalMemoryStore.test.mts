@@ -2789,6 +2789,12 @@ test('entity vector identity checkpoints are invalidated by same-model vector re
     initial.checkpoint, [], 'identity-vector-version-initial'
   ).committedProbes, 2)
   assert.equal(store.getIdentityVectorScanBacklog('identity-vector-version').pending, 0)
+  assert.throws(() => store.commitIdentityVectorScanBatch(initial.checkpoint, [{
+    id: 'duplicate-vector-review', kind: 'possible_duplicate', title: '重复提交候选',
+    detail: '', confidence: 0.9, status: 'pending', createdAt: new Date().toISOString()
+  }], 'identity-vector-version-duplicate'), /已提交或发生竞争/)
+  assert.equal(store.listGraphReviewsByIds(['duplicate-vector-review']).length, 0)
+  assert.equal(store.getGraphCommitId(), 'identity-vector-version-initial')
 
   assert.equal(store.saveEmbedding('entity:vector-version-a', 'identity-vector-version', [0.8, 0.6]), true)
   assert.equal(store.getIdentityVectorScanBacklog('identity-vector-version').pending, 1)
