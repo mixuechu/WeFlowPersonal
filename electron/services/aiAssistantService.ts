@@ -412,6 +412,7 @@ import {
   compactBriefings
 } from '../../shared/briefingRetention'
 import {
+  GRAPH_REVIEW_STATE_EVIDENCE_LIMIT,
   GRAPH_REVIEW_STORAGE_VERSION,
   compactGraphReviewWorkset
 } from '../../shared/graphReviewStorage'
@@ -845,7 +846,10 @@ export class AiAssistantService {
     version: GRAPH_REVIEW_STORAGE_VERSION,
     recoveryVersion: GRAPH_COMMIT_RECOVERY_VERSION,
     statePolicy: 'pending_only',
+    pendingEvidenceLimit: GRAPH_REVIEW_STATE_EVIDENCE_LIMIT,
     pending: 0,
+    pendingEvidenceRows: 0,
+    omittedPendingEvidenceRows: 0,
     archivedThisRun: 0,
     archivedEvidenceThisRun: 0,
     lastArchivedAt: '',
@@ -1617,7 +1621,9 @@ export class AiAssistantService {
     const result = compactGraphReviewWorkset(this.state.graph.reviewQueue)
     this.state.graph.reviewQueue = result.pending
     this.graphReviewStorage.pending = result.pending.length
-    if (result.changed) {
+    this.graphReviewStorage.pendingEvidenceRows = result.pendingEvidenceRows
+    this.graphReviewStorage.omittedPendingEvidenceRows = result.omittedPendingEvidenceRows
+    if (result.resolved.length > 0) {
       this.graphReviewStorage.archivedThisRun += result.resolved.length
       this.graphReviewStorage.archivedEvidenceThisRun += result.resolved.reduce(
         (total, review) => total + (Array.isArray(review?.evidence) ? review.evidence.length : 0),

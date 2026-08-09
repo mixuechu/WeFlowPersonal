@@ -150,7 +150,10 @@ import {
   BRIEFING_RETENTION_DAYS,
   compactBriefings
 } from '../shared/briefingRetention.ts'
-import { compactGraphReviewWorkset } from '../shared/graphReviewStorage.ts'
+import {
+  GRAPH_REVIEW_STATE_EVIDENCE_LIMIT,
+  compactGraphReviewWorkset
+} from '../shared/graphReviewStorage.ts'
 import {
   GRAPH_COMMIT_RECOVERY_VERSION,
   recoverGraphStateFromSql,
@@ -959,6 +962,33 @@ test('resolved graph reviews leave encrypted state but remain paginated in SQLCi
     assert.equal(store.listReviewLedgerPage({ status: 'pending' }).total, 2)
     assert.equal(store.listReviewLedgerPage({ status: 'resolved' }).total, 2_500)
   })
+})
+
+test('pending graph review state keeps only a bounded newest evidence hotset', () => {
+  const evidence = Array.from({ length: 75 }, (_, index) => ({
+    sourceId: index % 2 ? 'wechat' : 'mail',
+    sessionId: `session-${index % 3}`,
+    messageId: `message-${index}`,
+    timestamp: 1_700_000_000 + index,
+    sender: `发送者 ${index}`,
+    excerpt: `候选原文 ${index}`
+  }))
+  const result = compactGraphReviewWorkset([{
+    id: 'pending-large-evidence', kind: 'entity_creation', status: 'pending',
+    evidence: [...evidence, { ...evidence[74], excerpt: '重复载体' }],
+    evidenceTotal: 90
+  }])
+  assert.equal(result.pending.length, 1)
+  assert.equal(result.resolved.length, 0)
+  assert.equal(result.changed, true)
+  assert.equal(result.pendingEvidenceRows, GRAPH_REVIEW_STATE_EVIDENCE_LIMIT)
+  assert.equal(result.omittedPendingEvidenceRows, 70)
+  assert.equal(result.pending[0].evidenceTotal, 90)
+  assert.equal(result.pending[0].evidence[0].messageId, 'message-74')
+  assert.equal(result.pending[0].evidence.at(-1).messageId, 'message-55')
+  assert.equal(new Set(result.pending[0].evidence.map((item: any) =>
+    `${item.sourceId}:${item.sessionId}:${item.messageId}`)).size,
+  GRAPH_REVIEW_STATE_EVIDENCE_LIMIT)
 })
 
 test('SQLCipher review ledger remains available after process-style reopen', () => {

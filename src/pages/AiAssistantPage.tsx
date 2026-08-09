@@ -13213,7 +13213,7 @@ function AiAssistantPage() {
           <div className="assistant-review-section" id="graph-review-ledger" tabIndex={-1}>
             <div className="assistant-section-heading"><div><span className="assistant-eyebrow">REVIEW LEDGER</span><h3>身份与关系审阅</h3></div><span className="assistant-count">{pendingReviewCount} 待处理 · {resolvedReviewCount} 已处理</span></div>
             {dashboard?.graphReviewStorage?.statePolicy === 'pending_only' && <small className="assistant-evidence">
-              加密运行状态只保留 {dashboard.graphReviewStorage.pending || 0} 条待处理工作；已处理历史由 SQLCipher 审阅账本分页保存，可在重启后继续筛选查看。
+              加密运行状态只保留 {dashboard.graphReviewStorage.pending || 0} 条待处理工作，每项最多 {dashboard.graphReviewStorage.pendingEvidenceLimit || 20} 条近期原文热集；当前状态内共 {Number(dashboard.graphReviewStorage.pendingEvidenceRows || 0).toLocaleString()} 条，另有 {Number(dashboard.graphReviewStorage.omittedPendingEvidenceRows || 0).toLocaleString()} 条完整原文只保存在 SQLCipher。已处理历史由 SQLCipher 审阅账本分页保存，可在重启后继续筛选查看。
               {dashboard.graphReviewStorage.archivedThisRun
                 ? ` 本次启动已迁移 ${dashboard.graphReviewStorage.archivedThisRun} 条历史、移除 ${dashboard.graphReviewStorage.archivedEvidenceThisRun || 0} 份重复原文副本。`
                 : ''}

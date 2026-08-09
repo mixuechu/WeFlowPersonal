@@ -1,3 +1,5 @@
+import { compactGraphReviewWorkset } from './graphReviewStorage.ts'
+
 export const TASK_STATE_STORAGE_VERSION = 'task-state-storage-v2'
 
 export function taskIsClosed(task: any): boolean {
@@ -15,11 +17,16 @@ export function compactTaskForEncryptedState(task: any): any {
 }
 
 export function buildEncryptedAssistantState(state: any): any {
+  const compactedReviews = compactGraphReviewWorkset(state?.graph?.reviewQueue)
   return {
     ...state,
     tasks: Array.isArray(state?.tasks)
       ? state.tasks.map(compactTaskForEncryptedState)
-      : []
+      : [],
+    graph: {
+      ...(state?.graph || {}),
+      reviewQueue: compactedReviews.pending
+    }
   }
 }
 
