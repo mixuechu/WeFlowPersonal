@@ -2631,6 +2631,62 @@ test('identity disambiguation recalls multi-account candidates from graph and lo
   assert.ok(vectorPairs[0].score >= 0.9)
 }))
 
+test('entity vector identity scans advance a durable bounded probe backlog instead of all-pairs work', () => withStore(store => {
+  const db = (store as any).db
+  const insert = db.prepare(`
+    INSERT INTO search_documents(
+      id,document_type,source_id,title,search_text,metadata_json,
+      embedding_model,embedding_dimensions,embedding_json,embedding_chunk_count,
+      content_hash,updated_at
+    ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
+  `)
+  db.transaction(() => {
+    for (let index = 0; index < 5_000; index += 1) {
+      const angle = (index % 100) / 1_000
+      insert.run(
+        `entity:vector-person-${index}`,
+        'entity',
+        `vector-person-${index}`,
+        `人物${index}`,
+        `人物${index}`,
+        '{}',
+        'identity-incremental-test',
+        2,
+        JSON.stringify([Math.cos(angle), Math.sin(angle)]),
+        1,
+        `hash-${index}`,
+        new Date(1_700_000_000_000 + index).toISOString()
+      )
+    }
+  })()
+
+  const first = store.scanSimilarEntityPairsIncremental(
+    'identity-incremental-test', 0.999, 200, 32)
+  assert.equal(first.stats.eligible, 5_000)
+  assert.equal(first.stats.pendingBefore, 5_000)
+  assert.equal(first.stats.probes, 32)
+  assert.equal(first.stats.comparisons, 32 * 4_999)
+  assert.ok(first.stats.matchedComparisons > 0)
+  assert.equal(first.stats.truncated, true)
+  assert.ok(first.pairs.length <= 200)
+  assert.ok(first.stats.durationMs < 3_000)
+
+  const second = store.scanSimilarEntityPairsIncremental(
+    'identity-incremental-test', 0.999, 200, 32)
+  assert.equal(second.stats.pendingBefore, 4_968)
+  assert.equal(second.stats.probes, 32)
+  assert.equal(Number(db.prepare(`
+    SELECT COUNT(*) AS count FROM identity_vector_scan_state
+    WHERE model='identity-incremental-test'
+  `).get()?.count || 0), 64)
+
+  store.saveEmbedding('entity:vector-person-0', 'identity-incremental-test-v2', [1, 0])
+  const changedModel = store.scanSimilarEntityPairsIncremental(
+    'identity-incremental-test-v2', 0.999, 200, 32)
+  assert.equal(changedModel.stats.pendingBefore, 1)
+  assert.equal(changedModel.stats.probes, 1)
+}))
+
 test('identity decisions for a hundred-thousand candidate scan load through one JSON-indexed query', () => withStore(store => {
   for (let index = 0; index < 1_000; index += 1) {
     store.recordIdentityDecision(

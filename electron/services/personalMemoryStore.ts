@@ -1388,6 +1388,19 @@ export class PersonalMemoryStore {
         updated_at TEXT NOT NULL,
         PRIMARY KEY(document_id,model,chunk_index)
       ) STRICT;
+
+      CREATE TABLE IF NOT EXISTS identity_vector_scan_state (
+        document_id TEXT NOT NULL REFERENCES search_documents(id) ON DELETE CASCADE,
+        model TEXT NOT NULL,
+        content_hash TEXT NOT NULL,
+        scanned_at TEXT NOT NULL,
+        PRIMARY KEY(document_id,model,content_hash)
+      ) STRICT;
+      CREATE INDEX IF NOT EXISTS idx_identity_vector_scan_model_time
+        ON identity_vector_scan_state(model,scanned_at,document_id);
+      CREATE INDEX IF NOT EXISTS idx_search_documents_entity_embedding_scan
+        ON search_documents(embedding_model,updated_at,id)
+        WHERE document_type='entity' AND embedding_json IS NOT NULL;
       CREATE INDEX IF NOT EXISTS idx_search_document_embedding_chunks_model
         ON search_document_embedding_chunks(model,dimensions,document_id);
 
@@ -19881,6 +19894,155 @@ export class PersonalMemoryStore {
       }
     }
     return pairs.sort((left, right) => right.score - left.score).slice(0, Math.max(1, Math.min(1000, limit)))
+  }
+
+  scanSimilarEntityPairsIncremental(
+    model: string,
+    minimumScore = 0.88,
+    limit = 200,
+    probeLimit = 32
+  ): {
+    pairs: Array<{ leftId: string; rightId: string; score: number }>
+    stats: {
+      eligible: number
+      pendingBefore: number
+      probes: number
+      comparisons: number
+      matchedComparisons: number
+      truncated: boolean
+      durationMs: number
+    }
+  } {
+    const startedAt = performance.now()
+    const empty = { pairs: [], stats: {
+      eligible: 0, pendingBefore: 0, probes: 0, comparisons: 0,
+      matchedComparisons: 0, truncated: false, durationMs: 0
+    } }
+    if (!this.db) return empty
+    const boundedProbeLimit = Math.max(1, Math.min(200, Math.floor(probeLimit || 32)))
+    const rows = this.db.prepare(`
+      SELECT source_id,content_hash,embedding_json FROM search_documents
+      WHERE document_type='entity' AND embedding_model=? AND embedding_json IS NOT NULL
+        AND json_valid(embedding_json)=1 AND json_type(embedding_json)='array'
+        AND embedding_dimensions>0
+        AND json_array_length(embedding_json)=embedding_dimensions
+        AND NOT EXISTS (
+          SELECT 1 FROM json_each(embedding_json)
+          WHERE type NOT IN ('integer','real')
+        )
+      ORDER BY id
+    `).all(model) as Array<{ source_id: string; content_hash: string; embedding_json: string }>
+    const vectors = rows.flatMap(row => {
+      try {
+        const vector = JSON.parse(row.embedding_json)
+        return validateEmbeddingBatch([vector], 1).valid
+          ? [{ id: row.source_id, contentHash: row.content_hash, vector }]
+          : []
+      } catch {
+        return []
+      }
+    })
+    const pendingWhere = `
+      d.document_type='entity' AND d.embedding_model=? AND d.embedding_json IS NOT NULL
+      AND json_valid(d.embedding_json)=1 AND json_type(d.embedding_json)='array'
+      AND d.embedding_dimensions>0
+      AND json_array_length(d.embedding_json)=d.embedding_dimensions
+      AND NOT EXISTS (
+        SELECT 1 FROM json_each(d.embedding_json)
+        WHERE type NOT IN ('integer','real')
+      )
+      AND scanned.document_id IS NULL
+    `
+    const pendingBefore = Number((this.db.prepare(`
+      SELECT COUNT(*) AS count
+      FROM search_documents d
+      LEFT JOIN identity_vector_scan_state scanned
+        ON scanned.document_id=d.id AND scanned.model=d.embedding_model
+        AND scanned.content_hash=d.content_hash
+      WHERE ${pendingWhere}
+    `).get(model) as { count?: number } | undefined)?.count || 0)
+    const probes = this.db.prepare(`
+      SELECT d.id,d.source_id,d.content_hash
+      FROM search_documents d
+      LEFT JOIN identity_vector_scan_state scanned
+        ON scanned.document_id=d.id AND scanned.model=d.embedding_model
+        AND scanned.content_hash=d.content_hash
+      WHERE ${pendingWhere}
+      ORDER BY d.updated_at,d.id
+      LIMIT ?
+    `).all(model, boundedProbeLimit) as Array<{ id: string; source_id: string; content_hash: string }>
+    const probeIds = new Set(probes.map(probe => probe.source_id))
+    const pairScores = new Map<string, { leftId: string; rightId: string; score: number }>()
+    const pairBudget = Math.max(2_000, Math.min(20_000, Math.max(1, limit) * 20))
+    const prunePairs = (): void => {
+      const retained = [...pairScores.entries()]
+        .sort(([, left], [, right]) => right.score - left.score ||
+          left.leftId.localeCompare(right.leftId) || left.rightId.localeCompare(right.rightId))
+        .slice(0, pairBudget)
+      pairScores.clear()
+      for (const [key, value] of retained) pairScores.set(key, value)
+    }
+    let comparisons = 0
+    let matchedComparisons = 0
+    let truncated = false
+    for (const probe of vectors.filter(item => probeIds.has(item.id))) {
+      for (const candidate of vectors) {
+        if (candidate.id === probe.id) continue
+        comparisons += 1
+        const score = safeCosineSimilarity(probe.vector, candidate.vector)
+        if (score === null || score < minimumScore) continue
+        matchedComparisons += 1
+        const [leftId, rightId] = [probe.id, candidate.id].sort()
+        const key = `${leftId}|${rightId}`
+        const existing = pairScores.get(key)
+        if (!existing || score > existing.score) pairScores.set(key, { leftId, rightId, score })
+        if (pairScores.size >= pairBudget * 2) {
+          truncated = true
+          prunePairs()
+        }
+      }
+    }
+    if (pairScores.size > pairBudget) {
+      truncated = true
+      prunePairs()
+    }
+    if (probes.length) {
+      const scannedAt = new Date().toISOString()
+      const record = this.db.prepare(`
+        INSERT OR IGNORE INTO identity_vector_scan_state(document_id,model,content_hash,scanned_at)
+        VALUES(?,?,?,?)
+      `)
+      this.db.transaction(() => {
+        for (const probe of probes) {
+          record.run(probe.id, model, probe.content_hash, scannedAt)
+        }
+        this.db!.prepare(`
+          DELETE FROM identity_vector_scan_state
+          WHERE NOT EXISTS (
+            SELECT 1 FROM search_documents current
+            WHERE current.id=identity_vector_scan_state.document_id
+              AND current.embedding_model=identity_vector_scan_state.model
+              AND current.content_hash=identity_vector_scan_state.content_hash
+          )
+        `).run()
+      })()
+    }
+    if (pairScores.size > Math.max(1, Math.min(1000, limit))) truncated = true
+    const pairs = [...pairScores.values()]
+      .sort((left, right) => right.score - left.score || left.leftId.localeCompare(right.leftId) || left.rightId.localeCompare(right.rightId))
+      .slice(0, Math.max(1, Math.min(1000, limit)))
+    return {
+      pairs,
+      stats: {
+        eligible: vectors.length,
+        pendingBefore,
+        probes: probes.length,
+        comparisons,
+        matchedComparisons,
+        truncated,
+        durationMs: Number((performance.now() - startedAt).toFixed(2))
+      }
+    }
   }
 
   getDocumentEvidencePayload(

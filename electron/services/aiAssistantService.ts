@@ -595,6 +595,13 @@ type AssistantState = {
       decisionLookupQueries: number
       decisionLookupDurationMs: number
       decisionLookupAt: string | null
+      vectorEligible: number
+      vectorPendingBefore: number
+      vectorProbes: number
+      vectorComparisons: number
+      vectorMatchedComparisons: number
+      vectorTruncated: boolean
+      vectorScanDurationMs: number
     }
   }
 }
@@ -653,7 +660,10 @@ const EMPTY_STATE: AssistantState = {
     contextualPairCandidates: 0, contextualTruncated: false,
     fullPairCandidates: 0, fullLargestNameBucket: 0, fullTruncated: false,
     decisionLookupPairs: 0, decisionLookupQueries: 0, decisionLookupDurationMs: 0,
-    decisionLookupAt: null
+    decisionLookupAt: null,
+    vectorEligible: 0, vectorPendingBefore: 0, vectorProbes: 0,
+    vectorComparisons: 0, vectorMatchedComparisons: 0,
+    vectorTruncated: false, vectorScanDurationMs: 0
   } }
 }
 
@@ -3102,7 +3112,16 @@ export class AiAssistantService {
     this.state.graph.identityScan.contextualSkippedHubs = graphPlan.stats.skippedHighDegreeNeighbors
     this.state.graph.identityScan.contextualPairCandidates = graphPlan.stats.pairCandidates
     this.state.graph.identityScan.contextualTruncated = graphPlan.stats.truncated
-    for (const pair of personalMemoryStore.listSimilarEntityPairs(localEmbeddingService.modelVersion, 0.88, 200)) {
+    const vectorScan = personalMemoryStore.scanSimilarEntityPairsIncremental(
+      localEmbeddingService.modelVersion, 0.88, 200, 32)
+    this.state.graph.identityScan.vectorEligible = vectorScan.stats.eligible
+    this.state.graph.identityScan.vectorPendingBefore = vectorScan.stats.pendingBefore
+    this.state.graph.identityScan.vectorProbes = vectorScan.stats.probes
+    this.state.graph.identityScan.vectorComparisons = vectorScan.stats.comparisons
+    this.state.graph.identityScan.vectorMatchedComparisons = vectorScan.stats.matchedComparisons
+    this.state.graph.identityScan.vectorTruncated = vectorScan.stats.truncated
+    this.state.graph.identityScan.vectorScanDurationMs = vectorScan.stats.durationMs
+    for (const pair of vectorScan.pairs) {
       if (!byId.has(pair.leftId) || !byId.has(pair.rightId)) continue
       suggestions.push({
         leftId: pair.leftId,

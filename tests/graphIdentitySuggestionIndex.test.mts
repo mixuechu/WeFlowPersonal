@@ -116,6 +116,18 @@ test('identity scan diagnostics expose hub exclusions and truncation in the UI',
   assert.match(store, /listIdentityDecisions\(pairKeys: string\[\]\)/)
   assert.match(store, /FROM json_each\(\?\) requested[\s\S]*JOIN identity_decisions/)
   assert.match(page, /SQLCipher 批量决定查询/)
+  assert.match(service, /scanSimilarEntityPairsIncremental\(/)
+  const contextualScan = service.slice(
+    service.indexOf('private runContextualIdentityScan'),
+    service.indexOf('private async syncLocalDocuments')
+  )
+  assert.ok(contextualScan.length > 0)
+  assert.doesNotMatch(contextualScan, /listSimilarEntityPairs\(/)
+  assert.match(store, /CREATE TABLE IF NOT EXISTS identity_vector_scan_state/)
+  assert.match(store, /LIMIT \?\n\s*`\)\.all\(model, boundedProbeLimit\)/)
+  assert.match(page, /本轮向量探针 \/ 扫描前待处理/)
+  assert.match(page, /增量向量身份比较/)
+  assert.match(page, /向量候选已达上限/)
 })
 
 test('weekly name scan keeps deterministic deduplicated order and bounds huge same-name buckets', () => {
