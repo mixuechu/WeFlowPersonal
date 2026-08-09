@@ -5111,6 +5111,7 @@ export class AiAssistantService {
         dossier: 'single_item_on_demand',
         trashDirectory: 'paginated_without_snapshot'
       },
+      resourceContentBudget: personalMemoryStore.getResourceContentBudgetStats(),
       resourceTrash: [],
       ingestionStatus: personalMemoryStore.getIngestionStatus(),
       assistantArchive: {

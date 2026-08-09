@@ -12737,6 +12737,15 @@ function AiAssistantPage() {
               {!!dashboard.imageSemanticMigration.pending && ` · ${dashboard.imageSemanticMigration.pending} 张将在后续同步中继续`}
               {!!dashboard.imageSemanticMigration.deferred && ` · ${dashboard.imageSemanticMigration.deferred} 张正在退避等待`}
             </div>}
+            {dashboard?.resourceContentBudget?.version && <div className={`assistant-query-plan ${
+              dashboard.resourceContentBudget.healthy ? '' : 'warning'
+            }`}>
+              资源正文预算：{Number(dashboard.resourceContentBudget.total || 0).toLocaleString()} 项
+              {' · '}明确截断 {Number(dashboard.resourceContentBudget.truncated || 0).toLocaleString()}
+              {' · '}历史边界未知 {Number(dashboard.resourceContentBudget.boundaryUnknown || 0).toLocaleString()}
+              {!!dashboard.resourceContentBudget.pendingLegacy &&
+                ` · 还有 ${Number(dashboard.resourceContentBudget.pendingLegacy).toLocaleString()} 项将在后续启动继续核验`}
+            </div>}
             <div className="assistant-memory-list">
               {visibleResources.map((directoryResource: any) => {
                 const resource = selectedResourceDossier?.id === directoryResource.id &&
@@ -12775,6 +12784,9 @@ function AiAssistantPage() {
                   正文原始约 {Number(resource.metadata.contentStorageOriginalChars || 0).toLocaleString()} 字符，
                   本机按 {Number(resource.metadata.contentStorageLimitChars || 80_000).toLocaleString()} 字符安全预算保存并检索；
                   超出部分未被模型读取。
+                </small>}
+                {resource.metadata?.contentStorageCompletenessUnknown && <small className="assistant-diagnostics-error">
+                  这条历史正文恰好等于旧版保存上限；系统无法证明它当时是否完整，已保留现有内容并标记为历史边界未知。
                 </small>}
                 {resource.metadata?.attachmentStructure?.kind === 'spreadsheet' && <div className="assistant-evidence-stack">
                   <small>

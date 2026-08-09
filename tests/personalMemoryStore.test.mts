@@ -22711,6 +22711,63 @@ test('resource content budget is authoritative, visible and stable across append
   assert.equal(store.searchText('短正文')[0]?.id, 'resource:bounded-resource-content')
 }))
 
+test('legacy resource budget migration is bounded and never guesses exact-limit completeness', () => withStore(store => {
+  const database = (store as any).db
+  const insert = database.prepare(`
+    INSERT INTO memory_resources(
+      id,resource_type,title,url,file_name,file_ext,content,metadata_json,created_at,updated_at
+    ) VALUES(?,?,?,?,?,?,?,?,?,?)
+  `)
+  const now = '2026-08-10T00:00:00.000Z'
+  insert.run(
+    'legacy-boundary', 'file', '旧版边界正文', '', '', '.pdf',
+    '甲'.repeat(RESOURCE_CONTENT_CHAR_LIMIT), '{}', now, now
+  )
+  insert.run(
+    'legacy-oversized', 'file', '旧版超长正文', '', '', '.pdf',
+    `${'乙'.repeat(RESOURCE_CONTENT_CHAR_LIMIT)}尾部不可保留`, '{}', now, now
+  )
+
+  const first = store.repairLegacyResourceContentBudgets(1)
+  assert.deepEqual(
+    { checked: first.checked, repaired: first.repaired, boundaryUnknown: first.boundaryUnknown, remaining: first.remaining },
+    { checked: 1, repaired: 1, boundaryUnknown: 1, remaining: 1 }
+  )
+  const boundary = database.prepare(`
+    SELECT content,metadata_json FROM memory_resources WHERE id='legacy-boundary'
+  `).get()
+  const boundaryMetadata = JSON.parse(boundary.metadata_json)
+  assert.equal(boundary.content.length, RESOURCE_CONTENT_CHAR_LIMIT)
+  assert.equal(boundaryMetadata.contentStorageCompletenessUnknown, true)
+  assert.equal(boundaryMetadata.contentStorageTruncated, false)
+  assert.equal(boundaryMetadata.contentStorageAuditStatus, 'legacy_boundary_unknown')
+
+  const second = store.repairLegacyResourceContentBudgets(1)
+  assert.deepEqual(
+    { checked: second.checked, truncated: second.truncated, remaining: second.remaining },
+    { checked: 1, truncated: 1, remaining: 0 }
+  )
+  const oversized = database.prepare(`
+    SELECT content,metadata_json FROM memory_resources WHERE id='legacy-oversized'
+  `).get()
+  const oversizedMetadata = JSON.parse(oversized.metadata_json)
+  assert.equal(oversized.content.length, RESOURCE_CONTENT_CHAR_LIMIT)
+  assert.equal(oversizedMetadata.contentStorageOriginalChars, RESOURCE_CONTENT_CHAR_LIMIT + 6)
+  assert.equal(oversizedMetadata.contentStorageTruncated, true)
+  assert.equal(oversizedMetadata.contentStorageCompletenessUnknown, false)
+  const searchDocument = database.prepare(`
+    SELECT search_text FROM search_documents WHERE id='resource:legacy-oversized'
+  `).get()
+  assert.equal(String(searchDocument.search_text).includes('尾部不可保留'), false)
+  assert.equal(String(searchDocument.search_text).includes('乙乙乙'), true)
+  const stats = store.getResourceContentBudgetStats()
+  assert.equal(stats.oversized, 0)
+  assert.equal(stats.pendingLegacy, 0)
+  assert.equal(stats.boundaryUnknown, 1)
+  assert.equal(stats.truncated, 1)
+  assert.equal(stats.healthy, true)
+}))
+
 test('message resources remain idempotent, searchable and traceable to original evidence', () => withStore(store => {
   const resource = {
     id: 'resource-link-1',
