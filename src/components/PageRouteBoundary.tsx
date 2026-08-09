@@ -3,6 +3,7 @@ import { useLocation, useNavigate } from 'react-router-dom'
 import { RefreshCw, ShieldAlert } from 'lucide-react'
 import { ErrorBoundary } from './ErrorBoundary'
 import { rememberPageRecoveryRoute } from '../utils/pageRecoveryRoute'
+import { buildRendererPageIncident } from '../../shared/rendererPageIncident'
 import './PageRouteBoundary.scss'
 
 export function PageLoadingFallback() {
@@ -48,5 +49,15 @@ export function PageRouteBoundary({ children }: { children: ReactNode }) {
     </section>
   )
 
-  return <ErrorBoundary key={boundaryKey} fallback={fallback}>{children}</ErrorBoundary>
+  return <ErrorBoundary
+    key={boundaryKey}
+    fallback={fallback}
+    logError={false}
+    onError={(error, errorInfo) => {
+      void buildRendererPageIncident(location.pathname, error, errorInfo.componentStack)
+        .then(payload => window.electronAPI.app.reportRendererPageIncident(payload))
+        .catch(() => undefined)
+    }}>
+    {children}
+  </ErrorBoundary>
 }

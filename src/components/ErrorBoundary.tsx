@@ -1,8 +1,10 @@
-import { Component, ReactNode } from 'react'
+import { Component, type ErrorInfo, type ReactNode } from 'react'
 
 interface Props {
   children: ReactNode
   fallback?: ReactNode
+  logError?: boolean
+  onError?: (error: Error, errorInfo: ErrorInfo) => void
 }
 
 interface State {
@@ -20,8 +22,13 @@ export class ErrorBoundary extends Component<Props, State> {
     return { hasError: true, error }
   }
 
-  componentDidCatch(error: Error, errorInfo: any) {
-    console.error('ErrorBoundary caught:', error, errorInfo)
+  componentDidCatch(error: Error, errorInfo: ErrorInfo) {
+    if (this.props.logError !== false) console.error('ErrorBoundary caught:', error, errorInfo)
+    try {
+      this.props.onError?.(error, errorInfo)
+    } catch {
+      // Diagnostic reporting must never replace the original recovery UI.
+    }
   }
 
   render() {

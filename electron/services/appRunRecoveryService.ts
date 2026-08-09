@@ -13,7 +13,7 @@ export type AppRunExitReason =
 
 export type AppRunIncident = {
   at: string
-  kind: 'renderer_gone' | 'child_process_gone' | 'uncaught_exception' | 'unhandled_rejection'
+  kind: 'renderer_gone' | 'renderer_page_error' | 'child_process_gone' | 'uncaught_exception' | 'unhandled_rejection'
   detail: string
   fatal: boolean
 }
@@ -56,7 +56,9 @@ const EXIT_REASONS = new Set<AppRunExitReason>([
   'normal', 'update_restart', 'forced_timeout', 'uncaught_exception',
   'shutdown_interrupted', 'unknown_interruption'
 ])
-const INCIDENT_KINDS = new Set<AppRunIncident['kind']>(['renderer_gone', 'child_process_gone', 'uncaught_exception', 'unhandled_rejection'])
+const INCIDENT_KINDS = new Set<AppRunIncident['kind']>([
+  'renderer_gone', 'renderer_page_error', 'child_process_gone', 'uncaught_exception', 'unhandled_rejection'
+])
 const SHUTDOWN_STEP_STATUSES = new Set<AppRunShutdownStep['status']>(['running', 'completed', 'failed'])
 
 const boundedText = (value: unknown, maximum: number): string => typeof value === 'string'

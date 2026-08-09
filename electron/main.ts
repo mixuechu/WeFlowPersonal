@@ -47,6 +47,7 @@ import { formatPathSanitizationDiagnostic } from './services/pathSanitizationDia
 import { isAllowedIpcSender, isAllowedRendererNavigation } from './services/rendererNavigationPolicy'
 import { isAllowedRendererPermission } from './services/rendererPermissionPolicy'
 import { releaseNotesToSafeText } from '../src/utils/releaseNotesPresentation'
+import { normalizeRendererPageIncident } from '../shared/rendererPageIncident'
 
 // 桌面产品名可独立定制，但始终沿用原 WeFlow 数据目录，避免升级后
 // 配置、解密信息和 AI 助理游标被 Electron 视为一套全新的应用数据。
@@ -2367,6 +2368,17 @@ function registerIpcHandlers() {
 
   ipcMain.handle('app:getVersion', async () => {
     return app.getVersion()
+  })
+
+  ipcMain.handle('app:reportRendererPageIncident', async (_, payload: unknown) => {
+    const incident = normalizeRendererPageIncident(payload)
+    if (!incident) return { success: false }
+    appRunRecoveryService.recordIncident(
+      'renderer_page_error',
+      `页面 ${incident.pageKind} 未完成渲染；类型 ${incident.errorClass}；摘要 ${incident.fingerprint}`,
+      false
+    )
+    return { success: true }
   })
 
   ipcMain.handle('app:getLaunchAtStartupStatus', async () => {

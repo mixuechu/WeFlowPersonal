@@ -17,6 +17,7 @@ const EXIT_REASON_LABELS: Record<string, string> = {
 
 const INCIDENT_LABELS: Record<string, string> = {
   renderer_gone: '界面进程退出',
+  renderer_page_error: '页面渲染失败',
   child_process_gone: '子进程退出',
   uncaught_exception: '未捕获异常',
   unhandled_rejection: '未处理异步错误'
