@@ -1,10 +1,13 @@
 import { parentPort, workerData } from 'worker_threads'
 import { WcdbCore } from './services/wcdbCore'
+import { SerialWorkerRequestQueue } from './services/serialWorkerRequestQueue'
 
 const core = new WcdbCore()
+const requestQueue = new SerialWorkerRequestQueue()
 
 if (parentPort) {
-    parentPort.on('message', async (msg) => {
+    parentPort.on('message', (msg) => {
+      void requestQueue.enqueue(async () => {
         const { id, type, payload } = msg
 
         try {
@@ -304,5 +307,6 @@ if (parentPort) {
         } catch (e) {
             parentPort!.postMessage({ id, error: String(e) })
         }
+      }).catch(() => undefined)
     })
 }

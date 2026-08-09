@@ -19,7 +19,12 @@ interface WorkerMessage {
 export class WcdbService {
   private worker: Worker | null = null
   private messageId = 0
-  private pending = new Map<number, { resolve: (val: any) => void; reject: (err: any) => void }>()
+  private pending = new Map<number, {
+    resolve: (val: any) => void
+    reject: (err: any) => void
+    type: string
+    startedAt: number
+  }>()
   private resourcesPath: string | null = null
   private userDataPath: string | null = null
   private logEnabled = false
@@ -112,7 +117,7 @@ export class WcdbService {
 
     return new Promise((resolve, reject) => {
       const id = ++this.messageId
-      this.pending.set(id, { resolve, reject })
+      this.pending.set(id, { resolve, reject, type: String(type || 'unknown'), startedAt: Date.now() })
       this.worker!.postMessage({ id, type, payload })
     })
   }
@@ -191,6 +196,9 @@ export class WcdbService {
     gracefulClose: boolean
     workerTerminated: boolean
     boundedFallback: boolean
+    pendingBeforeClose?: number
+    pendingTypes?: string[]
+    oldestPendingMs?: number
   }> {
     if (this.shuttingDown) {
       return { gracefulClose: false, workerTerminated: false, boundedFallback: true }
@@ -227,6 +235,14 @@ export class WcdbService {
     // A native cloud report can be non-cancellable. Give the ordered WCDB close
     // a short grace period, then detach this read-only worker so app shutdown is
     // never held hostage by an RPC that cannot observe an AbortSignal.
+    const pendingBeforeClose = this.pending.size
+    const pendingSnapshot = [...this.pending.values()]
+    const pendingTypes = [...new Set(pendingSnapshot.map(item => item.type))]
+      .sort()
+      .slice(0, 12)
+    const oldestPendingMs = pendingSnapshot.length
+      ? Math.max(0, Date.now() - Math.min(...pendingSnapshot.map(item => item.startedAt)))
+      : 0
     const closePromise = this.callWorker('close')
     this.shuttingDown = true
     const gracefulClose = await settleWithin(closePromise, 2_000)
@@ -240,7 +256,10 @@ export class WcdbService {
     return {
       gracefulClose,
       workerTerminated,
-      boundedFallback: !gracefulClose || !workerTerminated
+      boundedFallback: !gracefulClose || !workerTerminated,
+      pendingBeforeClose,
+      pendingTypes,
+      oldestPendingMs
     }
   }
 
