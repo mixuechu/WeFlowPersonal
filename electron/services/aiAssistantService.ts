@@ -384,8 +384,11 @@ import { buildGraphViewport, type GraphViewportOptions } from '../../shared/grap
 import {
   buildGraphDashboardPayload,
   buildGraphReviewEntityPayload,
+  buildUntrustedEntityReviewTargets,
   claimEntitiesAreTrusted,
+  claimUntrustedEntityIds,
   eventEntitiesAreTrusted,
+  eventUntrustedEntityIds,
   toGraphViewportEdge,
   toGraphViewportNode
 } from '../../shared/graphPayload'
@@ -5549,10 +5552,17 @@ export class AiAssistantService {
     const trustedIds = new Set(this.state.graph.entities.filter(isTrustedEntity).map(entity => entity.id))
     return {
       ...page,
-      items: page.items.map((event: any) => ({
-        ...event,
-        entities_trusted: eventEntitiesAreTrusted(event, trustedIds)
-      }))
+      items: page.items.map((event: any) => {
+        const reviewTargets = buildUntrustedEntityReviewTargets(
+          eventUntrustedEntityIds(event, trustedIds), this.state.graph.entities
+        )
+        return {
+          ...event,
+          entities_trusted: eventEntitiesAreTrusted(event, trustedIds),
+          untrusted_entity_review_targets: reviewTargets.items,
+          untrusted_entity_count: reviewTargets.total
+        }
+      })
     }
   }
 
@@ -5684,10 +5694,17 @@ export class AiAssistantService {
     const trustedIds = new Set(this.state.graph.entities.filter(isTrustedEntity).map(entity => entity.id))
     return {
       ...page,
-      items: page.items.map((claim: any) => ({
-        ...claim,
-        entities_trusted: claimEntitiesAreTrusted(claim, trustedIds)
-      }))
+      items: page.items.map((claim: any) => {
+        const reviewTargets = buildUntrustedEntityReviewTargets(
+          claimUntrustedEntityIds(claim, trustedIds), this.state.graph.entities
+        )
+        return {
+          ...claim,
+          entities_trusted: claimEntitiesAreTrusted(claim, trustedIds),
+          untrusted_entity_review_targets: reviewTargets.items,
+          untrusted_entity_count: reviewTargets.total
+        }
+      })
     }
   }
 

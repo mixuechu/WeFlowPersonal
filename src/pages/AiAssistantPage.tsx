@@ -313,6 +313,36 @@ function EvidenceNavigationAction({ evidence, label = '打开原消息' }: {
   )}>{label}</button>
 }
 
+type UntrustedEntityReviewTarget = {
+  id: string
+  canonicalName: string
+  trustStatus: 'candidate' | 'rejected' | 'missing'
+}
+
+function BlockedEntityReviewActions({ item, memoryKind, onOpen, onOpenAll }: {
+  item: any
+  memoryKind: 'claim' | 'event'
+  onOpen: (target: UntrustedEntityReviewTarget) => void
+  onOpenAll: () => void
+}) {
+  const targets = (Array.isArray(item?.untrusted_entity_review_targets)
+    ? item.untrusted_entity_review_targets : []).slice(0, 20) as UntrustedEntityReviewTarget[]
+  const total = Math.max(targets.length, Number(item?.untrusted_entity_count || 0))
+  const noun = memoryKind === 'claim' ? '事实涉及的实体' : '事件参与实体'
+  return <div className="assistant-blocked-entity-review">
+    <small>{noun}尚未全部可信；先处理下列身份候选，之后才能确认或纠正。</small>
+    <div>
+      {targets.map(target => <button type="button" key={target.id}
+        onClick={() => onOpen(target)}>
+        {target.trustStatus === 'candidate' ? '审阅' : '核验'}：{target.canonicalName}
+      </button>)}
+      {(!targets.length || total > targets.length) && <button type="button" onClick={onOpenAll}>
+        打开全部身份候选{total > targets.length ? `（另 ${total - targets.length} 项）` : ''}
+      </button>}
+    </div>
+  </div>
+}
+
 function EvidenceRows({
   evidence: rawEvidence,
   total,
@@ -5877,6 +5907,20 @@ function AiAssistantPage() {
       candidate_events: 'event-timeline'
     }
     window.setTimeout(() => document.getElementById(sectionId[target])
+      ?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 0)
+  }
+
+  const openBlockedEntityReview = (target: UntrustedEntityReviewTarget) => {
+    setFocusedReviewId('')
+    clearReviewReturnTarget()
+    setReviewStatusFilter(target.trustStatus === 'candidate' ? 'pending' : 'all')
+    setReviewKindFilter('')
+    setReviewQuery(target.id)
+    setReviewCalibrationOutcomeFilter('')
+    setMessage(target.trustStatus === 'candidate'
+      ? `已定位“${target.canonicalName}”的待处理身份候选。`
+      : `“${target.canonicalName}”当前不是可信实体；已打开相关身份审阅记录供核验。`)
+    window.setTimeout(() => document.getElementById('graph-review-ledger')
       ?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 0)
   }
 
@@ -12187,7 +12231,9 @@ function AiAssistantPage() {
                       {memoryItemAudits[`claim:${claim.id}`].total}）
                     </button>}
                   </details>}
-                {!claimEntitiesTrusted(claim) && <small>涉及的实体尚未确认；请先在图谱候选区确认实体，之后才能确认或纠正此事实。</small>}
+                {!claimEntitiesTrusted(claim) && <BlockedEntityReviewActions item={claim}
+                  memoryKind="claim" onOpen={openBlockedEntityReview}
+                  onOpenAll={() => openReviewInboxTarget('graph_identity')} />}
                 {claim.polarity === 'negative' && <small>该条是对“{claim.predicate}”的明确否定陈述，仍需结合反证人工确认。</small>}
                 {(claim.valid_from || claim.valid_to) && <small>有效期：{claim.valid_from || '未知'} — {claim.valid_to || '至今'}</small>}
                 <div className="assistant-evidence-stack">
@@ -12382,7 +12428,9 @@ function AiAssistantPage() {
                     </button>}
                   </details>}
                 {!!event.participants?.length && <small>参与者：{event.participants.map((item: any) => `${item.canonical_name}（${item.role}）`).join('、')}</small>}
-                {!eventEntitiesTrusted(event) && <small>存在尚未确认的参与实体；请先在图谱候选区确认实体，之后才能确认或纠正此事件。</small>}
+                {!eventEntitiesTrusted(event) && <BlockedEntityReviewActions item={event}
+                  memoryKind="event" onOpen={openBlockedEntityReview}
+                  onOpenAll={() => openReviewInboxTarget('graph_identity')} />}
                 <div className="assistant-evidence-stack">
                   <EvidenceRows evidence={event.evidence} total={event.evidence_count}
                     onOpenArchive={() => void openMemoryEvidenceArchive(
@@ -14413,9 +14461,9 @@ function AiAssistantPage() {
                       void openMemoryEvidenceArchive(
                         'claim', claim.id, `${selectedEntity?.canonicalName || '人物'} · ${claim.predicate}`
                       )} /></div>
-                  {!claimEntitiesTrusted(claim) && <small>
-                    涉及的实体尚未确认；请先处理身份候选，再确认或纠正此事实。
-                  </small>}
+                  {!claimEntitiesTrusted(claim) && <BlockedEntityReviewActions item={claim}
+                    memoryKind="claim" onOpen={openBlockedEntityReview}
+                    onOpenAll={() => openReviewInboxTarget('graph_identity')} />}
                   <div className="assistant-memory-actions">
                     <button onClick={() => void openCurrentStructuredMemoryDossier(
                       'claim',
@@ -14598,9 +14646,9 @@ function AiAssistantPage() {
                   <div className="assistant-evidence-stack"><EvidenceRows evidence={event.evidence}
                     total={event.evidence_count} onOpenArchive={() =>
                       void openMemoryEvidenceArchive('event', event.id, event.title || '事件原文')} /></div>
-                  {!eventEntitiesTrusted(event) && <small>
-                    存在尚未确认的参与实体；请先处理身份候选，再确认或纠正此事件。
-                  </small>}
+                  {!eventEntitiesTrusted(event) && <BlockedEntityReviewActions item={event}
+                    memoryKind="event" onOpen={openBlockedEntityReview}
+                    onOpenAll={() => openReviewInboxTarget('graph_identity')} />}
                   <div className="assistant-memory-actions">
                     <button onClick={() => void openCurrentStructuredMemoryDossier(
                       'event',
@@ -15016,6 +15064,9 @@ function AiAssistantPage() {
                     onOpenArchive={() => void openMemoryEvidenceArchive(
                       'claim', claim.id, `${selectedProject.name || '项目'} · ${claim.predicate}`
                     )} /></div>
+                  {!claimEntitiesTrusted(claim) && <BlockedEntityReviewActions item={claim}
+                    memoryKind="claim" onOpen={openBlockedEntityReview}
+                    onOpenAll={() => openReviewInboxTarget('graph_identity')} />}
                   {selectedProject.entityId && <div className="assistant-memory-actions">
                     <button onClick={() => openProjectStructuredMemoryDossier(
                       'claim', claim.id
@@ -15161,6 +15212,9 @@ function AiAssistantPage() {
                     onOpenArchive={() => void openMemoryEvidenceArchive(
                       'event', event.id, event.title || '项目事件原文'
                     )} /></div>
+                  {!eventEntitiesTrusted(event) && <BlockedEntityReviewActions item={event}
+                    memoryKind="event" onOpen={openBlockedEntityReview}
+                    onOpenAll={() => openReviewInboxTarget('graph_identity')} />}
                   {selectedProject.entityId && <div className="assistant-memory-actions">
                     <button onClick={() => openProjectStructuredMemoryDossier(
                       'event', event.id
@@ -15301,6 +15355,9 @@ function AiAssistantPage() {
                     onOpenArchive={() => void openMemoryEvidenceArchive(
                       'event', event.id, event.title || '里程碑原文'
                     )} /></div>
+                  {!eventEntitiesTrusted(event) && <BlockedEntityReviewActions item={event}
+                    memoryKind="event" onOpen={openBlockedEntityReview}
+                    onOpenAll={() => openReviewInboxTarget('graph_identity')} />}
                   {selectedProject.entityId && <div className="assistant-memory-actions">
                     <button onClick={() => openProjectStructuredMemoryDossier(
                       'event', event.id

@@ -101,7 +101,55 @@ export function claimEntitiesAreTrusted(claim: any, trustedEntityIds: ReadonlySe
     (!claim?.object_entity_id || trustedEntityIds.has(String(claim.object_entity_id)))
 }
 
+export function claimUntrustedEntityIds(
+  claim: any,
+  trustedEntityIds: ReadonlySet<string>
+): string[] {
+  return [...new Set([claim?.subject_id, claim?.object_entity_id]
+    .map(value => String(value || '').trim())
+    .filter(id => id && !trustedEntityIds.has(id)))]
+}
+
 export function eventEntitiesAreTrusted(event: any, trustedEntityIds: ReadonlySet<string>): boolean {
   return (Array.isArray(event?.participants) ? event.participants : [])
     .every((participant: any) => trustedEntityIds.has(String(participant?.entity_id || '')))
+}
+
+export function eventUntrustedEntityIds(
+  event: any,
+  trustedEntityIds: ReadonlySet<string>
+): string[] {
+  return [...new Set((Array.isArray(event?.participants) ? event.participants : [])
+    .map((participant: any) => String(participant?.entity_id || '').trim())
+    .filter((id: string) => id && !trustedEntityIds.has(id)))]
+}
+
+export type UntrustedEntityReviewTarget = {
+  id: string
+  canonicalName: string
+  trustStatus: 'candidate' | 'rejected' | 'missing'
+}
+
+export function buildUntrustedEntityReviewTargets(
+  ids: string[],
+  entities: any[],
+  limit = 20
+): { items: UntrustedEntityReviewTarget[]; total: number } {
+  const uniqueIds = [...new Set((ids || []).map(id => String(id || '').trim()).filter(Boolean))]
+  const entityById = new Map((entities || []).map(entity => [String(entity?.id || ''), entity]))
+  const safeLimit = Math.max(1, Math.min(20, Math.floor(Number(limit) || 20)))
+  return {
+    items: uniqueIds.slice(0, safeLimit).map(id => {
+      const entity = entityById.get(id)
+      const trustStatus = String(entity?.trustStatus || '')
+      return {
+        id,
+        canonicalName: String(entity?.canonicalName || id).slice(0, 120),
+        trustStatus: trustStatus === 'candidate' || trustStatus === 'rejected'
+          ? trustStatus
+          : 'missing'
+      }
+    }),
+    total: uniqueIds.length
+  }
 }

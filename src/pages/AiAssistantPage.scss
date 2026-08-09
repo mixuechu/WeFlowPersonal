@@ -468,6 +468,10 @@
 .assistant-evidence-row button { flex: none; padding: 3px 6px; border: 1px solid #ccd9cf; border-radius: 6px; color: #255f4b; background: #fff; font-size: 8px; cursor: pointer; }
 .assistant-evidence-navigation-note { flex: none; max-width: 140px; color: #929890; font-size: 8px; font-style: normal; line-height: 1.35; text-align: right; }
 .assistant-evidence-limit, .assistant-evidence-empty { color: #929890 !important; font-style: italic; }
+.assistant-blocked-entity-review { display: grid; gap: 6px; margin-top: 8px; padding: 8px 10px; border: 1px solid #ead8aa; border-radius: 9px; background: #fff8e7; }
+.assistant-blocked-entity-review > small { color: #7b641f; line-height: 1.45; }
+.assistant-blocked-entity-review > div { display: flex; flex-wrap: wrap; gap: 6px; }
+.assistant-blocked-entity-review button { padding: 4px 7px; border: 1px solid #d8c17c; border-radius: 6px; color: #6b5416; background: #fffdf7; font-size: 8px; cursor: pointer; }
 .assistant-briefing-evidence, .assistant-highlight-evidence { display: grid; gap: 5px; margin-top: 7px; }
 .assistant-briefing-evidence .assistant-evidence-row, .assistant-highlight-evidence .assistant-evidence-row { padding-top: 5px; border-top: 1px dashed rgba(79, 93, 82, .16); }
 .assistant-memory-actions { display: flex; justify-content: flex-end; gap: 7px; margin-top: 10px; }

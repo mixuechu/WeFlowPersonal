@@ -3,8 +3,11 @@ import assert from 'node:assert/strict'
 import {
   buildGraphDashboardPayload,
   buildGraphReviewEntityPayload,
+  buildUntrustedEntityReviewTargets,
   claimEntitiesAreTrusted,
+  claimUntrustedEntityIds,
   eventEntitiesAreTrusted,
+  eventUntrustedEntityIds,
   toGraphEntityDirectoryEntry,
   toGraphViewportEdge,
   toGraphViewportNode
@@ -154,10 +157,36 @@ test('claim and event review actions use server-hydrated trusted entity flags', 
     subject_id: 'person-a',
     object_entity_id: 'candidate'
   }, trusted), false)
+  assert.equal(claimEntitiesAreTrusted({ object_entity_id: 'person-b' }, trusted), false)
   assert.equal(eventEntitiesAreTrusted({
     participants: [{ entity_id: 'person-a' }, { entity_id: 'person-b' }]
   }, trusted), true)
   assert.equal(eventEntitiesAreTrusted({
     participants: [{ entity_id: 'person-a' }, { entity_id: 'candidate' }]
   }, trusted), false)
+  assert.deepEqual(claimUntrustedEntityIds({
+    subject_id: 'candidate',
+    object_entity_id: 'candidate'
+  }, trusted), ['candidate'])
+  assert.deepEqual(claimUntrustedEntityIds({ object_entity_id: 'person-b' }, trusted), [])
+  assert.deepEqual(eventUntrustedEntityIds({
+    participants: [
+      { entity_id: 'person-a' },
+      { entity_id: 'candidate-b' },
+      { entity_id: 'candidate-b' },
+      { entity_id: 'candidate-c' }
+    ]
+  }, trusted), ['candidate-b', 'candidate-c'])
+  assert.deepEqual(buildUntrustedEntityReviewTargets(
+    ['candidate-b', 'candidate-b', 'rejected-c', 'missing-d'],
+    [{ id: 'candidate-b', canonicalName: '候选乙', trustStatus: 'candidate' },
+      { id: 'rejected-c', canonicalName: '已拒绝丙', trustStatus: 'rejected' }],
+    2
+  ), {
+    items: [
+      { id: 'candidate-b', canonicalName: '候选乙', trustStatus: 'candidate' },
+      { id: 'rejected-c', canonicalName: '已拒绝丙', trustStatus: 'rejected' }
+    ],
+    total: 3
+  })
 })
