@@ -1,5 +1,44 @@
 export const GRAPH_RELATION_EVIDENCE_HOT_LIMIT = 100
 
+function relationEvidenceIdentity(item: any): string {
+  return [
+    String(item?.sourceId || ''),
+    String(item?.sessionId || ''),
+    String(item?.messageId || '')
+  ].join('\0')
+}
+
+export function mergeRelationEvidenceHotset(
+  relation: any,
+  incoming: unknown,
+  limit = GRAPH_RELATION_EVIDENCE_HOT_LIMIT
+): any {
+  const merged = new Map<string, any>()
+  for (const item of [
+    ...(Array.isArray(relation?.evidence) ? relation.evidence : []),
+    ...(Array.isArray(incoming) ? incoming : [])
+  ]) {
+    if (!item?.messageId && !item?.excerpt) continue
+    const key = relationEvidenceIdentity(item)
+    const previous = merged.get(key)
+    if (!previous) {
+      merged.set(key, item)
+      continue
+    }
+    merged.set(key, {
+      ...previous,
+      ...item,
+      timestamp: Math.max(Number(previous?.timestamp || 0), Number(item?.timestamp || 0)),
+      sender: String(item?.sender || previous?.sender || ''),
+      excerpt: String(item?.excerpt || '').length >= String(previous?.excerpt || '').length
+        ? item.excerpt
+        : previous.excerpt
+    })
+  }
+  relation.evidence = [...merged.values()]
+  return compactRelationEvidenceHotset(relation, undefined, limit)
+}
+
 export function compactRelationEvidenceHotset(
   relation: any,
   authoritativeTotal?: number,
@@ -9,11 +48,7 @@ export function compactRelationEvidenceHotset(
   const rows = Array.isArray(relation?.evidence) ? relation.evidence : []
   const unique = new Map<string, any>()
   for (const item of rows) {
-    const key = [
-      String(item?.sourceId || ''),
-      String(item?.sessionId || ''),
-      String(item?.messageId || '')
-    ].join('\0')
+    const key = relationEvidenceIdentity(item)
     if (!item?.messageId && !item?.excerpt) continue
     const previous = unique.get(key)
     if (!previous || Number(item?.timestamp || 0) >= Number(previous?.timestamp || 0)) unique.set(key, item)

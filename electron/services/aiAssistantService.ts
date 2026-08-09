@@ -318,7 +318,7 @@ import {
 } from './extractionCoveragePolicy'
 import {
   compactGraphRelationEvidence,
-  compactRelationEvidenceHotset
+  mergeRelationEvidenceHotset
 } from './graphEvidenceHotset'
 import {
   EMPTY_BACKLOG_RETRY_STATE,
@@ -2830,11 +2830,9 @@ export class AiAssistantService {
       })) continue
       const existing = relationsById.get(id)
       if (existing) {
-        const known = new Set(existing.evidence.map(item => item.messageId))
-        existing.evidence.push(...evidence.filter(item => !known.has(item.messageId)))
+        mergeRelationEvidenceHotset(existing, evidence)
         existing.confidence = Math.max(existing.confidence, Number(item.confidence || 0))
         existing.updatedAt = now
-        compactRelationEvidenceHotset(existing)
       } else {
         const relation: GraphRelation = {
           id, subjectId, predicate, objectId,
