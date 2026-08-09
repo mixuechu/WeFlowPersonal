@@ -13382,6 +13382,23 @@ function AiAssistantPage() {
                   ? [review.leftEntityId, review.rightEntityId]
                     .map((entityId: string) => reviewEntity(entityId))
                   : []
+                const leftDuplicateEntity = duplicateEntities.find((entity: any) =>
+                  entity?.id === review.leftEntityId)
+                const rightDuplicateEntity = duplicateEntities.find((entity: any) =>
+                  entity?.id === review.rightEntityId)
+                const leftIdentityVersion = Number(review.leftIdentityVersion)
+                const rightIdentityVersion = Number(review.rightIdentityVersion)
+                const identityCandidateInvalidReason = review.kind !== 'possible_duplicate'
+                  ? ''
+                  : !leftDuplicateEntity || !rightDuplicateEntity
+                    ? '候选人物已经不存在，只能拒绝这张旧候选。'
+                    : !Number.isInteger(leftIdentityVersion) || leftIdentityVersion < 1 ||
+                        !Number.isInteger(rightIdentityVersion) || rightIdentityVersion < 1
+                      ? '旧版候选缺少人物身份版本，不能直接合并；请拒绝后等待重新识别。'
+                      : Number(leftDuplicateEntity.identityVersion || 1) !== leftIdentityVersion ||
+                          Number(rightDuplicateEntity.identityVersion || 1) !== rightIdentityVersion
+                        ? '候选生成后人物档案已经变化，不能沿用旧判断；请拒绝后等待重新识别。'
+                        : ''
                 const selectedMergeTargetId = mergeTargets[review.id] || ''
                 const selectedMergeTarget = duplicateEntities.find((entity: any) => entity?.id === selectedMergeTargetId)
                 const selectedMergeSource = duplicateEntities.find((entity: any) => entity?.id && entity.id !== selectedMergeTargetId)
@@ -13427,7 +13444,7 @@ function AiAssistantPage() {
                   {[review.leftEntityId, review.rightEntityId].map((entityId: string) => {
                     const entity = reviewEntity(entityId)
                     const selected = selectedMergeTargetId === entityId
-                    return <button type="button" disabled={!isPending} className={selected ? 'selected' : ''} key={entityId}
+                    return <button type="button" disabled={!isPending || Boolean(identityCandidateInvalidReason)} className={selected ? 'selected' : ''} key={entityId}
                       onClick={() => setMergeTargets(current => ({ ...current, [review.id]: entityId }))}>
                       <span>{selected ? '✓ 将保留此身份' : '选择保留此身份'}</span>
                       <b>{entity?.canonicalName || '未知人物'}</b><small>{
@@ -13437,7 +13454,9 @@ function AiAssistantPage() {
                   })}
                 </div>}
                 {review.kind === 'possible_duplicate' && isPending && <div className={`assistant-merge-preview${selectedMergeTarget ? ' ready' : ''}`}>
-                  {selectedMergeTarget
+                  {identityCandidateInvalidReason
+                    ? <><b>候选已经失效</b><small className="error">{identityCandidateInvalidReason}</small></>
+                    : selectedMergeTarget
                     ? <><b>合并预览：</b><span>{selectedMergeSource?.canonicalName || '被合并身份'} → {selectedMergeTarget.canonicalName || '保留身份'}</span><small>右侧身份会消失；保留身份的名称和档案作为主记录，账号、别名、证据、关系和事件会迁入。之后仍可从合并历史撤销。</small></>
                     : <><b>请先选择保留哪一个身份</b><small>系统不会再替你默认决定合并方向。</small></>}
                 </div>}
@@ -13664,7 +13683,7 @@ function AiAssistantPage() {
                 disabled={!!reviewDecisionSaving[review.id]}
                 onClick={() => void decideReview(review.id, 'rejected')}>
                 {reviewDecisionSaving[review.id] ? '正在保存…' : '拒绝'}
-              </button><button className="primary" disabled={!!reviewDecisionSaving[review.id] || (review.kind === 'possible_duplicate' && (!review.leftEntityId || !review.rightEntityId || !selectedMergeTargetId)) || Boolean(entityNameInvalidReason) || Boolean(relationInvalidReason) || Boolean(profileInvalidReason)} title={review.kind === 'possible_duplicate' && (!review.leftEntityId || !review.rightEntityId) ? '候选信息不完整，暂不能合并' : review.kind === 'possible_duplicate' && !selectedMergeTargetId ? '请先选择合并后保留的身份' : entityNameInvalidReason || relationInvalidReason || profileInvalidReason} onClick={() => void decideReview(review.id, 'confirmed', review.kind === 'possible_duplicate' ? { mergeTargetEntityId: selectedMergeTargetId } : review.kind === 'entity_creation' ? { correctedCanonicalName: entityNameEdits[review.id] ?? review.entityCanonicalName ?? '' } : review.kind === 'relation' && relationEdit ? { relationCorrection: {
+              </button><button className="primary" disabled={!!reviewDecisionSaving[review.id] || (review.kind === 'possible_duplicate' && (!review.leftEntityId || !review.rightEntityId || !selectedMergeTargetId || Boolean(identityCandidateInvalidReason))) || Boolean(entityNameInvalidReason) || Boolean(relationInvalidReason) || Boolean(profileInvalidReason)} title={review.kind === 'possible_duplicate' && identityCandidateInvalidReason ? identityCandidateInvalidReason : review.kind === 'possible_duplicate' && (!review.leftEntityId || !review.rightEntityId) ? '候选信息不完整，暂不能合并' : review.kind === 'possible_duplicate' && !selectedMergeTargetId ? '请先选择合并后保留的身份' : entityNameInvalidReason || relationInvalidReason || profileInvalidReason} onClick={() => void decideReview(review.id, 'confirmed', review.kind === 'possible_duplicate' ? { mergeTargetEntityId: selectedMergeTargetId } : review.kind === 'entity_creation' ? { correctedCanonicalName: entityNameEdits[review.id] ?? review.entityCanonicalName ?? '' } : review.kind === 'relation' && relationEdit ? { relationCorrection: {
                 subjectId: relationEdit.subjectId,
                 predicate: relationEdit.predicate,
                 objectId: relationEdit.objectId

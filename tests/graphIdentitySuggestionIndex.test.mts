@@ -4,6 +4,7 @@ import { readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import {
+  assertIdentityCandidateVersionsCurrent,
   buildGraphIdentitySuggestionPlan,
   buildGraphIdentitySuggestions,
   buildNameIdentityPairPlan,
@@ -13,6 +14,61 @@ import {
 } from '../electron/services/identityDisambiguation.ts'
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)))
+
+test('identity merge confirmation is bound to both current entity versions', () => {
+  const entities = new Map([
+    ['left', { id: 'left', type: 'person', canonicalName: '甲', identityVersion: 4 }],
+    ['right', { id: 'right', type: 'person', canonicalName: '乙', identityVersion: 7 }]
+  ])
+  assert.doesNotThrow(() => assertIdentityCandidateVersionsCurrent({
+    leftEntityId: 'left', rightEntityId: 'right',
+    leftIdentityVersion: 4, rightIdentityVersion: 7
+  }, entities))
+  assert.throws(() => assertIdentityCandidateVersionsCurrent({
+    leftEntityId: 'left', rightEntityId: 'right',
+    leftIdentityVersion: 3, rightIdentityVersion: 7
+  }, entities), /人物档案已经变化/)
+  assert.throws(() => assertIdentityCandidateVersionsCurrent({
+    leftEntityId: 'left', rightEntityId: 'right',
+    leftIdentityVersion: 4, rightIdentityVersion: 8
+  }, entities), /人物档案已经变化/)
+  assert.throws(() => assertIdentityCandidateVersionsCurrent({
+    leftEntityId: 'left', rightEntityId: 'right',
+    leftIdentityVersion: 7, rightIdentityVersion: 4
+  }, entities), /人物档案已经变化/)
+  assert.throws(() => assertIdentityCandidateVersionsCurrent({
+    leftEntityId: 'left', rightEntityId: 'right'
+  }, entities), /旧版身份合并候选缺少实体版本/)
+  assert.throws(() => assertIdentityCandidateVersionsCurrent({
+    leftEntityId: 'left', rightEntityId: 'missing',
+    leftIdentityVersion: 4, rightIdentityVersion: 7
+  }, entities), /实体已经不存在/)
+})
+
+test('identity merge confirmation checks versions before writing review decisions', () => {
+  const service = readFileSync(join(root, 'electron/services/aiAssistantService.ts'), 'utf8')
+  const store = readFileSync(join(root, 'electron/services/personalMemoryStore.ts'), 'utf8')
+  const page = readFileSync(join(root, 'src/pages/AiAssistantPage.tsx'), 'utf8')
+  assert.match(service, /leftIdentityVersion: Number\(left\.identityVersion \|\| 1\)/)
+  assert.match(service, /rightIdentityVersion: Number\(right\.identityVersion \|\| 1\)/)
+  const applyReview = service.slice(
+    service.indexOf('private applyGraphReview('),
+    service.indexOf('private applyEntityRejectionCascade', service.indexOf('private applyGraphReview('))
+  )
+  assert.ok(applyReview.indexOf('assertIdentityCandidateVersionsCurrent(') >= 0)
+  assert.ok(applyReview.indexOf('assertIdentityCandidateVersionsCurrent(') <
+    applyReview.indexOf('recordIdentityReviewDecision('))
+  assert.ok(applyReview.indexOf('assertIdentityCandidateVersionsCurrent(') <
+    applyReview.indexOf('planEntityMerge('))
+  assert.match(page, /旧版候选缺少人物身份版本，不能直接合并/)
+  assert.match(page, /Boolean\(identityCandidateInvalidReason\)/)
+  const graphRevisionTables = store.slice(
+    store.indexOf('private graphReviewRevisionTables()'),
+    store.indexOf('private backfillHumanReviewCalibrationHistory()')
+  )
+  assert.match(graphRevisionTables, /'graph_review_evidence'/)
+  assert.match(graphRevisionTables, /'entities'/)
+})
 
 function exhaustiveSuggestions(entities: any[], relations: any[]): any[] {
   const people = entities.filter(entity => entity.type === 'person').map(entity => entity.id)

@@ -388,6 +388,7 @@ import {
   buildIdentityCandidateLookup,
   buildGraphIdentitySuggestionPlan,
   buildNameIdentityPairPlan,
+  assertIdentityCandidateVersionsCurrent,
   getFullIdentityScanSchedule,
   identityPairKey,
   listIndexedIdentityCandidates,
@@ -580,7 +581,7 @@ type AssistantState = {
     relations: GraphRelation[]
     lastSqlCommitId?: string | null
     snapshotPolicy?: string
-    reviewQueue: Array<{ id: string; kind: 'possible_duplicate' | 'relation' | 'entity_summary' | 'entity_alias' | 'entity_creation'; title: string; detail: string; confidence: number; status: 'pending' | 'confirmed' | 'rejected'; createdAt: string; resolvedAt?: string; resolutionActor?: 'user' | 'system'; resolutionReason?: string; leftEntityId?: string; rightEntityId?: string; mergeSourceEntityId?: string; mergeTargetEntityId?: string; relationId?: string; originalRelationId?: string; correctedRelationId?: string; relationCorrection?: RelationCorrection; entityId?: string; entityIdentityVersion?: number; entityCanonicalName?: string; originalEntityCanonicalName?: string; correctedCanonicalName?: string; entityType?: string; legacyReview?: boolean; previousSummary?: string; summaryText?: string; originalSummaryText?: string; correctedSummaryText?: string; aliasText?: string; originalAliasText?: string; correctedAliasText?: string; evidence?: Array<{ sourceId?: string; messageId: string; sessionId: string; timestamp: number; sender: string; excerpt: string }>; candidateSource?: string; candidateSignals?: Array<{ source: string; label: string; value: string }>; candidateInstanceId?: string; candidatePolicyVersion?: string; candidatePromptVersion?: string; candidateSchemaVersion?: string; candidateModel?: string; candidateSourceKind?: string }>
+    reviewQueue: Array<{ id: string; kind: 'possible_duplicate' | 'relation' | 'entity_summary' | 'entity_alias' | 'entity_creation'; title: string; detail: string; confidence: number; status: 'pending' | 'confirmed' | 'rejected'; createdAt: string; resolvedAt?: string; resolutionActor?: 'user' | 'system'; resolutionReason?: string; leftEntityId?: string; rightEntityId?: string; leftIdentityVersion?: number; rightIdentityVersion?: number; mergeSourceEntityId?: string; mergeTargetEntityId?: string; relationId?: string; originalRelationId?: string; correctedRelationId?: string; relationCorrection?: RelationCorrection; entityId?: string; entityIdentityVersion?: number; entityCanonicalName?: string; originalEntityCanonicalName?: string; correctedCanonicalName?: string; entityType?: string; legacyReview?: boolean; previousSummary?: string; summaryText?: string; originalSummaryText?: string; correctedSummaryText?: string; aliasText?: string; originalAliasText?: string; correctedAliasText?: string; evidence?: Array<{ sourceId?: string; messageId: string; sessionId: string; timestamp: number; sender: string; excerpt: string }>; candidateSource?: string; candidateSignals?: Array<{ source: string; label: string; value: string }>; candidateInstanceId?: string; candidatePolicyVersion?: string; candidatePromptVersion?: string; candidateSchemaVersion?: string; candidateModel?: string; candidateSourceKind?: string }>
     identityScan: {
       lastFullScanAt: string | null
       lastRunAt: string | null
@@ -3057,6 +3058,8 @@ export class AiAssistantService {
       createdAt: now,
       leftEntityId: left.id,
       rightEntityId: right.id,
+      leftIdentityVersion: Number(left.identityVersion || 1),
+      rightIdentityVersion: Number(right.identityVersion || 1),
       candidateSource: suggestion?.source || signals[0]?.source || 'rule',
       candidateSignals: signals,
       candidateInstanceId: crypto.createHash('sha256').update([
@@ -7856,6 +7859,12 @@ export class AiAssistantService {
     )
     const review = this.state.graph.reviewQueue.find(item => item.id === id)
     if (!review || review.status !== 'pending') return null
+    if (review.kind === 'possible_duplicate' && decision === 'confirmed') {
+      assertIdentityCandidateVersionsCurrent(
+        review,
+        new Map(this.state.graph.entities.map(entity => [entity.id, entity]))
+      )
+    }
     const resolutionNow = new Date().toISOString()
     const mergePlan = review.kind === 'possible_duplicate' && decision === 'confirmed'
       ? planEntityMerge(review, this.state.graph.entities, options?.mergeTargetEntityId)

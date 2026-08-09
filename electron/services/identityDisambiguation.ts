@@ -214,6 +214,34 @@ export function planStaleRuleIdentityReviews(
   })
 }
 
+export function assertIdentityCandidateVersionsCurrent(
+  review: {
+    leftEntityId?: string
+    rightEntityId?: string
+    leftIdentityVersion?: number
+    rightIdentityVersion?: number
+  },
+  entitiesById: ReadonlyMap<string, IdentityCandidateEntity>
+): void {
+  const leftId = String(review.leftEntityId || '')
+  const rightId = String(review.rightEntityId || '')
+  const left = entitiesById.get(leftId)
+  const right = entitiesById.get(rightId)
+  if (!leftId || !rightId || !left || !right) {
+    throw new Error('身份合并候选的实体已经不存在，请刷新后拒绝旧候选')
+  }
+  const expectedLeft = Number(review.leftIdentityVersion)
+  const expectedRight = Number(review.rightIdentityVersion)
+  if (!Number.isInteger(expectedLeft) || expectedLeft < 1 ||
+    !Number.isInteger(expectedRight) || expectedRight < 1) {
+    throw new Error('旧版身份合并候选缺少实体版本，不能直接确认；请拒绝后等待重新识别')
+  }
+  if (expectedLeft !== Number(left.identityVersion || 1) ||
+    expectedRight !== Number(right.identityVersion || 1)) {
+    throw new Error('身份合并候选生成后人物档案已经变化，请刷新后重新核对')
+  }
+}
+
 export function isNegativeDecisionCurrent(
   decision: any,
   left: IdentityCandidateEntity,
