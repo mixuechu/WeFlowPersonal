@@ -50,6 +50,51 @@ export const appRunShutdownStepLabel = (name: unknown): string => SHUTDOWN_STEP_
 
 export const appRunShutdownStatusLabel = (status: unknown): string => SHUTDOWN_STATUS_LABELS[String(status || '')] || '未知状态'
 
+const parseShutdownDetail = (detail: unknown): Record<string, unknown> | null => {
+  if (typeof detail !== 'string' || !detail.trim().startsWith('{')) return null
+  try {
+    const value = JSON.parse(detail)
+    return value && typeof value === 'object' && !Array.isArray(value)
+      ? value as Record<string, unknown>
+      : null
+  } catch {
+    return null
+  }
+}
+
+export const appRunShutdownDetailLabel = (name: unknown, detail: unknown): string => {
+  const text = typeof detail === 'string' ? detail.trim().slice(0, 300) : ''
+  if (!text) return ''
+  const parsed = parseShutdownDetail(text)
+  if (!parsed) return text
+
+  if (String(name || '') === 'wcdb-worker-stop') {
+    const strategy = String(parsed.shutdownStrategy || '')
+    if (strategy === 'process_exit_detach') {
+      return '只读 Worker 已确认静默，并随应用退出回收'
+    }
+    if (strategy === 'no_worker') return '本次没有已启动的微信数据库 Worker'
+    const pending = Math.max(0, Math.floor(Number(parsed.pendingBeforeClose) || 0))
+    if (strategy === 'forced_terminate' || parsed.boundedFallback === true) {
+      return parsed.workerTerminated === true
+        ? `原生请求未及时结束，已强制停止 Worker${pending ? `（退出前 ${pending} 项）` : ''}`
+        : `原生请求未及时结束，已进入有界退出兜底${pending ? `（退出前 ${pending} 项）` : ''}`
+    }
+    if (parsed.gracefulClose === true) return '微信数据库 Worker 已正常停止'
+  }
+
+  if (String(name || '') === 'ai-assistant-stop') {
+    const waited = Math.max(0, Math.floor(Number(parsed.waited) || 0))
+    const pending = Array.isArray(parsed.pending) ? parsed.pending.length : 0
+    if (parsed.timedOut === true) {
+      return `等待后台任务达到上限，仍有 ${pending} 项交由进程退出回收`
+    }
+    return `后台任务已落定${waited ? `（等待 ${waited} 项）` : ''}，记忆数据库${parsed.databaseClosed === false ? '由进程退出回收' : '已安全关闭'}`
+  }
+
+  return '已记录结构化诊断详情'
+}
+
 export const appRunDurationLabel = (durationMs: unknown): string => {
   const milliseconds = Number(durationMs)
   if (!Number.isFinite(milliseconds) || milliseconds < 0) return '耗时未知'

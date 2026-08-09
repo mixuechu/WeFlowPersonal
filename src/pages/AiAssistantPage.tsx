@@ -96,6 +96,7 @@ import {
   appRunExitReasonLabel,
   appRunIncidentLabel,
   appRunShutdownStatusLabel,
+  appRunShutdownDetailLabel,
   appRunShutdownStepLabel,
   appRunStageLabel
 } from '../utils/appRecoveryPresentation'
@@ -16859,7 +16860,7 @@ function AiAssistantPage() {
                       <p className={`assistant-recovery-step ${step.status}`} key={`${run.id}-step-${index}`}>
                         退出步骤 · {appRunShutdownStepLabel(step.name)} · {appRunShutdownStatusLabel(step.status)}
                         {step.durationMs == null ? '' : ` · ${appRunDurationLabel(step.durationMs)}`}
-                        {step.detail ? ` · ${step.detail}` : ''}
+                        {step.detail ? ` · ${appRunShutdownDetailLabel(step.name, step.detail)}` : ''}
                       </p>)}
                     {(run.incidents || []).map((incident: any, index: number) =>
                       <p key={`${run.id}-${index}`}>{new Date(incident.at).toLocaleTimeString('zh-CN')} · {appRunIncidentLabel(incident.kind)} · {incident.detail}</p>)}

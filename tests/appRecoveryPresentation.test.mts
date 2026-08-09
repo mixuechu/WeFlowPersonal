@@ -5,6 +5,7 @@ import {
   appRunElapsedLabel,
   appRunExitReasonLabel,
   appRunIncidentLabel,
+  appRunShutdownDetailLabel,
   appRunShutdownStatusLabel,
   appRunShutdownStepLabel,
   appRunStageLabel
@@ -17,6 +18,41 @@ test('app recovery presentation translates persisted machine states into user-fa
   assert.equal(appRunIncidentLabel('renderer_gone'), '界面进程退出')
   assert.equal(appRunShutdownStepLabel('wcdb-worker-stop'), '微信数据库停止')
   assert.equal(appRunShutdownStatusLabel('running'), '执行中被中断')
+})
+
+test('app recovery presentation explains structured shutdown diagnostics without raw JSON', () => {
+  assert.equal(appRunShutdownDetailLabel('wcdb-worker-stop', JSON.stringify({
+    gracefulClose: true,
+    workerDetached: true,
+    shutdownStrategy: 'process_exit_detach',
+    boundedFallback: false
+  })), '只读 Worker 已确认静默，并随应用退出回收')
+  assert.equal(appRunShutdownDetailLabel('wcdb-worker-stop', JSON.stringify({
+    gracefulClose: false,
+    workerTerminated: false,
+    shutdownStrategy: 'forced_terminate',
+    boundedFallback: true,
+    pendingBeforeClose: 3
+  })), '原生请求未及时结束，已进入有界退出兜底（退出前 3 项）')
+  assert.equal(appRunShutdownDetailLabel('wcdb-worker-stop', JSON.stringify({
+    gracefulClose: true,
+    workerTerminated: true,
+    shutdownStrategy: 'no_worker'
+  })), '本次没有已启动的微信数据库 Worker')
+  assert.equal(appRunShutdownDetailLabel('ai-assistant-stop', JSON.stringify({
+    waited: 2,
+    timedOut: false,
+    pending: [],
+    databaseClosed: true
+  })), '后台任务已落定（等待 2 项），记忆数据库已安全关闭')
+  assert.equal(appRunShutdownDetailLabel('ai-assistant-stop', JSON.stringify({
+    waited: 4,
+    timedOut: true,
+    pending: ['incremental_sync'],
+    databaseClosed: false
+  })), '等待后台任务达到上限，仍有 1 项交由进程退出回收')
+  assert.equal(appRunShutdownDetailLabel('unknown-step', '{"private":"machine-state"}'), '已记录结构化诊断详情')
+  assert.equal(appRunShutdownDetailLabel('unknown-step', '普通错误'), '普通错误')
 })
 
 test('app recovery presentation reports bounded durations without inventing invalid timing', () => {
