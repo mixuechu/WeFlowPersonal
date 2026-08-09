@@ -878,6 +878,22 @@ export class PersonalMemoryStore {
         resolved_at TEXT
       ) STRICT;
 
+      CREATE TABLE IF NOT EXISTS graph_review_evidence (
+        review_id TEXT NOT NULL REFERENCES review_queue(id) ON DELETE CASCADE,
+        evidence_key TEXT NOT NULL,
+        source_id TEXT NOT NULL DEFAULT 'legacy',
+        session_id TEXT NOT NULL DEFAULT '',
+        message_id TEXT NOT NULL DEFAULT '',
+        timestamp INTEGER NOT NULL DEFAULT 0,
+        sender TEXT NOT NULL DEFAULT '',
+        excerpt TEXT NOT NULL DEFAULT '',
+        evidence_json TEXT NOT NULL DEFAULT '{}',
+        created_at TEXT NOT NULL,
+        PRIMARY KEY(review_id,evidence_key)
+      ) STRICT;
+      CREATE INDEX IF NOT EXISTS idx_graph_review_evidence_page
+        ON graph_review_evidence(review_id,timestamp DESC,source_id,session_id,message_id DESC,evidence_key);
+
       CREATE TABLE IF NOT EXISTS merge_history (
         id INTEGER PRIMARY KEY,
         source_entity_id TEXT NOT NULL,
@@ -1763,6 +1779,8 @@ export class PersonalMemoryStore {
     this.ensureMemoryEvidenceArchiveRevisionTriggers()
     this.ensureStructuredMemoryRevisionTriggers()
     this.backfillHumanReviewCalibrationHistory()
+    this.ensureGraphReviewEvidencePageIndex()
+    this.migrateGraphReviewEvidenceArchive()
     this.ensureGraphReviewRevisionTriggers()
     this.normalizeTaskHistoryEvidence()
     this.repairTaskEvidenceArchiveFromHistory()
@@ -3919,6 +3937,7 @@ export class PersonalMemoryStore {
   private graphReviewRevisionTables(): string[] {
     return [
       'review_queue',
+      'graph_review_evidence',
       'identity_decisions',
       'identity_review_decisions',
       'graph_candidate_review_decisions',
@@ -4042,7 +4061,7 @@ export class PersonalMemoryStore {
       prefix: 'graph_review_revision',
       revisionKey: 'graph_review_revision',
       tables: this.graphReviewRevisionTables(),
-      version: 'graph-review-revision-v5'
+      version: 'graph-review-revision-v6'
     })
   }
 
@@ -4058,7 +4077,7 @@ export class PersonalMemoryStore {
       prefix: 'graph_review_revision',
       revisionKey: 'graph_review_revision',
       tables: this.graphReviewRevisionTables(),
-      version: 'graph-review-revision-v5',
+      version: 'graph-review-revision-v6',
       revision: this.getGraphReviewRevision()
     })
   }
@@ -7111,6 +7130,7 @@ export class PersonalMemoryStore {
     const memoryDeletionAuditRevision = this.getMemoryDeletionAuditRevisionHealth()
     const memoryEvidenceArchiveRevision = this.getMemoryEvidenceArchiveRevisionHealth()
     const structuredMemoryRevision = this.getStructuredMemoryRevisionHealth()
+    const graphReviewEvidenceStorage = this.getGraphReviewEvidenceStorageHealth()
     const graphReviewRevision = this.getGraphReviewRevisionHealth()
     const taskArchiveRevision = this.getTaskArchiveRevisionHealth()
     const taskOwnershipReviewRevision = this.getTaskOwnershipReviewRevisionHealth()
@@ -7187,6 +7207,7 @@ export class PersonalMemoryStore {
         && memoryDeletionAuditRevision.healthy
         && memoryEvidenceArchiveRevision.healthy
         && structuredMemoryRevision.healthy
+        && graphReviewEvidenceStorage.healthy
         && graphReviewRevision.healthy
         && taskArchiveRevision.healthy
         && taskOwnershipReviewRevision.healthy
@@ -7217,6 +7238,7 @@ export class PersonalMemoryStore {
       memoryDeletionAuditRevisionHealthy: memoryDeletionAuditRevision.healthy,
       memoryEvidenceArchiveRevisionHealthy: memoryEvidenceArchiveRevision.healthy,
       structuredMemoryRevisionHealthy: structuredMemoryRevision.healthy,
+      graphReviewEvidenceStorageHealthy: graphReviewEvidenceStorage.healthy,
       graphReviewRevisionHealthy: graphReviewRevision.healthy,
       taskArchiveRevisionHealthy: taskArchiveRevision.healthy,
       taskOwnershipReviewRevisionHealthy: taskOwnershipReviewRevision.healthy,
@@ -7257,6 +7279,7 @@ export class PersonalMemoryStore {
       memoryDeletionAuditRevision,
       memoryEvidenceArchiveRevision,
       structuredMemoryRevision,
+      graphReviewEvidenceStorage,
       graphReviewRevision,
       taskArchiveRevision,
       taskOwnershipReviewRevision,
@@ -8102,6 +8125,13 @@ export class PersonalMemoryStore {
       SELECT payload_json FROM review_queue WHERE status='pending'
       ORDER BY created_at,id
     `).all() as Array<{ payload_json: string }>
+    const reviewEvidence = this.db.prepare(`
+      SELECT source_id,session_id,message_id,timestamp,sender,excerpt,evidence_json,
+        COUNT(*) OVER() AS evidence_total
+      FROM graph_review_evidence WHERE review_id=?
+      ORDER BY timestamp DESC,source_id,session_id,message_id DESC,evidence_key
+      LIMIT 20
+    `)
     return {
       entities: entityRows.map(row => {
         const entityIdentities = identities.all(row.id) as any[]
@@ -8163,7 +8193,25 @@ export class PersonalMemoryStore {
       reviewQueue: reviewRows.flatMap(row => {
         try {
           const review = JSON.parse(String(row.payload_json || '{}'))
-          return review?.id && review?.status === 'pending' ? [review] : []
+          if (!review?.id || review?.status !== 'pending') return []
+          const rows = reviewEvidence.all(review.id) as any[]
+          return [{
+            ...review,
+            evidence: rows.map(item => {
+              let stored: any = {}
+              try { stored = JSON.parse(String(item.evidence_json || '{}')) } catch {}
+              return {
+                ...stored,
+                sourceId: String(item.source_id || 'legacy'),
+                sessionId: String(item.session_id || ''),
+                messageId: String(item.message_id || ''),
+                timestamp: Number(item.timestamp || 0),
+                sender: String(item.sender || ''),
+                excerpt: String(item.excerpt || '')
+              }
+            }),
+            evidenceTotal: Number(rows[0]?.evidence_total || review.evidenceTotal || 0)
+          }]
         } catch {
           return []
         }
@@ -8522,15 +8570,37 @@ export class PersonalMemoryStore {
         `SELECT id FROM review_queue WHERE status='pending'`
       ).all() as Array<{ id: string }>
       const deletePendingReview = this.db.prepare(`DELETE FROM review_queue WHERE id=? AND status='pending'`)
+      const countReviewEvidence = this.db.prepare(`
+        SELECT COUNT(*) AS count FROM graph_review_evidence WHERE review_id=?
+      `)
+      const updateReviewPayload = this.db.prepare(`
+        UPDATE review_queue SET payload_json=? WHERE id=? AND payload_json IS NOT ?
+      `)
       for (const { id } of storedPendingReviewIds) {
         if (!activeReviewIds.has(id)) deletePendingReview.run(id)
       }
       for (const review of graph.reviewQueue) {
         if (review.kind === 'relation' && review.relationId && this.isMemoryItemSuppressed('relation', review.relationId)) continue
+        const normalizedEvidence = this.normalizeGraphReviewEvidence(review)
+        const existingEvidenceTotal = Number(
+          (countReviewEvidence.get(review.id) as any)?.count || 0
+        )
+        const compactPayload = this.graphReviewPayloadWithoutEvidence(
+          review,
+          Math.max(existingEvidenceTotal, normalizedEvidence.length)
+        )
         upsertReview.run(
           review.id, review.kind, review.title, review.detail || '', Number(review.confidence || 0),
-          review.status, JSON.stringify(review), review.createdAt || now, review.resolvedAt || null
+          review.status, JSON.stringify(compactPayload), review.createdAt || now, review.resolvedAt || null
         )
+        this.persistGraphReviewEvidence(review.id, { evidence: normalizedEvidence }, now)
+        const authoritativeEvidenceTotal = Number(
+          (countReviewEvidence.get(review.id) as any)?.count || 0
+        )
+        if (authoritativeEvidenceTotal !== Number(compactPayload.evidenceTotal || 0)) {
+          compactPayload.evidenceTotal = authoritativeEvidenceTotal
+          updateReviewPayload.run(JSON.stringify(compactPayload), review.id, JSON.stringify(compactPayload))
+        }
       }
       if (commitId) {
         this.db.prepare(`
@@ -8894,7 +8964,206 @@ export class PersonalMemoryStore {
         Number(right.timestamp || 0) - Number(left.timestamp || 0)
         || String(left.sourceId || '').localeCompare(String(right.sourceId || ''))
         || String(left.sessionId || '').localeCompare(String(right.sessionId || ''))
-        || String(right.messageId || '').localeCompare(String(left.messageId || '')))
+      || String(right.messageId || '').localeCompare(String(left.messageId || '')))
+  }
+
+  private graphReviewEvidenceKey(item: any): string {
+    const sourceId = evidenceSourceId(item)
+    const sessionId = String(item?.sessionId || item?.session_id || '').trim()
+    const messageId = String(item?.messageId || item?.message_id || '').trim()
+    const timestamp = Number(item?.timestamp || 0)
+    const excerpt = String(item?.excerpt || '').trim()
+    const identity = messageId
+      ? `message\0${sourceId}\0${sessionId}\0${messageId}`
+      : `legacy\0${sourceId}\0${sessionId}\0${timestamp}\0${excerpt}`
+    return createHash('sha256').update(identity).digest('hex')
+  }
+
+  private graphReviewEvidencePageIndexSql(): string {
+    return `CREATE INDEX IF NOT EXISTS idx_graph_review_evidence_page
+      ON graph_review_evidence(review_id,timestamp DESC,source_id,session_id,message_id DESC,evidence_key)`
+  }
+
+  private ensureGraphReviewEvidencePageIndex(): void {
+    if (!this.db) return
+    const key = 'graph_review_evidence_index_integrity_v1'
+    const normalizeSql = (value: unknown) => String(value || '')
+      .replace(/["`\[\]]/g, '').replace(/\s+/g, ' ').trim().toLowerCase()
+    const actual = (this.db.prepare(`
+      SELECT sql FROM sqlite_master WHERE type='index' AND name='idx_graph_review_evidence_page'
+    `).get() as any)?.sql
+    const expected = this.graphReviewEvidencePageIndexSql()
+    const repaired = normalizeSql(actual) !== normalizeSql(expected)
+    let previous: any = {}
+    try {
+      previous = JSON.parse(String((this.db.prepare(
+        'SELECT value FROM schema_meta WHERE key=?'
+      ).get(key) as any)?.value || '{}'))
+    } catch {}
+    const now = new Date().toISOString()
+    if (repaired) {
+      this.db.exec('BEGIN IMMEDIATE')
+      try {
+        this.db.exec(`DROP INDEX IF EXISTS idx_graph_review_evidence_page;${expected};`)
+        this.db.prepare(`
+          INSERT INTO schema_meta(key,value,updated_at) VALUES(?,?,?)
+          ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_at=excluded.updated_at
+        `).run(key, JSON.stringify({
+          version: 1, checkedAt: now, repairedThisStart: true,
+          repairsTotal: Number(previous.repairsTotal || 0) + 1
+        }), now)
+        this.db.exec('COMMIT')
+      } catch (error) {
+        this.db.exec('ROLLBACK')
+        throw error
+      }
+    } else {
+      this.db.prepare(`
+        INSERT INTO schema_meta(key,value,updated_at) VALUES(?,?,?)
+        ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_at=excluded.updated_at
+      `).run(key, JSON.stringify({
+        version: 1, checkedAt: now, repairedThisStart: false,
+        repairsTotal: Number(previous.repairsTotal || 0)
+      }), now)
+    }
+  }
+
+  private persistGraphReviewEvidence(reviewId: string, payload: any, now: string): number {
+    if (!this.db) return 0
+    const evidence = this.normalizeGraphReviewEvidence(payload)
+    const upsert = this.db.prepare(`
+      INSERT INTO graph_review_evidence(
+        review_id,evidence_key,source_id,session_id,message_id,timestamp,
+        sender,excerpt,evidence_json,created_at
+      ) VALUES(?,?,?,?,?,?,?,?,?,?)
+      ON CONFLICT(review_id,evidence_key) DO UPDATE SET
+        timestamp=MAX(graph_review_evidence.timestamp,excluded.timestamp),
+        sender=CASE WHEN excluded.sender!='' THEN excluded.sender ELSE graph_review_evidence.sender END,
+        excerpt=CASE WHEN LENGTH(excluded.excerpt)>=LENGTH(graph_review_evidence.excerpt)
+          THEN excluded.excerpt ELSE graph_review_evidence.excerpt END,
+        evidence_json=CASE WHEN LENGTH(excluded.evidence_json)>=LENGTH(graph_review_evidence.evidence_json)
+          THEN excluded.evidence_json ELSE graph_review_evidence.evidence_json END
+    `)
+    for (const item of evidence) {
+      upsert.run(
+        reviewId,
+        this.graphReviewEvidenceKey(item),
+        String(item.sourceId || 'legacy'),
+        String(item.sessionId || ''),
+        String(item.messageId || ''),
+        Number(item.timestamp || 0),
+        String(item.sender || '').slice(0, 500),
+        String(item.excerpt || '').slice(0, 4000),
+        JSON.stringify(item),
+        now
+      )
+    }
+    return evidence.length
+  }
+
+  private graphReviewPayloadWithoutEvidence(payload: any, evidenceTotal: number): any {
+    const compact = { ...(payload && typeof payload === 'object' ? payload : {}) }
+    delete compact.evidence
+    compact.evidenceStorageVersion = 1
+    compact.evidenceTotal = Math.max(Number(compact.evidenceTotal || 0), evidenceTotal)
+    return compact
+  }
+
+  private migrateGraphReviewEvidenceArchive(): void {
+    if (!this.db) return
+    const migrationKey = 'graph_review_evidence_archive_v1'
+    const previous = this.db.prepare('SELECT value FROM schema_meta WHERE key=?')
+      .get(migrationKey) as any
+    let prior: any = {}
+    try { prior = JSON.parse(String(previous?.value || '{}')) } catch {}
+    const rows = this.db.prepare(`
+      SELECT id,payload_json FROM review_queue
+      WHERE json_valid(payload_json)=1 AND json_type(payload_json,'$.evidence')='array'
+    `).all() as Array<{ id: string; payload_json: string }>
+    const now = new Date().toISOString()
+    let evidenceRows = 0
+    let payloadBytesReleased = 0
+    this.db.exec('BEGIN IMMEDIATE')
+    try {
+      const update = this.db.prepare('UPDATE review_queue SET payload_json=? WHERE id=?')
+      for (const row of rows) {
+        let payload: any = {}
+        try { payload = JSON.parse(String(row.payload_json || '{}')) } catch { continue }
+        const count = this.persistGraphReviewEvidence(row.id, payload, now)
+        const compact = JSON.stringify(this.graphReviewPayloadWithoutEvidence(payload, count))
+        update.run(compact, row.id)
+        evidenceRows += count
+        payloadBytesReleased += Math.max(0,
+          Buffer.byteLength(String(row.payload_json || '{}')) - Buffer.byteLength(compact))
+      }
+      this.db.prepare(`
+        INSERT INTO schema_meta(key,value,updated_at) VALUES(?,?,?)
+        ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_at=excluded.updated_at
+      `).run(migrationKey, JSON.stringify({
+        version: 1,
+        checkedAt: now,
+        reviewsMigratedThisStart: rows.length,
+        evidenceRowsMigratedThisStart: evidenceRows,
+        payloadBytesReleasedThisStart: payloadBytesReleased,
+        reviewsMigratedTotal: Number(prior.reviewsMigratedTotal || 0) + rows.length,
+        evidenceRowsMigratedTotal: Number(prior.evidenceRowsMigratedTotal || 0) + evidenceRows,
+        payloadBytesReleasedTotal: Number(prior.payloadBytesReleasedTotal || 0) + payloadBytesReleased
+      }), now)
+      this.db.exec('COMMIT')
+    } catch (error) {
+      this.db.exec('ROLLBACK')
+      throw error
+    }
+  }
+
+  getGraphReviewEvidenceStorageHealth(): any {
+    if (!this.db) return { healthy: false, version: 1, evidenceRows: 0 }
+    const columns = (this.db.prepare(`PRAGMA table_info('graph_review_evidence')`).all() as any[])
+      .map(row => String(row.name || ''))
+    const expectedColumns = [
+      'review_id', 'evidence_key', 'source_id', 'session_id', 'message_id',
+      'timestamp', 'sender', 'excerpt', 'evidence_json', 'created_at'
+    ]
+    const index = (this.db.prepare(`
+      SELECT sql FROM sqlite_master WHERE type='index' AND name='idx_graph_review_evidence_page'
+    `).get() as any)?.sql || ''
+    const orphaned = Number((this.db.prepare(`
+      SELECT COUNT(*) AS count FROM graph_review_evidence evidence
+      LEFT JOIN review_queue review ON review.id=evidence.review_id
+      WHERE review.id IS NULL
+    `).get() as any)?.count || 0)
+    const payloadArrays = Number((this.db.prepare(`
+      SELECT COUNT(*) AS count FROM review_queue
+      WHERE json_valid(payload_json)=1 AND json_type(payload_json,'$.evidence')='array'
+    `).get() as any)?.count || 0)
+    const evidenceRows = Number((this.db.prepare(`
+      SELECT COUNT(*) AS count FROM graph_review_evidence
+    `).get() as any)?.count || 0)
+    const auditRow = this.db.prepare(`
+      SELECT value FROM schema_meta WHERE key='graph_review_evidence_archive_v1'
+    `).get() as any
+    const indexAuditRow = this.db.prepare(`
+      SELECT value FROM schema_meta WHERE key='graph_review_evidence_index_integrity_v1'
+    `).get() as any
+    let migration: any = {}
+    let indexAudit: any = {}
+    try { migration = JSON.parse(String(auditRow?.value || '{}')) } catch {}
+    try { indexAudit = JSON.parse(String(indexAuditRow?.value || '{}')) } catch {}
+    const columnsHealthy = expectedColumns.every(column => columns.includes(column))
+    const indexHealthy = /review_id\s*,\s*timestamp\s+desc\s*,\s*source_id\s*,\s*session_id\s*,\s*message_id\s+desc\s*,\s*evidence_key/i.test(String(index))
+    return {
+      version: 1,
+      policy: 'sqlcipher_rows_payload_metadata_only',
+      healthy: columnsHealthy && indexHealthy && orphaned === 0 && payloadArrays === 0,
+      columnsHealthy,
+      indexHealthy,
+      orphaned,
+      payloadArrays,
+      evidenceRows,
+      repairedIndexThisStart: indexAudit.repairedThisStart === true,
+      indexRepairsTotal: Number(indexAudit.repairsTotal || 0),
+      ...migration
+    }
   }
 
   listReviewLedgerPage(options?: {
@@ -8974,12 +9243,19 @@ export class PersonalMemoryStore {
       scopeParams.push(entityId)
     }
     if (query) {
-      scopeConditions.push(`instr(lower(
-        title || char(0) || detail || char(0) || CASE WHEN json_valid(payload_json)=1
-          THEN json_remove(payload_json,'$.entityRejectionCascadeSnapshot')
-          ELSE payload_json END
-      ), ?) > 0`)
-      scopeParams.push(query)
+      scopeConditions.push(`(
+        instr(lower(
+          title || char(0) || detail || char(0) || CASE WHEN json_valid(payload_json)=1
+            THEN json_remove(payload_json,'$.entityRejectionCascadeSnapshot')
+            ELSE payload_json END
+        ), ?) > 0
+        OR EXISTS(
+          SELECT 1 FROM graph_review_evidence review_evidence
+          WHERE review_evidence.review_id=review_queue.id
+            AND instr(lower(review_evidence.sender || char(0) || review_evidence.excerpt), ?) > 0
+        )
+      )`)
+      scopeParams.push(query, query)
     }
     const scopeSql = `
       FROM review_queue
@@ -9007,6 +9283,7 @@ export class PersonalMemoryStore {
     `).all(...scopeParams, limit, offset) as any[]
     const restoredReviewIds = new Set<string>()
     const visibleReviewIds = rows.map(row => String(row.id || '')).filter(Boolean)
+    const evidenceByReview = new Map<string, { total: number; items: any[] }>()
     if (visibleReviewIds.length) {
       const restoredRows = this.db.prepare(`
         SELECT json_extract(payload_json,'$.restoredFromReviewId') AS review_id
@@ -9017,19 +9294,51 @@ export class PersonalMemoryStore {
             IN (${visibleReviewIds.map(() => '?').join(',')})
       `).all(...visibleReviewIds) as Array<{ review_id: string }>
       for (const row of restoredRows) restoredReviewIds.add(String(row.review_id || ''))
+      const evidenceRows = this.db.prepare(`
+        WITH ranked AS (
+          SELECT review_id,source_id,session_id,message_id,timestamp,sender,excerpt,evidence_json,
+            COUNT(*) OVER (PARTITION BY review_id) AS evidence_total,
+            ROW_NUMBER() OVER (
+              PARTITION BY review_id
+              ORDER BY timestamp DESC,source_id,session_id,message_id DESC,evidence_key
+            ) AS evidence_rank
+          FROM graph_review_evidence
+          WHERE review_id IN (${visibleReviewIds.map(() => '?').join(',')})
+        )
+        SELECT * FROM ranked WHERE evidence_rank<=3
+        ORDER BY review_id,evidence_rank
+      `).all(...visibleReviewIds) as any[]
+      for (const evidenceRow of evidenceRows) {
+        const reviewId = String(evidenceRow.review_id || '')
+        let item: any = {}
+        try { item = JSON.parse(String(evidenceRow.evidence_json || '{}')) } catch {}
+        const bucket = evidenceByReview.get(reviewId) || {
+          total: Number(evidenceRow.evidence_total || 0), items: []
+        }
+        bucket.items.push({
+          ...item,
+          sourceId: String(evidenceRow.source_id || 'legacy'),
+          sessionId: String(evidenceRow.session_id || ''),
+          messageId: String(evidenceRow.message_id || ''),
+          timestamp: Number(evidenceRow.timestamp || 0),
+          sender: String(evidenceRow.sender || ''),
+          excerpt: String(evidenceRow.excerpt || '')
+        })
+        evidenceByReview.set(reviewId, bucket)
+      }
     }
     const items = rows.map(row => {
       let payload: any = {}
       try { payload = JSON.parse(String(row.payload_json || '{}')) } catch {}
       const rejectionCascadeSnapshot = payload.entityRejectionCascadeSnapshot
       delete payload.entityRejectionCascadeSnapshot
-      const fullEvidence = this.normalizeGraphReviewEvidence(payload)
+      const archivedEvidence = evidenceByReview.get(String(row.id || '')) || { total: 0, items: [] }
       return {
         ...payload,
         entityRejectionCascadeAvailable: Boolean(rejectionCascadeSnapshot),
         entityRejectionRestored: restoredReviewIds.has(String(row.id || '')),
-        evidence: fullEvidence.slice(0, 3),
-        evidenceTotal: fullEvidence.length,
+        evidence: archivedEvidence.items,
+        evidenceTotal: archivedEvidence.total,
         id: row.id,
         kind: row.kind,
         title: row.title,
@@ -9081,23 +9390,40 @@ export class PersonalMemoryStore {
     const empty = { items: [], total: 0, offset, limit, hasMore: false, revision, stale: false }
     if (!this.db || !String(options.reviewId || '').trim()) return empty
     if (String(options.revision || '').trim() !== revision) return { ...empty, stale: true }
-    const row = this.db.prepare(`
-      SELECT payload_json FROM review_queue WHERE id=?
-    `).get(String(options.reviewId).trim()) as any
+    const reviewId = String(options.reviewId).trim()
+    const row = this.db.prepare(`SELECT 1 FROM review_queue WHERE id=?`).get(reviewId) as any
     if (!row) return { ...empty, stale: true }
-    let payload: any = {}
-    try { payload = JSON.parse(String(row.payload_json || '{}')) } catch {}
-    const evidence = this.normalizeGraphReviewEvidence(payload)
+    const total = Number((this.db.prepare(`
+      SELECT COUNT(*) AS count FROM graph_review_evidence WHERE review_id=?
+    `).get(reviewId) as any)?.count || 0)
+    const evidenceRows = this.db.prepare(`
+      SELECT source_id,session_id,message_id,timestamp,sender,excerpt,evidence_json
+      FROM graph_review_evidence WHERE review_id=?
+      ORDER BY timestamp DESC,source_id,session_id,message_id DESC,evidence_key
+      LIMIT ? OFFSET ?
+    `).all(reviewId, limit, offset) as any[]
+    const items = evidenceRows.map(evidenceRow => {
+      let item: any = {}
+      try { item = JSON.parse(String(evidenceRow.evidence_json || '{}')) } catch {}
+      return {
+        ...item,
+        sourceId: String(evidenceRow.source_id || 'legacy'),
+        sessionId: String(evidenceRow.session_id || ''),
+        messageId: String(evidenceRow.message_id || ''),
+        timestamp: Number(evidenceRow.timestamp || 0),
+        sender: String(evidenceRow.sender || ''),
+        excerpt: String(evidenceRow.excerpt || '')
+      }
+    })
     const completedRevision = this.getGraphReviewRevision()
     if (completedRevision !== revision) {
       return { ...empty, revision: completedRevision, stale: true }
     }
-    const items = evidence.slice(offset, offset + limit)
     return {
       ...empty,
       items,
-      total: evidence.length,
-      hasMore: offset + items.length < evidence.length
+      total,
+      hasMore: offset + items.length < total
     }
   }
 

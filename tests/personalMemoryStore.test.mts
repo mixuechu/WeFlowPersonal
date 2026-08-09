@@ -1518,6 +1518,21 @@ test('graph review directory bounds evidence while the complete archive stays pa
       ['wechat', 'mail', 'wechat']
     )
     assert.equal(JSON.stringify(directoryPage.items[0]).includes('审阅原文 0'), false)
+    const compactPayload = (first as any).db.prepare(`
+      SELECT payload_json FROM review_queue WHERE id='large-review-evidence'
+    `).get().payload_json
+    assert.equal(JSON.parse(compactPayload).evidence, undefined)
+    assert.equal(JSON.parse(compactPayload).evidenceStorageVersion, 1)
+    assert.equal((first as any).db.prepare(`
+      SELECT COUNT(*) AS count FROM graph_review_evidence
+      WHERE review_id='large-review-evidence'
+    `).get().count, 125)
+    const plan = (first as any).db.prepare(`
+      EXPLAIN QUERY PLAN SELECT source_id FROM graph_review_evidence
+      WHERE review_id=? ORDER BY timestamp DESC,source_id,session_id,message_id DESC,evidence_key
+      LIMIT ? OFFSET ?
+    `).all('large-review-evidence', 40, 40)
+    assert.match(plan.map((row: any) => String(row.detail || '')).join('\n'), /idx_graph_review_evidence_page/)
     first.close()
 
     reopened.initialize(databasePath)
@@ -1552,6 +1567,64 @@ test('graph review directory bounds evidence while the complete archive stays pa
     })
     assert.equal(stale.stale, true)
     assert.equal(stale.items.length, 0)
+  } finally {
+    first.close()
+    reopened.close()
+    rmSync(directory, { recursive: true, force: true })
+  }
+})
+
+test('legacy graph review evidence migrates atomically out of payloads and cascades on deletion', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'weflow-review-evidence-migration-test-'))
+  const databasePath = join(directory, 'memory.sqlite')
+  const first = new PersonalMemoryStore()
+  const reopened = new PersonalMemoryStore()
+  try {
+    first.initialize(databasePath)
+    first.syncGraph({
+      entities: [], relations: [], reviewQueue: [{
+        id: 'legacy-evidence-review', kind: 'entity_alias', title: '旧候选', detail: '',
+        confidence: 0.7, status: 'pending', createdAt: '2026-08-09T00:00:00.000Z',
+        entityId: 'legacy-entity', alias: '旧别名', evidence: []
+      }]
+    } as any)
+    ;(first as any).db.prepare(`DELETE FROM graph_review_evidence WHERE review_id=?`)
+      .run('legacy-evidence-review')
+    ;(first as any).db.prepare(`UPDATE review_queue SET payload_json=? WHERE id=?`).run(JSON.stringify({
+      id: 'legacy-evidence-review', kind: 'entity_alias', title: '旧候选', detail: '',
+      confidence: 0.7, status: 'pending', createdAt: '2026-08-09T00:00:00.000Z',
+      entityId: 'legacy-entity', alias: '旧别名', evidence: [
+        { sourceId: 'wechat', sessionId: 's1', messageId: 'm1', timestamp: 100, sender: '甲', excerpt: '旧原文一' },
+        { sourceId: 'mail', sessionId: 's1', messageId: 'm1', timestamp: 101, sender: '乙', excerpt: '跨来源同号' },
+        { sourceId: 'wechat', sessionId: 's1', messageId: 'm1', timestamp: 99, sender: '甲', excerpt: '重复载体' }
+      ]
+    }), 'legacy-evidence-review')
+    ;(first as any).db.exec(`
+      DROP INDEX idx_graph_review_evidence_page;
+      CREATE INDEX idx_graph_review_evidence_page
+        ON graph_review_evidence(timestamp,review_id);
+    `)
+    first.close()
+
+    reopened.initialize(databasePath)
+    const health = reopened.getGraphReviewEvidenceStorageHealth()
+    assert.equal(health.healthy, true)
+    assert.equal(health.reviewsMigratedThisStart, 1)
+    assert.equal(health.evidenceRowsMigratedThisStart, 2)
+    assert.equal(health.payloadArrays, 0)
+    assert.equal(health.indexHealthy, true)
+    assert.equal(health.repairedIndexThisStart, true)
+    const revision = reopened.getGraphReviewRevision()
+    const evidence = reopened.listGraphReviewEvidencePage({
+      reviewId: 'legacy-evidence-review', revision, limit: 40
+    })
+    assert.equal(evidence.total, 2)
+    assert.deepEqual(evidence.items.map((item: any) => item.sourceId), ['mail', 'wechat'])
+    assert.equal(reopened.listReviewLedgerPage({ status: 'pending', query: '跨来源同号' }).total, 1)
+    ;(reopened as any).db.prepare(`DELETE FROM review_queue WHERE id=?`).run('legacy-evidence-review')
+    assert.equal((reopened as any).db.prepare(`
+      SELECT COUNT(*) AS count FROM graph_review_evidence WHERE review_id=?
+    `).get('legacy-evidence-review').count, 0)
   } finally {
     first.close()
     reopened.close()
@@ -12986,16 +13059,30 @@ test('graph review revision covers queue and enriched graph state and self-heals
       visibleRevision,
       first.getGraphReviewRevision()
     ))
-    graph.reviewQueue[0].detail = '后台补充了新的候选原文'
-    first.syncGraph(graph)
+    ;(first as any).db.prepare(`
+      INSERT INTO graph_review_evidence(
+        review_id,evidence_key,source_id,session_id,message_id,timestamp,
+        sender,excerpt,evidence_json,created_at
+      ) VALUES(?,?,?,?,?,?,?,?,?,?)
+    `).run(
+      'review-revision-candidate', 'revision-evidence-key', 'wechat', 'revision-session',
+      'revision-message', 100, '发送者', '后台新增原文', '{}', '2026-08-03T00:01:00.000Z'
+    )
     assert.throws(() => assertGraphReviewMutationRevision(
       visibleRevision,
       first.getGraphReviewRevision()
     ), /刷新后重新确认/)
+    const evidenceVisibleRevision = first.listReviewLedgerPage({ status: 'pending' }).revision
+    graph.reviewQueue[0].detail = '后台补充了新的候选原文'
+    first.syncGraph(graph)
+    assert.throws(() => assertGraphReviewMutationRevision(
+      evidenceVisibleRevision,
+      first.getGraphReviewRevision()
+    ), /刷新后重新确认/)
     const initialHealth = first.getGraphReviewRevisionHealth()
-    assert.equal(initialHealth.version, 'graph-review-revision-v5')
-    assert.equal(initialHealth.expectedTriggers, 30)
-    assert.equal(initialHealth.validTriggers, 30)
+    assert.equal(initialHealth.version, 'graph-review-revision-v6')
+    assert.equal(initialHealth.expectedTriggers, 33)
+    assert.equal(initialHealth.validTriggers, 33)
     assert.equal(initialHealth.healthy, true)
     ;(first as any).db.exec(`
       DROP TRIGGER trg_graph_review_revision_review_queue_insert;
@@ -13003,15 +13090,15 @@ test('graph review revision covers queue and enriched graph state and self-heals
       AFTER INSERT ON review_queue BEGIN SELECT 1; END;
     `)
     const driftedHealth = first.getGraphReviewRevisionHealth()
-    assert.equal(driftedHealth.installedTriggers, 30)
-    assert.equal(driftedHealth.validTriggers, 29)
+    assert.equal(driftedHealth.installedTriggers, 33)
+    assert.equal(driftedHealth.validTriggers, 32)
     assert.equal(driftedHealth.healthy, false)
     first.close()
 
     const reopened = new PersonalMemoryStore()
     reopened.initialize(databasePath)
     const repairedHealth = reopened.getGraphReviewRevisionHealth()
-    assert.equal(repairedHealth.validTriggers, 30)
+    assert.equal(repairedHealth.validTriggers, 33)
     assert.equal(repairedHealth.repairedTriggersThisStart, 1)
     assert.equal(repairedHealth.healthy, true)
     assert.equal(reopened.listReviewLedgerPage({ status: 'pending' }).items[0]?.id, 'review-revision-candidate')

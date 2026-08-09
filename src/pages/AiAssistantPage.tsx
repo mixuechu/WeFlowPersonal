@@ -16187,9 +16187,23 @@ function AiAssistantPage() {
                 <span>本次/累计自愈 <b>{Number(memoryDiagnostics.resourceArchiveRevision.repairedTriggersThisStart || 0)} / {Number(memoryDiagnostics.resourceArchiveRevision.repairsTotal || 0)}</b></span>
               </div>
             </div>}
+            {memoryDiagnostics.graphReviewEvidenceStorage?.version && <div className={`assistant-recovery-audit ${memoryDiagnostics.graphReviewEvidenceStorageHealthy ? 'healthy' : 'unhealthy'}`}>
+              <header><ShieldCheck size={15} /><span><b>图谱候选原文独立存储</b>
+                <small>完整原文已从候选 JSON 拆入 SQLCipher 权威表；候选目录只读取最近三条，完整档案直接由数据库稳定分页，长期积累不再反复解析整包原文。</small>
+              </span></header>
+              <div className="assistant-recovery-current">
+                <span>当前状态 <b>{memoryDiagnostics.graphReviewEvidenceStorageHealthy ? '存储正常' : '需要检查'}</b></span>
+                <span>权威原文 <b>{Number(memoryDiagnostics.graphReviewEvidenceStorage.evidenceRows || 0).toLocaleString()}</b> 条</span>
+                <span>遗留大 JSON <b>{Number(memoryDiagnostics.graphReviewEvidenceStorage.payloadArrays || 0).toLocaleString()}</b> 个</span>
+                <span>本次迁移 <b>{Number(memoryDiagnostics.graphReviewEvidenceStorage.reviewsMigratedThisStart || 0).toLocaleString()}</b> 个候选 / {Number(memoryDiagnostics.graphReviewEvidenceStorage.evidenceRowsMigratedThisStart || 0).toLocaleString()} 条原文</span>
+                <span>累计释放候选载荷 <b>{formatBytes(Number(memoryDiagnostics.graphReviewEvidenceStorage.payloadBytesReleasedTotal || 0))}</b></span>
+                <span>分页索引 <b>{memoryDiagnostics.graphReviewEvidenceStorage.indexHealthy ? '正常' : '异常'}</b></span>
+                <span>本次/累计索引自愈 <b>{memoryDiagnostics.graphReviewEvidenceStorage.repairedIndexThisStart ? 1 : 0} / {Number(memoryDiagnostics.graphReviewEvidenceStorage.indexRepairsTotal || 0).toLocaleString()}</b></span>
+              </div>
+            </div>}
             {memoryDiagnostics.graphReviewRevision?.version && <div className={`assistant-recovery-audit ${memoryDiagnostics.graphReviewRevisionHealthy ? 'healthy' : 'unhealthy'}`}>
               <header><ShieldCheck size={15} /><span><b>图谱审阅分页一致性保护</b>
-                <small>候选队列、身份判断、实体、关系和关系纠正共享数据库 revision；触发器即使名称仍在但定义被替换，也会被诊断发现并在启动时按项修复。</small>
+                <small>候选队列、独立原文、身份判断、实体、关系和关系纠正共享数据库 revision；触发器即使名称仍在但定义被替换，也会被诊断发现并在启动时按项修复。</small>
               </span></header>
               <div className="assistant-recovery-current">
                 <span>当前状态 <b>{memoryDiagnostics.graphReviewRevisionHealthy ? '保护正常' : '需要检查'}</b></span>
