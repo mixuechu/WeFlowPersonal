@@ -2069,6 +2069,7 @@ export interface ElectronAPI {
         limit?: number
         revision?: string
         mode?: 'hybrid' | 'lexical_archive'
+        retrievalMode?: 'hybrid' | 'lexical_ai_disabled' | 'lexical_vector_fallback' | 'lexical_archive' | 'scope_browse'
       }) => Promise<{
         results: any[]
         offset: number
@@ -2077,6 +2078,8 @@ export interface ElectronAPI {
         hasMore: boolean
         truncated: boolean
         searchMode?: 'hybrid' | 'lexical_archive' | 'scope_browse'
+        retrievalMode?: 'hybrid' | 'lexical_ai_disabled' | 'lexical_vector_fallback' | 'lexical_archive' | 'scope_browse'
+        retrievalModeStale?: boolean
         lexicalSearchMode?: 'fts' | 'substring_fallback'
         typeCounts?: Record<string, number>
         typeCountsBasis?: 'lexical_archive' | 'scope_browse'

@@ -9116,7 +9116,12 @@ export class AiAssistantService {
     })
   }
 
-  async searchMemoryHybrid(query: string, options: MemorySearchOptions = {}, maxResults = 40): Promise<any[]> {
+  async searchMemoryHybrid(
+    query: string,
+    options: MemorySearchOptions = {},
+    maxResults = 40,
+    execution?: { mode?: 'hybrid' | 'lexical_ai_disabled' | 'lexical_vector_fallback' }
+  ): Promise<any[]> {
     const selectedEntity = options.entityId ? this.state.graph.entities.find(entity => entity.id === options.entityId && isTrustedEntity(entity)) : null
     const scopedOptions = selectedEntity
       ? {
@@ -9134,6 +9139,7 @@ export class AiAssistantService {
     const candidateLimit = Math.max(300, Math.min(500, Number(maxResults) || 40))
     const lexical = this.searchMemory(query, candidateLimit, allowedIds, scopedOptions)
     if (!this.config.get('aiAssistantEnabled')) {
+      if (execution) execution.mode = 'lexical_ai_disabled'
       const filtered = filterMemorySearchResults(lexical, scopedOptions, allowedIds !== null)
       return this.applyStoredMemorySearchFeedback(query, scopedOptions, filtered)
         .slice(0, Math.max(1, Math.min(500, maxResults))).map(item => ({
@@ -9200,6 +9206,7 @@ export class AiAssistantService {
         success: true,
         dimensionRepairs
       })) this.persistVectorQueryHealth()
+      if (execution) execution.mode = 'hybrid'
       return this.applyStoredMemorySearchFeedback(query, scopedOptions, filtered)
         .slice(0, Math.max(1, Math.min(500, maxResults))).map(item => ({
         ...item,
@@ -9207,6 +9214,7 @@ export class AiAssistantService {
         retrieval_scope_candidates: scopeCandidateCount
       }))
     } catch (error) {
+      if (execution) execution.mode = 'lexical_vector_fallback'
       console.warn('[AI Assistant] 向量检索回退为全文检索:', error)
       this.vectorQueryHealth = recordVectorQueryOutcome(this.vectorQueryHealth, {
         success: false,
@@ -9397,6 +9405,7 @@ export class AiAssistantService {
       limit?: number
       revision?: string
       mode?: 'hybrid' | 'lexical_archive'
+      retrievalMode?: 'hybrid' | 'lexical_ai_disabled' | 'lexical_vector_fallback' | 'lexical_archive' | 'scope_browse'
     } = {}
   ): Promise<any> {
     const rawOffset = Number(pagination.offset)
@@ -9648,13 +9657,16 @@ export class AiAssistantService {
         hasMore: lexicalPage.hasMore,
         truncated: false,
         searchMode,
-        lexicalSearchMode: lexicalPage.searchMode
+        lexicalSearchMode: lexicalPage.searchMode,
+        retrievalMode: 'lexical_archive'
       }
     } else if (text) {
-      const ranked = await this.searchMemoryHybrid(text, scopedOptions, 500)
+      const execution: { mode?: 'hybrid' | 'lexical_ai_disabled' | 'lexical_vector_fallback' } = {}
+      const ranked = await this.searchMemoryHybrid(text, scopedOptions, 500, execution)
       page = {
         ...paginateMemoryResults(ranked, offset, limit, 500),
-        searchMode
+        searchMode,
+        retrievalMode: execution.mode || 'lexical_vector_fallback'
       }
     } else {
       const browseContext = buildMemorySearchFeedbackContext(text, scopedOptions)
@@ -9694,7 +9706,18 @@ export class AiAssistantService {
         total: browsePage.total,
         hasMore: browsePage.hasMore,
         truncated: false,
-        searchMode: 'scope_browse'
+        searchMode: 'scope_browse',
+        retrievalMode: 'scope_browse'
+      }
+    }
+    const expectedRetrievalMode = String(pagination.retrievalMode || '').trim()
+    if (offset > 0 && expectedRetrievalMode && expectedRetrievalMode !== page.retrievalMode) {
+      return {
+        results: [], offset, limit, total: 0, hasMore: false, truncated: false,
+        scopeCandidates: allowedIds?.size ?? null, feedback: [],
+        feedbackVersion: MEMORY_SEARCH_FEEDBACK_VERSION,
+        revision, stale: true, retrievalModeStale: true,
+        retrievalMode: page.retrievalMode
       }
     }
     page.typeCounts = typeFacet.counts
@@ -10183,6 +10206,7 @@ export class AiAssistantService {
     const plannedScopeIds = personalMemoryStore.listScopedSearchDocumentIds(scopeAuditOptions)
     if (plannedScopeIds) plan.explanation.push(`召回前范围约束：${plannedScopeIds.size} 个候选文档`)
     const mergedResults = new Map<string, any>()
+    const retrievalModes = new Set<string>()
     let plannedGraphPath: any = null
     if (plan.matchedEntities.length >= 2) {
       if (plannedScopeIds !== null) plan.explanation.push('图路径同样受当前检索范围约束')
@@ -10223,10 +10247,12 @@ export class AiAssistantService {
       }
     }
     for (const plannedQuery of plan.queries.slice(0, 6)) {
-      for (const result of await this.searchMemoryHybrid(plannedQuery, plannedOptions)) {
+      const execution: { mode?: 'hybrid' | 'lexical_ai_disabled' | 'lexical_vector_fallback' } = {}
+      for (const result of await this.searchMemoryHybrid(plannedQuery, plannedOptions, 40, execution)) {
         const existing = mergedResults.get(result.id)
         if (!existing || Number(result.hybrid_score || 0) > Number(existing.hybrid_score || 0)) mergedResults.set(result.id, result)
       }
+      if (execution.mode) retrievalModes.add(execution.mode)
     }
     let results = [...mergedResults.values()]
       .sort((left, right) => Number(right.hybrid_score || 0) - Number(left.hybrid_score || 0))
@@ -10236,10 +10262,15 @@ export class AiAssistantService {
       const terms = query.match(/[A-Za-z0-9@._-]{2,}|[\u4e00-\u9fff]{2,}/g) || []
       const merged = new Map<string, any>()
       for (const term of terms.slice(0, 6)) {
-        for (const result of await this.searchMemoryHybrid(term, plannedOptions)) merged.set(result.id, result)
+        const execution: { mode?: 'hybrid' | 'lexical_ai_disabled' | 'lexical_vector_fallback' } = {}
+        for (const result of await this.searchMemoryHybrid(term, plannedOptions, 40, execution)) {
+          merged.set(result.id, result)
+        }
+        if (execution.mode) retrievalModes.add(execution.mode)
       }
       results = [...merged.values()]
     }
+    ;(plan as any).retrievalModes = [...retrievalModes].sort()
     // Sub-query feedback is useful inside each retrieval branch, but the final answer
     // must obey feedback bound to the user's actual contextual question and scope.
     // applyMemorySearchFeedback is idempotent, so this removes any prior branch

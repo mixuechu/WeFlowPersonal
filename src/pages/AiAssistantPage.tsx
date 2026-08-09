@@ -1125,6 +1125,7 @@ function AiAssistantPage() {
     revision?: string
     nextOffset?: number
     searchMode?: 'hybrid' | 'lexical_archive' | 'scope_browse'
+    retrievalMode?: 'hybrid' | 'lexical_ai_disabled' | 'lexical_vector_fallback' | 'lexical_archive' | 'scope_browse'
     lexicalSearchMode?: 'fts' | 'substring_fallback'
     typeCounts?: Record<string, number>
     typeCountsBasis?: 'lexical_archive' | 'scope_browse'
@@ -2753,6 +2754,7 @@ function AiAssistantPage() {
           scopeCandidates: page.scopeCandidates,
           revision: page.revision,
           searchMode: page.searchMode,
+          retrievalMode: page.retrievalMode,
           lexicalSearchMode: page.lexicalSearchMode,
           typeCounts: page.typeCounts,
           typeCountsBasis: page.typeCountsBasis,
@@ -7645,7 +7647,8 @@ function AiAssistantPage() {
           offset: Number(memorySearchState.nextOffset ?? memoryResults.length),
           limit: 40,
           revision: memorySearchState.revision,
-          mode: query ? memorySearchMode : 'hybrid'
+          mode: query ? memorySearchMode : 'hybrid',
+          retrievalMode: memorySearchState.retrievalMode
         }
       )
       if (!memorySearchGate.current.isCurrent(request)) return
@@ -7682,6 +7685,7 @@ function AiAssistantPage() {
         scopeCandidates: page.scopeCandidates,
         revision: page.revision,
         searchMode: page.searchMode,
+        retrievalMode: page.retrievalMode,
         lexicalSearchMode: page.lexicalSearchMode,
         typeCounts: page.typeCounts,
         typeCountsBasis: page.typeCountsBasis,
@@ -11110,7 +11114,13 @@ function AiAssistantPage() {
                 {memorySearchState.query ? `“${memorySearchState.query}”` : '当前范围'} · 已显示 {memoryResults.length} / {Number(memorySearchState.total || 0)} 条
                 {memorySearchState.searchMode === 'lexical_archive'
                   ? ` · ${memorySearchState.lexicalSearchMode === 'substring_fallback' ? '子串回退' : '本机全文'}完整分页，不使用语义扩展`
-                  : memorySearchState.truncated ? ' · 混合相关性排序池已达 500 条上限，可切换“完整关键词档案”继续查阅' : ''}
+                  : memorySearchState.retrievalMode === 'lexical_ai_disabled'
+                    ? ' · AI 助理已关闭，本次仅使用本机全文检索，未加载向量模型'
+                    : memorySearchState.retrievalMode === 'lexical_vector_fallback'
+                      ? ' · 语义检索暂不可用，本次已明确回退本机全文检索'
+                      : memorySearchState.retrievalMode === 'hybrid'
+                        ? ' · 本机全文＋语义混合检索'
+                        : memorySearchState.truncated ? ' · 混合相关性排序池已达 500 条上限，可切换“完整关键词档案”继续查阅' : ''}
               </div>}
             {memorySearchState.status === 'ready' &&
               Object.values(memorySearchState.evidenceBreadthCounts || {})
