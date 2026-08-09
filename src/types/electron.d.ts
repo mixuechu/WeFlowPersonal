@@ -366,7 +366,11 @@ export interface ElectronAPI {
   app: {
     getDownloadsPath: () => Promise<string>
     getVersion: () => Promise<string>
-    reportRendererPageIncident: (payload: unknown) => Promise<{ success: boolean }>
+    reportRendererPageIncident: (payload: unknown) => Promise<{
+      success: boolean
+      recorded?: boolean
+      reason?: 'recorded' | 'duplicate' | 'rate_limited'
+    }>
     getLaunchAtStartupStatus: () => Promise<{ enabled: boolean; supported: boolean; reason?: string }>
     setLaunchAtStartup: (enabled: boolean) => Promise<{
       success: boolean

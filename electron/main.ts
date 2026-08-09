@@ -48,11 +48,13 @@ import { isAllowedIpcSender, isAllowedRendererNavigation } from './services/rend
 import { isAllowedRendererPermission } from './services/rendererPermissionPolicy'
 import { releaseNotesToSafeText } from '../src/utils/releaseNotesPresentation'
 import { normalizeRendererPageIncident } from '../shared/rendererPageIncident'
+import { RendererPageIncidentAdmission } from './services/rendererPageIncidentAdmission'
 
 // 桌面产品名可独立定制，但始终沿用原 WeFlow 数据目录，避免升级后
 // 配置、解密信息和 AI 助理游标被 Electron 视为一套全新的应用数据。
 app.setPath('userData', join(app.getPath('appData'), 'weflow'))
 const appRunRecoveryService = initializeAppRunRecoveryService(app.getPath('userData'))
+const rendererPageIncidentAdmission = new RendererPageIncidentAdmission()
 appRunRecoveryService.start(app.getVersion())
 process.on('uncaughtExceptionMonitor', error => {
   appRunRecoveryService.recordIncident('uncaught_exception', error, true)
@@ -2373,12 +2375,14 @@ function registerIpcHandlers() {
   ipcMain.handle('app:reportRendererPageIncident', async (_, payload: unknown) => {
     const incident = normalizeRendererPageIncident(payload)
     if (!incident) return { success: false }
+    const admission = rendererPageIncidentAdmission.admit(incident)
+    if (!admission.recorded) return { success: true, ...admission }
     appRunRecoveryService.recordIncident(
       'renderer_page_error',
       `页面 ${incident.pageKind} 未完成渲染；类型 ${incident.errorClass}；摘要 ${incident.fingerprint}`,
       false
     )
-    return { success: true }
+    return { success: true, ...admission }
   })
 
   ipcMain.handle('app:getLaunchAtStartupStatus', async () => {
