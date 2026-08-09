@@ -102,6 +102,7 @@ import {
   appRunStageLabel
 } from '../utils/appRecoveryPresentation'
 import { TrailingCoalescedRequest } from '../utils/trailingCoalescedRequest'
+import { ASSISTANT_MODULE_NAVIGATION } from '../utils/assistantModuleNavigation'
 import './AiAssistantPage.scss'
 
 const MEMORY_GROWTH_KIND_LABELS: Record<string, string> = {
@@ -9330,6 +9331,27 @@ function AiAssistantPage() {
           </div>
         </header>
 
+        <nav className="assistant-module-navigation" aria-label="AI 助理模块导航">
+          <span>快速前往</span>
+          <div>
+            {ASSISTANT_MODULE_NAVIGATION.map(item => <button
+              type="button"
+              key={item.id}
+              onClick={() => {
+                const target = document.getElementById(item.id)
+                if (!target) {
+                  setMessage(`“${item.label}”模块当前尚未加载，请完成首次整理后重试。`)
+                  return
+                }
+                target.scrollIntoView({ behavior: 'smooth', block: 'start' })
+              }}>
+              {item.label}
+              {item.id === 'review-inbox' && reviewInboxReady && reviewInbox.total > 0 &&
+                <b aria-label={`${reviewInbox.total} 项待审阅`}>{reviewInbox.total > 999 ? '999+' : reviewInbox.total}</b>}
+            </button>)}
+          </div>
+        </nav>
+
         {!status?.configured && (
           <section className="assistant-setup-banner">
             <Sparkles size={18} />
@@ -10733,7 +10755,7 @@ function AiAssistantPage() {
           </div>}
         </section>
 
-        <section className="assistant-panel assistant-project-portfolio">
+        <section className="assistant-panel assistant-project-portfolio" id="project-intelligence">
           <div className="assistant-section-heading">
             <div><span className="assistant-eyebrow">PROJECT INTELLIGENCE</span><h3>项目驾驶舱</h3></div>
             <span className="assistant-count">{projectDirectory.total} 个匹配项目</span>
@@ -11613,7 +11635,7 @@ function AiAssistantPage() {
           </details>
         </section>
 
-        <section className="assistant-panel assistant-memory-chat">
+        <section className="assistant-panel assistant-memory-chat" id="memory-qa">
           <div className="assistant-section-heading">
             <div><span className="assistant-eyebrow">EVIDENCE Q&A</span><h3><Bot size={16} /> 向个人记忆提问</h3></div>
             <button onClick={startNewMemoryConversation}>新对话</button>
@@ -12706,7 +12728,7 @@ function AiAssistantPage() {
             </div>}
           </section>
 
-          <section className="assistant-panel">
+          <section className="assistant-panel" id="message-resources">
             <div className="assistant-section-heading">
               <div><span className="assistant-eyebrow">MESSAGE RESOURCES</span><h3><Paperclip size={16} /> 消息资源库</h3></div>
               <span className="assistant-count">{visibleResources.length} / {resourceArchive.total || 0} 项</span>
@@ -12976,7 +12998,7 @@ function AiAssistantPage() {
           </section>
         </div>
 
-        <section className="assistant-panel assistant-memory">
+        <section className="assistant-panel assistant-memory" id="personal-memory-graph">
           <div className="assistant-section-heading">
             <div><span className="assistant-eyebrow">PERSONAL MEMORY GRAPH</span><h3><Network size={16} /> 持续生长的个人知识图谱</h3></div>
             <span className="assistant-count">{Number(graphWorkspace.summary?.entities || dashboard?.graphSummary?.entities || 0)} 个实体 · {Number(graphWorkspace.summary?.relations || dashboard?.graphSummary?.relations || 0)} 条关系</span>
