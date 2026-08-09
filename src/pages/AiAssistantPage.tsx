@@ -2182,15 +2182,21 @@ function AiAssistantPage() {
   }, [dashboard?.taskReminderDirectory?.revision])
 
   useEffect(() => {
-    const focus = new URLSearchParams(location.search).get('focus')
-    if (focus !== 'reminders' || !dashboard) return
+    const params = new URLSearchParams(location.search)
+    const focus = params.get('focus')
+    if (!dashboard || (focus !== 'reminders' && focus !== 'task')) return
     const requestIdentity = `${location.key}:${location.search}`
     if (handledNotificationFocusRef.current === requestIdentity) return
     handledNotificationFocusRef.current = requestIdentity
     setTaskView('list')
-    setFocusedTaskId('')
+    const taskId = focus === 'task' ? String(params.get('taskId') || '').trim() : ''
+    setFocusedTaskId(taskId)
+    if (taskId) {
+      setSelectedTaskId(taskId)
+      setTaskDossierModalOpen(true)
+    }
     const timer = window.setTimeout(() => {
-      document.getElementById('assistant-task-reminders')
+      document.getElementById(taskId ? `assistant-task-${taskId}` : 'assistant-task-reminders')
         ?.scrollIntoView({ behavior: 'smooth', block: 'start' })
     }, 120)
     return () => window.clearTimeout(timer)

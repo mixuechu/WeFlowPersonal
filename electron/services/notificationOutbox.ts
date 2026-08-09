@@ -9,6 +9,7 @@ export type AssistantNotification = {
   lastError?: string
   lastAttemptAt?: string
   nextAttemptAt?: string
+  targetRoute?: string
 }
 
 export type NotificationOutbox = {
@@ -49,6 +50,32 @@ function normalizeNotificationKey(value: unknown): { key: string; migrated: bool
 function validIso(value: unknown): string | undefined {
   const text = String(value || '')
   return Number.isFinite(Date.parse(text)) ? new Date(Date.parse(text)).toISOString() : undefined
+}
+
+export function normalizeAssistantNotificationTargetRoute(value: unknown): string | undefined {
+  const text = String(value || '').trim()
+  if (!text || text.length > 500) return undefined
+  let parsed: URL
+  try {
+    parsed = new URL(text, 'https://weflow.local')
+  } catch {
+    return undefined
+  }
+  if (parsed.origin !== 'https://weflow.local' || parsed.pathname !== '/ai-assistant') {
+    return undefined
+  }
+  const focus = String(parsed.searchParams.get('focus') || '')
+  if (focus === 'reminders') return '/ai-assistant?focus=reminders'
+  if (focus !== 'task') return undefined
+  const taskId = String(parsed.searchParams.get('taskId') || '').trim()
+  if (!taskId || taskId.length > 180 || /[\u0000-\u001f\u007f]/.test(taskId)) return undefined
+  return `/ai-assistant?focus=task&taskId=${encodeURIComponent(taskId)}`
+}
+
+export function buildTaskNotificationTargetRoute(taskId: unknown): string {
+  return normalizeAssistantNotificationTargetRoute(
+    `/ai-assistant?focus=task&taskId=${encodeURIComponent(String(taskId || '').trim())}`
+  ) || '/ai-assistant?focus=reminders'
 }
 
 function boundedCounter(value: unknown): number {
@@ -103,7 +130,8 @@ export function normalizeNotificationOutbox(value: any): NotificationOutbox {
       attempts: Math.min(100_000, Math.max(0, Math.floor(Number(raw?.attempts) || 0))),
       lastError: String(raw?.lastError || '').slice(0, 300) || undefined,
       lastAttemptAt: validIso(raw?.lastAttemptAt),
-      nextAttemptAt: validIso(raw?.nextAttemptAt)
+      nextAttemptAt: validIso(raw?.nextAttemptAt),
+      targetRoute: normalizeAssistantNotificationTargetRoute(raw?.targetRoute)
     })
   }
   const pendingOverflow = Math.max(0, pending.length - 100)

@@ -114,9 +114,11 @@ import {
 } from '../electron/services/relationCorrectionPolicy.ts'
 import {
   buildNotificationDedupKey,
+  buildTaskNotificationTargetRoute,
   deliverNotificationBatch,
   enqueueUniqueNotification,
   markNotificationAttempt,
+  normalizeAssistantNotificationTargetRoute,
   normalizeNotificationOutbox
 } from '../electron/services/notificationOutbox.ts'
 import {
@@ -5824,7 +5826,10 @@ test('entity summaries remain evidence-backed candidates until non-stale confirm
 
 test('notification outbox persists unique work until a successful delivery', () => {
   const outbox = { pending: [], sentKeys: [] } as any
-  const notification = { key: 'task-reminders:2026-07-30', title: '需要留意', content: '两项待办', createdAt: '2026-07-30T12:00:00Z' }
+  const notification = {
+    key: 'task-reminders:2026-07-30', title: '需要留意', content: '两项待办',
+    createdAt: '2026-07-30T12:00:00Z', targetRoute: '/ai-assistant?focus=reminders'
+  }
   assert.equal(enqueueUniqueNotification(outbox, notification), true)
   assert.equal(enqueueUniqueNotification(outbox, notification), false)
   markNotificationAttempt(outbox, notification.key, { success: false, error: 'temporary failure' })
@@ -5832,10 +5837,40 @@ test('notification outbox persists unique work until a successful delivery', () 
   assert.equal(outbox.pending[0].lastError, 'temporary failure')
   assert.ok(Number.isFinite(Date.parse(outbox.pending[0].lastAttemptAt)))
   assert.ok(Date.parse(outbox.pending[0].nextAttemptAt) > Date.parse(outbox.pending[0].lastAttemptAt))
+  assert.equal(outbox.pending[0].targetRoute, '/ai-assistant?focus=reminders')
   markNotificationAttempt(outbox, notification.key, { success: true })
   assert.equal(outbox.pending.length, 0)
   assert.deepEqual(outbox.sentKeys, [notification.key])
   assert.equal(enqueueUniqueNotification(outbox, notification), false)
+})
+
+test('assistant notification routes are internal, canonical and task-specific', () => {
+  assert.equal(
+    buildTaskNotificationTargetRoute('task / 一'),
+    '/ai-assistant?focus=task&taskId=task%20%2F%20%E4%B8%80'
+  )
+  assert.equal(
+    normalizeAssistantNotificationTargetRoute('/ai-assistant?taskId=ignored&focus=reminders'),
+    '/ai-assistant?focus=reminders'
+  )
+  assert.equal(normalizeAssistantNotificationTargetRoute('/chat?focus=task&taskId=task-1'), undefined)
+  assert.equal(normalizeAssistantNotificationTargetRoute('https://evil.example/ai-assistant?focus=reminders'), undefined)
+  assert.equal(normalizeAssistantNotificationTargetRoute('/ai-assistant?focus=task'), undefined)
+
+  const normalized = normalizeNotificationOutbox({
+    pending: [{
+      key: 'safe-route', title: '新待办', content: '',
+      createdAt: '2026-08-09T00:00:00.000Z',
+      targetRoute: '/ai-assistant?taskId=task-1&focus=task&ignored=secret'
+    }, {
+      key: 'unsafe-route', title: '异常路由', content: '',
+      createdAt: '2026-08-09T00:01:00.000Z',
+      targetRoute: 'https://evil.example/'
+    }],
+    sentKeys: []
+  })
+  assert.equal(normalized.pending[0].targetRoute, '/ai-assistant?focus=task&taskId=task-1')
+  assert.equal(normalized.pending[1].targetRoute, undefined)
 })
 
 test('notification delivery does not let one failed head item starve later work', async () => {

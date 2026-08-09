@@ -259,6 +259,7 @@ import {
 import { assessAutomaticSearchMaintenance } from './automaticSearchMaintenancePolicy.ts'
 import {
   buildNotificationDedupKey,
+  buildTaskNotificationTargetRoute,
   deliverNotificationBatch,
   enqueueUniqueNotification,
   normalizeNotificationOutbox,
@@ -4081,7 +4082,8 @@ export class AiAssistantService {
           key: buildNotificationDedupKey('new-tasks', mineTasks.map(task => task.id)),
           title: `AI 助理发现 ${mineTasks.length} 个新待办`,
           content: mineTasks.slice(0, 2).map(task => task.title).join('；'),
-          createdAt: new Date().toISOString()
+          createdAt: new Date().toISOString(),
+          targetRoute: buildTaskNotificationTargetRoute(mineTasks[0]?.id)
         })
         this.saveState()
         await this.flushNotificationOutbox(new Date())
@@ -10503,7 +10505,8 @@ export class AiAssistantService {
           key: `task-reminders:${today}`,
           title: `AI 助理：${reminders.length} 项需要留意`,
           content: reminders.slice(0, 2).map(item => `${item.title}（${item.reason}）`).join('；'),
-          createdAt: now.toISOString()
+          createdAt: now.toISOString(),
+          targetRoute: '/ai-assistant?focus=reminders'
         })
         this.state.cursor.lastReminderNotificationDate = today
       }
@@ -10533,7 +10536,13 @@ export class AiAssistantService {
     )
   }
 
-  private enqueueNotification(notification: { key: string; title: string; content: string; createdAt: string }): boolean {
+  private enqueueNotification(notification: {
+    key: string
+    title: string
+    content: string
+    createdAt: string
+    targetRoute?: string
+  }): boolean {
     return enqueueUniqueNotification(this.state.notifications, notification)
   }
 
@@ -10573,7 +10582,7 @@ export class AiAssistantService {
           title: notification.title,
           content: notification.content,
           channel: 'ai-assistant',
-          targetRoute: '/ai-assistant?focus=reminders'
+          targetRoute: notification.targetRoute || '/ai-assistant?focus=reminders'
         })
         if (notificationId === null) {
           throw new Error('当前系统无法创建通知；已保留在待发队列')
