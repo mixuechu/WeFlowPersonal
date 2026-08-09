@@ -2769,6 +2769,54 @@ test('entity vector identity scan gives every matched probe a fair candidate slo
   }
 }))
 
+test('entity vector identity checkpoints are invalidated by same-model vector replacement', () => withStore(store => {
+  const db = (store as any).db
+  store.syncGraph({
+    entities: [
+      { id: 'vector-version-a', type: 'person', canonicalName: '向量版本甲', trustStatus: 'confirmed' },
+      { id: 'vector-version-b', type: 'person', canonicalName: '向量版本乙', trustStatus: 'confirmed' }
+    ],
+    relations: [],
+    reviewQueue: []
+  })
+  assert.equal(store.saveEmbedding('entity:vector-version-a', 'identity-vector-version', [1, 0]), true)
+  assert.equal(store.saveEmbedding('entity:vector-version-b', 'identity-vector-version', [0, 1]), true)
+
+  const initial = store.scanSimilarEntityPairsIncremental('identity-vector-version', 0.88, 20, 2)
+  assert.equal(initial.checkpoint.probes.length, 2)
+  assert.ok(initial.checkpoint.probes.every(probe => probe.vectorHash.length === 64))
+  assert.equal(store.commitIdentityVectorScanBatch(
+    initial.checkpoint, [], 'identity-vector-version-initial'
+  ).committedProbes, 2)
+  assert.equal(store.getIdentityVectorScanBacklog('identity-vector-version').pending, 0)
+
+  assert.equal(store.saveEmbedding('entity:vector-version-a', 'identity-vector-version', [0.8, 0.6]), true)
+  assert.equal(store.getIdentityVectorScanBacklog('identity-vector-version').pending, 1)
+  const stale = store.scanSimilarEntityPairsIncremental('identity-vector-version', 0.88, 20, 2)
+  assert.equal(stale.checkpoint.probes.length, 1)
+
+  assert.equal(store.saveEmbedding('entity:vector-version-a', 'identity-vector-version', [0.6, 0.8]), true)
+  assert.throws(() => store.commitIdentityVectorScanBatch(stale.checkpoint, [{
+    id: 'stale-vector-review', kind: 'possible_duplicate', title: '陈旧向量候选',
+    detail: '', confidence: 0.9, status: 'pending', createdAt: new Date().toISOString()
+  }], 'identity-vector-version-stale'), /checkpoint 已过期/)
+  assert.equal(store.getIdentityVectorScanBacklog('identity-vector-version').pending, 1)
+  assert.equal(store.listGraphReviewsByIds(['stale-vector-review']).length, 0)
+  assert.equal(store.getGraphCommitId(), 'identity-vector-version-initial')
+
+  const fresh = store.scanSimilarEntityPairsIncremental('identity-vector-version', 0.88, 20, 2)
+  assert.notEqual(fresh.checkpoint.probes[0].vectorHash, stale.checkpoint.probes[0].vectorHash)
+  assert.equal(store.commitIdentityVectorScanBatch(
+    fresh.checkpoint, [], 'identity-vector-version-fresh'
+  ).committedProbes, 1)
+  assert.equal(store.getIdentityVectorScanBacklog('identity-vector-version').pending, 0)
+  const stored = db.prepare(`
+    SELECT vector_hash FROM identity_vector_scan_state
+    WHERE document_id='entity:vector-version-a' AND model='identity-vector-version'
+  `).get()
+  assert.equal(stored.vector_hash, fresh.checkpoint.probes[0].vectorHash)
+}))
+
 test('identity decisions for a hundred-thousand candidate scan load through one JSON-indexed query', () => withStore(store => {
   for (let index = 0; index < 1_000; index += 1) {
     store.recordIdentityDecision(

@@ -1393,6 +1393,7 @@ export class PersonalMemoryStore {
         document_id TEXT NOT NULL REFERENCES search_documents(id) ON DELETE CASCADE,
         model TEXT NOT NULL,
         content_hash TEXT NOT NULL,
+        vector_hash TEXT NOT NULL DEFAULT '',
         scanned_at TEXT NOT NULL,
         PRIMARY KEY(document_id,model,content_hash)
       ) STRICT;
@@ -1665,6 +1666,7 @@ export class PersonalMemoryStore {
     `)
     this.ensureColumn('entities', 'identity_version', 'INTEGER NOT NULL DEFAULT 1')
     this.ensureColumn('search_documents', 'embedding_chunk_count', 'INTEGER NOT NULL DEFAULT 0')
+    this.ensureColumn('identity_vector_scan_state', 'vector_hash', `TEXT NOT NULL DEFAULT ''`)
     this.ensureColumn('relations', 'direction_explanation', `TEXT NOT NULL DEFAULT ''`)
     this.ensureColumn(
       'relation_corrections',
@@ -19910,7 +19912,7 @@ export class PersonalMemoryStore {
     pairs: Array<{ leftId: string; rightId: string; score: number }>
     checkpoint: {
       model: string
-      probes: Array<{ documentId: string; contentHash: string }>
+      probes: Array<{ documentId: string; contentHash: string; vectorHash: string }>
     }
     stats: {
       eligible: number
@@ -19973,18 +19975,25 @@ export class PersonalMemoryStore {
       LEFT JOIN identity_vector_scan_state scanned
         ON scanned.document_id=d.id AND scanned.model=d.embedding_model
         AND scanned.content_hash=d.content_hash
+        AND scanned.vector_hash=weflow_sha256(d.embedding_json)
       WHERE ${pendingWhere}
     `).get(model) as { count?: number } | undefined)?.count || 0)
     const probes = this.db.prepare(`
-      SELECT d.id,d.source_id,d.content_hash
+      SELECT d.id,d.source_id,d.content_hash,weflow_sha256(d.embedding_json) AS vector_hash
       FROM search_documents d
       LEFT JOIN identity_vector_scan_state scanned
         ON scanned.document_id=d.id AND scanned.model=d.embedding_model
         AND scanned.content_hash=d.content_hash
+        AND scanned.vector_hash=weflow_sha256(d.embedding_json)
       WHERE ${pendingWhere}
       ORDER BY d.updated_at,d.id
       LIMIT ?
-    `).all(model, boundedProbeLimit) as Array<{ id: string; source_id: string; content_hash: string }>
+    `).all(model, boundedProbeLimit) as Array<{
+      id: string
+      source_id: string
+      content_hash: string
+      vector_hash: string
+    }>
     const probeIds = new Set(probes.map(probe => probe.source_id))
     const outputLimit = Math.max(1, Math.min(1000, limit))
     const perProbeBudget = Math.max(64, outputLimit)
@@ -20053,7 +20062,8 @@ export class PersonalMemoryStore {
         model,
         probes: probes.map(probe => ({
           documentId: probe.id,
-          contentHash: probe.content_hash
+          contentHash: probe.content_hash,
+          vectorHash: probe.vector_hash
         }))
       },
       stats: {
@@ -20079,6 +20089,7 @@ export class PersonalMemoryStore {
       LEFT JOIN identity_vector_scan_state scanned
         ON scanned.document_id=d.id AND scanned.model=d.embedding_model
         AND scanned.content_hash=d.content_hash
+        AND scanned.vector_hash=weflow_sha256(d.embedding_json)
       WHERE d.document_type='entity' AND d.embedding_model=? AND d.embedding_json IS NOT NULL
         AND json_extract(d.metadata_json,'$.entityType')='person'
         AND json_valid(d.embedding_json)=1 AND json_type(d.embedding_json)='array'
@@ -20096,7 +20107,10 @@ export class PersonalMemoryStore {
   }
 
   commitIdentityVectorScanBatch(
-    checkpoint: { model: string; probes: Array<{ documentId: string; contentHash: string }> },
+    checkpoint: {
+      model: string
+      probes: Array<{ documentId: string; contentHash: string; vectorHash: string }>
+    },
     reviews: any[],
     graphCommitId: string
   ): { committedProbes: number; persistedReviews: number; graphCommitId: string } {
@@ -20108,13 +20122,32 @@ export class PersonalMemoryStore {
       .slice(0, 200)
       .map(probe => ({
         documentId: String(probe?.documentId || ''),
-        contentHash: String(probe?.contentHash || '')
+        contentHash: String(probe?.contentHash || ''),
+        vectorHash: String(probe?.vectorHash || '')
       }))
-      .filter(probe => probe.documentId && probe.contentHash)
+      .filter(probe => probe.documentId && probe.contentHash && probe.vectorHash)
+    if (probes.length !== (Array.isArray(checkpoint?.probes)
+      ? checkpoint.probes.slice(0, 200).length
+      : 0) || new Set(probes.map(probe => probe.documentId)).size !== probes.length) {
+      throw new Error('向量身份扫描 checkpoint 身份无效')
+    }
     const pendingReviews = (Array.isArray(reviews) ? reviews : [])
       .filter(review => review?.id && review?.status === 'pending')
     const now = new Date().toISOString()
     return this.db.transaction(() => {
+      const currentProbeCount = Number((this.db!.prepare(`
+        SELECT COUNT(*) AS count
+        FROM json_each(?) requested
+        JOIN search_documents current
+          ON current.id=json_extract(requested.value,'$.documentId')
+          AND current.embedding_model=?
+          AND current.content_hash=json_extract(requested.value,'$.contentHash')
+          AND current.embedding_json IS NOT NULL
+          AND weflow_sha256(current.embedding_json)=json_extract(requested.value,'$.vectorHash')
+      `).get(JSON.stringify(probes), model) as { count?: number } | undefined)?.count || 0)
+      if (currentProbeCount !== probes.length) {
+        throw new Error('向量身份扫描 checkpoint 已过期，未写入候选或进度')
+      }
       const upsertReview = this.db!.prepare(`
         INSERT INTO review_queue(id,kind,title,detail,confidence,status,payload_json,created_at,resolved_at)
         VALUES(?,?,?,?,?,?,?,?,NULL)
@@ -20139,14 +20172,20 @@ export class PersonalMemoryStore {
         persistedReviews += 1
       }
       const record = this.db!.prepare(`
-        INSERT OR IGNORE INTO identity_vector_scan_state(document_id,model,content_hash,scanned_at)
-        SELECT id,embedding_model,content_hash,? FROM search_documents
+        INSERT INTO identity_vector_scan_state(
+          document_id,model,content_hash,vector_hash,scanned_at
+        )
+        SELECT id,embedding_model,content_hash,weflow_sha256(embedding_json),? FROM search_documents
         WHERE id=? AND embedding_model=? AND content_hash=?
+          AND embedding_json IS NOT NULL AND weflow_sha256(embedding_json)=?
+        ON CONFLICT(document_id,model,content_hash) DO UPDATE SET
+          vector_hash=excluded.vector_hash,scanned_at=excluded.scanned_at
+        WHERE identity_vector_scan_state.vector_hash<>excluded.vector_hash
       `)
       let committedProbes = 0
       for (const probe of probes) {
         committedProbes += Number(record.run(
-          now, probe.documentId, model, probe.contentHash
+          now, probe.documentId, model, probe.contentHash, probe.vectorHash
         ).changes || 0)
       }
       this.db!.prepare(`
@@ -20156,6 +20195,8 @@ export class PersonalMemoryStore {
           WHERE current.id=identity_vector_scan_state.document_id
             AND current.embedding_model=identity_vector_scan_state.model
             AND current.content_hash=identity_vector_scan_state.content_hash
+            AND current.embedding_json IS NOT NULL
+            AND weflow_sha256(current.embedding_json)=identity_vector_scan_state.vector_hash
         )
       `).run()
       this.db!.prepare(`
