@@ -13047,6 +13047,86 @@ export class PersonalMemoryStore {
     }
   }
 
+  listLegacyEntityReviewEvidence(
+    entityIdsInput: string[],
+    perEntityLimit = 12
+  ): Map<string, any[]> {
+    const entityIds = [...new Set((entityIdsInput || [])
+      .map(id => String(id || '').trim()).filter(Boolean))]
+    const output = new Map<string, any[]>(entityIds.map(id => [id, []]))
+    if (!this.db || !entityIds.length) return output
+    const limit = Math.max(1, Math.min(40, Math.floor(Number(perEntityLimit) || 12)))
+    for (let offset = 0; offset < entityIds.length; offset += 300) {
+      const batch = entityIds.slice(offset, offset + 300)
+      const rows = this.db.prepare(`
+        WITH RECURSIVE target_entities(target_id) AS (
+          SELECT CAST(value AS TEXT) FROM json_each(?)
+        ),
+        entity_scope(target_id,entity_id) AS (
+          SELECT target_id,target_id FROM target_entities
+          UNION
+          SELECT scope.target_id,history.source_entity_id
+          FROM merge_history history
+          JOIN entity_scope scope ON history.target_entity_id=scope.entity_id
+          WHERE history.reverted_at IS NULL
+        ),
+        scoped AS (
+          SELECT scope.target_id,ee.source_id,ee.session_id,ee.message_id,
+            ee.timestamp,ee.sender,ee.excerpt
+          FROM entity_scope scope
+          JOIN entity_evidence ee ON ee.entity_id=scope.entity_id
+          UNION ALL
+          SELECT scope.target_id,e.source_id,e.session_id,e.message_id,
+            e.timestamp,e.sender,e.excerpt
+          FROM entity_scope scope
+          JOIN claims claim
+            ON claim.subject_id=scope.entity_id OR claim.object_entity_id=scope.entity_id
+          JOIN evidence e ON e.claim_id=claim.id
+          UNION ALL
+          SELECT scope.target_id,e.source_id,e.session_id,e.message_id,
+            e.timestamp,e.sender,e.excerpt
+          FROM entity_scope scope
+          JOIN relations relation
+            ON relation.subject_id=scope.entity_id OR relation.object_id=scope.entity_id
+          JOIN evidence e ON e.relation_id=relation.id
+          UNION ALL
+          SELECT scope.target_id,e.source_id,e.session_id,e.message_id,
+            e.timestamp,e.sender,e.excerpt
+          FROM entity_scope scope
+          JOIN event_participants participant ON participant.entity_id=scope.entity_id
+          JOIN evidence e ON e.event_id=participant.event_id
+        ),
+        grouped AS (
+          SELECT target_id,source_id,session_id,message_id,MAX(timestamp) AS timestamp,
+            MAX(sender) AS sender,MAX(excerpt) AS excerpt
+          FROM scoped
+          GROUP BY target_id,source_id,session_id,message_id
+        ),
+        ranked AS (
+          SELECT *,ROW_NUMBER() OVER (
+            PARTITION BY target_id
+            ORDER BY timestamp DESC,source_id,session_id,message_id DESC
+          ) AS evidence_rank
+          FROM grouped
+        )
+        SELECT target_id,source_id,session_id,message_id,timestamp,sender,excerpt
+        FROM ranked WHERE evidence_rank<=?
+        ORDER BY target_id,evidence_rank
+      `).all(JSON.stringify(batch), limit) as any[]
+      for (const row of rows) {
+        output.get(String(row.target_id || ''))?.push({
+          sourceId: String(row.source_id || 'legacy'),
+          messageId: String(row.message_id || ''),
+          sessionId: String(row.session_id || ''),
+          timestamp: Number(row.timestamp || 0),
+          sender: String(row.sender || ''),
+          excerpt: String(row.excerpt || '')
+        })
+      }
+    }
+    return output
+  }
+
   listEntityEvidencePage(options: {
     entityId: string
     sourceId?: 'wechat' | 'documents' | 'calendar' | 'mail' | 'legacy'

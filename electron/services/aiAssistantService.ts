@@ -801,6 +801,17 @@ export class AiAssistantService {
     lastRunAt: '',
     scope: 'all_confirmed_sqlcipher_memory'
   }
+  private legacyEntityReviewRecovery = {
+    version: 'legacy-entity-review-recovery-v2',
+    legacyEntities: 0,
+    alreadyPending: 0,
+    reviewsCreated: 0,
+    reviewsWithEvidence: 0,
+    reviewsWithoutEvidence: 0,
+    recoveredEvidence: 0,
+    lastRunAt: '',
+    scope: 'all_sqlcipher_entity_evidence'
+  }
   private taskEvidenceHotsetRecovery = {
     checked: 0,
     restored: 0,
@@ -1302,23 +1313,29 @@ export class AiAssistantService {
   }
 
   private ensureLegacyEntityReviews(): void {
-    const feed = personalMemoryStore.getMemoryFeed()
-    for (const entity of this.state.graph.entities) {
-      if (entity.trustStatus !== 'legacy_unverified') continue
+    const allLegacyEntities = this.state.graph.entities.filter(entity =>
+      entity.trustStatus === 'legacy_unverified')
+    const legacyEntities = allLegacyEntities.filter(entity =>
+      !this.state.graph.reviewQueue.some(review =>
+        review.kind === 'entity_creation' && review.entityId === entity.id &&
+        review.status === 'pending'))
+    const durableEvidence = personalMemoryStore.listLegacyEntityReviewEvidence(
+      legacyEntities.map(entity => entity.id),
+      12
+    )
+    let reviewsCreated = 0
+    let reviewsWithEvidence = 0
+    let reviewsWithoutEvidence = 0
+    let recoveredEvidence = 0
+    for (const entity of legacyEntities) {
       if (this.state.graph.reviewQueue.some(review =>
         review.kind === 'entity_creation' && review.entityId === entity.id &&
         review.status === 'pending')) continue
       const evidence = [
+        ...(durableEvidence.get(entity.id) || []),
         ...this.state.graph.relations
           .filter(relation => relation.subjectId === entity.id || relation.objectId === entity.id)
-          .flatMap(relation => relation.evidence || []),
-        ...(feed.claims || [])
-          .filter((claim: any) => claim.subject_id === entity.id || claim.object_entity_id === entity.id)
-          .flatMap((claim: any) => claim.evidence || []),
-        ...(feed.events || [])
-          .filter((event: any) => (event.participants || []).some((participant: any) =>
-            participant.entity_id === entity.id))
-          .flatMap((event: any) => event.evidence || [])
+          .flatMap(relation => relation.evidence || [])
       ]
       const review = buildLegacyEntityReview({
         entity,
@@ -1330,7 +1347,22 @@ export class AiAssistantService {
           review.id = `${review.id}_v${Math.max(1, Number(entity.identityVersion || 1))}`
         }
         this.state.graph.reviewQueue.push(review)
+        reviewsCreated += 1
+        recoveredEvidence += Number(review.evidence?.length || 0)
+        if (review.evidence?.length) reviewsWithEvidence += 1
+        else reviewsWithoutEvidence += 1
       }
+    }
+    this.legacyEntityReviewRecovery = {
+      version: 'legacy-entity-review-recovery-v2',
+      legacyEntities: allLegacyEntities.length,
+      alreadyPending: allLegacyEntities.length - legacyEntities.length,
+      reviewsCreated,
+      reviewsWithEvidence,
+      reviewsWithoutEvidence,
+      recoveredEvidence,
+      lastRunAt: new Date().toISOString(),
+      scope: 'all_sqlcipher_entity_evidence'
     }
   }
 
@@ -5883,6 +5915,7 @@ export class AiAssistantService {
         mergeAndRecoveryBounded: true
       },
       entityTrustReconciliation: this.entityTrustReconciliation,
+      legacyEntityReviewRecovery: this.legacyEntityReviewRecovery,
       graphRelationEvidenceHotset: {
         version: 'graph-relation-evidence-hotset-v1',
         hotLimitPerRelation: 100,

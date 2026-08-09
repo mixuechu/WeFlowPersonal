@@ -101,6 +101,7 @@ export function buildLegacyEntityReview(input: {
 }): any | null {
   if (input.entity?.trustStatus !== 'legacy_unverified' || !input.entity?.id) return null
   const evidence = (input.evidence || []).map(item => ({
+    sourceId: String(item?.sourceId || item?.source_id || 'legacy'),
     messageId: String(item?.messageId || item?.message_id || ''),
     sessionId: String(item?.sessionId || item?.session_id || ''),
     timestamp: Number(item?.timestamp || 0),
@@ -108,7 +109,9 @@ export function buildLegacyEntityReview(input: {
     excerpt: compact(item?.excerpt, 500)
   })).filter(item => item.messageId || item.excerpt)
   const unique = new Map(evidence.map(item => [
-    item.messageId || `${item.sessionId}:${item.timestamp}:${item.excerpt}`,
+    item.messageId
+      ? `${item.sourceId}:${item.sessionId}:${item.messageId}`
+      : `${item.sourceId}:${item.sessionId}:${item.timestamp}:${item.excerpt}`,
     item
   ]))
   return {

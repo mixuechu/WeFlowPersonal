@@ -15809,6 +15809,22 @@ function AiAssistantPage() {
                   : '尚未执行'}</b></span>
               </div>
             </div>}
+            {memoryDiagnostics.legacyEntityReviewRecovery?.version && <div className="assistant-recovery-audit healthy">
+              <header><ShieldCheck size={15} /><span><b>旧版实体全历史原文恢复</b>
+                <small>启动时直接从 SQLCipher 的身份、事实、关系和事件原文中，为旧版未验证实体恢复最近 12 条可核验依据；查询覆盖全部历史，不受首页最近 100 条限制，结果进入身份关系候选供你确认。</small>
+              </span></header>
+              <div className="assistant-recovery-current">
+                <span>旧版未验证实体 <b>{Number(memoryDiagnostics.legacyEntityReviewRecovery.legacyEntities || 0).toLocaleString()}</b></span>
+                <span>已有待审卡片 <b>{Number(memoryDiagnostics.legacyEntityReviewRecovery.alreadyPending || 0).toLocaleString()}</b></span>
+                <span>本次新建卡片 <b>{Number(memoryDiagnostics.legacyEntityReviewRecovery.reviewsCreated || 0).toLocaleString()}</b></span>
+                <span>带原文卡片 <b>{Number(memoryDiagnostics.legacyEntityReviewRecovery.reviewsWithEvidence || 0).toLocaleString()}</b></span>
+                <span>无可恢复原文 <b>{Number(memoryDiagnostics.legacyEntityReviewRecovery.reviewsWithoutEvidence || 0).toLocaleString()}</b></span>
+                <span>恢复原文 <b>{Number(memoryDiagnostics.legacyEntityReviewRecovery.recoveredEvidence || 0).toLocaleString()}</b></span>
+                <span>最近恢复 <b>{memoryDiagnostics.legacyEntityReviewRecovery.lastRunAt
+                  ? new Date(memoryDiagnostics.legacyEntityReviewRecovery.lastRunAt).toLocaleString('zh-CN', { hour12: false })
+                  : '尚未执行'}</b></span>
+              </div>
+            </div>}
             {memoryDiagnostics.eventDeduplicationAuthority?.version && <div className="assistant-recovery-audit healthy">
               <header><ShieldCheck size={15} /><span><b>事件去重权威保护</b>
                 <small>相同原文与相同时间的重复事件按人工纠正、受保护审阅和可信状态确定性归并；两条都有人工作出决定时保守并存，等待你继续审阅。</small>

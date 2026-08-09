@@ -6050,10 +6050,17 @@ test('legacy unverified entities receive actionable reviews with recovered evide
   const review = buildLegacyEntityReview({
     entity,
     evidence: [{
+      source_id: 'wechat',
       message_id: 'wechat:legacy-session:legacy-message',
       session_id: 'legacy-session',
       timestamp: 1710000000,
       excerpt: '旧版人物确认参加项目。'
+    }, {
+      source_id: 'documents',
+      message_id: 'wechat:legacy-session:legacy-message',
+      session_id: 'legacy-session',
+      timestamp: 1710000001,
+      excerpt: '同号文档原文也提到了旧版人物。'
     }],
     createdAt: '2026-07-30T12:00:00.000Z'
   })
@@ -6061,6 +6068,8 @@ test('legacy unverified entities receive actionable reviews with recovered evide
   assert.equal(review.kind, 'entity_creation')
   assert.equal(review.legacyReview, true)
   assert.equal(review.evidence[0].messageId, 'wechat:legacy-session:legacy-message')
+  assert.equal(review.evidence.length, 2)
+  assert.deepEqual(review.evidence.map((item: any) => item.sourceId), ['wechat', 'documents'])
   assert.equal(canConfirmEntityCreation(review, entity), true)
 
   const withoutEvidence = buildLegacyEntityReview({
@@ -6071,6 +6080,51 @@ test('legacy unverified entities receive actionable reviews with recovered evide
   assert.ok(withoutEvidence)
   assert.equal(withoutEvidence.evidence.length, 0)
   assert.match(withoutEvidence.detail, /无法恢复/)
+})
+
+test('legacy entity review evidence recovers old SQLCipher carriers beyond the dashboard window', () => {
+  withStore(store => {
+    store.syncGraph({
+      entities: [{
+        id: 'legacy-review-old', type: 'person', canonicalName: '旧实体',
+        trustStatus: 'legacy_unverified', aliases: [], accountIds: [], confidence: 0.7
+      }, {
+        id: 'legacy-review-current', type: 'person', canonicalName: '新实体',
+        trustStatus: 'confirmed', aliases: [], accountIds: [], confidence: 1
+      }],
+      relations: [], reviewQueue: []
+    } as any)
+    store.upsertClaims([{
+      id: 'legacy-review-old-claim', subjectId: 'legacy-review-old', predicate: '参与',
+      objectValue: '历史项目', confidence: 0.8, status: 'candidate',
+      sourceNature: 'other_statement', searchText: '旧实体参与历史项目',
+      evidence: [{
+        sourceId: 'wechat', messageId: 'legacy-old-message', sessionId: 'legacy-old-session',
+        timestamp: 1, sender: '历史联系人', excerpt: '旧实体参与历史项目'
+      }]
+    }, ...Array.from({ length: 105 }, (_, index) => ({
+      id: `legacy-review-current-claim-${index}`,
+      subjectId: 'legacy-review-current', predicate: `新事实${index}`,
+      objectValue: `值${index}`, confidence: 0.9, status: 'confirmed',
+      sourceNature: 'self_statement', searchText: `新实体事实${index}`,
+      evidence: [{
+        sourceId: 'wechat', messageId: `legacy-new-message-${index}`,
+        sessionId: 'legacy-new-session', timestamp: 10_000 + index,
+        sender: '新联系人', excerpt: `新实体事实${index}`
+      }]
+    }))])
+    ;(store as any).db.prepare(`
+      UPDATE claims SET updated_at='2020-01-01T00:00:00.000Z'
+      WHERE id='legacy-review-old-claim'
+    `).run()
+    assert.equal(store.getMemoryFeed(100, false).claims
+      .some((claim: any) => claim.id === 'legacy-review-old-claim'), false)
+    const recovered = store.listLegacyEntityReviewEvidence(['legacy-review-old'])
+    assert.deepEqual(recovered.get('legacy-review-old'), [{
+      sourceId: 'wechat', messageId: 'legacy-old-message', sessionId: 'legacy-old-session',
+      timestamp: 1, sender: '历史联系人', excerpt: '旧实体参与历史项目'
+    }])
+  })
 })
 
 test('graph sync removes stale aliases and identities from trusted lookup', () => withStore(store => {
