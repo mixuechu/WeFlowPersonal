@@ -591,6 +591,10 @@ type AssistantState = {
       fullPairCandidates: number
       fullLargestNameBucket: number
       fullTruncated: boolean
+      decisionLookupPairs: number
+      decisionLookupQueries: number
+      decisionLookupDurationMs: number
+      decisionLookupAt: string | null
     }
   }
 }
@@ -647,7 +651,9 @@ const EMPTY_STATE: AssistantState = {
     lastFullScanAt: null, lastRunAt: null, lastMode: null, lastCandidateCount: 0,
     contextualRelations: 0, contextualEligibleNeighbors: 0, contextualSkippedHubs: 0,
     contextualPairCandidates: 0, contextualTruncated: false,
-    fullPairCandidates: 0, fullLargestNameBucket: 0, fullTruncated: false
+    fullPairCandidates: 0, fullLargestNameBucket: 0, fullTruncated: false,
+    decisionLookupPairs: 0, decisionLookupQueries: 0, decisionLookupDurationMs: 0,
+    decisionLookupAt: null
   } }
 }
 
@@ -2946,20 +2952,43 @@ export class AiAssistantService {
     )
   }
 
+  private loadIdentityDecisionIndex(pairKeys: string[], now: string): Map<string, any> {
+    const keys = [...new Set(pairKeys.map(String).filter(Boolean))].slice(0, 100_000)
+    const startedAt = performance.now()
+    const decisions = personalMemoryStore.listIdentityDecisions(keys)
+    const durationMs = Math.max(0, performance.now() - startedAt)
+    const sameRun = this.state.graph.identityScan.decisionLookupAt === now
+    this.state.graph.identityScan.decisionLookupPairs =
+      (sameRun ? this.state.graph.identityScan.decisionLookupPairs : 0) + keys.length
+    this.state.graph.identityScan.decisionLookupQueries =
+      (sameRun ? this.state.graph.identityScan.decisionLookupQueries : 0) + (keys.length ? 1 : 0)
+    this.state.graph.identityScan.decisionLookupDurationMs = Number((
+      (sameRun ? this.state.graph.identityScan.decisionLookupDurationMs : 0) + durationMs
+    ).toFixed(2))
+    this.state.graph.identityScan.decisionLookupAt = now
+    return decisions
+  }
+
   private enqueueIdentityCandidates(
     entity: GraphEntity,
     now: string,
     provenance: IdentityCandidateProvenance = {},
     candidateLookup?: IdentityCandidateLookup,
-    reviewsById?: Map<string, any>
+    reviewsById?: Map<string, any>,
+    identityDecisions?: Map<string, any>
   ): void {
     if (entity.type !== 'person') return
     if (this.state.graph.identityScan.lastRunAt !== now) this.state.graph.identityScan.lastCandidateCount = 0
     const candidates = candidateLookup
       ? listIndexedIdentityCandidates(candidateLookup, entity)
       : this.state.graph.entities
+    const decisions = identityDecisions || this.loadIdentityDecisionIndex(
+      candidates.map(candidate => identityPairKey(entity.id, candidate.id)),
+      now
+    )
     for (const candidate of candidates) {
-      if (this.enqueueIdentityPair(entity, candidate, now, undefined, provenance, reviewsById)) {
+      if (this.enqueueIdentityPair(
+        entity, candidate, now, undefined, provenance, reviewsById, decisions)) {
         this.state.graph.identityScan.lastCandidateCount += 1
       }
     }
@@ -2974,13 +3003,17 @@ export class AiAssistantService {
     now: string,
     suggestion?: { source: string; detail: string; confidence: number; label?: string; value?: string },
     provenance: IdentityCandidateProvenance = {},
-    reviewsById?: Map<string, any>
+    reviewsById?: Map<string, any>,
+    identityDecisions?: Map<string, any>
   ): boolean {
     const assessment = assessIdentityPair(left, right)
     if (!assessment.eligible && (!suggestion || suggestion.confidence < 0.65)) return false
-    const decision = personalMemoryStore.getIdentityDecision(left.id, right.id)
+    const pairKey = identityPairKey(left.id, right.id)
+    const decision = identityDecisions
+      ? identityDecisions.get(pairKey) || null
+      : personalMemoryStore.getIdentityDecision(left.id, right.id)
     if (isNegativeDecisionCurrent(decision, left, right)) return false
-    const id = crypto.createHash('sha256').update(identityPairKey(left.id, right.id)).digest('hex').slice(0, 20)
+    const id = crypto.createHash('sha256').update(pairKey).digest('hex').slice(0, 20)
     const existing = reviewsById?.get(id) || this.state.graph.reviewQueue.find(review => review.id === id)
     if (existing?.status === 'pending') return false
     const signals = assessment.signals.map(signal => ({ source: signal.source, label: signal.label, value: signal.value }))
@@ -3036,12 +3069,13 @@ export class AiAssistantService {
     const pairPlan = buildNameIdentityPairPlan(people)
     let candidates = 0
     const reviewsById = new Map(this.state.graph.reviewQueue.map(review => [review.id, review]))
+    const identityDecisions = this.loadIdentityDecisionIndex(pairPlan.pairKeys, now)
     for (const pairKey of pairPlan.pairKeys) {
       const [leftId, rightId] = pairKey.split('|')
       const left = byId.get(leftId)
       const right = byId.get(rightId)
       if (left && right && this.enqueueIdentityPair(
-        left, right, now, undefined, {}, reviewsById)) candidates += 1
+        left, right, now, undefined, {}, reviewsById, identityDecisions)) candidates += 1
     }
     this.state.graph.identityScan = {
       ...this.state.graph.identityScan,
@@ -3081,11 +3115,15 @@ export class AiAssistantService {
       })
     }
     let candidates = 0
+    const identityDecisions = this.loadIdentityDecisionIndex(
+      suggestions.map(suggestion => identityPairKey(suggestion.leftId, suggestion.rightId)),
+      now
+    )
     for (const suggestion of suggestions) {
       const left = byId.get(suggestion.leftId)
       const right = byId.get(suggestion.rightId)
       if (left && right && this.enqueueIdentityPair(
-        left, right, now, suggestion, {}, reviewsById)) candidates += 1
+        left, right, now, suggestion, {}, reviewsById, identityDecisions)) candidates += 1
     }
     this.state.graph.identityScan.lastCandidateCount += candidates
   }

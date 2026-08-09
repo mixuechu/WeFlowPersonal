@@ -2631,6 +2631,26 @@ test('identity disambiguation recalls multi-account candidates from graph and lo
   assert.ok(vectorPairs[0].score >= 0.9)
 }))
 
+test('identity decisions for a hundred-thousand candidate scan load through one JSON-indexed query', () => withStore(store => {
+  for (let index = 0; index < 1_000; index += 1) {
+    store.recordIdentityDecision(
+      `person-${index}`,
+      `person-${index + 100_000}`,
+      'different',
+      1,
+      1,
+      '人工确认不是同一人'
+    )
+  }
+  const pairKeys = Array.from({ length: 100_000 }, (_, index) =>
+    [`person-${index}`, `person-${index + 100_000}`].sort().join('|'))
+  const startedAt = performance.now()
+  const decisions = store.listIdentityDecisions(pairKeys)
+  assert.equal(decisions.size, 1_000)
+  assert.equal(decisions.get(['person-42', 'person-100042'].sort().join('|'))?.decision, 'different')
+  assert.ok(performance.now() - startedAt < 3_000)
+}))
+
 test('conflicting current claims coexist as review candidates', () => withStore(store => {
   store.syncGraph({
     entities: [{

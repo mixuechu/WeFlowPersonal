@@ -9556,6 +9556,18 @@ export class PersonalMemoryStore {
     return this.db?.prepare('SELECT * FROM identity_decisions WHERE pair_key=?').get(this.pairKey(leftId, rightId)) || null
   }
 
+  listIdentityDecisions(pairKeys: string[]): Map<string, any> {
+    if (!this.db) return new Map()
+    const keys = [...new Set((pairKeys || []).map(String).filter(Boolean))].slice(0, 100_000)
+    if (!keys.length) return new Map()
+    const rows = this.db.prepare(`
+      SELECT decision.*
+      FROM json_each(?) requested
+      JOIN identity_decisions decision ON decision.pair_key=CAST(requested.value AS TEXT)
+    `).all(JSON.stringify(keys)) as any[]
+    return new Map(rows.map(row => [String(row.pair_key), row]))
+  }
+
   deleteIdentityDecision(leftId: string, rightId: string): void {
     this.db?.prepare('DELETE FROM identity_decisions WHERE pair_key=?').run(this.pairKey(leftId, rightId))
   }

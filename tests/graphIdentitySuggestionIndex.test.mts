@@ -100,6 +100,7 @@ test('high-degree graph hubs and pathological pair explosions are bounded and vi
 
 test('identity scan diagnostics expose hub exclusions and truncation in the UI', () => {
   const service = readFileSync(join(root, 'electron/services/aiAssistantService.ts'), 'utf8')
+  const store = readFileSync(join(root, 'electron/services/personalMemoryStore.ts'), 'utf8')
   const page = readFileSync(join(root, 'src/pages/AiAssistantPage.tsx'), 'utf8')
   assert.match(service, /buildGraphIdentitySuggestionPlan/)
   assert.match(service, /contextualSkippedHubs = graphPlan\.stats\.skippedHighDegreeNeighbors/)
@@ -110,6 +111,11 @@ test('identity scan diagnostics expose hub exclusions and truncation in the UI',
   assert.match(page, /最近每周同名候选对/)
   assert.match(page, /最大同名\/别名桶/)
   assert.match(page, /每周巡检已达上限/)
+  assert.match(service, /loadIdentityDecisionIndex\(pairPlan\.pairKeys, now\)/)
+  assert.match(service, /suggestions\.map\(suggestion => identityPairKey/)
+  assert.match(store, /listIdentityDecisions\(pairKeys: string\[\]\)/)
+  assert.match(store, /FROM json_each\(\?\) requested[\s\S]*JOIN identity_decisions/)
+  assert.match(page, /SQLCipher 批量决定查询/)
 })
 
 test('weekly name scan keeps deterministic deduplicated order and bounds huge same-name buckets', () => {
