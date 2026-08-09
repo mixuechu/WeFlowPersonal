@@ -2306,17 +2306,27 @@ export class ExportContext {
         }
 
         if (svridsToResolve.length === 0) return
-        const results = await Promise.allSettled(
-                  svridsToResolve.map(({ svrid }) => wcdbService.getMessageByServerId(sessionId, svrid))
-                );
-        for (let i = 0; i < results.length; i++) {
-          const result = results[i]
-          const { msg } = svridsToResolve[i]
+        const resultBySvrid = new Map<string, Awaited<ReturnType<typeof wcdbService.getMessageByServerId>>>()
+        const uniqueSvrids = [...new Set(svridsToResolve.map(({ svrid }) => svrid))]
+        const chunkSize = 8
+        for (let offset = 0; offset < uniqueSvrids.length; offset += chunkSize) {
+          const chunk = uniqueSvrids.slice(offset, offset + chunkSize)
+          const results = await Promise.allSettled(
+            chunk.map(svrid => wcdbService.getMessageByServerId(sessionId, svrid))
+          )
+          results.forEach((result, index) => {
+            resultBySvrid.set(chunk[index], result.status === 'fulfilled'
+              ? result.value
+              : { success: false, error: String(result.reason || '查询失败') })
+          })
+        }
+        for (const { msg, svrid } of svridsToResolve) {
+          const result = resultBySvrid.get(svrid)
 
-          if (result.status === 'fulfilled' && result.value.success && result.value.row) {
-            const localType = parseInt(result.value.row.local_type || '0', 10)
-            const rawMessageContent = result.value.row.message_content
-            const rawCompressContent = result.value.row.compress_content
+          if (result?.success && result.row) {
+            const localType = parseInt(result.row.local_type || '0', 10)
+            const rawMessageContent = result.row.message_content
+            const rawCompressContent = result.row.compress_content
             const content = chatService['decodeMessageContent'](rawMessageContent, rawCompressContent)
 
             if (localType === 1) {

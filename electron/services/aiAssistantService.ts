@@ -13,6 +13,7 @@ import { jsonrepair } from 'jsonrepair'
 import JSZip from 'jszip'
 import { ConfigService } from './config'
 import { httpService } from './httpService'
+import { wcdbService } from './wcdbService'
 import { showSystemNotification } from './systemNotificationService'
 import { personalMemoryStore, RESOURCE_CONTENT_CHAR_LIMIT } from './personalMemoryStore'
 import { localEmbeddingService } from './localEmbeddingService'
@@ -6372,6 +6373,7 @@ export class AiAssistantService {
         vectorIndexing: Boolean(this.vectorIndexPromise),
         searchRepairing: Boolean(this.memorySearchRepairPromise)
       }),
+      wcdbQueue: wcdbService.getQueueHealth(),
       modelRequests: {
         ...this.modelRequests.getStatus(),
         memoryQuestions: this.memoryQuestionPromises.size,

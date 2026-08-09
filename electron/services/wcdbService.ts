@@ -11,6 +11,8 @@ interface WorkerMessage {
   error?: string
 }
 
+export const WCDB_MAX_PENDING_REQUESTS = 256
+
 /**
  * WCDB 服务 (客户端代理)
  * 负责与后台 Worker 线程通信，执行数据库操作
@@ -30,6 +32,10 @@ export class WcdbService {
   private logEnabled = false
   private monitorListener: ((type: string, json: string) => void) | null = null
   private shuttingDown = false
+  private queueHighWatermark = 0
+  private queueRejectedCount = 0
+  private queueLastRejectedAt = ''
+  private queueLastRejectedType = ''
 
   constructor() {}
 
@@ -114,12 +120,39 @@ export class WcdbService {
     if (this.shuttingDown) return Promise.reject(new Error('WCDB Worker 正在退出'))
     if (!this.worker) this.initWorker()
     if (!this.worker) return Promise.reject(new Error('WCDB Worker 不可用'))
+    if (type !== 'close' && this.pending.size >= WCDB_MAX_PENDING_REQUESTS) {
+      this.queueRejectedCount += 1
+      this.queueLastRejectedAt = new Date().toISOString()
+      this.queueLastRejectedType = String(type || 'unknown').slice(0, 80)
+      return Promise.reject(new Error(
+        `WCDB Worker 请求队列已达到 ${WCDB_MAX_PENDING_REQUESTS} 项，请稍后重试`
+      ))
+    }
 
     return new Promise((resolve, reject) => {
       const id = ++this.messageId
       this.pending.set(id, { resolve, reject, type: String(type || 'unknown'), startedAt: Date.now() })
+      this.queueHighWatermark = Math.max(this.queueHighWatermark, this.pending.size)
       this.worker!.postMessage({ id, type, payload })
     })
+  }
+
+  getQueueHealth(): {
+    pending: number
+    capacity: number
+    highWatermark: number
+    rejectedCount: number
+    lastRejectedAt: string
+    lastRejectedType: string
+  } {
+    return {
+      pending: this.pending.size,
+      capacity: WCDB_MAX_PENDING_REQUESTS,
+      highWatermark: this.queueHighWatermark,
+      rejectedCount: this.queueRejectedCount,
+      lastRejectedAt: this.queueLastRejectedAt,
+      lastRejectedType: this.queueLastRejectedType
+    }
   }
 
   /**
@@ -232,9 +265,10 @@ export class WcdbService {
         )
       })
 
-    // A native cloud report can be non-cancellable. Give the ordered WCDB close
-    // a short grace period, then detach this read-only worker so app shutdown is
-    // never held hostage by an RPC that cannot observe an AbortSignal.
+    // A native cloud report or shutdown can be non-cancellable. Give the ordered
+    // WCDB close a short grace period, then detach this read-only worker so app
+    // shutdown is never held hostage by native code that cannot observe an
+    // AbortSignal. Recovery diagnostics distinguish this from queue pressure.
     const pendingBeforeClose = this.pending.size
     const pendingSnapshot = [...this.pending.values()]
     const pendingTypes = [...new Set(pendingSnapshot.map(item => item.type))]

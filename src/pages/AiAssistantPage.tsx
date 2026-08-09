@@ -15872,6 +15872,24 @@ function AiAssistantPage() {
                 <span>诊断快照 <b>{memoryDiagnostics.backgroundWrites.message || '空闲'}</b></span>
               </div>
             </div>}
+            {memoryDiagnostics.wcdbQueue && <div className={`assistant-recovery-audit ${
+              Number(memoryDiagnostics.wcdbQueue.rejectedCount || 0) > 0 ? 'warning' : 'healthy'
+            }`}>
+              <header><Database size={15} /><span><b>微信数据库请求队列</b>
+                <small>所有原生数据库操作按抵达顺序单飞执行，并使用统一容量门禁防止界面、导出或本机接口在慢查询期间无界占用内存；安全关闭请求始终保留入口。</small>
+              </span></header>
+              <div className="assistant-recovery-current">
+                <span>当前排队 <b>{Number(memoryDiagnostics.wcdbQueue.pending || 0).toLocaleString()} / {Number(memoryDiagnostics.wcdbQueue.capacity || 0).toLocaleString()}</b></span>
+                <span>运行期峰值 <b>{Number(memoryDiagnostics.wcdbQueue.highWatermark || 0).toLocaleString()}</b></span>
+                <span>累计背压 <b>{Number(memoryDiagnostics.wcdbQueue.rejectedCount || 0).toLocaleString()}</b> 次</span>
+                <span>最近背压 <b>{memoryDiagnostics.wcdbQueue.lastRejectedAt
+                  ? new Date(memoryDiagnostics.wcdbQueue.lastRejectedAt).toLocaleString('zh-CN', { hour12: false })
+                  : '无'}</b></span>
+              </div>
+              {memoryDiagnostics.wcdbQueue.lastRejectedType && <small className="assistant-diagnostics-error">
+                最近被延后的操作：{memoryDiagnostics.wcdbQueue.lastRejectedType}。完成当前查询后可直接重试。
+              </small>}
+            </div>}
             {memoryDiagnostics.backupPairIntegrity && <div className={`assistant-recovery-audit ${
               Number(memoryDiagnostics.backupPairIntegrity.databaseOnly || 0) +
                 Number(memoryDiagnostics.backupPairIntegrity.stateOnly || 0) +
