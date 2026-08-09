@@ -16257,6 +16257,8 @@ function AiAssistantPage() {
                 <span>本次来源/发送者自愈 <b>{Number(memoryDiagnostics.graphReviewEvidenceStorage.provenanceRepair?.sourceRowsRepairedThisStart || 0).toLocaleString()} / {Number(memoryDiagnostics.graphReviewEvidenceStorage.provenanceRepair?.senderRowsRepairedThisStart || 0).toLocaleString()}</b> 条</span>
                 <span>本次合并重复载体 <b>{Number(memoryDiagnostics.graphReviewEvidenceStorage.provenanceRepair?.rowsMergedThisStart || 0).toLocaleString()}</b> 条</span>
                 <span>发送者歧义/仍未知 <b>{Number(memoryDiagnostics.graphReviewEvidenceStorage.provenanceRepair?.ambiguousSenderRowsThisStart || 0).toLocaleString()} / {Number(memoryDiagnostics.graphReviewEvidenceStorage.provenanceRepair?.unresolvedRowsThisStart || 0).toLocaleString()}</b> 条</span>
+                <span>自愈查询索引 <b>{memoryDiagnostics.graphReviewEvidenceStorage.provenanceRepair?.indexesHealthy ? '正常' : '异常'}</b> · {Number(memoryDiagnostics.graphReviewEvidenceStorage.provenanceRepair?.installedIndexes || 0)} / {Number(memoryDiagnostics.graphReviewEvidenceStorage.provenanceRepair?.expectedIndexes || 0)}</span>
+                <span>本次/累计查询索引自愈 <b>{Number(memoryDiagnostics.graphReviewEvidenceStorage.provenanceRepair?.repairedIndexesThisStart || 0)} / {Number(memoryDiagnostics.graphReviewEvidenceStorage.provenanceRepair?.indexRepairsTotal || 0).toLocaleString()}</b></span>
                 <span>分页索引 <b>{memoryDiagnostics.graphReviewEvidenceStorage.indexHealthy ? '正常' : '异常'}</b></span>
                 <span>本次/累计索引自愈 <b>{memoryDiagnostics.graphReviewEvidenceStorage.repairedIndexThisStart ? 1 : 0} / {Number(memoryDiagnostics.graphReviewEvidenceStorage.indexRepairsTotal || 0).toLocaleString()}</b></span>
               </div>

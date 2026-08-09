@@ -1676,6 +1676,7 @@ test('legacy graph review evidence provenance repairs only uniquely proven carri
   const first = new PersonalMemoryStore()
   const reopened = new PersonalMemoryStore()
   const secondRestart = new PersonalMemoryStore()
+  const repairedRestart = new PersonalMemoryStore()
   try {
     first.initialize(databasePath)
     const review = (id: string) => ({
@@ -1763,10 +1764,97 @@ test('legacy graph review evidence provenance repairs only uniquely proven carri
     assert.equal(afterRestart.sourceRowsRepairedTotal, 2)
     assert.equal(afterRestart.senderRowsRepairedTotal, 2)
     assert.equal(afterRestart.rowsMergedTotal, 1)
+    assert.equal(afterRestart.indexesHealthy, true)
+    assert.equal(afterRestart.installedIndexes, 4)
+    ;(secondRestart as any).db.exec(`
+      DROP INDEX idx_evidence_carrier_sender;
+      CREATE INDEX idx_evidence_carrier_sender ON evidence(timestamp,session_id);
+    `)
+    assert.equal(secondRestart.getGraphReviewEvidenceStorageHealth().healthy, false)
+    secondRestart.close()
+
+    repairedRestart.initialize(databasePath)
+    const repairedHealth = repairedRestart.getGraphReviewEvidenceStorageHealth()
+    assert.equal(repairedHealth.healthy, true)
+    assert.equal(repairedHealth.provenanceRepair.indexesHealthy, true)
+    assert.equal(repairedHealth.provenanceRepair.repairedIndexesThisStart, 1)
   } finally {
     first.close()
     reopened.close()
     secondRestart.close()
+    repairedRestart.close()
+    rmSync(directory, { recursive: true, force: true })
+  }
+})
+
+test('legacy graph review provenance repair batches thousands of carriers through covering indexes', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'weflow-review-provenance-scale-test-'))
+  const databasePath = join(directory, 'memory.sqlite')
+  const first = new PersonalMemoryStore()
+  const reopened = new PersonalMemoryStore()
+  try {
+    first.initialize(databasePath)
+    first.syncGraph({
+      entities: [{
+        id: 'provenance-scale-person', type: 'person', canonicalName: '规模发送者',
+        trustStatus: 'confirmed'
+      }],
+      relations: [], reviewQueue: []
+    } as any)
+    const db = (first as any).db
+    const insertReviews = db.transaction(() => {
+      const review = db.prepare(`
+        INSERT INTO review_queue(
+          id,kind,title,detail,confidence,status,payload_json,created_at
+        ) VALUES(?, 'entity_creation', ?, '', 0.7, 'pending', '{}', ?)
+      `)
+      const evidence = db.prepare(`
+        INSERT INTO graph_review_evidence(
+          review_id,evidence_key,source_id,session_id,message_id,timestamp,
+          sender,excerpt,evidence_json,created_at
+        ) VALUES(?,?,'legacy','scale-room',?,?,'',?,'{}',?)
+      `)
+      const authority = db.prepare(`
+        INSERT INTO entity_evidence(
+          entity_id,source_id,message_id,session_id,timestamp,sender,excerpt,evidence_kind
+        ) VALUES('provenance-scale-person','wechat',?,'scale-room',?,'规模发送者',?,'identity')
+      `)
+      for (let index = 0; index < 3_000; index += 1) {
+        const reviewId = `provenance-scale-review-${index}`
+        const messageId = `wechat:scale-room:${index}`
+        const timestamp = 1_700_000_000 + index
+        const now = new Date(timestamp * 1000).toISOString()
+        review.run(reviewId, reviewId, now)
+        evidence.run(reviewId, `legacy-scale-key-${index}`, messageId, timestamp, `规模原文 ${index}`, now)
+        authority.run(messageId, timestamp, `规模原文 ${index}`)
+      }
+    })
+    insertReviews()
+    first.close()
+
+    const startedAt = Date.now()
+    reopened.initialize(databasePath)
+    const durationMs = Date.now() - startedAt
+    const health = reopened.getGraphReviewEvidenceStorageHealth()
+    assert.equal(health.provenanceRepair.sourceRowsRepairedThisStart, 3_000)
+    assert.equal(health.provenanceRepair.senderRowsRepairedThisStart, 3_000)
+    assert.equal(health.provenanceRepair.unresolvedRowsThisStart, 0)
+    assert.equal(health.provenanceRepair.indexesHealthy, true)
+    assert.ok(durationMs < 5_000, `3,000-carrier startup repair took ${durationMs}ms`)
+    for (const [table, indexName] of [
+      ['entity_evidence', 'idx_entity_evidence_carrier_sender'],
+      ['evidence', 'idx_evidence_carrier_sender'],
+      ['search_document_evidence', 'idx_search_document_evidence_carrier_sender']
+    ]) {
+      const plan = (reopened as any).db.prepare(`
+        EXPLAIN QUERY PLAN SELECT source_id,sender FROM ${table}
+        WHERE session_id=? AND message_id=?
+      `).all('scale-room', 'wechat:scale-room:1')
+      assert.match(plan.map((row: any) => String(row.detail || '')).join('\n'), new RegExp(indexName))
+    }
+  } finally {
+    first.close()
+    reopened.close()
     rmSync(directory, { recursive: true, force: true })
   }
 })

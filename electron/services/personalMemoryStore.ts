@@ -1822,6 +1822,7 @@ export class PersonalMemoryStore {
     this.backfillHumanReviewCalibrationHistory()
     this.ensureGraphReviewEvidencePageIndex()
     this.migrateGraphReviewEvidenceArchive()
+    this.ensureGraphReviewEvidenceProvenanceIndexes()
     this.repairGraphReviewEvidenceProvenance()
     this.ensureGraphReviewRevisionTriggers()
     this.normalizeTaskHistoryEvidence()
@@ -9274,6 +9275,110 @@ export class PersonalMemoryStore {
     }
   }
 
+  private graphReviewEvidenceProvenanceIndexDefinitions(): Array<{
+    name: string
+    table: string
+    columns: string[]
+    where?: string
+  }> {
+    return [{
+      name: 'idx_graph_review_evidence_provenance_repair',
+      table: 'graph_review_evidence',
+      columns: ['source_id', 'sender', 'session_id', 'message_id', 'review_id', 'evidence_key'],
+      where: `message_id!='' AND (source_id='legacy' OR sender='')`
+    }, {
+      name: 'idx_entity_evidence_carrier_sender',
+      table: 'entity_evidence',
+      columns: ['session_id', 'message_id', 'source_id', 'sender']
+    }, {
+      name: 'idx_evidence_carrier_sender',
+      table: 'evidence',
+      columns: ['session_id', 'message_id', 'source_id', 'sender']
+    }, {
+      name: 'idx_search_document_evidence_carrier_sender',
+      table: 'search_document_evidence',
+      columns: ['session_id', 'message_id', 'source_id', 'sender']
+    }]
+  }
+
+  private inspectGraphReviewEvidenceProvenanceIndexes(): {
+    healthy: boolean
+    expectedIndexes: number
+    installedIndexes: number
+    unhealthyIndexes: string[]
+  } {
+    if (!this.db) return {
+      healthy: false, expectedIndexes: 4, installedIndexes: 0, unhealthyIndexes: []
+    }
+    const normalize = (value: unknown) => String(value || '')
+      .replace(/["`\[\]]/g, '').replace(/\s+/g, ' ').trim().toLowerCase()
+    const unhealthyIndexes: string[] = []
+    let installedIndexes = 0
+    for (const definition of this.graphReviewEvidenceProvenanceIndexDefinitions()) {
+      const row = this.db.prepare(`
+        SELECT tbl_name,sql FROM sqlite_master WHERE type='index' AND name=?
+      `).get(definition.name) as any
+      if (row) installedIndexes += 1
+      const columns = row
+        ? (this.db.prepare(`SELECT name FROM pragma_index_info(?) ORDER BY seqno`)
+            .all(definition.name) as Array<{ name: string }>).map(item => String(item.name || ''))
+        : []
+      const sql = normalize(row?.sql)
+      const tableHealthy = String(row?.tbl_name || '') === definition.table
+      const columnsHealthy = columns.length === definition.columns.length &&
+        columns.every((column, index) => column === definition.columns[index])
+      const whereHealthy = definition.where
+        ? sql.includes(`where ${normalize(definition.where)}`)
+        : !sql.includes(' where ')
+      if (!tableHealthy || !columnsHealthy || !whereHealthy) {
+        unhealthyIndexes.push(definition.name)
+      }
+    }
+    return {
+      healthy: unhealthyIndexes.length === 0,
+      expectedIndexes: this.graphReviewEvidenceProvenanceIndexDefinitions().length,
+      installedIndexes,
+      unhealthyIndexes
+    }
+  }
+
+  private ensureGraphReviewEvidenceProvenanceIndexes(): void {
+    if (!this.db) return
+    const auditKey = 'graph_review_evidence_provenance_index_integrity_v1'
+    const before = this.inspectGraphReviewEvidenceProvenanceIndexes()
+    let previous: any = {}
+    try {
+      previous = JSON.parse(String((this.db.prepare(
+        'SELECT value FROM schema_meta WHERE key=?'
+      ).get(auditKey) as any)?.value || '{}'))
+    } catch {}
+    if (!before.healthy) {
+      const unhealthy = new Set(before.unhealthyIndexes)
+      const transaction = this.db.transaction(() => {
+        for (const definition of this.graphReviewEvidenceProvenanceIndexDefinitions()) {
+          if (!unhealthy.has(definition.name)) continue
+          this.db!.exec(`DROP INDEX IF EXISTS ${definition.name}`)
+          this.db!.exec(`CREATE INDEX ${definition.name} ON ${definition.table}(
+            ${definition.columns.join(',')}
+          )${definition.where ? ` WHERE ${definition.where}` : ''}`)
+        }
+      })
+      transaction()
+    }
+    const after = this.inspectGraphReviewEvidenceProvenanceIndexes()
+    const checkedAt = new Date().toISOString()
+    this.db.prepare(`
+      INSERT INTO schema_meta(key,value,updated_at) VALUES(?,?,?)
+      ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_at=excluded.updated_at
+    `).run(auditKey, JSON.stringify({
+      version: 1,
+      checkedAt,
+      ...after,
+      repairedIndexesThisStart: before.unhealthyIndexes.length,
+      repairsTotal: Number(previous.repairsTotal || 0) + (before.healthy ? 0 : 1)
+    }), checkedAt)
+  }
+
   private repairGraphReviewEvidenceProvenance(): void {
     if (!this.db) return
     const auditKey = 'graph_review_evidence_provenance_repair_v1'
@@ -9290,16 +9395,44 @@ export class PersonalMemoryStore {
       WHERE message_id!='' AND (source_id='legacy' OR sender='')
       ORDER BY review_id,CASE WHEN source_id='legacy' THEN 0 ELSE 1 END,evidence_key
     `).all() as any[]
-    const authority = this.db.prepare(`
-      SELECT source_id,sender FROM entity_evidence
-      WHERE session_id=? AND message_id=?
-      UNION ALL
-      SELECT source_id,sender FROM evidence
-      WHERE session_id=? AND message_id=?
-      UNION ALL
-      SELECT source_id,sender FROM search_document_evidence
-      WHERE session_id=? AND message_id=?
-    `)
+    const carriers = [...new Map(rows.map(row => {
+      const sessionId = String(row.session_id || '').trim()
+      const messageId = String(row.message_id || '').trim()
+      return [`${sessionId}\0${messageId}`, [sessionId, messageId]]
+    })).values()]
+    const authoritativeRows = carriers.length
+      ? this.db.prepare(`
+          WITH requested(session_id,message_id) AS (
+            SELECT CAST(json_extract(value,'$[0]') AS TEXT),
+              CAST(json_extract(value,'$[1]') AS TEXT)
+            FROM json_each(?)
+          )
+          SELECT authority.session_id,authority.message_id,authority.source_id,authority.sender
+          FROM requested
+          JOIN entity_evidence authority
+            ON authority.session_id=requested.session_id
+           AND authority.message_id=requested.message_id
+          UNION ALL
+          SELECT authority.session_id,authority.message_id,authority.source_id,authority.sender
+          FROM requested
+          JOIN evidence authority
+            ON authority.session_id=requested.session_id
+           AND authority.message_id=requested.message_id
+          UNION ALL
+          SELECT authority.session_id,authority.message_id,authority.source_id,authority.sender
+          FROM requested
+          JOIN search_document_evidence authority
+            ON authority.session_id=requested.session_id
+           AND authority.message_id=requested.message_id
+        `).all(JSON.stringify(carriers)) as any[]
+      : []
+    const authorityByCarrier = new Map<string, any[]>()
+    for (const item of authoritativeRows) {
+      const key = `${String(item.session_id || '').trim()}\0${String(item.message_id || '').trim()}`
+      const bucket = authorityByCarrier.get(key) || []
+      bucket.push(item)
+      authorityByCarrier.set(key, bucket)
+    }
     const update = this.db.prepare(`
       UPDATE graph_review_evidence SET
         evidence_key=?,source_id=?,sender=?,evidence_json=?
@@ -9336,9 +9469,7 @@ export class PersonalMemoryStore {
         const sessionId = String(row.session_id || '').trim()
         const messageId = String(row.message_id || '').trim()
         const currentSource = String(row.source_id || 'legacy').trim() || 'legacy'
-        const authoritative = authority.all(
-          sessionId, messageId, sessionId, messageId, sessionId, messageId
-        ) as any[]
+        const authoritative = authorityByCarrier.get(`${sessionId}\0${messageId}`) || []
         const authoritySources = [...new Set(authoritative
           .map(item => String(item.source_id || '').trim())
           .filter(source => source && source !== 'legacy'))]
@@ -9467,18 +9598,25 @@ export class PersonalMemoryStore {
     const provenanceAuditRow = this.db.prepare(`
       SELECT value FROM schema_meta WHERE key='graph_review_evidence_provenance_repair_v1'
     `).get() as any
+    const provenanceIndexAuditRow = this.db.prepare(`
+      SELECT value FROM schema_meta WHERE key='graph_review_evidence_provenance_index_integrity_v1'
+    `).get() as any
     let migration: any = {}
     let indexAudit: any = {}
     let provenanceAudit: any = {}
+    let provenanceIndexAudit: any = {}
     try { migration = JSON.parse(String(auditRow?.value || '{}')) } catch {}
     try { indexAudit = JSON.parse(String(indexAuditRow?.value || '{}')) } catch {}
     try { provenanceAudit = JSON.parse(String(provenanceAuditRow?.value || '{}')) } catch {}
+    try { provenanceIndexAudit = JSON.parse(String(provenanceIndexAuditRow?.value || '{}')) } catch {}
+    const provenanceIndexes = this.inspectGraphReviewEvidenceProvenanceIndexes()
     const columnsHealthy = expectedColumns.every(column => columns.includes(column))
     const indexHealthy = /review_id\s*,\s*timestamp\s+desc\s*,\s*source_id\s*,\s*session_id\s*,\s*message_id\s+desc\s*,\s*evidence_key/i.test(String(index))
     return {
       version: 1,
       policy: 'sqlcipher_rows_payload_metadata_only',
-      healthy: columnsHealthy && indexHealthy && orphaned === 0 && payloadArrays === 0,
+      healthy: columnsHealthy && indexHealthy && provenanceIndexes.healthy &&
+        orphaned === 0 && payloadArrays === 0,
       columnsHealthy,
       indexHealthy,
       orphaned,
@@ -9487,7 +9625,15 @@ export class PersonalMemoryStore {
       repairedIndexThisStart: indexAudit.repairedThisStart === true,
       indexRepairsTotal: Number(indexAudit.repairsTotal || 0),
       ...migration,
-      provenanceRepair: provenanceAudit
+      provenanceRepair: {
+        ...provenanceAudit,
+        indexesHealthy: provenanceIndexes.healthy,
+        expectedIndexes: provenanceIndexes.expectedIndexes,
+        installedIndexes: provenanceIndexes.installedIndexes,
+        unhealthyIndexes: provenanceIndexes.unhealthyIndexes,
+        repairedIndexesThisStart: Number(provenanceIndexAudit.repairedIndexesThisStart || 0),
+        indexRepairsTotal: Number(provenanceIndexAudit.repairsTotal || 0)
+      }
     }
   }
 
