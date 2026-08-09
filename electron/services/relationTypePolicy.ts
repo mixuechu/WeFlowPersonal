@@ -14,16 +14,26 @@ export type RelationTypeRelation = {
   updatedAt?: unknown
 }
 
-export function relationTypeViolation(
-  relation: RelationTypeRelation,
+export type RelationEntityTypeIndex = ReadonlyMap<string, string>
+
+export function buildRelationEntityTypeIndex(
   entities: RelationTypeEntity[]
-): string | null {
-  const predicate = String(relation?.predicate || '').trim()
-  if (!PERSON_ONLY_RELATION_PATTERN.test(predicate)) return null
-  const entityTypes = new Map(entities.map(entity => [
+): Map<string, string> {
+  return new Map(entities.map(entity => [
     String(entity.id || ''),
     String(entity.type || '')
   ]))
+}
+
+export function relationTypeViolation(
+  relation: RelationTypeRelation,
+  entities: RelationTypeEntity[] | RelationEntityTypeIndex
+): string | null {
+  const predicate = String(relation?.predicate || '').trim()
+  if (!PERSON_ONLY_RELATION_PATTERN.test(predicate)) return null
+  const entityTypes = Array.isArray(entities)
+    ? buildRelationEntityTypeIndex(entities)
+    : entities
   const subjectType = entityTypes.get(String(relation.subjectId || ''))
   const objectType = entityTypes.get(String(relation.objectId || ''))
   if (subjectType === 'person' && objectType === 'person') return null
@@ -37,8 +47,9 @@ export function quarantineInvalidRelationTypes<T extends RelationTypeRelation>(
 ): { relations: T[]; invalidRelationIds: string[]; changed: number } {
   const invalidRelationIds: string[] = []
   let changed = 0
+  const entityTypes = buildRelationEntityTypeIndex(entities)
   const next = relations.map(relation => {
-    if (!relationTypeViolation(relation, entities)) return relation
+    if (!relationTypeViolation(relation, entityTypes)) return relation
     invalidRelationIds.push(String(relation.id || ''))
     if (relation.status === 'candidate' || relation.status === 'rejected') return relation
     changed += 1

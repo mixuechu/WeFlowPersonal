@@ -81,3 +81,42 @@ test('relation confirmation requires a type-valid correction', () => {
   assert.equal(corrected.after.predicate, '服务对象')
   assert.equal(corrected.changed, true)
 })
+
+test('large relation quarantine builds the entity index once instead of once per relation', () => {
+  const entityCount = 50_000
+  const relationCount = 100_000
+  let entityMapCalls = 0
+  const largeEntities = new Proxy(
+    Array.from({ length: entityCount }, (_, index) => ({
+      id: `entity-${index}`,
+      type: index % 5 === 0 ? 'organization' : 'person'
+    })),
+    {
+      get(target, property, receiver) {
+        if (property === 'map') {
+          return (...args: Parameters<Array<(typeof target)[number]>['map']>) => {
+            entityMapCalls += 1
+            return target.map(...args)
+          }
+        }
+        return Reflect.get(target, property, receiver)
+      }
+    }
+  )
+  const relations = Array.from({ length: relationCount }, (_, index) => ({
+    id: `relation-${index}`,
+    subjectId: `entity-${index % entityCount}`,
+    predicate: index % 2 === 0 ? '朋友' : '服务对象',
+    objectId: `entity-${(index + 1) % entityCount}`,
+    status: 'confirmed',
+    updatedAt: 'before'
+  }))
+  const startedAt = performance.now()
+  const result = quarantineInvalidRelationTypes(relations, largeEntities, 'after')
+  const durationMs = performance.now() - startedAt
+
+  assert.equal(entityMapCalls, 1)
+  assert.equal(result.invalidRelationIds.length, 20_000)
+  assert.equal(result.changed, 20_000)
+  assert.ok(durationMs < 3_000, `indexed 100k-relation pass took ${durationMs.toFixed(1)}ms`)
+})

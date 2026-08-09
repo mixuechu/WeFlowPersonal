@@ -20,6 +20,24 @@ test('legacy entity review recovery uses a bounded full-history SQLCipher query'
   assert.match(store, /JOIN claims claim[\s\S]*JOIN relations relation[\s\S]*JOIN event_participants participant/)
 })
 
+test('startup graph normalization uses batch indexes instead of nested queue and graph scans', () => {
+  const service = read('electron/services/aiAssistantService.ts')
+  const legacyStart = service.indexOf('private ensureLegacyEntityReviews')
+  const legacyEnd = service.indexOf('private quarantinePlaceholderEntities', legacyStart)
+  const invalidStart = service.indexOf('private quarantineInvalidRelations')
+  const invalidEnd = service.indexOf('private saveState', invalidStart)
+  const legacyImplementation = service.slice(legacyStart, legacyEnd)
+  const invalidImplementation = service.slice(invalidStart, invalidEnd)
+
+  assert.match(legacyImplementation, /pendingLegacyEntityIds = new Set/)
+  assert.match(legacyImplementation, /reviewIds = new Set/)
+  assert.doesNotMatch(legacyImplementation, /reviewQueue\.some/)
+  assert.match(invalidImplementation, /relationsById = new Map/)
+  assert.match(invalidImplementation, /entitiesById = new Map/)
+  assert.match(invalidImplementation, /pendingRelationIds = new Set/)
+  assert.doesNotMatch(invalidImplementation, /\.relations\.find|\.entities\.find|reviewQueue\.some/)
+})
+
 test('legacy review evidence keeps complete carrier identity for collision-safe deduplication', () => {
   const policy = read('electron/services/entityTrustPolicy.ts')
   assert.match(policy, /sourceId: String\(item\?\.sourceId \|\| item\?\.source_id \|\| 'legacy'\)/)

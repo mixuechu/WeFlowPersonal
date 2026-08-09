@@ -221,6 +221,7 @@ import {
   quarantinePlaceholderPersonEntities
 } from './placeholderEntityPolicy'
 import {
+  buildRelationEntityTypeIndex,
   quarantineInvalidRelationTypes,
   relationTypeViolation
 } from './relationTypePolicy'
@@ -1326,10 +1327,13 @@ export class AiAssistantService {
   private ensureLegacyEntityReviews(): void {
     const allLegacyEntities = this.state.graph.entities.filter(entity =>
       entity.trustStatus === 'legacy_unverified')
+    const pendingLegacyEntityIds = new Set(this.state.graph.reviewQueue
+      .filter(review => review.kind === 'entity_creation' && review.status === 'pending')
+      .map(review => String(review.entityId || ''))
+      .filter(Boolean))
+    const reviewIds = new Set(this.state.graph.reviewQueue.map(review => String(review.id || '')))
     const legacyEntities = allLegacyEntities.filter(entity =>
-      !this.state.graph.reviewQueue.some(review =>
-        review.kind === 'entity_creation' && review.entityId === entity.id &&
-        review.status === 'pending'))
+      !pendingLegacyEntityIds.has(entity.id))
     const durableEvidence = personalMemoryStore.listLegacyEntityReviewEvidence(
       legacyEntities.map(entity => entity.id),
       12
@@ -1339,9 +1343,6 @@ export class AiAssistantService {
     let reviewsWithoutEvidence = 0
     let recoveredEvidence = 0
     for (const entity of legacyEntities) {
-      if (this.state.graph.reviewQueue.some(review =>
-        review.kind === 'entity_creation' && review.entityId === entity.id &&
-        review.status === 'pending')) continue
       const evidence = [
         ...(durableEvidence.get(entity.id) || [])
       ]
@@ -1351,10 +1352,14 @@ export class AiAssistantService {
         createdAt: entity.createdAt || new Date().toISOString()
       })
       if (review) {
-        if (this.state.graph.reviewQueue.some(existing => existing.id === review.id)) {
-          review.id = `${review.id}_v${Math.max(1, Number(entity.identityVersion || 1))}`
+        const baseReviewId = review.id
+        let suffix = Math.max(1, Number(entity.identityVersion || 1))
+        while (reviewIds.has(review.id)) {
+          review.id = `${baseReviewId}_v${suffix++}`
         }
         this.state.graph.reviewQueue.push(review)
+        reviewIds.add(review.id)
+        pendingLegacyEntityIds.add(entity.id)
         reviewsCreated += 1
         recoveredEvidence += Number(review.evidence?.length || 0)
         if (review.evidence?.length) reviewsWithEvidence += 1
@@ -1390,20 +1395,24 @@ export class AiAssistantService {
       now
     )
     this.state.graph.relations = result.relations
+    const relationsById = new Map(this.state.graph.relations.map(relation => [relation.id, relation]))
+    const entitiesById = new Map(this.state.graph.entities.map(entity => [entity.id, entity]))
+    const entityTypes = buildRelationEntityTypeIndex(this.state.graph.entities)
+    const pendingRelationIds = new Set(this.state.graph.reviewQueue
+      .filter(review => review.kind === 'relation' && review.status === 'pending')
+      .map(review => String(review.relationId || ''))
+      .filter(Boolean))
+    const reviewIds = new Set(this.state.graph.reviewQueue.map(review => String(review.id || '')))
     for (const relationId of result.invalidRelationIds) {
-      const relation = this.state.graph.relations.find(item => item.id === relationId)
+      const relation = relationsById.get(relationId)
       if (!relation || relation.status === 'rejected') continue
-      if (this.state.graph.reviewQueue.some(review =>
-        review.kind === 'relation' && review.relationId === relationId &&
-        review.status === 'pending')) continue
-      const subject = this.state.graph.entities.find(entity =>
-        entity.id === relation.subjectId)?.canonicalName || '未知实体'
-      const object = this.state.graph.entities.find(entity =>
-        entity.id === relation.objectId)?.canonicalName || '未知实体'
-      const violation = relationTypeViolation(relation, this.state.graph.entities)
+      if (pendingRelationIds.has(relationId)) continue
+      const subject = entitiesById.get(relation.subjectId)?.canonicalName || '未知实体'
+      const object = entitiesById.get(relation.objectId)?.canonicalName || '未知实体'
+      const violation = relationTypeViolation(relation, entityTypes)
       let reviewId = `review_rel_type_${relationId}`
       let suffix = 2
-      while (this.state.graph.reviewQueue.some(review => review.id === reviewId)) {
+      while (reviewIds.has(reviewId)) {
         reviewId = `review_rel_type_${relationId}_${suffix++}`
       }
       this.state.graph.reviewQueue.push({
@@ -1416,6 +1425,8 @@ export class AiAssistantService {
         createdAt: now,
         relationId
       })
+      reviewIds.add(reviewId)
+      pendingRelationIds.add(relationId)
     }
   }
 
