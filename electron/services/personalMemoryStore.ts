@@ -8121,13 +8121,17 @@ export class PersonalMemoryStore {
         FROM merge_history history
         JOIN entity_scope scope ON history.target_entity_id=scope.entity_id
         WHERE history.reverted_at IS NULL
-      ), carriers(root_id,message_id) AS (
-        SELECT scope.root_id,evidence.message_id
+      ), carriers(root_id,source_id,session_id,message_id) AS (
+        SELECT scope.root_id,evidence.source_id,evidence.session_id,evidence.message_id
         FROM entity_scope scope JOIN entity_evidence evidence
           ON evidence.entity_id=scope.entity_id
+      ), grouped AS (
+        SELECT root_id,source_id,session_id,message_id
+        FROM carriers WHERE message_id!=''
+        GROUP BY root_id,source_id,session_id,message_id
       )
-      SELECT root_id,COUNT(DISTINCT message_id) AS evidence_total
-      FROM carriers WHERE message_id!=''
+      SELECT root_id,COUNT(*) AS evidence_total
+      FROM grouped
       GROUP BY root_id ORDER BY root_id
     `).all() as Array<{ root_id: string; evidence_total: number }>
     queryCount += 1
@@ -8270,6 +8274,26 @@ export class PersonalMemoryStore {
 
   getGraphSnapshotHydrationStats(): any {
     return { ...this.graphSnapshotHydration }
+  }
+
+  getEntityEvidenceAuthorityStats(): {
+    evidenceRows: number
+    entitiesWithEvidence: number
+    lastEvidenceAt: number | null
+  } {
+    if (!this.db) return { evidenceRows: 0, entitiesWithEvidence: 0, lastEvidenceAt: null }
+    const row = this.db.prepare(`
+      SELECT COUNT(*) AS evidence_rows,
+        COUNT(DISTINCT entity_id) AS entities_with_evidence,
+        MAX(timestamp) AS last_evidence_at
+      FROM entity_evidence
+    `).get() as any
+    const lastEvidenceAt = Number(row?.last_evidence_at || 0)
+    return {
+      evidenceRows: Number(row?.evidence_rows || 0),
+      entitiesWithEvidence: Number(row?.entities_with_evidence || 0),
+      lastEvidenceAt: lastEvidenceAt > 0 ? lastEvidenceAt : null
+    }
   }
 
   getRelationEvidenceCounts(): Map<string, number> {

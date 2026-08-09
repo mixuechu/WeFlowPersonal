@@ -4190,7 +4190,7 @@ test('batched graph hydration counts identity evidence across an active merge ch
       entity_id,source_id,message_id,session_id,timestamp,sender,excerpt,evidence_kind
     ) VALUES(?,?,?,?,?,?,?,?)
   `).run(
-    'hydration-merge-source', 'wechat', 'wechat:merge-room:source-evidence',
+    'hydration-merge-source', 'wechat', 'shared-cross-source-message',
     'merge-room', 1_700_000_001, '合并前身份', '来源身份原文', 'identity'
   )
   database.prepare(`
@@ -4198,7 +4198,7 @@ test('batched graph hydration counts identity evidence across an active merge ch
       entity_id,source_id,message_id,session_id,timestamp,sender,excerpt,evidence_kind
     ) VALUES(?,?,?,?,?,?,?,?)
   `).run(
-    'hydration-merge-target', 'wechat', 'wechat:merge-room:target-evidence',
+    'hydration-merge-target', 'mail', 'shared-cross-source-message',
     'merge-room', 1_700_000_002, '合并后身份', '目标身份原文', 'identity'
   )
   database.prepare(`
@@ -4223,6 +4223,24 @@ test('batched graph hydration counts identity evidence across an active merge ch
   assert.equal(store.getGraphSnapshotHydrationStats().queryCount, 8)
   assert.equal(store.getGraphSnapshotHydrationStats().entityEvidenceKeys, 0)
   assert.equal(store.getGraphSnapshotHydrationStats().entityEvidenceTotalKeys, 2)
+  assert.deepEqual(store.getEntityEvidenceAuthorityStats(), {
+    evidenceRows: 2,
+    entitiesWithEvidence: 2,
+    lastEvidenceAt: 1_700_000_002
+  })
+  database.prepare(`
+    INSERT INTO entity_evidence(
+      entity_id,source_id,message_id,session_id,timestamp,sender,excerpt,evidence_kind
+    ) VALUES(?,?,?,?,?,?,?,?)
+  `).run(
+    'hydration-merge-target', 'calendar', 'shared-cross-source-message',
+    'merge-room', 1_700_000_003, '合并后身份', '运行期新增日历依据', 'identity_anchor'
+  )
+  assert.deepEqual(store.getEntityEvidenceAuthorityStats(), {
+    evidenceRows: 3,
+    entitiesWithEvidence: 2,
+    lastEvidenceAt: 1_700_000_003
+  })
 }))
 
 test('multi-year identity evidence stays count-only during graph startup', () => withStore(store => {

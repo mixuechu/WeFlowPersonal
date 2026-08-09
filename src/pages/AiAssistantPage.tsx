@@ -15866,6 +15866,7 @@ function AiAssistantPage() {
               <div className="assistant-recovery-current">
                 <span>图谱实体 <b>{Number(memoryDiagnostics.graphEntityEvidenceHotset.entities || 0).toLocaleString()}</b></span>
                 <span>权威消息键 <b>{Number(memoryDiagnostics.graphEntityEvidenceHotset.authoritativeMessageIds || 0).toLocaleString()}</b></span>
+                <span>有身份依据实体 <b>{Number(memoryDiagnostics.graphEntityEvidenceHotset.entitiesWithAuthoritativeEvidence || 0).toLocaleString()}</b></span>
                 <span>当前临时消息键 <b>{Number(memoryDiagnostics.graphEntityEvidenceHotset.inMemoryMessageIds || 0).toLocaleString()}</b></span>
                 <span>启动单实体消息键 <b>{Number(memoryDiagnostics.graphEntityEvidenceHotset.startupHotLimitPerEntity ?? 0)}</b></span>
                 <span>修改临时上限 <b>{Number(memoryDiagnostics.graphEntityEvidenceHotset.mutationHotLimitPerEntity ?? 500)}</b></span>

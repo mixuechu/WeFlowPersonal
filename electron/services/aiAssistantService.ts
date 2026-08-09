@@ -5907,6 +5907,7 @@ export class AiAssistantService {
       (total, entity) => total + Number(entity.evidenceMessageIds?.length || 0),
       0
     )
+    const entityEvidenceAuthority = personalMemoryStore.getEntityEvidenceAuthorityStats()
     return {
       ...databaseDiagnostics,
       backups: annotatedBackups,
@@ -5939,9 +5940,9 @@ export class AiAssistantService {
         mutationHotLimitPerEntity: ENTITY_EVIDENCE_MESSAGE_HOT_LIMIT,
         entities: this.state.graph.entities.length,
         inMemoryMessageIds: entityEvidenceMessageRows,
-        authoritativeMessageIds: Number(
-          personalMemoryStore.getGraphSnapshotHydrationStats().entityEvidenceTotalKeys || 0
-        ),
+        authoritativeMessageIds: entityEvidenceAuthority.evidenceRows,
+        entitiesWithAuthoritativeEvidence: entityEvidenceAuthority.entitiesWithEvidence,
+        lastAuthoritativeEvidenceAt: entityEvidenceAuthority.lastEvidenceAt,
         entitiesAtLimit: this.state.graph.entities.filter(entity =>
           Number(entity.evidenceMessageIds?.length || 0) >= ENTITY_EVIDENCE_MESSAGE_HOT_LIMIT).length,
         authoritativeEvidence: 'sqlcipher_direct_identity_and_active_merge_chain',
