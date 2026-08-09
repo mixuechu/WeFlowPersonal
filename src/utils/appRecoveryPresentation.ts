@@ -11,6 +11,7 @@ const EXIT_REASON_LABELS: Record<string, string> = {
   update_restart: '更新后重启',
   forced_timeout: '安全退出超时',
   uncaught_exception: '未捕获异常',
+  shutdown_interrupted: '安全退出途中中断',
   unknown_interruption: '进程意外中断或设备断电'
 }
 

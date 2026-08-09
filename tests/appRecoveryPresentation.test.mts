@@ -15,6 +15,7 @@ import {
 test('app recovery presentation translates persisted machine states into user-facing Chinese', () => {
   assert.equal(appRunStageLabel('services_ready'), '全部服务已就绪')
   assert.equal(appRunExitReasonLabel('unknown_interruption'), '进程意外中断或设备断电')
+  assert.equal(appRunExitReasonLabel('shutdown_interrupted'), '安全退出途中中断')
   assert.equal(appRunExitReasonLabel(undefined, true), '正常结束')
   assert.equal(appRunIncidentLabel('renderer_gone'), '界面进程退出')
   assert.equal(appRunShutdownStepLabel('wcdb-worker-stop'), '微信数据库停止')

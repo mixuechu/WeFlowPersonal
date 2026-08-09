@@ -8,6 +8,7 @@ export type AppRunExitReason =
   | 'update_restart'
   | 'forced_timeout'
   | 'uncaught_exception'
+  | 'shutdown_interrupted'
   | 'unknown_interruption'
 
 export type AppRunIncident = {
@@ -51,7 +52,10 @@ type AppRunLedger = {
 const emptyLedger = (): AppRunLedger => ({ schemaVersion: 1, current: null, history: [] })
 
 const SESSION_STAGES = new Set<AppRunSession['stage']>(['starting', 'ready', 'services_ready', 'shutting_down', 'ended'])
-const EXIT_REASONS = new Set<AppRunExitReason>(['normal', 'update_restart', 'forced_timeout', 'uncaught_exception', 'unknown_interruption'])
+const EXIT_REASONS = new Set<AppRunExitReason>([
+  'normal', 'update_restart', 'forced_timeout', 'uncaught_exception',
+  'shutdown_interrupted', 'unknown_interruption'
+])
 const INCIDENT_KINDS = new Set<AppRunIncident['kind']>(['renderer_gone', 'child_process_gone', 'uncaught_exception', 'unhandled_rejection'])
 const SHUTDOWN_STEP_STATUSES = new Set<AppRunShutdownStep['status']>(['running', 'completed', 'failed'])
 
@@ -151,14 +155,15 @@ export class AppRunRecoveryService {
   start(version: string, now = new Date()): AppRunSession {
     this.ledger = this.readLedger()
     if (this.ledger.current) {
-      const expectedExit = this.ledger.current.stage === 'shutting_down'
-        && ['normal', 'update_restart'].includes(this.ledger.current.exitReason || '')
+      const shutdownInterrupted = this.ledger.current.stage === 'shutting_down'
       const interrupted: AppRunSession = {
         ...this.ledger.current,
         stage: 'ended',
         endedAt: now.toISOString(),
-        exitReason: expectedExit ? this.ledger.current.exitReason : this.ledger.current.exitReason || 'unknown_interruption',
-        cleanExit: expectedExit
+        exitReason: shutdownInterrupted
+          ? 'shutdown_interrupted'
+          : this.ledger.current.exitReason || 'unknown_interruption',
+        cleanExit: false
       }
       this.ledger.history.unshift(interrupted)
     }
@@ -244,7 +249,10 @@ export class AppRunRecoveryService {
     })
   }
 
-  finishShutdown(reason?: Exclude<AppRunExitReason, 'unknown_interruption'>, now = new Date()): void {
+  finishShutdown(
+    reason?: Exclude<AppRunExitReason, 'unknown_interruption' | 'shutdown_interrupted'>,
+    now = new Date()
+  ): void {
     this.stopHeartbeat()
     if (!this.ledger.current) return
     const completed: AppRunSession = {
@@ -294,6 +302,7 @@ export class AppRunRecoveryService {
     const previousExpectedExit = previous?.exitReason === 'normal' || previous?.exitReason === 'update_restart'
     const recoveredFromInterruption = !previousExpectedExit && (previous?.exitReason === 'unknown_interruption'
       || previous?.exitReason === 'uncaught_exception'
+      || previous?.exitReason === 'shutdown_interrupted'
       || previous?.exitReason === 'forced_timeout')
     return {
       current: this.ledger.current ? { ...this.ledger.current } : null,
@@ -304,7 +313,9 @@ export class AppRunRecoveryService {
         ? '尚无历史运行记录'
         : previous.cleanExit || previousExpectedExit
           ? '上次运行正常结束'
-          : previous.exitReason === 'unknown_interruption'
+          : previous.exitReason === 'shutdown_interrupted'
+            ? '上次安全退出未完成，已按持久化 checkpoint 恢复'
+            : previous.exitReason === 'unknown_interruption'
             ? '检测到上次进程未完成退出，已按持久化 checkpoint 恢复'
             : previous.exitReason === 'forced_timeout'
               ? '上次退出超时，已按持久化 checkpoint 恢复'

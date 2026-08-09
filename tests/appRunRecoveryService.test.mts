@@ -71,7 +71,7 @@ test('shutdown steps retain the running phase when a later forced exit interrupt
   ])
 }))
 
-test('a persisted shutdown intent is clean even when Electron exits before async cleanup finishes', () => withTempDirectory(directory => {
+test('a persisted shutdown intent remains interrupted until async cleanup actually finishes', () => withTempDirectory(directory => {
   const service = new AppRunRecoveryService(directory)
   service.start('5.1.0', new Date('2026-07-29T20:00:00.000Z'))
   service.beginShutdown('normal', new Date('2026-07-29T20:05:00.000Z'))
@@ -80,10 +80,33 @@ test('a persisted shutdown intent is clean even when Electron exits before async
   const next = new AppRunRecoveryService(directory)
   next.start('5.1.0', new Date('2026-07-29T20:06:00.000Z'))
   const diagnostics = next.getDiagnostics()
-  assert.equal(diagnostics.previous?.cleanExit, true)
-  assert.equal(diagnostics.previous?.exitReason, 'normal')
-  assert.equal(diagnostics.recoveredFromInterruption, false)
-  assert.equal(diagnostics.recoveryMessage, '上次运行正常结束')
+  assert.equal(diagnostics.previous?.cleanExit, false)
+  assert.equal(diagnostics.previous?.exitReason, 'shutdown_interrupted')
+  assert.equal(diagnostics.recoveredFromInterruption, true)
+  assert.equal(diagnostics.recoveryMessage, '上次安全退出未完成，已按持久化 checkpoint 恢复')
+  next.dispose()
+}))
+
+test('an interrupted shutdown preserves the last completed and running cleanup steps', () => withTempDirectory(directory => {
+  const service = new AppRunRecoveryService(directory)
+  service.start('5.1.0', new Date('2026-07-29T20:00:00.000Z'))
+  service.beginShutdown('normal', new Date('2026-07-29T20:05:00.000Z'))
+  service.startShutdownStep('http-server-stop', new Date('2026-07-29T20:05:00.100Z'))
+  service.finishShutdownStep(
+    'http-server-stop', 'completed', undefined,
+    new Date('2026-07-29T20:05:00.200Z')
+  )
+  service.startShutdownStep('wcdb-worker-stop', new Date('2026-07-29T20:05:00.300Z'))
+  service.dispose()
+
+  const next = new AppRunRecoveryService(directory)
+  next.start('5.1.0', new Date('2026-07-29T20:06:00.000Z'))
+  const previous = next.getDiagnostics().previous
+  assert.equal(previous?.exitReason, 'shutdown_interrupted')
+  assert.deepEqual(previous?.shutdownSteps?.map(step => [step.name, step.status]), [
+    ['http-server-stop', 'completed'],
+    ['wcdb-worker-stop', 'running']
+  ])
   next.dispose()
 }))
 
