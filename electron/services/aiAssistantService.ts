@@ -391,6 +391,7 @@ import {
   getFullIdentityScanSchedule,
   identityPairKey,
   listIndexedIdentityCandidates,
+  planStaleGraphIdentityReviews,
   planStaleVectorIdentityReviews,
   type IdentityCandidateLookup,
   isNegativeDecisionCurrent
@@ -589,6 +590,7 @@ type AssistantState = {
       contextualSkippedHubs: number
       contextualPairCandidates: number
       contextualTruncated: boolean
+      contextualRetiredCandidates: number
       fullPairCandidates: number
       fullLargestNameBucket: number
       fullTruncated: boolean
@@ -666,6 +668,7 @@ const EMPTY_STATE: AssistantState = {
     lastFullScanAt: null, lastRunAt: null, lastMode: null, lastCandidateCount: 0,
     contextualRelations: 0, contextualEligibleNeighbors: 0, contextualSkippedHubs: 0,
     contextualPairCandidates: 0, contextualTruncated: false,
+    contextualRetiredCandidates: 0,
     fullPairCandidates: 0, fullLargestNameBucket: 0, fullTruncated: false,
     decisionLookupPairs: 0, decisionLookupQueries: 0, decisionLookupDurationMs: 0,
     decisionLookupAt: null,
@@ -3124,6 +3127,22 @@ export class AiAssistantService {
     this.state.graph.identityScan.contextualPairCandidates = graphPlan.stats.pairCandidates
     this.state.graph.identityScan.contextualTruncated = graphPlan.stats.truncated
     this.runVectorIdentityScan(now, people, byId, reviewsById)
+    const staleGraphReviewIds = planStaleGraphIdentityReviews(
+      this.state.graph.reviewQueue,
+      new Set(suggestions.map(suggestion => identityPairKey(
+        suggestion.leftId,
+        suggestion.rightId
+      ))),
+      !graphPlan.stats.truncated && graphPlan.stats.skippedHighDegreeNeighbors === 0
+    )
+    if (staleGraphReviewIds.length) {
+      const staleIds = new Set(staleGraphReviewIds)
+      this.state.graph.reviewQueue = this.state.graph.reviewQueue.filter(
+        review => !staleIds.has(review.id)
+      )
+      for (const reviewId of staleGraphReviewIds) reviewsById.delete(reviewId)
+    }
+    this.state.graph.identityScan.contextualRetiredCandidates = staleGraphReviewIds.length
     let candidates = 0
     const identityDecisions = this.loadIdentityDecisionIndex(
       suggestions.map(suggestion => identityPairKey(suggestion.leftId, suggestion.rightId)),

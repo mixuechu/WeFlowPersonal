@@ -7,6 +7,7 @@ import {
   buildGraphIdentitySuggestionPlan,
   buildGraphIdentitySuggestions,
   buildNameIdentityPairPlan,
+  planStaleGraphIdentityReviews,
   planStaleVectorIdentityReviews
 } from '../electron/services/identityDisambiguation.ts'
 
@@ -152,6 +153,8 @@ test('identity scan diagnostics expose hub exclusions and truncation in the UI',
   assert.match(page, /本轮撤销过期纯向量候选/)
   assert.match(page, /本机人物档案向量相似建议/)
   assert.match(page, /共同关系邻居建议/)
+  assert.match(service, /planStaleGraphIdentityReviews\([\s\S]*skippedHighDegreeNeighbors === 0/)
+  assert.match(page, /本轮撤销过期纯关系候选/)
   assert.match(page, /向量候选已达上限/)
   assert.match(page, /本轮向量进度未提交/)
 })
@@ -187,6 +190,36 @@ test('complete vector rescans retire only unsupported pure-vector identity revie
   assert.deepEqual(planStaleVectorIdentityReviews(
     reviews,
     new Set(['a']),
+    new Set(['a|c']),
+    false
+  ), [])
+})
+
+test('complete contextual scans retire only unsupported pure-graph identity reviews', () => {
+  const reviews = [{
+    id: 'stale-graph', kind: 'possible_duplicate', status: 'pending',
+    leftEntityId: 'a', rightEntityId: 'b', candidateSource: 'graph_neighbors',
+    candidateSignals: [{ source: 'graph_neighbors' }]
+  }, {
+    id: 'current-graph', kind: 'possible_duplicate', status: 'pending',
+    leftEntityId: 'a', rightEntityId: 'c', candidateSource: 'graph_neighbors',
+    candidateSignals: [{ source: 'graph_neighbors' }]
+  }, {
+    id: 'graph-and-name', kind: 'possible_duplicate', status: 'pending',
+    leftEntityId: 'a', rightEntityId: 'd', candidateSource: 'graph_neighbors',
+    candidateSignals: [{ source: 'exact_name' }, { source: 'graph_neighbors' }]
+  }, {
+    id: 'resolved-graph', kind: 'possible_duplicate', status: 'confirmed',
+    leftEntityId: 'a', rightEntityId: 'e', candidateSource: 'graph_neighbors',
+    candidateSignals: [{ source: 'graph_neighbors' }]
+  }]
+  assert.deepEqual(planStaleGraphIdentityReviews(
+    reviews,
+    new Set(['a|c']),
+    true
+  ), ['stale-graph'])
+  assert.deepEqual(planStaleGraphIdentityReviews(
+    reviews,
     new Set(['a|c']),
     false
   ), [])

@@ -160,6 +160,33 @@ export function planStaleVectorIdentityReviews(
   })
 }
 
+export function planStaleGraphIdentityReviews(
+  reviews: Array<{
+    id?: string
+    kind?: string
+    status?: string
+    leftEntityId?: string
+    rightEntityId?: string
+    candidateSource?: string
+    candidateSignals?: Array<{ source?: string }>
+  }>,
+  currentPairKeys: ReadonlySet<string>,
+  complete: boolean
+): string[] {
+  if (!complete) return []
+  return reviews.flatMap(review => {
+    const leftId = String(review.leftEntityId || '')
+    const rightId = String(review.rightEntityId || '')
+    const signals = Array.isArray(review.candidateSignals) ? review.candidateSignals : []
+    const pureGraph = review.candidateSource === 'graph_neighbors' &&
+      (!signals.length || signals.every(signal => signal?.source === 'graph_neighbors'))
+    if (!review.id || review.kind !== 'possible_duplicate' || review.status !== 'pending' ||
+      !leftId || !rightId || !pureGraph ||
+      currentPairKeys.has(identityPairKey(leftId, rightId))) return []
+    return [String(review.id)]
+  })
+}
+
 export function isNegativeDecisionCurrent(
   decision: any,
   left: IdentityCandidateEntity,
