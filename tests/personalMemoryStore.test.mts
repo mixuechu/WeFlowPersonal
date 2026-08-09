@@ -7728,6 +7728,15 @@ test('review inbox aggregation stays indexed and repairs index drift on restart'
       sql: `SELECT COUNT(*) FROM review_queue WHERE status='pending'`,
       args: []
     }, {
+      index: 'idx_review_queue_kind_entity_status_time',
+      sql: `SELECT id FROM review_queue
+        WHERE kind=?
+          AND CASE WHEN json_valid(payload_json)=1
+            THEN COALESCE(json_extract(payload_json,'$.entityId'),'') ELSE '' END=?
+          AND status=?
+        ORDER BY COALESCE(resolved_at,created_at) DESC,id ASC`,
+      args: ['entity_creation', 'entity-id', 'pending']
+    }, {
       index: 'idx_evidence_claim_role',
       sql: `SELECT 1 FROM evidence WHERE claim_id=? AND evidence_role='contradiction'`,
       args: ['claim-id']
@@ -7746,13 +7755,13 @@ test('review inbox aggregation stays indexed and repairs index drift on restart'
       assert.match(details, new RegExp(plan.index))
     }
     assert.deepEqual(first.getReviewInboxIndexHealth(), {
-      version: 1,
+      version: 2,
       checkedAt: first.getReviewInboxIndexHealth().checkedAt,
       repairedThisStart: true,
-      repairedIndexesThisStart: 7,
+      repairedIndexesThisStart: 8,
       repairsTotal: 1,
-      expectedIndexes: 7,
-      installedIndexes: 7,
+      expectedIndexes: 8,
+      installedIndexes: 8,
       healthy: true,
       unhealthyIndexes: []
     })
@@ -7761,6 +7770,9 @@ test('review inbox aggregation stays indexed and repairs index drift on restart'
       CREATE INDEX idx_evidence_claim_role ON evidence(claim_id,timestamp);
       DROP INDEX idx_evidence_event_role;
       CREATE INDEX idx_evidence_event_role ON evidence(event_id,timestamp);
+      DROP INDEX idx_review_queue_kind_entity_status_time;
+      CREATE INDEX idx_review_queue_kind_entity_status_time
+        ON review_queue(kind,status);
     `)
     assert.equal(first.getReviewInboxIndexHealth().healthy, false)
     assert.equal(first.getDiagnostics().reviewInboxIndexesHealthy, false)
@@ -7782,7 +7794,11 @@ test('review inbox aggregation stays indexed and repairs index drift on restart'
     database.exec = originalExec
     assert.deepEqual(
       first.getReviewInboxIndexHealth().unhealthyIndexes,
-      ['idx_evidence_claim_role', 'idx_evidence_event_role']
+      [
+        'idx_review_queue_kind_entity_status_time',
+        'idx_evidence_claim_role',
+        'idx_evidence_event_role'
+      ]
     )
     first.close()
 
@@ -7791,9 +7807,9 @@ test('review inbox aggregation stays indexed and repairs index drift on restart'
       reopened.initialize(databasePath)
       const health = reopened.getReviewInboxIndexHealth()
       assert.equal(health.healthy, true)
-      assert.equal(health.installedIndexes, 7)
+      assert.equal(health.installedIndexes, 8)
       assert.equal(health.repairedThisStart, true)
-      assert.equal(health.repairedIndexesThisStart, 2)
+      assert.equal(health.repairedIndexesThisStart, 3)
       assert.equal(health.repairsTotal, 2)
       assert.deepEqual(health.unhealthyIndexes, [])
       const diagnostics = reopened.getDiagnostics()

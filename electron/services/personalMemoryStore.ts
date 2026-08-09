@@ -2282,6 +2282,7 @@ export class PersonalMemoryStore {
     table: string
     columns: string[]
     where?: string
+    sql?: string
   }> {
     return [{
       name: 'idx_claims_status',
@@ -2299,6 +2300,19 @@ export class PersonalMemoryStore {
       name: 'idx_review_queue_status',
       table: 'review_queue',
       columns: ['status']
+    }, {
+      name: 'idx_review_queue_kind_entity_status_time',
+      table: 'review_queue',
+      columns: [],
+      sql: `CREATE INDEX idx_review_queue_kind_entity_status_time
+        ON review_queue(
+          kind,
+          CASE WHEN json_valid(payload_json)=1
+            THEN COALESCE(json_extract(payload_json,'$.entityId'),'') ELSE '' END,
+          status,
+          COALESCE(resolved_at,created_at) DESC,
+          id ASC
+        )`
     }, {
       name: 'idx_evidence_claim_role',
       table: 'evidence',
@@ -2337,17 +2351,24 @@ export class PersonalMemoryStore {
         SELECT sql FROM sqlite_master WHERE type='index' AND name=?
       `).get(definition.name) as any
       if (row?.sql) installedIndexes += 1
-      const columns = row?.sql
+      const columns = row?.sql && !definition.sql
         ? (this.db.prepare(`PRAGMA index_info(${definition.name})`).all() as Array<{ name: string }>)
           .map(item => item.name)
         : []
       const sql = String(row?.sql || '').toLowerCase().replace(/\s+/g, ' ')
-      const columnsHealthy = JSON.stringify(columns) === JSON.stringify(definition.columns)
-      const tableHealthy = sql.includes(`on ${definition.table}(`)
-      const whereHealthy = definition.where
+      const expectedSql = String(definition.sql || '').toLowerCase().replace(/;/g, '')
+        .replace(/\s+/g, ' ').trim()
+      const actualSql = sql.replace(/;/g, '').trim()
+      const exactSqlHealthy = definition.sql ? actualSql === expectedSql : true
+      const columnsHealthy = definition.sql ||
+        JSON.stringify(columns) === JSON.stringify(definition.columns)
+      const tableHealthy = definition.sql || sql.includes(`on ${definition.table}(`)
+      const whereHealthy = definition.sql || (definition.where
         ? sql.includes(`where ${definition.where}`)
-        : !sql.includes(' where ')
-      if (!columnsHealthy || !tableHealthy || !whereHealthy) unhealthyIndexes.push(definition.name)
+        : !sql.includes(' where '))
+      if (!exactSqlHealthy || !columnsHealthy || !tableHealthy || !whereHealthy) {
+        unhealthyIndexes.push(definition.name)
+      }
     }
     return {
       expectedIndexes: definitions.length,
@@ -2371,9 +2392,11 @@ export class PersonalMemoryStore {
       for (const definition of this.reviewInboxIndexDefinitions()) {
         if (!unhealthy.has(definition.name)) continue
         statements.push(`DROP INDEX IF EXISTS ${definition.name};`)
-        statements.push(`CREATE INDEX ${definition.name}
-          ON ${definition.table}(${definition.columns.join(',')})
-          ${definition.where ? `WHERE ${definition.where}` : ''};`)
+        statements.push(definition.sql
+          ? `${definition.sql};`
+          : `CREATE INDEX ${definition.name}
+            ON ${definition.table}(${definition.columns.join(',')})
+            ${definition.where ? `WHERE ${definition.where}` : ''};`)
       }
       this.db.transaction(() => {
         this.db!.exec(statements.join('\n'))
@@ -2382,7 +2405,7 @@ export class PersonalMemoryStore {
     const after = this.inspectReviewInboxIndexes()
     const checkedAt = new Date().toISOString()
     const audit = {
-      version: 1,
+      version: 2,
       checkedAt,
       ...after,
       repairedThisStart: !before.healthy,
@@ -2398,14 +2421,14 @@ export class PersonalMemoryStore {
 
   getReviewInboxIndexHealth(): any {
     const live = this.inspectReviewInboxIndexes()
-    if (!this.db) return { version: 1, ...live, repairsTotal: 0 }
+    if (!this.db) return { version: 2, ...live, repairsTotal: 0 }
     const row = this.db.prepare(`
       SELECT value,updated_at FROM schema_meta WHERE key='review_inbox_index_integrity'
     `).get() as any
     let audit: any = {}
     try { audit = JSON.parse(String(row?.value || '{}')) } catch {}
     return {
-      version: 1,
+      version: 2,
       checkedAt: String(audit.checkedAt || row?.updated_at || ''),
       repairedThisStart: Boolean(audit.repairedThisStart),
       repairedIndexesThisStart: Number(audit.repairedIndexesThisStart || 0),
@@ -8885,16 +8908,32 @@ export class PersonalMemoryStore {
           : ` AND status='confirmed' AND json_valid(payload_json)=1
             AND json_extract(payload_json,'$.resolutionActor')='user'
             AND NOT ${correctedOutcomeSql}`
+    const scopeConditions: string[] = ['1=1']
+    const scopeParams: string[] = []
+    if (kind) {
+      scopeConditions.push('kind=?')
+      scopeParams.push(kind)
+    }
+    if (reviewId) {
+      scopeConditions.push('id=?')
+      scopeParams.push(reviewId)
+    }
+    if (entityId) {
+      scopeConditions.push(`CASE WHEN json_valid(payload_json)=1
+        THEN COALESCE(json_extract(payload_json,'$.entityId'),'') ELSE '' END=?`)
+      scopeParams.push(entityId)
+    }
+    if (query) {
+      scopeConditions.push(`instr(lower(
+        title || char(0) || detail || char(0) || payload_json
+      ), ?) > 0`)
+      scopeParams.push(query)
+    }
     const scopeSql = `
       FROM review_queue
-      WHERE (?='' OR kind=?)
-        AND (?='' OR id=?)
-        AND (?='' OR CASE WHEN json_valid(payload_json)=1
-          THEN COALESCE(json_extract(payload_json,'$.entityId'),'') ELSE '' END=?)
-        AND (?='' OR instr(lower(title || char(0) || detail || char(0) || payload_json), ?) > 0)
-        ${calibrationOutcomeSql}
+      WHERE ${scopeConditions.join(' AND ')}
+      ${calibrationOutcomeSql}
     `
-    const scopeParams = [kind, kind, reviewId, reviewId, entityId, entityId, query, query]
     const countRows = this.db.prepare(`
       SELECT CASE WHEN status='pending' THEN 'pending' ELSE 'resolved' END AS bucket, COUNT(*) AS count
       ${scopeSql}
