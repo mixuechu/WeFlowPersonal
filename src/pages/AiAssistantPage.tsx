@@ -13959,7 +13959,16 @@ function AiAssistantPage() {
               })()}
             </article>)}
             {reviewPage.status === 'loading' && <div className="assistant-empty">正在读取符合条件的审阅记录…</div>}
-            {reviewPage.status === 'error' && <div className="assistant-empty">审阅记录读取失败：{reviewPage.error}</div>}
+            {reviewPage.status === 'error' && <div className="assistant-task-load-failure" role="alert">
+              <strong>{visibleReviews.length ? '更多审阅记录读取失败' : '审阅记录读取失败'}</strong>
+              <span>{reviewPage.error}。{visibleReviews.length
+                ? ` 已加载的 ${visibleReviews.length} 条仍可处理，但当前尚未读完。`
+                : ' 当前不会把读取失败解释为“没有待处理候选”。'}</span>
+              <button type="button" disabled={reviewLoadingMore} onClick={() => {
+                if (visibleReviews.length) void loadMoreReviews()
+                else setReviewRefreshKey(value => value + 1)
+              }}>{reviewLoadingMore ? '正在重试…' : '立即重试'}</button>
+            </div>}
             {reviewPage.status === 'ready' && !visibleReviews.length && <div className="assistant-empty">{reviewStatusFilter === 'pending' ? '当前没有符合筛选条件的待处理候选。' : '当前没有符合筛选条件的审阅历史。'}</div>}
             {reviewPage.status === 'ready' && visibleReviews.length > 0 && <div className="assistant-review-page-status">
               <small>已加载 {visibleReviews.length} / {reviewPage.total} 条符合条件的记录；筛选和排序由本机后端执行。
