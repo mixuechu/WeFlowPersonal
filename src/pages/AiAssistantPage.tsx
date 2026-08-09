@@ -1362,6 +1362,7 @@ function AiAssistantPage() {
     useState<ReviewCalibrationOutcomeFilter>('')
   const [focusedReviewId, setFocusedReviewId] = useState('')
   const [focusedReviewEntityId, setFocusedReviewEntityId] = useState('')
+  const [focusedReviewEntityName, setFocusedReviewEntityName] = useState('')
   const reviewContextKey = JSON.stringify([
     reviewStatusFilter,
     reviewKindFilter,
@@ -5948,6 +5949,7 @@ function AiAssistantPage() {
   ) => {
     setFocusedReviewId('')
     setFocusedReviewEntityId(target.id)
+    setFocusedReviewEntityName(target.canonicalName)
     clearReviewReturnTarget()
     setReviewStatusFilter(target.trustStatus === 'candidate' ? 'pending' : 'all')
     setReviewKindFilter('entity_creation')
@@ -13118,6 +13120,19 @@ function AiAssistantPage() {
               <button type="button" onClick={() => returnToBlockedRelationReview()}>
                 返回原关系候选
               </button>
+            </div>}
+            {focusedReviewEntityId && <div className="assistant-review-note">
+              <b>精确身份审阅范围：</b>
+              <span>当前只显示“{focusedReviewEntityName || '未命名实体'}”对应的实体存在与名称记录；普通关键词框不会暴露或代替此范围。</span>
+              <small title={focusedReviewEntityId}>
+                稳定 ID：{compactReviewSourceId(focusedReviewEntityId)}
+              </small>
+              <button type="button" onClick={() => {
+                setFocusedReviewEntityId('')
+                setFocusedReviewEntityName('')
+                setBlockedIdentityReviewReturn(null)
+                setMessage('已退出精确身份范围，返回当前实体审阅档案。')
+              }}>查看全部实体存在与名称档案</button>
             </div>}
             <div className="assistant-review-filters">
               <div>
