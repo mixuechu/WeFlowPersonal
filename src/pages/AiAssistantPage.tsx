@@ -15239,8 +15239,8 @@ function AiAssistantPage() {
               <button onClick={() => setProjectMemoryRefreshKey(value => value + 1)}>重试</button>
             </div>}
             {!selectedProject.entityId && <div className="assistant-query-plan">
-              这是尚未形成可信项目实体的派生项目；当前仅展示由明确任务项目字段和保守名称规则聚合的内容，
-              不会用模糊名称跨项目分页，以免把同名项目混在一起。
+              这是尚未形成可信项目实体的派生项目；当前只展示明确写入待办“项目”字段的任务、进度和风险。
+              在你确认项目实体前，系统不会按名称猜测并吸收事实、关系或事件，以免把同名项目和普通消息混在一起。
             </div>}
             <div className="assistant-dossier-grid">
               <section>

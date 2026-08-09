@@ -5438,7 +5438,7 @@ export class AiAssistantService {
       entity.id === id && entity.type === 'project' && isTrustedEntity(entity))
     const memoryFeed = projectEntity
       ? personalMemoryStore.getEntityMemory(id, 1, true)
-      : personalMemoryStore.getMemoryFeed(500, false)
+      : { claims: [], events: [] }
     const boundedProjectRelations = projectEntity
       ? []
       : this.state.graph.relations
@@ -5523,12 +5523,12 @@ export class AiAssistantService {
       payloadPolicy: {
         version: 'project-dossier-v2',
         evidence: 'bounded',
-        memoryScope: projectEntity ? 'sql_entity_first' : 'derived_name_fallback',
-        claimLimit: projectEntity ? 0 : 500,
-        eventLimit: projectEntity ? 0 : 500,
+        memoryScope: projectEntity ? 'sql_entity_first' : 'task_field_only_until_entity_confirmed',
+        claimLimit: 0,
+        eventLimit: 0,
         loadedOnDemand: true,
         taskDirectory: 'paginated_40',
-        structuredMemoryDirectory: projectEntity ? 'authoritative_paginated' : 'derived_fallback'
+        structuredMemoryDirectory: projectEntity ? 'authoritative_paginated' : 'blocked_until_entity_confirmed'
       }
     }
   }
