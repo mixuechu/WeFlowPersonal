@@ -536,9 +536,9 @@ export class PersonalMemoryStore {
     triggerRepairedThisStart: false
   }
   private graphSnapshotHydration = {
-    version: 'graph-snapshot-batch-v4',
-    strategy: 'fixed_eight_queries_relation_and_review_counts_only',
-    entityEvidencePolicy: 'direct_identity_and_active_merge_chain',
+    version: 'graph-snapshot-batch-v5',
+    strategy: 'fixed_eight_queries_all_evidence_counts_only',
+    entityEvidencePolicy: 'sqlcipher_authoritative_counts_startup_keys_zero',
     structuredCarrierCopies: 0,
     queryCount: 0,
     durationMs: 0,
@@ -550,6 +550,7 @@ export class PersonalMemoryStore {
     aliasRows: 0,
     identityRows: 0,
     entityEvidenceKeys: 0,
+    entityEvidenceTotalKeys: 0,
     relationEvidenceRows: 0,
     relationEvidenceTotalRows: 0,
     reviewEvidenceRows: 0,
@@ -8112,7 +8113,7 @@ export class PersonalMemoryStore {
       ORDER BY identity.entity_id,identity.platform,identity.account_id
     `).all() as any[]
     queryCount += 1
-    const entityEvidenceRows = this.db.prepare(`
+    const entityEvidenceCountRows = this.db.prepare(`
       WITH RECURSIVE entity_scope(root_id,entity_id) AS (
         SELECT id,id FROM entities WHERE deleted_at IS NULL
         UNION
@@ -8120,23 +8121,15 @@ export class PersonalMemoryStore {
         FROM merge_history history
         JOIN entity_scope scope ON history.target_entity_id=scope.entity_id
         WHERE history.reverted_at IS NULL
-      ), carriers(root_id,message_id,timestamp) AS (
-        SELECT scope.root_id,evidence.message_id,evidence.timestamp
+      ), carriers(root_id,message_id) AS (
+        SELECT scope.root_id,evidence.message_id
         FROM entity_scope scope JOIN entity_evidence evidence
           ON evidence.entity_id=scope.entity_id
-      ), grouped AS (
-        SELECT root_id,message_id,MAX(timestamp) AS timestamp
-        FROM carriers WHERE message_id!='' GROUP BY root_id,message_id
-      ), ranked AS (
-        SELECT root_id,message_id,
-          ROW_NUMBER() OVER (
-            PARTITION BY root_id ORDER BY timestamp DESC,message_id
-          ) AS evidence_rank
-        FROM grouped
       )
-      SELECT root_id,message_id FROM ranked WHERE evidence_rank<=500
-      ORDER BY root_id,evidence_rank
-    `).all() as Array<{ root_id: string; message_id: string }>
+      SELECT root_id,COUNT(DISTINCT message_id) AS evidence_total
+      FROM carriers WHERE message_id!=''
+      GROUP BY root_id ORDER BY root_id
+    `).all() as Array<{ root_id: string; evidence_total: number }>
     queryCount += 1
     const relationRows = this.db.prepare(`SELECT * FROM relations ORDER BY id`).all() as any[]
     queryCount += 1
@@ -8171,12 +8164,9 @@ export class PersonalMemoryStore {
       values.push(row)
       identitiesByEntity.set(String(row.entity_id), values)
     }
-    const evidenceKeysByEntity = new Map<string, string[]>()
-    for (const row of entityEvidenceRows) {
-      const values = evidenceKeysByEntity.get(String(row.root_id)) || []
-      values.push(String(row.message_id))
-      evidenceKeysByEntity.set(String(row.root_id), values)
-    }
+    const evidenceCountByEntity = new Map(entityEvidenceCountRows.map(row => [
+      String(row.root_id), Number(row.evidence_total || 0)
+    ]))
     const evidenceCountByRelation = new Map(relationEvidenceCountRows.map(row => [
       String(row.relation_id), Number(row.evidence_total || 0)
     ]))
@@ -8206,7 +8196,8 @@ export class PersonalMemoryStore {
           summaryStatus: row.summary_status,
           trustStatus: row.trust_status,
           confidence: Number(row.confidence || 0),
-          evidenceMessageIds: evidenceKeysByEntity.get(String(row.id)) || [],
+          evidenceMessageIds: [],
+          evidenceMessageIdTotal: Number(evidenceCountByEntity.get(String(row.id)) || 0),
           createdAt: row.created_at,
           updatedAt: row.updated_at,
           identityVersion: Number(row.identity_version || 1),
@@ -8249,21 +8240,23 @@ export class PersonalMemoryStore {
     }
     const durationMs = Date.now() - startedAt
     this.graphSnapshotHydration = {
-      version: 'graph-snapshot-batch-v4',
-      strategy: 'fixed_eight_queries_relation_and_review_counts_only',
-      entityEvidencePolicy: 'direct_identity_and_active_merge_chain',
+      version: 'graph-snapshot-batch-v5',
+      strategy: 'fixed_eight_queries_all_evidence_counts_only',
+      entityEvidencePolicy: 'sqlcipher_authoritative_counts_startup_keys_zero',
       structuredCarrierCopies: 0,
       queryCount,
       durationMs,
       performanceStatus: durationMs >= 5_000
         ? 'critical' : durationMs >= 2_000 ? 'attention' : 'healthy',
-      hydratedHotRows: aliasRows.length + identityRows.length + entityEvidenceRows.length,
+      hydratedHotRows: aliasRows.length + identityRows.length,
       entities: snapshot.entities.length,
       relations: snapshot.relations.length,
       pendingReviews: snapshot.reviewQueue.length,
       aliasRows: aliasRows.length,
       identityRows: identityRows.length,
-      entityEvidenceKeys: entityEvidenceRows.length,
+      entityEvidenceKeys: 0,
+      entityEvidenceTotalKeys: entityEvidenceCountRows.reduce(
+        (total, row) => total + Number(row.evidence_total || 0), 0),
       relationEvidenceRows: 0,
       relationEvidenceTotalRows: relationEvidenceCountRows.reduce(
         (total, row) => total + Number(row.evidence_total || 0), 0),

@@ -13221,10 +13221,10 @@ function AiAssistantPage() {
                 ? ` 本次启动已从权威数据库加载 ${dashboard.graphReviewStorage.recoveredEntities || 0} 个实体、${dashboard.graphReviewStorage.recoveredRelations || 0} 条关系和 ${dashboard.graphReviewStorage.recoveredPendingReviews || 0} 个待处理候选。`
                 : ' 图谱跨存储提交点一致。'}
               {dashboard.graphStateStorage?.hydration?.lastLoadedAt
-                ? ` 本次权威图谱使用固定 ${Number(dashboard.graphStateStorage.hydration.queryCount || 0)} 次批量查询加载，耗时 ${Number(dashboard.graphStateStorage.hydration.durationMs || 0).toLocaleString()} 毫秒（${dashboard.graphStateStorage.hydration.performanceStatus === 'critical' ? '较慢' : dashboard.graphStateStorage.hydration.performanceStatus === 'attention' ? '需关注' : '正常'}），共水合 ${Number(dashboard.graphStateStorage.hydration.hydratedHotRows || 0).toLocaleString()} 条有界身份与账号热集；关系和候选只加载原文总数，查询次数不会随实体、关系或候选数量增长。`
+                ? ` 本次权威图谱使用固定 ${Number(dashboard.graphStateStorage.hydration.queryCount || 0)} 次批量查询加载，耗时 ${Number(dashboard.graphStateStorage.hydration.durationMs || 0).toLocaleString()} 毫秒（${dashboard.graphStateStorage.hydration.performanceStatus === 'critical' ? '较慢' : dashboard.graphStateStorage.hydration.performanceStatus === 'attention' ? '需关注' : '正常'}），共水合 ${Number(dashboard.graphStateStorage.hydration.hydratedHotRows || 0).toLocaleString()} 条有界别名与账号；身份、关系和候选都只加载原文总数，查询次数不会随实体、关系或候选数量增长。`
                 : ''}
-              {dashboard.graphStateStorage?.hydration?.entityEvidencePolicy === 'direct_identity_and_active_merge_chain'
-                ? ' 实体内存消息键只保留直接身份依据及有效合并链，关系和待审候选正文都不再随全部工作集常驻内存；人物侧栏、路径、共同实体、候选目录和修改预览会从 SQLCipher 精确加载所见原文，事实与事件继续走各自权威档案。'
+              {dashboard.graphStateStorage?.hydration?.entityEvidencePolicy === 'sqlcipher_authoritative_counts_startup_keys_zero'
+                ? ' 实体身份消息键、关系正文和待审候选正文都不再随全部工作集启动常驻；直接身份依据及有效合并链仍由 SQLCipher 权威保存，人物侧栏、路径、共同实体、候选目录和修改预览会精确加载所见原文，事实与事件继续走各自权威档案。'
                 : ''}
             </small>}
             {blockedIdentityReviewReturn && <div className="assistant-review-note">
@@ -15860,14 +15860,15 @@ function AiAssistantPage() {
               </div>
             </div>}
             {memoryDiagnostics.graphEntityEvidenceHotset?.version && <div className="assistant-recovery-audit healthy">
-              <header><Database size={15} /><span><b>图谱身份原文热窗口</b>
-                <small>人物与项目的完整原文仍由 SQLCipher 按需检索；常驻图谱只保留最近消息身份，新增、合并与断电恢复共用同一硬上限。</small>
+              <header><Database size={15} /><span><b>图谱身份原文分层</b>
+                <small>人物与项目的完整身份原文及有效合并链由 SQLCipher 权威保存；启动不常驻历史消息键，当前尚未提交的新证据与合并操作仍使用有界临时窗口。</small>
               </span></header>
               <div className="assistant-recovery-current">
                 <span>图谱实体 <b>{Number(memoryDiagnostics.graphEntityEvidenceHotset.entities || 0).toLocaleString()}</b></span>
-                <span>内存消息键 <b>{Number(memoryDiagnostics.graphEntityEvidenceHotset.inMemoryMessageIds || 0).toLocaleString()}</b></span>
-                <span>达到窗口上限 <b>{Number(memoryDiagnostics.graphEntityEvidenceHotset.entitiesAtLimit || 0).toLocaleString()}</b></span>
-                <span>单实体上限 <b>{Number(memoryDiagnostics.graphEntityEvidenceHotset.hotLimitPerEntity || 500)}</b></span>
+                <span>权威消息键 <b>{Number(memoryDiagnostics.graphEntityEvidenceHotset.authoritativeMessageIds || 0).toLocaleString()}</b></span>
+                <span>当前临时消息键 <b>{Number(memoryDiagnostics.graphEntityEvidenceHotset.inMemoryMessageIds || 0).toLocaleString()}</b></span>
+                <span>启动单实体消息键 <b>{Number(memoryDiagnostics.graphEntityEvidenceHotset.startupHotLimitPerEntity ?? 0)}</b></span>
+                <span>修改临时上限 <b>{Number(memoryDiagnostics.graphEntityEvidenceHotset.mutationHotLimitPerEntity ?? 500)}</b></span>
               </div>
             </div>}
             {memoryDiagnostics.taskStateStorage?.version && <div className="assistant-recovery-audit healthy">

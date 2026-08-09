@@ -19,8 +19,11 @@ test('graph and review evidence presentation hydrates only the visible scope on 
   assert.match(common, /getRelationEvidenceHotset\([\s\S]*relationIds/)
   const snapshot = store.slice(store.indexOf('loadGraphSnapshot(): MemoryGraph'),
     store.indexOf('getRelationEvidenceCounts():', store.indexOf('loadGraphSnapshot(): MemoryGraph')))
+  assert.match(snapshot, /COUNT\(DISTINCT message_id\) AS evidence_total/)
   assert.match(snapshot, /SELECT relation_id,COUNT\(\*\) AS evidence_total/)
   assert.match(snapshot, /SELECT evidence\.review_id,COUNT\(\*\) AS evidence_total/)
+  assert.match(snapshot, /evidenceMessageIds: \[\]/)
+  assert.doesNotMatch(snapshot, /SELECT root_id,message_id FROM ranked/)
   assert.doesNotMatch(snapshot, /sender,excerpt,[\s\S]*FROM evidence WHERE relation_id/)
   assert.doesNotMatch(snapshot, /sender,excerpt,evidence_json,[\s\S]*FROM graph_review_evidence/)
   const reviewDirectory = store.slice(store.indexOf('listReviewLedgerPage('),

@@ -4627,7 +4627,7 @@ export class AiAssistantService {
         authoritativeEntities: this.state.graph.entities.length,
         entityDirectory: 'server_search_on_demand',
         entityProfiles: 'on_demand',
-        entityEvidenceMessageIds: 'sqlcipher_authoritative_identity_hotset_500',
+        entityEvidenceMessageIds: 'sqlcipher_authoritative_counts_startup_keys_zero',
         relationEvidence: 'sqlcipher_authoritative_counts_startup_evidence_on_demand',
         reviewEntities: 'page_scoped'
       },
@@ -5934,14 +5934,18 @@ export class AiAssistantService {
         reviewSnapshots: personalMemoryStore.getTaskReviewSnapshotStorageStats()
       },
       graphEntityEvidenceHotset: {
-        version: 'graph-entity-evidence-hotset-v2',
-        hotLimitPerEntity: ENTITY_EVIDENCE_MESSAGE_HOT_LIMIT,
+        version: 'graph-entity-evidence-hotset-v3',
+        startupHotLimitPerEntity: 0,
+        mutationHotLimitPerEntity: ENTITY_EVIDENCE_MESSAGE_HOT_LIMIT,
         entities: this.state.graph.entities.length,
         inMemoryMessageIds: entityEvidenceMessageRows,
+        authoritativeMessageIds: Number(
+          personalMemoryStore.getGraphSnapshotHydrationStats().entityEvidenceTotalKeys || 0
+        ),
         entitiesAtLimit: this.state.graph.entities.filter(entity =>
           Number(entity.evidenceMessageIds?.length || 0) >= ENTITY_EVIDENCE_MESSAGE_HOT_LIMIT).length,
-        authoritativeEvidence: 'sqlcipher_on_demand',
-        inMemoryScope: 'direct_identity_and_active_merge_chain',
+        authoritativeEvidence: 'sqlcipher_direct_identity_and_active_merge_chain',
+        inMemoryScope: 'current_uncommitted_mutations_only_after_startup',
         structuredCarrierCopies: 0,
         mergeAndRecoveryBounded: true
       },

@@ -4131,9 +4131,9 @@ test('relation graph snapshots keep a bounded hotset while SQLCipher retains eve
     assert.equal(hotset.evidence[0].messageId,
       `relation-evidence-${allEvidence.length - GRAPH_RELATION_EVIDENCE_HOT_LIMIT}`)
     const hydration = first.getGraphSnapshotHydrationStats()
-    assert.equal(hydration.version, 'graph-snapshot-batch-v4')
-    assert.equal(hydration.strategy, 'fixed_eight_queries_relation_and_review_counts_only')
-    assert.equal(hydration.entityEvidencePolicy, 'direct_identity_and_active_merge_chain')
+    assert.equal(hydration.version, 'graph-snapshot-batch-v5')
+    assert.equal(hydration.strategy, 'fixed_eight_queries_all_evidence_counts_only')
+    assert.equal(hydration.entityEvidencePolicy, 'sqlcipher_authoritative_counts_startup_keys_zero')
     assert.equal(hydration.structuredCarrierCopies, 0)
     assert.equal(hydration.queryCount, 8)
     assert.equal(hydration.entities, 2)
@@ -4142,6 +4142,7 @@ test('relation graph snapshots keep a bounded hotset while SQLCipher retains eve
     assert.equal(hydration.aliasRows, 0)
     assert.equal(hydration.identityRows, 0)
     assert.equal(hydration.entityEvidenceKeys, 0)
+    assert.equal(hydration.entityEvidenceTotalKeys, 0)
     assert.equal(hydration.relationEvidenceRows, 0)
     assert.equal(hydration.relationEvidenceTotalRows, allEvidence.length)
     assert.equal(hydration.reviewEvidenceRows, 0)
@@ -4171,7 +4172,7 @@ test('relation graph snapshots keep a bounded hotset while SQLCipher retains eve
   }
 })
 
-test('batched graph hydration retains evidence across an active merge chain', () => withStore(store => {
+test('batched graph hydration counts identity evidence across an active merge chain without resident keys', () => withStore(store => {
   store.syncGraph({
     entities: [{
       id: 'hydration-merge-source', type: 'person', canonicalName: '合并前身份',
@@ -4214,12 +4215,70 @@ test('batched graph hydration retains evidence across an active merge chain', ()
   const snapshot = store.loadGraphSnapshot()
   assert.equal(snapshot.entities.length, 1)
   assert.equal(snapshot.entities[0].id, 'hydration-merge-target')
-  assert.deepEqual(new Set(snapshot.entities[0].evidenceMessageIds), new Set([
-    'wechat:merge-room:source-evidence',
-    'wechat:merge-room:target-evidence'
-  ]))
+  assert.deepEqual(snapshot.entities[0].evidenceMessageIds, [])
+  assert.equal((snapshot.entities[0] as any).evidenceMessageIdTotal, 2)
+  assert.equal(store.listEntityEvidencePage({
+    entityId: 'hydration-merge-target', limit: 40
+  }).total, 2)
   assert.equal(store.getGraphSnapshotHydrationStats().queryCount, 8)
-  assert.equal(store.getGraphSnapshotHydrationStats().entityEvidenceKeys, 2)
+  assert.equal(store.getGraphSnapshotHydrationStats().entityEvidenceKeys, 0)
+  assert.equal(store.getGraphSnapshotHydrationStats().entityEvidenceTotalKeys, 2)
+}))
+
+test('multi-year identity evidence stays count-only during graph startup', () => withStore(store => {
+  const entityCount = 1_000
+  const evidencePerEntity = 100
+  const entities = Array.from({ length: entityCount }, (_, index) => ({
+    id: `identity-scale-entity-${index}`,
+    type: 'person',
+    canonicalName: `身份规模人物 ${index}`,
+    trustStatus: 'confirmed',
+    aliases: [],
+    accountIds: []
+  }))
+  store.syncGraph({ entities, relations: [], reviewQueue: [] } as any)
+  const database = (store as any).db
+  const insert = database.prepare(`
+    INSERT INTO entity_evidence(
+      entity_id,source_id,message_id,session_id,timestamp,sender,excerpt,evidence_kind
+    ) VALUES(?,?,?,?,?,?,?,?)
+  `)
+  database.exec('BEGIN IMMEDIATE')
+  try {
+    for (let entityIndex = 0; entityIndex < entityCount; entityIndex += 1) {
+      for (let evidenceIndex = 0; evidenceIndex < evidencePerEntity; evidenceIndex += 1) {
+        insert.run(
+          `identity-scale-entity-${entityIndex}`,
+          'wechat',
+          `wechat:identity-scale-${entityIndex}:message-${evidenceIndex}`,
+          `identity-scale-${entityIndex % 20}`,
+          1_700_000_000 + evidenceIndex,
+          `身份规模人物 ${entityIndex}`,
+          `第 ${evidenceIndex} 条身份依据`,
+          evidenceIndex % 10 === 0 ? 'identity_anchor' : 'identity'
+        )
+      }
+    }
+    database.exec('COMMIT')
+  } catch (error) {
+    database.exec('ROLLBACK')
+    throw error
+  }
+
+  const snapshot = store.loadGraphSnapshot()
+  assert.equal(snapshot.entities.length, entityCount)
+  assert.ok(snapshot.entities.every(entity => entity.evidenceMessageIds.length === 0))
+  assert.ok(snapshot.entities.every(entity =>
+    Number((entity as any).evidenceMessageIdTotal || 0) === evidencePerEntity))
+  const hydration = store.getGraphSnapshotHydrationStats()
+  assert.equal(hydration.queryCount, 8)
+  assert.equal(hydration.entityEvidenceKeys, 0)
+  assert.equal(hydration.entityEvidenceTotalKeys, entityCount * evidencePerEntity)
+  assert.equal(hydration.hydratedHotRows, 0)
+  assert.ok(hydration.durationMs < 5_000)
+  assert.equal(store.listEntityEvidencePage({
+    entityId: 'identity-scale-entity-999', memoryKind: 'identity', limit: 100
+  }).total, evidencePerEntity)
 }))
 
 test('batched graph hydration keeps query count fixed at multi-year graph scale', () => withStore(store => {
@@ -4261,9 +4320,10 @@ test('batched graph hydration keeps query count fixed at multi-year graph scale'
   assert.equal(hydration.aliasRows, entityCount)
   assert.equal(hydration.identityRows, entityCount / 2)
   assert.equal(hydration.entityEvidenceKeys, 0)
+  assert.equal(hydration.entityEvidenceTotalKeys, 0)
   assert.equal(hydration.relationEvidenceRows, 0)
   assert.equal(hydration.relationEvidenceTotalRows, relationCount)
-  assert.equal(hydration.entityEvidencePolicy, 'direct_identity_and_active_merge_chain')
+  assert.equal(hydration.entityEvidencePolicy, 'sqlcipher_authoritative_counts_startup_keys_zero')
   assert.equal(hydration.structuredCarrierCopies, 0)
   assert.equal(hydration.hydratedHotRows, entityCount + entityCount / 2)
   assert.ok(['healthy', 'attention', 'critical'].includes(hydration.performanceStatus))
@@ -7352,13 +7412,11 @@ test('project memory is scoped in SQL before limits and preserves authoritative 
   const recoveredProjectEntity = store.loadGraphSnapshot().entities.find(
     entity => entity.id === 'project-memory-scope'
   )
-  assert.equal(recoveredProjectEntity?.evidenceMessageIds.length, 125)
-  assert.ok(recoveredProjectEntity?.evidenceMessageIds.includes(
-    'wechat:identity-session:identity-message-124'
-  ))
-  assert.equal(recoveredProjectEntity?.evidenceMessageIds.includes(
-    'project-scoped-relation-message-124'
-  ), false)
+  assert.equal(recoveredProjectEntity?.evidenceMessageIds.length, 0)
+  assert.equal((recoveredProjectEntity as any)?.evidenceMessageIdTotal, 125)
+  assert.equal(store.listEntityEvidencePage({
+    entityId: 'project-memory-scope', memoryKind: 'identity', limit: 200
+  }).total, 125)
   const claims = Array.from({ length: 260 }, (_, index) => ({
     id: `project-scoped-claim-${index}`,
     subjectId: 'project-memory-scope',
@@ -9232,7 +9290,10 @@ test('direct entity evidence follows reversible identity merges without copying 
     'wechat:merge-evidence:message-0')
   assert.equal(store.loadGraphSnapshot().entities.find(
     entity => entity.id === entities[1].id
-  )?.evidenceMessageIds.length, 2)
+  )?.evidenceMessageIds.length, 0)
+  assert.equal((store.loadGraphSnapshot().entities.find(
+    entity => entity.id === entities[1].id
+  ) as any)?.evidenceMessageIdTotal, 2)
   store.markMergeReverted(mergeId)
   assert.equal(store.listEntityEvidencePage({
     entityId: entities[1].id
@@ -10124,7 +10185,9 @@ test('graph commit mismatch recovers authoritative entities relations evidence a
     assert.equal(snapshot.entities[0].aliases[0], '甲别名')
     assert.equal(snapshot.entities[0].accountIds[0], 'wxid-recovery-a')
     assert.equal(snapshot.entities[0].externalIdentities[0].accountId, 'a@example.com')
-    assert.ok(snapshot.entities[0].evidenceMessageIds.includes('wechat:recovery-session:recovery-message'))
+    assert.equal(snapshot.entities[0].evidenceMessageIds.length, 0)
+    assert.equal((snapshot.entities[0] as any).evidenceMessageIdTotal, 1)
+    assert.equal(store.listEntityEvidencePage({ entityId: 'graph-recovery-a' }).total, 1)
     assert.equal(snapshot.relations.length, 1)
     assert.equal(snapshot.relations[0].status, 'confirmed')
     assert.equal(snapshot.relations[0].directionExplanation, '恢复甲向恢复组织')
@@ -10135,7 +10198,7 @@ test('graph commit mismatch recovers authoritative entities relations evidence a
     assert.equal(snapshot.reviewQueue.length, 1)
     assert.equal(snapshot.reviewQueue[0].id, 'graph-recovery-pending')
     const hydration = store.getGraphSnapshotHydrationStats()
-    assert.equal(hydration.strategy, 'fixed_eight_queries_relation_and_review_counts_only')
+    assert.equal(hydration.strategy, 'fixed_eight_queries_all_evidence_counts_only')
     assert.equal(hydration.queryCount, 8)
     assert.equal(hydration.entities, 2)
     assert.equal(hydration.relations, 1)
