@@ -1291,6 +1291,7 @@ function AiAssistantPage() {
     revision?: string
     stale?: boolean
     loading?: boolean
+    error?: string
   }>({ items: [], total: 0, hasMore: false, counts: {} })
   const [taskWorksetLoadingMore, setTaskWorksetLoadingMore] = useState(false)
   const [taskWorksetRefreshKey, setTaskWorksetRefreshKey] = useState(0)
@@ -1300,6 +1301,7 @@ function AiAssistantPage() {
     total: number
     revision: string
     loading: boolean
+    error?: string
   }>({ items: [], total: 0, revision: '', loading: false })
   const [taskCalendarRefreshKey, setTaskCalendarRefreshKey] = useState(0)
   const taskCalendarGate = useRef(new LatestRequestGate())
@@ -2250,7 +2252,7 @@ function AiAssistantPage() {
   useEffect(() => {
     const request = taskWorksetGate.current.begin()
     setTaskWorksetLoadingMore(false)
-    setTaskWorkset(current => ({ ...current, items: [], loading: true }))
+    setTaskWorkset(current => ({ ...current, items: [], loading: true, error: undefined }))
     const timer = window.setTimeout(() => {
       void window.electronAPI.aiAssistant.getActiveTaskWorkset(taskWorksetOptions).then(result => {
         if (!taskWorksetGate.current.isCurrent(request)) return
@@ -2259,9 +2261,12 @@ function AiAssistantPage() {
           return
         }
         setTaskWorkset({ ...result, loading: false })
-      }).catch(() => {
+      }).catch(error => {
         if (!taskWorksetGate.current.isCurrent(request)) return
-        setTaskWorkset({ items: [], total: 0, hasMore: false, counts: {}, loading: false })
+        setTaskWorkset({
+          items: [], total: 0, hasMore: false, counts: {}, loading: false,
+          error: error?.message || String(error)
+        })
       })
     }, taskQuery.trim() ? 220 : 0)
     return () => {
@@ -2276,7 +2281,7 @@ function AiAssistantPage() {
       return
     }
     const request = taskCalendarGate.current.begin()
-    setTaskCalendarPage({ items: [], total: 0, revision: '', loading: true })
+    setTaskCalendarPage({ items: [], total: 0, revision: '', loading: true, error: undefined })
     const timer = window.setTimeout(() => {
       void (async () => {
         let items: Task[] = []
@@ -2299,9 +2304,12 @@ function AiAssistantPage() {
           setTaskCalendarPage({ items, total, revision, loading: result.hasMore })
           if (!result.hasMore) return
         }
-      })().catch(() => {
+      })().catch(error => {
         if (!taskCalendarGate.current.isCurrent(request)) return
-        setTaskCalendarPage({ items: [], total: 0, revision: '', loading: false })
+        setTaskCalendarPage({
+          items: [], total: 0, revision: '', loading: false,
+          error: error?.message || String(error)
+        })
       })
     }, taskQuery.trim() ? 220 : 0)
     return () => {
@@ -6360,7 +6368,13 @@ function AiAssistantPage() {
       }
       setTaskWorkset(current => ({
         ...result,
-        items: [...current.items, ...result.items]
+        items: [...current.items, ...result.items],
+        error: undefined
+      }))
+    } catch (error: any) {
+      setTaskWorkset(current => ({
+        ...current,
+        error: error?.message || String(error)
       }))
     } finally {
       setTaskWorksetLoadingMore(false)
@@ -10566,7 +10580,13 @@ function AiAssistantPage() {
                   : `加载更多提醒（已显示 ${taskReminders.length} / ${taskReminderPage.total}）`}
               </button>}
             </div>}
-            {taskView === 'calendar' && <div className="assistant-task-calendar">
+            {taskView === 'calendar' && (taskCalendarPage.error
+              ? <div className="assistant-task-load-failure" role="alert">
+                <strong>本月任务读取失败</strong>
+                <span>{taskCalendarPage.error}。当前不会把读取失败显示成“本月 0 项”。</span>
+                <button onClick={() => setTaskCalendarRefreshKey(value => value + 1)}>重试本月任务</button>
+              </div>
+              : <div className="assistant-task-calendar">
               <header><button onClick={() => moveCalendarMonth(-1)}>‹</button><strong>{calendarMonth}</strong><button onClick={() => moveCalendarMonth(1)}>›</button></header>
               <small className="assistant-evidence">
                 {taskCalendarPage.loading
@@ -10595,10 +10615,21 @@ function AiAssistantPage() {
                 {!taskCalendarPage.loading && !(selectedCalendarDay?.tasks.length) &&
                   <em>当天没有当前筛选范围内的任务</em>}
               </div>
-            </div>}
+            </div>)}
             {taskView === 'list' && <div className="assistant-task-list">
               {taskWorkset.loading && <div className="assistant-empty">正在读取当前行动工作集…</div>}
-              {!taskWorkset.loading && displayedTasks.length === 0 && <div className="assistant-empty">当前筛选没有待办</div>}
+              {taskWorkset.error && <div className="assistant-task-load-failure" role="alert">
+                <strong>{taskWorkset.items.length ? '更多待办读取失败' : '当前行动读取失败'}</strong>
+                <span>{taskWorkset.error}。{taskWorkset.items.length
+                  ? ` 已成功加载的 ${taskWorkset.items.length} 项仍可使用，但不会声称已读完。`
+                  : ' 当前不会把读取失败显示成“没有待办”。'}</span>
+                <button disabled={taskWorksetLoadingMore} onClick={() => {
+                  if (taskWorkset.items.length) void loadMoreActiveTasks()
+                  else setTaskWorksetRefreshKey(value => value + 1)
+                }}>{taskWorksetLoadingMore ? '正在重试…' : '立即重试'}</button>
+              </div>}
+              {!taskWorkset.loading && !taskWorkset.error && displayedTasks.length === 0 &&
+                <div className="assistant-empty">当前筛选没有待办</div>}
               {displayedTasks.map(task => (
                 <article id={`assistant-task-${task.id}`} className={`assistant-task ${task.status === 'done' ? 'done' : ''}`} key={task.id}>
                   <button className="assistant-check" onClick={() => void toggleTask(task)} aria-label={task.status === 'done' ? '恢复待办' : '完成待办'}>
