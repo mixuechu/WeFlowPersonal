@@ -600,6 +600,8 @@ type AssistantState = {
       vectorProbes: number
       vectorComparisons: number
       vectorMatchedComparisons: number
+      vectorProbesWithMatches: number
+      vectorRepresentedProbes: number
       vectorTruncated: boolean
       vectorScanDurationMs: number
       vectorPendingAfter: number
@@ -667,6 +669,7 @@ const EMPTY_STATE: AssistantState = {
     decisionLookupAt: null,
     vectorEligible: 0, vectorPendingBefore: 0, vectorProbes: 0,
     vectorComparisons: 0, vectorMatchedComparisons: 0,
+    vectorProbesWithMatches: 0, vectorRepresentedProbes: 0,
     vectorTruncated: false, vectorScanDurationMs: 0,
     vectorPendingAfter: 0, vectorCheckpointCommitted: false,
     vectorContinuationAt: null, vectorContinuationError: null
@@ -3146,6 +3149,8 @@ export class AiAssistantService {
     this.state.graph.identityScan.vectorProbes = vectorScan.stats.probes
     this.state.graph.identityScan.vectorComparisons = vectorScan.stats.comparisons
     this.state.graph.identityScan.vectorMatchedComparisons = vectorScan.stats.matchedComparisons
+    this.state.graph.identityScan.vectorProbesWithMatches = vectorScan.stats.probesWithMatches
+    this.state.graph.identityScan.vectorRepresentedProbes = vectorScan.stats.representedProbes
     this.state.graph.identityScan.vectorTruncated = vectorScan.stats.truncated
     this.state.graph.identityScan.vectorScanDurationMs = vectorScan.stats.durationMs
     if (!vectorScan.checkpoint.probes.length) {

@@ -19913,6 +19913,8 @@ export class PersonalMemoryStore {
       probes: number
       comparisons: number
       matchedComparisons: number
+      probesWithMatches: number
+      representedProbes: number
       truncated: boolean
       durationMs: number
     }
@@ -19920,7 +19922,8 @@ export class PersonalMemoryStore {
     const startedAt = performance.now()
     const empty = { pairs: [], checkpoint: { model, probes: [] }, stats: {
       eligible: 0, pendingBefore: 0, probes: 0, comparisons: 0,
-      matchedComparisons: 0, truncated: false, durationMs: 0
+      matchedComparisons: 0, probesWithMatches: 0, representedProbes: 0,
+      truncated: false, durationMs: 0
     } }
     if (!this.db) return empty
     const boundedProbeLimit = Math.max(1, Math.min(200, Math.floor(probeLimit || 32)))
@@ -19976,20 +19979,23 @@ export class PersonalMemoryStore {
       LIMIT ?
     `).all(model, boundedProbeLimit) as Array<{ id: string; source_id: string; content_hash: string }>
     const probeIds = new Set(probes.map(probe => probe.source_id))
-    const pairScores = new Map<string, { leftId: string; rightId: string; score: number }>()
-    const pairBudget = Math.max(2_000, Math.min(20_000, Math.max(1, limit) * 20))
-    const prunePairs = (): void => {
-      const retained = [...pairScores.entries()]
-        .sort(([, left], [, right]) => right.score - left.score ||
-          left.leftId.localeCompare(right.leftId) || left.rightId.localeCompare(right.rightId))
-        .slice(0, pairBudget)
-      pairScores.clear()
-      for (const [key, value] of retained) pairScores.set(key, value)
-    }
+    const outputLimit = Math.max(1, Math.min(1000, limit))
+    const perProbeBudget = Math.max(64, outputLimit)
+    const pairOrder = (
+      left: { leftId: string; rightId: string; score: number },
+      right: { leftId: string; rightId: string; score: number }
+    ): number => right.score - left.score || left.leftId.localeCompare(right.leftId) ||
+      left.rightId.localeCompare(right.rightId)
+    const probeBuckets: Array<{
+      probeId: string
+      pairs: Array<{ leftId: string; rightId: string; score: number }>
+      truncated: boolean
+    }> = []
     let comparisons = 0
     let matchedComparisons = 0
-    let truncated = false
     for (const probe of vectors.filter(item => probeIds.has(item.id))) {
+      let probePairs: Array<{ leftId: string; rightId: string; score: number }> = []
+      let probeTruncated = false
       for (const candidate of vectors) {
         if (candidate.id === probe.id) continue
         comparisons += 1
@@ -19997,23 +20003,43 @@ export class PersonalMemoryStore {
         if (score === null || score < minimumScore) continue
         matchedComparisons += 1
         const [leftId, rightId] = [probe.id, candidate.id].sort()
-        const key = `${leftId}|${rightId}`
-        const existing = pairScores.get(key)
-        if (!existing || score > existing.score) pairScores.set(key, { leftId, rightId, score })
-        if (pairScores.size >= pairBudget * 2) {
-          truncated = true
-          prunePairs()
+        probePairs.push({ leftId, rightId, score })
+        if (probePairs.length >= perProbeBudget * 2) {
+          probeTruncated = true
+          probePairs = probePairs.sort(pairOrder).slice(0, perProbeBudget)
         }
       }
+      if (probePairs.length > perProbeBudget) {
+        probeTruncated = true
+        probePairs = probePairs.sort(pairOrder).slice(0, perProbeBudget)
+      } else {
+        probePairs.sort(pairOrder)
+      }
+      if (probePairs.length) probeBuckets.push({
+        probeId: probe.id,
+        pairs: probePairs,
+        truncated: probeTruncated
+      })
     }
-    if (pairScores.size > pairBudget) {
-      truncated = true
-      prunePairs()
+    const selected = new Map<string, { leftId: string; rightId: string; score: number }>()
+    const maximumBucketDepth = Math.max(0, ...probeBuckets.map(bucket => bucket.pairs.length))
+    for (let rank = 0; rank < maximumBucketDepth && selected.size < outputLimit; rank += 1) {
+      for (const bucket of probeBuckets) {
+        const pair = bucket.pairs[rank]
+        if (!pair) continue
+        const key = `${pair.leftId}|${pair.rightId}`
+        if (!selected.has(key)) selected.set(key, pair)
+        if (selected.size >= outputLimit) break
+      }
     }
-    if (pairScores.size > Math.max(1, Math.min(1000, limit))) truncated = true
-    const pairs = [...pairScores.values()]
-      .sort((left, right) => right.score - left.score || left.leftId.localeCompare(right.leftId) || left.rightId.localeCompare(right.rightId))
-      .slice(0, Math.max(1, Math.min(1000, limit)))
+    const representedProbeIds = new Set(probeBuckets.flatMap(bucket =>
+      bucket.pairs.some(pair => selected.has(`${pair.leftId}|${pair.rightId}`))
+        ? [bucket.probeId]
+        : []))
+    const retainedPairCount = new Set(probeBuckets.flatMap(bucket =>
+      bucket.pairs.map(pair => `${pair.leftId}|${pair.rightId}`))).size
+    const truncated = probeBuckets.some(bucket => bucket.truncated) || retainedPairCount > selected.size
+    const pairs = [...selected.values()]
     return {
       pairs,
       checkpoint: {
@@ -20029,6 +20055,8 @@ export class PersonalMemoryStore {
         probes: probes.length,
         comparisons,
         matchedComparisons,
+        probesWithMatches: probeBuckets.length,
+        representedProbes: representedProbeIds.size,
         truncated,
         durationMs: Number((performance.now() - startedAt).toFixed(2))
       }

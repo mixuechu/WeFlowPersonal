@@ -133,6 +133,7 @@ test('identity scan diagnostics expose hub exclusions and truncation in the UI',
   assert.match(page, /本轮向量探针 \/ 扫描前待处理/)
   assert.match(page, /提交后剩余向量探针/)
   assert.match(page, /增量向量身份比较/)
+  assert.match(page, /获得候选席位 \/ 存在命中的探针/)
   assert.match(page, /向量候选已达上限/)
   assert.match(page, /本轮向量进度未提交/)
 })

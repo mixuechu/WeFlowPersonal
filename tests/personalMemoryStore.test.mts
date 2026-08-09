@@ -2718,6 +2718,42 @@ test('entity vector identity scans advance a durable bounded probe backlog inste
   assert.equal(store.getIdentityVectorScanBacklog('identity-incremental-test-v2').pending, 0)
 }))
 
+test('entity vector identity scan gives every matched probe a fair candidate slot before dense-cluster repeats', () => withStore(store => {
+  const db = (store as any).db
+  const insert = db.prepare(`
+    INSERT INTO search_documents(
+      id,document_type,source_id,title,search_text,metadata_json,
+      embedding_model,embedding_dimensions,embedding_json,embedding_chunk_count,
+      content_hash,updated_at
+    ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
+  `)
+  const add = (id: string, angle: number, order: number): void => insert.run(
+    `entity:${id}`, 'entity', id, id, id, '{}', 'identity-fair-test', 2,
+    JSON.stringify([Math.cos(angle), Math.sin(angle)]), 1, `hash-${id}`,
+    new Date(1_700_100_000_000 + order).toISOString()
+  )
+  db.transaction(() => {
+    add('probe-a', 0, 0)
+    add('probe-b', 0.5, 1)
+    add('probe-c', 1, 2)
+    add('probe-d', 1.5, 3)
+    for (let index = 0; index < 20; index += 1) add(`candidate-a-${index}`, 0, 10 + index)
+    add('candidate-b', 0.5, 40)
+    add('candidate-c', 1, 41)
+    add('candidate-d', 1.5, 42)
+  })()
+
+  const first = store.scanSimilarEntityPairsIncremental('identity-fair-test', 0.9999, 4, 4)
+  const second = store.scanSimilarEntityPairsIncremental('identity-fair-test', 0.9999, 4, 4)
+  assert.equal(first.stats.probesWithMatches, 4)
+  assert.equal(first.stats.representedProbes, 4)
+  assert.equal(first.stats.truncated, true)
+  assert.deepEqual(second.pairs, first.pairs)
+  for (const probeId of ['probe-a', 'probe-b', 'probe-c', 'probe-d']) {
+    assert.ok(first.pairs.some(pair => pair.leftId === probeId || pair.rightId === probeId), probeId)
+  }
+}))
+
 test('identity decisions for a hundred-thousand candidate scan load through one JSON-indexed query', () => withStore(store => {
   for (let index = 0; index < 1_000; index += 1) {
     store.recordIdentityDecision(
