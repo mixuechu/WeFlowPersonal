@@ -13221,7 +13221,10 @@ function AiAssistantPage() {
                 ? ` 本次启动已从权威数据库加载 ${dashboard.graphReviewStorage.recoveredEntities || 0} 个实体、${dashboard.graphReviewStorage.recoveredRelations || 0} 条关系和 ${dashboard.graphReviewStorage.recoveredPendingReviews || 0} 个待处理候选。`
                 : ' 图谱跨存储提交点一致。'}
               {dashboard.graphStateStorage?.hydration?.lastLoadedAt
-                ? ` 本次权威图谱使用固定 ${Number(dashboard.graphStateStorage.hydration.queryCount || 0)} 次批量查询加载，耗时 ${Number(dashboard.graphStateStorage.hydration.durationMs || 0).toLocaleString()} 毫秒；查询次数不会随实体、关系或候选数量增长。`
+                ? ` 本次权威图谱使用固定 ${Number(dashboard.graphStateStorage.hydration.queryCount || 0)} 次批量查询加载，耗时 ${Number(dashboard.graphStateStorage.hydration.durationMs || 0).toLocaleString()} 毫秒（${dashboard.graphStateStorage.hydration.performanceStatus === 'critical' ? '较慢' : dashboard.graphStateStorage.hydration.performanceStatus === 'attention' ? '需关注' : '正常'}），共水合 ${Number(dashboard.graphStateStorage.hydration.hydratedHotRows || 0).toLocaleString()} 条有界身份、账号与原文热集；查询次数不会随实体、关系或候选数量增长。`
+                : ''}
+              {dashboard.graphStateStorage?.hydration?.entityEvidencePolicy === 'direct_identity_and_active_merge_chain'
+                ? ' 实体内存消息键只保留直接身份依据及有效合并链，不再重复装载关系、事实或事件原文；这些载体仍在 SQLCipher 中按需读取。'
                 : ''}
             </small>}
             {blockedIdentityReviewReturn && <div className="assistant-review-note">

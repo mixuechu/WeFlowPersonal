@@ -536,10 +536,14 @@ export class PersonalMemoryStore {
     triggerRepairedThisStart: false
   }
   private graphSnapshotHydration = {
-    version: 'graph-snapshot-batch-v1',
+    version: 'graph-snapshot-batch-v2',
     strategy: 'fixed_eight_queries',
+    entityEvidencePolicy: 'direct_identity_and_active_merge_chain',
+    structuredCarrierCopies: 0,
     queryCount: 0,
     durationMs: 0,
+    performanceStatus: 'not_loaded',
+    hydratedHotRows: 0,
     entities: 0,
     relations: 0,
     pendingReviews: 0,
@@ -8118,27 +8122,6 @@ export class PersonalMemoryStore {
         SELECT scope.root_id,evidence.message_id,evidence.timestamp
         FROM entity_scope scope JOIN entity_evidence evidence
           ON evidence.entity_id=scope.entity_id
-        UNION ALL
-        SELECT scope.root_id,evidence.message_id,evidence.timestamp
-        FROM entity_scope scope JOIN relations relation ON relation.subject_id=scope.entity_id
-        JOIN evidence ON evidence.relation_id=relation.id
-        UNION ALL
-        SELECT scope.root_id,evidence.message_id,evidence.timestamp
-        FROM entity_scope scope JOIN relations relation ON relation.object_id=scope.entity_id
-        JOIN evidence ON evidence.relation_id=relation.id
-        UNION ALL
-        SELECT scope.root_id,evidence.message_id,evidence.timestamp
-        FROM entity_scope scope JOIN claims claim ON claim.subject_id=scope.entity_id
-        JOIN evidence ON evidence.claim_id=claim.id
-        UNION ALL
-        SELECT scope.root_id,evidence.message_id,evidence.timestamp
-        FROM entity_scope scope JOIN claims claim ON claim.object_entity_id=scope.entity_id
-        JOIN evidence ON evidence.claim_id=claim.id
-        UNION ALL
-        SELECT scope.root_id,evidence.message_id,evidence.timestamp
-        FROM entity_scope scope JOIN event_participants participant
-          ON participant.entity_id=scope.entity_id
-        JOIN evidence ON evidence.event_id=participant.event_id
       ), grouped AS (
         SELECT root_id,message_id,MAX(timestamp) AS timestamp
         FROM carriers WHERE message_id!='' GROUP BY root_id,message_id
@@ -8302,11 +8285,18 @@ export class PersonalMemoryStore {
         }
       })
     }
+    const durationMs = Date.now() - startedAt
     this.graphSnapshotHydration = {
-      version: 'graph-snapshot-batch-v1',
+      version: 'graph-snapshot-batch-v2',
       strategy: 'fixed_eight_queries',
+      entityEvidencePolicy: 'direct_identity_and_active_merge_chain',
+      structuredCarrierCopies: 0,
       queryCount,
-      durationMs: Date.now() - startedAt,
+      durationMs,
+      performanceStatus: durationMs >= 5_000
+        ? 'critical' : durationMs >= 2_000 ? 'attention' : 'healthy',
+      hydratedHotRows: aliasRows.length + identityRows.length + entityEvidenceRows.length +
+        relationEvidenceRows.length + reviewEvidenceRows.length,
       entities: snapshot.entities.length,
       relations: snapshot.relations.length,
       pendingReviews: snapshot.reviewQueue.length,
