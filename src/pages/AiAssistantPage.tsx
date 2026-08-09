@@ -15999,6 +15999,7 @@ function AiAssistantPage() {
                 <small>共享原文且时间兼容的重复事件按人工纠正、受保护审阅和可信状态确定性归并；明确发生在不同时间的事件保守并存，两条都有人工作出决定时等待你继续审阅。</small>
               </span></header>
               <div className="assistant-recovery-current">
+                <span>本次核验 <b>{memoryDiagnostics.eventDeduplicationAuthority.scanSkippedThisStart ? '结构化记忆未变化，已跳过' : '已扫描权威原文'}</b></span>
                 <span>本次重复组 <b>{Number(memoryDiagnostics.eventDeduplicationAuthority.duplicateGroupsThisStart || 0).toLocaleString()}</b></span>
                 <span>本次安全归并 <b>{Number(memoryDiagnostics.eventDeduplicationAuthority.mergedEventsThisStart || 0).toLocaleString()}</b></span>
                 <span>本次同步检索 <b>{Number(memoryDiagnostics.eventDeduplicationAuthority.searchDocumentsRefreshedThisStart || 0).toLocaleString()}</b></span>

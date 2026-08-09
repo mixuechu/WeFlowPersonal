@@ -18835,7 +18835,8 @@ test('event deduplication deterministically preserves human authority and its au
     assert.ok(audit.items.some(item => item.auditKind === 'correction'))
     assert.ok(audit.items.some(item => item.reason === '旧版非保护候选记录'))
     const diagnostics = second.getDiagnostics().eventDeduplicationAuthority
-    assert.equal(diagnostics.version, 2)
+    assert.equal(diagnostics.version, 3)
+    assert.equal(diagnostics.scanSkippedThisStart, false)
     assert.equal(diagnostics.mergedEventsThisStart, 1)
     assert.equal(diagnostics.protectedEventsPreservedThisStart, 1)
     assert.equal(diagnostics.ambiguousCandidatesPreservedThisStart, 1)
@@ -18888,6 +18889,59 @@ test('event deduplication deterministically preserves human authority and its au
   } finally {
     first.close()
     second.close()
+    rmSync(directory, { recursive: true, force: true })
+  }
+})
+
+test('event deduplication skips unchanged authority revisions and resumes after writes', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'weflow-event-dedup-revision-test-'))
+  const databasePath = join(directory, 'memory.sqlite')
+  const first = new PersonalMemoryStore()
+  const second = new PersonalMemoryStore()
+  const third = new PersonalMemoryStore()
+  const fourth = new PersonalMemoryStore()
+  const event = (id: string, messageId: string) => ({
+    id,
+    eventType: 'meeting',
+    title: id,
+    description: '',
+    startAt: '2026-08-10T02:00:00.000Z',
+    confidence: 0.8,
+    status: 'candidate',
+    sourceNature: 'inference',
+    searchText: id,
+    participants: [],
+    evidence: evidence(messageId, `${id}原文`)
+  })
+  try {
+    first.initialize(databasePath)
+    first.upsertEvents([event('revision-event-a', 'revision-message-a')])
+    first.close()
+
+    second.initialize(databasePath)
+    const scanned = second.getDiagnostics().eventDeduplicationAuthority
+    assert.equal(scanned.version, 3)
+    assert.equal(scanned.scanSkippedThisStart, false)
+    assert.ok(scanned.lastScannedAt)
+    second.close()
+
+    third.initialize(databasePath)
+    const skipped = third.getDiagnostics().eventDeduplicationAuthority
+    assert.equal(skipped.scanSkippedThisStart, true)
+    assert.equal(skipped.duplicateGroupsThisStart, 0)
+    assert.equal(skipped.lastScannedAt, scanned.lastScannedAt)
+    third.upsertEvents([event('revision-event-b', 'revision-message-b')])
+    third.close()
+
+    fourth.initialize(databasePath)
+    const resumed = fourth.getDiagnostics().eventDeduplicationAuthority
+    assert.equal(resumed.scanSkippedThisStart, false)
+    assert.notEqual(resumed.lastScannedAt, skipped.lastScannedAt)
+  } finally {
+    first.close()
+    second.close()
+    third.close()
+    fourth.close()
     rmSync(directory, { recursive: true, force: true })
   }
 })

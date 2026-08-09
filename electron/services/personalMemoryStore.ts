@@ -6708,6 +6708,37 @@ export class PersonalMemoryStore {
     `).get() as any
     let previous: any = {}
     try { previous = JSON.parse(String(previousRow?.value || '{}')) } catch {}
+    const authorityRevisionBefore = this.getStructuredMemoryRevision()
+    const checkedAt = new Date().toISOString()
+    if (Number(previous.version || 0) >= 3 &&
+        String(previous.authorityRevision || '') === authorityRevisionBefore) {
+      this.db.prepare(`
+        INSERT INTO schema_meta(key,value,updated_at) VALUES('event_deduplication_authority',?,?)
+        ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_at=excluded.updated_at
+      `).run(JSON.stringify({
+        version: 3,
+        checkedAt,
+        lastScannedAt: String(previous.lastScannedAt || previous.checkedAt || ''),
+        authorityRevision: authorityRevisionBefore,
+        scanSkippedThisStart: true,
+        duplicateGroupsThisStart: 0,
+        mergedEventsThisStart: 0,
+        protectedEventsPreservedThisStart: 0,
+        ambiguousCandidatesPreservedThisStart: 0,
+        temporallyDistinctEventsPreservedThisStart: 0,
+        reviewsReassignedThisStart: 0,
+        searchDocumentsRefreshedThisStart: 0,
+        mergedEventsTotal: Number(previous.mergedEventsTotal || 0),
+        protectedEventsPreservedTotal: Number(previous.protectedEventsPreservedTotal || 0),
+        ambiguousCandidatesPreservedTotal: Number(previous.ambiguousCandidatesPreservedTotal || 0),
+        temporallyDistinctEventsPreservedTotal:
+          Number(previous.temporallyDistinctEventsPreservedTotal || 0),
+        reviewsReassignedTotal: Number(previous.reviewsReassignedTotal || 0),
+        searchDocumentsRefreshedTotal:
+          Number(previous.searchDocumentsRefreshedTotal || 0)
+      }), checkedAt)
+      return
+    }
     const rows = this.db.prepare(`
       SELECT e.source_id,e.session_id,e.message_id,ev.id,ev.title,ev.start_at,
         ev.status,ev.created_at,
@@ -6769,7 +6800,6 @@ export class PersonalMemoryStore {
     let temporallyDistinctEventsPreserved = 0
     let reviewsReassigned = 0
     const refreshedTargets = new Set<string>()
-    const checkedAt = new Date().toISOString()
     const transaction = this.db.transaction(() => {
       for (const group of groups.values()) {
         const candidates = group.filter(item => !removed.has(item.id)).sort(compareAuthority)
@@ -6856,8 +6886,11 @@ export class PersonalMemoryStore {
         INSERT INTO schema_meta(key,value,updated_at) VALUES('event_deduplication_authority',?,?)
         ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_at=excluded.updated_at
       `).run(JSON.stringify({
-        version: 2,
+        version: 3,
         checkedAt,
+        lastScannedAt: checkedAt,
+        authorityRevision: this.getStructuredMemoryRevision(),
+        scanSkippedThisStart: false,
         duplicateGroupsThisStart: duplicateGroups,
         mergedEventsThisStart: mergedEvents,
         protectedEventsPreservedThisStart: protectedEventsPreserved,
@@ -7282,6 +7315,8 @@ export class PersonalMemoryStore {
         return {
           version: Number(audit.version || 0),
           checkedAt: String(audit.checkedAt || row?.updated_at || ''),
+          lastScannedAt: String(audit.lastScannedAt || audit.checkedAt || row?.updated_at || ''),
+          scanSkippedThisStart: audit.scanSkippedThisStart === true,
           duplicateGroupsThisStart: Number(audit.duplicateGroupsThisStart || 0),
           mergedEventsThisStart: Number(audit.mergedEventsThisStart || 0),
           protectedEventsPreservedThisStart:
@@ -7308,6 +7343,8 @@ export class PersonalMemoryStore {
         return {
           version: 0,
           checkedAt: String(row?.updated_at || ''),
+          lastScannedAt: '',
+          scanSkippedThisStart: false,
           duplicateGroupsThisStart: 0,
           mergedEventsThisStart: 0,
           protectedEventsPreservedThisStart: 0,
