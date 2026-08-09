@@ -13505,7 +13505,8 @@ function AiAssistantPage() {
                       title: review.title,
                       entityIds: relationUntrustedTargets.map(target => target.id)
                     })} />}
-                  {(relation.evidence || []).map((evidence: any) => <div key={evidence.messageId}><small>证据：“{evidence.excerpt}”</small></div>)}
+                  {!!relation.evidence?.length && <EvidenceRows evidence={relation.evidence}
+                    total={Math.max(Number(relation.evidenceTotal || 0), relation.evidence.length)} />}
                 </div>}
                 {review.kind === 'entity_summary' && <div className="assistant-review-note">
                   {review.previousSummary && <div><b>当前摘要：</b><span>{review.previousSummary}</span></div>}
@@ -13518,8 +13519,8 @@ function AiAssistantPage() {
                     <small>可在不丢失原文证据的前提下修改措辞或纠正事实；模型建议和人工最终值都会进入审计。</small>
                     {profileInvalidReason && <small className="error">{profileInvalidReason}</small>}
                   </label>}
-                  {(review.evidence || []).map((evidence: any) =>
-                    <div key={evidence.messageId}><small>{evidence.sender || '原文'}：“{evidence.excerpt}”</small></div>)}
+                  {!!review.evidence?.length && <EvidenceRows evidence={review.evidence}
+                    total={Math.max(Number(review.evidenceTotal || 0), review.evidence.length)} />}
                   <div><small>确认后才会写入档案和可信检索；拒绝不会修改现有摘要。</small></div>
                 </div>}
                 {review.kind === 'entity_alias' && <div className="assistant-review-note">
@@ -13532,8 +13533,8 @@ function AiAssistantPage() {
                     <small>错误建议可以直接改成正确别名；占位词、规范名和已经存在的别名会由后端再次拦截。</small>
                     {profileInvalidReason && <small className="error">{profileInvalidReason}</small>}
                   </label>}
-                  {(review.evidence || []).map((evidence: any) =>
-                    <div key={evidence.messageId}><small>{evidence.sender || '原文'}：“{evidence.excerpt}”</small></div>)}
+                  {!!review.evidence?.length && <EvidenceRows evidence={review.evidence}
+                    total={Math.max(Number(review.evidenceTotal || 0), review.evidence.length)} />}
                   <div><small>确认后才会参与身份消歧、合并建议和统一检索。</small></div>
                 </div>}
                 {review.kind === 'entity_creation' && <div className="assistant-review-note">
@@ -13556,8 +13557,8 @@ function AiAssistantPage() {
                       <small>当前仅显示前 {sameNameEntities.length} 个身份提示。</small>}
                     <small>本次确认仍会建立独立实体，不会因同名自动合并；人物会另行进入“可能是同一人”审阅。</small>
                   </div>}
-                  {(review.evidence || []).map((evidence: any) =>
-                    <div key={evidence.messageId}><small>{evidence.sender || '原文'}：“{evidence.excerpt}”</small></div>)}
+                  {!!review.evidence?.length && <EvidenceRows evidence={review.evidence}
+                    total={Math.max(Number(review.evidenceTotal || 0), review.evidence.length)} />}
                   <div><small>确认后才会进入统一检索、RAG 查询规划、图路径和确定性派生视图。</small></div>
                   {review.legacyReview && !(review.evidence || []).length && <div><small>⚠ 此旧版实体没有可恢复的关联原文，请仅在你能确认身份时通过。</small></div>}
                 </div>}
