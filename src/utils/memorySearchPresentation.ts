@@ -2,6 +2,7 @@ export type MemoryEvidence = {
   sourceId: string
   messageId: string
   sessionId: string
+  sessionName: string
   timestamp: number
   sender: string
   excerpt: string
@@ -51,11 +52,34 @@ export function normalizeMemoryEvidence(input: any): MemoryEvidence {
     sourceId: inferEvidenceSourceId(input),
     messageId: String(input?.message_id ?? input?.messageId ?? ''),
     sessionId: String(input?.session_id ?? input?.sessionId ?? ''),
+    sessionName: String(input?.session_name ?? input?.sessionName ?? ''),
     timestamp: Number.isFinite(timestamp) ? timestamp : 0,
     sender: String(input?.sender || ''),
     excerpt: String(input?.excerpt || ''),
     role: String(input?.evidence_role ?? input?.evidenceRole ?? input?.role ?? 'support')
   }
+}
+
+export type WechatEvidenceNavigation = {
+  sessionId: string
+  messageId: number
+}
+
+export function wechatEvidenceNavigation(input: any): WechatEvidenceNavigation | null {
+  const evidence = normalizeMemoryEvidence(input)
+  const messageId = evidenceLocalMessageId(evidence)
+  if (evidence.sourceId !== 'wechat' || !evidence.sessionId || !messageId) return null
+  return { sessionId: evidence.sessionId, messageId }
+}
+
+export function evidenceNavigationUnavailableReason(input: any): string {
+  const evidence = normalizeMemoryEvidence(input)
+  if (wechatEvidenceNavigation(evidence)) return ''
+  if (evidence.sourceId !== 'wechat') {
+    return `${memoryEvidenceSourceLabel(evidence)}证据不支持微信原消息跳转`
+  }
+  if (!evidence.sessionId) return '微信会话身份缺失，无法打开原消息'
+  return '微信消息身份不可用，无法打开原消息'
 }
 
 export function evidenceLocalMessageId(input: any): number | null {

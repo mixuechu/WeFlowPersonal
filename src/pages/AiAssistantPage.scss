@@ -466,7 +466,10 @@
 .assistant-evidence-row { display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; }
 .assistant-evidence-row small { min-width: 0; overflow-wrap: anywhere; }
 .assistant-evidence-row button { flex: none; padding: 3px 6px; border: 1px solid #ccd9cf; border-radius: 6px; color: #255f4b; background: #fff; font-size: 8px; cursor: pointer; }
+.assistant-evidence-navigation-note { flex: none; max-width: 140px; color: #929890; font-size: 8px; font-style: normal; line-height: 1.35; text-align: right; }
 .assistant-evidence-limit, .assistant-evidence-empty { color: #929890 !important; font-style: italic; }
+.assistant-briefing-evidence, .assistant-highlight-evidence { display: grid; gap: 5px; margin-top: 7px; }
+.assistant-briefing-evidence .assistant-evidence-row, .assistant-highlight-evidence .assistant-evidence-row { padding-top: 5px; border-top: 1px dashed rgba(79, 93, 82, .16); }
 .assistant-memory-actions { display: flex; justify-content: flex-end; gap: 7px; margin-top: 10px; }
 .assistant-memory-actions button { padding: 6px 10px; border: 1px solid #d9d6cd; border-radius: 8px; background: transparent; }
 .assistant-memory-actions button.primary { color: #fff; border-color: #255f4b; background: #255f4b; }

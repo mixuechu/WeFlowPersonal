@@ -4,7 +4,7 @@ import { BookOpen, Bot, CalendarDays, Check, Clock3, Database, Filter, Network, 
 import { buildTaskCalendar, shanghaiToday } from '../utils/taskCalendar'
 import type { ReviewStatusFilter } from '../utils/graphReviewFilters'
 import type { ReviewCalibrationOutcomeFilter } from '../../shared/graphReviewPagination'
-import { evidenceLocalMessageId, groupMemorySearchResults, memoryEvidenceSourceLabel, MEMORY_TYPE_LABELS, normalizeMemoryEvidence, type MemoryEvidence } from '../utils/memorySearchPresentation'
+import { evidenceLocalMessageId, evidenceNavigationUnavailableReason, groupMemorySearchResults, memoryEvidenceSourceLabel, MEMORY_TYPE_LABELS, normalizeMemoryEvidence, type MemoryEvidence, wechatEvidenceNavigation } from '../utils/memorySearchPresentation'
 import {
   authorityReturnLabel,
   buildAuthorityReturnTarget,
@@ -322,14 +322,18 @@ function EvidenceRows({
   </>
   return <>
     {evidence.map((item, index) => {
-      const localMessageId = evidenceLocalMessageId(item)
+      const navigation = wechatEvidenceNavigation(item)
+      const navigationUnavailableReason = evidenceNavigationUnavailableReason(item)
       const role = item.role === 'indirect' ? '间接证据'
         : item.role === 'contradiction' ? '反证'
           : roleLabels ? '直接证据' : '证据'
       return <div className="assistant-evidence-row" key={`${item.sourceId}-${item.sessionId}-${item.messageId}-${index}`}>
-        <small>{role} · {memoryEvidenceSourceLabel(item)} · {item.sender || '发送者未知'} · {evidenceTime(item.timestamp)}：“{item.excerpt}”</small>
-        {item.sessionId && localMessageId && <button onClick={() =>
-          void window.electronAPI.window.openChatHistoryWindow(item.sessionId, localMessageId)}>打开原消息</button>}
+        <small>{role} · {memoryEvidenceSourceLabel(item)}{item.sessionName ? ` · ${item.sessionName}` : ''} · {item.sender || '发送者未知'} · {evidenceTime(item.timestamp)}：“{item.excerpt}”</small>
+        {navigation
+          ? <button onClick={() => void window.electronAPI.window.openChatHistoryWindow(
+            navigation.sessionId, navigation.messageId
+          )}>打开原消息</button>
+          : <em className="assistant-evidence-navigation-note">{navigationUnavailableReason}</em>}
       </div>
     })}
     {Number(total || 0) > evidence.length && <small className="assistant-evidence-limit">
@@ -9960,9 +9964,10 @@ function AiAssistantPage() {
               {briefing?.summary && <details className="assistant-query-plan">
                 <summary>{briefing.summaryVerified ? `查看摘要原文（${briefing.summaryEvidence?.length || 0}）` : '历史摘要 · 生成时尚未保存逐条引用'}</summary>
                 {briefing.summaryVerified
-                  ? <div>{(briefing.summaryEvidence || []).map((item: any) => <span key={item.evidenceKey}>
-                    {item.sessionName} · {item.sender}：“{item.excerpt}”
-                  </span>)}</div>
+                  ? <div className="assistant-briefing-evidence"><EvidenceRows
+                    evidence={briefing.summaryEvidence}
+                    total={briefing.summaryEvidence?.length || 0}
+                  /></div>
                   : <small>该摘要可以作为历史阅读材料，但不会作为新的可信事实或问答证据。</small>}
               </details>}
             </> : <>
@@ -10333,7 +10338,10 @@ function AiAssistantPage() {
                 <Sparkles size={13} /><span>{highlight.text}
                   <small>{highlight.legacy ? '历史重点 · 未保存逐条引用' : `${highlight.evidence.length} 条原文依据`}</small>
                   {!!highlight.evidence?.length && <details><summary>查看原文</summary>
-                    {highlight.evidence.map((item: any) => <i key={item.evidenceKey}>{item.sessionName} · {item.sender}：“{item.excerpt}”</i>)}
+                    <div className="assistant-highlight-evidence"><EvidenceRows
+                      evidence={highlight.evidence}
+                      total={highlight.evidence.length}
+                    /></div>
                   </details>}
                 </span>
               </div>
