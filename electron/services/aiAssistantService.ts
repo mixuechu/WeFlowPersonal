@@ -387,7 +387,7 @@ import {
   addIdentityCandidateToLookup,
   buildIdentityCandidateLookup,
   buildGraphIdentitySuggestionPlan,
-  buildNameBuckets,
+  buildNameIdentityPairPlan,
   getFullIdentityScanSchedule,
   identityPairKey,
   listIndexedIdentityCandidates,
@@ -588,6 +588,9 @@ type AssistantState = {
       contextualSkippedHubs: number
       contextualPairCandidates: number
       contextualTruncated: boolean
+      fullPairCandidates: number
+      fullLargestNameBucket: number
+      fullTruncated: boolean
     }
   }
 }
@@ -643,7 +646,8 @@ const EMPTY_STATE: AssistantState = {
   graph: { entities: [], relations: [], lastSqlCommitId: null, reviewQueue: [], identityScan: {
     lastFullScanAt: null, lastRunAt: null, lastMode: null, lastCandidateCount: 0,
     contextualRelations: 0, contextualEligibleNeighbors: 0, contextualSkippedHubs: 0,
-    contextualPairCandidates: 0, contextualTruncated: false
+    contextualPairCandidates: 0, contextualTruncated: false,
+    fullPairCandidates: 0, fullLargestNameBucket: 0, fullTruncated: false
   } }
 }
 
@@ -3029,17 +3033,10 @@ export class AiAssistantService {
     if (!schedule.due) return
     const people = this.state.graph.entities.filter(entity => entity.type === 'person')
     const byId = new Map(people.map(entity => [entity.id, entity]))
-    const pairKeys = new Set<string>()
-    for (const ids of buildNameBuckets(people).values()) {
-      for (let leftIndex = 0; leftIndex < ids.length; leftIndex += 1) {
-        for (let rightIndex = leftIndex + 1; rightIndex < ids.length; rightIndex += 1) {
-          pairKeys.add(identityPairKey(ids[leftIndex], ids[rightIndex]))
-        }
-      }
-    }
+    const pairPlan = buildNameIdentityPairPlan(people)
     let candidates = 0
     const reviewsById = new Map(this.state.graph.reviewQueue.map(review => [review.id, review]))
-    for (const pairKey of pairKeys) {
+    for (const pairKey of pairPlan.pairKeys) {
       const [leftId, rightId] = pairKey.split('|')
       const left = byId.get(leftId)
       const right = byId.get(rightId)
@@ -3053,7 +3050,10 @@ export class AiAssistantService {
       lastMode: 'full',
       lastCandidateCount: (this.state.graph.identityScan.lastRunAt === now
         ? this.state.graph.identityScan.lastCandidateCount
-        : 0) + candidates
+        : 0) + candidates,
+      fullPairCandidates: pairPlan.stats.pairCandidates,
+      fullLargestNameBucket: pairPlan.stats.largestBucket,
+      fullTruncated: pairPlan.stats.truncated
     }
   }
 

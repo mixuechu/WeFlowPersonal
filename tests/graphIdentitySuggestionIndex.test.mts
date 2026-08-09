@@ -5,7 +5,8 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import {
   buildGraphIdentitySuggestionPlan,
-  buildGraphIdentitySuggestions
+  buildGraphIdentitySuggestions,
+  buildNameIdentityPairPlan
 } from '../electron/services/identityDisambiguation.ts'
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)))
@@ -106,4 +107,29 @@ test('identity scan diagnostics expose hub exclusions and truncation in the UI',
   assert.match(page, /共同邻居候选对/)
   assert.match(page, /已忽略低区分度超级枢纽/)
   assert.match(page, /已达安全上限/)
+  assert.match(page, /最近每周同名候选对/)
+  assert.match(page, /最大同名\/别名桶/)
+  assert.match(page, /每周巡检已达上限/)
+})
+
+test('weekly name scan keeps deterministic deduplicated order and bounds huge same-name buckets', () => {
+  const ordinary = [{ id: 'z', type: 'person', canonicalName: '同名', aliases: ['共同别名'] }, {
+    id: 'a', type: 'person', canonicalName: '同名', aliases: ['共同别名']
+  }, {
+    id: 'm', type: 'person', canonicalName: '第三人', aliases: ['共同别名']
+  }]
+  const ordinaryPlan = buildNameIdentityPairPlan(ordinary)
+  assert.deepEqual(ordinaryPlan.pairKeys, ['a|z', 'm|z', 'a|m'])
+  assert.equal(ordinaryPlan.stats.largestBucket, 3)
+  assert.equal(ordinaryPlan.stats.truncated, false)
+
+  const sameName = Array.from({ length: 10_000 }, (_, index) => ({
+    id: `person-${index}`, type: 'person', canonicalName: '超大同名桶', aliases: []
+  }))
+  const startedAt = performance.now()
+  const bounded = buildNameIdentityPairPlan(sameName, 100_000)
+  assert.equal(bounded.pairKeys.length, 100_000)
+  assert.equal(bounded.stats.largestBucket, 10_000)
+  assert.equal(bounded.stats.truncated, true)
+  assert.ok(performance.now() - startedAt < 3_000)
 })

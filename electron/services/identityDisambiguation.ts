@@ -181,6 +181,49 @@ export function buildNameBuckets(entities: IdentityCandidateEntity[]): Map<strin
   return buckets
 }
 
+export function buildNameIdentityPairPlan(
+  entities: IdentityCandidateEntity[],
+  maxPairCandidates = MAX_GRAPH_IDENTITY_PAIR_CANDIDATES
+): {
+  pairKeys: string[]
+  stats: {
+    people: number
+    nameBuckets: number
+    largestBucket: number
+    pairCandidates: number
+    truncated: boolean
+  }
+} {
+  const limit = Math.max(1, Math.floor(maxPairCandidates))
+  const buckets = buildNameBuckets(entities)
+  const pairKeys = new Set<string>()
+  let largestBucket = 0
+  let truncated = false
+  for (const ids of buckets.values()) largestBucket = Math.max(largestBucket, ids.length)
+  bucketLoop: for (const ids of buckets.values()) {
+    for (let leftIndex = 0; leftIndex < ids.length; leftIndex += 1) {
+      for (let rightIndex = leftIndex + 1; rightIndex < ids.length; rightIndex += 1) {
+        const key = identityPairKey(ids[leftIndex], ids[rightIndex])
+        if (!pairKeys.has(key) && pairKeys.size >= limit) {
+          truncated = true
+          break bucketLoop
+        }
+        pairKeys.add(key)
+      }
+    }
+  }
+  return {
+    pairKeys: [...pairKeys],
+    stats: {
+      people: entities.filter(entity => entity.type === 'person').length,
+      nameBuckets: buckets.size,
+      largestBucket,
+      pairCandidates: pairKeys.size,
+      truncated
+    }
+  }
+}
+
 export function buildGraphIdentitySuggestions(
   entities: IdentityCandidateEntity[],
   relations: Array<{ subjectId: string; objectId: string; predicate?: string; status?: string }>

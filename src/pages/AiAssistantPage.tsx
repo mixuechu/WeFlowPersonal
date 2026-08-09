@@ -12949,6 +12949,9 @@ function AiAssistantPage() {
             <span><b>{identityDisambiguation.contextualPairCandidates || 0}</b><small>共同邻居候选对</small></span>
             <span><b>{identityDisambiguation.contextualSkippedHubs || 0}</b><small>已忽略低区分度超级枢纽</small></span>
             {identityDisambiguation.contextualTruncated && <span className="warning"><b>已达安全上限</b><small>其余组合需等待新证据或人工检索复核</small></span>}
+            <span><b>{identityDisambiguation.fullPairCandidates || 0}</b><small>最近每周同名候选对</small></span>
+            <span><b>{identityDisambiguation.fullLargestNameBucket || 0}</b><small>最大同名/别名桶</small></span>
+            {identityDisambiguation.fullTruncated && <span className="warning"><b>每周巡检已达上限</b><small>其余同名组合需结合新证据或人工检索复核</small></span>}
           </div>}
           <div className="assistant-path-finder">
             <TrustedEntityPicker
