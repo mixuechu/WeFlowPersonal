@@ -9388,51 +9388,38 @@ export class PersonalMemoryStore {
         'SELECT value FROM schema_meta WHERE key=?'
       ).get(auditKey) as any)?.value || '{}'))
     } catch {}
-    const rows = this.db.prepare(`
-      SELECT review_id,evidence_key,source_id,session_id,message_id,timestamp,
-        sender,excerpt,evidence_json,created_at
+    const batchLimit = 500
+    const listBatch = this.db.prepare(`
+      SELECT rowid AS evidence_rowid,review_id,evidence_key,source_id,session_id,
+        message_id,timestamp,sender,excerpt,evidence_json,created_at
       FROM graph_review_evidence
-      WHERE message_id!='' AND (source_id='legacy' OR sender='')
-      ORDER BY review_id,CASE WHEN source_id='legacy' THEN 0 ELSE 1 END,evidence_key
-    `).all() as any[]
-    const carriers = [...new Map(rows.map(row => {
-      const sessionId = String(row.session_id || '').trim()
-      const messageId = String(row.message_id || '').trim()
-      return [`${sessionId}\0${messageId}`, [sessionId, messageId]]
-    })).values()]
-    const authoritativeRows = carriers.length
-      ? this.db.prepare(`
-          WITH requested(session_id,message_id) AS (
-            SELECT CAST(json_extract(value,'$[0]') AS TEXT),
-              CAST(json_extract(value,'$[1]') AS TEXT)
-            FROM json_each(?)
-          )
-          SELECT authority.session_id,authority.message_id,authority.source_id,authority.sender
-          FROM requested
-          JOIN entity_evidence authority
-            ON authority.session_id=requested.session_id
-           AND authority.message_id=requested.message_id
-          UNION ALL
-          SELECT authority.session_id,authority.message_id,authority.source_id,authority.sender
-          FROM requested
-          JOIN evidence authority
-            ON authority.session_id=requested.session_id
-           AND authority.message_id=requested.message_id
-          UNION ALL
-          SELECT authority.session_id,authority.message_id,authority.source_id,authority.sender
-          FROM requested
-          JOIN search_document_evidence authority
-            ON authority.session_id=requested.session_id
-           AND authority.message_id=requested.message_id
-        `).all(JSON.stringify(carriers)) as any[]
-      : []
-    const authorityByCarrier = new Map<string, any[]>()
-    for (const item of authoritativeRows) {
-      const key = `${String(item.session_id || '').trim()}\0${String(item.message_id || '').trim()}`
-      const bucket = authorityByCarrier.get(key) || []
-      bucket.push(item)
-      authorityByCarrier.set(key, bucket)
-    }
+      WHERE rowid>? AND message_id!='' AND (source_id='legacy' OR sender='')
+      ORDER BY rowid LIMIT ?
+    `)
+    const listAuthority = this.db.prepare(`
+      WITH requested(session_id,message_id) AS (
+        SELECT CAST(json_extract(value,'$[0]') AS TEXT),
+          CAST(json_extract(value,'$[1]') AS TEXT)
+        FROM json_each(?)
+      )
+      SELECT authority.session_id,authority.message_id,authority.source_id,authority.sender
+      FROM requested
+      JOIN entity_evidence authority
+        ON authority.session_id=requested.session_id
+       AND authority.message_id=requested.message_id
+      UNION ALL
+      SELECT authority.session_id,authority.message_id,authority.source_id,authority.sender
+      FROM requested
+      JOIN evidence authority
+        ON authority.session_id=requested.session_id
+       AND authority.message_id=requested.message_id
+      UNION ALL
+      SELECT authority.session_id,authority.message_id,authority.source_id,authority.sender
+      FROM requested
+      JOIN search_document_evidence authority
+        ON authority.session_id=requested.session_id
+       AND authority.message_id=requested.message_id
+    `)
     const update = this.db.prepare(`
       UPDATE graph_review_evidence SET
         evidence_key=?,source_id=?,sender=?,evidence_json=?
@@ -9460,8 +9447,38 @@ export class PersonalMemoryStore {
     let senderRowsRepaired = 0
     let rowsMerged = 0
     let ambiguousSenderRows = 0
-    const transaction = this.db.transaction(() => {
-      for (const queuedRow of rows) {
+    let rowsChecked = 0
+    let batches = 0
+    let authorityQueries = 0
+    let peakRows = 0
+    let peakCarriers = 0
+    let afterRowid = 0
+    while (true) {
+      const rows = listBatch.all(afterRowid, batchLimit) as any[]
+      if (!rows.length) break
+      afterRowid = Number(rows.at(-1)?.evidence_rowid || afterRowid)
+      rowsChecked += rows.length
+      batches += 1
+      peakRows = Math.max(peakRows, rows.length)
+      const carriers = [...new Map(rows.map(row => {
+        const sessionId = String(row.session_id || '').trim()
+        const messageId = String(row.message_id || '').trim()
+        return [`${sessionId}\0${messageId}`, [sessionId, messageId]]
+      })).values()]
+      peakCarriers = Math.max(peakCarriers, carriers.length)
+      const authoritativeRows = carriers.length
+        ? listAuthority.all(JSON.stringify(carriers)) as any[]
+        : []
+      if (carriers.length) authorityQueries += 1
+      const authorityByCarrier = new Map<string, any[]>()
+      for (const item of authoritativeRows) {
+        const key = `${String(item.session_id || '').trim()}\0${String(item.message_id || '').trim()}`
+        const bucket = authorityByCarrier.get(key) || []
+        bucket.push(item)
+        authorityByCarrier.set(key, bucket)
+      }
+      const transaction = this.db.transaction(() => {
+        for (const queuedRow of rows) {
         const row = findCurrent.get(queuedRow.review_id, queuedRow.evidence_key) as any
         if (!row || (String(row.source_id || '') !== 'legacy' && String(row.sender || '') !== '')) {
           continue
@@ -9538,7 +9555,11 @@ export class PersonalMemoryStore {
         }
         if (sourceChanged) sourceRowsRepaired += 1
         if (senderChanged) senderRowsRepaired += 1
-      }
+        }
+      })
+      transaction()
+    }
+    const transaction = this.db.transaction(() => {
       const checkedAt = new Date().toISOString()
       const unresolvedRows = Number((this.db!.prepare(`
         SELECT COUNT(*) AS count FROM graph_review_evidence
@@ -9548,10 +9569,16 @@ export class PersonalMemoryStore {
         INSERT INTO schema_meta(key,value,updated_at) VALUES(?,?,?)
         ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_at=excluded.updated_at
       `).run(auditKey, JSON.stringify({
-        version: 1,
+        version: 2,
         policy: 'unique_authoritative_carrier_only',
+        batchingPolicy: 'rowid_keyset_bounded_v1',
         checkedAt,
-        rowsCheckedThisStart: rows.length,
+        batchLimit,
+        batchesThisStart: batches,
+        authorityQueriesThisStart: authorityQueries,
+        peakRowsThisStart: peakRows,
+        peakCarriersThisStart: peakCarriers,
+        rowsCheckedThisStart: rowsChecked,
         sourceRowsRepairedThisStart: sourceRowsRepaired,
         senderRowsRepairedThisStart: senderRowsRepaired,
         rowsMergedThisStart: rowsMerged,

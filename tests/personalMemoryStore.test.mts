@@ -1761,6 +1761,9 @@ test('legacy graph review evidence provenance repairs only uniquely proven carri
     assert.equal(afterRestart.sourceRowsRepairedThisStart, 0)
     assert.equal(afterRestart.senderRowsRepairedThisStart, 0)
     assert.equal(afterRestart.rowsMergedThisStart, 0)
+    assert.equal(afterRestart.rowsCheckedThisStart, 2)
+    assert.equal(afterRestart.batchesThisStart, 1)
+    assert.equal(afterRestart.authorityQueriesThisStart, 1)
     assert.equal(afterRestart.sourceRowsRepairedTotal, 2)
     assert.equal(afterRestart.senderRowsRepairedTotal, 2)
     assert.equal(afterRestart.rowsMergedTotal, 1)
@@ -1819,14 +1822,15 @@ test('legacy graph review provenance repair batches thousands of carriers throug
           entity_id,source_id,message_id,session_id,timestamp,sender,excerpt,evidence_kind
         ) VALUES('provenance-scale-person','wechat',?,'scale-room',?,'规模发送者',?,'identity')
       `)
-      for (let index = 0; index < 3_000; index += 1) {
+      for (let index = 0; index < 4_200; index += 1) {
         const reviewId = `provenance-scale-review-${index}`
-        const messageId = `wechat:scale-room:${index}`
+        const repairable = index < 3_000
+        const messageId = repairable ? `wechat:scale-room:${index}` : `opaque-scale-${index}`
         const timestamp = 1_700_000_000 + index
         const now = new Date(timestamp * 1000).toISOString()
         review.run(reviewId, reviewId, now)
         evidence.run(reviewId, `legacy-scale-key-${index}`, messageId, timestamp, `规模原文 ${index}`, now)
-        authority.run(messageId, timestamp, `规模原文 ${index}`)
+        if (repairable) authority.run(messageId, timestamp, `规模原文 ${index}`)
       }
     })
     insertReviews()
@@ -1838,7 +1842,13 @@ test('legacy graph review provenance repair batches thousands of carriers throug
     const health = reopened.getGraphReviewEvidenceStorageHealth()
     assert.equal(health.provenanceRepair.sourceRowsRepairedThisStart, 3_000)
     assert.equal(health.provenanceRepair.senderRowsRepairedThisStart, 3_000)
-    assert.equal(health.provenanceRepair.unresolvedRowsThisStart, 0)
+    assert.equal(health.provenanceRepair.unresolvedRowsThisStart, 1_200)
+    assert.equal(health.provenanceRepair.batchingPolicy, 'rowid_keyset_bounded_v1')
+    assert.equal(health.provenanceRepair.batchLimit, 500)
+    assert.equal(health.provenanceRepair.batchesThisStart, 9)
+    assert.equal(health.provenanceRepair.authorityQueriesThisStart, 9)
+    assert.equal(health.provenanceRepair.peakRowsThisStart, 500)
+    assert.equal(health.provenanceRepair.peakCarriersThisStart, 500)
     assert.equal(health.provenanceRepair.indexesHealthy, true)
     assert.ok(durationMs < 5_000, `3,000-carrier startup repair took ${durationMs}ms`)
     for (const [table, indexName] of [
