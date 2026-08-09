@@ -25,6 +25,7 @@ import {
   verifyModelCacheManifest
 } from '../electron/services/localEmbeddingService.ts'
 import {
+  assessVectorIndexPowerPolicy,
   recordVectorIndexContinuation,
   recordVectorQueryOutcome,
   approximateVectorIndexNeedsRecovery,
@@ -11996,6 +11997,54 @@ test('bounded vector indexing exits on zero progress instead of spinning forever
     commit: () => false
   }), /没有可安全提交/)
   assert.equal(listCalls, 1)
+})
+
+test('vector continuation defers automatic work on battery or serious thermal pressure', () => {
+  assert.deepEqual(assessVectorIndexPowerPolicy({
+    onBattery: false,
+    thermalState: 'nominal'
+  }), {
+    onBattery: false,
+    thermalState: 'nominal',
+    deferred: false,
+    reason: ''
+  })
+  assert.deepEqual(assessVectorIndexPowerPolicy({
+    onBattery: true,
+    thermalState: 'fair'
+  }), {
+    onBattery: true,
+    thermalState: 'fair',
+    deferred: true,
+    reason: 'battery'
+  })
+  assert.deepEqual(assessVectorIndexPowerPolicy({
+    onBattery: false,
+    thermalState: 'serious'
+  }), {
+    onBattery: false,
+    thermalState: 'serious',
+    deferred: true,
+    reason: 'thermal'
+  })
+  assert.deepEqual(assessVectorIndexPowerPolicy({
+    onBattery: true,
+    thermalState: 'critical'
+  }), {
+    onBattery: true,
+    thermalState: 'critical',
+    deferred: true,
+    reason: 'thermal'
+  })
+  assert.deepEqual(assessVectorIndexPowerPolicy({
+    onBattery: false,
+    thermalState: 'forged-state'
+  }), {
+    onBattery: false,
+    thermalState: 'unknown',
+    deferred: false,
+    reason: ''
+  })
 })
 
 test('vector continuation health exposes scheduling, progress, retry and recovery', () => {

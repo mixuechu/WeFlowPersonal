@@ -16487,7 +16487,14 @@ function AiAssistantPage() {
                 <span>向量块 <b>{Number(memoryDiagnostics.embeddings.chunks || 0).toLocaleString()}</b> · 长文档 {Number(memoryDiagnostics.embeddings.longDocuments || 0).toLocaleString()}</span>
                 <span>索引执行 <b>{memoryDiagnostics.embeddings.indexing
                   ? '运行中'
-                  : memoryDiagnostics.embeddings.background?.scheduled ? '已排队' : '空闲'}</b></span>
+                  : memoryDiagnostics.embeddings.powerPolicy?.deferred
+                    ? memoryDiagnostics.embeddings.powerPolicy.reason === 'thermal'
+                      ? '温度较高 · 已暂停'
+                      : '使用电池 · 已暂停'
+                    : memoryDiagnostics.embeddings.background?.scheduled ? '已排队' : '空闲'}</b></span>
+                <span>后台能耗 <b>{memoryDiagnostics.embeddings.powerPolicy?.deferred
+                  ? '等待插电或温度恢复'
+                  : '允许续建'}</b></span>
                 <span>后台累计 <b>{Number(memoryDiagnostics.embeddings.background?.indexedCount || 0).toLocaleString()}</b> 条 / {Number(memoryDiagnostics.embeddings.background?.runCount || 0).toLocaleString()} 轮</span>
                 <span>近期速度 <b>{Number(memoryDiagnostics.embeddings.background?.recentDocumentsPerMinute || 0) > 0
                   ? `${Number(memoryDiagnostics.embeddings.background.recentDocumentsPerMinute).toFixed(1)} 条/分钟`
@@ -16497,7 +16504,13 @@ function AiAssistantPage() {
                   : '尚无'}</b></span>
                 <span>预计完成 <b>{memoryDiagnostics.embeddings.background?.estimatedCompletionAt
                   ? new Date(memoryDiagnostics.embeddings.background.estimatedCompletionAt).toLocaleString('zh-CN', { hour12: false })
-                  : Number(memoryDiagnostics.embeddings.pending || 0) > 0 ? '计算中' : '已完成'}</b></span>
+                  : Number(memoryDiagnostics.embeddings.pending || 0) > 0
+                    ? memoryDiagnostics.embeddings.powerPolicy?.deferred ? '恢复供电后继续计算' : '计算中'
+                    : '已完成'}</b></span>
+                {memoryDiagnostics.embeddings.powerPolicy?.lastChangedAt && <span>电源策略更新 <b>{
+                  new Date(memoryDiagnostics.embeddings.powerPolicy.lastChangedAt)
+                    .toLocaleString('zh-CN', { hour12: false })
+                }</b></span>}
                 <span>连续失败 <b>{Number(memoryDiagnostics.embeddings.background?.failureStreak || 0).toLocaleString()}</b> 次</span>
                 <span>查询降级 <b>{Number(memoryDiagnostics.embeddings.query?.fallbackCount || 0).toLocaleString()}</b> 次</span>
                 <span>维度漂移修复 <b>{Number(memoryDiagnostics.embeddings.query?.dimensionRepairCount || 0).toLocaleString()}</b> 条</span>

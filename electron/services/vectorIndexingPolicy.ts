@@ -148,6 +148,31 @@ export type VectorIndexContinuationHealth = {
   estimatedCompletionAt: string
 }
 
+export type VectorIndexPowerPolicy = {
+  onBattery: boolean
+  thermalState: 'unknown' | 'nominal' | 'fair' | 'serious' | 'critical'
+  deferred: boolean
+  reason: '' | 'battery' | 'thermal'
+}
+
+export function assessVectorIndexPowerPolicy(input: {
+  onBattery?: unknown
+  thermalState?: unknown
+}): VectorIndexPowerPolicy {
+  const thermalState = ['nominal', 'fair', 'serious', 'critical'].includes(
+    String(input.thermalState || '').toLowerCase()
+  )
+    ? String(input.thermalState || '').toLowerCase() as VectorIndexPowerPolicy['thermalState']
+    : 'unknown'
+  if (thermalState === 'serious' || thermalState === 'critical') {
+    return { onBattery: Boolean(input.onBattery), thermalState, deferred: true, reason: 'thermal' }
+  }
+  if (Boolean(input.onBattery)) {
+    return { onBattery: true, thermalState, deferred: true, reason: 'battery' }
+  }
+  return { onBattery: false, thermalState, deferred: false, reason: '' }
+}
+
 export const VECTOR_INDEX_RETRY_BASE_MS = 60_000
 export const VECTOR_INDEX_RETRY_MAX_MS = 6 * 60 * 60_000
 

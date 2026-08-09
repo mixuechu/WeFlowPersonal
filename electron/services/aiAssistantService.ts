@@ -22,12 +22,14 @@ import {
   recordVectorIndexContinuation,
   requestVectorIndexWarmup,
   approximateVectorIndexNeedsRecovery,
+  assessVectorIndexPowerPolicy,
   runVectorIndexPass,
   shouldPersistVectorQueryOutcome,
   vectorIndexScheduleDelayMs,
   validateEmbeddingBatch,
   withVectorQueryDeadline,
   type VectorIndexContinuationHealth,
+  type VectorIndexPowerPolicy,
   type VectorQueryHealth
 } from './vectorIndexingPolicy'
 import {
@@ -844,6 +846,13 @@ export class AiAssistantService {
     recentDocumentsPerMinute: 0,
     lastPendingCount: 0,
     estimatedCompletionAt: ''
+  }
+  private vectorIndexPowerPolicy: VectorIndexPowerPolicy & { lastChangedAt: string } = {
+    onBattery: false,
+    thermalState: 'unknown',
+    deferred: false,
+    reason: '',
+    lastChangedAt: ''
   }
   private vectorQueryHealth: VectorQueryHealth = {
     fallbackCount: 0,
@@ -4678,6 +4687,31 @@ export class AiAssistantService {
     }
   }
 
+  updatePowerState(input: { onBattery?: unknown; thermalState?: unknown }): void {
+    const next = assessVectorIndexPowerPolicy(input)
+    const changed = next.onBattery !== this.vectorIndexPowerPolicy.onBattery
+      || next.thermalState !== this.vectorIndexPowerPolicy.thermalState
+      || next.deferred !== this.vectorIndexPowerPolicy.deferred
+      || next.reason !== this.vectorIndexPowerPolicy.reason
+    this.vectorIndexPowerPolicy = {
+      ...next,
+      lastChangedAt: changed ? new Date().toISOString() : this.vectorIndexPowerPolicy.lastChangedAt
+    }
+    if (next.deferred) {
+      if (this.vectorIndexContinuation) clearTimeout(this.vectorIndexContinuation)
+      this.vectorIndexContinuation = null
+      this.vectorIndexContinuationHealth = recordVectorIndexContinuation(
+        this.vectorIndexContinuationHealth,
+        { type: 'cancelled', at: new Date().toISOString() }
+      )
+      if (this.statePath) this.persistVectorIndexContinuationHealth()
+      return
+    }
+    if (this.statePath && this.config.get('aiAssistantEnabled')) {
+      this.scheduleVectorIndexContinuation()
+    }
+  }
+
   private cacheConnectorAuthorization(kind: 'calendar' | 'mail', authorization: string): void {
     const current = this.connectorAuthorizationCache.peek()
     this.connectorAuthorizationCache.set({
@@ -6424,6 +6458,7 @@ export class AiAssistantService {
         ...localEmbeddingService.getStatus(),
         indexing: Boolean(this.vectorIndexPromise),
         background: { ...this.vectorIndexContinuationHealth },
+        powerPolicy: { ...this.vectorIndexPowerPolicy },
         query: { ...this.vectorQueryHealth }
       },
       privacy: {
@@ -9884,7 +9919,8 @@ export class AiAssistantService {
   }
 
   private scheduleVectorIndexContinuation(delayMs = 1_000): void {
-    if (this.disposed || !this.config.get('aiAssistantEnabled') || this.vectorIndexContinuation) return
+    if (this.disposed || !this.config.get('aiAssistantEnabled') ||
+        this.vectorIndexPowerPolicy.deferred || this.vectorIndexContinuation) return
     this.vectorIndexContinuationHealth = recordVectorIndexContinuation(
       this.vectorIndexContinuationHealth,
       { type: 'scheduled', at: new Date().toISOString() }
@@ -9892,6 +9928,14 @@ export class AiAssistantService {
     this.vectorIndexContinuation = setTimeout(() => {
       this.vectorIndexContinuation = null
       if (this.disposed) return
+      if (this.vectorIndexPowerPolicy.deferred) {
+        this.vectorIndexContinuationHealth = recordVectorIndexContinuation(
+          this.vectorIndexContinuationHealth,
+          { type: 'cancelled', at: new Date().toISOString() }
+        )
+        this.persistVectorIndexContinuationHealth()
+        return
+      }
       if (!this.config.get('aiAssistantEnabled')) {
         this.vectorIndexContinuationHealth = recordVectorIndexContinuation(
           this.vectorIndexContinuationHealth,

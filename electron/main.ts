@@ -5180,6 +5180,16 @@ app.whenReady().then(async () => {
 
   await httpService.autoStart()
   await aiAssistantService.initialize()
+  const updateAiAssistantPowerState = () => aiAssistantService.updatePowerState({
+    onBattery: powerMonitor.isOnBatteryPower(),
+    thermalState: process.platform === 'darwin'
+      ? powerMonitor.getCurrentThermalState()
+      : 'unknown'
+  })
+  updateAiAssistantPowerState()
+  powerMonitor.on('on-ac', updateAiAssistantPowerState)
+  powerMonitor.on('on-battery', updateAiAssistantPowerState)
+  powerMonitor.on('thermal-state-change', updateAiAssistantPowerState)
   powerMonitor.on('suspend', () => aiAssistantService.handleSystemSuspend())
   powerMonitor.on('resume', () => {
     void aiAssistantService.handleSystemResume().catch(error =>
