@@ -9,7 +9,8 @@ import {
   appRunShutdownDetailNeedsAttention,
   appRunShutdownStatusLabel,
   appRunShutdownStepLabel,
-  appRunStageLabel
+  appRunStageLabel,
+  buildRendererPageIncidentNotice
 } from '../src/utils/appRecoveryPresentation.ts'
 
 test('app recovery presentation translates persisted machine states into user-facing Chinese', () => {
@@ -77,4 +78,35 @@ test('app recovery presentation reports bounded durations without inventing inva
     '持续 2 分 5 秒'
   )
   assert.equal(appRunElapsedLabel('invalid', '2026-08-09T00:02:05.000Z'), '持续时间未知')
+})
+
+test('app recovery presentation exposes only current renderer page incidents in latest-first order', () => {
+  assert.deepEqual(buildRendererPageIncidentNotice({
+    current: {
+      incidents: [
+        { kind: 'renderer_page_error', at: '2026-08-10T01:00:00.000Z', detail: 'resources · ChunkLoadError · 摘要 aaa' },
+        { kind: 'renderer_gone', at: '2026-08-10T01:10:00.000Z', detail: '界面进程退出' },
+        { kind: 'renderer_page_error', at: '2026-08-10T01:20:00.000Z', detail: 'ai_assistant · TypeError · 摘要 bbb' },
+        { kind: 'renderer_page_error', at: 'invalid', detail: '不应展示' }
+      ]
+    },
+    history: [{ incidents: [{ kind: 'renderer_page_error', at: '2026-08-09T01:00:00.000Z' }] }]
+  }), {
+    count: 2,
+    latestAt: '2026-08-10T01:20:00.000Z',
+    latestDetail: 'ai_assistant · TypeError · 摘要 bbb'
+  })
+  assert.equal(buildRendererPageIncidentNotice({ current: { incidents: [] } }), null)
+  assert.equal(buildRendererPageIncidentNotice(null), null)
+})
+
+test('app recovery page incident notice bounds persisted presentation detail', () => {
+  const notice = buildRendererPageIncidentNotice({
+    current: { incidents: [{
+      kind: 'renderer_page_error',
+      at: '2026-08-10T01:00:00.000Z',
+      detail: 'x'.repeat(500)
+    }] }
+  })
+  assert.equal(notice?.latestDetail.length, 300)
 })

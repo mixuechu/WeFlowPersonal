@@ -48,6 +48,38 @@ export const appRunExitReasonLabel = (reason: unknown, cleanExit = false): strin
 
 export const appRunIncidentLabel = (kind: unknown): string => INCIDENT_LABELS[String(kind || '')] || '运行异常'
 
+export interface RendererPageIncidentNotice {
+  count: number
+  latestAt: string
+  latestDetail: string
+}
+
+export const buildRendererPageIncidentNotice = (appRecovery: unknown): RendererPageIncidentNotice | null => {
+  if (!appRecovery || typeof appRecovery !== 'object') return null
+  const current = (appRecovery as { current?: { incidents?: unknown } }).current
+  const incidents = Array.isArray(current?.incidents) ? current.incidents : []
+  const pageIncidents = incidents.flatMap(incident => {
+    if (!incident || typeof incident !== 'object') return []
+    const candidate = incident as { kind?: unknown; at?: unknown; detail?: unknown }
+    if (candidate.kind !== 'renderer_page_error') return []
+    const timestamp = Date.parse(String(candidate.at || ''))
+    if (!Number.isFinite(timestamp)) return []
+    return [{
+      timestamp,
+      at: new Date(timestamp).toISOString(),
+      detail: typeof candidate.detail === 'string' && candidate.detail.trim()
+        ? candidate.detail.trim().slice(0, 300)
+        : '已记录隐私安全的故障摘要'
+    }]
+  }).sort((left, right) => right.timestamp - left.timestamp)
+  if (!pageIncidents.length) return null
+  return {
+    count: pageIncidents.length,
+    latestAt: pageIncidents[0].at,
+    latestDetail: pageIncidents[0].detail
+  }
+}
+
 export const appRunShutdownStepLabel = (name: unknown): string => SHUTDOWN_STEP_LABELS[String(name || '')] || String(name || '未知步骤')
 
 export const appRunShutdownStatusLabel = (status: unknown): string => SHUTDOWN_STATUS_LABELS[String(status || '')] || '未知状态'

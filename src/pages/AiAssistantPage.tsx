@@ -99,7 +99,8 @@ import {
   appRunShutdownDetailLabel,
   appRunShutdownDetailNeedsAttention,
   appRunShutdownStepLabel,
-  appRunStageLabel
+  appRunStageLabel,
+  buildRendererPageIncidentNotice
 } from '../utils/appRecoveryPresentation'
 import { TrailingCoalescedRequest } from '../utils/trailingCoalescedRequest'
 import { ASSISTANT_MODULE_NAVIGATION } from '../utils/assistantModuleNavigation'
@@ -1472,6 +1473,7 @@ function AiAssistantPage() {
   const [repairingMemorySearchIndexes, setRepairingMemorySearchIndexes] = useState(false)
   const [memorySearchRepairResult, setMemorySearchRepairResult] = useState<any>(null)
   const [showDiagnostics, setShowDiagnostics] = useState(false)
+  const [focusAppRecoveryDiagnostics, setFocusAppRecoveryDiagnostics] = useState(false)
   const [ingestionArchive, setIngestionArchive] = useState<{
     items: any[]
     total: number
@@ -1972,6 +1974,17 @@ function AiAssistantPage() {
       dashboardLoadGate.current.invalidate()
     }
   }, [load])
+
+  useEffect(() => {
+    if (!showDiagnostics || !focusAppRecoveryDiagnostics || !memoryDiagnostics?.appRecovery) return
+    const frame = window.requestAnimationFrame(() => {
+      const target = document.getElementById('assistant-app-recovery-diagnostics')
+      target?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+      target?.focus({ preventScroll: true })
+      setFocusAppRecoveryDiagnostics(false)
+    })
+    return () => window.cancelAnimationFrame(frame)
+  }, [showDiagnostics, focusAppRecoveryDiagnostics, memoryDiagnostics?.appRecovery])
 
   useEffect(() => {
     if (!editingEvent) editingEventParticipantLoadGate.current.invalidate()
@@ -9290,6 +9303,12 @@ function AiAssistantPage() {
     setShowDataSources(false)
   }
 
+  const rendererPageIncidentNotice = buildRendererPageIncidentNotice(memoryDiagnostics?.appRecovery)
+  const openAppRecoveryDiagnostics = () => {
+    setFocusAppRecoveryDiagnostics(true)
+    setShowDiagnostics(true)
+  }
+
   return (
     <div className="ai-assistant-page native">
       <div className="ai-assistant-toolbar">
@@ -9916,7 +9935,20 @@ function AiAssistantPage() {
             <span><strong>已从上次异常中恢复</strong>
               <small>{memoryDiagnostics.appRecovery.recoveryMessage}；未完成的增量批次会沿 checkpoint 继续。</small>
             </span>
-            <button onClick={() => setShowDiagnostics(true)}>查看运行记录</button>
+            <button onClick={openAppRecoveryDiagnostics}>查看运行记录</button>
+          </section>
+        )}
+        {rendererPageIncidentNotice && (
+          <section className="assistant-recovery-banner page-incident" role="status">
+            <TriangleAlert size={15} />
+            <span><strong>本次运行有页面曾加载失败</strong>
+              <small>
+                已隐私安全地记录 {rendererPageIncidentNotice.count} 类故障；最近一次于
+                {' '}{new Date(rendererPageIncidentNotice.latestAt).toLocaleString('zh-CN', { hour12: false })}
+                {' · '}{rendererPageIncidentNotice.latestDetail}
+              </small>
+            </span>
+            <button onClick={openAppRecoveryDiagnostics}>定位运行记录</button>
           </section>
         )}
         {dashboard?.qualityBaseline && <section className={`assistant-quality-baseline ${dashboard.qualityBaseline.failures?.length ? 'warning' : ''}`}>
@@ -16851,7 +16883,8 @@ function AiAssistantPage() {
                 </button>
               </div>}
             </div>
-            {memoryDiagnostics.appRecovery && <div className={`assistant-recovery-audit ${memoryDiagnostics.appRecovery.recoveredFromInterruption ? 'warning' : 'healthy'}`}>
+            {memoryDiagnostics.appRecovery && <div id="assistant-app-recovery-diagnostics" tabIndex={-1}
+              className={`assistant-recovery-audit ${memoryDiagnostics.appRecovery.recoveredFromInterruption || rendererPageIncidentNotice ? 'warning' : 'healthy'}`}>
               <header><RefreshCw size={15} /><span><b>应用运行与恢复</b>
                 <small>{memoryDiagnostics.appRecovery.recoveryMessage}</small></span></header>
               <div className="assistant-recovery-current">
