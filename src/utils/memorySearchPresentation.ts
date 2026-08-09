@@ -43,7 +43,8 @@ export const MEMORY_TYPE_LABELS: Record<string, string> = {
   claim: '事实',
   event: '事件',
   task: '待办',
-  resource: '原始资料'
+  resource: '原始资料',
+  graph_review: '图谱候选原文'
 }
 
 export function normalizeMemoryEvidence(input: any): MemoryEvidence {

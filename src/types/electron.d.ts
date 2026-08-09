@@ -1676,9 +1676,16 @@ export interface ElectronAPI {
         offset?: number
         limit?: number
         revision?: string
+        query?: string
+        source?: string
+        session?: string
+        sender?: string
+        fromTimestamp?: number
+        toTimestamp?: number
       }) => Promise<{
         items: any[]
         total: number
+        unfilteredTotal: number
         offset: number
         limit: number
         hasMore: boolean

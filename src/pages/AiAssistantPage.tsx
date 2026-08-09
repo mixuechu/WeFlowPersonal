@@ -7926,10 +7926,8 @@ function AiAssistantPage() {
       status: 'loading'
     })
     try {
-      const page = await window.electronAPI.aiAssistant.getMemoryEvidencePage(
-        documentType,
-        sourceId,
-        {
+      const graphReviewArchive = documentType === 'graph_review'
+      const filtersPayload = {
           offset: 0,
           limit: 40,
           query: filters.query,
@@ -7938,7 +7936,18 @@ function AiAssistantPage() {
           sender: filters.sender,
           role: filters.role,
           fromTimestamp: memoryEvidenceTimestamp(filters.from),
-          toTimestamp: memoryEvidenceTimestamp(filters.to, true),
+          toTimestamp: memoryEvidenceTimestamp(filters.to, true)
+      }
+      const page: any = graphReviewArchive
+        ? await window.electronAPI.aiAssistant.getGraphReviewEvidencePage(sourceId, {
+          ...filtersPayload,
+          revision: String(reviewPage.revision || '')
+        })
+        : await window.electronAPI.aiAssistant.getMemoryEvidencePage(
+          documentType,
+          sourceId,
+          {
+          ...filtersPayload,
           expectedSearchRevision: openingSnapshot.searchRevision,
           expectedContentHash: openingSnapshot.contentHash,
           expectedEvidenceAuthorityRevision: openingSnapshot.evidenceAuthorityRevision
@@ -7946,6 +7955,12 @@ function AiAssistantPage() {
       )
       if (!memoryEvidenceArchiveGate.current.isCurrent(request)) return
       if (page.stale) {
+        if (graphReviewArchive) {
+          setMemoryEvidenceArchive(null)
+          setMessage('候选或原文在打开档案期间已经变化，已刷新审阅队列，请从最新候选重新打开。')
+          setReviewRefreshKey(value => value + 1)
+          return
+        }
         if (page.searchSnapshotStale || page.evidenceSnapshotStale) {
           setMemoryEvidenceArchive(null)
           if (openingSnapshot.origin === 'citation') {
@@ -8011,10 +8026,7 @@ function AiAssistantPage() {
     const request = memoryEvidenceArchiveGate.current.begin()
     setMemoryEvidenceLoadingMore(true)
     try {
-      const page = await window.electronAPI.aiAssistant.getMemoryEvidencePage(
-        archive.documentType,
-        archive.sourceId,
-        {
+      const filtersPayload = {
           offset: archive.items.length,
           limit: 40,
           revision: archive.revision,
@@ -8025,8 +8037,14 @@ function AiAssistantPage() {
           role: archive.filters.role,
           fromTimestamp: memoryEvidenceTimestamp(archive.filters.from),
           toTimestamp: memoryEvidenceTimestamp(archive.filters.to, true)
-        }
-      )
+      }
+      const page = archive.documentType === 'graph_review'
+        ? await window.electronAPI.aiAssistant.getGraphReviewEvidencePage(
+          archive.sourceId, filtersPayload
+        )
+        : await window.electronAPI.aiAssistant.getMemoryEvidencePage(
+          archive.documentType, archive.sourceId, filtersPayload
+        )
       if (!memoryEvidenceArchiveGate.current.isCurrent(request)) return
       if (page.stale) {
         setMessage('原文证据在翻页期间发生变化，已重新载入最新证据。')
@@ -13666,6 +13684,9 @@ function AiAssistantPage() {
                     ? '正在读取完整原文…'
                     : reviewEvidencePage ? '收起完整原文' : `查看全部 ${Number(review.evidenceTotal || 0)} 条原文`}
                 </button>
+                <button type="button" onClick={() => void openMemoryEvidenceArchive(
+                  'graph_review', review.id, `${review.title} · 候选原文`
+                )}>筛选原文档案</button>
                 {reviewEvidencePage?.error && <small className="error">
                   {reviewEvidencePage.error}
                 </small>}
@@ -14394,7 +14415,7 @@ function AiAssistantPage() {
                   <option value="legacy">历史来源未知</option>
                 </select>
               </label>
-              <label>
+              {memoryEvidenceArchive.documentType !== 'graph_review' && <label>
                 <span>证据性质</span>
                 <select value={memoryEvidenceFilters.role}
                   onChange={event => setMemoryEvidenceFilters(current => ({
@@ -14408,7 +14429,7 @@ function AiAssistantPage() {
                   <option value="support">历史支持证据</option>
                   <option value="original">未分类原文</option>
                 </select>
-              </label>
+              </label>}
               <label>
                 <span>会话 ID</span>
                 <input value={memoryEvidenceFilters.session} maxLength={500}

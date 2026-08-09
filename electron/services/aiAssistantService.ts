@@ -5556,7 +5556,13 @@ export class AiAssistantService {
       reviewId: normalizedId,
       offset: Number(options?.offset || 0),
       limit: Number(options?.limit || 40),
-      revision: String(options?.revision || '')
+      revision: String(options?.revision || ''),
+      query: String(options?.query || ''),
+      source: String(options?.source || ''),
+      session: String(options?.session || ''),
+      sender: String(options?.sender || ''),
+      fromTimestamp: Number(options?.fromTimestamp || 0),
+      toTimestamp: Number(options?.toTimestamp || 0)
     })
   }
 

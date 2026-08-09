@@ -1588,6 +1588,7 @@ test('graph review directory bounds evidence while the complete archive stays pa
       reviewId: 'large-review-evidence', offset: 80, limit: 100, revision
     })
     assert.equal(page1.total, 125)
+    assert.equal(page1.unfilteredTotal, 125)
     assert.equal(page1.items.length, 40)
     assert.equal(page2.items.length, 40)
     assert.equal(page3.items.length, 45)
@@ -1596,6 +1597,38 @@ test('graph review directory bounds evidence while the complete archive stays pa
       .map((item: any) => `${item.sourceId}:${item.sessionId}:${item.messageId}`)).size, 125)
     assert.equal(page1.items[0].messageId, 'review-message-124')
     assert.equal(page3.items.at(-1).messageId, 'review-message-0')
+    const filteredPage1 = reopened.listGraphReviewEvidencePage({
+      reviewId: 'large-review-evidence', offset: 0, limit: 5, revision,
+      source: 'mail', session: 'review-session-1'
+    })
+    const filteredPage2 = reopened.listGraphReviewEvidencePage({
+      reviewId: 'large-review-evidence', offset: 5, limit: 5, revision,
+      source: 'mail', session: 'review-session-1'
+    })
+    assert.equal(filteredPage1.unfilteredTotal, 125)
+    assert.equal(filteredPage1.total, 13)
+    assert.equal(filteredPage1.items.length, 5)
+    assert.equal(filteredPage2.items.length, 5)
+    assert.equal(filteredPage2.items[0].messageId, 'review-message-71')
+    assert.ok([...filteredPage1.items, ...filteredPage2.items].every((item: any) =>
+      item.sourceId === 'mail' && item.sessionId === 'review-session-1'))
+    const exact = reopened.listGraphReviewEvidencePage({
+      reviewId: 'large-review-evidence', revision,
+      query: 'review-message-121', sender: '发送者 121',
+      fromTimestamp: 1_700_100_120, toTimestamp: 1_700_100_122
+    })
+    assert.equal(exact.total, 1)
+    assert.equal(exact.items[0].messageId, 'review-message-121')
+    const ranged = reopened.listGraphReviewEvidencePage({
+      reviewId: 'large-review-evidence', revision,
+      source: 'mail', fromTimestamp: 1_700_100_120, toTimestamp: 1_700_100_124
+    })
+    assert.deepEqual(ranged.items.map((item: any) => item.messageId), [
+      'review-message-123', 'review-message-121'
+    ])
+    assert.throws(() => reopened.listGraphReviewEvidencePage({
+      reviewId: 'large-review-evidence', revision, source: 'forged-source'
+    }), /来源筛选无效/)
 
     ;(reopened as any).db.prepare(`
       UPDATE review_queue SET detail=detail || ' 已变化' WHERE id='large-review-evidence'

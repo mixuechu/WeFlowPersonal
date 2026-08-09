@@ -9873,9 +9873,16 @@ export class PersonalMemoryStore {
     offset?: number
     limit?: number
     revision?: string
+    query?: string
+    source?: string
+    session?: string
+    sender?: string
+    fromTimestamp?: number
+    toTimestamp?: number
   }): {
     items: any[]
     total: number
+    unfilteredTotal: number
     offset: number
     limit: number
     hasMore: boolean
@@ -9885,21 +9892,71 @@ export class PersonalMemoryStore {
     const revision = this.getGraphReviewRevision()
     const offset = Math.max(0, Math.min(1_000_000, Math.floor(Number(options.offset) || 0)))
     const limit = Math.max(1, Math.min(100, Math.floor(Number(options.limit) || 40)))
-    const empty = { items: [], total: 0, offset, limit, hasMore: false, revision, stale: false }
+    const query = String(options.query || '').trim().slice(0, 500)
+    const requestedSource = String(options.source || '').trim().toLowerCase().slice(0, 100)
+    const source = new Set(['wechat', 'documents', 'calendar', 'mail', 'legacy'])
+      .has(requestedSource) ? requestedSource : ''
+    if (requestedSource && !source) throw new Error('候选原文来源筛选无效')
+    const session = String(options.session || '').trim().slice(0, 500)
+    const sender = String(options.sender || '').trim().slice(0, 200)
+    const fromTimestamp = Number.isFinite(Number(options.fromTimestamp))
+      ? Math.max(0, Math.floor(Number(options.fromTimestamp))) : 0
+    const toTimestamp = Number.isFinite(Number(options.toTimestamp))
+      ? Math.max(0, Math.floor(Number(options.toTimestamp))) : 0
+    const conditions: string[] = []
+    const parameters: any[] = []
+    if (source) {
+      conditions.push(`LOWER(COALESCE(source_id,''))=?`)
+      parameters.push(source)
+    }
+    if (session) {
+      conditions.push(`INSTR(LOWER(COALESCE(session_id,'')),LOWER(?))>0`)
+      parameters.push(session)
+    }
+    if (sender) {
+      conditions.push(`INSTR(LOWER(COALESCE(sender,'')),LOWER(?))>0`)
+      parameters.push(sender)
+    }
+    if (query) {
+      conditions.push(`(
+        INSTR(LOWER(COALESCE(excerpt,'')),LOWER(?))>0 OR
+        INSTR(LOWER(COALESCE(sender,'')),LOWER(?))>0 OR
+        INSTR(LOWER(COALESCE(session_id,'')),LOWER(?))>0 OR
+        INSTR(LOWER(COALESCE(message_id,'')),LOWER(?))>0
+      )`)
+      parameters.push(query, query, query, query)
+    }
+    if (fromTimestamp) {
+      conditions.push('timestamp>=?')
+      parameters.push(fromTimestamp)
+    }
+    if (toTimestamp) {
+      conditions.push('timestamp<=?')
+      parameters.push(toTimestamp)
+    }
+    const filterSql = conditions.length ? ` AND ${conditions.join(' AND ')}` : ''
+    const empty = {
+      items: [], total: 0, unfilteredTotal: 0, offset, limit,
+      hasMore: false, revision, stale: false
+    }
     if (!this.db || !String(options.reviewId || '').trim()) return empty
     if (String(options.revision || '').trim() !== revision) return { ...empty, stale: true }
     const reviewId = String(options.reviewId).trim()
     const row = this.db.prepare(`SELECT 1 FROM review_queue WHERE id=?`).get(reviewId) as any
     if (!row) return { ...empty, stale: true }
-    const total = Number((this.db.prepare(`
+    const unfilteredTotal = Number((this.db.prepare(`
       SELECT COUNT(*) AS count FROM graph_review_evidence WHERE review_id=?
     `).get(reviewId) as any)?.count || 0)
+    const total = Number((this.db.prepare(`
+      SELECT COUNT(*) AS count FROM graph_review_evidence
+      WHERE review_id=?${filterSql}
+    `).get(reviewId, ...parameters) as any)?.count || 0)
     const evidenceRows = this.db.prepare(`
       SELECT source_id,session_id,message_id,timestamp,sender,excerpt,evidence_json
-      FROM graph_review_evidence WHERE review_id=?
+      FROM graph_review_evidence WHERE review_id=?${filterSql}
       ORDER BY timestamp DESC,source_id,session_id,message_id DESC,evidence_key
       LIMIT ? OFFSET ?
-    `).all(reviewId, limit, offset) as any[]
+    `).all(reviewId, ...parameters, limit, offset) as any[]
     const items = evidenceRows.map(evidenceRow => {
       let item: any = {}
       try { item = JSON.parse(String(evidenceRow.evidence_json || '{}')) } catch {}
@@ -9921,6 +9978,7 @@ export class PersonalMemoryStore {
       ...empty,
       items,
       total,
+      unfilteredTotal,
       hasMore: offset + items.length < total
     }
   }
