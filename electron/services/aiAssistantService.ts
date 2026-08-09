@@ -390,9 +390,11 @@ import {
   buildNameIdentityPairPlan,
   assertIdentityCandidateVersionsCurrent,
   getFullIdentityScanSchedule,
+  identityCandidateVersionsCurrent,
   identityPairKey,
   listIndexedIdentityCandidates,
   planStaleGraphIdentityReviews,
+  planStaleIdentityVersionReviews,
   planStaleRuleIdentityReviews,
   planStaleVectorIdentityReviews,
   type IdentityCandidateLookup,
@@ -593,6 +595,8 @@ type AssistantState = {
       contextualPairCandidates: number
       contextualTruncated: boolean
       contextualRetiredCandidates: number
+      versionRetiredCandidates: number
+      versionRegeneratedCandidates: number
       ruleRetiredCandidates: number
       fullPairCandidates: number
       fullLargestNameBucket: number
@@ -672,6 +676,8 @@ const EMPTY_STATE: AssistantState = {
     contextualRelations: 0, contextualEligibleNeighbors: 0, contextualSkippedHubs: 0,
     contextualPairCandidates: 0, contextualTruncated: false,
     contextualRetiredCandidates: 0,
+    versionRetiredCandidates: 0,
+    versionRegeneratedCandidates: 0,
     ruleRetiredCandidates: 0,
     fullPairCandidates: 0, fullLargestNameBucket: 0, fullTruncated: false,
     decisionLookupPairs: 0, decisionLookupQueries: 0, decisionLookupDurationMs: 0,
@@ -3043,7 +3049,10 @@ export class AiAssistantService {
     if (isNegativeDecisionCurrent(decision, left, right)) return false
     const id = crypto.createHash('sha256').update(pairKey).digest('hex').slice(0, 20)
     const existing = reviewsById?.get(id) || this.state.graph.reviewQueue.find(review => review.id === id)
-    if (existing?.status === 'pending') return false
+    if (existing?.status === 'pending' && identityCandidateVersionsCurrent(
+      existing,
+      new Map([[left.id, left], [right.id, right]])
+    )) return false
     const signals = assessment.signals.map(signal => ({ source: signal.source, label: signal.label, value: signal.value }))
     if (suggestion?.label && !signals.some(signal => signal.source === suggestion.source)) {
       signals.push({ source: suggestion.source as any, label: suggestion.label, value: suggestion.value || '' })
@@ -3132,6 +3141,37 @@ export class AiAssistantService {
     this.state.graph.identityScan.contextualSkippedHubs = graphPlan.stats.skippedHighDegreeNeighbors
     this.state.graph.identityScan.contextualPairCandidates = graphPlan.stats.pairCandidates
     this.state.graph.identityScan.contextualTruncated = graphPlan.stats.truncated
+    const staleVersionReviewIds = planStaleIdentityVersionReviews(
+      this.state.graph.reviewQueue,
+      byId
+    )
+    const staleVersionIds = new Set(staleVersionReviewIds)
+    const staleVersionReviews = new Map(this.state.graph.reviewQueue
+      .filter(review => staleVersionIds.has(review.id))
+      .map(review => [review.id, review]))
+    if (staleVersionReviewIds.length) {
+      this.state.graph.reviewQueue = this.state.graph.reviewQueue.filter(
+        review => !staleVersionIds.has(review.id)
+      )
+      for (const reviewId of staleVersionReviewIds) reviewsById.delete(reviewId)
+    }
+    this.state.graph.identityScan.versionRetiredCandidates = staleVersionReviewIds.length
+    let versionRegeneratedCandidates = 0
+    const staleVersionPairKeys = [...staleVersionReviews.values()].flatMap(review =>
+      review.leftEntityId && review.rightEntityId
+        ? [identityPairKey(review.leftEntityId, review.rightEntityId)]
+        : [])
+    const staleVersionDecisions = this.loadIdentityDecisionIndex(staleVersionPairKeys, now)
+    for (const review of staleVersionReviews.values()) {
+      const left = byId.get(String(review.leftEntityId || ''))
+      const right = byId.get(String(review.rightEntityId || ''))
+      if (left && right && assessIdentityPair(left, right).eligible && this.enqueueIdentityPair(
+        left, right, now, undefined, {}, reviewsById, staleVersionDecisions)) {
+        versionRegeneratedCandidates += 1
+      }
+    }
+    this.state.graph.identityScan.versionRegeneratedCandidates = versionRegeneratedCandidates
+    this.state.graph.identityScan.lastCandidateCount += versionRegeneratedCandidates
     const staleRuleReviewIds = planStaleRuleIdentityReviews(
       this.state.graph.reviewQueue,
       byId

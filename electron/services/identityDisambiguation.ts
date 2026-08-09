@@ -214,6 +214,45 @@ export function planStaleRuleIdentityReviews(
   })
 }
 
+export function planStaleIdentityVersionReviews(
+  reviews: Array<{
+    id?: string
+    kind?: string
+    status?: string
+    leftEntityId?: string
+    rightEntityId?: string
+    leftIdentityVersion?: number
+    rightIdentityVersion?: number
+  }>,
+  entitiesById: ReadonlyMap<string, IdentityCandidateEntity>
+): string[] {
+  return reviews.flatMap(review => {
+    if (!review.id || review.kind !== 'possible_duplicate' || review.status !== 'pending') return []
+    if (identityCandidateVersionsCurrent(review, entitiesById)) return []
+    return [String(review.id)]
+  })
+}
+
+export function identityCandidateVersionsCurrent(
+  review: {
+    leftEntityId?: string
+    rightEntityId?: string
+    leftIdentityVersion?: number
+    rightIdentityVersion?: number
+  },
+  entitiesById: ReadonlyMap<string, IdentityCandidateEntity>
+): boolean {
+  const left = entitiesById.get(String(review.leftEntityId || ''))
+  const right = entitiesById.get(String(review.rightEntityId || ''))
+  const expectedLeft = Number(review.leftIdentityVersion)
+  const expectedRight = Number(review.rightIdentityVersion)
+  return Boolean(left && right &&
+    Number.isInteger(expectedLeft) && expectedLeft >= 1 &&
+    Number.isInteger(expectedRight) && expectedRight >= 1 &&
+    expectedLeft === Number(left.identityVersion || 1) &&
+    expectedRight === Number(right.identityVersion || 1))
+}
+
 export function assertIdentityCandidateVersionsCurrent(
   review: {
     leftEntityId?: string
@@ -236,8 +275,7 @@ export function assertIdentityCandidateVersionsCurrent(
     !Number.isInteger(expectedRight) || expectedRight < 1) {
     throw new Error('旧版身份合并候选缺少实体版本，不能直接确认；请拒绝后等待重新识别')
   }
-  if (expectedLeft !== Number(left.identityVersion || 1) ||
-    expectedRight !== Number(right.identityVersion || 1)) {
+  if (!identityCandidateVersionsCurrent(review, entitiesById)) {
     throw new Error('身份合并候选生成后人物档案已经变化，请刷新后重新核对')
   }
 }

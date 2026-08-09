@@ -12948,6 +12948,8 @@ function AiAssistantPage() {
             <span><b>{identityDisambiguation.lastRunAt ? new Date(identityDisambiguation.lastRunAt).toLocaleString('zh-CN') : '尚未运行'}</b><small>最近消歧</small></span>
             <span><b>{identityDisambiguation.contextualPairCandidates || 0}</b><small>共同邻居候选对</small></span>
             <span><b>{identityDisambiguation.contextualSkippedHubs || 0}</b><small>已忽略低区分度超级枢纽</small></span>
+            <span><b>{identityDisambiguation.versionRetiredCandidates || 0}</b><small>本轮退役身份版本已变化候选</small></span>
+            <span><b>{identityDisambiguation.versionRegeneratedCandidates || 0}</b><small>仍有当前规则依据并重新生成</small></span>
             <span><b>{identityDisambiguation.contextualRetiredCandidates || 0}</b><small>本轮撤销过期纯关系候选</small></span>
             <span><b>{identityDisambiguation.ruleRetiredCandidates || 0}</b><small>本轮撤销过期纯规则候选</small></span>
             {identityDisambiguation.contextualTruncated && <span className="warning"><b>已达安全上限</b><small>其余组合需等待新证据或人工检索复核</small></span>}

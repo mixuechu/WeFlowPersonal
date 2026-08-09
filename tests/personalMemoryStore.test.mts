@@ -2170,6 +2170,41 @@ test('identity candidates explain their source and preserve current negative dec
   }, left, right), false)
 })
 
+test('a regenerated identity candidate receives a new authoritative queue creation time', () => withStore(store => {
+  const entities = [
+    { id: 'a', type: 'person', canonicalName: '甲', aliases: [], accountIds: [], identityVersion: 1 },
+    { id: 'b', type: 'person', canonicalName: '乙', aliases: [], accountIds: [], identityVersion: 1 }
+  ]
+  const candidate = {
+    id: 'stable-pair-review', kind: 'possible_duplicate', title: '甲 ↔ 乙', detail: '第一版',
+    confidence: 0.7, status: 'pending', createdAt: '2026-08-01T00:00:00.000Z',
+    leftEntityId: 'a', rightEntityId: 'b', leftIdentityVersion: 1, rightIdentityVersion: 1,
+    candidateSource: 'exact_name', candidateInstanceId: 'instance-v1'
+  }
+  store.syncGraph({ entities, relations: [], reviewQueue: [candidate] } as any)
+  const db = (store as any).db
+  assert.equal(db.prepare(`SELECT created_at FROM review_queue WHERE id=?`).pluck()
+    .get(candidate.id), candidate.createdAt)
+
+  const regenerated = {
+    ...candidate,
+    detail: '身份版本变化后的新实例',
+    createdAt: '2026-08-09T00:00:00.000Z',
+    leftIdentityVersion: 2,
+    candidateInstanceId: 'instance-v2'
+  }
+  store.syncGraph({
+    entities: [{ ...entities[0], identityVersion: 2 }, entities[1]],
+    relations: [],
+    reviewQueue: [regenerated]
+  } as any)
+  const row = db.prepare(`SELECT created_at,payload_json FROM review_queue WHERE id=?`)
+    .get(candidate.id) as any
+  assert.equal(row.created_at, regenerated.createdAt)
+  assert.equal(JSON.parse(row.payload_json).candidateInstanceId, 'instance-v2')
+  assert.equal(store.listGraphReviewsByIds([candidate.id])[0].createdAt, regenerated.createdAt)
+}))
+
 test('relationship history keeps creation and later review state instead of overwriting it', () => withStore(store => {
   const entities = [
     { id: 'person-a', type: 'person', canonicalName: '人物甲', aliases: [], accountIds: [] },

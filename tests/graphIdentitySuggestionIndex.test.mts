@@ -8,7 +8,9 @@ import {
   buildGraphIdentitySuggestionPlan,
   buildGraphIdentitySuggestions,
   buildNameIdentityPairPlan,
+  identityCandidateVersionsCurrent,
   planStaleGraphIdentityReviews,
+  planStaleIdentityVersionReviews,
   planStaleRuleIdentityReviews,
   planStaleVectorIdentityReviews
 } from '../electron/services/identityDisambiguation.ts'
@@ -24,6 +26,14 @@ test('identity merge confirmation is bound to both current entity versions', () 
     leftEntityId: 'left', rightEntityId: 'right',
     leftIdentityVersion: 4, rightIdentityVersion: 7
   }, entities))
+  assert.equal(identityCandidateVersionsCurrent({
+    leftEntityId: 'left', rightEntityId: 'right',
+    leftIdentityVersion: 4, rightIdentityVersion: 7
+  }, entities), true)
+  assert.equal(identityCandidateVersionsCurrent({
+    leftEntityId: 'right', rightEntityId: 'left',
+    leftIdentityVersion: 7, rightIdentityVersion: 4
+  }, entities), true)
   assert.throws(() => assertIdentityCandidateVersionsCurrent({
     leftEntityId: 'left', rightEntityId: 'right',
     leftIdentityVersion: 3, rightIdentityVersion: 7
@@ -51,6 +61,8 @@ test('identity merge confirmation checks versions before writing review decision
   const page = readFileSync(join(root, 'src/pages/AiAssistantPage.tsx'), 'utf8')
   assert.match(service, /leftIdentityVersion: Number\(left\.identityVersion \|\| 1\)/)
   assert.match(service, /rightIdentityVersion: Number\(right\.identityVersion \|\| 1\)/)
+  assert.match(service, /existing\?\.status === 'pending' && identityCandidateVersionsCurrent/)
+  assert.doesNotMatch(service, /if \(existing\?\.status === 'pending'\) return false/)
   const applyReview = service.slice(
     service.indexOf('private applyGraphReview('),
     service.indexOf('private applyEntityRejectionCascade', service.indexOf('private applyGraphReview('))
@@ -68,6 +80,28 @@ test('identity merge confirmation checks versions before writing review decision
   )
   assert.match(graphRevisionTables, /'graph_review_evidence'/)
   assert.match(graphRevisionTables, /'entities'/)
+  assert.equal((store.match(/created_at=CASE[\s\S]*?candidateInstanceId/g) || []).length, 2)
+})
+
+test('identity scans retire only pending candidates whose endpoint versions are no longer current', () => {
+  const entities = new Map([
+    ['a', { id: 'a', type: 'person', canonicalName: '甲', identityVersion: 2 }],
+    ['b', { id: 'b', type: 'person', canonicalName: '乙', identityVersion: 5 }]
+  ])
+  const base = {
+    kind: 'possible_duplicate', status: 'pending',
+    leftEntityId: 'a', rightEntityId: 'b'
+  }
+  assert.deepEqual(planStaleIdentityVersionReviews([
+    { id: 'current', ...base, leftIdentityVersion: 2, rightIdentityVersion: 5 },
+    { id: 'left-changed', ...base, leftIdentityVersion: 1, rightIdentityVersion: 5 },
+    { id: 'right-changed', ...base, leftIdentityVersion: 2, rightIdentityVersion: 4 },
+    { id: 'swapped', ...base, leftIdentityVersion: 5, rightIdentityVersion: 2 },
+    { id: 'legacy', ...base },
+    { id: 'missing', ...base, rightEntityId: 'missing', leftIdentityVersion: 2, rightIdentityVersion: 5 },
+    { id: 'resolved', ...base, status: 'rejected', leftIdentityVersion: 1, rightIdentityVersion: 5 },
+    { id: 'relation', ...base, kind: 'relation', leftIdentityVersion: 1, rightIdentityVersion: 5 }
+  ], entities), ['left-changed', 'right-changed', 'swapped', 'legacy', 'missing'])
 })
 
 function exhaustiveSuggestions(entities: any[], relations: any[]): any[] {
@@ -214,8 +248,16 @@ test('identity scan diagnostics expose hub exclusions and truncation in the UI',
   assert.match(page, /本轮撤销过期纯关系候选/)
   assert.match(service, /planStaleRuleIdentityReviews\([\s\S]*this\.runVectorIdentityScan/)
   assert.match(page, /本轮撤销过期纯规则候选/)
+  assert.match(page, /本轮退役身份版本已变化候选/)
+  assert.match(page, /仍有当前规则依据并重新生成/)
   assert.match(page, /向量候选已达上限/)
   assert.match(page, /本轮向量进度未提交/)
+  assert.ok(contextualScan.indexOf('planStaleIdentityVersionReviews(') >= 0)
+  assert.ok(contextualScan.indexOf('planStaleIdentityVersionReviews(') <
+    contextualScan.indexOf('planStaleRuleIdentityReviews('))
+  assert.ok(contextualScan.indexOf('planStaleIdentityVersionReviews(') <
+    contextualScan.indexOf('this.runVectorIdentityScan('))
+  assert.match(contextualScan, /assessIdentityPair\(left, right\)\.eligible && this\.enqueueIdentityPair\([\s\S]*?left, right, now, undefined/)
 })
 
 test('complete vector rescans retire only unsupported pure-vector identity reviews', () => {

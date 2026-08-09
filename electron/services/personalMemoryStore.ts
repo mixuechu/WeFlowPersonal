@@ -8697,7 +8697,11 @@ export class PersonalMemoryStore {
         INSERT INTO review_queue(id,kind,title,detail,confidence,status,payload_json,created_at,resolved_at)
         VALUES(?,?,?,?,?,?,?,?,?)
         ON CONFLICT(id) DO UPDATE SET title=excluded.title,detail=excluded.detail,confidence=excluded.confidence,
-          status=excluded.status,payload_json=excluded.payload_json,resolved_at=excluded.resolved_at
+          status=excluded.status,payload_json=excluded.payload_json,resolved_at=excluded.resolved_at,
+          created_at=CASE
+            WHEN json_extract(review_queue.payload_json,'$.candidateInstanceId') IS NOT
+              json_extract(excluded.payload_json,'$.candidateInstanceId')
+            THEN excluded.created_at ELSE review_queue.created_at END
         WHERE review_queue.title IS NOT excluded.title
           OR review_queue.detail IS NOT excluded.detail
           OR review_queue.confidence IS NOT excluded.confidence
@@ -20181,7 +20185,11 @@ export class PersonalMemoryStore {
         VALUES(?,?,?,?,?,?,?,?,NULL)
         ON CONFLICT(id) DO UPDATE SET title=excluded.title,detail=excluded.detail,
           confidence=excluded.confidence,status=excluded.status,payload_json=excluded.payload_json,
-          resolved_at=NULL
+          resolved_at=NULL,
+          created_at=CASE
+            WHEN json_extract(review_queue.payload_json,'$.candidateInstanceId') IS NOT
+              json_extract(excluded.payload_json,'$.candidateInstanceId')
+            THEN excluded.created_at ELSE review_queue.created_at END
         WHERE review_queue.title IS NOT excluded.title
           OR review_queue.detail IS NOT excluded.detail
           OR review_queue.confidence IS NOT excluded.confidence
