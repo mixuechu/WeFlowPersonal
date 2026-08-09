@@ -536,8 +536,8 @@ export class PersonalMemoryStore {
     triggerRepairedThisStart: false
   }
   private graphSnapshotHydration = {
-    version: 'graph-snapshot-batch-v2',
-    strategy: 'fixed_eight_queries',
+    version: 'graph-snapshot-batch-v3',
+    strategy: 'fixed_eight_queries_relation_counts_only',
     entityEvidencePolicy: 'direct_identity_and_active_merge_chain',
     structuredCarrierCopies: 0,
     queryCount: 0,
@@ -551,6 +551,7 @@ export class PersonalMemoryStore {
     identityRows: 0,
     entityEvidenceKeys: 0,
     relationEvidenceRows: 0,
+    relationEvidenceTotalRows: 0,
     reviewEvidenceRows: 0,
     lastLoadedAt: ''
   }
@@ -8138,19 +8139,11 @@ export class PersonalMemoryStore {
     queryCount += 1
     const relationRows = this.db.prepare(`SELECT * FROM relations ORDER BY id`).all() as any[]
     queryCount += 1
-    const relationEvidenceRows = this.db.prepare(`
-      WITH ranked AS (
-        SELECT relation_id,source_id,message_id,session_id,timestamp,sender,excerpt,
-          COUNT(*) OVER(PARTITION BY relation_id) AS evidence_total,
-          ROW_NUMBER() OVER(
-            PARTITION BY relation_id
-            ORDER BY timestamp DESC,source_id DESC,session_id DESC,message_id DESC
-          ) AS evidence_rank
-        FROM evidence WHERE relation_id IS NOT NULL
-      )
-      SELECT * FROM ranked WHERE evidence_rank<=?
-      ORDER BY relation_id,timestamp,source_id,session_id,message_id
-    `).all(GRAPH_RELATION_EVIDENCE_HOT_LIMIT) as any[]
+    const relationEvidenceCountRows = this.db.prepare(`
+      SELECT relation_id,COUNT(*) AS evidence_total
+      FROM evidence WHERE relation_id IS NOT NULL GROUP BY relation_id
+      ORDER BY relation_id
+    `).all() as Array<{ relation_id: string; evidence_total: number }>
     queryCount += 1
     const reviewRows = this.db.prepare(`
       SELECT id,payload_json FROM review_queue WHERE status='pending'
@@ -8190,12 +8183,9 @@ export class PersonalMemoryStore {
       values.push(String(row.message_id))
       evidenceKeysByEntity.set(String(row.root_id), values)
     }
-    const evidenceByRelation = new Map<string, any[]>()
-    for (const row of relationEvidenceRows) {
-      const values = evidenceByRelation.get(String(row.relation_id)) || []
-      values.push(row)
-      evidenceByRelation.set(String(row.relation_id), values)
-    }
+    const evidenceCountByRelation = new Map(relationEvidenceCountRows.map(row => [
+      String(row.relation_id), Number(row.evidence_total || 0)
+    ]))
     const evidenceByReview = new Map<string, any[]>()
     for (const row of reviewEvidenceRows) {
       const values = evidenceByReview.get(String(row.review_id)) || []
@@ -8233,7 +8223,6 @@ export class PersonalMemoryStore {
         }
       }),
       relations: relationRows.map(row => {
-        const hotEvidence = evidenceByRelation.get(String(row.id)) || []
         return {
           id: row.id,
           subjectId: row.subject_id,
@@ -8245,15 +8234,8 @@ export class PersonalMemoryStore {
           validFrom: row.valid_from || undefined,
           validTo: row.valid_to || undefined,
           searchText: row.search_text,
-          evidence: hotEvidence.map(item => ({
-            sourceId: item.source_id,
-            messageId: item.message_id,
-            sessionId: item.session_id,
-            timestamp: Number(item.timestamp || 0),
-            sender: item.sender,
-            excerpt: item.excerpt
-          })),
-          evidenceTotal: Number(hotEvidence[0]?.evidence_total || 0),
+          evidence: [],
+          evidenceTotal: Number(evidenceCountByRelation.get(String(row.id)) || 0),
           createdAt: row.created_at,
           updatedAt: row.updated_at
         }
@@ -8287,8 +8269,8 @@ export class PersonalMemoryStore {
     }
     const durationMs = Date.now() - startedAt
     this.graphSnapshotHydration = {
-      version: 'graph-snapshot-batch-v2',
-      strategy: 'fixed_eight_queries',
+      version: 'graph-snapshot-batch-v3',
+      strategy: 'fixed_eight_queries_relation_counts_only',
       entityEvidencePolicy: 'direct_identity_and_active_merge_chain',
       structuredCarrierCopies: 0,
       queryCount,
@@ -8296,14 +8278,16 @@ export class PersonalMemoryStore {
       performanceStatus: durationMs >= 5_000
         ? 'critical' : durationMs >= 2_000 ? 'attention' : 'healthy',
       hydratedHotRows: aliasRows.length + identityRows.length + entityEvidenceRows.length +
-        relationEvidenceRows.length + reviewEvidenceRows.length,
+        reviewEvidenceRows.length,
       entities: snapshot.entities.length,
       relations: snapshot.relations.length,
       pendingReviews: snapshot.reviewQueue.length,
       aliasRows: aliasRows.length,
       identityRows: identityRows.length,
       entityEvidenceKeys: entityEvidenceRows.length,
-      relationEvidenceRows: relationEvidenceRows.length,
+      relationEvidenceRows: 0,
+      relationEvidenceTotalRows: relationEvidenceCountRows.reduce(
+        (total, row) => total + Number(row.evidence_total || 0), 0),
       reviewEvidenceRows: reviewEvidenceRows.length,
       lastLoadedAt: new Date().toISOString()
     }
@@ -8339,6 +8323,50 @@ export class PersonalMemoryStore {
       `).all(...batch) as any[]
       for (const row of rows) {
         result.get(String(row.relation_id))?.push({
+          sourceId: row.source_id,
+          messageId: row.message_id,
+          sessionId: row.session_id,
+          timestamp: Number(row.timestamp || 0),
+          sender: row.sender,
+          excerpt: row.excerpt
+        })
+      }
+    }
+    return result
+  }
+
+  getRelationEvidenceHotset(
+    relationIds: string[],
+    limit = 8
+  ): Map<string, { evidence: any[]; evidenceTotal: number }> {
+    if (!this.db) return new Map()
+    const ids = [...new Set((relationIds || []).map(String).filter(Boolean))]
+    const safeLimit = Math.max(1, Math.min(GRAPH_RELATION_EVIDENCE_HOT_LIMIT,
+      Math.floor(Number(limit) || 8)))
+    const result = new Map<string, { evidence: any[]; evidenceTotal: number }>(
+      ids.map(id => [id, { evidence: [], evidenceTotal: 0 }])
+    )
+    for (let offset = 0; offset < ids.length; offset += 200) {
+      const batch = ids.slice(offset, offset + 200)
+      const placeholders = batch.map(() => '?').join(',')
+      const rows = this.db.prepare(`
+        WITH ranked AS (
+          SELECT relation_id,source_id,message_id,session_id,timestamp,sender,excerpt,
+            COUNT(*) OVER(PARTITION BY relation_id) AS evidence_total,
+            ROW_NUMBER() OVER(
+              PARTITION BY relation_id
+              ORDER BY timestamp DESC,source_id DESC,session_id DESC,message_id DESC
+            ) AS evidence_rank
+          FROM evidence WHERE relation_id IN (${placeholders})
+        )
+        SELECT * FROM ranked WHERE evidence_rank<=?
+        ORDER BY relation_id,timestamp,source_id,session_id,message_id
+      `).all(...batch, safeLimit) as any[]
+      for (const row of rows) {
+        const target = result.get(String(row.relation_id))
+        if (!target) continue
+        target.evidenceTotal = Number(row.evidence_total || 0)
+        target.evidence.push({
           sourceId: row.source_id,
           messageId: row.message_id,
           sessionId: row.session_id,

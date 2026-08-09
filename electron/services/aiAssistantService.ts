@@ -1343,10 +1343,7 @@ export class AiAssistantService {
         review.kind === 'entity_creation' && review.entityId === entity.id &&
         review.status === 'pending')) continue
       const evidence = [
-        ...(durableEvidence.get(entity.id) || []),
-        ...this.state.graph.relations
-          .filter(relation => relation.subjectId === entity.id || relation.objectId === entity.id)
-          .flatMap(relation => relation.evidence || [])
+        ...(durableEvidence.get(entity.id) || [])
       ]
       const review = buildLegacyEntityReview({
         entity,
@@ -4631,7 +4628,7 @@ export class AiAssistantService {
         entityDirectory: 'server_search_on_demand',
         entityProfiles: 'on_demand',
         entityEvidenceMessageIds: 'sqlcipher_authoritative_identity_hotset_500',
-        relationEvidence: 'sqlcipher_authoritative_hotset_100',
+        relationEvidence: 'sqlcipher_authoritative_counts_startup_evidence_on_demand',
         reviewEntities: 'page_scoped'
       },
       graphStateStorage: {
@@ -5246,6 +5243,10 @@ export class AiAssistantService {
         entityTaskRevision
       )
       const visibleRelations = allRelations.slice(0, 200)
+      const visibleRelationEvidence = personalMemoryStore.getRelationEvidenceHotset(
+        visibleRelations.map(relation => relation.id),
+        GRAPH_QUERY_EVIDENCE_LIMIT
+      )
       const relationHistoryPage = personalMemoryStore.listEntityAuditPage({
         entityId: focusEntity.id, kind: 'relation_history', limit: 40
       })
@@ -5293,9 +5294,9 @@ export class AiAssistantService {
         relations: visibleRelations.map(relation => ({
           ...relation,
           ...boundedEvidencePayload(
-            relation.evidence,
+            visibleRelationEvidence.get(relation.id)?.evidence || [],
             GRAPH_QUERY_EVIDENCE_LIMIT,
-            relation.evidenceTotal
+            visibleRelationEvidence.get(relation.id)?.evidenceTotal || relation.evidenceTotal
           )
         })),
         relationTotal: allRelations.length,
@@ -5947,8 +5948,10 @@ export class AiAssistantService {
       entityTrustReconciliation: this.entityTrustReconciliation,
       legacyEntityReviewRecovery: this.legacyEntityReviewRecovery,
       graphRelationEvidenceHotset: {
-        version: 'graph-relation-evidence-hotset-v1',
-        hotLimitPerRelation: 100,
+        version: 'graph-relation-evidence-hotset-v2',
+        startupHotLimitPerRelation: 0,
+        onDemandPreviewLimit: GRAPH_QUERY_EVIDENCE_LIMIT,
+        mutationHotLimitPerRelation: 100,
         relations: this.state.graph.relations.length,
         authoritativeEvidenceRows: relationEvidenceRows,
         inMemoryEvidenceRows: relationHotRows,
@@ -9555,7 +9558,7 @@ export class AiAssistantService {
       })
       if (selection.stale) throw new Error('关系路径所选实体已经变化，请重新选择起点和终点')
     }
-    return findScopedGraphPath(
+    const path = findScopedGraphPath(
       fromId,
       toId,
       this.state.graph.entities.filter(isTrustedEntity),
@@ -9563,6 +9566,22 @@ export class AiAssistantService {
       maxDepth,
       allowedRelationIds
     )
+    if (!path?.found || !Array.isArray(path.steps) || !path.steps.length) return path
+    const hotsets = personalMemoryStore.getRelationEvidenceHotset(
+      path.steps.map((step: any) => step.relationId),
+      GRAPH_QUERY_EVIDENCE_LIMIT
+    )
+    return {
+      ...path,
+      steps: path.steps.map((step: any) => ({
+        ...step,
+        ...boundedEvidencePayload(
+          hotsets.get(String(step.relationId))?.evidence || [],
+          GRAPH_QUERY_EVIDENCE_LIMIT,
+          hotsets.get(String(step.relationId))?.evidenceTotal || step.evidenceTotal
+        )
+      }))
+    }
   }
 
   findCommonNeighbors(fromId: string, toId: string, entityDirectoryRevision?: string): any {
@@ -9576,11 +9595,32 @@ export class AiAssistantService {
     }
     const entities = this.state.graph.entities.filter(isTrustedEntity)
     const entityIds = new Set(entities.map(entity => entity.id))
+    const common = findCommonGraphNeighbors(fromId, toId, entities, this.state.graph.relations.filter(relation =>
+      relation.status === 'confirmed' && entityIds.has(relation.subjectId) && entityIds.has(relation.objectId)))
+    const relationIds = common.flatMap((item: any) => [
+      ...(item.leftEdges || []).map((edge: any) => edge.relationId),
+      ...(item.rightEdges || []).map((edge: any) => edge.relationId)
+    ])
+    const hotsets = personalMemoryStore.getRelationEvidenceHotset(
+      relationIds,
+      GRAPH_QUERY_EVIDENCE_LIMIT
+    )
+    const enrichEdges = (edges: any[]) => (edges || []).map(edge => ({
+      ...edge,
+      ...boundedEvidencePayload(
+        hotsets.get(String(edge.relationId))?.evidence || [],
+        GRAPH_QUERY_EVIDENCE_LIMIT,
+        hotsets.get(String(edge.relationId))?.evidenceTotal || edge.evidenceTotal
+      )
+    }))
     return {
       from: entities.find(entity => entity.id === fromId) || null,
       to: entities.find(entity => entity.id === toId) || null,
-      common: findCommonGraphNeighbors(fromId, toId, entities, this.state.graph.relations.filter(relation =>
-        relation.status === 'confirmed' && entityIds.has(relation.subjectId) && entityIds.has(relation.objectId)))
+      common: common.map((item: any) => ({
+        ...item,
+        leftEdges: enrichEdges(item.leftEdges),
+        rightEdges: enrichEdges(item.rightEdges)
+      }))
     }
   }
 

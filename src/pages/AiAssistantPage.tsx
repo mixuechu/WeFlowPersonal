@@ -13224,7 +13224,7 @@ function AiAssistantPage() {
                 ? ` 本次权威图谱使用固定 ${Number(dashboard.graphStateStorage.hydration.queryCount || 0)} 次批量查询加载，耗时 ${Number(dashboard.graphStateStorage.hydration.durationMs || 0).toLocaleString()} 毫秒（${dashboard.graphStateStorage.hydration.performanceStatus === 'critical' ? '较慢' : dashboard.graphStateStorage.hydration.performanceStatus === 'attention' ? '需关注' : '正常'}），共水合 ${Number(dashboard.graphStateStorage.hydration.hydratedHotRows || 0).toLocaleString()} 条有界身份、账号与原文热集；查询次数不会随实体、关系或候选数量增长。`
                 : ''}
               {dashboard.graphStateStorage?.hydration?.entityEvidencePolicy === 'direct_identity_and_active_merge_chain'
-                ? ' 实体内存消息键只保留直接身份依据及有效合并链，不再重复装载关系、事实或事件原文；这些载体仍在 SQLCipher 中按需读取。'
+                ? ' 实体内存消息键只保留直接身份依据及有效合并链，关系正文也不再随全部边常驻内存；人物侧栏、路径、共同实体和修改预览会从 SQLCipher 精确加载所见关系原文，事实与事件继续走各自权威档案。'
                 : ''}
             </small>}
             {blockedIdentityReviewReturn && <div className="assistant-review-note">
