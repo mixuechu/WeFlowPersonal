@@ -125,9 +125,16 @@ test('identity scan diagnostics expose hub exclusions and truncation in the UI',
   assert.doesNotMatch(contextualScan, /listSimilarEntityPairs\(/)
   assert.match(store, /CREATE TABLE IF NOT EXISTS identity_vector_scan_state/)
   assert.match(store, /LIMIT \?\n\s*`\)\.all\(model, boundedProbeLimit\)/)
+  assert.match(store, /commitIdentityVectorScanBatch\(/)
+  assert.match(store, /INSERT OR IGNORE INTO identity_vector_scan_state[\s\S]*SELECT id,embedding_model,content_hash/)
+  assert.match(service, /continueIdentityVectorScanWhileIdle\(now\)/)
+  assert.match(service, /getIdentityVectorScanBacklog\([\s\S]*localEmbeddingService\.modelVersion/)
+  assert.match(service, /if \(!vectorScan\.checkpoint\.probes\.length\)[\s\S]*vectorCheckpointCommitted = true/)
   assert.match(page, /本轮向量探针 \/ 扫描前待处理/)
+  assert.match(page, /提交后剩余向量探针/)
   assert.match(page, /增量向量身份比较/)
   assert.match(page, /向量候选已达上限/)
+  assert.match(page, /本轮向量进度未提交/)
 })
 
 test('weekly name scan keeps deterministic deduplicated order and bounds huge same-name buckets', () => {

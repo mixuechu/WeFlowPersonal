@@ -2670,11 +2670,40 @@ test('entity vector identity scans advance a durable bounded probe backlog inste
   assert.equal(first.stats.truncated, true)
   assert.ok(first.pairs.length <= 200)
   assert.ok(first.stats.durationMs < 3_000)
+  assert.equal(store.getIdentityVectorScanBacklog('identity-incremental-test').pending, 5_000)
+  assert.equal(Number(db.prepare(`
+    SELECT COUNT(*) AS count FROM identity_vector_scan_state
+    WHERE model='identity-incremental-test'
+  `).get()?.count || 0), 0)
+
+  const circularReview: any = {
+    id: 'vector-review-rollback', kind: 'possible_duplicate', title: '回滚验证',
+    detail: '', confidence: 0.9, status: 'pending', createdAt: new Date().toISOString()
+  }
+  circularReview.circular = circularReview
+  const graphCommitBefore = store.getGraphCommitId()
+  assert.throws(() => store.commitIdentityVectorScanBatch(
+    first.checkpoint, [circularReview], 'vector-scan-rollback-commit'))
+  assert.equal(store.getIdentityVectorScanBacklog('identity-incremental-test').pending, 5_000)
+  assert.equal(store.getGraphCommitId(), graphCommitBefore)
+
+  const committed = store.commitIdentityVectorScanBatch(first.checkpoint, [{
+    id: 'vector-review-committed', kind: 'possible_duplicate', title: '人物0 ↔ 人物1',
+    detail: '本地向量相似，等待人工确认', confidence: 0.9, status: 'pending',
+    createdAt: new Date().toISOString(), leftEntityId: 'vector-person-0',
+    rightEntityId: 'vector-person-1', candidateSource: 'vector_similarity'
+  }], 'vector-scan-committed-1')
+  assert.equal(committed.committedProbes, 32)
+  assert.equal(committed.persistedReviews, 1)
+  assert.equal(committed.graphCommitId, 'vector-scan-committed-1')
+  assert.equal(store.getGraphCommitId(), 'vector-scan-committed-1')
+  assert.equal(store.listGraphReviewsByIds(['vector-review-committed']).length, 1)
 
   const second = store.scanSimilarEntityPairsIncremental(
     'identity-incremental-test', 0.999, 200, 32)
   assert.equal(second.stats.pendingBefore, 4_968)
   assert.equal(second.stats.probes, 32)
+  store.commitIdentityVectorScanBatch(second.checkpoint, [], 'vector-scan-committed-2')
   assert.equal(Number(db.prepare(`
     SELECT COUNT(*) AS count FROM identity_vector_scan_state
     WHERE model='identity-incremental-test'
@@ -2685,6 +2714,8 @@ test('entity vector identity scans advance a durable bounded probe backlog inste
     'identity-incremental-test-v2', 0.999, 200, 32)
   assert.equal(changedModel.stats.pendingBefore, 1)
   assert.equal(changedModel.stats.probes, 1)
+  store.commitIdentityVectorScanBatch(changedModel.checkpoint, [], 'vector-scan-model-change')
+  assert.equal(store.getIdentityVectorScanBacklog('identity-incremental-test-v2').pending, 0)
 }))
 
 test('identity decisions for a hundred-thousand candidate scan load through one JSON-indexed query', () => withStore(store => {

@@ -19903,6 +19903,10 @@ export class PersonalMemoryStore {
     probeLimit = 32
   ): {
     pairs: Array<{ leftId: string; rightId: string; score: number }>
+    checkpoint: {
+      model: string
+      probes: Array<{ documentId: string; contentHash: string }>
+    }
     stats: {
       eligible: number
       pendingBefore: number
@@ -19914,7 +19918,7 @@ export class PersonalMemoryStore {
     }
   } {
     const startedAt = performance.now()
-    const empty = { pairs: [], stats: {
+    const empty = { pairs: [], checkpoint: { model, probes: [] }, stats: {
       eligible: 0, pendingBefore: 0, probes: 0, comparisons: 0,
       matchedComparisons: 0, truncated: false, durationMs: 0
     } }
@@ -20006,33 +20010,19 @@ export class PersonalMemoryStore {
       truncated = true
       prunePairs()
     }
-    if (probes.length) {
-      const scannedAt = new Date().toISOString()
-      const record = this.db.prepare(`
-        INSERT OR IGNORE INTO identity_vector_scan_state(document_id,model,content_hash,scanned_at)
-        VALUES(?,?,?,?)
-      `)
-      this.db.transaction(() => {
-        for (const probe of probes) {
-          record.run(probe.id, model, probe.content_hash, scannedAt)
-        }
-        this.db!.prepare(`
-          DELETE FROM identity_vector_scan_state
-          WHERE NOT EXISTS (
-            SELECT 1 FROM search_documents current
-            WHERE current.id=identity_vector_scan_state.document_id
-              AND current.embedding_model=identity_vector_scan_state.model
-              AND current.content_hash=identity_vector_scan_state.content_hash
-          )
-        `).run()
-      })()
-    }
     if (pairScores.size > Math.max(1, Math.min(1000, limit))) truncated = true
     const pairs = [...pairScores.values()]
       .sort((left, right) => right.score - left.score || left.leftId.localeCompare(right.leftId) || left.rightId.localeCompare(right.rightId))
       .slice(0, Math.max(1, Math.min(1000, limit)))
     return {
       pairs,
+      checkpoint: {
+        model,
+        probes: probes.map(probe => ({
+          documentId: probe.id,
+          contentHash: probe.content_hash
+        }))
+      },
       stats: {
         eligible: vectors.length,
         pendingBefore,
@@ -20043,6 +20033,102 @@ export class PersonalMemoryStore {
         durationMs: Number((performance.now() - startedAt).toFixed(2))
       }
     }
+  }
+
+  getIdentityVectorScanBacklog(model: string): { eligible: number; pending: number } {
+    if (!this.db) return { eligible: 0, pending: 0 }
+    const row = this.db.prepare(`
+      SELECT COUNT(*) AS eligible,
+        COALESCE(SUM(CASE WHEN scanned.document_id IS NULL THEN 1 ELSE 0 END),0) AS pending
+      FROM search_documents d
+      LEFT JOIN identity_vector_scan_state scanned
+        ON scanned.document_id=d.id AND scanned.model=d.embedding_model
+        AND scanned.content_hash=d.content_hash
+      WHERE d.document_type='entity' AND d.embedding_model=? AND d.embedding_json IS NOT NULL
+        AND json_valid(d.embedding_json)=1 AND json_type(d.embedding_json)='array'
+        AND d.embedding_dimensions>0
+        AND json_array_length(d.embedding_json)=d.embedding_dimensions
+        AND NOT EXISTS (
+          SELECT 1 FROM json_each(d.embedding_json)
+          WHERE type NOT IN ('integer','real')
+        )
+    `).get(model) as { eligible?: number; pending?: number } | undefined
+    return {
+      eligible: Number(row?.eligible || 0),
+      pending: Number(row?.pending || 0)
+    }
+  }
+
+  commitIdentityVectorScanBatch(
+    checkpoint: { model: string; probes: Array<{ documentId: string; contentHash: string }> },
+    reviews: any[],
+    graphCommitId: string
+  ): { committedProbes: number; persistedReviews: number; graphCommitId: string } {
+    if (!this.db) throw new Error('个人记忆数据库尚未初始化')
+    const model = String(checkpoint?.model || '')
+    const commitId = String(graphCommitId || '').trim()
+    if (!commitId) throw new Error('向量身份扫描缺少图谱提交身份')
+    const probes = (Array.isArray(checkpoint?.probes) ? checkpoint.probes : [])
+      .slice(0, 200)
+      .map(probe => ({
+        documentId: String(probe?.documentId || ''),
+        contentHash: String(probe?.contentHash || '')
+      }))
+      .filter(probe => probe.documentId && probe.contentHash)
+    const pendingReviews = (Array.isArray(reviews) ? reviews : [])
+      .filter(review => review?.id && review?.status === 'pending')
+    const now = new Date().toISOString()
+    return this.db.transaction(() => {
+      const upsertReview = this.db!.prepare(`
+        INSERT INTO review_queue(id,kind,title,detail,confidence,status,payload_json,created_at,resolved_at)
+        VALUES(?,?,?,?,?,?,?,?,NULL)
+        ON CONFLICT(id) DO UPDATE SET title=excluded.title,detail=excluded.detail,
+          confidence=excluded.confidence,status=excluded.status,payload_json=excluded.payload_json,
+          resolved_at=NULL
+        WHERE review_queue.title IS NOT excluded.title
+          OR review_queue.detail IS NOT excluded.detail
+          OR review_queue.confidence IS NOT excluded.confidence
+          OR review_queue.status IS NOT excluded.status
+          OR review_queue.payload_json IS NOT excluded.payload_json
+          OR review_queue.resolved_at IS NOT NULL
+      `)
+      let persistedReviews = 0
+      for (const review of pendingReviews) {
+        const compactPayload = this.graphReviewPayloadWithoutEvidence(review, 0)
+        upsertReview.run(
+          String(review.id), String(review.kind || ''), String(review.title || ''),
+          String(review.detail || ''), Number(review.confidence || 0), 'pending',
+          JSON.stringify(compactPayload), String(review.createdAt || now)
+        )
+        persistedReviews += 1
+      }
+      const record = this.db!.prepare(`
+        INSERT OR IGNORE INTO identity_vector_scan_state(document_id,model,content_hash,scanned_at)
+        SELECT id,embedding_model,content_hash,? FROM search_documents
+        WHERE id=? AND embedding_model=? AND content_hash=?
+      `)
+      let committedProbes = 0
+      for (const probe of probes) {
+        committedProbes += Number(record.run(
+          now, probe.documentId, model, probe.contentHash
+        ).changes || 0)
+      }
+      this.db!.prepare(`
+        DELETE FROM identity_vector_scan_state
+        WHERE NOT EXISTS (
+          SELECT 1 FROM search_documents current
+          WHERE current.id=identity_vector_scan_state.document_id
+            AND current.embedding_model=identity_vector_scan_state.model
+            AND current.content_hash=identity_vector_scan_state.content_hash
+        )
+      `).run()
+      this.db!.prepare(`
+        INSERT INTO schema_meta(key,value,updated_at)
+        VALUES('graph_state_commit',?,?)
+        ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_at=excluded.updated_at
+      `).run(commitId, now)
+      return { committedProbes, persistedReviews, graphCommitId: commitId }
+    })()
   }
 
   getDocumentEvidencePayload(

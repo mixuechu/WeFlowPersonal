@@ -12955,9 +12955,12 @@ function AiAssistantPage() {
             <span><b>{identityDisambiguation.decisionLookupPairs || 0}</b><small>本轮身份决定匹配对</small></span>
             <span><b>{identityDisambiguation.decisionLookupQueries || 0} 次 · {Number(identityDisambiguation.decisionLookupDurationMs || 0).toFixed(1)}ms</b><small>SQLCipher 批量决定查询</small></span>
             <span><b>{identityDisambiguation.vectorProbes || 0} / {identityDisambiguation.vectorPendingBefore || 0}</b><small>本轮向量探针 / 扫描前待处理</small></span>
+            <span><b>{identityDisambiguation.vectorPendingAfter || 0}</b><small>提交后剩余向量探针</small></span>
             <span><b>{identityDisambiguation.vectorComparisons || 0} 次 · {Number(identityDisambiguation.vectorScanDurationMs || 0).toFixed(1)}ms</b><small>增量向量身份比较</small></span>
             <span><b>{identityDisambiguation.vectorMatchedComparisons || 0}</b><small>达到相似阈值的有向比较</small></span>
             {identityDisambiguation.vectorTruncated && <span className="warning"><b>向量候选已达上限</b><small>本轮只保留最高分候选，其余低分命中未进入人工队列</small></span>}
+            {!identityDisambiguation.vectorCheckpointCommitted && Number(identityDisambiguation.vectorProbes || 0) > 0 && <span className="warning"><b>本轮向量进度未提交</b><small>{identityDisambiguation.vectorContinuationError || '候选与探针账本未能原子提交，下次会从同一批重试'}</small></span>}
+            {identityDisambiguation.vectorContinuationAt && <span><b>{new Date(identityDisambiguation.vectorContinuationAt).toLocaleString('zh-CN', { hour12: false })}</b><small>最近空闲向量续跑</small></span>}
           </div>}
           <div className="assistant-path-finder">
             <TrustedEntityPicker

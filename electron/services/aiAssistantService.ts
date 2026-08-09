@@ -602,6 +602,10 @@ type AssistantState = {
       vectorMatchedComparisons: number
       vectorTruncated: boolean
       vectorScanDurationMs: number
+      vectorPendingAfter: number
+      vectorCheckpointCommitted: boolean
+      vectorContinuationAt: string | null
+      vectorContinuationError: string | null
     }
   }
 }
@@ -663,7 +667,9 @@ const EMPTY_STATE: AssistantState = {
     decisionLookupAt: null,
     vectorEligible: 0, vectorPendingBefore: 0, vectorProbes: 0,
     vectorComparisons: 0, vectorMatchedComparisons: 0,
-    vectorTruncated: false, vectorScanDurationMs: 0
+    vectorTruncated: false, vectorScanDurationMs: 0,
+    vectorPendingAfter: 0, vectorCheckpointCommitted: false,
+    vectorContinuationAt: null, vectorContinuationError: null
   } }
 }
 
@@ -3112,6 +3118,27 @@ export class AiAssistantService {
     this.state.graph.identityScan.contextualSkippedHubs = graphPlan.stats.skippedHighDegreeNeighbors
     this.state.graph.identityScan.contextualPairCandidates = graphPlan.stats.pairCandidates
     this.state.graph.identityScan.contextualTruncated = graphPlan.stats.truncated
+    this.runVectorIdentityScan(now, people, byId, reviewsById)
+    let candidates = 0
+    const identityDecisions = this.loadIdentityDecisionIndex(
+      suggestions.map(suggestion => identityPairKey(suggestion.leftId, suggestion.rightId)),
+      now
+    )
+    for (const suggestion of suggestions) {
+      const left = byId.get(suggestion.leftId)
+      const right = byId.get(suggestion.rightId)
+      if (left && right && this.enqueueIdentityPair(
+        left, right, now, suggestion, {}, reviewsById, identityDecisions)) candidates += 1
+    }
+    this.state.graph.identityScan.lastCandidateCount += candidates
+  }
+
+  private runVectorIdentityScan(
+    now: string,
+    people = this.state.graph.entities.filter(entity => entity.type === 'person'),
+    byId = new Map(people.map(entity => [entity.id, entity])),
+    reviewsById = new Map(this.state.graph.reviewQueue.map(review => [review.id, review]))
+  ): { committed: boolean; pendingAfter: number; candidates: number } {
     const vectorScan = personalMemoryStore.scanSimilarEntityPairsIncremental(
       localEmbeddingService.modelVersion, 0.88, 200, 32)
     this.state.graph.identityScan.vectorEligible = vectorScan.stats.eligible
@@ -3121,6 +3148,21 @@ export class AiAssistantService {
     this.state.graph.identityScan.vectorMatchedComparisons = vectorScan.stats.matchedComparisons
     this.state.graph.identityScan.vectorTruncated = vectorScan.stats.truncated
     this.state.graph.identityScan.vectorScanDurationMs = vectorScan.stats.durationMs
+    if (!vectorScan.checkpoint.probes.length) {
+      this.state.graph.identityScan.vectorPendingAfter = vectorScan.stats.pendingBefore
+      this.state.graph.identityScan.vectorCheckpointCommitted = true
+      this.state.graph.identityScan.vectorContinuationError = null
+      return { committed: true, pendingAfter: vectorScan.stats.pendingBefore, candidates: 0 }
+    }
+    const suggestions: Array<{
+      leftId: string
+      rightId: string
+      source: string
+      label: string
+      value: string
+      detail: string
+      confidence: number
+    }> = []
     for (const pair of vectorScan.pairs) {
       if (!byId.has(pair.leftId) || !byId.has(pair.rightId)) continue
       suggestions.push({
@@ -3145,6 +3187,53 @@ export class AiAssistantService {
         left, right, now, suggestion, {}, reviewsById, identityDecisions)) candidates += 1
     }
     this.state.graph.identityScan.lastCandidateCount += candidates
+    const vectorReviews = suggestions.flatMap(suggestion => {
+      const reviewId = crypto.createHash('sha256')
+        .update(identityPairKey(suggestion.leftId, suggestion.rightId))
+        .digest('hex').slice(0, 20)
+      const review = reviewsById.get(reviewId)
+      return review?.status === 'pending' ? [review] : []
+    })
+    try {
+      const graphCommitId = crypto.randomUUID()
+      personalMemoryStore.commitIdentityVectorScanBatch(
+        vectorScan.checkpoint,
+        vectorReviews,
+        graphCommitId
+      )
+      this.state.graph.lastSqlCommitId = graphCommitId
+      const backlog = personalMemoryStore.getIdentityVectorScanBacklog(localEmbeddingService.modelVersion)
+      this.state.graph.identityScan.vectorPendingAfter = backlog.pending
+      this.state.graph.identityScan.vectorCheckpointCommitted = true
+      this.state.graph.identityScan.vectorContinuationError = null
+      return { committed: true, pendingAfter: backlog.pending, candidates }
+    } catch (error) {
+      this.state.graph.identityScan.vectorPendingAfter = vectorScan.stats.pendingBefore
+      this.state.graph.identityScan.vectorCheckpointCommitted = false
+      this.state.graph.identityScan.vectorContinuationError = sanitizeDiagnosticText(error)
+      return { committed: false, pendingAfter: vectorScan.stats.pendingBefore, candidates }
+    }
+  }
+
+  private continueIdentityVectorScanWhileIdle(now: Date): string {
+    if (this.activeSync || this.vectorIndexPromise || this.memorySearchRepairPromise) {
+      return 'identity_vector_scan_busy'
+    }
+    const model = localEmbeddingService.modelVersion
+    const backlog = personalMemoryStore.getIdentityVectorScanBacklog(model)
+    this.state.graph.identityScan.vectorEligible = backlog.eligible
+    this.state.graph.identityScan.vectorPendingBefore = backlog.pending
+    this.state.graph.identityScan.vectorPendingAfter = backlog.pending
+    if (!backlog.pending) return 'identity_vector_scan_complete'
+    const observedAt = now.toISOString()
+    const result = this.runVectorIdentityScan(observedAt)
+    this.state.graph.identityScan.vectorContinuationAt = observedAt
+    this.persistCrossStoreMutationState()
+    return result.committed
+      ? result.pendingAfter > 0
+        ? 'identity_vector_scan_advanced'
+        : 'identity_vector_scan_completed'
+      : 'identity_vector_scan_failed'
   }
 
   private async syncLocalDocuments(): Promise<{ indexed: number; error?: string }> {
@@ -10951,6 +11040,12 @@ export class AiAssistantService {
           this.saveState()
           return 'search_maintenance_failed'
         }
+      }
+      const identityVectorBacklog = personalMemoryStore.getIdentityVectorScanBacklog(
+        localEmbeddingService.modelVersion
+      )
+      if (identityVectorBacklog.pending > 0) {
+        return this.continueIdentityVectorScanWhileIdle(now)
       }
       return time < schedule ? 'before_daily_schedule' : 'daily_already_complete'
     }
