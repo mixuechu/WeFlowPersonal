@@ -97,6 +97,7 @@ import {
   appRunIncidentLabel,
   appRunShutdownStatusLabel,
   appRunShutdownDetailLabel,
+  appRunShutdownDetailNeedsAttention,
   appRunShutdownStepLabel,
   appRunStageLabel
 } from '../utils/appRecoveryPresentation'
@@ -16848,23 +16849,29 @@ function AiAssistantPage() {
               <details>
                 <summary>最近运行记录（{memoryDiagnostics.appRecovery.history?.length || 0}）</summary>
                 <div>
-                  {(memoryDiagnostics.appRecovery.history || []).map((run: any) => <article key={run.id}>
+                  {(memoryDiagnostics.appRecovery.history || []).map((run: any) => {
+                    const attentionSteps = (run.shutdownSteps || []).filter((step: any) =>
+                      appRunShutdownDetailNeedsAttention(step.name, step.detail)).length
+                    return <article key={run.id}>
                     <span><b>{new Date(run.startedAt).toLocaleString('zh-CN')}</b><small>{run.version} · {appRunExitReasonLabel(run.exitReason, run.cleanExit)} · {appRunElapsedLabel(run.startedAt, run.endedAt || run.lastHeartbeatAt)}</small></span>
-                    <span>{run.incidents?.length || 0} 个异常事件 · {run.shutdownSteps?.length || 0} 个退出步骤</span>
+                    <span>{run.incidents?.length || 0} 个异常事件 · {run.shutdownSteps?.length || 0} 个退出步骤
+                      {attentionSteps ? ` · ${attentionSteps} 个步骤使用安全兜底` : ''}</span>
                     <small className="assistant-recovery-run-timing">
                       界面就绪 {run.readyAt ? new Date(run.readyAt).toLocaleTimeString('zh-CN') : '未记录'}
                       {' · '}服务就绪 {run.servicesReadyAt ? new Date(run.servicesReadyAt).toLocaleTimeString('zh-CN') : '未记录'}
                       {' · '}最后心跳 {new Date(run.lastHeartbeatAt).toLocaleTimeString('zh-CN')}
                     </small>
                     {(run.shutdownSteps || []).map((step: any, index: number) =>
-                      <p className={`assistant-recovery-step ${step.status}`} key={`${run.id}-step-${index}`}>
+                      <p className={`assistant-recovery-step ${step.status} ${
+                        appRunShutdownDetailNeedsAttention(step.name, step.detail) ? 'warning' : ''
+                      }`} key={`${run.id}-step-${index}`}>
                         退出步骤 · {appRunShutdownStepLabel(step.name)} · {appRunShutdownStatusLabel(step.status)}
                         {step.durationMs == null ? '' : ` · ${appRunDurationLabel(step.durationMs)}`}
                         {step.detail ? ` · ${appRunShutdownDetailLabel(step.name, step.detail)}` : ''}
                       </p>)}
                     {(run.incidents || []).map((incident: any, index: number) =>
                       <p key={`${run.id}-${index}`}>{new Date(incident.at).toLocaleTimeString('zh-CN')} · {appRunIncidentLabel(incident.kind)} · {incident.detail}</p>)}
-                  </article>)}
+                  </article>})}
                   {!memoryDiagnostics.appRecovery.history?.length && <em>首次记录，尚无历史会话。</em>}
                 </div>
               </details>

@@ -95,6 +95,20 @@ export const appRunShutdownDetailLabel = (name: unknown, detail: unknown): strin
   return '已记录结构化诊断详情'
 }
 
+export const appRunShutdownDetailNeedsAttention = (
+  name: unknown,
+  detail: unknown
+): boolean => {
+  const parsed = parseShutdownDetail(detail)
+  if (!parsed) return false
+  if (String(name || '') === 'wcdb-worker-stop') {
+    return parsed.boundedFallback === true ||
+      String(parsed.shutdownStrategy || '') === 'forced_terminate'
+  }
+  if (String(name || '') === 'ai-assistant-stop') return parsed.timedOut === true
+  return false
+}
+
 export const appRunDurationLabel = (durationMs: unknown): string => {
   const milliseconds = Number(durationMs)
   if (!Number.isFinite(milliseconds) || milliseconds < 0) return '耗时未知'

@@ -6,6 +6,7 @@ import {
   appRunExitReasonLabel,
   appRunIncidentLabel,
   appRunShutdownDetailLabel,
+  appRunShutdownDetailNeedsAttention,
   appRunShutdownStatusLabel,
   appRunShutdownStepLabel,
   appRunStageLabel
@@ -53,6 +54,16 @@ test('app recovery presentation explains structured shutdown diagnostics without
   })), '等待后台任务达到上限，仍有 1 项交由进程退出回收')
   assert.equal(appRunShutdownDetailLabel('unknown-step', '{"private":"machine-state"}'), '已记录结构化诊断详情')
   assert.equal(appRunShutdownDetailLabel('unknown-step', '普通错误'), '普通错误')
+  assert.equal(appRunShutdownDetailNeedsAttention('wcdb-worker-stop', JSON.stringify({
+    shutdownStrategy: 'process_exit_detach', boundedFallback: false
+  })), false)
+  assert.equal(appRunShutdownDetailNeedsAttention('wcdb-worker-stop', JSON.stringify({
+    shutdownStrategy: 'forced_terminate', boundedFallback: true
+  })), true)
+  assert.equal(appRunShutdownDetailNeedsAttention('ai-assistant-stop', JSON.stringify({
+    timedOut: true
+  })), true)
+  assert.equal(appRunShutdownDetailNeedsAttention('unknown-step', '{broken'), false)
 })
 
 test('app recovery presentation reports bounded durations without inventing invalid timing', () => {
