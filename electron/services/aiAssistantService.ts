@@ -386,7 +386,7 @@ import {
   assessIdentityPair,
   addIdentityCandidateToLookup,
   buildIdentityCandidateLookup,
-  buildGraphIdentitySuggestions,
+  buildGraphIdentitySuggestionPlan,
   buildNameBuckets,
   getFullIdentityScanSchedule,
   identityPairKey,
@@ -578,7 +578,17 @@ type AssistantState = {
     lastSqlCommitId?: string | null
     snapshotPolicy?: string
     reviewQueue: Array<{ id: string; kind: 'possible_duplicate' | 'relation' | 'entity_summary' | 'entity_alias' | 'entity_creation'; title: string; detail: string; confidence: number; status: 'pending' | 'confirmed' | 'rejected'; createdAt: string; resolvedAt?: string; resolutionActor?: 'user' | 'system'; resolutionReason?: string; leftEntityId?: string; rightEntityId?: string; mergeSourceEntityId?: string; mergeTargetEntityId?: string; relationId?: string; originalRelationId?: string; correctedRelationId?: string; relationCorrection?: RelationCorrection; entityId?: string; entityIdentityVersion?: number; entityCanonicalName?: string; originalEntityCanonicalName?: string; correctedCanonicalName?: string; entityType?: string; legacyReview?: boolean; previousSummary?: string; summaryText?: string; originalSummaryText?: string; correctedSummaryText?: string; aliasText?: string; originalAliasText?: string; correctedAliasText?: string; evidence?: Array<{ sourceId?: string; messageId: string; sessionId: string; timestamp: number; sender: string; excerpt: string }>; candidateSource?: string; candidateSignals?: Array<{ source: string; label: string; value: string }>; candidateInstanceId?: string; candidatePolicyVersion?: string; candidatePromptVersion?: string; candidateSchemaVersion?: string; candidateModel?: string; candidateSourceKind?: string }>
-    identityScan: { lastFullScanAt: string | null; lastRunAt: string | null; lastMode: 'incremental' | 'full' | null; lastCandidateCount: number }
+    identityScan: {
+      lastFullScanAt: string | null
+      lastRunAt: string | null
+      lastMode: 'incremental' | 'full' | null
+      lastCandidateCount: number
+      contextualRelations: number
+      contextualEligibleNeighbors: number
+      contextualSkippedHubs: number
+      contextualPairCandidates: number
+      contextualTruncated: boolean
+    }
   }
 }
 
@@ -630,7 +640,11 @@ const EMPTY_STATE: AssistantState = {
     pendingSessionBacklogCount: 0,
     backlogRetry: { ...EMPTY_BACKLOG_RETRY_STATE }
   },
-  graph: { entities: [], relations: [], lastSqlCommitId: null, reviewQueue: [], identityScan: { lastFullScanAt: null, lastRunAt: null, lastMode: null, lastCandidateCount: 0 } }
+  graph: { entities: [], relations: [], lastSqlCommitId: null, reviewQueue: [], identityScan: {
+    lastFullScanAt: null, lastRunAt: null, lastMode: null, lastCandidateCount: 0,
+    contextualRelations: 0, contextualEligibleNeighbors: 0, contextualSkippedHubs: 0,
+    contextualPairCandidates: 0, contextualTruncated: false
+  } }
 }
 
 const EXTRACTION_PROMPT_VERSION = 'personal-os-prompt-v8'
@@ -3024,13 +3038,16 @@ export class AiAssistantService {
       }
     }
     let candidates = 0
+    const reviewsById = new Map(this.state.graph.reviewQueue.map(review => [review.id, review]))
     for (const pairKey of pairKeys) {
       const [leftId, rightId] = pairKey.split('|')
       const left = byId.get(leftId)
       const right = byId.get(rightId)
-      if (left && right && this.enqueueIdentityPair(left, right, now)) candidates += 1
+      if (left && right && this.enqueueIdentityPair(
+        left, right, now, undefined, {}, reviewsById)) candidates += 1
     }
     this.state.graph.identityScan = {
+      ...this.state.graph.identityScan,
       lastFullScanAt: now,
       lastRunAt: now,
       lastMode: 'full',
@@ -3043,7 +3060,14 @@ export class AiAssistantService {
   private runContextualIdentityScan(now: string): void {
     const people = this.state.graph.entities.filter(entity => entity.type === 'person')
     const byId = new Map(people.map(entity => [entity.id, entity]))
-    const suggestions = buildGraphIdentitySuggestions(people, this.state.graph.relations)
+    const graphPlan = buildGraphIdentitySuggestionPlan(people, this.state.graph.relations)
+    const suggestions = graphPlan.suggestions
+    const reviewsById = new Map(this.state.graph.reviewQueue.map(review => [review.id, review]))
+    this.state.graph.identityScan.contextualRelations = graphPlan.stats.relations
+    this.state.graph.identityScan.contextualEligibleNeighbors = graphPlan.stats.eligibleNeighbors
+    this.state.graph.identityScan.contextualSkippedHubs = graphPlan.stats.skippedHighDegreeNeighbors
+    this.state.graph.identityScan.contextualPairCandidates = graphPlan.stats.pairCandidates
+    this.state.graph.identityScan.contextualTruncated = graphPlan.stats.truncated
     for (const pair of personalMemoryStore.listSimilarEntityPairs(localEmbeddingService.modelVersion, 0.88, 200)) {
       if (!byId.has(pair.leftId) || !byId.has(pair.rightId)) continue
       suggestions.push({
@@ -3060,7 +3084,8 @@ export class AiAssistantService {
     for (const suggestion of suggestions) {
       const left = byId.get(suggestion.leftId)
       const right = byId.get(suggestion.rightId)
-      if (left && right && this.enqueueIdentityPair(left, right, now, suggestion)) candidates += 1
+      if (left && right && this.enqueueIdentityPair(
+        left, right, now, suggestion, {}, reviewsById)) candidates += 1
     }
     this.state.graph.identityScan.lastCandidateCount += candidates
   }

@@ -38,6 +38,9 @@ export type IdentityCandidateLookup = {
 
 export const FULL_IDENTITY_SCAN_THRESHOLD = 500
 export const FULL_IDENTITY_SCAN_INTERVAL_DAYS = 7
+export const MAX_GRAPH_IDENTITY_NEIGHBOR_PEOPLE = 500
+export const MAX_GRAPH_IDENTITY_PAIR_CANDIDATES = 100_000
+export const MAX_GRAPH_IDENTITY_SUGGESTIONS = 2_000
 
 function normalize(value: unknown): string {
   return String(value || '').trim().toLocaleLowerCase('zh-CN').replace(/\s+/g, '')
@@ -169,7 +172,11 @@ export function buildNameBuckets(entities: IdentityCandidateEntity[]): Map<strin
   for (const entity of entities) {
     if (entity.type !== 'person') continue
     const names = new Set([entity.canonicalName, ...(entity.aliases || [])].map(normalize).filter(value => value.length >= 2))
-    for (const name of names) buckets.set(name, [...(buckets.get(name) || []), entity.id])
+    for (const name of names) {
+      const ids = buckets.get(name) || []
+      ids.push(entity.id)
+      buckets.set(name, ids)
+    }
   }
   return buckets
 }
@@ -178,37 +185,112 @@ export function buildGraphIdentitySuggestions(
   entities: IdentityCandidateEntity[],
   relations: Array<{ subjectId: string; objectId: string; predicate?: string; status?: string }>
 ): IdentityPairSuggestion[] {
+  return buildGraphIdentitySuggestionPlan(entities, relations).suggestions
+}
+
+export function buildGraphIdentitySuggestionPlan(
+  entities: IdentityCandidateEntity[],
+  relations: Array<{ subjectId: string; objectId: string; predicate?: string; status?: string }>,
+  options: {
+    maxPeoplePerNeighbor?: number
+    maxPairCandidates?: number
+    maxSuggestions?: number
+  } = {}
+): {
+  suggestions: IdentityPairSuggestion[]
+  stats: {
+    people: number
+    relations: number
+    eligibleNeighbors: number
+    skippedHighDegreeNeighbors: number
+    pairCandidates: number
+    suggestions: number
+    truncated: boolean
+  }
+} {
+  const maxPeoplePerNeighbor = Math.max(2, Math.floor(
+    options.maxPeoplePerNeighbor ?? MAX_GRAPH_IDENTITY_NEIGHBOR_PEOPLE))
+  const maxPairCandidates = Math.max(1, Math.floor(
+    options.maxPairCandidates ?? MAX_GRAPH_IDENTITY_PAIR_CANDIDATES))
+  const maxSuggestions = Math.max(1, Math.floor(
+    options.maxSuggestions ?? MAX_GRAPH_IDENTITY_SUGGESTIONS))
   const people = new Set(entities.filter(entity => entity.type === 'person').map(entity => entity.id))
-  const neighbors = new Map<string, Set<string>>()
+  const peopleByNeighbor = new Map<string, Set<string>>()
   for (const relation of relations) {
     if (relation.status === 'rejected') continue
     if (people.has(relation.subjectId)) {
-      const set = neighbors.get(relation.subjectId) || new Set<string>()
-      set.add(relation.objectId)
-      neighbors.set(relation.subjectId, set)
+      const set = peopleByNeighbor.get(relation.objectId) || new Set<string>()
+      set.add(relation.subjectId)
+      peopleByNeighbor.set(relation.objectId, set)
     }
     if (people.has(relation.objectId)) {
-      const set = neighbors.get(relation.objectId) || new Set<string>()
-      set.add(relation.subjectId)
-      neighbors.set(relation.objectId, set)
+      const set = peopleByNeighbor.get(relation.subjectId) || new Set<string>()
+      set.add(relation.objectId)
+      peopleByNeighbor.set(relation.subjectId, set)
     }
   }
   const ids = [...people]
-  const suggestions: IdentityPairSuggestion[] = []
-  for (let leftIndex = 0; leftIndex < ids.length; leftIndex += 1) {
-    for (let rightIndex = leftIndex + 1; rightIndex < ids.length; rightIndex += 1) {
-      const shared = [...(neighbors.get(ids[leftIndex]) || [])].filter(id => neighbors.get(ids[rightIndex])?.has(id))
-      if (shared.length < 2) continue
-      suggestions.push({
-        leftId: ids[leftIndex],
-        rightId: ids[rightIndex],
-        source: 'graph_neighbors',
-        label: '共享图谱邻居',
-        value: `${shared.length} 个`,
-        detail: `两个人物连接到 ${shared.length} 个相同实体，可能是同一人的不同账号，需人工确认。`,
-        confidence: Math.min(0.9, 0.66 + shared.length * 0.06)
-      })
+  const orderById = new Map(ids.map((id, index) => [id, index]))
+  const pairCounts = new Map<string, number>()
+  let eligibleNeighbors = 0
+  let skippedHighDegreeNeighbors = 0
+  let truncated = false
+  const neighborBuckets = [...peopleByNeighbor.entries()]
+    .filter(([, linkedPeople]) => linkedPeople.size >= 2)
+    .sort(([leftId, left], [rightId, right]) => left.size - right.size || leftId.localeCompare(rightId))
+  for (const [, linkedPeople] of neighborBuckets) {
+    if (linkedPeople.size > maxPeoplePerNeighbor) {
+      skippedHighDegreeNeighbors += 1
+      continue
+    }
+    eligibleNeighbors += 1
+    const linkedIds = [...linkedPeople].sort((left, right) =>
+      (orderById.get(left) ?? Number.MAX_SAFE_INTEGER) - (orderById.get(right) ?? Number.MAX_SAFE_INTEGER))
+    for (let leftIndex = 0; leftIndex < linkedIds.length; leftIndex += 1) {
+      for (let rightIndex = leftIndex + 1; rightIndex < linkedIds.length; rightIndex += 1) {
+        const key = identityPairKey(linkedIds[leftIndex], linkedIds[rightIndex])
+        if (!pairCounts.has(key) && pairCounts.size >= maxPairCandidates) {
+          truncated = true
+          continue
+        }
+        pairCounts.set(key, (pairCounts.get(key) || 0) + 1)
+      }
     }
   }
-  return suggestions
+  const suggestions = [...pairCounts.entries()]
+    .filter(([, shared]) => shared >= 2)
+    .map(([key, shared]) => {
+      const [firstId, secondId] = key.split('|')
+      const [leftId, rightId] =
+        (orderById.get(firstId) ?? Number.MAX_SAFE_INTEGER) <=
+        (orderById.get(secondId) ?? Number.MAX_SAFE_INTEGER)
+          ? [firstId, secondId]
+          : [secondId, firstId]
+      return {
+        leftId,
+        rightId,
+        source: 'graph_neighbors',
+        label: '共享图谱邻居',
+        value: `${shared} 个`,
+        detail: `两个人物连接到 ${shared} 个相同实体，可能是同一人的不同账号，需人工确认。`,
+        confidence: Math.min(0.9, 0.66 + shared * 0.06)
+      } as IdentityPairSuggestion
+    })
+    .sort((left, right) =>
+      (orderById.get(left.leftId) ?? Number.MAX_SAFE_INTEGER) - (orderById.get(right.leftId) ?? Number.MAX_SAFE_INTEGER) ||
+      (orderById.get(left.rightId) ?? Number.MAX_SAFE_INTEGER) - (orderById.get(right.rightId) ?? Number.MAX_SAFE_INTEGER))
+  if (suggestions.length > maxSuggestions) truncated = true
+  const boundedSuggestions = suggestions.slice(0, maxSuggestions)
+  return {
+    suggestions: boundedSuggestions,
+    stats: {
+      people: people.size,
+      relations: relations.length,
+      eligibleNeighbors,
+      skippedHighDegreeNeighbors,
+      pairCandidates: pairCounts.size,
+      suggestions: boundedSuggestions.length,
+      truncated
+    }
+  }
 }

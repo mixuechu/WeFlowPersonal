@@ -12946,6 +12946,9 @@ function AiAssistantPage() {
               <small>上次新增身份合并候选 · 查看</small>
             </button>
             <span><b>{identityDisambiguation.lastRunAt ? new Date(identityDisambiguation.lastRunAt).toLocaleString('zh-CN') : '尚未运行'}</b><small>最近消歧</small></span>
+            <span><b>{identityDisambiguation.contextualPairCandidates || 0}</b><small>共同邻居候选对</small></span>
+            <span><b>{identityDisambiguation.contextualSkippedHubs || 0}</b><small>已忽略低区分度超级枢纽</small></span>
+            {identityDisambiguation.contextualTruncated && <span className="warning"><b>已达安全上限</b><small>其余组合需等待新证据或人工检索复核</small></span>}
           </div>}
           <div className="assistant-path-finder">
             <TrustedEntityPicker
