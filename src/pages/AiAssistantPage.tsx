@@ -9075,14 +9075,15 @@ function AiAssistantPage() {
   const openClaimCorrection = async (citation: any) => {
     const request = claimCitationCorrectionGate.current.begin()
     setMessage('正在从本机权威事实档案读取当前值…')
-    const claim = await window.electronAPI.aiAssistant
-      .getMemoryClaim(citation.sourceId)
-      .catch((error: any) => {
-        if (claimCitationCorrectionGate.current.isCurrent(request)) {
-          setMessage(error?.message || String(error))
-        }
-        return null
-      })
+    let claim: any
+    try {
+      claim = await window.electronAPI.aiAssistant.getMemoryClaim(citation.sourceId)
+    } catch (error: any) {
+      if (claimCitationCorrectionGate.current.isCurrent(request)) {
+        setMessage(`${error?.message || String(error)}。当前无法判断该事实是否仍然存在，请重试。`)
+      }
+      return
+    }
     if (!claimCitationCorrectionGate.current.isCurrent(request)) return
     if (!claim) {
       setMessage('该事实不存在或已经被永久删除。')
@@ -9119,14 +9120,15 @@ function AiAssistantPage() {
   ) => {
     const request = eventCitationCorrectionGate.current.begin()
     setMessage('正在从本机权威事件档案读取当前值…')
-    const event = await window.electronAPI.aiAssistant
-      .getMemoryEvent(citation.sourceId)
-      .catch((error: any) => {
-        if (eventCitationCorrectionGate.current.isCurrent(request)) {
-          setMessage(error?.message || String(error))
-        }
-        return null
-      })
+    let event: any
+    try {
+      event = await window.electronAPI.aiAssistant.getMemoryEvent(citation.sourceId)
+    } catch (error: any) {
+      if (eventCitationCorrectionGate.current.isCurrent(request)) {
+        setMessage(`${error?.message || String(error)}。当前无法判断该事件是否仍然存在，请重试。`)
+      }
+      return
+    }
     if (!eventCitationCorrectionGate.current.isCurrent(request)) return
     if (!event) {
       setMessage('该事件不存在或已经被永久删除。')
