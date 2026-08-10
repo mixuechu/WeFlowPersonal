@@ -1321,6 +1321,7 @@ function AiAssistantPage() {
     revision?: string
     stale?: boolean
     loading?: boolean
+    error?: string
   }>({ items: [], total: 0, hasMore: false })
   const [taskArchiveProjects, setTaskArchiveProjects] = useState<{
     items: Array<{ project: string; taskTotal: number; lastUpdatedAt: string }>
@@ -2376,7 +2377,9 @@ function AiAssistantPage() {
   useEffect(() => {
     const request = taskArchiveGate.current.begin()
     setTaskArchiveLoadingMore(false)
-    setTaskArchive(current => ({ ...current, items: [], loading: true }))
+    setTaskArchive(current => ({
+      ...current, items: [], loading: true, error: undefined
+    }))
     void window.electronAPI.aiAssistant.getTaskArchive(taskArchiveOptions).then(result => {
       if (!taskArchiveGate.current.isCurrent(request)) return
       if (result.stale) {
@@ -2386,9 +2389,12 @@ function AiAssistantPage() {
         return
       }
       setTaskArchive({ ...result, loading: false })
-    }).catch(() => {
+    }).catch(error => {
       if (!taskArchiveGate.current.isCurrent(request)) return
-      setTaskArchive({ items: [], total: 0, hasMore: false, loading: false })
+      setTaskArchive({
+        items: [], total: 0, hasMore: false, loading: false,
+        error: error?.message || String(error)
+      })
     })
     return () => {
       if (taskArchiveGate.current.isCurrent(request)) taskArchiveGate.current.invalidate()
@@ -4801,6 +4807,7 @@ function AiAssistantPage() {
     if (taskArchiveLoadingMore || !taskArchive.hasMore) return
     const request = taskArchiveGate.current.begin()
     setTaskArchiveLoadingMore(true)
+    setTaskArchive(current => ({ ...current, error: undefined }))
     try {
       const result = await window.electronAPI.aiAssistant.getTaskArchive({
         ...taskArchiveOptions,
@@ -4821,7 +4828,11 @@ function AiAssistantPage() {
         loading: false
       }))
     } catch (error: any) {
-      if (taskArchiveGate.current.isCurrent(request)) setMessage(error?.message || String(error))
+      if (taskArchiveGate.current.isCurrent(request)) {
+        const errorMessage = error?.message || String(error)
+        setTaskArchive(current => ({ ...current, error: errorMessage }))
+        setMessage(errorMessage)
+      }
     } finally {
       if (taskArchiveGate.current.isCurrent(request)) setTaskArchiveLoadingMore(false)
     }
@@ -10833,7 +10844,8 @@ function AiAssistantPage() {
         <section className="assistant-panel assistant-project-portfolio">
           <div className="assistant-section-heading">
             <div><span className="assistant-eyebrow">TASK ARCHIVE</span><h3>已关闭任务档案</h3></div>
-            <span className="assistant-count">{taskArchive.total} 项</span>
+            <span className="assistant-count">{taskArchive.error && !taskArchive.items.length
+              ? '读取失败' : `${taskArchive.total} 项`}</span>
           </div>
           <div className="assistant-memory-scope assistant-event-scope">
             <select value={taskArchiveStatus} onChange={event => setTaskArchiveStatus(event.target.value as any)}>
@@ -10912,11 +10924,21 @@ function AiAssistantPage() {
                 </>}
               </div>}
             </article>)}
-            {!taskArchive.items.length && <div className="assistant-empty">
+            {taskArchive.error && <div className="assistant-task-load-failure" role="alert">
+              <strong>{taskArchive.items.length ? '更多历史任务读取失败' : '历史任务档案读取失败'}</strong>
+              <span>{taskArchive.error}。{taskArchive.items.length
+                ? ` 已加载的 ${taskArchive.items.length} 项仍可查看或恢复，但当前档案尚未读完。`
+                : ' 当前不会把失败解释为“没有已关闭任务”。'}</span>
+              <button type="button" disabled={taskArchiveLoadingMore} onClick={() => {
+                if (taskArchive.items.length) void loadMoreTaskArchive()
+                else setTaskArchiveRefreshKey(value => value + 1)
+              }}>{taskArchiveLoadingMore ? '正在重试…' : '立即重试'}</button>
+            </div>}
+            {!taskArchive.error && !taskArchive.items.length && <div className="assistant-empty">
               {taskArchive.loading ? '正在读取任务档案…' : '当前范围没有已完成或已取消任务。'}
             </div>}
           </div>
-          {taskArchive.hasMore && <div className="assistant-timeline-more">
+          {taskArchive.hasMore && !taskArchive.error && <div className="assistant-timeline-more">
             <button disabled={taskArchiveLoadingMore} onClick={() => void loadMoreTaskArchive()}>
               {taskArchiveLoadingMore ? '正在加载…' : `加载更多（已显示 ${taskArchive.items.length}/${taskArchive.total}）`}
             </button>
