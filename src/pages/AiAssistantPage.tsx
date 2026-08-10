@@ -1567,6 +1567,7 @@ function AiAssistantPage() {
     revision?: string
     stale?: boolean
     loading?: boolean
+    error?: string
   }>({ items: [], total: 0, hasMore: false })
   const [assistantArchiveQuery, setAssistantArchiveQuery] = useState('')
   const [assistantArchiveFrom, setAssistantArchiveFrom] = useState('')
@@ -2433,7 +2434,9 @@ function AiAssistantPage() {
   useEffect(() => {
     const request = assistantArchiveGate.current.begin()
     setAssistantArchiveLoadingMore(false)
-    setAssistantArchive(current => ({ ...current, items: [], loading: true }))
+    setAssistantArchive(current => ({
+      ...current, items: [], loading: true, error: undefined
+    }))
     const timer = window.setTimeout(() => {
       void window.electronAPI.aiAssistant.getAssistantConversations(assistantArchiveOptions).then(result => {
         if (!assistantArchiveGate.current.isCurrent(request)) return
@@ -2446,9 +2449,12 @@ function AiAssistantPage() {
           return
         }
         setAssistantArchive({ ...result, loading: false })
-      }).catch(() => {
+      }).catch(error => {
         if (!assistantArchiveGate.current.isCurrent(request)) return
-        setAssistantArchive({ items: [], total: 0, hasMore: false, loading: false })
+        setAssistantArchive({
+          items: [], total: 0, hasMore: false, loading: false,
+          error: error?.message || String(error)
+        })
       })
     }, assistantArchiveQuery ? 200 : 0)
     return () => {
@@ -8293,6 +8299,7 @@ function AiAssistantPage() {
     if (assistantArchiveLoadingMore || !assistantArchive.hasMore) return
     const request = assistantArchiveGate.current.begin()
     setAssistantArchiveLoadingMore(true)
+    setAssistantArchive(current => ({ ...current, error: undefined }))
     try {
       const result = await window.electronAPI.aiAssistant.getAssistantConversations({
         ...assistantArchiveOptions,
@@ -8313,7 +8320,11 @@ function AiAssistantPage() {
         loading: false
       }))
     } catch (error: any) {
-      if (assistantArchiveGate.current.isCurrent(request)) setMessage(error?.message || String(error))
+      if (assistantArchiveGate.current.isCurrent(request)) {
+        const errorMessage = error?.message || String(error)
+        setAssistantArchive(current => ({ ...current, error: errorMessage }))
+        setMessage(errorMessage)
+      }
     } finally {
       if (assistantArchiveGate.current.isCurrent(request)) setAssistantArchiveLoadingMore(false)
     }
@@ -12285,7 +12296,8 @@ function AiAssistantPage() {
           </details>
           <div className="assistant-conversation-layout">
             <aside className="assistant-conversation-list">
-              <strong>本机历史 · {assistantArchive.total}</strong>
+              <strong>本机历史 · {assistantArchive.error && !assistantConversations.length
+                ? '读取失败' : assistantArchive.total}</strong>
               <input
                 value={assistantArchiveQuery}
                 onChange={event => setAssistantArchiveQuery(event.target.value)}
@@ -12372,12 +12384,22 @@ function AiAssistantPage() {
                 <small>{conversation.preview}</small>
               </button>)}
               {assistantArchive.loading && <small>正在读取本机问答档案…</small>}
-              {!assistantArchive.loading && !assistantConversations.length && <small>
+              {assistantArchive.error && <div className="assistant-task-load-failure" role="alert">
+                <strong>{assistantConversations.length ? '更早会话读取失败' : '问答会话档案读取失败'}</strong>
+                <span>{assistantArchive.error}。{assistantConversations.length
+                  ? ` 已加载的 ${assistantConversations.length} 段会话仍可打开，但当前档案尚未读完。`
+                  : ' 当前不会把失败解释为“还没有本地问答记录”。'}</span>
+                <button type="button" disabled={assistantArchiveLoadingMore} onClick={() => {
+                  if (assistantConversations.length) void loadMoreAssistantConversations()
+                  else setAssistantArchiveRefreshKey(value => value + 1)
+                }}>{assistantArchiveLoadingMore ? '正在重试…' : '立即重试'}</button>
+              </div>}
+              {!assistantArchive.loading && !assistantArchive.error && !assistantConversations.length && <small>
                 {assistantArchiveQuery || assistantArchiveFrom || assistantArchiveTo || assistantArchiveRevalidation
                   ? '没有符合筛选条件的问答记录。'
                   : '还没有本地问答记录。'}
               </small>}
-              {assistantArchive.hasMore && <button onClick={() => void loadMoreAssistantConversations()}
+              {assistantArchive.hasMore && !assistantArchive.error && <button onClick={() => void loadMoreAssistantConversations()}
                 disabled={assistantArchiveLoadingMore}>
                 {assistantArchiveLoadingMore ? '正在加载…' : '加载更早会话'}
               </button>}
