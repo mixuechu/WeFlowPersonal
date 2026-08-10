@@ -1969,7 +1969,12 @@ export class AiAssistantService {
     continuationOffsets: Record<string, number>
   }> {
     const sessionsFromApi = await this.listAllWechatSessions()
-    const contacts = await this.listAllWechatContacts().catch(() => [])
+    // Contact identities are part of the extraction trust boundary: continuing with an
+    // empty directory would remove remarks/nicknames/wxids from the mapper and could
+    // turn a transient read failure into durable, ambiguous people and relationships.
+    // Let the run fail before any message cursor is advanced so the same window can be
+    // retried with its complete identity context.
+    const contacts = await this.listAllWechatContacts()
     const contactsById = new Map(contacts.map((contact: any) => [String(contact.username), contact]))
     const policies = personalMemoryStore.getConversationPolicies()
     const allSessions = includeContinuationSessions(
