@@ -678,6 +678,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
       ipcRenderer.invoke('ai-assistant:getMergeHistoryPage', options),
     sync: () => ipcRenderer.invoke('ai-assistant:sync'),
     cancelSync: () => ipcRenderer.invoke('ai-assistant:cancelSync'),
+    auditActiveTaskLifecycles: () => ipcRenderer.invoke('ai-assistant:auditActiveTaskLifecycles'),
     getSettings: () => ipcRenderer.invoke('ai-assistant:getSettings'),
     setSettings: (input: any) => ipcRenderer.invoke('ai-assistant:setSettings', input),
     updateTask: (id: string, patch: any, mutationToken?: string) =>

@@ -4719,6 +4719,8 @@ function registerIpcHandlers() {
     aiAssistantService.getMergeHistoryPage(options))
   ipcMain.handle('ai-assistant:sync', () => aiAssistantService.sync())
   ipcMain.handle('ai-assistant:cancelSync', () => aiAssistantService.cancelSync())
+  ipcMain.handle('ai-assistant:auditActiveTaskLifecycles', () =>
+    aiAssistantService.auditActiveTaskLifecycles())
   ipcMain.handle('ai-assistant:getSettings', () => aiAssistantService.getSettings())
   ipcMain.handle('ai-assistant:setSettings', (_, input: any) => aiAssistantService.setSettings(input))
   ipcMain.handle('ai-assistant:updateTask', (

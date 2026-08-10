@@ -1825,6 +1825,13 @@ export interface ElectronAPI {
         revision: string
         stale: boolean
       }>
+      auditActiveTaskLifecycles: () => Promise<{
+        total: number
+        processed: number
+        closed: number
+        kept: number
+        skipped: number
+      }>
       getTaskCalendarPage: (options?: any) => Promise<{
         items: any[]
         total: number

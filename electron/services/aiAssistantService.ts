@@ -401,6 +401,10 @@ import {
   reconcileTaskStatus,
   resolveExtractedTaskLifecycle
 } from './taskLifecyclePolicy'
+import {
+  planTaskLifecycleAuditDecision,
+  selectTaskLifecycleAuditEvidence
+} from './taskLifecycleAuditPolicy'
 import { chatService } from './chatService'
 import { voiceTranscribeService } from './voiceTranscribeService'
 import { localOcrService } from './localOcrService'
@@ -567,6 +571,17 @@ type AssistantState = {
   lastSyncAt: string | null
   notifications: NotificationOutbox
   reminderPreferences: ReminderPreferences
+  taskLifecycleAudit: {
+    running: boolean
+    total: number
+    processed: number
+    closed: number
+    kept: number
+    skipped: number
+    startedAt: string
+    finishedAt: string
+    lastError: string
+  }
   cursor: {
     lastMessageTimestamp: number
     recentMessageIds: string[]
@@ -660,6 +675,10 @@ const EMPTY_STATE: AssistantState = {
     prunedSentKeyCount: 0
   },
   reminderPreferences: { mutedKinds: [], snoozedUntil: {}, history: [] },
+  taskLifecycleAudit: {
+    running: false, total: 0, processed: 0, closed: 0, kept: 0, skipped: 0,
+    startedAt: '', finishedAt: '', lastError: ''
+  },
   cursor: {
     lastMessageTimestamp: 0,
     recentMessageIds: [],
@@ -810,6 +829,11 @@ export class AiAssistantService {
   private activeSync: Promise<any> | null = null
   private activeSyncTrigger: 'manual' | 'startup' | 'daily' | 'backlog' | 'resume' | null = null
   private activeSyncPhase: IncrementalSyncPhase | null = null
+  private taskLifecycleAuditPromise: Promise<any> | null = null
+  private taskLifecycleAuditState = {
+    running: false, total: 0, processed: 0, closed: 0, kept: 0, skipped: 0,
+    startedAt: '', finishedAt: '', lastError: ''
+  }
   private scheduler: ReturnType<typeof setInterval> | null = null
   private schedulerTickPromise: Promise<string> | null = null
   private systemResumePromise: Promise<string> | null = null
@@ -1179,6 +1203,7 @@ export class AiAssistantService {
       { name: 'scheduler_tick', promise: this.schedulerTickPromise },
       { name: 'system_resume', promise: this.systemResumePromise },
       { name: 'notification_flush', promise: this.notificationFlushPromise },
+      { name: 'task_lifecycle_audit', promise: this.taskLifecycleAuditPromise },
       ...[...this.memoryQuestionPromises].map((promise, index) => ({
         name: `memory_question_${index + 1}`,
         promise
@@ -1300,6 +1325,14 @@ export class AiAssistantService {
           ...normalizeNotificationOutbox(loaded.notifications)
         },
         reminderPreferences: normalizeReminderPreferences(loaded.reminderPreferences),
+        taskLifecycleAudit: {
+          ...structuredClone(EMPTY_STATE.taskLifecycleAudit),
+          ...(loaded.taskLifecycleAudit || {}),
+          running: false,
+          lastError: loaded.taskLifecycleAudit?.running
+            ? '上次待办生命周期复核在应用退出前未完成，可重新开始'
+            : String(loaded.taskLifecycleAudit?.lastError || '')
+        },
         tasks: Array.isArray(loaded.tasks)
           ? sanitizeTasksForPersistence(loaded.tasks.map((task: AssistantTask) =>
               task.classification ? task : { ...task, classification: 'uncertain' }))
@@ -1326,6 +1359,7 @@ export class AiAssistantService {
           }
         }
       }
+      this.taskLifecycleAuditState = { ...this.state.taskLifecycleAudit }
       const sqlCommitId = personalMemoryStore.getGraphCommitId()
       if (shouldRecoverGraphFromSql(
         sqlCommitId,
@@ -4549,6 +4583,9 @@ export class AiAssistantService {
       throw new Error('AI 助理已关闭，未开始增量处理或模型请求')
     }
     if (this.activeSync) return this.activeSync
+    if (this.taskLifecycleAuditPromise) {
+      throw new Error('当前正在复核活动待办，请等待完成后再开始增量处理')
+    }
     if (this.memorySearchRepairPromise) {
       throw new Error('当前正在核验检索索引，请在完成后再开始增量处理')
     }
@@ -5128,6 +5165,7 @@ export class AiAssistantService {
         localApiActive: this.localApiRequests.getStatus().active,
         localApiCalls: this.localApiCallPromises.size
       },
+      taskLifecycleAudit: { ...this.taskLifecycleAuditState },
       cancelling: this.cancelRequested,
       scheduleTime: this.config.get('aiAssistantScheduleTime'),
       model: this.config.get('aiAssistantApiModel'),
@@ -5348,6 +5386,144 @@ export class AiAssistantService {
     if (!this.activeSync) return { success: false, message: '当前没有正在运行的增量处理' }
     this.cancelRequested = true
     return { success: true, message: '将在当前批次安全完成后暂停' }
+  }
+
+  auditActiveTaskLifecycles(): Promise<any> {
+    if (this.taskLifecycleAuditPromise) return this.taskLifecycleAuditPromise
+    if (this.activeSync) throw new Error('正在补齐消息，请等待当前增量批次完成后再复核待办')
+    if (!this.config.get('aiAssistantEnabled')) throw new Error('AI 助理已关闭，未开始待办复核')
+    const apiKey = String(this.config.get('aiAssistantApiKey') || '').trim()
+    if (!apiKey) throw new Error('请先设置 DeepSeek API Key')
+    const candidates = this.state.tasks.filter(task =>
+      task.classification === 'mine' && ['todo', 'doing', 'waiting'].includes(task.status))
+    this.taskLifecycleAuditState = {
+      running: true, total: candidates.length, processed: 0, closed: 0, kept: 0, skipped: 0,
+      startedAt: new Date().toISOString(), finishedAt: '', lastError: ''
+    }
+    this.state.taskLifecycleAudit = { ...this.taskLifecycleAuditState }
+    this.saveState()
+    const promise = this.runActiveTaskLifecycleAudit(candidates, apiKey)
+      .then(result => {
+        this.taskLifecycleAuditState = {
+          ...this.taskLifecycleAuditState, running: false, finishedAt: new Date().toISOString()
+        }
+        this.state.taskLifecycleAudit = { ...this.taskLifecycleAuditState }
+        this.saveState()
+        return result
+      })
+      .catch(error => {
+        this.taskLifecycleAuditState = {
+          ...this.taskLifecycleAuditState, running: false, finishedAt: new Date().toISOString(),
+          lastError: sanitizeDiagnosticText(error)
+        }
+        this.state.taskLifecycleAudit = { ...this.taskLifecycleAuditState }
+        this.saveState()
+        throw error
+      })
+      .finally(() => {
+        if (this.taskLifecycleAuditPromise === promise) this.taskLifecycleAuditPromise = null
+      })
+    this.taskLifecycleAuditPromise = promise
+    return promise
+  }
+
+  private async runActiveTaskLifecycleAudit(candidates: AssistantTask[], apiKey: string): Promise<any> {
+    const baseUrl = String(this.config.get('aiAssistantApiBaseUrl') || 'https://api.deepseek.com').replace(/\/$/, '')
+    const model = String(this.config.get('aiAssistantApiModel') || 'deepseek-v4-flash')
+    const redactionLevel = String(this.config.get('aiAssistantSensitiveRedactionLevel') || 'standard') as SensitiveRedactionLevel
+    let closed = 0
+    let kept = 0
+    let skipped = 0
+    for (let offset = 0; offset < candidates.length; offset += 10) {
+      if (this.activeSync) throw new Error('增量处理已经开始，待办复核已在下一批模型请求前安全停止')
+      const batch = candidates.slice(offset, offset + 10)
+      const evidenceByTask = personalMemoryStore.listTaskEvidence(batch.map(task => task.id))
+      const evidenceWindowByTask = new Map(batch.map(task => [
+        task.id,
+        selectTaskLifecycleAuditEvidence(evidenceByTask.get(task.id) || [], 20)
+      ]))
+      const mutationTokens = new Map(batch.map(task => [task.id, buildTaskMutationToken(task)]))
+      const auditInput = batch.map(task => ({
+        taskId: task.id,
+        title: task.title,
+        detail: task.detail,
+        status: task.status,
+        due: task.due,
+        source: task.source,
+        evidence: (evidenceWindowByTask.get(task.id) || []).map((item, index) => ({
+          evidenceId: `${task.id}:e${index + 1}`,
+          time: Number(item.timestamp || 0)
+            ? new Date(Number(item.timestamp) * 1000).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' })
+            : '',
+          sender: item.sender,
+          excerpt: item.excerpt
+        }))
+      }))
+      const outbound = redactSensitiveText(JSON.stringify({ tasks: auditInput }), redactionLevel)
+      const { response, payload } = await this.modelRequests.fetchJson(`${baseUrl}/chat/completions`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          model,
+          thinking: { type: 'disabled' },
+          temperature: 0.1,
+          max_tokens: 3000,
+          response_format: { type: 'json_object' },
+          messages: [{
+            role: 'system',
+            content: `你是谨慎的待办生命周期复核器。逐项判断截至最后一条证据时动作是否仍未完成。只有明确显示已经交付、发送、提供、修复、完成、收到或验收且没有后续动作，才是 completed；明确取消或不再需要才是 cancelled；其余一律 open。引用、计划、催促和仅仅讨论完成条件都不能证明完成。taskId 和 evidenceId 必须逐字复制输入。只返回一个 JSON 对象：{"decisions":[{"taskId":"","lifecycle":"open|completed|cancelled","confidence":0.0,"reason":"简短依据","evidenceIds":[""]}]}。`
+          }, { role: 'user', content: outbound.text }]
+        })
+      }, 90_000, true)
+      if (!response.ok) throw new Error(payload?.error?.message || `DeepSeek 请求失败 (${response.status})`)
+      const parsed = parseModelJsonObject(payload?.choices?.[0]?.message?.content)
+      const decisions = Array.isArray(parsed.decisions) ? parsed.decisions : []
+      const decisionByTask = new Map(decisions.map((decision: any) => [String(decision.taskId || ''), decision]))
+      const updates: Array<{ id: string; patch: any; mutationToken: string }> = []
+      for (const task of batch) {
+        const current = this.state.tasks.find(item => item.id === task.id)
+        const mutationToken = mutationTokens.get(task.id) || ''
+        const allowedEvidenceIds = (evidenceWindowByTask.get(task.id) || [])
+          .map((_item, index) => `${task.id}:e${index + 1}`)
+        const plan = planTaskLifecycleAuditDecision({
+          currentExists: Boolean(current),
+          currentStatus: current?.status,
+          currentMutationToken: current ? buildTaskMutationToken(current) : '',
+          expectedMutationToken: mutationToken,
+          decision: decisionByTask.get(task.id),
+          allowedEvidenceIds
+        })
+        if (plan.action === 'skip') {
+          skipped += 1
+          continue
+        }
+        if (plan.action !== 'close') {
+          kept += 1
+          continue
+        }
+        const decision: any = decisionByTask.get(task.id)
+        updates.push({
+          id: task.id,
+          mutationToken,
+          patch: {
+            status: plan.status,
+            lifecycleEvidence: redactLocalSecrets(String(decision.reason || '')).slice(0, 300),
+            reason: plan.reason
+          }
+        })
+      }
+      if (updates.length) {
+        this.updateTasks(updates)
+        closed += updates.length
+      }
+      this.taskLifecycleAuditState = {
+        ...this.taskLifecycleAuditState,
+        processed: Math.min(candidates.length, offset + batch.length), closed, kept, skipped
+      }
+      this.state.taskLifecycleAudit = { ...this.taskLifecycleAuditState }
+      this.saveState()
+    }
+    return { total: candidates.length, processed: candidates.length, closed, kept, skipped }
   }
 
   private getProjectDirectoryRevision(): string {
@@ -6896,6 +7072,7 @@ export class AiAssistantService {
         localApiCalls: this.localApiCallPromises.size,
         timeoutSeconds: 90
       },
+      taskLifecycleAudit: { ...this.taskLifecycleAuditState },
       identityMergeSnapshotStorage: personalMemoryStore.getIdentityMergeSnapshotStorageStats(),
       taskStateStorage: {
         ...getTaskStateStorageStats(this.state.tasks),
@@ -8044,6 +8221,9 @@ export class AiAssistantService {
     if (['todo', 'doing', 'waiting', 'done', 'cancelled'].includes(patch.status)) next.status = patch.status
     if (typeof patch.title === 'string' && patch.title.trim()) next.title = patch.title.trim().slice(0, 300)
     if (typeof patch.detail === 'string') next.detail = patch.detail.trim().slice(0, 2000)
+    if (typeof patch.lifecycleEvidence === 'string') {
+      next.lifecycleEvidence = redactLocalSecrets(patch.lifecycleEvidence).trim().slice(0, 300)
+    }
     if (typeof patch.owner === 'string') next.owner = patch.owner.trim().slice(0, 100) || '我'
     if (Array.isArray(patch.collaborators)) next.collaborators = patch.collaborators
       .map((value: any) => String(value || '').trim().slice(0, 80)).filter(Boolean).slice(0, 20)

@@ -924,6 +924,7 @@ function AiAssistantPage() {
   const [settingsSaving, setSettingsSaving] = useState(false)
   const [settingsError, setSettingsError] = useState('')
   const [syncing, setSyncing] = useState(false)
+  const [taskLifecycleAuditing, setTaskLifecycleAuditing] = useState(false)
   const [retryingNotifications, setRetryingNotifications] = useState(false)
   const [message, setMessage] = useState('')
   const [reviewReasonSelections, setReviewReasonSelections] =
@@ -4997,6 +4998,24 @@ function AiAssistantPage() {
     const result = await window.electronAPI.aiAssistant.cancelSync()
     setMessage(result.message)
     await load()
+  }
+
+  const auditTaskLifecycles = async () => {
+    if (taskLifecycleAuditing || status?.taskLifecycleAudit?.running) return
+    setTaskLifecycleAuditing(true)
+    setMessage('正在根据权威原文复核活动待办；只会关闭高置信度的已完成或已取消事项。')
+    try {
+      const result = await window.electronAPI.aiAssistant.auditActiveTaskLifecycles()
+      setMessage(`待办复核完成：检查 ${result.processed} 项，关闭 ${result.closed} 项，保留 ${result.kept} 项，因并发变化跳过 ${result.skipped} 项。`)
+      await load()
+      setTaskWorkspaceRefreshKey(value => value + 1)
+      setTaskArchiveRefreshKey(value => value + 1)
+    } catch (error: any) {
+      setMessage(error?.message || String(error))
+      await load().catch(() => {})
+    } finally {
+      setTaskLifecycleAuditing(false)
+    }
   }
 
   const openSettings = async () => {
@@ -9800,6 +9819,14 @@ function AiAssistantPage() {
             </p>
           </div>
           <div className="assistant-sync-actions">
+            <button className="assistant-sync-button" onClick={() => void auditTaskLifecycles()}
+              disabled={taskLifecycleAuditing || status?.taskLifecycleAudit?.running || syncing || status?.syncing || !status?.configured}
+              title="依据每项待办的权威原文重新判断是否已经完成或取消">
+              <ShieldCheck size={15} className={taskLifecycleAuditing || status?.taskLifecycleAudit?.running ? 'spin' : ''} />
+              {taskLifecycleAuditing || status?.taskLifecycleAudit?.running
+                ? `复核 ${status?.taskLifecycleAudit?.processed || 0}/${status?.taskLifecycleAudit?.total || 0}`
+                : '复核活动待办'}
+            </button>
             <button className="assistant-sync-button" onClick={syncNow} disabled={syncing || status?.syncing || !status?.configured}>
               <RefreshCw size={15} className={syncing ? 'spin' : ''} />
               {syncing || status?.syncing
@@ -9809,6 +9836,12 @@ function AiAssistantPage() {
             {(syncing || status?.syncing) && <button className="assistant-cancel-sync" onClick={() => void cancelSync()} disabled={status?.cancelling}>
               {status?.cancelling ? '正在安全暂停…' : '当前批次后暂停'}
             </button>}
+            {!status?.taskLifecycleAudit?.running && status?.taskLifecycleAudit?.finishedAt &&
+              <small title={new Date(status.taskLifecycleAudit.finishedAt).toLocaleString('zh-CN', { hour12: false })}>
+                上次待办复核：检查 {status.taskLifecycleAudit.processed || 0} 项，关闭 {status.taskLifecycleAudit.closed || 0} 项，
+                保留 {status.taskLifecycleAudit.kept || 0} 项，跳过 {status.taskLifecycleAudit.skipped || 0} 项
+                {status.taskLifecycleAudit.lastError ? ` · 未完整结束：${status.taskLifecycleAudit.lastError}` : ''}
+              </small>}
           </div>
         </header>
 
