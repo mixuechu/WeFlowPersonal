@@ -2007,6 +2007,9 @@ export interface ElectronAPI {
           'image_semantics' | 'voice_transcript' | 'web_snapshot' | 'pdf_ocr'
         retryToken: string
       }) => Promise<any>
+      previewResourceEnrichmentBatch: (input: any) => Promise<any>
+      retryResourceEnrichmentBatch: (input: any) => Promise<any>
+      cancelResourceEnrichmentBatch: () => Promise<any>
       getResourceDossier: (id: string, expectedRevision: string) => Promise<any>
       getCurrentResourceDossier: (id: string) => Promise<any>
       getStructuredMemoryDossier: (

@@ -736,6 +736,12 @@ contextBridge.exposeInMainWorld('electronAPI', {
       ipcRenderer.invoke('ai-assistant:getResourceArchive', options),
     retryResourceEnrichment: (input: any) =>
       ipcRenderer.invoke('ai-assistant:retryResourceEnrichment', input),
+    previewResourceEnrichmentBatch: (input: any) =>
+      ipcRenderer.invoke('ai-assistant:previewResourceEnrichmentBatch', input),
+    retryResourceEnrichmentBatch: (input: any) =>
+      ipcRenderer.invoke('ai-assistant:retryResourceEnrichmentBatch', input),
+    cancelResourceEnrichmentBatch: () =>
+      ipcRenderer.invoke('ai-assistant:cancelResourceEnrichmentBatch'),
     getResourceDossier: (id: string, expectedRevision: string) =>
       ipcRenderer.invoke('ai-assistant:getResourceDossier', id, expectedRevision),
     getCurrentResourceDossier: (id: string) =>

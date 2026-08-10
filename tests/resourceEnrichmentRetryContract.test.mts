@@ -32,3 +32,28 @@ test('resource cards explain disabled capabilities and refresh after one retry',
   assert.match(page, /AI 助理总开关已关闭/)
   assert.match(page, /网页正文索引当前未启用/)
 })
+
+test('bounded batch retry requires a revision-bound preview and stops between items', () => {
+  assert.match(service, /loadResourceEnrichmentBatchIdentity/)
+  assert.match(service, /normalized\.revision !== page\.revision/)
+  assert.match(service, /assertResourceEnrichmentBatchToken\(identity, input\?\.previewToken\)/)
+  assert.match(service, /RESOURCE_ENRICHMENT_BATCH_LIMIT/)
+  assert.match(service, /for \(const item of identity\.items\)/)
+  assert.match(service, /current\.enrichment\?\.retryToken !== item\.retryToken/)
+  assert.match(service, /resourceEnrichmentBatchState\.cancelRequested \|\| this\.disposed/)
+  assert.match(service, /this\.resourceEnrichmentPromise = tracked/)
+  assert.match(main, /ai-assistant:previewResourceEnrichmentBatch/)
+  assert.match(main, /ai-assistant:retryResourceEnrichmentBatch/)
+  assert.match(main, /ai-assistant:cancelResourceEnrichmentBatch/)
+  assert.match(preload, /previewResourceEnrichmentBatch/)
+  assert.match(preload, /cancelResourceEnrichmentBatch/)
+})
+
+test('resource batch UI previews scope, reports progress and offers bounded cancellation', () => {
+  assert.match(page, /当前筛选范围批量重试/)
+  assert.match(page, /每批最多 25 条/)
+  assert.match(page, /预览本批重试/)
+  assert.match(page, /确认并开始本批/)
+  assert.match(page, /完成当前条后停止/)
+  assert.match(page, /status\?\.resourceEnrichmentBatch\?\.active/)
+})

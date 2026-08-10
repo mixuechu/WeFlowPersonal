@@ -51,6 +51,12 @@ import {
   selectDueResourceEnrichmentKind,
   type ResourceEnrichmentKind
 } from './resourceEnrichmentPolicy'
+import {
+  assertResourceEnrichmentBatchToken,
+  buildResourceEnrichmentBatchToken,
+  RESOURCE_ENRICHMENT_BATCH_LIMIT,
+  type ResourceEnrichmentBatchIdentity
+} from './resourceEnrichmentBatchPolicy'
 import { extractAttachmentText } from './attachmentTextExtractor'
 import { structureOcrText } from './imageOcrStructuring'
 import { captureWebSnapshot } from './webSnapshotService'
@@ -835,6 +841,20 @@ export class AiAssistantService {
   private lastSchedulerTickAt = 0
   private vectorIndexPromise: Promise<any> | null = null
   private resourceEnrichmentPromise: Promise<string> | null = null
+  private resourceEnrichmentBatchState = {
+    active: false,
+    cancelRequested: false,
+    kind: '',
+    status: '',
+    total: 0,
+    processed: 0,
+    succeeded: 0,
+    failed: 0,
+    skipped: 0,
+    startedAt: '',
+    finishedAt: '',
+    lastError: ''
+  }
   private runtimeMemoryPeakBytes = 0
   private vectorIndexContinuation: ReturnType<typeof setTimeout> | null = null
   private startupSyncTimer: ReturnType<typeof setTimeout> | null = null
@@ -4995,6 +5015,7 @@ export class AiAssistantService {
       vectorIndexing: backgroundWrites.vectorIndexing,
       searchRepairing: backgroundWrites.searchRepairing,
       backgroundWrites,
+      resourceEnrichmentBatch: { ...this.resourceEnrichmentBatchState },
       modelRequests: {
         ...this.modelRequests.getStatus(),
         memoryQuestions: this.memoryQuestionPromises.size,
@@ -9118,6 +9139,241 @@ export class AiAssistantService {
     })
   }
 
+  private assertResourceEnrichmentCapability(
+    kind: ResourceEnrichmentKind,
+    state = ''
+  ): void {
+    if (kind === 'image_ocr' || kind === 'pdf_ocr' ||
+        (kind === 'attachment_index' && state === 'waiting')) {
+      if (!this.config.get('aiAssistantOcrImages')) {
+        throw new Error('图片 OCR 当前未启用，请先在 AI 助理设置中开启')
+      }
+    }
+    if (kind === 'image_semantics' && !this.config.get('aiAssistantAnalyzeImages')) {
+      throw new Error('图片视觉理解当前未启用，请先在 AI 助理设置中开启')
+    }
+    if (kind === 'voice_transcript' && !this.config.get('autoTranscribeVoice')) {
+      throw new Error('自动语音转写当前未启用，请先在 AI 助理设置中开启')
+    }
+    if (kind === 'web_snapshot' && !this.config.get('aiAssistantIndexWebLinks')) {
+      throw new Error('网页正文索引当前未启用，请先在 AI 助理设置中开启')
+    }
+  }
+
+  private async runExactResourceEnrichment(
+    kind: ResourceEnrichmentKind,
+    resourceId: string,
+    runId: string
+  ): Promise<number> {
+    const eligibleAt = new Date('9999-12-31T23:59:59.999Z')
+    const runners: Record<ResourceEnrichmentKind, () => Promise<number>> = {
+      attachment_index: () => this.continuePendingAttachmentIndexes(
+        runId, resourceId, eligibleAt
+      ),
+      image_ocr: () => this.continuePendingImageOcr(runId, resourceId, eligibleAt),
+      voice_transcript: () => this.continuePendingVoiceTranscripts(
+        runId, resourceId, eligibleAt
+      ),
+      image_semantics: () => this.continuePendingImageSemantics(
+        runId, resourceId, eligibleAt
+      ),
+      web_snapshot: () => this.continuePendingWebSnapshots(runId, resourceId, eligibleAt),
+      pdf_ocr: () => this.continuePendingPdfOcr(runId, resourceId),
+      attachment_structure: () => this.continuePendingAttachmentStructures(
+        runId, resourceId, eligibleAt
+      )
+    }
+    return runners[kind]()
+  }
+
+  private normalizeResourceEnrichmentBatchInput(input: any): {
+    kind: ResourceEnrichmentKind
+    status: 'pending' | 'deferred' | 'waiting'
+    revision: string
+    filters: ResourceEnrichmentBatchIdentity['filters']
+  } {
+    const kind = String(input?.kind || '') as ResourceEnrichmentKind
+    if (!(RESOURCE_ENRICHMENT_KINDS as readonly string[]).includes(kind)) {
+      throw new Error('资源补全类型无效')
+    }
+    const status = String(input?.status || '')
+    if (!['pending', 'deferred', 'waiting'].includes(status)) {
+      throw new Error('批量重试只支持待处理、失败退避或等待能力的资源')
+    }
+    const sourceId = ['wechat', 'documents', 'calendar', 'mail', 'legacy'].includes(
+      String(input?.sourceId || '')
+    ) ? String(input.sourceId) : ''
+    return {
+      kind,
+      status: status as 'pending' | 'deferred' | 'waiting',
+      revision: String(input?.revision || '').trim(),
+      filters: {
+        resourceType: String(input?.resourceType || '').trim().slice(0, 64),
+        sourceId,
+        query: String(input?.query || '').trim().slice(0, 500),
+        from: input?.from && Number.isFinite(Date.parse(input.from)) ? String(input.from) : '',
+        to: input?.to && Number.isFinite(Date.parse(input.to)) ? String(input.to) : ''
+      }
+    }
+  }
+
+  private loadResourceEnrichmentBatchIdentity(input: any): {
+    identity: ResourceEnrichmentBatchIdentity
+    total: number
+  } {
+    const normalized = this.normalizeResourceEnrichmentBatchInput(input)
+    const page = personalMemoryStore.listResourceArchive({
+      ...normalized.filters,
+      enrichmentKind: normalized.kind,
+      enrichmentStatus: normalized.status,
+      limit: RESOURCE_ENRICHMENT_BATCH_LIMIT,
+      attachmentStructureParserVersion: ATTACHMENT_STRUCTURE_PARSER_VERSION,
+      imageSemanticModelVersion: localImageSemanticService.getStatus().modelVersion
+    })
+    if (!normalized.revision || normalized.revision !== page.revision) {
+      throw new Error('资源目录已变化，请刷新后重新预览')
+    }
+    return {
+      identity: {
+        revision: page.revision,
+        kind: normalized.kind,
+        status: normalized.status,
+        filters: normalized.filters,
+        items: page.items.map((item: any) => ({
+          id: String(item.id || ''),
+          retryToken: String(item.enrichment?.retryToken || '')
+        }))
+      },
+      total: Number(page.total || 0)
+    }
+  }
+
+  previewResourceEnrichmentBatch(input: any = {}): any {
+    if (this.disposed) throw new Error('AI 助理正在安全退出，不能预览资源批量重试')
+    if (!this.config.get('aiAssistantEnabled')) {
+      throw new Error('AI 助理总开关已关闭，请开启后再重试资源补全')
+    }
+    const { identity, total } = this.loadResourceEnrichmentBatchIdentity(input)
+    if (!identity.items.length) throw new Error('当前筛选范围没有可重试的资源')
+    this.assertResourceEnrichmentCapability(
+      identity.kind as ResourceEnrichmentKind,
+      identity.status
+    )
+    return {
+      revision: identity.revision,
+      kind: identity.kind,
+      status: identity.status,
+      matchingTotal: total,
+      batchCount: identity.items.length,
+      remainingAfterBatch: Math.max(0, total - identity.items.length),
+      limit: RESOURCE_ENRICHMENT_BATCH_LIMIT,
+      previewToken: buildResourceEnrichmentBatchToken(identity)
+    }
+  }
+
+  async retryResourceEnrichmentBatch(input: any = {}): Promise<any> {
+    if (this.disposed) throw new Error('AI 助理正在安全退出，不能批量重试资源补全')
+    if (!this.config.get('aiAssistantEnabled')) {
+      throw new Error('AI 助理总开关已关闭，请开启后再重试资源补全')
+    }
+    const { identity, total } = this.loadResourceEnrichmentBatchIdentity(input)
+    assertResourceEnrichmentBatchToken(identity, input?.previewToken)
+    if (!identity.items.length) throw new Error('当前筛选范围没有可重试的资源')
+    this.assertResourceEnrichmentCapability(
+      identity.kind as ResourceEnrichmentKind,
+      identity.status
+    )
+    const backgroundWrites = describeBackgroundWriteState({
+      syncing: Boolean(this.activeSync),
+      syncPhase: this.activeSyncPhase,
+      vectorIndexing: Boolean(this.vectorIndexPromise),
+      searchRepairing: Boolean(this.memorySearchRepairPromise),
+      resourceEnriching: Boolean(this.resourceEnrichmentPromise)
+    })
+    if (backgroundWrites.active) {
+      throw new Error(`${backgroundWrites.message}，请完成后再批量重试`)
+    }
+    this.resourceEnrichmentBatchState = {
+      active: true,
+      cancelRequested: false,
+      kind: identity.kind,
+      status: identity.status,
+      total: identity.items.length,
+      processed: 0,
+      succeeded: 0,
+      failed: 0,
+      skipped: 0,
+      startedAt: new Date().toISOString(),
+      finishedAt: '',
+      lastError: ''
+    }
+    const resultPromise = (async () => {
+      for (const item of identity.items) {
+        if (this.resourceEnrichmentBatchState.cancelRequested || this.disposed) break
+        const current = personalMemoryStore.listResourceArchive({
+          enrichmentKind: identity.kind,
+          resourceId: item.id,
+          limit: 1,
+          attachmentStructureParserVersion: ATTACHMENT_STRUCTURE_PARSER_VERSION,
+          imageSemanticModelVersion: localImageSemanticService.getStatus().modelVersion
+        }).items[0]
+        if (!current || current.enrichment?.retryToken !== item.retryToken ||
+            !['pending', 'deferred', 'waiting'].includes(current.enrichment?.state)) {
+          this.resourceEnrichmentBatchState.skipped += 1
+          this.resourceEnrichmentBatchState.processed += 1
+          continue
+        }
+        try {
+          this.assertResourceEnrichmentCapability(
+            identity.kind as ResourceEnrichmentKind,
+            current.enrichment.state
+          )
+          const processed = await this.runExactResourceEnrichment(
+            identity.kind as ResourceEnrichmentKind,
+            item.id,
+            `manual_resource_batch_${crypto.randomUUID()}`
+          )
+          if (processed === 1) this.resourceEnrichmentBatchState.succeeded += 1
+          else this.resourceEnrichmentBatchState.skipped += 1
+        } catch (error) {
+          this.resourceEnrichmentBatchState.failed += 1
+          this.resourceEnrichmentBatchState.lastError = sanitizeDiagnosticText(error)
+        } finally {
+          this.resourceEnrichmentBatchState.processed += 1
+        }
+      }
+      this.scheduleVectorIndexContinuation(1_000)
+      this.resourceEnrichmentBatchState.active = false
+      this.resourceEnrichmentBatchState.finishedAt = new Date().toISOString()
+      return {
+        success: true,
+        matchingTotal: total,
+        ...this.resourceEnrichmentBatchState,
+        cancelled: this.resourceEnrichmentBatchState.cancelRequested || this.disposed
+      }
+    })()
+    const tracked = resultPromise.then(
+      () => `resource_enrichment_${identity.kind}_manual_batch_completed`
+    ).finally(() => {
+      this.resourceEnrichmentBatchState.active = false
+      if (!this.resourceEnrichmentBatchState.finishedAt) {
+        this.resourceEnrichmentBatchState.finishedAt = new Date().toISOString()
+      }
+      if (this.resourceEnrichmentPromise === tracked) this.resourceEnrichmentPromise = null
+    })
+    void tracked.catch(() => undefined)
+    this.resourceEnrichmentPromise = tracked
+    return resultPromise
+  }
+
+  cancelResourceEnrichmentBatch(): any {
+    if (!this.resourceEnrichmentBatchState.active || !this.resourceEnrichmentPromise) {
+      return { success: false, active: false }
+    }
+    this.resourceEnrichmentBatchState.cancelRequested = true
+    return { success: true, active: true }
+  }
+
   async retryResourceEnrichment(input: {
     resourceId?: string
     kind?: string
@@ -9149,21 +9405,7 @@ export class AiAssistantService {
     if (!['pending', 'deferred', 'waiting'].includes(String(current.enrichment?.state || ''))) {
       throw new Error('这条资源已经完成或无需再试，请刷新资源目录')
     }
-    if (kind === 'image_ocr' || kind === 'pdf_ocr' ||
-        (kind === 'attachment_index' && current.enrichment?.state === 'waiting')) {
-      if (!this.config.get('aiAssistantOcrImages')) {
-        throw new Error('图片 OCR 当前未启用，请先在 AI 助理设置中开启')
-      }
-    }
-    if (kind === 'image_semantics' && !this.config.get('aiAssistantAnalyzeImages')) {
-      throw new Error('图片视觉理解当前未启用，请先在 AI 助理设置中开启')
-    }
-    if (kind === 'voice_transcript' && !this.config.get('autoTranscribeVoice')) {
-      throw new Error('自动语音转写当前未启用，请先在 AI 助理设置中开启')
-    }
-    if (kind === 'web_snapshot' && !this.config.get('aiAssistantIndexWebLinks')) {
-      throw new Error('网页正文索引当前未启用，请先在 AI 助理设置中开启')
-    }
+    this.assertResourceEnrichmentCapability(kind, current.enrichment?.state)
     const backgroundWrites = describeBackgroundWriteState({
       syncing: Boolean(this.activeSync),
       syncPhase: this.activeSyncPhase,
@@ -9174,27 +9416,9 @@ export class AiAssistantService {
     if (backgroundWrites.active) {
       throw new Error(`${backgroundWrites.message}，请完成后再重试这条资源`)
     }
-    const eligibleAt = new Date('9999-12-31T23:59:59.999Z')
     const runId = `manual_resource_${crypto.randomUUID()}`
-    const runners: Record<ResourceEnrichmentKind, () => Promise<number>> = {
-      attachment_index: () => this.continuePendingAttachmentIndexes(
-        runId, resourceId, eligibleAt
-      ),
-      image_ocr: () => this.continuePendingImageOcr(runId, resourceId, eligibleAt),
-      voice_transcript: () => this.continuePendingVoiceTranscripts(
-        runId, resourceId, eligibleAt
-      ),
-      image_semantics: () => this.continuePendingImageSemantics(
-        runId, resourceId, eligibleAt
-      ),
-      web_snapshot: () => this.continuePendingWebSnapshots(runId, resourceId, eligibleAt),
-      pdf_ocr: () => this.continuePendingPdfOcr(runId, resourceId),
-      attachment_structure: () => this.continuePendingAttachmentStructures(
-        runId, resourceId, eligibleAt
-      )
-    }
     const resultPromise = (async () => {
-      const processed = await runners[kind]()
+      const processed = await this.runExactResourceEnrichment(kind, resourceId, runId)
       if (processed !== 1) {
         throw new Error('这条资源当前无法进入补全队列，请刷新后检查能力状态')
       }

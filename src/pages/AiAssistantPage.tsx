@@ -1122,6 +1122,8 @@ function AiAssistantPage() {
   const [resourceLoadingMore, setResourceLoadingMore] = useState(false)
   const [resourceEnrichmentRetrying, setResourceEnrichmentRetrying] =
     useState<Record<string, boolean>>({})
+  const [resourceEnrichmentBatchPreview, setResourceEnrichmentBatchPreview] = useState<any>(null)
+  const [resourceEnrichmentBatchLoading, setResourceEnrichmentBatchLoading] = useState(false)
   const [selectedResourceDossier, setSelectedResourceDossier] = useState<any>(null)
   const [structuredMemoryDossier, setStructuredMemoryDossier] = useState<any>(null)
   const [relationDossierAuditLoading, setRelationDossierAuditLoading] =
@@ -1819,6 +1821,9 @@ function AiAssistantPage() {
     resourceTypeFilter, resourceSourceFilter, resourceEnrichmentKind,
     resourceEnrichmentStatus, resourceQuery, resourceFrom, resourceTo
   ])
+  useEffect(() => {
+    setResourceEnrichmentBatchPreview(null)
+  }, [resourceArchiveOptions])
   const taskArchiveOptions = useMemo(() => ({
     status: taskArchiveStatus,
     priority: taskArchivePriority || undefined,
@@ -4237,6 +4242,62 @@ function AiAssistantPage() {
       setResourceEnrichmentRetrying(current => setKeyedLoadingState(
         current, resource.id, false
       ))
+    }
+  }
+  const resourceEnrichmentBatchInput = () => ({
+    kind: resourceEnrichmentKind,
+    status: resourceEnrichmentStatus,
+    revision: resourceArchive.revision,
+    resourceType: resourceTypeFilter || undefined,
+    sourceId: resourceSourceFilter || undefined,
+    query: resourceQuery.trim() || undefined,
+    from: resourceFrom ? new Date(`${resourceFrom}T00:00:00+08:00`).toISOString() : undefined,
+    to: resourceTo ? new Date(`${resourceTo}T23:59:59.999+08:00`).toISOString() : undefined
+  })
+  const previewResourceEnrichmentBatch = async () => {
+    if (!resourceEnrichmentKind || !resourceEnrichmentStatus ||
+        !['pending', 'deferred', 'waiting'].includes(resourceEnrichmentStatus)) return
+    setResourceEnrichmentBatchLoading(true)
+    try {
+      const preview = await window.electronAPI.aiAssistant.previewResourceEnrichmentBatch(
+        resourceEnrichmentBatchInput()
+      )
+      setResourceEnrichmentBatchPreview(preview)
+    } catch (error: any) {
+      setMessage(error?.message || String(error))
+      setResourceRefreshKey(value => value + 1)
+    } finally {
+      setResourceEnrichmentBatchLoading(false)
+    }
+  }
+  const runResourceEnrichmentBatch = async () => {
+    if (!resourceEnrichmentBatchPreview?.previewToken) return
+    setResourceEnrichmentBatchLoading(true)
+    try {
+      const result = await window.electronAPI.aiAssistant.retryResourceEnrichmentBatch({
+        ...resourceEnrichmentBatchInput(),
+        previewToken: resourceEnrichmentBatchPreview.previewToken
+      })
+      setMessage(result.cancelled
+        ? `批量重试已停止：处理 ${result.processed}/${result.total} 条。`
+        : `批量重试完成：成功处理 ${result.succeeded} 条，跳过 ${result.skipped} 条，失败 ${result.failed} 条。`)
+      setResourceEnrichmentBatchPreview(null)
+      setResourceRefreshKey(value => value + 1)
+      await load()
+    } catch (error: any) {
+      setMessage(error?.message || String(error))
+      setResourceEnrichmentBatchPreview(null)
+      setResourceRefreshKey(value => value + 1)
+    } finally {
+      setResourceEnrichmentBatchLoading(false)
+    }
+  }
+  const cancelResourceEnrichmentBatch = async () => {
+    try {
+      await window.electronAPI.aiAssistant.cancelResourceEnrichmentBatch()
+      setMessage('已请求停止；当前这一条完成后不会继续处理下一条。')
+    } catch (error: any) {
+      setMessage(error?.message || String(error))
     }
   }
   const beginSearchDossierReturn = (
@@ -13307,6 +13368,53 @@ function AiAssistantPage() {
                   setResourceFrom(''); setResourceTo('')
                 }}>清除范围</button>}
             </div>
+            {resourceEnrichmentKind && ['pending', 'deferred', 'waiting'].includes(
+              resourceEnrichmentStatus
+            ) && <div className="assistant-recovery-audit">
+              <div className="assistant-section-heading">
+                <div>
+                  <strong>当前筛选范围批量重试</strong>
+                  <small>每批最多 25 条；确认后逐条复核，状态变化的项目会安全跳过。</small>
+                </div>
+                {!resourceEnrichmentBatchPreview && <button
+                  disabled={resourceEnrichmentBatchLoading || resourceArchive.status !== 'ready' ||
+                    !Number(resourceArchive.total || 0) || Boolean(
+                      resourceEnrichmentDisabledReason({
+                        kind: resourceEnrichmentKind,
+                        state: resourceEnrichmentStatus
+                      })
+                    )}
+                  title={resourceEnrichmentDisabledReason({
+                    kind: resourceEnrichmentKind,
+                    state: resourceEnrichmentStatus
+                  }) || '先预览本批数量，不会立即执行'}
+                  onClick={() => void previewResourceEnrichmentBatch()}>
+                  {resourceEnrichmentBatchLoading ? '正在预览…' : '预览本批重试'}
+                </button>}
+              </div>
+              {resourceEnrichmentBatchPreview && <div className="assistant-memory-actions">
+                <span>当前匹配 {resourceEnrichmentBatchPreview.matchingTotal} 条；本批处理
+                  {' '}{resourceEnrichmentBatchPreview.batchCount} 条；完成后仍有
+                  {' '}{resourceEnrichmentBatchPreview.remainingAfterBatch} 条可继续预览。</span>
+                <button disabled={resourceEnrichmentBatchLoading}
+                  onClick={() => setResourceEnrichmentBatchPreview(null)}>取消预览</button>
+                <button className="primary" disabled={resourceEnrichmentBatchLoading}
+                  onClick={() => void runResourceEnrichmentBatch()}>
+                  {resourceEnrichmentBatchLoading ? '正在逐条处理…' : '确认并开始本批'}
+                </button>
+              </div>}
+              {status?.resourceEnrichmentBatch?.active && <div className="assistant-memory-actions">
+                <span>正在处理 {Number(status.resourceEnrichmentBatch.processed || 0)} /
+                  {' '}{Number(status.resourceEnrichmentBatch.total || 0)}；成功
+                  {' '}{Number(status.resourceEnrichmentBatch.succeeded || 0)}，跳过
+                  {' '}{Number(status.resourceEnrichmentBatch.skipped || 0)}，失败
+                  {' '}{Number(status.resourceEnrichmentBatch.failed || 0)}。</span>
+                <button disabled={Boolean(status.resourceEnrichmentBatch.cancelRequested)}
+                  onClick={() => void cancelResourceEnrichmentBatch()}>
+                  {status.resourceEnrichmentBatch.cancelRequested ? '正在停止…' : '完成当前条后停止'}
+                </button>
+              </div>}
+            </div>}
             {dashboard?.memoryFeedPayloadPolicy?.resources === 'paginated_on_demand' &&
               <small className="assistant-evidence">
                 首页不再周期传输资源正文、附件结构或原文；目录分页读取，单条详情仅在展开时从 SQLCipher 水合。

@@ -4783,6 +4783,12 @@ function registerIpcHandlers() {
     aiAssistantService.getResourceArchive(options))
   ipcMain.handle('ai-assistant:retryResourceEnrichment', (_, input?: any) =>
     aiAssistantService.retryResourceEnrichment(input))
+  ipcMain.handle('ai-assistant:previewResourceEnrichmentBatch', (_, input?: any) =>
+    aiAssistantService.previewResourceEnrichmentBatch(input))
+  ipcMain.handle('ai-assistant:retryResourceEnrichmentBatch', (_, input?: any) =>
+    aiAssistantService.retryResourceEnrichmentBatch(input))
+  ipcMain.handle('ai-assistant:cancelResourceEnrichmentBatch', () =>
+    aiAssistantService.cancelResourceEnrichmentBatch())
   ipcMain.handle('ai-assistant:getResourceDossier', (_, id: string, expectedRevision: string) =>
     aiAssistantService.getResourceDossier(id, expectedRevision))
   ipcMain.handle('ai-assistant:getCurrentResourceDossier', (_, id: string) =>
