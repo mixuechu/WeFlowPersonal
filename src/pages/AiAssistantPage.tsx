@@ -1277,6 +1277,7 @@ function AiAssistantPage() {
   const [taskDependencyCandidates, setTaskDependencyCandidates] = useState<any>({
     items: [], total: 0, revision: '', loading: false
   })
+  const [taskDependencyRefreshKey, setTaskDependencyRefreshKey] = useState(0)
   const taskDependencyGate = useRef(new LatestRequestGate())
   const [taskStatusFilter, setTaskStatusFilter] = useState<'all' | Task['status']>('all')
   const [taskPriorityFilter, setTaskPriorityFilter] = useState<'all' | Task['priority']>('all')
@@ -1328,6 +1329,7 @@ function AiAssistantPage() {
     items: Array<{ project: string; taskTotal: number; lastUpdatedAt: string }>
     total: number
     loading?: boolean
+    error?: string
   }>({ items: [], total: 0 })
   const [taskArchiveStatus, setTaskArchiveStatus] = useState<'all' | 'done' | 'cancelled'>('all')
   const [taskArchivePriority, setTaskArchivePriority] = useState('')
@@ -1337,6 +1339,7 @@ function AiAssistantPage() {
   const [taskArchiveTo, setTaskArchiveTo] = useState('')
   const [taskArchiveLoadingMore, setTaskArchiveLoadingMore] = useState(false)
   const [taskArchiveRefreshKey, setTaskArchiveRefreshKey] = useState(0)
+  const [taskArchiveProjectRefreshKey, setTaskArchiveProjectRefreshKey] = useState(0)
   const taskArchiveGate = useRef(new LatestRequestGate())
   const taskArchiveProjectGate = useRef(new LatestRequestGate())
   const [taskOwnershipReviews, setTaskOwnershipReviews] = useState<{
@@ -2205,7 +2208,9 @@ function AiAssistantPage() {
       return
     }
     const request = taskDependencyGate.current.begin()
-    setTaskDependencyCandidates((current: any) => ({ ...current, loading: true }))
+    setTaskDependencyCandidates((current: any) => ({
+      ...current, loading: true, error: undefined
+    }))
     const timer = window.setTimeout(() => {
       void window.electronAPI.aiAssistant.getTaskDependencyCandidates({
         query: taskDependencyQuery.trim() || undefined,
@@ -2216,9 +2221,12 @@ function AiAssistantPage() {
         if (!taskDependencyGate.current.isCurrent(request)) return
         if (result.stale) return
         setTaskDependencyCandidates({ ...result, loading: false })
-      }).catch(() => {
+      }).catch(error => {
         if (!taskDependencyGate.current.isCurrent(request)) return
-        setTaskDependencyCandidates({ items: [], total: 0, revision: '', loading: false })
+        setTaskDependencyCandidates({
+          items: [], total: 0, revision: '', loading: false,
+          error: error?.message || String(error)
+        })
       })
     }, taskDependencyQuery.trim() ? 180 : 0)
     return () => {
@@ -2229,7 +2237,8 @@ function AiAssistantPage() {
     editingTask?.id,
     (editingTask?.dependsOnIds || []).join('\u0000'),
     taskDependencyQuery,
-    dashboard?.taskRevision
+    dashboard?.taskRevision,
+    taskDependencyRefreshKey
   ])
 
   useEffect(() => {
@@ -2409,7 +2418,9 @@ function AiAssistantPage() {
   useEffect(() => {
     const request = taskArchiveProjectGate.current.begin()
     const timer = window.setTimeout(() => {
-      setTaskArchiveProjects(current => ({ ...current, loading: true }))
+      setTaskArchiveProjects(current => ({
+        ...current, loading: true, error: undefined
+      }))
       void window.electronAPI.aiAssistant.getTaskArchiveProjects({
         query: taskArchiveProject.trim() || undefined,
         limit: 40,
@@ -2422,16 +2433,22 @@ function AiAssistantPage() {
           total: result.total,
           loading: false
         })
-      }).catch(() => {
+      }).catch(error => {
         if (!taskArchiveProjectGate.current.isCurrent(request)) return
-        setTaskArchiveProjects({ items: [], total: 0, loading: false })
+        setTaskArchiveProjects({
+          items: [], total: 0, loading: false,
+          error: error?.message || String(error)
+        })
       })
     }, taskArchiveProject.trim() ? 180 : 0)
     return () => {
       window.clearTimeout(timer)
       if (taskArchiveProjectGate.current.isCurrent(request)) taskArchiveProjectGate.current.invalidate()
     }
-  }, [taskArchiveProject, dashboard?.taskRevision, taskArchiveRefreshKey])
+  }, [
+    taskArchiveProject, dashboard?.taskRevision,
+    taskArchiveRefreshKey, taskArchiveProjectRefreshKey
+  ])
 
   useEffect(() => {
     const request = assistantArchiveGate.current.begin()
@@ -10792,12 +10809,22 @@ function AiAssistantPage() {
                             </label>
                           })}
                           {taskDependencyCandidates.loading && <small>正在搜索全部任务…</small>}
-                          {!taskDependencyCandidates.loading && !taskDependencyCandidates.items.length &&
+                          {taskDependencyCandidates.error && <div className="assistant-task-load-failure" role="alert">
+                            <strong>可依赖任务读取失败</strong>
+                            <span>{taskDependencyCandidates.error}。当前不会把读取故障解释为“没有匹配的可依赖任务”。</span>
+                            <button type="button" onClick={() => setTaskDependencyRefreshKey(value => value + 1)}>
+                              立即重试
+                            </button>
+                          </div>}
+                          {!taskDependencyCandidates.loading && !taskDependencyCandidates.error &&
+                            !taskDependencyCandidates.items.length &&
                             <small>没有匹配的可依赖任务。</small>}
                         </div>
                         <small>
                           已选择 {(editingTask.dependsOnIds || []).length} 项；
-                          当前搜索匹配 {taskDependencyCandidates.total || 0} 项，优先显示前 20 项。
+                          {taskDependencyCandidates.error
+                            ? '候选读取失败，匹配总数未知。'
+                            : `当前搜索匹配 ${taskDependencyCandidates.total || 0} 项，优先显示前 20 项。`}
                         </small>
                       </div>
                       <div className="assistant-task-editor-actions"><button onClick={() => setEditingTask(null)}>取消</button><button className="primary" onClick={() => void saveTask()}>保存</button></div>
@@ -10933,9 +10960,19 @@ function AiAssistantPage() {
           </div>
           <small className="assistant-evidence">
             历史任务从本机 SQLCipher 目录按需分页读取，不参与 15 秒首页轮询；项目目录可搜索全部
-            {taskArchiveProjects.total} 个匹配项目{taskArchiveProjects.loading ? '（检索中）' : ''}，不再截断前 500 个。
+            {taskArchiveProjects.error
+              ? '读取失败，匹配项目数未知'
+              : `${taskArchiveProjects.total} 个匹配项目${taskArchiveProjects.loading ? '（检索中）' : ''}`}
+            ，不再截断前 500 个。
             恢复后会重新进入当前行动工作集。
           </small>
+          {taskArchiveProjects.error && <div className="assistant-task-load-failure" role="alert">
+            <strong>历史任务项目目录读取失败</strong>
+            <span>{taskArchiveProjects.error}。当前不会把读取故障解释为“没有历史项目”。</span>
+            <button type="button" onClick={() => setTaskArchiveProjectRefreshKey(value => value + 1)}>
+              立即重试
+            </button>
+          </div>}
           <div className="assistant-memory-list">
             {taskArchive.items.map(task => <article className="assistant-memory-item" key={`task-archive-${task.id}`}>
               <div className="assistant-memory-item-head">
