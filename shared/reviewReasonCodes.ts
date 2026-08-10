@@ -45,6 +45,16 @@ export const REVIEW_REASON_LABELS: Record<ReviewReasonCode, string> = {
 export const reviewReasonOptions = (domain: ReviewReasonDomain) =>
   DOMAIN_CODES[domain].map(code => ({ code, label: REVIEW_REASON_LABELS[code] }))
 
+export const isReviewReasonCodeForDomain = (
+  domain: ReviewReasonDomain,
+  value: unknown,
+  options: { allowUnspecified?: boolean } = {}
+): value is ReviewReasonCode => {
+  const code = String(value || '') as ReviewReasonCode
+  return (options.allowUnspecified === true && code === 'unspecified') ||
+    DOMAIN_CODES[domain].includes(code)
+}
+
 export const normalizeReviewReasonCode = (
   domain: ReviewReasonDomain,
   value: unknown

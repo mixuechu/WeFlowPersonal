@@ -12,6 +12,12 @@ test('fixed review reasons cross renderer, preload, IPC and store boundaries', (
   const store = read('electron/services/personalMemoryStore.ts')
 
   assert.match(page, /aria-label="不准确的具体原因"/)
+  assert.match(page, /aria-label="归属反馈原因筛选"/)
+  assert.match(page, /aria-label="事实不准确原因筛选"/)
+  assert.match(page, /aria-label="事件不准确原因筛选"/)
+  assert.match(page, /aria-label="图谱审阅原因筛选"/)
+  assert.match(page, /openReviewReasonArchive/)
+  assert.match(page, /具体原因：/)
   assert.match(page, /REVIEW_REASON_LABELS/)
   assert.match(page, /只统计固定原因代码和数量，不保存自由文本、姓名或聊天原文/)
   for (const boundary of [preload, main, service]) {
@@ -22,5 +28,6 @@ test('fixed review reasons cross renderer, preload, IPC and store boundaries', (
   assert.match(store, /normalizeReviewReasonCode\('graph'/)
   assert.match(store, /normalizeReviewReasonCode\('identity'/)
   assert.match(store, /human-review-calibration-v9/)
+  assert.match(store, /reason_code=\?/)
   assert.doesNotMatch(store, /rejection_reason_text/i)
 })

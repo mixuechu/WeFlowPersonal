@@ -1664,6 +1664,7 @@ export interface ElectronAPI {
         reviewId?: string
         entityId?: string
         calibrationOutcome?: '' | 'exact' | 'corrected' | 'rejected'
+        reasonCode?: string
         offset?: number
         limit?: number
         revision?: string

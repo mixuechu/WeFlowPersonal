@@ -5796,6 +5796,7 @@ export class AiAssistantService {
     const page = personalMemoryStore.listTaskReviewDecisionPage({
       status: ['active', 'revoked', 'all'].includes(options?.status) ? options.status : 'all',
       decision: ['mine', 'rejected', 'all'].includes(options?.decision) ? options.decision : 'all',
+      reasonCode: String(options?.reasonCode || '') as ReviewReasonCode | '',
       query: String(options?.query || ''),
       from: String(options?.from || ''),
       to: String(options?.to || ''),
@@ -5943,6 +5944,7 @@ export class AiAssistantService {
       entityId: String(options?.entityId || '').trim(),
       calibrationOutcome: ['exact', 'corrected', 'rejected'].includes(String(options?.calibrationOutcome || ''))
         ? options?.calibrationOutcome : '',
+      reasonCode: String(options?.reasonCode || '') as ReviewReasonCode | '',
       offset: options?.offset,
       limit: options?.limit,
       revision: String(options?.revision || '')
@@ -6485,6 +6487,7 @@ export class AiAssistantService {
       status: ['candidate', 'confirmed', 'rejected', 'cancelled'].includes(options?.status)
         ? options.status
         : undefined,
+      reasonCode: String(options?.reasonCode || '') as ReviewReasonCode | '',
       query: String(options?.query || ''),
       from: String(options?.from || ''),
       to: String(options?.to || ''),
@@ -6627,6 +6630,7 @@ export class AiAssistantService {
       status: ['candidate', 'confirmed', 'rejected'].includes(options?.status)
         ? options.status
         : undefined,
+      reasonCode: String(options?.reasonCode || '') as ReviewReasonCode | '',
       predicate: String(options?.predicate || ''),
       from: String(options?.from || ''),
       to: String(options?.to || ''),

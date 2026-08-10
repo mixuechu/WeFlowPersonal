@@ -84,6 +84,7 @@ import {
   type ReviewInboxTarget
 } from '../../shared/reviewInbox'
 import {
+  REVIEW_REASON_CODES,
   REVIEW_REASON_LABELS,
   reviewReasonOptions,
   type ReviewReasonCode,
@@ -581,6 +582,11 @@ function relationHistoryDirectionText(item: any): string {
     : ''
 }
 
+function reviewReasonLabel(value: unknown): string {
+  const code = String(value || 'unspecified') as ReviewReasonCode
+  return REVIEW_REASON_LABELS[code] || REVIEW_REASON_LABELS.unspecified
+}
+
 function MemoryItemAuditRows({
   kind,
   items,
@@ -618,6 +624,7 @@ function MemoryItemAuditRows({
           {memoryAuditStatusLabel(item.previousStatus)} → {memoryAuditStatusLabel(item.decision)}
           {' · '}{new Date(item.createdAt).toLocaleString('zh-CN')}
           {item.reason ? ` · ${item.reason}` : ''}
+          {item.decision === 'rejected' ? ` · 具体原因：${reviewReasonLabel(item.reasonCode)}` : ''}
           {item.protectFromExtraction ? ' · 阻止模型覆盖' : ' · 不冻结模型更新'}
         </small>)}
   </div>
@@ -1105,11 +1112,13 @@ function AiAssistantPage() {
   const [claimEntitySelection, setClaimEntitySelection] = useState<any>(null)
   const [claimSourceFilter, setClaimSourceFilter] = useState('')
   const [claimStatusFilter, setClaimStatusFilter] = useState('')
+  const [claimReviewReasonFilter, setClaimReviewReasonFilter] = useState<ReviewReasonCode | ''>('')
   const [claimPredicateFilter, setClaimPredicateFilter] = useState('')
   const [claimFrom, setClaimFrom] = useState('')
   const [claimTo, setClaimTo] = useState('')
   const [eventSourceFilter, setEventSourceFilter] = useState('')
   const [eventStatusFilter, setEventStatusFilter] = useState('')
+  const [eventReviewReasonFilter, setEventReviewReasonFilter] = useState<ReviewReasonCode | ''>('')
   const [eventFrom, setEventFrom] = useState('')
   const [eventTo, setEventTo] = useState('')
   const [resourceArchive, setResourceArchive] = useState<any>({
@@ -1428,6 +1437,7 @@ function AiAssistantPage() {
   }>({ items: [], total: 0, hasMore: false, counts: { active: 0, revoked: 0, all: 0 } })
   const [taskFeedbackStatus, setTaskFeedbackStatus] = useState<'all' | 'active' | 'revoked'>('all')
   const [taskFeedbackDecision, setTaskFeedbackDecision] = useState<'all' | 'mine' | 'rejected'>('all')
+  const [taskFeedbackReason, setTaskFeedbackReason] = useState<ReviewReasonCode | ''>('')
   const [taskFeedbackQuery, setTaskFeedbackQuery] = useState('')
   const [taskFeedbackFrom, setTaskFeedbackFrom] = useState('')
   const [taskFeedbackTo, setTaskFeedbackTo] = useState('')
@@ -1460,6 +1470,7 @@ function AiAssistantPage() {
   const [reviewQuery, setReviewQuery] = useState('')
   const [reviewCalibrationOutcomeFilter, setReviewCalibrationOutcomeFilter] =
     useState<ReviewCalibrationOutcomeFilter>('')
+  const [reviewReasonFilter, setReviewReasonFilter] = useState<ReviewReasonCode | ''>('')
   const [focusedReviewId, setFocusedReviewId] = useState('')
   const [focusedReviewEntityId, setFocusedReviewEntityId] = useState('')
   const [focusedReviewEntityName, setFocusedReviewEntityName] = useState('')
@@ -1468,6 +1479,7 @@ function AiAssistantPage() {
     reviewKindFilter,
     reviewQuery.trim(),
     reviewCalibrationOutcomeFilter,
+    reviewReasonFilter,
     focusedReviewId,
     focusedReviewEntityId
   ])
@@ -1799,21 +1811,23 @@ function AiAssistantPage() {
   const eventTimelineOptions = useMemo(() => ({
     sourceId: eventSourceFilter || undefined,
     status: eventStatusFilter || undefined,
+    reasonCode: eventReviewReasonFilter || undefined,
     from: eventFrom ? new Date(`${eventFrom}T00:00:00+08:00`).toISOString() : undefined,
     to: eventTo ? new Date(`${eventTo}T23:59:59.999+08:00`).toISOString() : undefined,
     limit: 100,
     offset: 0
-  }), [eventSourceFilter, eventStatusFilter, eventFrom, eventTo])
+  }), [eventSourceFilter, eventStatusFilter, eventReviewReasonFilter, eventFrom, eventTo])
   const claimArchiveOptions = useMemo(() => ({
     entityId: claimEntityFilter || undefined,
     sourceId: claimSourceFilter || undefined,
     status: claimStatusFilter || undefined,
+    reasonCode: claimReviewReasonFilter || undefined,
     predicate: claimPredicateFilter || undefined,
     from: claimFrom ? new Date(`${claimFrom}T00:00:00+08:00`).toISOString() : undefined,
     to: claimTo ? new Date(`${claimTo}T23:59:59.999+08:00`).toISOString() : undefined,
     limit: 100,
     offset: 0
-  }), [claimEntityFilter, claimSourceFilter, claimStatusFilter, claimPredicateFilter, claimFrom, claimTo])
+  }), [claimEntityFilter, claimSourceFilter, claimStatusFilter, claimReviewReasonFilter, claimPredicateFilter, claimFrom, claimTo])
   const resourceArchiveOptions = useMemo(() => ({
     resourceType: resourceTypeFilter || undefined,
     sourceId: resourceSourceFilter || undefined,
@@ -1929,12 +1943,13 @@ function AiAssistantPage() {
   const taskFeedbackOptions = useMemo(() => ({
     status: taskFeedbackStatus,
     decision: taskFeedbackDecision,
+    reasonCode: taskFeedbackReason || undefined,
     query: taskFeedbackQuery || undefined,
     from: taskFeedbackFrom ? new Date(`${taskFeedbackFrom}T00:00:00+08:00`).toISOString() : undefined,
     to: taskFeedbackTo ? new Date(`${taskFeedbackTo}T23:59:59.999+08:00`).toISOString() : undefined,
     limit: 40,
     offset: 0
-  }), [taskFeedbackStatus, taskFeedbackDecision, taskFeedbackQuery, taskFeedbackFrom, taskFeedbackTo])
+  }), [taskFeedbackStatus, taskFeedbackDecision, taskFeedbackReason, taskFeedbackQuery, taskFeedbackFrom, taskFeedbackTo])
   const memoryDeletionOptions = useMemo(() => ({
     kind: memoryDeletionKind,
     reason: memoryDeletionReason,
@@ -3042,6 +3057,7 @@ function AiAssistantPage() {
         reviewId: focusedReviewId || undefined,
         entityId: focusedReviewEntityId || undefined,
         calibrationOutcome: reviewCalibrationOutcomeFilter || undefined,
+        reasonCode: reviewReasonFilter || undefined,
         offset: 0,
         limit: 40
       }).then(page => {
@@ -3069,7 +3085,7 @@ function AiAssistantPage() {
       window.clearTimeout(timer)
       if (reviewPageGate.current.isCurrent(request)) reviewPageGate.current.invalidate()
     }
-  }, [reviewStatusFilter, reviewKindFilter, reviewQuery, reviewCalibrationOutcomeFilter, focusedReviewId, focusedReviewEntityId, reviewRefreshKey, dashboard?.graphReviewRevision])
+  }, [reviewStatusFilter, reviewKindFilter, reviewQuery, reviewCalibrationOutcomeFilter, reviewReasonFilter, focusedReviewId, focusedReviewEntityId, reviewRefreshKey, dashboard?.graphReviewRevision])
 
   useEffect(() => {
     const target = reviewReturnTarget
@@ -6096,6 +6112,42 @@ function AiAssistantPage() {
       <option key={option.code} value={option.code}>{option.label}</option>)}
   </select>
 
+  const openReviewReasonArchive = (
+    domain: ReviewReasonDomain,
+    reasonCode: ReviewReasonCode
+  ) => {
+    if (domain === 'task') {
+      setTaskFeedbackStatus('all')
+      setTaskFeedbackDecision('rejected')
+      setTaskFeedbackReason(reasonCode)
+      window.setTimeout(() => {
+        const details = document.getElementById('task-feedback-archive') as HTMLDetailsElement | null
+        if (details) details.open = true
+        details?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+      }, 0)
+      return
+    }
+    if (domain === 'memory') {
+      setClaimStatusFilter('rejected')
+      setClaimReviewReasonFilter(reasonCode)
+      setEventStatusFilter('rejected')
+      setEventReviewReasonFilter(reasonCode)
+      window.setTimeout(() => document.getElementById('structured-claims')
+        ?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 0)
+      return
+    }
+    setReviewStatusFilter('resolved')
+    setReviewCalibrationOutcomeFilter('rejected')
+    setReviewReasonFilter(reasonCode)
+    setReviewKindFilter(domain === 'identity' ? 'possible_duplicate' : '')
+    setFocusedReviewId('')
+    setFocusedReviewEntityId('')
+    clearReviewReturnTarget()
+    setBlockedIdentityReviewReturn(null)
+    window.setTimeout(() => document.getElementById('graph-review-ledger')
+      ?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 0)
+  }
+
   const updateProjectMemoryStatus = async (
     kind: 'claim' | 'event',
     id: string,
@@ -7371,6 +7423,7 @@ function AiAssistantPage() {
         reviewId: focusedReviewId || undefined,
         entityId: focusedReviewEntityId || undefined,
         calibrationOutcome: reviewCalibrationOutcomeFilter || undefined,
+        reasonCode: reviewReasonFilter || undefined,
         offset: reviewPage.items.length,
         limit: 40,
         revision: reviewPage.revision
@@ -10403,12 +10456,15 @@ function AiAssistantPage() {
             {(['task', 'memory', 'graph', 'identity'] as const).map(domain => {
               const domainLabels = { task: '待办', memory: '事实事件', graph: '图谱', identity: '身份' }
               const entries = Object.entries(dashboard.humanReviewCalibration.rejectionReasons.byDomain?.[domain] || {})
-                .filter(([code, count]) => code !== 'unspecified' && Number(count) > 0)
+                .filter(([code, count]) => REVIEW_REASON_CODES.includes(code as ReviewReasonCode) && Number(count) > 0)
               if (!entries.length) return null
               return <small key={domain}>
-                {' '}{domainLabels[domain]}：{entries.map(([code, count]) =>
-                  `${REVIEW_REASON_LABELS[code as ReviewReasonCode] || REVIEW_REASON_LABELS.unspecified} ${Number(count)}`
-                ).join('、')}。
+                {' '}{domainLabels[domain]}：{entries.map(([code, count], index) => <span key={code}>
+                  {index > 0 ? '、' : ''}<button type="button"
+                    onClick={() => openReviewReasonArchive(domain, code as ReviewReasonCode)}>
+                    {REVIEW_REASON_LABELS[code as ReviewReasonCode]} {Number(count)}
+                  </button>
+                </span>)}。
               </small>
             })}
             <small>只统计固定原因代码和数量，不保存自由文本、姓名或聊天原文。</small>
@@ -11415,7 +11471,8 @@ function AiAssistantPage() {
               disabled={taskOwnershipLoadingMore}>
               {taskOwnershipLoadingMore ? '正在加载下一页…' : '加载更多待确认归属'}
             </button>}
-            {!!taskReviewFeedback.archive?.total && <details className="assistant-task-feedback-history">
+            {!!taskReviewFeedback.archive?.total && <details id="task-feedback-archive"
+              className="assistant-task-feedback-history">
               <summary>完整归属反馈档案 · {taskFeedbackArchive.error && !taskFeedbackArchive.items.length
                 ? '读取失败'
                 : `${taskFeedbackArchive.total} 条匹配 / ${taskReviewFeedback.archive.total} 条全部`}</summary>
@@ -11427,10 +11484,25 @@ function AiAssistantPage() {
                   <option value="revoked">已经撤销</option>
                 </select>
                 <select value={taskFeedbackDecision}
-                  onChange={event => setTaskFeedbackDecision(event.target.value as any)}>
+                  onChange={event => {
+                    const decision = event.target.value as 'all' | 'mine' | 'rejected'
+                    setTaskFeedbackDecision(decision)
+                    if (decision !== 'rejected') setTaskFeedbackReason('')
+                  }}>
                   <option value="all">全部判断</option>
                   <option value="mine">确认为我的</option>
                   <option value="rejected">不是我的</option>
+                </select>
+                <select aria-label="归属反馈原因筛选" value={taskFeedbackReason}
+                  onChange={event => {
+                    const reason = event.target.value as ReviewReasonCode | ''
+                    setTaskFeedbackReason(reason)
+                    if (reason) setTaskFeedbackDecision('rejected')
+                  }}>
+                  <option value="">全部原因</option>
+                  <option value="unspecified">未标注具体原因</option>
+                  {reviewReasonOptions('task').map(option =>
+                    <option key={option.code} value={option.code}>{option.label}</option>)}
                 </select>
                 <input value={taskFeedbackQuery} onChange={event => setTaskFeedbackQuery(event.target.value)}
                   placeholder="搜索任务标题或来源" />
@@ -11447,6 +11519,7 @@ function AiAssistantPage() {
                 <small>
                   {new Date(item.updated_at).toLocaleString('zh-CN')} · {!item.active ? '已撤销' : item.decision === 'mine' ? '确认为我的' : '不是我的'} · {item.title || '未命名事项'}
                   {item.source ? ` · ${item.source}` : ''}
+                  {item.decision === 'rejected' ? ` · 原因：${reviewReasonLabel(item.reason_code)}` : ''}
                   {item.active && item.suppression_count ? ` · 已拦截 ${item.suppression_count} 次重复抽取` : ''}
                 </small>
                 <button onClick={() => void openTaskFeedbackDossier(item.evidence_fingerprint)}>原文与审计</button>
@@ -11485,6 +11558,8 @@ function AiAssistantPage() {
                     ? taskFeedbackDossier.decision === 'mine' ? '当前判断：是我的待办' : '当前判断：不是我的待办'
                     : '当前判断已经撤销'}
                   {taskFeedbackDossier.source ? ` · 来源 ${taskFeedbackDossier.source}` : ''}
+                  {taskFeedbackDossier.decision === 'rejected'
+                    ? ` · 原因：${reviewReasonLabel(taskFeedbackDossier.reason_code)}` : ''}
                 </p>
                 <div className="assistant-evidence-stack">
                   <EvidenceRows evidence={taskFeedbackDossier.evidence || []}
@@ -11498,6 +11573,7 @@ function AiAssistantPage() {
                         : item.action === 'rejected' ? '不是我的'
                           : '撤销反馈'
                     }{item.snapshotAvailable ? ' · 保存了可恢复快照' : ''}
+                    {item.action === 'rejected' ? ` · 原因：${reviewReasonLabel(item.reason_code)}` : ''}
                   </small>)}
                   {taskFeedbackDossier.historyHasMore && <button
                     onClick={() => void loadMoreTaskFeedbackHistory()}
@@ -13060,20 +13136,34 @@ function AiAssistantPage() {
                 <option value="mail">Mail</option>
                 <option value="legacy">历史未知来源</option>
               </select>
-              <select value={claimStatusFilter} onChange={event => setClaimStatusFilter(event.target.value)}>
+              <select value={claimStatusFilter} onChange={event => {
+                setClaimStatusFilter(event.target.value)
+                if (event.target.value !== 'rejected') setClaimReviewReasonFilter('')
+              }}>
                 <option value="">有效事实</option>
                 <option value="candidate">待确认</option>
                 <option value="confirmed">已确认</option>
                 <option value="rejected">已标记不准确</option>
               </select>
+              <select aria-label="事实不准确原因筛选" value={claimReviewReasonFilter}
+                onChange={event => {
+                  const reason = event.target.value as ReviewReasonCode | ''
+                  setClaimReviewReasonFilter(reason)
+                  if (reason) setClaimStatusFilter('rejected')
+                }}>
+                <option value="">全部原因</option>
+                <option value="unspecified">未标注具体原因</option>
+                {reviewReasonOptions('memory').map(option =>
+                  <option key={option.code} value={option.code}>{option.label}</option>)}
+              </select>
               <input value={claimPredicateFilter} onChange={event => setClaimPredicateFilter(event.target.value)}
                 placeholder="搜索谓词、事实值或关键词" />
               <label><span>有效期从</span><input type="date" value={claimFrom} onChange={event => setClaimFrom(event.target.value)} /></label>
               <label><span>到</span><input type="date" value={claimTo} onChange={event => setClaimTo(event.target.value)} /></label>
-              {(claimEntityFilter || claimSourceFilter || claimStatusFilter || claimPredicateFilter || claimFrom || claimTo) &&
+              {(claimEntityFilter || claimSourceFilter || claimStatusFilter || claimReviewReasonFilter || claimPredicateFilter || claimFrom || claimTo) &&
                 <button onClick={() => {
                   setClaimEntityFilter(''); setClaimEntitySelection(null); setClaimSourceFilter(''); setClaimStatusFilter('')
-                  setClaimPredicateFilter(''); setClaimFrom(''); setClaimTo('')
+                  setClaimReviewReasonFilter(''); setClaimPredicateFilter(''); setClaimFrom(''); setClaimTo('')
                 }}>清除范围</button>}
             </div>
             {dashboard?.memoryFeedPayloadPolicy?.claims === 'paginated_on_demand' && <small className="assistant-evidence">
@@ -13088,6 +13178,7 @@ function AiAssistantPage() {
                 <p>{claim.polarity === 'negative' ? '否定：' : ''}
                   {claim.object_entity_name || claim.object_value || '未记录值'}</p>
                 <small>来源：{claim.source_nature === 'self_statement' ? '本人明确陈述' : claim.source_nature === 'other_statement' ? '他人陈述' : claim.source_nature === 'human_confirmation' ? '人工纠正确认' : '模型推断'} · {Math.round(Number(claim.confidence || 0) * 100)}% 可信{claim.conflict_group ? ' · 与其他事实冲突' : ''}</small>
+                {claim.status === 'rejected' && <small>不准确原因：{reviewReasonLabel(claim.review_reason_code)}</small>}
                 <small>原始载体：{memorySourceLabels(claim)}
                   {!!claim.correction_count && ` · 人工纠正 ${claim.correction_count} 次${claim.corrected_at ? `（最近 ${new Date(claim.corrected_at).toLocaleString('zh-CN')}）` : ''}`}
                 </small>
@@ -13179,17 +13270,31 @@ function AiAssistantPage() {
                 <option value="mail">Mail</option>
                 <option value="legacy">历史未知来源</option>
               </select>
-              <select value={eventStatusFilter} onChange={event => setEventStatusFilter(event.target.value)}>
+              <select value={eventStatusFilter} onChange={event => {
+                setEventStatusFilter(event.target.value)
+                if (event.target.value !== 'rejected') setEventReviewReasonFilter('')
+              }}>
                 <option value="">所有状态</option>
                 <option value="candidate">待确认</option>
                 <option value="confirmed">已确认</option>
                 <option value="rejected">不准确</option>
                 <option value="cancelled">已取消</option>
               </select>
+              <select aria-label="事件不准确原因筛选" value={eventReviewReasonFilter}
+                onChange={event => {
+                  const reason = event.target.value as ReviewReasonCode | ''
+                  setEventReviewReasonFilter(reason)
+                  if (reason) setEventStatusFilter('rejected')
+                }}>
+                <option value="">全部原因</option>
+                <option value="unspecified">未标注具体原因</option>
+                {reviewReasonOptions('memory').map(option =>
+                  <option key={option.code} value={option.code}>{option.label}</option>)}
+              </select>
               <label><span>从</span><input type="date" value={eventFrom} onChange={event => setEventFrom(event.target.value)} /></label>
               <label><span>至</span><input type="date" value={eventTo} onChange={event => setEventTo(event.target.value)} /></label>
-              {(eventSourceFilter || eventStatusFilter || eventFrom || eventTo) &&
-                <button onClick={() => { setEventSourceFilter(''); setEventStatusFilter(''); setEventFrom(''); setEventTo('') }}>清除范围</button>}
+              {(eventSourceFilter || eventStatusFilter || eventReviewReasonFilter || eventFrom || eventTo) &&
+                <button onClick={() => { setEventSourceFilter(''); setEventStatusFilter(''); setEventReviewReasonFilter(''); setEventFrom(''); setEventTo('') }}>清除范围</button>}
             </div>
             <div className="assistant-memory-list">
               {shouldRenderDetachedEventEditor(editingEvent, visibleEventIds) &&
@@ -13229,8 +13334,9 @@ function AiAssistantPage() {
               {visibleEvents.map((event: any) => <article className="assistant-memory-item" id={`memory-event-${event.id}`} key={event.id}>
                 <div className="assistant-memory-item-head">
                   <strong>{event.title}</strong>
-                  <span className={event.status}>{event.status === 'confirmed' ? '已确认' : event.status === 'cancelled' ? '已取消' : '待确认'}</span>
+                  <span className={event.status}>{event.status === 'confirmed' ? '已确认' : event.status === 'cancelled' ? '已取消' : event.status === 'rejected' ? '不准确' : '待确认'}</span>
                 </div>
+                {event.status === 'rejected' && <small>不准确原因：{reviewReasonLabel(event.review_reason_code)}</small>}
                 {editingEvent?.id === event.id && editingEvent?.origin !== 'citation' ? <div className="assistant-event-editor">
                   <input value={editingEvent.title} onChange={input => setEditingEvent({ ...editingEvent, title: input.target.value })} placeholder="事件标题" />
                   <input value={editingEvent.eventType} onChange={input => setEditingEvent({ ...editingEvent, eventType: input.target.value })} placeholder="事件类型" />
@@ -14210,9 +14316,9 @@ function AiAssistantPage() {
             </div>}
             <div className="assistant-review-filters">
               <div>
-                <button className={reviewStatusFilter === 'pending' ? 'active' : ''} onClick={() => { setFocusedReviewId(''); setFocusedReviewEntityId(''); clearReviewReturnTarget(); setBlockedIdentityReviewReturn(null); setReviewCalibrationOutcomeFilter(''); setReviewStatusFilter('pending') }}>待处理 {pendingReviewCount}</button>
+                <button className={reviewStatusFilter === 'pending' ? 'active' : ''} onClick={() => { setFocusedReviewId(''); setFocusedReviewEntityId(''); clearReviewReturnTarget(); setBlockedIdentityReviewReturn(null); setReviewCalibrationOutcomeFilter(''); setReviewReasonFilter(''); setReviewStatusFilter('pending') }}>待处理 {pendingReviewCount}</button>
                 <button className={reviewStatusFilter === 'resolved' ? 'active' : ''} onClick={() => { setFocusedReviewId(''); setFocusedReviewEntityId(''); clearReviewReturnTarget(); setBlockedIdentityReviewReturn(null); setReviewStatusFilter('resolved') }}>已处理 {resolvedReviewCount}</button>
-                <button className={reviewStatusFilter === 'all' ? 'active' : ''} onClick={() => { setFocusedReviewId(''); setFocusedReviewEntityId(''); clearReviewReturnTarget(); setBlockedIdentityReviewReturn(null); setReviewCalibrationOutcomeFilter(''); setReviewStatusFilter('all') }}>全部 {reviewPage.counts.all}</button>
+                <button className={reviewStatusFilter === 'all' ? 'active' : ''} onClick={() => { setFocusedReviewId(''); setFocusedReviewEntityId(''); clearReviewReturnTarget(); setBlockedIdentityReviewReturn(null); setReviewCalibrationOutcomeFilter(''); setReviewReasonFilter(''); setReviewStatusFilter('all') }}>全部 {reviewPage.counts.all}</button>
               </div>
               <select value={reviewKindFilter} onChange={event => { setFocusedReviewId(''); setFocusedReviewEntityId(''); clearReviewReturnTarget(); setBlockedIdentityReviewReturn(null); setReviewKindFilter(event.target.value) }}>
                 <option value="">全部类型</option>
@@ -14229,12 +14335,31 @@ function AiAssistantPage() {
                 setBlockedIdentityReviewReturn(null)
                 const outcome = event.target.value as ReviewCalibrationOutcomeFilter
                 setReviewCalibrationOutcomeFilter(outcome)
+                if (outcome && outcome !== 'rejected') setReviewReasonFilter('')
                 if (outcome) setReviewStatusFilter('resolved')
               }}>
                 <option value="">全部人工结果</option>
                 <option value="exact">原样确认</option>
                 <option value="corrected">修改后采用</option>
                 <option value="rejected">本人拒绝</option>
+              </select>
+              <select aria-label="图谱审阅原因筛选" value={reviewReasonFilter}
+                onChange={event => {
+                  setFocusedReviewId('')
+                  setFocusedReviewEntityId('')
+                  clearReviewReturnTarget()
+                  setBlockedIdentityReviewReturn(null)
+                  const reason = event.target.value as ReviewReasonCode | ''
+                  setReviewReasonFilter(reason)
+                  if (reason) {
+                    setReviewCalibrationOutcomeFilter('rejected')
+                    setReviewStatusFilter('resolved')
+                  }
+                }}>
+                <option value="">全部原因</option>
+                <option value="unspecified">未标注具体原因</option>
+                {REVIEW_REASON_CODES.filter(code => code !== 'unspecified').map(code =>
+                  <option key={code} value={code}>{REVIEW_REASON_LABELS[code]}</option>)}
               </select>
               <input value={reviewQuery} placeholder="搜索名称、原文、建议或处理原因" onChange={event => { setFocusedReviewId(''); setFocusedReviewEntityId(''); clearReviewReturnTarget(); setBlockedIdentityReviewReturn(null); setReviewQuery(event.target.value) }} />
             </div>
@@ -14552,6 +14677,8 @@ function AiAssistantPage() {
                 {review.status !== 'pending' && <div className={`assistant-review-resolution ${review.status}`}>
                   <b>{review.status === 'confirmed' ? '已确认' : '已拒绝'}</b>
                   <span>{review.resolutionReason || (review.resolutionActor === 'system' ? '由系统规则处理' : '历史处理原因未记录')}</span>
+                  {review.status === 'rejected' && review.resolutionActor === 'user' &&
+                    <small>具体原因：{reviewReasonLabel(review.reviewReasonCode)}</small>}
                   <small>{review.resolutionActor === 'system' ? '系统自动处理' : '人工处理'} · {review.resolvedAt ? new Date(review.resolvedAt).toLocaleString('zh-CN') : '旧版记录，处理时间未知'}</small>
                 </div>}
                 {review.kind === 'entity_creation' && review.status === 'rejected' &&

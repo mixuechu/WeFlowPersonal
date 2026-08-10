@@ -27,6 +27,7 @@ import {
 } from './identityMergeSnapshot.ts'
 import { taskEvidenceFingerprint } from './taskReviewFeedback.ts'
 import {
+  isReviewReasonCodeForDomain,
   normalizeReviewReasonCode,
   REVIEW_REASON_CODES,
   type ReviewReasonCode
@@ -1819,6 +1820,14 @@ export class PersonalMemoryStore {
     this.ensureColumn('memory_review_decisions', 'reason_code', `TEXT NOT NULL DEFAULT 'unspecified'`)
     this.ensureColumn('graph_candidate_review_decisions', 'reason_code', `TEXT NOT NULL DEFAULT 'unspecified'`)
     this.ensureColumn('identity_review_decisions', 'reason_code', `TEXT NOT NULL DEFAULT 'unspecified'`)
+    this.db.exec(`
+      CREATE INDEX IF NOT EXISTS idx_task_review_decisions_reason_time
+        ON task_review_decisions(reason_code,updated_at DESC,evidence_fingerprint);
+      CREATE INDEX IF NOT EXISTS idx_graph_candidate_reviews_review_reason
+        ON graph_candidate_review_decisions(review_id,reason_code,id DESC);
+      CREATE INDEX IF NOT EXISTS idx_identity_reviews_review_reason
+        ON identity_review_decisions(review_id,reason_code,id DESC);
+    `)
     this.ensureColumn('task_review_decisions', 'last_reconciled_at', 'TEXT')
     this.ensureColumn('task_review_decisions', 'revoked_at', 'TEXT')
     this.ensureColumn('task_mutation_commits', 'payload_blob', 'BLOB')
@@ -9956,6 +9965,7 @@ export class PersonalMemoryStore {
     reviewId?: string
     entityId?: string
     calibrationOutcome?: '' | 'exact' | 'corrected' | 'rejected'
+    reasonCode?: ReviewReasonCode | ''
     offset?: number
     limit?: number
     revision?: string
@@ -9983,6 +9993,11 @@ export class PersonalMemoryStore {
     const calibrationOutcome = ['exact', 'corrected', 'rejected'].includes(String(options?.calibrationOutcome || ''))
       ? String(options?.calibrationOutcome)
       : ''
+    const reasonCodeInput = String(options?.reasonCode || '').trim()
+    if (reasonCodeInput && !(REVIEW_REASON_CODES as readonly string[]).includes(reasonCodeInput)) {
+      throw new Error('审阅原因筛选无效')
+    }
+    const reasonCode = reasonCodeInput as ReviewReasonCode | ''
     const offset = Math.max(0, Math.min(100_000, Math.floor(Number(options?.offset) || 0)))
     const limit = Math.max(1, Math.min(100, Math.floor(Number(options?.limit) || 40)))
     const revision = this.getGraphReviewRevision()
@@ -10012,6 +10027,13 @@ export class PersonalMemoryStore {
             AND NOT ${correctedOutcomeSql}`
     const scopeConditions: string[] = ['1=1']
     const scopeParams: string[] = []
+    const reviewReasonSql = `COALESCE(
+      (SELECT identity_review.reason_code FROM identity_review_decisions identity_review
+        WHERE identity_review.review_id=review_queue.id ORDER BY identity_review.id DESC LIMIT 1),
+      (SELECT graph_review.reason_code FROM graph_candidate_review_decisions graph_review
+        WHERE graph_review.review_id=review_queue.id ORDER BY graph_review.id DESC LIMIT 1),
+      'unspecified'
+    )`
     if (kind) {
       scopeConditions.push('kind=?')
       scopeParams.push(kind)
@@ -10024,6 +10046,13 @@ export class PersonalMemoryStore {
       scopeConditions.push(`CASE WHEN json_valid(payload_json)=1
         THEN COALESCE(json_extract(payload_json,'$.entityId'),'') ELSE '' END=?`)
       scopeParams.push(entityId)
+    }
+    if (reasonCode) {
+      scopeConditions.push(`status='rejected'`)
+      scopeConditions.push(`json_valid(payload_json)=1`)
+      scopeConditions.push(`json_extract(payload_json,'$.resolutionActor')='user'`)
+      scopeConditions.push(`${reviewReasonSql}=?`)
+      scopeParams.push(reasonCode)
     }
     if (query) {
       scopeConditions.push(`(
@@ -10059,7 +10088,8 @@ export class PersonalMemoryStore {
         : ` AND status<>'pending'`
     const total = status === 'all' ? pending + resolved : status === 'pending' ? pending : resolved
     const rows = this.db.prepare(`
-      SELECT id,kind,title,detail,confidence,status,payload_json,created_at,resolved_at
+      SELECT id,kind,title,detail,confidence,status,payload_json,created_at,resolved_at,
+        ${reviewReasonSql} AS review_reason_code
       ${scopeSql}${statusSql}
       ORDER BY COALESCE(resolved_at,created_at) DESC, id ASC
       LIMIT ? OFFSET ?
@@ -10129,7 +10159,10 @@ export class PersonalMemoryStore {
         confidence: row.confidence,
         status: row.status,
         createdAt: row.created_at,
-        resolvedAt: row.resolved_at || payload.resolvedAt
+        resolvedAt: row.resolved_at || payload.resolvedAt,
+        reviewReasonCode: row.status === 'rejected' &&
+          (REVIEW_REASON_CODES as readonly string[]).includes(String(row.review_reason_code || ''))
+          ? String(row.review_reason_code) : ''
       }
     })
     const completedRevision = this.getGraphReviewRevision()
@@ -14435,6 +14468,7 @@ export class PersonalMemoryStore {
     eventTypes?: string[]
     sourceId?: MemoryEvidenceSource
     status?: 'candidate' | 'confirmed' | 'rejected' | 'cancelled'
+    reasonCode?: ReviewReasonCode | ''
     query?: string
     from?: string
     to?: string
@@ -14451,9 +14485,22 @@ export class PersonalMemoryStore {
     }
     const conditions = options.status ? [] : [`ev.status!='rejected'`]
     const parameters: Array<string | number> = []
+    const reasonCodeInput = String(options.reasonCode || '').trim()
+    if (reasonCodeInput && !isReviewReasonCodeForDomain('memory', reasonCodeInput, {
+      allowUnspecified: true
+    })) throw new Error('事件不准确原因筛选无效')
+    const latestReasonSql = `(SELECT decision.reason_code
+      FROM memory_review_decisions decision
+      WHERE decision.item_kind='event' AND decision.item_id=ev.id AND decision.actor='user'
+      ORDER BY decision.id DESC LIMIT 1)`
     if (options.status) {
       conditions.push('ev.status=?')
       parameters.push(options.status)
+    }
+    if (reasonCodeInput) {
+      conditions.push(`ev.status='rejected'`)
+      conditions.push(`${latestReasonSql}=?`)
+      parameters.push(reasonCodeInput)
     }
     const entityId = String(options.entityId || '').trim()
     if (entityId) {
@@ -14511,6 +14558,7 @@ export class PersonalMemoryStore {
         (SELECT decision.created_at FROM memory_review_decisions decision
           WHERE decision.item_kind='event' AND decision.item_id=ev.id
           ORDER BY decision.id DESC LIMIT 1) AS reviewed_at,
+        ${latestReasonSql} AS review_reason_code,
         (SELECT COUNT(*) FROM evidence e WHERE e.event_id=ev.id) AS evidence_count,
         (SELECT mc.created_at FROM memory_corrections mc
           WHERE mc.item_kind='event' AND mc.item_id=ev.id
@@ -15300,12 +15348,13 @@ export class PersonalMemoryStore {
         SELECT 'correction' AS audit_kind,id AS audit_id,created_at,
           before_json,after_json,
           NULL AS previous_status,NULL AS decision,NULL AS actor,NULL AS reason,
+          NULL AS reason_code,
           NULL AS protect_from_extraction
         FROM memory_corrections WHERE item_kind=? AND item_id=?
         UNION ALL
         SELECT 'review' AS audit_kind,id AS audit_id,created_at,
           NULL AS before_json,NULL AS after_json,
-          previous_status,decision,actor,reason,protect_from_extraction
+          previous_status,decision,actor,reason,reason_code,protect_from_extraction
         FROM memory_review_decisions WHERE item_kind=? AND item_id=?
       )
       ORDER BY created_at DESC,audit_kind ASC,audit_id DESC
@@ -15379,6 +15428,9 @@ export class PersonalMemoryStore {
           decision: row.decision,
           actor: row.actor,
           reason: row.reason,
+          reasonCode: isReviewReasonCodeForDomain('memory', row.reason_code, {
+            allowUnspecified: true
+          }) ? row.reason_code : 'unspecified',
           protectFromExtraction: Boolean(row.protect_from_extraction)
         })
     const completedRevision = this.getStructuredMemoryRevision()
@@ -15471,6 +15523,7 @@ export class PersonalMemoryStore {
     entityId?: string
     sourceId?: MemoryEvidenceSource
     status?: 'candidate' | 'confirmed' | 'rejected'
+    reasonCode?: ReviewReasonCode | ''
     predicate?: string
     from?: string
     to?: string
@@ -15487,11 +15540,24 @@ export class PersonalMemoryStore {
     }
     const conditions: string[] = []
     const parameters: Array<string | number> = []
+    const reasonCodeInput = String(options.reasonCode || '').trim()
+    if (reasonCodeInput && !isReviewReasonCodeForDomain('memory', reasonCodeInput, {
+      allowUnspecified: true
+    })) throw new Error('事实不准确原因筛选无效')
+    const latestReasonSql = `(SELECT decision.reason_code
+      FROM memory_review_decisions decision
+      WHERE decision.item_kind='claim' AND decision.item_id=c.id AND decision.actor='user'
+      ORDER BY decision.id DESC LIMIT 1)`
     if (options.status) {
       conditions.push('c.status=?')
       parameters.push(options.status)
     } else {
       conditions.push(`c.status!='rejected'`)
+    }
+    if (reasonCodeInput) {
+      conditions.push(`c.status='rejected'`)
+      conditions.push(`${latestReasonSql}=?`)
+      parameters.push(reasonCodeInput)
     }
     const entityId = String(options.entityId || '').trim()
     if (entityId) {
@@ -15536,6 +15602,7 @@ export class PersonalMemoryStore {
         (SELECT decision.created_at FROM memory_review_decisions decision
           WHERE decision.item_kind='claim' AND decision.item_id=c.id
           ORDER BY decision.id DESC LIMIT 1) AS reviewed_at,
+        ${latestReasonSql} AS review_reason_code,
         (SELECT mc.created_at FROM memory_corrections mc
           WHERE mc.item_kind='claim' AND mc.item_id=c.id
           ORDER BY mc.id DESC LIMIT 1) AS corrected_at,
@@ -17024,6 +17091,7 @@ export class PersonalMemoryStore {
   listTaskReviewDecisionPage(options: {
     status?: 'active' | 'revoked' | 'all'
     decision?: 'mine' | 'rejected' | 'all'
+    reasonCode?: ReviewReasonCode | ''
     query?: string
     from?: string
     to?: string
@@ -17060,6 +17128,15 @@ export class PersonalMemoryStore {
       conditions.push('decision=?')
       parameters.push(options.decision)
     }
+    const reasonCodeInput = String(options.reasonCode || '').trim()
+    if (reasonCodeInput && !isReviewReasonCodeForDomain('task', reasonCodeInput, {
+      allowUnspecified: true
+    })) throw new Error('待办反馈原因筛选无效')
+    if (reasonCodeInput) {
+      conditions.push(`decision='rejected'`)
+      conditions.push('reason_code=?')
+      parameters.push(reasonCodeInput)
+    }
     const query = String(options.query || '').trim().toLocaleLowerCase('zh-CN')
     if (query) {
       conditions.push(`instr(lower(title || char(0) || source),?)>0`)
@@ -17083,7 +17160,7 @@ export class PersonalMemoryStore {
     const rows = this.db.prepare(`
       SELECT evidence_fingerprint,task_id,decision,title,source,suppression_count,
         reconciliation_count,last_suppressed_at,last_reconciled_at,revoked_at,
-        created_at,updated_at,task_json,evidence_json
+        created_at,updated_at,task_json,evidence_json,reason_code
       FROM task_review_decisions
       ${where}
       ORDER BY updated_at DESC,evidence_fingerprint ASC
@@ -17169,7 +17246,7 @@ export class PersonalMemoryStore {
       SELECT COUNT(*) AS count FROM task_review_history WHERE evidence_fingerprint=?
     `).get(evidenceFingerprint) as any)?.count || 0)
     const historyRows = this.db.prepare(`
-      SELECT id,action,created_at,task_json FROM task_review_history
+      SELECT id,action,created_at,task_json,reason_code FROM task_review_history
       WHERE evidence_fingerprint=?
       ORDER BY created_at DESC,id DESC
       LIMIT ? OFFSET ?
@@ -17182,6 +17259,9 @@ export class PersonalMemoryStore {
         id: item.id,
         action: item.action,
         created_at: item.created_at,
+        reason_code: isReviewReasonCodeForDomain('task', item.reason_code, {
+          allowUnspecified: true
+        }) ? item.reason_code : 'unspecified',
         snapshotAvailable: Boolean(snapshot?.id && snapshot?.title)
       }
     })

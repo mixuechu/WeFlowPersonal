@@ -1,3 +1,5 @@
+import type { ReviewReasonCode } from './reviewReasonCodes.ts'
+
 export type ReviewStatusFilter = 'pending' | 'resolved' | 'all'
 export type ReviewCalibrationOutcomeFilter = '' | 'exact' | 'corrected' | 'rejected'
 
@@ -8,6 +10,7 @@ export type GraphReviewPageOptions = {
   reviewId?: string
   entityId?: string
   calibrationOutcome?: ReviewCalibrationOutcomeFilter
+  reasonCode?: ReviewReasonCode | ''
   offset?: number
   limit?: number
   revision?: string
@@ -37,7 +40,7 @@ function reviewMatchesQuery(review: any, query: string): boolean {
 
 export function filterGraphReviews(
   reviews: any[],
-  options: Pick<GraphReviewPageOptions, 'status' | 'kind' | 'query' | 'reviewId' | 'entityId' | 'calibrationOutcome'>
+  options: Pick<GraphReviewPageOptions, 'status' | 'kind' | 'query' | 'reviewId' | 'entityId' | 'calibrationOutcome' | 'reasonCode'>
 ): any[] {
   const query = String(options.query || '').trim().toLocaleLowerCase('zh-CN')
   const reviewId = String(options.reviewId || '').trim()
@@ -50,6 +53,7 @@ export function filterGraphReviews(
       (!reviewId || review.id === reviewId) &&
       (!entityId || String(review.entityId || '') === entityId) &&
       (!options.calibrationOutcome || graphReviewCalibrationOutcome(review) === options.calibrationOutcome) &&
+      (!options.reasonCode || review.reviewReasonCode === options.reasonCode) &&
       reviewMatchesQuery(review, query))
     .sort((left, right) => {
       const timeOrder = String(right.resolvedAt || right.createdAt || '')
@@ -76,6 +80,7 @@ export function paginateGraphReviews(reviews: any[], options: GraphReviewPageOpt
     (!reviewId || review.id === reviewId) &&
     (!entityId || String(review.entityId || '') === entityId) &&
     (!options.calibrationOutcome || graphReviewCalibrationOutcome(review) === options.calibrationOutcome) &&
+    (!options.reasonCode || review.reviewReasonCode === options.reasonCode) &&
     reviewMatchesQuery(review, query))
   const counts = {
     pending: matchingScope.filter(review => review.status === 'pending').length,

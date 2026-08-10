@@ -1112,6 +1112,7 @@ test('review ledger filters pending and resolved decisions by kind, evidence and
       status: 'rejected',
       title: '错误关系',
       resolutionReason: '关联实体已被拒绝',
+      reviewReasonCode: 'wrong_relation',
       createdAt: '2026-07-29T00:00:00.000Z',
       resolvedAt: '2026-07-30T02:00:00.000Z'
     }
@@ -1136,6 +1137,18 @@ test('review ledger filters pending and resolved decisions by kind, evidence and
   assert.deepEqual(
     filterGraphReviews(calibrated, { status: 'resolved', calibrationOutcome: 'rejected' }).map(item => item.id),
     ['rejected-relation']
+  )
+  assert.deepEqual(
+    filterGraphReviews(calibrated, {
+      status: 'resolved', calibrationOutcome: 'rejected', reasonCode: 'wrong_relation'
+    }).map(item => item.id),
+    ['rejected-relation']
+  )
+  assert.deepEqual(
+    filterGraphReviews(calibrated, {
+      status: 'resolved', calibrationOutcome: 'rejected', reasonCode: 'wrong_subject'
+    }).map(item => item.id),
+    []
   )
 })
 
@@ -21747,6 +21760,17 @@ test('fixed rejection reasons persist across review domains without exposing pri
       searchText: '不可泄露项目名 原因测试',
       evidence: evidence('reason-message', '不可泄露的聊天原文')
     }])
+    store.upsertEvents([{
+      id: 'reason-event',
+      eventType: 'meeting',
+      title: '不可泄露的事件标题',
+      description: '',
+      confidence: 0.8,
+      status: 'candidate',
+      searchText: '不可泄露的事件标题',
+      participants: [{ entityId: 'reason-person', role: '参与者' }],
+      evidence: evidence('reason-event-message', '不可泄露的事件原文')
+    }])
     store.updateMemoryItemStatus('claim', 'reason-claim', 'rejected', {
       reasonCode: 'wrong_subject'
     })
@@ -21772,19 +21796,66 @@ test('fixed rejection reasons persist across review domains without exposing pri
       decision: 'different',
       reasonCode: 'identity_mismatch'
     })
+    store.updateMemoryItemStatus('event', 'reason-event', 'rejected', {
+      reasonCode: 'wrong_time'
+    })
+    const database = (store as any).db
+    const now = new Date().toISOString()
+    const insertResolvedReview = database.prepare(`
+      INSERT INTO review_queue(
+        id,kind,title,detail,confidence,status,payload_json,created_at,resolved_at
+      ) VALUES(?,?,?,?,?,'rejected',?,?,?)
+    `)
+    insertResolvedReview.run(
+      'reason-graph-review', 'relation', '不可泄露的关系标题', '', 0.8,
+      JSON.stringify({ resolutionActor: 'user' }), now, now
+    )
+    insertResolvedReview.run(
+      'reason-identity-review', 'possible_duplicate', '不可泄露的人名', '', 0.8,
+      JSON.stringify({ resolutionActor: 'user' }), now, now
+    )
 
     const reasons = store.getHumanReviewCalibrationStats().rejectionReasons
     assert.deepEqual(reasons, {
-      total: 4,
-      specified: 3,
+      total: 5,
+      specified: 4,
       unspecified: 1,
       byDomain: {
         task: { incorrect_assignment: 1 },
-        memory: { wrong_subject: 1 },
+        memory: { wrong_subject: 1, wrong_time: 1 },
         graph: { unspecified: 1 },
         identity: { identity_mismatch: 1 }
       }
     })
+    assert.equal(store.listTaskReviewDecisionPage({
+      decision: 'rejected', reasonCode: 'incorrect_assignment'
+    }).items[0].reason_code, 'incorrect_assignment')
+    assert.equal(store.getTaskReviewDecisionDossier('reason-task-fingerprint')
+      .history[0].reason_code, 'incorrect_assignment')
+    assert.equal(store.listClaimArchive({
+      status: 'rejected', reasonCode: 'wrong_subject'
+    }).items[0].review_reason_code, 'wrong_subject')
+    assert.equal(store.listEventTimeline({
+      status: 'rejected', reasonCode: 'wrong_time'
+    }).items[0].review_reason_code, 'wrong_time')
+    assert.equal(store.listMemoryItemAuditPage({
+      kind: 'claim', itemId: 'reason-claim'
+    }).items[0].reasonCode, 'wrong_subject')
+    assert.equal(store.listReviewLedgerPage({
+      status: 'resolved', reasonCode: 'unspecified'
+    }).items[0].reviewReasonCode, 'unspecified')
+    assert.equal(store.listReviewLedgerPage({
+      status: 'resolved', reasonCode: 'identity_mismatch'
+    }).items[0].reviewReasonCode, 'identity_mismatch')
+    assert.throws(() => store.listTaskReviewDecisionPage({
+      reasonCode: 'wrong_subject'
+    }), /原因筛选无效/)
+    assert.throws(() => store.listClaimArchive({
+      reasonCode: '../../private' as any
+    }), /原因筛选无效/)
+    assert.throws(() => store.listReviewLedgerPage({
+      reasonCode: '../../private' as any
+    }), /原因筛选无效/)
     const serialized = JSON.stringify(reasons)
     assert.doesNotMatch(serialized, /不可泄露|reason-message|reason-task/)
   })
