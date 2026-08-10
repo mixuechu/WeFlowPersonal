@@ -5973,10 +5973,20 @@ export class PersonalMemoryStore {
       + missingEvents.length + missingResources.length + missingEntities.length
     const authoritativeMismatchCount = metadataRepairs.length
       + structuredDocumentRepairs.length + resourceRepairs.length + entityRepairs.length
-    const metadataMismatchKinds = {
+    const metadataRepairKinds = {
       claims: metadataRepairs.filter(item => item.kind === 'claim').length,
       relations: metadataRepairs.filter(item => item.kind === 'relation').length,
       events: metadataRepairs.filter(item => item.kind === 'event').length
+    }
+    const currentMismatchKinds = {
+      claims: metadataRepairKinds.claims
+        + structuredDocumentRepairs.filter(item => item.type === 'claim').length,
+      relations: metadataRepairKinds.relations
+        + structuredDocumentRepairs.filter(item => item.type === 'relation').length,
+      events: metadataRepairKinds.events
+        + structuredDocumentRepairs.filter(item => item.type === 'event').length,
+      resources: resourceRepairs.length,
+      entities: entityRepairs.length
     }
     if (options.dryRun) {
       return {
@@ -5986,7 +5996,7 @@ export class PersonalMemoryStore {
         currentMissingDocuments: missingDocumentCount,
         currentFtsPayloadMismatches: ftsMismatches.length,
         currentMetadataMismatches: authoritativeMismatchCount,
-        currentMetadataMismatchesByKind: metadataMismatchKinds,
+        currentMetadataMismatchesByKind: currentMismatchKinds,
         currentAnnOrphans: orphanAnn,
         currentOrphanPayloadRows: orphanFts + orphanEvidence
       }
@@ -6141,7 +6151,7 @@ export class PersonalMemoryStore {
         orphanAnnRowsRemovedThisStart: orphanAnn,
         ftsPayloadsRebuiltThisStart: ftsMismatches.length,
         metadataDocumentsRepairedThisStart: metadataRepairs.length,
-        metadataDocumentsRepairedByKindThisStart: metadataMismatchKinds,
+        metadataDocumentsRepairedByKindThisStart: metadataRepairKinds,
         structuredDocumentsRepairedThisStart: structuredDocumentRepairs.length,
         resourceDocumentsRepairedThisStart: resourceRepairs.length,
         entityDocumentsRepairedThisStart: entityRepairs.length,
@@ -7559,6 +7569,10 @@ export class PersonalMemoryStore {
           - Number(beforeIndex.metadataDocumentsRepairedTotal || 0)),
         structuredDocuments: Math.max(0, Number(afterIndex.structuredDocumentsRepairedTotal || 0)
           - Number(beforeIndex.structuredDocumentsRepairedTotal || 0)),
+        resourceDocuments: Math.max(0, Number(afterIndex.resourceDocumentsRepairedTotal || 0)
+          - Number(beforeIndex.resourceDocumentsRepairedTotal || 0)),
+        entityDocuments: Math.max(0, Number(afterIndex.entityDocumentsRepairedTotal || 0)
+          - Number(beforeIndex.entityDocumentsRepairedTotal || 0)),
         annOrphans: Math.max(0, Number(afterIndex.orphanAnnRowsRemovedTotal || 0)
           - Number(beforeIndex.orphanAnnRowsRemovedTotal || 0)),
         taskDocuments: Math.max(0, Number(afterTasks.repairedDerivedDocumentsTotal || 0)
@@ -12046,7 +12060,8 @@ export class PersonalMemoryStore {
             String(row.id || ''),
             String(row.title || '未命名资源'),
             [row.title, nextContent, row.url, row.file_name, row.file_ext,
-              nextMetadata.sessionName, nextMetadata.senderName].filter(Boolean).join('；'),
+              nextMetadata.sessionName, nextMetadata.senderName,
+              nextMetadata.appMsgKind].filter(Boolean).join('；'),
             {
               ...nextMetadata,
               resourceType: row.resource_type,
@@ -12313,7 +12328,8 @@ export class PersonalMemoryStore {
       this.upsertSearchDocument(
         `resource:${resourceId}`, 'resource', resourceId, String(row.title || '未命名资源'),
         [row.title, nextContent, row.url, row.file_name, row.file_ext,
-          metadata.sessionName, metadata.senderName].filter(Boolean).join('；'),
+          metadata.sessionName, metadata.senderName,
+          metadata.appMsgKind].filter(Boolean).join('；'),
         {
           ...metadata,
           resourceType: row.resource_type,
@@ -12365,7 +12381,8 @@ export class PersonalMemoryStore {
       this.upsertSearchDocument(
         `resource:${resourceId}`, 'resource', resourceId, String(row.title || '未命名资源'),
         [row.title, content, row.url, row.file_name, row.file_ext,
-          metadata.sessionName, metadata.senderName].filter(Boolean).join('；'),
+          metadata.sessionName, metadata.senderName,
+          metadata.appMsgKind].filter(Boolean).join('；'),
         {
           ...metadata,
           resourceType: row.resource_type,

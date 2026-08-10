@@ -16644,6 +16644,15 @@ function AiAssistantPage() {
                 <span>累计修复实体文档 <b>{Number(memoryDiagnostics.structuredSearchIndex.entityDocumentsRepairedTotal || 0).toLocaleString()}</b></span>
                 <span>实时缺失/幽灵 <b>{Number(memoryDiagnostics.structuredSearchIndex.currentMissingDocuments || 0).toLocaleString()} / {Number(memoryDiagnostics.structuredSearchIndex.currentGhostDocuments || 0).toLocaleString()}</b></span>
                 <span>实时正文/元数据漂移 <b>{Number(memoryDiagnostics.structuredSearchIndex.currentMetadataMismatches || 0).toLocaleString()}</b></span>
+                {memoryDiagnostics.structuredSearchIndex.currentMetadataMismatchesByKind && <span>
+                  漂移分类 <b>
+                    事实 {Number(memoryDiagnostics.structuredSearchIndex.currentMetadataMismatchesByKind.claims || 0).toLocaleString()} ·
+                    关系 {Number(memoryDiagnostics.structuredSearchIndex.currentMetadataMismatchesByKind.relations || 0).toLocaleString()} ·
+                    事件 {Number(memoryDiagnostics.structuredSearchIndex.currentMetadataMismatchesByKind.events || 0).toLocaleString()} ·
+                    资源 {Number(memoryDiagnostics.structuredSearchIndex.currentMetadataMismatchesByKind.resources || 0).toLocaleString()} ·
+                    实体 {Number(memoryDiagnostics.structuredSearchIndex.currentMetadataMismatchesByKind.entities || 0).toLocaleString()}
+                  </b>
+                </span>}
                 <span>实时 FTS/孤儿载荷 <b>{Number(memoryDiagnostics.structuredSearchIndex.currentFtsPayloadMismatches || 0).toLocaleString()} / {Number(memoryDiagnostics.structuredSearchIndex.currentOrphanPayloadRows || 0).toLocaleString()}</b></span>
                 <span>实时 ANN 孤儿 <b>{Number(memoryDiagnostics.structuredSearchIndex.currentAnnOrphans || 0).toLocaleString()}</b></span>
                 <span>删除保护修复 <b>{Number(memoryDiagnostics.structuredSearchIndex.triggerRepairs || 0).toLocaleString()}</b> 次</span>
@@ -16699,6 +16708,8 @@ function AiAssistantPage() {
                 FTS {Number(memorySearchRepairResult.repaired.ftsPayloads || 0)}，
                 元数据/正文 {Number(memorySearchRepairResult.repaired.metadataDocuments || 0) +
                   Number(memorySearchRepairResult.repaired.structuredDocuments || 0)}，
+                资源文档 {Number(memorySearchRepairResult.repaired.resourceDocuments || 0)}，
+                实体文档 {Number(memorySearchRepairResult.repaired.entityDocuments || 0)}，
                 ANN 孤儿 {Number(memorySearchRepairResult.repaired.annOrphans || 0)}，
                 待办派生文档 {Number(memorySearchRepairResult.repaired.taskDocuments || 0)}；
                 结构化证据触发器 {Number(memorySearchRepairResult.repaired.structuredEvidenceTriggers || 0)}，

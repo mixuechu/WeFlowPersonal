@@ -6041,10 +6041,92 @@ test('empty relation direction metadata remains normalized across repeated graph
     assert.equal(diagnostics.structuredSearchIndex.currentMetadataMismatches, 0)
     assert.deepEqual(
       diagnostics.structuredSearchIndex.currentMetadataMismatchesByKind,
-      { claims: 0, relations: 0, events: 0 }
+      { claims: 0, relations: 0, events: 0, resources: 0, entities: 0 }
     )
   })
 })
+
+test('runtime search repair reports resource and entity document repairs by kind', () => withStore(store => {
+  store.upsertResources([{
+    id: 'runtime-repair-resource-kind',
+    resourceType: 'document',
+    title: '运行修复资源',
+    content: '运行修复资源正文',
+    metadata: { sourceId: 'documents' }
+  }])
+  store.syncGraph({
+    entities: [{
+      id: 'runtime-repair-entity-kind',
+      type: 'person',
+      canonicalName: '运行修复实体',
+      trustStatus: 'confirmed'
+    }],
+    relations: [],
+    reviewQueue: []
+  } as any)
+  const database = (store as any).db
+  database.exec(`
+    UPDATE search_documents SET title='漂移资源标题'
+    WHERE id='resource:runtime-repair-resource-kind';
+    UPDATE search_documents SET title='漂移实体名称'
+    WHERE id='entity:runtime-repair-entity-kind';
+  `)
+
+  const drifted = store.getDiagnostics()
+  assert.equal(drifted.structuredSearchIndex.currentMetadataMismatches, 2)
+  assert.deepEqual(drifted.structuredSearchIndex.currentMetadataMismatchesByKind, {
+    claims: 0, relations: 0, events: 0, resources: 1, entities: 1
+  })
+
+  const repaired = store.repairRuntimeSearchDerivedState([])
+  assert.equal(repaired.healthy, true)
+  assert.equal(repaired.repaired.resourceDocuments, 1)
+  assert.equal(repaired.repaired.entityDocuments, 1)
+  assert.deepEqual(repaired.diagnostics.structuredSearchIndex.currentMetadataMismatchesByKind, {
+    claims: 0, relations: 0, events: 0, resources: 0, entities: 0
+  })
+}))
+
+test('resource maintenance keeps app message kind in the canonical search document', () => withStore(store => {
+  store.upsertResources([{
+    id: 'resource-app-kind-search-consistency',
+    resourceType: 'file',
+    title: '微信附件结构补全',
+    content: '初始附件正文',
+    fileName: '结构资料.pdf',
+    metadata: {
+      sourceId: 'wechat',
+      sessionName: '结构测试群',
+      senderName: '测试发送者',
+      appMsgKind: '文件附件'
+    }
+  }])
+  assert.equal(store.getDiagnostics().structuredSearchIndexHealthy, true)
+
+  store.replaceResourceContent(
+    'resource-app-kind-search-consistency',
+    '替换后的附件正文',
+    { attachmentStructureParserVersion: 'structure-test-v1' }
+  )
+  let diagnostics = store.getDiagnostics()
+  assert.equal(diagnostics.structuredSearchIndexHealthy, true)
+  assert.deepEqual(diagnostics.structuredSearchIndex.currentMetadataMismatchesByKind, {
+    claims: 0, relations: 0, events: 0, resources: 0, entities: 0
+  })
+  assert.equal(store.searchText('文件附件').some((item: any) =>
+    item.id === 'resource:resource-app-kind-search-consistency'), true)
+
+  store.appendResourceContent(
+    'resource-app-kind-search-consistency',
+    '追加的 OCR 正文',
+    { attachmentPdfOcrNextPage: 3 }
+  )
+  diagnostics = store.getDiagnostics()
+  assert.equal(diagnostics.structuredSearchIndexHealthy, true)
+  assert.equal(diagnostics.structuredSearchIndex.currentMetadataMismatches, 0)
+  assert.equal(store.searchText('文件附件').some((item: any) =>
+    item.id === 'resource:resource-app-kind-search-consistency'), true)
+}))
 
 test('task search keeps original message evidence', () => withStore(store => {
   store.syncTasks([{
