@@ -17075,14 +17075,18 @@ function AiAssistantPage() {
                 ? 'warning' : 'healthy'
             }`}>
               <header><RefreshCw size={15} /><span><b>近期增量可靠性</b>
-                <small>近期窗口与历史累计分开计算；旧版失败继续保留审计，但不会冒充当前仍在失败。</small>
+              <small>近期窗口与历史累计分开计算；失败批次作为尝试审计永久保留，是否延续到当前由最近一次真实抽取成功边界单独判断。</small>
               </span></header>
               <div className="assistant-recovery-current">
                 <span>最近 24 小时 <b>{Number(memoryDiagnostics.ingestionSummary.recent24Hours.completed || 0)} 完成 / {Number(memoryDiagnostics.ingestionSummary.recent24Hours.partial || 0)} 部分 / {Number(memoryDiagnostics.ingestionSummary.recent24Hours.failed || 0)} 失败</b></span>
                 <span>24 小时完成口径 <b>{Number(memoryDiagnostics.ingestionSummary.recent24Hours.completedWithBatches || 0)} 次有批次 / {Number(memoryDiagnostics.ingestionSummary.recent24Hours.completedWithoutBatches || 0)} 次无新增</b></span>
-                <span>24 小时模型批次 <b>{Number(memoryDiagnostics.ingestionSummary.recent24Hours.successfulBatches || 0).toLocaleString()} 成功 / {Number(memoryDiagnostics.ingestionSummary.recent24Hours.failedBatches || 0).toLocaleString()} 失败</b></span>
+                <span>24 小时批次记录 <b>{Number(memoryDiagnostics.ingestionSummary.recent24Hours.successfulBatches || 0).toLocaleString()} 成功 / {Number(memoryDiagnostics.ingestionSummary.recent24Hours.failedBatches || 0).toLocaleString()} 失败尝试</b></span>
                 <span>最近 7 天 <b>{Number(memoryDiagnostics.ingestionSummary.recent7Days?.completed || 0)} 完成 / {Number(memoryDiagnostics.ingestionSummary.recent7Days?.partial || 0)} 部分 / {Number(memoryDiagnostics.ingestionSummary.recent7Days?.failed || 0)} 失败</b></span>
                 <span>最近异常后 <b>{Number(memoryDiagnostics.ingestionSummary.completedWithBatchesSinceLatestDegraded || 0).toLocaleString()} 次实际抽取完成 / {Number(memoryDiagnostics.ingestionSummary.completedWithoutBatchesSinceLatestDegraded || 0).toLocaleString()} 次无新增正常结束</b></span>
+                <span>最近实际抽取成功 <b>{memoryDiagnostics.ingestionSummary.latestSuccessfulExtractionAt
+                  ? new Date(memoryDiagnostics.ingestionSummary.latestSuccessfulExtractionAt).toLocaleString('zh-CN', { hour12: false })
+                  : '尚无'}</b></span>
+                <span>该成功边界之后 <b>{Number(memoryDiagnostics.ingestionSummary.failedBatchesSinceLatestSuccessfulExtraction || 0).toLocaleString()} 个失败批次</b></span>
                 <span>最近部分完成 <b>{memoryDiagnostics.ingestionSummary.latestPartialAt
                   ? new Date(memoryDiagnostics.ingestionSummary.latestPartialAt).toLocaleString('zh-CN', { hour12: false })
                   : '无'}</b></span>

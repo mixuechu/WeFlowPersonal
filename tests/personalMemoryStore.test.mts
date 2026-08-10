@@ -20583,6 +20583,7 @@ test('ingestion summary separates recent reliability from lifetime failures', ()
   const oldFailureAt = new Date(now - 8 * 24 * 60 * 60 * 1000).toISOString()
   const recentPartialAt = new Date(now - 2 * 60 * 60 * 1000).toISOString()
   const recoveredAt = new Date(now - 60 * 60 * 1000).toISOString()
+  const extractionSucceededAt = new Date(now - 30 * 60 * 1000).toISOString()
   const insertRun = database.prepare(`
     INSERT INTO ingestion_runs(id,started_at,finished_at,status,error)
     VALUES(?,?,?,?,?)
@@ -20590,32 +20591,43 @@ test('ingestion summary separates recent reliability from lifetime failures', ()
   insertRun.run('old-failed', oldFailureAt, oldFailureAt, 'failed', '历史错误')
   insertRun.run('recent-partial', recentPartialAt, recentPartialAt, 'partial', '近期部分完成')
   insertRun.run('recent-completed', recoveredAt, recoveredAt, 'completed', null)
-  database.prepare(`
+  insertRun.run(
+    'recent-extraction-completed', extractionSucceededAt, extractionSucceededAt, 'completed', null
+  )
+  const insertBatch = database.prepare(`
     INSERT INTO ingestion_batches(
       run_id,batch_index,message_count,status,started_at,finished_at
     ) VALUES(?,?,?,?,?,?)
-  `).run('recent-partial', 0, 1, 'failed', recentPartialAt, recentPartialAt)
+  `)
+  insertBatch.run('recent-partial', 0, 1, 'failed', recentPartialAt, recentPartialAt)
+  insertBatch.run(
+    'recent-extraction-completed', 0, 2, 'completed', extractionSucceededAt,
+    extractionSucceededAt
+  )
 
   const summary = store.getIngestionArchiveSummary()
   assert.deepEqual(summary.recent24Hours, {
-    runs: 2, completed: 1, partial: 1, failed: 0, running: 0,
-    completedWithBatches: 0, completedWithoutBatches: 1,
-    successfulBatches: 0, failedBatches: 1
+    runs: 3, completed: 2, partial: 1, failed: 0, running: 0,
+    completedWithBatches: 1, completedWithoutBatches: 1,
+    successfulBatches: 1, failedBatches: 1
   })
   assert.deepEqual(summary.recent7Days, {
-    runs: 2, completed: 1, partial: 1, failed: 0, running: 0,
-    completedWithBatches: 0, completedWithoutBatches: 1,
-    successfulBatches: 0, failedBatches: 1
+    runs: 3, completed: 2, partial: 1, failed: 0, running: 0,
+    completedWithBatches: 1, completedWithoutBatches: 1,
+    successfulBatches: 1, failedBatches: 1
   })
   assert.equal(summary.failedRuns, 1)
   assert.equal(summary.partialRuns, 1)
   assert.equal(summary.latestPartialAt, recentPartialAt)
   assert.equal(summary.latestFailedAt, oldFailureAt)
   assert.equal(summary.latestDegradedAt, recentPartialAt)
-  assert.equal(summary.completedSinceLatestDegraded, 1)
-  assert.equal(summary.completedWithBatchesSinceLatestDegraded, 0)
+  assert.equal(summary.latestSuccessfulExtractionAt, extractionSucceededAt)
+  assert.equal(summary.latestFailedBatchAt, recentPartialAt)
+  assert.equal(summary.failedBatchesSinceLatestSuccessfulExtraction, 0)
+  assert.equal(summary.completedSinceLatestDegraded, 2)
+  assert.equal(summary.completedWithBatchesSinceLatestDegraded, 1)
   assert.equal(summary.completedWithoutBatchesSinceLatestDegraded, 1)
-  assert.equal(summary.runsSinceLatestDegraded, 1)
+  assert.equal(summary.runsSinceLatestDegraded, 2)
 }))
 
 test('ingestion run archive paginates all years and loads bounded batch audits on demand', () => {
@@ -20719,6 +20731,10 @@ test('ingestion run archive paginates all years and loads bounded batch audits o
       latestPartialAt: summary.latestPartialAt,
       latestFailedAt: summary.latestFailedAt,
       latestDegradedAt: summary.latestDegradedAt,
+      latestSuccessfulExtractionAt: summary.latestSuccessfulExtractionAt,
+      latestFailedBatchAt: summary.latestFailedBatchAt,
+      failedBatchesSinceLatestSuccessfulExtraction:
+        summary.failedBatchesSinceLatestSuccessfulExtraction,
       completedSinceLatestDegraded: 0,
       completedWithBatchesSinceLatestDegraded: 0,
       completedWithoutBatchesSinceLatestDegraded: 0,

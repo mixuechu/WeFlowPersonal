@@ -19331,6 +19331,9 @@ export class PersonalMemoryStore {
     latestPartialAt: string
     latestFailedAt: string
     latestDegradedAt: string
+    latestSuccessfulExtractionAt: string
+    latestFailedBatchAt: string
+    failedBatchesSinceLatestSuccessfulExtraction: number
     completedSinceLatestDegraded: number
     completedWithBatchesSinceLatestDegraded: number
     completedWithoutBatchesSinceLatestDegraded: number
@@ -19356,6 +19359,8 @@ export class PersonalMemoryStore {
       messages: 0, inputTokens: 0, outputTokens: 0, durationMs: 0,
       failedBatches: 0, batches: 0, latestRunId: '', latestActivityAt: '',
       latestPartialAt: '', latestFailedAt: '', latestDegradedAt: '',
+      latestSuccessfulExtractionAt: '', latestFailedBatchAt: '',
+      failedBatchesSinceLatestSuccessfulExtraction: 0,
       completedSinceLatestDegraded: 0,
       completedWithBatchesSinceLatestDegraded: 0,
       completedWithoutBatchesSinceLatestDegraded: 0,
@@ -19397,6 +19402,23 @@ export class PersonalMemoryStore {
           THEN COALESCE(finished_at,recovered_at,started_at) END) AS latest_degraded_at
       FROM ingestion_runs
     `).get() as any
+    const latestSuccessfulExtraction = this.db.prepare(`
+      SELECT COALESCE(r.finished_at,r.recovered_at,r.started_at) AS activity_at
+      FROM ingestion_runs r
+      WHERE r.status='completed' AND EXISTS(
+        SELECT 1 FROM ingestion_batches b WHERE b.run_id=r.id AND b.status='completed'
+      )
+      ORDER BY COALESCE(r.finished_at,r.recovered_at,r.started_at) DESC,r.id ASC LIMIT 1
+    `).get() as any
+    const latestSuccessfulExtractionAt = String(latestSuccessfulExtraction?.activity_at || '')
+    const failedBatchRecovery = this.db.prepare(`
+      SELECT
+        MAX(CASE WHEN status='failed'
+          THEN COALESCE(finished_at,started_at) END) AS latest_failed_batch_at,
+        SUM(CASE WHEN status='failed' AND (?='' OR COALESCE(finished_at,started_at)>?)
+          THEN 1 ELSE 0 END) AS failed_batches_since_success
+      FROM ingestion_batches
+    `).get(latestSuccessfulExtractionAt, latestSuccessfulExtractionAt) as any
     const summarizeWindow = (modifier: string) => {
       const windowRuns = this.db!.prepare(`
         SELECT
@@ -19462,6 +19484,11 @@ export class PersonalMemoryStore {
       latestPartialAt: String(latestDegraded?.latest_partial_at || ''),
       latestFailedAt: String(latestDegraded?.latest_failed_at || ''),
       latestDegradedAt,
+      latestSuccessfulExtractionAt,
+      latestFailedBatchAt: String(failedBatchRecovery?.latest_failed_batch_at || ''),
+      failedBatchesSinceLatestSuccessfulExtraction: Number(
+        failedBatchRecovery?.failed_batches_since_success || 0
+      ),
       completedSinceLatestDegraded: Number(recovery?.completed || 0),
       completedWithBatchesSinceLatestDegraded: Number(recovery?.completed_with_batches || 0),
       completedWithoutBatchesSinceLatestDegraded: Number(recovery?.completed_without_batches || 0),
