@@ -1346,6 +1346,7 @@ function AiAssistantPage() {
     revision?: string
     stale?: boolean
     loading?: boolean
+    error?: string
   }>({ items: [], total: 0, hasMore: false, counts: {} })
   const [taskOwnershipClassification, setTaskOwnershipClassification] = useState('')
   const [taskOwnershipPriority, setTaskOwnershipPriority] = useState('')
@@ -2542,7 +2543,9 @@ function AiAssistantPage() {
   useEffect(() => {
     const request = taskOwnershipGate.current.begin()
     setTaskOwnershipLoadingMore(false)
-    setTaskOwnershipReviews(current => ({ ...current, items: [], loading: true }))
+    setTaskOwnershipReviews(current => ({
+      ...current, items: [], loading: true, error: undefined
+    }))
     const timer = window.setTimeout(() => {
       void window.electronAPI.aiAssistant.getTaskOwnershipReviews(taskOwnershipOptions).then(result => {
         if (!taskOwnershipGate.current.isCurrent(request)) return
@@ -2553,9 +2556,12 @@ function AiAssistantPage() {
           return
         }
         setTaskOwnershipReviews({ ...result, loading: false })
-      }).catch(() => {
+      }).catch(error => {
         if (!taskOwnershipGate.current.isCurrent(request)) return
-        setTaskOwnershipReviews({ items: [], total: 0, hasMore: false, counts: {}, loading: false })
+        setTaskOwnershipReviews({
+          items: [], total: 0, hasMore: false, counts: {}, loading: false,
+          error: error?.message || String(error)
+        })
       })
     }, taskOwnershipQuery ? 200 : 0)
     return () => {
@@ -4842,6 +4848,7 @@ function AiAssistantPage() {
     if (taskOwnershipLoadingMore || !taskOwnershipReviews.hasMore) return
     const request = taskOwnershipGate.current.begin()
     setTaskOwnershipLoadingMore(true)
+    setTaskOwnershipReviews(current => ({ ...current, error: undefined }))
     try {
       const result = await window.electronAPI.aiAssistant.getTaskOwnershipReviews({
         ...taskOwnershipOptions,
@@ -4862,7 +4869,11 @@ function AiAssistantPage() {
         loading: false
       }))
     } catch (error: any) {
-      if (taskOwnershipGate.current.isCurrent(request)) setMessage(error?.message || String(error))
+      if (taskOwnershipGate.current.isCurrent(request)) {
+        const errorMessage = error?.message || String(error)
+        setTaskOwnershipReviews(current => ({ ...current, error: errorMessage }))
+        setMessage(errorMessage)
+      }
     } finally {
       if (taskOwnershipGate.current.isCurrent(request)) setTaskOwnershipLoadingMore(false)
     }
@@ -10999,12 +11010,16 @@ function AiAssistantPage() {
           </button>}
         </section>
 
-        {(taskOwnershipReviews.total > 0 || taskReviewFeedback.mine || taskReviewFeedback.rejected ||
-          taskReviewFeedback.archive?.total) && (
+        {(taskOwnershipReviews.total > 0 || taskOwnershipReviews.loading || taskOwnershipReviews.error ||
+          taskReviewFeedback.mine || taskReviewFeedback.rejected || taskReviewFeedback.archive?.total) && (
           <section className="assistant-panel assistant-review-section" id="task-ownership-review">
             <div className="assistant-section-heading">
               <div><span className="assistant-eyebrow">ASSIGNEE REVIEW</span><h3>待确认归属</h3></div>
-              <span className="assistant-count">{taskOwnershipReviews.total} 项不会计入你的待办</span>
+              <span className="assistant-count">
+                {taskOwnershipReviews.error && !taskReviewQueue.length
+                  ? '读取失败'
+                  : `${taskOwnershipReviews.total} 项不会计入你的待办`}
+              </span>
             </div>
             <div className="assistant-task-feedback-summary">
               <span><b>{Number(taskReviewFeedback.mine || 0)}</b><small>已确认为我的</small></span>
@@ -11056,10 +11071,20 @@ function AiAssistantPage() {
               </article>
             ))}
             {taskOwnershipReviews.loading && <div className="assistant-empty">正在读取待确认归属…</div>}
-            {!taskOwnershipReviews.loading && !taskReviewQueue.length && <div className="assistant-empty">
+            {taskOwnershipReviews.error && <div className="assistant-task-load-failure" role="alert">
+              <strong>{taskReviewQueue.length ? '更多归属候选读取失败' : '待办归属审阅读取失败'}</strong>
+              <span>{taskOwnershipReviews.error}。{taskReviewQueue.length
+                ? ` 已加载的 ${taskReviewQueue.length} 项仍可审阅，但当前候选目录尚未读完。`
+                : ' 当前不会把失败解释为“没有待确认归属”。'}</span>
+              <button type="button" disabled={taskOwnershipLoadingMore} onClick={() => {
+                if (taskReviewQueue.length) void loadMoreTaskOwnershipReviews()
+                else setTaskOwnershipRefreshKey(value => value + 1)
+              }}>{taskOwnershipLoadingMore ? '正在重试…' : '立即重试'}</button>
+            </div>}
+            {!taskOwnershipReviews.loading && !taskOwnershipReviews.error && !taskReviewQueue.length && <div className="assistant-empty">
               当前筛选下没有待确认归属。
             </div>}
-            {taskOwnershipReviews.hasMore && <button onClick={() => void loadMoreTaskOwnershipReviews()}
+            {taskOwnershipReviews.hasMore && !taskOwnershipReviews.error && <button onClick={() => void loadMoreTaskOwnershipReviews()}
               disabled={taskOwnershipLoadingMore}>
               {taskOwnershipLoadingMore ? '正在加载下一页…' : '加载更多待确认归属'}
             </button>}
