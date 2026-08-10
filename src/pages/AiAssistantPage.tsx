@@ -1364,6 +1364,7 @@ function AiAssistantPage() {
     revision?: string
     stale?: boolean
     loading?: boolean
+    error?: string
   }>({ items: [], total: 0, hasMore: false, counts: { active: 0, revoked: 0, all: 0 } })
   const [taskFeedbackStatus, setTaskFeedbackStatus] = useState<'all' | 'active' | 'revoked'>('all')
   const [taskFeedbackDecision, setTaskFeedbackDecision] = useState<'all' | 'mine' | 'rejected'>('all')
@@ -2573,7 +2574,9 @@ function AiAssistantPage() {
   useEffect(() => {
     const request = taskFeedbackArchiveGate.current.begin()
     setTaskFeedbackLoadingMore(false)
-    setTaskFeedbackArchive(current => ({ ...current, items: [], loading: true }))
+    setTaskFeedbackArchive(current => ({
+      ...current, items: [], loading: true, error: undefined
+    }))
     const timer = window.setTimeout(() => {
       void window.electronAPI.aiAssistant.getTaskReviewDecisionPage(taskFeedbackOptions).then(result => {
         if (!taskFeedbackArchiveGate.current.isCurrent(request)) return
@@ -2584,11 +2587,12 @@ function AiAssistantPage() {
           return
         }
         setTaskFeedbackArchive({ ...result, loading: false })
-      }).catch(() => {
+      }).catch(error => {
         if (!taskFeedbackArchiveGate.current.isCurrent(request)) return
         setTaskFeedbackArchive({
           items: [], total: 0, hasMore: false,
-          counts: { active: 0, revoked: 0, all: 0 }, loading: false
+          counts: { active: 0, revoked: 0, all: 0 }, loading: false,
+          error: error?.message || String(error)
         })
       })
     }, taskFeedbackQuery ? 200 : 0)
@@ -4883,6 +4887,7 @@ function AiAssistantPage() {
     if (taskFeedbackLoadingMore || !taskFeedbackArchive.hasMore) return
     const request = taskFeedbackArchiveGate.current.begin()
     setTaskFeedbackLoadingMore(true)
+    setTaskFeedbackArchive(current => ({ ...current, error: undefined }))
     try {
       const result = await window.electronAPI.aiAssistant.getTaskReviewDecisionPage({
         ...taskFeedbackOptions,
@@ -4903,7 +4908,11 @@ function AiAssistantPage() {
         loading: false
       }))
     } catch (error: any) {
-      if (taskFeedbackArchiveGate.current.isCurrent(request)) setMessage(error?.message || String(error))
+      if (taskFeedbackArchiveGate.current.isCurrent(request)) {
+        const errorMessage = error?.message || String(error)
+        setTaskFeedbackArchive(current => ({ ...current, error: errorMessage }))
+        setMessage(errorMessage)
+      }
     } finally {
       if (taskFeedbackArchiveGate.current.isCurrent(request)) setTaskFeedbackLoadingMore(false)
     }
@@ -11089,7 +11098,9 @@ function AiAssistantPage() {
               {taskOwnershipLoadingMore ? '正在加载下一页…' : '加载更多待确认归属'}
             </button>}
             {!!taskReviewFeedback.archive?.total && <details className="assistant-task-feedback-history">
-              <summary>完整归属反馈档案 · {taskFeedbackArchive.total} 条匹配 / {taskReviewFeedback.archive.total} 条全部</summary>
+              <summary>完整归属反馈档案 · {taskFeedbackArchive.error && !taskFeedbackArchive.items.length
+                ? '读取失败'
+                : `${taskFeedbackArchive.total} 条匹配 / ${taskReviewFeedback.archive.total} 条全部`}</summary>
               <div className="assistant-task-filters">
                 <select value={taskFeedbackStatus}
                   onChange={event => setTaskFeedbackStatus(event.target.value as any)}>
@@ -11110,10 +11121,10 @@ function AiAssistantPage() {
                 <label>到<input type="date" value={taskFeedbackTo}
                   onChange={event => setTaskFeedbackTo(event.target.value)} /></label>
               </div>
-              <small>
+              {!taskFeedbackArchive.error && <small>
                 当前有效 {taskFeedbackArchive.counts.active || 0} · 已撤销 {taskFeedbackArchive.counts.revoked || 0}。
                 目录不含任务快照或原文，点击单条后才从 SQLCipher 读取。
-              </small>
+              </small>}
               {taskFeedbackArchive.items.map((item: any) => <div key={item.evidence_fingerprint}>
                 <small>
                   {new Date(item.updated_at).toLocaleString('zh-CN')} · {!item.active ? '已撤销' : item.decision === 'mine' ? '确认为我的' : '不是我的'} · {item.title || '未命名事项'}
@@ -11124,8 +11135,18 @@ function AiAssistantPage() {
                 {item.canRevert && <button onClick={() => void revertTaskReview(item.evidence_fingerprint)}>撤销反馈</button>}
               </div>)}
               {taskFeedbackArchive.loading && <small>正在读取归属反馈档案…</small>}
-              {!taskFeedbackArchive.loading && !taskFeedbackArchive.items.length && <small>当前筛选下没有反馈记录。</small>}
-              {taskFeedbackArchive.hasMore && <button onClick={() => void loadMoreTaskFeedback()}
+              {taskFeedbackArchive.error && <div className="assistant-task-load-failure" role="alert">
+                <strong>{taskFeedbackArchive.items.length ? '更多归属反馈读取失败' : '归属反馈档案读取失败'}</strong>
+                <span>{taskFeedbackArchive.error}。{taskFeedbackArchive.items.length
+                  ? ` 已加载的 ${taskFeedbackArchive.items.length} 条仍可核验或撤销，但当前档案尚未读完。`
+                  : ' 当前不会把失败解释为“没有反馈记录”。'}</span>
+                <button type="button" disabled={taskFeedbackLoadingMore} onClick={() => {
+                  if (taskFeedbackArchive.items.length) void loadMoreTaskFeedback()
+                  else setTaskFeedbackRefreshKey(value => value + 1)
+                }}>{taskFeedbackLoadingMore ? '正在重试…' : '立即重试'}</button>
+              </div>}
+              {!taskFeedbackArchive.loading && !taskFeedbackArchive.error && !taskFeedbackArchive.items.length && <small>当前筛选下没有反馈记录。</small>}
+              {taskFeedbackArchive.hasMore && !taskFeedbackArchive.error && <button onClick={() => void loadMoreTaskFeedback()}
                 disabled={taskFeedbackLoadingMore}>
                 {taskFeedbackLoadingMore ? '正在加载…' : '加载更多反馈'}
               </button>}
