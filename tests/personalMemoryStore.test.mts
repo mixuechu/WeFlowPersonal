@@ -20542,6 +20542,7 @@ test('partial ingestion keeps completed checkpoints visible for safe resume', ()
   const runs = store.listIngestionRuns()
   assert.equal(runs.length, 1)
   assert.equal(runs[0].batches[1].error, '用户已安全暂停')
+  assert.equal(runs[0].batches[1].failure_class, 'operational_failure')
   assert.deepEqual(runs[0].batches[0].sensitiveRedaction, {
     level: 'standard', total: 2, counts: { 手机号: 1, 邮箱: 1 }
   })
@@ -20705,6 +20706,59 @@ test('ingestion reliability separates controlled interruption from operational f
   assert.equal(summary.latestControlledInterruptionAt, controlledAt)
 }))
 
+test('ingestion failure classes persist on write and deterministically backfill legacy rows', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'weflow-ingestion-failure-class-'))
+  const databasePath = join(directory, 'memory.sqlite')
+  const key = randomBytes(32)
+  const first = new PersonalMemoryStore()
+  const second = new PersonalMemoryStore()
+  try {
+    first.initialize(databasePath, key)
+    first.startIngestionRun('structured-write', 'deepseek-test', 'prompt-test')
+    first.recordIngestionBatch(
+      'structured-write', 0, 2, 'failed', '应用正在安全退出，模型请求已取消'
+    )
+    const database = (first as any).db
+    database.prepare(`
+      INSERT INTO ingestion_runs(id,started_at,finished_at,status,error)
+      VALUES(?,?,?,?,?)
+    `).run('legacy-failure', new Date().toISOString(), new Date().toISOString(), 'partial', '旧记录')
+    database.prepare(`
+      INSERT INTO ingestion_batches(
+        run_id,batch_index,message_count,status,error,started_at,finished_at
+      ) VALUES(?,?,?,?,?,?,?)
+    `).run(
+      'legacy-failure', 0, 2, 'failed', '模型没有返回有效 JSON',
+      new Date().toISOString(), new Date().toISOString()
+    )
+    assert.equal(database.prepare(`
+      SELECT failure_class FROM ingestion_batches WHERE run_id='structured-write'
+    `).pluck().get(), 'controlled_interruption')
+    assert.equal(database.prepare(`
+      SELECT failure_class FROM ingestion_batches WHERE run_id='legacy-failure'
+    `).pluck().get(), '')
+    first.close()
+
+    second.initialize(databasePath, key)
+    const reopened = (second as any).db
+    assert.equal(reopened.prepare(`
+      SELECT failure_class FROM ingestion_batches WHERE run_id='structured-write'
+    `).pluck().get(), 'controlled_interruption')
+    assert.equal(reopened.prepare(`
+      SELECT failure_class FROM ingestion_batches WHERE run_id='legacy-failure'
+    `).pluck().get(), 'operational_failure')
+    const summary = second.getIngestionArchiveSummary()
+    assert.equal(summary.operationalFailedBatches, 1)
+    assert.equal(summary.controlledInterruptedBatches, 1)
+    assert.equal(summary.unclassifiedFailedBatches, 0)
+    assert.equal(summary.failureClassificationVersion, 'ingestion-failure-class-v1')
+  } finally {
+    first.close()
+    second.close()
+    rmSync(directory, { recursive: true, force: true })
+  }
+})
+
 test('ingestion run archive paginates all years and loads bounded batch audits on demand', () => {
   const directory = mkdtempSync(join(tmpdir(), 'weflow-ingestion-run-archive-'))
   const databasePath = join(directory, 'memory.sqlite')
@@ -20800,6 +20854,10 @@ test('ingestion run archive paginates all years and loads bounded batch audits o
       outputTokens: expectedBatches * 5,
       durationMs: expectedBatches * 100,
       failedBatches: expectedFailedBatches,
+      operationalFailedBatches: 0,
+      controlledInterruptedBatches: 0,
+      unclassifiedFailedBatches: expectedFailedBatches,
+      failureClassificationVersion: 'ingestion-failure-class-v1',
       batches: expectedBatches,
       latestRunId: summary.latestRunId,
       latestActivityAt: summary.latestActivityAt,

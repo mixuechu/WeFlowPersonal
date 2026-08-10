@@ -36,5 +36,7 @@ test('ingestion diagnostics separate recent reliability from lifetime audit tota
   assert.match(page, /失败批次作为尝试审计永久保留/)
   assert.match(page, /该成功边界之后/)
   assert.match(page, /受控中断/)
+  assert.match(page, /历史失败分类/)
+  assert.match(page, /unclassifiedFailedBatches/)
   assert.match(page, /历史失败批次/)
 })

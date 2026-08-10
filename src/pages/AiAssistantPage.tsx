@@ -17110,6 +17110,7 @@ function AiAssistantPage() {
             <div className="assistant-diagnostics-summary">
               <span>总耗时 <b>{(Number(memoryDiagnostics.ingestionSummary?.durationMs || 0) / 1000).toFixed(1)} 秒</b></span>
               <span>处理消息 <b>{Number(memoryDiagnostics.ingestionSummary?.messages || 0).toLocaleString()} 条</b></span>
+              <span>历史失败分类 <b>{Number(memoryDiagnostics.ingestionSummary?.operationalFailedBatches || 0).toLocaleString()} 异常 / {Number(memoryDiagnostics.ingestionSummary?.controlledInterruptedBatches || 0).toLocaleString()} 受控中断 / {Number(memoryDiagnostics.ingestionSummary?.unclassifiedFailedBatches || 0).toLocaleString()} 未分类</b></span>
               <span>估算成本 <b>{memoryDiagnostics.ingestionSummary?.costConfigured
                 ? `¥${Number(memoryDiagnostics.ingestionSummary.estimatedCost || 0).toFixed(4)}`
                 : '未配置费率'}</b></span>

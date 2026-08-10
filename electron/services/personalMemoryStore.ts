@@ -43,6 +43,20 @@ type MemoryGraph = {
 
 type MemoryEvidenceSource = 'wechat' | 'documents' | 'calendar' | 'mail' | 'legacy'
 
+type IngestionBatchFailureClass = '' | 'operational_failure' | 'controlled_interruption'
+
+function classifyIngestionBatchFailure(
+  status: string,
+  error: unknown
+): IngestionBatchFailureClass {
+  if (status !== 'failed') return ''
+  const message = String(error || '')
+  return message.startsWith('应用正在安全退出，')
+    || message === 'AI 助理已关闭，当前模型请求已取消'
+    ? 'controlled_interruption'
+    : 'operational_failure'
+}
+
 type MemoryChangeOrigin = {
   kind: 'model_batch' | 'connector_page' | 'human_action' | 'system'
   id?: string
@@ -1331,6 +1345,9 @@ export class PersonalMemoryStore {
         status TEXT NOT NULL,
         attempts INTEGER NOT NULL DEFAULT 1,
         error TEXT,
+        failure_class TEXT NOT NULL DEFAULT '' CHECK(failure_class IN (
+          '', 'operational_failure', 'controlled_interruption'
+        )),
         started_at TEXT NOT NULL,
         finished_at TEXT,
         model TEXT NOT NULL DEFAULT '',
@@ -1771,6 +1788,22 @@ export class PersonalMemoryStore {
     this.ensureColumn('ingestion_batches', 'input_tokens', `INTEGER NOT NULL DEFAULT 0`)
     this.ensureColumn('ingestion_batches', 'output_tokens', `INTEGER NOT NULL DEFAULT 0`)
     this.ensureColumn('ingestion_batches', 'duration_ms', `INTEGER NOT NULL DEFAULT 0`)
+    this.ensureColumn(
+      'ingestion_batches',
+      'failure_class',
+      `TEXT NOT NULL DEFAULT '' CHECK(failure_class IN (` +
+        `'','operational_failure','controlled_interruption'))`
+    )
+    this.db.prepare(`
+      UPDATE ingestion_batches
+      SET failure_class=CASE
+        WHEN COALESCE(error,'') LIKE '应用正在安全退出，%'
+          OR COALESCE(error,'')='AI 助理已关闭，当前模型请求已取消'
+          THEN 'controlled_interruption'
+        ELSE 'operational_failure'
+      END
+      WHERE status='failed' AND failure_class=''
+    `).run()
     this.ensureColumn('ingestion_batches', 'redaction_summary_json', `TEXT NOT NULL DEFAULT '{}'`)
     this.ensureColumn('ingestion_batches', 'evidence_validation_json', `TEXT NOT NULL DEFAULT '{}'`)
     this.ensureColumn('ingestion_batches', 'extraction_context_json', `TEXT NOT NULL DEFAULT '{}'`)
@@ -18638,11 +18671,12 @@ export class PersonalMemoryStore {
     if (!this.db) return
     const now = new Date().toISOString()
     this.db.prepare(`
-      INSERT INTO ingestion_batches(run_id,batch_index,message_count,status,error,started_at,finished_at,
+      INSERT INTO ingestion_batches(run_id,batch_index,message_count,status,error,failure_class,started_at,finished_at,
         model,prompt_version,schema_version,input_tokens,output_tokens,duration_ms,redaction_summary_json,
         evidence_validation_json,extraction_context_json,extraction_coverage_json)
-      VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+      VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
       ON CONFLICT(run_id,batch_index) DO UPDATE SET status=excluded.status,error=excluded.error,
+        failure_class=excluded.failure_class,
         attempts=CASE WHEN excluded.status='running' THEN ingestion_batches.attempts+1 ELSE ingestion_batches.attempts END,
         finished_at=excluded.finished_at,
         model=CASE WHEN excluded.model!='' THEN excluded.model ELSE ingestion_batches.model END,
@@ -18656,7 +18690,8 @@ export class PersonalMemoryStore {
         extraction_context_json=CASE WHEN excluded.extraction_context_json!='{}' THEN excluded.extraction_context_json ELSE ingestion_batches.extraction_context_json END,
         extraction_coverage_json=CASE WHEN excluded.extraction_coverage_json!='{}' THEN excluded.extraction_coverage_json ELSE ingestion_batches.extraction_coverage_json END
     `).run(
-      runId, batchIndex, messageCount, status, error || null, now, status === 'running' ? null : now,
+      runId, batchIndex, messageCount, status, error || null,
+      classifyIngestionBatchFailure(status, error), now, status === 'running' ? null : now,
       String(metrics.model || ''), String(metrics.promptVersion || ''), String(metrics.schemaVersion || ''),
       Math.max(0, Number(metrics.inputTokens || 0)), Math.max(0, Number(metrics.outputTokens || 0)),
       Math.max(0, Number(metrics.durationMs || 0)), JSON.stringify(metrics.sensitiveRedaction || {}),
@@ -19325,6 +19360,10 @@ export class PersonalMemoryStore {
     outputTokens: number
     durationMs: number
     failedBatches: number
+    operationalFailedBatches: number
+    controlledInterruptedBatches: number
+    unclassifiedFailedBatches: number
+    failureClassificationVersion: string
     batches: number
     latestRunId: string
     latestActivityAt: string
@@ -19365,6 +19404,9 @@ export class PersonalMemoryStore {
       runs: 0, completedRuns: 0, partialRuns: 0, failedRuns: 0, runningRuns: 0,
       messages: 0, inputTokens: 0, outputTokens: 0, durationMs: 0,
       failedBatches: 0, batches: 0, latestRunId: '', latestActivityAt: '',
+      operationalFailedBatches: 0, controlledInterruptedBatches: 0,
+      unclassifiedFailedBatches: 0,
+      failureClassificationVersion: 'ingestion-failure-class-v1',
       latestPartialAt: '', latestFailedAt: '', latestDegradedAt: '',
       latestSuccessfulExtractionAt: '', latestFailedBatchAt: '',
       failedBatchesSinceLatestSuccessfulExtraction: 0,
@@ -19392,6 +19434,12 @@ export class PersonalMemoryStore {
       SELECT
         COUNT(*) AS batches,
         SUM(CASE WHEN status='failed' THEN 1 ELSE 0 END) AS failed_batches,
+        SUM(CASE WHEN status='failed' AND failure_class='operational_failure'
+          THEN 1 ELSE 0 END) AS operational_failed_batches,
+        SUM(CASE WHEN status='failed' AND failure_class='controlled_interruption'
+          THEN 1 ELSE 0 END) AS controlled_interrupted_batches,
+        SUM(CASE WHEN status='failed' AND failure_class=''
+          THEN 1 ELSE 0 END) AS unclassified_failed_batches,
         COALESCE(SUM(input_tokens),0) AS input_tokens,
         COALESCE(SUM(output_tokens),0) AS output_tokens,
         COALESCE(SUM(duration_ms),0) AS duration_ms
@@ -19425,24 +19473,32 @@ export class PersonalMemoryStore {
       SELECT
         MAX(CASE WHEN status='failed'
           THEN COALESCE(finished_at,started_at) END) AS latest_failed_batch_at,
-        MAX(CASE WHEN status='failed' AND NOT (
-          COALESCE(error,'') LIKE '应用正在安全退出，%'
-          OR COALESCE(error,'')='AI 助理已关闭，当前模型请求已取消'
+        MAX(CASE WHEN status='failed' AND (
+          failure_class='operational_failure' OR (failure_class='' AND NOT (
+            COALESCE(error,'') LIKE '应用正在安全退出，%'
+            OR COALESCE(error,'')='AI 助理已关闭，当前模型请求已取消'
+          ))
         ) THEN COALESCE(finished_at,started_at) END) AS latest_operational_failure_at,
         MAX(CASE WHEN status='failed' AND (
-          COALESCE(error,'') LIKE '应用正在安全退出，%'
-          OR COALESCE(error,'')='AI 助理已关闭，当前模型请求已取消'
+          failure_class='controlled_interruption' OR (failure_class='' AND (
+            COALESCE(error,'') LIKE '应用正在安全退出，%'
+            OR COALESCE(error,'')='AI 助理已关闭，当前模型请求已取消'
+          ))
         ) THEN COALESCE(finished_at,started_at) END) AS latest_controlled_interruption_at,
         SUM(CASE WHEN status='failed' AND (?='' OR COALESCE(finished_at,started_at)>?)
           THEN 1 ELSE 0 END) AS failed_batches_since_success,
-        SUM(CASE WHEN status='failed' AND NOT (
-          COALESCE(error,'') LIKE '应用正在安全退出，%'
-          OR COALESCE(error,'')='AI 助理已关闭，当前模型请求已取消'
+        SUM(CASE WHEN status='failed' AND (
+          failure_class='operational_failure' OR (failure_class='' AND NOT (
+            COALESCE(error,'') LIKE '应用正在安全退出，%'
+            OR COALESCE(error,'')='AI 助理已关闭，当前模型请求已取消'
+          ))
         ) AND (?='' OR COALESCE(finished_at,started_at)>?)
           THEN 1 ELSE 0 END) AS operational_failed_batches_since_success,
         SUM(CASE WHEN status='failed' AND (
-          COALESCE(error,'') LIKE '应用正在安全退出，%'
-          OR COALESCE(error,'')='AI 助理已关闭，当前模型请求已取消'
+          failure_class='controlled_interruption' OR (failure_class='' AND (
+            COALESCE(error,'') LIKE '应用正在安全退出，%'
+            OR COALESCE(error,'')='AI 助理已关闭，当前模型请求已取消'
+          ))
         ) AND (?='' OR COALESCE(finished_at,started_at)>?)
           THEN 1 ELSE 0 END) AS controlled_interrupted_batches_since_success
       FROM ingestion_batches
@@ -19472,13 +19528,17 @@ export class PersonalMemoryStore {
         SELECT
           SUM(CASE WHEN b.status='completed' THEN 1 ELSE 0 END) AS successful_batches,
           SUM(CASE WHEN b.status='failed' THEN 1 ELSE 0 END) AS failed_batches,
-          SUM(CASE WHEN b.status='failed' AND NOT (
-            COALESCE(b.error,'') LIKE '应用正在安全退出，%'
-            OR COALESCE(b.error,'')='AI 助理已关闭，当前模型请求已取消'
+          SUM(CASE WHEN b.status='failed' AND (
+            b.failure_class='operational_failure' OR (b.failure_class='' AND NOT (
+              COALESCE(b.error,'') LIKE '应用正在安全退出，%'
+              OR COALESCE(b.error,'')='AI 助理已关闭，当前模型请求已取消'
+            ))
           ) THEN 1 ELSE 0 END) AS operational_failed_batches,
           SUM(CASE WHEN b.status='failed' AND (
-            COALESCE(b.error,'') LIKE '应用正在安全退出，%'
-            OR COALESCE(b.error,'')='AI 助理已关闭，当前模型请求已取消'
+            b.failure_class='controlled_interruption' OR (b.failure_class='' AND (
+              COALESCE(b.error,'') LIKE '应用正在安全退出，%'
+              OR COALESCE(b.error,'')='AI 助理已关闭，当前模型请求已取消'
+            ))
           ) THEN 1 ELSE 0 END) AS controlled_interrupted_batches
         FROM ingestion_batches b
         WHERE julianday(COALESCE(b.finished_at,b.started_at))>=julianday('now',?)
@@ -19520,6 +19580,10 @@ export class PersonalMemoryStore {
       outputTokens: Number(batches?.output_tokens || 0),
       durationMs: Number(batches?.duration_ms || 0),
       failedBatches: Number(batches?.failed_batches || 0),
+      operationalFailedBatches: Number(batches?.operational_failed_batches || 0),
+      controlledInterruptedBatches: Number(batches?.controlled_interrupted_batches || 0),
+      unclassifiedFailedBatches: Number(batches?.unclassified_failed_batches || 0),
+      failureClassificationVersion: 'ingestion-failure-class-v1',
       batches: Number(batches?.batches || 0),
       latestRunId: String(latest?.id || ''),
       latestActivityAt: String(latest?.activity_at || ''),
