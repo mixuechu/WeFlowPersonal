@@ -18225,9 +18225,9 @@ function AiAssistantPage() {
                 <input value={ingestionArchiveQuery}
                   onChange={event => setIngestionArchiveQuery(event.target.value)}
                   placeholder="搜索运行 ID、触发来源、结果、模型、Prompt 或错误" />
-                <label><span>开始从</span><input type="date" value={ingestionArchiveFrom}
+                <label><span>最终活动从</span><input type="date" value={ingestionArchiveFrom}
                   onChange={event => setIngestionArchiveFrom(event.target.value)} /></label>
-                <label><span>到</span><input type="date" value={ingestionArchiveTo}
+                <label><span>最终活动到</span><input type="date" value={ingestionArchiveTo}
                   onChange={event => setIngestionArchiveTo(event.target.value)} /></label>
                 {(ingestionArchiveStatus !== 'all' || ingestionArchiveTrigger !== 'all' ||
                   ingestionArchiveBacklogOutcome !== 'all' || ingestionArchiveBatchOutcome !== 'all' ||
@@ -18247,7 +18247,7 @@ function AiAssistantPage() {
               </small>
               {ingestionArchive.items.map((run: any) => <article className="assistant-ingestion-run" key={run.id}>
                 <div>
-                  <b>{new Date(run.started_at).toLocaleString('zh-CN')}</b>
+                  <b>最终活动 {new Date(run.activity_at || run.started_at).toLocaleString('zh-CN')}</b>
                   <span className={run.status}>{run.status} · {run.message_count} 条 · {run.batch_count} 批
                     {run.failed_batch_count
                       ? ` · ${run.failed_batch_count} 批失败（${Number(run.operational_failed_batch_count || 0)} 异常 / ${Number(run.controlled_interrupted_batch_count || 0)} 受控）`

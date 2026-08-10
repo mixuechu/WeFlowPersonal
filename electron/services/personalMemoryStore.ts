@@ -19677,6 +19677,16 @@ export class PersonalMemoryStore {
       )
       parameters.push(windowModifier)
     }
+    const from = options.from && Number.isFinite(Date.parse(options.from)) ? String(options.from) : ''
+    const to = options.to && Number.isFinite(Date.parse(options.to)) ? String(options.to) : ''
+    if (from) {
+      conditions.push('COALESCE(r.finished_at,r.recovered_at,r.started_at)>=?')
+      parameters.push(from)
+    }
+    if (to) {
+      conditions.push('COALESCE(r.finished_at,r.recovered_at,r.started_at)<=?')
+      parameters.push(to)
+    }
     const batchOutcome = String(options.batchOutcome || '')
     if (['completed', 'operational_failure', 'controlled_interruption',
       'unclassified_failure', 'failed_any'].includes(batchOutcome)) {
@@ -19697,6 +19707,14 @@ export class PersonalMemoryStore {
           `julianday(COALESCE(bf.finished_at,bf.started_at))>=julianday('now',?)`
         )
         parameters.push(windowModifier)
+      }
+      if (from) {
+        batchConditions.push('COALESCE(bf.finished_at,bf.started_at)>=?')
+        parameters.push(from)
+      }
+      if (to) {
+        batchConditions.push('COALESCE(bf.finished_at,bf.started_at)<=?')
+        parameters.push(to)
       }
       conditions.push(`EXISTS(
         SELECT 1 FROM ingestion_batches bf WHERE ${batchConditions.join(' AND ')}
@@ -19724,16 +19742,6 @@ export class PersonalMemoryStore {
       ),?)>0`)
       parameters.push(auditQueryAliases[query] || query)
     }
-    const from = options.from && Number.isFinite(Date.parse(options.from)) ? String(options.from) : ''
-    const to = options.to && Number.isFinite(Date.parse(options.to)) ? String(options.to) : ''
-    if (from) {
-      conditions.push('r.started_at>=?')
-      parameters.push(from)
-    }
-    if (to) {
-      conditions.push('r.started_at<=?')
-      parameters.push(to)
-    }
     const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : ''
     const total = Number((this.db.prepare(`
       SELECT COUNT(*) AS count FROM ingestion_runs r ${where}
@@ -19741,6 +19749,7 @@ export class PersonalMemoryStore {
     const limit = Math.max(1, Math.min(100, Math.floor(Number(options.limit) || 40)))
     const rows = this.db.prepare(`
       SELECT r.*,
+        COALESCE(r.finished_at,r.recovered_at,r.started_at) AS activity_at,
         COUNT(b.batch_index) AS batch_count,
         SUM(CASE WHEN b.status='failed' THEN 1 ELSE 0 END) AS failed_batch_count,
         SUM(CASE WHEN b.failure_class='operational_failure' THEN 1 ELSE 0 END)
@@ -19754,7 +19763,7 @@ export class PersonalMemoryStore {
       LEFT JOIN ingestion_batches b ON b.run_id=r.id
       ${where}
       GROUP BY r.id
-      ORDER BY r.started_at DESC,r.id ASC
+      ORDER BY COALESCE(r.finished_at,r.recovered_at,r.started_at) DESC,r.id ASC
       LIMIT ? OFFSET ?
     `).all(...parameters, limit, offset) as any[]
     const counts = this.db.prepare(`

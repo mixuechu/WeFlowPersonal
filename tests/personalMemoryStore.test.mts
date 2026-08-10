@@ -20664,6 +20664,39 @@ test('ingestion reliability windows use final activity instead of stale start ti
     operationalFailedBatches: 0, controlledInterruptedBatches: 0
   })
   assert.equal(summary.latestSuccessfulExtractionAt, completedInsideDay)
+  database.prepare(`
+    INSERT INTO ingestion_runs(id,started_at,finished_at,status,error)
+    VALUES(?,?,?,?,?)
+  `).run('mixed-boundary-batches', beforeDayBoundary, completedInsideDay, 'completed', null)
+  const insertMixedBatch = database.prepare(`
+    INSERT INTO ingestion_batches(
+      run_id,batch_index,message_count,status,error,failure_class,started_at,finished_at
+    ) VALUES(?,?,?,?,?,?,?,?)
+  `)
+  insertMixedBatch.run(
+    'mixed-boundary-batches', 0, 1, 'failed', '旧异常', 'operational_failure',
+    beforeDayBoundary, beforeDayBoundary
+  )
+  insertMixedBatch.run(
+    'mixed-boundary-batches', 1, 1, 'completed', null, '',
+    completedInsideDay, completedInsideDay
+  )
+  const boundary = new Date(now - 24 * 60 * 60 * 1000).toISOString()
+  const manualRange = store.listIngestionRunPage({ from: boundary, limit: 40 })
+  const batchRange = store.listIngestionRunPage({
+    from: boundary, batchOutcome: 'completed', limit: 40
+  })
+  const beforeCompletion = store.listIngestionRunPage({
+    to: boundary, batchOutcome: 'completed', limit: 40
+  })
+  const oldFailureOutsideRange = store.listIngestionRunPage({
+    from: boundary, batchOutcome: 'operational_failure', limit: 40
+  })
+  assert.equal(manualRange.total, 2)
+  assert.equal(manualRange.items[0].activity_at, completedInsideDay)
+  assert.equal(batchRange.total, 2)
+  assert.equal(beforeCompletion.total, 0)
+  assert.equal(oldFailureOutsideRange.total, 0)
 }))
 
 test('ingestion reliability separates controlled interruption from operational failure', () => withStore(store => {

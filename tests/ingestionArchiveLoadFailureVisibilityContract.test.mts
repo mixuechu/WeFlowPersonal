@@ -44,5 +44,8 @@ test('ingestion diagnostics separate recent reliability from lifetime audit tota
   assert.match(page, /openIngestionBatchAudit\('controlled_interruption'\)/)
   assert.match(page, /审阅 24 小时真实异常/)
   assert.match(page, /审阅 24 小时受控中断/)
+  assert.match(page, /最终活动从/)
+  assert.match(page, /最终活动到/)
+  assert.match(page, /run\.activity_at \|\| run\.started_at/)
   assert.match(page, /历史失败批次/)
 })
