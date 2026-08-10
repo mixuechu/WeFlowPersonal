@@ -19332,25 +19332,34 @@ export class PersonalMemoryStore {
     latestFailedAt: string
     latestDegradedAt: string
     completedSinceLatestDegraded: number
+    completedWithBatchesSinceLatestDegraded: number
+    completedWithoutBatchesSinceLatestDegraded: number
     runsSinceLatestDegraded: number
     recent24Hours: {
       runs: number; completed: number; partial: number; failed: number; running: number
-      failedBatches: number
+      completedWithBatches: number; completedWithoutBatches: number
+      successfulBatches: number; failedBatches: number
     }
     recent7Days: {
       runs: number; completed: number; partial: number; failed: number; running: number
-      failedBatches: number
+      completedWithBatches: number; completedWithoutBatches: number
+      successfulBatches: number; failedBatches: number
     }
   } {
     const emptyWindow = {
-      runs: 0, completed: 0, partial: 0, failed: 0, running: 0, failedBatches: 0
+      runs: 0, completed: 0, partial: 0, failed: 0, running: 0,
+      completedWithBatches: 0, completedWithoutBatches: 0,
+      successfulBatches: 0, failedBatches: 0
     }
     const empty = {
       runs: 0, completedRuns: 0, partialRuns: 0, failedRuns: 0, runningRuns: 0,
       messages: 0, inputTokens: 0, outputTokens: 0, durationMs: 0,
       failedBatches: 0, batches: 0, latestRunId: '', latestActivityAt: '',
       latestPartialAt: '', latestFailedAt: '', latestDegradedAt: '',
-      completedSinceLatestDegraded: 0, runsSinceLatestDegraded: 0,
+      completedSinceLatestDegraded: 0,
+      completedWithBatchesSinceLatestDegraded: 0,
+      completedWithoutBatchesSinceLatestDegraded: 0,
+      runsSinceLatestDegraded: 0,
       recent24Hours: { ...emptyWindow }, recent7Days: { ...emptyWindow }
     }
     if (!this.db) return empty
@@ -19395,12 +19404,19 @@ export class PersonalMemoryStore {
           SUM(CASE WHEN status='completed' THEN 1 ELSE 0 END) AS completed,
           SUM(CASE WHEN status='partial' THEN 1 ELSE 0 END) AS partial,
           SUM(CASE WHEN status='failed' THEN 1 ELSE 0 END) AS failed,
-          SUM(CASE WHEN status='running' THEN 1 ELSE 0 END) AS running
-        FROM ingestion_runs
-        WHERE julianday(started_at)>=julianday('now',?)
+          SUM(CASE WHEN status='running' THEN 1 ELSE 0 END) AS running,
+          SUM(CASE WHEN status='completed' AND EXISTS(
+            SELECT 1 FROM ingestion_batches b WHERE b.run_id=ingestion_runs.id
+          ) THEN 1 ELSE 0 END) AS completed_with_batches,
+          SUM(CASE WHEN status='completed' AND NOT EXISTS(
+            SELECT 1 FROM ingestion_batches b WHERE b.run_id=ingestion_runs.id
+          ) THEN 1 ELSE 0 END) AS completed_without_batches
+        FROM ingestion_runs WHERE julianday(started_at)>=julianday('now',?)
       `).get(modifier) as any
       const windowBatches = this.db!.prepare(`
-        SELECT SUM(CASE WHEN b.status='failed' THEN 1 ELSE 0 END) AS failed_batches
+        SELECT
+          SUM(CASE WHEN b.status='completed' THEN 1 ELSE 0 END) AS successful_batches,
+          SUM(CASE WHEN b.status='failed' THEN 1 ELSE 0 END) AS failed_batches
         FROM ingestion_batches b
         INNER JOIN ingestion_runs r ON r.id=b.run_id
         WHERE julianday(r.started_at)>=julianday('now',?)
@@ -19411,13 +19427,22 @@ export class PersonalMemoryStore {
         partial: Number(windowRuns?.partial || 0),
         failed: Number(windowRuns?.failed || 0),
         running: Number(windowRuns?.running || 0),
+        completedWithBatches: Number(windowRuns?.completed_with_batches || 0),
+        completedWithoutBatches: Number(windowRuns?.completed_without_batches || 0),
+        successfulBatches: Number(windowBatches?.successful_batches || 0),
         failedBatches: Number(windowBatches?.failed_batches || 0)
       }
     }
     const latestDegradedAt = String(latestDegraded?.latest_degraded_at || '')
     const recovery = latestDegradedAt ? this.db.prepare(`
       SELECT COUNT(*) AS runs,
-        SUM(CASE WHEN status='completed' THEN 1 ELSE 0 END) AS completed
+        SUM(CASE WHEN status='completed' THEN 1 ELSE 0 END) AS completed,
+        SUM(CASE WHEN status='completed' AND EXISTS(
+          SELECT 1 FROM ingestion_batches b WHERE b.run_id=ingestion_runs.id
+        ) THEN 1 ELSE 0 END) AS completed_with_batches,
+        SUM(CASE WHEN status='completed' AND NOT EXISTS(
+          SELECT 1 FROM ingestion_batches b WHERE b.run_id=ingestion_runs.id
+        ) THEN 1 ELSE 0 END) AS completed_without_batches
       FROM ingestion_runs WHERE started_at>?
     `).get(latestDegradedAt) as any : null
     return {
@@ -19438,6 +19463,8 @@ export class PersonalMemoryStore {
       latestFailedAt: String(latestDegraded?.latest_failed_at || ''),
       latestDegradedAt,
       completedSinceLatestDegraded: Number(recovery?.completed || 0),
+      completedWithBatchesSinceLatestDegraded: Number(recovery?.completed_with_batches || 0),
+      completedWithoutBatchesSinceLatestDegraded: Number(recovery?.completed_without_batches || 0),
       runsSinceLatestDegraded: Number(recovery?.runs || 0),
       recent24Hours: summarizeWindow('-1 day'),
       recent7Days: summarizeWindow('-7 days')

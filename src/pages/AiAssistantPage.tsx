@@ -17079,9 +17079,10 @@ function AiAssistantPage() {
               </span></header>
               <div className="assistant-recovery-current">
                 <span>最近 24 小时 <b>{Number(memoryDiagnostics.ingestionSummary.recent24Hours.completed || 0)} 完成 / {Number(memoryDiagnostics.ingestionSummary.recent24Hours.partial || 0)} 部分 / {Number(memoryDiagnostics.ingestionSummary.recent24Hours.failed || 0)} 失败</b></span>
-                <span>24 小时失败批次 <b>{Number(memoryDiagnostics.ingestionSummary.recent24Hours.failedBatches || 0).toLocaleString()}</b></span>
+                <span>24 小时完成口径 <b>{Number(memoryDiagnostics.ingestionSummary.recent24Hours.completedWithBatches || 0)} 次有批次 / {Number(memoryDiagnostics.ingestionSummary.recent24Hours.completedWithoutBatches || 0)} 次无新增</b></span>
+                <span>24 小时模型批次 <b>{Number(memoryDiagnostics.ingestionSummary.recent24Hours.successfulBatches || 0).toLocaleString()} 成功 / {Number(memoryDiagnostics.ingestionSummary.recent24Hours.failedBatches || 0).toLocaleString()} 失败</b></span>
                 <span>最近 7 天 <b>{Number(memoryDiagnostics.ingestionSummary.recent7Days?.completed || 0)} 完成 / {Number(memoryDiagnostics.ingestionSummary.recent7Days?.partial || 0)} 部分 / {Number(memoryDiagnostics.ingestionSummary.recent7Days?.failed || 0)} 失败</b></span>
-                <span>最近异常后 <b>{Number(memoryDiagnostics.ingestionSummary.completedSinceLatestDegraded || 0).toLocaleString()} 次完整完成</b></span>
+                <span>最近异常后 <b>{Number(memoryDiagnostics.ingestionSummary.completedWithBatchesSinceLatestDegraded || 0).toLocaleString()} 次实际抽取完成 / {Number(memoryDiagnostics.ingestionSummary.completedWithoutBatchesSinceLatestDegraded || 0).toLocaleString()} 次无新增正常结束</b></span>
                 <span>最近部分完成 <b>{memoryDiagnostics.ingestionSummary.latestPartialAt
                   ? new Date(memoryDiagnostics.ingestionSummary.latestPartialAt).toLocaleString('zh-CN', { hour12: false })
                   : '无'}</b></span>

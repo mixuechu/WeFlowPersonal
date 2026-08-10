@@ -20598,10 +20598,14 @@ test('ingestion summary separates recent reliability from lifetime failures', ()
 
   const summary = store.getIngestionArchiveSummary()
   assert.deepEqual(summary.recent24Hours, {
-    runs: 2, completed: 1, partial: 1, failed: 0, running: 0, failedBatches: 1
+    runs: 2, completed: 1, partial: 1, failed: 0, running: 0,
+    completedWithBatches: 0, completedWithoutBatches: 1,
+    successfulBatches: 0, failedBatches: 1
   })
   assert.deepEqual(summary.recent7Days, {
-    runs: 2, completed: 1, partial: 1, failed: 0, running: 0, failedBatches: 1
+    runs: 2, completed: 1, partial: 1, failed: 0, running: 0,
+    completedWithBatches: 0, completedWithoutBatches: 1,
+    successfulBatches: 0, failedBatches: 1
   })
   assert.equal(summary.failedRuns, 1)
   assert.equal(summary.partialRuns, 1)
@@ -20609,6 +20613,8 @@ test('ingestion summary separates recent reliability from lifetime failures', ()
   assert.equal(summary.latestFailedAt, oldFailureAt)
   assert.equal(summary.latestDegradedAt, recentPartialAt)
   assert.equal(summary.completedSinceLatestDegraded, 1)
+  assert.equal(summary.completedWithBatchesSinceLatestDegraded, 0)
+  assert.equal(summary.completedWithoutBatchesSinceLatestDegraded, 1)
   assert.equal(summary.runsSinceLatestDegraded, 1)
 }))
 
@@ -20714,12 +20720,18 @@ test('ingestion run archive paginates all years and loads bounded batch audits o
       latestFailedAt: summary.latestFailedAt,
       latestDegradedAt: summary.latestDegradedAt,
       completedSinceLatestDegraded: 0,
+      completedWithBatchesSinceLatestDegraded: 0,
+      completedWithoutBatchesSinceLatestDegraded: 0,
       runsSinceLatestDegraded: 1,
       recent24Hours: {
-        runs: 0, completed: 0, partial: 0, failed: 0, running: 0, failedBatches: 0
+        runs: 0, completed: 0, partial: 0, failed: 0, running: 0,
+        completedWithBatches: 0, completedWithoutBatches: 0,
+        successfulBatches: 0, failedBatches: 0
       },
       recent7Days: {
-        runs: 0, completed: 0, partial: 0, failed: 0, running: 0, failedBatches: 0
+        runs: 0, completed: 0, partial: 0, failed: 0, running: 0,
+        completedWithBatches: 0, completedWithoutBatches: 0,
+        successfulBatches: 0, failedBatches: 0
       }
     })
     const firstPage = first.listIngestionRunPage({ limit: 40 })
