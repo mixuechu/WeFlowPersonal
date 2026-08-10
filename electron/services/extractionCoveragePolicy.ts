@@ -9,7 +9,7 @@ export const EXTRACTION_OUTPUT_LIMITS = {
 export type ExtractionOutputKind = keyof typeof EXTRACTION_OUTPUT_LIMITS
 
 export interface ExtractionCoverage {
-  version: 'extraction-coverage-v1'
+  version: 'extraction-coverage-v2'
   saturatedKinds: ExtractionOutputKind[]
   counts: Record<ExtractionOutputKind, number>
   limits: typeof EXTRACTION_OUTPUT_LIMITS
@@ -18,11 +18,21 @@ export interface ExtractionCoverage {
   splitDepth: number
   attempts: number
   unresolved: boolean
+  splitReasons: Array<'output_saturation' | 'invalid_json'>
+  invalidJsonFailures: number
+  recoveredFromInvalidJson: boolean
 }
 
 export function inspectExtractionCoverage(
   digest: any,
-  input: { adaptivelySplit?: boolean; splitDepth?: number; attempts?: number; unresolved?: boolean } = {}
+  input: {
+    adaptivelySplit?: boolean
+    splitDepth?: number
+    attempts?: number
+    unresolved?: boolean
+    splitReasons?: Array<'output_saturation' | 'invalid_json'>
+    invalidJsonFailures?: number
+  } = {}
 ): ExtractionCoverage {
   const counts = Object.fromEntries(
     Object.keys(EXTRACTION_OUTPUT_LIMITS).map(kind => [
@@ -33,7 +43,7 @@ export function inspectExtractionCoverage(
   const saturatedKinds = (Object.keys(EXTRACTION_OUTPUT_LIMITS) as ExtractionOutputKind[])
     .filter(kind => counts[kind] >= EXTRACTION_OUTPUT_LIMITS[kind])
   return {
-    version: 'extraction-coverage-v1',
+    version: 'extraction-coverage-v2',
     saturatedKinds,
     counts,
     limits: EXTRACTION_OUTPUT_LIMITS,
@@ -41,8 +51,18 @@ export function inspectExtractionCoverage(
     adaptivelySplit: Boolean(input.adaptivelySplit),
     splitDepth: Math.max(0, Number(input.splitDepth || 0)),
     attempts: Math.max(1, Number(input.attempts || 1)),
-    unresolved: Boolean(input.unresolved)
+    unresolved: Boolean(input.unresolved),
+    splitReasons: [...new Set(input.splitReasons || [])],
+    invalidJsonFailures: Math.max(0, Math.floor(Number(input.invalidJsonFailures || 0))),
+    recoveredFromInvalidJson: (input.splitReasons || []).includes('invalid_json')
   }
+}
+
+export function isInvalidModelJsonFailure(error: unknown): boolean {
+  return Boolean(error && typeof error === 'object' && [
+    'model_invalid_json',
+    'model_json_truncated'
+  ].includes(String((error as any).code || '')))
 }
 
 export function splitSaturatedAnalysisBatch(

@@ -9,7 +9,6 @@ import {
   writeFileSync
 } from 'fs'
 import { basename, dirname, join, resolve } from 'path'
-import { jsonrepair } from 'jsonrepair'
 import JSZip from 'jszip'
 import { ConfigService } from './config'
 import { httpService } from './httpService'
@@ -73,6 +72,7 @@ import {
   stageMemoryBackupTrash
 } from './memoryBackupTrashPolicy'
 import { ModelRequestCoordinator, RequestCoordinator } from './modelRequestCoordinator'
+import { parseModelJsonObject } from './modelJsonParser'
 import { extractScannedPdfText, getPdfOcrStatus } from './pdfOcrService'
 import { exportService } from './export'
 import {
@@ -330,6 +330,7 @@ import {
   EXTRACTION_OUTPUT_LIMITS,
   accumulateExtractionAttemptMeta,
   inspectExtractionCoverage,
+  isInvalidModelJsonFailure,
   splitSaturatedAnalysisBatch
 } from './extractionCoveragePolicy'
 import {
@@ -769,23 +770,6 @@ function stableTaskId(task: any): string {
     : Array.isArray(task.sourceMessageIds) ? task.sourceMessageIds : []).map(String).sort().join(',')
   const value = [task.title, task.source, evidence].map(item => String(item || '').trim().toLowerCase()).join('|')
   return crypto.createHash('sha256').update(value).digest('hex').slice(0, 20)
-}
-
-function parseModelJson(text: string): any {
-  const raw = String(text || '').trim()
-  const fenced = raw.match(/```(?:json)?\s*([\s\S]*?)```/i)?.[1] || raw
-  try {
-    return JSON.parse(fenced)
-  } catch {
-    const start = fenced.indexOf('{')
-    const end = fenced.lastIndexOf('}')
-    const candidate = start >= 0 && end > start ? fenced.slice(start, end + 1) : fenced
-    try {
-      return JSON.parse(jsonrepair(candidate))
-    } catch {
-      throw new Error('模型没有返回有效 JSON')
-    }
-  }
 }
 
 function redact(text: string): string {
@@ -2917,6 +2901,7 @@ export class AiAssistantService {
       totals: extractionContext.totals
     })
     let lastError: any = null
+    let failedAttemptMeta = accumulateExtractionAttemptMeta()
     for (let attempt = 0; attempt < 2; attempt += 1) {
       const startedAt = Date.now()
       if (!this.config.get('aiAssistantEnabled')) {
@@ -2927,8 +2912,9 @@ export class AiAssistantService {
         headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
         body: JSON.stringify({
           model,
+          thinking: { type: 'disabled' },
           temperature: 0.2,
-          max_tokens: 5000,
+          max_tokens: attempt ? 8000 : 5000,
           response_format: { type: 'json_object' },
           messages: [
             { role: 'system', content: SYSTEM_PROMPT + (attempt ? '\n务必输出单个完整 JSON 对象。' : '') },
@@ -2937,23 +2923,51 @@ export class AiAssistantService {
         })
       }, 90_000, true)
       if (!response.ok) throw new Error(payload?.error?.message || `DeepSeek 请求失败 (${response.status})`)
+      const attemptMeta = {
+        inputTokens: Number(payload?.usage?.prompt_tokens || 0),
+        outputTokens: Number(payload?.usage?.completion_tokens || 0),
+        durationMs: Date.now() - startedAt,
+        attempts: 1
+      }
       try {
+        const aggregateMeta = accumulateExtractionAttemptMeta(failedAttemptMeta, attemptMeta)
         return {
-          ...parseModelJson(payload?.choices?.[0]?.message?.content),
+          ...parseModelJsonObject(payload?.choices?.[0]?.message?.content),
           __meta: {
             model,
             promptVersion: EXTRACTION_PROMPT_VERSION,
             schemaVersion: EXTRACTION_SCHEMA_VERSION,
-            inputTokens: Number(payload?.usage?.prompt_tokens || 0),
-            outputTokens: Number(payload?.usage?.completion_tokens || 0),
-            durationMs: Date.now() - startedAt,
+            inputTokens: aggregateMeta.inputTokens,
+            outputTokens: aggregateMeta.outputTokens,
+            durationMs: aggregateMeta.durationMs,
+            attempts: aggregateMeta.attempts,
             attempt: attempt + 1,
             sensitiveRedaction: outbound.summary,
             extractionContext: extractionContextAudit
           }
         }
       } catch (error) {
-        lastError = error
+        failedAttemptMeta = accumulateExtractionAttemptMeta(failedAttemptMeta, attemptMeta)
+        const finishReason = String(payload?.choices?.[0]?.finish_reason || '').trim()
+        const modelError = error as Error & {
+          code?: string
+          modelFailureMeta?: ReturnType<typeof accumulateExtractionAttemptMeta> & {
+            finishReason: string
+            responseChars: number
+          }
+        }
+        if (finishReason === 'length') {
+          modelError.code = 'model_json_truncated'
+          modelError.message = '模型 JSON 因输出上限截断'
+        }
+        modelError.modelFailureMeta = {
+          ...failedAttemptMeta,
+          finishReason: ['stop', 'length', 'content_filter', 'tool_calls'].includes(finishReason)
+            ? finishReason
+            : 'unknown',
+          responseChars: Math.max(0, String(payload?.choices?.[0]?.message?.content || '').length)
+        }
+        lastError = modelError
       }
     }
     throw lastError
@@ -4700,6 +4714,8 @@ export class AiAssistantService {
         batch,
         splitDepth: 0,
         wasAdaptivelySplit: false,
+        splitReasons: [] as Array<'output_saturation' | 'invalid_json'>,
+        invalidJsonFailures: 0,
         probeMeta: accumulateExtractionAttemptMeta()
       }))
       let batchIndex = 0
@@ -4725,6 +4741,8 @@ export class AiAssistantService {
               batch: splitBatch,
               splitDepth: work.splitDepth + 1,
               wasAdaptivelySplit: true,
+              splitReasons: [...new Set([...work.splitReasons, 'output_saturation' as const])],
+              invalidJsonFailures: index === 0 ? work.invalidJsonFailures : 0,
               probeMeta: index === 0 ? probeMeta : accumulateExtractionAttemptMeta()
             })))
             continue
@@ -4748,7 +4766,9 @@ export class AiAssistantService {
                 adaptivelySplit: work.wasAdaptivelySplit,
                 splitDepth: work.splitDepth,
                 attempts: aggregateMeta.attempts,
-                unresolved: coverage.saturated
+                unresolved: coverage.saturated,
+                splitReasons: work.splitReasons,
+                invalidJsonFailures: work.invalidJsonFailures
               }),
               structuredEvidence: {
                 version: 'structured-evidence-v1',
@@ -4809,13 +4829,41 @@ export class AiAssistantService {
           batchIndex += 1
         } catch (error: any) {
           memoryGuard?.rollbackUncommitted()
+          const invalidJsonSplit = isInvalidModelJsonFailure(error) && work.splitDepth < 2
+            ? splitSaturatedAnalysisBatch(batch, { messageKey, minimumCoreSize: 25 })
+            : []
+          if (invalidJsonSplit.length > 1) {
+            const invalidJsonFailures = work.invalidJsonFailures + 2
+            batchQueue.unshift(...invalidJsonSplit.map((splitBatch, index) => ({
+              batch: splitBatch,
+              splitDepth: work.splitDepth + 1,
+              wasAdaptivelySplit: true,
+              splitReasons: [...new Set([...work.splitReasons, 'invalid_json' as const])],
+              invalidJsonFailures: index === 0 ? invalidJsonFailures : 0,
+              probeMeta: index === 0
+                ? accumulateExtractionAttemptMeta(work.probeMeta, { attempts: 2 })
+                : accumulateExtractionAttemptMeta()
+            })))
+            continue
+          }
           const message = sanitizeDiagnosticText(error)
+          const modelFailureMeta = error?.modelFailureMeta || {}
           batchErrors.push(message)
           personalMemoryStore.recordIngestionBatch(runId, batchIndex, batch.length, 'failed', message, {
             model: String(this.config.get('aiAssistantApiModel') || ''),
             promptVersion: EXTRACTION_PROMPT_VERSION,
             schemaVersion: EXTRACTION_SCHEMA_VERSION,
-            durationMs: Date.now() - batchStartedAt
+            inputTokens: Number(modelFailureMeta.inputTokens || 0),
+            outputTokens: Number(modelFailureMeta.outputTokens || 0),
+            durationMs: Number(modelFailureMeta.durationMs || Date.now() - batchStartedAt),
+            extractionCoverage: inspectExtractionCoverage({}, {
+              adaptivelySplit: work.wasAdaptivelySplit,
+              splitDepth: work.splitDepth,
+              attempts: Math.max(1, work.probeMeta.attempts + Number(modelFailureMeta.attempts || 1)),
+              unresolved: true,
+              splitReasons: work.splitReasons,
+              invalidJsonFailures: work.invalidJsonFailures + (isInvalidModelJsonFailure(error) ? 2 : 0)
+            })
           })
           batchIndex += 1
         }
@@ -11233,7 +11281,7 @@ export class AiAssistantService {
       throw error
     }
     try {
-    const parsed = parseModelJson(payload?.choices?.[0]?.message?.content)
+    const parsed = parseModelJsonObject(payload?.choices?.[0]?.message?.content)
     const grounded = finalizeGroundedMemoryAnswer(parsed, context)
     const sourcePrivacyAudit = buildModelSourcePrivacyAudit({
       results,

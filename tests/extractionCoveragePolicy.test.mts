@@ -3,6 +3,7 @@ import assert from 'node:assert/strict'
 import {
   accumulateExtractionAttemptMeta,
   inspectExtractionCoverage,
+  isInvalidModelJsonFailure,
   splitSaturatedAnalysisBatch
 } from '../electron/services/extractionCoveragePolicy.ts'
 
@@ -20,6 +21,26 @@ test('extraction coverage identifies every array that reaches its output budget'
   assert.equal(coverage.saturated, true)
   assert.deepEqual(coverage.saturatedKinds, ['entities', 'claims', 'events'])
   assert.equal(coverage.unresolved, false)
+  assert.deepEqual(coverage.splitReasons, [])
+  assert.equal(coverage.invalidJsonFailures, 0)
+})
+
+test('invalid model JSON recovery is explicit and never inferred from an error message', () => {
+  const invalidJson = Object.assign(new Error('模型没有返回有效 JSON'), { code: 'model_invalid_json' })
+  const truncatedJson = Object.assign(new Error('模型 JSON 因输出上限截断'), { code: 'model_json_truncated' })
+  assert.equal(isInvalidModelJsonFailure(invalidJson), true)
+  assert.equal(isInvalidModelJsonFailure(truncatedJson), true)
+  assert.equal(isInvalidModelJsonFailure(new Error('模型没有返回有效 JSON')), false)
+  const coverage = inspectExtractionCoverage({}, {
+    adaptivelySplit: true,
+    splitDepth: 2,
+    attempts: 5,
+    splitReasons: ['invalid_json'],
+    invalidJsonFailures: 2
+  })
+  assert.equal(coverage.version, 'extraction-coverage-v2')
+  assert.equal(coverage.recoveredFromInvalidJson, true)
+  assert.deepEqual(coverage.splitReasons, ['invalid_json'])
 })
 
 test('saturated batch split preserves context while assigning every core message once', () => {

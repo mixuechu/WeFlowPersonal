@@ -653,9 +653,14 @@ function IngestionBatchAudit({ batch, run }: { batch: any; run: any }) {
     {!!batch.extractionCoverage?.version && <small className={batch.extractionCoverage.unresolved ? 'assistant-diagnostics-error' : ''}>
       抽取覆盖：
       {batch.extractionCoverage.adaptivelySplit
-        ? `检测到容量触顶，已自动细分 ${Number(batch.extractionCoverage.splitDepth || 0)} 层`
+        ? `${batch.extractionCoverage.splitReasons?.includes('invalid_json')
+          ? '检测到模型 JSON 不完整'
+          : '检测到容量触顶'}，已自动细分 ${Number(batch.extractionCoverage.splitDepth || 0)} 层`
         : '本批无需细分'}
       {' · '}模型调用 {Number(batch.extractionCoverage.attempts || 1)} 次
+      {Number(batch.extractionCoverage.invalidJsonFailures || 0) > 0
+        ? ` · JSON 无效 ${Number(batch.extractionCoverage.invalidJsonFailures)} 次${batch.extractionCoverage.recoveredFromInvalidJson && !batch.extractionCoverage.unresolved ? '，已恢复' : ''}`
+        : ''}
       {batch.extractionCoverage.unresolved
         ? ` · 仍触及 ${batch.extractionCoverage.saturatedKinds?.join('、') || '输出'} 上限，请关注`
         : ' · 未发现未处理的容量风险'}
