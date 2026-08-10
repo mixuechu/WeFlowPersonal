@@ -2233,7 +2233,9 @@ function AiAssistantPage() {
   useEffect(() => {
     const request = projectDirectoryGate.current.begin()
     setProjectDirectoryLoadingMore(false)
-    setProjectDirectory((current: any) => ({ ...current, items: [], loading: true }))
+    setProjectDirectory((current: any) => ({
+      ...current, items: [], loading: true, error: undefined
+    }))
     const timer = window.setTimeout(() => {
       void window.electronAPI.aiAssistant.getProjectDirectory(projectDirectoryOptions).then(result => {
         if (!projectDirectoryGate.current.isCurrent(request)) return
@@ -2242,10 +2244,11 @@ function AiAssistantPage() {
           return
         }
         setProjectDirectory({ ...result, loading: false })
-      }).catch(() => {
+      }).catch(error => {
         if (!projectDirectoryGate.current.isCurrent(request)) return
         setProjectDirectory({
-          items: [], total: 0, hasMore: false, revision: '', loading: false
+          items: [], total: 0, hasMore: false, revision: '', loading: false,
+          error: error?.message || String(error)
         })
       })
     }, projectQuery.trim() ? 220 : 0)
@@ -6404,13 +6407,16 @@ function AiAssistantPage() {
 
   const loadMoreProjects = async () => {
     if (projectDirectoryLoadingMore || !projectDirectory.hasMore) return
+    const request = projectDirectoryGate.current.begin()
     setProjectDirectoryLoadingMore(true)
+    setProjectDirectory((current: any) => ({ ...current, error: undefined }))
     try {
       const result = await window.electronAPI.aiAssistant.getProjectDirectory({
         ...projectDirectoryOptions,
         offset: projectDirectory.items.length,
         revision: projectDirectory.revision
       })
+      if (!projectDirectoryGate.current.isCurrent(request)) return
       if (result.stale) {
         setProjectDirectoryRefreshKey(value => value + 1)
         return
@@ -6421,8 +6427,16 @@ function AiAssistantPage() {
         items: [...current.items, ...result.items.filter((item: any) =>
           !current.items.some((known: any) => known.id === item.id))]
       }))
+    } catch (error: any) {
+      if (projectDirectoryGate.current.isCurrent(request)) {
+        const errorMessage = error?.message || String(error)
+        setProjectDirectory((current: any) => ({ ...current, error: errorMessage }))
+        setMessage(errorMessage)
+      }
     } finally {
-      setProjectDirectoryLoadingMore(false)
+      if (projectDirectoryGate.current.isCurrent(request)) {
+        setProjectDirectoryLoadingMore(false)
+      }
     }
   }
 
@@ -10912,7 +10926,8 @@ function AiAssistantPage() {
         <section className="assistant-panel assistant-project-portfolio" id="project-intelligence">
           <div className="assistant-section-heading">
             <div><span className="assistant-eyebrow">PROJECT INTELLIGENCE</span><h3>项目驾驶舱</h3></div>
-            <span className="assistant-count">{projectDirectory.total} 个匹配项目</span>
+            <span className="assistant-count">{projectDirectory.error && !projectInsights.length
+              ? '读取失败' : `${projectDirectory.total} 个匹配项目`}</span>
           </div>
           <div className="assistant-task-filters">
             <input value={projectQuery} onChange={event => setProjectQuery(event.target.value)}
@@ -10939,12 +10954,22 @@ function AiAssistantPage() {
                 {project.pendingReviewTotal ? ` · ${project.pendingReviewTotal} 条候选待确认` : ''}
               </small>
             </button>)}
-          </div> : !projectDirectory.loading && <div className="assistant-empty">
+          </div> : !projectDirectory.loading && !projectDirectory.error && <div className="assistant-empty">
             {projectQuery || projectPhase
               ? '当前筛选没有项目。'
               : '当聊天中识别到项目实体或待办归属项目后，这里会自动形成项目进度、风险、里程碑和决策视图。'}
           </div>}
-          {projectDirectory.hasMore && <button disabled={projectDirectoryLoadingMore}
+          {projectDirectory.error && <div className="assistant-task-load-failure" role="alert">
+            <strong>{projectInsights.length ? '更多项目读取失败' : '项目目录读取失败'}</strong>
+            <span>{projectDirectory.error}。{projectInsights.length
+              ? ` 已加载的 ${projectInsights.length} 个项目仍可查看，但当前目录尚未读完。`
+              : ' 当前不会把读取失败解释为“没有项目”。'}</span>
+            <button type="button" disabled={projectDirectoryLoadingMore} onClick={() => {
+              if (projectInsights.length) void loadMoreProjects()
+              else setProjectDirectoryRefreshKey(value => value + 1)
+            }}>{projectDirectoryLoadingMore ? '正在重试…' : '立即重试'}</button>
+          </div>}
+          {projectDirectory.hasMore && !projectDirectory.error && <button disabled={projectDirectoryLoadingMore}
             onClick={() => void loadMoreProjects()}>
             {projectDirectoryLoadingMore
               ? '正在加载…'
