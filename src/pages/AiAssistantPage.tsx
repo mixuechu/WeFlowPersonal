@@ -244,6 +244,7 @@ type Task = {
   status: 'todo' | 'doing' | 'waiting' | 'done' | 'cancelled'
   classification?: 'mine' | 'uncertain' | 'others'
   assignmentEvidence?: string
+  lifecycleEvidence?: string
   ownershipPolicyReason?: string
   ownershipPolicyVersion?: string
   ownershipPromptVersion?: string
@@ -11155,6 +11156,7 @@ function AiAssistantPage() {
                       <span>{Math.round(task.confidence * 100)}% 可信</span>
                     </div>
                     {task.assignmentEvidence && <small className="assistant-evidence">归属依据：{task.assignmentEvidence}</small>}
+                    {task.lifecycleEvidence && <small className="assistant-evidence">状态依据：{task.lifecycleEvidence}</small>}
                     {task.ownershipPolicyReason && <small className="assistant-evidence">策略判断：{task.ownershipPolicyReason}</small>}
                     {editingTask?.id !== task.id && <div className="assistant-task-actions">
                       <button onClick={() => setEditingTask({
@@ -11455,6 +11457,7 @@ function AiAssistantPage() {
                   <strong>{task.title}</strong>
                   {task.detail && <p>{task.detail}</p>}
                   <small>{task.assignmentEvidence || '缺少足够的归属证据'}{task.source ? ` · 来自 ${task.source}` : ''}</small>
+                  {task.lifecycleEvidence && <small>状态依据：{task.lifecycleEvidence}</small>}
                 </div>
                 <div>
                   <button onClick={() => setSelectedTaskId(task.id)}>查看原文</button>
@@ -15074,6 +15077,8 @@ function AiAssistantPage() {
                   </div>
                   {taskWorkspace.task.assignmentEvidence &&
                     <small className="assistant-evidence">归属依据：{taskWorkspace.task.assignmentEvidence}</small>}
+                  {taskWorkspace.task.lifecycleEvidence &&
+                    <small className="assistant-evidence">状态依据：{taskWorkspace.task.lifecycleEvidence}</small>}
                   {taskWorkspace.ownershipReview?.eligible && <div className="assistant-task-ownership-audit">
                     <span><b>这项待办真的属于你吗？</b>
                       <small>反馈绑定当前完整原文证据，可在归属反馈档案中撤销；不会按相似文字影响别的事项。</small>

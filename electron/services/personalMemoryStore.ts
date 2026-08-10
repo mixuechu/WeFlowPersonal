@@ -26,6 +26,8 @@ import {
   compactIdentityMergeSnapshot
 } from './identityMergeSnapshot.ts'
 import { taskEvidenceFingerprint } from './taskReviewFeedback.ts'
+import { redactLocalSecrets } from './sensitiveRedaction.ts'
+import { sanitizeTaskForPersistence } from './taskPrivacy.ts'
 import {
   isReviewReasonCodeForDomain,
   normalizeReviewReasonCode,
@@ -12747,6 +12749,7 @@ export class PersonalMemoryStore {
     preserveExistingEvidence = false
   ): void {
     if (!this.db) return
+    tasks = (Array.isArray(tasks) ? tasks : []).map(task => sanitizeTaskForPersistence(task || {}))
     const now = new Date().toISOString()
     const ownsTransaction = !withinTransaction && !this.db.inTransaction
     if (ownsTransaction) this.db.exec('BEGIN IMMEDIATE')
@@ -16239,6 +16242,53 @@ export class PersonalMemoryStore {
     return audit
   }
 
+  sanitizePersistedTaskSecrets(): { rowsChanged: number; lastRunAt: string } {
+    if (!this.db) return { rowsChanged: 0, lastRunAt: '' }
+    const previous = this.db.prepare(
+      `SELECT value FROM schema_meta WHERE key='task_secret_sanitization_v1'`
+    ).get() as { value?: string } | undefined
+    if (previous?.value) {
+      try {
+        const audit = JSON.parse(previous.value)
+        if (Number(audit?.version) === 1 && String(audit?.lastRunAt || '')) {
+          return {
+            rowsChanged: Math.max(0, Number(audit.rowsChanged || 0)),
+            lastRunAt: String(audit.lastRunAt)
+          }
+        }
+      } catch {}
+    }
+    const lastRunAt = new Date().toISOString()
+    let rowsChanged = 0
+    const redactColumn = (table: string, column: string, where = '') => {
+      const rows = this.db!.prepare(`SELECT rowid AS row_id,${column} AS value FROM ${table} ${where}`).all() as Array<{
+        row_id: number
+        value: string
+      }>
+      const update = this.db!.prepare(`UPDATE ${table} SET ${column}=? WHERE rowid=?`)
+      for (const row of rows) {
+        const before = String(row.value || '')
+        const after = redactLocalSecrets(before)
+        if (after === before) continue
+        update.run(after, row.row_id)
+        rowsChanged += 1
+      }
+    }
+    this.db.transaction(() => {
+      redactColumn('task_directory', 'payload_json')
+      redactColumn('task_history', 'before_value')
+      redactColumn('task_history', 'after_value')
+      redactColumn('task_history_evidence', 'evidence_json')
+      redactColumn('search_document_evidence', 'sender', "WHERE document_id LIKE 'task:%'")
+      redactColumn('search_document_evidence', 'excerpt', "WHERE document_id LIKE 'task:%'")
+      this.db!.prepare(`
+        INSERT INTO schema_meta(key,value,updated_at) VALUES('task_secret_sanitization_v1',?,?)
+        ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_at=excluded.updated_at
+      `).run(JSON.stringify({ version: 1, rowsChanged, lastRunAt }), lastRunAt)
+    })()
+    return { rowsChanged, lastRunAt }
+  }
+
   recordTaskChanges(taskId: string, before: any, after: any, reason = 'manual_edit', evidence: any[] = []): void {
     if (!this.db) return
     this.recordTaskChangeSets([{ taskId, before, after, reason, evidence }])
@@ -16252,6 +16302,12 @@ export class PersonalMemoryStore {
     evidence?: any[]
   }>): void {
     if (!this.db || !changes.length) return
+    const safeChanges = changes.map(change => ({
+      ...change,
+      before: sanitizeTaskForPersistence(change.before || {}),
+      after: sanitizeTaskForPersistence(change.after || {}),
+      evidence: sanitizeTaskForPersistence({ evidence: change.evidence || [] }).evidence || []
+    }))
     const fields = ['status', 'classification', 'title', 'detail', 'owner', 'collaborators', 'project', 'dependsOnIds', 'taskKind', 'due', 'priority']
     const insert = this.db.prepare(`
       INSERT INTO task_history(
@@ -16264,7 +16320,7 @@ export class PersonalMemoryStore {
     `)
     const now = new Date().toISOString()
     this.db.transaction(() => {
-      for (const [changeIndex, change] of changes.entries()) {
+      for (const [changeIndex, change] of safeChanges.entries()) {
         const changedFields = fields.filter(field =>
           JSON.stringify(change.before?.[field] ?? '') !== JSON.stringify(change.after?.[field] ?? ''))
         if (!changedFields.length) continue

@@ -19663,6 +19663,43 @@ test('task status changes are persisted as an auditable history', () => withStor
   })
 }))
 
+test('persisted task secret sanitation removes legacy credentials from every task authority', () => withStore(store => {
+  const task = {
+    id: 'task-secret-migration', title: '交付 VPN', detail: '日期 2026-08-10', owner: '我',
+    source: '项目群', status: 'todo', classification: 'mine', priority: 'medium', due: '',
+    assignmentEvidence: 'password: old-secret-8899', evidence: [{
+      sourceId: 'wechat', sessionId: 'session-secret', messageId: 'message-secret',
+      timestamp: 1, sender: '同事', excerpt: 'vmess://legacy-private-payload'
+    }]
+  }
+  store.syncTasks([task])
+  store.recordTaskChanges(task.id, { detail: 'token: oldtokenvalue88' }, { detail: '已发送' }, 'legacy', [{
+    messageId: 'message-secret', excerpt: '口令为 pass-7788'
+  }])
+  const database = (store as any).db
+  database.prepare('UPDATE task_directory SET payload_json=? WHERE id=?')
+    .run(JSON.stringify({ ...task, assignmentEvidence: 'password: old-secret-8899' }), task.id)
+  database.prepare('UPDATE task_history SET before_value=? WHERE task_id=?')
+    .run(JSON.stringify('token: oldtokenvalue88'), task.id)
+  database.prepare('UPDATE task_history_evidence SET evidence_json=? WHERE task_id=?')
+    .run(JSON.stringify([{ messageId: 'message-secret', excerpt: '口令为 pass-7788' }]), task.id)
+  database.prepare("UPDATE search_document_evidence SET excerpt=? WHERE document_id=?")
+    .run('vmess://legacy-private-payload', `task:${task.id}`)
+  const result = store.sanitizePersistedTaskSecrets()
+  const persisted = JSON.stringify({
+    directory: database.prepare('SELECT payload_json FROM task_directory WHERE id=?').get(task.id),
+    history: database.prepare('SELECT before_value,after_value FROM task_history WHERE task_id=?').all(task.id),
+    historyEvidence: database.prepare('SELECT evidence_json FROM task_history_evidence WHERE task_id=?').all(task.id),
+    evidence: database.prepare("SELECT sender,excerpt FROM search_document_evidence WHERE document_id=?").all(`task:${task.id}`)
+  })
+  assert.ok(result.rowsChanged >= 4)
+  for (const secret of ['old-secret-8899', 'legacy-private-payload', 'oldtokenvalue88', 'pass-7788']) {
+    assert.equal(persisted.includes(secret), false)
+  }
+  assert.match(persisted, /2026-08-10/)
+  assert.deepEqual(store.sanitizePersistedTaskSecrets(), result)
+}))
+
 test('task history pages every audit row and rejects a stale continuation', () => withStore(store => {
   for (let index = 0; index < 125; index += 1) {
     store.recordTaskChanges(

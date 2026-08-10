@@ -395,6 +395,12 @@ import {
   isPortableMemoryBundle
 } from './portableMemoryBundle'
 import { redactLocalSecrets, redactSensitiveText, type SensitiveRedactionLevel } from './sensitiveRedaction'
+import { sanitizeTaskForPersistence, sanitizeTasksForPersistence } from './taskPrivacy'
+import {
+  lifecycleRequiresExistingTask,
+  reconcileTaskStatus,
+  resolveExtractedTaskLifecycle
+} from './taskLifecyclePolicy'
 import { chatService } from './chatService'
 import { voiceTranscribeService } from './voiceTranscribeService'
 import { localOcrService } from './localOcrService'
@@ -496,6 +502,7 @@ type AssistantTask = {
   updatedAt?: string
   classification?: 'mine' | 'uncertain'
   assignmentEvidence?: string
+  lifecycleEvidence?: string
   ownershipPolicyReason?: string
   ownershipPolicyVersion?: string
   ownershipPromptVersion?: string
@@ -709,8 +716,8 @@ const EMPTY_STATE: AssistantState = {
   } }
 }
 
-const EXTRACTION_PROMPT_VERSION = 'personal-os-prompt-v9'
-const EXTRACTION_SCHEMA_VERSION = 'personal-memory-schema-v7'
+const EXTRACTION_PROMPT_VERSION = 'personal-os-prompt-v10'
+const EXTRACTION_SCHEMA_VERSION = 'personal-memory-schema-v8'
 const IDENTITY_CANDIDATE_POLICY_VERSION = 'identity-candidate-policy-v1'
 const IDENTITY_CANDIDATE_SCHEMA_VERSION = 'identity-candidate-schema-v1'
 const GRAPH_CANDIDATE_POLICY_VERSION = 'graph-candidate-policy-v1'
@@ -728,6 +735,7 @@ const SYSTEM_PROMPT = `你是一个谨慎的中文私人助理兼个人记忆图
 待办归属规则：只有明确@用户、称呼用户、上下文明确指派用户，或用户自己明确承诺承担的事项才进入 mine；可能相关但证据不足进入 uncertain；明确分配给他人则标为 others；群公告、@所有人和泛泛讨论不得成为任务。
 “我发送”只表示消息方向，绝不表示任务负责人是用户。用户发出的“查一下、看一下、确认一下、问一下、发一下、快、请、麻烦、帮我”等祈使句或请求，默认是要求收件人/群友执行，必须标为 others；只有同时出现“我来、我会、我负责、我去、我处理、我跟进、我要”等明确自我承诺，才可能标为 mine。
 群聊必须结合 sender、direction、被提及名字和前后文判断，不能因为群内出现祈使句就默认属于用户。每个任务必须给出 assignmentEvidence。
+待办生命周期规则：每个任务必须输出 lifecycle=open|completed|cancelled 和 lifecycleEvidence。只有在当前 core 上下文结束时仍有明确未完成动作，才能标为 open；已经发送、交付、提供、修复、完成、收到或验收且没有后续动作的标为 completed；明确放弃、不再需要或取消的标为 cancelled。completed/cancelled 只用于关闭此前存在的匹配任务，不得把历史完成项创建成新待办。引用内容和 context 消息不能单独改变生命周期。
 引用消息规则：semanticType=quote 时，content 中“[引用上下文｜发送者：原文]”属于被引用的原作者，不是当前回复者的新陈述；它只能用于理解指代、回复对象和上下文，不得把引用原文的承诺或任务重新归到当前回复者名下。链接、文件、聊天记录、小程序、图片、语音、视频和表情的 semanticType 必须保留其媒介性质。
 图片视觉规则：content 中“[图片视觉·Apple Vision 本地候选｜未经人工确认]”只是设备端分类线索，不是图片事实描述，也不能单独支持任务、人物、关系、claim 或 event；只能辅助理解和检索，必须结合原消息文字、OCR 或其他直接证据。
 身份映射规则：每个会话的 participants 提供 wxid、通讯录备注 contactRemark、微信昵称 wechatNickname、群昵称 groupNickname、微信号 alias 和 displayName。wxid 是稳定身份主键，其余名称都是该身份在不同场景下的别名；同一个 wxid 的多个名称必须视为同一人，不同 wxid 即使同名也不得自动合并。理解消息中的称呼时优先结合群昵称和通讯录备注。
@@ -741,6 +749,7 @@ const SYSTEM_PROMPT = `你是一个谨慎的中文私人助理兼个人记忆图
 只根据消息证据，不臆测；title 用动词开头；不确定日期时 due 为空；source 使用会话显示名。
 统一证据键规则：所有 evidenceKeys、sourceEvidenceKeys、summaryEvidenceKeys 都必须逐字复制输入消息的 evidenceKey，且只能引用 analysisScope=core 的消息。context 消息可以帮助理解，但绝不能成为任何输出的证据。无法引用真实 core 证据时不要输出该条结构。summary 必须列出 summaryEvidenceKeys；highlights 中每一项必须是 {"text":"重点","sourceEvidenceKeys":["证据键"]}。
 只返回 JSON：
+下面 JSON 中每个 tasks 元素还必须包含 "lifecycle":"open|completed|cancelled" 与 "lifecycleEvidence":"生命周期判断依据"，不得省略。
 {"headline":"标题","summary":"摘要","summaryEvidenceKeys":["sourceId:sessionId:messageId"],"highlights":[{"text":"重要信息","sourceEvidenceKeys":["sourceId:sessionId:messageId"]}],"tasks":[{"title":"待办","detail":"上下文","owner":"负责人真实名称","collaborators":["协作者"],"project":"所属项目","dependsOnTitles":["依赖待办标题"],"taskKind":"action|delegated|waiting","due":"","priority":"high|medium|low","source":"会话名","confidence":0.8,"classification":"mine|uncertain|others","assignmentEvidence":"归属证据","sourceEvidenceKeys":["sourceId:sessionId:messageId"]}],"entities":[{"tempId":"e1","type":"person|organization|group|project","canonicalName":"名称","aliases":[],"accountIds":[],"summary":"仅基于引用原文的简述；它只是待用户确认的摘要候选","confidence":0.8,"evidenceKeys":["sourceId:sessionId:messageId"]}],"relations":[{"subjectTempId":"e1","predicate":"从主语到宾语可直接朗读的有向关系","objectTempId":"e2","directionExplanation":"完整自然语言，例如A向B提供服务","confidence":0.8,"evidenceKeys":["sourceId:sessionId:messageId"]}],"claims":[{"subjectTempId":"e1","predicate":"肯定式标准事实属性","objectTempId":"","objectValue":"事实值","polarity":"positive|negative","valueType":"text|number|date|boolean","validFrom":"","validTo":"","confidence":0.8,"sourceNature":"self_statement|other_statement|inference","evidenceKeys":["sourceId:sessionId:messageId"]}],"events":[{"eventType":"meeting|commitment|delivery|travel|payment|organization_change|decision|other","title":"事件","description":"描述","startAt":"","endAt":"","location":"","participants":[{"tempId":"e1","role":"参与者角色"}],"confidence":0.8,"evidenceKeys":["sourceId:sessionId:messageId"]}],"possibleDuplicates":[{"leftTempId":"e1","rightExistingEntityId":"已确认长期记忆中的稳定实体ID","rightExistingName":"与该ID对应的规范名","confidence":0.7,"reason":"原因","evidenceKeys":["sourceId:sessionId:messageId"]}]}`
 
 function shanghaiDate(timestampMs = Date.now()): string {
@@ -1077,6 +1086,8 @@ export class AiAssistantService {
     const sourceMutationRecovery = this.recoverPreparedConversationSourceMutationCommits()
     const taskMutationRecovery = this.recoverPreparedTaskMutationCommits()
     this.restoreActiveTaskEvidenceHotsets()
+    this.state.tasks = sanitizeTasksForPersistence(this.state.tasks)
+    personalMemoryStore.sanitizePersistedTaskSecrets()
     personalMemoryStore.recordProcessedIngestionMessageKeys(
       this.state.cursor.recentMessageIds,
       'legacy-state-hot-cache-migration'
@@ -1290,7 +1301,8 @@ export class AiAssistantService {
         },
         reminderPreferences: normalizeReminderPreferences(loaded.reminderPreferences),
         tasks: Array.isArray(loaded.tasks)
-          ? loaded.tasks.map((task: AssistantTask) => task.classification ? task : { ...task, classification: 'uncertain' })
+          ? sanitizeTasksForPersistence(loaded.tasks.map((task: AssistantTask) =>
+              task.classification ? task : { ...task, classification: 'uncertain' }))
           : [],
         graph: {
           entities: Array.isArray(loaded.graph?.entities) ? loaded.graph.entities.map((entity: any) => ({
@@ -1547,6 +1559,7 @@ export class AiAssistantService {
 
   private saveState(strictMemorySync = false): void {
     this.compactBriefingState()
+    this.state.tasks = sanitizeTasksForPersistence(this.state.tasks)
     const graphCommitId = crypto.randomUUID()
     const result = commitAssistantState({
       strict: strictMemorySync,
@@ -4150,6 +4163,12 @@ export class AiAssistantService {
     const suppressionFingerprints: string[] = []
     let saved = 0
     for (const item of Array.isArray(digest.tasks) ? digest.tasks : []) {
+      const lifecycle = resolveExtractedTaskLifecycle({
+        lifecycle: item.lifecycle,
+        taskKind: item.taskKind,
+        requireExplicitLifecycle: String(digest.__meta?.schemaVersion || '') === EXTRACTION_SCHEMA_VERSION
+      })
+      if (!lifecycle.status) continue
       const sourceMessageIds = Array.isArray(item.sourceEvidenceKeys)
         ? item.sourceEvidenceKeys.map(String).slice(0, 20)
         : []
@@ -4161,7 +4180,7 @@ export class AiAssistantService {
       })
       if (!assignment.keep) continue
       const taskKind = assignment.taskKind
-      const task: AssistantTask = {
+      const task: AssistantTask = sanitizeTaskForPersistence({
         id: stableTaskId(item),
         title: String(item.title || '待确认事项').slice(0, 160),
         detail: String(item.detail || '').slice(0, 500),
@@ -4176,9 +4195,10 @@ export class AiAssistantService {
         source: String(item.source || '').slice(0, 100),
         sourceSessionId: String(evidenceMessages[0]?.sessionId || ''),
         confidence: Math.max(0, Math.min(1, Number(item.confidence ?? 0.7))),
-        status: taskKind === 'waiting' ? 'waiting' : 'todo',
+        status: lifecycle.status,
         classification: assignment.classification,
         assignmentEvidence: String(item.assignmentEvidence || '').slice(0, 300),
+        lifecycleEvidence: String(item.lifecycleEvidence || '').slice(0, 300),
         ownershipPolicyReason: assignment.rationale,
         ownershipPolicyVersion: TASK_ASSIGNMENT_POLICY_VERSION,
         ownershipPromptVersion: String(digest.__meta?.promptVersion || EXTRACTION_PROMPT_VERSION).slice(0, 120),
@@ -4194,7 +4214,7 @@ export class AiAssistantService {
           sender: message.direction === '我发送' ? '我' : String(message.senderName || message.senderId || '对方'),
           excerpt: redact(String(message.content)).slice(0, 300)
         }))
-      }
+      })
       const feedbackFingerprint = taskEvidenceFingerprint(task)
       const reviewedTask = applyTaskReviewFeedback(
         task,
@@ -4206,10 +4226,13 @@ export class AiAssistantService {
       }
       Object.assign(task, reviewedTask)
       const previous = existing.get(task.id) || findMatchingTask(task, this.state.tasks)
+      if (!previous && lifecycleRequiresExistingTask(lifecycle.lifecycle)) continue
       if (previous) task.id = previous.id
       const merged: AssistantTask = previous ? {
         ...task,
-        status: previous.status,
+        status: lifecycleRequiresExistingTask(lifecycle.lifecycle)
+          ? reconcileTaskStatus(previous.status, lifecycle)
+          : previous.status,
         owner: previous.owner || task.owner,
         collaborators: previous.collaborators || task.collaborators,
         project: previous.project || task.project,
@@ -4226,7 +4249,9 @@ export class AiAssistantService {
         taskId: merged.id,
         before: previous || {},
         after: merged,
-        reason: previous ? 'replayed_ingestion_batch' : 'recovered_from_ingestion_batch',
+        reason: lifecycleRequiresExistingTask(lifecycle.lifecycle)
+          ? lifecycle.reason
+          : previous ? 'replayed_ingestion_batch' : 'recovered_from_ingestion_batch',
         evidence: merged.evidence || []
       })
       saved += 1
@@ -4255,6 +4280,12 @@ export class AiAssistantService {
     const suppressionFingerprints: string[] = []
     let saved = 0
     for (const item of Array.isArray(digest.tasks) ? digest.tasks : []) {
+      const lifecycle = resolveExtractedTaskLifecycle({
+        lifecycle: item.lifecycle,
+        taskKind: item.taskKind,
+        requireExplicitLifecycle: String(digest.__meta?.schemaVersion || '') === EXTRACTION_SCHEMA_VERSION
+      })
+      if (!lifecycle.status) continue
       const sourceMessageIds = (Array.isArray(item.sourceEvidenceKeys)
         ? item.sourceEvidenceKeys
         : Array.isArray(item.sourceMessageIds) ? item.sourceMessageIds : [])
@@ -4272,7 +4303,7 @@ export class AiAssistantService {
         ownerTerms
       )
       if (classification === 'others') continue
-      const task: AssistantTask = {
+      const task: AssistantTask = sanitizeTaskForPersistence({
         id: stableTaskId({ ...item, source: `本机文档：${evidenceMessages[0].sessionName}`, sourceMessageIds }),
         title: String(item.title || '文档待确认事项').slice(0, 160),
         detail: String(item.detail || '').slice(0, 500),
@@ -4289,9 +4320,10 @@ export class AiAssistantService {
         source: `本机文档：${evidenceMessages[0].sessionName}`.slice(0, 100),
         sourceSessionId: 'data-source:documents',
         confidence: Math.max(0, Math.min(1, Number(item.confidence ?? 0.6))),
-        status: item.taskKind === 'waiting' ? 'waiting' : 'todo',
+        status: lifecycle.status,
         classification,
         assignmentEvidence: String(item.assignmentEvidence || '').slice(0, 300),
+        lifecycleEvidence: String(item.lifecycleEvidence || '').slice(0, 300),
         ownershipPolicyReason: classification === 'mine'
           ? '文档正文明确出现用户姓名或别名，仍保留原文证据'
           : '文档没有明确把事项指派给用户，进入人工归属确认',
@@ -4309,7 +4341,7 @@ export class AiAssistantService {
           sender: String(message.senderName || '本机文档连接器'),
           excerpt: redact(String(message.content)).slice(0, 300)
         }))
-      }
+      })
       const feedbackFingerprint = taskEvidenceFingerprint(task)
       const feedback = feedbackFingerprint
         ? personalMemoryStore.getTaskReviewDecision(feedbackFingerprint)
@@ -4321,10 +4353,13 @@ export class AiAssistantService {
       }
       Object.assign(task, reviewedTask)
       const previous = existing.get(task.id) || findMatchingTask(task, this.state.tasks)
+      if (!previous && lifecycleRequiresExistingTask(lifecycle.lifecycle)) continue
       if (previous) task.id = previous.id
       const merged: AssistantTask = previous ? {
         ...task,
-        status: previous.status,
+        status: lifecycleRequiresExistingTask(lifecycle.lifecycle)
+          ? reconcileTaskStatus(previous.status, lifecycle)
+          : previous.status,
         owner: previous.owner || task.owner,
         classification: previous.classification || task.classification,
         evidence: mergeTaskEvidenceHotset(previous.evidence, task.evidence),
@@ -4336,7 +4371,9 @@ export class AiAssistantService {
         taskId: merged.id,
         before: previous || {},
         after: merged,
-        reason: previous ? 'document_content_update' : 'created_from_document',
+        reason: lifecycleRequiresExistingTask(lifecycle.lifecycle)
+          ? lifecycle.reason
+          : previous ? 'document_content_update' : 'created_from_document',
         evidence: merged.evidence || []
       })
       saved += 1

@@ -59,10 +59,11 @@ export function redactSensitiveText(
   }
 
   replace(/\bsk-[A-Za-z0-9._-]{12,}\b/g, 'API密钥')
+  replace(/\b(?:vmess|vless|trojan|ss):\/\/[^\s<>'"\]]+/gi, '代理凭证')
   replace(/\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{8,}\b/g, '访问令牌')
   replace(/\b[A-Fa-f0-9]{32,}\b/g, '长令牌')
   output = output.replace(
-    /(?<![?&])((?:password|passwd|pwd|secret|token|api[_ -]?key|密码|口令|密钥)\s*[:=：]\s*)([^\s,，;；"'<>?&#\[\]]{6,})/gi,
+    /(?<![?&])((?:password|passwd|pwd|secret|token|api[_ -]?key|密码|口令|密钥)\s*(?::|=|：|是|为)\s*)([^\s,，;；"'<>?&#\[\]]{4,})/gi,
     (_full, label, value) => `${label}${placeholder(context, '凭证', value)}`
   )
 
