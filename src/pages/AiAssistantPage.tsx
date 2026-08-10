@@ -2622,7 +2622,9 @@ function AiAssistantPage() {
   useEffect(() => {
     const request = memoryGrowthGate.current.begin()
     setMemoryGrowthLoadingMore(false)
-    setMemoryGrowth((current: any) => ({ ...current, items: [], loading: true }))
+    setMemoryGrowth((current: any) => ({
+      ...current, items: [], loading: true, error: undefined
+    }))
     void window.electronAPI.aiAssistant.getMemoryChangeLogPage(memoryGrowthOptions)
       .then(result => {
         if (!memoryGrowthGate.current.isCurrent(request)) return
@@ -2639,9 +2641,9 @@ function AiAssistantPage() {
         if (!memoryGrowthGate.current.isCurrent(request)) return
         setMemoryGrowth({
           items: [], total: 0, hasMore: false, counts: {},
-          revision: '', trackedSince: '', loading: false
+          revision: '', trackedSince: '', loading: false,
+          error: error?.message || String(error)
         })
-        setMessage(error?.message || String(error))
       })
     return () => {
       if (memoryGrowthGate.current.isCurrent(request)) memoryGrowthGate.current.invalidate()
@@ -4923,6 +4925,7 @@ function AiAssistantPage() {
     if (memoryGrowthLoadingMore || !memoryGrowth.hasMore) return
     const request = memoryGrowthGate.current.begin()
     setMemoryGrowthLoadingMore(true)
+    setMemoryGrowth((current: any) => ({ ...current, error: undefined }))
     try {
       const result = await window.electronAPI.aiAssistant.getMemoryChangeLogPage({
         ...memoryGrowthOptions,
@@ -4944,7 +4947,9 @@ function AiAssistantPage() {
       }))
     } catch (error: any) {
       if (memoryGrowthGate.current.isCurrent(request)) {
-        setMessage(error?.message || String(error))
+        const errorMessage = error?.message || String(error)
+        setMemoryGrowth((current: any) => ({ ...current, error: errorMessage }))
+        setMessage(errorMessage)
       }
     } finally {
       if (memoryGrowthGate.current.isCurrent(request)) setMemoryGrowthLoadingMore(false)
@@ -9526,7 +9531,11 @@ function AiAssistantPage() {
               <h3><BookOpen size={16} /> 记忆成长记录</h3>
             </div>
             <span className="assistant-count">
-              {memoryGrowth.loading ? '正在读取' : `${memoryGrowth.total.toLocaleString()} 条匹配`}
+              {memoryGrowth.loading
+                ? '正在读取'
+                : memoryGrowth.error && !memoryGrowth.items.length
+                  ? '读取失败'
+                  : `${memoryGrowth.total.toLocaleString()} 条匹配`}
             </span>
           </div>
           <div className="assistant-task-filters">
@@ -9677,12 +9686,22 @@ function AiAssistantPage() {
               </div>
             </article>)}
           </div>
-          {!memoryGrowth.items.length && <div className="assistant-empty">
+          {memoryGrowth.error && <div className="assistant-task-load-failure" role="alert">
+            <strong>{memoryGrowth.items.length ? '更多成长记录读取失败' : '记忆成长记录读取失败'}</strong>
+            <span>{memoryGrowth.error}。{memoryGrowth.items.length
+              ? ` 已加载的 ${memoryGrowth.items.length} 条仍可核验，但当前尚未读完。`
+              : ' 当前不会把失败解释为“没有新增记忆”。'}</span>
+            <button type="button" disabled={memoryGrowthLoadingMore} onClick={() => {
+              if (memoryGrowth.items.length) void loadMoreMemoryGrowth()
+              else setMemoryGrowthRefreshKey(value => value + 1)
+            }}>{memoryGrowthLoadingMore ? '正在重试…' : '立即重试'}</button>
+          </div>}
+          {!memoryGrowth.error && !memoryGrowth.items.length && <div className="assistant-empty">
             {memoryGrowth.loading
               ? '正在从本机加密变化账本读取…'
               : '当前范围尚无记忆变化。新账本不会伪造安装前的历史。'}
           </div>}
-          {memoryGrowth.hasMore && <div className="assistant-timeline-more">
+          {memoryGrowth.hasMore && !memoryGrowth.error && <div className="assistant-timeline-more">
             <button disabled={memoryGrowthLoadingMore}
               onClick={() => void loadMoreMemoryGrowth()}>
               {memoryGrowthLoadingMore
