@@ -19334,6 +19334,10 @@ export class PersonalMemoryStore {
     latestSuccessfulExtractionAt: string
     latestFailedBatchAt: string
     failedBatchesSinceLatestSuccessfulExtraction: number
+    operationalFailedBatchesSinceLatestSuccessfulExtraction: number
+    controlledInterruptedBatchesSinceLatestSuccessfulExtraction: number
+    latestOperationalFailureAt: string
+    latestControlledInterruptionAt: string
     completedSinceLatestDegraded: number
     completedWithBatchesSinceLatestDegraded: number
     completedWithoutBatchesSinceLatestDegraded: number
@@ -19342,17 +19346,20 @@ export class PersonalMemoryStore {
       runs: number; completed: number; partial: number; failed: number; running: number
       completedWithBatches: number; completedWithoutBatches: number
       successfulBatches: number; failedBatches: number
+      operationalFailedBatches: number; controlledInterruptedBatches: number
     }
     recent7Days: {
       runs: number; completed: number; partial: number; failed: number; running: number
       completedWithBatches: number; completedWithoutBatches: number
       successfulBatches: number; failedBatches: number
+      operationalFailedBatches: number; controlledInterruptedBatches: number
     }
   } {
     const emptyWindow = {
       runs: 0, completed: 0, partial: 0, failed: 0, running: 0,
       completedWithBatches: 0, completedWithoutBatches: 0,
-      successfulBatches: 0, failedBatches: 0
+      successfulBatches: 0, failedBatches: 0,
+      operationalFailedBatches: 0, controlledInterruptedBatches: 0
     }
     const empty = {
       runs: 0, completedRuns: 0, partialRuns: 0, failedRuns: 0, runningRuns: 0,
@@ -19361,6 +19368,9 @@ export class PersonalMemoryStore {
       latestPartialAt: '', latestFailedAt: '', latestDegradedAt: '',
       latestSuccessfulExtractionAt: '', latestFailedBatchAt: '',
       failedBatchesSinceLatestSuccessfulExtraction: 0,
+      operationalFailedBatchesSinceLatestSuccessfulExtraction: 0,
+      controlledInterruptedBatchesSinceLatestSuccessfulExtraction: 0,
+      latestOperationalFailureAt: '', latestControlledInterruptionAt: '',
       completedSinceLatestDegraded: 0,
       completedWithBatchesSinceLatestDegraded: 0,
       completedWithoutBatchesSinceLatestDegraded: 0,
@@ -19415,10 +19425,32 @@ export class PersonalMemoryStore {
       SELECT
         MAX(CASE WHEN status='failed'
           THEN COALESCE(finished_at,started_at) END) AS latest_failed_batch_at,
+        MAX(CASE WHEN status='failed' AND NOT (
+          COALESCE(error,'') LIKE '应用正在安全退出，%'
+          OR COALESCE(error,'')='AI 助理已关闭，当前模型请求已取消'
+        ) THEN COALESCE(finished_at,started_at) END) AS latest_operational_failure_at,
+        MAX(CASE WHEN status='failed' AND (
+          COALESCE(error,'') LIKE '应用正在安全退出，%'
+          OR COALESCE(error,'')='AI 助理已关闭，当前模型请求已取消'
+        ) THEN COALESCE(finished_at,started_at) END) AS latest_controlled_interruption_at,
         SUM(CASE WHEN status='failed' AND (?='' OR COALESCE(finished_at,started_at)>?)
-          THEN 1 ELSE 0 END) AS failed_batches_since_success
+          THEN 1 ELSE 0 END) AS failed_batches_since_success,
+        SUM(CASE WHEN status='failed' AND NOT (
+          COALESCE(error,'') LIKE '应用正在安全退出，%'
+          OR COALESCE(error,'')='AI 助理已关闭，当前模型请求已取消'
+        ) AND (?='' OR COALESCE(finished_at,started_at)>?)
+          THEN 1 ELSE 0 END) AS operational_failed_batches_since_success,
+        SUM(CASE WHEN status='failed' AND (
+          COALESCE(error,'') LIKE '应用正在安全退出，%'
+          OR COALESCE(error,'')='AI 助理已关闭，当前模型请求已取消'
+        ) AND (?='' OR COALESCE(finished_at,started_at)>?)
+          THEN 1 ELSE 0 END) AS controlled_interrupted_batches_since_success
       FROM ingestion_batches
-    `).get(latestSuccessfulExtractionAt, latestSuccessfulExtractionAt) as any
+    `).get(
+      latestSuccessfulExtractionAt, latestSuccessfulExtractionAt,
+      latestSuccessfulExtractionAt, latestSuccessfulExtractionAt,
+      latestSuccessfulExtractionAt, latestSuccessfulExtractionAt
+    ) as any
     const summarizeWindow = (modifier: string) => {
       const windowRuns = this.db!.prepare(`
         SELECT
@@ -19439,7 +19471,15 @@ export class PersonalMemoryStore {
       const windowBatches = this.db!.prepare(`
         SELECT
           SUM(CASE WHEN b.status='completed' THEN 1 ELSE 0 END) AS successful_batches,
-          SUM(CASE WHEN b.status='failed' THEN 1 ELSE 0 END) AS failed_batches
+          SUM(CASE WHEN b.status='failed' THEN 1 ELSE 0 END) AS failed_batches,
+          SUM(CASE WHEN b.status='failed' AND NOT (
+            COALESCE(b.error,'') LIKE '应用正在安全退出，%'
+            OR COALESCE(b.error,'')='AI 助理已关闭，当前模型请求已取消'
+          ) THEN 1 ELSE 0 END) AS operational_failed_batches,
+          SUM(CASE WHEN b.status='failed' AND (
+            COALESCE(b.error,'') LIKE '应用正在安全退出，%'
+            OR COALESCE(b.error,'')='AI 助理已关闭，当前模型请求已取消'
+          ) THEN 1 ELSE 0 END) AS controlled_interrupted_batches
         FROM ingestion_batches b
         WHERE julianday(COALESCE(b.finished_at,b.started_at))>=julianday('now',?)
       `).get(modifier) as any
@@ -19452,7 +19492,9 @@ export class PersonalMemoryStore {
         completedWithBatches: Number(windowRuns?.completed_with_batches || 0),
         completedWithoutBatches: Number(windowRuns?.completed_without_batches || 0),
         successfulBatches: Number(windowBatches?.successful_batches || 0),
-        failedBatches: Number(windowBatches?.failed_batches || 0)
+        failedBatches: Number(windowBatches?.failed_batches || 0),
+        operationalFailedBatches: Number(windowBatches?.operational_failed_batches || 0),
+        controlledInterruptedBatches: Number(windowBatches?.controlled_interrupted_batches || 0)
       }
     }
     const latestDegradedAt = String(latestDegraded?.latest_degraded_at || '')
@@ -19488,6 +19530,18 @@ export class PersonalMemoryStore {
       latestFailedBatchAt: String(failedBatchRecovery?.latest_failed_batch_at || ''),
       failedBatchesSinceLatestSuccessfulExtraction: Number(
         failedBatchRecovery?.failed_batches_since_success || 0
+      ),
+      operationalFailedBatchesSinceLatestSuccessfulExtraction: Number(
+        failedBatchRecovery?.operational_failed_batches_since_success || 0
+      ),
+      controlledInterruptedBatchesSinceLatestSuccessfulExtraction: Number(
+        failedBatchRecovery?.controlled_interrupted_batches_since_success || 0
+      ),
+      latestOperationalFailureAt: String(
+        failedBatchRecovery?.latest_operational_failure_at || ''
+      ),
+      latestControlledInterruptionAt: String(
+        failedBatchRecovery?.latest_controlled_interruption_at || ''
       ),
       completedSinceLatestDegraded: Number(recovery?.completed || 0),
       completedWithBatchesSinceLatestDegraded: Number(recovery?.completed_with_batches || 0),

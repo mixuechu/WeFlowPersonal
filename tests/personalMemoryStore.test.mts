@@ -20609,12 +20609,14 @@ test('ingestion summary separates recent reliability from lifetime failures', ()
   assert.deepEqual(summary.recent24Hours, {
     runs: 3, completed: 2, partial: 1, failed: 0, running: 0,
     completedWithBatches: 1, completedWithoutBatches: 1,
-    successfulBatches: 1, failedBatches: 1
+    successfulBatches: 1, failedBatches: 1,
+    operationalFailedBatches: 1, controlledInterruptedBatches: 0
   })
   assert.deepEqual(summary.recent7Days, {
     runs: 3, completed: 2, partial: 1, failed: 0, running: 0,
     completedWithBatches: 1, completedWithoutBatches: 1,
-    successfulBatches: 1, failedBatches: 1
+    successfulBatches: 1, failedBatches: 1,
+    operationalFailedBatches: 1, controlledInterruptedBatches: 0
   })
   assert.equal(summary.failedRuns, 1)
   assert.equal(summary.partialRuns, 1)
@@ -20624,6 +20626,10 @@ test('ingestion summary separates recent reliability from lifetime failures', ()
   assert.equal(summary.latestSuccessfulExtractionAt, extractionSucceededAt)
   assert.equal(summary.latestFailedBatchAt, recentPartialAt)
   assert.equal(summary.failedBatchesSinceLatestSuccessfulExtraction, 0)
+  assert.equal(summary.operationalFailedBatchesSinceLatestSuccessfulExtraction, 0)
+  assert.equal(summary.controlledInterruptedBatchesSinceLatestSuccessfulExtraction, 0)
+  assert.equal(summary.latestOperationalFailureAt, recentPartialAt)
+  assert.equal(summary.latestControlledInterruptionAt, '')
   assert.equal(summary.completedSinceLatestDegraded, 2)
   assert.equal(summary.completedWithBatchesSinceLatestDegraded, 1)
   assert.equal(summary.completedWithoutBatchesSinceLatestDegraded, 1)
@@ -20653,9 +20659,50 @@ test('ingestion reliability windows use final activity instead of stale start ti
   assert.deepEqual(summary.recent24Hours, {
     runs: 1, completed: 1, partial: 0, failed: 0, running: 0,
     completedWithBatches: 1, completedWithoutBatches: 0,
-    successfulBatches: 1, failedBatches: 0
+    successfulBatches: 1, failedBatches: 0,
+    operationalFailedBatches: 0, controlledInterruptedBatches: 0
   })
   assert.equal(summary.latestSuccessfulExtractionAt, completedInsideDay)
+}))
+
+test('ingestion reliability separates controlled interruption from operational failure', () => withStore(store => {
+  const database = (store as any).db
+  const now = Date.now()
+  const successAt = new Date(now - 2 * 60 * 60 * 1000).toISOString()
+  const controlledAt = new Date(now - 60 * 60 * 1000).toISOString()
+  const failureAt = new Date(now - 30 * 60 * 1000).toISOString()
+  const insertRun = database.prepare(`
+    INSERT INTO ingestion_runs(id,started_at,finished_at,status,error)
+    VALUES(?,?,?,?,?)
+  `)
+  insertRun.run('completed-extraction', successAt, successAt, 'completed', null)
+  insertRun.run('controlled-stop', controlledAt, controlledAt, 'partial', '安全退出')
+  insertRun.run('operational-failure', failureAt, failureAt, 'partial', '模型 JSON 无效')
+  const insertBatch = database.prepare(`
+    INSERT INTO ingestion_batches(
+      run_id,batch_index,message_count,status,error,started_at,finished_at
+    ) VALUES(?,?,?,?,?,?,?)
+  `)
+  insertBatch.run('completed-extraction', 0, 2, 'completed', null, successAt, successAt)
+  insertBatch.run(
+    'controlled-stop', 0, 2, 'failed', '应用正在安全退出，模型请求已取消',
+    controlledAt, controlledAt
+  )
+  insertBatch.run(
+    'operational-failure', 0, 2, 'failed', '模型没有返回有效 JSON',
+    failureAt, failureAt
+  )
+
+  const summary = store.getIngestionArchiveSummary()
+  assert.equal(summary.recent24Hours.successfulBatches, 1)
+  assert.equal(summary.recent24Hours.failedBatches, 2)
+  assert.equal(summary.recent24Hours.operationalFailedBatches, 1)
+  assert.equal(summary.recent24Hours.controlledInterruptedBatches, 1)
+  assert.equal(summary.failedBatchesSinceLatestSuccessfulExtraction, 2)
+  assert.equal(summary.operationalFailedBatchesSinceLatestSuccessfulExtraction, 1)
+  assert.equal(summary.controlledInterruptedBatchesSinceLatestSuccessfulExtraction, 1)
+  assert.equal(summary.latestOperationalFailureAt, failureAt)
+  assert.equal(summary.latestControlledInterruptionAt, controlledAt)
 }))
 
 test('ingestion run archive paginates all years and loads bounded batch audits on demand', () => {
@@ -20763,6 +20810,12 @@ test('ingestion run archive paginates all years and loads bounded batch audits o
       latestFailedBatchAt: summary.latestFailedBatchAt,
       failedBatchesSinceLatestSuccessfulExtraction:
         summary.failedBatchesSinceLatestSuccessfulExtraction,
+      operationalFailedBatchesSinceLatestSuccessfulExtraction:
+        summary.operationalFailedBatchesSinceLatestSuccessfulExtraction,
+      controlledInterruptedBatchesSinceLatestSuccessfulExtraction:
+        summary.controlledInterruptedBatchesSinceLatestSuccessfulExtraction,
+      latestOperationalFailureAt: summary.latestOperationalFailureAt,
+      latestControlledInterruptionAt: summary.latestControlledInterruptionAt,
       completedSinceLatestDegraded: 0,
       completedWithBatchesSinceLatestDegraded: 0,
       completedWithoutBatchesSinceLatestDegraded: 0,
@@ -20770,12 +20823,14 @@ test('ingestion run archive paginates all years and loads bounded batch audits o
       recent24Hours: {
         runs: 0, completed: 0, partial: 0, failed: 0, running: 0,
         completedWithBatches: 0, completedWithoutBatches: 0,
-        successfulBatches: 0, failedBatches: 0
+        successfulBatches: 0, failedBatches: 0,
+        operationalFailedBatches: 0, controlledInterruptedBatches: 0
       },
       recent7Days: {
         runs: 0, completed: 0, partial: 0, failed: 0, running: 0,
         completedWithBatches: 0, completedWithoutBatches: 0,
-        successfulBatches: 0, failedBatches: 0
+        successfulBatches: 0, failedBatches: 0,
+        operationalFailedBatches: 0, controlledInterruptedBatches: 0
       }
     })
     const firstPage = first.listIngestionRunPage({ limit: 40 })
