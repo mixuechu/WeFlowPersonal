@@ -20,7 +20,11 @@ test('invalid model JSON is split before a batch is recorded as failed', () => {
 test('invalid JSON recovery remains visible without exposing model output', () => {
   assert.match(service, /invalidJsonFailures: work\.invalidJsonFailures \+ \(isInvalidModelJsonFailure\(error\) \? 2 : 0\)/)
   assert.match(service, /inputTokens: Number\(modelFailureMeta\.inputTokens \|\| 0\)/)
+  assert.match(service, /sensitiveRedaction: modelFailureMeta\.sensitiveRedaction/)
+  assert.match(service, /extractionContext: modelFailureMeta\.extractionContext/)
   assert.match(page, /检测到模型 JSON 不完整/)
   assert.match(page, /JSON 无效/)
+  assert.match(page, /条新增 \+.*条只读上下文/)
+  assert.match(page, /旧版未区分新增与上下文/)
   assert.doesNotMatch(page, /invalidJsonRawOutput|rawInvalidJson/)
 })

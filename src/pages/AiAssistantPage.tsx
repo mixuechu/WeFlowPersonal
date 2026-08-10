@@ -646,8 +646,14 @@ function setBoundedAuditCache(
 }
 
 function IngestionBatchAudit({ batch, run }: { batch: any; run: any }) {
+  const coreMessageCount = Number(batch.extractionContext?.messageScope?.core)
+  const contextMessageCount = Number(batch.extractionContext?.messageScope?.context)
+  const hasMessageScope = Number.isFinite(coreMessageCount) && coreMessageCount >= 0 &&
+    Number.isFinite(contextMessageCount) && contextMessageCount >= 0
   return <article className={batch.status}>
-    <div><b>批次 {Number(batch.batch_index) + 1}</b><span>{batch.status} · {batch.message_count} 条 · 尝试 {batch.attempts} 次</span></div>
+    <div><b>批次 {Number(batch.batch_index) + 1}</b><span>{batch.status} · {hasMessageScope
+      ? `${coreMessageCount} 条新增 + ${contextMessageCount} 条只读上下文`
+      : `${batch.message_count} 条（旧版未区分新增与上下文）`} · 尝试 {batch.attempts} 次</span></div>
     <small>{batch.model || run.model} · {batch.prompt_version || run.prompt_version}{batch.schema_version ? ` / ${batch.schema_version}` : ''}</small>
     <small>Token {Number(batch.input_tokens || 0).toLocaleString()} 入 / {Number(batch.output_tokens || 0).toLocaleString()} 出 · {(Number(batch.duration_ms || 0) / 1000).toFixed(1)} 秒</small>
     {!!batch.extractionCoverage?.version && <small className={batch.extractionCoverage.unresolved ? 'assistant-diagnostics-error' : ''}>

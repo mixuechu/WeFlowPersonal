@@ -2954,6 +2954,8 @@ export class AiAssistantService {
           modelFailureMeta?: ReturnType<typeof accumulateExtractionAttemptMeta> & {
             finishReason: string
             responseChars: number
+            sensitiveRedaction: any
+            extractionContext: any
           }
         }
         if (finishReason === 'length') {
@@ -2965,7 +2967,9 @@ export class AiAssistantService {
           finishReason: ['stop', 'length', 'content_filter', 'tool_calls'].includes(finishReason)
             ? finishReason
             : 'unknown',
-          responseChars: Math.max(0, String(payload?.choices?.[0]?.message?.content || '').length)
+          responseChars: Math.max(0, String(payload?.choices?.[0]?.message?.content || '').length),
+          sensitiveRedaction: outbound.summary,
+          extractionContext: extractionContextAudit
         }
         lastError = modelError
       }
@@ -4472,6 +4476,7 @@ export class AiAssistantService {
       } catch (error) {
         memoryGuard?.rollbackUncommitted()
         const detail = sanitizeDiagnosticText(error)
+        const modelFailureMeta = (error as any)?.modelFailureMeta || {}
         const retryDays = Math.min(7, Math.max(1, 2 ** attempts))
         personalMemoryStore.replaceResourceContent(resource.id, resource.content, {
           documentAnalysisStatus: 'failed',
@@ -4482,7 +4487,11 @@ export class AiAssistantService {
           model: String(this.config.get('aiAssistantApiModel') || ''),
           promptVersion: `${EXTRACTION_PROMPT_VERSION}/document-v1`,
           schemaVersion: EXTRACTION_SCHEMA_VERSION,
-          durationMs: Date.now() - startedAt
+          inputTokens: Number(modelFailureMeta.inputTokens || 0),
+          outputTokens: Number(modelFailureMeta.outputTokens || 0),
+          durationMs: Number(modelFailureMeta.durationMs || Date.now() - startedAt),
+          sensitiveRedaction: modelFailureMeta.sensitiveRedaction,
+          extractionContext: modelFailureMeta.extractionContext
         })
         personalMemoryStore.finishIngestionRun(runId, {
           status: 'failed',
@@ -4750,7 +4759,9 @@ export class AiAssistantService {
           personalMemoryStore.recordIngestionBatch(runId, batchIndex, batch.length, 'running', '', {
             model: String(this.config.get('aiAssistantApiModel') || ''),
             promptVersion: EXTRACTION_PROMPT_VERSION,
-            schemaVersion: EXTRACTION_SCHEMA_VERSION
+            schemaVersion: EXTRACTION_SCHEMA_VERSION,
+            sensitiveRedaction: rawDigest.__meta?.sensitiveRedaction,
+            extractionContext: rawDigest.__meta?.extractionContext
           })
           const evidenceValidation = validateStructuredDigestEvidence(rawDigest, batch)
           const aggregateMeta = accumulateExtractionAttemptMeta(work.probeMeta, rawDigest.__meta)
@@ -4856,6 +4867,8 @@ export class AiAssistantService {
             inputTokens: Number(modelFailureMeta.inputTokens || 0),
             outputTokens: Number(modelFailureMeta.outputTokens || 0),
             durationMs: Number(modelFailureMeta.durationMs || Date.now() - batchStartedAt),
+            sensitiveRedaction: modelFailureMeta.sensitiveRedaction,
+            extractionContext: modelFailureMeta.extractionContext,
             extractionCoverage: inspectExtractionCoverage({}, {
               adaptivelySplit: work.wasAdaptivelySplit,
               splitDepth: work.splitDepth,
