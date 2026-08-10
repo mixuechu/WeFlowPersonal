@@ -23863,8 +23863,12 @@ test('resource archive filters durable enrichment queues without exposing local 
   assert.equal(pending.items[0].id, 'ocr-pending')
   assert.deepEqual(pending.items[0].enrichment, {
     kind: 'image_ocr', state: 'pending', reasonCode: 'failed', attempts: 2,
-    nextAttemptAt: ''
+    nextAttemptAt: '', retryToken: pending.items[0].enrichment.retryToken
   })
+  assert.match(pending.items[0].enrichment.retryToken, /^[a-f0-9]{64}$/)
+  assert.equal(store.listResourceArchive({
+    enrichmentKind: 'image_ocr', enrichmentStatus: 'pending', limit: 40
+  }).items[0].enrichment.retryToken, pending.items[0].enrichment.retryToken)
   assert.equal('content' in pending.items[0], false)
   assert.equal('metadata_json' in pending.items[0], false)
   assert.doesNotMatch(JSON.stringify(pending.items), /Users|secret-pending/)
@@ -23875,6 +23879,12 @@ test('resource archive filters durable enrichment queues without exposing local 
   assert.equal(deferred.total, 1)
   assert.equal(deferred.items[0].enrichment.state, 'deferred')
   assert.equal(deferred.items[0].enrichment.nextAttemptAt, '2099-01-01T00:00:00.000Z')
+  assert.equal(store.listPendingImageOcrResources(
+    1, new Date('9999-12-31T23:59:59.999Z'), 'ocr-deferred'
+  )[0].id, 'ocr-deferred')
+  assert.equal(store.listPendingImageOcrResources(
+    1, new Date('9999-12-31T23:59:59.999Z'), 'missing-resource'
+  ).length, 0)
   assert.equal(store.listResourceArchive({
     enrichmentKind: 'image_ocr', enrichmentStatus: 'completed'
   }).items[0].id, 'ocr-completed')
@@ -23895,6 +23905,14 @@ test('resource archive filters durable enrichment queues without exposing local 
   })
   assert.equal(pdfOcr.total, 1)
   assert.equal(pdfOcr.items[0].id, 'pdf-ocr-waiting')
+  store.replaceResourceContent('ocr-pending', '目录不应返回的正文', {
+    imageOcrMigrationAttempts: 3,
+    imageOcrMigrationNextAt: '2099-03-01T00:00:00.000Z'
+  })
+  const changed = store.listResourceArchive({
+    enrichmentKind: 'image_ocr', resourceId: 'ocr-pending'
+  }).items[0]
+  assert.notEqual(changed.enrichment.retryToken, pending.items[0].enrichment.retryToken)
 }))
 
 test('resource trash retention is opt-in and expires snapshots without lifting suppressions', () => withStore(store => {

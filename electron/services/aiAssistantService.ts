@@ -47,6 +47,7 @@ import {
   vectorIndexConflictMessage
 } from './backgroundWriteCoordination'
 import {
+  RESOURCE_ENRICHMENT_KINDS,
   selectDueResourceEnrichmentKind,
   type ResourceEnrichmentKind
 } from './resourceEnrichmentPolicy'
@@ -2249,11 +2250,15 @@ export class AiAssistantService {
     }
   }
 
-  private async continuePendingImageSemantics(runId: string): Promise<void> {
-    if (!this.config.get('aiAssistantAnalyzeImages')) return
+  private async continuePendingImageSemantics(
+    runId: string, resourceId = '', eligibleAt = new Date()
+  ): Promise<number> {
+    if (!this.config.get('aiAssistantAnalyzeImages')) return 0
     const status = localImageSemanticService.getStatus()
-    if (!status.available) return
-    const pending = personalMemoryStore.listPendingImageSemanticResources(status.modelVersion, 1)
+    if (!status.available) return 0
+    const pending = personalMemoryStore.listPendingImageSemanticResources(
+      status.modelVersion, 1, eligibleAt, resourceId
+    )
     for (const resource of pending) {
       const filePath = String(resource.metadata?.mediaLocalPath || '')
       const attempts = Number(resource.metadata?.visualMigrationAttempts || 0)
@@ -2289,13 +2294,16 @@ export class AiAssistantService {
         visualMigratedAt: new Date().toISOString()
       }, this.wechatResourceMaintenanceOrigin(runId, resource.id, 'image-semantics'))
     }
+    return pending.length
   }
 
-  private async continuePendingImageOcr(runId: string): Promise<void> {
-    if (!this.config.get('aiAssistantOcrImages')) return
+  private async continuePendingImageOcr(
+    runId: string, resourceId = '', eligibleAt = new Date()
+  ): Promise<number> {
+    if (!this.config.get('aiAssistantOcrImages')) return 0
     const status = await localOcrService.getStatus()
-    if (!status.available || !status.chinese) return
-    const pending = personalMemoryStore.listPendingImageOcrResources(1)
+    if (!status.available || !status.chinese) return 0
+    const pending = personalMemoryStore.listPendingImageOcrResources(1, eligibleAt, resourceId)
     for (const resource of pending) {
       const metadata = resource.metadata || {}
       const filePath = String(metadata.mediaLocalPath || '')
@@ -2335,14 +2343,19 @@ export class AiAssistantService {
         imageOcrMigrationNextAt: new Date(Date.now() + retryDays * 86_400_000).toISOString()
       }, this.wechatResourceMaintenanceOrigin(runId, resource.id, 'image-ocr'))
     }
+    return pending.length
   }
 
-  private async continuePendingVoiceTranscripts(runId: string): Promise<void> {
-    if (!this.config.get('autoTranscribeVoice')) return
+  private async continuePendingVoiceTranscripts(
+    runId: string, resourceId = '', eligibleAt = new Date()
+  ): Promise<number> {
+    if (!this.config.get('autoTranscribeVoice')) return 0
     const model = await voiceTranscribeService.getModelStatus()
       .catch(() => ({ success: false, exists: false }))
-    if (!model.success || !model.exists) return
-    const pending = personalMemoryStore.listPendingVoiceTranscriptResources(1)
+    if (!model.success || !model.exists) return 0
+    const pending = personalMemoryStore.listPendingVoiceTranscriptResources(
+      1, eligibleAt, resourceId
+    )
     for (const resource of pending) {
       const metadata = resource.metadata || {}
       const attempts = Number(metadata.voiceTranscriptionAttempts || 0)
@@ -2378,6 +2391,7 @@ export class AiAssistantService {
         voiceTranscriptionNextAt: new Date(Date.now() + retryDays * 86_400_000).toISOString()
       }, this.wechatResourceMaintenanceOrigin(runId, resource.id, 'voice-transcription'))
     }
+    return pending.length
   }
 
   private async enrichAttachmentText(messages: any[]): Promise<void> {
@@ -2435,9 +2449,13 @@ export class AiAssistantService {
     }
   }
 
-  private async continuePendingAttachmentIndexes(runId: string): Promise<void> {
+  private async continuePendingAttachmentIndexes(
+    runId: string, resourceId = '', eligibleAt = new Date()
+  ): Promise<number> {
     const ocrEnabled = Boolean(this.config.get('aiAssistantOcrImages'))
-    const pending = personalMemoryStore.listPendingAttachmentIndexResources(1, ocrEnabled)
+    const pending = personalMemoryStore.listPendingAttachmentIndexResources(
+      1, ocrEnabled, eligibleAt, resourceId
+    )
     for (const resource of pending) {
       const metadata = resource.metadata || {}
       const attempts = Number(metadata.attachmentIndexAttempts || 0)
@@ -2507,6 +2525,7 @@ export class AiAssistantService {
           this.wechatResourceMaintenanceOrigin(runId, resource.id, 'attachment-index'))
       }
     }
+    return pending.length
   }
 
   private async enrichWebSnapshots(messages: any[]): Promise<void> {
@@ -2532,9 +2551,11 @@ export class AiAssistantService {
     }
   }
 
-  private async continuePendingWebSnapshots(runId: string): Promise<void> {
-    if (!this.config.get('aiAssistantIndexWebLinks')) return
-    const pending = personalMemoryStore.listPendingWebSnapshotResources(1)
+  private async continuePendingWebSnapshots(
+    runId: string, resourceId = '', eligibleAt = new Date()
+  ): Promise<number> {
+    if (!this.config.get('aiAssistantIndexWebLinks')) return 0
+    const pending = personalMemoryStore.listPendingWebSnapshotResources(1, eligibleAt, resourceId)
     for (const resource of pending) {
       const metadata = resource.metadata || {}
       const attempts = Number(metadata.webSnapshotAttempts || 0)
@@ -2566,11 +2587,12 @@ export class AiAssistantService {
         this.wechatResourceMaintenanceOrigin(runId, resource.id, 'web-snapshot')
       )
     }
+    return pending.length
   }
 
-  private async continuePendingPdfOcr(runId: string): Promise<void> {
-    if (!this.config.get('aiAssistantOcrImages')) return
-    const pending = personalMemoryStore.listPendingPdfOcrResources(1)
+  private async continuePendingPdfOcr(runId: string, resourceId = ''): Promise<number> {
+    if (!this.config.get('aiAssistantOcrImages')) return 0
+    const pending = personalMemoryStore.listPendingPdfOcrResources(1, resourceId)
     for (const resource of pending) {
       const filePath = String(resource.metadata?.attachmentLocalPath || '')
       if (!filePath || !existsSync(filePath)) {
@@ -2603,12 +2625,17 @@ export class AiAssistantService {
         this.wechatResourceMaintenanceOrigin(runId, resource.id, 'pdf-ocr')
       )
     }
+    return pending.length
   }
 
-  private async continuePendingAttachmentStructures(runId: string): Promise<void> {
+  private async continuePendingAttachmentStructures(
+    runId: string, resourceId = '', eligibleAt = new Date()
+  ): Promise<number> {
     const pending = personalMemoryStore.listPendingAttachmentStructureResources(
       ATTACHMENT_STRUCTURE_PARSER_VERSION,
-      1
+      1,
+      eligibleAt,
+      resourceId
     )
     for (const resource of pending) {
       const filePath = String(resource.metadata?.attachmentLocalPath || '')
@@ -2642,6 +2669,7 @@ export class AiAssistantService {
         }, this.wechatResourceMaintenanceOrigin(runId, resource.id, 'attachment-structure'))
       }
     }
+    return pending.length
   }
 
   private persistMessageResources(
@@ -9084,9 +9112,104 @@ export class AiAssistantService {
       sourceId,
       enrichmentKind,
       enrichmentStatus,
+      resourceId: undefined,
       attachmentStructureParserVersion: ATTACHMENT_STRUCTURE_PARSER_VERSION,
       imageSemanticModelVersion: localImageSemanticService.getStatus().modelVersion
     })
+  }
+
+  async retryResourceEnrichment(input: {
+    resourceId?: string
+    kind?: string
+    retryToken?: string
+  } = {}): Promise<any> {
+    if (this.disposed) throw new Error('AI 助理正在安全退出，不能重试资源补全')
+    if (!this.config.get('aiAssistantEnabled')) {
+      throw new Error('AI 助理总开关已关闭，请开启后再重试资源补全')
+    }
+    const resourceId = String(input.resourceId || '').trim()
+    if (!resourceId || resourceId.length > 512) throw new Error('资源身份无效')
+    const kind = String(input.kind || '') as ResourceEnrichmentKind
+    if (!(RESOURCE_ENRICHMENT_KINDS as readonly string[]).includes(kind)) {
+      throw new Error('资源补全类型无效')
+    }
+    const retryToken = String(input.retryToken || '')
+    if (!/^[a-f0-9]{64}$/.test(retryToken)) throw new Error('资源重试令牌无效')
+    const archiveOptions = {
+      enrichmentKind: kind,
+      resourceId,
+      limit: 1,
+      attachmentStructureParserVersion: ATTACHMENT_STRUCTURE_PARSER_VERSION,
+      imageSemanticModelVersion: localImageSemanticService.getStatus().modelVersion
+    }
+    const current = personalMemoryStore.listResourceArchive(archiveOptions).items[0]
+    if (!current || current.enrichment?.retryToken !== retryToken) {
+      throw new Error('这条资源的补全状态已经变化，请刷新后重新操作')
+    }
+    if (!['pending', 'deferred', 'waiting'].includes(String(current.enrichment?.state || ''))) {
+      throw new Error('这条资源已经完成或无需再试，请刷新资源目录')
+    }
+    if (kind === 'image_ocr' || kind === 'pdf_ocr' ||
+        (kind === 'attachment_index' && current.enrichment?.state === 'waiting')) {
+      if (!this.config.get('aiAssistantOcrImages')) {
+        throw new Error('图片 OCR 当前未启用，请先在 AI 助理设置中开启')
+      }
+    }
+    if (kind === 'image_semantics' && !this.config.get('aiAssistantAnalyzeImages')) {
+      throw new Error('图片视觉理解当前未启用，请先在 AI 助理设置中开启')
+    }
+    if (kind === 'voice_transcript' && !this.config.get('autoTranscribeVoice')) {
+      throw new Error('自动语音转写当前未启用，请先在 AI 助理设置中开启')
+    }
+    if (kind === 'web_snapshot' && !this.config.get('aiAssistantIndexWebLinks')) {
+      throw new Error('网页正文索引当前未启用，请先在 AI 助理设置中开启')
+    }
+    const backgroundWrites = describeBackgroundWriteState({
+      syncing: Boolean(this.activeSync),
+      syncPhase: this.activeSyncPhase,
+      vectorIndexing: Boolean(this.vectorIndexPromise),
+      searchRepairing: Boolean(this.memorySearchRepairPromise),
+      resourceEnriching: Boolean(this.resourceEnrichmentPromise)
+    })
+    if (backgroundWrites.active) {
+      throw new Error(`${backgroundWrites.message}，请完成后再重试这条资源`)
+    }
+    const eligibleAt = new Date('9999-12-31T23:59:59.999Z')
+    const runId = `manual_resource_${crypto.randomUUID()}`
+    const runners: Record<ResourceEnrichmentKind, () => Promise<number>> = {
+      attachment_index: () => this.continuePendingAttachmentIndexes(
+        runId, resourceId, eligibleAt
+      ),
+      image_ocr: () => this.continuePendingImageOcr(runId, resourceId, eligibleAt),
+      voice_transcript: () => this.continuePendingVoiceTranscripts(
+        runId, resourceId, eligibleAt
+      ),
+      image_semantics: () => this.continuePendingImageSemantics(
+        runId, resourceId, eligibleAt
+      ),
+      web_snapshot: () => this.continuePendingWebSnapshots(runId, resourceId, eligibleAt),
+      pdf_ocr: () => this.continuePendingPdfOcr(runId, resourceId),
+      attachment_structure: () => this.continuePendingAttachmentStructures(
+        runId, resourceId, eligibleAt
+      )
+    }
+    const resultPromise = (async () => {
+      const processed = await runners[kind]()
+      if (processed !== 1) {
+        throw new Error('这条资源当前无法进入补全队列，请刷新后检查能力状态')
+      }
+      this.scheduleVectorIndexContinuation(1_000)
+      const item = personalMemoryStore.listResourceArchive(archiveOptions).items[0] || null
+      return { success: true, resourceId, kind, item }
+    })()
+    const tracked = resultPromise.then(
+      () => `resource_enrichment_${kind}_manual_completed`
+    ).finally(() => {
+      if (this.resourceEnrichmentPromise === tracked) this.resourceEnrichmentPromise = null
+    })
+    void tracked.catch(() => undefined)
+    this.resourceEnrichmentPromise = tracked
+    return resultPromise
   }
 
   getResourceDossier(id: string, expectedRevision: string): any {
@@ -11668,7 +11791,7 @@ export class AiAssistantService {
     }, now.getTime())
     if (!kind) return null
     const runId = `maintenance_${crypto.randomUUID()}`
-    const runners: Record<ResourceEnrichmentKind, () => Promise<void>> = {
+    const runners: Record<ResourceEnrichmentKind, () => Promise<number>> = {
       attachment_index: () => this.continuePendingAttachmentIndexes(runId),
       image_ocr: () => this.continuePendingImageOcr(runId),
       voice_transcript: () => this.continuePendingVoiceTranscripts(runId),

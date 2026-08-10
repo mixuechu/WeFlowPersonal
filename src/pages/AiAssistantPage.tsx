@@ -193,7 +193,8 @@ const RESOURCE_ENRICHMENT_REASON_LABELS: Record<string, string> = {
   empty: '未提取到可读内容',
   unsafe_url: '安全策略拒绝访问该地址',
   not_html: '目标不是可索引网页',
-  timeout: '访问或处理超时'
+  timeout: '访问或处理超时',
+  storage_limit: '资源正文已经达到本机安全保存上限'
 }
 
 type ResourceEnrichmentKind = '' | 'attachment_index' | 'attachment_structure' |
@@ -1119,6 +1120,8 @@ function AiAssistantPage() {
   const [resourceTo, setResourceTo] = useState('')
   const [resourceRefreshKey, setResourceRefreshKey] = useState(0)
   const [resourceLoadingMore, setResourceLoadingMore] = useState(false)
+  const [resourceEnrichmentRetrying, setResourceEnrichmentRetrying] =
+    useState<Record<string, boolean>>({})
   const [selectedResourceDossier, setSelectedResourceDossier] = useState<any>(null)
   const [structuredMemoryDossier, setStructuredMemoryDossier] = useState<any>(null)
   const [relationDossierAuditLoading, setRelationDossierAuditLoading] =
@@ -4183,6 +4186,57 @@ function AiAssistantPage() {
       if (resourceArchiveGate.current.isCurrent(request)) setMessage(error?.message || String(error))
     } finally {
       if (resourceArchiveGate.current.isCurrent(request)) setResourceLoadingMore(false)
+    }
+  }
+  const resourceEnrichmentDisabledReason = (enrichment: any): string => {
+    if (!enrichment) return '没有可重试的补全状态'
+    if (settings && settings.enabled === false) return 'AI 助理总开关已关闭'
+    if (status?.backgroundWrites?.active) {
+      return status.backgroundWrites.message || '当前有其他后台写入正在进行'
+    }
+    if ((enrichment.kind === 'image_ocr' || enrichment.kind === 'pdf_ocr' ||
+        (enrichment.kind === 'attachment_index' && enrichment.state === 'waiting')) &&
+        !dashboard?.imageOcrMigration?.enabled) return '图片 OCR 当前未启用'
+    if (enrichment.kind === 'image_semantics' &&
+        !dashboard?.imageSemanticMigration?.enabled) return '图片视觉理解当前未启用'
+    if (enrichment.kind === 'voice_transcript' &&
+        !dashboard?.voiceTranscriptionMigration?.enabled) return '自动语音转写当前未启用'
+    if (enrichment.kind === 'web_snapshot' &&
+        !dashboard?.webSnapshotMigration?.enabled) return '网页正文索引当前未启用'
+    return ''
+  }
+  const retryResourceEnrichment = async (resource: any) => {
+    const enrichment = resource?.enrichment
+    if (!resource?.id || !enrichment?.retryToken || resourceEnrichmentRetrying[resource.id]) return
+    const disabledReason = resourceEnrichmentDisabledReason(enrichment)
+    if (disabledReason) {
+      setMessage(`${disabledReason}；可在 AI 助理设置中调整后重试。`)
+      return
+    }
+    setResourceEnrichmentRetrying(current => setKeyedLoadingState(
+      current, resource.id, true
+    ))
+    try {
+      const result = await window.electronAPI.aiAssistant.retryResourceEnrichment({
+        resourceId: resource.id,
+        kind: enrichment.kind,
+        retryToken: enrichment.retryToken
+      })
+      const nextState = String(result?.item?.enrichment?.state || '')
+      setMessage(nextState === 'completed'
+        ? '这条资源已经补全完成。'
+        : nextState === 'terminal'
+          ? '本次处理确认该资源无需再试，已保存具体原因。'
+          : '本次重试已经完成；资源仍需后续处理，新的退避状态已经保存。')
+      setResourceRefreshKey(value => value + 1)
+      await load()
+    } catch (error: any) {
+      setMessage(error?.message || String(error))
+      setResourceRefreshKey(value => value + 1)
+    } finally {
+      setResourceEnrichmentRetrying(current => setKeyedLoadingState(
+        current, resource.id, false
+      ))
     }
   }
   const beginSearchDossierReturn = (
@@ -13347,6 +13401,10 @@ function AiAssistantPage() {
                   ? selectedResourceDossier
                   : directoryResource
                 const enrichment = directoryResource.enrichment
+                const enrichmentRetryable = enrichment &&
+                  ['pending', 'deferred', 'waiting'].includes(enrichment.state)
+                const enrichmentRetryDisabledReason = enrichmentRetryable
+                  ? resourceEnrichmentDisabledReason(enrichment) : ''
                 const structureView = buildResourceStructurePresentation(resource.metadata)
                 return <article className="assistant-memory-item" key={resource.id}>
                 <div className="assistant-memory-item-head">
@@ -13520,6 +13578,15 @@ function AiAssistantPage() {
                       ? selectedResourceDossier.status === 'loading' ? '正在读取…' : '收起详情'
                       : '查看详情'}
                   </button>
+                  {enrichmentRetryable && <button
+                    disabled={Boolean(resourceEnrichmentRetrying[resource.id]) ||
+                      Boolean(enrichmentRetryDisabledReason)}
+                    title={enrichmentRetryDisabledReason || '忽略当前冷却时间，只重试这一条资源'}
+                    onClick={() => void retryResourceEnrichment(directoryResource)}>
+                    {resourceEnrichmentRetrying[resource.id]
+                      ? '正在重试…'
+                      : enrichmentRetryDisabledReason || '立即重试这一条'}
+                  </button>}
                   <button onClick={() => void deleteMemoryResource(resource)}>从记忆删除</button>
                 </div>
               </article>})}

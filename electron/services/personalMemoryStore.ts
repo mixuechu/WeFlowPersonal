@@ -11986,7 +11986,7 @@ export class PersonalMemoryStore {
     return { success: true, purged: Number(result.changes || 0), retentionDays: days, cutoff }
   }
 
-  listPendingPdfOcrResources(limit = 1): any[] {
+  listPendingPdfOcrResources(limit = 1, resourceId = ''): any[] {
     if (!this.db) return []
     const boundedLimit = Math.max(1, Math.min(10, Math.floor(Number(limit) || 1)))
     const rows = this.db.prepare(`
@@ -11997,9 +11997,10 @@ export class PersonalMemoryStore {
         AND json_extract(r.metadata_json,'$.attachmentPdfOcrTruncated')=1
         AND COALESCE(json_extract(r.metadata_json,'$.attachmentLocalPath'),'')<>''
         AND CAST(COALESCE(json_extract(r.metadata_json,'$.attachmentPdfOcrNextPage'),0) AS INTEGER)>=2
+        AND (?='' OR r.id=?)
       ORDER BY r.updated_at ASC
       LIMIT ?
-    `).all(boundedLimit) as any[]
+    `).all(String(resourceId || ''), String(resourceId || ''), boundedLimit) as any[]
     return rows.flatMap(row => {
       try {
         return [{ ...row, metadata: JSON.parse(row.metadata_json || '{}') }]
@@ -12012,7 +12013,8 @@ export class PersonalMemoryStore {
   listPendingAttachmentIndexResources(
     limit = 1,
     includeOcrRequired = false,
-    now = new Date()
+    now = new Date(),
+    resourceId = ''
   ): any[] {
     if (!this.db) return []
     const boundedLimit = Math.max(1, Math.min(10, Math.floor(Number(limit) || 1)))
@@ -12031,9 +12033,13 @@ export class PersonalMemoryStore {
           julianday(json_extract(r.metadata_json,'$.attachmentIndexNextAt')) IS NULL
           OR julianday(json_extract(r.metadata_json,'$.attachmentIndexNextAt'))<=julianday(?)
         )
+        AND (?='' OR r.id=?)
       ORDER BY r.updated_at ASC
       LIMIT ?
-    `).all(includeOcrRequired ? 1 : 0, now.toISOString(), boundedLimit) as any[]
+    `).all(
+      includeOcrRequired ? 1 : 0, now.toISOString(),
+      String(resourceId || ''), String(resourceId || ''), boundedLimit
+    ) as any[]
     return rows.flatMap(row => {
       try {
         return [{ ...row, metadata: JSON.parse(row.metadata_json || '{}') }]
@@ -12079,7 +12085,7 @@ export class PersonalMemoryStore {
     }
   }
 
-  listPendingWebSnapshotResources(limit = 1, now = new Date()): any[] {
+  listPendingWebSnapshotResources(limit = 1, now = new Date(), resourceId = ''): any[] {
     if (!this.db) return []
     const boundedLimit = Math.max(1, Math.min(10, Math.floor(Number(limit) || 1)))
     const rows = this.db.prepare(`
@@ -12096,9 +12102,12 @@ export class PersonalMemoryStore {
           julianday(json_extract(r.metadata_json,'$.webSnapshotNextAt')) IS NULL
           OR julianday(json_extract(r.metadata_json,'$.webSnapshotNextAt'))<=julianday(?)
         )
+        AND (?='' OR r.id=?)
       ORDER BY r.updated_at ASC
       LIMIT ?
-    `).all(now.toISOString(), boundedLimit) as any[]
+    `).all(
+      now.toISOString(), String(resourceId || ''), String(resourceId || ''), boundedLimit
+    ) as any[]
     return rows.flatMap(row => {
       try {
         return [{ ...row, metadata: JSON.parse(row.metadata_json || '{}') }]
@@ -12136,7 +12145,7 @@ export class PersonalMemoryStore {
     return { total, completed, pending: Math.max(0, total - completed - deferred), deferred }
   }
 
-  listPendingVoiceTranscriptResources(limit = 1, now = new Date()): any[] {
+  listPendingVoiceTranscriptResources(limit = 1, now = new Date(), resourceId = ''): any[] {
     if (!this.db) return []
     const boundedLimit = Math.max(1, Math.min(10, Math.floor(Number(limit) || 1)))
     const rows = this.db.prepare(`
@@ -12151,9 +12160,12 @@ export class PersonalMemoryStore {
           julianday(json_extract(r.metadata_json,'$.voiceTranscriptionNextAt')) IS NULL
           OR julianday(json_extract(r.metadata_json,'$.voiceTranscriptionNextAt'))<=julianday(?)
         )
+        AND (?='' OR r.id=?)
       ORDER BY r.updated_at ASC
       LIMIT ?
-    `).all(now.toISOString(), boundedLimit) as any[]
+    `).all(
+      now.toISOString(), String(resourceId || ''), String(resourceId || ''), boundedLimit
+    ) as any[]
     return rows.flatMap(row => {
       try {
         return [{ ...row, metadata: JSON.parse(row.metadata_json || '{}') }]
@@ -12189,7 +12201,7 @@ export class PersonalMemoryStore {
     return { total, completed, pending: Math.max(0, total - completed - deferred), deferred }
   }
 
-  listPendingImageOcrResources(limit = 1, now = new Date()): any[] {
+  listPendingImageOcrResources(limit = 1, now = new Date(), resourceId = ''): any[] {
     if (!this.db) return []
     const boundedLimit = Math.max(1, Math.min(10, Math.floor(Number(limit) || 1)))
     const rows = this.db.prepare(`
@@ -12203,9 +12215,12 @@ export class PersonalMemoryStore {
           julianday(json_extract(r.metadata_json,'$.imageOcrMigrationNextAt')) IS NULL
           OR julianday(json_extract(r.metadata_json,'$.imageOcrMigrationNextAt'))<=julianday(?)
         )
+        AND (?='' OR r.id=?)
       ORDER BY r.updated_at ASC
       LIMIT ?
-    `).all(now.toISOString(), boundedLimit) as any[]
+    `).all(
+      now.toISOString(), String(resourceId || ''), String(resourceId || ''), boundedLimit
+    ) as any[]
     return rows.flatMap(row => {
       try {
         return [{ ...row, metadata: JSON.parse(row.metadata_json || '{}') }]
@@ -12401,7 +12416,12 @@ export class PersonalMemoryStore {
     }
   }
 
-  listPendingAttachmentStructureResources(parserVersion: string, limit = 1, now = new Date()): any[] {
+  listPendingAttachmentStructureResources(
+    parserVersion: string,
+    limit = 1,
+    now = new Date(),
+    resourceId = ''
+  ): any[] {
     if (!this.db) return []
     const boundedLimit = Math.max(1, Math.min(10, Math.floor(Number(limit) || 1)))
     const nowIso = now.toISOString()
@@ -12423,9 +12443,13 @@ export class PersonalMemoryStore {
           julianday(json_extract(r.metadata_json,'$.attachmentStructureMigrationNextAt')) IS NULL
           OR julianday(json_extract(r.metadata_json,'$.attachmentStructureMigrationNextAt'))<=julianday(?)
         )
+        AND (?='' OR r.id=?)
       ORDER BY r.updated_at ASC
       LIMIT ?
-    `).all(String(parserVersion || ''), nowIso, boundedLimit) as any[]
+    `).all(
+      String(parserVersion || ''), nowIso,
+      String(resourceId || ''), String(resourceId || ''), boundedLimit
+    ) as any[]
     return rows.flatMap(row => {
       try {
         return [{ ...row, metadata: JSON.parse(row.metadata_json || '{}') }]
@@ -12435,7 +12459,12 @@ export class PersonalMemoryStore {
     })
   }
 
-  listPendingImageSemanticResources(modelVersion: string, limit = 1, now = new Date()): any[] {
+  listPendingImageSemanticResources(
+    modelVersion: string,
+    limit = 1,
+    now = new Date(),
+    resourceId = ''
+  ): any[] {
     if (!this.db) return []
     const boundedLimit = Math.max(1, Math.min(10, Math.floor(Number(limit) || 1)))
     const nowIso = now.toISOString()
@@ -12450,9 +12479,13 @@ export class PersonalMemoryStore {
           julianday(json_extract(r.metadata_json,'$.visualMigrationNextAt')) IS NULL
           OR julianday(json_extract(r.metadata_json,'$.visualMigrationNextAt'))<=julianday(?)
         )
+        AND (?='' OR r.id=?)
       ORDER BY r.updated_at ASC
       LIMIT ?
-    `).all(String(modelVersion || ''), nowIso, boundedLimit) as any[]
+    `).all(
+      String(modelVersion || ''), nowIso,
+      String(resourceId || ''), String(resourceId || ''), boundedLimit
+    ) as any[]
     return rows.flatMap(row => {
       try {
         return [{ ...row, metadata: JSON.parse(row.metadata_json || '{}') }]
@@ -13554,6 +13587,7 @@ export class PersonalMemoryStore {
     enrichmentStatus?: string
     attachmentStructureParserVersion?: string
     imageSemanticModelVersion?: string
+    resourceId?: string
     query?: string
     from?: string
     to?: string
@@ -13659,9 +13693,17 @@ export class PersonalMemoryStore {
           OR COALESCE(json_extract(mr.metadata_json,'$.attachmentPdfOcrTruncated'),0)=1
         )`
       enrichmentCompleted = `COALESCE(json_extract(mr.metadata_json,'$.attachmentPdfOcrTruncated'),0)=0
-        AND COALESCE(json_extract(mr.metadata_json,'$.attachmentPdfOcrStatus'),'')<>''`
-      enrichmentWaiting = `COALESCE(json_extract(mr.metadata_json,'$.attachmentPdfOcrTruncated'),0)=1`
-      enrichmentRawStatus = `COALESCE(json_extract(mr.metadata_json,'$.attachmentPdfOcrStatus'),'')`
+        AND COALESCE(json_extract(mr.metadata_json,'$.attachmentPdfOcrStatus'),'')='indexed'
+        AND COALESCE(json_extract(mr.metadata_json,'$.attachmentPdfOcrStorageTruncated'),0)=0`
+      enrichmentTerminal = `COALESCE(json_extract(mr.metadata_json,'$.attachmentPdfOcrStatus'),'')
+          IN ('not_found','empty')
+        OR COALESCE(json_extract(mr.metadata_json,'$.attachmentPdfOcrStorageTruncated'),0)=1`
+      enrichmentWaiting = `COALESCE(json_extract(mr.metadata_json,'$.attachmentPdfOcrTruncated'),0)=1
+        AND NOT (${enrichmentTerminal})`
+      enrichmentRawStatus = `CASE
+        WHEN COALESCE(json_extract(mr.metadata_json,'$.attachmentPdfOcrStorageTruncated'),0)=1
+          THEN 'storage_limit'
+        ELSE COALESCE(json_extract(mr.metadata_json,'$.attachmentPdfOcrStatus'),'') END`
     }
     const enrichmentDeferred = enrichmentKind
       ? `NOT (${enrichmentCompleted}) AND NOT (${enrichmentTerminal}) AND NOT (${enrichmentWaiting})
@@ -13681,6 +13723,11 @@ export class PersonalMemoryStore {
         waiting: enrichmentWaiting
       }
       if (enrichmentStatus) conditions.push(`(${stateConditions[enrichmentStatus]})`)
+    }
+    const resourceId = String(options.resourceId || '').trim()
+    if (resourceId) {
+      conditions.push('mr.id=?')
+      parameters.push(resourceId)
     }
     const resourceType = String(options.resourceType || '').trim()
     if (resourceType) {
@@ -13745,7 +13792,7 @@ export class PersonalMemoryStore {
     const safeReasonCodes = new Set([
       'pending', 'completed', 'failed', 'not_found', 'indexed', 'ocr_required',
       'dependency_missing', 'unsupported', 'too_large', 'empty', 'unsafe_url',
-      'not_html', 'timeout'
+      'not_html', 'timeout', 'storage_limit'
     ])
     const items = rows.map(row => {
       const {
@@ -13766,7 +13813,20 @@ export class PersonalMemoryStore {
             ? String(rawStatus) : '',
           attempts: Math.max(0, Math.min(10_000, Number(attempts || 0))),
           nextAttemptAt: Number.isFinite(parsedNextAt)
-            ? new Date(parsedNextAt).toISOString() : ''
+            ? new Date(parsedNextAt).toISOString() : '',
+          retryToken: createHash('sha256').update(JSON.stringify({
+            id: String(directoryItem.id || ''),
+            updatedAt: String(directoryItem.updated_at || ''),
+            kind: enrichmentKind,
+            state: String(state || 'pending'),
+            reasonCode: safeReasonCodes.has(String(rawStatus || ''))
+              ? String(rawStatus) : '',
+            attempts: Math.max(0, Math.min(10_000, Number(attempts || 0))),
+            nextAttemptAt: Number.isFinite(parsedNextAt)
+              ? new Date(parsedNextAt).toISOString() : '',
+            parserVersion: String(options.attachmentStructureParserVersion || ''),
+            semanticVersion: String(options.imageSemanticModelVersion || '')
+          })).digest('hex')
         }
       }
     })

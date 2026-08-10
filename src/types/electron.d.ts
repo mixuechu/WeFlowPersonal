@@ -2001,6 +2001,12 @@ export interface ElectronAPI {
         offset?: number
         revision?: string
       }) => Promise<any>
+      retryResourceEnrichment: (input: {
+        resourceId: string
+        kind: 'attachment_index' | 'attachment_structure' | 'image_ocr' |
+          'image_semantics' | 'voice_transcript' | 'web_snapshot' | 'pdf_ocr'
+        retryToken: string
+      }) => Promise<any>
       getResourceDossier: (id: string, expectedRevision: string) => Promise<any>
       getCurrentResourceDossier: (id: string) => Promise<any>
       getStructuredMemoryDossier: (
