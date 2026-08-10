@@ -13230,6 +13230,14 @@ function AiAssistantPage() {
                 : ` · ${dashboard.voiceTranscriptionMigration.pending} 条等待处理，自动语音转写当前未启用`)}
               {!!dashboard.voiceTranscriptionMigration.deferred && ` · ${dashboard.voiceTranscriptionMigration.deferred} 条正在退避等待`}
             </div>}
+            {!!dashboard?.webSnapshotMigration?.total && <div className="assistant-query-plan">
+              微信网页快照：{dashboard.webSnapshotMigration.completed || 0}
+              {' / '}{dashboard.webSnapshotMigration.total} 已处理
+              {!!dashboard.webSnapshotMigration.pending && (dashboard.webSnapshotMigration.enabled
+                ? ` · ${dashboard.webSnapshotMigration.pending} 个将在后续同步中继续`
+                : ` · ${dashboard.webSnapshotMigration.pending} 个等待处理，网页正文索引当前未启用`)}
+              {!!dashboard.webSnapshotMigration.deferred && ` · ${dashboard.webSnapshotMigration.deferred} 个正在退避等待`}
+            </div>}
             {dashboard?.resourceContentBudget?.version && <div className={`assistant-query-plan ${
               dashboard.resourceContentBudget.healthy ? '' : 'warning'
             }`}>

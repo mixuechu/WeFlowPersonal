@@ -2513,10 +2513,51 @@ export class AiAssistantService {
       message.webSnapshotFinalUrl = snapshot.finalUrl || ''
       message.webSnapshotTitle = snapshot.title || ''
       message.webSnapshotDescription = snapshot.description || ''
+      message.webSnapshotAttempts = 1
+      message.webSnapshotNextAt = snapshot.success ||
+        ['unsafe_url', 'not_html', 'too_large'].includes(snapshot.status)
+        ? ''
+        : new Date(Date.now() + 86_400_000).toISOString()
       if (snapshot.success && snapshot.text) {
         message.content = `${message.content}\n[网页·本地快照] ${snapshot.text}`.slice(0, 18_000)
         message.webSnapshotSource = 'local-safe-fetch'
       }
+    }
+  }
+
+  private async continuePendingWebSnapshots(runId: string): Promise<void> {
+    if (!this.config.get('aiAssistantIndexWebLinks')) return
+    const pending = personalMemoryStore.listPendingWebSnapshotResources(1)
+    for (const resource of pending) {
+      const metadata = resource.metadata || {}
+      const attempts = Number(metadata.webSnapshotAttempts || 0)
+      const snapshot = await captureWebSnapshot(String(resource.url || ''))
+      const terminal = ['unsafe_url', 'not_html', 'too_large'].includes(snapshot.status)
+      const patch: Record<string, any> = {
+        webSnapshotStatus: snapshot.status,
+        webSnapshotFinalUrl: snapshot.finalUrl || '',
+        webSnapshotTitle: snapshot.title || '',
+        webSnapshotDescription: snapshot.description || '',
+        webSnapshotAttempts: attempts + 1,
+        webSnapshotNextAt: ''
+      }
+      let content = String(resource.content || '')
+        .replace(/\n?\[网页·本地快照\][\s\S]*$/u, '')
+        .trim()
+      if (snapshot.success && snapshot.text) {
+        content = `${content}\n[网页·本地快照] ${snapshot.text}`.trim()
+        patch.webSnapshotSource = 'local-safe-fetch'
+        patch.webSnapshotIndexedAt = new Date().toISOString()
+      } else if (!terminal) {
+        const retryDays = Math.min(7, Math.max(1, 2 ** attempts))
+        patch.webSnapshotNextAt = new Date(Date.now() + retryDays * 86_400_000).toISOString()
+      }
+      personalMemoryStore.replaceResourceContent(
+        resource.id,
+        content,
+        patch,
+        this.wechatResourceMaintenanceOrigin(runId, resource.id, 'web-snapshot')
+      )
     }
   }
 
@@ -2672,7 +2713,9 @@ export class AiAssistantService {
           webSnapshotFinalUrl: message.webSnapshotFinalUrl || '',
           webSnapshotTitle: message.webSnapshotTitle || '',
           webSnapshotDescription: message.webSnapshotDescription || '',
-          webSnapshotSource: message.webSnapshotSource || ''
+          webSnapshotSource: message.webSnapshotSource || '',
+          webSnapshotAttempts: Number(message.webSnapshotAttempts || 0),
+          webSnapshotNextAt: message.webSnapshotNextAt || ''
         },
         createdAt: new Date(Number(message.timestamp || 0) * 1000).toISOString(),
         updatedAt: createdAt,
@@ -4580,6 +4623,7 @@ export class AiAssistantService {
       await this.continuePendingImageOcr(runId)
       await this.continuePendingVoiceTranscripts(runId)
       await this.continuePendingImageSemantics(runId)
+      await this.continuePendingWebSnapshots(runId)
       await this.continuePendingAttachmentStructures(runId)
       const successfulMessageKeys: string[] = []
       const batchErrors: string[] = []
@@ -5402,6 +5446,10 @@ export class AiAssistantService {
       voiceTranscriptionMigration: {
         ...personalMemoryStore.getVoiceTranscriptMigrationStats(),
         enabled: Boolean(this.config.get('autoTranscribeVoice'))
+      },
+      webSnapshotMigration: {
+        ...personalMemoryStore.getWebSnapshotMigrationStats(),
+        enabled: Boolean(this.config.get('aiAssistantIndexWebLinks'))
       },
       memoryFeed: {
         claims: [],

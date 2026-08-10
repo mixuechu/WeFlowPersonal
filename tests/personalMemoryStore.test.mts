@@ -24115,6 +24115,41 @@ test('wechat attachment indexing retries recoverable failures but not terminal f
   assert.equal(store.getAttachmentIndexMigrationStats().completed, 2)
 }))
 
+test('web snapshot retry queue separates transient failures from safe terminal outcomes', () => withStore(store => {
+  const add = (id: string, status: string, extra: Record<string, any> = {}) => store.upsertResources([{
+    id,
+    resourceType: 'link',
+    title: id,
+    url: `https://example.com/${id}`,
+    content: '链接消息',
+    metadata: { sourceId: 'wechat', webSnapshotStatus: status, ...extra },
+    evidence: []
+  }])
+  add('web-timeout', 'timeout')
+  add('web-private', 'unsafe_url')
+  add('web-non-html', 'not_html')
+  add('web-deferred', 'failed', { webSnapshotNextAt: '2099-01-01T00:00:00.000Z' })
+  assert.equal(store.listPendingWebSnapshotResources(10)
+    .some(item => item.id === 'web-timeout'), true)
+  assert.equal(store.listPendingWebSnapshotResources(10)
+    .some(item => item.id === 'web-private'), false)
+  assert.equal(store.listPendingWebSnapshotResources(10)
+    .some(item => item.id === 'web-non-html'), false)
+  assert.equal(store.listPendingWebSnapshotResources(10)
+    .some(item => item.id === 'web-deferred'), false)
+  assert.deepEqual(store.getWebSnapshotMigrationStats(), {
+    total: 4, completed: 2, pending: 1, deferred: 1
+  })
+  store.replaceResourceContent('web-timeout', '链接消息\n[网页·本地快照] 项目正式发布', {
+    webSnapshotSource: 'local-safe-fetch',
+    webSnapshotStatus: 'indexed',
+    webSnapshotAttempts: 2,
+    webSnapshotNextAt: ''
+  })
+  assert.ok(store.searchText('项目正式发布').some(item => item.id === 'resource:web-timeout'))
+  assert.equal(store.getWebSnapshotMigrationStats().completed, 3)
+}))
+
 test('background resource migrations deserialize only their bounded eligible rows', () => withStore(store => {
   const database = (store as any).db
   const insert = database.prepare(`

@@ -12079,6 +12079,63 @@ export class PersonalMemoryStore {
     }
   }
 
+  listPendingWebSnapshotResources(limit = 1, now = new Date()): any[] {
+    if (!this.db) return []
+    const boundedLimit = Math.max(1, Math.min(10, Math.floor(Number(limit) || 1)))
+    const rows = this.db.prepare(`
+      SELECT r.* FROM memory_resources r
+      LEFT JOIN resource_suppressions s ON s.resource_id=r.id
+      WHERE r.resource_type='link' AND s.resource_id IS NULL
+        AND COALESCE(r.url,'')<>''
+        AND json_valid(r.metadata_json)=1
+        AND COALESCE(json_extract(r.metadata_json,'$.sourceId'),'wechat')='wechat'
+        AND COALESCE(json_extract(r.metadata_json,'$.webSnapshotSource'),'')=''
+        AND COALESCE(json_extract(r.metadata_json,'$.webSnapshotStatus'),'')
+          NOT IN ('unsafe_url','not_html','too_large')
+        AND (
+          julianday(json_extract(r.metadata_json,'$.webSnapshotNextAt')) IS NULL
+          OR julianday(json_extract(r.metadata_json,'$.webSnapshotNextAt'))<=julianday(?)
+        )
+      ORDER BY r.updated_at ASC
+      LIMIT ?
+    `).all(now.toISOString(), boundedLimit) as any[]
+    return rows.flatMap(row => {
+      try {
+        return [{ ...row, metadata: JSON.parse(row.metadata_json || '{}') }]
+      } catch {
+        return []
+      }
+    })
+  }
+
+  getWebSnapshotMigrationStats(now = new Date()): any {
+    if (!this.db) return { total: 0, completed: 0, pending: 0, deferred: 0 }
+    const row = this.db.prepare(`
+      WITH eligible AS (
+        SELECT
+          COALESCE(json_extract(r.metadata_json,'$.webSnapshotSource'),'') AS source,
+          COALESCE(json_extract(r.metadata_json,'$.webSnapshotStatus'),'') AS status,
+          json_extract(r.metadata_json,'$.webSnapshotNextAt') AS next_at
+        FROM memory_resources r
+        LEFT JOIN resource_suppressions s ON s.resource_id=r.id
+        WHERE r.resource_type='link' AND s.resource_id IS NULL
+          AND COALESCE(r.url,'')<>''
+          AND json_valid(r.metadata_json)=1
+          AND COALESCE(json_extract(r.metadata_json,'$.sourceId'),'wechat')='wechat'
+      )
+      SELECT
+        COUNT(*) AS total,
+        COALESCE(SUM(CASE WHEN source<>'' OR status IN ('unsafe_url','not_html','too_large') THEN 1 ELSE 0 END),0) AS completed,
+        COALESCE(SUM(CASE WHEN source='' AND status NOT IN ('unsafe_url','not_html','too_large')
+          AND julianday(next_at)>julianday(?) THEN 1 ELSE 0 END),0) AS deferred
+      FROM eligible
+    `).get(now.toISOString()) as any
+    const total = Number(row?.total || 0)
+    const completed = Number(row?.completed || 0)
+    const deferred = Number(row?.deferred || 0)
+    return { total, completed, pending: Math.max(0, total - completed - deferred), deferred }
+  }
+
   listPendingVoiceTranscriptResources(limit = 1, now = new Date()): any[] {
     if (!this.db) return []
     const boundedLimit = Math.max(1, Math.min(10, Math.floor(Number(limit) || 1)))

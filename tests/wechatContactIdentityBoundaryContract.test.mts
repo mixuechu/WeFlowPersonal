@@ -75,7 +75,8 @@ test('raw voice and image resources survive first-pass enrichment failure for du
     service.indexOf('await this.continuePendingAttachmentIndexes(runId)'),
     service.indexOf('await this.continuePendingImageOcr(runId)'),
     service.indexOf('await this.continuePendingVoiceTranscripts(runId)'),
-    service.indexOf('await this.continuePendingImageSemantics(runId)')
+    service.indexOf('await this.continuePendingImageSemantics(runId)'),
+    service.indexOf('await this.continuePendingWebSnapshots(runId)')
   ]
   assert.ok(syncOrder.every(index => index >= 0))
   assert.deepEqual([...syncOrder].sort((a, b) => a - b), syncOrder)
@@ -88,4 +89,5 @@ test('media migration progress distinguishes paused features from active retries
   assert.match(assistantPage, /自动语音转写当前未启用/)
   assert.match(assistantPage, /图片视觉理解当前未启用/)
   assert.match(assistantPage, /扫描 PDF 等待启用图片 OCR/)
+  assert.match(assistantPage, /网页正文索引当前未启用/)
 })
