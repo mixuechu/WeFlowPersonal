@@ -930,6 +930,8 @@ function AiAssistantPage() {
   const [reviewReasonSelections, setReviewReasonSelections] =
     useState<Record<string, ReviewReasonCode>>({})
   const [dashboardLoadError, setDashboardLoadError] = useState('')
+  const [dashboardLoadedAt, setDashboardLoadedAt] = useState('')
+  const [dashboardRefreshing, setDashboardRefreshing] = useState(false)
   const [graphQuery, setGraphQuery] = useState('')
   const [graphRelationType, setGraphRelationType] = useState('')
   const [graphRelationStatus, setGraphRelationStatus] = useState('')
@@ -2075,6 +2077,7 @@ function AiAssistantPage() {
 
   const load = useCallback(async () => {
     const request = dashboardLoadGate.current.begin()
+    setDashboardRefreshing(true)
     try {
       const [nextStatus, nextDashboard] = await dashboardRefresh.current.run(() => Promise.all([
         window.electronAPI.aiAssistant.status(),
@@ -2083,12 +2086,15 @@ function AiAssistantPage() {
       if (!dashboardLoadGate.current.isCurrent(request)) return
       setStatus(nextStatus)
       setDashboard(nextDashboard)
+      setDashboardLoadedAt(new Date().toISOString())
       setDashboardLoadError('')
     } catch (error) {
       if (dashboardLoadGate.current.isCurrent(request)) {
         setDashboardLoadError(error instanceof Error ? error.message : String(error))
       }
       throw error
+    } finally {
+      if (dashboardLoadGate.current.isCurrent(request)) setDashboardRefreshing(false)
     }
   }, [])
 
@@ -9906,9 +9912,20 @@ function AiAssistantPage() {
         )}
 
         {message && <div className={`assistant-message ${message.includes('完成') ? 'success' : ''}`}>{message}</div>}
-        {dashboardLoadError && <div className="assistant-message">
-          状态刷新暂时失败：{dashboardLoadError}。系统不会叠加重复请求，将在下一轮自动重试。
-        </div>}
+        {dashboardLoadError && <section className="assistant-recovery-banner page-incident" role="alert">
+          <TriangleAlert size={15} />
+          <span><strong>AI 助理当前状态暂时无法刷新</strong>
+            <small>
+              {dashboardLoadedAt
+                ? `页面仍保留 ${new Date(dashboardLoadedAt).toLocaleString('zh-CN', { hour12: false })} 的最近成功快照，不能视为当前状态；`
+                : '当前尚未取得可验证的运行状态，页面中的运行数字不能视为权威结果；'}
+              {' '}{dashboardLoadError}。系统每 15 秒有界重试，不会叠加请求。
+            </small>
+          </span>
+          <button disabled={dashboardRefreshing} onClick={() => void load().catch(() => {})}>
+            {dashboardRefreshing ? '正在重试…' : '立即重试'}
+          </button>
+        </section>}
         {memoryDiagnosticsError && <section className="assistant-recovery-banner page-incident" role="alert">
           <TriangleAlert size={15} />
           <span><strong>个人记忆诊断暂时无法刷新</strong>
