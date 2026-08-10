@@ -13550,6 +13550,10 @@ export class PersonalMemoryStore {
   listResourceArchive(options: {
     resourceType?: string
     sourceId?: MemoryEvidenceSource
+    enrichmentKind?: string
+    enrichmentStatus?: string
+    attachmentStructureParserVersion?: string
+    imageSemanticModelVersion?: string
     query?: string
     from?: string
     to?: string
@@ -13565,6 +13569,119 @@ export class PersonalMemoryStore {
     }
     const conditions: string[] = []
     const parameters: Array<string | number> = []
+    const enrichmentKind = [
+      'attachment_index', 'attachment_structure', 'image_ocr',
+      'image_semantics', 'voice_transcript', 'web_snapshot', 'pdf_ocr'
+    ].includes(String(options.enrichmentKind || ''))
+      ? String(options.enrichmentKind) : ''
+    const enrichmentStatus = [
+      'pending', 'deferred', 'completed', 'terminal', 'waiting'
+    ].includes(String(options.enrichmentStatus || ''))
+      ? String(options.enrichmentStatus) : ''
+    const nowIso = new Date().toISOString()
+    const quoteSql = (value: unknown) => `'${String(value || '').replaceAll("'", "''")}'`
+    const parserVersion = quoteSql(options.attachmentStructureParserVersion)
+    const semanticVersion = quoteSql(options.imageSemanticModelVersion)
+    const nowSql = quoteSql(nowIso)
+    let enrichmentBase = ''
+    let enrichmentCompleted = '0'
+    let enrichmentTerminal = '0'
+    let enrichmentWaiting = '0'
+    let enrichmentNextAt = "''"
+    let enrichmentRawStatus = "''"
+    let enrichmentAttempts = '0'
+    if (enrichmentKind === 'attachment_index') {
+      enrichmentBase = `mr.resource_type='file' AND COALESCE(mr.file_name,'')<>''
+        AND json_valid(mr.metadata_json)=1
+        AND COALESCE(json_extract(mr.metadata_json,'$.sourceId'),'wechat')='wechat'`
+      enrichmentCompleted = `COALESCE(json_extract(mr.metadata_json,'$.attachmentTextSource'),'')<>''`
+      enrichmentTerminal = `COALESCE(json_extract(mr.metadata_json,'$.attachmentIndexStatus'),'')
+        IN ('unsupported','too_large','empty')`
+      enrichmentWaiting = `COALESCE(json_extract(mr.metadata_json,'$.attachmentTextSource'),'')=''
+        AND COALESCE(json_extract(mr.metadata_json,'$.attachmentIndexStatus'),'')='ocr_required'`
+      enrichmentNextAt = `COALESCE(json_extract(mr.metadata_json,'$.attachmentIndexNextAt'),'')`
+      enrichmentRawStatus = `COALESCE(json_extract(mr.metadata_json,'$.attachmentIndexStatus'),'')`
+      enrichmentAttempts = `CAST(COALESCE(json_extract(mr.metadata_json,'$.attachmentIndexAttempts'),0) AS INTEGER)`
+    } else if (enrichmentKind === 'attachment_structure') {
+      enrichmentBase = `mr.resource_type='file' AND json_valid(mr.metadata_json)=1
+        AND lower(COALESCE(NULLIF(json_extract(mr.metadata_json,'$.attachmentFormat'),''),mr.file_ext))
+          IN ('.docx','.pptx','.xlsx','.pdf')
+        AND COALESCE(json_extract(mr.metadata_json,'$.attachmentLocalPath'),'')<>''`
+      enrichmentCompleted = `COALESCE(json_extract(mr.metadata_json,'$.attachmentStructureParserVersion'),'')=${parserVersion}
+        AND (
+          json_type(mr.metadata_json,'$.attachmentStructure') IN ('object','array','true')
+          OR (json_type(mr.metadata_json,'$.attachmentStructure')='text'
+            AND COALESCE(json_extract(mr.metadata_json,'$.attachmentStructure'),'')<>'')
+          OR (json_type(mr.metadata_json,'$.attachmentStructure') IN ('integer','real')
+            AND COALESCE(json_extract(mr.metadata_json,'$.attachmentStructure'),0)<>0)
+        )`
+      enrichmentNextAt = `COALESCE(json_extract(mr.metadata_json,'$.attachmentStructureMigrationNextAt'),'')`
+      enrichmentRawStatus = `COALESCE(json_extract(mr.metadata_json,'$.attachmentStructureMigrationStatus'),'')`
+      enrichmentAttempts = `CAST(COALESCE(json_extract(mr.metadata_json,'$.attachmentStructureMigrationAttempts'),0) AS INTEGER)`
+    } else if (enrichmentKind === 'image_ocr') {
+      enrichmentBase = `mr.resource_type='image' AND json_valid(mr.metadata_json)=1
+        AND COALESCE(json_extract(mr.metadata_json,'$.mediaLocalPath'),'')<>''`
+      enrichmentCompleted = `COALESCE(json_extract(mr.metadata_json,'$.ocrSource'),'')<>''`
+      enrichmentNextAt = `COALESCE(json_extract(mr.metadata_json,'$.imageOcrMigrationNextAt'),'')`
+      enrichmentRawStatus = `COALESCE(json_extract(mr.metadata_json,'$.imageOcrMigrationStatus'),'')`
+      enrichmentAttempts = `CAST(COALESCE(json_extract(mr.metadata_json,'$.imageOcrMigrationAttempts'),0) AS INTEGER)`
+    } else if (enrichmentKind === 'image_semantics') {
+      enrichmentBase = `mr.resource_type='image' AND json_valid(mr.metadata_json)=1
+        AND COALESCE(json_extract(mr.metadata_json,'$.mediaLocalPath'),'')<>''`
+      enrichmentCompleted = `COALESCE(json_extract(mr.metadata_json,'$.visualModelVersion'),'')=${semanticVersion}`
+      enrichmentNextAt = `COALESCE(json_extract(mr.metadata_json,'$.visualMigrationNextAt'),'')`
+      enrichmentRawStatus = `COALESCE(json_extract(mr.metadata_json,'$.visualMigrationStatus'),'')`
+      enrichmentAttempts = `CAST(COALESCE(json_extract(mr.metadata_json,'$.visualMigrationAttempts'),0) AS INTEGER)`
+    } else if (enrichmentKind === 'voice_transcript') {
+      enrichmentBase = `mr.resource_type='voice' AND json_valid(mr.metadata_json)=1
+        AND COALESCE(json_extract(mr.metadata_json,'$.localId'),'')<>''
+        AND COALESCE(json_extract(mr.metadata_json,'$.sessionId'),'')<>''`
+      enrichmentCompleted = `COALESCE(json_extract(mr.metadata_json,'$.transcriptionSource'),'')<>''`
+      enrichmentNextAt = `COALESCE(json_extract(mr.metadata_json,'$.voiceTranscriptionNextAt'),'')`
+      enrichmentRawStatus = `COALESCE(json_extract(mr.metadata_json,'$.voiceTranscriptionStatus'),'')`
+      enrichmentAttempts = `CAST(COALESCE(json_extract(mr.metadata_json,'$.voiceTranscriptionAttempts'),0) AS INTEGER)`
+    } else if (enrichmentKind === 'web_snapshot') {
+      enrichmentBase = `mr.resource_type='link' AND COALESCE(mr.url,'')<>''
+        AND json_valid(mr.metadata_json)=1
+        AND COALESCE(json_extract(mr.metadata_json,'$.sourceId'),'wechat')='wechat'`
+      enrichmentCompleted = `COALESCE(json_extract(mr.metadata_json,'$.webSnapshotSource'),'')<>''`
+      enrichmentTerminal = `COALESCE(json_extract(mr.metadata_json,'$.webSnapshotStatus'),'')
+        IN ('unsafe_url','not_html','too_large')`
+      enrichmentNextAt = `COALESCE(json_extract(mr.metadata_json,'$.webSnapshotNextAt'),'')`
+      enrichmentRawStatus = `COALESCE(json_extract(mr.metadata_json,'$.webSnapshotStatus'),'')`
+      enrichmentAttempts = `CAST(COALESCE(json_extract(mr.metadata_json,'$.webSnapshotAttempts'),0) AS INTEGER)`
+    } else if (enrichmentKind === 'pdf_ocr') {
+      enrichmentBase = `mr.resource_type='file' AND json_valid(mr.metadata_json)=1
+        AND COALESCE(json_extract(mr.metadata_json,'$.attachmentLocalPath'),'')<>''
+        AND lower(COALESCE(NULLIF(json_extract(mr.metadata_json,'$.attachmentFormat'),''),mr.file_ext)) IN ('.pdf','.pdf-ocr')
+        AND (
+          COALESCE(json_extract(mr.metadata_json,'$.attachmentPdfOcrStatus'),'')<>''
+          OR COALESCE(json_extract(mr.metadata_json,'$.attachmentPdfOcrTruncated'),0)=1
+        )`
+      enrichmentCompleted = `COALESCE(json_extract(mr.metadata_json,'$.attachmentPdfOcrTruncated'),0)=0
+        AND COALESCE(json_extract(mr.metadata_json,'$.attachmentPdfOcrStatus'),'')<>''`
+      enrichmentWaiting = `COALESCE(json_extract(mr.metadata_json,'$.attachmentPdfOcrTruncated'),0)=1`
+      enrichmentRawStatus = `COALESCE(json_extract(mr.metadata_json,'$.attachmentPdfOcrStatus'),'')`
+    }
+    const enrichmentDeferred = enrichmentKind
+      ? `NOT (${enrichmentCompleted}) AND NOT (${enrichmentTerminal}) AND NOT (${enrichmentWaiting})
+        AND COALESCE(julianday(${enrichmentNextAt})>julianday(${nowSql}),0)=1`
+      : '0'
+    const enrichmentPending = enrichmentKind
+      ? `NOT (${enrichmentCompleted}) AND NOT (${enrichmentTerminal}) AND NOT (${enrichmentWaiting})
+        AND NOT (${enrichmentDeferred})`
+      : '0'
+    if (enrichmentKind) {
+      conditions.push(`(${enrichmentBase})`)
+      const stateConditions: Record<string, string> = {
+        pending: enrichmentPending,
+        deferred: enrichmentDeferred,
+        completed: enrichmentCompleted,
+        terminal: enrichmentTerminal,
+        waiting: enrichmentWaiting
+      }
+      if (enrichmentStatus) conditions.push(`(${stateConditions[enrichmentStatus]})`)
+    }
     const resourceType = String(options.resourceType || '').trim()
     if (resourceType) {
       conditions.push('mr.resource_type=?')
@@ -13601,7 +13718,7 @@ export class PersonalMemoryStore {
       SELECT COUNT(*) AS count FROM memory_resources mr WHERE ${where}
     `).get(...parameters) as any)?.count || 0)
     const limit = Math.max(1, Math.min(100, Math.floor(Number(options.limit) || 40)))
-    const items = this.db.prepare(`
+    const rows = this.db.prepare(`
       SELECT mr.id,mr.resource_type,mr.title,mr.url,mr.file_name,mr.file_ext,
         mr.created_at,mr.updated_at,
         length(mr.content) AS content_length,
@@ -13609,12 +13726,50 @@ export class PersonalMemoryStore {
           WHERE sde.document_id='resource:' || mr.id) AS evidence_count,
         (SELECT GROUP_CONCAT(DISTINCT sde.source_id)
           FROM search_document_evidence sde
-          WHERE sde.document_id='resource:' || mr.id) AS source_ids
+          WHERE sde.document_id='resource:' || mr.id) AS source_ids,
+        ${enrichmentKind ? enrichmentRawStatus : "''"} AS enrichment_raw_status,
+        ${enrichmentKind ? enrichmentAttempts : '0'} AS enrichment_attempts,
+        ${enrichmentKind ? enrichmentNextAt : "''"} AS enrichment_next_at,
+        CASE
+          WHEN ${enrichmentKind ? enrichmentCompleted : '0'} THEN 'completed'
+          WHEN ${enrichmentKind ? enrichmentTerminal : '0'} THEN 'terminal'
+          WHEN ${enrichmentKind ? enrichmentWaiting : '0'} THEN 'waiting'
+          WHEN ${enrichmentKind ? enrichmentDeferred : '0'} THEN 'deferred'
+          ELSE ${enrichmentKind ? "'pending'" : "''"}
+        END AS enrichment_state
       FROM memory_resources mr
       WHERE ${where}
       ORDER BY mr.updated_at DESC,mr.id ASC
       LIMIT ? OFFSET ?
     `).all(...parameters, limit, offset) as any[]
+    const safeReasonCodes = new Set([
+      'pending', 'completed', 'failed', 'not_found', 'indexed', 'ocr_required',
+      'dependency_missing', 'unsupported', 'too_large', 'empty', 'unsafe_url',
+      'not_html', 'timeout'
+    ])
+    const items = rows.map(row => {
+      const {
+        enrichment_raw_status: rawStatus,
+        enrichment_attempts: attempts,
+        enrichment_next_at: nextAt,
+        enrichment_state: state,
+        ...directoryItem
+      } = row
+      if (!enrichmentKind) return directoryItem
+      const parsedNextAt = Date.parse(String(nextAt || ''))
+      return {
+        ...directoryItem,
+        enrichment: {
+          kind: enrichmentKind,
+          state: String(state || 'pending'),
+          reasonCode: safeReasonCodes.has(String(rawStatus || ''))
+            ? String(rawStatus) : '',
+          attempts: Math.max(0, Math.min(10_000, Number(attempts || 0))),
+          nextAttemptAt: Number.isFinite(parsedNextAt)
+            ? new Date(parsedNextAt).toISOString() : ''
+        }
+      }
+    })
     const completedRevision = this.getResourceArchiveRevision()
     if (completedRevision !== revision) {
       return { items: [], total: 0, hasMore: false, revision: completedRevision, stale: true }

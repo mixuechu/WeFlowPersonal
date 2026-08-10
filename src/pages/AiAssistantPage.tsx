@@ -162,6 +162,45 @@ const MEMORY_GROWTH_CONNECTOR_OPERATION_LABELS: Record<string, string> = {
   'documents.analysis_failed': '文档分析失败'
 }
 
+const RESOURCE_ENRICHMENT_KIND_LABELS: Record<string, string> = {
+  attachment_index: '附件正文',
+  attachment_structure: '附件结构',
+  image_ocr: '图片 OCR',
+  image_semantics: '图片视觉理解',
+  voice_transcript: '语音转写',
+  web_snapshot: '网页快照',
+  pdf_ocr: '扫描 PDF OCR'
+}
+
+const RESOURCE_ENRICHMENT_STATE_LABELS: Record<string, string> = {
+  pending: '等待处理',
+  deferred: '失败后退避',
+  completed: '已完成',
+  terminal: '无需再试',
+  waiting: '等待其他能力'
+}
+
+const RESOURCE_ENRICHMENT_REASON_LABELS: Record<string, string> = {
+  failed: '本次处理失败',
+  not_found: '本机暂未找到原始载体',
+  indexed: '索引已经完成',
+  completed: '处理已经完成',
+  pending: '尚未开始处理',
+  ocr_required: '扫描版文件，需要 OCR 接力',
+  dependency_missing: '本机缺少所需解析组件',
+  unsupported: '当前版本不支持这种格式',
+  too_large: '超过本机安全处理上限',
+  empty: '未提取到可读内容',
+  unsafe_url: '安全策略拒绝访问该地址',
+  not_html: '目标不是可索引网页',
+  timeout: '访问或处理超时'
+}
+
+type ResourceEnrichmentKind = '' | 'attachment_index' | 'attachment_structure' |
+  'image_ocr' | 'image_semantics' | 'voice_transcript' | 'web_snapshot' | 'pdf_ocr'
+type ResourceEnrichmentStatus = '' | 'pending' | 'deferred' | 'completed' |
+  'terminal' | 'waiting'
+
 const memoryGrowthConnectorOperationLabel = (originId: unknown): string =>
   MEMORY_GROWTH_CONNECTOR_OPERATION_LABELS[
     String(originId || '').split(':', 1)[0]
@@ -1072,6 +1111,10 @@ function AiAssistantPage() {
   const [resourceSourceFilter, setResourceSourceFilter] = useState<
     '' | 'wechat' | 'documents' | 'calendar' | 'mail' | 'legacy'
   >('')
+  const [resourceEnrichmentKind, setResourceEnrichmentKind] =
+    useState<ResourceEnrichmentKind>('')
+  const [resourceEnrichmentStatus, setResourceEnrichmentStatus] =
+    useState<ResourceEnrichmentStatus>('')
   const [resourceFrom, setResourceFrom] = useState('')
   const [resourceTo, setResourceTo] = useState('')
   const [resourceRefreshKey, setResourceRefreshKey] = useState(0)
@@ -1761,13 +1804,17 @@ function AiAssistantPage() {
   const resourceArchiveOptions = useMemo(() => ({
     resourceType: resourceTypeFilter || undefined,
     sourceId: resourceSourceFilter || undefined,
+    enrichmentKind: resourceEnrichmentKind || undefined,
+    enrichmentStatus: resourceEnrichmentKind && resourceEnrichmentStatus
+      ? resourceEnrichmentStatus : undefined,
     query: resourceQuery.trim() || undefined,
     from: resourceFrom ? new Date(`${resourceFrom}T00:00:00+08:00`).toISOString() : undefined,
     to: resourceTo ? new Date(`${resourceTo}T23:59:59.999+08:00`).toISOString() : undefined,
     limit: 40,
     offset: 0
   }), [
-    resourceTypeFilter, resourceSourceFilter, resourceQuery, resourceFrom, resourceTo
+    resourceTypeFilter, resourceSourceFilter, resourceEnrichmentKind,
+    resourceEnrichmentStatus, resourceQuery, resourceFrom, resourceTo
   ])
   const taskArchiveOptions = useMemo(() => ({
     status: taskArchiveStatus,
@@ -13179,11 +13226,30 @@ function AiAssistantPage() {
                 <option value="documents">本机文档</option><option value="calendar">macOS 日历</option>
                 <option value="mail">Mail</option><option value="legacy">历史未知来源</option>
               </select>
+              <select value={resourceEnrichmentKind} onChange={event => {
+                setResourceEnrichmentKind(event.target.value as ResourceEnrichmentKind)
+                if (!event.target.value) setResourceEnrichmentStatus('')
+              }}>
+                <option value="">全部补全能力</option>
+                {Object.entries(RESOURCE_ENRICHMENT_KIND_LABELS).map(([value, label]) =>
+                  <option key={value} value={value}>{label}</option>)}
+              </select>
+              <select value={resourceEnrichmentStatus}
+                disabled={!resourceEnrichmentKind}
+                onChange={event => setResourceEnrichmentStatus(
+                  event.target.value as ResourceEnrichmentStatus
+                )}>
+                <option value="">该能力的全部状态</option>
+                {Object.entries(RESOURCE_ENRICHMENT_STATE_LABELS).map(([value, label]) =>
+                  <option key={value} value={value}>{label}</option>)}
+              </select>
               <label><span>从</span><input type="date" value={resourceFrom} onChange={event => setResourceFrom(event.target.value)} /></label>
               <label><span>至</span><input type="date" value={resourceTo} onChange={event => setResourceTo(event.target.value)} /></label>
-              {(resourceQuery || resourceTypeFilter || resourceSourceFilter || resourceFrom || resourceTo) &&
+              {(resourceQuery || resourceTypeFilter || resourceSourceFilter || resourceEnrichmentKind ||
+                resourceEnrichmentStatus || resourceFrom || resourceTo) &&
                 <button onClick={() => {
                   setResourceQuery(''); setResourceTypeFilter(''); setResourceSourceFilter('')
+                  setResourceEnrichmentKind(''); setResourceEnrichmentStatus('')
                   setResourceFrom(''); setResourceTo('')
                 }}>清除范围</button>}
             </div>
@@ -13191,6 +13257,31 @@ function AiAssistantPage() {
               <small className="assistant-evidence">
                 首页不再周期传输资源正文、附件结构或原文；目录分页读取，单条详情仅在展开时从 SQLCipher 水合。
               </small>}
+            <div className="assistant-inline-filters assistant-inline-filters-wide">
+              {([
+                ['attachment_structure', dashboard?.attachmentStructureMigration],
+                ['attachment_index', dashboard?.attachmentIndexMigration],
+                ['image_semantics', dashboard?.imageSemanticMigration],
+                ['image_ocr', dashboard?.imageOcrMigration],
+                ['voice_transcript', dashboard?.voiceTranscriptionMigration],
+                ['web_snapshot', dashboard?.webSnapshotMigration]
+              ] as Array<[ResourceEnrichmentKind, any]>).flatMap(([kind, stats]) => {
+                if (!stats?.total) return []
+                const entries: Array<[ResourceEnrichmentStatus, number, string]> = [
+                  ['pending', Number(stats.pending || 0), '待处理'],
+                  ['deferred', Number(stats.deferred || 0), '退避'],
+                  ['waiting', Number(stats.waitingForOcr || 0), '等待 OCR']
+                ]
+                return entries.filter(([, count]) => count > 0).map(([state, count, label]) =>
+                  <button className="assistant-dossier-link" key={`${kind}-${state}`}
+                    onClick={() => {
+                      setResourceEnrichmentKind(kind)
+                      setResourceEnrichmentStatus(state)
+                    }}>
+                    {RESOURCE_ENRICHMENT_KIND_LABELS[kind]} · {label} {count}
+                  </button>)
+              })}
+            </div>
             {!!dashboard?.attachmentStructureMigration?.total && <div className="assistant-query-plan">
               历史附件结构化：{dashboard.attachmentStructureMigration.completed || 0}
               {' / '}{dashboard.attachmentStructureMigration.total} 已完成
@@ -13255,6 +13346,7 @@ function AiAssistantPage() {
                   selectedResourceDossier.status === 'ready'
                   ? selectedResourceDossier
                   : directoryResource
+                const enrichment = directoryResource.enrichment
                 const structureView = buildResourceStructurePresentation(resource.metadata)
                 return <article className="assistant-memory-item" key={resource.id}>
                 <div className="assistant-memory-item-head">
@@ -13264,6 +13356,19 @@ function AiAssistantPage() {
                 <small>原始载体：{memorySourceLabels(resource)}</small>
                 {resource.content && <p>{resource.content}</p>}
                 {(resource.file_name || resource.url) && <small>{resource.file_name ? `${resource.file_name}${resource.file_ext ? ` · ${resource.file_ext}` : ''}` : resource.url}</small>}
+                {enrichment && <div className={`assistant-query-plan ${
+                  enrichment.state === 'deferred' || enrichment.state === 'terminal'
+                    ? 'warning' : ''
+                }`}>
+                  <strong>{RESOURCE_ENRICHMENT_KIND_LABELS[enrichment.kind] || '资源补全'}</strong>
+                  {' · '}{RESOURCE_ENRICHMENT_STATE_LABELS[enrichment.state] || enrichment.state}
+                  {enrichment.reasonCode &&
+                    ` · ${RESOURCE_ENRICHMENT_REASON_LABELS[enrichment.reasonCode] || '处理状态已记录'}`}
+                  {!!enrichment.attempts && ` · 已尝试 ${enrichment.attempts} 次`}
+                  {enrichment.nextAttemptAt && ` · 下次自动尝试 ${new Date(
+                    enrichment.nextAttemptAt
+                  ).toLocaleString('zh-CN', { hour12: false })}`}
+                </div>}
                 {resource.resource_type === 'file' && <small>
                   正文索引：{resource.metadata?.attachmentIndexStatus === 'indexed'
                     ? `已完成${resource.metadata?.attachmentFormat ? `（${resource.metadata.attachmentFormat}）` : ''}`

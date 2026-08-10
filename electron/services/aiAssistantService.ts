@@ -9072,9 +9072,20 @@ export class AiAssistantService {
     const sourceId = ['wechat', 'documents', 'calendar', 'mail', 'legacy'].includes(
       String(options?.sourceId || '')
     ) ? options.sourceId : undefined
+    const enrichmentKind = [
+      'attachment_index', 'attachment_structure', 'image_ocr',
+      'image_semantics', 'voice_transcript', 'web_snapshot', 'pdf_ocr'
+    ].includes(String(options?.enrichmentKind || '')) ? options.enrichmentKind : undefined
+    const enrichmentStatus = [
+      'pending', 'deferred', 'completed', 'terminal', 'waiting'
+    ].includes(String(options?.enrichmentStatus || '')) ? options.enrichmentStatus : undefined
     return personalMemoryStore.listResourceArchive({
       ...(options || {}),
-      sourceId
+      sourceId,
+      enrichmentKind,
+      enrichmentStatus,
+      attachmentStructureParserVersion: ATTACHMENT_STRUCTURE_PARSER_VERSION,
+      imageSemanticModelVersion: localImageSemanticService.getStatus().modelVersion
     })
   }
 

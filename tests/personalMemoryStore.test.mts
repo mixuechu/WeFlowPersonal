@@ -23800,6 +23800,103 @@ test('resource archive pages stay bounded, revision-safe and hydrate only one do
   assert.equal(store.getResourceArchiveRevisionHealth().healthy, true)
 }))
 
+test('resource archive filters durable enrichment queues without exposing local metadata', () => withStore(store => {
+  const add = (id: string, resourceType: string, metadata: Record<string, any>, extra: any = {}) =>
+    store.upsertResources([{
+      id,
+      resourceType,
+      title: `补全资源 ${id}`,
+      url: resourceType === 'link' ? `https://example.com/${id}` : '',
+      fileName: resourceType === 'file' ? `${id}.pdf` : '',
+      fileExt: resourceType === 'file' ? '.pdf' : '',
+      content: '目录不应返回的正文',
+      metadata: { sourceId: 'wechat', ...metadata },
+      evidence: [],
+      ...extra
+    }])
+  add('ocr-pending', 'image', {
+    mediaLocalPath: '/Users/private/secret-pending.png',
+    imageOcrMigrationStatus: 'failed',
+    imageOcrMigrationAttempts: 2
+  })
+  add('ocr-deferred', 'image', {
+    mediaLocalPath: '/Users/private/secret-deferred.png',
+    imageOcrMigrationStatus: 'not_found',
+    imageOcrMigrationAttempts: 3,
+    imageOcrMigrationNextAt: '2099-01-01T00:00:00.000Z'
+  })
+  add('ocr-completed', 'image', {
+    mediaLocalPath: '/Users/private/secret-completed.png',
+    ocrSource: 'local-ocr',
+    imageOcrMigrationStatus: 'completed'
+  })
+  add('web-terminal', 'link', { webSnapshotStatus: 'unsafe_url' })
+  add('attachment-waiting', 'file', {
+    attachmentIndexStatus: 'ocr_required',
+    attachmentLocalPath: '/Users/private/scan.pdf'
+  })
+  add('structure-deferred', 'file', {
+    attachmentFormat: '.pdf',
+    attachmentLocalPath: '/Users/private/structure.pdf',
+    attachmentStructureMigrationStatus: 'failed',
+    attachmentStructureMigrationAttempts: 4,
+    attachmentStructureMigrationNextAt: '2099-02-01T00:00:00.000Z'
+  })
+  add('pdf-ocr-waiting', 'file', {
+    attachmentFormat: '.pdf',
+    attachmentLocalPath: '/Users/private/scanned.pdf',
+    attachmentPdfOcrStatus: 'failed',
+    attachmentPdfOcrTruncated: true,
+    attachmentPdfOcrNextPage: 3
+  })
+  add('ordinary-text-pdf', 'file', {
+    attachmentFormat: '.pdf',
+    attachmentLocalPath: '/Users/private/text-layer.pdf',
+    attachmentIndexStatus: 'indexed',
+    attachmentTextSource: 'local-bounded-parser'
+  })
+
+  const pending = store.listResourceArchive({
+    enrichmentKind: 'image_ocr', enrichmentStatus: 'pending', limit: 40
+  })
+  assert.equal(pending.total, 1)
+  assert.equal(pending.items[0].id, 'ocr-pending')
+  assert.deepEqual(pending.items[0].enrichment, {
+    kind: 'image_ocr', state: 'pending', reasonCode: 'failed', attempts: 2,
+    nextAttemptAt: ''
+  })
+  assert.equal('content' in pending.items[0], false)
+  assert.equal('metadata_json' in pending.items[0], false)
+  assert.doesNotMatch(JSON.stringify(pending.items), /Users|secret-pending/)
+
+  const deferred = store.listResourceArchive({
+    enrichmentKind: 'image_ocr', enrichmentStatus: 'deferred', limit: 40
+  })
+  assert.equal(deferred.total, 1)
+  assert.equal(deferred.items[0].enrichment.state, 'deferred')
+  assert.equal(deferred.items[0].enrichment.nextAttemptAt, '2099-01-01T00:00:00.000Z')
+  assert.equal(store.listResourceArchive({
+    enrichmentKind: 'image_ocr', enrichmentStatus: 'completed'
+  }).items[0].id, 'ocr-completed')
+  assert.equal(store.listResourceArchive({
+    enrichmentKind: 'web_snapshot', enrichmentStatus: 'terminal'
+  }).items[0].enrichment.reasonCode, 'unsafe_url')
+  assert.equal(store.listResourceArchive({
+    enrichmentKind: 'attachment_index', enrichmentStatus: 'waiting'
+  }).items[0].id, 'attachment-waiting')
+  const structure = store.listResourceArchive({
+    enrichmentKind: 'attachment_structure', enrichmentStatus: 'deferred',
+    attachmentStructureParserVersion: 'attachment-layout-v3'
+  })
+  assert.equal(structure.total, 1)
+  assert.equal(structure.items[0].enrichment.attempts, 4)
+  const pdfOcr = store.listResourceArchive({
+    enrichmentKind: 'pdf_ocr', enrichmentStatus: 'waiting'
+  })
+  assert.equal(pdfOcr.total, 1)
+  assert.equal(pdfOcr.items[0].id, 'pdf-ocr-waiting')
+}))
+
 test('resource trash retention is opt-in and expires snapshots without lifting suppressions', () => withStore(store => {
   const resource = {
     id: 'resource-retention',

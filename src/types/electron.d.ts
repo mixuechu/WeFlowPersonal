@@ -1991,6 +1991,9 @@ export interface ElectronAPI {
       getResourceArchive: (options?: {
         resourceType?: string
         sourceId?: 'wechat' | 'documents' | 'calendar' | 'mail' | 'legacy'
+        enrichmentKind?: 'attachment_index' | 'attachment_structure' | 'image_ocr' |
+          'image_semantics' | 'voice_transcript' | 'web_snapshot' | 'pdf_ocr'
+        enrichmentStatus?: 'pending' | 'deferred' | 'completed' | 'terminal' | 'waiting'
         query?: string
         from?: string
         to?: string
