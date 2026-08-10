@@ -27,4 +27,7 @@ test('idle enrichment is a first-class writer in scheduling, diagnostics and shu
   assert.match(service, /const resourceEnrichmentOutcome = this\.continueIdleResourceEnrichment\(now\)/)
   assert.match(service, /if \(resourceEnrichmentOutcome\) return await resourceEnrichmentOutcome/)
   assert.match(service, /if \(this\.resourceEnrichmentPromise\) \{\s*await Promise\.allSettled/)
+  assert.match(service, /idle: !this\.activeSync && !this\.vectorIndexPromise && !this\.memorySearchRepairPromise &&\s*!this\.resourceEnrichmentPromise/)
+  assert.match(service, /continueIdentityVectorScanWhileIdle[\s\S]*?this\.resourceEnrichmentPromise\) \{/)
+  assert.match(service, /continueLegacyResourceContentBudgetMigration[\s\S]*?this\.resourceEnrichmentPromise\) \{/)
 })

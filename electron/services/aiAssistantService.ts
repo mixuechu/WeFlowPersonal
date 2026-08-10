@@ -3680,7 +3680,8 @@ export class AiAssistantService {
   }
 
   private continueIdentityVectorScanWhileIdle(now: Date): string {
-    if (this.activeSync || this.vectorIndexPromise || this.memorySearchRepairPromise) {
+    if (this.activeSync || this.vectorIndexPromise || this.memorySearchRepairPromise ||
+        this.resourceEnrichmentPromise) {
       return 'identity_vector_scan_busy'
     }
     const model = localEmbeddingService.modelVersion
@@ -6669,7 +6670,8 @@ export class AiAssistantService {
       ...searchMaintenanceCheckpoint,
       lastAttemptAt: this.state.cursor.lastAutomaticSearchMaintenanceAttemptAt,
       lastError: this.state.cursor.lastAutomaticSearchMaintenanceError,
-      idle: !this.activeSync && !this.vectorIndexPromise && !this.memorySearchRepairPromise
+      idle: !this.activeSync && !this.vectorIndexPromise && !this.memorySearchRepairPromise &&
+        !this.resourceEnrichmentPromise
     })
     const ocr = await localOcrService.getStatus()
     const imageSemantics = localImageSemanticService.getStatus()
@@ -11609,7 +11611,8 @@ export class AiAssistantService {
   private continueLegacyResourceContentBudgetMigration(): string | null {
     const resourceContentBudget = personalMemoryStore.getResourceContentBudgetStats()
     if (Number(resourceContentBudget.pendingLegacy || 0) <= 0) return null
-    if (this.activeSync || this.vectorIndexPromise || this.memorySearchRepairPromise) {
+    if (this.activeSync || this.vectorIndexPromise || this.memorySearchRepairPromise ||
+        this.resourceEnrichmentPromise) {
       return 'resource_content_budget_waiting_for_idle'
     }
     try {
@@ -11795,7 +11798,8 @@ export class AiAssistantService {
         ...personalMemoryStore.getSearchMaintenanceCheckpoint(),
         lastAttemptAt: this.state.cursor.lastAutomaticSearchMaintenanceAttemptAt,
         lastError: this.state.cursor.lastAutomaticSearchMaintenanceError,
-        idle: !this.activeSync && !this.vectorIndexPromise && !this.memorySearchRepairPromise
+        idle: !this.activeSync && !this.vectorIndexPromise && !this.memorySearchRepairPromise &&
+          !this.resourceEnrichmentPromise
       })
       if (maintenance.due) {
         this.state.cursor.lastAutomaticSearchMaintenanceAttemptAt = now.toISOString()
