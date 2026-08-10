@@ -125,6 +125,7 @@ test('background writer diagnostics expose the authoritative owner and waiting p
     syncPhase: null,
     vectorIndexing: false,
     searchRepairing: false,
+    resourceEnriching: false,
     message: null
   })
 
@@ -140,6 +141,7 @@ test('background writer diagnostics expose the authoritative owner and waiting p
     syncPhase: 'waiting_for_vector',
     vectorIndexing: true,
     searchRepairing: false,
+    resourceEnriching: false,
     message: '增量处理正在等待当前语义索引批次结束'
   })
 
@@ -203,6 +205,9 @@ test('prepared recovery defers for every background writer', () => {
   assert.equal(shouldDeferPreparedRecovery({
     syncing: false, vectorIndexing: false, searchRepairing: true
   }), true)
+  assert.equal(shouldDeferPreparedRecovery({
+    syncing: false, vectorIndexing: false, searchRepairing: false, resourceEnriching: true
+  }), true)
 })
 
 test('manual recovery reports the exact writer that owns the gate', () => {
@@ -218,12 +223,16 @@ test('manual recovery reports the exact writer that owns the gate', () => {
   assert.equal(getBackgroundWriteConflict({
     syncing: false, vectorIndexing: true, searchRepairing: false
   }), 'vector_index')
+  assert.equal(getBackgroundWriteConflict({
+    syncing: false, vectorIndexing: false, searchRepairing: false, resourceEnriching: true
+  }), 'resource_enrichment')
   assert.match(preparedRecoveryConflictMessage('incremental_sync'), /增量处理/)
   assert.match(preparedRecoveryConflictMessage('search_repair'), /检索索引/)
   assert.match(
     preparedRecoveryConflictMessage('vector_index', '写入恢复队列'),
     /本地向量索引.*写入恢复队列/
   )
+  assert.match(preparedRecoveryConflictMessage('resource_enrichment'), /资源内容/)
 })
 
 test('manual vector indexing rejects both authoritative writers with a specific reason', () => {
@@ -239,6 +248,11 @@ test('manual vector indexing rejects both authoritative writers with a specific 
     syncing: false,
     searchRepairing: true
   }), 'search_repair')
+  assert.equal(getVectorIndexWriteConflict({
+    syncing: false,
+    searchRepairing: false,
+    resourceEnriching: true
+  }), 'resource_enrichment')
   assert.match(vectorIndexConflictMessage('incremental_sync'), /增量处理.*语义索引/)
   assert.match(vectorIndexConflictMessage('search_repair'), /核验并修复检索索引.*语义索引/)
 })

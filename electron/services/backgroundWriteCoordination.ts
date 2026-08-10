@@ -1,5 +1,5 @@
 export type IncrementalSyncPhase = 'waiting_for_vector' | 'running'
-export type BackgroundWriteConflict = 'incremental_sync' | 'vector_index' | 'search_repair'
+export type BackgroundWriteConflict = 'incremental_sync' | 'vector_index' | 'search_repair' | 'resource_enrichment'
 
 export type BackgroundWriteState = {
   active: boolean
@@ -8,6 +8,7 @@ export type BackgroundWriteState = {
   syncPhase: IncrementalSyncPhase | null
   vectorIndexing: boolean
   searchRepairing: boolean
+  resourceEnriching: boolean
   message: string | null
 }
 
@@ -83,6 +84,7 @@ export function describeBackgroundWriteState(input: {
   syncPhase?: IncrementalSyncPhase | null
   vectorIndexing: boolean
   searchRepairing: boolean
+  resourceEnriching?: boolean
 }): BackgroundWriteState {
   const conflict = getBackgroundWriteConflict(input)
   const message = conflict === 'incremental_sync'
@@ -91,6 +93,8 @@ export function describeBackgroundWriteState(input: {
       : '正在执行增量处理'
     : conflict === 'search_repair'
       ? '正在核验并修复检索索引'
+      : conflict === 'resource_enrichment'
+        ? '正在补齐图片、语音、附件或网页资源'
       : conflict === 'vector_index'
         ? '正在构建本地语义索引'
         : null
@@ -101,6 +105,7 @@ export function describeBackgroundWriteState(input: {
     syncPhase: input.syncing ? input.syncPhase || 'running' : null,
     vectorIndexing: input.vectorIndexing,
     searchRepairing: input.searchRepairing,
+    resourceEnriching: Boolean(input.resourceEnriching),
     message
   }
 }
@@ -108,9 +113,11 @@ export function describeBackgroundWriteState(input: {
 export function getVectorIndexWriteConflict(input: {
   syncing: boolean
   searchRepairing: boolean
+  resourceEnriching?: boolean
 }): Exclude<BackgroundWriteConflict, 'vector_index'> | null {
   if (input.syncing) return 'incremental_sync'
   if (input.searchRepairing) return 'search_repair'
+  if (input.resourceEnriching) return 'resource_enrichment'
   return null
 }
 
@@ -119,16 +126,20 @@ export function vectorIndexConflictMessage(
 ): string {
   return conflict === 'incremental_sync'
     ? '当前正在增量处理，请在本轮结束后再补齐或重建语义索引'
-    : '当前正在核验并修复检索索引，请完成后再补齐或重建语义索引'
+    : conflict === 'search_repair'
+      ? '当前正在核验并修复检索索引，请完成后再补齐或重建语义索引'
+      : '当前正在补齐资源内容，请在本项完成后再补齐或重建语义索引'
 }
 
 export function getBackgroundWriteConflict(input: {
   syncing: boolean
   vectorIndexing: boolean
   searchRepairing: boolean
+  resourceEnriching?: boolean
 }): BackgroundWriteConflict | null {
   if (input.syncing) return 'incremental_sync'
   if (input.searchRepairing) return 'search_repair'
+  if (input.resourceEnriching) return 'resource_enrichment'
   if (input.vectorIndexing) return 'vector_index'
   return null
 }
@@ -137,6 +148,7 @@ export function shouldDeferPreparedRecovery(input: {
   syncing: boolean
   vectorIndexing: boolean
   searchRepairing: boolean
+  resourceEnriching?: boolean
 }): boolean {
   return getBackgroundWriteConflict(input) !== null
 }
@@ -150,6 +162,9 @@ export function preparedRecoveryConflictMessage(
   }
   if (conflict === 'search_repair') {
     return `当前正在核验检索索引，请在完成后重试${queueLabel}`
+  }
+  if (conflict === 'resource_enrichment') {
+    return `当前正在补齐资源内容，请在本项完成后重试${queueLabel}`
   }
   return `当前正在构建本地向量索引，请在当前批次完成后重试${queueLabel}`
 }

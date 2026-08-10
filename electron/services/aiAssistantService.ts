@@ -46,6 +46,10 @@ import {
   waitForNamedBackgroundWrites,
   vectorIndexConflictMessage
 } from './backgroundWriteCoordination'
+import {
+  selectDueResourceEnrichmentKind,
+  type ResourceEnrichmentKind
+} from './resourceEnrichmentPolicy'
 import { extractAttachmentText } from './attachmentTextExtractor'
 import { structureOcrText } from './imageOcrStructuring'
 import { captureWebSnapshot } from './webSnapshotService'
@@ -829,6 +833,7 @@ export class AiAssistantService {
   private lastSchedulerAttemptAt = 0
   private lastSchedulerTickAt = 0
   private vectorIndexPromise: Promise<any> | null = null
+  private resourceEnrichmentPromise: Promise<string> | null = null
   private runtimeMemoryPeakBytes = 0
   private vectorIndexContinuation: ReturnType<typeof setTimeout> | null = null
   private startupSyncTimer: ReturnType<typeof setTimeout> | null = null
@@ -1150,6 +1155,7 @@ export class AiAssistantService {
       { name: 'incremental_sync', promise: this.activeSync },
       { name: 'vector_index', promise: this.vectorIndexPromise },
       { name: 'search_repair', promise: this.memorySearchRepairPromise },
+      { name: 'resource_enrichment', promise: this.resourceEnrichmentPromise },
       { name: 'scheduler_tick', promise: this.schedulerTickPromise },
       { name: 'system_resume', promise: this.systemResumePromise },
       { name: 'notification_flush', promise: this.notificationFlushPromise },
@@ -1855,7 +1861,8 @@ export class AiAssistantService {
       if (shouldDeferPreparedRecovery({
         syncing: Boolean(this.activeSync),
         vectorIndexing: Boolean(this.vectorIndexPromise),
-        searchRepairing: Boolean(this.memorySearchRepairPromise)
+        searchRepairing: Boolean(this.memorySearchRepairPromise),
+        resourceEnriching: Boolean(this.resourceEnrichmentPromise)
       })) {
         this.schedulePreparedRecoveryContinuation()
         return
@@ -4432,6 +4439,10 @@ export class AiAssistantService {
     if (this.memorySearchRepairPromise) {
       throw new Error('当前正在核验检索索引，请在完成后再开始增量处理')
     }
+    if (this.resourceEnrichmentPromise) {
+      await Promise.allSettled([this.resourceEnrichmentPromise])
+      if (this.disposed) throw new Error('AI 助理正在安全退出，不能开始新的增量处理')
+    }
     this.cancelRequested = false
     if (trigger !== 'backlog' && this.state.cursor.backlogRetry.paused) {
       this.state.cursor.backlogRetry = {
@@ -4944,7 +4955,8 @@ export class AiAssistantService {
       syncing: Boolean(this.activeSync),
       syncPhase: this.activeSyncPhase,
       vectorIndexing: Boolean(this.vectorIndexPromise),
-      searchRepairing: Boolean(this.memorySearchRepairPromise)
+      searchRepairing: Boolean(this.memorySearchRepairPromise),
+      resourceEnriching: Boolean(this.resourceEnrichmentPromise)
     })
     return {
       configured: Boolean(this.config.get('aiAssistantApiKey')),
@@ -6711,7 +6723,8 @@ export class AiAssistantService {
         syncing: Boolean(this.activeSync),
         syncPhase: this.activeSyncPhase,
         vectorIndexing: Boolean(this.vectorIndexPromise),
-        searchRepairing: Boolean(this.memorySearchRepairPromise)
+        searchRepairing: Boolean(this.memorySearchRepairPromise),
+        resourceEnriching: Boolean(this.resourceEnrichmentPromise)
       }),
       wcdbQueue: wcdbService.getQueueHealth(),
       runtimeMemory,
@@ -6865,6 +6878,7 @@ export class AiAssistantService {
     if (this.memorySearchRepairPromise) return this.memorySearchRepairPromise
     if (this.activeSync) throw new Error('当前正在增量处理，请在本轮结束后再核验检索索引')
     if (this.vectorIndexPromise) throw new Error('当前正在构建本地向量索引，请完成后再核验')
+    if (this.resourceEnrichmentPromise) throw new Error('当前正在补齐资源内容，请完成后再核验检索索引')
     this.memorySearchRepairPromise = (async () => {
       const result = personalMemoryStore.repairRuntimeSearchDerivedState(this.state.tasks)
       const embeddings = await this.ensureVectorIndex({ allowDuringSearchRepair: true })
@@ -6923,7 +6937,8 @@ export class AiAssistantService {
     const conflict = getBackgroundWriteConflict({
       syncing: Boolean(this.activeSync),
       vectorIndexing: Boolean(this.vectorIndexPromise),
-      searchRepairing: Boolean(this.memorySearchRepairPromise)
+      searchRepairing: Boolean(this.memorySearchRepairPromise),
+      resourceEnriching: Boolean(this.resourceEnrichmentPromise)
     })
     if (conflict) throw new Error(preparedRecoveryConflictMessage(conflict))
     const result = this.recoverPreparedIngestionBatchCommits()
@@ -6996,7 +7011,8 @@ export class AiAssistantService {
     const conflict = getBackgroundWriteConflict({
       syncing: Boolean(this.activeSync),
       vectorIndexing: Boolean(this.vectorIndexPromise),
-      searchRepairing: Boolean(this.memorySearchRepairPromise)
+      searchRepairing: Boolean(this.memorySearchRepairPromise),
+      resourceEnriching: Boolean(this.resourceEnrichmentPromise)
     })
     if (conflict) throw new Error(preparedRecoveryConflictMessage(conflict, '写入恢复队列'))
     const beforeTask = { ...this.taskMutationRecovery }
@@ -7171,7 +7187,8 @@ export class AiAssistantService {
     const conflict = getBackgroundWriteConflict({
       syncing: Boolean(this.activeSync) && !options.allowDuringActiveSync,
       vectorIndexing: Boolean(this.vectorIndexPromise),
-      searchRepairing: Boolean(this.memorySearchRepairPromise)
+      searchRepairing: Boolean(this.memorySearchRepairPromise),
+      resourceEnriching: Boolean(this.resourceEnrichmentPromise)
     })
     if (conflict) {
       throw new Error(preparedRecoveryConflictMessage(
@@ -10287,7 +10304,7 @@ export class AiAssistantService {
         this.persistVectorIndexContinuationHealth()
         return
       }
-      if (this.activeSync || this.memorySearchRepairPromise) {
+      if (this.activeSync || this.memorySearchRepairPromise || this.resourceEnrichmentPromise) {
         this.scheduleVectorIndexContinuation(5_000)
         return
       }
@@ -10366,7 +10383,8 @@ export class AiAssistantService {
     if (options.maxBatches === undefined) {
       const conflict = getVectorIndexWriteConflict({
         syncing: Boolean(this.activeSync),
-        searchRepairing: Boolean(this.memorySearchRepairPromise) && !options.allowDuringSearchRepair
+        searchRepairing: Boolean(this.memorySearchRepairPromise) && !options.allowDuringSearchRepair,
+        resourceEnriching: Boolean(this.resourceEnrichmentPromise)
       })
       if (conflict) throw new Error(vectorIndexConflictMessage(conflict))
     }
@@ -11607,6 +11625,57 @@ export class AiAssistantService {
     }
   }
 
+  private continueIdleResourceEnrichment(now: Date): Promise<string> | null {
+    if (this.disposed || this.activeSync || this.vectorIndexPromise ||
+        this.memorySearchRepairPromise || this.resourceEnrichmentPromise) return null
+    const ocrEnabled = Boolean(this.config.get('aiAssistantOcrImages'))
+    const attachment = personalMemoryStore.getAttachmentIndexMigrationStats(now)
+    const imageOcr = personalMemoryStore.getImageOcrMigrationStats(now)
+    const voice = personalMemoryStore.getVoiceTranscriptMigrationStats(now)
+    const imageSemantics = personalMemoryStore.getImageSemanticMigrationStats(
+      localImageSemanticService.getStatus().modelVersion,
+      now
+    )
+    const web = personalMemoryStore.getWebSnapshotMigrationStats(now)
+    const structure = personalMemoryStore.getAttachmentStructureMigrationStats(
+      ATTACHMENT_STRUCTURE_PARSER_VERSION,
+      now
+    )
+    const kind = selectDueResourceEnrichmentKind({
+      attachment_index: Number(attachment.pending || 0) > 0 ||
+        (ocrEnabled && Number(attachment.waitingForOcr || 0) > 0),
+      image_ocr: ocrEnabled && Number(imageOcr.pending || 0) > 0,
+      voice_transcript: Boolean(this.config.get('autoTranscribeVoice')) && Number(voice.pending || 0) > 0,
+      image_semantics: Boolean(this.config.get('aiAssistantAnalyzeImages')) &&
+        Number(imageSemantics.pending || 0) > 0,
+      web_snapshot: Boolean(this.config.get('aiAssistantIndexWebLinks')) && Number(web.pending || 0) > 0,
+      pdf_ocr: ocrEnabled && personalMemoryStore.listPendingPdfOcrResources(1).length > 0,
+      attachment_structure: Number(structure.pending || 0) > 0
+    }, now.getTime())
+    if (!kind) return null
+    const runId = `maintenance_${crypto.randomUUID()}`
+    const runners: Record<ResourceEnrichmentKind, () => Promise<void>> = {
+      attachment_index: () => this.continuePendingAttachmentIndexes(runId),
+      image_ocr: () => this.continuePendingImageOcr(runId),
+      voice_transcript: () => this.continuePendingVoiceTranscripts(runId),
+      image_semantics: () => this.continuePendingImageSemantics(runId),
+      web_snapshot: () => this.continuePendingWebSnapshots(runId),
+      pdf_ocr: () => this.continuePendingPdfOcr(runId),
+      attachment_structure: () => this.continuePendingAttachmentStructures(runId)
+    }
+    const promise = runners[kind]().then(() => {
+      this.scheduleVectorIndexContinuation(1_000)
+      return `resource_enrichment_${kind}_completed`
+    }).catch(error => {
+      console.warn('[AI Assistant] 空闲资源补全暂未完成:', sanitizeDiagnosticText(error))
+      return `resource_enrichment_${kind}_failed`
+    }).finally(() => {
+      if (this.resourceEnrichmentPromise === promise) this.resourceEnrichmentPromise = null
+    })
+    this.resourceEnrichmentPromise = promise
+    return promise
+  }
+
   private schedulerTick(
     source: 'timer' | 'system_resume' = 'timer',
     observedNow?: Date
@@ -11745,6 +11814,8 @@ export class AiAssistantService {
       }
       const resourceContentBudgetOutcome = this.continueLegacyResourceContentBudgetMigration()
       if (resourceContentBudgetOutcome) return resourceContentBudgetOutcome
+      const resourceEnrichmentOutcome = this.continueIdleResourceEnrichment(now)
+      if (resourceEnrichmentOutcome) return await resourceEnrichmentOutcome
       const identityVectorBacklog = personalMemoryStore.getIdentityVectorScanBacklog(
         localEmbeddingService.modelVersion
       )
