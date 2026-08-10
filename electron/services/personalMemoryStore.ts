@@ -1328,6 +1328,29 @@ export class PersonalMemoryStore {
       ) STRICT;
       CREATE INDEX IF NOT EXISTS idx_ingestion_batches_status ON ingestion_batches(status,started_at);
 
+      CREATE TABLE IF NOT EXISTS resource_enrichment_batch_runs (
+        id TEXT PRIMARY KEY,
+        kind TEXT NOT NULL CHECK(kind IN (
+          'attachment_index','attachment_structure','image_ocr','image_semantics',
+          'voice_transcript','web_snapshot','pdf_ocr'
+        )),
+        status_filter TEXT NOT NULL CHECK(status_filter IN ('pending','deferred','waiting')),
+        outcome TEXT NOT NULL CHECK(outcome IN (
+          'running','completed','partial','cancelled','interrupted'
+        )),
+        matching_total INTEGER NOT NULL DEFAULT 0 CHECK(matching_total>=0),
+        planned_count INTEGER NOT NULL DEFAULT 0 CHECK(planned_count>=0 AND planned_count<=25),
+        processed_count INTEGER NOT NULL DEFAULT 0 CHECK(processed_count>=0),
+        succeeded_count INTEGER NOT NULL DEFAULT 0 CHECK(succeeded_count>=0),
+        skipped_count INTEGER NOT NULL DEFAULT 0 CHECK(skipped_count>=0),
+        failed_count INTEGER NOT NULL DEFAULT 0 CHECK(failed_count>=0),
+        failure_code TEXT NOT NULL DEFAULT '' CHECK(failure_code IN ('','item_failure','process_interrupted')),
+        started_at TEXT NOT NULL,
+        finished_at TEXT
+      ) STRICT;
+      CREATE INDEX IF NOT EXISTS idx_resource_enrichment_batch_runs_time
+        ON resource_enrichment_batch_runs(started_at DESC,id DESC);
+
       CREATE TABLE IF NOT EXISTS ingestion_batch_commits (
         commit_id TEXT PRIMARY KEY,
         run_id TEXT NOT NULL,
@@ -13577,6 +13600,131 @@ export class PersonalMemoryStore {
       latestId: String(latest?.id || ''),
       latestUpdatedAt: String(latest?.updated_at || ''),
       latestClassification: String(latest?.classification || '')
+    }
+  }
+
+  startResourceEnrichmentBatchRun(input: {
+    id: string
+    kind: string
+    status: string
+    matchingTotal: number
+    plannedCount: number
+    startedAt?: string
+  }): void {
+    if (!this.db) throw new Error('个人记忆数据库未打开')
+    if (![
+      'attachment_index', 'attachment_structure', 'image_ocr', 'image_semantics',
+      'voice_transcript', 'web_snapshot', 'pdf_ocr'
+    ].includes(String(input.kind || ''))) throw new Error('资源补全类型无效')
+    if (!['pending', 'deferred', 'waiting'].includes(String(input.status || ''))) {
+      throw new Error('资源补全状态无效')
+    }
+    const plannedCount = Math.max(0, Math.min(25, Math.floor(Number(input.plannedCount) || 0)))
+    this.db.prepare(`
+      INSERT INTO resource_enrichment_batch_runs(
+        id,kind,status_filter,outcome,matching_total,planned_count,started_at
+      ) VALUES(?,?,?,'running',?,?,?)
+    `).run(
+      String(input.id || ''), String(input.kind), String(input.status),
+      Math.max(0, Math.floor(Number(input.matchingTotal) || 0)), plannedCount,
+      input.startedAt || new Date().toISOString()
+    )
+  }
+
+  updateResourceEnrichmentBatchRun(input: {
+    id: string
+    processed: number
+    succeeded: number
+    skipped: number
+    failed: number
+  }): void {
+    if (!this.db) throw new Error('个人记忆数据库未打开')
+    const values = [input.processed, input.succeeded, input.skipped, input.failed]
+      .map(value => Math.max(0, Math.floor(Number(value) || 0)))
+    const [processed, succeeded, skipped, failed] = values
+    if (succeeded + skipped + failed !== processed) {
+      throw new Error('资源批量重试计数不一致')
+    }
+    const result = this.db.prepare(`
+      UPDATE resource_enrichment_batch_runs
+      SET processed_count=?,succeeded_count=?,skipped_count=?,failed_count=?,
+        failure_code=CASE WHEN ?>0 THEN 'item_failure' ELSE failure_code END
+      WHERE id=? AND outcome='running' AND ?>=processed_count AND ?<=planned_count
+    `).run(processed, succeeded, skipped, failed, failed, String(input.id || ''), processed, processed)
+    if (Number(result.changes || 0) !== 1) throw new Error('资源批量重试账本已变化')
+  }
+
+  finishResourceEnrichmentBatchRun(input: {
+    id: string
+    outcome: 'completed' | 'partial' | 'cancelled'
+    processed: number
+    succeeded: number
+    skipped: number
+    failed: number
+    finishedAt?: string
+  }): void {
+    if (!this.db) throw new Error('个人记忆数据库未打开')
+    this.updateResourceEnrichmentBatchRun(input)
+    const result = this.db.prepare(`
+      UPDATE resource_enrichment_batch_runs
+      SET outcome=?,finished_at=?
+      WHERE id=? AND outcome='running'
+    `).run(input.outcome, input.finishedAt || new Date().toISOString(), String(input.id || ''))
+    if (Number(result.changes || 0) !== 1) throw new Error('资源批量重试账本无法完成')
+  }
+
+  reconcileInterruptedResourceEnrichmentBatchRuns(): number {
+    if (!this.db) return 0
+    const result = this.db.prepare(`
+      UPDATE resource_enrichment_batch_runs
+      SET outcome='interrupted',failure_code='process_interrupted',finished_at=?
+      WHERE outcome='running'
+    `).run(new Date().toISOString())
+    return Math.max(0, Number(result.changes || 0))
+  }
+
+  interruptResourceEnrichmentBatchRun(id: string, finishedAt = new Date().toISOString()): boolean {
+    if (!this.db) return false
+    const result = this.db.prepare(`
+      UPDATE resource_enrichment_batch_runs
+      SET outcome='interrupted',failure_code='process_interrupted',finished_at=?
+      WHERE id=? AND outcome='running'
+    `).run(finishedAt, String(id || ''))
+    return Number(result.changes || 0) === 1
+  }
+
+  listResourceEnrichmentBatchRuns(limit = 12): {
+    items: any[]
+    interruptedRecovered: number
+  } {
+    if (!this.db) return { items: [], interruptedRecovered: 0 }
+    const boundedLimit = Math.max(1, Math.min(50, Math.floor(Number(limit) || 12)))
+    const items = this.db.prepare(`
+      SELECT id,kind,status_filter,outcome,matching_total,planned_count,processed_count,
+        succeeded_count,skipped_count,failed_count,failure_code,started_at,finished_at
+      FROM resource_enrichment_batch_runs
+      ORDER BY started_at DESC,id DESC LIMIT ?
+    `).all(boundedLimit) as any[]
+    const interruptedRecovered = Number((this.db.prepare(`
+      SELECT COUNT(*) AS count FROM resource_enrichment_batch_runs WHERE outcome='interrupted'
+    `).get() as any)?.count || 0)
+    return {
+      items: items.map(row => ({
+        id: String(row.id || ''),
+        kind: String(row.kind || ''),
+        status: String(row.status_filter || ''),
+        outcome: String(row.outcome || ''),
+        matchingTotal: Number(row.matching_total || 0),
+        planned: Number(row.planned_count || 0),
+        processed: Number(row.processed_count || 0),
+        succeeded: Number(row.succeeded_count || 0),
+        skipped: Number(row.skipped_count || 0),
+        failed: Number(row.failed_count || 0),
+        failureCode: String(row.failure_code || ''),
+        startedAt: String(row.started_at || ''),
+        finishedAt: String(row.finished_at || '')
+      })),
+      interruptedRecovered
     }
   }
 

@@ -13415,6 +13415,36 @@ function AiAssistantPage() {
                 </button>
               </div>}
             </div>}
+            {!!status?.resourceEnrichmentBatchHistory?.items?.length &&
+              <details className="assistant-query-plan">
+                <summary>最近资源批量重试（{status.resourceEnrichmentBatchHistory.items.length}）</summary>
+                {!!Number(status.resourceEnrichmentBatchHistory.interruptedThisStart || 0) &&
+                  <div className="assistant-task-load-failure" role="status">
+                    本次启动发现并标记了
+                    {' '}{Number(status.resourceEnrichmentBatchHistory.interruptedThisStart)} 个中断批次；
+                    已完成的单条结果仍然保留，剩余资源可重新预览。
+                  </div>}
+                <div className="assistant-memory-list">
+                  {status.resourceEnrichmentBatchHistory.items.map((run: any) =>
+                    <article className="assistant-memory-item" key={run.id}>
+                      <div className="assistant-memory-item-head">
+                        <strong>{RESOURCE_ENRICHMENT_KIND_LABELS[run.kind] || '资源补全'} ·
+                          {' '}{RESOURCE_ENRICHMENT_STATE_LABELS[run.status] || run.status}</strong>
+                        <span>{run.outcome === 'completed' ? '全部完成'
+                          : run.outcome === 'partial' ? '部分完成'
+                            : run.outcome === 'cancelled' ? '本人停止'
+                              : run.outcome === 'interrupted' ? '应用退出中断'
+                                : '正在处理'}</span>
+                      </div>
+                      <small>{new Date(run.startedAt).toLocaleString('zh-CN', {
+                        timeZone: 'Asia/Shanghai'
+                      })} · 计划 {Number(run.planned || 0)} / 匹配
+                        {' '}{Number(run.matchingTotal || 0)} · 已处理
+                        {' '}{Number(run.processed || 0)} · 成功 {Number(run.succeeded || 0)} ·
+                        跳过 {Number(run.skipped || 0)} · 失败 {Number(run.failed || 0)}</small>
+                    </article>)}
+                </div>
+              </details>}
             {dashboard?.memoryFeedPayloadPolicy?.resources === 'paginated_on_demand' &&
               <small className="assistant-evidence">
                 首页不再周期传输资源正文、附件结构或原文；目录分页读取，单条详情仅在展开时从 SQLCipher 水合。

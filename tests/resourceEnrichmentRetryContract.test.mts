@@ -57,3 +57,16 @@ test('resource batch UI previews scope, reports progress and offers bounded canc
   assert.match(page, /完成当前条后停止/)
   assert.match(page, /status\?\.resourceEnrichmentBatch\?\.active/)
 })
+
+test('resource batch outcomes persist without storing filters or resource identities', () => {
+  assert.match(store, /CREATE TABLE IF NOT EXISTS resource_enrichment_batch_runs/)
+  assert.match(store, /CHECK\(planned_count>=0 AND planned_count<=25\)/)
+  assert.match(store, /reconcileInterruptedResourceEnrichmentBatchRuns/)
+  assert.match(store, /failure_code='process_interrupted'/)
+  assert.match(service, /startResourceEnrichmentBatchRun/)
+  assert.match(service, /updateResourceEnrichmentBatchRun/)
+  assert.match(service, /finishResourceEnrichmentBatchRun/)
+  assert.match(service, /resourceEnrichmentBatchHistory/)
+  assert.match(page, /最近资源批量重试/)
+  assert.match(page, /已完成的单条结果仍然保留/)
+})

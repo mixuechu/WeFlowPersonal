@@ -23915,6 +23915,51 @@ test('resource archive filters durable enrichment queues without exposing local 
   assert.notEqual(changed.enrichment.retryToken, pending.items[0].enrichment.retryToken)
 }))
 
+test('resource enrichment batch ledger preserves bounded outcomes and recovers interruption privately', () => withStore(store => {
+  store.startResourceEnrichmentBatchRun({
+    id: 'batch-safe-1', kind: 'attachment_structure', status: 'deferred',
+    matchingTotal: 42, plannedCount: 25, startedAt: '2026-08-10T00:00:00.000Z'
+  })
+  store.updateResourceEnrichmentBatchRun({
+    id: 'batch-safe-1', processed: 2, succeeded: 1, skipped: 1, failed: 0
+  })
+  assert.throws(() => store.updateResourceEnrichmentBatchRun({
+    id: 'batch-safe-1', processed: 1, succeeded: 1, skipped: 0, failed: 0
+  }), /账本已变化/)
+  assert.throws(() => store.updateResourceEnrichmentBatchRun({
+    id: 'batch-safe-1', processed: 3, succeeded: 1, skipped: 0, failed: 0
+  }), /计数不一致/)
+  store.finishResourceEnrichmentBatchRun({
+    id: 'batch-safe-1', outcome: 'partial', processed: 2,
+    succeeded: 1, skipped: 1, failed: 0, finishedAt: '2026-08-10T00:01:00.000Z'
+  })
+  store.startResourceEnrichmentBatchRun({
+    id: 'batch-safe-2', kind: 'web_snapshot', status: 'pending',
+    matchingTotal: 3, plannedCount: 3, startedAt: '2026-08-10T00:02:00.000Z'
+  })
+  store.updateResourceEnrichmentBatchRun({
+    id: 'batch-safe-2', processed: 1, succeeded: 0, skipped: 0, failed: 1
+  })
+  assert.equal(store.reconcileInterruptedResourceEnrichmentBatchRuns(), 1)
+  assert.equal(store.reconcileInterruptedResourceEnrichmentBatchRuns(), 0)
+  store.startResourceEnrichmentBatchRun({
+    id: 'batch-safe-3', kind: 'image_ocr', status: 'waiting',
+    matchingTotal: 1, plannedCount: 1, startedAt: '2026-08-10T00:03:00.000Z'
+  })
+  assert.equal(store.interruptResourceEnrichmentBatchRun(
+    'batch-safe-3', '2026-08-10T00:03:30.000Z'
+  ), true)
+  assert.equal(store.interruptResourceEnrichmentBatchRun('batch-safe-3'), false)
+  const history = store.listResourceEnrichmentBatchRuns(12)
+  assert.equal(history.items.length, 3)
+  assert.equal(history.items[0].outcome, 'interrupted')
+  assert.equal(history.items[0].failureCode, 'process_interrupted')
+  assert.equal(history.items[1].processed, 1)
+  assert.equal(history.items[2].outcome, 'partial')
+  assert.equal(history.interruptedRecovered, 2)
+  assert.doesNotMatch(JSON.stringify(history), /Users|resource-a|secret|query/)
+}))
+
 test('resource trash retention is opt-in and expires snapshots without lifting suppressions', () => withStore(store => {
   const resource = {
     id: 'resource-retention',

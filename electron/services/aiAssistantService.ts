@@ -855,6 +855,7 @@ export class AiAssistantService {
     finishedAt: '',
     lastError: ''
   }
+  private resourceEnrichmentBatchInterruptedThisStart = 0
   private runtimeMemoryPeakBytes = 0
   private vectorIndexContinuation: ReturnType<typeof setTimeout> | null = null
   private startupSyncTimer: ReturnType<typeof setTimeout> | null = null
@@ -1105,6 +1106,8 @@ export class AiAssistantService {
       entityCount: this.state.graph.entities.length,
       relationCount: this.state.graph.relations.length
     })
+    this.resourceEnrichmentBatchInterruptedThisStart =
+      personalMemoryStore.reconcileInterruptedResourceEnrichmentBatchRuns()
     this.reconcileTaskReviewFeedbackOnStartup()
     this.removeSuppressedRelationsFromState()
     this.saveState(true)
@@ -5016,6 +5019,10 @@ export class AiAssistantService {
       searchRepairing: backgroundWrites.searchRepairing,
       backgroundWrites,
       resourceEnrichmentBatch: { ...this.resourceEnrichmentBatchState },
+      resourceEnrichmentBatchHistory: {
+        ...personalMemoryStore.listResourceEnrichmentBatchRuns(12),
+        interruptedThisStart: this.resourceEnrichmentBatchInterruptedThisStart
+      },
       modelRequests: {
         ...this.modelRequests.getStatus(),
         memoryQuestions: this.memoryQuestionPromises.size,
@@ -9307,6 +9314,15 @@ export class AiAssistantService {
       finishedAt: '',
       lastError: ''
     }
+    const batchRunId = `resource_batch_${crypto.randomUUID()}`
+    personalMemoryStore.startResourceEnrichmentBatchRun({
+      id: batchRunId,
+      kind: identity.kind,
+      status: identity.status,
+      matchingTotal: total,
+      plannedCount: identity.items.length,
+      startedAt: this.resourceEnrichmentBatchState.startedAt
+    })
     const resultPromise = (async () => {
       for (const item of identity.items) {
         if (this.resourceEnrichmentBatchState.cancelRequested || this.disposed) break
@@ -9321,6 +9337,10 @@ export class AiAssistantService {
             !['pending', 'deferred', 'waiting'].includes(current.enrichment?.state)) {
           this.resourceEnrichmentBatchState.skipped += 1
           this.resourceEnrichmentBatchState.processed += 1
+          personalMemoryStore.updateResourceEnrichmentBatchRun({
+            id: batchRunId,
+            ...this.resourceEnrichmentBatchState
+          })
           continue
         }
         try {
@@ -9340,20 +9360,42 @@ export class AiAssistantService {
           this.resourceEnrichmentBatchState.lastError = sanitizeDiagnosticText(error)
         } finally {
           this.resourceEnrichmentBatchState.processed += 1
+          personalMemoryStore.updateResourceEnrichmentBatchRun({
+            id: batchRunId,
+            ...this.resourceEnrichmentBatchState
+          })
         }
       }
       this.scheduleVectorIndexContinuation(1_000)
       this.resourceEnrichmentBatchState.active = false
       this.resourceEnrichmentBatchState.finishedAt = new Date().toISOString()
+      const cancelled = this.resourceEnrichmentBatchState.cancelRequested || this.disposed
+      const outcome = cancelled
+        ? 'cancelled'
+        : this.resourceEnrichmentBatchState.failed > 0 ||
+            this.resourceEnrichmentBatchState.skipped > 0
+          ? 'partial'
+          : 'completed'
+      personalMemoryStore.finishResourceEnrichmentBatchRun({
+        id: batchRunId,
+        outcome,
+        ...this.resourceEnrichmentBatchState,
+        finishedAt: this.resourceEnrichmentBatchState.finishedAt
+      })
       return {
         success: true,
         matchingTotal: total,
         ...this.resourceEnrichmentBatchState,
-        cancelled: this.resourceEnrichmentBatchState.cancelRequested || this.disposed
+        cancelled
       }
     })()
     const tracked = resultPromise.then(
-      () => `resource_enrichment_${identity.kind}_manual_batch_completed`
+      () => `resource_enrichment_${identity.kind}_manual_batch_completed`,
+      error => {
+        this.resourceEnrichmentBatchState.lastError = sanitizeDiagnosticText(error)
+        personalMemoryStore.interruptResourceEnrichmentBatchRun(batchRunId)
+        throw error
+      }
     ).finally(() => {
       this.resourceEnrichmentBatchState.active = false
       if (!this.resourceEnrichmentBatchState.finishedAt) {
