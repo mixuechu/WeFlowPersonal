@@ -20577,6 +20577,41 @@ test('partial ingestion keeps completed checkpoints visible for safe resume', ()
   assert.equal(summary.estimatedCost, 0.0018)
 }))
 
+test('ingestion summary separates recent reliability from lifetime failures', () => withStore(store => {
+  const database = (store as any).db
+  const now = Date.now()
+  const oldFailureAt = new Date(now - 8 * 24 * 60 * 60 * 1000).toISOString()
+  const recentPartialAt = new Date(now - 2 * 60 * 60 * 1000).toISOString()
+  const recoveredAt = new Date(now - 60 * 60 * 1000).toISOString()
+  const insertRun = database.prepare(`
+    INSERT INTO ingestion_runs(id,started_at,finished_at,status,error)
+    VALUES(?,?,?,?,?)
+  `)
+  insertRun.run('old-failed', oldFailureAt, oldFailureAt, 'failed', '历史错误')
+  insertRun.run('recent-partial', recentPartialAt, recentPartialAt, 'partial', '近期部分完成')
+  insertRun.run('recent-completed', recoveredAt, recoveredAt, 'completed', null)
+  database.prepare(`
+    INSERT INTO ingestion_batches(
+      run_id,batch_index,message_count,status,started_at,finished_at
+    ) VALUES(?,?,?,?,?,?)
+  `).run('recent-partial', 0, 1, 'failed', recentPartialAt, recentPartialAt)
+
+  const summary = store.getIngestionArchiveSummary()
+  assert.deepEqual(summary.recent24Hours, {
+    runs: 2, completed: 1, partial: 1, failed: 0, running: 0, failedBatches: 1
+  })
+  assert.deepEqual(summary.recent7Days, {
+    runs: 2, completed: 1, partial: 1, failed: 0, running: 0, failedBatches: 1
+  })
+  assert.equal(summary.failedRuns, 1)
+  assert.equal(summary.partialRuns, 1)
+  assert.equal(summary.latestPartialAt, recentPartialAt)
+  assert.equal(summary.latestFailedAt, oldFailureAt)
+  assert.equal(summary.latestDegradedAt, recentPartialAt)
+  assert.equal(summary.completedSinceLatestDegraded, 1)
+  assert.equal(summary.runsSinceLatestDegraded, 1)
+}))
+
 test('ingestion run archive paginates all years and loads bounded batch audits on demand', () => {
   const directory = mkdtempSync(join(tmpdir(), 'weflow-ingestion-run-archive-'))
   const databasePath = join(directory, 'memory.sqlite')
@@ -20674,7 +20709,18 @@ test('ingestion run archive paginates all years and loads bounded batch audits o
       failedBatches: expectedFailedBatches,
       batches: expectedBatches,
       latestRunId: summary.latestRunId,
-      latestActivityAt: summary.latestActivityAt
+      latestActivityAt: summary.latestActivityAt,
+      latestPartialAt: summary.latestPartialAt,
+      latestFailedAt: summary.latestFailedAt,
+      latestDegradedAt: summary.latestDegradedAt,
+      completedSinceLatestDegraded: 0,
+      runsSinceLatestDegraded: 1,
+      recent24Hours: {
+        runs: 0, completed: 0, partial: 0, failed: 0, running: 0, failedBatches: 0
+      },
+      recent7Days: {
+        runs: 0, completed: 0, partial: 0, failed: 0, running: 0, failedBatches: 0
+      }
     })
     const firstPage = first.listIngestionRunPage({ limit: 40 })
     const secondPage = first.listIngestionRunPage({

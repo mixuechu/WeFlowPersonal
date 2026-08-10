@@ -17069,9 +17069,30 @@ function AiAssistantPage() {
                 {' · '}需人工检查 {Number(memoryDiagnostics.memoryBackupTrashRecovery.conflicts || 0)}
               </small>}
             </div>}
+            {memoryDiagnostics.ingestionSummary?.recent24Hours && <div className={`assistant-recovery-audit ${
+              Number(memoryDiagnostics.ingestionSummary.recent24Hours.partial || 0) > 0 ||
+              Number(memoryDiagnostics.ingestionSummary.recent24Hours.failed || 0) > 0
+                ? 'warning' : 'healthy'
+            }`}>
+              <header><RefreshCw size={15} /><span><b>近期增量可靠性</b>
+                <small>近期窗口与历史累计分开计算；旧版失败继续保留审计，但不会冒充当前仍在失败。</small>
+              </span></header>
+              <div className="assistant-recovery-current">
+                <span>最近 24 小时 <b>{Number(memoryDiagnostics.ingestionSummary.recent24Hours.completed || 0)} 完成 / {Number(memoryDiagnostics.ingestionSummary.recent24Hours.partial || 0)} 部分 / {Number(memoryDiagnostics.ingestionSummary.recent24Hours.failed || 0)} 失败</b></span>
+                <span>24 小时失败批次 <b>{Number(memoryDiagnostics.ingestionSummary.recent24Hours.failedBatches || 0).toLocaleString()}</b></span>
+                <span>最近 7 天 <b>{Number(memoryDiagnostics.ingestionSummary.recent7Days?.completed || 0)} 完成 / {Number(memoryDiagnostics.ingestionSummary.recent7Days?.partial || 0)} 部分 / {Number(memoryDiagnostics.ingestionSummary.recent7Days?.failed || 0)} 失败</b></span>
+                <span>最近异常后 <b>{Number(memoryDiagnostics.ingestionSummary.completedSinceLatestDegraded || 0).toLocaleString()} 次完整完成</b></span>
+                <span>最近部分完成 <b>{memoryDiagnostics.ingestionSummary.latestPartialAt
+                  ? new Date(memoryDiagnostics.ingestionSummary.latestPartialAt).toLocaleString('zh-CN', { hour12: false })
+                  : '无'}</b></span>
+                <span>最近整体失败 <b>{memoryDiagnostics.ingestionSummary.latestFailedAt
+                  ? new Date(memoryDiagnostics.ingestionSummary.latestFailedAt).toLocaleString('zh-CN', { hour12: false })
+                  : '无'}</b></span>
+              </div>
+            </div>}
             <div className="assistant-dossier-metrics">
               <span><b>{memoryDiagnostics.ingestionSummary?.runs || 0}</b><small>全部运行</small></span>
-              <span><b>{memoryDiagnostics.ingestionSummary?.failedBatches || 0}</b><small>失败批次</small></span>
+              <span><b>{memoryDiagnostics.ingestionSummary?.failedBatches || 0}</b><small>历史失败批次</small></span>
               <span><b>{Number(memoryDiagnostics.ingestionSummary?.inputTokens || 0).toLocaleString()}</b><small>输入 Token</small></span>
               <span><b>{Number(memoryDiagnostics.ingestionSummary?.outputTokens || 0).toLocaleString()}</b><small>输出 Token</small></span>
             </div>

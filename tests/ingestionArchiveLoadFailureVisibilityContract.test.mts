@@ -18,3 +18,12 @@ test('ingestion continuation failures preserve runs and retry the exact archive 
   assert.match(page, /offset: ingestionArchive\.items\.length,[\s\S]*revision: ingestionArchive\.revision/)
   assert.match(page, /ingestionArchive\.hasMore && !ingestionArchive\.error/)
 })
+
+test('ingestion diagnostics separate recent reliability from lifetime audit totals', () => {
+  assert.match(page, /近期增量可靠性/)
+  assert.match(page, /recent24Hours\.completed/)
+  assert.match(page, /recent7Days\?\.completed/)
+  assert.match(page, /completedSinceLatestDegraded/)
+  assert.match(page, /旧版失败继续保留审计，但不会冒充当前仍在失败/)
+  assert.match(page, /历史失败批次/)
+})

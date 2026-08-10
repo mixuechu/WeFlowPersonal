@@ -19328,11 +19328,30 @@ export class PersonalMemoryStore {
     batches: number
     latestRunId: string
     latestActivityAt: string
+    latestPartialAt: string
+    latestFailedAt: string
+    latestDegradedAt: string
+    completedSinceLatestDegraded: number
+    runsSinceLatestDegraded: number
+    recent24Hours: {
+      runs: number; completed: number; partial: number; failed: number; running: number
+      failedBatches: number
+    }
+    recent7Days: {
+      runs: number; completed: number; partial: number; failed: number; running: number
+      failedBatches: number
+    }
   } {
+    const emptyWindow = {
+      runs: 0, completed: 0, partial: 0, failed: 0, running: 0, failedBatches: 0
+    }
     const empty = {
       runs: 0, completedRuns: 0, partialRuns: 0, failedRuns: 0, runningRuns: 0,
       messages: 0, inputTokens: 0, outputTokens: 0, durationMs: 0,
-      failedBatches: 0, batches: 0, latestRunId: '', latestActivityAt: ''
+      failedBatches: 0, batches: 0, latestRunId: '', latestActivityAt: '',
+      latestPartialAt: '', latestFailedAt: '', latestDegradedAt: '',
+      completedSinceLatestDegraded: 0, runsSinceLatestDegraded: 0,
+      recent24Hours: { ...emptyWindow }, recent7Days: { ...emptyWindow }
     }
     if (!this.db) return empty
     const runs = this.db.prepare(`
@@ -19359,6 +19378,48 @@ export class PersonalMemoryStore {
       FROM ingestion_runs
       ORDER BY COALESCE(finished_at,recovered_at,started_at) DESC,id ASC LIMIT 1
     `).get() as any
+    const latestDegraded = this.db.prepare(`
+      SELECT
+        MAX(CASE WHEN status='partial'
+          THEN COALESCE(finished_at,recovered_at,started_at) END) AS latest_partial_at,
+        MAX(CASE WHEN status='failed'
+          THEN COALESCE(finished_at,recovered_at,started_at) END) AS latest_failed_at,
+        MAX(CASE WHEN status IN ('partial','failed')
+          THEN COALESCE(finished_at,recovered_at,started_at) END) AS latest_degraded_at
+      FROM ingestion_runs
+    `).get() as any
+    const summarizeWindow = (modifier: string) => {
+      const windowRuns = this.db!.prepare(`
+        SELECT
+          COUNT(*) AS runs,
+          SUM(CASE WHEN status='completed' THEN 1 ELSE 0 END) AS completed,
+          SUM(CASE WHEN status='partial' THEN 1 ELSE 0 END) AS partial,
+          SUM(CASE WHEN status='failed' THEN 1 ELSE 0 END) AS failed,
+          SUM(CASE WHEN status='running' THEN 1 ELSE 0 END) AS running
+        FROM ingestion_runs
+        WHERE julianday(started_at)>=julianday('now',?)
+      `).get(modifier) as any
+      const windowBatches = this.db!.prepare(`
+        SELECT SUM(CASE WHEN b.status='failed' THEN 1 ELSE 0 END) AS failed_batches
+        FROM ingestion_batches b
+        INNER JOIN ingestion_runs r ON r.id=b.run_id
+        WHERE julianday(r.started_at)>=julianday('now',?)
+      `).get(modifier) as any
+      return {
+        runs: Number(windowRuns?.runs || 0),
+        completed: Number(windowRuns?.completed || 0),
+        partial: Number(windowRuns?.partial || 0),
+        failed: Number(windowRuns?.failed || 0),
+        running: Number(windowRuns?.running || 0),
+        failedBatches: Number(windowBatches?.failed_batches || 0)
+      }
+    }
+    const latestDegradedAt = String(latestDegraded?.latest_degraded_at || '')
+    const recovery = latestDegradedAt ? this.db.prepare(`
+      SELECT COUNT(*) AS runs,
+        SUM(CASE WHEN status='completed' THEN 1 ELSE 0 END) AS completed
+      FROM ingestion_runs WHERE started_at>?
+    `).get(latestDegradedAt) as any : null
     return {
       runs: Number(runs?.runs || 0),
       completedRuns: Number(runs?.completed_runs || 0),
@@ -19372,7 +19433,14 @@ export class PersonalMemoryStore {
       failedBatches: Number(batches?.failed_batches || 0),
       batches: Number(batches?.batches || 0),
       latestRunId: String(latest?.id || ''),
-      latestActivityAt: String(latest?.activity_at || '')
+      latestActivityAt: String(latest?.activity_at || ''),
+      latestPartialAt: String(latestDegraded?.latest_partial_at || ''),
+      latestFailedAt: String(latestDegraded?.latest_failed_at || ''),
+      latestDegradedAt,
+      completedSinceLatestDegraded: Number(recovery?.completed || 0),
+      runsSinceLatestDegraded: Number(recovery?.runs || 0),
+      recent24Hours: summarizeWindow('-1 day'),
+      recent7Days: summarizeWindow('-7 days')
     }
   }
 
