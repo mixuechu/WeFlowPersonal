@@ -2763,7 +2763,7 @@ function AiAssistantPage() {
     const request = crossStoreRecoveryArchiveGate.current.begin()
     setCrossStoreRecoveryArchiveLoadingMore(false)
     setCrossStoreRecoveryArchive((current: any) => ({
-      ...current, items: [], loading: true
+      ...current, items: [], loading: true, error: undefined
     }))
     const timer = window.setTimeout(() => {
       void window.electronAPI.aiAssistant
@@ -2779,10 +2779,11 @@ function AiAssistantPage() {
             return
           }
           setCrossStoreRecoveryArchive({ ...page, loading: false })
-        }).catch(() => {
+        }).catch(error => {
           if (!crossStoreRecoveryArchiveGate.current.isCurrent(request)) return
           setCrossStoreRecoveryArchive({
-            items: [], total: 0, hasMore: false, counts: {}, loading: false
+            items: [], total: 0, hasMore: false, counts: {}, loading: false,
+            error: error?.message || String(error)
           })
         })
     }, crossStoreRecoveryArchiveQuery ? 200 : 0)
@@ -5310,6 +5311,7 @@ function AiAssistantPage() {
     if (crossStoreRecoveryArchiveLoadingMore || !crossStoreRecoveryArchive.hasMore) return
     const request = crossStoreRecoveryArchiveGate.current.begin()
     setCrossStoreRecoveryArchiveLoadingMore(true)
+    setCrossStoreRecoveryArchive((current: any) => ({ ...current, error: undefined }))
     try {
       const page = await window.electronAPI.aiAssistant.getCrossStoreRecoveryArchivePage({
         ...crossStoreRecoveryArchiveOptions,
@@ -5335,7 +5337,9 @@ function AiAssistantPage() {
       }))
     } catch (error: any) {
       if (crossStoreRecoveryArchiveGate.current.isCurrent(request)) {
-        setMessage(error?.message || String(error))
+        const errorMessage = error?.message || String(error)
+        setCrossStoreRecoveryArchive((current: any) => ({ ...current, error: errorMessage }))
+        setMessage(errorMessage)
       }
     } finally {
       if (crossStoreRecoveryArchiveGate.current.isCurrent(request)) {
@@ -17064,8 +17068,9 @@ function AiAssistantPage() {
                 <span>
                   <b>跨存储写入处理档案</b>
                   <small>
-                    {Number(crossStoreRecoveryArchive.total || 0)} 条匹配 · 全部{' '}
-                    {Number(crossStoreRecoveryArchive.counts?.all || 0)} 条。
+                    {crossStoreRecoveryArchive.error && !crossStoreRecoveryArchive.items?.length
+                      ? '读取失败；当前不能据此判断跨存储写入历史数量。'
+                      : `${Number(crossStoreRecoveryArchive.total || 0)} 条匹配 · 全部 ${Number(crossStoreRecoveryArchive.counts?.all || 0)} 条。`}
                     只展示提交身份、影响数量和处理结论，不读取任务、会话或恢复载荷正文。
                   </small>
                 </span>
@@ -17119,14 +17124,14 @@ function AiAssistantPage() {
                   setCrossStoreRecoveryArchiveTo('')
                 }}>清除范围</button>}
               </div>
-              <div className="assistant-recovery-current">
+              {!crossStoreRecoveryArchive.error && <div className="assistant-recovery-current">
                 <span>待恢复 <b>{Number(crossStoreRecoveryArchive.counts?.prepared || 0)}</b></span>
                 <span>已提交 <b>{Number(crossStoreRecoveryArchive.counts?.committed || 0)}</b></span>
                 <span>已放弃 <b>{Number(crossStoreRecoveryArchive.counts?.abandoned || 0)}</b></span>
                 <span>本人保留当前状态 <b>
                   {Number(crossStoreRecoveryArchive.counts?.userKeptCurrentState || 0)}
                 </b></span>
-              </div>
+              </div>}
               {(crossStoreRecoveryArchive.items || []).map((entry: any) => {
                 const action = entry.recoveryAction === 'user_kept_current_state'
                   ? '本人确认保留当前状态'
@@ -17161,12 +17166,23 @@ function AiAssistantPage() {
                   </p>}
                 </article>
               })}
-              {!crossStoreRecoveryArchive.items?.length && <div className="assistant-empty">
+              {crossStoreRecoveryArchive.error && <div className="assistant-task-load-failure" role="alert">
+                <strong>{crossStoreRecoveryArchive.items?.length
+                  ? '更多跨存储处理记录读取失败' : '跨存储写入处理档案读取失败'}</strong>
+                <span>{crossStoreRecoveryArchive.error}。{crossStoreRecoveryArchive.items?.length
+                  ? ` 已加载的 ${crossStoreRecoveryArchive.items.length} 条处理记录仍可审阅，但当前档案尚未读完。`
+                  : ' 当前不会把读取故障解释为“没有跨存储写入记录”。'}</span>
+                <button type="button" disabled={crossStoreRecoveryArchiveLoadingMore} onClick={() => {
+                  if (crossStoreRecoveryArchive.items?.length) void loadMoreCrossStoreRecoveryArchive()
+                  else setCrossStoreRecoveryArchiveRefreshKey(value => value + 1)
+                }}>{crossStoreRecoveryArchiveLoadingMore ? '正在重试…' : '立即重试'}</button>
+              </div>}
+              {!crossStoreRecoveryArchive.error && !crossStoreRecoveryArchive.items?.length && <div className="assistant-empty">
                 {crossStoreRecoveryArchive.loading
                   ? '正在读取跨存储写入处理档案…'
                   : '当前范围没有跨存储写入记录。'}
               </div>}
-              {crossStoreRecoveryArchive.hasMore && <div className="assistant-timeline-more">
+              {crossStoreRecoveryArchive.hasMore && !crossStoreRecoveryArchive.error && <div className="assistant-timeline-more">
                 <button disabled={crossStoreRecoveryArchiveLoadingMore}
                   onClick={() => void loadMoreCrossStoreRecoveryArchive()}>
                   {crossStoreRecoveryArchiveLoadingMore
