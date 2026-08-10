@@ -1232,6 +1232,7 @@ function AiAssistantPage() {
     revision?: string
     stale?: boolean
     loading?: boolean
+    error?: string
   }>({ items: [], total: 0, hasMore: false, counts: {} })
   const [memoryDeletionKind, setMemoryDeletionKind] = useState<'all' | 'claim' | 'event' | 'relation'>('all')
   const [memoryDeletionReason, setMemoryDeletionReason] = useState<'all' | 'manual_delete' | 'not_important'>('all')
@@ -1492,6 +1493,7 @@ function AiAssistantPage() {
     revision?: string
     stale?: boolean
     loading?: boolean
+    error?: string
   }>({ items: [], total: 0, hasMore: false, counts: {} })
   const [ingestionArchiveStatus, setIngestionArchiveStatus] = useState<
     'all' | 'running' | 'completed' | 'partial' | 'failed'
@@ -2720,7 +2722,9 @@ function AiAssistantPage() {
     }
     const request = ingestionArchiveGate.current.begin()
     setIngestionArchiveLoadingMore(false)
-    setIngestionArchive(current => ({ ...current, items: [], loading: true }))
+    setIngestionArchive(current => ({
+      ...current, items: [], loading: true, error: undefined
+    }))
     setIngestionDossier(null)
     const timer = window.setTimeout(() => {
       void window.electronAPI.aiAssistant.getIngestionRunPage(ingestionArchiveOptions).then(page => {
@@ -2734,9 +2738,12 @@ function AiAssistantPage() {
           return
         }
         setIngestionArchive({ ...page, loading: false })
-      }).catch(() => {
+      }).catch(error => {
         if (!ingestionArchiveGate.current.isCurrent(request)) return
-        setIngestionArchive({ items: [], total: 0, hasMore: false, counts: {}, loading: false })
+        setIngestionArchive({
+          items: [], total: 0, hasMore: false, counts: {}, loading: false,
+          error: error?.message || String(error)
+        })
       })
     }, ingestionArchiveQuery ? 200 : 0)
     return () => {
@@ -5045,6 +5052,7 @@ function AiAssistantPage() {
     if (ingestionArchiveLoadingMore || !ingestionArchive.hasMore) return
     const request = ingestionArchiveGate.current.begin()
     setIngestionArchiveLoadingMore(true)
+    setIngestionArchive(current => ({ ...current, error: undefined }))
     try {
       const page = await window.electronAPI.aiAssistant.getIngestionRunPage({
         ...ingestionArchiveOptions,
@@ -5068,7 +5076,11 @@ function AiAssistantPage() {
         loading: false
       }))
     } catch (error: any) {
-      if (ingestionArchiveGate.current.isCurrent(request)) setMessage(error?.message || String(error))
+      if (ingestionArchiveGate.current.isCurrent(request)) {
+        const errorMessage = error?.message || String(error)
+        setIngestionArchive(current => ({ ...current, error: errorMessage }))
+        setMessage(errorMessage)
+      }
     } finally {
       if (ingestionArchiveGate.current.isCurrent(request)) setIngestionArchiveLoadingMore(false)
     }
@@ -17320,7 +17332,9 @@ function AiAssistantPage() {
                 }}>清除范围</button>}
               </div>
               <small className="assistant-evidence">
-                {ingestionArchive.total} 条匹配 · 全部 {ingestionArchive.counts.all || memoryDiagnostics.ingestionArchive?.total || 0} 次运行。
+                {ingestionArchive.error && !ingestionArchive.items.length
+                  ? '运行档案读取失败；当前不能据此判断历史运行数量。'
+                  : `${ingestionArchive.total} 条匹配 · 全部 ${ingestionArchive.counts.all || memoryDiagnostics.ingestionArchive?.total || 0} 次运行。`}
                 目录不携带批次上下文；点击后才按每页 40 批读取完整证据门禁、脱敏和可信上下文审计。
               </small>
               {ingestionArchive.items.map((run: any) => <article className="assistant-ingestion-run" key={run.id}>
@@ -17376,10 +17390,20 @@ function AiAssistantPage() {
                   </button>}
                 </div>}
               </article>)}
-              {!ingestionArchive.items.length && <div className="assistant-empty">
+              {ingestionArchive.error && <div className="assistant-task-load-failure" role="alert">
+                <strong>{ingestionArchive.items.length ? '更多增量运行读取失败' : '增量运行档案读取失败'}</strong>
+                <span>{ingestionArchive.error}。{ingestionArchive.items.length
+                  ? ` 已加载的 ${ingestionArchive.items.length} 次运行及批次详情仍可审阅，但当前档案尚未读完。`
+                  : ' 当前不会把读取故障解释为“没有增量运行记录”。'}</span>
+                <button type="button" disabled={ingestionArchiveLoadingMore} onClick={() => {
+                  if (ingestionArchive.items.length) void loadMoreIngestionRuns()
+                  else setIngestionArchiveRefreshKey(value => value + 1)
+                }}>{ingestionArchiveLoadingMore ? '正在重试…' : '立即重试'}</button>
+              </div>}
+              {!ingestionArchive.error && !ingestionArchive.items.length && <div className="assistant-empty">
                 {ingestionArchive.loading ? '正在读取运行档案…' : '当前范围没有增量运行记录。'}
               </div>}
-              {ingestionArchive.hasMore && <div className="assistant-review-page-status">
+              {ingestionArchive.hasMore && !ingestionArchive.error && <div className="assistant-review-page-status">
                 <small>已加载 {ingestionArchive.items.length} / {ingestionArchive.total} 次运行。</small>
                 <button disabled={ingestionArchiveLoadingMore} onClick={() => void loadMoreIngestionRuns()}>
                   {ingestionArchiveLoadingMore ? '正在加载…' : '加载更多运行'}
