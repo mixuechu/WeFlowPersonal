@@ -17075,7 +17075,7 @@ function AiAssistantPage() {
                 ? 'warning' : 'healthy'
             }`}>
               <header><RefreshCw size={15} /><span><b>近期增量可靠性</b>
-              <small>近期窗口与历史累计分开计算；失败批次作为尝试审计永久保留，是否延续到当前由最近一次真实抽取成功边界单独判断。</small>
+              <small>近期窗口按运行与批次的最终活动时间计算；失败批次作为尝试审计永久保留，是否延续到当前由最近一次真实抽取成功边界单独判断。</small>
               </span></header>
               <div className="assistant-recovery-current">
                 <span>最近 24 小时 <b>{Number(memoryDiagnostics.ingestionSummary.recent24Hours.completed || 0)} 完成 / {Number(memoryDiagnostics.ingestionSummary.recent24Hours.partial || 0)} 部分 / {Number(memoryDiagnostics.ingestionSummary.recent24Hours.failed || 0)} 失败</b></span>

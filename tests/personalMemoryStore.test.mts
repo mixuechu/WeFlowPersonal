@@ -20630,6 +20630,34 @@ test('ingestion summary separates recent reliability from lifetime failures', ()
   assert.equal(summary.runsSinceLatestDegraded, 2)
 }))
 
+test('ingestion reliability windows use final activity instead of stale start times', () => withStore(store => {
+  const database = (store as any).db
+  const now = Date.now()
+  const beforeDayBoundary = new Date(now - 25 * 60 * 60 * 1000).toISOString()
+  const completedInsideDay = new Date(now - 23 * 60 * 60 * 1000).toISOString()
+  database.prepare(`
+    INSERT INTO ingestion_runs(id,started_at,finished_at,status,error)
+    VALUES(?,?,?,?,?)
+  `).run(
+    'crossed-day-boundary', beforeDayBoundary, completedInsideDay, 'completed', null
+  )
+  database.prepare(`
+    INSERT INTO ingestion_batches(
+      run_id,batch_index,message_count,status,started_at,finished_at
+    ) VALUES(?,?,?,?,?,?)
+  `).run(
+    'crossed-day-boundary', 0, 2, 'completed', beforeDayBoundary, completedInsideDay
+  )
+
+  const summary = store.getIngestionArchiveSummary()
+  assert.deepEqual(summary.recent24Hours, {
+    runs: 1, completed: 1, partial: 0, failed: 0, running: 0,
+    completedWithBatches: 1, completedWithoutBatches: 0,
+    successfulBatches: 1, failedBatches: 0
+  })
+  assert.equal(summary.latestSuccessfulExtractionAt, completedInsideDay)
+}))
+
 test('ingestion run archive paginates all years and loads bounded batch audits on demand', () => {
   const directory = mkdtempSync(join(tmpdir(), 'weflow-ingestion-run-archive-'))
   const databasePath = join(directory, 'memory.sqlite')

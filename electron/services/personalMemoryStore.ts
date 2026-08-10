@@ -19433,15 +19433,15 @@ export class PersonalMemoryStore {
           SUM(CASE WHEN status='completed' AND NOT EXISTS(
             SELECT 1 FROM ingestion_batches b WHERE b.run_id=ingestion_runs.id
           ) THEN 1 ELSE 0 END) AS completed_without_batches
-        FROM ingestion_runs WHERE julianday(started_at)>=julianday('now',?)
+        FROM ingestion_runs
+        WHERE julianday(COALESCE(finished_at,recovered_at,started_at))>=julianday('now',?)
       `).get(modifier) as any
       const windowBatches = this.db!.prepare(`
         SELECT
           SUM(CASE WHEN b.status='completed' THEN 1 ELSE 0 END) AS successful_batches,
           SUM(CASE WHEN b.status='failed' THEN 1 ELSE 0 END) AS failed_batches
         FROM ingestion_batches b
-        INNER JOIN ingestion_runs r ON r.id=b.run_id
-        WHERE julianday(r.started_at)>=julianday('now',?)
+        WHERE julianday(COALESCE(b.finished_at,b.started_at))>=julianday('now',?)
       `).get(modifier) as any
       return {
         runs: Number(windowRuns?.runs || 0),
