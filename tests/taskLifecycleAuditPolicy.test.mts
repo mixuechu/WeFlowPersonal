@@ -1,6 +1,8 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import {
+  canResumeTaskLifecycleAudit,
+  classifyTaskLifecycleAuditRequestFailure,
   planTaskLifecycleAuditDecision,
   selectTaskLifecycleAuditEvidence
 } from '../electron/services/taskLifecycleAuditPolicy.ts'
@@ -55,4 +57,48 @@ test('lifecycle audit evidence keeps task origin and recent outcome within a har
   assert.deepEqual(selected.slice(0, 5), [0, 1, 2, 3, 4])
   assert.deepEqual(selected.slice(-3), [47, 48, 49])
   assert.equal(selected.length, 20)
+})
+
+test('lifecycle audit resumes only an exact encrypted batch cursor', () => {
+  assert.equal(canResumeTaskLifecycleAudit({
+    running: false,
+    total: 23,
+    processed: 20,
+    candidateIds: Array.from({ length: 23 }, (_, index) => `task-${index}`),
+    nextOffset: 20
+  }), true)
+  assert.equal(canResumeTaskLifecycleAudit({
+    running: false,
+    total: 23,
+    processed: 20,
+    candidateIds: Array.from({ length: 22 }, (_, index) => `task-${index}`),
+    nextOffset: 20
+  }), false)
+  assert.equal(canResumeTaskLifecycleAudit({
+    running: false,
+    total: 23,
+    processed: 20,
+    candidateIds: Array.from({ length: 23 }, (_, index) => `task-${index}`),
+    nextOffset: 10
+  }), false)
+  assert.equal(canResumeTaskLifecycleAudit({
+    running: true,
+    total: 23,
+    processed: 20,
+    candidateIds: Array.from({ length: 23 }, (_, index) => `task-${index}`),
+    nextOffset: 20
+  }), false)
+})
+
+test('lifecycle audit classifies English, Chinese and bounded timeout failures', () => {
+  assert.equal(classifyTaskLifecycleAuditRequestFailure({
+    message: '模型请求超过 90 秒，已安全取消'
+  }), 'timeout')
+  assert.equal(classifyTaskLifecycleAuditRequestFailure({ message: 'request timeout' }), 'timeout')
+  assert.equal(classifyTaskLifecycleAuditRequestFailure({ message: '模型请求超时' }), 'timeout')
+  assert.equal(classifyTaskLifecycleAuditRequestFailure({
+    name: 'AbortError',
+    message: '模型请求超过 90 秒，已安全取消'
+  }), 'cancelled')
+  assert.equal(classifyTaskLifecycleAuditRequestFailure({ message: '连接已重置' }), 'request_failed')
 })

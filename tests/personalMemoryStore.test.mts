@@ -17803,6 +17803,66 @@ test('model request audit is privacy-minimized, revision-paged and recovers inte
   }
 })
 
+test('task lifecycle model batches share the private model ledger without storing task content', () => {
+  withStore(store => {
+    const auditId = store.recordTaskLifecycleModelRequestStarted({
+      outboundSha256: '7'.repeat(64),
+      batchIndex: 2,
+      batchCount: 4,
+      taskCount: 10,
+      evidenceCount: 137,
+      redaction: {
+        level: 'strict',
+        total: 3,
+        counts: { '邮箱': 2, 'API密钥': 1 }
+      },
+      rawPrompt: '不应保存的待办标题和聊天原文',
+      taskIds: ['private-task-id']
+    } as any, 'deepseek-lifecycle-test')
+    store.finishAssistantModelRequestAudit(auditId, 'response_received')
+    store.finishAssistantModelRequestAnswerAudit(
+      auditId,
+      'committed',
+      'task_lifecycle_batch_committed'
+    )
+
+    const page = store.listAssistantModelRequestAuditsPage({
+      requestKind: 'task_lifecycle_audit',
+      answerOutcomeCode: 'task_lifecycle_batch_committed',
+      limit: 10
+    })
+    assert.equal(page.total, 1)
+    assert.deepEqual(page.kindCounts, {
+      memory_answer: 0,
+      task_lifecycle_audit: 1
+    })
+    assert.equal(page.items[0].request_kind, 'task_lifecycle_audit')
+    assert.equal(page.items[0].sourcePrivacyAudit.outboundSha256, undefined)
+    assert.deepEqual(page.items[0].operationAudit, {
+      version: 'task-lifecycle-model-request-v1',
+      outboundSha256: '7'.repeat(64),
+      batchIndex: 2,
+      batchCount: 4,
+      taskCount: 10,
+      evidenceCount: 137,
+      redaction: {
+        level: 'strict',
+        total: 3,
+        counts: { '邮箱': 2, 'API密钥': 1 }
+      },
+      privacyPolicy: 'counts_digest_no_task_ids_prompt_evidence_or_model_output_v1'
+    })
+    assert.equal(page.answerReasonCounts.task_lifecycle_batch_committed, 1)
+    const raw = String((store as any).db.prepare(`
+      SELECT audit_json FROM assistant_model_request_audits WHERE id=?
+    `).get(auditId).audit_json)
+    assert.equal(raw.includes('不应保存'), false)
+    assert.equal(raw.includes('private-task-id'), false)
+    assert.equal(store.getAssistantModelRequestAuditStats()
+      .kindCounts.task_lifecycle_audit, 1)
+  })
+})
+
 test('model answer audit links delete atomically and orphan drift self-heals on reopen', () => {
   const directory = mkdtempSync(join(tmpdir(), 'weflow-model-answer-link-repair-'))
   const databasePath = join(directory, 'memory.sqlite')
@@ -17942,13 +18002,18 @@ test('transport-only model request audits upgrade without inventing answer succe
     assert.equal((second as any).db.prepare(`
       SELECT COUNT(*) AS count FROM pragma_table_info('assistant_model_request_audits')
       WHERE name IN (
+        'request_kind',
         'answer_outcome','answer_outcome_code','answer_completed_at',
         'conversation_id','answer_message_id'
       )
-    `).get().count, 5)
+    `).get().count, 6)
     assert.equal((second as any).db.prepare(`
       SELECT COUNT(*) AS count FROM sqlite_master
       WHERE type='index' AND name='idx_assistant_model_request_audits_answer_message'
+    `).get().count, 1)
+    assert.equal((second as any).db.prepare(`
+      SELECT COUNT(*) AS count FROM sqlite_master
+      WHERE type='index' AND name='idx_assistant_model_request_audits_kind_time'
     `).get().count, 1)
   } finally {
     first.close()

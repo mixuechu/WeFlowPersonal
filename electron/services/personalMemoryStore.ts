@@ -1283,6 +1283,8 @@ export class PersonalMemoryStore {
 
       CREATE TABLE IF NOT EXISTS assistant_model_request_audits (
         id INTEGER PRIMARY KEY,
+        request_kind TEXT NOT NULL DEFAULT 'memory_answer'
+          CHECK(request_kind IN ('memory_answer','task_lifecycle_audit')),
         status TEXT NOT NULL CHECK(status IN ('sending','response_received','failed','interrupted')),
         outcome_code TEXT NOT NULL DEFAULT '',
         model TEXT NOT NULL DEFAULT '',
@@ -4450,6 +4452,13 @@ export class PersonalMemoryStore {
       PRAGMA table_info(assistant_model_request_audits)
     `).all() as any[]).map(row => String(row.name || '')))
     const transaction = this.db.transaction(() => {
+      if (!columns.has('request_kind')) {
+        this.db!.exec(`
+          ALTER TABLE assistant_model_request_audits
+          ADD COLUMN request_kind TEXT NOT NULL DEFAULT 'memory_answer'
+            CHECK(request_kind IN ('memory_answer','task_lifecycle_audit'))
+        `)
+      }
       if (!columns.has('answer_outcome')) {
         this.db!.exec(`
           ALTER TABLE assistant_model_request_audits
@@ -4494,6 +4503,10 @@ export class PersonalMemoryStore {
         CREATE UNIQUE INDEX IF NOT EXISTS idx_assistant_model_request_audits_answer_message
         ON assistant_model_request_audits(answer_message_id)
         WHERE answer_message_id!=''
+      `)
+      this.db!.exec(`
+        CREATE INDEX IF NOT EXISTS idx_assistant_model_request_audits_kind_time
+        ON assistant_model_request_audits(request_kind,started_at DESC,id DESC)
       `)
       this.db!.prepare(`
         UPDATE assistant_model_request_audits
@@ -23264,6 +23277,53 @@ export class PersonalMemoryStore {
     return Number(result.lastInsertRowid || 0)
   }
 
+  recordTaskLifecycleModelRequestStarted(input: {
+    outboundSha256: string
+    batchIndex: number
+    batchCount: number
+    taskCount: number
+    evidenceCount: number
+    redaction?: any
+  }, model: string): number {
+    if (!this.db) return 0
+    const outboundSha256 = String(input?.outboundSha256 || '').trim().toLowerCase()
+    if (!/^[a-f0-9]{64}$/.test(outboundSha256)) {
+      throw new Error('待办复核模型审计缺少有效的不可逆请求摘要')
+    }
+    const redactionCounts = Object.fromEntries(Object.entries(input?.redaction?.counts || {})
+      .slice(0, 20)
+      .map(([key, value]) => [
+        String(key || '').slice(0, 40),
+        Math.max(0, Math.min(1_000_000, Math.floor(Number(value) || 0)))
+      ]))
+    const compacted = {
+      version: 'task-lifecycle-model-request-v1',
+      outboundSha256,
+      batchIndex: Math.max(1, Math.floor(Number(input.batchIndex) || 1)),
+      batchCount: Math.max(1, Math.floor(Number(input.batchCount) || 1)),
+      taskCount: Math.max(0, Math.min(10, Math.floor(Number(input.taskCount) || 0))),
+      evidenceCount: Math.max(0, Math.min(200, Math.floor(Number(input.evidenceCount) || 0))),
+      redaction: {
+        level: ['credentials', 'standard', 'strict'].includes(String(input?.redaction?.level || ''))
+          ? String(input.redaction.level)
+          : 'standard',
+        total: Math.max(0, Math.min(1_000_000, Math.floor(Number(input?.redaction?.total) || 0))),
+        counts: redactionCounts
+      },
+      privacyPolicy: 'counts_digest_no_task_ids_prompt_evidence_or_model_output_v1'
+    }
+    const result = this.db.prepare(`
+      INSERT INTO assistant_model_request_audits(
+        request_kind,status,outcome_code,model,audit_json,started_at,completed_at
+      ) VALUES('task_lifecycle_audit','sending','',?,?,?,NULL)
+    `).run(
+      String(model || '').trim().slice(0, 120),
+      JSON.stringify(compacted),
+      new Date().toISOString()
+    )
+    return Number(result.lastInsertRowid || 0)
+  }
+
   finishAssistantModelRequestAudit(
     id: number,
     status: 'response_received' | 'failed',
@@ -23310,12 +23370,18 @@ export class PersonalMemoryStore {
       'grounding_rejected',
       'evidence_changed',
       'answer_commit_failed',
-      'response_processing_failed'
+      'response_processing_failed',
+      'task_lifecycle_batch_committed',
+      'task_lifecycle_decision_rejected',
+      'task_lifecycle_commit_failed'
     ])
+    const requestedCode = String(outcomeCode || '')
     const normalizedCode = outcome === 'committed'
-      ? 'answer_committed'
-      : allowedRejectedCodes.has(String(outcomeCode || ''))
-        ? String(outcomeCode)
+      ? requestedCode === 'task_lifecycle_batch_committed'
+        ? requestedCode
+        : 'answer_committed'
+      : allowedRejectedCodes.has(requestedCode)
+        ? requestedCode
         : 'response_processing_failed'
     this.db.prepare(`
       UPDATE assistant_model_request_audits
@@ -23325,6 +23391,7 @@ export class PersonalMemoryStore {
   }
 
   listAssistantModelRequestAuditsPage(options: {
+    requestKind?: string
     status?: string
     answerOutcome?: string
     answerOutcomeCode?: string
@@ -23340,6 +23407,7 @@ export class PersonalMemoryStore {
       items: [], total: 0, hasMore: false, offset, limit,
       revision: this.getAssistantModelRequestAuditRevision(),
       stale: false,
+      kindCounts: { memory_answer: 0, task_lifecycle_audit: 0 },
       counts: { sending: 0, response_received: 0, failed: 0, interrupted: 0 },
       answerCounts: {
         processing: 0, committed: 0, rejected: 0, interrupted: 0,
@@ -23351,6 +23419,9 @@ export class PersonalMemoryStore {
         evidence_changed: 0,
         answer_commit_failed: 0,
         response_processing_failed: 0,
+        task_lifecycle_batch_committed: 0,
+        task_lifecycle_decision_rejected: 0,
+        task_lifecycle_commit_failed: 0,
         process_interrupted_after_response: 0,
         legacy_transport_only: 0
       }
@@ -23364,6 +23435,9 @@ export class PersonalMemoryStore {
     const normalizedStatus = new Set([
       'sending', 'response_received', 'failed', 'interrupted'
     ]).has(String(options.status || '')) ? String(options.status) : ''
+    const normalizedRequestKind = new Set([
+      'memory_answer', 'task_lifecycle_audit'
+    ]).has(String(options.requestKind || '')) ? String(options.requestKind) : ''
     const normalizedAnswerOutcome = new Set([
       'processing', 'committed', 'rejected', 'interrupted',
       'not_applicable', 'legacy_unknown'
@@ -23371,6 +23445,8 @@ export class PersonalMemoryStore {
     const normalizedAnswerOutcomeCode = new Set([
       'invalid_model_json', 'grounding_rejected', 'evidence_changed',
       'answer_commit_failed', 'response_processing_failed',
+      'task_lifecycle_batch_committed', 'task_lifecycle_decision_rejected',
+      'task_lifecycle_commit_failed',
       'process_interrupted_after_response', 'answer_committed',
       'legacy_transport_only'
     ]).has(String(options.answerOutcomeCode || ''))
@@ -23380,11 +23456,16 @@ export class PersonalMemoryStore {
     const to = String(options.to || '').trim()
     const buildWhere = (include: {
       status?: boolean
+      requestKind?: boolean
       answerOutcome?: boolean
       answerOutcomeCode?: boolean
     } = {}): { where: string; args: string[] } => {
       const filters: string[] = []
       const args: string[] = []
+      if (include.requestKind !== false && normalizedRequestKind) {
+        filters.push('request_kind=?')
+        args.push(normalizedRequestKind)
+      }
       if (include.status !== false && normalizedStatus) {
         filters.push('status=?')
         args.push(normalizedStatus)
@@ -23426,6 +23507,19 @@ export class PersonalMemoryStore {
         counts[row.status as keyof typeof counts] = Math.max(0, Number(row.count || 0))
       }
     }
+    const kindFacet = buildWhere({ requestKind: false })
+    const kindRows = this.db.prepare(`
+      SELECT request_kind,COUNT(*) AS count
+      FROM assistant_model_request_audits ${kindFacet.where}
+      GROUP BY request_kind
+    `).all(...kindFacet.args) as any[]
+    const kindCounts = { memory_answer: 0, task_lifecycle_audit: 0 }
+    for (const row of kindRows) {
+      if (row.request_kind in kindCounts) {
+        kindCounts[row.request_kind as keyof typeof kindCounts] =
+          Math.max(0, Number(row.count || 0))
+      }
+    }
     const answerFacet = buildWhere({ answerOutcome: false })
     const answerCountRows = this.db.prepare(`
       SELECT answer_outcome,COUNT(*) AS count
@@ -23455,6 +23549,9 @@ export class PersonalMemoryStore {
       evidence_changed: 0,
       answer_commit_failed: 0,
       response_processing_failed: 0,
+      task_lifecycle_batch_committed: 0,
+      task_lifecycle_decision_rejected: 0,
+      task_lifecycle_commit_failed: 0,
       process_interrupted_after_response: 0,
       legacy_transport_only: 0
     }
@@ -23466,7 +23563,7 @@ export class PersonalMemoryStore {
       }
     }
     const rows = this.db.prepare(`
-      SELECT audit.id,audit.status,audit.outcome_code,audit.model,audit.audit_json,
+      SELECT audit.id,audit.request_kind,audit.status,audit.outcome_code,audit.model,audit.audit_json,
         answer_outcome,answer_outcome_code,
         started_at,completed_at,answer_completed_at,
         CASE WHEN audit.answer_outcome='committed' AND EXISTS(
@@ -23487,16 +23584,45 @@ export class PersonalMemoryStore {
     const items = rows.map(row => {
       let audit: any = {}
       try { audit = JSON.parse(String(row.audit_json || '{}')) } catch {}
-      const compacted = this.compactAssistantGroundingAudit({
-        version: 'statement-citations-v1',
-        sourcePrivacyAudit: audit
-      })?.sourcePrivacyAudit || {}
+      const requestKind = row.request_kind === 'task_lifecycle_audit'
+        ? 'task_lifecycle_audit'
+        : 'memory_answer'
+      const compacted = requestKind === 'memory_answer'
+        ? this.compactAssistantGroundingAudit({
+            version: 'statement-citations-v1',
+            sourcePrivacyAudit: audit
+          })?.sourcePrivacyAudit || {}
+        : {}
+      const operationAudit = requestKind === 'task_lifecycle_audit' &&
+        audit?.version === 'task-lifecycle-model-request-v1'
+        ? {
+            version: 'task-lifecycle-model-request-v1',
+            outboundSha256: /^[a-f0-9]{64}$/.test(String(audit.outboundSha256 || ''))
+              ? String(audit.outboundSha256)
+              : '',
+            batchIndex: Math.max(1, Number(audit.batchIndex || 1)),
+            batchCount: Math.max(1, Number(audit.batchCount || 1)),
+            taskCount: Math.max(0, Number(audit.taskCount || 0)),
+            evidenceCount: Math.max(0, Number(audit.evidenceCount || 0)),
+            redaction: {
+              level: String(audit.redaction?.level || 'standard'),
+              total: Math.max(0, Number(audit.redaction?.total || 0)),
+              counts: Object.fromEntries(Object.entries(audit.redaction?.counts || {})
+                .slice(0, 20).map(([key, value]) => [
+                  String(key || '').slice(0, 40), Math.max(0, Number(value || 0))
+                ]))
+            },
+            privacyPolicy: 'counts_digest_no_task_ids_prompt_evidence_or_model_output_v1'
+          }
+        : null
       return {
         id: Number(row.id || 0),
+        request_kind: requestKind,
         status: String(row.status || ''),
         outcome_code: String(row.outcome_code || ''),
         model: String(row.model || ''),
         sourcePrivacyAudit: compacted,
+        operationAudit,
         answer_outcome: String(row.answer_outcome || ''),
         answer_outcome_code: String(row.answer_outcome_code || ''),
         started_at: String(row.started_at || ''),
@@ -23518,6 +23644,7 @@ export class PersonalMemoryStore {
       limit,
       revision,
       stale: false,
+      kindCounts,
       counts,
       answerCounts,
       answerReasonCounts
@@ -23527,6 +23654,7 @@ export class PersonalMemoryStore {
   getAssistantModelRequestAuditStats(): any {
     if (!this.db) return {
       total: 0,
+      kindCounts: { memory_answer: 0, task_lifecycle_audit: 0 },
       counts: { sending: 0, response_received: 0, failed: 0, interrupted: 0 },
       answerCounts: {
         processing: 0, committed: 0, rejected: 0, interrupted: 0,
@@ -23538,6 +23666,9 @@ export class PersonalMemoryStore {
         evidence_changed: 0,
         answer_commit_failed: 0,
         response_processing_failed: 0,
+        task_lifecycle_batch_committed: 0,
+        task_lifecycle_decision_rejected: 0,
+        task_lifecycle_commit_failed: 0,
         process_interrupted_after_response: 0,
         legacy_transport_only: 0
       },
@@ -23573,6 +23704,7 @@ export class PersonalMemoryStore {
       total: Number((this.db.prepare(`
         SELECT COUNT(*) AS count FROM assistant_model_request_audits
       `).get() as any)?.count || 0),
+      kindCounts: page.kindCounts,
       counts: page.counts,
       answerCounts: page.answerCounts,
       answerReasonCounts: page.answerReasonCounts,

@@ -1668,6 +1668,7 @@ function AiAssistantPage() {
   const [modelRequestAuditsOpen, setModelRequestAuditsOpen] = useState(false)
   const [modelRequestAudits, setModelRequestAudits] = useState<any>({
     items: [], total: 0, hasMore: false,
+    kindCounts: { memory_answer: 0, task_lifecycle_audit: 0 },
     counts: { sending: 0, response_received: 0, failed: 0, interrupted: 0 },
     answerCounts: {
       processing: 0, committed: 0, rejected: 0, interrupted: 0,
@@ -1679,6 +1680,7 @@ function AiAssistantPage() {
       process_interrupted_after_response: 0, legacy_transport_only: 0
     }
   })
+  const [modelRequestAuditKind, setModelRequestAuditKind] = useState('')
   const [modelRequestAuditStatus, setModelRequestAuditStatus] = useState('')
   const [modelRequestAuditAnswerOutcome, setModelRequestAuditAnswerOutcome] = useState('')
   const [modelRequestAuditAnswerReason, setModelRequestAuditAnswerReason] = useState('')
@@ -1902,6 +1904,7 @@ function AiAssistantPage() {
     limit: 30
   }), [assistantArchiveQuery, assistantArchiveFrom, assistantArchiveTo, assistantArchiveRevalidation])
   const modelRequestAuditOptions = useMemo(() => ({
+    requestKind: modelRequestAuditKind || undefined,
     status: modelRequestAuditStatus || undefined,
     answerOutcome: modelRequestAuditAnswerOutcome || undefined,
     answerOutcomeCode: modelRequestAuditAnswerReason || undefined,
@@ -1914,6 +1917,7 @@ function AiAssistantPage() {
     offset: 0,
     limit: 30
   }), [
+    modelRequestAuditKind,
     modelRequestAuditStatus,
     modelRequestAuditAnswerOutcome,
     modelRequestAuditAnswerReason,
@@ -9825,7 +9829,9 @@ function AiAssistantPage() {
               <ShieldCheck size={15} className={taskLifecycleAuditing || status?.taskLifecycleAudit?.running ? 'spin' : ''} />
               {taskLifecycleAuditing || status?.taskLifecycleAudit?.running
                 ? `复核 ${status?.taskLifecycleAudit?.processed || 0}/${status?.taskLifecycleAudit?.total || 0}`
-                : '复核活动待办'}
+                : status?.taskLifecycleAudit?.resumeAvailable
+                  ? `继续复核剩余 ${status.taskLifecycleAudit.remaining || 0} 项`
+                  : '复核活动待办'}
             </button>
             <button className="assistant-sync-button" onClick={syncNow} disabled={syncing || status?.syncing || !status?.configured}>
               <RefreshCw size={15} className={syncing ? 'spin' : ''} />
@@ -12350,6 +12356,18 @@ function AiAssistantPage() {
             {modelRequestAuditsOpen && <>
               <div className="assistant-answer-review-filters"
                 hidden={Boolean(modelRequestAudits.error)}>
+                <select value={modelRequestAuditKind}
+                  onChange={event => setModelRequestAuditKind(event.target.value)}>
+                  <option value="">全部模型动作</option>
+                  <option value="memory_answer">
+                    证据问答（{Number(modelRequestAudits.kindCounts?.memory_answer || 0)}）
+                  </option>
+                  <option value="task_lifecycle_audit">
+                    待办生命周期复核（{Number(
+                      modelRequestAudits.kindCounts?.task_lifecycle_audit || 0
+                    )}）
+                  </option>
+                </select>
                 <select value={modelRequestAuditStatus}
                   onChange={event => setModelRequestAuditStatus(event.target.value)}>
                   <option value="">全部发送状态</option>
@@ -12368,12 +12386,12 @@ function AiAssistantPage() {
                 </select>
                 <select value={modelRequestAuditAnswerOutcome}
                   onChange={event => setModelRequestAuditAnswerOutcome(event.target.value)}>
-                  <option value="">全部回答结果</option>
+                  <option value="">全部本地处理结果</option>
                   <option value="committed">
-                    回答已提交（{Number(modelRequestAudits.answerCounts?.committed || 0)}）
+                    本地结果已提交（{Number(modelRequestAudits.answerCounts?.committed || 0)}）
                   </option>
                   <option value="rejected">
-                    响应被拒绝（{Number(modelRequestAudits.answerCounts?.rejected || 0)}）
+                    响应处理被拒绝（{Number(modelRequestAudits.answerCounts?.rejected || 0)}）
                   </option>
                   <option value="interrupted">
                     响应后中断（{Number(modelRequestAudits.answerCounts?.interrupted || 0)}）
@@ -12420,6 +12438,21 @@ function AiAssistantPage() {
                       modelRequestAudits.answerReasonCounts?.response_processing_failed || 0
                     )}）
                   </option>
+                  <option value="task_lifecycle_batch_committed">
+                    待办复核批次已提交（{Number(
+                      modelRequestAudits.answerReasonCounts?.task_lifecycle_batch_committed || 0
+                    )}）
+                  </option>
+                  <option value="task_lifecycle_decision_rejected">
+                    待办复核响应无效（{Number(
+                      modelRequestAudits.answerReasonCounts?.task_lifecycle_decision_rejected || 0
+                    )}）
+                  </option>
+                  <option value="task_lifecycle_commit_failed">
+                    待办复核提交失败（{Number(
+                      modelRequestAudits.answerReasonCounts?.task_lifecycle_commit_failed || 0
+                    )}）
+                  </option>
                   <option value="process_interrupted_after_response">
                     响应后进程中断（{Number(
                       modelRequestAudits.answerReasonCounts?.process_interrupted_after_response || 0
@@ -12437,8 +12470,9 @@ function AiAssistantPage() {
                   onChange={event => setModelRequestAuditTo(event.target.value)} />
               </div>
               <small>
-                审计只保存微信、文档、日历、Mail、旧版或未知来源类别、资料计数、
-                脱敏计数和请求 SHA-256；不保存问题、聊天正文、邮箱地址或连接器内部 ID。
+                证据问答只保存来源类别和资料计数；待办复核只保存批次、待办/证据数量、
+                脱敏计数和请求 SHA-256。两者都不保存问题、任务名称、Prompt、聊天正文、
+                邮箱地址、连接器内部 ID 或模型原始输出。
               </small>
               {dashboard?.assistantArchive?.modelRequestAudits?.linkIntegrity && <small>
                 已提交回答链接 {Number(
@@ -12456,7 +12490,7 @@ function AiAssistantPage() {
                   ' 删除联动触发器异常，请打开完整诊断。'}
               </small>}
               <small hidden={Boolean(modelRequestAudits.error)}>
-                回答已提交 {Number(modelRequestAudits.answerCounts?.committed || 0)} ·
+                本地结果已提交 {Number(modelRequestAudits.answerCounts?.committed || 0)} ·
                 响应被拒绝 {Number(modelRequestAudits.answerCounts?.rejected || 0)} ·
                 响应后中断 {Number(modelRequestAudits.answerCounts?.interrupted || 0)} ·
                 正在处理 {Number(modelRequestAudits.answerCounts?.processing || 0)}
@@ -12470,6 +12504,7 @@ function AiAssistantPage() {
               </div>}
               <div className="assistant-answer-review-list">
                 {(modelRequestAudits.items || []).map((item: any) => {
+                  const isTaskLifecycleAudit = item.request_kind === 'task_lifecycle_audit'
                   const privacy = presentModelSourcePrivacyAudit(
                     item.sourcePrivacyAudit,
                     { requestLedger: true }
@@ -12505,6 +12540,9 @@ function AiAssistantPage() {
                     evidence_changed: '权威证据在处理期间发生变化',
                     answer_commit_failed: '本地原子提交失败',
                     response_processing_failed: '响应处理失败',
+                    task_lifecycle_batch_committed: '待办复核决定已经通过门禁并提交',
+                    task_lifecycle_decision_rejected: '待办复核响应格式或决定无效',
+                    task_lifecycle_commit_failed: '待办复核本地提交失败',
                     process_interrupted_after_response: '响应处理期间应用退出',
                     answer_committed: '问答与审计在同一事务提交',
                     legacy_transport_only: '旧版没有端到端回答结果'
@@ -12514,7 +12552,7 @@ function AiAssistantPage() {
                       <b>{statusLabel}</b>
                       <span>{new Date(item.started_at).toLocaleString('zh-CN')}</span>
                     </header>
-                    <strong>{item.model || '未记录模型'}</strong>
+                    <strong>{isTaskLifecycleAudit ? '待办生命周期复核' : '证据问答'} · {item.model || '未记录模型'}</strong>
                     {item.outcome_code && <small>
                       {outcomeLabel[item.outcome_code] || '请求状态已记录'}
                     </small>}
@@ -12530,7 +12568,19 @@ function AiAssistantPage() {
                         ? ` · ${answerOutcomeReason[item.answer_outcome_code] || '有限结果码已保存'}`
                         : ''}
                     </small>}
-                    {privacy.valid && <>
+                    {isTaskLifecycleAudit && item.operationAudit && <>
+                      <p>
+                        批次 {Number(item.operationAudit.batchIndex || 0)}/
+                        {Number(item.operationAudit.batchCount || 0)} ·
+                        待办 {Number(item.operationAudit.taskCount || 0)} 项 ·
+                        权威证据 {Number(item.operationAudit.evidenceCount || 0)} 条
+                      </p>
+                      <small>
+                        脱敏 {Number(item.operationAudit.redaction?.total || 0)} 处 ·
+                        请求摘要 {String(item.operationAudit.outboundSha256 || '').slice(0, 16)}…
+                      </small>
+                    </>}
+                    {!isTaskLifecycleAudit && privacy.valid && <>
                       <p>{privacy.summary}</p>
                       <small>{privacy.detail}</small>
                     </>}

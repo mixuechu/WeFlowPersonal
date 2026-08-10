@@ -7,6 +7,35 @@ export type TaskLifecycleAuditPlan = {
   evidenceIds: string[]
 }
 
+export function classifyTaskLifecycleAuditRequestFailure(input: {
+  name?: unknown
+  message?: unknown
+}): 'cancelled' | 'timeout' | 'request_failed' {
+  if (String(input?.name || '') === 'AbortError') return 'cancelled'
+  return /timeout|超时|超过\s*\d+\s*秒/i.test(String(input?.message || ''))
+    ? 'timeout'
+    : 'request_failed'
+}
+
+export function canResumeTaskLifecycleAudit(input: {
+  running: unknown
+  total: unknown
+  processed: unknown
+  candidateIds: unknown
+  nextOffset: unknown
+}): boolean {
+  if (Boolean(input.running)) return false
+  const total = Math.max(0, Math.floor(Number(input.total) || 0))
+  const processed = Math.max(0, Math.floor(Number(input.processed) || 0))
+  const candidateIds = Array.isArray(input.candidateIds)
+    ? input.candidateIds.map(value => String(value || '').trim())
+    : []
+  if (!total || processed <= 0 || processed >= total) return false
+  if (candidateIds.length !== total || new Set(candidateIds).size !== total ||
+      candidateIds.some(id => !id)) return false
+  return Math.max(0, Math.floor(Number(input.nextOffset) || 0)) === processed
+}
+
 export function selectTaskLifecycleAuditEvidence<T>(items: T[], limit = 20): T[] {
   const list = Array.isArray(items) ? items : []
   const boundedLimit = Math.max(1, Math.min(40, Math.floor(Number(limit) || 20)))
