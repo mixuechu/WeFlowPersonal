@@ -20752,6 +20752,18 @@ test('ingestion failure classes persist on write and deterministically backfill 
     assert.equal(summary.controlledInterruptedBatches, 1)
     assert.equal(summary.unclassifiedFailedBatches, 0)
     assert.equal(summary.failureClassificationVersion, 'ingestion-failure-class-v1')
+    const operationalPage = second.listIngestionRunPage({
+      batchOutcome: 'operational_failure', window: '24h', limit: 40
+    })
+    const controlledPage = second.listIngestionRunPage({
+      batchOutcome: 'controlled_interruption', window: '24h', limit: 40
+    })
+    assert.equal(operationalPage.total, 1)
+    assert.equal(operationalPage.items[0].id, 'legacy-failure')
+    assert.equal(operationalPage.items[0].operational_failed_batch_count, 1)
+    assert.equal(controlledPage.total, 1)
+    assert.equal(controlledPage.items[0].id, 'structured-write')
+    assert.equal(controlledPage.items[0].controlled_interrupted_batch_count, 1)
   } finally {
     first.close()
     second.close()

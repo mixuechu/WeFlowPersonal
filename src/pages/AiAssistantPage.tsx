@@ -1590,6 +1590,11 @@ function AiAssistantPage() {
   const [ingestionArchiveBacklogOutcome, setIngestionArchiveBacklogOutcome] = useState<
     'all' | 'idle' | 'progressed' | 'waiting' | 'failed' | 'paused' | 'drained' | 'interrupted'
   >('all')
+  const [ingestionArchiveBatchOutcome, setIngestionArchiveBatchOutcome] = useState<
+    'all' | 'completed' | 'operational_failure' | 'controlled_interruption' |
+    'unclassified_failure' | 'failed_any'
+  >('all')
+  const [ingestionArchiveWindow, setIngestionArchiveWindow] = useState<'all' | '24h' | '7d'>('all')
   const [ingestionArchiveQuery, setIngestionArchiveQuery] = useState('')
   const [ingestionArchiveFrom, setIngestionArchiveFrom] = useState('')
   const [ingestionArchiveTo, setIngestionArchiveTo] = useState('')
@@ -2014,6 +2019,8 @@ function AiAssistantPage() {
     status: ingestionArchiveStatus,
     trigger: ingestionArchiveTrigger,
     backlogOutcome: ingestionArchiveBacklogOutcome,
+    batchOutcome: ingestionArchiveBatchOutcome,
+    window: ingestionArchiveWindow,
     query: ingestionArchiveQuery || undefined,
     from: ingestionArchiveFrom ? new Date(`${ingestionArchiveFrom}T00:00:00+08:00`).toISOString() : undefined,
     to: ingestionArchiveTo ? new Date(`${ingestionArchiveTo}T23:59:59.999+08:00`).toISOString() : undefined,
@@ -2021,6 +2028,7 @@ function AiAssistantPage() {
     offset: 0
   }), [
     ingestionArchiveStatus, ingestionArchiveTrigger, ingestionArchiveBacklogOutcome,
+    ingestionArchiveBatchOutcome, ingestionArchiveWindow,
     ingestionArchiveQuery, ingestionArchiveFrom, ingestionArchiveTo
   ])
   const crossStoreRecoveryArchiveOptions = useMemo(() => ({
@@ -9789,6 +9797,23 @@ function AiAssistantPage() {
     setShowDiagnostics(true)
   }
 
+  const openIngestionBatchAudit = (
+    batchOutcome: 'operational_failure' | 'controlled_interruption' | 'unclassified_failure',
+    timeframe: '24h' | '7d' | 'all' = '24h'
+  ) => {
+    setIngestionArchiveStatus('all')
+    setIngestionArchiveTrigger('all')
+    setIngestionArchiveBacklogOutcome('all')
+    setIngestionArchiveBatchOutcome(batchOutcome)
+    setIngestionArchiveWindow(timeframe)
+    setIngestionArchiveQuery('')
+    setIngestionArchiveFrom('')
+    setIngestionArchiveTo('')
+    setIngestionDossier(null)
+    window.setTimeout(() => document.getElementById('ingestion-run-archive')
+      ?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 0)
+  }
+
   return (
     <div className="ai-assistant-page native">
       <div className="ai-assistant-toolbar">
@@ -17100,6 +17125,18 @@ function AiAssistantPage() {
                   ? new Date(memoryDiagnostics.ingestionSummary.latestFailedAt).toLocaleString('zh-CN', { hour12: false })
                   : '无'}</b></span>
               </div>
+              <div className="assistant-ingestion-recovery-actions">
+                <button type="button" onClick={() => openIngestionBatchAudit('operational_failure')}>
+                  审阅 24 小时真实异常
+                </button>
+                <button type="button" onClick={() => openIngestionBatchAudit('controlled_interruption')}>
+                  审阅 24 小时受控中断
+                </button>
+                {Number(memoryDiagnostics.ingestionSummary.unclassifiedFailedBatches || 0) > 0 &&
+                  <button type="button" onClick={() => openIngestionBatchAudit('unclassified_failure', 'all')}>
+                    审阅未分类历史
+                  </button>}
+              </div>
             </div>}
             <div className="assistant-dossier-metrics">
               <span><b>{memoryDiagnostics.ingestionSummary?.runs || 0}</b><small>全部运行</small></span>
@@ -18132,7 +18169,7 @@ function AiAssistantPage() {
                 </button>
               </div>}
             </div>
-            <div className="assistant-diagnostics-runs">
+            <div className="assistant-diagnostics-runs" id="ingestion-run-archive">
               <div className="assistant-task-filters">
                 <select value={ingestionArchiveStatus}
                   onChange={event => setIngestionArchiveStatus(event.target.value as typeof ingestionArchiveStatus)}>
@@ -18166,6 +18203,25 @@ function AiAssistantPage() {
                   <option value="interrupted">异常退出</option>
                   <option value="idle">无分页积压</option>
                 </select>
+                <select value={ingestionArchiveBatchOutcome}
+                  onChange={event => setIngestionArchiveBatchOutcome(
+                    event.target.value as typeof ingestionArchiveBatchOutcome
+                  )}>
+                  <option value="all">所有批次结果</option>
+                  <option value="completed">包含成功批次</option>
+                  <option value="operational_failure">包含真实异常</option>
+                  <option value="controlled_interruption">包含受控中断</option>
+                  <option value="failed_any">包含任意失败</option>
+                  <option value="unclassified_failure">包含未分类失败</option>
+                </select>
+                <select value={ingestionArchiveWindow}
+                  onChange={event => setIngestionArchiveWindow(
+                    event.target.value as typeof ingestionArchiveWindow
+                  )}>
+                  <option value="all">全部活动时间</option>
+                  <option value="24h">最近 24 小时</option>
+                  <option value="7d">最近 7 天</option>
+                </select>
                 <input value={ingestionArchiveQuery}
                   onChange={event => setIngestionArchiveQuery(event.target.value)}
                   placeholder="搜索运行 ID、触发来源、结果、模型、Prompt 或错误" />
@@ -18174,10 +18230,12 @@ function AiAssistantPage() {
                 <label><span>到</span><input type="date" value={ingestionArchiveTo}
                   onChange={event => setIngestionArchiveTo(event.target.value)} /></label>
                 {(ingestionArchiveStatus !== 'all' || ingestionArchiveTrigger !== 'all' ||
-                  ingestionArchiveBacklogOutcome !== 'all' || ingestionArchiveQuery ||
+                  ingestionArchiveBacklogOutcome !== 'all' || ingestionArchiveBatchOutcome !== 'all' ||
+                  ingestionArchiveWindow !== 'all' || ingestionArchiveQuery ||
                   ingestionArchiveFrom || ingestionArchiveTo) && <button onClick={() => {
                   setIngestionArchiveStatus('all'); setIngestionArchiveTrigger('all')
-                  setIngestionArchiveBacklogOutcome('all'); setIngestionArchiveQuery('')
+                  setIngestionArchiveBacklogOutcome('all'); setIngestionArchiveBatchOutcome('all')
+                  setIngestionArchiveWindow('all'); setIngestionArchiveQuery('')
                   setIngestionArchiveFrom(''); setIngestionArchiveTo('')
                 }}>清除范围</button>}
               </div>
@@ -18191,7 +18249,9 @@ function AiAssistantPage() {
                 <div>
                   <b>{new Date(run.started_at).toLocaleString('zh-CN')}</b>
                   <span className={run.status}>{run.status} · {run.message_count} 条 · {run.batch_count} 批
-                    {run.failed_batch_count ? ` · ${run.failed_batch_count} 批失败` : ''}
+                    {run.failed_batch_count
+                      ? ` · ${run.failed_batch_count} 批失败（${Number(run.operational_failed_batch_count || 0)} 异常 / ${Number(run.controlled_interrupted_batch_count || 0)} 受控）`
+                      : ''}
                     {' · '}{(Number(run.duration_ms || 0) / 1000).toFixed(1)} 秒
                   </span>
                 </div>

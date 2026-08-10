@@ -19620,6 +19620,8 @@ export class PersonalMemoryStore {
     status?: 'running' | 'completed' | 'partial' | 'failed' | 'all'
     trigger?: 'manual' | 'startup' | 'daily' | 'backlog' | 'resume' | 'document' | 'legacy' | 'all'
     backlogOutcome?: 'idle' | 'progressed' | 'waiting' | 'failed' | 'paused' | 'drained' | 'interrupted' | 'all'
+    batchOutcome?: 'completed' | 'operational_failure' | 'controlled_interruption' | 'unclassified_failure' | 'failed_any' | 'all'
+    window?: '24h' | '7d' | 'all'
     query?: string
     from?: string
     to?: string
@@ -19666,6 +19668,40 @@ export class PersonalMemoryStore {
       conditions.push('r.backlog_outcome=?')
       parameters.push(String(options.backlogOutcome))
     }
+    const windowModifier = options.window === '24h'
+      ? '-1 day'
+      : options.window === '7d' ? '-7 days' : ''
+    if (windowModifier) {
+      conditions.push(
+        `julianday(COALESCE(r.finished_at,r.recovered_at,r.started_at))>=julianday('now',?)`
+      )
+      parameters.push(windowModifier)
+    }
+    const batchOutcome = String(options.batchOutcome || '')
+    if (['completed', 'operational_failure', 'controlled_interruption',
+      'unclassified_failure', 'failed_any'].includes(batchOutcome)) {
+      const batchConditions = ['bf.run_id=r.id']
+      if (batchOutcome === 'completed') batchConditions.push(`bf.status='completed'`)
+      if (batchOutcome === 'failed_any') batchConditions.push(`bf.status='failed'`)
+      if (batchOutcome === 'operational_failure') {
+        batchConditions.push(`bf.status='failed'`, `bf.failure_class='operational_failure'`)
+      }
+      if (batchOutcome === 'controlled_interruption') {
+        batchConditions.push(`bf.status='failed'`, `bf.failure_class='controlled_interruption'`)
+      }
+      if (batchOutcome === 'unclassified_failure') {
+        batchConditions.push(`bf.status='failed'`, `bf.failure_class=''`)
+      }
+      if (windowModifier) {
+        batchConditions.push(
+          `julianday(COALESCE(bf.finished_at,bf.started_at))>=julianday('now',?)`
+        )
+        parameters.push(windowModifier)
+      }
+      conditions.push(`EXISTS(
+        SELECT 1 FROM ingestion_batches bf WHERE ${batchConditions.join(' AND ')}
+      )`)
+    }
     const query = String(options.query || '').trim().toLocaleLowerCase('zh-CN')
     if (query) {
       const auditQueryAliases: Record<string, string> = {
@@ -19707,6 +19743,10 @@ export class PersonalMemoryStore {
       SELECT r.*,
         COUNT(b.batch_index) AS batch_count,
         SUM(CASE WHEN b.status='failed' THEN 1 ELSE 0 END) AS failed_batch_count,
+        SUM(CASE WHEN b.failure_class='operational_failure' THEN 1 ELSE 0 END)
+          AS operational_failed_batch_count,
+        SUM(CASE WHEN b.failure_class='controlled_interruption' THEN 1 ELSE 0 END)
+          AS controlled_interrupted_batch_count,
         COALESCE(SUM(b.input_tokens),0) AS input_tokens,
         COALESCE(SUM(b.output_tokens),0) AS output_tokens,
         COALESCE(SUM(b.duration_ms),0) AS duration_ms
@@ -19730,6 +19770,8 @@ export class PersonalMemoryStore {
       ...item,
       batch_count: Number(item.batch_count || 0),
       failed_batch_count: Number(item.failed_batch_count || 0),
+      operational_failed_batch_count: Number(item.operational_failed_batch_count || 0),
+      controlled_interrupted_batch_count: Number(item.controlled_interrupted_batch_count || 0),
       input_tokens: Number(item.input_tokens || 0),
       output_tokens: Number(item.output_tokens || 0),
       duration_ms: Number(item.duration_ms || 0)

@@ -7372,6 +7372,10 @@ export class AiAssistantService {
         .includes(options?.trigger) ? options.trigger : 'all',
       backlogOutcome: ['idle', 'progressed', 'waiting', 'failed', 'paused', 'drained', 'interrupted', 'all']
         .includes(options?.backlogOutcome) ? options.backlogOutcome : 'all',
+      batchOutcome: ['completed', 'operational_failure', 'controlled_interruption',
+        'unclassified_failure', 'failed_any', 'all']
+        .includes(options?.batchOutcome) ? options.batchOutcome : 'all',
+      window: ['24h', '7d', 'all'].includes(options?.window) ? options.window : 'all',
       query: String(options?.query || ''),
       from: String(options?.from || ''),
       to: String(options?.to || ''),
