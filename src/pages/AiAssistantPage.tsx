@@ -1463,6 +1463,8 @@ function AiAssistantPage() {
     revision?: string
     stale?: boolean
     loading?: boolean
+    error?: string
+    loadMoreError?: string
   }>({
     items: [], total: 0, hasMore: false,
     counts: { active: 0, reverted: 0, all: 0 }
@@ -2489,7 +2491,9 @@ function AiAssistantPage() {
     }
     const request = modelRequestAuditGate.current.begin()
     setModelRequestAuditsLoadingMore(false)
-    setModelRequestAudits((current: any) => ({ ...current, items: [], loading: true }))
+    setModelRequestAudits((current: any) => ({
+      ...current, items: [], loading: true, error: undefined, loadMoreError: undefined
+    }))
     void window.electronAPI.aiAssistant.getAssistantModelRequestAudits(modelRequestAuditOptions)
       .then(result => {
         if (!modelRequestAuditGate.current.isCurrent(request)) return
@@ -2502,10 +2506,11 @@ function AiAssistantPage() {
           return
         }
         setModelRequestAudits({ ...result, loading: false })
-      }).catch(() => {
+      }).catch(error => {
         if (!modelRequestAuditGate.current.isCurrent(request)) return
         setModelRequestAudits((current: any) => ({
-          ...current, items: [], total: 0, hasMore: false, loading: false
+          ...current, items: [], total: 0, hasMore: false, loading: false,
+          error: error?.message || String(error)
         }))
       })
     return () => {
@@ -2527,7 +2532,9 @@ function AiAssistantPage() {
     }
     const request = assistantAnswerReviewsGate.current.begin()
     setAssistantAnswerReviewsLoadingMore(false)
-    setAssistantAnswerReviews((current: any) => ({ ...current, items: [], loading: true }))
+    setAssistantAnswerReviews((current: any) => ({
+      ...current, items: [], loading: true, error: undefined, loadMoreError: undefined
+    }))
     const timer = window.setTimeout(() => {
       void window.electronAPI.aiAssistant.getAssistantAnswerReviews(assistantAnswerReviewOptions)
         .then(result => {
@@ -2541,7 +2548,7 @@ function AiAssistantPage() {
             return
           }
           setAssistantAnswerReviews({ ...result, loading: false })
-        }).catch(() => {
+        }).catch(error => {
           if (!assistantAnswerReviewsGate.current.isCurrent(request)) return
           setAssistantAnswerReviews({
             items: [], total: 0, hasMore: false, loading: false,
@@ -2549,7 +2556,8 @@ function AiAssistantPage() {
             reasonCounts: {
               missing: 0, ineligible: 0, contentChanged: 0,
               evidenceCountsChanged: 0, evidenceChanged: 0, other: 0
-            }
+            },
+            error: error?.message || String(error)
           })
         })
     }, assistantAnswerReviewQuery ? 200 : 0)
@@ -3100,7 +3108,9 @@ function AiAssistantPage() {
   useEffect(() => {
     const request = mergeArchiveGate.current.begin()
     setMergeArchiveLoadingMore(false)
-    setMergeArchive(current => ({ ...current, items: [], loading: true }))
+    setMergeArchive(current => ({
+      ...current, items: [], loading: true, error: undefined, loadMoreError: undefined
+    }))
     const timer = window.setTimeout(() => {
       void window.electronAPI.aiAssistant.getMergeHistoryPage(mergeArchiveOptions).then(page => {
         if (!mergeArchiveGate.current.isCurrent(request)) return
@@ -3113,11 +3123,12 @@ function AiAssistantPage() {
           return
         }
         setMergeArchive({ ...page, loading: false })
-      }).catch(() => {
+      }).catch(error => {
         if (!mergeArchiveGate.current.isCurrent(request)) return
         setMergeArchive({
           items: [], total: 0, hasMore: false,
-          counts: { active: 0, reverted: 0, all: 0 }, loading: false
+          counts: { active: 0, reverted: 0, all: 0 }, loading: false,
+          error: error?.message || String(error)
         })
       })
     }, mergeArchiveQuery ? 200 : 0)
@@ -7118,6 +7129,7 @@ function AiAssistantPage() {
     if (mergeArchiveLoadingMore || !mergeArchive.hasMore) return
     const request = mergeArchiveGate.current.begin()
     setMergeArchiveLoadingMore(true)
+    setMergeArchive(current => ({ ...current, loadMoreError: undefined }))
     try {
       const page = await window.electronAPI.aiAssistant.getMergeHistoryPage({
         ...mergeArchiveOptions,
@@ -7141,7 +7153,11 @@ function AiAssistantPage() {
         loading: false
       }))
     } catch (error: any) {
-      if (mergeArchiveGate.current.isCurrent(request)) setMessage(error?.message || String(error))
+      if (mergeArchiveGate.current.isCurrent(request)) {
+        const errorMessage = error?.message || String(error)
+        setMergeArchive(current => ({ ...current, loadMoreError: errorMessage }))
+        setMessage(errorMessage)
+      }
     } finally {
       if (mergeArchiveGate.current.isCurrent(request)) setMergeArchiveLoadingMore(false)
     }
@@ -8375,6 +8391,7 @@ function AiAssistantPage() {
     if (modelRequestAuditsLoadingMore || !modelRequestAudits.hasMore) return
     const request = modelRequestAuditGate.current.begin()
     setModelRequestAuditsLoadingMore(true)
+    setModelRequestAudits((current: any) => ({ ...current, loadMoreError: undefined }))
     try {
       const result = await window.electronAPI.aiAssistant.getAssistantModelRequestAudits({
         ...modelRequestAuditOptions,
@@ -8396,7 +8413,11 @@ function AiAssistantPage() {
       }))
     } catch (error: any) {
       if (modelRequestAuditGate.current.isCurrent(request)) {
-        setMessage(error?.message || String(error))
+        const errorMessage = error?.message || String(error)
+        setModelRequestAudits((current: any) => ({
+          ...current, loadMoreError: errorMessage
+        }))
+        setMessage(errorMessage)
       }
     } finally {
       if (modelRequestAuditGate.current.isCurrent(request)) {
@@ -8409,6 +8430,7 @@ function AiAssistantPage() {
     if (assistantAnswerReviewsLoadingMore || !assistantAnswerReviews.hasMore) return
     const request = assistantAnswerReviewsGate.current.begin()
     setAssistantAnswerReviewsLoadingMore(true)
+    setAssistantAnswerReviews((current: any) => ({ ...current, loadMoreError: undefined }))
     try {
       const result = await window.electronAPI.aiAssistant.getAssistantAnswerReviews({
         ...assistantAnswerReviewOptions,
@@ -8430,7 +8452,11 @@ function AiAssistantPage() {
       }))
     } catch (error: any) {
       if (assistantAnswerReviewsGate.current.isCurrent(request)) {
-        setMessage(error?.message || String(error))
+        const errorMessage = error?.message || String(error)
+        setAssistantAnswerReviews((current: any) => ({
+          ...current, loadMoreError: errorMessage
+        }))
+        setMessage(errorMessage)
       }
     } finally {
       if (assistantAnswerReviewsGate.current.isCurrent(request)) {
@@ -11980,7 +12006,8 @@ function AiAssistantPage() {
               <small>成功、失败和断电中断均保留不可逆摘要，不保存问题或原文</small>
             </summary>
             {modelRequestAuditsOpen && <>
-              <div className="assistant-answer-review-filters">
+              <div className="assistant-answer-review-filters"
+                hidden={Boolean(modelRequestAudits.error)}>
                 <select value={modelRequestAuditStatus}
                   onChange={event => setModelRequestAuditStatus(event.target.value)}>
                   <option value="">全部发送状态</option>
@@ -12086,12 +12113,19 @@ function AiAssistantPage() {
                 {!dashboard.assistantArchive.modelRequestAudits.linkIntegrity.deleteTriggerHealthy &&
                   ' 删除联动触发器异常，请打开完整诊断。'}
               </small>}
-              <small>
+              <small hidden={Boolean(modelRequestAudits.error)}>
                 回答已提交 {Number(modelRequestAudits.answerCounts?.committed || 0)} ·
                 响应被拒绝 {Number(modelRequestAudits.answerCounts?.rejected || 0)} ·
                 响应后中断 {Number(modelRequestAudits.answerCounts?.interrupted || 0)} ·
                 正在处理 {Number(modelRequestAudits.answerCounts?.processing || 0)}
               </small>
+              {modelRequestAudits.error && <div className="assistant-task-load-failure" role="alert">
+                <strong>模型发送审计读取失败</strong>
+                <span>{modelRequestAudits.error}。当前不会把读取故障解释为“没有模型发送记录”。</span>
+                <button type="button" onClick={() => setModelRequestAuditRefreshKey(value => value + 1)}>
+                  立即重试
+                </button>
+              </div>}
               <div className="assistant-answer-review-list">
                 {(modelRequestAudits.items || []).map((item: any) => {
                   const privacy = presentModelSourcePrivacyAudit(
@@ -12177,8 +12211,17 @@ function AiAssistantPage() {
               </div>
               {modelRequestAudits.loading &&
                 <div className="assistant-empty">正在读取模型发送审计…</div>}
-              {!modelRequestAudits.loading && !modelRequestAudits.items?.length &&
+              {!modelRequestAudits.loading && !modelRequestAudits.error &&
+                !modelRequestAudits.items?.length &&
                 <div className="assistant-empty">当前筛选下没有模型发送记录。</div>}
+              {modelRequestAudits.loadMoreError && <div className="assistant-task-load-failure" role="alert">
+                <strong>更早模型发送记录尚未读完</strong>
+                <span>{modelRequestAudits.loadMoreError}。已加载的记录继续保留。</span>
+                <button type="button" disabled={modelRequestAuditsLoadingMore}
+                  onClick={() => void loadMoreModelRequestAudits()}>
+                  {modelRequestAuditsLoadingMore ? '正在重试…' : '重试当前续页'}
+                </button>
+              </div>}
               {modelRequestAudits.hasMore && <button
                 className="assistant-search-load-more"
                 disabled={modelRequestAuditsLoadingMore}
@@ -12196,7 +12239,8 @@ function AiAssistantPage() {
                 <small>逐回答检查，不遗漏同一会话里的多条变化</small>}
             </summary>
             {assistantAnswerReviewsOpen && <>
-              <div className="assistant-answer-review-filters">
+              <div className="assistant-answer-review-filters"
+                hidden={Boolean(assistantAnswerReviews.error)}>
                 <select value={assistantAnswerReviewState}
                   onChange={event => setAssistantAnswerReviewState(event.target.value)}>
                   <option value="pending">待处理</option>
@@ -12254,6 +12298,7 @@ function AiAssistantPage() {
                   onChange={event => setAssistantAnswerReviewTo(event.target.value)} />
               </div>
               <div className="assistant-answer-review-counts"
+                hidden={Boolean(assistantAnswerReviews.error)}
                 aria-label="按回答核验统计筛选">
                 {([
                   ['pending', '待处理', assistantAnswerReviews.counts?.pending],
@@ -12268,6 +12313,13 @@ function AiAssistantPage() {
                   {label} <b>{Number(count || 0)}</b>
                 </button>)}
               </div>
+              {assistantAnswerReviews.error && <div className="assistant-task-load-failure" role="alert">
+                <strong>历史回答核验队列读取失败</strong>
+                <span>{assistantAnswerReviews.error}。当前不会把读取故障解释为“没有待核验回答”。</span>
+                <button type="button" onClick={() => setAssistantAnswerReviewRevision(value => value + 1)}>
+                  立即重试
+                </button>
+              </div>}
               <div className="assistant-answer-review-list" id="assistant-answer-review-list">
                 {(assistantAnswerReviews.items || []).map((item: any) => <article key={item.message_id}>
                   <header>
@@ -12345,8 +12397,17 @@ function AiAssistantPage() {
                 </article>)}
               </div>
               {assistantAnswerReviews.loading && <div className="assistant-empty">正在读取逐回答核验档案…</div>}
-              {!assistantAnswerReviews.loading && !assistantAnswerReviews.items?.length &&
+              {!assistantAnswerReviews.loading && !assistantAnswerReviews.error &&
+                !assistantAnswerReviews.items?.length &&
                 <div className="assistant-empty">当前筛选下没有回答。</div>}
+              {assistantAnswerReviews.loadMoreError && <div className="assistant-task-load-failure" role="alert">
+                <strong>更多回答核验记录尚未读完</strong>
+                <span>{assistantAnswerReviews.loadMoreError}。已加载的核验记录继续保留。</span>
+                <button type="button" disabled={assistantAnswerReviewsLoadingMore}
+                  onClick={() => void loadMoreAssistantAnswerReviews()}>
+                  {assistantAnswerReviewsLoadingMore ? '正在重试…' : '重试当前续页'}
+                </button>
+              </div>}
               {assistantAnswerReviews.hasMore && <button
                 className="assistant-search-load-more"
                 disabled={assistantAnswerReviewsLoadingMore}
@@ -14186,18 +14247,20 @@ function AiAssistantPage() {
                 {reviewLoadingMore ? '正在加载…' : '加载更多审阅记录'}
               </button>}
             </div>}
-            {(dashboard?.mergeHistoryArchive?.total > 0 || mergeArchive.loading) && <div className="assistant-merge-archive">
+            {(dashboard?.mergeHistoryArchive?.total > 0 || mergeArchive.loading || mergeArchive.error) && <div className="assistant-merge-archive">
               <div className="assistant-section-heading">
                 <div><span className="assistant-eyebrow">MERGE HISTORY</span><h3>身份合并完整档案</h3></div>
                 <span className="assistant-count">
-                  {mergeArchive.counts.active} 有效 · {mergeArchive.counts.reverted} 已撤销
+                  {mergeArchive.error
+                    ? '读取失败，统计未知'
+                    : `${mergeArchive.counts.active} 有效 · ${mergeArchive.counts.reverted} 已撤销`}
                 </span>
               </div>
               <small className="assistant-evidence">
                 全部合并由本机 SQLCipher 分页读取；撤销快照只在主进程按需使用，不会发送到界面。
                 启动恢复可信身份会读取全部 {dashboard?.mergeHistoryArchive?.active || 0} 个有效合并，不受当前页面数量限制。
               </small>
-              <div className="assistant-task-filters">
+              <div className="assistant-task-filters" hidden={Boolean(mergeArchive.error)}>
                 <select value={mergeArchiveStatus}
                   onChange={event => setMergeArchiveStatus(event.target.value as typeof mergeArchiveStatus)}>
                   <option value="all">全部状态</option>
@@ -14217,6 +14280,13 @@ function AiAssistantPage() {
                     setMergeArchiveFrom(''); setMergeArchiveTo('')
                   }}>清除范围</button>}
               </div>
+              {mergeArchive.error && <div className="assistant-task-load-failure" role="alert">
+                <strong>身份合并档案读取失败</strong>
+                <span>{mergeArchive.error}。当前不会把读取故障解释为“没有身份合并记录”。</span>
+                <button type="button" onClick={() => setMergeArchiveRefreshKey(value => value + 1)}>
+                  立即重试
+                </button>
+              </div>}
               {mergeArchive.items.map((merge: any) =>
                 <article className={`assistant-review-item ${merge.reverted_at ? 'resolved' : ''}`}
                   key={`merge-${merge.id}`}>
@@ -14232,8 +14302,16 @@ function AiAssistantPage() {
                     <button onClick={() => void revertMerge(Number(merge.id))}>撤销合并</button>
                   </div>}
                 </article>)}
-              {!mergeArchive.items.length && <div className="assistant-empty">
+              {!mergeArchive.error && !mergeArchive.items.length && <div className="assistant-empty">
                 {mergeArchive.loading ? '正在读取完整身份合并档案…' : '当前范围没有身份合并记录。'}
+              </div>}
+              {mergeArchive.loadMoreError && <div className="assistant-task-load-failure" role="alert">
+                <strong>身份合并档案尚未读完</strong>
+                <span>{mergeArchive.loadMoreError}。已加载的合并记录继续保留。</span>
+                <button type="button" disabled={mergeArchiveLoadingMore}
+                  onClick={() => void loadMoreMergeHistory()}>
+                  {mergeArchiveLoadingMore ? '正在重试…' : '重试当前续页'}
+                </button>
               </div>}
               {mergeArchive.hasMore && <div className="assistant-review-page-status">
                 <small>已加载 {mergeArchive.items.length} / {mergeArchive.total} 条合并记录。</small>
