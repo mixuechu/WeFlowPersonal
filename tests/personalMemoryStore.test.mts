@@ -21371,7 +21371,7 @@ test('human review calibration uses latest authoritative decisions without claim
     const firstTaskFeedback = store.getTaskReviewFeedbackStats()
     assert.strictEqual(store.getTaskReviewFeedbackStats(), firstTaskFeedback)
     assert.deepEqual(firstCalibration, {
-      version: 'human-review-calibration-v8',
+      version: 'human-review-calibration-v9',
       revision: `${store.getTaskOwnershipReviewRevision()}:${store.getStructuredMemoryRevision()}:${store.getGraphReviewRevision()}:${store.getMemoryChangeLogRevision()}:${store.getIngestionArchiveRevision()}:${store.getIngestionRecoveryRevision()}`,
       taskOwnership: { accepted: 1, rejected: 0, revoked: 1, total: 1 },
       activeMineAudit: {
@@ -21603,6 +21603,12 @@ test('human review calibration uses latest authoritative decisions without claim
         graphReviews: 0,
         completedAt: firstCalibration.legacyBackfill.completedAt
       },
+      rejectionReasons: {
+        total: 0,
+        specified: 0,
+        unspecified: 0,
+        byDomain: { task: {}, memory: {}, graph: {}, identity: {} }
+      },
       reviewedTotal: 4,
       interpretation: 'selected_human_reviews_not_population_accuracy'
     })
@@ -21717,6 +21723,70 @@ test('human review calibration uses latest authoritative decisions without claim
     assert.equal(boundedVersions.versionGroupTotal, 15)
     assert.equal(boundedVersions.versions.length, 12)
     assert.equal(boundedVersions.versionsTruncated, true)
+  })
+})
+
+test('fixed rejection reasons persist across review domains without exposing private content', () => {
+  withStore(store => {
+    store.syncGraph({
+      entities: [{
+        id: 'reason-person', type: 'person', canonicalName: '原因测试对象',
+        aliases: [], accountIds: []
+      }],
+      relations: [],
+      reviewQueue: []
+    })
+    store.upsertClaims([{
+      id: 'reason-claim',
+      subjectId: 'reason-person',
+      predicate: '负责项目',
+      objectValue: '不可泄露项目名',
+      confidence: 0.8,
+      status: 'candidate',
+      sourceNature: 'other_statement',
+      searchText: '不可泄露项目名 原因测试',
+      evidence: evidence('reason-message', '不可泄露的聊天原文')
+    }])
+    store.updateMemoryItemStatus('claim', 'reason-claim', 'rejected', {
+      reasonCode: 'wrong_subject'
+    })
+    store.recordTaskReviewDecision({
+      evidenceFingerprint: 'reason-task-fingerprint',
+      taskId: 'reason-task',
+      decision: 'rejected',
+      title: '不可泄露的待办标题',
+      reasonCode: 'incorrect_assignment'
+    })
+    store.recordGraphCandidateReviewDecision({
+      candidateInstanceId: 'reason-graph-instance',
+      reviewId: 'reason-graph-review',
+      candidateKind: 'relation',
+      outcome: 'rejected',
+      reasonCode: '../../private' as any
+    })
+    store.recordIdentityReviewDecision({
+      candidateInstanceId: 'reason-identity-instance',
+      reviewId: 'reason-identity-review',
+      leftEntityId: 'reason-left',
+      rightEntityId: 'reason-right',
+      decision: 'different',
+      reasonCode: 'identity_mismatch'
+    })
+
+    const reasons = store.getHumanReviewCalibrationStats().rejectionReasons
+    assert.deepEqual(reasons, {
+      total: 4,
+      specified: 3,
+      unspecified: 1,
+      byDomain: {
+        task: { incorrect_assignment: 1 },
+        memory: { wrong_subject: 1 },
+        graph: { unspecified: 1 },
+        identity: { identity_mismatch: 1 }
+      }
+    })
+    const serialized = JSON.stringify(reasons)
+    assert.doesNotMatch(serialized, /不可泄露|reason-message|reason-task/)
   })
 })
 

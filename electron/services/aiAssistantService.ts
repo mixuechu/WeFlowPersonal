@@ -58,6 +58,7 @@ import {
   type ResourceEnrichmentBatchIdentity
 } from './resourceEnrichmentBatchPolicy'
 import { extractAttachmentText } from './attachmentTextExtractor'
+import type { ReviewReasonCode } from '../../shared/reviewReasonCodes.ts'
 import { structureOcrText } from './imageOcrStructuring'
 import { captureWebSnapshot } from './webSnapshotService'
 import {
@@ -8013,7 +8014,8 @@ export class AiAssistantService {
     idInput: unknown,
     decisionInput: unknown,
     mutationToken: unknown,
-    sampleContextInput?: unknown
+    sampleContextInput?: unknown,
+    reasonCodeInput?: unknown
   ): any {
     const id = String(idInput || '').trim()
     const decision = decisionInput === 'mine' || decisionInput === 'rejected'
@@ -8072,7 +8074,8 @@ export class AiAssistantService {
       reason: decision === 'mine' ? 'ownership_audit_confirmed' : 'ownership_audit_rejected',
       ownershipAuditSelection: auditSelection,
       evidence: before.evidence || [],
-      feedbackEvidenceFingerprint: evidenceFingerprint
+      feedbackEvidenceFingerprint: evidenceFingerprint,
+      reviewReasonCode: decision === 'rejected' ? String(reasonCodeInput || '') : ''
     }
     personalMemoryStore.prepareTaskMutationCommit({
       commitId,
@@ -8262,7 +8265,8 @@ export class AiAssistantService {
   updateTaskReview(
     id: string,
     decision: 'mine' | 'rejected',
-    expectedRevision?: string
+    expectedRevision?: string,
+    reasonCode?: ReviewReasonCode
   ): AssistantTask | null {
     assertTaskOwnershipMutationRevision(
       expectedRevision,
@@ -8280,7 +8284,8 @@ export class AiAssistantService {
         title: task.title,
         source: task.source,
         evidence: task.evidence || [],
-        task
+        task,
+        reasonCode
       })
     }
     if (decision === 'rejected') {
@@ -8391,6 +8396,7 @@ export class AiAssistantService {
       correctedSummaryText?: string
       correctedAliasText?: string
       relationCorrection?: RelationCorrection
+      reasonCode?: ReviewReasonCode
     }
   ): any {
     const snapshot = structuredClone(this.state.graph)
@@ -8420,6 +8426,7 @@ export class AiAssistantService {
       correctedSummaryText?: string
       correctedAliasText?: string
       relationCorrection?: RelationCorrection
+      reasonCode?: ReviewReasonCode
     }
   ): any {
     assertGraphReviewMutationRevision(
@@ -8465,6 +8472,7 @@ export class AiAssistantService {
         schemaVersion: review.candidateSchemaVersion,
         model: review.candidateModel,
         sourceKind: review.candidateSourceKind,
+        reasonCode: options?.reasonCode,
         createdAt: resolutionNow
       })
     }
@@ -8512,6 +8520,7 @@ export class AiAssistantService {
         model: review.candidateModel,
         sourceKind: review.candidateSourceKind,
         relatedEntityIds,
+        reasonCode: options?.reasonCode,
         createdAt: resolutionNow
       })
     }
@@ -9033,7 +9042,8 @@ export class AiAssistantService {
     kind: 'claim' | 'event',
     id: string,
     status: 'confirmed' | 'rejected',
-    expectedRevision?: string
+    expectedRevision?: string,
+    reasonCode?: ReviewReasonCode
   ): any {
     assertStructuredMemoryMutationRevision(
       expectedRevision,
@@ -9044,7 +9054,7 @@ export class AiAssistantService {
       kind: 'human_action',
       id: `memory-status:${kind}:${id}:${status}`,
       sourceKind: 'local'
-    }, () => personalMemoryStore.updateMemoryItemStatus(kind, id, status))
+    }, () => personalMemoryStore.updateMemoryItemStatus(kind, id, status, { reasonCode }))
   }
 
   private assertStructuredEntityTrust(kind: 'claim' | 'event', id: string): void {

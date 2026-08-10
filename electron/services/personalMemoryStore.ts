@@ -26,6 +26,11 @@ import {
   compactIdentityMergeSnapshot
 } from './identityMergeSnapshot.ts'
 import { taskEvidenceFingerprint } from './taskReviewFeedback.ts'
+import {
+  normalizeReviewReasonCode,
+  REVIEW_REASON_CODES,
+  type ReviewReasonCode
+} from '../../shared/reviewReasonCodes.ts'
 
 type MemoryGraph = {
   entities: any[]
@@ -986,6 +991,7 @@ export class PersonalMemoryStore {
         schema_version TEXT NOT NULL DEFAULT 'legacy-unknown-schema',
         model TEXT NOT NULL DEFAULT 'legacy-unknown-model',
         source_kind TEXT NOT NULL DEFAULT 'legacy',
+        reason_code TEXT NOT NULL DEFAULT 'unspecified',
         created_at TEXT NOT NULL
       ) STRICT;
       CREATE INDEX IF NOT EXISTS idx_identity_review_decisions_version_time
@@ -1007,6 +1013,7 @@ export class PersonalMemoryStore {
         model TEXT NOT NULL DEFAULT 'legacy-unknown-model',
         source_kind TEXT NOT NULL DEFAULT 'legacy',
         related_entity_ids_json TEXT NOT NULL DEFAULT '[]',
+        reason_code TEXT NOT NULL DEFAULT 'unspecified',
         created_at TEXT NOT NULL
       ) STRICT;
       CREATE INDEX IF NOT EXISTS idx_graph_candidate_reviews_version_time
@@ -1032,6 +1039,7 @@ export class PersonalMemoryStore {
         decision TEXT NOT NULL,
         actor TEXT NOT NULL DEFAULT 'user',
         reason TEXT NOT NULL DEFAULT '',
+        reason_code TEXT NOT NULL DEFAULT 'unspecified',
         protect_from_extraction INTEGER NOT NULL DEFAULT 1,
         created_at TEXT NOT NULL
       ) STRICT;
@@ -1185,6 +1193,7 @@ export class PersonalMemoryStore {
         task_json TEXT NOT NULL DEFAULT '{}',
         suppression_count INTEGER NOT NULL DEFAULT 0,
         reconciliation_count INTEGER NOT NULL DEFAULT 0,
+        reason_code TEXT NOT NULL DEFAULT 'unspecified',
         last_suppressed_at TEXT,
         last_reconciled_at TEXT,
         revoked_at TEXT,
@@ -1198,6 +1207,7 @@ export class PersonalMemoryStore {
         evidence_fingerprint TEXT NOT NULL,
         task_id TEXT NOT NULL,
         action TEXT NOT NULL CHECK(action IN ('mine','rejected','revoked')),
+        reason_code TEXT NOT NULL DEFAULT 'unspecified',
         task_json TEXT NOT NULL DEFAULT '{}',
         created_at TEXT NOT NULL
       ) STRICT;
@@ -1804,6 +1814,11 @@ export class PersonalMemoryStore {
     this.ensureColumn('data_source_connectors', 'config_json', `TEXT NOT NULL DEFAULT '{}'`)
     this.ensureColumn('task_review_decisions', 'task_json', `TEXT NOT NULL DEFAULT '{}'`)
     this.ensureColumn('task_review_decisions', 'reconciliation_count', 'INTEGER NOT NULL DEFAULT 0')
+    this.ensureColumn('task_review_decisions', 'reason_code', `TEXT NOT NULL DEFAULT 'unspecified'`)
+    this.ensureColumn('task_review_history', 'reason_code', `TEXT NOT NULL DEFAULT 'unspecified'`)
+    this.ensureColumn('memory_review_decisions', 'reason_code', `TEXT NOT NULL DEFAULT 'unspecified'`)
+    this.ensureColumn('graph_candidate_review_decisions', 'reason_code', `TEXT NOT NULL DEFAULT 'unspecified'`)
+    this.ensureColumn('identity_review_decisions', 'reason_code', `TEXT NOT NULL DEFAULT 'unspecified'`)
     this.ensureColumn('task_review_decisions', 'last_reconciled_at', 'TEXT')
     this.ensureColumn('task_review_decisions', 'revoked_at', 'TEXT')
     this.ensureColumn('task_mutation_commits', 'payload_blob', 'BLOB')
@@ -10303,6 +10318,7 @@ export class PersonalMemoryStore {
     schemaVersion?: string
     model?: string
     sourceKind?: string
+    reasonCode?: ReviewReasonCode
     createdAt?: string
   }): boolean {
     if (!this.db) return false
@@ -10321,8 +10337,8 @@ export class PersonalMemoryStore {
     const result = this.db.prepare(`
       INSERT OR IGNORE INTO identity_review_decisions(
         candidate_instance_id,review_id,pair_key,left_entity_id,right_entity_id,decision,candidate_source,
-        policy_version,prompt_version,schema_version,model,source_kind,created_at
-      ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)
+        policy_version,prompt_version,schema_version,model,source_kind,reason_code,created_at
+      ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)
     `).run(
       candidateInstanceId,
       reviewId,
@@ -10336,6 +10352,9 @@ export class PersonalMemoryStore {
       bounded(input.schemaVersion, 'legacy-unknown-schema'),
       bounded(input.model, 'legacy-unknown-model'),
       sourceKind,
+      input.decision === 'different'
+        ? normalizeReviewReasonCode('identity', input.reasonCode)
+        : 'unspecified',
       String(input.createdAt || new Date().toISOString())
     )
     return Number(result.changes || 0) === 1
@@ -10353,6 +10372,7 @@ export class PersonalMemoryStore {
     model?: string
     sourceKind?: string
     relatedEntityIds?: string[]
+    reasonCode?: ReviewReasonCode
     createdAt?: string
   }): boolean {
     if (!this.db) return false
@@ -10370,8 +10390,8 @@ export class PersonalMemoryStore {
       INSERT OR IGNORE INTO graph_candidate_review_decisions(
         candidate_instance_id,review_id,candidate_kind,outcome,candidate_source,
         policy_version,prompt_version,schema_version,model,source_kind,
-        related_entity_ids_json,created_at
-      ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
+        related_entity_ids_json,reason_code,created_at
+      ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)
     `).run(
       candidateInstanceId,
       reviewId,
@@ -10384,6 +10404,9 @@ export class PersonalMemoryStore {
       bounded(input.model, 'legacy-unknown-model'),
       sourceKind,
       JSON.stringify(relatedEntityIds),
+      input.outcome === 'rejected'
+        ? normalizeReviewReasonCode('graph', input.reasonCode)
+        : 'unspecified',
       String(input.createdAt || new Date().toISOString())
     )
     return Number(result.changes || 0) === 1
@@ -15900,6 +15923,7 @@ export class PersonalMemoryStore {
     options: {
       actor?: 'user' | 'system'
       reason?: string
+      reasonCode?: ReviewReasonCode
       protectFromExtraction?: boolean
       at?: string
     } = {}
@@ -15920,8 +15944,9 @@ export class PersonalMemoryStore {
       if (!previous) return null
       this.db!.prepare(`
         INSERT INTO memory_review_decisions(
-          item_kind,item_id,previous_status,decision,actor,reason,protect_from_extraction,created_at
-        ) VALUES(?,?,?,?,?,?,?,?)
+          item_kind,item_id,previous_status,decision,actor,reason,reason_code,
+          protect_from_extraction,created_at
+        ) VALUES(?,?,?,?,?,?,?,?,?)
       `).run(
         kind,
         id,
@@ -15929,6 +15954,9 @@ export class PersonalMemoryStore {
         status,
         actor,
         reason,
+        status === 'rejected'
+          ? normalizeReviewReasonCode('memory', options.reasonCode)
+          : 'unspecified',
         options.protectFromExtraction === false ? 0 : 1,
         now
       )
@@ -16315,6 +16343,7 @@ export class PersonalMemoryStore {
           title: String(task.title || ''),
           source: String(task.source || ''),
           evidence: Array.isArray(task.evidence) ? task.evidence : [],
+          reasonCode: String(change?.reviewReasonCode || '') as ReviewReasonCode,
           task: {
             ...task,
             ...(['stable_evidence_hash_queue_v1', 'latest_version_stable_hash_queue_v2']
@@ -16837,6 +16866,7 @@ export class PersonalMemoryStore {
     source?: string
     evidence?: any[]
     task?: any
+    reasonCode?: ReviewReasonCode
   }): any {
     if (!this.db) return null
     const transaction = this.db.transaction(() => {
@@ -16854,25 +16884,39 @@ export class PersonalMemoryStore {
     source?: string
     evidence?: any[]
     task?: any
+    reasonCode?: ReviewReasonCode
   }): void {
     if (!this.db) throw new Error('个人记忆数据库尚未初始化')
     const now = new Date().toISOString()
     const taskJson = JSON.stringify(compactTaskReviewSnapshot(input.task))
     this.db.prepare(`
       INSERT INTO task_review_decisions(
-        evidence_fingerprint,task_id,decision,title,source,evidence_json,task_json,created_at,updated_at
-      ) VALUES(?,?,?,?,?,?,?,?,?)
+        evidence_fingerprint,task_id,decision,title,source,evidence_json,task_json,
+        reason_code,created_at,updated_at
+      ) VALUES(?,?,?,?,?,?,?,?,?,?)
       ON CONFLICT(evidence_fingerprint) DO UPDATE SET
         task_id=excluded.task_id,decision=excluded.decision,title=excluded.title,source=excluded.source,
-        evidence_json=excluded.evidence_json,task_json=excluded.task_json,revoked_at=NULL,updated_at=excluded.updated_at
+        evidence_json=excluded.evidence_json,task_json=excluded.task_json,
+        reason_code=excluded.reason_code,revoked_at=NULL,updated_at=excluded.updated_at
     `).run(
       input.evidenceFingerprint, input.taskId, input.decision, String(input.title || ''),
-      String(input.source || ''), JSON.stringify(input.evidence || []), taskJson, now, now
+      String(input.source || ''), JSON.stringify(input.evidence || []), taskJson,
+      input.decision === 'rejected'
+        ? normalizeReviewReasonCode('task', input.reasonCode)
+        : 'unspecified',
+      now, now
     )
     this.db.prepare(`
-      INSERT INTO task_review_history(evidence_fingerprint,task_id,action,task_json,created_at)
-      VALUES(?,?,?,?,?)
-    `).run(input.evidenceFingerprint, input.taskId, input.decision, taskJson, now)
+      INSERT INTO task_review_history(
+        evidence_fingerprint,task_id,action,task_json,reason_code,created_at
+      ) VALUES(?,?,?,?,?,?)
+    `).run(
+      input.evidenceFingerprint, input.taskId, input.decision, taskJson,
+      input.decision === 'rejected'
+        ? normalizeReviewReasonCode('task', input.reasonCode)
+        : 'unspecified',
+      now
+    )
   }
 
   getTaskReviewDecision(evidenceFingerprint: string): any {
@@ -16920,9 +16964,10 @@ export class PersonalMemoryStore {
         UPDATE task_review_decisions SET revoked_at=?,updated_at=? WHERE evidence_fingerprint=?
       `).run(now, now, evidenceFingerprint)
       this.db!.prepare(`
-        INSERT INTO task_review_history(evidence_fingerprint,task_id,action,task_json,created_at)
-        VALUES(?,?,?,?,?)
-      `).run(evidenceFingerprint, row.task_id, 'revoked', row.task_json || '{}', now)
+        INSERT INTO task_review_history(
+          evidence_fingerprint,task_id,action,task_json,reason_code,created_at
+        ) VALUES(?,?,?,?,?,?)
+      `).run(evidenceFingerprint, row.task_id, 'revoked', row.task_json || '{}', 'unspecified', now)
     })
     transaction()
     let task: any = {}
@@ -17439,7 +17484,7 @@ export class PersonalMemoryStore {
 
   getHumanReviewCalibrationStats(): any {
     const empty = {
-      version: 'human-review-calibration-v8',
+      version: 'human-review-calibration-v9',
       taskOwnership: { accepted: 0, rejected: 0, revoked: 0, total: 0 },
       activeMineAudit: {
         correct: 0,
@@ -17533,6 +17578,12 @@ export class PersonalMemoryStore {
         identityReviews: 0,
         graphReviews: 0,
         completedAt: ''
+      },
+      rejectionReasons: {
+        total: 0,
+        specified: 0,
+        unspecified: 0,
+        byDomain: { task: {}, memory: {}, graph: {}, identity: {} }
       },
       reviewedTotal: 0,
       interpretation: 'selected_human_reviews_not_population_accuracy'
@@ -18011,6 +18062,50 @@ export class PersonalMemoryStore {
         versionsTruncated: identityVersions.length < identityVersionGroupTotal
       }
     }
+    const reasonRows = this.db.prepare(`
+      SELECT domain,reason_code,COUNT(*) AS count FROM (
+        SELECT 'task' AS domain,reason_code FROM task_review_decisions
+        WHERE revoked_at IS NULL AND decision='rejected'
+        UNION ALL
+        SELECT 'memory' AS domain,reason_code FROM (
+          SELECT reason_code,decision,ROW_NUMBER() OVER (
+            PARTITION BY item_kind,item_id ORDER BY id DESC
+          ) AS position
+          FROM memory_review_decisions WHERE actor='user'
+        ) latest_memory_reason
+        WHERE position=1 AND decision='rejected'
+        UNION ALL
+        SELECT 'graph' AS domain,reason_code FROM graph_candidate_review_decisions
+        WHERE outcome='rejected'
+        UNION ALL
+        SELECT 'identity' AS domain,reason_code FROM identity_review_decisions
+        WHERE decision='different'
+      ) reasons GROUP BY domain,reason_code ORDER BY domain,reason_code
+    `).all() as any[]
+    const reasonDomains = { task: {}, memory: {}, graph: {}, identity: {} } as Record<
+      'task' | 'memory' | 'graph' | 'identity', Record<string, number>
+    >
+    let rejectionTotal = 0
+    let rejectionSpecified = 0
+    for (const row of reasonRows) {
+      const domain = ['task', 'memory', 'graph', 'identity'].includes(String(row.domain || ''))
+        ? String(row.domain) as keyof typeof reasonDomains
+        : null
+      if (!domain) continue
+      const rawCode = String(row.reason_code || 'unspecified')
+      const code = (REVIEW_REASON_CODES as readonly string[]).includes(rawCode)
+        ? rawCode : 'unspecified'
+      const count = Math.max(0, Number(row.count || 0))
+      reasonDomains[domain][code] = (reasonDomains[domain][code] || 0) + count
+      rejectionTotal += count
+      if (code !== 'unspecified') rejectionSpecified += count
+    }
+    const rejectionReasons = {
+      total: rejectionTotal,
+      specified: rejectionSpecified,
+      unspecified: Math.max(0, rejectionTotal - rejectionSpecified),
+      byDomain: reasonDomains
+    }
     const value = {
       ...empty,
       revision,
@@ -18020,6 +18115,7 @@ export class PersonalMemoryStore {
       structuredMemory,
       graphCandidates,
       identityPairs,
+      rejectionReasons,
       legacyBackfill,
       reviewedTotal: taskOwnership.total + structuredMemory.total + graphCandidates.total + identityPairs.total
     }

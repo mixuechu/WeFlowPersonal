@@ -4725,15 +4725,19 @@ function registerIpcHandlers() {
     _, id: string, patch: any, mutationToken?: string
   ) => aiAssistantService.updateTask(id, patch, mutationToken))
   ipcMain.handle('ai-assistant:reviewMineTaskOwnership', (
-    _, id: string, decision: 'mine' | 'rejected', mutationToken?: string, sampleContext?: unknown
-  ) => aiAssistantService.reviewMineTaskOwnership(id, decision, mutationToken, sampleContext))
+    _, id: string, decision: 'mine' | 'rejected', mutationToken?: string,
+    sampleContext?: unknown, reasonCode?: unknown
+  ) => aiAssistantService.reviewMineTaskOwnership(
+    id, decision, mutationToken, sampleContext, reasonCode
+  ))
   ipcMain.handle('ai-assistant:updateTasks', (_, updates: any[]) => aiAssistantService.updateTasks(updates))
   ipcMain.handle('ai-assistant:previewTaskFromMemory', (_, input: any) =>
     aiAssistantService.previewTaskFromMemory(input))
   ipcMain.handle('ai-assistant:createTaskFromMemory', (_, input: any) => aiAssistantService.createTaskFromMemory(input))
   ipcMain.handle('ai-assistant:updateTaskReview', (
-    _, id: string, decision: 'mine' | 'rejected', expectedRevision?: string
-  ) => aiAssistantService.updateTaskReview(id, decision, expectedRevision))
+    _, id: string, decision: 'mine' | 'rejected', expectedRevision?: string,
+    reasonCode?: any
+  ) => aiAssistantService.updateTaskReview(id, decision, expectedRevision, reasonCode))
   ipcMain.handle('ai-assistant:revertTaskReview', (
     _, evidenceFingerprint: string, expectedRevision?: string
   ) => aiAssistantService.revertTaskReview(evidenceFingerprint, expectedRevision))
@@ -4766,8 +4770,9 @@ function registerIpcHandlers() {
     _, id: number, input?: any
   ) => aiAssistantService.revertMerge(id, input))
   ipcMain.handle('ai-assistant:updateMemoryItemStatus', (
-    _, kind: 'claim' | 'event', id: string, status: 'confirmed' | 'rejected', expectedRevision?: string
-  ) => aiAssistantService.updateMemoryItemStatus(kind, id, status, expectedRevision))
+    _, kind: 'claim' | 'event', id: string, status: 'confirmed' | 'rejected',
+    expectedRevision?: string, reasonCode?: any
+  ) => aiAssistantService.updateMemoryItemStatus(kind, id, status, expectedRevision, reasonCode))
   ipcMain.handle('ai-assistant:previewDeleteMemoryItem', (
     _, kind: 'claim' | 'event' | 'relation', id: string, reason?: any
   ) => aiAssistantService.previewDeleteMemoryItem(kind, id, reason))

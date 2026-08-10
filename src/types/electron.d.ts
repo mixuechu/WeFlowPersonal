@@ -1909,7 +1909,8 @@ export interface ElectronAPI {
         id: string,
         decision: 'mine' | 'rejected',
         mutationToken?: string,
-        sampleContext?: { revision: string; strategy: string }
+        sampleContext?: { revision: string; strategy: string },
+        reasonCode?: string
       ) => Promise<any>
       updateTasks: (updates: Array<{ id: string; patch: any; mutationToken?: string }>) => Promise<any[]>
       previewTaskFromMemory: (input: any) => Promise<any>
@@ -1917,7 +1918,8 @@ export interface ElectronAPI {
       updateTaskReview: (
         id: string,
         decision: 'mine' | 'rejected',
-        expectedRevision?: string
+        expectedRevision?: string,
+        reasonCode?: string
       ) => Promise<any>
       revertTaskReview: (evidenceFingerprint: string, expectedRevision?: string) => Promise<any>
       updateReminderPreference: (input: {
@@ -1939,6 +1941,7 @@ export interface ElectronAPI {
         correctedSummaryText?: string
         correctedAliasText?: string
         relationCorrection?: { subjectId?: string; predicate?: string; objectId?: string }
+        reasonCode?: string
       }) => Promise<any>
       previewRestoreRejectedEntity: (id: string, expectedRevision?: string) => Promise<any>
       restoreRejectedEntity: (
@@ -1970,7 +1973,8 @@ export interface ElectronAPI {
         kind: 'claim' | 'event',
         id: string,
         status: 'confirmed' | 'rejected',
-        expectedRevision?: string
+        expectedRevision?: string,
+        reasonCode?: string
       ) => Promise<any>
       previewDeleteMemoryItem: (
         kind: 'claim' | 'event' | 'relation',

@@ -84,6 +84,12 @@ import {
   type ReviewInboxTarget
 } from '../../shared/reviewInbox'
 import {
+  REVIEW_REASON_LABELS,
+  reviewReasonOptions,
+  type ReviewReasonCode,
+  type ReviewReasonDomain
+} from '../../shared/reviewReasonCodes'
+import {
   blockedEntityMissingGuidance,
   blockedEntityReviewScope,
   buildBlockedStructuredMemoryReturnTarget,
@@ -901,6 +907,8 @@ function AiAssistantPage() {
   const [syncing, setSyncing] = useState(false)
   const [retryingNotifications, setRetryingNotifications] = useState(false)
   const [message, setMessage] = useState('')
+  const [reviewReasonSelections, setReviewReasonSelections] =
+    useState<Record<string, ReviewReasonCode>>({})
   const [dashboardLoadError, setDashboardLoadError] = useState('')
   const [graphQuery, setGraphQuery] = useState('')
   const [graphRelationType, setGraphRelationType] = useState('')
@@ -6070,6 +6078,24 @@ function AiAssistantPage() {
     if (kind === 'event') setEventTimelineRefreshKey(value => value + 1)
   }
 
+  const selectedReviewReason = (domain: ReviewReasonDomain, id: string): ReviewReasonCode =>
+    reviewReasonSelections[`${domain}:${id}`] || 'unspecified'
+  const ReviewReasonSelect = ({ domain, itemId }: {
+    domain: ReviewReasonDomain
+    itemId: string
+  }) => <select
+    aria-label="不准确的具体原因"
+    value={selectedReviewReason(domain, itemId) === 'unspecified'
+      ? '' : selectedReviewReason(domain, itemId)}
+    onChange={event => setReviewReasonSelections(current => ({
+      ...current,
+      [`${domain}:${itemId}`]: (event.target.value || 'unspecified') as ReviewReasonCode
+    }))}>
+    <option value="">可选：标注错误原因</option>
+    {reviewReasonOptions(domain).map(option =>
+      <option key={option.code} value={option.code}>{option.label}</option>)}
+  </select>
+
   const updateProjectMemoryStatus = async (
     kind: 'claim' | 'event',
     id: string,
@@ -6082,7 +6108,8 @@ function AiAssistantPage() {
     setProjectMemoryMutations(current => setKeyedLoadingState(current, key, true))
     try {
       await window.electronAPI.aiAssistant.updateMemoryItemStatus(
-        kind, id, nextStatus, String(expectedRevision || '')
+        kind, id, nextStatus, String(expectedRevision || ''),
+        nextStatus === 'rejected' ? selectedReviewReason('memory', `${kind}:${id}`) : undefined
       )
       setMessage(nextStatus === 'confirmed'
         ? `${kind === 'claim' ? '项目事实' : '项目事件'}已确认并写入可信审计。`
@@ -6977,6 +7004,7 @@ function AiAssistantPage() {
       correctedSummaryText?: string
       correctedAliasText?: string
       relationCorrection?: { subjectId?: string; predicate?: string; objectId?: string }
+      reasonCode?: ReviewReasonCode
     }
   ) => {
     if (reviewDecisionLocks.current.has(id)) return
@@ -6988,6 +7016,8 @@ function AiAssistantPage() {
       const continuationContextKey = reviewContextKeyRef.current
       const blockedReturnBeforeDecision = blockedIdentityReviewReturn
       const decidedReviewBeforeDecision = reviewPage.items.find((item: any) => item.id === id)
+      const reviewReasonDomain: ReviewReasonDomain =
+        decidedReviewBeforeDecision?.kind === 'possible_duplicate' ? 'identity' : 'graph'
       const completedBlockedIdentity = shouldReturnToBlockedIdentitySource(
         blockedReturnBeforeDecision,
         decidedReviewBeforeDecision
@@ -6998,6 +7028,8 @@ function AiAssistantPage() {
         : null
       await window.electronAPI.aiAssistant.updateGraphReview(id, decision, {
         ...options,
+        reasonCode: decision === 'rejected'
+          ? selectedReviewReason(reviewReasonDomain, id) : undefined,
         expectedRevision: String(reviewPage.revision || '')
       })
       setMergeTargets(current => {
@@ -7056,7 +7088,8 @@ function AiAssistantPage() {
       await window.electronAPI.aiAssistant.updateTaskReview(
         id,
         decision,
-        String(taskOwnershipReviews.revision || '')
+        String(taskOwnershipReviews.revision || ''),
+        decision === 'rejected' ? selectedReviewReason('task', id) : undefined
       )
       await load()
       setTaskOwnershipRefreshKey(value => value + 1)
@@ -7089,7 +7122,8 @@ function AiAssistantPage() {
         task.id,
         decision,
         task.mutationToken,
-        sampleContext
+        sampleContext,
+        decision === 'rejected' ? selectedReviewReason('task', task.id) : undefined
       )
       setMineTaskAuditSelection(null)
       taskWorkspaceGate.current.invalidate()
@@ -7418,7 +7452,8 @@ function AiAssistantPage() {
         kind,
         id,
         nextStatus,
-        String(expectedRevision || '')
+        String(expectedRevision || ''),
+        nextStatus === 'rejected' ? selectedReviewReason('memory', `${kind}:${id}`) : undefined
       )
       await load()
       setClaimArchiveRefreshKey(value => value + 1)
@@ -7454,7 +7489,8 @@ function AiAssistantPage() {
         kind,
         id,
         nextStatus,
-        String(entityDossierPages[section]?.revision || '')
+        String(entityDossierPages[section]?.revision || ''),
+        nextStatus === 'rejected' ? selectedReviewReason('memory', `${kind}:${id}`) : undefined
       )
       setMessage(nextStatus === 'confirmed'
         ? `${kind === 'claim' ? '事实' : '事件'}已确认并写入可信审计。`
@@ -10359,6 +10395,24 @@ function AiAssistantPage() {
             <span><b>{Number(dashboard.humanReviewCalibration.graphCandidates.accepted || 0)} / {Number(dashboard.humanReviewCalibration.graphCandidates.rejected || 0)}</b><small>图谱候选：确认 / 拒绝</small></span>
             <span><b>{Number(dashboard.humanReviewCalibration.identityPairs.merged || 0)} / {Number(dashboard.humanReviewCalibration.identityPairs.different || 0)}</b><small>身份建议：合并 / 不同人</small></span>
           </div>
+          {Number(dashboard.humanReviewCalibration.rejectionReasons?.total || 0) > 0 && <p>
+            不准确原因已标注{' '}
+            <b>{Number(dashboard.humanReviewCalibration.rejectionReasons.specified || 0).toLocaleString()}</b>
+            {' '} / {Number(dashboard.humanReviewCalibration.rejectionReasons.total || 0).toLocaleString()} 项；未标注{' '}
+            <b>{Number(dashboard.humanReviewCalibration.rejectionReasons.unspecified || 0).toLocaleString()}</b> 项。
+            {(['task', 'memory', 'graph', 'identity'] as const).map(domain => {
+              const domainLabels = { task: '待办', memory: '事实事件', graph: '图谱', identity: '身份' }
+              const entries = Object.entries(dashboard.humanReviewCalibration.rejectionReasons.byDomain?.[domain] || {})
+                .filter(([code, count]) => code !== 'unspecified' && Number(count) > 0)
+              if (!entries.length) return null
+              return <small key={domain}>
+                {' '}{domainLabels[domain]}：{entries.map(([code, count]) =>
+                  `${REVIEW_REASON_LABELS[code as ReviewReasonCode] || REVIEW_REASON_LABELS.unspecified} ${Number(count)}`
+                ).join('、')}。
+              </small>
+            })}
+            <small>只统计固定原因代码和数量，不保存自由文本、姓名或聊天原文。</small>
+          </p>}
           {(Number(dashboard.humanReviewCalibration.legacyBackfill?.identityReviews || 0) > 0 ||
             Number(dashboard.humanReviewCalibration.legacyBackfill?.graphReviews || 0) > 0) && <p>
             已从升级前仍可核验的人工审阅中安全回填：同一人建议{' '}
@@ -11337,6 +11391,7 @@ function AiAssistantPage() {
                 </div>
                 <div>
                   <button onClick={() => setSelectedTaskId(task.id)}>查看原文</button>
+                  <ReviewReasonSelect domain="task" itemId={task.id} />
                   <button onClick={() => void decideTaskReview(task.id, 'rejected')}>不是我的</button>
                   <button className="primary" onClick={() => void decideTaskReview(task.id, 'mine')}>归为我的待办</button>
                 </div>
@@ -13081,7 +13136,8 @@ function AiAssistantPage() {
                     title: claim.predicate
                   })}>纠正</button>
                   {claim.status !== 'rejected' &&
-                    <button onClick={() => void updateMemoryStatus('claim', claim.id, 'rejected')}>不准确</button>}
+                    <><ReviewReasonSelect domain="memory" itemId={`claim:${claim.id}`} />
+                    <button onClick={() => void updateMemoryStatus('claim', claim.id, 'rejected')}>不准确</button></>}
                   <button onClick={() => void ignoreMemoryItem('claim', claim)}>不重要</button>
                   {claim.status !== 'confirmed' && <button className="primary" disabled={!claimEntitiesTrusted(claim)} title={!claimEntitiesTrusted(claim) ? '请先确认事实涉及的实体' : ''} onClick={() => void updateMemoryStatus('claim', claim.id, 'confirmed')}>{claim.status === 'rejected' ? '恢复并确认' : '确认事实'}</button>}
                   <button className="danger" onClick={() => void permanentlyDeleteMemoryItem('claim', claim)}>永久删除</button>
@@ -13290,7 +13346,9 @@ function AiAssistantPage() {
                     : <button onClick={() => void openEventCorrection({
                       sourceId: event.id
                     }, 'timeline')}>纠正</button>}
-                  {event.status !== 'rejected' && <button onClick={() => void updateMemoryStatus('event', event.id, 'rejected')}>不准确</button>}
+                  {event.status !== 'rejected' && <><ReviewReasonSelect domain="memory"
+                    itemId={`event:${event.id}`} /><button
+                    onClick={() => void updateMemoryStatus('event', event.id, 'rejected')}>不准确</button></>}
                   <button onClick={() => void ignoreMemoryItem('event', event)}>不重要</button>
                   {event.status !== 'confirmed' && <button className="primary" disabled={!eventEntitiesTrusted(event)} title={!eventEntitiesTrusted(event) ? '请先确认事件参与实体' : ''} onClick={() => void updateMemoryStatus('event', event.id, 'confirmed')}>{event.status === 'rejected' ? '恢复并确认' : '确认事件'}</button>}
                   <button className="danger" onClick={() => void permanentlyDeleteMemoryItem('event', event)}>永久删除</button>
@@ -14561,7 +14619,9 @@ function AiAssistantPage() {
                   </button>}
                 </div>}
               </div>}
-              {isPending && <div className="assistant-review-actions"><button
+              {isPending && <div className="assistant-review-actions">
+                <ReviewReasonSelect domain={review.kind === 'possible_duplicate' ? 'identity' : 'graph'}
+                  itemId={review.id} /><button
                 disabled={!!reviewDecisionSaving[review.id]}
                 onClick={() => void decideReview(review.id, 'rejected')}>
                 {reviewDecisionSaving[review.id] ? '正在保存…' : '拒绝'}
@@ -14893,6 +14953,7 @@ function AiAssistantPage() {
                       onClick={() => void reviewMineTaskOwnership('mine')}>
                       {taskOwnershipAuditSaving ? '正在保存…' : '归属正确'}
                     </button>
+                    <ReviewReasonSelect domain="task" itemId={taskWorkspace.task.id} />
                     <button className="danger" disabled={taskOwnershipAuditSaving}
                       onClick={() => void reviewMineTaskOwnership('rejected')}>
                       不属于我
@@ -15694,11 +15755,13 @@ function AiAssistantPage() {
                       sourceId: claim.id,
                       title: claim.predicate
                     })}>纠正</button>
-                    {claim.status !== 'rejected' && <button
-                      disabled={!!entityDossierMutations[`claim:${claim.id}`]}
-                      onClick={() => void updateEntityDossierMemoryStatus(
-                        'claim', claim.id, 'rejected'
-                      )}>不准确</button>}
+                    {claim.status !== 'rejected' && <>
+                      <ReviewReasonSelect domain="memory" itemId={`claim:${claim.id}`} />
+                      <button disabled={!!entityDossierMutations[`claim:${claim.id}`]}
+                        onClick={() => void updateEntityDossierMemoryStatus(
+                          'claim', claim.id, 'rejected'
+                        )}>不准确</button>
+                    </>}
                     <button onClick={() => void ignoreMemoryItem('claim', claim)}>
                       不重要
                     </button>
@@ -15878,11 +15941,13 @@ function AiAssistantPage() {
                       onClick={() => void openEventCorrection({
                       sourceId: event.id
                     })}>纠正</button>
-                    {!['rejected', 'cancelled'].includes(event.status) && <button
-                      disabled={!!entityDossierMutations[`event:${event.id}`]}
-                      onClick={() => void updateEntityDossierMemoryStatus(
-                        'event', event.id, 'rejected'
-                      )}>不准确</button>}
+                    {!['rejected', 'cancelled'].includes(event.status) && <>
+                      <ReviewReasonSelect domain="memory" itemId={`event:${event.id}`} />
+                      <button disabled={!!entityDossierMutations[`event:${event.id}`]}
+                        onClick={() => void updateEntityDossierMemoryStatus(
+                          'event', event.id, 'rejected'
+                        )}>不准确</button>
+                    </>}
                     <button onClick={() => void ignoreMemoryItem('event', event)}>
                       不重要
                     </button>
@@ -16291,11 +16356,13 @@ function AiAssistantPage() {
                       sourceId: claim.id,
                       title: claim.predicate
                     })}>纠正事实</button>
-                    {claim.status !== 'rejected' && <button
-                      disabled={!!projectMemoryMutations[`claim:${claim.id}`]}
-                      onClick={() => void updateProjectMemoryStatus(
-                        'claim', claim.id, 'rejected', projectMemoryPages.claims?.revision
-                      )}>不准确</button>}
+                    {claim.status !== 'rejected' && <>
+                      <ReviewReasonSelect domain="memory" itemId={`claim:${claim.id}`} />
+                      <button disabled={!!projectMemoryMutations[`claim:${claim.id}`]}
+                        onClick={() => void updateProjectMemoryStatus(
+                          'claim', claim.id, 'rejected', projectMemoryPages.claims?.revision
+                        )}>不准确</button>
+                    </>}
                     {claim.status !== 'confirmed' && <button className="primary"
                       disabled={!claimEntitiesTrusted(claim) ||
                         !!projectMemoryMutations[`claim:${claim.id}`]}
@@ -16441,11 +16508,13 @@ function AiAssistantPage() {
                       onClick={() => void openEventCorrection({
                         sourceId: event.id
                       })}>纠正事件</button>
-                    {!['rejected', 'cancelled'].includes(event.status) && <button
-                      disabled={!!projectMemoryMutations[`event:${event.id}`]}
-                      onClick={() => void updateProjectMemoryStatus(
-                        'event', event.id, 'rejected', projectMemoryPages.events?.revision
-                      )}>不准确</button>}
+                    {!['rejected', 'cancelled'].includes(event.status) && <>
+                      <ReviewReasonSelect domain="memory" itemId={`event:${event.id}`} />
+                      <button disabled={!!projectMemoryMutations[`event:${event.id}`]}
+                        onClick={() => void updateProjectMemoryStatus(
+                          'event', event.id, 'rejected', projectMemoryPages.events?.revision
+                        )}>不准确</button>
+                    </>}
                     {event.status !== 'confirmed' && event.status !== 'cancelled' &&
                       <button className="primary"
                         disabled={!eventEntitiesTrusted(event) ||
@@ -16584,11 +16653,13 @@ function AiAssistantPage() {
                       onClick={() => void openEventCorrection({
                         sourceId: event.id
                       })}>纠正事件</button>
-                    {!['rejected', 'cancelled'].includes(event.status) && <button
-                      disabled={!!projectMemoryMutations[`event:${event.id}`]}
-                      onClick={() => void updateProjectMemoryStatus(
-                        'event', event.id, 'rejected', projectKeyEventPage.revision
-                      )}>不准确</button>}
+                    {!['rejected', 'cancelled'].includes(event.status) && <>
+                      <ReviewReasonSelect domain="memory" itemId={`event:${event.id}`} />
+                      <button disabled={!!projectMemoryMutations[`event:${event.id}`]}
+                        onClick={() => void updateProjectMemoryStatus(
+                          'event', event.id, 'rejected', projectKeyEventPage.revision
+                        )}>不准确</button>
+                    </>}
                     {event.status !== 'confirmed' && event.status !== 'cancelled' &&
                       <button className="primary"
                         disabled={!eventEntitiesTrusted(event) ||

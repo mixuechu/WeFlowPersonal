@@ -686,16 +686,21 @@ contextBridge.exposeInMainWorld('electronAPI', {
       id: string,
       decision: 'mine' | 'rejected',
       mutationToken?: string,
-      sampleContext?: { revision: string; strategy: string }
+      sampleContext?: { revision: string; strategy: string },
+      reasonCode?: string
     ) => ipcRenderer.invoke(
-      'ai-assistant:reviewMineTaskOwnership', id, decision, mutationToken, sampleContext
+      'ai-assistant:reviewMineTaskOwnership', id, decision, mutationToken, sampleContext,
+      reasonCode
     ),
     updateTasks: (updates: any[]) => ipcRenderer.invoke('ai-assistant:updateTasks', updates),
     previewTaskFromMemory: (input: any) =>
       ipcRenderer.invoke('ai-assistant:previewTaskFromMemory', input),
     createTaskFromMemory: (input: any) => ipcRenderer.invoke('ai-assistant:createTaskFromMemory', input),
-    updateTaskReview: (id: string, decision: 'mine' | 'rejected', expectedRevision?: string) =>
-      ipcRenderer.invoke('ai-assistant:updateTaskReview', id, decision, expectedRevision),
+    updateTaskReview: (
+      id: string, decision: 'mine' | 'rejected', expectedRevision?: string, reasonCode?: string
+    ) => ipcRenderer.invoke(
+      'ai-assistant:updateTaskReview', id, decision, expectedRevision, reasonCode
+    ),
     revertTaskReview: (evidenceFingerprint: string, expectedRevision?: string) =>
       ipcRenderer.invoke('ai-assistant:revertTaskReview', evidenceFingerprint, expectedRevision),
     updateReminderPreference: (input: any) => ipcRenderer.invoke('ai-assistant:updateReminderPreference', input),
@@ -707,6 +712,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
       correctedSummaryText?: string
       correctedAliasText?: string
       relationCorrection?: { subjectId?: string; predicate?: string; objectId?: string }
+      reasonCode?: string
     }) => ipcRenderer.invoke('ai-assistant:updateGraphReview', id, decision, options),
     previewRestoreRejectedEntity: (id: string, expectedRevision?: string) =>
       ipcRenderer.invoke('ai-assistant:previewRestoreRejectedEntity', id, expectedRevision),
@@ -719,8 +725,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
       kind: 'claim' | 'event',
       id: string,
       status: 'confirmed' | 'rejected',
-      expectedRevision?: string
-    ) => ipcRenderer.invoke('ai-assistant:updateMemoryItemStatus', kind, id, status, expectedRevision),
+      expectedRevision?: string,
+      reasonCode?: string
+    ) => ipcRenderer.invoke(
+      'ai-assistant:updateMemoryItemStatus', kind, id, status, expectedRevision, reasonCode
+    ),
     previewDeleteMemoryItem: (
       kind: 'claim' | 'event' | 'relation',
       id: string,
