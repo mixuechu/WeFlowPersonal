@@ -33,3 +33,26 @@ test('wechat extraction fails closed when the contact identity directory cannot 
   assert.ok(contactLoad >= 0)
   assert.ok(policyMutation > contactLoad)
 })
+
+test('a failed group member directory pauses only that session instead of degrading sender identity', () => {
+  const collectStart = service.indexOf('private async collectMessages(')
+  const collectEnd = service.indexOf('\n  private ', collectStart + 1)
+  const collectMessages = service.slice(collectStart, collectEnd)
+
+  assert.match(
+    collectMessages,
+    /\? await this\.api\('\/api\/v1\/group-members', \{ chatroomId: session\.username \}\)/
+  )
+  assert.doesNotMatch(
+    collectMessages,
+    /group-members[^\n]*\.catch\([^\n]*members: \[\]/
+  )
+  assert.match(
+    collectMessages,
+    /const results = await settleWithConcurrency\(sessions, 8, async \(session: any\) => \{/
+  )
+  assert.match(
+    collectMessages,
+    /if \(result\.status === 'fulfilled'\)[\s\S]*?else \{\s*failed\.push\(sessions\[index\]\?\.username\)/
+  )
+})

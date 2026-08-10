@@ -2036,7 +2036,11 @@ export class AiAssistantService {
       }
       const isGroup = String(session.username).endsWith('@chatroom')
       const membersPayload = isGroup && rawRows.length
-        ? await this.api('/api/v1/group-members', { chatroomId: session.username }).catch(() => ({ members: [] }))
+        // A failed group-member lookup must fail this session rather than silently
+        // stripping group nicknames and sender identity from durable extraction.
+        // settleWithConcurrency records the session as failed, and cursor planning
+        // retains its original boundary while unrelated sessions continue.
+        ? await this.api('/api/v1/group-members', { chatroomId: session.username })
         : { members: [] }
       const membersById = new Map((membersPayload.members || []).map((member: any) => [String(member.wxid), member]))
       const rows = rawRows.map((message: any) => {
