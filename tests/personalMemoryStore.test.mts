@@ -24074,6 +24074,47 @@ test('pending image OCR remains durable and retryable independently of visual se
     .some(item => item.id === 'resource:resource-image-ocr-pending'))
 }))
 
+test('wechat attachment indexing retries recoverable failures but not terminal formats', () => withStore(store => {
+  const add = (id: string, status: string, extra: Record<string, any> = {}) => store.upsertResources([{
+    id,
+    resourceType: 'file',
+    title: id,
+    fileName: `${id}.pdf`,
+    fileExt: '.pdf',
+    content: '文件消息',
+    metadata: { sourceId: 'wechat', attachmentIndexStatus: status, ...extra },
+    evidence: []
+  }])
+  add('attachment-not-found', 'not_found')
+  add('attachment-ocr', 'ocr_required', { attachmentLocalPath: '/tmp/scan.pdf' })
+  add('attachment-unsupported', 'unsupported')
+  add('attachment-deferred', 'failed', { attachmentIndexNextAt: '2099-01-01T00:00:00.000Z' })
+
+  assert.equal(store.listPendingAttachmentIndexResources(10, false)
+    .some(item => item.id === 'attachment-not-found'), true)
+  assert.equal(store.listPendingAttachmentIndexResources(10, false)
+    .some(item => item.id === 'attachment-ocr'), false)
+  assert.equal(store.listPendingAttachmentIndexResources(10, true)
+    .some(item => item.id === 'attachment-ocr'), true)
+  assert.equal(store.listPendingAttachmentIndexResources(10, true)
+    .some(item => item.id === 'attachment-unsupported'), false)
+  assert.equal(store.listPendingAttachmentIndexResources(10, true)
+    .some(item => item.id === 'attachment-deferred'), false)
+  assert.deepEqual(store.getAttachmentIndexMigrationStats(), {
+    total: 4, completed: 1, pending: 1, deferred: 1, waitingForOcr: 1
+  })
+
+  store.replaceResourceContent('attachment-not-found', '文件消息\n[附件·本地正文] 项目验收标准', {
+    attachmentTextSource: 'local-bounded-parser',
+    attachmentIndexStatus: 'indexed',
+    attachmentIndexAttempts: 2,
+    attachmentIndexNextAt: ''
+  })
+  assert.ok(store.searchText('项目验收标准')
+    .some(item => item.id === 'resource:attachment-not-found'))
+  assert.equal(store.getAttachmentIndexMigrationStats().completed, 2)
+}))
+
 test('background resource migrations deserialize only their bounded eligible rows', () => withStore(store => {
   const database = (store as any).db
   const insert = database.prepare(`

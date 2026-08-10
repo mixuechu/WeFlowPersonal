@@ -72,6 +72,7 @@ test('raw voice and image resources survive first-pass enrichment failure for du
 
   const syncOrder = [
     service.indexOf('this.persistMessageResources(fresh, createdAt, runId)'),
+    service.indexOf('await this.continuePendingAttachmentIndexes(runId)'),
     service.indexOf('await this.continuePendingImageOcr(runId)'),
     service.indexOf('await this.continuePendingVoiceTranscripts(runId)'),
     service.indexOf('await this.continuePendingImageSemantics(runId)')
@@ -86,4 +87,5 @@ test('media migration progress distinguishes paused features from active retries
   assert.match(assistantPage, /图片 OCR 当前未启用/)
   assert.match(assistantPage, /自动语音转写当前未启用/)
   assert.match(assistantPage, /图片视觉理解当前未启用/)
+  assert.match(assistantPage, /扫描 PDF 等待启用图片 OCR/)
 })

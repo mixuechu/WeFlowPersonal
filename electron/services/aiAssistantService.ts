@@ -2386,6 +2386,8 @@ export class AiAssistantService {
         })
         if (!located) {
           message.attachmentIndexStatus = 'not_found'
+          message.attachmentIndexAttempts = 1
+          message.attachmentIndexNextAt = new Date(Date.now() + 7 * 86_400_000).toISOString()
           continue
         }
         const extracted = await extractAttachmentText(located.sourcePath, located.size)
@@ -2395,6 +2397,8 @@ export class AiAssistantService {
         message.attachmentFormat = extracted.format
         message.attachmentStructure = extracted.structure || null
         message.attachmentStructureParserVersion = extracted.structure ? ATTACHMENT_STRUCTURE_PARSER_VERSION : ''
+        message.attachmentIndexAttempts = 1
+        message.attachmentIndexNextAt = ''
         if (extracted.status === 'ocr_required' && this.config.get('aiAssistantOcrImages')) {
           const scanned = await extractScannedPdfText(located.sourcePath)
           message.attachmentPdfOcrStatus = scanned.status
@@ -2407,6 +2411,9 @@ export class AiAssistantService {
             message.attachmentIndexStatus = 'indexed'
             message.attachmentFormat = '.pdf-ocr'
             message.attachmentTextSource = 'poppler-tesseract-local'
+          } else {
+            message.attachmentIndexStatus = scanned.status || 'failed'
+            message.attachmentIndexNextAt = new Date(Date.now() + 86_400_000).toISOString()
           }
         }
         if (extracted.success) {
@@ -2415,6 +2422,82 @@ export class AiAssistantService {
         }
       } catch {
         message.attachmentIndexStatus = 'failed'
+        message.attachmentIndexAttempts = 1
+        message.attachmentIndexNextAt = new Date(Date.now() + 86_400_000).toISOString()
+      }
+    }
+  }
+
+  private async continuePendingAttachmentIndexes(runId: string): Promise<void> {
+    const ocrEnabled = Boolean(this.config.get('aiAssistantOcrImages'))
+    const pending = personalMemoryStore.listPendingAttachmentIndexResources(1, ocrEnabled)
+    for (const resource of pending) {
+      const metadata = resource.metadata || {}
+      const attempts = Number(metadata.attachmentIndexAttempts || 0)
+      const retryPatch = (status: string, retryDays: number) => ({
+        attachmentIndexStatus: status,
+        attachmentIndexAttempts: attempts + 1,
+        attachmentIndexNextAt: new Date(Date.now() + retryDays * 86_400_000).toISOString()
+      })
+      try {
+        const located = await exportService.context.resolveFileAttachmentForIndexing({
+          fileName: String(resource.file_name || ''),
+          fileMd5: String(metadata.fileMd5 || ''),
+          createTime: Number(metadata.messageTimestamp || 0)
+        })
+        if (!located) {
+          personalMemoryStore.replaceResourceContent(resource.id, resource.content,
+            retryPatch('not_found', 7),
+            this.wechatResourceMaintenanceOrigin(runId, resource.id, 'attachment-index'))
+          continue
+        }
+        const extracted = await extractAttachmentText(located.sourcePath, located.size)
+        const basePatch: Record<string, any> = {
+          attachmentLocalPath: located.sourcePath,
+          attachmentMatchedBy: located.matchedBy,
+          attachmentIndexStatus: extracted.status,
+          attachmentFormat: extracted.format,
+          attachmentStructure: extracted.structure || null,
+          attachmentStructureParserVersion: extracted.structure ? ATTACHMENT_STRUCTURE_PARSER_VERSION : '',
+          attachmentIndexAttempts: attempts + 1,
+          attachmentIndexNextAt: ''
+        }
+        let nextContent = String(resource.content || '')
+          .replace(/\n?\[(?:附件·本地正文|PDF扫描·本地OCR)\][\s\S]*$/u, '')
+          .trim()
+        if (extracted.status === 'ocr_required' && ocrEnabled) {
+          const scanned = await extractScannedPdfText(located.sourcePath)
+          Object.assign(basePatch, {
+            attachmentPdfOcrStatus: scanned.status,
+            attachmentPdfOcrPages: scanned.processedPages,
+            attachmentPdfTotalPages: scanned.totalPages,
+            attachmentPdfOcrTruncated: scanned.truncated,
+            attachmentPdfOcrNextPage: scanned.nextPage
+          })
+          if (scanned.success) {
+            nextContent = `${nextContent}\n[PDF扫描·本地OCR] ${redact(scanned.text)}`.trim()
+            basePatch.attachmentIndexStatus = 'indexed'
+            basePatch.attachmentFormat = '.pdf-ocr'
+            basePatch.attachmentTextSource = 'poppler-tesseract-local'
+          } else {
+            Object.assign(basePatch, retryPatch(scanned.status || 'failed', 1))
+          }
+        } else if (extracted.success) {
+          nextContent = `${nextContent}\n[附件·本地正文] ${redact(extracted.text)}`.trim()
+          basePatch.attachmentTextSource = 'local-bounded-parser'
+          basePatch.attachmentIndexStatus = 'indexed'
+        }
+        personalMemoryStore.replaceResourceContent(
+          resource.id,
+          nextContent,
+          basePatch,
+          this.wechatResourceMaintenanceOrigin(runId, resource.id, 'attachment-index')
+        )
+      } catch {
+        const retryDays = Math.min(7, Math.max(1, 2 ** attempts))
+        personalMemoryStore.replaceResourceContent(resource.id, resource.content,
+          retryPatch('failed', retryDays),
+          this.wechatResourceMaintenanceOrigin(runId, resource.id, 'attachment-index'))
       }
     }
   }
@@ -2574,6 +2657,8 @@ export class AiAssistantService {
           attachmentLocalPath: message.attachmentLocalPath || '',
           attachmentMatchedBy: message.attachmentMatchedBy || '',
           attachmentIndexStatus: message.attachmentIndexStatus || '',
+          attachmentIndexAttempts: Number(message.attachmentIndexAttempts || 0),
+          attachmentIndexNextAt: message.attachmentIndexNextAt || '',
           attachmentFormat: message.attachmentFormat || '',
           attachmentTextSource: message.attachmentTextSource || '',
           attachmentStructure: message.attachmentStructure || null,
@@ -4491,6 +4576,7 @@ export class AiAssistantService {
       const createdAt = new Date().toISOString()
       await this.continuePendingPdfOcr(runId)
       this.persistMessageResources(fresh, createdAt, runId)
+      await this.continuePendingAttachmentIndexes(runId)
       await this.continuePendingImageOcr(runId)
       await this.continuePendingVoiceTranscripts(runId)
       await this.continuePendingImageSemantics(runId)
@@ -5299,6 +5385,10 @@ export class AiAssistantService {
       attachmentStructureMigration: personalMemoryStore.getAttachmentStructureMigrationStats(
         ATTACHMENT_STRUCTURE_PARSER_VERSION
       ),
+      attachmentIndexMigration: {
+        ...personalMemoryStore.getAttachmentIndexMigrationStats(),
+        ocrEnabled: Boolean(this.config.get('aiAssistantOcrImages'))
+      },
       imageSemanticMigration: {
         ...personalMemoryStore.getImageSemanticMigrationStats(
           localImageSemanticService.getStatus().modelVersion

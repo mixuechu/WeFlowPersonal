@@ -13197,6 +13197,15 @@ function AiAssistantPage() {
               {!!dashboard.attachmentStructureMigration.pending && ` · ${dashboard.attachmentStructureMigration.pending} 个将在后续同步中继续`}
               {!!dashboard.attachmentStructureMigration.deferred && ` · ${dashboard.attachmentStructureMigration.deferred} 个正在退避等待`}
             </div>}
+            {!!dashboard?.attachmentIndexMigration?.total && <div className="assistant-query-plan">
+              微信附件正文：{dashboard.attachmentIndexMigration.completed || 0}
+              {' / '}{dashboard.attachmentIndexMigration.total} 已处理
+              {!!dashboard.attachmentIndexMigration.pending && ` · ${dashboard.attachmentIndexMigration.pending} 个将在后续同步中继续`}
+              {!!dashboard.attachmentIndexMigration.deferred && ` · ${dashboard.attachmentIndexMigration.deferred} 个正在退避等待`}
+              {!!dashboard.attachmentIndexMigration.waitingForOcr && (dashboard.attachmentIndexMigration.ocrEnabled
+                ? ` · ${dashboard.attachmentIndexMigration.waitingForOcr} 个扫描 PDF 等待 OCR 接力`
+                : ` · ${dashboard.attachmentIndexMigration.waitingForOcr} 个扫描 PDF 等待启用图片 OCR`)}
+            </div>}
             {!!dashboard?.imageSemanticMigration?.total && <div className="assistant-query-plan">
               历史图片视觉理解：{dashboard.imageSemanticMigration.completed || 0}
               {' / '}{dashboard.imageSemanticMigration.total} 已完成

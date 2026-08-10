@@ -12009,6 +12009,76 @@ export class PersonalMemoryStore {
     })
   }
 
+  listPendingAttachmentIndexResources(
+    limit = 1,
+    includeOcrRequired = false,
+    now = new Date()
+  ): any[] {
+    if (!this.db) return []
+    const boundedLimit = Math.max(1, Math.min(10, Math.floor(Number(limit) || 1)))
+    const rows = this.db.prepare(`
+      SELECT r.* FROM memory_resources r
+      LEFT JOIN resource_suppressions s ON s.resource_id=r.id
+      WHERE r.resource_type='file' AND s.resource_id IS NULL
+        AND COALESCE(r.file_name,'')<>''
+        AND json_valid(r.metadata_json)=1
+        AND COALESCE(json_extract(r.metadata_json,'$.sourceId'),'wechat')='wechat'
+        AND COALESCE(json_extract(r.metadata_json,'$.attachmentTextSource'),'')=''
+        AND COALESCE(json_extract(r.metadata_json,'$.attachmentIndexStatus'),'')
+          NOT IN ('unsupported','too_large','empty')
+        AND (?=1 OR COALESCE(json_extract(r.metadata_json,'$.attachmentIndexStatus'),'')<>'ocr_required')
+        AND (
+          julianday(json_extract(r.metadata_json,'$.attachmentIndexNextAt')) IS NULL
+          OR julianday(json_extract(r.metadata_json,'$.attachmentIndexNextAt'))<=julianday(?)
+        )
+      ORDER BY r.updated_at ASC
+      LIMIT ?
+    `).all(includeOcrRequired ? 1 : 0, now.toISOString(), boundedLimit) as any[]
+    return rows.flatMap(row => {
+      try {
+        return [{ ...row, metadata: JSON.parse(row.metadata_json || '{}') }]
+      } catch {
+        return []
+      }
+    })
+  }
+
+  getAttachmentIndexMigrationStats(now = new Date()): any {
+    if (!this.db) return { total: 0, completed: 0, pending: 0, deferred: 0, waitingForOcr: 0 }
+    const row = this.db.prepare(`
+      WITH eligible AS (
+        SELECT
+          COALESCE(json_extract(r.metadata_json,'$.attachmentTextSource'),'') AS source,
+          COALESCE(json_extract(r.metadata_json,'$.attachmentIndexStatus'),'') AS status,
+          json_extract(r.metadata_json,'$.attachmentIndexNextAt') AS next_at
+        FROM memory_resources r
+        LEFT JOIN resource_suppressions s ON s.resource_id=r.id
+        WHERE r.resource_type='file' AND s.resource_id IS NULL
+          AND COALESCE(r.file_name,'')<>''
+          AND json_valid(r.metadata_json)=1
+          AND COALESCE(json_extract(r.metadata_json,'$.sourceId'),'wechat')='wechat'
+      )
+      SELECT
+        COUNT(*) AS total,
+        COALESCE(SUM(CASE WHEN source<>'' OR status IN ('unsupported','too_large','empty') THEN 1 ELSE 0 END),0) AS completed,
+        COALESCE(SUM(CASE WHEN source='' AND status NOT IN ('unsupported','too_large','empty')
+          AND julianday(next_at)>julianday(?) THEN 1 ELSE 0 END),0) AS deferred,
+        COALESCE(SUM(CASE WHEN source='' AND status='ocr_required' THEN 1 ELSE 0 END),0) AS waiting_ocr
+      FROM eligible
+    `).get(now.toISOString()) as any
+    const total = Number(row?.total || 0)
+    const completed = Number(row?.completed || 0)
+    const deferred = Number(row?.deferred || 0)
+    const waitingForOcr = Number(row?.waiting_ocr || 0)
+    return {
+      total,
+      completed,
+      pending: Math.max(0, total - completed - deferred - waitingForOcr),
+      deferred,
+      waitingForOcr
+    }
+  }
+
   listPendingVoiceTranscriptResources(limit = 1, now = new Date()): any[] {
     if (!this.db) return []
     const boundedLimit = Math.max(1, Math.min(10, Math.floor(Number(limit) || 1)))
