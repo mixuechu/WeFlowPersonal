@@ -10829,18 +10829,40 @@ export class PersonalMemoryStore {
             this.mergeStructuredEvidenceQuality('claim', claim.id, item, 'contradiction')
           }
         }
-        this.upsertSearchDocument(`claim:${claim.id}`, 'claim', claim.id, claim.predicate, claim.searchText,
-          {
-            subjectId: claim.subjectId,
-            objectEntityId: claim.objectEntityId,
-            polarity: incomingPolarity,
-            valueType: claim.valueType || 'text',
-            status: claim.status,
-            sourceNature,
-            correctionCount: 0,
-            validFrom: claim.validFrom,
-            validTo: claim.validTo
-          }, now)
+        // Build the derived document from the row that actually won the upsert. The
+        // incoming model item may omit defaults (for example status) or lose an
+        // ON CONFLICT comparison. Persisting its shape directly can make the
+        // search document disagree with authority immediately after a successful
+        // transaction.
+        const storedClaim = this.db.prepare(`
+          SELECT *,(
+            SELECT COUNT(*) FROM memory_corrections correction
+            WHERE correction.item_kind='claim' AND correction.item_id=claims.id
+          ) AS correction_count
+          FROM claims WHERE id=?
+        `).get(claim.id) as any
+        if (storedClaim) {
+          this.upsertSearchDocument(
+            `claim:${storedClaim.id}`,
+            'claim',
+            storedClaim.id,
+            storedClaim.predicate,
+            storedClaim.search_text,
+            {
+              subjectId: storedClaim.subject_id,
+              objectEntityId: storedClaim.object_entity_id || undefined,
+              polarity: storedClaim.polarity,
+              valueType: storedClaim.value_type,
+              status: storedClaim.status,
+              sourceNature: storedClaim.source_nature,
+              correctionCount: Number(storedClaim.correction_count || 0),
+              validFrom: storedClaim.valid_from || undefined,
+              validTo: storedClaim.valid_to || undefined,
+              conflictGroup: storedClaim.conflict_group || undefined
+            },
+            now
+          )
+        }
       }
       if (withinTransaction) this.db.exec('RELEASE SAVEPOINT weflow_upsert_claims')
       else this.db.exec('COMMIT')
@@ -10988,16 +11010,37 @@ export class PersonalMemoryStore {
             item.role && item.role !== 'support' ? item.role : 'direct'
           )
         }
-        this.upsertSearchDocument(`event:${event.id}`, 'event', event.id, event.title, event.searchText,
-          {
-            eventType: event.eventType,
-            startAt: event.startAt,
-            endAt: event.endAt,
-            participantIds: (event.participants || []).map((item: any) => item.entityId),
-            status: event.status,
-            sourceNature: event.sourceNature || 'inference',
-            correctionCount: 0
-          }, now)
+        const storedEvent = this.db.prepare(`
+          SELECT *,(
+            SELECT COUNT(*) FROM memory_corrections correction
+            WHERE correction.item_kind='event' AND correction.item_id=events.id
+          ) AS correction_count
+          FROM events WHERE id=?
+        `).get(event.id) as any
+        if (storedEvent) {
+          const participantIds = (this.db.prepare(`
+            SELECT entity_id FROM event_participants
+            WHERE event_id=? ORDER BY entity_id
+          `).all(storedEvent.id) as Array<{ entity_id: string }>)
+            .map(item => item.entity_id)
+          this.upsertSearchDocument(
+            `event:${storedEvent.id}`,
+            'event',
+            storedEvent.id,
+            storedEvent.title,
+            storedEvent.search_text,
+            {
+              eventType: storedEvent.event_type,
+              startAt: storedEvent.start_at || undefined,
+              endAt: storedEvent.end_at || undefined,
+              participantIds,
+              status: storedEvent.status,
+              sourceNature: storedEvent.source_nature,
+              correctionCount: Number(storedEvent.correction_count || 0)
+            },
+            now
+          )
+        }
       }
       if (withinTransaction) this.db.exec('RELEASE SAVEPOINT weflow_upsert_events')
       else this.db.exec('COMMIT')

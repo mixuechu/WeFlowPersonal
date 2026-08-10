@@ -6059,6 +6059,67 @@ test('empty relation direction metadata remains normalized across repeated graph
   })
 })
 
+test('new claims and events derive search metadata from committed authority defaults', () => {
+  withStore(store => {
+    store.syncGraph({
+      entities: [
+        { id: 'derived-authority-owner', type: 'person', canonicalName: '权威主体', trustStatus: 'confirmed' },
+        { id: 'derived-authority-a', type: 'person', canonicalName: '参与者甲', trustStatus: 'confirmed' },
+        { id: 'derived-authority-b', type: 'person', canonicalName: '参与者乙', trustStatus: 'confirmed' }
+      ],
+      relations: [],
+      reviewQueue: []
+    } as any)
+    store.upsertClaimsAndEvents([{
+      id: 'derived-authority-claim',
+      subjectId: 'derived-authority-owner',
+      predicate: '负责',
+      objectValue: '派生索引一致性',
+      confidence: 0.8,
+      searchText: '权威主体 负责 派生索引一致性',
+      evidence: []
+    }], [{
+      id: 'derived-authority-event',
+      eventType: 'meeting',
+      title: '派生索引会议',
+      description: '核验提交后的权威行',
+      confidence: 0.8,
+      searchText: '派生索引会议 核验提交后的权威行',
+      participants: [
+        { entityId: 'derived-authority-b', role: 'participant' },
+        { entityId: 'derived-authority-a', role: 'participant' }
+      ],
+      evidence: []
+    }])
+
+    const database = (store as any).db
+    const claimDocument = database.prepare(`
+      SELECT metadata_json FROM search_documents WHERE id='claim:derived-authority-claim'
+    `).get()
+    const eventDocument = database.prepare(`
+      SELECT metadata_json FROM search_documents WHERE id='event:derived-authority-event'
+    `).get()
+    assert.deepEqual(JSON.parse(claimDocument.metadata_json), {
+      subjectId: 'derived-authority-owner',
+      polarity: 'positive',
+      valueType: 'text',
+      status: 'candidate',
+      sourceNature: 'inference',
+      correctionCount: 0
+    })
+    assert.deepEqual(JSON.parse(eventDocument.metadata_json), {
+      eventType: 'meeting',
+      participantIds: ['derived-authority-a', 'derived-authority-b'],
+      status: 'candidate',
+      sourceNature: 'inference',
+      correctionCount: 0
+    })
+    const diagnostics = store.getDiagnostics()
+    assert.equal(diagnostics.structuredSearchIndexHealthy, true)
+    assert.equal(diagnostics.structuredSearchIndex.currentMetadataMismatches, 0)
+  })
+})
+
 test('runtime search repair reports resource and entity document repairs by kind', () => withStore(store => {
   store.upsertResources([{
     id: 'runtime-repair-resource-kind',
