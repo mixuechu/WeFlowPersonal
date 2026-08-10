@@ -1103,11 +1103,14 @@ function AiAssistantPage() {
     }
   })
   const [sourceLoading, setSourceLoading] = useState(false)
+  const [sourceDirectoryError, setSourceDirectoryError] = useState('')
   const [sourceTypeFilter, setSourceTypeFilter] = useState<'all' | 'group' | 'private'>('all')
   const [sourceEnabledFilter, setSourceEnabledFilter] = useState<'all' | 'enabled' | 'disabled'>('all')
   const sourceDirectoryGate = useRef(new LatestRequestGate())
   const [dataSources, setDataSources] = useState<any[]>([])
   const [dataSourcesLoading, setDataSourcesLoading] = useState(false)
+  const [dataSourcesError, setDataSourcesError] = useState('')
+  const [dataSourcesRefreshKey, setDataSourcesRefreshKey] = useState(0)
   const dataSourceDirectoryGate = useRef(new LatestRequestGate())
   const [dataSourceToggling, setDataSourceToggling] = useState<Record<string, boolean>>({})
   const dataSourceToggleGates = useRef(new KeyedLatestRequestGates())
@@ -2159,6 +2162,7 @@ function AiAssistantPage() {
     }
     const request = dataSourceDirectoryGate.current.begin()
     setDataSources([])
+    setDataSourcesError('')
     setDataSourcesLoading(true)
     void window.electronAPI.aiAssistant.getDataSources()
       .then(result => {
@@ -2166,13 +2170,13 @@ function AiAssistantPage() {
       })
       .catch(error => {
         if (dataSourceDirectoryGate.current.isCurrent(request)) {
-          setMessage(error?.message || String(error))
+          setDataSourcesError(error?.message || String(error))
         }
       })
       .finally(() => {
         if (dataSourceDirectoryGate.current.isCurrent(request)) setDataSourcesLoading(false)
       })
-  }, [showDataSources])
+  }, [showDataSources, dataSourcesRefreshKey])
 
   useEffect(() => {
     if (!memorySessionPickerOpen) return
@@ -9442,12 +9446,22 @@ function AiAssistantPage() {
     setSourceQuery('')
     setSourceTypeFilter('all')
     setSourceEnabledFilter('all')
+    setSourceDirectoryError('')
     setShowSources(true)
   }
 
   const loadConversationSources = useCallback(async (offset = 0, append = false) => {
     const request = sourceDirectoryGate.current.begin()
     setSourceLoading(true)
+    setSourceDirectoryError('')
+    if (!append) {
+      setSourceDirectory({
+        items: [], total: 0, hasMore: false, revision: '', counts: {
+          total: 0, enabled: 0, disabled: 0, group: 0, private: 0,
+          groupEnabled: 0, privateEnabled: 0
+        }
+      })
+    }
     try {
       const result = await window.electronAPI.aiAssistant.getConversationSources({
         query: sourceQuery || undefined,
@@ -9476,7 +9490,9 @@ function AiAssistantPage() {
         }))
       }
     } catch (error: any) {
-      if (sourceDirectoryGate.current.isCurrent(request)) setMessage(error?.message || String(error))
+      if (sourceDirectoryGate.current.isCurrent(request)) {
+        setSourceDirectoryError(error?.message || String(error))
+      }
     } finally {
       if (sourceDirectoryGate.current.isCurrent(request)) setSourceLoading(false)
     }
@@ -9489,8 +9505,21 @@ function AiAssistantPage() {
 
   useEffect(() => {
     if (!showSources) return
+    sourceDirectoryGate.current.invalidate()
+    setSourceDirectoryError('')
+    setSourceLoading(true)
+    setSourceDirectory({
+      items: [], total: 0, hasMore: false, revision: '', counts: {
+        total: 0, enabled: 0, disabled: 0, group: 0, private: 0,
+        groupEnabled: 0, privateEnabled: 0
+      }
+    })
     const timer = window.setTimeout(() => void loadConversationSources(0, false), 250)
-    return () => window.clearTimeout(timer)
+    return () => {
+      window.clearTimeout(timer)
+      sourceDirectoryGate.current.invalidate()
+      setSourceLoading(false)
+    }
   }, [showSources, sourceQuery, sourceTypeFilter, sourceEnabledFilter])
 
   const forgetSelectedEntity = async () => {
@@ -9605,8 +9634,8 @@ function AiAssistantPage() {
       )
       if (!dataSourceToggleGates.current.isCurrent(source.id, request)) return
       setDataSources(current => current.map(item => item.id === source.id ? updated : item))
-      setStatus(await window.electronAPI.aiAssistant.status())
       setMessage(`${source.displayName}数据源已${updated.enabled ? '开启' : '暂停'}。`)
+      await load().catch(() => {})
     } catch (error: any) {
       if (!dataSourceToggleGates.current.isCurrent(source.id, request)) return
       const errorMessage = error?.message || String(error)
@@ -19791,9 +19820,12 @@ function AiAssistantPage() {
               冲突 {Number(dashboard.conversationSourceMutationCommits.startupRecovery.conflicts)}。
             </small>}
             <div className="assistant-source-actions">
-              <button onClick={() => void setSourceType('group', false)}>关闭全部群聊</button>
-              <button onClick={() => void setSourceType('group', true)}>开启全部群聊</button>
-              <button onClick={() => void setSourceType('private', true)}>开启全部私聊</button>
+              <button disabled={sourceLoading || Boolean(sourceDirectoryError)}
+                onClick={() => void setSourceType('group', false)}>关闭全部群聊</button>
+              <button disabled={sourceLoading || Boolean(sourceDirectoryError)}
+                onClick={() => void setSourceType('group', true)}>开启全部群聊</button>
+              <button disabled={sourceLoading || Boolean(sourceDirectoryError)}
+                onClick={() => void setSourceType('private', true)}>开启全部私聊</button>
             </div>
             <input className="assistant-source-search" value={sourceQuery} onChange={event => setSourceQuery(event.target.value)} placeholder="搜索群聊或联系人" />
             <div className="assistant-source-filters">
@@ -19803,7 +19835,9 @@ function AiAssistantPage() {
               <select value={sourceEnabledFilter} onChange={event => setSourceEnabledFilter(event.target.value as any)}>
                 <option value="all">全部状态</option><option value="enabled">参与分析</option><option value="disabled">停止分析</option>
               </select>
-              <span>群聊 {sourceDirectory.counts.groupEnabled}/{sourceDirectory.counts.group} · 私聊 {sourceDirectory.counts.privateEnabled}/{sourceDirectory.counts.private}</span>
+              <span>{sourceDirectoryError
+                ? '当前范围读取失败'
+                : `群聊 ${sourceDirectory.counts.groupEnabled}/${sourceDirectory.counts.group} · 私聊 ${sourceDirectory.counts.privateEnabled}/${sourceDirectory.counts.private}`}</span>
             </div>
             <div className="assistant-source-list">
               {sourceDirectory.items.map((source: any) => (
@@ -19812,8 +19846,23 @@ function AiAssistantPage() {
                   <input type="checkbox" checked={source.enabled} disabled={sourceLoading} onChange={() => void toggleSource(source)} />
                 </label>
               ))}
-              {!sourceLoading && !sourceDirectory.items.length && <div className="assistant-source-empty">没有匹配的信息来源</div>}
-              {sourceDirectory.hasMore && <button
+              {sourceDirectoryError && <div className="assistant-task-load-failure" role="alert">
+                <strong>{sourceDirectory.items.length
+                  ? '更多信息来源读取失败' : '信息来源目录读取失败'}</strong>
+                <span>{sourceDirectoryError}。{sourceDirectory.items.length
+                  ? ` 已加载的 ${sourceDirectory.items.length} 个来源仍可查看，但当前目录尚未读完。`
+                  : ' 当前不会把读取故障解释为“没有匹配的信息来源”。'}</span>
+                <button type="button" disabled={sourceLoading}
+                  onClick={() => void loadConversationSources(
+                    sourceDirectory.items.length,
+                    sourceDirectory.items.length > 0
+                  )}>
+                  {sourceLoading ? '正在重试…' : '立即重试'}
+                </button>
+              </div>}
+              {!sourceLoading && !sourceDirectoryError && !sourceDirectory.items.length &&
+                <div className="assistant-source-empty">没有匹配的信息来源</div>}
+              {sourceDirectory.hasMore && !sourceDirectoryError && <button
                 className="assistant-source-more"
                 disabled={sourceLoading}
                 onClick={() => void loadConversationSources(sourceDirectory.items.length, true)}>
@@ -19821,7 +19870,9 @@ function AiAssistantPage() {
               </button>}
             </div>
             <div className="assistant-source-footer">
-              <span>显示 {sourceDirectory.items.length}/{sourceDirectory.total} · 全部 {sourceDirectory.counts.enabled} 个来源已开启</span>
+              <span>{sourceDirectoryError && !sourceDirectory.items.length
+                ? '来源数量未知 · 请重试读取'
+                : `显示 ${sourceDirectory.items.length}/${sourceDirectory.total} · 全部 ${sourceDirectory.counts.enabled} 个来源已开启`}</span>
               <button className="primary" onClick={() => setShowSources(false)}>完成</button>
             </div>
           </div>
@@ -19837,6 +19888,14 @@ function AiAssistantPage() {
             </div><button onClick={closeDataSourceModal}><X size={16} /></button></div>
             <div className="assistant-source-list">
               {dataSourcesLoading && <div className="assistant-source-empty">正在按需读取连接器配置…</div>}
+              {dataSourcesError && <div className="assistant-task-load-failure" role="alert">
+                <strong>数据源连接器配置读取失败</strong>
+                <span>{dataSourcesError}。当前不会把读取故障解释为“0 个连接器已开启”。</span>
+                <button type="button" disabled={dataSourcesLoading}
+                  onClick={() => setDataSourcesRefreshKey(value => value + 1)}>
+                  {dataSourcesLoading ? '正在重试…' : '立即重试'}
+                </button>
+              </div>}
               {dataSources.map(source => (
                 <label className="assistant-source-row" key={source.id}>
                   <span><strong>{source.displayName}</strong>
@@ -19983,7 +20042,9 @@ function AiAssistantPage() {
                   onClick={() => void saveMailSelection()}>保存选择</button>
               </div>
             </div>}
-            <div className="assistant-source-footer"><span>{dataSources.filter(source => source.enabled).length} 个连接器已开启</span>
+            <div className="assistant-source-footer"><span>{dataSourcesError
+              ? '连接器数量未知 · 请重试读取'
+              : `${dataSources.filter(source => source.enabled).length} 个连接器已开启`}</span>
               <button className="primary" onClick={closeDataSourceModal}>完成</button></div>
           </div>
         </div>
