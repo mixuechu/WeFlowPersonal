@@ -2617,7 +2617,9 @@ function AiAssistantPage() {
     }
     const request = memoryDeletionArchiveGate.current.begin()
     setMemoryDeletionLoadingMore(false)
-    setMemoryDeletionArchive(current => ({ ...current, items: [], loading: true }))
+    setMemoryDeletionArchive(current => ({
+      ...current, items: [], loading: true, error: undefined
+    }))
     const timer = window.setTimeout(() => {
       void window.electronAPI.aiAssistant.getMemoryDeletionAuditPage(memoryDeletionOptions).then(result => {
         if (!memoryDeletionArchiveGate.current.isCurrent(request)) return
@@ -2630,9 +2632,12 @@ function AiAssistantPage() {
           return
         }
         setMemoryDeletionArchive({ ...result, loading: false })
-      }).catch(() => {
+      }).catch(error => {
         if (!memoryDeletionArchiveGate.current.isCurrent(request)) return
-        setMemoryDeletionArchive({ items: [], total: 0, hasMore: false, counts: {}, loading: false })
+        setMemoryDeletionArchive({
+          items: [], total: 0, hasMore: false, counts: {}, loading: false,
+          error: error?.message || String(error)
+        })
       })
     }, memoryDeletionQuery ? 200 : 0)
     return () => {
@@ -4936,6 +4941,7 @@ function AiAssistantPage() {
     if (memoryDeletionLoadingMore || !memoryDeletionArchive.hasMore) return
     const request = memoryDeletionArchiveGate.current.begin()
     setMemoryDeletionLoadingMore(true)
+    setMemoryDeletionArchive(current => ({ ...current, error: undefined }))
     try {
       const result = await window.electronAPI.aiAssistant.getMemoryDeletionAuditPage({
         ...memoryDeletionOptions,
@@ -4960,7 +4966,9 @@ function AiAssistantPage() {
       }))
     } catch (error: any) {
       if (memoryDeletionArchiveGate.current.isCurrent(request)) {
-        setMessage(error?.message || String(error))
+        const errorMessage = error?.message || String(error)
+        setMemoryDeletionArchive(current => ({ ...current, error: errorMessage }))
+        setMessage(errorMessage)
       }
     } finally {
       if (memoryDeletionArchiveGate.current.isCurrent(request)) {
@@ -17249,7 +17257,9 @@ function AiAssistantPage() {
                 <span>
                   <b>删除与不重要审计</b>
                   <small>
-                    {memoryDeletionArchive.total} 条匹配 · 全部 {Number(memoryDeletionArchive.counts?.all || dashboard?.memoryDeletionArchive?.total || 0)} 条。
+                    {memoryDeletionArchive.error && !memoryDeletionArchive.items.length
+                      ? '读取失败；当前不能据此判断删除或不重要清理数量。'
+                      : `${memoryDeletionArchive.total} 条匹配 · 全部 ${Number(memoryDeletionArchive.counts?.all || dashboard?.memoryDeletionArchive?.total || 0)} 条。`}
                     只保留不可逆指纹和影响计数，不保留被清理正文。
                   </small>
                 </span>
@@ -17286,10 +17296,21 @@ function AiAssistantPage() {
                   <small>{entry.reason === 'not_important' ? '不重要清理' : '永久删除'} · {new Date(entry.created_at).toLocaleString('zh-CN')}</small></span>
                 <span>证据 {entry.impact?.evidence || 0} · 关联 {entry.impact?.related || 0} · 索引 {entry.impact?.searchDocuments || 0} · 问答 {entry.impact?.assistantMessages || 0}</span>
               </article>)}
-              {!memoryDeletionArchive.items.length && <div className="assistant-empty">
+              {memoryDeletionArchive.error && <div className="assistant-task-load-failure" role="alert">
+                <strong>{memoryDeletionArchive.items.length
+                  ? '更多删除审计读取失败' : '删除与不重要审计读取失败'}</strong>
+                <span>{memoryDeletionArchive.error}。{memoryDeletionArchive.items.length
+                  ? ` 已加载的 ${memoryDeletionArchive.items.length} 条不可逆审计仍可核验，但当前档案尚未读完。`
+                  : ' 当前不会把读取故障解释为“没有删除或不重要清理记录”。'}</span>
+                <button type="button" disabled={memoryDeletionLoadingMore} onClick={() => {
+                  if (memoryDeletionArchive.items.length) void loadMoreMemoryDeletionAudit()
+                  else setMemoryDeletionArchiveRefreshKey(value => value + 1)
+                }}>{memoryDeletionLoadingMore ? '正在重试…' : '立即重试'}</button>
+              </div>}
+              {!memoryDeletionArchive.error && !memoryDeletionArchive.items.length && <div className="assistant-empty">
                 {memoryDeletionArchive.loading ? '正在读取完整删除审计…' : '当前范围没有删除或不重要清理记录。'}
               </div>}
-              {memoryDeletionArchive.hasMore && <div className="assistant-timeline-more">
+              {memoryDeletionArchive.hasMore && !memoryDeletionArchive.error && <div className="assistant-timeline-more">
                 <button disabled={memoryDeletionLoadingMore}
                   onClick={() => void loadMoreMemoryDeletionAudit()}>
                   {memoryDeletionLoadingMore
