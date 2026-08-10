@@ -7773,6 +7773,7 @@ function AiAssistantPage() {
     const query = memoryQuery.trim()
     const request = memorySearchGate.current.begin()
     setMemoryLoadingMore(true)
+    setMemorySearchState(current => ({ ...current, status: 'ready', error: undefined }))
     try {
       const page = await window.electronAPI.aiAssistant.searchMemoryPage(
         query,
@@ -11449,7 +11450,17 @@ function AiAssistantPage() {
                 </button>
               </div>}
             {memorySearchState.status === 'error' &&
-              <div className="assistant-search-status error">“{memorySearchState.query}”检索失败：{memorySearchState.error}</div>}
+              <div className="assistant-task-load-failure" role="alert">
+                <strong>{memoryResults.length ? '更多检索结果读取失败' : '统一检索失败'}</strong>
+                <span>{memorySearchState.query ? `“${memorySearchState.query}”` : '当前范围'}：{memorySearchState.error}。
+                  {memoryResults.length
+                    ? ` 已加载的 ${memoryResults.length} 条结果仍可查看和核验，但当前结果集尚未读完。`
+                    : ' 当前不会把失败解释为“没有找到相关记忆”。'}</span>
+                <button type="button" disabled={memoryLoadingMore} onClick={() => {
+                  if (memoryResults.length) void loadMoreMemoryResults()
+                  else setMemorySearchRefreshKey(value => value + 1)
+                }}>{memoryLoadingMore ? '正在重试…' : '立即重试'}</button>
+              </div>}
             {memorySearchState.status === 'ready' && Object.keys(memorySearchState.typeCounts || {}).length > 0 &&
               <div className="assistant-search-type-facets">
                 <div>
