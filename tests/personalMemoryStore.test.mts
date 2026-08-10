@@ -11990,6 +11990,29 @@ test('local embedding identity pins an immutable model revision', () => {
   }
 })
 
+test('explicit diagnostics verify the pinned embedding cache without loading the model', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'weflow-model-diagnostic-integrity-'))
+  const service = new LocalEmbeddingService(async () => {
+    throw new Error('完整性诊断不得加载模型')
+  })
+  try {
+    service.initialize(directory)
+    assert.equal(service.getStatus().integrity.state, 'not_checked')
+    const audit = await service.verifyCacheIntegrity()
+    assert.equal(audit.performed, true)
+    assert.equal(audit.deferredReason, '')
+    assert.equal(audit.integrity.state, 'incomplete')
+    assert.equal(audit.integrity.checked, 0)
+    assert.equal(audit.integrity.missing, LOCAL_EMBEDDING_MANIFEST.length)
+    assert.match(audit.integrity.checkedAt, /^\d{4}-\d{2}-\d{2}T/)
+    assert.equal(service.getStatus().loaded, false)
+    assert.equal(service.getStatus().integrity.state, 'incomplete')
+  } finally {
+    await service.dispose()
+    rmSync(directory, { recursive: true, force: true })
+  }
+})
+
 test('local embedding releases an idle model session and reloads it on demand', async () => {
   const directory = mkdtempSync(join(tmpdir(), 'weflow-model-lifecycle-'))
   let loads = 0
@@ -12041,6 +12064,10 @@ test('local embedding never unloads a session while inference is active', async 
     await new Promise(resolve => setTimeout(resolve, 15))
     assert.equal(service.getStatus().activeInferences, 1)
     assert.equal(disposals, 0)
+    const deferredAudit = await service.verifyCacheIntegrity()
+    assert.equal(deferredAudit.performed, false)
+    assert.equal(deferredAudit.deferredReason, 'model_active')
+    assert.equal(deferredAudit.integrity.state, 'not_checked')
     releaseInference?.()
     await inference
     await new Promise(resolve => setTimeout(resolve, 20))

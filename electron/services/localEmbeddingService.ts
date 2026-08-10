@@ -158,6 +158,12 @@ export type ModelCacheIntegrityHealth = {
   lastRepairAt: string
 }
 
+export type ModelCacheIntegrityAudit = {
+  performed: boolean
+  deferredReason: '' | 'model_active'
+  integrity: ModelCacheIntegrityHealth
+}
+
 export function recordModelCacheIntegrity(
   previous: ModelCacheIntegrityHealth,
   result: Awaited<ReturnType<typeof verifyModelCacheManifest>>,
@@ -359,6 +365,7 @@ export class LocalEmbeddingService {
   private lastUnloadedAt = ''
   private lastUnloadError = ''
   private lastError = ''
+  private integrityAuditPromise: Promise<ModelCacheIntegrityHealth> | null = null
   private integrity: ModelCacheIntegrityHealth = {
     state: 'not_checked',
     checkedAt: '',
@@ -408,7 +415,41 @@ export class LocalEmbeddingService {
       lastUnloadedAt: this.lastUnloadedAt,
       lastUnloadError: this.lastUnloadError,
       lastError: this.lastError,
+      integrityChecking: Boolean(this.integrityAuditPromise),
       integrity: { ...this.integrity }
+    }
+  }
+
+  async verifyCacheIntegrity(): Promise<ModelCacheIntegrityAudit> {
+    if (!this.cacheDirectory) throw new Error('本地向量服务尚未初始化')
+    if (this.extractorPromise || this.activeInferences > 0) {
+      return {
+        performed: false,
+        deferredReason: 'model_active',
+        integrity: { ...this.integrity }
+      }
+    }
+    if (!this.integrityAuditPromise) {
+      this.integrityAuditPromise = verifyModelCacheManifest({
+        cacheDirectory: this.cacheDirectory,
+        model: LOCAL_EMBEDDING_MODEL,
+        revision: LOCAL_EMBEDDING_REVISION,
+        manifest: LOCAL_EMBEDDING_MANIFEST
+      }).then(result => {
+        this.integrity = recordModelCacheIntegrity(
+          this.integrity,
+          result,
+          new Date().toISOString()
+        )
+        return { ...this.integrity }
+      }).finally(() => {
+        this.integrityAuditPromise = null
+      })
+    }
+    return {
+      performed: true,
+      deferredReason: '',
+      integrity: { ...await this.integrityAuditPromise }
     }
   }
 
@@ -491,6 +532,7 @@ export class LocalEmbeddingService {
 
   private async getExtractor(): Promise<any> {
     if (!this.cacheDirectory) throw new Error('本地向量服务尚未初始化')
+    if (this.integrityAuditPromise) await this.integrityAuditPromise
     if (!this.extractorPromise) {
       this.lastError = ''
       const loading = this.extractorLoader

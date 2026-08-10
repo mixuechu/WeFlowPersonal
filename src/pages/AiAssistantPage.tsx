@@ -17736,6 +17736,9 @@ function AiAssistantPage() {
                     : memoryDiagnostics.embeddings.integrity?.state === 'incomplete'
                       ? '等待完整下载'
                       : '尚未核验'}</b></span>
+                <span>缓存核验时间 <b>{memoryDiagnostics.embeddings.integrity?.checkedAt
+                  ? new Date(memoryDiagnostics.embeddings.integrity.checkedAt).toLocaleString('zh-CN')
+                  : '尚未执行'}</b></span>
                 <span>版本 <b>{memoryDiagnostics.embeddings.ann.version || 'lsh-v1'}</b></span>
                 <span>最近构建 <b>{memoryDiagnostics.embeddings.ann.lastBuiltAt
                   ? new Date(memoryDiagnostics.embeddings.ann.lastBuiltAt).toLocaleString('zh-CN') : '尚未需要'}</b></span>
@@ -17767,6 +17770,13 @@ function AiAssistantPage() {
                 {memoryDiagnostics.embeddings.integrity.lastRepairAt
                   ? ` · 最近修复 ${new Date(memoryDiagnostics.embeddings.integrity.lastRepairAt).toLocaleString('zh-CN')}`
                   : ''}
+              </small>}
+              {memoryDiagnostics.embeddings.integrity?.state === 'incomplete' && <small className="assistant-diagnostics-error">
+                固定版本模型缓存缺少 {Number(memoryDiagnostics.embeddings.integrity.missing || 0).toLocaleString()} 个文件；
+                个人记忆向量仍安全保留，下一次语义检索或后台补建会从固定提交下载并重新执行 SHA-256 校验。
+              </small>}
+              {memoryDiagnostics.embeddings.integrityAudit?.deferredReason === 'model_active' && <small>
+                本次完整校验遇到正在使用的本地模型，为避免与推理并发读取同一缓存而安全延后；模型空闲后可再次点击完整校验。
               </small>}
               {!memoryDiagnostics.embeddings.background?.lastError
                 && memoryDiagnostics.embeddings.background?.lastSuccessAt && <small>

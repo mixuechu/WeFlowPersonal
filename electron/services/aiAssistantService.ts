@@ -7091,6 +7091,9 @@ export class AiAssistantService {
   }
 
   async getMemoryDiagnostics(options: { forceIntegrityCheck?: boolean } = {}): Promise<any> {
+    const embeddingCacheIntegrityAudit = options.forceIntegrityCheck === true
+      ? await localEmbeddingService.verifyCacheIntegrity()
+      : null
     const ingestionTotals = personalMemoryStore.getIngestionArchiveSummary()
     const ingestionRates = {
       inputPerMillion: Math.max(0, Number(this.config.get('aiAssistantInputCostPerMillion') || 0)),
@@ -7276,6 +7279,7 @@ export class AiAssistantService {
       embeddings: {
         ...personalMemoryStore.getEmbeddingStats(localEmbeddingService.modelVersion),
         ...localEmbeddingService.getStatus(),
+        integrityAudit: embeddingCacheIntegrityAudit,
         indexing: Boolean(this.vectorIndexPromise),
         background: { ...this.vectorIndexContinuationHealth },
         powerPolicy: { ...this.vectorIndexPowerPolicy },

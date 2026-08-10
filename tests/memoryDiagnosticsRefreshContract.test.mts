@@ -3,6 +3,7 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 
 const page = readFileSync(new URL('../src/pages/AiAssistantPage.tsx', import.meta.url), 'utf8')
+const service = readFileSync(new URL('../electron/services/aiAssistantService.ts', import.meta.url), 'utf8')
 
 test('memory diagnostics use one coalesced refresh path with bounded periodic retry', () => {
   assert.match(page, /memoryDiagnosticsRefresh = useRef\(new TrailingCoalescedRequest<any>\(\)\)/)
@@ -25,4 +26,10 @@ test('diagnostic refresh failure remains visible and manually retryable without 
   assert.match(page, /role="alert"/)
   assert.match(page, /onClick=\{\(\) => void refreshMemoryDiagnostics\(\)\.catch\(\(\) => \{\}\)\}/)
   assert.match(page, /onClick=\{\(\) => void refreshMemoryDiagnostics\(true\)\.catch\(\(\) => \{\}\)\}/)
+})
+
+test('a forced diagnostic verifies the pinned semantic model cache and explains deferral', () => {
+  assert.match(service, /await localEmbeddingService\.verifyCacheIntegrity\(\)/)
+  assert.match(page, /固定版本模型缓存缺少/)
+  assert.match(page, /本次完整校验遇到正在使用的本地模型/)
 })
