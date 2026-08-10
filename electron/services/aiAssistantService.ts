@@ -2139,8 +2139,19 @@ export class AiAssistantService {
         if (result.success && result.transcript?.trim()) {
           message.content = attachLocalVoiceTranscript(message.content, redact(result.transcript))
           message.transcriptionSource = 'sensevoice-local'
+          message.voiceTranscriptionStatus = 'completed'
+          message.voiceTranscriptionAttempts = 1
+          message.voiceTranscriptionNextAt = ''
+        } else {
+          message.voiceTranscriptionStatus = 'failed'
+          message.voiceTranscriptionAttempts = 1
+          message.voiceTranscriptionNextAt = new Date(Date.now() + 86_400_000).toISOString()
         }
-      } catch {}
+      } catch {
+        message.voiceTranscriptionStatus = 'failed'
+        message.voiceTranscriptionAttempts = 1
+        message.voiceTranscriptionNextAt = new Date(Date.now() + 86_400_000).toISOString()
+      }
     }
   }
 
@@ -2152,11 +2163,24 @@ export class AiAssistantService {
       message.semanticType === 'image' && message.mediaLocalPath && !String(message.content || '').includes('本地OCR')
     ).slice(-8)
     for (const message of candidates) {
-      const result = await localOcrService.recognize(message.mediaLocalPath)
-      if (result.success && result.text?.trim()) {
-        message.content = attachLocalImageOcr(message.content, redact(result.text))
-        message.ocrSource = 'tesseract-local'
-        message.ocrStructure = structureOcrText(redact(result.text))
+      try {
+        const result = await localOcrService.recognize(message.mediaLocalPath)
+        if (result.success && result.text?.trim()) {
+          message.content = attachLocalImageOcr(message.content, redact(result.text))
+          message.ocrSource = 'tesseract-local'
+          message.ocrStructure = structureOcrText(redact(result.text))
+          message.imageOcrMigrationStatus = 'completed'
+          message.imageOcrMigrationAttempts = 1
+          message.imageOcrMigrationNextAt = ''
+        } else {
+          message.imageOcrMigrationStatus = 'failed'
+          message.imageOcrMigrationAttempts = 1
+          message.imageOcrMigrationNextAt = new Date(Date.now() + 86_400_000).toISOString()
+        }
+      } catch {
+        message.imageOcrMigrationStatus = 'failed'
+        message.imageOcrMigrationAttempts = 1
+        message.imageOcrMigrationNextAt = new Date(Date.now() + 86_400_000).toISOString()
       }
     }
   }
@@ -2257,6 +2281,95 @@ export class AiAssistantService {
         visualMigrationNextAt: '',
         visualMigratedAt: new Date().toISOString()
       }, this.wechatResourceMaintenanceOrigin(runId, resource.id, 'image-semantics'))
+    }
+  }
+
+  private async continuePendingImageOcr(runId: string): Promise<void> {
+    if (!this.config.get('aiAssistantOcrImages')) return
+    const status = await localOcrService.getStatus()
+    if (!status.available || !status.chinese) return
+    const pending = personalMemoryStore.listPendingImageOcrResources(1)
+    for (const resource of pending) {
+      const metadata = resource.metadata || {}
+      const filePath = String(metadata.mediaLocalPath || '')
+      const attempts = Number(metadata.imageOcrMigrationAttempts || 0)
+      if (!filePath || !existsSync(filePath)) {
+        personalMemoryStore.replaceResourceContent(resource.id, resource.content, {
+          imageOcrMigrationStatus: 'not_found',
+          imageOcrMigrationAttempts: attempts + 1,
+          imageOcrMigrationNextAt: new Date(Date.now() + 7 * 86_400_000).toISOString()
+        }, this.wechatResourceMaintenanceOrigin(runId, resource.id, 'image-ocr'))
+        continue
+      }
+      try {
+        const result = await localOcrService.recognize(filePath)
+        if (result.success && result.text?.trim()) {
+          const redactedText = redact(result.text)
+          personalMemoryStore.replaceResourceContent(
+            resource.id,
+            attachLocalImageOcr(String(resource.content || '[图片]'), redactedText),
+            {
+              ocrSource: 'tesseract-local',
+              ocrStructure: structureOcrText(redactedText),
+              imageOcrMigrationStatus: 'completed',
+              imageOcrMigrationAttempts: attempts + 1,
+              imageOcrMigrationNextAt: '',
+              imageOcrMigratedAt: new Date().toISOString()
+            },
+            this.wechatResourceMaintenanceOrigin(runId, resource.id, 'image-ocr')
+          )
+          continue
+        }
+      } catch {}
+      const retryDays = Math.min(7, Math.max(1, 2 ** attempts))
+      personalMemoryStore.replaceResourceContent(resource.id, resource.content, {
+        imageOcrMigrationStatus: 'failed',
+        imageOcrMigrationAttempts: attempts + 1,
+        imageOcrMigrationNextAt: new Date(Date.now() + retryDays * 86_400_000).toISOString()
+      }, this.wechatResourceMaintenanceOrigin(runId, resource.id, 'image-ocr'))
+    }
+  }
+
+  private async continuePendingVoiceTranscripts(runId: string): Promise<void> {
+    if (!this.config.get('autoTranscribeVoice')) return
+    const model = await voiceTranscribeService.getModelStatus()
+      .catch(() => ({ success: false, exists: false }))
+    if (!model.success || !model.exists) return
+    const pending = personalMemoryStore.listPendingVoiceTranscriptResources(1)
+    for (const resource of pending) {
+      const metadata = resource.metadata || {}
+      const attempts = Number(metadata.voiceTranscriptionAttempts || 0)
+      try {
+        const result = await chatService.getVoiceTranscript(
+          String(metadata.sessionId || ''),
+          String(metadata.localId || ''),
+          Number(metadata.messageTimestamp || 0),
+          undefined,
+          String(metadata.senderId || ''),
+          String(metadata.serverId || '')
+        )
+        if (result.success && result.transcript?.trim()) {
+          personalMemoryStore.replaceResourceContent(
+            resource.id,
+            attachLocalVoiceTranscript(String(resource.content || '[语音]'), redact(result.transcript)),
+            {
+              transcriptionSource: 'sensevoice-local',
+              voiceTranscriptionStatus: 'completed',
+              voiceTranscriptionAttempts: attempts + 1,
+              voiceTranscriptionNextAt: '',
+              voiceTranscribedAt: new Date().toISOString()
+            },
+            this.wechatResourceMaintenanceOrigin(runId, resource.id, 'voice-transcription')
+          )
+          continue
+        }
+      } catch {}
+      const retryDays = Math.min(7, Math.max(1, 2 ** attempts))
+      personalMemoryStore.replaceResourceContent(resource.id, resource.content, {
+        voiceTranscriptionStatus: 'failed',
+        voiceTranscriptionAttempts: attempts + 1,
+        voiceTranscriptionNextAt: new Date(Date.now() + retryDays * 86_400_000).toISOString()
+      }, this.wechatResourceMaintenanceOrigin(runId, resource.id, 'voice-transcription'))
     }
   }
 
@@ -2408,8 +2521,6 @@ export class AiAssistantService {
     const resourceTypes = new Set(['link', 'file', 'forward', 'miniapp', 'image', 'voice'])
     const resources = messages.flatMap(message => {
       if (!resourceTypes.has(message.semanticType)) return []
-      if (message.semanticType === 'image' && !message.ocrSource && !message.visualSource) return []
-      if (message.semanticType === 'voice' && !message.transcriptionSource) return []
       const recoveredContent = String(message.content || '')
         .replace(/^\[(?:图片·本地OCR|语音·本地转写)\]\s*/, '')
         .trim()
@@ -2443,9 +2554,20 @@ export class AiAssistantService {
           fileSize: message.fileSize,
           fileMd5: message.fileMd5,
           mediaLocalPath: message.mediaLocalPath,
+          localId: message.localId || '',
+          serverId: message.serverId || '',
+          messageTimestamp: Number(message.timestamp || 0),
           transcriptionSource: message.transcriptionSource || '',
+          voiceTranscriptionStatus: message.voiceTranscriptionStatus ||
+            (message.transcriptionSource ? 'completed' : 'pending'),
+          voiceTranscriptionAttempts: Number(message.voiceTranscriptionAttempts || 0),
+          voiceTranscriptionNextAt: message.voiceTranscriptionNextAt || '',
           ocrSource: message.ocrSource || '',
           ocrStructure: message.ocrStructure || null,
+          imageOcrMigrationStatus: message.imageOcrMigrationStatus ||
+            (message.ocrSource ? 'completed' : 'pending'),
+          imageOcrMigrationAttempts: Number(message.imageOcrMigrationAttempts || 0),
+          imageOcrMigrationNextAt: message.imageOcrMigrationNextAt || '',
           visualSource: message.visualSource || '',
           visualLabels: message.visualLabels || [],
           visualModelVersion: message.visualModelVersion || '',
@@ -4369,6 +4491,8 @@ export class AiAssistantService {
       const createdAt = new Date().toISOString()
       await this.continuePendingPdfOcr(runId)
       this.persistMessageResources(fresh, createdAt, runId)
+      await this.continuePendingImageOcr(runId)
+      await this.continuePendingVoiceTranscripts(runId)
       await this.continuePendingImageSemantics(runId)
       await this.continuePendingAttachmentStructures(runId)
       const successfulMessageKeys: string[] = []
@@ -5175,9 +5299,20 @@ export class AiAssistantService {
       attachmentStructureMigration: personalMemoryStore.getAttachmentStructureMigrationStats(
         ATTACHMENT_STRUCTURE_PARSER_VERSION
       ),
-      imageSemanticMigration: personalMemoryStore.getImageSemanticMigrationStats(
-        localImageSemanticService.getStatus().modelVersion
-      ),
+      imageSemanticMigration: {
+        ...personalMemoryStore.getImageSemanticMigrationStats(
+          localImageSemanticService.getStatus().modelVersion
+        ),
+        enabled: Boolean(this.config.get('aiAssistantAnalyzeImages'))
+      },
+      imageOcrMigration: {
+        ...personalMemoryStore.getImageOcrMigrationStats(),
+        enabled: Boolean(this.config.get('aiAssistantOcrImages'))
+      },
+      voiceTranscriptionMigration: {
+        ...personalMemoryStore.getVoiceTranscriptMigrationStats(),
+        enabled: Boolean(this.config.get('autoTranscribeVoice'))
+      },
       memoryFeed: {
         claims: [],
         events: [],

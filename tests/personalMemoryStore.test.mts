@@ -23987,6 +23987,93 @@ test('historical image semantics resume by model version and invalidate stale ve
   assert.equal(store.getEmbeddingStats('test-vector').pending, 1)
 }))
 
+test('pending voice transcripts remain durable, retryable and visible after a failed first pass', () => withStore(store => {
+  store.upsertResources([{
+    id: 'resource-voice-pending',
+    resourceType: 'voice',
+    title: '语音内容',
+    content: '[语音]',
+    metadata: {
+      sourceId: 'wechat',
+      sessionId: 'voice-session',
+      localId: 'voice-local-1',
+      serverId: 'voice-server-1',
+      messageTimestamp: 1_775_000_000,
+      senderId: 'wxid-speaker',
+      transcriptionSource: '',
+      voiceTranscriptionStatus: 'pending'
+    },
+    evidence: []
+  }])
+  assert.deepEqual(store.getVoiceTranscriptMigrationStats(), {
+    total: 1, completed: 0, pending: 1, deferred: 0
+  })
+  assert.equal(store.listPendingVoiceTranscriptResources(1)[0].id, 'resource-voice-pending')
+
+  store.replaceResourceContent('resource-voice-pending', '[语音·本地转写] 明天下午三点开会', {
+    transcriptionSource: 'sensevoice-local',
+    voiceTranscriptionStatus: 'completed',
+    voiceTranscriptionAttempts: 2,
+    voiceTranscriptionNextAt: ''
+  })
+  assert.deepEqual(store.getVoiceTranscriptMigrationStats(), {
+    total: 1, completed: 1, pending: 0, deferred: 0
+  })
+  assert.equal(store.listPendingVoiceTranscriptResources(1).length, 0)
+  assert.ok(store.searchText('明天下午三点开会')
+    .some(item => item.id === 'resource:resource-voice-pending'))
+
+  store.upsertResources([{
+    id: 'resource-voice-deferred',
+    resourceType: 'voice',
+    title: '等待重试的语音',
+    content: '[语音]',
+    metadata: {
+      sessionId: 'voice-session',
+      localId: 'voice-local-2',
+      transcriptionSource: '',
+      voiceTranscriptionNextAt: '2099-01-01T00:00:00.000Z'
+    },
+    evidence: []
+  }])
+  assert.equal(store.getVoiceTranscriptMigrationStats().deferred, 1)
+  assert.equal(store.listPendingVoiceTranscriptResources(10)
+    .some(item => item.id === 'resource-voice-deferred'), false)
+}))
+
+test('pending image OCR remains durable and retryable independently of visual semantics', () => withStore(store => {
+  store.upsertResources([{
+    id: 'resource-image-ocr-pending',
+    resourceType: 'image',
+    title: '等待 OCR 的图片',
+    content: '[图片]',
+    metadata: {
+      sourceId: 'wechat',
+      mediaLocalPath: '/tmp/image-ocr-pending.png',
+      ocrSource: '',
+      imageOcrMigrationStatus: 'pending'
+    },
+    evidence: []
+  }])
+  assert.deepEqual(store.getImageOcrMigrationStats(), {
+    total: 1, completed: 0, pending: 1, deferred: 0
+  })
+  assert.equal(store.listPendingImageOcrResources(1)[0].id, 'resource-image-ocr-pending')
+
+  store.replaceResourceContent('resource-image-ocr-pending', '[图片·本地OCR] 合同金额十万元', {
+    ocrSource: 'tesseract-local',
+    imageOcrMigrationStatus: 'completed',
+    imageOcrMigrationAttempts: 2,
+    imageOcrMigrationNextAt: ''
+  })
+  assert.deepEqual(store.getImageOcrMigrationStats(), {
+    total: 1, completed: 1, pending: 0, deferred: 0
+  })
+  assert.equal(store.listPendingImageOcrResources(1).length, 0)
+  assert.ok(store.searchText('合同金额十万元')
+    .some(item => item.id === 'resource:resource-image-ocr-pending'))
+}))
+
 test('background resource migrations deserialize only their bounded eligible rows', () => withStore(store => {
   const database = (store as any).db
   const insert = database.prepare(`

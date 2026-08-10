@@ -13200,8 +13200,26 @@ function AiAssistantPage() {
             {!!dashboard?.imageSemanticMigration?.total && <div className="assistant-query-plan">
               历史图片视觉理解：{dashboard.imageSemanticMigration.completed || 0}
               {' / '}{dashboard.imageSemanticMigration.total} 已完成
-              {!!dashboard.imageSemanticMigration.pending && ` · ${dashboard.imageSemanticMigration.pending} 张将在后续同步中继续`}
+              {!!dashboard.imageSemanticMigration.pending && (dashboard.imageSemanticMigration.enabled
+                ? ` · ${dashboard.imageSemanticMigration.pending} 张将在后续同步中继续`
+                : ` · ${dashboard.imageSemanticMigration.pending} 张等待处理，图片视觉理解当前未启用`)}
               {!!dashboard.imageSemanticMigration.deferred && ` · ${dashboard.imageSemanticMigration.deferred} 张正在退避等待`}
+            </div>}
+            {!!dashboard?.imageOcrMigration?.total && <div className="assistant-query-plan">
+              历史图片 OCR：{dashboard.imageOcrMigration.completed || 0}
+              {' / '}{dashboard.imageOcrMigration.total} 已完成
+              {!!dashboard.imageOcrMigration.pending && (dashboard.imageOcrMigration.enabled
+                ? ` · ${dashboard.imageOcrMigration.pending} 张将在后续同步中继续`
+                : ` · ${dashboard.imageOcrMigration.pending} 张等待处理，图片 OCR 当前未启用`)}
+              {!!dashboard.imageOcrMigration.deferred && ` · ${dashboard.imageOcrMigration.deferred} 张正在退避等待`}
+            </div>}
+            {!!dashboard?.voiceTranscriptionMigration?.total && <div className="assistant-query-plan">
+              历史语音转写：{dashboard.voiceTranscriptionMigration.completed || 0}
+              {' / '}{dashboard.voiceTranscriptionMigration.total} 已完成
+              {!!dashboard.voiceTranscriptionMigration.pending && (dashboard.voiceTranscriptionMigration.enabled
+                ? ` · ${dashboard.voiceTranscriptionMigration.pending} 条将在后续同步中继续`
+                : ` · ${dashboard.voiceTranscriptionMigration.pending} 条等待处理，自动语音转写当前未启用`)}
+              {!!dashboard.voiceTranscriptionMigration.deferred && ` · ${dashboard.voiceTranscriptionMigration.deferred} 条正在退避等待`}
             </div>}
             {dashboard?.resourceContentBudget?.version && <div className={`assistant-query-plan ${
               dashboard.resourceContentBudget.healthy ? '' : 'warning'

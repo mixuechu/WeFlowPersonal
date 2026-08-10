@@ -7,6 +7,10 @@ const service = readFileSync(
   join(process.cwd(), 'electron/services/aiAssistantService.ts'),
   'utf8'
 )
+const assistantPage = readFileSync(
+  join(process.cwd(), 'src/pages/AiAssistantPage.tsx'),
+  'utf8'
+)
 
 test('wechat extraction fails closed when the contact identity directory cannot be read', () => {
   const collectStart = service.indexOf('private async collectMessages(')
@@ -55,4 +59,31 @@ test('a failed group member directory pauses only that session instead of degrad
     collectMessages,
     /if \(result\.status === 'fulfilled'\)[\s\S]*?else \{\s*failed\.push\(sessions\[index\]\?\.username\)/
   )
+})
+
+test('raw voice and image resources survive first-pass enrichment failure for durable retry', () => {
+  const persistStart = service.indexOf('private persistMessageResources(')
+  const persistEnd = service.indexOf('\n  private ', persistStart + 1)
+  const persistResources = service.slice(persistStart, persistEnd)
+  assert.doesNotMatch(persistResources, /semanticType === 'image'[^\n]*return \[\]/)
+  assert.doesNotMatch(persistResources, /semanticType === 'voice'[^\n]*return \[\]/)
+  assert.match(persistResources, /voiceTranscriptionStatus:/)
+  assert.match(persistResources, /localId: message\.localId/)
+
+  const syncOrder = [
+    service.indexOf('this.persistMessageResources(fresh, createdAt, runId)'),
+    service.indexOf('await this.continuePendingImageOcr(runId)'),
+    service.indexOf('await this.continuePendingVoiceTranscripts(runId)'),
+    service.indexOf('await this.continuePendingImageSemantics(runId)')
+  ]
+  assert.ok(syncOrder.every(index => index >= 0))
+  assert.deepEqual([...syncOrder].sort((a, b) => a - b), syncOrder)
+})
+
+test('media migration progress distinguishes paused features from active retries', () => {
+  assert.match(service, /imageOcrMigration: \{[\s\S]*?enabled: Boolean\(this\.config\.get\('aiAssistantOcrImages'\)\)/)
+  assert.match(service, /voiceTranscriptionMigration: \{[\s\S]*?enabled: Boolean\(this\.config\.get\('autoTranscribeVoice'\)\)/)
+  assert.match(assistantPage, /图片 OCR 当前未启用/)
+  assert.match(assistantPage, /自动语音转写当前未启用/)
+  assert.match(assistantPage, /图片视觉理解当前未启用/)
 })

@@ -12009,6 +12009,110 @@ export class PersonalMemoryStore {
     })
   }
 
+  listPendingVoiceTranscriptResources(limit = 1, now = new Date()): any[] {
+    if (!this.db) return []
+    const boundedLimit = Math.max(1, Math.min(10, Math.floor(Number(limit) || 1)))
+    const rows = this.db.prepare(`
+      SELECT r.* FROM memory_resources r
+      LEFT JOIN resource_suppressions s ON s.resource_id=r.id
+      WHERE r.resource_type='voice' AND s.resource_id IS NULL
+        AND json_valid(r.metadata_json)=1
+        AND COALESCE(json_extract(r.metadata_json,'$.localId'),'')<>''
+        AND COALESCE(json_extract(r.metadata_json,'$.sessionId'),'')<>''
+        AND COALESCE(json_extract(r.metadata_json,'$.transcriptionSource'),'')=''
+        AND (
+          julianday(json_extract(r.metadata_json,'$.voiceTranscriptionNextAt')) IS NULL
+          OR julianday(json_extract(r.metadata_json,'$.voiceTranscriptionNextAt'))<=julianday(?)
+        )
+      ORDER BY r.updated_at ASC
+      LIMIT ?
+    `).all(now.toISOString(), boundedLimit) as any[]
+    return rows.flatMap(row => {
+      try {
+        return [{ ...row, metadata: JSON.parse(row.metadata_json || '{}') }]
+      } catch {
+        return []
+      }
+    })
+  }
+
+  getVoiceTranscriptMigrationStats(now = new Date()): any {
+    if (!this.db) return { total: 0, completed: 0, pending: 0, deferred: 0 }
+    const row = this.db.prepare(`
+      WITH eligible AS (
+        SELECT
+          COALESCE(json_extract(r.metadata_json,'$.transcriptionSource'),'') AS source,
+          json_extract(r.metadata_json,'$.voiceTranscriptionNextAt') AS next_at
+        FROM memory_resources r
+        LEFT JOIN resource_suppressions s ON s.resource_id=r.id
+        WHERE r.resource_type='voice' AND s.resource_id IS NULL
+          AND json_valid(r.metadata_json)=1
+          AND COALESCE(json_extract(r.metadata_json,'$.localId'),'')<>''
+          AND COALESCE(json_extract(r.metadata_json,'$.sessionId'),'')<>''
+      )
+      SELECT
+        COUNT(*) AS total,
+        COALESCE(SUM(CASE WHEN source<>'' THEN 1 ELSE 0 END),0) AS completed,
+        COALESCE(SUM(CASE WHEN source='' AND julianday(next_at)>julianday(?) THEN 1 ELSE 0 END),0) AS deferred
+      FROM eligible
+    `).get(now.toISOString()) as any
+    const total = Number(row?.total || 0)
+    const completed = Number(row?.completed || 0)
+    const deferred = Number(row?.deferred || 0)
+    return { total, completed, pending: Math.max(0, total - completed - deferred), deferred }
+  }
+
+  listPendingImageOcrResources(limit = 1, now = new Date()): any[] {
+    if (!this.db) return []
+    const boundedLimit = Math.max(1, Math.min(10, Math.floor(Number(limit) || 1)))
+    const rows = this.db.prepare(`
+      SELECT r.* FROM memory_resources r
+      LEFT JOIN resource_suppressions s ON s.resource_id=r.id
+      WHERE r.resource_type='image' AND s.resource_id IS NULL
+        AND json_valid(r.metadata_json)=1
+        AND COALESCE(json_extract(r.metadata_json,'$.mediaLocalPath'),'')<>''
+        AND COALESCE(json_extract(r.metadata_json,'$.ocrSource'),'')=''
+        AND (
+          julianday(json_extract(r.metadata_json,'$.imageOcrMigrationNextAt')) IS NULL
+          OR julianday(json_extract(r.metadata_json,'$.imageOcrMigrationNextAt'))<=julianday(?)
+        )
+      ORDER BY r.updated_at ASC
+      LIMIT ?
+    `).all(now.toISOString(), boundedLimit) as any[]
+    return rows.flatMap(row => {
+      try {
+        return [{ ...row, metadata: JSON.parse(row.metadata_json || '{}') }]
+      } catch {
+        return []
+      }
+    })
+  }
+
+  getImageOcrMigrationStats(now = new Date()): any {
+    if (!this.db) return { total: 0, completed: 0, pending: 0, deferred: 0 }
+    const row = this.db.prepare(`
+      WITH eligible AS (
+        SELECT
+          COALESCE(json_extract(r.metadata_json,'$.ocrSource'),'') AS source,
+          json_extract(r.metadata_json,'$.imageOcrMigrationNextAt') AS next_at
+        FROM memory_resources r
+        LEFT JOIN resource_suppressions s ON s.resource_id=r.id
+        WHERE r.resource_type='image' AND s.resource_id IS NULL
+          AND json_valid(r.metadata_json)=1
+          AND COALESCE(json_extract(r.metadata_json,'$.mediaLocalPath'),'')<>''
+      )
+      SELECT
+        COUNT(*) AS total,
+        COALESCE(SUM(CASE WHEN source<>'' THEN 1 ELSE 0 END),0) AS completed,
+        COALESCE(SUM(CASE WHEN source='' AND julianday(next_at)>julianday(?) THEN 1 ELSE 0 END),0) AS deferred
+      FROM eligible
+    `).get(now.toISOString()) as any
+    const total = Number(row?.total || 0)
+    const completed = Number(row?.completed || 0)
+    const deferred = Number(row?.deferred || 0)
+    return { total, completed, pending: Math.max(0, total - completed - deferred), deferred }
+  }
+
   repairLegacyResourceContentBudgets(limit = 100): any {
     if (!this.db) return { checked: 0, repaired: 0, truncated: 0, boundaryUnknown: 0 }
     const boundedLimit = Math.max(1, Math.min(500, Math.floor(Number(limit) || 100)))
