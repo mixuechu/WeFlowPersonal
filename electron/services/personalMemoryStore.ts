@@ -14128,6 +14128,176 @@ export class PersonalMemoryStore {
     }
   }
 
+  listTaskReminderPage(options: {
+    nowMs?: number
+    mutedKinds?: string[]
+    snoozedUntil?: Record<string, string>
+    reminderId?: string
+    offset?: number
+    limit?: number
+  } = {}): {
+    items: Array<{
+      id: string
+      taskId: string
+      kind: 'overdue' | 'due_soon' | 'waiting_stale' | 'blocked'
+      severity: 'high' | 'medium'
+      title: string
+      reason: string
+    }>
+    offset: number
+    nextOffset: number
+    limit: number
+    total: number
+    rawTotal: number
+    suppressed: number
+    hasMore: boolean
+    lastBoundaryMs: number
+    nextBoundaryMs: number | null
+    target: any | null
+  } {
+    const offset = Math.max(0, Math.min(1_000_000, Math.floor(Number(options.offset) || 0)))
+    const limit = Math.max(1, Math.min(100, Math.floor(Number(options.limit) || 8)))
+    const empty = {
+      items: [], offset, nextOffset: offset, limit, total: 0, rawTotal: 0,
+      suppressed: 0, hasMore: false, lastBoundaryMs: 0, nextBoundaryMs: null,
+      target: null
+    }
+    if (!this.db) return empty
+    const nowMs = Number.isFinite(Number(options.nowMs))
+      ? Math.max(0, Math.floor(Number(options.nowMs))) : Date.now()
+    const allowedKinds = new Set(['overdue', 'due_soon', 'waiting_stale', 'blocked'])
+    const mutedKinds = [...new Set((options.mutedKinds || [])
+      .map(String).filter(kind => allowedKinds.has(kind)))]
+    const snoozes = Object.entries(options.snoozedUntil || {}).flatMap(([id, until]) => {
+      const untilMs = Date.parse(String(until || ''))
+      return String(id || '').trim() && Number.isFinite(untilMs)
+        ? [{ id: String(id), untilMs }] : []
+    }).slice(0, 10_000)
+    const rows = this.db.prepare(`
+      WITH input(now_ms,muted_json,snooze_json,page_offset,page_limit,target_id) AS (VALUES(?,?,?,?,?,?)),
+      active_tasks AS (
+        SELECT task.*,
+          CASE
+            WHEN LENGTH(COALESCE(task.due,''))=10 AND task.due GLOB
+              '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]'
+              THEN UNIXEPOCH(task.due || ' 15:59:59')*1000+999
+            WHEN JULIANDAY(task.due) IS NOT NULL
+              THEN CAST(ROUND((JULIANDAY(task.due)-2440587.5)*86400000) AS INTEGER)
+            ELSE NULL
+          END AS due_ms,
+          CASE WHEN JULIANDAY(COALESCE(NULLIF(task.updated_at,''),task.created_at)) IS NOT NULL
+            THEN CAST(ROUND((JULIANDAY(COALESCE(NULLIF(task.updated_at,''),task.created_at))-2440587.5)*86400000) AS INTEGER)
+            ELSE NULL END AS waiting_since_ms
+        FROM task_directory task
+        WHERE task.classification='mine' AND task.status NOT IN ('done','cancelled')
+      ), reminders AS (
+        SELECT 'overdue:' || task.id AS id,task.id AS task_id,'overdue' AS kind,
+          'high' AS severity,task.title,
+          '截止时间 ' || task.due || ' 已经过期，任务仍为“' || task.status || '”' AS reason
+        FROM active_tasks task,input WHERE task.due_ms IS NOT NULL AND task.due_ms<input.now_ms
+        UNION ALL
+        SELECT 'due_soon:' || task.id,task.id,'due_soon','medium',task.title,
+          '将在 48 小时内到期：' || task.due
+        FROM active_tasks task,input WHERE task.due_ms IS NOT NULL AND task.due_ms>=input.now_ms
+          AND task.due_ms-input.now_ms<=172800000
+        UNION ALL
+        SELECT 'waiting_stale:' || task.id,task.id,'waiting_stale','medium',task.title,
+          '已等待 ' || CAST((input.now_ms-task.waiting_since_ms)/86400000 AS INTEGER) ||
+            ' 天，没有新的状态变化'
+        FROM active_tasks task,input
+        WHERE (task.status='waiting' OR task.task_kind IN ('waiting','delegated'))
+          AND task.waiting_since_ms IS NOT NULL AND input.now_ms-task.waiting_since_ms>=259200000
+        UNION ALL
+        SELECT 'blocked:' || task.id,task.id,'blocked','medium',task.title,
+          '仍依赖 ' || (
+            SELECT COUNT(*) FROM json_each(task.payload_json,'$.dependsOnIds') requested
+            JOIN task_directory dependency ON dependency.id=CAST(requested.value AS TEXT)
+            WHERE dependency.status NOT IN ('done','cancelled')
+          ) || ' 项未完成任务：' || COALESCE((
+            SELECT GROUP_CONCAT(title,'、') FROM (
+              SELECT dependency.title AS title
+              FROM json_each(task.payload_json,'$.dependsOnIds') requested
+              JOIN task_directory dependency ON dependency.id=CAST(requested.value AS TEXT)
+              WHERE dependency.status NOT IN ('done','cancelled')
+              ORDER BY CAST(requested.key AS INTEGER) LIMIT 2
+            )
+          ),'')
+        FROM active_tasks task WHERE EXISTS (
+          SELECT 1 FROM json_each(task.payload_json,'$.dependsOnIds') requested
+          JOIN task_directory dependency ON dependency.id=CAST(requested.value AS TEXT)
+          WHERE dependency.status NOT IN ('done','cancelled')
+        )
+      ), decorated AS (
+        SELECT reminder.*,
+          CASE WHEN EXISTS (
+            SELECT 1 FROM input,json_each(input.muted_json) muted
+            WHERE CAST(muted.value AS TEXT)=reminder.kind
+          ) OR EXISTS (
+            SELECT 1 FROM input,json_each(input.snooze_json) snooze
+            WHERE json_extract(snooze.value,'$.id')=reminder.id
+              AND CAST(json_extract(snooze.value,'$.untilMs') AS INTEGER)>input.now_ms
+          ) THEN 0 ELSE 1 END AS visible
+        FROM reminders reminder
+      ), ordered AS (
+        SELECT decorated.*,
+          ROW_NUMBER() OVER (ORDER BY CASE severity WHEN 'high' THEN 0 ELSE 1 END,id) AS item_rank
+        FROM decorated WHERE visible=1
+      ), boundaries(value) AS (
+        SELECT due_ms-172800000 FROM active_tasks WHERE due_ms IS NOT NULL
+        UNION ALL SELECT due_ms FROM active_tasks WHERE due_ms IS NOT NULL
+        UNION ALL SELECT waiting_since_ms+259200000 FROM active_tasks
+          WHERE waiting_since_ms IS NOT NULL AND
+            (status='waiting' OR task_kind IN ('waiting','delegated'))
+        UNION ALL SELECT CAST(json_extract(snooze.value,'$.untilMs') AS INTEGER)
+          FROM input,json_each(input.snooze_json) snooze
+      ), summary AS (
+        SELECT (SELECT COUNT(*) FROM decorated) AS raw_total,
+          (SELECT COUNT(*) FROM decorated WHERE visible=1) AS visible_total,
+          COALESCE((SELECT MAX(value) FROM boundaries,input WHERE value<=input.now_ms),0) AS last_boundary_ms,
+          (SELECT MIN(value) FROM boundaries,input WHERE value>input.now_ms) AS next_boundary_ms
+      )
+      SELECT 0 AS row_type,'' AS id,'' AS task_id,'' AS kind,'' AS severity,'' AS title,'' AS reason,
+        summary.raw_total,summary.visible_total,summary.last_boundary_ms,summary.next_boundary_ms,0 AS item_rank
+      FROM summary
+      UNION ALL
+      SELECT 1,ordered.id,ordered.task_id,ordered.kind,ordered.severity,ordered.title,ordered.reason,
+        summary.raw_total,summary.visible_total,summary.last_boundary_ms,summary.next_boundary_ms,ordered.item_rank
+      FROM ordered,summary,input
+      WHERE ordered.item_rank>input.page_offset
+        AND ordered.item_rank<=input.page_offset+input.page_limit
+      UNION ALL
+      SELECT 2,decorated.id,decorated.task_id,decorated.kind,decorated.severity,
+        decorated.title,decorated.reason,summary.raw_total,summary.visible_total,
+        summary.last_boundary_ms,summary.next_boundary_ms,0
+      FROM decorated,summary,input
+      WHERE decorated.visible=1 AND input.target_id!='' AND decorated.id=input.target_id
+      ORDER BY row_type,item_rank
+    `).all(
+      nowMs, JSON.stringify(mutedKinds), JSON.stringify(snoozes), offset, limit,
+      String(options.reminderId || '').trim()
+    ) as any[]
+    const summary = rows[0]
+    if (!summary) return empty
+    const total = Number(summary.visible_total || 0)
+    const toReminder = (row: any) => ({
+      id: String(row.id || ''), taskId: String(row.task_id || ''),
+      kind: String(row.kind || '') as 'overdue' | 'due_soon' | 'waiting_stale' | 'blocked',
+      severity: String(row.severity || '') as 'high' | 'medium',
+      title: String(row.title || ''), reason: String(row.reason || '')
+    })
+    const items = rows.filter(row => Number(row.row_type) === 1).map(toReminder)
+    const targetRow = rows.find(row => Number(row.row_type) === 2)
+    return {
+      items, offset, nextOffset: offset + items.length, limit, total,
+      rawTotal: Number(summary.raw_total || 0),
+      suppressed: Math.max(0, Number(summary.raw_total || 0) - total),
+      hasMore: offset + items.length < total,
+      lastBoundaryMs: Number(summary.last_boundary_ms || 0),
+      nextBoundaryMs: summary.next_boundary_ms == null ? null : Number(summary.next_boundary_ms),
+      target: targetRow ? toReminder(targetRow) : null
+    }
+  }
+
   getMineTaskOwnershipAuditSample(): {
     item: any | null
     total: number

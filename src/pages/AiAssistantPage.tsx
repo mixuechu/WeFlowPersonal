@@ -1429,7 +1429,8 @@ function AiAssistantPage() {
     total: number
     hasMore: boolean
     revision: string
-  }>({ items: [], total: 0, hasMore: false, revision: '' })
+    nextOffset: number
+  }>({ items: [], total: 0, hasMore: false, revision: '', nextOffset: 0 })
   const [taskReminderLoadingMore, setTaskReminderLoadingMore] = useState(false)
   const [taskReminderSaving, setTaskReminderSaving] = useState<Record<string, boolean>>({})
   const taskReminderMutationGates = useRef(new KeyedLatestRequestGates())
@@ -2548,7 +2549,8 @@ function AiAssistantPage() {
       items: dashboard?.taskReminders || [],
       total: Number(directory.total || 0),
       hasMore: Boolean(directory.hasMore),
-      revision: String(directory.revision || '')
+      revision: String(directory.revision || ''),
+      nextOffset: Number(directory.nextOffset ?? (dashboard?.taskReminders || []).length)
     })
   }, [dashboard?.taskReminderDirectory?.revision])
 
@@ -4038,7 +4040,7 @@ function AiAssistantPage() {
     setTaskReminderLoadingMore(true)
     try {
       const result = await window.electronAPI.aiAssistant.getTaskReminderPage({
-        offset: taskReminderPage.items.length,
+        offset: taskReminderPage.nextOffset,
         limit: 40,
         revision: taskReminderPage.revision
       })
@@ -4051,7 +4053,8 @@ function AiAssistantPage() {
         items: [...current.items, ...result.items],
         total: result.total,
         hasMore: result.hasMore,
-        revision: result.revision
+        revision: result.revision,
+        nextOffset: Number(result.nextOffset ?? (current.items.length + result.items.length))
       }))
     } catch (error: any) {
       setMessage(error?.message || '加载更多提醒失败')
@@ -11800,6 +11803,11 @@ function AiAssistantPage() {
               进行中待办按当前筛选从 SQLCipher 分页读取（已加载 {tasks.length} / {taskWorkset.total}）；
               已完成和已取消任务进入下方档案。原文证据和修改历史仅在展开单条任务时读取；
               单页操作令牌复用权威任务索引，不再为每次翻页重建全任务 ID 集合。
+            </small>}
+            {dashboard?.taskReminderDirectory?.directory === 'sqlcipher_paginated_complete' && <small className="assistant-evidence">
+              行动提醒由 SQLCipher 按逾期、48 小时临期、等待过久和未完成依赖实时计算，
+              当前可见 {dashboard.taskReminderDirectory.total || 0} 条；静音与稍后提醒在数据库分页前过滤。
+              目录缓存绑定任务与偏好版本，并会在下一个时间边界自动失效。
             </small>}
             {(!!taskReminders.length || reminderPreferences?.mutedKinds?.length) && <div className="assistant-task-reminders">
               {taskReminders.map(reminder => <article key={reminder.id} className={reminder.severity}>

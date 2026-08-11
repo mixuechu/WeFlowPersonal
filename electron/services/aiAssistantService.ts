@@ -156,11 +156,9 @@ import {
 } from './taskMutationPolicy.ts'
 import {
   applyReminderPreferences,
-  assertReminderPreferenceMutation,
   buildTaskReminders,
   findMatchingTask,
   normalizeReminderPreferences,
-  paginateTaskReminders,
   type ReminderPreferences,
   type TaskReminder
 } from './taskIntelligence'
@@ -883,6 +881,14 @@ export class AiAssistantService {
   private state: AssistantState = structuredClone(EMPTY_STATE)
   private taskStateIndex = new ReferenceArrayIndex<AssistantTask>(task => String(task.id))
   private projectDirectoryCountCache = { revision: '', total: 0, queries: 0, hits: 0 }
+  private taskReminderDirectoryCache: {
+    authorityKey: string
+    capturedAtMs: number
+    nextBoundaryMs: number | null
+    page: any
+    queries: number
+    hits: number
+  } | null = null
   private statePath = ''
   private stateEncryptionKey = ''
   private activeSync: Promise<any> | null = null
@@ -6037,16 +6043,7 @@ export class AiAssistantService {
     const mineTaskOwnershipAuditState = mineTaskOwnershipAudit.item
       ? taskStateIndex.get(String(mineTaskOwnershipAudit.item.id || ''))
       : null
-    const allTaskReminders = buildTaskReminders(tasks)
-    const reminderResult = applyReminderPreferences(allTaskReminders, this.state.reminderPreferences)
-    const taskReminderRevision = this.buildTaskReminderRevision(
-      reminderResult.visible,
-      taskWorksetStats.revision
-    )
-    const taskReminderPage = paginateTaskReminders(reminderResult.visible, {
-      revision: taskReminderRevision,
-      limit: 8
-    })
+    const taskReminderPage = this.getTaskReminderDashboardPage()
     const memoryStats = personalMemoryStore.getMemoryStats()
     const graphReviewRevision = revisions.graph
     const graphRevision = graphReviewRevision
@@ -6119,15 +6116,23 @@ export class AiAssistantService {
         total: taskReminderPage.total,
         revision: taskReminderPage.revision,
         hasMore: taskReminderPage.hasMore,
-        version: 'task-reminder-directory-v1',
-        directory: 'revision_paginated',
-        pageLimit: taskReminderPage.limit
+        nextOffset: taskReminderPage.nextOffset,
+        version: 'task-reminder-directory-v2',
+        directory: 'sqlcipher_paginated_complete',
+        pageLimit: taskReminderPage.limit,
+        nextBoundaryAt: taskReminderPage.nextBoundaryMs == null
+          ? '' : new Date(taskReminderPage.nextBoundaryMs).toISOString(),
+        cache: {
+          queries: this.taskReminderDirectoryCache?.queries || 0,
+          hits: this.taskReminderDirectoryCache?.hits || 0,
+          revisionBound: true
+        }
       },
       reminderPreferences: {
         ...this.state.reminderPreferences,
-        suppressed: reminderResult.suppressed,
-        total: allTaskReminders.length,
-        visibleTotal: reminderResult.visible.length,
+        suppressed: taskReminderPage.suppressed,
+        total: taskReminderPage.rawTotal,
+        visibleTotal: taskReminderPage.total,
         payloadLimit: taskReminderPage.limit
       },
       taskReviewFeedback: {
@@ -6380,13 +6385,10 @@ export class AiAssistantService {
     }
   }
 
-  private buildTaskReminderRevision(reminders: TaskReminder[], taskRevision: string): string {
+  private buildTaskReminderAuthorityKey(taskRevision: string): string {
     const preferenceIdentity = normalizeReminderPreferences(this.state.reminderPreferences)
     return crypto.createHash('sha256').update(JSON.stringify({
       taskRevision,
-      reminders: reminders.map(reminder => [
-        reminder.id, reminder.taskId, reminder.kind, reminder.severity, reminder.title, reminder.reason
-      ]),
       mutedKinds: preferenceIdentity.mutedKinds,
       snoozedUntil: preferenceIdentity.snoozedUntil,
       history: preferenceIdentity.history.map(item => [
@@ -6395,22 +6397,51 @@ export class AiAssistantService {
     })).digest('hex')
   }
 
-  getTaskReminderPage(options: any = {}): any {
-    const tasks = this.state.tasks.filter(task => task.classification === 'mine')
-    const reminders = applyReminderPreferences(
-      buildTaskReminders(tasks),
-      this.state.reminderPreferences
-    ).visible
-    const revision = this.buildTaskReminderRevision(
-      reminders,
-      personalMemoryStore.getTaskArchiveRevision()
-    )
-    return paginateTaskReminders(reminders, {
-      offset: Number(options?.offset || 0),
-      limit: Number(options?.limit || 8),
-      revision,
-      expectedRevision: String(options?.revision || '')
+  private queryTaskReminderPage(options: any = {}, now = new Date()): any {
+    const preferences = normalizeReminderPreferences(this.state.reminderPreferences)
+    const taskRevision = personalMemoryStore.getTaskArchiveRevision()
+    const authorityKey = this.buildTaskReminderAuthorityKey(taskRevision)
+    const offset = Math.max(0, Math.floor(Number(options?.offset) || 0))
+    const page = personalMemoryStore.listTaskReminderPage({
+      nowMs: now.getTime(), mutedKinds: preferences.mutedKinds,
+      snoozedUntil: preferences.snoozedUntil,
+      reminderId: String(options?.reminderId || ''),
+      offset, limit: Number(options?.limit || 8)
     })
+    const revision = crypto.createHash('sha256').update(JSON.stringify([
+      authorityKey, page.lastBoundaryMs
+    ])).digest('hex')
+    if (offset > 0 && String(options?.revision || '') !== revision) {
+      return {
+        items: [], offset, nextOffset: offset, limit: page.limit,
+        total: page.total, rawTotal: page.rawTotal, suppressed: page.suppressed,
+        hasMore: false, revision, stale: true, target: null,
+        nextBoundaryMs: page.nextBoundaryMs
+      }
+    }
+    return { ...page, revision, stale: false }
+  }
+
+  private getTaskReminderDashboardPage(now = new Date()): any {
+    const taskRevision = personalMemoryStore.getTaskArchiveRevision()
+    const authorityKey = this.buildTaskReminderAuthorityKey(taskRevision)
+    const nowMs = now.getTime()
+    const cached = this.taskReminderDirectoryCache
+    if (cached && cached.authorityKey === authorityKey && nowMs >= cached.capturedAtMs &&
+        (cached.nextBoundaryMs == null || nowMs < cached.nextBoundaryMs)) {
+      cached.hits += 1
+      return cached.page
+    }
+    const page = this.queryTaskReminderPage({ limit: 8 }, now)
+    this.taskReminderDirectoryCache = {
+      authorityKey, capturedAtMs: nowMs, nextBoundaryMs: page.nextBoundaryMs,
+      page, queries: Number(cached?.queries || 0) + 1, hits: Number(cached?.hits || 0)
+    }
+    return page
+  }
+
+  getTaskReminderPage(options: any = {}): any {
+    return this.queryTaskReminderPage(options)
   }
 
   getTaskHistoryPage(taskId: string, options: any = {}): any {
@@ -9649,17 +9680,21 @@ export class AiAssistantService {
     const allowedKinds = new Set<TaskReminder['kind']>(['overdue', 'due_soon', 'waiting_stale', 'blocked'])
     const allowedActions = new Set(['helpful', 'snooze', 'mute_kind', 'restore_kind'])
     if (!allowedKinds.has(input?.kind) || !allowedActions.has(input?.action)) throw new Error('无效的提醒反馈')
-    const preferences = normalizeReminderPreferences(this.state.reminderPreferences)
-    const visibleReminders = applyReminderPreferences(
-      buildTaskReminders(this.state.tasks.filter(task => task.classification === 'mine')),
-      preferences
-    ).visible
-    const currentRevision = this.buildTaskReminderRevision(
-      visibleReminders,
-      personalMemoryStore.getTaskArchiveRevision()
-    )
-    assertReminderPreferenceMutation(visibleReminders, input, currentRevision)
     const now = new Date()
+    const preferences = normalizeReminderPreferences(this.state.reminderPreferences)
+    const current = this.queryTaskReminderPage({
+      reminderId: String(input.reminderId || ''), limit: 1
+    }, now)
+    if (!input.expectedRevision || input.expectedRevision !== current.revision) {
+      throw new Error('提醒列表在展示后发生了变化，请刷新后重试')
+    }
+    if (input.action !== 'restore_kind') {
+      const target = current.target
+      if (!target || target.id !== String(input.reminderId || '') ||
+          target.taskId !== String(input.taskId || '') || target.kind !== input.kind) {
+        throw new Error('这条提醒已变化或不再需要处理，请刷新后重试')
+      }
+    }
     if (input.action === 'snooze') {
       if (!input.reminderId) throw new Error('缺少提醒 ID')
       preferences.snoozedUntil[input.reminderId] = new Date(now.getTime() + 24 * 60 * 60 * 1000).toISOString()

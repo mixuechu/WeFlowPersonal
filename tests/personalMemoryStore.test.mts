@@ -19974,6 +19974,74 @@ test('task reminder directory pages every reminder and rejects mixed revisions',
   assert.equal(stale.items.length, 0)
 })
 
+test('SQLCipher task reminder directory preserves reminder intelligence semantics', () => withStore(store => {
+  const tasks = [{
+    id: 'dependency-a', title: '准备设计稿', status: 'todo', classification: 'mine',
+    taskKind: 'action', createdAt: '2026-07-01T00:00:00.000Z', updatedAt: '2026-07-01T00:00:00.000Z'
+  }, {
+    id: 'dependency-b', title: '确认预算', status: 'doing', classification: 'mine',
+    taskKind: 'action', createdAt: '2026-07-01T00:00:00.000Z', updatedAt: '2026-07-01T00:00:00.000Z'
+  }, {
+    id: 'subject', title: '提交客户方案', status: 'waiting', classification: 'mine',
+    taskKind: 'delegated', due: '2026-07-20', updatedAt: '2026-07-20T00:00:00+08:00',
+    createdAt: '2026-07-19T00:00:00.000Z', dependsOnIds: ['dependency-a', 'dependency-b']
+  }, {
+    id: 'ignored', title: '别人的任务', status: 'todo', classification: 'others',
+    due: '2026-07-20', createdAt: '2026-07-01T00:00:00.000Z', updatedAt: '2026-07-01T00:00:00.000Z'
+  }]
+  store.syncTasks(tasks)
+  const now = new Date('2026-07-30T04:00:00.000Z')
+  const expected = buildTaskReminders(tasks.filter(task => task.classification === 'mine'), now)
+  const actual = store.listTaskReminderPage({ nowMs: now.getTime(), limit: 100 })
+  assert.deepEqual(actual.items, expected)
+  assert.equal(actual.rawTotal, expected.length)
+  assert.equal(actual.suppressed, 0)
+  assert.equal(actual.target, null)
+}))
+
+test('SQLCipher task reminder directory pages, suppresses, and resolves an off-page target', () => withStore(store => {
+  const tasks = Array.from({ length: 125 }, (_, index) => ({
+    id: `reminder-task-${String(index).padStart(3, '0')}`,
+    title: `提醒任务 ${index}`, status: 'todo', classification: 'mine', taskKind: 'action',
+    due: '2026-07-01', createdAt: '2026-06-01T00:00:00.000Z', updatedAt: '2026-06-01T00:00:00.000Z'
+  }))
+  store.syncTasks(tasks)
+  const nowMs = Date.parse('2026-08-11T04:00:00.000Z')
+  const first = store.listTaskReminderPage({ nowMs, limit: 40 })
+  const second = store.listTaskReminderPage({ nowMs, offset: first.nextOffset, limit: 40 })
+  const last = store.listTaskReminderPage({ nowMs, offset: second.nextOffset, limit: 100 })
+  assert.deepEqual([first.items.length, second.items.length, last.items.length], [40, 40, 45])
+  assert.equal(last.hasMore, false)
+  assert.equal(new Set([...first.items, ...second.items, ...last.items].map(item => item.id)).size, 125)
+
+  const targetId = 'overdue:reminder-task-124'
+  const snoozed = store.listTaskReminderPage({
+    nowMs, reminderId: targetId, limit: 1,
+    snoozedUntil: { 'overdue:reminder-task-001': '2026-08-12T04:00:00.000Z' }
+  })
+  assert.equal(snoozed.rawTotal, 125)
+  assert.equal(snoozed.total, 124)
+  assert.equal(snoozed.suppressed, 1)
+  assert.equal(snoozed.target?.id, targetId)
+  const muted = store.listTaskReminderPage({ nowMs, mutedKinds: ['overdue'], limit: 40 })
+  assert.equal(muted.rawTotal, 125)
+  assert.equal(muted.total, 0)
+  assert.equal(muted.suppressed, 125)
+}))
+
+test('SQLCipher task reminder date-only deadlines use the Shanghai end-of-day boundary', () => withStore(store => {
+  store.syncTasks([{
+    id: 'shanghai-day', title: '上海日期边界', status: 'todo', classification: 'mine',
+    taskKind: 'action', due: '2026-08-11', createdAt: '2026-08-01T00:00:00.000Z',
+    updatedAt: '2026-08-01T00:00:00.000Z'
+  }])
+  const before = store.listTaskReminderPage({ nowMs: Date.parse('2026-08-11T15:59:59.998Z') })
+  const after = store.listTaskReminderPage({ nowMs: Date.parse('2026-08-11T16:00:00.000Z') })
+  assert.equal(before.items.find(item => item.taskId === 'shanghai-day')?.kind, 'due_soon')
+  assert.equal(after.items.find(item => item.taskId === 'shanghai-day')?.kind, 'overdue')
+  assert.equal(before.nextBoundaryMs, Date.parse('2026-08-11T15:59:59.999Z'))
+}))
+
 test('reminder feedback is bound to the visible revision and exact reminder identity', () => {
   const reminders = [{
     id: 'overdue:task-a',

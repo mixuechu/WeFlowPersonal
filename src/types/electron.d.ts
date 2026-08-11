@@ -1809,11 +1809,15 @@ export interface ElectronAPI {
       getTaskReminderPage: (options?: any) => Promise<{
         items: any[]
         offset: number
+        nextOffset: number
         limit: number
         total: number
+        rawTotal: number
+        suppressed: number
         hasMore: boolean
         revision: string
         stale: boolean
+        nextBoundaryMs: number | null
       }>
       getTaskDependencyCandidates: (options?: any) => Promise<{
         items: any[]
