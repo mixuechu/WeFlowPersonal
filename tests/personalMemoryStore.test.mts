@@ -8286,6 +8286,15 @@ test('project directory counts, filters, and ranks trusted plus derived projects
       createdAt: new Date(1_710_000_000_000 + index * 1_000).toISOString(),
       updatedAt: new Date(1_710_000_000_000 + index * 1_000).toISOString(), evidence: []
     })))
+    tasks.push({
+      id: 'sql-directory-derived-title-only', title: '派生项目 4 只是标题提及', detail: '', project: '',
+      status: 'todo', classification: 'mine', priority: 'high', taskKind: 'action', due: '',
+      createdAt: '2026-08-10T00:00:00.000Z', updatedAt: '2026-08-10T00:00:00.000Z', evidence: []
+    }, {
+      id: 'sql-directory-derived-others', title: '他人的派生项目任务', detail: '', project: '派生项目 4',
+      status: 'todo', classification: 'others', priority: 'high', taskKind: 'action', due: '',
+      createdAt: '2026-08-10T00:00:00.000Z', updatedAt: '2026-08-10T00:00:00.000Z', evidence: []
+    })
     store.syncTasks(tasks)
 
     assert.equal(store.countProjectDirectory(), 150)
@@ -8308,8 +8317,8 @@ test('project directory counts, filters, and ranks trusted plus derived projects
     assert.equal(first.items[0].id, projects[4].id)
     assert.deepEqual(first.items[0], {
       id: projects[4].id, entityId: projects[4].id, name: '项目 4', summary: '',
-      inferred: false, phase: 'active', progress: 33, memberCount: 1,
-      activeTaskCount: 2, riskCount: 4, pendingReviewTotal: 1
+      inferred: false, phase: 'active', progress: 25, memberCount: 1,
+      activeTaskCount: 3, riskCount: 5, pendingReviewTotal: 1
     })
     const summary = store.listProjectDirectoryPage({ query: '特殊摘要', today: '2026-08-11' })
     assert.equal(summary.total, 1)
@@ -8317,6 +8326,18 @@ test('project directory counts, filters, and ranks trusted plus derived projects
     const completed = store.listProjectDirectoryPage({ phase: 'completed', today: '2026-08-11' })
     assert.equal(completed.total, 1)
     assert.equal(completed.items[0].id, projects[104].id)
+    const derived = store.getDerivedProjectIdentityById('derived:派生项目4')
+    assert.deepEqual(derived, {
+      id: 'derived:派生项目4', name: '派生项目 4', normalizedName: '派生项目4'
+    })
+    assert.equal(store.getDerivedProjectIdentityById('derived:项目4'), null)
+    assert.equal(store.getDerivedProjectIdentityById('derived:不存在'), null)
+    assert.equal(store.listProjectTaskPage(['派生项目4']).total, 2)
+    assert.equal(store.listProjectTaskPage(['派生项目4'], { explicitProjectOnly: true }).total, 1)
+    assert.equal(store.listProjectRiskPage(['派生项目4'], '2026-08-11').total, 0)
+    assert.equal(store.listProjectRiskPage(
+      ['派生项目4'], '2026-08-11', { explicitProjectOnly: true }
+    ).total, 0)
   }))
 
 test('project task pages preserve exact project assignment, all statuses, and revision safety', () => {

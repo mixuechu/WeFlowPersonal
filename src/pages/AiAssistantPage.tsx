@@ -17342,6 +17342,7 @@ function AiAssistantPage() {
             </div>}
             {!selectedProject.entityId && <div className="assistant-query-plan">
               这是尚未形成可信项目实体的派生项目；当前只展示明确写入待办“项目”字段的任务、进度和风险。
+              项目身份、完整任务目录和风险均由 SQLCipher 直接筛选，不会扫描全部历史待办。
               在你确认项目实体前，系统不会按名称猜测并吸收事实、关系或事件，以免把同名项目和普通消息混在一起。
             </div>}
             {selectedProject.entityId && <div className="assistant-query-plan">

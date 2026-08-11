@@ -14691,7 +14691,7 @@ export class PersonalMemoryStore {
 
   listProjectTaskPage(
     normalizedNamesInput: string[],
-    options: { offset?: number; limit?: number } = {}
+    options: { offset?: number; limit?: number; explicitProjectOnly?: boolean } = {}
   ): {
     items: any[]
     total: number
@@ -14716,6 +14716,7 @@ export class PersonalMemoryStore {
     const names = [...new Set((normalizedNamesInput || [])
       .map(value => String(value || '').trim()).filter(Boolean))].slice(0, 100)
     if (!this.db || !names.length) return empty
+    const explicitProjectOnly = options.explicitProjectOnly ? 1 : 0
     const normalize = (expression: string) =>
       `LOWER(REPLACE(REPLACE(REPLACE(REPLACE(COALESCE(${expression},''),' ',''),CHAR(9),''),CHAR(10),''),CHAR(13),''))`
     const matches = `
@@ -14723,7 +14724,7 @@ export class PersonalMemoryStore {
       WHERE task.classification='mine' AND EXISTS (
         SELECT 1 FROM json_each(?) requested
         WHERE ${normalize('task.project')}=CAST(requested.value AS TEXT)
-          OR (
+          OR (?=0 AND
             ${normalize('task.project')}='' AND LENGTH(CAST(requested.value AS TEXT))>=3
             AND (
               INSTR(${normalize('task.title')},CAST(requested.value AS TEXT))>0
@@ -14742,13 +14743,13 @@ export class PersonalMemoryStore {
         SUM((SELECT COUNT(*) FROM search_document_evidence evidence
           WHERE evidence.document_id='task:' || task.id)) AS evidence_count
       ${matches}
-    `).get(namesJson) as any
+    `).get(namesJson, explicitProjectOnly) as any
     const total = Number(counts?.task_count || 0)
     const rows = this.db.prepare(`
       SELECT task.id,task.payload_json ${matches}
       ORDER BY task.updated_at DESC,task.id ASC
       LIMIT ? OFFSET ?
-    `).all(namesJson, limit, offset) as Array<{ id: string; payload_json: string }>
+    `).all(namesJson, explicitProjectOnly, limit, offset) as Array<{ id: string; payload_json: string }>
     const taskIds = rows.map(row => String(row.id))
     const evidenceByTask = new Map<string, { evidence: any[]; total: number }>(
       taskIds.map(id => [id, { evidence: [], total: 0 }]))
@@ -14794,7 +14795,7 @@ export class PersonalMemoryStore {
       SELECT * FROM ranked
       ORDER BY timestamp DESC,source_id,session_id,message_id DESC
       LIMIT ?
-    `).all(namesJson, 50) as any[]
+    `).all(namesJson, explicitProjectOnly, 50) as any[]
     const aggregateEvidence = aggregateRows.map(row => ({
       sourceId: String(row.source_id || 'legacy'),
       messageId: String(row.message_id || ''),
@@ -14854,6 +14855,37 @@ export class PersonalMemoryStore {
         (SELECT COUNT(*) FROM derived) AS count
     `).get() as any
     return Number(row?.count || 0)
+  }
+
+  getDerivedProjectIdentityById(projectIdInput: string): {
+    id: string
+    name: string
+    normalizedName: string
+  } | null {
+    if (!this.db) return null
+    const id = String(projectIdInput || '').trim()
+    if (!id.startsWith('derived:')) return null
+    const normalizedName = id.slice('derived:'.length)
+    if (!normalizedName) return null
+    const normalize = (expression: string) =>
+      `LOWER(REPLACE(REPLACE(REPLACE(REPLACE(COALESCE(${expression},''),' ',''),CHAR(9),''),CHAR(10),''),CHAR(13),''))`
+    const row = this.db.prepare(`
+      WITH trusted_names AS (
+        SELECT ${normalize('entity.canonical_name')} AS normalized_name
+        FROM entities entity
+        WHERE entity.type='project' AND entity.trust_status='confirmed' AND entity.deleted_at IS NULL
+        UNION
+        SELECT ${normalize('alias.value')}
+        FROM aliases alias JOIN entities entity ON entity.id=alias.entity_id
+        WHERE entity.type='project' AND entity.trust_status='confirmed' AND entity.deleted_at IS NULL
+      )
+      SELECT MIN(TRIM(task.project)) AS name
+      FROM task_directory task
+      WHERE task.classification='mine' AND ${normalize('task.project')}=?
+        AND NOT EXISTS (SELECT 1 FROM trusted_names trusted WHERE trusted.normalized_name=?)
+    `).get(normalizedName, normalizedName) as any
+    const name = String(row?.name || '').trim()
+    return name ? { id, name, normalizedName } : null
   }
 
   listProjectDirectoryPage(options: {
@@ -15032,7 +15064,7 @@ export class PersonalMemoryStore {
   listProjectRiskPage(
     normalizedNamesInput: string[],
     todayInput: string,
-    options: { offset?: number; limit?: number } = {}
+    options: { offset?: number; limit?: number; explicitProjectOnly?: boolean } = {}
   ): { items: any[]; total: number; hasMore: boolean; offset: number; nextOffset: number; limit: number } {
     const offset = Math.max(0, Math.min(1_000_000, Math.floor(Number(options.offset) || 0)))
     const limit = Math.max(1, Math.min(100, Math.floor(Number(options.limit) || 40)))
@@ -15042,6 +15074,7 @@ export class PersonalMemoryStore {
     const today = /^\d{4}-\d{2}-\d{2}$/.test(String(todayInput || ''))
       ? String(todayInput) : ''
     if (!this.db || !names.length || !today) return empty
+    const explicitProjectOnly = options.explicitProjectOnly ? 1 : 0
     const normalize = (expression: string) =>
       `LOWER(REPLACE(REPLACE(REPLACE(REPLACE(COALESCE(${expression},''),' ',''),CHAR(9),''),CHAR(10),''),CHAR(13),''))`
     const ctes = `
@@ -15051,7 +15084,7 @@ export class PersonalMemoryStore {
           AND EXISTS (
             SELECT 1 FROM json_each(?) requested
             WHERE ${normalize('task.project')}=CAST(requested.value AS TEXT)
-              OR (
+              OR (?=0 AND
                 ${normalize('task.project')}='' AND LENGTH(CAST(requested.value AS TEXT))>=3
                 AND (
                   INSTR(${normalize('task.title')},CAST(requested.value AS TEXT))>0
@@ -15087,14 +15120,14 @@ export class PersonalMemoryStore {
     `
     const namesJson = JSON.stringify(names)
     const total = Number((this.db.prepare(`${ctes} SELECT COUNT(*) AS count FROM risks`)
-      .get(namesJson, today) as any)?.count || 0)
+      .get(namesJson, explicitProjectOnly, today) as any)?.count || 0)
     const rows = this.db.prepare(`
       ${ctes}
       SELECT kind,severity,task_id,title,detail FROM risks
       ORDER BY CASE severity WHEN 'high' THEN 0 WHEN 'medium' THEN 1 ELSE 2 END,
         kind COLLATE NOCASE,title COLLATE NOCASE,task_id
       LIMIT ? OFFSET ?
-    `).all(namesJson, today, limit, offset) as any[]
+    `).all(namesJson, explicitProjectOnly, today, limit, offset) as any[]
     return {
       items: rows.map(row => ({
         kind: String(row.kind || ''),

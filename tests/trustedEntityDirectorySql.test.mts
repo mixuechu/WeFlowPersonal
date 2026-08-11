@@ -47,7 +47,8 @@ test('all trusted directory reads and selection gates use SQLCipher authority', 
   const projectEnd = serviceSource.indexOf('\n  getEventTimeline(', projectStart)
   const projectSource = serviceSource.slice(projectStart, projectEnd)
   assert.match(projectSource, /personalMemoryStore\.getGraphEntityById\(/)
-  assert.match(projectSource, /entities: projectEntity \? \[projectEntity\] : this\.state\.graph\.entities/)
+  assert.match(projectSource, /personalMemoryStore\.getDerivedProjectIdentityById\(id\)/)
+  assert.doesNotMatch(projectSource, /this\.state\.graph\.entities/)
   assert.match(projectSource, /personalMemoryStore\.listGraphEntityTaskSearchNames\(/)
   for (const [startMarker, endMarker] of [
     ['  async searchMemoryHybrid(', '\n  async searchMemoryWithTrustedScope('],

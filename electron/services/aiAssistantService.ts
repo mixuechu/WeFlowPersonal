@@ -311,9 +311,7 @@ import {
   PROJECT_EVIDENCE_LIMIT
 } from '../../shared/evidencePayload'
 import {
-  buildProjectInsight,
-  paginateProjectRisks,
-  paginateProjectTasks
+  buildProjectInsight
 } from './projectInsights'
 import { buildDashboardRevisions, buildGraphWorkspaceRevision } from './dashboardRevisions'
 import { attachLocalImageOcr, attachLocalVoiceTranscript, recoverMessageSemantics } from './messageSemanticRecovery'
@@ -7125,25 +7123,23 @@ export class AiAssistantService {
   getProjectWorkspace(projectId: string): any {
     const id = String(projectId || '').trim()
     if (!id) throw new Error('请选择项目')
+    const taskRevision = this.getProjectDirectoryRevision()
     const projectEntity = personalMemoryStore.getGraphEntityById(id, {
       trust: 'confirmed', type: 'project'
     })
+    const derivedProject = projectEntity ? null : personalMemoryStore.getDerivedProjectIdentityById(id)
+    if (!projectEntity && !derivedProject) throw new Error('项目不存在或已经不在当前可信视图中')
     const memoryFeed = projectEntity
       ? personalMemoryStore.getEntityMemory(id, 1, true)
       : { claims: [], events: [] }
-    const boundedProjectRelations = projectEntity
-      ? []
-      : this.state.graph.relations
-    const project = buildProjectInsight({
-      entities: projectEntity ? [projectEntity] : this.state.graph.entities,
-      relations: boundedProjectRelations,
-      claims: projectEntity ? [] : memoryFeed.claims,
-      events: projectEntity ? [] : memoryFeed.events,
-      tasks: projectEntity
-        ? []
-        : this.state.tasks.filter(task => task.classification === 'mine')
-    }, id)
-    if (!project) throw new Error('项目不存在或已经不在当前可信视图中')
+    const project = projectEntity ? buildProjectInsight({
+      entities: [projectEntity], relations: [], claims: [], events: [], tasks: []
+    }, id) : {
+      id, entityId: null, name: derivedProject!.name, summary: '', inferred: true,
+      members: [], tasks: [], risks: [], milestones: [], decisions: [], claims: [],
+      pendingReview: { relations: [], claims: [], milestones: [], decisions: [], total: 0 },
+      evidence: [], evidenceTotal: 0
+    }
     const reviewCounts = projectEntity
       ? personalMemoryStore.getProjectReviewCounts([id])[id]
       : null
@@ -7166,24 +7162,24 @@ export class AiAssistantService {
     const authoritativeMemoryReviewCount = reviewCounts
       ? Number(reviewCounts.total || 0)
       : loadedMemoryReviewCount
-    const taskRevision = this.getProjectDirectoryRevision()
     const projectNames = projectEntity
-      ? personalMemoryStore.listGraphEntityTaskSearchNames(id, { projectOnly: true }) : []
-    const taskPage: any = projectEntity
-      ? {
-          ...personalMemoryStore.listProjectTaskPage(projectNames, { limit: 40 }),
-          revision: taskRevision,
-          stale: false
-        }
-      : paginateProjectTasks(project, { limit: 40 }, taskRevision)
+      ? personalMemoryStore.listGraphEntityTaskSearchNames(id, { projectOnly: true })
+      : [derivedProject!.normalizedName]
+    const taskPage: any = {
+      ...personalMemoryStore.listProjectTaskPage(projectNames, {
+        limit: 40, explicitProjectOnly: Boolean(derivedProject)
+      }),
+      revision: taskRevision,
+      stale: false
+    }
     const riskRevision = `${taskRevision}:day=${shanghaiDate()}`
-    const riskPage: any = projectEntity
-      ? {
-          ...personalMemoryStore.listProjectRiskPage(projectNames, shanghaiDate(), { limit: 40 }),
-          revision: riskRevision,
-          stale: false
-        }
-      : paginateProjectRisks(project, { limit: 40 }, riskRevision)
+    const riskPage: any = {
+      ...personalMemoryStore.listProjectRiskPage(projectNames, shanghaiDate(), {
+        limit: 40, explicitProjectOnly: Boolean(derivedProject)
+      }),
+      revision: riskRevision,
+      stale: false
+    }
     const memberPage = projectEntity
       ? personalMemoryStore.listProjectMemberPage({ projectId: id, limit: 40 })
       : {
@@ -7193,16 +7189,14 @@ export class AiAssistantService {
           revision: '',
           stale: false
         }
-    if (projectEntity && this.getProjectDirectoryRevision() !== taskRevision) {
+    if (this.getProjectDirectoryRevision() !== taskRevision) {
       throw new Error('项目在读取期间已有更新，请重试')
     }
-    const projectEvidence = projectEntity
-      ? boundedEvidencePayload(
-          [...(project.evidence || []), ...(taskPage.aggregateEvidence || [])],
-          PROJECT_EVIDENCE_LIMIT,
-          Number(project.evidenceTotal || 0) + Number(taskPage.taskEvidenceTotal || 0)
-        )
-      : {}
+    const projectEvidence = boundedEvidencePayload(
+      [...(project.evidence || []), ...(taskPage.aggregateEvidence || [])],
+      PROJECT_EVIDENCE_LIMIT,
+      Number(project.evidenceTotal || 0) + Number(taskPage.taskEvidenceTotal || 0)
+    )
     const taskIndex = this.getTaskStateIndex()
     const progressTotal = Number(taskPage.progressTotal || 0)
     const completedTaskTotal = Number(taskPage.completedTotal || 0)
@@ -7210,18 +7204,16 @@ export class AiAssistantService {
       project: {
         ...project,
         ...projectEvidence,
-        ...(projectEntity ? {
-          phase: progressTotal && completedTaskTotal === progressTotal
+        phase: progressTotal && completedTaskTotal === progressTotal
             ? 'completed'
             : Number(taskPage.doingTotal || 0) > 0 ? 'active'
               : progressTotal ? 'planned' : 'discovery',
-          progress: progressTotal
+        progress: progressTotal
             ? Math.round(completedTaskTotal / progressTotal * 100)
             : 0,
-          activeTaskCount: Number(taskPage.activeTotal || 0),
-          completedTaskCount: completedTaskTotal,
-          riskCount: Number(riskPage.total || 0)
-        } : {}),
+        activeTaskCount: Number(taskPage.activeTotal || 0),
+        completedTaskCount: completedTaskTotal,
+        riskCount: Number(riskPage.total || 0),
         pendingReview: {
           ...project.pendingReview,
           total: authoritativeMemoryReviewCount,
@@ -7231,12 +7223,10 @@ export class AiAssistantService {
         },
         claimTotal: projectEntity
           ? Number((memoryFeed as any).claimTotal || 0)
-          : Number(project.claims?.length || 0),
+          : 0,
         eventTotal: projectEntity
           ? Number((memoryFeed as any).eventTotal || 0)
-          : Number((project.milestones?.length || 0) + (project.decisions?.length || 0) +
-            (project.pendingReview?.milestones?.length || 0) +
-            (project.pendingReview?.decisions?.length || 0)),
+          : 0,
         memoryTruncated: false,
         tasks: taskPage.items.map((item: any) => {
           const task = taskIndex.get(String(item.id || ''))
@@ -7271,8 +7261,8 @@ export class AiAssistantService {
         claimLimit: 0,
         eventLimit: 0,
         loadedOnDemand: true,
-        taskDirectory: projectEntity ? 'sqlcipher_paginated_40' : 'derived_task_field_paginated_40',
-        riskDirectory: projectEntity ? 'sqlcipher_union_paginated_40' : 'derived_in_memory_paginated_40',
+        taskDirectory: projectEntity ? 'sqlcipher_paginated_40' : 'sqlcipher_explicit_project_paginated_40',
+        riskDirectory: projectEntity ? 'sqlcipher_union_paginated_40' : 'sqlcipher_explicit_project_union_paginated_40',
         structuredMemoryDirectory: projectEntity ? 'authoritative_paginated' : 'blocked_until_entity_confirmed'
       }
     }
@@ -7301,56 +7291,18 @@ export class AiAssistantService {
     const projectEntity = personalMemoryStore.getGraphEntityById(id, {
       trust: 'confirmed', type: 'project'
     })
-    if (projectEntity) {
-      if (offset > 0 && String(options?.revision || '').trim() !== revision) {
-        return { items: [], total: 0, hasMore: false, nextOffset: offset, revision, stale: true }
-      }
-      const page = personalMemoryStore.listProjectTaskPage(
-        personalMemoryStore.listGraphEntityTaskSearchNames(id, { projectOnly: true }), {
-          limit: Number(options?.limit || 40),
-          offset
-        }
-      )
-      const completedRevision = this.getProjectDirectoryRevision()
-      if (completedRevision !== revision) {
-        return {
-          items: [], total: 0, hasMore: false, nextOffset: offset,
-          revision: completedRevision, stale: true
-        }
-      }
-      const taskIndex = this.getTaskStateIndex()
-      return {
-        ...page,
-        revision,
-        stale: false,
-        items: page.items.flatMap(item => {
-          const task = taskIndex.get(String(item.id || ''))
-          return task ? [{
-            ...task,
-            ...boundedEvidencePayload(
-              item.evidence,
-              MEMORY_CARD_EVIDENCE_LIMIT,
-              item.evidenceTotal
-            ),
-            mutationToken: buildTaskMutationToken(task)
-          }] : []
-        })
-      }
+    const derivedProject = projectEntity ? null : personalMemoryStore.getDerivedProjectIdentityById(id)
+    if (!projectEntity && !derivedProject) throw new Error('项目不存在或已经不在当前目录中')
+    if (offset > 0 && String(options?.revision || '').trim() !== revision) {
+      return { items: [], total: 0, hasMore: false, nextOffset: offset, revision, stale: true }
     }
-    const project = buildProjectInsight({
-      entities: this.state.graph.entities,
-      relations: [],
-      claims: [],
-      events: [],
-      tasks: this.state.tasks.filter(task => task.classification === 'mine')
-    }, id)
-    if (!project) throw new Error('项目不存在或已经不在当前目录中')
-    const page = paginateProjectTasks(project, {
-      limit: Number(options?.limit || 40),
-      offset,
-      revision: String(options?.revision || '')
-    }, revision)
-    if (page.stale) return page
+    const names = projectEntity
+      ? personalMemoryStore.listGraphEntityTaskSearchNames(id, { projectOnly: true })
+      : [derivedProject!.normalizedName]
+    const page = personalMemoryStore.listProjectTaskPage(names, {
+      limit: Number(options?.limit || 40), offset,
+      explicitProjectOnly: Boolean(derivedProject)
+    })
     const completedRevision = this.getProjectDirectoryRevision()
     if (completedRevision !== revision) {
       return {
@@ -7360,9 +7312,15 @@ export class AiAssistantService {
     }
     return {
       ...page,
-      items: page.items.map((item: any) => {
+      revision,
+      stale: false,
+      items: page.items.flatMap((item: any) => {
         const task = this.getTaskStateIndex().get(String(item.id || ''))
-        return task ? { ...item, mutationToken: buildTaskMutationToken(task) } : item
+        return task ? [{
+          ...task,
+          ...boundedEvidencePayload(item.evidence, MEMORY_CARD_EVIDENCE_LIMIT, item.evidenceTotal),
+          mutationToken: buildTaskMutationToken(task)
+        }] : []
       })
     }
   }
@@ -7376,38 +7334,18 @@ export class AiAssistantService {
     const projectEntity = personalMemoryStore.getGraphEntityById(id, {
       trust: 'confirmed', type: 'project'
     })
-    if (projectEntity) {
-      if (offset > 0 && String(options?.revision || '').trim() !== revision) {
-        return { items: [], total: 0, hasMore: false, nextOffset: offset, revision, stale: true }
-      }
-      const page = personalMemoryStore.listProjectRiskPage(
-        personalMemoryStore.listGraphEntityTaskSearchNames(id, { projectOnly: true }), shanghaiDate(), {
-          limit: Number(options?.limit || 40),
-          offset
-        }
-      )
-      const completedRevision = `${this.getProjectDirectoryRevision()}:day=${shanghaiDate()}`
-      return completedRevision === revision
-        ? { ...page, revision, stale: false }
-        : {
-            items: [], total: 0, hasMore: false, nextOffset: offset,
-            revision: completedRevision, stale: true
-          }
+    const derivedProject = projectEntity ? null : personalMemoryStore.getDerivedProjectIdentityById(id)
+    if (!projectEntity && !derivedProject) throw new Error('项目不存在或已经不在当前目录中')
+    if (offset > 0 && String(options?.revision || '').trim() !== revision) {
+      return { items: [], total: 0, hasMore: false, nextOffset: offset, revision, stale: true }
     }
-    const project = buildProjectInsight({
-      entities: this.state.graph.entities,
-      relations: [],
-      claims: [],
-      events: [],
-      tasks: this.state.tasks.filter(task => task.classification === 'mine')
-    }, id)
-    if (!project) throw new Error('项目不存在或已经不在当前目录中')
-    const page = paginateProjectRisks(project, {
-      limit: Number(options?.limit || 40),
-      offset,
-      revision: String(options?.revision || '')
-    }, revision)
-    if (page.stale) return page
+    const names = projectEntity
+      ? personalMemoryStore.listGraphEntityTaskSearchNames(id, { projectOnly: true })
+      : [derivedProject!.normalizedName]
+    const page = personalMemoryStore.listProjectRiskPage(names, shanghaiDate(), {
+      limit: Number(options?.limit || 40), offset,
+      explicitProjectOnly: Boolean(derivedProject)
+    })
     const completedRevision = `${this.getProjectDirectoryRevision()}:day=${shanghaiDate()}`
     if (completedRevision !== revision) {
       return {
@@ -7415,7 +7353,7 @@ export class AiAssistantService {
         revision: completedRevision, stale: true
       }
     }
-    return page
+    return { ...page, revision, stale: false }
   }
 
   getEventTimeline(options: any = {}): any {
