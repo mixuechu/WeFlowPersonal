@@ -10140,29 +10140,31 @@ export class PersonalMemoryStore {
           INSERT INTO evidence(
             relation_id,source_id,message_id,session_id,timestamp,sender,excerpt,evidence_role
           )
+          WITH ranked AS (
+            SELECT *,ROW_NUMBER() OVER (
+              PARTITION BY after_relation_id,source_id,session_id,message_id
+              ORDER BY LENGTH(excerpt) DESC,excerpt DESC,before_relation_id DESC
+            ) AS excerpt_rank,
+            ROW_NUMBER() OVER (
+              PARTITION BY after_relation_id,source_id,session_id,message_id
+              ORDER BY CASE WHEN sender!='' THEN 1 ELSE 0 END DESC,
+                timestamp DESC,LENGTH(sender) DESC,sender DESC,before_relation_id DESC
+            ) AS sender_rank
+            FROM identity_merge_relation_evidence
+            WHERE merge_id=? AND after_relation_id!=''
+          )
           SELECT after_relation_id,source_id,message_id,session_id,
-            timestamp,sender,excerpt,evidence_role
-          FROM identity_merge_relation_evidence
-          WHERE merge_id=? AND before_relation_id=? AND after_relation_id!=''
-          ON CONFLICT(relation_id,source_id,session_id,message_id)
-            WHERE relation_id IS NOT NULL DO UPDATE SET
-            timestamp=MAX(evidence.timestamp,excluded.timestamp),
-            sender=CASE WHEN excluded.sender!='' AND evidence.sender=''
-              THEN excluded.sender ELSE evidence.sender END,
-            excerpt=CASE WHEN LENGTH(excluded.excerpt)>LENGTH(evidence.excerpt)
-              THEN excluded.excerpt ELSE evidence.excerpt END,
-            evidence_role=CASE
-              WHEN (CASE excluded.evidence_role
-                WHEN 'contradiction' THEN 3 WHEN 'direct' THEN 2
-                WHEN 'indirect' THEN 1 ELSE 0 END) >
-                (CASE evidence.evidence_role
-                  WHEN 'contradiction' THEN 3 WHEN 'direct' THEN 2
-                  WHEN 'indirect' THEN 1 ELSE 0 END)
-              THEN excluded.evidence_role ELSE evidence.evidence_role END
+            MAX(timestamp),MAX(CASE WHEN sender_rank=1 THEN sender END),
+            MAX(CASE WHEN excerpt_rank=1 THEN excerpt END),
+            CASE MAX(CASE evidence_role
+              WHEN 'contradiction' THEN 3 WHEN 'direct' THEN 2
+              WHEN 'indirect' THEN 1 ELSE 0 END)
+              WHEN 3 THEN 'contradiction' WHEN 2 THEN 'direct'
+              WHEN 1 THEN 'indirect' ELSE 'direct' END
+          FROM ranked
+          GROUP BY after_relation_id,source_id,session_id,message_id
         `)
-        for (const route of routes) {
-          applyArchivedEvidence.run(mergeId, route.before_relation_id)
-        }
+        applyArchivedEvidence.run(mergeId)
       }
       const mergeEvidenceRevertId = Number(options.identityMergeRevert?.mergeId || 0)
       if (mergeEvidenceRevertId) {
@@ -22841,13 +22843,33 @@ export class PersonalMemoryStore {
     const id = Number(mergeId || 0)
     const row = this.db.prepare(`
       WITH archived AS (
-        SELECT after_relation_id,source_id,session_id,message_id
+        SELECT before_relation_id,after_relation_id,source_id,session_id,message_id,
+          timestamp,sender,excerpt,evidence_role,
+          ROW_NUMBER() OVER (
+            PARTITION BY after_relation_id,source_id,session_id,message_id
+            ORDER BY LENGTH(excerpt) DESC,excerpt DESC,before_relation_id DESC
+          ) AS excerpt_rank,
+          ROW_NUMBER() OVER (
+            PARTITION BY after_relation_id,source_id,session_id,message_id
+            ORDER BY CASE WHEN sender!='' THEN 1 ELSE 0 END DESC,
+              timestamp DESC,LENGTH(sender) DESC,sender DESC,before_relation_id DESC
+          ) AS sender_rank
         FROM identity_merge_relation_evidence WHERE merge_id=?
       ), expected AS (
-        SELECT DISTINCT after_relation_id,source_id,session_id,message_id
+        SELECT after_relation_id,source_id,session_id,message_id,
+          MAX(timestamp) AS timestamp,
+          MAX(CASE WHEN sender_rank=1 THEN sender END) AS sender,
+          MAX(CASE WHEN excerpt_rank=1 THEN excerpt END) AS excerpt,
+          CASE MAX(CASE evidence_role
+            WHEN 'contradiction' THEN 3 WHEN 'direct' THEN 2
+            WHEN 'indirect' THEN 1 ELSE 0 END)
+            WHEN 3 THEN 'contradiction' WHEN 2 THEN 'direct'
+            WHEN 1 THEN 'indirect' ELSE 'direct' END AS evidence_role
         FROM archived WHERE after_relation_id!=''
+        GROUP BY after_relation_id,source_id,session_id,message_id
       ), current AS (
-        SELECT relation_id AS after_relation_id,source_id,session_id,message_id
+        SELECT relation_id AS after_relation_id,source_id,session_id,message_id,
+          timestamp,sender,excerpt,evidence_role
         FROM evidence WHERE relation_id IN (
           SELECT DISTINCT after_relation_id FROM archived WHERE after_relation_id!=''
         )

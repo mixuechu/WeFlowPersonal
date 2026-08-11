@@ -227,7 +227,7 @@ export function inspectIdentityMergeRevert(input: {
     reason = '身份消歧决定在合并后已有变化'
   } else if (input.relationEvidenceLineage?.present &&
     !input.relationEvidenceLineage.matches) {
-    reason = '合并关系的原文载体在合并后已有变化'
+    reason = '合并关系的原文载体或内容在合并后已有变化'
   }
   return {
     safe: !reason,

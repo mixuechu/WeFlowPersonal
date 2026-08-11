@@ -16047,6 +16047,29 @@ test('identity merge evidence lineage folds and restores relations without JSON 
     currentActiveRows: 3
   })
   const database = (store as any).db
+  const reapplyLineage = () => store.syncGraph({
+    entities: [entities[1], entities[2]],
+    relations: [mergedRelation],
+    reviewQueue: []
+  } as any, '', {
+    identityMergeEvidenceApply: { mergeId: recorded.mergeId }
+  })
+  for (const mutation of [
+    { column: 'timestamp', value: 99 },
+    { column: 'sender', value: '后来补充的发送者' },
+    { column: 'excerpt', value: '同一个载体后来补充的新正文' },
+    { column: 'evidence_role', value: 'contradiction' }
+  ]) {
+    database.prepare(`
+      UPDATE evidence SET ${mutation.column}=?
+      WHERE relation_id=? AND source_id='wechat'
+        AND session_id='shared' AND message_id='same'
+    `).run(mutation.value, targetRelationId)
+    assert.equal(store.inspectMergeRelationEvidenceLineage(recorded.mergeId).matches, false,
+      `同一载体的 ${mutation.column} 漂移必须阻止撤销`)
+    reapplyLineage()
+    assert.equal(store.inspectMergeRelationEvidenceLineage(recorded.mergeId).matches, true)
+  }
   database.prepare(`
     DELETE FROM evidence WHERE relation_id=? AND source_id='mail'
       AND session_id='target' AND message_id='target-only'
@@ -16057,13 +16080,7 @@ test('identity merge evidence lineage folds and restores relations without JSON 
     ) VALUES(?,?,?,?,?,?,?,'direct')
   `).run(targetRelationId, 'mail', 'target', 'replacement', 4, '目标', '同数量替换原文')
   assert.equal(store.inspectMergeRelationEvidenceLineage(recorded.mergeId).matches, false)
-  store.syncGraph({
-    entities: [entities[1], entities[2]],
-    relations: [mergedRelation],
-    reviewQueue: []
-  } as any, '', {
-    identityMergeEvidenceApply: { mergeId: recorded.mergeId }
-  })
+  reapplyLineage()
   assert.equal(store.inspectMergeRelationEvidenceLineage(recorded.mergeId).matches, true)
 
   store.syncGraph({
