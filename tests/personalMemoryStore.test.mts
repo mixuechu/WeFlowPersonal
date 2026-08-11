@@ -25276,6 +25276,73 @@ test('full deletion audit archive paginates safely and survives a SQLCipher reop
   }
 })
 
+test('maintenance audit is privacy-minimal, idempotent, filterable, and revision safe', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'weflow-maintenance-audit-'))
+  const databasePath = join(directory, 'memory.sqlite')
+  const key = randomBytes(32)
+  const store = new PersonalMemoryStore()
+  try {
+    store.initialize(databasePath, key)
+    const initialRevision = store.getMemoryMaintenanceAuditRevision()
+    assert.equal(store.recordMemoryMaintenanceAudit({
+      eventId: '11111111-1111-4111-8111-111111111111',
+      operation: 'backup_create', trigger: 'automatic', artifactCount: 2,
+      bytes: 4_096, completedAt: '2026-08-10T01:00:00.000Z'
+    }), true)
+    assert.equal(store.recordMemoryMaintenanceAudit({
+      eventId: '11111111-1111-4111-8111-111111111111',
+      operation: 'backup_create', trigger: 'automatic', artifactCount: 2,
+      bytes: 4_096, completedAt: '2026-08-10T01:00:00.000Z'
+    }), false)
+    store.recordMemoryMaintenanceAudit({
+      eventId: '22222222-2222-4222-8222-222222222222',
+      operation: 'bundle_export', trigger: 'manual', artifactCount: 1,
+      bytes: 8_192, portable: true, completedAt: '2026-08-11T02:00:00.000Z'
+    })
+    store.recordMemoryMaintenanceAudit({
+      eventId: '33333333-3333-4333-8333-333333333333',
+      operation: 'backup_trash_discard', trigger: 'recovery', artifactCount: 2,
+      bytes: 2_048, completedAt: '2026-08-11T03:00:00.000Z'
+    })
+    assert.notEqual(store.getMemoryMaintenanceAuditRevision(), initialRevision)
+    const page = store.listMemoryMaintenanceAuditPage({ limit: 2 })
+    assert.equal(page.total, 3)
+    assert.equal(page.items.length, 2)
+    assert.equal(page.hasMore, true)
+    assert.deepEqual(page.counts, { all: 3, manual: 1, automatic: 1, recovery: 1 })
+    assert.equal(JSON.stringify(page.items).includes('event_id'), false)
+    assert.equal(JSON.stringify(page.items).includes(databasePath), false)
+    const filtered = store.listMemoryMaintenanceAuditPage({
+      operation: 'bundle_export', trigger: 'manual',
+      from: '2026-08-11T00:00:00.000Z', to: '2026-08-11T23:59:59.999Z'
+    })
+    assert.equal(filtered.total, 1)
+    assert.equal(filtered.items[0].portable, true)
+    assert.deepEqual(store.getMemoryMaintenanceAuditStats(), {
+      total: 3, latestId: 3, latestCompletedAt: '2026-08-11T03:00:00.000Z'
+    })
+    store.recordMemoryMaintenanceAudit({
+      eventId: '44444444-4444-4444-8444-444444444444',
+      operation: 'backup_restore', trigger: 'manual', artifactCount: 2, bytes: 1
+    })
+    assert.equal(store.listMemoryMaintenanceAuditPage({
+      limit: 2, offset: 2, revision: page.revision
+    }).stale, true)
+    const health = store.getMemoryMaintenanceAuditRevisionHealth()
+    assert.equal(health.expectedTriggers, 3)
+    assert.equal(health.validTriggers, 3)
+    assert.equal(health.healthy, true)
+    assert.throws(() => store.recordMemoryMaintenanceAudit({
+      eventId: '55555555-5555-4555-8555-555555555555',
+      operation: 'not_allowed' as any, trigger: 'manual'
+    }))
+  } finally {
+    store.close()
+    key.fill(0)
+    rmSync(directory, { recursive: true, force: true })
+  }
+})
+
 test('personal memory migrates atomically to SQLCipher and keeps encrypted backups restorable', () => {
   const directory = mkdtempSync(join(tmpdir(), 'weflow-memory-cipher-test-'))
   const databasePath = join(directory, 'memory.sqlite')

@@ -69,7 +69,7 @@ test('memory growth is a first-class pageable archive with current dossier navig
   assert.match(service, /stat\.dev.*stat\.ino.*stat\.size.*stat\.mtimeMs.*stat\.ctimeMs/)
   assert.match(service, /restoreStatus: assessment\?\.restorable \? 'restorable' : 'invalid'/)
   assert.match(service, /restoreFailure: assessment\?\.restorable \? null/)
-  assert.match(service, /createMemoryBackup\(\[\], \{ allowDuringActiveSync: true \}\)/)
+  assert.match(service, /createMemoryBackup\(\[\], \{[\s\S]*?allowDuringActiveSync: true,[\s\S]*?auditTrigger: 'automatic'[\s\S]*?\}\)/)
   assert.match(page, /完成后才能创建数据库与状态一致的联合快照/)
   assert.match(page, /memoryDiagnostics\.backupPairIntegrity\.databaseOnly/)
   assert.match(page, /数据库与 AI 状态联合快照配对状态/)

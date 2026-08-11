@@ -546,6 +546,18 @@ type MemoryMaintenanceLease = {
   startedAt: string
 }
 
+type MemoryMaintenanceAuditEvent = {
+  eventId: string
+  operation: 'backup_create' | 'backup_restore' | 'backup_delete' | 'bundle_export'
+    | 'bundle_import' | 'import_staging_discard' | 'backup_trash_restore'
+    | 'backup_trash_discard'
+  trigger: 'manual' | 'automatic' | 'recovery'
+  artifactCount: number
+  bytes: number
+  portable: boolean | null
+  completedAt: string
+}
+
 const MEMORY_MAINTENANCE_LABELS: Record<MemoryMaintenanceKind, string> = {
   backup_create: '创建个人记忆联合备份',
   backup_restore: '恢复个人记忆快照',
@@ -616,6 +628,12 @@ type AssistantState = {
   taskLifecycleAuditResume: {
     candidateIds: string[]
     nextOffset: number
+  }
+  maintenanceAuditOutbox: {
+    pending: MemoryMaintenanceAuditEvent[]
+    delivered: number
+    lastDeliveredAt: string
+    lastError: string
   }
   cursor: {
     lastMessageTimestamp: number
@@ -715,6 +733,9 @@ const EMPTY_STATE: AssistantState = {
     startedAt: '', finishedAt: '', lastError: ''
   },
   taskLifecycleAuditResume: { candidateIds: [], nextOffset: 0 },
+  maintenanceAuditOutbox: {
+    pending: [], delivered: 0, lastDeliveredAt: '', lastError: ''
+  },
   cursor: {
     lastMessageTimestamp: 0,
     recentMessageIds: [],
@@ -907,6 +928,10 @@ export class AiAssistantService {
 
   private beginMemoryMaintenance(kind: MemoryMaintenanceKind): MemoryMaintenanceLease {
     if (this.disposed) throw new Error('AI 助理正在安全退出，不能开始个人记忆维护')
+    this.flushMemoryMaintenanceAuditOutbox()
+    if (this.state.maintenanceAuditOutbox.pending.length >= 256) {
+      throw new Error('个人记忆维护审计等待写入的记录已满；请先检查数据库健康后再操作')
+    }
     if (this.memoryMaintenanceLease) {
       throw new Error(`当前正在${MEMORY_MAINTENANCE_LABELS[this.memoryMaintenanceLease.kind]}，请完成后再重试`)
     }
@@ -923,6 +948,52 @@ export class AiAssistantService {
 
   private finishMemoryMaintenance(lease: MemoryMaintenanceLease): void {
     if (this.memoryMaintenanceLease?.token === lease.token) this.memoryMaintenanceLease = null
+  }
+
+  private flushMemoryMaintenanceAuditOutbox(): void {
+    const outbox = this.state?.maintenanceAuditOutbox
+    if (!outbox?.pending?.length) return
+    let delivered = 0
+    try {
+      for (const event of outbox.pending) {
+        personalMemoryStore.recordMemoryMaintenanceAudit(event)
+        delivered += 1
+      }
+      outbox.pending.splice(0, delivered)
+      outbox.delivered += delivered
+      outbox.lastDeliveredAt = new Date().toISOString()
+      outbox.lastError = ''
+      try { this.saveState() } catch (error) {
+        outbox.lastError = sanitizeDiagnosticText(error)
+      }
+    } catch (error) {
+      if (delivered > 0) outbox.pending.splice(0, delivered)
+      outbox.delivered += delivered
+      outbox.lastError = sanitizeDiagnosticText(error)
+      try { this.saveState() } catch (stateError) {
+        outbox.lastError = sanitizeDiagnosticText(stateError)
+      }
+    }
+  }
+
+  private recordMemoryMaintenanceCompletion(
+    input: Omit<MemoryMaintenanceAuditEvent, 'eventId' | 'completedAt' | 'portable'> & {
+      portable?: boolean | null
+    }
+  ): void {
+    const event: MemoryMaintenanceAuditEvent = {
+      ...input,
+      portable: input.portable ?? null,
+      eventId: crypto.randomUUID(),
+      completedAt: new Date().toISOString()
+    }
+    this.state.maintenanceAuditOutbox.pending.push(event)
+    // Persist the privacy-minimal event before attempting SQLCipher delivery so a
+    // completed filesystem operation cannot lose its audit record on power loss.
+    try { this.saveState() } catch (error) {
+      this.state.maintenanceAuditOutbox.lastError = sanitizeDiagnosticText(error)
+    }
+    this.flushMemoryMaintenanceAuditOutbox()
   }
 
   private runMemoryMaintenanceSync<T>(
@@ -1358,6 +1429,7 @@ export class AiAssistantService {
     // derived search layer once more before any scheduler or query can observe
     // the startup state.
     personalMemoryStore.reconcileStructuredSearchAfterAuthorityCommit()
+    this.flushMemoryMaintenanceAuditOutbox()
     this.lastSchedulerTickAt = Date.now()
     this.scheduler = setInterval(() => void this.schedulerTick(), 60_000)
     this.scheduler.unref()
@@ -1564,6 +1636,17 @@ export class AiAssistantService {
           nextOffset: Math.max(0, Math.floor(
             Number(loaded.taskLifecycleAuditResume?.nextOffset) || 0
           ))
+        },
+        maintenanceAuditOutbox: {
+          pending: (Array.isArray(loaded.maintenanceAuditOutbox?.pending)
+            ? loaded.maintenanceAuditOutbox.pending : [])
+            .filter((item: any) => item && /^[a-f0-9-]{16,64}$/i.test(String(item.eventId || '')))
+            .slice(-256),
+          delivered: Math.max(0, Math.floor(
+            Number(loaded.maintenanceAuditOutbox?.delivered) || 0
+          )),
+          lastDeliveredAt: String(loaded.maintenanceAuditOutbox?.lastDeliveredAt || ''),
+          lastError: sanitizeDiagnosticText(loaded.maintenanceAuditOutbox?.lastError || '')
         },
         tasks: Array.isArray(loaded.tasks)
           ? sanitizeTasksForPersistence(loaded.tasks.map((task: AssistantTask) =>
@@ -4921,7 +5004,10 @@ export class AiAssistantService {
     this.state.cursor.lastAutomaticBackupAttemptAt = now.toISOString()
     this.saveState()
     try {
-      const backup = this.createMemoryBackup([], { allowDuringActiveSync: true })
+      const backup = this.createMemoryBackup([], {
+        allowDuringActiveSync: true,
+        auditTrigger: 'automatic'
+      })
       const completedAt = new Date().toISOString()
       this.state.cursor.lastAutomaticBackupDate = policy.date
       this.state.cursor.lastAutomaticBackupAt = completedAt
@@ -5950,6 +6036,7 @@ export class AiAssistantService {
     const assistantArchiveStats = personalMemoryStore.getAssistantArchiveStats()
     const taskReviewArchiveStats = personalMemoryStore.getTaskReviewArchiveStats()
     const memoryDeletionArchiveStats = personalMemoryStore.getMemoryDeletionAuditStats()
+    const memoryMaintenanceArchiveStats = personalMemoryStore.getMemoryMaintenanceAuditStats()
     const memoryChangeLogHealth = personalMemoryStore.getMemoryChangeLogHealth()
     const mergeHistoryArchiveStats = personalMemoryStore.getMergeHistoryArchiveStats()
     const identityMergeSnapshotStorage = personalMemoryStore.getIdentityMergeSnapshotStorageStats()
@@ -6098,6 +6185,16 @@ export class AiAssistantService {
         revision: revisions.memoryDeletion,
         version: 'memory-deletion-audit-v1',
         directory: 'paginated_without_content'
+      },
+      memoryMaintenanceArchive: {
+        total: memoryMaintenanceArchiveStats.total,
+        revision: personalMemoryStore.getMemoryMaintenanceAuditRevision(),
+        version: 'memory-maintenance-audit-v1',
+        directory: 'privacy_minimal_revision_paginated',
+        pendingDelivery: this.state.maintenanceAuditOutbox.pending.length,
+        delivered: this.state.maintenanceAuditOutbox.delivered,
+        lastDeliveredAt: this.state.maintenanceAuditOutbox.lastDeliveredAt,
+        lastError: this.state.maintenanceAuditOutbox.lastError
       },
       memoryGrowth: {
         total: memoryChangeLogHealth.total,
@@ -6492,6 +6589,25 @@ export class AiAssistantService {
         ? options.reason
         : 'all',
       query: String(options?.query || ''),
+      from: String(options?.from || ''),
+      to: String(options?.to || ''),
+      limit: Number(options?.limit || 40),
+      offset: Number(options?.offset || 0),
+      revision: String(options?.revision || '')
+    })
+  }
+
+  getMemoryMaintenanceAuditPage(options: any = {}): any {
+    const operations = [
+      'backup_create', 'backup_restore', 'backup_delete', 'bundle_export',
+      'bundle_import', 'import_staging_discard', 'backup_trash_restore',
+      'backup_trash_discard', 'all'
+    ]
+    return personalMemoryStore.listMemoryMaintenanceAuditPage({
+      operation: operations.includes(options?.operation) ? options.operation : 'all',
+      trigger: ['manual', 'automatic', 'recovery', 'all'].includes(options?.trigger)
+        ? options.trigger
+        : 'all',
       from: String(options?.from || ''),
       to: String(options?.to || ''),
       limit: Number(options?.limit || 40),
@@ -7409,6 +7525,14 @@ export class AiAssistantService {
       memoryBackupTrashConflicts: this.getMemoryBackupTrashConflictCatalog(),
       memoryRestoreRecovery: this.memoryRestoreRecovery,
       memoryMaintenance: this.getMemoryMaintenanceStatus(),
+      memoryMaintenanceAuditDelivery: {
+        version: 'memory-maintenance-audit-outbox-v1',
+        pending: this.state.maintenanceAuditOutbox.pending.length,
+        delivered: this.state.maintenanceAuditOutbox.delivered,
+        lastDeliveredAt: this.state.maintenanceAuditOutbox.lastDeliveredAt,
+        lastError: this.state.maintenanceAuditOutbox.lastError,
+        healthy: this.state.maintenanceAuditOutbox.pending.length === 0
+      },
       backgroundWrites: describeBackgroundWriteState({
         syncing: Boolean(this.activeSync),
         syncPhase: this.activeSyncPhase,
@@ -7896,10 +8020,25 @@ export class AiAssistantService {
 
   createMemoryBackup(
     protectedPaths: string[] = [],
-    options: { allowDuringActiveSync?: boolean } = {}
+    options: { allowDuringActiveSync?: boolean; auditTrigger?: 'manual' | 'automatic' } = {}
   ): any {
-    return this.runMemoryMaintenanceSync('backup_create', lease =>
-      this.createMemoryBackupWithLease(protectedPaths, { ...options, maintenanceLease: lease }))
+    return this.runMemoryMaintenanceSync('backup_create', lease => {
+      const result = this.createMemoryBackupWithLease(
+        protectedPaths,
+        { ...options, maintenanceLease: lease }
+      )
+      this.recordMemoryMaintenanceCompletion({
+        operation: 'backup_create',
+        trigger: options.auditTrigger || 'manual',
+        artifactCount: result.stateBackupPath ? 2 : 1,
+        bytes: Number(result.bytes || 0) + (
+          result.stateBackupPath && existsSync(result.stateBackupPath)
+            ? statSync(result.stateBackupPath).size
+            : 0
+        )
+      })
+      return result
+    })
   }
 
   private createMemoryBackupWithLease(
@@ -8027,7 +8166,14 @@ export class AiAssistantService {
       this.assertMemoryReplacementIdle()
       const inspected = this.inspectMemoryBackupForRestore(path)
       assertMemoryBackupRestoreConfirmation(inspected.identity, input)
-      return this.applyMemoryBackup(inspected.preview.path, inspected.restoredState, lease)
+      const result = this.applyMemoryBackup(inspected.preview.path, inspected.restoredState, lease)
+      this.recordMemoryMaintenanceCompletion({
+        operation: 'backup_restore',
+        trigger: 'manual',
+        artifactCount: inspected.preview?.hasState === false ? 1 : 2,
+        bytes: Number(inspected.preview?.bytes || 0)
+      })
+      return result
     })
   }
 
@@ -8094,13 +8240,18 @@ export class AiAssistantService {
           })
           await shell.trashItem(stagingDirectory)
           this.jointBackupValidationCache.delete(databasePath)
-          return {
+          const result = {
             success: true,
             artifactCount: staged.artifacts.length,
             bytes: Number(inspected.preview.databaseBytes || 0) +
               Number(inspected.preview.stateBytes || 0),
             recoverableFromTrash: true
           }
+          this.recordMemoryMaintenanceCompletion({
+            operation: 'backup_delete', trigger: 'manual',
+            artifactCount: result.artifactCount, bytes: result.bytes
+          })
+          return result
         } catch (error) {
           if (staged && !rollbackStagedMemoryBackupTrash(staged)) {
             throw new Error('移动到废纸篓失败，快照仍保留在备份目录的安全暂存区；重启应用会自动恢复')
@@ -8201,22 +8352,32 @@ export class AiAssistantService {
           }))
         })
         if (!restored) throw new Error('恢复原位置未完全完成；现场已保留，下次启动会再次尝试恢复')
-        return {
+        const result = {
           success: true,
           action,
           artifactCount: inspected.preview.artifactCount,
           bytes: inspected.preview.bytes,
           restoredWithoutOverwrite: true
         }
+        this.recordMemoryMaintenanceCompletion({
+          operation: 'backup_trash_restore', trigger: 'recovery',
+          artifactCount: result.artifactCount, bytes: result.bytes
+        })
+        return result
       }
       await shell.trashItem(inspected.internal.stagingDirectory)
-      return {
+      const result = {
         success: true,
         action,
         artifactCount: inspected.preview.artifactCount,
         bytes: inspected.preview.bytes,
         recoverableFromTrash: true
       }
+      this.recordMemoryMaintenanceCompletion({
+        operation: 'backup_trash_discard', trigger: 'recovery',
+        artifactCount: result.artifactCount, bytes: result.bytes
+      })
+      return result
     })
   }
 
@@ -8296,12 +8457,17 @@ export class AiAssistantService {
           stagingDirectory
         })
         await shell.trashItem(stagingDirectory)
-        return {
+        const result = {
           success: true,
           artifactCount: staged.artifacts.length,
           bytes: inspected.preview.bytes,
           recoverableFromTrash: true
         }
+        this.recordMemoryMaintenanceCompletion({
+          operation: 'import_staging_discard', trigger: 'recovery',
+          artifactCount: result.artifactCount, bytes: result.bytes
+        })
+        return result
       } catch (error) {
         if (staged && !rollbackStagedMemoryBackupTrash(staged)) {
           throw new Error('清理导入暂存冲突失败，文件仍在安全暂存区；重启应用会自动恢复')
@@ -8450,13 +8616,18 @@ export class AiAssistantService {
         })
         payload = encryptPortableMemoryBundle(archive, passphrase)
         const published = writePrivateFileAtomically(outputPath, payload)
-        return {
+        const result = {
           success: true,
           path: outputPath,
           bytes: published.bytes,
           sha256: published.sha256,
           manifest
         }
+        this.recordMemoryMaintenanceCompletion({
+          operation: 'bundle_export', trigger: 'manual',
+          artifactCount: 1, bytes: published.bytes, portable: true
+        })
+        return result
       } finally {
         payload?.fill(0)
         archive?.fill(0)
@@ -8598,10 +8769,15 @@ export class AiAssistantService {
           sourceKey,
           encodeEncryptedDurableJson(JSON.parse(stateText), this.stateEncryptionKey)
         )
-        return {
+        const result = {
           ...this.applyMemoryBackup(imported.path, undefined, lease),
           importedFrom: bundlePath
         }
+        this.recordMemoryMaintenanceCompletion({
+          operation: 'bundle_import', trigger: 'manual',
+          artifactCount: 1, bytes: Number(inspected.databaseBytes || 0), portable: inspected.portable
+        })
+        return result
       } finally {
         if (sourceKey) sourceKey.fill(0)
       }

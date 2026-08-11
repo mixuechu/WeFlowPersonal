@@ -337,6 +337,17 @@ function formatBytes(value: number): string {
   return `${(bytes / 1024 / 1024).toFixed(1)} MB`
 }
 
+const memoryMaintenanceOperationLabel = (operation: string): string => ({
+  backup_create: '创建联合快照',
+  backup_restore: '恢复联合快照',
+  backup_delete: '快照移到废纸篓',
+  bundle_export: '导出迁移包',
+  bundle_import: '导入迁移包',
+  import_staging_discard: '清理导入暂存冲突',
+  backup_trash_restore: '暂存快照恢复原位',
+  backup_trash_discard: '暂存快照移到废纸篓'
+} as Record<string, string>)[operation] || '未知维护操作'
+
 function memorySourceLabels(item: { source_id?: string; source_ids?: string }): string {
   const ids = [...new Set(String(item.source_ids || item.source_id || '')
     .split(',').map(value => value.trim()).filter(Boolean))]
@@ -1336,6 +1347,16 @@ function AiAssistantPage() {
   const [memoryDeletionLoadingMore, setMemoryDeletionLoadingMore] = useState(false)
   const [memoryDeletionArchiveRefreshKey, setMemoryDeletionArchiveRefreshKey] = useState(0)
   const memoryDeletionArchiveGate = useRef(new LatestRequestGate())
+  const [memoryMaintenanceArchive, setMemoryMaintenanceArchive] = useState<any>({
+    items: [], total: 0, hasMore: false, counts: {}, revision: '', loading: false
+  })
+  const [memoryMaintenanceOperation, setMemoryMaintenanceOperation] = useState('all')
+  const [memoryMaintenanceTrigger, setMemoryMaintenanceTrigger] = useState('all')
+  const [memoryMaintenanceFrom, setMemoryMaintenanceFrom] = useState('')
+  const [memoryMaintenanceTo, setMemoryMaintenanceTo] = useState('')
+  const [memoryMaintenanceLoadingMore, setMemoryMaintenanceLoadingMore] = useState(false)
+  const [memoryMaintenanceRefreshKey, setMemoryMaintenanceRefreshKey] = useState(0)
+  const memoryMaintenanceArchiveGate = useRef(new LatestRequestGate())
   const [memoryGrowth, setMemoryGrowth] = useState<any>({
     items: [], total: 0, hasMore: false, counts: {}, revision: '',
     trackedSince: '', loading: false
@@ -2012,6 +2033,21 @@ function AiAssistantPage() {
   }), [
     memoryDeletionKind, memoryDeletionReason, memoryDeletionQuery,
     memoryDeletionFrom, memoryDeletionTo
+  ])
+  const memoryMaintenanceOptions = useMemo(() => ({
+    operation: memoryMaintenanceOperation,
+    trigger: memoryMaintenanceTrigger,
+    from: memoryMaintenanceFrom
+      ? new Date(`${memoryMaintenanceFrom}T00:00:00+08:00`).toISOString()
+      : undefined,
+    to: memoryMaintenanceTo
+      ? new Date(`${memoryMaintenanceTo}T23:59:59.999+08:00`).toISOString()
+      : undefined,
+    limit: 40,
+    offset: 0
+  }), [
+    memoryMaintenanceOperation, memoryMaintenanceTrigger,
+    memoryMaintenanceFrom, memoryMaintenanceTo
   ])
   const memoryGrowthOptions = useMemo(() => ({
     kind: memoryGrowthKind,
@@ -2826,6 +2862,46 @@ function AiAssistantPage() {
   }, [
     showDiagnostics, memoryDeletionOptions,
     dashboard?.memoryDeletionArchive?.revision, memoryDeletionArchiveRefreshKey
+  ])
+
+  useEffect(() => {
+    if (!showDiagnostics) {
+      memoryMaintenanceArchiveGate.current.invalidate()
+      return
+    }
+    const request = memoryMaintenanceArchiveGate.current.begin()
+    setMemoryMaintenanceLoadingMore(false)
+    setMemoryMaintenanceArchive((current: any) => ({
+      ...current, items: [], loading: true, error: undefined
+    }))
+    void window.electronAPI.aiAssistant.getMemoryMaintenanceAuditPage(
+      memoryMaintenanceOptions
+    ).then(result => {
+      if (!memoryMaintenanceArchiveGate.current.isCurrent(request)) return
+      if (result.stale) {
+        window.setTimeout(() => {
+          if (memoryMaintenanceArchiveGate.current.isCurrent(request)) {
+            setMemoryMaintenanceRefreshKey(value => value + 1)
+          }
+        }, 250)
+        return
+      }
+      setMemoryMaintenanceArchive({ ...result, loading: false })
+    }).catch(error => {
+      if (!memoryMaintenanceArchiveGate.current.isCurrent(request)) return
+      setMemoryMaintenanceArchive({
+        items: [], total: 0, hasMore: false, counts: {}, loading: false,
+        error: error?.message || String(error)
+      })
+    })
+    return () => {
+      if (memoryMaintenanceArchiveGate.current.isCurrent(request)) {
+        memoryMaintenanceArchiveGate.current.invalidate()
+      }
+    }
+  }, [
+    showDiagnostics, memoryMaintenanceOptions,
+    dashboard?.memoryMaintenanceArchive?.revision, memoryMaintenanceRefreshKey
   ])
 
   useEffect(() => {
@@ -5325,6 +5401,46 @@ function AiAssistantPage() {
     } finally {
       if (memoryDeletionArchiveGate.current.isCurrent(request)) {
         setMemoryDeletionLoadingMore(false)
+      }
+    }
+  }
+
+  const loadMoreMemoryMaintenanceAudit = async () => {
+    if (memoryMaintenanceLoadingMore || !memoryMaintenanceArchive.hasMore) return
+    const request = memoryMaintenanceArchiveGate.current.begin()
+    setMemoryMaintenanceLoadingMore(true)
+    setMemoryMaintenanceArchive((current: any) => ({ ...current, error: undefined }))
+    try {
+      const result = await window.electronAPI.aiAssistant.getMemoryMaintenanceAuditPage({
+        ...memoryMaintenanceOptions,
+        offset: memoryMaintenanceArchive.items.length,
+        limit: 40,
+        revision: memoryMaintenanceArchive.revision
+      })
+      if (!memoryMaintenanceArchiveGate.current.isCurrent(request)) return
+      if (result.stale) {
+        setMessage('个人记忆维护审计已有变化，已自动从第一页刷新')
+        setMemoryMaintenanceRefreshKey(value => value + 1)
+        return
+      }
+      setMemoryMaintenanceArchive((current: any) => ({
+        ...result,
+        items: [
+          ...current.items,
+          ...result.items.filter((item: any) =>
+            !current.items.some((known: any) => known.id === item.id))
+        ],
+        loading: false
+      }))
+    } catch (error: any) {
+      if (memoryMaintenanceArchiveGate.current.isCurrent(request)) {
+        const errorMessage = error?.message || String(error)
+        setMemoryMaintenanceArchive((current: any) => ({ ...current, error: errorMessage }))
+        setMessage(errorMessage)
+      }
+    } finally {
+      if (memoryMaintenanceArchiveGate.current.isCurrent(request)) {
+        setMemoryMaintenanceLoadingMore(false)
       }
     }
   }
@@ -18671,6 +18787,86 @@ function AiAssistantPage() {
                 </div>
               </details>
             </div>}
+            <div className="assistant-deletion-audit">
+              <header>
+                <ShieldCheck size={15} />
+                <span>
+                  <b>个人记忆维护审计</b>
+                  <small>
+                    {memoryMaintenanceArchive.error && !memoryMaintenanceArchive.items.length
+                      ? '读取失败；当前不能据此判断维护历史。'
+                      : `${memoryMaintenanceArchive.total} 条匹配 · 全部 ${Number(memoryMaintenanceArchive.counts?.all || dashboard?.memoryMaintenanceArchive?.total || 0)} 条。`}
+                    只保存固定操作类型、方向、触发来源、文件数、空间与时间；不保存路径、文件名、口令、哈希或记忆正文。
+                  </small>
+                </span>
+              </header>
+              <div className="assistant-task-filters">
+                <select value={memoryMaintenanceOperation}
+                  onChange={event => setMemoryMaintenanceOperation(event.target.value)}>
+                  <option value="all">所有维护操作</option>
+                  <option value="backup_create">创建联合快照</option>
+                  <option value="backup_restore">恢复联合快照</option>
+                  <option value="backup_delete">快照移到废纸篓</option>
+                  <option value="bundle_export">导出迁移包</option>
+                  <option value="bundle_import">导入迁移包</option>
+                  <option value="import_staging_discard">清理导入暂存冲突</option>
+                  <option value="backup_trash_restore">暂存快照恢复原位</option>
+                  <option value="backup_trash_discard">暂存快照移到废纸篓</option>
+                </select>
+                <select value={memoryMaintenanceTrigger}
+                  onChange={event => setMemoryMaintenanceTrigger(event.target.value)}>
+                  <option value="all">所有触发来源</option>
+                  <option value="manual">本人操作</option>
+                  <option value="automatic">系统自动</option>
+                  <option value="recovery">故障恢复</option>
+                </select>
+                <label><span>操作从</span><input type="date" value={memoryMaintenanceFrom}
+                  onChange={event => setMemoryMaintenanceFrom(event.target.value)} /></label>
+                <label><span>到</span><input type="date" value={memoryMaintenanceTo}
+                  onChange={event => setMemoryMaintenanceTo(event.target.value)} /></label>
+                {(memoryMaintenanceOperation !== 'all' || memoryMaintenanceTrigger !== 'all' ||
+                  memoryMaintenanceFrom || memoryMaintenanceTo) && <button onClick={() => {
+                  setMemoryMaintenanceOperation('all'); setMemoryMaintenanceTrigger('all')
+                  setMemoryMaintenanceFrom(''); setMemoryMaintenanceTo('')
+                }}>清除范围</button>}
+              </div>
+              {memoryMaintenanceArchive.items.map((entry: any) => <article key={entry.id}>
+                <span><b>{memoryMaintenanceOperationLabel(entry.operation)}</b>
+                  <small>
+                    {entry.trigger_kind === 'automatic' ? '系统自动' :
+                      entry.trigger_kind === 'recovery' ? '故障恢复' : '本人操作'}
+                    {' · '}{new Date(entry.completed_at).toLocaleString('zh-CN')}
+                  </small></span>
+                <span>{Number(entry.artifact_count || 0)} 个文件 · {formatBytes(Number(entry.byte_count || 0))}
+                  {entry.portable == null ? '' : entry.portable ? ' · 口令迁移包' : ' · 设备绑定包'}</span>
+              </article>)}
+              {memoryMaintenanceArchive.error && <div className="assistant-task-load-failure" role="alert">
+                <strong>{memoryMaintenanceArchive.items.length
+                  ? '更多维护审计读取失败' : '个人记忆维护审计读取失败'}</strong>
+                <span>{memoryMaintenanceArchive.error}。{memoryMaintenanceArchive.items.length
+                  ? ` 已加载的 ${memoryMaintenanceArchive.items.length} 条记录仍可核验，但当前档案尚未读完。`
+                  : ' 当前不会把读取故障解释为“没有发生维护操作”。'}</span>
+                <button type="button" disabled={memoryMaintenanceLoadingMore} onClick={() => {
+                  if (memoryMaintenanceArchive.items.length) void loadMoreMemoryMaintenanceAudit()
+                  else setMemoryMaintenanceRefreshKey(value => value + 1)
+                }}>{memoryMaintenanceLoadingMore ? '正在重试…' : '立即重试'}</button>
+              </div>}
+              {!memoryMaintenanceArchive.error && !memoryMaintenanceArchive.items.length &&
+                <div className="assistant-empty">
+                  {memoryMaintenanceArchive.loading
+                    ? '正在读取个人记忆维护审计…'
+                    : '当前范围还没有维护操作记录；升级前的历史不会被猜测补写。'}
+                </div>}
+              {memoryMaintenanceArchive.hasMore && !memoryMaintenanceArchive.error &&
+                <div className="assistant-timeline-more">
+                  <button disabled={memoryMaintenanceLoadingMore}
+                    onClick={() => void loadMoreMemoryMaintenanceAudit()}>
+                    {memoryMaintenanceLoadingMore
+                      ? '正在加载…'
+                      : `加载更多（已显示 ${memoryMaintenanceArchive.items.length}/${memoryMaintenanceArchive.total}）`}
+                  </button>
+                </div>}
+            </div>
             <div className="assistant-deletion-audit">
               <header>
                 <ShieldCheck size={15} />

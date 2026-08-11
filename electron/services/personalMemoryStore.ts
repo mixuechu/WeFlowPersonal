@@ -1717,6 +1717,24 @@ export class PersonalMemoryStore {
       CREATE INDEX IF NOT EXISTS idx_memory_deletion_audit_created
         ON memory_deletion_audit(created_at DESC);
 
+      CREATE TABLE IF NOT EXISTS memory_maintenance_audit (
+        id INTEGER PRIMARY KEY,
+        event_id TEXT NOT NULL UNIQUE,
+        operation TEXT NOT NULL CHECK(operation IN (
+          'backup_create','backup_restore','backup_delete','bundle_export','bundle_import',
+          'import_staging_discard','backup_trash_restore','backup_trash_discard'
+        )),
+        trigger_kind TEXT NOT NULL CHECK(trigger_kind IN ('manual','automatic','recovery')),
+        artifact_count INTEGER NOT NULL DEFAULT 0 CHECK(artifact_count>=0),
+        byte_count INTEGER NOT NULL DEFAULT 0 CHECK(byte_count>=0),
+        portable INTEGER CHECK(portable IS NULL OR portable IN (0,1)),
+        completed_at TEXT NOT NULL
+      ) STRICT;
+      CREATE INDEX IF NOT EXISTS idx_memory_maintenance_audit_time
+        ON memory_maintenance_audit(completed_at DESC,id DESC);
+      CREATE INDEX IF NOT EXISTS idx_memory_maintenance_audit_operation_time
+        ON memory_maintenance_audit(operation,completed_at DESC,id DESC);
+
       CREATE TABLE IF NOT EXISTS memory_change_log (
         id INTEGER PRIMARY KEY,
         item_kind TEXT NOT NULL,
@@ -1956,6 +1974,7 @@ export class PersonalMemoryStore {
     this.ensureMemorySearchRevisionTriggers()
     this.ensureMemorySearchFeedbackArchiveRevisionTriggers()
     this.ensureMemoryDeletionAuditRevisionTriggers()
+    this.ensureMemoryMaintenanceAuditRevisionTriggers()
     this.ensureMemoryEvidenceArchiveRevisionTriggers()
     this.ensureStructuredMemoryRevisionTriggers()
     this.backfillHumanReviewCalibrationHistory()
@@ -3815,6 +3834,36 @@ export class PersonalMemoryStore {
       revision: this.getMemoryDeletionAuditRevision(),
       nameFor: (_table, operation) =>
         `trg_memory_deletion_audit_revision_${operation.toLowerCase()}`
+    })
+  }
+
+  private ensureMemoryMaintenanceAuditRevisionTriggers(): void {
+    this.ensureRevisionTriggerSet({
+      prefix: 'memory_maintenance_audit_revision',
+      revisionKey: 'memory_maintenance_audit_revision',
+      tables: ['memory_maintenance_audit'],
+      version: 'memory-maintenance-audit-revision-v1',
+      nameFor: (_table, operation) =>
+        `trg_memory_maintenance_audit_revision_${operation.toLowerCase()}`
+    })
+  }
+
+  getMemoryMaintenanceAuditRevision(): string {
+    if (!this.db) return '0'
+    return String((this.db.prepare(`
+      SELECT value FROM schema_meta WHERE key='memory_maintenance_audit_revision'
+    `).get() as any)?.value || '0')
+  }
+
+  getMemoryMaintenanceAuditRevisionHealth(): any {
+    return this.getRevisionTriggerSetHealth({
+      prefix: 'memory_maintenance_audit_revision',
+      revisionKey: 'memory_maintenance_audit_revision',
+      tables: ['memory_maintenance_audit'],
+      version: 'memory-maintenance-audit-revision-v1',
+      revision: this.getMemoryMaintenanceAuditRevision(),
+      nameFor: (_table, operation) =>
+        `trg_memory_maintenance_audit_revision_${operation.toLowerCase()}`
     })
   }
 
@@ -7458,6 +7507,7 @@ export class PersonalMemoryStore {
     const memorySearchFeedbackArchiveRevision =
       this.getMemorySearchFeedbackArchiveRevisionHealth()
     const memoryDeletionAuditRevision = this.getMemoryDeletionAuditRevisionHealth()
+    const memoryMaintenanceAuditRevision = this.getMemoryMaintenanceAuditRevisionHealth()
     const memoryEvidenceArchiveRevision = this.getMemoryEvidenceArchiveRevisionHealth()
     const structuredMemoryRevision = this.getStructuredMemoryRevisionHealth()
     const graphReviewEvidenceStorage = this.getGraphReviewEvidenceStorageHealth()
@@ -7545,6 +7595,7 @@ export class PersonalMemoryStore {
         && memorySearchRevision.healthy
         && memorySearchFeedbackArchiveRevision.healthy
         && memoryDeletionAuditRevision.healthy
+        && memoryMaintenanceAuditRevision.healthy
         && memoryEvidenceArchiveRevision.healthy
         && structuredMemoryRevision.healthy
         && graphReviewEvidenceStorage.healthy
@@ -7577,6 +7628,7 @@ export class PersonalMemoryStore {
       memorySearchFeedbackArchiveRevisionHealthy:
         memorySearchFeedbackArchiveRevision.healthy,
       memoryDeletionAuditRevisionHealthy: memoryDeletionAuditRevision.healthy,
+      memoryMaintenanceAuditRevisionHealthy: memoryMaintenanceAuditRevision.healthy,
       memoryEvidenceArchiveRevisionHealthy: memoryEvidenceArchiveRevision.healthy,
       structuredMemoryRevisionHealthy: structuredMemoryRevision.healthy,
       graphReviewEvidenceStorageHealthy: graphReviewEvidenceStorage.healthy,
@@ -7618,6 +7670,7 @@ export class PersonalMemoryStore {
       memorySearchRevision,
       memorySearchFeedbackArchiveRevision,
       memoryDeletionAuditRevision,
+      memoryMaintenanceAuditRevision,
       memoryEvidenceArchiveRevision,
       structuredMemoryRevision,
       graphReviewEvidenceStorage,
@@ -16260,6 +16313,133 @@ export class PersonalMemoryStore {
       total: Number(row?.total || 0),
       latestId: Number(row?.latest_id || 0),
       latestCreatedAt: String(row?.latest_created_at || '')
+    }
+  }
+
+  recordMemoryMaintenanceAudit(input: {
+    eventId: string
+    operation: 'backup_create' | 'backup_restore' | 'backup_delete' | 'bundle_export'
+      | 'bundle_import' | 'import_staging_discard' | 'backup_trash_restore'
+      | 'backup_trash_discard'
+    trigger: 'manual' | 'automatic' | 'recovery'
+    artifactCount?: number
+    bytes?: number
+    portable?: boolean | null
+    completedAt?: string
+  }): boolean {
+    if (!this.db) throw new Error('个人记忆数据库尚未初始化')
+    const eventId = String(input.eventId || '').trim()
+    if (!/^[a-f0-9-]{16,64}$/i.test(eventId)) throw new Error('维护审计事件身份无效')
+    const operations = new Set([
+      'backup_create', 'backup_restore', 'backup_delete', 'bundle_export',
+      'bundle_import', 'import_staging_discard', 'backup_trash_restore',
+      'backup_trash_discard'
+    ])
+    if (!operations.has(input.operation)) throw new Error('维护审计操作类型无效')
+    if (!['manual', 'automatic', 'recovery'].includes(input.trigger)) {
+      throw new Error('维护审计触发来源无效')
+    }
+    const artifactCount = Math.max(0, Math.min(1_000_000,
+      Math.floor(Number(input.artifactCount) || 0)))
+    const bytes = Math.max(0, Math.min(Number.MAX_SAFE_INTEGER,
+      Math.floor(Number(input.bytes) || 0)))
+    const completedAt = String(input.completedAt || new Date().toISOString())
+    if (!Number.isFinite(Date.parse(completedAt))) throw new Error('维护审计完成时间无效')
+    const result = this.db.prepare(`
+      INSERT OR IGNORE INTO memory_maintenance_audit(
+        event_id,operation,trigger_kind,artifact_count,byte_count,portable,completed_at
+      ) VALUES(?,?,?,?,?,?,?)
+    `).run(
+      eventId, input.operation, input.trigger, artifactCount, bytes,
+      input.portable == null ? null : input.portable ? 1 : 0, completedAt
+    )
+    return Number(result.changes || 0) > 0
+  }
+
+  listMemoryMaintenanceAuditPage(options: {
+    operation?: string
+    trigger?: 'manual' | 'automatic' | 'recovery' | 'all'
+    from?: string
+    to?: string
+    limit?: number
+    offset?: number
+    revision?: string
+  } = {}): any {
+    const emptyCounts = { all: 0, manual: 0, automatic: 0, recovery: 0 }
+    const limit = Math.max(1, Math.min(100, Math.floor(Number(options.limit) || 40)))
+    const offset = Math.max(0, Math.min(1_000_000, Math.floor(Number(options.offset) || 0)))
+    const revision = this.getMemoryMaintenanceAuditRevision()
+    if (!this.db) return { items: [], total: 0, hasMore: false, counts: emptyCounts, revision, stale: false }
+    if (offset > 0 && String(options.revision || '') !== revision) {
+      return { items: [], total: 0, hasMore: false, counts: emptyCounts, revision, stale: true }
+    }
+    const allowedOperations = new Set([
+      'backup_create', 'backup_restore', 'backup_delete', 'bundle_export',
+      'bundle_import', 'import_staging_discard', 'backup_trash_restore',
+      'backup_trash_discard'
+    ])
+    const conditions: string[] = []
+    const parameters: Array<string | number> = []
+    if (allowedOperations.has(String(options.operation || ''))) {
+      conditions.push('operation=?')
+      parameters.push(String(options.operation))
+    }
+    if (options.trigger && options.trigger !== 'all') {
+      conditions.push('trigger_kind=?')
+      parameters.push(options.trigger)
+    }
+    const from = options.from && Number.isFinite(Date.parse(options.from)) ? String(options.from) : ''
+    const to = options.to && Number.isFinite(Date.parse(options.to)) ? String(options.to) : ''
+    if (from) { conditions.push('completed_at>=?'); parameters.push(from) }
+    if (to) { conditions.push('completed_at<=?'); parameters.push(to) }
+    const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : ''
+    const total = Number((this.db.prepare(`SELECT COUNT(*) AS count FROM memory_maintenance_audit ${where}`)
+      .get(...parameters) as any)?.count || 0)
+    const rows = this.db.prepare(`
+      SELECT id,operation,trigger_kind,artifact_count,byte_count,portable,completed_at
+      FROM memory_maintenance_audit ${where}
+      ORDER BY completed_at DESC,id DESC LIMIT ? OFFSET ?
+    `).all(...parameters, limit, offset) as any[]
+    const countsRow = this.db.prepare(`
+      SELECT COUNT(*) AS all_count,
+        SUM(CASE WHEN trigger_kind='manual' THEN 1 ELSE 0 END) AS manual_count,
+        SUM(CASE WHEN trigger_kind='automatic' THEN 1 ELSE 0 END) AS automatic_count,
+        SUM(CASE WHEN trigger_kind='recovery' THEN 1 ELSE 0 END) AS recovery_count
+      FROM memory_maintenance_audit
+    `).get() as any
+    const completedRevision = this.getMemoryMaintenanceAuditRevision()
+    if (completedRevision !== revision) {
+      return { items: [], total: 0, hasMore: false, counts: emptyCounts, revision: completedRevision, stale: true }
+    }
+    return {
+      items: rows.map(row => ({
+        ...row,
+        portable: row.portable == null ? null : Boolean(row.portable)
+      })),
+      total,
+      hasMore: offset + rows.length < total,
+      counts: {
+        all: Number(countsRow?.all_count || 0),
+        manual: Number(countsRow?.manual_count || 0),
+        automatic: Number(countsRow?.automatic_count || 0),
+        recovery: Number(countsRow?.recovery_count || 0)
+      },
+      revision,
+      stale: false
+    }
+  }
+
+  getMemoryMaintenanceAuditStats(): any {
+    if (!this.db) return { total: 0, latestId: 0, latestCompletedAt: '' }
+    const row = this.db.prepare(`
+      SELECT COUNT(*) AS total,COALESCE(MAX(id),0) AS latest_id,
+        COALESCE(MAX(completed_at),'') AS latest_completed_at
+      FROM memory_maintenance_audit
+    `).get() as any
+    return {
+      total: Number(row?.total || 0),
+      latestId: Number(row?.latest_id || 0),
+      latestCompletedAt: String(row?.latest_completed_at || '')
     }
   }
 
