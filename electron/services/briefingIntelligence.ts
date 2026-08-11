@@ -6,7 +6,12 @@ export function isQuietTime(time: string, start: string, end: string): boolean {
 export function buildWeeklyBriefing(
   briefings: Record<string, any>,
   tasks: any[],
-  now = new Date()
+  now = new Date(),
+  taskSummary?: {
+    activeTaskCount: number
+    waitingTaskCount: number
+    highPriorityTaskCount: number
+  }
 ): any {
   const end = new Intl.DateTimeFormat('en-CA', {
     timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit'
@@ -21,7 +26,7 @@ export function buildWeeklyBriefing(
     .sort(([left], [right]) => right.localeCompare(left))
   const highlights = [...new Set(entries.flatMap(([, briefing]) =>
     Array.isArray(briefing?.highlights) ? briefing.highlights.map(String) : []))].slice(0, 12)
-  const activeTasks = tasks.filter(task => !['done', 'cancelled'].includes(task.status))
+  const activeTasks = taskSummary ? [] : tasks.filter(task => !['done', 'cancelled'].includes(task.status))
   const summaries = entries.map(([date, briefing]) => ({
     date,
     summary: String(briefing?.summary || ''),
@@ -36,9 +41,11 @@ export function buildWeeklyBriefing(
     daysWithUpdates: entries.length,
     messageCount: entries.reduce((sum, [, briefing]) => sum + Number(briefing?.messageCount || 0), 0),
     highlights,
-    activeTaskCount: activeTasks.length,
-    waitingTaskCount: activeTasks.filter(task => task.status === 'waiting' || task.taskKind === 'waiting').length,
-    highPriorityTaskCount: activeTasks.filter(task => task.priority === 'high').length,
+    activeTaskCount: taskSummary?.activeTaskCount ?? activeTasks.length,
+    waitingTaskCount: taskSummary?.waitingTaskCount ??
+      activeTasks.filter(task => task.status === 'waiting' || task.taskKind === 'waiting').length,
+    highPriorityTaskCount: taskSummary?.highPriorityTaskCount ??
+      activeTasks.filter(task => task.priority === 'high').length,
     summaryCount: summaries.length,
     verifiedSummaryCount: summaries.filter(item => item.verified).length,
     summaryEvidenceCount: summaries.reduce((total, item) => total + item.evidence.length, 0),

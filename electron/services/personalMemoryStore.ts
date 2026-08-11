@@ -9043,6 +9043,47 @@ export class PersonalMemoryStore {
     return { ...this.graphSnapshotHydration }
   }
 
+  getDashboardScaleStats(): {
+    graph: { entities: number; relations: number; authoritativeEntities: number; authoritativeRelations: number; pendingReviews: number }
+    tasks: { activeTaskCount: number; waitingTaskCount: number; highPriorityTaskCount: number }
+  } {
+    const empty = {
+      graph: { entities: 0, relations: 0, authoritativeEntities: 0, authoritativeRelations: 0, pendingReviews: 0 },
+      tasks: { activeTaskCount: 0, waitingTaskCount: 0, highPriorityTaskCount: 0 }
+    }
+    if (!this.db) return empty
+    const row = this.db.prepare(`
+      SELECT
+        (SELECT COUNT(*) FROM entities WHERE trust_status<>'rejected') AS entities,
+        (SELECT COUNT(*) FROM relations WHERE status<>'rejected') AS relations,
+        (SELECT COUNT(*) FROM entities) AS authoritative_entities,
+        (SELECT COUNT(*) FROM relations) AS authoritative_relations,
+        (SELECT COUNT(*) FROM review_queue WHERE status='pending') AS pending_reviews,
+        (SELECT COUNT(*) FROM task_directory
+          WHERE classification='mine' AND status NOT IN ('done','cancelled')) AS active_tasks,
+        (SELECT COUNT(*) FROM task_directory
+          WHERE classification='mine' AND status NOT IN ('done','cancelled')
+            AND (status='waiting' OR task_kind='waiting')) AS waiting_tasks,
+        (SELECT COUNT(*) FROM task_directory
+          WHERE classification='mine' AND status NOT IN ('done','cancelled')
+            AND priority='high') AS high_priority_tasks
+    `).get() as any
+    return {
+      graph: {
+        entities: Number(row?.entities || 0),
+        relations: Number(row?.relations || 0),
+        authoritativeEntities: Number(row?.authoritative_entities || 0),
+        authoritativeRelations: Number(row?.authoritative_relations || 0),
+        pendingReviews: Number(row?.pending_reviews || 0)
+      },
+      tasks: {
+        activeTaskCount: Number(row?.active_tasks || 0),
+        waitingTaskCount: Number(row?.waiting_tasks || 0),
+        highPriorityTaskCount: Number(row?.high_priority_tasks || 0)
+      }
+    }
+  }
+
   getEntityEvidenceAuthorityStats(): {
     evidenceRows: number
     entitiesWithEvidence: number

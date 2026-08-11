@@ -11809,6 +11809,11 @@ function AiAssistantPage() {
               当前可见 {dashboard.taskReminderDirectory.total || 0} 条；静音与稍后提醒在数据库分页前过滤。
               目录缓存绑定任务与偏好版本，并会在下一个时间边界自动失效。
             </small>}
+            {dashboard?.dashboardScaleStats?.authority === 'sqlcipher_revision_cached' && <small className="assistant-evidence">
+              首页图谱总量与周简报任务计数由 SQLCipher 权威聚合，并按图谱、任务版本复用；
+              当前已查询 {dashboard.dashboardScaleStats.queries || 0} 次、复用 {dashboard.dashboardScaleStats.hits || 0} 次，
+              不再随每次首页刷新遍历完整图谱和任务集合。
+            </small>}
             {(!!taskReminders.length || reminderPreferences?.mutedKinds?.length) && <div className="assistant-task-reminders">
               {taskReminders.map(reminder => <article key={reminder.id} className={reminder.severity}>
                 <button className="assistant-reminder-main"

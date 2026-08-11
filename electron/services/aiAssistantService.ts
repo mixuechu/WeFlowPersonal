@@ -881,6 +881,12 @@ export class AiAssistantService {
   private state: AssistantState = structuredClone(EMPTY_STATE)
   private taskStateIndex = new ReferenceArrayIndex<AssistantTask>(task => String(task.id))
   private projectDirectoryCountCache = { revision: '', total: 0, queries: 0, hits: 0 }
+  private dashboardScaleStatsCache: {
+    revision: string
+    value: ReturnType<typeof personalMemoryStore.getDashboardScaleStats>
+    queries: number
+    hits: number
+  } | null = null
   private taskReminderDirectoryCache: {
     authorityKey: string
     capturedAtMs: number
@@ -6034,7 +6040,6 @@ export class AiAssistantService {
     const revisions = buildDashboardRevisions(personalMemoryStore)
     const dates = Object.keys(this.state.briefings).sort().reverse()
     const latest = dates[0] ? this.state.briefings[dates[0]] : null
-    const tasks = this.state.tasks.filter(task => task.classification === 'mine')
     const taskWorksetStats = personalMemoryStore.listActiveTaskWorkset({ limit: 1 })
     const taskOwnershipReviewStats = personalMemoryStore.getTaskOwnershipReviewStats()
     const mineTaskOwnershipAudit = personalMemoryStore.getMineTaskOwnershipAuditSample()
@@ -6049,6 +6054,19 @@ export class AiAssistantService {
     const graphRevision = graphReviewRevision
     const projectRevision = revisions.project
     const projectCount = this.getProjectDirectoryCount(projectRevision)
+    const dashboardScaleRevision = `${graphRevision}:${taskWorksetStats.revision}`
+    const previousScaleStats = this.dashboardScaleStatsCache
+    const dashboardScaleStats = previousScaleStats?.revision === dashboardScaleRevision
+      ? previousScaleStats.value
+      : personalMemoryStore.getDashboardScaleStats()
+    this.dashboardScaleStatsCache = {
+      revision: dashboardScaleRevision,
+      value: dashboardScaleStats,
+      queries: Number(previousScaleStats?.queries || 0) +
+        (previousScaleStats?.revision === dashboardScaleRevision ? 0 : 1),
+      hits: Number(previousScaleStats?.hits || 0) +
+        (previousScaleStats?.revision === dashboardScaleRevision ? 1 : 0)
+    }
     const assistantArchiveStats = personalMemoryStore.getAssistantArchiveStats()
     const taskReviewArchiveStats = personalMemoryStore.getTaskReviewArchiveStats()
     const memoryDeletionArchiveStats = personalMemoryStore.getMemoryDeletionAuditStats()
@@ -6168,13 +6186,13 @@ export class AiAssistantService {
       projectRevision,
       graph: buildGraphDashboardPayload(),
       graphSummary: {
-        entities: this.state.graph.entities.filter(entity => entity.trustStatus !== 'rejected').length,
-        relations: this.state.graph.relations.filter(relation => relation.status !== 'rejected').length
+        entities: dashboardScaleStats.graph.entities,
+        relations: dashboardScaleStats.graph.relations
       },
       graphPayloadPolicy: {
         version: 'graph-on-demand-v3',
         directoryEntities: 0,
-        authoritativeEntities: this.state.graph.entities.length,
+        authoritativeEntities: dashboardScaleStats.graph.authoritativeEntities,
         entityDirectory: 'server_search_on_demand',
         entityProfiles: 'on_demand',
         entityEvidenceMessageIds: 'sqlcipher_authoritative_counts_startup_keys_zero',
@@ -6187,8 +6205,7 @@ export class AiAssistantService {
         sqlCommitIdPresent: Boolean(String(this.state.graph.lastSqlCommitId || '').trim()),
         runtimeEntities: this.state.graph.entities.length,
         runtimeRelations: this.state.graph.relations.length,
-        runtimePendingReviews: this.state.graph.reviewQueue.filter(review =>
-          review.status === 'pending').length,
+        runtimePendingReviews: dashboardScaleStats.graph.pendingReviews,
         persistedEntities: this.state.graph.lastSqlCommitId ? 0 : this.state.graph.entities.length,
         persistedRelations: this.state.graph.lastSqlCommitId ? 0 : this.state.graph.relations.length,
         persistedPendingReviews: this.state.graph.lastSqlCommitId ? 0
@@ -6322,7 +6339,14 @@ export class AiAssistantService {
       },
       qualityBaseline: evaluateTaskAssignmentPolicy(),
       humanReviewCalibration: personalMemoryStore.getHumanReviewCalibrationStats(),
-      weeklyBriefing: buildWeeklyBriefing(this.state.briefings, tasks),
+      weeklyBriefing: buildWeeklyBriefing(this.state.briefings, [], new Date(), dashboardScaleStats.tasks),
+      dashboardScaleStats: {
+        version: 'dashboard-scale-stats-v1',
+        authority: 'sqlcipher_revision_cached',
+        revisionBound: true,
+        queries: this.dashboardScaleStatsCache.queries,
+        hits: this.dashboardScaleStatsCache.hits
+      },
       notificationDelivery: {
         pending: this.state.notifications.pending.length,
         sent: this.state.notifications.sentKeys.length,

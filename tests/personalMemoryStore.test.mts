@@ -7013,6 +7013,20 @@ test('weekly briefing aggregates Shanghai dates and quiet hours cross midnight',
   assert.equal(briefing.summaries[0].verified, false)
 })
 
+test('weekly briefing accepts authoritative task counts without scanning a task collection', () => {
+  const tasks = new Proxy([] as any[], {
+    get() { throw new Error('task collection must not be read') }
+  })
+  const weekly = buildWeeklyBriefing({}, tasks, new Date('2026-08-12T12:00:00+08:00'), {
+    activeTaskCount: 12,
+    waitingTaskCount: 4,
+    highPriorityTaskCount: 3
+  })
+  assert.equal(weekly.activeTaskCount, 12)
+  assert.equal(weekly.waitingTaskCount, 4)
+  assert.equal(weekly.highPriorityTaskCount, 3)
+})
+
 test('weekly briefing exposes every daily summary in newest-first order', () => {
   const briefings = Object.fromEntries(Array.from({ length: 8 }, (_, index) => {
     const day = String(30 - index).padStart(2, '0')
@@ -10562,6 +10576,57 @@ test('active task workset stays filtered, pageable, and revision safe at scale',
     : task))
   assert.equal(store.listActiveTaskWorkset({ query: '主动工作集特殊关键词' }).total, 0)
   assert.equal(store.listActiveTaskWorkset({ taskId: 'active-task-0997' }).total, 0)
+}))
+
+test('dashboard scale statistics count graph and active task authority inside SQLCipher', () => withStore(store => {
+  const entities = Array.from({ length: 120 }, (_, index) => ({
+    id: `scale-entity-${index}`, type: 'person', canonicalName: `规模人物 ${index}`,
+    trustStatus: index < 7 ? 'rejected' : 'confirmed', createdAt: '2026-08-01T00:00:00.000Z',
+    updatedAt: '2026-08-01T00:00:00.000Z'
+  }))
+  const relations = Array.from({ length: 119 }, (_, index) => ({
+    id: `scale-relation-${index}`, subjectId: entities[index].id,
+    objectId: entities[index + 1].id, predicate: '认识', confidence: 0.9,
+    status: index < 9 ? 'rejected' : 'confirmed', createdAt: '2026-08-01T00:00:00.000Z',
+    updatedAt: '2026-08-01T00:00:00.000Z'
+  }))
+  const reviewQueue = Array.from({ length: 25 }, (_, index) => ({
+    id: `scale-review-${index}`, kind: 'relation', title: `审阅 ${index}`,
+    detail: '', confidence: 0.8, status: index < 18 ? 'pending' : 'confirmed',
+    createdAt: '2026-08-01T00:00:00.000Z'
+  }))
+  store.syncGraph({ entities, relations, reviewQueue } as any)
+  const tasks = Array.from({ length: 100 }, (_, index) => ({
+    id: `scale-task-${index}`, title: `规模任务 ${index}`,
+    classification: index < 90 ? 'mine' : 'others',
+    status: index < 20 ? 'done' : index < 35 ? 'waiting' : 'todo',
+    taskKind: index >= 35 && index < 42 ? 'waiting' : 'action',
+    priority: index >= 42 && index < 50 ? 'high' : 'medium',
+    createdAt: '2026-08-01T00:00:00.000Z', updatedAt: '2026-08-01T00:00:00.000Z'
+  }))
+  store.syncTasks(tasks)
+  assert.deepEqual(store.getDashboardScaleStats(), {
+    graph: {
+      entities: 113, relations: 110, authoritativeEntities: 120,
+      authoritativeRelations: 119, pendingReviews: 18
+    },
+    tasks: { activeTaskCount: 70, waitingTaskCount: 22, highPriorityTaskCount: 8 }
+  })
+  store.syncGraph({
+    entities: entities.map((item, index) => index === 7 ? { ...item, trustStatus: 'rejected' } : item),
+    relations: relations.map((item, index) => index === 9 ? { ...item, status: 'rejected' } : item),
+    reviewQueue: reviewQueue.map((item, index) => index === 18 ? { ...item, status: 'pending' } : item)
+  } as any)
+  store.syncTasks(tasks.map((item, index) => index === 20
+    ? { ...item, status: 'done' }
+    : index === 50 ? { ...item, priority: 'high' } : item))
+  assert.deepEqual(store.getDashboardScaleStats(), {
+    graph: {
+      entities: 112, relations: 109, authoritativeEntities: 120,
+      authoritativeRelations: 119, pendingReviews: 19
+    },
+    tasks: { activeTaskCount: 69, waitingTaskCount: 21, highPriorityTaskCount: 9 }
+  })
 }))
 
 test('task calendar pages every matching task in a month without depending on workset loading', () => withStore(store => {
