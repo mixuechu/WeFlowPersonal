@@ -310,7 +310,6 @@ import {
   type NotificationOutbox
 } from './notificationOutbox'
 import { commitAssistantState } from './assistantStateCommitPolicy'
-import { findCommonGraphNeighbors } from './graphCommonNeighbors'
 import {
   boundedEvidencePayload,
   GRAPH_QUERY_EVIDENCE_LIMIT,
@@ -12049,9 +12048,12 @@ export class AiAssistantService {
       if (selection.stale) throw new Error('共同实体查询所选身份已经变化，请重新选择起点和终点')
     }
     const entities = this.state.graph.entities.filter(isTrustedEntity)
-    const entityIds = new Set(entities.map(entity => entity.id))
-    const common = findCommonGraphNeighbors(fromId, toId, entities, this.state.graph.relations.filter(relation =>
-      relation.status === 'confirmed' && entityIds.has(relation.subjectId) && entityIds.has(relation.objectId)))
+    const entityMap = new Map(entities.map(entity => [entity.id, entity]))
+    const authority = personalMemoryStore.findCommonRelationNeighbors(fromId, toId)
+    const common = authority.items.flatMap((item: any) => {
+      const entity = entityMap.get(item.entityId)
+      return entity ? [{ ...item, entity }] : []
+    })
     const relationIds = common.flatMap((item: any) => [
       ...(item.leftEdges || []).map((edge: any) => edge.relationId),
       ...(item.rightEdges || []).map((edge: any) => edge.relationId)
@@ -12071,6 +12073,10 @@ export class AiAssistantService {
     return {
       from: entities.find(entity => entity.id === fromId) || null,
       to: entities.find(entity => entity.id === toId) || null,
+      total: authority.total,
+      limit: authority.limit,
+      truncated: authority.truncated,
+      edgeLimitPerSide: authority.edgeLimitPerSide,
       common: common.map((item: any) => ({
         ...item,
         leftEdges: enrichEdges(item.leftEdges),

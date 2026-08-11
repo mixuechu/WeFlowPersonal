@@ -17,6 +17,8 @@ test('graph and review evidence presentation hydrates only the visible scope on 
   assert.match(focus, /getRelationEvidenceHotset\([\s\S]*visibleRelations\.map/)
   assert.match(path, /getRelationEvidenceHotset\([\s\S]*path\.steps\.map/)
   assert.match(common, /getRelationEvidenceHotset\([\s\S]*relationIds/)
+  assert.match(common, /findCommonRelationNeighbors\(fromId, toId\)/)
+  assert.doesNotMatch(common, /findCommonGraphNeighbors|this\.state\.graph\.relations\.filter/)
   const snapshot = store.slice(store.indexOf('loadGraphSnapshot(): MemoryGraph'),
     store.indexOf('getRelationEvidenceCounts():', store.indexOf('loadGraphSnapshot(): MemoryGraph')))
   assert.match(snapshot, /GROUP BY root_id,source_id,session_id,message_id/)

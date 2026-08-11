@@ -14887,13 +14887,14 @@ function AiAssistantPage() {
               : `SQLCipher 已检查 ${Number(graphPath.explored || 0).toLocaleString()} 个有界路径状态，在 6 层关系内没有找到路径。候选和已拒绝关系不会参与计算。`}</p>}
           </div>}
           {graphCommonNeighbors && <div className="assistant-common-neighbors">
-            <div className="assistant-section-heading"><div><span className="assistant-eyebrow">COMMON CONNECTIONS</span><h3>共同联系人与实体</h3></div><span className="assistant-count">{graphCommonNeighbors.common.length} 个</span></div>
+            <div className="assistant-section-heading"><div><span className="assistant-eyebrow">COMMON CONNECTIONS</span><h3>共同联系人与实体</h3></div><span className="assistant-count">{Number(graphCommonNeighbors.total || graphCommonNeighbors.common.length)} 个</span></div>
+            {graphCommonNeighbors.truncated && <p>当前按关系强度展示前 {graphCommonNeighbors.common.length} / {graphCommonNeighbors.total} 个共同实体；完整总数来自 SQLCipher，避免一次渲染过大的关系集合。</p>}
             {graphCommonNeighbors.common.map((item: any) => <article key={item.entity.id}>
               <button onClick={() => setSelectedEntityId(item.entity.id)}>{item.entity.canonicalName}</button>
               <div>
                 {item.leftEdges.map((edge: any) => <div className="assistant-common-edge" key={`left-${edge.relationId}`}>
                   {graphCommonNeighbors.from?.canonicalName} {edge.forward ? edge.predicate : `被${edge.predicate}`} {item.entity.canonicalName}
-                  <small>{edge.status === 'confirmed' ? '已确认' : '待确认'} · {Math.round(Number(edge.confidence || 0) * 100)}%</small>
+                  <small>{edge.status === 'confirmed' ? '已确认' : '待确认'} · {Math.round(Number(edge.confidence || 0) * 100)}%{Number(item.leftTotal || 0) > item.leftEdges.length ? ` · 左侧关系预览 ${item.leftEdges.length}/${item.leftTotal}` : ''}</small>
                   <details><summary>原文证据 {edge.evidenceTotal || 0} 条</summary><EvidenceRows
                     evidence={edge.evidence} total={edge.evidenceTotal}
                     onOpenArchive={() => void openMemoryEvidenceArchive(
@@ -14903,7 +14904,7 @@ function AiAssistantPage() {
                 </div>)}
                 {item.rightEdges.map((edge: any) => <div className="assistant-common-edge" key={`right-${edge.relationId}`}>
                   {graphCommonNeighbors.to?.canonicalName} {edge.forward ? edge.predicate : `被${edge.predicate}`} {item.entity.canonicalName}
-                  <small>{edge.status === 'confirmed' ? '已确认' : '待确认'} · {Math.round(Number(edge.confidence || 0) * 100)}%</small>
+                  <small>{edge.status === 'confirmed' ? '已确认' : '待确认'} · {Math.round(Number(edge.confidence || 0) * 100)}%{Number(item.rightTotal || 0) > item.rightEdges.length ? ` · 右侧关系预览 ${item.rightEdges.length}/${item.rightTotal}` : ''}</small>
                   <details><summary>原文证据 {edge.evidenceTotal || 0} 条</summary><EvidenceRows
                     evidence={edge.evidence} total={edge.evidenceTotal}
                     onOpenArchive={() => void openMemoryEvidenceArchive(
@@ -18168,6 +18169,8 @@ function AiAssistantPage() {
                 <span>全图路径 <b>{memoryDiagnostics.memorySearchScopePlanning.unscopedGraphPathStrategy === 'sqlcipher_recursive_cte' ? 'SQLCipher 有界路径' : '需要检查'}</b></span>
                 <span>关系 ID 集合 <b>{Number(memoryDiagnostics.memorySearchScopePlanning.scopedGraphRelationIdentityMaterializations || 0)}</b> 份</span>
                 <span>全图邻接副本 <b>{Number(memoryDiagnostics.memorySearchScopePlanning.unscopedGraphAdjacencyMaterializations || 0)}</b> 份</span>
+                <span>共同实体 <b>{memoryDiagnostics.memorySearchScopePlanning.commonNeighborStrategy === 'sqlcipher_ranked_aggregate' ? 'SQLCipher 聚合' : '需要检查'}</b></span>
+                <span>共同实体预算 <b>{Number(memoryDiagnostics.memorySearchScopePlanning.commonNeighborLimit || 0)}</b> 个</span>
                 <span>图路径扩展预算 <b>{Number(memoryDiagnostics.memorySearchScopePlanning.scopedGraphPathExpansionBudget || 0).toLocaleString()}</b> 状态</span>
                 <span>预算截断 <b>{memoryDiagnostics.memorySearchScopePlanning.scopedGraphPathTruncationVisible ? '明确提示' : '需要检查'}</b></span>
               </div>

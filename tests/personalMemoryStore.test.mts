@@ -13646,6 +13646,62 @@ test('scoped graph paths stay inside SQLCipher without materializing every relat
     )
   }))
 
+test('common graph neighbors are ranked and bounded inside SQLCipher with honest totals', () =>
+  withStore(store => {
+    const endpoint = (id: string) => ({
+      id,
+      type: 'person',
+      canonicalName: id,
+      summary: '',
+      confidence: 1,
+      trustStatus: 'confirmed',
+      aliases: [],
+      accountIds: []
+    })
+    const neighbors = Array.from({ length: 105 }, (_, index) => endpoint(`common-${index}`))
+    const relation = (id: string, subjectId: string, objectId: string, confidence: number) => ({
+      id,
+      subjectId,
+      objectId,
+      predicate: '共同关系',
+      confidence,
+      status: 'confirmed',
+      evidence: []
+    })
+    store.syncGraph({
+      entities: [endpoint('common-left'), endpoint('common-right'), ...neighbors],
+      relations: neighbors.flatMap((neighbor, index) => [
+        relation(`common-left-${index}`, 'common-left', neighbor.id, 0.5 + index / 1_000),
+        relation(`common-right-${index}`, neighbor.id, 'common-right', 0.5 + index / 1_000)
+      ]),
+      reviewQueue: []
+    } as any)
+    const result = store.findCommonRelationNeighbors('common-left', 'common-right')
+    assert.equal(result.total, 105)
+    assert.equal(result.items.length, 100)
+    assert.equal(result.limit, 100)
+    assert.equal(result.truncated, true)
+    assert.equal(result.edgeLimitPerSide, 4)
+    assert.equal(result.items[0].entityId, 'common-104')
+    assert.deepEqual(
+      result.items[0].leftEdges.map(edge => [edge.relationId, edge.forward]),
+      [['common-left-104', true]]
+    )
+    assert.deepEqual(
+      result.items[0].rightEdges.map(edge => [edge.relationId, edge.forward]),
+      [['common-right-104', false]]
+    )
+    assert.equal(result.items[0].leftTotal, 1)
+    assert.equal(result.items[0].rightTotal, 1)
+    assert.deepEqual(store.findCommonRelationNeighbors('common-left', 'missing'), {
+      items: [],
+      total: 0,
+      limit: 100,
+      truncated: false,
+      edgeLimitPerSide: 4
+    })
+  }))
+
 test('memory result pages are stable, bounded and report remaining ranked candidates', () => {
   const ranked = Array.from({ length: 95 }, (_, index) => ({ id: `result-${index}` }))
   const first = paginateMemoryResults(ranked, 0, 40)

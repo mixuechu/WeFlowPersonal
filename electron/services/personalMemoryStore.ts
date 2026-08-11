@@ -587,6 +587,8 @@ export type SearchDocumentScopeHandle = Readonly<{
 
 type SearchDocumentScope = SearchDocumentScopeHandle
 const SCOPED_GRAPH_PATH_EXPANSION_LIMIT = 50_000
+const COMMON_GRAPH_NEIGHBOR_LIMIT = 100
+const COMMON_GRAPH_EDGE_LIMIT_PER_SIDE = 4
 
 export class PersonalMemoryStore {
   private db: Database.Database | null = null
@@ -7849,7 +7851,7 @@ export class PersonalMemoryStore {
       mineTaskOwnershipAuditIndex,
       memoryChangeLog,
       memorySearchScopePlanning: {
-        version: 6,
+        version: 7,
         facetStrategy: 'sqlcipher_direct_count',
         facetIdentityMaterializations: 0,
         primaryScopeStrategy: 'sqlcipher_isolated_temp_table',
@@ -7865,7 +7867,11 @@ export class PersonalMemoryStore {
         scopedGraphPathBreadthFirst: true,
         scopedGraphPathTruncationVisible: true,
         unscopedGraphPathStrategy: 'sqlcipher_recursive_cte',
-        unscopedGraphAdjacencyMaterializations: 0
+        unscopedGraphAdjacencyMaterializations: 0,
+        commonNeighborStrategy: 'sqlcipher_ranked_aggregate',
+        commonNeighborLimit: COMMON_GRAPH_NEIGHBOR_LIMIT,
+        commonNeighborEdgeLimitPerSide: COMMON_GRAPH_EDGE_LIMIT_PER_SIDE,
+        commonNeighborTotalVisible: true
       },
       memorySearchRevision,
       memorySearchFeedbackArchiveRevision,
@@ -20846,6 +20852,135 @@ export class PersonalMemoryStore {
     })
     if (steps.some(step => !step)) return { found: false, entityIds: [], steps: [], ...budget }
     return { found: true, entityIds, steps, ...budget }
+  }
+
+  findCommonRelationNeighbors(fromId: string, toId: string): {
+    items: any[]
+    total: number
+    limit: number
+    truncated: boolean
+    edgeLimitPerSide: number
+  } {
+    const empty = {
+      items: [],
+      total: 0,
+      limit: COMMON_GRAPH_NEIGHBOR_LIMIT,
+      truncated: false,
+      edgeLimitPerSide: COMMON_GRAPH_EDGE_LIMIT_PER_SIDE
+    }
+    if (!this.db || !fromId || !toId || fromId === toId) return empty
+    const endpointCount = Number((this.db.prepare(`
+      SELECT COUNT(*) AS count FROM entities
+      WHERE id IN (?,?) AND deleted_at IS NULL AND trust_status='confirmed'
+    `).get(fromId, toId) as any)?.count || 0)
+    if (endpointCount !== 2) return empty
+    const edgeCtes = `
+      left_edges AS (
+        SELECT relation.id AS relation_id,relation.object_id AS neighbor_id,1 AS forward,
+          relation.predicate,relation.status,relation.confidence
+        FROM relations relation JOIN entities neighbor ON neighbor.id=relation.object_id
+        WHERE relation.subject_id=? AND relation.status='confirmed'
+          AND neighbor.deleted_at IS NULL AND neighbor.trust_status='confirmed'
+        UNION ALL
+        SELECT relation.id,relation.subject_id,0,relation.predicate,relation.status,relation.confidence
+        FROM relations relation JOIN entities neighbor ON neighbor.id=relation.subject_id
+        WHERE relation.object_id=? AND relation.status='confirmed'
+          AND neighbor.deleted_at IS NULL AND neighbor.trust_status='confirmed'
+      ), right_edges AS (
+        SELECT relation.id AS relation_id,relation.object_id AS neighbor_id,1 AS forward,
+          relation.predicate,relation.status,relation.confidence
+        FROM relations relation JOIN entities neighbor ON neighbor.id=relation.object_id
+        WHERE relation.subject_id=? AND relation.status='confirmed'
+          AND neighbor.deleted_at IS NULL AND neighbor.trust_status='confirmed'
+        UNION ALL
+        SELECT relation.id,relation.subject_id,0,relation.predicate,relation.status,relation.confidence
+        FROM relations relation JOIN entities neighbor ON neighbor.id=relation.subject_id
+        WHERE relation.object_id=? AND relation.status='confirmed'
+          AND neighbor.deleted_at IS NULL AND neighbor.trust_status='confirmed'
+      ), common AS (
+        SELECT left_edges.neighbor_id,
+          (SELECT SUM(confidence+0.25) FROM left_edges score_left
+            WHERE score_left.neighbor_id=left_edges.neighbor_id) +
+          (SELECT SUM(confidence+0.25) FROM right_edges score_right
+            WHERE score_right.neighbor_id=left_edges.neighbor_id) AS score
+        FROM left_edges
+        WHERE left_edges.neighbor_id NOT IN (?,?)
+          AND EXISTS (SELECT 1 FROM right_edges WHERE right_edges.neighbor_id=left_edges.neighbor_id)
+        GROUP BY left_edges.neighbor_id
+      )
+    `
+    const parameters = [fromId, fromId, toId, toId, fromId, toId]
+    const total = Number((this.db.prepare(`
+      WITH ${edgeCtes} SELECT COUNT(*) AS count FROM common
+    `).get(...parameters) as any)?.count || 0)
+    if (!total) return empty
+    const ranked = this.db.prepare(`
+      WITH ${edgeCtes}
+      SELECT common.neighbor_id,common.score
+      FROM common ORDER BY common.score DESC,common.neighbor_id ASC LIMIT ?
+    `).all(...parameters, COMMON_GRAPH_NEIGHBOR_LIMIT) as Array<{
+      neighbor_id: string
+      score: number
+    }>
+    const neighborIds = ranked.map(row => row.neighbor_id)
+    const placeholders = neighborIds.map(() => '?').join(',')
+    const edgeRows = this.db.prepare(`
+      WITH ${edgeCtes}, selected_edges AS (
+        SELECT 'left' AS side,left_edges.* FROM left_edges
+        WHERE left_edges.neighbor_id IN (${placeholders})
+        UNION ALL
+        SELECT 'right' AS side,right_edges.* FROM right_edges
+        WHERE right_edges.neighbor_id IN (${placeholders})
+      ), ranked_edges AS (
+        SELECT selected_edges.*,
+          ROW_NUMBER() OVER (
+            PARTITION BY side,neighbor_id ORDER BY confidence DESC,relation_id ASC
+          ) AS edge_rank,
+          COUNT(*) OVER (PARTITION BY side,neighbor_id) AS edge_total
+        FROM selected_edges
+      )
+      SELECT * FROM ranked_edges WHERE edge_rank<=?
+      ORDER BY neighbor_id,side,edge_rank
+    `).all(
+      ...parameters,
+      ...neighborIds,
+      ...neighborIds,
+      COMMON_GRAPH_EDGE_LIMIT_PER_SIDE
+    ) as any[]
+    const edgesByNeighbor = new Map<string, { leftEdges: any[]; rightEdges: any[]; leftTotal: number; rightTotal: number }>()
+    for (const edge of edgeRows) {
+      const current = edgesByNeighbor.get(edge.neighbor_id) || {
+        leftEdges: [], rightEdges: [], leftTotal: 0, rightTotal: 0
+      }
+      const item = {
+        relationId: edge.relation_id,
+        predicate: edge.predicate,
+        forward: Boolean(edge.forward),
+        status: edge.status,
+        confidence: edge.confidence
+      }
+      if (edge.side === 'left') {
+        current.leftEdges.push(item)
+        current.leftTotal = Number(edge.edge_total || 0)
+      } else {
+        current.rightEdges.push(item)
+        current.rightTotal = Number(edge.edge_total || 0)
+      }
+      edgesByNeighbor.set(edge.neighbor_id, current)
+    }
+    return {
+      items: ranked.map(row => ({
+        entityId: row.neighbor_id,
+        score: Number(row.score || 0),
+        ...(edgesByNeighbor.get(row.neighbor_id) || {
+          leftEdges: [], rightEdges: [], leftTotal: 0, rightTotal: 0
+        })
+      })),
+      total,
+      limit: COMMON_GRAPH_NEIGHBOR_LIMIT,
+      truncated: total > ranked.length,
+      edgeLimitPerSide: COMMON_GRAPH_EDGE_LIMIT_PER_SIDE
+    }
   }
 
   private searchDocumentScopeJoin(scope: SearchDocumentScope | null, expression: string): string {
