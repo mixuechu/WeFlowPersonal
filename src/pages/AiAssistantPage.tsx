@@ -1658,7 +1658,10 @@ function AiAssistantPage() {
   const [deletingMemoryBackup, setDeletingMemoryBackup] = useState(false)
   const [memoryBackupDeleteDialog, setMemoryBackupDeleteDialog] = useState<any>(null)
   const [memoryBackupDeleteConfirmation, setMemoryBackupDeleteConfirmation] = useState('')
+  const memoryBackupMutationLock = useRef(false)
+  const memoryBackupCreateGate = useRef(new LatestRequestGate())
   const memoryRestoreGate = useRef(new LatestRequestGate())
+  const memoryBackupDeleteGate = useRef(new LatestRequestGate())
   const [migratingMemory, setMigratingMemory] = useState(false)
   const [migrationDialog, setMigrationDialog] = useState<any>(null)
   const [migrationPassphrase, setMigrationPassphrase] = useState('')
@@ -3902,6 +3905,9 @@ function AiAssistantPage() {
   const sourceMutationBusy = sourceBulkMutating || Object.values(sourceMutating).some(Boolean)
   const dataSourceMutationBusy = documentConnecting || calendarConnecting || mailConnecting ||
     Object.values(dataSourceToggling).some(Boolean)
+  const memoryBackupOperationBusy = backingUpMemory || restoringMemory || deletingMemoryBackup ||
+    memoryRestoreDialog?.status === 'loading' || memoryRestoreDialog?.status === 'restoring' ||
+    memoryBackupDeleteDialog?.status === 'loading' || memoryBackupDeleteDialog?.status === 'deleting'
   const updateReminderPreference = async (reminder: any, action: 'helpful' | 'snooze' | 'mute_kind' | 'restore_kind') => {
     const key = action === 'restore_kind' ? `restore:${reminder.kind}` : reminder.id
     if (taskReminderSaving[key]) return
@@ -6918,25 +6924,34 @@ function AiAssistantPage() {
   }
 
   const backupMemory = async () => {
-    if (backingUpMemory) return
+    if (memoryBackupOperationBusy || memoryBackupMutationLock.current) return
+    memoryBackupMutationLock.current = true
+    const request = memoryBackupCreateGate.current.begin()
     setBackingUpMemory(true)
     try {
       const result = await window.electronAPI.aiAssistant.createMemoryBackup()
+      if (!memoryBackupCreateGate.current.isCurrent(request)) return
       setMessage(`个人记忆备份完成：${result.path}`)
       await refreshMemoryDiagnostics().catch(() => {})
     } catch (error: any) {
+      if (!memoryBackupCreateGate.current.isCurrent(request)) return
       setMessage(error?.message || String(error))
     } finally {
-      setBackingUpMemory(false)
+      if (memoryBackupCreateGate.current.isCurrent(request)) {
+        memoryBackupMutationLock.current = false
+        setBackingUpMemory(false)
+      }
     }
   }
 
   const openMemoryRestoreDialog = async (backup: any) => {
     if (
-      restoringMemory
+      memoryBackupOperationBusy
+      || memoryBackupMutationLock.current
       || !backup?.path
       || !describeMemoryBackupRestore(backup).enabled
     ) return
+    memoryBackupMutationLock.current = true
     const requestId = memoryRestoreGate.current.begin()
     setMemoryRestoreConfirmation('')
     setMemoryRestoreDialog({ backup, status: 'loading' })
@@ -6951,12 +6966,17 @@ function AiAssistantPage() {
         status: 'error',
         error: error?.message || String(error)
       })
+    } finally {
+      if (memoryRestoreGate.current.isCurrent(requestId)) {
+        memoryBackupMutationLock.current = false
+      }
     }
   }
 
   const closeMemoryRestoreDialog = () => {
     if (restoringMemory) return
     memoryRestoreGate.current.invalidate()
+    memoryBackupMutationLock.current = false
     setMemoryRestoreDialog(null)
     setMemoryRestoreConfirmation('')
   }
@@ -6964,52 +6984,71 @@ function AiAssistantPage() {
   const restoreMemory = async () => {
     const path = memoryRestoreDialog?.preview?.path
     if (
-      restoringMemory
+      memoryBackupOperationBusy
+      || memoryBackupMutationLock.current
       || memoryRestoreDialog?.status !== 'ready'
       || !path
       || memoryRestoreConfirmation !== '恢复快照'
     ) return
-    memoryRestoreGate.current.invalidate()
+    memoryBackupMutationLock.current = true
+    const request = memoryRestoreGate.current.begin()
+    const preview = memoryRestoreDialog.preview
+    const confirmation = memoryRestoreConfirmation
     setRestoringMemory(true)
     setMemoryRestoreDialog((current: any) => current ? { ...current, status: 'restoring', error: '' } : current)
     try {
       await window.electronAPI.aiAssistant.restoreMemoryBackup(path, {
-        previewToken: memoryRestoreDialog.preview.previewToken,
-        confirmation: memoryRestoreConfirmation
+        previewToken: preview.previewToken,
+        confirmation
       })
+      if (!memoryRestoreGate.current.isCurrent(request)) return
       setMemoryRestoreDialog(null)
       setMemoryRestoreConfirmation('')
       await refreshMemoryDiagnostics().catch(() => {})
       await refreshDashboardAfterCommittedAction('个人记忆已恢复；恢复前的安全快照已保留。')
     } catch (error: any) {
+      if (!memoryRestoreGate.current.isCurrent(request)) return
       const message = error?.message || String(error)
       setMessage(message)
       setMemoryRestoreDialog((current: any) => current ? { ...current, status: 'error', error: message } : current)
     } finally {
-      setRestoringMemory(false)
+      if (memoryRestoreGate.current.isCurrent(request)) {
+        memoryBackupMutationLock.current = false
+        setRestoringMemory(false)
+      }
     }
   }
 
   const openMemoryBackupDeleteDialog = async (backup: any) => {
-    if (deletingMemoryBackup || !backup?.path) return
+    if (memoryBackupOperationBusy || memoryBackupMutationLock.current || !backup?.path) return
+    memoryBackupMutationLock.current = true
+    const request = memoryBackupDeleteGate.current.begin()
     setMemoryBackupDeleteConfirmation('')
     setMemoryBackupDeleteDialog({ backup, status: 'loading' })
     try {
       const preview = await window.electronAPI.aiAssistant.previewDeleteMemoryBackup(backup.path)
+      if (!memoryBackupDeleteGate.current.isCurrent(request)) return
       setMemoryBackupDeleteDialog((current: any) =>
         current?.backup?.path === backup.path
           ? { backup, preview, status: 'ready' }
           : current)
     } catch (error: any) {
+      if (!memoryBackupDeleteGate.current.isCurrent(request)) return
       setMemoryBackupDeleteDialog((current: any) =>
         current?.backup?.path === backup.path
           ? { backup, status: 'error', error: error?.message || String(error) }
           : current)
+    } finally {
+      if (memoryBackupDeleteGate.current.isCurrent(request)) {
+        memoryBackupMutationLock.current = false
+      }
     }
   }
 
   const closeMemoryBackupDeleteDialog = () => {
     if (deletingMemoryBackup) return
+    memoryBackupDeleteGate.current.invalidate()
+    memoryBackupMutationLock.current = false
     setMemoryBackupDeleteDialog(null)
     setMemoryBackupDeleteConfirmation('')
   }
@@ -7017,11 +7056,15 @@ function AiAssistantPage() {
   const deleteMemoryBackup = async () => {
     const preview = memoryBackupDeleteDialog?.preview
     if (
-      deletingMemoryBackup
+      memoryBackupOperationBusy
+      || memoryBackupMutationLock.current
       || memoryBackupDeleteDialog?.status !== 'ready'
       || !preview?.path
       || memoryBackupDeleteConfirmation !== '移到废纸篓'
     ) return
+    memoryBackupMutationLock.current = true
+    const request = memoryBackupDeleteGate.current.begin()
+    const confirmation = memoryBackupDeleteConfirmation
     setDeletingMemoryBackup(true)
     setMemoryBackupDeleteDialog((current: any) =>
       current ? { ...current, status: 'deleting', error: '' } : current)
@@ -7030,20 +7073,25 @@ function AiAssistantPage() {
         preview.path,
         {
           previewToken: preview.previewToken,
-          confirmation: memoryBackupDeleteConfirmation
+          confirmation
         }
       )
+      if (!memoryBackupDeleteGate.current.isCurrent(request)) return
       setMessage(`历史快照已移到废纸篓，释放备份目录 ${(Number(result.bytes || 0) / 1024 / 1024).toFixed(1)} MB`)
       setMemoryBackupDeleteDialog(null)
       setMemoryBackupDeleteConfirmation('')
       await refreshMemoryDiagnostics().catch(() => {})
     } catch (error: any) {
+      if (!memoryBackupDeleteGate.current.isCurrent(request)) return
       const message = error?.message || String(error)
       setMessage(message)
       setMemoryBackupDeleteDialog((current: any) =>
         current ? { ...current, status: 'error', error: message } : current)
     } finally {
-      setDeletingMemoryBackup(false)
+      if (memoryBackupDeleteGate.current.isCurrent(request)) {
+        memoryBackupMutationLock.current = false
+        setDeletingMemoryBackup(false)
+      }
     }
   }
 
@@ -10636,7 +10684,7 @@ function AiAssistantPage() {
               <button onClick={() => setShowDiagnostics(true)}>完整诊断</button>
               <button
                 onClick={() => void backupMemory()}
-                disabled={backingUpMemory || restoringMemory || !memoryDiagnostics.healthy ||
+                disabled={memoryBackupOperationBusy || !memoryDiagnostics.healthy ||
                   Boolean(status?.backgroundWrites?.active)}
                 title={status?.backgroundWrites?.active
                   ? `${status.backgroundWrites.message}，完成后才能创建数据库与状态一致的联合快照`
@@ -10678,13 +10726,13 @@ function AiAssistantPage() {
                     const availability = describeMemoryBackupRestore(backup)
                     return <div key={backup.path}>
                       <button
-                        disabled={restoringMemory || deletingMemoryBackup || !availability.enabled}
+                        disabled={memoryBackupOperationBusy || !availability.enabled}
                         title={availability.title}
                         onClick={() => void openMemoryRestoreDialog(backup)}>
                         {new Date(backup.createdAt).toLocaleString('zh-CN')}{availability.suffix}
                       </button>
                       <button
-                        disabled={restoringMemory || deletingMemoryBackup}
+                        disabled={memoryBackupOperationBusy}
                         title="先预览文件数量与空间，再经明确确认移到 macOS 废纸篓"
                         onClick={() => void openMemoryBackupDeleteDialog(backup)}>
                         清理此快照

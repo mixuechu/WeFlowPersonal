@@ -77,7 +77,7 @@ test('memory growth is a first-class pageable archive with current dossier navig
   assert.match(page, /memoryDiagnostics\.backupRestoreAudit\?\.restorable/)
   assert.match(page, /配对但验证失败/)
   assert.match(page, /describeMemoryBackupRestore\(backup\)\.enabled/)
-  assert.match(page, /disabled=\{restoringMemory \|\| deletingMemoryBackup \|\| !availability\.enabled\}/)
+  assert.match(page, /disabled=\{memoryBackupOperationBusy \|\| !availability\.enabled\}/)
   assert.match(service, /resolve\(String\(backup\?\.path \|\| ''\)\) === resolve\(String\(path \|\| ''\)\)/)
   assert.match(service, /buildMemoryBackupDeletionPreviewToken/)
   assert.match(service, /assertMemoryBackupDeletionConfirmation/)
