@@ -14583,6 +14583,49 @@ export class PersonalMemoryStore {
     return result
   }
 
+  listTaskEvidenceWindow(
+    taskIdsInput: string[],
+    options: { head?: number; tail?: number } = {}
+  ): Map<string, any[]> {
+    const taskIds = [...new Set((Array.isArray(taskIdsInput) ? taskIdsInput : [])
+      .map(id => String(id || '').trim()).filter(Boolean))].slice(0, 500)
+    const result = new Map<string, any[]>(taskIds.map(id => [id, []]))
+    if (!this.db || !taskIds.length) return result
+    const head = Math.max(0, Math.min(50, Math.floor(Number(options.head) || 0)))
+    const tail = Math.max(0, Math.min(200, Math.floor(Number(options.tail) || 0)))
+    if (!head && !tail) return result
+    const documentIds = taskIds.map(id => `task:${id}`)
+    const placeholders = documentIds.map(() => '?').join(',')
+    const rows = this.db.prepare(`
+      WITH ranked AS (
+        SELECT substr(document_id,6) AS task_id,source_id,message_id,session_id,
+          timestamp,sender,excerpt,
+          ROW_NUMBER() OVER (PARTITION BY document_id
+            ORDER BY timestamp,source_id,session_id,message_id) AS head_rank,
+          ROW_NUMBER() OVER (PARTITION BY document_id
+            ORDER BY timestamp DESC,source_id DESC,session_id DESC,message_id DESC) AS tail_rank
+        FROM search_document_evidence
+        WHERE document_id IN (${placeholders})
+      )
+      SELECT task_id,source_id,message_id,session_id,timestamp,sender,excerpt
+      FROM ranked WHERE head_rank<=? OR tail_rank<=?
+      ORDER BY task_id,timestamp,source_id,session_id,message_id
+    `).all(...documentIds, head, tail) as any[]
+    for (const row of rows) {
+      const evidence = result.get(String(row.task_id || ''))
+      if (!evidence) continue
+      evidence.push({
+        sourceId: String(row.source_id || 'legacy'),
+        messageId: String(row.message_id || ''),
+        sessionId: String(row.session_id || ''),
+        timestamp: Number(row.timestamp || 0),
+        sender: String(row.sender || ''),
+        excerpt: String(row.excerpt || '')
+      })
+    }
+    return result
+  }
+
   getTaskDirectoryDossierItem(taskIdInput: string): any | null {
     if (!this.db) return null
     const taskId = String(taskIdInput || '').trim()

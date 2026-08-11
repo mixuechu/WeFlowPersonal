@@ -1971,7 +1971,9 @@ export class AiAssistantService {
       return task && !Array.isArray(task.evidence) ? [task] : []
     })
     if (!missing.length) return
-    const evidence = personalMemoryStore.listTaskEvidence(missing.map(task => task.id))
+    const evidence = personalMemoryStore.listTaskEvidenceWindow(
+      missing.map(task => task.id), { tail: 50 }
+    )
     for (const task of missing) task.evidence = evidence.get(task.id) || []
   }
 
@@ -1982,7 +1984,9 @@ export class AiAssistantService {
     let evidenceAdded = 0
     for (let offset = 0; offset < active.length; offset += 500) {
       const batch = active.slice(offset, offset + 500)
-      const evidenceByTask = personalMemoryStore.listTaskEvidence(batch.map(task => task.id))
+      const evidenceByTask = personalMemoryStore.listTaskEvidenceWindow(
+        batch.map(task => task.id), { tail: 50 }
+      )
       for (const task of batch) {
         const previous = Array.isArray(task.evidence) ? task.evidence : []
         const merged = mergeTaskEvidenceHotset(
@@ -5861,7 +5865,9 @@ export class AiAssistantService {
         this.saveState()
         continue
       }
-      const evidenceByTask = personalMemoryStore.listTaskEvidence(batch.map(task => task.id))
+      const evidenceByTask = personalMemoryStore.listTaskEvidenceWindow(
+        batch.map(task => task.id), { head: 5, tail: 15 }
+      )
       const evidenceWindowByTask = new Map(batch.map(task => [
         task.id,
         selectTaskLifecycleAuditEvidence(evidenceByTask.get(task.id) || [], 20)

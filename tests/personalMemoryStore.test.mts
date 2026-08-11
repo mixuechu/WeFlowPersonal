@@ -26642,6 +26642,20 @@ test('omitted closed-task evidence preserves SQLCipher authority while an explic
   assert.equal(hydrated.get('closed-task-state-storage')?.length, 125)
   assert.equal(hydrated.get('closed-task-state-storage')?.at(-1)?.messageId,
     'closed-task-message-124')
+  const hotset = store.listTaskEvidenceWindow(['closed-task-state-storage'], { tail: 50 })
+  assert.equal(hotset.get('closed-task-state-storage')?.length, 50)
+  assert.equal(hotset.get('closed-task-state-storage')?.at(0)?.messageId,
+    'closed-task-message-75')
+  assert.equal(hotset.get('closed-task-state-storage')?.at(-1)?.messageId,
+    'closed-task-message-124')
+  const lifecycle = store.listTaskEvidenceWindow(
+    ['closed-task-state-storage'], { head: 5, tail: 15 }
+  ).get('closed-task-state-storage') || []
+  assert.equal(lifecycle.length, 20)
+  assert.deepEqual(lifecycle.slice(0, 5).map(item => item.messageId),
+    Array.from({ length: 5 }, (_, index) => `closed-task-message-${index}`))
+  assert.equal(lifecycle.at(5)?.messageId, 'closed-task-message-110')
+  assert.equal(lifecycle.at(-1)?.messageId, 'closed-task-message-124')
 
   store.syncTasks([{ ...lightweight, detail: '显式移除原文', evidence: [] }])
   assert.equal(database.prepare(`
