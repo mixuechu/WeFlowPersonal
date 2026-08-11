@@ -7848,7 +7848,7 @@ export class PersonalMemoryStore {
       mineTaskOwnershipAuditIndex,
       memoryChangeLog,
       memorySearchScopePlanning: {
-        version: 3,
+        version: 4,
         facetStrategy: 'sqlcipher_direct_count',
         facetIdentityMaterializations: 0,
         primaryScopeStrategy: 'sqlcipher_isolated_temp_table',
@@ -7857,7 +7857,9 @@ export class PersonalMemoryStore {
         concurrentScopeIsolation: true,
         releasedAfterRequest: true,
         handleOnlyScopeApi: true,
-        legacySharedScopeRemoved: true
+        legacySharedScopeRemoved: true,
+        scopedGraphPathStrategy: 'sqlcipher_recursive_cte',
+        scopedGraphRelationIdentityMaterializations: 0
       },
       memorySearchRevision,
       memorySearchFeedbackArchiveRevision,
@@ -20734,20 +20736,79 @@ export class PersonalMemoryStore {
     return Boolean(this.db.prepare(`SELECT 1 FROM ${table} WHERE id=?`).get(documentId))
   }
 
-  listSearchDocumentSourceIdsInScope(
-    scope: SearchDocumentScopeHandle | null,
-    documentType: SearchDocumentType
-  ): string[] | null {
-    if (!scope) return null
-    if (!this.db) return []
-    const table = this.activeSearchScopes.get(scope.id)
-    if (!table) throw new Error('检索范围已经释放或不属于当前数据库')
-    return (this.db.prepare(`
-      SELECT d.source_id FROM search_documents d
-      JOIN ${table} scope ON scope.id=d.id
-      WHERE d.document_type=?
-      ORDER BY d.source_id ASC
-    `).all(documentType) as Array<{ source_id: string }>).map(row => row.source_id)
+  findRelationPathInScope(
+    scope: SearchDocumentScopeHandle,
+    fromId: string,
+    toId: string,
+    maxDepth = 5
+  ): { found: boolean; entityIds: string[]; steps: any[] } {
+    if (!this.db || !fromId || !toId) return { found: false, entityIds: [], steps: [] }
+    if (fromId === toId) return { found: true, entityIds: [fromId], steps: [] }
+    const scopeJoin = this.searchDocumentScopeJoin(scope, `('relation:' || relation.id)`)
+    const safeDepth = Math.max(1, Math.min(8, Number(maxDepth) || 5))
+    const row = this.db.prepare(`
+      WITH RECURSIVE eligible_edges(relation_id,from_id,to_id,forward) AS (
+        SELECT relation.id,relation.subject_id,relation.object_id,1
+        FROM relations relation
+        ${scopeJoin}
+        JOIN entities subject ON subject.id=relation.subject_id
+          AND subject.deleted_at IS NULL AND subject.trust_status='confirmed'
+        JOIN entities object ON object.id=relation.object_id
+          AND object.deleted_at IS NULL AND object.trust_status='confirmed'
+        WHERE relation.status='confirmed'
+        UNION ALL
+        SELECT relation.id,relation.object_id,relation.subject_id,0
+        FROM relations relation
+        ${scopeJoin}
+        JOIN entities subject ON subject.id=relation.subject_id
+          AND subject.deleted_at IS NULL AND subject.trust_status='confirmed'
+        JOIN entities object ON object.id=relation.object_id
+          AND object.deleted_at IS NULL AND object.trust_status='confirmed'
+        WHERE relation.status='confirmed'
+      ), walk(current_id,depth,entity_path,relation_path,direction_path) AS (
+        SELECT ?,0,json_array(?),json_array(),json_array()
+        UNION ALL
+        SELECT edge.to_id,walk.depth+1,
+          json_insert(walk.entity_path,'$[#]',edge.to_id),
+          json_insert(walk.relation_path,'$[#]',edge.relation_id),
+          json_insert(walk.direction_path,'$[#]',edge.forward)
+        FROM walk JOIN eligible_edges edge ON edge.from_id=walk.current_id
+        WHERE walk.depth<?
+          AND NOT EXISTS (
+            SELECT 1 FROM json_each(walk.entity_path) visited WHERE visited.value=edge.to_id
+          )
+      )
+      SELECT entity_path,relation_path,direction_path
+      FROM walk WHERE current_id=? AND depth>0
+      ORDER BY depth ASC,relation_path ASC LIMIT 1
+    `).get(fromId, fromId, safeDepth, toId) as any
+    if (!row) return { found: false, entityIds: [], steps: [] }
+    const entityIds = JSON.parse(String(row.entity_path || '[]')) as string[]
+    const relationIds = JSON.parse(String(row.relation_path || '[]')) as string[]
+    const directions = JSON.parse(String(row.direction_path || '[]')) as number[]
+    if (!relationIds.length || entityIds.length !== relationIds.length + 1) {
+      return { found: false, entityIds: [], steps: [] }
+    }
+    const placeholders = relationIds.map(() => '?').join(',')
+    const relations = this.db.prepare(`
+      SELECT id,predicate,status,confidence FROM relations WHERE id IN (${placeholders})
+    `).all(...relationIds) as any[]
+    const byId = new Map(relations.map(relation => [String(relation.id), relation]))
+    const steps = relationIds.map((relationId, index) => {
+      const relation = byId.get(relationId)
+      if (!relation) return null
+      return {
+        relationId,
+        fromId: entityIds[index],
+        toId: entityIds[index + 1],
+        predicate: relation.predicate,
+        forward: Boolean(directions[index]),
+        status: relation.status,
+        confidence: relation.confidence
+      }
+    })
+    if (steps.some(step => !step)) return { found: false, entityIds: [], steps: [] }
+    return { found: true, entityIds, steps }
   }
 
   private searchDocumentScopeJoin(scope: SearchDocumentScope | null, expression: string): string {

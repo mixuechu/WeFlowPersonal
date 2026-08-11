@@ -18161,6 +18161,8 @@ function AiAssistantPage() {
                 <span>并发查询 <b>{memoryDiagnostics.memorySearchScopePlanning.concurrentScopeIsolation ? '独立隔离' : '需要检查'}</b></span>
                 <span>请求结束 <b>{memoryDiagnostics.memorySearchScopePlanning.releasedAfterRequest ? '自动释放' : '需要检查'}</b></span>
                 <span>旧共享范围 <b>{memoryDiagnostics.memorySearchScopePlanning.legacySharedScopeRemoved ? '已移除' : '需要检查'}</b></span>
+                <span>范围内图路径 <b>{memoryDiagnostics.memorySearchScopePlanning.scopedGraphPathStrategy === 'sqlcipher_recursive_cte' ? 'SQLCipher 最短路径' : '需要检查'}</b></span>
+                <span>关系 ID 集合 <b>{Number(memoryDiagnostics.memorySearchScopePlanning.scopedGraphRelationIdentityMaterializations || 0)}</b> 份</span>
               </div>
             </div>}
             {memoryDiagnostics.memorySearchRevision?.version && <div className={`assistant-recovery-audit ${memoryDiagnostics.memorySearchRevisionHealthy ? 'healthy' : 'unhealthy'}`}>

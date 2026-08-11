@@ -11998,7 +11998,7 @@ export class AiAssistantService {
     fromId: string,
     toId: string,
     maxDepth = 5,
-    allowedRelationIds: Set<string> | null = null,
+    relationScope: SearchDocumentScopeHandle | null = null,
     entityDirectoryRevision?: string
   ): any {
     if (entityDirectoryRevision) {
@@ -12009,14 +12009,24 @@ export class AiAssistantService {
       })
       if (selection.stale) throw new Error('关系路径所选实体已经变化，请重新选择起点和终点')
     }
-    const path = findScopedGraphPath(
-      fromId,
-      toId,
-      this.state.graph.entities.filter(isTrustedEntity),
-      this.state.graph.relations,
-      maxDepth,
-      allowedRelationIds
-    )
+    const trustedEntities = this.state.graph.entities.filter(isTrustedEntity)
+    const entityMap = new Map(trustedEntities.map(entity => [entity.id, entity]))
+    const scopedPath = relationScope
+      ? personalMemoryStore.findRelationPathInScope(relationScope, fromId, toId, maxDepth)
+      : null
+    const path = scopedPath
+      ? {
+          found: scopedPath.found,
+          entities: scopedPath.entityIds.map(id => entityMap.get(id)).filter(Boolean),
+          steps: scopedPath.steps
+        }
+      : findScopedGraphPath(
+          fromId,
+          toId,
+          trustedEntities,
+          this.state.graph.relations,
+          maxDepth
+        )
     if (!path?.found || !Array.isArray(path.steps) || !path.steps.length) return path
     const hotsets = personalMemoryStore.getRelationEvidenceHotset(
       path.steps.map((step: any) => step.relationId),
@@ -12173,18 +12183,11 @@ export class AiAssistantService {
     try {
     if (plan.matchedEntities.length >= 2) {
       if (plannedScope !== null) plan.explanation.push('图路径同样受当前检索范围约束')
-      const scopedRelationIds = personalMemoryStore.listSearchDocumentSourceIdsInScope(
-        plannedScope,
-        'relation'
-      )
-      const allowedRelationIds = scopedRelationIds === null
-        ? null
-        : new Set(scopedRelationIds)
       plannedGraphPath = this.findGraphPath(
         plan.matchedEntities[0].id,
         plan.matchedEntities[1].id,
         6,
-        allowedRelationIds
+        plannedScope
       )
       if (plannedGraphPath.found && plannedGraphPath.steps.length) {
         const names = new Map(trustedEntities.map(entity => [entity.id, entity.canonicalName]))

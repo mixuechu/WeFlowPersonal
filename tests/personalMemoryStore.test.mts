@@ -13491,7 +13491,6 @@ test('retrieval scope is applied before lexical and vector top-k ranking', () =>
   const database = (store as any).db
   assert.equal(targetHandle.size, 1)
   assert.equal(wechatHandle.size, 350)
-  assert.deepEqual(store.listSearchDocumentSourceIdsInScope(targetHandle, 'relation'), [])
   assert.equal(Number(database.prepare(`
     SELECT COUNT(*) AS count FROM sqlite_temp_master
     WHERE type='table' AND name LIKE 'active_memory_search_scope_%'
@@ -13520,10 +13519,6 @@ test('retrieval scope is applied before lexical and vector top-k ranking', () =>
     () => store.searchText('共同关键词', 40, targetHandle),
     /检索范围已经释放/
   )
-  assert.throws(
-    () => store.listSearchDocumentSourceIdsInScope(targetHandle, 'relation'),
-    /检索范围已经释放/
-  )
   assert.equal(store.searchText('共同关键词', 500, wechatHandle).length, 350)
   store.releaseSearchDocumentScope(wechatHandle)
   assert.equal(Number(database.prepare(`
@@ -13532,6 +13527,89 @@ test('retrieval scope is applied before lexical and vector top-k ranking', () =>
       AND name!='active_memory_search_scope'
   `).get().count), 0)
 }))
+
+test('scoped graph paths stay inside SQLCipher without materializing every relation id', () =>
+  withStore(store => {
+    const entities = ['path-left', 'path-right', 'path-calendar-bridge'].map(id => ({
+      id,
+      type: 'person',
+      canonicalName: id,
+      summary: '',
+      confidence: 1,
+      trustStatus: 'confirmed',
+      aliases: [],
+      accountIds: []
+    }))
+    const relation = (
+      id: string,
+      subjectId: string,
+      objectId: string,
+      sourceId: string,
+      predicate: string
+    ) => ({
+      id,
+      subjectId,
+      objectId,
+      predicate,
+      confidence: 0.9,
+      status: 'confirmed',
+      evidence: [{
+        sourceId,
+        messageId: `${id}-message`,
+        sessionId: `data-source:${sourceId}`,
+        timestamp: 1_800_000_000,
+        sender: '路径测试',
+        excerpt: predicate
+      }]
+    })
+    store.syncGraph({
+      entities,
+      relations: [
+        relation('path-wechat-direct', 'path-left', 'path-right', 'wechat', '微信直连'),
+        relation('path-calendar-left', 'path-left', 'path-calendar-bridge', 'calendar', '日历左边'),
+        relation('path-calendar-right', 'path-calendar-bridge', 'path-right', 'calendar', '日历右边')
+      ],
+      reviewQueue: []
+    } as any)
+    const wechatScope = store.createSearchDocumentScope({
+      sourceIds: ['wechat'],
+      documentTypes: ['relation']
+    })!
+    const calendarScope = store.createSearchDocumentScope({
+      sourceIds: ['calendar'],
+      documentTypes: ['relation']
+    })!
+    assert.deepEqual(
+      store.findRelationPathInScope(wechatScope, 'path-left', 'path-right', 6)
+        .steps.map(step => step.relationId),
+      ['path-wechat-direct']
+    )
+    const calendarPath = store.findRelationPathInScope(
+      calendarScope,
+      'path-left',
+      'path-right',
+      6
+    )
+    assert.deepEqual(calendarPath.entityIds, [
+      'path-left',
+      'path-calendar-bridge',
+      'path-right'
+    ])
+    assert.deepEqual(
+      calendarPath.steps.map(step => [step.relationId, step.forward]),
+      [['path-calendar-left', true], ['path-calendar-right', true]]
+    )
+    assert.equal(
+      store.findRelationPathInScope(calendarScope, 'path-left', 'path-right', 1).found,
+      false
+    )
+    store.releaseSearchDocumentScope(wechatScope)
+    store.releaseSearchDocumentScope(calendarScope)
+    assert.throws(
+      () => store.findRelationPathInScope(calendarScope, 'path-left', 'path-right', 6),
+      /检索范围已经释放/
+    )
+  }))
 
 test('memory result pages are stable, bounded and report remaining ranked candidates', () => {
   const ranked = Array.from({ length: 95 }, (_, index) => ({ id: `result-${index}` }))
