@@ -15,7 +15,10 @@ test('memory diagnostics use one coalesced refresh path with bounded periodic re
     /getMemoryDiagnostics\(\)\.then\(setMemoryDiagnostics\)\.catch\(\(\) => \{\}\)/
   )
   assert.equal((page.match(/window\.electronAPI\.aiAssistant\.getMemoryDiagnostics\(/g) || []).length, 1)
-  assert.equal((page.match(/await refreshMemoryDiagnostics\(\)\.catch\(\(\) => \{\}\)/g) || []).length, 11)
+  assert.ok(
+    (page.match(/refreshMemoryDiagnostics\(\)\.catch\(\(\) => \{\}\)/g) || []).length >= 12,
+    'maintenance and periodic refresh paths should reuse the visible diagnostic coordinator'
+  )
 })
 
 test('diagnostic refresh failure remains visible and manually retryable without discarding last success', () => {

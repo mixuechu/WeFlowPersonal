@@ -921,8 +921,11 @@ function AiAssistantPage() {
   const [dashboard, setDashboard] = useState<any>(null)
   const [settings, setSettings] = useState<any>(null)
   const [showSettings, setShowSettings] = useState(false)
+  const [settingsLoading, setSettingsLoading] = useState(false)
+  const [settingsLoadError, setSettingsLoadError] = useState('')
   const [settingsSaving, setSettingsSaving] = useState(false)
   const [settingsError, setSettingsError] = useState('')
+  const settingsLoadGate = useRef(new LatestRequestGate())
   const [syncing, setSyncing] = useState(false)
   const [taskLifecycleAuditing, setTaskLifecycleAuditing] = useState(false)
   const [retryingNotifications, setRetryingNotifications] = useState(false)
@@ -5040,10 +5043,34 @@ function AiAssistantPage() {
     }
   }
 
-  const openSettings = async () => {
+  const loadSettingsForDialog = async () => {
+    const request = settingsLoadGate.current.begin()
+    setSettingsLoading(true)
+    setSettingsLoadError('')
     setSettingsError('')
-    setSettings(await window.electronAPI.aiAssistant.getSettings())
+    setSettings(null)
+    try {
+      const result = await window.electronAPI.aiAssistant.getSettings()
+      if (settingsLoadGate.current.isCurrent(request)) setSettings(result)
+    } catch (error: any) {
+      if (settingsLoadGate.current.isCurrent(request)) {
+        setSettingsLoadError(error?.message || String(error))
+      }
+    } finally {
+      if (settingsLoadGate.current.isCurrent(request)) setSettingsLoading(false)
+    }
+  }
+
+  const openSettings = () => {
     setShowSettings(true)
+    void loadSettingsForDialog()
+  }
+
+  const closeSettings = () => {
+    if (settingsSaving) return
+    settingsLoadGate.current.invalidate()
+    setSettingsLoading(false)
+    setShowSettings(false)
   }
 
   const saveSettings = async () => {
@@ -5053,15 +5080,24 @@ function AiAssistantPage() {
     try {
       const result = await window.electronAPI.aiAssistant.setSettings(settings)
       setShowSettings(false)
-      await load()
-      await refreshMemoryDiagnostics().catch(() => {})
       setMessage(result?.maintenanceWarning || 'AI 助理设置已完整保存')
+      await Promise.all([
+        load().catch(() => {}),
+        refreshMemoryDiagnostics().catch(() => {})
+      ])
     } catch (error: any) {
       const errorMessage = error?.message || String(error)
       setMessage(errorMessage)
       setSettingsError(errorMessage)
       if (errorMessage.includes('AI 助理设置在展示后发生了变化')) {
-        setSettings(await window.electronAPI.aiAssistant.getSettings())
+        try {
+          setSettings(await window.electronAPI.aiAssistant.getSettings())
+        } catch (refreshError: any) {
+          setSettings(null)
+          setSettingsLoadError(
+            `设置已发生变化，但重新读取当前值失败：${refreshError?.message || String(refreshError)}`
+          )
+        }
       }
     } finally {
       setSettingsSaving(false)
@@ -19659,10 +19695,23 @@ function AiAssistantPage() {
         </div>
       )}
 
-      {showSettings && settings && (
+      {showSettings && (
         <div className="assistant-modal-backdrop">
           <div className="assistant-modal">
-            <div className="assistant-modal-title"><div><h2>AI 助理设置</h2><p>敏感 Key 由 Electron safeStorage 加密保存。</p></div><button disabled={settingsSaving} onClick={() => setShowSettings(false)}><X size={16} /></button></div>
+            <div className="assistant-modal-title"><div><h2>AI 助理设置</h2><p>敏感 Key 由 Electron safeStorage 加密保存。</p></div><button disabled={settingsSaving} onClick={closeSettings}><X size={16} /></button></div>
+            {settingsLoading && <div className="assistant-delete-status">
+              <RefreshCw size={16} /><span><strong>正在读取当前设置…</strong>
+                <small>读取完成前不会展示默认值，也不会允许保存。</small></span>
+            </div>}
+            {settingsLoadError && <div className="assistant-task-load-failure" role="alert">
+              <strong>AI 助理设置读取失败</strong>
+              <span>{settingsLoadError}。当前不会用空值或旧值冒充已保存设置。</span>
+              <button type="button" disabled={settingsLoading}
+                onClick={() => void loadSettingsForDialog()}>
+                {settingsLoading ? '正在重试…' : '立即重试'}
+              </button>
+            </div>}
+            {settings && <>
             {settingsError && <div className="assistant-error" role="alert">
               <strong>设置没有保存</strong><span>{settingsError}</span>
               <small>请修正后再次保存；本次没有写入任何部分设置。</small>
@@ -19723,7 +19772,8 @@ function AiAssistantPage() {
             </select></label>
             <small className="assistant-settings-note">到期只清除回收站快照；删除抑制仍保留，原消息不会让资源复活。</small>
             <label className="assistant-toggle"><input type="checkbox" checked={settings.enabled} onChange={event => setSettings({ ...settings, enabled: event.target.checked })} /><span>启用启动补齐与每日自动整理</span></label>
-            <div className="assistant-modal-actions"><button disabled={settingsSaving} onClick={() => setShowSettings(false)}>取消</button><button className="primary" disabled={settingsSaving} onClick={saveSettings}>{settingsSaving ? '正在保存…' : '保存设置'}</button></div>
+            <div className="assistant-modal-actions"><button disabled={settingsSaving} onClick={closeSettings}>取消</button><button className="primary" disabled={settingsSaving} onClick={saveSettings}>{settingsSaving ? '正在保存…' : '保存设置'}</button></div>
+            </>}
           </div>
         </div>
       )}
