@@ -4800,6 +4800,86 @@ export class PersonalMemoryStore {
     return { entities, revision, stale: false, reason: 'ok' }
   }
 
+  listTrustedEntitiesMentionedInText(textInput: string, limitInput = 100): {
+    items: any[]
+    total: number
+    truncated: boolean
+    revision: string
+    stale: boolean
+  } {
+    const text = String(textInput || '').trim().toLocaleLowerCase('zh-CN').slice(0, 2_000)
+    const limit = Math.max(1, Math.min(100, Math.floor(Number(limitInput) || 100)))
+    const revision = this.getTrustedEntityDirectoryRevision()
+    if (!this.db || !text) {
+      return { items: [], total: 0, truncated: false, revision, stale: false }
+    }
+    const termCte = `
+      WITH trusted AS (
+        SELECT id,type,canonical_name,updated_at
+        FROM entities
+        WHERE deleted_at IS NULL AND trust_status='confirmed'
+          AND trim(canonical_name)!=''
+      ), terms AS (
+        SELECT trusted.id AS entity_id,lower(trim(trusted.canonical_name)) AS term
+        FROM trusted
+        UNION
+        SELECT trusted.id,lower(trim(alias.value))
+        FROM trusted JOIN aliases alias ON alias.entity_id=trusted.id
+        UNION
+        SELECT trusted.id,lower(trim(identity.account_id))
+        FROM trusted JOIN identities identity ON identity.entity_id=trusted.id
+        UNION
+        SELECT trusted.id,lower(trim(identity.display_name))
+        FROM trusted JOIN identities identity ON identity.entity_id=trusted.id
+      ), positioned AS (
+        SELECT entity_id,term,instr(?,term) AS position
+        FROM terms
+        WHERE length(term)>=2
+      ), matched AS (
+        SELECT entity_id,MAX(length(term)) AS best_term_length
+        FROM positioned
+        WHERE position>0
+          AND (
+            substr(term,1,1) NOT GLOB '[0-9A-Za-z_]'
+            OR position=1
+            OR substr(?,position-1,1) NOT GLOB '[0-9A-Za-z_]'
+          )
+          AND (
+            substr(term,-1,1) NOT GLOB '[0-9A-Za-z_]'
+            OR position+length(term)>length(?)
+            OR substr(?,position+length(term),1) NOT GLOB '[0-9A-Za-z_]'
+          )
+        GROUP BY entity_id
+      )
+    `
+    const total = Number((this.db.prepare(`${termCte}
+      SELECT COUNT(*) AS count FROM matched
+    `).get(text, text, text, text) as any)?.count || 0)
+    const ids = (this.db.prepare(`${termCte}
+      SELECT trusted.id
+      FROM matched JOIN trusted ON trusted.id=matched.entity_id
+      ORDER BY matched.best_term_length DESC,
+        trusted.canonical_name COLLATE NOCASE ASC,trusted.id ASC
+      LIMIT ?
+    `).all(text, text, text, text, limit) as any[]).map(row => String(row.id))
+    const selection = ids.length
+      ? this.resolveTrustedEntityDirectorySelection({ entityIds: ids, expectedRevision: revision })
+      : { entities: [], revision, reason: 'ok' as const }
+    if (selection.reason === 'revision_changed') {
+      return {
+        items: [], total: 0, truncated: false,
+        revision: selection.revision, stale: true
+      }
+    }
+    return {
+      items: selection.entities,
+      total,
+      truncated: total > selection.entities.length,
+      revision,
+      stale: false
+    }
+  }
+
   getGraphReviewRevision(): string {
     if (!this.db) return '0'
     return String((this.db.prepare(`
@@ -8144,7 +8224,7 @@ export class PersonalMemoryStore {
       mineTaskOwnershipAuditIndex,
       memoryChangeLog,
       memorySearchScopePlanning: {
-        version: 12,
+        version: 13,
         facetStrategy: 'sqlcipher_direct_count',
         facetIdentityMaterializations: 0,
         primaryScopeStrategy: 'sqlcipher_isolated_temp_table',
@@ -8185,7 +8265,11 @@ export class PersonalMemoryStore {
         trustedEntityDirectorySearchFields: 'canonical_alias_account_external_id',
         trustedEntityDirectoryCollisionAuthority: 'sqlcipher_full_trusted_scope',
         trustedEntityDirectoryRevisionBound: true,
-        trustedEntityPresentationHydration: 'requested_ids_only'
+        trustedEntityPresentationHydration: 'requested_ids_only',
+        questionEntityPlanningStrategy: 'sqlcipher_reverse_term_match',
+        questionEntityPlanningLimit: 100,
+        questionEntityPlanningTotalVisible: true,
+        questionEntityPlanningTruncationSafe: true
       },
       memorySearchRevision,
       memorySearchFeedbackArchiveRevision,

@@ -11346,7 +11346,9 @@ export class AiAssistantService {
     execution?: { mode?: 'hybrid' | 'lexical_ai_disabled' | 'lexical_vector_fallback' },
     preparedScope?: { allowedIds: SearchDocumentScopeHandle | null }
   ): Promise<any[]> {
-    const selectedEntity = options.entityId ? this.state.graph.entities.find(entity => entity.id === options.entityId && isTrustedEntity(entity)) : null
+    const selectedEntity = options.entityId
+      ? this.getTrustedEntityPresentations([options.entityId]).byId.get(options.entityId) || null
+      : null
     const scopedOptions = selectedEntity
       ? {
           ...options,
@@ -11534,8 +11536,7 @@ export class AiAssistantService {
     const documentId = String(input?.documentId || '').trim()
     if (!documentId) throw new Error('缺少检索记忆 ID')
     const trustedEntity = options.entityId
-      ? this.state.graph.entities.find(entity =>
-          entity.id === options.entityId && isTrustedEntity(entity))
+      ? this.getTrustedEntityPresentations([options.entityId]).byId.get(options.entityId) || null
       : null
     if (options.entityId && !trustedEntity) {
       throw new Error('反馈对应的实体范围已经变化或不再可信，请刷新后重试')
@@ -12392,8 +12393,25 @@ export class AiAssistantService {
     )
     const conversationHistory = conversationHistoryAudit.history
     const contextualQuestion = buildContextualMemoryQuestion(query, conversationHistory)
-    const trustedEntities = this.state.graph.entities.filter(isTrustedEntity)
-    const plan = buildMemoryQueryPlan(contextualQuestion.query, trustedEntities)
+    const mentionedEntities = personalMemoryStore.listTrustedEntitiesMentionedInText(
+      contextualQuestion.query,
+      100
+    )
+    if (mentionedEntities.stale) {
+      throw new Error('可信实体目录在理解问题期间发生了变化，请重试')
+    }
+    const plannerEntities = [...mentionedEntities.items]
+    if (options.entityId && !plannerEntities.some(entity => entity.id === options.entityId)) {
+      const selected = this.getTrustedEntityPresentations([options.entityId]).byId.get(options.entityId)
+      if (selected) plannerEntities.push(selected)
+    }
+    const plan = buildMemoryQueryPlan(contextualQuestion.query, plannerEntities)
+    if (mentionedEntities.truncated) {
+      plan.explanation.unshift(
+        `问题命中 ${mentionedEntities.total} 个可信实体；当前只用最长名称优先的前 ${mentionedEntities.items.length} 个规划，未据此自动绑定单一人物`
+      )
+      plan.inferredOptions.entityId = undefined
+    }
     if (options.entityId) {
       plan.explanation.unshift('显式实体范围已绑定稳定 ID 与可信目录版本，并会在回答保存前再次复核')
     }
@@ -12429,7 +12447,7 @@ export class AiAssistantService {
       sourceIds: options.sourceIds?.length ? options.sourceIds : plan.inferredOptions.sourceIds
     }
     const plannedEntity = plannedOptions.entityId
-      ? trustedEntities.find(entity => entity.id === plannedOptions.entityId)
+      ? plannerEntities.find(entity => entity.id === plannedOptions.entityId) || null
       : null
     const scopeAuditOptions: MemorySearchOptions = plannedEntity ? {
       ...plannedOptions,
@@ -12461,7 +12479,8 @@ export class AiAssistantService {
         plannedScope
       )
       if (plannedGraphPath.found && plannedGraphPath.steps.length) {
-        const names = new Map(trustedEntities.map(entity => [entity.id, entity.canonicalName]))
+        const names = new Map((plannedGraphPath.entities || [])
+          .map((entity: any) => [entity.id, entity.canonicalName]))
         const pathResults = plannedGraphPath.steps.map((step: any) => ({
           id: `relation:${step.relationId}`,
           document_type: 'relation',

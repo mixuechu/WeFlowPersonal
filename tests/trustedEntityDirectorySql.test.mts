@@ -20,6 +20,22 @@ test('all trusted directory reads and selection gates use SQLCipher authority', 
   assert.doesNotMatch(serviceSource, /buildTrustedEntityDirectory\(this\.state\.graph\.entities/)
   assert.doesNotMatch(serviceSource, /resolveTrustedEntitySelection\(this\.state\.graph\.entities/)
   assert.doesNotMatch(serviceSource, /resolveTrustedEntityPairSelection\(this\.state\.graph\.entities/)
+  const questionStart = serviceSource.indexOf('  private async runMemoryQuestion(')
+  const questionEnd = serviceSource.indexOf('\n  getAssistantConversations(', questionStart)
+  const questionSource = serviceSource.slice(questionStart, questionEnd)
+  assert.match(questionSource, /personalMemoryStore\.listTrustedEntitiesMentionedInText\(/)
+  assert.doesNotMatch(questionSource, /this\.state\.graph\.entities\.(?:find|filter|map)/)
+  for (const [startMarker, endMarker] of [
+    ['  async searchMemoryHybrid(', '\n  async searchMemoryWithTrustedScope('],
+    ['  async updateMemorySearchFeedback(', '\n  getMemorySearchFeedbackArchive(']
+  ]) {
+    const start = serviceSource.indexOf(startMarker)
+    const end = serviceSource.indexOf(endMarker, start)
+    assert.ok(start > 0 && end > start, startMarker)
+    const source = serviceSource.slice(start, end)
+    assert.match(source, /getTrustedEntityPresentations\(\[options\.entityId\]\)/, startMarker)
+    assert.doesNotMatch(source, /this\.state\.graph\.entities\.(?:find|filter|map)/, startMarker)
+  }
   for (const [startMarker, endMarker] of [
     ['  getMemoryClaim(', '\n  getMemoryEvent('],
     ['  getMemoryEvent(', '\n  getEventCorrectionParticipantPage('],
@@ -90,6 +106,23 @@ test('SQLCipher trusted entity directory searches and paginates without material
     const sameName = store.listTrustedEntityDirectoryPage({ query: '王伟' })
     assert.deepEqual(new Set(sameName.items.map(item => item.id)), new Set(['trusted-0', 'trusted-1']))
     assert.ok(sameName.items.every(item => item.canonicalNameCollisionCount === 2))
+
+    const mentioned = store.listTrustedEntitiesMentionedInText(
+      '请结合别名-123、wxid-456 和 person-789@example.com 的关系回答'
+    )
+    assert.equal(mentioned.stale, false)
+    assert.deepEqual(
+      new Set(mentioned.items.map(entity => entity.id)),
+      new Set(['trusted-123', 'trusted-456', 'trusted-789'])
+    )
+    const manyMentions = store.listTrustedEntitiesMentionedInText(
+      Array.from({ length: 110 }, (_, index) => `实体 ${String(index + 10).padStart(4, '0')}`).join('、'),
+      25
+    )
+    assert.equal(manyMentions.total, 110)
+    assert.equal(manyMentions.items.length, 25)
+    assert.equal(manyMentions.truncated, true)
+    assert.ok(manyMentions.items.every(entity => entity.trustStatus === 'confirmed'))
 
     const selection = store.resolveTrustedEntityDirectorySelection({
       entityIds: ['trusted-1', 'trusted-123'],
