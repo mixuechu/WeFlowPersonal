@@ -13,7 +13,7 @@ const between = (startText: string, endText: string): string => {
 }
 
 test('backup creation, restore, and deletion share one synchronous operation lock', () => {
-  assert.match(page, /const memoryBackupMutationLock = useRef\(false\)/)
+  assert.match(page, /const memoryMaintenanceLock = useRef\(false\)/)
   assert.match(page, /const memoryBackupCreateGate = useRef\(new LatestRequestGate\(\)\)/)
   assert.match(page, /const memoryRestoreGate = useRef\(new LatestRequestGate\(\)\)/)
   assert.match(page, /const memoryBackupDeleteGate = useRef\(new LatestRequestGate\(\)\)/)
@@ -30,9 +30,9 @@ test('backup creation, restore, and deletion share one synchronous operation loc
     ['  const deleteMemoryBackup =', '  const openExportMemoryBundle =']
   ] as const) {
     const operation = between(start, end)
-    assert.match(operation, /memoryBackupMutationLock\.current/)
-    assert.match(operation, /memoryBackupMutationLock\.current = true/)
-    assert.match(operation, /memoryBackupMutationLock\.current = false/)
+    assert.match(operation, /memoryMaintenanceLock\.current/)
+    assert.match(operation, /memoryMaintenanceLock\.current = true/)
+    assert.match(operation, /memoryMaintenanceLock\.current = false/)
   }
 })
 
@@ -57,16 +57,16 @@ test('every backup preview or mutation rejects late success and error results', 
 test('closing either preview invalidates its pending read and releases ownership', () => {
   const restoreClose = between('  const closeMemoryRestoreDialog =', '  const restoreMemory =')
   assert.match(restoreClose, /memoryRestoreGate\.current\.invalidate\(\)/)
-  assert.match(restoreClose, /memoryBackupMutationLock\.current = false/)
+  assert.match(restoreClose, /memoryMaintenanceLock\.current = false/)
 
   const deleteClose = between('  const closeMemoryBackupDeleteDialog =', '  const deleteMemoryBackup =')
   assert.match(deleteClose, /memoryBackupDeleteGate\.current\.invalidate\(\)/)
-  assert.match(deleteClose, /memoryBackupMutationLock\.current = false/)
+  assert.match(deleteClose, /memoryMaintenanceLock\.current = false/)
 })
 
 test('the backup directory disables every competing action while an operation owns it', () => {
   const health = between('<div className="assistant-memory-health-actions">', '</section>')
-  assert.match(health, /disabled=\{memoryBackupOperationBusy \|\| !memoryDiagnostics\.healthy/)
-  assert.match(health, /disabled=\{memoryBackupOperationBusy \|\| !availability\.enabled\}/)
-  assert.match(health, /disabled=\{memoryBackupOperationBusy\}/)
+  assert.match(health, /disabled=\{memoryMaintenanceBusy \|\| !memoryDiagnostics\.healthy/)
+  assert.match(health, /disabled=\{memoryMaintenanceBusy \|\| !availability\.enabled\}/)
+  assert.match(health, /disabled=\{memoryMaintenanceBusy\}/)
 })

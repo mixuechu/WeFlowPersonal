@@ -1658,7 +1658,7 @@ function AiAssistantPage() {
   const [deletingMemoryBackup, setDeletingMemoryBackup] = useState(false)
   const [memoryBackupDeleteDialog, setMemoryBackupDeleteDialog] = useState<any>(null)
   const [memoryBackupDeleteConfirmation, setMemoryBackupDeleteConfirmation] = useState('')
-  const memoryBackupMutationLock = useRef(false)
+  const memoryMaintenanceLock = useRef(false)
   const memoryBackupCreateGate = useRef(new LatestRequestGate())
   const memoryRestoreGate = useRef(new LatestRequestGate())
   const memoryBackupDeleteGate = useRef(new LatestRequestGate())
@@ -1667,7 +1667,9 @@ function AiAssistantPage() {
   const [migrationPassphrase, setMigrationPassphrase] = useState('')
   const [migrationPassphraseConfirmation, setMigrationPassphraseConfirmation] = useState('')
   const [migrationImportConfirmation, setMigrationImportConfirmation] = useState('')
+  const memoryMigrationGate = useRef(new LatestRequestGate())
   const [indexingVectors, setIndexingVectors] = useState(false)
+  const memoryVectorIndexGate = useRef(new LatestRequestGate())
   const [memoryQuestion, setMemoryQuestion] = useState('')
   const [memoryAnswer, setMemoryAnswer] = useState<any>(null)
   const [memoryConversationId, setMemoryConversationId] = useState<string | null>(null)
@@ -3908,6 +3910,7 @@ function AiAssistantPage() {
   const memoryBackupOperationBusy = backingUpMemory || restoringMemory || deletingMemoryBackup ||
     memoryRestoreDialog?.status === 'loading' || memoryRestoreDialog?.status === 'restoring' ||
     memoryBackupDeleteDialog?.status === 'loading' || memoryBackupDeleteDialog?.status === 'deleting'
+  const memoryMaintenanceBusy = memoryBackupOperationBusy || migratingMemory || indexingVectors
   const updateReminderPreference = async (reminder: any, action: 'helpful' | 'snooze' | 'mute_kind' | 'restore_kind') => {
     const key = action === 'restore_kind' ? `restore:${reminder.kind}` : reminder.id
     if (taskReminderSaving[key]) return
@@ -6924,8 +6927,8 @@ function AiAssistantPage() {
   }
 
   const backupMemory = async () => {
-    if (memoryBackupOperationBusy || memoryBackupMutationLock.current) return
-    memoryBackupMutationLock.current = true
+    if (memoryMaintenanceBusy || memoryMaintenanceLock.current) return
+    memoryMaintenanceLock.current = true
     const request = memoryBackupCreateGate.current.begin()
     setBackingUpMemory(true)
     try {
@@ -6938,7 +6941,7 @@ function AiAssistantPage() {
       setMessage(error?.message || String(error))
     } finally {
       if (memoryBackupCreateGate.current.isCurrent(request)) {
-        memoryBackupMutationLock.current = false
+        memoryMaintenanceLock.current = false
         setBackingUpMemory(false)
       }
     }
@@ -6946,12 +6949,12 @@ function AiAssistantPage() {
 
   const openMemoryRestoreDialog = async (backup: any) => {
     if (
-      memoryBackupOperationBusy
-      || memoryBackupMutationLock.current
+      memoryMaintenanceBusy
+      || memoryMaintenanceLock.current
       || !backup?.path
       || !describeMemoryBackupRestore(backup).enabled
     ) return
-    memoryBackupMutationLock.current = true
+    memoryMaintenanceLock.current = true
     const requestId = memoryRestoreGate.current.begin()
     setMemoryRestoreConfirmation('')
     setMemoryRestoreDialog({ backup, status: 'loading' })
@@ -6968,7 +6971,7 @@ function AiAssistantPage() {
       })
     } finally {
       if (memoryRestoreGate.current.isCurrent(requestId)) {
-        memoryBackupMutationLock.current = false
+        memoryMaintenanceLock.current = false
       }
     }
   }
@@ -6976,7 +6979,7 @@ function AiAssistantPage() {
   const closeMemoryRestoreDialog = () => {
     if (restoringMemory) return
     memoryRestoreGate.current.invalidate()
-    memoryBackupMutationLock.current = false
+    memoryMaintenanceLock.current = false
     setMemoryRestoreDialog(null)
     setMemoryRestoreConfirmation('')
   }
@@ -6984,13 +6987,13 @@ function AiAssistantPage() {
   const restoreMemory = async () => {
     const path = memoryRestoreDialog?.preview?.path
     if (
-      memoryBackupOperationBusy
-      || memoryBackupMutationLock.current
+      memoryMaintenanceBusy
+      || memoryMaintenanceLock.current
       || memoryRestoreDialog?.status !== 'ready'
       || !path
       || memoryRestoreConfirmation !== '恢复快照'
     ) return
-    memoryBackupMutationLock.current = true
+    memoryMaintenanceLock.current = true
     const request = memoryRestoreGate.current.begin()
     const preview = memoryRestoreDialog.preview
     const confirmation = memoryRestoreConfirmation
@@ -7013,15 +7016,15 @@ function AiAssistantPage() {
       setMemoryRestoreDialog((current: any) => current ? { ...current, status: 'error', error: message } : current)
     } finally {
       if (memoryRestoreGate.current.isCurrent(request)) {
-        memoryBackupMutationLock.current = false
+        memoryMaintenanceLock.current = false
         setRestoringMemory(false)
       }
     }
   }
 
   const openMemoryBackupDeleteDialog = async (backup: any) => {
-    if (memoryBackupOperationBusy || memoryBackupMutationLock.current || !backup?.path) return
-    memoryBackupMutationLock.current = true
+    if (memoryMaintenanceBusy || memoryMaintenanceLock.current || !backup?.path) return
+    memoryMaintenanceLock.current = true
     const request = memoryBackupDeleteGate.current.begin()
     setMemoryBackupDeleteConfirmation('')
     setMemoryBackupDeleteDialog({ backup, status: 'loading' })
@@ -7040,7 +7043,7 @@ function AiAssistantPage() {
           : current)
     } finally {
       if (memoryBackupDeleteGate.current.isCurrent(request)) {
-        memoryBackupMutationLock.current = false
+        memoryMaintenanceLock.current = false
       }
     }
   }
@@ -7048,7 +7051,7 @@ function AiAssistantPage() {
   const closeMemoryBackupDeleteDialog = () => {
     if (deletingMemoryBackup) return
     memoryBackupDeleteGate.current.invalidate()
-    memoryBackupMutationLock.current = false
+    memoryMaintenanceLock.current = false
     setMemoryBackupDeleteDialog(null)
     setMemoryBackupDeleteConfirmation('')
   }
@@ -7056,13 +7059,13 @@ function AiAssistantPage() {
   const deleteMemoryBackup = async () => {
     const preview = memoryBackupDeleteDialog?.preview
     if (
-      memoryBackupOperationBusy
-      || memoryBackupMutationLock.current
+      memoryMaintenanceBusy
+      || memoryMaintenanceLock.current
       || memoryBackupDeleteDialog?.status !== 'ready'
       || !preview?.path
       || memoryBackupDeleteConfirmation !== '移到废纸篓'
     ) return
-    memoryBackupMutationLock.current = true
+    memoryMaintenanceLock.current = true
     const request = memoryBackupDeleteGate.current.begin()
     const confirmation = memoryBackupDeleteConfirmation
     setDeletingMemoryBackup(true)
@@ -7089,20 +7092,21 @@ function AiAssistantPage() {
         current ? { ...current, status: 'error', error: message } : current)
     } finally {
       if (memoryBackupDeleteGate.current.isCurrent(request)) {
-        memoryBackupMutationLock.current = false
+        memoryMaintenanceLock.current = false
         setDeletingMemoryBackup(false)
       }
     }
   }
 
   const openExportMemoryBundle = () => {
+    if (memoryMaintenanceBusy || memoryMaintenanceLock.current) return
     setMigrationPassphrase('')
     setMigrationPassphraseConfirmation('')
     setMigrationDialog({ mode: 'export' })
   }
 
   const exportMemoryBundle = async () => {
-    if (migratingMemory) return
+    if (memoryMaintenanceBusy || memoryMaintenanceLock.current) return
     if (migrationPassphrase.normalize('NFKC').length < 12) {
       setMessage('迁移口令至少需要 12 个字符。')
       return
@@ -7111,62 +7115,92 @@ function AiAssistantPage() {
       setMessage('两次输入的迁移口令不一致。')
       return
     }
-    const selected = await window.electronAPI.dialog.saveFile({
-      title: '导出个人记忆迁移包',
-      defaultPath: `WeFlow-个人记忆-${new Date().toISOString().slice(0, 10)}.weflow-memory`,
-      filters: [{ name: 'WeFlow 个人记忆', extensions: ['weflow-memory'] }]
-    })
-    if (selected.canceled || !selected.filePath) return
+    memoryMaintenanceLock.current = true
+    const request = memoryMigrationGate.current.begin()
+    const passphrase = migrationPassphrase
     setMigratingMemory(true)
     try {
-      const result = await window.electronAPI.aiAssistant.exportMemoryBundle(selected.filePath, migrationPassphrase)
+      const selected = await window.electronAPI.dialog.saveFile({
+        title: '导出个人记忆迁移包',
+        defaultPath: `WeFlow-个人记忆-${new Date().toISOString().slice(0, 10)}.weflow-memory`,
+        filters: [{ name: 'WeFlow 个人记忆', extensions: ['weflow-memory'] }]
+      })
+      if (!memoryMigrationGate.current.isCurrent(request)) return
+      if (selected.canceled || !selected.filePath) return
+      const result = await window.electronAPI.aiAssistant.exportMemoryBundle(selected.filePath, passphrase)
+      if (!memoryMigrationGate.current.isCurrent(request)) return
       setMigrationDialog(null)
       setMigrationPassphrase('')
       setMigrationPassphraseConfirmation('')
       setMessage(`口令保护的便携迁移包已校验并导出：${result.path}`)
       await refreshMemoryDiagnostics().catch(() => {})
     } catch (error: any) {
+      if (!memoryMigrationGate.current.isCurrent(request)) return
       setMessage(error?.message || String(error))
     } finally {
-      setMigratingMemory(false)
+      if (memoryMigrationGate.current.isCurrent(request)) {
+        memoryMaintenanceLock.current = false
+        setMigratingMemory(false)
+      }
     }
   }
 
   const openImportMemoryBundle = async () => {
-    if (migratingMemory || restoringMemory) return
-    const selected = await window.electronAPI.dialog.openFile({
-      title: '选择个人记忆迁移包',
-      properties: ['openFile'],
-      filters: [{ name: 'WeFlow 个人记忆', extensions: ['weflow-memory'] }]
-    })
-    const bundlePath = selected.filePaths?.[0]
-    if (selected.canceled || !bundlePath) return
-    setMigrationPassphrase('')
-    setMigrationPassphraseConfirmation('')
-    setMigrationImportConfirmation('')
-    setMigrationDialog({ mode: 'import', bundlePath, status: 'unlock' })
+    if (memoryMaintenanceBusy || memoryMaintenanceLock.current) return
+    memoryMaintenanceLock.current = true
+    const request = memoryMigrationGate.current.begin()
+    setMigratingMemory(true)
+    try {
+      const selected = await window.electronAPI.dialog.openFile({
+        title: '选择个人记忆迁移包',
+        properties: ['openFile'],
+        filters: [{ name: 'WeFlow 个人记忆', extensions: ['weflow-memory'] }]
+      })
+      if (!memoryMigrationGate.current.isCurrent(request)) return
+      const bundlePath = selected.filePaths?.[0]
+      if (selected.canceled || !bundlePath) return
+      setMigrationPassphrase('')
+      setMigrationPassphraseConfirmation('')
+      setMigrationImportConfirmation('')
+      setMigrationDialog({ mode: 'import', bundlePath, status: 'unlock' })
+    } catch (error: any) {
+      if (!memoryMigrationGate.current.isCurrent(request)) return
+      setMessage(error?.message || String(error))
+    } finally {
+      if (memoryMigrationGate.current.isCurrent(request)) {
+        memoryMaintenanceLock.current = false
+        setMigratingMemory(false)
+      }
+    }
   }
 
   const importMemoryBundle = async () => {
     const bundlePath = migrationDialog?.bundlePath
-    if (!bundlePath || migratingMemory || restoringMemory) return
+    if (!bundlePath || memoryMaintenanceBusy || memoryMaintenanceLock.current) return
+    memoryMaintenanceLock.current = true
+    const request = memoryMigrationGate.current.begin()
+    const passphrase = migrationPassphrase
+    const inspected = migrationDialog.inspected
+    const confirmation = migrationImportConfirmation
     setMigratingMemory(true)
     try {
-      if (migrationDialog.status !== 'preview' || !migrationDialog.inspected?.previewToken) {
-        const inspected = await window.electronAPI.aiAssistant.inspectMemoryBundle(bundlePath, migrationPassphrase)
+      if (migrationDialog.status !== 'preview' || !inspected?.previewToken) {
+        const result = await window.electronAPI.aiAssistant.inspectMemoryBundle(bundlePath, passphrase)
+        if (!memoryMigrationGate.current.isCurrent(request)) return
         setMigrationImportConfirmation('')
         setMigrationDialog((current: any) => ({
           ...current,
           status: 'preview',
-          inspected,
+          inspected: result,
           error: undefined
         }))
       } else {
-        if (migrationImportConfirmation !== '导入并替换') return
-        await window.electronAPI.aiAssistant.importMemoryBundle(bundlePath, migrationPassphrase, {
-          previewToken: migrationDialog.inspected.previewToken,
-          confirmation: migrationImportConfirmation
+        if (confirmation !== '导入并替换') return
+        await window.electronAPI.aiAssistant.importMemoryBundle(bundlePath, passphrase, {
+          previewToken: inspected.previewToken,
+          confirmation
         })
+        if (!memoryMigrationGate.current.isCurrent(request)) return
         setMigrationDialog(null)
         setMigrationPassphrase('')
         setMigrationImportConfirmation('')
@@ -7174,18 +7208,24 @@ function AiAssistantPage() {
         await refreshDashboardAfterCommittedAction('个人记忆迁移完成；导入前的安全快照已保留。')
       }
     } catch (error: any) {
+      if (!memoryMigrationGate.current.isCurrent(request)) return
       setMigrationDialog((current: any) => ({
         ...current,
         status: 'error',
         error: error?.message || String(error)
       }))
     } finally {
-      setMigratingMemory(false)
+      if (memoryMigrationGate.current.isCurrent(request)) {
+        memoryMaintenanceLock.current = false
+        setMigratingMemory(false)
+      }
     }
   }
 
   const closeMigrationDialog = () => {
     if (migratingMemory) return
+    memoryMigrationGate.current.invalidate()
+    memoryMaintenanceLock.current = false
     setMigrationDialog(null)
     setMigrationPassphrase('')
     setMigrationPassphraseConfirmation('')
@@ -7193,19 +7233,26 @@ function AiAssistantPage() {
   }
 
   const indexMemoryVectors = async () => {
-    if (indexingVectors) return
+    if (memoryMaintenanceBusy || memoryMaintenanceLock.current) return
+    memoryMaintenanceLock.current = true
+    const request = memoryVectorIndexGate.current.begin()
     setIndexingVectors(true)
     try {
       const result = await window.electronAPI.aiAssistant.indexMemoryVectors()
+      if (!memoryVectorIndexGate.current.isCurrent(request)) return
       setMessage(
         `本地语义索引完成：${result.indexed} 条新增，累计 ${result.total - result.pending}/${result.total} 条`
         + `${result.ann?.rebuilt ? '；ANN 文档与分块索引已重建。' : '。'}`
       )
       await refreshMemoryDiagnostics().catch(() => {})
     } catch (error: any) {
+      if (!memoryVectorIndexGate.current.isCurrent(request)) return
       setMessage(error?.message || String(error))
     } finally {
-      setIndexingVectors(false)
+      if (memoryVectorIndexGate.current.isCurrent(request)) {
+        memoryMaintenanceLock.current = false
+        setIndexingVectors(false)
+      }
     }
   }
 
@@ -10684,7 +10731,7 @@ function AiAssistantPage() {
               <button onClick={() => setShowDiagnostics(true)}>完整诊断</button>
               <button
                 onClick={() => void backupMemory()}
-                disabled={memoryBackupOperationBusy || !memoryDiagnostics.healthy ||
+                disabled={memoryMaintenanceBusy || !memoryDiagnostics.healthy ||
                   Boolean(status?.backgroundWrites?.active)}
                 title={status?.backgroundWrites?.active
                   ? `${status.backgroundWrites.message}，完成后才能创建数据库与状态一致的联合快照`
@@ -10693,14 +10740,14 @@ function AiAssistantPage() {
               </button>
               <button
                 onClick={openExportMemoryBundle}
-                disabled={migratingMemory || !memoryDiagnostics.healthy ||
+                disabled={memoryMaintenanceBusy || !memoryDiagnostics.healthy ||
                   Boolean(status?.backgroundWrites?.active)}
                 title={status?.backgroundWrites?.active
                   ? `${status.backgroundWrites.message}，完成后才能导出一致的迁移包`
                   : undefined}>
                 {migratingMemory ? '正在处理迁移包…' : '导出到其他电脑'}
               </button>
-              <button onClick={() => void openImportMemoryBundle()} disabled={migratingMemory || restoringMemory}>导入迁移包</button>
+              <button onClick={() => void openImportMemoryBundle()} disabled={memoryMaintenanceBusy}>导入迁移包</button>
               {(Number(memoryDiagnostics.embeddings?.pending || 0) > 0
                 || (Number(memoryDiagnostics.embeddings?.ann?.eligible || 0)
                     >= Number(memoryDiagnostics.embeddings?.ann?.minimumDocuments || 2_000)
@@ -10711,7 +10758,7 @@ function AiAssistantPage() {
                       !== Number(memoryDiagnostics.embeddings?.ann?.eligibleChunks || 0)))) &&
                 <button
                   onClick={() => void indexMemoryVectors()}
-                  disabled={indexingVectors || Boolean(status?.backgroundWrites?.active)}
+                  disabled={memoryMaintenanceBusy || Boolean(status?.backgroundWrites?.active)}
                   title={status?.backgroundWrites?.message || undefined}>
                   {indexingVectors
                     ? '正在修复语义索引…'
@@ -10726,13 +10773,13 @@ function AiAssistantPage() {
                     const availability = describeMemoryBackupRestore(backup)
                     return <div key={backup.path}>
                       <button
-                        disabled={memoryBackupOperationBusy || !availability.enabled}
+                        disabled={memoryMaintenanceBusy || !availability.enabled}
                         title={availability.title}
                         onClick={() => void openMemoryRestoreDialog(backup)}>
                         {new Date(backup.createdAt).toLocaleString('zh-CN')}{availability.suffix}
                       </button>
                       <button
-                        disabled={memoryBackupOperationBusy}
+                        disabled={memoryMaintenanceBusy}
                         title="先预览文件数量与空间，再经明确确认移到 macOS 废纸篓"
                         onClick={() => void openMemoryBackupDeleteDialog(backup)}>
                         清理此快照
