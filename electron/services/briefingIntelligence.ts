@@ -186,7 +186,7 @@ export function buildBriefingArchivePage(
       date,
       headline: String(briefing?.headline || '').slice(0, 300),
       summary: String(briefing?.summary || '').slice(0, 900),
-      summaryVerified: briefing?.summaryVerified === true && evidenceTotal > 0,
+      summaryVerified: briefing?.summaryVerified === true && evidence.length > 0,
       summaryEvidence: evidence,
       summaryEvidenceTotal: evidenceTotal,
       summaryEvidenceTruncated: evidenceTotal > evidence.length,

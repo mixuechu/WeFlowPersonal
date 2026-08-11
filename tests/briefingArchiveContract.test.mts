@@ -22,4 +22,7 @@ test('briefing archive has one bounded service, IPC, preload and renderer path',
   assert.match(page, /revision: briefingArchive\.revision/)
   assert.match(page, /page\.stale/)
   assert.match(page, /summaryEvidenceTruncated/)
+  assert.match(page, /inspectBriefingDateInMemorySearch\(item\.date\)/)
+  assert.match(page, />\s*查看该日完整记忆\s*</)
+  assert.match(page, /setMemorySearchRefreshKey\(value => value \+ 1\)/)
 })

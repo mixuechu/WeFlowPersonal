@@ -7358,6 +7358,7 @@ test('briefing archive pages ninety-day state without exposing replay identities
   assert.equal(first.items[0].summaryEvidence.length, 1)
   assert.equal(first.items[0].summaryEvidenceTotal, 2)
   assert.equal(first.items[0].summaryEvidenceTruncated, true)
+  assert.equal(first.items[0].summaryVerified, true)
   assert.equal('recentIncrementIds' in first.items[0], false)
   assert.equal('incrementId' in first.items[0], false)
 
@@ -7381,6 +7382,16 @@ test('briefing archive pages ninety-day state without exposing replay identities
   assert.equal(buildBriefingArchivePage(evidenceChanged, {
     offset: 7, revision: first.revision
   }).stale, true)
+  const invalidOnly = buildBriefingArchivePage({
+    '2026-08-12': {
+      summary: '不能冒充已核验的摘要', summaryVerified: true,
+      summaryEvidenceTotal: 9,
+      summaryEvidence: [{ evidenceKey: '', sessionId: 'invalid', messageId: 'invalid' }]
+    }
+  })
+  assert.equal(invalidOnly.items[0].summaryEvidence.length, 0)
+  assert.equal(invalidOnly.items[0].summaryEvidenceTotal, 9)
+  assert.equal(invalidOnly.items[0].summaryVerified, false)
 })
 
 test('weekly briefing accepts authoritative task counts without scanning a task collection', () => {

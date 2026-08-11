@@ -112,6 +112,7 @@ import {
 import { TrailingCoalescedRequest } from '../utils/trailingCoalescedRequest'
 import { ASSISTANT_MODULE_NAVIGATION } from '../utils/assistantModuleNavigation'
 import { shouldRenderDetachedEventEditor } from '../utils/detachedEventEditor'
+import { buildBriefingMemorySearchPlan } from '../utils/briefingMemorySearchNavigation'
 import './AiAssistantPage.scss'
 
 const MEMORY_GROWTH_KIND_LABELS: Record<string, string> = {
@@ -1902,6 +1903,42 @@ function AiAssistantPage() {
     setMemoryConflictFilter(filters.evidenceConflict)
     setMemoryEvidenceStrengthFilter(filters.evidenceStrength)
     setMemoryEvidenceBreadthFilter(filters.evidenceBreadth)
+  }, [])
+  const inspectBriefingDateInMemorySearch = useCallback((date: unknown) => {
+    const plan = buildBriefingMemorySearchPlan(date)
+    if (!plan) {
+      setMessage('这条简报的日期无效，无法建立可信的检索范围。')
+      return
+    }
+    memorySearchGate.current.invalidate()
+    setMemoryQuery(plan.query)
+    setMemorySearchMode(plan.mode)
+    setMemoryEntityFilter(plan.entityId)
+    setMemoryEntitySelection(null)
+    setMemorySessionFilter(plan.sessionId)
+    setMemorySessionSelection(null)
+    setMemorySessionQuery(plan.sessionQuery)
+    setMemorySessionPickerOpen(false)
+    setMemorySourceFilter(plan.sourceId)
+    setMemoryTypeFilter(plan.documentType)
+    setMemoryTrustFilter(plan.trustStatus)
+    setMemorySupportFilter(plan.supportability)
+    setMemoryConflictFilter(plan.evidenceConflict)
+    setMemoryEvidenceStrengthFilter(plan.evidenceStrength)
+    setMemoryEvidenceBreadthFilter(plan.evidenceBreadth)
+    setMemoryFrom(plan.from)
+    setMemoryTo(plan.to)
+    setMemoryResults([])
+    setMemorySearchFeedback([])
+    setMemoryLoadingMore(false)
+    setMemorySearchState({ status: 'waiting', query: '' })
+    setMemorySearchRefreshKey(value => value + 1)
+    setMessage(`正在统一检索中读取 ${plan.from} 的全部权威记忆；旧查询与范围已清除。`)
+    window.requestAnimationFrame(() => {
+      document.getElementById('memory-search')
+        ?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+      memorySearchInputRef.current?.focus({ preventScroll: true })
+    })
   }, [])
   const memoryFeedbackArchiveOptions = useMemo(() => ({
     action: memoryFeedbackArchiveAction || undefined,
@@ -11816,6 +11853,10 @@ function AiAssistantPage() {
                         当前展示 {item.summaryEvidence.length} / {item.summaryEvidenceTotal} 条摘要引用；完整原消息可在统一检索中按日期核验。
                       </small>}
                       {!item.summaryVerified && <small>该日摘要没有当前可验证的逐条引用，只作为历史阅读材料。</small>}
+                      <button type="button"
+                        onClick={() => inspectBriefingDateInMemorySearch(item.date)}>
+                        查看该日完整记忆
+                      </button>
                       <small>
                         首次整理 {item.firstGeneratedAt ? new Date(item.firstGeneratedAt).toLocaleString('zh-CN') : '未知'} ·
                         最近整理 {item.generatedAt ? new Date(item.generatedAt).toLocaleString('zh-CN') : '未知'}
