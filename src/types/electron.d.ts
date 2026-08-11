@@ -2251,6 +2251,11 @@ export interface ElectronAPI {
         path: string,
         input?: { previewToken?: string; confirmation?: string }
       ) => Promise<any>
+      previewDiscardImportedBackupStagingConflict: (id: string) => Promise<any>
+      discardImportedBackupStagingConflict: (
+        id: string,
+        input?: { previewToken?: string; confirmation?: string }
+      ) => Promise<any>
       exportMemoryBundle: (path: string, passphrase: string) => Promise<any>
       inspectMemoryBundle: (path: string, passphrase?: string) => Promise<any>
       importMemoryBundle: (

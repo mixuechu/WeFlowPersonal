@@ -11282,6 +11282,50 @@ test('startup discards an unpublished one-sided imported database staging file',
   }
 })
 
+test('invalid imported staging is exposed as a privacy-safe actionable conflict', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'weflow-import-staging-conflict-'))
+  const databasePath = join(directory, 'memory.sqlite')
+  const backupDirectory = join(directory, 'personal-memory-backups')
+  const privateLabel = 'personal-memory-imported-private-customer-name.sqlite'
+  const finalDatabase = join(backupDirectory, privateLabel)
+  const first = new PersonalMemoryStore()
+  try {
+    first.initialize(databasePath)
+    mkdirSync(backupDirectory, { recursive: true })
+    writeFileSync(`${finalDatabase}.importing-db`, 'not-a-database', { mode: 0o600 })
+    writeFileSync(`${finalDatabase}.importing-state`, JSON.stringify({ version: 3 }), { mode: 0o600 })
+    first.close()
+
+    const reopened = new PersonalMemoryStore()
+    reopened.initialize(databasePath)
+    try {
+      const catalog = reopened.getImportedBackupStagingConflicts()
+      assert.equal(catalog.total, 1)
+      assert.equal(catalog.items[0].reason, 'validation_failed')
+      assert.equal(catalog.items[0].artifactCount, 2)
+      assert.equal(catalog.items[0].hasDatabaseStaging, true)
+      assert.equal(catalog.items[0].hasStateStaging, true)
+      assert.match(catalog.items[0].id, /^[a-f0-9]{64}$/)
+      assert.doesNotMatch(JSON.stringify(catalog), /private-customer-name|personal-memory-imported/)
+      const internal = reopened.inspectImportedBackupStagingConflict(catalog.items[0].id)
+      assert.deepEqual(internal.artifactPaths.sort(), [
+        `${finalDatabase}.importing-db`,
+        `${finalDatabase}.importing-state`
+      ].sort())
+      assert.equal(reopened.getDiagnostics().importedBackupStagingConflicts.total, 1)
+      assert.throws(
+        () => reopened.inspectImportedBackupStagingConflict('0'.repeat(64)),
+        /已经变化或不存在/
+      )
+    } finally {
+      reopened.close()
+    }
+  } finally {
+    first.close()
+    rmSync(directory, { recursive: true, force: true })
+  }
+})
+
 test('deferred backup retention preserves old snapshots until the state sidecar commits', () => withStore(store => {
   const backups = Array.from({ length: 10 }, () => {
     const backup = store.createBackup()

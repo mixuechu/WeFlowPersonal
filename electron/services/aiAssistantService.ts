@@ -69,6 +69,7 @@ import {
 import {
   recoverInterruptedMemoryBackupTrash,
   rollbackStagedMemoryBackupTrash,
+  stageMemoryArtifactsTrash,
   stageMemoryBackupTrash
 } from './memoryBackupTrashPolicy'
 import { ModelRequestCoordinator, RequestCoordinator } from './modelRequestCoordinator'
@@ -532,6 +533,7 @@ type MemoryMaintenanceKind =
   | 'backup_create'
   | 'backup_restore'
   | 'backup_delete'
+  | 'import_staging_discard'
   | 'bundle_export'
   | 'bundle_import'
 
@@ -545,6 +547,7 @@ const MEMORY_MAINTENANCE_LABELS: Record<MemoryMaintenanceKind, string> = {
   backup_create: '创建个人记忆联合备份',
   backup_restore: '恢复个人记忆快照',
   backup_delete: '清理个人记忆快照',
+  import_staging_discard: '清理导入暂存冲突',
   bundle_export: '导出个人记忆迁移包',
   bundle_import: '导入个人记忆迁移包'
 }
@@ -8082,6 +8085,97 @@ export class AiAssistantService {
         return await operation
       } finally {
         if (this.memoryBackupTrashPromise === operation) this.memoryBackupTrashPromise = null
+      }
+    })
+  }
+
+  private inspectImportedBackupStagingConflictForDiscard(id: string): {
+    internal: any
+    preview: any
+    previewToken: string
+  } {
+    const internal = personalMemoryStore.inspectImportedBackupStagingConflict(id)
+    const artifacts = [...internal.artifactPaths].sort().map((path: string) => {
+      const bytes = readFileSync(path)
+      try {
+        return {
+          slot: path.endsWith('.importing-db')
+            ? 'database_staging'
+            : path.endsWith('.importing-state')
+              ? 'state_staging'
+              : path.endsWith('.state.json')
+                ? 'published_state'
+                : 'published_database',
+          bytes: bytes.length,
+          sha256: crypto.createHash('sha256').update(bytes).digest('hex')
+        }
+      } finally {
+        bytes.fill(0)
+      }
+    })
+    const identity = {
+      version: 'imported-backup-staging-discard-v1',
+      id: internal.id,
+      identity: internal.identity,
+      artifacts
+    }
+    return {
+      internal,
+      previewToken: crypto.createHash('sha256').update(JSON.stringify(identity)).digest('hex'),
+      preview: {
+        id: internal.id,
+        reason: internal.reason,
+        artifactCount: internal.artifactCount,
+        bytes: internal.bytes,
+        detectedAt: internal.detectedAt,
+        hasDatabaseStaging: internal.hasDatabaseStaging,
+        hasStateStaging: internal.hasStateStaging,
+        hasPublishedDatabase: internal.hasPublishedDatabase,
+        hasPublishedState: internal.hasPublishedState
+      }
+    }
+  }
+
+  previewDiscardImportedBackupStagingConflict(id: string): any {
+    const inspected = this.inspectImportedBackupStagingConflictForDiscard(id)
+    return { ...inspected.preview, previewToken: inspected.previewToken }
+  }
+
+  async discardImportedBackupStagingConflict(
+    id: string,
+    input: { previewToken?: string; confirmation?: string } = {}
+  ): Promise<any> {
+    return this.runMemoryMaintenanceAsync('import_staging_discard', async lease => {
+      this.assertMemoryMaintenanceLease(lease)
+      const inspected = this.inspectImportedBackupStagingConflictForDiscard(id)
+      if (String(input.previewToken || '') !== inspected.previewToken) {
+        throw new Error('导入暂存冲突已经变化，请重新预览后再清理')
+      }
+      if (String(input.confirmation || '') !== '移到废纸篓') {
+        throw new Error('请输入“移到废纸篓”确认清理导入暂存冲突')
+      }
+      const stagingDirectory = join(
+        dirname(inspected.internal.artifactPaths[0]),
+        `.weflow-backup-trash-${crypto.randomUUID()}`
+      )
+      let staged: ReturnType<typeof stageMemoryArtifactsTrash> | null = null
+      try {
+        staged = stageMemoryArtifactsTrash({
+          artifactPaths: inspected.internal.artifactPaths,
+          stagingDirectory
+        })
+        await shell.trashItem(stagingDirectory)
+        return {
+          success: true,
+          artifactCount: staged.artifacts.length,
+          bytes: inspected.preview.bytes,
+          recoverableFromTrash: true
+        }
+      } catch (error) {
+        if (staged && !rollbackStagedMemoryBackupTrash(staged)) {
+          throw new Error('清理导入暂存冲突失败，文件仍在安全暂存区；重启应用会自动恢复')
+        }
+        throw error
       }
     })
   }

@@ -7636,6 +7636,7 @@ export class PersonalMemoryStore {
       eventDeduplicationAuthority,
       backupPairIntegrity,
       importedBackupStagingRecovery: this.importedBackupStagingRecovery,
+      importedBackupStagingConflicts: this.getImportedBackupStagingConflicts(),
       backups
     }
   }
@@ -8388,6 +8389,95 @@ export class PersonalMemoryStore {
       }
     }
     this.importedBackupStagingRecovery = recovery
+  }
+
+  private scanImportedBackupStagingConflicts(): Array<{
+    id: string
+    baseName: string
+    artifactPaths: string[]
+    artifactCount: number
+    bytes: number
+    detectedAt: string
+    reason: 'validation_failed' | 'conflicting_layout' | 'stale_residue'
+    hasDatabaseStaging: boolean
+    hasStateStaging: boolean
+    hasPublishedDatabase: boolean
+    hasPublishedState: boolean
+    identity: string
+  }> {
+    if (!this.databasePath) return []
+    const backupDirectory = join(dirname(this.databasePath), 'personal-memory-backups')
+    let names: string[] = []
+    try { names = readdirSync(backupDirectory) } catch { return [] }
+    const bases = new Set<string>()
+    for (const name of names) {
+      const match = name.match(/^(personal-memory-imported-.*\.sqlite)\.importing-(?:db|state)$/)
+      if (match) bases.add(match[1])
+    }
+    return [...bases].sort().map(baseName => {
+      const databasePath = join(backupDirectory, baseName)
+      const statePath = `${databasePath}.state.json`
+      const databaseTemporary = `${databasePath}.importing-db`
+      const stateTemporary = `${databasePath}.importing-state`
+      const hasDatabaseStaging = existsSync(databaseTemporary)
+      const hasStateStaging = existsSync(stateTemporary)
+      const hasPublishedDatabase = existsSync(databasePath)
+      const hasPublishedState = existsSync(statePath)
+      const artifactPaths = hasPublishedDatabase && hasPublishedState
+        ? [databaseTemporary, stateTemporary].filter(existsSync)
+        : [databaseTemporary, stateTemporary, databasePath, statePath].filter(existsSync)
+      const stats = artifactPaths.map(path => {
+        try {
+          const stat = statSync(path)
+          return { path, bytes: stat.size, mtimeMs: stat.mtimeMs, ctimeMs: stat.ctimeMs }
+        } catch {
+          return { path, bytes: 0, mtimeMs: 0, ctimeMs: 0 }
+        }
+      })
+      const identity = createHash('sha256').update(JSON.stringify(stats.map(item => [
+        item.path.slice(backupDirectory.length), item.bytes, item.mtimeMs, item.ctimeMs
+      ]))).digest('hex')
+      const detectedMs = Math.max(0, ...stats.map(item => Math.max(item.mtimeMs, item.ctimeMs)))
+      return {
+        id: createHash('sha256').update(`imported-backup-staging:${baseName}`).digest('hex'),
+        baseName,
+        artifactPaths,
+        artifactCount: artifactPaths.length,
+        bytes: stats.reduce((sum, item) => sum + item.bytes, 0),
+        detectedAt: detectedMs ? new Date(detectedMs).toISOString() : '',
+        reason: hasPublishedDatabase && hasPublishedState
+          ? 'stale_residue'
+          : (hasDatabaseStaging && hasStateStaging) ||
+              (hasPublishedDatabase && hasStateStaging)
+            ? 'validation_failed'
+            : 'conflicting_layout',
+        hasDatabaseStaging,
+        hasStateStaging,
+        hasPublishedDatabase,
+        hasPublishedState,
+        identity
+      }
+    }).filter(item => item.artifactCount > 0)
+  }
+
+  getImportedBackupStagingConflicts(): any {
+    const items = this.scanImportedBackupStagingConflicts()
+    return {
+      version: 'imported-backup-staging-conflicts-v1',
+      revision: createHash('sha256').update(JSON.stringify(
+        items.map(item => [item.id, item.identity])
+      )).digest('hex'),
+      total: items.length,
+      items: items.map(({ baseName: _baseName, artifactPaths: _artifactPaths, identity: _identity, ...item }) => item)
+    }
+  }
+
+  inspectImportedBackupStagingConflict(id: string): any {
+    const normalizedId = String(id || '').trim()
+    if (!/^[a-f0-9]{64}$/.test(normalizedId)) throw new Error('导入暂存冲突身份无效')
+    const item = this.scanImportedBackupStagingConflicts().find(candidate => candidate.id === normalizedId)
+    if (!item) throw new Error('该导入暂存冲突已经变化或不存在，请刷新诊断')
+    return item
   }
 
   private listBackups(backupDirectory: string): Array<{ path: string; name: string; bytes: number; createdAt: string; hasState: boolean }> {

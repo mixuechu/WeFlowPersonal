@@ -1658,10 +1658,14 @@ function AiAssistantPage() {
   const [deletingMemoryBackup, setDeletingMemoryBackup] = useState(false)
   const [memoryBackupDeleteDialog, setMemoryBackupDeleteDialog] = useState<any>(null)
   const [memoryBackupDeleteConfirmation, setMemoryBackupDeleteConfirmation] = useState('')
+  const [discardingImportedBackupStaging, setDiscardingImportedBackupStaging] = useState(false)
+  const [importedBackupStagingDialog, setImportedBackupStagingDialog] = useState<any>(null)
+  const [importedBackupStagingConfirmation, setImportedBackupStagingConfirmation] = useState('')
   const memoryMaintenanceLock = useRef(false)
   const memoryBackupCreateGate = useRef(new LatestRequestGate())
   const memoryRestoreGate = useRef(new LatestRequestGate())
   const memoryBackupDeleteGate = useRef(new LatestRequestGate())
+  const importedBackupStagingGate = useRef(new LatestRequestGate())
   const [migratingMemory, setMigratingMemory] = useState(false)
   const [migrationDialog, setMigrationDialog] = useState<any>(null)
   const [migrationPassphrase, setMigrationPassphrase] = useState('')
@@ -3911,6 +3915,7 @@ function AiAssistantPage() {
     memoryRestoreDialog?.status === 'loading' || memoryRestoreDialog?.status === 'restoring' ||
     memoryBackupDeleteDialog?.status === 'loading' || memoryBackupDeleteDialog?.status === 'deleting'
   const memoryMaintenanceBusy = memoryBackupOperationBusy || migratingMemory || indexingVectors ||
+    discardingImportedBackupStaging ||
     Boolean(status?.memoryMaintenance?.active)
   const updateReminderPreference = async (reminder: any, action: 'helpful' | 'snooze' | 'mute_kind' | 'restore_kind') => {
     const key = action === 'restore_kind' ? `restore:${reminder.kind}` : reminder.id
@@ -7098,6 +7103,81 @@ function AiAssistantPage() {
       if (memoryBackupDeleteGate.current.isCurrent(request)) {
         memoryMaintenanceLock.current = false
         setDeletingMemoryBackup(false)
+      }
+    }
+  }
+
+  const openImportedBackupStagingDialog = async (conflict: any) => {
+    if (memoryMaintenanceBusy || memoryMaintenanceLock.current || !conflict?.id) return
+    memoryMaintenanceLock.current = true
+    const request = importedBackupStagingGate.current.begin()
+    setImportedBackupStagingConfirmation('')
+    setImportedBackupStagingDialog({ conflict, status: 'loading' })
+    try {
+      const preview = await window.electronAPI.aiAssistant
+        .previewDiscardImportedBackupStagingConflict(conflict.id)
+      if (!importedBackupStagingGate.current.isCurrent(request)) return
+      setImportedBackupStagingDialog((current: any) =>
+        current?.conflict?.id === conflict.id
+          ? { conflict, preview, status: 'ready' }
+          : current)
+    } catch (error: any) {
+      if (!importedBackupStagingGate.current.isCurrent(request)) return
+      setImportedBackupStagingDialog((current: any) =>
+        current?.conflict?.id === conflict.id
+          ? { conflict, status: 'error', error: error?.message || String(error) }
+          : current)
+    } finally {
+      if (importedBackupStagingGate.current.isCurrent(request)) {
+        memoryMaintenanceLock.current = false
+      }
+    }
+  }
+
+  const closeImportedBackupStagingDialog = () => {
+    if (discardingImportedBackupStaging) return
+    importedBackupStagingGate.current.invalidate()
+    memoryMaintenanceLock.current = false
+    setImportedBackupStagingDialog(null)
+    setImportedBackupStagingConfirmation('')
+  }
+
+  const discardImportedBackupStagingConflict = async () => {
+    const preview = importedBackupStagingDialog?.preview
+    if (
+      memoryMaintenanceBusy
+      || memoryMaintenanceLock.current
+      || importedBackupStagingDialog?.status !== 'ready'
+      || !preview?.id
+      || importedBackupStagingConfirmation !== '移到废纸篓'
+    ) return
+    memoryMaintenanceLock.current = true
+    const request = importedBackupStagingGate.current.begin()
+    const confirmation = importedBackupStagingConfirmation
+    setDiscardingImportedBackupStaging(true)
+    setImportedBackupStagingDialog((current: any) =>
+      current ? { ...current, status: 'discarding', error: '' } : current)
+    try {
+      const result = await window.electronAPI.aiAssistant
+        .discardImportedBackupStagingConflict(preview.id, {
+          previewToken: preview.previewToken,
+          confirmation
+        })
+      if (!importedBackupStagingGate.current.isCurrent(request)) return
+      setMessage(`导入暂存冲突已移到废纸篓，共 ${Number(result.artifactCount || 0)} 个文件`)
+      setImportedBackupStagingDialog(null)
+      setImportedBackupStagingConfirmation('')
+      await refreshMemoryDiagnostics().catch(() => {})
+    } catch (error: any) {
+      if (!importedBackupStagingGate.current.isCurrent(request)) return
+      const message = error?.message || String(error)
+      setMessage(message)
+      setImportedBackupStagingDialog((current: any) =>
+        current ? { ...current, status: 'error', error: message } : current)
+    } finally {
+      if (importedBackupStagingGate.current.isCurrent(request)) {
+        memoryMaintenanceLock.current = false
+        setDiscardingImportedBackupStaging(false)
       }
     }
   }
@@ -10790,6 +10870,29 @@ function AiAssistantPage() {
                       </button>
                     </div>
                   })}
+                </div>
+              </details>}
+              {!!memoryDiagnostics.importedBackupStagingConflicts?.items?.length && <details open>
+                <summary>导入暂存需人工检查（{Number(
+                  memoryDiagnostics.importedBackupStagingConflicts.total || 0
+                )} 组）</summary>
+                <div>
+                  {memoryDiagnostics.importedBackupStagingConflicts.items.map((conflict: any) =>
+                    <div key={conflict.id}>
+                      <span>
+                        {conflict.reason === 'validation_failed'
+                          ? '数据库或状态校验失败'
+                          : conflict.reason === 'stale_residue'
+                            ? '完整快照旁遗留暂存文件'
+                            : '文件组合无法自动判断'}
+                        {' · '}{Number(conflict.artifactCount || 0)} 个文件
+                        {' · '}{(Number(conflict.bytes || 0) / 1024 / 1024).toFixed(1)} MB
+                      </span>
+                      <button disabled={memoryMaintenanceBusy}
+                        onClick={() => void openImportedBackupStagingDialog(conflict)}>
+                        核对并清理
+                      </button>
+                    </div>)}
                 </div>
               </details>}
             </div>
@@ -17435,7 +17538,7 @@ function AiAssistantPage() {
                 导入暂存启动检查 {Number(memoryDiagnostics.importedBackupStagingRecovery.checked || 0)} 组
                 {' · '}完成中断注册 {Number(memoryDiagnostics.importedBackupStagingRecovery.finalized || 0)} 组
                 {' · '}清理未发布暂存 {Number(memoryDiagnostics.importedBackupStagingRecovery.abandoned || 0)} 组
-                {' · '}需人工检查 {Number(memoryDiagnostics.importedBackupStagingRecovery.conflicts || 0)} 组
+                {' · '}本次启动发现冲突 {Number(memoryDiagnostics.importedBackupStagingRecovery.conflicts || 0)} 组
               </small>}
             </div>}
             {memoryDiagnostics.ingestionSummary?.recent24Hours && <div className={`assistant-recovery-audit ${
@@ -19873,6 +19976,78 @@ function AiAssistantPage() {
                     deletingMemoryBackup}
                   onClick={() => void deleteMemoryBackup()}>
                   {deletingMemoryBackup ? '正在安全移动…' : '确认移到废纸篓'}
+                </button>}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {importedBackupStagingDialog && (
+        <div className="assistant-modal-backdrop" role="presentation">
+          <div className="assistant-modal assistant-delete-modal" role="dialog" aria-modal="true"
+            aria-labelledby="imported-backup-staging-title">
+            <div className="assistant-modal-title"><div>
+              <h2 id="imported-backup-staging-title">处理导入暂存冲突</h2>
+              <p>这些文件来自一次未能自动完成的迁移包导入。当前个人记忆不会被修改。</p>
+            </div><button aria-label="关闭导入暂存冲突确认"
+              disabled={discardingImportedBackupStaging}
+              onClick={closeImportedBackupStagingDialog}><X size={16} /></button></div>
+            {importedBackupStagingDialog.status === 'loading' &&
+              <div className="assistant-delete-status">
+                <RefreshCw size={16} /><span><strong>正在核对冲突文件…</strong>
+                  <small>逐个计算内容摘要，不返回路径、文件名或文件内容。</small></span>
+              </div>}
+            {importedBackupStagingDialog.status === 'error' && <div className="assistant-error">
+              <strong>暂存冲突核对或清理失败</strong>
+              <span>{importedBackupStagingDialog.error || '未知错误'}</span>
+            </div>}
+            {(importedBackupStagingDialog.status === 'ready' ||
+              importedBackupStagingDialog.status === 'discarding') && <>
+              <div className="assistant-delete-preview">
+                <strong>{importedBackupStagingDialog.preview.reason === 'validation_failed'
+                  ? '数据库或加密状态未通过自动验证'
+                  : importedBackupStagingDialog.preview.reason === 'stale_residue'
+                    ? '完整快照旁存在遗留暂存文件'
+                    : '文件组合无法安全自动判断'}</strong>
+                <p>
+                  将移动 {Number(importedBackupStagingDialog.preview.artifactCount || 0)} 个文件，
+                  共 {(Number(importedBackupStagingDialog.preview.bytes || 0) / 1024 / 1024).toFixed(1)} MB。
+                </p>
+                <p>
+                  数据库暂存：{importedBackupStagingDialog.preview.hasDatabaseStaging ? '有' : '无'}；
+                  状态暂存：{importedBackupStagingDialog.preview.hasStateStaging ? '有' : '无'}；
+                  已发布数据库：{importedBackupStagingDialog.preview.hasPublishedDatabase ? '有' : '无'}；
+                  已发布状态：{importedBackupStagingDialog.preview.hasPublishedState ? '有' : '无'}。
+                </p>
+                <p>文件会作为一组移到 macOS 废纸篓，可以人工恢复。预览后任一内容变化都会使本次确认失效。</p>
+              </div>
+              <label><span>输入“移到废纸篓”确认</span><input autoFocus
+                value={importedBackupStagingConfirmation}
+                disabled={importedBackupStagingDialog.status === 'discarding'}
+                onChange={event => setImportedBackupStagingConfirmation(event.target.value)}
+                onKeyDown={event => {
+                  if (event.key === 'Enter' &&
+                    importedBackupStagingConfirmation === '移到废纸篓') {
+                    void discardImportedBackupStagingConflict()
+                  }
+                }}
+                placeholder="移到废纸篓" /></label>
+            </>}
+            <div className="assistant-modal-actions">
+              <button disabled={discardingImportedBackupStaging}
+                onClick={closeImportedBackupStagingDialog}>取消</button>
+              {importedBackupStagingDialog.status === 'error' && <button
+                disabled={discardingImportedBackupStaging}
+                onClick={() => void openImportedBackupStagingDialog(
+                  importedBackupStagingDialog.conflict
+                )}>重新核对</button>}
+              {(importedBackupStagingDialog.status === 'ready' ||
+                importedBackupStagingDialog.status === 'discarding') &&
+                <button className="danger"
+                  disabled={discardingImportedBackupStaging ||
+                    importedBackupStagingConfirmation !== '移到废纸篓'}
+                  onClick={() => void discardImportedBackupStagingConflict()}>
+                  {discardingImportedBackupStaging ? '正在安全移动…' : '确认移到废纸篓'}
                 </button>}
             </div>
           </div>

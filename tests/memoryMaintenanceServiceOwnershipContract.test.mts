@@ -33,6 +33,7 @@ test('the main process owns one lease across every mutating memory maintenance e
   assert.match(service, /runMemoryMaintenanceSync\('backup_create'/)
   assert.match(service, /runMemoryMaintenanceSync\('backup_restore'/)
   assert.match(service, /runMemoryMaintenanceAsync\('backup_delete'/)
+  assert.match(service, /runMemoryMaintenanceAsync\('import_staging_discard'/)
   assert.match(service, /runMemoryMaintenanceAsync\('bundle_export'/)
   assert.match(service, /runMemoryMaintenanceAsync\('bundle_import'/)
 })
@@ -69,4 +70,25 @@ test('maintenance ownership blocks new writers and participates in shutdown and 
   assert.ok((service.match(/memoryMaintenance: this\.getMemoryMaintenanceStatus\(\)/g) || []).length >= 2)
   assert.match(page, /Boolean\(status\?\.memoryMaintenance\?\.active\)/)
   assert.match(page, /status\?\.memoryMaintenance\?\.message/)
+})
+
+test('import staging conflicts have a content-bound trash preview and visible review flow', () => {
+  const discard = between(
+    '  private inspectImportedBackupStagingConflictForDiscard(',
+    '  private applyMemoryBackup('
+  )
+  assert.match(discard, /readFileSync\(path\)/)
+  assert.match(discard, /sha256: crypto\.createHash\('sha256'\)/)
+  assert.match(discard, /bytes\.fill\(0\)/)
+  assert.match(discard, /String\(input\.previewToken \|\| ''\) !== inspected\.previewToken/)
+  assert.match(discard, /String\(input\.confirmation \|\| ''\) !== '移到废纸篓'/)
+  assert.match(discard, /stageMemoryArtifactsTrash\(/)
+  assert.match(discard, /shell\.trashItem\(stagingDirectory\)/)
+  assert.match(discard, /rollbackStagedMemoryBackupTrash\(staged\)/)
+  assert.doesNotMatch(discard, /preview:\s*\{[\s\S]{0,500}\bpath:/)
+
+  assert.match(page, /导入暂存需人工检查/)
+  assert.match(page, /openImportedBackupStagingDialog/)
+  assert.match(page, /discardImportedBackupStagingConflict/)
+  assert.match(page, /预览后任一内容变化都会使本次确认失效/)
 })

@@ -13,6 +13,7 @@ import { tmpdir } from 'node:os'
 import {
   recoverInterruptedMemoryBackupTrash,
   rollbackStagedMemoryBackupTrash,
+  stageMemoryArtifactsTrash,
   stageMemoryBackupTrash
 } from '../electron/services/memoryBackupTrashPolicy.ts'
 
@@ -64,4 +65,33 @@ test('backup trash startup recovery restores interrupted groups and preserves co
   ), 'state')
   assert.equal(existsSync(recoverable), false)
   assert.equal(readFileSync(join(conflict, 'personal-memory-conflict.sqlite'), 'utf8'), 'staged')
+}))
+
+test('import staging conflicts move as one group and restart recovery restores every artifact', () => withDirectory(directory => {
+  const databaseStaging = join(
+    directory,
+    'personal-memory-imported-interrupted.sqlite.importing-db'
+  )
+  const stateStaging = join(
+    directory,
+    'personal-memory-imported-interrupted.sqlite.importing-state'
+  )
+  writeFileSync(databaseStaging, 'database-staging')
+  writeFileSync(stateStaging, 'state-staging')
+  const stagingDirectory = join(directory, '.weflow-backup-trash-d4')
+  const staged = stageMemoryArtifactsTrash({
+    artifactPaths: [databaseStaging, stateStaging],
+    stagingDirectory
+  })
+
+  assert.equal(staged.artifacts.length, 2)
+  assert.equal(existsSync(databaseStaging), false)
+  assert.equal(existsSync(stateStaging), false)
+  assert.deepEqual(recoverInterruptedMemoryBackupTrash(directory), {
+    checked: 1,
+    restored: 1,
+    conflicts: 0
+  })
+  assert.equal(readFileSync(databaseStaging, 'utf8'), 'database-staging')
+  assert.equal(readFileSync(stateStaging, 'utf8'), 'state-staging')
 }))

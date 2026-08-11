@@ -37,18 +37,24 @@ export function stageMemoryBackupTrash(input: {
   stagingDirectory: string
 }): StagedMemoryBackupTrash {
   const statePath = `${input.databasePath}.state.json`
-  const artifacts = [
-    {
-      source: input.databasePath,
-      staged: join(input.stagingDirectory, basename(input.databasePath))
-    },
-    ...(input.hasState
-      ? [{
-          source: statePath,
-          staged: join(input.stagingDirectory, basename(statePath))
-        }]
-      : [])
-  ]
+  return stageMemoryArtifactsTrash({
+    artifactPaths: [input.databasePath, ...(input.hasState ? [statePath] : [])],
+    stagingDirectory: input.stagingDirectory
+  })
+}
+
+export function stageMemoryArtifactsTrash(input: {
+  artifactPaths: string[]
+  stagingDirectory: string
+}): StagedMemoryBackupTrash {
+  const artifactPaths = [...new Set(input.artifactPaths)]
+  if (!artifactPaths.length) throw new Error('没有可移到废纸篓的个人记忆文件')
+  const names = artifactPaths.map(path => basename(path))
+  if (new Set(names).size !== names.length) throw new Error('个人记忆文件名称冲突，未执行清理')
+  const artifacts = artifactPaths.map((source, index) => ({
+    source,
+    staged: join(input.stagingDirectory, names[index])
+  }))
   mkdirSync(input.stagingDirectory, { mode: 0o700 })
   const moved: StagedMemoryBackupTrash = {
     stagingDirectory: input.stagingDirectory,
@@ -89,7 +95,7 @@ export function recoverInterruptedMemoryBackupTrash(
     try { artifactNames = readdirSync(stagingDirectory) } catch { continue }
     checked += 1
     const validNames = artifactNames.filter(name =>
-      /^personal-memory-.*\.sqlite(?:\.state\.json)?$/.test(name))
+      /^personal-memory-.*\.sqlite(?:\.state\.json|\.importing-(?:db|state))?$/.test(name))
     if (validNames.length !== artifactNames.length ||
         validNames.some(name => existsSync(join(backupDirectory, name)))) {
       conflicts += 1
