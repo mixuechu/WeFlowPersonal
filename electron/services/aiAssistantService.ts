@@ -72,6 +72,7 @@ import {
   stageMemoryBackupTrash
 } from './memoryBackupTrashPolicy'
 import { ModelRequestCoordinator, RequestCoordinator } from './modelRequestCoordinator'
+import { writePrivateFileAtomically } from './privateAtomicFile'
 import { parseModelJsonObject } from './modelJsonParser'
 import { extractScannedPdfText, getPdfOcrStatus } from './pdfOcrService'
 import { exportService } from './export'
@@ -8077,9 +8078,21 @@ export class AiAssistantService {
     zip.file('database-key.bin', Buffer.from(databaseKey, 'hex'))
     const archive = await zip.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE', compressionOptions: { level: 6 } })
     const payload = encryptPortableMemoryBundle(archive, passphrase)
-    writeFileSync(outputPath, payload, { mode: 0o600 })
-    try { chmodSync(outputPath, 0o600) } catch {}
-    return { success: true, path: outputPath, bytes: payload.length, manifest }
+    try {
+      const published = writePrivateFileAtomically(outputPath, payload)
+      return {
+        success: true,
+        path: outputPath,
+        bytes: published.bytes,
+        sha256: published.sha256,
+        manifest
+      }
+    } finally {
+      payload.fill(0)
+      archive.fill(0)
+      databaseBytes.fill(0)
+      stateBytes.fill(0)
+    }
   }
 
   private getCurrentMemoryImportSummary(): any {
