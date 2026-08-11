@@ -1893,6 +1893,14 @@ export interface ElectronAPI {
         revision: string
         stale: boolean
       }>
+      retryMemoryMaintenanceAuditDelivery: () => Promise<{
+        success: boolean
+        attempted: number
+        delivered: number
+        pending: number
+        lastDeliveredAt: string
+        lastError: string
+      }>
       getMemoryChangeLogPage: (options?: any) => Promise<{
         items: any[]
         total: number

@@ -1355,8 +1355,10 @@ function AiAssistantPage() {
   const [memoryMaintenanceFrom, setMemoryMaintenanceFrom] = useState('')
   const [memoryMaintenanceTo, setMemoryMaintenanceTo] = useState('')
   const [memoryMaintenanceLoadingMore, setMemoryMaintenanceLoadingMore] = useState(false)
+  const [memoryMaintenanceRetrying, setMemoryMaintenanceRetrying] = useState(false)
   const [memoryMaintenanceRefreshKey, setMemoryMaintenanceRefreshKey] = useState(0)
   const memoryMaintenanceArchiveGate = useRef(new LatestRequestGate())
+  const memoryMaintenanceRetryGate = useRef(new LatestRequestGate())
   const [memoryGrowth, setMemoryGrowth] = useState<any>({
     items: [], total: 0, hasMore: false, counts: {}, revision: '',
     trackedSince: '', loading: false
@@ -5441,6 +5443,31 @@ function AiAssistantPage() {
     } finally {
       if (memoryMaintenanceArchiveGate.current.isCurrent(request)) {
         setMemoryMaintenanceLoadingMore(false)
+      }
+    }
+  }
+
+  const retryMemoryMaintenanceAuditDelivery = async () => {
+    if (memoryMaintenanceRetrying) return
+    const request = memoryMaintenanceRetryGate.current.begin()
+    setMemoryMaintenanceRetrying(true)
+    try {
+      const result = await window.electronAPI.aiAssistant.retryMemoryMaintenanceAuditDelivery()
+      if (!memoryMaintenanceRetryGate.current.isCurrent(request)) return
+      setMessage(result.success
+        ? result.attempted
+          ? `维护审计已补投 ${result.delivered} 条，当前没有等待记录`
+          : '当前没有等待投递的维护审计'
+        : `仍有 ${result.pending} 条维护审计等待投递：${result.lastError || '数据库暂时不可写'}`)
+      setMemoryMaintenanceRefreshKey(value => value + 1)
+      await refreshMemoryDiagnostics().catch(() => {})
+    } catch (error: any) {
+      if (memoryMaintenanceRetryGate.current.isCurrent(request)) {
+        setMessage(error?.message || String(error))
+      }
+    } finally {
+      if (memoryMaintenanceRetryGate.current.isCurrent(request)) {
+        setMemoryMaintenanceRetrying(false)
       }
     }
   }
@@ -18800,6 +18827,31 @@ function AiAssistantPage() {
                   </small>
                 </span>
               </header>
+              <div className="assistant-recovery-current">
+                <span>SQLCipher revision 保护 <b>{memoryDiagnostics.memoryMaintenanceAuditRevisionHealthy
+                  ? '正常' : '需要检查'}</b></span>
+                <span>等待投递 <b>{Number(
+                  memoryDiagnostics.memoryMaintenanceAuditDelivery?.pending || 0
+                )}</b></span>
+                <span>累计补投 <b>{Number(
+                  memoryDiagnostics.memoryMaintenanceAuditDelivery?.delivered || 0
+                )}</b></span>
+                <span>异常状态项隔离 <b>{Number(
+                  memoryDiagnostics.memoryMaintenanceAuditDelivery?.invalidDiscarded || 0
+                ) + Number(
+                  memoryDiagnostics.memoryMaintenanceAuditDelivery?.duplicateDiscarded || 0
+                ) + Number(
+                  memoryDiagnostics.memoryMaintenanceAuditDelivery?.overflowDiscarded || 0
+                )}</b></span>
+                <button type="button" disabled={memoryMaintenanceRetrying}
+                  onClick={() => void retryMemoryMaintenanceAuditDelivery()}>
+                  {memoryMaintenanceRetrying ? '正在重投…' : '立即重试审计投递'}
+                </button>
+              </div>
+              {memoryDiagnostics.memoryMaintenanceAuditDelivery?.lastError && <p
+                className="assistant-diagnostics-error">
+                最近投递错误：{memoryDiagnostics.memoryMaintenanceAuditDelivery.lastError}
+              </p>}
               <div className="assistant-task-filters">
                 <select value={memoryMaintenanceOperation}
                   onChange={event => setMemoryMaintenanceOperation(event.target.value)}>

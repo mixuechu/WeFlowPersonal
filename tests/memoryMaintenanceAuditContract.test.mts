@@ -18,9 +18,9 @@ test('every completed personal-memory maintenance direction enters one durable a
     assert.match(page, new RegExp(`value="${operation}"`))
   }
   assert.match(service, /maintenanceAuditOutbox/)
-  assert.match(service, /this\.saveState\(\)[\s\S]*?this\.flushMemoryMaintenanceAuditOutbox\(\)/)
+  assert.match(service, /this\.persistCrossStoreMutationState\(\)[\s\S]*?this\.flushMemoryMaintenanceAuditOutbox\(\)/)
   assert.match(service, /personalMemoryStore\.recordMemoryMaintenanceAudit\(event\)/)
-  assert.match(service, /pending\.length >= 256/)
+  assert.match(service, /pending\.length >= MEMORY_MAINTENANCE_AUDIT_OUTBOX_LIMIT/)
 })
 
 test('maintenance audit is SQLCipher paginated and does not expose sensitive artifact identity', () => {
@@ -36,4 +36,16 @@ test('maintenance audit is SQLCipher paginated and does not expose sensitive art
   assert.match(preload, /getMemoryMaintenanceAuditPage/)
   assert.match(main, /ai-assistant:getMemoryMaintenanceAuditPage/)
   assert.match(page, /不保存路径、文件名、口令、哈希或记忆正文/)
+})
+
+test('maintenance audit delivery health and manual retry are visible end to end', () => {
+  assert.match(service, /retryMemoryMaintenanceAuditDelivery\(\)/)
+  assert.match(service, /memoryMaintenanceAuditDelivery/)
+  assert.match(preload, /retryMemoryMaintenanceAuditDelivery/)
+  assert.match(main, /ai-assistant:retryMemoryMaintenanceAuditDelivery/)
+  assert.match(page, /SQLCipher revision 保护/)
+  assert.match(page, /等待投递/)
+  assert.match(page, /异常状态项隔离/)
+  assert.match(page, /立即重试审计投递/)
+  assert.match(page, /memoryMaintenanceRetryGate/)
 })

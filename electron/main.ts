@@ -4712,6 +4712,8 @@ function registerIpcHandlers() {
     aiAssistantService.getMemoryDeletionAuditPage(options))
   ipcMain.handle('ai-assistant:getMemoryMaintenanceAuditPage', (_, options?: any) =>
     aiAssistantService.getMemoryMaintenanceAuditPage(options))
+  ipcMain.handle('ai-assistant:retryMemoryMaintenanceAuditDelivery', () =>
+    aiAssistantService.retryMemoryMaintenanceAuditDelivery())
   ipcMain.handle('ai-assistant:getMemoryChangeLogPage', (_, options?: any) =>
     aiAssistantService.getMemoryChangeLogPage(options))
   ipcMain.handle('ai-assistant:getMemoryChangeOriginDossier', (

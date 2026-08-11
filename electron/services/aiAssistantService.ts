@@ -293,6 +293,11 @@ import {
 } from './relationCorrectionPolicy'
 import { assessAutomaticSearchMaintenance } from './automaticSearchMaintenancePolicy.ts'
 import {
+  MEMORY_MAINTENANCE_AUDIT_OUTBOX_LIMIT,
+  normalizeMemoryMaintenanceAuditOutbox,
+  type MemoryMaintenanceAuditEvent
+} from './memoryMaintenanceAuditOutbox.ts'
+import {
   buildNotificationDedupKey,
   buildTaskNotificationTargetRoute,
   deliverNotificationBatch,
@@ -546,18 +551,6 @@ type MemoryMaintenanceLease = {
   startedAt: string
 }
 
-type MemoryMaintenanceAuditEvent = {
-  eventId: string
-  operation: 'backup_create' | 'backup_restore' | 'backup_delete' | 'bundle_export'
-    | 'bundle_import' | 'import_staging_discard' | 'backup_trash_restore'
-    | 'backup_trash_discard'
-  trigger: 'manual' | 'automatic' | 'recovery'
-  artifactCount: number
-  bytes: number
-  portable: boolean | null
-  completedAt: string
-}
-
 const MEMORY_MAINTENANCE_LABELS: Record<MemoryMaintenanceKind, string> = {
   backup_create: '创建个人记忆联合备份',
   backup_restore: '恢复个人记忆快照',
@@ -634,6 +627,9 @@ type AssistantState = {
     delivered: number
     lastDeliveredAt: string
     lastError: string
+    invalidDiscarded: number
+    duplicateDiscarded: number
+    overflowDiscarded: number
   }
   cursor: {
     lastMessageTimestamp: number
@@ -734,7 +730,8 @@ const EMPTY_STATE: AssistantState = {
   },
   taskLifecycleAuditResume: { candidateIds: [], nextOffset: 0 },
   maintenanceAuditOutbox: {
-    pending: [], delivered: 0, lastDeliveredAt: '', lastError: ''
+    pending: [], delivered: 0, lastDeliveredAt: '', lastError: '',
+    invalidDiscarded: 0, duplicateDiscarded: 0, overflowDiscarded: 0
   },
   cursor: {
     lastMessageTimestamp: 0,
@@ -929,7 +926,7 @@ export class AiAssistantService {
   private beginMemoryMaintenance(kind: MemoryMaintenanceKind): MemoryMaintenanceLease {
     if (this.disposed) throw new Error('AI 助理正在安全退出，不能开始个人记忆维护')
     this.flushMemoryMaintenanceAuditOutbox()
-    if (this.state.maintenanceAuditOutbox.pending.length >= 256) {
+    if (this.state.maintenanceAuditOutbox.pending.length >= MEMORY_MAINTENANCE_AUDIT_OUTBOX_LIMIT) {
       throw new Error('个人记忆维护审计等待写入的记录已满；请先检查数据库健康后再操作')
     }
     if (this.memoryMaintenanceLease) {
@@ -963,14 +960,14 @@ export class AiAssistantService {
       outbox.delivered += delivered
       outbox.lastDeliveredAt = new Date().toISOString()
       outbox.lastError = ''
-      try { this.saveState() } catch (error) {
+      try { this.persistCrossStoreMutationState() } catch (error) {
         outbox.lastError = sanitizeDiagnosticText(error)
       }
     } catch (error) {
       if (delivered > 0) outbox.pending.splice(0, delivered)
       outbox.delivered += delivered
       outbox.lastError = sanitizeDiagnosticText(error)
-      try { this.saveState() } catch (stateError) {
+      try { this.persistCrossStoreMutationState() } catch (stateError) {
         outbox.lastError = sanitizeDiagnosticText(stateError)
       }
     }
@@ -990,7 +987,7 @@ export class AiAssistantService {
     this.state.maintenanceAuditOutbox.pending.push(event)
     // Persist the privacy-minimal event before attempting SQLCipher delivery so a
     // completed filesystem operation cannot lose its audit record on power loss.
-    try { this.saveState() } catch (error) {
+    try { this.persistCrossStoreMutationState() } catch (error) {
       this.state.maintenanceAuditOutbox.lastError = sanitizeDiagnosticText(error)
     }
     this.flushMemoryMaintenanceAuditOutbox()
@@ -1600,6 +1597,9 @@ export class AiAssistantService {
           (durable.recovery.primaryError !== 'missing' || durable.recovery.backupError !== 'missing')) {
         throw new Error('主状态文件和最近良好副本均无法解析；为避免覆盖可恢复数据，已停止初始化')
       }
+      const normalizedMaintenanceAuditOutbox = normalizeMemoryMaintenanceAuditOutbox(
+        loaded.maintenanceAuditOutbox?.pending
+      )
       this.state = {
         ...structuredClone(EMPTY_STATE),
         ...loaded,
@@ -1638,15 +1638,23 @@ export class AiAssistantService {
           ))
         },
         maintenanceAuditOutbox: {
-          pending: (Array.isArray(loaded.maintenanceAuditOutbox?.pending)
-            ? loaded.maintenanceAuditOutbox.pending : [])
-            .filter((item: any) => item && /^[a-f0-9-]{16,64}$/i.test(String(item.eventId || '')))
-            .slice(-256),
-          delivered: Math.max(0, Math.floor(
+          pending: normalizedMaintenanceAuditOutbox.pending,
+          delivered: Math.min(Number.MAX_SAFE_INTEGER, Math.max(0, Math.floor(
             Number(loaded.maintenanceAuditOutbox?.delivered) || 0
-          )),
-          lastDeliveredAt: String(loaded.maintenanceAuditOutbox?.lastDeliveredAt || ''),
-          lastError: sanitizeDiagnosticText(loaded.maintenanceAuditOutbox?.lastError || '')
+          ))),
+          lastDeliveredAt: Number.isFinite(Date.parse(
+            String(loaded.maintenanceAuditOutbox?.lastDeliveredAt || '')
+          )) ? new Date(String(loaded.maintenanceAuditOutbox.lastDeliveredAt)).toISOString() : '',
+          lastError: sanitizeDiagnosticText(loaded.maintenanceAuditOutbox?.lastError || ''),
+          invalidDiscarded: Math.min(Number.MAX_SAFE_INTEGER, Math.max(0, Math.floor(
+            Number(loaded.maintenanceAuditOutbox?.invalidDiscarded) || 0
+          )) + normalizedMaintenanceAuditOutbox.invalid),
+          duplicateDiscarded: Math.min(Number.MAX_SAFE_INTEGER, Math.max(0, Math.floor(
+            Number(loaded.maintenanceAuditOutbox?.duplicateDiscarded) || 0
+          )) + normalizedMaintenanceAuditOutbox.duplicate),
+          overflowDiscarded: Math.min(Number.MAX_SAFE_INTEGER, Math.max(0, Math.floor(
+            Number(loaded.maintenanceAuditOutbox?.overflowDiscarded) || 0
+          )) + normalizedMaintenanceAuditOutbox.overflow)
         },
         tasks: Array.isArray(loaded.tasks)
           ? sanitizeTasksForPersistence(loaded.tasks.map((task: AssistantTask) =>
@@ -6194,7 +6202,10 @@ export class AiAssistantService {
         pendingDelivery: this.state.maintenanceAuditOutbox.pending.length,
         delivered: this.state.maintenanceAuditOutbox.delivered,
         lastDeliveredAt: this.state.maintenanceAuditOutbox.lastDeliveredAt,
-        lastError: this.state.maintenanceAuditOutbox.lastError
+        lastError: this.state.maintenanceAuditOutbox.lastError,
+        invalidDiscarded: this.state.maintenanceAuditOutbox.invalidDiscarded,
+        duplicateDiscarded: this.state.maintenanceAuditOutbox.duplicateDiscarded,
+        overflowDiscarded: this.state.maintenanceAuditOutbox.overflowDiscarded
       },
       memoryGrowth: {
         total: memoryChangeLogHealth.total,
@@ -6614,6 +6625,20 @@ export class AiAssistantService {
       offset: Number(options?.offset || 0),
       revision: String(options?.revision || '')
     })
+  }
+
+  retryMemoryMaintenanceAuditDelivery(): any {
+    const before = this.state.maintenanceAuditOutbox.pending.length
+    this.flushMemoryMaintenanceAuditOutbox()
+    const after = this.state.maintenanceAuditOutbox.pending.length
+    return {
+      success: after === 0,
+      attempted: before,
+      delivered: Math.max(0, before - after),
+      pending: after,
+      lastDeliveredAt: this.state.maintenanceAuditOutbox.lastDeliveredAt,
+      lastError: this.state.maintenanceAuditOutbox.lastError
+    }
   }
 
   getMemoryChangeLogPage(options: any = {}): any {
@@ -7531,6 +7556,9 @@ export class AiAssistantService {
         delivered: this.state.maintenanceAuditOutbox.delivered,
         lastDeliveredAt: this.state.maintenanceAuditOutbox.lastDeliveredAt,
         lastError: this.state.maintenanceAuditOutbox.lastError,
+        invalidDiscarded: this.state.maintenanceAuditOutbox.invalidDiscarded,
+        duplicateDiscarded: this.state.maintenanceAuditOutbox.duplicateDiscarded,
+        overflowDiscarded: this.state.maintenanceAuditOutbox.overflowDiscarded,
         healthy: this.state.maintenanceAuditOutbox.pending.length === 0
       },
       backgroundWrites: describeBackgroundWriteState({
