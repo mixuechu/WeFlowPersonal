@@ -6535,7 +6535,11 @@ export class AiAssistantService {
       ...page,
       items: page.items.map((item: any) => {
         const task = tasks.get(String(item.id || ''))
-        return task ? { ...item, mutationToken: buildTaskMutationToken(task) } : item
+        return {
+          ...item,
+          mutationToken: task ? buildTaskMutationToken(task) : undefined,
+          directoryState: task ? 'runtime_mutable' : 'sqlcipher_history_read_only'
+        }
       })
     }
   }
@@ -6566,7 +6570,11 @@ export class AiAssistantService {
       ...page,
       items: page.items.map((item: any) => {
         const task = tasks.get(String(item.id || ''))
-        return task ? { ...item, mutationToken: buildTaskMutationToken(task) } : item
+        return {
+          ...item,
+          mutationToken: task ? buildTaskMutationToken(task) : undefined,
+          directoryState: task ? 'runtime_mutable' : 'sqlcipher_history_read_only'
+        }
       })
     }
   }
@@ -6588,7 +6596,11 @@ export class AiAssistantService {
       ...page,
       items: page.items.map((item: any) => {
         const task = tasks.get(String(item.id || ''))
-        return task ? { ...item, mutationToken: buildTaskMutationToken(task) } : item
+        return {
+          ...item,
+          mutationToken: task ? buildTaskMutationToken(task) : undefined,
+          directoryState: task ? 'runtime_mutable' : 'sqlcipher_history_read_only'
+        }
       })
     }
   }

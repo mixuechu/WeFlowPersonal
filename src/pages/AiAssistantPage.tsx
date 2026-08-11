@@ -7023,7 +7023,8 @@ function AiAssistantPage() {
   }
 
   const completeVisibleTasks = async () => {
-    const targets = displayedTasks.filter(task => !['done', 'cancelled'].includes(task.status))
+    const targets = displayedTasks.filter(task =>
+      !['done', 'cancelled'].includes(task.status) && Boolean(task.mutationToken))
     try {
       await window.electronAPI.aiAssistant.updateTasks(targets.map(task => ({
         id: task.id,
@@ -11833,7 +11834,9 @@ function AiAssistantPage() {
                   setTaskView('calendar')
                 }}><CalendarDays size={11} /> 月历</button>
               </div>
-              <button disabled={!displayedTasks.length} onClick={() => void completeVisibleTasks()}>完成已加载筛选</button>
+              <button disabled={!displayedTasks.some(task =>
+                !['done', 'cancelled'].includes(task.status) && Boolean(task.mutationToken))}
+                onClick={() => void completeVisibleTasks()}>完成已加载筛选</button>
               {focusedTaskId && <button onClick={() => setFocusedTaskId('')}>返回原筛选</button>}
             </div>
             {focusedTaskId && <small className="assistant-evidence">
@@ -11910,14 +11913,18 @@ function AiAssistantPage() {
               </div>
               <div className="assistant-calendar-detail">
                 <h4>{selectedCalendarDate} <small>{selectedCalendarDay?.tasks.length || 0} 项</small></h4>
-                {(selectedCalendarDay?.tasks || []).map(task => <button key={task.id} onClick={() => {
+                {(selectedCalendarDay?.tasks || []).map(task => <button key={task.id}
+                  disabled={!task.mutationToken}
+                  title={!task.mutationToken ? 'SQLCipher 历史记录当前只读，不能编辑' : undefined}
+                  onClick={() => {
                   setEditingTask({
                     ...task, owner: task.owner || '我', collaboratorsText: (task.collaborators || []).join('、'),
                     project: task.project || '', dependsOnIds: task.dependsOnIds || [], taskKind: task.taskKind || 'action',
                     detail: task.detail || '', due: task.due || ''
                   })
                   setTaskView('list')
-                }}><b>{task.title}</b><span>{task.status} · {task.priority}</span></button>)}
+                  }}><b>{task.title}</b><span>{task.status} · {task.priority}
+                    {!task.mutationToken ? ' · 只读' : ''}</span></button>)}
                 {!taskCalendarPage.loading && !(selectedCalendarDay?.tasks.length) &&
                   <em>当天没有当前筛选范围内的任务</em>}
               </div>
@@ -11938,7 +11945,9 @@ function AiAssistantPage() {
                 <div className="assistant-empty">当前筛选没有待办</div>}
               {displayedTasks.map(task => (
                 <article id={`assistant-task-${task.id}`} className={`assistant-task ${task.status === 'done' ? 'done' : ''}`} key={task.id}>
-                  <button className="assistant-check" onClick={() => void toggleTask(task)} aria-label={task.status === 'done' ? '恢复待办' : '完成待办'}>
+                  <button className="assistant-check" disabled={!task.mutationToken}
+                    title={!task.mutationToken ? '当前没有可用操作令牌，只能查看' : undefined}
+                    onClick={() => void toggleTask(task)} aria-label={task.status === 'done' ? '恢复待办' : '完成待办'}>
                     {task.status === 'done' && <Check size={13} />}
                   </button>
                   <div>
@@ -12020,7 +12029,7 @@ function AiAssistantPage() {
                     {task.lifecycleEvidence && <small className="assistant-evidence">状态依据：{task.lifecycleEvidence}</small>}
                     {task.ownershipPolicyReason && <small className="assistant-evidence">策略判断：{task.ownershipPolicyReason}</small>}
                     {editingTask?.id !== task.id && <div className="assistant-task-actions">
-                      <button onClick={() => setEditingTask({
+                      {task.mutationToken && <button onClick={() => setEditingTask({
                         ...task,
                         owner: task.owner || '我',
                         collaboratorsText: (task.collaborators || []).join('、'),
@@ -12029,7 +12038,8 @@ function AiAssistantPage() {
                         taskKind: task.taskKind || 'action',
                         detail: task.detail || '',
                         due: task.due || ''
-                      })}>编辑待办</button>
+                      })}>编辑待办</button>}
+                      {!task.mutationToken && <small>SQLCipher 权威记录 · 当前只读</small>}
                       <button onClick={() => setSelectedTaskId(current => current === task.id ? '' : task.id)}>
                         {selectedTaskId === task.id ? '收起原文与历史' : `查看原文与历史${Number((task as any).evidenceTotal || 0) ? `（${(task as any).evidenceTotal}）` : ''}`}
                       </button>
@@ -12163,7 +12173,11 @@ function AiAssistantPage() {
                 <button onClick={() => setSelectedTaskId(current => current === task.id ? '' : task.id)}>
                   {selectedTaskId === task.id ? '收起原文与历史' : `查看原文与历史（${Number((task as any).evidenceTotal || 0)}）`}
                 </button>
-                <button className="primary" onClick={() => void restoreArchivedTask(task)}>恢复到待处理</button>
+                {task.mutationToken
+                  ? <button className="primary" onClick={() => void restoreArchivedTask(task)}>
+                    恢复到待处理
+                  </button>
+                  : <small>SQLCipher 权威记录 · 当前只读，不能直接恢复</small>}
               </div>
               {selectedTaskId === task.id && <div className="assistant-task-history">
                 {taskWorkspace.status === 'loading' && <small>正在读取任务原文与审计历史…</small>}
