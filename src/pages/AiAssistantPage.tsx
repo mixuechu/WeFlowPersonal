@@ -18332,6 +18332,9 @@ function AiAssistantPage() {
                 <span>任务匹配身份 <b>{Number(memoryDiagnostics.memorySearchScopePlanning.entityDossierTaskNameLimit || 0)} 个完整有界名称</b></span>
                 <span>可信项目档案 <b>{memoryDiagnostics.memorySearchScopePlanning.confirmedProjectDossierIdentityLookup === 'sqlcipher_point_by_stable_id' ? 'SQLCipher 稳定 ID 点查' : '需要检查'}</b></span>
                 <span>可信详情全图副本 <b>{Number(memoryDiagnostics.memorySearchScopePlanning.confirmedDossierFullGraphMaterializations || 0)} 份</b></span>
+                <span>事实 / 事件身份可信度 <b>{memoryDiagnostics.memorySearchScopePlanning.structuredMemoryTrustHydration === 'sqlcipher_current_page_join' ? 'SQLCipher 当前页联查' : '需要检查'}</b></span>
+                <span>记忆可信判定全图副本 <b>{Number(memoryDiagnostics.memorySearchScopePlanning.structuredMemoryTrustFullGraphMaterializations || 0)} 份</b></span>
+                <span>缺失事件参与者 <b>{memoryDiagnostics.memorySearchScopePlanning.structuredMemoryMissingParticipantsVisible ? '保留并进入审阅' : '需要检查'}</b></span>
                 <span>问答实体识别 <b>{memoryDiagnostics.memorySearchScopePlanning.questionEntityPlanningStrategy === 'sqlcipher_reverse_term_match' ? 'SQLCipher 反向词匹配' : '需要检查'}</b></span>
                 <span>单轮规划预算 <b>{Number(memoryDiagnostics.memorySearchScopePlanning.questionEntityPlanningLimit || 0)} 个实体</b></span>
                 <span>超预算语义 <b>{memoryDiagnostics.memorySearchScopePlanning.questionEntityPlanningTruncationSafe ? '显示总数且禁止单人自动绑定' : '需要检查'}</b></span>

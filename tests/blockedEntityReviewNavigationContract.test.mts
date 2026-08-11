@@ -9,11 +9,29 @@ const read = (path: string): string => readFileSync(join(root, path), 'utf8')
 
 test('claim and event pages expose bounded untrusted entity review targets', () => {
   const service = read('electron/services/aiAssistantService.ts')
-  assert.match(service, /buildUntrustedEntityReviewTargets\(/)
-  assert.match(service, /claimUntrustedEntityIds\(claim, trustedIds\)/)
-  assert.match(service, /eventUntrustedEntityIds\(event, trustedIds\)/)
-  assert.match(service, /untrusted_entity_review_targets: reviewTargets\.items/)
-  assert.match(service, /untrusted_entity_count: reviewTargets\.total/)
+  const store = read('electron/services/personalMemoryStore.ts')
+  const eventMethod = store.slice(
+    store.indexOf('  listEventTimeline('),
+    store.indexOf('\n  listEntityRelationPage(', store.indexOf('  listEventTimeline('))
+  )
+  const claimMethod = store.slice(
+    store.indexOf('  listClaimArchive('),
+    store.indexOf('\n  private memoryItemSemanticFingerprint(', store.indexOf('  listClaimArchive('))
+  )
+  assert.match(eventMethod, /LEFT JOIN entities e ON e\.id=ep\.entity_id/)
+  assert.match(eventMethod, /entities_trusted: untrusted\.length === 0/)
+  assert.match(eventMethod, /untrusted_entity_review_targets: untrusted\.slice\(0, 20\)/)
+  assert.match(claimMethod, /s\.trust_status AS subject_trust_status/)
+  assert.match(claimMethod, /entities_trusted: targets\.length === 0/)
+  assert.match(claimMethod, /untrusted_entity_review_targets: targets\.slice\(0, 20\)/)
+  assert.doesNotMatch(service.slice(
+    service.indexOf('  getEventTimeline('),
+    service.indexOf('\n  getEntityRelationPage(', service.indexOf('  getEventTimeline('))
+  ), /this\.state\.graph\.entities/)
+  assert.doesNotMatch(service.slice(
+    service.indexOf('  getClaimArchive('),
+    service.indexOf('\n  private inspectJointMemoryBackup(', service.indexOf('  getClaimArchive('))
+  ), /this\.state\.graph\.entities/)
 })
 
 test('every blocked claim and event surface links to exact identity review work', () => {

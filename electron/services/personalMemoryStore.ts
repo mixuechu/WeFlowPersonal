@@ -8541,7 +8541,7 @@ export class PersonalMemoryStore {
       mineTaskOwnershipAuditIndex,
       memoryChangeLog,
       memorySearchScopePlanning: {
-        version: 15,
+        version: 16,
         facetStrategy: 'sqlcipher_direct_count',
         facetIdentityMaterializations: 0,
         primaryScopeStrategy: 'sqlcipher_isolated_temp_table',
@@ -8594,6 +8594,10 @@ export class PersonalMemoryStore {
         entityDossierTaskNameLimit: 100,
         confirmedProjectDossierIdentityLookup: 'sqlcipher_point_by_stable_id',
         confirmedDossierFullGraphMaterializations: 0,
+        structuredMemoryTrustHydration: 'sqlcipher_current_page_join',
+        structuredMemoryTrustFullGraphMaterializations: 0,
+        structuredMemoryTrustReviewTargetLimit: 20,
+        structuredMemoryMissingParticipantsVisible: true,
         questionEntityPlanningStrategy: 'sqlcipher_reverse_term_match',
         questionEntityPlanningLimit: 100,
         questionEntityPlanningTotalVisible: true,
@@ -16611,8 +16615,9 @@ export class PersonalMemoryStore {
         message_id DESC LIMIT ?
     `)
     const participantStatement = this.db.prepare(`
-      SELECT ep.entity_id,ep.role,e.canonical_name
-      FROM event_participants ep JOIN entities e ON e.id=ep.entity_id WHERE ep.event_id=?
+      SELECT ep.entity_id,ep.role,e.canonical_name,e.trust_status,e.deleted_at
+      FROM event_participants ep LEFT JOIN entities e ON e.id=ep.entity_id WHERE ep.event_id=?
+      ORDER BY ep.entity_id,ep.role
     `)
     const candidateIds = rows
       .filter(event => event.status === 'candidate')
@@ -16689,12 +16694,31 @@ export class PersonalMemoryStore {
         ambiguityByEvent.set(candidateId, ambiguity)
       }
     }
-    const items = rows.map(event => ({
-      ...event,
-      participants: participantStatement.all(event.id) as any[],
-      evidence: (evidenceStatement.all(event.id, MEMORY_CARD_EVIDENCE_LIMIT) as any[]).reverse(),
-      dedupAmbiguity: ambiguityByEvent.get(String(event.id)) || null
-    }))
+    const items = rows.map(event => {
+      const participants = participantStatement.all(event.id) as any[]
+      const untrusted = [...new Map(participants.filter(participant =>
+        participant.deleted_at != null || String(participant.trust_status || '') !== 'confirmed')
+        .map(participant => [String(participant.entity_id || ''), participant])).values()]
+      return {
+        ...event,
+        participants: participants.map(participant => ({
+          entity_id: participant.entity_id,
+          role: participant.role,
+          canonical_name: participant.canonical_name
+        })),
+        entities_trusted: untrusted.length === 0,
+        untrusted_entity_review_targets: untrusted.slice(0, 20).map(participant => ({
+          id: String(participant.entity_id || ''),
+          canonicalName: String(participant.canonical_name || participant.entity_id || '').slice(0, 120),
+          trustStatus: participant.deleted_at == null &&
+            ['candidate', 'rejected'].includes(String(participant.trust_status || ''))
+            ? String(participant.trust_status) : 'missing'
+        })),
+        untrusted_entity_count: untrusted.length,
+        evidence: (evidenceStatement.all(event.id, MEMORY_CARD_EVIDENCE_LIMIT) as any[]).reverse(),
+        dedupAmbiguity: ambiguityByEvent.get(String(event.id)) || null
+      }
+    })
     const completedRevision = this.getStructuredMemoryRevision()
     if (completedRevision !== revision) {
       return { items: [], total: 0, hasMore: false, revision: completedRevision, stale: true }
@@ -17694,6 +17718,8 @@ export class PersonalMemoryStore {
     const limit = Math.max(1, Math.min(100, Math.floor(Number(options.limit) || 40)))
     const rows = this.db.prepare(`
       SELECT c.*,s.canonical_name AS subject_name,o.canonical_name AS object_entity_name,
+        s.trust_status AS subject_trust_status,s.deleted_at AS subject_deleted_at,
+        o.trust_status AS object_trust_status,o.deleted_at AS object_deleted_at,
         (SELECT COUNT(*) FROM memory_corrections mc
           WHERE mc.item_kind='claim' AND mc.item_id=c.id) AS correction_count,
         (SELECT COUNT(*) FROM memory_review_decisions decision
@@ -17732,10 +17758,42 @@ export class PersonalMemoryStore {
         CASE WHEN evidence_role='contradiction' THEN 0 ELSE 1 END,
         message_id DESC LIMIT ?
     `)
-    const items = rows.map(claim => ({
-      ...claim,
-      evidence: (evidenceStatement.all(claim.id, MEMORY_CARD_EVIDENCE_LIMIT) as any[]).reverse()
-    }))
+    const items = rows.map(claim => {
+      const targets = [...new Map([
+        {
+          id: String(claim.subject_id || ''),
+          canonicalName: String(claim.subject_name || claim.subject_id || '').slice(0, 120),
+          trustStatus: String(claim.subject_trust_status || ''),
+          deleted: claim.subject_deleted_at != null
+        },
+        ...(claim.object_entity_id ? [{
+          id: String(claim.object_entity_id || ''),
+          canonicalName: String(claim.object_entity_name || claim.object_entity_id || '').slice(0, 120),
+          trustStatus: String(claim.object_trust_status || ''),
+          deleted: claim.object_deleted_at != null
+        }] : [])
+      ].filter(target => target.id && (target.deleted || target.trustStatus !== 'confirmed'))
+        .map(target => [target.id, target])).values()]
+      const {
+        subject_trust_status: _subjectTrustStatus,
+        subject_deleted_at: _subjectDeletedAt,
+        object_trust_status: _objectTrustStatus,
+        object_deleted_at: _objectDeletedAt,
+        ...visibleClaim
+      } = claim
+      return {
+        ...visibleClaim,
+        entities_trusted: targets.length === 0,
+        untrusted_entity_review_targets: targets.slice(0, 20).map(target => ({
+          id: target.id,
+          canonicalName: target.canonicalName,
+          trustStatus: !target.deleted && ['candidate', 'rejected'].includes(target.trustStatus)
+            ? target.trustStatus : 'missing'
+        })),
+        untrusted_entity_count: targets.length,
+        evidence: (evidenceStatement.all(claim.id, MEMORY_CARD_EVIDENCE_LIMIT) as any[]).reverse()
+      }
+    })
     const completedRevision = this.getStructuredMemoryRevision()
     if (completedRevision !== revision) {
       return { items: [], total: 0, hasMore: false, revision: completedRevision, stale: true }

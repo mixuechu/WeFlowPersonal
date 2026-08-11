@@ -2806,6 +2806,54 @@ test('event timeline filters cross-source evidence, status and time with stable 
   assert.equal(bounded.evidence.at(-1).message_id, 'wechat:timeline:25')
 }))
 
+test('claim and event pages derive entity trust from SQLCipher without hiding deleted participants', () => withStore(store => {
+  store.syncGraph({
+    entities: [
+      { id: 'page-trusted', type: 'person', canonicalName: '可信人物', trustStatus: 'confirmed' },
+      { id: 'page-candidate', type: 'person', canonicalName: '候选人物', trustStatus: 'candidate' },
+      { id: 'page-deleted', type: 'person', canonicalName: '已删除人物', trustStatus: 'confirmed' }
+    ],
+    relations: [],
+    reviewQueue: []
+  } as any)
+  ;(store as any).db.prepare(`UPDATE entities SET deleted_at=? WHERE id='page-deleted'`)
+    .run('2026-08-12T00:00:00.000Z')
+  store.upsertClaims([{
+    id: 'page-trust-claim', subjectId: 'page-trusted', predicate: '协作',
+    objectEntityId: 'page-candidate', confidence: 0.8, status: 'candidate',
+    sourceNature: 'inference', searchText: '可信人物与候选人物协作',
+    evidence: [{ sourceId: 'wechat', sessionId: 'trust-page', messageId: 'claim-message',
+      timestamp: 1_800_000_000, excerpt: '协作原文', role: 'direct' }]
+  }])
+  store.upsertEvents([{
+    id: 'page-trust-event', eventType: 'meeting', title: '身份可信会议', description: '',
+    confidence: 0.8, status: 'candidate', sourceNature: 'inference', searchText: '身份可信会议',
+    participants: [
+      { entityId: 'page-trusted', role: 'owner' },
+      { entityId: 'page-deleted', role: 'guest' },
+      { entityId: 'page-deleted', role: 'observer' }
+    ],
+    evidence: [{ sourceId: 'wechat', sessionId: 'trust-page', messageId: 'event-message',
+      timestamp: 1_800_000_001, excerpt: '会议原文', role: 'direct' }]
+  }])
+
+  const claim = store.listClaimArchive({ predicate: '协作' }).items[0]
+  assert.equal(claim.entities_trusted, false)
+  assert.deepEqual(claim.untrusted_entity_review_targets, [{
+    id: 'page-candidate', canonicalName: '候选人物', trustStatus: 'candidate'
+  }])
+  assert.equal(claim.untrusted_entity_count, 1)
+  assert.equal('subject_trust_status' in claim, false)
+
+  const event = store.listEventTimeline({ query: '身份可信会议' }).items[0]
+  assert.equal(event.entities_trusted, false)
+  assert.equal(event.participants.length, 3)
+  assert.deepEqual(event.untrusted_entity_review_targets, [{
+    id: 'page-deleted', canonicalName: '已删除人物', trustStatus: 'missing'
+  }])
+  assert.equal(event.untrusted_entity_count, 1)
+}))
+
 test('project key event timeline pages beyond legacy workspace windows and rejects stale continuation', () => withStore(store => {
   store.syncGraph({
     entities: [{
