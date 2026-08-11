@@ -16097,6 +16097,30 @@ test('identity merge evidence lineage folds and restores relations without JSON 
   reapplyLineage()
   assert.equal(store.inspectMergeRelationEvidenceLineage(recorded.mergeId).matches, true)
 
+  database.exec(`
+    CREATE TEMP TRIGGER fail_identity_merge_lineage_cleanup
+    BEFORE DELETE ON identity_merge_relation_evidence
+    BEGIN SELECT RAISE(ABORT,'lineage cleanup failure'); END
+  `)
+  assert.throws(() => store.syncGraph({
+    entities,
+    relations: structuralRelations,
+    reviewQueue: []
+  } as any, '', {
+    identityMergeRevert: {
+      mergeId: recorded.mergeId,
+      sourceId,
+      targetId,
+      sourceParticipants: [],
+      targetParticipants: []
+    }
+  }), /lineage cleanup failure/)
+  assert.equal(store.getMergeSnapshot(recorded.mergeId)?.source?.id, sourceId)
+  assert.equal(store.inspectMergeRelationEvidenceLineage(recorded.mergeId).matches, true)
+  assert.equal(store.getRelationEvidence([targetRelationId]).get(targetRelationId)?.length, 3)
+  assert.equal(store.getRelationEvidence([sourceRelationId]).get(sourceRelationId)?.length, 0)
+  database.exec('DROP TRIGGER fail_identity_merge_lineage_cleanup')
+
   store.syncGraph({
     entities,
     relations: structuralRelations,
@@ -16120,6 +16144,24 @@ test('identity merge evidence lineage folds and restores relations without JSON 
   )
   assert.equal(store.getRelationEvidence([selfRelationId]).get(selfRelationId)?.[0]?.excerpt,
     '合并后成为自环但撤销时必须恢复')
+  assert.deepEqual(store.inspectMergeRelationEvidenceLineage(recorded.mergeId), {
+    present: false,
+    matches: false,
+    archivedRows: 0,
+    expectedActiveRows: 0,
+    currentActiveRows: 0,
+    missingRows: 0,
+    extraRows: 0,
+    changedRows: 0
+  })
+  assert.equal(database.prepare(`
+    SELECT COUNT(*) AS count FROM identity_merge_relation_evidence WHERE merge_id=?
+  `).get(recorded.mergeId).count, 0)
+  const revertedAudit = database.prepare(`
+    SELECT reverted_at,snapshot_json FROM merge_history WHERE id=?
+  `).get(recorded.mergeId) as any
+  assert.ok(revertedAudit.reverted_at)
+  assert.equal(JSON.parse(revertedAudit.snapshot_json).relationEvidenceLineage.totalRows, 5)
 }))
 
 test('ingestion archive revision covers run and batch lifecycle and self-heals on restart', () => {

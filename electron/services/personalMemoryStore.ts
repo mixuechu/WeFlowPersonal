@@ -10539,6 +10539,9 @@ export class PersonalMemoryStore {
         if (Number(result.changes || 0) !== 1) {
           throw new Error('身份合并撤销档案已经变化，请重新核对')
         }
+        this.db.prepare(
+          'DELETE FROM identity_merge_relation_evidence WHERE merge_id=?'
+        ).run(mergeRevert.mergeId)
       }
       if (withinTransaction) this.db.exec('RELEASE SAVEPOINT weflow_sync_graph')
       else this.db.exec('COMMIT')
