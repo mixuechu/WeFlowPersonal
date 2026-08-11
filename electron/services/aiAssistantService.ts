@@ -6901,17 +6901,19 @@ export class AiAssistantService {
           relationCorrections: auditPageMeta(relationCorrectionsPage),
           entityProfileCorrections: auditPageMeta(entityProfileCorrectionsPage)
         },
-        tasks: relatedTasks.items.flatMap(task => {
+        tasks: relatedTasks.items.map(task => {
           const current = currentTasksById.get(String(task.id))
-          return current ? [{
-            ...current,
+          return {
+            ...task,
+            ...(current || {}),
             ...boundedEvidencePayload(
               task.evidence,
               MEMORY_CARD_EVIDENCE_LIMIT,
               task.evidenceTotal
             ),
-            mutationToken: buildTaskMutationToken(current)
-          }] : []
+            mutationToken: current ? buildTaskMutationToken(current) : undefined,
+            directoryState: current ? 'runtime_mutable' : 'sqlcipher_history_read_only'
+          }
         }),
         taskTotal: relatedTasks.total,
         tasksTruncated: relatedTasks.hasMore,
@@ -7052,17 +7054,19 @@ export class AiAssistantService {
       ...page,
       revision,
       stale: false,
-      items: page.items.flatMap(task => {
+      items: page.items.map(task => {
         const current = currentTasksById.get(String(task.id))
-        return current ? [{
-          ...current,
+        return {
+          ...task,
+          ...(current || {}),
           ...boundedEvidencePayload(
             task.evidence,
             MEMORY_CARD_EVIDENCE_LIMIT,
             task.evidenceTotal
           ),
-          mutationToken: buildTaskMutationToken(current)
-        }] : []
+          mutationToken: current ? buildTaskMutationToken(current) : undefined,
+          directoryState: current ? 'runtime_mutable' : 'sqlcipher_history_read_only'
+        }
       })
     }
   }
