@@ -25,6 +25,11 @@ test('all trusted directory reads and selection gates use SQLCipher authority', 
   const questionSource = serviceSource.slice(questionStart, questionEnd)
   assert.match(questionSource, /personalMemoryStore\.listTrustedEntitiesMentionedInText\(/)
   assert.doesNotMatch(questionSource, /this\.state\.graph\.entities\.(?:find|filter|map)/)
+  const extractionStart = serviceSource.indexOf('  private async callAi(')
+  const extractionEnd = serviceSource.indexOf('\n  private buildAnalysisBatches(', extractionStart)
+  const extractionSource = serviceSource.slice(extractionStart, extractionEnd)
+  assert.match(extractionSource, /personalMemoryStore\.selectTrustedExtractionContext\(/)
+  assert.doesNotMatch(extractionSource, /this\.state\.graph\.(?:entities|relations)\.(?:find|filter|map)/)
   for (const [startMarker, endMarker] of [
     ['  async searchMemoryHybrid(', '\n  async searchMemoryWithTrustedScope('],
     ['  async updateMemorySearchFeedback(', '\n  getMemorySearchFeedbackArchive(']
@@ -81,7 +86,19 @@ test('SQLCipher trusted entity directory searches and paginates without material
         createdAt: '2026-08-12T00:00:00.000Z',
         updatedAt: '2026-08-12T00:00:00.000Z'
       })),
-      relations: [],
+      relations: [{
+        id: 'relation-direct-neighbor', subjectId: 'trusted-123', objectId: 'trusted-1000',
+        predicate: '协作', status: 'confirmed', confidence: 1,
+        createdAt: '2026-08-12T00:00:00.000Z', updatedAt: '2026-08-12T00:00:00.000Z'
+      }, {
+        id: 'relation-two-hop', subjectId: 'trusted-1000', objectId: 'trusted-1001',
+        predicate: '协作', status: 'confirmed', confidence: 1,
+        createdAt: '2026-08-12T00:00:00.000Z', updatedAt: '2026-08-12T00:00:00.000Z'
+      }, {
+        id: 'relation-candidate-neighbor', subjectId: 'trusted-456', objectId: 'trusted-1002',
+        predicate: '可能协作', status: 'candidate', confidence: 0.6,
+        createdAt: '2026-08-12T00:00:00.000Z', updatedAt: '2026-08-12T00:00:00.000Z'
+      }],
       reviewQueue: []
     } as any)
 
@@ -123,6 +140,31 @@ test('SQLCipher trusted entity directory searches and paginates without material
     assert.equal(manyMentions.items.length, 25)
     assert.equal(manyMentions.truncated, true)
     assert.ok(manyMentions.items.every(entity => entity.trustStatus === 'confirmed'))
+
+    const extraction = store.selectTrustedExtractionContext({
+      text: '别名-123 正在推进相关事项',
+      senderAnchors: ['wxid-456'],
+      ownerEntityIds: ['trusted-789'],
+      limit: 24
+    })
+    assert.equal(extraction.stale, false)
+    assert.deepEqual(extraction.directEntityIds, ['trusted-789', 'trusted-456', 'trusted-123'])
+    assert.deepEqual(extraction.expandedEntityIds, ['trusted-1000'])
+    assert.deepEqual(extraction.relations.map(relation => relation.id), ['relation-direct-neighbor'])
+    assert.deepEqual(extraction.reasons['trusted-789'], ['用户本人绑定身份'])
+    assert.deepEqual(extraction.reasons['trusted-456'], ['当前发送者身份锚点'])
+    assert.deepEqual(extraction.reasons['trusted-1000'], ['可信关系一跳邻居'])
+    assert.equal(extraction.entities.some(entity => entity.id === 'trusted-1001'), false)
+    assert.equal(extraction.entities.some(entity => entity.id === 'trusted-1002'), false)
+
+    const originalGraphRevision = store.getGraphReviewRevision.bind(store)
+    let graphRevisionReads = 0
+    ;(store as any).getGraphReviewRevision = () =>
+      graphRevisionReads++ === 0 ? originalGraphRevision() : `${originalGraphRevision()}-changed`
+    const staleExtraction = store.selectTrustedExtractionContext({ text: '别名-123' })
+    ;(store as any).getGraphReviewRevision = originalGraphRevision
+    assert.equal(staleExtraction.stale, true)
+    assert.deepEqual(staleExtraction.entities, [])
 
     const selection = store.resolveTrustedEntityDirectorySelection({
       entityIds: ['trusted-1', 'trusted-123'],

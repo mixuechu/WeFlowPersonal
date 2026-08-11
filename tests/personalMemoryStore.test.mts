@@ -20227,7 +20227,7 @@ test('trusted extraction context excludes candidates and keeps same-name confirm
     relations: [],
     limit: 24
   })
-  assert.equal(EXTRACTION_MEMORY_CONTEXT_VERSION, 'trusted-extraction-context-v2')
+  assert.equal(EXTRACTION_MEMORY_CONTEXT_VERSION, 'trusted-extraction-context-v3')
   assert.deepEqual(new Set(selected.entities.map(entity => entity.id)),
     new Set(['person-zhang-a', 'person-zhang-b']))
   assert.equal(selected.entities.some(entity => entity.id === 'person-zhang-candidate'), false)

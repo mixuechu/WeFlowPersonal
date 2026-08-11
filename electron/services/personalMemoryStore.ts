@@ -4880,6 +4880,243 @@ export class PersonalMemoryStore {
     }
   }
 
+  selectTrustedExtractionContext(input: {
+    text?: string
+    senderAnchors?: string[]
+    ownerNames?: string[]
+    ownerEntityIds?: string[]
+    limit?: number
+  }): {
+    entities: any[]
+    relations: any[]
+    directEntityIds: string[]
+    expandedEntityIds: string[]
+    reasons: Record<string, string[]>
+    revision: string
+    stale: boolean
+  } {
+    const revision = `${this.getTrustedEntityDirectoryRevision()}:${this.getGraphReviewRevision()}`
+    const empty = {
+      entities: [], relations: [], directEntityIds: [], expandedEntityIds: [],
+      reasons: {}, revision, stale: false
+    }
+    if (!this.db) return empty
+    const text = String(input.text || '').trim().toLocaleLowerCase('zh-CN')
+    const senderAnchors = [...new Set((input.senderAnchors || [])
+      .map(value => String(value || '').trim().toLocaleLowerCase('zh-CN')).filter(Boolean))].slice(0, 200)
+    const ownerNames = [...new Set((input.ownerNames || [])
+      .map(value => String(value || '').trim().toLocaleLowerCase('zh-CN')).filter(Boolean))].slice(0, 40)
+    const ownerEntityIds = [...new Set((input.ownerEntityIds || [])
+      .map(value => String(value || '').trim()).filter(Boolean))].slice(0, 8)
+    const limit = Math.max(1, Math.min(40, Math.floor(Number(input.limit) || 24)))
+    const directRows = this.db.prepare(`
+      WITH trusted AS (
+        SELECT entities.id,entities.type,entities.canonical_name,entities.summary,
+          entities.summary_status,entities.updated_at
+        FROM entities
+        WHERE deleted_at IS NULL AND trust_status='confirmed' AND trim(canonical_name)!=''
+      ), signals AS (
+        SELECT trusted.id AS entity_id,110 AS score,'用户本人绑定身份' AS reason
+        FROM trusted JOIN json_each(?) owner_id ON CAST(owner_id.value AS TEXT)=trusted.id
+        UNION ALL
+        SELECT trusted.id,100,'当前发送者身份锚点'
+        FROM trusted JOIN identities identity ON identity.entity_id=trusted.id
+        JOIN json_each(?) anchor ON lower(trim(identity.account_id))=CAST(anchor.value AS TEXT)
+        UNION ALL
+        SELECT trusted.id,90,'用户本人可信身份'
+        FROM trusted JOIN json_each(?) owner_name
+        WHERE lower(trim(trusted.canonical_name))=CAST(owner_name.value AS TEXT)
+          OR EXISTS(SELECT 1 FROM aliases alias WHERE alias.entity_id=trusted.id
+            AND lower(trim(alias.value))=CAST(owner_name.value AS TEXT))
+        UNION ALL
+        SELECT trusted.id,80,'正文或会话出现规范名'
+        FROM trusted
+        WHERE ((length(trim(trusted.canonical_name))>=3)
+            OR (length(trim(trusted.canonical_name))>=2
+              AND trim(trusted.canonical_name) NOT GLOB '*[^一-龥]*'))
+          AND instr(?,lower(trim(trusted.canonical_name)))>0
+          AND (substr(trim(trusted.canonical_name),1,1) NOT GLOB '[0-9A-Za-z_]'
+            OR instr(?,lower(trim(trusted.canonical_name)))=1
+            OR substr(?,instr(?,lower(trim(trusted.canonical_name)))-1,1) NOT GLOB '[0-9A-Za-z_]')
+          AND (substr(trim(trusted.canonical_name),-1,1) NOT GLOB '[0-9A-Za-z_]'
+            OR instr(?,lower(trim(trusted.canonical_name)))+length(trim(trusted.canonical_name))>length(?)
+            OR substr(?,instr(?,lower(trim(trusted.canonical_name)))+length(trim(trusted.canonical_name)),1)
+              NOT GLOB '[0-9A-Za-z_]')
+        UNION ALL
+        SELECT trusted.id,75,'正文或会话出现可信别名'
+        FROM trusted JOIN aliases alias ON alias.entity_id=trusted.id
+        WHERE ((length(trim(alias.value))>=3)
+            OR (length(trim(alias.value))>=2 AND trim(alias.value) NOT GLOB '*[^一-龥]*'))
+          AND instr(?,lower(trim(alias.value)))>0
+          AND (substr(trim(alias.value),1,1) NOT GLOB '[0-9A-Za-z_]'
+            OR instr(?,lower(trim(alias.value)))=1
+            OR substr(?,instr(?,lower(trim(alias.value)))-1,1) NOT GLOB '[0-9A-Za-z_]')
+          AND (substr(trim(alias.value),-1,1) NOT GLOB '[0-9A-Za-z_]'
+            OR instr(?,lower(trim(alias.value)))+length(trim(alias.value))>length(?)
+            OR substr(?,instr(?,lower(trim(alias.value)))+length(trim(alias.value)),1)
+              NOT GLOB '[0-9A-Za-z_]')
+      ), ranked AS (
+        SELECT trusted.*,MAX(signals.score) AS score
+        FROM trusted JOIN signals ON signals.entity_id=trusted.id
+        GROUP BY trusted.id
+      )
+      SELECT * FROM ranked
+      ORDER BY score DESC,updated_at DESC,id ASC
+      LIMIT ?
+    `).all(
+      JSON.stringify(ownerEntityIds), JSON.stringify(senderAnchors), JSON.stringify(ownerNames),
+      text, text, text, text, text, text, text, text,
+      text, text, text, text, text, text, text, text, limit
+    ) as any[]
+    const directIds = directRows.map(row => String(row.id))
+    const remaining = Math.max(0, limit - directIds.length)
+    const expandedRows = remaining && directIds.length ? this.db.prepare(`
+      WITH direct(id) AS (SELECT CAST(value AS TEXT) FROM json_each(?)),
+      edges AS (
+        SELECT relation.id AS relation_id,relation.updated_at,
+          CASE WHEN relation.subject_id=direct.id THEN relation.object_id ELSE relation.subject_id END AS neighbor_id
+        FROM direct JOIN relations relation
+          ON relation.subject_id=direct.id OR relation.object_id=direct.id
+        JOIN entities neighbor ON neighbor.id=CASE
+          WHEN relation.subject_id=direct.id THEN relation.object_id ELSE relation.subject_id END
+        WHERE relation.status='confirmed' AND neighbor.deleted_at IS NULL
+          AND neighbor.trust_status='confirmed'
+          AND NOT EXISTS(SELECT 1 FROM direct known WHERE known.id=neighbor.id)
+      ), ranked AS (
+        SELECT neighbor_id,MAX(updated_at) AS updated_at,MIN(relation_id) AS relation_id
+        FROM edges GROUP BY neighbor_id
+      )
+      SELECT neighbor_id AS id FROM ranked
+      ORDER BY updated_at DESC,relation_id ASC,neighbor_id ASC LIMIT ?
+    `).all(JSON.stringify(directIds), remaining) as any[] : []
+    const expandedIds = expandedRows.map(row => String(row.id))
+    const selectedIds = [...directIds, ...expandedIds]
+    if (!selectedIds.length) return empty
+    const rowsById = new Map(directRows.map(row => [String(row.id), row]))
+    if (expandedIds.length) {
+      for (const row of this.db.prepare(`
+        SELECT entities.id,entities.type,entities.canonical_name,entities.summary,
+          entities.summary_status,entities.updated_at
+        FROM entities JOIN json_each(?) requested ON CAST(requested.value AS TEXT)=entities.id
+        WHERE deleted_at IS NULL AND trust_status='confirmed'
+      `).all(JSON.stringify(expandedIds)) as any[]) rowsById.set(String(row.id), row)
+    }
+    const aliases = new Map<string, string[]>()
+    const accounts = new Map<string, string[]>()
+    for (const row of this.db.prepare(`
+      WITH ranked AS (
+        SELECT alias.entity_id,alias.value,
+          ROW_NUMBER() OVER(PARTITION BY alias.entity_id ORDER BY alias.id) AS ordinal
+        FROM aliases alias JOIN json_each(?) requested
+          ON CAST(requested.value AS TEXT)=alias.entity_id
+      ) SELECT entity_id,value FROM ranked WHERE ordinal<=8 ORDER BY entity_id,ordinal
+    `).all(JSON.stringify(selectedIds)) as any[]) {
+      const values = aliases.get(String(row.entity_id)) || []
+      values.push(String(row.value || ''))
+      aliases.set(String(row.entity_id), values)
+    }
+    for (const row of this.db.prepare(`
+      WITH ranked AS (
+        SELECT identity.entity_id,identity.account_id,
+          ROW_NUMBER() OVER(PARTITION BY identity.entity_id ORDER BY identity.id) AS ordinal
+        FROM identities identity JOIN json_each(?) requested
+          ON CAST(requested.value AS TEXT)=identity.entity_id
+        WHERE lower(identity.platform)='wechat'
+      ) SELECT entity_id,account_id FROM ranked WHERE ordinal<=8 ORDER BY entity_id,ordinal
+    `).all(JSON.stringify(selectedIds)) as any[]) {
+      const values = accounts.get(String(row.entity_id)) || []
+      values.push(String(row.account_id || ''))
+      accounts.set(String(row.entity_id), values)
+    }
+    const reasonRows = this.db.prepare(`
+      WITH trusted AS (
+        SELECT id,canonical_name FROM entities
+        WHERE deleted_at IS NULL AND trust_status='confirmed' AND trim(canonical_name)!=''
+      ), selected(id) AS (SELECT CAST(value AS TEXT) FROM json_each(?)), signals AS (
+        SELECT trusted.id AS entity_id,110 AS score,'用户本人绑定身份' AS reason
+        FROM trusted JOIN selected ON selected.id=trusted.id
+        JOIN json_each(?) owner_id ON CAST(owner_id.value AS TEXT)=trusted.id
+        UNION ALL
+        SELECT trusted.id,100,'当前发送者身份锚点'
+        FROM trusted JOIN selected ON selected.id=trusted.id
+        JOIN identities identity ON identity.entity_id=trusted.id
+        JOIN json_each(?) anchor ON lower(trim(identity.account_id))=CAST(anchor.value AS TEXT)
+        UNION ALL
+        SELECT trusted.id,90,'用户本人可信身份'
+        FROM trusted JOIN selected ON selected.id=trusted.id JOIN json_each(?) owner_name
+        WHERE lower(trim(trusted.canonical_name))=CAST(owner_name.value AS TEXT)
+          OR EXISTS(SELECT 1 FROM aliases alias WHERE alias.entity_id=trusted.id
+            AND lower(trim(alias.value))=CAST(owner_name.value AS TEXT))
+        UNION ALL
+        SELECT trusted.id,80,'正文或会话出现规范名'
+        FROM trusted JOIN selected ON selected.id=trusted.id
+        WHERE ((length(trim(trusted.canonical_name))>=3)
+            OR (length(trim(trusted.canonical_name))>=2
+              AND trim(trusted.canonical_name) NOT GLOB '*[^一-龥]*'))
+          AND instr(?,lower(trim(trusted.canonical_name)))>0
+          AND (substr(trim(trusted.canonical_name),1,1) NOT GLOB '[0-9A-Za-z_]'
+            OR instr(?,lower(trim(trusted.canonical_name)))=1
+            OR substr(?,instr(?,lower(trim(trusted.canonical_name)))-1,1) NOT GLOB '[0-9A-Za-z_]')
+          AND (substr(trim(trusted.canonical_name),-1,1) NOT GLOB '[0-9A-Za-z_]'
+            OR instr(?,lower(trim(trusted.canonical_name)))+length(trim(trusted.canonical_name))>length(?)
+            OR substr(?,instr(?,lower(trim(trusted.canonical_name)))+length(trim(trusted.canonical_name)),1)
+              NOT GLOB '[0-9A-Za-z_]')
+        UNION ALL
+        SELECT trusted.id,75,'正文或会话出现可信别名'
+        FROM trusted JOIN selected ON selected.id=trusted.id JOIN aliases alias ON alias.entity_id=trusted.id
+        WHERE ((length(trim(alias.value))>=3)
+            OR (length(trim(alias.value))>=2 AND trim(alias.value) NOT GLOB '*[^一-龥]*'))
+          AND instr(?,lower(trim(alias.value)))>0
+          AND (substr(trim(alias.value),1,1) NOT GLOB '[0-9A-Za-z_]'
+            OR instr(?,lower(trim(alias.value)))=1
+            OR substr(?,instr(?,lower(trim(alias.value)))-1,1) NOT GLOB '[0-9A-Za-z_]')
+          AND (substr(trim(alias.value),-1,1) NOT GLOB '[0-9A-Za-z_]'
+            OR instr(?,lower(trim(alias.value)))+length(trim(alias.value))>length(?)
+            OR substr(?,instr(?,lower(trim(alias.value)))+length(trim(alias.value)),1)
+              NOT GLOB '[0-9A-Za-z_]')
+      ) SELECT DISTINCT entity_id,reason,score FROM signals ORDER BY score DESC,reason ASC
+    `).all(
+      JSON.stringify(directIds), JSON.stringify(ownerEntityIds), JSON.stringify(senderAnchors),
+      JSON.stringify(ownerNames),
+      text, text, text, text, text, text, text, text,
+      text, text, text, text, text, text, text, text
+    ) as any[]
+    const reasons: Record<string, string[]> = {}
+    for (const row of reasonRows) (reasons[String(row.entity_id)] ||= []).push(String(row.reason))
+    for (const id of expandedIds) reasons[id] = ['可信关系一跳邻居']
+    const relations = this.db.prepare(`
+      WITH selected(id) AS (SELECT CAST(value AS TEXT) FROM json_each(?))
+      SELECT relation.id,relation.subject_id,relation.object_id,relation.predicate,
+        relation.status,relation.confidence,relation.updated_at
+      FROM relations relation
+      JOIN selected subject ON subject.id=relation.subject_id
+      JOIN selected object ON object.id=relation.object_id
+      WHERE relation.status='confirmed'
+      ORDER BY relation.updated_at DESC,relation.id ASC LIMIT 40
+    `).all(JSON.stringify(selectedIds)) as any[]
+    const completedRevision = `${this.getTrustedEntityDirectoryRevision()}:${this.getGraphReviewRevision()}`
+    if (completedRevision !== revision) {
+      return { ...empty, revision: completedRevision, stale: true }
+    }
+    return {
+      entities: selectedIds.flatMap(id => {
+        const row = rowsById.get(id)
+        return row ? [{
+          id, type: String(row.type || 'unknown'), canonicalName: String(row.canonical_name || ''),
+          aliases: aliases.get(id) || [], accountIds: accounts.get(id) || [],
+          summary: String(row.summary || ''), summaryStatus: String(row.summary_status || 'empty'),
+          trustStatus: 'confirmed', updatedAt: String(row.updated_at || '')
+        }] : []
+      }),
+      relations: relations.map(row => ({
+        id: String(row.id), subjectId: String(row.subject_id), objectId: String(row.object_id),
+        predicate: String(row.predicate || ''), status: 'confirmed',
+        confidence: Number(row.confidence || 0), updatedAt: String(row.updated_at || '')
+      })),
+      directEntityIds: directIds, expandedEntityIds: expandedIds, reasons, revision, stale: false
+    }
+  }
+
   getGraphReviewRevision(): string {
     if (!this.db) return '0'
     return String((this.db.prepare(`
@@ -8224,7 +8461,7 @@ export class PersonalMemoryStore {
       mineTaskOwnershipAuditIndex,
       memoryChangeLog,
       memorySearchScopePlanning: {
-        version: 13,
+        version: 14,
         facetStrategy: 'sqlcipher_direct_count',
         facetIdentityMaterializations: 0,
         primaryScopeStrategy: 'sqlcipher_isolated_temp_table',
@@ -8266,6 +8503,12 @@ export class PersonalMemoryStore {
         trustedEntityDirectoryCollisionAuthority: 'sqlcipher_full_trusted_scope',
         trustedEntityDirectoryRevisionBound: true,
         trustedEntityPresentationHydration: 'requested_ids_only',
+        extractionContextStrategy: 'sqlcipher_ranked_direct_plus_one_hop',
+        extractionContextEntityLimit: 24,
+        extractionContextRelationLimit: 40,
+        extractionContextAliasesPerEntity: 8,
+        extractionContextRevisionBound: true,
+        extractionContextFullGraphMaterializations: 0,
         questionEntityPlanningStrategy: 'sqlcipher_reverse_term_match',
         questionEntityPlanningLimit: 100,
         questionEntityPlanningTotalVisible: true,

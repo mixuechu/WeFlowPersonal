@@ -324,8 +324,7 @@ import { sanitizeDiagnosticText } from './diagnosticRedaction'
 import { getSensitiveLogDiagnostics } from './sensitiveLogPolicy'
 import {
   buildExtractionContextAudit,
-  EXTRACTION_MEMORY_CONTEXT_VERSION,
-  selectTrustedExtractionEntities
+  EXTRACTION_MEMORY_CONTEXT_VERSION
 } from './extractionMemoryContext'
 import {
   initializeSessionRetryCursors,
@@ -3207,12 +3206,39 @@ export class AiAssistantService {
     const configuredOwnerName = String(this.config.get('aiAssistantOwnerName') || '').trim()
     const configuredAliases = String(this.config.get('aiAssistantOwnerAliases') || '').split(/[,，、\n]/).map(item => item.trim()).filter(Boolean)
     const configuredOwnerEntityId = String(this.config.get('aiAssistantOwnerEntityId') || '').trim()
-    const configuredOwnerEntity = this.state.graph.entities.find(entity =>
-      entity.id === configuredOwnerEntityId && isTrustedEntity(entity))
     const selfIdentity = messages.find(message => message.direction === '我发送' && message.senderIdentity)?.senderIdentity
     const inferredOwnerName = String(
       selfIdentity?.contactRemark || selfIdentity?.wechatNickname || selfIdentity?.displayName || ''
     ).trim()
+    const observedOwnerNames = [...new Set([
+      configuredOwnerName,
+      ...configuredAliases,
+      inferredOwnerName,
+      selfIdentity?.contactRemark,
+      selfIdentity?.wechatNickname,
+      selfIdentity?.groupNickname,
+      selfIdentity?.alias
+    ].map(value => String(value || '').trim()).filter(Boolean))]
+    const contextSelection = personalMemoryStore.selectTrustedExtractionContext({
+      text: messages.flatMap(message => [
+        message.content,
+        message.sessionName,
+        message.senderName,
+        message.quotedSender
+      ]).join('\n'),
+      senderAnchors: messages.flatMap(message => {
+        const identity = message?.senderIdentity || {}
+        return [identity.wxid, identity.accountId, identity.account_id]
+      }),
+      ownerNames: observedOwnerNames,
+      ownerEntityIds: configuredOwnerEntityId ? [configuredOwnerEntityId] : [],
+      limit: 24
+    })
+    if (contextSelection.stale) {
+      throw new Error('可信实体或关系在构建抽取上下文期间发生了变化，请重试')
+    }
+    const configuredOwnerEntity = contextSelection.entities.find(entity =>
+      entity.id === configuredOwnerEntityId) || null
     const ownerProfile = {
       entityId: configuredOwnerEntity?.id || '',
       name: configuredOwnerName || configuredOwnerEntity?.canonicalName || inferredOwnerName,
@@ -3227,14 +3253,6 @@ export class AiAssistantService {
       wxid: String(selfIdentity?.wxid || configuredOwnerEntity?.accountIds?.[0] || ''),
       background: String(this.config.get('aiAssistantOwnerBackground') || '').trim()
     }
-    const contextSelection = selectTrustedExtractionEntities({
-      messages,
-      entities: this.state.graph.entities.filter(isTrustedEntity),
-      relations: this.state.graph.relations,
-      ownerNames: [ownerProfile.name, ...ownerProfile.aliases],
-      ownerEntityIds: ownerProfile.entityId ? [ownerProfile.entityId] : [],
-      limit: 24
-    })
     const contextEntityIds = contextSelection.entities.map(entity => entity.id)
     const contextMemory = personalMemoryStore.getTrustedExtractionMemory(contextEntityIds, {
       claimLimit: 36,

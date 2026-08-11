@@ -1,4 +1,4 @@
-export const EXTRACTION_MEMORY_CONTEXT_VERSION = 'trusted-extraction-context-v2'
+export const EXTRACTION_MEMORY_CONTEXT_VERSION = 'trusted-extraction-context-v3'
 export const EXTRACTION_CONTEXT_AUDIT_VERSION = 'extraction-context-audit-v1'
 
 type ContextEntity = {
