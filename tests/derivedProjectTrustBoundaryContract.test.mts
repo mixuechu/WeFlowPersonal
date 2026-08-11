@@ -46,6 +46,8 @@ test('trusted project tasks and risks stay paginated inside SQLCipher', () => {
   assert.match(taskPage, /explicitProjectOnly: Boolean\(derivedProject\)/)
   assert.match(riskPage, /explicitProjectOnly: Boolean\(derivedProject\)/)
   assert.doesNotMatch(taskPage, /this\.state\.tasks|buildProjectInsight|paginateProjectTasks/)
+  assert.doesNotMatch(taskPage, /page\.items\.flatMap/)
+  assert.match(taskPage, /sqlcipher_history_read_only/)
   assert.doesNotMatch(riskPage, /this\.state\.tasks|buildProjectInsight|paginateProjectRisks/)
   assert.match(taskPage, /nextOffset: offset/)
   assert.match(riskPage, /nextOffset: offset/)
@@ -56,6 +58,7 @@ test('trusted project tasks and risks stay paginated inside SQLCipher', () => {
   assert.match(page, /offset: Number\(project\.riskOffset \|\| project\.risks\?\.length \|\| 0\)/)
   assert.match(page, /riskOffset: page\.nextOffset/)
   assert.match(page, /SQLCipher 按项目名与已确认别名直接筛选、计数和分页/)
+  assert.match(page, /SQLCipher 历史记录 · 当前只读/)
 })
 
 test('the complete project directory is counted and paged inside SQLCipher', () => {

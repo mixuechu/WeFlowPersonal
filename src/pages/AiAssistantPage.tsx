@@ -17387,7 +17387,12 @@ function AiAssistantPage() {
                   <div className="assistant-evidence-stack"><EvidenceRows
                     evidence={(task.evidence || []).slice(-2)} total={(task as any).evidenceTotal}
                     onOpenArchive={() => void openMemoryEvidenceArchive('task', task.id, task.title)} /></div>
-                  {task.status !== 'cancelled' && <button className="assistant-dossier-task-action" onClick={() => void toggleTask(task)}>{task.status === 'done' ? '恢复待处理' : '标记完成'}</button>}
+                  {task.status !== 'cancelled' && task.mutationToken &&
+                    <button className="assistant-dossier-task-action"
+                      onClick={() => void toggleTask(task)}>
+                      {task.status === 'done' ? '恢复待处理' : '标记完成'}
+                    </button>}
+                  {!task.mutationToken && <small>SQLCipher 历史记录 · 当前只读</small>}
                 </article>)}
                 {!selectedProject.tasks.length && <em>尚无归入项目的任务</em>}
                 {selectedProject.taskHasMore && <button

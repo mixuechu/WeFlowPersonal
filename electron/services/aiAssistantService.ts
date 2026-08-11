@@ -7230,15 +7230,17 @@ export class AiAssistantService {
         memoryTruncated: false,
         tasks: taskPage.items.map((item: any) => {
           const task = taskIndex.get(String(item.id || ''))
-          return task ? {
-            ...task,
+          return {
+            ...item,
+            ...(task || {}),
             ...boundedEvidencePayload(
               item.evidence,
               MEMORY_CARD_EVIDENCE_LIMIT,
               item.evidenceTotal
             ),
-            mutationToken: buildTaskMutationToken(task)
-          } : item
+            mutationToken: task ? buildTaskMutationToken(task) : undefined,
+            directoryState: task ? 'runtime_mutable' : 'sqlcipher_history_read_only'
+          }
         }),
         taskTotal: taskPage.total,
         taskHasMore: taskPage.hasMore,
@@ -7314,13 +7316,15 @@ export class AiAssistantService {
       ...page,
       revision,
       stale: false,
-      items: page.items.flatMap((item: any) => {
+      items: page.items.map((item: any) => {
         const task = this.getTaskStateIndex().get(String(item.id || ''))
-        return task ? [{
-          ...task,
+        return {
+          ...item,
+          ...(task || {}),
           ...boundedEvidencePayload(item.evidence, MEMORY_CARD_EVIDENCE_LIMIT, item.evidenceTotal),
-          mutationToken: buildTaskMutationToken(task)
-        }] : []
+          mutationToken: task ? buildTaskMutationToken(task) : undefined,
+          directoryState: task ? 'runtime_mutable' : 'sqlcipher_history_read_only'
+        }
       })
     }
   }
