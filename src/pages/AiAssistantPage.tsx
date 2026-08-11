@@ -762,6 +762,8 @@ function TrustedEntityPicker({
   const [query, setQuery] = useState('')
   const [options, setOptions] = useState<any[]>([])
   const [total, setTotal] = useState(0)
+  const [nextOffset, setNextOffset] = useState(0)
+  const [hasMore, setHasMore] = useState(false)
   const [revision, setRevision] = useState('')
   const [open, setOpen] = useState(false)
   const [loading, setLoading] = useState(false)
@@ -786,11 +788,15 @@ function TrustedEntityPicker({
         setOptions(result.items)
         setTotal(result.total)
         setRevision(result.revision)
+        setNextOffset(Number(result.nextOffset ?? result.items.length))
+        setHasMore(Boolean(result.hasMore))
       }).catch(error => {
         if (!requestGate.current.isCurrent(request)) return
         setOptions([])
         setTotal(0)
         setRevision('')
+        setNextOffset(0)
+        setHasMore(false)
         onError?.(error?.message || String(error))
       }).finally(() => {
         if (requestGate.current.isCurrent(request)) setLoading(false)
@@ -798,6 +804,38 @@ function TrustedEntityPicker({
     }, 220)
     return () => window.clearTimeout(timer)
   }, [open, query, onError, type])
+
+  const loadMore = () => {
+    if (loading || !hasMore || !revision) return
+    const request = requestGate.current.begin()
+    setLoading(true)
+    void window.electronAPI.aiAssistant.getTrustedEntityDirectory({
+      query: query.trim() || undefined,
+      type,
+      limit: 20,
+      offset: nextOffset,
+      expectedRevision: revision
+    }).then(result => {
+      if (!requestGate.current.isCurrent(request)) return
+      if (result.stale) {
+        setOptions([])
+        setTotal(0)
+        setNextOffset(0)
+        setHasMore(false)
+        setRevision(result.revision)
+        onError?.('可信实体目录在浏览期间发生了变化，请重新搜索')
+        return
+      }
+      setOptions(current => [...current, ...result.items])
+      setTotal(result.total)
+      setNextOffset(Number(result.nextOffset ?? nextOffset + result.items.length))
+      setHasMore(Boolean(result.hasMore))
+    }).catch(error => {
+      if (requestGate.current.isCurrent(request)) onError?.(error?.message || String(error))
+    }).finally(() => {
+      if (requestGate.current.isCurrent(request)) setLoading(false)
+    })
+  }
 
   return <div className="assistant-memory-entity-picker"
     onBlur={event => {
@@ -853,9 +891,10 @@ function TrustedEntityPicker({
       })}
       {!loading && !options.length && <span>没有匹配的已确认实体</span>}
       {loading && <span>正在搜索全部可信实体…</span>}
-      {!loading && total > options.length && <span>
-        匹配 {total} 个，继续输入名称、别名或账号缩小范围
-      </span>}
+      {!loading && hasMore && <button type="button" onMouseDown={event => {
+        event.preventDefault()
+        loadMore()
+      }}>加载更多（已加载 {options.length} / {total}）</button>}
     </div>}
   </div>
 }
@@ -18278,6 +18317,10 @@ function AiAssistantPage() {
                 <span>人物关联事项 <b>{memoryDiagnostics.memorySearchScopePlanning.entityTaskStrategy === 'sqlcipher_name_evidence_page' ? 'SQLCipher 完整分页' : '需要检查'}</b></span>
                 <span>任务匹配 ID 集合 <b>{Number(memoryDiagnostics.memorySearchScopePlanning.entityTaskIdentityMaterializations || 0)}</b> 份</span>
                 <span>任务原文预览 <b>{Number(memoryDiagnostics.memorySearchScopePlanning.entityTaskEvidenceLimit || 0)}</b> 条 / 项</span>
+                <span>可信实体目录 <b>{memoryDiagnostics.memorySearchScopePlanning.trustedEntityDirectoryStrategy === 'sqlcipher_ranked_page' ? 'SQLCipher 搜索分页' : '需要检查'}</b></span>
+                <span>实体目录 ID 集合 <b>{Number(memoryDiagnostics.memorySearchScopePlanning.trustedEntityDirectoryIdentityMaterializations || 0)}</b> 份</span>
+                <span>同名碰撞 <b>{memoryDiagnostics.memorySearchScopePlanning.trustedEntityDirectoryCollisionAuthority === 'sqlcipher_full_trusted_scope' ? '全可信范围计数' : '需要检查'}</b></span>
+                <span>实体选择 <b>{memoryDiagnostics.memorySearchScopePlanning.trustedEntityDirectoryRevisionBound ? 'revision 保护' : '需要检查'}</b></span>
                 <span>图路径扩展预算 <b>{Number(memoryDiagnostics.memorySearchScopePlanning.scopedGraphPathExpansionBudget || 0).toLocaleString()}</b> 状态</span>
                 <span>预算截断 <b>{memoryDiagnostics.memorySearchScopePlanning.scopedGraphPathTruncationVisible ? '明确提示' : '需要检查'}</b></span>
               </div>

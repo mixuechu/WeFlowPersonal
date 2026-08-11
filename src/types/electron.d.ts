@@ -1990,6 +1990,7 @@ export interface ElectronAPI {
         items: any[]
         total: number
         hasMore: boolean
+        nextOffset: number
         offset: number
         limit: number
         revision: string

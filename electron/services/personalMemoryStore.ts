@@ -2000,6 +2000,7 @@ export class PersonalMemoryStore {
     this.migrateGraphReviewEvidenceArchive()
     this.ensureGraphReviewEvidenceProvenanceIndexes()
     this.ensureGraphReviewRevisionTriggers()
+    this.ensureTrustedEntityDirectoryRevisionTriggers()
     this.repairGraphReviewEvidenceProvenance()
     this.normalizeTaskHistoryEvidence()
     this.repairTaskEvidenceArchiveFromHistory()
@@ -4510,6 +4511,293 @@ export class PersonalMemoryStore {
       tables: this.graphReviewRevisionTables(),
       version: 'graph-review-revision-v6'
     })
+  }
+
+  private trustedEntityDirectoryRevisionTables(): string[] {
+    return ['entities', 'aliases', 'identities']
+  }
+
+  private ensureTrustedEntityDirectoryRevisionTriggers(): void {
+    this.ensureRevisionTriggerSet({
+      prefix: 'trusted_entity_directory_revision',
+      revisionKey: 'trusted_entity_directory_revision',
+      tables: this.trustedEntityDirectoryRevisionTables(),
+      version: 'trusted-entity-directory-revision-v1'
+    })
+  }
+
+  getTrustedEntityDirectoryRevision(): string {
+    if (!this.db) return '0'
+    return String((this.db.prepare(`
+      SELECT value FROM schema_meta WHERE key='trusted_entity_directory_revision'
+    `).get() as any)?.value || '0')
+  }
+
+  getTrustedEntityDirectoryRevisionHealth(): any {
+    return this.getRevisionTriggerSetHealth({
+      prefix: 'trusted_entity_directory_revision',
+      revisionKey: 'trusted_entity_directory_revision',
+      tables: this.trustedEntityDirectoryRevisionTables(),
+      version: 'trusted-entity-directory-revision-v1',
+      revision: this.getTrustedEntityDirectoryRevision()
+    })
+  }
+
+  listTrustedEntityDirectoryPage(options: {
+    query?: string
+    type?: string
+    offset?: number
+    limit?: number
+    expectedRevision?: string
+  } = {}): {
+    items: any[]
+    total: number
+    hasMore: boolean
+    nextOffset: number
+    offset: number
+    limit: number
+    revision: string
+    stale: boolean
+    counts: Record<string, number>
+  } {
+    const offset = Math.max(0, Math.floor(Number(options.offset) || 0))
+    const limit = Math.min(100, Math.max(1, Math.floor(Number(options.limit) || 20)))
+    const revision = this.getTrustedEntityDirectoryRevision()
+    const expectedRevision = String(options.expectedRevision || '').trim()
+    if (!this.db || (expectedRevision && expectedRevision !== revision)) {
+      return {
+        items: [], total: 0, hasMore: false, nextOffset: offset,
+        offset, limit, revision, stale: Boolean(expectedRevision && expectedRevision !== revision),
+        counts: {}
+      }
+    }
+    const query = String(options.query || '').trim().toLocaleLowerCase('zh-CN')
+    const type = String(options.type || '').trim().toLocaleLowerCase('zh-CN')
+    const queryLike = query.replace(/[\\%_]/g, value => `\\${value}`)
+    const searchClause = query ? `AND (
+      lower(trim(entity.canonical_name)) LIKE ? ESCAPE '\\'
+      OR lower(entity.id) LIKE ? ESCAPE '\\'
+      OR EXISTS(
+        SELECT 1 FROM aliases alias
+        WHERE alias.entity_id=entity.id
+          AND lower(trim(alias.value)) LIKE ? ESCAPE '\\'
+      )
+      OR EXISTS(
+        SELECT 1 FROM identities identity
+        WHERE identity.entity_id=entity.id
+          AND (
+            lower(trim(identity.platform)) LIKE ? ESCAPE '\\'
+            OR lower(trim(identity.account_id)) LIKE ? ESCAPE '\\'
+            OR lower(trim(identity.display_name)) LIKE ? ESCAPE '\\'
+          )
+      )
+    )` : ''
+    const typeClause = type && type !== 'all' ? 'AND lower(entity.type)=?' : ''
+    const searchParams = query ? Array(6).fill(`%${queryLike}%`) : []
+    const filterParams = [...(type && type !== 'all' ? [type] : []), ...searchParams]
+    const total = Number((this.db.prepare(`
+      SELECT COUNT(*) AS count
+      FROM entities entity
+      WHERE entity.deleted_at IS NULL AND entity.trust_status='confirmed'
+        AND trim(entity.canonical_name)!=''
+        ${typeClause}
+        ${searchClause}
+    `).get(...filterParams) as any)?.count || 0)
+    const countRows = this.db.prepare(`
+      SELECT entity.type,COUNT(*) AS count
+      FROM entities entity
+      WHERE entity.deleted_at IS NULL AND entity.trust_status='confirmed'
+        AND trim(entity.canonical_name)!=''
+      GROUP BY entity.type
+    `).all() as any[]
+    const counts: Record<string, number> = { all: 0 }
+    for (const row of countRows) {
+      counts[String(row.type || 'unknown')] = Number(row.count || 0)
+      counts.all += Number(row.count || 0)
+    }
+    const scoreParams = query ? Array(18).fill(query).flatMap((value, index) => {
+      const mode = Math.floor(index / 6)
+      const escaped = value.replace(/[\\%_]/g, character => `\\${character}`)
+      return [mode === 0 ? escaped : mode === 1 ? `${escaped}%` : `%${escaped}%`]
+    }) : []
+    const scoreSql = query ? `CASE
+      WHEN lower(trim(entity.canonical_name))=?
+        OR lower(entity.id)=?
+        OR EXISTS(SELECT 1 FROM aliases alias WHERE alias.entity_id=entity.id AND lower(trim(alias.value))=?)
+        OR EXISTS(SELECT 1 FROM identities identity WHERE identity.entity_id=entity.id AND (
+          lower(trim(identity.platform))=? OR lower(trim(identity.account_id))=? OR lower(trim(identity.display_name))=?)) THEN 0
+      WHEN lower(trim(entity.canonical_name)) LIKE ? ESCAPE '\\'
+        OR lower(entity.id) LIKE ? ESCAPE '\\'
+        OR EXISTS(SELECT 1 FROM aliases alias WHERE alias.entity_id=entity.id AND lower(trim(alias.value)) LIKE ? ESCAPE '\\')
+        OR EXISTS(SELECT 1 FROM identities identity WHERE identity.entity_id=entity.id AND (
+          lower(trim(identity.platform)) LIKE ? ESCAPE '\\' OR lower(trim(identity.account_id)) LIKE ? ESCAPE '\\'
+          OR lower(trim(identity.display_name)) LIKE ? ESCAPE '\\')) THEN 1
+      WHEN lower(trim(entity.canonical_name)) LIKE ? ESCAPE '\\'
+        OR lower(entity.id) LIKE ? ESCAPE '\\'
+        OR EXISTS(SELECT 1 FROM aliases alias WHERE alias.entity_id=entity.id AND lower(trim(alias.value)) LIKE ? ESCAPE '\\')
+        OR EXISTS(SELECT 1 FROM identities identity WHERE identity.entity_id=entity.id AND (
+          lower(trim(identity.platform)) LIKE ? ESCAPE '\\' OR lower(trim(identity.account_id)) LIKE ? ESCAPE '\\'
+          OR lower(trim(identity.display_name)) LIKE ? ESCAPE '\\')) THEN 2
+      ELSE 3 END` : '0'
+    const rows = this.db.prepare(`
+      WITH name_counts AS (
+        SELECT lower(trim(canonical_name)) AS normalized_name,COUNT(*) AS collision_count
+        FROM entities
+        WHERE deleted_at IS NULL AND trust_status='confirmed' AND trim(canonical_name)!=''
+        GROUP BY lower(trim(canonical_name))
+      ), ranked AS (
+        SELECT entity.id,entity.type,entity.canonical_name,entity.updated_at,
+          names.collision_count,${scoreSql} AS match_score
+        FROM entities entity
+        JOIN name_counts names ON names.normalized_name=lower(trim(entity.canonical_name))
+        WHERE entity.deleted_at IS NULL AND entity.trust_status='confirmed'
+          AND trim(entity.canonical_name)!=''
+          ${typeClause}
+          ${searchClause}
+      )
+      SELECT * FROM ranked
+      ORDER BY match_score ASC,canonical_name COLLATE NOCASE ASC,type COLLATE NOCASE ASC,id ASC
+      LIMIT ? OFFSET ?
+    `).all(...scoreParams, ...filterParams, limit, offset) as any[]
+    const ids = rows.map(row => String(row.id))
+    const aliases = new Map<string, string[]>()
+    const accounts = new Map<string, string[]>()
+    const external = new Map<string, any[]>()
+    if (ids.length) {
+      for (const row of this.db.prepare(`
+        SELECT alias.entity_id,alias.value FROM aliases alias
+        JOIN json_each(?) requested ON CAST(requested.value AS TEXT)=alias.entity_id
+        ORDER BY alias.id ASC
+      `).all(JSON.stringify(ids)) as any[]) {
+        const list = aliases.get(String(row.entity_id)) || []
+        if (list.length < 8 && !list.includes(String(row.value))) list.push(String(row.value))
+        aliases.set(String(row.entity_id), list)
+      }
+      for (const row of this.db.prepare(`
+        SELECT identity.entity_id,identity.platform,identity.account_id,identity.display_name
+        FROM identities identity
+        JOIN json_each(?) requested ON CAST(requested.value AS TEXT)=identity.entity_id
+        ORDER BY identity.id ASC
+      `).all(JSON.stringify(ids)) as any[]) {
+        const entityId = String(row.entity_id)
+        if (String(row.platform).toLowerCase() === 'wechat') {
+          const list = accounts.get(entityId) || []
+          if (list.length < 8 && !list.includes(String(row.account_id))) list.push(String(row.account_id))
+          accounts.set(entityId, list)
+        } else {
+          const list = external.get(entityId) || []
+          if (list.length < 8) list.push({
+            platform: String(row.platform || ''), accountId: String(row.account_id || ''),
+            displayName: String(row.display_name || '')
+          })
+          external.set(entityId, list)
+        }
+      }
+    }
+    const items = rows.map(row => ({
+      id: String(row.id), type: String(row.type || 'unknown'),
+      canonicalName: String(row.canonical_name || ''), aliases: aliases.get(String(row.id)) || [],
+      accountIds: accounts.get(String(row.id)) || [],
+      externalIdentities: external.get(String(row.id)) || [],
+      updatedAt: String(row.updated_at || ''),
+      canonicalNameCollisionCount: Number(row.collision_count || 1),
+      trustStatus: 'confirmed'
+    }))
+    return {
+      items, total, hasMore: offset + items.length < total,
+      nextOffset: offset + items.length, offset, limit, revision, stale: false, counts
+    }
+  }
+
+  resolveTrustedEntityDirectorySelection(input: {
+    entityIds?: string[]
+    expectedRevision?: string
+  }): {
+    entities: any[]
+    revision: string
+    stale: boolean
+    reason: 'ok' | 'missing_revision' | 'revision_changed' | 'entity_untrusted'
+  } {
+    const revision = this.getTrustedEntityDirectoryRevision()
+    const expectedRevision = String(input.expectedRevision || '').trim()
+    if (!expectedRevision) return { entities: [], revision, stale: true, reason: 'missing_revision' }
+    if (expectedRevision !== revision) {
+      return { entities: [], revision, stale: true, reason: 'revision_changed' }
+    }
+    const ids = [...new Set((input.entityIds || []).map(value => String(value || '').trim()).filter(Boolean))]
+    if (!ids.length || !this.db) return { entities: [], revision, stale: true, reason: 'entity_untrusted' }
+    const rows = this.db.prepare(`
+      WITH requested(id,ordinal) AS (
+        SELECT CAST(value AS TEXT),CAST(key AS INTEGER) FROM json_each(?)
+      ), name_counts AS (
+        SELECT lower(trim(canonical_name)) AS normalized_name,COUNT(*) AS collision_count
+        FROM entities
+        WHERE deleted_at IS NULL AND trust_status='confirmed' AND trim(canonical_name)!=''
+        GROUP BY lower(trim(canonical_name))
+      )
+      SELECT entity.id,entity.type,entity.canonical_name,entity.updated_at,
+        names.collision_count,requested.ordinal
+      FROM requested
+      JOIN entities entity ON entity.id=requested.id
+      JOIN name_counts names ON names.normalized_name=lower(trim(entity.canonical_name))
+      WHERE entity.deleted_at IS NULL AND entity.trust_status='confirmed'
+        AND trim(entity.canonical_name)!=''
+      ORDER BY requested.ordinal ASC
+    `).all(JSON.stringify(ids)) as any[]
+    const aliases = new Map<string, string[]>()
+    const accounts = new Map<string, string[]>()
+    const external = new Map<string, any[]>()
+    if (rows.length) {
+      for (const row of this.db.prepare(`
+        SELECT alias.entity_id,alias.value FROM aliases alias
+        JOIN json_each(?) requested ON CAST(requested.value AS TEXT)=alias.entity_id
+        ORDER BY alias.id ASC
+      `).all(JSON.stringify(ids)) as any[]) {
+        const entityId = String(row.entity_id)
+        const list = aliases.get(entityId) || []
+        if (list.length < 8 && !list.includes(String(row.value))) list.push(String(row.value))
+        aliases.set(entityId, list)
+      }
+      for (const row of this.db.prepare(`
+        SELECT identity.entity_id,identity.platform,identity.account_id,identity.display_name
+        FROM identities identity
+        JOIN json_each(?) requested ON CAST(requested.value AS TEXT)=identity.entity_id
+        ORDER BY identity.id ASC
+      `).all(JSON.stringify(ids)) as any[]) {
+        const entityId = String(row.entity_id)
+        if (String(row.platform).toLowerCase() === 'wechat') {
+          const list = accounts.get(entityId) || []
+          if (list.length < 8 && !list.includes(String(row.account_id))) list.push(String(row.account_id))
+          accounts.set(entityId, list)
+        } else {
+          const list = external.get(entityId) || []
+          if (list.length < 8) list.push({
+            platform: String(row.platform || ''), accountId: String(row.account_id || ''),
+            displayName: String(row.display_name || '')
+          })
+          external.set(entityId, list)
+        }
+      }
+    }
+    const entities = rows.map(row => ({
+      id: String(row.id), type: String(row.type || 'unknown'),
+      canonicalName: String(row.canonical_name || ''), aliases: aliases.get(String(row.id)) || [],
+      accountIds: accounts.get(String(row.id)) || [],
+      externalIdentities: external.get(String(row.id)) || [],
+      updatedAt: String(row.updated_at || ''),
+      canonicalNameCollisionCount: Number(row.collision_count || 1),
+      trustStatus: 'confirmed'
+    }))
+    if (entities.length !== ids.length) {
+      return { entities: [], revision, stale: true, reason: 'entity_untrusted' }
+    }
+    if (this.getTrustedEntityDirectoryRevision() !== revision) {
+      return {
+        entities: [], revision: this.getTrustedEntityDirectoryRevision(),
+        stale: true, reason: 'revision_changed'
+      }
+    }
+    return { entities, revision, stale: false, reason: 'ok' }
   }
 
   getGraphReviewRevision(): string {
@@ -7697,6 +7985,7 @@ export class PersonalMemoryStore {
     const structuredMemoryRevision = this.getStructuredMemoryRevisionHealth()
     const graphReviewEvidenceStorage = this.getGraphReviewEvidenceStorageHealth()
     const graphReviewRevision = this.getGraphReviewRevisionHealth()
+    const trustedEntityDirectoryRevision = this.getTrustedEntityDirectoryRevisionHealth()
     const taskArchiveRevision = this.getTaskArchiveRevisionHealth()
     const taskOwnershipReviewRevision = this.getTaskOwnershipReviewRevisionHealth()
     const identityMergeArchiveRevision = this.getIdentityMergeArchiveRevisionHealth()
@@ -7785,6 +8074,7 @@ export class PersonalMemoryStore {
         && structuredMemoryRevision.healthy
         && graphReviewEvidenceStorage.healthy
         && graphReviewRevision.healthy
+        && trustedEntityDirectoryRevision.healthy
         && taskArchiveRevision.healthy
         && taskOwnershipReviewRevision.healthy
         && identityMergeArchiveRevision.healthy
@@ -7818,6 +8108,7 @@ export class PersonalMemoryStore {
       structuredMemoryRevisionHealthy: structuredMemoryRevision.healthy,
       graphReviewEvidenceStorageHealthy: graphReviewEvidenceStorage.healthy,
       graphReviewRevisionHealthy: graphReviewRevision.healthy,
+      trustedEntityDirectoryRevisionHealthy: trustedEntityDirectoryRevision.healthy,
       taskArchiveRevisionHealthy: taskArchiveRevision.healthy,
       taskOwnershipReviewRevisionHealthy: taskOwnershipReviewRevision.healthy,
       identityMergeArchiveRevisionHealthy: identityMergeArchiveRevision.healthy,
@@ -7853,7 +8144,7 @@ export class PersonalMemoryStore {
       mineTaskOwnershipAuditIndex,
       memoryChangeLog,
       memorySearchScopePlanning: {
-        version: 11,
+        version: 12,
         facetStrategy: 'sqlcipher_direct_count',
         facetIdentityMaterializations: 0,
         primaryScopeStrategy: 'sqlcipher_isolated_temp_table',
@@ -7888,7 +8179,12 @@ export class PersonalMemoryStore {
         entityTaskStrategy: 'sqlcipher_name_evidence_page',
         entityTaskIdentityMaterializations: 0,
         entityTaskEvidenceLimit: MEMORY_CARD_EVIDENCE_LIMIT,
-        entityTaskRevisionBound: true
+        entityTaskRevisionBound: true,
+        trustedEntityDirectoryStrategy: 'sqlcipher_ranked_page',
+        trustedEntityDirectoryIdentityMaterializations: 0,
+        trustedEntityDirectorySearchFields: 'canonical_alias_account_external_id',
+        trustedEntityDirectoryCollisionAuthority: 'sqlcipher_full_trusted_scope',
+        trustedEntityDirectoryRevisionBound: true
       },
       memorySearchRevision,
       memorySearchFeedbackArchiveRevision,
@@ -7898,6 +8194,7 @@ export class PersonalMemoryStore {
       structuredMemoryRevision,
       graphReviewEvidenceStorage,
       graphReviewRevision,
+      trustedEntityDirectoryRevision,
       taskArchiveRevision,
       taskOwnershipReviewRevision,
       identityMergeArchiveRevision,

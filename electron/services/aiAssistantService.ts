@@ -201,9 +201,6 @@ import {
 } from './entityTrustPolicy'
 import { planEntityMerge } from './entityMergeDirection'
 import {
-  buildTrustedEntityDirectory,
-  resolveTrustedEntityPairSelection,
-  resolveTrustedEntitySelection,
   type TrustedEntityDirectoryOptions
 } from './trustedEntityDirectory.ts'
 import { resolveOwnerEntityBinding } from './ownerEntityBindingPolicy.ts'
@@ -7051,7 +7048,44 @@ export class AiAssistantService {
   }
 
   getTrustedEntityDirectory(options: TrustedEntityDirectoryOptions = {}): any {
-    return buildTrustedEntityDirectory(this.state.graph.entities, options)
+    return personalMemoryStore.listTrustedEntityDirectoryPage(options)
+  }
+
+  private resolveTrustedEntitySelection(input: {
+    entityId?: string
+    expectedRevision?: string
+  }): any {
+    const result = personalMemoryStore.resolveTrustedEntityDirectorySelection({
+      entityIds: [String(input.entityId || '').trim()],
+      expectedRevision: input.expectedRevision
+    })
+    return {
+      entity: result.entities[0] || null,
+      revision: result.revision,
+      stale: result.stale,
+      reason: result.reason
+    }
+  }
+
+  private resolveTrustedEntityPairSelection(input: {
+    fromId?: string
+    toId?: string
+    expectedRevision?: string
+  }): any {
+    const fromId = String(input.fromId || '').trim()
+    const toId = String(input.toId || '').trim()
+    const result = personalMemoryStore.resolveTrustedEntityDirectorySelection({
+      entityIds: [fromId, toId],
+      expectedRevision: input.expectedRevision
+    })
+    const byId = new Map(result.entities.map((entity: any) => [entity.id, entity]))
+    return {
+      from: byId.get(fromId) || null,
+      to: byId.get(toId) || null,
+      revision: result.revision,
+      stale: result.stale,
+      reason: result.reason
+    }
   }
 
   getEntityTaskPage(entityId: string, options: any = {}): any {
@@ -9020,7 +9054,7 @@ export class AiAssistantService {
   private getOwnerEntityPresentation(): any | null {
     const entityId = String(this.config.get('aiAssistantOwnerEntityId') || '').trim()
     if (!entityId) return null
-    const directory = buildTrustedEntityDirectory(this.state.graph.entities, {
+    const directory = personalMemoryStore.listTrustedEntityDirectoryPage({
       query: entityId,
       limit: 20
     })
@@ -9031,10 +9065,7 @@ export class AiAssistantService {
   getSettings(): any {
     const apiKeySecret = String(this.config.get('aiAssistantApiKey') || '')
     const ownerEntity = this.getOwnerEntityPresentation()
-    const ownerEntityRevision = buildTrustedEntityDirectory(
-      this.state.graph.entities,
-      { limit: 1 }
-    ).revision
+    const ownerEntityRevision = personalMemoryStore.getTrustedEntityDirectoryRevision()
     const settings = {
       configured: Boolean(apiKeySecret),
       baseUrl: this.config.get('aiAssistantApiBaseUrl'),
@@ -9100,7 +9131,7 @@ export class AiAssistantService {
     phase: 'before_retrieval' | 'after_retrieval' | 'after_model'
   ): Promise<void> {
     if (options.entityId) {
-      const selection = resolveTrustedEntitySelection(this.state.graph.entities, {
+      const selection = this.resolveTrustedEntitySelection({
         entityId: options.entityId,
         expectedRevision: options.entitySelectionRevision
       })
@@ -11023,7 +11054,7 @@ export class AiAssistantService {
   ): any {
     const inspected = this.inspectMemoryCitationReview('relation', id, input)
     const correction = input.relationCorrection || {}
-    const selected = resolveTrustedEntityPairSelection(this.state.graph.entities, {
+    const selected = this.resolveTrustedEntityPairSelection({
       fromId: correction.subjectId,
       toId: correction.objectId,
       expectedRevision: input.entityDirectoryRevision
@@ -11089,7 +11120,7 @@ export class AiAssistantService {
         input.correctionPreviewToken
       )
       const correction = input.relationCorrection || {}
-      const selected = resolveTrustedEntityPairSelection(this.state.graph.entities, {
+      const selected = this.resolveTrustedEntityPairSelection({
         fromId: correction.subjectId,
         toId: correction.objectId,
         expectedRevision: input.entityDirectoryRevision
@@ -11614,7 +11645,7 @@ export class AiAssistantService {
       }
     }
     const entitySelection = options.entityId
-      ? resolveTrustedEntitySelection(this.state.graph.entities, {
+      ? this.resolveTrustedEntitySelection({
           entityId: options.entityId,
           expectedRevision: options.entitySelectionRevision
         })
@@ -11873,7 +11904,7 @@ export class AiAssistantService {
     const feedback = this.memorySearchFeedbackContext(text, scopedOptions).entries
     const completedRevision = personalMemoryStore.getMemorySearchRevision()
     const completedEntitySelection = options.entityId
-      ? resolveTrustedEntitySelection(this.state.graph.entities, {
+      ? this.resolveTrustedEntitySelection({
           entityId: options.entityId,
           expectedRevision: options.entitySelectionRevision
         })
@@ -12207,7 +12238,7 @@ export class AiAssistantService {
     entityDirectoryRevision?: string
   ): any {
     if (entityDirectoryRevision) {
-      const selection = resolveTrustedEntityPairSelection(this.state.graph.entities, {
+      const selection = this.resolveTrustedEntityPairSelection({
         fromId,
         toId,
         expectedRevision: entityDirectoryRevision
@@ -12251,7 +12282,7 @@ export class AiAssistantService {
     pagination: { offset?: number; limit?: number; expectedGraphRevision?: string } = {}
   ): any {
     if (entityDirectoryRevision) {
-      const selection = resolveTrustedEntityPairSelection(this.state.graph.entities, {
+      const selection = this.resolveTrustedEntityPairSelection({
         fromId,
         toId,
         expectedRevision: entityDirectoryRevision
@@ -12932,10 +12963,7 @@ export class AiAssistantService {
             const objectId = String(document.metadata?.objectId || '')
             const subject = this.state.graph.entities.find(entity => entity.id === subjectId)
             const object = this.state.graph.entities.find(entity => entity.id === objectId)
-            const directoryRevision = buildTrustedEntityDirectory(
-              this.state.graph.entities,
-              { limit: 1 }
-            ).revision
+            const directoryRevision = personalMemoryStore.getTrustedEntityDirectoryRevision()
             Object.assign(hydratedCitation, {
               relationCorrectionContext: {
                 subjectId,
@@ -13044,7 +13072,7 @@ export class AiAssistantService {
       throw new Error('实体型事实必须选择可信事实对象')
     }
     if (effectiveObjectEntityId && requestedSubjectId) {
-      const selected = resolveTrustedEntityPairSelection(this.state.graph.entities, {
+      const selected = this.resolveTrustedEntityPairSelection({
         fromId: requestedSubjectId,
         toId: effectiveObjectEntityId,
         expectedRevision: input?.entityDirectoryRevision
@@ -13055,7 +13083,7 @@ export class AiAssistantService {
     } else if (requestedObjectEntityId && !requestedSubjectId) {
       throw new Error('选择事实对象实体时必须同时选择可信事实主体')
     } else if (requestedSubjectId) {
-      const selected = resolveTrustedEntitySelection(this.state.graph.entities, {
+      const selected = this.resolveTrustedEntitySelection({
         entityId: requestedSubjectId,
         expectedRevision: input?.entityDirectoryRevision
       })
@@ -13078,17 +13106,17 @@ export class AiAssistantService {
       personalMemoryStore.getStructuredMemoryRevision()
     )
     if (Array.isArray(input?.participants)) {
-      const directory = buildTrustedEntityDirectory(this.state.graph.entities, { limit: 1 })
+      const directoryRevision = personalMemoryStore.getTrustedEntityDirectoryRevision()
       if (!input?.entityDirectoryRevision ||
-        String(input.entityDirectoryRevision) !== directory.revision) {
+        String(input.entityDirectoryRevision) !== directoryRevision) {
         throw new Error('可信实体目录在你编辑事件参与者后发生了变化，请重新打开')
       }
       for (const entityId of [...new Set(input.participants
         .map((participant: any) => String(participant?.entityId || '').trim())
         .filter(Boolean))]) {
-        const selected = resolveTrustedEntitySelection(this.state.graph.entities, {
+        const selected = this.resolveTrustedEntitySelection({
           entityId,
-          expectedRevision: directory.revision
+          expectedRevision: directoryRevision
         })
         if (selected.stale) {
           throw new Error('事件参与者不存在、尚未确认或已经失信，请重新选择')
@@ -13107,7 +13135,7 @@ export class AiAssistantService {
   getMemoryClaim(id: string): any {
     const revision = personalMemoryStore.getStructuredMemoryRevision()
     const claim = personalMemoryStore.getClaim(id)
-    const directory = buildTrustedEntityDirectory(this.state.graph.entities, { limit: 1 })
+    const directoryRevision = personalMemoryStore.getTrustedEntityDirectoryRevision()
     const subject = claim
       ? this.state.graph.entities.find(entity =>
         entity.id === claim.subject_id && isTrustedEntity(entity))
@@ -13123,7 +13151,7 @@ export class AiAssistantService {
     return claim ? {
       ...claim,
       structuredMemoryRevision: revision,
-      entityDirectoryRevision: directory.revision,
+      entityDirectoryRevision: directoryRevision,
       subjectEntity: subject ? {
         id: subject.id,
         type: subject.type,
@@ -13145,7 +13173,7 @@ export class AiAssistantService {
     const participantPage = event
       ? personalMemoryStore.listEventParticipantsForCorrection(id, 40)
       : { items: [], total: 0, truncated: false }
-    const directory = buildTrustedEntityDirectory(this.state.graph.entities, { limit: 1 })
+    const directoryRevision = personalMemoryStore.getTrustedEntityDirectoryRevision()
     const trustedById = new Map(this.state.graph.entities
       .filter(isTrustedEntity)
       .map(entity => [entity.id, entity]))
@@ -13156,7 +13184,7 @@ export class AiAssistantService {
     return event ? {
       ...event,
       structuredMemoryRevision: revision,
-      entityDirectoryRevision: directory.revision,
+      entityDirectoryRevision: directoryRevision,
       participants: participantPage.items.map(participant => {
         const entity = trustedById.get(participant.entity_id)
         return {
@@ -13195,7 +13223,7 @@ export class AiAssistantService {
     const relation = this.state.graph.relations.find(item =>
       item.id === String(id || '').trim())
     if (!relation) return null
-    const directory = buildTrustedEntityDirectory(this.state.graph.entities, { limit: 1 })
+    const directoryRevision = personalMemoryStore.getTrustedEntityDirectoryRevision()
     const subject = this.state.graph.entities.find(entity =>
       entity.id === relation.subjectId && isTrustedEntity(entity))
     const object = this.state.graph.entities.find(entity =>
@@ -13210,7 +13238,7 @@ export class AiAssistantService {
     return {
       ...relation,
       relationRevision,
-      entityDirectoryRevision: directory.revision,
+      entityDirectoryRevision: directoryRevision,
       subjectEntity: subject ? {
         id: subject.id, type: subject.type,
         canonicalName: subject.canonicalName, trustStatus: subject.trustStatus
@@ -13236,7 +13264,7 @@ export class AiAssistantService {
       personalMemoryStore.getStructuredMemoryRevision()
     )
     const correction = input.relationCorrection || {}
-    const selected = resolveTrustedEntityPairSelection(this.state.graph.entities, {
+    const selected = this.resolveTrustedEntityPairSelection({
       fromId: correction.subjectId,
       toId: correction.objectId,
       expectedRevision: input.entityDirectoryRevision
