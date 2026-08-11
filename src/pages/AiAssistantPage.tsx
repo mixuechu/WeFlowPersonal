@@ -9658,6 +9658,14 @@ function AiAssistantPage() {
     }
   }
 
+  const refreshDataSourcesAfterConflict = () => {
+    dataSourceDirectoryGate.current.invalidate()
+    setDataSources([])
+    setDataSourcesError('')
+    setDataSourcesLoading(true)
+    setDataSourcesRefreshKey(value => value + 1)
+  }
+
   const toggleDataSource = async (source: any) => {
     if (dataSourceToggling[source.id]) return
     const request = dataSourceToggleGates.current.begin(source.id)
@@ -9677,7 +9685,7 @@ function AiAssistantPage() {
       const errorMessage = error?.message || String(error)
       setMessage(errorMessage)
       if (errorMessage.includes('数据源状态在展示后发生了变化')) {
-        setDataSources(await window.electronAPI.aiAssistant.getDataSources())
+        refreshDataSourcesAfterConflict()
       }
     } finally {
       if (dataSourceToggleGates.current.isCurrent(source.id, request)) {
@@ -9710,7 +9718,7 @@ function AiAssistantPage() {
       const errorMessage = error?.message || String(error)
       setMessage(errorMessage)
       if (errorMessage.includes('数据源配置在展示后发生了变化')) {
-        setDataSources(await window.electronAPI.aiAssistant.getDataSources())
+        refreshDataSourcesAfterConflict()
       }
     }
   }
@@ -9741,8 +9749,11 @@ function AiAssistantPage() {
         selectedIds: calendars.filter(calendar => calendar.selected).map(calendar => String(calendar.id)),
         expectedMutationToken: String(calendarSnapshot.mutationToken || '')
       })
-      const sources = await window.electronAPI.aiAssistant.getDataSources()
-      if (calendarConnectorGate.current.isCurrent(request)) setDataSources(sources)
+      setDataSources(current => current.map(item => item.id === 'calendar' ? {
+        ...item,
+        authorization,
+        selectedCalendarCount: calendars.filter(calendar => calendar.selected).length
+      } : item))
     } catch (error: any) {
       if (calendarConnectorGate.current.isCurrent(request)) {
         setMessage(error?.message || String(error))
@@ -9761,13 +9772,16 @@ function AiAssistantPage() {
     const request = calendarConnectorGate.current.begin()
     setCalendarConnecting(true)
     try {
-      await window.electronAPI.aiAssistant.configureDataSource('calendar', {
+      const updated = await window.electronAPI.aiAssistant.configureDataSource('calendar', {
         calendarIds: selection.selectedIds,
         expectedMutationToken: selection.expectedMutationToken
       })
-      const sources = await window.electronAPI.aiAssistant.getDataSources()
       if (!calendarConnectorGate.current.isCurrent(request)) return
-      setDataSources(sources)
+      setDataSources(current => current.map(item => item.id === 'calendar' ? {
+        ...updated,
+        authorization: item.authorization,
+        selectedCalendarCount: selection.selectedIds.length
+      } : item))
       setCalendarPicker(null)
       setMessage('所选日历已连接；只会在本机增量索引事件，不会自动生成待办。')
     } catch (error: any) {
@@ -9776,7 +9790,7 @@ function AiAssistantPage() {
       setMessage(errorMessage)
       if (errorMessage.includes('数据源配置在展示后发生了变化')) {
         setCalendarPicker(null)
-        setDataSources(await window.electronAPI.aiAssistant.getDataSources())
+        refreshDataSourcesAfterConflict()
       }
     } finally {
       if (calendarConnectorGate.current.isCurrent(request)) setCalendarConnecting(false)
@@ -9808,8 +9822,11 @@ function AiAssistantPage() {
         allowModelAnalysis: Boolean(mailboxSnapshot.allowModelAnalysis),
         expectedMutationToken: String(mailboxSnapshot.mutationToken || '')
       })
-      const sources = await window.electronAPI.aiAssistant.getDataSources()
-      if (mailConnectorGate.current.isCurrent(request)) setDataSources(sources)
+      setDataSources(current => current.map(item => item.id === 'mail' ? {
+        ...item,
+        authorization,
+        selectedMailboxCount: mailboxes.filter(mailbox => mailbox.selected).length
+      } : item))
     } catch (error: any) {
       if (mailConnectorGate.current.isCurrent(request)) {
         setMessage(error?.message || String(error))
@@ -9828,14 +9845,17 @@ function AiAssistantPage() {
     const request = mailConnectorGate.current.begin()
     setMailConnecting(true)
     try {
-      await window.electronAPI.aiAssistant.configureDataSource('mail', {
+      const updated = await window.electronAPI.aiAssistant.configureDataSource('mail', {
         mailboxIds: selection.selectedIds,
         allowModelAnalysis: selection.allowModelAnalysis,
         expectedMutationToken: selection.expectedMutationToken
       })
-      const sources = await window.electronAPI.aiAssistant.getDataSources()
       if (!mailConnectorGate.current.isCurrent(request)) return
-      setDataSources(sources)
+      setDataSources(current => current.map(item => item.id === 'mail' ? {
+        ...updated,
+        authorization: item.authorization,
+        selectedMailboxCount: selection.selectedIds.length
+      } : item))
       setMailPicker(null)
       setMessage('所选 Mail 邮箱已连接；邮件正文只进入本机检索，不会默认发送给模型或生成待办。')
     } catch (error: any) {
@@ -9844,7 +9864,7 @@ function AiAssistantPage() {
       setMessage(errorMessage)
       if (errorMessage.includes('数据源配置在展示后发生了变化')) {
         setMailPicker(null)
-        setDataSources(await window.electronAPI.aiAssistant.getDataSources())
+        refreshDataSourcesAfterConflict()
       }
     } finally {
       if (mailConnectorGate.current.isCurrent(request)) setMailConnecting(false)

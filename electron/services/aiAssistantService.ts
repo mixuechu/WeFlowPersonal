@@ -5248,6 +5248,14 @@ export class AiAssistantService {
   }
 
   async getDataSources(): Promise<any[]> {
+    const internalSources = personalMemoryStore.listDataSources()
+    const registeredIds = new Set(internalSources.map(source => String(source.id || '')))
+    const missingCatalogIds = PERSONAL_DATA_SOURCE_CATALOG
+      .map(source => String(source.id))
+      .filter(id => !registeredIds.has(id))
+    if (missingCatalogIds.length) {
+      throw new Error('个人记忆数据库或连接器目录尚未初始化完成，请稍后重试')
+    }
     const analysis = personalMemoryStore.getDocumentAnalysisStats(DOCUMENT_ANALYSIS_VERSION)
     const authorizations = await this.connectorAuthorizationCache.get(async () => {
       const [calendar, mail] = await Promise.allSettled([
@@ -5263,7 +5271,7 @@ export class AiAssistantService {
           : 'unavailable'
       }
     })
-    return personalMemoryStore.listDataSources().map(internalSource => {
+    return internalSources.map(internalSource => {
       const source = presentDataSourceForRenderer(internalSource)
       return source.id === 'documents'
         ? { ...source, analysis }
