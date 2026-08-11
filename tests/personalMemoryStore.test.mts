@@ -16164,6 +16164,74 @@ test('identity merge evidence lineage folds and restores relations without JSON 
   assert.equal(JSON.parse(revertedAudit.snapshot_json).relationEvidenceLineage.totalRows, 5)
 }))
 
+test('startup purges legacy reverted identity merge lineage once and retains structural audit', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'weflow-reverted-lineage-cleanup-'))
+  const databasePath = join(directory, 'memory.sqlite')
+  try {
+    const first = new PersonalMemoryStore()
+    first.initialize(databasePath)
+    const database = (first as any).db
+    const inserted = database.prepare(`
+      INSERT INTO merge_history(
+        source_entity_id,target_entity_id,source_name,target_name,
+        snapshot_json,created_at,reverted_at
+      ) VALUES(?,?,?,?,?,?,?)
+    `).run(
+      'legacy-source', 'legacy-target', '旧来源', '旧目标',
+      JSON.stringify({
+        version: 'identity-merge-snapshot-v2',
+        source: { id: 'legacy-source' },
+        target: { id: 'legacy-target' },
+        relations: [],
+        relationEvidenceLineage: { totalRows: 1 }
+      }),
+      '2026-08-11T00:00:00.000Z', '2026-08-12T00:00:00.000Z'
+    )
+    const mergeId = Number(inserted.lastInsertRowid)
+    database.prepare(`
+      INSERT INTO identity_merge_relation_evidence(
+        merge_id,before_relation_id,after_relation_id,source_id,message_id,
+        session_id,timestamp,sender,excerpt,evidence_role
+      ) VALUES(?,?,?,?,?,?,?,?,?,?)
+    `).run(
+      mergeId, 'legacy-before', 'legacy-after', 'wechat', 'legacy-message',
+      'legacy-session', 1786464000000, '旧发送者', '旧版本遗留的加密关系原文', 'direct'
+    )
+    first.close()
+
+    const reopened = new PersonalMemoryStore()
+    reopened.initialize(databasePath)
+    const stats = reopened.getIdentityMergeSnapshotStorageStats()
+    assert.equal(stats.relationEvidenceLineage.rows, 0)
+    assert.equal(stats.relationEvidenceLineage.activeRows, 0)
+    assert.equal(stats.relationEvidenceLineage.revertedRows, 0)
+    assert.equal(stats.relationEvidenceLineage.cleanup.rowsRemovedThisStart, 1)
+    assert.equal(stats.relationEvidenceLineage.cleanup.rowsRemovedTotal, 1)
+    assert.ok(stats.relationEvidenceLineage.cleanup.bytesReclaimedThisStart > 0)
+    assert.equal(stats.relationEvidenceLineage.cleanup.remainingRows, 0)
+    const retained = (reopened as any).db.prepare(`
+      SELECT reverted_at,snapshot_json FROM merge_history WHERE id=?
+    `).get(mergeId) as any
+    assert.equal(retained.reverted_at, '2026-08-12T00:00:00.000Z')
+    assert.equal(JSON.parse(retained.snapshot_json).relationEvidenceLineage.totalRows, 1)
+    reopened.close()
+
+    const secondRestart = new PersonalMemoryStore()
+    secondRestart.initialize(databasePath)
+    const repeated = secondRestart.getIdentityMergeSnapshotStorageStats()
+      .relationEvidenceLineage.cleanup
+    assert.equal(repeated.rowsRemovedThisStart, 0)
+    assert.equal(repeated.bytesReclaimedThisStart, 0)
+    assert.equal(repeated.rowsRemovedTotal, 1)
+    assert.equal(repeated.bytesReclaimedTotal,
+      stats.relationEvidenceLineage.cleanup.bytesReclaimedTotal)
+    assert.equal(repeated.remainingRows, 0)
+    secondRestart.close()
+  } finally {
+    rmSync(directory, { recursive: true, force: true })
+  }
+})
+
 test('ingestion archive revision covers run and batch lifecycle and self-heals on restart', () => {
   const directory = mkdtempSync(join(tmpdir(), 'weflow-ingestion-archive-revision-'))
   const databasePath = join(directory, 'memory.sqlite')

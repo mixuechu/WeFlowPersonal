@@ -2040,6 +2040,7 @@ export class PersonalMemoryStore {
     this.ensureResourceArchiveRevisionTriggers()
     this.backfillMergeHistoryNames()
     this.compactIdentityMergeSnapshots()
+    this.cleanupRevertedIdentityMergeRelationEvidence()
     this.db.exec(`CREATE INDEX IF NOT EXISTS idx_memory_corrections_item
       ON memory_corrections(item_kind,item_id,created_at DESC)`)
     this.db.exec(`CREATE INDEX IF NOT EXISTS idx_memory_review_decisions_item
@@ -7813,6 +7814,62 @@ export class PersonalMemoryStore {
     })()
   }
 
+  private cleanupRevertedIdentityMergeRelationEvidence(): void {
+    if (!this.db) return
+    const migrationKey = 'identity_merge_reverted_lineage_cleanup_v1'
+    const previousRow = this.db.prepare(
+      'SELECT value FROM schema_meta WHERE key=?'
+    ).get(migrationKey) as any
+    let previous: any = {}
+    try { previous = JSON.parse(String(previousRow?.value || '{}')) } catch {}
+    const checkedAt = new Date().toISOString()
+    const stale = this.db.prepare(`
+      SELECT COUNT(*) AS rows,
+        COALESCE(SUM(
+          LENGTH(lineage.before_relation_id)+LENGTH(lineage.after_relation_id)+
+          LENGTH(lineage.source_id)+LENGTH(lineage.message_id)+
+          LENGTH(lineage.session_id)+LENGTH(lineage.sender)+
+          LENGTH(lineage.excerpt)+LENGTH(lineage.evidence_role)+32
+        ),0) AS bytes
+      FROM identity_merge_relation_evidence lineage
+      JOIN merge_history history ON history.id=lineage.merge_id
+      WHERE history.reverted_at IS NOT NULL
+    `).get() as any
+    const rowsRemovedThisStart = Number(stale?.rows || 0)
+    const bytesReclaimedThisStart = Number(stale?.bytes || 0)
+    this.db.transaction(() => {
+      const removed = this.db!.prepare(`
+        DELETE FROM identity_merge_relation_evidence
+        WHERE merge_id IN(
+          SELECT id FROM merge_history WHERE reverted_at IS NOT NULL
+        )
+      `).run()
+      if (Number(removed.changes || 0) !== rowsRemovedThisStart) {
+        throw new Error('已撤销身份合并证据清理计数不一致')
+      }
+      const remaining = this.db!.prepare(`
+        SELECT COUNT(*) AS rows
+        FROM identity_merge_relation_evidence lineage
+        JOIN merge_history history ON history.id=lineage.merge_id
+        WHERE history.reverted_at IS NOT NULL
+      `).get() as any
+      const audit = {
+        version: 'identity-merge-reverted-lineage-cleanup-v1',
+        checkedAt,
+        rowsRemovedThisStart,
+        bytesReclaimedThisStart,
+        rowsRemovedTotal: Number(previous.rowsRemovedTotal || 0) + rowsRemovedThisStart,
+        bytesReclaimedTotal: Number(previous.bytesReclaimedTotal || 0) +
+          bytesReclaimedThisStart,
+        remainingRows: Number(remaining?.rows || 0)
+      }
+      this.db!.prepare(`
+        INSERT INTO schema_meta(key,value,updated_at) VALUES(?,?,?)
+        ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_at=excluded.updated_at
+      `).run(migrationKey, JSON.stringify(audit), checkedAt)
+    })()
+  }
+
   private repairDuplicateEvents(): void {
     if (!this.db) return
     const previousRow = this.db.prepare(`
@@ -12367,7 +12424,9 @@ export class PersonalMemoryStore {
       policy: 'affected_entities_relations_reviews_events',
       rows: 0,
       bytes: 0,
-      relationEvidenceLineage: { merges: 0, rows: 0, bytes: 0 }
+      relationEvidenceLineage: {
+        merges: 0, rows: 0, bytes: 0, activeRows: 0, revertedRows: 0, cleanup: {}
+      }
     }
     const current = this.db.prepare(`
       SELECT COUNT(*) AS rows,
@@ -12379,14 +12438,25 @@ export class PersonalMemoryStore {
     `).get() as any
     let migration: any = {}
     try { migration = JSON.parse(String(meta?.value || '{}')) } catch {}
+    const cleanupMeta = this.db.prepare(`
+      SELECT value FROM schema_meta
+      WHERE key='identity_merge_reverted_lineage_cleanup_v1'
+    `).get() as any
+    let cleanup: any = {}
+    try { cleanup = JSON.parse(String(cleanupMeta?.value || '{}')) } catch {}
     const lineage = this.db.prepare(`
       SELECT COUNT(DISTINCT merge_id) AS merges,COUNT(*) AS rows,
         COALESCE(SUM(
           LENGTH(before_relation_id)+LENGTH(after_relation_id)+LENGTH(source_id)+
           LENGTH(message_id)+LENGTH(session_id)+LENGTH(sender)+LENGTH(excerpt)+
           LENGTH(evidence_role)+32
-        ),0) AS bytes
-      FROM identity_merge_relation_evidence
+        ),0) AS bytes,
+        COALESCE(SUM(CASE WHEN history.reverted_at IS NULL THEN 1 ELSE 0 END),0)
+          AS active_rows,
+        COALESCE(SUM(CASE WHEN history.reverted_at IS NOT NULL THEN 1 ELSE 0 END),0)
+          AS reverted_rows
+      FROM identity_merge_relation_evidence lineage
+      JOIN merge_history history ON history.id=lineage.merge_id
     `).get() as any
     return {
       version: IDENTITY_MERGE_SNAPSHOT_VERSION,
@@ -12396,7 +12466,10 @@ export class PersonalMemoryStore {
       relationEvidenceLineage: {
         merges: Number(lineage?.merges || 0),
         rows: Number(lineage?.rows || 0),
-        bytes: Number(lineage?.bytes || 0)
+        bytes: Number(lineage?.bytes || 0),
+        activeRows: Number(lineage?.active_rows || 0),
+        revertedRows: Number(lineage?.reverted_rows || 0),
+        cleanup
       },
       migration
     }

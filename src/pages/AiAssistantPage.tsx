@@ -18148,6 +18148,11 @@ function AiAssistantPage() {
                 <span>当前占用 <b>{(Number(memoryDiagnostics.identityMergeSnapshotStorage.bytes || 0) / 1024).toFixed(1)} KB</b></span>
                 <span>证据谱系 <b>{Number(memoryDiagnostics.identityMergeSnapshotStorage.relationEvidenceLineage?.rows || 0).toLocaleString()}</b> 行</span>
                 <span>谱系占用 <b>{(Number(memoryDiagnostics.identityMergeSnapshotStorage.relationEvidenceLineage?.bytes || 0) / 1024).toFixed(1)} KB</b></span>
+                <span>可撤销谱系 <b>{Number(memoryDiagnostics.identityMergeSnapshotStorage.relationEvidenceLineage?.activeRows || 0).toLocaleString()}</b> 行</span>
+                <span>已撤销残留 <b>{Number(memoryDiagnostics.identityMergeSnapshotStorage.relationEvidenceLineage?.revertedRows || 0).toLocaleString()}</b> 行</span>
+                <span>本次清理 <b>{Number(memoryDiagnostics.identityMergeSnapshotStorage.relationEvidenceLineage?.cleanup?.rowsRemovedThisStart || 0).toLocaleString()}</b> 行</span>
+                <span>累计清理 <b>{Number(memoryDiagnostics.identityMergeSnapshotStorage.relationEvidenceLineage?.cleanup?.rowsRemovedTotal || 0).toLocaleString()}</b> 行</span>
+                <span>累计谱系回收 <b>{(Number(memoryDiagnostics.identityMergeSnapshotStorage.relationEvidenceLineage?.cleanup?.bytesReclaimedTotal || 0) / 1024).toFixed(1)} KB</b></span>
                 <span>旧快照压缩 <b>{Number(memoryDiagnostics.identityMergeSnapshotStorage.migration?.rowsCompacted || 0).toLocaleString()}</b> 份</span>
                 <span>移除无关关系 <b>{Number(memoryDiagnostics.identityMergeSnapshotStorage.migration?.relationsRemoved || 0).toLocaleString()}</b> 条</span>
                 <span>回收空间 <b>{(Number(memoryDiagnostics.identityMergeSnapshotStorage.migration?.bytesReclaimed || 0) / 1024).toFixed(1)} KB</b></span>
