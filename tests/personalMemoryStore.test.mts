@@ -94,6 +94,8 @@ import {
 import { editDistance, entityPinyinTerms, fuzzyEntityScore, pinyinEntityScore } from '../electron/services/fuzzyEntitySearch.ts'
 import {
   buildBriefingArchivePage,
+  buildLatestBriefingFromState,
+  buildLatestBriefingPresentation,
   buildWeeklyBriefing,
   isQuietTime,
   mergeDailyBriefing
@@ -7418,6 +7420,7 @@ test('weekly briefing exposes every daily summary in newest-first order', () => 
       summaryVerified: index % 2 === 0,
       summaryEvidence: index % 2 === 0 ? [{
         evidenceKey: `wechat:session:${index}`,
+        sourceId: 'wechat', sessionId: 'session', messageId: String(index),
         excerpt: `原文 ${index}`
       }] : []
     }]
@@ -7437,6 +7440,63 @@ test('weekly briefing exposes every daily summary in newest-first order', () => 
   assert.equal(weekly.verifiedSummaryCount, 4)
   assert.equal(weekly.summaryEvidenceCount, 4)
   assert.equal(weekly.summaries.some((item: any) => item.date === '2026-07-23'), false)
+})
+
+test('latest briefing projection exposes only bounded reviewable presentation', () => {
+  const projected = buildLatestBriefingPresentation('2026-08-12', {
+    headline: '  今日  简报  ', summary: '可信摘要', summaryVerified: true,
+    summaryEvidenceTotal: 3,
+    summaryEvidence: [{
+      evidenceKey: 'wechat:session:message', sourceId: 'wechat',
+      sessionId: 'session', messageId: 'message', excerpt: '有效引用'
+    }, { evidenceKey: '', sessionId: 'invalid', messageId: 'invalid' }],
+    highlightItems: [{ text: '重点', evidence: [{
+      evidenceKey: 'wechat:session:highlight', sourceId: 'wechat',
+      sessionId: 'session', messageId: 'highlight', excerpt: '重点引用'
+    }] }],
+    messageCount: 8, incrementCount: 2,
+    incrementId: 'private-current-replay-id',
+    recentIncrementIds: ['private-replay-ledger'],
+    evidencePolicy: { rejectedSummaryCount: 99 },
+    tasks: [{ title: 'private-derived-task' }]
+  })
+  assert.equal(projected.date, '2026-08-12')
+  assert.equal(projected.headline, '今日 简报')
+  assert.equal(projected.summaryVerified, true)
+  assert.equal(projected.summaryEvidence.length, 1)
+  assert.equal(projected.summaryEvidenceTotal, 3)
+  assert.equal(projected.summaryEvidenceTruncated, true)
+  assert.equal(projected.highlightItems[0].legacy, false)
+  for (const privateField of [
+    'incrementId', 'recentIncrementIds', 'evidencePolicy', 'tasks'
+  ]) assert.equal(privateField in projected, false)
+
+  const unverified = buildLatestBriefingPresentation('2026-08-13', {
+    summary: '引用已损坏', summaryVerified: true, summaryEvidenceTotal: 5,
+    summaryEvidence: [{ evidenceKey: '', sessionId: 'invalid', messageId: 'invalid' }]
+  })
+  assert.equal(unverified.summaryVerified, false)
+  assert.equal(unverified.summaryEvidenceTotal, 5)
+  assert.equal(buildLatestBriefingPresentation('2026-02-30', {}), null)
+  assert.equal(buildLatestBriefingFromState({
+    'zzzz-corrupt': { summary: '不能遮住合法简报' },
+    '2026-08-12': { summary: '合法最新简报', messageCount: 2 },
+    '2026-08-11': { summary: '较早简报', messageCount: 1 }
+  })?.date, '2026-08-12')
+})
+
+test('weekly briefing rejects impossible dates and revalidates visible evidence', () => {
+  const weekly = buildWeeklyBriefing({
+    '2026-08-12': {
+      summary: '损坏引用摘要', summaryVerified: true, summaryEvidenceTotal: 7,
+      summaryEvidence: [{ evidenceKey: '', sessionId: 'invalid', messageId: 'invalid' }]
+    },
+    '2026-02-30': { summary: '不可能日期', summaryVerified: true }
+  }, [], new Date('2026-08-12T12:00:00+08:00'))
+  assert.equal(weekly.daysWithUpdates, 1)
+  assert.equal(weekly.verifiedSummaryCount, 0)
+  assert.equal(weekly.summaries[0].verified, false)
+  assert.equal(weekly.summaries[0].evidenceTotal, 7)
 })
 
 test('briefing prose requires exact core-message evidence keys', () => {

@@ -170,6 +170,7 @@ import {
 } from './taskAssignmentPolicy'
 import {
   buildBriefingArchivePage,
+  buildLatestBriefingFromState,
   buildWeeklyBriefing,
   isQuietTime,
   mergeDailyBriefing
@@ -6068,8 +6069,7 @@ export class AiAssistantService {
 
   getDashboard(): any {
     const revisions = buildDashboardRevisions(personalMemoryStore)
-    const dates = Object.keys(this.state.briefings).sort().reverse()
-    const latest = dates[0] ? this.state.briefings[dates[0]] : null
+    const latestBriefing = buildLatestBriefingFromState(this.state.briefings)
     const taskWorksetStats = personalMemoryStore.listActiveTaskWorkset({ limit: 1 })
     const taskOwnershipReviewStats = personalMemoryStore.getTaskOwnershipReviewStats()
     const mineTaskOwnershipAudit = personalMemoryStore.getMineTaskOwnershipAuditSample()
@@ -6107,7 +6107,7 @@ export class AiAssistantService {
     const resourceArchiveRevision = personalMemoryStore.getResourceArchiveRevision()
     const resourceTrashStats = personalMemoryStore.listResourceTrashArchive({ limit: 1 })
     return {
-      briefing: latest ? { ...latest, tasks: undefined } : null,
+      briefing: latestBriefing,
       briefingStorage: this.briefingStorage,
       tasks: [],
       taskWorkset: {

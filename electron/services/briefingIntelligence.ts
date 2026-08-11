@@ -19,6 +19,18 @@ function boundedCount(value: unknown): number {
     : 0
 }
 
+function validBriefingDate(value: unknown): string {
+  const normalized = String(value || '').trim()
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(normalized)) return ''
+  const [year, month, day] = normalized.split('-').map(Number)
+  const date = new Date(Date.UTC(year, month - 1, day))
+  return date.getUTCFullYear() === year &&
+    date.getUTCMonth() === month - 1 &&
+    date.getUTCDate() === day
+    ? normalized
+    : ''
+}
+
 export function mergeDailyBriefing(existing: any, incoming: any): any {
   const current = existing && typeof existing === 'object' ? existing : null
   const incrementId = String(incoming?.incrementId || '').trim()
@@ -155,13 +167,78 @@ function projectBriefingEvidence(value: any): any | null {
   }
 }
 
+export function buildLatestBriefingPresentation(
+  date: unknown,
+  briefing: any
+): any | null {
+  const normalizedDate = validBriefingDate(date)
+  if (!normalizedDate || !briefing || typeof briefing !== 'object') return null
+  const summaryEvidence = (Array.isArray(briefing.summaryEvidence)
+    ? briefing.summaryEvidence : [])
+    .slice(0, 40)
+    .map(projectBriefingEvidence)
+    .filter(Boolean)
+  const summaryEvidenceTotal = Math.max(
+    summaryEvidence.length,
+    Math.min(1_000_000, boundedCount(briefing.summaryEvidenceTotal))
+  )
+  const highlightItems = (Array.isArray(briefing.highlightItems)
+    ? briefing.highlightItems : [])
+    .slice(0, 8)
+    .map((item: any) => {
+      const text = String(item?.text || '').replace(/\s+/g, ' ').trim().slice(0, 300)
+      if (!text) return null
+      const evidence = (Array.isArray(item?.evidence) ? item.evidence : [])
+        .slice(0, 12)
+        .map(projectBriefingEvidence)
+        .filter(Boolean)
+      return { text, evidence, legacy: item?.legacy === true || evidence.length === 0 }
+    })
+    .filter(Boolean)
+  const legacyHighlights = (Array.isArray(briefing.highlights) ? briefing.highlights : [])
+    .map((value: any) => String(value || '').replace(/\s+/g, ' ').trim().slice(0, 300))
+    .filter(Boolean)
+    .slice(0, 8)
+  return {
+    date: normalizedDate,
+    headline: String(briefing.headline || '').replace(/\s+/g, ' ').trim().slice(0, 300),
+    summary: String(briefing.summary || '').replace(/\s+/g, ' ').trim().slice(0, 900),
+    summaryVerified: briefing.summaryVerified === true && summaryEvidence.length > 0,
+    summaryEvidence,
+    summaryEvidenceTotal,
+    summaryEvidenceTruncated: summaryEvidenceTotal > summaryEvidence.length,
+    highlightItems,
+    highlights: highlightItems.length
+      ? highlightItems.map((item: any) => item.text)
+      : legacyHighlights,
+    messageCount: boundedCount(briefing.messageCount),
+    incrementCount: boundedCount(briefing.incrementCount),
+    lastIncrementMessageCount: boundedCount(briefing.lastIncrementMessageCount),
+    failedSessions: boundedCount(briefing.failedSessions),
+    failedSessionsTotal: boundedCount(briefing.failedSessionsTotal),
+    firstGeneratedAt: String(briefing.firstGeneratedAt || '').slice(0, 100),
+    generatedAt: String(briefing.generatedAt || '').slice(0, 100)
+  }
+}
+
+export function buildLatestBriefingFromState(
+  briefings: Record<string, any> | null | undefined
+): any | null {
+  const source = briefings && typeof briefings === 'object' ? briefings : {}
+  return Object.keys(source)
+    .sort()
+    .reverse()
+    .map(date => buildLatestBriefingPresentation(date, source[date]))
+    .find(Boolean) || null
+}
+
 export function buildBriefingArchivePage(
   briefings: Record<string, any> | null | undefined,
   options: { offset?: number; limit?: number; revision?: string } = {}
 ): any {
   const source = briefings && typeof briefings === 'object' ? briefings : {}
   const entries = Object.entries(source)
-    .filter(([date]) => /^\d{4}-\d{2}-\d{2}$/.test(date))
+    .filter(([date]) => Boolean(validBriefingDate(date)))
     .sort(([left], [right]) => right.localeCompare(left))
   const revision = briefingArchiveRevision(entries)
   const offset = Math.max(0, Math.floor(Number(options.offset) || 0))
@@ -235,22 +312,22 @@ export function buildWeeklyBriefing(
     timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit'
   }).format(startDate)
   const entries = Object.entries(briefings)
-    .filter(([date]) => date >= start && date <= end)
+    .filter(([date]) => Boolean(validBriefingDate(date)) && date >= start && date <= end)
     .sort(([left], [right]) => right.localeCompare(left))
-  const highlights = [...new Set(entries.flatMap(([, briefing]) =>
-    Array.isArray(briefing?.highlights) ? briefing.highlights.map(String) : []))].slice(0, 12)
+  const projectedEntries = entries
+    .map(([date, briefing]) => buildLatestBriefingPresentation(date, briefing))
+    .filter(Boolean)
+  const highlights = [...new Set(projectedEntries.flatMap(briefing =>
+    Array.isArray(briefing.highlights) ? briefing.highlights : []))].slice(0, 12)
   const activeTasks = taskSummary ? [] : tasks.filter(task => !['done', 'cancelled'].includes(task.status))
-  const summaries = entries.map(([date, briefing]) => ({
-    date,
-    summary: String(briefing?.summary || ''),
-    headline: String(briefing?.headline || ''),
-    verified: briefing?.summaryVerified === true,
-    evidence: Array.isArray(briefing?.summaryEvidence) ? briefing.summaryEvidence : [],
-    evidenceTotal: Math.max(
-      Number(briefing?.summaryEvidenceTotal || 0),
-      Array.isArray(briefing?.summaryEvidence) ? briefing.summaryEvidence.length : 0
-    ),
-    evidenceTruncated: briefing?.summaryEvidenceTruncated === true
+  const summaries = projectedEntries.map(briefing => ({
+    date: briefing.date,
+    summary: briefing.summary,
+    headline: briefing.headline,
+    verified: briefing.summaryVerified,
+    evidence: briefing.summaryEvidence,
+    evidenceTotal: briefing.summaryEvidenceTotal,
+    evidenceTruncated: briefing.summaryEvidenceTruncated
   }))
     .filter(item => item.summary || item.headline)
   return {

@@ -11786,6 +11786,10 @@ function AiAssistantPage() {
                   /></div>
                   : <small>该摘要可以作为历史阅读材料，但不会作为新的可信事实或问答证据。</small>}
               </details>}
+              {briefing?.date && <button type="button"
+                onClick={() => inspectBriefingDateInMemorySearch(briefing.date)}>
+                查看该日完整记忆
+              </button>}
             </> : briefingPeriod === 'week' ? <>
               <h2>{weeklyBriefing?.daysWithUpdates || 0} 天有新增信息，{weeklyBriefing?.activeTaskCount || 0} 项仍在推进</h2>
               {(weeklyBriefing?.summaries || []).length ? <div className="assistant-weekly-summary-list">
@@ -11809,6 +11813,10 @@ function AiAssistantPage() {
                     : !item.verified
                       ? <small>该日摘要生成于逐条引用策略启用前；已有原文仅供人工核对，摘要本身不参与可信问答。</small>
                       : null}
+                  <button type="button"
+                    onClick={() => inspectBriefingDateInMemorySearch(item.date)}>
+                    查看该日完整记忆
+                  </button>
                 </details>)}
               </div> : <p>本周尚无可汇总的新增信息。</p>}
               <small>
