@@ -28,7 +28,7 @@ test('graph and review evidence presentation hydrates only the visible scope on 
   assert.match(common, /expectedGraphRevision[\s\S]*?共同实体结果在浏览期间已经变化/)
   const snapshot = store.slice(store.indexOf('loadGraphSnapshot(): MemoryGraph'),
     store.indexOf('getRelationEvidenceCounts():', store.indexOf('loadGraphSnapshot(): MemoryGraph')))
-  assert.match(snapshot, /GROUP BY root_id,source_id,session_id,message_id/)
+  assert.match(snapshot, /GROUP BY scope\.root_id,evidence\.source_id,evidence\.session_id,evidence\.message_id/)
   assert.match(snapshot, /SELECT relation_id,COUNT\(\*\) AS evidence_total/)
   assert.match(snapshot, /SELECT evidence\.review_id,COUNT\(\*\) AS evidence_total/)
   assert.match(snapshot, /evidenceMessageIds: \[\]/)

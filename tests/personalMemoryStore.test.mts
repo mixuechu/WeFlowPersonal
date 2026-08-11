@@ -4735,8 +4735,8 @@ test('relation graph snapshots keep a bounded hotset while SQLCipher retains eve
     assert.equal(hotset.evidence[0].messageId,
       `relation-evidence-${allEvidence.length - GRAPH_RELATION_EVIDENCE_HOT_LIMIT}`)
     const hydration = first.getGraphSnapshotHydrationStats()
-    assert.equal(hydration.version, 'graph-snapshot-batch-v5')
-    assert.equal(hydration.strategy, 'fixed_eight_queries_all_evidence_counts_only')
+    assert.equal(hydration.version, 'graph-snapshot-batch-v6')
+    assert.equal(hydration.strategy, 'fixed_eight_queries_direct_counts_merge_exception_only')
     assert.equal(hydration.entityEvidencePolicy, 'sqlcipher_authoritative_counts_startup_keys_zero')
     assert.equal(hydration.structuredCarrierCopies, 0)
     assert.equal(hydration.queryCount, 8)
@@ -4805,6 +4805,19 @@ test('batched graph hydration counts identity evidence across an active merge ch
     'hydration-merge-target', 'mail', 'shared-cross-source-message',
     'merge-room', 1_700_000_002, '合并后身份', '目标身份原文', 'identity'
   )
+  for (const [entityId, excerpt] of [
+    ['hydration-merge-source', '合并前重复载体'],
+    ['hydration-merge-target', '合并后重复载体']
+  ]) {
+    database.prepare(`
+      INSERT INTO entity_evidence(
+        entity_id,source_id,message_id,session_id,timestamp,sender,excerpt,evidence_kind
+      ) VALUES(?,?,?,?,?,?,?,?)
+    `).run(
+      entityId, 'wechat', 'exact-duplicate-carrier', 'merge-room',
+      1_700_000_003, '合并身份', excerpt, 'identity'
+    )
+  }
   database.prepare(`
     INSERT INTO merge_history(
       source_entity_id,target_entity_id,source_name,target_name,snapshot_json,created_at
@@ -4820,17 +4833,17 @@ test('batched graph hydration counts identity evidence across an active merge ch
   assert.equal(snapshot.entities.length, 1)
   assert.equal(snapshot.entities[0].id, 'hydration-merge-target')
   assert.deepEqual(snapshot.entities[0].evidenceMessageIds, [])
-  assert.equal((snapshot.entities[0] as any).evidenceMessageIdTotal, 2)
+  assert.equal((snapshot.entities[0] as any).evidenceMessageIdTotal, 3)
   assert.equal(store.listEntityEvidencePage({
     entityId: 'hydration-merge-target', limit: 40
-  }).total, 2)
+  }).total, 3)
   assert.equal(store.getGraphSnapshotHydrationStats().queryCount, 8)
   assert.equal(store.getGraphSnapshotHydrationStats().entityEvidenceKeys, 0)
-  assert.equal(store.getGraphSnapshotHydrationStats().entityEvidenceTotalKeys, 2)
+  assert.equal(store.getGraphSnapshotHydrationStats().entityEvidenceTotalKeys, 3)
   assert.deepEqual(store.getEntityEvidenceAuthorityStats(), {
-    evidenceRows: 2,
+    evidenceRows: 4,
     entitiesWithEvidence: 2,
-    lastEvidenceAt: 1_700_000_002
+    lastEvidenceAt: 1_700_000_003
   })
   database.prepare(`
     INSERT INTO entity_evidence(
@@ -4838,12 +4851,12 @@ test('batched graph hydration counts identity evidence across an active merge ch
     ) VALUES(?,?,?,?,?,?,?,?)
   `).run(
     'hydration-merge-target', 'calendar', 'shared-cross-source-message',
-    'merge-room', 1_700_000_003, '合并后身份', '运行期新增日历依据', 'identity_anchor'
+    'merge-room', 1_700_000_004, '合并后身份', '运行期新增日历依据', 'identity_anchor'
   )
   assert.deepEqual(store.getEntityEvidenceAuthorityStats(), {
-    evidenceRows: 3,
+    evidenceRows: 5,
     entitiesWithEvidence: 2,
-    lastEvidenceAt: 1_700_000_003
+    lastEvidenceAt: 1_700_000_004
   })
 }))
 
@@ -11215,7 +11228,7 @@ test('graph commit mismatch recovers authoritative entities relations evidence a
     assert.equal(snapshot.reviewQueue.length, 1)
     assert.equal(snapshot.reviewQueue[0].id, 'graph-recovery-pending')
     const hydration = store.getGraphSnapshotHydrationStats()
-    assert.equal(hydration.strategy, 'fixed_eight_queries_all_evidence_counts_only')
+    assert.equal(hydration.strategy, 'fixed_eight_queries_direct_counts_merge_exception_only')
     assert.equal(hydration.queryCount, 8)
     assert.equal(hydration.entities, 2)
     assert.equal(hydration.relations, 1)

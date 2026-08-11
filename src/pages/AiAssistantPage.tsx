@@ -15194,6 +15194,9 @@ function AiAssistantPage() {
               {dashboard.graphStateStorage?.hydration?.entityEvidencePolicy === 'sqlcipher_authoritative_counts_startup_keys_zero'
                 ? ' 实体身份消息键、关系正文和待审候选正文都不再随全部工作集启动常驻；直接身份依据及有效合并链仍由 SQLCipher 权威保存，人物侧栏、路径、共同实体、候选目录和修改预览会精确加载所见原文，事实与事件继续走各自权威档案。'
                 : ''}
+              {dashboard.graphStateStorage?.hydration?.strategy === 'fixed_eight_queries_direct_counts_merge_exception_only'
+                ? ' 身份原文总数先沿实体索引直接聚合，只有确实存在有效身份合并链的人物才进入递归去重；普通人物不会再为不存在的合并关系参与全量递归分组。'
+                : ''}
             </small>}
             {blockedIdentityReviewReturn && <div className="assistant-review-note">
               <b>正在先处理{

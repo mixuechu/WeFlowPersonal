@@ -8881,25 +8881,46 @@ export class PersonalMemoryStore {
     `).all() as any[]
     queryCount += 1
     const entityEvidenceCountRows = this.db.prepare(`
-      WITH RECURSIVE entity_scope(root_id,entity_id) AS (
-        SELECT id,id FROM entities WHERE deleted_at IS NULL
+      WITH RECURSIVE active_merge(root_id,entity_id) AS (
+        SELECT history.target_entity_id,history.source_entity_id
+        FROM merge_history history INDEXED BY idx_merge_history_active_target
+        JOIN entities target ON target.id=history.target_entity_id
+        WHERE history.reverted_at IS NULL AND target.deleted_at IS NULL
         UNION
-        SELECT scope.root_id,history.source_entity_id
-        FROM merge_history history
-        JOIN entity_scope scope ON history.target_entity_id=scope.entity_id
+        SELECT merge.root_id,history.source_entity_id
+        FROM active_merge merge
+        JOIN merge_history history INDEXED BY idx_merge_history_active_target
+          ON history.target_entity_id=merge.entity_id
         WHERE history.reverted_at IS NULL
-      ), carriers(root_id,source_id,session_id,message_id) AS (
+      ), merged_roots(root_id) AS (
+        SELECT DISTINCT root_id FROM active_merge
+      ), direct_counts(root_id,evidence_total) AS (
+        SELECT evidence.entity_id,COUNT(*)
+        FROM entity_evidence evidence INDEXED BY idx_entity_evidence_entity_time
+        JOIN entities entity ON entity.id=evidence.entity_id
+        WHERE entity.deleted_at IS NULL AND evidence.message_id!=''
+          AND NOT EXISTS (
+            SELECT 1 FROM merged_roots WHERE merged_roots.root_id=evidence.entity_id
+          )
+        GROUP BY evidence.entity_id
+      ), merged_scope(root_id,entity_id) AS (
+        SELECT root_id,root_id FROM merged_roots
+        UNION ALL
+        SELECT root_id,entity_id FROM active_merge
+      ), merged_carriers(root_id,source_id,session_id,message_id) AS (
         SELECT scope.root_id,evidence.source_id,evidence.session_id,evidence.message_id
-        FROM entity_scope scope JOIN entity_evidence evidence
+        FROM merged_scope scope
+        JOIN entity_evidence evidence INDEXED BY idx_entity_evidence_entity_time
           ON evidence.entity_id=scope.entity_id
-      ), grouped AS (
-        SELECT root_id,source_id,session_id,message_id
-        FROM carriers WHERE message_id!=''
-        GROUP BY root_id,source_id,session_id,message_id
+        WHERE evidence.message_id!=''
+        GROUP BY scope.root_id,evidence.source_id,evidence.session_id,evidence.message_id
+      ), merged_counts(root_id,evidence_total) AS (
+        SELECT root_id,COUNT(*) FROM merged_carriers GROUP BY root_id
       )
-      SELECT root_id,COUNT(*) AS evidence_total
-      FROM grouped
-      GROUP BY root_id ORDER BY root_id
+      SELECT root_id,evidence_total FROM direct_counts
+      UNION ALL
+      SELECT root_id,evidence_total FROM merged_counts
+      ORDER BY root_id
     `).all() as Array<{ root_id: string; evidence_total: number }>
     queryCount += 1
     const relationRows = this.db.prepare(`SELECT * FROM relations ORDER BY id`).all() as any[]
@@ -9011,8 +9032,8 @@ export class PersonalMemoryStore {
     }
     const durationMs = Date.now() - startedAt
     this.graphSnapshotHydration = {
-      version: 'graph-snapshot-batch-v5',
-      strategy: 'fixed_eight_queries_all_evidence_counts_only',
+      version: 'graph-snapshot-batch-v6',
+      strategy: 'fixed_eight_queries_direct_counts_merge_exception_only',
       entityEvidencePolicy: 'sqlcipher_authoritative_counts_startup_keys_zero',
       structuredCarrierCopies: 0,
       queryCount,
