@@ -18083,7 +18083,7 @@ function AiAssistantPage() {
             </div>}
             {memoryDiagnostics.graphRelationEvidenceHotset?.version && <div className="assistant-recovery-audit healthy">
               <header><Database size={15} /><span><b>图谱关系原文分层</b>
-                <small>SQLCipher 保存完整关系原文；启动不常驻关系正文，人物侧栏和图查询只加载所见预览。人工关系纠正在库内统计并迁移完整证据，身份合并与撤销仍按需补全受影响关系。</small>
+                <small>SQLCipher 保存完整关系原文；启动不常驻关系正文，人物侧栏和图查询只加载所见预览。人工纠正、身份合并与撤销均在库内迁移完整证据，不再把正文补全进主进程。</small>
               </span></header>
               <div className="assistant-recovery-current">
                 <span>权威原文 <b>{Number(memoryDiagnostics.graphRelationEvidenceHotset.authoritativeEvidenceRows || 0).toLocaleString()}</b></span>
@@ -18141,11 +18141,13 @@ function AiAssistantPage() {
             </div>}
             {memoryDiagnostics.identityMergeSnapshotStorage?.version && <div className="assistant-recovery-audit healthy">
               <header><Database size={15} /><span><b>身份合并可逆快照</b>
-                <small>每次合并只加密保存双方档案及受影响的关系、事件参与和审阅记录，不再复制整张关系图。</small>
+                <small>新合并只加密保存双方档案及受影响结构；关系原文留在 SQLCipher 证据谱系中，快照 JSON 不复制正文，撤销前还会核验载体集合。</small>
               </span></header>
               <div className="assistant-recovery-current">
                 <span>快照 <b>{Number(memoryDiagnostics.identityMergeSnapshotStorage.rows || 0).toLocaleString()}</b> 份</span>
                 <span>当前占用 <b>{(Number(memoryDiagnostics.identityMergeSnapshotStorage.bytes || 0) / 1024).toFixed(1)} KB</b></span>
+                <span>证据谱系 <b>{Number(memoryDiagnostics.identityMergeSnapshotStorage.relationEvidenceLineage?.rows || 0).toLocaleString()}</b> 行</span>
+                <span>谱系占用 <b>{(Number(memoryDiagnostics.identityMergeSnapshotStorage.relationEvidenceLineage?.bytes || 0) / 1024).toFixed(1)} KB</b></span>
                 <span>旧快照压缩 <b>{Number(memoryDiagnostics.identityMergeSnapshotStorage.migration?.rowsCompacted || 0).toLocaleString()}</b> 份</span>
                 <span>移除无关关系 <b>{Number(memoryDiagnostics.identityMergeSnapshotStorage.migration?.relationsRemoved || 0).toLocaleString()}</b> 条</span>
                 <span>回收空间 <b>{(Number(memoryDiagnostics.identityMergeSnapshotStorage.migration?.bytesReclaimed || 0) / 1024).toFixed(1)} KB</b></span>

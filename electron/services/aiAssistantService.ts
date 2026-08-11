@@ -2100,25 +2100,18 @@ export class AiAssistantService {
     }
   }
 
-  private checkpointGraphToSql(): void {
+  private checkpointGraphToSql(
+    options: { identityMergeEvidenceApply?: { mergeId: number } } = {}
+  ): void {
     personalMemoryStore.syncGraph(this.state.graph, crypto.randomUUID(), {
-      entityEvidence: this.pendingEntityEvidence
+      entityEvidence: this.pendingEntityEvidence,
+      identityMergeEvidenceApply: options.identityMergeEvidenceApply
     })
     this.pendingEntityEvidence = []
     compactGraphRelationEvidence(
       this.state.graph.relations,
       personalMemoryStore.getRelationEvidenceCounts()
     )
-  }
-
-  private hydrateRelationEvidence(relationIds: string[]): void {
-    const evidence = personalMemoryStore.getRelationEvidence(relationIds)
-    for (const relation of this.state.graph.relations) {
-      const rows = evidence.get(relation.id)
-      if (!rows) continue
-      relation.evidence = rows
-      relation.evidenceTotal = rows.length
-    }
   }
 
   private compactBriefingState(): void {
@@ -10002,11 +9995,19 @@ export class AiAssistantService {
     if (review.kind === 'possible_duplicate' && decision === 'confirmed' && mergePlan) {
       const { source, target } = mergePlan
       {
-        this.hydrateRelationEvidence(this.state.graph.relations
-          .filter(item =>
-            item.subjectId === source.id || item.objectId === source.id ||
-            item.subjectId === target.id || item.objectId === target.id)
-          .map(item => item.id))
+        const affectedRelations = this.state.graph.relations.filter(item =>
+          item.subjectId === source.id || item.objectId === source.id ||
+          item.subjectId === target.id || item.objectId === target.id)
+        const relationEvidenceRoutes = affectedRelations.map(relation => {
+          const subjectId = relation.subjectId === source.id ? target.id : relation.subjectId
+          const objectId = relation.objectId === source.id ? target.id : relation.objectId
+          return {
+            beforeId: relation.id,
+            afterId: subjectId === objectId
+              ? null
+              : relationSemanticId(subjectId, relation.predicate, objectId)
+          }
+        })
         const affectedReviews = this.state.graph.reviewQueue
           .filter(pending =>
             pending.id === review.id ||
@@ -10018,16 +10019,26 @@ export class AiAssistantService {
             : structuredClone(pending))
         const sourceEventParticipants = personalMemoryStore.listEntityEventParticipants(source.id)
         const targetEventParticipants = personalMemoryStore.listEntityEventParticipants(target.id)
-        personalMemoryStore.recordMerge(source.id, target.id, {
+        const mergeEvidence = personalMemoryStore.recordMergeWithRelationEvidenceLineage(
+          source.id,
+          target.id,
+          {
           source: structuredClone(source),
           target: structuredClone(target),
-          relations: structuredClone(this.state.graph.relations.filter(item =>
-            item.subjectId === source.id || item.objectId === source.id ||
-            item.subjectId === target.id || item.objectId === target.id)),
+          relations: affectedRelations.map(relation => ({
+            ...structuredClone(relation),
+            evidence: [],
+            evidenceTotal: Math.max(
+              Number(relation.evidenceTotal || 0),
+              Number(relation.evidence?.length || 0)
+            )
+          })),
           sourceEventParticipants,
           targetEventParticipants,
           affectedReviews
-        })
+          },
+          relationEvidenceRoutes
+        )
         review.mergeSourceEntityId = source.id
         review.mergeTargetEntityId = target.id
         target.aliases = [...new Set([...target.aliases, source.canonicalName, ...source.aliases])].filter(alias => alias !== target.canonicalName)
@@ -10068,6 +10079,10 @@ export class AiAssistantService {
         )
         this.state.graph.relations =
           normalizeRelationsAfterIdentityMerge(this.state.graph.relations)
+        for (const relation of this.state.graph.relations) {
+          const evidenceTotal = mergeEvidence.mergedTotals[relation.id]
+          if (evidenceTotal !== undefined) relation.evidenceTotal = evidenceTotal
+        }
         reconcileRelationReviewsAfterIdentityMerge({
           reviewQueue: this.state.graph.reviewQueue,
           relationIdMap,
@@ -10088,7 +10103,9 @@ export class AiAssistantService {
           }
         }
         personalMemoryStore.mergeEntityEventParticipants(source.id, target.id)
-        this.checkpointGraphToSql()
+        this.checkpointGraphToSql({
+          identityMergeEvidenceApply: { mergeId: mergeEvidence.mergeId }
+        })
         personalMemoryStore.recordIdentityDecision(source.id, target.id, 'merged', source.identityVersion, target.identityVersion, review.detail)
       }
     }
@@ -10121,7 +10138,8 @@ export class AiAssistantService {
       currentGraph: { ...this.state.graph, reviewQueue: currentReviews },
       currentSourceParticipants: personalMemoryStore.listEntityEventParticipants(snapshot.source.id),
       currentTargetParticipants: personalMemoryStore.listEntityEventParticipants(snapshot.target.id),
-      currentIdentityDecision: personalMemoryStore.getIdentityDecision(snapshot.source.id, snapshot.target.id)
+      currentIdentityDecision: personalMemoryStore.getIdentityDecision(snapshot.source.id, snapshot.target.id),
+      relationEvidenceLineage: personalMemoryStore.inspectMergeRelationEvidenceLineage(id)
     })
     return {
       mergeId: Number(id),
@@ -10292,7 +10310,8 @@ export class AiAssistantService {
       },
       currentSourceParticipants: personalMemoryStore.listEntityEventParticipants(snapshot.source.id),
       currentTargetParticipants: personalMemoryStore.listEntityEventParticipants(snapshot.target.id),
-      currentIdentityDecision: personalMemoryStore.getIdentityDecision(snapshot.source.id, snapshot.target.id)
+      currentIdentityDecision: personalMemoryStore.getIdentityDecision(snapshot.source.id, snapshot.target.id),
+      relationEvidenceLineage: personalMemoryStore.inspectMergeRelationEvidenceLineage(id)
     })
     if (!inspection.safe) {
       throw new Error(`合并后相关档案已经变化，不能安全自动撤销：${inspection.reason}`)

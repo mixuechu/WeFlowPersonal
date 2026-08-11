@@ -1021,6 +1021,22 @@ export class PersonalMemoryStore {
       CREATE INDEX IF NOT EXISTS idx_merge_history_activity
         ON merge_history(COALESCE(reverted_at,created_at) DESC,id DESC);
 
+      CREATE TABLE IF NOT EXISTS identity_merge_relation_evidence (
+        merge_id INTEGER NOT NULL REFERENCES merge_history(id) ON DELETE CASCADE,
+        before_relation_id TEXT NOT NULL,
+        after_relation_id TEXT NOT NULL DEFAULT '',
+        source_id TEXT NOT NULL DEFAULT 'legacy',
+        message_id TEXT NOT NULL,
+        session_id TEXT NOT NULL,
+        timestamp INTEGER NOT NULL,
+        sender TEXT NOT NULL DEFAULT '',
+        excerpt TEXT NOT NULL,
+        evidence_role TEXT NOT NULL DEFAULT 'direct',
+        PRIMARY KEY(merge_id,before_relation_id,source_id,session_id,message_id)
+      ) STRICT;
+      CREATE INDEX IF NOT EXISTS idx_identity_merge_relation_evidence_after
+        ON identity_merge_relation_evidence(merge_id,after_relation_id);
+
       CREATE TABLE IF NOT EXISTS identity_decisions (
         pair_key TEXT PRIMARY KEY,
         left_entity_id TEXT NOT NULL,
@@ -10042,6 +10058,7 @@ export class PersonalMemoryStore {
         sourceParticipants: Array<{ eventId: string; role: string }>
         targetParticipants: Array<{ eventId: string; role: string }>
       }
+      identityMergeEvidenceApply?: { mergeId: number }
       relationEvidenceMoves?: Array<{ fromId: string; toId: string }>
     } = {}
   ): void {
@@ -10098,6 +10115,71 @@ export class PersonalMemoryStore {
         movedFromIds.add(fromId)
         moveRelationEvidence.run(toId, fromId)
         removeMovedRelationEvidence.run(fromId)
+      }
+      const mergeEvidenceApply = options.identityMergeEvidenceApply
+      if (mergeEvidenceApply) {
+        const mergeId = Number(mergeEvidenceApply.mergeId || 0)
+        const routes = this.db.prepare(`
+          SELECT before_relation_id,after_relation_id,COUNT(*) AS row_count
+          FROM identity_merge_relation_evidence WHERE merge_id=?
+          GROUP BY before_relation_id,after_relation_id
+          ORDER BY before_relation_id
+        `).all(mergeId) as Array<{
+          before_relation_id: string
+          after_relation_id: string
+          row_count: number
+        }>
+        if (!mergeId || routes.some(route =>
+          route.after_relation_id && !activeRelationIds.has(String(route.after_relation_id)))) {
+          throw new Error('身份合并关系证据谱系与当前图谱不一致')
+        }
+        for (const beforeId of new Set(routes.map(route => String(route.before_relation_id)))) {
+          removeMovedRelationEvidence.run(beforeId)
+        }
+        const applyArchivedEvidence = this.db.prepare(`
+          INSERT INTO evidence(
+            relation_id,source_id,message_id,session_id,timestamp,sender,excerpt,evidence_role
+          )
+          SELECT after_relation_id,source_id,message_id,session_id,
+            timestamp,sender,excerpt,evidence_role
+          FROM identity_merge_relation_evidence
+          WHERE merge_id=? AND before_relation_id=? AND after_relation_id!=''
+          ON CONFLICT(relation_id,source_id,session_id,message_id)
+            WHERE relation_id IS NOT NULL DO UPDATE SET
+            timestamp=MAX(evidence.timestamp,excluded.timestamp),
+            sender=CASE WHEN excluded.sender!='' AND evidence.sender=''
+              THEN excluded.sender ELSE evidence.sender END,
+            excerpt=CASE WHEN LENGTH(excluded.excerpt)>LENGTH(evidence.excerpt)
+              THEN excluded.excerpt ELSE evidence.excerpt END,
+            evidence_role=CASE
+              WHEN (CASE excluded.evidence_role
+                WHEN 'contradiction' THEN 3 WHEN 'direct' THEN 2
+                WHEN 'indirect' THEN 1 ELSE 0 END) >
+                (CASE evidence.evidence_role
+                  WHEN 'contradiction' THEN 3 WHEN 'direct' THEN 2
+                  WHEN 'indirect' THEN 1 ELSE 0 END)
+              THEN excluded.evidence_role ELSE evidence.evidence_role END
+        `)
+        for (const route of routes) {
+          applyArchivedEvidence.run(mergeId, route.before_relation_id)
+        }
+      }
+      const mergeEvidenceRevertId = Number(options.identityMergeRevert?.mergeId || 0)
+      if (mergeEvidenceRevertId) {
+        const afterIds = (this.db.prepare(`
+          SELECT DISTINCT after_relation_id FROM identity_merge_relation_evidence
+          WHERE merge_id=? AND after_relation_id!=''
+        `).all(mergeEvidenceRevertId) as Array<{ after_relation_id: string }>)
+          .map(row => String(row.after_relation_id || '')).filter(Boolean)
+        for (const afterId of afterIds) removeMovedRelationEvidence.run(afterId)
+        this.db.prepare(`
+          INSERT INTO evidence(
+            relation_id,source_id,message_id,session_id,timestamp,sender,excerpt,evidence_role
+          )
+          SELECT before_relation_id,source_id,message_id,session_id,
+            timestamp,sender,excerpt,evidence_role
+          FROM identity_merge_relation_evidence WHERE merge_id=?
+        `).run(mergeEvidenceRevertId)
       }
       const storedRelationIds = this.db.prepare('SELECT id FROM relations').all() as Array<{ id: string }>
       for (const { id } of storedRelationIds) {
@@ -12050,6 +12132,97 @@ export class PersonalMemoryStore {
     return Number(result.lastInsertRowid)
   }
 
+  recordMergeWithRelationEvidenceLineage(
+    sourceId: string,
+    targetId: string,
+    snapshot: any,
+    routes: Array<{ beforeId: string; afterId: string | null }>
+  ): {
+    mergeId: number
+    totalRows: number
+    routes: Array<{ beforeId: string; afterId: string | null; rowCount: number }>
+    mergedTotals: Record<string, number>
+  } {
+    if (!this.db) throw new Error('个人记忆数据库尚未初始化')
+    const normalizedRoutes = routes.map(route => ({
+      beforeId: String(route.beforeId || '').trim(),
+      afterId: route.afterId === null ? null : String(route.afterId || '').trim()
+    }))
+    const beforeIds = new Set<string>()
+    for (const route of normalizedRoutes) {
+      if (!route.beforeId || (route.afterId !== null && !route.afterId) ||
+        beforeIds.has(route.beforeId)) {
+        throw new Error('身份合并关系证据路由无效')
+      }
+      beforeIds.add(route.beforeId)
+    }
+    const expectedRoutes = new Map((snapshot?.relations || []).map((relation: any) => {
+      const beforeId = String(relation?.id || '').trim()
+      const subjectId = String(relation?.subjectId || '') === sourceId
+        ? targetId : String(relation?.subjectId || '')
+      const objectId = String(relation?.objectId || '') === sourceId
+        ? targetId : String(relation?.objectId || '')
+      const predicate = String(relation?.predicate || '').replace(/\s+/g, ' ').trim().slice(0, 100)
+      const afterId = subjectId === objectId
+        ? null
+        : createHash('sha256').update(`${subjectId}|${predicate}|${objectId}`)
+          .digest('hex').slice(0, 20)
+      return [beforeId, afterId] as const
+    }))
+    if (expectedRoutes.size !== normalizedRoutes.length || normalizedRoutes.some(route =>
+      !expectedRoutes.has(route.beforeId) || expectedRoutes.get(route.beforeId) !== route.afterId)) {
+      throw new Error('身份合并关系证据路由与可逆快照不一致')
+    }
+    const apply = () => {
+      const mergeId = this.recordMerge(sourceId, targetId, snapshot)
+      if (!mergeId) throw new Error('身份合并档案写入失败')
+      const archive = this.db!.prepare(`
+        INSERT INTO identity_merge_relation_evidence(
+          merge_id,before_relation_id,after_relation_id,
+          source_id,message_id,session_id,timestamp,sender,excerpt,evidence_role
+        )
+        SELECT ?,?,?,source_id,message_id,session_id,timestamp,sender,excerpt,evidence_role
+        FROM evidence WHERE relation_id=?
+      `)
+      const routeRows: Array<{ beforeId: string; afterId: string | null; rowCount: number }> = []
+      for (const route of normalizedRoutes) {
+        const result = archive.run(
+          mergeId, route.beforeId, route.afterId || '', route.beforeId
+        )
+        routeRows.push({
+          ...route,
+          rowCount: Number(result.changes || 0)
+        })
+      }
+      const totals = this.db!.prepare(`
+        SELECT after_relation_id,COUNT(*) AS count FROM (
+          SELECT DISTINCT after_relation_id,source_id,session_id,message_id
+          FROM identity_merge_relation_evidence
+          WHERE merge_id=? AND after_relation_id!=''
+        ) GROUP BY after_relation_id
+      `).all(mergeId) as Array<{ after_relation_id: string; count: number }>
+      const mergedTotals = Object.fromEntries(totals.map(row => [
+        String(row.after_relation_id), Number(row.count || 0)
+      ]))
+      const totalRows = routeRows.reduce((sum, route) => sum + route.rowCount, 0)
+      const snapshotWithLineage = {
+        ...snapshot,
+        relationEvidenceLineage: {
+          version: 'identity-merge-relation-evidence-v1',
+          totalRows,
+          routes: routeRows,
+          mergedTotals
+        }
+      }
+      const compacted = compactIdentityMergeSnapshot(snapshotWithLineage)
+      if (!compacted.valid) throw new Error('身份合并缺少有效的受影响范围快照')
+      this.db!.prepare('UPDATE merge_history SET snapshot_json=? WHERE id=?')
+        .run(JSON.stringify(compacted.snapshot), mergeId)
+      return { mergeId, totalRows, routes: routeRows, mergedTotals }
+    }
+    return this.db.inTransaction ? apply() : this.db.transaction(apply)()
+  }
+
   listActiveMergeTargetIds(): string[] {
     if (!this.db) return []
     return (this.db.prepare(`
@@ -12188,7 +12361,8 @@ export class PersonalMemoryStore {
       version: IDENTITY_MERGE_SNAPSHOT_VERSION,
       policy: 'affected_entities_relations_reviews_events',
       rows: 0,
-      bytes: 0
+      bytes: 0,
+      relationEvidenceLineage: { merges: 0, rows: 0, bytes: 0 }
     }
     const current = this.db.prepare(`
       SELECT COUNT(*) AS rows,
@@ -12200,11 +12374,25 @@ export class PersonalMemoryStore {
     `).get() as any
     let migration: any = {}
     try { migration = JSON.parse(String(meta?.value || '{}')) } catch {}
+    const lineage = this.db.prepare(`
+      SELECT COUNT(DISTINCT merge_id) AS merges,COUNT(*) AS rows,
+        COALESCE(SUM(
+          LENGTH(before_relation_id)+LENGTH(after_relation_id)+LENGTH(source_id)+
+          LENGTH(message_id)+LENGTH(session_id)+LENGTH(sender)+LENGTH(excerpt)+
+          LENGTH(evidence_role)+32
+        ),0) AS bytes
+      FROM identity_merge_relation_evidence
+    `).get() as any
     return {
       version: IDENTITY_MERGE_SNAPSHOT_VERSION,
       policy: 'affected_entities_relations_reviews_events',
       rows: Number(current?.rows || 0),
       bytes: Number(current?.bytes || 0),
+      relationEvidenceLineage: {
+        merges: Number(lineage?.merges || 0),
+        rows: Number(lineage?.rows || 0),
+        bytes: Number(lineage?.bytes || 0)
+      },
       migration
     }
   }
@@ -22635,6 +22823,57 @@ export class PersonalMemoryStore {
     if (!this.db) return null
     const row = this.db.prepare('SELECT snapshot_json FROM merge_history WHERE id=? AND reverted_at IS NULL').get(id) as { snapshot_json: string } | undefined
     return row ? JSON.parse(row.snapshot_json) : null
+  }
+
+  inspectMergeRelationEvidenceLineage(mergeId: number): {
+    present: boolean
+    matches: boolean
+    archivedRows: number
+    expectedActiveRows: number
+    currentActiveRows: number
+  } {
+    if (!this.db) {
+      return {
+        present: false, matches: false,
+        archivedRows: 0, expectedActiveRows: 0, currentActiveRows: 0
+      }
+    }
+    const id = Number(mergeId || 0)
+    const row = this.db.prepare(`
+      WITH archived AS (
+        SELECT after_relation_id,source_id,session_id,message_id
+        FROM identity_merge_relation_evidence WHERE merge_id=?
+      ), expected AS (
+        SELECT DISTINCT after_relation_id,source_id,session_id,message_id
+        FROM archived WHERE after_relation_id!=''
+      ), current AS (
+        SELECT relation_id AS after_relation_id,source_id,session_id,message_id
+        FROM evidence WHERE relation_id IN (
+          SELECT DISTINCT after_relation_id FROM archived WHERE after_relation_id!=''
+        )
+      )
+      SELECT
+        (SELECT COUNT(*) FROM archived) AS archived_rows,
+        (SELECT COUNT(*) FROM expected) AS expected_rows,
+        (SELECT COUNT(*) FROM current) AS current_rows,
+        (SELECT COUNT(*) FROM (
+          SELECT * FROM expected EXCEPT SELECT * FROM current
+        )) AS missing_rows,
+        (SELECT COUNT(*) FROM (
+          SELECT * FROM current EXCEPT SELECT * FROM expected
+        )) AS extra_rows
+    `).get(id) as any
+    const archivedRows = Number(row?.archived_rows || 0)
+    const expectedActiveRows = Number(row?.expected_rows || 0)
+    const currentActiveRows = Number(row?.current_rows || 0)
+    return {
+      present: archivedRows > 0,
+      matches: archivedRows > 0 && Number(row?.missing_rows || 0) === 0 &&
+        Number(row?.extra_rows || 0) === 0,
+      archivedRows,
+      expectedActiveRows,
+      currentActiveRows
+    }
   }
 
   listGraphReviewsByIds(ids: string[]): any[] {

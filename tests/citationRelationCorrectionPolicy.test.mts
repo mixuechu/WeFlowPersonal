@@ -107,8 +107,9 @@ test('all human relation correction entry points use SQLCipher evidence stats an
   const reviewMethod = source.slice(reviewStart, reviewEnd)
   assert.match(reviewMethod, /relationEvidenceMoves\.push\(/)
   assert.match(reviewMethod, /saveState\(true, \{ relationEvidenceMoves \}\)/)
-  assert.equal((reviewMethod.match(/hydrateRelationEvidence\(/g) || []).length, 1,
-    'identity merge remains the only full relation-evidence hydration in graph review')
+  assert.doesNotMatch(reviewMethod, /hydrateRelationEvidence\(/)
+  assert.match(reviewMethod, /recordMergeWithRelationEvidenceLineage\(/)
+  assert.match(reviewMethod, /identityMergeEvidenceApply/)
 })
 
 test('identity merge relation normalization preserves confirmed authority regardless of order', () => {

@@ -139,6 +139,20 @@ test('identity merge revert rejects post-merge identity, relation and participan
   }).reason, /事件参与关系/)
 })
 
+test('identity merge revert rejects same-count relation evidence carrier replacement', () => {
+  const input = fixture()
+  const inspection = inspectIdentityMergeRevert({
+    snapshot: input.snapshot,
+    currentGraph: input.currentGraph,
+    currentSourceParticipants: input.sourceParticipants,
+    currentTargetParticipants: input.targetParticipants,
+    currentIdentityDecision: input.identityDecision,
+    relationEvidenceLineage: { present: true, matches: false }
+  })
+  assert.equal(inspection.safe, false)
+  assert.match(inspection.reason, /原文载体/)
+})
+
 test('identity merge restore preserves unrelated graph changes', () => {
   const input = fixture()
   input.currentGraph.relations.push({

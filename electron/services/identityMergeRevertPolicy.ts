@@ -91,7 +91,8 @@ export function buildExpectedMergedTarget(source: any, target: any): any {
 export function buildExpectedMergedRelations(
   relations: any[],
   sourceId: string,
-  targetId: string
+  targetId: string,
+  mergedEvidenceTotals: Record<string, number> = {}
 ): any[] {
   const normalized = new Map<string, any>()
   for (const original of relations || []) {
@@ -126,7 +127,10 @@ export function buildExpectedMergedRelations(
       })
     }
   }
-  return [...normalized.values()]
+  return [...normalized.values()].map(relation => ({
+    ...relation,
+    evidenceTotal: mergedEvidenceTotals[relation.id] ?? relation.evidenceTotal
+  }))
 }
 
 export function inspectIdentityMergeRevert(input: {
@@ -135,6 +139,7 @@ export function inspectIdentityMergeRevert(input: {
   currentSourceParticipants?: any[]
   currentTargetParticipants?: any[]
   currentIdentityDecision?: any
+  relationEvidenceLineage?: { present?: boolean; matches?: boolean }
 }): {
   safe: boolean
   reason: string
@@ -155,7 +160,12 @@ export function inspectIdentityMergeRevert(input: {
   const currentSource = input.currentGraph.entities.find(entity => entity.id === source.id)
   const currentTarget = input.currentGraph.entities.find(entity => entity.id === target.id)
   const expectedTarget = buildExpectedMergedTarget(source, target)
-  const expectedRelations = buildExpectedMergedRelations(snapshot.relations, source.id, target.id)
+  const expectedRelations = buildExpectedMergedRelations(
+    snapshot.relations,
+    source.id,
+    target.id,
+    snapshot.relationEvidenceLineage?.mergedTotals || {}
+  )
     .filter(relation => relation.subjectId === target.id || relation.objectId === target.id)
     .map(relationIdentity).sort((a, b) => a.id.localeCompare(b.id))
   const currentRelations = input.currentGraph.relations
@@ -215,6 +225,9 @@ export function inspectIdentityMergeRevert(input: {
     reason = '相关身份审阅决定在合并后已有变化'
   } else if (String(input.currentIdentityDecision?.decision || '') !== 'merged') {
     reason = '身份消歧决定在合并后已有变化'
+  } else if (input.relationEvidenceLineage?.present &&
+    !input.relationEvidenceLineage.matches) {
+    reason = '合并关系的原文载体在合并后已有变化'
   }
   return {
     safe: !reason,

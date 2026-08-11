@@ -15945,6 +15945,152 @@ test('identity merge revert commits graph, decision and archive atomically', () 
   })
 })
 
+test('identity merge evidence lineage folds and restores relations without JSON plaintext', () => withStore(store => {
+  const sourceId = 'lineage-source'
+  const targetId = 'lineage-target'
+  const otherId = 'lineage-other'
+  const entities = [sourceId, targetId, otherId].map((id, index) => ({
+    id,
+    type: 'person',
+    canonicalName: `谱系人物 ${index}`,
+    aliases: [],
+    accountIds: [],
+    externalIdentities: [],
+    evidenceMessageIds: [],
+    summary: '',
+    summaryStatus: 'empty',
+    confidence: 1,
+    identityVersion: 1,
+    trustStatus: 'confirmed'
+  }))
+  const sourceRelationId = relationSemanticId(sourceId, '合作', otherId)
+  const targetRelationId = relationSemanticId(targetId, '合作', otherId)
+  const selfRelationId = relationSemanticId(sourceId, '认识', targetId)
+  const relation = (id: string, subjectId: string, predicate: string, objectId: string,
+    evidence: any[]) => ({
+      id, subjectId, predicate, objectId, evidence,
+      evidenceTotal: evidence.length,
+      confidence: 0.8,
+      status: 'confirmed',
+      createdAt: '2026-08-12T00:00:00.000Z',
+      updatedAt: '2026-08-12T00:00:00.000Z'
+    })
+  const originalRelations = [
+    relation(sourceRelationId, sourceId, '合作', otherId, [
+      { sourceId: 'wechat', sessionId: 'shared', messageId: 'same', timestamp: 2,
+        sender: '来源', excerpt: '来源关系的较完整共同原文' },
+      { sourceId: 'wechat', sessionId: 'source', messageId: 'source-only', timestamp: 3,
+        sender: '来源', excerpt: '来源独有原文' }
+    ]),
+    relation(targetRelationId, targetId, '合作', otherId, [
+      { sourceId: 'wechat', sessionId: 'shared', messageId: 'same', timestamp: 1,
+        sender: '', excerpt: '短原文' },
+      { sourceId: 'mail', sessionId: 'target', messageId: 'target-only', timestamp: 4,
+        sender: '目标', excerpt: '目标独有原文' }
+    ]),
+    relation(selfRelationId, sourceId, '认识', targetId, [
+      { sourceId: 'wechat', sessionId: 'self', messageId: 'self-only', timestamp: 5,
+        sender: '来源', excerpt: '合并后成为自环但撤销时必须恢复' }
+    ])
+  ]
+  store.syncGraph({ entities, relations: originalRelations, reviewQueue: [] } as any)
+  const structuralRelations = originalRelations.map(item => ({
+    ...item,
+    evidence: []
+  }))
+  const recorded = store.recordMergeWithRelationEvidenceLineage(
+    sourceId,
+    targetId,
+    {
+      source: entities[0],
+      target: entities[1],
+      relations: structuralRelations,
+      sourceEventParticipants: [],
+      targetEventParticipants: [],
+      affectedReviews: []
+    },
+    [
+      { beforeId: sourceRelationId, afterId: targetRelationId },
+      { beforeId: targetRelationId, afterId: targetRelationId },
+      { beforeId: selfRelationId, afterId: null }
+    ]
+  )
+  assert.equal(recorded.totalRows, 5)
+  assert.equal(recorded.mergedTotals[targetRelationId], 3)
+  const snapshotJson = (store as any).db.prepare(
+    'SELECT snapshot_json FROM merge_history WHERE id=?'
+  ).get(recorded.mergeId).snapshot_json as string
+  assert.doesNotMatch(snapshotJson, /来源独有原文|目标独有原文|成为自环/)
+  assert.equal(JSON.parse(snapshotJson).relationEvidenceLineage.totalRows, 5)
+
+  const mergedRelation = {
+    ...structuralRelations[1],
+    evidenceTotal: 3
+  }
+  store.syncGraph({
+    entities: [entities[1], entities[2]],
+    relations: [mergedRelation],
+    reviewQueue: []
+  } as any, '', {
+    identityMergeEvidenceApply: { mergeId: recorded.mergeId }
+  })
+  const mergedEvidence = store.getRelationEvidence([targetRelationId]).get(targetRelationId) || []
+  assert.equal(mergedEvidence.length, 3)
+  assert.equal(mergedEvidence.find(item => item.messageId === 'same')?.excerpt,
+    '来源关系的较完整共同原文')
+  assert.equal(store.getRelationEvidence([selfRelationId]).get(selfRelationId)?.length, 0)
+  assert.deepEqual(store.inspectMergeRelationEvidenceLineage(recorded.mergeId), {
+    present: true,
+    matches: true,
+    archivedRows: 5,
+    expectedActiveRows: 3,
+    currentActiveRows: 3
+  })
+  const database = (store as any).db
+  database.prepare(`
+    DELETE FROM evidence WHERE relation_id=? AND source_id='mail'
+      AND session_id='target' AND message_id='target-only'
+  `).run(targetRelationId)
+  database.prepare(`
+    INSERT INTO evidence(
+      relation_id,source_id,message_id,session_id,timestamp,sender,excerpt,evidence_role
+    ) VALUES(?,?,?,?,?,?,?,'direct')
+  `).run(targetRelationId, 'mail', 'target', 'replacement', 4, '目标', '同数量替换原文')
+  assert.equal(store.inspectMergeRelationEvidenceLineage(recorded.mergeId).matches, false)
+  store.syncGraph({
+    entities: [entities[1], entities[2]],
+    relations: [mergedRelation],
+    reviewQueue: []
+  } as any, '', {
+    identityMergeEvidenceApply: { mergeId: recorded.mergeId }
+  })
+  assert.equal(store.inspectMergeRelationEvidenceLineage(recorded.mergeId).matches, true)
+
+  store.syncGraph({
+    entities,
+    relations: structuralRelations,
+    reviewQueue: []
+  } as any, '', {
+    identityMergeRevert: {
+      mergeId: recorded.mergeId,
+      sourceId,
+      targetId,
+      sourceParticipants: [],
+      targetParticipants: []
+    }
+  })
+  assert.deepEqual(
+    store.getRelationEvidence([sourceRelationId]).get(sourceRelationId)?.map(item => item.excerpt),
+    ['来源关系的较完整共同原文', '来源独有原文']
+  )
+  assert.deepEqual(
+    store.getRelationEvidence([targetRelationId]).get(targetRelationId)?.map(item => item.excerpt),
+    ['短原文', '目标独有原文']
+  )
+  assert.equal(store.getRelationEvidence([selfRelationId]).get(selfRelationId)?.[0]?.excerpt,
+    '合并后成为自环但撤销时必须恢复')
+}))
+
 test('ingestion archive revision covers run and batch lifecycle and self-heals on restart', () => {
   const directory = mkdtempSync(join(tmpdir(), 'weflow-ingestion-archive-revision-'))
   const databasePath = join(directory, 'memory.sqlite')

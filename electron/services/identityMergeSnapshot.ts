@@ -33,7 +33,10 @@ export function compactIdentityMergeSnapshot(input: any): IdentityMergeSnapshotC
       ? input.sourceEventParticipants : [],
     targetEventParticipants: Array.isArray(input.targetEventParticipants)
       ? input.targetEventParticipants : [],
-    affectedReviews: Array.isArray(input.affectedReviews) ? input.affectedReviews : []
+    affectedReviews: Array.isArray(input.affectedReviews) ? input.affectedReviews : [],
+    ...(input.relationEvidenceLineage?.version === 'identity-merge-relation-evidence-v1'
+      ? { relationEvidenceLineage: input.relationEvidenceLineage }
+      : {})
   }
   return {
     snapshot,
