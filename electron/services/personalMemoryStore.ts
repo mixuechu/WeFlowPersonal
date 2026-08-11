@@ -7853,7 +7853,7 @@ export class PersonalMemoryStore {
       mineTaskOwnershipAuditIndex,
       memoryChangeLog,
       memorySearchScopePlanning: {
-        version: 10,
+        version: 11,
         facetStrategy: 'sqlcipher_direct_count',
         facetIdentityMaterializations: 0,
         primaryScopeStrategy: 'sqlcipher_isolated_temp_table',
@@ -7884,7 +7884,11 @@ export class PersonalMemoryStore {
         graphFocusStrategy: 'sqlcipher_ranked_preview',
         graphFocusRelationLimit: 200,
         graphFocusInsightAuthority: 'sqlcipher_counts',
-        graphFocusEntityNameHydration: 'requested_only'
+        graphFocusEntityNameHydration: 'requested_only',
+        entityTaskStrategy: 'sqlcipher_name_evidence_page',
+        entityTaskIdentityMaterializations: 0,
+        entityTaskEvidenceLimit: MEMORY_CARD_EVIDENCE_LIMIT,
+        entityTaskRevisionBound: true
       },
       memorySearchRevision,
       memorySearchFeedbackArchiveRevision,
@@ -13594,6 +13598,112 @@ export class PersonalMemoryStore {
       })
     }
     return result
+  }
+
+  listEntityRelatedTaskPage(
+    normalizedNamesInput: string[],
+    options: { offset?: number; limit?: number } = {}
+  ): { items: any[]; total: number; openTotal: number; hasMore: boolean; offset: number; nextOffset: number; limit: number } {
+    const offset = Math.max(0, Math.min(1_000_000, Math.floor(Number(options.offset) || 0)))
+    const limit = Math.max(1, Math.min(100, Math.floor(Number(options.limit) || 40)))
+    const empty = {
+      items: [], total: 0, openTotal: 0, hasMore: false,
+      offset, nextOffset: offset, limit
+    }
+    const names = [...new Set((normalizedNamesInput || [])
+      .map(value => String(value || '').trim()).filter(Boolean))].slice(0, 100)
+    if (!this.db || !names.length) return empty
+    const normalize = (expression: string) =>
+      `LOWER(REPLACE(REPLACE(REPLACE(REPLACE(COALESCE(${expression},''),' ',''),CHAR(9),''),CHAR(10),''),CHAR(13),''))`
+    const matches = `
+      FROM task_directory task
+      WHERE task.classification='mine' AND EXISTS (
+        SELECT 1 FROM json_each(?) requested
+        WHERE
+          ${normalize(`json_extract(task.payload_json,'$.owner')`)}=CAST(requested.value AS TEXT)
+          OR EXISTS (
+            SELECT 1 FROM json_each(task.payload_json,'$.collaborators') collaborator
+            WHERE ${normalize('collaborator.value')}=CAST(requested.value AS TEXT)
+          )
+          OR EXISTS (
+            SELECT 1 FROM search_document_evidence evidence
+            WHERE evidence.document_id='task:' || task.id
+              AND ${normalize('evidence.sender')}=CAST(requested.value AS TEXT)
+          )
+          OR (
+            LENGTH(CAST(requested.value AS TEXT))>=2 AND (
+              INSTR(${normalize('task.title')},CAST(requested.value AS TEXT))>0
+              OR INSTR(${normalize(`json_extract(task.payload_json,'$.detail')`)},CAST(requested.value AS TEXT))>0
+              OR INSTR(${normalize('task.project')},CAST(requested.value AS TEXT))>0
+              OR EXISTS (
+                SELECT 1 FROM search_document_evidence evidence
+                WHERE evidence.document_id='task:' || task.id
+                  AND INSTR(${normalize('evidence.excerpt')},CAST(requested.value AS TEXT))>0
+              )
+            )
+          )
+      )
+    `
+    const namesJson = JSON.stringify(names)
+    const counts = this.db.prepare(`
+      SELECT COUNT(*) AS count,
+        SUM(CASE WHEN task.status NOT IN ('done','cancelled') THEN 1 ELSE 0 END) AS open_count
+      ${matches}
+    `).get(namesJson) as any
+    const total = Number(counts?.count || 0)
+    const openTotal = Number(counts?.open_count || 0)
+    const rows = this.db.prepare(`
+      SELECT task.id,task.payload_json ${matches}
+      ORDER BY CASE WHEN task.status IN ('done','cancelled') THEN 1 ELSE 0 END,
+        task.updated_at DESC,task.id ASC
+      LIMIT ? OFFSET ?
+    `).all(namesJson, limit, offset) as Array<{ id: string; payload_json: string }>
+    const taskIds = rows.map(row => String(row.id))
+    const evidenceByTask = new Map<string, { evidence: any[]; total: number }>(
+      taskIds.map(id => [id, { evidence: [], total: 0 }]))
+    if (taskIds.length) {
+      const documentIds = taskIds.map(id => `task:${id}`)
+      const placeholders = documentIds.map(() => '?').join(',')
+      const evidenceRows = this.db.prepare(`
+        WITH ranked AS (
+          SELECT substr(document_id,6) AS task_id,source_id,message_id,session_id,
+            timestamp,sender,excerpt,
+            COUNT(*) OVER (PARTITION BY document_id) AS evidence_total,
+            ROW_NUMBER() OVER (PARTITION BY document_id
+              ORDER BY timestamp DESC,source_id,session_id,message_id DESC) AS evidence_rank
+          FROM search_document_evidence
+          WHERE document_id IN (${placeholders})
+        )
+        SELECT * FROM ranked WHERE evidence_rank<=?
+        ORDER BY task_id,evidence_rank ASC
+      `).all(...documentIds, MEMORY_CARD_EVIDENCE_LIMIT) as any[]
+      for (const row of evidenceRows) {
+        const taskId = String(row.task_id || '')
+        const bucket = evidenceByTask.get(taskId)
+        if (!bucket) continue
+        bucket.total = Number(row.evidence_total || 0)
+        bucket.evidence.push({
+          sourceId: String(row.source_id || 'legacy'),
+          messageId: String(row.message_id || ''),
+          sessionId: String(row.session_id || ''),
+          timestamp: Number(row.timestamp || 0),
+          sender: String(row.sender || ''),
+          excerpt: String(row.excerpt || '')
+        })
+      }
+    }
+    const items = rows.flatMap(row => {
+      let task: any = null
+      try { task = JSON.parse(String(row.payload_json || '{}')) } catch {}
+      if (!task || typeof task !== 'object' || Array.isArray(task)) return []
+      const evidence = evidenceByTask.get(String(row.id)) || { evidence: [], total: 0 }
+      return [{ ...task, id: String(row.id), evidence: evidence.evidence, evidenceTotal: evidence.total }]
+    })
+    return {
+      items, total, openTotal,
+      hasMore: offset + rows.length < total,
+      offset, nextOffset: offset + rows.length, limit
+    }
   }
 
   getMineTaskOwnershipAuditSample(): {

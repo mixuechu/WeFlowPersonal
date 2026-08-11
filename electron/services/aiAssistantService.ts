@@ -164,7 +164,7 @@ import {
   type ReminderPreferences,
   type TaskReminder
 } from './taskIntelligence'
-import { buildEntityInsights, paginateEntityRelatedTasks } from './relationshipInsights'
+import { buildEntityInsights, entityTaskSearchNames } from './relationshipInsights'
 import { boundEntityIdentityPresentation } from './entityIdentityPresentation'
 import {
   TASK_ASSIGNMENT_POLICY_VERSION,
@@ -6809,10 +6809,14 @@ export class AiAssistantService {
       : null
     let focus: any = null
     if (focusEntity) {
-      const mineTasks = this.state.tasks.filter(task => task.classification === 'mine')
       const memory = personalMemoryStore.getEntityMemory(focusEntity.id, 200)
       const evidenceStats = personalMemoryStore.getEntityEvidenceStats(focusEntity.id)
       const graphFocus = personalMemoryStore.getEntityGraphFocus(focusEntity.id, 200)
+      const entityTaskRevision = this.getProjectDirectoryRevision()
+      const relatedTasks = personalMemoryStore.listEntityRelatedTaskPage(
+        entityTaskSearchNames(focusEntity), { limit: 40 }
+      )
+      const currentTasksById = new Map(this.state.tasks.map(task => [task.id, task]))
       const candidateReviewCounts =
         personalMemoryStore.getEntityCandidateReviewCounts(focusEntity.id)
       const insights = buildEntityInsights({
@@ -6822,7 +6826,7 @@ export class AiAssistantService {
         claimTotal: memory.claimTotal,
         events: memory.events,
         eventTotal: memory.eventTotal,
-        tasks: mineTasks,
+        tasks: [],
         authoritativeEvidence: {
           [focusEntity.id]: {
             evidenceTotal: evidenceStats.activeEvidenceTotal,
@@ -6835,15 +6839,11 @@ export class AiAssistantService {
             candidateCount: graphFocus.candidateRelationCount,
             confirmedConfidenceTotal: graphFocus.confirmedConfidenceTotal
           }
+        },
+        authoritativeOpenTaskCounts: {
+          [focusEntity.id]: relatedTasks.openTotal
         }
       })
-      const entityTaskRevision = this.getProjectDirectoryRevision()
-      const relatedTasks = paginateEntityRelatedTasks(
-        focusEntity,
-        mineTasks,
-        { limit: 40 },
-        entityTaskRevision
-      )
       const visibleRelations = graphFocus.relations
       const visibleRelationEvidence = personalMemoryStore.getRelationEvidenceHotset(
         visibleRelations.map(relation => relation.id),
@@ -6912,15 +6912,23 @@ export class AiAssistantService {
           relationCorrections: auditPageMeta(relationCorrectionsPage),
           entityProfileCorrections: auditPageMeta(entityProfileCorrectionsPage)
         },
-        tasks: relatedTasks.items.map(task => ({
-          ...task,
-          ...boundedEvidencePayload(task.evidence, MEMORY_CARD_EVIDENCE_LIMIT),
-          mutationToken: buildTaskMutationToken(task)
-        })),
+        tasks: relatedTasks.items.flatMap(task => {
+          const current = currentTasksById.get(String(task.id))
+          return current ? [{
+            ...current,
+            ...boundedEvidencePayload(
+              task.evidence,
+              MEMORY_CARD_EVIDENCE_LIMIT,
+              task.evidenceTotal
+            ),
+            mutationToken: buildTaskMutationToken(current)
+          }] : []
+        }),
         taskTotal: relatedTasks.total,
         tasksTruncated: relatedTasks.hasMore,
         taskHasMore: relatedTasks.hasMore,
-        taskRevision: relatedTasks.revision,
+        taskOffset: relatedTasks.nextOffset,
+        taskRevision: entityTaskRevision,
         entityNames: personalMemoryStore.getEntityCanonicalNames([...namedEntityIds])
       }
     }
@@ -6979,31 +6987,40 @@ export class AiAssistantService {
       candidate.id === id && candidate.trustStatus !== 'rejected')
     if (!entity) throw new Error('人物或实体不存在')
     const revision = this.getProjectDirectoryRevision()
-    const page = paginateEntityRelatedTasks(
-      entity,
-      this.state.tasks.filter(task => task.classification === 'mine'),
-      {
+    const offset = Math.max(0, Math.floor(Number(options?.offset) || 0))
+    if (offset > 0 && String(options?.revision || '').trim() !== revision) {
+      return { items: [], total: 0, hasMore: false, nextOffset: offset, revision, stale: true }
+    }
+    const page = personalMemoryStore.listEntityRelatedTaskPage(
+      entityTaskSearchNames(entity), {
         limit: Number(options?.limit || 40),
-        offset: Number(options?.offset || 0),
-        revision: String(options?.revision || '')
-      },
-      revision
+        offset
+      }
     )
-    if (page.stale) return page
     const completedRevision = this.getProjectDirectoryRevision()
     if (completedRevision !== revision) {
       return {
         items: [], total: 0, hasMore: false,
-        revision: completedRevision, stale: true
+        nextOffset: offset, revision: completedRevision, stale: true
       }
     }
+    const currentTasksById = new Map(this.state.tasks.map(task => [task.id, task]))
     return {
       ...page,
-      items: page.items.map(task => ({
-        ...task,
-        ...boundedEvidencePayload(task.evidence, MEMORY_CARD_EVIDENCE_LIMIT),
-        mutationToken: buildTaskMutationToken(task)
-      }))
+      revision,
+      stale: false,
+      items: page.items.flatMap(task => {
+        const current = currentTasksById.get(String(task.id))
+        return current ? [{
+          ...current,
+          ...boundedEvidencePayload(
+            task.evidence,
+            MEMORY_CARD_EVIDENCE_LIMIT,
+            task.evidenceTotal
+          ),
+          mutationToken: buildTaskMutationToken(current)
+        }] : []
+      })
     }
   }
 

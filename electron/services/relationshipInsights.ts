@@ -27,6 +27,10 @@ function entityTaskNames(entity: any): string[] {
   ].map(normalizedIdentity).filter(Boolean))]
 }
 
+export function entityTaskSearchNames(entity: any): string[] {
+  return entityTaskNames(entity)
+}
+
 export function taskRelatesToEntity(task: any, entity: any): boolean {
   const names = entityTaskNames(entity)
   if (!names.length) return false
@@ -103,6 +107,7 @@ export function buildEntityInsights(input: {
     candidateCount: number
     confirmedConfidenceTotal: number
   }>
+  authoritativeOpenTaskCounts?: Record<string, number>
   now?: Date
 }): Record<string, EntityInsight> {
   const now = (input.now || new Date()).getTime()
@@ -129,6 +134,9 @@ export function buildEntityInsights(input: {
       (event.participants || []).some((participant: any) => participant.entity_id === entity.id))
     const tasks = input.tasks.filter(task =>
       !['done', 'cancelled'].includes(task.status) && taskRelatesToEntity(task, entity))
+    const openTaskCount = input.authoritativeOpenTaskCounts?.[entity.id] === undefined
+      ? tasks.length
+      : Math.max(0, Number(input.authoritativeOpenTaskCounts[entity.id] || 0))
     const evidence = [
       ...relevantRelations.flatMap(relation => relation.evidence || []),
       ...claims.flatMap(claim => claim.evidence || []),
@@ -152,7 +160,7 @@ export function buildEntityInsights(input: {
     const recencyScore = daysSinceContact <= 7 ? 40 : daysSinceContact <= 30 ? 28 : daysSinceContact <= 90 ? 15 : 0
     const evidenceScore = Math.min(30, evidenceCount * 3)
     const relationScore = Math.min(20, confirmedConfidenceTotal * 10)
-    const taskScore = Math.min(10, tasks.length * 4)
+    const taskScore = Math.min(10, openTaskCount * 4)
     const strength = Math.round(Math.min(100, recencyScore + evidenceScore + relationScore + taskScore))
     const pendingCommitmentCount = events.filter(event =>
       event.event_type === 'commitment' && event.status === 'candidate').length
@@ -161,7 +169,7 @@ export function buildEntityInsights(input: {
       `${evidenceCount} 条去重原文证据`,
       `${confirmedRelationCount} 条已确认关系`,
       `${candidateRelationCount} 条关系待确认`,
-      `${tasks.length} 项未完成关联任务`
+      `${openTaskCount} 项未完成关联任务`
     ]
     result[entity.id] = {
       entityId: entity.id,
@@ -171,7 +179,7 @@ export function buildEntityInsights(input: {
       evidenceCount,
       relationCount: confirmedRelationCount,
       pendingRelationCount: candidateRelationCount,
-      openTaskCount: tasks.length,
+      openTaskCount,
       pendingCommitmentCount,
       explanation
     }

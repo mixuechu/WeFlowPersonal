@@ -46,7 +46,7 @@ test('evidence Q&A reuses one SQLCipher scope across planning branches and relea
 })
 
 test('scope planning is honest and visible in complete diagnostics', () => {
-  assert.match(store, /memorySearchScopePlanning:\s*\{[\s\S]*?version: 10[\s\S]*?facetStrategy: 'sqlcipher_direct_count'[\s\S]*?facetIdentityMaterializations: 0[\s\S]*?primaryScopeStrategy: 'sqlcipher_isolated_temp_table'[\s\S]*?primaryIdentityMaterializations: 0[\s\S]*?hybridScopeReused: true[\s\S]*?releasedAfterRequest: true[\s\S]*?handleOnlyScopeApi: true[\s\S]*?legacySharedScopeRemoved: true[\s\S]*?scopedGraphPathStrategy: 'sqlcipher_recursive_cte'[\s\S]*?scopedGraphRelationIdentityMaterializations: 0[\s\S]*?scopedGraphPathExpansionBudget: SCOPED_GRAPH_PATH_EXPANSION_LIMIT[\s\S]*?scopedGraphPathBreadthFirst: true[\s\S]*?scopedGraphPathTruncationVisible: true[\s\S]*?unscopedGraphPathStrategy: 'sqlcipher_recursive_cte'[\s\S]*?unscopedGraphAdjacencyMaterializations: 0[\s\S]*?commonNeighborStrategy: 'sqlcipher_ranked_aggregate'[\s\S]*?commonNeighborLimit: COMMON_GRAPH_NEIGHBOR_LIMIT[\s\S]*?commonNeighborEdgeLimitPerSide: COMMON_GRAPH_EDGE_LIMIT_PER_SIDE[\s\S]*?commonNeighborTotalVisible: true[\s\S]*?commonNeighborPagination: true[\s\S]*?commonNeighborRevisionBound: true[\s\S]*?commonNeighborContinuationRecoverable: true[\s\S]*?graphViewportStrategy: 'sqlcipher_recursive_cte'[\s\S]*?graphViewportIdentityMaterializations: 0[\s\S]*?graphViewportRelationLimit: GRAPH_VIEWPORT_RELATION_LIMIT[\s\S]*?graphViewportTruncationVisible: true[\s\S]*?graphFocusStrategy: 'sqlcipher_ranked_preview'[\s\S]*?graphFocusRelationLimit: 200[\s\S]*?graphFocusInsightAuthority: 'sqlcipher_counts'[\s\S]*?graphFocusEntityNameHydration: 'requested_only'/)
+  assert.match(store, /memorySearchScopePlanning:\s*\{[\s\S]*?version: 11[\s\S]*?facetStrategy: 'sqlcipher_direct_count'[\s\S]*?facetIdentityMaterializations: 0[\s\S]*?primaryScopeStrategy: 'sqlcipher_isolated_temp_table'[\s\S]*?primaryIdentityMaterializations: 0[\s\S]*?hybridScopeReused: true[\s\S]*?releasedAfterRequest: true[\s\S]*?handleOnlyScopeApi: true[\s\S]*?legacySharedScopeRemoved: true[\s\S]*?scopedGraphPathStrategy: 'sqlcipher_recursive_cte'[\s\S]*?scopedGraphRelationIdentityMaterializations: 0[\s\S]*?scopedGraphPathExpansionBudget: SCOPED_GRAPH_PATH_EXPANSION_LIMIT[\s\S]*?scopedGraphPathBreadthFirst: true[\s\S]*?scopedGraphPathTruncationVisible: true[\s\S]*?unscopedGraphPathStrategy: 'sqlcipher_recursive_cte'[\s\S]*?unscopedGraphAdjacencyMaterializations: 0[\s\S]*?commonNeighborStrategy: 'sqlcipher_ranked_aggregate'[\s\S]*?commonNeighborLimit: COMMON_GRAPH_NEIGHBOR_LIMIT[\s\S]*?commonNeighborEdgeLimitPerSide: COMMON_GRAPH_EDGE_LIMIT_PER_SIDE[\s\S]*?commonNeighborTotalVisible: true[\s\S]*?commonNeighborPagination: true[\s\S]*?commonNeighborRevisionBound: true[\s\S]*?commonNeighborContinuationRecoverable: true[\s\S]*?graphViewportStrategy: 'sqlcipher_recursive_cte'[\s\S]*?graphViewportIdentityMaterializations: 0[\s\S]*?graphViewportRelationLimit: GRAPH_VIEWPORT_RELATION_LIMIT[\s\S]*?graphViewportTruncationVisible: true[\s\S]*?graphFocusStrategy: 'sqlcipher_ranked_preview'[\s\S]*?graphFocusRelationLimit: 200[\s\S]*?graphFocusInsightAuthority: 'sqlcipher_counts'[\s\S]*?graphFocusEntityNameHydration: 'requested_only'[\s\S]*?entityTaskStrategy: 'sqlcipher_name_evidence_page'[\s\S]*?entityTaskIdentityMaterializations: 0[\s\S]*?entityTaskEvidenceLimit: MEMORY_CARD_EVIDENCE_LIMIT[\s\S]*?entityTaskRevisionBound: true/)
   assert.doesNotMatch(store, /replaceActiveSearchScope|CREATE TEMP TABLE IF NOT EXISTS active_memory_search_scope\s*\(/)
   assert.doesNotMatch(store, /type SearchDocumentScope\s*=\s*Set/)
   assert.match(pageSource, /检索范围执行策略[\s\S]*?SQLCipher 直接计数[\s\S]*?主检索范围 <b>SQLCipher 临时范围[\s\S]*?旧共享范围[\s\S]*?已移除[\s\S]*?范围内图路径[\s\S]*?SQLCipher 最短路径[\s\S]*?关系 ID 集合[\s\S]*?图路径扩展预算[\s\S]*?预算截断[\s\S]*?明确提示/)
@@ -58,6 +58,7 @@ test('scope planning is honest and visible in complete diagnostics', () => {
   assert.match(pageSource, /加载更多（已加载[\s\S]*?graphCommonNeighbors\.total/)
   assert.match(pageSource, /图谱视口 <b>[\s\S]*?SQLCipher 多跳扩展[\s\S]*?画布关系预算/)
   assert.match(pageSource, /人物聚焦关系 <b>[\s\S]*?SQLCipher 有界预览[\s\S]*?关系强度统计[\s\S]*?权威计数/)
+  assert.match(pageSource, /人物关联事项 <b>[\s\S]*?SQLCipher 完整分页[\s\S]*?任务原文预览/)
   assert.match(pageSource, /稠密关系已按 SQLCipher 安全预算隐藏/)
 })
 
@@ -80,4 +81,15 @@ test('graph viewport selection and relation budgets stay in SQLCipher', () => {
   assert.match(workspace, /authoritativeRelationships/)
   assert.match(workspace, /getEntityCanonicalNames\(\[\.\.\.namedEntityIds\]\)/)
   assert.doesNotMatch(workspace, /const allRelations = this\.state\.graph\.relations/)
+  assert.match(workspace, /listEntityRelatedTaskPage\([\s\S]*?entityTaskSearchNames/)
+  assert.doesNotMatch(workspace, /paginateEntityRelatedTasks|filter\(task => task\.classification === 'mine'\)/)
+  const taskPageStart = service.indexOf('  getEntityTaskPage(')
+  const taskPageEnd = service.indexOf('\n  getEntityAuditPage(', taskPageStart)
+  const taskPage = service.slice(taskPageStart, taskPageEnd)
+  assert.match(taskPage, /listEntityRelatedTaskPage\(/)
+  assert.doesNotMatch(taskPage, /paginateEntityRelatedTasks|taskRelatesToEntity/)
+  assert.match(store, /listEntityRelatedTaskPage\([\s\S]*?task\.classification='mine'[\s\S]*?search_document_evidence[\s\S]*?ROW_NUMBER\(\) OVER \(PARTITION BY document_id/)
+  assert.match(store, /nextOffset: offset \+ rows\.length/)
+  assert.match(pageSource, /offset: Number\(focus\.taskOffset \|\| focus\.tasks\?\.length \|\| 0\)/)
+  assert.match(pageSource, /taskOffset: page\.nextOffset/)
 })

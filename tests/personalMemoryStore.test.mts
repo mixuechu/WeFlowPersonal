@@ -72,6 +72,7 @@ import {
 } from '../electron/services/taskIntelligence.ts'
 import {
   buildEntityInsights,
+  entityTaskSearchNames,
   listEntityRelatedTasks,
   paginateEntityRelatedTasks,
   taskRelatesToEntity
@@ -22323,6 +22324,75 @@ test('entity dossiers derive bounded related tasks from the authoritative task s
   assert.equal(taskRelatesToEntity({ title: '李子采购', owner: '我' }, shortNameEntity), false)
   assert.equal(taskRelatesToEntity({ title: '普通任务', owner: '李' }, shortNameEntity), true)
 })
+
+test('entity related task pages match names and evidence inside SQLCipher with bounded evidence', () =>
+  withStore(store => {
+    const entity = {
+      canonicalName: '邢爱妮', aliases: ['爱妮'], accountIds: ['wxid-xingaini'],
+      externalIdentities: [{ platform: 'email', accountId: 'aini@example.com', displayName: 'Aini Xing' }]
+    }
+    const tasks = Array.from({ length: 160 }, (_, index) => {
+      const matching = index < 130
+      const evidenceOnly = matching && index >= 125
+      return {
+        id: `sql-entity-task-${String(index).padStart(3, '0')}`,
+        title: matching && !evidenceOnly ? `与邢爱妮确认事项 ${index}` : `普通事项 ${index}`,
+        detail: '', owner: '我', collaborators: [], project: '',
+        status: ['todo', 'doing', 'waiting', 'done', 'cancelled'][index % 5],
+        classification: 'mine', priority: 'medium', taskKind: 'action',
+        createdAt: new Date(1_700_000_000_000 + index * 1_000).toISOString(),
+        updatedAt: new Date(1_700_000_000_000 + index * 1_000).toISOString(),
+        evidence: evidenceOnly ? [{
+          sourceId: 'wechat', sessionId: 'entity-task-session',
+          messageId: `entity-task-message-${index}`, timestamp: 1_700_000_000 + index,
+          sender: index % 2 ? 'Aini Xing' : '其他人',
+          excerpt: index % 2 ? '普通原文' : '请联系 wxid-xingaini'
+        }] : []
+      }
+    })
+    tasks[129].evidence = Array.from({ length: 25 }, (_, evidenceIndex) => ({
+      sourceId: 'wechat', sessionId: 'entity-task-session',
+      messageId: `entity-task-message-129-${evidenceIndex}`,
+      timestamp: 1_700_000_129 + evidenceIndex,
+      sender: 'Aini Xing', excerpt: `关联任务原文 ${evidenceIndex}`
+    }))
+    store.syncTasks(tasks)
+    const expected = tasks.filter(task => taskRelatesToEntity(task, entity))
+      .sort((left, right) =>
+        Number(['done', 'cancelled'].includes(left.status)) -
+          Number(['done', 'cancelled'].includes(right.status)) ||
+        String(right.updatedAt).localeCompare(String(left.updatedAt)) ||
+        left.id.localeCompare(right.id))
+    const first = store.listEntityRelatedTaskPage(entityTaskSearchNames(entity), { limit: 40 })
+    const second = store.listEntityRelatedTaskPage(entityTaskSearchNames(entity), {
+      offset: 40, limit: 40
+    })
+    const last = store.listEntityRelatedTaskPage(entityTaskSearchNames(entity), {
+      offset: 120, limit: 40
+    })
+    assert.equal(first.total, expected.length)
+    assert.equal(first.total, 130)
+    assert.equal(first.openTotal, expected.filter(task =>
+      !['done', 'cancelled'].includes(task.status)).length)
+    assert.deepEqual(first.items.map(item => item.id), expected.slice(0, 40).map(item => item.id))
+    assert.equal(first.nextOffset, 40)
+    assert.equal(second.items.length, 40)
+    assert.equal(second.nextOffset, 80)
+    assert.equal(last.items.length, 10)
+    assert.equal(last.hasMore, false)
+    assert.equal(last.nextOffset, 130)
+    assert.equal(new Set([...first.items, ...second.items, ...last.items]
+      .map(item => item.id)).size, 90)
+    const evidenceTask = [...first.items, ...second.items, ...last.items]
+      .find(item => item.id === 'sql-entity-task-129')
+    assert.equal(evidenceTask?.evidence.length, 20)
+    assert.equal(evidenceTask?.evidenceTotal, 25)
+    assert.deepEqual(
+      evidenceTask?.evidence.map((item: any) => item.timestamp),
+      [...(evidenceTask?.evidence || [])].map((item: any) => item.timestamp)
+        .sort((left: number, right: number) => right - left)
+    )
+  }))
 
 test('anonymous task-assignment golden set meets the published quality baseline', () => {
   const report = evaluateTaskAssignmentPolicy()

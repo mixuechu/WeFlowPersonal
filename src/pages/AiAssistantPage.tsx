@@ -6172,7 +6172,7 @@ function AiAssistantPage() {
         selectedEntityId,
         {
           limit: 40,
-          offset: focus.tasks?.length || 0,
+          offset: Number(focus.taskOffset || focus.tasks?.length || 0),
           revision: focus.taskRevision
         }
       )
@@ -6194,6 +6194,7 @@ function AiAssistantPage() {
           taskTotal: page.total,
           taskHasMore: page.hasMore,
           tasksTruncated: page.hasMore,
+          taskOffset: page.nextOffset,
           taskRevision: page.revision
         }
       }))
@@ -18246,6 +18247,9 @@ function AiAssistantPage() {
                 <span>人物聚焦关系 <b>{memoryDiagnostics.memorySearchScopePlanning.graphFocusStrategy === 'sqlcipher_ranked_preview' ? 'SQLCipher 有界预览' : '需要检查'}</b></span>
                 <span>关系强度统计 <b>{memoryDiagnostics.memorySearchScopePlanning.graphFocusInsightAuthority === 'sqlcipher_counts' ? '权威计数' : '需要检查'}</b></span>
                 <span>聚焦名称水合 <b>{memoryDiagnostics.memorySearchScopePlanning.graphFocusEntityNameHydration === 'requested_only' ? '仅所需实体' : '需要检查'}</b></span>
+                <span>人物关联事项 <b>{memoryDiagnostics.memorySearchScopePlanning.entityTaskStrategy === 'sqlcipher_name_evidence_page' ? 'SQLCipher 完整分页' : '需要检查'}</b></span>
+                <span>任务匹配 ID 集合 <b>{Number(memoryDiagnostics.memorySearchScopePlanning.entityTaskIdentityMaterializations || 0)}</b> 份</span>
+                <span>任务原文预览 <b>{Number(memoryDiagnostics.memorySearchScopePlanning.entityTaskEvidenceLimit || 0)}</b> 条 / 项</span>
                 <span>图路径扩展预算 <b>{Number(memoryDiagnostics.memorySearchScopePlanning.scopedGraphPathExpansionBudget || 0).toLocaleString()}</b> 状态</span>
                 <span>预算截断 <b>{memoryDiagnostics.memorySearchScopePlanning.scopedGraphPathTruncationVisible ? '明确提示' : '需要检查'}</b></span>
               </div>

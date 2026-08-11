@@ -1729,6 +1729,7 @@ export interface ElectronAPI {
         items: any[]
         total: number
         hasMore: boolean
+        nextOffset: number
         revision: string
         stale: boolean
       }>
