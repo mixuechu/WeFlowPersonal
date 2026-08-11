@@ -139,11 +139,8 @@ import {
   findScopedGraphPath
 } from '../electron/services/graphCommonNeighbors.ts'
 import {
-  buildProjectDirectory,
   buildProjectInsight,
   buildProjectInsights,
-  countProjectDirectory,
-  paginateProjectDirectory,
   paginateProjectRisks,
   paginateProjectTasks,
   projectTaskSearchNames
@@ -8068,100 +8065,90 @@ test('project dossiers bound task and aggregate evidence without hiding totals',
   assert.equal(project.tasks[0].evidence.at(-1).messageId, `wechat:task:${taskEvidence.length}`)
 })
 
-test('project dashboard is a light directory and dossiers are selected on demand', () => {
-  const entities = Array.from({ length: 100 }, (_, index) => ({
-    id: `project-${index}`,
-    type: 'project',
-    canonicalName: `规模项目 ${index}`,
-    aliases: [],
-    summary: `项目摘要 ${index}`,
-    trustStatus: 'confirmed'
-  }))
-  const tasks = entities.map((entity, index) => ({
-    id: `task-${index}`,
-    title: `处理 ${entity.canonicalName}`,
-    project: entity.canonicalName,
-    status: index % 2 ? 'doing' : 'done',
-    priority: 'medium',
-    evidence: Array.from({ length: 100 }, (_, evidenceIndex) => ({
-      messageId: `wechat:project-${index}:${evidenceIndex}`,
-      sessionId: `project-${index}`,
-      timestamp: evidenceIndex,
-      excerpt: `不应进入目录的长证据 ${index} ${evidenceIndex} ${'证据'.repeat(200)}`
+test('project directory counts, filters, and ranks trusted plus derived projects inside SQLCipher', () =>
+  withStore(store => {
+    const projects = Array.from({ length: 105 }, (_, index) => ({
+      id: `sql-directory-project-${String(index).padStart(3, '0')}`,
+      type: 'project', canonicalName: `项目 ${index}`,
+      aliases: index === 4 ? ['四号 工程'] : [],
+      summary: index === 77 ? '这是特殊摘要' : '',
+      summaryStatus: index === 77 ? 'confirmed' : 'empty',
+      trustStatus: 'confirmed'
     }))
-  }))
-  const input = { entities, relations: [], claims: [], events: [], tasks }
-  const directory = buildProjectDirectory(input)
-  const serialized = JSON.stringify(directory)
-  assert.equal(directory.length, 100)
-  assert.equal(directory[0].tasks, undefined)
-  assert.equal(directory[0].evidence, undefined)
-  assert.equal(serialized.includes('不应进入目录的长证据'), false)
-  assert.ok(Buffer.byteLength(serialized) < 40_000)
-  const fullPayloadBytes = Buffer.byteLength(JSON.stringify(buildProjectInsights(input)))
-  assert.ok(Buffer.byteLength(serialized) < fullPayloadBytes * 0.05)
+    const person = {
+      id: 'sql-directory-person', type: 'person', canonicalName: '项目成员',
+      trustStatus: 'confirmed'
+    }
+    store.syncGraph({
+      entities: [...projects, person],
+      relations: [{
+        id: 'sql-directory-member', subjectId: person.id,
+        objectId: projects[4].id, predicate: '参与', status: 'confirmed', confidence: 1
+      }, {
+        id: 'sql-directory-candidate', subjectId: person.id,
+        objectId: projects[4].id, predicate: '负责', status: 'candidate', confidence: 0.8
+      }],
+      reviewQueue: []
+    } as any)
+    const tasks: any[] = projects.map((project, index) => ({
+      id: `sql-directory-task-${String(index).padStart(3, '0')}`,
+      title: `推进 ${project.canonicalName}`, detail: '', project: project.canonicalName,
+      status: index === 4 ? 'doing' : index === 104 ? 'done' : 'todo',
+      classification: 'mine', priority: index === 4 ? 'high' : 'medium',
+      taskKind: index === 4 ? 'waiting' : 'action',
+      due: index === 4 ? '2026-08-01' : '',
+      dependsOnIds: index === 4 ? ['sql-directory-task-000'] : [],
+      createdAt: new Date(1_700_000_000_000 + index * 1_000).toISOString(),
+      updatedAt: new Date(1_700_000_000_000 + index * 1_000).toISOString(), evidence: []
+    }))
+    tasks.push({
+      id: 'sql-directory-alias-task', title: '别名任务', detail: '', project: '四号工程',
+      status: 'done', classification: 'mine', priority: 'medium', taskKind: 'action', due: '',
+      createdAt: '2026-08-09T00:00:00.000Z', updatedAt: '2026-08-09T00:00:00.000Z', evidence: []
+    }, {
+      id: 'sql-directory-title-fallback', title: '四号工程高优先交付', detail: '', project: '',
+      status: 'todo', classification: 'mine', priority: 'high', taskKind: 'action', due: '',
+      createdAt: '2026-08-10T00:00:00.000Z', updatedAt: '2026-08-10T00:00:00.000Z', evidence: []
+    })
+    tasks.push(...Array.from({ length: 45 }, (_, index) => ({
+      id: `sql-directory-derived-task-${String(index).padStart(3, '0')}`,
+      title: `派生任务 ${index}`, detail: '', project: `派生项目 ${index}`,
+      status: 'todo', classification: 'mine', priority: 'medium', taskKind: 'action', due: '',
+      createdAt: new Date(1_710_000_000_000 + index * 1_000).toISOString(),
+      updatedAt: new Date(1_710_000_000_000 + index * 1_000).toISOString(), evidence: []
+    })))
+    store.syncTasks(tasks)
 
-  const dossier = buildProjectInsight(input, 'project-42')
-  assert.equal(dossier.id, 'project-42')
-  assert.equal(dossier.tasks.length, 1)
-  assert.equal(dossier.tasks[0].evidenceTotal, 100)
-  assert.equal(buildProjectInsight(input, 'missing-project'), null)
-})
-
-test('project directory paginates thousands of projects with filters and revision safety', () => {
-  const entities = Array.from({ length: 2_500 }, (_, index) => ({
-    id: `paged-project-${String(index).padStart(4, '0')}`,
-    type: 'project',
-    canonicalName: index === 1777 ? '北辰特殊项目' : `分页项目 ${index}`,
-    aliases: index === 1777 ? ['Orion Initiative'] : [],
-    summary: index === 1777 ? '跨团队特殊摘要' : `项目摘要 ${index}`,
-    trustStatus: 'confirmed'
+    assert.equal(store.countProjectDirectory(), 150)
+    const first = store.listProjectDirectoryPage({ today: '2026-08-11', limit: 40 })
+    const second = store.listProjectDirectoryPage({
+      today: '2026-08-11', offset: first.nextOffset, limit: 40
+    })
+    const third = store.listProjectDirectoryPage({
+      today: '2026-08-11', offset: second.nextOffset, limit: 40
+    })
+    const last = store.listProjectDirectoryPage({ today: '2026-08-11', offset: 120, limit: 40 })
+    assert.equal(first.total, 150)
+    assert.equal(first.items.length, 40)
+    assert.equal(second.nextOffset, 80)
+    assert.equal(last.items.length, 30)
+    assert.equal(last.nextOffset, 150)
+    assert.equal(last.hasMore, false)
+    assert.equal(new Set([...first.items, ...second.items, ...third.items, ...last.items]
+      .map(item => item.id)).size, 150)
+    assert.equal(first.items[0].id, projects[4].id)
+    assert.deepEqual(first.items[0], {
+      id: projects[4].id, entityId: projects[4].id, name: '项目 4', summary: '',
+      inferred: false, phase: 'active', progress: 33, memberCount: 1,
+      activeTaskCount: 2, riskCount: 4, pendingReviewTotal: 1
+    })
+    const summary = store.listProjectDirectoryPage({ query: '特殊摘要', today: '2026-08-11' })
+    assert.equal(summary.total, 1)
+    assert.equal(summary.items[0].id, projects[77].id)
+    const completed = store.listProjectDirectoryPage({ phase: 'completed', today: '2026-08-11' })
+    assert.equal(completed.total, 1)
+    assert.equal(completed.items[0].id, projects[104].id)
   }))
-  const tasks = entities.map((entity, index) => ({
-    id: `paged-project-task-${index}`,
-    title: `推进 ${entity.canonicalName}`,
-    project: entity.canonicalName,
-    status: index % 4 === 0 ? 'done' : index % 2 === 0 ? 'doing' : 'todo',
-    priority: index % 5 === 0 ? 'high' : 'medium',
-    evidence: [{
-      messageId: `paged-project-evidence-${index}`,
-      excerpt: `不应进入项目目录 ${'原文'.repeat(100)}`
-    }]
-  }))
-  tasks.push({
-    id: 'derived-project-task',
-    title: '推进无实体项目',
-    project: '仅待办派生项目',
-    status: 'doing',
-    priority: 'medium',
-    evidence: []
-  } as any)
-  const input = { entities, relations: [], claims: [], events: [], tasks }
-  const directory = buildProjectDirectory(input)
-  assert.equal(countProjectDirectory(input), 2_501)
-  assert.equal(directory.length, 2_501)
-
-  const first = paginateProjectDirectory(directory, { limit: 100 }, 'project-revision-1')
-  const second = paginateProjectDirectory(directory, {
-    limit: 100, offset: 100, revision: first.revision
-  }, 'project-revision-1')
-  assert.equal(first.items.length, 100)
-  assert.equal(first.total, 2_501)
-  assert.equal(second.items.length, 100)
-  assert.equal(new Set([...first.items, ...second.items].map(item => item.id)).size, 200)
-  assert.equal(JSON.stringify(first.items).includes('不应进入项目目录'), false)
-  assert.equal(
-    paginateProjectDirectory(directory, { query: '特殊摘要' }, 'project-revision-1')
-      .items[0]?.id,
-    'paged-project-1777'
-  )
-  assert.ok(paginateProjectDirectory(directory, { phase: 'completed' }, 'project-revision-1').total > 0)
-  const stale = paginateProjectDirectory(directory, {
-    limit: 100, offset: 100, revision: 'project-revision-1'
-  }, 'project-revision-2')
-  assert.equal(stale.stale, true)
-  assert.equal(stale.items.length, 0)
-})
 
 test('project task pages preserve exact project assignment, all statuses, and revision safety', () => {
   const tasks = [

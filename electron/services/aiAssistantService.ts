@@ -318,10 +318,7 @@ import {
   PROJECT_EVIDENCE_LIMIT
 } from '../../shared/evidencePayload'
 import {
-  buildProjectDirectory,
   buildProjectInsight,
-  countProjectDirectory,
-  paginateProjectDirectory,
   paginateProjectRisks,
   paginateProjectTasks,
   projectTaskSearchNames
@@ -885,6 +882,7 @@ export class AiAssistantService {
   private config = ConfigService.getInstance()
   private state: AssistantState = structuredClone(EMPTY_STATE)
   private taskStateIndex = new ReferenceArrayIndex<AssistantTask>(task => String(task.id))
+  private projectDirectoryCountCache = { revision: '', total: 0, queries: 0, hits: 0 }
   private statePath = ''
   private stateEncryptionKey = ''
   private activeSync: Promise<any> | null = null
@@ -5986,39 +5984,41 @@ export class AiAssistantService {
     return buildDashboardRevisions(personalMemoryStore).project
   }
 
+  private getProjectDirectoryCount(revision: string): number {
+    if (this.projectDirectoryCountCache.revision === revision) {
+      this.projectDirectoryCountCache.hits += 1
+      return this.projectDirectoryCountCache.total
+    }
+    const total = personalMemoryStore.countProjectDirectory()
+    this.projectDirectoryCountCache = {
+      revision, total, queries: this.projectDirectoryCountCache.queries + 1,
+      hits: this.projectDirectoryCountCache.hits
+    }
+    return total
+  }
+
   getProjectDirectory(options: any = {}): any {
     const revision = this.getProjectDirectoryRevision()
-    const directory = buildProjectDirectory({
-      entities: this.state.graph.entities,
-      relations: this.state.graph.relations,
-      claims: [],
-      events: [],
-      tasks: this.state.tasks.filter(task => task.classification === 'mine')
+    const offset = Math.max(0, Math.floor(Number(options?.offset) || 0))
+    if (offset > 0 && String(options?.revision || '').trim() !== revision) {
+      return { items: [], total: 0, hasMore: false, nextOffset: offset, revision, stale: true }
+    }
+    const page = personalMemoryStore.listProjectDirectoryPage({
+      query: String(options?.query || ''),
+      phase: String(options?.phase || ''),
+      today: shanghaiDate(),
+      offset,
+      limit: Number(options?.limit || 40)
     })
-    const page = paginateProjectDirectory(directory, options || {}, revision)
-    if (page.stale) return page
-    const reviewCounts = personalMemoryStore.getProjectReviewCounts(
-      page.items.map(project => project.entityId).filter(Boolean)
-    )
-    const items = page.items.map(project => ({
-      ...project,
-      pendingReviewTotal: Number(project.pendingReviewTotal || 0) +
-        Number(project.entityId
-          ? (reviewCounts[project.entityId]?.candidateClaims || 0) +
-            (reviewCounts[project.entityId]?.candidateEvents || 0)
-          : 0)
-    }))
     const completedRevision = this.getProjectDirectoryRevision()
     if (completedRevision !== revision) {
       return {
-        items: [], total: 0, hasMore: false,
+        items: [], total: 0, hasMore: false, nextOffset: offset,
         revision: completedRevision, stale: true
       }
     }
     return {
-      items,
-      total: page.total,
-      hasMore: page.hasMore,
+      ...page,
       revision,
       stale: false
     }
@@ -6048,16 +6048,10 @@ export class AiAssistantService {
       limit: 8
     })
     const memoryStats = personalMemoryStore.getMemoryStats()
-    const projectCount = countProjectDirectory({
-      entities: this.state.graph.entities,
-      relations: this.state.graph.relations,
-      claims: [],
-      events: [],
-      tasks
-    })
     const graphReviewRevision = revisions.graph
     const graphRevision = graphReviewRevision
     const projectRevision = revisions.project
+    const projectCount = this.getProjectDirectoryCount(projectRevision)
     const assistantArchiveStats = personalMemoryStore.getAssistantArchiveStats()
     const taskReviewArchiveStats = personalMemoryStore.getTaskReviewArchiveStats()
     const memoryDeletionArchiveStats = personalMemoryStore.getMemoryDeletionAuditStats()
@@ -6151,13 +6145,19 @@ export class AiAssistantService {
       projectDirectory: {
         total: projectCount,
         revision: projectRevision,
-        version: 'project-directory-v2',
-        directory: 'paginated_on_demand',
+        version: 'project-directory-v3',
+        directory: 'sqlcipher_paginated_on_demand',
+        count: 'sqlcipher_distinct_trusted_and_derived',
+        countCache: {
+          revisionBound: true,
+          queries: this.projectDirectoryCountCache.queries,
+          hits: this.projectDirectoryCountCache.hits
+        },
         dossier: 'on_demand'
       },
       projectPayloadPolicy: {
-        version: 'project-directory-v2',
-        directoryFields: 'paginated_summary_only',
+        version: 'project-directory-v3',
+        directoryFields: 'sqlcipher_filtered_paginated_summary_only',
         dossier: 'on_demand'
       },
       projectRevision,

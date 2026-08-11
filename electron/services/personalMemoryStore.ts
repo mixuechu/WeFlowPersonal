@@ -13843,6 +13843,209 @@ export class PersonalMemoryStore {
     }
   }
 
+  countProjectDirectory(): number {
+    if (!this.db) return 0
+    const normalize = (expression: string) =>
+      `LOWER(REPLACE(REPLACE(REPLACE(REPLACE(COALESCE(${expression},''),' ',''),CHAR(9),''),CHAR(10),''),CHAR(13),''))`
+    const row = this.db.prepare(`
+      WITH trusted_names AS (
+        SELECT ${normalize('entity.canonical_name')} AS normalized_name
+        FROM entities entity
+        WHERE entity.type='project' AND entity.trust_status='confirmed' AND entity.deleted_at IS NULL
+        UNION
+        SELECT ${normalize('alias.value')}
+        FROM aliases alias JOIN entities entity ON entity.id=alias.entity_id
+        WHERE entity.type='project' AND entity.trust_status='confirmed' AND entity.deleted_at IS NULL
+      ), derived AS (
+        SELECT DISTINCT ${normalize('task.project')} AS normalized_name
+        FROM task_directory task
+        WHERE task.classification='mine' AND ${normalize('task.project')}!=''
+          AND NOT EXISTS (
+            SELECT 1 FROM trusted_names trusted
+            WHERE trusted.normalized_name=${normalize('task.project')}
+          )
+      )
+      SELECT
+        (SELECT COUNT(*) FROM entities entity
+          WHERE entity.type='project' AND entity.trust_status='confirmed' AND entity.deleted_at IS NULL) +
+        (SELECT COUNT(*) FROM derived) AS count
+    `).get() as any
+    return Number(row?.count || 0)
+  }
+
+  listProjectDirectoryPage(options: {
+    query?: string
+    phase?: string
+    today?: string
+    offset?: number
+    limit?: number
+  } = {}): { items: any[]; total: number; hasMore: boolean; offset: number; nextOffset: number; limit: number } {
+    const offset = Math.max(0, Math.min(1_000_000, Math.floor(Number(options.offset) || 0)))
+    const limit = Math.max(1, Math.min(100, Math.floor(Number(options.limit) || 40)))
+    const query = String(options.query || '').trim().toLocaleLowerCase('zh-CN').slice(0, 500)
+    const phase = ['discovery', 'planned', 'active', 'completed'].includes(String(options.phase || ''))
+      ? String(options.phase) : ''
+    const today = /^\d{4}-\d{2}-\d{2}$/.test(String(options.today || ''))
+      ? String(options.today) : new Intl.DateTimeFormat('en-CA', {
+          timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit'
+        }).format(new Date())
+    const empty = { items: [], total: 0, hasMore: false, offset, nextOffset: offset, limit }
+    if (!this.db) return empty
+    const normalize = (expression: string) =>
+      `LOWER(REPLACE(REPLACE(REPLACE(REPLACE(COALESCE(${expression},''),' ',''),CHAR(9),''),CHAR(10),''),CHAR(13),''))`
+    const ctes = `
+      WITH input(today,query,phase) AS (VALUES(?,?,?)),
+      trusted_projects AS (
+        SELECT entity.id,entity.id AS entity_id,entity.canonical_name AS name,
+          entity.summary,0 AS inferred
+        FROM entities entity
+        WHERE entity.type='project' AND entity.trust_status='confirmed' AND entity.deleted_at IS NULL
+      ), trusted_names AS (
+        SELECT project.id AS project_id,${normalize('project.name')} AS normalized_name
+        FROM trusted_projects project
+        UNION
+        SELECT project.id,${normalize('alias.value')}
+        FROM trusted_projects project JOIN aliases alias ON alias.entity_id=project.id
+      ), derived_projects AS (
+        SELECT 'derived:' || ${normalize('task.project')} AS id,NULL AS entity_id,
+          MIN(TRIM(task.project)) AS name,'' AS summary,1 AS inferred
+        FROM task_directory task
+        WHERE task.classification='mine' AND ${normalize('task.project')}!=''
+          AND NOT EXISTS (
+            SELECT 1 FROM trusted_names trusted
+            WHERE trusted.normalized_name=${normalize('task.project')}
+          )
+        GROUP BY ${normalize('task.project')}
+      ), projects AS (
+        SELECT * FROM trusted_projects UNION ALL SELECT * FROM derived_projects
+      ), query_projects AS (
+        SELECT project.* FROM projects project,input
+        WHERE input.query='' OR INSTR(LOWER(project.name || CHAR(0) || project.summary),input.query)>0
+      ), matched_tasks AS (
+        SELECT DISTINCT trusted.project_id,task.*
+        FROM task_directory task
+        JOIN trusted_names trusted ON trusted.normalized_name=${normalize('task.project')}
+        JOIN query_projects project ON project.id=trusted.project_id
+        WHERE task.classification='mine' AND ${normalize('task.project')}!=''
+        UNION ALL
+        SELECT DISTINCT trusted.project_id,task.*
+        FROM task_directory task
+        JOIN trusted_names trusted ON LENGTH(trusted.normalized_name)>=3 AND (
+          INSTR(${normalize('task.title')},trusted.normalized_name)>0 OR
+          INSTR(${normalize(`json_extract(task.payload_json,'$.detail')`)},trusted.normalized_name)>0
+        )
+        JOIN query_projects project ON project.id=trusted.project_id
+        WHERE task.classification='mine' AND ${normalize('task.project')}=''
+        UNION ALL
+        SELECT project.id,task.*
+        FROM task_directory task
+        JOIN query_projects project ON project.inferred=1 AND
+          SUBSTR(project.id,9)=${normalize('task.project')}
+        WHERE task.classification='mine' AND ${normalize('task.project')}!=''
+      ), task_stats AS (
+        SELECT task.project_id,
+          COUNT(*) AS task_count,
+          SUM(task.status NOT IN ('done','cancelled')) AS active_count,
+          SUM(task.status='doing') AS doing_count,
+          SUM(task.status='done') AS completed_count,
+          SUM(task.status!='cancelled') AS progress_count,
+          SUM(
+            (COALESCE(task.due,'')!='' AND SUBSTR(task.due,1,10)<(SELECT today FROM input)) +
+            (task.status='waiting' OR task.task_kind='waiting') +
+            EXISTS(
+              SELECT 1 FROM json_each(task.payload_json,'$.dependsOnIds') requested_dependency
+              JOIN task_directory dependency ON dependency.id=CAST(requested_dependency.value AS TEXT)
+              WHERE dependency.status NOT IN ('done','cancelled')
+            ) +
+            (task.priority='high' AND COALESCE(task.due,'')='')
+          ) AS risk_count,
+          SUM(
+            (COALESCE(task.due,'')!='' AND SUBSTR(task.due,1,10)<(SELECT today FROM input)) +
+            EXISTS(
+              SELECT 1 FROM json_each(task.payload_json,'$.dependsOnIds') requested_dependency
+              JOIN task_directory dependency ON dependency.id=CAST(requested_dependency.value AS TEXT)
+              WHERE dependency.status NOT IN ('done','cancelled')
+            )
+          ) AS high_risk_count
+        FROM matched_tasks task GROUP BY task.project_id
+      ), member_stats AS (
+        SELECT project.id AS project_id,COUNT(DISTINCT member.id) AS member_count
+        FROM query_projects project
+        JOIN relations relation ON relation.status='confirmed' AND
+          (relation.subject_id=project.id OR relation.object_id=project.id)
+        JOIN entities member ON member.id=CASE WHEN relation.subject_id=project.id
+          THEN relation.object_id ELSE relation.subject_id END
+        WHERE project.inferred=0 AND member.type='person' AND member.trust_status='confirmed'
+          AND member.deleted_at IS NULL
+        GROUP BY project.id
+      ), review_stats AS (
+        SELECT project.id AS project_id,
+          (SELECT COUNT(*) FROM claims claim WHERE claim.status='candidate' AND
+            (claim.subject_id=project.id OR claim.object_entity_id=project.id)) +
+          (SELECT COUNT(DISTINCT participant.event_id) FROM event_participants participant
+            JOIN events event ON event.id=participant.event_id
+            WHERE participant.entity_id=project.id AND event.status='candidate') +
+          (SELECT COUNT(*) FROM relations relation WHERE relation.status='candidate' AND
+            (relation.subject_id=project.id OR relation.object_id=project.id)) AS review_count
+        FROM query_projects project WHERE project.inferred=0
+      ), directory AS (
+        SELECT project.id,project.entity_id,project.name,project.summary,project.inferred,
+          CASE
+            WHEN COALESCE(tasks.progress_count,0)>0 AND tasks.completed_count=tasks.progress_count
+              THEN 'completed'
+            WHEN COALESCE(tasks.doing_count,0)>0 THEN 'active'
+            WHEN COALESCE(tasks.progress_count,0)>0 THEN 'planned'
+            ELSE 'discovery'
+          END AS phase,
+          CASE WHEN COALESCE(tasks.progress_count,0)>0
+            THEN ROUND(100.0*tasks.completed_count/tasks.progress_count) ELSE 0 END AS progress,
+          COALESCE(members.member_count,0) AS member_count,
+          COALESCE(tasks.active_count,0) AS active_task_count,
+          COALESCE(tasks.risk_count,0) AS risk_count,
+          COALESCE(reviews.review_count,0) AS pending_review_total,
+          COALESCE(tasks.high_risk_count,0)*10+COALESCE(tasks.active_count,0) AS severity_score
+        FROM query_projects project
+        LEFT JOIN task_stats tasks ON tasks.project_id=project.id
+        LEFT JOIN member_stats members ON members.project_id=project.id
+        LEFT JOIN review_stats reviews ON reviews.project_id=project.id
+      ), filtered AS (
+        SELECT directory.* FROM directory,input
+        WHERE input.phase='' OR directory.phase=input.phase
+      )
+    `
+    const parameters = [today, query, phase]
+    const rows = this.db.prepare(`
+      ${ctes}
+      SELECT id,entity_id,name,summary,inferred,phase,progress,member_count,
+        active_task_count,risk_count,pending_review_total,COUNT(*) OVER() AS filtered_total
+      FROM filtered
+      ORDER BY severity_score DESC,inferred ASC,LOWER(name),id
+      LIMIT ? OFFSET ?
+    `).all(...parameters, limit, offset) as any[]
+    const total = rows.length
+      ? Number(rows[0].filtered_total || 0)
+      : offset > 0
+        ? Number((this.db.prepare(`${ctes} SELECT COUNT(*) AS count FROM filtered`)
+            .get(...parameters) as any)?.count || 0)
+        : 0
+    return {
+      items: rows.map(row => ({
+        id: String(row.id || ''),
+        entityId: row.entity_id == null ? null : String(row.entity_id),
+        name: String(row.name || ''), summary: String(row.summary || ''),
+        inferred: Boolean(row.inferred), phase: String(row.phase || 'discovery'),
+        progress: Number(row.progress || 0), memberCount: Number(row.member_count || 0),
+        activeTaskCount: Number(row.active_task_count || 0), riskCount: Number(row.risk_count || 0),
+        pendingReviewTotal: Number(row.pending_review_total || 0)
+      })),
+      total,
+      hasMore: offset + rows.length < total,
+      offset,
+      nextOffset: offset + rows.length,
+      limit
+    }
+  }
+
   listProjectRiskPage(
     normalizedNamesInput: string[],
     todayInput: string,

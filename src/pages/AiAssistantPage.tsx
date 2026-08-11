@@ -7031,7 +7031,7 @@ function AiAssistantPage() {
     try {
       const result = await window.electronAPI.aiAssistant.getProjectDirectory({
         ...projectDirectoryOptions,
-        offset: projectDirectory.items.length,
+        offset: Number(projectDirectory.nextOffset ?? projectDirectory.items.length),
         revision: projectDirectory.revision
       })
       if (!projectDirectoryGate.current.isCurrent(request)) return
@@ -7042,6 +7042,7 @@ function AiAssistantPage() {
       setProjectDirectory((current: any) => ({
         ...result,
         loading: false,
+        nextOffset: result.nextOffset ?? Number(current.nextOffset || 0) + result.items.length,
         items: [...current.items, ...result.items.filter((item: any) =>
           !current.items.some((known: any) => known.id === item.id))]
       }))
@@ -12174,9 +12175,10 @@ function AiAssistantPage() {
               <option value="discovery">发现阶段</option>
             </select>
           </div>
-          {dashboard?.projectDirectory?.directory === 'paginated_on_demand' && <small className="assistant-evidence">
-            项目目录按搜索和阶段从本机服务分页读取（已加载 {projectInsights.length} / {projectDirectory.total}）；
-            任务、事件、候选与原文证据会在点击项目后按需读取。
+          {dashboard?.projectDirectory?.directory === 'sqlcipher_paginated_on_demand' && <small className="assistant-evidence">
+            项目总数、搜索、阶段、进度、风险和候选计数均在 SQLCipher 内完成，
+            当前仅水合所见页（已加载 {projectInsights.length} / {projectDirectory.total}）；
+            任务、事件与原文证据会在点击项目后按需读取。
           </small>}
           {projectDirectory.loading && <div className="assistant-empty">正在读取项目目录…</div>}
           {projectInsights.length ? <div className="assistant-project-grid">
