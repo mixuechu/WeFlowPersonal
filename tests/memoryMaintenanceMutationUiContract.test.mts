@@ -15,7 +15,7 @@ const between = (startText: string, endText: string): string => {
 test('backup, migration, and vector maintenance share one visible and synchronous owner', () => {
   assert.match(
     page,
-    /const memoryMaintenanceBusy = memoryBackupOperationBusy \|\| migratingMemory \|\| indexingVectors/
+    /const memoryMaintenanceBusy = memoryBackupOperationBusy \|\| migratingMemory \|\| indexingVectors \|\|[\s\S]*Boolean\(status\?\.memoryMaintenance\?\.active\)/
   )
   assert.match(page, /const memoryMaintenanceLock = useRef\(false\)/)
   assert.match(page, /const memoryMigrationGate = useRef\(new LatestRequestGate\(\)\)/)

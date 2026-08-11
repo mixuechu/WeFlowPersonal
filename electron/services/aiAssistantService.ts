@@ -528,6 +528,27 @@ type AssistantTask = {
   mutationToken?: string
 }
 
+type MemoryMaintenanceKind =
+  | 'backup_create'
+  | 'backup_restore'
+  | 'backup_delete'
+  | 'bundle_export'
+  | 'bundle_import'
+
+type MemoryMaintenanceLease = {
+  token: symbol
+  kind: MemoryMaintenanceKind
+  startedAt: string
+}
+
+const MEMORY_MAINTENANCE_LABELS: Record<MemoryMaintenanceKind, string> = {
+  backup_create: '创建个人记忆联合备份',
+  backup_restore: '恢复个人记忆快照',
+  backup_delete: '清理个人记忆快照',
+  bundle_export: '导出个人记忆迁移包',
+  bundle_import: '导入个人记忆迁移包'
+}
+
 type GraphEntity = {
   id: string
   type: 'person' | 'organization' | 'group' | 'project'
@@ -857,6 +878,8 @@ export class AiAssistantService {
   }>(5 * 60_000)
   private jointBackupValidationCache: JointMemoryBackupValidationCache = new Map()
   private memoryBackupTrashPromise: Promise<any> | null = null
+  private memoryMaintenanceLease: MemoryMaintenanceLease | null = null
+  private memoryMaintenancePromise: Promise<any> | null = null
   private memoryBackupTrashRecovery = {
     checked: 0,
     restored: 0,
@@ -873,6 +896,74 @@ export class AiAssistantService {
     lastRunAt: '',
     lastRecoveredAt: '',
     lastError: ''
+  }
+
+  private beginMemoryMaintenance(kind: MemoryMaintenanceKind): MemoryMaintenanceLease {
+    if (this.disposed) throw new Error('AI 助理正在安全退出，不能开始个人记忆维护')
+    if (this.memoryMaintenanceLease) {
+      throw new Error(`当前正在${MEMORY_MAINTENANCE_LABELS[this.memoryMaintenanceLease.kind]}，请完成后再重试`)
+    }
+    const lease = { token: Symbol(kind), kind, startedAt: new Date().toISOString() }
+    this.memoryMaintenanceLease = lease
+    return lease
+  }
+
+  private assertMemoryMaintenanceLease(lease: MemoryMaintenanceLease): void {
+    if (this.memoryMaintenanceLease?.token !== lease.token) {
+      throw new Error('个人记忆维护所有权已经变化，请重新开始操作')
+    }
+  }
+
+  private finishMemoryMaintenance(lease: MemoryMaintenanceLease): void {
+    if (this.memoryMaintenanceLease?.token === lease.token) this.memoryMaintenanceLease = null
+  }
+
+  private runMemoryMaintenanceSync<T>(
+    kind: MemoryMaintenanceKind,
+    run: (lease: MemoryMaintenanceLease) => T
+  ): T {
+    const lease = this.beginMemoryMaintenance(kind)
+    try {
+      return run(lease)
+    } finally {
+      this.finishMemoryMaintenance(lease)
+    }
+  }
+
+  private async runMemoryMaintenanceAsync<T>(
+    kind: MemoryMaintenanceKind,
+    run: (lease: MemoryMaintenanceLease) => Promise<T>
+  ): Promise<T> {
+    const lease = this.beginMemoryMaintenance(kind)
+    const operation = Promise.resolve().then(() => run(lease))
+    this.memoryMaintenancePromise = operation
+    try {
+      return await operation
+    } finally {
+      if (this.memoryMaintenancePromise === operation) this.memoryMaintenancePromise = null
+      this.finishMemoryMaintenance(lease)
+    }
+  }
+
+  private getMemoryMaintenanceStatus(): any {
+    const active = this.memoryMaintenanceLease
+    return active
+      ? {
+          active: true,
+          kind: active.kind,
+          message: `正在${MEMORY_MAINTENANCE_LABELS[active.kind]}`,
+          startedAt: active.startedAt
+        }
+      : { active: false, kind: null, message: null, startedAt: null }
+  }
+
+  private assertMemoryReplacementIdle(): void {
+    if (this.taskLifecycleAuditPromise) {
+      throw new Error('当前正在复核活动待办，请完成后再替换个人记忆')
+    }
+    if (this.memoryQuestionPromises.size > 0) {
+      throw new Error('当前仍有记忆问答正在核验或保存，请完成后再替换个人记忆')
+    }
   }
   private lastSchedulerAttemptAt = 0
   private lastSchedulerTickAt = 0
@@ -1305,6 +1396,7 @@ export class AiAssistantService {
       { name: 'system_resume', promise: this.systemResumePromise },
       { name: 'notification_flush', promise: this.notificationFlushPromise },
       { name: 'task_lifecycle_audit', promise: this.taskLifecycleAuditPromise },
+      { name: 'memory_maintenance', promise: this.memoryMaintenancePromise },
       ...[...this.memoryQuestionPromises].map((promise, index) => ({
         name: `memory_question_${index + 1}`,
         promise
@@ -3907,7 +3999,7 @@ export class AiAssistantService {
   }
 
   private continueIdentityVectorScanWhileIdle(now: Date): string {
-    if (this.activeSync || this.vectorIndexPromise || this.memorySearchRepairPromise ||
+    if (this.memoryMaintenanceLease || this.activeSync || this.vectorIndexPromise || this.memorySearchRepairPromise ||
         this.resourceEnrichmentPromise) {
       return 'identity_vector_scan_busy'
     }
@@ -4692,6 +4784,9 @@ export class AiAssistantService {
     if (!this.config.get('aiAssistantEnabled')) {
       throw new Error('AI 助理已关闭，未开始增量处理或模型请求')
     }
+    if (this.memoryMaintenanceLease) {
+      throw new Error(`${this.getMemoryMaintenanceStatus().message}，请完成后再开始增量处理`)
+    }
     if (this.activeSync) return this.activeSync
     if (this.taskLifecycleAuditPromise) {
       throw new Error('当前正在复核活动待办，请等待完成后再开始增量处理')
@@ -5264,6 +5359,7 @@ export class AiAssistantService {
       vectorIndexing: backgroundWrites.vectorIndexing,
       searchRepairing: backgroundWrites.searchRepairing,
       backgroundWrites,
+      memoryMaintenance: this.getMemoryMaintenanceStatus(),
       resourceEnrichmentBatch: { ...this.resourceEnrichmentBatchState },
       resourceEnrichmentBatchHistory: {
         ...personalMemoryStore.listResourceEnrichmentBatchRuns(12),
@@ -5518,6 +5614,9 @@ export class AiAssistantService {
 
   auditActiveTaskLifecycles(): Promise<any> {
     if (this.taskLifecycleAuditPromise) return this.taskLifecycleAuditPromise
+    if (this.memoryMaintenanceLease) {
+      throw new Error(`${this.getMemoryMaintenanceStatus().message}，请完成后再复核待办`)
+    }
     if (this.activeSync) throw new Error('正在补齐消息，请等待当前增量批次完成后再复核待办')
     if (!this.config.get('aiAssistantEnabled')) throw new Error('AI 助理已关闭，未开始待办复核')
     const apiKey = String(this.config.get('aiAssistantApiKey') || '').trim()
@@ -7226,7 +7325,7 @@ export class AiAssistantService {
       ...searchMaintenanceCheckpoint,
       lastAttemptAt: this.state.cursor.lastAutomaticSearchMaintenanceAttemptAt,
       lastError: this.state.cursor.lastAutomaticSearchMaintenanceError,
-      idle: !this.activeSync && !this.vectorIndexPromise && !this.memorySearchRepairPromise &&
+      idle: !this.memoryMaintenanceLease && !this.activeSync && !this.vectorIndexPromise && !this.memorySearchRepairPromise &&
         !this.resourceEnrichmentPromise
     })
     const ocr = await localOcrService.getStatus()
@@ -7278,6 +7377,7 @@ export class AiAssistantService {
       backupRestoreAudit,
       memoryBackupTrashRecovery: this.memoryBackupTrashRecovery,
       memoryRestoreRecovery: this.memoryRestoreRecovery,
+      memoryMaintenance: this.getMemoryMaintenanceStatus(),
       backgroundWrites: describeBackgroundWriteState({
         syncing: Boolean(this.activeSync),
         syncPhase: this.activeSyncPhase,
@@ -7447,6 +7547,9 @@ export class AiAssistantService {
   async repairMemorySearchIndexes(): Promise<any> {
     if (this.disposed) throw new Error('AI 助理正在安全退出，不能核验检索索引')
     if (this.memorySearchRepairPromise) return this.memorySearchRepairPromise
+    if (this.memoryMaintenanceLease) {
+      throw new Error(`${this.getMemoryMaintenanceStatus().message}，请完成后再核验检索索引`)
+    }
     if (this.activeSync) throw new Error('当前正在增量处理，请在本轮结束后再核验检索索引')
     if (this.vectorIndexPromise) throw new Error('当前正在构建本地向量索引，请完成后再核验')
     if (this.resourceEnrichmentPromise) throw new Error('当前正在补齐资源内容，请完成后再核验检索索引')
@@ -7509,6 +7612,9 @@ export class AiAssistantService {
   }
 
   retryPreparedIngestion(): any {
+    if (this.memoryMaintenanceLease) {
+      throw new Error(`${this.getMemoryMaintenanceStatus().message}，请完成后再重试恢复队列`)
+    }
     const conflict = getBackgroundWriteConflict({
       syncing: Boolean(this.activeSync),
       vectorIndexing: Boolean(this.vectorIndexPromise),
@@ -7583,6 +7689,9 @@ export class AiAssistantService {
   }
 
   retryCrossStoreRecovery(): any {
+    if (this.memoryMaintenanceLease) {
+      throw new Error(`${this.getMemoryMaintenanceStatus().message}，请完成后再写入恢复队列`)
+    }
     const conflict = getBackgroundWriteConflict({
       syncing: Boolean(this.activeSync),
       vectorIndexing: Boolean(this.vectorIndexPromise),
@@ -7758,7 +7867,22 @@ export class AiAssistantService {
     protectedPaths: string[] = [],
     options: { allowDuringActiveSync?: boolean } = {}
   ): any {
+    return this.runMemoryMaintenanceSync('backup_create', lease =>
+      this.createMemoryBackupWithLease(protectedPaths, { ...options, maintenanceLease: lease }))
+  }
+
+  private createMemoryBackupWithLease(
+    protectedPaths: string[] = [],
+    options: { allowDuringActiveSync?: boolean; maintenanceLease: MemoryMaintenanceLease }
+  ): any {
+    this.assertMemoryMaintenanceLease(options.maintenanceLease)
     if (this.disposed) throw new Error('AI 助理正在安全退出，不能创建个人记忆联合备份')
+    if (this.taskLifecycleAuditPromise) {
+      throw new Error('当前正在复核活动待办，请完成后再创建个人记忆联合备份')
+    }
+    if (this.memoryQuestionPromises.size > 0) {
+      throw new Error('当前仍有记忆问答正在核验或保存，请完成后再创建个人记忆联合备份')
+    }
     const conflict = getBackgroundWriteConflict({
       syncing: Boolean(this.activeSync) && !options.allowDuringActiveSync,
       vectorIndexing: Boolean(this.vectorIndexPromise),
@@ -7868,9 +7992,12 @@ export class AiAssistantService {
     path: string,
     input: { previewToken?: string; confirmation?: string } = {}
   ): any {
-    const inspected = this.inspectMemoryBackupForRestore(path)
-    assertMemoryBackupRestoreConfirmation(inspected.identity, input)
-    return this.applyMemoryBackup(inspected.preview.path, inspected.restoredState)
+    return this.runMemoryMaintenanceSync('backup_restore', lease => {
+      this.assertMemoryReplacementIdle()
+      const inspected = this.inspectMemoryBackupForRestore(path)
+      assertMemoryBackupRestoreConfirmation(inspected.identity, input)
+      return this.applyMemoryBackup(inspected.preview.path, inspected.restoredState, lease)
+    })
   }
 
   private inspectMemoryBackupForDeletion(path: string): {
@@ -7915,48 +8042,56 @@ export class AiAssistantService {
     path: string,
     input: { previewToken?: string; confirmation?: string } = {}
   ): Promise<any> {
-    if (this.memoryBackupTrashPromise) throw new Error('另一份快照正在移到废纸篓，请稍后重试')
-    const operation = (async () => {
-      const inspected = this.inspectMemoryBackupForDeletion(path)
-      assertMemoryBackupDeletionConfirmation(inspected.identity, input)
-      const databasePath = inspected.identity.backupPath
-      const statePath = `${databasePath}.state.json`
-      const stagingDirectory = join(
-        dirname(databasePath),
-        `.weflow-backup-trash-${crypto.randomUUID()}`
-      )
-      let staged: ReturnType<typeof stageMemoryBackupTrash> | null = null
+    return this.runMemoryMaintenanceAsync('backup_delete', async lease => {
+      this.assertMemoryMaintenanceLease(lease)
+      if (this.memoryBackupTrashPromise) throw new Error('另一份快照正在移到废纸篓，请稍后重试')
+      const operation = (async () => {
+        const inspected = this.inspectMemoryBackupForDeletion(path)
+        assertMemoryBackupDeletionConfirmation(inspected.identity, input)
+        const databasePath = inspected.identity.backupPath
+        const statePath = `${databasePath}.state.json`
+        const stagingDirectory = join(
+          dirname(databasePath),
+          `.weflow-backup-trash-${crypto.randomUUID()}`
+        )
+        let staged: ReturnType<typeof stageMemoryBackupTrash> | null = null
+        try {
+          staged = stageMemoryBackupTrash({
+            databasePath,
+            hasState: existsSync(statePath),
+            stagingDirectory
+          })
+          await shell.trashItem(stagingDirectory)
+          this.jointBackupValidationCache.delete(databasePath)
+          return {
+            success: true,
+            artifactCount: staged.artifacts.length,
+            bytes: Number(inspected.preview.databaseBytes || 0) +
+              Number(inspected.preview.stateBytes || 0),
+            recoverableFromTrash: true
+          }
+        } catch (error) {
+          if (staged && !rollbackStagedMemoryBackupTrash(staged)) {
+            throw new Error('移动到废纸篓失败，快照仍保留在备份目录的安全暂存区；重启应用会自动恢复')
+          }
+          throw error
+        }
+      })()
+      this.memoryBackupTrashPromise = operation
       try {
-        staged = stageMemoryBackupTrash({
-          databasePath,
-          hasState: existsSync(statePath),
-          stagingDirectory
-        })
-        await shell.trashItem(stagingDirectory)
-        this.jointBackupValidationCache.delete(databasePath)
-        return {
-          success: true,
-          artifactCount: staged.artifacts.length,
-          bytes: Number(inspected.preview.databaseBytes || 0) +
-            Number(inspected.preview.stateBytes || 0),
-          recoverableFromTrash: true
-        }
-      } catch (error) {
-        if (staged && !rollbackStagedMemoryBackupTrash(staged)) {
-          throw new Error('移动到废纸篓失败，快照仍保留在备份目录的安全暂存区；重启应用会自动恢复')
-        }
-        throw error
+        return await operation
+      } finally {
+        if (this.memoryBackupTrashPromise === operation) this.memoryBackupTrashPromise = null
       }
-    })()
-    this.memoryBackupTrashPromise = operation
-    try {
-      return await operation
-    } finally {
-      if (this.memoryBackupTrashPromise === operation) this.memoryBackupTrashPromise = null
-    }
+    })
   }
 
-  private applyMemoryBackup(path: string, knownRestoredState?: any): any {
+  private applyMemoryBackup(
+    path: string,
+    knownRestoredState: any | undefined,
+    maintenanceLease: MemoryMaintenanceLease
+  ): any {
+    this.assertMemoryMaintenanceLease(maintenanceLease)
     const stateBackupPath = `${path}.state.json`
     if (!existsSync(stateBackupPath)) throw new Error('该快照缺少 AI 助理状态文件，无法完整恢复')
     let restoredState = knownRestoredState
@@ -7969,7 +8104,7 @@ export class AiAssistantService {
       if (restored.recovery.source === 'empty') throw new Error('快照中的 AI 状态损坏或密钥不匹配')
       restoredState = restored.value
     }
-    const safety = this.createMemoryBackup([path])
+    const safety = this.createMemoryBackupWithLease([path], { maintenanceLease })
     if (!safety.stateBackupPath || !existsSync(safety.stateBackupPath)) {
       throw new Error('恢复前的联合安全快照不完整，当前记忆未被修改')
     }
@@ -8047,52 +8182,64 @@ export class AiAssistantService {
   async exportMemoryBundle(outputPath: string, passphrase: string): Promise<any> {
     if (!String(outputPath || '').trim()) throw new Error('未选择导出位置')
     if (String(passphrase || '').normalize('NFKC').length < 12) throw new Error('迁移口令至少需要 12 个字符')
-    const backup = this.createMemoryBackup()
-    const databaseBytes = readFileSync(backup.path)
-    const backupState = readEncryptedDurableJson<any>(
-      backup.stateBackupPath,
-      structuredClone(EMPTY_STATE),
-      this.stateEncryptionKey
-    )
-    if (backupState.recovery.source === 'empty') throw new Error('AI 状态快照无法解密，迁移包未创建')
-    const stateBytes = Buffer.from(JSON.stringify(backupState.value), 'utf8')
-    const databaseKey = String(this.config.get('aiAssistantDatabaseKey') || '')
-    if (!/^[a-f0-9]{64}$/i.test(databaseKey)) throw new Error('无法读取个人记忆数据库密钥，迁移包未创建')
-    const manifest = {
-      format: 'weflow-personal-memory',
-      version: 2,
-      appVersion: app.getVersion(),
-      createdAt: new Date().toISOString(),
-      databaseSha256: crypto.createHash('sha256').update(databaseBytes).digest('hex'),
-      stateSha256: crypto.createHash('sha256').update(stateBytes).digest('hex'),
-      databaseEncryption: {
-        ...personalMemoryStore.getEncryptionMetadata(),
-        keyScope: 'portable-passphrase-envelope',
-        rekeyOnImport: true
+    return this.runMemoryMaintenanceAsync('bundle_export', async lease => {
+      const backup = this.createMemoryBackupWithLease([], { maintenanceLease: lease })
+      const databaseBytes = readFileSync(backup.path)
+      let stateBytes: Buffer | null = null
+      let databaseKeyBytes: Buffer | null = null
+      let archive: Buffer | null = null
+      let payload: Buffer | null = null
+      try {
+        const backupState = readEncryptedDurableJson<any>(
+          backup.stateBackupPath,
+          structuredClone(EMPTY_STATE),
+          this.stateEncryptionKey
+        )
+        if (backupState.recovery.source === 'empty') throw new Error('AI 状态快照无法解密，迁移包未创建')
+        stateBytes = Buffer.from(JSON.stringify(backupState.value), 'utf8')
+        const databaseKey = String(this.config.get('aiAssistantDatabaseKey') || '')
+        if (!/^[a-f0-9]{64}$/i.test(databaseKey)) throw new Error('无法读取个人记忆数据库密钥，迁移包未创建')
+        databaseKeyBytes = Buffer.from(databaseKey, 'hex')
+        const manifest = {
+          format: 'weflow-personal-memory',
+          version: 2,
+          appVersion: app.getVersion(),
+          createdAt: new Date().toISOString(),
+          databaseSha256: crypto.createHash('sha256').update(databaseBytes).digest('hex'),
+          stateSha256: crypto.createHash('sha256').update(stateBytes).digest('hex'),
+          databaseEncryption: {
+            ...personalMemoryStore.getEncryptionMetadata(),
+            keyScope: 'portable-passphrase-envelope',
+            rekeyOnImport: true
+          }
+        }
+        const zip = new JSZip()
+        zip.file('manifest.json', JSON.stringify(manifest, null, 2))
+        zip.file('personal-memory.sqlite', databaseBytes)
+        zip.file('ai-assistant-state.json', stateBytes)
+        zip.file('database-key.bin', databaseKeyBytes)
+        archive = await zip.generateAsync({
+          type: 'nodebuffer',
+          compression: 'DEFLATE',
+          compressionOptions: { level: 6 }
+        })
+        payload = encryptPortableMemoryBundle(archive, passphrase)
+        const published = writePrivateFileAtomically(outputPath, payload)
+        return {
+          success: true,
+          path: outputPath,
+          bytes: published.bytes,
+          sha256: published.sha256,
+          manifest
+        }
+      } finally {
+        payload?.fill(0)
+        archive?.fill(0)
+        databaseKeyBytes?.fill(0)
+        databaseBytes.fill(0)
+        stateBytes?.fill(0)
       }
-    }
-    const zip = new JSZip()
-    zip.file('manifest.json', JSON.stringify(manifest, null, 2))
-    zip.file('personal-memory.sqlite', databaseBytes)
-    zip.file('ai-assistant-state.json', stateBytes)
-    zip.file('database-key.bin', Buffer.from(databaseKey, 'hex'))
-    const archive = await zip.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE', compressionOptions: { level: 6 } })
-    const payload = encryptPortableMemoryBundle(archive, passphrase)
-    try {
-      const published = writePrivateFileAtomically(outputPath, payload)
-      return {
-        success: true,
-        path: outputPath,
-        bytes: published.bytes,
-        sha256: published.sha256,
-        manifest
-      }
-    } finally {
-      payload.fill(0)
-      archive.fill(0)
-      databaseBytes.fill(0)
-      stateBytes.fill(0)
-    }
+    })
   }
 
   private getCurrentMemoryImportSummary(): any {
@@ -8195,30 +8342,45 @@ export class AiAssistantService {
     passphrase?: string,
     input: { previewToken?: string; confirmation?: string } = {}
   ): Promise<any> {
-    const { zip, portable, bundleSha256 } = await this.readMemoryBundle(bundlePath, passphrase)
-    const inspected = await this.inspectLoadedMemoryBundle(zip, portable, bundleSha256)
-    assertMemoryImportConfirmation({
-      bundleSha256: inspected.bundleSha256,
-      databaseSha256: inspected.manifest.databaseSha256,
-      stateSha256: inspected.manifest.stateSha256,
-      currentStateSha256: inspected.currentStateSummary.identitySha256
-    }, input)
-    const databaseBytes = await zip.file('personal-memory.sqlite')!.async('uint8array')
-    const stateText = await zip.file('ai-assistant-state.json')!.async('string')
-    const sourceKey = inspected.portable
-      ? await zip.file('database-key.bin')!.async('nodebuffer')
-      : undefined
-    try {
-      const imported = personalMemoryStore.registerImportedBackup(
-        databaseBytes,
-        stateText,
-        sourceKey,
-        encodeEncryptedDurableJson(JSON.parse(stateText), this.stateEncryptionKey)
-      )
-      return { ...this.applyMemoryBackup(imported.path), importedFrom: bundlePath }
-    } finally {
-      if (sourceKey) sourceKey.fill(0)
-    }
+    return this.runMemoryMaintenanceAsync('bundle_import', async lease => {
+      this.assertMemoryReplacementIdle()
+      const { zip, portable, bundleSha256 } = await this.readMemoryBundle(bundlePath, passphrase)
+      const inspected = await this.inspectLoadedMemoryBundle(zip, portable, bundleSha256)
+      assertMemoryImportConfirmation({
+        bundleSha256: inspected.bundleSha256,
+        databaseSha256: inspected.manifest.databaseSha256,
+        stateSha256: inspected.manifest.stateSha256,
+        currentStateSha256: inspected.currentStateSummary.identitySha256
+      }, input)
+      const databaseBytes = await zip.file('personal-memory.sqlite')!.async('uint8array')
+      const stateText = await zip.file('ai-assistant-state.json')!.async('string')
+      const sourceKey = inspected.portable
+        ? await zip.file('database-key.bin')!.async('nodebuffer')
+        : undefined
+      try {
+        this.assertMemoryMaintenanceLease(lease)
+        this.assertMemoryReplacementIdle()
+        const currentStateSummary = this.getCurrentMemoryImportSummary()
+        assertMemoryImportConfirmation({
+          bundleSha256: inspected.bundleSha256,
+          databaseSha256: inspected.manifest.databaseSha256,
+          stateSha256: inspected.manifest.stateSha256,
+          currentStateSha256: currentStateSummary.identitySha256
+        }, input)
+        const imported = personalMemoryStore.registerImportedBackup(
+          databaseBytes,
+          stateText,
+          sourceKey,
+          encodeEncryptedDurableJson(JSON.parse(stateText), this.stateEncryptionKey)
+        )
+        return {
+          ...this.applyMemoryBackup(imported.path, undefined, lease),
+          importedFrom: bundlePath
+        }
+      } finally {
+        if (sourceKey) sourceKey.fill(0)
+      }
+    })
   }
 
   private getOwnerEntityPresentation(): any | null {
@@ -9847,6 +10009,9 @@ export class AiAssistantService {
     if (!this.config.get('aiAssistantEnabled')) {
       throw new Error('AI 助理总开关已关闭，请开启后再重试资源补全')
     }
+    if (this.memoryMaintenanceLease) {
+      throw new Error(`${this.getMemoryMaintenanceStatus().message}，请完成后再批量重试资源补全`)
+    }
     const { identity, total } = this.loadResourceEnrichmentBatchIdentity(input)
     assertResourceEnrichmentBatchToken(identity, input?.previewToken)
     if (!identity.items.length) throw new Error('当前筛选范围没有可重试的资源')
@@ -9988,6 +10153,9 @@ export class AiAssistantService {
     if (this.disposed) throw new Error('AI 助理正在安全退出，不能重试资源补全')
     if (!this.config.get('aiAssistantEnabled')) {
       throw new Error('AI 助理总开关已关闭，请开启后再重试资源补全')
+    }
+    if (this.memoryMaintenanceLease) {
+      throw new Error(`${this.getMemoryMaintenanceStatus().message}，请完成后再重试资源补全`)
     }
     const resourceId = String(input.resourceId || '').trim()
     if (!resourceId || resourceId.length > 512) throw new Error('资源身份无效')
@@ -11346,6 +11514,9 @@ export class AiAssistantService {
     if (!this.config.get('aiAssistantEnabled')) {
       throw new Error('AI 助理已关闭，未开始本地向量补建')
     }
+    if (this.memoryMaintenanceLease) {
+      throw new Error(`${this.getMemoryMaintenanceStatus().message}，请完成后再补齐或重建语义索引`)
+    }
     if (options.maxBatches === undefined) {
       const conflict = getVectorIndexWriteConflict({
         syncing: Boolean(this.activeSync),
@@ -11516,6 +11687,9 @@ export class AiAssistantService {
     if (this.disposed) throw new Error('AI 助理正在安全退出，不能开始新的记忆问答')
     if (!this.config.get('aiAssistantEnabled')) {
       throw new Error('AI 助理已关闭，未开始记忆问答或模型请求')
+    }
+    if (this.memoryMaintenanceLease) {
+      throw new Error(`${this.getMemoryMaintenanceStatus().message}，请完成后再开始记忆问答`)
     }
     const promise = this.runMemoryQuestion(question, conversationId, options)
     this.memoryQuestionPromises.add(promise)
@@ -12575,7 +12749,7 @@ export class AiAssistantService {
   private continueLegacyResourceContentBudgetMigration(): string | null {
     const resourceContentBudget = personalMemoryStore.getResourceContentBudgetStats()
     if (Number(resourceContentBudget.pendingLegacy || 0) <= 0) return null
-    if (this.activeSync || this.vectorIndexPromise || this.memorySearchRepairPromise ||
+    if (this.memoryMaintenanceLease || this.activeSync || this.vectorIndexPromise || this.memorySearchRepairPromise ||
         this.resourceEnrichmentPromise) {
       return 'resource_content_budget_waiting_for_idle'
     }
@@ -12593,7 +12767,7 @@ export class AiAssistantService {
   }
 
   private continueIdleResourceEnrichment(now: Date): Promise<string> | null {
-    if (this.disposed || this.activeSync || this.vectorIndexPromise ||
+    if (this.disposed || this.memoryMaintenanceLease || this.activeSync || this.vectorIndexPromise ||
         this.memorySearchRepairPromise || this.resourceEnrichmentPromise) return null
     const ocrEnabled = Boolean(this.config.get('aiAssistantOcrImages'))
     const attachment = personalMemoryStore.getAttachmentIndexMigrationStats(now)
@@ -12762,7 +12936,7 @@ export class AiAssistantService {
         ...personalMemoryStore.getSearchMaintenanceCheckpoint(),
         lastAttemptAt: this.state.cursor.lastAutomaticSearchMaintenanceAttemptAt,
         lastError: this.state.cursor.lastAutomaticSearchMaintenanceError,
-        idle: !this.activeSync && !this.vectorIndexPromise && !this.memorySearchRepairPromise &&
+        idle: !this.memoryMaintenanceLease && !this.activeSync && !this.vectorIndexPromise && !this.memorySearchRepairPromise &&
           !this.resourceEnrichmentPromise
       })
       if (maintenance.due) {

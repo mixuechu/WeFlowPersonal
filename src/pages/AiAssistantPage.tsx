@@ -3910,7 +3910,8 @@ function AiAssistantPage() {
   const memoryBackupOperationBusy = backingUpMemory || restoringMemory || deletingMemoryBackup ||
     memoryRestoreDialog?.status === 'loading' || memoryRestoreDialog?.status === 'restoring' ||
     memoryBackupDeleteDialog?.status === 'loading' || memoryBackupDeleteDialog?.status === 'deleting'
-  const memoryMaintenanceBusy = memoryBackupOperationBusy || migratingMemory || indexingVectors
+  const memoryMaintenanceBusy = memoryBackupOperationBusy || migratingMemory || indexingVectors ||
+    Boolean(status?.memoryMaintenance?.active)
   const updateReminderPreference = async (reminder: any, action: 'helpful' | 'snooze' | 'mute_kind' | 'restore_kind') => {
     const key = action === 'restore_kind' ? `restore:${reminder.kind}` : reminder.id
     if (taskReminderSaving[key]) return
@@ -4294,6 +4295,9 @@ function AiAssistantPage() {
   const resourceEnrichmentDisabledReason = (enrichment: any): string => {
     if (!enrichment) return '没有可重试的补全状态'
     if (settings && settings.enabled === false) return 'AI 助理总开关已关闭'
+    if (status?.memoryMaintenance?.active) {
+      return status.memoryMaintenance.message || '正在维护个人记忆'
+    }
     if (status?.backgroundWrites?.active) {
       return status.backgroundWrites.message || '当前有其他后台写入正在进行'
     }
@@ -17318,10 +17322,11 @@ function AiAssistantPage() {
               status?.backgroundWrites?.active ? 'warning' : 'healthy'
             }`}>
               <header><RefreshCw size={15} /><span><b>后台权威写入协调</b>
-                <small>增量处理、语义索引和检索修复共用同一写入占用契约；界面操作与服务端门禁采用相同优先级。</small>
+                <small>增量处理、语义索引、检索修复和个人记忆维护共用服务端写入占用契约；直接 IPC 也不能绕过。</small>
               </span></header>
               <div className="assistant-recovery-current">
                 <span>当前状态 <b>{status?.backgroundWrites?.message || '空闲'}</b></span>
+                <span>记忆维护 <b>{status?.memoryMaintenance?.message || '空闲'}</b></span>
                 <span>权威写入者 <b>{status?.backgroundWrites?.conflict === 'incremental_sync'
                   ? '增量处理'
                   : status?.backgroundWrites?.conflict === 'search_repair'
