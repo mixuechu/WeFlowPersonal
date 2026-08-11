@@ -13982,6 +13982,27 @@ test('memory trust scopes and facets separate confirmed candidates from source m
       evidenceBreadth: 'forged-breadth'
     })?.size, 0)
     assert.equal(invalidConflict?.size, 0)
+    for (const options of [
+      { sourceIds: ['wechat'] },
+      { evidenceStrength: 'direct' },
+      { evidenceBreadth: 'multi_source' },
+      { evidenceConflict: 'with_contradiction' },
+      { trustStatuses: ['candidate'], supportability: 'review_only' }
+    ]) {
+      const ids = store.listScopedSearchDocumentIds(options as any)!
+      assert.equal(
+        store.countSearchDocumentsInScope(options as any).total,
+        store.listSearchDocumentsInScopePage(ids, { limit: 1 }).total
+      )
+      assert.equal(
+        store.countSearchDocumentsInScope(options as any, '可信层级关键词').total,
+        store.listSearchDocumentsByKeywordPage('可信层级关键词', ids, { limit: 1 }).total
+      )
+    }
+    assert.deepEqual(
+      store.countSearchDocumentsInScope({ sourceIds: ['wechat'] }, '可信层级关键词'),
+      { total: 3, searchMode: 'fts' }
+    )
     assert.deepEqual(
       store.getSearchDocumentTrustCountsByKeyword('可信层级关键词', null),
       {

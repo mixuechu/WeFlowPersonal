@@ -11085,7 +11085,8 @@ export class AiAssistantService {
     query: string,
     options: MemorySearchOptions = {},
     maxResults = 40,
-    execution?: { mode?: 'hybrid' | 'lexical_ai_disabled' | 'lexical_vector_fallback' }
+    execution?: { mode?: 'hybrid' | 'lexical_ai_disabled' | 'lexical_vector_fallback' },
+    preparedScope?: { allowedIds: Set<string> | null }
   ): Promise<any[]> {
     const selectedEntity = options.entityId ? this.state.graph.entities.find(entity => entity.id === options.entityId && isTrustedEntity(entity)) : null
     const scopedOptions = selectedEntity
@@ -11099,7 +11100,9 @@ export class AiAssistantService {
           ]
         }
       : options
-    const allowedIds = personalMemoryStore.listScopedSearchDocumentIds(scopedOptions)
+    const allowedIds = preparedScope
+      ? preparedScope.allowedIds
+      : personalMemoryStore.listScopedSearchDocumentIds(scopedOptions)
     const scopeCandidateCount = allowedIds?.size ?? null
     const candidateLimit = Math.max(300, Math.min(500, Number(maxResults) || 40))
     const lexical = this.searchMemory(query, candidateLimit, allowedIds, scopedOptions)
@@ -11427,26 +11430,10 @@ export class AiAssistantService {
       ]
     } : options
     const allowedIds = personalMemoryStore.listScopedSearchDocumentIds(scopedOptions)
-    const facetAllowedIds = personalMemoryStore.listScopedSearchDocumentIds({
-      ...scopedOptions,
-      documentTypes: undefined
-    })
-    const trustFacetAllowedIds = personalMemoryStore.listScopedSearchDocumentIds({
-      ...scopedOptions,
-      trustStatuses: undefined
-    })
     const sourceFacetOptions = {
       ...scopedOptions,
       sourceIds: undefined
     }
-    const supportFacetAllowedIds = personalMemoryStore.listScopedSearchDocumentIds({
-      ...scopedOptions,
-      supportability: undefined
-    })
-    const conflictFacetAllowedIds = personalMemoryStore.listScopedSearchDocumentIds({
-      ...scopedOptions,
-      evidenceConflict: undefined
-    })
     const strengthFacetOptions = {
       ...scopedOptions,
       evidenceStrength: undefined
@@ -11463,110 +11450,71 @@ export class AiAssistantService {
       }
     }
     let page: any
-    const typeFacet = text
-      ? personalMemoryStore.getSearchDocumentTypeCountsByKeyword(text, facetAllowedIds)
-      : {
-          counts: personalMemoryStore.getSearchDocumentTypeCountsInScope(facetAllowedIds || new Set()),
-          searchMode: undefined
-        }
-    const trustFacet = text
-      ? personalMemoryStore.getSearchDocumentTrustCountsByKeyword(text, trustFacetAllowedIds)
-      : {
-          counts: personalMemoryStore.getSearchDocumentTrustCountsInScope(
-            trustFacetAllowedIds || new Set()
-          ),
-          searchMode: undefined
-        }
+    const countScoped = (facetOptions: MemorySearchOptions) =>
+      personalMemoryStore.countSearchDocumentsInScope(facetOptions, text)
+    const typeFacetOptions = { ...scopedOptions, documentTypes: undefined }
+    const typeFacetEntries = ['entity', 'relation', 'claim', 'event', 'task', 'resource']
+      .map(documentType => [documentType, countScoped({
+        ...typeFacetOptions,
+        documentTypes: [documentType]
+      }).total] as const)
+      .filter(([, count]) => count > 0)
+    const typeFacet = {
+      counts: Object.fromEntries(typeFacetEntries),
+      searchMode: text ? countScoped(typeFacetOptions).searchMode : undefined
+    }
+    const trustFacetOptions = { ...scopedOptions, trustStatuses: undefined }
+    const trustFacetEntries = ['confirmed', 'candidate', 'cancelled', 'source']
+      .map(trustStatus => [trustStatus, countScoped({
+        ...trustFacetOptions,
+        trustStatuses: [trustStatus]
+      }).total] as const)
+      .filter(([, count]) => count > 0)
+    const trustFacet = {
+      counts: Object.fromEntries(trustFacetEntries),
+      searchMode: text ? countScoped(trustFacetOptions).searchMode : undefined
+    }
     const sourceCounts = Object.fromEntries(
       ['wechat', 'documents', 'calendar', 'mail', 'legacy'].map(sourceId => {
-        const sourceAllowedIds = personalMemoryStore.listScopedSearchDocumentIds({
+        const total = personalMemoryStore.countSearchDocumentsInScope({
           ...sourceFacetOptions,
           sourceIds: [sourceId]
-        }) || new Set<string>()
-        const total = text
-          ? personalMemoryStore.listSearchDocumentsByKeywordPage(
-              text,
-              sourceAllowedIds,
-              { offset: 0, limit: 1 }
-            ).total
-          : personalMemoryStore.listSearchDocumentsInScopePage(
-              sourceAllowedIds,
-              { offset: 0, limit: 1 }
-            ).total
+        }, text).total
         return [sourceId, total]
       })
     )
-    const supportFacet = text
-      ? personalMemoryStore.getSearchDocumentSupportCountsByKeyword(
-          text,
-          supportFacetAllowedIds,
-          scopedOptions
-        )
-      : {
-          counts: personalMemoryStore.getSearchDocumentSupportCountsInScope(
-            supportFacetAllowedIds || new Set(),
-            scopedOptions
-          ),
-          searchMode: undefined
-        }
-    const conflictFacet = text
-      ? personalMemoryStore.getSearchDocumentContradictionCountByKeyword(
-          text,
-          conflictFacetAllowedIds,
-          scopedOptions
-        )
-      : {
-          count: personalMemoryStore.getSearchDocumentContradictionCountInScope(
-            conflictFacetAllowedIds || new Set(),
-            scopedOptions
-          ),
-          searchMode: undefined
-        }
-    const conflictFacetTotal = text
-        ? personalMemoryStore.listSearchDocumentsByKeywordPage(
-          text,
-          conflictFacetAllowedIds,
-          { offset: 0, limit: 1 }
-        ).total
-      : personalMemoryStore.listSearchDocumentsInScopePage(
-          conflictFacetAllowedIds || new Set(),
-          { offset: 0, limit: 1 }
-        ).total
+    const supportFacetOptions = { ...scopedOptions, supportability: undefined }
+    const supportFacet = {
+      counts: {
+        supporting: countScoped({ ...supportFacetOptions, supportability: 'supporting' }).total,
+        review_only: countScoped({ ...supportFacetOptions, supportability: 'review_only' }).total
+      },
+      searchMode: text ? countScoped(supportFacetOptions).searchMode : undefined
+    }
+    const conflictFacetOptions = { ...scopedOptions, evidenceConflict: undefined }
+    const conflictFacet = {
+      count: countScoped({
+        ...conflictFacetOptions,
+        evidenceConflict: 'with_contradiction'
+      }).total,
+      searchMode: text ? countScoped(conflictFacetOptions).searchMode : undefined
+    }
+    const conflictFacetTotal = countScoped(conflictFacetOptions).total
     const evidenceStrengthCounts = Object.fromEntries(
       ['direct', 'indirect_only'].map(strength => {
-        const strengthAllowedIds = personalMemoryStore.listScopedSearchDocumentIds({
+        const total = personalMemoryStore.countSearchDocumentsInScope({
           ...strengthFacetOptions,
           evidenceStrength: strength
-        }) || new Set<string>()
-        const total = text
-          ? personalMemoryStore.listSearchDocumentsByKeywordPage(
-              text,
-              strengthAllowedIds,
-              { offset: 0, limit: 1 }
-            ).total
-          : personalMemoryStore.listSearchDocumentsInScopePage(
-              strengthAllowedIds,
-              { offset: 0, limit: 1 }
-            ).total
+        }, text).total
         return [strength, total]
       })
     )
     const evidenceBreadthCounts = Object.fromEntries(
       ['multi_source', 'single_source'].map(breadth => {
-        const breadthAllowedIds = personalMemoryStore.listScopedSearchDocumentIds({
+        const total = personalMemoryStore.countSearchDocumentsInScope({
           ...breadthFacetOptions,
           evidenceBreadth: breadth
-        }) || new Set<string>()
-        const total = text
-          ? personalMemoryStore.listSearchDocumentsByKeywordPage(
-              text,
-              breadthAllowedIds,
-              { offset: 0, limit: 1 }
-            ).total
-          : personalMemoryStore.listSearchDocumentsInScopePage(
-              breadthAllowedIds,
-              { offset: 0, limit: 1 }
-            ).total
+        }, text).total
         return [breadth, total]
       })
     )
@@ -11581,18 +11529,10 @@ export class AiAssistantService {
             scopedOptions as Record<string, unknown>,
             preset
           ) as MemorySearchOptions
-          const presetAllowedIds =
-            personalMemoryStore.listScopedSearchDocumentIds(presetOptions) || new Set<string>()
-          const total = text
-            ? personalMemoryStore.listSearchDocumentsByKeywordPage(
-                text,
-                presetAllowedIds,
-                { offset: 0, limit: 1 }
-              ).total
-            : personalMemoryStore.listSearchDocumentsInScopePage(
-                presetAllowedIds,
-                { offset: 0, limit: 1 }
-              ).total
+          const total = personalMemoryStore.countSearchDocumentsInScope(
+            presetOptions,
+            text
+          ).total
           return [preset, total]
         })
     )
@@ -11627,7 +11567,13 @@ export class AiAssistantService {
       }
     } else if (text) {
       const execution: { mode?: 'hybrid' | 'lexical_ai_disabled' | 'lexical_vector_fallback' } = {}
-      const ranked = await this.searchMemoryHybrid(text, scopedOptions, 500, execution)
+      const ranked = await this.searchMemoryHybrid(
+        text,
+        scopedOptions,
+        500,
+        execution,
+        { allowedIds }
+      )
       page = {
         ...paginateMemoryResults(ranked, offset, limit, 500),
         searchMode,

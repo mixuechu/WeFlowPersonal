@@ -18148,6 +18148,17 @@ function AiAssistantPage() {
                 当前{memorySearchRepairResult.healthy ? '一致' : '仍需检查'}。
               </small>}
             </div>}
+            {memoryDiagnostics.memorySearchScopePlanning?.version && <div className="assistant-recovery-audit healthy">
+              <header><Search size={15} /><span><b>检索范围执行策略</b>
+                <small>来源、类型、可信度、证据强度、冲突和审阅预设的分面计数直接在 SQLCipher 内完成，不再把每个分面的全部文档 ID 复制进主进程；全文与向量召回复用同一份已鉴权主范围。</small>
+              </span></header>
+              <div className="assistant-recovery-current">
+                <span>分面范围 <b>SQLCipher 直接计数</b></span>
+                <span>分面 ID 集合 <b>{Number(memoryDiagnostics.memorySearchScopePlanning.facetIdentityMaterializations || 0)}</b> 份</span>
+                <span>主检索范围 <b>单份复用</b></span>
+                <span>全文 / 向量 <b>{memoryDiagnostics.memorySearchScopePlanning.hybridScopeReused ? '范围一致' : '需要检查'}</b></span>
+              </div>
+            </div>}
             {memoryDiagnostics.memorySearchRevision?.version && <div className={`assistant-recovery-audit ${memoryDiagnostics.memorySearchRevisionHealthy ? 'healthy' : 'unhealthy'}`}>
               <header><Search size={15} /><span><b>检索分页一致性保护</b>
                 <small>搜索文档、原文证据、相关性反馈和向量索引任一发生变化都会推进加密数据库 revision；逐项核验每个触发器监听的表、操作和计数动作，定义漂移会在启动时按项自愈。</small>

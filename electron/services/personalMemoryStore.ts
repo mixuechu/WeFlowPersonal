@@ -7836,6 +7836,13 @@ export class PersonalMemoryStore {
       reviewInboxIndexes,
       mineTaskOwnershipAuditIndex,
       memoryChangeLog,
+      memorySearchScopePlanning: {
+        version: 1,
+        facetStrategy: 'sqlcipher_direct_count',
+        facetIdentityMaterializations: 0,
+        primaryScopeStrategy: 'single_shared_identity_set',
+        hybridScopeReused: true
+      },
       memorySearchRevision,
       memorySearchFeedbackArchiveRevision,
       memoryDeletionAuditRevision,
@@ -20444,8 +20451,10 @@ export class PersonalMemoryStore {
     this.db?.prepare('UPDATE merge_history SET reverted_at=? WHERE id=? AND reverted_at IS NULL').run(new Date().toISOString(), id)
   }
 
-  listScopedSearchDocumentIds(options: MemorySearchOptions = {}): Set<string> | null {
-    if (!this.db) return new Set()
+  private buildScopedSearchDocumentQuery(options: MemorySearchOptions = {}): {
+    sql: string
+    parameters: Array<string | number>
+  } | null {
     const hasScope = Boolean(
       options.entityId ||
       options.sessionId ||
@@ -20656,9 +20665,62 @@ export class PersonalMemoryStore {
       }
     }
     if (!conditions.length) return null
-    return new Set((this.db.prepare(`
-      SELECT d.id FROM search_documents d WHERE ${conditions.join(' AND ')}
-    `).all(...parameters) as Array<{ id: string }>).map(row => row.id))
+    return {
+      sql: `SELECT d.id FROM search_documents d WHERE ${conditions.join(' AND ')}`,
+      parameters
+    }
+  }
+
+  listScopedSearchDocumentIds(options: MemorySearchOptions = {}): Set<string> | null {
+    if (!this.db) return new Set()
+    const scope = this.buildScopedSearchDocumentQuery(options)
+    if (!scope) return null
+    return new Set((this.db.prepare(scope.sql).all(...scope.parameters) as Array<{ id: string }>)
+      .map(row => row.id))
+  }
+
+  countSearchDocumentsInScope(
+    options: MemorySearchOptions = {},
+    query = ''
+  ): { total: number; searchMode?: 'fts' | 'substring_fallback' } {
+    if (!this.db) return { total: 0 }
+    const scope = this.buildScopedSearchDocumentQuery(options)
+    const scopeCte = scope ? `WITH scoped_document_ids AS (${scope.sql})` : ''
+    const scopeJoin = scope
+      ? 'JOIN scoped_document_ids scope ON scope.id=d.id'
+      : ''
+    const scopeParameters = scope?.parameters || []
+    const trustedCondition = `NOT (
+      d.document_type IN ('claim','relation','event')
+      AND COALESCE(json_extract(d.metadata_json,'$.status'),'')='rejected'
+    )`
+    const normalized = String(query || '').trim().replace(/["']/g, ' ')
+    if (!normalized) {
+      const total = Number((this.db.prepare(`
+        ${scopeCte}
+        SELECT COUNT(*) AS count FROM search_documents d ${scopeJoin}
+        WHERE ${trustedCondition}
+      `).get(...scopeParameters) as any)?.count || 0)
+      return { total }
+    }
+    const ftsQuery = `"${normalized.replace(/"/g, '""')}"`
+    try {
+      const total = Number((this.db.prepare(`
+        ${scopeCte}
+        SELECT COUNT(*) AS count
+        FROM search_fts JOIN search_documents d ON d.id=search_fts.document_id
+        ${scopeJoin}
+        WHERE search_fts MATCH ? AND ${trustedCondition}
+      `).get(...scopeParameters, ftsQuery) as any)?.count || 0)
+      if (total > 0) return { total, searchMode: 'fts' }
+    } catch {}
+    const pattern = `%${normalized}%`
+    const total = Number((this.db.prepare(`
+      ${scopeCte}
+      SELECT COUNT(*) AS count FROM search_documents d ${scopeJoin}
+      WHERE (d.title LIKE ? OR d.search_text LIKE ?) AND ${trustedCondition}
+    `).get(...scopeParameters, pattern, pattern) as any)?.count || 0)
+    return { total, searchMode: 'substring_fallback' }
   }
 
   private replaceActiveSearchScope(ids: Set<string>): void {
