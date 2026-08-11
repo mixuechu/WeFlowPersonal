@@ -41,4 +41,18 @@ test('task reminder UI consumes the authoritative next offset and explains the d
   assert.match(page, /nextOffset: Number\(result\.nextOffset/)
   assert.match(page, /行动提醒由 SQLCipher/)
   assert.match(page, /下一个时间边界自动失效/)
+  assert.match(page, /每日系统通知同样使用完整权威总数/)
+})
+
+test('daily reminder notification reads the SQLCipher directory without scanning all tasks', () => {
+  const service = read('electron/services/aiAssistantService.ts')
+  const start = service.indexOf('private async runSchedulerTick(')
+  const end = service.indexOf('\n  private ', start + 10)
+  const scheduler = service.slice(start, end)
+  assert.ok(start > 0 && end > start)
+  assert.match(scheduler, /this\.queryTaskReminderPage\(\{ limit: 2 \}, now\)/)
+  assert.match(scheduler, /reminderPage\.total/)
+  assert.match(scheduler, /reminderPage\.items\.map/)
+  assert.doesNotMatch(scheduler, /buildTaskReminders|applyReminderPreferences|this\.state\.tasks/)
+  assert.match(service, /notification: 'sqlcipher_first_two_exact_total'/)
 })

@@ -11845,7 +11845,8 @@ function AiAssistantPage() {
             </small>}
             {dashboard?.taskReminderDirectory?.directory === 'sqlcipher_paginated_complete' && <small className="assistant-evidence">
               行动提醒由 SQLCipher 按逾期、48 小时临期、等待过久和未完成依赖实时计算，
-              当前可见 {dashboard.taskReminderDirectory.total || 0} 条；静音与稍后提醒在数据库分页前过滤。
+              当前可见 {dashboard.taskReminderDirectory.total || 0} 条；静音与稍后提醒在数据库分页前过滤，
+              每日系统通知同样使用完整权威总数且只读取正文所需的前两条。
               目录缓存绑定任务与偏好版本，并会在下一个时间边界自动失效。
             </small>}
             {dashboard?.dashboardScaleStats?.authority === 'sqlcipher_revision_cached' && <small className="assistant-evidence">

@@ -155,8 +155,6 @@ import {
   TASK_ABSENT_MUTATION_TOKEN
 } from './taskMutationPolicy.ts'
 import {
-  applyReminderPreferences,
-  buildTaskReminders,
   findMatchingTask,
   normalizeReminderPreferences,
   type ReminderPreferences,
@@ -6144,6 +6142,7 @@ export class AiAssistantService {
         nextOffset: taskReminderPage.nextOffset,
         version: 'task-reminder-directory-v2',
         directory: 'sqlcipher_paginated_complete',
+        notification: 'sqlcipher_first_two_exact_total',
         pageLimit: taskReminderPage.limit,
         nextBoundaryAt: taskReminderPage.nextBoundaryMs == null
           ? '' : new Date(taskReminderPage.nextBoundaryMs).toISOString(),
@@ -13589,16 +13588,13 @@ export class AiAssistantService {
         this.saveState()
         return 'daily_partial_saved'
       }
-      const reminders = applyReminderPreferences(
-        buildTaskReminders(this.state.tasks.filter(task => task.classification === 'mine'), now),
-        this.state.reminderPreferences,
-        now
-      ).visible
-      if (reminders.length && this.state.cursor.lastReminderNotificationDate !== today) {
+      const reminderPage = this.queryTaskReminderPage({ limit: 2 }, now)
+      if (reminderPage.total > 0 && this.state.cursor.lastReminderNotificationDate !== today) {
         this.enqueueNotification({
           key: `task-reminders:${today}`,
-          title: `AI 助理：${reminders.length} 项需要留意`,
-          content: reminders.slice(0, 2).map(item => `${item.title}（${item.reason}）`).join('；'),
+          title: `AI 助理：${reminderPage.total} 项需要留意`,
+          content: reminderPage.items.map((item: any) =>
+            `${item.title}（${item.reason}）`).join('；'),
           createdAt: now.toISOString(),
           targetRoute: '/ai-assistant?focus=reminders'
         })
