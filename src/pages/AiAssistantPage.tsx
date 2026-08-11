@@ -17426,6 +17426,12 @@ function AiAssistantPage() {
                   ? ` · ${memoryDiagnostics.memoryRestoreRecovery.lastError}`
                   : ''}
               </small>}
+              {memoryDiagnostics.importedBackupStagingRecovery && <small>
+                导入暂存启动检查 {Number(memoryDiagnostics.importedBackupStagingRecovery.checked || 0)} 组
+                {' · '}完成中断注册 {Number(memoryDiagnostics.importedBackupStagingRecovery.finalized || 0)} 组
+                {' · '}清理未发布暂存 {Number(memoryDiagnostics.importedBackupStagingRecovery.abandoned || 0)} 组
+                {' · '}需人工检查 {Number(memoryDiagnostics.importedBackupStagingRecovery.conflicts || 0)} 组
+              </small>}
             </div>}
             {memoryDiagnostics.ingestionSummary?.recent24Hours && <div className={`assistant-recovery-audit ${
               Number(memoryDiagnostics.ingestionSummary.recent24Hours.partial || 0) > 0 ||

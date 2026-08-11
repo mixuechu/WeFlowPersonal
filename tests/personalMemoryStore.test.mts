@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { createHash, randomBytes } from 'node:crypto'
@@ -11222,6 +11222,65 @@ test('verified memory backup is created only from a healthy database', () => wit
   assert.equal(existsSync(`${imported.path}.state.json`), true)
   assert.ok(store.restoreBackup(imported.path).success)
 }))
+
+test('startup finalizes a fully staged imported database and state pair', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'weflow-import-staging-recovery-'))
+  const databasePath = join(directory, 'memory.sqlite')
+  const backupDirectory = join(directory, 'personal-memory-backups')
+  const first = new PersonalMemoryStore()
+  try {
+    first.initialize(databasePath)
+    const source = first.createBackup()
+    const finalDatabase = join(backupDirectory, 'personal-memory-imported-crash.sqlite')
+    copyFileSync(source.path, `${finalDatabase}.importing-db`)
+    writeFileSync(`${finalDatabase}.importing-state`, JSON.stringify({ version: 3 }), { mode: 0o600 })
+    first.close()
+
+    const reopened = new PersonalMemoryStore()
+    reopened.initialize(databasePath)
+    try {
+      assert.equal(existsSync(finalDatabase), true)
+      assert.equal(existsSync(`${finalDatabase}.state.json`), true)
+      assert.equal(existsSync(`${finalDatabase}.importing-db`), false)
+      assert.equal(existsSync(`${finalDatabase}.importing-state`), false)
+      assert.equal(reopened.getDiagnostics().importedBackupStagingRecovery.finalized, 1)
+      assert.equal(reopened.inspectBackup(finalDatabase).integrity, 'ok')
+    } finally {
+      reopened.close()
+    }
+  } finally {
+    first.close()
+    rmSync(directory, { recursive: true, force: true })
+  }
+})
+
+test('startup discards an unpublished one-sided imported database staging file', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'weflow-import-staging-abandon-'))
+  const databasePath = join(directory, 'memory.sqlite')
+  const backupDirectory = join(directory, 'personal-memory-backups')
+  const first = new PersonalMemoryStore()
+  try {
+    first.initialize(databasePath)
+    const source = first.createBackup()
+    const finalDatabase = join(backupDirectory, 'personal-memory-imported-incomplete.sqlite')
+    copyFileSync(source.path, `${finalDatabase}.importing-db`)
+    first.close()
+
+    const reopened = new PersonalMemoryStore()
+    reopened.initialize(databasePath)
+    try {
+      assert.equal(existsSync(finalDatabase), false)
+      assert.equal(existsSync(`${finalDatabase}.state.json`), false)
+      assert.equal(existsSync(`${finalDatabase}.importing-db`), false)
+      assert.equal(reopened.getDiagnostics().importedBackupStagingRecovery.abandoned, 1)
+    } finally {
+      reopened.close()
+    }
+  } finally {
+    first.close()
+    rmSync(directory, { recursive: true, force: true })
+  }
+})
 
 test('deferred backup retention preserves old snapshots until the state sidecar commits', () => withStore(store => {
   const backups = Array.from({ length: 10 }, () => {

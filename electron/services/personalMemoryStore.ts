@@ -1,7 +1,7 @@
 import Database from 'better-sqlite3-multiple-ciphers'
 import { createHash } from 'node:crypto'
 import { gzipSync, gunzipSync } from 'node:zlib'
-import { chmodSync, copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, statSync, unlinkSync, writeFileSync } from 'fs'
+import { chmodSync, closeSync, copyFileSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, readdirSync, renameSync, statSync, unlinkSync, writeFileSync } from 'fs'
 import { dirname, join, resolve } from 'path'
 import { fuzzyEntityScore, pinyinEntityScore } from './fuzzyEntitySearch.ts'
 import {
@@ -63,6 +63,22 @@ type MemoryChangeOrigin = {
   sourceKind?: 'wechat' | 'documents' | 'calendar' | 'mail' | 'local' | 'system'
 }
 export const RESOURCE_CONTENT_CHAR_LIMIT = 80_000
+
+const writeSyncedPrivateFile = (path: string, content: Uint8Array | string): void => {
+  const descriptor = openSync(path, 'wx', 0o600)
+  try {
+    writeFileSync(descriptor, content)
+    fsyncSync(descriptor)
+  } finally {
+    closeSync(descriptor)
+  }
+  try { chmodSync(path, 0o600) } catch {}
+}
+
+const syncDirectory = (path: string): void => {
+  const descriptor = openSync(path, 'r')
+  try { fsyncSync(descriptor) } finally { closeSync(descriptor) }
+}
 
 const applyResourceContentBudget = (
   value: unknown,
@@ -568,6 +584,14 @@ export class PersonalMemoryStore {
   private databasePath = ''
   private encryptionKey: Buffer | null = null
   private encryptionMigrated = false
+  private importedBackupStagingRecovery = {
+    version: 'imported-backup-staging-v1',
+    checked: 0,
+    finalized: 0,
+    abandoned: 0,
+    conflicts: 0,
+    lastRunAt: ''
+  }
   private taskReviewFeedbackStatsCache: {
     revision: string
     value: any
@@ -2004,6 +2028,7 @@ export class PersonalMemoryStore {
       INSERT INTO schema_meta(key, value, updated_at) VALUES('schema_version', '1', ?)
       ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at
     `).run(new Date().toISOString())
+    this.recoverImportedBackupStaging()
     if (this.encryptionKey) this.encryptLegacyBackups()
   }
 
@@ -7610,6 +7635,7 @@ export class PersonalMemoryStore {
       generalEvidenceRevision,
       eventDeduplicationAuthority,
       backupPairIntegrity,
+      importedBackupStagingRecovery: this.importedBackupStagingRecovery,
       backups
     }
   }
@@ -8249,20 +8275,21 @@ export class PersonalMemoryStore {
     try { chmodSync(backupDirectory, 0o700) } catch {}
     const timestamp = new Date().toISOString().replace(/[:.]/g, '-')
     const backupPath = join(backupDirectory, `personal-memory-imported-${timestamp}.sqlite`)
-    const temporary = `${backupPath}.tmp`
-    writeFileSync(temporary, databaseBytes)
+    const databaseTemporary = `${backupPath}.importing-db`
+    const stateTemporary = `${backupPath}.importing-state`
+    writeSyncedPrivateFile(databaseTemporary, databaseBytes)
     const sourceKey = sourceEncryptionKey === undefined
       ? null
       : Buffer.isBuffer(sourceEncryptionKey)
         ? Buffer.from(sourceEncryptionKey)
         : Buffer.from(String(sourceEncryptionKey), 'hex')
     if (sourceKey && sourceKey.length !== 32) {
-      try { unlinkSync(temporary) } catch {}
+      try { unlinkSync(databaseTemporary) } catch {}
       throw new Error('迁移包中的数据库密钥无效')
     }
     try {
-      if (sourceKey && !this.isPlaintextDatabase(temporary)) {
-        const imported = new Database(temporary)
+      if (sourceKey && !this.isPlaintextDatabase(databaseTemporary)) {
+        const imported = new Database(databaseTemporary)
         try {
           imported.pragma('cipher=sqlcipher')
           imported.pragma('legacy=4')
@@ -8275,21 +8302,92 @@ export class PersonalMemoryStore {
           sourceKey.fill(0)
           imported.close()
         }
-      } else if (this.encryptionKey && this.isPlaintextDatabase(temporary)) {
-        this.prepareEncryptedDatabase(temporary, this.encryptionKey)
+      } else if (this.encryptionKey && this.isPlaintextDatabase(databaseTemporary)) {
+        this.prepareEncryptedDatabase(databaseTemporary, this.encryptionKey)
       }
-      this.verifyDatabase(temporary)
-      renameSync(temporary, backupPath)
-      writeFileSync(`${backupPath}.state.json`, storedStateText || stateText, 'utf8')
+      this.verifyDatabase(databaseTemporary)
+      const persistedState = storedStateText || stateText
+      JSON.parse(persistedState)
+      writeSyncedPrivateFile(stateTemporary, persistedState)
+      renameSync(databaseTemporary, backupPath)
+      renameSync(stateTemporary, `${backupPath}.state.json`)
+      syncDirectory(backupDirectory)
       try {
         chmodSync(backupPath, 0o600)
         chmodSync(`${backupPath}.state.json`, 0o600)
       } catch {}
       return { path: backupPath, bytes: statSync(backupPath).size, createdAt: new Date().toISOString(), hasState: true }
     } catch (error) {
-      try { unlinkSync(temporary) } catch {}
+      for (const path of [
+        databaseTemporary,
+        stateTemporary,
+        backupPath,
+        `${backupPath}.state.json`
+      ]) {
+        try { if (existsSync(path)) unlinkSync(path) } catch {}
+      }
       throw error
     }
+  }
+
+  private recoverImportedBackupStaging(): void {
+    if (!this.databasePath) return
+    const backupDirectory = join(dirname(this.databasePath), 'personal-memory-backups')
+    let names: string[] = []
+    try { names = readdirSync(backupDirectory) } catch {}
+    const bases = new Set<string>()
+    for (const name of names) {
+      const match = name.match(/^(personal-memory-imported-.*\.sqlite)\.importing-(?:db|state)$/)
+      if (match) bases.add(match[1])
+    }
+    const recovery = {
+      ...this.importedBackupStagingRecovery,
+      checked: bases.size,
+      finalized: 0,
+      abandoned: 0,
+      conflicts: 0,
+      lastRunAt: new Date().toISOString()
+    }
+    for (const base of bases) {
+      const databasePath = join(backupDirectory, base)
+      const statePath = `${databasePath}.state.json`
+      const databaseTemporary = `${databasePath}.importing-db`
+      const stateTemporary = `${databasePath}.importing-state`
+      try {
+        if (existsSync(databasePath) && existsSync(statePath)) {
+          for (const path of [databaseTemporary, stateTemporary]) {
+            try { if (existsSync(path)) unlinkSync(path) } catch {}
+          }
+          recovery.abandoned += 1
+          continue
+        }
+        if (!existsSync(databasePath) && existsSync(databaseTemporary) &&
+            existsSync(stateTemporary) && !existsSync(statePath)) {
+          this.verifyDatabase(databaseTemporary)
+          JSON.parse(readFileSync(stateTemporary, 'utf8'))
+          renameSync(databaseTemporary, databasePath)
+        }
+        if (existsSync(databasePath) && !existsSync(statePath) && existsSync(stateTemporary)) {
+          this.verifyDatabase(databasePath)
+          JSON.parse(readFileSync(stateTemporary, 'utf8'))
+          renameSync(stateTemporary, statePath)
+          try {
+            chmodSync(databasePath, 0o600)
+            chmodSync(statePath, 0o600)
+          } catch {}
+          syncDirectory(backupDirectory)
+          recovery.finalized += 1
+          continue
+        }
+        for (const path of [databaseTemporary, stateTemporary]) {
+          try { if (existsSync(path)) unlinkSync(path) } catch {}
+        }
+        recovery.abandoned += 1
+      } catch {
+        recovery.conflicts += 1
+      }
+    }
+    this.importedBackupStagingRecovery = recovery
   }
 
   private listBackups(backupDirectory: string): Array<{ path: string; name: string; bytes: number; createdAt: string; hasState: boolean }> {
