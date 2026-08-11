@@ -98,6 +98,11 @@ export function buildEntityInsights(input: {
     evidenceTotal: number
     lastEvidenceAt: number | null
   }>
+  authoritativeRelationships?: Record<string, {
+    confirmedCount: number
+    candidateCount: number
+    confirmedConfidenceTotal: number
+  }>
   now?: Date
 }): Record<string, EntityInsight> {
   const now = (input.now || new Date()).getTime()
@@ -109,6 +114,16 @@ export function buildEntityInsights(input: {
       (relation.subjectId === entity.id || relation.objectId === entity.id))
     const relations = relevantRelations.filter(relation => relation.status === 'confirmed')
     const candidateRelations = relevantRelations.filter(relation => relation.status === 'candidate')
+    const authoritativeRelationships = input.authoritativeRelationships?.[entity.id]
+    const confirmedRelationCount = authoritativeRelationships
+      ? Math.max(0, Number(authoritativeRelationships.confirmedCount || 0))
+      : relations.length
+    const candidateRelationCount = authoritativeRelationships
+      ? Math.max(0, Number(authoritativeRelationships.candidateCount || 0))
+      : candidateRelations.length
+    const confirmedConfidenceTotal = authoritativeRelationships
+      ? Math.max(0, Number(authoritativeRelationships.confirmedConfidenceTotal || 0))
+      : relations.reduce((sum, relation) => sum + Number(relation.confidence || 0), 0)
     const claims = input.claims.filter(claim => claim.status !== 'rejected' && claim.subject_id === entity.id)
     const events = input.events.filter(event => event.status !== 'rejected' &&
       (event.participants || []).some((participant: any) => participant.entity_id === entity.id))
@@ -136,7 +151,7 @@ export function buildEntityInsights(input: {
     const daysSinceContact = lastContactAt ? Math.max(0, (now - lastContactAt * 1000) / 86_400_000) : Infinity
     const recencyScore = daysSinceContact <= 7 ? 40 : daysSinceContact <= 30 ? 28 : daysSinceContact <= 90 ? 15 : 0
     const evidenceScore = Math.min(30, evidenceCount * 3)
-    const relationScore = Math.min(20, relations.reduce((sum, relation) => sum + Number(relation.confidence || 0) * 10, 0))
+    const relationScore = Math.min(20, confirmedConfidenceTotal * 10)
     const taskScore = Math.min(10, tasks.length * 4)
     const strength = Math.round(Math.min(100, recencyScore + evidenceScore + relationScore + taskScore))
     const pendingCommitmentCount = events.filter(event =>
@@ -144,8 +159,8 @@ export function buildEntityInsights(input: {
     const explanation = [
       lastContactAt ? `最近证据：${Math.floor(daysSinceContact)} 天前` : '尚无带时间的互动证据',
       `${evidenceCount} 条去重原文证据`,
-      `${relations.length} 条已确认关系`,
-      `${candidateRelations.length} 条关系待确认`,
+      `${confirmedRelationCount} 条已确认关系`,
+      `${candidateRelationCount} 条关系待确认`,
       `${tasks.length} 项未完成关联任务`
     ]
     result[entity.id] = {
@@ -154,8 +169,8 @@ export function buildEntityInsights(input: {
       strengthLabel: strength >= 70 ? '强' : strength >= 35 ? '中' : '弱',
       lastContactAt,
       evidenceCount,
-      relationCount: relations.length,
-      pendingRelationCount: candidateRelations.length,
+      relationCount: confirmedRelationCount,
+      pendingRelationCount: candidateRelationCount,
       openTaskCount: tasks.length,
       pendingCommitmentCount,
       explanation

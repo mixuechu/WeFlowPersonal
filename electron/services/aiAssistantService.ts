@@ -6812,18 +6812,12 @@ export class AiAssistantService {
       const mineTasks = this.state.tasks.filter(task => task.classification === 'mine')
       const memory = personalMemoryStore.getEntityMemory(focusEntity.id, 200)
       const evidenceStats = personalMemoryStore.getEntityEvidenceStats(focusEntity.id)
+      const graphFocus = personalMemoryStore.getEntityGraphFocus(focusEntity.id, 200)
       const candidateReviewCounts =
         personalMemoryStore.getEntityCandidateReviewCounts(focusEntity.id)
-      const allRelations = this.state.graph.relations
-        .filter(relation => relation.status !== 'rejected' &&
-          (relation.subjectId === focusEntity.id || relation.objectId === focusEntity.id))
-        .sort((left, right) =>
-          Number(right.status === 'confirmed') - Number(left.status === 'confirmed') ||
-          Number(right.confidence || 0) - Number(left.confidence || 0) ||
-          String(right.updatedAt || right.createdAt || '').localeCompare(String(left.updatedAt || left.createdAt || '')))
       const insights = buildEntityInsights({
-        entities: this.state.graph.entities,
-        relations: this.state.graph.relations,
+        entities: [focusEntity],
+        relations: [],
         claims: memory.claims,
         claimTotal: memory.claimTotal,
         events: memory.events,
@@ -6834,6 +6828,13 @@ export class AiAssistantService {
             evidenceTotal: evidenceStats.activeEvidenceTotal,
             lastEvidenceAt: evidenceStats.lastActiveEvidenceAt
           }
+        },
+        authoritativeRelationships: {
+          [focusEntity.id]: {
+            confirmedCount: graphFocus.confirmedRelationCount,
+            candidateCount: graphFocus.candidateRelationCount,
+            confirmedConfidenceTotal: graphFocus.confirmedConfidenceTotal
+          }
         }
       })
       const entityTaskRevision = this.getProjectDirectoryRevision()
@@ -6843,7 +6844,7 @@ export class AiAssistantService {
         { limit: 40 },
         entityTaskRevision
       )
-      const visibleRelations = allRelations.slice(0, 200)
+      const visibleRelations = graphFocus.relations
       const visibleRelationEvidence = personalMemoryStore.getRelationEvidenceHotset(
         visibleRelations.map(relation => relation.id),
         GRAPH_QUERY_EVIDENCE_LIMIT
@@ -6900,7 +6901,7 @@ export class AiAssistantService {
             visibleRelationEvidence.get(relation.id)?.evidenceTotal || relation.evidenceTotal
           )
         })),
-        relationTotal: allRelations.length,
+        relationTotal: graphFocus.relationTotal,
         relationHistory,
         entityCorrections,
         relationCorrections,
@@ -6920,9 +6921,7 @@ export class AiAssistantService {
         tasksTruncated: relatedTasks.hasMore,
         taskHasMore: relatedTasks.hasMore,
         taskRevision: relatedTasks.revision,
-        entityNames: Object.fromEntries(this.state.graph.entities
-          .filter(entity => namedEntityIds.has(entity.id))
-          .map(entity => [entity.id, entity.canonicalName]))
+        entityNames: personalMemoryStore.getEntityCanonicalNames([...namedEntityIds])
       }
     }
     const completedRevision = buildGraphWorkspaceRevision(personalMemoryStore, Boolean(focusEntityId))

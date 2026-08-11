@@ -13712,6 +13712,46 @@ test('graph viewport search, expansion and dense-edge budgets stay inside SQLCip
     assert.equal(dense.truncatedRelations, 25)
     assert.deepEqual(dense.summary, { entities: 130, relations: 1_304 })
     assert.deepEqual(dense.predicates, ['协作', '认识'])
+    const focus = store.getEntityGraphFocus('viewport-dense-0', 200)
+    assert.equal(focus.relationTotal, 49)
+    assert.equal(focus.relations.length, 49)
+    assert.equal(focus.confirmedRelationCount, 49)
+    assert.equal(focus.candidateRelationCount, 0)
+    assert.ok(Math.abs(focus.confirmedConfidenceTotal - 39.2) < 0.000_001)
+    assert.deepEqual(store.getEntityCanonicalNames([
+      'viewport-chain-70', 'viewport-dense-0', 'viewport-dense-0', 'missing'
+    ]), {
+      'viewport-chain-70': '人物 70',
+      'viewport-dense-0': '人物 100'
+    })
+  }))
+
+test('entity graph focus keeps large relation previews bounded with authoritative insight totals', () =>
+  withStore(store => {
+    const entities = Array.from({ length: 251 }, (_, index) => ({
+      id: index === 0 ? 'focus-hub' : `focus-neighbor-${index}`,
+      type: 'person',
+      canonicalName: index === 0 ? '聚焦人物' : `关系人物 ${index}`,
+      summary: '', aliases: [], accountIds: [],
+      trustStatus: 'confirmed', confidence: 1
+    }))
+    const relations = entities.slice(1).map((neighbor, index) => ({
+      id: `focus-relation-${String(index).padStart(3, '0')}`,
+      subjectId: 'focus-hub', objectId: neighbor.id,
+      predicate: '合作',
+      status: index < 225 ? 'confirmed' : 'candidate',
+      confidence: 0.5 + index / 1_000,
+      evidence: []
+    }))
+    store.syncGraph({ entities, relations, reviewQueue: [] } as any)
+    const focus = store.getEntityGraphFocus('focus-hub', 999)
+    assert.equal(focus.relationTotal, 250)
+    assert.equal(focus.relations.length, 200)
+    assert.equal(focus.confirmedRelationCount, 225)
+    assert.equal(focus.candidateRelationCount, 25)
+    assert.ok(focus.confirmedConfidenceTotal > 100)
+    assert.ok(focus.relations.every(item => item.status === 'confirmed'))
+    assert.equal(focus.relations[0].id, 'focus-relation-224')
   }))
 
 test('common graph neighbors are ranked and bounded inside SQLCipher with honest totals', () =>
@@ -22209,11 +22249,18 @@ test('entity insight strength is explainable and deduplicates shared evidence', 
     authoritativeEvidence: {
       'person-a': { evidenceTotal: 750, lastEvidenceAt: 1_775_000_250 }
     },
+    authoritativeRelationships: {
+      'person-a': { confirmedCount: 5, candidateCount: 2, confirmedConfidenceTotal: 1 }
+    },
     now: new Date(1_775_000_300_000)
   })['person-a']
   assert.equal(completeInsight.evidenceCount, 750)
   assert.equal(completeInsight.lastContactAt, 1_775_000_250)
+  assert.equal(completeInsight.relationCount, 5)
+  assert.equal(completeInsight.pendingRelationCount, 2)
+  assert.equal(completeInsight.strength, 80)
   assert.ok(completeInsight.explanation.includes('750 条去重原文证据'))
+  assert.ok(completeInsight.explanation.includes('5 条已确认关系'))
 })
 
 test('entity dossiers derive bounded related tasks from the authoritative task set', () => {

@@ -7853,7 +7853,7 @@ export class PersonalMemoryStore {
       mineTaskOwnershipAuditIndex,
       memoryChangeLog,
       memorySearchScopePlanning: {
-        version: 9,
+        version: 10,
         facetStrategy: 'sqlcipher_direct_count',
         facetIdentityMaterializations: 0,
         primaryScopeStrategy: 'sqlcipher_isolated_temp_table',
@@ -7880,7 +7880,11 @@ export class PersonalMemoryStore {
         graphViewportStrategy: 'sqlcipher_recursive_cte',
         graphViewportIdentityMaterializations: 0,
         graphViewportRelationLimit: GRAPH_VIEWPORT_RELATION_LIMIT,
-        graphViewportTruncationVisible: true
+        graphViewportTruncationVisible: true,
+        graphFocusStrategy: 'sqlcipher_ranked_preview',
+        graphFocusRelationLimit: 200,
+        graphFocusInsightAuthority: 'sqlcipher_counts',
+        graphFocusEntityNameHydration: 'requested_only'
       },
       memorySearchRevision,
       memorySearchFeedbackArchiveRevision,
@@ -15594,6 +15598,82 @@ export class PersonalMemoryStore {
       activeEvidenceTotal: Number(row?.active_evidence_total || 0),
       lastActiveEvidenceAt: lastActiveEvidenceAt > 0 ? lastActiveEvidenceAt : null
     }
+  }
+
+  getEntityGraphFocus(entityId: string, limit = 200): {
+    relations: any[]
+    relationTotal: number
+    confirmedRelationCount: number
+    candidateRelationCount: number
+    confirmedConfidenceTotal: number
+  } {
+    const empty = {
+      relations: [], relationTotal: 0,
+      confirmedRelationCount: 0, candidateRelationCount: 0,
+      confirmedConfidenceTotal: 0
+    }
+    const id = String(entityId || '').trim()
+    if (!this.db || !id) return empty
+    const safeLimit = Math.max(1, Math.min(200, Math.floor(Number(limit) || 200)))
+    const relationTotal = Number((this.db.prepare(`
+      SELECT COUNT(*) AS count FROM relations
+      WHERE status!='rejected' AND (subject_id=? OR object_id=?)
+    `).get(id, id) as any)?.count || 0)
+    const relations = (this.db.prepare(`
+      SELECT id,subject_id,predicate,object_id,confidence,direction_explanation,
+        status,valid_from,valid_to,created_at,updated_at
+      FROM relations
+      WHERE status!='rejected' AND (subject_id=? OR object_id=?)
+      ORDER BY CASE WHEN status='confirmed' THEN 0 ELSE 1 END,
+        confidence DESC,updated_at DESC,id ASC
+      LIMIT ?
+    `).all(id, id, safeLimit) as any[]).map(row => ({
+      id: String(row.id),
+      subjectId: String(row.subject_id),
+      predicate: String(row.predicate),
+      objectId: String(row.object_id),
+      confidence: Number(row.confidence || 0),
+      directionExplanation: String(row.direction_explanation || ''),
+      status: String(row.status || 'candidate'),
+      validFrom: row.valid_from || undefined,
+      validTo: row.valid_to || undefined,
+      createdAt: String(row.created_at || ''),
+      updatedAt: String(row.updated_at || '')
+    }))
+    const stats = this.db.prepare(`
+      SELECT
+        SUM(CASE WHEN relation.status='confirmed' THEN 1 ELSE 0 END) AS confirmed_count,
+        SUM(CASE WHEN relation.status='candidate' THEN 1 ELSE 0 END) AS candidate_count,
+        SUM(CASE WHEN relation.status='confirmed' THEN relation.confidence ELSE 0 END)
+          AS confirmed_confidence_total
+      FROM relations relation
+      JOIN entities subject ON subject.id=relation.subject_id
+        AND subject.deleted_at IS NULL AND subject.trust_status='confirmed'
+      JOIN entities object ON object.id=relation.object_id
+        AND object.deleted_at IS NULL AND object.trust_status='confirmed'
+      WHERE relation.status!='rejected'
+        AND (relation.subject_id=? OR relation.object_id=?)
+    `).get(id, id) as any
+    return {
+      relations,
+      relationTotal,
+      confirmedRelationCount: Number(stats?.confirmed_count || 0),
+      candidateRelationCount: Number(stats?.candidate_count || 0),
+      confirmedConfidenceTotal: Number(stats?.confirmed_confidence_total || 0)
+    }
+  }
+
+  getEntityCanonicalNames(entityIdsInput: string[]): Record<string, string> {
+    const entityIds = [...new Set((entityIdsInput || []).map(value =>
+      String(value || '').trim()).filter(Boolean))].slice(0, 1_000)
+    if (!this.db || !entityIds.length) return {}
+    const rows = this.db.prepare(`
+      SELECT entity.id,entity.canonical_name
+      FROM json_each(?) requested
+      JOIN entities entity ON entity.id=CAST(requested.value AS TEXT)
+      WHERE entity.deleted_at IS NULL
+    `).all(JSON.stringify(entityIds)) as Array<{ id: string; canonical_name: string }>
+    return Object.fromEntries(rows.map(row => [String(row.id), String(row.canonical_name || '')]))
   }
 
   listLegacyEntityReviewEvidence(

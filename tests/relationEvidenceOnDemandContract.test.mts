@@ -9,12 +9,15 @@ const root = join(dirname(fileURLToPath(import.meta.url)), '..')
 test('graph and review evidence presentation hydrates only the visible scope on demand', () => {
   const service = readFileSync(join(root, 'electron/services/aiAssistantService.ts'), 'utf8')
   const store = readFileSync(join(root, 'electron/services/personalMemoryStore.ts'), 'utf8')
-  const focus = service.slice(service.indexOf('const visibleRelations = allRelations.slice(0, 200)'),
-    service.indexOf('const relationHistoryPage', service.indexOf('const visibleRelations = allRelations.slice(0, 200)')))
+  const focusStart = service.indexOf('const visibleRelations = graphFocus.relations')
+  const focus = service.slice(focusStart,
+    service.indexOf('const relationHistoryPage', focusStart))
   const path = service.slice(service.indexOf('findGraphPath('), service.indexOf('findCommonNeighbors('))
   const common = service.slice(service.indexOf('findCommonNeighbors('), service.indexOf('async askMemory('))
 
   assert.match(focus, /getRelationEvidenceHotset\([\s\S]*visibleRelations\.map/)
+  assert.match(service, /getEntityGraphFocus\(focusEntity\.id, 200\)/)
+  assert.doesNotMatch(focus, /allRelations|this\.state\.graph\.relations/)
   assert.match(path, /getRelationEvidenceHotset\([\s\S]*path\.steps\.map/)
   assert.match(common, /getRelationEvidenceHotset\([\s\S]*relationIds/)
   assert.match(common, /findCommonRelationNeighbors\(fromId, toId, pagination\)/)

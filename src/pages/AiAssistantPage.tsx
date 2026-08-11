@@ -18243,6 +18243,9 @@ function AiAssistantPage() {
                 <span>图谱视口 <b>{memoryDiagnostics.memorySearchScopePlanning.graphViewportStrategy === 'sqlcipher_recursive_cte' ? 'SQLCipher 多跳扩展' : '需要检查'}</b></span>
                 <span>视口实体 ID 集合 <b>{Number(memoryDiagnostics.memorySearchScopePlanning.graphViewportIdentityMaterializations || 0)}</b> 份</span>
                 <span>画布关系预算 <b>{Number(memoryDiagnostics.memorySearchScopePlanning.graphViewportRelationLimit || 0).toLocaleString()}</b> 条</span>
+                <span>人物聚焦关系 <b>{memoryDiagnostics.memorySearchScopePlanning.graphFocusStrategy === 'sqlcipher_ranked_preview' ? 'SQLCipher 有界预览' : '需要检查'}</b></span>
+                <span>关系强度统计 <b>{memoryDiagnostics.memorySearchScopePlanning.graphFocusInsightAuthority === 'sqlcipher_counts' ? '权威计数' : '需要检查'}</b></span>
+                <span>聚焦名称水合 <b>{memoryDiagnostics.memorySearchScopePlanning.graphFocusEntityNameHydration === 'requested_only' ? '仅所需实体' : '需要检查'}</b></span>
                 <span>图路径扩展预算 <b>{Number(memoryDiagnostics.memorySearchScopePlanning.scopedGraphPathExpansionBudget || 0).toLocaleString()}</b> 状态</span>
                 <span>预算截断 <b>{memoryDiagnostics.memorySearchScopePlanning.scopedGraphPathTruncationVisible ? '明确提示' : '需要检查'}</b></span>
               </div>
