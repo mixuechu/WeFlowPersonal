@@ -9500,8 +9500,16 @@ test('composed evidence scope indexes cover query plans and self-heal definition
     }, {
       name: 'idx_search_document_evidence_archive_time',
       sql: `SELECT message_id FROM search_document_evidence
+        INDEXED BY idx_search_document_evidence_archive_time
         WHERE document_id=?
         ORDER BY timestamp DESC,source_id DESC,session_id DESC,message_id DESC LIMIT 40`,
+      args: ['memory-id']
+    }, {
+      name: 'idx_task_evidence_window_asc',
+      sql: `SELECT message_id FROM search_document_evidence
+        INDEXED BY idx_task_evidence_window_asc
+        WHERE document_id=?
+        ORDER BY timestamp,source_id,session_id,message_id LIMIT 40`,
       args: ['memory-id']
     }, {
       name: 'idx_entity_evidence_archive_time',
@@ -9589,7 +9597,7 @@ test('composed evidence scope indexes cover query plans and self-heal definition
       reopened.initialize(databasePath)
       const diagnostics = reopened.getDiagnostics()
       assert.equal(diagnostics.evidenceScopeIndexesHealthy, true)
-      assert.equal(diagnostics.evidenceScopeIndexes.installedIndexes, 12)
+      assert.equal(diagnostics.evidenceScopeIndexes.installedIndexes, 13)
       assert.equal(diagnostics.evidenceScopeIndexes.repairedThisStart, true)
       assert.equal(diagnostics.evidenceScopeIndexes.repairedIndexesThisStart, 2)
       assert.equal(diagnostics.evidenceScopeIndexes.unhealthyIndexes.length, 0)
@@ -9629,7 +9637,7 @@ test('entity memory lookup indexes self-heal exact definition drift and remain v
       const health = reopened.getEvidenceScopeIndexHealth()
       assert.equal(health.version, 3)
       assert.equal(health.healthy, true)
-      assert.equal(health.installedIndexes, 12)
+      assert.equal(health.installedIndexes, 13)
       assert.equal(health.repairedIndexesThisStart, 2)
       const reopenedDatabase = (reopened as any).db
       const claimPlan = reopenedDatabase.prepare(`EXPLAIN QUERY PLAN
@@ -26656,6 +26664,25 @@ test('omitted closed-task evidence preserves SQLCipher authority while an explic
     Array.from({ length: 5 }, (_, index) => `closed-task-message-${index}`))
   assert.equal(lifecycle.at(5)?.messageId, 'closed-task-message-110')
   assert.equal(lifecycle.at(-1)?.messageId, 'closed-task-message-124')
+  for (const plan of [{
+    index: 'idx_task_evidence_window_asc', direction: 'ASC'
+  }, {
+    index: 'idx_search_document_evidence_archive_time', direction: 'DESC'
+  }]) {
+    const details = (database.prepare(`EXPLAIN QUERY PLAN
+      WITH ranked AS (
+        SELECT document_id,ROW_NUMBER() OVER (PARTITION BY document_id
+          ORDER BY timestamp ${plan.direction},source_id ${plan.direction},
+            session_id ${plan.direction},message_id ${plan.direction}) AS evidence_rank
+        FROM search_document_evidence INDEXED BY ${plan.index}
+        WHERE document_id IN (?)
+      )
+      SELECT document_id FROM ranked WHERE evidence_rank<=?
+    `).all('task:closed-task-state-storage', 20) as Array<{ detail: string }>)
+      .map(row => row.detail).join(' ')
+    assert.match(details, new RegExp(plan.index))
+    assert.doesNotMatch(details, /USE TEMP B-TREE FOR ORDER BY/i)
+  }
 
   store.syncTasks([{ ...lightweight, detail: '显式移除原文', evidence: [] }])
   assert.equal(database.prepare(`

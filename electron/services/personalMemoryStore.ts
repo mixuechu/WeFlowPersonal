@@ -2336,6 +2336,11 @@ export class PersonalMemoryStore {
       columns: ['document_id', 'timestamp', 'source_id', 'session_id', 'message_id'],
       orders: ['ASC', 'DESC', 'DESC', 'DESC', 'DESC']
     }, {
+      name: 'idx_task_evidence_window_asc',
+      table: 'search_document_evidence',
+      columns: ['document_id', 'timestamp', 'source_id', 'session_id', 'message_id'],
+      orders: ['ASC', 'ASC', 'ASC', 'ASC', 'ASC']
+    }, {
       name: 'idx_entity_evidence_archive_time',
       table: 'entity_evidence',
       columns: ['entity_id', 'timestamp', 'source_id', 'session_id', 'message_id'],
@@ -14596,21 +14601,39 @@ export class PersonalMemoryStore {
     if (!head && !tail) return result
     const documentIds = taskIds.map(id => `task:${id}`)
     const placeholders = documentIds.map(() => '?').join(',')
-    const rows = this.db.prepare(`
+    const readWindow = (
+      indexName: 'idx_task_evidence_window_asc' | 'idx_search_document_evidence_archive_time',
+      direction: 'ASC' | 'DESC',
+      limit: number
+    ): any[] => limit ? this.db!.prepare(`
       WITH ranked AS (
         SELECT substr(document_id,6) AS task_id,source_id,message_id,session_id,
           timestamp,sender,excerpt,
           ROW_NUMBER() OVER (PARTITION BY document_id
-            ORDER BY timestamp,source_id,session_id,message_id) AS head_rank,
-          ROW_NUMBER() OVER (PARTITION BY document_id
-            ORDER BY timestamp DESC,source_id DESC,session_id DESC,message_id DESC) AS tail_rank
-        FROM search_document_evidence
+            ORDER BY timestamp ${direction},source_id ${direction},
+              session_id ${direction},message_id ${direction}) AS evidence_rank
+        FROM search_document_evidence INDEXED BY ${indexName}
         WHERE document_id IN (${placeholders})
       )
       SELECT task_id,source_id,message_id,session_id,timestamp,sender,excerpt
-      FROM ranked WHERE head_rank<=? OR tail_rank<=?
-      ORDER BY task_id,timestamp,source_id,session_id,message_id
-    `).all(...documentIds, head, tail) as any[]
+      FROM ranked WHERE evidence_rank<=?
+    `).all(...documentIds, limit) as any[] : []
+    const unique = new Map<string, any>()
+    for (const row of [
+      ...readWindow('idx_task_evidence_window_asc', 'ASC', head),
+      ...readWindow('idx_search_document_evidence_archive_time', 'DESC', tail)
+    ]) {
+      unique.set([
+        String(row.task_id || ''), String(row.source_id || ''),
+        String(row.session_id || ''), String(row.message_id || '')
+      ].join('\u0000'), row)
+    }
+    const rows = [...unique.values()].sort((left, right) =>
+      String(left.task_id || '').localeCompare(String(right.task_id || '')) ||
+      Number(left.timestamp || 0) - Number(right.timestamp || 0) ||
+      String(left.source_id || '').localeCompare(String(right.source_id || '')) ||
+      String(left.session_id || '').localeCompare(String(right.session_id || '')) ||
+      String(left.message_id || '').localeCompare(String(right.message_id || '')))
     for (const row of rows) {
       const evidence = result.get(String(row.task_id || ''))
       if (!evidence) continue

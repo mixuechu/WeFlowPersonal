@@ -30,8 +30,11 @@ test('runtime task hydration and lifecycle audits use bounded SQLCipher evidence
   const windowStart = store.indexOf('  listTaskEvidenceWindow(')
   const windowEnd = store.indexOf('\n  getTaskDirectoryDossierItem(', windowStart)
   const windowMethod = store.slice(windowStart, windowEnd)
+  assert.match(windowMethod, /idx_task_evidence_window_asc/)
+  assert.match(windowMethod, /idx_search_document_evidence_archive_time/)
   assert.match(windowMethod, /ROW_NUMBER\(\) OVER \(PARTITION BY document_id/)
-  assert.match(windowMethod, /head_rank<=\? OR tail_rank<=\?/)
+  assert.match(windowMethod, /WHERE evidence_rank<=\?/)
+  assert.doesNotMatch(windowMethod, /head_rank<=\? OR tail_rank<=\?/)
   assert.match(windowMethod, /slice\(0, 500\)/)
 
   assert.match(service, /runtimeEvidenceHydrationStrategy: 'sqlcipher_tail_window'/)
