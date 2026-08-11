@@ -9931,6 +9931,52 @@ export class PersonalMemoryStore {
     return result
   }
 
+  getRelationEvidenceMergeStats(sourceRelationId: string, targetRelationId: string): {
+    sourceCount: number
+    targetCount: number
+    mergedCount: number
+    duplicateCount: number
+    identity: string
+  } {
+    if (!this.db) {
+      return { sourceCount: 0, targetCount: 0, mergedCount: 0, duplicateCount: 0, identity: '0' }
+    }
+    const sourceId = String(sourceRelationId || '').trim()
+    const targetId = String(targetRelationId || '').trim()
+    const row = this.db.prepare(`
+      WITH selected AS (
+        SELECT id,relation_id,source_id,session_id,message_id
+        FROM evidence
+        WHERE relation_id=? OR relation_id=?
+      ), carriers AS (
+        SELECT source_id,session_id,message_id,
+          MAX(CASE WHEN relation_id=? THEN 1 ELSE 0 END) AS in_source,
+          MAX(CASE WHEN relation_id=? THEN 1 ELSE 0 END) AS in_target
+        FROM selected
+        GROUP BY source_id,session_id,message_id
+      )
+      SELECT
+        COALESCE(SUM(in_source),0) AS source_count,
+        COALESCE(SUM(in_target),0) AS target_count,
+        COUNT(*) AS merged_count,
+        COALESCE(SUM(CASE WHEN in_source=1 AND in_target=1 THEN 1 ELSE 0 END),0)
+          AS duplicate_count,
+        COALESCE((SELECT COUNT(*) FROM selected),0) AS row_count,
+        COALESCE((SELECT MIN(id) FROM selected),0) AS min_id,
+        COALESCE((SELECT MAX(id) FROM selected),0) AS max_id,
+        COALESCE((SELECT SUM(id) FROM selected),0) AS id_sum
+      FROM carriers
+    `).get(sourceId, targetId, sourceId, targetId) as any
+    return {
+      sourceCount: Number(row?.source_count || 0),
+      targetCount: Number(row?.target_count || 0),
+      mergedCount: Number(row?.merged_count || 0),
+      duplicateCount: Number(row?.duplicate_count || 0),
+      identity: [row?.row_count, row?.min_id, row?.max_id, row?.id_sum]
+        .map(value => String(value || 0)).join(':')
+    }
+  }
+
   getRelationEvidenceHotset(
     relationIds: string[],
     limit = 8
@@ -9996,6 +10042,7 @@ export class PersonalMemoryStore {
         sourceParticipants: Array<{ eventId: string; role: string }>
         targetParticipants: Array<{ eventId: string; role: string }>
       }
+      relationEvidenceMoves?: Array<{ fromId: string; toId: string }>
     } = {}
   ): void {
     if (!this.db) return
@@ -10015,6 +10062,43 @@ export class PersonalMemoryStore {
       const allowedRelations = graph.relations.filter(relation =>
         !this.isMemoryItemSuppressed('relation', relation.id, this.memoryItemSemanticFingerprint('relation', relation)))
       const activeRelationIds = new Set(allowedRelations.map(relation => relation.id))
+      const moveRelationEvidence = this.db.prepare(`
+        INSERT INTO evidence(
+          relation_id,source_id,message_id,session_id,timestamp,sender,excerpt,evidence_role
+        )
+        SELECT ?,source_id,message_id,session_id,timestamp,sender,excerpt,evidence_role
+        FROM evidence WHERE relation_id=?
+        ON CONFLICT(relation_id,source_id,session_id,message_id)
+          WHERE relation_id IS NOT NULL DO UPDATE SET
+          timestamp=MAX(evidence.timestamp,excluded.timestamp),
+          sender=CASE WHEN excluded.sender!='' AND evidence.sender=''
+            THEN excluded.sender ELSE evidence.sender END,
+          excerpt=CASE WHEN LENGTH(excluded.excerpt)>LENGTH(evidence.excerpt)
+            THEN excluded.excerpt ELSE evidence.excerpt END,
+          evidence_role=CASE
+            WHEN (CASE excluded.evidence_role
+              WHEN 'contradiction' THEN 3 WHEN 'direct' THEN 2
+              WHEN 'indirect' THEN 1 ELSE 0 END) >
+              (CASE evidence.evidence_role
+                WHEN 'contradiction' THEN 3 WHEN 'direct' THEN 2
+                WHEN 'indirect' THEN 1 ELSE 0 END)
+            THEN excluded.evidence_role ELSE evidence.evidence_role END
+      `)
+      const removeMovedRelationEvidence = this.db.prepare(
+        'DELETE FROM evidence WHERE relation_id=?'
+      )
+      const movedFromIds = new Set<string>()
+      for (const move of options.relationEvidenceMoves || []) {
+        const fromId = String(move.fromId || '').trim()
+        const toId = String(move.toId || '').trim()
+        if (!fromId || !toId || fromId === toId || movedFromIds.has(fromId) ||
+          activeRelationIds.has(fromId) || !activeRelationIds.has(toId)) {
+          throw new Error('关系证据迁移范围与当前图谱不一致')
+        }
+        movedFromIds.add(fromId)
+        moveRelationEvidence.run(toId, fromId)
+        removeMovedRelationEvidence.run(fromId)
+      }
       const storedRelationIds = this.db.prepare('SELECT id FROM relations').all() as Array<{ id: string }>
       for (const { id } of storedRelationIds) {
         if (activeRelationIds.has(id)) continue
@@ -18271,6 +18355,24 @@ export class PersonalMemoryStore {
 
   isExtractedMemoryItemSuppressed(kind: 'claim' | 'event' | 'relation', item: any): boolean {
     return this.isMemoryItemSuppressed(kind, String(item?.id || ''), this.memoryItemSemanticFingerprint(kind, item))
+  }
+
+  isRelationCorrectionSuppressed(
+    relation: any,
+    evidenceRelationIds: string[]
+  ): boolean {
+    if (!this.db) return false
+    const ids = [...new Set((evidenceRelationIds || []).map(String).filter(Boolean))]
+    if (!ids.length) return this.isExtractedMemoryItemSuppressed('relation', relation)
+    const messageIds = (this.db.prepare(`
+      SELECT DISTINCT message_id FROM evidence
+      WHERE relation_id IN (${ids.map(() => '?').join(',')})
+      ORDER BY message_id
+    `).all(...ids) as Array<{ message_id: string }>).map(row => String(row.message_id || ''))
+    return this.isExtractedMemoryItemSuppressed('relation', {
+      ...relation,
+      evidence: messageIds.map(messageId => ({ messageId }))
+    })
   }
 
   previewDeleteMemoryItem(kind: 'claim' | 'event' | 'relation', id: string): any | null {

@@ -1919,7 +1919,10 @@ export class AiAssistantService {
     }
   }
 
-  private saveState(strictMemorySync = false): void {
+  private saveState(
+    strictMemorySync = false,
+    graphOptions: { relationEvidenceMoves?: Array<{ fromId: string; toId: string }> } = {}
+  ): void {
     this.compactBriefingState()
     this.state.tasks = sanitizeTasksForPersistence(this.state.tasks)
     const graphCommitId = crypto.randomUUID()
@@ -1927,7 +1930,8 @@ export class AiAssistantService {
       strict: strictMemorySync,
       syncGraph: () => {
         personalMemoryStore.syncGraph(this.state.graph, graphCommitId, {
-          entityEvidence: this.pendingEntityEvidence
+          entityEvidence: this.pendingEntityEvidence,
+          relationEvidenceMoves: graphOptions.relationEvidenceMoves
         })
         this.pendingEntityEvidence = []
         this.state.graph.lastSqlCommitId = graphCommitId
@@ -9723,6 +9727,7 @@ export class AiAssistantService {
       )
     }
     const resolutionNow = new Date().toISOString()
+    const relationEvidenceMoves: Array<{ fromId: string; toId: string }> = []
     const mergePlan = review.kind === 'possible_duplicate' && decision === 'confirmed'
       ? planEntityMerge(review, this.state.graph.entities, options?.mergeTargetEntityId)
       : null
@@ -9756,9 +9761,6 @@ export class AiAssistantService {
         reasonCode: options?.reasonCode,
         createdAt: resolutionNow
       })
-    }
-    if (relationPlan?.changed) {
-      this.hydrateRelationEvidence([relationPlan.before.id, relationPlan.after.id])
     }
     const profileEntity = (review.kind === 'entity_summary' || review.kind === 'entity_alias') && review.entityId
       ? this.state.graph.entities.find(item => item.id === review.entityId)
@@ -9949,10 +9951,10 @@ export class AiAssistantService {
       if (relation) {
         if (decision === 'confirmed' && relationPlan) {
           const now = new Date().toISOString()
-          if (relationPlan.changed && personalMemoryStore.isExtractedMemoryItemSuppressed('relation', {
-            ...relationPlan.after,
-            evidence: relation.evidence
-          })) {
+          if (relationPlan.changed && personalMemoryStore.isRelationCorrectionSuppressed(
+            relationPlan.after,
+            [relationPlan.before.id, relationPlan.after.id]
+          )) {
             review.status = 'pending'
             throw new Error('修正后的关系曾被永久删除，不能通过重新抽取恢复')
           }
@@ -9964,6 +9966,10 @@ export class AiAssistantService {
           })
           this.state.graph.relations = applied.relations
           if (relationPlan.changed) {
+            relationEvidenceMoves.push({
+              fromId: relationPlan.before.id,
+              toId: relationPlan.after.id
+            })
             review.originalRelationId = relationPlan.before.id
             review.correctedRelationId = relationPlan.after.id
             review.relationCorrection = {
@@ -10097,7 +10103,7 @@ export class AiAssistantService {
       review.resolutionReason = review.resolutionReason ||
         (review.status === 'confirmed' ? '用户确认候选' : '用户拒绝候选')
     }
-    this.saveState(true)
+    this.saveState(true, { relationEvidenceMoves })
     return review
   }
 
@@ -10967,9 +10973,8 @@ export class AiAssistantService {
       correction
     })
     if (!plan.changed) throw new Error('关系方向和谓词没有变化，无需保存纠正')
-    this.hydrateRelationEvidence([plan.before.id, plan.after.id])
     const sourceRelation = this.state.graph.relations.find(item => item.id === id)
-    if (!sourceRelation) throw new Error('关系在读取完整证据时发生了变化，请刷新后重试')
+    if (!sourceRelation) throw new Error('关系已经发生了变化，请刷新后重试')
     const targetRelation = this.state.graph.relations.find(item =>
       item.id === plan.after.id && item.id !== id) || null
     return buildCitationRelationCorrectionPreview({
@@ -10980,7 +10985,10 @@ export class AiAssistantService {
       sourceRelation,
       targetRelation,
       plan,
-      reviewQueue: this.state.graph.reviewQueue
+      reviewQueue: this.state.graph.reviewQueue,
+      evidenceStats: personalMemoryStore.getRelationEvidenceMergeStats(
+        plan.before.id, plan.after.id
+      )
     })
   }
 
@@ -11032,13 +11040,10 @@ export class AiAssistantService {
         correction
       })
       if (!relationPlan.changed) throw new Error('关系方向和谓词没有变化，无需保存纠正')
-      this.hydrateRelationEvidence([relationPlan.before.id, relationPlan.after.id])
-      const hydratedRelation = this.state.graph.relations.find(item => item.id === id)
-      if (!hydratedRelation) throw new Error('关系在读取完整证据时发生了变化，请刷新后重试')
-      if (personalMemoryStore.isExtractedMemoryItemSuppressed('relation', {
-        ...relationPlan.after,
-        evidence: hydratedRelation.evidence
-      })) throw new Error('修正后的关系曾被永久删除，不能通过纠正恢复')
+      if (personalMemoryStore.isRelationCorrectionSuppressed(
+        relationPlan.after,
+        [relationPlan.before.id, relationPlan.after.id]
+      )) throw new Error('修正后的关系曾被永久删除，不能通过纠正恢复')
       const snapshot = structuredClone(this.state.graph)
       const now = new Date().toISOString()
       const auditId = `citation_relation_correction_${crypto.randomUUID()}`
@@ -11061,7 +11066,9 @@ export class AiAssistantService {
             relationPlan.before,
             relationPlan.after
           )
-          this.saveState(true)
+          this.saveState(true, {
+            relationEvidenceMoves: [{ fromId: relationPlan.before.id, toId: relationPlan.after.id }]
+          })
           return confirmedRelation
         },
         restore: graph => { this.state.graph = graph },
@@ -13197,9 +13204,8 @@ export class AiAssistantService {
       correction
     })
     if (!plan.changed) throw new Error('关系方向和谓词没有变化，无需保存纠正')
-    this.hydrateRelationEvidence([plan.before.id, plan.after.id])
     const sourceRelation = this.state.graph.relations.find(item => item.id === id)
-    if (!sourceRelation) throw new Error('关系在读取完整证据时发生了变化，请刷新后重试')
+    if (!sourceRelation) throw new Error('关系已经发生了变化，请刷新后重试')
     const targetRelation = this.state.graph.relations.find(item =>
       item.id === plan.after.id && item.id !== id) || null
     return buildCitationRelationCorrectionPreview({
@@ -13210,7 +13216,10 @@ export class AiAssistantService {
       sourceRelation,
       targetRelation,
       plan,
-      reviewQueue: this.state.graph.reviewQueue
+      reviewQueue: this.state.graph.reviewQueue,
+      evidenceStats: personalMemoryStore.getRelationEvidenceMergeStats(
+        plan.before.id, plan.after.id
+      )
     })
   }
 
@@ -13235,10 +13244,10 @@ export class AiAssistantService {
       entities: this.state.graph.entities,
       correction: input.relationCorrection
     })
-    if (personalMemoryStore.isExtractedMemoryItemSuppressed('relation', {
-      ...plan.after,
-      evidence: relation.evidence
-    })) throw new Error('修正后的关系曾被永久删除，不能通过纠正恢复')
+    if (personalMemoryStore.isRelationCorrectionSuppressed(
+      plan.after,
+      [plan.before.id, plan.after.id]
+    )) throw new Error('修正后的关系曾被永久删除，不能通过纠正恢复')
     const snapshot = structuredClone(this.state.graph)
     const now = new Date().toISOString()
     const auditId = `dossier_relation_correction_${crypto.randomUUID()}`
@@ -13254,7 +13263,9 @@ export class AiAssistantService {
           this.state.graph, id, plan, now
         )
         personalMemoryStore.recordRelationCorrection(auditId, plan.before, plan.after)
-        this.saveState(true)
+        this.saveState(true, {
+          relationEvidenceMoves: [{ fromId: plan.before.id, toId: plan.after.id }]
+        })
         return confirmedRelation
       },
       restore: graph => { this.state.graph = graph },

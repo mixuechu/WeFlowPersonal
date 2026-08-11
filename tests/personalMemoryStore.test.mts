@@ -2619,6 +2619,59 @@ test('relationship history keeps creation and later review state instead of over
   )
 }))
 
+test('relation correction previews and moves complete evidence inside SQLCipher', () => withStore(store => {
+  const entities = [
+    { id: 'move-person', type: 'person', canonicalName: '迁移人物', aliases: [], accountIds: [] },
+    { id: 'move-org', type: 'organization', canonicalName: '迁移组织', aliases: [], accountIds: [] }
+  ]
+  const relation = (id: string, predicate: string, evidence: any[]) => ({
+    id,
+    subjectId: 'move-person',
+    predicate,
+    objectId: 'move-org',
+    confidence: 0.8,
+    status: 'candidate',
+    evidence,
+    createdAt: '2026-08-12T00:00:00.000Z',
+    updatedAt: '2026-08-12T00:00:00.000Z'
+  })
+  const source = relation('move-source', '旧关系', [
+    { sourceId: 'wechat', sessionId: 'one', messageId: 'shared', timestamp: 2,
+      sender: '来源发送者', excerpt: '来源中更完整的重复原文' },
+    { sourceId: 'wechat', sessionId: 'two', messageId: 'source-only', timestamp: 3,
+      sender: '来源发送者', excerpt: '只属于来源的原文' }
+  ])
+  const target = relation('move-target', '新关系', [
+    { sourceId: 'wechat', sessionId: 'one', messageId: 'shared', timestamp: 1,
+      sender: '', excerpt: '短原文' },
+    { sourceId: 'mail', sessionId: 'inbox', messageId: 'target-only', timestamp: 4,
+      sender: '邮件发送者', excerpt: '只属于目标的原文' }
+  ])
+  store.syncGraph({ entities, relations: [source, target], reviewQueue: [] } as any)
+  assert.deepEqual(store.getRelationEvidenceMergeStats(source.id, target.id), {
+    sourceCount: 2,
+    targetCount: 2,
+    mergedCount: 3,
+    duplicateCount: 1,
+    identity: '4:1:4:10'
+  })
+
+  store.syncGraph({
+    entities,
+    relations: [{ ...target, evidence: [], evidenceTotal: 3 }],
+    reviewQueue: []
+  } as any, '', {
+    relationEvidenceMoves: [{ fromId: source.id, toId: target.id }]
+  })
+  assert.equal(store.getRelationEvidence([source.id]).get(source.id)?.length, 0)
+  const moved = store.getRelationEvidence([target.id]).get(target.id) || []
+  assert.equal(moved.length, 3)
+  assert.equal(moved.find(item => item.messageId === 'shared')?.excerpt,
+    '来源中更完整的重复原文')
+  assert.equal(moved.find(item => item.messageId === 'shared')?.sender, '来源发送者')
+  assert.equal(moved.find(item => item.messageId === 'shared')?.timestamp, 2)
+}))
+
 test('relation direction authority survives reopen, empty syncs and search index repair', () => {
   const directory = mkdtempSync(join(tmpdir(), 'weflow-relation-direction-test-'))
   const databasePath = join(directory, 'memory.sqlite')

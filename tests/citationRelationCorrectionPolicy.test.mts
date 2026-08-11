@@ -1,5 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
 import {
   assertCitationRelationCorrectionPreview,
   buildCitationRelationCorrectionPreview
@@ -84,6 +85,30 @@ test('relation correction preview token rejects target evidence and candidate dr
   assert.throws(() =>
     assertCitationRelationCorrectionPreview(changedReviews, original.previewToken),
   /重新核对/)
+})
+
+test('all human relation correction entry points use SQLCipher evidence stats and moves', () => {
+  const source = readFileSync(new URL(
+    '../electron/services/aiAssistantService.ts', import.meta.url
+  ), 'utf8')
+  for (const [startMarker, endMarker] of [
+    ['  previewRelationCorrectionFromMemoryDocument(', '\n  reviewMemoryDocument('],
+    ['  previewRelationCorrection(', '\n  correctRelation(']
+  ]) {
+    const start = source.indexOf(startMarker)
+    const end = source.indexOf(endMarker, start)
+    const method = source.slice(start, end)
+    assert.ok(start > 0 && end > start, startMarker)
+    assert.match(method, /getRelationEvidenceMergeStats\(/)
+    assert.doesNotMatch(method, /hydrateRelationEvidence\(/)
+  }
+  const reviewStart = source.indexOf('  private applyGraphReview(')
+  const reviewEnd = source.indexOf('\n  previewRevertMerge(', reviewStart)
+  const reviewMethod = source.slice(reviewStart, reviewEnd)
+  assert.match(reviewMethod, /relationEvidenceMoves\.push\(/)
+  assert.match(reviewMethod, /saveState\(true, \{ relationEvidenceMoves \}\)/)
+  assert.equal((reviewMethod.match(/hydrateRelationEvidence\(/g) || []).length, 1,
+    'identity merge remains the only full relation-evidence hydration in graph review')
 })
 
 test('identity merge relation normalization preserves confirmed authority regardless of order', () => {

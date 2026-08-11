@@ -18083,7 +18083,7 @@ function AiAssistantPage() {
             </div>}
             {memoryDiagnostics.graphRelationEvidenceHotset?.version && <div className="assistant-recovery-audit healthy">
               <header><Database size={15} /><span><b>图谱关系原文分层</b>
-                <small>SQLCipher 保存完整关系原文；启动不常驻关系正文，人物侧栏和图查询只加载所见预览，纠正、合并和撤销前按需补全受影响关系。</small>
+                <small>SQLCipher 保存完整关系原文；启动不常驻关系正文，人物侧栏和图查询只加载所见预览。人工关系纠正在库内统计并迁移完整证据，身份合并与撤销仍按需补全受影响关系。</small>
               </span></header>
               <div className="assistant-recovery-current">
                 <span>权威原文 <b>{Number(memoryDiagnostics.graphRelationEvidenceHotset.authoritativeEvidenceRows || 0).toLocaleString()}</b></span>

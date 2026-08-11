@@ -27,10 +27,24 @@ export function buildCitationRelationCorrectionPreview(input: {
   targetRelation?: any | null
   plan: any
   reviewQueue?: any[]
+  evidenceStats?: {
+    sourceCount: number
+    targetCount: number
+    mergedCount: number
+    duplicateCount: number
+    identity: string
+  }
 }): any {
   const sourceEvidence = new Set((input.sourceRelation?.evidence || []).map(evidenceKey))
   const targetEvidence = new Set((input.targetRelation?.evidence || []).map(evidenceKey))
   const mergedEvidence = new Set([...targetEvidence, ...sourceEvidence])
+  const stats = input.evidenceStats || {
+    sourceCount: sourceEvidence.size,
+    targetCount: targetEvidence.size,
+    mergedCount: mergedEvidence.size,
+    duplicateCount: sourceEvidence.size + targetEvidence.size - mergedEvidence.size,
+    identity: [...mergedEvidence].sort().join('\u001e')
+  }
   const affectedReviewIds = (input.reviewQueue || []).filter(review =>
     review?.kind === 'relation'
     && review?.status === 'pending'
@@ -45,6 +59,7 @@ export function buildCitationRelationCorrectionPreview(input: {
     targetRelation: relationIdentity(input.targetRelation),
     before: input.plan.before,
     after: input.plan.after,
+    evidenceIdentity: stats.identity,
     affectedReviewIds
   }
   return {
@@ -52,10 +67,10 @@ export function buildCitationRelationCorrectionPreview(input: {
     after: input.plan.after,
     changed: Boolean(input.plan.changed),
     mergesExistingRelation: Boolean(input.targetRelation),
-    sourceEvidenceCount: sourceEvidence.size,
-    targetEvidenceCount: targetEvidence.size,
-    mergedEvidenceCount: mergedEvidence.size,
-    duplicateEvidenceCount: sourceEvidence.size + targetEvidence.size - mergedEvidence.size,
+    sourceEvidenceCount: stats.sourceCount,
+    targetEvidenceCount: stats.targetCount,
+    mergedEvidenceCount: stats.mergedCount,
+    duplicateEvidenceCount: stats.duplicateCount,
     affectedReviewCount: affectedReviewIds.length,
     previewToken: createHash('sha256').update(JSON.stringify(identity)).digest('hex')
   }

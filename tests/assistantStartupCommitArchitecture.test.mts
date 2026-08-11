@@ -26,7 +26,7 @@ test('assistant startup reaches schedulers only after a strict authority commit'
 })
 
 test('assistant service delegates persistence ordering to the executable commit policy', () => {
-  const saveStart = source.indexOf('private saveState(strictMemorySync = false)')
+  const saveStart = source.indexOf('private saveState(')
   const nextMethod = source.indexOf('private persistCrossStoreMutationState', saveStart)
   const saveSource = source.slice(saveStart, nextMethod)
   assert.ok(saveStart >= 0)
