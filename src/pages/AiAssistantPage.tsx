@@ -10592,6 +10592,7 @@ function AiAssistantPage() {
                 保留 {status.taskLifecycleAudit.kept || 0} 项，跳过 {status.taskLifecycleAudit.skipped || 0} 项
                 {status.taskLifecycleAudit.lastError ? ` · 未完整结束：${status.taskLifecycleAudit.lastError}` : ''}
               </small>}
+            <small>复核候选由 SQLCipher 按本人未完成任务一次固化稳定 ID；任务正文仍在每批发送前重新鉴权。</small>
           </div>
         </header>
 

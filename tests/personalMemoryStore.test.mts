@@ -10704,6 +10704,22 @@ test('active task workset stays filtered, pageable, and revision safe at scale',
   assert.equal(store.listActiveTaskWorkset({ taskId: 'active-task-0997' }).items[0]?.id, 'active-task-0997')
   assert.equal(store.listActiveTaskWorkset({ taskId: 'missing-active-task' }).total, 0)
 
+  const lifecycleCandidates = store.listActiveMineTaskLifecycleCandidateIds()
+  assert.equal(lifecycleCandidates.total, 750)
+  assert.equal(lifecycleCandidates.ids.length, 750)
+  assert.equal(new Set(lifecycleCandidates.ids).size, 750)
+  assert.equal(lifecycleCandidates.stale, false)
+  assert.equal(lifecycleCandidates.ids.includes('active-task-0997'), true)
+  assert.equal(lifecycleCandidates.ids.includes('active-task-0000'), false)
+  const originalTaskRevision = store.getTaskArchiveRevision.bind(store)
+  let lifecycleRevisionReads = 0
+  ;(store as any).getTaskArchiveRevision = () =>
+    lifecycleRevisionReads++ === 0 ? originalTaskRevision() : `${originalTaskRevision()}-changed`
+  const staleLifecycleCandidates = store.listActiveMineTaskLifecycleCandidateIds()
+  ;(store as any).getTaskArchiveRevision = originalTaskRevision
+  assert.equal(staleLifecycleCandidates.stale, true)
+  assert.deepEqual(staleLifecycleCandidates.ids, [])
+
   store.syncTasks(tasks.map(task => task.id === 'active-task-0997'
     ? {
         ...task,

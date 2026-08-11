@@ -5526,6 +5526,10 @@ export class AiAssistantService {
       },
       taskLifecycleAudit: {
         ...this.taskLifecycleAuditState,
+        candidateSelection: 'sqlcipher_active_mine_stable_ids',
+        candidateFullTaskMaterializations: 0,
+        candidateRevisionBound: true,
+        resumeSnapshot: 'encrypted_stable_ids',
         resumeAvailable: canResumeTaskLifecycleAudit({
           ...this.taskLifecycleAuditState,
           ...this.state.taskLifecycleAuditResume
@@ -5779,11 +5783,13 @@ export class AiAssistantService {
       ...this.taskLifecycleAuditState,
       ...savedResume
     })
-    const candidateIds = canResume
-      ? [...savedResume.candidateIds]
-      : this.state.tasks.filter(task =>
-          task.classification === 'mine' && ['todo', 'doing', 'waiting'].includes(task.status))
-        .map(task => task.id)
+    const candidateSelection = canResume
+      ? null
+      : personalMemoryStore.listActiveMineTaskLifecycleCandidateIds()
+    if (candidateSelection?.stale) {
+      throw new Error('活动待办在建立复核范围期间发生了变化，请重新开始')
+    }
+    const candidateIds = canResume ? [...savedResume.candidateIds] : candidateSelection!.ids
     const startOffset = canResume ? savedResume.nextOffset : 0
     this.taskLifecycleAuditState = canResume
       ? {
@@ -7721,6 +7727,10 @@ export class AiAssistantService {
       },
       taskLifecycleAudit: {
         ...this.taskLifecycleAuditState,
+        candidateSelection: 'sqlcipher_active_mine_stable_ids',
+        candidateFullTaskMaterializations: 0,
+        candidateRevisionBound: true,
+        resumeSnapshot: 'encrypted_stable_ids',
         resumeAvailable: canResumeTaskLifecycleAudit({
           ...this.taskLifecycleAuditState,
           ...this.state.taskLifecycleAuditResume

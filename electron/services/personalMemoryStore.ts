@@ -15483,6 +15483,25 @@ export class PersonalMemoryStore {
     }
   }
 
+  listActiveMineTaskLifecycleCandidateIds(): {
+    ids: string[]
+    total: number
+    revision: string
+    stale: boolean
+  } {
+    if (!this.db) return { ids: [], total: 0, revision: '0', stale: false }
+    const revision = this.getTaskArchiveRevision()
+    const ids = (this.db.prepare(`
+      SELECT id FROM task_directory
+      WHERE classification='mine' AND status IN ('todo','doing','waiting')
+      ORDER BY created_at,id
+    `).all() as Array<{ id: string }>).map(row => String(row.id || '')).filter(Boolean)
+    const completedRevision = this.getTaskArchiveRevision()
+    return completedRevision === revision
+      ? { ids, total: ids.length, revision, stale: false }
+      : { ids: [], total: 0, revision: completedRevision, stale: true }
+  }
+
   listTaskCalendarPage(options: {
     month?: string
     status?: 'todo' | 'doing' | 'waiting' | 'all'

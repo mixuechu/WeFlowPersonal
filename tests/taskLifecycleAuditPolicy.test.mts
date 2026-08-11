@@ -1,5 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
 import {
   canResumeTaskLifecycleAudit,
   classifyTaskLifecycleAuditRequestFailure,
@@ -101,4 +103,21 @@ test('lifecycle audit classifies English, Chinese and bounded timeout failures',
     message: '模型请求超过 90 秒，已安全取消'
   }), 'cancelled')
   assert.equal(classifyTaskLifecycleAuditRequestFailure({ message: '连接已重置' }), 'request_failed')
+})
+
+test('lifecycle audit selects its durable candidate snapshot inside SQLCipher', () => {
+  const service = readFileSync(join(process.cwd(), 'electron/services/aiAssistantService.ts'), 'utf8')
+  const store = readFileSync(join(process.cwd(), 'electron/services/personalMemoryStore.ts'), 'utf8')
+  const page = readFileSync(join(process.cwd(), 'src/pages/AiAssistantPage.tsx'), 'utf8')
+  const start = service.indexOf('  auditActiveTaskLifecycles(): Promise<any>')
+  const end = service.indexOf('\n  private async runActiveTaskLifecycleAudit(', start)
+  const method = service.slice(start, end)
+  assert.match(method, /personalMemoryStore\.listActiveMineTaskLifecycleCandidateIds\(\)/)
+  assert.match(method, /candidateSelection\?\.stale/)
+  assert.doesNotMatch(method, /this\.state\.tasks\.(?:filter|map|flatMap)/)
+  assert.match(store, /listActiveMineTaskLifecycleCandidateIds\(\)[\s\S]*?FROM task_directory[\s\S]*?classification='mine'[\s\S]*?status IN \('todo','doing','waiting'\)[\s\S]*?completedRevision === revision/)
+  assert.match(service, /candidateSelection: 'sqlcipher_active_mine_stable_ids'/)
+  assert.match(service, /candidateFullTaskMaterializations: 0/)
+  assert.match(service, /resumeSnapshot: 'encrypted_stable_ids'/)
+  assert.match(page, /复核候选由 SQLCipher 按本人未完成任务一次固化稳定 ID/)
 })
