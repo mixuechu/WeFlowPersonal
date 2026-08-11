@@ -18160,6 +18160,7 @@ function AiAssistantPage() {
                 <span>全文 / 向量 <b>{memoryDiagnostics.memorySearchScopePlanning.hybridScopeReused ? '范围一致' : '需要检查'}</b></span>
                 <span>并发查询 <b>{memoryDiagnostics.memorySearchScopePlanning.concurrentScopeIsolation ? '独立隔离' : '需要检查'}</b></span>
                 <span>请求结束 <b>{memoryDiagnostics.memorySearchScopePlanning.releasedAfterRequest ? '自动释放' : '需要检查'}</b></span>
+                <span>旧共享范围 <b>{memoryDiagnostics.memorySearchScopePlanning.legacySharedScopeRemoved ? '已移除' : '需要检查'}</b></span>
               </div>
             </div>}
             {memoryDiagnostics.memorySearchRevision?.version && <div className={`assistant-recovery-audit ${memoryDiagnostics.memorySearchRevisionHealthy ? 'healthy' : 'unhealthy'}`}>

@@ -11040,7 +11040,7 @@ export class AiAssistantService {
   searchMemory(
     query: string,
     limit = 200,
-    allowedIds: Set<string> | SearchDocumentScopeHandle | null = null,
+    allowedIds: SearchDocumentScopeHandle | null = null,
     evidenceScope: MemorySearchOptions = {}
   ): any[] {
     return personalMemoryStore.searchText(

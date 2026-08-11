@@ -9176,12 +9176,13 @@ test('direct entity evidence is keyword searchable, scope aware and hydrated as 
     role: 'contradiction'
   }).total, 0)
 
-  const mailScope = store.listScopedSearchDocumentIds({
+  const mailScopeOptions = {
     sourceIds: ['mail'],
     sessionId: 'data-source:mail:searchable',
     from: new Date(1_920_000_050 * 1000).toISOString()
-  })
-  assert.equal(mailScope?.has('entity:searchable-evidence-entity'), true)
+  }
+  const mailScope = store.createSearchDocumentScope(mailScopeOptions)!
+  assert.equal(store.isSearchDocumentInScope(mailScope, 'entity:searchable-evidence-entity'), true)
   assert.equal(store.searchText('首次提到', 10, mailScope, {
     sourceIds: ['mail']
   }).some(item => item.id === 'entity:searchable-evidence-entity'), false)
@@ -9195,6 +9196,7 @@ test('direct entity evidence is keyword searchable, scope aware and hydrated as 
     sourceIds: ['wechat'],
     from: new Date(1_920_000_050 * 1000).toISOString()
   }).some(item => item.id === 'entity:searchable-evidence-entity'), false)
+  store.releaseSearchDocumentScope(mailScope)
   assert.equal(store.listScopedSearchDocumentIds({
     sourceIds: ['documents']
   })?.has('entity:searchable-evidence-entity'), false)
@@ -13457,17 +13459,25 @@ test('retrieval scope is applied before lexical and vector top-k ranking', () =>
     []
   )
   assert.equal(store.searchText('共同关键词', 300).some(item => item.id === 'task:scoped-target'), false)
-  assert.deepEqual(store.searchText('共同关键词', 40, scope).map(item => item.id), ['task:scoped-target'])
-  assert.deepEqual(store.listSearchDocumentsInScope(scope!, 40).map(item => item.id), ['task:scoped-target'])
+  const initialHandle = store.createSearchDocumentScope({
+    sessionId: 'session-target',
+    sourceIds: ['documents'],
+    from: '2026-07-30',
+    to: '2026-07-30',
+    documentTypes: ['task']
+  })!
+  assert.deepEqual(store.searchText('共同关键词', 40, initialHandle).map(item => item.id), ['task:scoped-target'])
+  assert.deepEqual(store.listSearchDocumentsInScope(initialHandle, 40).map(item => item.id), ['task:scoped-target'])
 
   const model = 'scoped-retrieval:2d'
   tasks.forEach((task, index) =>
     store.saveEmbedding(`task:${task.id}`, model, task.id === 'scoped-target' ? [0, 1] : [1, index / 10_000]))
   const globalVector = store.searchVector([1, 0], model, 300)
   assert.equal(globalVector.some(item => item.id === 'task:scoped-target'), false)
-  const scopedVector = store.searchVector([1, 0], model, 40, { allowedIds: scope })
+  const scopedVector = store.searchVector([1, 0], model, 40, { allowedIds: initialHandle })
   assert.deepEqual(scopedVector.map(item => item.id), ['task:scoped-target'])
   assert.equal(scopedVector[0].semantic_search_mode, 'exact')
+  store.releaseSearchDocumentScope(initialHandle)
 
   const targetHandle = store.createSearchDocumentScope({
     sessionId: 'session-target',
@@ -13760,8 +13770,8 @@ test('scoped memory browsing reaches every result beyond the ranked search windo
     }))
     store.syncTasks(tasks)
     const options = { sourceIds: ['wechat'], documentTypes: ['task'] }
-    const scope = store.listScopedSearchDocumentIds(options)
-    assert.equal(scope?.size, 1_205)
+    const scope = store.createSearchDocumentScope(options)!
+    assert.equal(scope.size, 1_205)
     const context = buildMemorySearchFeedbackContext('', options)
     const first = store.listSearchDocumentsInScopePage(scope!, {
       offset: 0,
@@ -13819,6 +13829,7 @@ test('scoped memory browsing reaches every result beyond the ranked search windo
     assert.equal(feedbackFirst.items[0].relevance_feedback, 'helpful')
     assert.equal(feedbackLast.items.at(-1).id, 'task:range-browse-1204')
     assert.equal(feedbackLast.items.at(-1).relevance_feedback, 'not_relevant')
+    store.releaseSearchDocumentScope(scope)
   }))
 
 test('complete keyword archive pages every exact indexed match beyond five hundred', () =>
@@ -13842,11 +13853,11 @@ test('complete keyword archive pages every exact indexed match beyond five hundr
       }]
     }))
     store.syncTasks(tasks)
-    const scope = store.listScopedSearchDocumentIds({
+    const scope = store.createSearchDocumentScope({
       sourceIds: ['wechat'],
       documentTypes: ['task']
-    })
-    assert.equal(scope?.size, 1_205)
+    })!
+    assert.equal(scope.size, 1_205)
     const first = store.listSearchDocumentsByKeywordPage('完整关键词盲区', scope, {
       offset: 0,
       limit: 100
@@ -13874,6 +13885,7 @@ test('complete keyword archive pages every exact indexed match beyond five hundr
       store.getSearchDocumentTypeCountsByKeyword('完整关键词盲区', scope),
       { counts: { task: 1_205 }, searchMode: 'fts' }
     )
+    store.releaseSearchDocumentScope(scope)
   }))
 
 test('memory trust scopes and facets separate confirmed candidates from source material', () =>
@@ -14042,7 +14054,7 @@ test('memory trust scopes and facets separate confirmed candidates from source m
       { evidenceConflict: 'with_contradiction' },
       { trustStatuses: ['candidate'], supportability: 'review_only' }
     ]) {
-      const ids = store.listScopedSearchDocumentIds(options as any)!
+      const ids = store.createSearchDocumentScope(options as any)!
       assert.equal(
         store.countSearchDocumentsInScope(options as any).total,
         store.listSearchDocumentsInScopePage(ids, { limit: 1 }).total
@@ -14051,6 +14063,7 @@ test('memory trust scopes and facets separate confirmed candidates from source m
         store.countSearchDocumentsInScope(options as any, '可信层级关键词').total,
         store.listSearchDocumentsByKeywordPage('可信层级关键词', ids, { limit: 1 }).total
       )
+      store.releaseSearchDocumentScope(ids)
     }
     assert.deepEqual(
       store.countSearchDocumentsInScope({ sourceIds: ['wechat'] }, '可信层级关键词'),
@@ -14070,21 +14083,26 @@ test('memory trust scopes and facets separate confirmed candidates from source m
         searchMode: 'fts'
       }
     )
-    const supportFacetScope = store.listScopedSearchDocumentIds({
+    const supportFacetScope = store.createSearchDocumentScope({
       documentTypes: ['entity', 'claim', 'task']
     })!
     assert.deepEqual(store.getSearchDocumentSupportCountsInScope(supportFacetScope), {
       supporting: 2,
       review_only: 2
     })
+    store.releaseSearchDocumentScope(supportFacetScope)
     const wechatScope = store.listScopedSearchDocumentIds({ sourceIds: ['wechat'] })!
     const documentScope = store.listScopedSearchDocumentIds({ sourceIds: ['documents'] })!
+    const wechatHandle = store.createSearchDocumentScope({ sourceIds: ['wechat'] })!
+    const documentHandle = store.createSearchDocumentScope({ sourceIds: ['documents'] })!
     assert.equal(store.listSearchDocumentsByKeywordPage(
-      '可信层级关键词', wechatScope, { limit: 1 }
+      '可信层级关键词', wechatHandle, { limit: 1 }
     ).total, 3)
     assert.equal(store.listSearchDocumentsByKeywordPage(
-      '可信层级关键词', documentScope, { limit: 1 }
+      '可信层级关键词', documentHandle, { limit: 1 }
     ).total, 1)
+    store.releaseSearchDocumentScope(wechatHandle)
+    store.releaseSearchDocumentScope(documentHandle)
     assert.equal(wechatScope.has('task:trust-facet-task'), true)
     assert.equal(documentScope.has('task:trust-facet-task'), true)
     const calendarSupporting = store.listScopedSearchDocumentIds({
@@ -14164,10 +14182,11 @@ test('memory trust scopes and facets separate confirmed candidates from source m
       to: '2027-12-31',
       evidenceConflict: 'with_contradiction'
     })!.has('claim:trust-facet-confirmed'), true)
+    const calendarSupportHandle = store.createSearchDocumentScope({ sourceIds: ['calendar'] })!
     assert.deepEqual(
       store.getSearchDocumentSupportCountsByKeyword(
         '可信层级关键词',
-        store.listScopedSearchDocumentIds({ sourceIds: ['calendar'] }),
+        calendarSupportHandle,
         { sourceIds: ['calendar'] }
       ),
       {
@@ -14175,29 +14194,34 @@ test('memory trust scopes and facets separate confirmed candidates from source m
         searchMode: 'fts'
       }
     )
+    store.releaseSearchDocumentScope(calendarSupportHandle)
+    const wechatContradictionHandle = store.createSearchDocumentScope({ sourceIds: ['wechat'] })!
     assert.deepEqual(
       store.getSearchDocumentContradictionCountByKeyword(
         '可信层级关键词',
-        store.listScopedSearchDocumentIds({ sourceIds: ['wechat'] }),
+        wechatContradictionHandle,
         { sourceIds: ['wechat'] }
       ),
       { count: 0, searchMode: 'fts' }
     )
+    store.releaseSearchDocumentScope(wechatContradictionHandle)
+    const calendarContradictionHandle = store.createSearchDocumentScope({ sourceIds: ['calendar'] })!
     assert.deepEqual(
       store.getSearchDocumentContradictionCountByKeyword(
         '可信层级关键词',
-        store.listScopedSearchDocumentIds({ sourceIds: ['calendar'] }),
+        calendarContradictionHandle,
         { sourceIds: ['calendar'] }
       ),
       { count: 1, searchMode: 'fts' }
     )
     assert.equal(
       store.getSearchDocumentContradictionCountInScope(
-        store.listScopedSearchDocumentIds({ sourceIds: ['calendar'] })!,
+        calendarContradictionHandle,
         { sourceIds: ['calendar'] }
       ),
       1
     )
+    store.releaseSearchDocumentScope(calendarContradictionHandle)
   }))
 
 test('evidence review preset scopes count exact combinations before paging', () =>
@@ -14323,10 +14347,19 @@ test('evidence review preset scopes count exact combinations before paging', () 
       ['claim:preset-conflict']
     )
     assert.equal(conservativeIds.has('claim:preset-conflict'), false)
+    const conservativeScope = store.createSearchDocumentScope(
+      memorySearchReviewPresetOptions(baseScope, 'conservative_support') as any
+    )!
+    const fragileScope = store.createSearchDocumentScope(
+      memorySearchReviewPresetOptions(baseScope, 'fragile_candidate') as any
+    )!
+    const conflictScope = store.createSearchDocumentScope(
+      memorySearchReviewPresetOptions(baseScope, 'confirmed_conflict') as any
+    )!
     assert.equal(
       store.listSearchDocumentsByKeywordPage(
         '组合计数关键词',
-        conservativeIds,
+        conservativeScope,
         { offset: 0, limit: 1 }
       ).total,
       1
@@ -14334,7 +14367,7 @@ test('evidence review preset scopes count exact combinations before paging', () 
     assert.equal(
       store.listSearchDocumentsByKeywordPage(
         '组合计数关键词',
-        fragileIds,
+        fragileScope,
         { offset: 0, limit: 1 }
       ).total,
       1
@@ -14342,11 +14375,14 @@ test('evidence review preset scopes count exact combinations before paging', () 
     assert.equal(
       store.listSearchDocumentsByKeywordPage(
         '组合计数关键词',
-        conflictIds,
+        conflictScope,
         { offset: 0, limit: 1 }
       ).total,
       1
     )
+    store.releaseSearchDocumentScope(conservativeScope)
+    store.releaseSearchDocumentScope(fragileScope)
+    store.releaseSearchDocumentScope(conflictScope)
     assert.deepEqual(store.getMemoryStats().reviewInbox, {
       candidateClaims: 2,
       candidateEvents: 0,

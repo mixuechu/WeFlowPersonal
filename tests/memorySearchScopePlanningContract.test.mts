@@ -40,6 +40,8 @@ test('evidence Q&A reuses one SQLCipher scope across planning branches and relea
 })
 
 test('scope planning is honest and visible in complete diagnostics', () => {
-  assert.match(store, /memorySearchScopePlanning:\s*\{[\s\S]*?facetStrategy: 'sqlcipher_direct_count'[\s\S]*?facetIdentityMaterializations: 0[\s\S]*?primaryScopeStrategy: 'sqlcipher_isolated_temp_table'[\s\S]*?primaryIdentityMaterializations: 0[\s\S]*?hybridScopeReused: true[\s\S]*?releasedAfterRequest: true/)
-  assert.match(pageSource, /检索范围执行策略[\s\S]*?SQLCipher 直接计数[\s\S]*?主检索范围 <b>SQLCipher 临时范围/)
+  assert.match(store, /memorySearchScopePlanning:\s*\{[\s\S]*?version: 3[\s\S]*?facetStrategy: 'sqlcipher_direct_count'[\s\S]*?facetIdentityMaterializations: 0[\s\S]*?primaryScopeStrategy: 'sqlcipher_isolated_temp_table'[\s\S]*?primaryIdentityMaterializations: 0[\s\S]*?hybridScopeReused: true[\s\S]*?releasedAfterRequest: true[\s\S]*?handleOnlyScopeApi: true[\s\S]*?legacySharedScopeRemoved: true/)
+  assert.doesNotMatch(store, /replaceActiveSearchScope|CREATE TEMP TABLE IF NOT EXISTS active_memory_search_scope\s*\(/)
+  assert.doesNotMatch(store, /type SearchDocumentScope\s*=\s*Set/)
+  assert.match(pageSource, /检索范围执行策略[\s\S]*?SQLCipher 直接计数[\s\S]*?主检索范围 <b>SQLCipher 临时范围[\s\S]*?旧共享范围[\s\S]*?已移除/)
 })

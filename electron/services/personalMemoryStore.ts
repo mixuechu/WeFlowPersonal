@@ -585,7 +585,7 @@ export type SearchDocumentScopeHandle = Readonly<{
   size: number
 }>
 
-type SearchDocumentScope = Set<string> | SearchDocumentScopeHandle
+type SearchDocumentScope = SearchDocumentScopeHandle
 
 export class PersonalMemoryStore {
   private db: Database.Database | null = null
@@ -7848,14 +7848,16 @@ export class PersonalMemoryStore {
       mineTaskOwnershipAuditIndex,
       memoryChangeLog,
       memorySearchScopePlanning: {
-        version: 2,
+        version: 3,
         facetStrategy: 'sqlcipher_direct_count',
         facetIdentityMaterializations: 0,
         primaryScopeStrategy: 'sqlcipher_isolated_temp_table',
         primaryIdentityMaterializations: 0,
         hybridScopeReused: true,
         concurrentScopeIsolation: true,
-        releasedAfterRequest: true
+        releasedAfterRequest: true,
+        handleOnlyScopeApi: true,
+        legacySharedScopeRemoved: true
       },
       memorySearchRevision,
       memorySearchFeedbackArchiveRevision,
@@ -20750,10 +20752,6 @@ export class PersonalMemoryStore {
 
   private searchDocumentScopeJoin(scope: SearchDocumentScope | null, expression: string): string {
     if (!scope) return ''
-    if (scope instanceof Set) {
-      this.replaceActiveSearchScope(scope)
-      return `JOIN active_memory_search_scope scope ON scope.id=${expression}`
-    }
     const table = this.activeSearchScopes.get(scope.id)
     if (!table) throw new Error('检索范围已经释放或不属于当前数据库')
     return `JOIN ${table} scope ON scope.id=${expression}`
@@ -20803,38 +20801,23 @@ export class PersonalMemoryStore {
     return { total, searchMode: 'substring_fallback' }
   }
 
-  private replaceActiveSearchScope(ids: Set<string>): void {
-    if (!this.db) return
-    this.db.exec(`
-      CREATE TEMP TABLE IF NOT EXISTS active_memory_search_scope (
-        id TEXT PRIMARY KEY
-      ) WITHOUT ROWID;
-      DELETE FROM active_memory_search_scope;
-    `)
-    const insert = this.db.prepare('INSERT INTO active_memory_search_scope(id) VALUES(?)')
-    const transaction = this.db.transaction(() => {
-      for (const id of ids) insert.run(id)
-    })
-    transaction()
-  }
-
-  listSearchDocumentsInScope(allowedIds: Set<string>, limit = 500): any[] {
+  listSearchDocumentsInScope(allowedIds: SearchDocumentScopeHandle, limit = 500): any[] {
     if (!this.db || !allowedIds.size) return []
-    this.replaceActiveSearchScope(allowedIds)
+    const scopeJoin = this.searchDocumentScopeJoin(allowedIds, 'd.id')
     return this.db.prepare(`
       SELECT d.* FROM search_documents d
-      JOIN active_memory_search_scope scope ON scope.id=d.id
+      ${scopeJoin}
       ORDER BY d.updated_at DESC,d.id LIMIT ?
     `).all(Math.max(1, Math.min(500, Number(limit) || 500))) as any[]
   }
 
-  getSearchDocumentTypeCountsInScope(allowedIds: Set<string>): Record<string, number> {
+  getSearchDocumentTypeCountsInScope(allowedIds: SearchDocumentScopeHandle): Record<string, number> {
     if (!this.db || !allowedIds.size) return {}
-    this.replaceActiveSearchScope(allowedIds)
+    const scopeJoin = this.searchDocumentScopeJoin(allowedIds, 'd.id')
     const rows = this.db.prepare(`
       SELECT d.document_type AS type,COUNT(*) AS count
       FROM search_documents d
-      JOIN active_memory_search_scope scope ON scope.id=d.id
+      ${scopeJoin}
       WHERE NOT (
         d.document_type IN ('claim','relation','event')
         AND COALESCE(json_extract(d.metadata_json,'$.status'),'')='rejected'
@@ -20844,9 +20827,9 @@ export class PersonalMemoryStore {
     return Object.fromEntries(rows.map(row => [String(row.type), Number(row.count || 0)]))
   }
 
-  getSearchDocumentTrustCountsInScope(allowedIds: Set<string>): Record<string, number> {
+  getSearchDocumentTrustCountsInScope(allowedIds: SearchDocumentScopeHandle): Record<string, number> {
     if (!this.db || !allowedIds.size) return {}
-    this.replaceActiveSearchScope(allowedIds)
+    const scopeJoin = this.searchDocumentScopeJoin(allowedIds, 'd.id')
     const rows = this.db.prepare(`
       SELECT CASE
         WHEN d.document_type IN ('claim','relation','event')
@@ -20854,7 +20837,7 @@ export class PersonalMemoryStore {
         ELSE 'source'
       END AS status,COUNT(*) AS count
       FROM search_documents d
-      JOIN active_memory_search_scope scope ON scope.id=d.id
+      ${scopeJoin}
       WHERE NOT (
         d.document_type IN ('claim','relation','event')
         AND COALESCE(json_extract(d.metadata_json,'$.status'),'')='rejected'
@@ -20865,18 +20848,18 @@ export class PersonalMemoryStore {
   }
 
   getSearchDocumentSupportCountsInScope(
-    allowedIds: Set<string>,
+    allowedIds: SearchDocumentScopeHandle,
     options: MemorySearchOptions = {}
   ): Record<string, number> {
     if (!this.db || !allowedIds.size) return {}
-    this.replaceActiveSearchScope(allowedIds)
+    const scopeJoin = this.searchDocumentScopeJoin(allowedIds, 'd.id')
     const supportsFacts = searchDocumentSupportsFactsSql(options)
     const row = this.db.prepare(`
       SELECT
         SUM(CASE WHEN ${supportsFacts.sql} THEN 1 ELSE 0 END) AS supporting,
         SUM(CASE WHEN NOT ${supportsFacts.sql} THEN 1 ELSE 0 END) AS review_only
       FROM search_documents d
-      JOIN active_memory_search_scope scope ON scope.id=d.id
+      ${scopeJoin}
       WHERE NOT (
         d.document_type IN ('claim','relation','event')
         AND COALESCE(json_extract(d.metadata_json,'$.status'),'')='rejected'
@@ -20889,16 +20872,16 @@ export class PersonalMemoryStore {
   }
 
   getSearchDocumentContradictionCountInScope(
-    allowedIds: Set<string>,
+    allowedIds: SearchDocumentScopeHandle,
     options: MemorySearchOptions = {}
   ): number {
     if (!this.db || !allowedIds.size) return 0
-    this.replaceActiveSearchScope(allowedIds)
+    const scopeJoin = this.searchDocumentScopeJoin(allowedIds, 'd.id')
     const contradiction = searchDocumentHasContradictionSql(options)
     return Number((this.db.prepare(`
       SELECT COUNT(*) AS count
       FROM search_documents d
-      JOIN active_memory_search_scope scope ON scope.id=d.id
+      ${scopeJoin}
       WHERE ${contradiction.sql}
         AND NOT (
           d.document_type IN ('claim','relation','event')
@@ -21057,16 +21040,13 @@ export class PersonalMemoryStore {
 
   getSearchDocumentTypeCountsByKeyword(
     query: string,
-    allowedIds: Set<string> | null
+    allowedIds: SearchDocumentScopeHandle | null
   ): { counts: Record<string, number>; searchMode: 'fts' | 'substring_fallback' } {
     const normalized = String(query || '').trim().replace(/["']/g, ' ')
     if (!this.db || !normalized || (allowedIds && !allowedIds.size)) {
       return { counts: {}, searchMode: 'fts' }
     }
-    if (allowedIds) this.replaceActiveSearchScope(allowedIds)
-    const scopeJoin = allowedIds
-      ? 'JOIN active_memory_search_scope scope ON scope.id=d.id'
-      : ''
+    const scopeJoin = this.searchDocumentScopeJoin(allowedIds, 'd.id')
     const trustedCondition = `NOT (
       d.document_type IN ('claim','relation','event')
       AND COALESCE(json_extract(d.metadata_json,'$.status'),'')='rejected'
@@ -21096,16 +21076,13 @@ export class PersonalMemoryStore {
 
   getSearchDocumentTrustCountsByKeyword(
     query: string,
-    allowedIds: Set<string> | null
+    allowedIds: SearchDocumentScopeHandle | null
   ): { counts: Record<string, number>; searchMode: 'fts' | 'substring_fallback' } {
     const normalized = String(query || '').trim().replace(/["']/g, ' ')
     if (!this.db || !normalized || (allowedIds && !allowedIds.size)) {
       return { counts: {}, searchMode: 'fts' }
     }
-    if (allowedIds) this.replaceActiveSearchScope(allowedIds)
-    const scopeJoin = allowedIds
-      ? 'JOIN active_memory_search_scope scope ON scope.id=d.id'
-      : ''
+    const scopeJoin = this.searchDocumentScopeJoin(allowedIds, 'd.id')
     const statusExpression = `CASE
       WHEN d.document_type IN ('claim','relation','event')
         THEN COALESCE(json_extract(d.metadata_json,'$.status'),'candidate')
@@ -21140,17 +21117,14 @@ export class PersonalMemoryStore {
 
   getSearchDocumentSupportCountsByKeyword(
     query: string,
-    allowedIds: Set<string> | null,
+    allowedIds: SearchDocumentScopeHandle | null,
     options: MemorySearchOptions = {}
   ): { counts: Record<string, number>; searchMode: 'fts' | 'substring_fallback' } {
     const normalized = String(query || '').trim().replace(/["']/g, ' ')
     if (!this.db || !normalized || (allowedIds && !allowedIds.size)) {
       return { counts: {}, searchMode: 'fts' }
     }
-    if (allowedIds) this.replaceActiveSearchScope(allowedIds)
-    const scopeJoin = allowedIds
-      ? 'JOIN active_memory_search_scope scope ON scope.id=d.id'
-      : ''
+    const scopeJoin = this.searchDocumentScopeJoin(allowedIds, 'd.id')
     const supportsFacts = searchDocumentSupportsFactsSql(options)
     const trustedCondition = `NOT (
       d.document_type IN ('claim','relation','event')
@@ -21196,17 +21170,14 @@ export class PersonalMemoryStore {
 
   getSearchDocumentContradictionCountByKeyword(
     query: string,
-    allowedIds: Set<string> | null,
+    allowedIds: SearchDocumentScopeHandle | null,
     options: MemorySearchOptions = {}
   ): { count: number; searchMode: 'fts' | 'substring_fallback' } {
     const normalized = String(query || '').trim().replace(/["']/g, ' ')
     if (!this.db || !normalized || (allowedIds && !allowedIds.size)) {
       return { count: 0, searchMode: 'fts' }
     }
-    if (allowedIds) this.replaceActiveSearchScope(allowedIds)
-    const scopeJoin = allowedIds
-      ? 'JOIN active_memory_search_scope scope ON scope.id=d.id'
-      : ''
+    const scopeJoin = this.searchDocumentScopeJoin(allowedIds, 'd.id')
     const contradiction = searchDocumentHasContradictionSql(options)
     const trustedCondition = `NOT (
       d.document_type IN ('claim','relation','event')
