@@ -18109,7 +18109,7 @@ function AiAssistantPage() {
             </div>}
             {memoryDiagnostics.taskStateStorage?.version && <div className="assistant-recovery-audit healthy">
               <header><Database size={15} /><span><b>任务状态与原文分层</b>
-                <small>进行中的任务每项只在加密状态保留最近 {Number(memoryDiagnostics.taskStateStorage.activeEvidenceLimit || 50)} 条原文热集；完成和取消任务只保留依赖计算所需结构，按需审阅仍从 SQLCipher 权威库读取完整证据。</small>
+                <small>进行中的任务每项只在加密状态保留最近 {Number(memoryDiagnostics.taskStateStorage.activeEvidenceLimit || 50)} 条原文热集；运行时补齐直接读取 SQLCipher 尾部窗口，生命周期复核读取最早与最新窗口，完整审阅仍可分页访问全部权威证据。</small>
               </span></header>
               <div className="assistant-recovery-current">
                 <span>活跃任务 <b>{Number(memoryDiagnostics.taskStateStorage.activeTasks || 0).toLocaleString()}</b></span>
@@ -18119,6 +18119,9 @@ function AiAssistantPage() {
                 <span>活跃写入省略 <b>{Number(memoryDiagnostics.taskStateStorage.activeEvidenceRowsOmittedOnWrite || 0).toLocaleString()}</b></span>
                 <span>关闭任务原文 <b>{Number(memoryDiagnostics.taskStateStorage.closedTaskEvidenceRows || 0).toLocaleString()}</b></span>
                 <span>关闭写入省略 <b>{Number(memoryDiagnostics.taskStateStorage.closedEvidenceRowsOmittedOnWrite || 0).toLocaleString()}</b></span>
+                <span>运行时补齐 <b>每项最新 {Number(memoryDiagnostics.taskStateStorage.runtimeEvidenceHydrationLimitPerTask || 50)} 条</b></span>
+                <span>生命周期复核 <b>最早 {Number(memoryDiagnostics.taskStateStorage.lifecycleEvidenceHeadPerTask || 5)} ＋ 最新 {Number(memoryDiagnostics.taskStateStorage.lifecycleEvidenceTailPerTask || 15)} 条</b></span>
+                <span>完整证据档案 <b>{memoryDiagnostics.taskStateStorage.completeEvidenceArchive === 'sqlcipher_authoritative_paginated' ? 'SQLCipher 权威分页' : '需要检查'}</b></span>
                 <span>审计字段历史 <b>{Number(memoryDiagnostics.taskStateStorage.historyEvidence?.historyRows || 0).toLocaleString()}</b></span>
                 <span>审计证据集 <b>{Number(memoryDiagnostics.taskStateStorage.historyEvidence?.changeSets || 0).toLocaleString()}</b></span>
                 <span>旧重复回收 <b>{(Number(memoryDiagnostics.taskStateStorage.historyEvidence?.migration?.bytesReclaimed || 0) / 1024).toFixed(1)} KB</b></span>

@@ -7721,6 +7721,12 @@ export class AiAssistantService {
       taskStateStorage: {
         ...getTaskStateStorageStats(this.state.tasks),
         ...personalMemoryStore.getTaskEvidenceStorageStats(),
+        runtimeEvidenceHydrationStrategy: 'sqlcipher_tail_window',
+        runtimeEvidenceHydrationLimitPerTask: 50,
+        lifecycleEvidenceStrategy: 'sqlcipher_head_tail_window',
+        lifecycleEvidenceHeadPerTask: 5,
+        lifecycleEvidenceTailPerTask: 15,
+        completeEvidenceArchive: 'sqlcipher_authoritative_paginated',
         hotsetRecovery: this.taskEvidenceHotsetRecovery,
         historyEvidence: personalMemoryStore.getTaskHistoryEvidenceStorageStats(),
         reviewSnapshots: personalMemoryStore.getTaskReviewSnapshotStorageStats()
