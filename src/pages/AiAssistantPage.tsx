@@ -15978,7 +15978,7 @@ function AiAssistantPage() {
                 <h2 id="task-authority-dossier-title">
                   {taskWorkspace.task?.title || '待办权威档案'}
                 </h2>
-                <p>按稳定任务 ID 从当前权威状态读取；检索摘要仅用于找到它，不作为详情来源。</p>
+                <p>按稳定任务 ID 从当前状态或 SQLCipher 历史档案读取；检索摘要仅用于找到它，不作为详情来源。</p>
               </div>
               <button aria-label="关闭待办权威档案" onClick={() => {
                 closeSearchTaskDossier()
@@ -15991,6 +15991,10 @@ function AiAssistantPage() {
                 <button onClick={() => setTaskWorkspaceRefreshKey(value => value + 1)}>重试</button>
               </div>}
               {taskWorkspace.status === 'ready' && taskWorkspace.task && <>
+                {taskWorkspace.task.directoryState === 'sqlcipher_history_read_only' &&
+                  <div className="assistant-query-plan">
+                    这是 SQLCipher 中的历史任务权威档案；状态、原文和修改历史仍可核验，但当前没有可用操作令牌，因此只读。
+                  </div>}
                 <div className="assistant-memory-item">
                   <div className="assistant-memory-item-head">
                     <strong>{taskWorkspace.task.title}</strong>

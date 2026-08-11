@@ -10587,6 +10587,13 @@ test('closed task archive stays fully pageable without copying evidence into its
 
   const first = store.listTaskArchive({ limit: 100 })
   const second = store.listTaskArchive({ offset: 100, limit: 100, revision: first.revision })
+  const dossierItem = store.getTaskDirectoryDossierItem(tasks[778].id)
+  assert.equal(dossierItem.id, tasks[778].id)
+  assert.equal(dossierItem.title, '特殊历史任务关键词')
+  assert.equal(dossierItem.evidence.length, 1)
+  assert.equal(dossierItem.evidenceTotal, 1)
+  assert.equal(dossierItem.mutationToken, undefined)
+  assert.equal(store.getTaskDirectoryDossierItem('missing-task'), null)
   assert.equal(first.total, 400)
   assert.equal(first.items.length, 100)
   assert.equal(second.items.length, 100)

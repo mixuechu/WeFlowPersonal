@@ -21,7 +21,11 @@ export function buildTaskDossier(task: any, history: any[], historyTotal = histo
   return {
     task: {
       ...task,
-      ...boundedEvidencePayload(task.evidence, MEMORY_CARD_EVIDENCE_LIMIT)
+      ...boundedEvidencePayload(
+        task.evidence,
+        MEMORY_CARD_EVIDENCE_LIMIT,
+        task.evidenceTotal
+      )
     },
     history: Array.isArray(history) ? history.slice(0, TASK_HISTORY_LIMIT) : [],
     historyTotal: Math.max(Number(historyTotal || 0), Array.isArray(history) ? history.length : 0),

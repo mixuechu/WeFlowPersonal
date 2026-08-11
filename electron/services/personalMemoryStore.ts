@@ -14583,6 +14583,58 @@ export class PersonalMemoryStore {
     return result
   }
 
+  getTaskDirectoryDossierItem(taskIdInput: string): any | null {
+    if (!this.db) return null
+    const taskId = String(taskIdInput || '').trim()
+    if (!taskId) return null
+    const row = this.db.prepare(`
+      SELECT id,status,classification,priority,due,project,task_kind,title,
+        payload_json,created_at,updated_at
+      FROM task_directory WHERE id=?
+    `).get(taskId) as any
+    if (!row) return null
+    let payload: any = null
+    try { payload = JSON.parse(String(row.payload_json || '{}')) } catch {}
+    if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return null
+    const evidenceRows = this.db.prepare(`
+      SELECT source_id,message_id,session_id,timestamp,sender,excerpt,
+        COUNT(*) OVER () AS evidence_total
+      FROM search_document_evidence
+      WHERE document_id=?
+      ORDER BY timestamp DESC,source_id,session_id,message_id DESC
+      LIMIT ?
+    `).all(`task:${taskId}`, MEMORY_CARD_EVIDENCE_LIMIT) as any[]
+    const {
+      evidence: _evidence,
+      sourceMessageIds: _sourceMessageIds,
+      mutationToken: _mutationToken,
+      directoryState: _directoryState,
+      ...safePayload
+    } = payload
+    return {
+      ...safePayload,
+      id: String(row.id || ''),
+      title: String(row.title || ''),
+      status: String(row.status || ''),
+      classification: String(row.classification || ''),
+      priority: String(row.priority || ''),
+      due: String(row.due || ''),
+      project: String(row.project || ''),
+      taskKind: String(row.task_kind || 'action'),
+      createdAt: String(row.created_at || ''),
+      updatedAt: String(row.updated_at || ''),
+      evidence: evidenceRows.map(evidence => ({
+        sourceId: String(evidence.source_id || 'legacy'),
+        messageId: String(evidence.message_id || ''),
+        sessionId: String(evidence.session_id || ''),
+        timestamp: Number(evidence.timestamp || 0),
+        sender: String(evidence.sender || ''),
+        excerpt: String(evidence.excerpt || '')
+      })),
+      evidenceTotal: Number(evidenceRows[0]?.evidence_total || 0)
+    }
+  }
+
   listEntityRelatedTaskPage(
     normalizedNamesInput: string[],
     options: { offset?: number; limit?: number } = {}

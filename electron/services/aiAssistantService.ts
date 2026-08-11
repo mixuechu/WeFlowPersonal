@@ -6387,8 +6387,12 @@ export class AiAssistantService {
   }
 
   getTaskWorkspace(taskId: string): any {
-    this.hydrateTaskEvidenceFromSql([String(taskId || '')])
-    const task = this.getTaskStateIndex().get(String(taskId || ''))
+    const id = String(taskId || '').trim()
+    if (!id) return null
+    const revision = personalMemoryStore.getTaskArchiveRevision()
+    this.hydrateTaskEvidenceFromSql([id])
+    const runtimeTask = this.getTaskStateIndex().get(id)
+    const task = runtimeTask || personalMemoryStore.getTaskDirectoryDossierItem(id)
     if (!task) return null
     const historyPage = personalMemoryStore.listTaskHistoryPage({
       taskId: task.id,
@@ -6399,11 +6403,18 @@ export class AiAssistantService {
     const ownershipDecision = ownershipFingerprint
       ? personalMemoryStore.getTaskReviewDecision(ownershipFingerprint)
       : null
+    if (personalMemoryStore.getTaskArchiveRevision() !== revision) {
+      throw new Error('待办档案在读取期间已有更新，请重试')
+    }
     return {
       ...dossier,
-      task: { ...dossier.task, mutationToken: buildTaskMutationToken(task) },
+      task: {
+        ...dossier.task,
+        mutationToken: runtimeTask ? buildTaskMutationToken(runtimeTask) : undefined,
+        directoryState: runtimeTask ? 'runtime_mutable' : 'sqlcipher_history_read_only'
+      },
       ownershipReview: {
-        eligible: task.classification === 'mine' && Boolean(ownershipFingerprint),
+        eligible: Boolean(runtimeTask) && task.classification === 'mine' && Boolean(ownershipFingerprint),
         decision: ownershipDecision?.decision || '',
         reviewedAt: ownershipDecision?.updated_at || '',
         evidenceFingerprint: ownershipFingerprint
@@ -6412,7 +6423,9 @@ export class AiAssistantService {
       historyRevision: historyPage.revision,
       payloadPolicy: {
         ...dossier.payloadPolicy,
-        version: 'task-dossier-v2',
+        version: 'task-dossier-v3',
+        authority: runtimeTask ? 'runtime_current' : 'sqlcipher_stable_id_history',
+        historicalMutationPolicy: 'read_only_without_current_runtime_token',
         history: 'revision_paginated',
         historyPageLimit: 40
       }
