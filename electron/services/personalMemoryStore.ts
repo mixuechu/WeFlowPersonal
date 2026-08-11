@@ -2278,7 +2278,9 @@ export class PersonalMemoryStore {
     name: string
     table: string
     columns: string[]
+    orders?: Array<'ASC' | 'DESC'>
     where?: string
+    sql?: string
   }> {
     return [{
       name: 'idx_search_document_evidence_scope',
@@ -2312,6 +2314,49 @@ export class PersonalMemoryStore {
       name: 'idx_event_participants_entity',
       table: 'event_participants',
       columns: ['entity_id', 'event_id', 'role']
+    }, {
+      name: 'idx_search_document_evidence_archive_time',
+      table: 'search_document_evidence',
+      columns: ['document_id', 'timestamp', 'source_id', 'session_id', 'message_id'],
+      orders: ['ASC', 'DESC', 'DESC', 'DESC', 'DESC']
+    }, {
+      name: 'idx_entity_evidence_archive_time',
+      table: 'entity_evidence',
+      columns: ['entity_id', 'timestamp', 'source_id', 'session_id', 'message_id'],
+      orders: ['ASC', 'DESC', 'DESC', 'DESC', 'DESC']
+    }, {
+      name: 'idx_evidence_claim_archive_time',
+      table: 'evidence',
+      columns: ['claim_id', 'timestamp', '', 'source_id', 'session_id', 'message_id'],
+      orders: ['ASC', 'DESC', 'ASC', 'DESC', 'DESC', 'DESC'],
+      where: 'claim_id is not null',
+      sql: `CREATE INDEX idx_evidence_claim_archive_time ON evidence(
+        claim_id ASC,timestamp DESC,
+        CASE WHEN evidence_role='contradiction' THEN 1 ELSE 0 END ASC,
+        source_id DESC,session_id DESC,message_id DESC
+      ) WHERE claim_id IS NOT NULL`
+    }, {
+      name: 'idx_evidence_relation_archive_time',
+      table: 'evidence',
+      columns: ['relation_id', 'timestamp', '', 'source_id', 'session_id', 'message_id'],
+      orders: ['ASC', 'DESC', 'ASC', 'DESC', 'DESC', 'DESC'],
+      where: 'relation_id is not null',
+      sql: `CREATE INDEX idx_evidence_relation_archive_time ON evidence(
+        relation_id ASC,timestamp DESC,
+        CASE WHEN evidence_role='contradiction' THEN 1 ELSE 0 END ASC,
+        source_id DESC,session_id DESC,message_id DESC
+      ) WHERE relation_id IS NOT NULL`
+    }, {
+      name: 'idx_evidence_event_archive_time',
+      table: 'evidence',
+      columns: ['event_id', 'timestamp', '', 'source_id', 'session_id', 'message_id'],
+      orders: ['ASC', 'DESC', 'ASC', 'DESC', 'DESC', 'DESC'],
+      where: 'event_id is not null',
+      sql: `CREATE INDEX idx_evidence_event_archive_time ON evidence(
+        event_id ASC,timestamp DESC,
+        CASE WHEN evidence_role='contradiction' THEN 1 ELSE 0 END ASC,
+        source_id DESC,session_id DESC,message_id DESC
+      ) WHERE event_id IS NOT NULL`
     }]
   }
 
@@ -2456,16 +2501,29 @@ export class PersonalMemoryStore {
       if (row?.sql) installedIndexes += 1
       const columns = row?.sql
         ? (this.db.prepare(`PRAGMA index_info(${definition.name})`).all() as Array<{ name: string }>)
-          .map(item => item.name)
+          .map(item => String(item.name || ''))
+        : []
+      const orders = row?.sql
+        ? (this.db.prepare(`PRAGMA index_xinfo(${definition.name})`).all() as Array<{
+            name: string
+            key: number
+            desc: number
+          }>).filter(item => Number(item.key) === 1).map(item => Number(item.desc) ? 'DESC' : 'ASC')
         : []
       const sql = String(row?.sql || '').toLowerCase().replace(/\s+/g, ' ')
       const columnsHealthy =
         JSON.stringify(columns) === JSON.stringify(definition.columns)
+      const ordersHealthy = JSON.stringify(orders) === JSON.stringify(
+        definition.orders || definition.columns.map(() => 'ASC')
+      )
       const tableHealthy = sql.includes(`on ${definition.table}(`)
+      const exactSqlHealthy = definition.sql
+        ? sql === definition.sql.toLowerCase().replace(/\s+/g, ' ')
+        : true
       const whereHealthy = definition.where
         ? sql.includes(`where ${definition.where}`)
         : !sql.includes(' where ')
-      if (!columnsHealthy || !tableHealthy || !whereHealthy) {
+      if (!columnsHealthy || !ordersHealthy || !tableHealthy || !whereHealthy || !exactSqlHealthy) {
         unhealthyIndexes.push(definition.name)
       }
     }
@@ -2491,9 +2549,10 @@ export class PersonalMemoryStore {
       for (const definition of this.evidenceScopeIndexDefinitions()) {
         if (!unhealthy.has(definition.name)) continue
         statements.push(`DROP INDEX IF EXISTS ${definition.name};`)
-        statements.push(`CREATE INDEX ${definition.name}
-          ON ${definition.table}(${definition.columns.join(',')})
-          ${definition.where ? `WHERE ${definition.where}` : ''};`)
+        statements.push(`${definition.sql || `CREATE INDEX ${definition.name}
+          ON ${definition.table}(${definition.columns.map((column, index) =>
+            `${column} ${(definition.orders?.[index] || 'ASC')}`).join(',')})
+          ${definition.where ? `WHERE ${definition.where}` : ''}`};`)
       }
       this.db.transaction(() => {
         this.db!.exec(statements.join('\n'))
@@ -2502,7 +2561,7 @@ export class PersonalMemoryStore {
     const after = this.inspectEvidenceScopeIndexes()
     const checkedAt = new Date().toISOString()
     const audit = {
-      version: 2,
+      version: 3,
       checkedAt,
       ...after,
       repairedThisStart: !before.healthy,
@@ -2518,14 +2577,14 @@ export class PersonalMemoryStore {
 
   getEvidenceScopeIndexHealth(): any {
     const live = this.inspectEvidenceScopeIndexes()
-    if (!this.db) return { version: 2, ...live, repairsTotal: 0 }
+    if (!this.db) return { version: 3, ...live, repairsTotal: 0 }
     const row = this.db.prepare(`
       SELECT value,updated_at FROM schema_meta WHERE key='evidence_scope_index_integrity'
     `).get() as any
     let audit: any = {}
     try { audit = JSON.parse(String(row?.value || '{}')) } catch {}
     return {
-      version: 2,
+      version: 3,
       checkedAt: String(audit.checkedAt || row?.updated_at || ''),
       repairedThisStart: Boolean(audit.repairedThisStart),
       repairedIndexesThisStart: Number(audit.repairedIndexesThisStart || 0),

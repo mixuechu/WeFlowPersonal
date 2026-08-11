@@ -18176,8 +18176,8 @@ function AiAssistantPage() {
               </div>
             </div>}
             {memoryDiagnostics.evidenceScopeIndexes?.version && <div className={`assistant-recovery-audit ${memoryDiagnostics.evidenceScopeIndexesHealthy ? 'healthy' : 'unhealthy'}`}>
-              <header><Search size={15} /><span><b>组合范围与实体记忆索引</b>
-                <small>通用、身份、事实、关系和事件证据按“记忆身份＋来源＋会话＋时间”建立复合索引；事实对象与事件参与者另按实体建立全历史入口。启动会核对表、列顺序和部分条件并自动修复漂移。</small>
+              <header><Search size={15} /><span><b>证据范围与完整档案索引</b>
+                <small>通用、身份、事实、关系和事件证据同时按“记忆身份＋来源＋会话＋时间”支持组合筛选，并按“记忆身份＋时间倒序”支持多年完整档案翻页；事实对象与事件参与者另按实体建立全历史入口。启动会核对表、列顺序、升降序和部分条件并自动修复漂移。</small>
               </span></header>
               <div className="assistant-recovery-current">
                 <span>当前状态 <b>{memoryDiagnostics.evidenceScopeIndexesHealthy ? '覆盖正常' : '需要检查'}</b></span>

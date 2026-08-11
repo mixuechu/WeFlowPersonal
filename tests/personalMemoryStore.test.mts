@@ -9316,12 +9316,49 @@ test('composed evidence scope indexes cover query plans and self-heal definition
       name: 'idx_evidence_event_scope',
       sql: `SELECT 1 FROM evidence
         WHERE event_id=? AND source_id=? AND session_id=? AND timestamp>=?`
+    }, {
+      name: 'idx_search_document_evidence_archive_time',
+      sql: `SELECT message_id FROM search_document_evidence
+        WHERE document_id=?
+        ORDER BY timestamp DESC,source_id DESC,session_id DESC,message_id DESC LIMIT 40`,
+      args: ['memory-id']
+    }, {
+      name: 'idx_entity_evidence_archive_time',
+      sql: `SELECT message_id FROM entity_evidence
+        WHERE entity_id=?
+        ORDER BY timestamp DESC,source_id DESC,session_id DESC,message_id DESC LIMIT 40`,
+      args: ['memory-id']
+    }, {
+      name: 'idx_evidence_claim_archive_time',
+      sql: `SELECT message_id FROM evidence
+        WHERE claim_id=?
+        ORDER BY timestamp DESC,
+          CASE WHEN evidence_role='contradiction' THEN 1 ELSE 0 END,
+          source_id DESC,session_id DESC,message_id DESC LIMIT 40`,
+      args: ['memory-id']
+    }, {
+      name: 'idx_evidence_relation_archive_time',
+      sql: `SELECT message_id FROM evidence
+        WHERE relation_id=?
+        ORDER BY timestamp DESC,
+          CASE WHEN evidence_role='contradiction' THEN 1 ELSE 0 END,
+          source_id DESC,session_id DESC,message_id DESC LIMIT 40`,
+      args: ['memory-id']
+    }, {
+      name: 'idx_evidence_event_archive_time',
+      sql: `SELECT message_id FROM evidence
+        WHERE event_id=?
+        ORDER BY timestamp DESC,
+          CASE WHEN evidence_role='contradiction' THEN 1 ELSE 0 END,
+          source_id DESC,session_id DESC,message_id DESC LIMIT 40`,
+      args: ['memory-id']
     }]
     for (const plan of plans) {
       const details = (database.prepare(`EXPLAIN QUERY PLAN ${plan.sql}`)
-        .all('memory-id', 'wechat', 'scope-session', 1_700_000_000) as Array<{ detail: string }>)
+        .all(...(plan.args || ['memory-id', 'wechat', 'scope-session', 1_700_000_000])) as Array<{ detail: string }>)
         .map(row => row.detail).join(' ')
       assert.match(details, new RegExp(plan.name))
+      if (plan.name.includes('_archive_time')) assert.doesNotMatch(details, /TEMP B-TREE FOR ORDER BY/i)
     }
     first.upsertResources([{
       id: 'scope-index-scale-resource',
@@ -9359,6 +9396,9 @@ test('composed evidence scope indexes cover query plans and self-heal definition
       DROP INDEX idx_entity_evidence_scope;
       CREATE INDEX idx_entity_evidence_scope
         ON entity_evidence(entity_id,timestamp);
+      DROP INDEX idx_search_document_evidence_archive_time;
+      CREATE INDEX idx_search_document_evidence_archive_time
+        ON search_document_evidence(document_id,timestamp ASC,source_id DESC,session_id DESC,message_id DESC);
     `)
     assert.equal(first.getEvidenceScopeIndexHealth().healthy, false)
     first.close()
@@ -9368,9 +9408,9 @@ test('composed evidence scope indexes cover query plans and self-heal definition
       reopened.initialize(databasePath)
       const diagnostics = reopened.getDiagnostics()
       assert.equal(diagnostics.evidenceScopeIndexesHealthy, true)
-      assert.equal(diagnostics.evidenceScopeIndexes.installedIndexes, 7)
+      assert.equal(diagnostics.evidenceScopeIndexes.installedIndexes, 12)
       assert.equal(diagnostics.evidenceScopeIndexes.repairedThisStart, true)
-      assert.equal(diagnostics.evidenceScopeIndexes.repairedIndexesThisStart, 1)
+      assert.equal(diagnostics.evidenceScopeIndexes.repairedIndexesThisStart, 2)
       assert.equal(diagnostics.evidenceScopeIndexes.unhealthyIndexes.length, 0)
     } finally {
       reopened.close()
@@ -9406,9 +9446,9 @@ test('entity memory lookup indexes self-heal exact definition drift and remain v
     try {
       reopened.initialize(databasePath)
       const health = reopened.getEvidenceScopeIndexHealth()
-      assert.equal(health.version, 2)
+      assert.equal(health.version, 3)
       assert.equal(health.healthy, true)
-      assert.equal(health.installedIndexes, 7)
+      assert.equal(health.installedIndexes, 12)
       assert.equal(health.repairedIndexesThisStart, 2)
       const reopenedDatabase = (reopened as any).db
       const claimPlan = reopenedDatabase.prepare(`EXPLAIN QUERY PLAN
