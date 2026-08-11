@@ -7088,6 +7088,24 @@ export class AiAssistantService {
     }
   }
 
+  private getTrustedEntityPresentations(entityIds: string[]): {
+    revision: string
+    byId: Map<string, any>
+  } {
+    const revision = personalMemoryStore.getTrustedEntityDirectoryRevision()
+    const result = personalMemoryStore.resolveTrustedEntityDirectorySelection({
+      entityIds,
+      expectedRevision: revision
+    })
+    if (result.reason === 'revision_changed') {
+      throw new Error('可信实体目录在读取期间发生了变化，请重新打开')
+    }
+    return {
+      revision,
+      byId: new Map(result.entities.map((entity: any) => [entity.id, entity]))
+    }
+  }
+
   getEntityTaskPage(entityId: string, options: any = {}): any {
     const id = String(entityId || '').trim()
     const entity = this.state.graph.entities.find(candidate =>
@@ -12245,14 +12263,13 @@ export class AiAssistantService {
       })
       if (selection.stale) throw new Error('关系路径所选实体已经变化，请重新选择起点和终点')
     }
-    const trustedEntities = this.state.graph.entities.filter(isTrustedEntity)
-    const entityMap = new Map(trustedEntities.map(entity => [entity.id, entity]))
     const authorityPath = personalMemoryStore.findRelationPath(
       relationScope,
       fromId,
       toId,
       maxDepth
     )
+    const entityMap = this.getTrustedEntityPresentations(authorityPath.entityIds || []).byId
     const path = {
       ...authorityPath,
       entities: authorityPath.entityIds.map(id => entityMap.get(id)).filter(Boolean)
@@ -12293,13 +12310,14 @@ export class AiAssistantService {
     if (pagination.expectedGraphRevision && pagination.expectedGraphRevision !== startingGraphRevision) {
       throw new Error('共同实体结果在浏览期间已经变化，请从第一页重新加载')
     }
-    const entities = this.state.graph.entities.filter(isTrustedEntity)
-    const entityMap = new Map(entities.map(entity => [entity.id, entity]))
     const authority = personalMemoryStore.findCommonRelationNeighbors(fromId, toId, pagination)
     const completedGraphRevision = String(personalMemoryStore.getGraphReviewRevision())
     if (completedGraphRevision !== startingGraphRevision) {
       throw new Error('共同实体结果在读取期间已经变化，请从第一页重新加载')
     }
+    const entityMap = this.getTrustedEntityPresentations(
+      authority.items.map((item: any) => String(item.entityId || ''))
+    ).byId
     const common = authority.items.flatMap((item: any) => {
       const entity = entityMap.get(item.entityId)
       return entity ? [{ ...item, entity }] : []
@@ -12961,9 +12979,10 @@ export class AiAssistantService {
           if (String(document.document_type || '') === 'relation') {
             const subjectId = String(document.metadata?.subjectId || '')
             const objectId = String(document.metadata?.objectId || '')
-            const subject = this.state.graph.entities.find(entity => entity.id === subjectId)
-            const object = this.state.graph.entities.find(entity => entity.id === objectId)
-            const directoryRevision = personalMemoryStore.getTrustedEntityDirectoryRevision()
+            const entityDirectory = this.getTrustedEntityPresentations([subjectId, objectId])
+            const subject = entityDirectory.byId.get(subjectId)
+            const object = entityDirectory.byId.get(objectId)
+            const directoryRevision = entityDirectory.revision
             Object.assign(hydratedCitation, {
               relationCorrectionContext: {
                 subjectId,
@@ -13135,15 +13154,13 @@ export class AiAssistantService {
   getMemoryClaim(id: string): any {
     const revision = personalMemoryStore.getStructuredMemoryRevision()
     const claim = personalMemoryStore.getClaim(id)
-    const directoryRevision = personalMemoryStore.getTrustedEntityDirectoryRevision()
-    const subject = claim
-      ? this.state.graph.entities.find(entity =>
-        entity.id === claim.subject_id && isTrustedEntity(entity))
-      : null
+    const entityDirectory = this.getTrustedEntityPresentations(claim ? [
+      String(claim.subject_id || ''), String(claim.object_entity_id || '')
+    ] : [])
+    const directoryRevision = entityDirectory.revision
+    const subject = claim ? entityDirectory.byId.get(String(claim.subject_id || '')) : null
     const object = claim?.object_entity_id
-      ? this.state.graph.entities.find(entity =>
-        entity.id === claim.object_entity_id && isTrustedEntity(entity))
-      : null
+      ? entityDirectory.byId.get(String(claim.object_entity_id)) : null
     const completedRevision = personalMemoryStore.getStructuredMemoryRevision()
     if (completedRevision !== revision) {
       throw new Error('事实与事件档案在读取期间发生了变化，请重新打开')
@@ -13173,10 +13190,10 @@ export class AiAssistantService {
     const participantPage = event
       ? personalMemoryStore.listEventParticipantsForCorrection(id, 40)
       : { items: [], total: 0, truncated: false }
-    const directoryRevision = personalMemoryStore.getTrustedEntityDirectoryRevision()
-    const trustedById = new Map(this.state.graph.entities
-      .filter(isTrustedEntity)
-      .map(entity => [entity.id, entity]))
+    const entityDirectory = this.getTrustedEntityPresentations(
+      participantPage.items.map(participant => String(participant.entity_id || ''))
+    )
+    const directoryRevision = entityDirectory.revision
     const completedRevision = personalMemoryStore.getStructuredMemoryRevision()
     if (completedRevision !== revision) {
       throw new Error('事实与事件档案在读取期间发生了变化，请重新打开')
@@ -13186,7 +13203,7 @@ export class AiAssistantService {
       structuredMemoryRevision: revision,
       entityDirectoryRevision: directoryRevision,
       participants: participantPage.items.map(participant => {
-        const entity = trustedById.get(participant.entity_id)
+        const entity = entityDirectory.byId.get(participant.entity_id)
         return {
           entityId: participant.entity_id,
           canonicalName: participant.canonical_name || participant.entity_id,
@@ -13223,11 +13240,12 @@ export class AiAssistantService {
     const relation = this.state.graph.relations.find(item =>
       item.id === String(id || '').trim())
     if (!relation) return null
-    const directoryRevision = personalMemoryStore.getTrustedEntityDirectoryRevision()
-    const subject = this.state.graph.entities.find(entity =>
-      entity.id === relation.subjectId && isTrustedEntity(entity))
-    const object = this.state.graph.entities.find(entity =>
-      entity.id === relation.objectId && isTrustedEntity(entity))
+    const entityDirectory = this.getTrustedEntityPresentations([
+      relation.subjectId, relation.objectId
+    ])
+    const directoryRevision = entityDirectory.revision
+    const subject = entityDirectory.byId.get(relation.subjectId)
+    const object = entityDirectory.byId.get(relation.objectId)
     const completedRevision = entityRelationMutationRevision(
       personalMemoryStore.getGraphReviewRevision(),
       personalMemoryStore.getStructuredMemoryRevision()

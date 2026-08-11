@@ -4789,7 +4789,7 @@ export class PersonalMemoryStore {
       trustStatus: 'confirmed'
     }))
     if (entities.length !== ids.length) {
-      return { entities: [], revision, stale: true, reason: 'entity_untrusted' }
+      return { entities, revision, stale: true, reason: 'entity_untrusted' }
     }
     if (this.getTrustedEntityDirectoryRevision() !== revision) {
       return {
@@ -8184,7 +8184,8 @@ export class PersonalMemoryStore {
         trustedEntityDirectoryIdentityMaterializations: 0,
         trustedEntityDirectorySearchFields: 'canonical_alias_account_external_id',
         trustedEntityDirectoryCollisionAuthority: 'sqlcipher_full_trusted_scope',
-        trustedEntityDirectoryRevisionBound: true
+        trustedEntityDirectoryRevisionBound: true,
+        trustedEntityPresentationHydration: 'requested_ids_only'
       },
       memorySearchRevision,
       memorySearchFeedbackArchiveRevision,

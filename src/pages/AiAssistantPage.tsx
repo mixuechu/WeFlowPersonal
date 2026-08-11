@@ -18321,6 +18321,7 @@ function AiAssistantPage() {
                 <span>实体目录 ID 集合 <b>{Number(memoryDiagnostics.memorySearchScopePlanning.trustedEntityDirectoryIdentityMaterializations || 0)}</b> 份</span>
                 <span>同名碰撞 <b>{memoryDiagnostics.memorySearchScopePlanning.trustedEntityDirectoryCollisionAuthority === 'sqlcipher_full_trusted_scope' ? '全可信范围计数' : '需要检查'}</b></span>
                 <span>实体选择 <b>{memoryDiagnostics.memorySearchScopePlanning.trustedEntityDirectoryRevisionBound ? 'revision 保护' : '需要检查'}</b></span>
+                <span>实体展示水合 <b>{memoryDiagnostics.memorySearchScopePlanning.trustedEntityPresentationHydration === 'requested_ids_only' ? '仅查询所需 ID' : '需要检查'}</b></span>
                 <span>图路径扩展预算 <b>{Number(memoryDiagnostics.memorySearchScopePlanning.scopedGraphPathExpansionBudget || 0).toLocaleString()}</b> 状态</span>
                 <span>预算截断 <b>{memoryDiagnostics.memorySearchScopePlanning.scopedGraphPathTruncationVisible ? '明确提示' : '需要检查'}</b></span>
               </div>

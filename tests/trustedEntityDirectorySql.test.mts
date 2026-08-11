@@ -20,6 +20,20 @@ test('all trusted directory reads and selection gates use SQLCipher authority', 
   assert.doesNotMatch(serviceSource, /buildTrustedEntityDirectory\(this\.state\.graph\.entities/)
   assert.doesNotMatch(serviceSource, /resolveTrustedEntitySelection\(this\.state\.graph\.entities/)
   assert.doesNotMatch(serviceSource, /resolveTrustedEntityPairSelection\(this\.state\.graph\.entities/)
+  for (const [startMarker, endMarker] of [
+    ['  getMemoryClaim(', '\n  getMemoryEvent('],
+    ['  getMemoryEvent(', '\n  getEventCorrectionParticipantPage('],
+    ['  getMemoryRelation(', '\n  previewRelationCorrection('],
+    ['  findGraphPath(', '\n  findCommonNeighbors('],
+    ['  findCommonNeighbors(', '\n  async askMemory(']
+  ]) {
+    const start = serviceSource.indexOf(startMarker)
+    const end = serviceSource.indexOf(endMarker, start)
+    assert.ok(start > 0 && end > start, startMarker)
+    const source = serviceSource.slice(start, end)
+    assert.match(source, /getTrustedEntityPresentations\(/, startMarker)
+    assert.doesNotMatch(source, /this\.state\.graph\.entities\.(?:find|filter)/, startMarker)
+  }
   const pickerStart = pageSource.indexOf('function TrustedEntityPicker(')
   const pickerEnd = pageSource.indexOf('\nfunction EventParticipantEditor(', pickerStart)
   const picker = pageSource.slice(pickerStart, pickerEnd)
@@ -83,10 +97,12 @@ test('SQLCipher trusted entity directory searches and paginates without material
     })
     assert.equal(selection.reason, 'ok')
     assert.deepEqual(selection.entities.map(entity => entity.id), ['trusted-1', 'trusted-123'])
-    assert.equal(store.resolveTrustedEntityDirectorySelection({
-      entityIds: ['trusted-1204'],
+    const partial = store.resolveTrustedEntityDirectorySelection({
+      entityIds: ['trusted-1', 'trusted-1204'],
       expectedRevision: first.revision
-    }).reason, 'entity_untrusted')
+    })
+    assert.equal(partial.reason, 'entity_untrusted')
+    assert.deepEqual(partial.entities.map(entity => entity.id), ['trusted-1'])
 
     const database = (store as any).db
     database.prepare(`
