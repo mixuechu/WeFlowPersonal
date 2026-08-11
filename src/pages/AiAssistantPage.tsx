@@ -20220,6 +20220,17 @@ function AiAssistantPage() {
                   ? '当前不能安全自动撤销'
                   : '身份合并撤销失败'}</strong>
                 <span>{mergeRevertDialog.error || mergeRevertDialog.preview?.reason || '未知错误'}</span>
+                {mergeRevertDialog.preview?.evidenceChanges?.present &&
+                  (Number(mergeRevertDialog.preview.evidenceChanges.missing || 0) > 0 ||
+                    Number(mergeRevertDialog.preview.evidenceChanges.added || 0) > 0 ||
+                    Number(mergeRevertDialog.preview.evidenceChanges.changed || 0) > 0) &&
+                  <small>
+                    关系原文差异：缺失 {Number(mergeRevertDialog.preview.evidenceChanges.missing || 0)} 条、
+                    新增 {Number(mergeRevertDialog.preview.evidenceChanges.added || 0)} 条、
+                    同一载体内容变化 {Number(mergeRevertDialog.preview.evidenceChanges.changed || 0)} 条。
+                    当前共 {Number(mergeRevertDialog.preview.evidenceChanges.current || 0)} 条，
+                    合并完成时为 {Number(mergeRevertDialog.preview.evidenceChanges.expected || 0)} 条。
+                  </small>}
                 {(String(mergeRevertDialog.error || '').includes('变化') ||
                   String(mergeRevertDialog.error || '').includes('失效')) &&
                   <button onClick={() => {

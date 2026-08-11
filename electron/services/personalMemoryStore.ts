@@ -22833,11 +22833,15 @@ export class PersonalMemoryStore {
     archivedRows: number
     expectedActiveRows: number
     currentActiveRows: number
+    missingRows: number
+    extraRows: number
+    changedRows: number
   } {
     if (!this.db) {
       return {
         present: false, matches: false,
-        archivedRows: 0, expectedActiveRows: 0, currentActiveRows: 0
+        archivedRows: 0, expectedActiveRows: 0, currentActiveRows: 0,
+        missingRows: 0, extraRows: 0, changedRows: 0
       }
     }
     const id = Number(mergeId || 0)
@@ -22879,22 +22883,39 @@ export class PersonalMemoryStore {
         (SELECT COUNT(*) FROM expected) AS expected_rows,
         (SELECT COUNT(*) FROM current) AS current_rows,
         (SELECT COUNT(*) FROM (
-          SELECT * FROM expected EXCEPT SELECT * FROM current
-        )) AS missing_rows,
+          SELECT after_relation_id,source_id,session_id,message_id FROM expected
+          EXCEPT
+          SELECT after_relation_id,source_id,session_id,message_id FROM current
+        )) AS missing_carrier_rows,
         (SELECT COUNT(*) FROM (
-          SELECT * FROM current EXCEPT SELECT * FROM expected
-        )) AS extra_rows
+          SELECT after_relation_id,source_id,session_id,message_id FROM current
+          EXCEPT
+          SELECT after_relation_id,source_id,session_id,message_id FROM expected
+        )) AS extra_carrier_rows,
+        (SELECT COUNT(*) FROM expected
+          INNER JOIN current USING(after_relation_id,source_id,session_id,message_id)
+          WHERE expected.timestamp IS NOT current.timestamp
+            OR expected.sender IS NOT current.sender
+            OR expected.excerpt IS NOT current.excerpt
+            OR expected.evidence_role IS NOT current.evidence_role
+        ) AS changed_content_rows
     `).get(id) as any
     const archivedRows = Number(row?.archived_rows || 0)
     const expectedActiveRows = Number(row?.expected_rows || 0)
     const currentActiveRows = Number(row?.current_rows || 0)
+    const missingRows = Number(row?.missing_carrier_rows || 0)
+    const extraRows = Number(row?.extra_carrier_rows || 0)
+    const changedRows = Number(row?.changed_content_rows || 0)
     return {
       present: archivedRows > 0,
-      matches: archivedRows > 0 && Number(row?.missing_rows || 0) === 0 &&
-        Number(row?.extra_rows || 0) === 0,
+      matches: archivedRows > 0 && missingRows === 0 && extraRows === 0 &&
+        changedRows === 0,
       archivedRows,
       expectedActiveRows,
-      currentActiveRows
+      currentActiveRows,
+      missingRows,
+      extraRows,
+      changedRows
     }
   }
 

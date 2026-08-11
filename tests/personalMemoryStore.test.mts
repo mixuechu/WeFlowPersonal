@@ -16044,7 +16044,10 @@ test('identity merge evidence lineage folds and restores relations without JSON 
     matches: true,
     archivedRows: 5,
     expectedActiveRows: 3,
-    currentActiveRows: 3
+    currentActiveRows: 3,
+    missingRows: 0,
+    extraRows: 0,
+    changedRows: 0
   })
   const database = (store as any).db
   const reapplyLineage = () => store.syncGraph({
@@ -16065,8 +16068,13 @@ test('identity merge evidence lineage folds and restores relations without JSON 
       WHERE relation_id=? AND source_id='wechat'
         AND session_id='shared' AND message_id='same'
     `).run(mutation.value, targetRelationId)
-    assert.equal(store.inspectMergeRelationEvidenceLineage(recorded.mergeId).matches, false,
+    const drift = store.inspectMergeRelationEvidenceLineage(recorded.mergeId)
+    assert.equal(drift.matches, false,
       `同一载体的 ${mutation.column} 漂移必须阻止撤销`)
+    assert.deepEqual(
+      { missing: drift.missingRows, added: drift.extraRows, changed: drift.changedRows },
+      { missing: 0, added: 0, changed: 1 }
+    )
     reapplyLineage()
     assert.equal(store.inspectMergeRelationEvidenceLineage(recorded.mergeId).matches, true)
   }
@@ -16079,7 +16087,13 @@ test('identity merge evidence lineage folds and restores relations without JSON 
       relation_id,source_id,message_id,session_id,timestamp,sender,excerpt,evidence_role
     ) VALUES(?,?,?,?,?,?,?,'direct')
   `).run(targetRelationId, 'mail', 'target', 'replacement', 4, '目标', '同数量替换原文')
-  assert.equal(store.inspectMergeRelationEvidenceLineage(recorded.mergeId).matches, false)
+  const carrierDrift = store.inspectMergeRelationEvidenceLineage(recorded.mergeId)
+  assert.equal(carrierDrift.matches, false)
+  assert.deepEqual(
+    { missing: carrierDrift.missingRows, added: carrierDrift.extraRows,
+      changed: carrierDrift.changedRows },
+    { missing: 1, added: 1, changed: 0 }
+  )
   reapplyLineage()
   assert.equal(store.inspectMergeRelationEvidenceLineage(recorded.mergeId).matches, true)
 

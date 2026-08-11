@@ -112,6 +112,27 @@ test('all human relation correction entry points use SQLCipher evidence stats an
   assert.match(reviewMethod, /identityMergeEvidenceApply/)
 })
 
+test('identity merge revert preview explains privacy-minimal evidence drift counts', () => {
+  const service = readFileSync(new URL(
+    '../electron/services/aiAssistantService.ts', import.meta.url
+  ), 'utf8')
+  const page = readFileSync(new URL(
+    '../src/pages/AiAssistantPage.tsx', import.meta.url
+  ), 'utf8')
+  const previewStart = service.indexOf('  previewRevertMerge(')
+  const previewEnd = service.indexOf('\n  previewRestoreRejectedEntity(', previewStart)
+  const preview = service.slice(previewStart, previewEnd)
+  assert.ok(previewStart > 0 && previewEnd > previewStart)
+  assert.match(preview, /inspectMergeRelationEvidenceLineage\(id\)/)
+  assert.match(preview, /evidenceChanges:/)
+  for (const field of ['expected', 'current', 'missing', 'added', 'changed']) {
+    assert.match(preview, new RegExp(`${field}:`))
+  }
+  assert.match(page, /关系原文差异：缺失/)
+  assert.match(page, /同一载体内容变化/)
+  assert.doesNotMatch(preview, /excerpt:/)
+})
+
 test('identity merge relation normalization preserves confirmed authority regardless of order', () => {
   const candidate = {
     id: 'candidate-before-merge',

@@ -10133,13 +10133,14 @@ export class AiAssistantService {
     if (!snapshot?.source || !snapshot?.target || !Array.isArray(snapshot.relations)) return null
     const affectedReviewIds = (snapshot.affectedReviews || []).map((review: any) => String(review.id || ''))
     const currentReviews = personalMemoryStore.listGraphReviewsByIds(affectedReviewIds)
+    const relationEvidenceLineage = personalMemoryStore.inspectMergeRelationEvidenceLineage(id)
     const inspection = inspectIdentityMergeRevert({
       snapshot,
       currentGraph: { ...this.state.graph, reviewQueue: currentReviews },
       currentSourceParticipants: personalMemoryStore.listEntityEventParticipants(snapshot.source.id),
       currentTargetParticipants: personalMemoryStore.listEntityEventParticipants(snapshot.target.id),
       currentIdentityDecision: personalMemoryStore.getIdentityDecision(snapshot.source.id, snapshot.target.id),
-      relationEvidenceLineage: personalMemoryStore.inspectMergeRelationEvidenceLineage(id)
+      relationEvidenceLineage
     })
     return {
       mergeId: Number(id),
@@ -10149,6 +10150,14 @@ export class AiAssistantService {
       safe: inspection.safe,
       reason: inspection.reason,
       counts: inspection.counts,
+      evidenceChanges: {
+        present: relationEvidenceLineage.present,
+        expected: relationEvidenceLineage.expectedActiveRows,
+        current: relationEvidenceLineage.currentActiveRows,
+        missing: relationEvidenceLineage.missingRows,
+        added: relationEvidenceLineage.extraRows,
+        changed: relationEvidenceLineage.changedRows
+      },
       previewToken: inspection.safe ? buildIdentityMergeRevertPreviewToken({
         mergeId: Number(id),
         archiveRevision,
