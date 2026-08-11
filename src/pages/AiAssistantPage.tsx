@@ -1121,6 +1121,9 @@ function AiAssistantPage() {
   const dataSourceDirectoryGate = useRef(new LatestRequestGate())
   const [dataSourceToggling, setDataSourceToggling] = useState<Record<string, boolean>>({})
   const dataSourceToggleGates = useRef(new KeyedLatestRequestGates())
+  const dataSourceMutationLock = useRef(false)
+  const [documentConnecting, setDocumentConnecting] = useState(false)
+  const documentConnectorGate = useRef(new LatestRequestGate())
   const calendarConnectorGate = useRef(new LatestRequestGate())
   const mailConnectorGate = useRef(new LatestRequestGate())
   const [eventTimeline, setEventTimeline] = useState<{ items: any[]; total: number; hasMore: boolean; revision?: string; stale?: boolean; loading?: boolean; error?: string }>({
@@ -2169,10 +2172,15 @@ function AiAssistantPage() {
   useEffect(() => {
     if (!showDataSources) {
       dataSourceDirectoryGate.current.invalidate()
+      dataSourceToggleGates.current.invalidateAll()
+      documentConnectorGate.current.invalidate()
       calendarConnectorGate.current.invalidate()
       mailConnectorGate.current.invalidate()
+      dataSourceMutationLock.current = false
       setCalendarPicker(null)
       setMailPicker(null)
+      setDataSourceToggling({})
+      setDocumentConnecting(false)
       setCalendarConnecting(false)
       setMailConnecting(false)
       setDataSourcesLoading(false)
@@ -3892,6 +3900,8 @@ function AiAssistantPage() {
   )
   const selectedCalendarDay = taskCalendar.days.find(day => day.date === selectedCalendarDate)
   const sourceMutationBusy = sourceBulkMutating || Object.values(sourceMutating).some(Boolean)
+  const dataSourceMutationBusy = documentConnecting || calendarConnecting || mailConnecting ||
+    Object.values(dataSourceToggling).some(Boolean)
   const updateReminderPreference = async (reminder: any, action: 'helpful' | 'snooze' | 'mute_kind' | 'restore_kind') => {
     const key = action === 'restore_kind' ? `restore:${reminder.kind}` : reminder.id
     if (taskReminderSaving[key]) return
@@ -9742,7 +9752,8 @@ function AiAssistantPage() {
   }
 
   const toggleDataSource = async (source: any) => {
-    if (dataSourceToggling[source.id]) return
+    if (dataSourceMutationBusy || dataSourceMutationLock.current) return
+    dataSourceMutationLock.current = true
     const request = dataSourceToggleGates.current.begin(source.id)
     setDataSourceToggling(current => setKeyedLoadingState(current, source.id, true))
     try {
@@ -9764,41 +9775,56 @@ function AiAssistantPage() {
       }
     } finally {
       if (dataSourceToggleGates.current.isCurrent(source.id, request)) {
+        dataSourceMutationLock.current = false
         setDataSourceToggling(current => setKeyedLoadingState(current, source.id, false))
       }
     }
   }
 
   const configureDocumentSource = async () => {
+    if (dataSourceMutationBusy || dataSourceMutationLock.current) return
     const source = dataSources.find(item => item.id === 'documents')
     if (!source?.mutationToken) {
       setMessage('文档数据源状态尚未加载完成，请刷新后重试。')
       return
     }
+    dataSourceMutationLock.current = true
+    const request = documentConnectorGate.current.begin()
+    setDocumentConnecting(true)
     const expectedMutationToken = source.mutationToken
-    const selected = await window.electronAPI.dialog.openFile({
-      title: '选择要持续索引的本机文档目录',
-      properties: ['openDirectory', 'createDirectory']
-    })
-    const folderPath = selected.filePaths?.[0]
-    if (selected.canceled || !folderPath) return
     try {
+      const selected = await window.electronAPI.dialog.openFile({
+        title: '选择要持续索引的本机文档目录',
+        properties: ['openDirectory', 'createDirectory']
+      })
+      if (!documentConnectorGate.current.isCurrent(request)) return
+      const folderPath = selected.filePaths?.[0]
+      if (selected.canceled || !folderPath) return
       const updated = await window.electronAPI.aiAssistant.configureDataSource('documents', {
         folderPath,
         expectedMutationToken
       })
+      if (!documentConnectorGate.current.isCurrent(request)) return
       setDataSources(current => current.map(item => item.id === 'documents' ? updated : item))
       setMessage('本机文档目录已连接；下次立即补齐或自动整理时开始增量索引。')
     } catch (error: any) {
+      if (!documentConnectorGate.current.isCurrent(request)) return
       const errorMessage = error?.message || String(error)
       setMessage(errorMessage)
       if (errorMessage.includes('数据源配置在展示后发生了变化')) {
         refreshDataSourcesAfterConflict()
       }
+    } finally {
+      if (documentConnectorGate.current.isCurrent(request)) {
+        dataSourceMutationLock.current = false
+        setDocumentConnecting(false)
+      }
     }
   }
 
   const configureCalendarSource = async (source: any) => {
+    if (dataSourceMutationBusy || dataSourceMutationLock.current) return
+    dataSourceMutationLock.current = true
     const request = calendarConnectorGate.current.begin()
     mailConnectorGate.current.invalidate()
     setCalendarConnecting(true)
@@ -9834,15 +9860,20 @@ function AiAssistantPage() {
         setMessage(error?.message || String(error))
       }
     } finally {
-      if (calendarConnectorGate.current.isCurrent(request)) setCalendarConnecting(false)
+      if (calendarConnectorGate.current.isCurrent(request)) {
+        dataSourceMutationLock.current = false
+        setCalendarConnecting(false)
+      }
     }
   }
 
   const saveCalendarSelection = async () => {
+    if (dataSourceMutationBusy || dataSourceMutationLock.current) return
     if (!calendarPicker?.selectedIds.length) {
       setMessage('请至少选择一个要索引的日历。')
       return
     }
+    dataSourceMutationLock.current = true
     const selection = calendarPicker
     const request = calendarConnectorGate.current.begin()
     setCalendarConnecting(true)
@@ -9868,11 +9899,16 @@ function AiAssistantPage() {
         refreshDataSourcesAfterConflict()
       }
     } finally {
-      if (calendarConnectorGate.current.isCurrent(request)) setCalendarConnecting(false)
+      if (calendarConnectorGate.current.isCurrent(request)) {
+        dataSourceMutationLock.current = false
+        setCalendarConnecting(false)
+      }
     }
   }
 
   const configureMailSource = async (source: any) => {
+    if (dataSourceMutationBusy || dataSourceMutationLock.current) return
+    dataSourceMutationLock.current = true
     const request = mailConnectorGate.current.begin()
     calendarConnectorGate.current.invalidate()
     setMailConnecting(true)
@@ -9907,15 +9943,20 @@ function AiAssistantPage() {
         setMessage(error?.message || String(error))
       }
     } finally {
-      if (mailConnectorGate.current.isCurrent(request)) setMailConnecting(false)
+      if (mailConnectorGate.current.isCurrent(request)) {
+        dataSourceMutationLock.current = false
+        setMailConnecting(false)
+      }
     }
   }
 
   const saveMailSelection = async () => {
+    if (dataSourceMutationBusy || dataSourceMutationLock.current) return
     if (!mailPicker?.selectedIds.length) {
       setMessage('请至少选择一个要索引的 Mail 邮箱。')
       return
     }
+    dataSourceMutationLock.current = true
     const selection = mailPicker
     const request = mailConnectorGate.current.begin()
     setMailConnecting(true)
@@ -9942,16 +9983,24 @@ function AiAssistantPage() {
         refreshDataSourcesAfterConflict()
       }
     } finally {
-      if (mailConnectorGate.current.isCurrent(request)) setMailConnecting(false)
+      if (mailConnectorGate.current.isCurrent(request)) {
+        dataSourceMutationLock.current = false
+        setMailConnecting(false)
+      }
     }
   }
 
   const closeDataSourceModal = () => {
     dataSourceDirectoryGate.current.invalidate()
+    dataSourceToggleGates.current.invalidateAll()
+    documentConnectorGate.current.invalidate()
     calendarConnectorGate.current.invalidate()
     mailConnectorGate.current.invalidate()
+    dataSourceMutationLock.current = false
     setCalendarPicker(null)
     setMailPicker(null)
+    setDataSourceToggling({})
+    setDocumentConnecting(false)
     setCalendarConnecting(false)
     setMailConnecting(false)
     setShowDataSources(false)
@@ -20030,13 +20079,13 @@ function AiAssistantPage() {
             <div className="assistant-modal-title"><div><h2>数据源连接器</h2>
               <p>每个连接器拥有独立状态和 checkpoint；文档、Mail 与日历的权威记忆、原文、检索索引和断点按页一起提交，失败整页回滚。</p>
               <p>连接器配置仅在打开本窗口时按需读取，不进入每 15 秒的首页状态心跳。</p>
-            </div><button onClick={closeDataSourceModal}><X size={16} /></button></div>
+            </div><button disabled={dataSourceMutationBusy} onClick={closeDataSourceModal}><X size={16} /></button></div>
             <div className="assistant-source-list">
               {dataSourcesLoading && <div className="assistant-source-empty">正在按需读取连接器配置…</div>}
               {dataSourcesError && <div className="assistant-task-load-failure" role="alert">
                 <strong>数据源连接器配置读取失败</strong>
                 <span>{dataSourcesError}。当前不会把读取故障解释为“0 个连接器已开启”。</span>
-                <button type="button" disabled={dataSourcesLoading}
+                <button type="button" disabled={dataSourcesLoading || dataSourceMutationBusy}
                   onClick={() => setDataSourcesRefreshKey(value => value + 1)}>
                   {dataSourcesLoading ? '正在重试…' : '立即重试'}
                 </button>
@@ -20085,12 +20134,12 @@ function AiAssistantPage() {
                       {' · '}{source.config?.allowModelAnalysis ? '已允许进入 DeepSeek 问答上下文' : '正文仅本机'}
                     </small>}
                     {source.lastError && <small className="assistant-error">{source.lastError}</small>}
-                    {source.id === 'documents' && <button type="button" onClick={event => {
+                    {source.id === 'documents' && <button type="button" disabled={dataSourceMutationBusy} onClick={event => {
                       event.preventDefault()
                       event.stopPropagation()
                       void configureDocumentSource()
-                    }}>{source.config?.folderConfigured ? '更换文档目录' : '选择文档目录'}</button>}
-                    {source.id === 'calendar' && source.available && <button type="button" disabled={calendarConnecting}
+                    }}>{documentConnecting ? '正在连接…' : source.config?.folderConfigured ? '更换文档目录' : '选择文档目录'}</button>}
+                    {source.id === 'calendar' && source.available && <button type="button" disabled={dataSourceMutationBusy}
                       onClick={event => {
                         event.preventDefault()
                         event.stopPropagation()
@@ -20098,7 +20147,7 @@ function AiAssistantPage() {
                       }}>
                       {calendarConnecting ? '正在连接…' : source.selectedCalendarCount ? '更改所选日历' : '授权并选择日历'}
                     </button>}
-                    {source.id === 'mail' && source.available && <button type="button" disabled={mailConnecting}
+                    {source.id === 'mail' && source.available && <button type="button" disabled={dataSourceMutationBusy}
                       onClick={event => {
                         event.preventDefault()
                         event.stopPropagation()
@@ -20108,7 +20157,7 @@ function AiAssistantPage() {
                     </button>}
                   </span>
                   <input type="checkbox" checked={Boolean(source.enabled)}
-                    disabled={!!dataSourceToggling[source.id] || !source.available ||
+                    disabled={dataSourceMutationBusy || !source.available ||
                       (source.id === 'calendar' && !source.selectedCalendarCount) ||
                       (source.id === 'mail' && !source.selectedMailboxCount)}
                     title={!source.available
@@ -20131,6 +20180,7 @@ function AiAssistantPage() {
                 {calendarPicker.calendars.map(calendar => (
                   <label key={calendar.id}>
                     <input type="checkbox" checked={calendarPicker.selectedIds.includes(calendar.id)}
+                      disabled={dataSourceMutationBusy}
                       onChange={() => setCalendarPicker(current => current ? {
                         ...current,
                         selectedIds: current.selectedIds.includes(calendar.id)
@@ -20142,12 +20192,12 @@ function AiAssistantPage() {
                 ))}
               </div>
               <div className="assistant-calendar-actions">
-                <button onClick={() => {
+                <button disabled={dataSourceMutationBusy} onClick={() => {
                   calendarConnectorGate.current.invalidate()
                   setCalendarConnecting(false)
                   setCalendarPicker(null)
                 }}>取消</button>
-                <button className="primary" disabled={calendarConnecting || !calendarPicker.selectedIds.length}
+                <button className="primary" disabled={dataSourceMutationBusy || !calendarPicker.selectedIds.length}
                   onClick={() => void saveCalendarSelection()}>保存选择</button>
               </div>
             </div>}
@@ -20158,6 +20208,7 @@ function AiAssistantPage() {
                 {mailPicker.mailboxes.map(mailbox => (
                   <label key={mailbox.id}>
                     <input type="checkbox" checked={mailPicker.selectedIds.includes(mailbox.id)}
+                      disabled={dataSourceMutationBusy}
                       onChange={() => setMailPicker(current => current ? {
                         ...current,
                         selectedIds: current.selectedIds.includes(mailbox.id)
@@ -20170,6 +20221,7 @@ function AiAssistantPage() {
               </div>
               <label className="assistant-mail-model-toggle">
                 <input type="checkbox" checked={mailPicker.allowModelAnalysis}
+                  disabled={dataSourceMutationBusy}
                   onChange={event => setMailPicker(current => current ? {
                     ...current,
                     allowModelAnalysis: event.target.checked
@@ -20178,19 +20230,19 @@ function AiAssistantPage() {
                   <small>默认关闭。开启后，仅命中你问题的邮件片段会按当前脱敏策略发送；仍不会自动生成待办。</small></span>
               </label>
               <div className="assistant-calendar-actions">
-                <button onClick={() => {
+                <button disabled={dataSourceMutationBusy} onClick={() => {
                   mailConnectorGate.current.invalidate()
                   setMailConnecting(false)
                   setMailPicker(null)
                 }}>取消</button>
-                <button className="primary" disabled={mailConnecting || !mailPicker.selectedIds.length}
+                <button className="primary" disabled={dataSourceMutationBusy || !mailPicker.selectedIds.length}
                   onClick={() => void saveMailSelection()}>保存选择</button>
               </div>
             </div>}
             <div className="assistant-source-footer"><span>{dataSourcesError
               ? '连接器数量未知 · 请重试读取'
               : `${dataSources.filter(source => source.enabled).length} 个连接器已开启`}</span>
-              <button className="primary" onClick={closeDataSourceModal}>完成</button></div>
+              <button className="primary" disabled={dataSourceMutationBusy} onClick={closeDataSourceModal}>完成</button></div>
           </div>
         </div>
       )}
