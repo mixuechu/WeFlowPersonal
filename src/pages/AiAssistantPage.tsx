@@ -2104,18 +2104,25 @@ function AiAssistantPage() {
     }
   }, [])
 
+  const refreshDashboardAfterCommittedAction = async (successMessage: string) => {
+    setMessage(successMessage)
+    try {
+      await load()
+    } catch {
+      setMessage(`${successMessage}；首页状态暂时无法刷新，已保留最近一次成功快照，请稍后重试。`)
+    }
+  }
+
   const retryNotificationDelivery = async () => {
     if (retryingNotifications) return
     setRetryingNotifications(true)
     try {
       const result = await window.electronAPI.aiAssistant.retryNotificationOutbox()
-      setMessage(result.pending
+      await refreshDashboardAfterCommittedAction(result.pending
         ? `通知重试完成，仍有 ${result.pending} 条等待后续重试。`
         : '待发通知已经全部成功投递。')
-      await load()
     } catch (error: any) {
       setMessage(error?.message || '通知重试失败')
-      await load().catch(() => {})
     } finally {
       setRetryingNotifications(false)
     }
@@ -5005,12 +5012,12 @@ function AiAssistantPage() {
     setMessage('')
     try {
       const result = await window.electronAPI.aiAssistant.sync()
-      setMessage(result.cancelled
+      const successMessage = result.cancelled
         ? result.message
         : result.success === false || result.partial
           ? `本轮已保存成功部分，但仍需重试：${result.message || result.documentSourceError || result.calendarSourceError || result.mailSourceError || '仍有来源或分页等待补齐'}`
-          : `补齐完成：${result.newMessageCount} 条新消息，${result.newTaskCount} 个新待办`)
-      await load()
+          : `补齐完成：${result.newMessageCount} 条新消息，${result.newTaskCount} 个新待办`
+      await refreshDashboardAfterCommittedAction(successMessage)
       setReviewRefreshKey(value => value + 1)
     } catch (error: any) {
       setMessage(error?.message || String(error))
@@ -5021,8 +5028,7 @@ function AiAssistantPage() {
 
   const cancelSync = async () => {
     const result = await window.electronAPI.aiAssistant.cancelSync()
-    setMessage(result.message)
-    await load()
+    await refreshDashboardAfterCommittedAction(result.message)
   }
 
   const auditTaskLifecycles = async () => {
@@ -5031,13 +5037,13 @@ function AiAssistantPage() {
     setMessage('正在根据权威原文复核活动待办；只会关闭高置信度的已完成或已取消事项。')
     try {
       const result = await window.electronAPI.aiAssistant.auditActiveTaskLifecycles()
-      setMessage(`待办复核完成：检查 ${result.processed} 项，关闭 ${result.closed} 项，保留 ${result.kept} 项，因并发变化跳过 ${result.skipped} 项。`)
-      await load()
+      await refreshDashboardAfterCommittedAction(
+        `待办复核完成：检查 ${result.processed} 项，关闭 ${result.closed} 项，保留 ${result.kept} 项，因并发变化跳过 ${result.skipped} 项。`
+      )
       setTaskWorkspaceRefreshKey(value => value + 1)
       setTaskArchiveRefreshKey(value => value + 1)
     } catch (error: any) {
       setMessage(error?.message || String(error))
-      await load().catch(() => {})
     } finally {
       setTaskLifecycleAuditing(false)
     }
@@ -5106,14 +5112,16 @@ function AiAssistantPage() {
 
   const toggleTask = async (task: Task) => {
     try {
+      const nextStatus = task.status === 'done' ? 'todo' : 'done'
       await window.electronAPI.aiAssistant.updateTask(task.id, {
-        status: task.status === 'done' ? 'todo' : 'done'
+        status: nextStatus
       }, task.mutationToken)
-      await load()
+      await refreshDashboardAfterCommittedAction(
+        nextStatus === 'done' ? '待办已完成。' : '待办已恢复为进行中。'
+      )
       if (selectedProjectId) setProjectWorkspaceRefreshKey(value => value + 1)
     } catch (error: any) {
       setMessage(error?.message || String(error))
-      await load()
       setTaskWorkspaceRefreshKey(value => value + 1)
       if (selectedProjectId) setProjectWorkspaceRefreshKey(value => value + 1)
     }
@@ -5123,7 +5131,7 @@ function AiAssistantPage() {
     try {
       await window.electronAPI.aiAssistant.updateTask(task.id, { status: 'todo' }, task.mutationToken)
       setSelectedTaskId('')
-      await load()
+      await refreshDashboardAfterCommittedAction('待办已从历史档案恢复为进行中。')
       if (task.project && selectedProjectId === task.project) {
         setProjectWorkspaceRefreshKey(value => value + 1)
       }
@@ -5131,7 +5139,6 @@ function AiAssistantPage() {
       setMessage(error?.message || String(error))
       setTaskArchiveRefreshKey(value => value + 1)
       setTaskWorkspaceRefreshKey(value => value + 1)
-      await load()
     }
   }
 
@@ -6949,11 +6956,10 @@ function AiAssistantPage() {
         previewToken: memoryRestoreDialog.preview.previewToken,
         confirmation: memoryRestoreConfirmation
       })
-      setMessage('个人记忆已恢复；恢复前的安全快照已保留。')
       setMemoryRestoreDialog(null)
       setMemoryRestoreConfirmation('')
       await refreshMemoryDiagnostics().catch(() => {})
-      await load()
+      await refreshDashboardAfterCommittedAction('个人记忆已恢复；恢复前的安全快照已保留。')
     } catch (error: any) {
       const message = error?.message || String(error)
       setMessage(message)
@@ -7095,9 +7101,8 @@ function AiAssistantPage() {
         setMigrationDialog(null)
         setMigrationPassphrase('')
         setMigrationImportConfirmation('')
-        setMessage('个人记忆迁移完成；导入前的安全快照已保留。')
         await refreshMemoryDiagnostics().catch(() => {})
-        await load()
+        await refreshDashboardAfterCommittedAction('个人记忆迁移完成；导入前的安全快照已保留。')
       }
     } catch (error: any) {
       setMigrationDialog((current: any) => ({
@@ -9612,11 +9617,12 @@ function AiAssistantPage() {
         confirmation: entityForgetConfirmation
       })
       setSelectedEntityId('')
-      setMessage(`已彻底遗忘 ${result.canonicalName}：删除 ${result.removed.searchDocuments} 个记忆索引`)
       entityForgetGate.current.invalidate()
       setEntityForgetDialog(null)
       setEntityForgetConfirmation('')
-      await load()
+      await refreshDashboardAfterCommittedAction(
+        `已彻底遗忘 ${result.canonicalName}：删除 ${result.removed.searchDocuments} 个记忆索引`
+      )
       await refreshMemoryDiagnostics().catch(() => {})
     } catch (error: any) {
       setEntityForgetDialog((current: any) => ({
