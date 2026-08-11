@@ -48,7 +48,14 @@ test('destructive committed actions cannot reopen as failures only because dashb
   const cases = [
     ['restoreMemory', 'openMemoryBackupDeleteDialog'],
     ['importMemoryBundle', 'closeMigrationDialog'],
-    ['confirmForgetSelectedEntity', 'toggleSource']
+    ['confirmForgetSelectedEntity', 'toggleSource'],
+    ['confirmRevertMerge', 'previewRestoreRejectedEntity'],
+    ['confirmRestoreRejectedEntity', 'loadMoreMergeHistory'],
+    ['confirmPermanentMemoryDeletion', 'ignoreMemoryItem'],
+    ['restoreMemoryResource', 'purgeMemoryResourceTrash'],
+    ['confirmResourceDeletion', 'saveClaimCorrection'],
+    ['confirmConversationDeletion', 'createTaskFromMemory'],
+    ['confirmCreateTaskFromMemory', 'reviewMemoryCitation']
   ] as const
   for (const [name, nextName] of cases) {
     const body = functionBody(name, nextName)

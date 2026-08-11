@@ -7377,8 +7377,9 @@ function AiAssistantPage() {
       mergeRevertGate.current.invalidate()
       setMergeRevertDialog(null)
       setMergeRevertConfirmation('')
-      setMessage('身份合并已安全撤销；合并前的两个身份和相关关系已恢复。')
-      await load()
+      await refreshDashboardAfterCommittedAction(
+        '身份合并已安全撤销；合并前的两个身份和相关关系已恢复。'
+      )
       setReviewRefreshKey(value => value + 1)
       setMergeArchiveRefreshKey(value => value + 1)
     } catch (error: any) {
@@ -7446,10 +7447,11 @@ function AiAssistantPage() {
       entityRestoreGate.current.invalidate()
       setEntityRestoreDialog(null)
       setEntityRestoreConfirmation('')
-      setMessage(`身份及关联内容已安全恢复${Number(result?.downgraded || 0) > 0
+      await refreshDashboardAfterCommittedAction(
+        `身份及关联内容已安全恢复${Number(result?.downgraded || 0) > 0
         ? `；${result.downgraded} 项因仍涉及其他未确认实体而保守恢复为候选。`
-        : '。'}`)
-      await load()
+        : '。'}`
+      )
       setReviewRefreshKey(value => value + 1)
       setClaimArchiveRefreshKey(value => value + 1)
       setEventTimelineRefreshKey(value => value + 1)
@@ -7731,14 +7733,14 @@ function AiAssistantPage() {
             confirmation: memoryDeletionConfirmation
           })
       const kindLabel = kind === 'claim' ? '事实' : kind === 'event' ? '事件' : '关系'
-      setMessage(reason === 'not_important'
+      const successMessage = reason === 'not_important'
         ? `已标记为不重要并清理${kindLabel}；抑制指纹 ${result.fingerprint} 已保存。`
-        : `已永久删除${kindLabel}；抑制指纹 ${result.fingerprint} 已保存。`)
+        : `已永久删除${kindLabel}；抑制指纹 ${result.fingerprint} 已保存。`
       setEditingClaim((current: any) => current?.id === id ? null : current)
       setEditingEvent((current: any) => current?.id === id ? null : current)
       if (memoryAnswer?.citations?.some((citation: any) => citation.documentId === `${kind}:${id}`)) setMemoryAnswer(null)
       closeMemoryDeletionDialog()
-      await load()
+      await refreshDashboardAfterCommittedAction(successMessage)
       await refreshMemoryDiagnostics().catch(() => {})
     } catch (error: any) {
       setMemoryDeletionDialog((current: any) => ({
@@ -7844,8 +7846,8 @@ function AiAssistantPage() {
         resource.mutation_token
       )
       if (!resourceTrashRestoreGates.current.isCurrent(resource.id, request)) return
-      setMessage(result?.success ? `已恢复资源：${resource.title || '未命名资源'}` : '资源恢复失败')
-      await load()
+      if (!result?.success) throw new Error('资源恢复失败')
+      await refreshDashboardAfterCommittedAction(`已恢复资源：${resource.title || '未命名资源'}`)
       setResourceRefreshKey(value => value + 1)
     } catch (error: any) {
       if (resourceTrashRestoreGates.current.isCurrent(resource.id, request)) {
@@ -7912,18 +7914,20 @@ function AiAssistantPage() {
           previewToken: preview.previewToken,
           confirmation: resourceDeletionConfirmation
         })
-        setMessage(`已永久删除资源快照：${preview.title}`)
       } else {
         await window.electronAPI.aiAssistant.deleteMemoryResource(resourceId, {
           previewToken: preview.previewToken,
           confirmation: resourceDeletionConfirmation
         })
-        setMessage(`已从个人记忆删除并保留回收站快照：${preview.title}`)
       }
       resourceDeletionGate.current.invalidate()
       setResourceDeletionDialog(null)
       setResourceDeletionConfirmation('')
-      await load()
+      await refreshDashboardAfterCommittedAction(
+        action === 'purge'
+          ? `已永久删除资源快照：${preview.title}`
+          : `已从个人记忆删除并保留回收站快照：${preview.title}`
+      )
       setSelectedResourceDossier(null)
       setResourceRefreshKey(value => value + 1)
     } catch (error: any) {
@@ -9052,8 +9056,9 @@ function AiAssistantPage() {
       if (!conversationDeletionGate.current.isCurrent(request)) return
       closeConversationDeletionDialog()
       if (memoryConversationId === conversationId) startNewMemoryConversation()
-      setMessage('已删除这段本地问答历史；引用的原始记忆没有被删除。')
-      await load()
+      await refreshDashboardAfterCommittedAction(
+        '已删除这段本地问答历史；引用的原始记忆没有被删除。'
+      )
     } catch (error: any) {
       if (!conversationDeletionGate.current.isCurrent(request)) return
       setConversationDeletionDialog((current: any) => ({
@@ -9110,8 +9115,7 @@ function AiAssistantPage() {
       if (!memoryTaskPreviewGate.current.isCurrent(request)) return
       setMemoryAnswer((current: any) => ({ ...current, createdTaskId: task.id }))
       setMemoryTaskPreviewDialog(null)
-      setMessage(`已生成待办：${task.title}`)
-      await load()
+      await refreshDashboardAfterCommittedAction(`已生成待办：${task.title}`)
     } catch (error: any) {
       if (!memoryTaskPreviewGate.current.isCurrent(request)) return
       setMemoryTaskPreviewDialog((current: any) => ({
