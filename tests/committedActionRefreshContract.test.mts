@@ -14,10 +14,12 @@ const functionBody = (name: string, nextName: string): string => {
 
 test('committed action refresh preserves the authoritative success result', () => {
   const body = functionBody('refreshDashboardAfterCommittedAction', 'retryNotificationDelivery')
+  assert.match(body, /committedActionRefreshGate\.current\.begin\(\)/)
   assert.match(body, /setMessage\(successMessage\)/)
   assert.match(body, /await load\(\)/)
   assert.match(body, /catch \{/)
   assert.match(body, /首页状态暂时无法刷新/)
+  assert.match(body, /committedActionRefreshGate\.current\.isCurrent\(request\)/)
   assert.doesNotMatch(body, /throw error/)
 })
 

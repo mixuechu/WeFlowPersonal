@@ -1183,6 +1183,7 @@ function AiAssistantPage() {
   const resourceTrashRestoreGates = useRef(new KeyedLatestRequestGates())
   const dashboardLoadGate = useRef(new LatestRequestGate())
   const dashboardRefresh = useRef(new TrailingCoalescedRequest<[any, any]>())
+  const committedActionRefreshGate = useRef(new LatestRequestGate())
   const memoryDiagnosticsRefresh = useRef(new TrailingCoalescedRequest<any>())
   const memoryDiagnosticsForceRequested = useRef(false)
   const claimArchiveGate = useRef(new LatestRequestGate())
@@ -2105,11 +2106,14 @@ function AiAssistantPage() {
   }, [])
 
   const refreshDashboardAfterCommittedAction = async (successMessage: string) => {
+    const request = committedActionRefreshGate.current.begin()
     setMessage(successMessage)
     try {
       await load()
     } catch {
-      setMessage(`${successMessage}；首页状态暂时无法刷新，已保留最近一次成功快照，请稍后重试。`)
+      if (committedActionRefreshGate.current.isCurrent(request)) {
+        setMessage(`${successMessage}；首页状态暂时无法刷新，已保留最近一次成功快照，请稍后重试。`)
+      }
     }
   }
 
@@ -7200,13 +7204,22 @@ function AiAssistantPage() {
         delete next[id]
         return next
       })
+      const reviewSuccessMessage = decision === 'confirmed'
+        ? '图谱审阅决定已确认并写入审计。'
+        : '图谱候选已拒绝并写入审计。'
       await refreshDashboardAfterCommittedAction(
-        decision === 'confirmed' ? '图谱审阅决定已确认并写入审计。' : '图谱候选已拒绝并写入审计。'
+        reviewSuccessMessage
       )
       if (completedBlockedIdentity && blockedReturnBeforeDecision &&
         !(blockedReturnBeforeDecision.kind === 'relation_review' &&
           blockedReturnBeforeDecision.reviewId === id)) {
-        await returnToBlockedIdentitySource(blockedReturnBeforeDecision)
+        try {
+          await returnToBlockedIdentitySource(blockedReturnBeforeDecision)
+        } catch (navigationError: any) {
+          setMessage(
+            `${reviewSuccessMessage}；返回原档案失败：${navigationError?.message || String(navigationError)}`
+          )
+        }
         return
       }
       if (continuationPlan &&
@@ -7218,7 +7231,15 @@ function AiAssistantPage() {
         reviewReturnTargetRef.current,
         id
       )
-      if (returnTarget) await restoreReviewReturnTarget(returnTarget)
+      if (returnTarget) {
+        try {
+          await restoreReviewReturnTarget(returnTarget)
+        } catch (navigationError: any) {
+          setMessage(
+            `${reviewSuccessMessage}；返回原档案失败：${navigationError?.message || String(navigationError)}`
+          )
+        }
+      }
     } catch (error: any) {
       const errorMessage = error?.message || String(error)
       setMessage(errorMessage)
